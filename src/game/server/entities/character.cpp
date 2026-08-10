@@ -2,9 +2,7 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "character.h"
 
-#include "laser.h"
 #include "pickup.h"
-#include "projectile.h"
 
 #include <antibot/antibot_data.h>
 
@@ -502,150 +500,17 @@ void CCharacter::FireWeapon()
 		return;
 	}
 
-	// check for ammo
-	if(m_Core.m_ActiveWeapon < 0 || !m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo)
+	vec2 ProjStartPos = m_Pos + Direction * GetProximityRadius() * 0.75f;
+	CWeaponFireContext FireContext = {this, m_Core.m_ActiveWeapon, Direction, MouseTarget, ProjStartPos, GetTuning(m_TuneZone)};
+	const CWeaponFireResult FireResult = GameServer()->m_pController->OnCharacterFireWeapon(FireContext);
+	if(FireResult.m_ReloadTicks > 0)
+		m_ReloadTimer = FireResult.m_ReloadTicks;
+	if(!FireResult.m_Fired)
 		return;
 
-	vec2 ProjStartPos = m_Pos + Direction * GetProximityRadius() * 0.75f;
-
-	switch(m_Core.m_ActiveWeapon)
-	{
-	case WEAPON_HAMMER:
-	{
-		GameServer()->CreateSound(m_Pos, SOUND_HAMMER_FIRE, TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
-
-		Antibot()->OnHammerFire(m_pPlayer->GetCid());
-
-		if(m_Core.m_HammerHitDisabled)
-			break;
-
-		CEntity *apEnts[MAX_CLIENTS];
-		int Hits = 0;
-		int Num = GameServer()->m_World.FindEntities(ProjStartPos, GetProximityRadius() * 0.5f, apEnts,
-			MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
-
-		for(int i = 0; i < Num; ++i)
-		{
-			auto *pTarget = static_cast<CCharacter *>(apEnts[i]);
-
-			if((pTarget == this || (pTarget->IsAlive() && !CanCollide(pTarget->GetPlayer()->GetCid()))))
-				continue;
-
-			// set their velocity to fast upward (for now)
-			if(length(pTarget->m_Pos - ProjStartPos) > 0.0f)
-				GameServer()->CreateHammerHit(pTarget->m_Pos - normalize(pTarget->m_Pos - ProjStartPos) * GetProximityRadius() * 0.5f, TeamMask());
-			else
-				GameServer()->CreateHammerHit(ProjStartPos, TeamMask());
-
-			vec2 Dir;
-			if(length(pTarget->m_Pos - m_Pos) > 0.0f)
-				Dir = normalize(pTarget->m_Pos - m_Pos);
-			else
-				Dir = vec2(0.f, -1.f);
-
-			float Strength = GetTuning(m_TuneZone)->m_HammerStrength;
-
-			vec2 Temp = pTarget->m_Core.m_Vel + normalize(Dir + vec2(0.f, -1.1f)) * 10.0f;
-			Temp = ClampVel(pTarget->m_MoveRestrictions, Temp);
-			Temp -= pTarget->m_Core.m_Vel;
-			pTarget->TakeDamage((vec2(0.f, -1.0f) + Temp) * Strength, g_pData->m_Weapons.m_Hammer.m_pBase->m_Damage,
-				m_pPlayer->GetCid(), m_Core.m_ActiveWeapon);
-			pTarget->Unfreeze();
-
-			Antibot()->OnHammerHit(m_pPlayer->GetCid(), pTarget->GetPlayer()->GetCid());
-
-			Hits++;
-		}
-
-		// if we Hit anything, we have to wait for the reload
-		if(Hits)
-		{
-			float FireDelay = GetTuning(m_TuneZone)->m_HammerHitFireDelay;
-			m_ReloadTimer = FireDelay * Server()->TickSpeed() / 1000;
-		}
-	}
-	break;
-
-	case WEAPON_GUN:
-	{
-		if(!m_Core.m_Jetpack || !m_pPlayer->m_NinjaJetpack || m_Core.m_HasTelegunGun)
-		{
-			int Lifetime = (int)(Server()->TickSpeed() * GetTuning(m_TuneZone)->m_GunLifetime);
-
-			new CProjectile(
-				GameWorld(),
-				WEAPON_GUN, //Type
-				m_pPlayer->GetCid(), //Owner
-				ProjStartPos, //Pos
-				Direction, //Dir
-				Lifetime, //Span
-				false, //Freeze
-				false, //Explosive
-				-1, //SoundImpact
-				MouseTarget //InitDir
-			);
-
-			GameServer()->CreateSound(m_Pos, SOUND_GUN_FIRE, TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
-		}
-	}
-	break;
-
-	case WEAPON_SHOTGUN:
-	{
-		float LaserReach = GetTuning(m_TuneZone)->m_LaserReach;
-
-		new CLaser(&GameServer()->m_World, m_Pos, Direction, LaserReach, m_pPlayer->GetCid(), WEAPON_SHOTGUN);
-		GameServer()->CreateSound(m_Pos, SOUND_SHOTGUN_FIRE, TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
-	}
-	break;
-
-	case WEAPON_GRENADE:
-	{
-		int Lifetime = (int)(Server()->TickSpeed() * GetTuning(m_TuneZone)->m_GrenadeLifetime);
-
-		new CProjectile(
-			GameWorld(),
-			WEAPON_GRENADE, //Type
-			m_pPlayer->GetCid(), //Owner
-			ProjStartPos, //Pos
-			Direction, //Dir
-			Lifetime, //Span
-			false, //Freeze
-			true, //Explosive
-			SOUND_GRENADE_EXPLODE, //SoundImpact
-			MouseTarget // MouseTarget
-		);
-
-		GameServer()->CreateSound(m_Pos, SOUND_GRENADE_FIRE, TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
-	}
-	break;
-
-	case WEAPON_LASER:
-	{
-		float LaserReach = GetTuning(m_TuneZone)->m_LaserReach;
-
-		new CLaser(GameWorld(), m_Pos, Direction, LaserReach, m_pPlayer->GetCid(), WEAPON_LASER);
-		GameServer()->CreateSound(m_Pos, SOUND_LASER_FIRE, TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
-	}
-	break;
-
-	case WEAPON_NINJA:
-	{
-		// reset Hit objects
-		m_NumObjectsHit = 0;
-
-		m_Core.m_Ninja.m_ActivationDir = Direction;
-		m_Core.m_Ninja.m_CurrentMoveTime = g_pData->m_Weapons.m_Ninja.m_Movetime * Server()->TickSpeed() / 1000;
-
-		// clamp to prevent massive MoveBox calculation lag with SG bug
-		m_Core.m_Ninja.m_OldVelAmount = std::clamp(length(m_Core.m_Vel), 0.0f, 6000.0f);
-
-		GameServer()->CreateSound(m_Pos, SOUND_NINJA_FIRE, TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
-	}
-	break;
-	}
-
 	m_AttackTick = Server()->Tick();
+	if(FireResult.m_ConsumeAmmo && m_Core.m_ActiveWeapon >= 0 && m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo > 0)
+		m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo--;
 
 	// -1 is no weapon, handled here so pain sound still plays when firing in freeze
 	if(!m_ReloadTimer && m_Core.m_ActiveWeapon != -1)
@@ -1014,7 +879,8 @@ void CCharacter::Die(int Killer, int Weapon, bool SendKillMsg)
 	if(Killer != WEAPON_GAME && m_SetSavePos[RESCUEMODE_AUTO])
 		GetPlayer()->m_LastDeath = m_RescueTee[RESCUEMODE_AUTO];
 	StopRecording();
-	int ModeSpecial = GameServer()->m_pController->OnCharacterDeath(this, GameServer()->m_apPlayers[Killer], Weapon);
+	CPlayer *pKiller = Killer >= 0 && Killer < MAX_CLIENTS ? GameServer()->m_apPlayers[Killer] : nullptr;
+	int ModeSpecial = GameServer()->m_pController->OnCharacterDeath(this, pKiller, Weapon);
 
 	log_info("game", "kill killer='%d:%s' victim='%d:%s' weapon=%d special=%d",
 		Killer, Server()->ClientName(Killer),
@@ -1042,17 +908,9 @@ void CCharacter::Die(int Killer, int Weapon, bool SendKillMsg)
 	CancelSwapRequests();
 }
 
-bool CCharacter::TakeDamage(vec2 Force, int Dmg, int From, int Weapon)
+bool CCharacter::TakeDamage(vec2 Force, int Dmg, int From, int Weapon, bool CanDamage)
 {
-	if(Dmg)
-	{
-		SetEmote(EMOTE_PAIN, Server()->Tick() + 500 * Server()->TickSpeed() / 1000);
-	}
-
-	vec2 Temp = m_Core.m_Vel + Force;
-	m_Core.m_Vel = ClampVel(m_MoveRestrictions, Temp);
-
-	return true;
+	return GameServer()->m_pController->OnCharacterTakeDamage(this, Force, Dmg, From, Weapon, CanDamage);
 }
 
 void CCharacter::SendDeathMessageIfNotInLockedTeam(int Killer, int Weapon, int ModeSpecial)
@@ -2599,6 +2457,19 @@ void CCharacter::SetRawVelocity(vec2 NewVelocity)
 void CCharacter::AddVelocity(vec2 Addition)
 {
 	SetVelocity(m_Core.m_Vel + Addition);
+}
+
+vec2 CCharacter::VelocityDeltaAfterClamping(vec2 Addition) const
+{
+	return ClampVel(m_MoveRestrictions, m_Core.m_Vel + Addition) - m_Core.m_Vel;
+}
+
+void CCharacter::ActivateNinja(vec2 Direction)
+{
+	m_NumObjectsHit = 0;
+	m_Core.m_Ninja.m_ActivationDir = Direction;
+	m_Core.m_Ninja.m_CurrentMoveTime = g_pData->m_Weapons.m_Ninja.m_Movetime * Server()->TickSpeed() / 1000;
+	m_Core.m_Ninja.m_OldVelAmount = std::clamp(length(m_Core.m_Vel), 0.0f, 6000.0f);
 }
 
 void CCharacter::ApplyMoveRestrictions()

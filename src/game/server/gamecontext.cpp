@@ -3,8 +3,9 @@
 #include "gamecontext.h"
 
 #include "entities/character.h"
-#include "gamemodes/ddnet.h"
-#include "gamemodes/mod.h"
+#include "gamecontroller.h"
+#include "mode/builtin_game_modes.h"
+#include "mode/game_mode_registry.h"
 #include "player.h"
 #include "score.h"
 #include "teeinfo.h"
@@ -80,6 +81,7 @@ void CClientChatLogger::Log(const CLogMessage *pMessage)
 }
 
 CGameContext::CGameContext(bool Resetting) :
+	m_GameHost(this),
 	m_Mutes("mutes"),
 	m_VoteMutes("votemutes")
 {
@@ -428,7 +430,7 @@ void CGameContext::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamag
 				TeamMask.reset(PlayerTeam);
 			}
 
-			pChr->TakeDamage(ForceDir * Dmg * 2, (int)Dmg, Owner, Weapon);
+			pChr->TakeDamage(ForceDir * Dmg * 2, (int)Dmg, Owner, Weapon, !NoDamage);
 		}
 	}
 }
@@ -3158,7 +3160,7 @@ void CGameContext::ConTuneReset(IConsole::IResult *pResult, void *pUserData)
 	}
 	else
 	{
-		pSelf->ResetTuning();
+		pSelf->m_pController->ResetTuning();
 		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", "Tuning reset");
 	}
 }
@@ -4185,86 +4187,20 @@ void CGameContext::OnInit(const void *pPersistentData)
 	m_World.Init(&m_Collision, m_aTuningList);
 	m_MapBugs = CMapBugs::Create(Map()->BaseName(), Map()->Size(), Map()->Sha256());
 
-	// Reset Tunezones
-	for(int i = 0; i < TuneZone::NUM; i++)
+	dbg_assert(RegisterBuiltInGameModes(m_GameHost.Modes()), "failed to register built-in game modes");
+	if(!m_GameHost.Select(Config()->m_SvGametype))
 	{
-		TuningList()[i] = CTuningParams::DEFAULT;
-		TuningList()[i].Set("gun_curvature", 0);
-		TuningList()[i].Set("gun_speed", 1400);
-		TuningList()[i].Set("shotgun_curvature", 0);
-		TuningList()[i].Set("shotgun_speed", 500);
-		TuningList()[i].Set("shotgun_speeddiff", 0);
+		log_error("server", "unknown game type '%s'", Config()->m_SvGametype);
+		dbg_assert(m_GameHost.Select("ddnet"), "failed to create fallback controller for shutdown");
+		m_pController = m_GameHost.Controller();
+		dbg_assert(m_pController, "failed to create fallback controller for shutdown");
+		Server()->SetErrorShutdown("unknown game type");
+		return;
 	}
 
-	for(int i = 0; i < TuneZone::NUM; i++)
-	{
-		// Send no text by default when changing tune zones.
-		m_aaZoneEnterMsg[i][0] = 0;
-		m_aaZoneLeaveMsg[i][0] = 0;
-	}
-	// Reset Tuning
-	if(g_Config.m_SvTuneReset)
-	{
-		ResetTuning();
-	}
-	else
-	{
-		GlobalTuning()->Set("gun_speed", 1400);
-		GlobalTuning()->Set("gun_curvature", 0);
-		GlobalTuning()->Set("shotgun_speed", 500);
-		GlobalTuning()->Set("shotgun_speeddiff", 0);
-		GlobalTuning()->Set("shotgun_curvature", 0);
-	}
-
-	if(g_Config.m_SvDDRaceTuneReset)
-	{
-		g_Config.m_SvHit = 1;
-		g_Config.m_SvEndlessDrag = 0;
-		g_Config.m_SvOldLaser = 0;
-		g_Config.m_SvOldTeleportHook = 0;
-		g_Config.m_SvOldTeleportWeapons = 0;
-		g_Config.m_SvTeleportHoldHook = 0;
-		g_Config.m_SvTeam = SV_TEAM_ALLOWED;
-		g_Config.m_SvShowOthersDefault = SHOW_OTHERS_OFF;
-
-		for(auto &Switcher : Switchers())
-			Switcher.m_Initial = true;
-	}
-
-	m_pConfigManager->SetGameSettingsReadOnly(false);
-
-	Console()->ExecuteFile(g_Config.m_SvResetFile, IConsole::CLIENT_ID_UNSPECIFIED);
-
-	LoadMapSettings();
-
-	m_pConfigManager->SetGameSettingsReadOnly(true);
-
+	m_pController = m_GameHost.Controller();
+	m_GameHost.Init();
 	m_MapBugs.Dump();
-
-	if(g_Config.m_SvSoloServer)
-	{
-		g_Config.m_SvTeam = SV_TEAM_FORCED_SOLO;
-		g_Config.m_SvShowOthersDefault = SHOW_OTHERS_ON;
-
-		GlobalTuning()->Set("player_collision", 0);
-		GlobalTuning()->Set("player_hooking", 0);
-
-		for(int i = 0; i < TuneZone::NUM; i++)
-		{
-			TuningList()[i].Set("player_collision", 0);
-			TuningList()[i].Set("player_hooking", 0);
-		}
-	}
-
-	if(!str_comp(Config()->m_SvGametype, "mod"))
-		m_pController = new CGameControllerMod(this);
-	else
-		m_pController = new CGameControllerDDNet(this);
-
-	for(const char *pReservedGameType : {"DM", "TDM", "CTF", "LMS", "LTS"})
-	{
-		dbg_assert(str_comp(m_pController->m_pGameType, pReservedGameType) != 0, "Using reserved gametype '%s' is not allowed", m_pController->m_pGameType);
-	}
 
 	ReadCensorList();
 
@@ -4622,7 +4558,7 @@ void CGameContext::OnShutdown(void *pPersistentData)
 	ConfigManager()->ResetGameSettings();
 	Collision()->Unload();
 	Layers()->Unload();
-	delete m_pController;
+	m_GameHost.Shutdown();
 	m_pController = nullptr;
 	Clear();
 }
@@ -4731,6 +4667,12 @@ const char *CGameContext::GameType() const
 	dbg_assert(m_pController, "no controller");
 	dbg_assert(m_pController->m_pGameType, "no gametype");
 	return m_pController->m_pGameType;
+}
+
+const char *CGameContext::ClientScoreKind() const
+{
+	dbg_assert(m_pController, "no controller");
+	return GameModeScoreKindName(m_pController->Info().m_ScoreKind);
 }
 const char *CGameContext::Version() const { return m_aVersionString; }
 const char *CGameContext::NetVersion() const { return GAME_NETVERSION; }
@@ -4982,17 +4924,6 @@ bool CGameContext::ProcessSpamProtection(int ClientId, bool RespectChatInitialDe
 int CGameContext::GetDDRaceTeam(int ClientId) const
 {
 	return m_pController->Teams().m_Core.Team(ClientId);
-}
-
-void CGameContext::ResetTuning()
-{
-	*GlobalTuning() = CTuningParams::DEFAULT;
-	GlobalTuning()->Set("gun_speed", 1400);
-	GlobalTuning()->Set("gun_curvature", 0);
-	GlobalTuning()->Set("shotgun_speed", 500);
-	GlobalTuning()->Set("shotgun_speeddiff", 0);
-	GlobalTuning()->Set("shotgun_curvature", 0);
-	SendTuningParams(-1);
 }
 
 void CGameContext::Whisper(int ClientId, char *pStr)

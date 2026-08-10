@@ -6,42 +6,86 @@
 #include "entities/door.h"
 #include "entities/dragger.h"
 #include "entities/gun.h"
+#include "entities/laser.h"
 #include "entities/light.h"
 #include "entities/pickup.h"
 #include "entities/projectile.h"
 #include "gamecontext.h"
 #include "player.h"
 
+#include <base/log.h>
+
+#include <engine/antibot.h>
+#include <engine/config.h>
 #include <engine/shared/config.h>
 #include <engine/shared/protocolglue.h>
 
 #include <generated/protocol.h>
+#include <generated/server_data.h>
 
 #include <game/mapitems.h>
 #include <game/server/score.h>
 #include <game/teamscore.h>
 
-IGameController::IGameController(class CGameContext *pGameServer) :
-	m_Teams(pGameServer), m_pLoadBestTimeResult(nullptr)
+IGameController::IGameController(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo) :
+	m_Teams(pGameServer), m_GameModeInfo(GameModeInfo), m_pLoadBestTimeResult(nullptr)
 {
 	m_pGameServer = pGameServer;
 	m_pConfig = m_pGameServer->Config();
 	m_pServer = m_pGameServer->Server();
-	m_pGameType = "unknown";
+	m_pGameType = g_Config.m_SvTestingCommands ? m_GameModeInfo.m_pTestingGameType : m_GameModeInfo.m_pGameType;
 
 	//
-	DoWarmup(g_Config.m_SvWarmup);
+	m_Warmup = 0;
 	m_GameOverTick = -1;
 	m_SuddenDeath = 0;
 	m_RoundStartTick = Server()->Tick();
 	m_RoundCount = 0;
-	m_GameFlags = 0;
+	m_GameFlags = m_GameModeInfo.m_GameFlags;
 	m_aMapWish[0] = 0;
 
 	m_CurrentRecord.reset();
 }
 
 IGameController::~IGameController() = default;
+
+void IGameController::Init()
+{
+	InitGameSettings();
+	m_pGameType = g_Config.m_SvTestingCommands ? m_GameModeInfo.m_pTestingGameType : m_GameModeInfo.m_pGameType;
+	DoWarmup(g_Config.m_SvWarmup);
+	m_Teams.Reset();
+}
+
+void IGameController::LoadGameSettings()
+{
+	GameServer()->ConfigManager()->SetGameSettingsReadOnly(false);
+	GameServer()->ConfigManager()->SetReadOnly("sv_gametype", true);
+	GameServer()->Console()->ExecuteFile(g_Config.m_SvResetFile, IConsole::CLIENT_ID_UNSPECIFIED);
+	GameServer()->LoadMapSettings();
+	GameServer()->ConfigManager()->SetReadOnly("sv_gametype", false);
+	GameServer()->ConfigManager()->SetGameSettingsReadOnly(true);
+}
+
+void IGameController::InitGameSettings()
+{
+	for(int i = 0; i < TuneZone::NUM; i++)
+	{
+		GameServer()->TuningList()[i] = CTuningParams::DEFAULT;
+		GameServer()->m_aaZoneEnterMsg[i][0] = 0;
+		GameServer()->m_aaZoneLeaveMsg[i][0] = 0;
+	}
+	if(g_Config.m_SvTuneReset)
+		ResetTuning();
+
+	LoadGameSettings();
+}
+
+void IGameController::ResetTuning()
+{
+	*GameServer()->GlobalTuning() = CTuningParams::DEFAULT;
+	GameServer()->SendTuningParams(-1);
+}
 
 void IGameController::DoActivityCheck()
 {
@@ -418,8 +462,8 @@ void IGameController::OnPlayerConnect(CPlayer *pPlayer)
 			Msg.m_GameFlags = m_GameFlags;
 			Msg.m_MatchCurrent = 1;
 			Msg.m_MatchNum = 0;
-			Msg.m_ScoreLimit = 0;
-			Msg.m_TimeLimit = 0;
+			Msg.m_ScoreLimit = ScoreLimit();
+			Msg.m_TimeLimit = TimeLimit();
 			Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
 		}
 
@@ -458,6 +502,7 @@ void IGameController::EndRound()
 	SetGamePaused(true);
 	m_GameOverTick = Server()->Tick();
 	m_SuddenDeath = 0;
+	log_info("game", "end round type='%s'", m_pGameType);
 }
 
 void IGameController::ResetGame()
@@ -507,9 +552,7 @@ void IGameController::StartRound()
 	m_GameOverTick = -1;
 	SetGamePaused(false);
 	Server()->DemoRecorder_HandleAutoStart();
-	char aBuf[256];
-	str_format(aBuf, sizeof(aBuf), "start round type='%s' teamplay='%d'", m_pGameType, m_GameFlags & GAMEFLAG_TEAMS);
-	GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "game", aBuf);
+	log_info("game", "start round type='%s' teamplay='%d'", m_pGameType, m_GameFlags & GAMEFLAG_TEAMS);
 }
 
 void IGameController::ChangeMap(const char *pToMap)
@@ -527,6 +570,235 @@ void IGameController::OnReset()
 int IGameController::OnCharacterDeath(class CCharacter *pVictim, class CPlayer *pKiller, int Weapon)
 {
 	return 0;
+}
+
+bool IGameController::OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage)
+{
+	if(Damage)
+		pVictim->SetEmote(EMOTE_PAIN, Server()->Tick() + 500 * Server()->TickSpeed() / 1000);
+
+	pVictim->AddVelocity(Force);
+	return true;
+}
+
+bool IGameController::CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const
+{
+	return pTarget->IsAlive() && pAttacker->CanCollide(pTarget->GetPlayer()->GetCid());
+}
+
+CWeaponFireResult IGameController::OnCharacterFireWeapon(const CWeaponFireContext &Context)
+{
+	CCharacter *pCharacter = Context.m_pCharacter;
+	if(!pCharacter || Context.m_Weapon < 0 || Context.m_Weapon >= NUM_WEAPONS || !pCharacter->GetWeaponAmmo(Context.m_Weapon))
+		return {};
+
+	CWeaponFireResult Result;
+	Result.m_Fired = true;
+	const int Owner = pCharacter->GetPlayer()->GetCid();
+
+	switch(Context.m_Weapon)
+	{
+	case WEAPON_HAMMER:
+	{
+		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_HAMMER_FIRE, pCharacter->TeamMask());
+		GameServer()->Antibot()->OnHammerFire(Owner);
+		if(pCharacter->HammerHitDisabled())
+			break;
+
+		CEntity *apEntities[MAX_CLIENTS];
+		const int NumEntities = GameServer()->m_World.FindEntities(
+			Context.m_ProjectileStartPosition,
+			pCharacter->GetProximityRadius() * 0.5f,
+			apEntities,
+			MAX_CLIENTS,
+			CGameWorld::ENTTYPE_CHARACTER);
+		int Hits = 0;
+		for(int i = 0; i < NumEntities; i++)
+		{
+			auto *pTarget = static_cast<CCharacter *>(apEntities[i]);
+			if(pTarget == pCharacter || !CanCharacterHitCharacter(pCharacter, pTarget))
+				continue;
+
+			if(length(pTarget->m_Pos - Context.m_ProjectileStartPosition) > 0.0f)
+				GameServer()->CreateHammerHit(pTarget->m_Pos - normalize(pTarget->m_Pos - Context.m_ProjectileStartPosition) * pCharacter->GetProximityRadius() * 0.5f, pCharacter->TeamMask());
+			else
+				GameServer()->CreateHammerHit(Context.m_ProjectileStartPosition, pCharacter->TeamMask());
+
+			const vec2 Direction = length(pTarget->m_Pos - pCharacter->m_Pos) > 0.0f ? normalize(pTarget->m_Pos - pCharacter->m_Pos) : vec2(0.0f, -1.0f);
+			const vec2 VelocityDelta = pTarget->VelocityDeltaAfterClamping(normalize(Direction + vec2(0.0f, -1.1f)) * 10.0f);
+			pTarget->TakeDamage(
+				(vec2(0.0f, -1.0f) + VelocityDelta) * Context.m_pTuning->m_HammerStrength,
+				g_pData->m_Weapons.m_Hammer.m_pBase->m_Damage,
+				Owner,
+				Context.m_Weapon);
+			pTarget->Unfreeze();
+			GameServer()->Antibot()->OnHammerHit(Owner, pTarget->GetPlayer()->GetCid());
+			Hits++;
+		}
+
+		if(Hits)
+			Result.m_ReloadTicks = Context.m_pTuning->m_HammerHitFireDelay * Server()->TickSpeed() / 1000;
+		break;
+	}
+	case WEAPON_GUN:
+		if(!pCharacter->Core()->m_Jetpack || !pCharacter->GetPlayer()->m_NinjaJetpack || pCharacter->HasTelegunGun())
+		{
+			new CProjectile(
+				pCharacter->GameWorld(),
+				WEAPON_GUN,
+				Owner,
+				Context.m_ProjectileStartPosition,
+				Context.m_Direction,
+				Server()->TickSpeed() * Context.m_pTuning->m_GunLifetime,
+				false,
+				false,
+				-1,
+				Context.m_MouseTarget);
+			GameServer()->CreateSound(pCharacter->m_Pos, SOUND_GUN_FIRE, pCharacter->TeamMask());
+		}
+		break;
+	case WEAPON_SHOTGUN:
+		new CLaser(pCharacter->GameWorld(), pCharacter->m_Pos, Context.m_Direction, Context.m_pTuning->m_LaserReach, Owner, WEAPON_SHOTGUN);
+		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_SHOTGUN_FIRE, pCharacter->TeamMask());
+		break;
+	case WEAPON_GRENADE:
+		new CProjectile(
+			pCharacter->GameWorld(),
+			WEAPON_GRENADE,
+			Owner,
+			Context.m_ProjectileStartPosition,
+			Context.m_Direction,
+			Server()->TickSpeed() * Context.m_pTuning->m_GrenadeLifetime,
+			false,
+			true,
+			SOUND_GRENADE_EXPLODE,
+			Context.m_MouseTarget);
+		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_GRENADE_FIRE, pCharacter->TeamMask());
+		break;
+	case WEAPON_LASER:
+		new CLaser(pCharacter->GameWorld(), pCharacter->m_Pos, Context.m_Direction, Context.m_pTuning->m_LaserReach, Owner, WEAPON_LASER);
+		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_LASER_FIRE, pCharacter->TeamMask());
+		break;
+	case WEAPON_NINJA:
+		pCharacter->ActivateNinja(Context.m_Direction);
+		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_NINJA_FIRE, pCharacter->TeamMask());
+		break;
+	default:
+		return {};
+	}
+
+	return Result;
+}
+
+CGamePickupResult IGameController::OnCharacterPickup(CCharacter *pCharacter, int Type, int Subtype, vec2 Position)
+{
+	bool Sound = false;
+	switch(Type)
+	{
+	case POWERUP_HEALTH:
+		if(pCharacter->Freeze())
+			GameServer()->CreateSound(Position, SOUND_PICKUP_HEALTH, pCharacter->TeamMask());
+		break;
+	case POWERUP_ARMOR:
+		if(pCharacter->Team() == TEAM_SUPER)
+			break;
+		for(int Weapon = WEAPON_SHOTGUN; Weapon < NUM_WEAPONS; Weapon++)
+		{
+			if(pCharacter->GetWeaponGot(Weapon))
+			{
+				pCharacter->SetWeaponGot(Weapon, false);
+				pCharacter->SetWeaponAmmo(Weapon, 0);
+				Sound = true;
+			}
+		}
+		pCharacter->SetNinjaActivationDir(vec2(0, 0));
+		pCharacter->SetNinjaActivationTick(-500);
+		pCharacter->SetNinjaCurrentMoveTime(0);
+		if(Sound)
+		{
+			pCharacter->SetLastWeapon(WEAPON_GUN);
+			GameServer()->CreateSound(Position, SOUND_PICKUP_ARMOR, pCharacter->TeamMask());
+		}
+		if(pCharacter->GetActiveWeapon() >= WEAPON_SHOTGUN)
+			pCharacter->SetActiveWeapon(WEAPON_HAMMER);
+		break;
+	case POWERUP_ARMOR_SHOTGUN:
+		if(pCharacter->Team() == TEAM_SUPER)
+			break;
+		if(pCharacter->GetWeaponGot(WEAPON_SHOTGUN))
+		{
+			pCharacter->SetWeaponGot(WEAPON_SHOTGUN, false);
+			pCharacter->SetWeaponAmmo(WEAPON_SHOTGUN, 0);
+			pCharacter->SetLastWeapon(WEAPON_GUN);
+			GameServer()->CreateSound(Position, SOUND_PICKUP_ARMOR, pCharacter->TeamMask());
+		}
+		if(pCharacter->GetActiveWeapon() == WEAPON_SHOTGUN)
+			pCharacter->SetActiveWeapon(WEAPON_HAMMER);
+		break;
+	case POWERUP_ARMOR_GRENADE:
+		if(pCharacter->Team() == TEAM_SUPER)
+			break;
+		if(pCharacter->GetWeaponGot(WEAPON_GRENADE))
+		{
+			pCharacter->SetWeaponGot(WEAPON_GRENADE, false);
+			pCharacter->SetWeaponAmmo(WEAPON_GRENADE, 0);
+			pCharacter->SetLastWeapon(WEAPON_GUN);
+			GameServer()->CreateSound(Position, SOUND_PICKUP_ARMOR, pCharacter->TeamMask());
+		}
+		if(pCharacter->GetActiveWeapon() == WEAPON_GRENADE)
+			pCharacter->SetActiveWeapon(WEAPON_HAMMER);
+		break;
+	case POWERUP_ARMOR_NINJA:
+		if(pCharacter->Team() != TEAM_SUPER)
+		{
+			pCharacter->SetNinjaActivationDir(vec2(0, 0));
+			pCharacter->SetNinjaActivationTick(-500);
+			pCharacter->SetNinjaCurrentMoveTime(0);
+		}
+		break;
+	case POWERUP_ARMOR_LASER:
+		if(pCharacter->Team() == TEAM_SUPER)
+			break;
+		if(pCharacter->GetWeaponGot(WEAPON_LASER))
+		{
+			pCharacter->SetWeaponGot(WEAPON_LASER, false);
+			pCharacter->SetWeaponAmmo(WEAPON_LASER, 0);
+			pCharacter->SetLastWeapon(WEAPON_GUN);
+			GameServer()->CreateSound(Position, SOUND_PICKUP_ARMOR, pCharacter->TeamMask());
+		}
+		if(pCharacter->GetActiveWeapon() == WEAPON_LASER)
+			pCharacter->SetActiveWeapon(WEAPON_HAMMER);
+		break;
+	case POWERUP_WEAPON:
+		if(Subtype >= 0 && Subtype < NUM_WEAPONS && (!pCharacter->GetWeaponGot(Subtype) || pCharacter->GetWeaponAmmo(Subtype) != -1))
+		{
+			pCharacter->GiveWeapon(Subtype);
+			if(Subtype == WEAPON_GRENADE)
+				GameServer()->CreateSound(Position, SOUND_PICKUP_GRENADE, pCharacter->TeamMask());
+			else if(Subtype == WEAPON_SHOTGUN || Subtype == WEAPON_LASER)
+				GameServer()->CreateSound(Position, SOUND_PICKUP_SHOTGUN, pCharacter->TeamMask());
+			if(pCharacter->GetPlayer())
+				GameServer()->SendWeaponPickup(pCharacter->GetPlayer()->GetCid(), Subtype);
+		}
+		break;
+	case POWERUP_NINJA:
+		pCharacter->GiveNinja();
+		break;
+	default:
+		break;
+	}
+	return {};
+}
+
+CGameProjectileRules IGameController::ProjectileRules(const CGameProjectileContext &Context) const
+{
+	const EProjectileOwnerLossAction OwnerLossAction = Context.m_Weapon != WEAPON_GRENADE || g_Config.m_SvDestroyBulletsOnDeath || Context.m_BelongsToPracticeTeam ? EProjectileOwnerLossAction::DESTROY : EProjectileOwnerLossAction::KEEP;
+	return {
+		Context.m_pOwner ? !Context.m_pOwner->GrenadeHitDisabled() : g_Config.m_SvHit != 0,
+		true,
+		0.0f,
+		OwnerLossAction,
+	};
 }
 
 void IGameController::OnCharacterSpawn(class CCharacter *pChr)
@@ -612,54 +884,12 @@ void IGameController::Snap(int SnappingClient)
 
 	GameInfo.m_RoundNum = 0;
 	GameInfo.m_RoundCurrent = m_RoundCount + 1;
-
-	CCharacter *pChr;
-	CPlayer *pPlayer = SnappingClient != SERVER_DEMO_CLIENT ? GameServer()->m_apPlayers[SnappingClient] : nullptr;
-	CPlayer *pPlayer2;
-
-	if(pPlayer && (pPlayer->m_TimerType == CPlayer::TIMERTYPE_GAMETIMER || pPlayer->m_TimerType == CPlayer::TIMERTYPE_GAMETIMER_AND_BROADCAST) && pPlayer->GetClientVersion() >= VERSION_DDNET_GAMETICK)
-	{
-		if((pPlayer->GetTeam() == TEAM_SPECTATORS || pPlayer->IsPaused()) && pPlayer->SpectatorId() != SPEC_FREEVIEW && (pPlayer2 = GameServer()->m_apPlayers[pPlayer->SpectatorId()]))
-		{
-			if((pChr = pPlayer2->GetCharacter()) && pChr->m_DDRaceState == ERaceState::STARTED)
-			{
-				GameInfo.m_WarmupTimer = -pChr->m_StartTime;
-				GameInfo.m_GameStateFlags |= GAMESTATEFLAG_RACETIME;
-			}
-		}
-		else if((pChr = pPlayer->GetCharacter()) && pChr->m_DDRaceState == ERaceState::STARTED)
-		{
-			GameInfo.m_WarmupTimer = -pChr->m_StartTime;
-			GameInfo.m_GameStateFlags |= GAMESTATEFLAG_RACETIME;
-		}
-	}
+	UpdateGameInfo(GameInfo, SnappingClient);
 	Server()->SnapNewItem(0, GameInfo);
 
 	CNetObj_GameInfoEx GameInfoEx = {};
-	GameInfoEx.m_Flags =
-		GAMEINFOFLAG_TIMESCORE |
-		GAMEINFOFLAG_GAMETYPE_RACE |
-		GAMEINFOFLAG_GAMETYPE_DDRACE |
-		GAMEINFOFLAG_GAMETYPE_DDNET |
-		GAMEINFOFLAG_UNLIMITED_AMMO |
-		GAMEINFOFLAG_RACE_RECORD_MESSAGE |
-		GAMEINFOFLAG_ALLOW_EYE_WHEEL |
-		GAMEINFOFLAG_ALLOW_HOOK_COLL |
-		GAMEINFOFLAG_ALLOW_ZOOM |
-		GAMEINFOFLAG_BUG_DDRACE_GHOST |
-		GAMEINFOFLAG_BUG_DDRACE_INPUT |
-		GAMEINFOFLAG_PREDICT_DDRACE |
-		GAMEINFOFLAG_PREDICT_DDRACE_TILES |
-		GAMEINFOFLAG_ENTITIES_DDNET |
-		GAMEINFOFLAG_ENTITIES_DDRACE |
-		GAMEINFOFLAG_ENTITIES_RACE |
-		GAMEINFOFLAG_RACE;
-	GameInfoEx.m_Flags2 = GAMEINFOFLAG2_HUD_DDRACE |
-			      GAMEINFOFLAG2_DDRACE_TEAM |
-			      GAMEINFOFLAG2_PREDICT_EVENTS |
-			      GAMEINFOFLAG2_SUPPORTS_128_TEAMS;
-	if(g_Config.m_SvNoWeakHook)
-		GameInfoEx.m_Flags2 |= GAMEINFOFLAG2_NO_WEAK_HOOK;
+	GameInfoEx.m_Flags = GameInfoFlags(SnappingClient);
+	GameInfoEx.m_Flags2 = GameInfoFlags2(SnappingClient);
 	GameInfoEx.m_Version = GAMEINFO_CURVERSION;
 	Server()->SnapNewItem(0, GameInfoEx);
 
@@ -674,32 +904,11 @@ void IGameController::Snap(int SnappingClient)
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_SUDDENDEATH;
 		if(IsGamePaused())
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_PAUSED;
-		GameData.m_GameStateEndTick = 0;
+		GameData.m_GameStateEndTick = TimeLimit() > 0 ? m_RoundStartTick + TimeLimit() * Server()->TickSpeed() * 60 : 0;
 		Server()->SnapNewItem(0, GameData);
-
-		protocol7::CNetObj_GameDataRace RaceData = {};
-		CFinishTime MapTime = SnapMapBestTime(SnappingClient);
-		int BestTime = MapTime.m_Seconds > 0 ? MapTime.m_Seconds * 1000 + MapTime.m_Milliseconds : -1;
-
-		RaceData.m_BestTime = BestTime;
-		RaceData.m_Precision = 2;
-		RaceData.m_RaceFlags = protocol7::RACEFLAG_KEEP_WANTED_WEAPON;
-		Server()->SnapNewItem(0, RaceData);
 	}
 
-	GameServer()->SnapSwitchers(SnappingClient);
-
-	if(!Server()->IsSixup(SnappingClient))
-	{
-		CFinishTime MapTime = SnapMapBestTime(SnappingClient);
-		if(MapTime.m_Seconds != FinishTime::UNSET)
-		{
-			CNetObj_MapBestTime MapBestTime = {};
-			MapBestTime.m_MapBestTimeSeconds = MapTime.m_Seconds;
-			MapBestTime.m_MapBestTimeMillis = MapTime.m_Milliseconds;
-			Server()->SnapNewItem(0, MapBestTime);
-		}
-	}
+	SnapMode(SnappingClient);
 }
 
 int IGameController::GetAutoTeam(int NotThisId)

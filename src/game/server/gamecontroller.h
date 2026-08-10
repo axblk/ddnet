@@ -11,9 +11,58 @@
 
 #include <generated/protocol.h>
 
+#include <game/server/mode/game_mode_registry.h>
 #include <game/server/teams.h>
 
 struct CScoreLoadBestTimeResult;
+class CCharacter;
+
+struct CWeaponFireContext
+{
+	CCharacter *m_pCharacter;
+	int m_Weapon;
+	vec2 m_Direction;
+	vec2 m_MouseTarget;
+	vec2 m_ProjectileStartPosition;
+	const CTuningParams *m_pTuning;
+};
+
+struct CWeaponFireResult
+{
+	bool m_Fired = false;
+	bool m_ConsumeAmmo = false;
+	int m_ReloadTicks = 0;
+};
+
+struct CGamePickupResult
+{
+	bool m_Picked = false;
+	int m_RespawnSeconds = 0;
+	int m_RespawnSound = -1;
+};
+
+enum class EProjectileOwnerLossAction
+{
+	KEEP,
+	DETACH,
+	DESTROY,
+};
+
+struct CGameProjectileContext
+{
+	int m_Weapon;
+	CCharacter *m_pOwner;
+	bool m_OwnerConnected;
+	bool m_BelongsToPracticeTeam;
+};
+
+struct CGameProjectileRules
+{
+	bool m_HitCharacters;
+	bool m_RespectCharacterCollision;
+	float m_DirectImpactForce;
+	EProjectileOwnerLossAction m_OwnerLossAction;
+};
 
 /*
 	Class: Game Controller
@@ -42,12 +91,21 @@ private:
 	class IServer *m_pServer;
 
 	CGameTeams m_Teams;
+	const CGameModeInfo m_GameModeInfo;
 
 protected:
 	CGameContext *GameServer() const { return m_pGameServer; }
 	CConfig *Config() { return m_pConfig; }
 	IServer *Server() const { return m_pServer; }
 
+	void LoadGameSettings();
+	virtual void InitGameSettings();
+	virtual void UpdateGameInfo(CNetObj_GameInfo &GameInfo, int SnappingClient) {}
+	virtual int GameInfoFlags(int SnappingClient) const { return 0; }
+	virtual int GameInfoFlags2(int SnappingClient) const { return 0; }
+	virtual void SnapMode(int SnappingClient) {}
+	virtual int ScoreLimit() const { return 0; }
+	virtual int TimeLimit() const { return 0; }
 	void DoActivityCheck();
 
 	struct CSpawnEval
@@ -84,8 +142,11 @@ protected:
 public:
 	const char *m_pGameType;
 
-	IGameController(class CGameContext *pGameServer);
+	IGameController(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo);
 	virtual ~IGameController();
+	void Init();
+	const CGameModeInfo &Info() const { return m_GameModeInfo; }
+	virtual void ResetTuning();
 
 	// event
 	/*
@@ -99,6 +160,12 @@ public:
 				weapon when switching team or player suicides.
 	*/
 	virtual int OnCharacterDeath(class CCharacter *pVictim, class CPlayer *pKiller, int Weapon);
+	virtual bool OnCharacterTakeDamage(class CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage);
+	virtual bool CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const;
+	virtual CWeaponFireResult OnCharacterFireWeapon(const CWeaponFireContext &Context);
+	virtual CGamePickupResult OnCharacterPickup(CCharacter *pCharacter, int Type, int Subtype, vec2 Position);
+	virtual int PickupInitialSpawnDelaySeconds(int Type, int Subtype) const { return 0; }
+	virtual CGameProjectileRules ProjectileRules(const CGameProjectileContext &Context) const;
 	/*
 		Function: OnCharacterSpawn
 			Called when a CCharacter spawns into the game world.

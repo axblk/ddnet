@@ -9,8 +9,10 @@ class CScore;
 class CGameControllerDDNet : public IGameController
 {
 public:
-	CGameControllerDDNet(class CGameContext *pGameServer);
+	CGameControllerDDNet(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo);
 	~CGameControllerDDNet() override;
+	static CTuningParams DefaultTuning();
+	void ResetTuning() override;
 
 	CScore *Score();
 
@@ -28,5 +30,12 @@ public:
 	void Tick() override;
 
 	void DoTeamChange(class CPlayer *pPlayer, int Team, bool DoChatMsg) override;
+
+protected:
+	void InitGameSettings() override;
+	void UpdateGameInfo(CNetObj_GameInfo &GameInfo, int SnappingClient) override;
+	int GameInfoFlags(int SnappingClient) const override;
+	int GameInfoFlags2(int SnappingClient) const override;
+	void SnapMode(int SnappingClient) override;
 };
 #endif // GAME_SERVER_GAMEMODES_DDNET_H

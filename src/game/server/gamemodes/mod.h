@@ -6,7 +6,7 @@
 class CGameControllerMod : public IGameController
 {
 public:
-	CGameControllerMod(class CGameContext *pGameServer);
+	CGameControllerMod(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo);
 	~CGameControllerMod() override;
 
 	void Tick() override;

@@ -17,9 +17,12 @@
 #include <generated/protocol.h>
 
 #include <game/server/entities/character.h>
+#include <game/server/entities/pickup.h>
+#include <game/server/entities/projectile.h>
 #include <game/server/gamecontext.h>
 #include <game/server/gamecontroller.h>
 #include <game/server/gameworld.h>
+#include <game/server/modes/vanilla/dm.h>
 #include <game/server/player.h>
 #include <game/version.h>
 
@@ -306,4 +309,161 @@ TEST_F(GameWorld, CharacterEmote)
 	// /emote angry 3 chat command and frozen
 	pChr->Freeze(10);
 	ASSERT_EQ(pChr->DetermineEyeEmote(), EMOTE_ANGRY);
+}
+
+TEST_F(GameWorld, VanillaWeaponFire)
+{
+	constexpr int ClientId = 0;
+	GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+	pPlayer->ForceSpawn(vec2(0, 0));
+	CCharacter *pCharacter = pPlayer->GetCharacter();
+	ASSERT_NE(pCharacter, nullptr);
+
+	const CGameModeInfo Info = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
+	CGameControllerVanillaDM Controller(GameServer(), Info);
+	const CTuningParams Tuning = CGameControllerVanillaDM::DefaultTuning();
+	auto CountProjectiles = [this]() {
+		int Count = 0;
+		for(CEntity *pEntity = GameServer()->m_World.FindFirst(CGameWorld::ENTTYPE_PROJECTILE); pEntity; pEntity = pEntity->TypeNext())
+			Count++;
+		return Count;
+	};
+
+	pCharacter->SetWeaponAmmo(WEAPON_GUN, 10);
+	CWeaponFireContext Context = {pCharacter, WEAPON_GUN, vec2(1, 0), vec2(1, 0), pCharacter->m_Pos, &Tuning};
+	const int BeforeGun = CountProjectiles();
+	IGameController *pPreviousController = GameServer()->m_pController;
+	GameServer()->m_pController = &Controller;
+	pCharacter->SetActiveWeapon(WEAPON_GUN);
+	CNetObj_PlayerInput Input = {};
+	Input.m_TargetX = 1;
+	pCharacter->OnDirectInput(&Input);
+	Input.m_Fire = 1;
+	pCharacter->OnDirectInput(&Input);
+	GameServer()->m_pController = pPreviousController;
+	EXPECT_EQ(pCharacter->GetWeaponAmmo(WEAPON_GUN), 9);
+	EXPECT_EQ(CountProjectiles(), BeforeGun + 1);
+
+	pCharacter->SetWeaponAmmo(WEAPON_SHOTGUN, 10);
+	Context.m_Weapon = WEAPON_SHOTGUN;
+	const int BeforeShotgun = CountProjectiles();
+	const CWeaponFireResult ShotgunResult = Controller.OnCharacterFireWeapon(Context);
+	EXPECT_TRUE(ShotgunResult.m_Fired);
+	EXPECT_TRUE(ShotgunResult.m_ConsumeAmmo);
+	EXPECT_EQ(CountProjectiles(), BeforeShotgun + 5);
+
+	pCharacter->SetWeaponAmmo(WEAPON_GUN, 0);
+	Context.m_Weapon = WEAPON_GUN;
+	const int BeforeNoAmmo = CountProjectiles();
+	const CWeaponFireResult NoAmmoResult = Controller.OnCharacterFireWeapon(Context);
+	EXPECT_FALSE(NoAmmoResult.m_Fired);
+	EXPECT_GT(NoAmmoResult.m_ReloadTicks, 0);
+	EXPECT_EQ(CountProjectiles(), BeforeNoAmmo);
+}
+
+TEST_F(GameWorld, VanillaPickup)
+{
+	constexpr int ClientId = 0;
+	GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+	pPlayer->ForceSpawn(vec2(0, 0));
+	CCharacter *pCharacter = pPlayer->GetCharacter();
+	ASSERT_NE(pCharacter, nullptr);
+
+	const CGameModeInfo Info = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
+	CGameControllerVanillaDM Controller(GameServer(), Info);
+	pCharacter->SetHealth(9);
+	const CGamePickupResult HealthResult = Controller.OnCharacterPickup(pCharacter, POWERUP_HEALTH, 0, pCharacter->m_Pos);
+	EXPECT_TRUE(HealthResult.m_Picked);
+	EXPECT_EQ(HealthResult.m_RespawnSeconds, 15);
+	EXPECT_EQ(pCharacter->GetHealth(), 10);
+	EXPECT_FALSE(Controller.OnCharacterPickup(pCharacter, POWERUP_HEALTH, 0, pCharacter->m_Pos).m_Picked);
+
+	pCharacter->SetWeaponGot(WEAPON_SHOTGUN, false);
+	pCharacter->SetWeaponAmmo(WEAPON_SHOTGUN, 0);
+	const CGamePickupResult WeaponResult = Controller.OnCharacterPickup(pCharacter, POWERUP_WEAPON, WEAPON_SHOTGUN, pCharacter->m_Pos);
+	EXPECT_TRUE(WeaponResult.m_Picked);
+	EXPECT_EQ(WeaponResult.m_RespawnSeconds, 15);
+	EXPECT_EQ(WeaponResult.m_RespawnSound, SOUND_WEAPON_SPAWN);
+	EXPECT_TRUE(pCharacter->GetWeaponGot(WEAPON_SHOTGUN));
+	EXPECT_EQ(pCharacter->GetWeaponAmmo(WEAPON_SHOTGUN), 10);
+	pCharacter->SetWeaponAmmo(WEAPON_SHOTGUN, 4);
+	EXPECT_TRUE(Controller.OnCharacterPickup(pCharacter, POWERUP_WEAPON, WEAPON_SHOTGUN, pCharacter->m_Pos).m_Picked);
+	EXPECT_EQ(pCharacter->GetWeaponAmmo(WEAPON_SHOTGUN), 10);
+	EXPECT_FALSE(Controller.OnCharacterPickup(pCharacter, POWERUP_WEAPON, WEAPON_SHOTGUN, pCharacter->m_Pos).m_Picked);
+	EXPECT_EQ(Controller.PickupInitialSpawnDelaySeconds(POWERUP_HEALTH, 0), 0);
+	EXPECT_EQ(Controller.PickupInitialSpawnDelaySeconds(POWERUP_NINJA, 0), 90);
+
+	pCharacter->SetHealth(9);
+	IGameController *pPreviousController = GameServer()->m_pController;
+	GameServer()->m_pController = &Controller;
+	auto *pHealth = new CPickup(&GameServer()->m_World, POWERUP_HEALTH, 0, 0, 0, 0);
+	pHealth->m_Pos = pCharacter->m_Pos;
+	pHealth->Tick();
+	auto *pNinja = new CPickup(&GameServer()->m_World, POWERUP_NINJA, 0, 0, 0, 0);
+	GameServer()->m_pController = pPreviousController;
+	EXPECT_EQ(pCharacter->GetHealth(), 10);
+	EXPECT_FALSE(pHealth->IsActive());
+	EXPECT_FALSE(pNinja->IsActive());
+}
+
+TEST_F(GameWorld, LegacyPickupRemainsActive)
+{
+	constexpr int ClientId = 0;
+	GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+	pPlayer->ForceSpawn(vec2(0, 0));
+	CCharacter *pCharacter = pPlayer->GetCharacter();
+	ASSERT_NE(pCharacter, nullptr);
+
+	auto *pHealth = new CPickup(&GameServer()->m_World, POWERUP_HEALTH, 0, 0, 0, 0);
+	pHealth->m_Pos = pCharacter->m_Pos;
+	pHealth->Tick();
+	EXPECT_GT(pCharacter->m_FreezeTime, 0);
+	EXPECT_TRUE(pHealth->IsActive());
+}
+
+TEST_F(GameWorld, VanillaProjectileOwnerLoss)
+{
+	constexpr int ClientId = 0;
+	constexpr int TargetId = 1;
+	vec2 SpawnPosition;
+	ASSERT_TRUE(GameServer()->m_pController->CanSpawn(TEAM_GAME, &SpawnPosition, ClientId));
+	GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+	pPlayer->ForceSpawn(SpawnPosition);
+	ASSERT_NE(pPlayer->GetCharacter(), nullptr);
+	GameServer()->CreatePlayer(TargetId, TEAM_GAME, false, -1);
+	CPlayer *pTargetPlayer = GameServer()->m_apPlayers[TargetId];
+	pTargetPlayer->ForceSpawn(SpawnPosition);
+	CCharacter *pTarget = pTargetPlayer->GetCharacter();
+	ASSERT_NE(pTarget, nullptr);
+	pTarget->SetHealth(10);
+
+	const CGameModeInfo Info = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
+	CGameControllerVanillaDM Controller(GameServer(), Info);
+	const CGameProjectileRules ConnectedRules = Controller.ProjectileRules({WEAPON_GUN, pPlayer->GetCharacter(), true, false});
+	EXPECT_TRUE(ConnectedRules.m_HitCharacters);
+	EXPECT_FALSE(ConnectedRules.m_RespectCharacterCollision);
+	EXPECT_FLOAT_EQ(ConnectedRules.m_DirectImpactForce, 0.001f);
+	EXPECT_EQ(ConnectedRules.m_OwnerLossAction, EProjectileOwnerLossAction::KEEP);
+	EXPECT_EQ(Controller.ProjectileRules({WEAPON_GUN, nullptr, false, false}).m_OwnerLossAction, EProjectileOwnerLossAction::DETACH);
+	EXPECT_EQ(GameServer()->m_pController->ProjectileRules({WEAPON_GUN, nullptr, true, false}).m_OwnerLossAction, EProjectileOwnerLossAction::DESTROY);
+
+	IGameController *pPreviousController = GameServer()->m_pController;
+	GameServer()->m_pController = &Controller;
+	auto *pImpactProjectile = new CProjectile(&GameServer()->m_World, WEAPON_GUN, ClientId, SpawnPosition, vec2(1, 0), 100, false, false, -1, vec2(1, 0));
+	pImpactProjectile->Tick();
+	EXPECT_EQ(pTarget->GetHealth(), 9);
+
+	auto *pProjectile = new CProjectile(&GameServer()->m_World, WEAPON_GUN, ClientId, SpawnPosition, vec2(1, 0), 100, false, false, -1, vec2(1, 0));
+	pPlayer->KillCharacter();
+	pProjectile->Tick();
+	EXPECT_EQ(pProjectile->GetOwnerId(), ClientId);
+	GameServer()->m_apPlayers[ClientId] = nullptr;
+	pProjectile->Tick();
+	GameServer()->m_apPlayers[ClientId] = pPlayer;
+	GameServer()->m_pController = pPreviousController;
+	EXPECT_EQ(pProjectile->GetOwnerId(), -1);
 }

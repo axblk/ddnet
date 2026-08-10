@@ -12,6 +12,7 @@ class CGameTeams;
 class CGameWorld;
 class IAntibot;
 struct CAntibotCharacterData;
+struct CWeaponFireResult;
 
 enum
 {
@@ -78,7 +79,7 @@ public:
 	void FireWeapon();
 
 	void Die(int Killer, int Weapon, bool SendKillMsg = true);
-	bool TakeDamage(vec2 Force, int Dmg, int From, int Weapon);
+	bool TakeDamage(vec2 Force, int Dmg, int From, int Weapon, bool CanDamage = true);
 	void SendDeathMessageIfNotInLockedTeam(int Killer, int Weapon, int ModeSpecial);
 	void CancelSwapRequests();
 
@@ -113,6 +114,8 @@ public:
 	void SetRawVelocity(vec2 NewVelocity);
 	void AddVelocity(vec2 Addition);
 	void ApplyMoveRestrictions();
+	vec2 VelocityDeltaAfterClamping(vec2 Addition) const;
+	void ActivateNinja(vec2 Direction);
 
 private:
 	// player controlling this character
@@ -257,6 +260,8 @@ public:
 	void SetLastAction(int LastAction) { m_LastAction = LastAction; }
 	int GetArmor() const { return m_Armor; }
 	void SetArmor(int Armor) { m_Armor = Armor; }
+	int GetHealth() const { return m_Health; }
+	void SetHealth(int Health) { m_Health = Health; }
 	CCharacterCore GetCore() { return m_Core; }
 	void SetCore(const CCharacterCore &Core) { m_Core = Core; }
 	const CCharacterCore *Core() const { return &m_Core; }

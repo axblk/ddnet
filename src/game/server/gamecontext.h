@@ -5,6 +5,7 @@
 
 #include "eventhandler.h"
 #include "gameworld.h"
+#include "mode/game_host.h"
 #include "playermapping.h"
 #include "teehistorian.h"
 
@@ -133,6 +134,7 @@ class CGameContext : public IGameServer
 	CUuid m_GameUuid;
 	CMapBugs m_MapBugs;
 	CPrng m_Prng;
+	CGameHost m_GameHost;
 
 	bool m_Resetting;
 
@@ -232,7 +234,10 @@ public:
 	// ClientId has to be valid
 	CNetObj_PlayerInput GetLastPlayerInput(int ClientId) const;
 
+	// ponytail: non-owning migration alias; replace callers with GameHost().Controller() as host/mode boundaries grow.
 	IGameController *m_pController;
+	CGameHost &GameHost() { return m_GameHost; }
+	const CGameHost &GameHost() const { return m_GameHost; }
 	CGameWorld m_World;
 	CPlayerMapping m_PlayerMapping;
 
@@ -405,6 +410,7 @@ public:
 
 	CUuid GameUuid() const override;
 	const char *GameType() const override;
+	const char *ClientScoreKind() const override;
 	char m_aVersionString[32];
 	const char *Version() const override;
 	const char *NetVersion() const override;
@@ -671,8 +677,6 @@ public:
 	void SendSaveCode(int Team, int TeamSize, int State, const char *pError, const char *pSaveRequester, const char *pServerName, const char *pGeneratedCode, const char *pCode);
 	void OnSetAuthed(int ClientId, int Level) override;
 	void OnSetTimedOut(int ClientId) override;
-
-	void ResetTuning();
 };
 
 static inline bool CheckClientId(int ClientId)

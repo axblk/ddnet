@@ -10,7 +10,7 @@
 
 #include <game/mapitems.h>
 #include <game/server/gamecontext.h>
-#include <game/server/gamemodes/ddnet.h>
+#include <game/server/gamecontroller.h>
 
 CProjectile::CProjectile(
 	CGameWorld *pGameWorld,
@@ -98,10 +98,12 @@ void CProjectile::Tick()
 	if(m_Owner >= 0)
 		pOwnerChar = GameServer()->GetPlayerChar(m_Owner);
 
+	const bool OwnerConnected = m_Owner >= 0 && m_Owner < MAX_CLIENTS && GameServer()->m_apPlayers[m_Owner] != nullptr;
+	const CGameProjectileRules Rules = GameServer()->m_pController->ProjectileRules({m_Type, pOwnerChar, OwnerConnected, m_BelongsToPracticeTeam});
 	CCharacter *pTargetChr = nullptr;
 
-	if(pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : g_Config.m_SvHit)
-		pTargetChr = GameServer()->m_World.IntersectCharacter(PrevPos, ColPos, m_Freeze ? 1.0f : 6.0f, ColPos, pOwnerChar, m_Owner);
+	if(Rules.m_HitCharacters)
+		pTargetChr = GameServer()->m_World.IntersectCharacter(PrevPos, ColPos, m_Freeze ? 1.0f : 6.0f, ColPos, pOwnerChar, Rules.m_RespectCharacterCollision ? m_Owner : -1);
 
 	if(m_LifeSpan > -1)
 		m_LifeSpan--;
@@ -109,6 +111,7 @@ void CProjectile::Tick()
 	CClientMask TeamMask = CClientMask().set();
 	bool IsWeaponCollide = false;
 	if(
+		Rules.m_RespectCharacterCollision &&
 		pOwnerChar &&
 		pTargetChr &&
 		pOwnerChar->IsAlive() &&
@@ -121,13 +124,22 @@ void CProjectile::Tick()
 	{
 		TeamMask = pOwnerChar->TeamMask();
 	}
-	else if(m_Owner >= 0 && (m_Type != WEAPON_GRENADE || g_Config.m_SvDestroyBulletsOnDeath || m_BelongsToPracticeTeam))
+	else if(m_Owner >= 0)
 	{
-		m_MarkedForDestroy = true;
-		return;
+		switch(Rules.m_OwnerLossAction)
+		{
+		case EProjectileOwnerLossAction::KEEP:
+			break;
+		case EProjectileOwnerLossAction::DETACH:
+			m_Owner = -1;
+			break;
+		case EProjectileOwnerLossAction::DESTROY:
+			m_MarkedForDestroy = true;
+			return;
+		}
 	}
 
-	if(((pTargetChr && (pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : g_Config.m_SvHit || m_Owner == -1 || pTargetChr == pOwnerChar)) || Collide || GameLayerClipped(CurPos)) && !IsWeaponCollide)
+	if((pTargetChr || Collide || GameLayerClipped(CurPos)) && !IsWeaponCollide)
 	{
 		if(m_Explosive /*??*/ && (!pTargetChr || (pTargetChr && (!m_Freeze || (m_Type == WEAPON_SHOTGUN && Collide)))))
 		{
@@ -156,7 +168,7 @@ void CProjectile::Tick()
 			}
 		}
 		else if(pTargetChr)
-			pTargetChr->TakeDamage(vec2(0, 0), 0, m_Owner, m_Type);
+			pTargetChr->TakeDamage(m_Direction * Rules.m_DirectImpactForce, 0, m_Owner, m_Type);
 
 		if(pOwnerChar && !GameLayerClipped(ColPos) &&
 			((m_Type == WEAPON_GRENADE && pOwnerChar->HasTelegunGrenade()) || (m_Type == WEAPON_GUN && pOwnerChar->HasTelegunGun())))

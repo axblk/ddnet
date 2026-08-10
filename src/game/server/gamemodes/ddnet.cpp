@@ -16,17 +16,157 @@
 #include <game/server/score.h>
 #include <game/version.h>
 
-#define GAME_TYPE_NAME "DDraceNetwork"
-#define TEST_TYPE_NAME "TestDDraceNetwork"
-
-CGameControllerDDNet::CGameControllerDDNet(class CGameContext *pGameServer) :
-	IGameController(pGameServer)
+CGameControllerDDNet::CGameControllerDDNet(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo) :
+	IGameController(pGameServer, GameModeInfo)
 {
-	m_pGameType = g_Config.m_SvTestingCommands ? TEST_TYPE_NAME : GAME_TYPE_NAME;
-	m_GameFlags = protocol7::GAMEFLAG_RACE;
 }
 
 CGameControllerDDNet::~CGameControllerDDNet() = default;
+
+CTuningParams CGameControllerDDNet::DefaultTuning()
+{
+	CTuningParams Tuning = CTuningParams::DEFAULT;
+	Tuning.Set("gun_speed", 1400);
+	Tuning.Set("gun_curvature", 0);
+	Tuning.Set("shotgun_speed", 500);
+	Tuning.Set("shotgun_speeddiff", 0);
+	Tuning.Set("shotgun_curvature", 0);
+	return Tuning;
+}
+
+void CGameControllerDDNet::ResetTuning()
+{
+	*GameServer()->GlobalTuning() = DefaultTuning();
+	GameServer()->SendTuningParams(-1);
+}
+
+void CGameControllerDDNet::InitGameSettings()
+{
+	const CTuningParams Tuning = DefaultTuning();
+	for(int i = 0; i < TuneZone::NUM; i++)
+	{
+		GameServer()->TuningList()[i] = Tuning;
+		GameServer()->m_aaZoneEnterMsg[i][0] = 0;
+		GameServer()->m_aaZoneLeaveMsg[i][0] = 0;
+	}
+	if(g_Config.m_SvTuneReset)
+		ResetTuning();
+
+	if(g_Config.m_SvDDRaceTuneReset)
+	{
+		g_Config.m_SvHit = 1;
+		g_Config.m_SvEndlessDrag = 0;
+		g_Config.m_SvOldLaser = 0;
+		g_Config.m_SvOldTeleportHook = 0;
+		g_Config.m_SvOldTeleportWeapons = 0;
+		g_Config.m_SvTeleportHoldHook = 0;
+		g_Config.m_SvTeam = SV_TEAM_ALLOWED;
+		g_Config.m_SvShowOthersDefault = SHOW_OTHERS_OFF;
+
+		for(auto &Switcher : GameServer()->Switchers())
+			Switcher.m_Initial = true;
+	}
+
+	LoadGameSettings();
+
+	if(g_Config.m_SvSoloServer)
+	{
+		g_Config.m_SvTeam = SV_TEAM_FORCED_SOLO;
+		g_Config.m_SvShowOthersDefault = SHOW_OTHERS_ON;
+
+		GameServer()->GlobalTuning()->Set("player_collision", 0);
+		GameServer()->GlobalTuning()->Set("player_hooking", 0);
+
+		for(int i = 0; i < TuneZone::NUM; i++)
+		{
+			GameServer()->TuningList()[i].Set("player_collision", 0);
+			GameServer()->TuningList()[i].Set("player_hooking", 0);
+		}
+	}
+}
+
+void CGameControllerDDNet::UpdateGameInfo(CNetObj_GameInfo &GameInfo, int SnappingClient)
+{
+	CPlayer *pPlayer = SnappingClient != SERVER_DEMO_CLIENT ? GameServer()->m_apPlayers[SnappingClient] : nullptr;
+	if(!pPlayer || (pPlayer->m_TimerType != CPlayer::TIMERTYPE_GAMETIMER && pPlayer->m_TimerType != CPlayer::TIMERTYPE_GAMETIMER_AND_BROADCAST) || pPlayer->GetClientVersion() < VERSION_DDNET_GAMETICK)
+		return;
+
+	CCharacter *pChr = nullptr;
+	if((pPlayer->GetTeam() == TEAM_SPECTATORS || pPlayer->IsPaused()) && pPlayer->SpectatorId() != SPEC_FREEVIEW)
+	{
+		CPlayer *pSpectatedPlayer = GameServer()->m_apPlayers[pPlayer->SpectatorId()];
+		if(pSpectatedPlayer)
+			pChr = pSpectatedPlayer->GetCharacter();
+	}
+	else
+	{
+		pChr = pPlayer->GetCharacter();
+	}
+
+	if(pChr && pChr->m_DDRaceState == ERaceState::STARTED)
+	{
+		GameInfo.m_WarmupTimer = -pChr->m_StartTime;
+		GameInfo.m_GameStateFlags |= GAMESTATEFLAG_RACETIME;
+	}
+}
+
+int CGameControllerDDNet::GameInfoFlags(int SnappingClient) const
+{
+	return GAMEINFOFLAG_TIMESCORE |
+	       GAMEINFOFLAG_GAMETYPE_RACE |
+	       GAMEINFOFLAG_GAMETYPE_DDRACE |
+	       GAMEINFOFLAG_GAMETYPE_DDNET |
+	       GAMEINFOFLAG_UNLIMITED_AMMO |
+	       GAMEINFOFLAG_RACE_RECORD_MESSAGE |
+	       GAMEINFOFLAG_ALLOW_EYE_WHEEL |
+	       GAMEINFOFLAG_ALLOW_HOOK_COLL |
+	       GAMEINFOFLAG_ALLOW_ZOOM |
+	       GAMEINFOFLAG_BUG_DDRACE_GHOST |
+	       GAMEINFOFLAG_BUG_DDRACE_INPUT |
+	       GAMEINFOFLAG_PREDICT_DDRACE |
+	       GAMEINFOFLAG_PREDICT_DDRACE_TILES |
+	       GAMEINFOFLAG_ENTITIES_DDNET |
+	       GAMEINFOFLAG_ENTITIES_DDRACE |
+	       GAMEINFOFLAG_ENTITIES_RACE |
+	       GAMEINFOFLAG_RACE;
+}
+
+int CGameControllerDDNet::GameInfoFlags2(int SnappingClient) const
+{
+	int Flags = GAMEINFOFLAG2_HUD_DDRACE | GAMEINFOFLAG2_DDRACE_TEAM | GAMEINFOFLAG2_PREDICT_EVENTS | GAMEINFOFLAG2_SUPPORTS_128_TEAMS;
+	if(g_Config.m_SvNoWeakHook)
+		Flags |= GAMEINFOFLAG2_NO_WEAK_HOOK;
+	return Flags;
+}
+
+void CGameControllerDDNet::SnapMode(int SnappingClient)
+{
+	if(Server()->IsSixup(SnappingClient))
+	{
+		protocol7::CNetObj_GameDataRace RaceData = {};
+		CFinishTime MapTime = SnapMapBestTime(SnappingClient);
+		const int BestTime = MapTime.m_Seconds > 0 ? MapTime.m_Seconds * 1000 + MapTime.m_Milliseconds : -1;
+
+		RaceData.m_BestTime = BestTime;
+		RaceData.m_Precision = 2;
+		RaceData.m_RaceFlags = protocol7::RACEFLAG_KEEP_WANTED_WEAPON;
+		Server()->SnapNewItem(0, RaceData);
+	}
+
+	GameServer()->SnapSwitchers(SnappingClient);
+
+	if(!Server()->IsSixup(SnappingClient))
+	{
+		CFinishTime MapTime = SnapMapBestTime(SnappingClient);
+		if(MapTime.m_Seconds != FinishTime::UNSET)
+		{
+			CNetObj_MapBestTime MapBestTime = {};
+			MapBestTime.m_MapBestTimeSeconds = MapTime.m_Seconds;
+			MapBestTime.m_MapBestTimeMillis = MapTime.m_Milliseconds;
+			Server()->SnapNewItem(0, MapBestTime);
+		}
+	}
+}
 
 CScore *CGameControllerDDNet::Score()
 {

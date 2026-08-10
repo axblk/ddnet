@@ -19,11 +19,14 @@ public:
 
 	int Type() const { return m_Type; }
 	int Subtype() const { return m_Subtype; }
+	bool IsActive() const { return m_SpawnTick == -1; }
 
 private:
 	int m_Type;
 	int m_Subtype;
 	int m_Flags;
+	int m_SpawnTick;
+	int m_RespawnSound;
 
 	// DDRace
 

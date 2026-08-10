@@ -3029,6 +3029,16 @@ if(SERVER)
     gameworld.h
     interactions.cpp
     interactions.h
+    mode/builtin_game_modes.cpp
+    mode/builtin_game_modes.h
+    mode/game_host.cpp
+    mode/game_host.h
+    mode/game_mode_registry.cpp
+    mode/game_mode_registry.h
+    modes/vanilla/dm.cpp
+    modes/vanilla/dm.h
+    modes/vanilla/game_modes.cpp
+    modes/vanilla/game_modes.h
     mutes.cpp
     player.cpp
     player.h
@@ -3282,6 +3292,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     dbg_test.cpp
     editor_test.cpp
     fs_test.cpp
+    game_mode_registry_test.cpp
     gameworld_test.cpp
     git_revision_test.cpp
     hash_test.cpp

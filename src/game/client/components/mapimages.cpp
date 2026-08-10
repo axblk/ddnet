@@ -261,8 +261,8 @@ static bool IsValidTile(int LayerType, bool EntitiesAreMasked, EMapImageModType 
 
 IGraphics::CTextureHandle CMapImages::GetEntities(EMapImageEntityLayerType EntityLayerType)
 {
-	const bool EntitiesAreMasked = !GameClient()->m_GameInfo.m_DontMaskEntities;
-	const EMapImageModType EntitiesModType = GetEntitiesModType(GameClient()->m_GameInfo);
+	const bool EntitiesAreMasked = !GameClient()->FocusedGameInfo().m_DontMaskEntities;
+	const EMapImageModType EntitiesModType = GetEntitiesModType(GameClient()->FocusedGameInfo());
 
 	if(!m_aEntitiesIsLoaded[(EntitiesModType * 2) + (int)EntitiesAreMasked])
 	{

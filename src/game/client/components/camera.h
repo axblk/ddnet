@@ -2,18 +2,16 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #ifndef GAME_CLIENT_COMPONENTS_CAMERA_H
 #define GAME_CLIENT_COMPONENTS_CAMERA_H
-#include <base/bezier.h>
 #include <base/vmath.h>
 
 #include <engine/client.h>
 #include <engine/console.h>
 
 #include <game/client/component.h>
+#include <game/client/game_view.h>
 
 class CCamera : public CComponent
 {
-	friend class CMenuBackground;
-
 public:
 	enum
 	{
@@ -23,27 +21,11 @@ public:
 	};
 
 private:
-	int m_CamType;
-	vec2 m_aLastPos[NUM_DUMMIES];
-	vec2 m_PrevCenter;
-
-	int m_PrevSpecId;
-	bool m_WasSpectating;
-
-	bool m_CameraSmoothing;
-	vec2 m_CameraSmoothingCenter;
-	vec2 m_CameraSmoothingTarget;
-	CCubicBezier m_CameraSmoothingBezierX;
-	CCubicBezier m_CameraSmoothingBezierY;
-	float m_CameraSmoothingStart;
-	float m_CameraSmoothingEnd;
-	vec2 m_CenterBeforeSmoothing;
+	CGameView::CCameraState *m_pState = nullptr;
+	CGameView::CCameraState &State();
+	const CGameView::CCameraState &State() const;
 
 	float CameraSmoothingProgress(float CurrentTime) const;
-
-	CCubicBezier m_ZoomSmoothing;
-	float m_ZoomSmoothingStart;
-	float m_ZoomSmoothingEnd;
 
 	void ScaleZoom(float Factor);
 	void ChangeZoom(float Target, int Smoothness, bool IsUser);
@@ -51,11 +33,6 @@ private:
 
 	float MinZoomLevel();
 	float MaxZoomLevel();
-
-	vec2 m_LastTargetPos;
-	float m_DyncamSmoothingSpeedBias;
-	bool m_CanUseCameraInfo;
-	bool m_UsingAutoSpecCamera;
 
 	char m_aAutoSpecCameraTooltip[512];
 
@@ -69,19 +46,6 @@ public:
 	 * @return converted zoom value
 	 **/
 	static float ZoomStepsToValue(float Steps) { return std::pow(CCamera::ZOOM_STEP, Steps); }
-
-	vec2 m_Center;
-	bool m_ZoomSet;
-	bool m_Zooming;
-	float m_Zoom;
-	float m_ZoomSmoothingTarget;
-
-	bool m_AutoSpecCameraZooming;
-	bool m_AutoSpecCamera;
-	float m_UserZoomTarget;
-
-	vec2 m_DyncamTargetCameraOffset;
-	vec2 m_aDyncamCurrentCameraOffset[NUM_DUMMIES];
 
 	CCamera();
 	int Sizeof() const override { return sizeof(*this); }
@@ -101,11 +65,22 @@ public:
 
 	int Deadzone() const;
 	int FollowFactor() const;
-	int CamType() const { return m_CamType; }
+	int CamType() const { return State().m_CamType; }
+	vec2 Center() const { return State().m_Center; }
+	float Zoom() const { return State().m_Zoom; }
+	bool IsZoomSet() const { return State().m_ZoomSet; }
+	bool IsZooming() const { return State().m_Zooming; }
+	float ZoomSmoothingTarget() const { return State().m_ZoomSmoothingTarget; }
+	bool IsAutoSpecCameraZooming() const { return State().m_AutoSpecCameraZooming; }
+	bool IsAutoSpecCamera() const { return State().m_AutoSpecCamera; }
+	void SetAutoSpecCamera(bool Enabled) { State().m_AutoSpecCamera = Enabled; }
+	vec2 DynamicCameraTargetOffset() const { return State().m_DyncamTargetCameraOffset; }
+	vec2 DynamicCameraOffset() const { return State().m_DynamicCameraOffset; }
+	void BindState(CGameView::CCameraState &State) { m_pState = &State; }
 
 	void UpdateCamera();
 	void ResetAutoSpecCamera();
-	bool SpectatingPlayer() const { return m_CanUseCameraInfo; }
+	bool SpectatingPlayer() const { return State().m_CanUseCameraInfo; }
 	bool CanUseAutoSpecCamera() const;
 	void ToggleAutoSpecCamera();
 	void UpdateAutoSpecCameraTooltip();
@@ -120,14 +95,6 @@ private:
 	static void ConSetViewRelative(IConsole::IResult *pResult, void *pUserData);
 	static void ConGotoSwitch(IConsole::IResult *pResult, void *pUserData);
 	static void ConGotoTele(IConsole::IResult *pResult, void *pUserData);
-
-	bool m_ForceFreeview;
-	vec2 m_ForceFreeviewPos;
-	int m_GotoSwitchOffset;
-	int m_GotoTeleOffset;
-	ivec2 m_GotoSwitchLastPos;
-	ivec2 m_GotoTeleLastPos;
-	int m_GotoTeleLastNumber = -1;
 };
 
 #endif

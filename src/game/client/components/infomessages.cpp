@@ -88,7 +88,7 @@ CInfoMessages::CInfoMsg CInfoMessages::CreateInfoMsg(EType Type)
 {
 	CInfoMsg InfoMsg;
 	InfoMsg.m_Type = Type;
-	InfoMsg.m_Tick = Client()->GameTick(g_Config.m_ClDummy);
+	InfoMsg.m_Tick = Client()->GameTick(GameClient()->ActiveConnection());
 
 	for(int i = 0; i < MAX_KILLMSG_TEAM_MEMBERS; i++)
 	{
@@ -224,7 +224,7 @@ void CInfoMessages::OnTeamKillMessage(const CNetMsg_Sv_KillMsgTeam *pMsg)
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
 		if(GameClient()->m_aClients[ClientId].m_Active &&
-			GameClient()->m_Teams.Team(ClientId) == pMsg->m_Team)
+			GameClient()->FocusedTeams().Team(ClientId) == pMsg->m_Team)
 		{
 			CCharacter *pChr = GameClient()->m_GameWorld.GetCharacterById(ClientId);
 			vStrongWeakSorted.emplace_back(ClientId, pMsg->m_First == ClientId ? MAX_CLIENTS : (pChr ? pChr->GetStrongWeakId() : 0));
@@ -255,7 +255,7 @@ void CInfoMessages::OnKillMessage(const CNetMsg_Sv_KillMsg *pMsg)
 	{
 		Kill.m_TeamSize = 1;
 		Kill.m_aVictimIds[0] = pMsg->m_Victim;
-		Kill.m_VictimDDTeam = GameClient()->m_Teams.Team(Kill.m_aVictimIds[0]);
+		Kill.m_VictimDDTeam = GameClient()->FocusedTeams().Team(Kill.m_aVictimIds[0]);
 		str_copy(Kill.m_aVictimName, GameClient()->m_aClients[Kill.m_aVictimIds[0]].m_aName);
 		Kill.m_apVictimManagedTeeRenderInfos[0] = GameClient()->CreateManagedTeeRenderInfo(GameClient()->m_aClients[Kill.m_aVictimIds[0]]);
 	}
@@ -290,7 +290,7 @@ void CInfoMessages::OnRaceFinishMessage(const CNetMsg_Sv_RaceFinish *pMsg)
 
 	Finish.m_TeamSize = 1;
 	Finish.m_aVictimIds[0] = pMsg->m_ClientId;
-	Finish.m_VictimDDTeam = GameClient()->m_Teams.Team(Finish.m_aVictimIds[0]);
+	Finish.m_VictimDDTeam = GameClient()->FocusedTeams().Team(Finish.m_aVictimIds[0]);
 	str_copy(Finish.m_aVictimName, GameClient()->m_aClients[Finish.m_aVictimIds[0]].m_aName);
 	Finish.m_apVictimManagedTeeRenderInfos[0] = GameClient()->CreateManagedTeeRenderInfo(GameClient()->m_aClients[pMsg->m_ClientId]);
 
@@ -468,7 +468,7 @@ void CInfoMessages::OnRender()
 		{
 			continue;
 		}
-		if(Client()->GameTick(g_Config.m_ClDummy) > InfoMsg.m_Tick + Client()->GameTickSpeed() * 10)
+		if(Client()->GameTick(GameClient()->ActiveConnection()) > InfoMsg.m_Tick + Client()->GameTickSpeed() * 10)
 		{
 			ResetMessage(InfoMsg);
 			continue;

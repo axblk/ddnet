@@ -3,6 +3,8 @@
 
 #include <engine/client/stream.h>
 
+#include <generated/protocol.h>
+
 #include <vector>
 
 enum class EStreamInputPolicy
@@ -18,6 +20,11 @@ public:
 	CStreamId m_Target;
 	CStreamId m_Source;
 	EStreamInputPolicy m_Policy = EStreamInputPolicy::DIRECT;
+	CNetObj_PlayerInput m_HammerInput = {};
+	unsigned int m_HammerCounter = 0;
+
+	bool AdvanceHammer();
+	void FinishHammering(CNetObj_PlayerInput &TargetInput);
 };
 
 class CStreamInputRouter
@@ -26,8 +33,11 @@ class CStreamInputRouter
 
 public:
 	bool Set(CStreamId Target, CStreamId Source, EStreamInputPolicy Policy);
+	CStreamInputRoute *Find(CStreamId Target);
 	const CStreamInputRoute *Find(CStreamId Target) const;
-	bool Remove(CStreamId Target);
+	bool Remove(CStreamId Stream);
+	void Reset() { m_vRoutes.clear(); }
+	const std::vector<CStreamInputRoute> &Routes() const { return m_vRoutes; }
 	size_t NumRoutes() const { return m_vRoutes.size(); }
 };
 

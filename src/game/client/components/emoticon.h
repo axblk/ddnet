@@ -7,25 +7,19 @@
 #include <engine/console.h>
 
 #include <game/client/component.h>
+#include <game/client/game_view.h>
 #include <game/client/ui.h>
 
 class CEmoticon : public CComponent
 {
-	bool m_WasActive;
-	bool m_Active;
-
-	vec2 m_SelectorMouse;
-	int m_SelectedEmote;
-	int m_SelectedEyeEmote;
-
 	CUi::CTouchState m_TouchState;
-	bool m_TouchPressedOutside;
+	CGameView::CEmoticonSelectorState &Selector();
+	const CGameView::CEmoticonSelectorState &Selector() const;
 
 	static void ConKeyEmoticon(IConsole::IResult *pResult, void *pUserData);
 	static void ConEmote(IConsole::IResult *pResult, void *pUserData);
 
 public:
-	CEmoticon();
 	int Sizeof() const override { return sizeof(*this); }
 
 	void OnReset() override;
@@ -38,7 +32,7 @@ public:
 	void Emote(int Emoticon);
 	void EyeEmote(int EyeEmote);
 
-	bool IsActive() const { return m_Active; }
+	bool IsActive() const;
 };
 
 #endif

@@ -272,6 +272,9 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	char m_aAutomaticDummyName[MAX_NAME_LENGTH];
 
 public:
+	CSessionId FocusedSessionId() const override { return m_SessionManager.FocusedId(); }
+	CSessionId NetworkSessionId() const override { return m_NetworkSessionId; }
+	CSessionId DemoSessionId() const override { return m_DemoSessionId; }
 	int PrevGameTick(int Conn) const override { return Connection(Conn).m_PrevGameTick; }
 	int GameTick(int Conn) const override { return Connection(Conn).m_CurGameTick; }
 	int PredGameTick(int Conn) const override { return Connection(Conn).m_PredTick; }

@@ -3,18 +3,21 @@
 #ifndef GAME_CLIENT_COMPONENTS_BROADCAST_H
 #define GAME_CLIENT_COMPONENTS_BROADCAST_H
 
+#include <engine/client/session.h>
 #include <engine/textrender.h>
 
 #include <game/client/component.h>
 
+#include <cstdint>
+
 class CBroadcast : public CComponent
 {
-	// broadcasts
-	char m_aBroadcastText[1024];
-	int m_BroadcastTick;
 	float m_BroadcastRenderOffset;
 	STextContainerIndex m_TextContainerIndex;
+	CSessionId m_RenderedSessionId;
+	uint64_t m_RenderedRevision = 0;
 
+	void InvalidateRenderCache();
 	void RenderServerBroadcast();
 
 public:
@@ -22,9 +25,8 @@ public:
 	void OnReset() override;
 	void OnWindowResize() override;
 	void OnRender() override;
-	void OnMessage(int MsgType, void *pRawMsg) override;
 
-	void DoBroadcast(const char *pText);
+	void DoBroadcast(const char *pText, int Conn);
 };
 
 #endif

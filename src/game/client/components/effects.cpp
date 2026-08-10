@@ -11,19 +11,11 @@
 #include <generated/client_data.h>
 
 #include <game/client/components/damageind.h>
-#include <game/client/components/flow.h>
 #include <game/client/components/particles.h>
 #include <game/client/components/sounds.h>
 #include <game/client/gameclient.h>
 
-CEffects::CEffects()
-{
-	m_Add5hz = false;
-	m_Add50hz = false;
-	m_Add100hz = false;
-}
-
-void CEffects::AirJump(vec2 Pos, float Alpha, float Volume)
+void CEffects::AirJump(CGameState &State, vec2 Pos, float Alpha, float Volume)
 {
 	CParticle p;
 	p.SetDefault();
@@ -37,26 +29,25 @@ void CEffects::AirJump(vec2 Pos, float Alpha, float Volume)
 	p.m_Rotspeed = pi * 2.0f;
 	p.m_Gravity = 500.0f;
 	p.m_Friction = 0.7f;
-	p.m_FlowAffected = 0.0f;
 	p.m_Color.a = Alpha;
 	p.m_StartAlpha = Alpha;
-	GameClient()->m_Particles.Add(CParticles::GROUP_GENERAL, &p);
+	GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 
 	p.m_Pos = Pos + vec2(6.0f, 16.0f);
-	GameClient()->m_Particles.Add(CParticles::GROUP_GENERAL, &p);
+	GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 
 	if(g_Config.m_SndGame)
 		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_AIRJUMP, Volume, Pos);
 }
 
-void CEffects::DamageIndicator(vec2 Pos, vec2 Dir, float Alpha)
+void CEffects::DamageIndicator(CGameState &State, vec2 Pos, vec2 Dir, float Alpha)
 {
-	GameClient()->m_DamageInd.Create(Pos, Dir, Alpha);
+	GameClient()->m_DamageInd.Create(State, Pos, Dir, Alpha);
 }
 
-void CEffects::PowerupShine(vec2 Pos, vec2 Size, float Alpha)
+void CEffects::PowerupShine(CGameState &State, vec2 Pos, vec2 Size, float Alpha)
 {
-	if(!m_Add50hz)
+	if(!State.EffectClock().m_Add50hz)
 		return;
 
 	CParticle p;
@@ -71,15 +62,14 @@ void CEffects::PowerupShine(vec2 Pos, vec2 Size, float Alpha)
 	p.m_Rotspeed = pi * 2.0f;
 	p.m_Gravity = 500.0f;
 	p.m_Friction = 0.9f;
-	p.m_FlowAffected = 0.0f;
 	p.m_Color.a = Alpha;
 	p.m_StartAlpha = Alpha;
-	GameClient()->m_Particles.Add(CParticles::GROUP_GENERAL, &p);
+	GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 }
 
-void CEffects::FreezingFlakes(vec2 Pos, vec2 Size, float Alpha)
+void CEffects::FreezingFlakes(CGameState &State, vec2 Pos, vec2 Size, float Alpha)
 {
-	if(!m_Add5hz)
+	if(!State.EffectClock().m_Add5hz)
 		return;
 
 	CParticle p;
@@ -97,16 +87,15 @@ void CEffects::FreezingFlakes(vec2 Pos, vec2 Size, float Alpha)
 	p.m_Rotspeed = pi;
 	p.m_Gravity = random_float(250.0f);
 	p.m_Friction = 0.9f;
-	p.m_FlowAffected = 0.0f;
 	p.m_Collides = false;
 	p.m_Color.a = Alpha;
 	p.m_StartAlpha = Alpha;
-	GameClient()->m_Particles.Add(CParticles::GROUP_EXTRA, &p);
+	GameClient()->m_Particles.Add(State, CParticles::GROUP_EXTRA, p);
 }
 
-void CEffects::SparkleTrail(vec2 Pos, float Alpha)
+void CEffects::SparkleTrail(CGameState &State, vec2 Pos, float Alpha)
 {
-	if(!m_Add50hz)
+	if(!State.EffectClock().m_Add50hz)
 		return;
 
 	CParticle p;
@@ -121,12 +110,12 @@ void CEffects::SparkleTrail(vec2 Pos, float Alpha)
 	p.m_StartAlpha = Alpha;
 	p.m_EndAlpha = std::min(0.2f, Alpha);
 	p.m_Collides = false;
-	GameClient()->m_Particles.Add(CParticles::GROUP_TRAIL_EXTRA, &p);
+	GameClient()->m_Particles.Add(State, CParticles::GROUP_TRAIL_EXTRA, p);
 }
 
-void CEffects::SmokeTrail(vec2 Pos, vec2 Vel, float Alpha, float TimePassed)
+void CEffects::SmokeTrail(CGameState &State, vec2 Pos, vec2 Vel, float Alpha, float TimePassed)
 {
-	if(!m_Add50hz && TimePassed < 0.001f)
+	if(!State.EffectClock().m_Add50hz && TimePassed < 0.001f)
 		return;
 
 	CParticle p;
@@ -141,12 +130,13 @@ void CEffects::SmokeTrail(vec2 Pos, vec2 Vel, float Alpha, float TimePassed)
 	p.m_Gravity = random_float(-500.0f);
 	p.m_Color.a = Alpha;
 	p.m_StartAlpha = Alpha;
-	GameClient()->m_Particles.Add(CParticles::GROUP_PROJECTILE_TRAIL, &p, TimePassed);
+	GameClient()->m_Particles.Add(State, CParticles::GROUP_PROJECTILE_TRAIL, p, TimePassed);
 }
 
-void CEffects::SkidTrail(vec2 Pos, vec2 Vel, int Direction, float Alpha, float Volume)
+void CEffects::SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, float Alpha, float Volume)
 {
-	if(m_Add100hz)
+	CGameState::CEffectClockState &EffectClock = State.EffectClock();
+	if(EffectClock.m_Add100hz)
 	{
 		CParticle p;
 		p.SetDefault();
@@ -160,22 +150,18 @@ void CEffects::SkidTrail(vec2 Pos, vec2 Vel, int Direction, float Alpha, float V
 		p.m_Gravity = random_float(-500.0f);
 		p.m_Color = ColorRGBA(0.75f, 0.75f, 0.75f, Alpha);
 		p.m_StartAlpha = Alpha;
-		GameClient()->m_Particles.Add(CParticles::GROUP_GENERAL, &p);
+		GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 	}
 	if(g_Config.m_SndGame)
 	{
-		int64_t Now = time();
-		if(Now - m_SkidSoundTimer > time_freq() / 10)
-		{
-			m_SkidSoundTimer = Now;
+		if(EffectClock.TrySkidSound(time(), time_freq()))
 			GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_SKID, Volume, Pos);
-		}
 	}
 }
 
-void CEffects::BulletTrail(vec2 Pos, float Alpha, float TimePassed)
+void CEffects::BulletTrail(CGameState &State, vec2 Pos, float Alpha, float TimePassed)
 {
-	if(!m_Add100hz && TimePassed < 0.001f)
+	if(!State.EffectClock().m_Add100hz && TimePassed < 0.001f)
 		return;
 
 	CParticle p;
@@ -188,10 +174,10 @@ void CEffects::BulletTrail(vec2 Pos, float Alpha, float TimePassed)
 	p.m_Friction = 0.7f;
 	p.m_Color.a *= Alpha;
 	p.m_StartAlpha = Alpha;
-	GameClient()->m_Particles.Add(CParticles::GROUP_PROJECTILE_TRAIL, &p, TimePassed);
+	GameClient()->m_Particles.Add(State, CParticles::GROUP_PROJECTILE_TRAIL, p, TimePassed);
 }
 
-void CEffects::PlayerSpawn(vec2 Pos, float Alpha, float Volume)
+void CEffects::PlayerSpawn(CGameState &State, vec2 Pos, float Alpha, float Volume)
 {
 	for(int i = 0; i < 32; i++)
 	{
@@ -209,13 +195,13 @@ void CEffects::PlayerSpawn(vec2 Pos, float Alpha, float Volume)
 		p.m_Friction = 0.7f;
 		p.m_Color = ColorRGBA(0xb5 / 255.0f, 0x50 / 255.0f, 0xcb / 255.0f, Alpha);
 		p.m_StartAlpha = Alpha;
-		GameClient()->m_Particles.Add(CParticles::GROUP_GENERAL, &p);
+		GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 	}
 	if(g_Config.m_SndGame)
 		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_SPAWN, Volume, Pos);
 }
 
-void CEffects::PlayerDeath(vec2 Pos, int ClientId, float Alpha)
+void CEffects::PlayerDeath(CGameState &State, vec2 Pos, int ClientId, float Alpha)
 {
 	ColorRGBA BloodColor(1.0f, 1.0f, 1.0f);
 
@@ -229,13 +215,13 @@ void CEffects::PlayerDeath(vec2 Pos, int ClientId, float Alpha)
 		// And will use the team body color to create player death effect instead of tee color
 		if(GameClient()->Client()->IsSixup())
 		{
-			if(GameClient()->m_aClients[ClientId].m_RenderInfo.m_aSixup[g_Config.m_ClDummy].m_aUseCustomColors[protocol7::SKINPART_BODY])
+			if(GameClient()->m_aClients[ClientId].m_RenderInfo.m_Sixup.m_aUseCustomColors[protocol7::SKINPART_BODY])
 			{
-				BloodColor = GameClient()->m_aClients[ClientId].m_RenderInfo.m_aSixup[g_Config.m_ClDummy].m_aColors[protocol7::SKINPART_BODY];
+				BloodColor = GameClient()->m_aClients[ClientId].m_RenderInfo.m_Sixup.m_aColors[protocol7::SKINPART_BODY];
 			}
 			else
 			{
-				BloodColor = GameClient()->m_aClients[ClientId].m_RenderInfo.m_aSixup[g_Config.m_ClDummy].m_BloodColor;
+				BloodColor = GameClient()->m_aClients[ClientId].m_RenderInfo.m_Sixup.m_BloodColor;
 			}
 		}
 		else
@@ -267,11 +253,11 @@ void CEffects::PlayerDeath(vec2 Pos, int ClientId, float Alpha)
 		p.m_Friction = 0.8f;
 		p.m_Color = BloodColor.Multiply(random_float(0.75f, 1.0f)).WithAlpha(0.75f * Alpha);
 		p.m_StartAlpha = Alpha;
-		GameClient()->m_Particles.Add(CParticles::GROUP_GENERAL, &p);
+		GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 	}
 }
 
-void CEffects::Confetti(vec2 Pos, float Alpha)
+void CEffects::Confetti(CGameState &State, vec2 Pos, float Alpha)
 {
 	ColorRGBA Red(1.0f, 0.4f, 0.4f);
 	ColorRGBA Green(0.4f, 1.0f, 0.4f);
@@ -300,7 +286,7 @@ void CEffects::Confetti(vec2 Pos, float Alpha)
 		ColorRGBA c = aConfettiColors[(rand() % std::size(aConfettiColors))];
 		p.m_Color = c.WithMultipliedAlpha(0.75f * Alpha);
 		p.m_StartAlpha = Alpha;
-		GameClient()->m_Particles.Add(CParticles::GROUP_GENERAL, &p);
+		GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 	}
 
 	// broader confettis
@@ -321,23 +307,12 @@ void CEffects::Confetti(vec2 Pos, float Alpha)
 		ColorRGBA c = aConfettiColors[(rand() % std::size(aConfettiColors))];
 		p.m_Color = c.WithMultipliedAlpha(0.75f * Alpha);
 		p.m_StartAlpha = Alpha;
-		GameClient()->m_Particles.Add(CParticles::GROUP_GENERAL, &p);
+		GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 	}
 }
 
-void CEffects::Explosion(vec2 Pos, float Alpha)
+void CEffects::Explosion(CGameState &State, vec2 Pos, float Alpha)
 {
-	// add to flow
-	for(int y = -8; y <= 8; y++)
-		for(int x = -8; x <= 8; x++)
-		{
-			if(x == 0 && y == 0)
-				continue;
-
-			float a = 1 - (length(vec2(x, y)) / length(vec2(8.0f, 8.0f)));
-			GameClient()->m_Flow.Add(Pos + vec2(x, y) * 16.0f, normalize(vec2(x, y)) * 5000.0f * a, 10.0f);
-		}
-
 	// add the explosion
 	CParticle p;
 	p.SetDefault();
@@ -349,7 +324,7 @@ void CEffects::Explosion(vec2 Pos, float Alpha)
 	p.m_Rot = random_angle();
 	p.m_Color.a = Alpha;
 	p.m_StartAlpha = Alpha;
-	GameClient()->m_Particles.Add(CParticles::GROUP_EXPLOSIONS, &p);
+	GameClient()->m_Particles.Add(State, CParticles::GROUP_EXPLOSIONS, p);
 
 	// Nudge position slightly to edge of closest tile so the
 	// smoke doesn't get stuck inside the tile.
@@ -387,11 +362,11 @@ void CEffects::Explosion(vec2 Pos, float Alpha)
 		p.m_Friction = 0.4f;
 		p.m_Color = ColorRGBA(1.0f, 1.0f, 1.0f).Multiply(random_float(0.5f, 0.75f)).WithAlpha(Alpha);
 		p.m_StartAlpha = p.m_Color.a;
-		GameClient()->m_Particles.Add(CParticles::GROUP_GENERAL, &p);
+		GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 	}
 }
 
-void CEffects::HammerHit(vec2 Pos, float Alpha, float Volume)
+void CEffects::HammerHit(CGameState &State, vec2 Pos, float Alpha, float Volume)
 {
 	// add the explosion
 	CParticle p;
@@ -404,24 +379,17 @@ void CEffects::HammerHit(vec2 Pos, float Alpha, float Volume)
 	p.m_Rot = random_angle();
 	p.m_Color.a = Alpha;
 	p.m_StartAlpha = Alpha;
-	GameClient()->m_Particles.Add(CParticles::GROUP_EXPLOSIONS, &p);
+	GameClient()->m_Particles.Add(State, CParticles::GROUP_EXPLOSIONS, p);
 	if(g_Config.m_SndGame)
 		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_HAMMER_HIT, Volume, Pos);
 }
 
-void CEffects::OnRender()
+void CEffects::Update(CGameState &State, float GameTickTime, float PredIntraTick)
 {
-	const float Speed = GameClient()->GetAnimationPlaybackSpeed();
 	const int64_t Now = time();
-	auto UpdateClock = [&](bool &Add, int64_t &LastUpdate, int Frequency) {
-		Add = (Now - LastUpdate) / (float)time_freq() * Speed > 1.0f / Frequency;
-		if(Add)
-			LastUpdate = Now;
-	};
-	UpdateClock(m_Add5hz, m_LastUpdate5hz, 5);
-	UpdateClock(m_Add50hz, m_LastUpdate50hz, 50);
-	UpdateClock(m_Add100hz, m_LastUpdate100hz, 100);
-
-	if(m_Add50hz)
-		GameClient()->m_Flow.Update();
+	const int64_t TimeFrequency = time_freq();
+	const float Speed = GameClient()->GetAnimationPlaybackSpeed();
+	State.EffectClock().Update(Now, TimeFrequency, Speed);
+	if(Client()->State() == IClient::STATE_ONLINE || Client()->State() == IClient::STATE_DEMOPLAYBACK)
+		State.SceneClock().Update(Now, TimeFrequency, Speed, GameTickTime, PredIntraTick);
 }

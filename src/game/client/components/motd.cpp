@@ -12,28 +12,40 @@
 #include <engine/shared/config.h>
 #include <engine/textrender.h>
 
-#include <generated/protocol.h>
-
 #include <game/client/components/important_alert.h>
+#include <game/client/components/scoreboard.h>
+#include <game/client/components/statboard.h>
 #include <game/client/gameclient.h>
 
-CMotd::CMotd()
+#include <string>
+
+const char *CMotd::ServerMotd() const
 {
-	m_aServerMotd[0] = '\0';
-	m_ServerMotdTime = 0;
-	m_ServerMotdUpdateTime = 0;
+	return GameClient()->SessionContext().Motd().Text();
+}
+
+uint64_t CMotd::ServerMotdRevision() const
+{
+	return GameClient()->SessionContext().Motd().Revision();
 }
 
 void CMotd::Clear()
 {
-	m_ServerMotdTime = 0;
+	GameClient()->LegacyGameView().Motd().Dismiss();
+	InvalidateRenderCache();
+}
+
+void CMotd::InvalidateRenderCache()
+{
 	Graphics()->DeleteQuadContainer(m_RectQuadContainer);
 	TextRender()->DeleteTextContainer(m_TextContainerIndex);
+	m_RenderedSessionId = CSessionId();
 }
 
 bool CMotd::IsActive() const
 {
-	return time() < m_ServerMotdTime;
+	const CGameSessionContext &Session = GameClient()->SessionContext();
+	return GameClient()->LegacyGameView().Motd().IsActive(Session.Id(), Session.Motd().Revision(), time());
 }
 
 void CMotd::OnStateChange(int NewState, int OldState)
@@ -44,8 +56,13 @@ void CMotd::OnStateChange(int NewState, int OldState)
 
 void CMotd::OnWindowResize()
 {
-	Graphics()->DeleteQuadContainer(m_RectQuadContainer);
-	TextRender()->DeleteTextContainer(m_TextContainerIndex);
+	InvalidateRenderCache();
+}
+
+void CMotd::OnUpdate()
+{
+	if(IsActive() && (GameClient()->m_ImportantAlert.IsActive() || GameClient()->m_Scoreboard.IsActive() || GameClient()->m_Statboard.IsRenderable()))
+		Clear();
 }
 
 void CMotd::OnRender()
@@ -56,11 +73,16 @@ void CMotd::OnRender()
 	if(!IsActive())
 		return;
 
-	if(GameClient()->m_ImportantAlert.IsActive())
+	const CGameSessionContext &Session = GameClient()->SessionContext();
+	if(m_RenderedSessionId != Session.Id() || m_RenderedRevision != Session.Motd().Revision())
 	{
-		Clear();
-		return;
+		InvalidateRenderCache();
+		m_RenderedSessionId = Session.Id();
+		m_RenderedRevision = Session.Motd().Revision();
 	}
+
+	if(GameClient()->m_ImportantAlert.IsActive())
+		return;
 
 	const int MaxLines = 24;
 	const float FontSize = 32.0f; // also the size of the margin and rect rounding
@@ -102,54 +124,34 @@ void CMotd::OnRender()
 		TextRender()->RenderTextContainer(m_TextContainerIndex, TextRender()->DefaultTextColor(), TextRender()->DefaultTextOutlineColor());
 }
 
-void CMotd::OnMessage(int MsgType, void *pRawMsg)
+void CMotd::DoMotd(const char *pText)
 {
-	if(Client()->State() == IClient::STATE_DEMOPLAYBACK)
-		return;
+	CGameSessionContext &Session = GameClient()->SessionContext();
+	Session.Motd().Apply(pText);
+	const int64_t Now = time();
+	const int64_t VisibleUntil = Session.Motd().Text()[0] && g_Config.m_ClMotdTime ? Now + time_freq() * g_Config.m_ClMotdTime : 0;
+	GameClient()->LegacyGameView().Motd().Show(Session.Id(), Session.Motd().Revision(), VisibleUntil);
+	InvalidateRenderCache();
 
-	if(MsgType == NETMSGTYPE_SV_MOTD)
+	if(g_Config.m_ClPrintMotd)
 	{
-		const CNetMsg_Sv_Motd *pMsg = static_cast<CNetMsg_Sv_Motd *>(pRawMsg);
-
-		// copy it manually to process all \n
-		const char *pMsgStr = pMsg->m_pMessage;
-		const size_t MotdLen = str_length(pMsgStr) + 1;
-		const char *pLast = m_aServerMotd; // for console printing
 		const LOG_COLOR LogColor = color_cast<LOG_COLOR>(color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClMessageHighlightColor)));
-		for(size_t i = 0, k = 0; i < MotdLen && k < sizeof(m_aServerMotd); i++, k++)
+		const char *pLineStart = Session.Motd().Text();
+		for(const char *pCursor = pLineStart;; ++pCursor)
 		{
-			// handle incoming "\\n"
-			if(pMsgStr[i] == '\\' && pMsgStr[i + 1] == 'n')
+			if(*pCursor != '\n' && *pCursor != '\0')
+				continue;
+
+			if(*pCursor == '\n' || pCursor != pLineStart)
 			{
-				m_aServerMotd[k] = '\n';
-				i++; // skip the 'n'
-			}
-			else
-			{
-				m_aServerMotd[k] = pMsgStr[i];
+				const std::string Line(pLineStart, pCursor);
+				log_info_color(LogColor, "motd", "%s", Line.c_str());
 			}
 
-			// print the line to the console when receiving the newline character
-			if(g_Config.m_ClPrintMotd && m_aServerMotd[k] == '\n')
-			{
-				m_aServerMotd[k] = '\0';
-				log_info_color(LogColor, "motd", "%s", pLast);
-				m_aServerMotd[k] = '\n';
-				pLast = m_aServerMotd + k + 1;
-			}
+			if(*pCursor == '\0')
+				break;
+			pLineStart = pCursor + 1;
 		}
-		m_aServerMotd[sizeof(m_aServerMotd) - 1] = '\0';
-		if(g_Config.m_ClPrintMotd && *pLast != '\0')
-		{
-			log_info_color(LogColor, "motd", "%s", pLast);
-		}
-
-		m_ServerMotdUpdateTime = time();
-		if(m_aServerMotd[0] && g_Config.m_ClMotdTime)
-			m_ServerMotdTime = m_ServerMotdUpdateTime + time_freq() * g_Config.m_ClMotdTime;
-		else
-			m_ServerMotdTime = 0;
-		TextRender()->DeleteTextContainer(m_TextContainerIndex);
 	}
 }
 

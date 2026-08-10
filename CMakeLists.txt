@@ -2552,8 +2552,6 @@ if(CLIENT)
     components/emoticon.h
     components/envelope_state.cpp
     components/envelope_state.h
-    components/flow.cpp
-    components/flow.h
     components/freezebars.cpp
     components/freezebars.h
     components/ghost.cpp
@@ -2671,6 +2669,7 @@ if(CLIENT)
     race.h
     render.cpp
     render.h
+    session_context.h
     session_game_config.cpp
     session_game_config.h
     sixup_translate_connless.cpp
@@ -3366,8 +3365,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/engine/client/session.cpp
     src/engine/client/session_sources.cpp
     src/engine/client/session_sources.h
-    src/engine/client/sqlite.cpp
     src/engine/client/smooth_time.cpp
+    src/engine/client/sqlite.cpp
     src/engine/client/stream.h
     src/game/client/components/censor.cpp
     src/game/client/components/censor.h
@@ -3385,7 +3384,6 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   list(REMOVE_ITEM TESTS ${PROJECT_SOURCE_DIR}/src/test/game_state_test.cpp)
   set(CLIENT_GAME_STATE_TEST_SOURCES
     # tidy-alphabetical-start
-    src/generated/client_data.cpp
     src/game/client/game_state.cpp
     src/game/client/game_view.cpp
     src/game/client/laser_data.cpp
@@ -3402,6 +3400,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/game/client/prediction/gameworld.cpp
     src/game/client/projectile_data.cpp
     src/game/client/session_game_config.cpp
+    src/generated/client_data.cpp
     src/headless/client_game_state_test_main.cpp
     src/test/game_state_test.cpp
     # tidy-alphabetical-end
@@ -3440,11 +3439,17 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   list(APPEND TARGETS_OWN ${TARGET_TESTRUNNER})
   list(APPEND TARGETS_LINK ${TARGET_TESTRUNNER})
 
+  add_custom_target(check_client_state_architecture
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/check_client_state_architecture.py ${PROJECT_SOURCE_DIR}
+    COMMENT Checking client multi-state architecture boundaries
+    VERBATIM
+  )
+
   add_custom_target(run_cxx_tests
     COMMAND $<TARGET_FILE:${TARGET_TESTRUNNER}> ${TESTRUNNER_ARGS}
     COMMAND $<TARGET_FILE:${TARGET_CLIENT_GAME_STATE_TESTS}>
     COMMENT Running unit tests
-    DEPENDS ${TARGET_TESTRUNNER} ${TARGET_CLIENT_GAME_STATE_TESTS}
+    DEPENDS ${TARGET_TESTRUNNER} ${TARGET_CLIENT_GAME_STATE_TESTS} check_client_state_architecture
     USES_TERMINAL
   )
   add_custom_target(run_tests

@@ -30,6 +30,7 @@ public:
 	void OnRelease() override;
 	void OnMessage(int MsgType, void *pRawMsg) override;
 	bool IsActive() const;
+	bool IsRenderable() const;
 };
 
 #endif // GAME_CLIENT_COMPONENTS_STATBOARD_H

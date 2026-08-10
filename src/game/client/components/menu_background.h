@@ -73,6 +73,7 @@ public:
 	};
 
 private:
+	CGameView::CCameraState m_CameraState;
 	CCamera m_Camera;
 
 	vec2 m_RotationCenter;

@@ -4952,7 +4952,7 @@ void CEditor::LoadIngameMap()
 		Map()->m_ValidSaveFilename = false;
 	}
 
-	vec2 Center = pGameClient->m_Camera.m_Center;
+	vec2 Center = pGameClient->m_Camera.Center();
 	MapView()->SetWorldOffset(Center);
 }
 

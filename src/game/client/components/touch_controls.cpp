@@ -614,35 +614,37 @@ void CTouchControls::CJoystickTouchButtonBehavior::OnDeactivate(bool ByFinger)
 void CTouchControls::CJoystickTouchButtonBehavior::OnUpdate()
 {
 	CControls &Controls = m_pTouchControls->GameClient()->m_Controls;
-	const float Zoom = m_pTouchControls->GameClient()->m_Snap.m_SpecInfo.m_Active ? m_pTouchControls->GameClient()->m_Camera.m_Zoom : 1.0f;
+	const int ActiveConn = m_pTouchControls->GameClient()->ActiveConnection();
+	CGameState::CInputState &Input = m_pTouchControls->GameClient()->GameState(ActiveConn).Input();
+	const float Zoom = m_pTouchControls->GameClient()->m_Snap.m_SpecInfo.m_Active ? m_pTouchControls->GameClient()->m_Camera.Zoom() : 1.0f;
 	if(m_pTouchControls->GameClient()->m_Snap.m_SpecInfo.m_Active)
 	{
 		vec2 WorldScreenSize;
 		m_pTouchControls->Graphics()->CalcScreenParams(m_pTouchControls->Graphics()->ScreenAspect(), Zoom, &WorldScreenSize.x, &WorldScreenSize.y);
-		Controls.m_aMousePos[g_Config.m_ClDummy] += -m_AccumulatedDelta * WorldScreenSize;
-		Controls.m_aMouseInputType[g_Config.m_ClDummy] = CControls::EMouseInputType::RELATIVE;
-		Controls.m_aMousePos[g_Config.m_ClDummy].x = std::clamp(Controls.m_aMousePos[g_Config.m_ClDummy].x, -201.0f * 32, (m_pTouchControls->Collision()->GetWidth() + 201.0f) * 32.0f);
-		Controls.m_aMousePos[g_Config.m_ClDummy].y = std::clamp(Controls.m_aMousePos[g_Config.m_ClDummy].y, -201.0f * 32, (m_pTouchControls->Collision()->GetHeight() + 201.0f) * 32.0f);
+		Input.m_MousePos += -m_AccumulatedDelta * WorldScreenSize;
+		Input.m_MouseInputType = CGameState::EMouseInputType::RELATIVE;
+		Input.m_MousePos.x = std::clamp(Input.m_MousePos.x, -201.0f * 32, (m_pTouchControls->Collision()->GetWidth() + 201.0f) * 32.0f);
+		Input.m_MousePos.y = std::clamp(Input.m_MousePos.y, -201.0f * 32, (m_pTouchControls->Collision()->GetHeight() + 201.0f) * 32.0f);
 		m_AccumulatedDelta = vec2(0.0f, 0.0f);
 	}
 	else if(IsRelative())
 	{
 		vec2 WorldScreenSize;
 		m_pTouchControls->Graphics()->CalcScreenParams(m_pTouchControls->Graphics()->ScreenAspect(), Zoom, &WorldScreenSize.x, &WorldScreenSize.y);
-		Controls.m_aMousePos[g_Config.m_ClDummy] += m_AccumulatedDelta * WorldScreenSize;
-		Controls.m_aMouseInputType[g_Config.m_ClDummy] = CControls::EMouseInputType::RELATIVE;
+		Input.m_MousePos += m_AccumulatedDelta * WorldScreenSize;
+		Input.m_MouseInputType = CGameState::EMouseInputType::RELATIVE;
 		Controls.ClampMousePos();
 		m_AccumulatedDelta = vec2(0.0f, 0.0f);
 	}
 	else
 	{
 		const vec2 AbsolutePosition = (m_ActivePosition - vec2(0.5f, 0.5f)) * 2.0f;
-		Controls.m_aMousePos[g_Config.m_ClDummy] = AbsolutePosition * (Controls.GetMaxMouseDistance() - Controls.GetMinMouseDistance()) + normalize(AbsolutePosition) * Controls.GetMinMouseDistance();
-		Controls.m_aMouseInputType[g_Config.m_ClDummy] = CControls::EMouseInputType::ABSOLUTE;
-		if(length(Controls.m_aMousePos[g_Config.m_ClDummy]) < 0.001f)
+		Input.m_MousePos = AbsolutePosition * (Controls.GetMaxMouseDistance() - Controls.GetMinMouseDistance()) + normalize(AbsolutePosition) * Controls.GetMinMouseDistance();
+		Input.m_MouseInputType = CGameState::EMouseInputType::ABSOLUTE;
+		if(length(Input.m_MousePos) < 0.001f)
 		{
-			Controls.m_aMousePos[g_Config.m_ClDummy].x = 0.001f;
-			Controls.m_aMousePos[g_Config.m_ClDummy].y = 0.0f;
+			Input.m_MousePos.x = 0.001f;
+			Input.m_MousePos.y = 0.0f;
 		}
 	}
 }
@@ -1164,27 +1166,28 @@ void CTouchControls::UpdateButtonsGame(const std::vector<IInput::CTouchFingerSta
 	// Update mouse position based on the finger responsible for the last active action.
 	if(GotDirectFingerState)
 	{
-		const float Zoom = GameClient()->m_Snap.m_SpecInfo.m_Active ? GameClient()->m_Camera.m_Zoom : 1.0f;
+		const float Zoom = GameClient()->m_Snap.m_SpecInfo.m_Active ? GameClient()->m_Camera.Zoom() : 1.0f;
 		vec2 WorldScreenSize;
 		Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), Zoom, &WorldScreenSize.x, &WorldScreenSize.y);
 		CControls &Controls = GameClient()->m_Controls;
+		CGameState::CInputState &Input = GameClient()->GameState(GameClient()->ActiveConnection()).Input();
 		if(GameClient()->m_Snap.m_SpecInfo.m_Active)
 		{
-			Controls.m_aMousePos[g_Config.m_ClDummy] += -DirectFingerState.m_Delta * WorldScreenSize;
-			Controls.m_aMouseInputType[g_Config.m_ClDummy] = CControls::EMouseInputType::RELATIVE;
-			Controls.m_aMousePos[g_Config.m_ClDummy].x = std::clamp(Controls.m_aMousePos[g_Config.m_ClDummy].x, -201.0f * 32, (Collision()->GetWidth() + 201.0f) * 32.0f);
-			Controls.m_aMousePos[g_Config.m_ClDummy].y = std::clamp(Controls.m_aMousePos[g_Config.m_ClDummy].y, -201.0f * 32, (Collision()->GetHeight() + 201.0f) * 32.0f);
+			Input.m_MousePos += -DirectFingerState.m_Delta * WorldScreenSize;
+			Input.m_MouseInputType = CGameState::EMouseInputType::RELATIVE;
+			Input.m_MousePos.x = std::clamp(Input.m_MousePos.x, -201.0f * 32, (Collision()->GetWidth() + 201.0f) * 32.0f);
+			Input.m_MousePos.y = std::clamp(Input.m_MousePos.y, -201.0f * 32, (Collision()->GetHeight() + 201.0f) * 32.0f);
 		}
 		else if(m_DirectTouchIngame == EDirectTouchIngameMode::AIM_RELATIVE)
 		{
-			Controls.m_aMousePos[g_Config.m_ClDummy] += DirectFingerState.m_Delta * WorldScreenSize;
-			Controls.m_aMouseInputType[g_Config.m_ClDummy] = CControls::EMouseInputType::RELATIVE;
+			Input.m_MousePos += DirectFingerState.m_Delta * WorldScreenSize;
+			Input.m_MouseInputType = CGameState::EMouseInputType::RELATIVE;
 			Controls.ClampMousePos();
 		}
 		else
 		{
-			Controls.m_aMousePos[g_Config.m_ClDummy] = (DirectFingerState.m_Position - vec2(0.5f, 0.5f)) * WorldScreenSize;
-			Controls.m_aMouseInputType[g_Config.m_ClDummy] = CControls::EMouseInputType::ABSOLUTE;
+			Input.m_MousePos = (DirectFingerState.m_Position - vec2(0.5f, 0.5f)) * WorldScreenSize;
+			Input.m_MouseInputType = CGameState::EMouseInputType::ABSOLUTE;
 		}
 	}
 

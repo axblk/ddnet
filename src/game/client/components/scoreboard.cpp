@@ -180,7 +180,8 @@ bool CScoreboard::OnInput(const IInput::CEvent &Event)
 void CScoreboard::RenderTitle(CUIRect TitleLabel, int Team, const char *pTitle, float TitleFontSize)
 {
 	const bool IsMapTitle = !GameClient()->IsTeamPlay();
-	if(IsMapTitle && m_MouseUnlocked && GameClient()->m_aMapDescription[0] != '\0')
+	const char *pMapDescription = GameClient()->SessionContext().MapMetadata().Description();
+	if(IsMapTitle && m_MouseUnlocked && pMapDescription[0] != '\0')
 	{
 		const int ButtonResult = Ui()->DoButtonLogic(&m_MapTitleButtonId, 0, &TitleLabel, BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT);
 		if(ButtonResult != 0)
@@ -190,7 +191,7 @@ void CScoreboard::RenderTitle(CUIRect TitleLabel, int Team, const char *pTitle, 
 			m_MapTitlePopupContext.m_FontSize = 12.0f;
 			const float MaxWidth = 300.0f;
 			const float Margin = 5.0f;
-			const char *pDescription = GameClient()->m_aMapDescription;
+			const char *pDescription = pMapDescription;
 			const float TextWidth = std::min(std::ceil(TextRender()->TextWidth(m_MapTitlePopupContext.m_FontSize, pDescription) + 0.5f), MaxWidth);
 			float TextHeight = 0.0f;
 			STextSizeProperties TextSizeProps{};
@@ -216,18 +217,19 @@ void CScoreboard::RenderTitleScore(CUIRect ScoreLabel, int Team, float TitleFont
 	// map best
 	char aScore[128] = "";
 	const CNetObj_GameInfo *pGameInfoObj = GameClient()->m_Snap.m_pGameInfoObj;
-	const bool TimeScore = GameClient()->m_GameInfo.m_TimeScore;
+	const bool TimeScore = GameClient()->FocusedGameInfo().m_TimeScore;
 	const bool Race7 = Client()->IsSixup() && pGameInfoObj && pGameInfoObj->m_GameFlags & protocol7::GAMEFLAG_RACE;
-	if(GameClient()->m_ReceivedDDNetPlayerFinishTimes || TimeScore || Race7)
+	if(GameClient()->ReceivedDDNetPlayerFinishTimes() || TimeScore || Race7)
 	{
-		if(GameClient()->m_MapBestTimeSeconds != FinishTime::UNSET)
+		const CSessionMapMetadataState &MapMetadata = GameClient()->SessionContext().MapMetadata();
+		if(MapMetadata.BestTimeSeconds() != FinishTime::UNSET)
 		{
 			Ui()->RenderTime(ScoreLabel,
 				TitleFontSize,
-				GameClient()->m_MapBestTimeSeconds,
-				GameClient()->m_MapBestTimeSeconds == FinishTime::NOT_FINISHED_MILLIS,
-				GameClient()->m_MapBestTimeMillis,
-				GameClient()->m_ReceivedDDNetPlayerFinishTimesMillis,
+				MapMetadata.BestTimeSeconds(),
+				MapMetadata.BestTimeSeconds() == FinishTime::NOT_FINISHED_MILLIS,
+				MapMetadata.BestTimeMillis(),
+				GameClient()->ReceivedDDNetPlayerFinishTimesMillis(),
 				m_TitleScore, m_TitleScoreMillis, TextRender()->DefaultTextColor());
 			return;
 		}
@@ -381,7 +383,7 @@ void CScoreboard::RenderSpectators(CUIRect Spectators)
 			const char *pClanName = ClientData.m_aClan;
 			if(pClanName[0] != '\0')
 			{
-				if(GameClient()->m_aLocalIds[g_Config.m_ClDummy] >= 0 && str_comp(pClanName, GameClient()->m_aClients[GameClient()->m_aLocalIds[g_Config.m_ClDummy]].m_aClan) == 0)
+				if(GameClient()->GameState(GameClient()->ActiveConnection()).LocalClientId() >= 0 && str_comp(pClanName, GameClient()->m_aClients[GameClient()->GameState(GameClient()->ActiveConnection()).LocalClientId()].m_aClan) == 0)
 				{
 					TextRender()->TextColor(color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClSameClanColor)));
 				}
@@ -439,8 +441,8 @@ void CScoreboard::RenderSpectators(CUIRect Spectators)
 			{
 				m_ScoreboardPopupContext.m_pScoreboard = this;
 				m_ScoreboardPopupContext.m_ClientId = pInfo->m_ClientId;
-				m_ScoreboardPopupContext.m_IsLocal = GameClient()->m_aLocalIds[0] == pInfo->m_ClientId ||
-								     (Client()->DummyConnected() && GameClient()->m_aLocalIds[1] == pInfo->m_ClientId);
+				m_ScoreboardPopupContext.m_IsLocal = GameClient()->GameState(IClient::CONN_MAIN).LocalClientId() == pInfo->m_ClientId ||
+								     (Client()->DummyConnected() && GameClient()->GameState(IClient::CONN_DUMMY).LocalClientId() == pInfo->m_ClientId);
 				m_ScoreboardPopupContext.m_IsSpectating = true;
 
 				Ui()->DoPopupMenu(&m_ScoreboardPopupContext, Ui()->MouseX(), Ui()->MouseY(), 110.0f,
@@ -471,9 +473,9 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 
 	const CNetObj_GameInfo *pGameInfoObj = GameClient()->m_Snap.m_pGameInfoObj;
 	const CNetObj_GameData *pGameDataObj = GameClient()->m_Snap.m_pGameDataObj;
-	const bool TimeScore = GameClient()->m_GameInfo.m_TimeScore;
-	const bool MillisecondScore = GameClient()->m_ReceivedDDNetPlayerFinishTimes;
-	const bool TrueMilliseconds = GameClient()->m_ReceivedDDNetPlayerFinishTimesMillis;
+	const bool TimeScore = GameClient()->FocusedGameInfo().m_TimeScore;
+	const bool MillisecondScore = GameClient()->ReceivedDDNetPlayerFinishTimes();
+	const bool TrueMilliseconds = GameClient()->ReceivedDDNetPlayerFinishTimesMillis();
 	const int NumPlayers = CountEnd - CountStart;
 	const bool LowScoreboardWidth = Scoreboard.w < 350.0f;
 
@@ -596,7 +598,7 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 			if(CountRendered++ < CountStart)
 				continue;
 
-			int DDTeam = GameClient()->m_Teams.Team(pInfo->m_ClientId);
+			int DDTeam = GameClient()->FocusedTeams().Team(pInfo->m_ClientId);
 			int NextDDTeam = 0;
 
 			ColorRGBA TextColor = TextRender()->DefaultTextColor();
@@ -609,7 +611,7 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 				if(!pInfoNext || pInfoNext->m_Team != Team)
 					continue;
 
-				NextDDTeam = GameClient()->m_Teams.Team(pInfoNext->m_ClientId);
+				NextDDTeam = GameClient()->FocusedTeams().Team(pInfoNext->m_ClientId);
 				break;
 			}
 
@@ -621,7 +623,7 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 					if(!pInfoPrev || pInfoPrev->m_Team != Team)
 						continue;
 
-					PrevDDTeam = GameClient()->m_Teams.Team(pInfoPrev->m_ClientId);
+					PrevDDTeam = GameClient()->FocusedTeams().Team(pInfoPrev->m_ClientId);
 					break;
 				}
 			}
@@ -695,8 +697,8 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 				{
 					m_ScoreboardPopupContext.m_pScoreboard = this;
 					m_ScoreboardPopupContext.m_ClientId = pInfo->m_ClientId;
-					m_ScoreboardPopupContext.m_IsLocal = GameClient()->m_aLocalIds[0] == pInfo->m_ClientId ||
-									     (Client()->DummyConnected() && GameClient()->m_aLocalIds[1] == pInfo->m_ClientId);
+					m_ScoreboardPopupContext.m_IsLocal = GameClient()->GameState(IClient::CONN_MAIN).LocalClientId() == pInfo->m_ClientId ||
+									     (Client()->DummyConnected() && GameClient()->GameState(IClient::CONN_DUMMY).LocalClientId() == pInfo->m_ClientId);
 					m_ScoreboardPopupContext.m_IsSpectating = false;
 
 					Ui()->DoPopupMenu(&m_ScoreboardPopupContext, Ui()->MouseX(), Ui()->MouseY(), 110.0f,
@@ -817,7 +819,7 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 			// clan
 			{
 				ColorRGBA ClanColor = TextColor;
-				if(GameClient()->m_aLocalIds[g_Config.m_ClDummy] >= 0 && str_comp(ClientData.m_aClan, GameClient()->m_aClients[GameClient()->m_aLocalIds[g_Config.m_ClDummy]].m_aClan) == 0)
+				if(GameClient()->GameState(GameClient()->ActiveConnection()).LocalClientId() >= 0 && str_comp(ClientData.m_aClan, GameClient()->m_aClients[GameClient()->GameState(GameClient()->ActiveConnection()).LocalClientId()].m_aClan) == 0)
 				{
 					ClanColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClSameClanColor));
 				}
@@ -908,10 +910,6 @@ void CScoreboard::OnRender()
 		Ui()->StartCheck();
 		Ui()->Update();
 	}
-
-	// if the score board is active, then we should clear the motd message as well
-	if(GameClient()->m_Motd.IsActive())
-		GameClient()->m_Motd.Clear();
 
 	const CUIRect Screen = *Ui()->Screen();
 	Ui()->MapScreen();
@@ -1235,7 +1233,7 @@ CUi::EPopupMenuFunctionResult CScoreboard::CMapTitlePopupContext::Render(void *p
 	CMapTitlePopupContext *pPopupContext = static_cast<CMapTitlePopupContext *>(pContext);
 	CScoreboard *pScoreboard = pPopupContext->m_pScoreboard;
 
-	pScoreboard->TextRender()->Text(View.x, View.y, pPopupContext->m_FontSize, pScoreboard->GameClient()->m_aMapDescription, View.w);
+	pScoreboard->TextRender()->Text(View.x, View.y, pPopupContext->m_FontSize, pScoreboard->GameClient()->SessionContext().MapMetadata().Description(), View.w);
 
 	return CUi::POPUP_KEEP_OPEN;
 }

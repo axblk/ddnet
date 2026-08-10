@@ -144,9 +144,9 @@ void CMapSounds::OnRender()
 		static float s_Time = 0.0f;
 		if(GameClient()->m_Snap.m_pGameInfoObj)
 		{
-			s_Time = mix((Client()->PrevGameTick(g_Config.m_ClDummy) - GameClient()->m_Snap.m_pGameInfoObj->m_RoundStartTick) / (float)Client()->GameTickSpeed(),
-				(Client()->GameTick(g_Config.m_ClDummy) - GameClient()->m_Snap.m_pGameInfoObj->m_RoundStartTick) / (float)Client()->GameTickSpeed(),
-				Client()->IntraGameTick(g_Config.m_ClDummy));
+			s_Time = mix((Client()->PrevGameTick(GameClient()->ActiveConnection()) - GameClient()->m_Snap.m_pGameInfoObj->m_RoundStartTick) / (float)Client()->GameTickSpeed(),
+				(Client()->GameTick(GameClient()->ActiveConnection()) - GameClient()->m_Snap.m_pGameInfoObj->m_RoundStartTick) / (float)Client()->GameTickSpeed(),
+				Client()->IntraGameTick(GameClient()->ActiveConnection()));
 		}
 		float Offset = s_Time - Source.m_pSource->m_TimeDelay;
 		if(!DemoPlayerPaused && Offset >= 0.0f && g_Config.m_SndEnable && (g_Config.m_GfxHighDetail || !Source.m_HighDetail))
@@ -192,7 +192,7 @@ void CMapSounds::OnRender()
 		}
 	}
 
-	const vec2 Center = GameClient()->m_Camera.m_Center;
+	const vec2 Center = GameClient()->m_Camera.Center();
 	for(const auto &Source : m_vSourceQueue)
 	{
 		if(!Source.m_Voice.IsValid())

@@ -7,25 +7,17 @@
 #include <engine/console.h>
 
 #include <game/client/component.h>
+#include <game/client/game_view.h>
 #include <game/client/ui.h>
 
 class CSpectator : public CComponent
 {
-	enum
-	{
-		MULTI_VIEW = -4,
-		NO_SELECTION = -3,
-	};
-
-	bool m_Active;
-	bool m_WasActive;
-
-	int m_SelectedSpectatorId;
-	vec2 m_SelectorMouse;
+	static constexpr int MULTI_VIEW = CGameView::CSpectatorSelectorState::MULTI_VIEW;
+	static constexpr int NO_SELECTION = CGameView::CSpectatorSelectorState::NO_SELECTION;
 
 	CUi::CTouchState m_TouchState;
-
-	float m_MultiViewActivateDelay;
+	CGameView::CSpectatorSelectorState &Selector();
+	const CGameView::CSpectatorSelectorState &Selector() const;
 
 	bool CanChangeSpectatorId();
 	void SpectateNext(bool Reverse);
@@ -38,7 +30,6 @@ class CSpectator : public CComponent
 	static void ConMultiView(IConsole::IResult *pResult, void *pUserData);
 
 public:
-	CSpectator();
 	int Sizeof() const override { return sizeof(*this); }
 
 	void OnConsoleInit() override;
@@ -51,7 +42,7 @@ public:
 	void Spectate(int SpectatorId);
 	void SpectateClosest();
 
-	bool IsActive() const { return m_Active; }
+	bool IsActive() const;
 };
 
 #endif

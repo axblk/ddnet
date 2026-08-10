@@ -148,7 +148,7 @@ void CSounds::OnRender()
 			return;
 	}
 
-	Sound()->SetListenerPosition(GameClient()->m_Camera.m_Center);
+	Sound()->SetListenerPosition(GameClient()->m_Camera.Center());
 	UpdateChannels();
 
 	// play sound from queue

@@ -2,12 +2,12 @@
 
 #include <algorithm>
 
-CGameViewId CGameViewManager::Create(CGameStateId StateId)
+CGameViewId CGameViewManager::Create(CSessionId SessionId, CGameStateId StateId)
 {
-	if(!StateId.IsValid())
+	if(!SessionId.IsValid() || !StateId.IsValid())
 		return {};
 	const CGameViewId Id(m_NextId++);
-	m_vpViews.push_back(std::make_unique<CGameView>(Id, StateId));
+	m_vpViews.push_back(std::make_unique<CGameView>(Id, SessionId, StateId));
 	return Id;
 }
 

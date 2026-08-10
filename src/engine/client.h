@@ -10,6 +10,7 @@
 #include <base/hash.h>
 
 #include <engine/client/enums.h>
+#include <engine/client/session.h>
 #include <engine/friends.h>
 #include <engine/shared/translation_context.h>
 
@@ -129,6 +130,9 @@ public:
 		dbg_assert(Conn == CONN_MAIN || Conn == CONN_DUMMY, "invalid active game connection");
 		m_ActiveConnection = Conn;
 	}
+	virtual CSessionId FocusedSessionId() const = 0;
+	virtual CSessionId NetworkSessionId() const = 0;
+	virtual CSessionId DemoSessionId() const = 0;
 
 	enum
 	{
@@ -434,7 +438,7 @@ public:
 
 	virtual int ClientVersion7() const = 0;
 
-	virtual void ApplySkin7InfoFromSnapObj(const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId) = 0;
+	virtual void ApplySkin7InfoFromSnapObj(const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId, int Conn) = 0;
 	virtual int OnDemoRecSnap7(CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn) = 0;
 	virtual int TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn, bool Dummy) = 0;
 	virtual void ProcessDemoSnapshot(CSnapshot *pSnap) = 0;

@@ -153,7 +153,7 @@ void CMenus::RenderGame(CUIRect MainView)
 			static CButtonContainer s_SpectateButton;
 			if(!Client()->DummyConnecting() && DoButton_Menu(&s_SpectateButton, Localize("Spectate"), 0, &Button))
 			{
-				if(g_Config.m_ClDummy == 0 || Client()->DummyConnected())
+				if(GameClient()->ActiveConnection() == 0 || Client()->DummyConnected())
 				{
 					GameClient()->SendSwitchTeam(TEAM_SPECTATORS);
 					SetActive(false);
@@ -216,7 +216,7 @@ void CMenus::RenderGame(CUIRect MainView)
 		}
 	}
 
-	if(GameClient()->m_ReceivedDDNetPlayer && GameClient()->m_Snap.m_pLocalInfo && (ShowDDRaceButtons || !GameClient()->IsTeamPlay()))
+	if(GameClient()->ReceivedDDNetPlayer() && GameClient()->m_Snap.m_pLocalInfo && (ShowDDRaceButtons || !GameClient()->IsTeamPlay()))
 	{
 		if(GameClient()->m_Snap.m_pLocalInfo->m_Team != TEAM_SPECTATORS || Paused || Spec)
 		{
@@ -239,7 +239,7 @@ void CMenus::RenderGame(CUIRect MainView)
 
 		static CButtonContainer s_AutoCameraButton;
 
-		bool Active = GameClient()->m_Camera.m_AutoSpecCamera && GameClient()->m_Camera.SpectatingPlayer() && GameClient()->m_Camera.CanUseAutoSpecCamera();
+		bool Active = GameClient()->m_Camera.IsAutoSpecCamera() && GameClient()->m_Camera.SpectatingPlayer() && GameClient()->m_Camera.CanUseAutoSpecCamera();
 		bool Enabled = g_Config.m_ClSpecAutoSync;
 		if(Ui()->DoButton_FontIcon(&s_AutoCameraButton, FontIcon::CAMERA, !Active, &Button, BUTTONFLAG_LEFT, IGraphics::CORNER_ALL, Enabled))
 		{
@@ -763,7 +763,7 @@ void CMenus::RenderServerInfo(CUIRect MainView)
 		}
 	}
 
-	if(GameClient()->m_GameInfo.m_DDRaceTeam)
+	if(GameClient()->FocusedGameInfo().m_DDRaceTeam)
 	{
 		const char *pTeamMode = nullptr;
 		const CSessionGameConfig *pGameConfig = GameClient()->GameConfig();
@@ -828,20 +828,21 @@ void CMenus::RenderServerInfoMotd(CUIRect Motd)
 	ScrollParams.m_ScrollUnit = 5 * MotdFontSize;
 	s_ScrollRegion.Begin(&Motd, &ScrollParams);
 
-	static float s_MotdHeight = 0.0f;
-	static int64_t s_MotdLastUpdateTime = -1;
-	if(!m_MotdTextContainerIndex.Valid() || s_MotdLastUpdateTime == -1 || s_MotdLastUpdateTime != GameClient()->m_Motd.ServerMotdUpdateTime())
+	const CSessionId SessionId = GameClient()->SessionContext().Id();
+	const uint64_t Revision = GameClient()->m_Motd.ServerMotdRevision();
+	if(!m_MotdTextContainerIndex.Valid() || m_MotdTextSessionId != SessionId || m_MotdTextRevision != Revision)
 	{
 		CTextCursor Cursor;
 		Cursor.m_FontSize = MotdFontSize;
 		Cursor.m_LineWidth = Motd.w;
 		TextRender()->RecreateTextContainer(m_MotdTextContainerIndex, &Cursor, GameClient()->m_Motd.ServerMotd());
-		s_MotdHeight = Cursor.Height();
-		s_MotdLastUpdateTime = GameClient()->m_Motd.ServerMotdUpdateTime();
+		m_MotdTextHeight = Cursor.Height();
+		m_MotdTextSessionId = SessionId;
+		m_MotdTextRevision = Revision;
 	}
 
 	CUIRect MotdTextArea;
-	Motd.HSplitTop(s_MotdHeight, &MotdTextArea, &Motd);
+	Motd.HSplitTop(m_MotdTextHeight, &MotdTextArea, &Motd);
 	s_ScrollRegion.AddRect(MotdTextArea);
 
 	if(m_MotdTextContainerIndex.Valid())
@@ -859,11 +860,12 @@ bool CMenus::RenderServerControlServer(CUIRect MainView, bool UpdateScroll)
 	int TotalShown = 0;
 
 	int i = 0;
-	for(const CVoteOptionClient *pOption = GameClient()->m_Voting.FirstOption(); pOption; pOption = pOption->m_pNext, i++)
+	for(const std::string &Option : GameClient()->m_Voting.Options())
 	{
-		if(!m_FilterInput.IsEmpty() && !str_utf8_find_nocase(pOption->m_aDescription, m_FilterInput.GetString()))
+		const int OptionIndex = i++;
+		if(!m_FilterInput.IsEmpty() && !str_utf8_find_nocase(Option.c_str(), m_FilterInput.GetString()))
 			continue;
-		if(i == m_CallvoteSelectedOption)
+		if(OptionIndex == m_CallvoteSelectedOption)
 			Selected = TotalShown;
 		TotalShown++;
 	}
@@ -872,20 +874,21 @@ bool CMenus::RenderServerControlServer(CUIRect MainView, bool UpdateScroll)
 	s_ListBox.DoStart(19.0f, TotalShown, 1, 3, Selected, &List);
 
 	i = 0;
-	for(const CVoteOptionClient *pOption = GameClient()->m_Voting.FirstOption(); pOption; pOption = pOption->m_pNext, i++)
+	for(const std::string &Option : GameClient()->m_Voting.Options())
 	{
-		if(!m_FilterInput.IsEmpty() && !str_utf8_find_nocase(pOption->m_aDescription, m_FilterInput.GetString()))
+		const int OptionIndex = i++;
+		if(!m_FilterInput.IsEmpty() && !str_utf8_find_nocase(Option.c_str(), m_FilterInput.GetString()))
 			continue;
-		aIndices[NumVoteOptions] = i;
+		aIndices[NumVoteOptions] = OptionIndex;
 		NumVoteOptions++;
 
-		const CListboxItem Item = s_ListBox.DoNextItem(pOption);
+		const CListboxItem Item = s_ListBox.DoNextItem(&Option);
 		if(!Item.m_Visible)
 			continue;
 
 		CUIRect Label;
 		Item.m_Rect.VMargin(2.0f, &Label);
-		Ui()->DoLabel(&Label, pOption->m_aDescription, 13.0f, TEXTALIGN_ML);
+		Ui()->DoLabel(&Label, Option.c_str(), 13.0f, TEXTALIGN_ML);
 	}
 
 	Selected = s_ListBox.DoEnd();

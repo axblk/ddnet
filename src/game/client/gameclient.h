@@ -4,10 +4,12 @@
 #define GAME_CLIENT_GAMECLIENT_H
 
 #include "game_state.h"
+#include "game_view.h"
 #include "input_policy.h"
 #include "local_player_profile.h"
 #include "map_context.h"
 #include "render.h"
+#include "session_context.h"
 
 #include <base/color.h>
 #include <base/types.h>
@@ -45,7 +47,6 @@
 #include "components/debughud.h"
 #include "components/effects.h"
 #include "components/emoticon.h"
-#include "components/flow.h"
 #include "components/freezebars.h"
 #include "components/ghost.h"
 #include "components/hud.h"
@@ -76,61 +77,10 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <vector>
 
 class IMap;
-
-class CGameInfo
-{
-public:
-	bool m_FlagStartsRace;
-	bool m_TimeScore;
-	bool m_UnlimitedAmmo;
-	bool m_DDRaceRecordMessage;
-	bool m_RaceRecordMessage;
-	bool m_RaceSounds;
-
-	bool m_AllowEyeWheel;
-	bool m_AllowHookColl;
-	bool m_AllowZoom;
-
-	bool m_BugDDRaceGhost;
-	bool m_BugDDRaceInput;
-	bool m_BugFNGLaserRange;
-	bool m_BugVanillaBounce;
-
-	bool m_PredictFNG;
-	bool m_PredictDDRace;
-	bool m_PredictDDRaceTiles;
-	bool m_PredictVanilla;
-
-	bool m_EntitiesDDNet;
-	bool m_EntitiesDDRace;
-	bool m_EntitiesRace;
-	bool m_EntitiesFNG;
-	bool m_EntitiesVanilla;
-	bool m_EntitiesBW;
-	bool m_EntitiesFDDrace;
-
-	bool m_Race;
-	bool m_Pvp;
-
-	bool m_DontMaskEntities;
-	bool m_AllowXSkins;
-
-	bool m_HudHealthArmor;
-	bool m_HudAmmo;
-	bool m_HudDDRace;
-
-	bool m_NoWeakHookAndBounce;
-	bool m_NoSkinChangeForFrozen;
-
-	bool m_DDRaceTeam;
-
-	bool m_PredictEvents;
-
-	bool m_Supports128Teams;
-};
 
 class CSnapEntities
 {
@@ -166,7 +116,6 @@ public:
 	CSkins m_Skins;
 	CSkins7 m_Skins7;
 	CCountryFlags m_CountryFlags;
-	CFlow m_Flow;
 	CHud m_Hud;
 	CImportantAlert m_ImportantAlert;
 	CDebugHud m_DebugHud;
@@ -229,10 +178,9 @@ private:
 #endif
 	class IHttp *m_pHttp;
 
-	CMapContext m_MapContext;
-	CGameStateManager m_GameStates;
-	CStreamInputRouter m_InputRouter;
-	CLocalPlayerProfileBindings m_LocalPlayerProfiles;
+	CGameSessionContextManager m_SessionContexts;
+	CGameViewManager m_GameViews;
+	CGameViewId m_LegacyGameViewId;
 	CUi m_UI;
 	CRaceHelper m_RaceHelper;
 
@@ -244,17 +192,6 @@ private:
 
 	int m_EditorMovementDelay = 5;
 	void UpdateEditorIngameMoved();
-
-	int m_PredictedTick;
-	int m_aLastNewPredictedTick[NUM_DUMMIES];
-
-	int m_LastRoundStartTick;
-	int m_LastRaceTick;
-
-	int m_LastFlagCarrierRed;
-	int m_LastFlagCarrierBlue;
-
-	int m_aCheckInfo[NUM_DUMMIES];
 
 	char m_aDDNetVersionStr[64];
 
@@ -277,19 +214,17 @@ private:
 
 	static std::function<bool(int, int, int, int)> GetScoreComparator(bool TimeScore, bool ReceivedMillisecondFinishTimes, bool Race7);
 
-	// only used in OnPredict
-	vec2 m_aLastPos[MAX_CLIENTS];
-	bool m_aLastActive[MAX_CLIENTS];
-
-	// only used in OnNewSnapshot
-	bool m_GameOver = false;
-	bool m_GamePaused = false;
-
 public:
 	IKernel *Kernel() { return IInterface::Kernel(); }
 	IEngine *Engine() const { return m_pEngine; }
 	class IGraphics *Graphics() const { return m_pGraphics; }
 	class IClient *Client() const { return m_pClient; }
+	int ActiveConnection() const { return Client()->ActiveConnection(); }
+	int OtherConnection() const { return ActiveConnection() == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN; }
+	CGameSessionContext &SessionContext();
+	const CGameSessionContext &SessionContext() const;
+	CMapContext &MapContext() { return SessionContext().MapContext(); }
+	const CMapContext &MapContext() const { return SessionContext().MapContext(); }
 	class CUi *Ui() { return &m_UI; }
 	class ISound *Sound() const { return m_pSound; }
 	class IInput *Input() const { return m_pInput; }
@@ -298,6 +233,7 @@ public:
 	class CConfig *Config() const { return m_pConfig; }
 	CGameState &GameState(int Conn);
 	const CGameState &GameState(int Conn) const;
+	CGameView &LegacyGameView();
 	class IConsole *Console() { return m_pConsole; }
 	class ITextRender *TextRender() const { return m_pTextRender; }
 	class IDemoPlayer *DemoPlayer() const { return m_pDemoPlayer; }
@@ -306,10 +242,10 @@ public:
 	class IServerBrowser *ServerBrowser() const { return m_pServerBrowser; }
 	class CRenderTools *RenderTools() { return &m_RenderTools; }
 	class CRenderMap *RenderMap() { return &m_RenderMap; }
-	class CLayers *Layers() { return m_MapContext.Layers(); }
-	CCollision *Collision() { return m_MapContext.Collision(); }
-	const CCollision *Collision() const { return m_MapContext.Collision(); }
-	const CSessionGameConfig *GameConfig() const { return &m_MapContext.GameConfig(); }
+	class CLayers *Layers() { return MapContext().Layers(); }
+	CCollision *Collision() { return MapContext().Collision(); }
+	const CCollision *Collision() const { return MapContext().Collision(); }
+	const CSessionGameConfig *GameConfig() const { return &MapContext().GameConfig(); }
 	const CRaceHelper *RaceHelper() const { return &m_RaceHelper; }
 	class IEditor *Editor() { return m_pEditor; }
 	class IFriends *Friends() { return m_pFriends; }
@@ -334,16 +270,6 @@ public:
 	bool m_SuppressEvents;
 	bool m_NewTick;
 	bool m_NewPredictedTick;
-	int m_aFlagDropTick[2];
-
-	enum
-	{
-		SERVERMODE_PURE = 0,
-		SERVERMODE_MOD,
-		SERVERMODE_PUREMOD,
-	};
-	int m_ServerMode;
-	CGameInfo m_GameInfo;
 
 	int m_DemoSpecId;
 
@@ -423,42 +349,8 @@ public:
 	};
 
 	CSnapState m_Snap;
-	int m_aLocalTuneZone[NUM_DUMMIES]; // current tunezone (0-255)
-	bool m_aReceivedTuning[NUM_DUMMIES]; // was tuning message received after zone change
-	int m_aExpectingTuningForZone[NUM_DUMMIES]; // tunezone changed, waiting for tuning for that zone
-	int m_aExpectingTuningSince[NUM_DUMMIES]; // how many snaps received since tunezone changed
-	CTuningParams m_aTuning[NUM_DUMMIES]; // current local player tuning, only what the player/dummy has
 
 	std::bitset<RECORDER_MAX> m_ActiveRecordings;
-
-	// spectate cursor data
-	class CCursorInfo
-	{
-		friend class CGameClient;
-		static constexpr int CURSOR_SAMPLES = 8; // how many samples to keep
-		static constexpr int SAMPLE_FRAME_WINDOW = 3; // how many samples should be used for polynomial interpolation
-		static constexpr int SAMPLE_FRAME_OFFSET = 2; // how many samples in the past should be included
-		static constexpr double INTERP_DELAY = 4.25; // how many ticks in the past to show, enables extrapolation with smaller value (<= SAMPLE_FRAME_WINDOW - SAMPLE_FRAME_OFFSET + 3)
-		static constexpr double REST_THRESHOLD = 3.0; // how many ticks of the same samples are considered to be resting
-
-		int m_CursorOwnerId;
-		double m_aTargetSamplesTime[CURSOR_SAMPLES];
-		vec2 m_aTargetSamplesData[CURSOR_SAMPLES];
-		int m_NumSamples;
-
-		bool m_Available;
-		int m_Weapon;
-		vec2 m_Target;
-		vec2 m_WorldTarget;
-		vec2 m_Position;
-
-	public:
-		bool IsAvailable() const { return m_Available; }
-		int Weapon() const { return m_Weapon; }
-		vec2 Target() const { return m_Target; }
-		vec2 WorldTarget() const { return m_WorldTarget; }
-		vec2 Position() const { return m_Position; }
-	} m_CursorInfo;
 
 	// client data
 	class CClientData
@@ -483,25 +375,6 @@ public:
 		int m_Emoticon;
 		float m_EmoticonStartFraction;
 		int m_EmoticonStartTick;
-
-		bool m_Solo;
-		bool m_Jetpack;
-		bool m_CollisionDisabled;
-		bool m_EndlessHook;
-		bool m_EndlessJump;
-		bool m_HammerHitDisabled;
-		bool m_GrenadeHitDisabled;
-		bool m_LaserHitDisabled;
-		bool m_ShotgunHitDisabled;
-		bool m_HookHitDisabled;
-		bool m_Super;
-		bool m_Invincible;
-		bool m_HasTelegunGun;
-		bool m_HasTelegunGrenade;
-		bool m_HasTelegunLaser;
-		int m_FreezeEnd;
-		bool m_DeepFrozen;
-		bool m_LiveFrozen;
 
 		CCharacterCore m_Predicted;
 		CCharacterCore m_PrevPredicted;
@@ -545,27 +418,14 @@ public:
 		bool m_SpecCharPresent;
 		vec2 m_SpecChar;
 
-		void UpdateSkinInfo();
-		void UpdateSkin7HatSprite(int Dummy);
-		void UpdateSkin7BotDecoration(int Dummy);
+		void UpdateSkinInfo(const CGameState &State);
+		void UpdateSkin7HatSprite(const CGameState::CProtocol7ClientState &Protocol7Client);
+		void UpdateSkin7BotDecoration(const CGameState::CProtocol7ClientState &Protocol7Client);
 		void UpdateRenderInfo();
 		void Reset();
-		CSkinDescriptor ToSkinDescriptor() const;
+		CSkinDescriptor ToSkinDescriptor(const CGameState &State) const;
 
 		int ClientId() const { return m_ClientId; }
-
-		class CSixup
-		{
-		public:
-			void Reset();
-
-			char m_aaSkinPartNames[protocol7::NUM_SKINPARTS][protocol7::MAX_SKIN_LENGTH];
-			int m_aUseCustomColors[protocol7::NUM_SKINPARTS];
-			int m_aSkinPartColors[protocol7::NUM_SKINPARTS];
-		};
-
-		// 0.7 Skin
-		CSixup m_aSixup[NUM_DUMMIES];
 	};
 
 	CClientData m_aClients[MAX_CLIENTS];
@@ -629,9 +489,9 @@ public:
 	void OnStateChange(int NewState, int OldState) override;
 	template<typename T>
 	void ApplySkin7InfoFromGameMsg(const T *pMsg, int ClientId, int Conn);
-	void ApplySkin7InfoFromSnapObj(const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId) override;
+	void ApplySkin7InfoFromSnapObj(const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId, int Conn) override;
 	int OnDemoRecSnap7(CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn) override;
-	void *TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn);
+	void *TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn, bool Dummy);
 	int TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn, bool Dummy) override;
 	void OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dummy) override;
 	void InvalidateSnapshot() override;
@@ -691,24 +551,19 @@ public:
 
 	void ApplyPreInputs(int Tick, bool Direct, CGameWorld &GameWorld);
 
-	int m_aNextChangeInfo[NUM_DUMMIES];
-
 	// DDRace
 
-	int m_aLocalIds[NUM_DUMMIES];
-	CNetObj_PlayerInput m_DummyInput;
-	CNetObj_PlayerInput m_HammerInput;
-	unsigned int m_DummyFire;
-	bool m_ReceivedDDNetPlayer;
-	bool m_ReceivedDDNetPlayerFinishTimes;
-	bool m_ReceivedDDNetPlayerFinishTimesMillis;
-
-	CTeamsCore m_Teams;
+	const CTeamsCore &FocusedTeams() const { return GameState(ActiveConnection()).Teams(); }
+	const CGameInfo &FocusedGameInfo() const { return GameState(ActiveConnection()).CoreGameInfo(); }
 
 	int IntersectCharacter(vec2 HookPos, vec2 NewPos, vec2 &NewPos2, int OwnId, vec2 *pPlayerPosition = nullptr);
 
 	int LastRaceTick() const;
 	int CurrentRaceTime() const;
+	int FlagDropTick(int Team) const;
+	bool ReceivedDDNetPlayer() const;
+	bool ReceivedDDNetPlayerFinishTimes() const;
+	bool ReceivedDDNetPlayerFinishTimesMillis() const;
 
 	bool IsTeamPlay() const;
 	bool IsWorldPaused() const;
@@ -722,7 +577,7 @@ public:
 	bool Predict() const;
 	bool PredictDummy() const;
 
-	const CTuningParams *GetTuning(int i) const { return &m_MapContext.TuningList()[i]; }
+	const CTuningParams *GetTuning(int i) const { return &MapContext().TuningList()[i]; }
 	ColorRGBA GetDDTeamColor(int DDTeam, float Lightness = 0.5f) const;
 	void FormatClientId(int ClientId, char (&aClientId)[16], EClientIdFormat Format) const;
 
@@ -740,8 +595,8 @@ public:
 	bool IsLocalCharSuper() const;
 	bool CanDisplayWarning() const override;
 
-	IMap *Map() override { return m_MapContext.Map(); }
-	const IMap *Map() const override { return m_MapContext.Map(); }
+	IMap *Map() override { return MapContext().Map(); }
+	const IMap *Map() const override { return MapContext().Map(); }
 	CNetObjHandler *GetNetObjHandler() override;
 	protocol7::CNetObjHandler *GetNetObjHandler7() override;
 
@@ -916,26 +771,15 @@ public:
 
 	const std::vector<CSnapEntities> &SnapEntities() { return m_vSnapEntities; }
 
-	int m_MultiViewTeam;
-	float m_MultiViewPersonalZoom;
-	bool m_MultiViewShowHud;
-	bool m_MultiViewActivated;
-	bool m_aMultiViewId[MAX_CLIENTS];
+	CGameView::CMultiViewState &MultiView() { return LegacyGameView().MultiView(); }
 
 	void ResetMultiView();
 	int FindFirstMultiViewId();
 	void CleanMultiViewId(int ClientId);
-	int m_MapBestTimeSeconds;
-	int m_MapBestTimeMillis;
-	char m_aMapDescription[512];
 
 private:
 	std::vector<CSnapEntities> m_vSnapEntities;
 	void SnapCollectEntities();
-
-	bool m_aDDRaceMsgSent[NUM_DUMMIES];
-	int m_aShowOthers[NUM_DUMMIES];
-	int m_aEnableSpectatorCount[NUM_DUMMIES]; // current setting as sent to the server, -1 if not yet sent
 
 	class CImageAsset
 	{
@@ -953,6 +797,7 @@ private:
 	std::vector<std::shared_ptr<CManagedTeeRenderInfo>> m_vpManagedTeeRenderInfos;
 	void UpdateManagedTeeRenderInfos();
 
+	void UpdateInputRoutes();
 	void UpdateLocalTuning();
 	void UpdatePrediction();
 	void UpdateSpectatorCursor();
@@ -961,16 +806,13 @@ private:
 
 	void OnInput(const IInput::CEvent &Event);
 
-	int m_aLastUpdateTick[MAX_CLIENTS] = {0};
-	void DetectStrongHook();
+	void DetectStrongHook(CGameState::CRuntimeState &Runtime);
 
 	vec2 GetSmoothPos(int ClientId);
 
-	int m_IsDummySwapping;
-	CCharOrder m_CharOrder;
-	int m_aSwitchStateTeam[NUM_DUMMIES];
+	std::optional<CStreamId> m_PreviousFocusedStream;
 
-	CTuningParams *TuningList() { return m_MapContext.TuningList(); }
+	CTuningParams *TuningList() { return MapContext().TuningList(); }
 
 	float m_LastShowDistanceZoom;
 	float m_LastZoom;
@@ -986,21 +828,6 @@ private:
 	float CalculateMultiViewMultiplier(vec2 TargetPos);
 	float CalculateMultiViewZoom(vec2 MinPos, vec2 MaxPos, float Vel);
 	float MapValue(float MaxValue, float MinValue, float MaxRange, float MinRange, float Value);
-
-	struct SMultiView
-	{
-		bool m_Solo;
-		bool m_IsInit;
-		bool m_Teleported;
-		bool m_aVanish[MAX_CLIENTS];
-		vec2 m_OldPos;
-		int m_OldPersonalZoom;
-		float m_SecondChance;
-		float m_OldCameraDistance;
-		float m_aLastFreeze[MAX_CLIENTS];
-	};
-
-	SMultiView m_MultiView;
 
 	void OnSaveCodeNetMessage(const CNetMsg_Sv_SaveCode *pMsg);
 	void StoreSave(const char *pTeamMembers, const char *pGeneratedCode) const;

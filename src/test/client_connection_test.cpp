@@ -72,6 +72,23 @@ TEST(ClientConnection, DynamicStreamsKeepStableIdsAndStorage)
 	EXPECT_EQ(Source.NumStreams(), 3U);
 }
 
+TEST(ClientConnection, StreamValueStorageGrowsWithoutChangingExistingValues)
+{
+	CStreamStorage<int> Values(2);
+	Values[0] = 100;
+	Values[1] = 200;
+	Values[4] = 500;
+
+	EXPECT_EQ(Values.size(), 5U);
+	EXPECT_EQ(Values[0], 100);
+	EXPECT_EQ(Values[1], 200);
+	EXPECT_EQ(Values[2], 0);
+	EXPECT_EQ(Values[4], 500);
+	Values.Fill(-1);
+	EXPECT_EQ(Values[0], -1);
+	EXPECT_EQ(Values[4], -1);
+}
+
 TEST(ClientConnection, InputRoutesUseExplicitSourceAndTargetStreams)
 {
 	CStreamInputRouter Router;
@@ -85,13 +102,54 @@ TEST(ClientConnection, InputRoutesUseExplicitSourceAndTargetStreams)
 	EXPECT_EQ(Router.Find(Second)->m_Source, Primary);
 	EXPECT_EQ(Router.Find(Second)->m_Policy, EStreamInputPolicy::COPY_MOVES);
 	EXPECT_EQ(Router.Find(Third)->m_Policy, EStreamInputPolicy::HAMMER);
+	Router.Find(Second)->m_HammerInput.m_Fire = 3;
+	Router.Find(Third)->m_HammerInput.m_Fire = 7;
+	Router.Find(Third)->m_HammerCounter = 24;
 
-	EXPECT_TRUE(Router.Set(Second, Third, EStreamInputPolicy::DIRECT));
+	EXPECT_TRUE(Router.Set(Second, Third, EStreamInputPolicy::COPY_MOVES));
 	EXPECT_EQ(Router.NumRoutes(), 3U);
 	EXPECT_EQ(Router.Find(Second)->m_Source, Third);
+	EXPECT_EQ(Router.Find(Second)->m_HammerInput.m_Fire, 3);
+	EXPECT_EQ(Router.Find(Third)->m_HammerInput.m_Fire, 7);
+	EXPECT_EQ(Router.Find(Third)->m_HammerCounter, 24U);
+	EXPECT_FALSE(Router.Set(Second, Third, EStreamInputPolicy::DIRECT));
 	EXPECT_TRUE(Router.Remove(Primary));
 	EXPECT_EQ(Router.Find(Primary), nullptr);
+	EXPECT_NE(Router.Find(Second), nullptr);
+	EXPECT_EQ(Router.Find(Third), nullptr);
+	EXPECT_TRUE(Router.Remove(Third));
+	EXPECT_EQ(Router.Find(Second), nullptr);
 	EXPECT_FALSE(Router.Set({}, Primary, EStreamInputPolicy::DIRECT));
+	EXPECT_TRUE(Router.Set(Primary, Primary, EStreamInputPolicy::DIRECT));
+	Router.Reset();
+	EXPECT_EQ(Router.NumRoutes(), 0U);
+}
+
+TEST(ClientConnection, HammerInputCadenceAndReleaseAreRouteLocal)
+{
+	CStreamInputRouter Router;
+	const CStreamId Primary(1);
+	const CStreamId Second(2);
+	const CStreamId Third(3);
+	ASSERT_TRUE(Router.Set(Second, Primary, EStreamInputPolicy::HAMMER));
+	ASSERT_TRUE(Router.Set(Third, Primary, EStreamInputPolicy::HAMMER));
+	CStreamInputRoute *pSecond = Router.Find(Second);
+	CStreamInputRoute *pThird = Router.Find(Third);
+	ASSERT_NE(pSecond, nullptr);
+	ASSERT_NE(pThird, nullptr);
+
+	for(int Tick = 0; Tick < 50; Tick++)
+		EXPECT_EQ(pSecond->AdvanceHammer(), Tick % 25 == 0);
+	EXPECT_EQ(pThird->m_HammerCounter, 0U);
+
+	pSecond->m_HammerInput.m_Fire = 5;
+	CNetObj_PlayerInput TargetInput = {};
+	TargetInput.m_Fire = 9;
+	pSecond->FinishHammering(TargetInput);
+	EXPECT_EQ(TargetInput.m_Fire, 6);
+	EXPECT_EQ(pSecond->m_HammerCounter, 0U);
+	pSecond->FinishHammering(TargetInput);
+	EXPECT_EQ(TargetInput.m_Fire, 6);
 }
 
 TEST(ClientConnection, LocalProfilesBindToThreeStreams)

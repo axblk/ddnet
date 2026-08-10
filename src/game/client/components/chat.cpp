@@ -663,7 +663,7 @@ void CChat::AddLine(int ClientId, int Team, const char *pLine)
 		(ClientId >= 0 && (GameClient()->m_aClients[ClientId].m_aName[0] == '\0' || // unknown client
 					  GameClient()->m_aClients[ClientId].m_ChatIgnore ||
 					  (GameClient()->m_Snap.m_LocalClientId != ClientId && g_Config.m_ClShowChatFriends && !GameClient()->m_aClients[ClientId].m_Friend) ||
-					  (GameClient()->m_Snap.m_LocalClientId != ClientId && g_Config.m_ClShowChatTeamMembersOnly && GameClient()->IsOtherTeam(ClientId) && GameClient()->m_Teams.Team(GameClient()->m_Snap.m_LocalClientId) != TEAM_FLOCK) ||
+					  (GameClient()->m_Snap.m_LocalClientId != ClientId && g_Config.m_ClShowChatTeamMembersOnly && GameClient()->IsOtherTeam(ClientId) && GameClient()->FocusedTeams().Team(GameClient()->m_Snap.m_LocalClientId) != TEAM_FLOCK) ||
 					  (GameClient()->m_Snap.m_LocalClientId != ClientId && GameClient()->m_aClients[ClientId].m_Foe))))
 		return;
 
@@ -779,21 +779,19 @@ void CChat::AddLine(int ClientId, int Team, const char *pLine)
 	CurrentLine.m_CustomColor = CustomColor;
 
 	// check for highlighted name
-	if(Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(ClientId >= 0)
 	{
-		if(ClientId >= 0 && ClientId != GameClient()->m_aLocalIds[0] && ClientId != GameClient()->m_aLocalIds[1])
+		bool IsLocal = false;
+		for(const auto &pState : GameClient()->SessionContext().GameStates().States())
+			IsLocal |= ClientId == pState->LocalClientId();
+		if(!IsLocal)
 		{
-			for(int LocalId : GameClient()->m_aLocalIds)
+			for(const auto &pState : GameClient()->SessionContext().GameStates().States())
 			{
+				const int LocalId = pState->LocalClientId();
 				Highlighted |= LocalId >= 0 && LineShouldHighlight(pLine, GameClient()->m_aClients[LocalId].m_aName);
 			}
 		}
-	}
-	else
-	{
-		// on demo playback use local id from snap directly,
-		// since m_aLocalIds isn't valid there
-		Highlighted |= GameClient()->m_Snap.m_LocalClientId >= 0 && LineShouldHighlight(pLine, GameClient()->m_aClients[GameClient()->m_Snap.m_LocalClientId].m_aName);
 	}
 	CurrentLine.m_Highlighted = Highlighted;
 
@@ -1081,8 +1079,8 @@ void CChat::OnPrepareLines(float y)
 			NameColor = ColorRGBA(0.7f, 0.7f, 1.0f, 1.0f);
 		else if(Line.m_NameColor == TEAM_SPECTATORS)
 			NameColor = ColorRGBA(0.75f, 0.5f, 0.75f, 1.0f);
-		else if(Line.m_ClientId >= 0 && g_Config.m_ClChatTeamColors && GameClient()->m_Teams.Team(Line.m_ClientId))
-			NameColor = GameClient()->GetDDTeamColor(GameClient()->m_Teams.Team(Line.m_ClientId), 0.75f);
+		else if(Line.m_ClientId >= 0 && g_Config.m_ClChatTeamColors && GameClient()->FocusedTeams().Team(Line.m_ClientId))
+			NameColor = GameClient()->GetDDTeamColor(GameClient()->FocusedTeams().Team(Line.m_ClientId), 0.75f);
 		else
 			NameColor = ColorRGBA(0.8f, 0.8f, 0.8f, 1.0f);
 

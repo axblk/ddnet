@@ -32,7 +32,8 @@ void CDebugHud::RenderNetCorrections()
 	const float Velspeed = length(vec2(GameClient()->m_Snap.m_pLocalCharacter->m_VelX / 256.0f, GameClient()->m_Snap.m_pLocalCharacter->m_VelY / 256.0f)) * Client()->GameTickSpeed();
 	const float VelspeedX = GameClient()->m_Snap.m_pLocalCharacter->m_VelX / 256.0f * Client()->GameTickSpeed();
 	const float VelspeedY = GameClient()->m_Snap.m_pLocalCharacter->m_VelY / 256.0f * Client()->GameTickSpeed();
-	const float Ramp = VelocityRamp(Velspeed, GameClient()->m_aTuning[g_Config.m_ClDummy].m_VelrampStart, GameClient()->m_aTuning[g_Config.m_ClDummy].m_VelrampRange, GameClient()->m_aTuning[g_Config.m_ClDummy].m_VelrampCurvature);
+	const CTuningParams &Tuning = GameClient()->GameState(GameClient()->ActiveConnection()).Runtime().m_CurrentTuning;
+	const float Ramp = VelocityRamp(Velspeed, Tuning.m_VelrampStart, Tuning.m_VelrampRange, Tuning.m_VelrampCurvature);
 	const CCharacter *pCharacter = GameClient()->m_GameWorld.GetCharacterById(GameClient()->m_Snap.m_LocalClientId);
 
 	const float FontSize = 5.0f;
@@ -191,7 +192,8 @@ void CDebugHud::RenderTuning()
 		{
 			// This is a calculation of the speed values per second on the X axis, from 270 to 34560 in steps of 270
 			const float Speed = (i + 1) * StepSizeRampGraph;
-			const float Ramp = VelocityRamp(Speed, GameClient()->m_aTuning[g_Config.m_ClDummy].m_VelrampStart, GameClient()->m_aTuning[g_Config.m_ClDummy].m_VelrampRange, GameClient()->m_aTuning[g_Config.m_ClDummy].m_VelrampCurvature);
+			const CTuningParams &Tuning = GameClient()->GameState(GameClient()->ActiveConnection()).Runtime().m_CurrentTuning;
+			const float Ramp = VelocityRamp(Speed, Tuning.m_VelrampStart, Tuning.m_VelrampRange, Tuning.m_VelrampCurvature);
 			const float RampedSpeed = Speed * Ramp;
 			if(RampedSpeed >= PreviousRampedSpeed)
 			{
@@ -213,7 +215,8 @@ void CDebugHud::RenderTuning()
 		{
 			// This is a calculation of the speed values per second on the X axis, from (MiddleOfZoomedInGraph - 64 * StepSize) to (MiddleOfZoomedInGraph + 64 * StepSize)
 			const float Speed = m_MiddleOfZoomedInGraph - 64 * StepSizeZoomedInGraph + i * StepSizeZoomedInGraph;
-			const float Ramp = VelocityRamp(Speed, GameClient()->m_aTuning[g_Config.m_ClDummy].m_VelrampStart, GameClient()->m_aTuning[g_Config.m_ClDummy].m_VelrampRange, GameClient()->m_aTuning[g_Config.m_ClDummy].m_VelrampCurvature);
+			const CTuningParams &Tuning = GameClient()->GameState(GameClient()->ActiveConnection()).Runtime().m_CurrentTuning;
+			const float Ramp = VelocityRamp(Speed, Tuning.m_VelrampStart, Tuning.m_VelrampRange, Tuning.m_VelrampCurvature);
 			const float RampedSpeed = Speed * Ramp;
 			if(RampedSpeed >= PreviousRampedSpeed)
 			{

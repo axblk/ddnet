@@ -15,7 +15,7 @@ int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrc
 	Builder.Init();
 
 	float LocalTime = Client()->LocalTime();
-	int GameTick = Client()->GameTick(g_Config.m_ClDummy);
+	int GameTick = Client()->GameTick(ActiveConnection());
 	CTranslationContext &TranslationContext = Client()->m_TranslationContext;
 
 	for(auto &PlayerInfosRace : TranslationContext.m_apPlayerInfosRace)
@@ -280,6 +280,7 @@ int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrc
 			{
 				Info6.m_Team = TranslationContext.m_aClients[pItem7->Id()].m_Team;
 				TranslationContext.m_aClients[pItem7->Id()].m_PlayerFlags7 = pInfo7->m_PlayerFlags;
+				GameState(Conn).Protocol7Client(pItem7->Id()).m_PlayerFlags = pInfo7->m_PlayerFlags;
 			}
 			Info6.m_Score = pInfo7->m_Score;
 			Info6.m_Latency = pInfo7->m_Latency;
@@ -409,7 +410,7 @@ int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrc
 				Client.m_Country = CountryCode::DEFAULT;
 			}
 
-			ApplySkin7InfoFromSnapObj(pInfo, ClientId);
+			ApplySkin7InfoFromSnapObj(pInfo, ClientId, Conn);
 		}
 		else if(ItemType == protocol7::NETOBJTYPE_DE_GAMEINFO)
 		{
@@ -449,6 +450,7 @@ int CGameClient::OnDemoRecSnap7(CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn
 			continue;
 
 		CTranslationContext::CClientData &ClientData = Client()->m_TranslationContext.m_aClients[i];
+		const CGameState::CProtocol7ClientState &Protocol7Client = GameState(Conn).Protocol7Client(i);
 
 		protocol7::CNetObj_De_ClientInfo ClientInfoObj;
 		ClientInfoObj.m_Local = i == Client()->m_TranslationContext.m_aLocalClientId[Conn];
@@ -462,19 +464,20 @@ int CGameClient::OnDemoRecSnap7(CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn
 			StrToInts(
 				ClientInfoObj.m_aaSkinPartNames[Part],
 				std::size(ClientInfoObj.m_aaSkinPartNames[Part]),
-				m_aClients[i].m_aSixup[Conn].m_aaSkinPartNames[Part]);
-			ClientInfoObj.m_aUseCustomColors[Part] = m_aClients[i].m_aSixup[Conn].m_aUseCustomColors[Part];
-			ClientInfoObj.m_aSkinPartColors[Part] = m_aClients[i].m_aSixup[Conn].m_aSkinPartColors[Part];
+				Protocol7Client.m_aaSkinPartNames[Part]);
+			ClientInfoObj.m_aUseCustomColors[Part] = Protocol7Client.m_aUseCustomColors[Part];
+			ClientInfoObj.m_aSkinPartColors[Part] = Protocol7Client.m_aSkinPartColors[Part];
 		}
 
 		Builder.NewItem(protocol7::NETOBJTYPE_DE_CLIENTINFO, i, &ClientInfoObj, sizeof(ClientInfoObj));
 	}
 
 	// add tuning
-	if(mem_comp(&CTuningParams::DEFAULT, &m_aTuning[Conn], sizeof(CTuningParams)) != 0)
+	const CTuningParams &CurrentTuning = GameState(Conn).Runtime().m_CurrentTuning;
+	if(mem_comp(&CTuningParams::DEFAULT, &CurrentTuning, sizeof(CTuningParams)) != 0)
 	{
 		protocol7::CNetObj_De_TuneParams TuneParams;
-		mem_copy(&TuneParams.m_aTuneParams, &m_aTuning[Conn], sizeof(TuneParams.m_aTuneParams));
+		mem_copy(&TuneParams.m_aTuneParams, &CurrentTuning, sizeof(TuneParams.m_aTuneParams));
 		Builder.NewItem(protocol7::NETOBJTYPE_DE_TUNEPARAMS, 0, &TuneParams, sizeof(TuneParams));
 	}
 

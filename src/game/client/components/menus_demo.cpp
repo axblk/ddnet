@@ -55,9 +55,9 @@ void CMenus::HandleDemoSeeking(float PositionToSeek, float TimeToSeek)
 	if((PositionToSeek >= 0.0f && PositionToSeek <= 1.0f) || TimeToSeek != 0.0f)
 	{
 		GameClient()->m_Chat.Reset();
-		GameClient()->m_DamageInd.OnReset();
+		GameClient()->GameState(GameClient()->ActiveConnection()).DamageIndicators().Reset();
 		GameClient()->m_InfoMessages.OnReset();
-		GameClient()->m_Particles.OnReset();
+		GameClient()->GameState(GameClient()->ActiveConnection()).Particles().Reset();
 		GameClient()->m_Sounds.OnReset();
 		GameClient()->m_Scoreboard.OnReset();
 		GameClient()->m_Statboard.OnReset();
@@ -731,9 +731,9 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 		ButtonBar.VSplitRight(Margins, &ButtonBar, nullptr);
 		ButtonBar.VSplitRight(ButtonbarHeight, &ButtonBar, &Button);
 		static CButtonContainer s_AutoCameraButton;
-		if(Ui()->DoButton_FontIcon(&s_AutoCameraButton, FontIcon::CAMERA, 0, &Button, BUTTONFLAG_LEFT, IGraphics::CORNER_ALL, GameClient()->m_Camera.m_AutoSpecCamera))
+		if(Ui()->DoButton_FontIcon(&s_AutoCameraButton, FontIcon::CAMERA, 0, &Button, BUTTONFLAG_LEFT, IGraphics::CORNER_ALL, GameClient()->m_Camera.IsAutoSpecCamera()))
 		{
-			GameClient()->m_Camera.m_AutoSpecCamera = !GameClient()->m_Camera.m_AutoSpecCamera;
+			GameClient()->m_Camera.SetAutoSpecCamera(!GameClient()->m_Camera.IsAutoSpecCamera());
 		}
 		GameClient()->m_Tooltips.DoToolTip(&s_AutoCameraButton, &Button, Localize("Toggle auto camera"));
 	}

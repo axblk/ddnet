@@ -51,6 +51,23 @@ bool CStatboard::IsActive() const
 	return m_Active;
 }
 
+bool CStatboard::IsRenderable() const
+{
+	if(!IsActive())
+		return false;
+
+	int NumPlayers = 0;
+	for(const auto *pInfo : GameClient()->m_Snap.m_apInfoByScore)
+	{
+		if(!pInfo || !GameClient()->m_aStats[pInfo->m_ClientId].IsActive())
+			continue;
+		if(GameClient()->m_aClients[pInfo->m_ClientId].m_Team == TEAM_RED ||
+			(GameClient()->IsTeamPlay() && GameClient()->m_aClients[pInfo->m_ClientId].m_Team == TEAM_BLUE))
+			NumPlayers++;
+	}
+	return NumPlayers <= 32;
+}
+
 void CStatboard::OnMessage(int MsgType, void *pRawMsg)
 {
 	if(GameClient()->m_SuppressEvents)
@@ -85,7 +102,7 @@ void CStatboard::OnMessage(int MsgType, void *pRawMsg)
 
 		for(int i = 0; i < MAX_CLIENTS; i++)
 		{
-			if(GameClient()->m_Teams.Team(i) == pMsg->m_Team)
+			if(GameClient()->FocusedTeams().Team(i) == pMsg->m_Team)
 			{
 				pStats[i].m_Deaths++;
 				pStats[i].m_Suicides++;
@@ -185,10 +202,6 @@ void CStatboard::RenderGlobalStats()
 	// remove as soon as support of more than 32 players is required
 	if(NumPlayers > 32)
 		return;
-
-	//clear motd if it is active
-	if(GameClient()->m_Motd.IsActive())
-		GameClient()->m_Motd.Clear();
 
 	bool GameWithFlags = GameClient()->m_Snap.m_pGameInfoObj &&
 			     GameClient()->m_Snap.m_pGameInfoObj->m_GameFlags & GAMEFLAG_FLAGS;
@@ -355,7 +368,7 @@ void CStatboard::RenderGlobalStats()
 		}
 		// FPM
 		{
-			float Fpm = pStats->GetFPM(Client()->GameTick(g_Config.m_ClDummy), Client()->GameTickSpeed());
+			float Fpm = pStats->GetFPM(Client()->GameTick(GameClient()->ActiveConnection()), Client()->GameTickSpeed());
 			str_format(aBuf, sizeof(aBuf), "%.1f", Fpm);
 			const float TextWidth = TextRender()->TextWidth(FontSize, aBuf, -1, -1.0f);
 			TextRender()->Text(x - TextWidth + px, y + (LineHeight * 0.95f - FontSize) / 2.f, FontSize, aBuf, -1.0f);
@@ -529,7 +542,7 @@ void CStatboard::FormatStats(char *pDest, size_t DestSize)
 			pStats->m_Suicides, // Suicides
 			KillRatio, // Kill ratio
 			pStats->m_Frags - pStats->m_Deaths, // Net
-			pStats->GetFPM(Client()->GameTick(g_Config.m_ClDummy), Client()->GameTickSpeed()), // FPM
+			pStats->GetFPM(Client()->GameTick(GameClient()->ActiveConnection()), Client()->GameTickSpeed()), // FPM
 			pStats->m_CurrentSpree, // CurSpree
 			pStats->m_BestSpree, // BestSpree
 			aWeaponFD, // WeaponFD

@@ -120,19 +120,11 @@ public:
 
 	// DDRace
 
-	void OnMessage(int MsgType, void *pRawMsg) override;
 	void RenderNinjaBarPos(float x, float y, float Width, float Height, float Progress, float Alpha = 1.0f);
 
 private:
 	void RenderRecord();
 	void RenderDDRaceEffects();
-	float m_TimeCpDiff;
-	float m_aPlayerRecord[NUM_DUMMIES];
-	float m_FinishTimeDiff;
-	int m_DDRaceTime;
-	int m_FinishTimeLastReceivedTick;
-	int m_TimeCpLastReceivedTick;
-	bool m_ShowFinishTime;
 
 	inline float GetMovementInformationBoxHeight();
 	inline int GetDigitsIndex(int Value, int Max);

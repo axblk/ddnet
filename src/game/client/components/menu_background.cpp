@@ -56,10 +56,10 @@ std::array<vec2, CMenuBackground::NUM_POS> GenerateMenuBackgroundPositions()
 CMenuBackground::CMenuBackground() :
 	CBackground(ERenderType::RENDERTYPE_FULL_DESIGN, false)
 {
+	m_Camera.BindState(m_CameraState);
 	m_RotationCenter = vec2(0.0f, 0.0f);
 	m_AnimationStartPos = vec2(0.0f, 0.0f);
-	m_Camera.m_Center = vec2(0.0f, 0.0f);
-	m_Camera.m_PrevCenter = vec2(0.0f, 0.0f); // unused in this class
+	m_CameraState.m_Center = vec2(0.0f, 0.0f);
 	m_ChangedPosition = false;
 
 	ResetPositions();
@@ -88,8 +88,8 @@ void CMenuBackground::OnInit()
 	if(g_Config.m_ClMenuMap[0] != '\0')
 		LoadMenuBackground();
 
-	m_Camera.m_ZoomSet = false;
-	m_Camera.m_ZoomSmoothingTarget = 0;
+	m_CameraState.m_ZoomSet = false;
+	m_CameraState.m_ZoomSmoothingTarget = 0.0f;
 }
 
 void CMenuBackground::ResetPositions()
@@ -310,15 +310,15 @@ bool CMenuBackground::Render()
 	if(!m_Loaded)
 		return false;
 
-	m_Camera.m_Zoom = 0.7f;
+	m_CameraState.m_Zoom = 0.7f;
 
-	float DistToCenter = distance(m_Camera.m_Center, m_RotationCenter);
+	float DistToCenter = distance(m_Camera.Center(), m_RotationCenter);
 	if(!m_ChangedPosition && absolute(DistToCenter - (float)g_Config.m_ClRotationRadius) <= 0.5f)
 	{
 		// do little rotation
 		float RotPerTick = 360.0f / (float)g_Config.m_ClRotationSpeed * std::clamp(Client()->RenderFrameTime(), 0.0f, 0.1f);
 		m_CurrentDirection = rotate(m_CurrentDirection, RotPerTick);
-		m_Camera.m_Center = m_RotationCenter + m_CurrentDirection * (float)g_Config.m_ClRotationRadius;
+		m_CameraState.m_Center = m_RotationCenter + m_CurrentDirection * (float)g_Config.m_ClRotationRadius;
 	}
 	else
 	{
@@ -340,10 +340,10 @@ bool CMenuBackground::Render()
 		float XVal = 1 - m_MoveTime;
 		XVal = std::pow(XVal, 7.0f);
 
-		m_Camera.m_Center = TargetPos + m_CurrentDirection * (XVal * Distance);
+		m_CameraState.m_Center = TargetPos + m_CurrentDirection * (XVal * Distance);
 		if(m_CurrentPosition < 0)
 		{
-			m_AnimationStartPos = m_Camera.m_Center;
+			m_AnimationStartPos = m_Camera.Center();
 			m_MoveTime = 0.0f;
 		}
 
@@ -377,7 +377,7 @@ void CMenuBackground::ChangePosition(int PositionNumber)
 
 		m_ChangedPosition = true;
 	}
-	m_AnimationStartPos = m_Camera.m_Center;
+	m_AnimationStartPos = m_Camera.Center();
 	m_RotationCenter = m_aPositions[m_CurrentPosition];
 	m_MoveTime = 0.0f;
 }

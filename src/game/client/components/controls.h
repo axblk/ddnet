@@ -6,6 +6,7 @@
 #include <base/vmath.h>
 
 #include <engine/client.h>
+#include <engine/client/stream.h>
 #include <engine/console.h>
 
 #include <generated/protocol.h>
@@ -18,29 +19,6 @@ public:
 	float GetMinMouseDistance() const;
 	float GetMaxMouseDistance() const;
 
-	enum class EMouseInputType
-	{
-		ABSOLUTE,
-		RELATIVE,
-		AUTOMATED,
-	};
-
-	vec2 m_aMousePos[NUM_DUMMIES];
-	vec2 m_aMousePosOnAction[NUM_DUMMIES];
-	vec2 m_aTargetPos[NUM_DUMMIES];
-
-	EMouseInputType m_aMouseInputType[NUM_DUMMIES];
-
-	int m_aAmmoCount[NUM_WEAPONS];
-
-	int64_t m_LastSendTime;
-	CNetObj_PlayerInput m_aInputData[NUM_DUMMIES];
-	CNetObj_PlayerInput m_aLastData[NUM_DUMMIES];
-	int m_aInputDirectionLeft[NUM_DUMMIES];
-	int m_aInputDirectionRight[NUM_DUMMIES];
-	int m_aShowHookColl[NUM_DUMMIES];
-
-	CControls();
 	int Sizeof() const override { return sizeof(*this); }
 
 	void OnReset() override;
@@ -53,6 +31,7 @@ public:
 	int SnapInput(int *pData);
 	void ClampMousePos();
 	void ResetInput(int Dummy);
+	void ResetInput(CStreamId StreamId);
 
 private:
 	static void ConKeyInputState(IConsole::IResult *pResult, void *pUserData);

@@ -30,6 +30,16 @@ void CVoting::ConVote(IConsole::IResult *pResult, void *pUserData)
 		pSelf->Vote(-1);
 }
 
+CSessionVoteState &CVoting::VoteState()
+{
+	return GameClient()->SessionContext().Vote();
+}
+
+const CSessionVoteState &CVoting::VoteState() const
+{
+	return GameClient()->SessionContext().Vote();
+}
+
 void CVoting::Callvote(const char *pType, const char *pValue, const char *pReason)
 {
 	if(Client()->IsSixup())
@@ -83,50 +93,36 @@ void CVoting::CallvoteKick(int ClientId, const char *pReason, bool ForceVote)
 
 void CVoting::CallvoteOption(int OptionId, const char *pReason, bool ForceVote)
 {
-	CVoteOptionClient *pOption = m_pFirst;
-	while(pOption && OptionId >= 0)
-	{
-		if(OptionId == 0)
-		{
-			if(ForceVote)
-			{
-				char aBuf[128] = "force_vote option \"";
-				char *pDst = aBuf + str_length(aBuf);
-				str_escape(&pDst, pOption->m_aDescription, aBuf + sizeof(aBuf));
-				str_append(aBuf, "\" \"");
-				pDst = aBuf + str_length(aBuf);
-				str_escape(&pDst, pReason, aBuf + sizeof(aBuf));
-				str_append(aBuf, "\"");
-				Client()->Rcon(aBuf);
-			}
-			else
-				Callvote("option", pOption->m_aDescription, pReason);
-			break;
-		}
+	const std::string *pOption = VoteState().Option(OptionId);
+	if(!pOption)
+		return;
 
-		OptionId--;
-		pOption = pOption->m_pNext;
+	if(ForceVote)
+	{
+		char aBuf[128] = "force_vote option \"";
+		char *pDst = aBuf + str_length(aBuf);
+		str_escape(&pDst, pOption->c_str(), aBuf + sizeof(aBuf));
+		str_append(aBuf, "\" \"");
+		pDst = aBuf + str_length(aBuf);
+		str_escape(&pDst, pReason, aBuf + sizeof(aBuf));
+		str_append(aBuf, "\"");
+		Client()->Rcon(aBuf);
 	}
+	else
+		Callvote("option", pOption->c_str(), pReason);
 }
 
 void CVoting::RemovevoteOption(int OptionId)
 {
-	CVoteOptionClient *pOption = m_pFirst;
-	while(pOption && OptionId >= 0)
-	{
-		if(OptionId == 0)
-		{
-			char aBuf[128] = "remove_vote \"";
-			char *pDst = aBuf + str_length(aBuf);
-			str_escape(&pDst, pOption->m_aDescription, aBuf + sizeof(aBuf));
-			str_append(aBuf, "\"");
-			Client()->Rcon(aBuf);
-			break;
-		}
+	const std::string *pOption = VoteState().Option(OptionId);
+	if(!pOption)
+		return;
 
-		OptionId--;
-		pOption = pOption->m_pNext;
-	}
+	char aBuf[128] = "remove_vote \"";
+	char *pDst = aBuf + str_length(aBuf);
+	str_escape(&pDst, pOption->c_str(), aBuf + sizeof(aBuf));
+	str_append(aBuf, "\"");
+	Client()->Rcon(aBuf);
 }
 
 void CVoting::AddvoteOption(const char *pDescription, const char *pCommand)
@@ -149,96 +145,58 @@ void CVoting::Vote(int v)
 
 int CVoting::SecondsLeft() const
 {
-	return (m_Closetime - time()) / time_freq();
+	return VoteState().SecondsLeft(time(), time_freq());
 }
 
-CVoting::CVoting()
+bool CVoting::IsVoting() const
 {
-	ClearOptions();
-	CVoting::OnReset();
+	return VoteState().IsVoting();
+}
+
+int CVoting::TakenChoice() const
+{
+	return VoteState().Voted();
+}
+
+const char *CVoting::VoteDescription() const
+{
+	return VoteState().Description();
+}
+
+const char *CVoting::VoteReason() const
+{
+	return VoteState().Reason();
+}
+
+bool CVoting::IsReceivingOptions() const
+{
+	return VoteState().IsReceivingOptions();
+}
+
+int CVoting::NumOptions() const
+{
+	return VoteState().NumOptions();
+}
+
+const std::list<std::string> &CVoting::Options() const
+{
+	return VoteState().Options();
 }
 
 void CVoting::AddOption(const char *pDescription)
 {
-	if(m_NumVoteOptions == MAX_VOTE_OPTIONS)
-		return;
-
-	CVoteOptionClient *pOption;
-	if(m_pRecycleFirst)
-	{
-		pOption = m_pRecycleFirst;
-		m_pRecycleFirst = m_pRecycleFirst->m_pNext;
-		if(m_pRecycleFirst)
-			m_pRecycleFirst->m_pPrev = nullptr;
-		else
-			m_pRecycleLast = nullptr;
-	}
-	else
-		pOption = m_Heap.Allocate<CVoteOptionClient>();
-
-	pOption->m_pNext = nullptr;
-	pOption->m_pPrev = m_pLast;
-	if(pOption->m_pPrev)
-		pOption->m_pPrev->m_pNext = pOption;
-	m_pLast = pOption;
-	if(!m_pFirst)
-		m_pFirst = pOption;
-
-	str_copy(pOption->m_aDescription, pDescription);
-	++m_NumVoteOptions;
-}
-
-void CVoting::RemoveOption(const char *pDescription)
-{
-	for(CVoteOptionClient *pOption = m_pFirst; pOption; pOption = pOption->m_pNext)
-	{
-		if(str_comp(pOption->m_aDescription, pDescription) == 0)
-		{
-			// remove it from the list
-			if(m_pFirst == pOption)
-				m_pFirst = m_pFirst->m_pNext;
-			if(m_pLast == pOption)
-				m_pLast = m_pLast->m_pPrev;
-			if(pOption->m_pPrev)
-				pOption->m_pPrev->m_pNext = pOption->m_pNext;
-			if(pOption->m_pNext)
-				pOption->m_pNext->m_pPrev = pOption->m_pPrev;
-			--m_NumVoteOptions;
-
-			// add it to recycle list
-			pOption->m_pNext = nullptr;
-			pOption->m_pPrev = m_pRecycleLast;
-			if(pOption->m_pPrev)
-				pOption->m_pPrev->m_pNext = pOption;
-			m_pRecycleLast = pOption;
-			if(!m_pRecycleFirst)
-				m_pRecycleLast = pOption;
-
-			break;
-		}
-	}
-}
-
-void CVoting::ClearOptions()
-{
-	m_Heap.Reset();
-
-	m_NumVoteOptions = 0;
-	m_pFirst = nullptr;
-	m_pLast = nullptr;
-
-	m_pRecycleFirst = nullptr;
-	m_pRecycleLast = nullptr;
+	VoteState().AddOption(pDescription);
 }
 
 void CVoting::OnReset()
 {
-	m_Opentime = m_Closetime = 0;
-	m_aDescription[0] = '\0';
-	m_aReason[0] = '\0';
-	m_Yes = m_No = m_Pass = m_Total = 0;
-	m_Voted = 0;
-	m_ReceivingOptions = false;
+	VoteState().ResetVote();
+}
+
+void CVoting::OnUpdate()
+{
+	if(IsVoting() && SecondsLeft() < 0)
+		VoteState().ResetVote();
 }
 
 void CVoting::OnConsoleInit()
@@ -247,42 +205,28 @@ void CVoting::OnConsoleInit()
 	Console()->Register("vote", "r['yes'|'no']", CFGFLAG_CLIENT, ConVote, this, "Vote yes/no");
 }
 
-void CVoting::OnMessage(int MsgType, void *pRawMsg)
+void CVoting::HandleMessage(int MsgType, void *pRawMsg)
 {
-	if(Client()->State() == IClient::STATE_DEMOPLAYBACK)
-		return;
-
+	CSessionVoteState &State = VoteState();
 	if(MsgType == NETMSGTYPE_SV_VOTESET)
 	{
 		CNetMsg_Sv_VoteSet *pMsg = (CNetMsg_Sv_VoteSet *)pRawMsg;
-		OnReset();
-		if(pMsg->m_Timeout)
+		if(State.ApplyVoteSet(pMsg->m_Timeout, pMsg->m_pDescription, pMsg->m_pReason, time(), time_freq()) && Client()->RconAuthed())
 		{
-			str_copy(m_aDescription, pMsg->m_pDescription);
-			str_copy(m_aReason, pMsg->m_pReason);
-			m_Opentime = time();
-			m_Closetime = time() + time_freq() * pMsg->m_Timeout;
-
-			if(Client()->RconAuthed())
-			{
-				char aBuf[512];
-				str_format(aBuf, sizeof(aBuf), "%s (%s)", m_aDescription, m_aReason);
-				Client()->Notify("DDNet Vote", aBuf);
-				GameClient()->m_Sounds.Play(CSounds::CHN_GUI, SOUND_CHAT_HIGHLIGHT, 1.0f);
-			}
+			char aBuf[512];
+			str_format(aBuf, sizeof(aBuf), "%s (%s)", State.Description(), State.Reason());
+			Client()->Notify("DDNet Vote", aBuf);
+			GameClient()->m_Sounds.Play(CSounds::CHN_GUI, SOUND_CHAT_HIGHLIGHT, 1.0f);
 		}
 	}
 	else if(MsgType == NETMSGTYPE_SV_VOTESTATUS)
 	{
 		CNetMsg_Sv_VoteStatus *pMsg = (CNetMsg_Sv_VoteStatus *)pRawMsg;
-		m_Yes = pMsg->m_Yes;
-		m_No = pMsg->m_No;
-		m_Pass = pMsg->m_Pass;
-		m_Total = pMsg->m_Total;
+		State.ApplyStatus(pMsg->m_Yes, pMsg->m_No, pMsg->m_Pass, pMsg->m_Total);
 	}
 	else if(MsgType == NETMSGTYPE_SV_VOTECLEAROPTIONS)
 	{
-		ClearOptions();
+		State.ClearOptions();
 	}
 	else if(MsgType == NETMSGTYPE_SV_VOTEOPTIONLISTADD)
 	{
@@ -292,46 +236,46 @@ void CVoting::OnMessage(int MsgType, void *pRawMsg)
 		{
 			switch(i)
 			{
-			case 0: AddOption(pMsg->m_pDescription0); break;
-			case 1: AddOption(pMsg->m_pDescription1); break;
-			case 2: AddOption(pMsg->m_pDescription2); break;
-			case 3: AddOption(pMsg->m_pDescription3); break;
-			case 4: AddOption(pMsg->m_pDescription4); break;
-			case 5: AddOption(pMsg->m_pDescription5); break;
-			case 6: AddOption(pMsg->m_pDescription6); break;
-			case 7: AddOption(pMsg->m_pDescription7); break;
-			case 8: AddOption(pMsg->m_pDescription8); break;
-			case 9: AddOption(pMsg->m_pDescription9); break;
-			case 10: AddOption(pMsg->m_pDescription10); break;
-			case 11: AddOption(pMsg->m_pDescription11); break;
-			case 12: AddOption(pMsg->m_pDescription12); break;
-			case 13: AddOption(pMsg->m_pDescription13); break;
-			case 14: AddOption(pMsg->m_pDescription14);
+			case 0: State.AddOption(pMsg->m_pDescription0); break;
+			case 1: State.AddOption(pMsg->m_pDescription1); break;
+			case 2: State.AddOption(pMsg->m_pDescription2); break;
+			case 3: State.AddOption(pMsg->m_pDescription3); break;
+			case 4: State.AddOption(pMsg->m_pDescription4); break;
+			case 5: State.AddOption(pMsg->m_pDescription5); break;
+			case 6: State.AddOption(pMsg->m_pDescription6); break;
+			case 7: State.AddOption(pMsg->m_pDescription7); break;
+			case 8: State.AddOption(pMsg->m_pDescription8); break;
+			case 9: State.AddOption(pMsg->m_pDescription9); break;
+			case 10: State.AddOption(pMsg->m_pDescription10); break;
+			case 11: State.AddOption(pMsg->m_pDescription11); break;
+			case 12: State.AddOption(pMsg->m_pDescription12); break;
+			case 13: State.AddOption(pMsg->m_pDescription13); break;
+			case 14: State.AddOption(pMsg->m_pDescription14);
 			}
 		}
 	}
 	else if(MsgType == NETMSGTYPE_SV_VOTEOPTIONADD)
 	{
 		CNetMsg_Sv_VoteOptionAdd *pMsg = (CNetMsg_Sv_VoteOptionAdd *)pRawMsg;
-		AddOption(pMsg->m_pDescription);
+		State.AddOption(pMsg->m_pDescription);
 	}
 	else if(MsgType == NETMSGTYPE_SV_VOTEOPTIONREMOVE)
 	{
 		CNetMsg_Sv_VoteOptionRemove *pMsg = (CNetMsg_Sv_VoteOptionRemove *)pRawMsg;
-		RemoveOption(pMsg->m_pDescription);
+		State.RemoveOption(pMsg->m_pDescription);
 	}
 	else if(MsgType == NETMSGTYPE_SV_YOURVOTE)
 	{
 		CNetMsg_Sv_YourVote *pMsg = (CNetMsg_Sv_YourVote *)pRawMsg;
-		m_Voted = pMsg->m_Voted;
+		State.SetVoted(pMsg->m_Voted);
 	}
 	else if(MsgType == NETMSGTYPE_SV_VOTEOPTIONGROUPSTART)
 	{
-		m_ReceivingOptions = true;
+		State.SetReceivingOptions(true);
 	}
 	else if(MsgType == NETMSGTYPE_SV_VOTEOPTIONGROUPEND)
 	{
-		m_ReceivingOptions = false;
+		State.SetReceivingOptions(false);
 	}
 }
 
@@ -341,10 +285,8 @@ void CVoting::Render()
 		return;
 	const int Seconds = SecondsLeft();
 	if(Seconds < 0)
-	{
-		OnReset();
 		return;
-	}
+	const CSessionVoteState &State = VoteState();
 
 	CUIRect View = {0.0f, 60.0f, 120.0f, 38.0f};
 	View.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.4f), IGraphics::CORNER_R, 3.0f);
@@ -364,7 +306,7 @@ void CVoting::Render()
 	LeftColumn.VSplitRight(2.0f, &LeftColumn, nullptr);
 
 	SProgressSpinnerProperties ProgressProps;
-	ProgressProps.m_Progress = std::clamp((time() - m_Opentime) / (float)(m_Closetime - m_Opentime), 0.0f, 1.0f);
+	ProgressProps.m_Progress = std::clamp((time() - State.OpenTime()) / (float)(State.CloseTime() - State.OpenTime()), 0.0f, 1.0f);
 	Ui()->RenderProgressSpinner(ProgressSpinner.Center(), ProgressSpinner.h / 2.0f, ProgressProps);
 
 	Ui()->DoLabel(&RightColumn, aBuf, 6.0f, TEXTALIGN_MR);
@@ -380,7 +322,7 @@ void CVoting::Render()
 
 	View.HSplitTop(3.0f, nullptr, &View);
 	View.HSplitTop(4.0f, &Row, &View);
-	RenderBars(Row);
+	RenderBars(Row, State);
 
 	View.HSplitTop(3.0f, nullptr, &View);
 	View.HSplitTop(6.0f, &Row, &View);
@@ -400,7 +342,7 @@ void CVoting::Render()
 	TextRender()->TextColor(TextRender()->DefaultTextColor());
 }
 
-void CVoting::RenderBars(CUIRect Bars) const
+void CVoting::RenderBars(CUIRect Bars, const CSessionVoteState &State) const
 {
 	Bars.Draw(ColorRGBA(0.8f, 0.8f, 0.8f, 0.5f), IGraphics::CORNER_ALL, Bars.h / 2.0f);
 
@@ -408,19 +350,19 @@ void CVoting::RenderBars(CUIRect Bars) const
 	Bars.VMargin((Bars.w - 2.0f) / 2.0f, &Splitter);
 	Splitter.Draw(ColorRGBA(0.4f, 0.4f, 0.4f, 0.5f), IGraphics::CORNER_NONE, 0.0f);
 
-	if(m_Total)
+	if(State.Total())
 	{
-		if(m_Yes)
+		if(State.Yes())
 		{
 			CUIRect YesArea;
-			Bars.VSplitLeft(Bars.w * m_Yes / m_Total, &YesArea, nullptr);
+			Bars.VSplitLeft(Bars.w * State.Yes() / State.Total(), &YesArea, nullptr);
 			YesArea.Draw(ColorRGBA(0.2f, 0.9f, 0.2f, 0.85f), IGraphics::CORNER_ALL, YesArea.h / 2.0f);
 		}
 
-		if(m_No)
+		if(State.No())
 		{
 			CUIRect NoArea;
-			Bars.VSplitRight(Bars.w * m_No / m_Total, nullptr, &NoArea);
+			Bars.VSplitRight(Bars.w * State.No() / State.Total(), nullptr, &NoArea);
 			NoArea.Draw(ColorRGBA(0.9f, 0.2f, 0.2f, 0.85f), IGraphics::CORNER_ALL, NoArea.h / 2.0f);
 		}
 	}

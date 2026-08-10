@@ -29,6 +29,12 @@ void CImportantAlert::OnWindowResize()
 	DeleteTextContainers();
 }
 
+void CImportantAlert::OnUpdate()
+{
+	if(m_Active && m_FadeOutSince >= 0.0f && Client()->GlobalTime() - m_FadeOutSince >= 1.0f)
+		OnReset();
+}
+
 void CImportantAlert::OnRender()
 {
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
@@ -57,12 +63,6 @@ void CImportantAlert::DeleteTextContainers()
 
 void CImportantAlert::RenderImportantAlert()
 {
-	if(m_FadeOutSince >= 0.0f && Client()->GlobalTime() - m_FadeOutSince >= 1.0f)
-	{
-		OnReset();
-		return;
-	}
-
 	const float Seconds = SecondsActive();
 
 	const float Height = 300.0f;

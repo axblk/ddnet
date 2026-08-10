@@ -3,6 +3,10 @@
 #ifndef GAME_CLIENT_GAMECLIENT_H
 #define GAME_CLIENT_GAMECLIENT_H
 
+#include "game_state.h"
+#include "input_policy.h"
+#include "local_player_profile.h"
+#include "map_context.h"
 #include "render.h"
 
 #include <base/color.h>
@@ -70,6 +74,7 @@
 #include "components/touch_controls.h"
 #include "components/voting.h"
 
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -144,6 +149,8 @@ enum class EClientIdFormat
 class CGameClient : public IGameClient
 {
 public:
+	CGameClient();
+
 	// all components
 	CInfoMessages m_InfoMessages;
 	CCamera m_Camera;
@@ -222,13 +229,18 @@ private:
 #endif
 	class IHttp *m_pHttp;
 
-	CLayers m_Layers;
-	CCollision m_Collision;
+	CMapContext m_MapContext;
+	CGameStateManager m_GameStates;
+	CStreamInputRouter m_InputRouter;
+	CLocalPlayerProfileBindings m_LocalPlayerProfiles;
 	CUi m_UI;
 	CRaceHelper m_RaceHelper;
 
 	void ProcessEvents();
+	void ProcessSnapshot();
+	void ProcessPrediction();
 	void UpdatePositions();
+	const CLocalPlayerProfile &RefreshLegacyPlayerProfile(int Conn);
 
 	int m_EditorMovementDelay = 5;
 	void UpdateEditorIngameMoved();
@@ -284,6 +296,8 @@ public:
 	class IStorage *Storage() const { return m_pStorage; }
 	class IConfigManager *ConfigManager() const { return m_pConfigManager; }
 	class CConfig *Config() const { return m_pConfig; }
+	CGameState &GameState(int Conn);
+	const CGameState &GameState(int Conn) const;
 	class IConsole *Console() { return m_pConsole; }
 	class ITextRender *TextRender() const { return m_pTextRender; }
 	class IDemoPlayer *DemoPlayer() const { return m_pDemoPlayer; }
@@ -292,9 +306,10 @@ public:
 	class IServerBrowser *ServerBrowser() const { return m_pServerBrowser; }
 	class CRenderTools *RenderTools() { return &m_RenderTools; }
 	class CRenderMap *RenderMap() { return &m_RenderMap; }
-	class CLayers *Layers() { return &m_Layers; }
-	CCollision *Collision() { return &m_Collision; }
-	const CCollision *Collision() const { return &m_Collision; }
+	class CLayers *Layers() { return m_MapContext.Layers(); }
+	CCollision *Collision() { return m_MapContext.Collision(); }
+	const CCollision *Collision() const { return m_MapContext.Collision(); }
+	const CSessionGameConfig *GameConfig() const { return &m_MapContext.GameConfig(); }
 	const CRaceHelper *RaceHelper() const { return &m_RaceHelper; }
 	class IEditor *Editor() { return m_pEditor; }
 	class IFriends *Friends() { return m_pFriends; }
@@ -620,11 +635,11 @@ public:
 	int TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn, bool Dummy) override;
 	void OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dummy) override;
 	void InvalidateSnapshot() override;
-	void OnNewSnapshot(bool DummySwapped) override;
-	void OnPredict() override;
+	void OnNewSnapshot(int Conn) override;
+	void OnPredict(int Conn) override;
 	void OnActivateEditor() override;
 	void OnDummySwap() override;
-	int OnSnapInput(int *pData, bool Dummy, bool Force) override;
+	int OnSnapInput(int *pData, int Conn, bool Force) override;
 	void OnShutdown() override;
 	void OnEnterGame() override;
 	void OnRconType(bool UsernameReq) override;
@@ -707,7 +722,7 @@ public:
 	bool Predict() const;
 	bool PredictDummy() const;
 
-	const CTuningParams *GetTuning(int i) const { return &m_aTuningList[i]; }
+	const CTuningParams *GetTuning(int i) const { return &m_MapContext.TuningList()[i]; }
 	ColorRGBA GetDDTeamColor(int DDTeam, float Lightness = 0.5f) const;
 	void FormatClientId(int ClientId, char (&aClientId)[16], EClientIdFormat Format) const;
 
@@ -725,8 +740,8 @@ public:
 	bool IsLocalCharSuper() const;
 	bool CanDisplayWarning() const override;
 
-	IMap *Map() override { return m_pMap.get(); }
-	const IMap *Map() const override { return m_pMap.get(); }
+	IMap *Map() override { return m_MapContext.Map(); }
+	const IMap *Map() const override { return m_MapContext.Map(); }
 	CNetObjHandler *GetNetObjHandler() override;
 	protocol7::CNetObjHandler *GetNetObjHandler7() override;
 
@@ -915,8 +930,6 @@ public:
 	char m_aMapDescription[512];
 
 private:
-	std::unique_ptr<IMap> m_pMap;
-
 	std::vector<CSnapEntities> m_vSnapEntities;
 	void SnapCollectEntities();
 
@@ -957,12 +970,7 @@ private:
 	CCharOrder m_CharOrder;
 	int m_aSwitchStateTeam[NUM_DUMMIES];
 
-	void LoadMapSettings();
-	CMapBugs m_MapBugs;
-
-	// tunings for every zone on the map, 0 is a global tune
-	CTuningParams m_aTuningList[TuneZone::NUM];
-	CTuningParams *TuningList() { return m_aTuningList; }
+	CTuningParams *TuningList() { return m_MapContext.TuningList(); }
 
 	float m_LastShowDistanceZoom;
 	float m_LastZoom;

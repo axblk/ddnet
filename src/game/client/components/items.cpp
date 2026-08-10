@@ -538,7 +538,7 @@ void CItems::OnRender()
 					if(pProj->m_LastRenderTick <= 0 && (pProj->m_Type != WEAPON_SHOTGUN || (!pProj->m_Freeze && !pProj->m_Explosive)) // skip ddrace shotgun bullets
 						&& (pProj->m_Type == WEAPON_SHOTGUN || absolute(length(pProj->m_Direction) - 1.f) < 0.02f) // workaround to skip grenades on ball mod
 						&& (pProj->GetOwner() < 0 || !GameClient()->m_aClients[pProj->GetOwner()].m_IsPredictedLocal || IsOtherTeam) // skip locally predicted projectiles
-						&& !Client()->SnapFindItem(IClient::SNAP_PREV, Item.m_Type, Item.m_Id))
+						&& !Client()->SnapFindItem(Client()->ActiveConnection(), IClient::SNAP_PREV, Item.m_Type, Item.m_Id))
 					{
 						ReconstructSmokeTrail(&Data, pProj->m_DestroyTick);
 					}
@@ -564,7 +564,7 @@ void CItems::OnRender()
 				if(pPickup && pPickup->InDDNetTile())
 					continue;
 			}
-			const void *pPrev = Client()->SnapFindItem(IClient::SNAP_PREV, Item.m_Type, Item.m_Id);
+			const void *pPrev = Client()->SnapFindItem(Client()->ActiveConnection(), IClient::SNAP_PREV, Item.m_Type, Item.m_Id);
 			if(pPrev)
 				RenderPickup((const CNetObj_Pickup *)pPrev, (const CNetObj_Pickup *)pData, false, Data.m_Flags);
 		}

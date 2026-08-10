@@ -33,6 +33,9 @@ CGameWorld::CGameWorld()
 	for(auto &pCharacter : m_apCharacters)
 		pCharacter = nullptr;
 	m_pCollision = nullptr;
+	m_pTuningList = nullptr;
+	m_pMapBugs = nullptr;
+	m_pGameConfig = nullptr;
 	m_GameTick = 0;
 	m_pParent = nullptr;
 	m_pChild = nullptr;
@@ -50,11 +53,12 @@ CGameWorld::~CGameWorld()
 		m_pParent->m_pChild = nullptr;
 }
 
-void CGameWorld::Init(CCollision *pCollision, CTuningParams *pTuningList, const CMapBugs *pMapBugs)
+void CGameWorld::Init(CCollision *pCollision, CTuningParams *pTuningList, const CMapBugs *pMapBugs, const CSessionGameConfig *pGameConfig)
 {
 	m_pCollision = pCollision;
 	m_pTuningList = pTuningList;
 	m_pMapBugs = pMapBugs;
+	m_pGameConfig = pGameConfig;
 }
 
 CEntity *CGameWorld::FindFirst(int Type)
@@ -377,7 +381,7 @@ void CGameWorld::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage,
 
 		float Dmg = Strength * l;
 		if((int)Dmg)
-			if((pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : g_Config.m_SvHit || NoDamage) || Owner == pChar->GetCid())
+			if((pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : GameConfig()->m_SvHit || NoDamage) || Owner == pChar->GetCid())
 			{
 				if(Owner != -1 && !pChar->CanCollide(Owner))
 					continue;
@@ -388,7 +392,7 @@ void CGameWorld::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage,
 				{
 					pOwnerChar->AntiPingInterference(pChar->GetCid());
 				}
-				if(pOwnerChar ? pOwnerChar->GrenadeHitDisabled() : !g_Config.m_SvHit || NoDamage)
+				if(pOwnerChar ? pOwnerChar->GrenadeHitDisabled() : !GameConfig()->m_SvHit || NoDamage)
 					break;
 			}
 	}
@@ -650,6 +654,7 @@ void CGameWorld::CopyWorld(CGameWorld *pFrom)
 	m_WorldConfig = pFrom->m_WorldConfig;
 	m_pTuningList = pFrom->m_pTuningList;
 	m_pMapBugs = pFrom->m_pMapBugs;
+	m_pGameConfig = pFrom->m_pGameConfig;
 	m_Teams = pFrom->m_Teams;
 	m_Core.m_vSwitchers = pFrom->m_Core.m_vSwitchers;
 	m_PredictedEvents = pFrom->m_PredictedEvents;

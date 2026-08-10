@@ -192,7 +192,7 @@ void CSounds::PlayAndRecord(int Channel, int SetId, float Volume, vec2 Position)
 	//       https://github.com/ddnet/ddnet/issues/1282
 	CNetMsg_Sv_SoundGlobal Msg;
 	Msg.m_SoundId = SetId;
-	Client()->SendPackMsgActive(&Msg, MSGFLAG_NOSEND | MSGFLAG_RECORD);
+	Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_NOSEND | MSGFLAG_RECORD);
 
 	PlayAt(Channel, SetId, Volume, Position);
 }

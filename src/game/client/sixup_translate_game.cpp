@@ -231,7 +231,7 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn)
 			return nullptr;
 		}
 
-		if(Client()->State() != IClient::STATE_DEMOPLAYBACK)
+		if(!Client()->IsDemoPlayback())
 		{
 			m_aClients[pMsg7->m_ClientId].m_Team = pMsg7->m_Team;
 			m_pClient->m_TranslationContext.m_aClients[pMsg7->m_ClientId].m_Team = pMsg7->m_Team;

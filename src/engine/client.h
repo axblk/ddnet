@@ -6,6 +6,7 @@
 #include "kernel.h"
 #include "message.h"
 
+#include <base/dbg.h>
 #include <base/hash.h>
 
 #include <engine/client/enums.h>
@@ -89,16 +90,6 @@ protected:
 	ELoadingStateDetail m_LoadingStateDetail = LOADING_STATE_DETAIL_INITIAL;
 	int64_t m_StateStartTime;
 
-	// quick access to time variables
-	int m_aPrevGameTick[NUM_DUMMIES] = {0, 0};
-	int m_aCurGameTick[NUM_DUMMIES] = {0, 0};
-	float m_aGameIntraTick[NUM_DUMMIES] = {0.0f, 0.0f};
-	float m_aGameTickTime[NUM_DUMMIES] = {0.0f, 0.0f};
-	float m_aGameIntraTickSincePrev[NUM_DUMMIES] = {0.0f, 0.0f};
-
-	int m_aPredTick[NUM_DUMMIES] = {0, 0};
-	float m_aPredIntraTick[NUM_DUMMIES] = {0.0f, 0.0f};
-
 	float m_LocalTime = 0.0f;
 	float m_GlobalTime = 0.0f;
 	float m_RenderFrameTime = 0.0001f;
@@ -109,6 +100,10 @@ protected:
 	char m_aNews[3000] = "";
 	int m_Points = -1;
 	int64_t m_ReconnectTime = 0;
+	// A connection is one local network endpoint. A stream is its ordered
+	// snapshots, messages and ticks. Sessions, game states and views are owned
+	// above this engine interface and must pass the connection explicitly.
+	int m_ActiveConnection = 0;
 
 public:
 	class CSnapItem
@@ -128,6 +123,13 @@ public:
 		NUM_CONNS,
 	};
 
+	int ActiveConnection() const { return m_ActiveConnection; }
+	void SetActiveConnection(int Conn)
+	{
+		dbg_assert(Conn == CONN_MAIN || Conn == CONN_DUMMY, "invalid active game connection");
+		m_ActiveConnection = Conn;
+	}
+
 	enum
 	{
 		CONNECTIVITY_UNKNOWN,
@@ -141,6 +143,8 @@ public:
 
 	//
 	EClientState State() const { return m_State; }
+	virtual bool IsOnline() const = 0;
+	virtual bool IsDemoPlayback() const = 0;
 	ELoadingStateDetail LoadingStateDetail() const { return m_LoadingStateDetail; }
 	int64_t StateStartTime() const { return m_StateStartTime; }
 	void SetLoadingStateDetail(ELoadingStateDetail LoadingStateDetail) { m_LoadingStateDetail = LoadingStateDetail; }
@@ -156,34 +160,34 @@ public:
 	 * Tick of the second to most recently received snapshot (usually 2
 	 * less than `GameTick`).
 	 */
-	int PrevGameTick(int Conn) const { return m_aPrevGameTick[Conn]; }
+	virtual int PrevGameTick(int Conn) const = 0;
 	/**
 	 * Tick of most recently received snapshot.
 	 */
-	int GameTick(int Conn) const { return m_aCurGameTick[Conn]; }
+	virtual int GameTick(int Conn) const = 0;
 	/**
 	 * The tick we should predict to. Comes from a magic black box called
 	 * "smooth time".
 	 */
-	int PredGameTick(int Conn) const { return m_aPredTick[Conn]; }
+	virtual int PredGameTick(int Conn) const = 0;
 	/**
 	 * Linear interpolation parameter between `PrevGameTick` (0) and
 	 * `GameTick` (1). Can be outside the interval [0, 1].
 	 */
-	float IntraGameTick(int Conn) const { return m_aGameIntraTick[Conn]; }
+	virtual float IntraGameTick(int Conn) const = 0;
 	/**
 	 * Linear interpolation parameter between `PredGameTick - 1` (0) and
 	 * `PredGameTick` (1). Can be outside the interval [0, 1].
 	 */
-	float PredIntraGameTick(int Conn) const { return m_aPredIntraTick[Conn]; }
+	virtual float PredIntraGameTick(int Conn) const = 0;
 	/**
 	 * (Fractional) ticks since `PrevGameTick`.
 	 */
-	float IntraGameTickSincePrev(int Conn) const { return m_aGameIntraTickSincePrev[Conn]; }
+	virtual float IntraGameTickSincePrev(int Conn) const = 0;
 	/**
 	 * Time in seconds since the second to most recently received snapshot.
 	 */
-	float GameTickTime(int Conn) const { return m_aGameTickTime[Conn]; }
+	virtual float GameTickTime(int Conn) const = 0;
 	/**
 	 * 50
 	 */
@@ -257,10 +261,10 @@ public:
 	virtual int MapDownloadTotalsize() const = 0;
 
 	// input
-	virtual int *GetInput(int Tick, int IsDummy = 0) const = 0;
+	virtual int *GetInput(int Conn, int Tick) const = 0;
 
 	// remote console
-	virtual void RconAuth(const char *pUsername, const char *pPassword, bool Dummy) = 0;
+	virtual void RconAuth(int Conn, const char *pUsername, const char *pPassword) = 0;
 	virtual bool RconAuthed() const = 0;
 	virtual bool UseTempRconCommands() const = 0;
 	virtual void Rcon(const char *pLine) = 0;
@@ -287,25 +291,14 @@ public:
 	};
 
 	// TODO: Refactor: should redo this a bit i think, too many virtual calls
-	virtual int SnapNumItems(int SnapId) const = 0;
-	virtual const void *SnapFindItem(int SnapId, int Type, int Id) const = 0;
-	virtual CSnapItem SnapGetItem(int SnapId, int Index) const = 0;
+	virtual int SnapNumItems(int Conn, int SnapId) const = 0;
+	virtual const void *SnapFindItem(int Conn, int SnapId, int Type, int Id) const = 0;
+	virtual CSnapItem SnapGetItem(int Conn, int SnapId, int Index) const = 0;
 
 	virtual void SnapSetStaticsize(int ItemType, int Size) = 0;
 	virtual void SnapSetStaticsize7(int ItemType, int Size) = 0;
 
 	virtual int SendMsg(int Conn, CMsgPacker *pMsg, int Flags) = 0;
-	virtual int SendMsgActive(CMsgPacker *pMsg, int Flags) = 0;
-
-	template<class T>
-	int SendPackMsgActive(T *pMsg, int Flags, bool NoTranslate = false)
-	{
-		CMsgPacker Packer(T::ms_MsgId, false, NoTranslate);
-		if(pMsg->Pack(&Packer))
-			return -1;
-		return SendMsgActive(&Packer, Flags);
-	}
-
 	template<class T>
 	int SendPackMsg(int Conn, T *pMsg, int Flags, bool NoTranslate = false)
 	{
@@ -404,7 +397,7 @@ public:
 	virtual void OnRconLine(const char *pLine) = 0;
 	virtual void OnInit() = 0;
 	virtual void InvalidateSnapshot() = 0;
-	virtual void OnNewSnapshot(bool DummySwapped) = 0;
+	virtual void OnNewSnapshot(int Conn) = 0;
 	virtual void OnEnterGame() = 0;
 	virtual void OnShutdown() = 0;
 	virtual void OnRender() = 0;
@@ -412,11 +405,11 @@ public:
 	virtual void OnStateChange(int NewState, int OldState) = 0;
 	virtual void OnConnected() = 0;
 	virtual void OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dummy) = 0;
-	virtual void OnPredict() = 0;
+	virtual void OnPredict(int Conn) = 0;
 	virtual void OnActivateEditor() = 0;
 	virtual void OnWindowResize() = 0;
 
-	virtual int OnSnapInput(int *pData, bool Dummy, bool Force) = 0;
+	virtual int OnSnapInput(int *pData, int Conn, bool Force) = 0;
 	virtual void OnDummySwap() = 0;
 	virtual void SendDummyInfo(bool Start) = 0;
 

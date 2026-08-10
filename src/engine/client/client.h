@@ -4,6 +4,7 @@
 #define ENGINE_CLIENT_CLIENT_H
 
 #include "graph.h"
+#include "session_sources.h"
 #include "smooth_time.h"
 
 #include <base/hash.h>
@@ -77,8 +78,12 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	IEngineTextRender *m_pTextRender = nullptr;
 	IUpdater *m_pUpdater = nullptr;
 
-	CNetClient m_aNetClient[NUM_CONNS];
-	CDemoPlayer m_DemoPlayer;
+	CSessionManager m_SessionManager;
+	CSessionId m_NetworkSessionId;
+	CSessionId m_DemoSessionId;
+	CNetworkSessionSource *m_pNetworkSessionSource = nullptr;
+	CDemoSessionSource *m_pDemoSessionSource = nullptr;
+	CNetClient m_ContactNetClient;
 	CDemoRecorder m_aDemoRecorders[RECORDER_MAX];
 	CDemoRecorder m_aDemoRecordersSixup[RECORDER_MAX];
 	CDemoEditor m_DemoEditor;
@@ -97,7 +102,6 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	bool m_HaveGlobalTcpAddr = false;
 	NETADDR m_GlobalTcpAddr = NETADDR_ZEROED;
 
-	uint64_t m_aSnapshotParts[NUM_DUMMIES] = {0, 0};
 	int64_t m_LocalStartTime = 0;
 	int64_t m_GlobalStartTime = 0;
 
@@ -111,9 +115,6 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	bool m_AutoCSVRecycle = false;
 	bool m_EditorActive = false;
 
-	int m_aAckGameTick[NUM_DUMMIES] = {-1, -1};
-	int m_aCurrentRecvTick[NUM_DUMMIES] = {0, 0};
-	int m_aRconAuthed[NUM_DUMMIES] = {0, 0};
 	char m_aRconUsername[64] = "";
 	char m_aRconPassword[sizeof(g_Config.m_SvRconPassword)] = "";
 	int m_UseTempRconCommands = 0;
@@ -131,8 +132,6 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	// pinging
 	int64_t m_PingStartTime = 0;
 
-	char m_aTimeoutCodes[NUM_DUMMIES][32] = {"", ""};
-	bool m_aDidPostConnect[NUM_DUMMIES] = {false, false};
 	bool m_GenerateTimeoutSeed = true;
 
 	char m_aCmdConnect[256] = "";
@@ -167,21 +166,8 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	std::shared_ptr<IHttpRequest> m_pDDNetInfoTask = nullptr;
 
 	// time
-	CSmoothTime m_aGameTime[NUM_DUMMIES];
 	CSmoothTime m_PredictedTime;
-
-	// input
-	struct // TODO: handle input better
-	{
-		int m_aData[MAX_INPUT_SIZE]; // the input data
-		int m_Tick; // the tick that the input is for
-		int64_t m_PredictedTime; // prediction latency when we sent this input
-		int64_t m_PredictionMargin; // prediction margin when we sent this input
-		int64_t m_Time;
-	} m_aInputs[NUM_DUMMIES][200];
-
-	int m_aCurrentInput[NUM_DUMMIES] = {0, 0};
-	bool m_LastDummy = false;
+	int m_LastActiveConnection = CONN_MAIN;
 	bool m_DummySendConnInfo = false;
 	bool m_DummyConnecting = false;
 	bool m_DummyConnected = false;
@@ -190,17 +176,7 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	bool m_DummyDeactivateOnReconnect = false;
 
 	// graphs
-	CGraph m_aInputtimeMarginGraphs[NUM_DUMMIES];
-	CGraph m_aGametimeMarginGraphs[NUM_DUMMIES];
 	CGraph m_FpsGraph;
-
-	// the game snapshots are modifiable by the game
-	CSnapshotStorage m_aSnapshotStorage[NUM_DUMMIES];
-	CSnapshotStorage::CHolder *m_aapSnapshots[NUM_DUMMIES][NUM_SNAPSHOT_TYPES];
-
-	int m_aReceivedSnapshots[NUM_DUMMIES] = {0, 0};
-	char m_aaSnapshotIncomingData[NUM_DUMMIES][CSnapshot::MAX_SIZE];
-	int m_aSnapshotIncomingDataSize[NUM_DUMMIES] = {0, 0};
 
 	CSnapshotStorage::CHolder m_aDemorecSnapshotHolders[NUM_SNAPSHOT_TYPES];
 	CSnapshotBuffer m_aaDemorecSnapshotData[NUM_SNAPSHOT_TYPES][2];
@@ -208,6 +184,26 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	CSnapshotDelta m_SnapshotDelta;
 	CSnapshotDelta m_SnapshotDeltaSixup;
 	CSnapshotDelta *SnapshotDelta();
+	CConnection &Connection(int Conn)
+	{
+		return m_pNetworkSessionSource->ConnectionAt(Conn);
+	}
+	const CConnection &Connection(int Conn) const
+	{
+		return m_pNetworkSessionSource->ConnectionAt(Conn);
+	}
+	CDemoPlayer &DemoPlayer() { return m_pDemoSessionSource->DemoPlayer(); }
+	const CDemoPlayer &DemoPlayer() const { return m_pDemoSessionSource->DemoPlayer(); }
+	CNetClient &NetClient(int Conn)
+	{
+		dbg_assert(Conn >= CONN_MAIN && Conn < NUM_CONNS, "invalid network connection");
+		return Conn == CONN_CONTACT ? m_ContactNetClient : Connection(Conn).m_NetClient;
+	}
+	const CNetClient &NetClient(int Conn) const
+	{
+		dbg_assert(Conn >= CONN_MAIN && Conn < NUM_CONNS, "invalid network connection");
+		return Conn == CONN_CONTACT ? m_ContactNetClient : Connection(Conn).m_NetClient;
+	}
 
 	std::deque<std::shared_ptr<CDemoEdit>> m_EditJobs;
 
@@ -276,6 +272,14 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	char m_aAutomaticDummyName[MAX_NAME_LENGTH];
 
 public:
+	int PrevGameTick(int Conn) const override { return Connection(Conn).m_PrevGameTick; }
+	int GameTick(int Conn) const override { return Connection(Conn).m_CurGameTick; }
+	int PredGameTick(int Conn) const override { return Connection(Conn).m_PredTick; }
+	float IntraGameTick(int Conn) const override { return Connection(Conn).m_GameIntraTick; }
+	float PredIntraGameTick(int Conn) const override { return Connection(Conn).m_PredIntraTick; }
+	float IntraGameTickSincePrev(int Conn) const override { return Connection(Conn).m_GameIntraTickSincePrev; }
+	float GameTickTime(int Conn) const override { return Connection(Conn).m_GameTickTime; }
+
 	IConfigManager *ConfigManager() { return m_pConfigManager; }
 	CConfig *Config() { return m_pConfig; }
 	IDiscord *Discord() { return m_pDiscord; }
@@ -296,17 +300,15 @@ public:
 
 	// ----- send functions -----
 	int SendMsg(int Conn, CMsgPacker *pMsg, int Flags) override;
-	// Send via the currently active client (main/dummy)
-	int SendMsgActive(CMsgPacker *pMsg, int Flags) override;
 
 	void SendInfo(int Conn);
 	void SendEnterGame(int Conn);
 	void SendReady(int Conn);
 	void SendMapRequest();
 
-	bool RconAuthed() const override { return m_aRconAuthed[g_Config.m_ClDummy] != 0; }
+	bool RconAuthed() const override { return Connection(ActiveConnection()).m_RconAuthed != 0; }
 	bool UseTempRconCommands() const override { return m_UseTempRconCommands != 0; }
-	void RconAuth(const char *pName, const char *pPassword, bool Dummy = g_Config.m_ClDummy) override;
+	void RconAuth(int Conn, const char *pName, const char *pPassword) override;
 	void Rcon(const char *pCmd) override;
 	bool ReceivingRconCommands() const override { return m_ExpectedRconCommands > 0; }
 	float GotRconCommandsPercentage() const override;
@@ -321,15 +323,17 @@ public:
 	void SendInput();
 
 	// TODO: OPT: do this a lot smarter!
-	int *GetInput(int Tick, int IsDummy) const override;
+	int *GetInput(int Conn, int Tick) const override;
 
 	const char *LatestVersion() const override;
 
 	// ------ state handling -----
 	void SetState(EClientState State);
+	bool IsOnline() const override;
+	bool IsDemoPlayback() const override;
 
 	// called when the map is loaded and we should init for a new round
-	void OnEnterGame(bool Dummy);
+	void OnEnterGame(int Conn);
 	void EnterGame(int Conn) override;
 
 	// called once after being ingame for 1 second
@@ -337,6 +341,7 @@ public:
 
 	void Connect(const char *pAddress, const char *pPassword = nullptr) override;
 	void DisconnectWithReason(const char *pReason);
+	void DisconnectDemoWithReason(const char *pReason);
 	void Disconnect() override;
 
 	void DummyDisconnect(const char *pReason) override;
@@ -355,10 +360,10 @@ public:
 	// ---
 
 	int GetPredictionTime() override;
-	CSnapItem SnapGetItem(int SnapId, int Index) const override;
+	CSnapItem SnapGetItem(int Conn, int SnapId, int Index) const override;
 	int GetPredictionTick() override;
-	const void *SnapFindItem(int SnapId, int Type, int Id) const override;
-	int SnapNumItems(int SnapId) const override;
+	const void *SnapFindItem(int Conn, int SnapId, int Type, int Id) const override;
+	int SnapNumItems(int Conn, int SnapId) const override;
 	void SnapSetStaticsize(int ItemType, int Size) override;
 	void SnapSetStaticsize7(int ItemType, int Size) override;
 
@@ -382,7 +387,7 @@ public:
 	bool PreprocessConnlessPacket7(CNetChunk *pPacket);
 	void ProcessConnlessPacket(CNetChunk *pPacket);
 	void ProcessServerInfo(int Type, NETADDR *pFrom, const void *pData, int DataSize);
-	void ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy);
+	void ProcessServerPacket(CNetChunk *pPacket, int Conn);
 
 	int UnpackAndValidateSnapshot(CSnapshot *pFrom, CSnapshotBuffer *pTo);
 
@@ -396,7 +401,7 @@ public:
 
 	bool IsSixup() const override { return m_Sixup; }
 
-	const NETADDR &ServerAddress() const override { return *m_aNetClient[CONN_MAIN].ServerAddress(); }
+	const NETADDR &ServerAddress() const override { return *NetClient(CONN_MAIN).ServerAddress(); }
 	int ConnectNetTypes() const override;
 	const char *ConnectAddressString() const override { return m_aConnectAddressStr; }
 	const char *MapDownloadName() const override { return m_aMapdownloadName; }

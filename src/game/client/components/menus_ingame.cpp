@@ -766,13 +766,14 @@ void CMenus::RenderServerInfo(CUIRect MainView)
 	if(GameClient()->m_GameInfo.m_DDRaceTeam)
 	{
 		const char *pTeamMode = nullptr;
-		switch(Config()->m_SvTeam)
+		const CSessionGameConfig *pGameConfig = GameClient()->GameConfig();
+		switch(pGameConfig->m_SvTeam)
 		{
 		case SV_TEAM_FORBIDDEN:
 			pTeamMode = Localize("forbidden", "Team status");
 			break;
 		case SV_TEAM_ALLOWED:
-			if(g_Config.m_SvSoloServer)
+			if(pGameConfig->m_SvSoloServer)
 				pTeamMode = Localize("solo", "Team status");
 			else
 				pTeamMode = Localize("allowed", "Team status");
@@ -786,14 +787,14 @@ void CMenus::RenderServerInfo(CUIRect MainView)
 		default:
 			dbg_assert_failed("unknown team mode");
 		}
-		if((Config()->m_SvTeam == SV_TEAM_ALLOWED || Config()->m_SvTeam == SV_TEAM_MANDATORY) && (Config()->m_SvMinTeamSize != DefaultConfig::SvMinTeamSize || Config()->m_SvMaxTeamSize != DefaultConfig::SvMaxTeamSize))
+		if((pGameConfig->m_SvTeam == SV_TEAM_ALLOWED || pGameConfig->m_SvTeam == SV_TEAM_MANDATORY) && (pGameConfig->m_SvMinTeamSize != DefaultConfig::SvMinTeamSize || pGameConfig->m_SvMaxTeamSize != DefaultConfig::SvMaxTeamSize))
 		{
-			if(Config()->m_SvMinTeamSize != DefaultConfig::SvMinTeamSize && Config()->m_SvMaxTeamSize != DefaultConfig::SvMaxTeamSize)
-				str_format(aBuf, sizeof(aBuf), "%s: %s (%s %d, %s %d)", Localize("Teams"), pTeamMode, Localize("minimum", "Team size"), Config()->m_SvMinTeamSize, Localize("maximum", "Team size"), Config()->m_SvMaxTeamSize);
-			else if(Config()->m_SvMinTeamSize != DefaultConfig::SvMinTeamSize)
-				str_format(aBuf, sizeof(aBuf), "%s: %s (%s %d)", Localize("Teams"), pTeamMode, Localize("minimum", "Team size"), Config()->m_SvMinTeamSize);
+			if(pGameConfig->m_SvMinTeamSize != DefaultConfig::SvMinTeamSize && pGameConfig->m_SvMaxTeamSize != DefaultConfig::SvMaxTeamSize)
+				str_format(aBuf, sizeof(aBuf), "%s: %s (%s %d, %s %d)", Localize("Teams"), pTeamMode, Localize("minimum", "Team size"), pGameConfig->m_SvMinTeamSize, Localize("maximum", "Team size"), pGameConfig->m_SvMaxTeamSize);
+			else if(pGameConfig->m_SvMinTeamSize != DefaultConfig::SvMinTeamSize)
+				str_format(aBuf, sizeof(aBuf), "%s: %s (%s %d)", Localize("Teams"), pTeamMode, Localize("minimum", "Team size"), pGameConfig->m_SvMinTeamSize);
 			else
-				str_format(aBuf, sizeof(aBuf), "%s: %s (%s %d)", Localize("Teams"), pTeamMode, Localize("maximum", "Team size"), Config()->m_SvMaxTeamSize);
+				str_format(aBuf, sizeof(aBuf), "%s: %s (%s %d)", Localize("Teams"), pTeamMode, Localize("maximum", "Team size"), pGameConfig->m_SvMaxTeamSize);
 		}
 		else
 			str_format(aBuf, sizeof(aBuf), "%s: %s", Localize("Teams"), pTeamMode);

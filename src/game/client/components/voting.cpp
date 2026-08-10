@@ -39,14 +39,14 @@ void CVoting::Callvote(const char *pType, const char *pValue, const char *pReaso
 		Msg.m_pValue = pValue;
 		Msg.m_pReason = pReason;
 		Msg.m_Force = false;
-		Client()->SendPackMsgActive(&Msg, MSGFLAG_VITAL, true);
+		Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL, true);
 		return;
 	}
 	CNetMsg_Cl_CallVote Msg = {nullptr};
 	Msg.m_pType = pType;
 	Msg.m_pValue = pValue;
 	Msg.m_pReason = pReason;
-	Client()->SendPackMsgActive(&Msg, MSGFLAG_VITAL);
+	Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL);
 }
 
 void CVoting::CallvoteSpectate(int ClientId, const char *pReason, bool ForceVote)
@@ -144,7 +144,7 @@ void CVoting::AddvoteOption(const char *pDescription, const char *pCommand)
 void CVoting::Vote(int v)
 {
 	CNetMsg_Cl_Vote Msg = {v};
-	Client()->SendPackMsgActive(&Msg, MSGFLAG_VITAL);
+	Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL);
 }
 
 int CVoting::SecondsLeft() const

@@ -99,6 +99,7 @@ protected:
 	IServer *Server() const { return m_pServer; }
 
 	void LoadGameSettings();
+	virtual void RegisterCommands() {}
 	virtual void InitGameSettings();
 	virtual void UpdateGameInfo(CNetObj_GameInfo &GameInfo, int SnappingClient) {}
 	virtual int GameInfoFlags(int SnappingClient) const { return 0; }
@@ -174,6 +175,9 @@ public:
 			chr - The CCharacter that was spawned.
 	*/
 	virtual void OnCharacterSpawn(class CCharacter *pChr);
+	// Complete mode-owned phases around the shared CharacterCore tick.
+	virtual void TickCharacterPreCore(CCharacter *) {}
+	virtual void TickCharacterPostCore(CCharacter *pCharacter);
 
 	virtual void HandleCharacterTiles(class CCharacter *pChr, int MapIndex);
 	virtual void SetArmorProgress(CCharacter *pCharacter, int Progress) {}
@@ -188,12 +192,16 @@ public:
 			pos - Where the entity is located in the world.
 
 		Returns:
-			bool?
+			True if the entity index was recognized by this controller.
 	*/
 	virtual bool OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number = 0);
 
 	virtual void OnPlayerConnect(class CPlayer *pPlayer);
 	virtual void OnPlayerDisconnect(class CPlayer *pPlayer, const char *pReason);
+	virtual void OnPlayerSetTeam(int ClientId, int Team);
+	virtual int PlayerAutoRespawnTick(const CPlayer *pPlayer) const;
+	virtual bool SaveStateForHotReload() { return false; }
+	virtual void RestoreCharacterAfterHotReload(CCharacter *pCharacter);
 
 	virtual void OnReset();
 

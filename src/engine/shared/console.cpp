@@ -36,13 +36,30 @@ CConsole::CResult::CResult(int ClientId) :
 }
 
 CConsole::CResult::CResult(const CResult &Other) :
-	IResult(Other)
+	CResult(Other.m_ClientId)
 {
+	*this = Other;
+}
+
+CConsole::CResult &CConsole::CResult::operator=(const CResult &Other)
+{
+	if(this == &Other)
+		return *this;
+
+	m_NumArgs = Other.m_NumArgs;
+	m_ClientId = Other.m_ClientId;
 	mem_copy(m_aStringStorage, Other.m_aStringStorage, sizeof(m_aStringStorage));
-	m_pArgsStart = m_aStringStorage + (Other.m_pArgsStart - Other.m_aStringStorage);
-	m_pCommand = m_aStringStorage + (Other.m_pCommand - Other.m_aStringStorage);
+	const auto RebasePointer = [this, &Other](const char *pPointer) {
+		return pPointer == nullptr ? nullptr : m_aStringStorage + (pPointer - Other.m_aStringStorage);
+	};
+	m_pArgsStart = RebasePointer(Other.m_pArgsStart);
+	m_pCommand = RebasePointer(Other.m_pCommand);
+	std::fill(std::begin(m_apArgs), std::end(m_apArgs), nullptr);
 	for(unsigned i = 0; i < Other.m_NumArgs; ++i)
-		m_apArgs[i] = m_aStringStorage + (Other.m_apArgs[i] - Other.m_aStringStorage);
+		m_apArgs[i] = RebasePointer(Other.m_apArgs[i]);
+	mem_copy(m_aSpecialVictim, Other.m_aSpecialVictim, sizeof(m_aSpecialVictim));
+	m_VictimId = Other.m_VictimId;
+	return *this;
 }
 
 void CConsole::CResult::AddArgument(const char *pArg)
@@ -99,6 +116,17 @@ const IConsole::ICommandInfo *CConsole::FirstCommandInfo(int ClientId, int FlagM
 	for(const CCommand *pCommand = m_pFirstCommand; pCommand; pCommand = pCommand->Next())
 	{
 		if(pCommand->m_Flags & FlagMask && CanUseCommand(ClientId, pCommand))
+			return pCommand;
+	}
+
+	return nullptr;
+}
+
+const IConsole::ICommandInfo *CConsole::FirstCommandInfoAtOrAfter(const char *pName, int ClientId, int FlagMask) const
+{
+	for(const CCommand *pCommand = m_pFirstCommand; pCommand; pCommand = pCommand->Next())
+	{
+		if(str_comp(pCommand->Name(), pName) >= 0 && pCommand->m_Flags & FlagMask && CanUseCommand(ClientId, pCommand))
 			return pCommand;
 	}
 
@@ -901,21 +929,12 @@ CConsole::~CConsole()
 	while(pCommand)
 	{
 		CCommand *pNext = pCommand->Next();
-		{
-			FCommandCallback pfnCallback = pCommand->m_pfnCallback;
-			void *pUserData = pCommand->m_pUserData;
-			CChain *pChain = nullptr;
-			while(pfnCallback == Con_Chain)
-			{
-				pChain = static_cast<CChain *>(pUserData);
-				pfnCallback = pChain->m_pfnCallback;
-				pUserData = pChain->m_pCallbackUserData;
-				delete pChain;
-			}
-		}
 		// Temp commands are on m_TempCommands heap, so don't delete them
 		if(!pCommand->m_Temp)
+		{
+			ClearCommandState(pCommand);
 			delete pCommand;
+		}
 		pCommand = pNext;
 	}
 }
@@ -973,8 +992,7 @@ void CConsole::AddCommandSorted(CCommand *pCommand)
 	}
 }
 
-void CConsole::Register(const char *pName, const char *pParams,
-	int Flags, FCommandCallback pfnFunc, void *pUser, const char *pHelp)
+bool CConsole::RegisterCommand(const char *pName, const char *pParams, int Flags, FCommandCallback pfnFunc, void *pUser, const char *pHelp, const void *pOwner, bool Replace)
 {
 	CCommand *pCommand = FindCommand(pName, Flags);
 	bool DoAdd = false;
@@ -983,8 +1001,17 @@ void CConsole::Register(const char *pName, const char *pParams,
 		pCommand = new CCommand();
 		DoAdd = true;
 	}
+	else if(!Replace)
+	{
+		return false;
+	}
+	else
+	{
+		ClearCommandState(pCommand);
+	}
 	pCommand->m_pfnCallback = pfnFunc;
 	pCommand->m_pUserData = pUser;
+	pCommand->m_pOwner = pOwner;
 
 	pCommand->m_pName = pName;
 	pCommand->m_pHelp = pHelp;
@@ -998,6 +1025,64 @@ void CConsole::Register(const char *pName, const char *pParams,
 
 	if(pCommand->m_Flags & CFGFLAG_CHAT)
 		pCommand->SetAccessLevel(EAccessLevel::USER);
+	return true;
+}
+
+void CConsole::Register(const char *pName, const char *pParams, int Flags, FCommandCallback pfnFunc, void *pUser, const char *pHelp)
+{
+	RegisterCommand(pName, pParams, Flags, pfnFunc, pUser, pHelp, nullptr, true);
+}
+
+bool CConsole::RegisterOwned(const char *pName, const char *pParams, int Flags, FCommandCallback pfnFunc, void *pUser, const char *pHelp, const void *pOwner)
+{
+	if(!pOwner)
+		return false;
+	return RegisterCommand(pName, pParams, Flags, pfnFunc, pUser, pHelp, pOwner, false);
+}
+
+void CConsole::ClearCommandState(CCommand *pCommand)
+{
+	m_vExecutionQueue.erase(std::remove_if(m_vExecutionQueue.begin(), m_vExecutionQueue.end(), [pCommand](const CExecutionQueueEntry &Entry) {
+		return Entry.m_pCommand == pCommand;
+	}),
+		m_vExecutionQueue.end());
+
+	FCommandCallback pfnCallback = pCommand->m_pfnCallback;
+	void *pUserData = pCommand->m_pUserData;
+	while(pfnCallback == Con_Chain)
+	{
+		CChain *pChain = static_cast<CChain *>(pUserData);
+		pfnCallback = pChain->m_pfnCallback;
+		pUserData = pChain->m_pCallbackUserData;
+		delete pChain;
+	}
+}
+
+void CConsole::DeregisterOwner(const void *pOwner)
+{
+	if(!pOwner)
+		return;
+
+	CCommand *pPrevious = nullptr;
+	CCommand *pCommand = m_pFirstCommand;
+	while(pCommand)
+	{
+		CCommand *pNext = pCommand->Next();
+		if(pCommand->m_pOwner == pOwner)
+		{
+			if(pPrevious)
+				pPrevious->SetNext(pNext);
+			else
+				m_pFirstCommand = pNext;
+			ClearCommandState(pCommand);
+			delete pCommand;
+		}
+		else
+		{
+			pPrevious = pCommand;
+		}
+		pCommand = pNext;
+	}
 }
 
 void CConsole::RegisterTemp(const char *pName, const char *pParams, int Flags, const char *pHelp)
@@ -1028,6 +1113,7 @@ void CConsole::RegisterTemp(const char *pName, const char *pParams, int Flags, c
 
 	pCommand->m_pfnCallback = nullptr;
 	pCommand->m_pUserData = nullptr;
+	pCommand->m_pOwner = nullptr;
 	pCommand->m_Flags = Flags;
 	pCommand->m_Temp = true;
 

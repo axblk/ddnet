@@ -224,8 +224,7 @@ void CPlayer::Tick()
 
 	if(!GameServer()->m_pController->IsGamePaused())
 	{
-		int EarliestRespawnTick = m_PreviousDieTick + Server()->TickSpeed() * 3;
-		int RespawnTick = std::max(m_DieTick, EarliestRespawnTick) + 2;
+		const int RespawnTick = GameServer()->m_pController->PlayerAutoRespawnTick(this);
 		if(!m_pCharacter && RespawnTick <= Server()->Tick())
 			m_Spawning = true;
 

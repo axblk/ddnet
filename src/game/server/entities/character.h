@@ -52,6 +52,10 @@ public:
 	bool IsSnappingCharacterInView(int SnappingClientId);
 
 	bool IsGrounded();
+	bool IsOnDeathTile();
+	void DDRaceInit();
+	void DDRaceTick();
+	void DDRacePostCoreTick();
 
 	void SetWeapon(int W);
 	void SetJetpack(bool Active);
@@ -180,11 +184,8 @@ private:
 	void HandleTiles(int Index);
 	float m_Time;
 	int m_LastBroadcast;
-	void DDRaceInit();
 	void HandleSkippableTiles(int Index);
 	void ForceSetRescue(int RescueMode);
-	void DDRaceTick();
-	void DDRacePostCoreTick();
 	void HandleBroadcast();
 	void HandleTuneLayer();
 	void SendZoneMsgs();

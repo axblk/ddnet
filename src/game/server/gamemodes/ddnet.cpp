@@ -16,8 +16,10 @@
 #include <game/server/score.h>
 #include <game/version.h>
 
+#include <algorithm>
+
 CGameControllerDDNet::CGameControllerDDNet(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo) :
-	IGameController(pGameServer, GameModeInfo)
+	CGameControllerDDRace(pGameServer, GameModeInfo)
 {
 }
 

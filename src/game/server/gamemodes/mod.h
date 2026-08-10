@@ -1,14 +1,12 @@
 #ifndef GAME_SERVER_GAMEMODES_MOD_H
 #define GAME_SERVER_GAMEMODES_MOD_H
 
-#include <game/server/gamecontroller.h>
+#include "ddrace.h"
 
-class CGameControllerMod : public IGameController
+class CGameControllerMod : public CGameControllerDDRace
 {
 public:
 	CGameControllerMod(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo);
 	~CGameControllerMod() override;
-
-	void Tick() override;
 };
 #endif // GAME_SERVER_GAMEMODES_MOD_H

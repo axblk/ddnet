@@ -234,6 +234,9 @@ public:
 	// returns last input if available otherwise nulled PlayerInput object
 	// ClientId has to be valid
 	CNetObj_PlayerInput GetLastPlayerInput(int ClientId) const;
+	void SaveDDRaceStateForHotReload();
+	void RestoreDDRaceCharacterAfterHotReload(CCharacter *pCharacter);
+	void DiscardHotReloadState(int ClientId);
 
 	// ponytail: non-owning migration alias; replace callers with GameHost().Controller() as host/mode boundaries grow.
 	IGameController *m_pController;
@@ -358,6 +361,11 @@ public:
 	void OnConsoleInit() override;
 	void RegisterDDRaceCommands();
 	void RegisterChatCommands();
+	void RegisterDDRaceAdminCommands(const void *pOwner);
+	void RegisterDDRacePlayerCommands(const void *pOwner);
+	void RegisterDDRacePracticeCommands(const void *pOwner);
+	void RegisterDDRaceScoreCommands(const void *pOwner);
+	void RegisterDDRaceTeamCommands(const void *pOwner);
 	[[nodiscard]] bool OnMapChange(char *pNewMapName, int MapNameSize) override;
 	void OnShutdown(void *pPersistentData) override;
 
@@ -371,7 +379,6 @@ public:
 	void OnSayNetMessage(const CNetMsg_Cl_Say *pMsg, int ClientId, const CUnpacker *pUnpacker);
 	void OnCallVoteNetMessage(const CNetMsg_Cl_CallVote *pMsg, int ClientId);
 	void OnVoteNetMessage(const CNetMsg_Cl_Vote *pMsg, int ClientId);
-	void OnSetTeamNetMessage(const CNetMsg_Cl_SetTeam *pMsg, int ClientId);
 	void OnIsDDNetLegacyNetMessage(const CNetMsg_Cl_IsDDNetLegacy *pMsg, int ClientId, CUnpacker *pUnpacker);
 	void OnShowOthersLegacyNetMessage(const CNetMsg_Cl_ShowOthersLegacy *pMsg, int ClientId);
 	void OnShowOthersNetMessage(const CNetMsg_Cl_ShowOthers *pMsg, int ClientId);

@@ -2,11 +2,11 @@
 #ifndef GAME_SERVER_GAMEMODES_DDNET_H
 #define GAME_SERVER_GAMEMODES_DDNET_H
 
-#include <game/server/gamecontroller.h>
+#include "ddrace.h"
 
 class CScore;
 
-class CGameControllerDDNet : public IGameController
+class CGameControllerDDNet : public CGameControllerDDRace
 {
 public:
 	CGameControllerDDNet(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo);
@@ -24,7 +24,6 @@ public:
 
 	void OnPlayerConnect(class CPlayer *pPlayer) override;
 	void OnPlayerDisconnect(class CPlayer *pPlayer, const char *pReason) override;
-
 	void OnReset() override;
 
 	void Tick() override;

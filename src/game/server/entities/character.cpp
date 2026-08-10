@@ -92,8 +92,14 @@ bool CCharacter::Spawn(CPlayer *pPlayer, vec2 Pos)
 	m_Core.m_ActiveWeapon = WEAPON_GUN;
 	m_Core.m_Pos = m_Pos;
 	m_Core.m_Id = m_pPlayer->GetCid();
-	int TuneZone = Collision()->IsTune(Collision()->GetMapIndex(Pos));
-	m_Core.m_Tuning = TuningList()[TuneZone];
+	m_Core.m_Jumps = 2;
+	m_Paused = false;
+	m_DDRaceState = ERaceState::NONE;
+	m_PrevPos = m_Pos;
+	m_TuneZone = Collision()->IsTune(Collision()->GetMapIndex(Pos));
+	m_TuneZoneOld = m_TuneZone;
+	m_NeededFaketuning = 0;
+	m_Core.m_Tuning = TuningList()[m_TuneZone];
 	GameServer()->m_World.m_Core.m_apCharacters[m_pPlayer->GetCid()] = &m_Core;
 
 	m_ReckoningTick = 0;
@@ -104,39 +110,7 @@ bool CCharacter::Spawn(CPlayer *pPlayer, vec2 Pos)
 	m_Alive = true;
 
 	GameServer()->m_pController->OnCharacterSpawn(this);
-
-	DDRaceInit();
-
-	m_TuneZone = TuneZone;
-	m_TuneZoneOld = -1; // no zone leave msg on spawn
-	m_NeededFaketuning = 0; // reset fake tunings on respawn and send the client
-	SendZoneMsgs(); // we want a entermessage also on spawn
-	GameServer()->SendTuningParams(m_pPlayer->GetCid(), m_TuneZone);
-
-	TrySetRescue(RESCUEMODE_MANUAL);
-	Server()->StartRecord(m_pPlayer->GetCid());
-
-	int Team = GameServer()->m_aTeamMapping[m_pPlayer->GetCid()];
-
-	if(Team != -1)
-	{
-		GameServer()->m_pController->Teams().SetForceCharacterTeam(m_pPlayer->GetCid(), Team);
-		GameServer()->m_aTeamMapping[m_pPlayer->GetCid()] = -1;
-
-		if(GameServer()->m_apSavedTeams[Team])
-		{
-			GameServer()->m_apSavedTeams[Team]->Load(GameServer(), Team, true, true);
-			delete GameServer()->m_apSavedTeams[Team];
-			GameServer()->m_apSavedTeams[Team] = nullptr;
-		}
-
-		if(GameServer()->m_apSavedTees[m_pPlayer->GetCid()])
-		{
-			GameServer()->m_apSavedTees[m_pPlayer->GetCid()]->Load(m_pPlayer->GetCharacter(), Team);
-			delete GameServer()->m_apSavedTees[m_pPlayer->GetCid()];
-			GameServer()->m_apSavedTees[m_pPlayer->GetCid()] = nullptr;
-		}
-	}
+	GameServer()->m_pController->RestoreCharacterAfterHotReload(this);
 
 	return true;
 }
@@ -671,7 +645,7 @@ void CCharacter::PreTick()
 		SetEmote(m_pPlayer->GetDefaultEmote(), -1);
 	}
 
-	DDRaceTick();
+	GameServer()->m_pController->TickCharacterPreCore(this);
 
 	Antibot()->OnCharacterTick(m_pPlayer->GetCid());
 
@@ -701,7 +675,7 @@ void CCharacter::Tick()
 	// handle Weapons
 	HandleWeapons();
 
-	DDRacePostCoreTick();
+	GameServer()->m_pController->TickCharacterPostCore(this);
 
 	if(m_Core.m_TriggeredEvents & COREEVENT_HOOK_ATTACH_PLAYER)
 	{
@@ -895,7 +869,7 @@ void CCharacter::Die(int Killer, int Weapon, bool SendKillMsg)
 	GameServer()->CreateSound(m_Pos, SOUND_PLAYER_DIE, TeamMask());
 	GameServer()->CreateDeath(m_Pos, m_pPlayer->GetCid(), TeamMask());
 
-	// this is to rate limit respawning to 3 secs
+	// Retain both death ticks for mode-owned respawn policies.
 	m_pPlayer->m_PreviousDieTick = m_pPlayer->m_DieTick;
 	m_pPlayer->m_DieTick = Server()->Tick();
 
@@ -1325,14 +1299,7 @@ void CCharacter::HandleBroadcast()
 void CCharacter::HandleSkippableTiles(int Index)
 {
 	// handle death-tiles and leaving gamelayer
-	if((Collision()->GetCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) == TILE_DEATH ||
-		   Collision()->GetCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) == TILE_DEATH ||
-		   Collision()->GetCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) == TILE_DEATH ||
-		   Collision()->GetCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) == TILE_DEATH ||
-		   Collision()->GetFrontCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) == TILE_DEATH ||
-		   Collision()->GetFrontCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) == TILE_DEATH ||
-		   Collision()->GetFrontCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) == TILE_DEATH ||
-		   Collision()->GetFrontCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) == TILE_DEATH) &&
+	if(IsOnDeathTile() &&
 		!m_Core.m_Super && !m_Core.m_Invincible && !(Team() && Teams()->TeeFinished(m_pPlayer->GetCid())))
 	{
 		if(Teams()->IsPractice(Team()))
@@ -1443,6 +1410,18 @@ void CCharacter::HandleSkippableTiles(int Index)
 			m_Core.m_Vel = ClampVel(m_MoveRestrictions, TempVel);
 		}
 	}
+}
+
+bool CCharacter::IsOnDeathTile()
+{
+	return Collision()->GetCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) == TILE_DEATH ||
+	       Collision()->GetCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) == TILE_DEATH ||
+	       Collision()->GetCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) == TILE_DEATH ||
+	       Collision()->GetCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) == TILE_DEATH ||
+	       Collision()->GetFrontCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) == TILE_DEATH ||
+	       Collision()->GetFrontCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) == TILE_DEATH ||
+	       Collision()->GetFrontCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) == TILE_DEATH ||
+	       Collision()->GetFrontCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) == TILE_DEATH;
 }
 
 bool CCharacter::IsSwitchActiveCb(unsigned char Number, void *pUser)
@@ -2120,14 +2099,7 @@ void CCharacter::DDRaceTick()
 			break;
 		}
 	}
-	m_Core.m_IsInFreeze |= (Collision()->GetCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) == TILE_DEATH ||
-				Collision()->GetCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) == TILE_DEATH ||
-				Collision()->GetCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) == TILE_DEATH ||
-				Collision()->GetCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) == TILE_DEATH ||
-				Collision()->GetFrontCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) == TILE_DEATH ||
-				Collision()->GetFrontCollisionAt(m_Pos.x + GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) == TILE_DEATH ||
-				Collision()->GetFrontCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y - GetProximityRadius() / 3.f) == TILE_DEATH ||
-				Collision()->GetFrontCollisionAt(m_Pos.x - GetProximityRadius() / 3.f, m_Pos.y + GetProximityRadius() / 3.f) == TILE_DEATH);
+	m_Core.m_IsInFreeze |= IsOnDeathTile();
 
 	// look for save position for rescue feature
 	// always update auto rescue
@@ -2337,14 +2309,10 @@ void CCharacter::Pause(bool Pause)
 
 void CCharacter::DDRaceInit()
 {
-	m_Paused = false;
-	m_DDRaceState = ERaceState::NONE;
-	m_PrevPos = m_Pos;
 	for(bool &Set : m_SetSavePos)
 		Set = false;
 	m_LastBroadcast = 0;
 	m_TeamBeforeSuper = 0;
-	m_Core.m_Id = GetPlayer()->GetCid();
 	m_TeleCheckpoint = 0;
 	m_Core.m_EndlessHook = g_Config.m_SvEndlessDrag;
 	if(g_Config.m_SvHit)
@@ -2361,8 +2329,6 @@ void CCharacter::DDRaceInit()
 		m_Core.m_GrenadeHitDisabled = true;
 		m_Core.m_LaserHitDisabled = true;
 	}
-	m_Core.m_Jumps = 2;
-
 	int Team = Teams()->m_Core.Team(m_Core.m_Id);
 
 	if(Teams()->TeamLocked(Team) && !Teams()->TeamFlock(Team))
@@ -2386,6 +2352,12 @@ void CCharacter::DDRaceInit()
 	{
 		GameServer()->SendStartWarning(GetPlayer()->GetCid(), "Please join a team before you start");
 	}
+
+	m_TuneZoneOld = -1; // no zone leave msg on spawn
+	SendZoneMsgs(); // we want an enter message also on spawn
+	GameServer()->SendTuningParams(m_pPlayer->GetCid(), m_TuneZone);
+	TrySetRescue(RESCUEMODE_MANUAL);
+	Server()->StartRecord(m_pPlayer->GetCid());
 }
 
 bool CCharacter::Rescue()

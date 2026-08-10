@@ -30,6 +30,7 @@ class CConsole : public IConsole
 		bool m_Temp;
 		FCommandCallback m_pfnCallback;
 		void *m_pUserData;
+		const void *m_pOwner;
 
 		const char *Name() const override { return m_pName; }
 		const char *Help() const override { return m_pHelp; }
@@ -108,6 +109,7 @@ class CConsole : public IConsole
 
 		CResult(int ClientId);
 		CResult(const CResult &Other);
+		CResult &operator=(const CResult &Other);
 
 		void AddArgument(const char *pArg);
 		void RemoveArgument(unsigned Index) override;
@@ -161,6 +163,8 @@ class CConsole : public IConsole
 
 	void AddCommandSorted(CCommand *pCommand);
 	CCommand *FindCommand(const char *pName, int FlagMask);
+	bool RegisterCommand(const char *pName, const char *pParams, int Flags, FCommandCallback pfnFunc, void *pUser, const char *pHelp, const void *pOwner, bool Replace);
+	void ClearCommandState(CCommand *pCommand);
 
 	bool m_Cheated;
 
@@ -170,12 +174,15 @@ public:
 
 	void Init() override;
 	const ICommandInfo *FirstCommandInfo(int ClientId, int FlagMask) const override;
+	const ICommandInfo *FirstCommandInfoAtOrAfter(const char *pName, int ClientId, int FlagMask) const override;
 	const ICommandInfo *NextCommandInfo(const IConsole::ICommandInfo *pInfo, int ClientId, int FlagMask) const override;
 	const ICommandInfo *GetCommandInfo(const char *pName, int FlagMask, bool Temp) override;
 	int PossibleCommands(const char *pStr, int FlagMask, bool Temp, FPossibleCallback pfnCallback, void *pUser) override;
 
 	void ParseArguments(int NumArgs, const char **ppArguments) override;
 	void Register(const char *pName, const char *pParams, int Flags, FCommandCallback pfnFunc, void *pUser, const char *pHelp) override;
+	bool RegisterOwned(const char *pName, const char *pParams, int Flags, FCommandCallback pfnFunc, void *pUser, const char *pHelp, const void *pOwner) override;
+	void DeregisterOwner(const void *pOwner) override;
 	void RegisterTemp(const char *pName, const char *pParams, int Flags, const char *pHelp) override;
 	void DeregisterTemp(const char *pName) override;
 	void DeregisterTempAll() override;

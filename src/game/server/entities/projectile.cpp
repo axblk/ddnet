@@ -419,7 +419,8 @@ void CProjectile::Snap(int SnappingClient)
 		return;
 
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
-	if(SnappingClientVersion < VERSION_DDNET_ENTITY_NETOBJS)
+	const bool UseDDNetEntityNetObjs = GameServer()->m_pController->UseDDNetEntityNetObjs();
+	if(UseDDNetEntityNetObjs && SnappingClientVersion < VERSION_DDNET_ENTITY_NETOBJS)
 	{
 		CCharacter *pSnapChar = GameServer()->GetPlayerChar(SnappingClient);
 		int Tick = (Server()->Tick() % Server()->TickSpeed()) % ((m_Explosive) ? 6 : 20);
@@ -439,11 +440,11 @@ void CProjectile::Snap(int SnappingClient)
 	if(SnappingClient != SERVER_DEMO_CLIENT && m_Owner != -1 && !TeamMask.test(SnappingClient))
 		return;
 
-	if(SnappingClientVersion >= VERSION_DDNET_ENTITY_NETOBJS)
+	if(UseDDNetEntityNetObjs && SnappingClientVersion >= VERSION_DDNET_ENTITY_NETOBJS)
 	{
 		Server()->SnapNewItem(GetId().value(), NetInfo(SnappingClient));
 	}
-	else if(SnappingClientVersion >= VERSION_DDNET_ANTIPING_PROJECTILE && NetIsInfoLegacyCompatible())
+	else if(UseDDNetEntityNetObjs && SnappingClientVersion >= VERSION_DDNET_ANTIPING_PROJECTILE && NetIsInfoLegacyCompatible())
 	{
 		if(SnappingClientVersion >= VERSION_DDNET_MSG_LEGACY)
 		{

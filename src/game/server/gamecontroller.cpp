@@ -10,10 +10,12 @@
 #include "player.h"
 
 #include <base/log.h>
+#include <base/net.h>
 #include <base/time.h>
 
 #include <engine/antibot.h>
 #include <engine/config.h>
+#include <engine/server.h>
 #include <engine/shared/config.h>
 #include <engine/shared/protocolglue.h>
 
@@ -164,6 +166,112 @@ void IGameController::OnPlayerSetTeam(int ClientId, int Team)
 	}
 	else
 		GameServer()->SendBroadcast(aTeamJoinError, ClientId);
+}
+
+void IGameController::OnPlayerKill(int ClientId)
+{
+	if(IsGamePaused())
+		return;
+
+	CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+	if(pPlayer->m_LastKill && pPlayer->m_LastKill + Server()->TickSpeed() * g_Config.m_SvKillDelay > Server()->Tick())
+		return;
+	if(pPlayer->IsPaused() || !pPlayer->GetCharacter())
+		return;
+
+	pPlayer->m_LastKill = Server()->Tick();
+	pPlayer->KillCharacter(WEAPON_SELF);
+	pPlayer->Respawn();
+}
+
+void IGameController::OnPlayerCallKickVote(int ClientId, int TargetId, const char *pReason)
+{
+	if(g_Config.m_SvVoteKickMin)
+	{
+		int NumPlayers = 0;
+		for(int i = 0; i < MAX_CLIENTS; ++i)
+		{
+			if(!GameServer()->m_apPlayers[i] || GameServer()->m_apPlayers[i]->GetTeam() == TEAM_SPECTATORS)
+				continue;
+
+			++NumPlayers;
+			for(int j = 0; j < i; ++j)
+			{
+				if(GameServer()->m_apPlayers[j] && GameServer()->m_apPlayers[j]->GetTeam() != TEAM_SPECTATORS &&
+					!net_addr_comp_noport(Server()->ClientAddr(i), Server()->ClientAddr(j)))
+				{
+					--NumPlayers;
+					break;
+				}
+			}
+		}
+
+		if(NumPlayers < g_Config.m_SvVoteKickMin)
+		{
+			char aMessage[128];
+			str_format(aMessage, sizeof(aMessage), "Kick voting requires %d players", g_Config.m_SvVoteKickMin);
+			GameServer()->SendChatTarget(ClientId, aMessage);
+			return;
+		}
+	}
+
+	char aChatMessage[512];
+	str_format(aChatMessage, sizeof(aChatMessage), "'%s' called for vote to kick '%s' (%s)", Server()->ClientName(ClientId), Server()->ClientName(TargetId), pReason);
+	char aSixupDescription[VOTE_DESC_LENGTH];
+	str_format(aSixupDescription, sizeof(aSixupDescription), "%2d: %s", TargetId, Server()->ClientName(TargetId));
+	char aCommand[VOTE_CMD_LENGTH];
+	char aDescription[VOTE_DESC_LENGTH];
+	if(!g_Config.m_SvVoteKickBantime)
+	{
+		str_format(aCommand, sizeof(aCommand), "kick %d Kicked by vote", TargetId);
+		str_format(aDescription, sizeof(aDescription), "Kick '%s'", Server()->ClientName(TargetId));
+	}
+	else
+	{
+		str_format(aCommand, sizeof(aCommand), "ban %s %d Banned by vote", Server()->ClientAddrString(TargetId, false), g_Config.m_SvVoteKickBantime);
+		str_format(aDescription, sizeof(aDescription), "Ban '%s'", Server()->ClientName(TargetId));
+	}
+
+	GameServer()->m_apPlayers[ClientId]->m_LastKickVote = time_get();
+	GameServer()->m_VoteType = CGameContext::VOTE_TYPE_KICK;
+	GameServer()->m_VoteVictim = TargetId;
+	GameServer()->CallVote(ClientId, aDescription, aCommand, pReason, aChatMessage, aSixupDescription);
+}
+
+void IGameController::OnPlayerCallSpectateVote(int ClientId, int TargetId, const char *pReason)
+{
+	char aChatMessage[512];
+	str_format(aChatMessage, sizeof(aChatMessage), "'%s' called for vote to move '%s' to spectators (%s)", Server()->ClientName(ClientId), Server()->ClientName(TargetId), pReason);
+	char aDescription[VOTE_DESC_LENGTH];
+	str_format(aDescription, sizeof(aDescription), "Move '%s' to spectators", Server()->ClientName(TargetId));
+	char aSixupDescription[VOTE_DESC_LENGTH];
+	str_format(aSixupDescription, sizeof(aSixupDescription), "%2d: %s", TargetId, Server()->ClientName(TargetId));
+	char aCommand[VOTE_CMD_LENGTH];
+	str_format(aCommand, sizeof(aCommand), "set_team %d -1 %d", TargetId, g_Config.m_SvVoteSpectateRejoindelay);
+
+	GameServer()->m_VoteType = CGameContext::VOTE_TYPE_SPECTATE;
+	GameServer()->m_VoteVictim = TargetId;
+	GameServer()->CallVote(ClientId, aDescription, aCommand, pReason, aChatMessage, aSixupDescription);
+}
+
+bool IGameController::CanPlayerVoteOnTargetVote(int, int VoterId) const
+{
+	return GameServer()->m_apPlayers[VoterId]->GetTeam() != TEAM_SPECTATORS;
+}
+
+int IGameController::PlayerVetoActivityStartTick(int ClientId) const
+{
+	return GameServer()->m_apPlayers[ClientId]->m_JoinTick;
+}
+
+int IGameController::PlayerTeamGroup(int ClientId) const
+{
+	return GameServer()->m_apPlayers[ClientId]->GetTeam();
+}
+
+bool IGameController::CanPlayerReceivePreInput(int, int) const
+{
+	return true;
 }
 
 float IGameController::EvaluateSpawnPos(CSpawnEval *pEval, vec2 Pos, int ClientId)

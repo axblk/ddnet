@@ -1035,23 +1035,7 @@ void CCharacter::SnapCharacter(int SnappingClient, int MapId)
 
 bool CCharacter::CanSnapCharacter(int SnappingClient)
 {
-	if(SnappingClient == SERVER_DEMO_CLIENT)
-		return true;
-
-	CCharacter *pSnapChar = GameServer()->GetPlayerChar(SnappingClient);
-	CPlayer *pSnapPlayer = GameServer()->m_apPlayers[SnappingClient];
-
-	if(pSnapPlayer->GetTeam() == TEAM_SPECTATORS || pSnapPlayer->IsPaused())
-	{
-		if(pSnapPlayer->SpectatorId() != SPEC_FREEVIEW && !CanCollide(pSnapPlayer->SpectatorId()) && (pSnapPlayer->m_ShowOthers == SHOW_OTHERS_OFF || (pSnapPlayer->m_ShowOthers == SHOW_OTHERS_ONLY_TEAM && !SameTeam(pSnapPlayer->SpectatorId()))))
-			return false;
-		else if(pSnapPlayer->SpectatorId() == SPEC_FREEVIEW && !CanCollide(SnappingClient) && pSnapPlayer->m_SpecTeam && !SameTeam(SnappingClient))
-			return false;
-	}
-	else if(pSnapChar && !pSnapChar->m_Core.m_Super && !CanCollide(SnappingClient) && (pSnapPlayer->m_ShowOthers == SHOW_OTHERS_OFF || (pSnapPlayer->m_ShowOthers == SHOW_OTHERS_ONLY_TEAM && !SameTeam(SnappingClient))))
-		return false;
-
-	return true;
+	return GameServer()->m_pController->CanSnapCharacter(this, SnappingClient);
 }
 
 bool CCharacter::IsSnappingCharacterInView(int SnappingClientId)
@@ -1117,7 +1101,11 @@ void CCharacter::Snap(int SnappingClient)
 
 	// otherwise show our normal tee and send ddnet character stuff
 	SnapCharacter(SnappingClient, TranslatedId);
+	GameServer()->m_pController->SnapCharacterMode(this, SnappingClient, TranslatedId);
+}
 
+void CCharacter::SnapDDRace(int Id)
+{
 	CNetObj_DDNetCharacter DDNetCharacter = {};
 	DDNetCharacter.m_Flags = 0;
 	if(m_Core.m_Solo)

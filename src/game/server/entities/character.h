@@ -56,6 +56,7 @@ public:
 	void DDRaceInit();
 	void DDRaceTick();
 	void DDRacePostCoreTick();
+	void SnapDDRace(int TranslatedId);
 
 	void SetWeapon(int W);
 	void SetJetpack(bool Active);

@@ -16,7 +16,20 @@ public:
 	bool SaveStateForHotReload() override;
 	void RestoreCharacterAfterHotReload(CCharacter *pCharacter) override;
 	bool OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number) override;
+	void OnPlayerConnect(CPlayer *pPlayer) override;
 	void OnPlayerSetTeam(int ClientId, int Team) override;
+	void OnPlayerKill(int ClientId) override;
+	void OnPlayerCallKickVote(int ClientId, int TargetId, const char *pReason) override;
+	void OnPlayerCallSpectateVote(int ClientId, int TargetId, const char *pReason) override;
+	bool CanPlayerVoteOnTargetVote(int VoteCreatorId, int VoterId) const override;
+	int PlayerVetoActivityStartTick(int ClientId) const override;
+	int PlayerTeamGroup(int ClientId) const override;
+	bool CanPlayerReceivePreInput(int SenderId, int ReceiverId) const override;
+	void OnPlayerShowOthers(int ClientId, int Show) override;
+	bool CanSnapCharacter(CCharacter *pCharacter, int SnappingClient) const override;
+	void SnapCharacterMode(CCharacter *pCharacter, int SnappingClient, int TranslatedId) override;
+	void SnapPlayerMode(CPlayer *pPlayer, int SnappingClient, int TranslatedId) override;
+	bool UseDDNetEntityNetObjs() const override { return true; }
 
 protected:
 	void RegisterCommands() override;

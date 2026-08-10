@@ -175,6 +175,9 @@ public:
 			chr - The CCharacter that was spawned.
 	*/
 	virtual void OnCharacterSpawn(class CCharacter *pChr);
+	virtual bool CanSnapCharacter(CCharacter *pCharacter, int SnappingClient) const { return true; }
+	virtual void SnapCharacterMode(CCharacter *pCharacter, int SnappingClient, int TranslatedId) {}
+	virtual bool UseDDNetEntityNetObjs() const { return false; }
 	// Complete mode-owned phases around the shared CharacterCore tick.
 	virtual void TickCharacterPreCore(CCharacter *) {}
 	virtual void TickCharacterPostCore(CCharacter *pCharacter);
@@ -199,6 +202,14 @@ public:
 	virtual void OnPlayerConnect(class CPlayer *pPlayer);
 	virtual void OnPlayerDisconnect(class CPlayer *pPlayer, const char *pReason);
 	virtual void OnPlayerSetTeam(int ClientId, int Team);
+	virtual void OnPlayerKill(int ClientId);
+	virtual void OnPlayerCallKickVote(int ClientId, int TargetId, const char *pReason);
+	virtual void OnPlayerCallSpectateVote(int ClientId, int TargetId, const char *pReason);
+	virtual bool CanPlayerVoteOnTargetVote(int VoteCreatorId, int VoterId) const;
+	virtual int PlayerVetoActivityStartTick(int ClientId) const;
+	virtual int PlayerTeamGroup(int ClientId) const;
+	virtual bool CanPlayerReceivePreInput(int SenderId, int ReceiverId) const;
+	virtual void OnPlayerShowOthers(int ClientId, int Show) {}
 	virtual int PlayerAutoRespawnTick(const CPlayer *pPlayer) const;
 	virtual bool SaveStateForHotReload() { return false; }
 	virtual void RestoreCharacterAfterHotReload(CCharacter *pCharacter);
@@ -230,6 +241,7 @@ public:
 	 * @return the score value that will be included in the snapshot.
 	 */
 	virtual int SnapPlayerScore(int SnappingClient, CPlayer *pPlayer) { return 0; }
+	virtual void SnapPlayerMode(CPlayer *pPlayer, int SnappingClient, int TranslatedId) {}
 
 	class CFinishTime
 	{
@@ -296,6 +308,7 @@ public:
 
 	std::optional<float> m_CurrentRecord;
 	CGameTeams &Teams() { return m_Teams; }
+	const CGameTeams &Teams() const { return m_Teams; }
 	std::shared_ptr<CScoreLoadBestTimeResult> m_pLoadBestTimeResult;
 };
 

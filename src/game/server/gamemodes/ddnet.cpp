@@ -324,7 +324,7 @@ IGameController::CFinishTime CGameControllerDDNet::SnapMapBestTime(int SnappingC
 
 void CGameControllerDDNet::OnPlayerConnect(CPlayer *pPlayer)
 {
-	IGameController::OnPlayerConnect(pPlayer);
+	CGameControllerDDRace::OnPlayerConnect(pPlayer);
 	int ClientId = pPlayer->GetCid();
 
 	// init the player

@@ -110,7 +110,7 @@ void CPlayer::Reset()
 
 	m_LastKickVote = 0;
 	m_LastDDRaceTeamChange.reset();
-	m_ShowOthers = g_Config.m_SvShowOthersDefault;
+	m_ShowOthers = SHOW_OTHERS_ON;
 	m_ShowAll = g_Config.m_SvShowAllDefault;
 	m_EnableSpectatorCount = true;
 	m_ShowDistance = vec2(1200, 800);
@@ -386,96 +386,7 @@ void CPlayer::Snap(int SnappingClient)
 		}
 	}
 
-	if(m_ClientId == SnappingClient)
-	{
-		// send extended spectator info even when playing, this allows demo to record camera settings for local player
-		const int SpectatingClient = ((m_Team != TEAM_SPECTATORS && !m_Paused) || m_SpectatorId < 0 || m_SpectatorId >= MAX_CLIENTS) ? m_ClientId : m_SpectatorId;
-		const CPlayer *pSpecPlayer = GameServer()->m_apPlayers[SpectatingClient];
-
-		if(pSpecPlayer)
-		{
-			CNetObj_DDNetSpectatorInfo DDNetSpectatorInfo = {};
-			DDNetSpectatorInfo.m_HasCameraInfo = pSpecPlayer->m_CameraInfo.m_HasCameraInfo;
-			DDNetSpectatorInfo.m_Zoom = pSpecPlayer->m_CameraInfo.m_Zoom * 1000.0f;
-			DDNetSpectatorInfo.m_Deadzone = pSpecPlayer->m_CameraInfo.m_Deadzone;
-			DDNetSpectatorInfo.m_FollowFactor = pSpecPlayer->m_CameraInfo.m_FollowFactor;
-
-			if(pSpecPlayer->m_EnableSpectatorCount && SpectatingClient == m_ClientId && SnappingClient != SERVER_DEMO_CLIENT && m_Team != TEAM_SPECTATORS && !m_Paused)
-			{
-				CNetObj_SpectatorCount SpectatorCountObj = {};
-				int SpectatorCount = 0;
-				for(auto &pPlayer : GameServer()->m_apPlayers)
-				{
-					if(!pPlayer || !pPlayer->m_EnableSpectatorCount || pPlayer->m_ClientId == m_ClientId || pPlayer->m_Afk ||
-						(Server()->IsRconAuthed(pPlayer->m_ClientId) && Server()->HasAuthHidden(pPlayer->m_ClientId)) ||
-						!(pPlayer->m_Paused || pPlayer->m_Team == TEAM_SPECTATORS))
-					{
-						continue;
-					}
-
-					if(pPlayer->m_SpectatorId == m_ClientId)
-					{
-						SpectatorCount++;
-					}
-					else if(GameServer()->m_apPlayers[m_ClientId]->GetCharacter())
-					{
-						vec2 CheckPos = GameServer()->m_apPlayers[m_ClientId]->GetCharacter()->GetPos();
-						float dx = pPlayer->m_ViewPos.x - CheckPos.x;
-						float dy = pPlayer->m_ViewPos.y - CheckPos.y;
-						if(absolute(dx) < (pPlayer->m_ShowDistance.x / 2.5f) && absolute(dy) < (pPlayer->m_ShowDistance.y / 2.3f))
-							SpectatorCount++;
-					}
-				}
-				DDNetSpectatorInfo.m_SpectatorCount = SpectatorCount;
-				SpectatorCountObj.m_NumSpectators = SpectatorCount;
-				Server()->SnapNewItem(0, SpectatorCountObj);
-			}
-			Server()->SnapNewItem(m_ClientId, DDNetSpectatorInfo);
-		}
-	}
-
-	CNetObj_DDNetPlayer DDNetPlayer = {};
-	if((SnappingClient >= 0 && Server()->IsRconAuthed(SnappingClient)) || !Server()->HasAuthHidden(m_ClientId))
-		DDNetPlayer.m_AuthLevel = Server()->GetAuthedState(m_ClientId);
-	else
-		DDNetPlayer.m_AuthLevel = AUTHED_NO;
-
-	DDNetPlayer.m_Flags = 0;
-	if(m_Afk)
-		DDNetPlayer.m_Flags |= EXPLAYERFLAG_AFK;
-	if(m_Paused == PAUSE_SPEC)
-		DDNetPlayer.m_Flags |= EXPLAYERFLAG_SPEC;
-	if(m_Paused == PAUSE_PAUSED)
-		DDNetPlayer.m_Flags |= EXPLAYERFLAG_PAUSED;
-
-	IGameController::CFinishTime PlayerTime = GameServer()->m_pController->SnapPlayerTime(SnappingClient, this);
-	DDNetPlayer.m_FinishTimeSeconds = PlayerTime.m_Seconds;
-	DDNetPlayer.m_FinishTimeMillis = PlayerTime.m_Milliseconds;
-	Server()->SnapNewItem(TranslatedId, DDNetPlayer);
-
-	if(Server()->IsSixup(SnappingClient) && m_pCharacter && m_pCharacter->m_DDRaceState == ERaceState::STARTED &&
-		GameServer()->m_apPlayers[SnappingClient]->m_TimerType == TIMERTYPE_SIXUP)
-	{
-		protocol7::CNetObj_PlayerInfoRace RaceInfo = {};
-		RaceInfo.m_RaceStartTick = m_pCharacter->m_StartTime;
-		Server()->SnapNewItem(TranslatedId, RaceInfo);
-	}
-
-	bool ShowSpec = m_pCharacter && m_pCharacter->IsPaused() && m_pCharacter->CanSnapCharacter(SnappingClient);
-
-	if(SnappingClient != SERVER_DEMO_CLIENT)
-	{
-		CPlayer *pSnapPlayer = GameServer()->m_apPlayers[SnappingClient];
-		ShowSpec = ShowSpec && (GameServer()->GetDDRaceTeam(m_ClientId) == GameServer()->GetDDRaceTeam(SnappingClient) || pSnapPlayer->m_ShowOthers == SHOW_OTHERS_ON || (pSnapPlayer->GetTeam() == TEAM_SPECTATORS || pSnapPlayer->IsPaused()));
-	}
-
-	if(ShowSpec)
-	{
-		CNetObj_SpecChar SpecChar = {};
-		SpecChar.m_X = m_pCharacter->Core()->m_Pos.x;
-		SpecChar.m_Y = m_pCharacter->Core()->m_Pos.y;
-		Server()->SnapNewItem(TranslatedId, SpecChar);
-	}
+	GameServer()->m_pController->SnapPlayerMode(this, SnappingClient, TranslatedId);
 }
 
 void CPlayer::FakeSnap()

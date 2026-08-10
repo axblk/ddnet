@@ -21,6 +21,7 @@
 #include <game/mapbugs.h>
 #include <game/voting.h>
 
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <optional>
@@ -294,7 +295,7 @@ public:
 
 	// helper functions
 	void CreateDamageInd(vec2 Pos, float AngleMod, int Amount, CClientMask Mask = CClientMask().set());
-	void CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int ActivatedTeam, CClientMask Mask = CClientMask().set());
+	void CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int ActivatedTeam, CClientMask Mask = CClientMask().set(), int AttackerTeam = TEAM_SPECTATORS);
 	void CreateHammerHit(vec2 Pos, CClientMask Mask = CClientMask().set());
 	void CreatePlayerSpawn(vec2 Pos, CClientMask Mask = CClientMask().set());
 	void CreateDeath(vec2 Pos, int ClientId, CClientMask Mask = CClientMask().set());
@@ -314,6 +315,8 @@ public:
 	};
 
 	// network
+	void CreateSoundGlobal(int Sound, int Target, int VersionFlags) const;
+	void SendGameMessage7(int GameMessageId, std::initializer_list<int> Parameters = {}, int Target = -1) const;
 	void CallVote(int ClientId, const char *pDesc, const char *pCmd, const char *pReason, const char *pChatmsg, const char *pSixupDesc = nullptr);
 	void SendChatTarget(int To, const char *pText, int VersionFlags = FLAG_SIX | FLAG_SIXUP) const;
 	void SendChatTeam(int Team, const char *pText) const;

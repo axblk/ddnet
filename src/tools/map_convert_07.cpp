@@ -15,6 +15,8 @@
 #include <game/gamecore.h>
 #include <game/mapitems.h>
 
+#include <vector>
+
 /*
 	Usage: map_convert_07 <source map filepath> <dest map filepath>
 */
@@ -22,11 +24,8 @@
 static CDataFileReader g_DataReader;
 static CDataFileWriter g_DataWriter;
 
-// global new image data (set by ReplaceImageItem)
-static int g_aNewDataSize[MAX_MAPIMAGES];
-static void *g_apNewData[MAX_MAPIMAGES];
-
-static int g_Index = 0;
+// New image data added by ReplaceImageItem.
+static std::vector<std::vector<uint8_t>> g_vNewImageData;
 static int g_NextDataItemId = -1;
 
 static int g_aImageIds[MAX_MAPIMAGES];
@@ -99,9 +98,7 @@ static void *ReplaceImageItem(int Index, CMapItemImage *pImgItem, CMapItemImage 
 	pNewImgItem->m_External = false;
 	pNewImgItem->m_ImageData = g_NextDataItemId++;
 
-	g_apNewData[g_Index] = ImgInfo.m_pData;
-	g_aNewDataSize[g_Index] = ImgInfo.DataSize();
-	g_Index++;
+	g_vNewImageData.emplace_back(ImgInfo.m_pData, ImgInfo.m_pData + ImgInfo.DataSize());
 
 	return (void *)pNewImgItem;
 }
@@ -219,9 +216,9 @@ int main(int argc, const char **argv)
 		g_DataWriter.AddData(Size, pData);
 	}
 
-	for(int Index = 0; Index < g_Index; Index++)
+	for(const auto &vImageData : g_vNewImageData)
 	{
-		g_DataWriter.AddData(g_aNewDataSize[Index], g_apNewData[Index]);
+		g_DataWriter.AddData(vImageData.size(), vImageData.data());
 	}
 
 	g_DataReader.Close();

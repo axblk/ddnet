@@ -160,7 +160,7 @@ public:
 				weapon when switching team or player suicides.
 	*/
 	virtual int OnCharacterDeath(class CCharacter *pVictim, class CPlayer *pKiller, int Weapon);
-	virtual bool OnCharacterTakeDamage(class CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage);
+	virtual bool OnCharacterTakeDamage(class CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam = TEAM_SPECTATORS);
 	virtual bool CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const;
 	virtual CWeaponFireResult OnCharacterFireWeapon(const CWeaponFireContext &Context);
 	virtual CGamePickupResult OnCharacterPickup(CCharacter *pCharacter, int Type, int Subtype, vec2 Position);

@@ -908,9 +908,9 @@ void CCharacter::Die(int Killer, int Weapon, bool SendKillMsg)
 	CancelSwapRequests();
 }
 
-bool CCharacter::TakeDamage(vec2 Force, int Dmg, int From, int Weapon, bool CanDamage)
+bool CCharacter::TakeDamage(vec2 Force, int Dmg, int From, int Weapon, bool CanDamage, int AttackerTeam)
 {
-	return GameServer()->m_pController->OnCharacterTakeDamage(this, Force, Dmg, From, Weapon, CanDamage);
+	return GameServer()->m_pController->OnCharacterTakeDamage(this, Force, Dmg, From, Weapon, CanDamage, AttackerTeam);
 }
 
 void CCharacter::SendDeathMessageIfNotInLockedTeam(int Killer, int Weapon, int ModeSpecial)

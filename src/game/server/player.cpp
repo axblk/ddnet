@@ -680,9 +680,10 @@ void CPlayer::Respawn(bool WeakHook)
 CCharacter *CPlayer::ForceSpawn(vec2 Pos)
 {
 	m_Spawning = false;
+	if(m_Team == TEAM_SPECTATORS)
+		m_Team = TEAM_GAME;
 	m_pCharacter = new(m_ClientId) CCharacter(&GameServer()->m_World, GameServer()->GetLastPlayerInput(m_ClientId));
 	m_pCharacter->Spawn(this, Pos);
-	m_Team = TEAM_GAME;
 	return m_pCharacter;
 }
 

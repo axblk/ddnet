@@ -11,6 +11,7 @@
 #include <game/mapitems.h>
 #include <game/server/gamecontext.h>
 #include <game/server/gamecontroller.h>
+#include <game/server/player.h>
 
 CProjectile::CProjectile(
 	CGameWorld *pGameWorld,
@@ -32,6 +33,8 @@ CProjectile::CProjectile(
 	m_Direction = Dir;
 	m_LifeSpan = Span;
 	m_Owner = Owner;
+	m_OwnerTeam = Owner >= 0 && Owner < MAX_CLIENTS && GameServer()->m_apPlayers[Owner] ? GameServer()->m_apPlayers[Owner]->GetTeam() : TEAM_SPECTATORS;
+	m_OwnerDetached = false;
 	m_SoundImpact = SoundImpact;
 	m_StartTick = Server()->Tick();
 	m_Explosive = Explosive;
@@ -55,6 +58,15 @@ CProjectile::CProjectile(
 void CProjectile::Reset()
 {
 	m_MarkedForDestroy = true;
+}
+
+void CProjectile::LoseOwner()
+{
+	if(m_Owner >= 0)
+	{
+		m_Owner = -1;
+		m_OwnerDetached = true;
+	}
 }
 
 vec2 CProjectile::GetPos(float Time)
@@ -131,7 +143,7 @@ void CProjectile::Tick()
 		case EProjectileOwnerLossAction::KEEP:
 			break;
 		case EProjectileOwnerLossAction::DETACH:
-			m_Owner = -1;
+			LoseOwner();
 			break;
 		case EProjectileOwnerLossAction::DESTROY:
 			m_MarkedForDestroy = true;
@@ -150,8 +162,14 @@ void CProjectile::Tick()
 			}
 			for(int i = 0; i < Number; i++)
 			{
-				GameServer()->CreateExplosion(ColPos, m_Owner, m_Type, m_Owner == -1, (!pTargetChr ? -1 : pTargetChr->Team()),
-					(m_Owner != -1) ? TeamMask : CClientMask().set());
+				GameServer()->CreateExplosion(
+					ColPos,
+					m_Owner,
+					m_Type,
+					m_Owner == -1 && !m_OwnerDetached,
+					m_OwnerDetached || !pTargetChr ? -1 : pTargetChr->Team(),
+					(m_Owner != -1) ? TeamMask : CClientMask().set(),
+					m_OwnerDetached ? m_OwnerTeam : TEAM_SPECTATORS);
 				GameServer()->CreateSound(ColPos, m_SoundImpact,
 					(m_Owner != -1) ? TeamMask : CClientMask().set());
 			}
@@ -168,7 +186,7 @@ void CProjectile::Tick()
 			}
 		}
 		else if(pTargetChr)
-			pTargetChr->TakeDamage(m_Direction * Rules.m_DirectImpactForce, 0, m_Owner, m_Type);
+			pTargetChr->TakeDamage(m_Direction * Rules.m_DirectImpactForce, 0, m_Owner, m_Type, true, m_OwnerDetached ? m_OwnerTeam : TEAM_SPECTATORS);
 
 		if(pOwnerChar && !GameLayerClipped(ColPos) &&
 			((m_Type == WEAPON_GRENADE && pOwnerChar->HasTelegunGrenade()) || (m_Type == WEAPON_GUN && pOwnerChar->HasTelegunGun())))
@@ -253,8 +271,14 @@ void CProjectile::Tick()
 				TeamMask = pOwnerChar->TeamMask();
 			}
 
-			GameServer()->CreateExplosion(ColPos, m_Owner, m_Type, m_Owner == -1, (!pOwnerChar ? -1 : pOwnerChar->Team()),
-				(m_Owner != -1) ? TeamMask : CClientMask().set());
+			GameServer()->CreateExplosion(
+				ColPos,
+				m_Owner,
+				m_Type,
+				m_Owner == -1 && !m_OwnerDetached,
+				m_OwnerDetached || !pOwnerChar ? -1 : pOwnerChar->Team(),
+				(m_Owner != -1) ? TeamMask : CClientMask().set(),
+				m_OwnerDetached ? m_OwnerTeam : TEAM_SPECTATORS);
 			GameServer()->CreateSound(ColPos, m_SoundImpact,
 				(m_Owner != -1) ? TeamMask : CClientMask().set());
 		}

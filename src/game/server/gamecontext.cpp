@@ -377,7 +377,7 @@ void CGameContext::CreateHammerHit(vec2 Pos, CClientMask Mask)
 	}
 }
 
-void CGameContext::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int ActivatedTeam, CClientMask Mask)
+void CGameContext::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int ActivatedTeam, CClientMask Mask, int AttackerTeam)
 {
 	// create the event
 	CNetEvent_Explosion *pEvent = m_Events.Create<CNetEvent_Explosion>(Mask);
@@ -430,7 +430,7 @@ void CGameContext::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamag
 				TeamMask.reset(PlayerTeam);
 			}
 
-			pChr->TakeDamage(ForceDir * Dmg * 2, (int)Dmg, Owner, Weapon, !NoDamage);
+			pChr->TakeDamage(ForceDir * Dmg * 2, (int)Dmg, Owner, Weapon, !NoDamage, AttackerTeam);
 		}
 	}
 }
@@ -493,20 +493,75 @@ void CGameContext::CreateSound(vec2 Pos, int Sound, CClientMask Mask)
 
 void CGameContext::CreateSoundGlobal(int Sound, int Target) const
 {
+	CreateSoundGlobal(Sound, Target, FLAG_SIX | FLAG_SIXUP);
+}
+
+void CGameContext::CreateSoundGlobal(int Sound, int Target, int VersionFlags) const
+{
 	if(Sound < 0)
 		return;
 
 	CNetMsg_Sv_SoundGlobal Msg;
 	Msg.m_SoundId = Sound;
 	if(Target == -2)
-		Server()->SendPackMsg(&Msg, MSGFLAG_NOSEND, -1);
-	else
 	{
-		int Flag = MSGFLAG_VITAL;
-		if(Target != -1)
-			Flag |= MSGFLAG_NORECORD;
-		Server()->SendPackMsg(&Msg, Flag, Target);
+		if(VersionFlags & FLAG_SIX)
+			Server()->SendPackMsg(&Msg, MSGFLAG_NOSEND, -1);
+		return;
 	}
+
+	const auto MatchesVersion = [&](int ClientId) {
+		return (Server()->IsSixup(ClientId) && (VersionFlags & FLAG_SIXUP)) ||
+		       (!Server()->IsSixup(ClientId) && (VersionFlags & FLAG_SIX));
+	};
+	if(Target >= 0)
+	{
+		if(MatchesVersion(Target))
+			Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, Target);
+		return;
+	}
+	if(Target != -1)
+		return;
+
+	if(VersionFlags == (FLAG_SIX | FLAG_SIXUP))
+	{
+		Server()->SendPackMsg(&Msg, MSGFLAG_VITAL, -1);
+		return;
+	}
+
+	if(VersionFlags & FLAG_SIX)
+		Server()->SendPackMsg(&Msg, MSGFLAG_NOSEND, -1);
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		if(m_apPlayers[ClientId] && MatchesVersion(ClientId))
+			Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
+	}
+}
+
+void CGameContext::SendGameMessage7(int GameMessageId, std::initializer_list<int> Parameters, int Target) const
+{
+	if(GameMessageId < 0 || GameMessageId >= protocol7::NUM_GAMEMSGS)
+		return;
+
+	const auto SendTo = [&](int ClientId) {
+		if(!m_apPlayers[ClientId] || !Server()->IsSixup(ClientId))
+			return;
+		CMsgPacker Msg(protocol7::NETMSGTYPE_SV_GAMEMSG, false, true);
+		Msg.AddInt(GameMessageId);
+		for(const int Parameter : Parameters)
+			Msg.AddInt(Parameter);
+		Server()->SendMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
+	};
+
+	if(Target >= 0 && Target < MAX_CLIENTS)
+	{
+		SendTo(Target);
+		return;
+	}
+	if(Target != -1)
+		return;
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+		SendTo(ClientId);
 }
 
 void CGameContext::SnapSwitchers(int SnappingClient)

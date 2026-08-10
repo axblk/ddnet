@@ -1660,6 +1660,7 @@ set(EXPECTED_DATA
   maps7/Sunny\ Side\ Up.map
   maps7/Tsunami.map
   maps7/Tutorial.map
+  maps7/ctf1.map
   maps7/readme.txt
   menuimages/demos.png
   menuimages/editor.png
@@ -3035,10 +3036,20 @@ if(SERVER)
     mode/game_host.h
     mode/game_mode_registry.cpp
     mode/game_mode_registry.h
+    modes/vanilla/ctf.cpp
+    modes/vanilla/ctf.h
     modes/vanilla/dm.cpp
     modes/vanilla/dm.h
+    modes/vanilla/flag.cpp
+    modes/vanilla/flag.h
     modes/vanilla/game_modes.cpp
     modes/vanilla/game_modes.h
+    modes/vanilla/tdm.cpp
+    modes/vanilla/tdm.h
+    modes/vanilla/teamplay.cpp
+    modes/vanilla/teamplay.h
+    modes/vanilla/vanilla_pvp.cpp
+    modes/vanilla/vanilla_pvp.h
     mutes.cpp
     player.cpp
     player.h

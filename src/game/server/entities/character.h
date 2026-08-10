@@ -79,7 +79,7 @@ public:
 	void FireWeapon();
 
 	void Die(int Killer, int Weapon, bool SendKillMsg = true);
-	bool TakeDamage(vec2 Force, int Dmg, int From, int Weapon, bool CanDamage = true);
+	bool TakeDamage(vec2 Force, int Dmg, int From, int Weapon, bool CanDamage = true, int AttackerTeam = TEAM_SPECTATORS);
 	void SendDeathMessageIfNotInLockedTeam(int Killer, int Weapon, int ModeSpecial);
 	void CancelSwapRequests();
 

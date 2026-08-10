@@ -498,7 +498,19 @@ class Client(Runnable):
 		self.fifo.write(f"{command}\n")
 
 	def exit(self):
-		self.command("quit")
+		try:
+			self.command("quit")
+		except OSError:
+			# On Windows the client can close its named pipe while this write is completing.
+			# wait_for_exit still verifies that the process terminated cleanly.
+			pass
+		finally:
+			if self.fifo is not None:
+				try:
+					self.fifo.close()
+				except OSError:
+					pass
+				self.fifo = None
 
 	def wait_for_startup(self, timeout=15):
 		self.wait_for_log_prefix("client: version", timeout=timeout)
@@ -755,15 +767,30 @@ def vanilla_dm_authenticate(server, client):
 	return int(auth.line.split("ClientId=", 1)[1].split(" ", 1)[0])
 
 
-def vanilla_dm_rcon(server, client, client_id, command):
+def vanilla_dm_rcon(server, client, client_id, command, observed_prefix=None):
 	client.command(f"rcon {command}")
-	server.wait_for_log_exact(f"server: ClientId={client_id} key='default_admin' rcon='{command}'", timeout=2)
+	expected = f"server: ClientId={client_id} key='default_admin' rcon='{command}'"
+	timeout_id = server.register_timeout(2, f"RCON `{command}`")
+	observed = None
+	while True:
+		event = server.next_event(timeout_id)
+		if isinstance(event, Exit):
+			raise EOFError(f"server exited unexpectedly waiting for RCON `{command}`")
+		if not isinstance(event, Log):
+			continue
+		if observed_prefix is not None and event.line.startswith(observed_prefix):
+			observed = event
+		if event.line == expected:
+			return observed
 
 
 def vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, victim_name, position_commands):
+	kill_prefix = f"game: kill killer='{attacker_id}:attacker' victim='{victim_id}:{victim_name}' weapon=0"
 	for _ in range(4):
 		for client, client_id, command in position_commands:
-			vanilla_dm_rcon(server, client, client_id, command)
+			kill = vanilla_dm_rcon(server, client, client_id, command, kill_prefix)
+			if kill is not None:
+				return kill
 		sleep(0.1)
 		attacker.command("+weapon1 1")
 		attacker.command("+weapon1 0")
@@ -771,7 +798,7 @@ def vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, victim_name
 		sleep(0.1)
 		attacker.command("+fire 0")
 		sleep(0.2)
-	return server.wait_for_log_prefix(f"game: kill killer='{attacker_id}:attacker' victim='{victim_id}:{victim_name}' weapon=0", timeout=5)
+	return server.wait_for_log_prefix(kill_prefix, timeout=5)
 
 
 @test
@@ -794,14 +821,44 @@ def vanilla_dm_match_lifecycle(test_env):
 	]
 
 	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
-	sleep(0.7)
+	sleep(3.2)
 	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
 	server.wait_for_log_exact("game: end round type='TestDM'", timeout=5)
 	server.wait_for_log_exact("game: start round type='TestDM' teamplay='0'", timeout=15)
 
-	server.exit()
 	attacker.exit()
 	victim.exit()
+	server.exit()
+	server.wait_for_exit()
+	attacker.wait_for_exit()
+	victim.wait_for_exit()
+
+
+@test
+def vanilla_tdm_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker"])
+	victim = test_env.client(["player_name victim"])
+	server = test_env.server(["sv_gametype vanilla.tdm", "sv_map Tutorial", "sv_scorelimit 1", "sv_test_cmds 1"])
+	wait_for_startup([attacker, victim, server])
+
+	attacker.command(f"connect localhost:{server.port}")
+	victim.command(f"connect localhost:{server.port}")
+	for _ in range(2):
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+	victim_id = vanilla_dm_authenticate(server, victim)
+	position_commands = [
+		(attacker, attacker_id, f"tele {victim_id} {attacker_id}"),
+		(victim, victim_id, "move_raw 20 0"),
+	]
+	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
+	server.wait_for_log_exact("game: end round type='TestTDM'", timeout=5)
+	server.wait_for_log_exact("game: start round type='TestTDM' teamplay='1'", timeout=15)
+
+	attacker.exit()
+	victim.exit()
+	server.exit()
 	server.wait_for_exit()
 	attacker.wait_for_exit()
 	victim.wait_for_exit()
@@ -860,6 +917,97 @@ def vanilla_dm_stock_07_match_lifecycle(test_env):
 	server.wait_for_exit()
 	attacker.wait_for_exit()
 	victim.wait_for_exit()
+
+
+@test(requires_teeworlds_client=True)
+def vanilla_tdm_stock_07_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker"])
+	server = test_env.server(["sv_gametype vanilla.tdm", "sv_map Tutorial", "sv_scorelimit 1", "sv_test_cmds 1"])
+	wait_for_startup([attacker, server])
+	attacker.command(f"connect localhost:{server.port}")
+	attacker_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=0" not in attacker_join:
+		raise AssertionError(f"sixup=0 not found in {attacker_join!r}")
+
+	victim = test_env.teeworlds(["player_name stock-victim", f"connect 127.0.0.1:{server.port}"])
+	victim.wait_for_log_prefix("game version 0.7.", timeout=10)
+	victim_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in victim_join:
+		raise AssertionError(f"sixup=1 not found in {victim_join!r}")
+	victim_id = int(victim_join.split("ClientId=", 1)[1].split(" ", 1)[0])
+
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+	position_commands = [
+		(attacker, attacker_id, f"tele {victim_id} {attacker_id}"),
+		(attacker, attacker_id, "move_raw -20 0"),
+	]
+	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "stock-victim", position_commands)
+	server.wait_for_log_exact("game: end round type='TestTDM'", timeout=5)
+	server.wait_for_log_exact("game: start round type='TestTDM' teamplay='1'", timeout=15)
+
+	server.exit()
+	victim.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
+	attacker.wait_for_log_exact("client: offline error='Server shutdown'", timeout=10)
+	attacker.exit()
+	victim.exit()
+	server.wait_for_exit()
+	attacker.wait_for_exit()
+	victim.wait_for_exit()
+
+
+@test(requires_teeworlds_client=True)
+def vanilla_ctf_stock_07_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker", "cl_auto_demo_record 0"])
+	server = test_env.server([
+		"sv_gametype vanilla.ctf",
+		"sv_map ctf1",
+		"sv_scorelimit 100",
+		"sv_test_cmds 1",
+		"sv_practice_by_default 1",
+	])
+	attacker.wait_for_startup()
+	server.wait_for_log_exact("game: selected mode id='vanilla.ctf' name='Vanilla CTF'", timeout=10)
+
+	stands = {}
+	for _ in range(2):
+		stand = server.wait_for_log_prefix("game: flag_stand team=", timeout=10).line
+		team = int(stand.split("team=", 1)[1].split(" ", 1)[0])
+		x = float(stand.split("x=", 1)[1].split(" ", 1)[0]) / 32.0
+		y = float(stand.split("y=", 1)[1]) / 32.0
+		stands[team] = (x, y)
+	if set(stands) != {0, 1}:
+		raise AssertionError(f"expected red and blue flag stands, got {stands!r}")
+	server.wait_for_startup()
+
+	attacker.command(f"connect localhost:{server.port}")
+	attacker_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=0" not in attacker_join:
+		raise AssertionError(f"sixup=0 not found in {attacker_join!r}")
+	attacker_id = int(attacker_join.split("ClientId=", 1)[1].split(" ", 1)[0])
+
+	observer = test_env.teeworlds(["player_name stock-observer", f"connect 127.0.0.1:{server.port}"])
+	observer.wait_for_log_prefix("game version 0.7.", timeout=10)
+	observer_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in observer_join:
+		raise AssertionError(f"sixup=1 not found in {observer_join!r}")
+
+	blue_x, blue_y = stands[1]
+	attacker.command(f"say /tpxy {blue_x} {blue_y}")
+	server.wait_for_log_prefix(f"game: flag_grab player='{attacker_id}:attacker' team=0", timeout=5)
+
+	red_x, red_y = stands[0]
+	attacker.command(f"say /tpxy {red_x} {red_y}")
+	server.wait_for_log_prefix(f"game: flag_capture player='{attacker_id}:attacker' team=0", timeout=5)
+	observer.wait_for_log_prefix("*** The blue flag was captured by 'attacker' (", timeout=5)
+	server.wait_for_log_exact("game: end round type='TestCTF'", timeout=5)
+	attacker.exit()
+
+	server.wait_for_log_exact("game: start round type='TestCTF' teamplay='1'", timeout=15)
+	server.exit()
+	observer.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
+	observer.exit()
+	server.wait_for_exit()
+	observer.wait_for_exit()
 
 
 @test(requires_websockets=True)

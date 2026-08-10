@@ -34,11 +34,14 @@ public:
 	void TickPaused() override;
 	void Snap(int SnappingClient) override;
 	void SwapClients(int Client1, int Client2) override;
+	void LoseOwner();
 
 private:
 	vec2 m_Direction;
 	int m_LifeSpan;
 	int m_Owner;
+	int m_OwnerTeam;
+	bool m_OwnerDetached;
 	int m_Type;
 	int m_SoundImpact;
 	int m_StartTick;

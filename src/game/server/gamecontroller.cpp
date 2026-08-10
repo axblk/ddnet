@@ -139,8 +139,9 @@ float IGameController::EvaluateSpawnPos(CSpawnEval *pEval, vec2 Pos, int ClientI
 		if(!pC->CanCollide(ClientId))
 			continue;
 
-		float d = distance(Pos, pC->m_Pos);
-		Score += d == 0 ? 1000000000.0f : 1.0f / d;
+		const float TeamWeight = pEval->m_FriendlyTeam != -1 && pC->GetPlayer()->GetTeam() == pEval->m_FriendlyTeam ? 0.5f : 1.0f;
+		const float d = distance(Pos, pC->m_Pos);
+		Score += TeamWeight * (d == 0 ? 1000000000.0f : 1.0f / d);
 	}
 
 	return Score;
@@ -572,7 +573,7 @@ int IGameController::OnCharacterDeath(class CCharacter *pVictim, class CPlayer *
 	return 0;
 }
 
-bool IGameController::OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage)
+bool IGameController::OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam)
 {
 	if(Damage)
 		pVictim->SetEmote(EMOTE_PAIN, Server()->Tick() + 500 * Server()->TickSpeed() / 1000);

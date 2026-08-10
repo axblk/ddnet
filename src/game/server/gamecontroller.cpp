@@ -26,6 +26,8 @@
 #include <game/server/score.h>
 #include <game/teamscore.h>
 
+#include <algorithm>
+
 IGameController::IGameController(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo) :
 	m_Teams(pGameServer), m_GameModeInfo(GameModeInfo), m_pLoadBestTimeResult(nullptr)
 {
@@ -922,6 +924,14 @@ int IGameController::GetAutoTeam(int NotThisId)
 	return TEAM_SPECTATORS;
 }
 
+int IGameController::ActivePlayerSlots() const
+{
+	const int ConfiguredSlots = std::max(0, Server()->MaxClients() - g_Config.m_SvSpectatorSlots);
+	if(m_GameModeInfo.m_ActivePlayerLimit <= 0)
+		return ConfiguredSlots;
+	return std::min(ConfiguredSlots, m_GameModeInfo.m_ActivePlayerLimit);
+}
+
 bool IGameController::CanJoinTeam(int Team, int NotThisId, char *pErrorReason, int ErrorReasonSize)
 {
 	const CPlayer *pPlayer = GameServer()->m_apPlayers[NotThisId];
@@ -944,20 +954,20 @@ bool IGameController::CanJoinTeam(int Team, int NotThisId, char *pErrorReason, i
 		}
 	}
 
-	if((aNumplayers[0] + aNumplayers[1]) < Server()->MaxClients() - g_Config.m_SvSpectatorSlots)
+	if((aNumplayers[0] + aNumplayers[1]) < ActivePlayerSlots())
 		return true;
 
 	if(pErrorReason)
-		str_format(pErrorReason, ErrorReasonSize, "Only %d active players are allowed", Server()->MaxClients() - g_Config.m_SvSpectatorSlots);
+		str_format(pErrorReason, ErrorReasonSize, "Only %d active players are allowed", ActivePlayerSlots());
 	return false;
 }
 
-CClientMask IGameController::GetMaskForPlayerWorldEvent(int Asker, int ExceptId)
+CClientMask IGameController::GetMaskForPlayerWorldEvent(int, int ExceptId)
 {
-	if(Asker == -1)
-		return CClientMask().set().reset(ExceptId);
-
-	return Teams().TeamMask(GameServer()->GetDDRaceTeam(Asker), ExceptId, Asker);
+	CClientMask Mask = CClientMask().set();
+	if(ExceptId != -1)
+		Mask.reset(ExceptId);
+	return Mask;
 }
 
 void IGameController::DoTeamChange(CPlayer *pPlayer, int Team, bool DoChatMsg)

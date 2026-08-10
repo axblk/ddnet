@@ -279,6 +279,13 @@ bool CGameControllerDDRace::CanPlayerReceivePreInput(int SenderId, int ReceiverI
 	return Teams().m_Core.Team(SenderId) == Teams().m_Core.Team(ReceiverId);
 }
 
+CClientMask CGameControllerDDRace::GetMaskForPlayerWorldEvent(int Asker, int ExceptId)
+{
+	if(Asker == -1)
+		return IGameController::GetMaskForPlayerWorldEvent(Asker, ExceptId);
+	return Teams().TeamMask(Teams().m_Core.Team(Asker), ExceptId, Asker);
+}
+
 void CGameControllerDDRace::OnPlayerShowOthers(int ClientId, int Show)
 {
 	if(g_Config.m_SvShowOthers && !g_Config.m_SvShowOthersDefault)

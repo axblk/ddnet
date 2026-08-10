@@ -879,7 +879,7 @@ void CGameContext::SendSettings(int ClientId) const
 	Msg.m_SpecVote = g_Config.m_SvVoteSpectate;
 	Msg.m_TeamLock = 0;
 	Msg.m_TeamBalance = 0;
-	Msg.m_PlayerSlots = Server()->MaxClients() - g_Config.m_SvSpectatorSlots;
+	Msg.m_PlayerSlots = m_pController->ActivePlayerSlots();
 	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
 }
 

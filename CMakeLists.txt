@@ -3040,6 +3040,9 @@ if(SERVER)
     mode/game_host.h
     mode/game_mode_registry.cpp
     mode/game_mode_registry.h
+    modes/insta/game_modes.cpp
+    modes/insta/game_modes.h
+    modes/insta/rules.h
     modes/vanilla/ctf.cpp
     modes/vanilla/ctf.h
     modes/vanilla/dm.cpp
@@ -3054,6 +3057,8 @@ if(SERVER)
     modes/vanilla/teamplay.h
     modes/vanilla/vanilla_pvp.cpp
     modes/vanilla/vanilla_pvp.h
+    modes/zcatch/game_modes.cpp
+    modes/zcatch/game_modes.h
     mutes.cpp
     player.cpp
     player.h

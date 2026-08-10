@@ -2384,7 +2384,7 @@ bool CCharacter::Rescue()
 
 CClientMask CCharacter::TeamMask()
 {
-	return Teams()->TeamMask(Team(), -1, GetPlayer()->GetCid());
+	return GameServer()->m_pController->GetMaskForPlayerWorldEvent(GetPlayer()->GetCid());
 }
 
 void CCharacter::SetPosition(const vec2 &Position)

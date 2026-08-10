@@ -47,6 +47,15 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	ASSERT_NE(pVanillaDM, nullptr);
 	EXPECT_STREQ(pVanillaDM->m_pGameType, "DM");
 	EXPECT_EQ(pVanillaDM->m_ScoreKind, EGameModeScoreKind::POINTS);
+	EXPECT_EQ(pVanillaDM->m_ActivePlayerLimit, 0);
+
+	const CGameModeInfo *pVanilla1on1 = Registry.Find("vanilla.1on1");
+	ASSERT_NE(pVanilla1on1, nullptr);
+	EXPECT_STREQ(pVanilla1on1->m_pGameType, "1on1");
+	EXPECT_EQ(pVanilla1on1->m_ScoreKind, EGameModeScoreKind::POINTS);
+	EXPECT_EQ(pVanilla1on1->m_GameFlags, 0);
+	EXPECT_EQ(pVanilla1on1->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
+	EXPECT_EQ(pVanilla1on1->m_ActivePlayerLimit, 2);
 
 	const CGameModeInfo *pVanillaTDM = Registry.Find("vanilla.tdm");
 	ASSERT_NE(pVanillaTDM, nullptr);
@@ -59,6 +68,53 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	EXPECT_STREQ(pVanillaCTF->m_pGameType, "CTF");
 	EXPECT_EQ(pVanillaCTF->m_GameFlags, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS);
 	EXPECT_EQ(pVanillaCTF->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
+
+	const CGameModeInfo *pInstagibDM = Registry.Find("insta.idm");
+	ASSERT_NE(pInstagibDM, nullptr);
+	EXPECT_STREQ(pInstagibDM->m_pGameType, "iDM");
+	EXPECT_EQ(pInstagibDM->m_ScoreKind, EGameModeScoreKind::POINTS);
+	EXPECT_EQ(pInstagibDM->m_GameFlags, 0);
+	EXPECT_EQ(pInstagibDM->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
+
+	const CGameModeInfo *pInstagibTDM = Registry.Find("insta.itdm");
+	ASSERT_NE(pInstagibTDM, nullptr);
+	EXPECT_STREQ(pInstagibTDM->m_pGameType, "iTDM");
+	EXPECT_EQ(pInstagibTDM->m_ScoreKind, EGameModeScoreKind::POINTS);
+	EXPECT_EQ(pInstagibTDM->m_GameFlags, protocol7::GAMEFLAG_TEAMS);
+	EXPECT_EQ(pInstagibTDM->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
+
+	const CGameModeInfo *pInstagibCTF = Registry.Find("insta.ictf");
+	ASSERT_NE(pInstagibCTF, nullptr);
+	EXPECT_STREQ(pInstagibCTF->m_pGameType, "iCTF");
+	EXPECT_EQ(pInstagibCTF->m_ScoreKind, EGameModeScoreKind::POINTS);
+	EXPECT_EQ(pInstagibCTF->m_GameFlags, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS);
+	EXPECT_EQ(pInstagibCTF->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
+
+	const CGameModeInfo *pGrenadeDM = Registry.Find("insta.gdm");
+	ASSERT_NE(pGrenadeDM, nullptr);
+	EXPECT_STREQ(pGrenadeDM->m_pGameType, "gDM");
+	EXPECT_EQ(pGrenadeDM->m_ScoreKind, EGameModeScoreKind::POINTS);
+	EXPECT_EQ(pGrenadeDM->m_GameFlags, 0);
+	EXPECT_EQ(pGrenadeDM->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
+
+	const CGameModeInfo *pGrenadeTDM = Registry.Find("insta.gtdm");
+	ASSERT_NE(pGrenadeTDM, nullptr);
+	EXPECT_STREQ(pGrenadeTDM->m_pGameType, "gTDM");
+	EXPECT_EQ(pGrenadeTDM->m_GameFlags, protocol7::GAMEFLAG_TEAMS);
+	EXPECT_EQ(pGrenadeTDM->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
+
+	const CGameModeInfo *pGrenadeCTF = Registry.Find("insta.gctf");
+	ASSERT_NE(pGrenadeCTF, nullptr);
+	EXPECT_STREQ(pGrenadeCTF->m_pGameType, "gCTF");
+	EXPECT_EQ(pGrenadeCTF->m_GameFlags, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS);
+	EXPECT_EQ(pGrenadeCTF->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
+
+	const CGameModeInfo *pZCatch = Registry.Find("zcatch.laser");
+	ASSERT_NE(pZCatch, nullptr);
+	EXPECT_STREQ(pZCatch->m_pGameType, "zCatch");
+	EXPECT_EQ(pZCatch->m_ScoreKind, EGameModeScoreKind::POINTS);
+	EXPECT_EQ(pZCatch->m_GameFlags, 0);
+	EXPECT_EQ(pZCatch->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
 }
 
 TEST(GameModeRegistry, VanillaDefaultTuning)

@@ -293,7 +293,7 @@ void CPlayer::PostTick()
 	}
 
 	// update view pos for spectators
-	if((m_Team == TEAM_SPECTATORS || m_Paused) && m_SpectatorId != SPEC_FREEVIEW && GameServer()->m_apPlayers[m_SpectatorId] && GameServer()->m_apPlayers[m_SpectatorId]->GetCharacter())
+	if((m_Team == TEAM_SPECTATORS || m_Paused || GameServer()->m_pController->IsPlayerDeadSpectator(m_ClientId)) && m_SpectatorId != SPEC_FREEVIEW && GameServer()->m_apPlayers[m_SpectatorId] && GameServer()->m_apPlayers[m_SpectatorId]->GetCharacter())
 		m_ViewPos = GameServer()->m_apPlayers[m_SpectatorId]->GetCharacter()->m_Pos;
 
 	UpdateNetworkClipRadius();
@@ -330,6 +330,7 @@ void CPlayer::Snap(int SnappingClient)
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
 	int Latency = SnappingClient == SERVER_DEMO_CLIENT ? m_Latency.m_Min : GameServer()->m_apPlayers[SnappingClient]->m_aCurLatency[m_ClientId];
 	int Score = GameServer()->m_pController->SnapPlayerScore(SnappingClient, this);
+	const bool DeadSpectator = GameServer()->m_pController->IsPlayerDeadSpectator(m_ClientId);
 
 	if(!Server()->IsSixup(SnappingClient))
 	{
@@ -338,11 +339,11 @@ void CPlayer::Snap(int SnappingClient)
 		PlayerInfo.m_Score = Score;
 		PlayerInfo.m_Local = (int)(m_ClientId == SnappingClient && (m_Paused != PAUSE_PAUSED || SnappingClientVersion >= VERSION_DDNET_OLD));
 		PlayerInfo.m_ClientId = TranslatedId;
-		PlayerInfo.m_Team = m_Team;
+		PlayerInfo.m_Team = DeadSpectator ? TEAM_SPECTATORS : m_Team;
 		if(SnappingClientVersion < VERSION_DDNET_INDEPENDENT_SPECTATORS_TEAM)
 		{
 			// In older versions the SPECTATORS TEAM was also used if the own player is in PAUSE_PAUSED or if any player is in PAUSE_SPEC.
-			PlayerInfo.m_Team = (m_Paused != PAUSE_PAUSED || m_ClientId != SnappingClient) && m_Paused < PAUSE_SPEC ? m_Team : TEAM_SPECTATORS;
+			PlayerInfo.m_Team = (m_Paused != PAUSE_PAUSED || m_ClientId != SnappingClient) && m_Paused < PAUSE_SPEC ? PlayerInfo.m_Team : TEAM_SPECTATORS;
 		}
 		Server()->SnapNewItem(TranslatedId, PlayerInfo);
 	}
@@ -350,6 +351,8 @@ void CPlayer::Snap(int SnappingClient)
 	{
 		protocol7::CNetObj_PlayerInfo PlayerInfo = {};
 		PlayerInfo.m_PlayerFlags = PlayerFlags_SixToSeven(m_PlayerFlags);
+		if(DeadSpectator)
+			PlayerInfo.m_PlayerFlags |= protocol7::PLAYERFLAG_DEAD;
 		if(SnappingClientVersion >= VERSION_DDRACE && (m_PlayerFlags & PLAYERFLAG_AIM))
 			PlayerInfo.m_PlayerFlags |= protocol7::PLAYERFLAG_AIM;
 		if(Server()->IsRconAuthed(m_ClientId) && ((SnappingClient >= 0 && Server()->IsRconAuthed(SnappingClient)) || !Server()->HasAuthHidden(m_ClientId)))
@@ -359,7 +362,7 @@ void CPlayer::Snap(int SnappingClient)
 		Server()->SnapNewItem(TranslatedId, PlayerInfo);
 	}
 
-	if(m_ClientId == SnappingClient && (m_Team == TEAM_SPECTATORS || m_Paused))
+	if(m_ClientId == SnappingClient && (m_Team == TEAM_SPECTATORS || m_Paused || DeadSpectator))
 	{
 		int SpectatorId = m_SpectatorId;
 		if(SpectatorId >= 0 && !Server()->Translate(SpectatorId, m_ClientId))
@@ -513,7 +516,7 @@ void CPlayer::OnDirectInput(const CNetObj_PlayerInput *pNewInput)
 
 	AfkTimer();
 
-	if(((pNewInput->m_PlayerFlags & PLAYERFLAG_SPEC_CAM) || GetClientVersion() < VERSION_DDNET_PLAYERFLAG_SPEC_CAM) && ((!m_pCharacter && m_Team == TEAM_SPECTATORS) || m_Paused) && m_SpectatorId == SPEC_FREEVIEW)
+	if(((pNewInput->m_PlayerFlags & PLAYERFLAG_SPEC_CAM) || GetClientVersion() < VERSION_DDNET_PLAYERFLAG_SPEC_CAM) && ((!m_pCharacter && (m_Team == TEAM_SPECTATORS || GameServer()->m_pController->IsPlayerDeadSpectator(m_ClientId))) || m_Paused) && m_SpectatorId == SPEC_FREEVIEW)
 		m_ViewPos = vec2(pNewInput->m_TargetX, pNewInput->m_TargetY);
 
 	// check for activity

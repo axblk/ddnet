@@ -35,6 +35,7 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <memory>
 #include <thread>
 
@@ -851,6 +852,44 @@ TEST_F(GameWorld, PlayerTeamGroupIsModeOwned)
 	GameServer()->m_pController = pPreviousController;
 }
 
+TEST_F(GameWorld, WorldEventAudienceIsModeOwned)
+{
+	constexpr int Red = 0;
+	constexpr int Blue = 1;
+	const CGameModeInfo TdmInfo = {"vanilla.tdm", "Vanilla TDM", "TDM", "TestTDM", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
+	CGameControllerVanillaTDM TdmController(GameServer(), TdmInfo);
+	IGameController *pPreviousController = GameServer()->m_pController;
+	GameServer()->m_pController = &TdmController;
+
+	CPlayer *pRed = GameServer()->CreatePlayer(Red, TEAM_RED, false, -1);
+	CPlayer *pBlue = GameServer()->CreatePlayer(Blue, TEAM_BLUE, false, -1);
+	ASSERT_NE(pRed, nullptr);
+	ASSERT_NE(pBlue, nullptr);
+	CCharacter *pRedCharacter = pRed->ForceSpawn(vec2(64.0f, 96.0f));
+	CCharacter *pBlueCharacter = pBlue->ForceSpawn(vec2(128.0f, 96.0f));
+	ASSERT_NE(pRedCharacter, nullptr);
+	ASSERT_NE(pBlueCharacter, nullptr);
+
+	EXPECT_TRUE(pRedCharacter->TeamMask().test(Red));
+	EXPECT_TRUE(pRedCharacter->TeamMask().test(Blue));
+
+	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
+	CGameControllerMod ModController(GameServer(), ModInfo);
+	GameServer()->m_pController = &ModController;
+	pRedCharacter->SetTeams(&ModController.Teams());
+	pBlueCharacter->SetTeams(&ModController.Teams());
+	ModController.Teams().SetForceCharacterTeam(Red, 1);
+	ModController.Teams().SetForceCharacterTeam(Blue, 2);
+	pBlue->m_ShowOthers = SHOW_OTHERS_OFF;
+
+	EXPECT_TRUE(pRedCharacter->TeamMask().test(Red));
+	EXPECT_FALSE(pRedCharacter->TeamMask().test(Blue));
+
+	pRedCharacter->SetTeams(&pPreviousController->Teams());
+	pBlueCharacter->SetTeams(&pPreviousController->Teams());
+	GameServer()->m_pController = pPreviousController;
+}
+
 TEST_F(GameWorld, PreInputAudienceIsModeOwned)
 {
 	constexpr int SenderId = 0;
@@ -1201,6 +1240,382 @@ TEST_F(GameWorld, VanillaTDMTeamDamage)
 	EXPECT_EQ(BlueTeamAfterForceSpawn, TEAM_BLUE);
 	EXPECT_EQ(FriendlyProjectileOwner, -1);
 	EXPECT_EQ(EnemyProjectileOwner, -1);
+}
+
+TEST_F(GameWorld, InstagibDMVerticalSlice)
+{
+	GameServer()->GameHost().Shutdown();
+	GameServer()->m_pController = nullptr;
+	ASSERT_TRUE(GameServer()->GameHost().Select("insta.idm"));
+	GameServer()->m_pController = GameServer()->GameHost().Controller();
+	GameServer()->GameHost().Init();
+
+	constexpr int AttackerId = 0;
+	constexpr int VictimId = 1;
+	CPlayer *pAttacker = GameServer()->CreatePlayer(AttackerId, TEAM_GAME, false, -1);
+	CPlayer *pVictim = GameServer()->CreatePlayer(VictimId, TEAM_GAME, false, -1);
+	ASSERT_NE(pAttacker, nullptr);
+	ASSERT_NE(pVictim, nullptr);
+	CCharacter *pAttackerCharacter = pAttacker->ForceSpawn(vec2(64.0f, 96.0f));
+	CCharacter *pVictimCharacter = pVictim->ForceSpawn(vec2(128.0f, 96.0f));
+	ASSERT_NE(pAttackerCharacter, nullptr);
+	ASSERT_NE(pVictimCharacter, nullptr);
+
+	EXPECT_FALSE(pAttackerCharacter->GetWeaponGot(WEAPON_HAMMER));
+	EXPECT_FALSE(pAttackerCharacter->GetWeaponGot(WEAPON_GUN));
+	EXPECT_TRUE(pAttackerCharacter->GetWeaponGot(WEAPON_LASER));
+	EXPECT_EQ(pAttackerCharacter->GetWeaponAmmo(WEAPON_LASER), -1);
+	EXPECT_EQ(pAttackerCharacter->GetActiveWeapon(), WEAPON_LASER);
+
+	pAttackerCharacter->TakeDamage(vec2(), 0, AttackerId, WEAPON_LASER);
+	EXPECT_TRUE(pAttackerCharacter->IsAlive());
+	EXPECT_EQ(pAttackerCharacter->GetHealth(), 10);
+
+	pVictimCharacter->SetArmor(10);
+	pVictimCharacter->TakeDamage(vec2(), 0, AttackerId, WEAPON_LASER);
+	EXPECT_FALSE(pVictimCharacter->IsAlive());
+	EXPECT_EQ(GameServer()->m_pController->SnapPlayerScore(SERVER_DEMO_CLIENT, pAttacker), 1);
+
+	EXPECT_TRUE(GameServer()->m_pController->OnEntity(ENTITY_SPAWN, 1, 1, LAYER_GAME, 0, true));
+	EXPECT_FALSE(GameServer()->m_pController->OnEntity(ENTITY_HEALTH_1, 1, 1, LAYER_GAME, 0, true));
+	EXPECT_FALSE(GameServer()->m_pController->OnEntity(ENTITY_WEAPON_LASER, 1, 1, LAYER_GAME, 0, true));
+}
+
+TEST_F(GameWorld, Vanilla1on1IsTwoSlotDMProfile)
+{
+	GameServer()->GameHost().Shutdown();
+	GameServer()->m_pController = nullptr;
+	ASSERT_TRUE(GameServer()->GameHost().Select("vanilla.1on1"));
+	GameServer()->m_pController = GameServer()->GameHost().Controller();
+	GameServer()->GameHost().Init();
+
+	EXPECT_NE(dynamic_cast<CGameControllerVanillaDM *>(GameServer()->m_pController), nullptr);
+	EXPECT_EQ(GameServer()->m_pController->ActivePlayerSlots(), 2);
+
+	ASSERT_NE(GameServer()->CreatePlayer(0, TEAM_GAME, false, -1), nullptr);
+	ASSERT_NE(GameServer()->CreatePlayer(1, TEAM_GAME, false, -1), nullptr);
+	char aError[128];
+	EXPECT_EQ(GameServer()->m_pController->GetAutoTeam(2), TEAM_SPECTATORS);
+	EXPECT_FALSE(GameServer()->m_pController->CanJoinTeam(TEAM_GAME, 2, aError, sizeof(aError)));
+	EXPECT_STREQ(aError, "Only 2 active players are allowed");
+	EXPECT_TRUE(GameServer()->m_pController->CanJoinTeam(TEAM_SPECTATORS, 2, aError, sizeof(aError)));
+}
+
+TEST_F(GameWorld, InstagibTDMReusesTeamplay)
+{
+	GameServer()->GameHost().Shutdown();
+	GameServer()->m_pController = nullptr;
+	ASSERT_TRUE(GameServer()->GameHost().Select("insta.itdm"));
+	GameServer()->m_pController = GameServer()->GameHost().Controller();
+	GameServer()->GameHost().Init();
+
+	constexpr int AttackerId = 0;
+	constexpr int TeammateId = 1;
+	constexpr int EnemyId = 2;
+	CPlayer *pAttacker = GameServer()->CreatePlayer(AttackerId, TEAM_RED, false, -1);
+	CPlayer *pTeammate = GameServer()->CreatePlayer(TeammateId, TEAM_RED, false, -1);
+	CPlayer *pEnemy = GameServer()->CreatePlayer(EnemyId, TEAM_BLUE, false, -1);
+	ASSERT_NE(pAttacker, nullptr);
+	ASSERT_NE(pTeammate, nullptr);
+	ASSERT_NE(pEnemy, nullptr);
+	CCharacter *pAttackerCharacter = pAttacker->ForceSpawn(vec2(64.0f, 96.0f));
+	CCharacter *pTeammateCharacter = pTeammate->ForceSpawn(vec2(96.0f, 96.0f));
+	CCharacter *pEnemyCharacter = pEnemy->ForceSpawn(vec2(128.0f, 96.0f));
+	ASSERT_NE(pAttackerCharacter, nullptr);
+	ASSERT_NE(pTeammateCharacter, nullptr);
+	ASSERT_NE(pEnemyCharacter, nullptr);
+
+	EXPECT_FALSE(pAttackerCharacter->GetWeaponGot(WEAPON_HAMMER));
+	EXPECT_FALSE(pAttackerCharacter->GetWeaponGot(WEAPON_GUN));
+	EXPECT_TRUE(pAttackerCharacter->GetWeaponGot(WEAPON_LASER));
+	EXPECT_EQ(pAttackerCharacter->GetWeaponAmmo(WEAPON_LASER), -1);
+
+	const int PreviousTeamDamage = g_Config.m_SvTeamdamage;
+	g_Config.m_SvTeamdamage = 0;
+	pAttackerCharacter->TakeDamage(vec2(), 0, AttackerId, WEAPON_LASER);
+	pTeammateCharacter->TakeDamage(vec2(2.0f, 0.0f), 0, AttackerId, WEAPON_LASER);
+	pEnemyCharacter->SetArmor(10);
+	pEnemyCharacter->TakeDamage(vec2(), 0, AttackerId, WEAPON_LASER);
+	g_Config.m_SvTeamdamage = PreviousTeamDamage;
+
+	EXPECT_TRUE(pAttackerCharacter->IsAlive());
+	EXPECT_TRUE(pTeammateCharacter->IsAlive());
+	EXPECT_EQ(pTeammateCharacter->GetHealth(), 10);
+	EXPECT_GT(pTeammateCharacter->GetCore().m_Vel.x, 0.0f);
+	EXPECT_FALSE(pEnemyCharacter->IsAlive());
+	EXPECT_EQ(GameServer()->m_pController->SnapPlayerScore(SERVER_DEMO_CLIENT, pAttacker), 1);
+	const auto *pTDM = dynamic_cast<CGameControllerVanillaTDM *>(GameServer()->m_pController);
+	ASSERT_NE(pTDM, nullptr);
+	EXPECT_EQ(pTDM->TeamScore(TEAM_RED), 1);
+	EXPECT_FALSE(GameServer()->m_pController->OnEntity(ENTITY_HEALTH_1, 1, 1, LAYER_GAME, 0, true));
+}
+
+TEST_F(GameWorld, InstagibCTFReusesFlagLifecycle)
+{
+	GameServer()->GameHost().Shutdown();
+	GameServer()->m_pController = nullptr;
+	ASSERT_TRUE(GameServer()->GameHost().Select("insta.ictf"));
+	GameServer()->m_pController = GameServer()->GameHost().Controller();
+	GameServer()->GameHost().Init();
+
+	EXPECT_FALSE(GameServer()->m_pController->OnEntity(ENTITY_HEALTH_1, 1, 1, LAYER_GAME, 0, true));
+	EXPECT_TRUE(GameServer()->m_pController->OnEntity(ENTITY_FLAGSTAND_RED, 1, 1, LAYER_GAME, 0, true));
+	EXPECT_TRUE(GameServer()->m_pController->OnEntity(ENTITY_FLAGSTAND_BLUE, 2, 1, LAYER_GAME, 0, true));
+	const auto *pCTF = dynamic_cast<CGameControllerVanillaCTF *>(GameServer()->m_pController);
+	ASSERT_NE(pCTF, nullptr);
+	ASSERT_NE(pCTF->Flag(TEAM_RED), nullptr);
+	ASSERT_NE(pCTF->Flag(TEAM_BLUE), nullptr);
+
+	constexpr int AttackerId = 0;
+	constexpr int VictimId = 1;
+	CPlayer *pAttacker = GameServer()->CreatePlayer(AttackerId, TEAM_RED, false, -1);
+	CPlayer *pVictim = GameServer()->CreatePlayer(VictimId, TEAM_BLUE, false, -1);
+	ASSERT_NE(pAttacker, nullptr);
+	ASSERT_NE(pVictim, nullptr);
+	CCharacter *pAttackerCharacter = pAttacker->ForceSpawn(vec2(64.0f, 96.0f));
+	CCharacter *pVictimCharacter = pVictim->ForceSpawn(vec2(128.0f, 96.0f));
+	ASSERT_NE(pAttackerCharacter, nullptr);
+	ASSERT_NE(pVictimCharacter, nullptr);
+	EXPECT_TRUE(pVictimCharacter->GetWeaponGot(WEAPON_LASER));
+	EXPECT_FALSE(pVictimCharacter->GetWeaponGot(WEAPON_GUN));
+
+	pCTF->Flag(TEAM_RED)->Grab(pVictimCharacter);
+	ASSERT_EQ(pCTF->Flag(TEAM_RED)->Carrier(), pVictimCharacter);
+	pVictimCharacter->SetArmor(10);
+	pVictimCharacter->TakeDamage(vec2(), 0, AttackerId, WEAPON_LASER);
+
+	EXPECT_FALSE(pVictimCharacter->IsAlive());
+	EXPECT_EQ(pCTF->Flag(TEAM_RED)->Carrier(), nullptr);
+	EXPECT_FALSE(pCTF->Flag(TEAM_RED)->IsAtStand());
+	EXPECT_EQ(GameServer()->m_pController->SnapPlayerScore(SERVER_DEMO_CLIENT, pAttacker), 2);
+}
+
+TEST_F(GameWorld, GrenadeInstagibDMVerticalSlice)
+{
+	GameServer()->GameHost().Shutdown();
+	GameServer()->m_pController = nullptr;
+	ASSERT_TRUE(GameServer()->GameHost().Select("insta.gdm"));
+	GameServer()->m_pController = GameServer()->GameHost().Controller();
+	GameServer()->GameHost().Init();
+
+	constexpr int AttackerId = 0;
+	constexpr int VictimId = 1;
+	CPlayer *pAttacker = GameServer()->CreatePlayer(AttackerId, TEAM_GAME, false, -1);
+	CPlayer *pVictim = GameServer()->CreatePlayer(VictimId, TEAM_GAME, false, -1);
+	ASSERT_NE(pAttacker, nullptr);
+	ASSERT_NE(pVictim, nullptr);
+	CCharacter *pAttackerCharacter = pAttacker->ForceSpawn(vec2(64.0f, 96.0f));
+	CCharacter *pVictimCharacter = pVictim->ForceSpawn(vec2(128.0f, 96.0f));
+	ASSERT_NE(pAttackerCharacter, nullptr);
+	ASSERT_NE(pVictimCharacter, nullptr);
+
+	EXPECT_FALSE(pAttackerCharacter->GetWeaponGot(WEAPON_HAMMER));
+	EXPECT_FALSE(pAttackerCharacter->GetWeaponGot(WEAPON_GUN));
+	EXPECT_TRUE(pAttackerCharacter->GetWeaponGot(WEAPON_GRENADE));
+	EXPECT_EQ(pAttackerCharacter->GetWeaponAmmo(WEAPON_GRENADE), -1);
+	EXPECT_EQ(pAttackerCharacter->GetActiveWeapon(), WEAPON_GRENADE);
+
+	pAttackerCharacter->TakeDamage(vec2(2.0f, 0.0f), 5, AttackerId, WEAPON_GRENADE);
+	EXPECT_TRUE(pAttackerCharacter->IsAlive());
+	EXPECT_EQ(pAttackerCharacter->GetHealth(), 10);
+	EXPECT_GT(pAttackerCharacter->GetCore().m_Vel.x, 0.0f);
+
+	pVictimCharacter->TakeDamage(vec2(2.0f, 0.0f), 3, AttackerId, WEAPON_GRENADE);
+	EXPECT_TRUE(pVictimCharacter->IsAlive());
+	EXPECT_EQ(pVictimCharacter->GetHealth(), 10);
+	EXPECT_GT(pVictimCharacter->GetCore().m_Vel.x, 0.0f);
+
+	pVictimCharacter->SetArmor(10);
+	pVictimCharacter->TakeDamage(vec2(), 4, AttackerId, WEAPON_GRENADE);
+	EXPECT_FALSE(pVictimCharacter->IsAlive());
+	EXPECT_EQ(GameServer()->m_pController->SnapPlayerScore(SERVER_DEMO_CLIENT, pAttacker), 1);
+
+	EXPECT_TRUE(GameServer()->m_pController->OnEntity(ENTITY_SPAWN, 1, 1, LAYER_GAME, 0, true));
+	EXPECT_FALSE(GameServer()->m_pController->OnEntity(ENTITY_HEALTH_1, 1, 1, LAYER_GAME, 0, true));
+	EXPECT_FALSE(GameServer()->m_pController->OnEntity(ENTITY_WEAPON_GRENADE, 1, 1, LAYER_GAME, 0, true));
+}
+
+TEST_F(GameWorld, ZCatchReleasesOwnershipOnCatcherDeathAndDisconnect)
+{
+	GameServer()->GameHost().Shutdown();
+	GameServer()->m_pController = nullptr;
+	ASSERT_TRUE(GameServer()->GameHost().Select("zcatch.laser"));
+	GameServer()->m_pController = GameServer()->GameHost().Controller();
+	GameServer()->GameHost().Init();
+
+	constexpr int FirstCatcherId = 0;
+	constexpr int VictimId = 1;
+	constexpr int SecondCatcherId = 2;
+	constexpr int StaleProjectileVictimId = 3;
+	CPlayer *pFirstCatcher = GameServer()->CreatePlayer(FirstCatcherId, TEAM_GAME, false, -1);
+	CPlayer *pVictim = GameServer()->CreatePlayer(VictimId, TEAM_GAME, false, -1);
+	CPlayer *pSecondCatcher = GameServer()->CreatePlayer(SecondCatcherId, TEAM_GAME, false, -1);
+	CPlayer *pStaleProjectileVictim = GameServer()->CreatePlayer(StaleProjectileVictimId, TEAM_GAME, false, -1);
+	ASSERT_NE(pFirstCatcher, nullptr);
+	ASSERT_NE(pVictim, nullptr);
+	ASSERT_NE(pSecondCatcher, nullptr);
+	ASSERT_NE(pStaleProjectileVictim, nullptr);
+	CCharacter *pFirstCatcherCharacter = pFirstCatcher->ForceSpawn(vec2(64.0f, 96.0f));
+	CCharacter *pVictimCharacter = pVictim->ForceSpawn(vec2(96.0f, 96.0f));
+	CCharacter *pSecondCatcherCharacter = pSecondCatcher->ForceSpawn(vec2(128.0f, 96.0f));
+	CCharacter *pStaleProjectileVictimCharacter = pStaleProjectileVictim->ForceSpawn(vec2(160.0f, 96.0f));
+	ASSERT_NE(pFirstCatcherCharacter, nullptr);
+	ASSERT_NE(pVictimCharacter, nullptr);
+	ASSERT_NE(pSecondCatcherCharacter, nullptr);
+	ASSERT_NE(pStaleProjectileVictimCharacter, nullptr);
+
+	pVictimCharacter->TakeDamage(vec2(), 0, FirstCatcherId, WEAPON_LASER);
+	EXPECT_EQ(GameServer()->m_pController->PlayerAutoRespawnTick(pVictim), std::numeric_limits<int>::max());
+	pFirstCatcherCharacter->TakeDamage(vec2(), 0, SecondCatcherId, WEAPON_LASER);
+	EXPECT_NE(GameServer()->m_pController->PlayerAutoRespawnTick(pVictim), std::numeric_limits<int>::max());
+	EXPECT_EQ(GameServer()->m_pController->PlayerAutoRespawnTick(pFirstCatcher), std::numeric_limits<int>::max());
+	pStaleProjectileVictimCharacter->TakeDamage(vec2(), 0, FirstCatcherId, WEAPON_LASER);
+	EXPECT_NE(GameServer()->m_pController->PlayerAutoRespawnTick(pStaleProjectileVictim), std::numeric_limits<int>::max());
+
+	GameServer()->m_pController->OnPlayerDisconnect(pSecondCatcher, "test");
+	EXPECT_NE(GameServer()->m_pController->PlayerAutoRespawnTick(pFirstCatcher), std::numeric_limits<int>::max());
+}
+
+TEST_F(GameWorld, ZCatchEndsRoundForLastPlayerStanding)
+{
+	GameServer()->GameHost().Shutdown();
+	GameServer()->m_pController = nullptr;
+	ASSERT_TRUE(GameServer()->GameHost().Select("zcatch.laser"));
+	GameServer()->m_pController = GameServer()->GameHost().Controller();
+	GameServer()->GameHost().Init();
+
+	constexpr int CatcherId = 0;
+	constexpr int FirstVictimId = 1;
+	constexpr int SecondVictimId = 2;
+	CPlayer *pCatcher = GameServer()->CreatePlayer(CatcherId, TEAM_GAME, false, -1);
+	CPlayer *pFirstVictim = GameServer()->CreatePlayer(FirstVictimId, TEAM_GAME, false, -1);
+	CPlayer *pSecondVictim = GameServer()->CreatePlayer(SecondVictimId, TEAM_GAME, false, -1);
+	ASSERT_NE(pCatcher, nullptr);
+	ASSERT_NE(pFirstVictim, nullptr);
+	ASSERT_NE(pSecondVictim, nullptr);
+	CCharacter *pCatcherCharacter = pCatcher->ForceSpawn(vec2(64.0f, 96.0f));
+	CCharacter *pFirstVictimCharacter = pFirstVictim->ForceSpawn(vec2(96.0f, 96.0f));
+	CCharacter *pSecondVictimCharacter = pSecondVictim->ForceSpawn(vec2(128.0f, 96.0f));
+	ASSERT_NE(pCatcherCharacter, nullptr);
+	ASSERT_NE(pFirstVictimCharacter, nullptr);
+	ASSERT_NE(pSecondVictimCharacter, nullptr);
+
+	pFirstVictimCharacter->TakeDamage(vec2(), 0, CatcherId, WEAPON_LASER);
+	pSecondVictimCharacter->TakeDamage(vec2(), 0, CatcherId, WEAPON_LASER);
+	EXPECT_EQ(GameServer()->m_pController->PlayerAutoRespawnTick(pFirstVictim), std::numeric_limits<int>::max());
+	EXPECT_EQ(GameServer()->m_pController->PlayerAutoRespawnTick(pSecondVictim), std::numeric_limits<int>::max());
+	EXPECT_FALSE(GameServer()->m_pController->IsGamePaused());
+
+	GameServer()->m_pController->Tick();
+	EXPECT_TRUE(GameServer()->m_pController->IsGamePaused());
+	EXPECT_EQ(GameServer()->m_pController->SnapPlayerScore(SERVER_DEMO_CLIENT, pCatcher), 2);
+}
+
+TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
+{
+	GameServer()->GameHost().Shutdown();
+	GameServer()->m_pController = nullptr;
+	ASSERT_TRUE(GameServer()->GameHost().Select("zcatch.laser"));
+	GameServer()->m_pController = GameServer()->GameHost().Controller();
+	GameServer()->GameHost().Init();
+
+	constexpr int VictimId = 0;
+	constexpr int CatcherId = 1;
+	CPlayer *pCatcher = GameServer()->CreatePlayer(CatcherId, TEAM_GAME, false, -1);
+	CPlayer *pVictim = GameServer()->CreatePlayer(VictimId, TEAM_GAME, false, -1);
+	ASSERT_NE(pCatcher, nullptr);
+	ASSERT_NE(pVictim, nullptr);
+	CCharacter *pCatcherCharacter = pCatcher->ForceSpawn(vec2(64.0f, 96.0f));
+	CCharacter *pVictimCharacter = pVictim->ForceSpawn(vec2(96.0f, 96.0f));
+	ASSERT_NE(pCatcherCharacter, nullptr);
+	ASSERT_NE(pVictimCharacter, nullptr);
+	const int PreviousClientState = m_pServer->m_aClients[VictimId].m_State;
+	const bool PreviousSixup = m_pServer->m_aClients[VictimId].m_Sixup;
+	m_pServer->m_aClients[VictimId].m_State = CServer::CClient::STATE_INGAME;
+
+	pVictimCharacter->TakeDamage(vec2(), 0, CatcherId, WEAPON_LASER);
+	EXPECT_EQ(pVictim->GetTeam(), TEAM_GAME);
+	EXPECT_EQ(pVictim->SpectatorId(), CatcherId);
+
+	m_pServer->m_aClients[VictimId].m_Sixup = false;
+	m_pServer->m_SnapshotBuilder.Init(false);
+	pVictim->Snap(VictimId);
+	CSnapshotBuffer SixBuffer;
+	m_pServer->m_SnapshotBuilder.Finish(&SixBuffer);
+	const CSnapshot *pSixSnapshot = SixBuffer.AsSnapshot();
+	const auto *pSixPlayerInfo = static_cast<const CNetObj_PlayerInfo *>(pSixSnapshot->FindItem(NETOBJTYPE_PLAYERINFO, VictimId));
+	const auto *pSixSpectatorInfo = static_cast<const CNetObj_SpectatorInfo *>(pSixSnapshot->FindItem(NETOBJTYPE_SPECTATORINFO, VictimId));
+	ASSERT_NE(pSixPlayerInfo, nullptr);
+	ASSERT_NE(pSixSpectatorInfo, nullptr);
+	EXPECT_EQ(pSixPlayerInfo->m_Team, TEAM_SPECTATORS);
+	EXPECT_EQ(pSixSpectatorInfo->m_SpectatorId, CatcherId);
+
+	m_pServer->m_aClients[VictimId].m_Sixup = true;
+	m_pServer->m_SnapshotBuilder.Init(true);
+	pVictim->Snap(VictimId);
+	CSnapshotBuffer SevenBuffer;
+	m_pServer->m_SnapshotBuilder.Finish(&SevenBuffer);
+	const CSnapshot *pSevenSnapshot = SevenBuffer.AsSnapshot();
+	const auto *pSevenPlayerInfo = static_cast<const protocol7::CNetObj_PlayerInfo *>(pSevenSnapshot->FindItem(protocol7::NETOBJTYPE_PLAYERINFO, VictimId));
+	const auto *pSevenSpectatorInfo = static_cast<const protocol7::CNetObj_SpectatorInfo *>(pSevenSnapshot->FindItem(protocol7::NETOBJTYPE_SPECTATORINFO, VictimId));
+	ASSERT_NE(pSevenPlayerInfo, nullptr);
+	ASSERT_NE(pSevenSpectatorInfo, nullptr);
+	EXPECT_NE(pSevenPlayerInfo->m_PlayerFlags & protocol7::PLAYERFLAG_DEAD, 0);
+	EXPECT_EQ(pSevenSpectatorInfo->m_SpecMode, protocol7::SPEC_PLAYER);
+	EXPECT_EQ(pSevenSpectatorInfo->m_SpectatorId, CatcherId);
+
+	m_pServer->m_aClients[VictimId].m_State = PreviousClientState;
+	m_pServer->m_aClients[VictimId].m_Sixup = PreviousSixup;
+}
+
+TEST_F(GameWorld, ZCatchLateJoinFollowsLeadingCatcher)
+{
+	GameServer()->GameHost().Shutdown();
+	GameServer()->m_pController = nullptr;
+	ASSERT_TRUE(GameServer()->GameHost().Select("zcatch.laser"));
+	GameServer()->m_pController = GameServer()->GameHost().Controller();
+	GameServer()->GameHost().Init();
+
+	constexpr int LeaderId = 0;
+	constexpr int VictimId = 1;
+	constexpr int ContenderId = 2;
+	constexpr int EarlyJoinId = 3;
+	constexpr int LateJoinId = 4;
+	constexpr int SpectatorId = 5;
+	CPlayer *pLeader = GameServer()->CreatePlayer(LeaderId, TEAM_GAME, false, -1);
+	CPlayer *pVictim = GameServer()->CreatePlayer(VictimId, TEAM_GAME, false, -1);
+	CPlayer *pContender = GameServer()->CreatePlayer(ContenderId, TEAM_GAME, false, -1);
+	ASSERT_NE(pLeader, nullptr);
+	ASSERT_NE(pVictim, nullptr);
+	ASSERT_NE(pContender, nullptr);
+	CCharacter *pLeaderCharacter = pLeader->ForceSpawn(vec2(64.0f, 96.0f));
+	CCharacter *pVictimCharacter = pVictim->ForceSpawn(vec2(96.0f, 96.0f));
+	CCharacter *pContenderCharacter = pContender->ForceSpawn(vec2(128.0f, 96.0f));
+	ASSERT_NE(pLeaderCharacter, nullptr);
+	ASSERT_NE(pVictimCharacter, nullptr);
+	ASSERT_NE(pContenderCharacter, nullptr);
+	CPlayer *pEarlyJoin = GameServer()->CreatePlayer(EarlyJoinId, TEAM_GAME, false, -1);
+	ASSERT_NE(pEarlyJoin, nullptr);
+	GameServer()->m_pController->OnPlayerConnect(pEarlyJoin);
+	EXPECT_FALSE(GameServer()->m_pController->IsPlayerDeadSpectator(EarlyJoinId));
+	pVictimCharacter->TakeDamage(vec2(), 0, LeaderId, WEAPON_LASER);
+
+	CPlayer *pLateJoin = GameServer()->CreatePlayer(LateJoinId, TEAM_GAME, false, -1);
+	ASSERT_NE(pLateJoin, nullptr);
+	GameServer()->m_pController->OnPlayerConnect(pLateJoin);
+	EXPECT_EQ(pLateJoin->GetTeam(), TEAM_GAME);
+	EXPECT_TRUE(GameServer()->m_pController->IsPlayerDeadSpectator(LateJoinId));
+	EXPECT_EQ(pLateJoin->SpectatorId(), LeaderId);
+	EXPECT_EQ(GameServer()->m_pController->PlayerAutoRespawnTick(pLateJoin), std::numeric_limits<int>::max());
+
+	CPlayer *pSpectator = GameServer()->CreatePlayer(SpectatorId, TEAM_SPECTATORS, false, -1);
+	ASSERT_NE(pSpectator, nullptr);
+	GameServer()->m_pController->OnPlayerConnect(pSpectator);
+	EXPECT_FALSE(GameServer()->m_pController->IsPlayerDeadSpectator(SpectatorId));
+
+	pLeaderCharacter->TakeDamage(vec2(), 0, ContenderId, WEAPON_LASER);
+	EXPECT_FALSE(GameServer()->m_pController->IsPlayerDeadSpectator(VictimId));
+	EXPECT_FALSE(GameServer()->m_pController->IsPlayerDeadSpectator(LateJoinId));
 }
 
 TEST_F(GameWorld, VanillaCTFFlagLifecycle)

@@ -25,6 +25,7 @@ public:
 	int PlayerVetoActivityStartTick(int ClientId) const override;
 	int PlayerTeamGroup(int ClientId) const override;
 	bool CanPlayerReceivePreInput(int SenderId, int ReceiverId) const override;
+	CClientMask GetMaskForPlayerWorldEvent(int Asker, int ExceptId = -1) override;
 	void OnPlayerShowOthers(int ClientId, int Show) override;
 	bool CanSnapCharacter(CCharacter *pCharacter, int SnappingClient) const override;
 	void SnapCharacterMode(CCharacter *pCharacter, int SnappingClient, int TranslatedId) override;

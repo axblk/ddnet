@@ -28,6 +28,7 @@ struct CGameModeInfo
 	EGameModeScoreKind m_ScoreKind;
 	int m_GameFlags;
 	int m_Protocols;
+	int m_ActivePlayerLimit = 0;
 };
 
 class CGameModeRegistry

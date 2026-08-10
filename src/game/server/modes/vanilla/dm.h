@@ -6,7 +6,7 @@
 class CGameControllerVanillaDM : public CGameControllerVanillaPvP
 {
 public:
-	CGameControllerVanillaDM(CGameContext *pGameServer, const CGameModeInfo &GameModeInfo);
+	CGameControllerVanillaDM(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 
 	int OnCharacterDeath(CCharacter *pVictim, CPlayer *pKiller, int Weapon) override;
 	void Tick() override;

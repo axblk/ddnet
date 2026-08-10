@@ -1,17 +1,12 @@
 #ifndef GAME_SERVER_MODES_VANILLA_VANILLA_PVP_H
 #define GAME_SERVER_MODES_VANILLA_VANILLA_PVP_H
 
-#include <game/server/gamecontroller.h>
+#include "player.h"
 
-#include <array>
+#include <game/server/gamecontroller.h>
 
 class CGameControllerVanillaPvP : public IGameController
 {
-protected:
-	std::array<int, MAX_CLIENTS> m_aScores{};
-	std::array<int, MAX_CLIENTS> m_aEarliestRespawnTicks{};
-	std::array<int, MAX_CLIENTS> m_aLastNoAmmoSoundTicks{};
-
 public:
 	enum class EMatchResult
 	{
@@ -20,13 +15,14 @@ public:
 		END_ROUND,
 	};
 
-	CGameControllerVanillaPvP(CGameContext *pGameServer, const CGameModeInfo &GameModeInfo);
+	CGameControllerVanillaPvP(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 
 	static CTuningParams DefaultTuning();
 	static void ApplyDamage(int Damage, bool SelfDamage, int &Health, int &Armor);
-	static void ApplyDeathScore(std::array<int, MAX_CLIENTS> &aScores, int VictimId, int KillerId, int Weapon, bool TeamKill = false);
+	static int DeathScoreDelta(int VictimId, int KillerId, int Weapon, bool TeamKill = false);
 	static EMatchResult EvaluateMatch(int NumTopScores, bool LimitReached, bool SuddenDeath);
 	static vec2 ShotgunDirection(vec2 Direction, int Pellet, float SpeedDifference);
+	CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team) override;
 	void ResetTuning() override;
 	bool OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam) override;
 	bool CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const override;
@@ -42,6 +38,7 @@ public:
 	int SnapPlayerScore(int SnappingClient, CPlayer *pPlayer) override;
 
 protected:
+	CPlayerVanilla *VanillaPlayer(int ClientId) const;
 	void DetachProjectiles(int ClientId);
 	void InitGameSettings() override;
 	int GameInfoFlags(int SnappingClient) const override;

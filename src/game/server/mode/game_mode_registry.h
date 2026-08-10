@@ -4,7 +4,7 @@
 #include <memory>
 #include <vector>
 
-class CGameContext;
+class CGameServices;
 class IGameController;
 
 enum class EGameModeScoreKind
@@ -34,11 +34,11 @@ struct CGameModeInfo
 class CGameModeRegistry
 {
 public:
-	using FCreateController = std::unique_ptr<IGameController> (*)(CGameContext *pGameServer, const CGameModeInfo &Info);
+	using FCreateController = std::unique_ptr<IGameController> (*)(CGameServices &Services, const CGameModeInfo &Info);
 
 	bool Register(const CGameModeInfo &Info, FCreateController pfnCreateController);
 	const CGameModeInfo *Find(const char *pId) const;
-	std::unique_ptr<IGameController> Create(const char *pId, CGameContext *pGameServer) const;
+	std::unique_ptr<IGameController> Create(const char *pId, CGameServices &Services) const;
 
 private:
 	struct CEntry

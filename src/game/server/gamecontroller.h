@@ -12,10 +12,16 @@
 #include <generated/protocol.h>
 
 #include <game/server/mode/game_mode_registry.h>
-#include <game/server/teams.h>
+#include <game/teamscore.h>
 
-struct CScoreLoadBestTimeResult;
 class CCharacter;
+class CGameContext;
+class CGameControllerDDRace;
+class CGameServices;
+class CGameTeams;
+class CInteractions;
+class CPlayer;
+class CTuningParams;
 
 struct CWeaponFireContext
 {
@@ -64,6 +70,17 @@ struct CGameProjectileRules
 	EProjectileOwnerLossAction m_OwnerLossAction;
 };
 
+struct CGameExplosionContext
+{
+	vec2 m_Position;
+	int m_Owner;
+	int m_Weapon;
+	bool m_NoDamage;
+	int m_ActivatedTeam;
+	CClientMask m_Mask;
+	int m_AttackerTeam;
+};
+
 /*
 	Class: Game Controller
 		Controls the main game logic. Keeping track of team and player score,
@@ -72,6 +89,7 @@ struct CGameProjectileRules
 class IGameController
 {
 	friend class CSaveTeam; // need access to GameServer() and Server()
+	friend class CGameControllerDDRace;
 
 protected:
 	enum ESpawnType
@@ -86,15 +104,16 @@ protected:
 private:
 	std::vector<vec2> m_avSpawnPoints[NUM_SPAWNTYPES];
 
-	class CGameContext *m_pGameServer;
+	CGameServices *m_pServices;
 	class CConfig *m_pConfig;
 	class IServer *m_pServer;
 
-	CGameTeams m_Teams;
+	CTeamsCore m_TeamsCore;
 	const CGameModeInfo m_GameModeInfo;
+	CGameContext *GameServer() const;
 
 protected:
-	CGameContext *GameServer() const { return m_pGameServer; }
+	CGameServices &Services() const { return *m_pServices; }
 	CConfig *Config() { return m_pConfig; }
 	IServer *Server() const { return m_pServer; }
 
@@ -143,11 +162,13 @@ protected:
 public:
 	const char *m_pGameType;
 
-	IGameController(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo);
+	IGameController(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 	virtual ~IGameController();
 	void Init();
 	const CGameModeInfo &Info() const { return m_GameModeInfo; }
 	virtual void ResetTuning();
+	virtual CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team);
+	virtual CCharacter *CreateCharacter(CPlayer *pPlayer);
 
 	// event
 	/*
@@ -163,10 +184,13 @@ public:
 	virtual int OnCharacterDeath(class CCharacter *pVictim, class CPlayer *pKiller, int Weapon);
 	virtual bool OnCharacterTakeDamage(class CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam = TEAM_SPECTATORS);
 	virtual bool CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const;
+	virtual bool CanSeeInteraction(const CInteractions &, int) const { return true; }
+	virtual bool CanHitInteraction(const CInteractions &, int) const { return true; }
 	virtual CWeaponFireResult OnCharacterFireWeapon(const CWeaponFireContext &Context);
 	virtual CGamePickupResult OnCharacterPickup(CCharacter *pCharacter, int Type, int Subtype, vec2 Position);
 	virtual int PickupInitialSpawnDelaySeconds(int Type, int Subtype) const { return 0; }
 	virtual CGameProjectileRules ProjectileRules(const CGameProjectileContext &Context) const;
+	virtual void OnExplosion(const CGameExplosionContext &Context);
 	/*
 		Function: OnCharacterSpawn
 			Called when a CCharacter spawns into the game world.
@@ -178,6 +202,8 @@ public:
 	virtual bool CanSnapCharacter(CCharacter *pCharacter, int SnappingClient) const { return true; }
 	virtual void SnapCharacterMode(CCharacter *pCharacter, int SnappingClient, int TranslatedId) {}
 	virtual bool UseDDNetEntityNetObjs() const { return false; }
+	virtual bool UsesRaceTeams() const { return false; }
+	virtual bool UsesRaceScore() const { return false; }
 	// Complete mode-owned phases around the shared CharacterCore tick.
 	virtual void TickCharacterPreCore(CCharacter *) {}
 	virtual void TickCharacterPostCore(CCharacter *pCharacter);
@@ -201,6 +227,8 @@ public:
 
 	virtual void OnPlayerConnect(class CPlayer *pPlayer);
 	virtual void OnPlayerDisconnect(class CPlayer *pPlayer, const char *pReason);
+	virtual void OnPlayerNameChanged(int ClientId) {}
+	virtual void OnPlayerDDNetVersionKnown(int ClientId) {}
 	virtual void OnPlayerSetTeam(int ClientId, int Team);
 	virtual void OnPlayerKill(int ClientId);
 	virtual void OnPlayerCallKickVote(int ClientId, int TargetId, const char *pReason);
@@ -306,12 +334,10 @@ public:
 	virtual CClientMask GetMaskForPlayerWorldEvent(int Asker, int ExceptID = -1);
 
 	bool IsTeamPlay() const { return m_GameFlags & GAMEFLAG_TEAMS; }
-	// DDRace
-
-	std::optional<float> m_CurrentRecord;
-	CGameTeams &Teams() { return m_Teams; }
-	const CGameTeams &Teams() const { return m_Teams; }
-	std::shared_ptr<CScoreLoadBestTimeResult> m_pLoadBestTimeResult;
+	CTeamsCore &TeamsCore() { return m_TeamsCore; }
+	const CTeamsCore &TeamsCore() const { return m_TeamsCore; }
+	CGameTeams &RaceTeams();
+	const CGameTeams &RaceTeams() const;
 };
 
 #endif

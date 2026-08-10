@@ -13,12 +13,15 @@
 
 #include <game/server/entities/character.h>
 #include <game/server/gamecontext.h>
+#include <game/server/interactions.h>
 #include <game/server/player.h>
+#include <game/server/score.h>
+#include <game/server/teams.h>
 
 #include <algorithm>
 
-CGameControllerDDRace::CGameControllerDDRace(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo) :
-	IGameController(pGameServer, GameModeInfo)
+CGameControllerDDRace::CGameControllerDDRace(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
+	IGameController(Services, GameModeInfo)
 {
 }
 
@@ -31,8 +34,56 @@ void CGameControllerDDRace::RegisterCommands()
 	GameServer()->RegisterDDRaceTeamCommands(this);
 }
 
+void CGameControllerDDRace::OnExplosion(const CGameExplosionContext &Context)
+{
+	GameServer()->CreateExplosionEvent(Context.m_Position, Context.m_Mask);
+
+	CEntity *apEntities[MAX_CLIENTS];
+	constexpr float Radius = 135.0f;
+	constexpr float InnerRadius = 48.0f;
+	const int Num = GameServer()->m_World.FindEntities(Context.m_Position, Radius, apEntities, MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
+	CClientMask TeamMask = CClientMask().set();
+	for(int i = 0; i < Num; i++)
+	{
+		auto *pCharacter = static_cast<CCharacter *>(apEntities[i]);
+		const vec2 Difference = pCharacter->m_Pos - Context.m_Position;
+		const float Distance = length(Difference);
+		const vec2 ForceDirection = Distance > 0.0f ? normalize(Difference) : vec2(0.0f, 1.0f);
+		const float Falloff = 1.0f - std::clamp((Distance - InnerRadius) / (Radius - InnerRadius), 0.0f, 1.0f);
+		const float Strength = Context.m_Owner == -1 || !GameServer()->m_apPlayers[Context.m_Owner] || !GameServer()->m_apPlayers[Context.m_Owner]->m_TuneZone ?
+					       GameServer()->GlobalTuning()->m_ExplosionStrength :
+					       GameServer()->TuningList()[GameServer()->m_apPlayers[Context.m_Owner]->m_TuneZone].m_ExplosionStrength;
+		const float Damage = Strength * Falloff;
+		if((int)Damage == 0)
+			continue;
+
+		if((GameServer()->GetPlayerChar(Context.m_Owner) ? !GameServer()->GetPlayerChar(Context.m_Owner)->GrenadeHitDisabled() : g_Config.m_SvHit) || Context.m_NoDamage || Context.m_Owner == pCharacter->GetPlayer()->GetCid())
+		{
+			if(Context.m_Owner != -1 && pCharacter->IsAlive() && !pCharacter->CanCollide(Context.m_Owner))
+				continue;
+			if(Context.m_Owner == -1 && Context.m_ActivatedTeam != -1 && pCharacter->IsAlive() && pCharacter->Team() != Context.m_ActivatedTeam)
+				continue;
+
+			// Explode at most once per team.
+			const int PlayerTeam = pCharacter->Team();
+			if((GameServer()->GetPlayerChar(Context.m_Owner) ? GameServer()->GetPlayerChar(Context.m_Owner)->GrenadeHitDisabled() : !g_Config.m_SvHit) || Context.m_NoDamage)
+			{
+				if(PlayerTeam == TEAM_SUPER)
+					continue;
+				if(!TeamMask.test(PlayerTeam))
+					continue;
+				TeamMask.reset(PlayerTeam);
+			}
+
+			pCharacter->TakeDamage(ForceDirection * Damage * 2.0f, (int)Damage, Context.m_Owner, Context.m_Weapon, !Context.m_NoDamage, Context.m_AttackerTeam);
+		}
+	}
+}
+
 void CGameControllerDDRace::OnCharacterSpawn(CCharacter *pCharacter)
 {
+	pCharacter->SetRaceTeams(&RaceTeams());
+	RaceTeams().OnCharacterSpawn(pCharacter->GetPlayer()->GetCid());
 	IGameController::OnCharacterSpawn(pCharacter);
 	pCharacter->DDRaceInit();
 }
@@ -71,10 +122,32 @@ bool CGameControllerDDRace::OnEntity(int Index, int x, int y, int Layer, int Fla
 
 void CGameControllerDDRace::OnPlayerConnect(CPlayer *pPlayer)
 {
+	RaceTeams().ResetPlayer(pPlayer->GetCid());
 	IGameController::OnPlayerConnect(pPlayer);
-	pPlayer->m_ShowOthers = g_Config.m_SvShowOthersDefault;
+	GameServer()->RaceScore()->ResetPlayer(pPlayer->GetCid());
+	RaceTeams().PlayerState(pPlayer->GetCid()).m_ShowOthers = g_Config.m_SvShowOthersDefault;
 	if(!Server()->ClientPrevIngame(pPlayer->GetCid()) && g_Config.m_SvShowOthers && g_Config.m_SvShowOthersDefault > SHOW_OTHERS_OFF)
 		GameServer()->SendChatTarget(pPlayer->GetCid(), "You can see other players. To disable this use DDNet client and type /showothers");
+}
+
+void CGameControllerDDRace::OnPlayerDisconnect(CPlayer *pPlayer, const char *pReason)
+{
+	IGameController::OnPlayerDisconnect(pPlayer, pReason);
+	GameServer()->RaceScore()->ResetPlayer(pPlayer->GetCid());
+	RaceTeams().ResetPlayer(pPlayer->GetCid());
+}
+
+void CGameControllerDDRace::OnPlayerNameChanged(int ClientId)
+{
+	GameServer()->RaceScore()->ResetPlayer(ClientId);
+	Server()->SetClientScore(ClientId, std::nullopt);
+	GameServer()->RaceScore()->LoadPlayerData(ClientId);
+}
+
+void CGameControllerDDRace::OnPlayerDDNetVersionKnown(int ClientId)
+{
+	RaceTeams().SendTeamsState(ClientId);
+	GameServer()->SendRecord(ClientId);
 }
 
 void CGameControllerDDRace::OnPlayerSetTeam(int ClientId, int Team)
@@ -111,7 +184,7 @@ void CGameControllerDDRace::OnPlayerKill(int ClientId)
 	if(IsGamePaused())
 		return;
 
-	if(GameServer()->IsRunningKickOrSpecVote(ClientId) && Teams().m_Core.Team(ClientId))
+	if(GameServer()->IsRunningKickOrSpecVote(ClientId) && RaceTeams().m_Core.Team(ClientId))
 	{
 		GameServer()->SendChatTarget(ClientId, "You are running a vote please try again after the vote is done!");
 		return;
@@ -137,9 +210,66 @@ void CGameControllerDDRace::OnPlayerKill(int ClientId)
 	IGameController::OnPlayerKill(ClientId);
 }
 
+bool CGameControllerDDRace::CanSeeInteraction(const CInteractions &Interaction, int ClientId) const
+{
+	const CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+	const auto &PlayerState = RaceTeams().PlayerState(ClientId);
+	auto IsDifferentTeam = [this, &Interaction](int OtherClientId) {
+		const int Team = RaceTeams().m_Core.Team(OtherClientId);
+		return Team != Interaction.DDRaceTeam() && Team != TEAM_SUPER;
+	};
+	auto IsSolo = [this](int OtherClientId) {
+		const CCharacter *pCharacter = GameServer()->GetPlayerChar(OtherClientId);
+		return pCharacter && pCharacter->Core()->m_Solo;
+	};
+
+	if(!(pPlayer->GetTeam() == TEAM_SPECTATORS || pPlayer->IsPaused()))
+	{
+		if(ClientId == Interaction.OwnerId())
+			return true;
+		if(PlayerState.m_ShowOthers == SHOW_OTHERS_ONLY_TEAM)
+			return !IsDifferentTeam(ClientId);
+		if(PlayerState.m_ShowOthers == SHOW_OTHERS_OFF)
+			return !Interaction.IsSolo() && !IsSolo(ClientId) && !IsDifferentTeam(ClientId);
+	}
+	else if(pPlayer->SpectatorId() != SPEC_FREEVIEW)
+	{
+		const int SpectatorId = pPlayer->SpectatorId();
+		if(SpectatorId == Interaction.OwnerId())
+			return true;
+		if(!GameServer()->GetPlayerChar(SpectatorId))
+			return false;
+		if(PlayerState.m_ShowOthers == SHOW_OTHERS_ONLY_TEAM)
+			return !IsDifferentTeam(SpectatorId);
+		if(PlayerState.m_ShowOthers == SHOW_OTHERS_OFF)
+			return !Interaction.IsSolo() && !IsSolo(SpectatorId) && !IsDifferentTeam(SpectatorId);
+	}
+	else if(PlayerState.m_SpecTeam)
+	{
+		return !IsDifferentTeam(ClientId);
+	}
+
+	return true;
+}
+
+bool CGameControllerDDRace::CanHitInteraction(const CInteractions &Interaction, int ClientId) const
+{
+	const CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+	if(Interaction.DDRaceTeam() && RaceTeams().m_Core.Team(ClientId) != Interaction.DDRaceTeam())
+		return false;
+	if(Interaction.IsSolo() && Interaction.UniqueOwnerId() != pPlayer->GetUniqueCid())
+		return false;
+	if(Interaction.NoHitOthers() && Interaction.UniqueOwnerId() != pPlayer->GetUniqueCid())
+		return false;
+	if(Interaction.NoHitSelf() && Interaction.UniqueOwnerId() == pPlayer->GetUniqueCid())
+		return false;
+
+	return true;
+}
+
 void CGameControllerDDRace::OnPlayerCallKickVote(int ClientId, int TargetId, const char *pReason)
 {
-	const int Team = Teams().m_Core.Team(ClientId);
+	const int Team = RaceTeams().m_Core.Team(ClientId);
 	if(g_Config.m_SvVoteKickMin && Team == TEAM_FLOCK)
 	{
 		const NETADDR *apAddresses[MAX_CLIENTS];
@@ -152,13 +282,13 @@ void CGameControllerDDRace::OnPlayerCallKickVote(int ClientId, int TargetId, con
 		int NumPlayers = 0;
 		for(int i = 0; i < MAX_CLIENTS; ++i)
 		{
-			if(!GameServer()->m_apPlayers[i] || GameServer()->m_apPlayers[i]->GetTeam() == TEAM_SPECTATORS || Teams().m_Core.Team(i) != TEAM_FLOCK)
+			if(!GameServer()->m_apPlayers[i] || GameServer()->m_apPlayers[i]->GetTeam() == TEAM_SPECTATORS || RaceTeams().m_Core.Team(i) != TEAM_FLOCK)
 				continue;
 
 			++NumPlayers;
 			for(int j = 0; j < i; ++j)
 			{
-				if(GameServer()->m_apPlayers[j] && GameServer()->m_apPlayers[j]->GetTeam() != TEAM_SPECTATORS && Teams().m_Core.Team(j) == TEAM_FLOCK &&
+				if(GameServer()->m_apPlayers[j] && GameServer()->m_apPlayers[j]->GetTeam() != TEAM_SPECTATORS && RaceTeams().m_Core.Team(j) == TEAM_FLOCK &&
 					!net_addr_comp_noport(apAddresses[i], apAddresses[j]))
 				{
 					--NumPlayers;
@@ -182,7 +312,7 @@ void CGameControllerDDRace::OnPlayerCallKickVote(int ClientId, int TargetId, con
 		return;
 	}
 
-	const int TargetTeam = Teams().m_Core.Team(TargetId);
+	const int TargetTeam = RaceTeams().m_Core.Team(TargetId);
 	if(Team == TEAM_FLOCK && TargetTeam == TEAM_FLOCK)
 	{
 		IGameController::OnPlayerCallKickVote(ClientId, TargetId, pReason);
@@ -220,7 +350,7 @@ void CGameControllerDDRace::OnPlayerCallKickVote(int ClientId, int TargetId, con
 
 void CGameControllerDDRace::OnPlayerCallSpectateVote(int ClientId, int TargetId, const char *pReason)
 {
-	if(!GameServer()->GetPlayerChar(ClientId) || !GameServer()->GetPlayerChar(TargetId) || Teams().m_Core.Team(ClientId) != Teams().m_Core.Team(TargetId))
+	if(!GameServer()->GetPlayerChar(ClientId) || !GameServer()->GetPlayerChar(TargetId) || RaceTeams().m_Core.Team(ClientId) != RaceTeams().m_Core.Team(TargetId))
 	{
 		GameServer()->SendChatTarget(ClientId, "You can only move your team member to spectators");
 		return;
@@ -229,7 +359,7 @@ void CGameControllerDDRace::OnPlayerCallSpectateVote(int ClientId, int TargetId,
 	char aChatMessage[512];
 	char aDescription[VOTE_DESC_LENGTH];
 	char aCommand[VOTE_CMD_LENGTH];
-	const int TargetTeam = Teams().m_Core.Team(TargetId);
+	const int TargetTeam = RaceTeams().m_Core.Team(TargetId);
 	if(g_Config.m_SvPauseable && g_Config.m_SvVotePause)
 	{
 		str_format(aChatMessage, sizeof(aChatMessage), "'%s' called for vote to pause '%s' for %d seconds (%s)", Server()->ClientName(ClientId), Server()->ClientName(TargetId), g_Config.m_SvVotePauseTime, pReason);
@@ -257,7 +387,7 @@ bool CGameControllerDDRace::CanPlayerVoteOnTargetVote(int VoteCreatorId, int Vot
 
 	const CCharacter *pCreator = GameServer()->GetPlayerChar(VoteCreatorId);
 	const CCharacter *pVoter = GameServer()->GetPlayerChar(VoterId);
-	return !pCreator || !pVoter || Teams().m_Core.Team(VoteCreatorId) == Teams().m_Core.Team(VoterId);
+	return !pCreator || !pVoter || RaceTeams().m_Core.Team(VoteCreatorId) == RaceTeams().m_Core.Team(VoterId);
 }
 
 int CGameControllerDDRace::PlayerVetoActivityStartTick(int ClientId) const
@@ -271,25 +401,25 @@ int CGameControllerDDRace::PlayerVetoActivityStartTick(int ClientId) const
 
 int CGameControllerDDRace::PlayerTeamGroup(int ClientId) const
 {
-	return Teams().m_Core.Team(ClientId);
+	return RaceTeams().m_Core.Team(ClientId);
 }
 
 bool CGameControllerDDRace::CanPlayerReceivePreInput(int SenderId, int ReceiverId) const
 {
-	return Teams().m_Core.Team(SenderId) == Teams().m_Core.Team(ReceiverId);
+	return RaceTeams().m_Core.Team(SenderId) == RaceTeams().m_Core.Team(ReceiverId);
 }
 
 CClientMask CGameControllerDDRace::GetMaskForPlayerWorldEvent(int Asker, int ExceptId)
 {
 	if(Asker == -1)
 		return IGameController::GetMaskForPlayerWorldEvent(Asker, ExceptId);
-	return Teams().TeamMask(Teams().m_Core.Team(Asker), ExceptId, Asker);
+	return RaceTeams().TeamMask(RaceTeams().m_Core.Team(Asker), ExceptId, Asker);
 }
 
 void CGameControllerDDRace::OnPlayerShowOthers(int ClientId, int Show)
 {
 	if(g_Config.m_SvShowOthers && !g_Config.m_SvShowOthersDefault)
-		GameServer()->m_apPlayers[ClientId]->m_ShowOthers = Show;
+		RaceTeams().PlayerState(ClientId).m_ShowOthers = Show;
 }
 
 bool CGameControllerDDRace::CanSnapCharacter(CCharacter *pCharacter, int SnappingClient) const
@@ -299,14 +429,15 @@ bool CGameControllerDDRace::CanSnapCharacter(CCharacter *pCharacter, int Snappin
 
 	CCharacter *pSnappingCharacter = GameServer()->GetPlayerChar(SnappingClient);
 	CPlayer *pSnappingPlayer = GameServer()->m_apPlayers[SnappingClient];
+	const auto &PlayerState = RaceTeams().PlayerState(SnappingClient);
 	if(pSnappingPlayer->GetTeam() == TEAM_SPECTATORS || pSnappingPlayer->IsPaused())
 	{
-		if(pSnappingPlayer->SpectatorId() != SPEC_FREEVIEW && !pCharacter->CanCollide(pSnappingPlayer->SpectatorId()) && (pSnappingPlayer->m_ShowOthers == SHOW_OTHERS_OFF || (pSnappingPlayer->m_ShowOthers == SHOW_OTHERS_ONLY_TEAM && !pCharacter->SameTeam(pSnappingPlayer->SpectatorId()))))
+		if(pSnappingPlayer->SpectatorId() != SPEC_FREEVIEW && !pCharacter->CanCollide(pSnappingPlayer->SpectatorId()) && (PlayerState.m_ShowOthers == SHOW_OTHERS_OFF || (PlayerState.m_ShowOthers == SHOW_OTHERS_ONLY_TEAM && !pCharacter->SameTeam(pSnappingPlayer->SpectatorId()))))
 			return false;
-		if(pSnappingPlayer->SpectatorId() == SPEC_FREEVIEW && !pCharacter->CanCollide(SnappingClient) && pSnappingPlayer->m_SpecTeam && !pCharacter->SameTeam(SnappingClient))
+		if(pSnappingPlayer->SpectatorId() == SPEC_FREEVIEW && !pCharacter->CanCollide(SnappingClient) && PlayerState.m_SpecTeam && !pCharacter->SameTeam(SnappingClient))
 			return false;
 	}
-	else if(pSnappingCharacter && !pSnappingCharacter->Core()->m_Super && !pCharacter->CanCollide(SnappingClient) && (pSnappingPlayer->m_ShowOthers == SHOW_OTHERS_OFF || (pSnappingPlayer->m_ShowOthers == SHOW_OTHERS_ONLY_TEAM && !pCharacter->SameTeam(SnappingClient))))
+	else if(pSnappingCharacter && !pSnappingCharacter->Core()->m_Super && !pCharacter->CanCollide(SnappingClient) && (PlayerState.m_ShowOthers == SHOW_OTHERS_OFF || (PlayerState.m_ShowOthers == SHOW_OTHERS_ONLY_TEAM && !pCharacter->SameTeam(SnappingClient))))
 		return false;
 
 	return true;
@@ -392,7 +523,7 @@ void CGameControllerDDRace::SnapPlayerMode(CPlayer *pPlayer, int SnappingClient,
 	if(SnappingClient != SERVER_DEMO_CLIENT)
 	{
 		CPlayer *pSnappingPlayer = GameServer()->m_apPlayers[SnappingClient];
-		ShowSpec = ShowSpec && (GameServer()->GetDDRaceTeam(pPlayer->GetCid()) == GameServer()->GetDDRaceTeam(SnappingClient) || pSnappingPlayer->m_ShowOthers == SHOW_OTHERS_ON || pSnappingPlayer->GetTeam() == TEAM_SPECTATORS || pSnappingPlayer->IsPaused());
+		ShowSpec = ShowSpec && (GameServer()->GetDDRaceTeam(pPlayer->GetCid()) == GameServer()->GetDDRaceTeam(SnappingClient) || RaceTeams().PlayerState(SnappingClient).m_ShowOthers == SHOW_OTHERS_ON || pSnappingPlayer->GetTeam() == TEAM_SPECTATORS || pSnappingPlayer->IsPaused());
 	}
 	if(ShowSpec)
 	{

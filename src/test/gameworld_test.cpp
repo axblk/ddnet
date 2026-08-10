@@ -19,6 +19,7 @@
 
 #include <game/mapitems.h>
 #include <game/server/entities/character.h>
+#include <game/server/entities/laser.h>
 #include <game/server/entities/pickup.h>
 #include <game/server/entities/projectile.h>
 #include <game/server/gamecontext.h>
@@ -26,11 +27,16 @@
 #include <game/server/gamemodes/ddnet.h>
 #include <game/server/gamemodes/mod.h>
 #include <game/server/gameworld.h>
+#include <game/server/interactions.h>
+#include <game/server/mode/game_mode_registry.h>
+#include <game/server/mode/game_services.h>
 #include <game/server/modes/vanilla/ctf.h>
 #include <game/server/modes/vanilla/dm.h>
 #include <game/server/modes/vanilla/flag.h>
 #include <game/server/modes/vanilla/tdm.h>
 #include <game/server/player.h>
+#include <game/server/score.h>
+#include <game/server/teams.h>
 #include <game/version.h>
 
 #include <gtest/gtest.h>
@@ -63,6 +69,11 @@ public:
 	CGameContext *GameServer() // NOLINT(readability-make-member-function-const)
 	{
 		return (CGameContext *)m_pGameServer;
+	}
+
+	CGameServices &GameServices() // NOLINT(readability-make-member-function-const)
+	{
+		return GameServer()->GameHost().Services();
 	}
 
 	GameWorld()
@@ -146,6 +157,98 @@ public:
 		m_pServer->DbPool()->OnShutdown();
 	}
 };
+
+namespace
+{
+	class CFactoryPlayer final : public CPlayerVanilla
+	{
+		int *m_pDestructions;
+		char m_aModeState[64]{};
+
+	public:
+		CFactoryPlayer(CGameServices &Services, uint32_t UniqueClientId, int ClientId, int Team, int *pDestructions) :
+			CPlayerVanilla(Services, UniqueClientId, ClientId, Team),
+			m_pDestructions(pDestructions)
+		{
+		}
+
+		~CFactoryPlayer() override
+		{
+			(*m_pDestructions)++;
+		}
+	};
+
+	class CFactoryCharacter final : public CCharacter
+	{
+		int *m_pDestructions;
+		char m_aModeState[64]{};
+
+	public:
+		CFactoryCharacter(CGameWorld *pWorld, CNetObj_PlayerInput LastInput, int *pDestructions) :
+			CCharacter(pWorld, LastInput),
+			m_pDestructions(pDestructions)
+		{
+		}
+
+		~CFactoryCharacter() override
+		{
+			(*m_pDestructions)++;
+		}
+	};
+
+	class CFactoryController final : public CGameControllerVanillaDM
+	{
+		int *m_pPlayerDestructions;
+		int *m_pCharacterDestructions;
+
+	public:
+		CFactoryController(CGameServices &Services, const CGameModeInfo &GameModeInfo, int *pPlayerDestructions, int *pCharacterDestructions) :
+			CGameControllerVanillaDM(Services, GameModeInfo),
+			m_pPlayerDestructions(pPlayerDestructions),
+			m_pCharacterDestructions(pCharacterDestructions)
+		{
+		}
+
+		CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team) override
+		{
+			return new(ClientId) CFactoryPlayer(Services(), UniqueClientId, ClientId, Team, m_pPlayerDestructions);
+		}
+
+		CCharacter *CreateCharacter(CPlayer *pPlayer) override
+		{
+			const int ClientId = pPlayer->GetCid();
+			return new(ClientId) CFactoryCharacter(&Services().World(), Services().LastPlayerInput(ClientId), m_pCharacterDestructions);
+		}
+
+		bool CanSpawn(int, vec2 *pOutPos, int) override
+		{
+			*pOutPos = vec2(64.0f, 96.0f);
+			return true;
+		}
+	};
+
+	class CServicesFactoryController final : public IGameController
+	{
+	public:
+		CGameServices *m_pConstructionServices;
+
+		CServicesFactoryController(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
+			IGameController(Services, GameModeInfo),
+			m_pConstructionServices(&Services)
+		{
+		}
+
+		bool IsValidTeam(int Team) override
+		{
+			return Team == TEAM_RED || Team == TEAM_BLUE || Team == TEAM_SPECTATORS;
+		}
+	};
+
+	std::unique_ptr<IGameController> CreateServicesFactoryController(CGameServices &Services, const CGameModeInfo &GameModeInfo)
+	{
+		return std::make_unique<CServicesFactoryController>(Services, GameModeInfo);
+	}
+}
 
 TEST_F(GameWorld, ClosestCharacter)
 {
@@ -322,14 +425,16 @@ TEST_F(GameWorld, CharacterEmote)
 TEST_F(GameWorld, VanillaWeaponFire)
 {
 	constexpr int ClientId = 0;
+	const CGameModeInfo Info = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
+	CGameControllerVanillaDM Controller(GameServices(), Info);
+	IGameController *pPreviousController = GameServer()->m_pController;
+	GameServer()->m_pController = &Controller;
 	GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
 	CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
 	pPlayer->ForceSpawn(vec2(0, 0));
 	CCharacter *pCharacter = pPlayer->GetCharacter();
 	ASSERT_NE(pCharacter, nullptr);
 
-	const CGameModeInfo Info = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM Controller(GameServer(), Info);
 	const CTuningParams Tuning = CGameControllerVanillaDM::DefaultTuning();
 	auto CountProjectiles = [this]() {
 		int Count = 0;
@@ -341,8 +446,6 @@ TEST_F(GameWorld, VanillaWeaponFire)
 	pCharacter->SetWeaponAmmo(WEAPON_GUN, 10);
 	CWeaponFireContext Context = {pCharacter, WEAPON_GUN, vec2(1, 0), vec2(1, 0), pCharacter->m_Pos, &Tuning};
 	const int BeforeGun = CountProjectiles();
-	IGameController *pPreviousController = GameServer()->m_pController;
-	GameServer()->m_pController = &Controller;
 	pCharacter->SetActiveWeapon(WEAPON_GUN);
 	CNetObj_PlayerInput Input = {};
 	Input.m_TargetX = 1;
@@ -368,6 +471,7 @@ TEST_F(GameWorld, VanillaWeaponFire)
 	EXPECT_FALSE(NoAmmoResult.m_Fired);
 	EXPECT_GT(NoAmmoResult.m_ReloadTicks, 0);
 	EXPECT_EQ(CountProjectiles(), BeforeNoAmmo);
+	GameServer()->m_pController = pPreviousController;
 }
 
 TEST_F(GameWorld, MapEntitySetsAreExplicit)
@@ -380,19 +484,19 @@ TEST_F(GameWorld, MapEntitySetsAreExplicit)
 	};
 
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	const int BeforeVanilla = CountProjectiles();
 	EXPECT_FALSE(VanillaController.OnEntity(ENTITY_CRAZY_SHOTGUN, 10, 10, LAYER_GAME, 0, true, 0));
 	EXPECT_EQ(CountProjectiles(), BeforeVanilla);
 	EXPECT_TRUE(VanillaController.OnEntity(ENTITY_SPAWN, 10, 10, LAYER_GAME, 0, true, 0));
 
 	const CGameModeInfo DDNetInfo = {"ddnet", "DDNet", "DDraceNetwork", "TestDDraceNetwork", EGameModeScoreKind::TIME, protocol7::GAMEFLAG_RACE, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerDDNet DDNetController(GameServer(), DDNetInfo);
+	CGameControllerDDNet DDNetController(GameServices(), DDNetInfo);
 	EXPECT_TRUE(DDNetController.OnEntity(ENTITY_CRAZY_SHOTGUN, 10, 10, LAYER_GAME, 0, true, 0));
 	EXPECT_EQ(CountProjectiles(), BeforeVanilla + 1);
 
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 	EXPECT_TRUE(ModController.OnEntity(ENTITY_CRAZY_SHOTGUN, 10, 10, LAYER_GAME, 0, true, 0));
 	EXPECT_EQ(CountProjectiles(), BeforeVanilla + 2);
 }
@@ -422,11 +526,11 @@ TEST_F(GameWorld, CharacterTickPhasesAreModeOwned)
 	ASSERT_TRUE(pCharacter->Freeze(2));
 
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	const CGameModeInfo DDNetInfo = {"ddnet", "DDNet", "DDraceNetwork", "TestDDraceNetwork", EGameModeScoreKind::TIME, protocol7::GAMEFLAG_RACE, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerDDNet DDNetController(GameServer(), DDNetInfo);
+	CGameControllerDDNet DDNetController(GameServices(), DDNetInfo);
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 
 	IGameController *pPreviousController = GameServer()->m_pController;
 	const int PreviousNoWeakHook = g_Config.m_SvNoWeakHook;
@@ -458,7 +562,7 @@ TEST_F(GameWorld, CharacterTickPhasesAreModeOwned)
 TEST_F(GameWorld, CharacterSpawnInitializationIsModeOwned)
 {
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	IGameController *pPreviousController = GameServer()->m_pController;
 	const int PreviousEndlessDrag = g_Config.m_SvEndlessDrag;
 	g_Config.m_SvEndlessDrag = 1;
@@ -475,6 +579,8 @@ TEST_F(GameWorld, CharacterSpawnInitializationIsModeOwned)
 	}
 	EXPECT_FALSE(pVanillaCharacter->GetCore().m_EndlessHook);
 	EXPECT_EQ(pVanillaCharacter->m_TuneZoneOld, pVanillaCharacter->m_TuneZone);
+	EXPECT_FALSE(pVanillaCharacter->HasRaceTeams());
+	EXPECT_FALSE(pVanillaCharacter->Rescue());
 
 	GameServer()->m_pController = pPreviousController;
 	GameServer()->CreatePlayer(1, TEAM_GAME, false, -1);
@@ -482,15 +588,70 @@ TEST_F(GameWorld, CharacterSpawnInitializationIsModeOwned)
 	EXPECT_NE(pDDNetCharacter, nullptr);
 	if(!pDDNetCharacter)
 	{
-		pVanillaCharacter->SetTeams(&pPreviousController->Teams());
+		pVanillaCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
 		g_Config.m_SvEndlessDrag = PreviousEndlessDrag;
 		return;
 	}
 	EXPECT_TRUE(pDDNetCharacter->GetCore().m_EndlessHook);
 	EXPECT_EQ(pDDNetCharacter->m_TuneZoneOld, -1);
+	EXPECT_TRUE(pDDNetCharacter->HasRaceTeams());
 
-	pVanillaCharacter->SetTeams(&pPreviousController->Teams());
+	pVanillaCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
 	g_Config.m_SvEndlessDrag = PreviousEndlessDrag;
+}
+
+TEST_F(GameWorld, ModeFactoriesOwnConcretePlayerAndCharacterTypes)
+{
+	constexpr int ClientId = 0;
+	const CGameModeInfo Info = {"factory.test", "Factory Test", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
+	int PlayerDestructions = 0;
+	int CharacterDestructions = 0;
+	CFactoryController Controller(GameServices(), Info, &PlayerDestructions, &CharacterDestructions);
+	IGameController *pPreviousController = GameServer()->m_pController;
+	GameServer()->m_pController = &Controller;
+
+	CPlayer *pPlayer = GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	ASSERT_NE(dynamic_cast<CFactoryPlayer *>(pPlayer), nullptr);
+	EXPECT_GT(sizeof(CFactoryPlayer), sizeof(CPlayer));
+
+	CCharacter *pCharacter = pPlayer->ForceSpawn(vec2(64.0f, 96.0f));
+	ASSERT_NE(dynamic_cast<CFactoryCharacter *>(pCharacter), nullptr);
+	EXPECT_GT(sizeof(CFactoryCharacter), sizeof(CCharacter));
+
+	pPlayer->KillCharacter();
+	EXPECT_EQ(CharacterDestructions, 1);
+	EXPECT_EQ(PlayerDestructions, 0);
+
+	pPlayer->Respawn();
+	pPlayer->TryRespawn();
+	ASSERT_NE(dynamic_cast<CFactoryCharacter *>(pPlayer->GetCharacter()), nullptr);
+	pPlayer->KillCharacter();
+	EXPECT_EQ(CharacterDestructions, 2);
+
+	GameServer()->m_pController = pPreviousController;
+	GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	EXPECT_EQ(PlayerDestructions, 1);
+}
+
+TEST_F(GameWorld, RegistryFactoriesReceiveHostServices)
+{
+	const CGameModeInfo Info = {"services.test", "Services Test", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
+	CGameModeRegistry Registry;
+	ASSERT_TRUE(Registry.Register(Info, CreateServicesFactoryController));
+
+	std::unique_ptr<IGameController> pController = Registry.Create(Info.m_pId, GameServices());
+	ASSERT_NE(pController, nullptr);
+	auto *pServicesController = dynamic_cast<CServicesFactoryController *>(pController.get());
+	ASSERT_NE(pServicesController, nullptr);
+	EXPECT_EQ(pServicesController->m_pConstructionServices, &GameServer()->GameHost().Services());
+	EXPECT_STREQ(pController->Info().m_pId, Info.m_pId);
+	EXPECT_EQ(Registry.Create("missing", GameServices()), nullptr);
+
+	ASSERT_FALSE(GameServer()->m_pController->IsValidTeam(TEAM_BLUE));
+	ASSERT_TRUE(pController->IsValidTeam(TEAM_BLUE));
+	std::unique_ptr<CPlayer> pPlayer(pController->CreatePlayer(1, 0, TEAM_BLUE));
+	ASSERT_NE(pPlayer, nullptr);
+	EXPECT_EQ(pPlayer->GetTeam(), TEAM_BLUE);
 }
 
 TEST_F(GameWorld, PlayerAutoRespawnPolicyIsModeOwned)
@@ -502,16 +663,16 @@ TEST_F(GameWorld, PlayerAutoRespawnPolicyIsModeOwned)
 	pPlayer->m_DieTick = 101;
 
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	EXPECT_EQ(VanillaController.PlayerAutoRespawnTick(pPlayer), pPlayer->m_DieTick + 2);
 
 	const int DDNetRespawnTick = pPlayer->m_PreviousDieTick + GameServer()->Server()->TickSpeed() * 3 + 2;
 	const CGameModeInfo DDNetInfo = {"ddnet", "DDNet", "DDraceNetwork", "TestDDraceNetwork", EGameModeScoreKind::TIME, protocol7::GAMEFLAG_RACE, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerDDNet DDNetController(GameServer(), DDNetInfo);
+	CGameControllerDDNet DDNetController(GameServices(), DDNetInfo);
 	EXPECT_EQ(DDNetController.PlayerAutoRespawnTick(pPlayer), DDNetRespawnTick);
 
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 	EXPECT_EQ(ModController.PlayerAutoRespawnTick(pPlayer), DDNetRespawnTick);
 }
 
@@ -524,11 +685,11 @@ TEST_F(GameWorld, PlayerSetTeamOperationIsModeOwned)
 	ASSERT_NE(pCharacter, nullptr);
 
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	const CGameModeInfo DDNetInfo = {"ddnet", "DDNet", "DDraceNetwork", "TestDDraceNetwork", EGameModeScoreKind::TIME, protocol7::GAMEFLAG_RACE, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerDDNet DDNetController(GameServer(), DDNetInfo);
+	CGameControllerDDNet DDNetController(GameServices(), DDNetInfo);
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 
 	IGameController *pPreviousController = GameServer()->m_pController;
 	const int PreviousKillProtection = g_Config.m_SvKillProtection;
@@ -562,7 +723,7 @@ TEST_F(GameWorld, PlayerSetTeamOperationIsModeOwned)
 	ModController.OnPlayerSetTeam(ClientId, TEAM_SPECTATORS);
 	EXPECT_EQ(pPlayer->GetTeam(), TEAM_GAME);
 
-	pCharacter->SetTeams(&pPreviousController->Teams());
+	pCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
 	g_Config.m_SvKillProtection = PreviousKillProtection;
 	g_Config.m_SvSpamprotection = PreviousSpamProtection;
 	GameServer()->m_pController = pPreviousController;
@@ -572,9 +733,9 @@ TEST_F(GameWorld, PlayerKillOperationIsModeOwned)
 {
 	constexpr int ClientId = 0;
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 
 	IGameController *pPreviousController = GameServer()->m_pController;
 	const int PreviousKillProtection = g_Config.m_SvKillProtection;
@@ -601,7 +762,7 @@ TEST_F(GameWorld, PlayerKillOperationIsModeOwned)
 	EXPECT_EQ(pPlayer->GetCharacter(), pRaceCharacter);
 	EXPECT_TRUE(pRaceCharacter->IsAlive());
 
-	pRaceCharacter->SetTeams(&pPreviousController->Teams());
+	pRaceCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
 	g_Config.m_SvKillProtection = PreviousKillProtection;
 	g_Config.m_SvKillDelay = PreviousKillDelay;
 	GameServer()->m_pController = pPreviousController;
@@ -612,9 +773,9 @@ TEST_F(GameWorld, TargetVoteOperationsAreModeOwned)
 	constexpr int CallerId = 0;
 	constexpr int TargetId = 1;
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 
 	IGameController *pPreviousController = GameServer()->m_pController;
 	const int PreviousVoteKickMin = g_Config.m_SvVoteKickMin;
@@ -651,10 +812,10 @@ TEST_F(GameWorld, TargetVoteOperationsAreModeOwned)
 	ASSERT_NE(pCallerCharacter, nullptr);
 	ASSERT_NE(pTargetCharacter, nullptr);
 	GameServer()->m_pController = &ModController;
-	pCallerCharacter->SetTeams(&ModController.Teams());
-	pTargetCharacter->SetTeams(&ModController.Teams());
-	ModController.Teams().SetForceCharacterTeam(CallerId, 1);
-	ModController.Teams().SetForceCharacterTeam(TargetId, 1);
+	pCallerCharacter->SetRaceTeams(&ModController.RaceTeams());
+	pTargetCharacter->SetRaceTeams(&ModController.RaceTeams());
+	ModController.RaceTeams().SetForceCharacterTeam(CallerId, 1);
+	ModController.RaceTeams().SetForceCharacterTeam(TargetId, 1);
 
 	ModController.OnPlayerCallKickVote(CallerId, TargetId, "test");
 	EXPECT_EQ(GameServer()->m_VoteType, CGameContext::VOTE_TYPE_KICK);
@@ -668,8 +829,8 @@ TEST_F(GameWorld, TargetVoteOperationsAreModeOwned)
 	EXPECT_STREQ(GameServer()->m_aVoteCommand, "uninvite 1 1; set_team 1 -1 3");
 	GameServer()->EndVote();
 
-	pCallerCharacter->SetTeams(&pPreviousController->Teams());
-	pTargetCharacter->SetTeams(&pPreviousController->Teams());
+	pCallerCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
+	pTargetCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
 	g_Config.m_SvVoteKickMin = PreviousVoteKickMin;
 	g_Config.m_SvVoteKickBantime = PreviousVoteKickBantime;
 	g_Config.m_SvPauseable = PreviousPauseable;
@@ -684,9 +845,9 @@ TEST_F(GameWorld, TargetVoteAudienceIsModeOwned)
 	constexpr int VoterId = 1;
 	constexpr int SpectatorId = 2;
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 
 	IGameController *pPreviousController = GameServer()->m_pController;
 	GameServer()->m_pController = &VanillaController;
@@ -702,21 +863,21 @@ TEST_F(GameWorld, TargetVoteAudienceIsModeOwned)
 	ASSERT_NE(pVoterCharacter, nullptr);
 
 	GameServer()->m_pController = &ModController;
-	pCreatorCharacter->SetTeams(&ModController.Teams());
-	pVoterCharacter->SetTeams(&ModController.Teams());
-	ModController.Teams().SetForceCharacterTeam(CreatorId, 1);
-	ModController.Teams().SetForceCharacterTeam(VoterId, 2);
+	pCreatorCharacter->SetRaceTeams(&ModController.RaceTeams());
+	pVoterCharacter->SetRaceTeams(&ModController.RaceTeams());
+	ModController.RaceTeams().SetForceCharacterTeam(CreatorId, 1);
+	ModController.RaceTeams().SetForceCharacterTeam(VoterId, 2);
 
 	EXPECT_TRUE(VanillaController.CanPlayerVoteOnTargetVote(CreatorId, VoterId));
 	EXPECT_FALSE(VanillaController.CanPlayerVoteOnTargetVote(CreatorId, SpectatorId));
 	EXPECT_FALSE(ModController.CanPlayerVoteOnTargetVote(CreatorId, VoterId));
 	EXPECT_FALSE(ModController.CanPlayerVoteOnTargetVote(CreatorId, SpectatorId));
 
-	ModController.Teams().SetForceCharacterTeam(VoterId, 1);
+	ModController.RaceTeams().SetForceCharacterTeam(VoterId, 1);
 	EXPECT_TRUE(ModController.CanPlayerVoteOnTargetVote(CreatorId, VoterId));
 
-	pCreatorCharacter->SetTeams(&pPreviousController->Teams());
-	pVoterCharacter->SetTeams(&pPreviousController->Teams());
+	pCreatorCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
+	pVoterCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
 	GameServer()->m_pController = pPreviousController;
 }
 
@@ -729,9 +890,9 @@ TEST_F(GameWorld, PlayerVetoActivityIsModeOwned)
 	ASSERT_NE(pCharacter, nullptr);
 
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 
 	const int Now = GameServer()->Server()->Tick();
 	pPlayer->m_JoinTick = Now - GameServer()->Server()->TickSpeed() * 5 * 60;
@@ -757,9 +918,9 @@ TEST_F(GameWorld, PlayerVisibilityPolicyIsModeOwned)
 	ASSERT_NE(pViewer, nullptr);
 
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 
 	IGameController *pPreviousController = GameServer()->m_pController;
 	const int PreviousShowOthers = g_Config.m_SvShowOthers;
@@ -768,29 +929,104 @@ TEST_F(GameWorld, PlayerVisibilityPolicyIsModeOwned)
 	g_Config.m_SvShowOthersDefault = SHOW_OTHERS_ONLY_TEAM;
 
 	GameServer()->m_pController = &ModController;
-	pTarget->SetTeams(&ModController.Teams());
-	pViewer->SetTeams(&ModController.Teams());
-	ModController.Teams().SetForceCharacterTeam(TargetId, 1);
-	ModController.Teams().SetForceCharacterTeam(ViewerId, 2);
+	pTarget->SetRaceTeams(&ModController.RaceTeams());
+	pViewer->SetRaceTeams(&ModController.RaceTeams());
+	ModController.RaceTeams().SetForceCharacterTeam(TargetId, 1);
+	ModController.RaceTeams().SetForceCharacterTeam(ViewerId, 2);
 	ModController.OnPlayerConnect(GameServer()->m_apPlayers[ViewerId]);
-	EXPECT_EQ(GameServer()->m_apPlayers[ViewerId]->m_ShowOthers, SHOW_OTHERS_ONLY_TEAM);
+	EXPECT_EQ(ModController.RaceTeams().PlayerState(ViewerId).m_ShowOthers, SHOW_OTHERS_ONLY_TEAM);
 
 	g_Config.m_SvShowOthersDefault = SHOW_OTHERS_OFF;
-	GameServer()->m_apPlayers[ViewerId]->m_ShowOthers = SHOW_OTHERS_OFF;
+	ModController.RaceTeams().PlayerState(ViewerId).m_ShowOthers = SHOW_OTHERS_OFF;
 	EXPECT_FALSE(pTarget->CanSnapCharacter(ViewerId));
 	ModController.OnPlayerShowOthers(ViewerId, SHOW_OTHERS_ON);
 	EXPECT_TRUE(pTarget->CanSnapCharacter(ViewerId));
 
-	GameServer()->m_apPlayers[ViewerId]->m_ShowOthers = SHOW_OTHERS_OFF;
+	ModController.RaceTeams().PlayerState(ViewerId).m_ShowOthers = SHOW_OTHERS_OFF;
 	GameServer()->m_pController = &VanillaController;
 	VanillaController.OnPlayerShowOthers(ViewerId, SHOW_OTHERS_ON);
-	EXPECT_EQ(GameServer()->m_apPlayers[ViewerId]->m_ShowOthers, SHOW_OTHERS_OFF);
+	EXPECT_EQ(ModController.RaceTeams().PlayerState(ViewerId).m_ShowOthers, SHOW_OTHERS_OFF);
 	EXPECT_TRUE(pTarget->CanSnapCharacter(ViewerId));
 
-	pTarget->SetTeams(&pPreviousController->Teams());
-	pViewer->SetTeams(&pPreviousController->Teams());
+	pTarget->SetRaceTeams(&pPreviousController->RaceTeams());
+	pViewer->SetRaceTeams(&pPreviousController->RaceTeams());
 	g_Config.m_SvShowOthers = PreviousShowOthers;
 	g_Config.m_SvShowOthersDefault = PreviousShowOthersDefault;
+	GameServer()->m_pController = pPreviousController;
+}
+
+TEST_F(GameWorld, EntityInteractionPolicyIsModeOwned)
+{
+	constexpr int OwnerId = 0;
+	constexpr int ViewerId = 1;
+	constexpr int SpectatorId = 2;
+	CPlayer *pOwner = GameServer()->CreatePlayer(OwnerId, TEAM_GAME, false, -1);
+	ASSERT_NE(pOwner, nullptr);
+	CPlayer *pViewer = GameServer()->CreatePlayer(ViewerId, TEAM_GAME, false, -1);
+	CPlayer *pSpectator = GameServer()->CreatePlayer(SpectatorId, TEAM_SPECTATORS, false, -1);
+	ASSERT_NE(pViewer, nullptr);
+	ASSERT_NE(pSpectator, nullptr);
+	CCharacter *pOwnerCharacter = pOwner->ForceSpawn(vec2(64.0f, 96.0f));
+	CCharacter *pViewerCharacter = pViewer->ForceSpawn(vec2(96.0f, 96.0f));
+	ASSERT_NE(pOwnerCharacter, nullptr);
+	ASSERT_NE(pViewerCharacter, nullptr);
+
+	CInteractions Interaction;
+	Interaction.Init(OwnerId, pOwner->GetUniqueCid());
+	Interaction.FillOwnerConnected(1, false, false, false);
+
+	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
+	CGameControllerMod ModController(GameServices(), ModInfo);
+	ModController.RaceTeams().SetForceCharacterTeam(OwnerId, 1);
+	ModController.RaceTeams().SetForceCharacterTeam(ViewerId, 2);
+	ModController.RaceTeams().SetForceCharacterTeam(SpectatorId, 2);
+	ModController.RaceTeams().PlayerState(ViewerId).m_ShowOthers = SHOW_OTHERS_OFF;
+
+	IGameController *pPreviousController = GameServer()->m_pController;
+	GameServer()->m_pController = &ModController;
+	EXPECT_FALSE(Interaction.CanSee(GameServer(), ViewerId));
+	EXPECT_FALSE(Interaction.CanHit(GameServer(), ViewerId));
+	EXPECT_FALSE(Interaction.CanSeeMask(GameServer()).test(ViewerId));
+	EXPECT_FALSE(Interaction.CanHitMask(GameServer()).test(ViewerId));
+	EXPECT_TRUE(Interaction.CanSee(GameServer(), OwnerId));
+
+	ModController.RaceTeams().PlayerState(ViewerId).m_ShowOthers = SHOW_OTHERS_ONLY_TEAM;
+	EXPECT_FALSE(Interaction.CanSee(GameServer(), ViewerId));
+	ModController.RaceTeams().SetForceCharacterTeam(ViewerId, 1);
+	EXPECT_TRUE(Interaction.CanSee(GameServer(), ViewerId));
+	ModController.RaceTeams().PlayerState(ViewerId).m_ShowOthers = SHOW_OTHERS_OFF;
+	pViewerCharacter->SetSolo(true);
+	EXPECT_FALSE(Interaction.CanSee(GameServer(), ViewerId));
+	pViewerCharacter->SetSolo(false);
+
+	ModController.RaceTeams().PlayerState(SpectatorId).m_SpecTeam = true;
+	EXPECT_FALSE(Interaction.CanSee(GameServer(), SpectatorId));
+	pSpectator->SetSpectatorId(OwnerId);
+	EXPECT_TRUE(Interaction.CanSee(GameServer(), SpectatorId));
+	pSpectator->SetSpectatorId(ViewerId);
+	EXPECT_TRUE(Interaction.CanSee(GameServer(), SpectatorId));
+	pViewer->KillCharacter();
+	EXPECT_FALSE(Interaction.CanSee(GameServer(), SpectatorId));
+
+	CInteractions NoHitOthers;
+	NoHitOthers.Init(OwnerId, pOwner->GetUniqueCid());
+	NoHitOthers.FillOwnerConnected(0, false, true, false);
+	EXPECT_TRUE(NoHitOthers.CanHit(GameServer(), OwnerId));
+	EXPECT_FALSE(NoHitOthers.CanHit(GameServer(), ViewerId));
+	CInteractions NoHitSelf;
+	NoHitSelf.Init(OwnerId, pOwner->GetUniqueCid());
+	NoHitSelf.FillOwnerConnected(0, false, false, true);
+	EXPECT_FALSE(NoHitSelf.CanHit(GameServer(), OwnerId));
+	EXPECT_TRUE(NoHitSelf.CanHit(GameServer(), ViewerId));
+
+	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
+	GameServer()->m_pController = &VanillaController;
+	EXPECT_TRUE(Interaction.CanSee(GameServer(), ViewerId));
+	EXPECT_TRUE(Interaction.CanHit(GameServer(), ViewerId));
+	EXPECT_TRUE(Interaction.CanSeeMask(GameServer()).test(ViewerId));
+	EXPECT_TRUE(Interaction.CanHitMask(GameServer()).test(ViewerId));
+
 	GameServer()->m_pController = pPreviousController;
 }
 
@@ -800,7 +1036,7 @@ TEST_F(GameWorld, PlayerTeamGroupIsModeOwned)
 	constexpr int RedTwo = 1;
 	constexpr int Blue = 2;
 	const CGameModeInfo TdmInfo = {"vanilla.tdm", "Vanilla TDM", "TDM", "TestTDM", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaTDM TdmController(GameServer(), TdmInfo);
+	CGameControllerVanillaTDM TdmController(GameServices(), TdmInfo);
 	IGameController *pPreviousController = GameServer()->m_pController;
 	GameServer()->m_pController = &TdmController;
 
@@ -828,14 +1064,14 @@ TEST_F(GameWorld, PlayerTeamGroupIsModeOwned)
 	EXPECT_NE(TdmServerInfo.find("\"team\": 1"), std::string::npos);
 
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 	GameServer()->m_pController = &ModController;
-	pRedOneCharacter->SetTeams(&ModController.Teams());
-	pRedTwoCharacter->SetTeams(&ModController.Teams());
-	pBlueCharacter->SetTeams(&ModController.Teams());
-	ModController.Teams().SetForceCharacterTeam(RedOne, 1);
-	ModController.Teams().SetForceCharacterTeam(RedTwo, 1);
-	ModController.Teams().SetForceCharacterTeam(Blue, 2);
+	pRedOneCharacter->SetRaceTeams(&ModController.RaceTeams());
+	pRedTwoCharacter->SetRaceTeams(&ModController.RaceTeams());
+	pBlueCharacter->SetRaceTeams(&ModController.RaceTeams());
+	ModController.RaceTeams().SetForceCharacterTeam(RedOne, 1);
+	ModController.RaceTeams().SetForceCharacterTeam(RedTwo, 1);
+	ModController.RaceTeams().SetForceCharacterTeam(Blue, 2);
 	EXPECT_EQ(ModController.PlayerTeamGroup(RedOne), 1);
 	EXPECT_EQ(ModController.PlayerTeamGroup(RedTwo), 1);
 	EXPECT_EQ(ModController.PlayerTeamGroup(Blue), 2);
@@ -846,9 +1082,9 @@ TEST_F(GameWorld, PlayerTeamGroupIsModeOwned)
 	const std::string RaceServerInfo = RaceServerInfoWriter.GetOutputString();
 	EXPECT_NE(RaceServerInfo.find("\"team\": 2"), std::string::npos);
 
-	pRedOneCharacter->SetTeams(&pPreviousController->Teams());
-	pRedTwoCharacter->SetTeams(&pPreviousController->Teams());
-	pBlueCharacter->SetTeams(&pPreviousController->Teams());
+	pRedOneCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
+	pRedTwoCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
+	pBlueCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
 	GameServer()->m_pController = pPreviousController;
 }
 
@@ -857,7 +1093,7 @@ TEST_F(GameWorld, WorldEventAudienceIsModeOwned)
 	constexpr int Red = 0;
 	constexpr int Blue = 1;
 	const CGameModeInfo TdmInfo = {"vanilla.tdm", "Vanilla TDM", "TDM", "TestTDM", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaTDM TdmController(GameServer(), TdmInfo);
+	CGameControllerVanillaTDM TdmController(GameServices(), TdmInfo);
 	IGameController *pPreviousController = GameServer()->m_pController;
 	GameServer()->m_pController = &TdmController;
 
@@ -874,19 +1110,19 @@ TEST_F(GameWorld, WorldEventAudienceIsModeOwned)
 	EXPECT_TRUE(pRedCharacter->TeamMask().test(Blue));
 
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 	GameServer()->m_pController = &ModController;
-	pRedCharacter->SetTeams(&ModController.Teams());
-	pBlueCharacter->SetTeams(&ModController.Teams());
-	ModController.Teams().SetForceCharacterTeam(Red, 1);
-	ModController.Teams().SetForceCharacterTeam(Blue, 2);
-	pBlue->m_ShowOthers = SHOW_OTHERS_OFF;
+	pRedCharacter->SetRaceTeams(&ModController.RaceTeams());
+	pBlueCharacter->SetRaceTeams(&ModController.RaceTeams());
+	ModController.RaceTeams().SetForceCharacterTeam(Red, 1);
+	ModController.RaceTeams().SetForceCharacterTeam(Blue, 2);
+	ModController.RaceTeams().PlayerState(Blue).m_ShowOthers = SHOW_OTHERS_OFF;
 
 	EXPECT_TRUE(pRedCharacter->TeamMask().test(Red));
 	EXPECT_FALSE(pRedCharacter->TeamMask().test(Blue));
 
-	pRedCharacter->SetTeams(&pPreviousController->Teams());
-	pBlueCharacter->SetTeams(&pPreviousController->Teams());
+	pRedCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
+	pBlueCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
 	GameServer()->m_pController = pPreviousController;
 }
 
@@ -896,7 +1132,7 @@ TEST_F(GameWorld, PreInputAudienceIsModeOwned)
 	constexpr int AllyId = 1;
 	constexpr int OpponentId = 2;
 	const CGameModeInfo TdmInfo = {"vanilla.tdm", "Vanilla TDM", "TDM", "TestTDM", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaTDM TdmController(GameServer(), TdmInfo);
+	CGameControllerVanillaTDM TdmController(GameServices(), TdmInfo);
 	IGameController *pPreviousController = GameServer()->m_pController;
 	GameServer()->m_pController = &TdmController;
 
@@ -923,32 +1159,31 @@ TEST_F(GameWorld, PreInputAudienceIsModeOwned)
 	m_pServer->m_aClients[OpponentId].m_State = CServer::CClient::STATE_INGAME;
 	m_pServer->SetClientDDNetVersion(AllyId, VERSION_DDNET_PREINPUT);
 	m_pServer->SetClientDDNetVersion(OpponentId, VERSION_DDNET_PREINPUT);
-	pAlly->m_ShowOthers = SHOW_OTHERS_ON;
-	pOpponent->m_ShowOthers = SHOW_OTHERS_ON;
-
 	bool aTdmClients[MAX_CLIENTS] = {};
 	GameServer()->PreInputClients(SenderId, aTdmClients);
 	EXPECT_TRUE(aTdmClients[AllyId]);
 	EXPECT_TRUE(aTdmClients[OpponentId]);
 
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 	GameServer()->m_pController = &ModController;
-	pSenderCharacter->SetTeams(&ModController.Teams());
-	pAllyCharacter->SetTeams(&ModController.Teams());
-	pOpponentCharacter->SetTeams(&ModController.Teams());
-	ModController.Teams().SetForceCharacterTeam(SenderId, 1);
-	ModController.Teams().SetForceCharacterTeam(AllyId, 1);
-	ModController.Teams().SetForceCharacterTeam(OpponentId, 2);
+	pSenderCharacter->SetRaceTeams(&ModController.RaceTeams());
+	pAllyCharacter->SetRaceTeams(&ModController.RaceTeams());
+	pOpponentCharacter->SetRaceTeams(&ModController.RaceTeams());
+	ModController.RaceTeams().SetForceCharacterTeam(SenderId, 1);
+	ModController.RaceTeams().SetForceCharacterTeam(AllyId, 1);
+	ModController.RaceTeams().SetForceCharacterTeam(OpponentId, 2);
+	ModController.RaceTeams().PlayerState(AllyId).m_ShowOthers = SHOW_OTHERS_ON;
+	ModController.RaceTeams().PlayerState(OpponentId).m_ShowOthers = SHOW_OTHERS_ON;
 
 	bool aRaceClients[MAX_CLIENTS] = {};
 	GameServer()->PreInputClients(SenderId, aRaceClients);
 	EXPECT_TRUE(aRaceClients[AllyId]);
 	EXPECT_FALSE(aRaceClients[OpponentId]);
 
-	pSenderCharacter->SetTeams(&pPreviousController->Teams());
-	pAllyCharacter->SetTeams(&pPreviousController->Teams());
-	pOpponentCharacter->SetTeams(&pPreviousController->Teams());
+	pSenderCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
+	pAllyCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
+	pOpponentCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
 	m_pServer->m_aClients[AllyId].m_State = PreviousAllyState;
 	m_pServer->m_aClients[AllyId].m_DDNetVersion = PreviousAllyVersion;
 	m_pServer->m_aClients[AllyId].m_DDNetVersionSettled = PreviousAllyVersionSettled;
@@ -965,9 +1200,9 @@ TEST_F(GameWorld, PlayerSnapshotContributionsAreModeOwned)
 	ASSERT_NE(pPlayer, nullptr);
 
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 
 	IGameController *pPreviousController = GameServer()->m_pController;
 	const int PreviousClientState = m_pServer->m_aClients[ClientId].m_State;
@@ -1008,16 +1243,17 @@ TEST_F(GameWorld, CharacterSnapshotContributionsAreModeOwned)
 	ASSERT_NE(pCharacter, nullptr);
 
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 
 	IGameController *pPreviousController = GameServer()->m_pController;
 	const int PreviousClientState = m_pServer->m_aClients[ClientId].m_State;
 	m_pServer->m_aClients[ClientId].m_State = CServer::CClient::STATE_INGAME;
 
 	GameServer()->m_pController = &VanillaController;
-	pCharacter->SetTeams(&VanillaController.Teams());
+	pCharacter->SetRaceTeams(nullptr);
+	pCharacter->SetTeamsCore(&VanillaController.TeamsCore());
 	m_pServer->m_SnapshotBuilder.Init();
 	pCharacter->Snap(ClientId);
 	CSnapshotBuffer VanillaBuffer;
@@ -1027,7 +1263,7 @@ TEST_F(GameWorld, CharacterSnapshotContributionsAreModeOwned)
 	EXPECT_EQ(pVanillaSnapshot->FindItem(NETOBJTYPE_DDNETCHARACTER, ClientId), nullptr);
 
 	GameServer()->m_pController = &ModController;
-	pCharacter->SetTeams(&ModController.Teams());
+	pCharacter->SetRaceTeams(&ModController.RaceTeams());
 	m_pServer->m_SnapshotBuilder.Init();
 	pCharacter->Snap(ClientId);
 	CSnapshotBuffer RaceBuffer;
@@ -1036,7 +1272,7 @@ TEST_F(GameWorld, CharacterSnapshotContributionsAreModeOwned)
 	EXPECT_NE(pRaceSnapshot->FindItem(NETOBJTYPE_CHARACTER, ClientId), nullptr);
 	EXPECT_NE(pRaceSnapshot->FindItem(NETOBJTYPE_DDNETCHARACTER, ClientId), nullptr);
 
-	pCharacter->SetTeams(&pPreviousController->Teams());
+	pCharacter->SetRaceTeams(&pPreviousController->RaceTeams());
 	m_pServer->m_aClients[ClientId].m_State = PreviousClientState;
 	GameServer()->m_pController = pPreviousController;
 }
@@ -1052,9 +1288,9 @@ TEST_F(GameWorld, EntitySnapshotFormatsAreModeOwned)
 	const int ProjectileId = pProjectile->GetId().value();
 
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerMod ModController(GameServer(), ModInfo);
+	CGameControllerMod ModController(GameServices(), ModInfo);
 
 	IGameController *pPreviousController = GameServer()->m_pController;
 	const int PreviousClientState = m_pServer->m_aClients[ClientId].m_State;
@@ -1122,23 +1358,46 @@ TEST_F(GameWorld, HotReloadStateIsModeOwned)
 	ASSERT_NE(pCharacter, nullptr);
 
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM VanillaController(GameServer(), VanillaInfo);
+	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
 	EXPECT_FALSE(VanillaController.SaveStateForHotReload());
 	EXPECT_EQ(GameServer()->m_apSavedTees[0], nullptr);
 
 	const CGameModeInfo DDNetInfo = {"ddnet", "DDNet", "DDraceNetwork", "TestDDraceNetwork", EGameModeScoreKind::TIME, protocol7::GAMEFLAG_RACE, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerDDNet DDNetController(GameServer(), DDNetInfo);
+	CGameControllerDDNet DDNetController(GameServices(), DDNetInfo);
+	auto &PlayerState = GameServer()->RaceTeams()->PlayerState(0);
+	EXPECT_FALSE(PlayerState.m_LastTeleTee.has_value());
+	EXPECT_FALSE(PlayerState.m_LastDeath.has_value());
 	const vec2 SavedPosition = pCharacter->m_Pos;
 	ASSERT_TRUE(DDNetController.SaveStateForHotReload());
 	ASSERT_NE(GameServer()->m_apSavedTees[0], nullptr);
 	EXPECT_NE(GameServer()->m_aTeamMapping[0], -1);
 
+	PlayerState.m_LastTeleTee.emplace();
+	PlayerState.m_LastDeath.emplace();
 	pCharacter->m_Pos = vec2(320.0f, 320.0f);
 	pCharacter->SetPosition(pCharacter->m_Pos);
 	DDNetController.RestoreCharacterAfterHotReload(pCharacter);
 	EXPECT_EQ(pCharacter->m_Pos, SavedPosition);
+	EXPECT_FALSE(PlayerState.m_LastTeleTee.has_value());
+	EXPECT_FALSE(PlayerState.m_LastDeath.has_value());
 	EXPECT_EQ(GameServer()->m_apSavedTees[0], nullptr);
 	EXPECT_EQ(GameServer()->m_aTeamMapping[0], -1);
+
+	GameServer()->RaceTeams()->SaveLastTeleport(pCharacter);
+	PlayerState.m_LastDeath = PlayerState.m_LastTeleTee;
+	ASSERT_TRUE(PlayerState.m_LastTeleTee.has_value());
+	ASSERT_TRUE(PlayerState.m_LastDeath.has_value());
+	const vec2 SavedTeleportPosition = PlayerState.m_LastTeleTee->GetPos();
+	const vec2 SavedDeathPosition = PlayerState.m_LastDeath->GetPos();
+	ASSERT_TRUE(DDNetController.SaveStateForHotReload());
+	ASSERT_NE(GameServer()->m_apSavedTees[0], nullptr);
+	PlayerState.m_LastTeleTee.reset();
+	PlayerState.m_LastDeath.reset();
+	DDNetController.RestoreCharacterAfterHotReload(pCharacter);
+	ASSERT_TRUE(PlayerState.m_LastTeleTee.has_value());
+	ASSERT_TRUE(PlayerState.m_LastDeath.has_value());
+	EXPECT_EQ(PlayerState.m_LastTeleTee->GetPos(), SavedTeleportPosition);
+	EXPECT_EQ(PlayerState.m_LastDeath->GetPos(), SavedDeathPosition);
 
 	ASSERT_TRUE(DDNetController.SaveStateForHotReload());
 	ASSERT_NE(GameServer()->m_apSavedTees[0], nullptr);
@@ -1160,6 +1419,11 @@ TEST_F(GameWorld, ModeOwnedCommandsFollowControllerLifetime)
 	};
 
 	ExpectModeCommands(true);
+	EXPECT_TRUE(GameServer()->HasRaceScore());
+	EXPECT_TRUE(GameServer()->HasRaceTeams());
+	GameServer()->RaceScore()->SetCurrentRecord(12.5f);
+	ASSERT_TRUE(GameServer()->RaceScore()->CurrentRecord().has_value());
+	EXPECT_FLOAT_EQ(GameServer()->RaceScore()->CurrentRecord().value(), 12.5f);
 	ASSERT_NE(pConsole->GetCommandInfo("help", CFGFLAG_CHAT, false), nullptr);
 	ASSERT_NE(pConsole->GetCommandInfo("showall", CFGFLAG_CHAT, false), nullptr);
 	ASSERT_NE(pConsole->GetCommandInfo("kill_pl", CFGFLAG_SERVER, false), nullptr);
@@ -1167,43 +1431,180 @@ TEST_F(GameWorld, ModeOwnedCommandsFollowControllerLifetime)
 	GameServer()->GameHost().Shutdown();
 	GameServer()->m_pController = nullptr;
 	ExpectModeCommands(false);
+	EXPECT_FALSE(GameServer()->HasRaceScore());
+	EXPECT_FALSE(GameServer()->HasRaceTeams());
 	EXPECT_NE(pConsole->GetCommandInfo("help", CFGFLAG_CHAT, false), nullptr);
 	EXPECT_NE(pConsole->GetCommandInfo("showall", CFGFLAG_CHAT, false), nullptr);
 	EXPECT_NE(pConsole->GetCommandInfo("kill_pl", CFGFLAG_SERVER, false), nullptr);
 
 	ASSERT_TRUE(GameServer()->GameHost().Select("vanilla.dm"));
 	GameServer()->m_pController = GameServer()->GameHost().Controller();
-	GameServer()->GameHost().Init();
+	GameServer()->GameHost().Init(m_pServer->DbPool());
 	ExpectModeCommands(false);
+	EXPECT_FALSE(GameServer()->HasRaceScore());
+	EXPECT_FALSE(GameServer()->HasRaceTeams());
+	const int VanillaClientId = 0;
+	CPlayer *pVanillaPlayer = GameServer()->CreatePlayer(VanillaClientId, TEAM_GAME, false, -1);
+	ASSERT_NE(pVanillaPlayer, nullptr);
+	EXPECT_NE(dynamic_cast<CPlayerVanilla *>(pVanillaPlayer), nullptr);
+	CCharacter *pVanillaCharacter = pVanillaPlayer->ForceSpawn(vec2(64.0f, 96.0f));
+	ASSERT_NE(pVanillaCharacter, nullptr);
+	EXPECT_FALSE(pVanillaCharacter->HasRaceTeams());
+	auto *pVanillaLaser = new CLaser(&GameServer()->m_World, pVanillaCharacter->m_Pos, vec2(1.0f, 0.0f), 64.0f, VanillaClientId, WEAPON_LASER);
+	pVanillaLaser->Tick();
+	delete pVanillaLaser;
+	auto *pVanillaProjectile = new CProjectile(&GameServer()->m_World, WEAPON_GUN, VanillaClientId, pVanillaCharacter->m_Pos, vec2(1.0f, 0.0f), 100, false, false, -1, vec2(1.0f, 0.0f));
+	EXPECT_TRUE(pVanillaProjectile->CanCollide(VanillaClientId));
+	delete pVanillaProjectile;
+	const int PreviousPlayerDemoRecord = g_Config.m_SvPlayerDemoRecord;
+	g_Config.m_SvPlayerDemoRecord = 1;
+	EXPECT_TRUE(m_pStorage->CreateFolder("demos", IStorage::TYPE_SAVE));
+	m_pServer->StartRecord(VanillaClientId);
+	EXPECT_TRUE(m_pServer->IsRecording(VanillaClientId));
+	pVanillaCharacter->StopRecording();
+	EXPECT_FALSE(m_pServer->IsRecording(VanillaClientId));
+	g_Config.m_SvPlayerDemoRecord = PreviousPlayerDemoRecord;
+	m_pServer->m_aClients[VanillaClientId].m_State = CServer::CClient::STATE_READY;
+	m_pServer->SetClientScore(VanillaClientId, 17);
+	GameServer()->m_pController->OnPlayerNameChanged(VanillaClientId);
+	EXPECT_EQ(m_pServer->m_aClients[VanillaClientId].m_Score, 17);
 	const int PreviousTestingCommands = g_Config.m_SvTestingCommands;
 	const int PreviousPracticeByDefault = g_Config.m_SvPracticeByDefault;
 	g_Config.m_SvTestingCommands = 1;
 	g_Config.m_SvPracticeByDefault = 0;
-	GameServer()->m_pController->Teams().SetPractice(1, false);
 	pConsole->ExecuteLine("sv_practice_by_default 1", IConsole::CLIENT_ID_UNSPECIFIED, true);
 	EXPECT_FALSE(GameServer()->PracticeByDefault());
-	EXPECT_FALSE(GameServer()->m_pController->Teams().IsPractice(TEAM_FLOCK));
-	EXPECT_FALSE(GameServer()->m_pController->Teams().IsPractice(1));
 
+	delete GameServer()->m_apPlayers[VanillaClientId];
+	GameServer()->m_apPlayers[VanillaClientId] = nullptr;
 	GameServer()->GameHost().Shutdown();
 	GameServer()->m_pController = nullptr;
 	ASSERT_TRUE(GameServer()->GameHost().Select("ddnet"));
 	GameServer()->m_pController = GameServer()->GameHost().Controller();
-	GameServer()->GameHost().Init();
+	GameServer()->GameHost().Init(m_pServer->DbPool());
 	ExpectModeCommands(true);
+	EXPECT_TRUE(GameServer()->HasRaceScore());
+	EXPECT_TRUE(GameServer()->HasRaceTeams());
+	EXPECT_FALSE(GameServer()->RaceScore()->CurrentRecord().has_value());
 	g_Config.m_SvTestingCommands = 1;
 	g_Config.m_SvPracticeByDefault = 1;
-	GameServer()->m_pController->Teams().Reset();
+	GameServer()->RaceTeams()->Reset();
 	EXPECT_TRUE(GameServer()->PracticeByDefault());
-	EXPECT_TRUE(GameServer()->m_pController->Teams().IsPractice(TEAM_FLOCK));
+	EXPECT_TRUE(GameServer()->RaceTeams()->IsPractice(TEAM_FLOCK));
 	g_Config.m_SvTestingCommands = PreviousTestingCommands;
 	g_Config.m_SvPracticeByDefault = PreviousPracticeByDefault;
+}
+
+TEST_F(GameWorld, RaceScorePlayerStateFollowsPlayerIdentity)
+{
+	constexpr int ClientId = 0;
+	CScore *pScore = GameServer()->RaceScore();
+	CPlayer *pFirstPlayer = GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	ASSERT_NE(pFirstPlayer, nullptr);
+	const uint32_t FirstUniqueClientId = pFirstPlayer->GetUniqueCid();
+	pScore->ResetPlayer(ClientId);
+
+	float aTimeCp[NUM_CHECKPOINTS] = {};
+	pScore->PlayerData(ClientId)->Set(12.5f, aTimeCp);
+	ASSERT_TRUE(pScore->PlayerData(ClientId)->m_BestTime.has_value());
+	pScore->BeginFinishEligibilityCheck(ClientId);
+	EXPECT_TRUE(pScore->FinishEligibilityCheckActive(ClientId));
+	pScore->SetNotEligibleForFinish(ClientId);
+	EXPECT_TRUE(pScore->NotEligibleForFinish(ClientId));
+	EXPECT_FALSE(pScore->FinishEligibilityCheckActive(ClientId));
+
+	CPlayer *pSecondPlayer = GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	ASSERT_NE(pSecondPlayer, nullptr);
+	ASSERT_NE(FirstUniqueClientId, pSecondPlayer->GetUniqueCid());
+	pScore->Tick();
+	EXPECT_FALSE(pScore->PlayerData(ClientId)->m_BestTime.has_value());
+	EXPECT_FALSE(pScore->NotEligibleForFinish(ClientId));
+	EXPECT_FALSE(pScore->FinishEligibilityCheckActive(ClientId));
+
+	pScore->PlayerData(ClientId)->Set(13.5f, aTimeCp);
+	pScore->SetNotEligibleForFinish(ClientId);
+	GameServer()->m_pController->OnPlayerNameChanged(ClientId);
+	EXPECT_FALSE(pScore->PlayerData(ClientId)->m_BestTime.has_value());
+	EXPECT_FALSE(pScore->NotEligibleForFinish(ClientId));
+
+	pScore->PlayerData(ClientId)->Set(14.5f, aTimeCp);
+	pScore->SetNotEligibleForFinish(ClientId);
+	GameServer()->m_pController->OnPlayerDisconnect(pSecondPlayer, "test");
+	EXPECT_FALSE(pScore->PlayerData(ClientId)->m_BestTime.has_value());
+	EXPECT_FALSE(pScore->NotEligibleForFinish(ClientId));
+}
+
+TEST_F(GameWorld, RaceTeamPlayerStateFollowsPlayerIdentity)
+{
+	constexpr int ClientId = 0;
+	CPlayer *pFirstPlayer = GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	ASSERT_NE(pFirstPlayer, nullptr);
+	GameServer()->m_pController->OnPlayerConnect(pFirstPlayer);
+	CCharacter *pFirstCharacter = pFirstPlayer->ForceSpawn(vec2(0.0f, 32.0f));
+	ASSERT_NE(pFirstCharacter, nullptr);
+	EXPECT_FALSE(GameServer()->RaceTeams()->LoadLastTeleport(pFirstCharacter));
+	GameServer()->RaceTeams()->SaveLastTeleport(pFirstCharacter);
+	pFirstCharacter->SetPosition(vec2(64.0f, 64.0f));
+	EXPECT_TRUE(GameServer()->RaceTeams()->LoadLastTeleport(pFirstCharacter));
+	EXPECT_EQ(pFirstCharacter->m_Pos.x, 0.0f);
+	EXPECT_EQ(pFirstCharacter->m_Pos.y, 32.0f);
+
+	auto SetState = [this, ClientId] {
+		auto &State = GameServer()->RaceTeams()->PlayerState(ClientId);
+		State.m_TeeStarted = true;
+		State.m_TeeFinished = true;
+		State.m_LastChat = 1;
+		State.m_LastSwap = 2;
+		State.m_LastInvited = 3;
+		State.m_LastTeamChange = 4;
+		State.m_VotedForPractice = true;
+		State.m_SwapTargetClientId = 1;
+		State.m_RescueMode = RESCUEMODE_MANUAL;
+		State.m_LastTeleTee.emplace();
+		State.m_LastDeath.emplace();
+		State.m_ShowOthers = SHOW_OTHERS_OFF;
+		State.m_SpecTeam = true;
+	};
+	auto ExpectReset = [this, ClientId](int ShowOthers) {
+		const auto &State = GameServer()->RaceTeams()->PlayerState(ClientId);
+		EXPECT_FALSE(State.m_TeeStarted);
+		EXPECT_FALSE(State.m_TeeFinished);
+		EXPECT_EQ(State.m_LastChat, 0);
+		EXPECT_EQ(State.m_LastSwap, 0);
+		EXPECT_EQ(State.m_LastInvited, 0);
+		EXPECT_FALSE(State.m_LastTeamChange.has_value());
+		EXPECT_FALSE(State.m_VotedForPractice);
+		EXPECT_EQ(State.m_SwapTargetClientId, -1);
+		EXPECT_EQ(State.m_RescueMode, RESCUEMODE_AUTO);
+		EXPECT_FALSE(State.m_LastTeleTee.has_value());
+		EXPECT_FALSE(State.m_LastDeath.has_value());
+		EXPECT_EQ(State.m_ShowOthers, ShowOthers);
+		EXPECT_FALSE(State.m_SpecTeam);
+	};
+
+	SetState();
+	GameServer()->RaceTeams()->Reset();
+	const auto &RoundResetState = GameServer()->RaceTeams()->PlayerState(ClientId);
+	EXPECT_FALSE(RoundResetState.m_TeeStarted);
+	EXPECT_FALSE(RoundResetState.m_LastTeleTee.has_value());
+	EXPECT_EQ(RoundResetState.m_ShowOthers, SHOW_OTHERS_OFF);
+	EXPECT_TRUE(RoundResetState.m_SpecTeam);
+
+	SetState();
+	CPlayer *pSecondPlayer = GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	ASSERT_NE(pSecondPlayer, nullptr);
+	GameServer()->m_pController->OnPlayerConnect(pSecondPlayer);
+	ExpectReset(g_Config.m_SvShowOthersDefault);
+
+	SetState();
+	GameServer()->m_pController->OnPlayerDisconnect(pSecondPlayer, "test");
+	ExpectReset(SHOW_OTHERS_ON);
 }
 
 TEST_F(GameWorld, VanillaTDMTeamDamage)
 {
 	const CGameModeInfo Info = {"vanilla.tdm", "Vanilla TDM", "TDM", "TestTDM", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaTDM Controller(GameServer(), Info);
+	CGameControllerVanillaTDM Controller(GameServices(), Info);
 	IGameController *pPreviousController = GameServer()->m_pController;
 	GameServer()->m_pController = &Controller;
 
@@ -1248,7 +1649,7 @@ TEST_F(GameWorld, InstagibDMVerticalSlice)
 	GameServer()->m_pController = nullptr;
 	ASSERT_TRUE(GameServer()->GameHost().Select("insta.idm"));
 	GameServer()->m_pController = GameServer()->GameHost().Controller();
-	GameServer()->GameHost().Init();
+	GameServer()->GameHost().Init(m_pServer->DbPool());
 
 	constexpr int AttackerId = 0;
 	constexpr int VictimId = 1;
@@ -1287,7 +1688,7 @@ TEST_F(GameWorld, Vanilla1on1IsTwoSlotDMProfile)
 	GameServer()->m_pController = nullptr;
 	ASSERT_TRUE(GameServer()->GameHost().Select("vanilla.1on1"));
 	GameServer()->m_pController = GameServer()->GameHost().Controller();
-	GameServer()->GameHost().Init();
+	GameServer()->GameHost().Init(m_pServer->DbPool());
 
 	EXPECT_NE(dynamic_cast<CGameControllerVanillaDM *>(GameServer()->m_pController), nullptr);
 	EXPECT_EQ(GameServer()->m_pController->ActivePlayerSlots(), 2);
@@ -1307,7 +1708,7 @@ TEST_F(GameWorld, InstagibTDMReusesTeamplay)
 	GameServer()->m_pController = nullptr;
 	ASSERT_TRUE(GameServer()->GameHost().Select("insta.itdm"));
 	GameServer()->m_pController = GameServer()->GameHost().Controller();
-	GameServer()->GameHost().Init();
+	GameServer()->GameHost().Init(m_pServer->DbPool());
 
 	constexpr int AttackerId = 0;
 	constexpr int TeammateId = 1;
@@ -1356,7 +1757,7 @@ TEST_F(GameWorld, InstagibCTFReusesFlagLifecycle)
 	GameServer()->m_pController = nullptr;
 	ASSERT_TRUE(GameServer()->GameHost().Select("insta.ictf"));
 	GameServer()->m_pController = GameServer()->GameHost().Controller();
-	GameServer()->GameHost().Init();
+	GameServer()->GameHost().Init(m_pServer->DbPool());
 
 	EXPECT_FALSE(GameServer()->m_pController->OnEntity(ENTITY_HEALTH_1, 1, 1, LAYER_GAME, 0, true));
 	EXPECT_TRUE(GameServer()->m_pController->OnEntity(ENTITY_FLAGSTAND_RED, 1, 1, LAYER_GAME, 0, true));
@@ -1396,7 +1797,7 @@ TEST_F(GameWorld, GrenadeInstagibDMVerticalSlice)
 	GameServer()->m_pController = nullptr;
 	ASSERT_TRUE(GameServer()->GameHost().Select("insta.gdm"));
 	GameServer()->m_pController = GameServer()->GameHost().Controller();
-	GameServer()->GameHost().Init();
+	GameServer()->GameHost().Init(m_pServer->DbPool());
 
 	constexpr int AttackerId = 0;
 	constexpr int VictimId = 1;
@@ -1441,7 +1842,7 @@ TEST_F(GameWorld, ZCatchReleasesOwnershipOnCatcherDeathAndDisconnect)
 	GameServer()->m_pController = nullptr;
 	ASSERT_TRUE(GameServer()->GameHost().Select("zcatch.laser"));
 	GameServer()->m_pController = GameServer()->GameHost().Controller();
-	GameServer()->GameHost().Init();
+	GameServer()->GameHost().Init(m_pServer->DbPool());
 
 	constexpr int FirstCatcherId = 0;
 	constexpr int VictimId = 1;
@@ -1482,7 +1883,7 @@ TEST_F(GameWorld, ZCatchEndsRoundForLastPlayerStanding)
 	GameServer()->m_pController = nullptr;
 	ASSERT_TRUE(GameServer()->GameHost().Select("zcatch.laser"));
 	GameServer()->m_pController = GameServer()->GameHost().Controller();
-	GameServer()->GameHost().Init();
+	GameServer()->GameHost().Init(m_pServer->DbPool());
 
 	constexpr int CatcherId = 0;
 	constexpr int FirstVictimId = 1;
@@ -1517,7 +1918,7 @@ TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
 	GameServer()->m_pController = nullptr;
 	ASSERT_TRUE(GameServer()->GameHost().Select("zcatch.laser"));
 	GameServer()->m_pController = GameServer()->GameHost().Controller();
-	GameServer()->GameHost().Init();
+	GameServer()->GameHost().Init(m_pServer->DbPool());
 
 	constexpr int VictimId = 0;
 	constexpr int CatcherId = 1;
@@ -1574,7 +1975,7 @@ TEST_F(GameWorld, ZCatchLateJoinFollowsLeadingCatcher)
 	GameServer()->m_pController = nullptr;
 	ASSERT_TRUE(GameServer()->GameHost().Select("zcatch.laser"));
 	GameServer()->m_pController = GameServer()->GameHost().Controller();
-	GameServer()->GameHost().Init();
+	GameServer()->GameHost().Init(m_pServer->DbPool());
 
 	constexpr int LeaderId = 0;
 	constexpr int VictimId = 1;
@@ -1621,7 +2022,7 @@ TEST_F(GameWorld, ZCatchLateJoinFollowsLeadingCatcher)
 TEST_F(GameWorld, VanillaCTFFlagLifecycle)
 {
 	const CGameModeInfo Info = {"vanilla.ctf", "Vanilla CTF", "CTF", "TestCTF", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaCTF Controller(GameServer(), Info);
+	CGameControllerVanillaCTF Controller(GameServices(), Info);
 	IGameController *pPreviousController = GameServer()->m_pController;
 	GameServer()->m_pController = &Controller;
 
@@ -1717,7 +2118,7 @@ TEST_F(GameWorld, VanillaPickup)
 	ASSERT_NE(pCharacter, nullptr);
 
 	const CGameModeInfo Info = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM Controller(GameServer(), Info);
+	CGameControllerVanillaDM Controller(GameServices(), Info);
 	pCharacter->SetHealth(9);
 	const CGamePickupResult HealthResult = Controller.OnCharacterPickup(pCharacter, POWERUP_HEALTH, 0, pCharacter->m_Pos);
 	EXPECT_TRUE(HealthResult.m_Picked);
@@ -1773,8 +2174,14 @@ TEST_F(GameWorld, VanillaProjectileOwnerLoss)
 {
 	constexpr int ClientId = 0;
 	constexpr int TargetId = 1;
+	const CGameModeInfo Info = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
+	CGameControllerVanillaDM Controller(GameServices(), Info);
+	IGameController *pPreviousController = GameServer()->m_pController;
+	EXPECT_EQ(pPreviousController->ProjectileRules({WEAPON_GUN, nullptr, true, false}).m_OwnerLossAction, EProjectileOwnerLossAction::DESTROY);
+
 	vec2 SpawnPosition;
-	ASSERT_TRUE(GameServer()->m_pController->CanSpawn(TEAM_GAME, &SpawnPosition, ClientId));
+	ASSERT_TRUE(pPreviousController->CanSpawn(TEAM_GAME, &SpawnPosition, ClientId));
+	GameServer()->m_pController = &Controller;
 	GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
 	CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
 	pPlayer->ForceSpawn(SpawnPosition);
@@ -1786,18 +2193,12 @@ TEST_F(GameWorld, VanillaProjectileOwnerLoss)
 	ASSERT_NE(pTarget, nullptr);
 	pTarget->SetHealth(10);
 
-	const CGameModeInfo Info = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
-	CGameControllerVanillaDM Controller(GameServer(), Info);
 	const CGameProjectileRules ConnectedRules = Controller.ProjectileRules({WEAPON_GUN, pPlayer->GetCharacter(), true, false});
 	EXPECT_TRUE(ConnectedRules.m_HitCharacters);
 	EXPECT_FALSE(ConnectedRules.m_RespectCharacterCollision);
 	EXPECT_FLOAT_EQ(ConnectedRules.m_DirectImpactForce, 0.001f);
 	EXPECT_EQ(ConnectedRules.m_OwnerLossAction, EProjectileOwnerLossAction::KEEP);
 	EXPECT_EQ(Controller.ProjectileRules({WEAPON_GUN, nullptr, false, false}).m_OwnerLossAction, EProjectileOwnerLossAction::DETACH);
-	EXPECT_EQ(GameServer()->m_pController->ProjectileRules({WEAPON_GUN, nullptr, true, false}).m_OwnerLossAction, EProjectileOwnerLossAction::DESTROY);
-
-	IGameController *pPreviousController = GameServer()->m_pController;
-	GameServer()->m_pController = &Controller;
 	auto *pImpactProjectile = new CProjectile(&GameServer()->m_World, WEAPON_GUN, ClientId, SpawnPosition, vec2(1, 0), 100, false, false, -1, vec2(1, 0));
 	pImpactProjectile->Tick();
 	EXPECT_EQ(pTarget->GetHealth(), 9);
@@ -1811,4 +2212,62 @@ TEST_F(GameWorld, VanillaProjectileOwnerLoss)
 	GameServer()->m_apPlayers[ClientId] = pPlayer;
 	GameServer()->m_pController = pPreviousController;
 	EXPECT_EQ(pProjectile->GetOwnerId(), -1);
+}
+
+TEST_F(GameWorld, ExplosionPolicyIsModeOwned)
+{
+	constexpr int OwnerId = 0;
+	constexpr int VictimId = 1;
+	const int PreviousHit = g_Config.m_SvHit;
+
+	ASSERT_TRUE(GameServer()->HasRaceTeams());
+	CPlayer *pRaceOwner = GameServer()->CreatePlayer(OwnerId, TEAM_GAME, false, -1);
+	CPlayer *pRaceVictim = GameServer()->CreatePlayer(VictimId, TEAM_GAME, false, -1);
+	ASSERT_NE(pRaceOwner, nullptr);
+	ASSERT_NE(pRaceVictim, nullptr);
+	ASSERT_NE(pRaceOwner->ForceSpawn(vec2(-64.0f, 0.0f)), nullptr);
+	CCharacter *pRaceVictimCharacter = pRaceVictim->ForceSpawn(vec2(0.0f, 0.0f));
+	ASSERT_NE(pRaceVictimCharacter, nullptr);
+	pRaceVictimCharacter->SetHealth(10);
+	pRaceOwner->KillCharacter();
+	g_Config.m_SvHit = 0;
+	GameServer()->CreateExplosion(pRaceVictimCharacter->m_Pos, OwnerId, WEAPON_GRENADE, false, -1);
+	const int RaceVictimHealth = pRaceVictimCharacter->GetHealth();
+	g_Config.m_SvHit = PreviousHit;
+	EXPECT_EQ(RaceVictimHealth, 10);
+
+	delete GameServer()->m_apPlayers[OwnerId];
+	GameServer()->m_apPlayers[OwnerId] = nullptr;
+	delete GameServer()->m_apPlayers[VictimId];
+	GameServer()->m_apPlayers[VictimId] = nullptr;
+	GameServer()->GameHost().Shutdown();
+	GameServer()->m_pController = nullptr;
+	ASSERT_TRUE(GameServer()->GameHost().Select("vanilla.dm"));
+	GameServer()->m_pController = GameServer()->GameHost().Controller();
+	GameServer()->GameHost().Init(m_pServer->DbPool());
+	ASSERT_FALSE(GameServer()->HasRaceTeams());
+	CPlayer *pVanillaOwner = GameServer()->CreatePlayer(OwnerId, TEAM_GAME, false, -1);
+	CPlayer *pVanillaVictim = GameServer()->CreatePlayer(VictimId, TEAM_GAME, false, -1);
+	ASSERT_NE(pVanillaOwner, nullptr);
+	ASSERT_NE(pVanillaVictim, nullptr);
+	ASSERT_NE(pVanillaOwner->ForceSpawn(vec2(-64.0f, 0.0f)), nullptr);
+	CCharacter *pVanillaVictimCharacter = pVanillaVictim->ForceSpawn(vec2(0.0f, 0.0f));
+	ASSERT_NE(pVanillaVictimCharacter, nullptr);
+	pVanillaVictimCharacter->SetHealth(10);
+	pVanillaOwner->KillCharacter();
+	g_Config.m_SvHit = 0;
+	GameServer()->CreateExplosion(pVanillaVictimCharacter->m_Pos, OwnerId, WEAPON_GRENADE, false, -1);
+	const int VanillaVictimHealth = pVanillaVictimCharacter->GetHealth();
+	g_Config.m_SvHit = PreviousHit;
+	EXPECT_LT(VanillaVictimHealth, 10);
+
+	delete GameServer()->m_apPlayers[OwnerId];
+	GameServer()->m_apPlayers[OwnerId] = nullptr;
+	delete GameServer()->m_apPlayers[VictimId];
+	GameServer()->m_apPlayers[VictimId] = nullptr;
+	GameServer()->GameHost().Shutdown();
+	GameServer()->m_pController = nullptr;
+	ASSERT_TRUE(GameServer()->GameHost().Select("ddnet"));
+	GameServer()->m_pController = GameServer()->GameHost().Controller();
+	GameServer()->GameHost().Init(m_pServer->DbPool());
 }

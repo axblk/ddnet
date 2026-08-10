@@ -9,26 +9,24 @@
 
 #include <engine/shared/protocol.h>
 
-#include <game/alloc.h>
-#include <game/server/save.h>
+#include <generated/protocol.h>
 
-#include <memory>
-#include <optional>
+#include <game/alloc.h>
 
 class CCharacter;
 class CGameContext;
+class CGameServices;
 class IServer;
+struct CNetMsg_Cl_CameraInfo;
 struct CNetObj_PlayerInput;
-struct CScorePlayerResult;
-
 // player object
 class CPlayer
 {
 	MACRO_ALLOC_POOL_ID()
 
 public:
-	CPlayer(CGameContext *pGameServer, uint32_t UniqueClientId, int ClientId, int Team);
-	~CPlayer();
+	CPlayer(CGameServices &Services, uint32_t UniqueClientId, int ClientId, int Team);
+	virtual ~CPlayer();
 
 	void Reset();
 
@@ -101,7 +99,6 @@ public:
 	int m_aLastCommands[4];
 	int m_LastCommandPos;
 	int m_LastWhisperTo;
-	int m_LastInvited;
 
 	int m_SendVoteIndex;
 
@@ -183,12 +180,9 @@ public:
 
 	bool IsPlaying() const;
 	int64_t m_LastKickVote;
-	std::optional<int64_t> m_LastDDRaceTeamChange;
-	int m_ShowOthers;
 	bool m_ShowAll;
 	bool m_EnableSpectatorCount;
 	vec2 m_ShowDistance;
-	bool m_SpecTeam;
 	bool m_NinjaJetpack;
 
 	// camera info is used sparingly for converting aim target to absolute world coordinates
@@ -240,20 +234,6 @@ public:
 	bool CanOverrideDefaultEmote() const;
 
 	bool m_FirstPacket;
-	int64_t m_LastSqlQuery;
-	void ProcessScoreResult(CScorePlayerResult &Result);
-	std::shared_ptr<CScorePlayerResult> m_ScoreQueryResult;
-	std::shared_ptr<CScorePlayerResult> m_ScoreFinishResult;
-	bool m_NotEligibleForFinish;
-	int64_t m_EligibleForFinishCheck;
-	bool m_VotedForPractice;
-	int m_SwapTargetsClientId; //Client ID of the swap target for the given player
-	bool m_BirthdayAnnounced;
-
-	int m_RescueMode;
-
-	CSaveTee m_LastTeleTee;
-	std::optional<CSaveTee> m_LastDeath;
 };
 
 #endif

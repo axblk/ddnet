@@ -7,6 +7,7 @@
 #include "entities/pickup.h"
 #include "entities/projectile.h"
 #include "gamecontext.h"
+#include "mode/game_services.h"
 #include "player.h"
 
 #include <base/log.h>
@@ -23,17 +24,16 @@
 #include <generated/server_data.h>
 
 #include <game/mapitems.h>
-#include <game/server/score.h>
 #include <game/teamscore.h>
 
 #include <algorithm>
 
-IGameController::IGameController(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo) :
-	m_Teams(pGameServer), m_GameModeInfo(GameModeInfo), m_pLoadBestTimeResult(nullptr)
+IGameController::IGameController(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
+	m_GameModeInfo(GameModeInfo)
 {
-	m_pGameServer = pGameServer;
-	m_pConfig = m_pGameServer->Config();
-	m_pServer = m_pGameServer->Server();
+	m_pServices = &Services;
+	m_pConfig = GameServer()->Config();
+	m_pServer = Services.Server();
 	m_pGameType = g_Config.m_SvTestingCommands ? m_GameModeInfo.m_pTestingGameType : m_GameModeInfo.m_pGameType;
 
 	//
@@ -44,8 +44,11 @@ IGameController::IGameController(class CGameContext *pGameServer, const CGameMod
 	m_RoundCount = 0;
 	m_GameFlags = m_GameModeInfo.m_GameFlags;
 	m_aMapWish[0] = 0;
+}
 
-	m_CurrentRecord.reset();
+CGameContext *IGameController::GameServer() const
+{
+	return m_pServices->GameServer();
 }
 
 IGameController::~IGameController()
@@ -59,7 +62,28 @@ void IGameController::Init()
 	InitGameSettings();
 	m_pGameType = g_Config.m_SvTestingCommands ? m_GameModeInfo.m_pTestingGameType : m_GameModeInfo.m_pGameType;
 	DoWarmup(g_Config.m_SvWarmup);
-	m_Teams.Reset();
+	m_TeamsCore.Reset();
+}
+
+CPlayer *IGameController::CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team)
+{
+	return new(ClientId) CPlayer(Services(), UniqueClientId, ClientId, Team);
+}
+
+CCharacter *IGameController::CreateCharacter(CPlayer *pPlayer)
+{
+	const int ClientId = pPlayer->GetCid();
+	return new(ClientId) CCharacter(&Services().World(), Services().LastPlayerInput(ClientId));
+}
+
+CGameTeams &IGameController::RaceTeams()
+{
+	return *GameServer()->RaceTeams();
+}
+
+const CGameTeams &IGameController::RaceTeams() const
+{
+	return *GameServer()->RaceTeams();
 }
 
 void IGameController::LoadGameSettings()
@@ -799,10 +823,33 @@ CGameProjectileRules IGameController::ProjectileRules(const CGameProjectileConte
 	};
 }
 
+void IGameController::OnExplosion(const CGameExplosionContext &Context)
+{
+	GameServer()->CreateExplosionEvent(Context.m_Position, Context.m_Mask);
+	if(Context.m_NoDamage)
+		return;
+
+	CEntity *apEntities[MAX_CLIENTS];
+	constexpr float Radius = 135.0f;
+	constexpr float InnerRadius = 48.0f;
+	const int Num = GameServer()->m_World.FindEntities(Context.m_Position, Radius, apEntities, MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
+	for(int i = 0; i < Num; i++)
+	{
+		auto *pCharacter = static_cast<CCharacter *>(apEntities[i]);
+		const vec2 Difference = pCharacter->m_Pos - Context.m_Position;
+		const float Distance = length(Difference);
+		const vec2 ForceDirection = Distance > 0.0f ? normalize(Difference) : vec2(0.0f, 1.0f);
+		const float Falloff = 1.0f - std::clamp((Distance - InnerRadius) / (Radius - InnerRadius), 0.0f, 1.0f);
+		const float Damage = GameServer()->GlobalTuning()->m_ExplosionStrength * Falloff;
+		if((int)Damage == 0)
+			continue;
+		pCharacter->TakeDamage(ForceDirection * Damage * 2.0f, (int)Damage, Context.m_Owner, Context.m_Weapon, true, Context.m_AttackerTeam);
+	}
+}
+
 void IGameController::OnCharacterSpawn(class CCharacter *pChr)
 {
-	pChr->SetTeams(&Teams());
-	Teams().OnCharacterSpawn(pChr->GetPlayer()->GetCid());
+	pChr->SetTeamsCore(&TeamsCore());
 
 	// default health
 	pChr->IncreaseHealth(10);
@@ -849,23 +896,6 @@ void IGameController::Tick()
 			StartRound();
 			m_RoundCount++;
 		}
-	}
-
-	if(m_pLoadBestTimeResult != nullptr && m_pLoadBestTimeResult->m_Completed)
-	{
-		if(m_pLoadBestTimeResult->m_Success)
-		{
-			m_CurrentRecord = m_pLoadBestTimeResult->m_CurrentRecord;
-
-			for(int i = 0; i < MAX_CLIENTS; i++)
-			{
-				if(GameServer()->m_apPlayers[i] && GameServer()->m_apPlayers[i]->GetClientVersion() >= VERSION_DDRACE)
-				{
-					GameServer()->SendRecord(i);
-				}
-			}
-		}
-		m_pLoadBestTimeResult = nullptr;
 	}
 
 	DoActivityCheck();

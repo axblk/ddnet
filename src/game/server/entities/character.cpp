@@ -154,7 +154,7 @@ void CCharacter::SetJumps(int Jumps)
 void CCharacter::SetSolo(bool Solo)
 {
 	m_Core.m_Solo = Solo;
-	Teams()->m_Core.SetSolo(m_pPlayer->GetCid(), Solo);
+	TeamsCore()->SetSolo(m_pPlayer->GetCid(), Solo);
 }
 
 void CCharacter::SetSuper(bool Super)
@@ -169,13 +169,13 @@ void CCharacter::SetSuper(bool Super)
 	{
 		m_TeamBeforeSuper = Team();
 		char aError[512];
-		if(!Teams()->SetCharacterTeam(GetPlayer()->GetCid(), TEAM_SUPER, aError, sizeof(aError)))
+		if(!RaceTeams()->SetCharacterTeam(GetPlayer()->GetCid(), TEAM_SUPER, aError, sizeof(aError)))
 			log_error("character", "failed to set super: %s", aError);
 		m_DDRaceState = ERaceState::CHEATED;
 	}
 	else if(!Super && WasSuper)
 	{
-		Teams()->SetForceCharacterTeam(GetPlayer()->GetCid(), m_TeamBeforeSuper);
+		RaceTeams()->SetForceCharacterTeam(GetPlayer()->GetCid(), m_TeamBeforeSuper);
 	}
 }
 
@@ -317,7 +317,7 @@ void CCharacter::HandleNinja()
 			int Num = GameServer()->m_World.FindEntities(OldPos, Radius, apEnts, MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
 
 			// check that we're not in solo part
-			if(Teams()->m_Core.GetSolo(m_pPlayer->GetCid()))
+			if(TeamsCore()->GetSolo(m_pPlayer->GetCid()))
 				return;
 
 			for(int i = 0; i < Num; ++i)
@@ -333,7 +333,7 @@ void CCharacter::HandleNinja()
 				const int ClientId = pChr->m_pPlayer->GetCid();
 
 				// Don't hit players in solo parts
-				if(Teams()->m_Core.GetSolo(ClientId))
+				if(TeamsCore()->GetSolo(ClientId))
 					continue;
 
 				// make sure we haven't Hit this object before
@@ -697,7 +697,7 @@ void CCharacter::TickDeferred()
 	// advance the dummy
 	{
 		CWorldCore TempWorld;
-		m_ReckoningCore.Init(&TempWorld, Collision(), &Teams()->m_Core);
+		m_ReckoningCore.Init(&TempWorld, Collision(), TeamsCore());
 		m_ReckoningCore.m_Id = m_pPlayer->GetCid();
 		m_ReckoningCore.m_Tuning = CTuningParams();
 		m_ReckoningCore.Tick(false);
@@ -749,9 +749,18 @@ void CCharacter::TickDeferred()
 
 		// Some sounds are triggered client-side for the acting player (or for all players on Sixup)
 		// so we need to avoid duplicating them
-		CClientMask TeamMaskExceptSelfAndSixup = Teams()->TeamMask(Team(), CID, CID, CGameContext::FLAG_SIX);
+		CClientMask TeamMaskExceptSelfAndSixup = TeamMask();
+		TeamMaskExceptSelfAndSixup.reset(CID);
 		// Some are triggered client-side but only on Sixup
-		CClientMask TeamMaskExceptSixup = Teams()->TeamMask(Team(), -1, CID, CGameContext::FLAG_SIX);
+		CClientMask TeamMaskExceptSixup = TeamMask();
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+		{
+			if(Server()->IsSixup(ClientId))
+			{
+				TeamMaskExceptSelfAndSixup.reset(ClientId);
+				TeamMaskExceptSixup.reset(ClientId);
+			}
+		}
 
 		if(Events & COREEVENT_GROUND_JUMP)
 			GameServer()->CreateSound(m_Pos, SOUND_PLAYER_JUMP, TeamMaskExceptSelfAndSixup);
@@ -837,7 +846,12 @@ void CCharacter::StopRecording()
 {
 	if(Server()->IsRecording(m_pPlayer->GetCid()))
 	{
-		CPlayerData *pData = GameServer()->Score()->PlayerData(m_pPlayer->GetCid());
+		if(!GameServer()->HasRaceScore())
+		{
+			Server()->StopRecord(m_pPlayer->GetCid());
+			return;
+		}
+		CPlayerData *pData = GameServer()->RaceScore()->PlayerData(m_pPlayer->GetCid());
 
 		if(pData->m_RecordStopTick - Server()->Tick() <= Server()->TickSpeed() && pData->m_RecordStopTick != -1)
 			Server()->SaveDemo(m_pPlayer->GetCid(), pData->m_RecordFinishTime);
@@ -850,8 +864,8 @@ void CCharacter::StopRecording()
 
 void CCharacter::Die(int Killer, int Weapon, bool SendKillMsg)
 {
-	if(Killer != WEAPON_GAME && m_SetSavePos[RESCUEMODE_AUTO])
-		GetPlayer()->m_LastDeath = m_RescueTee[RESCUEMODE_AUTO];
+	if(HasRaceTeams() && Killer != WEAPON_GAME && m_SetSavePos[RESCUEMODE_AUTO])
+		RaceTeams()->PlayerState(GetPlayer()->GetCid()).m_LastDeath = m_RescueTee[RESCUEMODE_AUTO];
 	StopRecording();
 	CPlayer *pKiller = Killer >= 0 && Killer < MAX_CLIENTS ? GameServer()->m_apPlayers[Killer] : nullptr;
 	int ModeSpecial = GameServer()->m_pController->OnCharacterDeath(this, pKiller, Weapon);
@@ -878,7 +892,8 @@ void CCharacter::Die(int Killer, int Weapon, bool SendKillMsg)
 
 	GameServer()->m_World.RemoveEntity(this);
 	GameServer()->m_World.m_Core.m_apCharacters[m_pPlayer->GetCid()] = nullptr;
-	Teams()->OnCharacterDeath(GetPlayer()->GetCid(), Weapon);
+	if(HasRaceTeams())
+		RaceTeams()->OnCharacterDeath(GetPlayer()->GetCid(), Weapon);
 	CancelSwapRequests();
 }
 
@@ -889,7 +904,7 @@ bool CCharacter::TakeDamage(vec2 Force, int Dmg, int From, int Weapon, bool CanD
 
 void CCharacter::SendDeathMessageIfNotInLockedTeam(int Killer, int Weapon, int ModeSpecial)
 {
-	if((Team() == TEAM_FLOCK || Teams()->TeamFlock(Team()) || Teams()->TeamSize(Team()) == 1 || Teams()->GetTeamState(Team()) == ETeamState::OPEN || !Teams()->TeamLocked(Team())))
+	if(!HasRaceTeams() || Team() == TEAM_FLOCK || RaceTeams()->TeamFlock(Team()) || RaceTeams()->TeamSize(Team()) == 1 || RaceTeams()->GetTeamState(Team()) == ETeamState::OPEN || !RaceTeams()->TeamLocked(Team()))
 	{
 		CNetMsg_Sv_KillMsg Msg;
 		Msg.m_Killer = Killer;
@@ -902,12 +917,15 @@ void CCharacter::SendDeathMessageIfNotInLockedTeam(int Killer, int Weapon, int M
 
 void CCharacter::CancelSwapRequests()
 {
-	for(auto &pPlayer : GameServer()->m_apPlayers)
+	if(!HasRaceTeams())
+		return;
+
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
-		if(pPlayer && pPlayer->m_SwapTargetsClientId == GetPlayer()->GetCid())
-			pPlayer->m_SwapTargetsClientId = -1;
+		if(GameServer()->m_apPlayers[ClientId] && RaceTeams()->PlayerState(ClientId).m_SwapTargetClientId == GetPlayer()->GetCid())
+			RaceTeams()->PlayerState(ClientId).m_SwapTargetClientId = -1;
 	}
-	GetPlayer()->m_SwapTargetsClientId = -1;
+	RaceTeams()->PlayerState(GetPlayer()->GetCid()).m_SwapTargetClientId = -1;
 }
 
 void CCharacter::SnapCharacter(int SnappingClient, int MapId)
@@ -1170,15 +1188,15 @@ void CCharacter::SnapDDRace(int Id)
 	{
 		DDNetCharacter.m_Flags |= CHARACTERFLAG_IN_FREEZE;
 	}
-	if(Teams()->IsPractice(Team()))
+	if(RaceTeams()->IsPractice(Team()))
 	{
 		DDNetCharacter.m_Flags |= CHARACTERFLAG_PRACTICE_MODE;
 	}
-	if(Teams()->TeamLocked(Team()))
+	if(RaceTeams()->TeamLocked(Team()))
 	{
 		DDNetCharacter.m_Flags |= CHARACTERFLAG_LOCK_MODE;
 	}
-	if(Teams()->TeamFlock(Team()))
+	if(RaceTeams()->TeamFlock(Team()))
 	{
 		DDNetCharacter.m_Flags |= CHARACTERFLAG_TEAM0_MODE;
 	}
@@ -1200,16 +1218,16 @@ void CCharacter::PostGlobalSnap()
 
 bool CCharacter::CanCollide(int ClientId)
 {
-	return Teams()->m_Core.CanCollide(GetPlayer()->GetCid(), ClientId);
+	return TeamsCore()->CanCollide(GetPlayer()->GetCid(), ClientId);
 }
 bool CCharacter::SameTeam(int ClientId)
 {
-	return Teams()->m_Core.SameTeam(GetPlayer()->GetCid(), ClientId);
+	return TeamsCore()->SameTeam(GetPlayer()->GetCid(), ClientId);
 }
 
 int CCharacter::Team()
 {
-	return Teams()->m_Core.Team(m_pPlayer->GetCid());
+	return TeamsCore()->Team(m_pPlayer->GetCid());
 }
 
 void CCharacter::FillAntibot(CAntibotCharacterData *pData)
@@ -1260,7 +1278,7 @@ void CCharacter::FillAntibot(CAntibotCharacterData *pData)
 
 void CCharacter::HandleBroadcast()
 {
-	CPlayerData *pData = GameServer()->Score()->PlayerData(m_pPlayer->GetCid());
+	CPlayerData *pData = GameServer()->RaceScore()->PlayerData(m_pPlayer->GetCid());
 
 	if(m_DDRaceState == ERaceState::STARTED && m_pPlayer->GetClientVersion() == VERSION_VANILLA && !Server()->IsSixup(m_pPlayer->GetCid()) &&
 		m_LastTimeCpBroadcasted != m_LastTimeCp && m_LastTimeCp > -1 &&
@@ -1288,9 +1306,9 @@ void CCharacter::HandleSkippableTiles(int Index)
 {
 	// handle death-tiles and leaving gamelayer
 	if(IsOnDeathTile() &&
-		!m_Core.m_Super && !m_Core.m_Invincible && !(Team() && Teams()->TeeFinished(m_pPlayer->GetCid())))
+		!m_Core.m_Super && !m_Core.m_Invincible && !(Team() && RaceTeams()->TeeFinished(m_pPlayer->GetCid())))
 	{
-		if(Teams()->IsPractice(Team()))
+		if(RaceTeams()->IsPractice(Team()))
 		{
 			Freeze();
 			// Rate limit death effects to once per second
@@ -1428,7 +1446,7 @@ void CCharacter::SetTimeCheckpoint(int TimeCheckpoint)
 		m_TimeCpBroadcastEndTick = Server()->Tick() + Server()->TickSpeed() * 2;
 		if(m_pPlayer->GetClientVersion() >= VERSION_DDRACE || Server()->IsSixup(m_pPlayer->GetCid()))
 		{
-			CPlayerData *pData = GameServer()->Score()->PlayerData(m_pPlayer->GetCid());
+			CPlayerData *pData = GameServer()->RaceScore()->PlayerData(m_pPlayer->GetCid());
 			if(pData->m_aBestTimeCp[m_LastTimeCp] != 0.0f)
 			{
 				if(Server()->IsSixup(m_pPlayer->GetCid()))
@@ -1774,15 +1792,15 @@ void CCharacter::HandleTiles(int Index)
 	{
 		const int Minutes = SwitchDelay;
 		const int Seconds = SwitchNumber;
-		int Team = Teams()->m_Core.Team(m_Core.m_Id);
+		int Team = TeamsCore()->Team(m_Core.m_Id);
 
 		m_StartTime -= (Minutes * 60 + Seconds) * Server()->TickSpeed();
 
-		if((g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO || (Team != TEAM_FLOCK && !Teams()->TeamFlock(Team))) && Team != TEAM_SUPER)
+		if((g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO || (Team != TEAM_FLOCK && !RaceTeams()->TeamFlock(Team))) && Team != TEAM_SUPER)
 		{
 			for(int i = 0; i < MAX_CLIENTS; i++)
 			{
-				if(Teams()->m_Core.Team(i) == Team && i != m_Core.m_Id && GameServer()->m_apPlayers[i])
+				if(TeamsCore()->Team(i) == Team && i != m_Core.m_Id && GameServer()->m_apPlayers[i])
 				{
 					CCharacter *pChar = GameServer()->m_apPlayers[i]->GetCharacter();
 
@@ -1798,17 +1816,17 @@ void CCharacter::HandleTiles(int Index)
 	{
 		const int Minutes = SwitchDelay;
 		const int Seconds = SwitchNumber;
-		int Team = Teams()->m_Core.Team(m_Core.m_Id);
+		int Team = TeamsCore()->Team(m_Core.m_Id);
 
 		m_StartTime += (Minutes * 60 + Seconds) * Server()->TickSpeed();
 		if(m_StartTime > Server()->Tick())
 			m_StartTime = Server()->Tick();
 
-		if((g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO || (Team != TEAM_FLOCK && !Teams()->TeamFlock(Team))) && Team != TEAM_SUPER)
+		if((g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO || (Team != TEAM_FLOCK && !RaceTeams()->TeamFlock(Team))) && Team != TEAM_SUPER)
 		{
 			for(int i = 0; i < MAX_CLIENTS; i++)
 			{
-				if(Teams()->m_Core.Team(i) == Team && i != m_Core.m_Id && GameServer()->m_apPlayers[i])
+				if(TeamsCore()->Team(i) == Team && i != m_Core.m_Id && GameServer()->m_apPlayers[i])
 				{
 					CCharacter *pChar = GameServer()->m_apPlayers[i]->GetCharacter();
 
@@ -1995,16 +2013,23 @@ IAntibot *CCharacter::Antibot()
 	return GameServer()->Antibot();
 }
 
-void CCharacter::SetTeams(CGameTeams *pTeams)
+void CCharacter::SetTeamsCore(CTeamsCore *pTeamsCore)
 {
-	m_pTeams = pTeams;
-	m_Core.SetTeamsCore(&m_pTeams->m_Core);
+	m_pTeamsCore = pTeamsCore;
+	m_Core.SetTeamsCore(m_pTeamsCore);
+}
+
+void CCharacter::SetRaceTeams(CGameTeams *pTeams)
+{
+	m_pRaceTeams = pTeams;
+	if(m_pRaceTeams != nullptr)
+		SetTeamsCore(&m_pRaceTeams->m_Core);
 }
 
 bool CCharacter::TrySetRescue(int RescueMode)
 {
 	bool Set = false;
-	if(g_Config.m_SvRescue || ((g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO || Team() > TEAM_FLOCK) && Teams()->IsValidTeamNumber(Team())))
+	if(g_Config.m_SvRescue || ((g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO || Team() > TEAM_FLOCK) && RaceTeams()->IsValidTeamNumber(Team())))
 	{
 		// check for nearby health pickups (also freeze)
 		bool InHealthPickup = false;
@@ -2317,13 +2342,13 @@ void CCharacter::DDRaceInit()
 		m_Core.m_GrenadeHitDisabled = true;
 		m_Core.m_LaserHitDisabled = true;
 	}
-	int Team = Teams()->m_Core.Team(m_Core.m_Id);
+	int Team = TeamsCore()->Team(m_Core.m_Id);
 
-	if(Teams()->TeamLocked(Team) && !Teams()->TeamFlock(Team))
+	if(RaceTeams()->TeamLocked(Team) && !RaceTeams()->TeamFlock(Team))
 	{
 		for(int i = 0; i < MAX_CLIENTS; i++)
 		{
-			if(Teams()->m_Core.Team(i) == Team && i != m_Core.m_Id && GameServer()->m_apPlayers[i])
+			if(TeamsCore()->Team(i) == Team && i != m_Core.m_Id && GameServer()->m_apPlayers[i])
 			{
 				CCharacter *pChar = GameServer()->m_apPlayers[i]->GetCharacter();
 
@@ -2350,9 +2375,12 @@ void CCharacter::DDRaceInit()
 
 bool CCharacter::Rescue()
 {
-	if(m_SetSavePos[GetPlayer()->m_RescueMode] && !m_Core.m_Super && !m_Core.m_Invincible)
+	if(!HasRaceTeams())
+		return false;
+	const int RescueMode = RaceTeams()->PlayerState(GetPlayer()->GetCid()).m_RescueMode;
+	if(m_SetSavePos[RescueMode] && !m_Core.m_Super && !m_Core.m_Invincible)
 	{
-		if(m_LastRescue + (int64_t)g_Config.m_SvRescueDelay * Server()->TickSpeed() > Server()->Tick() && !Teams()->IsPractice(Team()))
+		if(m_LastRescue + (int64_t)g_Config.m_SvRescueDelay * Server()->TickSpeed() > Server()->Tick() && !RaceTeams()->IsPractice(Team()))
 		{
 			char aBuf[256];
 			str_format(aBuf, sizeof(aBuf), "You have to wait %d seconds until you can rescue yourself", (int)((m_LastRescue + (int64_t)g_Config.m_SvRescueDelay * Server()->TickSpeed() - Server()->Tick()) / Server()->TickSpeed()));
@@ -2363,7 +2391,7 @@ bool CCharacter::Rescue()
 		m_LastRescue = Server()->Tick();
 		int StartTime = m_StartTime;
 		ERaceState DDRaceState = m_DDRaceState;
-		m_RescueTee[GetPlayer()->m_RescueMode].Load(this);
+		m_RescueTee[RescueMode].Load(this);
 		// Don't load these from saved tee:
 		m_Core.m_Vel = vec2(0, 0);
 		m_Core.m_HookState = HOOK_IDLE;

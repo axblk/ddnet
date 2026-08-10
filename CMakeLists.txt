@@ -3040,6 +3040,8 @@ if(SERVER)
     mode/game_host.h
     mode/game_mode_registry.cpp
     mode/game_mode_registry.h
+    mode/game_services.cpp
+    mode/game_services.h
     modes/insta/game_modes.cpp
     modes/insta/game_modes.h
     modes/insta/rules.h
@@ -3051,6 +3053,7 @@ if(SERVER)
     modes/vanilla/flag.h
     modes/vanilla/game_modes.cpp
     modes/vanilla/game_modes.h
+    modes/vanilla/player.h
     modes/vanilla/tdm.cpp
     modes/vanilla/tdm.h
     modes/vanilla/teamplay.cpp

@@ -12,6 +12,7 @@
 class CCollision;
 class CEntity;
 class CCharacter;
+class CGameContext;
 
 /*
 	Class: Game World
@@ -32,8 +33,11 @@ public:
 	};
 
 private:
+	friend class CEntity;
+
 	void Reset();
 	void RemoveEntities();
+	CGameContext *GameServer() { return m_pGameServer; }
 
 	CEntity *m_pNextTraverseEntity = nullptr;
 	CEntity *m_apFirstEntityTypes[NUM_ENTTYPES];
@@ -44,12 +48,13 @@ private:
 	CTuningParams *m_pTuningList;
 
 public:
-	class CGameContext *GameServer() { return m_pGameServer; }
 	class CConfig *Config() { return m_pConfig; }
 	class IServer *Server() { return m_pServer; }
 
 	bool m_ResetRequested;
 	bool m_Paused;
+	bool ResetRequested() const { return m_ResetRequested; }
+	bool IsPaused() const { return m_Paused; }
 	CWorldCore m_Core;
 
 	CGameWorld();

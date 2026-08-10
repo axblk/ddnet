@@ -561,16 +561,16 @@ void CGameContext::ConSetDDRTeam(IConsole::IResult *pResult, void *pUserData)
 		return;
 
 	const int Team = pResult->GetInteger(1);
-	if(!pController->Teams().IsValidTeamNumber(Team))
+	if(!pController->RaceTeams().IsValidTeamNumber(Team))
 		return;
 
 	CCharacter *pChr = pSelf->GetPlayerChar(Target);
 
-	if((pSelf->GetDDRaceTeam(Target) && pController->Teams().GetDDRaceState(pPlayer) == ERaceState::STARTED) || (pChr && pController->Teams().IsPractice(pChr->Team())))
+	if((pSelf->GetDDRaceTeam(Target) && pController->RaceTeams().GetDDRaceState(pPlayer) == ERaceState::STARTED) || (pChr && pController->RaceTeams().IsPractice(pChr->Team())))
 		pPlayer->KillCharacter(WEAPON_GAME);
 
-	pController->Teams().SetForceCharacterTeam(Target, Team);
-	pController->Teams().SetTeamLock(Team, true);
+	pController->RaceTeams().SetForceCharacterTeam(Target, Team);
+	pController->RaceTeams().SetTeamLock(Team, true);
 }
 
 void CGameContext::ConUninvite(IConsole::IResult *pResult, void *pUserData)
@@ -582,7 +582,7 @@ void CGameContext::ConUninvite(IConsole::IResult *pResult, void *pUserData)
 	if(!pSelf->m_apPlayers[Target])
 		return;
 
-	pController->Teams().SetClientInvited(pResult->GetInteger(1), Target, false);
+	pController->RaceTeams().SetClientInvited(pResult->GetInteger(1), Target, false);
 }
 
 void CGameContext::ConVoteNo(IConsole::IResult *pResult, void *pUserData)

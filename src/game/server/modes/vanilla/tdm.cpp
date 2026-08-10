@@ -1,15 +1,15 @@
 #include "tdm.h"
 
+#include <engine/server.h>
 #include <engine/shared/config.h>
 
 #include <game/server/entities/character.h>
-#include <game/server/gamecontext.h>
 #include <game/server/player.h>
 
 #include <algorithm>
 
-CGameControllerVanillaTDM::CGameControllerVanillaTDM(CGameContext *pGameServer, const CGameModeInfo &GameModeInfo) :
-	CGameControllerVanillaTeamplay(pGameServer, GameModeInfo)
+CGameControllerVanillaTDM::CGameControllerVanillaTDM(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
+	CGameControllerVanillaTeamplay(Services, GameModeInfo)
 {
 }
 
@@ -29,8 +29,9 @@ int CGameControllerVanillaTDM::OnCharacterDeath(CCharacter *pVictim, CPlayer *pK
 	const bool SelfKill = KillerId == VictimId;
 	const bool TeamKill = !SelfKill && KillerTeam == VictimTeam;
 
-	m_aEarliestRespawnTicks[VictimId] = Server()->Tick() + Server()->TickSpeed() * g_Config.m_SvRespawnDelayTDM;
-	ApplyDeathScore(m_aScores, VictimId, KillerId, Weapon, TeamKill);
+	VanillaPlayer(VictimId)->m_EarliestRespawnTick = Server()->Tick() + Server()->TickSpeed() * g_Config.m_SvRespawnDelayTDM;
+	if(CPlayerVanilla *pKillerPlayer = VanillaPlayer(KillerId))
+		pKillerPlayer->m_Score += DeathScoreDelta(VictimId, KillerId, Weapon, TeamKill);
 	ApplyTeamDeathScore(m_aTeamScores, VictimTeam, KillerTeam, Weapon, SelfKill);
 	return 0;
 }

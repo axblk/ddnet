@@ -3,12 +3,14 @@
 
 #include "teamplay.h"
 
+#include <array>
+
 class CFlag;
 
 class CGameControllerVanillaCTF : public CGameControllerVanillaTeamplay
 {
 public:
-	CGameControllerVanillaCTF(CGameContext *pGameServer, const CGameModeInfo &GameModeInfo);
+	CGameControllerVanillaCTF(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 
 	bool OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number) override;
 	int OnCharacterDeath(CCharacter *pVictim, CPlayer *pKiller, int Weapon) override;

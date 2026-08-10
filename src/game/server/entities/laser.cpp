@@ -13,6 +13,7 @@
 #include <game/server/gamecontext.h>
 #include <game/server/gamemodes/ddnet.h>
 #include <game/server/player.h>
+#include <game/server/teams.h>
 
 CLaser::CLaser(CGameWorld *pGameWorld, vec2 Pos, vec2 Direction, float StartEnergy, int Owner, int Type) :
 	CEntity(pGameWorld, CGameWorld::ENTTYPE_LASER, true)
@@ -31,7 +32,7 @@ CLaser::CLaser(CGameWorld *pGameWorld, vec2 Pos, vec2 Direction, float StartEner
 	m_ZeroEnergyBounceInLastTick = false;
 	m_TuneZone = GameServer()->Collision()->IsTune(GameServer()->Collision()->GetMapIndex(m_Pos));
 	CCharacter *pOwnerChar = GameServer()->GetPlayerChar(m_Owner);
-	m_BelongsToPracticeTeam = pOwnerChar && pOwnerChar->Teams()->IsPractice(pOwnerChar->Team());
+	m_BelongsToPracticeTeam = pOwnerChar && pOwnerChar->HasRaceTeams() && pOwnerChar->RaceTeams()->IsPractice(pOwnerChar->Team());
 
 	CPlayer *pOwnerPlayer = (Owner >= 0 && Owner < MAX_CLIENTS) ? GameServer()->m_apPlayers[m_Owner] : nullptr;
 	m_InteractState.Init(Owner, pOwnerPlayer ? pOwnerPlayer->GetUniqueCid() : 0);
@@ -314,8 +315,7 @@ void CLaser::SyncInteractState()
 			NoHitOthers = (m_Type == WEAPON_LASER && pOwnerChar->LaserHitDisabled()) || (m_Type == WEAPON_SHOTGUN && pOwnerChar->ShotgunHitDisabled());
 		bool NoHitSelf = g_Config.m_SvOldLaser || (m_Bounces == 0 && !m_WasTele);
 		m_InteractState.FillOwnerConnected(
-			pOwnerChar && pOwnerChar->IsAlive(),
-			pOwnerPlayer ? GameServer()->GetDDRaceTeam(m_Owner) : 0,
+			GameServer()->m_pController->PlayerTeamGroup(m_Owner),
 			pOwnerChar && pOwnerChar->Core()->m_Solo,
 			NoHitOthers,
 			NoHitSelf);

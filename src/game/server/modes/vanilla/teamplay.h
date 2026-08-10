@@ -3,13 +3,15 @@
 
 #include "vanilla_pvp.h"
 
+#include <array>
+
 class CGameControllerVanillaTeamplay : public CGameControllerVanillaPvP
 {
 protected:
 	std::array<int, NUM_TEAMS> m_aTeamScores{};
 
 public:
-	CGameControllerVanillaTeamplay(CGameContext *pGameServer, const CGameModeInfo &GameModeInfo);
+	CGameControllerVanillaTeamplay(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 
 	bool OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam) override;
 	void StartRound() override;

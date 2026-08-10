@@ -5,7 +5,7 @@
 #include "entities/character.h"
 #include "gamecontext.h"
 #include "gamecontroller.h"
-#include "score.h"
+#include "mode/game_services.h"
 
 #include <base/dbg.h>
 #include <base/mem.h>
@@ -26,12 +26,11 @@ MACRO_ALLOC_POOL_ID_IMPL(CPlayer, MAX_CLIENTS)
 
 IServer *CPlayer::Server() const { return m_pGameServer->Server(); }
 
-CPlayer::CPlayer(CGameContext *pGameServer, uint32_t UniqueClientId, int ClientId, int Team) :
+CPlayer::CPlayer(CGameServices &Services, uint32_t UniqueClientId, int ClientId, int Team) :
 	m_UniqueClientId(UniqueClientId)
 {
-	m_pGameServer = pGameServer;
+	m_pGameServer = Services.GameServer();
 	m_ClientId = ClientId;
-	dbg_assert(GameServer()->m_pController->IsValidTeam(Team), "Invalid Team: %d", Team);
 	m_Team = Team;
 	m_NumInputs = 0;
 	Reset();
@@ -57,13 +56,14 @@ void CPlayer::Reset()
 	m_LastActionTick = Server()->Tick();
 	m_TeamChangeTick = Server()->Tick();
 	m_LastSetTeam = 0;
-	m_LastInvited = 0;
 	m_WeakHookSpawn = false;
 
 	// DDRace
 
 	m_LastCommandPos = 0;
 	m_LastPlaytime = 0;
+	m_LastBroadcast = 0;
+	m_LastBroadcastImportance = false;
 	m_ChatScore = 0;
 	m_Moderating = false;
 	m_EyeEmoteEnabled = true;
@@ -106,15 +106,10 @@ void CPlayer::Reset()
 	}
 	m_OverrideEmoteReset = -1;
 
-	GameServer()->Score()->PlayerData(m_ClientId)->Reset();
-
 	m_LastKickVote = 0;
-	m_LastDDRaceTeamChange.reset();
-	m_ShowOthers = SHOW_OTHERS_ON;
 	m_ShowAll = g_Config.m_SvShowAllDefault;
 	m_EnableSpectatorCount = true;
 	m_ShowDistance = vec2(1200, 800);
-	m_SpecTeam = false;
 	m_NinjaJetpack = false;
 
 	m_Paused = PAUSE_NONE;
@@ -122,11 +117,6 @@ void CPlayer::Reset()
 	m_Whispers = true;
 
 	m_LastPause = 0;
-
-	// Variable initialized:
-	m_LastSqlQuery = 0;
-	m_ScoreQueryResult = nullptr;
-	m_ScoreFinishResult = nullptr;
 
 	int64_t Now = Server()->Tick();
 	int64_t TickSpeed = Server()->TickSpeed();
@@ -139,13 +129,6 @@ void CPlayer::Reset()
 		m_FirstVoteTick = Now + g_Config.m_SvJoinVoteDelay * TickSpeed;
 	else
 		m_FirstVoteTick = Now;
-
-	m_NotEligibleForFinish = false;
-	m_EligibleForFinishCheck = 0;
-	m_VotedForPractice = false;
-	m_SwapTargetsClientId = -1;
-	m_BirthdayAnnounced = false;
-	m_RescueMode = RESCUEMODE_AUTO;
 
 	m_CameraInfo.Reset();
 	UpdateNetworkClipRadius();
@@ -165,17 +148,6 @@ static int PlayerFlags_SixToSeven(int Flags)
 
 void CPlayer::Tick()
 {
-	if(m_ScoreQueryResult != nullptr && m_ScoreQueryResult->m_Completed && m_SentSnaps >= 3)
-	{
-		ProcessScoreResult(*m_ScoreQueryResult);
-		m_ScoreQueryResult = nullptr;
-	}
-	if(m_ScoreFinishResult != nullptr && m_ScoreFinishResult->m_Completed)
-	{
-		ProcessScoreResult(*m_ScoreFinishResult);
-		m_ScoreFinishResult = nullptr;
-	}
-
 	if(!Server()->ClientIngame(m_ClientId))
 		return;
 
@@ -595,7 +567,8 @@ CCharacter *CPlayer::ForceSpawn(vec2 Pos)
 	m_Spawning = false;
 	if(m_Team == TEAM_SPECTATORS)
 		m_Team = TEAM_GAME;
-	m_pCharacter = new(m_ClientId) CCharacter(&GameServer()->m_World, GameServer()->GetLastPlayerInput(m_ClientId));
+	m_pCharacter = GameServer()->m_pController->CreateCharacter(this);
+	dbg_assert(m_pCharacter, "game mode returned no character");
 	m_pCharacter->Spawn(this, Pos);
 	return m_pCharacter;
 }
@@ -684,7 +657,8 @@ void CPlayer::TryRespawn()
 
 	m_WeakHookSpawn = false;
 	m_Spawning = false;
-	m_pCharacter = new(m_ClientId) CCharacter(&GameServer()->m_World, GameServer()->GetLastPlayerInput(m_ClientId));
+	m_pCharacter = GameServer()->m_pController->CreateCharacter(this);
+	dbg_assert(m_pCharacter, "game mode returned no character");
 	m_ViewPos = SpawnPos;
 	m_pCharacter->Spawn(this, SpawnPos);
 	GameServer()->CreatePlayerSpawn(SpawnPos, GameServer()->m_pController->GetMaskForPlayerWorldEvent(m_ClientId));
@@ -866,99 +840,6 @@ void CPlayer::SetSpectatorId(int Id)
 {
 	m_SpectatorId = Id;
 	GameServer()->m_PlayerMapping.ResetSeeOthers(m_ClientId);
-}
-
-void CPlayer::ProcessScoreResult(CScorePlayerResult &Result)
-{
-	if(Result.m_Success) // SQL request was successful
-	{
-		switch(Result.m_MessageKind)
-		{
-		case CScorePlayerResult::DIRECT:
-			for(auto &aMessage : Result.m_Data.m_aaMessages)
-			{
-				if(aMessage[0] == 0)
-					break;
-				GameServer()->SendChatTarget(m_ClientId, aMessage);
-			}
-			break;
-		case CScorePlayerResult::ALL:
-		{
-			bool PrimaryMessage = true;
-			for(auto &aMessage : Result.m_Data.m_aaMessages)
-			{
-				if(aMessage[0] == 0)
-					break;
-
-				if(GameServer()->ProcessSpamProtection(m_ClientId) && PrimaryMessage)
-					break;
-
-				GameServer()->SendChat(-1, TEAM_ALL, aMessage, -1);
-				PrimaryMessage = false;
-			}
-			break;
-		}
-		case CScorePlayerResult::BROADCAST:
-			if(Result.m_Data.m_aBroadcast[0] != 0)
-				GameServer()->SendBroadcast(Result.m_Data.m_aBroadcast, -1);
-			break;
-		case CScorePlayerResult::MAP_VOTE:
-			GameServer()->m_VoteType = CGameContext::VOTE_TYPE_OPTION;
-			GameServer()->m_LastMapVote = time_get();
-
-			char aCmd[256];
-			str_format(aCmd, sizeof(aCmd),
-				"sv_reset_file types/%s/flexreset.cfg; change_map \"%s\"",
-				Result.m_Data.m_MapVote.m_aServer, Result.m_Data.m_MapVote.m_aMap);
-
-			char aChatmsg[512];
-			str_format(aChatmsg, sizeof(aChatmsg), "'%s' called vote to change server option '%s' (%s)",
-				Server()->ClientName(m_ClientId), Result.m_Data.m_MapVote.m_aMap, "/map");
-
-			GameServer()->CallVote(m_ClientId, Result.m_Data.m_MapVote.m_aMap, aCmd, "/map", aChatmsg);
-			break;
-		case CScorePlayerResult::PLAYER_INFO:
-		{
-			if(Result.m_Data.m_Info.m_Time.has_value())
-			{
-				GameServer()->Score()->PlayerData(m_ClientId)->Set(Result.m_Data.m_Info.m_Time.value(), Result.m_Data.m_Info.m_aTimeCp);
-				Server()->SetClientScore(m_ClientId, Result.m_Data.m_Info.m_Time.value());
-				// update map best time if player's time is better
-				if(!GameServer()->m_pController->m_CurrentRecord.has_value() ||
-					Result.m_Data.m_Info.m_Time.value() < GameServer()->m_pController->m_CurrentRecord.value())
-				{
-					GameServer()->Score()->LoadBestTime();
-				}
-			}
-			Server()->ExpireServerInfo();
-			int Birthday = Result.m_Data.m_Info.m_Birthday;
-			if(Birthday != 0 && !m_BirthdayAnnounced && GetCharacter())
-			{
-				char aBuf[512];
-				str_format(aBuf, sizeof(aBuf),
-					"Happy DDNet birthday to %s for finishing their first map %d year%s ago!",
-					Server()->ClientName(m_ClientId), Birthday, Birthday > 1 ? "s" : "");
-				GameServer()->SendChat(-1, TEAM_ALL, aBuf, m_ClientId);
-				str_format(aBuf, sizeof(aBuf),
-					"Happy DDNet birthday, %s!\nYou have finished your first map exactly %d year%s ago!",
-					Server()->ClientName(m_ClientId), Birthday, Birthday > 1 ? "s" : "");
-				GameServer()->SendBroadcast(aBuf, m_ClientId);
-				m_BirthdayAnnounced = true;
-
-				GameServer()->CreateBirthdayEffect(GetCharacter()->m_Pos, GetCharacter()->TeamMask());
-			}
-			GameServer()->SendRecord(m_ClientId);
-			break;
-		}
-		case CScorePlayerResult::PLAYER_TIMECP:
-			GameServer()->Score()->PlayerData(m_ClientId)->SetBestTimeCp(Result.m_Data.m_Info.m_aTimeCp);
-			char aBuf[128], aTime[32];
-			str_time_float(Result.m_Data.m_Info.m_Time.value(), ETimeFormat::HOURS_CENTISECS, aTime, sizeof(aTime));
-			str_format(aBuf, sizeof(aBuf), "Showing the checkpoint times for '%s' with a race time of %s", Result.m_Data.m_Info.m_aRequestedPlayer, aTime);
-			GameServer()->SendChatTarget(m_ClientId, aBuf);
-			break;
-		}
-	}
 }
 
 vec2 CPlayer::CCameraInfo::ConvertTargetToWorld(vec2 Position, vec2 Target) const

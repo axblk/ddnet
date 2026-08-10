@@ -6,7 +6,7 @@
 class CGameControllerVanillaTDM : public CGameControllerVanillaTeamplay
 {
 public:
-	CGameControllerVanillaTDM(CGameContext *pGameServer, const CGameModeInfo &GameModeInfo);
+	CGameControllerVanillaTDM(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 
 	static void ApplyTeamDeathScore(std::array<int, NUM_TEAMS> &aTeamScores, int VictimTeam, int KillerTeam, int Weapon, bool SelfKill);
 	int OnCharacterDeath(CCharacter *pVictim, CPlayer *pKiller, int Weapon) override;

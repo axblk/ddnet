@@ -8,6 +8,7 @@
 #include "mode/game_mode_registry.h"
 #include "player.h"
 #include "score.h"
+#include "teams.h"
 #include "teeinfo.h"
 
 #include <antibot/antibot_data.h>
@@ -100,13 +101,6 @@ CGameContext::CGameContext(bool Resetting) :
 	m_pVoteOptionLast = nullptr;
 	m_LastMapVote = 0;
 
-	m_SqlRandomMapResult = nullptr;
-
-	m_pLoadMapInfoResult = nullptr;
-	m_aMapInfoMessage[0] = '\0';
-
-	m_pScore = nullptr;
-
 	m_VoteCreator = -1;
 	m_VoteType = VOTE_TYPE_UNKNOWN;
 	m_VoteCloseTime = 0;
@@ -167,13 +161,12 @@ CGameContext::~CGameContext()
 
 		delete m_pVoteOptionHeap;
 	}
-
-	delete m_pScore;
-	m_pScore = nullptr;
 }
 
 void CGameContext::Clear()
 {
+	dbg_assert(!m_GameHost.Controller(), "game host must be shut down before clearing game context");
+
 	CHeap *pVoteOptionHeap = m_pVoteOptionHeap;
 	CVoteOptionServer *pVoteOptionFirst = m_pVoteOptionFirst;
 	CVoteOptionServer *pVoteOptionLast = m_pVoteOptionLast;
@@ -259,6 +252,20 @@ const CCharacter *CGameContext::GetPlayerChar(int ClientId) const
 	if(ClientId < 0 || ClientId >= MAX_CLIENTS || !m_apPlayers[ClientId])
 		return nullptr;
 	return m_apPlayers[ClientId]->GetCharacter();
+}
+
+CScore *CGameContext::RaceScore()
+{
+	CScore *pScore = m_GameHost.RaceScore();
+	dbg_assert(pScore, "race score service is not available for the active game mode");
+	return pScore;
+}
+
+CGameTeams *CGameContext::RaceTeams() const
+{
+	CGameTeams *pTeams = m_GameHost.RaceTeams();
+	dbg_assert(pTeams, "race teams service is not available for the active game mode");
+	return pTeams;
 }
 
 const CPlayer *CGameContext::FindPlayerByName(const char *pName) const
@@ -377,61 +384,18 @@ void CGameContext::CreateHammerHit(vec2 Pos, CClientMask Mask)
 	}
 }
 
-void CGameContext::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int ActivatedTeam, CClientMask Mask, int AttackerTeam)
+void CGameContext::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int ActivatedTeam, CClientMask Mask, int AttackerTeam) // NOLINT(readability-make-member-function-const)
 {
-	// create the event
+	m_pController->OnExplosion({Pos, Owner, Weapon, NoDamage, ActivatedTeam, Mask, AttackerTeam});
+}
+
+void CGameContext::CreateExplosionEvent(vec2 Pos, CClientMask Mask)
+{
 	CNetEvent_Explosion *pEvent = m_Events.Create<CNetEvent_Explosion>(Mask);
 	if(pEvent)
 	{
 		pEvent->m_X = (int)Pos.x;
 		pEvent->m_Y = (int)Pos.y;
-	}
-
-	// deal damage
-	CEntity *apEnts[MAX_CLIENTS];
-	float Radius = 135.0f;
-	float InnerRadius = 48.0f;
-	int Num = m_World.FindEntities(Pos, Radius, apEnts, MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
-	CClientMask TeamMask = CClientMask().set();
-	for(int i = 0; i < Num; i++)
-	{
-		auto *pChr = static_cast<CCharacter *>(apEnts[i]);
-		vec2 Diff = pChr->m_Pos - Pos;
-		vec2 ForceDir(0, 1);
-		float l = length(Diff);
-		if(l)
-			ForceDir = normalize(Diff);
-		l = 1 - std::clamp((l - InnerRadius) / (Radius - InnerRadius), 0.0f, 1.0f);
-		float Strength;
-		if(Owner == -1 || !m_apPlayers[Owner] || !m_apPlayers[Owner]->m_TuneZone)
-			Strength = GlobalTuning()->m_ExplosionStrength;
-		else
-			Strength = TuningList()[m_apPlayers[Owner]->m_TuneZone].m_ExplosionStrength;
-
-		float Dmg = Strength * l;
-		if(!(int)Dmg)
-			continue;
-
-		if((GetPlayerChar(Owner) ? !GetPlayerChar(Owner)->GrenadeHitDisabled() : g_Config.m_SvHit) || NoDamage || Owner == pChr->GetPlayer()->GetCid())
-		{
-			if(Owner != -1 && pChr->IsAlive() && !pChr->CanCollide(Owner))
-				continue;
-			if(Owner == -1 && ActivatedTeam != -1 && pChr->IsAlive() && pChr->Team() != ActivatedTeam)
-				continue;
-
-			// Explode at most once per team
-			int PlayerTeam = pChr->Team();
-			if((GetPlayerChar(Owner) ? GetPlayerChar(Owner)->GrenadeHitDisabled() : !g_Config.m_SvHit) || NoDamage)
-			{
-				if(PlayerTeam == TEAM_SUPER)
-					continue;
-				if(!TeamMask.test(PlayerTeam))
-					continue;
-				TeamMask.reset(PlayerTeam);
-			}
-
-			pChr->TakeDamage(ForceDir * Dmg * 2, (int)Dmg, Owner, Weapon, !NoDamage, AttackerTeam);
-		}
 	}
 }
 
@@ -1250,7 +1214,7 @@ void CGameContext::OnPreTickTeehistorian()
 	}
 	for(int i = 0; i < TEAM_SUPER; i++)
 	{
-		m_TeeHistorian.RecordTeamPractice(i, m_pController->Teams().IsPractice(i));
+		m_TeeHistorian.RecordTeamPractice(i, HasRaceTeams() && RaceTeams()->IsPractice(i));
 	}
 }
 
@@ -1280,6 +1244,8 @@ void CGameContext::OnTick()
 	m_PlayerMapping.Tick();
 
 	m_pController->Tick();
+	if(HasRaceScore())
+		RaceScore()->Tick();
 
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{
@@ -1516,33 +1482,6 @@ void CGameContext::OnTick()
 				Switcher.m_aType[j] = TILE_SWITCHOPEN;
 			}
 		}
-	}
-
-	if(m_SqlRandomMapResult != nullptr && m_SqlRandomMapResult->m_Completed)
-	{
-		if(m_SqlRandomMapResult->m_Success)
-		{
-			if(m_SqlRandomMapResult->m_ClientId != -1 && m_apPlayers[m_SqlRandomMapResult->m_ClientId] && m_SqlRandomMapResult->m_aMessage[0] != '\0')
-				SendChat(-1, TEAM_ALL, m_SqlRandomMapResult->m_aMessage);
-			if(m_SqlRandomMapResult->m_aMap[0] != '\0')
-				Server()->ChangeMap(m_SqlRandomMapResult->m_aMap);
-			else
-				m_LastMapVote = 0;
-		}
-		m_SqlRandomMapResult = nullptr;
-	}
-
-	// check for map info result from database
-	if(m_pLoadMapInfoResult != nullptr && m_pLoadMapInfoResult->m_Completed)
-	{
-		if(m_pLoadMapInfoResult->m_Success && m_pLoadMapInfoResult->m_Data.m_aaMessages[0][0] != '\0')
-		{
-			str_copy(m_aMapInfoMessage, m_pLoadMapInfoResult->m_Data.m_aaMessages[0]);
-			CNetMsg_Sv_MapInfo MapInfoMsg;
-			MapInfoMsg.m_pDescription = m_aMapInfoMessage;
-			Server()->SendPackMsg(&MapInfoMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, -1);
-		}
-		m_pLoadMapInfoResult = nullptr;
 	}
 
 	// Record player position at the end of the tick
@@ -1850,13 +1789,8 @@ void CGameContext::OnClientEnter(int ClientId)
 
 	Server()->ExpireServerInfo();
 
-	// send map info if loaded from database
-	if(m_aMapInfoMessage[0] != '\0')
-	{
-		CNetMsg_Sv_MapInfo MapInfoMsg;
-		MapInfoMsg.m_pDescription = m_aMapInfoMessage;
-		Server()->SendPackMsg(&MapInfoMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
-	}
+	if(HasRaceScore())
+		RaceScore()->SendMapInfoMessage(ClientId);
 
 	mem_zero(&m_aLastPlayerInput[ClientId], sizeof(m_aLastPlayerInput[ClientId]));
 	m_aPlayerHasInput[ClientId] = false;
@@ -1954,7 +1888,7 @@ void CGameContext::OnClientDrop(int ClientId, const char *pReason)
 	m_aTeamMapping[ClientId] = -1;
 
 	if(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO && PracticeByDefault())
-		m_pController->Teams().SetPractice(GetDDRaceTeam(ClientId), true);
+		RaceTeams()->SetPractice(GetDDRaceTeam(ClientId), true);
 
 	m_VoteUpdate = true;
 	if(m_VoteCreator == ClientId)
@@ -2079,11 +2013,7 @@ bool CGameContext::OnClientDDNetVersionKnown(int ClientId)
 	if(ClientVersion >= VERSION_DDNET_GAMETICK)
 		pPlayer->m_TimerType = g_Config.m_SvDefaultTimerType;
 
-	// First update the teams state.
-	m_pController->Teams().SendTeamsState(ClientId);
-
-	// Then send records.
-	SendRecord(ClientId);
+	m_pController->OnPlayerDDNetVersionKnown(ClientId);
 
 	// And report correct tunings.
 	if(ClientVersion < VERSION_DDNET_EARLY_VERSION)
@@ -2343,7 +2273,7 @@ void CGameContext::OnMessage(int MsgId, CUnpacker *pUnpacker, int ClientId)
 void CGameContext::OnSayNetMessage(const CNetMsg_Cl_Say *pMsg, int ClientId, const CUnpacker *pUnpacker)
 {
 	CPlayer *pPlayer = m_apPlayers[ClientId];
-	bool Check = !pPlayer->m_NotEligibleForFinish && pPlayer->m_EligibleForFinishCheck + 10 * time_freq() >= time_get();
+	bool Check = HasRaceScore() && RaceScore()->FinishEligibilityCheckActive(ClientId);
 	if(Check && str_comp(pMsg->m_pMessage, "xd sure chillerbot.png is lyfe") == 0 && pMsg->m_Team == 0)
 	{
 		if(m_TeeHistorianActive)
@@ -2351,7 +2281,7 @@ void CGameContext::OnSayNetMessage(const CNetMsg_Cl_Say *pMsg, int ClientId, con
 			m_TeeHistorian.RecordPlayerMessage(ClientId, pUnpacker->CompleteData(), pUnpacker->CompleteSize());
 		}
 
-		pPlayer->m_NotEligibleForFinish = true;
+		RaceScore()->SetNotEligibleForFinish(ClientId);
 		dbg_msg("hack", "bot detected, cid=%d", ClientId);
 		return;
 	}
@@ -2739,10 +2669,7 @@ void CGameContext::OnChangeInfoNetMessage(const CNetMsg_Cl_ChangeInfo *pMsg, int
 		str_format(aChatText, sizeof(aChatText), "'%s' changed name to '%s'", aOldName, Server()->ClientName(ClientId));
 		SendChat(-1, TEAM_ALL, aChatText);
 
-		// reload scores
-		Score()->PlayerData(ClientId)->Reset();
-		Server()->SetClientScore(ClientId, std::nullopt);
-		Score()->LoadPlayerData(ClientId);
+		m_pController->OnPlayerNameChanged(ClientId);
 
 		SixupNeedsUpdate = true;
 
@@ -3170,7 +3097,7 @@ void CGameContext::ConRandomMap(IConsole::IResult *pResult, void *pUserData)
 	if(!in_range(MinStars, -1, 5) || !in_range(MaxStars, -1, 5))
 		return;
 
-	pSelf->m_pScore->RandomMap(ClientId, MinStars, MaxStars);
+	pSelf->RaceScore()->RandomMap(ClientId, MinStars, MaxStars);
 }
 
 void CGameContext::ConRandomUnfinishedMap(IConsole::IResult *pResult, void *pUserData)
@@ -3184,7 +3111,7 @@ void CGameContext::ConRandomUnfinishedMap(IConsole::IResult *pResult, void *pUse
 	if(!in_range(MinStars, -1, 5) || !in_range(MaxStars, -1, 5))
 		return;
 
-	pSelf->m_pScore->RandomUnfinishedMap(ClientId, MinStars, MaxStars);
+	pSelf->RaceScore()->RandomUnfinishedMap(ClientId, MinStars, MaxStars);
 }
 
 void CGameContext::ConRestart(IConsole::IResult *pResult, void *pUserData)
@@ -3350,7 +3277,7 @@ void CGameContext::RestoreDDRaceCharacterAfterHotReload(CCharacter *pCharacter)
 	if(Team == -1)
 		return;
 
-	m_pController->Teams().SetForceCharacterTeam(ClientId, Team);
+	RaceTeams()->SetForceCharacterTeam(ClientId, Team);
 	m_aTeamMapping[ClientId] = -1;
 
 	if(m_apSavedTeams[Team])
@@ -3784,9 +3711,9 @@ void CGameContext::ConchainPracticeByDefaultUpdate(IConsole::IResult *pResult, v
 
 		for(int Team = 0; Team < NUM_DDRACE_TEAMS; Team++)
 		{
-			if(Team == TEAM_FLOCK || pSelf->m_pController->Teams().TeamSize(Team) == 0)
+			if(Team == TEAM_FLOCK || pSelf->RaceTeams()->TeamSize(Team) == 0)
 			{
-				pSelf->m_pController->Teams().SetPractice(Team, Enable);
+				pSelf->RaceTeams()->SetPractice(Team, Enable);
 			}
 		}
 	}
@@ -4146,7 +4073,7 @@ void CGameContext::OnInit(const void *pPersistentData)
 	}
 
 	m_pController = m_GameHost.Controller();
-	m_GameHost.Init();
+	m_GameHost.Init(((CServer *)Server())->DbPool());
 	m_MapBugs.Dump();
 
 	ReadCensorList();
@@ -4217,13 +4144,8 @@ void CGameContext::OnInit(const void *pPersistentData)
 
 	Server()->DemoRecorder_HandleAutoStart();
 
-	if(!m_pScore)
-	{
-		m_pScore = new CScore(this, ((CServer *)Server())->DbPool());
-	}
-
-	// load map info from database
-	Score()->LoadMapInfo();
+	if(HasRaceScore())
+		RaceScore()->LoadMapInfo();
 
 	// create all entities from the game layer
 	CreateAllEntities(true);
@@ -4327,9 +4249,11 @@ void CGameContext::CreateAllEntities(bool Initial)
 
 CPlayer *CGameContext::CreatePlayer(int ClientId, int StartTeam, bool Afk, int LastWhisperTo)
 {
+	dbg_assert(m_pController->IsValidTeam(StartTeam), "Invalid Team: %d", StartTeam);
 	if(m_apPlayers[ClientId])
 		delete m_apPlayers[ClientId];
-	m_apPlayers[ClientId] = new(ClientId) CPlayer(this, m_NextUniqueClientId, ClientId, StartTeam);
+	m_apPlayers[ClientId] = m_pController->CreatePlayer(m_NextUniqueClientId, ClientId, StartTeam);
+	dbg_assert(m_apPlayers[ClientId], "game mode returned no player");
 	m_apPlayers[ClientId]->SetInitialAfk(Afk);
 	m_apPlayers[ClientId]->m_LastWhisperTo = LastWhisperTo;
 	m_NextUniqueClientId += 1;
@@ -4502,6 +4426,11 @@ void CGameContext::OnShutdown(void *pPersistentData)
 	Server()->StopDemos();
 
 	DeleteTempfile();
+	for(auto &pPlayer : m_apPlayers)
+	{
+		delete pPlayer;
+		pPlayer = nullptr;
+	}
 	ConfigManager()->ResetGameSettings();
 	Collision()->Unload();
 	Layers()->Unload();
@@ -4669,8 +4598,9 @@ void CGameContext::SendRecord(int ClientId)
 
 	CNetMsg_Sv_Record Msg;
 	CNetMsg_Sv_RecordLegacy MsgLegacy;
-	MsgLegacy.m_PlayerTimeBest = Msg.m_PlayerTimeBest = round_to_int(Score()->PlayerData(ClientId)->m_BestTime.value_or(0.0f) * 100.0f);
-	MsgLegacy.m_ServerTimeBest = Msg.m_ServerTimeBest = m_pController->m_CurrentRecord.has_value() && !g_Config.m_SvHideScore ? round_to_int(m_pController->m_CurrentRecord.value() * 100.0f) : 0;
+	MsgLegacy.m_PlayerTimeBest = Msg.m_PlayerTimeBest = round_to_int(RaceScore()->PlayerData(ClientId)->m_BestTime.value_or(0.0f) * 100.0f);
+	const std::optional<float> &CurrentRecord = RaceScore()->CurrentRecord();
+	MsgLegacy.m_ServerTimeBest = Msg.m_ServerTimeBest = CurrentRecord.has_value() && !g_Config.m_SvHideScore ? round_to_int(CurrentRecord.value() * 100.0f) : 0;
 	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL, ClientId);
 	if(GetClientVersion(ClientId) < VERSION_DDNET_MSG_LEGACY)
 	{
@@ -4718,7 +4648,7 @@ void CGameContext::SendFinish(int ClientId, float Time, std::optional<float> Pre
 		RaceFinishMsg.m_Diff = Diff * 1000 * (Time < PreviousBestTime.value() ? -1 : 1);
 	}
 	RaceFinishMsg.m_RecordPersonal = (!PreviousBestTime.has_value() || Time < PreviousBestTime.value());
-	RaceFinishMsg.m_RecordServer = Time < m_pController->m_CurrentRecord;
+	RaceFinishMsg.m_RecordServer = Time < RaceScore()->CurrentRecord();
 	Server()->SendPackMsg(&RaceFinishMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, g_Config.m_SvHideScore ? ClientId : -1);
 }
 
@@ -4870,7 +4800,7 @@ bool CGameContext::ProcessSpamProtection(int ClientId, bool RespectChatInitialDe
 
 int CGameContext::GetDDRaceTeam(int ClientId) const
 {
-	return m_pController->Teams().m_Core.Team(ClientId);
+	return RaceTeams()->m_Core.Team(ClientId);
 }
 
 void CGameContext::Whisper(int ClientId, char *pStr)

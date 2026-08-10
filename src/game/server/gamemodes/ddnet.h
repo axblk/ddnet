@@ -9,12 +9,12 @@ class CScore;
 class CGameControllerDDNet : public CGameControllerDDRace
 {
 public:
-	CGameControllerDDNet(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo);
+	CGameControllerDDNet(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 	~CGameControllerDDNet() override;
 	static CTuningParams DefaultTuning();
 	void ResetTuning() override;
 
-	CScore *Score();
+	CScore *RaceScore();
 
 	void HandleCharacterTiles(class CCharacter *pChr, int MapIndex) override;
 	void SetArmorProgress(CCharacter *pCharacter, int Progress) override;

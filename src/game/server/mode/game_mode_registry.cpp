@@ -26,15 +26,15 @@ const CGameModeInfo *CGameModeRegistry::Find(const char *pId) const
 	return nullptr;
 }
 
-std::unique_ptr<IGameController> CGameModeRegistry::Create(const char *pId, CGameContext *pGameServer) const
+std::unique_ptr<IGameController> CGameModeRegistry::Create(const char *pId, CGameServices &Services) const
 {
-	if(!pId || !pGameServer)
+	if(!pId)
 		return nullptr;
 
 	for(const CEntry &Entry : m_vEntries)
 	{
 		if(str_comp(Entry.m_Info.m_pId, pId) == 0)
-			return Entry.m_pfnCreateController(pGameServer, Entry.m_Info);
+			return Entry.m_pfnCreateController(Services, Entry.m_Info);
 	}
 	return nullptr;
 }

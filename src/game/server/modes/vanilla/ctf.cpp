@@ -4,18 +4,19 @@
 
 #include <base/log.h>
 
+#include <engine/server.h>
 #include <engine/shared/config.h>
 
 #include <game/collision.h>
 #include <game/mapitems.h>
 #include <game/server/entities/character.h>
-#include <game/server/gamecontext.h>
+#include <game/server/mode/game_services.h>
 #include <game/server/player.h>
 
 #include <algorithm>
 
-CGameControllerVanillaCTF::CGameControllerVanillaCTF(CGameContext *pGameServer, const CGameModeInfo &GameModeInfo) :
-	CGameControllerVanillaTeamplay(pGameServer, GameModeInfo)
+CGameControllerVanillaCTF::CGameControllerVanillaCTF(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
+	CGameControllerVanillaTeamplay(Services, GameModeInfo)
 {
 }
 
@@ -28,7 +29,7 @@ bool CGameControllerVanillaCTF::OnEntity(int Index, int x, int y, int Layer, int
 		return BaseHandled;
 
 	const vec2 StandPosition(x * 32.0f + 16.0f, y * 32.0f + 16.0f);
-	m_apFlags[Team] = new CFlag(&GameServer()->m_World, Team, StandPosition);
+	m_apFlags[Team] = new CFlag(&Services().World(), Team, StandPosition);
 	log_info("game", "flag_stand team=%d x=%.1f y=%.1f", Team, StandPosition.x, StandPosition.y);
 	return true;
 }
@@ -38,8 +39,9 @@ int CGameControllerVanillaCTF::OnCharacterDeath(CCharacter *pVictim, CPlayer *pK
 	const int VictimId = pVictim->GetPlayer()->GetCid();
 	const int KillerId = pKiller ? pKiller->GetCid() : -1;
 	const bool TeamKill = pKiller && pKiller != pVictim->GetPlayer() && pKiller->GetTeam() == pVictim->GetPlayer()->GetTeam();
-	m_aEarliestRespawnTicks[VictimId] = Server()->Tick() + Server()->TickSpeed() / 2;
-	ApplyDeathScore(m_aScores, VictimId, KillerId, Weapon, TeamKill);
+	VanillaPlayer(VictimId)->m_EarliestRespawnTick = Server()->Tick() + Server()->TickSpeed() / 2;
+	if(CPlayerVanilla *pKillerPlayer = VanillaPlayer(KillerId))
+		pKillerPlayer->m_Score += DeathScoreDelta(VictimId, KillerId, Weapon, TeamKill);
 
 	int Result = 0;
 	for(CFlag *pFlag : m_apFlags)
@@ -53,10 +55,10 @@ int CGameControllerVanillaCTF::OnCharacterDeath(CCharacter *pVictim, CPlayer *pK
 
 		pFlag->Drop();
 		log_info("game", "flag_drop player='%d:%s' team=%d", VictimId, Server()->ClientName(VictimId), pVictim->GetPlayer()->GetTeam());
-		GameServer()->CreateSoundGlobal(SOUND_CTF_DROP, -1, CGameContext::FLAG_SIX);
-		GameServer()->SendGameMessage7(protocol7::GAMEMSG_CTF_DROP);
+		Services().CreateLegacySoundGlobal(SOUND_CTF_DROP);
+		Services().SendGameMessage7(protocol7::GAMEMSG_CTF_DROP);
 		if(pKiller && pKiller->GetTeam() != pVictim->GetPlayer()->GetTeam())
-			m_aScores[pKiller->GetCid()]++;
+			VanillaPlayer(pKiller->GetCid())->m_Score++;
 		Result |= 1;
 	}
 	return Result;
@@ -65,7 +67,7 @@ int CGameControllerVanillaCTF::OnCharacterDeath(CCharacter *pVictim, CPlayer *pK
 void CGameControllerVanillaCTF::Tick()
 {
 	CGameControllerVanillaTeamplay::Tick();
-	if(GameServer()->m_World.m_ResetRequested || GameServer()->m_World.m_Paused || m_GameOverTick != -1 || m_Warmup)
+	if(Services().World().ResetRequested() || Services().World().IsPaused() || m_GameOverTick != -1 || m_Warmup)
 		return;
 
 	ProcessFlags();
@@ -90,8 +92,8 @@ void CGameControllerVanillaCTF::ProcessFlags()
 		if(pFlag->TakeAutomaticReturn())
 		{
 			log_info("game", "flag_return");
-			GameServer()->CreateSoundGlobal(SOUND_CTF_RETURN, -1, CGameContext::FLAG_SIX);
-			GameServer()->SendGameMessage7(protocol7::GAMEMSG_CTF_RETURN);
+			Services().CreateLegacySoundGlobal(SOUND_CTF_RETURN);
+			Services().SendGameMessage7(protocol7::GAMEMSG_CTF_RETURN);
 			continue;
 		}
 
@@ -104,11 +106,11 @@ void CGameControllerVanillaCTF::ProcessFlags()
 		}
 
 		CEntity *apEntities[MAX_CLIENTS];
-		const int Num = GameServer()->m_World.FindEntities(pFlag->m_Pos, CFlag::PHYSICAL_SIZE, apEntities, MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
+		const int Num = Services().World().FindEntities(pFlag->m_Pos, CFlag::PHYSICAL_SIZE, apEntities, MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
 		for(int i = 0; i < Num; i++)
 		{
 			auto *pCharacter = static_cast<CCharacter *>(apEntities[i]);
-			if(!pCharacter->IsAlive() || pCharacter->GetPlayer()->GetTeam() == TEAM_SPECTATORS || GameServer()->Collision()->IntersectLine(pFlag->m_Pos, pCharacter->m_Pos, nullptr, nullptr))
+			if(!pCharacter->IsAlive() || pCharacter->GetPlayer()->GetTeam() == TEAM_SPECTATORS || Services().Collision()->IntersectLine(pFlag->m_Pos, pCharacter->m_Pos, nullptr, nullptr))
 				continue;
 			if(pCharacter->GetPlayer()->GetTeam() == pFlag->Team())
 			{
@@ -129,24 +131,24 @@ void CGameControllerVanillaCTF::FlagGrab(CFlag *pFlag, CCharacter *pCarrier)
 	if(pFlag->IsAtStand())
 		m_aTeamScores[pCarrier->GetPlayer()->GetTeam()]++;
 	pFlag->Grab(pCarrier);
-	m_aScores[pCarrier->GetPlayer()->GetCid()]++;
+	VanillaPlayer(pCarrier->GetPlayer()->GetCid())->m_Score++;
 	log_info("game", "flag_grab player='%d:%s' team=%d", pCarrier->GetPlayer()->GetCid(), Server()->ClientName(pCarrier->GetPlayer()->GetCid()), pCarrier->GetPlayer()->GetTeam());
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
-		CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+		CPlayer *pPlayer = Services().Player(ClientId);
 		if(pPlayer)
-			GameServer()->CreateSoundGlobal(pPlayer->GetTeam() == pFlag->Team() ? SOUND_CTF_GRAB_EN : SOUND_CTF_GRAB_PL, ClientId, CGameContext::FLAG_SIX);
+			Services().CreateLegacySoundGlobal(pPlayer->GetTeam() == pFlag->Team() ? SOUND_CTF_GRAB_EN : SOUND_CTF_GRAB_PL, ClientId);
 	}
-	GameServer()->SendGameMessage7(protocol7::GAMEMSG_CTF_GRAB, {pFlag->Team()});
+	Services().SendGameMessage7(protocol7::GAMEMSG_CTF_GRAB, {pFlag->Team()});
 }
 
 void CGameControllerVanillaCTF::FlagReturn(CFlag *pFlag, CCharacter *pPlayer)
 {
 	pFlag->Return();
-	m_aScores[pPlayer->GetPlayer()->GetCid()]++;
+	VanillaPlayer(pPlayer->GetPlayer()->GetCid())->m_Score++;
 	log_info("game", "flag_return player='%d:%s' team=%d", pPlayer->GetPlayer()->GetCid(), Server()->ClientName(pPlayer->GetPlayer()->GetCid()), pPlayer->GetPlayer()->GetTeam());
-	GameServer()->CreateSoundGlobal(SOUND_CTF_RETURN, -1, CGameContext::FLAG_SIX);
-	GameServer()->SendGameMessage7(protocol7::GAMEMSG_CTF_RETURN);
+	Services().CreateLegacySoundGlobal(SOUND_CTF_RETURN);
+	Services().SendGameMessage7(protocol7::GAMEMSG_CTF_RETURN);
 }
 
 void CGameControllerVanillaCTF::FlagCapture(CFlag *pFlag)
@@ -157,14 +159,14 @@ void CGameControllerVanillaCTF::FlagCapture(CFlag *pFlag)
 	const int CarrierId = pCarrier->GetPlayer()->GetCid();
 	const int CaptureTicks = Server()->Tick() - pFlag->GrabTick();
 	m_aTeamScores[pCarrier->GetPlayer()->GetTeam()] += 100;
-	m_aScores[CarrierId] += 5;
+	VanillaPlayer(CarrierId)->m_Score += 5;
 	log_info("game", "flag_capture player='%d:%s' team=%d time=%.2f", CarrierId, Server()->ClientName(CarrierId), pCarrier->GetPlayer()->GetTeam(), CaptureTicks / (float)Server()->TickSpeed());
-	GameServer()->CreateSoundGlobal(SOUND_CTF_CAPTURE, -1, CGameContext::FLAG_SIX);
+	Services().CreateLegacySoundGlobal(SOUND_CTF_CAPTURE);
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
 		int TranslatedCarrierId = CarrierId;
-		if(GameServer()->m_apPlayers[ClientId] && Server()->IsSixup(ClientId) && Server()->Translate(TranslatedCarrierId, ClientId))
-			GameServer()->SendGameMessage7(protocol7::GAMEMSG_CTF_CAPTURE, {pFlag->Team(), TranslatedCarrierId, CaptureTicks}, ClientId);
+		if(Services().Player(ClientId) && Server()->IsSixup(ClientId) && Server()->Translate(TranslatedCarrierId, ClientId))
+			Services().SendGameMessage7(protocol7::GAMEMSG_CTF_CAPTURE, {pFlag->Team(), TranslatedCarrierId, CaptureTicks}, ClientId);
 	}
 	for(CFlag *pResetFlag : m_apFlags)
 		if(pResetFlag)

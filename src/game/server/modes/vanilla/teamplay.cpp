@@ -1,21 +1,22 @@
 #include "teamplay.h"
 
+#include <engine/server.h>
 #include <engine/shared/config.h>
 
 #include <game/server/entities/character.h>
-#include <game/server/gamecontext.h>
+#include <game/server/mode/game_services.h>
 #include <game/server/player.h>
 
-CGameControllerVanillaTeamplay::CGameControllerVanillaTeamplay(CGameContext *pGameServer, const CGameModeInfo &GameModeInfo) :
-	CGameControllerVanillaPvP(pGameServer, GameModeInfo)
+CGameControllerVanillaTeamplay::CGameControllerVanillaTeamplay(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
+	CGameControllerVanillaPvP(Services, GameModeInfo)
 {
 }
 
 bool CGameControllerVanillaTeamplay::OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam)
 {
 	const int VictimId = pVictim->GetPlayer()->GetCid();
-	if(From >= 0 && From < MAX_CLIENTS && GameServer()->m_apPlayers[From])
-		AttackerTeam = GameServer()->m_apPlayers[From]->GetTeam();
+	if(CPlayer *pAttacker = Services().Player(From))
+		AttackerTeam = pAttacker->GetTeam();
 	if(!g_Config.m_SvTeamdamage && From != VictimId && AttackerTeam >= TEAM_RED && AttackerTeam <= TEAM_BLUE && AttackerTeam == pVictim->GetPlayer()->GetTeam())
 	{
 		pVictim->AddVelocity(Force);
@@ -32,7 +33,8 @@ void CGameControllerVanillaTeamplay::StartRound()
 
 bool CGameControllerVanillaTeamplay::CanSpawn(int Team, vec2 *pOutPos, int ClientId)
 {
-	if(ClientId < 0 || ClientId >= MAX_CLIENTS || Server()->Tick() < m_aEarliestRespawnTicks[ClientId] || !IsValidTeam(Team) || Team == TEAM_SPECTATORS)
+	CPlayerVanilla *pPlayer = VanillaPlayer(ClientId);
+	if(!pPlayer || Server()->Tick() < pPlayer->m_EarliestRespawnTick || !IsValidTeam(Team) || Team == TEAM_SPECTATORS)
 		return false;
 
 	CSpawnEval Eval;
@@ -69,9 +71,10 @@ int CGameControllerVanillaTeamplay::GetAutoTeam(int NotThisId)
 	int aTeamSize[NUM_TEAMS] = {0, 0};
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
-		if(ClientId == NotThisId || !GameServer()->m_apPlayers[ClientId])
+		CPlayer *pPlayer = Services().Player(ClientId);
+		if(ClientId == NotThisId || !pPlayer)
 			continue;
-		const int Team = GameServer()->m_apPlayers[ClientId]->GetTeam();
+		const int Team = pPlayer->GetTeam();
 		if(Team >= TEAM_RED && Team <= TEAM_BLUE)
 			aTeamSize[Team]++;
 	}

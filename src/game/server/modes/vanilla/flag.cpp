@@ -1,9 +1,12 @@
 #include "flag.h"
 
+#include <engine/server.h>
+
+#include <generated/protocol7.h>
+
 #include <game/collision.h>
 #include <game/mapitems.h>
 #include <game/server/entities/character.h>
-#include <game/server/gamecontext.h>
 
 CFlag::CFlag(CGameWorld *pGameWorld, int Team, vec2 StandPos) :
 	CEntity(pGameWorld, CGameWorld::ENTTYPE_FLAG, false, StandPos, PHYSICAL_SIZE),
@@ -87,7 +90,7 @@ void CFlag::TickDeferred()
 		return;
 	}
 
-	m_Vel.y += GameServer()->GlobalTuning()->m_Gravity;
+	m_Vel.y += GlobalTuning()->m_Gravity;
 	Collision()->MoveBox(&m_Pos, &m_Vel, vec2(PHYSICAL_SIZE, PHYSICAL_SIZE), vec2(0.5f, 0.5f));
 }
 

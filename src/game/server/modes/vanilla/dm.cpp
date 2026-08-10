@@ -1,21 +1,25 @@
 #include "dm.h"
 
+#include <engine/server.h>
+
 #include <game/server/entities/character.h>
-#include <game/server/gamecontext.h>
+#include <game/server/mode/game_services.h>
 #include <game/server/player.h>
 
 #include <limits>
 
-CGameControllerVanillaDM::CGameControllerVanillaDM(CGameContext *pGameServer, const CGameModeInfo &GameModeInfo) :
-	CGameControllerVanillaPvP(pGameServer, GameModeInfo)
+CGameControllerVanillaDM::CGameControllerVanillaDM(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
+	CGameControllerVanillaPvP(Services, GameModeInfo)
 {
 }
 
 int CGameControllerVanillaDM::OnCharacterDeath(CCharacter *pVictim, CPlayer *pKiller, int Weapon)
 {
 	const int VictimId = pVictim->GetPlayer()->GetCid();
-	m_aEarliestRespawnTicks[VictimId] = Server()->Tick() + Server()->TickSpeed() / 2;
-	ApplyDeathScore(m_aScores, VictimId, pKiller ? pKiller->GetCid() : -1, Weapon);
+	VanillaPlayer(VictimId)->m_EarliestRespawnTick = Server()->Tick() + Server()->TickSpeed() / 2;
+	const int KillerId = pKiller ? pKiller->GetCid() : -1;
+	if(CPlayerVanilla *pKillerPlayer = VanillaPlayer(KillerId))
+		pKillerPlayer->m_Score += DeathScoreDelta(VictimId, KillerId, Weapon);
 	return 0;
 }
 
@@ -29,16 +33,17 @@ void CGameControllerVanillaDM::Tick()
 	int NumTopScores = 0;
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
-		const CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+		const CPlayer *pPlayer = Services().Player(ClientId);
 		if(!pPlayer || pPlayer->GetTeam() == TEAM_SPECTATORS)
 			continue;
 
-		if(m_aScores[ClientId] > TopScore)
+		const int Score = VanillaPlayer(ClientId)->m_Score;
+		if(Score > TopScore)
 		{
-			TopScore = m_aScores[ClientId];
+			TopScore = Score;
 			NumTopScores = 1;
 		}
-		else if(m_aScores[ClientId] == TopScore)
+		else if(Score == TopScore)
 		{
 			NumTopScores++;
 		}
@@ -55,7 +60,8 @@ void CGameControllerVanillaDM::Tick()
 
 bool CGameControllerVanillaDM::CanSpawn(int Team, vec2 *pOutPos, int ClientId)
 {
-	if(ClientId < 0 || ClientId >= MAX_CLIENTS || Server()->Tick() < m_aEarliestRespawnTicks[ClientId])
+	CPlayerVanilla *pPlayer = VanillaPlayer(ClientId);
+	if(!pPlayer || Server()->Tick() < pPlayer->m_EarliestRespawnTick)
 		return false;
 	return IGameController::CanSpawn(Team, pOutPos, ClientId);
 }

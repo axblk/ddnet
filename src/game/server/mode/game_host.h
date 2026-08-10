@@ -2,30 +2,42 @@
 #define GAME_SERVER_MODE_GAME_HOST_H
 
 #include "game_mode_registry.h"
+#include "game_services.h"
 
 #include <memory>
 
 class CGameContext;
+class CGameTeams;
+class CScore;
+class CDbConnectionPool;
 class IGameController;
 
 class CGameHost
 {
 public:
 	explicit CGameHost(CGameContext *pGameServer);
+	~CGameHost();
 
 	CGameModeRegistry &Modes() { return m_Modes; }
 	const CGameModeRegistry &Modes() const { return m_Modes; }
 
 	bool Select(const char *pModeId);
-	void Init();
+	void Init(CDbConnectionPool *pDbPool);
 	void Shutdown();
 
 	IGameController *Controller() const { return m_pController.get(); }
+	CGameServices &Services() { return m_Services; }
+	const CGameServices &Services() const { return m_Services; }
+	CGameTeams *RaceTeams() const { return m_pRaceTeams.get(); }
+	CScore *RaceScore() const { return m_pRaceScore.get(); }
 
 private:
 	CGameContext *m_pGameServer;
+	CGameServices m_Services;
 	CGameModeRegistry m_Modes;
 	std::unique_ptr<IGameController> m_pController;
+	std::unique_ptr<CGameTeams> m_pRaceTeams;
+	std::unique_ptr<CScore> m_pRaceScore;
 };
 
 #endif // GAME_SERVER_MODE_GAME_HOST_H

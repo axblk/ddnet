@@ -167,7 +167,7 @@ private:
 	CSaveTee m_SaveTee;
 	bool m_Super;
 	bool m_Invincible;
-	CSaveTee m_SavedTeleTee;
+	std::optional<CSaveTee> m_SavedTeleTee;
 	std::optional<CSaveTee> m_LastDeath;
 };
 

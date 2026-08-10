@@ -1,7 +1,7 @@
 #include "game_modes.h"
 
-#include <game/server/gamecontext.h>
 #include <game/server/mode/game_mode_registry.h>
+#include <game/server/mode/game_services.h>
 #include <game/server/modes/insta/rules.h>
 #include <game/server/modes/vanilla/dm.h>
 
@@ -28,8 +28,8 @@ namespace
 				if(m_aCatcherIds[ClientId] != CatcherId)
 					continue;
 				m_aCatcherIds[ClientId] = -1;
-				if(GameServer()->m_apPlayers[ClientId])
-					GameServer()->m_apPlayers[ClientId]->Respawn();
+				if(CPlayer *pPlayer = Services().Player(ClientId))
+					pPlayer->Respawn();
 			}
 		}
 
@@ -39,7 +39,7 @@ namespace
 			int BestCount = 0;
 			for(int CandidateId = 0; CandidateId < MAX_CLIENTS; CandidateId++)
 			{
-				const CPlayer *pCandidate = GameServer()->m_apPlayers[CandidateId];
+				const CPlayer *pCandidate = Services().Player(CandidateId);
 				if(CandidateId == ExcludedId || !pCandidate || pCandidate->GetTeam() == TEAM_SPECTATORS || IsCaught(CandidateId))
 					continue;
 
@@ -56,8 +56,8 @@ namespace
 		}
 
 	public:
-		CGameControllerZCatch(CGameContext *pGameServer, const CGameModeInfo &GameModeInfo) :
-			CBase(pGameServer, GameModeInfo)
+		CGameControllerZCatch(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
+			CBase(Services, GameModeInfo)
 		{
 			m_aCatcherIds.fill(-1);
 		}
@@ -141,7 +141,7 @@ namespace
 			int Remaining = 0;
 			for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 			{
-				const CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+				const CPlayer *pPlayer = Services().Player(ClientId);
 				if(!pPlayer || pPlayer->GetTeam() == TEAM_SPECTATORS)
 					continue;
 				Contestants++;
@@ -158,5 +158,5 @@ bool RegisterZCatchGameModes(CGameModeRegistry &Registry)
 {
 	return Registry.Register(
 		{"zcatch.laser", "Laser zCatch", "zCatch", "TestZCatch", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN},
-		[](CGameContext *pGameServer, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerZCatch>(pGameServer, Info); });
+		[](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerZCatch>(Services, Info); });
 }

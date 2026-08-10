@@ -62,9 +62,6 @@ class IMap;
 class IEngine;
 class IStorage;
 struct CAntibotRoundData;
-struct CScoreRandomMapResult;
-struct CScorePlayerResult;
-
 struct CSnapContext
 {
 	CSnapContext(int Version, bool Sixup, int ClientId) :
@@ -299,6 +296,7 @@ public:
 	// helper functions
 	void CreateDamageInd(vec2 Pos, float AngleMod, int Amount, CClientMask Mask = CClientMask().set());
 	void CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int ActivatedTeam, CClientMask Mask = CClientMask().set(), int AttackerTeam = TEAM_SPECTATORS);
+	void CreateExplosionEvent(vec2 Pos, CClientMask Mask = CClientMask().set());
 	void CreateHammerHit(vec2 Pos, CClientMask Mask = CClientMask().set());
 	void CreatePlayerSpawn(vec2 Pos, CClientMask Mask = CClientMask().set());
 	void CreateDeath(vec2 Pos, int ClientId, CClientMask Mask = CClientMask().set());
@@ -447,18 +445,10 @@ public:
 
 	bool PracticeByDefault() const;
 
-	std::shared_ptr<CScoreRandomMapResult> m_SqlRandomMapResult;
-
-	// cached map info from database
-	std::shared_ptr<CScorePlayerResult> m_pLoadMapInfoResult;
-	char m_aMapInfoMessage[512];
-
 private:
 	// starting 1 to make 0 the special value "no client id"
 	uint32_t m_NextUniqueClientId = 1;
 	bool m_VoteWillPass;
-	CScore *m_pScore;
-
 	// DDRace Console Commands
 
 	static void ConKillPlayer(IConsole::IResult *pResult, void *pUserData);
@@ -661,7 +651,10 @@ private:
 
 public:
 	CLayers *Layers() { return &m_Layers; }
-	CScore *Score() { return m_pScore; }
+	CGameTeams *RaceTeams() const;
+	bool HasRaceTeams() const { return m_GameHost.RaceTeams() != nullptr; }
+	CScore *RaceScore();
+	bool HasRaceScore() const { return m_GameHost.RaceScore() != nullptr; }
 
 	enum
 	{

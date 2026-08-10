@@ -1,7 +1,7 @@
 #include "mod.h"
 
-CGameControllerMod::CGameControllerMod(class CGameContext *pGameServer, const CGameModeInfo &GameModeInfo) :
-	CGameControllerDDRace(pGameServer, GameModeInfo)
+CGameControllerMod::CGameControllerMod(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
+	CGameControllerDDRace(Services, GameModeInfo)
 {
 }
 

@@ -6,6 +6,7 @@
 
 #include <game/race_state.h>
 #include <game/server/gamecontext.h>
+#include <game/server/save.h>
 #include <game/team_state.h>
 #include <game/teamscore.h>
 
@@ -18,6 +19,26 @@ struct CScoreSaveResult;
 
 class CGameTeams
 {
+public:
+	class CPlayerState
+	{
+	public:
+		bool m_TeeStarted = false;
+		bool m_TeeFinished = false;
+		int m_LastChat = 0;
+		uint64_t m_LastSwap = 0;
+		int m_LastInvited = 0;
+		std::optional<int64_t> m_LastTeamChange;
+		bool m_VotedForPractice = false;
+		int m_SwapTargetClientId = -1;
+		int m_RescueMode = RESCUEMODE_AUTO;
+		std::optional<CSaveTee> m_LastTeleTee;
+		std::optional<CSaveTee> m_LastDeath;
+		int m_ShowOthers = SHOW_OTHERS_ON;
+		bool m_SpecTeam = false;
+	};
+
+private:
 	// `m_TeeStarted` is used to keep track whether a given tee has hit the
 	// start of the map yet. If a tee that leaves hasn't hit the start line
 	// yet, the team will be marked as "not allowed to finish"
@@ -25,9 +46,7 @@ class CGameTeams
 	// could go around the startline on a map, leave one tee behind at
 	// start, go to the finish line, let the tee start and kill, allowing
 	// the team to finish instantly.
-	bool m_aTeeStarted[MAX_CLIENTS];
-	bool m_aTeeFinished[MAX_CLIENTS];
-	int m_aLastChat[MAX_CLIENTS];
+	CPlayerState m_aPlayerState[MAX_CLIENTS];
 
 	ETeamState m_aTeamState[NUM_DDRACE_TEAMS];
 	bool m_aTeamLocked[NUM_DDRACE_TEAMS];
@@ -35,7 +54,6 @@ class CGameTeams
 	CClientMask m_aInvited[NUM_DDRACE_TEAMS];
 	bool m_aPractice[NUM_DDRACE_TEAMS];
 	std::shared_ptr<CScoreSaveResult> m_apSaveTeamResult[NUM_DDRACE_TEAMS];
-	uint64_t m_aLastSwap[MAX_CLIENTS]; // index is id of player who initiated swap
 	bool m_aTeamSentStartWarning[NUM_DDRACE_TEAMS];
 	// `m_aTeamUnfinishableKillTick` is -1 by default and gets set when a
 	// team becomes unfinishable. If the team hasn't entered practice mode
@@ -61,9 +79,9 @@ class CGameTeams
 	void OnFinish(CPlayer *Player, int TimeTicks, const char *pTimestamp);
 
 public:
-	CTeamsCore m_Core;
+	CTeamsCore &m_Core;
 
-	CGameTeams(CGameContext *pGameContext);
+	CGameTeams(CGameContext *pGameContext, CTeamsCore &TeamsCore);
 
 	// helper methods
 	CCharacter *Character(int ClientId);
@@ -104,8 +122,11 @@ public:
 	void SetForceCharacterTeam(int ClientId, int Team);
 
 	void Reset();
+	void ResetPlayer(int ClientId);
 	void ResetRoundState(int Team);
 	void ResetSwitchers(int Team);
+	void SaveLastTeleport(CCharacter *pCharacter);
+	bool LoadLastTeleport(CCharacter *pCharacter);
 
 	void SendTeamsState(int ClientId);
 	void SetTeamLock(int Team, bool Lock);
@@ -140,6 +161,8 @@ public:
 	void SetPractice(int Team, bool Enabled);
 	bool IsPractice(int Team);
 	bool IsValidTeamNumber(int Team) const;
+	CPlayerState &PlayerState(int ClientId) { return m_aPlayerState[ClientId]; }
+	const CPlayerState &PlayerState(int ClientId) const { return m_aPlayerState[ClientId]; }
 };
 
 #endif

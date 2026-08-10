@@ -43,6 +43,9 @@ protected:
 	/* State */
 	bool m_MarkedForDestroy;
 
+	// Legacy access for existing entity implementations. Mode controllers use CGameServices.
+	CGameContext *GameServer() { return m_pGameWorld->GameServer(); }
+
 public: // TODO: Maybe make protected
 	/*
 		Variable: m_Pos
@@ -66,7 +69,6 @@ public: // TODO: Maybe make protected
 	CTuningParams *TuningList() { return GameWorld()->TuningList(); }
 	CTuningParams *GetTuning(int i) { return GameWorld()->GetTuning(i); }
 	class CConfig *Config() { return m_pGameWorld->Config(); }
-	class CGameContext *GameServer() { return m_pGameWorld->GameServer(); }
 	class IServer *Server() { return m_pGameWorld->Server(); }
 	CCollision *Collision() { return m_pCCollision; }
 

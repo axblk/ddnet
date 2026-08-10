@@ -9,6 +9,7 @@
 
 class CPlayer;
 class CGameTeams;
+class CTeamsCore;
 class CGameWorld;
 class IAntibot;
 struct CAntibotCharacterData;
@@ -170,7 +171,8 @@ private:
 
 	// the player core for the physics
 	CCharacterCore m_Core;
-	CGameTeams *m_pTeams = nullptr;
+	CTeamsCore *m_pTeamsCore = nullptr;
+	CGameTeams *m_pRaceTeams = nullptr;
 
 	// info for dead reckoning
 	int m_ReckoningTick; // tick that we are performing dead reckoning From
@@ -204,8 +206,11 @@ private:
 	std::optional<int> m_aUntranslatedId[EUntranslatedMap::NUM_IDS];
 
 public:
-	CGameTeams *Teams() { return m_pTeams; }
-	void SetTeams(CGameTeams *pTeams);
+	CTeamsCore *TeamsCore() { return m_pTeamsCore; }
+	CGameTeams *RaceTeams() { return m_pRaceTeams; }
+	bool HasRaceTeams() const { return m_pRaceTeams != nullptr; }
+	void SetTeamsCore(CTeamsCore *pTeamsCore);
+	void SetRaceTeams(CGameTeams *pTeams);
 	bool TrySetRescue(int RescueMode);
 
 	void FillAntibot(CAntibotCharacterData *pData);

@@ -1,20 +1,31 @@
 #include "vanilla_pvp.h"
 
+#include <engine/server.h>
 #include <engine/shared/config.h>
 
 #include <generated/server_data.h>
 
 #include <game/server/entities/character.h>
 #include <game/server/entities/projectile.h>
-#include <game/server/gamecontext.h>
+#include <game/server/mode/game_services.h>
 #include <game/server/player.h>
 
 #include <algorithm>
 #include <cmath>
 
-CGameControllerVanillaPvP::CGameControllerVanillaPvP(CGameContext *pGameServer, const CGameModeInfo &GameModeInfo) :
-	IGameController(pGameServer, GameModeInfo)
+CGameControllerVanillaPvP::CGameControllerVanillaPvP(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
+	IGameController(Services, GameModeInfo)
 {
+}
+
+CPlayer *CGameControllerVanillaPvP::CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team)
+{
+	return new(ClientId) CPlayerVanilla(Services(), UniqueClientId, ClientId, Team);
+}
+
+CPlayerVanilla *CGameControllerVanillaPvP::VanillaPlayer(int ClientId) const
+{
+	return static_cast<CPlayerVanilla *>(Services().Player(ClientId));
 }
 
 CTuningParams CGameControllerVanillaPvP::DefaultTuning()
@@ -45,14 +56,11 @@ void CGameControllerVanillaPvP::ApplyDamage(int Damage, bool SelfDamage, int &He
 	Health -= Damage;
 }
 
-void CGameControllerVanillaPvP::ApplyDeathScore(std::array<int, MAX_CLIENTS> &aScores, int VictimId, int KillerId, int Weapon, bool TeamKill)
+int CGameControllerVanillaPvP::DeathScoreDelta(int VictimId, int KillerId, int Weapon, bool TeamKill)
 {
 	if(KillerId < 0 || Weapon == WEAPON_GAME)
-		return;
-	if(KillerId == VictimId || TeamKill)
-		aScores[KillerId]--;
-	else
-		aScores[KillerId]++;
+		return 0;
+	return KillerId == VictimId || TeamKill ? -1 : 1;
 }
 
 CGameControllerVanillaPvP::EMatchResult CGameControllerVanillaPvP::EvaluateMatch(int NumTopScores, bool LimitReached, bool SuddenDeath)
@@ -74,19 +82,13 @@ vec2 CGameControllerVanillaPvP::ShotgunDirection(vec2 Direction, int Pellet, flo
 
 void CGameControllerVanillaPvP::ResetTuning()
 {
-	*GameServer()->GlobalTuning() = DefaultTuning();
-	GameServer()->SendTuningParams(-1);
+	Services().SetGlobalTuning(DefaultTuning());
 }
 
 void CGameControllerVanillaPvP::InitGameSettings()
 {
 	const CTuningParams Tuning = DefaultTuning();
-	for(int i = 0; i < TuneZone::NUM; i++)
-	{
-		GameServer()->TuningList()[i] = Tuning;
-		GameServer()->m_aaZoneEnterMsg[i][0] = 0;
-		GameServer()->m_aaZoneLeaveMsg[i][0] = 0;
-	}
+	Services().ResetTuningZones(Tuning);
 	if(g_Config.m_SvTuneReset)
 		ResetTuning();
 
@@ -115,24 +117,24 @@ bool CGameControllerVanillaPvP::OnCharacterTakeDamage(CCharacter *pVictim, vec2 
 
 	const int DamageTaken = OldHealth - Health + OldArmor - Armor;
 	if(DamageTaken > 0)
-		GameServer()->CreateDamageInd(pVictim->m_Pos, 0.0f, DamageTaken, pVictim->TeamMask());
+		Services().CreateDamageInd(pVictim->m_Pos, 0.0f, DamageTaken, pVictim->TeamMask());
 
-	if(From >= 0 && From != VictimId && From < MAX_CLIENTS && GameServer()->m_apPlayers[From])
-		GameServer()->CreateSound(GameServer()->m_apPlayers[From]->m_ViewPos, SOUND_HIT, CClientMask().set(From));
+	if(CPlayer *pAttackerPlayer = From != VictimId ? Services().Player(From) : nullptr)
+		Services().CreateSound(pAttackerPlayer->m_ViewPos, SOUND_HIT, CClientMask().set(From));
 
 	if(Health <= 0)
 	{
 		pVictim->Die(From, Weapon);
-		if(From >= 0 && From != VictimId && From < MAX_CLIENTS && GameServer()->m_apPlayers[From])
+		if(CPlayer *pAttackerPlayer = From != VictimId ? Services().Player(From) : nullptr)
 		{
-			CCharacter *pAttacker = GameServer()->m_apPlayers[From]->GetCharacter();
+			CCharacter *pAttacker = pAttackerPlayer->GetCharacter();
 			if(pAttacker)
 				pAttacker->SetEmote(EMOTE_HAPPY, Server()->Tick() + Server()->TickSpeed());
 		}
 		return false;
 	}
 
-	GameServer()->CreateSound(pVictim->m_Pos, Damage > 2 ? SOUND_PLAYER_PAIN_LONG : SOUND_PLAYER_PAIN_SHORT, pVictim->TeamMask());
+	Services().CreateSound(pVictim->m_Pos, Damage > 2 ? SOUND_PLAYER_PAIN_LONG : SOUND_PLAYER_PAIN_SHORT, pVictim->TeamMask());
 	pVictim->SetEmote(EMOTE_PAIN, Server()->Tick() + 500 * Server()->TickSpeed() / 1000);
 	return true;
 }
@@ -151,10 +153,11 @@ CWeaponFireResult CGameControllerVanillaPvP::OnCharacterFireWeapon(const CWeapon
 	const int Owner = pCharacter->GetPlayer()->GetCid();
 	if(pCharacter->GetWeaponAmmo(Context.m_Weapon) == 0)
 	{
-		if(m_aLastNoAmmoSoundTicks[Owner] + Server()->TickSpeed() <= Server()->Tick())
+		CPlayerVanilla *pPlayer = VanillaPlayer(Owner);
+		if(pPlayer->m_LastNoAmmoSoundTick + Server()->TickSpeed() <= Server()->Tick())
 		{
-			GameServer()->CreateSound(pCharacter->m_Pos, SOUND_WEAPON_NOAMMO, pCharacter->TeamMask());
-			m_aLastNoAmmoSoundTicks[Owner] = Server()->Tick();
+			Services().CreateSound(pCharacter->m_Pos, SOUND_WEAPON_NOAMMO, pCharacter->TeamMask());
+			pPlayer->m_LastNoAmmoSoundTick = Server()->Tick();
 		}
 		return {false, false, std::max(1, 125 * Server()->TickSpeed() / 1000)};
 	}
@@ -173,7 +176,7 @@ CWeaponFireResult CGameControllerVanillaPvP::OnCharacterFireWeapon(const CWeapon
 			false,
 			-1,
 			Context.m_MouseTarget);
-		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_GUN_FIRE, pCharacter->TeamMask());
+		Services().CreateSound(pCharacter->m_Pos, SOUND_GUN_FIRE, pCharacter->TeamMask());
 		return {true, true, 0};
 	case WEAPON_SHOTGUN:
 		for(int Pellet = -2; Pellet <= 2; Pellet++)
@@ -190,7 +193,7 @@ CWeaponFireResult CGameControllerVanillaPvP::OnCharacterFireWeapon(const CWeapon
 				-1,
 				Context.m_MouseTarget);
 		}
-		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_SHOTGUN_FIRE, pCharacter->TeamMask());
+		Services().CreateSound(pCharacter->m_Pos, SOUND_SHOTGUN_FIRE, pCharacter->TeamMask());
 		return {true, true, 0};
 	default:
 	{
@@ -208,14 +211,14 @@ CGamePickupResult CGameControllerVanillaPvP::OnCharacterPickup(CCharacter *pChar
 	case POWERUP_HEALTH:
 		if(pCharacter->IncreaseHealth(1))
 		{
-			GameServer()->CreateSound(Position, SOUND_PICKUP_HEALTH, pCharacter->TeamMask());
+			Services().CreateSound(Position, SOUND_PICKUP_HEALTH, pCharacter->TeamMask());
 			return {true, 15, -1};
 		}
 		break;
 	case POWERUP_ARMOR:
 		if(pCharacter->IncreaseArmor(1))
 		{
-			GameServer()->CreateSound(Position, SOUND_PICKUP_ARMOR, pCharacter->TeamMask());
+			Services().CreateSound(Position, SOUND_PICKUP_ARMOR, pCharacter->TeamMask());
 			return {true, 15, -1};
 		}
 		break;
@@ -228,16 +231,16 @@ CGamePickupResult CGameControllerVanillaPvP::OnCharacterPickup(CCharacter *pChar
 				pCharacter->SetWeaponGot(Subtype, true);
 				pCharacter->SetWeaponAmmo(Subtype, MaxAmmo);
 				const int PickupSound = Subtype == WEAPON_GRENADE ? SOUND_PICKUP_GRENADE : SOUND_PICKUP_SHOTGUN;
-				GameServer()->CreateSound(Position, PickupSound, pCharacter->TeamMask());
-				GameServer()->SendWeaponPickup(pCharacter->GetPlayer()->GetCid(), Subtype);
+				Services().CreateSound(Position, PickupSound, pCharacter->TeamMask());
+				Services().SendWeaponPickup(pCharacter->GetPlayer()->GetCid(), Subtype);
 				return {true, 15, SOUND_WEAPON_SPAWN};
 			}
 		}
 		break;
 	case POWERUP_NINJA:
 		pCharacter->GiveNinja();
-		GameServer()->CreateSound(Position, SOUND_PICKUP_NINJA, pCharacter->TeamMask());
-		for(CCharacter *pOther = static_cast<CCharacter *>(GameServer()->m_World.FindFirst(CGameWorld::ENTTYPE_CHARACTER)); pOther; pOther = static_cast<CCharacter *>(pOther->TypeNext()))
+		Services().CreateSound(Position, SOUND_PICKUP_NINJA, pCharacter->TeamMask());
+		for(CCharacter *pOther = static_cast<CCharacter *>(Services().World().FindFirst(CGameWorld::ENTTYPE_CHARACTER)); pOther; pOther = static_cast<CCharacter *>(pOther->TypeNext()))
 		{
 			if(pOther != pCharacter)
 				pOther->SetEmote(EMOTE_SURPRISE, Server()->Tick() + Server()->TickSpeed());
@@ -269,10 +272,7 @@ void CGameControllerVanillaPvP::OnCharacterSpawn(CCharacter *pChr)
 
 void CGameControllerVanillaPvP::OnPlayerConnect(CPlayer *pPlayer)
 {
-	const int ClientId = pPlayer->GetCid();
-	m_aScores[ClientId] = 0;
-	m_aEarliestRespawnTicks[ClientId] = 0;
-	m_aLastNoAmmoSoundTicks[ClientId] = Server()->Tick() - Server()->TickSpeed();
+	static_cast<CPlayerVanilla *>(pPlayer)->ResetRoundState(Server()->Tick() - Server()->TickSpeed());
 	IGameController::OnPlayerConnect(pPlayer);
 }
 
@@ -281,9 +281,6 @@ void CGameControllerVanillaPvP::OnPlayerDisconnect(CPlayer *pPlayer, const char 
 	const int ClientId = pPlayer->GetCid();
 	DetachProjectiles(ClientId);
 	IGameController::OnPlayerDisconnect(pPlayer, pReason);
-	m_aScores[ClientId] = 0;
-	m_aEarliestRespawnTicks[ClientId] = 0;
-	m_aLastNoAmmoSoundTicks[ClientId] = 0;
 }
 
 void CGameControllerVanillaPvP::DoTeamChange(CPlayer *pPlayer, int Team, bool DoChatMsg)
@@ -295,7 +292,7 @@ void CGameControllerVanillaPvP::DoTeamChange(CPlayer *pPlayer, int Team, bool Do
 
 void CGameControllerVanillaPvP::DetachProjectiles(int ClientId)
 {
-	for(CProjectile *pProjectile = static_cast<CProjectile *>(GameServer()->m_World.FindFirst(CGameWorld::ENTTYPE_PROJECTILE)); pProjectile; pProjectile = static_cast<CProjectile *>(pProjectile->TypeNext()))
+	for(CProjectile *pProjectile = static_cast<CProjectile *>(Services().World().FindFirst(CGameWorld::ENTTYPE_PROJECTILE)); pProjectile; pProjectile = static_cast<CProjectile *>(pProjectile->TypeNext()))
 	{
 		if(pProjectile->GetOwnerId() == ClientId)
 			pProjectile->LoseOwner();
@@ -304,15 +301,18 @@ void CGameControllerVanillaPvP::DetachProjectiles(int ClientId)
 
 void CGameControllerVanillaPvP::StartRound()
 {
-	m_aScores.fill(0);
-	m_aEarliestRespawnTicks.fill(0);
-	m_aLastNoAmmoSoundTicks.fill(Server()->Tick() - Server()->TickSpeed());
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		CPlayer *pPlayer = Services().Player(ClientId);
+		if(pPlayer)
+			static_cast<CPlayerVanilla *>(pPlayer)->ResetRoundState(Server()->Tick() - Server()->TickSpeed());
+	}
 	IGameController::StartRound();
 }
 
 int CGameControllerVanillaPvP::SnapPlayerScore(int SnappingClient, CPlayer *pPlayer)
 {
-	return m_aScores[pPlayer->GetCid()];
+	return static_cast<CPlayerVanilla *>(pPlayer)->m_Score;
 }
 
 int CGameControllerVanillaPvP::GameInfoFlags(int SnappingClient) const

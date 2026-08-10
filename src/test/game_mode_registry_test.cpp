@@ -1,3 +1,5 @@
+#include <generated/protocol7.h>
+
 #include <game/gamecore.h>
 #include <game/server/gamemodes/ddnet.h>
 #include <game/server/mode/builtin_game_modes.h>
@@ -9,7 +11,7 @@
 
 namespace
 {
-	std::unique_ptr<IGameController> CreateNothing(CGameContext *pGameServer, const CGameModeInfo &Info)
+	std::unique_ptr<IGameController> CreateNothing(CGameServices &, const CGameModeInfo &)
 	{
 		return nullptr;
 	}
@@ -162,35 +164,25 @@ TEST(VanillaDM, SelfDamage)
 
 TEST(VanillaDM, DeathScore)
 {
-	std::array<int, MAX_CLIENTS> aScores{};
-	CGameControllerVanillaDM::ApplyDeathScore(aScores, 1, 2, WEAPON_GUN);
-	EXPECT_EQ(aScores[1], 0);
-	EXPECT_EQ(aScores[2], 1);
-
-	CGameControllerVanillaDM::ApplyDeathScore(aScores, 2, 2, WEAPON_SELF);
-	EXPECT_EQ(aScores[2], 0);
-	CGameControllerVanillaDM::ApplyDeathScore(aScores, 1, 2, WEAPON_GAME);
-	EXPECT_EQ(aScores[2], 0);
+	EXPECT_EQ(CGameControllerVanillaDM::DeathScoreDelta(1, 2, WEAPON_GUN), 1);
+	EXPECT_EQ(CGameControllerVanillaDM::DeathScoreDelta(2, 2, WEAPON_SELF), -1);
+	EXPECT_EQ(CGameControllerVanillaDM::DeathScoreDelta(1, 2, WEAPON_GAME), 0);
 }
 
 TEST(VanillaTDM, DeathScore)
 {
-	std::array<int, MAX_CLIENTS> aPlayerScores{};
 	std::array<int, NUM_TEAMS> aTeamScores{};
 
-	CGameControllerVanillaDM::ApplyDeathScore(aPlayerScores, 1, 2, WEAPON_GUN);
 	CGameControllerVanillaTDM::ApplyTeamDeathScore(aTeamScores, TEAM_RED, TEAM_BLUE, WEAPON_GUN, false);
-	EXPECT_EQ(aPlayerScores[2], 1);
+	EXPECT_EQ(CGameControllerVanillaDM::DeathScoreDelta(1, 2, WEAPON_GUN), 1);
 	EXPECT_EQ(aTeamScores[TEAM_BLUE], 1);
 
-	CGameControllerVanillaDM::ApplyDeathScore(aPlayerScores, 1, 0, WEAPON_GUN, true);
 	CGameControllerVanillaTDM::ApplyTeamDeathScore(aTeamScores, TEAM_RED, TEAM_RED, WEAPON_GUN, false);
-	EXPECT_EQ(aPlayerScores[0], -1);
+	EXPECT_EQ(CGameControllerVanillaDM::DeathScoreDelta(1, 0, WEAPON_GUN, true), -1);
 	EXPECT_EQ(aTeamScores[TEAM_RED], -1);
 
-	CGameControllerVanillaDM::ApplyDeathScore(aPlayerScores, 2, 2, WEAPON_SELF);
 	CGameControllerVanillaTDM::ApplyTeamDeathScore(aTeamScores, TEAM_BLUE, TEAM_BLUE, WEAPON_SELF, true);
-	EXPECT_EQ(aPlayerScores[2], 0);
+	EXPECT_EQ(CGameControllerVanillaDM::DeathScoreDelta(2, 2, WEAPON_SELF), -1);
 	EXPECT_EQ(aTeamScores[TEAM_BLUE], 0);
 
 	CGameControllerVanillaTDM::ApplyTeamDeathScore(aTeamScores, TEAM_RED, TEAM_BLUE, WEAPON_GAME, false);

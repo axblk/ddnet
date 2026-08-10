@@ -47,6 +47,7 @@ class CConsole : public IConsole
 		FCommandCallback m_pfnCallback;
 		void *m_pCallbackUserData;
 		void *m_pUserData;
+		const void *m_pOwner;
 	};
 
 	int m_FlagMask;
@@ -164,6 +165,7 @@ class CConsole : public IConsole
 	void AddCommandSorted(CCommand *pCommand);
 	CCommand *FindCommand(const char *pName, int FlagMask);
 	bool RegisterCommand(const char *pName, const char *pParams, int Flags, FCommandCallback pfnFunc, void *pUser, const char *pHelp, const void *pOwner, bool Replace);
+	bool ChainCommand(const char *pName, FChainCommandCallback pfnChainFunc, void *pUser, const void *pOwner);
 	void ClearCommandState(CCommand *pCommand);
 
 	bool m_Cheated;
@@ -187,6 +189,7 @@ public:
 	void DeregisterTemp(const char *pName) override;
 	void DeregisterTempAll() override;
 	void Chain(const char *pName, FChainCommandCallback pfnChainFunc, void *pUser) override;
+	bool ChainOwned(const char *pName, FChainCommandCallback pfnChainFunc, void *pUser, const void *pOwner) override;
 	void StoreCommands(bool Store) override;
 
 	bool LineIsValid(const char *pStr) override;

@@ -7,6 +7,7 @@
 
 #include <base/dbg.h>
 #include <base/io.h>
+#include <base/math.h>
 #include <base/secure.h>
 #include <base/str.h>
 #include <base/time.h>
@@ -167,7 +168,7 @@ void CScore::Tick()
 			for(int i = 0; i < MAX_CLIENTS; i++)
 			{
 				if(GameServer()->m_apPlayers[i] && GameServer()->m_apPlayers[i]->GetClientVersion() >= VERSION_DDRACE)
-					GameServer()->SendRecord(i);
+					SendRecord(i);
 			}
 		}
 		m_pLoadBestTimeResult = nullptr;
@@ -315,7 +316,7 @@ void CScore::ProcessPlayerResult(int ClientId, CScorePlayerResult &Result)
 
 			GameServer()->CreateBirthdayEffect(pPlayer->GetCharacter()->m_Pos, pPlayer->GetCharacter()->TeamMask());
 		}
-		GameServer()->SendRecord(ClientId);
+		SendRecord(ClientId);
 		break;
 	}
 	case CScorePlayerResult::PLAYER_TIMECP:
@@ -335,6 +336,67 @@ void CScore::SendMapInfoMessage(int ClientId) const
 	CNetMsg_Sv_MapInfo Msg;
 	Msg.m_pDescription = m_aMapInfoMessage;
 	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
+}
+
+void CScore::SendRecord(int ClientId)
+{
+	if(Server()->IsSixup(ClientId) || GameServer()->GetClientVersion(ClientId) >= VERSION_DDNET_MAP_BESTTIME)
+		return;
+
+	CNetMsg_Sv_Record Msg;
+	CNetMsg_Sv_RecordLegacy MsgLegacy;
+	MsgLegacy.m_PlayerTimeBest = Msg.m_PlayerTimeBest = round_to_int(PlayerData(ClientId)->m_BestTime.value_or(0.0f) * 100.0f);
+	const std::optional<float> &CurrentRecord = this->CurrentRecord();
+	MsgLegacy.m_ServerTimeBest = Msg.m_ServerTimeBest = CurrentRecord.has_value() && !g_Config.m_SvHideScore ? round_to_int(CurrentRecord.value() * 100.0f) : 0;
+	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL, ClientId);
+	if(GameServer()->GetClientVersion(ClientId) < VERSION_DDNET_MSG_LEGACY)
+	{
+		Server()->SendPackMsg(&MsgLegacy, MSGFLAG_VITAL, ClientId);
+	}
+}
+
+void CScore::SendFinish(int ClientId, float Time, std::optional<float> PreviousBestTime)
+{
+	int ClientVersion = GameServer()->m_apPlayers[ClientId]->GetClientVersion();
+
+	if(!Server()->IsSixup(ClientId))
+	{
+		CNetMsg_Sv_DDRaceTime Msg;
+		CNetMsg_Sv_DDRaceTimeLegacy MsgLegacy;
+		MsgLegacy.m_Time = Msg.m_Time = (int)(Time * 100.0f);
+		MsgLegacy.m_Check = Msg.m_Check = 0;
+		MsgLegacy.m_Finish = Msg.m_Finish = 1;
+
+		if(PreviousBestTime.has_value())
+		{
+			float Diff100 = (Time - PreviousBestTime.value()) * 100;
+			MsgLegacy.m_Check = Msg.m_Check = (int)Diff100;
+		}
+		if(VERSION_DDRACE <= ClientVersion)
+		{
+			if(ClientVersion < VERSION_DDNET_MSG_LEGACY)
+			{
+				Server()->SendPackMsg(&Msg, MSGFLAG_VITAL, ClientId);
+			}
+			else
+			{
+				Server()->SendPackMsg(&MsgLegacy, MSGFLAG_VITAL, ClientId);
+			}
+		}
+	}
+
+	CNetMsg_Sv_RaceFinish RaceFinishMsg;
+	RaceFinishMsg.m_ClientId = ClientId;
+	RaceFinishMsg.m_Time = Time * 1000;
+	RaceFinishMsg.m_Diff = 0;
+	if(PreviousBestTime.has_value())
+	{
+		float Diff = absolute(Time - PreviousBestTime.value());
+		RaceFinishMsg.m_Diff = Diff * 1000 * (Time < PreviousBestTime.value() ? -1 : 1);
+	}
+	RaceFinishMsg.m_RecordPersonal = (!PreviousBestTime.has_value() || Time < PreviousBestTime.value());
+	RaceFinishMsg.m_RecordServer = Time < CurrentRecord();
+	Server()->SendPackMsg(&RaceFinishMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, g_Config.m_SvHideScore ? ClientId : -1);
 }
 
 void CScore::LoadBestTime()
@@ -567,7 +629,7 @@ void CScore::SaveTeam(int ClientId, const char *pCode, const char *pServer)
 
 	pTeams->KillCharacterOrTeam(ClientId, Team);
 
-	GameServer()->SendSaveCode(
+	pTeams->SendSaveCode(
 		Team,
 		SaveResult->m_SavedTeam.GetMembersCount(),
 		SAVESTATE_PENDING,

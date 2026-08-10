@@ -4,6 +4,7 @@
 #include <base/log.h>
 
 #include <game/server/gamecontroller.h>
+#include <game/server/mode/game_mode_map_reload_state.h>
 #include <game/server/score.h>
 #include <game/server/teams.h>
 
@@ -50,4 +51,32 @@ void CGameHost::Shutdown()
 	m_pRaceScore.reset();
 	m_pRaceTeams.reset();
 	m_pController.reset();
+}
+
+void CGameHost::PrepareMapReloadState(std::unique_ptr<IGameModeMapReloadState> pState)
+{
+	m_pMapReloadState = std::move(pState);
+	m_MapReloadStateFromPreviousContext = false;
+}
+
+std::unique_ptr<IGameModeMapReloadState> CGameHost::TakeMapReloadState()
+{
+	if(m_MapReloadStateFromPreviousContext)
+	{
+		m_pMapReloadState.reset();
+		return nullptr;
+	}
+	return std::move(m_pMapReloadState);
+}
+
+void CGameHost::RestoreMapReloadState(std::unique_ptr<IGameModeMapReloadState> pState)
+{
+	m_pMapReloadState = std::move(pState);
+	m_MapReloadStateFromPreviousContext = m_pMapReloadState != nullptr;
+}
+
+void CGameHost::DiscardMapReloadState(int ClientId)
+{
+	if(m_pMapReloadState)
+		m_pMapReloadState->DiscardClient(ClientId);
 }

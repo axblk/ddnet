@@ -13,14 +13,16 @@ CGameControllerVanillaDM::CGameControllerVanillaDM(CGameServices &Services, cons
 {
 }
 
-int CGameControllerVanillaDM::OnCharacterDeath(CCharacter *pVictim, CPlayer *pKiller, int Weapon)
+void CGameControllerVanillaDM::OnCharacterDeath(const CGameCharacterDeathContext &Context)
 {
+	CCharacter *pVictim = Context.m_pVictim;
+	CPlayer *pKiller = Context.m_pKiller;
 	const int VictimId = pVictim->GetPlayer()->GetCid();
 	VanillaPlayer(VictimId)->m_EarliestRespawnTick = Server()->Tick() + Server()->TickSpeed() / 2;
 	const int KillerId = pKiller ? pKiller->GetCid() : -1;
 	if(CPlayerVanilla *pKillerPlayer = VanillaPlayer(KillerId))
-		pKillerPlayer->m_Score += DeathScoreDelta(VictimId, KillerId, Weapon);
-	return 0;
+		pKillerPlayer->m_Score += DeathScoreDelta(VictimId, KillerId, Context.m_Weapon);
+	FinalizeCharacterDeath(Context);
 }
 
 void CGameControllerVanillaDM::Tick()

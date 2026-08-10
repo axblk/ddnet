@@ -5,10 +5,12 @@
 
 #include <game/race_state.h>
 #include <game/server/entity.h>
-#include <game/server/save.h>
 
 class CPlayer;
+class CCharacterDDRace;
 class CGameTeams;
+class CSaveHotReloadTee;
+class CSaveTee;
 class CTeamsCore;
 class CGameWorld;
 class IAntibot;
@@ -33,6 +35,8 @@ class CCharacter : public CEntity
 	// need to use core
 	friend class CSaveTee;
 	friend class CSaveHotReloadTee;
+	friend class CCharacterDDRace;
+	friend class IGameController;
 
 public:
 	CCharacter(CGameWorld *pWorld, CNetObj_PlayerInput LastInput);
@@ -54,17 +58,11 @@ public:
 
 	bool IsGrounded();
 	bool IsOnDeathTile();
-	void DDRaceInit();
-	void DDRaceTick();
-	void DDRacePostCoreTick();
-	void SnapDDRace(int TranslatedId);
-
 	void SetWeapon(int W);
 	void SetJetpack(bool Active);
 	void SetEndlessJump(bool Active);
 	void SetJumps(int Jumps);
 	void SetSolo(bool Solo);
-	void SetSuper(bool Super);
 	void SetInvincible(bool Invincible);
 	void SetCollisionDisabled(bool CollisionDisabled);
 	void SetHookHitDisabled(bool HookHitDisabled);
@@ -84,10 +82,8 @@ public:
 	void ResetInput();
 	void FireWeapon();
 
-	void Die(int Killer, int Weapon, bool SendKillMsg = true);
+	virtual void Die(int Killer, int Weapon, bool SendKillMsg = true);
 	bool TakeDamage(vec2 Force, int Dmg, int From, int Weapon, bool CanDamage = true, int AttackerTeam = TEAM_SPECTATORS);
-	void SendDeathMessageIfNotInLockedTeam(int Killer, int Weapon, int ModeSpecial);
-	void CancelSwapRequests();
 
 	bool Spawn(class CPlayer *pPlayer, vec2 Pos);
 	bool Remove();
@@ -102,8 +98,6 @@ public:
 
 	void SetEmote(int Emote, int Tick);
 	int DetermineEyeEmote();
-
-	bool Rescue();
 
 	int NeededFaketuning() const { return m_NeededFaketuning; }
 	bool IsAlive() const { return m_Alive; }
@@ -181,21 +175,9 @@ private:
 
 	// DDRace
 
-	void SnapCharacter(int SnappingClient, int MapId);
-	static bool IsSwitchActiveCb(unsigned char Number, void *pUser);
-	void SetTimeCheckpoint(int TimeCheckpoint);
-	void HandleTiles(int Index);
-	float m_Time;
-	int m_LastBroadcast;
-	void HandleSkippableTiles(int Index);
-	void ForceSetRescue(int RescueMode);
-	void HandleBroadcast();
-	void HandleTuneLayer();
-	void SendZoneMsgs();
+	void SnapCharacter(int SnappingClient, int Id);
+	void FinalizeDeath(int Killer, int Weapon, bool SendKillMessage, int ModeSpecial);
 	IAntibot *Antibot();
-
-	bool m_SetSavePos[NUM_RESCUEMODES];
-	CSaveTee m_RescueTee[NUM_RESCUEMODES];
 
 	enum EUntranslatedMap
 	{
@@ -211,7 +193,6 @@ public:
 	bool HasRaceTeams() const { return m_pRaceTeams != nullptr; }
 	void SetTeamsCore(CTeamsCore *pTeamsCore);
 	void SetRaceTeams(CGameTeams *pTeams);
-	bool TrySetRescue(int RescueMode);
 
 	void FillAntibot(CAntibotCharacterData *pData);
 	void Pause(bool Pause);
@@ -227,7 +208,6 @@ public:
 	bool SameTeam(int ClientId);
 	void StopRecording();
 	bool m_NinjaJetpack;
-	int m_TeamBeforeSuper;
 	int m_FreezeTime;
 	bool m_FrozenLastTick;
 	int m_TuneZone;
@@ -243,14 +223,8 @@ public:
 	int m_LastTimeCpBroadcasted;
 	float m_aCurrentTimeCp[MAX_CHECKPOINTS];
 
-	int m_TileIndex;
-	int m_TileFIndex;
-
 	int64_t m_LastStartWarning;
-	int64_t m_LastRescue;
-	bool m_LastRefillJumps;
 	bool m_LastPenalty;
-	bool m_LastBonus;
 	vec2 m_TeleGunPos;
 	bool m_TeleGunTeleport;
 	bool m_IsBlueTeleGunTeleport;
@@ -299,7 +273,6 @@ public:
 
 	bool IsSuper() const { return m_Core.m_Super; }
 
-	CSaveTee &GetLastRescueTeeRef(int Mode = RESCUEMODE_AUTO) { return m_RescueTee[Mode]; }
 	CTuningParams *GetTuning(int Zone) { return &TuningList()[Zone]; }
 };
 

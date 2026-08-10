@@ -13,7 +13,7 @@ public:
 	CGameControllerVanillaCTF(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 
 	bool OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number) override;
-	int OnCharacterDeath(CCharacter *pVictim, CPlayer *pKiller, int Weapon) override;
+	void OnCharacterDeath(const CGameCharacterDeathContext &Context) override;
 	void Tick() override;
 	CFlag *Flag(int Team) const;
 

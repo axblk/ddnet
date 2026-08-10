@@ -3026,6 +3026,8 @@ if(SERVER)
     gamemodes/ddnet.h
     gamemodes/ddrace.cpp
     gamemodes/ddrace.h
+    gamemodes/ddrace_character.cpp
+    gamemodes/ddrace_character.h
     gamemodes/ddrace_map_entities.cpp
     gamemodes/ddrace_map_entities.h
     gamemodes/mod.cpp
@@ -3038,6 +3040,7 @@ if(SERVER)
     mode/builtin_game_modes.h
     mode/game_host.cpp
     mode/game_host.h
+    mode/game_mode_map_reload_state.h
     mode/game_mode_registry.cpp
     mode/game_mode_registry.h
     mode/game_services.cpp

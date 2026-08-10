@@ -1079,6 +1079,23 @@ void CConsole::DeregisterOwner(const void *pOwner)
 		}
 		else
 		{
+			FCommandCallback *ppfnCallback = &pCommand->m_pfnCallback;
+			void **ppUserData = &pCommand->m_pUserData;
+			while(*ppfnCallback == Con_Chain)
+			{
+				CChain *pChain = static_cast<CChain *>(*ppUserData);
+				if(pChain->m_pOwner == pOwner)
+				{
+					*ppfnCallback = pChain->m_pfnCallback;
+					*ppUserData = pChain->m_pCallbackUserData;
+					delete pChain;
+				}
+				else
+				{
+					ppfnCallback = &pChain->m_pfnCallback;
+					ppUserData = &pChain->m_pCallbackUserData;
+				}
+			}
 			pPrevious = pCommand;
 		}
 		pCommand = pNext;
@@ -1182,8 +1199,21 @@ void CConsole::Con_Chain(IResult *pResult, void *pUserData)
 
 void CConsole::Chain(const char *pName, FChainCommandCallback pfnChainFunc, void *pUser)
 {
+	dbg_assert(ChainCommand(pName, pfnChainFunc, pUser, nullptr), "Invalid command to chain: '%s'", pName);
+}
+
+bool CConsole::ChainOwned(const char *pName, FChainCommandCallback pfnChainFunc, void *pUser, const void *pOwner)
+{
+	if(!pOwner)
+		return false;
+	return ChainCommand(pName, pfnChainFunc, pUser, pOwner);
+}
+
+bool CConsole::ChainCommand(const char *pName, FChainCommandCallback pfnChainFunc, void *pUser, const void *pOwner)
+{
 	CCommand *pCommand = FindCommand(pName, m_FlagMask);
-	dbg_assert(pCommand != nullptr, "Invalid command to chain: '%s'", pName);
+	if(!pCommand)
+		return false;
 
 	// store info
 	CChain *pChainInfo = new CChain();
@@ -1191,10 +1221,12 @@ void CConsole::Chain(const char *pName, FChainCommandCallback pfnChainFunc, void
 	pChainInfo->m_pUserData = pUser;
 	pChainInfo->m_pfnCallback = pCommand->m_pfnCallback;
 	pChainInfo->m_pCallbackUserData = pCommand->m_pUserData;
+	pChainInfo->m_pOwner = pOwner;
 
 	// chain
 	pCommand->m_pfnCallback = Con_Chain;
 	pCommand->m_pUserData = pChainInfo;
+	return true;
 }
 
 void CConsole::StoreCommands(bool Store)

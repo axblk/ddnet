@@ -511,9 +511,19 @@ int IGameController::PlayerAutoRespawnTick(const CPlayer *pPlayer) const
 	return pPlayer->m_DieTick + 2;
 }
 
-void IGameController::RestoreCharacterAfterHotReload(CCharacter *pCharacter)
+IGameModeMapReloadState *IGameController::MapReloadState() const
 {
-	GameServer()->DiscardHotReloadState(pCharacter->GetPlayer()->GetCid());
+	return GameServer()->GameHost().MapReloadState();
+}
+
+void IGameController::DiscardMapReloadState(int ClientId)
+{
+	GameServer()->GameHost().DiscardMapReloadState(ClientId);
+}
+
+void IGameController::RestoreCharacterAfterMapReload(CCharacter *pCharacter)
+{
+	DiscardMapReloadState(pCharacter->GetPlayer()->GetCid());
 }
 
 void IGameController::EndRound()
@@ -589,9 +599,14 @@ void IGameController::OnReset()
 			pPlayer->Respawn();
 }
 
-int IGameController::OnCharacterDeath(class CCharacter *pVictim, class CPlayer *pKiller, int Weapon)
+void IGameController::FinalizeCharacterDeath(const CGameCharacterDeathContext &Context, int ModeSpecial)
 {
-	return 0;
+	Context.m_pVictim->FinalizeDeath(Context.m_Killer, Context.m_Weapon, Context.m_SendKillMessage, ModeSpecial);
+}
+
+void IGameController::OnCharacterDeath(const CGameCharacterDeathContext &Context)
+{
+	FinalizeCharacterDeath(Context);
 }
 
 bool IGameController::OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam)

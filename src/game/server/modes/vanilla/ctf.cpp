@@ -34,14 +34,16 @@ bool CGameControllerVanillaCTF::OnEntity(int Index, int x, int y, int Layer, int
 	return true;
 }
 
-int CGameControllerVanillaCTF::OnCharacterDeath(CCharacter *pVictim, CPlayer *pKiller, int Weapon)
+void CGameControllerVanillaCTF::OnCharacterDeath(const CGameCharacterDeathContext &Context)
 {
+	CCharacter *pVictim = Context.m_pVictim;
+	CPlayer *pKiller = Context.m_pKiller;
 	const int VictimId = pVictim->GetPlayer()->GetCid();
 	const int KillerId = pKiller ? pKiller->GetCid() : -1;
 	const bool TeamKill = pKiller && pKiller != pVictim->GetPlayer() && pKiller->GetTeam() == pVictim->GetPlayer()->GetTeam();
 	VanillaPlayer(VictimId)->m_EarliestRespawnTick = Server()->Tick() + Server()->TickSpeed() / 2;
 	if(CPlayerVanilla *pKillerPlayer = VanillaPlayer(KillerId))
-		pKillerPlayer->m_Score += DeathScoreDelta(VictimId, KillerId, Weapon, TeamKill);
+		pKillerPlayer->m_Score += DeathScoreDelta(VictimId, KillerId, Context.m_Weapon, TeamKill);
 
 	int Result = 0;
 	for(CFlag *pFlag : m_apFlags)
@@ -61,7 +63,7 @@ int CGameControllerVanillaCTF::OnCharacterDeath(CCharacter *pVictim, CPlayer *pK
 			VanillaPlayer(pKiller->GetCid())->m_Score++;
 		Result |= 1;
 	}
-	return Result;
+	FinalizeCharacterDeath(Context, Result);
 }
 
 void CGameControllerVanillaCTF::Tick()

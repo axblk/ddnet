@@ -16,6 +16,7 @@
 #include <game/mapitems.h>
 #include <game/server/entities/character.h>
 #include <game/server/gamecontext.h>
+#include <game/server/gamemodes/ddrace_character.h>
 #include <game/server/interactions.h>
 #include <game/team_state.h>
 
@@ -25,6 +26,117 @@ CGameTeams::CGameTeams(CGameContext *pGameContext, CTeamsCore &TeamsCore) :
 	m_pGameContext(pGameContext),
 	m_Core(TeamsCore)
 {
+}
+
+bool CGameTeams::PracticeByDefault() const
+{
+	return g_Config.m_SvPracticeByDefault && g_Config.m_SvTestingCommands;
+}
+
+void CGameTeams::SendSaveCode(int Team, int TeamSize, int State, const char *pError, const char *pSaveRequester, const char *pServerName, const char *pGeneratedCode, const char *pCode)
+{
+	char aBuf[512];
+
+	CMsgPacker Msg(NETMSGTYPE_SV_SAVECODE);
+	Msg.AddInt(State);
+	Msg.AddString(pError);
+	Msg.AddString(pSaveRequester);
+	Msg.AddString(pServerName);
+	Msg.AddString(pGeneratedCode);
+	Msg.AddString(pCode);
+	char aTeamMembers[1024];
+	aTeamMembers[0] = '\0';
+	int NumMembersSent = 0;
+	for(int MemberId = 0; MemberId < MAX_CLIENTS; MemberId++)
+	{
+		if(!GameServer()->m_apPlayers[MemberId])
+			continue;
+		if(m_Core.Team(MemberId) != Team)
+			continue;
+		if(NumMembersSent++ > 10)
+		{
+			str_format(aBuf, sizeof(aBuf), " and %d others", (TeamSize - NumMembersSent) + 1);
+			str_append(aTeamMembers, aBuf);
+			break;
+		}
+
+		if(NumMembersSent > 1)
+			str_append(aTeamMembers, ", ");
+		str_append(aTeamMembers, Server()->ClientName(MemberId));
+	}
+	Msg.AddString(aTeamMembers);
+
+	for(int MemberId = 0; MemberId < MAX_CLIENTS; MemberId++)
+	{
+		if(!GameServer()->m_apPlayers[MemberId])
+			continue;
+		if(m_Core.Team(MemberId) != Team)
+			continue;
+
+		if(GameServer()->GetClientVersion(MemberId) >= VERSION_DDNET_SAVE_CODE)
+		{
+			Server()->SendMsg(&Msg, MSGFLAG_VITAL, MemberId);
+		}
+		else
+		{
+			switch(State)
+			{
+			case SAVESTATE_PENDING:
+				if(pCode[0] == '\0')
+				{
+					str_format(aBuf,
+						sizeof(aBuf),
+						"Team save in progress. You'll be able to load with '/load %s'",
+						pGeneratedCode);
+				}
+				else
+				{
+					str_format(aBuf,
+						sizeof(aBuf),
+						"Team save in progress. You'll be able to load with '/load %s' if save is successful or with '/load %s' if it fails",
+						pCode,
+						pGeneratedCode);
+				}
+				break;
+			case SAVESTATE_DONE:
+				if(str_comp(pServerName, g_Config.m_SvSqlServerName) == 0)
+				{
+					str_format(aBuf, sizeof(aBuf),
+						"Team successfully saved by %s. Use '/load %s' to continue",
+						pSaveRequester, pCode[0] ? pCode : pGeneratedCode);
+				}
+				else
+				{
+					str_format(aBuf, sizeof(aBuf),
+						"Team successfully saved by %s. Use '/load %s' on %s to continue",
+						pSaveRequester, pCode[0] ? pCode : pGeneratedCode, pServerName);
+				}
+				break;
+			case SAVESTATE_FALLBACKFILE:
+				GameServer()->SendBroadcast("Database connection failed, teamsave written to a file instead. On official DDNet servers this will automatically be inserted into the database every full hour.", MemberId);
+				if(str_comp(pServerName, g_Config.m_SvSqlServerName) == 0)
+				{
+					str_format(aBuf, sizeof(aBuf),
+						"Team successfully saved by %s. The database connection failed, using generated save code instead to avoid collisions. Use '/load %s' to continue",
+						pSaveRequester, pCode[0] ? pCode : pGeneratedCode);
+				}
+				else
+				{
+					str_format(aBuf, sizeof(aBuf),
+						"Team successfully saved by %s. The database connection failed, using generated save code instead to avoid collisions. Use '/load %s' on %s to continue",
+						pSaveRequester, pCode[0] ? pCode : pGeneratedCode, pServerName);
+				}
+				break;
+			case SAVESTATE_ERROR:
+			case SAVESTATE_WARNING:
+				str_copy(aBuf, pError);
+				break;
+			default:
+				dbg_assert_failed("Unexpected save state %d", State);
+			}
+			GameServer()->SendChatTarget(MemberId, aBuf);
+		}
+	}
 }
 
 void CGameTeams::Reset()
@@ -51,7 +163,7 @@ void CGameTeams::Reset()
 		m_aTeamFlock[i] = false;
 		m_apSaveTeamResult[i] = nullptr;
 		m_aTeamSentStartWarning[i] = false;
-		if(m_pGameContext->PracticeByDefault())
+		if(PracticeByDefault())
 			m_aPractice[i] = true;
 		ResetRoundState(i);
 	}
@@ -62,14 +174,14 @@ void CGameTeams::ResetPlayer(int ClientId)
 	m_aPlayerState[ClientId] = CPlayerState{};
 }
 
-void CGameTeams::SaveLastTeleport(CCharacter *pCharacter)
+void CGameTeams::SaveLastTeleport(CCharacterDDRace *pCharacter)
 {
 	auto &LastTeleTee = m_aPlayerState[pCharacter->GetPlayer()->GetCid()].m_LastTeleTee;
 	LastTeleTee.emplace();
 	LastTeleTee->Save(pCharacter);
 }
 
-bool CGameTeams::LoadLastTeleport(CCharacter *pCharacter)
+bool CGameTeams::LoadLastTeleport(CCharacterDDRace *pCharacter)
 {
 	auto &LastTeleTee = m_aPlayerState[pCharacter->GetPlayer()->GetCid()].m_LastTeleTee;
 	if(!LastTeleTee.has_value())
@@ -84,7 +196,7 @@ void CGameTeams::ResetRoundState(int Team)
 	if(Team != TEAM_SUPER)
 		ResetSwitchers(Team);
 
-	if(!m_pGameContext->PracticeByDefault())
+	if(!PracticeByDefault())
 		m_aPractice[Team] = false;
 	m_aTeamUnfinishableKillTick[Team] = -1;
 	for(int i = 0; i < MAX_CLIENTS; i++)
@@ -454,7 +566,7 @@ bool CGameTeams::CanJoinTeam(int ClientId, int Team, char *pError, int ErrorSize
 		return false;
 	}
 	// No cheating through noob filter with practice and then leaving team
-	if(m_aPractice[CurrentTeam] && !m_pGameContext->PracticeByDefault())
+	if(m_aPractice[CurrentTeam] && !PracticeByDefault())
 	{
 		str_copy(pError, "You have used practice mode already", ErrorSize);
 		return false;
@@ -891,7 +1003,7 @@ void CGameTeams::OnFinish(CPlayer *pPlayer, int TimeTicks, const char *pTimestam
 		pData->m_RecordFinishTime = Time;
 	}
 
-	GameServer()->SendFinish(ClientId, Time, pData->m_BestTime);
+	GameServer()->RaceScore()->SendFinish(ClientId, Time, pData->m_BestTime);
 	bool CallSaveScore = g_Config.m_SvSaveWorseScores;
 	bool NeedToSendNewPersonalRecord = false;
 	if(!pData->m_BestTime || Time < pData->m_BestTime)
@@ -930,13 +1042,13 @@ void CGameTeams::OnFinish(CPlayer *pPlayer, int TimeTicks, const char *pTimestam
 		{
 			if(GameServer()->m_apPlayers[i] && GameServer()->m_apPlayers[i]->GetClientVersion() >= VERSION_DDRACE)
 			{
-				GameServer()->SendRecord(i);
+				GameServer()->RaceScore()->SendRecord(i);
 			}
 		}
 	}
 	if(!NeedToSendNewServerRecord && NeedToSendNewPersonalRecord && pPlayer->GetClientVersion() >= VERSION_DDRACE)
 	{
-		GameServer()->SendRecord(ClientId);
+		GameServer()->RaceScore()->SendRecord(ClientId);
 	}
 
 	int TTime = (int)Time;
@@ -1028,10 +1140,12 @@ void CGameTeams::RequestTeamSwap(CPlayer *pPlayer, CPlayer *pTargetPlayer, int T
 	m_aPlayerState[pPlayer->GetCid()].m_LastSwap = Server()->Tick();
 }
 
-void CGameTeams::SwapTeamCharacters(CPlayer *pPrimaryPlayer, CPlayer *pTargetPlayer, int Team)
+void CGameTeams::SwapTeamCharacters(CCharacterDDRace *pPrimaryCharacter, CCharacterDDRace *pTargetCharacter, int Team)
 {
-	if(!pPrimaryPlayer || !pTargetPlayer)
+	if(!pPrimaryCharacter || !pTargetCharacter)
 		return;
+	CPlayer *pPrimaryPlayer = pPrimaryCharacter->GetPlayer();
+	CPlayer *pTargetPlayer = pTargetCharacter->GetPlayer();
 
 	char aBuf[128];
 
@@ -1063,13 +1177,13 @@ void CGameTeams::SwapTeamCharacters(CPlayer *pPrimaryPlayer, CPlayer *pTargetPla
 	}
 
 	CSaveTee PrimarySavedTee;
-	PrimarySavedTee.Save(pPrimaryPlayer->GetCharacter());
+	PrimarySavedTee.Save(pPrimaryCharacter);
 
 	CSaveTee SecondarySavedTee;
-	SecondarySavedTee.Save(pTargetPlayer->GetCharacter());
+	SecondarySavedTee.Save(pTargetCharacter);
 
-	PrimarySavedTee.Load(pTargetPlayer->GetCharacter());
-	SecondarySavedTee.Load(pPrimaryPlayer->GetCharacter());
+	PrimarySavedTee.Load(pTargetCharacter);
+	SecondarySavedTee.Load(pPrimaryCharacter);
 
 	if(Team >= 1 && !m_aTeamFlock[Team])
 	{
@@ -1082,8 +1196,8 @@ void CGameTeams::SwapTeamCharacters(CPlayer *pPrimaryPlayer, CPlayer *pTargetPla
 	}
 	std::swap(m_aPlayerState[pPrimaryPlayer->GetCid()].m_TeeStarted, m_aPlayerState[pTargetPlayer->GetCid()].m_TeeStarted);
 	std::swap(m_aPlayerState[pPrimaryPlayer->GetCid()].m_TeeFinished, m_aPlayerState[pTargetPlayer->GetCid()].m_TeeFinished);
-	std::swap(pPrimaryPlayer->GetCharacter()->GetLastRescueTeeRef(RESCUEMODE_AUTO), pTargetPlayer->GetCharacter()->GetLastRescueTeeRef(RESCUEMODE_AUTO));
-	std::swap(pPrimaryPlayer->GetCharacter()->GetLastRescueTeeRef(RESCUEMODE_MANUAL), pTargetPlayer->GetCharacter()->GetLastRescueTeeRef(RESCUEMODE_MANUAL));
+	std::swap(pPrimaryCharacter->GetLastRescueTeeRef(RESCUEMODE_AUTO), pTargetCharacter->GetLastRescueTeeRef(RESCUEMODE_AUTO));
+	std::swap(pPrimaryCharacter->GetLastRescueTeeRef(RESCUEMODE_MANUAL), pTargetCharacter->GetLastRescueTeeRef(RESCUEMODE_MANUAL));
 
 	GameServer()->m_World.SwapClients(pPrimaryPlayer->GetCid(), pTargetPlayer->GetCid());
 
@@ -1170,7 +1284,7 @@ void CGameTeams::ProcessSaveTeam()
 
 		if(State != -1)
 		{
-			GameServer()->SendSaveCode(
+			SendSaveCode(
 				Team,
 				Size,
 				State,
@@ -1315,7 +1429,7 @@ void CGameTeams::OnCharacterDeath(int ClientId, int Weapon)
 		{
 			ChangeTeamState(Team, ETeamState::OPEN);
 
-			if(!m_pGameContext->PracticeByDefault())
+			if(!PracticeByDefault())
 			{
 				if(!g_Config.m_SvPauseable)
 				{
@@ -1518,13 +1632,13 @@ void CGameTeams::SetPractice(int Team, bool Enabled)
 	m_aPractice[Team] = Enabled;
 }
 
-bool CGameTeams::IsPractice(int Team)
+bool CGameTeams::IsPractice(int Team) const
 {
 	if(!IsValidTeamNumber(Team))
 		return false;
 	if(g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO && Team == TEAM_FLOCK)
 	{
-		if(GameServer()->PracticeByDefault())
+		if(PracticeByDefault())
 			return true;
 
 		return false;

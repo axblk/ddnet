@@ -49,8 +49,8 @@ CProjectile::CProjectile(
 	m_TuneZone = GameServer()->Collision()->IsTune(GameServer()->Collision()->GetMapIndex(m_Pos));
 
 	CCharacter *pOwnerChar = GameServer()->GetPlayerChar(m_Owner);
-	m_BelongsToPracticeTeam = pOwnerChar && pOwnerChar->HasRaceTeams() && pOwnerChar->RaceTeams()->IsPractice(pOwnerChar->Team());
-	m_DDRaceTeam = m_Owner == -1 || !GameServer()->HasRaceTeams() ? TEAM_FLOCK : GameServer()->GetDDRaceTeam(m_Owner);
+	m_OwnerTeamGroup = m_Owner == -1 || !GameServer()->m_pController->UsesRaceTeams() ? TEAM_FLOCK : GameServer()->m_pController->PlayerTeamGroup(m_Owner);
+	m_BelongsToPracticeTeam = pOwnerChar && GameServer()->m_pController->IsTeamPractice(m_OwnerTeamGroup);
 	m_IsSolo = pOwnerChar && pOwnerChar->GetCore().m_Solo;
 
 	GameWorld()->InsertEntity(this);
@@ -475,9 +475,9 @@ void CProjectile::SwapClients(int Client1, int Client2)
 
 bool CProjectile::CanCollide(int ClientId)
 {
-	if(!GameServer()->HasRaceTeams())
+	if(!GameServer()->m_pController->UsesRaceTeams())
 		return true;
-	if(m_DDRaceTeam != GameServer()->GetDDRaceTeam(ClientId))
+	if(m_OwnerTeamGroup != GameServer()->m_pController->PlayerTeamGroup(ClientId))
 		return false;
 	if(m_IsSolo)
 		return m_Owner == ClientId;

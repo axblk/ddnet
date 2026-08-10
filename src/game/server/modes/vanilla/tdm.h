@@ -9,7 +9,7 @@ public:
 	CGameControllerVanillaTDM(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 
 	static void ApplyTeamDeathScore(std::array<int, NUM_TEAMS> &aTeamScores, int VictimTeam, int KillerTeam, int Weapon, bool SelfKill);
-	int OnCharacterDeath(CCharacter *pVictim, CPlayer *pKiller, int Weapon) override;
+	void OnCharacterDeath(const CGameCharacterDeathContext &Context) override;
 	void Tick() override;
 
 protected:

@@ -12,6 +12,7 @@
 
 #include <game/server/entities/character.h>
 #include <game/server/gamecontext.h>
+#include <game/server/gamemodes/ddrace_character.h>
 #include <game/server/gamemodes/ddnet.h>
 #include <game/team_state.h>
 
@@ -19,7 +20,7 @@
 
 CSaveTee::CSaveTee() = default;
 
-void CSaveTee::Save(CCharacter *pChr, bool AddPenalty)
+void CSaveTee::Save(CCharacterDDRace *pChr, bool AddPenalty)
 {
 	m_ClientId = pChr->m_pPlayer->GetCid();
 	str_copy(m_aName, pChr->Server()->ClientName(m_ClientId));
@@ -139,7 +140,7 @@ void CSaveTee::Save(CCharacter *pChr, bool AddPenalty)
 	FormatUuid(pChr->GameServer()->GameUuid(), m_aGameUuid, sizeof(m_aGameUuid));
 }
 
-bool CSaveTee::Load(CCharacter *pChr, std::optional<int> Team)
+bool CSaveTee::Load(CCharacterDDRace *pChr, std::optional<int> Team)
 {
 	bool Valid = true;
 
@@ -527,7 +528,7 @@ bool CSaveTee::IsHooking() const
 	return m_HookState == HOOK_GRABBED || m_HookState == HOOK_FLYING;
 }
 
-void CSaveHotReloadTee::Save(CCharacter *pChr, bool AddPenalty)
+void CSaveHotReloadTee::Save(CCharacterDDRace *pChr, bool AddPenalty)
 {
 	m_SaveTee.Save(pChr, AddPenalty);
 	m_Super = pChr->m_Core.m_Super;
@@ -537,7 +538,7 @@ void CSaveHotReloadTee::Save(CCharacter *pChr, bool AddPenalty)
 	m_LastDeath = PlayerState.m_LastDeath;
 }
 
-bool CSaveHotReloadTee::Load(CCharacter *pChr, int Team)
+bool CSaveHotReloadTee::Load(CCharacterDDRace *pChr, int Team)
 {
 	bool Result = m_SaveTee.Load(pChr, Team);
 	pChr->SetSuper(m_Super);
@@ -593,8 +594,8 @@ ESaveResult CSaveTeam::Save(CGameContext *pGameServer, int Team, bool Dry, bool 
 	m_pSavedTees = new CSaveTee[m_MembersCount];
 	int aPlayerCids[MAX_CLIENTS];
 	int j = 0;
-	CCharacter *p = (CCharacter *)pGameServer->m_World.FindFirst(CGameWorld::ENTTYPE_CHARACTER);
-	for(; p; p = (CCharacter *)p->TypeNext())
+	CCharacterDDRace *p = static_cast<CCharacterDDRace *>(pGameServer->m_World.FindFirst(CGameWorld::ENTTYPE_CHARACTER));
+	for(; p; p = static_cast<CCharacterDDRace *>(p->TypeNext()))
 	{
 		if(pTeams->m_Core.Team(p->GetPlayer()->GetCid()) != Team)
 			continue;
@@ -679,7 +680,7 @@ bool CSaveTeam::Load(CGameContext *pGameServer, int Team, bool KeepCurrentWeakSt
 			aPlayerCids[i] = ClientId;
 			if(pGameServer->m_apPlayers[ClientId] && pTeams->m_Core.Team(ClientId) == Team)
 			{
-				CCharacter *pChr = MatchCharacter(pGameServer, m_pSavedTees[i].GetClientId(), i, KeepCurrentWeakStrong);
+				CCharacterDDRace *pChr = MatchCharacter(pGameServer, m_pSavedTees[i].GetClientId(), i, KeepCurrentWeakStrong);
 				ContainsInvalidPlayer |= !m_pSavedTees[i].Load(pChr, Team);
 			}
 		}
@@ -702,15 +703,15 @@ bool CSaveTeam::Load(CGameContext *pGameServer, int Team, bool KeepCurrentWeakSt
 	return !ContainsInvalidPlayer;
 }
 
-CCharacter *CSaveTeam::MatchCharacter(CGameContext *pGameServer, int ClientId, int SaveId, bool KeepCurrentCharacter) const
+CCharacterDDRace *CSaveTeam::MatchCharacter(CGameContext *pGameServer, int ClientId, int SaveId, bool KeepCurrentCharacter) const
 {
 	if(KeepCurrentCharacter && pGameServer->m_apPlayers[ClientId]->GetCharacter())
 	{
 		// keep old character to retain current weak/strong order
-		return pGameServer->m_apPlayers[ClientId]->GetCharacter();
+		return static_cast<CCharacterDDRace *>(pGameServer->m_apPlayers[ClientId]->GetCharacter());
 	}
 	pGameServer->m_apPlayers[ClientId]->KillCharacter(WEAPON_GAME);
-	return pGameServer->m_apPlayers[ClientId]->ForceSpawn(m_pSavedTees[SaveId].GetPos());
+	return static_cast<CCharacterDDRace *>(pGameServer->m_apPlayers[ClientId]->ForceSpawn(m_pSavedTees[SaveId].GetPos()));
 }
 
 char *CSaveTeam::GetString()

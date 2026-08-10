@@ -53,7 +53,7 @@ private:
 	bool m_Freeze;
 	int m_TuneZone;
 	bool m_BelongsToPracticeTeam;
-	int m_DDRaceTeam;
+	int m_OwnerTeamGroup;
 	bool m_IsSolo;
 	vec2 m_InitDir;
 

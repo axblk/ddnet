@@ -62,19 +62,20 @@ namespace
 			m_aCatcherIds.fill(-1);
 		}
 
-		int OnCharacterDeath(CCharacter *pVictim, CPlayer *pKiller, int Weapon) override
+		void OnCharacterDeath(const CGameCharacterDeathContext &Context) override
 		{
+			CCharacter *pVictim = Context.m_pVictim;
+			CPlayer *pKiller = Context.m_pKiller;
 			const int VictimId = pVictim->GetPlayer()->GetCid();
 			const int KillerId = pKiller ? pKiller->GetCid() : -1;
-			const int Result = CBase::OnCharacterDeath(pVictim, pKiller, Weapon);
 
 			ReleaseCaughtBy(VictimId);
-			if(Weapon != WEAPON_GAME && KillerId >= 0 && KillerId < MAX_CLIENTS && KillerId != VictimId && !IsCaught(KillerId) && pKiller->GetTeam() != TEAM_SPECTATORS)
+			if(Context.m_Weapon != WEAPON_GAME && KillerId >= 0 && KillerId < MAX_CLIENTS && KillerId != VictimId && !IsCaught(KillerId) && pKiller->GetTeam() != TEAM_SPECTATORS)
 			{
 				m_aCatcherIds[VictimId] = KillerId;
 				pVictim->GetPlayer()->SetSpectatorId(KillerId);
 			}
-			return Result;
+			CBase::OnCharacterDeath(Context);
 		}
 
 		bool IsPlayerDeadSpectator(int ClientId) const override

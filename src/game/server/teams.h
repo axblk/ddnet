@@ -14,6 +14,7 @@
 #include <optional>
 
 class CCharacter;
+class CCharacterDDRace;
 class CPlayer;
 struct CScoreSaveResult;
 
@@ -125,8 +126,8 @@ public:
 	void ResetPlayer(int ClientId);
 	void ResetRoundState(int Team);
 	void ResetSwitchers(int Team);
-	void SaveLastTeleport(CCharacter *pCharacter);
-	bool LoadLastTeleport(CCharacter *pCharacter);
+	void SaveLastTeleport(CCharacterDDRace *pCharacter);
+	bool LoadLastTeleport(CCharacterDDRace *pCharacter);
 
 	void SendTeamsState(int ClientId);
 	void SetTeamLock(int Team, bool Lock);
@@ -143,9 +144,10 @@ public:
 	void KillCharacterOrTeam(int ClientId, int Team);
 	void ResetSavedTeam(int ClientId, int Team);
 	void RequestTeamSwap(CPlayer *pPlayer, CPlayer *pTargetPlayer, int Team);
-	void SwapTeamCharacters(CPlayer *pPrimaryPlayer, CPlayer *pTargetPlayer, int Team);
+	void SwapTeamCharacters(CCharacterDDRace *pPrimaryCharacter, CCharacterDDRace *pTargetCharacter, int Team);
 	void CancelTeamSwap(CPlayer *pPlayer, int Team);
 	void ProcessSaveTeam();
+	void SendSaveCode(int Team, int TeamSize, int State, const char *pError, const char *pSaveRequester, const char *pServerName, const char *pGeneratedCode, const char *pCode);
 	std::optional<int> GetFirstEmptyTeam() const;
 	bool TeeStarted(int ClientId) const;
 	bool TeeFinished(int ClientId) const;
@@ -159,7 +161,8 @@ public:
 	void SetSaving(int TeamId, std::shared_ptr<CScoreSaveResult> &SaveResult);
 	bool GetSaving(int TeamId) const;
 	void SetPractice(int Team, bool Enabled);
-	bool IsPractice(int Team);
+	bool IsPractice(int Team) const;
+	bool PracticeByDefault() const;
 	bool IsValidTeamNumber(int Team) const;
 	CPlayerState &PlayerState(int ClientId) { return m_aPlayerState[ClientId]; }
 	const CPlayerState &PlayerState(int ClientId) const { return m_aPlayerState[ClientId]; }

@@ -2,8 +2,11 @@
 
 #include "ddrace_map_entities.h"
 
+#include <base/dbg.h>
+#include <base/log.h>
 #include <base/math.h>
 #include <base/net.h>
+#include <base/str.h>
 #include <base/time.h>
 
 #include <engine/server.h>
@@ -15,23 +18,1345 @@
 #include <game/server/gamecontext.h>
 #include <game/server/interactions.h>
 #include <game/server/player.h>
+#include <game/server/save.h>
 #include <game/server/score.h>
 #include <game/server/teams.h>
 
 #include <algorithm>
+#include <array>
+#include <memory>
+
+namespace
+{
+	CCharacterDDRace *DDRaceCharacter(CCharacter *pCharacter)
+	{
+		// The covariant factory return type requires all DDRace-derived modes to keep this invariant.
+		return static_cast<CCharacterDDRace *>(pCharacter);
+	}
+
+	class CDDRaceMapReloadState final : public IGameModeMapReloadState
+	{
+		std::array<std::unique_ptr<CSaveTeam>, MAX_CLIENTS> m_apSavedTeams;
+		std::array<std::unique_ptr<CSaveHotReloadTee>, MAX_CLIENTS> m_apSavedTees;
+		std::array<int, MAX_CLIENTS> m_aTeamMapping;
+
+	public:
+		explicit CDDRaceMapReloadState(CGameContext *pGameServer)
+		{
+			m_aTeamMapping.fill(-1);
+			for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+			{
+				CCharacterDDRace *pCharacter = DDRaceCharacter(pGameServer->GetPlayerChar(ClientId));
+				if(!pCharacter)
+					continue;
+
+				m_apSavedTees[ClientId] = std::make_unique<CSaveHotReloadTee>();
+				m_apSavedTees[ClientId]->Save(pCharacter, false);
+
+				int Team = pGameServer->RaceTeams()->m_Core.Team(ClientId);
+				if(Team == TEAM_SUPER)
+					Team = pCharacter->TeamBeforeSuper();
+				m_aTeamMapping[ClientId] = Team;
+
+				if(!m_apSavedTeams[Team])
+				{
+					m_apSavedTeams[Team] = std::make_unique<CSaveTeam>();
+					m_apSavedTeams[Team]->Save(pGameServer, Team, true, true);
+				}
+			}
+		}
+
+		void RestoreCharacter(CGameContext *pGameServer, CCharacterDDRace *pCharacter)
+		{
+			const int ClientId = pCharacter->GetPlayer()->GetCid();
+			const int Team = m_aTeamMapping[ClientId];
+			if(Team == -1)
+				return;
+
+			pGameServer->RaceTeams()->SetForceCharacterTeam(ClientId, Team);
+			m_aTeamMapping[ClientId] = -1;
+
+			if(m_apSavedTeams[Team])
+			{
+				m_apSavedTeams[Team]->Load(pGameServer, Team, true, true);
+				m_apSavedTeams[Team].reset();
+			}
+
+			if(m_apSavedTees[ClientId])
+			{
+				m_apSavedTees[ClientId]->Load(pCharacter, Team);
+				m_apSavedTees[ClientId].reset();
+			}
+		}
+
+		void DiscardClient(int ClientId) override
+		{
+			const int Team = m_aTeamMapping[ClientId];
+			m_aTeamMapping[ClientId] = -1;
+			m_apSavedTees[ClientId].reset();
+
+			if(Team < 0 || Team >= MAX_CLIENTS)
+				return;
+			for(const int MappedTeam : m_aTeamMapping)
+			{
+				if(MappedTeam == Team)
+					return;
+			}
+			m_apSavedTeams[Team].reset();
+		}
+	};
+
+	struct CCommandRegistration
+	{
+		const char *m_pName;
+		const char *m_pParams;
+		int m_Flags;
+		IConsole::FCommandCallback m_pfnCallback;
+		const char *m_pHelp;
+	};
+
+	void ConTeamTop5(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		if(g_Config.m_SvHideScore)
+		{
+			log_info("chatresp", "Showing the team top 5 is not allowed on this server.");
+			return;
+		}
+
+		if(pResult->NumArguments() == 0)
+		{
+			pGameServer->RaceScore()->ShowTeamTop5(pResult->m_ClientId, 1);
+		}
+		else if(pResult->NumArguments() == 1)
+		{
+			if(pResult->GetInteger(0) != 0)
+			{
+				pGameServer->RaceScore()->ShowTeamTop5(pResult->m_ClientId, pResult->GetInteger(0));
+			}
+			else
+			{
+				const char *pRequestedName = str_comp_nocase(pResult->GetString(0), "me") == 0 ?
+					pGameServer->Server()->ClientName(pResult->m_ClientId) :
+					pResult->GetString(0);
+				pGameServer->RaceScore()->ShowPlayerTeamTop5(pResult->m_ClientId, pRequestedName, 0);
+			}
+		}
+		else if(pResult->NumArguments() == 2 && pResult->GetInteger(1) != 0)
+		{
+			const char *pRequestedName = str_comp_nocase(pResult->GetString(0), "me") == 0 ?
+				pGameServer->Server()->ClientName(pResult->m_ClientId) :
+				pResult->GetString(0);
+			pGameServer->RaceScore()->ShowPlayerTeamTop5(pResult->m_ClientId, pRequestedName, pResult->GetInteger(1));
+		}
+		else
+		{
+			log_info("chatresp", "/top5team needs 0, 1 or 2 parameter. 1. = name, 2. = start number");
+			log_info("chatresp", "Example: /top5team, /top5team me, /top5team Hans, /top5team \"Papa Smurf\" 5");
+			log_info("chatresp", "Bad: /top5team Papa Smurf 5 # Good: /top5team \"Papa Smurf\" 5 ");
+		}
+	}
+
+	void ConTop(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		if(g_Config.m_SvHideScore)
+		{
+			log_info("chatresp", "Showing the top is not allowed on this server.");
+			return;
+		}
+
+		if(pResult->NumArguments() > 0)
+			pGameServer->RaceScore()->ShowTop(pResult->m_ClientId, pResult->GetInteger(0));
+		else
+			pGameServer->RaceScore()->ShowTop(pResult->m_ClientId);
+	}
+
+	void ConTimes(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		int Offset = 1;
+		const char *pRequestedName = nullptr;
+
+		if(pResult->NumArguments() == 1)
+		{
+			if(pResult->GetInteger(0) != 0)
+				Offset = pResult->GetInteger(0);
+			else
+				pRequestedName = pResult->GetString(0);
+		}
+		else if(pResult->NumArguments() == 2)
+		{
+			pRequestedName = pResult->GetString(0);
+			Offset = pResult->GetInteger(1);
+		}
+		else if(pResult->NumArguments() > 2)
+		{
+			log_info("chatresp", "/times needs 0, 1 or 2 parameter. 1. = name, 2. = start number");
+			log_info("chatresp", "Example: /times, /times me, /times Hans, /times \"Papa Smurf\" 5");
+			log_info("chatresp", "Bad: /times Papa Smurf 5 # Good: /times \"Papa Smurf\" 5 ");
+			return;
+		}
+
+		if(g_Config.m_SvHideScore)
+		{
+			if(pRequestedName && str_comp_nocase(pRequestedName, "me") != 0 && str_comp_nocase(pRequestedName, pGameServer->Server()->ClientName(pResult->m_ClientId)) != 0)
+			{
+				log_info("chatresp", "Showing the times of others is not allowed on this server.");
+				return;
+			}
+			pRequestedName = pGameServer->Server()->ClientName(pResult->m_ClientId);
+			pGameServer->RaceScore()->ShowTimes(pResult->m_ClientId, pRequestedName, Offset);
+		}
+		else if(!pRequestedName)
+		{
+			pGameServer->RaceScore()->ShowTimes(pResult->m_ClientId, Offset);
+		}
+		else
+		{
+			if(str_comp_nocase(pRequestedName, "me") == 0)
+				pRequestedName = pGameServer->Server()->ClientName(pResult->m_ClientId);
+			pGameServer->RaceScore()->ShowTimes(pResult->m_ClientId, pRequestedName, Offset);
+		}
+	}
+
+	void ConTeamRank(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		if(pResult->NumArguments() > 0)
+		{
+			if(!g_Config.m_SvHideScore)
+				pGameServer->RaceScore()->ShowTeamRank(pResult->m_ClientId, pResult->GetString(0));
+			else
+				log_info("chatresp", "Showing the team rank of other players is not allowed on this server.");
+		}
+		else
+		{
+			pGameServer->RaceScore()->ShowTeamRank(pResult->m_ClientId, pGameServer->Server()->ClientName(pResult->m_ClientId));
+		}
+	}
+
+	void ConRank(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		if(pResult->NumArguments() > 0)
+		{
+			if(!g_Config.m_SvHideScore)
+				pGameServer->RaceScore()->ShowRank(pResult->m_ClientId, pResult->GetString(0));
+			else
+				log_info("chatresp", "Showing the rank of other players is not allowed on this server.");
+		}
+		else
+		{
+			pGameServer->RaceScore()->ShowRank(pResult->m_ClientId, pGameServer->Server()->ClientName(pResult->m_ClientId));
+		}
+	}
+
+	void ConPoints(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		if(pResult->NumArguments() > 0)
+		{
+			if(!g_Config.m_SvHideScore)
+				pGameServer->RaceScore()->ShowPoints(pResult->m_ClientId, pResult->GetString(0));
+			else
+				log_info("chatresp", "Showing the global points of other players is not allowed on this server.");
+		}
+		else
+		{
+			pGameServer->RaceScore()->ShowPoints(pResult->m_ClientId, pGameServer->Server()->ClientName(pResult->m_ClientId));
+		}
+	}
+
+	void ConTopPoints(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		if(g_Config.m_SvHideScore)
+		{
+			log_info("chatresp", "Showing the global top points is not allowed on this server.");
+			return;
+		}
+
+		if(pResult->NumArguments() > 0)
+			pGameServer->RaceScore()->ShowTopPoints(pResult->m_ClientId, pResult->GetInteger(0));
+		else
+			pGameServer->RaceScore()->ShowTopPoints(pResult->m_ClientId);
+	}
+
+	void ConTimeCp(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		if(g_Config.m_SvHideScore)
+		{
+			log_info("chatresp", "Showing the checkpoint times is not allowed on this server.");
+			return;
+		}
+
+		if(!pGameServer->m_apPlayers[pResult->m_ClientId])
+			return;
+
+		pGameServer->RaceScore()->LoadPlayerTimeCp(pResult->m_ClientId, pResult->GetString(0));
+	}
+
+	void ConSettings(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+
+		if(pResult->NumArguments() == 0)
+		{
+			log_info("chatresp", "to check a server setting say /settings and setting's name, setting names are:");
+			log_info("chatresp", "teams, cheats, collision, hooking, endlesshooking,");
+			log_info("chatresp", "hitting, oldlaser, timeout, votes, pause and scores");
+			return;
+		}
+
+		const char *pArg = pResult->GetString(0);
+		char aBuf[256];
+		float ColTemp;
+		float HookTemp;
+		pGameServer->GlobalTuning()->Get("player_collision", &ColTemp);
+		pGameServer->GlobalTuning()->Get("player_hooking", &HookTemp);
+		if(str_comp_nocase(pArg, "teams") == 0)
+		{
+			str_format(aBuf, sizeof(aBuf), "%s %s",
+				g_Config.m_SvTeam == SV_TEAM_ALLOWED ?
+					"Teams are available on this server" :
+				(g_Config.m_SvTeam == SV_TEAM_FORBIDDEN || g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO) ?
+					"Teams are not available on this server" :
+					"You have to be in a team to play on this server",
+				"and all of your team will die if the team is locked");
+			log_info("chatresp", "%s", aBuf);
+		}
+		else if(str_comp_nocase(pArg, "cheats") == 0)
+		{
+			log_info("chatresp", g_Config.m_SvTestingCommands ? "Cheats are enabled on this server" : "Cheats are disabled on this server");
+		}
+		else if(str_comp_nocase(pArg, "collision") == 0)
+		{
+			log_info("chatresp", ColTemp ? "Players can collide on this server" : "Players can't collide on this server");
+		}
+		else if(str_comp_nocase(pArg, "hooking") == 0)
+		{
+			log_info("chatresp", HookTemp ? "Players can hook each other on this server" : "Players can't hook each other on this server");
+		}
+		else if(str_comp_nocase(pArg, "endlesshooking") == 0)
+		{
+			log_info("chatresp", g_Config.m_SvEndlessDrag ? "Players hook time is unlimited" : "Players hook time is limited");
+		}
+		else if(str_comp_nocase(pArg, "hitting") == 0)
+		{
+			log_info("chatresp", g_Config.m_SvHit ? "Players weapons affect others" : "Players weapons has no affect on others");
+		}
+		else if(str_comp_nocase(pArg, "oldlaser") == 0)
+		{
+			log_info("chatresp", g_Config.m_SvOldLaser ?
+						     "Lasers can hit you if you shot them and they pull you towards the bounce origin (Like DDRace Beta)" :
+						     "Lasers can't hit you if you shot them, and they pull others towards the shooter");
+		}
+		else if(str_comp_nocase(pArg, "timeout") == 0)
+		{
+			str_format(aBuf, sizeof(aBuf), "The Server Timeout is currently set to %d seconds", g_Config.m_ConnTimeout);
+			log_info("chatresp", "%s", aBuf);
+		}
+		else if(str_comp_nocase(pArg, "votes") == 0)
+		{
+			log_info("chatresp", g_Config.m_SvVoteKick ? "Players can use Callvote menu tab to kick offenders" : "Players can't use the Callvote menu tab to kick offenders");
+			if(g_Config.m_SvVoteKick)
+			{
+				str_format(aBuf, sizeof(aBuf), "Players are banned for %d minute(s) if they get voted off", g_Config.m_SvVoteKickBantime);
+				log_info("chatresp", "%s", g_Config.m_SvVoteKickBantime ? aBuf : "Players are just kicked and not banned if they get voted off");
+			}
+		}
+		else if(str_comp_nocase(pArg, "pause") == 0)
+		{
+			log_info("chatresp", g_Config.m_SvPauseable ? "/spec will pause you and your tee will vanish" : "/spec will pause you but your tee will not vanish");
+		}
+		else if(str_comp_nocase(pArg, "scores") == 0)
+		{
+			log_info("chatresp", g_Config.m_SvHideScore ? "Scores are private on this server" : "Scores are public on this server");
+		}
+		else
+		{
+			log_info("chatresp", "no matching settings found, type /settings to view them");
+		}
+	}
+
+	void ToggleSpecPause(IConsole::IResult *pResult, void *pUserData, int PauseType)
+	{
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		IServer *pServer = pGameServer->Server();
+		CPlayer *pPlayer = pGameServer->m_apPlayers[pResult->m_ClientId];
+		if(!pPlayer)
+			return;
+
+		int PauseState = pPlayer->IsPaused();
+		if(PauseState > 0)
+		{
+			char aBuf[128];
+			str_format(aBuf, sizeof(aBuf), "You are force-paused for %d seconds.", (PauseState - pServer->Tick()) / pServer->TickSpeed());
+			log_info("chatresp", "%s", aBuf);
+		}
+		else if(pResult->NumArguments() > 0)
+		{
+			if(-PauseState == PauseType && pPlayer->SpectatorId() != pResult->m_ClientId && pServer->ClientIngame(pPlayer->SpectatorId()) && !str_comp(pServer->ClientName(pPlayer->SpectatorId()), pResult->GetString(0)))
+			{
+				pPlayer->Pause(CPlayer::PAUSE_NONE, false);
+			}
+			else
+			{
+				pPlayer->Pause(PauseType, false);
+				pPlayer->SpectatePlayerName(pResult->GetString(0));
+			}
+		}
+		else if(-PauseState != CPlayer::PAUSE_NONE && PauseType != CPlayer::PAUSE_NONE)
+		{
+			pPlayer->Pause(CPlayer::PAUSE_NONE, false);
+		}
+		else if(-PauseState != PauseType)
+		{
+			pPlayer->Pause(PauseType, false);
+		}
+	}
+
+	void ToggleSpecPauseVoted(IConsole::IResult *pResult, void *pUserData, int PauseType)
+	{
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		CPlayer *pPlayer = pGameServer->m_apPlayers[pResult->m_ClientId];
+		if(!pPlayer)
+			return;
+
+		int PauseState = pPlayer->IsPaused();
+		if(PauseState > 0)
+		{
+			IServer *pServer = pGameServer->Server();
+			char aBuf[128];
+			str_format(aBuf, sizeof(aBuf), "You are force-paused for %d seconds.", (PauseState - pServer->Tick()) / pServer->TickSpeed());
+			log_info("chatresp", "%s", aBuf);
+			return;
+		}
+
+		bool IsPlayerBeingVoted = pGameServer->m_VoteCloseTime &&
+			(pGameServer->IsKickVote() || pGameServer->IsSpecVote()) &&
+			pResult->m_ClientId != pGameServer->m_VoteVictim;
+		if((!IsPlayerBeingVoted && -PauseState == PauseType) ||
+			(IsPlayerBeingVoted && PauseState && pPlayer->SpectatorId() == pGameServer->m_VoteVictim))
+		{
+			pPlayer->Pause(CPlayer::PAUSE_NONE, false);
+		}
+		else
+		{
+			pPlayer->Pause(PauseType, false);
+			if(IsPlayerBeingVoted)
+				pPlayer->SetSpectatorId(pGameServer->m_VoteVictim);
+		}
+	}
+
+	void ConToggleSpec(IConsole::IResult *pResult, void *pUserData)
+	{
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		CPlayer *pPlayer = pGameServer->m_apPlayers[pResult->m_ClientId];
+		if(!pPlayer)
+			return;
+
+		int PauseType = g_Config.m_SvPauseable ? CPlayer::PAUSE_SPEC : CPlayer::PAUSE_PAUSED;
+		if(pPlayer->GetCharacter())
+		{
+			CGameTeams &Teams = *pGameServer->RaceTeams();
+			if(Teams.IsPractice(Teams.m_Core.Team(pResult->m_ClientId)))
+				PauseType = CPlayer::PAUSE_SPEC;
+		}
+
+		ToggleSpecPause(pResult, pUserData, PauseType);
+	}
+
+	void ConToggleSpecVoted(IConsole::IResult *pResult, void *pUserData)
+	{
+		ToggleSpecPauseVoted(pResult, pUserData, g_Config.m_SvPauseable ? CPlayer::PAUSE_SPEC : CPlayer::PAUSE_PAUSED);
+	}
+
+	void ConTogglePause(IConsole::IResult *pResult, void *pUserData)
+	{
+		ToggleSpecPause(pResult, pUserData, CPlayer::PAUSE_PAUSED);
+	}
+
+	void ConTogglePauseVoted(IConsole::IResult *pResult, void *pUserData)
+	{
+		ToggleSpecPauseVoted(pResult, pUserData, CPlayer::PAUSE_PAUSED);
+	}
+
+	void ConNinjaJetpack(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		CPlayer *pPlayer = pGameServer->m_apPlayers[pResult->m_ClientId];
+		if(!pPlayer)
+			return;
+		if(pResult->NumArguments())
+			pPlayer->m_NinjaJetpack = pResult->GetInteger(0);
+		else
+			pPlayer->m_NinjaJetpack = !pPlayer->m_NinjaJetpack;
+	}
+
+	void ConShowOthers(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		CPlayer *pPlayer = pGameServer->m_apPlayers[pResult->m_ClientId];
+		if(!pPlayer)
+			return;
+		auto &ShowOthers = pGameServer->RaceTeams()->PlayerState(pResult->m_ClientId).m_ShowOthers;
+		if(g_Config.m_SvShowOthers)
+		{
+			if(pResult->NumArguments())
+				ShowOthers = pResult->GetInteger(0);
+			else
+				ShowOthers = !ShowOthers;
+		}
+		else
+			log_info("chatresp", "Showing players from other teams is disabled");
+	}
+
+	void ConSpecTeam(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		CPlayer *pPlayer = pGameServer->m_apPlayers[pResult->m_ClientId];
+		if(!pPlayer)
+			return;
+		auto &SpecTeam = pGameServer->RaceTeams()->PlayerState(pResult->m_ClientId).m_SpecTeam;
+
+		if(pResult->NumArguments())
+			SpecTeam = pResult->GetInteger(0);
+		else
+			SpecTeam = !SpecTeam;
+	}
+
+	void ConSayTime(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		int ClientId;
+		char aBufName[MAX_NAME_LENGTH];
+		if(pResult->NumArguments() > 0)
+		{
+			ClientId = pGameServer->FindClientIdByName(pResult->GetString(0)).value_or(-1);
+			if(ClientId == -1)
+				return;
+
+			str_format(aBufName, sizeof(aBufName), "%s's", pGameServer->Server()->ClientName(ClientId));
+		}
+		else
+		{
+			str_copy(aBufName, "Your");
+			ClientId = pResult->m_ClientId;
+		}
+
+		CPlayer *pPlayer = pGameServer->m_apPlayers[ClientId];
+		if(!pPlayer)
+			return;
+		CCharacter *pCharacter = pPlayer->GetCharacter();
+		if(!pCharacter || pCharacter->m_DDRaceState != ERaceState::STARTED)
+			return;
+
+		char aBufTime[32];
+		char aBuf[64];
+		int64_t Time = (int64_t)100 * (float)(pGameServer->Server()->Tick() - pCharacter->m_StartTime) / ((float)pGameServer->Server()->TickSpeed());
+		str_time(Time, ETimeFormat::HOURS, aBufTime, sizeof(aBufTime));
+		str_format(aBuf, sizeof(aBuf), "%s current race time is %s", aBufName, aBufTime);
+		log_info("chatresp", "%s", aBuf);
+	}
+
+	void ConSayTimeAll(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		CPlayer *pPlayer = pGameServer->m_apPlayers[pResult->m_ClientId];
+		if(!pPlayer)
+			return;
+		CCharacter *pCharacter = pPlayer->GetCharacter();
+		if(!pCharacter || pCharacter->m_DDRaceState != ERaceState::STARTED)
+			return;
+
+		char aBufTime[32];
+		char aBuf[64];
+		int64_t Time = (int64_t)100 * (float)(pGameServer->Server()->Tick() - pCharacter->m_StartTime) / ((float)pGameServer->Server()->TickSpeed());
+		const char *pName = pGameServer->Server()->ClientName(pResult->m_ClientId);
+		str_time(Time, ETimeFormat::HOURS, aBufTime, sizeof(aBufTime));
+		str_format(aBuf, sizeof(aBuf), "%s's current race time is %s", pName, aBufTime);
+		pGameServer->SendChat(-1, TEAM_ALL, aBuf, pResult->m_ClientId);
+	}
+
+	void ConTime(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		CPlayer *pPlayer = pGameServer->m_apPlayers[pResult->m_ClientId];
+		if(!pPlayer)
+			return;
+		CCharacter *pCharacter = pPlayer->GetCharacter();
+		if(!pCharacter)
+			return;
+
+		char aBufTime[32];
+		char aBuf[64];
+		int64_t Time = (int64_t)100 * (float)(pGameServer->Server()->Tick() - pCharacter->m_StartTime) / ((float)pGameServer->Server()->TickSpeed());
+		str_time(Time, ETimeFormat::HOURS, aBufTime, sizeof(aBufTime));
+		str_format(aBuf, sizeof(aBuf), "Your time is %s", aBufTime);
+		pGameServer->SendBroadcast(aBuf, pResult->m_ClientId);
+	}
+
+	static const char s_aaTimerTypeMessage[4][128] = {"game/round timer.", "broadcast.", "both game/round timer and broadcast.", "racetime."};
+
+	void ConSetTimerType(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		CPlayer *pPlayer = pGameServer->m_apPlayers[pResult->m_ClientId];
+		if(!pPlayer)
+			return;
+
+		char aBuf[128];
+		if(pResult->NumArguments() > 0)
+		{
+			int OldType = pPlayer->m_TimerType;
+			bool Result = false;
+
+			if(str_comp_nocase(pResult->GetString(0), "default") == 0)
+				Result = pPlayer->SetTimerType(CPlayer::TIMERTYPE_DEFAULT);
+			else if(str_comp_nocase(pResult->GetString(0), "gametimer") == 0)
+				Result = pPlayer->SetTimerType(CPlayer::TIMERTYPE_GAMETIMER);
+			else if(str_comp_nocase(pResult->GetString(0), "broadcast") == 0)
+				Result = pPlayer->SetTimerType(CPlayer::TIMERTYPE_BROADCAST);
+			else if(str_comp_nocase(pResult->GetString(0), "both") == 0)
+				Result = pPlayer->SetTimerType(CPlayer::TIMERTYPE_GAMETIMER_AND_BROADCAST);
+			else if(str_comp_nocase(pResult->GetString(0), "none") == 0)
+				Result = pPlayer->SetTimerType(CPlayer::TIMERTYPE_NONE);
+			else
+			{
+				log_info("chatresp", "Unknown parameter. Accepted values: default, gametimer, broadcast, both, none");
+				return;
+			}
+
+			if(!Result)
+			{
+				log_info("chatresp", "Selected timertype is not supported by your client");
+				return;
+			}
+
+			if((OldType == CPlayer::TIMERTYPE_BROADCAST || OldType == CPlayer::TIMERTYPE_GAMETIMER_AND_BROADCAST) && (pPlayer->m_TimerType == CPlayer::TIMERTYPE_GAMETIMER || pPlayer->m_TimerType == CPlayer::TIMERTYPE_NONE))
+				pGameServer->SendBroadcast("", pResult->m_ClientId);
+		}
+
+		if(pPlayer->m_TimerType <= CPlayer::TIMERTYPE_SIXUP && pPlayer->m_TimerType >= CPlayer::TIMERTYPE_GAMETIMER)
+			str_format(aBuf, sizeof(aBuf), "Timer is displayed in %s", s_aaTimerTypeMessage[pPlayer->m_TimerType]);
+		else if(pPlayer->m_TimerType == CPlayer::TIMERTYPE_NONE)
+			str_copy(aBuf, "Timer isn't displayed.");
+
+		log_info("chatresp", "%s", aBuf);
+	}
+
+	void ConProtectedKill(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+		CPlayer *pPlayer = pGameServer->m_apPlayers[pResult->m_ClientId];
+		if(!pPlayer)
+			return;
+		CCharacter *pCharacter = pPlayer->GetCharacter();
+		if(!pCharacter)
+			return;
+
+		int CurrTime = (pGameServer->Server()->Tick() - pCharacter->m_StartTime) / pGameServer->Server()->TickSpeed();
+		if(g_Config.m_SvKillProtection != 0 && CurrTime >= (60 * g_Config.m_SvKillProtection) && pCharacter->m_DDRaceState == ERaceState::STARTED)
+		{
+			pPlayer->KillCharacter(WEAPON_SELF);
+			pPlayer->Respawn();
+		}
+	}
+
+	void UnlockTeam(CGameContext *pGameServer, int ClientId, int Team)
+	{
+		pGameServer->RaceTeams()->SetTeamLock(Team, false);
+
+		char aBuf[512];
+		str_format(aBuf, sizeof(aBuf), "'%s' unlocked your team.", pGameServer->Server()->ClientName(ClientId));
+		pGameServer->SendChatTeam(Team, aBuf);
+	}
+
+	void AttemptJoinTeam(CGameContext *pGameServer, int ClientId, int Team)
+	{
+		CPlayer *pPlayer = pGameServer->m_apPlayers[ClientId];
+		if(!pPlayer)
+			return;
+
+		if(pGameServer->IsRunningKickOrSpecVote(ClientId))
+		{
+			log_info("chatresp", "You are running a vote, please try again after the vote is done!");
+			return;
+		}
+		else if(g_Config.m_SvTeam == SV_TEAM_FORBIDDEN || g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO)
+		{
+			log_info("chatresp", "Teams are disabled");
+			return;
+		}
+		else if(g_Config.m_SvTeam == SV_TEAM_MANDATORY && Team == 0 && pPlayer->GetCharacter() && pPlayer->GetCharacter()->m_LastStartWarning < pGameServer->Server()->Tick() - 3 * pGameServer->Server()->TickSpeed())
+		{
+			log_info("chatresp", "You must join a team and play with somebody or else you can't play");
+			pPlayer->GetCharacter()->m_LastStartWarning = pGameServer->Server()->Tick();
+		}
+
+		if(!pGameServer->RaceTeams()->IsValidTeamNumber(Team))
+		{
+			auto EmptyTeam = pGameServer->RaceTeams()->GetFirstEmptyTeam();
+			if(!EmptyTeam.has_value())
+			{
+				log_info("chatresp", "No empty team left.");
+				return;
+			}
+			Team = EmptyTeam.value();
+		}
+
+		char aError[512];
+		auto &PlayerState = pGameServer->RaceTeams()->PlayerState(ClientId);
+		if(PlayerState.m_LastTeamChange.has_value() && PlayerState.m_LastTeamChange.value() + (int64_t)pGameServer->Server()->TickSpeed() * g_Config.m_SvTeamChangeDelay > pGameServer->Server()->Tick())
+		{
+			log_info("chatresp", "You can't change teams that fast!");
+		}
+		else if(Team != TEAM_FLOCK && pGameServer->RaceTeams()->TeamLocked(Team) && !pGameServer->RaceTeams()->IsInvited(Team, ClientId))
+		{
+			log_info("chatresp", g_Config.m_SvInvite ?
+						     "This team is locked using /lock. Only members of the team can unlock it using /lock." :
+						     "This team is locked using /lock. Only members of the team can invite you or unlock it using /lock.");
+		}
+		else if(Team != TEAM_FLOCK && pGameServer->RaceTeams()->TeamSize(Team) >= g_Config.m_SvMaxTeamSize && !pGameServer->RaceTeams()->TeamFlock(Team) && !pGameServer->RaceTeams()->IsPractice(Team))
+		{
+			char aBuf[512];
+			str_format(aBuf, sizeof(aBuf), "This team already has the maximum allowed size of %d players", g_Config.m_SvMaxTeamSize);
+			log_info("chatresp", "%s", aBuf);
+		}
+		else if(!pGameServer->RaceTeams()->SetCharacterTeam(pPlayer->GetCid(), Team, aError, sizeof(aError)))
+		{
+			log_info("chatresp", "%s", aError);
+		}
+		else
+		{
+			if(pGameServer->RaceTeams()->PracticeByDefault())
+			{
+				// joined an empty team
+				if(pGameServer->RaceTeams()->TeamSize(Team) == 1)
+					pGameServer->RaceTeams()->SetPractice(Team, true);
+			}
+
+			char aBuf[512];
+			str_format(aBuf, sizeof(aBuf), "'%s' joined team %d",
+				pGameServer->Server()->ClientName(pPlayer->GetCid()),
+				Team);
+			pGameServer->SendChat(-1, TEAM_ALL, aBuf);
+			PlayerState.m_LastTeamChange = pGameServer->Server()->Tick();
+
+			if(pGameServer->RaceTeams()->IsPractice(Team))
+				pGameServer->SendChatTarget(pPlayer->GetCid(), "Practice mode enabled for your team, happy practicing!");
+
+			if(pGameServer->RaceTeams()->TeamFlock(Team))
+				pGameServer->SendChatTarget(pPlayer->GetCid(), "Team 0 mode enabled for your team. This will make your team behave like team 0.");
+		}
+	}
+
+	void ConSwap(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		const char *pName = pResult->GetString(0);
+
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		CPlayer *pPlayer = pGameServer->m_apPlayers[pResult->m_ClientId];
+		if(!pPlayer)
+			return;
+
+		if(!g_Config.m_SvSwap)
+		{
+			log_info("chatresp", "Swap is disabled on this server.");
+			return;
+		}
+
+		if(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO)
+		{
+			log_info("chatresp", "Swap is not available on forced solo servers.");
+			return;
+		}
+
+		CGameTeams &Teams = *pGameServer->RaceTeams();
+		int Team = Teams.m_Core.Team(pResult->m_ClientId);
+
+		if(Team == TEAM_SUPER)
+		{
+			log_info("chatresp", "Turn off super to use swap feature, which means you can swap positions with each other.");
+			return;
+		}
+
+		int TargetClientId = -1;
+		if(pResult->NumArguments() == 1)
+		{
+			TargetClientId = pGameServer->FindClientIdByName(pName).value_or(-1);
+		}
+		else
+		{
+			int TeamSize = 1;
+			for(int i = 0; i < MAX_CLIENTS; i++)
+			{
+				if(pGameServer->m_apPlayers[i] && Teams.m_Core.Team(i) == Team && i != pResult->m_ClientId)
+				{
+					TargetClientId = i;
+					TeamSize++;
+				}
+			}
+			if(TeamSize != 2)
+				TargetClientId = -1;
+		}
+
+		if(TargetClientId < 0)
+		{
+			log_info("chatresp", "Player not found");
+			return;
+		}
+
+		if(TargetClientId == pResult->m_ClientId)
+		{
+			log_info("chatresp", "Can't swap with yourself");
+			return;
+		}
+
+		int TargetTeam = Teams.m_Core.Team(TargetClientId);
+		if(TargetTeam != Team)
+		{
+			log_info("chatresp", "Player is on a different team");
+			return;
+		}
+
+		CPlayer *pSwapPlayer = pGameServer->m_apPlayers[TargetClientId];
+		if(Team == TEAM_FLOCK || Teams.TeamFlock(Team))
+		{
+			CCharacter *pChr = pPlayer->GetCharacter();
+			CCharacter *pSwapChr = pSwapPlayer->GetCharacter();
+			if(!pChr || !pSwapChr || pChr->m_DDRaceState != ERaceState::STARTED || pSwapChr->m_DDRaceState != ERaceState::STARTED)
+			{
+				log_info("chatresp", "You and other player need to have started the map");
+				return;
+			}
+		}
+		else if(!Teams.IsStarted(Team) && !Teams.TeamFlock(Team))
+		{
+			log_info("chatresp", "Need to have started the map to swap with a player.");
+			return;
+		}
+		if(pGameServer->m_World.m_Core.m_apCharacters[pResult->m_ClientId] == nullptr || pGameServer->m_World.m_Core.m_apCharacters[TargetClientId] == nullptr)
+		{
+			log_info("chatresp", "You and the other player must not be paused.");
+			return;
+		}
+
+		bool SwapPending = Teams.PlayerState(TargetClientId).m_SwapTargetClientId != pResult->m_ClientId;
+		if(SwapPending)
+		{
+			if(pGameServer->ProcessSpamProtection(pResult->m_ClientId))
+				return;
+
+			Teams.RequestTeamSwap(pPlayer, pSwapPlayer, Team);
+			return;
+		}
+
+		Teams.SwapTeamCharacters(DDRaceCharacter(pPlayer->GetCharacter()), DDRaceCharacter(pSwapPlayer->GetCharacter()), Team);
+	}
+
+	void ConCancelSwap(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		CPlayer *pPlayer = pGameServer->m_apPlayers[pResult->m_ClientId];
+		if(!pPlayer)
+			return;
+
+		if(!g_Config.m_SvSwap)
+		{
+			log_info("chatresp", "Swap is disabled on this server.");
+			return;
+		}
+
+		if(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO)
+		{
+			log_info("chatresp", "Swap is not available on forced solo servers.");
+			return;
+		}
+
+		CGameTeams &Teams = *pGameServer->RaceTeams();
+		int Team = Teams.m_Core.Team(pResult->m_ClientId);
+
+		const int SwapTargetClientId = Teams.PlayerState(pResult->m_ClientId).m_SwapTargetClientId;
+		bool SwapPending = SwapTargetClientId != -1 && !pGameServer->Server()->ClientSlotEmpty(SwapTargetClientId);
+
+		if(!SwapPending)
+		{
+			log_info("chatresp", "You do not have a pending swap request.");
+			return;
+		}
+
+		Teams.CancelTeamSwap(pPlayer, Team);
+	}
+
+	void ConSave(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		if(!g_Config.m_SvSaveGames)
+		{
+			pGameServer->SendChatTarget(pResult->m_ClientId, "Save-function is disabled on this server");
+			return;
+		}
+
+		const char *pCode = "";
+		if(pResult->NumArguments() > 0)
+			pCode = pResult->GetString(0);
+
+		pGameServer->RaceScore()->SaveTeam(pResult->m_ClientId, pCode, g_Config.m_SvSqlServerName);
+	}
+
+	void ConLoad(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		if(!g_Config.m_SvSaveGames)
+		{
+			pGameServer->SendChatTarget(pResult->m_ClientId, "Save-function is disabled on this server");
+			return;
+		}
+
+		if(pResult->NumArguments() > 0)
+			pGameServer->RaceScore()->LoadTeam(pResult->GetString(0), pResult->m_ClientId);
+		else
+			pGameServer->RaceScore()->GetSaves(pResult->m_ClientId);
+	}
+
+	void ConLock(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		if(g_Config.m_SvTeam == SV_TEAM_FORBIDDEN || g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO)
+		{
+			log_info("chatresp", "Teams are disabled");
+			return;
+		}
+
+		int Team = pGameServer->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+		bool Lock = pGameServer->RaceTeams()->TeamLocked(Team);
+
+		if(pResult->NumArguments() > 0)
+			Lock = !pResult->GetInteger(0);
+
+		if(Team == TEAM_FLOCK || !pGameServer->RaceTeams()->IsValidTeamNumber(Team))
+		{
+			log_info("chatresp", "This team can't be locked");
+			return;
+		}
+
+		if(pGameServer->ProcessSpamProtection(pResult->m_ClientId, false))
+			return;
+
+		char aBuf[512];
+		if(Lock)
+		{
+			UnlockTeam(pGameServer, pResult->m_ClientId, Team);
+		}
+		else
+		{
+			pGameServer->RaceTeams()->SetTeamLock(Team, true);
+
+			if(pGameServer->RaceTeams()->TeamFlock(Team))
+				str_format(aBuf, sizeof(aBuf), "'%s' locked your team.", pGameServer->Server()->ClientName(pResult->m_ClientId));
+			else
+				str_format(aBuf, sizeof(aBuf), "'%s' locked your team. After the race starts, killing will kill everyone in your team.", pGameServer->Server()->ClientName(pResult->m_ClientId));
+			pGameServer->SendChatTeam(Team, aBuf);
+		}
+	}
+
+	void ConUnlock(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		if(g_Config.m_SvTeam == SV_TEAM_FORBIDDEN || g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO)
+		{
+			log_info("chatresp", "Teams are disabled");
+			return;
+		}
+
+		int Team = pGameServer->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+
+		if(Team == TEAM_FLOCK || !pGameServer->RaceTeams()->IsValidTeamNumber(Team))
+			return;
+
+		if(pGameServer->ProcessSpamProtection(pResult->m_ClientId, false))
+			return;
+
+		UnlockTeam(pGameServer, pResult->m_ClientId, Team);
+	}
+
+	void ConInvite(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		const char *pName = pResult->GetString(0);
+
+		if(g_Config.m_SvTeam == SV_TEAM_FORBIDDEN || g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO)
+		{
+			log_info("chatresp", "Teams are disabled");
+			return;
+		}
+
+		if(!g_Config.m_SvInvite)
+		{
+			log_info("chatresp", "Invites are disabled");
+			return;
+		}
+
+		int Team = pGameServer->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+		if(Team != TEAM_FLOCK && pGameServer->RaceTeams()->IsValidTeamNumber(Team))
+		{
+			int Target = pGameServer->FindClientIdByName(pName).value_or(-1);
+			if(Target == -1)
+			{
+				log_info("chatresp", "Player not found");
+				return;
+			}
+
+			if(pGameServer->RaceTeams()->IsInvited(Team, Target))
+			{
+				log_info("chatresp", "Player already invited");
+				return;
+			}
+
+			auto &PlayerState = pGameServer->RaceTeams()->PlayerState(pResult->m_ClientId);
+			if(pGameServer->m_apPlayers[pResult->m_ClientId] && PlayerState.m_LastInvited + g_Config.m_SvInviteFrequency * pGameServer->Server()->TickSpeed() > pGameServer->Server()->Tick())
+			{
+				log_info("chatresp", "Can't invite this quickly");
+				return;
+			}
+
+			pGameServer->RaceTeams()->SetClientInvited(Team, Target, true);
+			PlayerState.m_LastInvited = pGameServer->Server()->Tick();
+
+			char aBuf[512];
+			str_format(aBuf, sizeof(aBuf), "'%s' invited you to team %d. Use /team %d to join.", pGameServer->Server()->ClientName(pResult->m_ClientId), Team, Team);
+			pGameServer->SendChatTarget(Target, aBuf);
+
+			str_format(aBuf, sizeof(aBuf), "'%s' invited '%s' to your team.", pGameServer->Server()->ClientName(pResult->m_ClientId), pGameServer->Server()->ClientName(Target));
+			pGameServer->SendChatTeam(Team, aBuf);
+		}
+		else
+			log_info("chatresp", "Can't invite players to this team");
+	}
+
+	void ConTeam0Mode(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		if(g_Config.m_SvTeam == SV_TEAM_FORBIDDEN || g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO || g_Config.m_SvTeam == SV_TEAM_MANDATORY)
+		{
+			log_info("chatresp", "Team mode change disabled");
+			return;
+		}
+
+		if(!g_Config.m_SvTeam0Mode)
+		{
+			log_info("chatresp", "Team mode change is disabled on this server.");
+			return;
+		}
+
+		int Team = pGameServer->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+		bool Mode = pGameServer->RaceTeams()->TeamFlock(Team);
+
+		if(Team == TEAM_FLOCK || !pGameServer->RaceTeams()->IsValidTeamNumber(Team))
+		{
+			log_info("chatresp", "This team can't have the mode changed");
+			return;
+		}
+
+		if(pGameServer->RaceTeams()->GetTeamState(Team) != ETeamState::OPEN)
+		{
+			pGameServer->SendChatTarget(pResult->m_ClientId, "Team mode can't be changed while racing");
+			return;
+		}
+
+		if(pResult->NumArguments() > 0)
+			Mode = !pResult->GetInteger(0);
+
+		if(pGameServer->ProcessSpamProtection(pResult->m_ClientId, false))
+			return;
+
+		char aBuf[512];
+		if(Mode)
+		{
+			if(pGameServer->RaceTeams()->TeamSize(Team) > g_Config.m_SvMaxTeamSize)
+			{
+				str_format(aBuf, sizeof(aBuf), "Can't disable team 0 mode. This team exceeds the maximum allowed size of %d players for regular team", g_Config.m_SvMaxTeamSize);
+				pGameServer->SendChatTarget(pResult->m_ClientId, aBuf);
+			}
+			else
+			{
+				pGameServer->RaceTeams()->SetTeamFlock(Team, false);
+
+				str_format(aBuf, sizeof(aBuf), "'%s' disabled team 0 mode.", pGameServer->Server()->ClientName(pResult->m_ClientId));
+				pGameServer->SendChatTeam(Team, aBuf);
+			}
+		}
+		else
+		{
+			if(pGameServer->RaceTeams()->IsPractice(Team))
+			{
+				pGameServer->SendChatTarget(pResult->m_ClientId, "Can't enable team 0 mode with practice mode on.");
+			}
+			else
+			{
+				pGameServer->RaceTeams()->SetTeamFlock(Team, true);
+
+				str_format(aBuf, sizeof(aBuf), "'%s' enabled team 0 mode. This will make your team behave like team 0.", pGameServer->Server()->ClientName(pResult->m_ClientId));
+				pGameServer->SendChatTeam(Team, aBuf);
+			}
+		}
+	}
+
+	void ConTeam(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		CPlayer *pPlayer = pGameServer->m_apPlayers[pResult->m_ClientId];
+		if(!pPlayer)
+			return;
+
+		if(pResult->NumArguments() > 0)
+		{
+			AttemptJoinTeam(pGameServer, pResult->m_ClientId, pResult->GetInteger(0));
+		}
+		else
+		{
+			char aBuf[512];
+			if(!pPlayer->IsPlaying())
+			{
+				log_info("chatresp", "You can't check your team while you are dead/a spectator.");
+			}
+			else
+			{
+				int TeamSize = 0;
+				const int PlayerTeam = pGameServer->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+
+				// Count players in team
+				for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+				{
+					const CPlayer *pOtherPlayer = pGameServer->m_apPlayers[ClientId];
+					if(!pOtherPlayer || !pOtherPlayer->IsPlaying())
+						continue;
+
+					if(pGameServer->RaceTeams()->m_Core.Team(ClientId) == PlayerTeam)
+						TeamSize++;
+				}
+
+				str_format(aBuf, sizeof(aBuf), "You are in team %d having %d %s", PlayerTeam, TeamSize, TeamSize > 1 ? "players" : "player");
+				log_info("chatresp", "%s", aBuf);
+			}
+		}
+	}
+
+	void ConJoin(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(!CheckClientId(pResult->m_ClientId))
+			return;
+
+		const char *pName = pResult->GetString(0);
+		int Target = pGameServer->FindClientIdByName(pName).value_or(-1);
+		if(Target == -1)
+		{
+			log_info("chatresp", "Player not found");
+			return;
+		}
+
+		int Team = pGameServer->RaceTeams()->m_Core.Team(Target);
+		if(pGameServer->ProcessSpamProtection(pResult->m_ClientId, false))
+			return;
+
+		AttemptJoinTeam(pGameServer, pResult->m_ClientId, Team);
+	}
+
+	void ConRandomMap(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+
+		const int ClientId = pResult->m_ClientId == -1 ? pGameServer->m_VoteCreator : pResult->m_ClientId;
+		int MinStars = pResult->NumArguments() > 0 ? pResult->GetInteger(0) : -1;
+		int MaxStars = pResult->NumArguments() > 1 ? pResult->GetInteger(1) : MinStars;
+
+		if(!in_range(MinStars, -1, 5) || !in_range(MaxStars, -1, 5))
+			return;
+
+		pGameServer->RaceScore()->RandomMap(ClientId, MinStars, MaxStars);
+	}
+
+	void ConRandomUnfinishedMap(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+
+		const int ClientId = pResult->m_ClientId == -1 ? pGameServer->m_VoteCreator : pResult->m_ClientId;
+		int MinStars = pResult->NumArguments() > 0 ? pResult->GetInteger(0) : -1;
+		int MaxStars = pResult->NumArguments() > 1 ? pResult->GetInteger(1) : MinStars;
+
+		if(!in_range(MinStars, -1, 5) || !in_range(MaxStars, -1, 5))
+			return;
+
+		pGameServer->RaceScore()->RandomUnfinishedMap(ClientId, MinStars, MaxStars);
+	}
+}
 
 CGameControllerDDRace::CGameControllerDDRace(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
 	IGameController(Services, GameModeInfo)
 {
 }
 
+void CGameControllerDDRace::Init()
+{
+	IGameController::Init();
+	GameServer()->RaceScore()->LoadMapInfo();
+}
+
+CCharacterDDRace *CGameControllerDDRace::CreateCharacter(CPlayer *pPlayer)
+{
+	const int ClientId = pPlayer->GetCid();
+	return new(ClientId) CCharacterDDRace(&Services().World(), Services().LastPlayerInput(ClientId));
+}
+
 void CGameControllerDDRace::RegisterCommands()
 {
-	GameServer()->RegisterDDRaceAdminCommands(this);
-	GameServer()->RegisterDDRacePlayerCommands(this);
-	GameServer()->RegisterDDRacePracticeCommands(this);
-	GameServer()->RegisterDDRaceScoreCommands(this);
-	GameServer()->RegisterDDRaceTeamCommands(this);
+	RegisterAdminCommands();
+	RegisterPracticeCommands();
+
+	static const CCommandRegistration s_aPlayerCommands[] = {
+		{"settings", "?s[configname]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSettings, "Shows gameplay information for this server"},
+		{"pause", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTogglePause, "Toggles pause"},
+		{"spec", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConToggleSpec, "Toggles spec (if not available behaves as /pause)"},
+		{"pausevoted", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTogglePauseVoted, "Toggles pause on the currently voted player"},
+		{"specvoted", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConToggleSpecVoted, "Toggles spec on the currently voted player"},
+		{"showothers", "?i['0'|'1'|'2']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConShowOthers, "Whether to show players from other teams or not (off by default), optional i = 0 for off, i = 1 for on, i = 2 for own team only"},
+		{"specteam", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSpecTeam, "Whether to show players from other teams when spectating (on by default), optional i = 0 for off else for on"},
+		{"ninjajetpack", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConNinjaJetpack, "Whether to use ninja jetpack or not. Makes jetpack look more awesome"},
+		{"saytime", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConSayTime, "Privately messages someone's current time in this current running race (your time by default)"},
+		{"saytimeall", "", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConSayTimeAll, "Publicly messages everyone your current time in this current running race"},
+		{"time", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTime, "Privately shows you your current time in this current running race in the broadcast message"},
+		{"timer", "?s['gametimer'|'broadcast'|'both'|'none'|'cycle']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSetTimerType, "Personal Setting of showing time in either broadcast or game/round timer, timer s, where s = broadcast for broadcast, gametimer for game/round timer, cycle for cycle, both for both, none for no timer and nothing to show current status"},
+		{"kill", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConProtectedKill, "Kill yourself when kill-protected during a long game (use f1, kill for regular kill)"},
+	};
+
+	for(const CCommandRegistration &Command : s_aPlayerCommands)
+	{
+		dbg_assert(GameServer()->Console()->RegisterOwned(Command.m_pName, Command.m_pParams, Command.m_Flags, Command.m_pfnCallback, GameServer(), Command.m_pHelp, this), "duplicate mode command '%s'", Command.m_pName);
+	}
+
+	static const CCommandRegistration s_aScoreCommands[] = {
+		{"random_map", "?i[stars] ?i[max stars]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRandomMap, "Random map"},
+		{"random_unfinished_map", "?i[stars] ?i[max stars]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRandomUnfinishedMap, "Random unfinished map"},
+		{"rankteam", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeamRank, "Shows the team rank of player with name r (your team rank by default)"},
+		{"teamrank", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeamRank, "Shows the team rank of player with name r (your team rank by default)"},
+		{"rank", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConRank, "Shows the rank of player with name r (your rank by default)"},
+		{"top5team", "?s[player name] ?i[rank to start with]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeamTop5, "Shows five team ranks of the ladder or of a player beginning with rank i (1 by default, -1 for worst)"},
+		{"teamtop5", "?s[player name] ?i[rank to start with]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeamTop5, "Shows five team ranks of the ladder or of a player beginning with rank i (1 by default, -1 for worst)"},
+		{"top", "?i[rank to start with]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTop, "Shows the top ranks of the global and regional ladder beginning with rank i (1 by default, -1 for worst)"},
+		{"top5", "?i[rank to start with]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTop, "Shows the top ranks of the global and regional ladder beginning with rank i (1 by default, -1 for worst)"},
+		{"times", "?s[player name] ?i[number of times to skip]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTimes, "/times ?s?i shows last 5 times of the server or of a player beginning with name s starting with time i (i = 1 by default, -1 for first)"},
+		{"points", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConPoints, "Shows the global points of a player beginning with name r (your rank by default)"},
+		{"top5points", "?i[number]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTopPoints, "Shows five points of the global point ladder beginning with rank i (1 by default)"},
+		{"timecp", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTimeCp, "Set your checkpoints based on another player"},
+	};
+
+	for(const CCommandRegistration &Command : s_aScoreCommands)
+	{
+		dbg_assert(GameServer()->Console()->RegisterOwned(Command.m_pName, Command.m_pParams, Command.m_Flags, Command.m_pfnCallback, GameServer(), Command.m_pHelp, this), "duplicate mode command '%s'", Command.m_pName);
+	}
+
+	static const CCommandRegistration s_aTeamCommands[] = {
+		{"swap", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSwap, "Request to swap your tee with another team member"},
+		{"cancelswap", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConCancelSwap, "Cancel your swap request"},
+		{"save", "?r[code]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSave, "Save team with code r."},
+		{"load", "?r[code]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConLoad, "Load with code r. /load to check your existing saves"},
+		{"team", "?i[id]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeam, "Lets you join team i (shows your team if left blank)"},
+		{"lock", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConLock, "Toggle team lock so no one else can join and so the team restarts when a player dies. /lock 0 to unlock, /lock 1 to lock"},
+		{"unlock", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConUnlock, "Unlock a team"},
+		{"invite", "r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConInvite, "Invite a person to a locked team"},
+		{"join", "r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConJoin, "Join the team of the specified player"},
+		{"team0mode", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeam0Mode, "Toggle team between team 0 and team mode. This mode will make your team behave like team 0."},
+	};
+
+	for(const CCommandRegistration &Command : s_aTeamCommands)
+	{
+		dbg_assert(GameServer()->Console()->RegisterOwned(Command.m_pName, Command.m_pParams, Command.m_Flags, Command.m_pfnCallback, GameServer(), Command.m_pHelp, this), "duplicate mode command '%s'", Command.m_pName);
+	}
 }
 
 void CGameControllerDDRace::OnExplosion(const CGameExplosionContext &Context)
@@ -80,22 +1405,44 @@ void CGameControllerDDRace::OnExplosion(const CGameExplosionContext &Context)
 	}
 }
 
+void CGameControllerDDRace::OnCharacterDeath(const CGameCharacterDeathContext &Context)
+{
+	CCharacter *pVictim = Context.m_pVictim;
+	const int VictimId = pVictim->GetPlayer()->GetCid();
+	const int Team = pVictim->Team();
+	const bool SendKillMessage = Context.m_SendKillMessage &&
+		(Team == TEAM_FLOCK || RaceTeams().TeamFlock(Team) || RaceTeams().TeamSize(Team) == 1 || RaceTeams().GetTeamState(Team) == ETeamState::OPEN || !RaceTeams().TeamLocked(Team));
+
+	CGameCharacterDeathContext RaceContext = Context;
+	RaceContext.m_SendKillMessage = SendKillMessage;
+	FinalizeCharacterDeath(RaceContext);
+	RaceTeams().OnCharacterDeath(VictimId, Context.m_Weapon);
+
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		if(GameServer()->m_apPlayers[ClientId] && RaceTeams().PlayerState(ClientId).m_SwapTargetClientId == VictimId)
+			RaceTeams().PlayerState(ClientId).m_SwapTargetClientId = -1;
+	}
+	RaceTeams().PlayerState(VictimId).m_SwapTargetClientId = -1;
+}
+
 void CGameControllerDDRace::OnCharacterSpawn(CCharacter *pCharacter)
 {
+	dbg_assert(dynamic_cast<CCharacterDDRace *>(pCharacter), "DDRace controller requires a DDRace character");
 	pCharacter->SetRaceTeams(&RaceTeams());
 	RaceTeams().OnCharacterSpawn(pCharacter->GetPlayer()->GetCid());
 	IGameController::OnCharacterSpawn(pCharacter);
-	pCharacter->DDRaceInit();
+	DDRaceCharacter(pCharacter)->DDRaceInit();
 }
 
 void CGameControllerDDRace::TickCharacterPreCore(CCharacter *pCharacter)
 {
-	pCharacter->DDRaceTick();
+	DDRaceCharacter(pCharacter)->DDRaceTick();
 }
 
 void CGameControllerDDRace::TickCharacterPostCore(CCharacter *pCharacter)
 {
-	pCharacter->DDRacePostCoreTick();
+	DDRaceCharacter(pCharacter)->DDRacePostCoreTick();
 }
 
 int CGameControllerDDRace::PlayerAutoRespawnTick(const CPlayer *pPlayer) const
@@ -103,15 +1450,20 @@ int CGameControllerDDRace::PlayerAutoRespawnTick(const CPlayer *pPlayer) const
 	return std::max(pPlayer->m_DieTick, pPlayer->m_PreviousDieTick + Server()->TickSpeed() * 3) + 2;
 }
 
-bool CGameControllerDDRace::SaveStateForHotReload()
+std::unique_ptr<IGameModeMapReloadState> CGameControllerDDRace::SaveStateForMapReload()
 {
-	GameServer()->SaveDDRaceStateForHotReload();
-	return true;
+	return std::make_unique<CDDRaceMapReloadState>(GameServer());
 }
 
-void CGameControllerDDRace::RestoreCharacterAfterHotReload(CCharacter *pCharacter)
+void CGameControllerDDRace::RestoreCharacterAfterMapReload(CCharacter *pCharacter)
 {
-	GameServer()->RestoreDDRaceCharacterAfterHotReload(pCharacter);
+	auto *pState = dynamic_cast<CDDRaceMapReloadState *>(MapReloadState());
+	if(!pState)
+	{
+		DiscardMapReloadState(pCharacter->GetPlayer()->GetCid());
+		return;
+	}
+	pState->RestoreCharacter(GameServer(), DDRaceCharacter(pCharacter));
 }
 
 bool CGameControllerDDRace::OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number)
@@ -130,11 +1482,28 @@ void CGameControllerDDRace::OnPlayerConnect(CPlayer *pPlayer)
 		GameServer()->SendChatTarget(pPlayer->GetCid(), "You can see other players. To disable this use DDNet client and type /showothers");
 }
 
+void CGameControllerDDRace::OnPlayerEnter(CPlayer *pPlayer)
+{
+	const int ClientId = pPlayer->GetCid();
+	GameServer()->RaceScore()->BeginFinishEligibilityCheck(ClientId);
+	GameServer()->RaceScore()->SendMapInfoMessage(ClientId);
+}
+
 void CGameControllerDDRace::OnPlayerDisconnect(CPlayer *pPlayer, const char *pReason)
 {
 	IGameController::OnPlayerDisconnect(pPlayer, pReason);
 	GameServer()->RaceScore()->ResetPlayer(pPlayer->GetCid());
 	RaceTeams().ResetPlayer(pPlayer->GetCid());
+}
+
+bool CGameControllerDDRace::OnPlayerChatMessage(int ClientId, const char *pMessage, int Team)
+{
+	if(Team != 0 || str_comp(pMessage, "xd sure chillerbot.png is lyfe") != 0 || !GameServer()->RaceScore()->FinishEligibilityCheckActive(ClientId))
+		return false;
+
+	GameServer()->RaceScore()->SetNotEligibleForFinish(ClientId);
+	dbg_msg("hack", "bot detected, cid=%d", ClientId);
+	return true;
 }
 
 void CGameControllerDDRace::OnPlayerNameChanged(int ClientId)
@@ -147,7 +1516,7 @@ void CGameControllerDDRace::OnPlayerNameChanged(int ClientId)
 void CGameControllerDDRace::OnPlayerDDNetVersionKnown(int ClientId)
 {
 	RaceTeams().SendTeamsState(ClientId);
-	GameServer()->SendRecord(ClientId);
+	GameServer()->RaceScore()->SendRecord(ClientId);
 }
 
 void CGameControllerDDRace::OnPlayerSetTeam(int ClientId, int Team)
@@ -443,9 +1812,9 @@ bool CGameControllerDDRace::CanSnapCharacter(CCharacter *pCharacter, int Snappin
 	return true;
 }
 
-void CGameControllerDDRace::SnapCharacterMode(CCharacter *pCharacter, int, int TranslatedId)
+void CGameControllerDDRace::SnapCharacterMode(CCharacter *pCharacter, int SnappingClient, int TranslatedId)
 {
-	pCharacter->SnapDDRace(TranslatedId);
+	DDRaceCharacter(pCharacter)->SnapDDRace(SnappingClient, TranslatedId);
 }
 
 void CGameControllerDDRace::SnapPlayerMode(CPlayer *pPlayer, int SnappingClient, int TranslatedId)
@@ -523,7 +1892,7 @@ void CGameControllerDDRace::SnapPlayerMode(CPlayer *pPlayer, int SnappingClient,
 	if(SnappingClient != SERVER_DEMO_CLIENT)
 	{
 		CPlayer *pSnappingPlayer = GameServer()->m_apPlayers[SnappingClient];
-		ShowSpec = ShowSpec && (GameServer()->GetDDRaceTeam(pPlayer->GetCid()) == GameServer()->GetDDRaceTeam(SnappingClient) || RaceTeams().PlayerState(SnappingClient).m_ShowOthers == SHOW_OTHERS_ON || pSnappingPlayer->GetTeam() == TEAM_SPECTATORS || pSnappingPlayer->IsPaused());
+		ShowSpec = ShowSpec && (RaceTeams().m_Core.Team(pPlayer->GetCid()) == RaceTeams().m_Core.Team(SnappingClient) || RaceTeams().PlayerState(SnappingClient).m_ShowOthers == SHOW_OTHERS_ON || pSnappingPlayer->GetTeam() == TEAM_SPECTATORS || pSnappingPlayer->IsPaused());
 	}
 	if(ShowSpec)
 	{
@@ -532,4 +1901,17 @@ void CGameControllerDDRace::SnapPlayerMode(CPlayer *pPlayer, int SnappingClient,
 		SpecChar.m_Y = pCharacter->Core()->m_Pos.y;
 		Server()->SnapNewItem(TranslatedId, SpecChar);
 	}
+}
+
+void CGameControllerDDRace::Tick()
+{
+	IGameController::Tick();
+	RaceTeams().ProcessSaveTeam();
+	RaceTeams().Tick();
+	GameServer()->RaceScore()->Tick();
+}
+
+bool CGameControllerDDRace::IsTeamPractice(int Team) const
+{
+	return RaceTeams().IsPractice(Team);
 }

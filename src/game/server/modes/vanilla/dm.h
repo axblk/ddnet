@@ -8,7 +8,7 @@ class CGameControllerVanillaDM : public CGameControllerVanillaPvP
 public:
 	CGameControllerVanillaDM(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 
-	int OnCharacterDeath(CCharacter *pVictim, CPlayer *pKiller, int Weapon) override;
+	void OnCharacterDeath(const CGameCharacterDeathContext &Context) override;
 	void Tick() override;
 	bool CanSpawn(int Team, vec2 *pOutPos, int ClientId) override;
 };

@@ -20,8 +20,10 @@ void CGameControllerVanillaTDM::ApplyTeamDeathScore(std::array<int, NUM_TEAMS> &
 	aTeamScores[KillerTeam] += SelfKill || KillerTeam == VictimTeam ? -1 : 1;
 }
 
-int CGameControllerVanillaTDM::OnCharacterDeath(CCharacter *pVictim, CPlayer *pKiller, int Weapon)
+void CGameControllerVanillaTDM::OnCharacterDeath(const CGameCharacterDeathContext &Context)
 {
+	CCharacter *pVictim = Context.m_pVictim;
+	CPlayer *pKiller = Context.m_pKiller;
 	const int VictimId = pVictim->GetPlayer()->GetCid();
 	const int VictimTeam = pVictim->GetPlayer()->GetTeam();
 	const int KillerId = pKiller ? pKiller->GetCid() : -1;
@@ -31,9 +33,9 @@ int CGameControllerVanillaTDM::OnCharacterDeath(CCharacter *pVictim, CPlayer *pK
 
 	VanillaPlayer(VictimId)->m_EarliestRespawnTick = Server()->Tick() + Server()->TickSpeed() * g_Config.m_SvRespawnDelayTDM;
 	if(CPlayerVanilla *pKillerPlayer = VanillaPlayer(KillerId))
-		pKillerPlayer->m_Score += DeathScoreDelta(VictimId, KillerId, Weapon, TeamKill);
-	ApplyTeamDeathScore(m_aTeamScores, VictimTeam, KillerTeam, Weapon, SelfKill);
-	return 0;
+		pKillerPlayer->m_Score += DeathScoreDelta(VictimId, KillerId, Context.m_Weapon, TeamKill);
+	ApplyTeamDeathScore(m_aTeamScores, VictimTeam, KillerTeam, Context.m_Weapon, SelfKill);
+	FinalizeCharacterDeath(Context);
 }
 
 void CGameControllerVanillaTDM::Tick()

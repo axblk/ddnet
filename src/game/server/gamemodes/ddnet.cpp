@@ -203,7 +203,7 @@ void CGameControllerDDNet::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
 	// start
 	if(IsOnStartTile && PlayerDDRaceState != ERaceState::CHEATED)
 	{
-		const int Team = GameServer()->GetDDRaceTeam(ClientId);
+		const int Team = RaceTeams().m_Core.Team(ClientId);
 		if(RaceTeams().GetSaving(Team))
 		{
 			GameServer()->SendStartWarning(ClientId, "You can't start while loading/saving of team is in progress");
@@ -241,10 +241,10 @@ void CGameControllerDDNet::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
 		RaceTeams().OnCharacterFinish(ClientId);
 
 	// unlock team
-	else if(((TileIndex == TILE_UNLOCK_TEAM) || (TileFIndex == TILE_UNLOCK_TEAM)) && RaceTeams().TeamLocked(GameServer()->GetDDRaceTeam(ClientId)))
+	else if(((TileIndex == TILE_UNLOCK_TEAM) || (TileFIndex == TILE_UNLOCK_TEAM)) && RaceTeams().TeamLocked(RaceTeams().m_Core.Team(ClientId)))
 	{
-		RaceTeams().SetTeamLock(GameServer()->GetDDRaceTeam(ClientId), false);
-		GameServer()->SendChatTeam(GameServer()->GetDDRaceTeam(ClientId), "Your team was unlocked by an unlock team tile");
+		RaceTeams().SetTeamLock(RaceTeams().m_Core.Team(ClientId), false);
+		GameServer()->SendChatTeam(RaceTeams().m_Core.Team(ClientId), "Your team was unlocked by an unlock team tile");
 	}
 
 	// solo part
@@ -360,19 +360,15 @@ void CGameControllerDDNet::OnPlayerDisconnect(CPlayer *pPlayer, const char *pRea
 	for(int Team = TEAM_FLOCK + 1; Team < TEAM_SUPER; Team++)
 		if(RaceTeams().IsInvited(Team, ClientId))
 			RaceTeams().SetClientInvited(Team, ClientId, false);
+
+	if(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO && RaceTeams().PracticeByDefault())
+		RaceTeams().SetPractice(RaceTeams().m_Core.Team(ClientId), true);
 }
 
 void CGameControllerDDNet::OnReset()
 {
 	IGameController::OnReset();
 	RaceTeams().Reset();
-}
-
-void CGameControllerDDNet::Tick()
-{
-	IGameController::Tick();
-	RaceTeams().ProcessSaveTeam();
-	RaceTeams().Tick();
 }
 
 void CGameControllerDDNet::DoTeamChange(class CPlayer *pPlayer, int Team, bool DoChatMsg)

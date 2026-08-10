@@ -71,6 +71,8 @@ public:
 	bool FinishEligibilityCheckActive(int ClientId);
 	bool NotEligibleForFinish(int ClientId);
 	void SetNotEligibleForFinish(int ClientId);
+	void SendRecord(int ClientId);
+	void SendFinish(int ClientId, float Time, std::optional<float> PreviousBestTime);
 	void SendMapInfoMessage(int ClientId) const;
 
 	void LoadBestTime();

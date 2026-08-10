@@ -11,8 +11,11 @@
 
 #include <generated/protocol.h>
 
+#include <game/server/mode/game_mode_map_reload_state.h>
 #include <game/server/mode/game_mode_registry.h>
 #include <game/teamscore.h>
+
+#include <memory>
 
 class CCharacter;
 class CGameContext;
@@ -81,6 +84,15 @@ struct CGameExplosionContext
 	int m_AttackerTeam;
 };
 
+struct CGameCharacterDeathContext
+{
+	CCharacter *m_pVictim;
+	CPlayer *m_pKiller;
+	int m_Killer;
+	int m_Weapon;
+	bool m_SendKillMessage;
+};
+
 /*
 	Class: Game Controller
 		Controls the main game logic. Keeping track of team and player score,
@@ -116,6 +128,8 @@ protected:
 	CGameServices &Services() const { return *m_pServices; }
 	CConfig *Config() { return m_pConfig; }
 	IServer *Server() const { return m_pServer; }
+	IGameModeMapReloadState *MapReloadState() const;
+	void DiscardMapReloadState(int ClientId);
 
 	void LoadGameSettings();
 	virtual void RegisterCommands() {}
@@ -127,6 +141,7 @@ protected:
 	virtual int ScoreLimit() const { return 0; }
 	virtual int TimeLimit() const { return 0; }
 	void DoActivityCheck();
+	void FinalizeCharacterDeath(const CGameCharacterDeathContext &Context, int ModeSpecial = 0);
 
 	struct CSpawnEval
 	{
@@ -164,7 +179,7 @@ public:
 
 	IGameController(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 	virtual ~IGameController();
-	void Init();
+	virtual void Init();
 	const CGameModeInfo &Info() const { return m_GameModeInfo; }
 	virtual void ResetTuning();
 	virtual CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team);
@@ -181,7 +196,7 @@ public:
 			weapon - What weapon that killed it. Can be -1 for undefined
 				weapon when switching team or player suicides.
 	*/
-	virtual int OnCharacterDeath(class CCharacter *pVictim, class CPlayer *pKiller, int Weapon);
+	virtual void OnCharacterDeath(const CGameCharacterDeathContext &Context);
 	virtual bool OnCharacterTakeDamage(class CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam = TEAM_SPECTATORS);
 	virtual bool CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const;
 	virtual bool CanSeeInteraction(const CInteractions &, int) const { return true; }
@@ -204,6 +219,7 @@ public:
 	virtual bool UseDDNetEntityNetObjs() const { return false; }
 	virtual bool UsesRaceTeams() const { return false; }
 	virtual bool UsesRaceScore() const { return false; }
+	virtual bool IsTeamPractice(int Team) const { return false; }
 	// Complete mode-owned phases around the shared CharacterCore tick.
 	virtual void TickCharacterPreCore(CCharacter *) {}
 	virtual void TickCharacterPostCore(CCharacter *pCharacter);
@@ -226,7 +242,9 @@ public:
 	virtual bool OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number = 0);
 
 	virtual void OnPlayerConnect(class CPlayer *pPlayer);
+	virtual void OnPlayerEnter(CPlayer *) {}
 	virtual void OnPlayerDisconnect(class CPlayer *pPlayer, const char *pReason);
+	virtual bool OnPlayerChatMessage(int, const char *, int) { return false; }
 	virtual void OnPlayerNameChanged(int ClientId) {}
 	virtual void OnPlayerDDNetVersionKnown(int ClientId) {}
 	virtual void OnPlayerSetTeam(int ClientId, int Team);
@@ -240,8 +258,8 @@ public:
 	virtual bool IsPlayerDeadSpectator(int ClientId) const { return false; }
 	virtual void OnPlayerShowOthers(int ClientId, int Show) {}
 	virtual int PlayerAutoRespawnTick(const CPlayer *pPlayer) const;
-	virtual bool SaveStateForHotReload() { return false; }
-	virtual void RestoreCharacterAfterHotReload(CCharacter *pCharacter);
+	virtual std::unique_ptr<IGameModeMapReloadState> SaveStateForMapReload() { return nullptr; }
+	virtual void RestoreCharacterAfterMapReload(CCharacter *pCharacter);
 
 	virtual void OnReset();
 

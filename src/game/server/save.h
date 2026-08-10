@@ -14,7 +14,7 @@
 class IGameController;
 class CGameContext;
 class CGameWorld;
-class CCharacter;
+class CCharacterDDRace;
 class CSaveTeam;
 
 enum
@@ -40,8 +40,8 @@ class CSaveTee
 public:
 	CSaveTee();
 	~CSaveTee() = default;
-	void Save(CCharacter *pChr, bool AddPenalty = true);
-	bool Load(CCharacter *pChr, std::optional<int> Team = std::nullopt);
+	void Save(CCharacterDDRace *pChr, bool AddPenalty = true);
+	bool Load(CCharacterDDRace *pChr, std::optional<int> Team = std::nullopt);
 	char *GetString(const CSaveTeam *pTeam);
 	// returns false if the tee could not be parsed or contains invalid values
 	bool FromString(const char *pString, int MembersCount);
@@ -160,8 +160,8 @@ class CSaveHotReloadTee
 public:
 	CSaveHotReloadTee() = default;
 	~CSaveHotReloadTee() = default;
-	void Save(CCharacter *pChr, bool AddPenalty = true);
-	bool Load(CCharacter *pChr, int Team);
+	void Save(CCharacterDDRace *pChr, bool AddPenalty = true);
+	bool Load(CCharacterDDRace *pChr, int Team);
 
 private:
 	CSaveTee m_SaveTee;
@@ -191,7 +191,7 @@ public:
 	static bool HandleSaveError(ESaveResult Result, int ClientId, CGameContext *pGameContext);
 
 private:
-	CCharacter *MatchCharacter(CGameContext *pGameServer, int ClientId, int SaveId, bool KeepCurrentCharacter) const;
+	CCharacterDDRace *MatchCharacter(CGameContext *pGameServer, int ClientId, int SaveId, bool KeepCurrentCharacter) const;
 
 	char m_aString[65536];
 

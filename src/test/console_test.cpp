@@ -16,6 +16,12 @@ namespace
 	{
 		pfnCallback(pResult, pCallbackUserData);
 	}
+
+	void CountAndPassThrough(IConsole::IResult *pResult, void *pUser, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
+	{
+		(*static_cast<int *>(pUser))++;
+		pfnCallback(pResult, pCallbackUserData);
+	}
 }
 
 TEST(Console, OwnedCommandsHaveBoundedLifetime)
@@ -59,4 +65,36 @@ TEST(Console, OwnedCommandsHaveBoundedLifetime)
 	EXPECT_EQ(CommonCalls, 1);
 	pConsole->ExecuteLine("common", IConsole::CLIENT_ID_UNSPECIFIED, true);
 	EXPECT_EQ(CommonCalls, 2);
+}
+
+TEST(Console, OwnedChainsHaveBoundedLifetime)
+{
+	auto pConsole = CreateConsole(CFGFLAG_SERVER);
+	int Owner = 0;
+	int OtherOwner = 0;
+	int Calls = 0;
+	int ChainCalls = 0;
+	int OtherChainCalls = 0;
+
+	pConsole->Register("common", "", CFGFLAG_SERVER, CountCalls, &Calls, "Common command");
+	ASSERT_TRUE(pConsole->ChainOwned("common", CountAndPassThrough, &ChainCalls, &Owner));
+	ASSERT_TRUE(pConsole->ChainOwned("common", CountAndPassThrough, &OtherChainCalls, &OtherOwner));
+	EXPECT_FALSE(pConsole->ChainOwned("common", CountAndPassThrough, &ChainCalls, nullptr));
+
+	pConsole->ExecuteLine("common", IConsole::CLIENT_ID_UNSPECIFIED, true);
+	EXPECT_EQ(Calls, 1);
+	EXPECT_EQ(ChainCalls, 1);
+	EXPECT_EQ(OtherChainCalls, 1);
+
+	pConsole->DeregisterOwner(&Owner);
+	pConsole->ExecuteLine("common", IConsole::CLIENT_ID_UNSPECIFIED, true);
+	EXPECT_EQ(Calls, 2);
+	EXPECT_EQ(ChainCalls, 1);
+	EXPECT_EQ(OtherChainCalls, 2);
+
+	pConsole->DeregisterOwner(&OtherOwner);
+	pConsole->ExecuteLine("common", IConsole::CLIENT_ID_UNSPECIFIED, true);
+	EXPECT_EQ(Calls, 3);
+	EXPECT_EQ(ChainCalls, 1);
+	EXPECT_EQ(OtherChainCalls, 2);
 }

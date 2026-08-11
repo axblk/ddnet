@@ -36,13 +36,10 @@ template<typename TBase, typename TRules>
 class CGameControllerInstagib : public TBase
 {
 public:
-	using TBase::TBase;
-
-	bool OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number) override
+	CGameControllerInstagib(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
+		TBase(Services, GameModeInfo)
 	{
-		if(Index >= ENTITY_ARMOR_1 && Index <= ENTITY_WEAPON_LASER)
-			return false;
-		return TBase::OnEntity(Index, x, y, Layer, Flags, Initial, Number);
+		this->IgnoreMapEntityRange(ENTITY_ARMOR_1, ENTITY_WEAPON_LASER);
 	}
 
 	void OnCharacterSpawn(CCharacter *pCharacter) override

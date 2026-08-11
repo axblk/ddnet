@@ -31,6 +31,7 @@
 #include <game/server/interactions.h>
 #include <game/server/mode/game_mode_registry.h>
 #include <game/server/mode/game_services.h>
+#include <game/server/mode/match_stats.h>
 #include <game/server/modes/vanilla/ctf.h>
 #include <game/server/modes/vanilla/dm.h>
 #include <game/server/modes/vanilla/flag.h>
@@ -49,6 +50,53 @@
 bool IsInterrupted()
 {
 	return false;
+}
+
+TEST(MatchStats, AggregatesTypedEvents)
+{
+	CMatchStats Stats;
+	Stats.OnEvent(CMatchEventShotFired{0, WEAPON_GUN});
+	Stats.OnEvent(CMatchEventWeaponHit{0, 1, WEAPON_GUN});
+	Stats.OnEvent(CMatchEventDamage{0, 1, WEAPON_GUN, 4});
+	Stats.OnEvent(CMatchEventKill{0, 1, WEAPON_GUN});
+	Stats.OnEvent(CMatchEventSuicide{1, WEAPON_SELF});
+	Stats.OnEvent(CMatchEventSpawn{0, TEAM_RED});
+	Stats.OnEvent(CMatchEventTeamChanged{0, TEAM_RED, TEAM_BLUE});
+	Stats.OnEvent(CMatchEventRoundStarted{});
+	Stats.OnEvent(CMatchEventRoundEnded{});
+	Stats.OnEvent(CMatchEventFlagGrab{0, TEAM_BLUE});
+	Stats.OnEvent(CMatchEventFlagDrop{0, TEAM_BLUE});
+	Stats.OnEvent(CMatchEventFlagReturn{1, TEAM_BLUE});
+	Stats.OnEvent(CMatchEventFlagCapture{0, TEAM_BLUE, 42});
+	Stats.OnEvent(CMatchEventFlagReturn{-1, TEAM_RED});
+
+	const CMatchPlayerStats &Attacker = Stats.Player(0);
+	EXPECT_EQ(Attacker.m_ShotsFired, 1);
+	EXPECT_EQ(Attacker.m_aShotsFired[WEAPON_GUN], 1);
+	EXPECT_EQ(Attacker.m_WeaponHits, 1);
+	EXPECT_EQ(Attacker.m_aWeaponHits[WEAPON_GUN], 1);
+	EXPECT_EQ(Attacker.m_DamageDealt, 4);
+	EXPECT_EQ(Attacker.m_aDamageDealt[WEAPON_GUN], 4);
+	EXPECT_EQ(Attacker.m_Kills, 1);
+	EXPECT_EQ(Attacker.m_aKills[WEAPON_GUN], 1);
+	EXPECT_EQ(Attacker.m_Spawns, 1);
+	EXPECT_EQ(Attacker.m_TeamChanges, 1);
+	EXPECT_EQ(Attacker.m_FlagGrabs, 1);
+	EXPECT_EQ(Attacker.m_FlagDrops, 1);
+	EXPECT_EQ(Attacker.m_FlagCaptures, 1);
+
+	const CMatchPlayerStats &Victim = Stats.Player(1);
+	EXPECT_EQ(Victim.m_DamageTaken, 4);
+	EXPECT_EQ(Victim.m_Deaths, 2);
+	EXPECT_EQ(Victim.m_Suicides, 1);
+	EXPECT_EQ(Victim.m_FlagReturns, 1);
+	EXPECT_EQ(Stats.Flag(TEAM_BLUE).m_Grabs, 1);
+	EXPECT_EQ(Stats.Flag(TEAM_BLUE).m_Drops, 1);
+	EXPECT_EQ(Stats.Flag(TEAM_BLUE).m_Returns, 1);
+	EXPECT_EQ(Stats.Flag(TEAM_BLUE).m_Captures, 1);
+	EXPECT_EQ(Stats.Flag(TEAM_RED).m_Returns, 1);
+	EXPECT_EQ(Stats.RoundsStarted(), 1);
+	EXPECT_EQ(Stats.RoundsEnded(), 1);
 }
 
 #if defined(CONF_PLATFORM_ANDROID)
@@ -164,7 +212,6 @@ namespace
 	class CFactoryPlayer final : public CPlayerVanilla
 	{
 		int *m_pDestructions;
-		char m_aModeState[64]{};
 
 	public:
 		CFactoryPlayer(CGameServices &Services, uint32_t UniqueClientId, int ClientId, int Team, int *pDestructions) :
@@ -182,7 +229,6 @@ namespace
 	class CFactoryCharacter final : public CCharacter
 	{
 		int *m_pDestructions;
-		char m_aModeState[64]{};
 
 	public:
 		CFactoryCharacter(CGameWorld *pWorld, CNetObj_PlayerInput LastInput, int *pDestructions) :
@@ -243,6 +289,13 @@ namespace
 		{
 			return Team == TEAM_RED || Team == TEAM_BLUE || Team == TEAM_SPECTATORS;
 		}
+	};
+
+	class CTestVanillaTDM final : public CGameControllerVanillaTDM
+	{
+	public:
+		using CGameControllerVanillaTDM::CGameControllerVanillaTDM;
+		using CGameControllerVanillaTeamplay::UpdateTeamBalance;
 	};
 
 	std::unique_ptr<IGameController> CreateServicesFactoryController(CGameServices &Services, const CGameModeInfo &GameModeInfo)
@@ -435,6 +488,7 @@ TEST_F(GameWorld, VanillaWeaponFire)
 	pPlayer->ForceSpawn(vec2(0, 0));
 	CCharacter *pCharacter = pPlayer->GetCharacter();
 	ASSERT_NE(pCharacter, nullptr);
+	EXPECT_EQ(Controller.MatchStats().Player(ClientId).m_Spawns, 1);
 
 	const CTuningParams Tuning = CGameControllerVanillaDM::DefaultTuning();
 	auto CountProjectiles = [this]() {
@@ -453,9 +507,10 @@ TEST_F(GameWorld, VanillaWeaponFire)
 	pCharacter->OnDirectInput(&Input);
 	Input.m_Fire = 1;
 	pCharacter->OnDirectInput(&Input);
-	GameServer()->m_pController = pPreviousController;
 	EXPECT_EQ(pCharacter->GetWeaponAmmo(WEAPON_GUN), 9);
 	EXPECT_EQ(CountProjectiles(), BeforeGun + 1);
+	EXPECT_EQ(Controller.MatchStats().Player(ClientId).m_ShotsFired, 1);
+	EXPECT_EQ(Controller.MatchStats().Player(ClientId).m_aShotsFired[WEAPON_GUN], 1);
 
 	pCharacter->SetWeaponAmmo(WEAPON_SHOTGUN, 10);
 	Context.m_Weapon = WEAPON_SHOTGUN;
@@ -472,34 +527,43 @@ TEST_F(GameWorld, VanillaWeaponFire)
 	EXPECT_FALSE(NoAmmoResult.m_Fired);
 	EXPECT_GT(NoAmmoResult.m_ReloadTicks, 0);
 	EXPECT_EQ(CountProjectiles(), BeforeNoAmmo);
+	EXPECT_EQ(Controller.MatchStats().Player(ClientId).m_ShotsFired, 1);
+	Controller.StartRound();
+	Controller.EndRound();
+	EXPECT_EQ(Controller.MatchStats().RoundsStarted(), 1);
+	EXPECT_EQ(Controller.MatchStats().RoundsEnded(), 1);
 	GameServer()->m_pController = pPreviousController;
 }
 
 TEST_F(GameWorld, MapEntitySetsAreExplicit)
 {
-	auto CountProjectiles = [this]() {
+	auto CountEntities = [this](int Type) {
 		int Count = 0;
-		for(CEntity *pEntity = GameServer()->m_World.FindFirst(CGameWorld::ENTTYPE_PROJECTILE); pEntity; pEntity = pEntity->TypeNext())
+		for(CEntity *pEntity = GameServer()->m_World.FindFirst(Type); pEntity; pEntity = pEntity->TypeNext())
 			Count++;
 		return Count;
 	};
 
 	const CGameModeInfo VanillaInfo = {"vanilla.dm", "Vanilla DM", "DM", "TestDM", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
 	CGameControllerVanillaDM VanillaController(GameServices(), VanillaInfo);
-	const int BeforeVanilla = CountProjectiles();
+	const int BeforeVanilla = CountEntities(CGameWorld::ENTTYPE_PROJECTILE);
 	EXPECT_FALSE(VanillaController.OnEntity(ENTITY_CRAZY_SHOTGUN, 10, 10, LAYER_GAME, 0, true, 0));
-	EXPECT_EQ(CountProjectiles(), BeforeVanilla);
+	EXPECT_EQ(CountEntities(CGameWorld::ENTTYPE_PROJECTILE), BeforeVanilla);
 	EXPECT_TRUE(VanillaController.OnEntity(ENTITY_SPAWN, 10, 10, LAYER_GAME, 0, true, 0));
+	EXPECT_TRUE(VanillaController.OnEntity(ENTITY_SPAWN, 10, 10, LAYER_GAME, 0, false, 0));
+	const int BeforePickups = CountEntities(CGameWorld::ENTTYPE_PICKUP);
+	EXPECT_TRUE(VanillaController.OnEntity(ENTITY_HEALTH_1, 10, 10, LAYER_GAME, 0, true, 0));
+	EXPECT_EQ(CountEntities(CGameWorld::ENTTYPE_PICKUP), BeforePickups + 1);
 
 	const CGameModeInfo DDNetInfo = {"ddnet", "DDNet", "DDraceNetwork", "TestDDraceNetwork", EGameModeScoreKind::TIME, protocol7::GAMEFLAG_RACE, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
 	CGameControllerDDNet DDNetController(GameServices(), DDNetInfo);
 	EXPECT_TRUE(DDNetController.OnEntity(ENTITY_CRAZY_SHOTGUN, 10, 10, LAYER_GAME, 0, true, 0));
-	EXPECT_EQ(CountProjectiles(), BeforeVanilla + 1);
+	EXPECT_EQ(CountEntities(CGameWorld::ENTTYPE_PROJECTILE), BeforeVanilla + 1);
 
 	const CGameModeInfo ModInfo = {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
 	CGameControllerMod ModController(GameServices(), ModInfo);
 	EXPECT_TRUE(ModController.OnEntity(ENTITY_CRAZY_SHOTGUN, 10, 10, LAYER_GAME, 0, true, 0));
-	EXPECT_EQ(CountProjectiles(), BeforeVanilla + 2);
+	EXPECT_EQ(CountEntities(CGameWorld::ENTTYPE_PROJECTILE), BeforeVanilla + 2);
 }
 
 TEST_F(GameWorld, CharacterTickPhasesAreModeOwned)
@@ -1881,7 +1945,7 @@ TEST_F(GameWorld, RaceTeamPlayerStateFollowsPlayerIdentity)
 	EXPECT_EQ(pFirstCharacter->m_Pos.x, 0.0f);
 	EXPECT_EQ(pFirstCharacter->m_Pos.y, 32.0f);
 
-	auto SetState = [this, ClientId] {
+	auto SetState = [this] {
 		auto &State = GameServer()->RaceTeams()->PlayerState(ClientId);
 		State.m_TeeStarted = true;
 		State.m_TeeFinished = true;
@@ -1897,7 +1961,7 @@ TEST_F(GameWorld, RaceTeamPlayerStateFollowsPlayerIdentity)
 		State.m_ShowOthers = SHOW_OTHERS_OFF;
 		State.m_SpecTeam = true;
 	};
-	auto ExpectReset = [this, ClientId](int ShowOthers) {
+	auto ExpectReset = [this](int ShowOthers) {
 		const auto &State = GameServer()->RaceTeams()->PlayerState(ClientId);
 		EXPECT_FALSE(State.m_TeeStarted);
 		EXPECT_FALSE(State.m_TeeFinished);
@@ -1956,6 +2020,7 @@ TEST_F(GameWorld, VanillaTDMTeamDamage)
 	auto *pFriendlyProjectile = new CProjectile(&GameServer()->m_World, WEAPON_GUN, pAttacker->GetPlayer()->GetCid(), pTeammate->m_Pos, vec2(1, 0), 100, false, false, -1, vec2(1, 0));
 	auto *pEnemyProjectile = new CProjectile(&GameServer()->m_World, WEAPON_GUN, pAttacker->GetPlayer()->GetCid(), pEnemy->m_Pos, vec2(1, 0), 100, false, false, -1, vec2(1, 0));
 	Controller.DoTeamChange(pAttacker->GetPlayer(), TEAM_BLUE, false);
+	EXPECT_EQ(Controller.MatchStats().Player(0).m_TeamChanges, 1);
 	pFriendlyProjectile->Tick();
 	pEnemyProjectile->Tick();
 	const int TeammateHealth = pTeammate->GetHealth();
@@ -1973,6 +2038,47 @@ TEST_F(GameWorld, VanillaTDMTeamDamage)
 	EXPECT_EQ(BlueTeamAfterForceSpawn, TEAM_BLUE);
 	EXPECT_EQ(FriendlyProjectileOwner, -1);
 	EXPECT_EQ(EnemyProjectileOwner, -1);
+}
+
+TEST_F(GameWorld, VanillaTeamBalanceRunsAfterConfiguredDelay)
+{
+	const int PreviousTeamBalanceTime = g_Config.m_SvTeambalanceTime;
+	g_Config.m_SvTeambalanceTime = 1;
+	const CGameModeInfo Info = {"vanilla.tdm", "Vanilla TDM", "TDM", "TestTDM", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN};
+	CTestVanillaTDM Controller(GameServices(), Info);
+	IGameController *pPreviousController = GameServer()->m_pController;
+	GameServer()->m_pController = &Controller;
+
+	for(int ClientId = 0; ClientId < 4; ClientId++)
+		GameServer()->CreatePlayer(ClientId, ClientId == 3 ? TEAM_BLUE : TEAM_RED, false, -1);
+	auto *pRedZero = static_cast<CPlayerVanilla *>(GameServer()->m_apPlayers[0]);
+	auto *pRedBestFit = static_cast<CPlayerVanilla *>(GameServer()->m_apPlayers[1]);
+	auto *pRedTen = static_cast<CPlayerVanilla *>(GameServer()->m_apPlayers[2]);
+	auto *pBlue = static_cast<CPlayerVanilla *>(GameServer()->m_apPlayers[3]);
+	pRedZero->m_Score = 0;
+	pRedBestFit->m_Score = 2;
+	pRedTen->m_Score = 10;
+	pBlue->m_Score = 3;
+	pRedBestFit->m_LastActionTick = 123;
+
+	char aError[64];
+	EXPECT_FALSE(Controller.CanJoinTeam(TEAM_RED, 4, aError, sizeof(aError)));
+	EXPECT_STREQ(aError, "Teams must remain balanced");
+	const int Now = GameServer()->Server()->Tick();
+	Controller.UpdateTeamBalance(Now);
+	Controller.UpdateTeamBalance(Now + GameServer()->Server()->TickSpeed() * 60);
+	EXPECT_EQ(pRedBestFit->GetTeam(), TEAM_RED);
+	Controller.UpdateTeamBalance(Now + GameServer()->Server()->TickSpeed() * 60 + 1);
+
+	EXPECT_EQ(pRedZero->GetTeam(), TEAM_RED);
+	EXPECT_EQ(pRedBestFit->GetTeam(), TEAM_BLUE);
+	EXPECT_EQ(pRedTen->GetTeam(), TEAM_RED);
+	EXPECT_EQ(pBlue->GetTeam(), TEAM_BLUE);
+	EXPECT_EQ(pRedBestFit->m_LastActionTick, 123);
+	EXPECT_EQ(Controller.MatchStats().Player(1).m_TeamChanges, 1);
+
+	g_Config.m_SvTeambalanceTime = PreviousTeamBalanceTime;
+	GameServer()->m_pController = pPreviousController;
 }
 
 TEST_F(GameWorld, InstagibDMVerticalSlice)
@@ -1993,6 +2099,8 @@ TEST_F(GameWorld, InstagibDMVerticalSlice)
 	CCharacter *pVictimCharacter = pVictim->ForceSpawn(vec2(128.0f, 96.0f));
 	ASSERT_NE(pAttackerCharacter, nullptr);
 	ASSERT_NE(pVictimCharacter, nullptr);
+	EXPECT_EQ(GameServer()->m_pController->MatchStats().Player(AttackerId).m_Spawns, 1);
+	EXPECT_EQ(GameServer()->m_pController->MatchStats().Player(VictimId).m_Spawns, 1);
 
 	EXPECT_FALSE(pAttackerCharacter->GetWeaponGot(WEAPON_HAMMER));
 	EXPECT_FALSE(pAttackerCharacter->GetWeaponGot(WEAPON_GUN));
@@ -2008,6 +2116,20 @@ TEST_F(GameWorld, InstagibDMVerticalSlice)
 	pVictimCharacter->TakeDamage(vec2(), 0, AttackerId, WEAPON_LASER);
 	EXPECT_FALSE(pVictimCharacter->IsAlive());
 	EXPECT_EQ(GameServer()->m_pController->SnapPlayerScore(SERVER_DEMO_CLIENT, pAttacker), 1);
+	const CMatchPlayerStats &AttackerStats = GameServer()->m_pController->MatchStats().Player(AttackerId);
+	const CMatchPlayerStats &VictimStats = GameServer()->m_pController->MatchStats().Player(VictimId);
+	EXPECT_EQ(AttackerStats.m_WeaponHits, 2);
+	EXPECT_EQ(AttackerStats.m_aWeaponHits[WEAPON_LASER], 2);
+	EXPECT_EQ(AttackerStats.m_DamageDealt, 20);
+	EXPECT_EQ(AttackerStats.m_aDamageDealt[WEAPON_LASER], 20);
+	EXPECT_EQ(AttackerStats.m_Kills, 1);
+	EXPECT_EQ(AttackerStats.m_aKills[WEAPON_LASER], 1);
+	EXPECT_EQ(VictimStats.m_DamageTaken, 20);
+	EXPECT_EQ(VictimStats.m_Deaths, 1);
+
+	pAttackerCharacter->Die(AttackerId, WEAPON_SELF);
+	EXPECT_EQ(AttackerStats.m_Suicides, 1);
+	EXPECT_EQ(AttackerStats.m_Deaths, 1);
 
 	EXPECT_TRUE(GameServer()->m_pController->OnEntity(ENTITY_SPAWN, 1, 1, LAYER_GAME, 0, true));
 	EXPECT_FALSE(GameServer()->m_pController->OnEntity(ENTITY_HEALTH_1, 1, 1, LAYER_GAME, 0, true));
@@ -2390,7 +2512,9 @@ TEST_F(GameWorld, VanillaCTFFlagLifecycle)
 	const vec2 BlueStand(BlueFlagX * 32.0f + 16.0f, BlueFlagY * 32.0f + 16.0f);
 	EXPECT_TRUE(Controller.OnEntity(ENTITY_FLAGSTAND_RED, RedFlagX, RedFlagY, LAYER_GAME, 0, true, 0));
 	EXPECT_TRUE(Controller.OnEntity(ENTITY_FLAGSTAND_BLUE, BlueFlagX, BlueFlagY, LAYER_GAME, 0, true, 0));
-	EXPECT_FALSE(Controller.OnEntity(ENTITY_FLAGSTAND_RED, RedFlagX, RedFlagY, LAYER_GAME, 0, true, 0));
+	CFlag *pRedFlag = Controller.Flag(TEAM_RED);
+	EXPECT_TRUE(Controller.OnEntity(ENTITY_FLAGSTAND_RED, RedFlagX, RedFlagY, LAYER_GAME, 0, true, 0));
+	EXPECT_EQ(Controller.Flag(TEAM_RED), pRedFlag);
 	ASSERT_NE(Controller.Flag(TEAM_RED), nullptr);
 	ASSERT_NE(Controller.Flag(TEAM_BLUE), nullptr);
 	EXPECT_EQ(Controller.Flag(TEAM_RED)->StandPosition(), RedStand);
@@ -2402,6 +2526,8 @@ TEST_F(GameWorld, VanillaCTFFlagLifecycle)
 	CCharacter *pBlueReturner = GameServer()->m_apPlayers[1]->ForceSpawn(vec2(BlueStand.x + 128.0f, BlueStand.y));
 	ASSERT_NE(pRedCarrier, nullptr);
 	ASSERT_NE(pBlueReturner, nullptr);
+	EXPECT_EQ(Controller.MatchStats().Player(0).m_Spawns, 1);
+	EXPECT_EQ(Controller.MatchStats().Player(1).m_Spawns, 1);
 	const int PreviousScoreLimit = g_Config.m_SvScorelimit;
 	const int PreviousTimeLimit = g_Config.m_SvTimelimit;
 	g_Config.m_SvScorelimit = 0;
@@ -2419,6 +2545,10 @@ TEST_F(GameWorld, VanillaCTFFlagLifecycle)
 	EXPECT_TRUE(Controller.Flag(TEAM_BLUE)->IsAtStand());
 	EXPECT_EQ(Controller.TeamScore(TEAM_RED), 101);
 	EXPECT_EQ(Controller.SnapPlayerScore(-1, pRedCarrier->GetPlayer()), 6);
+	EXPECT_EQ(Controller.MatchStats().Player(0).m_FlagGrabs, 1);
+	EXPECT_EQ(Controller.MatchStats().Player(0).m_FlagCaptures, 1);
+	EXPECT_EQ(Controller.MatchStats().Flag(TEAM_BLUE).m_Grabs, 1);
+	EXPECT_EQ(Controller.MatchStats().Flag(TEAM_BLUE).m_Captures, 1);
 
 	pRedCarrier->SetPosition(BlueStand);
 	pRedCarrier->m_Pos = BlueStand;
@@ -2432,6 +2562,13 @@ TEST_F(GameWorld, VanillaCTFFlagLifecycle)
 	Controller.Tick();
 	EXPECT_TRUE(Controller.Flag(TEAM_BLUE)->IsAtStand());
 	EXPECT_EQ(Controller.SnapPlayerScore(-1, pBlueReturner->GetPlayer()), 3);
+	EXPECT_EQ(Controller.MatchStats().Player(0).m_FlagGrabs, 2);
+	EXPECT_EQ(Controller.MatchStats().Player(0).m_FlagDrops, 1);
+	EXPECT_EQ(Controller.MatchStats().Player(1).m_FlagReturns, 1);
+	EXPECT_EQ(Controller.MatchStats().Flag(TEAM_BLUE).m_Grabs, 2);
+	EXPECT_EQ(Controller.MatchStats().Flag(TEAM_BLUE).m_Drops, 1);
+	EXPECT_EQ(Controller.MatchStats().Flag(TEAM_BLUE).m_Returns, 1);
+	EXPECT_EQ(Controller.MatchStats().Flag(TEAM_BLUE).m_Captures, 1);
 
 	g_Config.m_SvScorelimit = PreviousScoreLimit;
 	g_Config.m_SvTimelimit = PreviousTimeLimit;

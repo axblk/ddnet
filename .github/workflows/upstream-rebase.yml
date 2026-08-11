@@ -1,0 +1,48 @@
+name: Upstream rebase
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rebase-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Rebase onto DDNet master
+        run: |
+          git config user.name "Vanilla Next CI"
+          git config user.email "vanilla-next-ci@invalid"
+          git fetch --no-tags https://github.com/ddnet/ddnet.git master
+          git rebase --rebase-merges FETCH_HEAD
+          git submodule update --init --recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y cmake ninja-build pkg-config
+
+      - name: Verify stock 0.7.5 oracle
+        run: |
+          git init "$RUNNER_TEMP/teeworlds"
+          git -C "$RUNNER_TEMP/teeworlds" remote add origin https://github.com/teeworlds/teeworlds.git
+          git -C "$RUNNER_TEMP/teeworlds" fetch --depth=1 origin 4fc25a17fef3e6c2bf4d52b0421e0d69ecaa1e79
+          python scripts/vanilla_golden.py check --reference-repo "$RUNNER_TEMP/teeworlds"
+
+      - name: Configure
+        run: cmake -G Ninja -S . -B build -DCLIENT=OFF -DCMAKE_BUILD_TYPE=Debug -DDOWNLOAD_GTEST=ON -DDEV=ON -Werror=dev
+
+      - name: Build
+        run: cmake --build build --target testrunner game-server
+
+      - name: Test
+        run: cmake --build build --target run_tests

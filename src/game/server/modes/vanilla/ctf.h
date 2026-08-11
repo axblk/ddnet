@@ -12,7 +12,6 @@ class CGameControllerVanillaCTF : public CGameControllerVanillaTeamplay
 public:
 	CGameControllerVanillaCTF(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 
-	bool OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number) override;
 	void OnCharacterDeath(const CGameCharacterDeathContext &Context) override;
 	void Tick() override;
 	CFlag *Flag(int Team) const;
@@ -21,6 +20,7 @@ protected:
 	void SnapMode(int SnappingClient) override;
 
 private:
+	static bool CreateFlagMapEntity(IGameController &Controller, const CMapEntityContext &Context);
 	void ProcessFlags();
 	void FlagGrab(CFlag *pFlag, CCharacter *pCarrier);
 	void FlagReturn(CFlag *pFlag, CCharacter *pPlayer);

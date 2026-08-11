@@ -775,7 +775,7 @@ def vanilla_dm_rcon(server, client, client_id, command, observed_prefix=None):
 	while True:
 		event = server.next_event(timeout_id)
 		if isinstance(event, Exit):
-			raise EOFError(f"server exited unexpectedly waiting for RCON `{command}`")
+			raise EOFError(f"server exited unexpectedly waiting for RCON `{command}`")  # noqa: TRY004
 		if not isinstance(event, Log):
 			continue
 		if observed_prefix is not None and event.line.startswith(observed_prefix):
@@ -816,8 +816,7 @@ def vanilla_dm_match_lifecycle(test_env):
 	attacker_id = vanilla_dm_authenticate(server, attacker)
 	victim_id = vanilla_dm_authenticate(server, victim)
 	position_commands = [
-		(attacker, attacker_id, f"tele {victim_id} {attacker_id}"),
-		(victim, victim_id, "move_raw 20 0"),
+		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
 	]
 
 	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
@@ -849,8 +848,7 @@ def vanilla_tdm_match_lifecycle(test_env):
 	attacker_id = vanilla_dm_authenticate(server, attacker)
 	victim_id = vanilla_dm_authenticate(server, victim)
 	position_commands = [
-		(attacker, attacker_id, f"tele {victim_id} {attacker_id}"),
-		(victim, victim_id, "move_raw 20 0"),
+		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
 	]
 	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
 	server.wait_for_log_exact("game: end round type='TestTDM'", timeout=5)
@@ -900,8 +898,7 @@ def vanilla_dm_stock_07_match_lifecycle(test_env):
 
 	attacker_id = vanilla_dm_authenticate(server, attacker)
 	position_commands = [
-		(attacker, attacker_id, f"tele {victim_id} {attacker_id}"),
-		(attacker, attacker_id, "move_raw -20 0"),
+		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
 	]
 	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "stock-victim", position_commands)
 	sleep(3.2)
@@ -938,8 +935,7 @@ def vanilla_tdm_stock_07_match_lifecycle(test_env):
 
 	attacker_id = vanilla_dm_authenticate(server, attacker)
 	position_commands = [
-		(attacker, attacker_id, f"tele {victim_id} {attacker_id}"),
-		(attacker, attacker_id, "move_raw -20 0"),
+		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
 	]
 	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "stock-victim", position_commands)
 	server.wait_for_log_exact("game: end round type='TestTDM'", timeout=5)

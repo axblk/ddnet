@@ -256,6 +256,18 @@ CGameTeams *CGameContext::RaceTeams() const
 	return pTeams;
 }
 
+void CGameContext::ConPositionPlayer(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameContext *pSelf = static_cast<CGameContext *>(pUserData);
+	CCharacter *pCharacter = pSelf->GetPlayerChar(pResult->GetInteger(0));
+	const CCharacter *pTarget = pSelf->GetPlayerChar(pResult->GetInteger(1));
+	if(!pCharacter || !pTarget)
+		return;
+
+	pCharacter->SetPosition(pTarget->GetPos() + vec2(pResult->GetInteger(2), pResult->GetInteger(3)));
+	pCharacter->ResetVelocity();
+}
+
 const CPlayer *CGameContext::FindPlayerByName(const char *pName) const
 {
 	std::optional<int> ClientId = FindClientIdByName(pName);
@@ -830,7 +842,7 @@ void CGameContext::SendSettings(int ClientId) const
 	Msg.m_KickMin = g_Config.m_SvVoteKickMin;
 	Msg.m_SpecVote = g_Config.m_SvVoteSpectate;
 	Msg.m_TeamLock = 0;
-	Msg.m_TeamBalance = 0;
+	Msg.m_TeamBalance = m_pController->IsTeamPlay() && g_Config.m_SvTeambalanceTime != 0;
 	Msg.m_PlayerSlots = m_pController->ActivePlayerSlots();
 	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
 }
@@ -3596,6 +3608,7 @@ void CGameContext::OnConsoleInit()
 	Console()->Register("set_team", "i[id] i[team-id] ?i[delay in minutes]", CFGFLAG_SERVER, ConSetTeam, this, "Set team for a player (spectators = -1, game = 0)");
 	Console()->Register("set_team_all", "i[team-id]", CFGFLAG_SERVER, ConSetTeamAll, this, "Set team for all players (spectators = -1, game = 0)");
 	Console()->Register("hot_reload", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConHotReload, this, "Reload the map while preserving the state of tees and teams");
+	Console()->Register("position_player", "i[id] i[target-id] i[offset-x] i[offset-y]", CFGFLAG_SERVER | CMDFLAG_TEST, ConPositionPlayer, this, "Position a player relative to another player for testing");
 	Console()->Register("reload_censorlist", "", CFGFLAG_SERVER, ConReloadCensorlist, this, "Reload the censorlist");
 
 	Console()->Register("add_vote", "s[name] r[command]", CFGFLAG_SERVER, ConAddVote, this, "Add a voting option");
@@ -3614,6 +3627,7 @@ void CGameContext::OnConsoleInit()
 	Console()->Chain("sv_vote_kick_min", ConchainSettingUpdate, this);
 	Console()->Chain("sv_vote_spectate", ConchainSettingUpdate, this);
 	Console()->Chain("sv_spectator_slots", ConchainSettingUpdate, this);
+	Console()->Chain("sv_teambalance_time", ConchainSettingUpdate, this);
 
 	RegisterModerationCommands();
 	RegisterChatCommands();

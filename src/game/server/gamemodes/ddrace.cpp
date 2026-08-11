@@ -1279,6 +1279,7 @@ namespace
 CGameControllerDDRace::CGameControllerDDRace(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
 	IGameController(Services, GameModeInfo)
 {
+	RegisterMapEntityFactory(CreateRaceMapEntity);
 }
 
 void CGameControllerDDRace::Init()
@@ -1466,10 +1467,10 @@ void CGameControllerDDRace::RestoreCharacterAfterMapReload(CCharacter *pCharacte
 	pState->RestoreCharacter(GameServer(), DDRaceCharacter(pCharacter));
 }
 
-bool CGameControllerDDRace::OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number)
+bool CGameControllerDDRace::CreateRaceMapEntity(IGameController &Controller, const CMapEntityContext &Context)
 {
-	return IGameController::OnEntity(Index, x, y, Layer, Flags, Initial, Number) ||
-	       CreateDDRaceMapEntity(GameServer(), Index, x, y, Layer, Flags, Number);
+	auto &RaceController = static_cast<CGameControllerDDRace &>(Controller);
+	return CreateDDRaceMapEntity(RaceController.GameServer(), Context.m_Index, Context.m_X, Context.m_Y, Context.m_Layer, Context.m_Flags, Context.m_Number);
 }
 
 void CGameControllerDDRace::OnPlayerConnect(CPlayer *pPlayer)

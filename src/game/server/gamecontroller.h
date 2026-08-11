@@ -11,8 +11,10 @@
 
 #include <generated/protocol.h>
 
+#include <game/server/mode/entity_registry.h>
 #include <game/server/mode/game_mode_map_reload_state.h>
 #include <game/server/mode/game_mode_registry.h>
+#include <game/server/mode/match_stats.h>
 #include <game/teamscore.h>
 
 #include <memory>
@@ -114,7 +116,10 @@ protected:
 	};
 
 private:
+	static bool CreateCommonMapEntity(IGameController &Controller, const CMapEntityContext &Context);
+
 	std::vector<vec2> m_avSpawnPoints[NUM_SPAWNTYPES];
+	CEntityRegistry m_EntityRegistry;
 
 	CGameServices *m_pServices;
 	class CConfig *m_pConfig;
@@ -122,9 +127,12 @@ private:
 
 	CTeamsCore m_TeamsCore;
 	const CGameModeInfo m_GameModeInfo;
+	CMatchStats m_MatchStats;
 	CGameContext *GameServer() const;
 
 protected:
+	void RegisterMapEntityFactory(CEntityRegistry::FMapEntityFactory pfnFactory) { m_EntityRegistry.RegisterMapEntityFactory(pfnFactory); }
+	void IgnoreMapEntityRange(int First, int Last) { m_EntityRegistry.IgnoreMapEntityRange(First, Last); }
 	CGameServices &Services() const { return *m_pServices; }
 	CConfig *Config() { return m_pConfig; }
 	IServer *Server() const { return m_pServer; }
@@ -184,6 +192,8 @@ public:
 	virtual void ResetTuning();
 	virtual CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team);
 	virtual CCharacter *CreateCharacter(CPlayer *pPlayer);
+	void PublishMatchEvent(CMatchEvent Event) { m_MatchStats.OnEvent(Event); }
+	const CMatchStats &MatchStats() const { return m_MatchStats; }
 
 	// event
 	/*
@@ -239,7 +249,7 @@ public:
 		Returns:
 			True if the entity index was recognized by this controller.
 	*/
-	virtual bool OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number = 0);
+	bool OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number = 0);
 
 	virtual void OnPlayerConnect(class CPlayer *pPlayer);
 	virtual void OnPlayerEnter(CPlayer *) {}

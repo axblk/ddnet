@@ -9,11 +9,16 @@ class CGameControllerVanillaTeamplay : public CGameControllerVanillaPvP
 {
 protected:
 	std::array<int, NUM_TEAMS> m_aTeamScores{};
+	int m_UnbalancedSinceTick = -1;
+
+	std::array<int, NUM_TEAMS> TeamSizes(int ExceptClientId = -1) const;
+	void UpdateTeamBalance(int Tick);
 
 public:
 	CGameControllerVanillaTeamplay(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 
 	bool OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam) override;
+	void Tick() override;
 	void StartRound() override;
 	bool CanSpawn(int Team, vec2 *pOutPos, int ClientId) override;
 	bool IsValidTeam(int Team) override;

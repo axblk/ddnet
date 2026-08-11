@@ -24,7 +24,6 @@ public:
 	int PlayerAutoRespawnTick(const CPlayer *pPlayer) const override;
 	std::unique_ptr<IGameModeMapReloadState> SaveStateForMapReload() override;
 	void RestoreCharacterAfterMapReload(CCharacter *pCharacter) override;
-	bool OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number) override;
 	void OnPlayerConnect(CPlayer *pPlayer) override;
 	void OnPlayerEnter(CPlayer *pPlayer) override;
 	void OnPlayerDisconnect(CPlayer *pPlayer, const char *pReason) override;
@@ -56,6 +55,9 @@ protected:
 	void RegisterCommands() override;
 	void RegisterAdminCommands();
 	void RegisterPracticeCommands();
+
+private:
+	static bool CreateRaceMapEntity(IGameController &Controller, const CMapEntityContext &Context);
 };
 
 #endif // GAME_SERVER_GAMEMODES_DDRACE_H

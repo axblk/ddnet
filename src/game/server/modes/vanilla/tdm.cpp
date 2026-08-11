@@ -40,7 +40,7 @@ void CGameControllerVanillaTDM::OnCharacterDeath(const CGameCharacterDeathContex
 
 void CGameControllerVanillaTDM::Tick()
 {
-	IGameController::Tick();
+	CGameControllerVanillaTeamplay::Tick();
 	if(m_GameOverTick != -1 || m_Warmup)
 		return;
 

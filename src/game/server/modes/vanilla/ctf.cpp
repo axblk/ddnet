@@ -18,18 +18,20 @@
 CGameControllerVanillaCTF::CGameControllerVanillaCTF(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
 	CGameControllerVanillaTeamplay(Services, GameModeInfo)
 {
+	RegisterMapEntityFactory(CreateFlagMapEntity);
 }
 
-bool CGameControllerVanillaCTF::OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number)
+bool CGameControllerVanillaCTF::CreateFlagMapEntity(IGameController &Controller, const CMapEntityContext &Context)
 {
-	const bool BaseHandled = CGameControllerVanillaTeamplay::OnEntity(Index, x, y, Layer, Flags, Initial, Number);
-	const int Team = Index == ENTITY_FLAGSTAND_RED ? TEAM_RED : Index == ENTITY_FLAGSTAND_BLUE ? TEAM_BLUE :
-												     TEAM_SPECTATORS;
-	if(Team == TEAM_SPECTATORS || m_apFlags[Team])
-		return BaseHandled;
+	auto &CtfController = static_cast<CGameControllerVanillaCTF &>(Controller);
+	if(Context.m_Index != ENTITY_FLAGSTAND_RED && Context.m_Index != ENTITY_FLAGSTAND_BLUE)
+		return false;
+	const int Team = Context.m_Index == ENTITY_FLAGSTAND_RED ? TEAM_RED : TEAM_BLUE;
+	if(CtfController.m_apFlags[Team])
+		return true;
 
-	const vec2 StandPosition(x * 32.0f + 16.0f, y * 32.0f + 16.0f);
-	m_apFlags[Team] = new CFlag(&Services().World(), Team, StandPosition);
+	const vec2 StandPosition(Context.m_X * 32.0f + 16.0f, Context.m_Y * 32.0f + 16.0f);
+	CtfController.m_apFlags[Team] = new CFlag(&CtfController.Services().World(), Team, StandPosition);
 	log_info("game", "flag_stand team=%d x=%.1f y=%.1f", Team, StandPosition.x, StandPosition.y);
 	return true;
 }
@@ -41,7 +43,8 @@ void CGameControllerVanillaCTF::OnCharacterDeath(const CGameCharacterDeathContex
 	const int VictimId = pVictim->GetPlayer()->GetCid();
 	const int KillerId = pKiller ? pKiller->GetCid() : -1;
 	const bool TeamKill = pKiller && pKiller != pVictim->GetPlayer() && pKiller->GetTeam() == pVictim->GetPlayer()->GetTeam();
-	VanillaPlayer(VictimId)->m_EarliestRespawnTick = Server()->Tick() + Server()->TickSpeed() / 2;
+	const int RespawnDelay = Context.m_Weapon == WEAPON_SELF ? Server()->TickSpeed() * 3 : Server()->TickSpeed() / 2;
+	VanillaPlayer(VictimId)->m_EarliestRespawnTick = Server()->Tick() + RespawnDelay;
 	if(CPlayerVanilla *pKillerPlayer = VanillaPlayer(KillerId))
 		pKillerPlayer->m_Score += DeathScoreDelta(VictimId, KillerId, Context.m_Weapon, TeamKill);
 
@@ -61,6 +64,7 @@ void CGameControllerVanillaCTF::OnCharacterDeath(const CGameCharacterDeathContex
 		Services().SendGameMessage7(protocol7::GAMEMSG_CTF_DROP);
 		if(pKiller && pKiller->GetTeam() != pVictim->GetPlayer()->GetTeam())
 			VanillaPlayer(pKiller->GetCid())->m_Score++;
+		PublishMatchEvent(CMatchEventFlagDrop{VictimId, pFlag->Team()});
 		Result |= 1;
 	}
 	FinalizeCharacterDeath(Context, Result);
@@ -96,6 +100,7 @@ void CGameControllerVanillaCTF::ProcessFlags()
 			log_info("game", "flag_return");
 			Services().CreateLegacySoundGlobal(SOUND_CTF_RETURN);
 			Services().SendGameMessage7(protocol7::GAMEMSG_CTF_RETURN);
+			PublishMatchEvent(CMatchEventFlagReturn{-1, pFlag->Team()});
 			continue;
 		}
 
@@ -142,6 +147,7 @@ void CGameControllerVanillaCTF::FlagGrab(CFlag *pFlag, CCharacter *pCarrier)
 			Services().CreateLegacySoundGlobal(pPlayer->GetTeam() == pFlag->Team() ? SOUND_CTF_GRAB_EN : SOUND_CTF_GRAB_PL, ClientId);
 	}
 	Services().SendGameMessage7(protocol7::GAMEMSG_CTF_GRAB, {pFlag->Team()});
+	PublishMatchEvent(CMatchEventFlagGrab{pCarrier->GetPlayer()->GetCid(), pFlag->Team()});
 }
 
 void CGameControllerVanillaCTF::FlagReturn(CFlag *pFlag, CCharacter *pPlayer)
@@ -151,6 +157,7 @@ void CGameControllerVanillaCTF::FlagReturn(CFlag *pFlag, CCharacter *pPlayer)
 	log_info("game", "flag_return player='%d:%s' team=%d", pPlayer->GetPlayer()->GetCid(), Server()->ClientName(pPlayer->GetPlayer()->GetCid()), pPlayer->GetPlayer()->GetTeam());
 	Services().CreateLegacySoundGlobal(SOUND_CTF_RETURN);
 	Services().SendGameMessage7(protocol7::GAMEMSG_CTF_RETURN);
+	PublishMatchEvent(CMatchEventFlagReturn{pPlayer->GetPlayer()->GetCid(), pFlag->Team()});
 }
 
 void CGameControllerVanillaCTF::FlagCapture(CFlag *pFlag)
@@ -173,6 +180,7 @@ void CGameControllerVanillaCTF::FlagCapture(CFlag *pFlag)
 	for(CFlag *pResetFlag : m_apFlags)
 		if(pResetFlag)
 			pResetFlag->Return();
+	PublishMatchEvent(CMatchEventFlagCapture{CarrierId, pFlag->Team(), CaptureTicks});
 }
 
 CFlag *CGameControllerVanillaCTF::Flag(int Team) const

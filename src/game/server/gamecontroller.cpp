@@ -31,6 +31,7 @@
 IGameController::IGameController(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
 	m_GameModeInfo(GameModeInfo)
 {
+	RegisterMapEntityFactory(CreateCommonMapEntity);
 	m_pServices = &Services;
 	m_pConfig = GameServer()->Config();
 	m_pServer = Services.Server();
@@ -63,6 +64,8 @@ void IGameController::Init()
 	m_pGameType = g_Config.m_SvTestingCommands ? m_GameModeInfo.m_pTestingGameType : m_GameModeInfo.m_pGameType;
 	DoWarmup(g_Config.m_SvWarmup);
 	m_TeamsCore.Reset();
+	if(!m_Warmup)
+		PublishMatchEvent(CMatchEventRoundStarted{});
 }
 
 CPlayer *IGameController::CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team)
@@ -398,55 +401,62 @@ bool IGameController::CanSpawn(int Team, vec2 *pOutPos, int ClientId)
 bool IGameController::OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number)
 {
 	dbg_assert(Index >= 0, "Invalid entity index");
+	return m_EntityRegistry.CreateMapEntity(*this, {Index, x, y, Layer, Flags, Initial, Number});
+}
 
-	const vec2 Pos(x * 32.0f + 16.0f, y * 32.0f + 16.0f);
+bool IGameController::CreateCommonMapEntity(IGameController &Controller, const CMapEntityContext &Context)
+{
+	const vec2 Pos(Context.m_X * 32.0f + 16.0f, Context.m_Y * 32.0f + 16.0f);
 
-	if(Index >= ENTITY_SPAWN && Index <= ENTITY_SPAWN_BLUE && Initial)
+	if(Context.m_Index >= ENTITY_SPAWN && Context.m_Index <= ENTITY_SPAWN_BLUE)
 	{
-		const int SpawnType = Index - ENTITY_SPAWN;
-		m_avSpawnPoints[SpawnType].push_back(Pos);
+		if(Context.m_Initial)
+		{
+			const int SpawnType = Context.m_Index - ENTITY_SPAWN;
+			Controller.m_avSpawnPoints[SpawnType].push_back(Pos);
+		}
 		return true;
 	}
 
 	int Type = -1;
 	int SubType = 0;
 
-	if(Index == ENTITY_ARMOR_1)
+	if(Context.m_Index == ENTITY_ARMOR_1)
 		Type = POWERUP_ARMOR;
-	else if(Index == ENTITY_ARMOR_SHOTGUN)
+	else if(Context.m_Index == ENTITY_ARMOR_SHOTGUN)
 		Type = POWERUP_ARMOR_SHOTGUN;
-	else if(Index == ENTITY_ARMOR_GRENADE)
+	else if(Context.m_Index == ENTITY_ARMOR_GRENADE)
 		Type = POWERUP_ARMOR_GRENADE;
-	else if(Index == ENTITY_ARMOR_NINJA)
+	else if(Context.m_Index == ENTITY_ARMOR_NINJA)
 		Type = POWERUP_ARMOR_NINJA;
-	else if(Index == ENTITY_ARMOR_LASER)
+	else if(Context.m_Index == ENTITY_ARMOR_LASER)
 		Type = POWERUP_ARMOR_LASER;
-	else if(Index == ENTITY_HEALTH_1)
+	else if(Context.m_Index == ENTITY_HEALTH_1)
 		Type = POWERUP_HEALTH;
-	else if(Index == ENTITY_WEAPON_SHOTGUN)
+	else if(Context.m_Index == ENTITY_WEAPON_SHOTGUN)
 	{
 		Type = POWERUP_WEAPON;
 		SubType = WEAPON_SHOTGUN;
 	}
-	else if(Index == ENTITY_WEAPON_GRENADE)
+	else if(Context.m_Index == ENTITY_WEAPON_GRENADE)
 	{
 		Type = POWERUP_WEAPON;
 		SubType = WEAPON_GRENADE;
 	}
-	else if(Index == ENTITY_WEAPON_LASER)
+	else if(Context.m_Index == ENTITY_WEAPON_LASER)
 	{
 		Type = POWERUP_WEAPON;
 		SubType = WEAPON_LASER;
 	}
-	else if(Index == ENTITY_POWERUP_NINJA)
+	else if(Context.m_Index == ENTITY_POWERUP_NINJA)
 	{
 		Type = POWERUP_NINJA;
 		SubType = WEAPON_NINJA;
 	}
 	if(Type != -1) // NOLINT(clang-analyzer-unix.Malloc)
 	{
-		int PickupFlags = TileFlagsToPickupFlags(Flags);
-		CPickup *pPickup = new CPickup(&GameServer()->m_World, Type, SubType, Layer, Number, PickupFlags);
+		const int PickupFlags = Controller.TileFlagsToPickupFlags(Context.m_Flags);
+		CPickup *pPickup = new CPickup(&Controller.GameServer()->m_World, Type, SubType, Context.m_Layer, Context.m_Number, PickupFlags);
 		pPickup->m_Pos = Pos;
 		return true; // NOLINT(clang-analyzer-unix.Malloc)
 	}
@@ -535,6 +545,7 @@ void IGameController::EndRound()
 	m_GameOverTick = Server()->Tick();
 	m_SuddenDeath = 0;
 	log_info("game", "end round type='%s'", m_pGameType);
+	PublishMatchEvent(CMatchEventRoundEnded{});
 }
 
 void IGameController::ResetGame()
@@ -585,6 +596,7 @@ void IGameController::StartRound()
 	SetGamePaused(false);
 	Server()->DemoRecorder_HandleAutoStart();
 	log_info("game", "start round type='%s' teamplay='%d'", m_pGameType, m_GameFlags & GAMEFLAG_TEAMS);
+	PublishMatchEvent(CMatchEventRoundStarted{});
 }
 
 void IGameController::ChangeMap(const char *pToMap)
@@ -602,6 +614,13 @@ void IGameController::OnReset()
 void IGameController::FinalizeCharacterDeath(const CGameCharacterDeathContext &Context, int ModeSpecial)
 {
 	Context.m_pVictim->FinalizeDeath(Context.m_Killer, Context.m_Weapon, Context.m_SendKillMessage, ModeSpecial);
+	if(Context.m_Weapon == WEAPON_GAME)
+		return;
+	const int VictimId = Context.m_pVictim->GetPlayer()->GetCid();
+	if(Context.m_Killer == VictimId)
+		PublishMatchEvent(CMatchEventSuicide{VictimId, Context.m_Weapon});
+	else
+		PublishMatchEvent(CMatchEventKill{Context.m_Killer, VictimId, Context.m_Weapon});
 }
 
 void IGameController::OnCharacterDeath(const CGameCharacterDeathContext &Context)
@@ -1023,6 +1042,7 @@ void IGameController::DoTeamChange(CPlayer *pPlayer, int Team, bool DoChatMsg)
 	if(Team == pPlayer->GetTeam())
 		return;
 
+	const int OldTeam = pPlayer->GetTeam();
 	pPlayer->SetTeam(Team);
 	int ClientId = pPlayer->GetCid();
 
@@ -1035,6 +1055,7 @@ void IGameController::DoTeamChange(CPlayer *pPlayer, int Team, bool DoChatMsg)
 
 	str_format(aBuf, sizeof(aBuf), "team_join player='%d:%s' m_Team=%d", ClientId, Server()->ClientName(ClientId), Team);
 	GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "game", aBuf);
+	PublishMatchEvent(CMatchEventTeamChanged{ClientId, OldTeam, Team});
 
 	// OnPlayerInfoChange(pPlayer);
 }

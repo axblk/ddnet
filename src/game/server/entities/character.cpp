@@ -107,6 +107,7 @@ bool CCharacter::Spawn(CPlayer *pPlayer, vec2 Pos)
 
 	GameServer()->m_pController->OnCharacterSpawn(this);
 	GameServer()->m_pController->RestoreCharacterAfterMapReload(this);
+	GameServer()->m_pController->PublishMatchEvent(CMatchEventSpawn{m_pPlayer->GetCid(), m_pPlayer->GetTeam()});
 
 	return true;
 }
@@ -130,6 +131,7 @@ void CCharacter::SetWeapon(int W)
 
 	if(m_Core.m_ActiveWeapon < 0 || m_Core.m_ActiveWeapon >= NUM_WEAPONS)
 		m_Core.m_ActiveWeapon = 0;
+	m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart = -1;
 }
 
 void CCharacter::SetJetpack(bool Active)
@@ -461,6 +463,7 @@ void CCharacter::FireWeapon()
 	{
 		m_ReloadTimer = GetTuning(m_TuneZone)->GetWeaponFireDelay(m_Core.m_ActiveWeapon) * Server()->TickSpeed();
 	}
+	GameServer()->m_pController->PublishMatchEvent(CMatchEventShotFired{m_pPlayer->GetCid(), FireContext.m_Weapon});
 }
 
 void CCharacter::HandleWeapons()
@@ -481,6 +484,31 @@ void CCharacter::HandleWeapons()
 
 	// fire Weapon, if wanted
 	FireWeapon();
+
+	// ammo regen
+	if(m_Core.m_ActiveWeapon < 0 || m_Core.m_ActiveWeapon >= NUM_WEAPONS)
+		return;
+	const int AmmoRegenTime = g_pData->m_Weapons.m_aId[m_Core.m_ActiveWeapon].m_Ammoregentime;
+	if(AmmoRegenTime && m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo >= 0)
+	{
+		if(m_ReloadTimer <= 0)
+		{
+			if(m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart < 0)
+				m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart = Server()->Tick();
+
+			if(Server()->Tick() - m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart >= AmmoRegenTime * Server()->TickSpeed() / 1000)
+			{
+				m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo = std::min(
+					m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo + 1,
+					g_pData->m_Weapons.m_aId[m_Core.m_ActiveWeapon].m_Maxammo);
+				m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart = -1;
+			}
+		}
+		else
+		{
+			m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart = -1;
+		}
+	}
 }
 
 void CCharacter::GiveNinja()
@@ -872,6 +900,8 @@ void CCharacter::FinalizeDeath(int Killer, int Weapon, bool SendKillMessage, int
 
 bool CCharacter::TakeDamage(vec2 Force, int Dmg, int From, int Weapon, bool CanDamage, int AttackerTeam)
 {
+	if(From >= 0 && From < MAX_CLIENTS && GameServer()->m_apPlayers[From] && Weapon >= 0 && Weapon < NUM_WEAPONS)
+		GameServer()->m_pController->PublishMatchEvent(CMatchEventWeaponHit{From, m_pPlayer->GetCid(), Weapon});
 	return GameServer()->m_pController->OnCharacterTakeDamage(this, Force, Dmg, From, Weapon, CanDamage, AttackerTeam);
 }
 

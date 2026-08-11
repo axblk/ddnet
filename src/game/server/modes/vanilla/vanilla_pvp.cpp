@@ -117,7 +117,10 @@ bool CGameControllerVanillaPvP::OnCharacterTakeDamage(CCharacter *pVictim, vec2 
 
 	const int DamageTaken = OldHealth - Health + OldArmor - Armor;
 	if(DamageTaken > 0)
+	{
 		Services().CreateDamageInd(pVictim->m_Pos, 0.0f, DamageTaken, pVictim->TeamMask());
+		PublishMatchEvent(CMatchEventDamage{From, VictimId, Weapon, DamageTaken});
+	}
 
 	if(CPlayer *pAttackerPlayer = From != VictimId ? Services().Player(From) : nullptr)
 		Services().CreateSound(pAttackerPlayer->m_ViewPos, SOUND_HIT, CClientMask().set(From));

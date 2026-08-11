@@ -434,6 +434,7 @@ private:
 	// DDRace Console Commands
 
 	static void ConKillPlayer(IConsole::IResult *pResult, void *pUserData);
+	static void ConPositionPlayer(IConsole::IResult *pResult, void *pUserData);
 
 	static void ConInfo(IConsole::IResult *pResult, void *pUserData);
 	static void ConHelp(IConsole::IResult *pResult, void *pUserData);

@@ -34,7 +34,7 @@ private:
 	int m_ParticleQuadContainerIndex = -1;
 	int m_ExtraParticleQuadContainerIndex = -1;
 
-	void RenderGroup(int Group);
+	void RenderGroup(const CRenderContext &Context, int Group);
 	void UpdatePhysics(CGameState::CParticleSystemState &State, float TimePassed);
 
 	template<int TGROUP>
@@ -43,7 +43,7 @@ private:
 	public:
 		CParticles *m_pParts;
 		int Sizeof() const override { return sizeof(*this); }
-		void OnRender() override { m_pParts->RenderGroup(TGROUP); }
+		void OnRender(const CRenderContext &Context) override { m_pParts->RenderGroup(Context, TGROUP); }
 	};
 
 	// behind players

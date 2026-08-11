@@ -16,18 +16,18 @@ public:
 
 	void Update(CGameState &State, float GameTickTime, float PredIntraTick);
 
-	void BulletTrail(CGameState &State, vec2 Pos, float Alpha, float TimePassed);
-	void SmokeTrail(CGameState &State, vec2 Pos, vec2 Vel, float Alpha, float TimePassed);
-	void SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, float Alpha, float Volume, bool PlaySound);
+	void BulletTrail(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha, float TimePassed);
+	void SmokeTrail(CGameState &State, vec2 Pos, vec2 Vel, int OwnerClientId, float Alpha, float TimePassed);
+	void SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, int OwnerClientId, float Alpha, float Volume, bool PlaySound);
 	void Explosion(CGameState &State, vec2 Pos, float Alpha);
 	void HammerHit(CGameState &State, vec2 Pos, float Alpha, float Volume);
-	void AirJump(CGameState &State, vec2 Pos, float Alpha, float Volume);
-	void DamageIndicator(CGameState &State, vec2 Pos, vec2 Dir, float Alpha);
+	void AirJump(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha, float Volume);
+	void DamageIndicator(CGameState &State, vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha);
 	void PlayerSpawn(CGameState &State, vec2 Pos, float Alpha, float Volume);
 	void PlayerDeath(CGameState &State, vec2 Pos, int ClientId, float Alpha);
-	void PowerupShine(CGameState &State, vec2 Pos, vec2 Size, float Alpha);
-	void FreezingFlakes(CGameState &State, vec2 Pos, vec2 Size, float Alpha);
-	void SparkleTrail(CGameState &State, vec2 Pos, float Alpha);
+	void PowerupShine(CGameState &State, vec2 Pos, vec2 Size, int OwnerClientId, float Alpha);
+	void FreezingFlakes(CGameState &State, vec2 Pos, vec2 Size, int OwnerClientId, float Alpha);
+	void SparkleTrail(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha);
 	void Confetti(CGameState &State, vec2 Pos, float Alpha);
 };
 #endif

@@ -15,9 +15,9 @@ class CDamageInd : public CComponent
 public:
 	int Sizeof() const override { return sizeof(*this); }
 
-	void Create(CGameState &State, vec2 Pos, vec2 Dir, float Alpha);
+	void Create(CGameState &State, vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha);
 	void Update(CGameState &State);
-	void OnRender() override;
+	void OnRender(const CRenderContext &Context) override;
 	void OnInit() override;
 };
 #endif

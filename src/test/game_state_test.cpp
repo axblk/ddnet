@@ -168,6 +168,74 @@ TEST(GameState, TeamsAreIndependentAndResetPerState)
 	EXPECT_FALSE(Additional.Teams().GetSolo(5));
 }
 
+TEST(GameState, RenderedClientsUseStateOwnedSnapshotHistory)
+{
+	CGameState Primary(CGameStateId(1), CStreamId(1));
+	CGameState Additional(CGameStateId(2), CStreamId(2));
+	auto pPrimaryClients = std::make_unique<std::array<CGameState::CClientSnapshot, MAX_CLIENTS>>();
+	CGameState::CClientSnapshot &PrimaryClient = (*pPrimaryClients)[4];
+	PrimaryClient.m_Active = true;
+	PrimaryClient.m_HasPlayerInfo = true;
+	PrimaryClient.m_HasPrevPlayerInfo = true;
+	PrimaryClient.m_HasCharacter = true;
+	PrimaryClient.m_HasPrevCharacter = true;
+	PrimaryClient.m_HasExtendedCharacter = true;
+	PrimaryClient.m_HasPrevExtendedCharacter = true;
+	PrimaryClient.m_PrevCharacter.m_X = 100;
+	PrimaryClient.m_PrevCharacter.m_Y = 200;
+	PrimaryClient.m_Character.m_X = 300;
+	PrimaryClient.m_Character.m_Y = 600;
+	PrimaryClient.m_PrevExtendedTargetX = -10;
+	PrimaryClient.m_ExtendedCharacter.m_TargetX = 30;
+
+	auto pAdditionalClients = std::make_unique<std::array<CGameState::CClientSnapshot, MAX_CLIENTS>>();
+	CGameState::CClientSnapshot &AdditionalClient = (*pAdditionalClients)[4];
+	AdditionalClient.m_Active = true;
+	AdditionalClient.m_HasPlayerInfo = true;
+	AdditionalClient.m_HasPrevPlayerInfo = true;
+	AdditionalClient.m_HasCharacter = true;
+	AdditionalClient.m_HasPrevCharacter = true;
+	AdditionalClient.m_PrevCharacter.m_X = -400;
+	AdditionalClient.m_PrevCharacter.m_Y = -800;
+	AdditionalClient.m_Character.m_X = 400;
+	AdditionalClient.m_Character.m_Y = 800;
+
+	Primary.ApplySnapshotData(10, 4, std::move(*pPrimaryClients));
+	Additional.ApplySnapshotData(20, 4, std::move(*pAdditionalClients));
+	Primary.UpdateRenderedClient(4, false, false, 0.25f, 0.0f);
+	Additional.UpdateRenderedClient(4, false, false, 0.75f, 0.0f);
+
+	EXPECT_TRUE(Primary.RenderedClient(4).m_Active);
+	EXPECT_EQ(Primary.RenderedClient(4).m_Position, vec2(150.0f, 300.0f));
+	EXPECT_EQ(Additional.RenderedClient(4).m_Position, vec2(200.0f, 400.0f));
+	EXPECT_TRUE(Primary.Client(4).m_HasPrevExtendedCharacter);
+	EXPECT_EQ(Primary.Client(4).m_PrevExtendedTargetX, -10);
+	EXPECT_FALSE(Additional.Client(4).m_HasPrevExtendedCharacter);
+
+	Additional.RenderedClient(4).m_IsPredictedLocal = true;
+	Primary.PredictionHistory(4).m_aSmoothLen[0] = 100;
+	Primary.PredictionHistory(4).m_aPredPos[10] = vec2(10.0f, 20.0f);
+	Additional.PredictionHistory(4).m_aSmoothLen[0] = 200;
+	Additional.PredictionHistory(4).m_aPredPos[10] = vec2(30.0f, 40.0f);
+	Primary.Reset();
+	EXPECT_FALSE(Primary.RenderedClient(4).m_Active);
+	EXPECT_FALSE(Primary.Client(4).m_HasPrevExtendedCharacter);
+	EXPECT_EQ(Primary.PredictionHistory(4).m_aSmoothLen[0], 0);
+	EXPECT_EQ(Primary.PredictionHistory(4).m_aPredPos[10], vec2(0.0f, 0.0f));
+	EXPECT_TRUE(Additional.RenderedClient(4).m_Active);
+	EXPECT_TRUE(Additional.RenderedClient(4).m_IsPredictedLocal);
+	EXPECT_EQ(Additional.PredictionHistory(4).m_aSmoothLen[0], 200);
+	EXPECT_EQ(Additional.PredictionHistory(4).m_aPredPos[10], vec2(30.0f, 40.0f));
+
+	auto pIncompleteClients = std::make_unique<std::array<CGameState::CClientSnapshot, MAX_CLIENTS>>();
+	(*pIncompleteClients)[4].m_HasPlayerInfo = true;
+	(*pIncompleteClients)[4].m_HasCharacter = true;
+	(*pIncompleteClients)[4].m_HasPrevCharacter = true;
+	Primary.ApplySnapshotData(30, 2, std::move(*pIncompleteClients));
+	Primary.UpdateRenderedClient(4, false, false, 0.5f, 0.0f);
+	EXPECT_TRUE(Primary.RenderedClient(4).m_Active);
+}
+
 TEST(GameState, CoreGameInfoIsIndependentAndResetPerState)
 {
 	CGameState Primary(CGameStateId(1), CStreamId(1));
@@ -456,14 +524,16 @@ TEST(GameState, DamageIndicatorsAdvanceIndependently)
 {
 	CGameState Primary(CGameStateId(1), CStreamId(1));
 	CGameState Additional(CGameStateId(2), CStreamId(2));
-	Primary.DamageIndicators().Create(vec2(10.0f, 20.0f), vec2(1.0f, 0.0f), 0.5f, 0.25f);
-	Additional.DamageIndicators().Create(vec2(30.0f, 40.0f), vec2(0.0f, 1.0f), 0.75f, 0.5f);
+	Primary.DamageIndicators().Create(vec2(10.0f, 20.0f), vec2(1.0f, 0.0f), 4, 0.5f, 0.25f);
+	Additional.DamageIndicators().Create(vec2(30.0f, 40.0f), vec2(0.0f, 1.0f), 9, 0.75f, 0.5f);
 
 	ASSERT_EQ(Primary.DamageIndicators().NumItems(), 1);
 	ASSERT_EQ(Additional.DamageIndicators().NumItems(), 1);
 	EXPECT_EQ(Primary.DamageIndicators().Item(0).m_Pos, vec2(10.0f, 20.0f));
 	EXPECT_EQ(Primary.DamageIndicators().Item(0).m_Dir, vec2(-1.0f, 0.0f));
 	EXPECT_FLOAT_EQ(Primary.DamageIndicators().Item(0).m_Color.a, 0.5f);
+	EXPECT_EQ(Primary.DamageIndicators().Item(0).m_OwnerClientId, 4);
+	EXPECT_EQ(Additional.DamageIndicators().Item(0).m_OwnerClientId, 9);
 	Primary.DamageIndicators().Update(0.8f);
 	EXPECT_EQ(Primary.DamageIndicators().NumItems(), 0);
 	EXPECT_EQ(Additional.DamageIndicators().NumItems(), 1);
@@ -531,6 +601,7 @@ TEST(GameState, ParticlePoolsAreLazyBoundedAndResetIndependently)
 	CGameState::CParticle Particle;
 	Particle.SetDefault();
 	Particle.m_LifeSpan = 1.0f;
+	EXPECT_EQ(Particle.m_OwnerClientId, -1);
 
 	EXPECT_FALSE(Primary.Particles().Add(-1, Particle));
 	EXPECT_TRUE(Additional.Particles().Add(0, Particle));
@@ -869,6 +940,11 @@ TEST(GameState, SnapshotWorldsAreIndependent)
 	EXPECT_LT(Additional.PredictedClient(7).m_Current.m_Vel.x, 0.0f);
 	EXPECT_EQ(Primary.PredictionTick(), 101);
 	EXPECT_EQ(Additional.PredictionTick(), 201);
+	EXPECT_EQ(Primary.PredictionHistory(3).m_aPredTick[100], 100);
+	EXPECT_EQ(Primary.PredictionHistory(3).m_aPredTick[101], 101);
+	EXPECT_EQ(Additional.PredictionHistory(7).m_aPredTick[0], 200);
+	EXPECT_EQ(Additional.PredictionHistory(7).m_aPredTick[1], 201);
+	EXPECT_NE(Primary.PredictionHistory(3).m_aPredPos[101], Additional.PredictionHistory(7).m_aPredPos[1]);
 	EXPECT_TRUE(Primary.PredictedWorld().m_WorldConfig.m_IsDDRace);
 	EXPECT_TRUE(Primary.PredictedWorld().m_WorldConfig.m_PredictTiles);
 	EXPECT_TRUE(Primary.PredictedWorld().m_WorldConfig.m_BugDDRaceInput);
@@ -882,6 +958,40 @@ TEST(GameState, SnapshotWorldsAreIndependent)
 	EXPECT_EQ(Primary.SnapshotDigest(), PrimarySnapshotDigest);
 	EXPECT_EQ(Additional.SnapshotDigest(), AdditionalSnapshotDigest);
 	EXPECT_NE(Primary.PredictionDigest(), Additional.PredictionDigest());
+}
+
+TEST(GameState, EntitySnapshotsOwnCurrentAndPreviousData)
+{
+	CGameState Primary(CGameStateId(1), CStreamId(1));
+	CGameState Additional(CGameStateId(2), CStreamId(2));
+	CNetObj_Pickup Current = {};
+	Current.m_X = 100;
+	Current.m_Y = 200;
+	CNetObj_Pickup Prev = {};
+	Prev.m_X = 50;
+	Prev.m_Y = 150;
+	CGameState::CEntitySnapshot Entity;
+	Entity.m_Id = 7;
+	Entity.m_Type = NETOBJTYPE_PICKUP;
+	const auto *pCurrentData = reinterpret_cast<const unsigned char *>(&Current);
+	Entity.m_vData.assign(pCurrentData, pCurrentData + sizeof(Current));
+	const auto *pPrevData = reinterpret_cast<const unsigned char *>(&Prev);
+	Entity.m_vPrevData.assign(pPrevData, pPrevData + sizeof(Prev));
+	std::vector<CGameState::CEntitySnapshot> vEntities;
+	vEntities.push_back(std::move(Entity));
+	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aClients = {};
+	Primary.ApplySnapshotData(10, 1, aClients, nullptr, std::move(vEntities));
+	Additional.ApplySnapshotData(20, 0, std::move(aClients));
+
+	ASSERT_EQ(Primary.Entities().size(), 1U);
+	const CGameState::CEntitySnapshot &Stored = Primary.Entities().front();
+	EXPECT_EQ(Stored.m_Id, 7);
+	EXPECT_EQ(reinterpret_cast<const CNetObj_Pickup *>(Stored.m_vData.data())->m_X, 100);
+	EXPECT_EQ(reinterpret_cast<const CNetObj_Pickup *>(Stored.m_vPrevData.data())->m_X, 50);
+	EXPECT_TRUE(Additional.Entities().empty());
+	EXPECT_NE(Primary.SnapshotDigest(), Additional.SnapshotDigest());
+	Primary.Reset();
+	EXPECT_TRUE(Primary.Entities().empty());
 }
 
 TEST(GameView, RenderingTwoViewsDoesNotAdvanceState)
@@ -945,7 +1055,7 @@ TEST(GameView, RenderingTwoViewsDoesNotAdvanceState)
 	Particle.SetDefault();
 	Particle.m_LifeSpan = 1.0f;
 	ASSERT_TRUE(State.Particles().Add(0, Particle));
-	State.DamageIndicators().Create(vec2(10.0f, 20.0f), vec2(1.0f, 0.0f), 0.5f, 0.25f);
+	State.DamageIndicators().Create(vec2(10.0f, 20.0f), vec2(1.0f, 0.0f), 4, 0.5f, 0.25f);
 
 	const uint64_t SnapshotDigest = State.SnapshotDigest();
 	const uint64_t PredictionDigest = State.PredictionDigest();
@@ -974,6 +1084,9 @@ TEST(GameView, RenderingTwoViewsDoesNotAdvanceState)
 	EXPECT_EQ(&RightContext.m_View, pRight);
 	EXPECT_EQ(RightContext.m_Time.m_GameTick, 51);
 	EXPECT_FLOAT_EQ(RightContext.m_Time.m_IntraGameTick, 0.75f);
+	EXPECT_FLOAT_EQ(LeftContext.AlphaForOwner(5, 0.25f), 0.25f);
+	EXPECT_FLOAT_EQ(RightContext.AlphaForOwner(5, 0.25f), 1.0f);
+	EXPECT_FLOAT_EQ(LeftContext.AlphaForOwner(-1, 0.25f), 1.0f);
 	Renderer.Render(LeftContext, Output);
 	Renderer.Render(RightContext, Output);
 
@@ -1012,6 +1125,134 @@ TEST(GameView, RenderingTwoViewsDoesNotAdvanceState)
 	EXPECT_EQ(State.DamageIndicators().Item(0).m_Color, DamageIndicator.m_Color);
 	EXPECT_TRUE(ViewManager.Destroy(LeftId));
 	EXPECT_EQ(ViewManager.NumViews(), 1U);
+}
+
+TEST(GameView, PresentationContextCombinesVisibleWorldRectsWithoutView)
+{
+	CGameSessionContext Session(CSessionId(4), "presentation-test", EGameProtocol::SIX, {CStreamId(1)});
+	CGameState *pState = Session.GameStates().FindByStream(CStreamId(1));
+	ASSERT_NE(pState, nullptr);
+	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aClients = {};
+	aClients[1].m_HasPlayerInfo = true;
+	aClients[1].m_PlayerInfo.m_Local = 1;
+	pState->SetTeam(1, 1);
+	pState->SetTeam(2, 2);
+	pState->ApplySnapshotData(50, 1, std::move(aClients));
+
+	const std::array aVisibleWorldRects = {
+		CVisibleWorldRect(vec2(0.0f, 0.0f), vec2(100.0f, 100.0f)),
+		CVisibleWorldRect(vec2(200.0f, 200.0f), vec2(300.0f, 300.0f)),
+	};
+	CGameTickInfo Time;
+	Time.m_GameTick = 50;
+	Time.m_PredictionTick = 52;
+	Time.m_GameTickSpeed = 50;
+	CPresentationContext Context(Session, *pState, Time, aVisibleWorldRects, EPresentationPlayback::PLAYING, EPresentationAudio::MUTED);
+
+	EXPECT_EQ(&Context.m_Session, &Session);
+	EXPECT_EQ(&Context.m_State, pState);
+	EXPECT_EQ(Context.m_Time.m_PredictionTick, 52);
+	EXPECT_EQ(Context.m_vVisibleWorldRects.size(), 2U);
+	EXPECT_EQ(Context.m_Playback, EPresentationPlayback::PLAYING);
+	EXPECT_EQ(Context.m_Audio, EPresentationAudio::MUTED);
+	EXPECT_TRUE(Context.IsVisible(vec2(50.0f, 50.0f), vec2(0.0f, 0.0f)));
+	EXPECT_TRUE(Context.IsVisible(vec2(250.0f, 250.0f), vec2(0.0f, 0.0f)));
+	EXPECT_FALSE(Context.IsVisible(vec2(150.0f, 150.0f), vec2(0.0f, 0.0f)));
+	EXPECT_TRUE(Context.IsVisible(vec2(150.0f, 150.0f), vec2(50.0f, 50.0f)));
+	EXPECT_FALSE(Context.IsOtherTeamFromLocalPlayer(1));
+	EXPECT_TRUE(Context.IsOtherTeamFromLocalPlayer(2));
+}
+
+TEST(GameView, SchedulerUpdatesEachStateBeforeRenderingExplicitOutputs)
+{
+	CGameSessionContext Network(CSessionId(10), "network", EGameProtocol::SIX, {CStreamId(1), CStreamId(2)});
+	CGameSessionContext Demo(CSessionId(20), "demo", EGameProtocol::SIX, {CStreamId(1)});
+	CGameState *pMainState = Network.GameStates().FindByStream(CStreamId(1));
+	CGameState *pDummyState = Network.GameStates().FindByStream(CStreamId(2));
+	CGameState *pDemoState = Demo.GameStates().FindByStream(CStreamId(1));
+	ASSERT_NE(pMainState, nullptr);
+	ASSERT_NE(pDummyState, nullptr);
+	ASSERT_NE(pDemoState, nullptr);
+
+	CGameViewManager ViewManager;
+	CGameView *pMainLeft = ViewManager.Find(ViewManager.Create(Network.Id(), pMainState->Id()));
+	CGameView *pDemoView = ViewManager.Find(ViewManager.Create(Demo.Id(), pDemoState->Id()));
+	CGameView *pDummyView = ViewManager.Find(ViewManager.Create(Network.Id(), pDummyState->Id()));
+	CGameView *pMainRight = ViewManager.Find(ViewManager.Create(Network.Id(), pMainState->Id()));
+	ASSERT_NE(pMainLeft, nullptr);
+	ASSERT_NE(pDemoView, nullptr);
+	ASSERT_NE(pDummyView, nullptr);
+	ASSERT_NE(pMainRight, nullptr);
+	pMainLeft->SetViewport({0, 0, 640, 720});
+	pDemoView->SetViewport({0, 0, 320, 180});
+	pDummyView->SetViewport({320, 0, 320, 180});
+	pMainRight->SetViewport({640, 0, 640, 720});
+
+	CGameTickInfo MainTime;
+	MainTime.m_GameTick = 50;
+	MainTime.m_GameTickSpeed = 50;
+	CGameTickInfo DummyTime;
+	DummyTime.m_GameTick = 60;
+	DummyTime.m_GameTickSpeed = 50;
+	CGameTickInfo DemoTime;
+	DemoTime.m_GameTick = 70;
+	DemoTime.m_GameTickSpeed = 50;
+	DemoTime.m_IsDemoPlayback = true;
+
+	CTestRenderOutput MainLeftOutput;
+	CTestRenderOutput DemoOffscreenOutput;
+	CTestRenderOutput DummyOutput;
+	CTestRenderOutput MainRightOutput;
+	const std::array aRequests = {
+		CGameRenderRequest(Network, *pMainState, *pMainLeft, MainTime, CVisibleWorldRect(vec2(0.0f, 0.0f), vec2(100.0f, 100.0f)), EPresentationPlayback::PLAYING, EPresentationAudio::MUTED, MainLeftOutput),
+		CGameRenderRequest(Demo, *pDemoState, *pDemoView, DemoTime, CVisibleWorldRect(vec2(400.0f, 400.0f), vec2(500.0f, 500.0f)), EPresentationPlayback::PAUSED, EPresentationAudio::MUTED, DemoOffscreenOutput),
+		CGameRenderRequest(Network, *pDummyState, *pDummyView, DummyTime, CVisibleWorldRect(vec2(-200.0f, -200.0f), vec2(-100.0f, -100.0f)), EPresentationPlayback::PLAYING, EPresentationAudio::MUTED, DummyOutput),
+		CGameRenderRequest(Network, *pMainState, *pMainRight, MainTime, CVisibleWorldRect(vec2(200.0f, 200.0f), vec2(300.0f, 300.0f)), EPresentationPlayback::PLAYING, EPresentationAudio::AUDIBLE, MainRightOutput),
+	};
+
+	std::vector<const CGameState *> vpUpdatedStates;
+	std::vector<const CGameView *> vpRenderedViews;
+	std::vector<CRenderOutput *> vpRenderOutputs;
+	CGameStateRenderer Renderer;
+	CGameRenderScheduler Scheduler;
+	Scheduler.Run(
+		aRequests,
+		[&](const CPresentationContext &Context) {
+			EXPECT_TRUE(vpRenderedViews.empty());
+			vpUpdatedStates.push_back(&Context.m_State);
+			if(&Context.m_State == pMainState)
+			{
+				EXPECT_EQ(Context.m_vVisibleWorldRects.size(), 2U);
+				EXPECT_TRUE(Context.IsVisible(vec2(50.0f, 50.0f), vec2(0.0f, 0.0f)));
+				EXPECT_TRUE(Context.IsVisible(vec2(250.0f, 250.0f), vec2(0.0f, 0.0f)));
+				EXPECT_FALSE(Context.IsVisible(vec2(150.0f, 150.0f), vec2(0.0f, 0.0f)));
+				EXPECT_EQ(Context.m_Audio, EPresentationAudio::AUDIBLE);
+			}
+		},
+		[&](const CRenderContext &Context, CRenderOutput &Output) {
+			EXPECT_EQ(vpUpdatedStates.size(), 3U);
+			vpRenderedViews.push_back(&Context.m_View);
+			vpRenderOutputs.push_back(&Output);
+			Renderer.Render(Context, Output);
+		});
+
+	ASSERT_EQ(vpUpdatedStates.size(), 3U);
+	EXPECT_EQ(std::count(vpUpdatedStates.begin(), vpUpdatedStates.end(), pMainState), 1);
+	EXPECT_EQ(std::count(vpUpdatedStates.begin(), vpUpdatedStates.end(), pDummyState), 1);
+	EXPECT_EQ(std::count(vpUpdatedStates.begin(), vpUpdatedStates.end(), pDemoState), 1);
+	ASSERT_EQ(vpRenderedViews.size(), aRequests.size());
+	EXPECT_EQ(vpRenderedViews[0], pMainLeft);
+	EXPECT_EQ(vpRenderedViews[1], pDemoView);
+	EXPECT_EQ(vpRenderedViews[2], pDummyView);
+	EXPECT_EQ(vpRenderedViews[3], pMainRight);
+	EXPECT_EQ(vpRenderOutputs[0], &MainLeftOutput);
+	EXPECT_EQ(vpRenderOutputs[1], &DemoOffscreenOutput);
+	EXPECT_EQ(vpRenderOutputs[2], &DummyOutput);
+	EXPECT_EQ(vpRenderOutputs[3], &MainRightOutput);
+	EXPECT_EQ(MainLeftOutput.m_EndedViews, 1);
+	EXPECT_EQ(DemoOffscreenOutput.m_EndedViews, 1);
+	EXPECT_EQ(DummyOutput.m_EndedViews, 1);
+	EXPECT_EQ(MainRightOutput.m_EndedViews, 1);
 }
 
 TEST(GameView, EqualStateIdsInDifferentSessionsRemainDistinct)

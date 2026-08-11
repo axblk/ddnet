@@ -1004,7 +1004,7 @@ void CClient::RenderDebug()
 	str_format(aBuffer, sizeof(aBuffer), "Game/predicted tick: %d/%d", GameTick(ActiveConnection()), PredGameTick(ActiveConnection()));
 	Graphics()->QuadsText(2, 2, FontSize, aBuffer);
 
-	str_format(aBuffer, sizeof(aBuffer), "Prediction time: %d ms", GetPredictionTime());
+	str_format(aBuffer, sizeof(aBuffer), "Prediction time: %d ms", GetPredictionTime(ActiveConnection()));
 	Graphics()->QuadsText(2, 2 + FontSize, FontSize, aBuffer);
 
 	str_format(aBuffer, sizeof(aBuffer), "FPS: %3d", round_to_int(1.0f / m_FrameTimeAverage));
@@ -5324,15 +5324,15 @@ void CClient::RequestDDNetInfo()
 	m_InfoState = EInfoState::LOADING;
 }
 
-int CClient::GetPredictionTime()
+int CClient::GetPredictionTime(int Conn)
 {
 	int64_t Now = time_get();
-	return (int)((m_PredictedTime.Get(Now) - Connection(ActiveConnection()).m_GameTime.Get(Now)) * 1000 / (float)time_freq());
+	return (int)((m_PredictedTime.Get(Now) - Connection(Conn).m_GameTime.Get(Now)) * 1000 / (float)time_freq());
 }
 
 int CClient::GetPredictionTick()
 {
-	int PredictionTick = GetPredictionTime() * GameTickSpeed() / 1000.0f;
+	int PredictionTick = GetPredictionTime(ActiveConnection()) * GameTickSpeed() / 1000.0f;
 
 	int PredictionMin = g_Config.m_ClAntiPingLimit * GameTickSpeed() / 1000.0f;
 
@@ -5359,10 +5359,11 @@ int CClient::GetPredictionTick()
 	return PredictionTick;
 }
 
-void CClient::GetSmoothTick(int *pSmoothTick, float *pSmoothIntraTick, float MixAmount)
+void CClient::GetSmoothTick(int Conn, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount)
 {
-	int64_t GameTime = Connection(ActiveConnection()).m_GameTime.Get(time_get());
-	int64_t PredTime = m_PredictedTime.Get(time_get());
+	const int64_t Now = time_get();
+	int64_t GameTime = Connection(Conn).m_GameTime.Get(Now);
+	int64_t PredTime = m_PredictedTime.Get(Now);
 	int64_t SmoothTime = std::clamp(GameTime + (int64_t)(MixAmount * (PredTime - GameTime)), GameTime, PredTime);
 
 	*pSmoothTick = (int)(SmoothTime * GameTickSpeed() / time_freq()) + 1;

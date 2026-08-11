@@ -362,7 +362,7 @@ public:
 
 	// ---
 
-	int GetPredictionTime() override;
+	int GetPredictionTime(int Conn) override;
 	CSnapItem SnapGetItem(int Conn, int SnapId, int Index) const override;
 	int GetPredictionTick() override;
 	const void *SnapFindItem(int Conn, int SnapId, int Type, int Id) const override;
@@ -534,7 +534,7 @@ public:
 
 	IFriends *Foes() override { return &m_Foes; }
 
-	void GetSmoothTick(int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) override;
+	void GetSmoothTick(int Conn, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) override;
 
 	void AddWarning(const SWarning &Warning) override;
 	std::optional<SWarning> CurrentWarning() override;

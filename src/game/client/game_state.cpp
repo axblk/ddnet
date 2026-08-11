@@ -151,7 +151,7 @@ void CGameState::CDamageIndicatorState::Reset()
 	m_TimeInitialized = false;
 }
 
-void CGameState::CDamageIndicatorState::Create(vec2 Pos, vec2 Dir, float Alpha, float StartAngle)
+void CGameState::CDamageIndicatorState::Create(vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha, float StartAngle)
 {
 	if(m_NumItems >= MAX_ITEMS)
 		return;
@@ -162,6 +162,7 @@ void CGameState::CDamageIndicatorState::Create(vec2 Pos, vec2 Dir, float Alpha, 
 	Item.m_RemainingLife = 0.75f;
 	Item.m_StartAngle = StartAngle;
 	Item.m_Color = ColorRGBA(1.0f, 1.0f, 1.0f, Alpha);
+	Item.m_OwnerClientId = OwnerClientId;
 }
 
 void CGameState::CDamageIndicatorState::Update(float DeltaTime)
@@ -299,7 +300,13 @@ void CGameState::Reset()
 	m_PredictionTick = 0;
 	m_aTuning.fill(CTuningParams::DEFAULT);
 	m_aClients = {};
+	m_vRenderedClients.assign(MAX_CLIENTS, {});
+	m_vClientPredictionHistory.assign(MAX_CLIENTS, {});
 	m_aPredictedClients = {};
+	m_vSnappedCharacters.assign(MAX_CLIENTS, {});
+	m_vEvolvedCharacters.assign(MAX_CLIENTS, {});
+	for(CNetObj_Character &Character : m_vEvolvedCharacters)
+		Character.m_Tick = -1;
 	for(CProtocol7ClientState &Client : m_aProtocol7Clients)
 		Client.Reset();
 	m_vEntities.clear();
@@ -329,6 +336,24 @@ void CGameState::InitPrediction(CMapContext &MapContext)
 	m_GameWorld.m_Core.InitSwitchers(MapContext.Collision()->m_HighestSwitchNumber);
 	m_PredictionInitialized = true;
 	RebuildGameWorld();
+}
+
+void CGameState::EvolveCharacter(CNetObj_Character &Character, int Tick)
+{
+	CWorldCore TempWorld;
+	CCharacterCore TempCore;
+	CTeamsCore TempTeams;
+	TempCore.Init(&TempWorld, m_GameWorld.Collision(), &TempTeams);
+	TempCore.Read(&Character);
+	TempCore.m_ActiveWeapon = Character.m_Weapon;
+	while(Character.m_Tick < Tick)
+	{
+		Character.m_Tick++;
+		TempCore.Tick(false);
+		TempCore.Move();
+		TempCore.Quantize();
+	}
+	TempCore.Write(&Character);
 }
 
 void CGameState::ApplySnapshot(const IClient &Client, int Conn)
@@ -370,6 +395,8 @@ void CGameState::ApplySnapshot(const IClient &Client, int Conn)
 			Entity.m_Type = Item.m_Type;
 			const auto *pData = static_cast<const unsigned char *>(Item.m_pData);
 			Entity.m_vData.assign(pData, pData + Item.m_DataSize);
+			if(const auto *pPrevData = static_cast<const unsigned char *>(Client.SnapFindItem(Conn, IClient::SNAP_PREV, Item.m_Type, Item.m_Id)))
+				Entity.m_vPrevData.assign(pPrevData, pPrevData + Item.m_DataSize);
 			vEntities.push_back(std::move(Entity));
 		}
 		else if(Item.m_Id >= 0 && Item.m_Id < MAX_CLIENTS)
@@ -381,6 +408,10 @@ void CGameState::ApplySnapshot(const IClient &Client, int Conn)
 				SnapshotClient.m_Active = true;
 				SnapshotClient.m_HasPlayerInfo = true;
 				SnapshotClient.m_PlayerInfo = *static_cast<const CNetObj_PlayerInfo *>(Item.m_pData);
+				if(const auto *pPrev = static_cast<const CNetObj_PlayerInfo *>(Client.SnapFindItem(Conn, IClient::SNAP_PREV, NETOBJTYPE_PLAYERINFO, Item.m_Id)))
+				{
+					SnapshotClient.m_HasPrevPlayerInfo = true;
+				}
 				break;
 			case NETOBJTYPE_CLIENTINFO:
 				SnapshotClient.m_Active = true;
@@ -395,11 +426,34 @@ void CGameState::ApplySnapshot(const IClient &Client, int Conn)
 				{
 					SnapshotClient.m_HasPrevCharacter = true;
 					SnapshotClient.m_PrevCharacter = *pPrev;
+					const bool EvolvePrev = Client.PrevGameTick(Conn) - SnapshotClient.m_PrevCharacter.m_Tick <= 3 * Client.GameTickSpeed();
+					const bool EvolveCur = Client.GameTick(Conn) - SnapshotClient.m_Character.m_Tick <= 3 * Client.GameTickSpeed();
+					if(EvolveCur && m_vEvolvedCharacters[Item.m_Id].m_Tick == Client.PrevGameTick(Conn))
+					{
+						if(mem_comp(&SnapshotClient.m_PrevCharacter, &m_vSnappedCharacters[Item.m_Id], sizeof(CNetObj_Character)) == 0)
+							SnapshotClient.m_PrevCharacter = m_vEvolvedCharacters[Item.m_Id];
+						if(mem_comp(&SnapshotClient.m_Character, &m_vSnappedCharacters[Item.m_Id], sizeof(CNetObj_Character)) == 0)
+							SnapshotClient.m_Character = m_vEvolvedCharacters[Item.m_Id];
+					}
+					if(m_PredictionInitialized && EvolvePrev && SnapshotClient.m_PrevCharacter.m_Tick)
+						EvolveCharacter(SnapshotClient.m_PrevCharacter, Client.PrevGameTick(Conn));
+					if(m_PredictionInitialized && EvolveCur && SnapshotClient.m_Character.m_Tick)
+						EvolveCharacter(SnapshotClient.m_Character, Client.GameTick(Conn));
+					m_vSnappedCharacters[Item.m_Id] = *static_cast<const CNetObj_Character *>(Item.m_pData);
+					m_vEvolvedCharacters[Item.m_Id] = SnapshotClient.m_Character;
 				}
+				else
+					m_vEvolvedCharacters[Item.m_Id].m_Tick = -1;
 				break;
 			case NETOBJTYPE_DDNETCHARACTER:
 				SnapshotClient.m_HasExtendedCharacter = true;
 				SnapshotClient.m_ExtendedCharacter = *static_cast<const CNetObj_DDNetCharacter *>(Item.m_pData);
+				if(const auto *pPrev = static_cast<const CNetObj_DDNetCharacter *>(Client.SnapFindItem(Conn, IClient::SNAP_PREV, NETOBJTYPE_DDNETCHARACTER, Item.m_Id)))
+				{
+					SnapshotClient.m_HasPrevExtendedCharacter = true;
+					SnapshotClient.m_PrevExtendedTargetX = pPrev->m_TargetX;
+					SnapshotClient.m_PrevExtendedTargetY = pPrev->m_TargetY;
+				}
 				break;
 			case NETOBJTYPE_DDNETPLAYER:
 				SnapshotClient.m_HasDDNetPlayer = true;
@@ -561,6 +615,17 @@ void CGameState::PredictTo(int TargetTick, const std::function<const CNetObj_Pla
 	if(!pLocalCharacter)
 		return;
 	m_PrevPredictedWorld.CopyWorld(&m_PredictedWorld);
+	auto RecordPredictionHistory = [this](int Tick) {
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+		{
+			if(const CCharacter *pCharacter = m_PredictedWorld.GetCharacterById(ClientId))
+			{
+				m_vClientPredictionHistory[ClientId].m_aPredPos[Tick % 200] = pCharacter->Core()->m_Pos;
+				m_vClientPredictionHistory[ClientId].m_aPredTick[Tick % 200] = Tick;
+			}
+		}
+	};
+	RecordPredictionHistory(m_SnapshotTick);
 
 	for(int Tick = m_SnapshotTick + 1; Tick <= TargetTick; Tick++)
 	{
@@ -573,6 +638,7 @@ void CGameState::PredictTo(int TargetTick, const std::function<const CNetObj_Pla
 		if(Tick == TargetTick)
 			m_PrevPredictedWorld.CopyWorld(&m_PredictedWorld);
 		m_PredictedWorld.Tick();
+		RecordPredictionHistory(Tick);
 	}
 
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
@@ -590,6 +656,33 @@ void CGameState::PredictTo(int TargetTick, const std::function<const CNetObj_Pla
 	}
 }
 
+void CGameState::UpdateRenderedClient(int ClientId, bool UsePredicted, bool PredictedLocal, float IntraGameTick, float PredIntraGameTick)
+{
+	CRenderedClient &RenderedClient = m_vRenderedClients[ClientId];
+	RenderedClient = {};
+	const CClientSnapshot &SnapshotClient = m_aClients[ClientId];
+	if(!SnapshotClient.m_HasCharacter || !SnapshotClient.m_HasPrevCharacter)
+		return;
+
+	RenderedClient.m_Active = true;
+	RenderedClient.m_Prev = SnapshotClient.m_PrevCharacter;
+	RenderedClient.m_Cur = SnapshotClient.m_Character;
+	float Intra = IntraGameTick;
+	const CPredictedClient &PredictedClient = m_aPredictedClients[ClientId];
+	if(UsePredicted && PredictedClient.m_HasPrev && PredictedClient.m_HasCurrent)
+	{
+		PredictedClient.m_Prev.Write(&RenderedClient.m_Prev);
+		PredictedClient.m_Current.Write(&RenderedClient.m_Cur);
+		RenderedClient.m_IsPredicted = true;
+		RenderedClient.m_IsPredictedLocal = PredictedLocal;
+		Intra = PredIntraGameTick;
+	}
+	RenderedClient.m_Position = mix(
+		vec2(RenderedClient.m_Prev.m_X, RenderedClient.m_Prev.m_Y),
+		vec2(RenderedClient.m_Cur.m_X, RenderedClient.m_Cur.m_Y),
+		Intra);
+}
+
 bool CGameState::HasGameWorldCharacter(int ClientId) const
 {
 	return ClientId >= 0 && ClientId < MAX_CLIENTS && m_GameWorld.GetCharacterById(ClientId) != nullptr;
@@ -599,6 +692,21 @@ CCharacterCore CGameState::GameWorldCharacterCore(int ClientId) const
 {
 	const CCharacter *pCharacter = ClientId >= 0 && ClientId < MAX_CLIENTS ? m_GameWorld.GetCharacterById(ClientId) : nullptr;
 	return pCharacter ? pCharacter->GetCore() : CCharacterCore{};
+}
+
+bool CGameState::IsOtherTeamFromLocalPlayer(int ClientId) const
+{
+	if(!in_range(ClientId, MAX_CLIENTS - 1) || !in_range(m_LocalClientId, MAX_CLIENTS - 1))
+		return false;
+	const CNetObj_DDNetCharacter *pLocalExtended = ExtendedCharacter(m_LocalClientId);
+	const CNetObj_DDNetCharacter *pClientExtended = ExtendedCharacter(ClientId);
+	const bool LocalSolo = pLocalExtended != nullptr && (pLocalExtended->m_Flags & CHARACTERFLAG_SOLO) != 0;
+	const bool ClientSolo = pClientExtended != nullptr && (pClientExtended->m_Flags & CHARACTERFLAG_SOLO) != 0;
+	if((LocalSolo || ClientSolo) && ClientId != m_LocalClientId)
+		return true;
+	if(m_Teams.Team(ClientId) == TEAM_SUPER || m_Teams.Team(m_LocalClientId) == TEAM_SUPER)
+		return false;
+	return m_Teams.Team(ClientId) != m_Teams.Team(m_LocalClientId);
 }
 
 uint64_t CGameState::SnapshotDigest() const
@@ -619,10 +727,12 @@ uint64_t CGameState::SnapshotDigest() const
 		const CClientSnapshot &SnapshotClient = m_aClients[ClientId];
 		DigestValue(Digest, SnapshotClient.m_Active);
 		DigestValue(Digest, SnapshotClient.m_HasPlayerInfo);
+		DigestValue(Digest, SnapshotClient.m_HasPrevPlayerInfo);
 		DigestValue(Digest, SnapshotClient.m_HasClientInfo);
 		DigestValue(Digest, SnapshotClient.m_HasCharacter);
 		DigestValue(Digest, SnapshotClient.m_HasPrevCharacter);
 		DigestValue(Digest, SnapshotClient.m_HasExtendedCharacter);
+		DigestValue(Digest, SnapshotClient.m_HasPrevExtendedCharacter);
 		DigestValue(Digest, SnapshotClient.m_HasDDNetPlayer);
 		DigestValue(Digest, SnapshotClient.m_HasSpecChar);
 		if(SnapshotClient.m_HasPlayerInfo)
@@ -635,6 +745,11 @@ uint64_t CGameState::SnapshotDigest() const
 			DigestValue(Digest, SnapshotClient.m_PrevCharacter);
 		if(SnapshotClient.m_HasExtendedCharacter)
 			DigestValue(Digest, SnapshotClient.m_ExtendedCharacter);
+		if(SnapshotClient.m_HasPrevExtendedCharacter)
+		{
+			DigestValue(Digest, SnapshotClient.m_PrevExtendedTargetX);
+			DigestValue(Digest, SnapshotClient.m_PrevExtendedTargetY);
+		}
 		if(SnapshotClient.m_HasDDNetPlayer)
 			DigestValue(Digest, SnapshotClient.m_DDNetPlayer);
 		if(SnapshotClient.m_HasSpecChar)
@@ -659,6 +774,7 @@ uint64_t CGameState::SnapshotDigest() const
 		DigestValue(Digest, Entity.m_Id);
 		DigestValue(Digest, Entity.m_Type);
 		DigestBytes(Digest, Entity.m_vData.data(), Entity.m_vData.size());
+		DigestBytes(Digest, Entity.m_vPrevData.data(), Entity.m_vPrevData.size());
 		DigestValue(Digest, Entity.m_HasEntityEx);
 		if(Entity.m_HasEntityEx)
 			DigestValue(Digest, Entity.m_EntityEx);

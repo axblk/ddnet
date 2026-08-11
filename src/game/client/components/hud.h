@@ -75,7 +75,7 @@ class CHud : public CComponent
 	void RenderAmmoHealthAndArmor(const CNetObj_Character *pCharacter);
 
 	void PreparePlayerStateQuads();
-	void RenderPlayerState(int ClientId);
+	void RenderPlayerState(const CRenderContext &Context, int ClientId);
 
 	int m_LastSpectatorCountTick;
 	void RenderSpectatorCount(const CRenderContext &Context);

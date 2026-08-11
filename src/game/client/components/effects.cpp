@@ -15,7 +15,7 @@
 #include <game/client/components/sounds.h>
 #include <game/client/gameclient.h>
 
-void CEffects::AirJump(CGameState &State, vec2 Pos, float Alpha, float Volume)
+void CEffects::AirJump(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha, float Volume)
 {
 	CParticle p;
 	p.SetDefault();
@@ -31,6 +31,7 @@ void CEffects::AirJump(CGameState &State, vec2 Pos, float Alpha, float Volume)
 	p.m_Friction = 0.7f;
 	p.m_Color.a = Alpha;
 	p.m_StartAlpha = Alpha;
+	p.m_OwnerClientId = OwnerClientId;
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 
 	p.m_Pos = Pos + vec2(6.0f, 16.0f);
@@ -40,12 +41,12 @@ void CEffects::AirJump(CGameState &State, vec2 Pos, float Alpha, float Volume)
 		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_AIRJUMP, Volume, Pos);
 }
 
-void CEffects::DamageIndicator(CGameState &State, vec2 Pos, vec2 Dir, float Alpha)
+void CEffects::DamageIndicator(CGameState &State, vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha)
 {
-	GameClient()->m_DamageInd.Create(State, Pos, Dir, Alpha);
+	GameClient()->m_DamageInd.Create(State, Pos, Dir, OwnerClientId, Alpha);
 }
 
-void CEffects::PowerupShine(CGameState &State, vec2 Pos, vec2 Size, float Alpha)
+void CEffects::PowerupShine(CGameState &State, vec2 Pos, vec2 Size, int OwnerClientId, float Alpha)
 {
 	if(!State.EffectClock().m_Add50hz)
 		return;
@@ -64,10 +65,11 @@ void CEffects::PowerupShine(CGameState &State, vec2 Pos, vec2 Size, float Alpha)
 	p.m_Friction = 0.9f;
 	p.m_Color.a = Alpha;
 	p.m_StartAlpha = Alpha;
+	p.m_OwnerClientId = OwnerClientId;
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 }
 
-void CEffects::FreezingFlakes(CGameState &State, vec2 Pos, vec2 Size, float Alpha)
+void CEffects::FreezingFlakes(CGameState &State, vec2 Pos, vec2 Size, int OwnerClientId, float Alpha)
 {
 	if(!State.EffectClock().m_Add5hz)
 		return;
@@ -90,10 +92,11 @@ void CEffects::FreezingFlakes(CGameState &State, vec2 Pos, vec2 Size, float Alph
 	p.m_Collides = false;
 	p.m_Color.a = Alpha;
 	p.m_StartAlpha = Alpha;
+	p.m_OwnerClientId = OwnerClientId;
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_EXTRA, p);
 }
 
-void CEffects::SparkleTrail(CGameState &State, vec2 Pos, float Alpha)
+void CEffects::SparkleTrail(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha)
 {
 	if(!State.EffectClock().m_Add50hz)
 		return;
@@ -110,10 +113,11 @@ void CEffects::SparkleTrail(CGameState &State, vec2 Pos, float Alpha)
 	p.m_StartAlpha = Alpha;
 	p.m_EndAlpha = std::min(0.2f, Alpha);
 	p.m_Collides = false;
+	p.m_OwnerClientId = OwnerClientId;
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_TRAIL_EXTRA, p);
 }
 
-void CEffects::SmokeTrail(CGameState &State, vec2 Pos, vec2 Vel, float Alpha, float TimePassed)
+void CEffects::SmokeTrail(CGameState &State, vec2 Pos, vec2 Vel, int OwnerClientId, float Alpha, float TimePassed)
 {
 	if(!State.EffectClock().m_Add50hz && TimePassed < 0.001f)
 		return;
@@ -130,10 +134,11 @@ void CEffects::SmokeTrail(CGameState &State, vec2 Pos, vec2 Vel, float Alpha, fl
 	p.m_Gravity = random_float(-500.0f);
 	p.m_Color.a = Alpha;
 	p.m_StartAlpha = Alpha;
+	p.m_OwnerClientId = OwnerClientId;
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_PROJECTILE_TRAIL, p, TimePassed);
 }
 
-void CEffects::SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, float Alpha, float Volume, bool PlaySound)
+void CEffects::SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, int OwnerClientId, float Alpha, float Volume, bool PlaySound)
 {
 	CGameState::CEffectClockState &EffectClock = State.EffectClock();
 	if(EffectClock.m_Add100hz)
@@ -150,6 +155,7 @@ void CEffects::SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, f
 		p.m_Gravity = random_float(-500.0f);
 		p.m_Color = ColorRGBA(0.75f, 0.75f, 0.75f, Alpha);
 		p.m_StartAlpha = Alpha;
+		p.m_OwnerClientId = OwnerClientId;
 		GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 	}
 	if(PlaySound && g_Config.m_SndGame)
@@ -159,7 +165,7 @@ void CEffects::SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, f
 	}
 }
 
-void CEffects::BulletTrail(CGameState &State, vec2 Pos, float Alpha, float TimePassed)
+void CEffects::BulletTrail(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha, float TimePassed)
 {
 	if(!State.EffectClock().m_Add100hz && TimePassed < 0.001f)
 		return;
@@ -174,6 +180,7 @@ void CEffects::BulletTrail(CGameState &State, vec2 Pos, float Alpha, float TimeP
 	p.m_Friction = 0.7f;
 	p.m_Color.a *= Alpha;
 	p.m_StartAlpha = Alpha;
+	p.m_OwnerClientId = OwnerClientId;
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_PROJECTILE_TRAIL, p, TimePassed);
 }
 
@@ -253,6 +260,7 @@ void CEffects::PlayerDeath(CGameState &State, vec2 Pos, int ClientId, float Alph
 		p.m_Friction = 0.8f;
 		p.m_Color = BloodColor.Multiply(random_float(0.75f, 1.0f)).WithAlpha(0.75f * Alpha);
 		p.m_StartAlpha = Alpha;
+		p.m_OwnerClientId = ClientId;
 		GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 	}
 }

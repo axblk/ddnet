@@ -327,7 +327,7 @@ void CGhost::OnNewPredictedSnapshot()
 }
 
 template<typename F>
-void CGhost::ForEachGhostFrame(const CRenderContext &Context, F &&Function) const
+void CGhost::ForEachGhostFrame(const CGameState &State, const CGameTickInfo &Time, F &&Function) const
 {
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		return;
@@ -336,7 +336,7 @@ void CGhost::ForEachGhostFrame(const CRenderContext &Context, F &&Function) cons
 	if(!m_Rendering || !g_Config.m_ClRaceShowGhost)
 		return;
 
-	int PlaybackTick = Context.m_Time.m_PredGameTick - m_StartRenderTick;
+	int PlaybackTick = Time.m_PredGameTick - m_StartRenderTick;
 
 	for(const auto &Ghost : m_aActiveGhosts)
 	{
@@ -359,9 +359,9 @@ void CGhost::ForEachGhostFrame(const CRenderContext &Context, F &&Function) cons
 		int TickDiff = Player.m_Tick - Prev.m_Tick;
 		float IntraTick = 0.f;
 		if(TickDiff > 0)
-			IntraTick = (GhostTick - Prev.m_Tick - 1 + Context.m_Time.m_PredIntraGameTick) / TickDiff;
+			IntraTick = (GhostTick - Prev.m_Tick - 1 + Time.m_PredIntraGameTick) / TickDiff;
 
-		Player.m_AttackTick += Context.m_Time.m_GameTick - GhostTick;
+		Player.m_AttackTick += Time.m_GameTick - GhostTick;
 
 		const CTeeRenderInfo *pRenderInfo = &Ghost.m_pManagedTeeRenderInfo->TeeRenderInfo();
 		CTeeRenderInfo GhostNinjaRenderInfo;
@@ -370,7 +370,7 @@ void CGhost::ForEachGhostFrame(const CRenderContext &Context, F &&Function) cons
 			// change the skin for the ghost to the ninja
 			GhostNinjaRenderInfo = Ghost.m_pManagedTeeRenderInfo->TeeRenderInfo();
 			GhostNinjaRenderInfo.ApplySkin(GameClient()->m_Players.NinjaTeeRenderInfo()->TeeRenderInfo());
-			GhostNinjaRenderInfo.m_CustomColoredSkin = Context.m_State.HasGameInfo() && (Context.m_State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
+			GhostNinjaRenderInfo.m_CustomColoredSkin = State.HasGameInfo() && (State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
 			if(!GhostNinjaRenderInfo.m_CustomColoredSkin)
 			{
 				GhostNinjaRenderInfo.m_ColorBody = ColorRGBA(1, 1, 1);
@@ -383,14 +383,12 @@ void CGhost::ForEachGhostFrame(const CRenderContext &Context, F &&Function) cons
 	}
 }
 
-void CGhost::UpdatePresentation(CGameState &State, const CRenderContext &Context, const CScreenRect &ScreenRect, bool Audible)
+void CGhost::UpdatePresentation(const CPresentationContext &Context)
 {
-	dbg_assert(&State == &Context.m_State, "presentation state does not match render context");
-
-	CScreenRect ExpandedScreenRect = ScreenRect;
-	ExpandedScreenRect.Expand(100.0f);
-	ForEachGhostFrame(Context, [&](const CNetObj_Character &Prev, const CNetObj_Character &Player, const CTeeRenderInfo &RenderInfo, float IntraTick) {
-		GameClient()->m_Players.UpdatePlayerPresentation(State, Context, ExpandedScreenRect, &Prev, &Player, &RenderInfo, -2, Audible, IntraTick);
+	if(Context.m_Playback == EPresentationPlayback::PAUSED)
+		return;
+	ForEachGhostFrame(Context.m_State, Context.m_Time, [&](const CNetObj_Character &Prev, const CNetObj_Character &Player, const CTeeRenderInfo &RenderInfo, float IntraTick) {
+		GameClient()->m_Players.UpdatePlayerPresentation(Context, &Prev, &Player, &RenderInfo, -2, IntraTick);
 	});
 }
 
@@ -398,8 +396,8 @@ void CGhost::OnRender(const CRenderContext &Context)
 {
 	CScreenRect ScreenRect = Graphics()->GetScreen();
 	ScreenRect.Expand(100.0f);
-	ForEachGhostFrame(Context, [&](const CNetObj_Character &Prev, const CNetObj_Character &Player, const CTeeRenderInfo &RenderInfo, float IntraTick) {
-		GameClient()->m_Players.RenderHook(ScreenRect, &Prev, &Player, &RenderInfo, -2, IntraTick);
+	ForEachGhostFrame(Context.m_State, Context.m_Time, [&](const CNetObj_Character &Prev, const CNetObj_Character &Player, const CTeeRenderInfo &RenderInfo, float IntraTick) {
+		GameClient()->m_Players.RenderHook(Context, ScreenRect, &Prev, &Player, &RenderInfo, -2, IntraTick);
 		GameClient()->m_Players.RenderPlayer(Context, ScreenRect, &Prev, &Player, &RenderInfo, -2, IntraTick);
 	});
 }

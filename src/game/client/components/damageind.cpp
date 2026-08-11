@@ -11,9 +11,9 @@
 #include <game/client/game_state.h>
 #include <game/client/gameclient.h>
 
-void CDamageInd::Create(CGameState &State, vec2 Pos, vec2 Dir, float Alpha)
+void CDamageInd::Create(CGameState &State, vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha)
 {
-	State.DamageIndicators().Create(Pos, Dir, Alpha, -random_angle());
+	State.DamageIndicators().Create(Pos, Dir, OwnerClientId, Alpha, -random_angle());
 }
 
 void CDamageInd::Update(CGameState &State)
@@ -23,19 +23,20 @@ void CDamageInd::Update(CGameState &State)
 	State.DamageIndicators().Advance(LocalTime(), GameClient()->GetAnimationPlaybackSpeed());
 }
 
-void CDamageInd::OnRender()
+void CDamageInd::OnRender(const CRenderContext &Context)
 {
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		return;
 
-	const CGameState::CDamageIndicatorState &State = GameClient()->GameState(GameClient()->ActiveConnection()).DamageIndicators();
+	const CGameState::CDamageIndicatorState &State = Context.m_State.DamageIndicators();
 	Graphics()->TextureSet(GameClient()->m_GameSkin.m_aSpriteStars[0]);
 	for(int i = 0; i < State.NumItems(); i++)
 	{
 		const CGameState::CDamageIndicatorState::CItem &Item = State.Item(i);
 		vec2 Pos = mix(Item.m_Pos + Item.m_Dir * 75.0f, Item.m_Pos, std::clamp((Item.m_RemainingLife - 0.60f) / 0.15f, 0.0f, 1.0f));
+		const float ObserverAlpha = Context.AlphaForOwner(Item.m_OwnerClientId, g_Config.m_ClShowOthersAlpha / 100.0f);
 		const float LifeAlpha = Item.m_RemainingLife / 0.1f;
-		Graphics()->SetColor(Item.m_Color.WithMultipliedAlpha(LifeAlpha));
+		Graphics()->SetColor(Item.m_Color.WithMultipliedAlpha(LifeAlpha * ObserverAlpha));
 		Graphics()->QuadsSetRotation(Item.m_StartAngle + Item.m_RemainingLife * 2.0f);
 		Graphics()->RenderQuadContainerAsSprite(m_DmgIndQuadContainerIndex, 0, Pos.x, Pos.y);
 	}

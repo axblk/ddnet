@@ -282,7 +282,7 @@ public:
 	virtual const class CServerInfo &ServerInfo() const = 0;
 	virtual bool ServerCapAnyPlayerFlag() const = 0;
 
-	virtual int GetPredictionTime() = 0;
+	virtual int GetPredictionTime(int Conn) = 0;
 	virtual int GetPredictionTick() = 0;
 
 	// snapshot interface
@@ -352,7 +352,7 @@ public:
 
 	virtual IFriends *Foes() = 0;
 
-	virtual void GetSmoothTick(int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) = 0;
+	virtual void GetSmoothTick(int Conn, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) = 0;
 
 	virtual void AddWarning(const SWarning &Warning) = 0;
 	virtual std::optional<SWarning> CurrentWarning() = 0;

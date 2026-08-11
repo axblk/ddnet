@@ -8,8 +8,14 @@
 #include <game/client/component.h>
 #include <game/client/render.h>
 
+#include <span>
+
+class CGameSessionContext;
+class CGameTickInfo;
 class CRenderContext;
 class CGameState;
+class CPresentationContext;
+class CVisibleWorldRect;
 
 class CPlayers : public CComponent
 {
@@ -53,6 +59,7 @@ class CPlayers : public CComponent
 		int ClientId,
 		float Intra = 0.f);
 	void RenderHook(
+		const CRenderContext &Context,
 		const CScreenRect &ScreenRect,
 		const CNetObj_Character *pPrevChar,
 		const CNetObj_Character *pPlayerChar,
@@ -60,16 +67,21 @@ class CPlayers : public CComponent
 		int ClientId,
 		float Intra = 0.f);
 	void RenderHookCollLine(
+		const CRenderContext &Context,
 		const CScreenRect &ScreenRect,
 		const CNetObj_Character *pPrevChar,
 		const CNetObj_Character *pPlayerChar,
 		int ClientId);
 	void RenderSpectatorCharacters(const CRenderContext &Context, const CScreenRect &ScreenRect) const;
-	bool IsPlayerInfoAvailable(int ClientId) const;
-	void PrepareRenderInfo(const CRenderContext &Context, int ClientId, bool IsTeamPlay, CTeeRenderInfo &RenderInfo) const;
+	bool IsPlayerInfoAvailable(const CGameState &GameState, int ClientId) const;
+	void PrepareRenderInfo(const CGameSessionContext &Session, const CGameState &GameState, int ClientId, bool IsTeamPlay, CTeeRenderInfo &RenderInfo) const;
 	bool PreparePlayerRenderState(
-		const CRenderContext &Context,
-		const CScreenRect &ScreenRect,
+		const CGameSessionContext &Session,
+		const CGameState &GameState,
+		const CGameTickInfo &Time,
+		bool IsOtherTeam,
+		std::span<const CVisibleWorldRect> vVisibleWorldRects,
+		vec2 VisibilityMargin,
 		const CNetObj_Character *pPrevChar,
 		const CNetObj_Character *pPlayerChar,
 		const CTeeRenderInfo *pRenderInfo,
@@ -77,14 +89,11 @@ class CPlayers : public CComponent
 		float Intra,
 		CPlayerRenderState &State);
 	void UpdatePlayerPresentation(
-		CGameState &GameState,
-		const CRenderContext &Context,
-		const CScreenRect &ScreenRect,
+		const CPresentationContext &Context,
 		const CNetObj_Character *pPrevChar,
 		const CNetObj_Character *pPlayerChar,
 		const CTeeRenderInfo *pRenderInfo,
 		int ClientId,
-		bool Audible,
 		float Intra = 0.0f);
 
 	int m_WeaponEmoteQuadContainerIndex;
@@ -98,6 +107,9 @@ class CPlayers : public CComponent
 
 public:
 	float GetPlayerTargetAngle(
+		const CGameSessionContext &Session,
+		const CGameState &GameState,
+		const CGameTickInfo &Time,
 		const CNetObj_Character *pPrevChar,
 		const CNetObj_Character *pPlayerChar,
 		int ClientId,
@@ -105,7 +117,7 @@ public:
 
 	int Sizeof() const override { return sizeof(*this); }
 	void OnInit() override;
-	void UpdatePresentation(CGameState &State, const CRenderContext &Context, const CScreenRect &ScreenRect, bool Audible);
+	void UpdatePresentation(const CPresentationContext &Context);
 	void OnRender(const CRenderContext &Context) override;
 
 	const std::shared_ptr<CManagedTeeRenderInfo> &NinjaTeeRenderInfo() const { return m_pNinjaTeeRenderInfo; }

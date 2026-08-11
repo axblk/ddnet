@@ -2,33 +2,36 @@
 
 #include <game/client/gameclient.h>
 
-void CFreezeBars::RenderFreezeBar(const int ClientId)
+void CFreezeBars::RenderFreezeBar(const CRenderContext &Context, const int ClientId)
 {
 	const float FreezeBarWidth = 64.0f;
 	const float FreezeBarHalfWidth = 32.0f;
 	const float FreezeBarHeight = 16.0f;
 
 	// pCharacter contains the predicted character for local players or the last snap for players who are spectated
-	CCharacterCore *pCharacter = &GameClient()->m_aClients[ClientId].m_Predicted;
+	const CGameState::CPredictedClient &PredictedClient = Context.m_State.PredictedClient(ClientId);
+	const CCharacterCore Character = PredictedClient.m_HasCurrent ? PredictedClient.m_Current : Context.m_State.GameWorldCharacterCore(ClientId);
+	const CGameState::CClientSnapshot &SnapshotClient = Context.m_State.Client(ClientId);
+	const bool HasExtendedDisplayInfo = SnapshotClient.m_HasExtendedCharacter && SnapshotClient.m_ExtendedCharacter.m_JumpedTotal != -1;
 
-	if(pCharacter->m_FreezeEnd <= 0 || pCharacter->m_FreezeStart == 0 || pCharacter->m_FreezeEnd <= pCharacter->m_FreezeStart || !GameClient()->m_Snap.m_aCharacters[ClientId].m_HasExtendedDisplayInfo || (pCharacter->m_IsInFreeze && g_Config.m_ClFreezeBarsAlphaInsideFreeze == 0))
+	if(Character.m_FreezeEnd <= 0 || Character.m_FreezeStart == 0 || Character.m_FreezeEnd <= Character.m_FreezeStart || !HasExtendedDisplayInfo || (Character.m_IsInFreeze && g_Config.m_ClFreezeBarsAlphaInsideFreeze == 0))
 	{
 		return;
 	}
 
-	const int64_t Max = (int64_t)pCharacter->m_FreezeEnd - pCharacter->m_FreezeStart;
-	float FreezeProgress = std::clamp<int64_t>(Max - ((int64_t)Client()->GameTick(GameClient()->ActiveConnection()) - pCharacter->m_FreezeStart), 0, Max) / (float)Max;
+	const int64_t Max = (int64_t)Character.m_FreezeEnd - Character.m_FreezeStart;
+	float FreezeProgress = std::clamp<int64_t>(Max - ((int64_t)Context.m_Time.m_GameTick - Character.m_FreezeStart), 0, Max) / (float)Max;
 	if(FreezeProgress <= 0.0f)
 	{
 		return;
 	}
 
-	vec2 Position = GameClient()->m_aClients[ClientId].m_RenderPos;
+	vec2 Position = Context.m_State.RenderedClient(ClientId).m_Position;
 	Position.x -= FreezeBarHalfWidth;
 	Position.y += 32;
 
-	float Alpha = GameClient()->IsOtherTeam(ClientId) ? g_Config.m_ClShowOthersAlpha / 100.0f : 1.0f;
-	if(pCharacter->m_IsInFreeze)
+	float Alpha = Context.IsOtherTeam(ClientId) ? g_Config.m_ClShowOthersAlpha / 100.0f : 1.0f;
+	if(Character.m_IsInFreeze)
 	{
 		Alpha *= g_Config.m_ClFreezeBarsAlphaInsideFreeze / 100.0f;
 	}
@@ -187,18 +190,14 @@ void CFreezeBars::RenderFreezeBarPos(float x, const float y, const float Width, 
 	Graphics()->WrapNormal();
 }
 
-inline bool CFreezeBars::IsPlayerInfoAvailable(int ClientId) const
+inline bool CFreezeBars::IsPlayerInfoAvailable(const CGameState &State, int ClientId) const
 {
-	return GameClient()->m_Snap.m_aCharacters[ClientId].m_Active &&
-	       GameClient()->m_Snap.m_apPrevPlayerInfos[ClientId] != nullptr &&
-	       GameClient()->m_Snap.m_apPlayerInfos[ClientId] != nullptr;
+	const CGameState::CClientSnapshot &SnapshotClient = State.Client(ClientId);
+	return State.RenderedClient(ClientId).m_Active && SnapshotClient.m_HasPrevPlayerInfo && SnapshotClient.m_HasPlayerInfo;
 }
 
-void CFreezeBars::OnRender()
+void CFreezeBars::OnRender(const CRenderContext &Context)
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
-		return;
-
 	if(!g_Config.m_ClShowFreezeBars)
 	{
 		return;
@@ -212,26 +211,26 @@ void CFreezeBars::OnRender()
 	constexpr float BorderBuffer = 120.0f;
 	ScreenRect.Expand(BorderBuffer);
 
-	int LocalClientId = GameClient()->m_Snap.m_LocalClientId;
+	const int LocalClientId = Context.m_State.LocalClientId();
 
 	// render everyone else's freeze bar, then our own
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
-		if(ClientId == LocalClientId || !IsPlayerInfoAvailable(ClientId))
+		if(ClientId == LocalClientId || !IsPlayerInfoAvailable(Context.m_State, ClientId))
 		{
 			continue;
 		}
 
 		//don't render if the tee is offscreen
-		if(!ScreenRect.Inside(GameClient()->m_aClients[ClientId].m_RenderPos))
+		if(!ScreenRect.Inside(Context.m_State.RenderedClient(ClientId).m_Position))
 		{
 			continue;
 		}
 
-		RenderFreezeBar(ClientId);
+		RenderFreezeBar(Context, ClientId);
 	}
-	if(LocalClientId != -1 && IsPlayerInfoAvailable(LocalClientId))
+	if(LocalClientId != -1 && IsPlayerInfoAvailable(Context.m_State, LocalClientId))
 	{
-		RenderFreezeBar(LocalClientId);
+		RenderFreezeBar(Context, LocalClientId);
 	}
 }

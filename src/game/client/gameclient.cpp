@@ -87,6 +87,46 @@
 
 using namespace std::chrono_literals;
 
+namespace
+{
+	class CScreenRenderOutput final : public CRenderOutput
+	{
+		IGraphics &m_Graphics;
+		ColorRGBA m_ClearColor;
+		bool m_Cleared = false;
+		bool m_CustomViewport = false;
+
+	public:
+		CScreenRenderOutput(IGraphics &Graphics, ColorRGBA ClearColor) :
+			m_Graphics(Graphics),
+			m_ClearColor(ClearColor)
+		{
+		}
+
+		void BeginView(const CViewport &Viewport, vec2 CameraPosition, float Zoom) override
+		{
+			if(!m_Cleared)
+			{
+				m_Graphics.Clear(m_ClearColor.r, m_ClearColor.g, m_ClearColor.b);
+				m_Cleared = true;
+			}
+			m_CustomViewport = Viewport.m_Width > 0 && Viewport.m_Height > 0;
+			if(m_CustomViewport)
+				m_Graphics.UpdateViewport(Viewport.m_X, Viewport.m_Y, Viewport.m_Width, Viewport.m_Height, false);
+		}
+
+		void DrawCharacter(int ClientId, vec2 Position, bool Local) override {}
+		void DrawSpectatorCharacter(int ClientId, vec2 Position, bool OtherTeam) override {}
+
+		void EndView() override
+		{
+			if(m_CustomViewport)
+				m_Graphics.UpdateViewport(0, 0, m_Graphics.ScreenWidth(), m_Graphics.ScreenHeight(), false);
+			m_CustomViewport = false;
+		}
+	};
+}
+
 const char *CGameClient::Version() const { return GAME_VERSION; }
 const char *CGameClient::NetVersion() const { return GAME_NETVERSION; }
 const char *CGameClient::NetVersion7() const { return GAME_NETVERSION7; }
@@ -780,12 +820,9 @@ void CGameClient::UpdatePositions(const CGameState &State)
 {
 	CGameView::CMultiViewState &MultiViewState = MultiView();
 	// local character position
-	if(!Predict() && m_Snap.m_pLocalCharacter && m_Snap.m_pLocalPrevCharacter)
-	{
-		m_LocalCharacterPos = mix(
-			vec2(m_Snap.m_pLocalPrevCharacter->m_X, m_Snap.m_pLocalPrevCharacter->m_Y),
-			vec2(m_Snap.m_pLocalCharacter->m_X, m_Snap.m_pLocalCharacter->m_Y), Client()->IntraGameTick(ActiveConnection()));
-	}
+	const int LocalClientId = State.LocalClientId();
+	if(in_range(LocalClientId, MAX_CLIENTS - 1) && State.RenderedClient(LocalClientId).m_Active)
+		m_LocalCharacterPos = State.RenderedClient(LocalClientId).m_Position;
 
 	// spectator position
 	if(m_Snap.m_SpecInfo.m_Active)
@@ -815,8 +852,6 @@ void CGameClient::UpdatePositions(const CGameState &State)
 
 	if(!MultiViewState.m_Active && MultiViewState.m_IsInit)
 		ResetMultiView();
-
-	UpdateRenderedCharacters();
 }
 
 void CGameClient::OnRender()
@@ -828,8 +863,20 @@ void CGameClient::OnRender()
 	CGameState &ActiveState = *pActiveState;
 	CGameView &View = LegacyGameView();
 	CGameView::CMultiViewState &MultiViewState = MultiView();
+	CGameTickInfo GameTickInfo;
+	GameTickInfo.m_PrevGameTick = Client()->PrevGameTick(ActiveConn);
+	GameTickInfo.m_GameTick = Client()->GameTick(ActiveConn);
+	GameTickInfo.m_PredGameTick = Client()->PredGameTick(ActiveConn);
+	GameTickInfo.m_PredictionTick = Client()->GetPredictionTick();
+	GameTickInfo.m_IntraGameTick = Client()->IntraGameTick(ActiveConn);
+	GameTickInfo.m_IntraGameTickSincePrev = Client()->IntraGameTickSincePrev(ActiveConn);
+	GameTickInfo.m_PredIntraGameTick = Client()->PredIntraGameTick(ActiveConn);
+	GameTickInfo.m_GameTickTime = Client()->GameTickTime(ActiveConn);
+	GameTickInfo.m_GameTickSpeed = Client()->GameTickSpeed();
+	GameTickInfo.m_IsDemoPlayback = Client()->IsDemoPlayback();
+	const EPresentationPlayback Playback = GetAnimationPlaybackSpeed() > 0.0f ? EPresentationPlayback::PLAYING : EPresentationPlayback::PAUSED;
+	UpdateRenderedClients(ActiveSession, ActiveState, ActiveConn, GameTickInfo, Playback);
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
-	Graphics()->Clear(ClearColor.r, ClearColor.g, ClearColor.b);
 
 	// check if multi view got activated
 	if(!MultiViewState.m_IsInit && MultiViewState.m_Active)
@@ -870,35 +917,38 @@ void CGameClient::OnRender()
 	m_Controls.Update();
 	m_Camera.UpdatePosition();
 
-	CGameTickInfo GameTickInfo;
-	GameTickInfo.m_PrevGameTick = Client()->PrevGameTick(ActiveConn);
-	GameTickInfo.m_GameTick = Client()->GameTick(ActiveConn);
-	GameTickInfo.m_PredGameTick = Client()->PredGameTick(ActiveConn);
-	GameTickInfo.m_IntraGameTick = Client()->IntraGameTick(ActiveConn);
-	GameTickInfo.m_IntraGameTickSincePrev = Client()->IntraGameTickSincePrev(ActiveConn);
-	GameTickInfo.m_PredIntraGameTick = Client()->PredIntraGameTick(ActiveConn);
-	GameTickInfo.m_GameTickTime = Client()->GameTickTime(ActiveConn);
-	GameTickInfo.m_GameTickSpeed = Client()->GameTickSpeed();
-
-	UpdateSpectatorCursor(ActiveState);
-	m_Effects.Update(ActiveState, GameTickInfo.m_GameTickTime, GameTickInfo.m_PredIntraGameTick);
-	m_Particles.Update(ActiveState);
-	m_DamageInd.Update(ActiveState);
-	const CRenderContext RenderContext(ActiveSession, ActiveState, View, GameTickInfo);
+	UpdateSpectatorCursor(ActiveState, GameTickInfo);
 	const CViewport &Viewport = View.Viewport();
 	const float ViewAspect = Viewport.m_Width > 0 && Viewport.m_Height > 0 ? Viewport.m_Width / (float)Viewport.m_Height : Graphics()->ScreenAspect();
 	const CScreenRect PresentationScreenRect = Graphics()->MapScreenToWorld(
 		View.CameraPosition().x, View.CameraPosition().y, 100.0f, 100.0f, 100.0f, 0.0f, 0.0f, ViewAspect, View.Zoom());
-	if(GetAnimationPlaybackSpeed() > 0.0f)
-	{
-		m_Items.UpdatePresentation(ActiveState, RenderContext, PresentationScreenRect);
-		m_Ghost.UpdatePresentation(ActiveState, RenderContext, PresentationScreenRect, true);
-		m_Players.UpdatePresentation(ActiveState, RenderContext, PresentationScreenRect, true);
-	}
-
-	// render all systems
-	for(auto &pComponent : m_vpAll)
-		pComponent->OnRender(RenderContext);
+	CScreenRenderOutput ScreenOutput(*Graphics(), ClearColor);
+	const std::array aRenderRequests = {CGameRenderRequest(
+		ActiveSession,
+		ActiveState,
+		View,
+		GameTickInfo,
+		CVisibleWorldRect(PresentationScreenRect.m_TopLeft, PresentationScreenRect.m_BottomRight),
+		Playback,
+		EPresentationAudio::AUDIBLE,
+		ScreenOutput)};
+	CGameRenderScheduler Scheduler;
+	Scheduler.Run(
+		aRenderRequests,
+		[this](const CPresentationContext &Context) {
+			m_Effects.Update(Context.m_State, Context.m_Time.m_GameTickTime, Context.m_Time.m_PredIntraGameTick);
+			m_Particles.Update(Context.m_State);
+			m_DamageInd.Update(Context.m_State);
+			m_Items.UpdatePresentation(Context);
+			m_Ghost.UpdatePresentation(Context);
+			m_Players.UpdatePresentation(Context);
+		},
+		[this](const CRenderContext &Context, CRenderOutput &Output) {
+			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
+			for(auto &pComponent : m_vpAll)
+				pComponent->OnRender(Context);
+			Output.EndView();
+		});
 
 	// clear all events/input for this frame
 	Input()->Clear();
@@ -1618,7 +1668,7 @@ void CGameClient::ProcessEvents()
 			vec2 DamageIndPos = vec2(pEvent->m_X, pEvent->m_Y);
 			if(!m_PredictedWorld.CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, DamageIndPos, -1, Client()->GameTick(ActiveConnection()), pEvent->m_Angle)))
 			{
-				m_Effects.DamageIndicator(State, vec2(pEvent->m_X, pEvent->m_Y), direction(pEvent->m_Angle / 256.0f), Alpha);
+				m_Effects.DamageIndicator(State, vec2(pEvent->m_X, pEvent->m_Y), direction(pEvent->m_Angle / 256.0f), -1, Alpha);
 			}
 		}
 		else if(Item.m_Type == NETEVENTTYPE_EXPLOSION)
@@ -2544,15 +2594,12 @@ void CGameClient::ProcessSnapshot()
 				vec2 Pos = mix(vec2(m_Snap.m_aCharacters[i].m_Prev.m_X, m_Snap.m_aCharacters[i].m_Prev.m_Y),
 					vec2(m_Snap.m_aCharacters[i].m_Cur.m_X, m_Snap.m_aCharacters[i].m_Cur.m_Y),
 					Client()->IntraGameTick(ActiveConnection()));
-				float Alpha = 1.0f;
-				if(IsOtherTeam(i))
-					Alpha = g_Config.m_ClShowOthersAlpha / 100.0f;
 				const float Volume = 1.0f; // TODO snd_game_volume_others
 
 				const bool Grounded = Collision()->IsOnGround(vec2(m_Snap.m_aCharacters[i].m_Prev.m_X, m_Snap.m_aCharacters[i].m_Prev.m_Y), CCharacterCore::PhysicalSize());
 				if(!Grounded)
 				{
-					m_Effects.AirJump(ActiveState, Pos, Alpha, Volume);
+					m_Effects.AirJump(ActiveState, Pos, i, 1.0f, Volume);
 				}
 			}
 		}
@@ -2560,8 +2607,9 @@ void CGameClient::ProcessSnapshot()
 
 	if(g_Config.m_ClFreezeStars && !m_SuppressEvents)
 	{
-		for(auto &Character : m_Snap.m_aCharacters)
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 		{
+			auto &Character = m_Snap.m_aCharacters[ClientId];
 			if(Character.m_Active && Character.m_HasExtendedData && Character.m_pPrevExtendedData)
 			{
 				int FreezeTimeNow = Character.m_ExtendedData.m_FreezeEnd - Client()->GameTick(ActiveConnection());
@@ -2578,7 +2626,7 @@ void CGameClient::ProcessSnapshot()
 					for(int j = 0; j < Amount; j++)
 					{
 						float Angle = mix(Min, Max, (j + 1) / (float)(Amount + 2));
-						m_Effects.DamageIndicator(ActiveState, Pos, direction(Angle), 1.0f);
+						m_Effects.DamageIndicator(ActiveState, Pos, direction(Angle), ClientId, 1.0f);
 					}
 				}
 			}
@@ -2743,7 +2791,7 @@ void CGameClient::ProcessPrediction()
 
 	vec2 aBeforeRender[MAX_CLIENTS];
 	for(int i = 0; i < MAX_CLIENTS; i++)
-		aBeforeRender[i] = GetSmoothPos(i);
+		aBeforeRender[i] = GetSmoothPos(ActiveState, ActiveConnection(), i, m_aClients[i].m_PrevPredicted, m_aClients[i].m_Predicted);
 
 	// init
 	const int PredictionConnection = ActiveConnection();
@@ -2847,8 +2895,8 @@ void CGameClient::ProcessPrediction()
 		for(int i = 0; i < MAX_CLIENTS; i++)
 			if(CCharacter *pChar = m_PredictedWorld.GetCharacterById(i))
 			{
-				m_aClients[i].m_aPredPos[Tick % 200] = pChar->Core()->m_Pos;
-				m_aClients[i].m_aPredTick[Tick % 200] = Tick;
+				ActiveState.PredictionHistory(i).m_aPredPos[Tick % 200] = pChar->Core()->m_Pos;
+				ActiveState.PredictionHistory(i).m_aPredTick[Tick % 200] = Tick;
 			}
 
 		// check if we want to trigger effects
@@ -2860,7 +2908,7 @@ void CGameClient::ProcessPrediction()
 			int Events = pLocalChar->Core()->m_TriggeredEvents;
 			if(g_Config.m_ClPredict && !m_SuppressEvents)
 				if(Events & COREEVENT_AIR_JUMP)
-					m_Effects.AirJump(ActiveState, Pos, 1.0f, 1.0f);
+					m_Effects.AirJump(ActiveState, Pos, pLocalChar->GetCid(), 1.0f, 1.0f);
 			if(g_Config.m_SndGame && !m_SuppressEvents)
 			{
 				if(Events & COREEVENT_GROUND_JUMP)
@@ -2884,7 +2932,7 @@ void CGameClient::ProcessPrediction()
 			int Events = pDummyChar->Core()->m_TriggeredEvents;
 			if(g_Config.m_ClPredict && !m_SuppressEvents)
 				if(Events & COREEVENT_AIR_JUMP)
-					m_Effects.AirJump(ActiveState, Pos, 1.0f, 1.0f);
+					m_Effects.AirJump(ActiveState, Pos, pDummyChar->GetCid(), 1.0f, 1.0f);
 		}
 
 		HandlePredictedEvents(Tick);
@@ -2893,7 +2941,7 @@ void CGameClient::ProcessPrediction()
 	// detect mispredictions of other players and make corrections smoother when possible
 	if(g_Config.m_ClAntiPingSmooth && Predict() && AntiPingPlayers() && m_NewTick && Runtime.m_LegacyPredictedTick >= MIN_TICK && absolute(Runtime.m_LegacyPredictedTick - Client()->PredGameTick(ActiveConnection())) <= 1 && absolute(Client()->GameTick(ActiveConnection()) - Client()->PrevGameTick(ActiveConnection())) <= 2)
 	{
-		int PredTime = std::clamp(Client()->GetPredictionTime(), 0, 800);
+		int PredTime = std::clamp(Client()->GetPredictionTime(ActiveConnection()), 0, 800);
 		float SmoothPace = 4 - 1.5f * PredTime / 800.f; // smoothing pace (a lower value will make the smoothing quicker)
 		int64_t Len = 1000 * PredTime * SmoothPace;
 
@@ -2902,7 +2950,7 @@ void CGameClient::ProcessPrediction()
 			if(!m_Snap.m_aCharacters[i].m_Active || i == m_Snap.m_LocalClientId || !Runtime.m_aLastPredictedActive[i])
 				continue;
 			vec2 NewPos = (Runtime.m_LegacyPredictedTick == Client()->PredGameTick(ActiveConnection())) ? m_aClients[i].m_Predicted.m_Pos : m_aClients[i].m_PrevPredicted.m_Pos;
-			vec2 PredErr = (Runtime.m_aLastPredictedPosition[i] - NewPos) / (float)std::min(Client()->GetPredictionTime(), 200);
+			vec2 PredErr = (Runtime.m_aLastPredictedPosition[i] - NewPos) / (float)std::min(Client()->GetPredictionTime(ActiveConnection()), 200);
 			if(in_range(length(PredErr), 0.05f, 5.f))
 			{
 				vec2 PredPos = mix(m_aClients[i].m_PrevPredicted.m_Pos, m_aClients[i].m_Predicted.m_Pos, Client()->PredIntraGameTick(ActiveConnection()));
@@ -2926,7 +2974,8 @@ void CGameClient::ProcessPrediction()
 							aMixAmount[j] = 1.f - std::pow(1.f - aMixAmount[j], 1 / 1.2f);
 						}
 					}
-					int64_t TimePassed = time_get() - m_aClients[i].m_aSmoothStart[j];
+					CGameState::CClientPredictionHistory &PredictionHistory = ActiveState.PredictionHistory(i);
+					int64_t TimePassed = time_get() - PredictionHistory.m_aSmoothStart[j];
 					if(in_range(TimePassed, (int64_t)0, Len - 1))
 						aMixAmount[j] = std::min(aMixAmount[j], (float)(TimePassed / (double)Len));
 				}
@@ -2942,10 +2991,11 @@ void CGameClient::ProcessPrediction()
 						(1.f - aMixAmount[j ^ 1]) * Len + time_freq() * 0.300f,
 					});
 					int64_t Start = time_get() - (Len - Remaining);
-					if(!in_range(Start + Len, m_aClients[i].m_aSmoothStart[j], m_aClients[i].m_aSmoothStart[j] + Len))
+					CGameState::CClientPredictionHistory &PredictionHistory = ActiveState.PredictionHistory(i);
+					if(!in_range(Start + Len, PredictionHistory.m_aSmoothStart[j], PredictionHistory.m_aSmoothStart[j] + Len))
 					{
-						m_aClients[i].m_aSmoothStart[j] = Start;
-						m_aClients[i].m_aSmoothLen[j] = Len;
+						PredictionHistory.m_aSmoothStart[j] = Start;
+						PredictionHistory.m_aSmoothLen[j] = Len;
 					}
 				}
 			}
@@ -2956,6 +3006,11 @@ void CGameClient::ProcessPrediction()
 	{
 		if(m_Snap.m_aCharacters[i].m_Active)
 		{
+			CGameState::CPredictedClient &PredictedClient = ActiveState.PredictedClient(i);
+			PredictedClient.m_HasPrev = true;
+			PredictedClient.m_Prev = m_aClients[i].m_PrevPredicted;
+			PredictedClient.m_HasCurrent = true;
+			PredictedClient.m_Current = m_aClients[i].m_Predicted;
 			Runtime.m_aLastPredictedPosition[i] = m_aClients[i].m_Predicted.m_Pos;
 			Runtime.m_aLastPredictedActive[i] = true;
 		}
@@ -3134,16 +3189,6 @@ void CGameClient::CClientData::Reset()
 	{
 		PreInput.m_IntendedTick = -1;
 	}
-
-	m_RenderCur.m_Tick = -1;
-	m_RenderPrev.m_Tick = -1;
-	m_RenderPos = vec2(0.0f, 0.0f);
-	m_IsPredicted = false;
-	m_IsPredictedLocal = false;
-	std::fill(std::begin(m_aSmoothStart), std::end(m_aSmoothStart), 0);
-	std::fill(std::begin(m_aSmoothLen), std::end(m_aSmoothLen), 0);
-	std::fill(std::begin(m_aPredPos), std::end(m_aPredPos), vec2(0.0f, 0.0f));
-	std::fill(std::begin(m_aPredTick), std::end(m_aPredTick), 0);
 }
 
 CSkinDescriptor CGameClient::CClientData::ToSkinDescriptor(const CGameState &State) const
@@ -3572,7 +3617,8 @@ void CGameClient::UpdateLocalTuning()
 
 void CGameClient::UpdatePrediction()
 {
-	CGameState::CRuntimeState &Runtime = GameState(ActiveConnection()).Runtime();
+	CGameState &ActiveState = GameState(ActiveConnection());
+	CGameState::CRuntimeState &Runtime = ActiveState.Runtime();
 	m_GameWorld.m_WorldConfig.m_IsVanilla = FocusedGameInfo().m_PredictVanilla;
 	m_GameWorld.m_WorldConfig.m_IsDDRace = FocusedGameInfo().m_PredictDDRace;
 	m_GameWorld.m_WorldConfig.m_IsFNG = FocusedGameInfo().m_PredictFNG;
@@ -3660,8 +3706,8 @@ void CGameClient::UpdatePrediction()
 			for(int i = 0; i < MAX_CLIENTS; i++)
 				if(CCharacter *pChar = m_GameWorld.GetCharacterById(i))
 				{
-					m_aClients[i].m_aPredPos[Tick % 200] = pChar->Core()->m_Pos;
-					m_aClients[i].m_aPredTick[Tick % 200] = Tick;
+					ActiveState.PredictionHistory(i).m_aPredPos[Tick % 200] = pChar->Core()->m_Pos;
+					ActiveState.PredictionHistory(i).m_aPredTick[Tick % 200] = Tick;
 				}
 		}
 	}
@@ -3680,8 +3726,8 @@ void CGameClient::UpdatePrediction()
 	for(int i = 0; i < MAX_CLIENTS; i++)
 		if(CCharacter *pChar = m_GameWorld.GetCharacterById(i))
 		{
-			m_aClients[i].m_aPredPos[Client()->GameTick(ActiveConnection()) % 200] = pChar->Core()->m_Pos;
-			m_aClients[i].m_aPredTick[Client()->GameTick(ActiveConnection()) % 200] = Client()->GameTick(ActiveConnection());
+			ActiveState.PredictionHistory(i).m_aPredPos[Client()->GameTick(ActiveConnection()) % 200] = pChar->Core()->m_Pos;
+			ActiveState.PredictionHistory(i).m_aPredTick[Client()->GameTick(ActiveConnection()) % 200] = Client()->GameTick(ActiveConnection());
 		}
 
 	// update the local gameworld with the new snapshot
@@ -3703,15 +3749,63 @@ void CGameClient::UpdatePrediction()
 	m_GameWorld.NetObjEnd();
 }
 
-void CGameClient::UpdateSpectatorCursor(const CGameState &State)
+void CGameClient::UpdateRenderedClients(const CGameSessionContext &Session, CGameState &State, int Conn, const CGameTickInfo &Time, EPresentationPlayback Playback)
 {
-	CGameView::CSpectatorCursorState &Cursor = LegacyGameView().SpectatorCursor();
-	using CCursorState = CGameView::CSpectatorCursorState;
-	int CursorOwnerId = m_Snap.m_LocalClientId;
-	if(m_Snap.m_SpecInfo.m_Active)
+	const int LocalClientId = State.LocalClientId();
+	const CGameState::CClientSnapshot *pLocalClient = in_range(LocalClientId, MAX_CLIENTS - 1) ? &State.Client(LocalClientId) : nullptr;
+	const bool LocalSpectating = pLocalClient == nullptr ||
+				     (pLocalClient->m_HasPlayerInfo && pLocalClient->m_PlayerInfo.m_Team == TEAM_SPECTATORS) ||
+				     (pLocalClient->m_HasDDNetPlayer && (pLocalClient->m_DDNetPlayer.m_Flags & (EXPLAYERFLAG_PAUSED | EXPLAYERFLAG_SPEC)) != 0);
+	const bool Predict = g_Config.m_ClPredict && Playback == EPresentationPlayback::PLAYING && !Time.m_IsDemoPlayback && !LocalSpectating && pLocalClient != nullptr && pLocalClient->m_HasCharacter;
+	const int AntiPingPlayers = g_Config.m_ClAntiPing && g_Config.m_ClAntiPingPlayers ? g_Config.m_ClAntiPingPlayers : 0;
+	const bool AntiPingGunfire = g_Config.m_ClAntiPing && g_Config.m_ClAntiPingGrenade && g_Config.m_ClAntiPingWeapons && g_Config.m_ClAntiPingGunfire;
+
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
 	{
-		CursorOwnerId = m_Snap.m_SpecInfo.m_SpectatorId;
+		bool IsSecondaryLocal = false;
+		for(const auto &pSessionState : Session.GameStates().States())
+		{
+			if(pSessionState.get() == &State || pSessionState->LocalClientId() != ClientId)
+				continue;
+			const CGameState::CClientSnapshot &SessionLocalClient = pSessionState->Client(ClientId);
+			IsSecondaryLocal = !SessionLocalClient.m_HasDDNetPlayer || (SessionLocalClient.m_DDNetPlayer.m_Flags & EXPLAYERFLAG_PAUSED) == 0;
+			break;
+		}
+		const bool PredictedLocal = ClientId == LocalClientId || (g_Config.m_ClPredictDummy && IsSecondaryLocal);
+		const CGameState::CClientSnapshot &SnapshotClient = State.Client(ClientId);
+		const CGameState::CPredictedClient &PredictedClient = State.PredictedClient(ClientId);
+		const CCharacter *pCharacter = State.PredictedWorld().GetCharacterById(ClientId);
+		const bool AntiPingPlayer = AntiPingPlayers == 1 || (AntiPingPlayers >= 2 && (PredictedLocal || (pCharacter != nullptr && pCharacter->IsInterfering())));
+		const bool UsePredicted = Predict && PredictedClient.m_HasPrev && PredictedClient.m_HasCurrent && pCharacter != nullptr &&
+					  (ClientId == LocalClientId || (AntiPingPlayer && !State.IsOtherTeamFromLocalPlayer(ClientId)));
+		State.UpdateRenderedClient(ClientId, UsePredicted, PredictedLocal, Time.m_IntraGameTick, Time.m_PredIntraGameTick);
+		CGameState::CRenderedClient &RenderedClient = State.RenderedClient(ClientId);
+		if(!RenderedClient.m_IsPredicted)
+			continue;
+
+		if(RenderedClient.m_IsPredictedLocal && AntiPingGunfire &&
+			((pCharacter->m_NinjaJetpack && pCharacter->m_FreezeTime == 0) || SnapshotClient.m_Character.m_Weapon != WEAPON_NINJA || SnapshotClient.m_Character.m_Weapon == PredictedClient.m_Current.m_ActiveWeapon))
+		{
+			RenderedClient.m_Cur.m_AttackTick = pCharacter->GetAttackTick();
+			if(SnapshotClient.m_Character.m_Weapon != WEAPON_NINJA && !(pCharacter->m_NinjaJetpack && pCharacter->Core()->m_ActiveWeapon == WEAPON_GUN))
+				RenderedClient.m_Cur.m_Weapon = PredictedClient.m_Current.m_ActiveWeapon;
+		}
+		else if(!RenderedClient.m_IsPredictedLocal)
+		{
+			RenderedClient.m_Prev.m_Angle = SnapshotClient.m_PrevCharacter.m_Angle;
+			RenderedClient.m_Cur.m_Angle = SnapshotClient.m_Character.m_Angle;
+			if(g_Config.m_ClAntiPingSmooth)
+				RenderedClient.m_Position = GetSmoothPos(State, Conn, ClientId, PredictedClient.m_Prev, PredictedClient.m_Current);
+		}
 	}
+}
+
+void CGameClient::UpdateSpectatorCursor(const CGameState &State, const CGameTickInfo &Time)
+{
+	CGameView &View = LegacyGameView();
+	CGameView::CSpectatorCursorState &Cursor = View.SpectatorCursor();
+	using CCursorState = CGameView::CSpectatorCursorState;
+	const int CursorOwnerId = View.IsSpectating() ? View.SpectatorId() : State.LocalClientId();
 
 	if(CursorOwnerId != Cursor.m_CursorOwnerId)
 	{
@@ -3728,11 +3822,11 @@ void CGameClient::UpdateSpectatorCursor(const CGameState &State)
 		return;
 	}
 
-	const CSnapState::CCharacterInfo &CharInfo = m_Snap.m_aCharacters[CursorOwnerId];
-	const CClientData &CursorOwnerClient = m_aClients[CursorOwnerId];
 	const CGameState::CClientSnapshot &CursorOwner = State.Client(CursorOwnerId);
+	const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(CursorOwnerId);
+	const bool HasExtendedDisplayInfo = CursorOwner.m_HasExtendedCharacter && CursorOwner.m_ExtendedCharacter.m_JumpedTotal != -1;
 	const bool CursorOwnerPaused = CursorOwner.m_HasDDNetPlayer && (CursorOwner.m_DDNetPlayer.m_Flags & EXPLAYERFLAG_PAUSED) != 0;
-	if(!CharInfo.m_HasExtendedDisplayInfo || !CursorOwnerClient.m_Active || (!g_Config.m_Debug && CursorOwnerPaused))
+	if(!HasExtendedDisplayInfo || !RenderedClient.m_Active || (!g_Config.m_Debug && CursorOwnerPaused))
 	{
 		// hide cursor when the spectating player is paused
 		Cursor.m_Available = false;
@@ -3741,20 +3835,20 @@ void CGameClient::UpdateSpectatorCursor(const CGameState &State)
 	}
 
 	Cursor.m_Available = true;
-	Cursor.m_Position = CursorOwnerClient.m_RenderPos;
-	Cursor.m_Weapon = CharInfo.m_Cur.m_Weapon;
+	Cursor.m_Position = RenderedClient.m_Position;
+	Cursor.m_Weapon = CursorOwner.m_Character.m_Weapon;
 
-	const vec2 Target = vec2(CharInfo.m_ExtendedData.m_TargetX, CharInfo.m_ExtendedData.m_TargetY);
+	const vec2 Target = vec2(CursorOwner.m_ExtendedCharacter.m_TargetX, CursorOwner.m_ExtendedCharacter.m_TargetY);
 
 	if(IsDemoPlaybackPaused())
 	{
 		Cursor.m_CursorOwnerId = -1;
 		Cursor.m_NumSamples = 0;
-		const vec2 TargetNew = vec2(CharInfo.m_ExtendedData.m_TargetX, CharInfo.m_ExtendedData.m_TargetY);
-		if(CharInfo.m_pPrevExtendedData)
+		const vec2 TargetNew = vec2(CursorOwner.m_ExtendedCharacter.m_TargetX, CursorOwner.m_ExtendedCharacter.m_TargetY);
+		if(CursorOwner.m_HasPrevExtendedCharacter)
 		{
-			const vec2 TargetOld = vec2(CharInfo.m_pPrevExtendedData->m_TargetX, CharInfo.m_pPrevExtendedData->m_TargetY);
-			Cursor.m_Target = mix(TargetOld, TargetNew, Client()->IntraGameTick(ActiveConnection()));
+			const vec2 TargetOld = vec2(CursorOwner.m_PrevExtendedTargetX, CursorOwner.m_PrevExtendedTargetY);
+			Cursor.m_Target = mix(TargetOld, TargetNew, Time.m_IntraGameTick);
 		}
 		else
 		{
@@ -3764,7 +3858,7 @@ void CGameClient::UpdateSpectatorCursor(const CGameState &State)
 	else
 	{
 		// interpolate cursor positions
-		const double Tick = Client()->GameTick(ActiveConnection());
+		const double Tick = Time.m_GameTick;
 
 		const bool HasSample = Cursor.m_NumSamples > 0;
 		const vec2 LastInput = HasSample ? Cursor.m_aTargetSamplesData[Cursor.m_NumSamples - 1] : vec2(0.0f, 0.0f);
@@ -3798,7 +3892,7 @@ void CGameClient::UpdateSpectatorCursor(const CGameState &State)
 		}
 
 		// using double to avoid precision loss when converting int tick to decimal type
-		const double DisplayTime = Tick - CCursorState::INTERP_DELAY + double(Client()->IntraGameTickSincePrev(ActiveConnection()));
+		const double DisplayTime = Tick - CCursorState::INTERP_DELAY + double(Time.m_IntraGameTickSincePrev);
 		double aTime[CCursorState::SAMPLE_FRAME_WINDOW];
 		vec2 aData[CCursorState::SAMPLE_FRAME_WINDOW];
 
@@ -3851,63 +3945,6 @@ void CGameClient::UpdateSpectatorCursor(const CGameState &State)
 	Cursor.m_WorldTarget = Cursor.m_Position + (Cursor.m_Target - TargetCameraOffset) * Zoom + TargetCameraOffset;
 }
 
-void CGameClient::UpdateRenderedCharacters()
-{
-	for(int i = 0; i < MAX_CLIENTS; i++)
-	{
-		if(!m_Snap.m_aCharacters[i].m_Active)
-			continue;
-		m_aClients[i].m_RenderCur = m_Snap.m_aCharacters[i].m_Cur;
-		m_aClients[i].m_RenderPrev = m_Snap.m_aCharacters[i].m_Prev;
-		m_aClients[i].m_IsPredicted = false;
-		m_aClients[i].m_IsPredictedLocal = false;
-		vec2 UnpredPos = mix(
-			vec2(m_Snap.m_aCharacters[i].m_Prev.m_X, m_Snap.m_aCharacters[i].m_Prev.m_Y),
-			vec2(m_Snap.m_aCharacters[i].m_Cur.m_X, m_Snap.m_aCharacters[i].m_Cur.m_Y),
-			Client()->IntraGameTick(ActiveConnection()));
-		vec2 Pos = UnpredPos;
-
-		CCharacter *pChar = m_PredictedWorld.GetCharacterById(i);
-		const bool IsDummy = PredictDummy() && i == GameState(OtherConnection()).LocalClientId();
-		bool AntiPingPlayer = AntiPingPlayers() == 1 || (AntiPingPlayers() >= 2 && (IsDummy || (pChar && pChar->IsInterfering())));
-		if(Predict() && (i == m_Snap.m_LocalClientId || (AntiPingPlayer && !IsOtherTeam(i))) && pChar)
-		{
-			m_aClients[i].m_Predicted.Write(&m_aClients[i].m_RenderCur);
-			m_aClients[i].m_PrevPredicted.Write(&m_aClients[i].m_RenderPrev);
-
-			m_aClients[i].m_IsPredicted = true;
-
-			Pos = mix(
-				vec2(m_aClients[i].m_RenderPrev.m_X, m_aClients[i].m_RenderPrev.m_Y),
-				vec2(m_aClients[i].m_RenderCur.m_X, m_aClients[i].m_RenderCur.m_Y),
-				m_aClients[i].m_IsPredicted ? Client()->PredIntraGameTick(ActiveConnection()) : Client()->IntraGameTick(ActiveConnection()));
-
-			if(i == m_Snap.m_LocalClientId || IsDummy)
-			{
-				m_aClients[i].m_IsPredictedLocal = true;
-				if(AntiPingGunfire() && ((pChar->m_NinjaJetpack && pChar->m_FreezeTime == 0) || m_Snap.m_aCharacters[i].m_Cur.m_Weapon != WEAPON_NINJA || m_Snap.m_aCharacters[i].m_Cur.m_Weapon == m_aClients[i].m_Predicted.m_ActiveWeapon))
-				{
-					m_aClients[i].m_RenderCur.m_AttackTick = pChar->GetAttackTick();
-					if(m_Snap.m_aCharacters[i].m_Cur.m_Weapon != WEAPON_NINJA && !(pChar->m_NinjaJetpack && pChar->Core()->m_ActiveWeapon == WEAPON_GUN))
-						m_aClients[i].m_RenderCur.m_Weapon = m_aClients[i].m_Predicted.m_ActiveWeapon;
-				}
-			}
-			else
-			{
-				// use unpredicted values for other players
-				m_aClients[i].m_RenderPrev.m_Angle = m_Snap.m_aCharacters[i].m_Prev.m_Angle;
-				m_aClients[i].m_RenderCur.m_Angle = m_Snap.m_aCharacters[i].m_Cur.m_Angle;
-
-				if(g_Config.m_ClAntiPingSmooth)
-					Pos = GetSmoothPos(i);
-			}
-		}
-		m_aClients[i].m_RenderPos = Pos;
-		if(Predict() && i == m_Snap.m_LocalClientId)
-			m_LocalCharacterPos = Pos;
-	}
-}
-
 void CGameClient::HandlePredictedEvents(const int Tick)
 {
 	const float Alpha = 1.0f;
@@ -3937,7 +3974,7 @@ void CGameClient::HandlePredictedEvents(const int Tick)
 			}
 			else if(EventsIterator->m_EventId == NETEVENTTYPE_DAMAGEIND)
 			{
-				m_Effects.DamageIndicator(GameState(ActiveConnection()), EventsIterator->m_Pos, direction(EventsIterator->m_ExtraInfo / 256.0f), Alpha);
+				m_Effects.DamageIndicator(GameState(ActiveConnection()), EventsIterator->m_Pos, direction(EventsIterator->m_ExtraInfo / 256.0f), -1, Alpha);
 			}
 
 			EventsIterator->m_Handled = true;
@@ -4041,22 +4078,23 @@ void CGameClient::DetectStrongHook(CGameState::CRuntimeState &Runtime)
 	}
 }
 
-vec2 CGameClient::GetSmoothPos(int ClientId)
+vec2 CGameClient::GetSmoothPos(const CGameState &State, int Conn, int ClientId, const CCharacterCore &Prev, const CCharacterCore &Current)
 {
-	vec2 Pos = mix(m_aClients[ClientId].m_PrevPredicted.m_Pos, m_aClients[ClientId].m_Predicted.m_Pos, Client()->PredIntraGameTick(ActiveConnection()));
+	vec2 Pos = mix(Prev.m_Pos, Current.m_Pos, Client()->PredIntraGameTick(Conn));
+	const CGameState::CClientPredictionHistory &PredictionHistory = State.PredictionHistory(ClientId);
 	int64_t Now = time_get();
 	for(int i = 0; i < 2; i++)
 	{
-		int64_t Len = std::clamp(m_aClients[ClientId].m_aSmoothLen[i], (int64_t)1, time_freq());
-		int64_t TimePassed = Now - m_aClients[ClientId].m_aSmoothStart[i];
+		int64_t Len = std::clamp(PredictionHistory.m_aSmoothLen[i], (int64_t)1, time_freq());
+		int64_t TimePassed = Now - PredictionHistory.m_aSmoothStart[i];
 		if(in_range(TimePassed, (int64_t)0, Len - 1))
 		{
 			float MixAmount = 1.f - std::pow(1.f - TimePassed / (float)Len, 1.2f);
 			int SmoothTick;
 			float SmoothIntra;
-			Client()->GetSmoothTick(&SmoothTick, &SmoothIntra, MixAmount);
-			if(SmoothTick > 0 && m_aClients[ClientId].m_aPredTick[(SmoothTick - 1) % 200] >= Client()->PrevGameTick(ActiveConnection()) && m_aClients[ClientId].m_aPredTick[SmoothTick % 200] <= Client()->PredGameTick(ActiveConnection()))
-				Pos[i] = mix(m_aClients[ClientId].m_aPredPos[(SmoothTick - 1) % 200][i], m_aClients[ClientId].m_aPredPos[SmoothTick % 200][i], SmoothIntra);
+			Client()->GetSmoothTick(Conn, &SmoothTick, &SmoothIntra, MixAmount);
+			if(SmoothTick > 0 && PredictionHistory.m_aPredTick[(SmoothTick - 1) % 200] >= Client()->PrevGameTick(Conn) && PredictionHistory.m_aPredTick[SmoothTick % 200] <= Client()->PredGameTick(Conn))
+				Pos[i] = mix(PredictionHistory.m_aPredPos[(SmoothTick - 1) % 200][i], PredictionHistory.m_aPredPos[SmoothTick % 200][i], SmoothIntra);
 		}
 	}
 	return Pos;
@@ -4930,8 +4968,8 @@ void CGameClient::HandleMultiView(const CGameState &State)
 			continue;
 
 		vec2 PlayerPos;
-		if(m_Snap.m_aCharacters[ClientId].m_Active)
-			PlayerPos = m_aClients[ClientId].m_RenderPos;
+		if(State.RenderedClient(ClientId).m_Active)
+			PlayerPos = State.RenderedClient(ClientId).m_Position;
 		else if(const CGameState::CClientSnapshot &Client = State.Client(ClientId);
 			Client.m_HasDDNetPlayer && (Client.m_DDNetPlayer.m_Flags & EXPLAYERFLAG_SPEC) != 0 && Client.m_HasSpecChar)
 			PlayerPos = vec2(Client.m_SpecChar.m_X, Client.m_SpecChar.m_Y);
@@ -4975,7 +5013,7 @@ void CGameClient::HandleMultiView(const CGameState &State)
 		}
 
 		// sum up the velocity of all players we are spectating
-		const CNetObj_Character &CurrentCharacter = m_Snap.m_aCharacters[ClientId].m_Cur;
+		const CNetObj_Character &CurrentCharacter = State.RenderedClient(ClientId).m_Cur;
 		SumVel += length(vec2(CurrentCharacter.m_VelX / 256.0f, CurrentCharacter.m_VelY / 256.0f)) * 50.0f / 32.0f;
 		AmountPlayers++;
 	}
@@ -5047,8 +5085,8 @@ bool CGameClient::InitMultiView(const CGameState &State, int Team)
 			vec2 PlayerPos;
 
 			// get the position of the player
-			if(m_Snap.m_aCharacters[ClientId].m_Active)
-				PlayerPos = vec2(m_Snap.m_aCharacters[ClientId].m_Cur.m_X, m_Snap.m_aCharacters[ClientId].m_Cur.m_Y);
+			if(State.RenderedClient(ClientId).m_Active)
+				PlayerPos = State.RenderedClient(ClientId).m_Position;
 			else if(const CGameState::CClientSnapshot &Client = State.Client(ClientId);
 				Client.m_HasDDNetPlayer && (Client.m_DDNetPlayer.m_Flags & EXPLAYERFLAG_SPEC) != 0 && Client.m_HasSpecChar)
 				PlayerPos = vec2(Client.m_SpecChar.m_X, Client.m_SpecChar.m_Y);
@@ -5094,20 +5132,19 @@ bool CGameClient::InitMultiView(const CGameState &State, int Team)
 		vec2 CurPosition(m_Camera.Center());
 		if(SpectatorId != SPEC_FREEVIEW)
 		{
-			const CNetObj_Character &CurCharacter = m_Snap.m_aCharacters[SpectatorId].m_Cur;
-			CurPosition.x = CurCharacter.m_X;
-			CurPosition.y = CurCharacter.m_Y;
+			CurPosition = State.RenderedClient(SpectatorId).m_Position;
 		}
 
 		int ClosestDistance = std::numeric_limits<int>::max();
 		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 		{
-			if(!m_Snap.m_apPlayerInfos[ClientId] || m_Snap.m_apPlayerInfos[ClientId]->m_Team == TEAM_SPECTATORS || State.Teams().Team(ClientId) != MultiViewState.m_Team)
+			const CGameState::CClientSnapshot &SnapshotClient = State.Client(ClientId);
+			if(!SnapshotClient.m_HasPlayerInfo || SnapshotClient.m_PlayerInfo.m_Team == TEAM_SPECTATORS || State.Teams().Team(ClientId) != MultiViewState.m_Team)
 				continue;
 
 			vec2 PlayerPos;
-			if(m_Snap.m_aCharacters[ClientId].m_Active)
-				PlayerPos = vec2(m_aClients[ClientId].m_RenderPos.x, m_aClients[ClientId].m_RenderPos.y);
+			if(State.RenderedClient(ClientId).m_Active)
+				PlayerPos = State.RenderedClient(ClientId).m_Position;
 			else if(const CGameState::CClientSnapshot &Client = State.Client(ClientId);
 				Client.m_HasDDNetPlayer && (Client.m_DDNetPlayer.m_Flags & EXPLAYERFLAG_SPEC) != 0 && Client.m_HasSpecChar)
 				PlayerPos = vec2(Client.m_SpecChar.m_X, Client.m_SpecChar.m_Y);

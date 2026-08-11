@@ -581,7 +581,7 @@ void CHud::RenderTextInfo()
 	if(g_Config.m_ClShowpred && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 	{
 		char aBuf[64];
-		str_format(aBuf, sizeof(aBuf), "%d", Client()->GetPredictionTime());
+		str_format(aBuf, sizeof(aBuf), "%d", Client()->GetPredictionTime(GameClient()->ActiveConnection()));
 		TextRender()->Text(m_Width - 10 - TextRender()->TextWidth(12, aBuf, -1, -1.0f), Showfps ? 20 : 5, 12, aBuf, -1.0f);
 	}
 }
@@ -850,18 +850,23 @@ void CHud::PreparePlayerStateQuads()
 	m_Team0ModeOffset = Graphics()->QuadContainerAddSprite(m_HudQuadContainerIndex, 0.f, 0.f, 12.f, 12.f);
 }
 
-void CHud::RenderPlayerState(const int ClientId)
+void CHud::RenderPlayerState(const CRenderContext &Context, const int ClientId)
 {
 	Graphics()->SetColor(1.f, 1.f, 1.f, 1.f);
 
 	// pCharacter contains the predicted character for local players or the last snap for players who are spectated
-	CCharacterCore *pCharacter = &GameClient()->m_aClients[ClientId].m_Predicted;
-	CNetObj_Character *pPlayer = &GameClient()->m_aClients[ClientId].m_RenderCur;
+	const CGameState::CPredictedClient &PredictedClient = Context.m_State.PredictedClient(ClientId);
+	const CCharacterCore Character = PredictedClient.m_HasCurrent ? PredictedClient.m_Current : Context.m_State.GameWorldCharacterCore(ClientId);
+	const CCharacterCore *pCharacter = &Character;
+	const CNetObj_Character *pPlayer = &Context.m_State.RenderedClient(ClientId).m_Cur;
+	const CGameState::CClientSnapshot &SnapshotClient = Context.m_State.Client(ClientId);
+	const bool HasExtendedDisplayInfo = SnapshotClient.m_HasExtendedCharacter && SnapshotClient.m_ExtendedCharacter.m_JumpedTotal != -1;
+	const CGameInfo &GameInfo = Context.m_State.CoreGameInfo();
 	int TotalJumpsToDisplay = 0;
 	if(g_Config.m_ClShowhudJumpsIndicator)
 	{
 		int AvailableJumpsToDisplay;
-		if(GameClient()->m_Snap.m_aCharacters[ClientId].m_HasExtendedDisplayInfo)
+		if(HasExtendedDisplayInfo)
 		{
 			const bool Grounded = Collision()->IsOnGround(vec2(pPlayer->m_X, pPlayer->m_Y), CCharacterCore::PhysicalSize());
 			int UsedJumps = pCharacter->m_JumpedTotal;
@@ -896,12 +901,12 @@ void CHud::RenderPlayerState(const int ClientId)
 		}
 		else
 		{
-			TotalJumpsToDisplay = AvailableJumpsToDisplay = absolute(GameClient()->m_Snap.m_aCharacters[ClientId].m_ExtendedData.m_Jumps);
+			TotalJumpsToDisplay = AvailableJumpsToDisplay = absolute(SnapshotClient.m_ExtendedCharacter.m_Jumps);
 		}
 
 		// render available and used jumps
-		int JumpsOffsetY = ((GameClient()->FocusedGameInfo().m_HudHealthArmor && g_Config.m_ClShowhudHealthAmmo ? 24 : 0) +
-				    (GameClient()->FocusedGameInfo().m_HudAmmo && g_Config.m_ClShowhudHealthAmmo ? 12 : 0));
+		int JumpsOffsetY = ((GameInfo.m_HudHealthArmor && g_Config.m_ClShowhudHealthAmmo ? 24 : 0) +
+				    (GameInfo.m_HudAmmo && g_Config.m_ClShowhudHealthAmmo ? 12 : 0));
 		if(JumpsOffsetY > 0)
 		{
 			Graphics()->TextureSet(GameClient()->m_HudSkin.m_SpriteHudAirjump);
@@ -919,8 +924,8 @@ void CHud::RenderPlayerState(const int ClientId)
 	}
 
 	float x = 5 + 12;
-	float y = (5 + 12 + (GameClient()->FocusedGameInfo().m_HudHealthArmor && g_Config.m_ClShowhudHealthAmmo ? 24 : 0) +
-		   (GameClient()->FocusedGameInfo().m_HudAmmo && g_Config.m_ClShowhudHealthAmmo ? 12 : 0));
+	float y = (5 + 12 + (GameInfo.m_HudHealthArmor && g_Config.m_ClShowhudHealthAmmo ? 24 : 0) +
+		   (GameInfo.m_HudAmmo && g_Config.m_ClShowhudHealthAmmo ? 12 : 0));
 
 	// render weapons
 	{
@@ -947,9 +952,9 @@ void CHud::RenderPlayerState(const int ClientId)
 		}
 		if(pCharacter->m_aWeapons[WEAPON_NINJA].m_Got)
 		{
-			const int Max = g_pData->m_Weapons.m_Ninja.m_Duration * Client()->GameTickSpeed() / 1000;
-			float NinjaProgress = std::clamp(pCharacter->m_Ninja.m_ActivationTick + g_pData->m_Weapons.m_Ninja.m_Duration * Client()->GameTickSpeed() / 1000 - Client()->GameTick(GameClient()->ActiveConnection()), 0, Max) / (float)Max;
-			if(NinjaProgress > 0.0f && GameClient()->m_Snap.m_aCharacters[ClientId].m_HasExtendedDisplayInfo)
+			const int Max = g_pData->m_Weapons.m_Ninja.m_Duration * Context.m_Time.m_GameTickSpeed / 1000;
+			float NinjaProgress = std::clamp(pCharacter->m_Ninja.m_ActivationTick + Max - Context.m_Time.m_GameTick, 0, Max) / (float)Max;
+			if(NinjaProgress > 0.0f && HasExtendedDisplayInfo)
 			{
 				RenderNinjaBarPos(x, y - 12, 6.f, 24.f, NinjaProgress);
 			}
@@ -1075,19 +1080,19 @@ void CHud::RenderPlayerState(const int ClientId)
 	{
 		y += 12;
 	}
-	if(GameClient()->m_Snap.m_aCharacters[ClientId].m_HasExtendedDisplayInfo && GameClient()->m_Snap.m_aCharacters[ClientId].m_ExtendedData.m_Flags & CHARACTERFLAG_LOCK_MODE)
+	if(HasExtendedDisplayInfo && SnapshotClient.m_ExtendedCharacter.m_Flags & CHARACTERFLAG_LOCK_MODE)
 	{
 		Graphics()->TextureSet(GameClient()->m_HudSkin.m_SpriteHudLockMode);
 		Graphics()->RenderQuadContainerAsSprite(m_HudQuadContainerIndex, m_LockModeOffset, x, y);
 		x += 12;
 	}
-	if(GameClient()->m_Snap.m_aCharacters[ClientId].m_HasExtendedDisplayInfo && GameClient()->m_Snap.m_aCharacters[ClientId].m_ExtendedData.m_Flags & CHARACTERFLAG_PRACTICE_MODE)
+	if(HasExtendedDisplayInfo && SnapshotClient.m_ExtendedCharacter.m_Flags & CHARACTERFLAG_PRACTICE_MODE)
 	{
 		Graphics()->TextureSet(GameClient()->m_HudSkin.m_SpriteHudPracticeMode);
 		Graphics()->RenderQuadContainerAsSprite(m_HudQuadContainerIndex, m_PracticeModeOffset, x, y);
 		x += 12;
 	}
-	if(GameClient()->m_Snap.m_aCharacters[ClientId].m_HasExtendedDisplayInfo && GameClient()->m_Snap.m_aCharacters[ClientId].m_ExtendedData.m_Flags & CHARACTERFLAG_TEAM0_MODE)
+	if(HasExtendedDisplayInfo && SnapshotClient.m_ExtendedCharacter.m_Flags & CHARACTERFLAG_TEAM0_MODE)
 	{
 		Graphics()->TextureSet(GameClient()->m_HudSkin.m_SpriteHudTeam0Mode);
 		Graphics()->RenderQuadContainerAsSprite(m_HudQuadContainerIndex, m_Team0ModeOffset, x, y);
@@ -1476,7 +1481,7 @@ CHud::CMovementInformation CHud::GetMovementInformation(const CRenderContext &Co
 		Out.m_Speed.x *= Ramp;
 		Out.m_Speed.y = VelspeedY / 32.0f;
 
-		float Angle = GameClient()->m_Players.GetPlayerTargetAngle(pPrevChar, pCurChar, ClientId, IntraTick);
+		float Angle = GameClient()->m_Players.GetPlayerTargetAngle(Context.m_Session, Context.m_State, Context.m_Time, pPrevChar, pCurChar, ClientId, IntraTick);
 		if(Angle < 0.0f)
 		{
 			Angle += 2.0f * pi;
@@ -1704,7 +1709,7 @@ void CHud::OnRender(const CRenderContext &Context)
 			}
 			if(GameClient()->m_Snap.m_aCharacters[GameClient()->m_Snap.m_LocalClientId].m_HasExtendedData && g_Config.m_ClShowhudDDRace && GameClient()->FocusedGameInfo().m_HudDDRace)
 			{
-				RenderPlayerState(GameClient()->m_Snap.m_LocalClientId);
+				RenderPlayerState(Context, GameClient()->m_Snap.m_LocalClientId);
 			}
 			RenderSpectatorCount(Context);
 			RenderMovementInformation(Context);
@@ -1723,7 +1728,7 @@ void CHud::OnRender(const CRenderContext &Context)
 				(!GameClient()->MultiView().m_Active || GameClient()->MultiView().m_ShowHud) &&
 				GameClient()->FocusedGameInfo().m_HudDDRace)
 			{
-				RenderPlayerState(SpectatorId);
+				RenderPlayerState(Context, SpectatorId);
 			}
 			RenderMovementInformation(Context);
 			RenderSpectatorHud();

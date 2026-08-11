@@ -9,7 +9,9 @@
 #include <engine/client/session.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <span>
 #include <vector>
 
 class CGameSessionContext;
@@ -40,6 +42,21 @@ public:
 	int m_Height = 0;
 
 	bool operator==(const CViewport &Other) const { return m_X == Other.m_X && m_Y == Other.m_Y && m_Width == Other.m_Width && m_Height == Other.m_Height; }
+};
+
+class CVisibleWorldRect
+{
+public:
+	vec2 m_TopLeft;
+	vec2 m_BottomRight;
+
+	CVisibleWorldRect(vec2 TopLeft, vec2 BottomRight) :
+		m_TopLeft(TopLeft),
+		m_BottomRight(BottomRight)
+	{
+	}
+
+	bool Inside(vec2 Position, vec2 Margin) const;
 };
 
 class CGameView
@@ -258,6 +275,34 @@ public:
 	size_t NumViews() const { return m_vpViews.size(); }
 };
 
+enum class EPresentationPlayback
+{
+	PAUSED,
+	PLAYING,
+};
+
+enum class EPresentationAudio
+{
+	MUTED,
+	AUDIBLE,
+};
+
+class CPresentationContext
+{
+public:
+	const CGameSessionContext &m_Session;
+	CGameState &m_State;
+	CGameTickInfo m_Time;
+	std::span<const CVisibleWorldRect> m_vVisibleWorldRects;
+	EPresentationPlayback m_Playback;
+	EPresentationAudio m_Audio;
+
+	CPresentationContext(const CGameSessionContext &Session, CGameState &State, CGameTickInfo Time, std::span<const CVisibleWorldRect> vVisibleWorldRects, EPresentationPlayback Playback, EPresentationAudio Audio);
+
+	bool IsVisible(vec2 Position, vec2 Margin) const;
+	bool IsOtherTeamFromLocalPlayer(int ClientId) const;
+};
+
 class CRenderContext
 {
 public:
@@ -269,6 +314,7 @@ public:
 	CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time);
 
 	bool IsOtherTeam(int ClientId) const;
+	float AlphaForOwner(int OwnerClientId, float OtherTeamAlpha) const;
 };
 
 class CRenderOutput
@@ -279,6 +325,30 @@ public:
 	virtual void DrawCharacter(int ClientId, vec2 Position, bool Local) = 0;
 	virtual void DrawSpectatorCharacter(int ClientId, vec2 Position, bool OtherTeam) = 0;
 	virtual void EndView() = 0;
+};
+
+class CGameRenderRequest
+{
+public:
+	const CGameSessionContext &m_Session;
+	CGameState &m_State;
+	const CGameView &m_View;
+	CGameTickInfo m_Time;
+	CVisibleWorldRect m_VisibleWorldRect;
+	EPresentationPlayback m_Playback;
+	EPresentationAudio m_Audio;
+	CRenderOutput &m_Output;
+
+	CGameRenderRequest(const CGameSessionContext &Session, CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, EPresentationPlayback Playback, EPresentationAudio Audio, CRenderOutput &Output);
+};
+
+class CGameRenderScheduler
+{
+public:
+	using FUpdatePresentation = std::function<void(const CPresentationContext &Context)>;
+	using FRenderView = std::function<void(const CRenderContext &Context, CRenderOutput &Output)>;
+
+	void Run(std::span<const CGameRenderRequest> vRequests, const FUpdatePresentation &UpdatePresentation, const FRenderView &RenderView) const;
 };
 
 class CGameStateRenderer

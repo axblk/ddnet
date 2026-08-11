@@ -397,17 +397,6 @@ public:
 
 		CNetMsg_Sv_PreInput m_aPreInputs[200];
 
-		// rendered characters
-		CNetObj_Character m_RenderCur;
-		CNetObj_Character m_RenderPrev;
-		vec2 m_RenderPos;
-		bool m_IsPredicted;
-		bool m_IsPredictedLocal;
-		int64_t m_aSmoothStart[2];
-		int64_t m_aSmoothLen[2];
-		vec2 m_aPredPos[200];
-		int m_aPredTick[200];
-
 		void UpdateSkinInfo(const CGameState &State);
 		void UpdateSkin7HatSprite(const CGameState::CProtocol7ClientState &Protocol7Client);
 		void UpdateSkin7BotDecoration(const CGameState::CProtocol7ClientState &Protocol7Client);
@@ -751,15 +740,15 @@ private:
 	void UpdateInputRoutes();
 	void UpdateLocalTuning();
 	void UpdatePrediction();
-	void UpdateSpectatorCursor(const CGameState &State);
-	void UpdateRenderedCharacters();
+	void UpdateRenderedClients(const CGameSessionContext &Session, CGameState &State, int Conn, const CGameTickInfo &Time, EPresentationPlayback Playback);
+	void UpdateSpectatorCursor(const CGameState &State, const CGameTickInfo &Time);
 	void HandlePredictedEvents(int Tick);
 
 	void OnInput(const IInput::CEvent &Event);
 
 	void DetectStrongHook(CGameState::CRuntimeState &Runtime);
 
-	vec2 GetSmoothPos(int ClientId);
+	vec2 GetSmoothPos(const CGameState &State, int Conn, int ClientId, const CCharacterCore &Prev, const CCharacterCore &Current);
 
 	std::optional<CStreamId> m_PreviousFocusedStream;
 

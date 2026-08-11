@@ -870,22 +870,22 @@ void CNamePlates::OnRender(const CRenderContext &Context)
 
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{
-		const CNetObj_PlayerInfo *pInfo = GameClient()->m_Snap.m_apPlayerInfos[i];
-		if(!pInfo)
+		const CGameState::CClientSnapshot &SnapshotClient = Context.m_State.Client(i);
+		if(!SnapshotClient.m_HasPlayerInfo)
 			continue;
+		const CNetObj_PlayerInfo *pInfo = &SnapshotClient.m_PlayerInfo;
 
 		// Each player can also have a spectator char whose name plate is displayed independently
-		const CGameState::CClientSnapshot &SnapshotClient = Context.m_State.Client(i);
 		if(SnapshotClient.m_HasSpecChar)
 		{
 			const vec2 RenderPos(SnapshotClient.m_SpecChar.m_X, SnapshotClient.m_SpecChar.m_Y);
 			RenderNamePlateGame(Context, RenderPos, pInfo, 0.4f);
 		}
 		// Only render name plates for active characters
-		if(GameClient()->m_Snap.m_aCharacters[i].m_Active)
+		const CGameState::CRenderedClient &RenderedClient = Context.m_State.RenderedClient(i);
+		if(RenderedClient.m_Active)
 		{
-			const vec2 RenderPos = GameClient()->m_aClients[i].m_RenderPos;
-			RenderNamePlateGame(Context, RenderPos, pInfo, 1.0f);
+			RenderNamePlateGame(Context, RenderedClient.m_Position, pInfo, 1.0f);
 		}
 	}
 }

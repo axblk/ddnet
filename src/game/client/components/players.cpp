@@ -22,6 +22,7 @@
 #include <game/client/components/skins.h>
 #include <game/client/components/sounds.h>
 #include <game/client/gameclient.h>
+#include <game/client/prediction/entities/character.h>
 #include <game/collision.h>
 #include <game/gamecore.h>
 #include <game/mapitems.h>
@@ -94,26 +95,31 @@ void CPlayers::RenderHand6(const CTeeRenderInfo *pInfo, vec2 HandPos, float Hand
 }
 
 float CPlayers::GetPlayerTargetAngle(
+	const CGameSessionContext &Session,
+	const CGameState &GameState,
+	const CGameTickInfo &Time,
 	const CNetObj_Character *pPrevChar,
 	const CNetObj_Character *pPlayerChar,
 	int ClientId,
 	float Intra)
 {
-	if(GameClient()->PredictDummy() && GameClient()->GameState(GameClient()->OtherConnection()).LocalClientId() == ClientId)
+	const CGameState::CClientSnapshot *pSnapshotClient = in_range(ClientId, MAX_CLIENTS - 1) ? &GameState.Client(ClientId) : nullptr;
+	const CGameState *pInputState = nullptr;
+	for(const auto &pState : Session.GameStates().States())
 	{
-		const CGameState &TargetState = GameClient()->GameState(GameClient()->OtherConnection());
-		const CGameSessionContext &Session = GameClient()->SessionContext();
-		const CStreamInputRoute *pRoute = Session.InputRouter().Find(TargetState.StreamId());
-		const CNetObj_PlayerInput &Input = pRoute && pRoute->m_Policy == EStreamInputPolicy::HAMMER ? pRoute->m_HammerInput : TargetState.Input().m_InputData;
-		return angle(vec2(Input.m_TargetX, Input.m_TargetY));
+		if(pState->LocalClientId() == ClientId)
+		{
+			pInputState = pState.get();
+			break;
+		}
 	}
-
-	// with dummy copy, use the same angle as local player
-	if((GameClient()->m_Snap.m_LocalClientId == ClientId || (GameClient()->PredictDummy() && g_Config.m_ClDummyCopyMoves && GameClient()->GameState(GameClient()->OtherConnection()).LocalClientId() == ClientId)) &&
-		!GameClient()->m_Snap.m_SpecInfo.m_Active && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	const CGameState::CClientSnapshot *pInputClient = pInputState != nullptr ? &pInputState->Client(ClientId) : nullptr;
+	const bool LocalInput = pInputClient != nullptr && (pInputState == &GameState || g_Config.m_ClPredictDummy) && pInputClient->m_HasCharacter && !Time.m_IsDemoPlayback &&
+				(!pInputClient->m_HasPlayerInfo || pInputClient->m_PlayerInfo.m_Team != TEAM_SPECTATORS) &&
+				(!pInputClient->m_HasDDNetPlayer || (pInputClient->m_DDNetPlayer.m_Flags & (EXPLAYERFLAG_PAUSED | EXPLAYERFLAG_SPEC)) == 0);
+	if(LocalInput && pInputState == &GameState)
 	{
-		// calculate what would be sent to the server from our current input
-		const vec2 MousePos = GameClient()->GameState(GameClient()->ActiveConnection()).Input().m_MousePos;
+		const vec2 MousePos = pInputState->Input().m_MousePos;
 		vec2 Direction = normalize(vec2((int)MousePos.x, (int)MousePos.y));
 
 		// fix direction if mouse is exactly in the center
@@ -122,19 +128,24 @@ float CPlayers::GetPlayerTargetAngle(
 
 		return angle(Direction);
 	}
+	else if(LocalInput)
+	{
+		const CStreamInputRoute *pRoute = Session.InputRouter().Find(pInputState->StreamId());
+		const CNetObj_PlayerInput &Input = pRoute != nullptr && pRoute->m_Policy == EStreamInputPolicy::HAMMER ? pRoute->m_HammerInput : pInputState->Input().m_InputData;
+		return angle(vec2(Input.m_TargetX, Input.m_TargetY));
+	}
 
 	// using unpredicted angle when rendering other players in-game
 	if(ClientId >= 0)
-		Intra = Client()->IntraGameTick(GameClient()->ActiveConnection());
+		Intra = Time.m_IntraGameTick;
 
-	if(ClientId >= 0 && GameClient()->m_Snap.m_aCharacters[ClientId].m_HasExtendedDisplayInfo)
+	if(pSnapshotClient != nullptr && pSnapshotClient->m_HasExtendedCharacter && pSnapshotClient->m_ExtendedCharacter.m_JumpedTotal != -1)
 	{
-		const CNetObj_DDNetCharacter *pExtendedData = &GameClient()->m_Snap.m_aCharacters[ClientId].m_ExtendedData;
-		const CNetObj_DDNetCharacter *pPrevExtendedData = GameClient()->m_Snap.m_aCharacters[ClientId].m_pPrevExtendedData;
-		if(pPrevExtendedData)
+		const CNetObj_DDNetCharacter *pExtendedData = &pSnapshotClient->m_ExtendedCharacter;
+		if(pSnapshotClient->m_HasPrevExtendedCharacter)
 		{
-			float MixX = mix((float)pPrevExtendedData->m_TargetX, (float)pExtendedData->m_TargetX, Intra);
-			float MixY = mix((float)pPrevExtendedData->m_TargetY, (float)pExtendedData->m_TargetY, Intra);
+			float MixX = mix((float)pSnapshotClient->m_PrevExtendedTargetX, (float)pExtendedData->m_TargetX, Intra);
+			float MixY = mix((float)pSnapshotClient->m_PrevExtendedTargetY, (float)pExtendedData->m_TargetY, Intra);
 			return angle(vec2(MixX, MixY));
 		}
 		else
@@ -163,6 +174,7 @@ float CPlayers::GetPlayerTargetAngle(
 }
 
 void CPlayers::RenderHookCollLine(
+	const CRenderContext &Context,
 	const CScreenRect &ScreenRect,
 	const CNetObj_Character *pPrevChar,
 	const CNetObj_Character *pPlayerChar,
@@ -175,10 +187,11 @@ void CPlayers::RenderHookCollLine(
 
 	dbg_assert(in_range(ClientId, MAX_CLIENTS - 1), "invalid client id (%d)", ClientId);
 
-	if(!GameClient()->FocusedGameInfo().m_AllowHookColl)
+	const CGameState &GameState = Context.m_State;
+	if(!GameState.CoreGameInfo().m_AllowHookColl)
 		return;
 
-	bool Local = GameClient()->m_Snap.m_LocalClientId == ClientId;
+	bool Local = GameState.LocalClientId() == ClientId;
 
 #if defined(CONF_VIDEORECORDER)
 	if(IVideo::Current() && !g_Config.m_ClVideoShowHookCollOther && !Local)
@@ -188,7 +201,7 @@ void CPlayers::RenderHookCollLine(
 	bool Aim = (Player.m_PlayerFlags & PLAYERFLAG_AIM);
 	if(!Client()->ServerCapAnyPlayerFlag())
 	{
-		for(const auto &pState : GameClient()->SessionContext().GameStates().States())
+		for(const auto &pState : Context.m_Session.GameStates().States())
 		{
 			if(ClientId == pState->LocalClientId())
 			{
@@ -198,17 +211,26 @@ void CPlayers::RenderHookCollLine(
 		}
 	}
 
-	if(GameClient()->PredictDummy() && g_Config.m_ClDummyCopyMoves && GameClient()->GameState(GameClient()->OtherConnection()).LocalClientId() == ClientId)
-		Aim = false; // don't use unpredicted with copy moves
+	const CGameState *pSessionLocalState = nullptr;
+	for(const auto &pState : Context.m_Session.GameStates().States())
+	{
+		if(pState->LocalClientId() == ClientId)
+		{
+			pSessionLocalState = pState.get();
+			break;
+		}
+	}
+	const CStreamInputRoute *pInputRoute = pSessionLocalState != nullptr ? Context.m_Session.InputRouter().Find(pSessionLocalState->StreamId()) : nullptr;
+	const bool CopyMoves = pInputRoute != nullptr && pInputRoute->m_Policy == EStreamInputPolicy::COPY_MOVES;
+	if(CopyMoves)
+		Aim = false;
 
 	bool AlwaysRenderHookColl = (Local ? g_Config.m_ClShowHookCollOwn : g_Config.m_ClShowHookCollOther) == 2;
 	bool RenderHookCollPlayer = Aim && (Local ? g_Config.m_ClShowHookCollOwn : g_Config.m_ClShowHookCollOther) > 0;
-	if(Local && Client()->State() != IClient::STATE_DEMOPLAYBACK)
-		RenderHookCollPlayer = GameClient()->GameState(GameClient()->ActiveConnection()).Input().m_ShowHookColl && g_Config.m_ClShowHookCollOwn > 0;
+	if(Local)
+		RenderHookCollPlayer = GameState.Input().m_ShowHookColl && g_Config.m_ClShowHookCollOwn > 0;
 
-	if(GameClient()->PredictDummy() && g_Config.m_ClDummyCopyMoves &&
-		GameClient()->GameState(GameClient()->OtherConnection()).LocalClientId() == ClientId && GameClient()->GameState(GameClient()->ActiveConnection()).Input().m_ShowHookColl &&
-		Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(CopyMoves && GameState.Input().m_ShowHookColl)
 	{
 		RenderHookCollPlayer = g_Config.m_ClShowHookCollOther > 0;
 	}
@@ -216,17 +238,19 @@ void CPlayers::RenderHookCollLine(
 	if(!AlwaysRenderHookColl && !RenderHookCollPlayer)
 		return;
 
-	float Intra = GameClient()->m_aClients[ClientId].m_IsPredicted ? Client()->PredIntraGameTick(GameClient()->ActiveConnection()) : Client()->IntraGameTick(GameClient()->ActiveConnection());
-	float Angle = GetPlayerTargetAngle(&Prev, &Player, ClientId, Intra);
+	const CGameState::CRenderedClient &RenderedClient = GameState.RenderedClient(ClientId);
+	float Intra = RenderedClient.m_IsPredicted ? Context.m_Time.m_PredIntraGameTick : Context.m_Time.m_IntraGameTick;
+	float Angle = GetPlayerTargetAngle(Context.m_Session, GameState, Context.m_Time, &Prev, &Player, ClientId, Intra);
 
-	vec2 Position = GameClient()->m_aClients[ClientId].m_RenderPos;
+	vec2 Position = RenderedClient.m_Position;
 	vec2 Direction = direction(Angle);
 
 	// When the other player isn't predicted, we don't know their tunes.
 	// Use our own tunes instead. This is wrong, but a good heuristic.
-	const CCharacterCore &PlayerCore = GameClient()->m_aClients[ClientId].m_IsPredicted ? GameClient()->m_aClients[ClientId].m_Predicted : GameClient()->m_aClients[GameClient()->GameState(GameClient()->ActiveConnection()).LocalClientId()].m_Predicted;
-	float HookLength = PlayerCore.m_Tuning.m_HookLength;
-	float HookFireSpeed = PlayerCore.m_Tuning.m_HookFireSpeed;
+	const CGameState::CPredictedClient &PredictedClient = GameState.PredictedClient(ClientId);
+	const CTuningParams &Tuning = RenderedClient.m_IsPredicted && PredictedClient.m_HasCurrent ? PredictedClient.m_Current.m_Tuning : GameState.Tuning();
+	float HookLength = Tuning.m_HookLength;
+	float HookFireSpeed = Tuning.m_HookFireSpeed;
 
 	// Check, if the player is outside the screen-rect
 	// If the map contains hook teleports, we are out of luck since we don't know if it will enter the screen at any point.
@@ -478,6 +502,7 @@ void CPlayers::RenderHookCollLine(
 }
 
 void CPlayers::RenderHook(
+	const CRenderContext &Context,
 	const CScreenRect &ScreenRect,
 	const CNetObj_Character *pPrevChar,
 	const CNetObj_Character *pPlayerChar,
@@ -496,13 +521,13 @@ void CPlayers::RenderHook(
 	CTeeRenderInfo RenderInfo = *pRenderInfo;
 
 	// don't render hooks to not active character cores
-	if(pPlayerChar->m_HookedPlayer != -1 && !GameClient()->m_Snap.m_aCharacters[pPlayerChar->m_HookedPlayer].m_Active)
+	if(in_range(pPlayerChar->m_HookedPlayer, MAX_CLIENTS - 1) && !Context.m_State.RenderedClient(pPlayerChar->m_HookedPlayer).m_Active)
 		return;
 
 	if(ClientId >= 0)
-		Intra = GameClient()->m_aClients[ClientId].m_IsPredicted ? Client()->PredIntraGameTick(GameClient()->ActiveConnection()) : Client()->IntraGameTick(GameClient()->ActiveConnection());
+		Intra = Context.m_State.RenderedClient(ClientId).m_IsPredicted ? Context.m_Time.m_PredIntraGameTick : Context.m_Time.m_IntraGameTick;
 
-	bool OtherTeam = GameClient()->IsOtherTeam(ClientId);
+	bool OtherTeam = Context.IsOtherTeam(ClientId);
 	float Alpha = (OtherTeam || ClientId < 0) ? g_Config.m_ClShowOthersAlpha / 100.0f : 1.0f;
 	if(ClientId == -2) // ghost
 		Alpha = g_Config.m_ClRaceGhostAlpha / 100.0f;
@@ -511,7 +536,7 @@ void CPlayers::RenderHook(
 
 	vec2 Position;
 	if(in_range(ClientId, MAX_CLIENTS - 1))
-		Position = GameClient()->m_aClients[ClientId].m_RenderPos;
+		Position = Context.m_State.RenderedClient(ClientId).m_Position;
 	else
 		Position = mix(vec2(Prev.m_X, Prev.m_Y), vec2(Player.m_X, Player.m_Y), Intra);
 
@@ -524,7 +549,7 @@ void CPlayers::RenderHook(
 	vec2 HookPos;
 
 	if(in_range(pPlayerChar->m_HookedPlayer, MAX_CLIENTS - 1))
-		HookPos = GameClient()->m_aClients[pPlayerChar->m_HookedPlayer].m_RenderPos;
+		HookPos = Context.m_State.RenderedClient(pPlayerChar->m_HookedPlayer).m_Position;
 	else
 		HookPos = mix(vec2(Prev.m_HookX, Prev.m_HookY), vec2(Player.m_HookX, Player.m_HookY), Intra);
 
@@ -565,7 +590,7 @@ void CPlayers::RenderHook(
 	RenderHand(&RenderInfo, Position, normalize(HookPos - Pos), -pi / 2, vec2(20, 0), Alpha);
 }
 
-void CPlayers::PrepareRenderInfo(const CRenderContext &Context, int ClientId, bool IsTeamPlay, CTeeRenderInfo &RenderInfo) const
+void CPlayers::PrepareRenderInfo(const CGameSessionContext &Session, const CGameState &GameState, int ClientId, bool IsTeamPlay, CTeeRenderInfo &RenderInfo) const
 {
 	RenderInfo = GameClient()->m_aClients[ClientId].m_RenderInfo;
 	RenderInfo.m_TeeRenderFlags = 0;
@@ -573,22 +598,23 @@ void CPlayers::PrepareRenderInfo(const CRenderContext &Context, int ClientId, bo
 	// Predict freeze skin only for local players.
 	bool Frozen = false;
 	bool IsLocal = false;
-	for(const auto &pState : Context.m_Session.GameStates().States())
+	for(const auto &pState : Session.GameStates().States())
 		IsLocal |= ClientId == pState->LocalClientId();
 	if(IsLocal)
 	{
-		if(GameClient()->m_aClients[ClientId].m_Predicted.m_FreezeEnd != 0)
+		const CCharacterCore &Predicted = GameState.PredictedClient(ClientId).m_Current;
+		if(Predicted.m_FreezeEnd != 0)
 			RenderInfo.m_TeeRenderFlags |= TEE_EFFECT_FROZEN | TEE_NO_WEAPON;
-		if(GameClient()->m_aClients[ClientId].m_Predicted.m_LiveFrozen)
+		if(Predicted.m_LiveFrozen)
 			RenderInfo.m_TeeRenderFlags |= TEE_EFFECT_FROZEN;
-		if(GameClient()->m_aClients[ClientId].m_Predicted.m_Invincible)
+		if(Predicted.m_Invincible)
 			RenderInfo.m_TeeRenderFlags |= TEE_EFFECT_SPARKLE;
 
-		Frozen = GameClient()->m_aClients[ClientId].m_Predicted.m_FreezeEnd != 0;
+		Frozen = Predicted.m_FreezeEnd != 0;
 	}
 	else
 	{
-		const CNetObj_DDNetCharacter *pExtended = Context.m_State.ExtendedCharacter(ClientId);
+		const CNetObj_DDNetCharacter *pExtended = GameState.ExtendedCharacter(ClientId);
 		if(pExtended != nullptr && pExtended->m_FreezeEnd != 0)
 			RenderInfo.m_TeeRenderFlags |= TEE_EFFECT_FROZEN | TEE_NO_WEAPON;
 		if(pExtended != nullptr && (pExtended->m_Flags & CHARACTERFLAG_MOVEMENTS_DISABLED) != 0)
@@ -599,7 +625,7 @@ void CPlayers::PrepareRenderInfo(const CRenderContext &Context, int ClientId, bo
 		Frozen = pExtended != nullptr && pExtended->m_FreezeEnd != 0;
 	}
 
-	if((GameClient()->m_aClients[ClientId].m_RenderCur.m_Weapon == WEAPON_NINJA || (Frozen && !Context.m_State.CoreGameInfo().m_NoSkinChangeForFrozen)) && g_Config.m_ClShowNinja)
+	if((GameState.RenderedClient(ClientId).m_Cur.m_Weapon == WEAPON_NINJA || (Frozen && !GameState.CoreGameInfo().m_NoSkinChangeForFrozen)) && g_Config.m_ClShowNinja)
 	{
 		RenderInfo.m_Sixup.Reset();
 		RenderInfo.ApplySkin(NinjaTeeRenderInfo()->TeeRenderInfo());
@@ -613,8 +639,12 @@ void CPlayers::PrepareRenderInfo(const CRenderContext &Context, int ClientId, bo
 }
 
 bool CPlayers::PreparePlayerRenderState(
-	const CRenderContext &Context,
-	const CScreenRect &ScreenRect,
+	const CGameSessionContext &Session,
+	const CGameState &GameState,
+	const CGameTickInfo &Time,
+	bool IsOtherTeam,
+	std::span<const CVisibleWorldRect> vVisibleWorldRects,
+	vec2 VisibilityMargin,
 	const CNetObj_Character *pPrevChar,
 	const CNetObj_Character *pPlayerChar,
 	const CTeeRenderInfo *pRenderInfo,
@@ -628,37 +658,39 @@ bool CPlayers::PreparePlayerRenderState(
 	State.m_Intra = Intra;
 
 	if(in_range(ClientId, MAX_CLIENTS - 1))
-		State.m_Position = GameClient()->m_aClients[ClientId].m_RenderPos;
+		State.m_Position = GameState.RenderedClient(ClientId).m_Position;
 	else
 		State.m_Position = mix(vec2(State.m_Prev.m_X, State.m_Prev.m_Y), vec2(State.m_Player.m_X, State.m_Player.m_Y), State.m_Intra);
 
-	if(!ScreenRect.Inside(State.m_Position))
+	bool Visible = false;
+	for(const CVisibleWorldRect &VisibleWorldRect : vVisibleWorldRects)
+		Visible |= VisibleWorldRect.Inside(State.m_Position, VisibilityMargin);
+	if(!Visible)
 		return false;
 
-	const CGameState::CSceneClockState &SceneClock = Context.m_State.SceneClock();
-	State.m_Local = Context.m_State.LocalClientId() == ClientId;
-	const bool OtherTeam = Context.IsOtherTeam(ClientId);
-	State.m_Alpha = (OtherTeam || ClientId < 0) ? g_Config.m_ClShowOthersAlpha / 100.0f : 1.0f;
+	const CGameState::CSceneClockState &SceneClock = GameState.SceneClock();
+	State.m_Local = GameState.LocalClientId() == ClientId;
+	State.m_Alpha = (IsOtherTeam || ClientId < 0) ? g_Config.m_ClShowOthersAlpha / 100.0f : 1.0f;
 	if(ClientId == -2) // ghost
 		State.m_Alpha = g_Config.m_ClRaceGhostAlpha / 100.0f;
 
 	State.m_RenderInfo.m_Size = 64.0f;
 
 	if(ClientId >= 0)
-		State.m_Intra = GameClient()->m_aClients[ClientId].m_IsPredicted ? Context.m_Time.m_PredIntraGameTick : Context.m_Time.m_IntraGameTick;
+		State.m_Intra = GameState.RenderedClient(ClientId).m_IsPredicted ? Time.m_PredIntraGameTick : Time.m_IntraGameTick;
 
 	State.m_PredictLocalWeapons = false;
-	State.m_AttackTime = (Context.m_Time.m_PrevGameTick - State.m_Player.m_AttackTick) / (float)Context.m_Time.m_GameTickSpeed + Context.m_Time.m_GameTickTime;
-	State.m_LastAttackTime = (Context.m_Time.m_PrevGameTick - State.m_Player.m_AttackTick) / (float)Context.m_Time.m_GameTickSpeed + SceneClock.m_GameTickTime;
-	if(ClientId >= 0 && GameClient()->m_aClients[ClientId].m_IsPredictedLocal && GameClient()->AntiPingGunfire())
+	State.m_AttackTime = (Time.m_PrevGameTick - State.m_Player.m_AttackTick) / (float)Time.m_GameTickSpeed + Time.m_GameTickTime;
+	State.m_LastAttackTime = (Time.m_PrevGameTick - State.m_Player.m_AttackTick) / (float)Time.m_GameTickSpeed + SceneClock.m_GameTickTime;
+	if(ClientId >= 0 && GameState.RenderedClient(ClientId).m_IsPredictedLocal && g_Config.m_ClAntiPing && g_Config.m_ClAntiPingGrenade && g_Config.m_ClAntiPingWeapons && g_Config.m_ClAntiPingGunfire)
 	{
 		State.m_PredictLocalWeapons = true;
-		State.m_AttackTime = (Context.m_Time.m_PredIntraGameTick + (Context.m_Time.m_PredGameTick - 1 - State.m_Player.m_AttackTick)) / (float)Context.m_Time.m_GameTickSpeed;
-		State.m_LastAttackTime = (SceneClock.m_PredIntraTick + (Context.m_Time.m_PredGameTick - 1 - State.m_Player.m_AttackTick)) / (float)Context.m_Time.m_GameTickSpeed;
+		State.m_AttackTime = (Time.m_PredIntraGameTick + (Time.m_PredGameTick - 1 - State.m_Player.m_AttackTick)) / (float)Time.m_GameTickSpeed;
+		State.m_LastAttackTime = (SceneClock.m_PredIntraTick + (Time.m_PredGameTick - 1 - State.m_Player.m_AttackTick)) / (float)Time.m_GameTickSpeed;
 	}
-	State.m_AttackTicksPassed = State.m_AttackTime * (float)Context.m_Time.m_GameTickSpeed;
+	State.m_AttackTicksPassed = State.m_AttackTime * (float)Time.m_GameTickSpeed;
 
-	State.m_Angle = GetPlayerTargetAngle(&State.m_Prev, &State.m_Player, ClientId, State.m_Intra);
+	State.m_Angle = GetPlayerTargetAngle(Session, GameState, Time, &State.m_Prev, &State.m_Player, ClientId, State.m_Intra);
 	State.m_Direction = direction(State.m_Angle);
 	State.m_Vel = mix(vec2(State.m_Prev.m_VelX / 256.0f, State.m_Prev.m_VelY / 256.0f), vec2(State.m_Player.m_VelX / 256.0f, State.m_Player.m_VelY / 256.0f), State.m_Intra);
 
@@ -669,7 +701,7 @@ bool CPlayers::PreparePlayerRenderState(
 	State.m_InAir = !Collision()->CheckPoint(State.m_Player.m_X, State.m_Player.m_Y + 16);
 	const bool Running = State.m_Player.m_VelX >= 5000 || State.m_Player.m_VelX <= -5000;
 	State.m_WantOtherDir = (State.m_Player.m_Direction == -1 && State.m_Vel.x > 0) || (State.m_Player.m_Direction == 1 && State.m_Vel.x < 0);
-	const CNetObj_DDNetPlayer *pDDNetPlayer = in_range(ClientId, MAX_CLIENTS - 1) && Context.m_State.Client(ClientId).m_HasDDNetPlayer ? &Context.m_State.Client(ClientId).m_DDNetPlayer : nullptr;
+	const CNetObj_DDNetPlayer *pDDNetPlayer = in_range(ClientId, MAX_CLIENTS - 1) && GameState.Client(ClientId).m_HasDDNetPlayer ? &GameState.Client(ClientId).m_DDNetPlayer : nullptr;
 	State.m_Afk = pDDNetPlayer != nullptr && (pDDNetPlayer->m_Flags & EXPLAYERFLAG_AFK) != 0;
 	const bool Paused = pDDNetPlayer != nullptr && (pDDNetPlayer->m_Flags & EXPLAYERFLAG_PAUSED) != 0;
 	State.m_Inactive = State.m_Afk || Paused;
@@ -716,23 +748,21 @@ bool CPlayers::PreparePlayerRenderState(
 }
 
 void CPlayers::UpdatePlayerPresentation(
-	CGameState &GameState,
-	const CRenderContext &Context,
-	const CScreenRect &ScreenRect,
+	const CPresentationContext &Context,
 	const CNetObj_Character *pPrevChar,
 	const CNetObj_Character *pPlayerChar,
 	const CTeeRenderInfo *pRenderInfo,
 	int ClientId,
-	bool Audible,
 	float Intra)
 {
+	CGameState &GameState = Context.m_State;
 	CPlayerRenderState State;
-	if(!PreparePlayerRenderState(Context, ScreenRect, pPrevChar, pPlayerChar, pRenderInfo, ClientId, Intra, State))
+	if(!PreparePlayerRenderState(Context.m_Session, GameState, Context.m_Time, Context.IsOtherTeamFromLocalPlayer(ClientId), Context.m_vVisibleWorldRects, vec2(100.0f, 100.0f), pPrevChar, pPlayerChar, pRenderInfo, ClientId, Intra, State))
 		return;
 
 	constexpr float Volume = 1.0f;
 	if(!State.m_InAir && State.m_WantOtherDir && length(State.m_Vel * 50) > 500.0f)
-		GameClient()->m_Effects.SkidTrail(GameState, State.m_Position, State.m_Vel, State.m_Player.m_Direction, State.m_Alpha, Volume, Audible);
+		GameClient()->m_Effects.SkidTrail(GameState, State.m_Position, State.m_Vel, State.m_Player.m_Direction, ClientId, 1.0f, Volume, Context.m_Audio == EPresentationAudio::AUDIBLE);
 
 	if(State.m_Player.m_Weapon == WEAPON_NINJA && !(State.m_RenderInfo.m_TeeRenderFlags & TEE_NO_WEAPON))
 	{
@@ -744,11 +774,11 @@ void CPlayers::UpdatePlayerPresentation(
 		if(State.m_Direction.x < 0.0f)
 		{
 			WeaponPosition.x -= g_pData->m_Weapons.m_aId[CurrentWeapon].m_Offsetx;
-			GameClient()->m_Effects.PowerupShine(GameState, WeaponPosition + vec2(32.0f, 0.0f), vec2(32.0f, 12.0f), State.m_Alpha);
+			GameClient()->m_Effects.PowerupShine(GameState, WeaponPosition + vec2(32.0f, 0.0f), vec2(32.0f, 12.0f), ClientId, 1.0f);
 		}
 		else
 		{
-			GameClient()->m_Effects.PowerupShine(GameState, WeaponPosition - vec2(32.0f, 0.0f), vec2(32.0f, 12.0f), State.m_Alpha);
+			GameClient()->m_Effects.PowerupShine(GameState, WeaponPosition - vec2(32.0f, 0.0f), vec2(32.0f, 12.0f), ClientId, 1.0f);
 		}
 	}
 
@@ -756,9 +786,9 @@ void CPlayers::UpdatePlayerPresentation(
 	CRenderTools::GetRenderTeeAnimScaleAndBaseSize(&State.m_RenderInfo, TeeAnimScale, TeeBaseSize);
 	const vec2 BodyPos = State.m_Position + vec2(State.m_Animation.GetBody()->m_X, State.m_Animation.GetBody()->m_Y) * TeeAnimScale;
 	if(State.m_RenderInfo.m_TeeRenderFlags & TEE_EFFECT_FROZEN)
-		GameClient()->m_Effects.FreezingFlakes(GameState, BodyPos, vec2(32, 32), State.m_Alpha);
+		GameClient()->m_Effects.FreezingFlakes(GameState, BodyPos, vec2(32, 32), ClientId, 1.0f);
 	if(State.m_RenderInfo.m_TeeRenderFlags & TEE_EFFECT_SPARKLE)
-		GameClient()->m_Effects.SparkleTrail(GameState, BodyPos, State.m_Alpha);
+		GameClient()->m_Effects.SparkleTrail(GameState, BodyPos, ClientId, 1.0f);
 }
 
 void CPlayers::RenderPlayer(
@@ -771,7 +801,8 @@ void CPlayers::RenderPlayer(
 	float Intra)
 {
 	CPlayerRenderState RenderState;
-	if(!PreparePlayerRenderState(Context, ScreenRect, pPrevChar, pPlayerChar, pRenderInfo, ClientId, Intra, RenderState))
+	const CVisibleWorldRect VisibleWorldRect(ScreenRect.m_TopLeft, ScreenRect.m_BottomRight);
+	if(!PreparePlayerRenderState(Context.m_Session, Context.m_State, Context.m_Time, Context.IsOtherTeam(ClientId), std::span<const CVisibleWorldRect>(&VisibleWorldRect, 1), vec2(0.0f, 0.0f), pPrevChar, pPlayerChar, pRenderInfo, ClientId, Intra, RenderState))
 		return;
 
 	CNetObj_Character &Prev = RenderState.m_Prev;
@@ -868,7 +899,10 @@ void CPlayers::RenderPlayer(
 						if(PredictLocalWeapons || ClientId < 0)
 							HadokenDirection = vec2(pPlayerChar->m_X, pPlayerChar->m_Y) - vec2(pPrevChar->m_X, pPrevChar->m_Y);
 						else
-							HadokenDirection = vec2(GameClient()->m_Snap.m_aCharacters[ClientId].m_Cur.m_X, GameClient()->m_Snap.m_aCharacters[ClientId].m_Cur.m_Y) - vec2(GameClient()->m_Snap.m_aCharacters[ClientId].m_Prev.m_X, GameClient()->m_Snap.m_aCharacters[ClientId].m_Prev.m_Y);
+						{
+							const CGameState::CClientSnapshot &SnapshotClient = Context.m_State.Client(ClientId);
+							HadokenDirection = vec2(SnapshotClient.m_Character.m_X, SnapshotClient.m_Character.m_Y) - vec2(SnapshotClient.m_PrevCharacter.m_X, SnapshotClient.m_PrevCharacter.m_Y);
+						}
 						float HadokenAngle = 0.0f;
 						if(absolute(HadokenDirection.x) > 0.0001f || absolute(HadokenDirection.y) > 0.0001f)
 						{
@@ -950,10 +984,13 @@ void CPlayers::RenderPlayer(
 	{
 		vec2 ShadowPosition = Position;
 		if(ClientId >= 0)
+		{
+			const CGameState::CClientSnapshot &SnapshotClient = Context.m_State.Client(ClientId);
 			ShadowPosition = mix(
-				vec2(GameClient()->m_Snap.m_aCharacters[ClientId].m_Prev.m_X, GameClient()->m_Snap.m_aCharacters[ClientId].m_Prev.m_Y),
-				vec2(GameClient()->m_Snap.m_aCharacters[ClientId].m_Cur.m_X, GameClient()->m_Snap.m_aCharacters[ClientId].m_Cur.m_Y),
-				Client()->IntraGameTick(GameClient()->ActiveConnection()));
+				vec2(SnapshotClient.m_PrevCharacter.m_X, SnapshotClient.m_PrevCharacter.m_Y),
+				vec2(SnapshotClient.m_Character.m_X, SnapshotClient.m_Character.m_Y),
+				Context.m_Time.m_IntraGameTick);
+		}
 
 		RenderTools()->RenderTee(&State, &RenderInfo, Player.m_Emote, Direction, ShadowPosition, g_Config.m_ClUnpredictedShadowAlpha / 100.f); // render ghost
 	}
@@ -976,7 +1013,10 @@ void CPlayers::RenderPlayer(
 		Graphics()->QuadsSetRotation(0);
 	}
 
-	if(g_Config.m_ClAfkEmote && Afk && ClientId != GameClient()->GameState(GameClient()->OtherConnection()).LocalClientId())
+	bool SessionLocal = false;
+	for(const auto &pState : Context.m_Session.GameStates().States())
+		SessionLocal |= pState->LocalClientId() == ClientId;
+	if(g_Config.m_ClAfkEmote && Afk && !SessionLocal)
 	{
 		int CurEmoticon = (SPRITE_ZZZ - SPRITE_OOP);
 		Graphics()->TextureSet(GameClient()->m_EmoticonsSkin.m_aSpriteEmoticons[CurEmoticon]);
@@ -990,23 +1030,23 @@ void CPlayers::RenderPlayer(
 
 	if(g_Config.m_ClShowEmotes && !GameClient()->m_aClients[ClientId].m_EmoticonIgnore && GameClient()->m_aClients[ClientId].m_EmoticonStartTick != -1)
 	{
-		float SinceStart = (Client()->GameTick(GameClient()->ActiveConnection()) - GameClient()->m_aClients[ClientId].m_EmoticonStartTick) + (Client()->IntraGameTickSincePrev(GameClient()->ActiveConnection()) - GameClient()->m_aClients[ClientId].m_EmoticonStartFraction);
-		float FromEnd = (2 * Client()->GameTickSpeed()) - SinceStart;
+		float SinceStart = (Context.m_Time.m_GameTick - GameClient()->m_aClients[ClientId].m_EmoticonStartTick) + (Context.m_Time.m_IntraGameTickSincePrev - GameClient()->m_aClients[ClientId].m_EmoticonStartFraction);
+		float FromEnd = (2 * Context.m_Time.m_GameTickSpeed) - SinceStart;
 
 		if(0 <= SinceStart && FromEnd > 0)
 		{
 			float a = 1;
 
-			if(FromEnd < Client()->GameTickSpeed() / 5)
-				a = FromEnd / (Client()->GameTickSpeed() / 5.0f);
+			if(FromEnd < Context.m_Time.m_GameTickSpeed / 5)
+				a = FromEnd / (Context.m_Time.m_GameTickSpeed / 5.0f);
 
 			float h = 1;
-			if(SinceStart < Client()->GameTickSpeed() / 10)
-				h = SinceStart / (Client()->GameTickSpeed() / 10.0f);
+			if(SinceStart < Context.m_Time.m_GameTickSpeed / 10)
+				h = SinceStart / (Context.m_Time.m_GameTickSpeed / 10.0f);
 
 			float Wiggle = 0;
-			if(SinceStart < Client()->GameTickSpeed() / 5)
-				Wiggle = SinceStart / (Client()->GameTickSpeed() / 5.0f);
+			if(SinceStart < Context.m_Time.m_GameTickSpeed / 5)
+				Wiggle = SinceStart / (Context.m_Time.m_GameTickSpeed / 5.0f);
 
 			float WiggleAngle = std::sin(5 * Wiggle);
 
@@ -1024,38 +1064,35 @@ void CPlayers::RenderPlayer(
 	}
 }
 
-inline bool CPlayers::IsPlayerInfoAvailable(int ClientId) const
+inline bool CPlayers::IsPlayerInfoAvailable(const CGameState &GameState, int ClientId) const
 {
-	return GameClient()->m_Snap.m_aCharacters[ClientId].m_Active &&
-	       GameClient()->m_Snap.m_apPrevPlayerInfos[ClientId] != nullptr &&
-	       GameClient()->m_Snap.m_apPlayerInfos[ClientId] != nullptr;
+	const CGameState::CClientSnapshot &SnapshotClient = GameState.Client(ClientId);
+	return GameState.RenderedClient(ClientId).m_Active && SnapshotClient.m_HasPlayerInfo && SnapshotClient.m_HasPrevPlayerInfo;
 }
 
-void CPlayers::UpdatePresentation(CGameState &State, const CRenderContext &Context, const CScreenRect &ScreenRect, bool Audible)
+void CPlayers::UpdatePresentation(const CPresentationContext &Context)
 {
-	dbg_assert(&State == &Context.m_State, "presentation state does not match render context");
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(Context.m_Playback == EPresentationPlayback::PAUSED)
 		return;
 
+	CGameState &State = Context.m_State;
 	const bool IsTeamPlay = State.HasGameInfo() && (State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
 	CTeeRenderInfo aRenderInfo[MAX_CLIENTS];
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
-		PrepareRenderInfo(Context, ClientId, IsTeamPlay, aRenderInfo[ClientId]);
+		PrepareRenderInfo(Context.m_Session, State, ClientId, IsTeamPlay, aRenderInfo[ClientId]);
 
-	CScreenRect ExpandedScreenRect = ScreenRect;
-	ExpandedScreenRect.Expand(100.0f);
-	const int LocalClientId = GameClient()->m_Snap.m_LocalClientId;
-	const int RenderLastId = (GameClient()->m_Snap.m_SpecInfo.m_SpectatorId != SPEC_FREEVIEW && GameClient()->m_Snap.m_SpecInfo.m_Active) ? GameClient()->m_Snap.m_SpecInfo.m_SpectatorId : LocalClientId;
+	const int RenderLastId = State.LocalClientId();
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
 	{
-		if(ClientId == RenderLastId || !IsPlayerInfoAvailable(ClientId))
+		if(ClientId == RenderLastId || !IsPlayerInfoAvailable(State, ClientId))
 			continue;
-		UpdatePlayerPresentation(State, Context, ExpandedScreenRect, &GameClient()->m_aClients[ClientId].m_RenderPrev, &GameClient()->m_aClients[ClientId].m_RenderCur, &aRenderInfo[ClientId], ClientId, Audible);
+		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(ClientId);
+		UpdatePlayerPresentation(Context, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &aRenderInfo[ClientId], ClientId);
 	}
-	if(RenderLastId != -1 && IsPlayerInfoAvailable(RenderLastId))
+	if(RenderLastId != -1 && IsPlayerInfoAvailable(State, RenderLastId))
 	{
-		const CGameClient::CClientData &ClientData = GameClient()->m_aClients[RenderLastId];
-		UpdatePlayerPresentation(State, Context, ExpandedScreenRect, &ClientData.m_RenderPrev, &ClientData.m_RenderCur, &aRenderInfo[RenderLastId], RenderLastId, Audible);
+		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(RenderLastId);
+		UpdatePlayerPresentation(Context, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &aRenderInfo[RenderLastId], RenderLastId);
 	}
 }
 
@@ -1069,7 +1106,7 @@ void CPlayers::OnRender(const CRenderContext &Context)
 	const CGameState &State = Context.m_State;
 	const bool IsTeamPlay = State.HasGameInfo() && (State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
 	for(int i = 0; i < MAX_CLIENTS; ++i)
-		PrepareRenderInfo(Context, i, IsTeamPlay, aRenderInfo[i]);
+		PrepareRenderInfo(Context.m_Session, State, i, IsTeamPlay, aRenderInfo[i]);
 
 	// get screen edges to avoid rendering offscreen
 	CScreenRect ScreenRect = Graphics()->GetScreen();
@@ -1081,41 +1118,43 @@ void CPlayers::OnRender(const CRenderContext &Context)
 	ScreenRect.Expand(PlayerBorderBuffer);
 
 	// render everyone else's hook, then our own
-	const int LocalClientId = GameClient()->m_Snap.m_LocalClientId;
+	const int LocalClientId = State.LocalClientId();
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
-		if(ClientId == LocalClientId || !IsPlayerInfoAvailable(ClientId))
+		if(ClientId == LocalClientId || !IsPlayerInfoAvailable(State, ClientId))
 		{
 			continue;
 		}
-		RenderHook(ScreenRect, &GameClient()->m_aClients[ClientId].m_RenderPrev, &GameClient()->m_aClients[ClientId].m_RenderCur, &aRenderInfo[ClientId], ClientId);
+		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(ClientId);
+		RenderHook(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &aRenderInfo[ClientId], ClientId);
 	}
-	if(LocalClientId != -1 && IsPlayerInfoAvailable(LocalClientId))
+	if(LocalClientId != -1 && IsPlayerInfoAvailable(State, LocalClientId))
 	{
-		const CGameClient::CClientData *pLocalClientData = &GameClient()->m_aClients[LocalClientId];
-		RenderHook(ScreenRect, &pLocalClientData->m_RenderPrev, &pLocalClientData->m_RenderCur, &aRenderInfo[LocalClientId], LocalClientId);
+		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(LocalClientId);
+		RenderHook(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &aRenderInfo[LocalClientId], LocalClientId);
 	}
 
 	RenderSpectatorCharacters(Context, ScreenRect);
 
 	// render everyone else's tee, then either our own or the tee we are spectating.
-	const int RenderLastId = (GameClient()->m_Snap.m_SpecInfo.m_SpectatorId != SPEC_FREEVIEW && GameClient()->m_Snap.m_SpecInfo.m_Active) ? GameClient()->m_Snap.m_SpecInfo.m_SpectatorId : LocalClientId;
+	const int RenderLastId = Context.m_View.IsSpectating() && Context.m_View.SpectatorId() != SPEC_FREEVIEW ? Context.m_View.SpectatorId() : LocalClientId;
 
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
-		if(ClientId == RenderLastId || !IsPlayerInfoAvailable(ClientId))
+		if(ClientId == RenderLastId || !IsPlayerInfoAvailable(State, ClientId))
 		{
 			continue;
 		}
 
-		RenderHookCollLine(ScreenRect, &GameClient()->m_aClients[ClientId].m_RenderPrev, &GameClient()->m_aClients[ClientId].m_RenderCur, ClientId);
-		RenderPlayer(Context, ScreenRect, &GameClient()->m_aClients[ClientId].m_RenderPrev, &GameClient()->m_aClients[ClientId].m_RenderCur, &aRenderInfo[ClientId], ClientId);
+		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(ClientId);
+		RenderHookCollLine(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, ClientId);
+		RenderPlayer(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &aRenderInfo[ClientId], ClientId);
 	}
-	if(RenderLastId != -1 && IsPlayerInfoAvailable(RenderLastId))
+	if(RenderLastId != -1 && IsPlayerInfoAvailable(State, RenderLastId))
 	{
-		const CGameClient::CClientData *pClientData = &GameClient()->m_aClients[RenderLastId];
-		RenderHookCollLine(ScreenRect, &pClientData->m_RenderPrev, &pClientData->m_RenderCur, RenderLastId);
-		RenderPlayer(Context, ScreenRect, &pClientData->m_RenderPrev, &pClientData->m_RenderCur, &aRenderInfo[RenderLastId], RenderLastId);
+		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(RenderLastId);
+		RenderHookCollLine(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, RenderLastId);
+		RenderPlayer(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &aRenderInfo[RenderLastId], RenderLastId);
 	}
 }
 

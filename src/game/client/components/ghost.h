@@ -11,6 +11,8 @@
 
 struct CNetObj_Character;
 class CGameState;
+class CGameTickInfo;
+class CPresentationContext;
 
 enum
 {
@@ -139,7 +141,7 @@ private:
 
 	void UpdateTeeRenderInfo(CGhostItem &Ghost);
 	template<typename F>
-	void ForEachGhostFrame(const CRenderContext &Context, F &&Function) const;
+	void ForEachGhostFrame(const CGameState &State, const CGameTickInfo &Time, F &&Function) const;
 
 	static void ConGPlay(IConsole::IResult *pResult, void *pUserData);
 
@@ -148,7 +150,7 @@ public:
 
 	int Sizeof() const override { return sizeof(*this); }
 
-	void UpdatePresentation(CGameState &State, const CRenderContext &Context, const CScreenRect &ScreenRect, bool Audible);
+	void UpdatePresentation(const CPresentationContext &Context);
 	void OnRender(const CRenderContext &Context) override;
 	void OnConsoleInit() override;
 	void OnReset() override;

@@ -34,12 +34,24 @@ RENDER_PURITY_FUNCTIONS = (
 	("src/game/client/components/items.cpp", re.compile(r"\bCItems::(?:OnRender|Render[A-Za-z0-9_]*)\s*\(")),
 	("src/game/client/components/players.cpp", re.compile(r"\bCPlayers::(?:OnRender|Render[A-Za-z0-9_]*)\s*\(")),
 )
+PRESENTATION_UPDATE_FUNCTIONS = (
+	("src/game/client/components/ghost.cpp", re.compile(r"\bCGhost::UpdatePresentation\s*\(")),
+	("src/game/client/components/items.cpp", re.compile(r"\bCItems::UpdatePresentation\s*\(")),
+	("src/game/client/components/players.cpp", re.compile(r"\bCPlayers::UpdatePresentation\s*\(")),
+)
+ITEMS_PRESENTATION_FUNCTIONS = (("src/game/client/components/items.cpp", re.compile(r"\bCItems::UpdatePresentation\s*\(")),)
+PLAYERS_STATE_FUNCTIONS = (("src/game/client/components/players.cpp", re.compile(r"\bCPlayers::(?:GetPlayerTargetAngle|IsPlayerInfoAvailable|PreparePlayerRenderState|RenderHook|RenderHookCollLine|RenderPlayer|UpdatePlayerPresentation|UpdatePresentation|UpdateRenderedClients)\s*\(")),)
 CAMERA_FILES = ("src/game/client/components/camera.h",)
 CONTROLS_OWNER_FILES = ("src/game/client/components/controls.h",)
 BROADCAST_OWNER_FILES = ("src/game/client/components/broadcast.h",)
 DAMAGE_INDICATOR_FILES = (
 	"src/game/client/components/damageind.cpp",
 	"src/game/client/components/damageind.h",
+)
+SCENE_RENDER_FILES = (
+	"src/game/client/components/damageind.cpp",
+	"src/game/client/components/particles.cpp",
+	"src/game/client/components/particles.h",
 )
 EFFECT_OWNER_FILES = ("src/game/client/components/effects.h",)
 GHOST_OWNER_FILES = ("src/game/client/components/ghost.h",)
@@ -85,6 +97,25 @@ FORBIDDEN_RENDER_MUTATION = (
 	re.compile(r"GameClient\(\)->m_(?:Effects|Sounds)\."),
 	re.compile(r"\bm_Last(?:Presentation|Render)Tick\s*="),
 )
+FORBIDDEN_PRESENTATION_VIEW = (
+	re.compile(r"\bCRenderContext\b"),
+	re.compile(r"\bm_View\b"),
+	re.compile(r"\bLegacyGameView\s*\("),
+)
+FORBIDDEN_PRESENTATION_EFFECT_ALPHA = (re.compile(r"m_Effects\.[^\n;]*\b(?:State\.m_Alpha|Alpha)\b"),)
+FORBIDDEN_ITEMS_PRESENTATION_FOCUS = (
+	re.compile(r"\bActiveConnection\s*\("),
+	re.compile(r"\bSnap(?:FindItem|GetItem|NumItems)\s*\("),
+	re.compile(r"GameClient\(\)->m_(?:Snap|aClients|GameWorld|PrevPredictedWorld)\b"),
+	re.compile(r"GameClient\(\)->(?:SnapEntities|SwitchStateTeam|IsLocalCharSuper|Switchers|GetTuning)\s*\("),
+)
+FORBIDDEN_PLAYERS_STATE_FOCUS = (
+	re.compile(r"\bActiveConnection\s*\("),
+	re.compile(r"\bOtherConnection\s*\("),
+	re.compile(r"\bPredictDummy\s*\("),
+	re.compile(r"\bm_Snap\b"),
+	re.compile(r"GameClient\(\)->m_aClients\[[^\]]+\]\.m_(?:RenderCur|RenderPrev|RenderPos|Predicted|PrevPredicted|IsPredicted|IsPredictedLocal)\b"),
+)
 FORBIDDEN_GAME_CLIENT = (
 	re.compile(r"\bCStreamStorage\b"),
 	re.compile(r"\bCFlow\b"),
@@ -103,6 +134,10 @@ FORBIDDEN_CAMERA = (
 FORBIDDEN_CONTROLS_OWNER = (re.compile(r"\bOnRender\s*\("),)
 FORBIDDEN_BROADCAST_OWNER = (re.compile(r"\b(?:m_aBroadcastText|m_BroadcastTick)\b"),)
 FORBIDDEN_DAMAGE_INDICATOR = (re.compile(r"\b(?:m_aItems|m_NumItems|s_LastLocalTime|CDamageInd::OnReset)\b"),)
+FORBIDDEN_SCENE_RENDER = (
+	re.compile(r"GameState\(\s*GameClient\(\)->ActiveConnection\(\)\s*\)"),
+	re.compile(r"\bvoid OnRender\(\) override"),
+)
 FORBIDDEN_EFFECT_OWNER = (re.compile(r"\b(?:m_Add5hz|m_LastUpdate5hz|m_Add50hz|m_LastUpdate50hz|m_Add100hz|m_LastUpdate100hz|m_SkidSoundTimer)\b"),)
 FORBIDDEN_GHOST_OWNER = (re.compile(r"\bm_PlaybackPos\b"),)
 FORBIDDEN_PREDICTION_ENTITY = (re.compile(r"\bm_LastRenderTick\b"),)
@@ -110,6 +145,7 @@ FORBIDDEN_PARTICLE_OWNER = (re.compile(r"\b(?:m_vParticles|m_FirstFree|m_aFirstP
 FORBIDDEN_RENDER_TIMING = (re.compile(r"\b(?:s_LastGameTickTime|s_LastPredIntraTick|s_LastLocalTime|s_LastIteX|s_LastRaceTick|s_Time)\b"),)
 FORBIDDEN_GAME_CLIENT_OWNER = (
 	re.compile(r"\b(?:CClientStats|m_aLastUpdateTick|m_aStats|m_CharOrder|m_GameInfo|m_ServerMode|m_Teams)\b"),
+	re.compile(r"\b(?:m_RenderCur|m_RenderPrev|m_RenderPos|m_IsPredicted|m_IsPredictedLocal|m_aSmoothStart|m_aSmoothLen|m_aPredPos|m_aPredTick)\b"),
 	re.compile(r"\b(?:m_MapBestTimeSeconds|m_MapBestTimeMillis|m_aMapDescription)\b"),
 	re.compile(r"\b(?:SMultiView|m_MultiView|m_MultiViewTeam|m_MultiViewPersonalZoom|m_MultiViewShowHud|m_MultiViewActivated|m_aMultiViewId)\b"),
 	re.compile(r"\b(?:m_PredictedTick|m_LastRoundStartTick|m_LastRaceTick|m_LastFlagCarrierRed|m_LastFlagCarrierBlue|m_aLastPos|m_aLastActive|m_GameOver|m_GamePaused|m_aFlagDropTick|m_ReceivedDDNetPlayer|m_ReceivedDDNetPlayerFinishTimes|m_ReceivedDDNetPlayerFinishTimesMillis)\b"),
@@ -165,10 +201,15 @@ errors = (
 	+ check(RENDER_FILES, FORBIDDEN_RENDER)
 	+ check(CONTEXT_RENDER_FILES, FORBIDDEN_CONTEXT_RENDER)
 	+ check_function_bodies(RENDER_PURITY_FUNCTIONS, FORBIDDEN_RENDER_MUTATION)
+	+ check_function_bodies(PRESENTATION_UPDATE_FUNCTIONS, FORBIDDEN_PRESENTATION_VIEW)
+	+ check_function_bodies(PRESENTATION_UPDATE_FUNCTIONS, FORBIDDEN_PRESENTATION_EFFECT_ALPHA)
+	+ check_function_bodies(ITEMS_PRESENTATION_FUNCTIONS, FORBIDDEN_ITEMS_PRESENTATION_FOCUS)
+	+ check_function_bodies(PLAYERS_STATE_FUNCTIONS, FORBIDDEN_PLAYERS_STATE_FOCUS)
 	+ check(CAMERA_FILES, FORBIDDEN_CAMERA)
 	+ check(CONTROLS_OWNER_FILES, FORBIDDEN_CONTROLS_OWNER)
 	+ check(BROADCAST_OWNER_FILES, FORBIDDEN_BROADCAST_OWNER)
 	+ check(DAMAGE_INDICATOR_FILES, FORBIDDEN_DAMAGE_INDICATOR)
+	+ check(SCENE_RENDER_FILES, FORBIDDEN_SCENE_RENDER)
 	+ check(EFFECT_OWNER_FILES, FORBIDDEN_EFFECT_OWNER)
 	+ check(GHOST_OWNER_FILES, FORBIDDEN_GHOST_OWNER)
 	+ check(PREDICTION_ENTITY_FILES, FORBIDDEN_PREDICTION_ENTITY)

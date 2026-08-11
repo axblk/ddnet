@@ -158,9 +158,13 @@ bool CParticles::ParticleIsVisibleOnScreen(const vec2 &CurPos, float CurSize) co
 	return ScreenRect.Inside(CurPos);
 }
 
-void CParticles::RenderGroup(int Group)
+void CParticles::RenderGroup(const CRenderContext &Context, int Group)
 {
-	const CGameState::CParticleSystemState &State = GameClient()->GameState(GameClient()->ActiveConnection()).Particles();
+	const CGameState::CParticleSystemState &State = Context.m_State.Particles();
+	auto ParticleAlpha = [&Context](const CParticle &Particle, float LifeFraction) {
+		float Alpha = Particle.m_UseAlphaFading ? mix(Particle.m_StartAlpha, Particle.m_EndAlpha, LifeFraction) : Particle.m_Color.a;
+		return Alpha * Context.AlphaForOwner(Particle.m_OwnerClientId, g_Config.m_ClShowOthersAlpha / 100.0f);
+	};
 	IGraphics::CTextureHandle *aParticles = GameClient()->m_ParticlesSkin.m_aSpriteParticles;
 	int FirstParticleOffset = SPRITE_PART_SLICE;
 	int ParticleQuadContainerIndex = m_ParticleQuadContainerIndex;
@@ -186,12 +190,8 @@ void CParticles::RenderGroup(int Group)
 
 		if(i != -1)
 		{
-			float Alpha = State.m_vParticles[i].m_Color.a;
-			if(State.m_vParticles[i].m_UseAlphaFading)
-			{
-				float a = State.m_vParticles[i].m_Life / State.m_vParticles[i].m_LifeSpan;
-				Alpha = mix(State.m_vParticles[i].m_StartAlpha, State.m_vParticles[i].m_EndAlpha, a);
-			}
+			const float LifeFraction = State.m_vParticles[i].m_Life / State.m_vParticles[i].m_LifeSpan;
+			const float Alpha = ParticleAlpha(State.m_vParticles[i], LifeFraction);
 			LastColor.r = State.m_vParticles[i].m_Color.r;
 			LastColor.g = State.m_vParticles[i].m_Color.g;
 			LastColor.b = State.m_vParticles[i].m_Color.b;
@@ -212,11 +212,7 @@ void CParticles::RenderGroup(int Group)
 			float a = State.m_vParticles[i].m_Life / State.m_vParticles[i].m_LifeSpan;
 			vec2 p = State.m_vParticles[i].m_Pos;
 			float Size = mix(State.m_vParticles[i].m_StartSize, State.m_vParticles[i].m_EndSize, a);
-			float Alpha = State.m_vParticles[i].m_Color.a;
-			if(State.m_vParticles[i].m_UseAlphaFading)
-			{
-				Alpha = mix(State.m_vParticles[i].m_StartAlpha, State.m_vParticles[i].m_EndAlpha, a);
-			}
+			const float Alpha = ParticleAlpha(State.m_vParticles[i], a);
 
 			// the current position, respecting the size, is inside the viewport, render it, else ignore
 			if(ParticleIsVisibleOnScreen(p, Size))
@@ -270,11 +266,7 @@ void CParticles::RenderGroup(int Group)
 			float a = State.m_vParticles[i].m_Life / State.m_vParticles[i].m_LifeSpan;
 			vec2 p = State.m_vParticles[i].m_Pos;
 			float Size = mix(State.m_vParticles[i].m_StartSize, State.m_vParticles[i].m_EndSize, a);
-			float Alpha = State.m_vParticles[i].m_Color.a;
-			if(State.m_vParticles[i].m_UseAlphaFading)
-			{
-				Alpha = mix(State.m_vParticles[i].m_StartAlpha, State.m_vParticles[i].m_EndAlpha, a);
-			}
+			const float Alpha = ParticleAlpha(State.m_vParticles[i], a);
 
 			// the current position, respecting the size, is inside the viewport, render it, else ignore
 			if(ParticleIsVisibleOnScreen(p, Size))

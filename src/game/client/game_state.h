@@ -80,11 +80,13 @@ public:
 	int m_PrevGameTick = 0;
 	int m_GameTick = 0;
 	int m_PredGameTick = 0;
+	int m_PredictionTick = 0;
 	float m_IntraGameTick = 0.0f;
 	float m_IntraGameTickSincePrev = 0.0f;
 	float m_PredIntraGameTick = 0.0f;
 	float m_GameTickTime = 0.0f;
 	int m_GameTickSpeed = 0;
+	bool m_IsDemoPlayback = false;
 };
 
 class CGameStateId
@@ -132,6 +134,7 @@ public:
 			m_Friction = 0;
 			m_Color = ColorRGBA(1, 1, 1, 1);
 			m_Collides = true;
+			m_OwnerClientId = -1;
 		}
 
 		vec2 m_Pos;
@@ -149,6 +152,7 @@ public:
 		float m_Friction;
 		ColorRGBA m_Color;
 		bool m_Collides;
+		int m_OwnerClientId;
 		float m_Life;
 		int m_PrevPart;
 		int m_NextPart;
@@ -218,6 +222,7 @@ public:
 			float m_RemainingLife;
 			float m_StartAngle;
 			ColorRGBA m_Color;
+			int m_OwnerClientId;
 		};
 
 	private:
@@ -229,7 +234,7 @@ public:
 
 	public:
 		void Reset();
-		void Create(vec2 Pos, vec2 Dir, float Alpha, float StartAngle);
+		void Create(vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha, float StartAngle);
 		void Update(float DeltaTime);
 		void Advance(float LocalTime, float Speed);
 		int NumItems() const { return m_NumItems; }
@@ -318,10 +323,12 @@ public:
 	public:
 		bool m_Active = false;
 		bool m_HasPlayerInfo = false;
+		bool m_HasPrevPlayerInfo = false;
 		bool m_HasClientInfo = false;
 		bool m_HasCharacter = false;
 		bool m_HasPrevCharacter = false;
 		bool m_HasExtendedCharacter = false;
+		bool m_HasPrevExtendedCharacter = false;
 		bool m_HasDDNetPlayer = false;
 		bool m_HasSpecChar = false;
 		CNetObj_PlayerInfo m_PlayerInfo = {};
@@ -329,8 +336,30 @@ public:
 		CNetObj_Character m_Character = {};
 		CNetObj_Character m_PrevCharacter = {};
 		CNetObj_DDNetCharacter m_ExtendedCharacter = {};
+		int m_PrevExtendedTargetX = 0;
+		int m_PrevExtendedTargetY = 0;
 		CNetObj_DDNetPlayer m_DDNetPlayer = {};
 		CNetObj_SpecChar m_SpecChar = {};
+	};
+
+	class CRenderedClient
+	{
+	public:
+		bool m_Active = false;
+		CNetObj_Character m_Prev = {};
+		CNetObj_Character m_Cur = {};
+		vec2 m_Position = vec2(0.0f, 0.0f);
+		bool m_IsPredicted = false;
+		bool m_IsPredictedLocal = false;
+	};
+
+	class CClientPredictionHistory
+	{
+	public:
+		int64_t m_aSmoothStart[2] = {};
+		int64_t m_aSmoothLen[2] = {};
+		vec2 m_aPredPos[200] = {};
+		int m_aPredTick[200] = {};
 	};
 
 	class CPredictedClient
@@ -360,6 +389,7 @@ public:
 		int m_Id = -1;
 		int m_Type = -1;
 		std::vector<unsigned char> m_vData;
+		std::vector<unsigned char> m_vPrevData;
 		bool m_HasEntityEx = false;
 		CNetObj_EntityEx m_EntityEx = {};
 	};
@@ -373,7 +403,11 @@ private:
 	int m_PredictionTick = 0;
 	std::array<CTuningParams, TuneZone::NUM> m_aTuning;
 	std::array<CClientSnapshot, MAX_CLIENTS> m_aClients;
+	std::vector<CRenderedClient> m_vRenderedClients;
+	std::vector<CClientPredictionHistory> m_vClientPredictionHistory;
 	std::array<CPredictedClient, MAX_CLIENTS> m_aPredictedClients;
+	std::vector<CNetObj_Character> m_vSnappedCharacters;
+	std::vector<CNetObj_Character> m_vEvolvedCharacters;
 	std::array<CProtocol7ClientState, MAX_CLIENTS> m_aProtocol7Clients;
 	std::vector<CEntitySnapshot> m_vEntities;
 	bool m_HasGameInfo = false;
@@ -395,9 +429,10 @@ private:
 
 	void RebuildGameWorld();
 	void UpdateWorldConfigFromSnapshot();
+	void EvolveCharacter(CNetObj_Character &Character, int Tick);
 
 public:
-	CGameState() = default;
+	CGameState() { Reset(); }
 	CGameState(CGameStateId Id, CStreamId StreamId);
 
 	void Reset();
@@ -411,6 +446,7 @@ public:
 	void SetCoreGameInfo(const CGameInfo &GameInfo);
 	void Predict(const IClient &Client, int Conn);
 	void PredictTo(int TargetTick, const std::function<const CNetObj_PlayerInput *(int)> &InputAt);
+	void UpdateRenderedClient(int ClientId, bool UsePredicted, bool PredictedLocal, float IntraGameTick, float PredIntraGameTick);
 	void MarkPredicted(int Tick) { m_PredictionTick = Tick; }
 
 	CGameStateId Id() const { return m_Id; }
@@ -422,15 +458,23 @@ public:
 	int PredictionTick() const { return m_PredictionTick; }
 	const CTuningParams &Tuning(int TuneZone = 0) const { return m_aTuning[TuneZone]; }
 	const CClientSnapshot &Client(int ClientId) const { return m_aClients[ClientId]; }
+	CRenderedClient &RenderedClient(int ClientId) { return m_vRenderedClients[ClientId]; }
+	const CRenderedClient &RenderedClient(int ClientId) const { return m_vRenderedClients[ClientId]; }
+	CClientPredictionHistory &PredictionHistory(int ClientId) { return m_vClientPredictionHistory[ClientId]; }
+	const CClientPredictionHistory &PredictionHistory(int ClientId) const { return m_vClientPredictionHistory[ClientId]; }
 	const CNetObj_DDNetCharacter *ExtendedCharacter(int ClientId) const;
+	CPredictedClient &PredictedClient(int ClientId) { return m_aPredictedClients[ClientId]; }
 	const CPredictedClient &PredictedClient(int ClientId) const { return m_aPredictedClients[ClientId]; }
 	CProtocol7ClientState &Protocol7Client(int ClientId) { return m_aProtocol7Clients[ClientId]; }
 	const CProtocol7ClientState &Protocol7Client(int ClientId) const { return m_aProtocol7Clients[ClientId]; }
 	const CTeamsCore &Teams() const { return m_Teams; }
 	const CGameInfo &CoreGameInfo() const { return m_CoreGameInfo; }
+	CGameWorld &GameWorld() { return m_GameWorld; }
 	const CGameWorld &GameWorld() const { return m_GameWorld; }
 	const CGameWorld &PredictedWorld() const { return m_PredictedWorld; }
+	CGameWorld &PrevPredictedWorld() { return m_PrevPredictedWorld; }
 	const CGameWorld &PrevPredictedWorld() const { return m_PrevPredictedWorld; }
+	const std::vector<CEntitySnapshot> &Entities() const { return m_vEntities; }
 	CRuntimeState &Runtime() { return m_Runtime; }
 	const CRuntimeState &Runtime() const { return m_Runtime; }
 	CEffectClockState &EffectClock() { return m_EffectClock; }
@@ -447,6 +491,7 @@ public:
 	const CInputState &Input() const { return m_Runtime.m_Input; }
 	bool HasGameWorldCharacter(int ClientId) const;
 	CCharacterCore GameWorldCharacterCore(int ClientId) const;
+	bool IsOtherTeamFromLocalPlayer(int ClientId) const;
 	uint64_t SnapshotDigest() const;
 	uint64_t PredictionDigest() const;
 	bool HasGameInfo() const { return m_HasGameInfo; }

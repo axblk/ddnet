@@ -2673,6 +2673,8 @@ if(CLIENT)
     session_context.h
     session_game_config.cpp
     session_game_config.h
+    session_presentation.cpp
+    session_presentation.h
     sixup_translate_connless.cpp
     sixup_translate_game.cpp
     sixup_translate_snapshot.cpp

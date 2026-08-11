@@ -229,7 +229,7 @@ CProjectileData CProjectile::GetData() const
 	return Result;
 }
 
-bool CProjectile::Match(CProjectile *pProj)
+bool CProjectile::Match(const CProjectile *pProj) const
 {
 	if(pProj->m_Type != m_Type)
 		return false;

@@ -65,6 +65,7 @@
 #include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
 #include <engine/shared/csv.h>
+#include <engine/shared/video.h>
 #include <engine/sound.h>
 #include <engine/storage.h>
 #include <engine/textrender.h>
@@ -89,6 +90,11 @@ using namespace std::chrono_literals;
 
 namespace
 {
+	bool UsePredictedEnvelopeTime(const CGameTickInfo &Time, const CGameView &View)
+	{
+		return !Time.m_IsDemoPlayback && g_Config.m_ClPredict && (!View.IsSpectating() || View.SpectatorId() == SPEC_FREEVIEW);
+	}
+
 	class CScreenRenderOutput final : public CRenderOutput
 	{
 		IGraphics &m_Graphics;
@@ -151,6 +157,20 @@ const CGameSessionContext &CGameClient::SessionContext() const
 	const CGameSessionContext *pContext = m_SessionContexts.Find(Client()->FocusedSessionId());
 	dbg_assert(pContext != nullptr, "missing focused game session context");
 	return *pContext;
+}
+
+CSessionPresentation &CGameClient::SessionPresentation(CSessionId SessionId)
+{
+	CSessionPresentation *pPresentation = m_SessionPresentations.Find(SessionId);
+	dbg_assert(pPresentation != nullptr, "missing session presentation");
+	return *pPresentation;
+}
+
+const CSessionPresentation &CGameClient::SessionPresentation(CSessionId SessionId) const
+{
+	const CSessionPresentation *pPresentation = m_SessionPresentations.Find(SessionId);
+	dbg_assert(pPresentation != nullptr, "missing session presentation");
+	return *pPresentation;
 }
 
 CGameState &CGameClient::GameState(int Conn)
@@ -222,16 +242,13 @@ void CGameClient::OnConsoleInit()
 					      &m_Voting,
 					      &m_Particles, // initialized as a component and updated explicitly
 					      &m_RaceDemo,
-					      &m_MapSounds,
 					      &m_Censor,
-					      &m_Background, // render instead of m_MapLayersBackground when g_Config.m_ClOverlayEntities == 100
-					      &m_MapLayersBackground, // first to render
+					      &m_Background,
 					      &m_Particles.m_RenderTrail,
 					      &m_Particles.m_RenderTrailExtra,
 					      &m_Items,
 					      &m_Ghost,
 					      &m_Players,
-					      &m_MapLayersForeground,
 					      &m_Particles.m_RenderExplosions,
 					      &m_NamePlates,
 					      &m_Particles.m_RenderExtra,
@@ -291,6 +308,9 @@ void CGameClient::OnConsoleInit()
 
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnInterfacesInit(this);
+	m_SessionPresentations.OnInterfacesInit(this);
+	for(const auto &pContext : m_SessionContexts.Contexts())
+		dbg_assert(m_SessionPresentations.Create(pContext->Id()) != nullptr, "failed to create session presentation");
 
 	m_LocalServer.OnInterfacesInit(this);
 
@@ -718,6 +738,10 @@ void CGameClient::OnConnected()
 	m_GameWorld.m_Core.InitSwitchers(Collision()->m_HighestSwitchNumber);
 	m_GameWorld.m_PredictedEvents.clear();
 	m_RaceHelper.Init(this);
+	SessionContext().SetDescriptor(Map()->BaseName(), Client()->IsSixup() ? EGameProtocol::SIXUP : EGameProtocol::SIX);
+	SessionPresentation(SessionContext().Id()).Load(SessionContext());
+	// The compatibility connect path is focused and audible before its first snapshot arrives.
+	m_SessionPresentations.SetAudible(SessionContext().Id());
 
 	// render loading before going through all components
 	m_Menus.RenderLoading(pConnectCaption, pLoadMapContent, 0);
@@ -728,7 +752,6 @@ void CGameClient::OnConnected()
 	}
 
 	MapContext().Load(*Config());
-	SessionContext().SetDescriptor(Map()->BaseName(), Client()->IsSixup() ? EGameProtocol::SIXUP : EGameProtocol::SIX);
 	for(const auto &pGameState : SessionContext().GameStates().States())
 		pGameState->InitPrediction(MapContext());
 
@@ -808,12 +831,12 @@ void CGameClient::OnReset()
 
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnReset();
+	m_SessionPresentations.Unload(SessionContext().Id());
 
 	Editor()->ResetMentions();
 	Editor()->ResetIngameMoved();
 
-	for(const auto &pContext : m_SessionContexts.Contexts())
-		pContext->MapContext().Unload();
+	MapContext().Unload();
 }
 
 void CGameClient::UpdatePositions(const CGameState &State)
@@ -873,8 +896,17 @@ void CGameClient::OnRender()
 	GameTickInfo.m_PredIntraGameTick = Client()->PredIntraGameTick(ActiveConn);
 	GameTickInfo.m_GameTickTime = Client()->GameTickTime(ActiveConn);
 	GameTickInfo.m_GameTickSpeed = Client()->GameTickSpeed();
+	GameTickInfo.m_PresentationTime = time_get();
+	GameTickInfo.m_PresentationTimeFrequency = time_freq();
+	GameTickInfo.m_AnimationPlaybackSpeed = GetAnimationPlaybackSpeed();
+	GameTickInfo.m_IsGameActive = Client()->State() == IClient::STATE_ONLINE || Client()->State() == IClient::STATE_DEMOPLAYBACK;
 	GameTickInfo.m_IsDemoPlayback = Client()->IsDemoPlayback();
-	const EPresentationPlayback Playback = GetAnimationPlaybackSpeed() > 0.0f ? EPresentationPlayback::PLAYING : EPresentationPlayback::PAUSED;
+	GameTickInfo.m_IsDemoPlaybackPaused = IsDemoPlaybackPaused();
+#if defined(CONF_VIDEORECORDER)
+	if(IVideo::Current())
+		GameTickInfo.m_PresentationTime = IVideo::Current()->Time();
+#endif
+	const EPresentationPlayback Playback = GameTickInfo.m_AnimationPlaybackSpeed > 0.0f ? EPresentationPlayback::PLAYING : EPresentationPlayback::PAUSED;
 	UpdateRenderedClients(ActiveSession, ActiveState, ActiveConn, GameTickInfo, Playback);
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
 
@@ -922,33 +954,96 @@ void CGameClient::OnRender()
 	const float ViewAspect = Viewport.m_Width > 0 && Viewport.m_Height > 0 ? Viewport.m_Width / (float)Viewport.m_Height : Graphics()->ScreenAspect();
 	const CScreenRect PresentationScreenRect = Graphics()->MapScreenToWorld(
 		View.CameraPosition().x, View.CameraPosition().y, 100.0f, 100.0f, 100.0f, 0.0f, 0.0f, ViewAspect, View.Zoom());
+	const CVisibleWorldRect VisibleWorldRect(PresentationScreenRect.m_TopLeft, PresentationScreenRect.m_BottomRight);
 	CScreenRenderOutput ScreenOutput(*Graphics(), ClearColor);
 	const std::array aRenderRequests = {CGameRenderRequest(
 		ActiveSession,
 		ActiveState,
 		View,
 		GameTickInfo,
-		CVisibleWorldRect(PresentationScreenRect.m_TopLeft, PresentationScreenRect.m_BottomRight),
+		VisibleWorldRect,
 		Playback,
 		EPresentationAudio::AUDIBLE,
 		ScreenOutput)};
+	const CGameRenderRequest *pAudibleRequest = FindAudibleRenderRequest(aRenderRequests);
+	m_Sounds.Update(pAudibleRequest != nullptr ? std::optional(pAudibleRequest->m_View.CameraPosition()) : std::nullopt);
+	if(pAudibleRequest != nullptr)
+	{
+		m_SessionPresentations.SetAudible(pAudibleRequest->m_Session.Id());
+		SessionPresentation(pAudibleRequest->m_Session.Id()).UpdateMapSounds(pAudibleRequest->m_State, pAudibleRequest->m_Time, pAudibleRequest->m_View.CameraPosition(), UsePredictedEnvelopeTime(pAudibleRequest->m_Time, pAudibleRequest->m_View));
+	}
+	else
+	{
+		m_SessionPresentations.SetAudible(CSessionId());
+	}
 	CGameRenderScheduler Scheduler;
 	Scheduler.Run(
 		aRenderRequests,
 		[this](const CPresentationContext &Context) {
-			m_Effects.Update(Context.m_State, Context.m_Time.m_GameTickTime, Context.m_Time.m_PredIntraGameTick);
-			m_Particles.Update(Context.m_State);
-			m_DamageInd.Update(Context.m_State);
+			m_Effects.Update(Context);
+			m_Particles.Update(Context);
+			m_DamageInd.Update(Context);
 			m_Items.UpdatePresentation(Context);
 			m_Ghost.UpdatePresentation(Context);
 			m_Players.UpdatePresentation(Context);
 		},
 		[this](const CRenderContext &Context, CRenderOutput &Output) {
+			const bool UsePredictedTime = UsePredictedEnvelopeTime(Context.m_Time, Context.m_View);
+			CSessionPresentation &Presentation = SessionPresentation(Context.m_Session.Id());
+			if(Context.m_Time.m_IsGameActive)
+				Presentation.PrepareRender(Context, UsePredictedTime);
+			if(!m_Background.UsesCurrentMap())
+				m_Background.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
+			const std::array<CComponent *, 13> apWorldComponents = {
+				&Presentation.MapLayersBackground(),
+				&m_Particles.m_RenderTrail,
+				&m_Particles.m_RenderTrailExtra,
+				&m_Items,
+				&m_Ghost,
+				&m_Players,
+				&Presentation.MapLayersForeground(),
+				&m_Particles.m_RenderExplosions,
+				&m_NamePlates,
+				&m_Particles.m_RenderExtra,
+				&m_Particles.m_RenderGeneral,
+				&m_FreezeBars,
+				&m_DamageInd,
+			};
 			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
-			for(auto &pComponent : m_vpAll)
+			if(g_Config.m_ClOverlayEntities == 100)
+			{
+				if(m_Background.UsesCurrentMap())
+					Presentation.MapLayersBackgroundForce().OnRender(Context);
+				else
+					m_Background.OnRender(Context);
+			}
+			for(CComponent *pComponent : apWorldComponents)
 				pComponent->OnRender(Context);
 			Output.EndView();
 		});
+
+	const CRenderContext CompatibilityContext(ActiveSession, ActiveState, View, GameTickInfo, VisibleWorldRect);
+	const std::array<CComponent *, 15> apCompatibilityOverlays = {
+		&m_Hud,
+		&m_Spectator,
+		&m_Emoticon,
+		&m_InfoMessages,
+		&m_Chat,
+		&m_Broadcast,
+		&m_ImportantAlert,
+		&m_DebugHud,
+		&m_TouchControls,
+		&m_Scoreboard,
+		&m_Statboard,
+		&m_Motd,
+		&m_Menus,
+		&m_Tooltips,
+		&m_GameConsole,
+	};
+	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
+	for(CComponent *pComponent : apCompatibilityOverlays)
+		pComponent->OnRender(CompatibilityContext);
+	ScreenOutput.EndView();
 
 	// clear all events/input for this frame
 	Input()->Clear();
@@ -1203,7 +1298,7 @@ void CGameClient::OnRelease()
 		pComponent->OnRelease();
 }
 
-void CGameClient::OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dummy)
+void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn, bool Dummy)
 {
 	// special messages
 	static_assert((int)NETMSGTYPE_SV_TUNEPARAMS == (int)protocol7::NETMSGTYPE_SV_TUNEPARAMS, "0.6 and 0.7 tune message id do not match");
@@ -1480,7 +1575,7 @@ void CGameClient::OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dumm
 			return;
 
 		CNetMsg_Sv_MapSoundGlobal *pMsg = (CNetMsg_Sv_MapSoundGlobal *)pRawMsg;
-		m_MapSounds.Play(CSounds::CHN_GLOBAL, pMsg->m_SoundId);
+		SessionPresentation(SessionId).MapSounds().Play(CSounds::CHN_GLOBAL, pMsg->m_SoundId);
 	}
 	else if(MsgId == NETMSGTYPE_SV_PREINPUT)
 	{
@@ -1519,6 +1614,7 @@ void CGameClient::OnShutdown()
 {
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnShutdown();
+	m_SessionPresentations.UnloadAll();
 
 	m_LocalServer.KillServer();
 }
@@ -1644,7 +1740,7 @@ void CGameClient::OnRconLine(const char *pLine)
 	m_GameConsole.PrintLine(CGameConsole::CONSOLETYPE_REMOTE, pLine);
 }
 
-void CGameClient::ProcessEvents()
+void CGameClient::ProcessEvents(CSessionId SessionId)
 {
 	if(m_SuppressEvents)
 		return;
@@ -1732,7 +1828,7 @@ void CGameClient::ProcessEvents()
 			if(!Config()->m_SndGame)
 				continue;
 
-			m_MapSounds.PlayAt(CSounds::CHN_WORLD, pEvent->m_SoundId, vec2(pEvent->m_X, pEvent->m_Y));
+			SessionPresentation(SessionId).MapSounds().PlayAt(CSounds::CHN_WORLD, pEvent->m_SoundId, vec2(pEvent->m_X, pEvent->m_Y));
 		}
 	}
 }
@@ -1928,7 +2024,7 @@ void CGameClient::InvalidateSnapshot()
 	SnapCollectEntities();
 }
 
-void CGameClient::OnNewSnapshot(int Conn)
+void CGameClient::OnNewSnapshot(CSessionId SessionId, int Conn)
 {
 	CGameInfo GameInfo = GetGameInfo(nullptr, 0, &Client()->ServerInfo());
 	const int NumItems = Client()->SnapNumItems(Conn, IClient::SNAP_CURRENT);
@@ -1941,14 +2037,18 @@ void CGameClient::OnNewSnapshot(int Conn)
 			break;
 		}
 	}
-	CGameState &State = GameState(Conn);
+	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
+	dbg_assert(pSession != nullptr, "missing snapshot session context");
+	CGameState *pState = pSession->GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pState != nullptr, "missing snapshot game state");
+	CGameState &State = *pState;
 	State.SetCoreGameInfo(GameInfo);
 	State.ApplySnapshot(*Client(), Conn);
-	if(Conn == Client()->ActiveConnection())
-		ProcessSnapshot();
+	if(SessionId == Client()->FocusedSessionId() && Conn == Client()->ActiveConnection())
+		ProcessSnapshot(SessionId);
 }
 
-void CGameClient::ProcessSnapshot()
+void CGameClient::ProcessSnapshot(CSessionId SessionId)
 {
 	const int ActiveConn = Client()->ActiveConnection();
 	CGameState &ActiveState = GameState(ActiveConn);
@@ -1976,7 +2076,7 @@ void CGameClient::ProcessSnapshot()
 
 	m_NewTick = true;
 
-	ProcessEvents();
+	ProcessEvents(SessionId);
 
 	if(g_Config.m_DbgStress)
 	{

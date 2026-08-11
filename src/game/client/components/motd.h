@@ -16,8 +16,12 @@ class CMotd : public CComponent
 	STextContainerIndex m_TextContainerIndex;
 	CSessionId m_RenderedSessionId;
 	uint64_t m_RenderedRevision = 0;
+	uint64_t m_RenderedViewId = 0;
+	int m_RenderedViewportWidth = 0;
+	int m_RenderedViewportHeight = 0;
 
 	void InvalidateRenderCache();
+	bool IsActive(const CRenderContext &Context) const;
 
 public:
 	int Sizeof() const override { return sizeof(*this); }
@@ -29,7 +33,7 @@ public:
 	bool IsActive() const;
 
 	void OnUpdate() override;
-	void OnRender() override;
+	void OnRender(const CRenderContext &Context) override;
 	void OnStateChange(int NewState, int OldState) override;
 	void OnWindowResize() override;
 	bool OnInput(const IInput::CEvent &Event) override;

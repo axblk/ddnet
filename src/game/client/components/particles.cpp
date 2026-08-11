@@ -4,14 +4,14 @@
 
 #include <base/dbg.h>
 #include <base/math.h>
-#include <base/time.h>
 
-#include <engine/demo.h>
 #include <engine/graphics.h>
 
 #include <generated/client_data.h>
 
+#include <game/client/game_view.h>
 #include <game/client/gameclient.h>
+#include <game/collision.h>
 
 CParticles::CParticles()
 {
@@ -30,7 +30,7 @@ void CParticles::Add(CGameState &State, int Group, const CParticle &Particle, fl
 	State.Particles().Add(Group, Particle, TimePassed);
 }
 
-void CParticles::UpdatePhysics(CGameState::CParticleSystemState &State, float TimePassed)
+void CParticles::UpdatePhysics(CGameState::CParticleSystemState &State, const CCollision &Collision, float TimePassed)
 {
 	if(TimePassed <= 0.0f)
 		return;
@@ -67,7 +67,7 @@ void CParticles::UpdatePhysics(CGameState::CParticleSystemState &State, float Ti
 			vec2 Vel = State.m_vParticles[i].m_Vel * TimePassed;
 			if(State.m_vParticles[i].m_Collides)
 			{
-				Collision()->MovePoint(&State.m_vParticles[i].m_Pos, &Vel, random_float(0.1f, 1.0f), nullptr);
+				Collision.MovePoint(&State.m_vParticles[i].m_Pos, &Vel, random_float(0.1f, 1.0f), nullptr);
 			}
 			else
 			{
@@ -104,17 +104,19 @@ void CParticles::UpdatePhysics(CGameState::CParticleSystemState &State, float Ti
 	}
 }
 
-void CParticles::Update(CGameState &GameState)
+void CParticles::Update(const CPresentationContext &Context)
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(!Context.m_Time.m_IsGameActive)
 		return;
 
-	set_new_tick();
-	CGameState::CParticleSystemState &State = GameState.Particles();
-	const int64_t Now = time();
-	if(State.m_TimeInitialized)
-		UpdatePhysics(State, (float)((Now - State.m_LastRenderTime) / (double)time_freq()) * GameClient()->GetAnimationPlaybackSpeed());
-	State.m_LastRenderTime = Now;
+	CGameState::CParticleSystemState &State = Context.m_State.Particles();
+	const CGameTickInfo &Time = Context.m_Time;
+	if(State.m_TimeInitialized && Time.m_PresentationTime >= State.m_LastRenderTime && Time.m_PresentationTimeFrequency > 0)
+	{
+		const float TimePassed = (float)((Time.m_PresentationTime - State.m_LastRenderTime) / (double)Time.m_PresentationTimeFrequency) * Time.m_AnimationPlaybackSpeed;
+		UpdatePhysics(State, *Context.m_Session.MapContext().Collision(), TimePassed);
+	}
+	State.m_LastRenderTime = Time.m_PresentationTime;
 	State.m_TimeInitialized = true;
 }
 
@@ -143,9 +145,9 @@ void CParticles::OnInit()
 	Graphics()->QuadContainerUpload(m_ExtraParticleQuadContainerIndex);
 }
 
-bool CParticles::ParticleIsVisibleOnScreen(const vec2 &CurPos, float CurSize) const
+bool CParticles::ParticleIsVisibleOnScreen(const CRenderContext &Context, const vec2 &CurPos, float CurSize) const
 {
-	CScreenRect ScreenRect = Graphics()->GetScreen();
+	CScreenRect ScreenRect(Context.m_VisibleWorldRect.m_TopLeft, Context.m_VisibleWorldRect.m_BottomRight);
 
 	// for simplicity assume the worst case rotation, that increases the bounding box around the particle by its diagonal
 	const float SqrtOf2 = std::sqrt(2);
@@ -215,7 +217,7 @@ void CParticles::RenderGroup(const CRenderContext &Context, int Group)
 			const float Alpha = ParticleAlpha(State.m_vParticles[i], a);
 
 			// the current position, respecting the size, is inside the viewport, render it, else ignore
-			if(ParticleIsVisibleOnScreen(p, Size))
+			if(ParticleIsVisibleOnScreen(Context, p, Size))
 			{
 				if((size_t)CurParticleRenderCount == GRAPHICS_MAX_PARTICLES_RENDER_COUNT || LastColor.r != State.m_vParticles[i].m_Color.r || LastColor.g != State.m_vParticles[i].m_Color.g || LastColor.b != State.m_vParticles[i].m_Color.b || LastColor.a != Alpha || LastQuadOffset != QuadOffset)
 				{
@@ -269,7 +271,7 @@ void CParticles::RenderGroup(const CRenderContext &Context, int Group)
 			const float Alpha = ParticleAlpha(State.m_vParticles[i], a);
 
 			// the current position, respecting the size, is inside the viewport, render it, else ignore
-			if(ParticleIsVisibleOnScreen(p, Size))
+			if(ParticleIsVisibleOnScreen(Context, p, Size))
 			{
 				Graphics()->TextureSet(aParticles[State.m_vParticles[i].m_Spr - FirstParticleOffset]);
 				Graphics()->QuadsBegin();

@@ -95,7 +95,7 @@ bool CItems::GetProjectileRenderInfo(const CGameState &State, const CGameTickInf
 	return true;
 }
 
-void CItems::RenderProjectile(const CRenderContext &Context, const CProjectileData *pCurrent, int ItemId, const CScreenRect &ScreenRect)
+void CItems::RenderProjectile(const CRenderContext &Context, const CProjectileData *pCurrent, int ItemId, const CScreenRect &ScreenRect, bool PredictProjectiles)
 {
 	int CurWeapon;
 	vec2 Pos;
@@ -103,7 +103,7 @@ void CItems::RenderProjectile(const CRenderContext &Context, const CProjectileDa
 	float Alpha;
 	const bool IsOtherTeam = pCurrent->m_ExtraInfo && pCurrent->m_Owner >= 0 && Context.IsOtherTeam(pCurrent->m_Owner);
 	const CVisibleWorldRect VisibleWorldRect(ScreenRect.m_TopLeft, ScreenRect.m_BottomRight);
-	if(!GetProjectileRenderInfo(Context.m_State, Context.m_Time, GameClient()->Predict() && GameClient()->AntiPingGrenade(), IsOtherTeam, pCurrent, std::span<const CVisibleWorldRect>(&VisibleWorldRect, 1), vec2(0.0f, 0.0f), CurWeapon, Pos, Vel, Alpha))
+	if(!GetProjectileRenderInfo(Context.m_State, Context.m_Time, PredictProjectiles, IsOtherTeam, pCurrent, std::span<const CVisibleWorldRect>(&VisibleWorldRect, 1), vec2(0.0f, 0.0f), CurWeapon, Pos, Vel, Alpha))
 		return;
 
 	if(CurWeapon == WEAPON_GRENADE)
@@ -206,10 +206,25 @@ void CItems::RenderPickup(const CRenderContext &Context, const CNetObj_Pickup *p
 
 void CItems::RenderFlags(const CRenderContext &Context)
 {
-	for(int Flag = 0; Flag < GameClient()->m_Snap.m_NumFlags; ++Flag)
+	const CGameState::CEntitySnapshot *pGameData = nullptr;
+	for(const CGameState::CEntitySnapshot &Entity : Context.m_State.Entities())
 	{
-		RenderFlag(Context, GameClient()->m_Snap.m_apPrevFlags[Flag], GameClient()->m_Snap.m_apFlags[Flag],
-			GameClient()->m_Snap.m_pPrevGameDataObj, GameClient()->m_Snap.m_pGameDataObj);
+		if(Entity.m_Type == NETOBJTYPE_GAMEDATA)
+		{
+			pGameData = &Entity;
+			break;
+		}
+	}
+	for(const CGameState::CEntitySnapshot &Entity : Context.m_State.Entities())
+	{
+		if(Entity.m_Type != NETOBJTYPE_FLAG || Entity.m_vPrevData.empty())
+			continue;
+		RenderFlag(
+			Context,
+			reinterpret_cast<const CNetObj_Flag *>(Entity.m_vPrevData.data()),
+			reinterpret_cast<const CNetObj_Flag *>(Entity.m_vData.data()),
+			pGameData && !pGameData->m_vPrevData.empty() ? reinterpret_cast<const CNetObj_GameData *>(pGameData->m_vPrevData.data()) : nullptr,
+			pGameData ? reinterpret_cast<const CNetObj_GameData *>(pGameData->m_vData.data()) : nullptr);
 	}
 }
 
@@ -247,7 +262,7 @@ void CItems::RenderFlag(const CRenderContext &Context, const CNetObj_Flag *pPrev
 	Graphics()->RenderQuadContainerAsSprite(m_ItemsQuadContainerIndex, QuadOffset, Pos.x, Pos.y - Size * 0.75f);
 }
 
-void CItems::RenderLaser(const CLaserData *pCurrent, bool IsPredicted)
+void CItems::RenderLaser(const CRenderContext &Context, const CLaserData *pCurrent, bool IsPredicted)
 {
 	int Type = std::clamp(pCurrent->m_Type, -1, NUM_LASERTYPES - 1);
 	int ColorIn, ColorOut;
@@ -291,7 +306,7 @@ void CItems::RenderLaser(const CLaserData *pCurrent, bool IsPredicted)
 		ColorIn = g_Config.m_ClLaserRifleInnerColor;
 	}
 
-	bool IsOtherTeam = (pCurrent->m_ExtraInfo && pCurrent->m_Owner >= 0 && GameClient()->IsOtherTeam(pCurrent->m_Owner));
+	bool IsOtherTeam = pCurrent->m_ExtraInfo && pCurrent->m_Owner >= 0 && Context.IsOtherTeam(pCurrent->m_Owner);
 
 	float Alpha = IsOtherTeam ? g_Config.m_ClShowOthersAlpha / 100.0f : 1.f;
 
@@ -299,21 +314,20 @@ void CItems::RenderLaser(const CLaserData *pCurrent, bool IsPredicted)
 	const ColorRGBA InnerColor = color_cast<ColorRGBA>(ColorHSLA(ColorIn).WithAlpha(Alpha));
 
 	float Ticks;
-	float TicksHead = Client()->GameTick(GameClient()->ActiveConnection());
+	float TicksHead = Context.m_Time.m_GameTick;
 	if(Type == LASERTYPE_DOOR)
 	{
 		Ticks = 1.0f;
 	}
 	else if(IsPredicted)
 	{
-		int PredictionTick = Client()->GetPredictionTick();
-		Ticks = (float)(PredictionTick - pCurrent->m_StartTick) + Client()->PredIntraGameTick(GameClient()->ActiveConnection());
-		TicksHead += Client()->PredIntraGameTick(GameClient()->ActiveConnection());
+		Ticks = (float)(Context.m_Time.m_PredictionTick - pCurrent->m_StartTick) + Context.m_Time.m_PredIntraGameTick;
+		TicksHead += Context.m_Time.m_PredIntraGameTick;
 	}
 	else
 	{
-		Ticks = (float)(Client()->GameTick(GameClient()->ActiveConnection()) - pCurrent->m_StartTick) + Client()->IntraGameTick(GameClient()->ActiveConnection());
-		TicksHead += Client()->IntraGameTick(GameClient()->ActiveConnection());
+		Ticks = (float)(Context.m_Time.m_GameTick - pCurrent->m_StartTick) + Context.m_Time.m_IntraGameTick;
+		TicksHead += Context.m_Time.m_IntraGameTick;
 	}
 
 	if(Type == LASERTYPE_DRAGGER)
@@ -321,10 +335,21 @@ void CItems::RenderLaser(const CLaserData *pCurrent, bool IsPredicted)
 		TicksHead *= (((pCurrent->m_Subtype >> 1) % 3) * 4.0f) + 1;
 		TicksHead *= (pCurrent->m_Subtype & 1) ? -1 : 1;
 	}
-	RenderLaser(pCurrent->m_From, pCurrent->m_To, OuterColor, InnerColor, Ticks, TicksHead, Type);
+	int TuneZone = 0;
+	if((Type == LASERTYPE_RIFLE || Type == LASERTYPE_SHOTGUN) && !Context.m_Time.m_IsDemoPlayback && Context.m_State.GameWorld().m_WorldConfig.m_UseTuneZones)
+	{
+		const CCollision *pCollision = Context.m_Session.MapContext().Collision();
+		TuneZone = pCollision->IsTune(pCollision->GetMapIndex(pCurrent->m_From));
+	}
+	RenderLaser(pCurrent->m_From, pCurrent->m_To, OuterColor, InnerColor, Ticks, TicksHead, Type, Context.m_State.Tuning(TuneZone).m_LaserBounceDelay, Context.m_Time.m_GameTickSpeed);
 }
 
 void CItems::RenderLaser(vec2 From, vec2 Pos, ColorRGBA OuterColor, ColorRGBA InnerColor, float TicksBody, float TicksHead, int Type) const
+{
+	RenderLaser(From, Pos, OuterColor, InnerColor, TicksBody, TicksHead, Type, CTuningParams::DEFAULT.m_LaserBounceDelay, SERVER_TICK_SPEED);
+}
+
+void CItems::RenderLaser(vec2 From, vec2 Pos, ColorRGBA OuterColor, ColorRGBA InnerColor, float TicksBody, float TicksHead, int Type, float LaserBounceDelay, int GameTickSpeed) const
 {
 	float Len = distance(Pos, From);
 
@@ -338,12 +363,11 @@ void CItems::RenderLaser(vec2 From, vec2 Pos, ColorRGBA OuterColor, ColorRGBA In
 		}
 		vec2 Dir = normalize_pre_length(Pos - From, Len);
 
-		float Ms = TicksBody * 1000.0f / Client()->GameTickSpeed();
+		float Ms = TicksBody * 1000.0f / GameTickSpeed;
 		float a;
 		if(Type == LASERTYPE_RIFLE || Type == LASERTYPE_SHOTGUN)
 		{
-			int TuneZone = (Client()->State() == IClient::STATE_ONLINE && GameClient()->m_GameWorld.m_WorldConfig.m_UseTuneZones) ? Collision()->IsTune(Collision()->GetMapIndex(From)) : 0;
-			a = Ms / GameClient()->GetTuning(TuneZone)->m_LaserBounceDelay;
+			a = Ms / LaserBounceDelay;
 		}
 		else
 		{
@@ -455,7 +479,8 @@ void CItems::UpdatePresentation(const CPresentationContext &Context)
 	const bool BlinkingProjEx = (Ticks % 6) < 2;
 	const int SwitcherTeam = State.Runtime().m_SwitchStateTeam >= 0 ? State.Runtime().m_SwitchStateTeam : in_range(LocalClientId, MAX_CLIENTS - 1) ? State.Teams().Team(LocalClientId) :
 																			 0;
-	const bool UsePredicted = in_range(LocalClientId, MAX_CLIENTS - 1) && State.PredictedClient(LocalClientId).m_HasCurrent && g_Config.m_ClPredict && !Context.m_Time.m_IsDemoPlayback && g_Config.m_ClAntiPing && g_Config.m_ClAntiPingGrenade && g_Config.m_ClAntiPingWeapons && g_Config.m_ClAntiPingGunfire;
+	const bool WorldPaused = State.HasGameInfo() && (State.GameInfo().m_GameStateFlags & (GAMESTATEFLAG_GAMEOVER | GAMESTATEFLAG_PAUSED)) != 0;
+	const bool UsePredicted = in_range(LocalClientId, MAX_CLIENTS - 1) && State.PredictedClient(LocalClientId).m_HasCurrent && g_Config.m_ClPredict && !WorldPaused && !Context.m_Time.m_IsDemoPlayback && g_Config.m_ClAntiPing && g_Config.m_ClAntiPingGrenade && g_Config.m_ClAntiPingWeapons && g_Config.m_ClAntiPingGunfire;
 	CGameWorld &GameWorld = State.GameWorld();
 	CGameWorld &PrevPredictedWorld = State.PrevPredictedWorld();
 	const auto &aSwitchers = GameWorld.m_Core.m_vSwitchers;
@@ -527,7 +552,7 @@ void CItems::UpdatePresentation(const CPresentationContext &Context)
 
 			if(UsePredicted)
 			{
-				if(auto *pProj = (CProjectile *)GameWorld.FindMatch(Entity.m_Id, Entity.m_Type, pData))
+				if(auto *pProj = static_cast<CProjectile *>(GameWorld.FindMatch(Entity.m_Id, Entity.m_Type, pData)))
 				{
 					const bool IsOtherTeam = Context.IsOtherTeamFromLocalPlayer(pProj->GetOwner());
 					if(pProj->m_LastPresentationTick <= 0 && (pProj->m_Type != WEAPON_SHOTGUN || (!pProj->m_Freeze && !pProj->m_Explosive)) // skip ddrace shotgun bullets
@@ -554,7 +579,7 @@ void CItems::UpdatePresentation(const CPresentationContext &Context)
 				continue;
 			if(UsePredicted)
 			{
-				auto *pPickup = (CPickup *)GameWorld.FindMatch(Entity.m_Id, Entity.m_Type, pData);
+				auto *pPickup = static_cast<CPickup *>(GameWorld.FindMatch(Entity.m_Id, Entity.m_Type, pData));
 				if(pPickup && pPickup->InDDNetTile())
 					continue;
 			}
@@ -566,25 +591,35 @@ void CItems::UpdatePresentation(const CPresentationContext &Context)
 
 void CItems::OnRender(const CRenderContext &Context)
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
-		return;
-
-	bool IsSuper = GameClient()->IsLocalCharSuper();
-	int Ticks = Client()->GameTick(GameClient()->ActiveConnection()) % Client()->GameTickSpeed();
+	const CGameState &State = Context.m_State;
+	const int LocalClientId = State.LocalClientId();
+	const CNetObj_DDNetCharacter *pLocalExtended = State.ExtendedCharacter(LocalClientId);
+	const bool IsSuper = pLocalExtended != nullptr && (pLocalExtended->m_Flags & CHARACTERFLAG_SUPER) != 0;
+	int Ticks = Context.m_Time.m_GameTick % Context.m_Time.m_GameTickSpeed;
 	bool BlinkingPickup = (Ticks % 22) < 4;
 	bool BlinkingGun = (Ticks % 22) < 4;
 	bool BlinkingDragger = (Ticks % 22) < 4;
 	bool BlinkingProj = (Ticks % 20) < 2;
 	bool BlinkingProjEx = (Ticks % 6) < 2;
 	bool BlinkingLight = (Ticks % 6) < 2;
-	int SwitcherTeam = GameClient()->SwitchStateTeam();
-	int DraggerStartTick = std::max((Client()->GameTick(GameClient()->ActiveConnection()) / 7) * 7, Client()->GameTick(GameClient()->ActiveConnection()) - 4);
-	int GunStartTick = (Client()->GameTick(GameClient()->ActiveConnection()) / 7) * 7;
+	int SwitcherTeam = State.Runtime().m_SwitchStateTeam;
+	if(SwitcherTeam < 0)
+	{
+		const int TeamClientId = Context.m_View.IsSpectating() && in_range(Context.m_View.SpectatorId(), MAX_CLIENTS - 1) ? Context.m_View.SpectatorId() : LocalClientId;
+		SwitcherTeam = in_range(TeamClientId, MAX_CLIENTS - 1) ? State.Teams().Team(TeamClientId) : 0;
+	}
+	int DraggerStartTick = std::max((Context.m_Time.m_GameTick / 7) * 7, Context.m_Time.m_GameTick - 4);
+	int GunStartTick = (Context.m_Time.m_GameTick / 7) * 7;
 
-	bool UsePredicted = GameClient()->Predict() && GameClient()->AntiPingGunfire();
-	auto &aSwitchers = GameClient()->Switchers();
+	const bool WorldPaused = State.HasGameInfo() && (State.GameInfo().m_GameStateFlags & (GAMESTATEFLAG_GAMEOVER | GAMESTATEFLAG_PAUSED)) != 0;
+	const bool Predict = g_Config.m_ClPredict && !WorldPaused && !Context.m_Time.m_IsDemoPlayback && !Context.m_View.IsSpectating() && in_range(LocalClientId, MAX_CLIENTS - 1) && State.Client(LocalClientId).m_HasCharacter;
+	const bool PredictProjectiles = Predict && g_Config.m_ClAntiPing && g_Config.m_ClAntiPingGrenade;
+	const bool UsePredicted = PredictProjectiles && g_Config.m_ClAntiPingWeapons && g_Config.m_ClAntiPingGunfire;
+	const CGameWorld &GameWorld = State.GameWorld();
+	const CGameWorld &PrevPredictedWorld = State.PrevPredictedWorld();
+	const auto &aSwitchers = GameWorld.m_Core.m_vSwitchers;
 
-	CScreenRect ScreenRectLaser = Graphics()->GetScreen();
+	CScreenRect ScreenRectLaser(Context.m_VisibleWorldRect.m_TopLeft, Context.m_VisibleWorldRect.m_BottomRight);
 	CScreenRect ScreenRectProjectile = ScreenRectLaser;
 	CScreenRect ScreenRectPickup = ScreenRectLaser;
 
@@ -602,32 +637,34 @@ void CItems::OnRender(const CRenderContext &Context)
 
 	if(UsePredicted)
 	{
-		for(auto *pProj = (CProjectile *)GameClient()->m_PrevPredictedWorld.FindFirst(CGameWorld::ENTTYPE_PROJECTILE); pProj; pProj = (CProjectile *)pProj->NextEntity())
+		for(const CEntity *pEnt = PrevPredictedWorld.FindFirst(CGameWorld::ENTTYPE_PROJECTILE); pEnt; pEnt = pEnt->TypeNext())
 		{
+			const auto *pProj = static_cast<const CProjectile *>(pEnt);
 			if(!IsSuper && pProj->m_Number > 0 && pProj->m_Number < (int)aSwitchers.size() && !aSwitchers[pProj->m_Number].m_aStatus[SwitcherTeam] && (pProj->m_Explosive ? BlinkingProjEx : BlinkingProj))
 				continue;
 
 			CProjectileData Data = pProj->GetData();
-			RenderProjectile(Context, &Data, pProj->GetId(), ScreenRectProjectile);
+			RenderProjectile(Context, &Data, pProj->GetId(), ScreenRectProjectile, PredictProjectiles);
 		}
-		for(CEntity *pEnt = GameClient()->m_PrevPredictedWorld.FindFirst(CGameWorld::ENTTYPE_LASER); pEnt; pEnt = pEnt->NextEntity())
+		for(const CEntity *pEnt = PrevPredictedWorld.FindFirst(CGameWorld::ENTTYPE_LASER); pEnt; pEnt = pEnt->TypeNext())
 		{
-			auto *const pLaser = dynamic_cast<CLaser *>(pEnt);
+			auto *const pLaser = dynamic_cast<const CLaser *>(pEnt);
 			if(!pLaser || pLaser->GetOwner() < 0 || !Context.m_State.RenderedClient(pLaser->GetOwner()).m_IsPredictedLocal)
 				continue;
 			CLaserData Data = pLaser->GetData();
 			if(!IsLaserInside(Data))
 				continue;
-			RenderLaser(&Data, true);
+			RenderLaser(Context, &Data, true);
 		}
-		for(auto *pPickup = (CPickup *)GameClient()->m_PrevPredictedWorld.FindFirst(CGameWorld::ENTTYPE_PICKUP); pPickup; pPickup = (CPickup *)pPickup->NextEntity())
+		for(const CEntity *pEnt = PrevPredictedWorld.FindFirst(CGameWorld::ENTTYPE_PICKUP); pEnt; pEnt = pEnt->TypeNext())
 		{
+			const auto *pPickup = static_cast<const CPickup *>(pEnt);
 			if(!IsSuper && pPickup->m_Layer == LAYER_SWITCH && pPickup->m_Number > 0 && pPickup->m_Number < (int)aSwitchers.size() && !aSwitchers[pPickup->m_Number].m_aStatus[SwitcherTeam] && BlinkingPickup)
 				continue;
 
 			if(pPickup->InDDNetTile())
 			{
-				if(auto *pPrev = (CPickup *)GameClient()->m_PrevPredictedWorld.GetEntity(pPickup->GetId(), CGameWorld::ENTTYPE_PICKUP))
+				if(const auto *pPrev = static_cast<const CPickup *>(PrevPredictedWorld.GetEntity(pPickup->GetId(), CGameWorld::ENTTYPE_PICKUP)))
 				{
 					CNetObj_Pickup Data, Prev;
 					pPickup->FillInfo(&Data);
@@ -638,33 +675,33 @@ void CItems::OnRender(const CRenderContext &Context)
 		}
 	}
 
-	for(const CSnapEntities &Ent : GameClient()->SnapEntities())
+	for(const CGameState::CEntitySnapshot &Entity : State.Entities())
 	{
-		const IClient::CSnapItem Item = Ent.m_Item;
-		const void *pData = Item.m_pData;
-		const CNetObj_EntityEx *pEntEx = Ent.m_pDataEx;
+		const int ItemId = Entity.m_Id;
+		const int ItemType = Entity.m_Type;
+		const void *pData = Entity.m_vData.data();
+		const CNetObj_EntityEx *pEntEx = Entity.m_HasEntityEx ? &Entity.m_EntityEx : nullptr;
 
-		if(Item.m_Type == NETOBJTYPE_PROJECTILE || Item.m_Type == NETOBJTYPE_DDRACEPROJECTILE || Item.m_Type == NETOBJTYPE_DDNETPROJECTILE)
+		if(ItemType == NETOBJTYPE_PROJECTILE || ItemType == NETOBJTYPE_DDRACEPROJECTILE || ItemType == NETOBJTYPE_DDNETPROJECTILE)
 		{
-			CProjectileData Data = ExtractProjectileInfo(Item.m_Type, pData, &GameClient()->m_GameWorld, pEntEx);
+			CProjectileData Data = ExtractProjectileInfo(ItemType, pData, &GameWorld, pEntEx);
 			bool Inactive = !IsSuper && Data.m_SwitchNumber > 0 && Data.m_SwitchNumber < (int)aSwitchers.size() && !aSwitchers[Data.m_SwitchNumber].m_aStatus[SwitcherTeam];
 			if(Inactive && (Data.m_Explosive ? BlinkingProjEx : BlinkingProj))
 				continue;
 			if(UsePredicted)
-
 			{
-				if(auto *pProj = (CProjectile *)GameClient()->m_GameWorld.FindMatch(Item.m_Id, Item.m_Type, pData))
+				if(const auto *pProj = static_cast<const CProjectile *>(GameWorld.FindMatch(ItemId, ItemType, pData)))
 				{
 					bool IsOtherTeam = Context.IsOtherTeam(pProj->GetOwner());
 					if(!IsOtherTeam)
 						continue;
 				}
 			}
-			RenderProjectile(Context, &Data, Item.m_Id, ScreenRectProjectile);
+			RenderProjectile(Context, &Data, ItemId, ScreenRectProjectile, PredictProjectiles);
 		}
-		else if(Item.m_Type == NETOBJTYPE_PICKUP || Item.m_Type == NETOBJTYPE_DDNETPICKUP)
+		else if(ItemType == NETOBJTYPE_PICKUP || ItemType == NETOBJTYPE_DDNETPICKUP)
 		{
-			CPickupData Data = ExtractPickupInfo(Item.m_Type, pData, pEntEx);
+			CPickupData Data = ExtractPickupInfo(ItemType, pData, pEntEx);
 			if(!ScreenRectPickup.Inside(Data.m_Pos))
 				continue;
 			bool Inactive = !IsSuper && Data.m_SwitchNumber > 0 && Data.m_SwitchNumber < (int)aSwitchers.size() && !aSwitchers[Data.m_SwitchNumber].m_aStatus[SwitcherTeam];
@@ -673,24 +710,23 @@ void CItems::OnRender(const CRenderContext &Context)
 				continue;
 			if(UsePredicted)
 			{
-				auto *pPickup = (CPickup *)GameClient()->m_GameWorld.FindMatch(Item.m_Id, Item.m_Type, pData);
+				const auto *pPickup = static_cast<const CPickup *>(GameWorld.FindMatch(ItemId, ItemType, pData));
 				if(pPickup && pPickup->InDDNetTile())
 					continue;
 			}
-			const void *pPrev = Client()->SnapFindItem(Client()->ActiveConnection(), IClient::SNAP_PREV, Item.m_Type, Item.m_Id);
-			if(pPrev)
-				RenderPickup(Context, (const CNetObj_Pickup *)pPrev, (const CNetObj_Pickup *)pData, false, Data.m_Flags);
+			if(!Entity.m_vPrevData.empty())
+				RenderPickup(Context, reinterpret_cast<const CNetObj_Pickup *>(Entity.m_vPrevData.data()), reinterpret_cast<const CNetObj_Pickup *>(pData), false, Data.m_Flags);
 		}
-		else if(Item.m_Type == NETOBJTYPE_LASER || Item.m_Type == NETOBJTYPE_DDNETLASER)
+		else if(ItemType == NETOBJTYPE_LASER || ItemType == NETOBJTYPE_DDNETLASER)
 		{
 			if(UsePredicted)
 			{
-				auto *pLaser = dynamic_cast<CLaser *>(GameClient()->m_GameWorld.FindMatch(Item.m_Id, Item.m_Type, pData));
+				auto *pLaser = dynamic_cast<const CLaser *>(GameWorld.FindMatch(ItemId, ItemType, pData));
 				if(pLaser && pLaser->GetOwner() >= 0 && Context.m_State.RenderedClient(pLaser->GetOwner()).m_IsPredictedLocal)
 					continue;
 			}
 
-			CLaserData Data = ExtractLaserInfo(Item.m_Type, pData, &GameClient()->m_GameWorld, pEntEx);
+			CLaserData Data = ExtractLaserInfo(ItemType, pData, &GameWorld, pEntEx);
 			if(!IsLaserInside(Data))
 				continue;
 			bool Inactive = !IsSuper && Data.m_SwitchNumber > 0 && Data.m_SwitchNumber < (int)aSwitchers.size() && !aSwitchers[Data.m_SwitchNumber].m_aStatus[SwitcherTeam];
@@ -719,12 +755,12 @@ void CItems::OnRender(const CRenderContext &Context)
 					Data.m_From.x = Data.m_To.x;
 					Data.m_From.y = Data.m_To.y;
 				}
-				EntStartTick = Client()->GameTick(GameClient()->ActiveConnection());
+				EntStartTick = Context.m_Time.m_GameTick;
 			}
 			else
 			{
 				IsEntBlink = BlinkingDragger;
-				EntStartTick = Client()->GameTick(GameClient()->ActiveConnection());
+				EntStartTick = Context.m_Time.m_GameTick;
 			}
 
 			if(Data.m_Predict && Inactive && IsEntBlink)
@@ -737,7 +773,7 @@ void CItems::OnRender(const CRenderContext &Context)
 				Data.m_StartTick = EntStartTick;
 			}
 
-			RenderLaser(&Data);
+			RenderLaser(Context, &Data);
 		}
 	}
 

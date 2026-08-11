@@ -39,8 +39,40 @@ PRESENTATION_UPDATE_FUNCTIONS = (
 	("src/game/client/components/items.cpp", re.compile(r"\bCItems::UpdatePresentation\s*\(")),
 	("src/game/client/components/players.cpp", re.compile(r"\bCPlayers::UpdatePresentation\s*\(")),
 )
+OVERLAY_CONTEXT_RENDER_FUNCTIONS = (
+	("src/game/client/components/broadcast.cpp", re.compile(r"\bCBroadcast::(?:OnRender|RenderServerBroadcast)\s*\(")),
+	("src/game/client/components/motd.cpp", re.compile(r"\bCMotd::OnRender\s*\(")),
+)
 ITEMS_PRESENTATION_FUNCTIONS = (("src/game/client/components/items.cpp", re.compile(r"\bCItems::UpdatePresentation\s*\(")),)
+ITEMS_RENDER_FUNCTIONS = (("src/game/client/components/items.cpp", re.compile(r"\bCItems::(?:OnRender|Render[A-Za-z0-9_]*)\s*\(")),)
 PLAYERS_STATE_FUNCTIONS = (("src/game/client/components/players.cpp", re.compile(r"\bCPlayers::(?:GetPlayerTargetAngle|IsPlayerInfoAvailable|PreparePlayerRenderState|RenderHook|RenderHookCollLine|RenderPlayer|UpdatePlayerPresentation|UpdatePresentation|UpdateRenderedClients)\s*\(")),)
+GAME_CLIENT_RENDER_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::OnRender\s*\(")),)
+MAP_SOUNDS_UPDATE_FUNCTIONS = (("src/game/client/components/mapsounds.cpp", re.compile(r"\bCMapSounds::Update\s*\(")),)
+MAP_SOUNDS_LOAD_FUNCTIONS = (("src/game/client/components/mapsounds.cpp", re.compile(r"\bCMapSounds::Load\s*\(")),)
+SCENE_UPDATE_FUNCTIONS = (
+	("src/game/client/components/effects.cpp", re.compile(r"\bCEffects::(?:SkidTrail|Update)\s*\(")),
+	("src/game/client/components/particles.cpp", re.compile(r"\bCParticles::(?:Update|UpdatePhysics)\s*\(")),
+	("src/game/client/components/damageind.cpp", re.compile(r"\bCDamageInd::Update\s*\(")),
+)
+MAP_LAYER_CONTEXT_RENDER_FUNCTIONS = (
+	("src/game/client/components/background.cpp", re.compile(r"\bCBackground::OnRender\s*\(\s*const CRenderContext\s*&\s*Context\s*\)")),
+	("src/game/client/components/maplayers.cpp", re.compile(r"\bCMapLayers::OnRender\s*\(\s*const CRenderContext\s*&\s*Context\s*\)")),
+	("src/game/client/components/maplayers.cpp", re.compile(r"\bCMapLayers::Render\s*\(")),
+)
+WORLD_REQUEST_BOUNDS_FUNCTIONS = (
+	("src/game/client/components/freezebars.cpp", re.compile(r"\bCFreezeBars::OnRender\s*\(")),
+	("src/game/client/components/ghost.cpp", re.compile(r"\bCGhost::OnRender\s*\(")),
+	("src/game/client/components/nameplates.cpp", re.compile(r"\bCNamePlates::RenderNamePlateGame\s*\(")),
+	("src/game/client/components/players.cpp", re.compile(r"\bCPlayers::OnRender\s*\(")),
+)
+MAP_RENDER_IMAGE_FUNCTIONS = (("src/game/client/components/mapimages.cpp", re.compile(r"\bCMapRenderImages::(?:GetEntities|GetTuneColors|Load|SetGameInfo)\s*\(")),)
+MAP_LAYER_BINDING_FUNCTIONS = (("src/game/client/components/maplayers.cpp", re.compile(r"\bCMapLayers::(?:Load|Unload)\s*\(")),)
+SESSION_PRESENTATION_FUNCTIONS = (("src/game/client/session_presentation.cpp", re.compile(r"\bCSessionPresentation::(?:Load|PrepareRender|Unload|UpdateMapSounds)\s*\(")),)
+SESSION_RESET_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::OnReset\s*\(")),)
+SNAPSHOT_SOURCE_FUNCTIONS = (
+	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::OnNewSnapshot\s*\(")),
+	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::ProcessEvents\s*\(")),
+)
 CAMERA_FILES = ("src/game/client/components/camera.h",)
 CONTROLS_OWNER_FILES = ("src/game/client/components/controls.h",)
 BROADCAST_OWNER_FILES = ("src/game/client/components/broadcast.h",)
@@ -70,6 +102,17 @@ HUD_OWNER_FILES = ("src/game/client/components/hud.h",)
 EMOTICON_OWNER_FILES = ("src/game/client/components/emoticon.h",)
 MOTD_OWNER_FILES = ("src/game/client/components/motd.h",)
 SPECTATOR_OWNER_FILES = ("src/game/client/components/spectator.h",)
+SOUNDS_OWNER_FILES = ("src/game/client/components/sounds.h",)
+MAP_SOUNDS_OWNER_FILES = ("src/game/client/components/mapsounds.h",)
+MAP_LAYER_OWNER_FILES = (
+	"src/game/client/components/background.h",
+	"src/game/client/components/maplayers.h",
+)
+MAP_RENDER_IMAGE_OWNER_FILES = ("src/game/client/components/mapimages.h",)
+ENVELOPE_STATE_FILES = (
+	"src/game/client/components/envelope_state.cpp",
+	"src/game/client/components/envelope_state.h",
+)
 VOTING_OWNER_FILES = ("src/game/client/components/voting.h",)
 SIXUP_VOTE_FILES = ("src/game/client/sixup_translate_game.cpp",)
 GAME_CLIENT_FILES = tuple(path.relative_to(ROOT).as_posix() for path in (ROOT / "src/game/client").rglob("*") if path.suffix in (".cpp", ".h"))
@@ -103,11 +146,26 @@ FORBIDDEN_PRESENTATION_VIEW = (
 	re.compile(r"\bLegacyGameView\s*\("),
 )
 FORBIDDEN_PRESENTATION_EFFECT_ALPHA = (re.compile(r"m_Effects\.[^\n;]*\b(?:State\.m_Alpha|Alpha)\b"),)
+FORBIDDEN_OVERLAY_RENDER_FOCUS = (
+	re.compile(r"\bSessionContext\s*\("),
+	re.compile(r"\bActiveConnection\s*\("),
+	re.compile(r"\bm_Snap\b"),
+	re.compile(r"\bClient\(\)->(?:State|GameTick|GameTickSpeed)\s*\("),
+)
 FORBIDDEN_ITEMS_PRESENTATION_FOCUS = (
 	re.compile(r"\bActiveConnection\s*\("),
 	re.compile(r"\bSnap(?:FindItem|GetItem|NumItems)\s*\("),
 	re.compile(r"GameClient\(\)->m_(?:Snap|aClients|GameWorld|PrevPredictedWorld)\b"),
 	re.compile(r"GameClient\(\)->(?:SnapEntities|SwitchStateTeam|IsLocalCharSuper|Switchers|GetTuning)\s*\("),
+)
+FORBIDDEN_ITEMS_RENDER_FOCUS = (
+	re.compile(r"\bClient\(\)"),
+	re.compile(r"\bActiveConnection\s*\("),
+	re.compile(r"\bOtherConnection\s*\("),
+	re.compile(r"\bm_Snap\b"),
+	re.compile(r"GameClient\(\)->m_(?:GameWorld|PrevPredictedWorld)\b"),
+	re.compile(r"GameClient\(\)->(?:AntiPing[A-Za-z]*|GameState|GetTuning|IsLocalCharSuper|IsOtherTeam|Predict|SnapEntities|Switchers)\s*\("),
+	re.compile(r"Graphics\(\)->GetScreen\s*\("),
 )
 FORBIDDEN_PLAYERS_STATE_FOCUS = (
 	re.compile(r"\bActiveConnection\s*\("),
@@ -116,6 +174,50 @@ FORBIDDEN_PLAYERS_STATE_FOCUS = (
 	re.compile(r"\bm_Snap\b"),
 	re.compile(r"GameClient\(\)->m_aClients\[[^\]]+\]\.m_(?:RenderCur|RenderPrev|RenderPos|Predicted|PrevPredicted|IsPredicted|IsPredictedLocal)\b"),
 )
+FORBIDDEN_GAME_CLIENT_RENDER = (re.compile(r"\bm_vpAll\b"),)
+FORBIDDEN_MAP_SOUNDS_UPDATE_FOCUS = (
+	re.compile(r"\bClient\(\)"),
+	re.compile(r"\bActiveConnection\s*\("),
+	re.compile(r"\bm_Snap\b"),
+	re.compile(r"\bm_Camera\b"),
+	re.compile(r"\bm_MapLayersBackground\b"),
+	re.compile(r"\bIsDemoPlaybackPaused\s*\("),
+)
+FORBIDDEN_MAP_SOUNDS_LOAD_FOCUS = (
+	re.compile(r"\bGameClient\(\)->Map\s*\("),
+	re.compile(r"\bLayers\s*\("),
+)
+FORBIDDEN_SCENE_UPDATE_FOCUS = (
+	re.compile(r"\b(?:time|time_get|time_freq|LocalTime)\s*\("),
+	re.compile(r"\bGetAnimationPlaybackSpeed\s*\("),
+	re.compile(r"\bClient\(\)->State\s*\("),
+)
+FORBIDDEN_MAP_LAYER_CONTEXT_RENDER_FOCUS = (
+	re.compile(r"\bClient\(\)"),
+	re.compile(r"\bGameClient\(\)"),
+	re.compile(r"\bGetCurCamera\s*\("),
+)
+FORBIDDEN_WORLD_REQUEST_BOUNDS = (re.compile(r"Graphics\(\)->GetScreen\s*\("),)
+FORBIDDEN_MAP_RENDER_IMAGE_FOCUS = (
+	re.compile(r"\bActiveConnection\s*\("),
+	re.compile(r"\bFocusedGameInfo\s*\("),
+	re.compile(r"\bGameClient\(\)"),
+	re.compile(r"\bSessionContext\s*\("),
+	re.compile(r"\bClient\(\)->IsSixup\s*\("),
+)
+FORBIDDEN_MAP_LAYER_BINDING_FOCUS = (
+	re.compile(r"\bLayers\s*\("),
+	re.compile(r"\bm_MapRenderImages\b"),
+)
+FORBIDDEN_SESSION_PRESENTATION_FOCUS = (
+	re.compile(r"\bActiveConnection\s*\("),
+	re.compile(r"\bClient\s*\("),
+	re.compile(r"\bFocusedGameInfo\s*\("),
+	re.compile(r"\bGameClient\s*\("),
+	re.compile(r"\bSessionContext\s*\("),
+)
+FORBIDDEN_CROSS_SESSION_RESET = (re.compile(r"\bm_SessionContexts\.Contexts\s*\("),)
+FORBIDDEN_SNAPSHOT_SOURCE_FOCUS = (re.compile(r"\bSessionContext\s*\("),)
 FORBIDDEN_GAME_CLIENT = (
 	re.compile(r"\bCStreamStorage\b"),
 	re.compile(r"\bCFlow\b"),
@@ -137,6 +239,8 @@ FORBIDDEN_DAMAGE_INDICATOR = (re.compile(r"\b(?:m_aItems|m_NumItems|s_LastLocalT
 FORBIDDEN_SCENE_RENDER = (
 	re.compile(r"GameState\(\s*GameClient\(\)->ActiveConnection\(\)\s*\)"),
 	re.compile(r"\bvoid OnRender\(\) override"),
+	re.compile(r"Graphics\(\)->GetScreen\s*\("),
+	re.compile(r"\bClient\(\)->State\s*\("),
 )
 FORBIDDEN_EFFECT_OWNER = (re.compile(r"\b(?:m_Add5hz|m_LastUpdate5hz|m_Add50hz|m_LastUpdate50hz|m_Add100hz|m_LastUpdate100hz|m_SkidSoundTimer)\b"),)
 FORBIDDEN_GHOST_OWNER = (re.compile(r"\bm_PlaybackPos\b"),)
@@ -157,6 +261,22 @@ FORBIDDEN_HUD_OWNER = (re.compile(r"\b(?:m_TimeCpDiff|m_FinishTimeDiff|m_DDRaceT
 FORBIDDEN_EMOTICON_OWNER = (re.compile(r"\b(?:m_WasActive|m_Active|m_SelectorMouse|m_SelectedEmote|m_SelectedEyeEmote|m_TouchPressedOutside)\b"),)
 FORBIDDEN_MOTD_OWNER = (re.compile(r"\b(?:m_aServerMotd|m_ServerMotdTime|m_ServerMotdUpdateTime)\b"),)
 FORBIDDEN_SPECTATOR_OWNER = (re.compile(r"\b(?:m_Active|m_WasActive|m_SelectedSpectatorId|m_SelectorMouse|m_MultiViewActivateDelay|m_MultiViewActivateTime)\b"),)
+FORBIDDEN_SOUNDS_OWNER = (re.compile(r"\bOnRender\s*\("),)
+FORBIDDEN_MAP_SOUNDS_OWNER = (
+	re.compile(r"\bOnMapLoad\s*\("),
+	re.compile(r"\bOnRender\s*\("),
+	re.compile(r"\bOnStateChange\s*\("),
+)
+FORBIDDEN_MAP_LAYER_OWNER = (re.compile(r"\bvoid OnRender\(\) override"),)
+FORBIDDEN_MAP_RENDER_IMAGE_OWNER = (re.compile(r"\bOnMapLoad\s*\("),)
+FORBIDDEN_ENVELOPE_STATE_FOCUS = (
+	re.compile(r"\bGameClient\(\)"),
+	re.compile(r"\bClient\(\)"),
+	re.compile(r"\bActiveConnection\s*\("),
+	re.compile(r"\bm_Snap\b"),
+	re.compile(r"\bg_Config\b"),
+	re.compile(r"\bstatic\b[^;\n]*\bNanosPerTick\b"),
+)
 FORBIDDEN_VOTING_OWNER = (re.compile(r"\b(?:CHeap|CVoteOptionClient|m_Opentime|m_Closetime|m_aDescription|m_aReason|m_Voted|m_Yes|m_No|m_Pass|m_Total|m_ReceivingOptions|m_NumVoteOptions|m_pFirst|m_pLast|m_pRecycleFirst|m_pRecycleLast)\b"),)
 FORBIDDEN_SIXUP_VOTE = (re.compile(r"m_Voting\.OnReset\("),)
 
@@ -203,8 +323,21 @@ errors = (
 	+ check_function_bodies(RENDER_PURITY_FUNCTIONS, FORBIDDEN_RENDER_MUTATION)
 	+ check_function_bodies(PRESENTATION_UPDATE_FUNCTIONS, FORBIDDEN_PRESENTATION_VIEW)
 	+ check_function_bodies(PRESENTATION_UPDATE_FUNCTIONS, FORBIDDEN_PRESENTATION_EFFECT_ALPHA)
+	+ check_function_bodies(OVERLAY_CONTEXT_RENDER_FUNCTIONS, FORBIDDEN_OVERLAY_RENDER_FOCUS)
 	+ check_function_bodies(ITEMS_PRESENTATION_FUNCTIONS, FORBIDDEN_ITEMS_PRESENTATION_FOCUS)
+	+ check_function_bodies(ITEMS_RENDER_FUNCTIONS, FORBIDDEN_ITEMS_RENDER_FOCUS)
 	+ check_function_bodies(PLAYERS_STATE_FUNCTIONS, FORBIDDEN_PLAYERS_STATE_FOCUS)
+	+ check_function_bodies(GAME_CLIENT_RENDER_FUNCTIONS, FORBIDDEN_GAME_CLIENT_RENDER)
+	+ check_function_bodies(MAP_SOUNDS_UPDATE_FUNCTIONS, FORBIDDEN_MAP_SOUNDS_UPDATE_FOCUS)
+	+ check_function_bodies(MAP_SOUNDS_LOAD_FUNCTIONS, FORBIDDEN_MAP_SOUNDS_LOAD_FOCUS)
+	+ check_function_bodies(SCENE_UPDATE_FUNCTIONS, FORBIDDEN_SCENE_UPDATE_FOCUS)
+	+ check_function_bodies(MAP_LAYER_CONTEXT_RENDER_FUNCTIONS, FORBIDDEN_MAP_LAYER_CONTEXT_RENDER_FOCUS)
+	+ check_function_bodies(WORLD_REQUEST_BOUNDS_FUNCTIONS, FORBIDDEN_WORLD_REQUEST_BOUNDS)
+	+ check_function_bodies(MAP_RENDER_IMAGE_FUNCTIONS, FORBIDDEN_MAP_RENDER_IMAGE_FOCUS)
+	+ check_function_bodies(MAP_LAYER_BINDING_FUNCTIONS, FORBIDDEN_MAP_LAYER_BINDING_FOCUS)
+	+ check_function_bodies(SESSION_PRESENTATION_FUNCTIONS, FORBIDDEN_SESSION_PRESENTATION_FOCUS)
+	+ check_function_bodies(SESSION_RESET_FUNCTIONS, FORBIDDEN_CROSS_SESSION_RESET)
+	+ check_function_bodies(SNAPSHOT_SOURCE_FUNCTIONS, FORBIDDEN_SNAPSHOT_SOURCE_FOCUS)
 	+ check(CAMERA_FILES, FORBIDDEN_CAMERA)
 	+ check(CONTROLS_OWNER_FILES, FORBIDDEN_CONTROLS_OWNER)
 	+ check(BROADCAST_OWNER_FILES, FORBIDDEN_BROADCAST_OWNER)
@@ -220,6 +353,11 @@ errors = (
 	+ check(EMOTICON_OWNER_FILES, FORBIDDEN_EMOTICON_OWNER)
 	+ check(MOTD_OWNER_FILES, FORBIDDEN_MOTD_OWNER)
 	+ check(SPECTATOR_OWNER_FILES, FORBIDDEN_SPECTATOR_OWNER)
+	+ check(SOUNDS_OWNER_FILES, FORBIDDEN_SOUNDS_OWNER)
+	+ check(MAP_SOUNDS_OWNER_FILES, FORBIDDEN_MAP_SOUNDS_OWNER)
+	+ check(MAP_LAYER_OWNER_FILES, FORBIDDEN_MAP_LAYER_OWNER)
+	+ check(MAP_RENDER_IMAGE_OWNER_FILES, FORBIDDEN_MAP_RENDER_IMAGE_OWNER)
+	+ check(ENVELOPE_STATE_FILES, FORBIDDEN_ENVELOPE_STATE_FOCUS)
 	+ check(VOTING_OWNER_FILES, FORBIDDEN_VOTING_OWNER)
 	+ check(SIXUP_VOTE_FILES, FORBIDDEN_SIXUP_VOTE)
 	+ check(GAME_CLIENT_FILES, FORBIDDEN_GAME_CLIENT)

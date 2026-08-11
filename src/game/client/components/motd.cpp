@@ -40,12 +40,20 @@ void CMotd::InvalidateRenderCache()
 	Graphics()->DeleteQuadContainer(m_RectQuadContainer);
 	TextRender()->DeleteTextContainer(m_TextContainerIndex);
 	m_RenderedSessionId = CSessionId();
+	m_RenderedViewId = 0;
+	m_RenderedViewportWidth = 0;
+	m_RenderedViewportHeight = 0;
 }
 
 bool CMotd::IsActive() const
 {
 	const CGameSessionContext &Session = GameClient()->SessionContext();
 	return GameClient()->LegacyGameView().Motd().IsActive(Session.Id(), Session.Motd().Revision(), time());
+}
+
+bool CMotd::IsActive(const CRenderContext &Context) const
+{
+	return Context.m_View.Motd().IsActive(Context.m_Session.Id(), Context.m_Session.Motd().Revision(), time());
 }
 
 void CMotd::OnStateChange(int NewState, int OldState)
@@ -65,20 +73,23 @@ void CMotd::OnUpdate()
 		Clear();
 }
 
-void CMotd::OnRender()
+void CMotd::OnRender(const CRenderContext &Context)
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(!IsActive(Context))
 		return;
 
-	if(!IsActive())
-		return;
-
-	const CGameSessionContext &Session = GameClient()->SessionContext();
-	if(m_RenderedSessionId != Session.Id() || m_RenderedRevision != Session.Motd().Revision())
+	const CGameSessionContext &Session = Context.m_Session;
+	const CViewport &Viewport = Context.m_View.Viewport();
+	if(m_RenderedSessionId != Session.Id() || m_RenderedRevision != Session.Motd().Revision() ||
+		m_RenderedViewId != Context.m_View.Id().Value() ||
+		m_RenderedViewportWidth != Viewport.m_Width || m_RenderedViewportHeight != Viewport.m_Height)
 	{
 		InvalidateRenderCache();
 		m_RenderedSessionId = Session.Id();
 		m_RenderedRevision = Session.Motd().Revision();
+		m_RenderedViewId = Context.m_View.Id().Value();
+		m_RenderedViewportWidth = Viewport.m_Width;
+		m_RenderedViewportHeight = Viewport.m_Height;
 	}
 
 	if(GameClient()->m_ImportantAlert.IsActive())
@@ -87,7 +98,7 @@ void CMotd::OnRender()
 	const int MaxLines = 24;
 	const float FontSize = 32.0f; // also the size of the margin and rect rounding
 	const float ScreenHeight = 40.0f * FontSize; // multiple of the font size to get perfect alignment
-	const float ScreenWidth = ScreenHeight * Graphics()->ScreenAspect();
+	const float ScreenWidth = ScreenHeight * Context.AspectRatio(Graphics()->ScreenAspect());
 	Graphics()->MapScreenToSize(ScreenWidth, ScreenHeight);
 
 	const float RectHeight = (MaxLines + 2) * FontSize;
@@ -117,7 +128,7 @@ void CMotd::OnRender()
 		Cursor.m_FontSize = FontSize;
 		Cursor.m_LineWidth = RectWidth - 2.0f * FontSize;
 		Cursor.m_MaxLines = MaxLines;
-		TextRender()->CreateTextContainer(m_TextContainerIndex, &Cursor, ServerMotd());
+		TextRender()->CreateTextContainer(m_TextContainerIndex, &Cursor, Session.Motd().Text());
 	}
 
 	if(m_TextContainerIndex.Valid())

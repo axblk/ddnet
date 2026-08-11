@@ -86,7 +86,12 @@ public:
 	float m_PredIntraGameTick = 0.0f;
 	float m_GameTickTime = 0.0f;
 	int m_GameTickSpeed = 0;
+	int64_t m_PresentationTime = 0;
+	int64_t m_PresentationTimeFrequency = 1;
+	float m_AnimationPlaybackSpeed = 0.0f;
+	bool m_IsGameActive = false;
 	bool m_IsDemoPlayback = false;
+	bool m_IsDemoPlaybackPaused = false;
 };
 
 class CGameStateId
@@ -229,14 +234,14 @@ public:
 		static constexpr int MAX_ITEMS = 64;
 		std::array<CItem, MAX_ITEMS> m_aItems;
 		int m_NumItems = 0;
-		float m_LastLocalTime = 0.0f;
+		int64_t m_LastUpdateTime = 0;
 		bool m_TimeInitialized = false;
 
 	public:
 		void Reset();
 		void Create(vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha, float StartAngle);
 		void Update(float DeltaTime);
-		void Advance(float LocalTime, float Speed);
+		void Advance(int64_t Now, int64_t TimeFrequency, float Speed);
 		int NumItems() const { return m_NumItems; }
 		const CItem &Item(int Index) const { return m_aItems[Index]; }
 	};

@@ -2,13 +2,13 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "damageind.h"
 
-#include <engine/demo.h>
 #include <engine/graphics.h>
 
 #include <generated/client_data.h>
 #include <generated/protocol.h>
 
 #include <game/client/game_state.h>
+#include <game/client/game_view.h>
 #include <game/client/gameclient.h>
 
 void CDamageInd::Create(CGameState &State, vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha)
@@ -16,16 +16,16 @@ void CDamageInd::Create(CGameState &State, vec2 Pos, vec2 Dir, int OwnerClientId
 	State.DamageIndicators().Create(Pos, Dir, OwnerClientId, Alpha, -random_angle());
 }
 
-void CDamageInd::Update(CGameState &State)
+void CDamageInd::Update(const CPresentationContext &Context)
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(!Context.m_Time.m_IsGameActive)
 		return;
-	State.DamageIndicators().Advance(LocalTime(), GameClient()->GetAnimationPlaybackSpeed());
+	Context.m_State.DamageIndicators().Advance(Context.m_Time.m_PresentationTime, Context.m_Time.m_PresentationTimeFrequency, Context.m_Time.m_AnimationPlaybackSpeed);
 }
 
 void CDamageInd::OnRender(const CRenderContext &Context)
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(!Context.m_Time.m_IsGameActive)
 		return;
 
 	const CGameState::CDamageIndicatorState &State = Context.m_State.DamageIndicators();

@@ -16,15 +16,18 @@ class CBroadcast : public CComponent
 	STextContainerIndex m_TextContainerIndex;
 	CSessionId m_RenderedSessionId;
 	uint64_t m_RenderedRevision = 0;
+	uint64_t m_RenderedViewId = 0;
+	int m_RenderedViewportWidth = 0;
+	int m_RenderedViewportHeight = 0;
 
 	void InvalidateRenderCache();
-	void RenderServerBroadcast();
+	void RenderServerBroadcast(const CRenderContext &Context);
 
 public:
 	int Sizeof() const override { return sizeof(*this); }
 	void OnReset() override;
 	void OnWindowResize() override;
-	void OnRender() override;
+	void OnRender(const CRenderContext &Context) override;
 
 	void DoBroadcast(const char *pText, int Conn);
 };

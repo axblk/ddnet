@@ -73,8 +73,7 @@ CMenuBackground::CMenuBackground() :
 
 void CMenuBackground::OnInterfacesInit(CGameClient *pClient)
 {
-	CComponentInterfaces::OnInterfacesInit(pClient);
-	m_pImages->OnInterfacesInit(pClient);
+	CBackground::OnInterfacesInit(pClient);
 	m_Camera.OnInterfacesInit(pClient);
 }
 
@@ -170,10 +169,13 @@ void CMenuBackground::LoadMenuBackground(bool HasDayHint, bool HasNightHint)
 	if(!m_IsInit)
 		return;
 
+	CMapLayers::Unload();
+	m_pBackgroundImages->Unload();
 	if(m_Loaded && m_pMap == m_pBackgroundMap.get())
 		m_pMap->Unload();
 
 	m_Loaded = false;
+	m_UseCurrentMap = false;
 	m_pMap = m_pBackgroundMap.get();
 	m_pLayers = m_pBackgroundLayers;
 	m_pImages = m_pBackgroundImages;
@@ -262,8 +264,8 @@ void CMenuBackground::LoadMenuBackground(bool HasDayHint, bool HasNightHint)
 		{
 			m_pLayers->Init(m_pMap, true, true);
 
-			m_pImages->LoadBackground(m_pLayers, m_pMap);
-			CMapLayers::OnMapLoad();
+			m_pBackgroundImages->Load(m_pLayers, m_pMap, Client()->IsSixup());
+			CMapLayers::Load(m_pLayers, m_pBackgroundImages);
 
 			// look for custom positions
 			CMapItemLayerTilemap *pTLayer = m_pLayers->GameLayer();
@@ -350,16 +352,12 @@ bool CMenuBackground::Render()
 		m_ChangedPosition = false;
 	}
 
-	CMapLayers::OnRender();
+	m_pBackgroundImages->SetGameInfo(GameClient()->FocusedGameInfo());
+	CMapLayers::Render(m_Camera.Center(), m_Camera.Zoom());
 
 	m_CurrentPosition = -1;
 
 	return true;
-}
-
-CCamera *CMenuBackground::GetCurCamera()
-{
-	return &m_Camera;
 }
 
 void CMenuBackground::ChangePosition(int PositionNumber)

@@ -762,7 +762,7 @@ void CPlayers::UpdatePlayerPresentation(
 
 	constexpr float Volume = 1.0f;
 	if(!State.m_InAir && State.m_WantOtherDir && length(State.m_Vel * 50) > 500.0f)
-		GameClient()->m_Effects.SkidTrail(GameState, State.m_Position, State.m_Vel, State.m_Player.m_Direction, ClientId, 1.0f, Volume, Context.m_Audio == EPresentationAudio::AUDIBLE);
+		GameClient()->m_Effects.SkidTrail(GameState, Context.m_Time, State.m_Position, State.m_Vel, State.m_Player.m_Direction, ClientId, 1.0f, Volume, Context.m_Audio == EPresentationAudio::AUDIBLE);
 
 	if(State.m_Player.m_Weapon == WEAPON_NINJA && !(State.m_RenderInfo.m_TeeRenderFlags & TEE_NO_WEAPON))
 	{
@@ -1098,7 +1098,7 @@ void CPlayers::UpdatePresentation(const CPresentationContext &Context)
 
 void CPlayers::OnRender(const CRenderContext &Context)
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(!Context.m_Time.m_IsGameActive)
 		return;
 
 	// update render info for ninja
@@ -1109,7 +1109,7 @@ void CPlayers::OnRender(const CRenderContext &Context)
 		PrepareRenderInfo(Context.m_Session, State, i, IsTeamPlay, aRenderInfo[i]);
 
 	// get screen edges to avoid rendering offscreen
-	CScreenRect ScreenRect = Graphics()->GetScreen();
+	CScreenRect ScreenRect(Context.m_VisibleWorldRect.m_TopLeft, Context.m_VisibleWorldRect.m_BottomRight);
 	// expand the edges to prevent popping in/out onscreen
 	//
 	// it is assumed that the tee, all its weapons, and emotes fit into a 200x200 box centered on the tee

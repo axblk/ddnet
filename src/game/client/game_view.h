@@ -310,9 +310,11 @@ public:
 	const CGameState &m_State;
 	const CGameView &m_View;
 	CGameTickInfo m_Time;
+	CVisibleWorldRect m_VisibleWorldRect;
 
-	CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time);
+	CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect);
 
+	float AspectRatio(float DefaultAspectRatio) const;
 	bool IsOtherTeam(int ClientId) const;
 	float AlphaForOwner(int OwnerClientId, float OtherTeamAlpha) const;
 };
@@ -341,6 +343,8 @@ public:
 
 	CGameRenderRequest(const CGameSessionContext &Session, CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, EPresentationPlayback Playback, EPresentationAudio Audio, CRenderOutput &Output);
 };
+
+const CGameRenderRequest *FindAudibleRenderRequest(std::span<const CGameRenderRequest> vRequests);
 
 class CGameRenderScheduler
 {

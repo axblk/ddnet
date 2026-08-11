@@ -10,6 +10,7 @@
 #include "map_context.h"
 #include "render.h"
 #include "session_context.h"
+#include "session_presentation.h"
 
 #include <base/color.h>
 #include <base/types.h>
@@ -57,7 +58,6 @@
 #include "components/local_server.h"
 #include "components/mapimages.h"
 #include "components/maplayers.h"
-#include "components/mapsounds.h"
 #include "components/menu_background.h"
 #include "components/menus.h"
 #include "components/motd.h"
@@ -135,13 +135,9 @@ public:
 	CFreezeBars m_FreezeBars;
 	CItems m_Items;
 	CMapImages m_MapImages;
-
-	CMapLayers m_MapLayersBackground = CMapLayers{ERenderType::RENDERTYPE_BACKGROUND};
-	CMapLayers m_MapLayersForeground = CMapLayers{ERenderType::RENDERTYPE_FOREGROUND};
+	CSessionPresentationManager m_SessionPresentations{m_MapImages};
 	CBackground m_Background;
 	CMenuBackground m_MenuBackground;
-
-	CMapSounds m_MapSounds;
 
 	CRaceDemo m_RaceDemo;
 	CGhost m_Ghost;
@@ -184,8 +180,8 @@ private:
 	CUi m_UI;
 	CRaceHelper m_RaceHelper;
 
-	void ProcessEvents();
-	void ProcessSnapshot();
+	void ProcessEvents(CSessionId SessionId);
+	void ProcessSnapshot(CSessionId SessionId);
 	void ProcessPrediction();
 	void UpdatePositions(const CGameState &State);
 	const CLocalPlayerProfile &RefreshLegacyPlayerProfile(int Conn);
@@ -223,6 +219,8 @@ public:
 	int OtherConnection() const { return ActiveConnection() == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN; }
 	CGameSessionContext &SessionContext();
 	const CGameSessionContext &SessionContext() const;
+	CSessionPresentation &SessionPresentation(CSessionId SessionId);
+	const CSessionPresentation &SessionPresentation(CSessionId SessionId) const;
 	CMapContext &MapContext() { return SessionContext().MapContext(); }
 	const CMapContext &MapContext() const { return SessionContext().MapContext(); }
 	class CUi *Ui() { return &m_UI; }
@@ -433,9 +431,9 @@ public:
 	int OnDemoRecSnap7(CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn) override;
 	void *TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn, bool Dummy);
 	int TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn, bool Dummy) override;
-	void OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dummy) override;
+	void OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn, bool Dummy) override;
 	void InvalidateSnapshot() override;
-	void OnNewSnapshot(int Conn) override;
+	void OnNewSnapshot(CSessionId SessionId, int Conn) override;
 	void OnPredict(int Conn) override;
 	void OnActivateEditor() override;
 	void OnDummySwap() override;

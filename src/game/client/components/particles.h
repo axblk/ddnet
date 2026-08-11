@@ -7,6 +7,9 @@
 
 using CParticle = CGameState::CParticle;
 
+class CCollision;
+class CPresentationContext;
+
 class CParticles : public CComponent
 {
 	friend class CGameClient;
@@ -26,7 +29,7 @@ public:
 	int Sizeof() const override { return sizeof(*this); }
 
 	void Add(CGameState &State, int Group, const CParticle &Particle, float TimePassed = 0.0f);
-	void Update(CGameState &State);
+	void Update(const CPresentationContext &Context);
 
 	void OnInit() override;
 
@@ -35,7 +38,7 @@ private:
 	int m_ExtraParticleQuadContainerIndex = -1;
 
 	void RenderGroup(const CRenderContext &Context, int Group);
-	void UpdatePhysics(CGameState::CParticleSystemState &State, float TimePassed);
+	void UpdatePhysics(CGameState::CParticleSystemState &State, const CCollision &Collision, float TimePassed);
 
 	template<int TGROUP>
 	class CRenderGroup : public CComponent
@@ -54,6 +57,6 @@ private:
 	CRenderGroup<GROUP_EXTRA> m_RenderExtra;
 	CRenderGroup<GROUP_GENERAL> m_RenderGeneral;
 
-	bool ParticleIsVisibleOnScreen(const vec2 &CurPos, float CurSize) const;
+	bool ParticleIsVisibleOnScreen(const CRenderContext &Context, const vec2 &CurPos, float CurSize) const;
 };
 #endif

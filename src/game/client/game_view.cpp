@@ -67,16 +67,23 @@ bool CPresentationContext::IsOtherTeamFromLocalPlayer(int ClientId) const
 	return m_State.IsOtherTeamFromLocalPlayer(ClientId);
 }
 
-CRenderContext::CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time) :
+CRenderContext::CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect) :
 	m_Session(Session),
 	m_State(State),
 	m_View(View),
-	m_Time(Time)
+	m_Time(Time),
+	m_VisibleWorldRect(VisibleWorldRect)
 {
 	dbg_assert(Session.Id() == View.SessionId(), "render context session does not match view");
 	dbg_assert(State.Id() == View.StateId(), "render context state does not match view");
 	dbg_assert(Session.GameStates().Find(State.Id()) == &State, "render context state does not belong to session");
 	dbg_assert(Time.m_GameTickSpeed > 0, "render context tick speed must be positive");
+}
+
+float CRenderContext::AspectRatio(float DefaultAspectRatio) const
+{
+	const CViewport &Viewport = m_View.Viewport();
+	return Viewport.m_Width > 0 && Viewport.m_Height > 0 ? Viewport.m_Width / (float)Viewport.m_Height : DefaultAspectRatio;
 }
 
 bool CRenderContext::IsOtherTeam(int ClientId) const
@@ -126,6 +133,19 @@ CGameRenderRequest::CGameRenderRequest(const CGameSessionContext &Session, CGame
 	dbg_assert(Time.m_GameTickSpeed > 0, "render request tick speed must be positive");
 }
 
+const CGameRenderRequest *FindAudibleRenderRequest(std::span<const CGameRenderRequest> vRequests)
+{
+	const CGameRenderRequest *pAudibleRequest = nullptr;
+	for(const CGameRenderRequest &Request : vRequests)
+	{
+		if(Request.m_Audio != EPresentationAudio::AUDIBLE || !Request.m_Time.m_IsGameActive)
+			continue;
+		dbg_assert(pAudibleRequest == nullptr, "only one active render request can be audible");
+		pAudibleRequest = &Request;
+	}
+	return pAudibleRequest;
+}
+
 void CGameRenderScheduler::Run(std::span<const CGameRenderRequest> vRequests, const FUpdatePresentation &UpdatePresentation, const FRenderView &RenderView) const
 {
 	struct CStateGroup
@@ -148,7 +168,12 @@ void CGameRenderScheduler::Run(std::span<const CGameRenderRequest> vRequests, co
 		       Left.m_PredIntraGameTick == Right.m_PredIntraGameTick &&
 		       Left.m_GameTickTime == Right.m_GameTickTime &&
 		       Left.m_GameTickSpeed == Right.m_GameTickSpeed &&
-		       Left.m_IsDemoPlayback == Right.m_IsDemoPlayback;
+		       Left.m_PresentationTime == Right.m_PresentationTime &&
+		       Left.m_PresentationTimeFrequency == Right.m_PresentationTimeFrequency &&
+		       Left.m_AnimationPlaybackSpeed == Right.m_AnimationPlaybackSpeed &&
+		       Left.m_IsGameActive == Right.m_IsGameActive &&
+		       Left.m_IsDemoPlayback == Right.m_IsDemoPlayback &&
+		       Left.m_IsDemoPlaybackPaused == Right.m_IsDemoPlaybackPaused;
 	};
 
 	std::vector<CStateGroup> vGroups;
@@ -184,7 +209,7 @@ void CGameRenderScheduler::Run(std::span<const CGameRenderRequest> vRequests, co
 	{
 		const CGameRenderRequest &Request = vRequests[i];
 		const CStateGroup &Group = vGroups[vRequestGroups[i]];
-		RenderView(CRenderContext(Request.m_Session, Request.m_State, Request.m_View, Group.m_Time), Request.m_Output);
+		RenderView(CRenderContext(Request.m_Session, Request.m_State, Request.m_View, Group.m_Time, Request.m_VisibleWorldRect), Request.m_Output);
 	}
 }
 

@@ -155,7 +155,7 @@ void CDragger::Read(const CLaserData *pData)
 	m_TargetId = pData->m_Owner;
 }
 
-bool CDragger::Match(CDragger *pDragger)
+bool CDragger::Match(const CDragger *pDragger) const
 {
 	return pDragger->m_Strength == m_Strength && pDragger->m_Number == m_Number && pDragger->m_IgnoreWalls == m_IgnoreWalls;
 }

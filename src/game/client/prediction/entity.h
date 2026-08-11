@@ -37,6 +37,7 @@ public:
 	CTuningParams *GetTuning(int i) { return GameWorld()->GetTuning(i); }
 	class CCollision *Collision() { return GameWorld()->Collision(); }
 	CEntity *TypeNext() { return m_pNextTypeEntity; }
+	const CEntity *TypeNext() const { return m_pNextTypeEntity; }
 	CEntity *TypePrev() { return m_pPrevTypeEntity; }
 	const vec2 &GetPos() const { return m_Pos; }
 	float GetProximityRadius() const { return m_ProximityRadius; }
@@ -59,6 +60,7 @@ public:
 	CEntity *m_pParent;
 	CEntity *m_pChild;
 	CEntity *NextEntity() { return m_pNextTypeEntity; }
+	const CEntity *NextEntity() const { return m_pNextTypeEntity; }
 	void Keep()
 	{
 		m_SnapTicks = 0;

@@ -203,7 +203,7 @@ void CFreezeBars::OnRender(const CRenderContext &Context)
 		return;
 	}
 	// get screen edges to avoid rendering offscreen
-	CScreenRect ScreenRect = Graphics()->GetScreen();
+	CScreenRect ScreenRect(Context.m_VisibleWorldRect.m_TopLeft, Context.m_VisibleWorldRect.m_BottomRight);
 	// expand the edges to prevent popping in/out onscreen
 	//
 	// it is assumed that the tee with the freeze bar fit into a 240x240 box centered on the tee

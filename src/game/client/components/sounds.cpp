@@ -137,7 +137,7 @@ void CSounds::OnStateChange(int NewState, int OldState)
 		OnReset();
 }
 
-void CSounds::OnRender()
+void CSounds::Update(std::optional<vec2> ListenerPosition)
 {
 	// check for sound initialisation
 	if(m_WaitForSoundJob)
@@ -148,7 +148,8 @@ void CSounds::OnRender()
 			return;
 	}
 
-	Sound()->SetListenerPosition(GameClient()->m_Camera.Center());
+	if(ListenerPosition.has_value())
+		Sound()->SetListenerPosition(*ListenerPosition);
 	UpdateChannels();
 
 	// play sound from queue

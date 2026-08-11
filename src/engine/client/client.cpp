@@ -2308,7 +2308,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn)
 							}
 #endif
 						}
-						GameClient()->OnNewSnapshot(Conn);
+						GameClient()->OnNewSnapshot(m_NetworkSessionId, Conn);
 						SetState(IClient::STATE_ONLINE);
 						if(Conn == CONN_MAIN)
 						{
@@ -2403,7 +2403,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn)
 			}
 		}
 
-		GameClient()->OnMessage(Msg, &Unpacker, Conn, Dummy);
+		GameClient()->OnMessage(m_NetworkSessionId, Msg, &Unpacker, Conn, Dummy);
 	}
 }
 
@@ -2762,7 +2762,7 @@ void CClient::OnDemoPlayerSnapshot(void *pData, int Size)
 	mem_copy(Connection(CONN_MAIN).m_apSnapshots[SNAP_CURRENT]->m_pSnap, pData, Size);
 	mem_copy(Connection(CONN_MAIN).m_apSnapshots[SNAP_CURRENT]->m_pAltSnap, &AltSnapBuffer, AltSnapSize);
 
-	GameClient()->OnNewSnapshot(CONN_MAIN);
+	GameClient()->OnNewSnapshot(m_DemoSessionId, CONN_MAIN);
 }
 
 void CClient::OnDemoPlayerMessage(void *pData, int Size)
@@ -2783,7 +2783,7 @@ void CClient::OnDemoPlayerMessage(void *pData, int Size)
 	}
 
 	if(!Sys)
-		GameClient()->OnMessage(Msg, &Unpacker, CONN_MAIN, false);
+		GameClient()->OnMessage(m_DemoSessionId, Msg, &Unpacker, CONN_MAIN, false);
 }
 
 void CClient::UpdateDemoIntraTimers()
@@ -2873,7 +2873,7 @@ void CClient::Update()
 				// set ticks
 				OtherGameConnection.m_CurGameTick = OtherGameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
 				OtherGameConnection.m_PrevGameTick = OtherGameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
-				GameClient()->OnNewSnapshot(OtherConn);
+				GameClient()->OnNewSnapshot(m_NetworkSessionId, OtherConn);
 			}
 		}
 
@@ -2887,7 +2887,7 @@ void CClient::Update()
 			if(m_LastActiveConnection != ActiveConn && ActiveGameConnection.m_apSnapshots[SNAP_PREV])
 			{
 				// Load snapshot for m_ClDummy
-				GameClient()->OnNewSnapshot(ActiveConn);
+				GameClient()->OnNewSnapshot(m_NetworkSessionId, ActiveConn);
 				Repredict = true;
 			}
 
@@ -2906,7 +2906,7 @@ void CClient::Update()
 				ActiveGameConnection.m_CurGameTick = ActiveGameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
 				ActiveGameConnection.m_PrevGameTick = ActiveGameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
 
-				GameClient()->OnNewSnapshot(ActiveConn);
+				GameClient()->OnNewSnapshot(m_NetworkSessionId, ActiveConn);
 				Repredict = true;
 			}
 

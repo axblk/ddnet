@@ -32,45 +32,51 @@ void CBroadcast::InvalidateRenderCache()
 	m_BroadcastRenderOffset = -1.0f;
 	TextRender()->DeleteTextContainer(m_TextContainerIndex);
 	m_RenderedSessionId = CSessionId();
+	m_RenderedViewId = 0;
+	m_RenderedViewportWidth = 0;
+	m_RenderedViewportHeight = 0;
 }
 
-void CBroadcast::OnRender()
+void CBroadcast::OnRender(const CRenderContext &Context)
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
-		return;
-
-	RenderServerBroadcast();
+	RenderServerBroadcast(Context);
 }
 
-void CBroadcast::RenderServerBroadcast()
+void CBroadcast::RenderServerBroadcast(const CRenderContext &Context)
 {
-	const CGameSessionContext &Session = GameClient()->SessionContext();
+	const CGameSessionContext &Session = Context.m_Session;
 	const CSessionBroadcastState &Broadcast = Session.Broadcast();
-	if(m_RenderedSessionId != Session.Id() || m_RenderedRevision != Broadcast.Revision())
+	const CViewport &Viewport = Context.m_View.Viewport();
+	if(m_RenderedSessionId != Session.Id() || m_RenderedRevision != Broadcast.Revision() ||
+		m_RenderedViewId != Context.m_View.Id().Value() ||
+		m_RenderedViewportWidth != Viewport.m_Width || m_RenderedViewportHeight != Viewport.m_Height)
 	{
 		InvalidateRenderCache();
 		m_RenderedSessionId = Session.Id();
 		m_RenderedRevision = Broadcast.Revision();
+		m_RenderedViewId = Context.m_View.Id().Value();
+		m_RenderedViewportWidth = Viewport.m_Width;
+		m_RenderedViewportHeight = Viewport.m_Height;
 	}
 
 	if(GameClient()->m_Scoreboard.IsActive() ||
-		GameClient()->m_Motd.IsActive() ||
+		Context.m_View.Motd().IsActive(Session.Id(), Session.Motd().Revision(), time()) ||
 		GameClient()->m_ImportantAlert.IsActive() ||
 		!g_Config.m_ClShowBroadcasts)
 	{
 		return;
 	}
 
-	const int GameTick = Client()->GameTick(GameClient()->ActiveConnection());
+	const int GameTick = Context.m_Time.m_GameTick;
 	if(!Broadcast.IsActiveAt(GameTick))
 	{
 		TextRender()->DeleteTextContainer(m_TextContainerIndex);
 		return;
 	}
-	const float SecondsRemaining = (Broadcast.ExpireTick() - GameTick) / (float)Client()->GameTickSpeed();
+	const float SecondsRemaining = (Broadcast.ExpireTick() - GameTick) / (float)Context.m_Time.m_GameTickSpeed;
 
 	const float Height = 300.0f;
-	const float Width = Height * Graphics()->ScreenAspect();
+	const float Width = Height * Context.AspectRatio(Graphics()->ScreenAspect());
 	Graphics()->MapScreenToSize(Width, Height);
 
 	if(m_BroadcastRenderOffset < 0.0f)

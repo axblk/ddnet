@@ -3,9 +3,6 @@
 
 #include "effects.h"
 
-#include <base/time.h>
-
-#include <engine/demo.h>
 #include <engine/shared/config.h>
 
 #include <generated/client_data.h>
@@ -13,6 +10,7 @@
 #include <game/client/components/damageind.h>
 #include <game/client/components/particles.h>
 #include <game/client/components/sounds.h>
+#include <game/client/game_view.h>
 #include <game/client/gameclient.h>
 
 void CEffects::AirJump(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha, float Volume)
@@ -138,7 +136,7 @@ void CEffects::SmokeTrail(CGameState &State, vec2 Pos, vec2 Vel, int OwnerClient
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_PROJECTILE_TRAIL, p, TimePassed);
 }
 
-void CEffects::SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, int OwnerClientId, float Alpha, float Volume, bool PlaySound)
+void CEffects::SkidTrail(CGameState &State, const CGameTickInfo &Time, vec2 Pos, vec2 Vel, int Direction, int OwnerClientId, float Alpha, float Volume, bool PlaySound)
 {
 	CGameState::CEffectClockState &EffectClock = State.EffectClock();
 	if(EffectClock.m_Add100hz)
@@ -160,7 +158,7 @@ void CEffects::SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, i
 	}
 	if(PlaySound && g_Config.m_SndGame)
 	{
-		if(EffectClock.TrySkidSound(time(), time_freq()))
+		if(EffectClock.TrySkidSound(Time.m_PresentationTime, Time.m_PresentationTimeFrequency))
 			GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_SKID, Volume, Pos);
 	}
 }
@@ -392,12 +390,11 @@ void CEffects::HammerHit(CGameState &State, vec2 Pos, float Alpha, float Volume)
 		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_HAMMER_HIT, Volume, Pos);
 }
 
-void CEffects::Update(CGameState &State, float GameTickTime, float PredIntraTick)
+void CEffects::Update(const CPresentationContext &Context)
 {
-	const int64_t Now = time();
-	const int64_t TimeFrequency = time_freq();
-	const float Speed = GameClient()->GetAnimationPlaybackSpeed();
-	State.EffectClock().Update(Now, TimeFrequency, Speed);
-	if(Client()->State() == IClient::STATE_ONLINE || Client()->State() == IClient::STATE_DEMOPLAYBACK)
-		State.SceneClock().Update(Now, TimeFrequency, Speed, GameTickTime, PredIntraTick);
+	CGameState &State = Context.m_State;
+	const CGameTickInfo &Time = Context.m_Time;
+	State.EffectClock().Update(Time.m_PresentationTime, Time.m_PresentationTimeFrequency, Time.m_AnimationPlaybackSpeed);
+	if(Time.m_IsGameActive)
+		State.SceneClock().Update(Time.m_PresentationTime, Time.m_PresentationTimeFrequency, Time.m_AnimationPlaybackSpeed, Time.m_GameTickTime, Time.m_PredIntraGameTick);
 }

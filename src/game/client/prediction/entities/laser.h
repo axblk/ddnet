@@ -20,7 +20,7 @@ public:
 	const int &GetOwner() const { return m_Owner; }
 	const int &GetEvalTick() const { return m_EvalTick; }
 	CLaser(CGameWorld *pGameWorld, int Id, CLaserData *pLaser);
-	bool Match(CLaser *pLaser);
+	bool Match(const CLaser *pLaser) const;
 	CLaserData GetData() const;
 
 protected:

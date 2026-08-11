@@ -31,7 +31,7 @@ public:
 
 	void Tick() override;
 
-	bool Match(CProjectile *pProj);
+	bool Match(const CProjectile *pProj) const;
 	void SetBouncing(int Value);
 
 	const vec2 &GetDirection() const { return m_Direction; }

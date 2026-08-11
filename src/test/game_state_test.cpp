@@ -9,6 +9,7 @@
 #include <engine/shared/snapshot.h>
 #include <engine/storage.h>
 
+#include <game/client/components/envelope_state.h>
 #include <game/client/game_state.h>
 #include <game/client/game_view.h>
 #include <game/client/map_context.h>
@@ -534,6 +535,11 @@ TEST(GameState, DamageIndicatorsAdvanceIndependently)
 	EXPECT_FLOAT_EQ(Primary.DamageIndicators().Item(0).m_Color.a, 0.5f);
 	EXPECT_EQ(Primary.DamageIndicators().Item(0).m_OwnerClientId, 4);
 	EXPECT_EQ(Additional.DamageIndicators().Item(0).m_OwnerClientId, 9);
+	Primary.DamageIndicators().Advance(1000, 1000, 1.0f);
+	Primary.DamageIndicators().Advance(1250, 1000, 1.0f);
+	EXPECT_FLOAT_EQ(Primary.DamageIndicators().Item(0).m_RemainingLife, 0.5f);
+	Primary.DamageIndicators().Advance(1500, 1000, 0.0f);
+	EXPECT_FLOAT_EQ(Primary.DamageIndicators().Item(0).m_RemainingLife, 0.5f);
 	Primary.DamageIndicators().Update(0.8f);
 	EXPECT_EQ(Primary.DamageIndicators().NumItems(), 0);
 	EXPECT_EQ(Additional.DamageIndicators().NumItems(), 1);
@@ -592,6 +598,37 @@ TEST(GameState, SceneClocksAdvancePauseAndResetIndependently)
 	EXPECT_FALSE(Primary.SceneClock().m_Initialized);
 	EXPECT_FLOAT_EQ(Primary.SceneClock().m_AnimationTime, 0.0f);
 	EXPECT_FLOAT_EQ(Additional.SceneClock().m_AnimationTime, 1.0f);
+}
+
+TEST(GameState, EnvelopeTimeUsesFrozenStateTicks)
+{
+	CGameState State(CGameStateId(1), CStreamId(1));
+	CNetObj_GameInfo GameInfo = {};
+	GameInfo.m_RoundStartTick = 50;
+	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aClients = {};
+	State.ApplySnapshotData(101, 1, std::move(aClients), &GameInfo);
+
+	CGameTickInfo Time;
+	Time.m_PrevGameTick = 100;
+	Time.m_GameTick = 101;
+	Time.m_PredGameTick = 104;
+	Time.m_IntraGameTick = 0.25f;
+	Time.m_PredIntraGameTick = 0.5f;
+	Time.m_GameTickSpeed = 50;
+	EXPECT_EQ(CEnvelopeState::CalculateOnlineTime(State, Time, false).count(), 1005000000);
+	EXPECT_EQ(CEnvelopeState::CalculateOnlineTime(State, Time, true).count(), 1070000000);
+
+	Time.m_PrevGameTick = 200;
+	Time.m_GameTick = 201;
+	Time.m_IntraGameTick = 0.5f;
+	Time.m_GameTickSpeed = 100;
+	GameInfo.m_RoundStartTick = 0;
+	aClients = {};
+	State.ApplySnapshotData(201, 1, std::move(aClients), &GameInfo);
+	EXPECT_EQ(CEnvelopeState::CalculateOnlineTime(State, Time, false).count(), 2005000000);
+
+	State.Reset();
+	EXPECT_EQ(CEnvelopeState::CalculateOnlineTime(State, Time, false).count(), 0);
 }
 
 TEST(GameState, ParticlePoolsAreLazyBoundedAndResetIndependently)
@@ -970,24 +1007,46 @@ TEST(GameState, EntitySnapshotsOwnCurrentAndPreviousData)
 	CNetObj_Pickup Prev = {};
 	Prev.m_X = 50;
 	Prev.m_Y = 150;
-	CGameState::CEntitySnapshot Entity;
-	Entity.m_Id = 7;
-	Entity.m_Type = NETOBJTYPE_PICKUP;
-	const auto *pCurrentData = reinterpret_cast<const unsigned char *>(&Current);
-	Entity.m_vData.assign(pCurrentData, pCurrentData + sizeof(Current));
-	const auto *pPrevData = reinterpret_cast<const unsigned char *>(&Prev);
-	Entity.m_vPrevData.assign(pPrevData, pPrevData + sizeof(Prev));
 	std::vector<CGameState::CEntitySnapshot> vEntities;
-	vEntities.push_back(std::move(Entity));
+	auto AddEntity = [&vEntities](int Id, int Type, const auto &CurrentData, const auto &PrevData) {
+		CGameState::CEntitySnapshot Entity;
+		Entity.m_Id = Id;
+		Entity.m_Type = Type;
+		const auto *pCurrentData = reinterpret_cast<const unsigned char *>(&CurrentData);
+		Entity.m_vData.assign(pCurrentData, pCurrentData + sizeof(CurrentData));
+		const auto *pPrevData = reinterpret_cast<const unsigned char *>(&PrevData);
+		Entity.m_vPrevData.assign(pPrevData, pPrevData + sizeof(PrevData));
+		vEntities.push_back(std::move(Entity));
+	};
+	AddEntity(7, NETOBJTYPE_PICKUP, Current, Prev);
+	CNetObj_Flag CurrentFlag = {};
+	CurrentFlag.m_X = 300;
+	CurrentFlag.m_Team = TEAM_RED;
+	CNetObj_Flag PrevFlag = CurrentFlag;
+	PrevFlag.m_X = 250;
+	AddEntity(0, NETOBJTYPE_FLAG, CurrentFlag, PrevFlag);
+	CNetObj_GameData CurrentGameData = {};
+	CurrentGameData.m_FlagCarrierRed = 4;
+	CNetObj_GameData PrevGameData = CurrentGameData;
+	PrevGameData.m_FlagCarrierRed = FLAG_ATSTAND;
+	AddEntity(0, NETOBJTYPE_GAMEDATA, CurrentGameData, PrevGameData);
 	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aClients = {};
-	Primary.ApplySnapshotData(10, 1, aClients, nullptr, std::move(vEntities));
+	Primary.ApplySnapshotData(10, 3, aClients, nullptr, std::move(vEntities));
 	Additional.ApplySnapshotData(20, 0, std::move(aClients));
 
-	ASSERT_EQ(Primary.Entities().size(), 1U);
+	ASSERT_EQ(Primary.Entities().size(), 3U);
 	const CGameState::CEntitySnapshot &Stored = Primary.Entities().front();
 	EXPECT_EQ(Stored.m_Id, 7);
 	EXPECT_EQ(reinterpret_cast<const CNetObj_Pickup *>(Stored.m_vData.data())->m_X, 100);
 	EXPECT_EQ(reinterpret_cast<const CNetObj_Pickup *>(Stored.m_vPrevData.data())->m_X, 50);
+	const auto Flag = std::find_if(Primary.Entities().begin(), Primary.Entities().end(), [](const CGameState::CEntitySnapshot &StoredEntity) { return StoredEntity.m_Type == NETOBJTYPE_FLAG; });
+	const auto GameData = std::find_if(Primary.Entities().begin(), Primary.Entities().end(), [](const CGameState::CEntitySnapshot &StoredEntity) { return StoredEntity.m_Type == NETOBJTYPE_GAMEDATA; });
+	ASSERT_NE(Flag, Primary.Entities().end());
+	ASSERT_NE(GameData, Primary.Entities().end());
+	EXPECT_EQ(reinterpret_cast<const CNetObj_Flag *>(Flag->m_vData.data())->m_X, 300);
+	EXPECT_EQ(reinterpret_cast<const CNetObj_Flag *>(Flag->m_vPrevData.data())->m_X, 250);
+	EXPECT_EQ(reinterpret_cast<const CNetObj_GameData *>(GameData->m_vData.data())->m_FlagCarrierRed, 4);
+	EXPECT_EQ(reinterpret_cast<const CNetObj_GameData *>(GameData->m_vPrevData.data())->m_FlagCarrierRed, FLAG_ATSTAND);
 	EXPECT_TRUE(Additional.Entities().empty());
 	EXPECT_NE(Primary.SnapshotDigest(), Additional.SnapshotDigest());
 	Primary.Reset();
@@ -1074,13 +1133,15 @@ TEST(GameView, RenderingTwoViewsDoesNotAdvanceState)
 	RightTime.m_GameTick = 51;
 	RightTime.m_IntraGameTick = 0.75f;
 	RightTime.m_GameTickSpeed = 50;
-	const CRenderContext LeftContext(Session, State, *pLeft, LeftTime);
-	const CRenderContext RightContext(Session, State, *pRight, RightTime);
+	const CRenderContext LeftContext(Session, State, *pLeft, LeftTime, CVisibleWorldRect(vec2(0.0f, 0.0f), vec2(100.0f, 100.0f)));
+	const CRenderContext RightContext(Session, State, *pRight, RightTime, CVisibleWorldRect(vec2(200.0f, 200.0f), vec2(300.0f, 300.0f)));
 	EXPECT_EQ(&LeftContext.m_Session, &Session);
 	EXPECT_EQ(&LeftContext.m_State, &State);
 	EXPECT_EQ(&LeftContext.m_View, pLeft);
 	EXPECT_EQ(LeftContext.m_Time.m_GameTick, 50);
 	EXPECT_FLOAT_EQ(LeftContext.m_Time.m_IntraGameTick, 0.25f);
+	EXPECT_TRUE(LeftContext.m_VisibleWorldRect.Inside(vec2(50.0f, 50.0f), vec2(0.0f, 0.0f)));
+	EXPECT_FLOAT_EQ(LeftContext.AspectRatio(16.0f / 9.0f), 640.0f / 720.0f);
 	EXPECT_EQ(&RightContext.m_View, pRight);
 	EXPECT_EQ(RightContext.m_Time.m_GameTick, 51);
 	EXPECT_FLOAT_EQ(RightContext.m_Time.m_IntraGameTick, 0.75f);
@@ -1187,16 +1248,29 @@ TEST(GameView, SchedulerUpdatesEachStateBeforeRenderingExplicitOutputs)
 	pDemoView->SetViewport({0, 0, 320, 180});
 	pDummyView->SetViewport({320, 0, 320, 180});
 	pMainRight->SetViewport({640, 0, 640, 720});
+	pMainRight->SetCameraPosition(vec2(123.0f, 456.0f));
 
 	CGameTickInfo MainTime;
 	MainTime.m_GameTick = 50;
 	MainTime.m_GameTickSpeed = 50;
+	MainTime.m_PresentationTime = 1000;
+	MainTime.m_PresentationTimeFrequency = 1000;
+	MainTime.m_AnimationPlaybackSpeed = 1.0f;
+	MainTime.m_IsGameActive = true;
 	CGameTickInfo DummyTime;
 	DummyTime.m_GameTick = 60;
 	DummyTime.m_GameTickSpeed = 50;
+	DummyTime.m_PresentationTime = 2000;
+	DummyTime.m_PresentationTimeFrequency = 1000;
+	DummyTime.m_AnimationPlaybackSpeed = 1.0f;
+	DummyTime.m_IsGameActive = true;
 	CGameTickInfo DemoTime;
 	DemoTime.m_GameTick = 70;
 	DemoTime.m_GameTickSpeed = 50;
+	DemoTime.m_PresentationTime = 3000;
+	DemoTime.m_PresentationTimeFrequency = 1000;
+	DemoTime.m_AnimationPlaybackSpeed = 0.0f;
+	DemoTime.m_IsGameActive = true;
 	DemoTime.m_IsDemoPlayback = true;
 
 	CTestRenderOutput MainLeftOutput;
@@ -1209,10 +1283,14 @@ TEST(GameView, SchedulerUpdatesEachStateBeforeRenderingExplicitOutputs)
 		CGameRenderRequest(Network, *pDummyState, *pDummyView, DummyTime, CVisibleWorldRect(vec2(-200.0f, -200.0f), vec2(-100.0f, -100.0f)), EPresentationPlayback::PLAYING, EPresentationAudio::MUTED, DummyOutput),
 		CGameRenderRequest(Network, *pMainState, *pMainRight, MainTime, CVisibleWorldRect(vec2(200.0f, 200.0f), vec2(300.0f, 300.0f)), EPresentationPlayback::PLAYING, EPresentationAudio::AUDIBLE, MainRightOutput),
 	};
+	const CGameRenderRequest *pAudibleRequest = FindAudibleRenderRequest(aRequests);
+	ASSERT_EQ(pAudibleRequest, &aRequests[3]);
+	EXPECT_EQ(pAudibleRequest->m_View.CameraPosition(), vec2(123.0f, 456.0f));
 
 	std::vector<const CGameState *> vpUpdatedStates;
 	std::vector<const CGameView *> vpRenderedViews;
 	std::vector<CRenderOutput *> vpRenderOutputs;
+	std::vector<CVisibleWorldRect> vRenderedWorldRects;
 	CGameStateRenderer Renderer;
 	CGameRenderScheduler Scheduler;
 	Scheduler.Run(
@@ -1222,17 +1300,28 @@ TEST(GameView, SchedulerUpdatesEachStateBeforeRenderingExplicitOutputs)
 			vpUpdatedStates.push_back(&Context.m_State);
 			if(&Context.m_State == pMainState)
 			{
+				EXPECT_EQ(Context.m_Time.m_PresentationTime, 1000);
+				EXPECT_EQ(Context.m_Time.m_PresentationTimeFrequency, 1000);
+				EXPECT_FLOAT_EQ(Context.m_Time.m_AnimationPlaybackSpeed, 1.0f);
+				EXPECT_TRUE(Context.m_Time.m_IsGameActive);
 				EXPECT_EQ(Context.m_vVisibleWorldRects.size(), 2U);
 				EXPECT_TRUE(Context.IsVisible(vec2(50.0f, 50.0f), vec2(0.0f, 0.0f)));
 				EXPECT_TRUE(Context.IsVisible(vec2(250.0f, 250.0f), vec2(0.0f, 0.0f)));
 				EXPECT_FALSE(Context.IsVisible(vec2(150.0f, 150.0f), vec2(0.0f, 0.0f)));
 				EXPECT_EQ(Context.m_Audio, EPresentationAudio::AUDIBLE);
 			}
+			else if(&Context.m_State == pDemoState)
+			{
+				EXPECT_EQ(Context.m_Time.m_PresentationTime, 3000);
+				EXPECT_FLOAT_EQ(Context.m_Time.m_AnimationPlaybackSpeed, 0.0f);
+				EXPECT_TRUE(Context.m_Time.m_IsDemoPlayback);
+			}
 		},
 		[&](const CRenderContext &Context, CRenderOutput &Output) {
 			EXPECT_EQ(vpUpdatedStates.size(), 3U);
 			vpRenderedViews.push_back(&Context.m_View);
 			vpRenderOutputs.push_back(&Output);
+			vRenderedWorldRects.push_back(Context.m_VisibleWorldRect);
 			Renderer.Render(Context, Output);
 		});
 
@@ -1249,6 +1338,10 @@ TEST(GameView, SchedulerUpdatesEachStateBeforeRenderingExplicitOutputs)
 	EXPECT_EQ(vpRenderOutputs[1], &DemoOffscreenOutput);
 	EXPECT_EQ(vpRenderOutputs[2], &DummyOutput);
 	EXPECT_EQ(vpRenderOutputs[3], &MainRightOutput);
+	EXPECT_EQ(vRenderedWorldRects[0].m_TopLeft, vec2(0.0f, 0.0f));
+	EXPECT_EQ(vRenderedWorldRects[1].m_TopLeft, vec2(400.0f, 400.0f));
+	EXPECT_EQ(vRenderedWorldRects[2].m_TopLeft, vec2(-200.0f, -200.0f));
+	EXPECT_EQ(vRenderedWorldRects[3].m_TopLeft, vec2(200.0f, 200.0f));
 	EXPECT_EQ(MainLeftOutput.m_EndedViews, 1);
 	EXPECT_EQ(DemoOffscreenOutput.m_EndedViews, 1);
 	EXPECT_EQ(DummyOutput.m_EndedViews, 1);
@@ -1283,8 +1376,8 @@ TEST(GameView, EqualStateIdsInDifferentSessionsRemainDistinct)
 	CGameTickInfo DemoTime;
 	DemoTime.m_GameTick = 200;
 	DemoTime.m_GameTickSpeed = 50;
-	const CRenderContext NetworkContext(Network, *pNetworkState, *pNetworkView, NetworkTime);
-	const CRenderContext DemoContext(Demo, *pDemoState, *pDemoView, DemoTime);
+	const CRenderContext NetworkContext(Network, *pNetworkState, *pNetworkView, NetworkTime, CVisibleWorldRect(vec2(0.0f, 0.0f), vec2(100.0f, 100.0f)));
+	const CRenderContext DemoContext(Demo, *pDemoState, *pDemoView, DemoTime, CVisibleWorldRect(vec2(200.0f, 200.0f), vec2(300.0f, 300.0f)));
 	EXPECT_EQ(&NetworkContext.m_Session, &Network);
 	EXPECT_EQ(&DemoContext.m_Session, &Demo);
 	EXPECT_EQ(NetworkContext.m_Time.m_GameTick, 100);

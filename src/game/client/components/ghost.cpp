@@ -394,7 +394,7 @@ void CGhost::UpdatePresentation(const CPresentationContext &Context)
 
 void CGhost::OnRender(const CRenderContext &Context)
 {
-	CScreenRect ScreenRect = Graphics()->GetScreen();
+	CScreenRect ScreenRect(Context.m_VisibleWorldRect.m_TopLeft, Context.m_VisibleWorldRect.m_BottomRight);
 	ScreenRect.Expand(100.0f);
 	ForEachGhostFrame(Context.m_State, Context.m_Time, [&](const CNetObj_Character &Prev, const CNetObj_Character &Player, const CTeeRenderInfo &RenderInfo, float IntraTick) {
 		GameClient()->m_Players.RenderHook(Context, ScreenRect, &Prev, &Player, &RenderInfo, -2, IntraTick);

@@ -625,7 +625,7 @@ public:
 void CNamePlates::RenderNamePlateGame(const CRenderContext &Context, vec2 Position, const CNetObj_PlayerInfo *pPlayerInfo, float Alpha)
 {
 	// Get screen edges to avoid rendering offscreen
-	CScreenRect ScreenRect = Graphics()->GetScreen();
+	CScreenRect ScreenRect(Context.m_VisibleWorldRect.m_TopLeft, Context.m_VisibleWorldRect.m_BottomRight);
 
 	// Assume that the name plate fits into a 800x800 box placed directly above the tee
 	ScreenRect.m_TopLeft.x -= 400;
@@ -857,7 +857,7 @@ void CNamePlates::ResetNamePlates()
 
 void CNamePlates::OnRender(const CRenderContext &Context)
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(!Context.m_Time.m_IsGameActive)
 		return;
 
 	int ShowDirection = g_Config.m_ClShowDirection;

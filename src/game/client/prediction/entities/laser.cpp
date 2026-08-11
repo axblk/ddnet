@@ -206,7 +206,7 @@ CLaser::CLaser(CGameWorld *pGameWorld, int Id, CLaserData *pLaser) :
 	m_Id = Id;
 }
 
-bool CLaser::Match(CLaser *pLaser)
+bool CLaser::Match(const CLaser *pLaser) const
 {
 	if(pLaser->m_EvalTick != m_EvalTick)
 		return false;

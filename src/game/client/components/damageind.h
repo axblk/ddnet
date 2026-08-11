@@ -7,6 +7,7 @@
 #include <game/client/component.h>
 
 class CGameState;
+class CPresentationContext;
 
 class CDamageInd : public CComponent
 {
@@ -16,7 +17,7 @@ public:
 	int Sizeof() const override { return sizeof(*this); }
 
 	void Create(CGameState &State, vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha);
-	void Update(CGameState &State);
+	void Update(const CPresentationContext &Context);
 	void OnRender(const CRenderContext &Context) override;
 	void OnInit() override;
 };

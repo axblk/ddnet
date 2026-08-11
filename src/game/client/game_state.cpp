@@ -147,7 +147,7 @@ void CGameState::CSceneClockState::Update(int64_t Now, int64_t TimeFrequency, fl
 void CGameState::CDamageIndicatorState::Reset()
 {
 	m_NumItems = 0;
-	m_LastLocalTime = 0.0f;
+	m_LastUpdateTime = 0;
 	m_TimeInitialized = false;
 }
 
@@ -177,16 +177,17 @@ void CGameState::CDamageIndicatorState::Update(float DeltaTime)
 	}
 }
 
-void CGameState::CDamageIndicatorState::Advance(float LocalTime, float Speed)
+void CGameState::CDamageIndicatorState::Advance(int64_t Now, int64_t TimeFrequency, float Speed)
 {
 	if(!m_TimeInitialized)
 	{
-		m_LastLocalTime = LocalTime;
+		m_LastUpdateTime = Now;
 		m_TimeInitialized = true;
 		return;
 	}
-	Update((LocalTime - m_LastLocalTime) * Speed);
-	m_LastLocalTime = LocalTime;
+	if(Now >= m_LastUpdateTime && TimeFrequency > 0)
+		Update((Now - m_LastUpdateTime) / static_cast<float>(TimeFrequency) * Speed);
+	m_LastUpdateTime = Now;
 }
 
 void CGameState::CInputState::Reset()
@@ -388,7 +389,7 @@ void CGameState::ApplySnapshot(const IClient &Client, int Conn)
 			Entity.m_EntityEx = *static_cast<const CNetObj_EntityEx *>(Item.m_pData);
 			vEntityEx.push_back(std::move(Entity));
 		}
-		else if(Item.m_Type == NETOBJTYPE_PICKUP || Item.m_Type == NETOBJTYPE_DDNETPICKUP || Item.m_Type == NETOBJTYPE_LASER || Item.m_Type == NETOBJTYPE_DDNETLASER || Item.m_Type == NETOBJTYPE_PROJECTILE || Item.m_Type == NETOBJTYPE_DDRACEPROJECTILE || Item.m_Type == NETOBJTYPE_DDNETPROJECTILE)
+		else if(Item.m_Type == NETOBJTYPE_GAMEDATA || Item.m_Type == NETOBJTYPE_FLAG || Item.m_Type == NETOBJTYPE_PICKUP || Item.m_Type == NETOBJTYPE_DDNETPICKUP || Item.m_Type == NETOBJTYPE_LASER || Item.m_Type == NETOBJTYPE_DDNETLASER || Item.m_Type == NETOBJTYPE_PROJECTILE || Item.m_Type == NETOBJTYPE_DDRACEPROJECTILE || Item.m_Type == NETOBJTYPE_DDNETPROJECTILE)
 		{
 			CEntitySnapshot Entity;
 			Entity.m_Id = Item.m_Id;
@@ -468,6 +469,8 @@ void CGameState::ApplySnapshot(const IClient &Client, int Conn)
 	}
 	for(CEntitySnapshot &Entity : vEntities)
 	{
+		if(Entity.m_Type == NETOBJTYPE_GAMEDATA || Entity.m_Type == NETOBJTYPE_FLAG)
+			continue;
 		const auto Found = std::find_if(vEntityEx.begin(), vEntityEx.end(), [&Entity](const CEntitySnapshot &EntityEx) { return EntityEx.m_Id == Entity.m_Id; });
 		if(Found != vEntityEx.end())
 		{

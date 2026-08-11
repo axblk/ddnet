@@ -401,14 +401,14 @@ public:
 	virtual void OnRconLine(const char *pLine) = 0;
 	virtual void OnInit() = 0;
 	virtual void InvalidateSnapshot() = 0;
-	virtual void OnNewSnapshot(int Conn) = 0;
+	virtual void OnNewSnapshot(CSessionId SessionId, int Conn) = 0;
 	virtual void OnEnterGame() = 0;
 	virtual void OnShutdown() = 0;
 	virtual void OnRender() = 0;
 	virtual void OnUpdate() = 0;
 	virtual void OnStateChange(int NewState, int OldState) = 0;
 	virtual void OnConnected() = 0;
-	virtual void OnMessage(int MsgId, CUnpacker *pUnpacker, int Conn, bool Dummy) = 0;
+	virtual void OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn, bool Dummy) = 0;
 	virtual void OnPredict(int Conn) = 0;
 	virtual void OnActivateEditor() = 0;
 	virtual void OnWindowResize() = 0;

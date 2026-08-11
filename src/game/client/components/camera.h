@@ -49,7 +49,6 @@ public:
 
 	CCamera();
 	int Sizeof() const override { return sizeof(*this); }
-	void OnRender() override;
 
 	// DDRace
 
@@ -79,6 +78,7 @@ public:
 	void BindState(CGameView::CCameraState &State) { m_pState = &State; }
 
 	void UpdateCamera();
+	void UpdatePosition();
 	void ResetAutoSpecCamera();
 	bool SpectatingPlayer() const { return State().m_CanUseCameraInfo; }
 	bool CanUseAutoSpecCamera() const;

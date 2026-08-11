@@ -29,9 +29,16 @@ namespace
 			vec2 m_Position;
 			bool m_Local;
 		};
+		struct CSpectatorCharacterCall
+		{
+			int m_ClientId;
+			vec2 m_Position;
+			bool m_OtherTeam;
+		};
 
 		std::vector<CViewport> m_vViewports;
 		std::vector<CCharacterCall> m_vCharacters;
+		std::vector<CSpectatorCharacterCall> m_vSpectatorCharacters;
 		int m_EndedViews = 0;
 
 		void BeginView(const CViewport &Viewport, vec2 CameraPosition, float Zoom) override
@@ -42,6 +49,11 @@ namespace
 		void DrawCharacter(int ClientId, vec2 Position, bool Local) override
 		{
 			m_vCharacters.push_back({ClientId, Position, Local});
+		}
+
+		void DrawSpectatorCharacter(int ClientId, vec2 Position, bool OtherTeam) override
+		{
+			m_vSpectatorCharacters.push_back({ClientId, Position, OtherTeam});
 		}
 
 		void EndView() override
@@ -381,6 +393,65 @@ TEST(GameState, ExtendedCharactersAreIndependentAndResetPerState)
 	EXPECT_EQ(Additional.ExtendedCharacter(5)->m_FreezeEnd, 123);
 }
 
+TEST(GameState, ExtendedPlayersAndSpectatorCharactersAreIndependentAndResetPerState)
+{
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aPrimaryClients = {};
+	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aAdditionalClients = {};
+	CGameState::CClientSnapshot &PrimaryClient = aPrimaryClients[5];
+	PrimaryClient.m_HasDDNetPlayer = true;
+	PrimaryClient.m_DDNetPlayer.m_AuthLevel = AUTHED_ADMIN;
+	PrimaryClient.m_DDNetPlayer.m_Flags = EXPLAYERFLAG_AFK | EXPLAYERFLAG_PAUSED;
+	PrimaryClient.m_DDNetPlayer.m_FinishTimeSeconds = 12;
+	PrimaryClient.m_DDNetPlayer.m_FinishTimeMillis = 123;
+	PrimaryClient.m_HasSpecChar = true;
+	PrimaryClient.m_SpecChar.m_X = 100;
+	PrimaryClient.m_SpecChar.m_Y = 200;
+	CGameState::CClientSnapshot &AdditionalClient = aAdditionalClients[5];
+	AdditionalClient.m_HasDDNetPlayer = true;
+	AdditionalClient.m_DDNetPlayer.m_AuthLevel = AUTHED_MOD;
+	AdditionalClient.m_DDNetPlayer.m_Flags = EXPLAYERFLAG_SPEC;
+	AdditionalClient.m_DDNetPlayer.m_FinishTimeSeconds = FinishTime::UNSET;
+	AdditionalClient.m_HasSpecChar = true;
+	AdditionalClient.m_SpecChar.m_X = 300;
+	AdditionalClient.m_SpecChar.m_Y = 400;
+	pPrimary->ApplySnapshotData(10, 2, std::move(aPrimaryClients));
+	pAdditional->ApplySnapshotData(10, 2, std::move(aAdditionalClients));
+
+	EXPECT_EQ(pPrimary->Client(5).m_DDNetPlayer.m_AuthLevel, AUTHED_ADMIN);
+	EXPECT_EQ(pPrimary->Client(5).m_DDNetPlayer.m_Flags, EXPLAYERFLAG_AFK | EXPLAYERFLAG_PAUSED);
+	EXPECT_EQ(pPrimary->Client(5).m_SpecChar.m_X, 100);
+	EXPECT_EQ(pAdditional->Client(5).m_DDNetPlayer.m_AuthLevel, AUTHED_MOD);
+	EXPECT_EQ(pAdditional->Client(5).m_DDNetPlayer.m_Flags, EXPLAYERFLAG_SPEC);
+	EXPECT_EQ(pAdditional->Client(5).m_SpecChar.m_X, 300);
+	EXPECT_NE(pPrimary->SnapshotDigest(), pAdditional->SnapshotDigest());
+	EXPECT_TRUE(pPrimary->Runtime().m_ReceivedDDNetPlayer);
+	EXPECT_TRUE(pPrimary->Runtime().m_ReceivedDDNetPlayerFinishTimes);
+	EXPECT_TRUE(pPrimary->Runtime().m_ReceivedDDNetPlayerFinishTimesMillis);
+	EXPECT_TRUE(pAdditional->Runtime().m_ReceivedDDNetPlayer);
+	EXPECT_FALSE(pAdditional->Runtime().m_ReceivedDDNetPlayerFinishTimes);
+	EXPECT_FALSE(pAdditional->Runtime().m_ReceivedDDNetPlayerFinishTimesMillis);
+
+	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aEmptyClients = {};
+	pPrimary->ApplySnapshotData(30, 0, std::move(aEmptyClients));
+	EXPECT_FALSE(pPrimary->Client(5).m_HasDDNetPlayer);
+	EXPECT_FALSE(pPrimary->Client(5).m_HasSpecChar);
+	EXPECT_TRUE(pPrimary->Runtime().m_ReceivedDDNetPlayer);
+	EXPECT_TRUE(pPrimary->Runtime().m_ReceivedDDNetPlayerFinishTimes);
+	EXPECT_FALSE(pPrimary->Runtime().m_ReceivedDDNetPlayerFinishTimesMillis);
+	EXPECT_TRUE(pAdditional->Client(5).m_HasDDNetPlayer);
+	EXPECT_TRUE(pAdditional->Client(5).m_HasSpecChar);
+
+	pAdditional->Reset();
+	EXPECT_FALSE(pAdditional->Client(5).m_HasDDNetPlayer);
+	EXPECT_FALSE(pAdditional->Client(5).m_HasSpecChar);
+	EXPECT_TRUE(pPrimary->Runtime().m_ReceivedDDNetPlayer);
+
+	pPrimary->Reset();
+	EXPECT_FALSE(pPrimary->Runtime().m_ReceivedDDNetPlayer);
+}
+
 TEST(GameState, DamageIndicatorsAdvanceIndependently)
 {
 	CGameState Primary(CGameStateId(1), CStreamId(1));
@@ -604,6 +675,46 @@ TEST(GameState, SessionMapMetadataIsIndependentAndResettable)
 	EXPECT_STREQ(DemoMetadata.Description(), "demo description");
 }
 
+TEST(GameState, SessionStatsAreIndependentAndSurviveStateReset)
+{
+	CGameSessionContext Network(CSessionId(1), "Kobra 4", EGameProtocol::SIX, {CStreamId(1), CStreamId(2)});
+	CGameSessionContext Demo(CSessionId(2), "Sunny Side Up", EGameProtocol::SIXUP, {CStreamId(3)});
+	CSessionClientStats &NetworkStats = Network.Stats().Client(4);
+	CSessionClientStats &DemoStats = Demo.Stats().Client(4);
+
+	EXPECT_FALSE(NetworkStats.IsActive());
+	EXPECT_EQ(NetworkStats.m_Frags, 0);
+	EXPECT_EQ(NetworkStats.m_aFragsWith[WEAPON_LASER], 0);
+	NetworkStats.JoinGame(100);
+	NetworkStats.m_Frags = 3;
+	NetworkStats.m_aFragsWith[WEAPON_LASER] = 2;
+	NetworkStats.m_FlagCaptures = 1;
+	NetworkStats.JoinSpec(160);
+	EXPECT_FALSE(NetworkStats.IsActive());
+	NetworkStats.JoinGame(200);
+	EXPECT_TRUE(NetworkStats.IsActive());
+	EXPECT_EQ(NetworkStats.GetIngameTicks(230), 90);
+	EXPECT_EQ(NetworkStats.GetFPM(230, 50), 100.0f);
+
+	DemoStats.JoinGame(500);
+	DemoStats.m_Frags = 7;
+	DemoStats.m_FlagGrabs = 2;
+	Network.GameStates().FindByStream(CStreamId(1))->Reset();
+	EXPECT_EQ(NetworkStats.m_Frags, 3);
+	EXPECT_EQ(NetworkStats.m_FlagCaptures, 1);
+	EXPECT_EQ(DemoStats.m_Frags, 7);
+	EXPECT_EQ(DemoStats.m_FlagGrabs, 2);
+
+	Network.Stats().Reset();
+	EXPECT_FALSE(NetworkStats.IsActive());
+	EXPECT_EQ(NetworkStats.m_Frags, 0);
+	EXPECT_EQ(NetworkStats.m_aFragsWith[WEAPON_LASER], 0);
+	EXPECT_EQ(NetworkStats.m_FlagCaptures, 0);
+	EXPECT_TRUE(DemoStats.IsActive());
+	EXPECT_EQ(DemoStats.m_Frags, 7);
+	EXPECT_EQ(DemoStats.m_FlagGrabs, 2);
+}
+
 TEST(GameState, SessionVotesAreIndependentAndPreserveOptionsAcrossVotes)
 {
 	CGameSessionContext Network(CSessionId(1), "Kobra 4", EGameProtocol::SIX, {CStreamId(1)});
@@ -775,17 +886,25 @@ TEST(GameState, SnapshotWorldsAreIndependent)
 
 TEST(GameView, RenderingTwoViewsDoesNotAdvanceState)
 {
-	CGameState State(CGameStateId(7), CStreamId(1));
+	const CSessionId SessionId(3);
+	CGameSessionContext Session(SessionId, "render-test", EGameProtocol::SIX, {CStreamId(1)});
+	CGameState *pState = Session.GameStates().FindByStream(CStreamId(1));
+	ASSERT_NE(pState, nullptr);
+	CGameState &State = *pState;
 	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aClients = {};
 	aClients[4].m_HasPlayerInfo = true;
 	aClients[4].m_PlayerInfo.m_Local = 1;
 	aClients[4].m_HasCharacter = true;
 	aClients[4].m_Character.m_X = 100;
 	aClients[4].m_Character.m_Y = 200;
-	State.ApplySnapshotData(50, 2, std::move(aClients));
+	aClients[5].m_HasSpecChar = true;
+	aClients[5].m_SpecChar.m_X = 300;
+	aClients[5].m_SpecChar.m_Y = 400;
+	State.SetTeam(4, 1);
+	State.SetTeam(5, 2);
+	State.ApplySnapshotData(50, 3, std::move(aClients));
 
 	CGameViewManager ViewManager;
-	const CSessionId SessionId(3);
 	const CGameViewId LeftId = ViewManager.Create(SessionId, State.Id());
 	const CGameViewId RightId = ViewManager.Create(SessionId, State.Id());
 	ASSERT_TRUE(LeftId.IsValid());
@@ -817,41 +936,118 @@ TEST(GameView, RenderingTwoViewsDoesNotAdvanceState)
 	pRight->SetViewport({640, 0, 640, 720});
 	pRight->SetCameraPosition(vec2(300.0f, 400.0f));
 	pRight->SetZoom(2.0f);
+	pRight->SetSpectator(true, SPEC_FREEVIEW);
+	State.EffectClock().Update(1000, 1000, 1.0f);
+	EXPECT_TRUE(State.EffectClock().TrySkidSound(1001, 1000));
+	State.SceneClock().Update(1000, 1000, 1.0f, 0.25f, 0.5f);
+	State.SceneClock().Update(1500, 1000, 1.0f, 0.5f, 0.75f);
+	CGameState::CParticle Particle;
+	Particle.SetDefault();
+	Particle.m_LifeSpan = 1.0f;
+	ASSERT_TRUE(State.Particles().Add(0, Particle));
+	State.DamageIndicators().Create(vec2(10.0f, 20.0f), vec2(1.0f, 0.0f), 0.5f, 0.25f);
 
 	const uint64_t SnapshotDigest = State.SnapshotDigest();
 	const uint64_t PredictionDigest = State.PredictionDigest();
+	const CGameState::CEffectClockState EffectClock = State.EffectClock();
+	const CGameState::CSceneClockState SceneClock = State.SceneClock();
+	const int NumParticles = State.Particles().NumParticles();
+	const int NumDamageIndicators = State.DamageIndicators().NumItems();
+	const CGameState::CDamageIndicatorState::CItem DamageIndicator = State.DamageIndicators().Item(0);
 	CTestRenderOutput Output;
 	CGameStateRenderer Renderer;
-	Renderer.Render({State, *pLeft}, Output);
-	Renderer.Render({State, *pRight}, Output);
+	CGameTickInfo LeftTime;
+	LeftTime.m_GameTick = 50;
+	LeftTime.m_IntraGameTick = 0.25f;
+	LeftTime.m_GameTickSpeed = 50;
+	CGameTickInfo RightTime;
+	RightTime.m_GameTick = 51;
+	RightTime.m_IntraGameTick = 0.75f;
+	RightTime.m_GameTickSpeed = 50;
+	const CRenderContext LeftContext(Session, State, *pLeft, LeftTime);
+	const CRenderContext RightContext(Session, State, *pRight, RightTime);
+	EXPECT_EQ(&LeftContext.m_Session, &Session);
+	EXPECT_EQ(&LeftContext.m_State, &State);
+	EXPECT_EQ(&LeftContext.m_View, pLeft);
+	EXPECT_EQ(LeftContext.m_Time.m_GameTick, 50);
+	EXPECT_FLOAT_EQ(LeftContext.m_Time.m_IntraGameTick, 0.25f);
+	EXPECT_EQ(&RightContext.m_View, pRight);
+	EXPECT_EQ(RightContext.m_Time.m_GameTick, 51);
+	EXPECT_FLOAT_EQ(RightContext.m_Time.m_IntraGameTick, 0.75f);
+	Renderer.Render(LeftContext, Output);
+	Renderer.Render(RightContext, Output);
 
 	ASSERT_EQ(Output.m_vViewports.size(), 2U);
 	EXPECT_EQ(Output.m_vViewports[0], (CViewport{0, 0, 640, 720}));
 	EXPECT_EQ(Output.m_vViewports[1], (CViewport{640, 0, 640, 720}));
 	EXPECT_EQ(Output.m_vCharacters.size(), 2U);
+	ASSERT_EQ(Output.m_vSpectatorCharacters.size(), 2U);
+	EXPECT_EQ(Output.m_vSpectatorCharacters[0].m_ClientId, 5);
+	EXPECT_EQ(Output.m_vSpectatorCharacters[0].m_Position, vec2(300.0f, 400.0f));
+	EXPECT_TRUE(Output.m_vSpectatorCharacters[0].m_OtherTeam);
+	EXPECT_EQ(Output.m_vSpectatorCharacters[1].m_ClientId, 5);
+	EXPECT_EQ(Output.m_vSpectatorCharacters[1].m_Position, vec2(300.0f, 400.0f));
+	EXPECT_FALSE(Output.m_vSpectatorCharacters[1].m_OtherTeam);
 	EXPECT_EQ(Output.m_EndedViews, 2);
 	EXPECT_EQ(State.SnapshotDigest(), SnapshotDigest);
 	EXPECT_EQ(State.PredictionDigest(), PredictionDigest);
+	EXPECT_EQ(State.EffectClock().m_Add5hz, EffectClock.m_Add5hz);
+	EXPECT_EQ(State.EffectClock().m_LastUpdate5hz, EffectClock.m_LastUpdate5hz);
+	EXPECT_EQ(State.EffectClock().m_Add50hz, EffectClock.m_Add50hz);
+	EXPECT_EQ(State.EffectClock().m_LastUpdate50hz, EffectClock.m_LastUpdate50hz);
+	EXPECT_EQ(State.EffectClock().m_Add100hz, EffectClock.m_Add100hz);
+	EXPECT_EQ(State.EffectClock().m_LastUpdate100hz, EffectClock.m_LastUpdate100hz);
+	EXPECT_EQ(State.EffectClock().m_SkidSoundTimer, EffectClock.m_SkidSoundTimer);
+	EXPECT_FLOAT_EQ(State.SceneClock().m_AnimationTime, SceneClock.m_AnimationTime);
+	EXPECT_FLOAT_EQ(State.SceneClock().m_GameTickTime, SceneClock.m_GameTickTime);
+	EXPECT_FLOAT_EQ(State.SceneClock().m_PredIntraTick, SceneClock.m_PredIntraTick);
+	EXPECT_EQ(State.SceneClock().m_LastUpdateTime, SceneClock.m_LastUpdateTime);
+	EXPECT_EQ(State.SceneClock().m_Initialized, SceneClock.m_Initialized);
+	EXPECT_EQ(State.Particles().NumParticles(), NumParticles);
+	ASSERT_EQ(State.DamageIndicators().NumItems(), NumDamageIndicators);
+	EXPECT_EQ(State.DamageIndicators().Item(0).m_Pos, DamageIndicator.m_Pos);
+	EXPECT_EQ(State.DamageIndicators().Item(0).m_Dir, DamageIndicator.m_Dir);
+	EXPECT_FLOAT_EQ(State.DamageIndicators().Item(0).m_RemainingLife, DamageIndicator.m_RemainingLife);
+	EXPECT_FLOAT_EQ(State.DamageIndicators().Item(0).m_StartAngle, DamageIndicator.m_StartAngle);
+	EXPECT_EQ(State.DamageIndicators().Item(0).m_Color, DamageIndicator.m_Color);
 	EXPECT_TRUE(ViewManager.Destroy(LeftId));
 	EXPECT_EQ(ViewManager.NumViews(), 1U);
 }
 
 TEST(GameView, EqualStateIdsInDifferentSessionsRemainDistinct)
 {
+	CGameSessionContext Network(CSessionId(10), "network", EGameProtocol::SIX, {CStreamId(1)});
+	CGameSessionContext Demo(CSessionId(20), "demo", EGameProtocol::SIXUP, {CStreamId(1)});
+	const CGameState *pNetworkState = Network.GameStates().FindByStream(CStreamId(1));
+	const CGameState *pDemoState = Demo.GameStates().FindByStream(CStreamId(1));
+	ASSERT_NE(pNetworkState, nullptr);
+	ASSERT_NE(pDemoState, nullptr);
+	ASSERT_EQ(pNetworkState->Id(), pDemoState->Id());
 	CGameViewManager ViewManager;
-	const CGameStateId StateId(1);
-	const CGameViewId NetworkViewId = ViewManager.Create(CSessionId(10), StateId);
-	const CGameViewId DemoViewId = ViewManager.Create(CSessionId(20), StateId);
+	const CGameViewId NetworkViewId = ViewManager.Create(Network.Id(), pNetworkState->Id());
+	const CGameViewId DemoViewId = ViewManager.Create(Demo.Id(), pDemoState->Id());
 	ASSERT_TRUE(NetworkViewId.IsValid());
 	ASSERT_TRUE(DemoViewId.IsValid());
 	const CGameView *pNetworkView = ViewManager.Find(NetworkViewId);
 	const CGameView *pDemoView = ViewManager.Find(DemoViewId);
 	ASSERT_NE(pNetworkView, nullptr);
 	ASSERT_NE(pDemoView, nullptr);
-	EXPECT_EQ(pNetworkView->SessionId(), CSessionId(10));
-	EXPECT_EQ(pNetworkView->StateId(), StateId);
-	EXPECT_EQ(pDemoView->SessionId(), CSessionId(20));
-	EXPECT_EQ(pDemoView->StateId(), StateId);
+	EXPECT_EQ(pNetworkView->SessionId(), Network.Id());
+	EXPECT_EQ(pNetworkView->StateId(), pNetworkState->Id());
+	EXPECT_EQ(pDemoView->SessionId(), Demo.Id());
+	EXPECT_EQ(pDemoView->StateId(), pDemoState->Id());
+	CGameTickInfo NetworkTime;
+	NetworkTime.m_GameTick = 100;
+	NetworkTime.m_GameTickSpeed = 50;
+	CGameTickInfo DemoTime;
+	DemoTime.m_GameTick = 200;
+	DemoTime.m_GameTickSpeed = 50;
+	const CRenderContext NetworkContext(Network, *pNetworkState, *pNetworkView, NetworkTime);
+	const CRenderContext DemoContext(Demo, *pDemoState, *pDemoView, DemoTime);
+	EXPECT_EQ(&NetworkContext.m_Session, &Network);
+	EXPECT_EQ(&DemoContext.m_Session, &Demo);
+	EXPECT_EQ(NetworkContext.m_Time.m_GameTick, 100);
+	EXPECT_EQ(DemoContext.m_Time.m_GameTick, 200);
 }
 
 TEST(GameView, SelectorStatesAreIndependentAndSurviveRetargeting)

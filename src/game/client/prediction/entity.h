@@ -55,7 +55,7 @@ public:
 
 	int m_SnapTicks;
 	int m_DestroyTick;
-	int m_LastRenderTick;
+	int m_LastPresentationTick;
 	CEntity *m_pParent;
 	CEntity *m_pChild;
 	CEntity *NextEntity() { return m_pNextTypeEntity; }

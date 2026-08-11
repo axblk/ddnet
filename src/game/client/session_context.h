@@ -14,6 +14,7 @@
 #include <game/voting.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -138,6 +139,53 @@ public:
 		m_BestTimeMillis = 0;
 		m_Description.clear();
 	}
+};
+
+class CSessionClientStats
+{
+	int m_IngameTicks = 0;
+	int m_JoinTick = 0;
+	bool m_Active = false;
+
+public:
+	std::array<int, NUM_WEAPONS> m_aFragsWith = {};
+	std::array<int, NUM_WEAPONS> m_aDeathsFrom = {};
+	int m_Frags = 0;
+	int m_Deaths = 0;
+	int m_Suicides = 0;
+	int m_BestSpree = 0;
+	int m_CurrentSpree = 0;
+	int m_FlagGrabs = 0;
+	int m_FlagCaptures = 0;
+
+	void Reset() { *this = {}; }
+	bool IsActive() const { return m_Active; }
+	void JoinGame(int Tick)
+	{
+		m_Active = true;
+		m_JoinTick = Tick;
+	}
+	void JoinSpec(int Tick)
+	{
+		m_Active = false;
+		m_IngameTicks += Tick - m_JoinTick;
+	}
+	int GetIngameTicks(int Tick) const { return m_IngameTicks + Tick - m_JoinTick; }
+	float GetFPM(int Tick, int TickSpeed) const { return static_cast<float>(m_Frags * TickSpeed * 60) / GetIngameTicks(Tick); }
+};
+
+class CSessionStatsState
+{
+	std::array<CSessionClientStats, MAX_CLIENTS> m_aClients;
+
+public:
+	void Reset()
+	{
+		for(CSessionClientStats &Client : m_aClients)
+			Client.Reset();
+	}
+	CSessionClientStats &Client(int ClientId) { return m_aClients[ClientId]; }
+	const CSessionClientStats &Client(int ClientId) const { return m_aClients[ClientId]; }
 };
 
 class CSessionVoteState
@@ -266,6 +314,7 @@ class CGameSessionContext
 	CSessionBroadcastState m_Broadcast;
 	CSessionMotdState m_Motd;
 	CSessionMapMetadataState m_MapMetadata;
+	CSessionStatsState m_Stats;
 	CSessionVoteState m_Vote;
 
 public:
@@ -299,6 +348,8 @@ public:
 	const CSessionMotdState &Motd() const { return m_Motd; }
 	CSessionMapMetadataState &MapMetadata() { return m_MapMetadata; }
 	const CSessionMapMetadataState &MapMetadata() const { return m_MapMetadata; }
+	CSessionStatsState &Stats() { return m_Stats; }
+	const CSessionStatsState &Stats() const { return m_Stats; }
 	CSessionVoteState &Vote() { return m_Vote; }
 	const CSessionVoteState &Vote() const { return m_Vote; }
 };

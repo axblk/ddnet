@@ -376,7 +376,7 @@ int CControls::SnapInput(int *pData)
 	return sizeof(Input.m_InputData);
 }
 
-void CControls::OnRender()
+void CControls::Update()
 {
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		return;

@@ -118,12 +118,32 @@ void CGhost::CGhostPath::Add(const CGhostCharacter &Char)
 
 CGhostCharacter *CGhost::CGhostPath::Get(int Index)
 {
+	return const_cast<CGhostCharacter *>(static_cast<const CGhostPath *>(this)->Get(Index));
+}
+
+const CGhostCharacter *CGhost::CGhostPath::Get(int Index) const
+{
 	if(Index < 0 || Index >= m_NumItems)
 		return nullptr;
 
 	int Chunk = Index / m_ChunkSize;
 	int Pos = Index % m_ChunkSize;
 	return &m_vpChunks[Chunk][Pos];
+}
+
+int CGhost::CGhostPath::FindFirstAtOrAfterTick(int Tick) const
+{
+	int Begin = 0;
+	int End = m_NumItems;
+	while(Begin < End)
+	{
+		const int Middle = Begin + (End - Begin) / 2;
+		if(Get(Middle)->m_Tick < Tick)
+			Begin = Middle + 1;
+		else
+			End = Middle;
+	}
+	return Begin < m_NumItems ? Begin : -1;
 }
 
 void CGhost::GetPath(char *pBuf, int Size, const char *pPlayerName, int Time) const
@@ -306,7 +326,8 @@ void CGhost::OnNewPredictedSnapshot()
 		CheckStartLocal(true);
 }
 
-void CGhost::OnRender()
+template<typename F>
+void CGhost::ForEachGhostFrame(const CRenderContext &Context, F &&Function) const
 {
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		return;
@@ -315,31 +336,18 @@ void CGhost::OnRender()
 	if(!m_Rendering || !g_Config.m_ClRaceShowGhost)
 		return;
 
-	int PlaybackTick = Client()->PredGameTick(GameClient()->ActiveConnection()) - m_StartRenderTick;
+	int PlaybackTick = Context.m_Time.m_PredGameTick - m_StartRenderTick;
 
-	CScreenRect ScreenRect = Graphics()->GetScreen();
-
-	// 200x200 box around the player
-	ScreenRect.Expand(100.0f);
-
-	for(auto &Ghost : m_aActiveGhosts)
+	for(const auto &Ghost : m_aActiveGhosts)
 	{
 		if(Ghost.Empty())
 			continue;
 
 		int GhostTick = Ghost.m_StartTick + PlaybackTick;
-		while(Ghost.m_PlaybackPos >= 0 && Ghost.m_Path.Get(Ghost.m_PlaybackPos)->m_Tick < GhostTick)
-		{
-			if(Ghost.m_PlaybackPos < Ghost.m_Path.Size() - 1)
-				Ghost.m_PlaybackPos++;
-			else
-				Ghost.m_PlaybackPos = -1;
-		}
-
-		if(Ghost.m_PlaybackPos < 0)
+		const int CurPos = Ghost.m_Path.FindFirstAtOrAfterTick(GhostTick);
+		if(CurPos < 0)
 			continue;
 
-		int CurPos = Ghost.m_PlaybackPos;
 		int PrevPos = std::max(0, CurPos - 1);
 		if(Ghost.m_Path.Get(PrevPos)->m_Tick > GhostTick)
 			continue;
@@ -351,9 +359,9 @@ void CGhost::OnRender()
 		int TickDiff = Player.m_Tick - Prev.m_Tick;
 		float IntraTick = 0.f;
 		if(TickDiff > 0)
-			IntraTick = (GhostTick - Prev.m_Tick - 1 + Client()->PredIntraGameTick(GameClient()->ActiveConnection())) / TickDiff;
+			IntraTick = (GhostTick - Prev.m_Tick - 1 + Context.m_Time.m_PredIntraGameTick) / TickDiff;
 
-		Player.m_AttackTick += Client()->GameTick(GameClient()->ActiveConnection()) - GhostTick;
+		Player.m_AttackTick += Context.m_Time.m_GameTick - GhostTick;
 
 		const CTeeRenderInfo *pRenderInfo = &Ghost.m_pManagedTeeRenderInfo->TeeRenderInfo();
 		CTeeRenderInfo GhostNinjaRenderInfo;
@@ -362,7 +370,7 @@ void CGhost::OnRender()
 			// change the skin for the ghost to the ninja
 			GhostNinjaRenderInfo = Ghost.m_pManagedTeeRenderInfo->TeeRenderInfo();
 			GhostNinjaRenderInfo.ApplySkin(GameClient()->m_Players.NinjaTeeRenderInfo()->TeeRenderInfo());
-			GhostNinjaRenderInfo.m_CustomColoredSkin = GameClient()->IsTeamPlay();
+			GhostNinjaRenderInfo.m_CustomColoredSkin = Context.m_State.HasGameInfo() && (Context.m_State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
 			if(!GhostNinjaRenderInfo.m_CustomColoredSkin)
 			{
 				GhostNinjaRenderInfo.m_ColorBody = ColorRGBA(1, 1, 1);
@@ -371,9 +379,29 @@ void CGhost::OnRender()
 			pRenderInfo = &GhostNinjaRenderInfo;
 		}
 
-		GameClient()->m_Players.RenderHook(ScreenRect, &Prev, &Player, pRenderInfo, -2, IntraTick);
-		GameClient()->m_Players.RenderPlayer(ScreenRect, &Prev, &Player, pRenderInfo, -2, IntraTick);
+		Function(Prev, Player, *pRenderInfo, IntraTick);
 	}
+}
+
+void CGhost::UpdatePresentation(CGameState &State, const CRenderContext &Context, const CScreenRect &ScreenRect, bool Audible)
+{
+	dbg_assert(&State == &Context.m_State, "presentation state does not match render context");
+
+	CScreenRect ExpandedScreenRect = ScreenRect;
+	ExpandedScreenRect.Expand(100.0f);
+	ForEachGhostFrame(Context, [&](const CNetObj_Character &Prev, const CNetObj_Character &Player, const CTeeRenderInfo &RenderInfo, float IntraTick) {
+		GameClient()->m_Players.UpdatePlayerPresentation(State, Context, ExpandedScreenRect, &Prev, &Player, &RenderInfo, -2, Audible, IntraTick);
+	});
+}
+
+void CGhost::OnRender(const CRenderContext &Context)
+{
+	CScreenRect ScreenRect = Graphics()->GetScreen();
+	ScreenRect.Expand(100.0f);
+	ForEachGhostFrame(Context, [&](const CNetObj_Character &Prev, const CNetObj_Character &Player, const CTeeRenderInfo &RenderInfo, float IntraTick) {
+		GameClient()->m_Players.RenderHook(ScreenRect, &Prev, &Player, &RenderInfo, -2, IntraTick);
+		GameClient()->m_Players.RenderPlayer(Context, ScreenRect, &Prev, &Player, &RenderInfo, -2, IntraTick);
+	});
 }
 
 void CGhost::UpdateTeeRenderInfo(CGhostItem &Ghost)
@@ -450,8 +478,6 @@ void CGhost::StartRender(int Tick)
 {
 	m_Rendering = true;
 	m_StartRenderTick = Tick;
-	for(auto &Ghost : m_aActiveGhosts)
-		Ghost.m_PlaybackPos = 0;
 }
 
 void CGhost::StopRender()

@@ -272,7 +272,7 @@ void CCamera::UpdateCamera()
 	State().m_UsingAutoSpecCamera = UsingAutoSpecCamera;
 }
 
-void CCamera::OnRender()
+void CCamera::UpdatePosition()
 {
 	if(State().m_CameraSmoothing)
 	{

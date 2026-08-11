@@ -212,16 +212,17 @@ void CScoreboard::RenderTitle(CUIRect TitleLabel, int Team, const char *pTitle, 
 	Ui()->DoLabel(&TitleLabel, pTitle, TitleFontSize, Team == TEAM_RED ? TEXTALIGN_ML : TEXTALIGN_MR, Props);
 }
 
-void CScoreboard::RenderTitleScore(CUIRect ScoreLabel, int Team, float TitleFontSize)
+void CScoreboard::RenderTitleScore(const CRenderContext &Context, CUIRect ScoreLabel, int Team, float TitleFontSize)
 {
 	// map best
 	char aScore[128] = "";
-	const CNetObj_GameInfo *pGameInfoObj = GameClient()->m_Snap.m_pGameInfoObj;
-	const bool TimeScore = GameClient()->FocusedGameInfo().m_TimeScore;
-	const bool Race7 = Client()->IsSixup() && pGameInfoObj && pGameInfoObj->m_GameFlags & protocol7::GAMEFLAG_RACE;
-	if(GameClient()->ReceivedDDNetPlayerFinishTimes() || TimeScore || Race7)
+	const CGameState &GameState = Context.m_State;
+	const CNetObj_GameInfo *pGameInfoObj = GameState.HasGameInfo() ? &GameState.GameInfo() : nullptr;
+	const bool TimeScore = GameState.CoreGameInfo().m_TimeScore;
+	const bool Race7 = Context.m_Session.Protocol() == EGameProtocol::SIXUP && pGameInfoObj && pGameInfoObj->m_GameFlags & protocol7::GAMEFLAG_RACE;
+	if(GameState.Runtime().m_ReceivedDDNetPlayerFinishTimes || TimeScore || Race7)
 	{
-		const CSessionMapMetadataState &MapMetadata = GameClient()->SessionContext().MapMetadata();
+		const CSessionMapMetadataState &MapMetadata = Context.m_Session.MapMetadata();
 		if(MapMetadata.BestTimeSeconds() != FinishTime::UNSET)
 		{
 			Ui()->RenderTime(ScoreLabel,
@@ -229,12 +230,12 @@ void CScoreboard::RenderTitleScore(CUIRect ScoreLabel, int Team, float TitleFont
 				MapMetadata.BestTimeSeconds(),
 				MapMetadata.BestTimeSeconds() == FinishTime::NOT_FINISHED_MILLIS,
 				MapMetadata.BestTimeMillis(),
-				GameClient()->ReceivedDDNetPlayerFinishTimesMillis(),
+				GameState.Runtime().m_ReceivedDDNetPlayerFinishTimesMillis,
 				m_TitleScore, m_TitleScoreMillis, TextRender()->DefaultTextColor());
 			return;
 		}
 	}
-	else if(GameClient()->IsTeamPlay()) // normal score
+	else if(pGameInfoObj && (pGameInfoObj->m_GameFlags & GAMEFLAG_TEAMS) != 0) // normal score
 	{
 		const CNetObj_GameData *pGameDataObj = GameClient()->m_Snap.m_pGameDataObj;
 		if(pGameDataObj)
@@ -263,7 +264,7 @@ void CScoreboard::RenderTitleScore(CUIRect ScoreLabel, int Team, float TitleFont
 	}
 }
 
-void CScoreboard::RenderTitleBar(CUIRect TitleBar, int Team, const char *pTitle)
+void CScoreboard::RenderTitleBar(const CRenderContext &Context, CUIRect TitleBar, int Team, const char *pTitle)
 {
 	dbg_assert(Team == TEAM_RED || Team == TEAM_BLUE, "Team invalid");
 
@@ -287,7 +288,7 @@ void CScoreboard::RenderTitleBar(CUIRect TitleBar, int Team, const char *pTitle)
 	}
 
 	RenderTitle(TitleLabel, Team, pTitle, TitleFontSize);
-	RenderTitleScore(ScoreLabel, Team, TitleFontSize);
+	RenderTitleScore(Context, ScoreLabel, Team, TitleFontSize);
 }
 
 void CScoreboard::RenderGoals(CUIRect Goals)
@@ -318,7 +319,7 @@ void CScoreboard::RenderGoals(CUIRect Goals)
 	}
 }
 
-void CScoreboard::RenderSpectators(CUIRect Spectators)
+void CScoreboard::RenderSpectators(const CGameState &GameState, CUIRect Spectators)
 {
 	Spectators.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 7.5f);
 	constexpr float SpectatorCut = 5.0f;
@@ -383,7 +384,7 @@ void CScoreboard::RenderSpectators(CUIRect Spectators)
 			const char *pClanName = ClientData.m_aClan;
 			if(pClanName[0] != '\0')
 			{
-				if(GameClient()->GameState(GameClient()->ActiveConnection()).LocalClientId() >= 0 && str_comp(pClanName, GameClient()->m_aClients[GameClient()->GameState(GameClient()->ActiveConnection()).LocalClientId()].m_aClan) == 0)
+				if(GameState.LocalClientId() >= 0 && str_comp(pClanName, GameClient()->m_aClients[GameState.LocalClientId()].m_aClan) == 0)
 				{
 					TextRender()->TextColor(color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClSameClanColor)));
 				}
@@ -399,7 +400,9 @@ void CScoreboard::RenderSpectators(CUIRect Spectators)
 			}
 		}
 
-		if(GameClient()->m_aClients[pInfo->m_ClientId].m_AuthLevel)
+		const CGameState::CClientSnapshot &SnapshotClient = GameState.Client(pInfo->m_ClientId);
+		const int AuthLevel = SnapshotClient.m_HasDDNetPlayer ? SnapshotClient.m_DDNetPlayer.m_AuthLevel : 0;
+		if(AuthLevel)
 		{
 			TextRender()->TextColor(color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClAuthedPlayerColor)));
 		}
@@ -467,19 +470,20 @@ void CScoreboard::RenderSpectators(CUIRect Spectators)
 	}
 }
 
-void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart, int CountEnd, CScoreboardRenderState &State)
+void CScoreboard::RenderScoreboard(const CRenderContext &Context, CUIRect Scoreboard, int Team, int CountStart, int CountEnd, CScoreboardRenderState &State)
 {
 	dbg_assert(Team == TEAM_RED || Team == TEAM_BLUE, "Team invalid");
 
-	const CNetObj_GameInfo *pGameInfoObj = GameClient()->m_Snap.m_pGameInfoObj;
+	const CGameState &GameState = Context.m_State;
+	const CNetObj_GameInfo *pGameInfoObj = GameState.HasGameInfo() ? &GameState.GameInfo() : nullptr;
 	const CNetObj_GameData *pGameDataObj = GameClient()->m_Snap.m_pGameDataObj;
-	const bool TimeScore = GameClient()->FocusedGameInfo().m_TimeScore;
-	const bool MillisecondScore = GameClient()->ReceivedDDNetPlayerFinishTimes();
-	const bool TrueMilliseconds = GameClient()->ReceivedDDNetPlayerFinishTimesMillis();
+	const bool TimeScore = GameState.CoreGameInfo().m_TimeScore;
+	const bool MillisecondScore = GameState.Runtime().m_ReceivedDDNetPlayerFinishTimes;
+	const bool TrueMilliseconds = GameState.Runtime().m_ReceivedDDNetPlayerFinishTimesMillis;
 	const int NumPlayers = CountEnd - CountStart;
 	const bool LowScoreboardWidth = Scoreboard.w < 350.0f;
 
-	bool Race7 = Client()->IsSixup() && pGameInfoObj && pGameInfoObj->m_GameFlags & protocol7::GAMEFLAG_RACE;
+	bool Race7 = Context.m_Session.Protocol() == EGameProtocol::SIXUP && pGameInfoObj && pGameInfoObj->m_GameFlags & protocol7::GAMEFLAG_RACE;
 
 	const bool UseTime = Race7 || TimeScore || MillisecondScore;
 
@@ -590,7 +594,7 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 			const CNetObj_PlayerInfo *pInfo = GameClient()->m_Snap.m_apInfoByDDTeamScore[i];
 			if(!pInfo || pInfo->m_Team != Team)
 				continue;
-			bool IsDead = Client()->m_TranslationContext.m_aClients[pInfo->m_ClientId].m_PlayerFlags7 & protocol7::PLAYERFLAG_DEAD;
+			bool IsDead = Context.m_Session.Protocol() == EGameProtocol::SIXUP && (GameState.Protocol7Client(pInfo->m_ClientId).m_PlayerFlags & protocol7::PLAYERFLAG_DEAD) != 0;
 			if(!RenderDead && IsDead)
 				continue;
 			if(RenderDead && !IsDead)
@@ -598,7 +602,7 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 			if(CountRendered++ < CountStart)
 				continue;
 
-			int DDTeam = GameClient()->FocusedTeams().Team(pInfo->m_ClientId);
+			int DDTeam = GameState.Teams().Team(pInfo->m_ClientId);
 			int NextDDTeam = 0;
 
 			ColorRGBA TextColor = TextRender()->DefaultTextColor();
@@ -611,7 +615,7 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 				if(!pInfoNext || pInfoNext->m_Team != Team)
 					continue;
 
-				NextDDTeam = GameClient()->FocusedTeams().Team(pInfoNext->m_ClientId);
+				NextDDTeam = GameState.Teams().Team(pInfoNext->m_ClientId);
 				break;
 			}
 
@@ -623,7 +627,7 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 					if(!pInfoPrev || pInfoPrev->m_Team != Team)
 						continue;
 
-					PrevDDTeam = GameClient()->FocusedTeams().Team(pInfoPrev->m_ClientId);
+					PrevDDTeam = GameState.Teams().Team(pInfoPrev->m_ClientId);
 					break;
 				}
 			}
@@ -688,6 +692,7 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 			}
 
 			const CGameClient::CClientData &ClientData = GameClient()->m_aClients[pInfo->m_ClientId];
+			const CGameState::CClientSnapshot &SnapshotClient = GameState.Client(pInfo->m_ClientId);
 			CPlayerElement &Player = m_aPlayers[pInfo->m_ClientId];
 
 			if(m_MouseUnlocked)
@@ -726,7 +731,9 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 			}
 			else if(MillisecondScore)
 			{
-				Ui()->RenderTime(ScorePosition, FontSize, ClientData.m_FinishTimeSeconds, ClientData.m_FinishTimeSeconds == FinishTime::NOT_FINISHED_MILLIS, ClientData.m_FinishTimeMillis, TrueMilliseconds,
+				const int FinishTimeSeconds = SnapshotClient.m_HasDDNetPlayer ? SnapshotClient.m_DDNetPlayer.m_FinishTimeSeconds : FinishTime::UNSET;
+				const int FinishTimeMillis = SnapshotClient.m_HasDDNetPlayer ? SnapshotClient.m_DDNetPlayer.m_FinishTimeMillis : 0;
+				Ui()->RenderTime(ScorePosition, FontSize, FinishTimeSeconds, FinishTimeSeconds == FinishTime::UNSET || FinishTimeSeconds == FinishTime::NOT_FINISHED_MILLIS, FinishTimeMillis, TrueMilliseconds,
 					Player.m_Score, Player.m_ScoreMillis, TextColor);
 			}
 			else if(TimeScore)
@@ -802,14 +809,15 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 				Player.m_Name.Update(TextRender(), aBuf, FontSize, NameLength, TEXTFLAG_RENDER | TEXTFLAG_ELLIPSIS_AT_END);
 
 				ColorRGBA NameColor = TextColor;
-				if(ClientData.m_AuthLevel)
+				const int AuthLevel = SnapshotClient.m_HasDDNetPlayer ? SnapshotClient.m_DDNetPlayer.m_AuthLevel : 0;
+				if(AuthLevel)
 				{
 					NameColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClAuthedPlayerColor));
 				}
 				Player.m_Name.Render(TextRender(), vec2(NameOffset, TextY), NameColor);
 
 				// ready / watching
-				if(Client()->IsSixup() && Client()->m_TranslationContext.m_aClients[pInfo->m_ClientId].m_PlayerFlags7 & protocol7::PLAYERFLAG_READY)
+				if(Context.m_Session.Protocol() == EGameProtocol::SIXUP && (Context.m_State.Protocol7Client(pInfo->m_ClientId).m_PlayerFlags & protocol7::PLAYERFLAG_READY) != 0)
 				{
 					Player.m_ReadyMark.Update(TextRender(), "✓", FontSize);
 					Player.m_ReadyMark.Render(TextRender(), vec2(NameOffset + Player.m_Name.Width(), TextY), ColorRGBA(0.1f, 1.0f, 0.1f, TextColor.a));
@@ -819,7 +827,7 @@ void CScoreboard::RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart,
 			// clan
 			{
 				ColorRGBA ClanColor = TextColor;
-				if(GameClient()->GameState(GameClient()->ActiveConnection()).LocalClientId() >= 0 && str_comp(ClientData.m_aClan, GameClient()->m_aClients[GameClient()->GameState(GameClient()->ActiveConnection()).LocalClientId()].m_aClan) == 0)
+				if(GameState.LocalClientId() >= 0 && str_comp(ClientData.m_aClan, GameClient()->m_aClients[GameState.LocalClientId()].m_aClan) == 0)
 				{
 					ClanColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClSameClanColor));
 				}
@@ -890,7 +898,7 @@ void CScoreboard::RenderRecordingNotification(float x)
 	Ui()->DoLabel(&Rect, aBuf, FontSize, TEXTALIGN_ML);
 }
 
-void CScoreboard::OnRender()
+void CScoreboard::OnRender(const CRenderContext &Context)
 {
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		return;
@@ -982,10 +990,10 @@ void CScoreboard::OnRender()
 		RedScoreboard.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_B, 7.5f);
 		BlueScoreboard.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_B, 7.5f);
 
-		RenderTitleBar(RedTitle, TEAM_RED, pRedTeamName == nullptr ? Localize("Red team") : pRedTeamName);
-		RenderTitleBar(BlueTitle, TEAM_BLUE, pBlueTeamName == nullptr ? Localize("Blue team") : pBlueTeamName);
-		RenderScoreboard(RedScoreboard, TEAM_RED, 0, NumPlayers, RenderState);
-		RenderScoreboard(BlueScoreboard, TEAM_BLUE, 0, NumPlayers, RenderState);
+		RenderTitleBar(Context, RedTitle, TEAM_RED, pRedTeamName == nullptr ? Localize("Red team") : pRedTeamName);
+		RenderTitleBar(Context, BlueTitle, TEAM_BLUE, pBlueTeamName == nullptr ? Localize("Blue team") : pBlueTeamName);
+		RenderScoreboard(Context, RedScoreboard, TEAM_RED, 0, NumPlayers, RenderState);
+		RenderScoreboard(Context, BlueScoreboard, TEAM_BLUE, 0, NumPlayers, RenderState);
 	}
 	else
 	{
@@ -1003,11 +1011,11 @@ void CScoreboard::OnRender()
 
 		CUIRect Title;
 		Scoreboard.HSplitTop(TitleHeight, &Title, &Scoreboard);
-		RenderTitleBar(Title, TEAM_GAME, pTitle);
+		RenderTitleBar(Context, Title, TEAM_GAME, pTitle);
 
 		if(NumPlayers <= 16)
 		{
-			RenderScoreboard(Scoreboard, TEAM_GAME, 0, NumPlayers, RenderState);
+			RenderScoreboard(Context, Scoreboard, TEAM_GAME, 0, NumPlayers, RenderState);
 		}
 		else if(NumPlayers <= 64)
 		{
@@ -1023,8 +1031,8 @@ void CScoreboard::OnRender()
 
 			CUIRect LeftScoreboard, RightScoreboard;
 			Scoreboard.VSplitMid(&LeftScoreboard, &RightScoreboard);
-			RenderScoreboard(LeftScoreboard, TEAM_GAME, 0, PlayersPerSide, RenderState);
-			RenderScoreboard(RightScoreboard, TEAM_GAME, PlayersPerSide, 2 * PlayersPerSide, RenderState);
+			RenderScoreboard(Context, LeftScoreboard, TEAM_GAME, 0, PlayersPerSide, RenderState);
+			RenderScoreboard(Context, RightScoreboard, TEAM_GAME, PlayersPerSide, 2 * PlayersPerSide, RenderState);
 		}
 		else
 		{
@@ -1035,7 +1043,7 @@ void CScoreboard::OnRender()
 			{
 				CUIRect Column;
 				RemainingScoreboard.VSplitLeft(Scoreboard.w / NumColumns, &Column, &RemainingScoreboard);
-				RenderScoreboard(Column, TEAM_GAME, i * PlayersPerColumn, (i + 1) * PlayersPerColumn, RenderState);
+				RenderScoreboard(Context, Column, TEAM_GAME, i * PlayersPerColumn, (i + 1) * PlayersPerColumn, RenderState);
 			}
 		}
 	}
@@ -1048,7 +1056,7 @@ void CScoreboard::OnRender()
 		Spectators.HSplitTop(5.0f, nullptr, &Spectators);
 		RenderGoals(Goals);
 	}
-	RenderSpectators(Spectators);
+	RenderSpectators(Context.m_State, Spectators);
 
 	RenderRecordingNotification((Screen.w / 7) * 4 + 10);
 

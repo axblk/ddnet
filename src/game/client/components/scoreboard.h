@@ -10,6 +10,9 @@
 #include <game/client/ui.h>
 #include <game/client/ui_rect.h>
 
+class CGameState;
+class CRenderContext;
+
 class CScoreboard : public CComponent
 {
 	struct CScoreboardRenderState
@@ -22,12 +25,12 @@ class CScoreboard : public CComponent
 			m_TeamStartX(0), m_TeamStartY(0), m_CurrentDDTeamSize(0) {}
 	};
 
-	void RenderTitleScore(CUIRect ScoreLabel, int Team, float TitleFontSize);
+	void RenderTitleScore(const CRenderContext &Context, CUIRect ScoreLabel, int Team, float TitleFontSize);
 	void RenderTitle(CUIRect TitleLabel, int Team, const char *pTitle, float TitleFontSize);
-	void RenderTitleBar(CUIRect TitleBar, int Team, const char *pTitle);
+	void RenderTitleBar(const CRenderContext &Context, CUIRect TitleBar, int Team, const char *pTitle);
 	void RenderGoals(CUIRect Goals);
-	void RenderSpectators(CUIRect Spectators);
-	void RenderScoreboard(CUIRect Scoreboard, int Team, int CountStart, int CountEnd, CScoreboardRenderState &State);
+	void RenderSpectators(const CGameState &GameState, CUIRect Spectators);
+	void RenderScoreboard(const CRenderContext &Context, CUIRect Scoreboard, int Team, int CountStart, int CountEnd, CScoreboardRenderState &State);
 	void RenderRecordingNotification(float x);
 
 	static void ConKeyScoreboard(IConsole::IResult *pResult, void *pUserData);
@@ -105,7 +108,7 @@ public:
 	void OnReset() override;
 	void OnShutdown() override;
 	void OnWindowResize() override;
-	void OnRender() override;
+	void OnRender(const CRenderContext &Context) override;
 	void OnRelease() override;
 	bool OnCursorMove(float x, float y, IInput::ECursorType CursorType) override;
 	bool OnInput(const IInput::CEvent &Event) override;

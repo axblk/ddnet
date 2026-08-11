@@ -74,6 +74,19 @@ public:
 	bool m_Supports128Teams = false;
 };
 
+class CGameTickInfo
+{
+public:
+	int m_PrevGameTick = 0;
+	int m_GameTick = 0;
+	int m_PredGameTick = 0;
+	float m_IntraGameTick = 0.0f;
+	float m_IntraGameTickSincePrev = 0.0f;
+	float m_PredIntraGameTick = 0.0f;
+	float m_GameTickTime = 0.0f;
+	int m_GameTickSpeed = 0;
+};
+
 class CGameStateId
 {
 	uint64_t m_Value = 0;
@@ -309,11 +322,15 @@ public:
 		bool m_HasCharacter = false;
 		bool m_HasPrevCharacter = false;
 		bool m_HasExtendedCharacter = false;
+		bool m_HasDDNetPlayer = false;
+		bool m_HasSpecChar = false;
 		CNetObj_PlayerInfo m_PlayerInfo = {};
 		CNetObj_ClientInfo m_ClientInfo = {};
 		CNetObj_Character m_Character = {};
 		CNetObj_Character m_PrevCharacter = {};
 		CNetObj_DDNetCharacter m_ExtendedCharacter = {};
+		CNetObj_DDNetPlayer m_DDNetPlayer = {};
+		CNetObj_SpecChar m_SpecChar = {};
 	};
 
 	class CPredictedClient

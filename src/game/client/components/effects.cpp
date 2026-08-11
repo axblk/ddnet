@@ -133,7 +133,7 @@ void CEffects::SmokeTrail(CGameState &State, vec2 Pos, vec2 Vel, float Alpha, fl
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_PROJECTILE_TRAIL, p, TimePassed);
 }
 
-void CEffects::SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, float Alpha, float Volume)
+void CEffects::SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, float Alpha, float Volume, bool PlaySound)
 {
 	CGameState::CEffectClockState &EffectClock = State.EffectClock();
 	if(EffectClock.m_Add100hz)
@@ -152,7 +152,7 @@ void CEffects::SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, f
 		p.m_StartAlpha = Alpha;
 		GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 	}
-	if(g_Config.m_SndGame)
+	if(PlaySound && g_Config.m_SndGame)
 	{
 		if(EffectClock.TrySkidSound(time(), time_freq()))
 			GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_SKID, Volume, Pos);

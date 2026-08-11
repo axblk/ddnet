@@ -18,7 +18,7 @@ public:
 
 	void BulletTrail(CGameState &State, vec2 Pos, float Alpha, float TimePassed);
 	void SmokeTrail(CGameState &State, vec2 Pos, vec2 Vel, float Alpha, float TimePassed);
-	void SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, float Alpha, float Volume);
+	void SkidTrail(CGameState &State, vec2 Pos, vec2 Vel, int Direction, float Alpha, float Volume, bool PlaySound);
 	void Explosion(CGameState &State, vec2 Pos, float Alpha);
 	void HammerHit(CGameState &State, vec2 Pos, float Alpha, float Volume);
 	void AirJump(CGameState &State, vec2 Pos, float Alpha, float Volume);

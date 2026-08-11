@@ -22,13 +22,13 @@ public:
 	int Sizeof() const override { return sizeof(*this); }
 
 	void OnReset() override;
-	void OnRender() override;
 	void OnMessage(int MsgType, void *pRawMsg) override;
 	bool OnCursorMove(float x, float y, IInput::ECursorType CursorType) override;
 	void OnConsoleInit() override;
 	virtual void OnPlayerDeath();
 
 	int SnapInput(int *pData);
+	void Update();
 	void ClampMousePos();
 	void ResetInput(int Dummy);
 	void ResetInput(CStreamId StreamId);

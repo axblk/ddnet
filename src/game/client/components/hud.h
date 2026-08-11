@@ -78,9 +78,9 @@ class CHud : public CComponent
 	void RenderPlayerState(int ClientId);
 
 	int m_LastSpectatorCountTick;
-	void RenderSpectatorCount();
-	void RenderDummyActions();
-	void RenderMovementInformation();
+	void RenderSpectatorCount(const CRenderContext &Context);
+	void RenderDummyActions(const CRenderContext &Context);
+	void RenderMovementInformation(const CRenderContext &Context);
 
 	void UpdateMovementInformationTextContainer(STextContainerIndex &TextContainer, float FontSize, float Value, float &PrevValue);
 	void RenderMovementInformationTextContainer(STextContainerIndex &TextContainer, const ColorRGBA &Color, float X, float Y);
@@ -92,13 +92,13 @@ class CHud : public CComponent
 		vec2 m_Speed;
 		float m_Angle = 0.0f;
 	};
-	class CMovementInformation GetMovementInformation(int ClientId, int Conn) const;
+	class CMovementInformation GetMovementInformation(const CRenderContext &Context, int ClientId, int Conn) const;
 
-	void RenderGameTimer();
+	void RenderGameTimer(const CRenderContext &Context);
 	void RenderPauseNotification();
 	void RenderSuddenDeath();
 
-	void RenderScoreHud();
+	void RenderScoreHud(const CRenderContext &Context);
 	int m_LastLocalClientId = -1;
 
 	void RenderSpectatorHud();
@@ -114,7 +114,7 @@ public:
 	void ResetHudContainers();
 	void OnWindowResize() override;
 	void OnReset() override;
-	void OnRender() override;
+	void OnRender(const CRenderContext &Context) override;
 	void OnInit() override;
 	void OnNewSnapshot() override;
 
@@ -123,10 +123,10 @@ public:
 	void RenderNinjaBarPos(float x, float y, float Width, float Height, float Progress, float Alpha = 1.0f);
 
 private:
-	void RenderRecord();
+	void RenderRecord(const CRenderContext &Context);
 	void RenderDDRaceEffects();
 
-	inline float GetMovementInformationBoxHeight();
+	inline float GetMovementInformationBoxHeight(const CRenderContext &Context);
 	inline int GetDigitsIndex(int Value, int Max);
 
 	// Quad Offsets

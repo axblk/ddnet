@@ -60,6 +60,7 @@ void CMenus::HandleDemoSeeking(float PositionToSeek, float TimeToSeek)
 		GameClient()->GameState(GameClient()->ActiveConnection()).Particles().Reset();
 		GameClient()->m_Sounds.OnReset();
 		GameClient()->m_Scoreboard.OnReset();
+		GameClient()->SessionContext().Stats().Reset();
 		GameClient()->m_Statboard.OnReset();
 		GameClient()->m_SuppressEvents = true;
 		if(TimeToSeek != 0.0f)

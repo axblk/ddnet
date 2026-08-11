@@ -726,7 +726,8 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 				if(Conn == ActiveConnection())
 					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_CAPTURE);
 				int ClientId = std::clamp(aParaI[1], 0, MAX_CLIENTS - 1);
-				m_aStats[ClientId].m_FlagCaptures++;
+				if(!Dummy)
+					SessionContext().Stats().Client(ClientId).m_FlagCaptures++;
 
 				float Time = aParaI[2] / (float)Client()->GameTickSpeed();
 				if(Time <= 60)

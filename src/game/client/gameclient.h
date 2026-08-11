@@ -187,7 +187,7 @@ private:
 	void ProcessEvents();
 	void ProcessSnapshot();
 	void ProcessPrediction();
-	void UpdatePositions();
+	void UpdatePositions(const CGameState &State);
 	const CLocalPlayerProfile &RefreshLegacyPlayerProfile(int Conn);
 
 	int m_EditorMovementDelay = 5;
@@ -389,14 +389,6 @@ public:
 		bool m_Friend;
 		bool m_Foe;
 
-		int m_AuthLevel;
-		bool m_Afk;
-		bool m_Paused;
-		bool m_Spec;
-
-		int m_FinishTimeSeconds;
-		int m_FinishTimeMillis;
-
 		// Editor allows 256 switches for now.
 		bool m_aSwitchStates[256];
 
@@ -415,8 +407,6 @@ public:
 		int64_t m_aSmoothLen[2];
 		vec2 m_aPredPos[200];
 		int m_aPredTick[200];
-		bool m_SpecCharPresent;
-		vec2 m_SpecChar;
 
 		void UpdateSkinInfo(const CGameState &State);
 		void UpdateSkin7HatSprite(const CGameState::CProtocol7ClientState &Protocol7Client);
@@ -429,45 +419,6 @@ public:
 	};
 
 	CClientData m_aClients[MAX_CLIENTS];
-
-	class CClientStats
-	{
-		int m_IngameTicks;
-		int m_JoinTick;
-		bool m_Active;
-
-	public:
-		CClientStats();
-
-		int m_aFragsWith[NUM_WEAPONS];
-		int m_aDeathsFrom[NUM_WEAPONS];
-		int m_Frags;
-		int m_Deaths;
-		int m_Suicides;
-		int m_BestSpree;
-		int m_CurrentSpree;
-
-		int m_FlagGrabs;
-		int m_FlagCaptures;
-
-		void Reset();
-
-		bool IsActive() const { return m_Active; }
-		void JoinGame(int Tick)
-		{
-			m_Active = true;
-			m_JoinTick = Tick;
-		}
-		void JoinSpec(int Tick)
-		{
-			m_Active = false;
-			m_IngameTicks += Tick - m_JoinTick;
-		}
-		int GetIngameTicks(int Tick) const { return m_IngameTicks + Tick - m_JoinTick; }
-		float GetFPM(int Tick, int TickSpeed) const { return (float)(m_Frags * TickSpeed * 60) / GetIngameTicks(Tick); }
-	};
-
-	CClientStats m_aStats[MAX_CLIENTS];
 
 	CRenderTools m_RenderTools;
 	CRenderMap m_RenderMap;
@@ -800,7 +751,7 @@ private:
 	void UpdateInputRoutes();
 	void UpdateLocalTuning();
 	void UpdatePrediction();
-	void UpdateSpectatorCursor();
+	void UpdateSpectatorCursor(const CGameState &State);
 	void UpdateRenderedCharacters();
 	void HandlePredictedEvents(int Tick);
 
@@ -821,10 +772,10 @@ private:
 	float m_LastFollowFactor;
 	bool m_LastDummyConnected;
 
-	void HandleMultiView();
+	void HandleMultiView(const CGameState &State);
 	bool IsMultiViewIdSet();
 	void CleanMultiViewIds();
-	bool InitMultiView(int Team);
+	bool InitMultiView(const CGameState &State, int Team);
 	float CalculateMultiViewMultiplier(vec2 TargetPos);
 	float CalculateMultiViewZoom(vec2 MinPos, vec2 MaxPos, float Vel);
 	float MapValue(float MaxValue, float MinValue, float MaxRange, float MinRange, float Value);

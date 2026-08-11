@@ -401,6 +401,14 @@ void CGameState::ApplySnapshot(const IClient &Client, int Conn)
 				SnapshotClient.m_HasExtendedCharacter = true;
 				SnapshotClient.m_ExtendedCharacter = *static_cast<const CNetObj_DDNetCharacter *>(Item.m_pData);
 				break;
+			case NETOBJTYPE_DDNETPLAYER:
+				SnapshotClient.m_HasDDNetPlayer = true;
+				SnapshotClient.m_DDNetPlayer = *static_cast<const CNetObj_DDNetPlayer *>(Item.m_pData);
+				break;
+			case NETOBJTYPE_SPECCHAR:
+				SnapshotClient.m_HasSpecChar = true;
+				SnapshotClient.m_SpecChar = *static_cast<const CNetObj_SpecChar *>(Item.m_pData);
+				break;
 			}
 		}
 	}
@@ -427,13 +435,25 @@ void CGameState::ApplySnapshotData(int Tick, int NumItems, std::array<CClientSna
 	m_HasSpectatorInfo = false;
 	m_SpectatorInfo = {};
 	int LocalClientId = -1;
+	bool HasUnsetDDNetFinishTimes = false;
+	bool HasTrueMillisecondFinishTimes = false;
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
 		if(!m_aClients[ClientId].m_Active)
 			m_aProtocol7Clients[ClientId].Reset();
 		if(m_aClients[ClientId].m_HasPlayerInfo && m_aClients[ClientId].m_PlayerInfo.m_Local)
 			LocalClientId = ClientId;
+		if(m_aClients[ClientId].m_HasDDNetPlayer)
+		{
+			m_Runtime.m_ReceivedDDNetPlayer = true;
+			if(m_aClients[ClientId].m_DDNetPlayer.m_FinishTimeSeconds == FinishTime::UNSET)
+				HasUnsetDDNetFinishTimes = true;
+			else if(m_aClients[ClientId].m_DDNetPlayer.m_FinishTimeMillis % 10 != 0)
+				HasTrueMillisecondFinishTimes = true;
+		}
 	}
+	m_Runtime.m_ReceivedDDNetPlayerFinishTimes = m_Runtime.m_ReceivedDDNetPlayer && !HasUnsetDDNetFinishTimes;
+	m_Runtime.m_ReceivedDDNetPlayerFinishTimesMillis = m_Runtime.m_ReceivedDDNetPlayer && HasTrueMillisecondFinishTimes;
 	ApplySnapshotMetadata(Tick, NumItems, LocalClientId);
 	RebuildGameWorld();
 }
@@ -603,6 +623,8 @@ uint64_t CGameState::SnapshotDigest() const
 		DigestValue(Digest, SnapshotClient.m_HasCharacter);
 		DigestValue(Digest, SnapshotClient.m_HasPrevCharacter);
 		DigestValue(Digest, SnapshotClient.m_HasExtendedCharacter);
+		DigestValue(Digest, SnapshotClient.m_HasDDNetPlayer);
+		DigestValue(Digest, SnapshotClient.m_HasSpecChar);
 		if(SnapshotClient.m_HasPlayerInfo)
 			DigestValue(Digest, SnapshotClient.m_PlayerInfo);
 		if(SnapshotClient.m_HasClientInfo)
@@ -613,6 +635,10 @@ uint64_t CGameState::SnapshotDigest() const
 			DigestValue(Digest, SnapshotClient.m_PrevCharacter);
 		if(SnapshotClient.m_HasExtendedCharacter)
 			DigestValue(Digest, SnapshotClient.m_ExtendedCharacter);
+		if(SnapshotClient.m_HasDDNetPlayer)
+			DigestValue(Digest, SnapshotClient.m_DDNetPlayer);
+		if(SnapshotClient.m_HasSpecChar)
+			DigestValue(Digest, SnapshotClient.m_SpecChar);
 		const CProtocol7ClientState &Protocol7Client = m_aProtocol7Clients[ClientId];
 		if(Protocol7Client.m_Active)
 		{

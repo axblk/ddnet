@@ -140,8 +140,13 @@ void CMenus::RenderGame(CUIRect MainView)
 	bool Spec = false;
 	if(GameClient()->m_Snap.m_LocalClientId >= 0)
 	{
-		Paused = GameClient()->m_aClients[GameClient()->m_Snap.m_LocalClientId].m_Paused;
-		Spec = GameClient()->m_aClients[GameClient()->m_Snap.m_LocalClientId].m_Spec;
+		const CGameState &State = GameClient()->GameState(GameClient()->ActiveConnection());
+		const CGameState::CClientSnapshot &LocalClient = State.Client(GameClient()->m_Snap.m_LocalClientId);
+		if(LocalClient.m_HasDDNetPlayer)
+		{
+			Paused = (LocalClient.m_DDNetPlayer.m_Flags & EXPLAYERFLAG_PAUSED) != 0;
+			Spec = (LocalClient.m_DDNetPlayer.m_Flags & EXPLAYERFLAG_SPEC) != 0;
+		}
 	}
 
 	if(GameClient()->m_Snap.m_pLocalInfo && GameClient()->m_Snap.m_pGameInfoObj && !Paused && !Spec)

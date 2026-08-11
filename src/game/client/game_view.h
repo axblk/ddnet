@@ -12,6 +12,8 @@
 #include <memory>
 #include <vector>
 
+class CGameSessionContext;
+
 class CGameViewId
 {
 	uint64_t m_Value = 0;
@@ -259,8 +261,14 @@ public:
 class CRenderContext
 {
 public:
+	const CGameSessionContext &m_Session;
 	const CGameState &m_State;
 	const CGameView &m_View;
+	CGameTickInfo m_Time;
+
+	CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time);
+
+	bool IsOtherTeam(int ClientId) const;
 };
 
 class CRenderOutput
@@ -269,6 +277,7 @@ public:
 	virtual ~CRenderOutput() = default;
 	virtual void BeginView(const CViewport &Viewport, vec2 CameraPosition, float Zoom) = 0;
 	virtual void DrawCharacter(int ClientId, vec2 Position, bool Local) = 0;
+	virtual void DrawSpectatorCharacter(int ClientId, vec2 Position, bool OtherTeam) = 0;
 	virtual void EndView() = 0;
 };
 

@@ -205,6 +205,56 @@ void CGameState::CInputState::Reset()
 	m_LastSendTime = 0;
 }
 
+bool CGameState::CInputState::ApplyStrokedCommand(const char *pCommand, int Stroke, bool BlockGameplayPress)
+{
+	struct CCommand
+	{
+		const char *m_pName;
+		int *m_pValue;
+		bool m_Counter;
+		int m_PressValue;
+		bool m_Blockable;
+	};
+	const CCommand aCommands[] = {
+		{"+left", &m_InputDirectionLeft, false, 1, true},
+		{"+right", &m_InputDirectionRight, false, 1, true},
+		{"+jump", &m_InputData.m_Jump, false, 1, true},
+		{"+hook", &m_InputData.m_Hook, false, 1, true},
+		{"+fire", &m_InputData.m_Fire, true, 1, true},
+		{"+showhookcoll", &m_ShowHookColl, false, 1, true},
+		{"+weapon1", &m_InputData.m_WantedWeapon, false, 1, false},
+		{"+weapon2", &m_InputData.m_WantedWeapon, false, 2, false},
+		{"+weapon3", &m_InputData.m_WantedWeapon, false, 3, false},
+		{"+weapon4", &m_InputData.m_WantedWeapon, false, 4, false},
+		{"+weapon5", &m_InputData.m_WantedWeapon, false, 5, false},
+		{"+nextweapon", &m_InputData.m_NextWeapon, true, 1, true},
+		{"+prevweapon", &m_InputData.m_PrevWeapon, true, 1, true},
+	};
+	const auto It = std::find_if(std::begin(aCommands), std::end(aCommands), [pCommand](const CCommand &Command) { return str_comp(Command.m_pName, pCommand) == 0; });
+	if(It == std::end(aCommands))
+		return false;
+	if(BlockGameplayPress && Stroke && It->m_Blockable)
+	{
+		if(It->m_pValue == &m_InputData.m_NextWeapon || It->m_pValue == &m_InputData.m_PrevWeapon)
+			m_InputData.m_WantedWeapon = 0;
+		return true;
+	}
+	int &Value = *It->m_pValue;
+	if(It->m_Counter)
+	{
+		if((Value & 1) != Stroke)
+			Value++;
+		Value &= INPUT_STATE_MASK;
+		if(It->m_pValue == &m_InputData.m_NextWeapon || It->m_pValue == &m_InputData.m_PrevWeapon)
+			m_InputData.m_WantedWeapon = 0;
+	}
+	else if(Stroke)
+		Value = It->m_PressValue;
+	else if(It->m_pValue != &m_InputData.m_WantedWeapon)
+		Value = 0;
+	return true;
+}
+
 void CGameState::CRaceMessageState::Reset()
 {
 	m_CheckpointDiff = 0.0f;
@@ -301,6 +351,10 @@ void CGameState::Reset()
 	m_PredictionTick = 0;
 	m_aTuning.fill(CTuningParams::DEFAULT);
 	m_aClients = {};
+	m_vClientIdentities.assign(MAX_CLIENTS, {});
+	m_vClientEmoticons.assign(MAX_CLIENTS, {});
+	for(CClientEmoticonState &Emoticon : m_vClientEmoticons)
+		Emoticon.Reset();
 	m_vRenderedClients.assign(MAX_CLIENTS, {});
 	m_vClientPredictionHistory.assign(MAX_CLIENTS, {});
 	m_aPredictedClients = {};
@@ -315,6 +369,8 @@ void CGameState::Reset()
 	m_GameInfo = {};
 	m_HasSpectatorInfo = false;
 	m_SpectatorInfo = {};
+	m_HasSpectatorCount = false;
+	m_SpectatorCount = {};
 	m_CoreGameInfo = {};
 	m_Teams.Reset();
 	m_GameWorld.Clear();
@@ -366,6 +422,8 @@ void CGameState::ApplySnapshot(const IClient &Client, int Conn)
 	bool HasGameInfo = false;
 	CNetObj_SpectatorInfo SpectatorInfo = {};
 	bool HasSpectatorInfo = false;
+	CNetObj_SpectatorCount SpectatorCount = {};
+	bool HasSpectatorCount = false;
 	std::vector<CEntitySnapshot> vEntityEx;
 	for(int i = 0; i < NumItems; i++)
 	{
@@ -379,6 +437,11 @@ void CGameState::ApplySnapshot(const IClient &Client, int Conn)
 		{
 			HasSpectatorInfo = true;
 			SpectatorInfo = *static_cast<const CNetObj_SpectatorInfo *>(Item.m_pData);
+		}
+		else if(Item.m_Type == NETOBJTYPE_SPECTATORCOUNT)
+		{
+			HasSpectatorCount = true;
+			SpectatorCount = *static_cast<const CNetObj_SpectatorCount *>(Item.m_pData);
 		}
 		else if(Item.m_Type == NETOBJTYPE_ENTITYEX)
 		{
@@ -481,16 +544,34 @@ void CGameState::ApplySnapshot(const IClient &Client, int Conn)
 	ApplySnapshotData(Client.GameTick(Conn), NumItems, std::move(aClients), HasGameInfo ? &GameInfo : nullptr, std::move(vEntities));
 	if(HasSpectatorInfo)
 		ApplySpectatorInfo(SpectatorInfo);
+	if(HasSpectatorCount)
+		ApplySpectatorCount(SpectatorCount);
 }
 
 void CGameState::ApplySnapshotData(int Tick, int NumItems, std::array<CClientSnapshot, MAX_CLIENTS> aClients, const CNetObj_GameInfo *pGameInfo, std::vector<CEntitySnapshot> vEntities)
 {
 	m_aClients = std::move(aClients);
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+	{
+		const CClientSnapshot &SnapshotClient = m_aClients[ClientId];
+		if(!SnapshotClient.m_HasPlayerInfo)
+		{
+			m_vClientIdentities[ClientId].Reset();
+			m_vClientEmoticons[ClientId].Reset();
+		}
+		else if(SnapshotClient.m_HasClientInfo)
+		{
+			m_vClientIdentities[ClientId].m_Active = true;
+			m_vClientIdentities[ClientId].m_ClientInfo = SnapshotClient.m_ClientInfo;
+		}
+	}
 	m_vEntities = std::move(vEntities);
 	m_HasGameInfo = pGameInfo != nullptr;
 	m_GameInfo = pGameInfo ? *pGameInfo : CNetObj_GameInfo{};
 	m_HasSpectatorInfo = false;
 	m_SpectatorInfo = {};
+	m_HasSpectatorCount = false;
+	m_SpectatorCount = {};
 	int LocalClientId = -1;
 	bool HasUnsetDDNetFinishTimes = false;
 	bool HasTrueMillisecondFinishTimes = false;
@@ -515,6 +596,16 @@ void CGameState::ApplySnapshotData(int Tick, int NumItems, std::array<CClientSna
 	RebuildGameWorld();
 }
 
+void CGameState::ApplyEmoticon(int ClientId, int Emoticon, int Tick, float StartFraction)
+{
+	if(!in_range(ClientId, MAX_CLIENTS - 1))
+		return;
+	CClientEmoticonState &State = m_vClientEmoticons[ClientId];
+	State.m_Emoticon = Emoticon;
+	State.m_StartTick = Tick;
+	State.m_StartFraction = StartFraction;
+}
+
 void CGameState::ApplySnapshotMetadata(int Tick, int NumItems, int LocalClientId)
 {
 	m_SnapshotTick = Tick;
@@ -535,6 +626,12 @@ const CNetObj_DDNetCharacter *CGameState::ExtendedCharacter(int ClientId) const
 	if(ClientId < 0 || ClientId >= MAX_CLIENTS || !m_aClients[ClientId].m_HasExtendedCharacter)
 		return nullptr;
 	return &m_aClients[ClientId].m_ExtendedCharacter;
+}
+
+const CNetObj_GameData *CGameState::GameData() const
+{
+	const auto It = std::find_if(m_vEntities.begin(), m_vEntities.end(), [](const CEntitySnapshot &Entity) { return Entity.m_Type == NETOBJTYPE_GAMEDATA && Entity.m_vData.size() >= sizeof(CNetObj_GameData); });
+	return It == m_vEntities.end() ? nullptr : reinterpret_cast<const CNetObj_GameData *>(It->m_vData.data());
 }
 
 void CGameState::SetTeam(int ClientId, int Team)
@@ -725,6 +822,9 @@ uint64_t CGameState::SnapshotDigest() const
 	DigestValue(Digest, m_HasSpectatorInfo);
 	if(m_HasSpectatorInfo)
 		DigestValue(Digest, m_SpectatorInfo);
+	DigestValue(Digest, m_HasSpectatorCount);
+	if(m_HasSpectatorCount)
+		DigestValue(Digest, m_SpectatorCount);
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
 		const CClientSnapshot &SnapshotClient = m_aClients[ClientId];
@@ -757,6 +857,14 @@ uint64_t CGameState::SnapshotDigest() const
 			DigestValue(Digest, SnapshotClient.m_DDNetPlayer);
 		if(SnapshotClient.m_HasSpecChar)
 			DigestValue(Digest, SnapshotClient.m_SpecChar);
+		const CClientEmoticonState &Emoticon = m_vClientEmoticons[ClientId];
+		DigestValue(Digest, Emoticon.m_Emoticon);
+		DigestValue(Digest, Emoticon.m_StartFraction);
+		DigestValue(Digest, Emoticon.m_StartTick);
+		const CClientIdentityState &Identity = m_vClientIdentities[ClientId];
+		DigestValue(Digest, Identity.m_Active);
+		if(Identity.m_Active)
+			DigestValue(Digest, Identity.m_ClientInfo);
 		const CProtocol7ClientState &Protocol7Client = m_aProtocol7Clients[ClientId];
 		if(Protocol7Client.m_Active)
 		{

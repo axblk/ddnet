@@ -90,6 +90,15 @@ using namespace std::chrono_literals;
 
 namespace
 {
+	int64_t CurrentPresentationTime()
+	{
+#if defined(CONF_VIDEORECORDER)
+		if(IVideo::Current())
+			return IVideo::Current()->Time();
+#endif
+		return time_get();
+	}
+
 	bool UsePredictedEnvelopeTime(const CGameTickInfo &Time, const CGameView &View)
 	{
 		return !Time.m_IsDemoPlayback && g_Config.m_ClPredict && (!View.IsSpectating() || View.SpectatorId() == SPEC_FREEVIEW);
@@ -107,6 +116,15 @@ namespace
 			m_Graphics(Graphics),
 			m_ClearColor(ClearColor)
 		{
+		}
+
+		bool IsVideoOutput() const override
+		{
+#if defined(CONF_VIDEORECORDER)
+			return IVideo::Current() != nullptr;
+#else
+			return false;
+#endif
 		}
 
 		void BeginView(const CViewport &Viewport, vec2 CameraPosition, float Zoom) override
@@ -171,6 +189,27 @@ const CSessionPresentation &CGameClient::SessionPresentation(CSessionId SessionI
 	const CSessionPresentation *pPresentation = m_SessionPresentations.Find(SessionId);
 	dbg_assert(pPresentation != nullptr, "missing session presentation");
 	return *pPresentation;
+}
+
+void CGameClient::ResetInfoMessages(CSessionId SessionId)
+{
+	CGameSessionContext *pContext = m_SessionContexts.Find(SessionId);
+	dbg_assert(pContext != nullptr, "missing info message session context");
+	pContext->InfoMessages().Reset();
+	m_InfoMessages.ResetPresentation(SessionId);
+}
+
+void CGameClient::ResetChat(CSessionId SessionId)
+{
+	m_Chat.ResetSession(SessionId);
+}
+
+void CGameClient::AddChatLine(CSessionId SessionId, int Conn, int ClientId, int Team, const char *pText)
+{
+	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
+	CGameState *pState = pSession != nullptr ? pSession->GameStates().FindByStream(CStreamId(Conn + 1)) : nullptr;
+	if(pState != nullptr)
+		m_Chat.AddLine(*pSession, *pState, CurrentPresentationTime(), SessionId == Client()->DemoSessionId(), SessionId == Client()->FocusedSessionId(), ClientId, Team, pText);
 }
 
 CGameState &CGameClient::GameState(int Conn)
@@ -581,9 +620,38 @@ void CGameClient::OnUpdate()
 
 	// handle touch events
 	const std::vector<IInput::CTouchFingerState> &vTouchFingerStates = Input()->TouchFingerStates();
+	const int TouchConnection = ActiveConnection();
+	CGameSessionContext &TouchSession = SessionContext();
+	CGameState &TouchState = GameState(TouchConnection);
+	CGameView &TouchView = LegacyGameView();
+	const CViewport &TouchViewport = TouchView.Viewport();
+	const float TouchAspectRatio = TouchViewport.m_Width > 0 && TouchViewport.m_Height > 0 ? TouchViewport.m_Width / (float)TouchViewport.m_Height : Graphics()->ScreenAspect();
+	CTouchControllerContext TouchContext{
+		TouchSession,
+		TouchState,
+		TouchView,
+		*TouchSession.MapContext().Collision(),
+		TouchState.StreamId(),
+		Client()->State() == IClient::STATE_ONLINE || Client()->State() == IClient::STATE_DEMOPLAYBACK,
+		Client()->IsDemoPlayback(),
+		Client()->DummyAllowed(),
+		Client()->DummyConnected(),
+		Client()->RconAuthed(),
+		TouchAspectRatio,
+		time_get_nanoseconds(),
+	};
 	bool TouchHandled = false;
 	for(auto &pComponent : m_vpInput)
 	{
+		if(pComponent == &m_TouchControls)
+		{
+			if(m_TouchControls.UpdateController(TouchContext, vTouchFingerStates, !TouchHandled) && !TouchHandled)
+			{
+				Input()->ClearTouchDeltas();
+				TouchHandled = true;
+			}
+			continue;
+		}
 		if(TouchHandled)
 		{
 			// Also update inactive components so they can handle touch fingers being released.
@@ -607,6 +675,9 @@ void CGameClient::OnUpdate()
 		Input.m_MousePosOnAction = Input.m_MousePos;
 		m_Binds.m_MouseOnAction = false;
 	}
+	const int64_t Now = CurrentPresentationTime();
+	for(const auto &pContext : m_SessionContexts.Contexts())
+		pContext->Vote().Expire(Now, time_freq());
 
 	for(auto &pComponent : m_vpAll)
 	{
@@ -739,6 +810,7 @@ void CGameClient::OnConnected()
 	m_GameWorld.m_PredictedEvents.clear();
 	m_RaceHelper.Init(this);
 	SessionContext().SetDescriptor(Map()->BaseName(), Client()->IsSixup() ? EGameProtocol::SIXUP : EGameProtocol::SIX);
+	SessionContext().SetServerCapAnyPlayerFlag(Client()->ServerCapAnyPlayerFlag());
 	SessionPresentation(SessionContext().Id()).Load(SessionContext());
 	// The compatibility connect path is focused and audible before its first snapshot arrives.
 	m_SessionPresentations.SetAudible(SessionContext().Id());
@@ -778,6 +850,8 @@ void CGameClient::OnReset()
 	SessionContext().Broadcast().Reset();
 	SessionContext().MapMetadata().Reset();
 	SessionContext().Vote().Reset();
+	ResetInfoMessages(SessionContext().Id());
+	ResetChat(SessionContext().Id());
 
 	InvalidateSnapshot();
 
@@ -895,17 +969,16 @@ void CGameClient::OnRender()
 	GameTickInfo.m_IntraGameTickSincePrev = Client()->IntraGameTickSincePrev(ActiveConn);
 	GameTickInfo.m_PredIntraGameTick = Client()->PredIntraGameTick(ActiveConn);
 	GameTickInfo.m_GameTickTime = Client()->GameTickTime(ActiveConn);
+	GameTickInfo.m_FrameTimeAverage = Client()->FrameTimeAverage();
 	GameTickInfo.m_GameTickSpeed = Client()->GameTickSpeed();
-	GameTickInfo.m_PresentationTime = time_get();
+	GameTickInfo.m_PredictionTime = Client()->GetPredictionTime(ActiveConn);
+	GameTickInfo.m_PresentationTime = CurrentPresentationTime();
 	GameTickInfo.m_PresentationTimeFrequency = time_freq();
 	GameTickInfo.m_AnimationPlaybackSpeed = GetAnimationPlaybackSpeed();
 	GameTickInfo.m_IsGameActive = Client()->State() == IClient::STATE_ONLINE || Client()->State() == IClient::STATE_DEMOPLAYBACK;
 	GameTickInfo.m_IsDemoPlayback = Client()->IsDemoPlayback();
 	GameTickInfo.m_IsDemoPlaybackPaused = IsDemoPlaybackPaused();
-#if defined(CONF_VIDEORECORDER)
-	if(IVideo::Current())
-		GameTickInfo.m_PresentationTime = IVideo::Current()->Time();
-#endif
+	GameTickInfo.m_ConnectionProblems = Client()->ConnectionProblems();
 	const EPresentationPlayback Playback = GameTickInfo.m_AnimationPlaybackSpeed > 0.0f ? EPresentationPlayback::PLAYING : EPresentationPlayback::PAUSED;
 	UpdateRenderedClients(ActiveSession, ActiveState, ActiveConn, GameTickInfo, Playback);
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
@@ -980,6 +1053,7 @@ void CGameClient::OnRender()
 	Scheduler.Run(
 		aRenderRequests,
 		[this](const CPresentationContext &Context) {
+			SessionPresentation(Context.m_Session.Id()).UpdateClients(Context);
 			m_Effects.Update(Context);
 			m_Particles.Update(Context);
 			m_DamageInd.Update(Context);
@@ -1019,21 +1093,29 @@ void CGameClient::OnRender()
 			}
 			for(CComponent *pComponent : apWorldComponents)
 				pComponent->OnRender(Context);
+			m_InfoMessages.OnRender(Context);
 			Output.EndView();
 		});
 
-	const CRenderContext CompatibilityContext(ActiveSession, ActiveState, View, GameTickInfo, VisibleWorldRect);
-	const std::array<CComponent *, 15> apCompatibilityOverlays = {
+	const CRenderContext CompatibilityContext(ActiveSession, ActiveState, View, GameTickInfo, VisibleWorldRect, ScreenOutput.PresentationCacheKey(), ScreenOutput.IsVideoOutput());
+	const float ControllerLocalTime = Client()->LocalTime();
+	m_Spectator.UpdateController(View, CompatibilityContext, ControllerLocalTime);
+	m_Emoticon.UpdateController(View, CompatibilityContext);
+	m_Chat.UpdateController(CompatibilityContext);
+	m_Statboard.UpdateController();
+
+	const std::array<CComponent *, 3> apCompatibilityOverlaysBeforeChat = {
 		&m_Hud,
 		&m_Spectator,
 		&m_Emoticon,
-		&m_InfoMessages,
-		&m_Chat,
+	};
+	const std::array<CComponent *, 4> apCompatibilityOverlaysAfterChat = {
 		&m_Broadcast,
 		&m_ImportantAlert,
 		&m_DebugHud,
 		&m_TouchControls,
-		&m_Scoreboard,
+	};
+	const std::array<CComponent *, 5> apCompatibilityOverlaysAfterScoreboard = {
 		&m_Statboard,
 		&m_Motd,
 		&m_Menus,
@@ -1041,9 +1123,39 @@ void CGameClient::OnRender()
 		&m_GameConsole,
 	};
 	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
-	for(CComponent *pComponent : apCompatibilityOverlays)
+	for(CComponent *pComponent : apCompatibilityOverlaysBeforeChat)
+		pComponent->OnRender(CompatibilityContext);
+	m_Chat.RenderApplicationOverlay(CompatibilityContext);
+	ScreenOutput.EndView();
+	Scheduler.Run(
+		aRenderRequests,
+		[](const CPresentationContext &) {},
+		[this](const CRenderContext &Context, CRenderOutput &Output) {
+			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
+			m_Chat.OnRender(Context);
+			Output.EndView();
+		});
+	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
+	for(CComponent *pComponent : apCompatibilityOverlaysAfterChat)
+		pComponent->OnRender(CompatibilityContext);
+	m_TouchControls.RenderApplicationOverlay();
+	ScreenOutput.EndView();
+	m_Scoreboard.PrepareApplicationOverlay(CompatibilityContext);
+	m_Scoreboard.BeginRenderFrame();
+	Scheduler.Run(
+		aRenderRequests,
+		[](const CPresentationContext &) {},
+		[this](const CRenderContext &Context, CRenderOutput &Output) {
+			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
+			m_Scoreboard.OnRender(Context);
+			Output.EndView();
+		});
+	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
+	m_Scoreboard.RenderApplicationOverlay(CompatibilityContext);
+	for(CComponent *pComponent : apCompatibilityOverlaysAfterScoreboard)
 		pComponent->OnRender(CompatibilityContext);
 	ScreenOutput.EndView();
+	m_Spectator.CommitController(View, CompatibilityContext, ControllerLocalTime);
 
 	// clear all events/input for this frame
 	Input()->Clear();
@@ -1274,20 +1386,23 @@ void CGameClient::FormatClientId(int ClientId, char (&aClientId)[16], EClientIdF
 	else
 	{
 		const int HighestClientId = Format == EClientIdFormat::INDENT_AUTO ? m_Snap.m_HighestClientId : 64;
-		const char *pFigureSpace = " ";
-		char aNumber[8];
-		str_format(aNumber, sizeof(aNumber), "%d", ClientId);
-		aClientId[0] = '\0';
-		if(ClientId < 100 && HighestClientId >= 100)
-		{
-			str_append(aClientId, pFigureSpace);
-		}
-		if(ClientId < 10 && HighestClientId >= 10)
-		{
-			str_append(aClientId, pFigureSpace);
-		}
-		str_append(aClientId, aNumber);
+		FormatClientId(ClientId, aClientId, HighestClientId);
+		return;
 	}
+	str_append(aClientId, ": ");
+}
+
+void CGameClient::FormatClientId(int ClientId, char (&aClientId)[16], int HighestClientId) const
+{
+	const char *pFigureSpace = " ";
+	char aNumber[8];
+	str_format(aNumber, sizeof(aNumber), "%d", ClientId);
+	aClientId[0] = '\0';
+	if(ClientId < 100 && HighestClientId >= 100)
+		str_append(aClientId, pFigureSpace);
+	if(ClientId < 10 && HighestClientId >= 10)
+		str_append(aClientId, pFigureSpace);
+	str_append(aClientId, aNumber);
 	str_append(aClientId, ": ");
 }
 
@@ -1337,7 +1452,7 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 		return;
 	}
 
-	void *pRawMsg = TranslateGameMsg(&MsgId, pUnpacker, Conn, Dummy);
+	void *pRawMsg = TranslateGameMsg(SessionId, &MsgId, pUnpacker, Conn, Dummy);
 
 	if(!pRawMsg)
 	{
@@ -1350,6 +1465,10 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 		}
 		return;
 	}
+	CGameSessionContext *pMessageSession = m_SessionContexts.Find(SessionId);
+	dbg_assert(pMessageSession != nullptr, "missing message session context");
+	CGameState *pMessageState = pMessageSession->GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pMessageState != nullptr, "missing message game state");
 
 	if(MsgId == NETMSGTYPE_SV_CHANGEINFOCOOLDOWN)
 	{
@@ -1448,27 +1567,41 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	case NETMSGTYPE_SV_YOURVOTE:
 	case NETMSGTYPE_SV_VOTEOPTIONGROUPSTART:
 	case NETMSGTYPE_SV_VOTEOPTIONGROUPEND:
-		if(!Dummy && Client()->State() != IClient::STATE_DEMOPLAYBACK)
-			m_Voting.HandleMessage(MsgId, pRawMsg);
+		if(!Dummy && SessionId != Client()->DemoSessionId())
+			m_Voting.HandleMessage(pMessageSession->Vote(), CurrentPresentationTime(), time_freq(), Client()->RconAuthed(), MsgId, pRawMsg);
 		return;
+	}
+	if(MsgId == NETMSGTYPE_SV_EMOTICON)
+	{
+		const CNetMsg_Sv_Emoticon *pMsg = static_cast<const CNetMsg_Sv_Emoticon *>(pRawMsg);
+		pMessageState->ApplyEmoticon(pMsg->m_ClientId, pMsg->m_Emoticon, Client()->GameTick(Conn), Client()->IntraGameTickSincePrev(Conn));
 	}
 
 	if(Dummy)
 	{
-		const int MainLocalId = GameState(IClient::CONN_MAIN).LocalClientId();
-		const int DummyLocalId = GameState(IClient::CONN_DUMMY).LocalClientId();
+		const CGameState *pMainState = pMessageSession->GameStates().FindByStream(CStreamId(IClient::CONN_MAIN + 1));
+		const CGameState *pDummyState = pMessageSession->GameStates().FindByStream(CStreamId(IClient::CONN_DUMMY + 1));
+		if(pMainState == nullptr || pDummyState == nullptr)
+			return;
+		const int MainLocalId = pMainState->LocalClientId();
+		const int DummyLocalId = pDummyState->LocalClientId();
 		if(MsgId == NETMSGTYPE_SV_CHAT && MainLocalId >= 0 && DummyLocalId >= 0)
 		{
 			CNetMsg_Sv_Chat *pMsg = (CNetMsg_Sv_Chat *)pRawMsg;
 
-			const CTeamsCore &Teams = GameState(Conn).Teams();
-			if((pMsg->m_Team == 1 && (m_aClients[MainLocalId].m_Team != m_aClients[DummyLocalId].m_Team || Teams.Team(MainLocalId) != Teams.Team(DummyLocalId))) || pMsg->m_Team > 1)
+			const CTeamsCore &Teams = pMessageState->Teams();
+			const int MainTeam = pMainState->Client(MainLocalId).m_HasPlayerInfo ? pMainState->Client(MainLocalId).m_PlayerInfo.m_Team : TEAM_SPECTATORS;
+			const int DummyTeam = pDummyState->Client(DummyLocalId).m_HasPlayerInfo ? pDummyState->Client(DummyLocalId).m_PlayerInfo.m_Team : TEAM_SPECTATORS;
+			if((pMsg->m_Team == 1 && (MainTeam != DummyTeam || Teams.Team(MainLocalId) != Teams.Team(DummyLocalId))) || pMsg->m_Team > 1)
 			{
-				m_Chat.OnMessage(MsgId, pRawMsg);
+				m_Chat.HandleMessage(*pMessageSession, *pMessageState, CurrentPresentationTime(), m_SuppressEvents, SessionId == Client()->DemoSessionId(), SessionId == Client()->FocusedSessionId(), MsgId, pRawMsg);
 			}
 		}
 		return; // no need of all that stuff for the dummy
 	}
+	m_Chat.HandleMessage(*pMessageSession, *pMessageState, CurrentPresentationTime(), m_SuppressEvents, SessionId == Client()->DemoSessionId(), SessionId == Client()->FocusedSessionId(), MsgId, pRawMsg);
+	m_InfoMessages.HandleMessage(pMessageSession->InfoMessages(), *pMessageSession, *pMessageState, Client()->GameTick(Conn), m_SuppressEvents, MsgId, pRawMsg);
+	m_Statboard.HandleMessage(pMessageSession->Stats(), *pMessageState, m_SuppressEvents, MsgId, pRawMsg);
 
 	// TODO: this should be done smarter
 	for(auto &pComponent : m_vpAll)
@@ -1477,15 +1610,6 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	if(MsgId == NETMSGTYPE_SV_READYTOENTER)
 	{
 		Client()->EnterGame(Conn);
-	}
-	else if(MsgId == NETMSGTYPE_SV_EMOTICON)
-	{
-		CNetMsg_Sv_Emoticon *pMsg = (CNetMsg_Sv_Emoticon *)pRawMsg;
-
-		// apply
-		m_aClients[pMsg->m_ClientId].m_Emoticon = pMsg->m_Emoticon;
-		m_aClients[pMsg->m_ClientId].m_EmoticonStartTick = Client()->GameTick(Conn);
-		m_aClients[pMsg->m_ClientId].m_EmoticonStartFraction = Client()->IntraGameTickSincePrev(Conn);
 	}
 	else if(MsgId == NETMSGTYPE_SV_SOUNDGLOBAL)
 	{
@@ -1585,7 +1709,7 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	else if(MsgId == NETMSGTYPE_SV_SAVECODE)
 	{
 		const CNetMsg_Sv_SaveCode *pMsg = (CNetMsg_Sv_SaveCode *)pRawMsg;
-		OnSaveCodeNetMessage(pMsg);
+		OnSaveCodeNetMessage(*pMessageSession, *pMessageState, pMsg);
 	}
 	else if(MsgId == NETMSGTYPE_SV_RECORD || MsgId == NETMSGTYPE_SV_RECORDLEGACY)
 	{
@@ -1633,7 +1757,6 @@ void CGameClient::OnStartGame()
 {
 	if(!Client()->IsDemoPlayback() && !g_Config.m_ClAutoDemoOnConnect)
 		Client()->DemoRecorder_HandleAutoStart();
-	SessionContext().Stats().Reset();
 	m_Statboard.OnReset();
 }
 
@@ -1642,19 +1765,10 @@ void CGameClient::OnStartRound()
 	// In GamePaused or GameOver state RoundStartTick is updated on each tick
 	// hence no need to reset stats until player leaves GameOver
 	// and it would be a mistake to reset stats after or during the pause
-	SessionContext().Stats().Reset();
 	m_Statboard.OnReset();
 
 	// Restart automatic race demo recording
 	m_RaceDemo.OnReset();
-}
-
-void CGameClient::OnFlagGrab(int TeamId)
-{
-	if(TeamId == TEAM_RED)
-		SessionContext().Stats().Client(m_Snap.m_pGameDataObj->m_FlagCarrierRed).m_FlagGrabs++;
-	else
-		SessionContext().Stats().Client(m_Snap.m_pGameDataObj->m_FlagCarrierBlue).m_FlagGrabs++;
 }
 
 void CGameClient::OnWindowResize()
@@ -2044,6 +2158,8 @@ void CGameClient::OnNewSnapshot(CSessionId SessionId, int Conn)
 	CGameState &State = *pState;
 	State.SetCoreGameInfo(GameInfo);
 	State.ApplySnapshot(*Client(), Conn);
+	if(Conn == IClient::CONN_MAIN)
+		pSession->Stats().UpdateSnapshot(State, Client()->GameTick(Conn));
 	if(SessionId == Client()->FocusedSessionId() && Conn == Client()->ActiveConnection())
 		ProcessSnapshot(SessionId);
 }
@@ -2166,12 +2282,6 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 					if(pInfo->m_Team != TEAM_SPECTATORS)
 					{
 						m_Snap.m_aTeamSize[pInfo->m_Team]++;
-						if(!SessionContext().Stats().Client(pInfo->m_ClientId).IsActive())
-							SessionContext().Stats().Client(pInfo->m_ClientId).JoinGame(Client()->GameTick(ActiveConnection()));
-					}
-					else if(SessionContext().Stats().Client(pInfo->m_ClientId).IsActive())
-					{
-						SessionContext().Stats().Client(pInfo->m_ClientId).JoinSpec(Client()->GameTick(ActiveConnection()));
 					}
 				}
 			}
@@ -2292,11 +2402,6 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 				{
 					Runtime.m_aFlagDropTick[TEAM_BLUE] = 0;
 				}
-				if(Runtime.m_LastFlagCarrierRed == FLAG_ATSTAND && m_Snap.m_pGameDataObj->m_FlagCarrierRed >= 0)
-					OnFlagGrab(TEAM_RED);
-				else if(Runtime.m_LastFlagCarrierBlue == FLAG_ATSTAND && m_Snap.m_pGameDataObj->m_FlagCarrierBlue >= 0)
-					OnFlagGrab(TEAM_BLUE);
-
 				Runtime.m_LastFlagCarrierRed = m_Snap.m_pGameDataObj->m_FlagCarrierRed;
 				Runtime.m_LastFlagCarrierBlue = m_Snap.m_pGameDataObj->m_FlagCarrierBlue;
 			}
@@ -2419,6 +2524,8 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 		}
 	}
 	LegacyGameView().SetSpectator(m_Snap.m_SpecInfo.m_Active, m_Snap.m_SpecInfo.m_SpectatorId);
+	if(Client()->IsDemoPlayback())
+		LegacyGameView().SetSpectatorMode(m_DemoSpecId);
 
 	// clear out unneeded client data
 	for(int i = 0; i < MAX_CLIENTS; ++i)
@@ -2426,7 +2533,6 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 		if(!m_Snap.m_apPlayerInfos[i] && m_aClients[i].m_Active)
 		{
 			m_aClients[i].Reset();
-			SessionContext().Stats().Client(i).Reset();
 		}
 	}
 
@@ -3258,9 +3364,6 @@ void CGameClient::CClientData::Reset()
 	str_copy(m_aSkinName, "default");
 
 	m_Team = 0;
-	m_Emoticon = 0;
-	m_EmoticonStartFraction = 0;
-	m_EmoticonStartTick = -1;
 
 	m_Predicted.Reset();
 	m_PrevPredicted.Reset();
@@ -3275,8 +3378,6 @@ void CGameClient::CClientData::Reset()
 
 	m_Angle = 0.0f;
 	m_Active = false;
-	m_ChatIgnore = false;
-	m_EmoticonIgnore = false;
 	m_Friend = false;
 	m_Foe = false;
 
@@ -5371,11 +5472,14 @@ int CGameClient::FindFirstMultiViewId()
 	return ClientId;
 }
 
-void CGameClient::OnSaveCodeNetMessage(const CNetMsg_Sv_SaveCode *pMsg)
+void CGameClient::OnSaveCodeNetMessage(CGameSessionContext &Session, const CGameState &GameState, const CNetMsg_Sv_SaveCode *pMsg)
 {
 	char aBuf[512];
+	auto AddLine = [&](const char *pText) {
+		m_Chat.AddLine(Session, GameState, CurrentPresentationTime(), Session.Id() == Client()->DemoSessionId(), Session.Id() == Client()->FocusedSessionId(), -1, TEAM_ALL, pText);
+	};
 	if(pMsg->m_pError[0] != '\0')
-		m_Chat.AddLine(-1, TEAM_ALL, pMsg->m_pError);
+		AddLine(pMsg->m_pError);
 
 	int State = pMsg->m_State;
 	if(State == SAVESTATE_PENDING)
@@ -5393,7 +5497,7 @@ void CGameClient::OnSaveCodeNetMessage(const CNetMsg_Sv_SaveCode *pMsg)
 				pMsg->m_pCode,
 				pMsg->m_pGeneratedCode);
 		}
-		m_Chat.AddLine(-1, TEAM_ALL, aBuf);
+		AddLine(aBuf);
 	}
 	else if(State == SAVESTATE_DONE)
 	{
@@ -5412,7 +5516,7 @@ void CGameClient::OnSaveCodeNetMessage(const CNetMsg_Sv_SaveCode *pMsg)
 				pMsg->m_pCode[0] ? pMsg->m_pCode : pMsg->m_pGeneratedCode,
 				pMsg->m_pServerName);
 		}
-		m_Chat.AddLine(-1, TEAM_ALL, aBuf);
+		AddLine(aBuf);
 	}
 	else if(State == SAVESTATE_FALLBACKFILE)
 	{
@@ -5431,20 +5535,20 @@ void CGameClient::OnSaveCodeNetMessage(const CNetMsg_Sv_SaveCode *pMsg)
 				pMsg->m_pGeneratedCode,
 				pMsg->m_pServerName);
 		}
-		m_Chat.AddLine(-1, TEAM_ALL, aBuf);
+		AddLine(aBuf);
 	}
 	else if(State == SAVESTATE_ERROR)
 	{
-		m_Chat.AddLine(-1, TEAM_ALL, Localize("Save failed!"));
+		AddLine(Localize("Save failed!"));
 	}
 
-	if(State != SAVESTATE_PENDING && State != SAVESTATE_ERROR && !Client()->IsDemoPlayback())
+	if(State != SAVESTATE_PENDING && State != SAVESTATE_ERROR && Session.Id() != Client()->DemoSessionId())
 	{
-		StoreSave(pMsg->m_pTeamMembers, pMsg->m_pCode[0] ? pMsg->m_pCode : pMsg->m_pGeneratedCode);
+		StoreSave(Session, pMsg->m_pTeamMembers, pMsg->m_pCode[0] ? pMsg->m_pCode : pMsg->m_pGeneratedCode);
 	}
 }
 
-void CGameClient::StoreSave(const char *pTeamMembers, const char *pGeneratedCode) const
+void CGameClient::StoreSave(const CGameSessionContext &Session, const char *pTeamMembers, const char *pGeneratedCode) const
 {
 	static constexpr const char *SAVES_HEADER[] = {
 		"Time",
@@ -5467,7 +5571,7 @@ void CGameClient::StoreSave(const char *pTeamMembers, const char *pGeneratedCode
 	const char *apColumns[std::size(SAVES_HEADER)] = {
 		aTimestamp,
 		pTeamMembers,
-		Map()->BaseName(),
+		Session.MapName(),
 		pGeneratedCode,
 	};
 

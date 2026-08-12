@@ -54,9 +54,9 @@ void CMenus::HandleDemoSeeking(float PositionToSeek, float TimeToSeek)
 {
 	if((PositionToSeek >= 0.0f && PositionToSeek <= 1.0f) || TimeToSeek != 0.0f)
 	{
-		GameClient()->m_Chat.Reset();
+		GameClient()->ResetChat(Client()->DemoSessionId());
 		GameClient()->GameState(GameClient()->ActiveConnection()).DamageIndicators().Reset();
-		GameClient()->m_InfoMessages.OnReset();
+		GameClient()->ResetInfoMessages(Client()->DemoSessionId());
 		GameClient()->GameState(GameClient()->ActiveConnection()).Particles().Reset();
 		GameClient()->m_Sounds.OnReset();
 		GameClient()->m_Scoreboard.OnReset();

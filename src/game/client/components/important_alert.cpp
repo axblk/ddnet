@@ -35,9 +35,9 @@ void CImportantAlert::OnUpdate()
 		OnReset();
 }
 
-void CImportantAlert::OnRender()
+void CImportantAlert::OnRender(const CRenderContext &Context)
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(!Context.m_Time.m_IsGameActive)
 	{
 		return;
 	}
@@ -46,12 +46,12 @@ void CImportantAlert::OnRender()
 		return;
 	}
 #if defined(CONF_VIDEORECORDER)
-	if(IVideo::Current() && !g_Config.m_ClVideoShowImportantAlerts)
+	if(Context.m_IsVideoOutput && !g_Config.m_ClVideoShowImportantAlerts)
 	{
 		return;
 	}
 #endif
-	RenderImportantAlert();
+	RenderImportantAlert(Context);
 }
 
 void CImportantAlert::DeleteTextContainers()
@@ -61,12 +61,18 @@ void CImportantAlert::DeleteTextContainers()
 	TextRender()->DeleteTextContainer(m_CloseHintTextContainerIndex);
 }
 
-void CImportantAlert::RenderImportantAlert()
+void CImportantAlert::RenderImportantAlert(const CRenderContext &Context)
 {
 	const float Seconds = SecondsActive();
 
 	const float Height = 300.0f;
-	const float Width = Height * Graphics()->ScreenAspect();
+	const float Width = Height * Context.AspectRatio(Graphics()->ScreenAspect());
+	if(m_TextContainerWidth != Width || m_TextContainerOutputKey != Context.m_OutputCacheKey)
+	{
+		DeleteTextContainers();
+		m_TextContainerWidth = Width;
+		m_TextContainerOutputKey = Context.m_OutputCacheKey;
+	}
 	Graphics()->MapScreenToSize(Width, Height);
 
 	const float TitleFontSize = 20.0f;

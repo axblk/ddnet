@@ -13,8 +13,10 @@
 #include <generated/protocol7.h>
 
 #include <game/client/component.h>
+#include <game/client/game_view.h>
 #include <game/client/lineinput.h>
 #include <game/client/render.h>
+#include <game/client/session_context.h>
 
 #include <vector>
 
@@ -26,48 +28,38 @@ class CChat : public CComponent
 	static constexpr float CHAT_HEIGHT_MIN = 50.0f;
 	static constexpr float CHAT_FONTSIZE_WIDTH_RATIO = 2.5f;
 
-	enum
-	{
-		MAX_LINES = 64,
-		MAX_LINE_LENGTH = 256
-	};
+	static constexpr int MAX_LINE_LENGTH = CSessionChatState::MAX_LINE_LENGTH;
 
 	CLineInputBuffered<MAX_LINE_LENGTH> m_Input;
-	class CLine
+	class CCachedLine
 	{
 	public:
-		CLine();
+		CCachedLine();
 		void Reset(CChat &This);
+		void Invalidate(CChat &This);
 
-		bool m_Initialized;
-		int64_t m_Time;
-		float m_aYOffset[2];
-		int m_ClientId;
-		int m_TeamNumber;
-		bool m_Team;
-		bool m_Whisper;
-		int m_NameColor;
-		char m_aName[64];
-		char m_aText[MAX_LINE_LENGTH];
-		bool m_Friend;
-		bool m_Highlighted;
-		std::optional<ColorRGBA> m_CustomColor;
-
+		uint64_t m_LineId = 0;
+		uint64_t m_Revision = 0;
+		CGameStateId m_StateId;
+		CGameViewId m_ViewId;
+		CViewport m_Viewport;
+		uint64_t m_OutputCacheKey = 0;
+		bool m_ScoreboardOpen = false;
+		bool m_ShowLargeArea = false;
+		float m_YOffset = -1.0f;
 		STextContainerIndex m_TextContainerIndex;
-		int m_QuadContainerIndex;
-
+		int m_QuadContainerIndex = -1;
 		std::shared_ptr<CManagedTeeRenderInfo> m_pManagedTeeRenderInfo;
-
-		float m_TextYOffset;
-
-		int m_TimesRepeated;
+		float m_TextYOffset = 0.0f;
 	};
 
-	bool m_PrevScoreBoardShowed;
-	bool m_PrevShowChat;
-
-	CLine m_aLines[MAX_LINES];
-	int m_CurrentLine;
+	class CSessionCache
+	{
+	public:
+		CSessionId m_SessionId;
+		std::array<CCachedLine, CSessionChatState::MAX_LINES> m_aLines;
+	};
+	std::vector<CSessionCache> m_vSessionCaches;
 
 	enum
 	{
@@ -93,6 +85,13 @@ class CChat : public CComponent
 
 	int m_Mode;
 	bool m_Show;
+	CGameViewId m_ShowViewId;
+	CSessionId m_ShowSessionId;
+	CGameStateId m_ShowStateId;
+	CGameViewId m_InputViewId;
+	CSessionId m_InputSessionId;
+	CGameStateId m_InputStateId;
+	CStreamId m_InputStreamId;
 	bool m_CompletionUsed;
 	int m_CompletionChosen;
 	char m_aCompletionBuffer[MAX_LINE_LENGTH];
@@ -108,28 +107,6 @@ class CChat : public CComponent
 	CRateablePlayer m_aPlayerCompletionList[MAX_CLIENTS];
 	int m_PlayerCompletionListLength;
 
-	struct CCommand
-	{
-		char m_aName[IConsole::TEMPCMD_NAME_LENGTH];
-		char m_aParams[IConsole::TEMPCMD_PARAMS_LENGTH];
-		char m_aHelpText[IConsole::TEMPCMD_HELP_LENGTH];
-
-		CCommand() = default;
-		CCommand(const char *pName, const char *pParams, const char *pHelpText)
-		{
-			str_copy(m_aName, pName);
-			str_copy(m_aParams, pParams);
-			str_copy(m_aHelpText, pHelpText);
-		}
-
-		bool operator<(const CCommand &Other) const { return str_comp(m_aName, Other.m_aName) < 0; }
-		bool operator<=(const CCommand &Other) const { return str_comp(m_aName, Other.m_aName) <= 0; }
-		bool operator==(const CCommand &Other) const { return str_comp(m_aName, Other.m_aName) == 0; }
-	};
-
-	std::vector<CCommand> m_vServerCommands;
-	bool m_ServerCommandsNeedSorting;
-
 	struct CHistoryEntry
 	{
 		int m_Team;
@@ -137,14 +114,10 @@ class CChat : public CComponent
 	};
 	CHistoryEntry *m_pHistoryEntry;
 	CStaticRingBuffer<CHistoryEntry, 64 * 1024, CRingBufferBase::FLAG_RECYCLE> m_History;
-	int m_PendingChatCounter;
-	int64_t m_LastChatSend;
 	int64_t m_aLastSoundPlayed[CHAT_NUM];
 	bool m_IsInputCensored;
 	char m_aCurrentInputText[MAX_LINE_LENGTH];
 	bool m_EditingNewLine;
-
-	bool m_ServerSupportsCommandInfo;
 
 	static void ConSay(IConsole::IResult *pResult, void *pUserData);
 	static void ConSayTeam(IConsole::IResult *pResult, void *pUserData);
@@ -158,7 +131,14 @@ class CChat : public CComponent
 	static void ConchainChatWidth(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 
 	bool LineShouldHighlight(const char *pLine, const char *pName);
-	void StoreSave(const char *pText);
+	void StoreSave(const char *pText, const CGameSessionContext &Session);
+	CSessionCache &SessionCache(CSessionId SessionId);
+	CCachedLine &CachedLine(CSessionId SessionId, uint64_t LineId);
+	void CacheAppearance(CSessionId SessionId, const CGameState &State, const CSessionChatState::CLine &Line);
+	void RenderLines(const CRenderContext &Context, float y);
+	void OnPrepareLines(const CRenderContext &Context, float y);
+	bool InputMatches(const CRenderContext &Context) const;
+	bool ShowMatches(const CRenderContext &Context) const;
 
 public:
 	CChat();
@@ -167,26 +147,26 @@ public:
 	static constexpr float MESSAGE_TEE_PADDING_RIGHT = 0.5f;
 
 	bool IsActive() const { return m_Mode != MODE_NONE; }
-	void AddLine(int ClientId, int Team, const char *pLine);
+	void AddLine(CGameSessionContext &Session, const CGameState &State, int64_t Now, bool IsDemoPlayback, bool ApplicationEffects, int ClientId, int Team, const char *pLine);
+	void HandleMessage(CGameSessionContext &Session, const CGameState &State, int64_t Now, bool SuppressEvents, bool IsDemoPlayback, bool ApplicationEffects, int MsgType, void *pRawMsg);
 	void EnableMode(int Team);
 	void DisableMode();
-	void RegisterCommand(const char *pName, const char *pParams, const char *pHelpText);
-	void UnregisterCommand(const char *pName);
 	void Echo(const char *pString);
 
 	void OnWindowResize() override;
 	void OnConsoleInit() override;
 	void OnStateChange(int NewState, int OldState) override;
-	void OnRender() override;
-	void OnPrepareLines(float y);
+	void UpdateController(const CRenderContext &Context);
+	void OnRender(const CRenderContext &Context) override;
+	void RenderApplicationOverlay(const CRenderContext &Context);
 	void Reset();
+	void ResetSession(CSessionId SessionId);
 	void OnRelease() override;
-	void OnMessage(int MsgType, void *pRawMsg) override;
 	bool OnInput(const IInput::CEvent &Event) override;
 	void OnInit() override;
 
 	void RebuildChat();
-	void ClearLines();
+	void ClearLines(CSessionId SessionId);
 
 	void EnsureCoherentFontSize() const;
 	void EnsureCoherentWidth() const;
@@ -204,6 +184,7 @@ public:
 	// @param Team MODE_ALL=0 MODE_TEAM=1
 	// @param pLine the chat message
 	void SendChat(int Team, const char *pLine);
+	void SendChat(int Team, const char *pLine, CSessionId SessionId, CStreamId StreamId);
 
 	// Sends a chat message to the server.
 	//

@@ -7,6 +7,49 @@
 
 #include <algorithm>
 
+void CGameView::CEmoticonSelectorState::UpdateSelection(int NumEmoticons, int NumEyeEmotes, bool AllowEyeWheel)
+{
+	if(length(m_SelectorMouse) > 170.0f)
+		m_SelectorMouse = normalize(m_SelectorMouse) * 170.0f;
+
+	float SelectedAngle = angle(m_SelectorMouse) + 2 * pi / 24;
+	if(SelectedAngle < 0)
+		SelectedAngle += 2 * pi;
+
+	m_SelectedEmote = -1;
+	m_SelectedEyeEmote = -1;
+	if(length(m_SelectorMouse) > 110.0f)
+		m_SelectedEmote = static_cast<int>(SelectedAngle / (2 * pi) * NumEmoticons);
+	else if(AllowEyeWheel && length(m_SelectorMouse) > 40.0f)
+		m_SelectedEyeEmote = static_cast<int>(SelectedAngle / (2 * pi) * NumEyeEmotes);
+}
+
+void CGameView::CSpectatorSelectorState::UpdateSelection(float ObjWidth, float LineHeight, int PerLine, const std::array<int, MAX_CLIENTS> &aClients, int NumClients, bool AllowFollow)
+{
+	m_SelectedSpectatorId = NO_SELECTION;
+	if(m_SelectorMouse.x >= -(ObjWidth - 20.0f) && m_SelectorMouse.x <= -(ObjWidth - 20.0f) + ObjWidth * 2.0f / 3.0f - 40.0f && m_SelectorMouse.y >= -280.0f && m_SelectorMouse.y <= -220.0f)
+		m_SelectedSpectatorId = SPEC_FREEVIEW;
+	else if(m_SelectorMouse.x >= -(ObjWidth - 20.0f) + ObjWidth * 2.0f / 3.0f && m_SelectorMouse.x <= -(ObjWidth - 20.0f) + ObjWidth * 4.0f / 3.0f - 40.0f && m_SelectorMouse.y >= -280.0f && m_SelectorMouse.y <= -220.0f)
+		m_SelectedSpectatorId = MULTI_VIEW;
+	else if(AllowFollow && m_SelectorMouse.x >= -(ObjWidth - 20.0f) + ObjWidth * 4.0f / 3.0f && m_SelectorMouse.x <= -(ObjWidth - 20.0f) + ObjWidth * 2.0f - 40.0f && m_SelectorMouse.y >= -280.0f && m_SelectorMouse.y <= -220.0f)
+		m_SelectedSpectatorId = SPEC_FOLLOW;
+
+	float x = -(ObjWidth - 35.0f);
+	float y = -190.0f;
+	for(int Index = 0; m_SelectedSpectatorId == NO_SELECTION && Index < NumClients; ++Index)
+	{
+		const int Count = Index + 1;
+		if(Count > PerLine && (Count - 1) % PerLine == 0)
+		{
+			x += 290.0f;
+			y = -190.0f;
+		}
+		if(m_SelectorMouse.x >= x - 10.0f && m_SelectorMouse.x < x + 260.0f && m_SelectorMouse.y >= y - LineHeight / 6.0f && m_SelectorMouse.y < y + LineHeight * 5.0f / 6.0f)
+			m_SelectedSpectatorId = aClients[Index];
+		y += LineHeight;
+	}
+}
+
 bool CVisibleWorldRect::Inside(vec2 Position, vec2 Margin) const
 {
 	return in_range(Position.x, m_TopLeft.x - Margin.x, m_BottomRight.x + Margin.x) &&
@@ -67,12 +110,14 @@ bool CPresentationContext::IsOtherTeamFromLocalPlayer(int ClientId) const
 	return m_State.IsOtherTeamFromLocalPlayer(ClientId);
 }
 
-CRenderContext::CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect) :
+CRenderContext::CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, uint64_t OutputCacheKey, bool IsVideoOutput) :
 	m_Session(Session),
 	m_State(State),
 	m_View(View),
 	m_Time(Time),
-	m_VisibleWorldRect(VisibleWorldRect)
+	m_VisibleWorldRect(VisibleWorldRect),
+	m_OutputCacheKey(OutputCacheKey),
+	m_IsVideoOutput(IsVideoOutput)
 {
 	dbg_assert(Session.Id() == View.SessionId(), "render context session does not match view");
 	dbg_assert(State.Id() == View.StateId(), "render context state does not match view");
@@ -167,13 +212,16 @@ void CGameRenderScheduler::Run(std::span<const CGameRenderRequest> vRequests, co
 		       Left.m_IntraGameTickSincePrev == Right.m_IntraGameTickSincePrev &&
 		       Left.m_PredIntraGameTick == Right.m_PredIntraGameTick &&
 		       Left.m_GameTickTime == Right.m_GameTickTime &&
+		       Left.m_FrameTimeAverage == Right.m_FrameTimeAverage &&
 		       Left.m_GameTickSpeed == Right.m_GameTickSpeed &&
+		       Left.m_PredictionTime == Right.m_PredictionTime &&
 		       Left.m_PresentationTime == Right.m_PresentationTime &&
 		       Left.m_PresentationTimeFrequency == Right.m_PresentationTimeFrequency &&
 		       Left.m_AnimationPlaybackSpeed == Right.m_AnimationPlaybackSpeed &&
 		       Left.m_IsGameActive == Right.m_IsGameActive &&
 		       Left.m_IsDemoPlayback == Right.m_IsDemoPlayback &&
-		       Left.m_IsDemoPlaybackPaused == Right.m_IsDemoPlaybackPaused;
+		       Left.m_IsDemoPlaybackPaused == Right.m_IsDemoPlaybackPaused &&
+		       Left.m_ConnectionProblems == Right.m_ConnectionProblems;
 	};
 
 	std::vector<CStateGroup> vGroups;
@@ -209,7 +257,7 @@ void CGameRenderScheduler::Run(std::span<const CGameRenderRequest> vRequests, co
 	{
 		const CGameRenderRequest &Request = vRequests[i];
 		const CStateGroup &Group = vGroups[vRequestGroups[i]];
-		RenderView(CRenderContext(Request.m_Session, Request.m_State, Request.m_View, Group.m_Time, Request.m_VisibleWorldRect), Request.m_Output);
+		RenderView(CRenderContext(Request.m_Session, Request.m_State, Request.m_View, Group.m_Time, Request.m_VisibleWorldRect, Request.m_Output.PresentationCacheKey(), Request.m_Output.IsVideoOutput()), Request.m_Output);
 	}
 }
 

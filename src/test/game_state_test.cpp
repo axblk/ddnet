@@ -237,6 +237,61 @@ TEST(GameState, RenderedClientsUseStateOwnedSnapshotHistory)
 	EXPECT_TRUE(Primary.RenderedClient(4).m_Active);
 }
 
+TEST(GameState, ClientIdentityAndEmoticonsAreIndependentAndResetPerState)
+{
+	CGameState Primary(CGameStateId(1), CStreamId(1));
+	CGameState Additional(CGameStateId(2), CStreamId(2));
+	auto pPrimaryClients = std::make_unique<std::array<CGameState::CClientSnapshot, MAX_CLIENTS>>();
+	auto pAdditionalClients = std::make_unique<std::array<CGameState::CClientSnapshot, MAX_CLIENTS>>();
+	CGameState::CClientSnapshot &PrimaryClient = (*pPrimaryClients)[4];
+	PrimaryClient.m_Active = true;
+	PrimaryClient.m_HasPlayerInfo = true;
+	PrimaryClient.m_HasClientInfo = true;
+	StrToInts(PrimaryClient.m_ClientInfo.m_aName, std::size(PrimaryClient.m_ClientInfo.m_aName), "primary");
+	StrToInts(PrimaryClient.m_ClientInfo.m_aClan, std::size(PrimaryClient.m_ClientInfo.m_aClan), "one");
+	CGameState::CClientSnapshot &AdditionalClient = (*pAdditionalClients)[4];
+	AdditionalClient.m_Active = true;
+	AdditionalClient.m_HasPlayerInfo = true;
+	AdditionalClient.m_HasClientInfo = true;
+	StrToInts(AdditionalClient.m_ClientInfo.m_aName, std::size(AdditionalClient.m_ClientInfo.m_aName), "additional");
+	StrToInts(AdditionalClient.m_ClientInfo.m_aClan, std::size(AdditionalClient.m_ClientInfo.m_aClan), "two");
+	Primary.ApplySnapshotData(10, 2, std::move(*pPrimaryClients));
+	Additional.ApplySnapshotData(20, 2, std::move(*pAdditionalClients));
+	Primary.ApplyEmoticon(4, 3, 11, 0.25f);
+	Additional.ApplyEmoticon(4, 7, 22, 0.75f);
+
+	char aName[MAX_NAME_LENGTH];
+	EXPECT_TRUE(IntsToStr(Primary.ClientIdentity(4).m_ClientInfo.m_aName, std::size(Primary.ClientIdentity(4).m_ClientInfo.m_aName), aName, std::size(aName)));
+	EXPECT_STREQ(aName, "primary");
+	EXPECT_TRUE(IntsToStr(Additional.ClientIdentity(4).m_ClientInfo.m_aName, std::size(Additional.ClientIdentity(4).m_ClientInfo.m_aName), aName, std::size(aName)));
+	EXPECT_STREQ(aName, "additional");
+	EXPECT_EQ(Primary.ClientEmoticon(4).m_Emoticon, 3);
+	EXPECT_EQ(Primary.ClientEmoticon(4).m_StartTick, 11);
+	EXPECT_FLOAT_EQ(Primary.ClientEmoticon(4).m_StartFraction, 0.25f);
+	EXPECT_EQ(Additional.ClientEmoticon(4).m_Emoticon, 7);
+	EXPECT_NE(Primary.SnapshotDigest(), Additional.SnapshotDigest());
+
+	auto pPrimaryWithoutClientInfo = std::make_unique<std::array<CGameState::CClientSnapshot, MAX_CLIENTS>>();
+	(*pPrimaryWithoutClientInfo)[4].m_Active = true;
+	(*pPrimaryWithoutClientInfo)[4].m_HasPlayerInfo = true;
+	Primary.ApplySnapshotData(12, 1, std::move(*pPrimaryWithoutClientInfo));
+	EXPECT_TRUE(Primary.ClientIdentity(4).m_Active);
+	EXPECT_TRUE(IntsToStr(Primary.ClientIdentity(4).m_ClientInfo.m_aName, std::size(Primary.ClientIdentity(4).m_ClientInfo.m_aName), aName, std::size(aName)));
+	EXPECT_STREQ(aName, "primary");
+	EXPECT_EQ(Primary.ClientEmoticon(4).m_StartTick, 11);
+
+	auto pEmptyClients = std::make_unique<std::array<CGameState::CClientSnapshot, MAX_CLIENTS>>();
+	Primary.ApplySnapshotData(13, 0, std::move(*pEmptyClients));
+	EXPECT_FALSE(Primary.ClientIdentity(4).m_Active);
+	EXPECT_EQ(Primary.ClientEmoticon(4).m_StartTick, -1);
+	EXPECT_TRUE(Additional.ClientIdentity(4).m_Active);
+	EXPECT_EQ(Additional.ClientEmoticon(4).m_StartTick, 22);
+
+	Additional.Reset();
+	EXPECT_FALSE(Additional.ClientIdentity(4).m_Active);
+	EXPECT_EQ(Additional.ClientEmoticon(4).m_StartTick, -1);
+}
+
 TEST(GameState, CoreGameInfoIsIndependentAndResetPerState)
 {
 	CGameState Primary(CGameStateId(1), CStreamId(1));
@@ -692,6 +747,7 @@ TEST(GameState, SessionsOwnDifferentMapsProtocolsAndStates)
 	pNetwork->MapContext().GameConfig().Reset(Base);
 	pDemo->MapContext().GameConfig().Reset(Base);
 	pNetwork->MapContext().GameConfig().ExecuteLine("sv_hit 0");
+	pNetwork->SetServerCapAnyPlayerFlag(true);
 	pNetwork->GameStates().FindByStream(CStreamId(1))->ApplySnapshotMetadata(100, 2, 4);
 	pDemo->GameStates().FindByStream(CStreamId(3))->ApplySnapshotMetadata(500, 7, 8);
 	pNetwork->Broadcast().Apply("network broadcast", 100, 50);
@@ -703,6 +759,8 @@ TEST(GameState, SessionsOwnDifferentMapsProtocolsAndStates)
 	EXPECT_STREQ(pDemo->MapName(), "Sunny Side Up");
 	EXPECT_EQ(pNetwork->Protocol(), EGameProtocol::SIX);
 	EXPECT_EQ(pDemo->Protocol(), EGameProtocol::SIXUP);
+	EXPECT_TRUE(pNetwork->ServerCapAnyPlayerFlag());
+	EXPECT_FALSE(pDemo->ServerCapAnyPlayerFlag());
 	EXPECT_EQ(pNetwork->MapContext().GameConfig().m_SvHit, 0);
 	EXPECT_EQ(pDemo->MapContext().GameConfig().m_SvHit, 1);
 	EXPECT_EQ(pNetwork->GameStates().FindByStream(CStreamId(1))->SnapshotTick(), 100);
@@ -783,6 +841,105 @@ TEST(GameState, SessionMapMetadataIsIndependentAndResettable)
 	EXPECT_STREQ(DemoMetadata.Description(), "demo description");
 }
 
+TEST(GameState, SessionInfoMessagesAreBoundedAndIndependent)
+{
+	CGameSessionContext Network(CSessionId(1), "Kobra 4", EGameProtocol::SIX, {CStreamId(1), CStreamId(2)});
+	CGameSessionContext Demo(CSessionId(2), "Sunny Side Up", EGameProtocol::SIXUP, {CStreamId(3)});
+	for(int Tick = 10; Tick <= 60; Tick += 10)
+	{
+		CSessionInfoMessageState::CMessage Message;
+		Message.m_Tick = Tick;
+		str_format(Message.m_aVictimName, sizeof(Message.m_aVictimName), "network-%d", Tick);
+		Network.InfoMessages().Add(std::move(Message));
+	}
+	CSessionInfoMessageState::CMessage DemoMessage;
+	DemoMessage.m_Type = CSessionInfoMessageState::EType::FINISH;
+	DemoMessage.m_Tick = 500;
+	str_copy(DemoMessage.m_aVictimName, "demo");
+	Demo.InfoMessages().Add(std::move(DemoMessage));
+
+	ASSERT_EQ(Network.InfoMessages().Count(), CSessionInfoMessageState::MAX_MESSAGES);
+	for(int Index = 0; Index < Network.InfoMessages().Count(); ++Index)
+	{
+		const CSessionInfoMessageState::CMessage &Message = Network.InfoMessages().Message(Index);
+		EXPECT_EQ(Message.m_Tick, 20 + Index * 10);
+		EXPECT_EQ(Message.m_Id, static_cast<uint64_t>(Index + 2));
+	}
+	ASSERT_EQ(Demo.InfoMessages().Count(), 1);
+	EXPECT_EQ(Demo.InfoMessages().Message(0).m_Tick, 500);
+	EXPECT_STREQ(Demo.InfoMessages().Message(0).m_aVictimName, "demo");
+
+	Network.InfoMessages().Reset();
+	EXPECT_EQ(Network.InfoMessages().Count(), 0);
+	ASSERT_EQ(Demo.InfoMessages().Count(), 1);
+	EXPECT_EQ(Demo.InfoMessages().Message(0).m_Type, CSessionInfoMessageState::EType::FINISH);
+}
+
+TEST(GameState, SessionChatIsBoundedAndIndependent)
+{
+	CGameSessionContext Network(CSessionId(1), "Kobra 4", EGameProtocol::SIX, {CStreamId(1), CStreamId(2)});
+	CGameSessionContext Demo(CSessionId(2), "Sunny Side Up", EGameProtocol::SIXUP, {CStreamId(3)});
+
+	for(int Index = 0; Index <= CSessionChatState::MAX_LINES; ++Index)
+	{
+		CSessionChatState::CLine Line;
+		Line.m_Time = 100 + Index;
+		Line.m_ClientId = Index % MAX_CLIENTS;
+		str_format(Line.m_aText, sizeof(Line.m_aText), "network-%d", Index);
+		Network.Chat().Add(std::move(Line));
+	}
+	CSessionChatState::CLine Repeated;
+	Repeated.m_Time = 999;
+	Repeated.m_ClientId = CSessionChatState::MAX_LINES % MAX_CLIENTS;
+	str_format(Repeated.m_aText, sizeof(Repeated.m_aText), "network-%d", CSessionChatState::MAX_LINES);
+	const CSessionChatState::CLine &StoredRepeated = Network.Chat().Add(std::move(Repeated));
+
+	ASSERT_EQ(Network.Chat().Count(), CSessionChatState::MAX_LINES);
+	EXPECT_EQ(Network.Chat().Line(0).m_Id, 2);
+	EXPECT_STREQ(Network.Chat().Line(0).m_aText, "network-1");
+	EXPECT_EQ(StoredRepeated.m_Id, CSessionChatState::MAX_LINES + 1);
+	EXPECT_EQ(StoredRepeated.m_Revision, 2);
+	EXPECT_EQ(StoredRepeated.m_TimesRepeated, 1);
+	EXPECT_EQ(StoredRepeated.m_Time, 999);
+
+	CSessionChatState::CLine DemoLine;
+	str_copy(DemoLine.m_aText, "network-64");
+	Demo.Chat().Add(std::move(DemoLine));
+	Demo.Chat().BeginCommandInfo();
+	Demo.Chat().RegisterCommand("save", "?r[code]", "Save the team");
+	Demo.Chat().RegisterCommand("load", "r[code]", "Load the team");
+	Demo.Chat().RegisterCommand("save", "", "duplicate");
+	const auto &Commands = Demo.Chat().SortedCommands();
+	ASSERT_EQ(Commands.size(), 2);
+	EXPECT_EQ(Commands[0].m_Name, "load");
+	EXPECT_EQ(Commands[1].m_Name, "save");
+	Demo.Chat().UnregisterCommand("load");
+	EXPECT_EQ(Demo.Chat().Commands().size(), 1);
+	EXPECT_EQ(Demo.Chat().Line(0).m_TimesRepeated, 0);
+
+	EXPECT_TRUE(Network.Chat().Enqueue(CStreamId(1), 0, "first"));
+	EXPECT_TRUE(Network.Chat().Enqueue(CStreamId(2), 1, "second"));
+	EXPECT_TRUE(Network.Chat().Enqueue(CStreamId(1), 0, "third"));
+	EXPECT_FALSE(Network.Chat().Enqueue(CStreamId(2), 1, "overflow"));
+	EXPECT_EQ(Network.Chat().Pending().m_StreamId, CStreamId(1));
+	EXPECT_EQ(Network.Chat().Pending().m_Text, "first");
+	Network.Chat().PopPending();
+	EXPECT_EQ(Network.Chat().Pending().m_StreamId, CStreamId(2));
+	EXPECT_EQ(Network.Chat().Pending().m_Text, "second");
+	EXPECT_EQ(Demo.Chat().PendingCount(), 0);
+	Network.Chat().SetLastSend(777);
+	EXPECT_EQ(Network.Chat().LastSend(), 777);
+	EXPECT_EQ(Demo.Chat().LastSend(), 0);
+
+	Network.Chat().Reset();
+	EXPECT_EQ(Network.Chat().Count(), 0);
+	EXPECT_EQ(Network.Chat().PendingCount(), 0);
+	EXPECT_EQ(Network.Chat().LastSend(), 0);
+	ASSERT_EQ(Demo.Chat().Count(), 1);
+	EXPECT_STREQ(Demo.Chat().Line(0).m_aText, "network-64");
+	EXPECT_EQ(Demo.Chat().Commands().size(), 1);
+}
+
 TEST(GameState, SessionStatsAreIndependentAndSurviveStateReset)
 {
 	CGameSessionContext Network(CSessionId(1), "Kobra 4", EGameProtocol::SIX, {CStreamId(1), CStreamId(2)});
@@ -803,7 +960,6 @@ TEST(GameState, SessionStatsAreIndependentAndSurviveStateReset)
 	EXPECT_TRUE(NetworkStats.IsActive());
 	EXPECT_EQ(NetworkStats.GetIngameTicks(230), 90);
 	EXPECT_EQ(NetworkStats.GetFPM(230, 50), 100.0f);
-
 	DemoStats.JoinGame(500);
 	DemoStats.m_Frags = 7;
 	DemoStats.m_FlagGrabs = 2;
@@ -821,6 +977,38 @@ TEST(GameState, SessionStatsAreIndependentAndSurviveStateReset)
 	EXPECT_TRUE(DemoStats.IsActive());
 	EXPECT_EQ(DemoStats.m_Frags, 7);
 	EXPECT_EQ(DemoStats.m_FlagGrabs, 2);
+}
+
+TEST(GameState, SessionStatsFollowTheirSnapshotLifecycle)
+{
+	CGameSessionContext Session(CSessionId(1), "Kobra 4", EGameProtocol::SIX, {CStreamId(1)});
+	CGameState &State = *Session.GameStates().FindByStream(CStreamId(1));
+	CNetObj_GameInfo GameInfo = {};
+	GameInfo.m_RoundStartTick = 10;
+	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aClients = {};
+	aClients[5].m_HasPlayerInfo = true;
+	aClients[5].m_PlayerInfo.m_ClientId = 5;
+	aClients[5].m_PlayerInfo.m_Team = TEAM_RED;
+	State.ApplySnapshotData(100, 2, aClients, &GameInfo);
+	Session.Stats().UpdateSnapshot(State, 100);
+	CSessionClientStats &Stats = Session.Stats().Client(5);
+	EXPECT_TRUE(Stats.IsActive());
+	Stats.m_Frags = 2;
+
+	aClients[5].m_PlayerInfo.m_Team = TEAM_SPECTATORS;
+	State.ApplySnapshotData(150, 2, aClients, &GameInfo);
+	Session.Stats().UpdateSnapshot(State, 150);
+	EXPECT_FALSE(Stats.IsActive());
+	aClients[5].m_PlayerInfo.m_Team = TEAM_RED;
+	State.ApplySnapshotData(160, 2, aClients, &GameInfo);
+	Session.Stats().UpdateSnapshot(State, 160);
+	EXPECT_EQ(Stats.GetIngameTicks(160), 50);
+
+	GameInfo.m_RoundStartTick = 20;
+	State.ApplySnapshotData(200, 2, std::move(aClients), &GameInfo);
+	Session.Stats().UpdateSnapshot(State, 200);
+	EXPECT_FALSE(Stats.IsActive());
+	EXPECT_EQ(Stats.m_Frags, 0);
 }
 
 TEST(GameState, SessionVotesAreIndependentAndPreserveOptionsAcrossVotes)
@@ -857,6 +1045,10 @@ TEST(GameState, SessionVotesAreIndependentAndPreserveOptionsAcrossVotes)
 	EXPECT_EQ(NetworkVote.SecondsLeft(2100, 100), -1);
 	EXPECT_EQ(str_length(NetworkVote.Description()), VOTE_DESC_LENGTH - 1);
 	EXPECT_EQ(str_length(NetworkVote.Reason()), VOTE_REASON_LENGTH - 1);
+	EXPECT_TRUE(DemoVote.ApplyVoteSet(20, "demo vote", "demo reason", 1000, 100));
+	NetworkVote.Expire(2100, 100);
+	EXPECT_FALSE(NetworkVote.IsVoting());
+	EXPECT_TRUE(DemoVote.IsVoting());
 	std::string Utf8Description(VOTE_DESC_LENGTH - 2, 'd');
 	Utf8Description += "\xC3\xA4";
 	std::string Utf8Reason(VOTE_REASON_LENGTH - 2, 'r');
@@ -1047,6 +1239,9 @@ TEST(GameState, EntitySnapshotsOwnCurrentAndPreviousData)
 	EXPECT_EQ(reinterpret_cast<const CNetObj_Flag *>(Flag->m_vPrevData.data())->m_X, 250);
 	EXPECT_EQ(reinterpret_cast<const CNetObj_GameData *>(GameData->m_vData.data())->m_FlagCarrierRed, 4);
 	EXPECT_EQ(reinterpret_cast<const CNetObj_GameData *>(GameData->m_vPrevData.data())->m_FlagCarrierRed, FLAG_ATSTAND);
+	ASSERT_NE(Primary.GameData(), nullptr);
+	EXPECT_EQ(Primary.GameData()->m_FlagCarrierRed, 4);
+	EXPECT_EQ(Additional.GameData(), nullptr);
 	EXPECT_TRUE(Additional.Entities().empty());
 	EXPECT_NE(Primary.SnapshotDigest(), Additional.SnapshotDigest());
 	Primary.Reset();
@@ -1083,6 +1278,11 @@ TEST(GameView, RenderingTwoViewsDoesNotAdvanceState)
 	CGameView *pRight = ViewManager.Find(RightId);
 	ASSERT_NE(pLeft, nullptr);
 	ASSERT_NE(pRight, nullptr);
+	EXPECT_TRUE(pLeft->MatchesTarget(SessionId, State.Id()));
+	EXPECT_TRUE(pLeft->MatchesBinding(LeftId, SessionId, State.Id()));
+	EXPECT_FALSE(pLeft->MatchesBinding(RightId, SessionId, State.Id()));
+	EXPECT_FALSE(pLeft->MatchesTarget(CSessionId(99), State.Id()));
+	EXPECT_FALSE(pLeft->MatchesTarget(SessionId, CGameStateId(99)));
 	pLeft->Camera().m_LastInputPosition = vec2(10.0f, 20.0f);
 	pLeft->Camera().m_DynamicCameraOffset = vec2(30.0f, 40.0f);
 	pRight->Camera().m_LastInputPosition = vec2(50.0f, 60.0f);
@@ -1319,6 +1519,8 @@ TEST(GameView, SchedulerUpdatesEachStateBeforeRenderingExplicitOutputs)
 		},
 		[&](const CRenderContext &Context, CRenderOutput &Output) {
 			EXPECT_EQ(vpUpdatedStates.size(), 3U);
+			EXPECT_EQ(Context.m_OutputCacheKey, Output.PresentationCacheKey());
+			EXPECT_FALSE(Context.m_IsVideoOutput);
 			vpRenderedViews.push_back(&Context.m_View);
 			vpRenderOutputs.push_back(&Output);
 			vRenderedWorldRects.push_back(Context.m_VisibleWorldRect);
@@ -1384,7 +1586,7 @@ TEST(GameView, EqualStateIdsInDifferentSessionsRemainDistinct)
 	EXPECT_EQ(DemoContext.m_Time.m_GameTick, 200);
 }
 
-TEST(GameView, SelectorStatesAreIndependentAndSurviveRetargeting)
+TEST(GameView, SelectorStatesAreIndependentAndStaleSpectatorIntentIsCancelled)
 {
 	CGameViewManager ViewManager;
 	const CGameViewId LeftId = ViewManager.Create(CSessionId(1), CGameStateId(1));
@@ -1404,10 +1606,15 @@ TEST(GameView, SelectorStatesAreIndependentAndSurviveRetargeting)
 	pLeft->EmoticonSelector().m_SelectorMouse = vec2(10.0f, 20.0f);
 	pLeft->EmoticonSelector().m_SelectedEmote = 3;
 	pLeft->EmoticonSelector().m_TouchPressedOutside = true;
+	pLeft->EmoticonSelector().m_OriginSessionId = CSessionId(1);
+	pLeft->EmoticonSelector().m_OriginConnection = 1;
 	pLeft->SpectatorSelector().m_Active = true;
 	pLeft->SpectatorSelector().m_SelectorMouse = vec2(30.0f, 40.0f);
 	pLeft->SpectatorSelector().m_SelectedSpectatorId = 7;
 	pLeft->SpectatorSelector().m_MultiViewActivateTime = 12.5f;
+	pLeft->SpectatorSelector().m_OriginSessionId = CSessionId(1);
+	pLeft->SpectatorSelector().m_OriginStateId = CGameStateId(1);
+	pLeft->SpectatorSelector().m_PendingSpectatorId = 8;
 
 	EXPECT_FALSE(pRight->EmoticonSelector().m_Active);
 	EXPECT_EQ(pRight->EmoticonSelector().m_SelectorMouse, vec2(0.0f, 0.0f));
@@ -1419,11 +1626,17 @@ TEST(GameView, SelectorStatesAreIndependentAndSurviveRetargeting)
 	EXPECT_EQ(pRight->SpectatorSelector().m_MultiViewActivateTime, 0.0f);
 
 	pLeft->SetTarget(CSessionId(2), CGameStateId(2));
+	EXPECT_FALSE(pLeft->MatchesTarget(CSessionId(1), CGameStateId(1)));
+	EXPECT_TRUE(pLeft->MatchesTarget(CSessionId(2), CGameStateId(2)));
 	EXPECT_TRUE(pLeft->EmoticonSelector().m_Active);
 	EXPECT_EQ(pLeft->EmoticonSelector().m_SelectedEmote, 3);
-	EXPECT_TRUE(pLeft->SpectatorSelector().m_Active);
-	EXPECT_EQ(pLeft->SpectatorSelector().m_SelectedSpectatorId, 7);
-	EXPECT_EQ(pLeft->SpectatorSelector().m_MultiViewActivateTime, 12.5f);
+	EXPECT_EQ(pLeft->EmoticonSelector().m_OriginSessionId, CSessionId(1));
+	EXPECT_EQ(pLeft->EmoticonSelector().m_OriginConnection, 1);
+	EXPECT_FALSE(pLeft->SpectatorSelector().m_Active);
+	EXPECT_EQ(pLeft->SpectatorSelector().m_SelectedSpectatorId, CGameView::CSpectatorSelectorState::NO_SELECTION);
+	EXPECT_EQ(pLeft->SpectatorSelector().m_MultiViewActivateTime, 0.0f);
+	EXPECT_FALSE(pLeft->SpectatorSelector().m_OriginSessionId.IsValid());
+	EXPECT_EQ(pLeft->SpectatorSelector().m_PendingSpectatorId, CGameView::CSpectatorSelectorState::NO_SELECTION);
 
 	pLeft->EmoticonSelector().Reset();
 	pLeft->SpectatorSelector().Reset();
@@ -1432,6 +1645,60 @@ TEST(GameView, SelectorStatesAreIndependentAndSurviveRetargeting)
 	EXPECT_FALSE(pLeft->SpectatorSelector().m_Active);
 	EXPECT_EQ(pLeft->SpectatorSelector().m_SelectedSpectatorId, CGameView::CSpectatorSelectorState::NO_SELECTION);
 	EXPECT_EQ(pLeft->SpectatorSelector().m_MultiViewActivateTime, 0.0f);
+}
+
+TEST(GameView, SpectatorSelectionUsesViewOwnedLayoutAndDemoMode)
+{
+	CGameView::CSpectatorSelectorState Selector;
+	std::array<int, MAX_CLIENTS> aClients;
+	aClients.fill(-1);
+	for(int Index = 0; Index < 9; ++Index)
+		aClients[Index] = Index + 10;
+
+	Selector.m_SelectorMouse = vec2(-250.0f, -250.0f);
+	Selector.UpdateSelection(300.0f, 60.0f, 8, aClients, 9, true);
+	EXPECT_EQ(Selector.m_SelectedSpectatorId, SPEC_FREEVIEW);
+	Selector.m_SelectorMouse = vec2(0.0f, -250.0f);
+	Selector.UpdateSelection(300.0f, 60.0f, 8, aClients, 9, true);
+	EXPECT_EQ(Selector.m_SelectedSpectatorId, CGameView::CSpectatorSelectorState::MULTI_VIEW);
+	Selector.m_SelectorMouse = vec2(220.0f, -250.0f);
+	Selector.UpdateSelection(300.0f, 60.0f, 8, aClients, 9, true);
+	EXPECT_EQ(Selector.m_SelectedSpectatorId, SPEC_FOLLOW);
+	Selector.UpdateSelection(300.0f, 60.0f, 8, aClients, 9, false);
+	EXPECT_EQ(Selector.m_SelectedSpectatorId, CGameView::CSpectatorSelectorState::NO_SELECTION);
+	Selector.m_SelectorMouse = vec2(-260.0f, -190.0f);
+	Selector.UpdateSelection(300.0f, 60.0f, 8, aClients, 9, false);
+	EXPECT_EQ(Selector.m_SelectedSpectatorId, 10);
+	Selector.m_SelectorMouse = vec2(30.0f, -190.0f);
+	Selector.UpdateSelection(300.0f, 60.0f, 8, aClients, 9, false);
+	EXPECT_EQ(Selector.m_SelectedSpectatorId, 18);
+
+	CGameViewManager ViewManager;
+	CGameView *pView = ViewManager.Find(ViewManager.Create(CSessionId(1), CGameStateId(1)));
+	ASSERT_NE(pView, nullptr);
+	pView->SetSpectator(true, 3);
+	EXPECT_EQ(pView->SpectatorMode(), 3);
+	pView->SetSpectatorMode(SPEC_FOLLOW);
+	EXPECT_EQ(pView->SpectatorMode(), SPEC_FOLLOW);
+}
+
+TEST(GameView, EmoticonSelectionUsesTheViewOwnedPointer)
+{
+	CGameView::CEmoticonSelectorState Selector;
+	Selector.m_SelectorMouse = vec2(200.0f, 0.0f);
+	Selector.UpdateSelection(16, 6, true);
+	EXPECT_FLOAT_EQ(length(Selector.m_SelectorMouse), 170.0f);
+	EXPECT_EQ(Selector.m_SelectedEmote, 0);
+	EXPECT_EQ(Selector.m_SelectedEyeEmote, -1);
+
+	Selector.m_SelectorMouse = vec2(70.0f, 0.0f);
+	Selector.UpdateSelection(16, 6, true);
+	EXPECT_EQ(Selector.m_SelectedEmote, -1);
+	EXPECT_EQ(Selector.m_SelectedEyeEmote, 0);
+
+	Selector.UpdateSelection(16, 6, false);
+	EXPECT_EQ(Selector.m_SelectedEmote, -1);
+	EXPECT_EQ(Selector.m_SelectedEyeEmote, -1);
 }
 
 TEST(GameView, SpectatorCursorsAreIndependentAndResetWhenRetargeted)
@@ -1585,6 +1852,39 @@ TEST(GameState, HeadlessSpectatorSnapshotHasNoDesktopDependencies)
 	EXPECT_EQ(State.Client(5).m_PlayerInfo.m_Team, TEAM_SPECTATORS);
 	EXPECT_EQ(State.SpectatorInfo().m_SpectatorId, 9);
 	EXPECT_NE(State.SnapshotDigest(), BeforeSpectatorInfo);
+
+	const uint64_t BeforeSpectatorCount = State.SnapshotDigest();
+	CNetObj_SpectatorCount SpectatorCount = {};
+	SpectatorCount.m_NumSpectators = 7;
+	State.ApplySpectatorCount(SpectatorCount);
+	EXPECT_TRUE(State.HasSpectatorCount());
+	EXPECT_EQ(State.SpectatorCount().m_NumSpectators, 7);
+	const uint64_t DigestWithSpectatorCount = State.SnapshotDigest();
+	EXPECT_NE(DigestWithSpectatorCount, BeforeSpectatorCount);
+
+	State.Reset();
+	EXPECT_FALSE(State.HasSpectatorCount());
+	EXPECT_NE(State.SnapshotDigest(), DigestWithSpectatorCount);
+}
+
+TEST(GameState, StrokedInputCommandsRemainStateLocal)
+{
+	CGameState First(CGameStateId(1), CStreamId(1));
+	CGameState Second(CGameStateId(2), CStreamId(2));
+
+	EXPECT_TRUE(First.Input().ApplyStrokedCommand("+fire", 1, false));
+	EXPECT_EQ(First.Input().m_InputData.m_Fire & 1, 1);
+	EXPECT_EQ(Second.Input().m_InputData.m_Fire, 0);
+	EXPECT_TRUE(First.Input().ApplyStrokedCommand("+fire", 0, true));
+	EXPECT_EQ(First.Input().m_InputData.m_Fire & 1, 0);
+
+	EXPECT_TRUE(First.Input().ApplyStrokedCommand("+hook", 1, true));
+	EXPECT_EQ(First.Input().m_InputData.m_Hook, 0);
+	EXPECT_TRUE(First.Input().ApplyStrokedCommand("+weapon3", 1, true));
+	EXPECT_EQ(First.Input().m_InputData.m_WantedWeapon, 3);
+	EXPECT_TRUE(First.Input().ApplyStrokedCommand("+nextweapon", 1, false));
+	EXPECT_EQ(First.Input().m_InputData.m_WantedWeapon, 0);
+	EXPECT_FALSE(First.Input().ApplyStrokedCommand("+not-a-game-input", 1, false));
 }
 
 TEST(GameState, GeneratedDemoPlaysToKnownDigestHeadlessly)

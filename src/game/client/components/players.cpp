@@ -173,6 +173,42 @@ float CPlayers::GetPlayerTargetAngle(
 	}
 }
 
+int CPlayers::IntersectCharacter(const CGameState &GameState, const CGameTickInfo &Time, vec2 HookPos, vec2 NewPos, vec2 &NewPos2, int OwnId, vec2 *pPlayerPosition) const
+{
+	float Distance = 0.0f;
+	int ClosestId = -1;
+	const CNetObj_DDNetCharacter *pOwnExtended = GameState.ExtendedCharacter(OwnId);
+	const int OwnFlags = pOwnExtended != nullptr ? pOwnExtended->m_Flags : 0;
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+	{
+		if(ClientId == OwnId)
+			continue;
+		const CGameState::CClientSnapshot &Client = GameState.Client(ClientId);
+		if(!Client.m_HasPlayerInfo || !Client.m_HasCharacter || !Client.m_HasPrevCharacter)
+			continue;
+		const CNetObj_DDNetCharacter *pExtended = GameState.ExtendedCharacter(ClientId);
+		const int Flags = pExtended != nullptr ? pExtended->m_Flags : 0;
+		const bool IsOneSuper = (Flags & CHARACTERFLAG_SUPER) != 0 || (OwnFlags & CHARACTERFLAG_SUPER) != 0;
+		const bool IsOneSolo = (Flags & CHARACTERFLAG_SOLO) != 0 || (OwnFlags & CHARACTERFLAG_SOLO) != 0;
+		if(!IsOneSuper && (!GameState.Teams().SameTeam(ClientId, OwnId) || IsOneSolo || (OwnFlags & CHARACTERFLAG_HOOK_HIT_DISABLED) != 0))
+			continue;
+
+		const vec2 Position = mix(vec2(Client.m_PrevCharacter.m_X, Client.m_PrevCharacter.m_Y), vec2(Client.m_Character.m_X, Client.m_Character.m_Y), Time.m_IntraGameTick);
+		vec2 ClosestPoint;
+		if(!closest_point_on_line(HookPos, NewPos, Position, ClosestPoint) || distance(Position, ClosestPoint) >= CCharacterCore::PhysicalSize() + 2.0f)
+			continue;
+		if(ClosestId == -1 || distance(HookPos, Position) < Distance)
+		{
+			NewPos2 = ClosestPoint;
+			ClosestId = ClientId;
+			Distance = distance(HookPos, Position);
+			if(pPlayerPosition != nullptr)
+				*pPlayerPosition = Position;
+		}
+	}
+	return ClosestId;
+}
+
 void CPlayers::RenderHookCollLine(
 	const CRenderContext &Context,
 	const CScreenRect &ScreenRect,
@@ -194,12 +230,12 @@ void CPlayers::RenderHookCollLine(
 	bool Local = GameState.LocalClientId() == ClientId;
 
 #if defined(CONF_VIDEORECORDER)
-	if(IVideo::Current() && !g_Config.m_ClVideoShowHookCollOther && !Local)
+	if(Context.m_IsVideoOutput && !g_Config.m_ClVideoShowHookCollOther && !Local)
 		return;
 #endif
 
 	bool Aim = (Player.m_PlayerFlags & PLAYERFLAG_AIM);
-	if(!Client()->ServerCapAnyPlayerFlag())
+	if(!Context.m_Session.ServerCapAnyPlayerFlag())
 	{
 		for(const auto &pState : Context.m_Session.GameStates().States())
 		{
@@ -254,7 +290,8 @@ void CPlayers::RenderHookCollLine(
 
 	// Check, if the player is outside the screen-rect
 	// If the map contains hook teleports, we are out of luck since we don't know if it will enter the screen at any point.
-	if(!Collision()->HasHookTeleIns())
+	const CCollision *pCollision = Context.m_Session.MapContext().Collision();
+	if(!pCollision->HasHookTeleIns())
 	{
 		const float MaxHookReach = HookLength + HookFireSpeed;
 
@@ -282,7 +319,7 @@ void CPlayers::RenderHookCollLine(
 	ColorRGBA HookCollColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClHookCollColorNoColl));
 	std::vector<IGraphics::CLineItem> vLineSegments;
 
-	const int MaxHookTicks = 5 * Client()->GameTickSpeed(); // calculating above 5 seconds is very expensive and unlikely to happen
+	const int MaxHookTicks = 5 * Context.m_Time.m_GameTickSpeed; // calculating above 5 seconds is very expensive and unlikely to happen
 
 	auto AddHookPlayerSegment = [&](const vec2 &StartPos, const vec2 &EndPos, const vec2 &HookablePlayerPosition, const vec2 &HitPos) {
 		HookCollColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClHookCollColorTeeColl));
@@ -325,9 +362,9 @@ void CPlayers::RenderHookCollLine(
 			{
 				vec2 RetractingHookEndPos = BasePos + normalize(SegmentEndPos - BasePos) * HookLength;
 				// you can't hook a player, if the hook is behind solids, however you miss the solids as well
-				int Hit = Collision()->IntersectLineTeleHook(SegmentStartPos, RetractingHookEndPos, &HitPos, nullptr, &Tele);
+				int Hit = pCollision->IntersectLineTeleHook(SegmentStartPos, RetractingHookEndPos, &HitPos, nullptr, &Tele);
 
-				if(GameClient()->IntersectCharacter(SegmentStartPos, HitPos, RetractingHookEndPos, ClientId, &IntersectedPlayerPosition) != -1)
+				if(IntersectCharacter(GameState, Context.m_Time, SegmentStartPos, HitPos, RetractingHookEndPos, ClientId, &IntersectedPlayerPosition) != -1)
 				{
 					AddHookPlayerSegment(LineStartPos, SegmentEndPos, IntersectedPlayerPosition, RetractingHookEndPos);
 					break;
@@ -355,10 +392,10 @@ void CPlayers::RenderHookCollLine(
 		}
 
 		// check for map collisions
-		int Hit = Collision()->IntersectLineTeleHook(SegmentStartPos, SegmentEndPos, &HitPos, nullptr, &Tele);
+		int Hit = pCollision->IntersectLineTeleHook(SegmentStartPos, SegmentEndPos, &HitPos, nullptr, &Tele);
 
 		// check if we intersect a player
-		if(GameClient()->IntersectCharacter(SegmentStartPos, HitPos, SegmentEndPos, ClientId, &IntersectedPlayerPosition) != -1)
+		if(IntersectCharacter(GameState, Context.m_Time, SegmentStartPos, HitPos, SegmentEndPos, ClientId, &IntersectedPlayerPosition) != -1)
 		{
 			AddHookPlayerSegment(LineStartPos, HitPos, IntersectedPlayerPosition, SegmentEndPos);
 			break;
@@ -394,7 +431,7 @@ void CPlayers::RenderHookCollLine(
 		HookEnteredTelehook = true;
 
 		// check tele outs
-		const std::vector<vec2> &vTeleOuts = Collision()->TeleOuts(Tele - 1);
+		const std::vector<vec2> &vTeleOuts = pCollision->TeleOuts(Tele - 1);
 		if(vTeleOuts.empty())
 		{
 			// the hook gets stuck, this is a feature or a bug
@@ -443,7 +480,7 @@ void CPlayers::RenderHookCollLine(
 	// Render hook coll line
 	const int HookCollSize = Local ? g_Config.m_ClHookCollSize : g_Config.m_ClHookCollSizeOther;
 
-	float Alpha = GameClient()->IsOtherTeam(ClientId) ? g_Config.m_ClShowOthersAlpha / 100.0f : 1.0f;
+	float Alpha = Context.IsOtherTeam(ClientId) ? g_Config.m_ClShowOthersAlpha / 100.0f : 1.0f;
 	Alpha *= (float)g_Config.m_ClHookCollAlpha / 100;
 	if(Alpha <= 0.0f)
 		return;
@@ -456,7 +493,7 @@ void CPlayers::RenderHookCollLine(
 		vLineQuadSegments.reserve(vLineSegments.size());
 
 		float LineWidth = 0.5f + (float)(HookCollSize - 1) * 0.25f;
-		const vec2 PerpToAngle = normalize(vec2(Direction.y, -Direction.x)) * GameClient()->m_Camera.Zoom();
+		const vec2 PerpToAngle = normalize(vec2(Direction.y, -Direction.x)) * Context.m_View.Zoom();
 
 		auto ConvertLineSegments = [&](const IGraphics::CLineItem &LineSegment) {
 			vec2 DrawInitPos(LineSegment.m_X0, LineSegment.m_Y0);
@@ -590,54 +627,6 @@ void CPlayers::RenderHook(
 	RenderHand(&RenderInfo, Position, normalize(HookPos - Pos), -pi / 2, vec2(20, 0), Alpha);
 }
 
-void CPlayers::PrepareRenderInfo(const CGameSessionContext &Session, const CGameState &GameState, int ClientId, bool IsTeamPlay, CTeeRenderInfo &RenderInfo) const
-{
-	RenderInfo = GameClient()->m_aClients[ClientId].m_RenderInfo;
-	RenderInfo.m_TeeRenderFlags = 0;
-
-	// Predict freeze skin only for local players.
-	bool Frozen = false;
-	bool IsLocal = false;
-	for(const auto &pState : Session.GameStates().States())
-		IsLocal |= ClientId == pState->LocalClientId();
-	if(IsLocal)
-	{
-		const CCharacterCore &Predicted = GameState.PredictedClient(ClientId).m_Current;
-		if(Predicted.m_FreezeEnd != 0)
-			RenderInfo.m_TeeRenderFlags |= TEE_EFFECT_FROZEN | TEE_NO_WEAPON;
-		if(Predicted.m_LiveFrozen)
-			RenderInfo.m_TeeRenderFlags |= TEE_EFFECT_FROZEN;
-		if(Predicted.m_Invincible)
-			RenderInfo.m_TeeRenderFlags |= TEE_EFFECT_SPARKLE;
-
-		Frozen = Predicted.m_FreezeEnd != 0;
-	}
-	else
-	{
-		const CNetObj_DDNetCharacter *pExtended = GameState.ExtendedCharacter(ClientId);
-		if(pExtended != nullptr && pExtended->m_FreezeEnd != 0)
-			RenderInfo.m_TeeRenderFlags |= TEE_EFFECT_FROZEN | TEE_NO_WEAPON;
-		if(pExtended != nullptr && (pExtended->m_Flags & CHARACTERFLAG_MOVEMENTS_DISABLED) != 0)
-			RenderInfo.m_TeeRenderFlags |= TEE_EFFECT_FROZEN;
-		if(pExtended != nullptr && (pExtended->m_Flags & CHARACTERFLAG_INVINCIBLE) != 0)
-			RenderInfo.m_TeeRenderFlags |= TEE_EFFECT_SPARKLE;
-
-		Frozen = pExtended != nullptr && pExtended->m_FreezeEnd != 0;
-	}
-
-	if((GameState.RenderedClient(ClientId).m_Cur.m_Weapon == WEAPON_NINJA || (Frozen && !GameState.CoreGameInfo().m_NoSkinChangeForFrozen)) && g_Config.m_ClShowNinja)
-	{
-		RenderInfo.m_Sixup.Reset();
-		RenderInfo.ApplySkin(NinjaTeeRenderInfo()->TeeRenderInfo());
-		RenderInfo.m_CustomColoredSkin = IsTeamPlay;
-		if(!IsTeamPlay)
-		{
-			RenderInfo.m_ColorBody = ColorRGBA(1, 1, 1);
-			RenderInfo.m_ColorFeet = ColorRGBA(1, 1, 1);
-		}
-	}
-}
-
 bool CPlayers::PreparePlayerRenderState(
 	const CGameSessionContext &Session,
 	const CGameState &GameState,
@@ -698,7 +687,7 @@ bool CPlayers::PreparePlayerRenderState(
 	State.m_RenderInfo.m_FeetFlipped = false;
 
 	State.m_Stationary = State.m_Player.m_VelX <= 1 && State.m_Player.m_VelX >= -1;
-	State.m_InAir = !Collision()->CheckPoint(State.m_Player.m_X, State.m_Player.m_Y + 16);
+	State.m_InAir = !Session.MapContext().Collision()->CheckPoint(State.m_Player.m_X, State.m_Player.m_Y + 16);
 	const bool Running = State.m_Player.m_VelX >= 5000 || State.m_Player.m_VelX <= -5000;
 	State.m_WantOtherDir = (State.m_Player.m_Direction == -1 && State.m_Vel.x > 0) || (State.m_Player.m_Direction == 1 && State.m_Vel.x < 0);
 	const CNetObj_DDNetPlayer *pDDNetPlayer = in_range(ClientId, MAX_CLIENTS - 1) && GameState.Client(ClientId).m_HasDDNetPlayer ? &GameState.Client(ClientId).m_DDNetPlayer : nullptr;
@@ -1028,9 +1017,10 @@ void CPlayers::RenderPlayer(
 		Graphics()->QuadsSetRotation(0);
 	}
 
-	if(g_Config.m_ClShowEmotes && !GameClient()->m_aClients[ClientId].m_EmoticonIgnore && GameClient()->m_aClients[ClientId].m_EmoticonStartTick != -1)
+	const CGameState::CClientEmoticonState &Emoticon = Context.m_State.ClientEmoticon(ClientId);
+	if(g_Config.m_ClShowEmotes && !GameClient()->SessionPresentation(Context.m_Session.Id()).EmoticonIgnored(ClientId) && Emoticon.m_StartTick != -1)
 	{
-		float SinceStart = (Context.m_Time.m_GameTick - GameClient()->m_aClients[ClientId].m_EmoticonStartTick) + (Context.m_Time.m_IntraGameTickSincePrev - GameClient()->m_aClients[ClientId].m_EmoticonStartFraction);
+		float SinceStart = (Context.m_Time.m_GameTick - Emoticon.m_StartTick) + (Context.m_Time.m_IntraGameTickSincePrev - Emoticon.m_StartFraction);
 		float FromEnd = (2 * Context.m_Time.m_GameTickSpeed) - SinceStart;
 
 		if(0 <= SinceStart && FromEnd > 0)
@@ -1054,8 +1044,8 @@ void CPlayers::RenderPlayer(
 
 			Graphics()->SetColor(1.0f, 1.0f, 1.0f, a * Alpha);
 			// client_datas::emoticon is an offset from the first emoticon
-			int QuadOffset = QuadOffsetToEmoticon + GameClient()->m_aClients[ClientId].m_Emoticon;
-			Graphics()->TextureSet(GameClient()->m_EmoticonsSkin.m_aSpriteEmoticons[GameClient()->m_aClients[ClientId].m_Emoticon]);
+			int QuadOffset = QuadOffsetToEmoticon + Emoticon.m_Emoticon;
+			Graphics()->TextureSet(GameClient()->m_EmoticonsSkin.m_aSpriteEmoticons[Emoticon.m_Emoticon]);
 			Graphics()->RenderQuadContainerAsSprite(m_WeaponEmoteQuadContainerIndex, QuadOffset, Position.x, Position.y - 23.f - 32.f * h, 1.f, (64.f * h) / 64.f);
 
 			Graphics()->SetColor(1.0f, 1.0f, 1.0f, 1.0f);
@@ -1076,23 +1066,27 @@ void CPlayers::UpdatePresentation(const CPresentationContext &Context)
 		return;
 
 	CGameState &State = Context.m_State;
-	const bool IsTeamPlay = State.HasGameInfo() && (State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
-	CTeeRenderInfo aRenderInfo[MAX_CLIENTS];
-	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
-		PrepareRenderInfo(Context.m_Session, State, ClientId, IsTeamPlay, aRenderInfo[ClientId]);
+	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
 
 	const int RenderLastId = State.LocalClientId();
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
 	{
 		if(ClientId == RenderLastId || !IsPlayerInfoAvailable(State, ClientId))
 			continue;
+		const CClientPresentation *pClient = Presentation.Client(State.Id(), ClientId);
+		if(pClient == nullptr || !pClient->m_Active)
+			continue;
 		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(ClientId);
-		UpdatePlayerPresentation(Context, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &aRenderInfo[ClientId], ClientId);
+		UpdatePlayerPresentation(Context, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &pClient->m_RenderInfo, ClientId);
 	}
 	if(RenderLastId != -1 && IsPlayerInfoAvailable(State, RenderLastId))
 	{
-		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(RenderLastId);
-		UpdatePlayerPresentation(Context, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &aRenderInfo[RenderLastId], RenderLastId);
+		const CClientPresentation *pClient = Presentation.Client(State.Id(), RenderLastId);
+		if(pClient != nullptr && pClient->m_Active)
+		{
+			const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(RenderLastId);
+			UpdatePlayerPresentation(Context, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &pClient->m_RenderInfo, RenderLastId);
+		}
 	}
 }
 
@@ -1101,12 +1095,8 @@ void CPlayers::OnRender(const CRenderContext &Context)
 	if(!Context.m_Time.m_IsGameActive)
 		return;
 
-	// update render info for ninja
-	CTeeRenderInfo aRenderInfo[MAX_CLIENTS];
 	const CGameState &State = Context.m_State;
-	const bool IsTeamPlay = State.HasGameInfo() && (State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
-	for(int i = 0; i < MAX_CLIENTS; ++i)
-		PrepareRenderInfo(Context.m_Session, State, i, IsTeamPlay, aRenderInfo[i]);
+	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
 
 	// get screen edges to avoid rendering offscreen
 	CScreenRect ScreenRect(Context.m_VisibleWorldRect.m_TopLeft, Context.m_VisibleWorldRect.m_BottomRight);
@@ -1125,13 +1115,20 @@ void CPlayers::OnRender(const CRenderContext &Context)
 		{
 			continue;
 		}
+		const CClientPresentation *pClient = Presentation.Client(State.Id(), ClientId);
+		if(pClient == nullptr || !pClient->m_Active)
+			continue;
 		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(ClientId);
-		RenderHook(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &aRenderInfo[ClientId], ClientId);
+		RenderHook(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &pClient->m_RenderInfo, ClientId);
 	}
 	if(LocalClientId != -1 && IsPlayerInfoAvailable(State, LocalClientId))
 	{
-		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(LocalClientId);
-		RenderHook(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &aRenderInfo[LocalClientId], LocalClientId);
+		const CClientPresentation *pClient = Presentation.Client(State.Id(), LocalClientId);
+		if(pClient != nullptr && pClient->m_Active)
+		{
+			const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(LocalClientId);
+			RenderHook(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &pClient->m_RenderInfo, LocalClientId);
+		}
 	}
 
 	RenderSpectatorCharacters(Context, ScreenRect);
@@ -1145,16 +1142,23 @@ void CPlayers::OnRender(const CRenderContext &Context)
 		{
 			continue;
 		}
+		const CClientPresentation *pClient = Presentation.Client(State.Id(), ClientId);
+		if(pClient == nullptr || !pClient->m_Active)
+			continue;
 
 		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(ClientId);
 		RenderHookCollLine(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, ClientId);
-		RenderPlayer(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &aRenderInfo[ClientId], ClientId);
+		RenderPlayer(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &pClient->m_RenderInfo, ClientId);
 	}
 	if(RenderLastId != -1 && IsPlayerInfoAvailable(State, RenderLastId))
 	{
-		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(RenderLastId);
-		RenderHookCollLine(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, RenderLastId);
-		RenderPlayer(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &aRenderInfo[RenderLastId], RenderLastId);
+		const CClientPresentation *pClient = Presentation.Client(State.Id(), RenderLastId);
+		if(pClient != nullptr && pClient->m_Active)
+		{
+			const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(RenderLastId);
+			RenderHookCollLine(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, RenderLastId);
+			RenderPlayer(Context, ScreenRect, &RenderedClient.m_Prev, &RenderedClient.m_Cur, &pClient->m_RenderInfo, RenderLastId);
+		}
 	}
 }
 

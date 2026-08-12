@@ -18,6 +18,9 @@ class CSpectator : public CComponent
 	CUi::CTouchState m_TouchState;
 	CGameView::CSpectatorSelectorState &Selector();
 	const CGameView::CSpectatorSelectorState &Selector() const;
+	void Spectate(CGameView &View, const CGameView::CSpectatorSelectorState &Selector, int SpectatorId);
+	void ResetMultiView(CGameView &View);
+	void ApplySelection(CGameView &View, CGameView::CSpectatorSelectorState &Selector, int SpectatorId, int DDTeam, bool Toggle, float Now);
 
 	bool CanChangeSpectatorId();
 	void SpectateNext(bool Reverse);
@@ -35,7 +38,9 @@ public:
 	void OnConsoleInit() override;
 	bool OnCursorMove(float x, float y, IInput::ECursorType CursorType) override;
 	bool OnInput(const IInput::CEvent &Event) override;
-	void OnRender() override;
+	void UpdateController(CGameView &View, const CRenderContext &Context, float LocalTime);
+	void CommitController(CGameView &View, const CRenderContext &Context, float LocalTime);
+	void OnRender(const CRenderContext &Context) override;
 	void OnRelease() override;
 	void OnReset() override;
 

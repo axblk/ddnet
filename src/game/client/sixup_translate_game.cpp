@@ -34,6 +34,16 @@ static int GetStrTeam7(int Team, bool Teamplay)
 	return STR_TEAM_SPECTATORS;
 }
 
+static void GetStateClientName(const CGameState &State, int ClientId, char *pName, int NameSize)
+{
+	pName[0] = '\0';
+	if(!in_range(ClientId, MAX_CLIENTS - 1))
+		return;
+	const CGameState::CClientIdentityState &Identity = State.ClientIdentity(ClientId);
+	if(Identity.m_Active)
+		IntsToStr(Identity.m_ClientInfo.m_aName, std::size(Identity.m_ClientInfo.m_aName), pName, NameSize);
+}
+
 enum
 {
 	DO_CHAT = 0,
@@ -73,23 +83,24 @@ static CGameMsg7 gs_GameMsgList7[protocol7::NUM_GAMEMSGS] = {
 	{/*GAMEMSG_GAME_PAUSED*/ DO_SPECIAL, PARA_I, ""}, // special - add player name
 };
 
-void CGameClient::DoTeamChangeMessage7(const char *pName, int ClientId, int Team, const char *pPrefix)
+void CGameClient::DoTeamChangeMessage7(CSessionId SessionId, int Conn, const CGameState &State, const char *pName, int ClientId, int Team, const char *pPrefix)
 {
 	char aBuf[128];
-	switch(GetStrTeam7(Team, m_pClient->m_TranslationContext.m_GameFlags & protocol7::GAMEFLAG_TEAMS))
+	const bool TeamPlay = State.HasGameInfo() && (State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
+	switch(GetStrTeam7(Team, TeamPlay))
 	{
 	case STR_TEAM_GAME: str_format(aBuf, sizeof(aBuf), "'%s' %sjoined the game", pName, pPrefix); break;
 	case STR_TEAM_RED: str_format(aBuf, sizeof(aBuf), "'%s' %sjoined the red team", pName, pPrefix); break;
 	case STR_TEAM_BLUE: str_format(aBuf, sizeof(aBuf), "'%s' %sjoined the blue team", pName, pPrefix); break;
 	case STR_TEAM_SPECTATORS: str_format(aBuf, sizeof(aBuf), "'%s' %sjoined the spectators", pName, pPrefix); break;
 	}
-	m_Chat.AddLine(-1, 0, aBuf);
+	AddChatLine(SessionId, Conn, -1, 0, aBuf);
 }
 
 template<typename T>
-void CGameClient::ApplySkin7InfoFromGameMsg(const T *pMsg, int ClientId, int Conn)
+void CGameClient::ApplySkin7InfoFromGameMsg(const T *pMsg, int ClientId, CGameState &State)
 {
-	CGameState::CProtocol7ClientState &Protocol7Client = GameState(Conn).Protocol7Client(ClientId);
+	CGameState::CProtocol7ClientState &Protocol7Client = State.Protocol7Client(ClientId);
 	Protocol7Client.m_Active = true;
 
 	char *apSkinPartsPtr[protocol7::NUM_SKINPARTS];
@@ -119,7 +130,7 @@ void CGameClient::ApplySkin7InfoFromSnapObj(const protocol7::CNetObj_De_ClientIn
 		Msg.m_aUseCustomColors[Part] = pObj->m_aUseCustomColors[Part];
 		Msg.m_aSkinPartColors[Part] = pObj->m_aSkinPartColors[Part];
 	}
-	ApplySkin7InfoFromGameMsg(&Msg, ClientId, Conn);
+	ApplySkin7InfoFromGameMsg(&Msg, ClientId, GameState(Conn));
 }
 
 void CGameClient::CClientData::UpdateSkin7HatSprite(const CGameState::CProtocol7ClientState &Protocol7Client)
@@ -172,9 +183,13 @@ void CGameClient::CClientData::UpdateSkin7BotDecoration(const CGameState::CProto
 	}
 }
 
-void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn, bool Dummy)
+void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker *pUnpacker, int Conn, bool Dummy)
 {
-	if(!m_pClient->IsSixup())
+	CGameSessionContext *pSourceSession = m_SessionContexts.Find(SessionId);
+	dbg_assert(pSourceSession != nullptr, "missing translation session context");
+	CGameState *pSourceState = pSourceSession->GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pSourceState != nullptr, "missing translation game state");
+	if(pSourceSession->Protocol() != EGameProtocol::SIXUP)
 	{
 		return m_NetObjHandler.SecureUnpackMsg(*pMsgId, pUnpacker);
 	}
@@ -231,7 +246,7 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 			return nullptr;
 		}
 
-		if(!Client()->IsDemoPlayback())
+		if(SessionId != Client()->DemoSessionId())
 		{
 			m_aClients[pMsg7->m_ClientId].m_Team = pMsg7->m_Team;
 			m_pClient->m_TranslationContext.m_aClients[pMsg7->m_ClientId].m_Team = pMsg7->m_Team;
@@ -245,12 +260,14 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 			// }
 		}
 
-		if(Conn != ActiveConnection())
+		if(Dummy)
 			return nullptr;
 
 		if(pMsg7->m_Silent == 0)
 		{
-			DoTeamChangeMessage7(m_aClients[pMsg7->m_ClientId].m_aName, pMsg7->m_ClientId, pMsg7->m_Team);
+			char aName[MAX_NAME_LENGTH];
+			GetStateClientName(*pSourceState, pMsg7->m_ClientId, aName, sizeof(aName));
+			DoTeamChangeMessage7(SessionId, Conn, *pSourceState, aName, pMsg7->m_ClientId, pMsg7->m_Team);
 		}
 
 		// we drop the message and add the new team
@@ -272,10 +289,8 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 		// 0.7 only message for ui enrichment like locked teams
 		protocol7::CNetMsg_Sv_ServerSettings *pMsg = (protocol7::CNetMsg_Sv_ServerSettings *)pRawMsg;
 
-		if(!m_pClient->m_TranslationContext.m_ServerSettings.m_TeamLock && pMsg->m_TeamLock)
-			m_Chat.AddLine(-1, 0, "Teams were locked");
-		else if(m_pClient->m_TranslationContext.m_ServerSettings.m_TeamLock && !pMsg->m_TeamLock)
-			m_Chat.AddLine(-1, 0, "Teams were unlocked");
+		if(pSourceSession->Chat().UpdateSixupTeamLocked(pMsg->m_TeamLock != 0))
+			AddChatLine(SessionId, Conn, -1, 0, pMsg->m_TeamLock ? "Teams were locked" : "Teams were unlocked");
 
 		m_pClient->m_TranslationContext.m_ServerSettings.m_KickVote = pMsg->m_KickVote;
 		m_pClient->m_TranslationContext.m_ServerSettings.m_KickMin = pMsg->m_KickMin;
@@ -345,7 +360,7 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 
 		CTranslationContext::CClientData &Client = m_pClient->m_TranslationContext.m_aClients[pMsg7->m_ClientId];
 		Client.m_Active = true;
-		ApplySkin7InfoFromGameMsg(pMsg7, pMsg7->m_ClientId, Conn);
+		ApplySkin7InfoFromGameMsg(pMsg7, pMsg7->m_ClientId, *pSourceState);
 		// skin will be moved to the 0.6 snap by the translation context
 		// and we drop the game message
 		return nullptr;
@@ -383,8 +398,12 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 				if(pUnpacker->Error())
 					continue;
 
-				if(!Dummy && Client()->State() != IClient::STATE_DEMOPLAYBACK)
-					m_Voting.AddOption(pDescription);
+				if(!Dummy && SessionId != Client()->DemoSessionId())
+				{
+					CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
+					dbg_assert(pSession != nullptr, "missing vote option session context");
+					pSession->Vote().AddOption(pDescription);
+				}
 			}
 			// 0.7 can send more vote options than
 			// the 0.6 protocol fit
@@ -438,23 +457,25 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 			{
 				if(pMsg7->m_ClientId != -1)
 				{
-					const char *pName = m_aClients[pMsg7->m_ClientId].m_aName;
+					char aName[MAX_NAME_LENGTH];
+					GetStateClientName(*pSourceState, pMsg7->m_ClientId, aName, sizeof(aName));
+					const char *pName = aName;
 					switch(pMsg7->m_Type)
 					{
 					case protocol7::VOTE_START_OP:
 						str_format(aBuf, sizeof(aBuf), "'%s' called vote to change server option '%s' (%s)", pName, pMsg7->m_pDescription, pMsg7->m_pReason);
-						m_Chat.AddLine(-1, 0, aBuf);
+						AddChatLine(SessionId, Conn, -1, 0, aBuf);
 						break;
 					case protocol7::VOTE_START_KICK:
 					{
 						str_format(aBuf, sizeof(aBuf), "'%s' called for vote to kick '%s' (%s)", pName, pMsg7->m_pDescription, pMsg7->m_pReason);
-						m_Chat.AddLine(-1, 0, aBuf);
+						AddChatLine(SessionId, Conn, -1, 0, aBuf);
 						break;
 					}
 					case protocol7::VOTE_START_SPEC:
 					{
 						str_format(aBuf, sizeof(aBuf), "'%s' called for vote to move '%s' to spectators (%s)", pName, pMsg7->m_pDescription, pMsg7->m_pReason);
-						m_Chat.AddLine(-1, 0, aBuf);
+						AddChatLine(SessionId, Conn, -1, 0, aBuf);
 					}
 					}
 				}
@@ -465,20 +486,20 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 				{
 				case protocol7::VOTE_START_OP:
 					str_format(aBuf, sizeof(aBuf), "Admin forced server option '%s' (%s)", pMsg7->m_pDescription, pMsg7->m_pReason);
-					m_Chat.AddLine(-1, 0, aBuf);
+					AddChatLine(SessionId, Conn, -1, 0, aBuf);
 					break;
 				case protocol7::VOTE_START_SPEC:
 					str_format(aBuf, sizeof(aBuf), "Admin moved '%s' to spectator (%s)", pMsg7->m_pDescription, pMsg7->m_pReason);
-					m_Chat.AddLine(-1, 0, aBuf);
+					AddChatLine(SessionId, Conn, -1, 0, aBuf);
 					break;
 				case protocol7::VOTE_END_ABORT:
-					m_Chat.AddLine(-1, 0, "Vote aborted");
+					AddChatLine(SessionId, Conn, -1, 0, "Vote aborted");
 					break;
 				case protocol7::VOTE_END_PASS:
-					m_Chat.AddLine(-1, 0, pMsg7->m_ClientId == -1 ? "Admin forced vote yes" : "Vote passed");
+					AddChatLine(SessionId, Conn, -1, 0, pMsg7->m_ClientId == -1 ? "Admin forced vote yes" : "Vote passed");
 					break;
 				case protocol7::VOTE_END_FAIL:
-					m_Chat.AddLine(-1, 0, pMsg7->m_ClientId == -1 ? "Admin forced vote no" : "Vote failed");
+					AddChatLine(SessionId, Conn, -1, 0, pMsg7->m_ClientId == -1 ? "Admin forced vote no" : "Vote failed");
 				}
 			}
 		}
@@ -511,21 +532,23 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 			dbg_msg("sixup", "Sv_ClientDrop got invalid ClientId: %d", pMsg7->m_ClientId);
 			return nullptr;
 		}
+		char aName[MAX_NAME_LENGTH];
+		GetStateClientName(*pSourceState, pMsg7->m_ClientId, aName, sizeof(aName));
 		CTranslationContext::CClientData &Client = m_pClient->m_TranslationContext.m_aClients[pMsg7->m_ClientId];
 		Client.Reset();
 
 		if(pMsg7->m_Silent)
 			return nullptr;
 
-		if(Conn != ActiveConnection())
+		if(Dummy)
 			return nullptr;
 
 		static char s_aBuf[128];
 		if(pMsg7->m_pReason[0])
-			str_format(s_aBuf, sizeof(s_aBuf), "'%s' has left the game (%s)", m_aClients[pMsg7->m_ClientId].m_aName, pMsg7->m_pReason);
+			str_format(s_aBuf, sizeof(s_aBuf), "'%s' has left the game (%s)", aName, pMsg7->m_pReason);
 		else
-			str_format(s_aBuf, sizeof(s_aBuf), "'%s' has left the game", m_aClients[pMsg7->m_ClientId].m_aName);
-		m_Chat.AddLine(-1, 0, s_aBuf);
+			str_format(s_aBuf, sizeof(s_aBuf), "'%s' has left the game", aName);
+		AddChatLine(SessionId, Conn, -1, 0, s_aBuf);
 
 		return nullptr;
 	}
@@ -552,16 +575,22 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 		{
 			Client.m_Country = CountryCode::DEFAULT;
 		}
-		ApplySkin7InfoFromGameMsg(pMsg7, pMsg7->m_ClientId, Conn);
+		CNetObj_ClientInfo ClientInfo = {};
+		StrToInts(ClientInfo.m_aName, std::size(ClientInfo.m_aName), pMsg7->m_pName);
+		StrToInts(ClientInfo.m_aClan, std::size(ClientInfo.m_aClan), pMsg7->m_pClan);
+		ClientInfo.m_Country = Client.m_Country;
+		StrToInts(ClientInfo.m_aSkin, std::size(ClientInfo.m_aSkin), "default");
+		pSourceState->ApplyClientIdentity(pMsg7->m_ClientId, ClientInfo);
+		ApplySkin7InfoFromGameMsg(pMsg7, pMsg7->m_ClientId, *pSourceState);
 		if(m_pClient->m_TranslationContext.m_aLocalClientId[Conn] == -1)
 			return nullptr;
 		if(pMsg7->m_Silent || pMsg7->m_Local)
 			return nullptr;
 
-		if(Conn != ActiveConnection())
+		if(Dummy)
 			return nullptr;
 
-		DoTeamChangeMessage7(
+		DoTeamChangeMessage7(SessionId, Conn, *pSourceState,
 			pMsg7->m_pName,
 			pMsg7->m_ClientId,
 			pMsg7->m_Team,
@@ -638,13 +667,13 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 		 * Prints chat message only once
 		 * even if it is being sent to main tee and dummy
 		 */
-		auto SendChat = [Conn, GameMsgId, this](const char *pText) -> void {
+		auto SendChat = [SessionId, Conn, GameMsgId, Dummy, this](const char *pText) -> void {
 			if(GameMsgId != protocol7::GAMEMSG_TEAM_BALANCE_VICTIM && GameMsgId != protocol7::GAMEMSG_SPEC_INVALIDID)
 			{
-				if(Conn != ActiveConnection())
+				if(Dummy)
 					return;
 			}
-			m_Chat.AddLine(-1, 0, pText);
+			AddChatLine(SessionId, Conn, -1, 0, pText);
 		};
 
 		// check for valid gamemsgid
@@ -672,7 +701,7 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 
 		// handle special messages
 		char aBuf[256];
-		bool TeamPlay = m_pClient->m_TranslationContext.m_GameFlags & protocol7::GAMEFLAG_TEAMS;
+		const bool TeamPlay = pSourceState->HasGameInfo() && (pSourceState->GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
 		if(gs_GameMsgList7[GameMsgId].m_Action == DO_SPECIAL)
 		{
 			switch(GameMsgId)
@@ -718,7 +747,9 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 			case protocol7::GAMEMSG_GAME_PAUSED:
 			{
 				int ClientId = std::clamp(aParaI[0], 0, MAX_CLIENTS - 1);
-				str_format(aBuf, sizeof(aBuf), "'%s' initiated a pause", m_aClients[ClientId].m_aName);
+				char aName[MAX_NAME_LENGTH];
+				GetStateClientName(*pSourceState, ClientId, aName, sizeof(aName));
+				str_format(aBuf, sizeof(aBuf), "'%s' initiated a pause", aName);
 				SendChat(aBuf);
 			}
 			break;
@@ -727,29 +758,31 @@ void *CGameClient::TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn,
 					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_CAPTURE);
 				int ClientId = std::clamp(aParaI[1], 0, MAX_CLIENTS - 1);
 				if(!Dummy)
-					SessionContext().Stats().Client(ClientId).m_FlagCaptures++;
+					pSourceSession->Stats().Client(ClientId).m_FlagCaptures++;
 
 				float Time = aParaI[2] / (float)Client()->GameTickSpeed();
+				char aName[MAX_NAME_LENGTH];
+				GetStateClientName(*pSourceState, ClientId, aName, sizeof(aName));
 				if(Time <= 60)
 				{
 					if(aParaI[0])
 					{
-						str_format(aBuf, sizeof(aBuf), "The blue flag was captured by '%s' (%.2f seconds)", m_aClients[ClientId].m_aName, Time);
+						str_format(aBuf, sizeof(aBuf), "The blue flag was captured by '%s' (%.2f seconds)", aName, Time);
 					}
 					else
 					{
-						str_format(aBuf, sizeof(aBuf), "The red flag was captured by '%s' (%.2f seconds)", m_aClients[ClientId].m_aName, Time);
+						str_format(aBuf, sizeof(aBuf), "The red flag was captured by '%s' (%.2f seconds)", aName, Time);
 					}
 				}
 				else
 				{
 					if(aParaI[0])
 					{
-						str_format(aBuf, sizeof(aBuf), "The blue flag was captured by '%s'", m_aClients[ClientId].m_aName);
+						str_format(aBuf, sizeof(aBuf), "The blue flag was captured by '%s'", aName);
 					}
 					else
 					{
-						str_format(aBuf, sizeof(aBuf), "The red flag was captured by '%s'", m_aClients[ClientId].m_aName);
+						str_format(aBuf, sizeof(aBuf), "The red flag was captured by '%s'", aName);
 					}
 				}
 				SendChat(aBuf);

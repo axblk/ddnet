@@ -143,29 +143,9 @@ void CVoting::Vote(int v)
 	Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL);
 }
 
-int CVoting::SecondsLeft() const
-{
-	return VoteState().SecondsLeft(time(), time_freq());
-}
-
 bool CVoting::IsVoting() const
 {
 	return VoteState().IsVoting();
-}
-
-int CVoting::TakenChoice() const
-{
-	return VoteState().Voted();
-}
-
-const char *CVoting::VoteDescription() const
-{
-	return VoteState().Description();
-}
-
-const char *CVoting::VoteReason() const
-{
-	return VoteState().Reason();
 }
 
 bool CVoting::IsReceivingOptions() const
@@ -183,35 +163,18 @@ const std::list<std::string> &CVoting::Options() const
 	return VoteState().Options();
 }
 
-void CVoting::AddOption(const char *pDescription)
-{
-	VoteState().AddOption(pDescription);
-}
-
-void CVoting::OnReset()
-{
-	VoteState().ResetVote();
-}
-
-void CVoting::OnUpdate()
-{
-	if(IsVoting() && SecondsLeft() < 0)
-		VoteState().ResetVote();
-}
-
 void CVoting::OnConsoleInit()
 {
 	Console()->Register("callvote", "s['kick'|'spectate'|'option'] s[id|option text] ?r[reason]", CFGFLAG_CLIENT, ConCallvote, this, "Call vote");
 	Console()->Register("vote", "r['yes'|'no']", CFGFLAG_CLIENT, ConVote, this, "Vote yes/no");
 }
 
-void CVoting::HandleMessage(int MsgType, void *pRawMsg)
+void CVoting::HandleMessage(CSessionVoteState &State, int64_t Now, int64_t TimeFrequency, bool NotifyAdmin, int MsgType, void *pRawMsg)
 {
-	CSessionVoteState &State = VoteState();
 	if(MsgType == NETMSGTYPE_SV_VOTESET)
 	{
 		CNetMsg_Sv_VoteSet *pMsg = (CNetMsg_Sv_VoteSet *)pRawMsg;
-		if(State.ApplyVoteSet(pMsg->m_Timeout, pMsg->m_pDescription, pMsg->m_pReason, time(), time_freq()) && Client()->RconAuthed())
+		if(State.ApplyVoteSet(pMsg->m_Timeout, pMsg->m_pDescription, pMsg->m_pReason, Now, TimeFrequency) && NotifyAdmin)
 		{
 			char aBuf[512];
 			str_format(aBuf, sizeof(aBuf), "%s (%s)", State.Description(), State.Reason());
@@ -279,14 +242,14 @@ void CVoting::HandleMessage(int MsgType, void *pRawMsg)
 	}
 }
 
-void CVoting::Render()
+void CVoting::Render(const CRenderContext &Context)
 {
-	if((!g_Config.m_ClShowVotesAfterVoting && !GameClient()->m_Scoreboard.IsActive() && TakenChoice()) || !IsVoting())
+	const CSessionVoteState &State = Context.m_Session.Vote();
+	if((!g_Config.m_ClShowVotesAfterVoting && !GameClient()->m_Scoreboard.IsActive(Context) && State.Voted()) || !State.IsVoting())
 		return;
-	const int Seconds = SecondsLeft();
+	const int Seconds = State.SecondsLeft(Context.m_Time.m_PresentationTime, Context.m_Time.m_PresentationTimeFrequency);
 	if(Seconds < 0)
 		return;
-	const CSessionVoteState &State = VoteState();
 
 	CUIRect View = {0.0f, 60.0f, 120.0f, 38.0f};
 	View.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.4f), IGraphics::CORNER_R, 3.0f);
@@ -306,17 +269,17 @@ void CVoting::Render()
 	LeftColumn.VSplitRight(2.0f, &LeftColumn, nullptr);
 
 	SProgressSpinnerProperties ProgressProps;
-	ProgressProps.m_Progress = std::clamp((time() - State.OpenTime()) / (float)(State.CloseTime() - State.OpenTime()), 0.0f, 1.0f);
+	ProgressProps.m_Progress = std::clamp((Context.m_Time.m_PresentationTime - State.OpenTime()) / (float)(State.CloseTime() - State.OpenTime()), 0.0f, 1.0f);
 	Ui()->RenderProgressSpinner(ProgressSpinner.Center(), ProgressSpinner.h / 2.0f, ProgressProps);
 
 	Ui()->DoLabel(&RightColumn, aBuf, 6.0f, TEXTALIGN_MR);
 
 	Props.m_MaxWidth = LeftColumn.w;
-	Ui()->DoLabel(&LeftColumn, VoteDescription(), 6.0f, TEXTALIGN_ML, Props);
+	Ui()->DoLabel(&LeftColumn, State.Description(), 6.0f, TEXTALIGN_ML, Props);
 
 	View.HSplitTop(3.0f, nullptr, &View);
 	View.HSplitTop(6.0f, &Row, &View);
-	str_format(aBuf, sizeof(aBuf), "%s %s", Localize("Reason:"), VoteReason());
+	str_format(aBuf, sizeof(aBuf), "%s %s", Localize("Reason:"), State.Reason());
 	Props.m_MaxWidth = Row.w;
 	Ui()->DoLabel(&Row, aBuf, 6.0f, TEXTALIGN_ML, Props);
 
@@ -331,12 +294,12 @@ void CVoting::Render()
 	char aKey[64];
 	GameClient()->m_Binds.GetKey("vote yes", aKey, sizeof(aKey));
 	str_format(aBuf, sizeof(aBuf), "%s - %s", aKey, Localize("Vote yes"));
-	TextRender()->TextColor(TakenChoice() == 1 ? ColorRGBA(0.2f, 0.9f, 0.2f, 0.85f) : TextRender()->DefaultTextColor());
+	TextRender()->TextColor(State.Voted() == 1 ? ColorRGBA(0.2f, 0.9f, 0.2f, 0.85f) : TextRender()->DefaultTextColor());
 	Ui()->DoLabel(&LeftColumn, aBuf, 6.0f, TEXTALIGN_ML);
 
 	GameClient()->m_Binds.GetKey("vote no", aKey, sizeof(aKey));
 	str_format(aBuf, sizeof(aBuf), "%s - %s", Localize("Vote no"), aKey);
-	TextRender()->TextColor(TakenChoice() == -1 ? ColorRGBA(0.95f, 0.25f, 0.25f, 0.85f) : TextRender()->DefaultTextColor());
+	TextRender()->TextColor(State.Voted() == -1 ? ColorRGBA(0.95f, 0.25f, 0.25f, 0.85f) : TextRender()->DefaultTextColor());
 	Ui()->DoLabel(&RightColumn, aBuf, 6.0f, TEXTALIGN_MR);
 
 	TextRender()->TextColor(TextRender()->DefaultTextColor());

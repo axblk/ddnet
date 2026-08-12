@@ -8,6 +8,7 @@
 
 struct CNetObj_PlayerInfo;
 class CRenderContext;
+class CClientPresentation;
 
 class CNamePlates : public CComponent
 {
@@ -16,7 +17,7 @@ private:
 	CNamePlatesData *m_pData;
 
 public:
-	void RenderNamePlateGame(const CRenderContext &Context, vec2 Position, const CNetObj_PlayerInfo *pPlayerInfo, float Alpha);
+	void RenderNamePlateGame(const CRenderContext &Context, vec2 Position, int ClientId, const CClientPresentation &Client, float Alpha);
 	void RenderNamePlatePreview(vec2 Position, int Dummy);
 	void ResetNamePlates();
 	int Sizeof() const override { return sizeof(*this); }

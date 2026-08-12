@@ -48,6 +48,17 @@ class CHud : public CComponent
 
 	int m_HudQuadContainerIndex;
 	SScoreInfo m_aScoreInfo[2];
+	uint64_t m_ScoreHudSessionId = 0;
+	uint64_t m_ScoreHudStateId = 0;
+	uint64_t m_ScoreHudViewId = 0;
+	uint64_t m_ScoreHudOutputKey = 0;
+	int m_ScoreHudViewportX = 0;
+	int m_ScoreHudViewportY = 0;
+	int m_ScoreHudViewportWidth = 0;
+	int m_ScoreHudViewportHeight = 0;
+	int m_ScoreHudGameFlags = 0;
+	bool m_ScoreHudHasGameData = false;
+	bool m_ScoreHudCacheValid = false;
 	STextContainerIndex m_FPSTextContainerIndex;
 	STextContainerIndex m_DDRaceEffectsTextContainerIndex;
 	STextContainerIndex m_PlayerAngleTextContainerIndex;
@@ -65,19 +76,19 @@ class CHud : public CComponent
 	STextContainerIndex m_aPlayerPositionContainers[2];
 	float m_aPlayerPrevPosition[2];
 
-	void RenderCursor();
+	void RenderCursor(const CRenderContext &Context);
+	void ResetScoreHudContainers();
 
-	void RenderTextInfo();
-	void RenderConnectionWarning();
-	void RenderTeambalanceWarning();
+	void RenderTextInfo(const CRenderContext &Context);
+	void RenderConnectionWarning(const CRenderContext &Context);
+	void RenderTeambalanceWarning(const CRenderContext &Context);
 
 	void PrepareAmmoHealthAndArmorQuads();
-	void RenderAmmoHealthAndArmor(const CNetObj_Character *pCharacter);
+	void RenderAmmoHealthAndArmor(const CRenderContext &Context, const CNetObj_Character *pCharacter);
 
 	void PreparePlayerStateQuads();
 	void RenderPlayerState(const CRenderContext &Context, int ClientId);
 
-	int m_LastSpectatorCountTick;
 	void RenderSpectatorCount(const CRenderContext &Context);
 	void RenderDummyActions(const CRenderContext &Context);
 	void RenderMovementInformation(const CRenderContext &Context);
@@ -92,18 +103,18 @@ class CHud : public CComponent
 		vec2 m_Speed;
 		float m_Angle = 0.0f;
 	};
-	class CMovementInformation GetMovementInformation(const CRenderContext &Context, int ClientId, int Conn) const;
+	class CMovementInformation GetMovementInformation(const CRenderContext &Context, int ClientId) const;
 
 	void RenderGameTimer(const CRenderContext &Context);
-	void RenderPauseNotification();
-	void RenderSuddenDeath();
+	void RenderPauseNotification(const CRenderContext &Context);
+	void RenderSuddenDeath(const CRenderContext &Context);
 
 	void RenderScoreHud(const CRenderContext &Context);
 	int m_LastLocalClientId = -1;
 
-	void RenderSpectatorHud();
-	void RenderWarmupTimer();
-	void RenderLocalTime(float x);
+	void RenderSpectatorHud(const CRenderContext &Context);
+	void RenderWarmupTimer(const CRenderContext &Context);
+	void RenderLocalTime(const CRenderContext &Context, float x);
 
 	static constexpr float MOVEMENT_INFORMATION_LINE_HEIGHT = 8.0f;
 
@@ -124,7 +135,7 @@ public:
 
 private:
 	void RenderRecord(const CRenderContext &Context);
-	void RenderDDRaceEffects();
+	void RenderDDRaceEffects(const CRenderContext &Context);
 
 	inline float GetMovementInformationBoxHeight(const CRenderContext &Context);
 	inline int GetDigitsIndex(int Value, int Max);

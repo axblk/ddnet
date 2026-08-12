@@ -91,7 +91,10 @@ public:
 		int m_SelectedEmote = -1;
 		int m_SelectedEyeEmote = -1;
 		bool m_TouchPressedOutside = false;
+		CSessionId m_OriginSessionId;
+		int m_OriginConnection = -1;
 
+		void UpdateSelection(int NumEmoticons, int NumEyeEmotes, bool AllowEyeWheel);
 		void Reset() { *this = {}; }
 	};
 
@@ -104,9 +107,18 @@ public:
 		bool m_Active = false;
 		bool m_WasActive = false;
 		int m_SelectedSpectatorId = NO_SELECTION;
+		int m_SelectedDDTeam = 0;
 		vec2 m_SelectorMouse = vec2(0.0f, 0.0f);
 		float m_MultiViewActivateTime = 0.0f;
+		CSessionId m_OriginSessionId;
+		CGameStateId m_OriginStateId;
+		int m_OriginConnection = -1;
+		bool m_OriginSixup = false;
+		bool m_OriginDemo = false;
+		int m_PendingSpectatorId = NO_SELECTION;
+		int m_PendingDDTeam = 0;
 
+		void UpdateSelection(float ObjWidth, float LineHeight, int PerLine, const std::array<int, MAX_CLIENTS> &aClients, int NumClients, bool AllowFollow);
 		void Reset() { *this = {}; }
 	};
 
@@ -179,6 +191,7 @@ public:
 		vec2 m_LastTargetPos = vec2(0.0f, 0.0f);
 		float m_DyncamSmoothingSpeedBias = 0.5f;
 		bool m_CanUseCameraInfo = false;
+		bool m_CanUseAutoSpecCamera = false;
 		bool m_UsingAutoSpecCamera = false;
 		vec2 m_Center = vec2(0.0f, 0.0f);
 		bool m_ZoomSet = false;
@@ -214,6 +227,7 @@ private:
 	vec2 m_CursorPosition = vec2(0.0f, 0.0f);
 	bool m_Spectating = false;
 	int m_SpectatorId = -1;
+	int m_SpectatorMode = SPEC_FREEVIEW;
 
 public:
 	CGameView(CGameViewId Id, CSessionId SessionId, CGameStateId StateId) :
@@ -226,10 +240,15 @@ public:
 	CGameViewId Id() const { return m_Id; }
 	CSessionId SessionId() const { return m_SessionId; }
 	CGameStateId StateId() const { return m_StateId; }
+	bool MatchesTarget(CSessionId SessionId, CGameStateId StateId) const { return m_SessionId == SessionId && m_StateId == StateId; }
+	bool MatchesBinding(CGameViewId ViewId, CSessionId SessionId, CGameStateId StateId) const { return m_Id == ViewId && MatchesTarget(SessionId, StateId); }
 	void SetTarget(CSessionId SessionId, CGameStateId StateId)
 	{
 		if(m_SessionId != SessionId || m_StateId != StateId)
+		{
 			m_SpectatorCursor.Reset();
+			m_SpectatorSelector.Reset();
+		}
 		m_SessionId = SessionId;
 		m_StateId = StateId;
 	}
@@ -255,10 +274,13 @@ public:
 	void SetCursorPosition(vec2 Position) { m_CursorPosition = Position; }
 	bool IsSpectating() const { return m_Spectating; }
 	int SpectatorId() const { return m_SpectatorId; }
+	int SpectatorMode() const { return m_SpectatorMode; }
+	void SetSpectatorMode(int SpectatorMode) { m_SpectatorMode = SpectatorMode; }
 	void SetSpectator(bool Spectating, int SpectatorId = -1)
 	{
 		m_Spectating = Spectating;
 		m_SpectatorId = Spectating ? SpectatorId : -1;
+		m_SpectatorMode = Spectating ? SpectatorId : SPEC_FREEVIEW;
 	}
 };
 
@@ -311,8 +333,10 @@ public:
 	const CGameView &m_View;
 	CGameTickInfo m_Time;
 	CVisibleWorldRect m_VisibleWorldRect;
+	uint64_t m_OutputCacheKey;
+	bool m_IsVideoOutput;
 
-	CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect);
+	CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, uint64_t OutputCacheKey = 0, bool IsVideoOutput = false);
 
 	float AspectRatio(float DefaultAspectRatio) const;
 	bool IsOtherTeam(int ClientId) const;
@@ -323,6 +347,8 @@ class CRenderOutput
 {
 public:
 	virtual ~CRenderOutput() = default;
+	virtual uint64_t PresentationCacheKey() const { return reinterpret_cast<uintptr_t>(this); }
+	virtual bool IsVideoOutput() const { return false; }
 	virtual void BeginView(const CViewport &Viewport, vec2 CameraPosition, float Zoom) = 0;
 	virtual void DrawCharacter(int ClientId, vec2 Position, bool Local) = 0;
 	virtual void DrawSpectatorCharacter(int ClientId, vec2 Position, bool OtherTeam) = 0;

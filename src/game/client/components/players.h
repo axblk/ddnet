@@ -74,7 +74,7 @@ class CPlayers : public CComponent
 		int ClientId);
 	void RenderSpectatorCharacters(const CRenderContext &Context, const CScreenRect &ScreenRect) const;
 	bool IsPlayerInfoAvailable(const CGameState &GameState, int ClientId) const;
-	void PrepareRenderInfo(const CGameSessionContext &Session, const CGameState &GameState, int ClientId, bool IsTeamPlay, CTeeRenderInfo &RenderInfo) const;
+	int IntersectCharacter(const CGameState &GameState, const CGameTickInfo &Time, vec2 HookPos, vec2 NewPos, vec2 &NewPos2, int OwnId, vec2 *pPlayerPosition) const;
 	bool PreparePlayerRenderState(
 		const CGameSessionContext &Session,
 		const CGameState &GameState,

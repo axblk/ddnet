@@ -595,8 +595,8 @@ void CMenus::RenderPlayers(CUIRect MainView)
 		Button.VSplitLeft(Button.h, &Button, nullptr);
 		if(g_Config.m_ClShowChatFriends && !CurrentClient.m_Friend)
 			DoButton_Toggle(&s_aPlayerIds[Index][0], 1, &Button, false);
-		else if(DoButton_Toggle(&s_aPlayerIds[Index][0], CurrentClient.m_ChatIgnore, &Button, true))
-			CurrentClient.m_ChatIgnore ^= 1;
+		else if(DoButton_Toggle(&s_aPlayerIds[Index][0], GameClient()->SessionPresentation(GameClient()->SessionContext().Id()).ChatIgnored(CurrentClient.ClientId()), &Button, true))
+			GameClient()->SessionPresentation(GameClient()->SessionContext().Id()).ToggleChatIgnored(CurrentClient.ClientId());
 
 		// ignore emoticon button
 		Row.VSplitLeft(30.0f, nullptr, &Row);
@@ -605,8 +605,8 @@ void CMenus::RenderPlayers(CUIRect MainView)
 		Button.VSplitLeft(Button.h, &Button, nullptr);
 		if(g_Config.m_ClShowChatFriends && !CurrentClient.m_Friend)
 			DoButton_Toggle(&s_aPlayerIds[Index][1], 1, &Button, false);
-		else if(DoButton_Toggle(&s_aPlayerIds[Index][1], CurrentClient.m_EmoticonIgnore, &Button, true))
-			CurrentClient.m_EmoticonIgnore ^= 1;
+		else if(DoButton_Toggle(&s_aPlayerIds[Index][1], GameClient()->SessionPresentation(GameClient()->SessionContext().Id()).EmoticonIgnored(CurrentClient.ClientId()), &Button, true))
+			GameClient()->SessionPresentation(GameClient()->SessionContext().Id()).ToggleEmoticonIgnored(CurrentClient.ClientId());
 
 		// friend button
 		Row.VSplitLeft(10.0f, nullptr, &Row);

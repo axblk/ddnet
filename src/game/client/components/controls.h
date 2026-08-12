@@ -12,6 +12,7 @@
 #include <generated/protocol.h>
 
 #include <game/client/component.h>
+#include <game/client/game_state.h>
 
 class CControls : public CComponent
 {
@@ -30,6 +31,7 @@ public:
 	int SnapInput(int *pData);
 	void Update();
 	void ClampMousePos();
+	void ClampMousePos(CGameState::CInputState &Input) const;
 	void ResetInput(int Dummy);
 	void ResetInput(CStreamId StreamId);
 

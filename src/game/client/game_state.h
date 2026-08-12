@@ -85,13 +85,16 @@ public:
 	float m_IntraGameTickSincePrev = 0.0f;
 	float m_PredIntraGameTick = 0.0f;
 	float m_GameTickTime = 0.0f;
+	float m_FrameTimeAverage = 0.0f;
 	int m_GameTickSpeed = 0;
+	int m_PredictionTime = 0;
 	int64_t m_PresentationTime = 0;
 	int64_t m_PresentationTimeFrequency = 1;
 	float m_AnimationPlaybackSpeed = 0.0f;
 	bool m_IsGameActive = false;
 	bool m_IsDemoPlayback = false;
 	bool m_IsDemoPlaybackPaused = false;
+	bool m_ConnectionProblems = false;
 };
 
 class CGameStateId
@@ -269,6 +272,7 @@ public:
 		int64_t m_LastSendTime = 0;
 
 		void Reset();
+		bool ApplyStrokedCommand(const char *pCommand, int Stroke, bool BlockGameplayPress);
 	};
 
 	class CRaceMessageState
@@ -367,6 +371,29 @@ public:
 		int m_aPredTick[200] = {};
 	};
 
+	class CClientEmoticonState
+	{
+	public:
+		int m_Emoticon = 0;
+		float m_StartFraction = 0.0f;
+		int m_StartTick = -1;
+
+		void Reset()
+		{
+			*this = {};
+			m_StartTick = -1;
+		}
+	};
+
+	class CClientIdentityState
+	{
+	public:
+		bool m_Active = false;
+		CNetObj_ClientInfo m_ClientInfo = {};
+
+		void Reset() { *this = {}; }
+	};
+
 	class CPredictedClient
 	{
 	public:
@@ -408,6 +435,8 @@ private:
 	int m_PredictionTick = 0;
 	std::array<CTuningParams, TuneZone::NUM> m_aTuning;
 	std::array<CClientSnapshot, MAX_CLIENTS> m_aClients;
+	std::vector<CClientIdentityState> m_vClientIdentities;
+	std::vector<CClientEmoticonState> m_vClientEmoticons;
 	std::vector<CRenderedClient> m_vRenderedClients;
 	std::vector<CClientPredictionHistory> m_vClientPredictionHistory;
 	std::array<CPredictedClient, MAX_CLIENTS> m_aPredictedClients;
@@ -419,6 +448,8 @@ private:
 	CNetObj_GameInfo m_GameInfo = {};
 	bool m_HasSpectatorInfo = false;
 	CNetObj_SpectatorInfo m_SpectatorInfo = {};
+	bool m_HasSpectatorCount = false;
+	CNetObj_SpectatorCount m_SpectatorCount = {};
 	CGameInfo m_CoreGameInfo;
 	CTeamsCore m_Teams;
 	CGameWorld m_GameWorld;
@@ -445,6 +476,7 @@ public:
 	void ApplySnapshot(const IClient &Client, int Conn);
 	void ApplySnapshotData(int Tick, int NumItems, std::array<CClientSnapshot, MAX_CLIENTS> aClients, const CNetObj_GameInfo *pGameInfo = nullptr, std::vector<CEntitySnapshot> vEntities = {});
 	void ApplySnapshotMetadata(int Tick, int NumItems, int LocalClientId);
+	void ApplyEmoticon(int ClientId, int Emoticon, int Tick, float StartFraction);
 	void ApplyTuning(const CTuningParams &Tuning, int TuneZone = 0);
 	void SetTeam(int ClientId, int Team);
 	void SetDDrace16(bool DDrace16) { m_Teams.m_IsDDRace16 = DDrace16; }
@@ -463,6 +495,13 @@ public:
 	int PredictionTick() const { return m_PredictionTick; }
 	const CTuningParams &Tuning(int TuneZone = 0) const { return m_aTuning[TuneZone]; }
 	const CClientSnapshot &Client(int ClientId) const { return m_aClients[ClientId]; }
+	const CClientIdentityState &ClientIdentity(int ClientId) const { return m_vClientIdentities[ClientId]; }
+	void ApplyClientIdentity(int ClientId, const CNetObj_ClientInfo &ClientInfo)
+	{
+		m_vClientIdentities[ClientId].m_Active = true;
+		m_vClientIdentities[ClientId].m_ClientInfo = ClientInfo;
+	}
+	const CClientEmoticonState &ClientEmoticon(int ClientId) const { return m_vClientEmoticons[ClientId]; }
 	CRenderedClient &RenderedClient(int ClientId) { return m_vRenderedClients[ClientId]; }
 	const CRenderedClient &RenderedClient(int ClientId) const { return m_vRenderedClients[ClientId]; }
 	CClientPredictionHistory &PredictionHistory(int ClientId) { return m_vClientPredictionHistory[ClientId]; }
@@ -480,6 +519,7 @@ public:
 	CGameWorld &PrevPredictedWorld() { return m_PrevPredictedWorld; }
 	const CGameWorld &PrevPredictedWorld() const { return m_PrevPredictedWorld; }
 	const std::vector<CEntitySnapshot> &Entities() const { return m_vEntities; }
+	const CNetObj_GameData *GameData() const;
 	CRuntimeState &Runtime() { return m_Runtime; }
 	const CRuntimeState &Runtime() const { return m_Runtime; }
 	CEffectClockState &EffectClock() { return m_EffectClock; }
@@ -508,6 +548,13 @@ public:
 	}
 	bool HasSpectatorInfo() const { return m_HasSpectatorInfo; }
 	const CNetObj_SpectatorInfo &SpectatorInfo() const { return m_SpectatorInfo; }
+	void ApplySpectatorCount(const CNetObj_SpectatorCount &SpectatorCount)
+	{
+		m_HasSpectatorCount = true;
+		m_SpectatorCount = SpectatorCount;
+	}
+	bool HasSpectatorCount() const { return m_HasSpectatorCount; }
+	const CNetObj_SpectatorCount &SpectatorCount() const { return m_SpectatorCount; }
 };
 
 class CGameStateManager

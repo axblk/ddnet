@@ -114,7 +114,8 @@ void CCamera::UpdateCamera()
 				   (!GameClient()->Client()->DummyConnected() || GameClient()->m_Snap.m_SpecInfo.m_SpectatorId != GameClient()->GameState(IClient::CONN_DUMMY).LocalClientId());
 	}
 
-	bool UsingAutoSpecCamera = State().m_AutoSpecCamera && CanUseAutoSpecCamera();
+	const bool CanUseAutoSpecCamera = this->CanUseAutoSpecCamera();
+	bool UsingAutoSpecCamera = State().m_AutoSpecCamera && CanUseAutoSpecCamera;
 	float CurrentZoom = State().m_Zooming ? State().m_ZoomSmoothingTarget : State().m_Zoom;
 	bool ZoomChanged = false;
 	if(CanUseCameraInfo && UsingAutoSpecCamera && CurrentZoom != GameClient()->m_Snap.m_SpecInfo.m_Zoom)
@@ -194,6 +195,7 @@ void CCamera::UpdateCamera()
 	{
 		State().m_DynamicCameraOffset = vec2(0, 0);
 		State().m_CanUseCameraInfo = CanUseCameraInfo;
+		State().m_CanUseAutoSpecCamera = CanUseAutoSpecCamera;
 		State().m_UsingAutoSpecCamera = UsingAutoSpecCamera;
 		return;
 	}
@@ -269,6 +271,7 @@ void CCamera::UpdateCamera()
 
 	State().m_DynamicCameraOffset = CurrentCameraOffset;
 	State().m_CanUseCameraInfo = CanUseCameraInfo;
+	State().m_CanUseAutoSpecCamera = CanUseAutoSpecCamera;
 	State().m_UsingAutoSpecCamera = UsingAutoSpecCamera;
 }
 

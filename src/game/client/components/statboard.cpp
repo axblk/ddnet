@@ -67,11 +67,34 @@ bool CStatboard::IsRenderable() const
 	return NumPlayers <= 32;
 }
 
-void CStatboard::OnMessage(int MsgType, void *pRawMsg)
+bool CStatboard::IsRenderable(const CRenderContext &Context) const
 {
-	if(GameClient()->m_SuppressEvents)
+	if(!IsActive())
+		return false;
+	const CSessionStatsState &Stats = Context.m_Session.Stats();
+	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
+	const std::array<int, MAX_CLIENTS> *pClientsByScore = Presentation.ClientsByScore(Context.m_State.Id());
+	if(pClientsByScore == nullptr)
+		return false;
+	const bool TeamPlay = Context.m_State.HasGameInfo() && (Context.m_State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
+	int NumPlayers = 0;
+	for(const int ClientId : *pClientsByScore)
+	{
+		if(ClientId < 0)
+			break;
+		const CClientPresentation *pClient = Presentation.Client(Context.m_State.Id(), ClientId);
+		if(pClient == nullptr || !Stats.Client(ClientId).IsActive())
+			continue;
+		if(pClient->m_Team == TEAM_RED || (TeamPlay && pClient->m_Team == TEAM_BLUE))
+			++NumPlayers;
+	}
+	return NumPlayers <= 32;
+}
+
+void CStatboard::HandleMessage(CSessionStatsState &Stats, const CGameState &State, bool SuppressEvents, int MsgType, void *pRawMsg)
+{
+	if(SuppressEvents)
 		return;
-	CSessionStatsState &Stats = GameClient()->SessionContext().Stats();
 
 	if(MsgType == NETMSGTYPE_SV_KILLMSG)
 	{
@@ -100,7 +123,7 @@ void CStatboard::OnMessage(int MsgType, void *pRawMsg)
 		CNetMsg_Sv_KillMsgTeam *pMsg = (CNetMsg_Sv_KillMsgTeam *)pRawMsg;
 		for(int i = 0; i < MAX_CLIENTS; i++)
 		{
-			if(GameClient()->FocusedTeams().Team(i) == pMsg->m_Team)
+			if(State.Teams().Team(i) == pMsg->m_Team)
 			{
 				Stats.Client(i).m_Deaths++;
 				Stats.Client(i).m_Suicides++;
@@ -129,7 +152,9 @@ void CStatboard::OnMessage(int MsgType, void *pRawMsg)
 					if(!Stats.Client(i).IsActive())
 						continue;
 
-					if(str_comp(GameClient()->m_aClients[i].m_aName, aName) == 0)
+					const CGameState::CClientIdentityState &Identity = State.ClientIdentity(i);
+					char aClientName[MAX_NAME_LENGTH];
+					if(Identity.m_Active && IntsToStr(Identity.m_ClientInfo.m_aName, std::size(Identity.m_ClientInfo.m_aName), aClientName, std::size(aClientName)) && str_comp(aClientName, aName) == 0)
 					{
 						Stats.Client(i).m_FlagCaptures++;
 						break;
@@ -140,7 +165,7 @@ void CStatboard::OnMessage(int MsgType, void *pRawMsg)
 	}
 }
 
-void CStatboard::OnRender()
+void CStatboard::UpdateController()
 {
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		return;
@@ -160,40 +185,57 @@ void CStatboard::OnRender()
 			m_ScreenshotTaken = true;
 		}
 	}
-
-	if(IsActive())
-		RenderGlobalStats();
 }
 
-void CStatboard::RenderGlobalStats()
+void CStatboard::OnRender(const CRenderContext &Context)
 {
-	const CSessionStatsState &Stats = GameClient()->SessionContext().Stats();
-	const float StatboardWidth = 400 * 3.0f * Graphics()->ScreenAspect();
+	if(!Context.m_Time.m_IsGameActive)
+		return;
+
+	if(IsRenderable(Context))
+		RenderGlobalStats(Context);
+}
+
+void CStatboard::RenderGlobalStats(const CRenderContext &Context)
+{
+	const CSessionStatsState &Stats = Context.m_Session.Stats();
+	const CGameState &State = Context.m_State;
+	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
+	const std::array<int, MAX_CLIENTS> *pClientsByScore = Presentation.ClientsByScore(State.Id());
+	if(pClientsByScore == nullptr)
+		return;
+	const float StatboardWidth = 400 * 3.0f * Context.AspectRatio(Graphics()->ScreenAspect());
 	const float StatboardHeight = 400 * 3.0f;
 	float StatboardContentWidth = 260.0f;
 	float StatboardContentHeight = 750.0f;
 
-	const CNetObj_PlayerInfo *apPlayers[MAX_CLIENTS] = {nullptr};
+	std::array<int, MAX_CLIENTS> aPlayers;
+	aPlayers.fill(-1);
 	int NumPlayers = 0;
+	const bool TeamPlay = State.HasGameInfo() && (State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
 
 	// sort red or dm players by score
-	for(const auto *pInfo : GameClient()->m_Snap.m_apInfoByScore)
+	for(const int ClientId : *pClientsByScore)
 	{
-		if(!pInfo || !Stats.Client(pInfo->m_ClientId).IsActive() || GameClient()->m_aClients[pInfo->m_ClientId].m_Team != TEAM_RED)
+		if(ClientId < 0)
+			break;
+		const CClientPresentation *pClient = Presentation.Client(State.Id(), ClientId);
+		if(pClient == nullptr || !Stats.Client(ClientId).IsActive() || pClient->m_Team != TEAM_RED)
 			continue;
-		apPlayers[NumPlayers] = pInfo;
-		NumPlayers++;
+		aPlayers[NumPlayers++] = ClientId;
 	}
 
 	// sort blue players by score after
-	if(GameClient()->IsTeamPlay())
+	if(TeamPlay)
 	{
-		for(const auto *pInfo : GameClient()->m_Snap.m_apInfoByScore)
+		for(const int ClientId : *pClientsByScore)
 		{
-			if(!pInfo || !Stats.Client(pInfo->m_ClientId).IsActive() || GameClient()->m_aClients[pInfo->m_ClientId].m_Team != TEAM_BLUE)
+			if(ClientId < 0)
+				break;
+			const CClientPresentation *pClient = Presentation.Client(State.Id(), ClientId);
+			if(pClient == nullptr || !Stats.Client(ClientId).IsActive() || pClient->m_Team != TEAM_BLUE)
 				continue;
-			apPlayers[NumPlayers] = pInfo;
-			NumPlayers++;
+			aPlayers[NumPlayers++] = ClientId;
 		}
 	}
 
@@ -202,8 +244,7 @@ void CStatboard::RenderGlobalStats()
 	if(NumPlayers > 32)
 		return;
 
-	bool GameWithFlags = GameClient()->m_Snap.m_pGameInfoObj &&
-			     GameClient()->m_Snap.m_pGameInfoObj->m_GameFlags & GAMEFLAG_FLAGS;
+	const bool GameWithFlags = State.HasGameInfo() && (State.GameInfo().m_GameFlags & GAMEFLAG_FLAGS) != 0;
 
 	StatboardContentWidth += 7 * 85 + 95; // Suicides 95; other labels 85
 
@@ -213,7 +254,7 @@ void CStatboard::RenderGlobalStats()
 	bool aDisplayWeapon[NUM_WEAPONS] = {false};
 	for(int i = 0; i < NumPlayers; i++)
 	{
-		const CSessionClientStats *pStats = &Stats.Client(apPlayers[i]->m_ClientId);
+		const CSessionClientStats *pStats = &Stats.Client(aPlayers[i]);
 		for(int j = 0; j < NUM_WEAPONS; j++)
 			aDisplayWeapon[j] = aDisplayWeapon[j] || pStats->m_aFragsWith[j] || pStats->m_aDeathsFrom[j];
 	}
@@ -297,16 +338,18 @@ void CStatboard::RenderGlobalStats()
 
 	for(int j = 0; j < NumPlayers; j++)
 	{
-		const CNetObj_PlayerInfo *pInfo = apPlayers[j];
-		const CSessionClientStats *pStats = &Stats.Client(pInfo->m_ClientId);
+		const int ClientId = aPlayers[j];
+		const CSessionClientStats *pStats = &Stats.Client(ClientId);
+		const CClientPresentation *pClient = Presentation.Client(State.Id(), ClientId);
+		dbg_assert(pClient != nullptr, "statboard client presentation missing");
 
-		if(GameClient()->m_Snap.m_LocalClientId == pInfo->m_ClientId || (GameClient()->m_Snap.m_SpecInfo.m_Active && pInfo->m_ClientId == GameClient()->m_Snap.m_SpecInfo.m_SpectatorId))
+		if(State.LocalClientId() == ClientId || (Context.m_View.IsSpectating() && ClientId == Context.m_View.SpectatorId()))
 		{
 			// background so it's easy to find the local player
 			Graphics()->DrawRect(x - 10, y + ContentLineOffset / 2, StatboardContentWidth, LineHeight - ContentLineOffset, ColorRGBA(1.0f, 1.0f, 1.0f, 0.25f), IGraphics::CORNER_NONE, 0.0f);
 		}
 
-		CTeeRenderInfo Teeinfo = GameClient()->m_aClients[pInfo->m_ClientId].m_RenderInfo;
+		CTeeRenderInfo Teeinfo = pClient->m_BaseRenderInfo;
 		Teeinfo.m_Size *= TeeSizemod;
 
 		const CAnimState *pIdleState = CAnimState::GetIdle();
@@ -322,7 +365,7 @@ void CStatboard::RenderGlobalStats()
 		Cursor.m_FontSize = FontSize;
 		Cursor.m_Flags |= TEXTFLAG_STOP_AT_END;
 		Cursor.m_LineWidth = 220;
-		TextRender()->TextEx(&Cursor, GameClient()->m_aClients[pInfo->m_ClientId].m_aName, -1);
+		TextRender()->TextEx(&Cursor, pClient->m_aName, -1);
 
 		px = 325;
 
@@ -367,7 +410,7 @@ void CStatboard::RenderGlobalStats()
 		}
 		// FPM
 		{
-			float Fpm = pStats->GetFPM(Client()->GameTick(GameClient()->ActiveConnection()), Client()->GameTickSpeed());
+			const float Fpm = pStats->GetFPM(Context.m_Time.m_GameTick, Context.m_Time.m_GameTickSpeed);
 			str_format(aBuf, sizeof(aBuf), "%.1f", Fpm);
 			const float TextWidth = TextRender()->TextWidth(FontSize, aBuf, -1, -1.0f);
 			TextRender()->Text(x - TextWidth + px, y + (LineHeight * 0.95f - FontSize) / 2.f, FontSize, aBuf, -1.0f);

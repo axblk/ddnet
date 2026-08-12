@@ -27,27 +27,20 @@ class CVoting : public CComponent
 
 public:
 	int Sizeof() const override { return sizeof(*this); }
-	void OnReset() override;
-	void OnUpdate() override;
 	void OnConsoleInit() override;
-	void HandleMessage(int MsgType, void *pRawMsg);
+	void HandleMessage(CSessionVoteState &State, int64_t Now, int64_t TimeFrequency, bool NotifyAdmin, int MsgType, void *pRawMsg);
 
-	void Render();
+	void Render(const CRenderContext &Context);
 
 	void CallvoteSpectate(int ClientId, const char *pReason, bool ForceVote = false);
 	void CallvoteKick(int ClientId, const char *pReason, bool ForceVote = false);
 	void CallvoteOption(int OptionId, const char *pReason, bool ForceVote = false);
 	void RemovevoteOption(int OptionId);
 	void AddvoteOption(const char *pDescription, const char *pCommand);
-	void AddOption(const char *pDescription);
 
 	void Vote(int v); // -1 = no, 1 = yes
 
-	int SecondsLeft() const;
 	bool IsVoting() const;
-	int TakenChoice() const;
-	const char *VoteDescription() const;
-	const char *VoteReason() const;
 	bool IsReceivingOptions() const;
 	int NumOptions() const;
 	const std::list<std::string> &Options() const;

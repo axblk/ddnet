@@ -478,23 +478,26 @@ void CControls::ClampMousePos()
 		Input.m_MousePos.y = std::clamp(Input.m_MousePos.y, -201.0f * 32, (Collision()->GetHeight() + 201.0f) * 32.0f);
 	}
 	else
-	{
-		const float MouseMin = GetMinMouseDistance();
-		const float MouseMax = GetMaxMouseDistance();
+		ClampMousePos(Input);
+}
 
-		float MouseDistance = length(Input.m_MousePos);
-		if(MouseDistance < 0.001f)
-		{
-			Input.m_MousePos.x = 0.001f;
-			Input.m_MousePos.y = 0;
-			MouseDistance = 0.001f;
-		}
-		if(MouseDistance < MouseMin)
-			Input.m_MousePos = normalize_pre_length(Input.m_MousePos, MouseDistance) * MouseMin;
-		MouseDistance = length(Input.m_MousePos);
-		if(MouseDistance > MouseMax)
-			Input.m_MousePos = normalize_pre_length(Input.m_MousePos, MouseDistance) * MouseMax;
+void CControls::ClampMousePos(CGameState::CInputState &Input) const
+{
+	const float MouseMin = GetMinMouseDistance();
+	const float MouseMax = GetMaxMouseDistance();
+
+	float MouseDistance = length(Input.m_MousePos);
+	if(MouseDistance < 0.001f)
+	{
+		Input.m_MousePos.x = 0.001f;
+		Input.m_MousePos.y = 0;
+		MouseDistance = 0.001f;
 	}
+	if(MouseDistance < MouseMin)
+		Input.m_MousePos = normalize_pre_length(Input.m_MousePos, MouseDistance) * MouseMin;
+	MouseDistance = length(Input.m_MousePos);
+	if(MouseDistance > MouseMax)
+		Input.m_MousePos = normalize_pre_length(Input.m_MousePos, MouseDistance) * MouseMax;
 }
 
 float CControls::GetMinMouseDistance() const

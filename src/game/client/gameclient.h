@@ -184,6 +184,7 @@ private:
 	void ProcessSnapshot(CSessionId SessionId);
 	void ProcessPrediction();
 	void UpdatePositions(const CGameState &State);
+	void AddChatLine(CSessionId SessionId, int Conn, int ClientId, int Team, const char *pText);
 	const CLocalPlayerProfile &RefreshLegacyPlayerProfile(int Conn);
 
 	int m_EditorMovementDelay = 5;
@@ -208,9 +209,9 @@ private:
 
 	static void ConchainMenuMap(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 
+public:
 	static std::function<bool(int, int, int, int)> GetScoreComparator(bool TimeScore, bool ReceivedMillisecondFinishTimes, bool Race7);
 
-public:
 	IKernel *Kernel() { return IInterface::Kernel(); }
 	IEngine *Engine() const { return m_pEngine; }
 	class IGraphics *Graphics() const { return m_pGraphics; }
@@ -219,8 +220,12 @@ public:
 	int OtherConnection() const { return ActiveConnection() == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN; }
 	CGameSessionContext &SessionContext();
 	const CGameSessionContext &SessionContext() const;
+	CGameSessionContext *FindSessionContext(CSessionId SessionId) { return m_SessionContexts.Find(SessionId); }
+	const CGameSessionContext *FindSessionContext(CSessionId SessionId) const { return m_SessionContexts.Find(SessionId); }
 	CSessionPresentation &SessionPresentation(CSessionId SessionId);
 	const CSessionPresentation &SessionPresentation(CSessionId SessionId) const;
+	void ResetInfoMessages(CSessionId SessionId);
+	void ResetChat(CSessionId SessionId);
 	CMapContext &MapContext() { return SessionContext().MapContext(); }
 	const CMapContext &MapContext() const { return SessionContext().MapContext(); }
 	class CUi *Ui() { return &m_UI; }
@@ -370,9 +375,6 @@ public:
 		int m_Country;
 		char m_aSkinName[MAX_SKIN_LENGTH];
 		int m_Team;
-		int m_Emoticon;
-		float m_EmoticonStartFraction;
-		int m_EmoticonStartTick;
 
 		CCharacterCore m_Predicted;
 		CCharacterCore m_PrevPredicted;
@@ -382,8 +384,6 @@ public:
 
 		float m_Angle;
 		bool m_Active;
-		bool m_ChatIgnore;
-		bool m_EmoticonIgnore;
 		bool m_Friend;
 		bool m_Foe;
 
@@ -426,10 +426,10 @@ public:
 	void OnConsoleInit() override;
 	void OnStateChange(int NewState, int OldState) override;
 	template<typename T>
-	void ApplySkin7InfoFromGameMsg(const T *pMsg, int ClientId, int Conn);
+	void ApplySkin7InfoFromGameMsg(const T *pMsg, int ClientId, CGameState &State);
 	void ApplySkin7InfoFromSnapObj(const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId, int Conn) override;
 	int OnDemoRecSnap7(CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn) override;
-	void *TranslateGameMsg(int *pMsgId, CUnpacker *pUnpacker, int Conn, bool Dummy);
+	void *TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker *pUnpacker, int Conn, bool Dummy);
 	int TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn, bool Dummy) override;
 	void OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn, bool Dummy) override;
 	void InvalidateSnapshot() override;
@@ -445,7 +445,6 @@ public:
 	virtual void OnGameOver();
 	virtual void OnStartGame();
 	virtual void OnStartRound();
-	virtual void OnFlagGrab(int TeamId);
 	void OnWindowResize() override;
 
 	void InitializeLanguage() override;
@@ -473,7 +472,7 @@ public:
 	const char *DDNetVersionStr() const override;
 	int ClientVersion7() const override;
 
-	void DoTeamChangeMessage7(const char *pName, int ClientId, int Team, const char *pPrefix = "");
+	void DoTeamChangeMessage7(CSessionId SessionId, int Conn, const CGameState &State, const char *pName, int ClientId, int Team, const char *pPrefix = "");
 
 	// actions
 	// TODO: move these
@@ -518,6 +517,7 @@ public:
 	const CTuningParams *GetTuning(int i) const { return &MapContext().TuningList()[i]; }
 	ColorRGBA GetDDTeamColor(int DDTeam, float Lightness = 0.5f) const;
 	void FormatClientId(int ClientId, char (&aClientId)[16], EClientIdFormat Format) const;
+	void FormatClientId(int ClientId, char (&aClientId)[16], int HighestClientId) const;
 
 	CGameWorld m_GameWorld;
 	CGameWorld m_PredictedWorld;
@@ -767,8 +767,8 @@ private:
 	float CalculateMultiViewZoom(vec2 MinPos, vec2 MaxPos, float Vel);
 	float MapValue(float MaxValue, float MinValue, float MaxRange, float MinRange, float Value);
 
-	void OnSaveCodeNetMessage(const CNetMsg_Sv_SaveCode *pMsg);
-	void StoreSave(const char *pTeamMembers, const char *pGeneratedCode) const;
+	void OnSaveCodeNetMessage(CGameSessionContext &Session, const CGameState &State, const CNetMsg_Sv_SaveCode *pMsg);
+	void StoreSave(const CGameSessionContext &Session, const char *pTeamMembers, const char *pGeneratedCode) const;
 };
 
 ColorRGBA CalculateNameColor(ColorHSLA TextColorHSL);

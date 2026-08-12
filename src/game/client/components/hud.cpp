@@ -1686,7 +1686,7 @@ void CHud::OnNewSnapshot()
 
 	const CNetObj_Character *pPrevChar = &GameClient()->m_Snap.m_aCharacters[ClientId].m_Prev;
 	const CNetObj_Character *pCurChar = &GameClient()->m_Snap.m_aCharacters[ClientId].m_Cur;
-	const float IntraTick = Client()->IntraGameTick(GameClient()->ActiveConnection());
+	const float IntraTick = Client()->IntraGameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection());
 	ivec2 Vel = mix(ivec2(pPrevChar->m_VelX, pPrevChar->m_VelY), ivec2(pCurChar->m_VelX, pCurChar->m_VelY), IntraTick);
 
 	CCharacter *pChar = GameClient()->m_PredictedWorld.GetCharacterById(ClientId);

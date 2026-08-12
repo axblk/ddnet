@@ -2264,7 +2264,7 @@ void CMenus::SetActive(bool Active)
 	{
 		if(m_NeedSendinfo)
 		{
-			GameClient()->SendInfo(false);
+			GameClient()->SendInfo(Client()->NetworkSessionId(), false);
 			m_NeedSendinfo = false;
 		}
 

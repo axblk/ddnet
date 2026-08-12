@@ -135,13 +135,13 @@ void CMotd::OnRender(const CRenderContext &Context)
 		TextRender()->RenderTextContainer(m_TextContainerIndex, TextRender()->DefaultTextColor(), TextRender()->DefaultTextOutlineColor());
 }
 
-void CMotd::DoMotd(const char *pText)
+void CMotd::DoMotd(CGameSessionContext &Session, const char *pText, bool Show)
 {
-	CGameSessionContext &Session = GameClient()->SessionContext();
 	Session.Motd().Apply(pText);
 	const int64_t Now = time();
 	const int64_t VisibleUntil = Session.Motd().Text()[0] && g_Config.m_ClMotdTime ? Now + time_freq() * g_Config.m_ClMotdTime : 0;
-	GameClient()->LegacyGameView().Motd().Show(Session.Id(), Session.Motd().Revision(), VisibleUntil);
+	if(Show)
+		GameClient()->LegacyGameView().Motd().Show(Session.Id(), Session.Motd().Revision(), VisibleUntil);
 	InvalidateRenderCache();
 
 	if(g_Config.m_ClPrintMotd)

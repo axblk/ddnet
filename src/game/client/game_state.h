@@ -273,6 +273,7 @@ public:
 		int64_t m_LastSendTime = 0;
 
 		void Reset();
+		void ReleaseGameplay();
 		bool ApplyStrokedCommand(const char *pCommand, int Stroke, bool BlockGameplayPress);
 	};
 
@@ -482,7 +483,7 @@ public:
 	void SetTeam(int ClientId, int Team);
 	void SetDDrace16(bool DDrace16) { m_Teams.m_IsDDRace16 = DDrace16; }
 	void SetCoreGameInfo(const CGameInfo &GameInfo);
-	void Predict(const IClient &Client, int Conn);
+	void Predict(const IClient &Client, CSessionId SessionId, int Conn);
 	void PredictTo(int TargetTick, const std::function<const CNetObj_PlayerInput *(int)> &InputAt);
 	void UpdateRenderedClient(int ClientId, bool UsePredicted, bool PredictedLocal, float IntraGameTick, float PredIntraGameTick);
 	void MarkPredicted(int Tick) { m_PredictionTick = Tick; }

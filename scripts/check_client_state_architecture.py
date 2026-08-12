@@ -12,6 +12,8 @@ CORE_FILES = (
 	"src/engine/client/session_sources.cpp",
 	"src/engine/client/session_sources.h",
 	"src/engine/client/stream.h",
+	"src/engine/shared/translation_context.cpp",
+	"src/engine/shared/translation_context.h",
 	"src/game/client/game_state.cpp",
 	"src/game/client/game_state.h",
 	"src/game/client/game_view.cpp",
@@ -130,12 +132,21 @@ SESSION_RESET_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGa
 SNAPSHOT_SOURCE_FUNCTIONS = (
 	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::OnNewSnapshot\s*\(")),
 	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::ProcessEvents\s*\(")),
+	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::ProcessSnapshot\s*\(")),
+	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::SnapCollectEntities\s*\(")),
 )
 SESSION_SNAPSHOT_FUNCTIONS = (
 	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::OnNewSnapshot\s*\(")),
 	("src/game/client/game_state.cpp", re.compile(r"\bCGameState::ApplySnapshot\s*\(")),
 )
 DEMO_CONNECTION_FUNCTIONS = (("src/engine/client/client.cpp", re.compile(r"\bCClient::(?:DisconnectDemoWithReason|OnDemoPlayerSnapshot|UpdateDemoIntraTimers)\s*\(")),)
+SESSION_LIFECYCLE_FUNCTIONS = (
+	("src/engine/client/client.cpp", re.compile(r"\bCClient::(?:DisconnectWithReason|DisconnectDemoWithReason|LoadMap|LoadMapSearch)\s*\(")),
+	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::(?:BindLegacyWorld|OnConnected|OnSessionClosed|OnSessionFocused)\s*\(")),
+)
+SIXUP_SNAPSHOT_FUNCTIONS = (("src/game/client/sixup_translate_snapshot.cpp", re.compile(r"\bCGameClient::TranslateSnap\s*\(")),)
+SESSION_MESSAGE_TIME_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::SessionMessageTime\s*\(")),)
+NETWORK_DUMMY_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::(?:DummyResetInput|OnDummyDisconnect|SendDummyInfo|SendSkinChange7)\s*\(")),)
 CAMERA_FILES = ("src/game/client/components/camera.h",)
 CONTROLS_OWNER_FILES = ("src/game/client/components/controls.h",)
 BROADCAST_OWNER_FILES = ("src/game/client/components/broadcast.h",)
@@ -161,6 +172,12 @@ RENDER_TIMING_FILES = (
 	"src/game/client/components/race_demo.cpp",
 )
 GAME_CLIENT_OWNER_FILES = ("src/game/client/gameclient.h",)
+SOURCE_CALLBACK_OWNER_FILES = (
+	"src/engine/client.h",
+	"src/game/client/gameclient.h",
+	"src/game/client/local_player_profile.h",
+)
+I_CLIENT_SOURCE_API_FILES = ("src/engine/client.h",)
 ENGINE_TIMING_OWNER_FILES = ("src/engine/client/client.h",)
 EXPLICIT_CONNECTION_TIMING_FILES = (
 	"src/engine/client.h",
@@ -519,7 +536,12 @@ FORBIDDEN_SESSION_CLIENT_PRESENTATION_FOCUS = (
 	re.compile(r"\bm_View\b"),
 )
 FORBIDDEN_CROSS_SESSION_RESET = (re.compile(r"\bm_SessionContexts\.Contexts\s*\("),)
-FORBIDDEN_SNAPSHOT_SOURCE_FOCUS = (re.compile(r"\bSessionContext\s*\("),)
+FORBIDDEN_SNAPSHOT_SOURCE_FOCUS = (
+	re.compile(r"\bSessionContext\s*\("),
+	re.compile(r"\bGameState\s*\("),
+	re.compile(r"Client\(\)->ActiveConnection\s*\("),
+	re.compile(r"Client\(\)->(?:IsDemoPlayback|IsOnline|IsSixup)\s*\(\s*\)"),
+)
 FORBIDDEN_SESSION_SNAPSHOT_AMBIENT = (
 	re.compile(r"\bSnap(?:FindItem|GetItem|NumItems)\s*\(\s*Conn\b"),
 	re.compile(r"\b(?:GameTick|PrevGameTick)\s*\(\s*Conn\b"),
@@ -531,6 +553,27 @@ FORBIDDEN_DEMO_CONNECTION_ALIAS = (
 	re.compile(r"\bm_pNetworkSessionSource\b"),
 	re.compile(r"\bm_aa?DemorecSnapshot"),
 )
+FORBIDDEN_SESSION_LIFECYCLE_AMBIENT = (
+	re.compile(r"GameClient\(\)->Map\s*\(\s*\)"),
+	re.compile(r"\b(?:GameState|SessionContext)\s*\(\s*\)"),
+	re.compile(r"\bIsSixup\s*\(\s*\)"),
+	re.compile(r"\bConnection\s*\(\s*CONN_MAIN\s*\)"),
+)
+FORBIDDEN_SIXUP_SNAPSHOT_AMBIENT = (
+	re.compile(r"\bGameState\s*\("),
+	re.compile(r"\bSessionContext\s*\("),
+	re.compile(r"\bm_TranslationContext\b"),
+)
+FORBIDDEN_SESSION_MESSAGE_TIME_FOCUS = (
+	re.compile(r"\bFocusedSessionId\s*\("),
+	re.compile(r"\b(?:IsDemoPlayback|State)\s*\("),
+)
+FORBIDDEN_NETWORK_DUMMY_AMBIENT = (
+	re.compile(r"\bGameState\s*\("),
+	re.compile(r"\bOtherConnection\s*\("),
+	re.compile(r"\bSessionContext\s*\("),
+	re.compile(r"Client\(\)->IsSixup\s*\(\s*\)"),
+)
 FORBIDDEN_GAME_CLIENT = (
 	re.compile(r"\bCStreamStorage\b"),
 	re.compile(r"\bCFlow\b"),
@@ -538,6 +581,7 @@ FORBIDDEN_GAME_CLIENT = (
 	re.compile(r"\bm_aSixup\b"),
 	re.compile(r"\bSelect(?:ed)?Sixup\b"),
 	re.compile(r"\b(?:m_DummyInput|m_DummyFire|m_IsDummySwapping)\b"),
+	re.compile(r"\bOtherConnection\b"),
 	re.compile(r"\bm_CursorInfo\b"),
 	re.compile(r"ActiveConnection\(\)\s*\^"),
 	re.compile(r"GameState\(\s*!?Dummy\s*\)"),
@@ -570,6 +614,14 @@ FORBIDDEN_GAME_CLIENT_OWNER = (
 	re.compile(r"\b(?:CCursorInfo|m_CursorOwnerId|m_aTargetSamplesTime|m_aTargetSamplesData|m_NumSamples)\b"),
 	re.compile(r"\b(?:m_AuthLevel|m_Afk|m_Paused|m_Spec|m_FinishTimeSeconds|m_FinishTimeMillis|m_SpecCharPresent|m_SpecChar)\b"),
 	re.compile(r"\b(?:m_ChatIgnore|m_EmoticonStartFraction|m_EmoticonStartTick|m_EmoticonIgnore)\b"),
+)
+FORBIDDEN_SOURCE_CALLBACK_OWNER = (
+	re.compile(r"\bbool\s+Dummy\b"),
+	re.compile(r"\bOnDummySwap\b"),
+)
+FORBIDDEN_FOCUSED_CLIENT_SOURCE_API = (
+	re.compile(r"\b(?:PrevGameTick|GameTick|PredGameTick|IntraGameTick|PredIntraGameTick|IntraGameTickSincePrev|GameTickTime|GetPredictionTime|GetPredictionTick|SnapNumItems|SnapFindItem|SnapGetItem|ConnectionProblems|GetSmoothTick)\s*\(\s*int\s+Conn\b"),
+	re.compile(r"\b(?:ServerInfo|IsSixup)\s*\(\s*\)\s*const"),
 )
 FORBIDDEN_HUD_OWNER = (re.compile(r"\b(?:m_TimeCpDiff|m_FinishTimeDiff|m_DDRaceTime|m_FinishTimeLastReceivedTick|m_TimeCpLastReceivedTick|m_ShowFinishTime)\b"),)
 FORBIDDEN_INFO_MESSAGES_OWNER = (
@@ -705,6 +757,10 @@ errors = (
 	+ check_function_bodies(SNAPSHOT_SOURCE_FUNCTIONS, FORBIDDEN_SNAPSHOT_SOURCE_FOCUS)
 	+ check_function_bodies(SESSION_SNAPSHOT_FUNCTIONS, FORBIDDEN_SESSION_SNAPSHOT_AMBIENT)
 	+ check_function_bodies(DEMO_CONNECTION_FUNCTIONS, FORBIDDEN_DEMO_CONNECTION_ALIAS)
+	+ check_function_bodies(SESSION_LIFECYCLE_FUNCTIONS, FORBIDDEN_SESSION_LIFECYCLE_AMBIENT)
+	+ check_function_bodies(SIXUP_SNAPSHOT_FUNCTIONS, FORBIDDEN_SIXUP_SNAPSHOT_AMBIENT)
+	+ check_function_bodies(SESSION_MESSAGE_TIME_FUNCTIONS, FORBIDDEN_SESSION_MESSAGE_TIME_FOCUS)
+	+ check_function_bodies(NETWORK_DUMMY_FUNCTIONS, FORBIDDEN_NETWORK_DUMMY_AMBIENT)
 	+ check(CAMERA_FILES, FORBIDDEN_CAMERA)
 	+ check(CONTROLS_OWNER_FILES, FORBIDDEN_CONTROLS_OWNER)
 	+ check(BROADCAST_OWNER_FILES, FORBIDDEN_BROADCAST_OWNER)
@@ -716,6 +772,8 @@ errors = (
 	+ check(PARTICLE_OWNER_FILES, FORBIDDEN_PARTICLE_OWNER)
 	+ check(RENDER_TIMING_FILES, FORBIDDEN_RENDER_TIMING)
 	+ check(GAME_CLIENT_OWNER_FILES, FORBIDDEN_GAME_CLIENT_OWNER)
+	+ check(SOURCE_CALLBACK_OWNER_FILES, FORBIDDEN_SOURCE_CALLBACK_OWNER)
+	+ check(I_CLIENT_SOURCE_API_FILES, FORBIDDEN_FOCUSED_CLIENT_SOURCE_API)
 	+ check(ENGINE_TIMING_OWNER_FILES, FORBIDDEN_ENGINE_TIMING_OWNER)
 	+ check(EXPLICIT_CONNECTION_TIMING_FILES, FORBIDDEN_PARAMETERLESS_CONNECTION_TIMING)
 	+ check(HUD_OWNER_FILES, FORBIDDEN_HUD_OWNER)

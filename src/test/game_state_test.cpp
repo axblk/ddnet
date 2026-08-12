@@ -1474,11 +1474,11 @@ TEST(GameView, SchedulerUpdatesEachStateBeforeRenderingExplicitOutputs)
 	DemoTime.m_IsDemoPlayback = true;
 
 	CTestRenderOutput MainLeftOutput;
-	CTestRenderOutput DemoOffscreenOutput;
+	CTestRenderOutput DemoOutput;
 	CTestRenderOutput MainRightOutput;
 	const std::array aRequests = {
 		CGameRenderRequest(Network, *pMainState, *pMainLeft, MainTime, CVisibleWorldRect(vec2(0.0f, 0.0f), vec2(100.0f, 100.0f)), EPresentationPlayback::PLAYING, EPresentationAudio::MUTED, MainLeftOutput),
-		CGameRenderRequest(Demo, *pDemoState, *pDemoView, DemoTime, CVisibleWorldRect(vec2(400.0f, 400.0f), vec2(500.0f, 500.0f)), EPresentationPlayback::PAUSED, EPresentationAudio::MUTED, DemoOffscreenOutput),
+		CGameRenderRequest(Demo, *pDemoState, *pDemoView, DemoTime, CVisibleWorldRect(vec2(400.0f, 400.0f), vec2(500.0f, 500.0f)), EPresentationPlayback::PAUSED, EPresentationAudio::MUTED, DemoOutput),
 		CGameRenderRequest(Network, *pDummyState, *pDummyView, DummyTime, CVisibleWorldRect(vec2(-200.0f, -200.0f), vec2(-100.0f, -100.0f)), EPresentationPlayback::PLAYING, EPresentationAudio::MUTED, MainLeftOutput),
 		CGameRenderRequest(Network, *pMainState, *pMainRight, MainTime, CVisibleWorldRect(vec2(200.0f, 200.0f), vec2(300.0f, 300.0f)), EPresentationPlayback::PLAYING, EPresentationAudio::AUDIBLE, MainRightOutput),
 	};
@@ -1542,7 +1542,7 @@ TEST(GameView, SchedulerUpdatesEachStateBeforeRenderingExplicitOutputs)
 	EXPECT_EQ(vpRenderedViews[2], pDummyView);
 	EXPECT_EQ(vpRenderedViews[3], pMainRight);
 	EXPECT_EQ(vpRenderOutputs[0], &MainLeftOutput);
-	EXPECT_EQ(vpRenderOutputs[1], &DemoOffscreenOutput);
+	EXPECT_EQ(vpRenderOutputs[1], &DemoOutput);
 	EXPECT_EQ(vpRenderOutputs[2], &MainLeftOutput);
 	EXPECT_EQ(vpRenderOutputs[3], &MainRightOutput);
 	EXPECT_EQ(vRenderedWorldRects[0].m_TopLeft, vec2(0.0f, 0.0f));
@@ -1553,7 +1553,7 @@ TEST(GameView, SchedulerUpdatesEachStateBeforeRenderingExplicitOutputs)
 	EXPECT_EQ(MainLeftOutput.m_vViewports[0], (CViewport{0, 0, 640, 720}));
 	EXPECT_EQ(MainLeftOutput.m_vViewports[1], (CViewport{320, 0, 320, 180}));
 	EXPECT_EQ(MainLeftOutput.m_EndedViews, 2);
-	EXPECT_EQ(DemoOffscreenOutput.m_EndedViews, 1);
+	EXPECT_EQ(DemoOutput.m_EndedViews, 1);
 	EXPECT_EQ(MainRightOutput.m_EndedViews, 1);
 }
 
@@ -1892,6 +1892,26 @@ TEST(GameState, StrokedInputCommandsRemainStateLocal)
 	EXPECT_TRUE(First.Input().ApplyStrokedCommand("+nextweapon", 1, false));
 	EXPECT_EQ(First.Input().m_InputData.m_WantedWeapon, 0);
 	EXPECT_FALSE(First.Input().ApplyStrokedCommand("+not-a-game-input", 1, false));
+
+	First.Input().m_LastData.m_Direction = 1;
+	First.Input().m_LastData.m_Jump = 1;
+	First.Input().m_LastData.m_Hook = 1;
+	First.Input().m_LastData.m_Fire = 5;
+	First.Input().m_LastData.m_NextWeapon = 7;
+	First.Input().m_LastData.m_PrevWeapon = 9;
+	First.Input().m_InputDirectionLeft = 1;
+	First.Input().m_InputDirectionRight = 1;
+	Second.Input().m_LastData.m_Fire = 3;
+	First.Input().ReleaseGameplay();
+	EXPECT_EQ(First.Input().m_InputData.m_Direction, 0);
+	EXPECT_EQ(First.Input().m_InputData.m_Jump, 0);
+	EXPECT_EQ(First.Input().m_InputData.m_Hook, 0);
+	EXPECT_EQ(First.Input().m_InputData.m_Fire, 6);
+	EXPECT_EQ(First.Input().m_InputData.m_NextWeapon, 7);
+	EXPECT_EQ(First.Input().m_InputData.m_PrevWeapon, 9);
+	EXPECT_EQ(First.Input().m_InputDirectionLeft, 0);
+	EXPECT_EQ(First.Input().m_InputDirectionRight, 0);
+	EXPECT_EQ(Second.Input().m_LastData.m_Fire, 3);
 }
 
 TEST(GameState, GeneratedDemoPlaysToKnownDigestHeadlessly)

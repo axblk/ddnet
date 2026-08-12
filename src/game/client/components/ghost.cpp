@@ -211,7 +211,7 @@ void CGhost::CheckStart()
 	int RaceTick = -GameClient()->m_Snap.m_pGameInfoObj->m_WarmupTimer;
 	int RenderTick = m_NewRenderTick;
 
-	if(GameClient()->LastRaceTick() != RaceTick && Client()->GameTick(GameClient()->ActiveConnection()) - RaceTick < Client()->GameTickSpeed())
+	if(GameClient()->LastRaceTick() != RaceTick && Client()->GameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection()) - RaceTick < Client()->GameTickSpeed())
 	{
 		if(m_Rendering && m_RenderingStartedByServer) // race restarted: stop rendering
 			StopRender();
@@ -244,7 +244,7 @@ void CGhost::CheckStartLocal(bool Predicted)
 		{
 			if(m_Rendering && !m_RenderingStartedByServer) // race restarted: stop rendering
 				StopRender();
-			RenderTick = Client()->PredGameTick(GameClient()->ActiveConnection());
+			RenderTick = Client()->PredGameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection());
 		}
 
 		TryRenderStart(RenderTick, false);
@@ -641,7 +641,7 @@ void CGhost::SaveGhost(CMenus::CGhostItem *pItem)
 void CGhost::ConGPlay(IConsole::IResult *pResult, void *pUserData)
 {
 	CGhost *pGhost = (CGhost *)pUserData;
-	pGhost->StartRender(pGhost->Client()->PredGameTick(pGhost->GameClient()->ActiveConnection()));
+	pGhost->StartRender(pGhost->Client()->PredGameTick(pGhost->Client()->FocusedSessionId(), pGhost->GameClient()->ActiveConnection()));
 }
 
 void CGhost::OnConsoleInit()
@@ -663,7 +663,7 @@ void CGhost::OnMessage(int MsgType, void *pRawMsg)
 			if(m_Recording)
 				StopRecord();
 			StopRender();
-			m_LastDeathTick = Client()->GameTick(GameClient()->ActiveConnection());
+			m_LastDeathTick = Client()->GameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection());
 		}
 	}
 	else if(MsgType == NETMSGTYPE_SV_KILLMSGTEAM)
@@ -676,7 +676,7 @@ void CGhost::OnMessage(int MsgType, void *pRawMsg)
 				if(m_Recording)
 					StopRecord();
 				StopRender();
-				m_LastDeathTick = Client()->GameTick(GameClient()->ActiveConnection());
+				m_LastDeathTick = Client()->GameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection());
 			}
 		}
 	}

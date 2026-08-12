@@ -275,7 +275,7 @@ void CChat::ConchainChatWidth(IConsole::IResult *pResult, void *pUserData, ICons
 void CChat::Echo(const char *pString)
 {
 	CGameSessionContext &Session = GameClient()->SessionContext();
-	AddLine(Session, GameClient()->GameState(Client()->ActiveConnection()), time(), Client()->IsDemoPlayback(), true, CLIENT_MSG, 0, pString);
+	AddLine(Session, GameClient()->GameState(GameClient()->ActiveConnection()), time(), Client()->IsDemoPlayback(), true, CLIENT_MSG, 0, pString);
 }
 
 void CChat::OnConsoleInit()

@@ -206,7 +206,7 @@ void CEffects::PlayerSpawn(CGameState &State, vec2 Pos, float Alpha, float Volum
 		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_SPAWN, Volume, Pos);
 }
 
-void CEffects::PlayerDeath(CGameState &State, vec2 Pos, int ClientId, float Alpha)
+void CEffects::PlayerDeath(CSessionId SessionId, CGameState &State, vec2 Pos, int ClientId, float Alpha)
 {
 	ColorRGBA BloodColor(1.0f, 1.0f, 1.0f);
 
@@ -218,7 +218,7 @@ void CEffects::PlayerDeath(CGameState &State, vec2 Pos, int ClientId, float Alph
 		// m_RenderInfo.m_CustomColoredSkin Defines if in the context of the game the color is being customized,
 		// Using this value if the game is teams (red and blue), this value will be true even if the skin is with the normal color.
 		// And will use the team body color to create player death effect instead of tee color
-		if(GameClient()->Client()->IsSixup())
+		if(GameClient()->Client()->IsSixup(SessionId))
 		{
 			if(GameClient()->m_aClients[ClientId].m_RenderInfo.m_Sixup.m_aUseCustomColors[protocol7::SKINPART_BODY])
 			{

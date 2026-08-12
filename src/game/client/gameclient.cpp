@@ -90,6 +90,12 @@ using namespace std::chrono_literals;
 
 namespace
 {
+	int LegacyProfileIndex(int Conn)
+	{
+		dbg_assert(Conn == IClient::CONN_MAIN || Conn == IClient::CONN_DUMMY, "legacy profile stream must be main or dummy");
+		return Conn == IClient::CONN_DUMMY;
+	}
+
 	int64_t CurrentPresentationTime()
 	{
 #if defined(CONF_VIDEORECORDER)
@@ -209,7 +215,12 @@ void CGameClient::AddChatLine(CSessionId SessionId, int Conn, int ClientId, int 
 	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
 	CGameState *pState = pSession != nullptr ? pSession->GameStates().FindByStream(CStreamId(Conn + 1)) : nullptr;
 	if(pState != nullptr)
-		m_Chat.AddLine(*pSession, *pState, CurrentPresentationTime(), SessionId == Client()->DemoSessionId(), SessionId == Client()->FocusedSessionId(), ClientId, Team, pText);
+		m_Chat.AddLine(*pSession, *pState, SessionMessageTime(SessionId), SessionId == Client()->DemoSessionId(), SessionId == Client()->FocusedSessionId(), ClientId, Team, pText);
+}
+
+int64_t CGameClient::SessionMessageTime(CSessionId SessionId) const
+{
+	return SessionId == Client()->DemoSessionId() ? CurrentPresentationTime() : time_get();
 }
 
 CGameState &CGameClient::GameState(int Conn)
@@ -230,7 +241,11 @@ CGameView &CGameClient::LegacyGameView()
 {
 	CGameView *pView = m_GameViews.Find(m_LegacyGameViewId);
 	dbg_assert(pView != nullptr, "missing legacy game view");
-	pView->SetTarget(Client()->FocusedSessionId(), GameState(ActiveConnection()).Id());
+	CGameSessionContext &Session = SessionContext();
+	const int Conn = Session.Id() == Client()->DemoSessionId() ? IClient::CONN_MAIN : ActiveConnection();
+	CGameState *pState = Session.GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pState != nullptr, "missing focused game state");
+	pView->SetTarget(Session.Id(), pState->Id());
 	return *pView;
 }
 
@@ -247,6 +262,10 @@ void CGameClient::OnConsoleInit()
 	dbg_assert(pDummyState != nullptr, "missing dummy game state");
 	m_SecondaryGameViewId = m_GameViews.Create(pNetworkContext->Id(), pDummyState->Id());
 	dbg_assert(m_SecondaryGameViewId.IsValid(), "failed to create secondary game view");
+	const CGameState *pMainState = pNetworkContext->GameStates().FindByStream(CStreamId(IClient::CONN_MAIN + 1));
+	dbg_assert(pMainState != nullptr, "missing main game state");
+	m_TertiaryGameViewId = m_GameViews.Create(pNetworkContext->Id(), pMainState->Id());
+	dbg_assert(m_TertiaryGameViewId.IsValid(), "failed to create tertiary game view");
 	CGameView *pLegacyView = m_GameViews.Find(m_LegacyGameViewId);
 	dbg_assert(pLegacyView != nullptr, "missing legacy game view");
 	m_Camera.BindState(pLegacyView->Camera());
@@ -578,7 +597,7 @@ void CGameClient::OnInit()
 	}
 
 	m_GameWorld.Init(Collision(), TuningList(), MapContext().MapBugs(), GameConfig());
-	OnReset();
+	OnSessionClosed(Client()->FocusedSessionId());
 
 	// Set free binds to DDRace binds if it's active
 	m_Binds.SetDDRaceBinds(true);
@@ -679,9 +698,8 @@ void CGameClient::OnUpdate()
 		Input.m_MousePosOnAction = Input.m_MousePos;
 		m_Binds.m_MouseOnAction = false;
 	}
-	const int64_t Now = CurrentPresentationTime();
 	for(const auto &pContext : m_SessionContexts.Contexts())
-		pContext->Vote().Expire(Now, time_freq());
+		pContext->Vote().Expire(SessionMessageTime(pContext->Id()), time_freq());
 
 	for(auto &pComponent : m_vpAll)
 	{
@@ -700,33 +718,40 @@ void CGameClient::OnInput(const IInput::CEvent &Event)
 	}
 }
 
-void CGameClient::OnDummySwap()
+void CGameClient::OnConnectionFocusChanged(CSessionId SessionId, int PreviousConn, int Conn)
 {
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing focus-change game session context");
+	CGameState *pPreviousState = pSession->GameStates().FindByStream(CStreamId(PreviousConn + 1));
+	CGameState *pState = pSession->GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pPreviousState != nullptr && pState != nullptr, "missing focus-change game state");
 	(void)LegacyGameView();
 	m_Camera.UpdateCamera();
 	for(CClientData &Client : m_aClients)
-		Client.UpdateSkinInfo(GameState(ActiveConnection()));
+		Client.UpdateSkinInfo(*pState);
 	if(g_Config.m_ClDummyResetOnSwitch)
 	{
-		const CStreamId FocusedStream = GameState(ActiveConnection()).StreamId();
-		for(const auto &pState : SessionContext().GameStates().States())
+		const CStreamId FocusedStream = pState->StreamId();
+		for(const auto &pSessionState : pSession->GameStates().States())
 		{
-			const bool IsFocused = pState->StreamId() == FocusedStream;
+			const bool IsFocused = pSessionState->StreamId() == FocusedStream;
 			if(IsFocused != (g_Config.m_ClDummyResetOnSwitch == 2))
 				continue;
-			m_Controls.ResetInput(pState->StreamId());
-			pState->Input().m_InputData.m_Hook = 0;
+			m_Controls.ResetInput(pSessionState->StreamId());
 		}
 	}
-	m_PreviousFocusedStream = GameState(OtherConnection()).StreamId();
-	UpdateInputRoutes();
+	m_PreviousFocusedStream = pPreviousState->StreamId();
+	UpdateInputRoutes(SessionId);
 }
 
-void CGameClient::UpdateInputRoutes()
+void CGameClient::UpdateInputRoutes(CSessionId SessionId)
 {
-	const CStreamId FocusedStream = GameState(ActiveConnection()).StreamId();
-	CGameStateManager &GameStates = SessionContext().GameStates();
-	CStreamInputRouter &Router = SessionContext().InputRouter();
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing input game session context");
+	const bool AcceptControls = SessionId == Client()->FocusedSessionId();
+	const CStreamId FocusedStream(ActiveConnection() + 1);
+	CGameStateManager &GameStates = pSession->GameStates();
+	CStreamInputRouter &Router = pSession->InputRouter();
 	std::vector<CStreamId> vRemovedStreams;
 	for(const CStreamInputRoute &Route : Router.Routes())
 	{
@@ -741,28 +766,32 @@ void CGameClient::UpdateInputRoutes()
 	for(const auto &pState : GameStates.States())
 	{
 		const CStreamId Target = pState->StreamId();
-		const EStreamInputPolicy Policy = Target == FocusedStream ? EStreamInputPolicy::DIRECT : g_Config.m_ClDummyHammer ? EStreamInputPolicy::HAMMER :
-												 g_Config.m_ClDummyCopyMoves      ? EStreamInputPolicy::COPY_MOVES :
-																    EStreamInputPolicy::DIRECT;
+		const EStreamInputPolicy Policy = !AcceptControls || Target == FocusedStream ? EStreamInputPolicy::DIRECT : g_Config.m_ClDummyHammer ? EStreamInputPolicy::HAMMER :
+														    g_Config.m_ClDummyCopyMoves      ? EStreamInputPolicy::COPY_MOVES :
+																		       EStreamInputPolicy::DIRECT;
 		const CStreamId Source = Policy == EStreamInputPolicy::DIRECT ? Target : FocusedStream;
 		const bool RouteSet = Router.Set(Target, Source, Policy);
 		dbg_assert(RouteSet, "failed to set input route");
 	}
 }
 
-int CGameClient::OnSnapInput(int *pData, int Conn, bool Force)
+int CGameClient::OnSnapInput(CSessionId SessionId, int *pData, int Conn, bool Force)
 {
 	const int ActiveConn = Client()->ActiveConnection();
-	UpdateInputRoutes();
-	CGameState &TargetState = GameState(Conn);
+	UpdateInputRoutes(SessionId);
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing input game session context");
+	CGameState *pTargetState = pSession->GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pTargetState != nullptr, "missing input game state");
+	CGameState &TargetState = *pTargetState;
 	const CStreamId Target = TargetState.StreamId();
-	CStreamInputRouter &Router = SessionContext().InputRouter();
+	CStreamInputRouter &Router = pSession->InputRouter();
 	CStreamInputRoute &Route = *Router.Find(Target);
 	const EStreamInputPolicy Policy = Route.m_Policy;
 	CNetObj_PlayerInput &TargetInput = TargetState.Input().m_InputData;
 	if(Policy != EStreamInputPolicy::HAMMER)
 		Route.FinishHammering(TargetInput);
-	if(Policy == EStreamInputPolicy::DIRECT && Conn == ActiveConn)
+	if(Policy == EStreamInputPolicy::DIRECT && Conn == ActiveConn && SessionId == Client()->FocusedSessionId())
 	{
 		return m_Controls.SnapInput(pData);
 	}
@@ -773,7 +802,7 @@ int CGameClient::OnSnapInput(int *pData, int Conn, bool Force)
 
 	if(Policy != EStreamInputPolicy::HAMMER)
 	{
-		if(!Force && (!TargetInput.m_Direction && !TargetInput.m_Jump && !TargetInput.m_Hook))
+		if(!Force && SessionId == Client()->FocusedSessionId() && (!TargetInput.m_Direction && !TargetInput.m_Jump && !TargetInput.m_Hook))
 		{
 			return 0;
 		}
@@ -802,22 +831,56 @@ int CGameClient::OnSnapInput(int *pData, int Conn, bool Force)
 	}
 }
 
-void CGameClient::OnConnected()
+void CGameClient::BindLegacyWorld(CGameSessionContext &Session)
 {
-	const char *pConnectCaption = DemoPlayer()->IsPlaying() ? Localize("Preparing demo playback") : Localize("Connected");
-	const char *pLoadMapContent = Localize("Initializing map logic");
-	// render loading before skip is calculated
-	m_Menus.RenderLoading(pConnectCaption, pLoadMapContent, 0);
-	Layers()->Init(Map(), false, true);
-	Collision()->Init(Layers());
-	m_GameWorld.m_Core.InitSwitchers(Collision()->m_HighestSwitchNumber);
+	CMapContext &MapContext = Session.MapContext();
+	m_GameWorld.Clear();
+	m_GameWorld.Init(MapContext.Collision(), MapContext.TuningList(), MapContext.MapBugs(), &MapContext.GameConfig());
+	m_GameWorld.m_WorldConfig = {};
+	m_GameWorld.m_WorldConfig.m_InfiniteAmmo = true;
+	m_GameWorld.m_Core.InitSwitchers(MapContext.Collision()->m_HighestSwitchNumber);
 	m_GameWorld.m_PredictedEvents.clear();
+	m_PredictedWorld.CopyWorld(&m_GameWorld);
+	m_PrevPredictedWorld.CopyWorld(&m_PredictedWorld);
+}
+
+void CGameClient::OnConnected(CSessionId SessionId)
+{
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing connected game session context");
+	CMapContext &MapContext = pSession->MapContext();
+	const bool Focused = SessionId == Client()->FocusedSessionId();
+	const char *pConnectCaption = SessionId == Client()->DemoSessionId() ? Localize("Preparing demo playback") : Localize("Connected");
+	const char *pLoadMapContent = Localize("Initializing map logic");
+	if(Focused)
+		m_Menus.RenderLoading(pConnectCaption, pLoadMapContent, 0);
+	MapContext.Layers()->Init(MapContext.Map(), false, true);
+	MapContext.Collision()->Init(MapContext.Layers());
+	pSession->SetDescriptor(MapContext.Map()->BaseName(), Client()->IsSixup(SessionId) ? EGameProtocol::SIXUP : EGameProtocol::SIX);
+	pSession->SetServerCapAnyPlayerFlag(SessionId == Client()->NetworkSessionId() && Client()->ServerCapAnyPlayerFlag());
+	MapContext.Load(*Config());
+	for(const auto &pGameState : pSession->GameStates().States())
+		pGameState->InitPrediction(MapContext);
+	SessionPresentation(SessionId).Load(*pSession);
+
+	if(SessionId == Client()->NetworkSessionId())
+	{
+		if(Focused)
+		{
+			Client()->SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_GETTING_READY);
+			m_Menus.RenderLoading(pConnectCaption, Localize("Sending initial client info"), 0);
+		}
+		SendInfo(SessionId, true);
+		Client()->Rcon("crashmeplx");
+		m_LocalServer.RconAuthIfPossible();
+	}
+
+	if(!Focused)
+		return;
+
+	BindLegacyWorld(*pSession);
 	m_RaceHelper.Init(this);
-	SessionContext().SetDescriptor(Map()->BaseName(), Client()->IsSixup() ? EGameProtocol::SIXUP : EGameProtocol::SIX);
-	SessionContext().SetServerCapAnyPlayerFlag(Client()->ServerCapAnyPlayerFlag());
-	SessionPresentation(SessionContext().Id()).Load(SessionContext());
-	// The compatibility connect path is focused and audible before its first snapshot arrives.
-	m_SessionPresentations.SetAudible(SessionContext().Id());
+	m_SessionPresentations.SetAudible(SessionId);
 
 	// render loading before going through all components
 	m_Menus.RenderLoading(pConnectCaption, pLoadMapContent, 0);
@@ -826,38 +889,29 @@ void CGameClient::OnConnected()
 		pComponent->OnMapLoad();
 		pComponent->OnReset();
 	}
-
-	MapContext().Load(*Config());
-	for(const auto &pGameState : SessionContext().GameStates().States())
-		pGameState->InitPrediction(MapContext());
-
-	if(!Client()->IsDemoPlayback())
-	{
-		Client()->SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_GETTING_READY);
-		m_Menus.RenderLoading(pConnectCaption, Localize("Sending initial client info"), 0);
-
-		// send the initial info
-		SendInfo(true);
-		// we should keep this in for now, because otherwise you can't spectate
-		// people at start as the other info 64 packet is only sent after the first
-		// snap
-		Client()->Rcon("crashmeplx");
-
-		m_LocalServer.RconAuthIfPossible();
-	}
 }
 
-void CGameClient::OnReset()
+void CGameClient::OnSessionClosed(CSessionId SessionId)
 {
-	for(const auto &pGameState : SessionContext().GameStates().States())
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing closed game session context");
+	for(const auto &pGameState : pSession->GameStates().States())
 		pGameState->Reset();
-	SessionContext().Broadcast().Reset();
-	SessionContext().MapMetadata().Reset();
-	SessionContext().Vote().Reset();
-	ResetInfoMessages(SessionContext().Id());
-	ResetChat(SessionContext().Id());
+	pSession->Broadcast().Reset();
+	pSession->MapMetadata().Reset();
+	pSession->Vote().Reset();
+	ResetInfoMessages(SessionId);
+	ResetChat(SessionId);
+	pSession->Stats().Reset();
+	pSession->InputRouter().Reset();
+	m_SessionPresentations.Unload(SessionId);
+	pSession->MapContext().Unload();
+	pSession->MapContext().Map()->Unload();
 
-	InvalidateSnapshot();
+	if(SessionId != Client()->FocusedSessionId())
+		return;
+
+	InvalidateSnapshot(SessionId);
 
 	m_EditorMovementDelay = 5;
 
@@ -879,10 +933,6 @@ void CGameClient::OnReset()
 
 	for(auto &Client : m_aClients)
 		Client.Reset();
-
-	SessionContext().Stats().Reset();
-
-	SessionContext().InputRouter().Reset();
 
 	m_GameWorld.Clear();
 	m_GameWorld.m_WorldConfig.m_InfiniteAmmo = true;
@@ -910,19 +960,45 @@ void CGameClient::OnReset()
 	dbg_assert(pSecondaryView != nullptr, "missing secondary game view");
 	pSecondaryView->SetSpectator(false);
 	pSecondaryView->SpectatorCursor().Reset();
+	CGameView *pTertiaryView = m_GameViews.Find(m_TertiaryGameViewId);
+	dbg_assert(pTertiaryView != nullptr, "missing tertiary game view");
+	pTertiaryView->SetSpectator(false);
+	pTertiaryView->SpectatorCursor().Reset();
 
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnReset();
-	m_SessionPresentations.Unload(SessionContext().Id());
 
 	Editor()->ResetMentions();
 	Editor()->ResetIngameMoved();
+}
 
-	MapContext().Unload();
+void CGameClient::OnSessionFocused(CSessionId SessionId)
+{
+	dbg_assert(SessionId == Client()->FocusedSessionId(), "focused game session mismatch");
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing focused game session context");
+	if(SessionId == Client()->DemoSessionId())
+	{
+		CGameSessionContext *pNetworkSession = FindSessionContext(Client()->NetworkSessionId());
+		dbg_assert(pNetworkSession != nullptr, "missing Network game session context");
+		for(const auto &pState : pNetworkSession->GameStates().States())
+			pState->Input().ReleaseGameplay();
+	}
+	InvalidateSnapshot(SessionId);
+	LegacyGameView();
+	m_SessionPresentations.SetAudible(SessionId);
+	if(!pSession->MapContext().Map()->IsLoaded())
+		return;
+	BindLegacyWorld(*pSession);
+	m_RaceHelper.Init(this);
+	for(auto &pComponent : m_vpAll)
+		pComponent->OnMapLoad();
 }
 
 void CGameClient::UpdatePositions(const CGameState &State)
 {
+	const CSessionId SessionId = SessionContext().Id();
+	const int Conn = ActiveConnection();
 	CGameView::CMultiViewState &MultiViewState = MultiView();
 	// local character position
 	const int LocalClientId = State.LocalClientId();
@@ -941,14 +1017,14 @@ void CGameClient::UpdatePositions(const CGameState &State)
 			m_Snap.m_SpecInfo.m_Position = mix(
 				vec2(m_Snap.m_aCharacters[m_Snap.m_SpecInfo.m_SpectatorId].m_Prev.m_X, m_Snap.m_aCharacters[m_Snap.m_SpecInfo.m_SpectatorId].m_Prev.m_Y),
 				vec2(m_Snap.m_aCharacters[m_Snap.m_SpecInfo.m_SpectatorId].m_Cur.m_X, m_Snap.m_aCharacters[m_Snap.m_SpecInfo.m_SpectatorId].m_Cur.m_Y),
-				Client()->IntraGameTick(ActiveConnection()));
+				Client()->IntraGameTick(SessionId, Conn));
 			m_Snap.m_SpecInfo.m_UsePosition = true;
 		}
 		else if(m_Snap.m_pSpectatorInfo && ((Client()->IsDemoPlayback() && m_DemoSpecId == SPEC_FOLLOW) || (!Client()->IsDemoPlayback() && m_Snap.m_SpecInfo.m_SpectatorId != SPEC_FREEVIEW)))
 		{
 			if(m_Snap.m_pPrevSpectatorInfo && m_Snap.m_pPrevSpectatorInfo->m_SpectatorId == m_Snap.m_pSpectatorInfo->m_SpectatorId)
 				m_Snap.m_SpecInfo.m_Position = mix(vec2(m_Snap.m_pPrevSpectatorInfo->m_X, m_Snap.m_pPrevSpectatorInfo->m_Y),
-					vec2(m_Snap.m_pSpectatorInfo->m_X, m_Snap.m_pSpectatorInfo->m_Y), Client()->IntraGameTick(ActiveConnection()));
+					vec2(m_Snap.m_pSpectatorInfo->m_X, m_Snap.m_pSpectatorInfo->m_Y), Client()->IntraGameTick(SessionId, Conn));
 			else
 				m_Snap.m_SpecInfo.m_Position = vec2(m_Snap.m_pSpectatorInfo->m_X, m_Snap.m_pSpectatorInfo->m_Y);
 			m_Snap.m_SpecInfo.m_UsePosition = true;
@@ -961,56 +1037,114 @@ void CGameClient::UpdatePositions(const CGameState &State)
 
 void CGameClient::OnRender()
 {
-	const int ActiveConn = ActiveConnection();
 	CGameSessionContext &ActiveSession = SessionContext();
+	const bool FocusedDemo = ActiveSession.Id() == Client()->DemoSessionId();
+	const int ActiveConn = FocusedDemo ? IClient::CONN_MAIN : ActiveConnection();
 	CGameState *pActiveState = ActiveSession.GameStates().FindByStream(CStreamId(ActiveConn + 1));
 	dbg_assert(pActiveState != nullptr, "missing active game state");
 	CGameState &ActiveState = *pActiveState;
 	CGameView &View = LegacyGameView();
 	CGameView::CMultiViewState &MultiViewState = MultiView();
-	const bool SplitScreen = g_Config.m_ClDummySplitScreen && Client()->IsOnline() && Client()->DummyConnected();
-	const int SecondaryConn = ActiveConn == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN;
-	CGameState *pSecondaryState = SplitScreen ? ActiveSession.GameStates().FindByStream(CStreamId(SecondaryConn + 1)) : nullptr;
-	CGameView *pSecondaryView = SplitScreen ? m_GameViews.Find(m_SecondaryGameViewId) : nullptr;
-	dbg_assert(!SplitScreen || (pSecondaryState != nullptr && pSecondaryView != nullptr), "missing split-screen state or view");
-	if(SplitScreen)
-		pSecondaryView->SetTarget(ActiveSession.Id(), pSecondaryState->Id());
+	CGameView *pSecondaryView = m_GameViews.Find(m_SecondaryGameViewId);
+	CGameView *pTertiaryView = m_GameViews.Find(m_TertiaryGameViewId);
+	dbg_assert(pSecondaryView != nullptr && pTertiaryView != nullptr, "missing auxiliary game views");
+
+	struct CRenderEntry
+	{
+		CGameSessionContext *m_pSession;
+		CGameState *m_pState;
+		CGameView *m_pView;
+		int m_Conn;
+		bool m_Audible;
+		CGameTickInfo m_Time;
+		EPresentationPlayback m_Playback = EPresentationPlayback::PLAYING;
+	};
+	std::vector<CRenderEntry> vEntries;
+	vEntries.reserve(3);
+	auto AddEntry = [&](CGameSessionContext &Session, CGameState &State, CGameView &RenderView, int Conn, bool Audible) {
+		RenderView.SetTarget(Session.Id(), State.Id());
+		vEntries.push_back({&Session, &State, &RenderView, Conn, Audible});
+	};
+	auto AddNetworkEntries = [&](CGameSessionContext &NetworkSession, CGameView &MainView, CGameView *pDummyView) {
+		CGameState *pMainState = NetworkSession.GameStates().FindByStream(CStreamId(IClient::CONN_MAIN + 1));
+		dbg_assert(pMainState != nullptr, "missing Network main state");
+		AddEntry(NetworkSession, *pMainState, MainView, IClient::CONN_MAIN, &MainView == &View);
+		if(pDummyView != nullptr && Client()->DummyConnected())
+		{
+			CGameState *pDummyState = NetworkSession.GameStates().FindByStream(CStreamId(IClient::CONN_DUMMY + 1));
+			dbg_assert(pDummyState != nullptr, "missing Network dummy state");
+			AddEntry(NetworkSession, *pDummyState, *pDummyView, IClient::CONN_DUMMY, pDummyView == &View);
+		}
+	};
+
+	const bool MultiGameScreen = g_Config.m_ClDummySplitScreen != 0;
+	if(MultiGameScreen && FocusedDemo && Client()->SessionState(Client()->NetworkSessionId()) == ESessionState::READY)
+	{
+		CGameSessionContext *pNetworkSession = FindSessionContext(Client()->NetworkSessionId());
+		dbg_assert(pNetworkSession != nullptr, "missing Network session context");
+		AddNetworkEntries(*pNetworkSession, *pSecondaryView, pTertiaryView);
+		AddEntry(ActiveSession, ActiveState, View, ActiveConn, true);
+	}
+	else if(MultiGameScreen && !FocusedDemo)
+	{
+		if(ActiveConn == IClient::CONN_MAIN)
+			AddNetworkEntries(ActiveSession, View, pSecondaryView);
+		else
+			AddNetworkEntries(ActiveSession, *pSecondaryView, &View);
+		if(Client()->SessionState(Client()->DemoSessionId()) == ESessionState::READY)
+		{
+			CGameSessionContext *pDemoSession = FindSessionContext(Client()->DemoSessionId());
+			dbg_assert(pDemoSession != nullptr, "missing Demo session context");
+			CGameState *pDemoState = pDemoSession->GameStates().FindByStream(CStreamId(IClient::CONN_MAIN + 1));
+			dbg_assert(pDemoState != nullptr, "missing Demo game state");
+			AddEntry(*pDemoSession, *pDemoState, *pTertiaryView, IClient::CONN_MAIN, false);
+		}
+	}
+	else
+	{
+		AddEntry(ActiveSession, ActiveState, View, ActiveConn, true);
+	}
 
 	const int64_t PresentationTime = CurrentPresentationTime();
 	const int64_t Now = time_get();
 	const int64_t PresentationTimeFrequency = time_freq();
-	const float AnimationPlaybackSpeed = GetAnimationPlaybackSpeed();
-	auto FreezeTime = [&](CSessionId SessionId, int Conn) {
+	auto FreezeTime = [&](const CRenderEntry &Entry) {
+		const CSessionId SessionId = Entry.m_pSession->Id();
+		const bool DemoPlayback = SessionId == Client()->DemoSessionId();
+		const bool WorldPaused = Entry.m_pState->HasGameInfo() && (Entry.m_pState->GameInfo().m_GameStateFlags & (GAMESTATEFLAG_GAMEOVER | GAMESTATEFLAG_PAUSED)) != 0;
+		const bool DemoPaused = DemoPlayback && DemoPlayer()->BaseInfo()->m_Paused;
+		const float AnimationPlaybackSpeed = WorldPaused || DemoPaused ? 0.0f : DemoPlayback ? DemoPlayer()->BaseInfo()->m_Speed :
+												       1.0f;
 		CGameTickInfo Time;
-		Time.m_PrevGameTick = Client()->PrevGameTick(SessionId, Conn);
-		Time.m_GameTick = Client()->GameTick(SessionId, Conn);
-		Time.m_PredGameTick = Client()->PredGameTick(SessionId, Conn);
-		Time.m_PredictionTick = Client()->GetPredictionTick(SessionId, Conn);
-		Time.m_IntraGameTick = Client()->IntraGameTick(SessionId, Conn);
-		Time.m_IntraGameTickSincePrev = Client()->IntraGameTickSincePrev(SessionId, Conn);
-		Time.m_PredIntraGameTick = Client()->PredIntraGameTick(SessionId, Conn);
-		Time.m_GameTickTime = Client()->GameTickTime(SessionId, Conn);
+		Time.m_PrevGameTick = Client()->PrevGameTick(SessionId, Entry.m_Conn);
+		Time.m_GameTick = Client()->GameTick(SessionId, Entry.m_Conn);
+		Time.m_PredGameTick = Client()->PredGameTick(SessionId, Entry.m_Conn);
+		Time.m_PredictionTick = Client()->GetPredictionTick(SessionId, Entry.m_Conn);
+		Time.m_IntraGameTick = Client()->IntraGameTick(SessionId, Entry.m_Conn);
+		Time.m_IntraGameTickSincePrev = Client()->IntraGameTickSincePrev(SessionId, Entry.m_Conn);
+		Time.m_PredIntraGameTick = Client()->PredIntraGameTick(SessionId, Entry.m_Conn);
+		Time.m_GameTickTime = Client()->GameTickTime(SessionId, Entry.m_Conn);
 		Time.m_FrameTimeAverage = Client()->FrameTimeAverage();
 		Time.m_GameTickSpeed = Client()->GameTickSpeed();
-		Time.m_PredictionTime = Client()->GetPredictionTime(SessionId, Conn);
+		Time.m_PredictionTime = Client()->GetPredictionTime(SessionId, Entry.m_Conn);
 		Time.m_PresentationTime = PresentationTime;
 		Time.m_PresentationTimeFrequency = PresentationTimeFrequency;
 		Time.m_AnimationPlaybackSpeed = AnimationPlaybackSpeed;
-		Time.m_IsGameActive = Client()->State() == IClient::STATE_ONLINE || Client()->State() == IClient::STATE_DEMOPLAYBACK;
-		Time.m_IsDemoPlayback = Client()->IsDemoPlayback();
-		Time.m_IsDemoPlaybackPaused = IsDemoPlaybackPaused();
-		Time.m_ConnectionProblems = Client()->ConnectionProblems(SessionId, Conn);
+		Time.m_IsGameActive = Client()->SessionState(SessionId) == ESessionState::READY;
+		Time.m_IsDemoPlayback = DemoPlayback;
+		Time.m_IsDemoPlaybackPaused = DemoPaused;
+		Time.m_ConnectionProblems = Client()->ConnectionProblems(SessionId, Entry.m_Conn);
 		return Time;
 	};
-	std::array<CGameTickInfo, IClient::CONN_CONTACT> aGameTickInfo;
-	aGameTickInfo[ActiveConn] = FreezeTime(ActiveSession.Id(), ActiveConn);
-	if(SplitScreen)
-		aGameTickInfo[SecondaryConn] = FreezeTime(ActiveSession.Id(), SecondaryConn);
-	const CGameTickInfo &GameTickInfo = aGameTickInfo[ActiveConn];
-	const EPresentationPlayback Playback = AnimationPlaybackSpeed > 0.0f ? EPresentationPlayback::PLAYING : EPresentationPlayback::PAUSED;
-	UpdateRenderedClients(ActiveSession, ActiveState, ActiveConn, Now, GameTickInfo, Playback);
-	if(SplitScreen)
-		UpdateRenderedClients(ActiveSession, *pSecondaryState, SecondaryConn, Now, aGameTickInfo[SecondaryConn], Playback);
+	for(CRenderEntry &Entry : vEntries)
+	{
+		Entry.m_Time = FreezeTime(Entry);
+		Entry.m_Playback = Entry.m_Time.m_AnimationPlaybackSpeed > 0.0f ? EPresentationPlayback::PLAYING : EPresentationPlayback::PAUSED;
+		UpdateRenderedClients(*Entry.m_pSession, *Entry.m_pState, Entry.m_Conn, Now, Entry.m_Time, Entry.m_Playback);
+	}
+	const auto ActiveEntryIt = std::find_if(vEntries.begin(), vEntries.end(), [&](const CRenderEntry &Entry) { return Entry.m_pView == &View; });
+	dbg_assert(ActiveEntryIt != vEntries.end(), "missing active render entry");
+	const CGameTickInfo &GameTickInfo = ActiveEntryIt->m_Time;
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
 
 	// check if multi view got activated
@@ -1053,17 +1187,21 @@ void CGameClient::OnRender()
 	m_Camera.UpdatePosition();
 
 	UpdateSpectatorCursor(ActiveState, GameTickInfo);
-	if(SplitScreen)
+	if(vEntries.size() > 1)
 	{
-		const int HalfWidth = Graphics()->ScreenWidth() / 2;
-		const CViewport MainViewport{0, 0, HalfWidth, Graphics()->ScreenHeight()};
-		const CViewport DummyViewport{HalfWidth, 0, Graphics()->ScreenWidth() - HalfWidth, Graphics()->ScreenHeight()};
-		View.SetViewport(ActiveConn == IClient::CONN_MAIN ? MainViewport : DummyViewport);
-		pSecondaryView->SetViewport(SecondaryConn == IClient::CONN_MAIN ? MainViewport : DummyViewport);
-		const int SecondaryLocalId = pSecondaryState->LocalClientId();
-		if(in_range(SecondaryLocalId, MAX_CLIENTS - 1) && pSecondaryState->RenderedClient(SecondaryLocalId).m_Active)
-			pSecondaryView->SetCameraPosition(pSecondaryState->RenderedClient(SecondaryLocalId).m_Position);
-		pSecondaryView->SetZoom(View.Zoom());
+		for(size_t i = 0; i < vEntries.size(); ++i)
+		{
+			CRenderEntry &Entry = vEntries[i];
+			const int Left = Graphics()->ScreenWidth() * static_cast<int>(i) / static_cast<int>(vEntries.size());
+			const int Right = Graphics()->ScreenWidth() * static_cast<int>(i + 1) / static_cast<int>(vEntries.size());
+			Entry.m_pView->SetViewport({Left, 0, Right - Left, Graphics()->ScreenHeight()});
+			if(Entry.m_pView == &View)
+				continue;
+			const int LocalId = Entry.m_pState->LocalClientId();
+			if(in_range(LocalId, MAX_CLIENTS - 1) && Entry.m_pState->RenderedClient(LocalId).m_Active)
+				Entry.m_pView->SetCameraPosition(Entry.m_pState->RenderedClient(LocalId).m_Position);
+			Entry.m_pView->SetZoom(View.Zoom());
+		}
 	}
 	else
 	{
@@ -1080,23 +1218,19 @@ void CGameClient::OnRender()
 	const CVisibleWorldRect VisibleWorldRect = VisibleWorldRectFor(View);
 	CScreenRenderOutput ScreenOutput(*Graphics(), ClearColor);
 	std::vector<CGameRenderRequest> vRenderRequests;
-	vRenderRequests.reserve(SplitScreen ? 2 : 1);
-	auto AddRequest = [&](int Conn, CGameState &State, CGameView &RenderView) {
+	vRenderRequests.reserve(vEntries.size());
+	for(const CRenderEntry &Entry : vEntries)
+	{
 		vRenderRequests.emplace_back(
-			ActiveSession,
-			State,
-			RenderView,
-			aGameTickInfo[Conn],
-			VisibleWorldRectFor(RenderView),
-			Playback,
-			Conn == ActiveConn ? EPresentationAudio::AUDIBLE : EPresentationAudio::MUTED,
+			*Entry.m_pSession,
+			*Entry.m_pState,
+			*Entry.m_pView,
+			Entry.m_Time,
+			VisibleWorldRectFor(*Entry.m_pView),
+			Entry.m_Playback,
+			Entry.m_Audible ? EPresentationAudio::AUDIBLE : EPresentationAudio::MUTED,
 			ScreenOutput);
-	};
-	if(SplitScreen && SecondaryConn == IClient::CONN_MAIN)
-		AddRequest(SecondaryConn, *pSecondaryState, *pSecondaryView);
-	AddRequest(ActiveConn, ActiveState, View);
-	if(SplitScreen && SecondaryConn == IClient::CONN_DUMMY)
-		AddRequest(SecondaryConn, *pSecondaryState, *pSecondaryView);
+	}
 	const CGameRenderRequest *pAudibleRequest = FindAudibleRenderRequest(vRenderRequests);
 	m_Sounds.Update(pAudibleRequest != nullptr ? std::optional(pAudibleRequest->m_View.CameraPosition()) : std::nullopt);
 	if(pAudibleRequest != nullptr)
@@ -1248,72 +1382,71 @@ void CGameClient::OnRender()
 	m_NewPredictedTick = false;
 
 	// resend player and dummy info if it was filtered by server
-	const int MainLocalId = GameState(IClient::CONN_MAIN).LocalClientId();
-	const int DummyLocalId = GameState(IClient::CONN_DUMMY).LocalClientId();
-	CGameState::CRuntimeState &MainRuntime = GameState(IClient::CONN_MAIN).Runtime();
-	CGameState::CRuntimeState &DummyRuntime = GameState(IClient::CONN_DUMMY).Runtime();
-	if(MainLocalId >= 0 && Client()->IsOnline() && !m_Menus.IsActive() && WasNewTick)
+	if(!FocusedDemo)
 	{
-		if(MainRuntime.m_CheckInfo == 0)
+		const int MainLocalId = GameState(IClient::CONN_MAIN).LocalClientId();
+		const int DummyLocalId = GameState(IClient::CONN_DUMMY).LocalClientId();
+		CGameState::CRuntimeState &MainRuntime = GameState(IClient::CONN_MAIN).Runtime();
+		CGameState::CRuntimeState &DummyRuntime = GameState(IClient::CONN_DUMMY).Runtime();
+		if(MainLocalId >= 0 && Client()->IsOnline() && !m_Menus.IsActive() && WasNewTick)
 		{
-			if(m_pClient->IsSixup())
+			if(MainRuntime.m_CheckInfo == 0)
 			{
-				if(!GotWantedSkin7(false))
-					SendSkinChange7(false);
-				else
-					MainRuntime.m_CheckInfo = -1;
-			}
-			else
-			{
-				if(
-					str_comp(m_aClients[MainLocalId].m_aName, Client()->PlayerName()) ||
-					str_comp(m_aClients[MainLocalId].m_aClan, g_Config.m_PlayerClan) ||
-					m_aClients[MainLocalId].m_Country != g_Config.m_PlayerCountry ||
-					str_comp(m_aClients[MainLocalId].m_aSkinName, g_Config.m_ClPlayerSkin) ||
-					m_aClients[MainLocalId].m_UseCustomColor != g_Config.m_ClPlayerUseCustomColor ||
-					m_aClients[MainLocalId].m_ColorBody != (int)g_Config.m_ClPlayerColorBody ||
-					m_aClients[MainLocalId].m_ColorFeet != (int)g_Config.m_ClPlayerColorFeet)
-					SendInfo(false);
-				else
-					MainRuntime.m_CheckInfo = -1;
-			}
-		}
-
-		if(MainRuntime.m_CheckInfo > 0)
-		{
-			MainRuntime.m_CheckInfo -= std::min(Client()->GameTick(IClient::CONN_MAIN) - Client()->PrevGameTick(IClient::CONN_MAIN), MainRuntime.m_CheckInfo);
-		}
-
-		if(DummyLocalId >= 0)
-		{
-			if(DummyRuntime.m_CheckInfo == 0)
-			{
-				if(m_pClient->IsSixup())
+				if(m_pClient->IsSixup(Client()->NetworkSessionId()))
 				{
-					if(!GotWantedSkin7(true))
-						SendSkinChange7(true);
+					if(!GotWantedSkin7(IClient::CONN_MAIN))
+						SendSkinChange7(Client()->NetworkSessionId(), IClient::CONN_MAIN);
 					else
-						DummyRuntime.m_CheckInfo = -1;
+						MainRuntime.m_CheckInfo = -1;
 				}
 				else
 				{
 					if(
-						str_comp(m_aClients[DummyLocalId].m_aName, Client()->DummyName()) ||
-						str_comp(m_aClients[DummyLocalId].m_aClan, g_Config.m_ClDummyClan) ||
-						m_aClients[DummyLocalId].m_Country != g_Config.m_ClDummyCountry ||
-						str_comp(m_aClients[DummyLocalId].m_aSkinName, g_Config.m_ClDummySkin) ||
-						m_aClients[DummyLocalId].m_UseCustomColor != g_Config.m_ClDummyUseCustomColor ||
-						m_aClients[DummyLocalId].m_ColorBody != (int)g_Config.m_ClDummyColorBody ||
-						m_aClients[DummyLocalId].m_ColorFeet != (int)g_Config.m_ClDummyColorFeet)
-						SendDummyInfo(false);
+						str_comp(m_aClients[MainLocalId].m_aName, Client()->PlayerName()) ||
+						str_comp(m_aClients[MainLocalId].m_aClan, g_Config.m_PlayerClan) ||
+						m_aClients[MainLocalId].m_Country != g_Config.m_PlayerCountry ||
+						str_comp(m_aClients[MainLocalId].m_aSkinName, g_Config.m_ClPlayerSkin) ||
+						m_aClients[MainLocalId].m_UseCustomColor != g_Config.m_ClPlayerUseCustomColor ||
+						m_aClients[MainLocalId].m_ColorBody != (int)g_Config.m_ClPlayerColorBody ||
+						m_aClients[MainLocalId].m_ColorFeet != (int)g_Config.m_ClPlayerColorFeet)
+						SendInfo(Client()->NetworkSessionId(), false);
 					else
-						DummyRuntime.m_CheckInfo = -1;
+						MainRuntime.m_CheckInfo = -1;
 				}
 			}
 
-			if(DummyRuntime.m_CheckInfo > 0)
+			if(MainRuntime.m_CheckInfo > 0)
+				MainRuntime.m_CheckInfo -= std::min(Client()->GameTick(Client()->NetworkSessionId(), IClient::CONN_MAIN) - Client()->PrevGameTick(Client()->NetworkSessionId(), IClient::CONN_MAIN), MainRuntime.m_CheckInfo);
+
+			if(DummyLocalId >= 0)
 			{
-				DummyRuntime.m_CheckInfo -= std::min(Client()->GameTick(IClient::CONN_DUMMY) - Client()->PrevGameTick(IClient::CONN_DUMMY), DummyRuntime.m_CheckInfo);
+				if(DummyRuntime.m_CheckInfo == 0)
+				{
+					if(m_pClient->IsSixup(Client()->NetworkSessionId()))
+					{
+						if(!GotWantedSkin7(IClient::CONN_DUMMY))
+							SendSkinChange7(Client()->NetworkSessionId(), IClient::CONN_DUMMY);
+						else
+							DummyRuntime.m_CheckInfo = -1;
+					}
+					else
+					{
+						if(
+							str_comp(m_aClients[DummyLocalId].m_aName, Client()->DummyName()) ||
+							str_comp(m_aClients[DummyLocalId].m_aClan, g_Config.m_ClDummyClan) ||
+							m_aClients[DummyLocalId].m_Country != g_Config.m_ClDummyCountry ||
+							str_comp(m_aClients[DummyLocalId].m_aSkinName, g_Config.m_ClDummySkin) ||
+							m_aClients[DummyLocalId].m_UseCustomColor != g_Config.m_ClDummyUseCustomColor ||
+							m_aClients[DummyLocalId].m_ColorBody != (int)g_Config.m_ClDummyColorBody ||
+							m_aClients[DummyLocalId].m_ColorFeet != (int)g_Config.m_ClDummyColorFeet)
+							SendDummyInfo(false);
+						else
+							DummyRuntime.m_CheckInfo = -1;
+					}
+				}
+
+				if(DummyRuntime.m_CheckInfo > 0)
+					DummyRuntime.m_CheckInfo -= std::min(Client()->GameTick(Client()->NetworkSessionId(), IClient::CONN_DUMMY) - Client()->PrevGameTick(Client()->NetworkSessionId(), IClient::CONN_DUMMY), DummyRuntime.m_CheckInfo);
 			}
 		}
 	}
@@ -1323,7 +1456,11 @@ void CGameClient::OnRender()
 
 void CGameClient::OnDummyDisconnect()
 {
-	GameState(IClient::CONN_DUMMY).Reset();
+	CGameSessionContext *pSession = FindSessionContext(Client()->NetworkSessionId());
+	dbg_assert(pSession != nullptr, "missing Network game session context");
+	CGameState *pState = pSession->GameStates().FindByStream(CStreamId(IClient::CONN_DUMMY + 1));
+	dbg_assert(pState != nullptr, "missing Network dummy game state");
+	pState->Reset();
 }
 
 int CGameClient::LastRaceTick() const
@@ -1338,7 +1475,7 @@ int CGameClient::CurrentRaceTime() const
 	{
 		return 0;
 	}
-	return (Client()->GameTick(ActiveConnection()) - RaceTick) / Client()->GameTickSpeed();
+	return (Client()->GameTick(SessionContext().Id(), ActiveConnection()) - RaceTick) / Client()->GameTickSpeed();
 }
 
 int CGameClient::FlagDropTick(int Team) const
@@ -1436,11 +1573,10 @@ bool CGameClient::Predict() const
 	       m_Snap.m_pLocalCharacter;
 }
 
-bool CGameClient::PredictDummy() const
+bool CGameClient::PredictDummy(const CGameState &OtherState) const
 {
 	if(!g_Config.m_ClPredictDummy || !Client()->DummyConnected() || m_Snap.m_LocalClientId < 0)
 		return false;
-	const CGameState &OtherState = GameState(OtherConnection());
 	const int OtherLocalClientId = OtherState.LocalClientId();
 	if(OtherLocalClientId < 0)
 		return false;
@@ -1492,8 +1628,17 @@ void CGameClient::OnRelease()
 		pComponent->OnRelease();
 }
 
-void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn, bool Dummy)
+void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn)
 {
+	const bool InactiveStream = SessionId == Client()->NetworkSessionId() && Conn != Client()->ActiveConnection();
+	CGameSessionContext *pMessageSession = m_SessionContexts.Find(SessionId);
+	dbg_assert(pMessageSession != nullptr, "missing message session context");
+	CGameState *pMessageState = pMessageSession->GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pMessageState != nullptr, "missing message game state");
+	const bool Focused = SessionId == Client()->FocusedSessionId();
+	const bool SuppressEvents = m_SuppressEvents && SessionId == Client()->DemoSessionId();
+	const int64_t MessageTime = SessionMessageTime(SessionId);
+
 	// special messages
 	static_assert((int)NETMSGTYPE_SV_TUNEPARAMS == (int)protocol7::NETMSGTYPE_SV_TUNEPARAMS, "0.6 and 0.7 tune message id do not match");
 	if(MsgId == NETMSGTYPE_SV_TUNEPARAMS)
@@ -1509,7 +1654,7 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 		for(int i = 0; i < CTuningParams::Num(); i++)
 		{
 			static_assert(offsetof(CTuningParams, m_LaserDamage) / sizeof(CTuneParam) == 30);
-			if(i == 30 && Client()->IsSixup()) // laser_damage was removed in 0.7
+			if(i == 30 && Client()->IsSixup(SessionId)) // laser_damage was removed in 0.7
 			{
 				continue;
 			}
@@ -1523,55 +1668,50 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 			pParams[i] = Value;
 		}
 
-		GameState(Conn).Runtime().m_ServerMode = CGameState::SERVERMODE_PURE;
+		pMessageState->Runtime().m_ServerMode = CGameState::SERVERMODE_PURE;
 
-		GameState(Conn).Runtime().m_ReceivedTuning = true;
+		pMessageState->Runtime().m_ReceivedTuning = true;
 		// apply new tuning
-		GameState(Conn).ApplyTuning(NewTuning);
+		pMessageState->ApplyTuning(NewTuning);
 		return;
 	}
 
-	void *pRawMsg = TranslateGameMsg(SessionId, &MsgId, pUnpacker, Conn, Dummy);
+	void *pRawMsg = TranslateGameMsg(SessionId, &MsgId, pUnpacker, Conn);
 
 	if(!pRawMsg)
 	{
 		// the 0.7 version of this error message is printed on translation
 		// in sixup/translate_game.cpp
-		if(!Client()->IsSixup())
+		if(!Client()->IsSixup(SessionId))
 		{
 			log_debug("client", "dropped weird message '%s' (%d), failed on '%s'",
 				m_NetObjHandler.GetMsgName(MsgId), MsgId, m_NetObjHandler.FailedMsgOn());
 		}
 		return;
 	}
-	CGameSessionContext *pMessageSession = m_SessionContexts.Find(SessionId);
-	dbg_assert(pMessageSession != nullptr, "missing message session context");
-	CGameState *pMessageState = pMessageSession->GameStates().FindByStream(CStreamId(Conn + 1));
-	dbg_assert(pMessageState != nullptr, "missing message game state");
-
 	if(MsgId == NETMSGTYPE_SV_CHANGEINFOCOOLDOWN)
 	{
 		CNetMsg_Sv_ChangeInfoCooldown *pMsg = (CNetMsg_Sv_ChangeInfoCooldown *)pRawMsg;
-		GameState(Conn).Runtime().m_NextChangeInfo = pMsg->m_WaitUntil;
+		pMessageState->Runtime().m_NextChangeInfo = pMsg->m_WaitUntil;
 		return;
 	}
 
 	if(MsgId == NETMSGTYPE_SV_DDRACETIME || MsgId == NETMSGTYPE_SV_DDRACETIMELEGACY)
 	{
 		const CNetMsg_Sv_DDRaceTime *pMsg = static_cast<const CNetMsg_Sv_DDRaceTime *>(pRawMsg);
-		GameState(Conn).RaceMessages().ApplyDDRaceTime(pMsg->m_Time, pMsg->m_Check, pMsg->m_Finish != 0, Client()->GameTick(Conn));
+		pMessageState->RaceMessages().ApplyDDRaceTime(pMsg->m_Time, pMsg->m_Check, pMsg->m_Finish != 0, Client()->GameTick(SessionId, Conn));
 	}
 	else if(MsgId == NETMSGTYPE_SV_RECORD || MsgId == NETMSGTYPE_SV_RECORDLEGACY)
 	{
 		const CNetMsg_Sv_Record *pMsg = static_cast<const CNetMsg_Sv_Record *>(pRawMsg);
-		if(MsgId == NETMSGTYPE_SV_RECORDLEGACY && GameState(Conn).CoreGameInfo().m_DDRaceRecordMessage)
+		if(MsgId == NETMSGTYPE_SV_RECORDLEGACY && pMessageState->CoreGameInfo().m_DDRaceRecordMessage)
 		{
-			GameState(Conn).RaceMessages().ApplyLegacyRecord(pMsg->m_ServerTimeBest, pMsg->m_PlayerTimeBest, Client()->GameTick(Conn));
+			pMessageState->RaceMessages().ApplyLegacyRecord(pMsg->m_ServerTimeBest, pMsg->m_PlayerTimeBest, Client()->GameTick(SessionId, Conn));
 		}
-		else if(MsgId == NETMSGTYPE_SV_RECORD || GameState(Conn).CoreGameInfo().m_RaceRecordMessage)
+		else if(MsgId == NETMSGTYPE_SV_RECORD || pMessageState->CoreGameInfo().m_RaceRecordMessage)
 		{
 			// Ignore m_ServerTimeBest, it is handled below for the focused connection.
-			GameState(Conn).Runtime().m_PlayerRecord = pMsg->m_PlayerTimeBest / 100.0f;
+			pMessageState->Runtime().m_PlayerRecord = pMsg->m_PlayerTimeBest / 100.0f;
 		}
 	}
 
@@ -1581,29 +1721,32 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 		for(i = 0; i < MAX_CLIENTS; i++)
 		{
 			const int Team = pUnpacker->GetInt();
-			GameState(Conn).SetTeam(i, !pUnpacker->Error() && Team >= TEAM_FLOCK && Team < NUM_DDRACE_TEAMS ? Team : TEAM_FLOCK);
+			pMessageState->SetTeam(i, !pUnpacker->Error() && Team >= TEAM_FLOCK && Team < NUM_DDRACE_TEAMS ? Team : TEAM_FLOCK);
 			if(pUnpacker->Error() || Team < TEAM_FLOCK || Team >= NUM_DDRACE_TEAMS)
 				break;
 		}
-		GameState(Conn).SetDDrace16(i <= 16);
-		if(Dummy)
+		pMessageState->SetDDrace16(i <= 16);
+		if(InactiveStream)
 			return;
 
-		m_Ghost.m_AllowRestart = true;
-		m_RaceDemo.m_AllowRestart = true;
+		if(Focused)
+		{
+			m_Ghost.m_AllowRestart = true;
+			m_RaceDemo.m_AllowRestart = true;
+		}
 		return;
 	}
 	// Keep prediction ordering current for every stream before inactive messages are filtered below.
 	if(MsgId == NETMSGTYPE_SV_KILLMSG)
 	{
 		const CNetMsg_Sv_KillMsg *pMsg = static_cast<const CNetMsg_Sv_KillMsg *>(pRawMsg);
-		if(!(GameState(Conn).CoreGameInfo().m_PredictFNG && pMsg->m_Weapon == WEAPON_LASER))
-			GameState(Conn).Runtime().m_CharOrder.GiveWeak(pMsg->m_Victim);
+		if(!(pMessageState->CoreGameInfo().m_PredictFNG && pMsg->m_Weapon == WEAPON_LASER))
+			pMessageState->Runtime().m_CharOrder.GiveWeak(pMsg->m_Victim);
 	}
 	else if(MsgId == NETMSGTYPE_SV_KILLMSGTEAM)
 	{
 		const CNetMsg_Sv_KillMsgTeam *pMsg = static_cast<const CNetMsg_Sv_KillMsgTeam *>(pRawMsg);
-		CGameState &State = GameState(Conn);
+		CGameState &State = *pMessageState;
 		std::vector<std::pair<int, int>> vStrongWeakSorted;
 		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 		{
@@ -1619,19 +1762,19 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 
 	if(MsgId == NETMSGTYPE_SV_BROADCAST)
 	{
-		if(!Dummy)
+		if(!InactiveStream)
 		{
 			const CNetMsg_Sv_Broadcast *pMsg = static_cast<const CNetMsg_Sv_Broadcast *>(pRawMsg);
-			m_Broadcast.DoBroadcast(pMsg->m_pMessage, Conn);
+			m_Broadcast.DoBroadcast(pMessageSession->Broadcast(), pMsg->m_pMessage, Client()->GameTick(SessionId, Conn), Client()->GameTickSpeed());
 		}
 		return;
 	}
 	if(MsgId == NETMSGTYPE_SV_MOTD)
 	{
-		if(!Dummy && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+		if(!InactiveStream && SessionId != Client()->DemoSessionId())
 		{
 			const CNetMsg_Sv_Motd *pMsg = static_cast<const CNetMsg_Sv_Motd *>(pRawMsg);
-			m_Motd.DoMotd(pMsg->m_pMessage);
+			m_Motd.DoMotd(*pMessageSession, pMsg->m_pMessage, Focused);
 		}
 		return;
 	}
@@ -1646,17 +1789,17 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	case NETMSGTYPE_SV_YOURVOTE:
 	case NETMSGTYPE_SV_VOTEOPTIONGROUPSTART:
 	case NETMSGTYPE_SV_VOTEOPTIONGROUPEND:
-		if(!Dummy && SessionId != Client()->DemoSessionId())
-			m_Voting.HandleMessage(pMessageSession->Vote(), CurrentPresentationTime(), time_freq(), Client()->RconAuthed(), MsgId, pRawMsg);
+		if(!InactiveStream && SessionId != Client()->DemoSessionId())
+			m_Voting.HandleMessage(pMessageSession->Vote(), MessageTime, time_freq(), Client()->RconAuthed(), MsgId, pRawMsg);
 		return;
 	}
 	if(MsgId == NETMSGTYPE_SV_EMOTICON)
 	{
 		const CNetMsg_Sv_Emoticon *pMsg = static_cast<const CNetMsg_Sv_Emoticon *>(pRawMsg);
-		pMessageState->ApplyEmoticon(pMsg->m_ClientId, pMsg->m_Emoticon, Client()->GameTick(Conn), Client()->IntraGameTickSincePrev(Conn));
+		pMessageState->ApplyEmoticon(pMsg->m_ClientId, pMsg->m_Emoticon, Client()->GameTick(SessionId, Conn), Client()->IntraGameTickSincePrev(SessionId, Conn));
 	}
 
-	if(Dummy)
+	if(InactiveStream)
 	{
 		const CGameState *pMainState = pMessageSession->GameStates().FindByStream(CStreamId(IClient::CONN_MAIN + 1));
 		const CGameState *pDummyState = pMessageSession->GameStates().FindByStream(CStreamId(IClient::CONN_DUMMY + 1));
@@ -1673,26 +1816,55 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 			const int DummyTeam = pDummyState->Client(DummyLocalId).m_HasPlayerInfo ? pDummyState->Client(DummyLocalId).m_PlayerInfo.m_Team : TEAM_SPECTATORS;
 			if((pMsg->m_Team == 1 && (MainTeam != DummyTeam || Teams.Team(MainLocalId) != Teams.Team(DummyLocalId))) || pMsg->m_Team > 1)
 			{
-				m_Chat.HandleMessage(*pMessageSession, *pMessageState, CurrentPresentationTime(), m_SuppressEvents, SessionId == Client()->DemoSessionId(), SessionId == Client()->FocusedSessionId(), MsgId, pRawMsg);
+				m_Chat.HandleMessage(*pMessageSession, *pMessageState, MessageTime, SuppressEvents, SessionId == Client()->DemoSessionId(), Focused, MsgId, pRawMsg);
 			}
 		}
 		return; // no need of all that stuff for the dummy
 	}
-	m_Chat.HandleMessage(*pMessageSession, *pMessageState, CurrentPresentationTime(), m_SuppressEvents, SessionId == Client()->DemoSessionId(), SessionId == Client()->FocusedSessionId(), MsgId, pRawMsg);
-	m_InfoMessages.HandleMessage(pMessageSession->InfoMessages(), *pMessageSession, *pMessageState, Client()->GameTick(Conn), m_SuppressEvents, MsgId, pRawMsg);
-	m_Statboard.HandleMessage(pMessageSession->Stats(), *pMessageState, m_SuppressEvents, MsgId, pRawMsg);
+	m_Chat.HandleMessage(*pMessageSession, *pMessageState, MessageTime, SuppressEvents, SessionId == Client()->DemoSessionId(), Focused, MsgId, pRawMsg);
+	m_InfoMessages.HandleMessage(pMessageSession->InfoMessages(), *pMessageSession, *pMessageState, Client()->GameTick(SessionId, Conn), SuppressEvents, MsgId, pRawMsg);
+	m_Statboard.HandleMessage(pMessageSession->Stats(), *pMessageState, SuppressEvents, MsgId, pRawMsg);
+	if(MsgId == NETMSGTYPE_SV_RECORD || MsgId == NETMSGTYPE_SV_RECORDLEGACY)
+	{
+		const CNetMsg_Sv_Record *pMsg = static_cast<const CNetMsg_Sv_Record *>(pRawMsg);
+		pMessageSession->MapMetadata().ApplyRecordBestTime(pMsg->m_ServerTimeBest);
+	}
+	else if(MsgId == NETMSGTYPE_SV_MAPINFO)
+	{
+		const CNetMsg_Sv_MapInfo *pMsg = static_cast<const CNetMsg_Sv_MapInfo *>(pRawMsg);
+		pMessageSession->MapMetadata().SetDescription(pMsg->m_pDescription);
+	}
+	else if(MsgId == NETMSGTYPE_SV_READYTOENTER)
+	{
+		Client()->EnterGame(SessionId, Conn);
+		return;
+	}
+	else if(MsgId == NETMSGTYPE_SV_MAPSOUNDGLOBAL)
+	{
+		if(!SuppressEvents && g_Config.m_SndGame)
+		{
+			const CNetMsg_Sv_MapSoundGlobal *pMsg = static_cast<const CNetMsg_Sv_MapSoundGlobal *>(pRawMsg);
+			SessionPresentation(SessionId).MapSounds().Play(CSounds::CHN_GLOBAL, pMsg->m_SoundId);
+		}
+		return;
+	}
+	else if(MsgId == NETMSGTYPE_SV_SAVECODE)
+	{
+		const CNetMsg_Sv_SaveCode *pMsg = static_cast<const CNetMsg_Sv_SaveCode *>(pRawMsg);
+		OnSaveCodeNetMessage(*pMessageSession, *pMessageState, pMsg);
+		return;
+	}
+
+	if(!Focused)
+		return;
 
 	// TODO: this should be done smarter
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnMessage(MsgId, pRawMsg);
 
-	if(MsgId == NETMSGTYPE_SV_READYTOENTER)
+	if(MsgId == NETMSGTYPE_SV_SOUNDGLOBAL)
 	{
-		Client()->EnterGame(Conn);
-	}
-	else if(MsgId == NETMSGTYPE_SV_SOUNDGLOBAL)
-	{
-		if(m_SuppressEvents)
+		if(SuppressEvents)
 			return;
 
 		// don't enqueue pseudo-global sounds from demos (created by PlayAndRecord)
@@ -1769,46 +1941,15 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 			}
 		}
 	}
-	else if(MsgId == NETMSGTYPE_SV_MAPSOUNDGLOBAL)
-	{
-		if(m_SuppressEvents)
-			return;
-
-		if(!g_Config.m_SndGame)
-			return;
-
-		CNetMsg_Sv_MapSoundGlobal *pMsg = (CNetMsg_Sv_MapSoundGlobal *)pRawMsg;
-		SessionPresentation(SessionId).MapSounds().Play(CSounds::CHN_GLOBAL, pMsg->m_SoundId);
-	}
 	else if(MsgId == NETMSGTYPE_SV_PREINPUT)
 	{
 		CNetMsg_Sv_PreInput *pMsg = (CNetMsg_Sv_PreInput *)pRawMsg;
 		m_aClients[pMsg->m_Owner].m_aPreInputs[pMsg->m_IntendedTick % 200] = *pMsg;
 	}
-	else if(MsgId == NETMSGTYPE_SV_SAVECODE)
-	{
-		const CNetMsg_Sv_SaveCode *pMsg = (CNetMsg_Sv_SaveCode *)pRawMsg;
-		OnSaveCodeNetMessage(*pMessageSession, *pMessageState, pMsg);
-	}
-	else if(MsgId == NETMSGTYPE_SV_RECORD || MsgId == NETMSGTYPE_SV_RECORDLEGACY)
-	{
-		const CNetMsg_Sv_Record *pMsg = static_cast<const CNetMsg_Sv_Record *>(pRawMsg);
-		SessionContext().MapMetadata().ApplyRecordBestTime(pMsg->m_ServerTimeBest);
-	}
-	else if(MsgId == NETMSGTYPE_SV_MAPINFO)
-	{
-		const CNetMsg_Sv_MapInfo *pMsg = static_cast<const CNetMsg_Sv_MapInfo *>(pRawMsg);
-		SessionContext().MapMetadata().SetDescription(pMsg->m_pDescription);
-	}
 }
 
 void CGameClient::OnStateChange(int NewState, int OldState)
 {
-	// reset everything when not already connected (to keep gathered stuff)
-	if(NewState < IClient::STATE_ONLINE)
-		OnReset();
-
-	// then change the state
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnStateChange(NewState, OldState);
 }
@@ -1822,8 +1963,9 @@ void CGameClient::OnShutdown()
 	m_LocalServer.KillServer();
 }
 
-void CGameClient::OnEnterGame()
+void CGameClient::OnEnterGame(CSessionId SessionId)
 {
+	(void)SessionId;
 }
 
 void CGameClient::OnGameOver()
@@ -1933,18 +2075,21 @@ void CGameClient::OnRconLine(const char *pLine)
 	m_GameConsole.PrintLine(CGameConsole::CONSOLETYPE_REMOTE, pLine);
 }
 
-void CGameClient::ProcessEvents(CSessionId SessionId)
+void CGameClient::ProcessEvents(CSessionId SessionId, int Conn)
 {
 	if(m_SuppressEvents)
 		return;
 
-	int SnapType = IClient::SNAP_CURRENT;
-	const int ActiveConn = Client()->ActiveConnection();
-	CGameState &State = GameState(ActiveConn);
-	int Num = Client()->SnapNumItems(ActiveConn, SnapType);
+	const int SnapType = IClient::SNAP_CURRENT;
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing event session context");
+	CGameState *pState = pSession->GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pState != nullptr, "missing event game state");
+	CGameState &State = *pState;
+	const int Num = Client()->SnapNumItems(SessionId, Conn, SnapType);
 	for(int Index = 0; Index < Num; Index++)
 	{
-		const IClient::CSnapItem Item = Client()->SnapGetItem(ActiveConn, SnapType, Index);
+		const IClient::CSnapItem Item = Client()->SnapGetItem(SessionId, Conn, SnapType, Index);
 
 		// TODO: We don't have enough info about us, others, to know a correct alpha or volume value.
 		const float Alpha = 1.0f;
@@ -1955,7 +2100,7 @@ void CGameClient::ProcessEvents(CSessionId SessionId)
 			const CNetEvent_DamageInd *pEvent = (const CNetEvent_DamageInd *)Item.m_pData;
 
 			vec2 DamageIndPos = vec2(pEvent->m_X, pEvent->m_Y);
-			if(!m_PredictedWorld.CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, DamageIndPos, -1, Client()->GameTick(ActiveConnection()), pEvent->m_Angle)))
+			if(!m_PredictedWorld.CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, DamageIndPos, -1, Client()->GameTick(SessionId, Conn), pEvent->m_Angle)))
 			{
 				m_Effects.DamageIndicator(State, vec2(pEvent->m_X, pEvent->m_Y), direction(pEvent->m_Angle / 256.0f), -1, Alpha);
 			}
@@ -1965,7 +2110,7 @@ void CGameClient::ProcessEvents(CSessionId SessionId)
 			const CNetEvent_Explosion *pEvent = (const CNetEvent_Explosion *)Item.m_pData;
 
 			vec2 ExplosionPos = vec2(pEvent->m_X, pEvent->m_Y);
-			if(!m_PredictedWorld.CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, ExplosionPos, -1, Client()->GameTick(ActiveConnection()))))
+			if(!m_PredictedWorld.CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, ExplosionPos, -1, Client()->GameTick(SessionId, Conn))))
 			{
 				m_Effects.Explosion(State, ExplosionPos, Alpha);
 			}
@@ -1975,7 +2120,7 @@ void CGameClient::ProcessEvents(CSessionId SessionId)
 			const CNetEvent_HammerHit *pEvent = (const CNetEvent_HammerHit *)Item.m_pData;
 
 			vec2 HammerHitPos = vec2(pEvent->m_X, pEvent->m_Y);
-			if(!m_PredictedWorld.CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, HammerHitPos, -1, Client()->GameTick(ActiveConnection()))))
+			if(!m_PredictedWorld.CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, HammerHitPos, -1, Client()->GameTick(SessionId, Conn))))
 			{
 				m_Effects.HammerHit(State, HammerHitPos, Alpha, Volume);
 			}
@@ -1998,7 +2143,7 @@ void CGameClient::ProcessEvents(CSessionId SessionId)
 		else if(Item.m_Type == NETEVENTTYPE_DEATH)
 		{
 			const CNetEvent_Death *pEvent = (const CNetEvent_Death *)Item.m_pData;
-			m_Effects.PlayerDeath(State, vec2(pEvent->m_X, pEvent->m_Y), pEvent->m_ClientId, Alpha);
+			m_Effects.PlayerDeath(SessionId, State, vec2(pEvent->m_X, pEvent->m_Y), pEvent->m_ClientId, Alpha);
 		}
 		else if(Item.m_Type == NETEVENTTYPE_SOUNDWORLD)
 		{
@@ -2006,11 +2151,11 @@ void CGameClient::ProcessEvents(CSessionId SessionId)
 			if(!Config()->m_SndGame)
 				continue;
 
-			if(FocusedGameInfo().m_RaceSounds && ((pEvent->m_SoundId == SOUND_GUN_FIRE && !g_Config.m_SndGun) || (pEvent->m_SoundId == SOUND_PLAYER_PAIN_LONG && !g_Config.m_SndLongPain)))
+			if(State.CoreGameInfo().m_RaceSounds && ((pEvent->m_SoundId == SOUND_GUN_FIRE && !g_Config.m_SndGun) || (pEvent->m_SoundId == SOUND_PLAYER_PAIN_LONG && !g_Config.m_SndLongPain)))
 				continue;
 
 			vec2 SoundPos = vec2(pEvent->m_X, pEvent->m_Y);
-			if(!m_PredictedWorld.CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, SoundPos, -1, Client()->GameTick(ActiveConnection()), pEvent->m_SoundId)))
+			if(!m_PredictedWorld.CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, SoundPos, -1, Client()->GameTick(SessionId, Conn), pEvent->m_SoundId)))
 			{
 				m_Sounds.PlayAt(CSounds::CHN_WORLD, pEvent->m_SoundId, 1.0f, SoundPos);
 			}
@@ -2208,13 +2353,15 @@ static CGameInfo GetGameInfo(const CNetObj_GameInfoEx *pInfoEx, int InfoExSize, 
 	return Info;
 }
 
-void CGameClient::InvalidateSnapshot()
+void CGameClient::InvalidateSnapshot(CSessionId SessionId)
 {
+	if(SessionId != Client()->FocusedSessionId())
+		return;
 	// clear all pointers
 	mem_zero(&m_Snap, sizeof(m_Snap));
 	m_Snap.m_SpecInfo.m_Zoom = 1.0f;
 	m_Snap.m_LocalClientId = -1;
-	SnapCollectEntities();
+	m_vSnapEntities.clear();
 }
 
 void CGameClient::OnNewSnapshot(CSessionId SessionId, int Conn)
@@ -2239,20 +2386,26 @@ void CGameClient::OnNewSnapshot(CSessionId SessionId, int Conn)
 	State.ApplySnapshot(*Client(), SessionId, Conn);
 	if(Conn == IClient::CONN_MAIN)
 		pSession->Stats().UpdateSnapshot(State, Client()->GameTick(SessionId, Conn));
-	if(SessionId == Client()->FocusedSessionId() && Conn == Client()->ActiveConnection())
-		ProcessSnapshot(SessionId);
+	if(SessionId == Client()->FocusedSessionId() && Conn == ActiveConnection())
+		ProcessSnapshot(SessionId, Conn);
 }
 
-void CGameClient::ProcessSnapshot(CSessionId SessionId)
+void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 {
-	const int ActiveConn = Client()->ActiveConnection();
-	CGameState &ActiveState = GameState(ActiveConn);
+	dbg_assert(SessionId == Client()->FocusedSessionId(), "legacy snapshot must belong to focused session");
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing legacy snapshot session context");
+	CGameState *pState = pSession->GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pState != nullptr, "missing legacy snapshot game state");
+	CGameSessionContext &Session = *pSession;
+	CGameState &ActiveState = *pState;
 	CGameState::CRuntimeState &Runtime = ActiveState.Runtime();
-	auto &&Evolve = [this](CNetObj_Character *pCharacter, int Tick) {
+	const bool NetworkSource = SessionId == Client()->NetworkSessionId();
+	auto &&Evolve = [this, &Session](CNetObj_Character *pCharacter, int Tick) {
 		CWorldCore TempWorld;
 		CCharacterCore TempCore = CCharacterCore();
 		CTeamsCore TempTeams = CTeamsCore();
-		TempCore.Init(&TempWorld, Collision(), &TempTeams);
+		TempCore.Init(&TempWorld, Session.MapContext().Collision(), &TempTeams);
 		TempCore.Read(pCharacter);
 		TempCore.m_ActiveWeapon = pCharacter->m_Weapon;
 
@@ -2267,15 +2420,15 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 		TempCore.Write(pCharacter);
 	};
 
-	InvalidateSnapshot();
+	InvalidateSnapshot(SessionId);
 
 	m_NewTick = true;
 
-	ProcessEvents(SessionId);
+	ProcessEvents(SessionId, Conn);
 
 	if(g_Config.m_DbgStress)
 	{
-		if((Client()->GameTick(ActiveConnection()) % 100) == 0)
+		if(NetworkSource && (Client()->GameTick(SessionId, Conn) % 100) == 0)
 		{
 			char aMessage[64];
 			int MsgLen = rand() % (sizeof(aMessage) - 1);
@@ -2287,7 +2440,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 		}
 	}
 
-	const CServerInfo &ServerInfo = Client()->ServerInfo();
+	const CServerInfo &ServerInfo = Client()->ServerInfo(SessionId);
 
 	bool GotSwitchStateTeam = false;
 	Runtime.m_SwitchStateTeam = -1;
@@ -2296,10 +2449,10 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 	{
 		m_Snap.m_aTeamSize[TEAM_RED] = m_Snap.m_aTeamSize[TEAM_BLUE] = 0;
 
-		int Num = Client()->SnapNumItems(ActiveConn, IClient::SNAP_CURRENT);
+		const int Num = Client()->SnapNumItems(SessionId, Conn, IClient::SNAP_CURRENT);
 		for(int i = 0; i < Num; i++)
 		{
-			const IClient::CSnapItem Item = Client()->SnapGetItem(ActiveConn, IClient::SNAP_CURRENT, i);
+			const IClient::CSnapItem Item = Client()->SnapGetItem(SessionId, Conn, IClient::SNAP_CURRENT, i);
 
 			if(Item.m_Type == NETOBJTYPE_CLIENTINFO)
 			{
@@ -2322,7 +2475,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 
 					IntsToStr(pInfo->m_aSkin, std::size(pInfo->m_aSkin), pClient->m_aSkinName, std::size(pClient->m_aSkinName));
 					if(!CSkin::IsValidName(pClient->m_aSkinName) ||
-						(!FocusedGameInfo().m_AllowXSkins && CSkins::IsSpecialSkin(pClient->m_aSkinName)))
+						(!ActiveState.CoreGameInfo().m_AllowXSkins && CSkins::IsSpecialSkin(pClient->m_aSkinName)))
 					{
 						str_copy(pClient->m_aSkinName, "default");
 					}
@@ -2341,7 +2494,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 					m_aClients[pInfo->m_ClientId].m_Team = pInfo->m_Team;
 					m_aClients[pInfo->m_ClientId].m_Active = true;
 					m_Snap.m_apPlayerInfos[pInfo->m_ClientId] = pInfo;
-					m_Snap.m_apPrevPlayerInfos[pInfo->m_ClientId] = static_cast<const CNetObj_PlayerInfo *>(Client()->SnapFindItem(ActiveConn, IClient::SNAP_PREV, Item.m_Type, pInfo->m_ClientId));
+					m_Snap.m_apPrevPlayerInfos[pInfo->m_ClientId] = static_cast<const CNetObj_PlayerInfo *>(Client()->SnapFindItem(SessionId, Conn, IClient::SNAP_PREV, Item.m_Type, pInfo->m_ClientId));
 					m_Snap.m_NumPlayers++;
 
 					if(pInfo->m_Local)
@@ -2368,7 +2521,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 			{
 				if(Item.m_Id < MAX_CLIENTS)
 				{
-					const void *pOld = Client()->SnapFindItem(ActiveConn, IClient::SNAP_PREV, NETOBJTYPE_CHARACTER, Item.m_Id);
+					const void *pOld = Client()->SnapFindItem(SessionId, Conn, IClient::SNAP_PREV, NETOBJTYPE_CHARACTER, Item.m_Id);
 					m_Snap.m_aCharacters[Item.m_Id].m_Cur = *((const CNetObj_Character *)Item.m_pData);
 					if(pOld)
 					{
@@ -2376,11 +2529,11 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 						m_Snap.m_aCharacters[Item.m_Id].m_Prev = *((const CNetObj_Character *)pOld);
 
 						// limit evolving to 3 seconds
-						bool EvolvePrev = Client()->PrevGameTick(ActiveConnection()) - m_Snap.m_aCharacters[Item.m_Id].m_Prev.m_Tick <= 3 * Client()->GameTickSpeed();
-						bool EvolveCur = Client()->GameTick(ActiveConnection()) - m_Snap.m_aCharacters[Item.m_Id].m_Cur.m_Tick <= 3 * Client()->GameTickSpeed();
+						bool EvolvePrev = Client()->PrevGameTick(SessionId, Conn) - m_Snap.m_aCharacters[Item.m_Id].m_Prev.m_Tick <= 3 * Client()->GameTickSpeed();
+						bool EvolveCur = Client()->GameTick(SessionId, Conn) - m_Snap.m_aCharacters[Item.m_Id].m_Cur.m_Tick <= 3 * Client()->GameTickSpeed();
 
 						// reuse the result from the previous evolve if the snapped character didn't change since the previous snapshot
-						if(EvolveCur && m_aClients[Item.m_Id].m_Evolved.m_Tick == Client()->PrevGameTick(ActiveConnection()))
+						if(EvolveCur && m_aClients[Item.m_Id].m_Evolved.m_Tick == Client()->PrevGameTick(SessionId, Conn))
 						{
 							if(mem_comp(&m_Snap.m_aCharacters[Item.m_Id].m_Prev, &m_aClients[Item.m_Id].m_Snapped, sizeof(CNetObj_Character)) == 0)
 								m_Snap.m_aCharacters[Item.m_Id].m_Prev = m_aClients[Item.m_Id].m_Evolved;
@@ -2389,9 +2542,9 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 						}
 
 						if(EvolvePrev && m_Snap.m_aCharacters[Item.m_Id].m_Prev.m_Tick)
-							Evolve(&m_Snap.m_aCharacters[Item.m_Id].m_Prev, Client()->PrevGameTick(ActiveConnection()));
+							Evolve(&m_Snap.m_aCharacters[Item.m_Id].m_Prev, Client()->PrevGameTick(SessionId, Conn));
 						if(EvolveCur && m_Snap.m_aCharacters[Item.m_Id].m_Cur.m_Tick)
-							Evolve(&m_Snap.m_aCharacters[Item.m_Id].m_Cur, Client()->GameTick(ActiveConnection()));
+							Evolve(&m_Snap.m_aCharacters[Item.m_Id].m_Cur, Client()->GameTick(SessionId, Conn));
 
 						m_aClients[Item.m_Id].m_Snapped = *((const CNetObj_Character *)Item.m_pData);
 						m_aClients[Item.m_Id].m_Evolved = m_Snap.m_aCharacters[Item.m_Id].m_Cur;
@@ -2409,7 +2562,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 				if(Item.m_Id < MAX_CLIENTS)
 				{
 					m_Snap.m_aCharacters[Item.m_Id].m_ExtendedData = *pCharacterData;
-					m_Snap.m_aCharacters[Item.m_Id].m_pPrevExtendedData = (const CNetObj_DDNetCharacter *)Client()->SnapFindItem(ActiveConn, IClient::SNAP_PREV, NETOBJTYPE_DDNETCHARACTER, Item.m_Id);
+					m_Snap.m_aCharacters[Item.m_Id].m_pPrevExtendedData = (const CNetObj_DDNetCharacter *)Client()->SnapFindItem(SessionId, Conn, IClient::SNAP_PREV, NETOBJTYPE_DDNETCHARACTER, Item.m_Id);
 					m_Snap.m_aCharacters[Item.m_Id].m_HasExtendedData = true;
 					m_Snap.m_aCharacters[Item.m_Id].m_HasExtendedDisplayInfo = false;
 					if(pCharacterData->m_JumpedTotal != -1)
@@ -2422,11 +2575,11 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 			else if(Item.m_Type == NETOBJTYPE_SPECTATORINFO)
 			{
 				m_Snap.m_pSpectatorInfo = (const CNetObj_SpectatorInfo *)Item.m_pData;
-				m_Snap.m_pPrevSpectatorInfo = (const CNetObj_SpectatorInfo *)Client()->SnapFindItem(ActiveConn, IClient::SNAP_PREV, NETOBJTYPE_SPECTATORINFO, Item.m_Id);
+				m_Snap.m_pPrevSpectatorInfo = (const CNetObj_SpectatorInfo *)Client()->SnapFindItem(SessionId, Conn, IClient::SNAP_PREV, NETOBJTYPE_SPECTATORINFO, Item.m_Id);
 
 				// needed for 0.7 survival
 				// to auto spec players when dead
-				if(Client()->IsSixup())
+				if(Client()->IsSixup(SessionId))
 					m_Snap.m_SpecInfo.m_Active = true;
 				m_Snap.m_SpecInfo.m_SpectatorId = m_Snap.m_pSpectatorInfo->m_SpectatorId;
 			}
@@ -2462,11 +2615,11 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 			else if(Item.m_Type == NETOBJTYPE_GAMEDATA)
 			{
 				m_Snap.m_pGameDataObj = static_cast<const CNetObj_GameData *>(Item.m_pData);
-				m_Snap.m_pPrevGameDataObj = static_cast<const CNetObj_GameData *>(Client()->SnapFindItem(ActiveConn, IClient::SNAP_PREV, Item.m_Type, Item.m_Id));
+				m_Snap.m_pPrevGameDataObj = static_cast<const CNetObj_GameData *>(Client()->SnapFindItem(SessionId, Conn, IClient::SNAP_PREV, Item.m_Type, Item.m_Id));
 				if(m_Snap.m_pGameDataObj->m_FlagCarrierRed == FLAG_TAKEN)
 				{
 					if(Runtime.m_aFlagDropTick[TEAM_RED] == 0)
-						Runtime.m_aFlagDropTick[TEAM_RED] = Client()->GameTick(ActiveConnection());
+						Runtime.m_aFlagDropTick[TEAM_RED] = Client()->GameTick(SessionId, Conn);
 				}
 				else
 				{
@@ -2475,7 +2628,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 				if(m_Snap.m_pGameDataObj->m_FlagCarrierBlue == FLAG_TAKEN)
 				{
 					if(Runtime.m_aFlagDropTick[TEAM_BLUE] == 0)
-						Runtime.m_aFlagDropTick[TEAM_BLUE] = Client()->GameTick(ActiveConnection());
+						Runtime.m_aFlagDropTick[TEAM_BLUE] = Client()->GameTick(SessionId, Conn);
 				}
 				else
 				{
@@ -2486,7 +2639,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 			}
 			else if(Item.m_Type == NETOBJTYPE_FLAG)
 			{
-				const CNetObj_Flag *pPrevFlag = static_cast<const CNetObj_Flag *>(Client()->SnapFindItem(ActiveConn, IClient::SNAP_PREV, Item.m_Type, Item.m_Id));
+				const CNetObj_Flag *pPrevFlag = static_cast<const CNetObj_Flag *>(Client()->SnapFindItem(SessionId, Conn, IClient::SNAP_PREV, Item.m_Type, Item.m_Id));
 				if(pPrevFlag == nullptr)
 				{
 					continue;
@@ -2504,11 +2657,11 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 				const CNetObj_SwitchState *pSwitchStateData = (const CNetObj_SwitchState *)Item.m_pData;
 				int Team = std::clamp(Item.m_Id, (int)TEAM_FLOCK, NUM_DDRACE_TEAMS - 1);
 
-				int HighestSwitchNumber = std::clamp(std::max(pSwitchStateData->m_HighestSwitchNumber, Collision()->m_HighestSwitchNumber), 0, 255);
+				int HighestSwitchNumber = std::clamp(std::max(pSwitchStateData->m_HighestSwitchNumber, Session.MapContext().Collision()->m_HighestSwitchNumber), 0, 255);
 				if(HighestSwitchNumber != std::max(0, (int)Switchers().size() - 1))
 				{
 					m_GameWorld.m_Core.InitSwitchers(HighestSwitchNumber);
-					Collision()->m_HighestSwitchNumber = HighestSwitchNumber;
+					Session.MapContext().Collision()->m_HighestSwitchNumber = HighestSwitchNumber;
 				}
 
 				for(int j = 0; j < (int)Switchers().size(); j++)
@@ -2548,7 +2701,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 			else if(Item.m_Type == NETOBJTYPE_MAPBESTTIME)
 			{
 				const CNetObj_MapBestTime *pMapBestTimeData = static_cast<const CNetObj_MapBestTime *>(Item.m_pData);
-				SessionContext().MapMetadata().ApplyBestTime(pMapBestTimeData->m_MapBestTimeSeconds, pMapBestTimeData->m_MapBestTimeMillis);
+				Session.MapMetadata().ApplyBestTime(pMapBestTimeData->m_MapBestTimeSeconds, pMapBestTimeData->m_MapBestTimeMillis);
 			}
 		}
 	}
@@ -2579,18 +2732,18 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 				m_LocalCharacterPos = vec2(m_Snap.m_pLocalCharacter->m_X, m_Snap.m_pLocalCharacter->m_Y);
 			}
 		}
-		else if(Client()->SnapFindItem(ActiveConn, IClient::SNAP_PREV, NETOBJTYPE_CHARACTER, m_Snap.m_LocalClientId))
+		else if(Client()->SnapFindItem(SessionId, Conn, IClient::SNAP_PREV, NETOBJTYPE_CHARACTER, m_Snap.m_LocalClientId))
 		{
 			// player died
-			m_Controls.OnPlayerDeath();
+			ActiveState.Input().m_aAmmoCount.fill(0);
 		}
 	}
-	if(Client()->IsDemoPlayback())
+	if(SessionId == Client()->DemoSessionId())
 	{
 		if(m_Snap.m_LocalClientId == -1 && m_DemoSpecId == SPEC_FOLLOW)
 		{
 			// TODO: can this be done in the translation layer?
-			if(!Client()->IsSixup())
+			if(!Client()->IsSixup(SessionId))
 				m_DemoSpecId = SPEC_FREEVIEW;
 		}
 		if(m_DemoSpecId != SPEC_FOLLOW)
@@ -2603,7 +2756,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 		}
 	}
 	LegacyGameView().SetSpectator(m_Snap.m_SpecInfo.m_Active, m_Snap.m_SpecInfo.m_SpectatorId);
-	if(Client()->IsDemoPlayback())
+	if(SessionId == Client()->DemoSessionId())
 		LegacyGameView().SetSpectatorMode(m_DemoSpecId);
 
 	// clear out unneeded client data
@@ -2615,7 +2768,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 		}
 	}
 
-	if(Client()->IsOnline())
+	if(NetworkSource)
 	{
 		m_pDiscord->UpdatePlayerCount(m_Snap.m_NumPlayers);
 	}
@@ -2640,8 +2793,8 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 			return str_comp_nocase(m_aClients[pPlayer1->m_ClientId].m_aName, m_aClients[pPlayer2->m_ClientId].m_aName) < 0;
 		});
 
-	bool TimeScore = FocusedGameInfo().m_TimeScore;
-	bool Race7 = Client()->IsSixup() && m_Snap.m_pGameInfoObj && m_Snap.m_pGameInfoObj->m_GameFlags & protocol7::GAMEFLAG_RACE;
+	bool TimeScore = ActiveState.CoreGameInfo().m_TimeScore;
+	bool Race7 = Client()->IsSixup(SessionId) && m_Snap.m_pGameInfoObj && m_Snap.m_pGameInfoObj->m_GameFlags & protocol7::GAMEFLAG_RACE;
 
 	// sort player infos by score
 	mem_copy(m_Snap.m_apInfoByScore, m_Snap.m_apInfoByName, sizeof(m_Snap.m_apInfoByScore));
@@ -2672,7 +2825,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 	{
 		for(int i = 0; i < MAX_CLIENTS && Index < MAX_CLIENTS; ++i)
 		{
-			if(m_Snap.m_apInfoByScore[i] && FocusedTeams().Team(m_Snap.m_apInfoByScore[i]->m_ClientId) == Team)
+			if(m_Snap.m_apInfoByScore[i] && ActiveState.Teams().Team(m_Snap.m_apInfoByScore[i]->m_ClientId) == Team)
 				m_Snap.m_apInfoByDDTeamScore[Index++] = m_Snap.m_apInfoByScore[i];
 		}
 	}
@@ -2683,7 +2836,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 	{
 		for(int i = 0; i < MAX_CLIENTS && Index < MAX_CLIENTS; ++i)
 		{
-			if(m_Snap.m_apInfoByName[i] && FocusedTeams().Team(m_Snap.m_apInfoByName[i]->m_ClientId) == Team)
+			if(m_Snap.m_apInfoByName[i] && ActiveState.Teams().Team(m_Snap.m_apInfoByName[i]->m_ClientId) == Team)
 				m_Snap.m_apInfoByDDTeamName[Index++] = m_Snap.m_apInfoByName[i];
 		}
 	}
@@ -2698,118 +2851,147 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 			Runtime.m_ServerMode = CGameState::SERVERMODE_PUREMOD;
 	}
 
-	// add tuning to demo when new recording was started, because server tune message was already received before
-	std::bitset<RECORDER_MAX> CurrentRecordings;
-	for(int i = 0; i < RECORDER_MAX; i++)
+	if(NetworkSource)
 	{
-		if(DemoRecorder(i)->IsRecording())
+		// add tuning to demo when new recording was started, because server tune message was already received before
+		std::bitset<RECORDER_MAX> CurrentRecordings;
+		for(int i = 0; i < RECORDER_MAX; i++)
 		{
-			CurrentRecordings.set(i);
+			if(DemoRecorder(i)->IsRecording())
+			{
+				CurrentRecordings.set(i);
+			}
 		}
-	}
-	const bool HasNewRecordings = (CurrentRecordings & ~m_ActiveRecordings).any();
-	m_ActiveRecordings = CurrentRecordings;
-	if(HasNewRecordings)
-	{
-		CMsgPacker Msg(NETMSGTYPE_SV_TUNEPARAMS);
-		int *pParams = (int *)&Runtime.m_CurrentTuning;
-		for(unsigned i = 0; i < sizeof(Runtime.m_CurrentTuning) / sizeof(int); i++)
-			Msg.AddInt(pParams[i]);
-		Client()->SendMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_RECORD | MSGFLAG_NOSEND);
-	}
-
-	for(const auto &pState : SessionContext().GameStates().States())
-	{
-		const int Conn = (int)pState->StreamId().Value() - 1;
-		if(pState->Runtime().m_DDRaceMsgSent || !m_Snap.m_pLocalInfo)
+		const bool HasNewRecordings = (CurrentRecordings & ~m_ActiveRecordings).any();
+		m_ActiveRecordings = CurrentRecordings;
+		if(HasNewRecordings)
 		{
-			continue;
+			CMsgPacker Msg(NETMSGTYPE_SV_TUNEPARAMS);
+			int *pParams = (int *)&Runtime.m_CurrentTuning;
+			for(unsigned i = 0; i < sizeof(Runtime.m_CurrentTuning) / sizeof(int); i++)
+				Msg.AddInt(pParams[i]);
+			Client()->SendMsg(Conn, &Msg, MSGFLAG_RECORD | MSGFLAG_NOSEND);
 		}
-		if(Conn == IClient::CONN_DUMMY && !Client()->DummyConnected())
+
+		for(const auto &pSessionState : Session.GameStates().States())
 		{
-			continue;
+			const int SessionConn = (int)pSessionState->StreamId().Value() - 1;
+			if(pSessionState->Runtime().m_DDRaceMsgSent || !m_Snap.m_pLocalInfo)
+				continue;
+			if(SessionConn == IClient::CONN_DUMMY && !Client()->DummyConnected())
+				continue;
+			CMsgPacker Msg(NETMSGTYPE_CL_ISDDNETLEGACY, false);
+			Msg.AddInt(DDNetVersion());
+			Client()->SendMsg(SessionConn, &Msg, MSGFLAG_VITAL);
+			pSessionState->Runtime().m_DDRaceMsgSent = true;
 		}
-		CMsgPacker Msg(NETMSGTYPE_CL_ISDDNETLEGACY, false);
-		Msg.AddInt(DDNetVersion());
-		Client()->SendMsg(Conn, &Msg, MSGFLAG_VITAL);
-		pState->Runtime().m_DDRaceMsgSent = true;
-	}
 
-	if(m_Snap.m_SpecInfo.m_Active && MultiView().m_Active)
-	{
-		// dont show other teams while spectating in multi view
-		CNetMsg_Cl_ShowOthers Msg;
-		Msg.m_Show = SHOW_OTHERS_ONLY_TEAM;
-		Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL);
+		if(m_Snap.m_SpecInfo.m_Active && MultiView().m_Active)
+		{
+			// dont show other teams while spectating in multi view
+			CNetMsg_Cl_ShowOthers Msg;
+			Msg.m_Show = SHOW_OTHERS_ONLY_TEAM;
+			Client()->SendPackMsg(Conn, &Msg, MSGFLAG_VITAL);
 
-		// update state
-		Runtime.m_ShowOthers = SHOW_OTHERS_ONLY_TEAM;
-	}
-	else if(Runtime.m_ShowOthers == SHOW_OTHERS_NOT_SET || Runtime.m_ShowOthers != g_Config.m_ClShowOthers)
-	{
+			// update state
+			Runtime.m_ShowOthers = SHOW_OTHERS_ONLY_TEAM;
+		}
+		else if(Runtime.m_ShowOthers == SHOW_OTHERS_NOT_SET || Runtime.m_ShowOthers != g_Config.m_ClShowOthers)
 		{
 			CNetMsg_Cl_ShowOthers Msg;
 			Msg.m_Show = g_Config.m_ClShowOthers;
-			Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL);
+			Client()->SendPackMsg(Conn, &Msg, MSGFLAG_VITAL);
+
+			// update state
+			Runtime.m_ShowOthers = g_Config.m_ClShowOthers;
 		}
 
-		// update state
-		Runtime.m_ShowOthers = g_Config.m_ClShowOthers;
-	}
+		CGameState *pMainState = Session.GameStates().FindByStream(CStreamId(IClient::CONN_MAIN + 1));
+		CGameState *pDummyState = Session.GameStates().FindByStream(CStreamId(IClient::CONN_DUMMY + 1));
+		dbg_assert(pMainState != nullptr && pDummyState != nullptr, "missing Network game states");
+		CGameState::CRuntimeState &MainRuntime = pMainState->Runtime();
+		if(MainRuntime.m_EnableSpectatorCount == -1 || MainRuntime.m_EnableSpectatorCount != g_Config.m_ClShowhudSpectatorCount)
+		{
+			CNetMsg_Cl_EnableSpectatorCount Msg;
+			Msg.m_Enable = g_Config.m_ClShowhudSpectatorCount;
+			Client()->SendPackMsg(IClient::CONN_MAIN, &Msg, MSGFLAG_VITAL);
+			MainRuntime.m_EnableSpectatorCount = g_Config.m_ClShowhudSpectatorCount;
+		}
+		CGameState::CRuntimeState &DummyRuntime = pDummyState->Runtime();
+		if(Client()->DummyConnected() && (DummyRuntime.m_EnableSpectatorCount == -1 || DummyRuntime.m_EnableSpectatorCount != g_Config.m_ClShowhudSpectatorCount))
+		{
+			CNetMsg_Cl_EnableSpectatorCount Msg;
+			Msg.m_Enable = g_Config.m_ClShowhudSpectatorCount;
+			Client()->SendPackMsg(IClient::CONN_DUMMY, &Msg, MSGFLAG_VITAL);
+			DummyRuntime.m_EnableSpectatorCount = g_Config.m_ClShowhudSpectatorCount;
+		}
 
-	CGameState::CRuntimeState &MainRuntime = GameState(IClient::CONN_MAIN).Runtime();
-	if(MainRuntime.m_EnableSpectatorCount == -1 || MainRuntime.m_EnableSpectatorCount != g_Config.m_ClShowhudSpectatorCount)
-	{
-		CNetMsg_Cl_EnableSpectatorCount Msg;
-		Msg.m_Enable = g_Config.m_ClShowhudSpectatorCount;
-		Client()->SendPackMsg(0, &Msg, MSGFLAG_VITAL);
-		MainRuntime.m_EnableSpectatorCount = g_Config.m_ClShowhudSpectatorCount;
-	}
-	CGameState::CRuntimeState &DummyRuntime = GameState(IClient::CONN_DUMMY).Runtime();
-	if(Client()->DummyConnected() && (DummyRuntime.m_EnableSpectatorCount == -1 || DummyRuntime.m_EnableSpectatorCount != g_Config.m_ClShowhudSpectatorCount))
-	{
-		CNetMsg_Cl_EnableSpectatorCount Msg;
-		Msg.m_Enable = g_Config.m_ClShowhudSpectatorCount;
-		Client()->SendPackMsg(1, &Msg, MSGFLAG_VITAL);
-		DummyRuntime.m_EnableSpectatorCount = g_Config.m_ClShowhudSpectatorCount;
-	}
+		float ShowDistanceZoom = m_Camera.Zoom();
+		float Zoom = m_Camera.Zoom();
+		if(m_Camera.IsZooming())
+		{
+			if(m_Camera.ZoomSmoothingTarget() > m_Camera.Zoom()) // Zooming out
+				ShowDistanceZoom = m_Camera.ZoomSmoothingTarget();
+			else if(m_Camera.ZoomSmoothingTarget() < m_Camera.Zoom() && m_LastShowDistanceZoom > 0) // Zooming in
+				ShowDistanceZoom = m_LastShowDistanceZoom;
 
-	float ShowDistanceZoom = m_Camera.Zoom();
-	float Zoom = m_Camera.Zoom();
-	if(m_Camera.IsZooming())
-	{
-		if(m_Camera.ZoomSmoothingTarget() > m_Camera.Zoom()) // Zooming out
-			ShowDistanceZoom = m_Camera.ZoomSmoothingTarget();
-		else if(m_Camera.ZoomSmoothingTarget() < m_Camera.Zoom() && m_LastShowDistanceZoom > 0) // Zooming in
-			ShowDistanceZoom = m_LastShowDistanceZoom;
+			Zoom = m_Camera.ZoomSmoothingTarget();
+		}
 
-		Zoom = m_Camera.ZoomSmoothingTarget();
-	}
+		float Deadzone = m_Camera.Deadzone();
+		float FollowFactor = m_Camera.FollowFactor();
 
-	float Deadzone = m_Camera.Deadzone();
-	float FollowFactor = m_Camera.FollowFactor();
+		if(m_Snap.m_SpecInfo.m_Active)
+		{
+			// don't send camera information when spectating
+			Zoom = m_LastZoom;
+			Deadzone = m_LastDeadzone;
+			FollowFactor = m_LastFollowFactor;
+		}
 
-	if(m_Snap.m_SpecInfo.m_Active)
-	{
-		// don't send camera information when spectating
-		Zoom = m_LastZoom;
-		Deadzone = m_LastDeadzone;
-		FollowFactor = m_LastFollowFactor;
-	}
+		// initialize dummy vital when first connected
+		if(Client()->DummyConnected() && !m_LastDummyConnected)
+		{
+			{
+				CNetMsg_Cl_ShowDistance Msg;
+				float x, y;
+				Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), ShowDistanceZoom, &x, &y);
+				Msg.m_X = x;
+				Msg.m_Y = y;
+				CMsgPacker Packer(&Msg);
+				Msg.Pack(&Packer);
+				Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
+			}
+			{
+				CNetMsg_Cl_CameraInfo Msg;
+				Msg.m_Zoom = round_truncate(Zoom * 1000.f);
+				Msg.m_Deadzone = Deadzone;
+				Msg.m_FollowFactor = FollowFactor;
+				CMsgPacker Packer(&Msg);
+				Msg.Pack(&Packer);
+				Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
+			}
+		}
 
-	// initialize dummy vital when first connected
-	if(Client()->DummyConnected() && !m_LastDummyConnected)
-	{
+		// send show distance
+		if(ShowDistanceZoom != m_LastShowDistanceZoom || Graphics()->ScreenAspect() != m_LastScreenAspect)
 		{
 			CNetMsg_Cl_ShowDistance Msg;
 			float x, y;
 			Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), ShowDistanceZoom, &x, &y);
 			Msg.m_X = x;
 			Msg.m_Y = y;
+			Client()->ChecksumData()->m_Zoom = ShowDistanceZoom;
 			CMsgPacker Packer(&Msg);
 			Msg.Pack(&Packer);
-			Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
+
+			Client()->SendMsg(IClient::CONN_MAIN, &Packer, MSGFLAG_VITAL);
+			if(Client()->DummyConnected() && m_LastDummyConnected)
+				Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
 		}
+
+		// send camera info
+		if(Zoom != m_LastZoom || Deadzone != m_LastDeadzone || FollowFactor != m_LastFollowFactor)
 		{
 			CNetMsg_Cl_CameraInfo Msg;
 			Msg.m_Zoom = round_truncate(Zoom * 1000.f);
@@ -2817,48 +2999,19 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 			Msg.m_FollowFactor = FollowFactor;
 			CMsgPacker Packer(&Msg);
 			Msg.Pack(&Packer);
-			Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
+
+			Client()->SendMsg(IClient::CONN_MAIN, &Packer, MSGFLAG_VITAL);
+			if(Client()->DummyConnected() && m_LastDummyConnected)
+				Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
 		}
+
+		m_LastShowDistanceZoom = ShowDistanceZoom;
+		m_LastZoom = Zoom;
+		m_LastScreenAspect = Graphics()->ScreenAspect();
+		m_LastDeadzone = Deadzone;
+		m_LastFollowFactor = FollowFactor;
+		m_LastDummyConnected = Client()->DummyConnected();
 	}
-
-	// send show distance
-	if(ShowDistanceZoom != m_LastShowDistanceZoom || Graphics()->ScreenAspect() != m_LastScreenAspect)
-	{
-		CNetMsg_Cl_ShowDistance Msg;
-		float x, y;
-		Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), ShowDistanceZoom, &x, &y);
-		Msg.m_X = x;
-		Msg.m_Y = y;
-		Client()->ChecksumData()->m_Zoom = ShowDistanceZoom;
-		CMsgPacker Packer(&Msg);
-		Msg.Pack(&Packer);
-
-		Client()->SendMsg(IClient::CONN_MAIN, &Packer, MSGFLAG_VITAL);
-		if(Client()->DummyConnected() && m_LastDummyConnected)
-			Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
-	}
-
-	// send camera info
-	if(Zoom != m_LastZoom || Deadzone != m_LastDeadzone || FollowFactor != m_LastFollowFactor)
-	{
-		CNetMsg_Cl_CameraInfo Msg;
-		Msg.m_Zoom = round_truncate(Zoom * 1000.f);
-		Msg.m_Deadzone = Deadzone;
-		Msg.m_FollowFactor = FollowFactor;
-		CMsgPacker Packer(&Msg);
-		Msg.Pack(&Packer);
-
-		Client()->SendMsg(IClient::CONN_MAIN, &Packer, MSGFLAG_VITAL);
-		if(Client()->DummyConnected() && m_LastDummyConnected)
-			Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
-	}
-
-	m_LastShowDistanceZoom = ShowDistanceZoom;
-	m_LastZoom = Zoom;
-	m_LastScreenAspect = Graphics()->ScreenAspect();
-	m_LastDeadzone = Deadzone;
-	m_LastFollowFactor = FollowFactor;
-	m_LastDummyConnected = Client()->DummyConnected();
 
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnNewSnapshot();
@@ -2871,17 +3024,18 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 	{
 		if(m_Snap.m_aCharacters[i].m_Active && (m_Snap.m_aCharacters[i].m_Cur.m_Jumped & 2) && !(m_Snap.m_aCharacters[i].m_Prev.m_Jumped & 2))
 		{
-			bool IsDummy = Client()->DummyConnected() && i == GameState(OtherConnection()).LocalClientId();
+			const CGameState *pOtherState = NetworkSource ? Session.GameStates().FindByStream(CStreamId((Conn == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN) + 1)) : nullptr;
+			bool IsDummy = pOtherState != nullptr && Client()->DummyConnected() && i == pOtherState->LocalClientId();
 			bool IsLocalPlayer = i == m_Snap.m_LocalClientId;
 
 			if(!Predict() || (!IsLocalPlayer && !AntiPingPlayers()) || (!IsLocalPlayer && !IsDummy))
 			{
 				vec2 Pos = mix(vec2(m_Snap.m_aCharacters[i].m_Prev.m_X, m_Snap.m_aCharacters[i].m_Prev.m_Y),
 					vec2(m_Snap.m_aCharacters[i].m_Cur.m_X, m_Snap.m_aCharacters[i].m_Cur.m_Y),
-					Client()->IntraGameTick(ActiveConnection()));
+					Client()->IntraGameTick(SessionId, Conn));
 				const float Volume = 1.0f; // TODO snd_game_volume_others
 
-				const bool Grounded = Collision()->IsOnGround(vec2(m_Snap.m_aCharacters[i].m_Prev.m_X, m_Snap.m_aCharacters[i].m_Prev.m_Y), CCharacterCore::PhysicalSize());
+				const bool Grounded = Session.MapContext().Collision()->IsOnGround(vec2(m_Snap.m_aCharacters[i].m_Prev.m_X, m_Snap.m_aCharacters[i].m_Prev.m_Y), CCharacterCore::PhysicalSize());
 				if(!Grounded)
 				{
 					m_Effects.AirJump(ActiveState, Pos, i, 1.0f, Volume);
@@ -2897,8 +3051,8 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 			auto &Character = m_Snap.m_aCharacters[ClientId];
 			if(Character.m_Active && Character.m_HasExtendedData && Character.m_pPrevExtendedData)
 			{
-				int FreezeTimeNow = Character.m_ExtendedData.m_FreezeEnd - Client()->GameTick(ActiveConnection());
-				int FreezeTimePrev = Character.m_pPrevExtendedData->m_FreezeEnd - Client()->PrevGameTick(ActiveConnection());
+				int FreezeTimeNow = Character.m_ExtendedData.m_FreezeEnd - Client()->GameTick(SessionId, Conn);
+				int FreezeTimePrev = Character.m_pPrevExtendedData->m_FreezeEnd - Client()->PrevGameTick(SessionId, Conn);
 				vec2 Pos = vec2(Character.m_Cur.m_X, Character.m_Cur.m_Y);
 				int StarsNow = (FreezeTimeNow + 1) / Client()->GameTickSpeed();
 				int StarsPrev = (FreezeTimePrev + 1) / Client()->GameTickSpeed();
@@ -2919,8 +3073,8 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 	}
 
 	// Record m_LastRaceTick for g_Config.m_ClConfirmDisconnect/QuitTime
-	if(FocusedGameInfo().m_Race &&
-		Client()->IsOnline() &&
+	if(ActiveState.CoreGameInfo().m_Race &&
+		NetworkSource &&
 		m_Snap.m_pGameInfoObj &&
 		!m_Snap.m_SpecInfo.m_Active &&
 		m_Snap.m_pLocalCharacter &&
@@ -2930,11 +3084,11 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 		Runtime.m_LastRaceTick = RaceFlag ? -m_Snap.m_pGameInfoObj->m_WarmupTimer : -1;
 	}
 
-	SnapCollectEntities(); // creates a collection that associates EntityEx snap items with the entities they belong to
+	SnapCollectEntities(SessionId, Conn); // creates a collection that associates EntityEx snap items with the entities they belong to
 
-	UpdateLocalTuning();
+	UpdateLocalTuning(SessionId, Session, ActiveState, Conn);
 	m_PreviousFocusedStream.reset();
-	if(!Client()->IsDemoPlayback())
+	if(NetworkSource)
 		UpdatePrediction();
 }
 
@@ -3039,16 +3193,22 @@ void CGameClient::ApplyPreInputs(int Tick, bool Direct, CGameWorld &GameWorld)
 	}
 }
 
-void CGameClient::OnPredict(int Conn)
+void CGameClient::OnPredict(CSessionId SessionId, int Conn)
 {
-	GameState(Conn).Predict(*Client(), Conn);
-	if(Conn == Client()->ActiveConnection())
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing prediction game session context");
+	CGameState *pState = pSession->GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pState != nullptr, "missing prediction game state");
+	pState->Predict(*Client(), SessionId, Conn);
+	if(SessionId == Client()->FocusedSessionId() && Conn == ActiveConnection())
 		ProcessPrediction();
 }
 
 void CGameClient::ProcessPrediction()
 {
-	CGameState &ActiveState = GameState(ActiveConnection());
+	const CSessionId SessionId = Client()->NetworkSessionId();
+	const int PredictionConnection = ActiveConnection();
+	CGameState &ActiveState = GameState(PredictionConnection);
 	CGameState::CRuntimeState &Runtime = ActiveState.Runtime();
 	// store the previous values so we can detect prediction errors
 	CCharacterCore BeforePrevChar = m_PredictedPrevChar;
@@ -3077,11 +3237,11 @@ void CGameClient::ProcessPrediction()
 	vec2 aBeforeRender[MAX_CLIENTS];
 	const int64_t SmoothNow = time_get();
 	for(int i = 0; i < MAX_CLIENTS; i++)
-		aBeforeRender[i] = GetSmoothPos(SessionContext().Id(), ActiveState, ActiveConnection(), i, SmoothNow, m_aClients[i].m_PrevPredicted, m_aClients[i].m_Predicted);
+		aBeforeRender[i] = GetSmoothPos(SessionId, ActiveState, PredictionConnection, i, SmoothNow, m_aClients[i].m_PrevPredicted, m_aClients[i].m_Predicted);
 
 	// init
-	const int PredictionConnection = ActiveConnection();
-	const int OtherPredictionConnection = OtherConnection();
+	const int OtherPredictionConnection = PredictionConnection == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN;
+	const CGameState &OtherState = GameState(OtherPredictionConnection);
 
 	// PredictedEvents are only handled in predicted world, so update them here
 	m_GameWorld.m_PredictedEvents = m_PredictedWorld.m_PredictedEvents;
@@ -3107,12 +3267,12 @@ void CGameClient::ProcessPrediction()
 	if(!pLocalChar)
 		return;
 	CCharacter *pDummyChar = nullptr;
-	if(PredictDummy())
-		pDummyChar = m_PredictedWorld.GetCharacterById(GameState(OtherConnection()).LocalClientId());
+	if(PredictDummy(OtherState))
+		pDummyChar = m_PredictedWorld.GetCharacterById(OtherState.LocalClientId());
 
-	int PredictionTick = Client()->GetPredictionTick(ActiveConnection());
+	int PredictionTick = Client()->GetPredictionTick(SessionId, PredictionConnection);
 	// predict
-	for(int Tick = Client()->GameTick(ActiveConnection()) + 1; Tick <= Client()->PredGameTick(ActiveConnection()); Tick++)
+	for(int Tick = Client()->GameTick(SessionId, PredictionConnection) + 1; Tick <= Client()->PredGameTick(SessionId, PredictionConnection); Tick++)
 	{
 		// fetch the previous characters
 		if(Tick == PredictionTick)
@@ -3122,17 +3282,17 @@ void CGameClient::ProcessPrediction()
 					m_aClients[i].m_PrevPredicted = pChar->GetCore();
 		}
 
-		if(Tick == Client()->PredGameTick(ActiveConnection()))
+		if(Tick == Client()->PredGameTick(SessionId, PredictionConnection))
 		{
 			m_PredictedPrevChar = pLocalChar->GetCore();
 			m_aClients[m_Snap.m_LocalClientId].m_PrevPredicted = pLocalChar->GetCore();
 
 			if(pDummyChar)
-				m_aClients[GameState(OtherConnection()).LocalClientId()].m_PrevPredicted = pDummyChar->GetCore();
+				m_aClients[OtherState.LocalClientId()].m_PrevPredicted = pDummyChar->GetCore();
 		}
 
 		// optionally allow some movement in freeze by not predicting freeze the last one to two ticks
-		if(g_Config.m_ClPredictFreeze == 2 && Client()->PredGameTick(ActiveConnection()) - 1 - Client()->PredGameTick(ActiveConnection()) % 2 <= Tick)
+		if(g_Config.m_ClPredictFreeze == 2 && Client()->PredGameTick(SessionId, PredictionConnection) - 1 - Client()->PredGameTick(SessionId, PredictionConnection) % 2 <= Tick)
 			pLocalChar->m_CanMoveInFreeze = true;
 
 		// apply inputs and tick
@@ -3169,13 +3329,13 @@ void CGameClient::ProcessPrediction()
 					m_aClients[i].m_Predicted = pChar->GetCore();
 		}
 
-		if(Tick == Client()->PredGameTick(ActiveConnection()))
+		if(Tick == Client()->PredGameTick(SessionId, PredictionConnection))
 		{
 			m_PredictedChar = pLocalChar->GetCore();
 			m_aClients[m_Snap.m_LocalClientId].m_Predicted = pLocalChar->GetCore();
 
 			if(pDummyChar)
-				m_aClients[GameState(OtherConnection()).LocalClientId()].m_Predicted = pDummyChar->GetCore();
+				m_aClients[OtherState.LocalClientId()].m_Predicted = pDummyChar->GetCore();
 		}
 
 		for(int i = 0; i < MAX_CLIENTS; i++)
@@ -3186,9 +3346,9 @@ void CGameClient::ProcessPrediction()
 			}
 
 		// check if we want to trigger effects
-		if(Tick > GameState(PredictionConnection).Runtime().m_LastNewPredictedTick)
+		if(Tick > Runtime.m_LastNewPredictedTick)
 		{
-			GameState(PredictionConnection).Runtime().m_LastNewPredictedTick = Tick;
+			Runtime.m_LastNewPredictedTick = Tick;
 			m_NewPredictedTick = true;
 			vec2 Pos = pLocalChar->Core()->m_Pos;
 			int Events = pLocalChar->Core()->m_TriggeredEvents;
@@ -3225,9 +3385,9 @@ void CGameClient::ProcessPrediction()
 	}
 
 	// detect mispredictions of other players and make corrections smoother when possible
-	if(g_Config.m_ClAntiPingSmooth && Predict() && AntiPingPlayers() && m_NewTick && Runtime.m_LegacyPredictedTick >= MIN_TICK && absolute(Runtime.m_LegacyPredictedTick - Client()->PredGameTick(ActiveConnection())) <= 1 && absolute(Client()->GameTick(ActiveConnection()) - Client()->PrevGameTick(ActiveConnection())) <= 2)
+	if(g_Config.m_ClAntiPingSmooth && Predict() && AntiPingPlayers() && m_NewTick && Runtime.m_LegacyPredictedTick >= MIN_TICK && absolute(Runtime.m_LegacyPredictedTick - Client()->PredGameTick(SessionId, PredictionConnection)) <= 1 && absolute(Client()->GameTick(SessionId, PredictionConnection) - Client()->PrevGameTick(SessionId, PredictionConnection)) <= 2)
 	{
-		int PredTime = std::clamp(Client()->GetPredictionTime(ActiveConnection()), 0, 800);
+		int PredTime = std::clamp(Client()->GetPredictionTime(SessionId, PredictionConnection), 0, 800);
 		float SmoothPace = 4 - 1.5f * PredTime / 800.f; // smoothing pace (a lower value will make the smoothing quicker)
 		int64_t Len = 1000 * PredTime * SmoothPace;
 
@@ -3235,15 +3395,15 @@ void CGameClient::ProcessPrediction()
 		{
 			if(!m_Snap.m_aCharacters[i].m_Active || i == m_Snap.m_LocalClientId || !Runtime.m_aLastPredictedActive[i])
 				continue;
-			vec2 NewPos = (Runtime.m_LegacyPredictedTick == Client()->PredGameTick(ActiveConnection())) ? m_aClients[i].m_Predicted.m_Pos : m_aClients[i].m_PrevPredicted.m_Pos;
-			vec2 PredErr = (Runtime.m_aLastPredictedPosition[i] - NewPos) / (float)std::min(Client()->GetPredictionTime(ActiveConnection()), 200);
+			vec2 NewPos = (Runtime.m_LegacyPredictedTick == Client()->PredGameTick(SessionId, PredictionConnection)) ? m_aClients[i].m_Predicted.m_Pos : m_aClients[i].m_PrevPredicted.m_Pos;
+			vec2 PredErr = (Runtime.m_aLastPredictedPosition[i] - NewPos) / (float)std::min(Client()->GetPredictionTime(SessionId, PredictionConnection), 200);
 			if(in_range(length(PredErr), 0.05f, 5.f))
 			{
-				vec2 PredPos = mix(m_aClients[i].m_PrevPredicted.m_Pos, m_aClients[i].m_Predicted.m_Pos, Client()->PredIntraGameTick(ActiveConnection()));
+				vec2 PredPos = mix(m_aClients[i].m_PrevPredicted.m_Pos, m_aClients[i].m_Predicted.m_Pos, Client()->PredIntraGameTick(SessionId, PredictionConnection));
 				vec2 CurPos = mix(
 					vec2(m_Snap.m_aCharacters[i].m_Prev.m_X, m_Snap.m_aCharacters[i].m_Prev.m_Y),
 					vec2(m_Snap.m_aCharacters[i].m_Cur.m_X, m_Snap.m_aCharacters[i].m_Cur.m_Y),
-					Client()->IntraGameTick(ActiveConnection()));
+					Client()->IntraGameTick(SessionId, PredictionConnection));
 				vec2 RenderDiff = PredPos - aBeforeRender[i];
 				vec2 PredDiff = PredPos - CurPos;
 
@@ -3306,7 +3466,7 @@ void CGameClient::ProcessPrediction()
 		}
 	}
 
-	if(g_Config.m_Debug && g_Config.m_ClPredict && Runtime.m_LegacyPredictedTick == Client()->PredGameTick(ActiveConnection()))
+	if(g_Config.m_Debug && g_Config.m_ClPredict && Runtime.m_LegacyPredictedTick == Client()->PredGameTick(SessionId, PredictionConnection))
 	{
 		CNetObj_CharacterCore Before = {0}, Now = {0}, BeforePrev = {0}, NowPrev = {0};
 		BeforeChar.Write(&Before);
@@ -3327,7 +3487,7 @@ void CGameClient::ProcessPrediction()
 		}
 	}
 
-	Runtime.m_LegacyPredictedTick = Client()->PredGameTick(ActiveConnection());
+	Runtime.m_LegacyPredictedTick = Client()->PredGameTick(SessionId, PredictionConnection);
 
 	if(m_NewPredictedTick)
 		m_Ghost.OnNewPredictedSnapshot();
@@ -3498,58 +3658,72 @@ CSkinDescriptor CGameClient::CClientData::ToSkinDescriptor(const CGameState &Sta
 
 void CGameClient::SendSwitchTeam(int Team) const
 {
+	if(Client()->FocusedSessionId() != Client()->NetworkSessionId())
+		return;
 	CNetMsg_Cl_SetTeam Msg;
 	Msg.m_Team = Team;
 	Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL);
 }
 
-void CGameClient::SendStartInfo7(bool Dummy)
+void CGameClient::SendStartInfo7(CSessionId SessionId, int Conn)
 {
-	const int Conn = Dummy ? IClient::CONN_DUMMY : IClient::CONN_MAIN;
-	const CLocalPlayerProfile &Profile = RefreshLegacyPlayerProfile(Conn);
+	const int ProfileIndex = LegacyProfileIndex(Conn);
+	const CLocalPlayerProfile &Profile = RefreshLegacyPlayerProfile(SessionId, Conn);
 	protocol7::CNetMsg_Cl_StartInfo Msg;
 	Msg.m_pName = Profile.m_Name.c_str();
 	Msg.m_pClan = Profile.m_Clan.c_str();
 	Msg.m_Country = Profile.m_Country;
 	for(int p = 0; p < protocol7::NUM_SKINPARTS; p++)
 	{
-		Msg.m_apSkinPartNames[p] = CSkins7::ms_apSkinVariables[(int)Dummy][p];
-		Msg.m_aUseCustomColors[p] = *CSkins7::ms_apUCCVariables[(int)Dummy][p];
-		Msg.m_aSkinPartColors[p] = *CSkins7::ms_apColorVariables[(int)Dummy][p];
+		Msg.m_apSkinPartNames[p] = CSkins7::ms_apSkinVariables[ProfileIndex][p];
+		Msg.m_aUseCustomColors[p] = *CSkins7::ms_apUCCVariables[ProfileIndex][p];
+		Msg.m_aSkinPartColors[p] = *CSkins7::ms_apColorVariables[ProfileIndex][p];
 	}
 	CMsgPacker Packer(&Msg, false, true);
 	if(Msg.Pack(&Packer))
 		return;
-	Client()->SendMsg((int)Dummy, &Packer, MSGFLAG_VITAL | MSGFLAG_FLUSH);
-	GameState((int)Dummy).Runtime().m_CheckInfo = -1;
+	Client()->SendMsg(Conn, &Packer, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing start-info game session context");
+	CGameState *pState = pSession->GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pState != nullptr, "missing start-info game state");
+	pState->Runtime().m_CheckInfo = -1;
 }
 
-const CLocalPlayerProfile &CGameClient::RefreshLegacyPlayerProfile(int Conn)
+const CLocalPlayerProfile &CGameClient::RefreshLegacyPlayerProfile(CSessionId SessionId, int Conn)
 {
-	const bool Dummy = Conn == IClient::CONN_DUMMY;
+	const bool UseDummyProfile = LegacyProfileIndex(Conn);
 	const CStreamId StreamId(Conn + 1);
-	SessionContext().LocalPlayerProfiles().Set(StreamId, CLocalPlayerProfile::FromLegacyConfig(*Config(), Dummy, Dummy ? Client()->DummyName() : Client()->PlayerName()));
-	return *SessionContext().LocalPlayerProfiles().Find(StreamId);
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing player-profile game session context");
+	pSession->LocalPlayerProfiles().Set(StreamId, CLocalPlayerProfile::FromLegacyConfig(*Config(), UseDummyProfile, UseDummyProfile ? Client()->DummyName() : Client()->PlayerName()));
+	return *pSession->LocalPlayerProfiles().Find(StreamId);
 }
 
-void CGameClient::SendSkinChange7(bool Dummy)
+void CGameClient::SendSkinChange7(CSessionId SessionId, int Conn)
 {
+	const int ProfileIndex = LegacyProfileIndex(Conn);
 	protocol7::CNetMsg_Cl_SkinChange Msg;
 	for(int p = 0; p < protocol7::NUM_SKINPARTS; p++)
 	{
-		Msg.m_apSkinPartNames[p] = CSkins7::ms_apSkinVariables[(int)Dummy][p];
-		Msg.m_aUseCustomColors[p] = *CSkins7::ms_apUCCVariables[(int)Dummy][p];
-		Msg.m_aSkinPartColors[p] = *CSkins7::ms_apColorVariables[(int)Dummy][p];
+		Msg.m_apSkinPartNames[p] = CSkins7::ms_apSkinVariables[ProfileIndex][p];
+		Msg.m_aUseCustomColors[p] = *CSkins7::ms_apUCCVariables[ProfileIndex][p];
+		Msg.m_aSkinPartColors[p] = *CSkins7::ms_apColorVariables[ProfileIndex][p];
 	}
 	CMsgPacker Packer(&Msg, false, true);
 	if(Msg.Pack(&Packer))
 		return;
-	Client()->SendMsg((int)Dummy, &Packer, MSGFLAG_VITAL | MSGFLAG_FLUSH);
-	GameState((int)Dummy).Runtime().m_CheckInfo = Client()->GameTickSpeed();
+	Client()->SendMsg(Conn, &Packer, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing skin-change game session context");
+	CGameState *pState = pSession->GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pState != nullptr, "missing skin-change game state");
+	pState->Runtime().m_CheckInfo = Client()->GameTickSpeed();
 }
 
-bool CGameClient::GotWantedSkin7(bool Dummy)
+bool CGameClient::GotWantedSkin7(int Conn)
 {
+	const int ProfileIndex = LegacyProfileIndex(Conn);
 	// validate the wanted skinparts before comparison
 	// because the skin parts we compare against are also validated
 	// otherwise it tries to resend the skin info when the eyes are set to "negative"
@@ -3560,17 +3734,21 @@ bool CGameClient::GotWantedSkin7(bool Dummy)
 	int aColorVars[protocol7::NUM_SKINPARTS];
 	for(int SkinPart = 0; SkinPart < protocol7::NUM_SKINPARTS; SkinPart++)
 	{
-		str_copy(aSkinParts[SkinPart], CSkins7::ms_apSkinVariables[(int)Dummy][SkinPart], protocol7::MAX_SKIN_ARRAY_SIZE);
+		str_copy(aSkinParts[SkinPart], CSkins7::ms_apSkinVariables[ProfileIndex][SkinPart], protocol7::MAX_SKIN_ARRAY_SIZE);
 		apSkinPartsPtr[SkinPart] = aSkinParts[SkinPart];
-		aUCCVars[SkinPart] = *CSkins7::ms_apUCCVariables[(int)Dummy][SkinPart];
-		aColorVars[SkinPart] = *CSkins7::ms_apColorVariables[(int)Dummy][SkinPart];
+		aUCCVars[SkinPart] = *CSkins7::ms_apUCCVariables[ProfileIndex][SkinPart];
+		aColorVars[SkinPart] = *CSkins7::ms_apColorVariables[ProfileIndex][SkinPart];
 	}
-	m_Skins7.ValidateSkinParts(apSkinPartsPtr, aUCCVars, aColorVars, m_pClient->m_TranslationContext.m_GameFlags);
+	m_Skins7.ValidateSkinParts(apSkinPartsPtr, aUCCVars, aColorVars, Client()->TranslationContext(Client()->NetworkSessionId()).m_GameFlags);
 
-	const int LocalClientId = GameState((int)Dummy).LocalClientId();
+	const CGameSessionContext *pSession = FindSessionContext(Client()->NetworkSessionId());
+	dbg_assert(pSession != nullptr, "missing wanted-skin game session context");
+	const CGameState *pState = pSession->GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pState != nullptr, "missing wanted-skin game state");
+	const int LocalClientId = pState->LocalClientId();
 	if(LocalClientId < 0 || LocalClientId >= MAX_CLIENTS)
 		return false;
-	const CGameState::CProtocol7ClientState &Protocol7Client = GameState((int)Dummy).Protocol7Client(LocalClientId);
+	const CGameState::CProtocol7ClientState &Protocol7Client = pState->Protocol7Client(LocalClientId);
 	for(int SkinPart = 0; SkinPart < protocol7::NUM_SKINPARTS; SkinPart++)
 	{
 		if(str_comp(Protocol7Client.m_aaSkinPartNames[SkinPart], apSkinPartsPtr[SkinPart]))
@@ -3582,27 +3760,27 @@ bool CGameClient::GotWantedSkin7(bool Dummy)
 	}
 
 	// TODO: add name change ddnet extension to 0.7 protocol
-	// if(str_comp(m_aClients[LocalClientId].m_aName, Dummy ? Client()->DummyName() : Client()->PlayerName()))
+	// if(str_comp(m_aClients[LocalClientId].m_aName, ProfileIndex ? Client()->DummyName() : Client()->PlayerName()))
 	// 	return false;
-	// if(str_comp(m_aClients[LocalClientId].m_aClan, Dummy ? g_Config.m_ClDummyClan : g_Config.m_PlayerClan))
+	// if(str_comp(m_aClients[LocalClientId].m_aClan, ProfileIndex ? g_Config.m_ClDummyClan : g_Config.m_PlayerClan))
 	// 	return false;
-	// if(m_aClients[LocalClientId].m_Country != (Dummy ? g_Config.m_ClDummyCountry : g_Config.m_PlayerCountry))
+	// if(m_aClients[LocalClientId].m_Country != (ProfileIndex ? g_Config.m_ClDummyCountry : g_Config.m_PlayerCountry))
 	// 	return false;
 
 	return true;
 }
 
-void CGameClient::SendInfo(bool Start)
+void CGameClient::SendInfo(CSessionId SessionId, bool Start)
 {
-	if(m_pClient->IsSixup())
+	if(m_pClient->IsSixup(SessionId))
 	{
 		if(Start)
-			SendStartInfo7(false);
+			SendStartInfo7(SessionId, IClient::CONN_MAIN);
 		else
-			SendSkinChange7(false);
+			SendSkinChange7(SessionId, IClient::CONN_MAIN);
 		return;
 	}
-	const CLocalPlayerProfile &Profile = RefreshLegacyPlayerProfile(IClient::CONN_MAIN);
+	const CLocalPlayerProfile &Profile = RefreshLegacyPlayerProfile(SessionId, IClient::CONN_MAIN);
 	if(Start)
 	{
 		CNetMsg_Cl_StartInfo Msg;
@@ -3616,7 +3794,11 @@ void CGameClient::SendInfo(bool Start)
 		CMsgPacker Packer(&Msg);
 		Msg.Pack(&Packer);
 		Client()->SendMsg(IClient::CONN_MAIN, &Packer, MSGFLAG_VITAL | MSGFLAG_FLUSH);
-		GameState(IClient::CONN_MAIN).Runtime().m_CheckInfo = -1;
+		CGameSessionContext *pSession = FindSessionContext(SessionId);
+		dbg_assert(pSession != nullptr, "missing info game session context");
+		CGameState *pState = pSession->GameStates().FindByStream(CStreamId(IClient::CONN_MAIN + 1));
+		dbg_assert(pState != nullptr, "missing info game state");
+		pState->Runtime().m_CheckInfo = -1;
 	}
 	else
 	{
@@ -3631,21 +3813,30 @@ void CGameClient::SendInfo(bool Start)
 		CMsgPacker Packer(&Msg);
 		Msg.Pack(&Packer);
 		Client()->SendMsg(IClient::CONN_MAIN, &Packer, MSGFLAG_VITAL);
-		GameState(IClient::CONN_MAIN).Runtime().m_CheckInfo = Client()->GameTickSpeed();
+		CGameSessionContext *pSession = FindSessionContext(SessionId);
+		dbg_assert(pSession != nullptr, "missing info game session context");
+		CGameState *pState = pSession->GameStates().FindByStream(CStreamId(IClient::CONN_MAIN + 1));
+		dbg_assert(pState != nullptr, "missing info game state");
+		pState->Runtime().m_CheckInfo = Client()->GameTickSpeed();
 	}
 }
 
 void CGameClient::SendDummyInfo(bool Start)
 {
-	if(m_pClient->IsSixup())
+	const CSessionId SessionId = Client()->NetworkSessionId();
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing Network game session context");
+	CGameState *pState = pSession->GameStates().FindByStream(CStreamId(IClient::CONN_DUMMY + 1));
+	dbg_assert(pState != nullptr, "missing Network dummy game state");
+	if(m_pClient->IsSixup(SessionId))
 	{
 		if(Start)
-			SendStartInfo7(true);
+			SendStartInfo7(SessionId, IClient::CONN_DUMMY);
 		else
-			SendSkinChange7(true);
+			SendSkinChange7(SessionId, IClient::CONN_DUMMY);
 		return;
 	}
-	const CLocalPlayerProfile &Profile = RefreshLegacyPlayerProfile(IClient::CONN_DUMMY);
+	const CLocalPlayerProfile &Profile = RefreshLegacyPlayerProfile(SessionId, IClient::CONN_DUMMY);
 	if(Start)
 	{
 		CNetMsg_Cl_StartInfo Msg;
@@ -3659,7 +3850,7 @@ void CGameClient::SendDummyInfo(bool Start)
 		CMsgPacker Packer(&Msg);
 		Msg.Pack(&Packer);
 		Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
-		GameState(IClient::CONN_DUMMY).Runtime().m_CheckInfo = -1;
+		pState->Runtime().m_CheckInfo = -1;
 	}
 	else
 	{
@@ -3674,25 +3865,30 @@ void CGameClient::SendDummyInfo(bool Start)
 		CMsgPacker Packer(&Msg);
 		Msg.Pack(&Packer);
 		Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
-		GameState(IClient::CONN_DUMMY).Runtime().m_CheckInfo = Client()->GameTickSpeed();
+		pState->Runtime().m_CheckInfo = Client()->GameTickSpeed();
 	}
 }
 
 void CGameClient::SendKill() const
 {
+	if(Client()->FocusedSessionId() != Client()->NetworkSessionId())
+		return;
+	const int ActiveConn = Client()->ActiveConnection();
 	CNetMsg_Cl_Kill Msg;
-	Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL);
+	Client()->SendPackMsg(ActiveConn, &Msg, MSGFLAG_VITAL);
 
 	if(g_Config.m_ClDummyCopyMoves)
 	{
 		CMsgPacker MsgP(NETMSGTYPE_CL_KILL, false);
-		Client()->SendMsg(OtherConnection(), &MsgP, MSGFLAG_VITAL);
+		Client()->SendMsg(ActiveConn == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN, &MsgP, MSGFLAG_VITAL);
 	}
 }
 
 void CGameClient::SendReadyChange7() // NOLINT(readability-make-member-function-const)
 {
-	if(!Client()->IsSixup())
+	if(Client()->FocusedSessionId() != Client()->NetworkSessionId())
+		return;
+	if(!Client()->IsSixup(Client()->NetworkSessionId()))
 	{
 		log_error("client", "You have to be connected to a 0.7 server to use 'ready_change'");
 		return;
@@ -3733,7 +3929,10 @@ void CGameClient::ConchainSpecialInfoupdate(IConsole::IResult *pResult, void *pU
 {
 	pfnCallback(pResult, pCallbackUserData);
 	if(pResult->NumArguments())
-		((CGameClient *)pUserData)->SendInfo(false);
+	{
+		CGameClient *pSelf = (CGameClient *)pUserData;
+		pSelf->SendInfo(pSelf->Client()->NetworkSessionId(), false);
+	}
 }
 
 void CGameClient::ConchainSpecialDummyInfoupdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
@@ -3760,67 +3959,16 @@ IGameClient *CreateGameClient()
 	return new CGameClient();
 }
 
-int CGameClient::IntersectCharacter(vec2 HookPos, vec2 NewPos, vec2 &NewPos2, int OwnId, vec2 *pPlayerPosition)
-{
-	float Distance = 0.0f;
-	int ClosestId = -1;
-	const CGameState &State = GameState(ActiveConnection());
-	const CNetObj_DDNetCharacter *pOwnExtended = State.ExtendedCharacter(OwnId);
-	const int OwnFlags = pOwnExtended != nullptr ? pOwnExtended->m_Flags : 0;
-
-	for(int i = 0; i < MAX_CLIENTS; i++)
-	{
-		if(i == OwnId)
-			continue;
-
-		const CClientData &Data = m_aClients[i];
-		const CNetObj_DDNetCharacter *pExtended = State.ExtendedCharacter(i);
-		const int Flags = pExtended != nullptr ? pExtended->m_Flags : 0;
-
-		if(!Data.m_Active || !m_Snap.m_aCharacters[i].m_Active)
-			continue;
-
-		CNetObj_Character Prev = m_Snap.m_aCharacters[i].m_Prev;
-		CNetObj_Character Player = m_Snap.m_aCharacters[i].m_Cur;
-
-		vec2 Position = mix(vec2(Prev.m_X, Prev.m_Y), vec2(Player.m_X, Player.m_Y), Client()->IntraGameTick(ActiveConnection()));
-
-		bool IsOneSuper = (Flags & CHARACTERFLAG_SUPER) != 0 || (OwnFlags & CHARACTERFLAG_SUPER) != 0;
-		bool IsOneSolo = (Flags & CHARACTERFLAG_SOLO) != 0 || (OwnFlags & CHARACTERFLAG_SOLO) != 0;
-
-		if(!IsOneSuper && (!FocusedTeams().SameTeam(i, OwnId) || IsOneSolo || (OwnFlags & CHARACTERFLAG_HOOK_HIT_DISABLED) != 0))
-			continue;
-
-		vec2 ClosestPoint;
-		if(closest_point_on_line(HookPos, NewPos, Position, ClosestPoint))
-		{
-			if(distance(Position, ClosestPoint) < CCharacterCore::PhysicalSize() + 2.0f)
-			{
-				if(ClosestId == -1 || distance(HookPos, Position) < Distance)
-				{
-					NewPos2 = ClosestPoint;
-					ClosestId = i;
-					Distance = distance(HookPos, Position);
-					if(pPlayerPosition)
-						*pPlayerPosition = Position;
-				}
-			}
-		}
-	}
-
-	return ClosestId;
-}
-
 ColorRGBA CalculateNameColor(ColorHSLA TextColorHSL)
 {
 	return color_cast<ColorRGBA>(ColorHSLA(TextColorHSL.h, TextColorHSL.s * 0.68f, TextColorHSL.l * 0.81f));
 }
 
-void CGameClient::UpdateLocalTuning()
+void CGameClient::UpdateLocalTuning(CSessionId SessionId, CGameSessionContext &Session, CGameState &State, int Conn)
 {
-	CGameState::CRuntimeState &Runtime = GameState(ActiveConnection()).Runtime();
-	const CGameState *pPreviousFocusedState = m_PreviousFocusedStream.has_value() ? SessionContext().GameStates().FindByStream(*m_PreviousFocusedStream) : nullptr;
-	m_GameWorld.m_WorldConfig.m_UseTuneZones = FocusedGameInfo().m_PredictDDRaceTiles;
+	CGameState::CRuntimeState &Runtime = State.Runtime();
+	const CGameState *pPreviousFocusedState = m_PreviousFocusedStream.has_value() ? Session.GameStates().FindByStream(*m_PreviousFocusedStream) : nullptr;
+	m_GameWorld.m_WorldConfig.m_UseTuneZones = State.CoreGameInfo().m_PredictDDRaceTiles;
 
 	// always update default tune zone, even without character
 	if(!m_GameWorld.m_WorldConfig.m_UseTuneZones)
@@ -3838,7 +3986,7 @@ void CGameClient::UpdateLocalTuning()
 			m_Snap.m_aCharacters[m_Snap.m_LocalClientId].m_HasExtendedData &&
 					m_Snap.m_aCharacters[m_Snap.m_LocalClientId].m_ExtendedData.m_TuneZoneOverride != TuneZone::OVERRIDE_NONE ?
 				m_Snap.m_aCharacters[m_Snap.m_LocalClientId].m_ExtendedData.m_TuneZoneOverride :
-				Collision()->IsTune(Collision()->GetMapIndex(LocalPos));
+				Session.MapContext().Collision()->IsTune(Session.MapContext().Collision()->GetMapIndex(LocalPos));
 
 		if(TuneZone != Runtime.m_LocalTuneZone)
 		{
@@ -3848,20 +3996,20 @@ void CGameClient::UpdateLocalTuning()
 		}
 
 		// tunezone could have changed, send dummy tuning to demo
-		if(m_ActiveRecordings.any() && pPreviousFocusedState && Runtime.m_LocalTuneZone != pPreviousFocusedState->Runtime().m_LocalTuneZone)
+		if(SessionId == Client()->NetworkSessionId() && m_ActiveRecordings.any() && pPreviousFocusedState && Runtime.m_LocalTuneZone != pPreviousFocusedState->Runtime().m_LocalTuneZone)
 		{
 			CMsgPacker Msg(NETMSGTYPE_SV_TUNEPARAMS);
 			int *pParams = (int *)&Runtime.m_CurrentTuning;
 			for(unsigned i = 0; i < sizeof(Runtime.m_CurrentTuning) / sizeof(int); i++)
 				Msg.AddInt(pParams[i]);
-			Client()->SendMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_RECORD | MSGFLAG_NOSEND);
+			Client()->SendMsg(Conn, &Msg, MSGFLAG_RECORD | MSGFLAG_NOSEND);
 		}
 
 		if(Runtime.m_ExpectingTuningForZone >= 0)
 		{
 			if(Runtime.m_ReceivedTuning)
 			{
-				TuningList()[Runtime.m_ExpectingTuningForZone] = Runtime.m_CurrentTuning;
+				Session.MapContext().TuningList()[Runtime.m_ExpectingTuningForZone] = Runtime.m_CurrentTuning;
 				m_GameWorld.TuningList()[Runtime.m_ExpectingTuningForZone] = Runtime.m_CurrentTuning;
 				Runtime.m_ReceivedTuning = false;
 				Runtime.m_ExpectingTuningForZone = -1;
@@ -3898,7 +4046,11 @@ void CGameClient::UpdateLocalTuning()
 
 void CGameClient::UpdatePrediction()
 {
-	CGameState &ActiveState = GameState(ActiveConnection());
+	const CSessionId SessionId = Client()->NetworkSessionId();
+	const int PredictionConnection = ActiveConnection();
+	const int OtherPredictionConnection = PredictionConnection == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN;
+	CGameState &ActiveState = GameState(PredictionConnection);
+	const CGameState &OtherState = GameState(OtherPredictionConnection);
 	CGameState::CRuntimeState &Runtime = ActiveState.Runtime();
 	m_GameWorld.m_WorldConfig.m_IsVanilla = FocusedGameInfo().m_PredictVanilla;
 	m_GameWorld.m_WorldConfig.m_IsDDRace = FocusedGameInfo().m_PredictDDRace;
@@ -3925,8 +4077,9 @@ void CGameClient::UpdatePrediction()
 
 	CCharacter *pLocalChar = m_GameWorld.GetCharacterById(m_Snap.m_LocalClientId);
 	CCharacter *pDummyChar = nullptr;
-	if(PredictDummy())
-		pDummyChar = m_GameWorld.GetCharacterById(GameState(OtherConnection()).LocalClientId());
+	const bool PredictOther = PredictDummy(OtherState);
+	if(PredictOther)
+		pDummyChar = m_GameWorld.GetCharacterById(OtherState.LocalClientId());
 
 	// update strong and weak hook
 	if(pLocalChar && !m_Snap.m_SpecInfo.m_Active && !Client()->IsDemoPlayback() && (CurrentTuning.m_PlayerCollision || CurrentTuning.m_PlayerHooking))
@@ -3959,14 +4112,14 @@ void CGameClient::UpdatePrediction()
 	}
 
 	// advance the gameworld to the current gametick
-	if(pLocalChar && absolute(m_GameWorld.GameTick() - Client()->GameTick(ActiveConnection())) < Client()->GameTickSpeed())
+	if(pLocalChar && absolute(m_GameWorld.GameTick() - Client()->GameTick(SessionId, PredictionConnection)) < Client()->GameTickSpeed())
 	{
-		for(int Tick = m_GameWorld.GameTick() + 1; Tick <= Client()->GameTick(ActiveConnection()); Tick++)
+		for(int Tick = m_GameWorld.GameTick() + 1; Tick <= Client()->GameTick(SessionId, PredictionConnection); Tick++)
 		{
-			CNetObj_PlayerInput *pInput = (CNetObj_PlayerInput *)Client()->GetInput(Client()->ActiveConnection(), Tick);
+			CNetObj_PlayerInput *pInput = (CNetObj_PlayerInput *)Client()->GetInput(PredictionConnection, Tick);
 			CNetObj_PlayerInput *pDummyInput = nullptr;
 			if(pDummyChar)
-				pDummyInput = (CNetObj_PlayerInput *)Client()->GetInput(OtherConnection(), Tick);
+				pDummyInput = (CNetObj_PlayerInput *)Client()->GetInput(OtherPredictionConnection, Tick);
 			if(pInput)
 				pLocalChar->OnDirectInput(pInput);
 			if(pDummyInput)
@@ -3995,20 +4148,20 @@ void CGameClient::UpdatePrediction()
 	else
 	{
 		// skip to current gametick
-		m_GameWorld.m_GameTick = Client()->GameTick(ActiveConnection());
+		m_GameWorld.m_GameTick = Client()->GameTick(SessionId, PredictionConnection);
 		if(pLocalChar)
-			if(CNetObj_PlayerInput *pInput = (CNetObj_PlayerInput *)Client()->GetInput(Client()->ActiveConnection(), Client()->GameTick(ActiveConnection())))
+			if(CNetObj_PlayerInput *pInput = (CNetObj_PlayerInput *)Client()->GetInput(PredictionConnection, Client()->GameTick(SessionId, PredictionConnection)))
 				pLocalChar->SetInput(pInput);
 		if(pDummyChar)
-			if(CNetObj_PlayerInput *pInput = (CNetObj_PlayerInput *)Client()->GetInput(OtherConnection(), Client()->GameTick(ActiveConnection())))
+			if(CNetObj_PlayerInput *pInput = (CNetObj_PlayerInput *)Client()->GetInput(OtherPredictionConnection, Client()->GameTick(SessionId, PredictionConnection)))
 				pDummyChar->SetInput(pInput);
 	}
 
 	for(int i = 0; i < MAX_CLIENTS; i++)
 		if(CCharacter *pChar = m_GameWorld.GetCharacterById(i))
 		{
-			ActiveState.PredictionHistory(i).m_aPredPos[Client()->GameTick(ActiveConnection()) % 200] = pChar->Core()->m_Pos;
-			ActiveState.PredictionHistory(i).m_aPredTick[Client()->GameTick(ActiveConnection()) % 200] = Client()->GameTick(ActiveConnection());
+			ActiveState.PredictionHistory(i).m_aPredPos[Client()->GameTick(SessionId, PredictionConnection) % 200] = pChar->Core()->m_Pos;
+			ActiveState.PredictionHistory(i).m_aPredTick[Client()->GameTick(SessionId, PredictionConnection) % 200] = Client()->GameTick(SessionId, PredictionConnection);
 		}
 
 	// update the local gameworld with the new snapshot
@@ -4017,7 +4170,7 @@ void CGameClient::UpdatePrediction()
 	for(int i = 0; i < MAX_CLIENTS; i++)
 		if(m_Snap.m_aCharacters[i].m_Active)
 		{
-			bool IsLocal = (i == m_Snap.m_LocalClientId || (PredictDummy() && i == GameState(OtherConnection()).LocalClientId()));
+			bool IsLocal = i == m_Snap.m_LocalClientId || (PredictOther && i == OtherState.LocalClientId());
 			int GameTeam = IsTeamPlay() ? m_aClients[i].m_Team : i;
 			m_GameWorld.NetCharAdd(i, &m_Snap.m_aCharacters[i].m_Cur,
 				m_Snap.m_aCharacters[i].m_HasExtendedData ? &m_Snap.m_aCharacters[i].m_ExtendedData : nullptr,
@@ -4276,6 +4429,8 @@ void CGameClient::HandlePredictedEvents(const int Tick)
 
 void CGameClient::DetectStrongHook(CGameState::CRuntimeState &Runtime)
 {
+	const CSessionId SessionId = Client()->NetworkSessionId();
+	const int Conn = ActiveConnection();
 	CTeamsCore Teams = FocusedTeams();
 	// attempt to detect strong/weak between players
 	for(int FromPlayer = 0; FromPlayer < MAX_CLIENTS; FromPlayer++)
@@ -4285,7 +4440,7 @@ void CGameClient::DetectStrongHook(CGameState::CRuntimeState &Runtime)
 		int ToPlayer = m_Snap.m_aCharacters[FromPlayer].m_Prev.m_HookedPlayer;
 		if(ToPlayer < 0 || ToPlayer >= MAX_CLIENTS || !m_Snap.m_aCharacters[ToPlayer].m_Active || ToPlayer != m_Snap.m_aCharacters[FromPlayer].m_Cur.m_HookedPlayer)
 			continue;
-		if(absolute(std::min(Runtime.m_aStrongHookLastUpdateTick[ToPlayer], Runtime.m_aStrongHookLastUpdateTick[FromPlayer]) - Client()->GameTick(ActiveConnection())) < Client()->GameTickSpeed() / 4)
+		if(absolute(std::min(Runtime.m_aStrongHookLastUpdateTick[ToPlayer], Runtime.m_aStrongHookLastUpdateTick[FromPlayer]) - Client()->GameTick(SessionId, Conn)) < Client()->GameTickSpeed() / 4)
 			continue;
 		if(m_Snap.m_aCharacters[FromPlayer].m_Prev.m_Direction != m_Snap.m_aCharacters[FromPlayer].m_Cur.m_Direction || m_Snap.m_aCharacters[ToPlayer].m_Prev.m_Direction != m_Snap.m_aCharacters[ToPlayer].m_Cur.m_Direction)
 			continue;
@@ -4295,7 +4450,7 @@ void CGameClient::DetectStrongHook(CGameState::CRuntimeState &Runtime)
 		if(!pFromCharWorld || !pToCharWorld)
 			continue;
 
-		Runtime.m_aStrongHookLastUpdateTick[ToPlayer] = Runtime.m_aStrongHookLastUpdateTick[FromPlayer] = Client()->GameTick(ActiveConnection());
+		Runtime.m_aStrongHookLastUpdateTick[ToPlayer] = Runtime.m_aStrongHookLastUpdateTick[FromPlayer] = Client()->GameTick(SessionId, Conn);
 
 		float aPredictErr[2];
 		CCharacterCore ToCharCur;
@@ -4315,7 +4470,7 @@ void CGameClient::DetectStrongHook(CGameState::CRuntimeState &Runtime)
 			World.m_apCharacters[FromPlayer] = &FromChar;
 			FromChar.Read(&m_Snap.m_aCharacters[FromPlayer].m_Prev);
 
-			for(int Tick = Client()->PrevGameTick(ActiveConnection()); Tick < Client()->GameTick(ActiveConnection()); Tick++)
+			for(int Tick = Client()->PrevGameTick(SessionId, Conn); Tick < Client()->GameTick(SessionId, Conn); Tick++)
 			{
 				if(Direction == 0)
 				{
@@ -5140,12 +5295,17 @@ void CGameClient::DummyResetInput()
 	if(!Client()->DummyConnected())
 		return;
 
-	CNetObj_PlayerInput &Input = GameState(OtherConnection()).Input().m_InputData;
+	CGameSessionContext *pSession = FindSessionContext(Client()->NetworkSessionId());
+	dbg_assert(pSession != nullptr, "missing Network game session context");
+	const int Conn = Client()->ActiveConnection() == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN;
+	CGameState *pState = pSession->GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pState != nullptr, "missing Network game state");
+	CNetObj_PlayerInput &Input = pState->Input().m_InputData;
 	int Fire = Input.m_Fire;
 	if((Fire & 1) != 0)
 		Fire++;
 
-	m_Controls.ResetInput(OtherConnection());
+	pState->Input().ReleaseGameplay();
 	Input.m_Hook = 0;
 	Input.m_Fire = Fire;
 }
@@ -5165,17 +5325,16 @@ protocol7::CNetObjHandler *CGameClient::GetNetObjHandler7()
 	return &m_NetObjHandler7;
 }
 
-void CGameClient::SnapCollectEntities()
+void CGameClient::SnapCollectEntities(CSessionId SessionId, int Conn)
 {
-	const int ActiveConn = Client()->ActiveConnection();
-	int NumSnapItems = Client()->SnapNumItems(ActiveConn, IClient::SNAP_CURRENT);
+	const int NumSnapItems = Client()->SnapNumItems(SessionId, Conn, IClient::SNAP_CURRENT);
 
 	std::vector<CSnapEntities> vItemData;
 	std::vector<CSnapEntities> vItemEx;
 
 	for(int Index = 0; Index < NumSnapItems; Index++)
 	{
-		const IClient::CSnapItem Item = Client()->SnapGetItem(ActiveConn, IClient::SNAP_CURRENT, Index);
+		const IClient::CSnapItem Item = Client()->SnapGetItem(SessionId, Conn, IClient::SNAP_CURRENT, Index);
 		if(Item.m_Type == NETOBJTYPE_ENTITYEX)
 			vItemEx.push_back({Item, nullptr});
 		else if(Item.m_Type == NETOBJTYPE_PICKUP || Item.m_Type == NETOBJTYPE_DDNETPICKUP || Item.m_Type == NETOBJTYPE_LASER || Item.m_Type == NETOBJTYPE_DDNETLASER || Item.m_Type == NETOBJTYPE_PROJECTILE || Item.m_Type == NETOBJTYPE_DDRACEPROJECTILE || Item.m_Type == NETOBJTYPE_DDNETPROJECTILE)
@@ -5555,7 +5714,7 @@ void CGameClient::OnSaveCodeNetMessage(CGameSessionContext &Session, const CGame
 {
 	char aBuf[512];
 	auto AddLine = [&](const char *pText) {
-		m_Chat.AddLine(Session, GameState, CurrentPresentationTime(), Session.Id() == Client()->DemoSessionId(), Session.Id() == Client()->FocusedSessionId(), -1, TEAM_ALL, pText);
+		m_Chat.AddLine(Session, GameState, SessionMessageTime(Session.Id()), Session.Id() == Client()->DemoSessionId(), Session.Id() == Client()->FocusedSessionId(), -1, TEAM_ALL, pText);
 	};
 	if(pMsg->m_pError[0] != '\0')
 		AddLine(pMsg->m_pError);

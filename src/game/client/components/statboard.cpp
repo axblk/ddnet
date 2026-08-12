@@ -510,9 +510,10 @@ std::string CStatboard::ReplaceCommata(const char *pStr)
 
 void CStatboard::FormatStats(char *pDest, size_t DestSize)
 {
+	const CSessionId SessionId = GameClient()->SessionContext().Id();
 	const CSessionStatsState &Stats = GameClient()->SessionContext().Stats();
 	// server stats
-	const CServerInfo &CurrentServerInfo = Client()->ServerInfo();
+	const CServerInfo &CurrentServerInfo = Client()->ServerInfo(SessionId);
 
 	char aServerStats[1024];
 	str_format(aServerStats, sizeof(aServerStats), "Servername,Game-type,Map\n%s,%s,%s", ReplaceCommata(CurrentServerInfo.m_aName).c_str(), ReplaceCommata(CurrentServerInfo.m_aGameType).c_str(), ReplaceCommata(CurrentServerInfo.m_aMap).c_str());
@@ -585,7 +586,7 @@ void CStatboard::FormatStats(char *pDest, size_t DestSize)
 			pStats->m_Suicides, // Suicides
 			KillRatio, // Kill ratio
 			pStats->m_Frags - pStats->m_Deaths, // Net
-			pStats->GetFPM(Client()->GameTick(GameClient()->ActiveConnection()), Client()->GameTickSpeed()), // FPM
+			pStats->GetFPM(Client()->GameTick(SessionId, GameClient()->ActiveConnection()), Client()->GameTickSpeed()), // FPM
 			pStats->m_CurrentSpree, // CurSpree
 			pStats->m_BestSpree, // BestSpree
 			aWeaponFD, // WeaponFD

@@ -316,6 +316,7 @@ public:
 	CSessionId FocusedSessionId() const override { return m_SessionManager.FocusedId(); }
 	CSessionId NetworkSessionId() const override { return m_NetworkSessionId; }
 	CSessionId DemoSessionId() const override { return m_DemoSessionId; }
+	ESessionState SessionState(CSessionId SessionId) const override { return SessionSource(SessionId).State(); }
 	int PrevGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PrevGameTick; }
 	int GameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_CurGameTick; }
 	int PredGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PredTick; }
@@ -373,12 +374,14 @@ public:
 
 	// ------ state handling -----
 	void SetState(EClientState State);
+	void SetFocusedState(EClientState State, bool ResetSession);
+	void FocusSession(CSessionId SessionId);
 	bool IsOnline() const override;
 	bool IsDemoPlayback() const override;
 
 	// called when the map is loaded and we should init for a new round
 	void OnEnterGame(int Conn);
-	void EnterGame(int Conn) override;
+	void EnterGame(CSessionId SessionId, int Conn) override;
 
 	// called once after being ingame for 1 second
 	void OnPostConnect(int Conn);
@@ -423,8 +426,8 @@ public:
 	const char *DummyName() override;
 	const char *ErrorString() const override;
 
-	const char *LoadMap(const char *pName, const char *pFilename, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc);
-	const char *LoadMapSearch(const char *pMapName, const std::optional<SHA256_DIGEST> &WantedSha256, int WantedCrc);
+	const char *LoadMap(CSessionId SessionId, const char *pName, const char *pFilename, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc);
+	const char *LoadMapSearch(CSessionId SessionId, const char *pMapName, const std::optional<SHA256_DIGEST> &WantedSha256, int WantedCrc);
 
 	int TranslateSysMsg(int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, CNetChunk *pPacket, bool *pIsExMsg);
 
@@ -444,6 +447,8 @@ public:
 	void LoadDDNetInfo();
 
 	bool IsSixup(CSessionId SessionId) const override { return SessionSource(SessionId).IsSixup(); }
+	CTranslationContext &TranslationContext(CSessionId SessionId) override { return SessionSource(SessionId).TranslationContext(); }
+	const CTranslationContext &TranslationContext(CSessionId SessionId) const override { return SessionSource(SessionId).TranslationContext(); }
 
 	const NETADDR &ServerAddress() const override { return *NetClient(CONN_MAIN).ServerAddress(); }
 	int ConnectNetTypes() const override;

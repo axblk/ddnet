@@ -101,9 +101,9 @@ void CBroadcast::RenderServerBroadcast(const CRenderContext &Context)
 	}
 }
 
-void CBroadcast::DoBroadcast(const char *pText, int Conn)
+void CBroadcast::DoBroadcast(CSessionBroadcastState &Broadcast, const char *pText, int GameTick, int GameTickSpeed)
 {
-	GameClient()->SessionContext().Broadcast().Apply(pText, Client()->GameTick(Conn), Client()->GameTickSpeed());
+	Broadcast.Apply(pText, GameTick, GameTickSpeed);
 	InvalidateRenderCache();
 
 	if(g_Config.m_ClPrintBroadcasts)

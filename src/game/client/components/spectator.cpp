@@ -683,7 +683,7 @@ void CSpectator::Spectate(int SpectatorId)
 	Target.m_OriginDemo = Client()->State() == IClient::STATE_DEMOPLAYBACK;
 	Target.m_OriginSessionId = Target.m_OriginDemo ? Client()->DemoSessionId() : Client()->NetworkSessionId();
 	Target.m_OriginConnection = Client()->ActiveConnection();
-	Target.m_OriginSixup = Client()->IsSixup();
+	Target.m_OriginSixup = Client()->IsSixup(Target.m_OriginSessionId);
 	Spectate(GameClient()->LegacyGameView(), Target, SpectatorId);
 }
 

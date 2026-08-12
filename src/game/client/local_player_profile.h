@@ -19,7 +19,7 @@ public:
 	unsigned m_ColorBody = 0;
 	unsigned m_ColorFeet = 0;
 
-	static CLocalPlayerProfile FromLegacyConfig(const CConfig &Config, bool Dummy, const char *pResolvedName);
+	static CLocalPlayerProfile FromLegacyConfig(const CConfig &Config, bool UseDummyProfile, const char *pResolvedName);
 };
 
 class CLocalPlayerProfileBindings

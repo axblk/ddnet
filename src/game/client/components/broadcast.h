@@ -10,6 +10,8 @@
 
 #include <cstdint>
 
+class CSessionBroadcastState;
+
 class CBroadcast : public CComponent
 {
 	float m_BroadcastRenderOffset;
@@ -29,7 +31,7 @@ public:
 	void OnWindowResize() override;
 	void OnRender(const CRenderContext &Context) override;
 
-	void DoBroadcast(const char *pText, int Conn);
+	void DoBroadcast(CSessionBroadcastState &Broadcast, const char *pText, int GameTick, int GameTickSpeed);
 };
 
 #endif

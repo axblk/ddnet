@@ -205,6 +205,19 @@ void CGameState::CInputState::Reset()
 	m_LastSendTime = 0;
 }
 
+void CGameState::CInputState::ReleaseGameplay()
+{
+	m_LastData.m_Direction = 0;
+	if((m_LastData.m_Fire & 1) != 0)
+		m_LastData.m_Fire++;
+	m_LastData.m_Fire &= INPUT_STATE_MASK;
+	m_LastData.m_Jump = 0;
+	m_LastData.m_Hook = 0;
+	m_InputData = m_LastData;
+	m_InputDirectionLeft = 0;
+	m_InputDirectionRight = 0;
+}
+
 bool CGameState::CInputState::ApplyStrokedCommand(const char *pCommand, int Stroke, bool BlockGameplayPress)
 {
 	struct CCommand
@@ -694,9 +707,9 @@ void CGameState::RebuildGameWorld()
 	m_GameWorld.NetObjEnd();
 }
 
-void CGameState::Predict(const IClient &Client, int Conn)
+void CGameState::Predict(const IClient &Client, CSessionId SessionId, int Conn)
 {
-	PredictTo(Client.PredGameTick(Conn), [&Client, Conn](int Tick) {
+	PredictTo(Client.PredGameTick(SessionId, Conn), [&Client, Conn](int Tick) {
 		return reinterpret_cast<const CNetObj_PlayerInput *>(Client.GetInput(Conn, Tick));
 	});
 }

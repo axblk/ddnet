@@ -83,7 +83,6 @@ public:
 		LOADING_CALLBACK_DETAIL_DEMO,
 	};
 	typedef std::function<void(ELoadingCallbackDetail Detail)> TLoadingCallback;
-	CTranslationContext m_TranslationContext;
 
 protected:
 	// quick access to state of the client
@@ -133,6 +132,7 @@ public:
 	virtual CSessionId FocusedSessionId() const = 0;
 	virtual CSessionId NetworkSessionId() const = 0;
 	virtual CSessionId DemoSessionId() const = 0;
+	virtual ESessionState SessionState(CSessionId SessionId) const = 0;
 
 	enum
 	{
@@ -165,40 +165,33 @@ public:
 	 * less than `GameTick`).
 	 */
 	virtual int PrevGameTick(CSessionId SessionId, int Conn) const = 0;
-	int PrevGameTick(int Conn) const { return PrevGameTick(FocusedSessionId(), Conn); }
 	/**
 	 * Tick of most recently received snapshot.
 	 */
 	virtual int GameTick(CSessionId SessionId, int Conn) const = 0;
-	int GameTick(int Conn) const { return GameTick(FocusedSessionId(), Conn); }
 	/**
 	 * The tick we should predict to. Comes from a magic black box called
 	 * "smooth time".
 	 */
 	virtual int PredGameTick(CSessionId SessionId, int Conn) const = 0;
-	int PredGameTick(int Conn) const { return PredGameTick(FocusedSessionId(), Conn); }
 	/**
 	 * Linear interpolation parameter between `PrevGameTick` (0) and
 	 * `GameTick` (1). Can be outside the interval [0, 1].
 	 */
 	virtual float IntraGameTick(CSessionId SessionId, int Conn) const = 0;
-	float IntraGameTick(int Conn) const { return IntraGameTick(FocusedSessionId(), Conn); }
 	/**
 	 * Linear interpolation parameter between `PredGameTick - 1` (0) and
 	 * `PredGameTick` (1). Can be outside the interval [0, 1].
 	 */
 	virtual float PredIntraGameTick(CSessionId SessionId, int Conn) const = 0;
-	float PredIntraGameTick(int Conn) const { return PredIntraGameTick(FocusedSessionId(), Conn); }
 	/**
 	 * (Fractional) ticks since `PrevGameTick`.
 	 */
 	virtual float IntraGameTickSincePrev(CSessionId SessionId, int Conn) const = 0;
-	float IntraGameTickSincePrev(int Conn) const { return IntraGameTickSincePrev(FocusedSessionId(), Conn); }
 	/**
 	 * Time in seconds since the second to most recently received snapshot.
 	 */
 	virtual float GameTickTime(CSessionId SessionId, int Conn) const = 0;
-	float GameTickTime(int Conn) const { return GameTickTime(FocusedSessionId(), Conn); }
 	/**
 	 * 50
 	 */
@@ -261,7 +254,7 @@ public:
 	virtual void UpdateAndSwap() = 0;
 
 	// networking
-	virtual void EnterGame(int Conn) = 0;
+	virtual void EnterGame(CSessionId SessionId, int Conn) = 0;
 
 	//
 	virtual const NETADDR &ServerAddress() const = 0;
@@ -287,13 +280,10 @@ public:
 
 	// server info
 	virtual const class CServerInfo &ServerInfo(CSessionId SessionId) const = 0;
-	const CServerInfo &ServerInfo() const { return ServerInfo(FocusedSessionId()); }
 	virtual bool ServerCapAnyPlayerFlag() const = 0;
 
 	virtual int GetPredictionTime(CSessionId SessionId, int Conn) = 0;
-	int GetPredictionTime(int Conn) { return GetPredictionTime(FocusedSessionId(), Conn); }
 	virtual int GetPredictionTick(CSessionId SessionId, int Conn) = 0;
-	int GetPredictionTick(int Conn) { return GetPredictionTick(FocusedSessionId(), Conn); }
 
 	// snapshot interface
 
@@ -306,11 +296,8 @@ public:
 
 	// TODO: Refactor: should redo this a bit i think, too many virtual calls
 	virtual int SnapNumItems(CSessionId SessionId, int Conn, int SnapId) const = 0;
-	int SnapNumItems(int Conn, int SnapId) const { return SnapNumItems(FocusedSessionId(), Conn, SnapId); }
 	virtual const void *SnapFindItem(CSessionId SessionId, int Conn, int SnapId, int Type, int Id) const = 0;
-	const void *SnapFindItem(int Conn, int SnapId, int Type, int Id) const { return SnapFindItem(FocusedSessionId(), Conn, SnapId, Type, Id); }
 	virtual CSnapItem SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const = 0;
-	CSnapItem SnapGetItem(int Conn, int SnapId, int Index) const { return SnapGetItem(FocusedSessionId(), Conn, SnapId, Index); }
 
 	virtual void SnapSetStaticsize(int ItemType, int Size) = 0;
 	virtual void SnapSetStaticsize7(int ItemType, int Size) = 0;
@@ -331,7 +318,6 @@ public:
 	virtual const char *ErrorString() const = 0;
 	virtual const char *LatestVersion() const = 0;
 	virtual bool ConnectionProblems(CSessionId SessionId, int Conn) const = 0;
-	bool ConnectionProblems(int Conn) const { return ConnectionProblems(FocusedSessionId(), Conn); }
 
 	virtual IGraphics::CTextureHandle GetDebugFont() const = 0; // TODO: remove this function
 
@@ -343,7 +329,8 @@ public:
 	void SetReconnectTime(int64_t ReconnectTime) { m_ReconnectTime = ReconnectTime; }
 
 	virtual bool IsSixup(CSessionId SessionId) const = 0;
-	bool IsSixup() const { return IsSixup(FocusedSessionId()); }
+	virtual CTranslationContext &TranslationContext(CSessionId SessionId) = 0;
+	virtual const CTranslationContext &TranslationContext(CSessionId SessionId) const = 0;
 
 	virtual void RaceRecord_Start(const char *pFilename) = 0;
 	virtual void RaceRecord_Stop() = 0;
@@ -368,7 +355,6 @@ public:
 	virtual IFriends *Foes() = 0;
 
 	virtual void GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) = 0;
-	void GetSmoothTick(int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) { GetSmoothTick(FocusedSessionId(), Conn, Now, pSmoothTick, pSmoothIntraTick, MixAmount); }
 
 	virtual void AddWarning(const SWarning &Warning) = 0;
 	virtual std::optional<SWarning> CurrentWarning() = 0;
@@ -416,21 +402,23 @@ public:
 	virtual void OnRconType(bool UsernameReq) = 0;
 	virtual void OnRconLine(const char *pLine) = 0;
 	virtual void OnInit() = 0;
-	virtual void InvalidateSnapshot() = 0;
+	virtual void InvalidateSnapshot(CSessionId SessionId) = 0;
 	virtual void OnNewSnapshot(CSessionId SessionId, int Conn) = 0;
-	virtual void OnEnterGame() = 0;
+	virtual void OnEnterGame(CSessionId SessionId) = 0;
 	virtual void OnShutdown() = 0;
 	virtual void OnRender() = 0;
 	virtual void OnUpdate() = 0;
 	virtual void OnStateChange(int NewState, int OldState) = 0;
-	virtual void OnConnected() = 0;
-	virtual void OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn, bool Dummy) = 0;
-	virtual void OnPredict(int Conn) = 0;
+	virtual void OnConnected(CSessionId SessionId) = 0;
+	virtual void OnSessionClosed(CSessionId SessionId) = 0;
+	virtual void OnSessionFocused(CSessionId SessionId) = 0;
+	virtual void OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn) = 0;
+	virtual void OnPredict(CSessionId SessionId, int Conn) = 0;
 	virtual void OnActivateEditor() = 0;
 	virtual void OnWindowResize() = 0;
 
-	virtual int OnSnapInput(int *pData, int Conn, bool Force) = 0;
-	virtual void OnDummySwap() = 0;
+	virtual int OnSnapInput(CSessionId SessionId, int *pData, int Conn, bool Force) = 0;
+	virtual void OnConnectionFocusChanged(CSessionId SessionId, int PreviousConn, int Conn) = 0;
 	virtual void SendDummyInfo(bool Start) = 0;
 
 	virtual const char *GetItemName(int Type) const = 0;
@@ -456,9 +444,9 @@ public:
 
 	virtual int ClientVersion7() const = 0;
 
-	virtual void ApplySkin7InfoFromSnapObj(const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId, int Conn) = 0;
+	virtual void ApplySkin7InfoFromSnapObj(CSessionId SessionId, const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId, int Conn) = 0;
 	virtual int OnDemoRecSnap7(CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn) = 0;
-	virtual int TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn, bool Dummy) = 0;
+	virtual int TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn) = 0;
 	virtual void ProcessDemoSnapshot(CSnapshot *pSnap) = 0;
 
 	virtual void InitializeLanguage() = 0;

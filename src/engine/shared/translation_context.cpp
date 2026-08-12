@@ -11,7 +11,7 @@ void CTranslationContext::Reset()
 
 	std::fill(std::begin(m_aDamageTaken), std::end(m_aDamageTaken), 0);
 	std::fill(std::begin(m_aDamageTakenTick), std::end(m_aDamageTakenTick), 0);
-	std::fill(std::begin(m_aLocalClientId), std::end(m_aLocalClientId), -1);
+	m_LocalClientIds.Fill(-1);
 
 	m_ShouldSendGameInfo = false;
 	m_GameStateFlags7 = 0;

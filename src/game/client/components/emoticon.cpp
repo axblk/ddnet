@@ -236,7 +236,7 @@ void CEmoticon::Emote(int Emoticon)
 
 void CEmoticon::Emote(int Emoticon, CSessionId SessionId, int Conn)
 {
-	if(SessionId != Client()->NetworkSessionId() || Conn < IClient::CONN_MAIN || Conn >= IClient::NUM_CONNS)
+	if(SessionId != Client()->NetworkSessionId() || SessionId != Client()->FocusedSessionId() || Conn < IClient::CONN_MAIN || Conn >= IClient::NUM_CONNS)
 		return;
 
 	CNetMsg_Cl_Emoticon Msg;
@@ -258,7 +258,7 @@ void CEmoticon::EyeEmote(int Emote)
 
 void CEmoticon::EyeEmote(int Emote, CSessionId SessionId, int Conn)
 {
-	if(SessionId != Client()->NetworkSessionId() || Conn < IClient::CONN_MAIN || Conn >= IClient::NUM_CONNS)
+	if(SessionId != Client()->NetworkSessionId() || SessionId != Client()->FocusedSessionId() || Conn < IClient::CONN_MAIN || Conn >= IClient::NUM_CONNS)
 		return;
 
 	char aBuf[32];

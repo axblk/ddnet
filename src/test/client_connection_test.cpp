@@ -104,6 +104,10 @@ TEST(ClientConnection, DemoStateDoesNotAliasNetworkMain)
 	NetworkMain.m_apSnapshots[IClient::SNAP_CURRENT] = &NetworkSnapshot;
 	Network.SetSixup(false);
 	Demo.SetSixup(true);
+	Network.TranslationContext().m_GameFlags = 10;
+	Demo.TranslationContext().m_GameFlags = 20;
+	Network.SetState(ESessionState::READY);
+	Demo.SetState(ESessionState::READY);
 	str_copy(Network.ServerInfo().m_aMap, "network");
 	str_copy(Demo.ServerInfo().m_aMap, "demo");
 
@@ -115,13 +119,21 @@ TEST(ClientConnection, DemoStateDoesNotAliasNetworkMain)
 	Demo.Connection().m_CurGameTick = 456;
 	Demo.Connection().ResetSnapshots();
 	Demo.ResetMetadata();
+	Demo.RequestStop();
+	EXPECT_EQ(Demo.State(), ESessionState::STOPPING);
+	EXPECT_EQ(Network.State(), ESessionState::READY);
+	Demo.Update();
 
 	EXPECT_EQ(NetworkMain.m_CurGameTick, 123);
 	EXPECT_EQ(NetworkMain.m_apSnapshots[IClient::SNAP_CURRENT], &NetworkSnapshot);
 	EXPECT_FALSE(Network.IsSixup());
 	EXPECT_STREQ(Network.ServerInfo().m_aMap, "network");
+	EXPECT_EQ(Network.TranslationContext().m_GameFlags, 10);
 	EXPECT_FALSE(Demo.IsSixup());
 	EXPECT_EQ(Demo.ServerInfo().m_aMap[0], '\0');
+	EXPECT_EQ(Demo.TranslationContext().m_GameFlags, 0);
+	EXPECT_EQ(Demo.State(), ESessionState::OFFLINE);
+	EXPECT_EQ(Network.State(), ESessionState::READY);
 }
 
 TEST(ClientConnection, StreamValueStorageGrowsWithoutChangingExistingValues)
@@ -139,6 +151,19 @@ TEST(ClientConnection, StreamValueStorageGrowsWithoutChangingExistingValues)
 	Values.Fill(-1);
 	EXPECT_EQ(Values[0], -1);
 	EXPECT_EQ(Values[4], -1);
+}
+
+TEST(ClientConnection, TranslationContextLocalIdsGrowAndReset)
+{
+	CTranslationContext Context;
+	Context.LocalClientId(0) = 10;
+	Context.LocalClientId(2) = 30;
+
+	EXPECT_EQ(Context.LocalClientId(0), 10);
+	EXPECT_EQ(Context.LocalClientId(2), 30);
+	Context.Reset();
+	EXPECT_EQ(Context.LocalClientId(0), -1);
+	EXPECT_EQ(Context.LocalClientId(2), -1);
 }
 
 TEST(ClientConnection, InputRoutesUseExplicitSourceAndTargetStreams)

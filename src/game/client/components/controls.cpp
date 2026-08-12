@@ -71,22 +71,7 @@ void CControls::ResetInput(CStreamId StreamId)
 	dbg_assert(pState != nullptr, "missing game state for input reset");
 	if(!pState)
 		return;
-	CGameState::CInputState &Input = pState->Input();
-	Input.m_LastData.m_Direction = 0;
-	// simulate releasing the fire button
-	if((Input.m_LastData.m_Fire & 1) != 0)
-		Input.m_LastData.m_Fire++;
-	Input.m_LastData.m_Fire &= INPUT_STATE_MASK;
-	Input.m_LastData.m_Jump = 0;
-	Input.m_InputData = Input.m_LastData;
-
-	Input.m_InputDirectionLeft = 0;
-	Input.m_InputDirectionRight = 0;
-}
-
-void CControls::OnPlayerDeath()
-{
-	GameClient()->GameState(GameClient()->ActiveConnection()).Input().m_aAmmoCount.fill(0);
+	pState->Input().ReleaseGameplay();
 }
 
 struct CInputState
@@ -218,7 +203,6 @@ void CControls::OnMessage(int Msg, void *pRawMsg)
 int CControls::SnapInput(int *pData)
 {
 	CGameState::CInputState &Input = GameClient()->GameState(GameClient()->ActiveConnection()).Input();
-	CGameState::CInputState &OtherInput = GameClient()->GameState(GameClient()->OtherConnection()).Input();
 	// update player state
 	if(GameClient()->m_Chat.IsActive())
 		Input.m_InputData.m_PlayerFlags = PLAYERFLAG_CHATTING;
@@ -271,6 +255,7 @@ int CControls::SnapInput(int *pData)
 	}
 	else
 	{
+		const CStreamId Source = GameClient()->GameState(GameClient()->ActiveConnection()).StreamId();
 		Input.m_InputData.m_TargetX = (int)Input.m_MousePos.x;
 		Input.m_InputData.m_TargetY = (int)Input.m_MousePos.y;
 
@@ -295,7 +280,6 @@ int CControls::SnapInput(int *pData)
 			Input.m_InputData.m_Direction = 1;
 
 		// dummy copy moves
-		const CStreamId Source = GameClient()->GameState(GameClient()->ActiveConnection()).StreamId();
 		for(const CStreamInputRoute &Route : GameClient()->SessionContext().InputRouter().Routes())
 		{
 			if(Route.m_Policy != EStreamInputPolicy::COPY_MOVES || Route.m_Source != Source)
@@ -327,15 +311,20 @@ int CControls::SnapInput(int *pData)
 
 		if(g_Config.m_ClDummyControl)
 		{
-			CNetObj_PlayerInput *pDummyInput = &OtherInput.m_InputData;
-			pDummyInput->m_Jump = g_Config.m_ClDummyJump;
+			for(const auto &pState : GameClient()->SessionContext().GameStates().States())
+			{
+				if(pState->StreamId() == Source)
+					continue;
+				CNetObj_PlayerInput &OtherInput = pState->Input().m_InputData;
+				OtherInput.m_Jump = g_Config.m_ClDummyJump;
 
-			if(g_Config.m_ClDummyFire)
-				pDummyInput->m_Fire = g_Config.m_ClDummyFire;
-			else if((pDummyInput->m_Fire & 1) != 0)
-				pDummyInput->m_Fire++;
+				if(g_Config.m_ClDummyFire)
+					OtherInput.m_Fire = g_Config.m_ClDummyFire;
+				else if((OtherInput.m_Fire & 1) != 0)
+					OtherInput.m_Fire++;
 
-			pDummyInput->m_Hook = g_Config.m_ClDummyHook;
+				OtherInput.m_Hook = g_Config.m_ClDummyHook;
+			}
 		}
 
 		// stress testing

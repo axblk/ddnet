@@ -10,6 +10,7 @@
 class CGameState;
 class CGameTickInfo;
 class CPresentationContext;
+class CSessionId;
 
 class CEffects : public CComponent
 {
@@ -26,7 +27,7 @@ public:
 	void AirJump(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha, float Volume);
 	void DamageIndicator(CGameState &State, vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha);
 	void PlayerSpawn(CGameState &State, vec2 Pos, float Alpha, float Volume);
-	void PlayerDeath(CGameState &State, vec2 Pos, int ClientId, float Alpha);
+	void PlayerDeath(CSessionId SessionId, CGameState &State, vec2 Pos, int ClientId, float Alpha);
 	void PowerupShine(CGameState &State, vec2 Pos, vec2 Size, int OwnerClientId, float Alpha);
 	void FreezingFlakes(CGameState &State, vec2 Pos, vec2 Size, int OwnerClientId, float Alpha);
 	void SparkleTrail(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha);

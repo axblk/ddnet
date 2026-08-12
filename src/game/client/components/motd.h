@@ -10,6 +10,8 @@
 
 #include <cstdint>
 
+class CGameSessionContext;
+
 class CMotd : public CComponent
 {
 	int m_RectQuadContainer = -1;
@@ -29,7 +31,7 @@ public:
 	const char *ServerMotd() const;
 	uint64_t ServerMotdRevision() const;
 	void Clear();
-	void DoMotd(const char *pText);
+	void DoMotd(CGameSessionContext &Session, const char *pText, bool Show);
 	bool IsActive() const;
 
 	void OnUpdate() override;

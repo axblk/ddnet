@@ -8,6 +8,7 @@
 #include <engine/client/enums.h>
 #include <engine/serverbrowser.h>
 #include <engine/shared/demo.h>
+#include <engine/shared/translation_context.h>
 
 #include <memory>
 #include <vector>
@@ -18,6 +19,7 @@ class CSessionSourceBase : public IGameSessionSource
 	std::string m_Error;
 	CServerInfo m_ServerInfo = {};
 	bool m_Sixup = false;
+	CTranslationContext m_TranslationContext;
 
 public:
 	ESessionState State() const override { return m_State; }
@@ -30,10 +32,13 @@ public:
 	const CServerInfo &ServerInfo() const { return m_ServerInfo; }
 	bool IsSixup() const { return m_Sixup; }
 	void SetSixup(bool Sixup) { m_Sixup = Sixup; }
+	CTranslationContext &TranslationContext() { return m_TranslationContext; }
+	const CTranslationContext &TranslationContext() const { return m_TranslationContext; }
 	void ResetMetadata()
 	{
 		m_ServerInfo = {};
 		m_Sixup = false;
+		m_TranslationContext.Reset();
 	}
 };
 

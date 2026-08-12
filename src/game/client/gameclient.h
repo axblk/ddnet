@@ -178,15 +178,18 @@ private:
 	CGameViewManager m_GameViews;
 	CGameViewId m_LegacyGameViewId;
 	CGameViewId m_SecondaryGameViewId;
+	CGameViewId m_TertiaryGameViewId;
 	CUi m_UI;
 	CRaceHelper m_RaceHelper;
 
-	void ProcessEvents(CSessionId SessionId);
-	void ProcessSnapshot(CSessionId SessionId);
+	void ProcessEvents(CSessionId SessionId, int Conn);
+	void ProcessSnapshot(CSessionId SessionId, int Conn);
 	void ProcessPrediction();
 	void UpdatePositions(const CGameState &State);
+	void BindLegacyWorld(CGameSessionContext &Session);
 	void AddChatLine(CSessionId SessionId, int Conn, int ClientId, int Team, const char *pText);
-	const CLocalPlayerProfile &RefreshLegacyPlayerProfile(int Conn);
+	int64_t SessionMessageTime(CSessionId SessionId) const;
+	const CLocalPlayerProfile &RefreshLegacyPlayerProfile(CSessionId SessionId, int Conn);
 
 	int m_EditorMovementDelay = 5;
 	void UpdateEditorIngameMoved();
@@ -217,8 +220,7 @@ public:
 	IEngine *Engine() const { return m_pEngine; }
 	class IGraphics *Graphics() const { return m_pGraphics; }
 	class IClient *Client() const { return m_pClient; }
-	int ActiveConnection() const { return Client()->ActiveConnection(); }
-	int OtherConnection() const { return ActiveConnection() == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN; }
+	int ActiveConnection() const { return Client()->FocusedSessionId() == Client()->DemoSessionId() ? IClient::CONN_MAIN : Client()->ActiveConnection(); }
 	CGameSessionContext &SessionContext();
 	const CGameSessionContext &SessionContext() const;
 	CGameSessionContext *FindSessionContext(CSessionId SessionId) { return m_SessionContexts.Find(SessionId); }
@@ -281,12 +283,12 @@ public:
 
 	/**
 	 * Our prediction for the local character at tick
-	 * `IClient::PredGameTick() - 1`.
+	 * `IClient::PredGameTick(SessionId, Conn) - 1`.
 	 */
 	CCharacterCore m_PredictedPrevChar;
 	/**
 	 * Our prediction for the local character at tick
-	 * `IClient::PredGameTick()`.
+	 * `IClient::PredGameTick(SessionId, Conn)`.
 	 */
 	CCharacterCore m_PredictedChar;
 
@@ -413,12 +415,12 @@ public:
 
 	bool m_BackButtonHandledKeyBind = false;
 
-	void OnReset();
-
 	size_t ComponentCount() const { return m_vpAll.size(); }
 
 	// hooks
-	void OnConnected() override;
+	void OnConnected(CSessionId SessionId) override;
+	void OnSessionClosed(CSessionId SessionId) override;
+	void OnSessionFocused(CSessionId SessionId) override;
 	void OnRender() override;
 	void OnUpdate() override;
 	void OnDummyDisconnect() override;
@@ -427,20 +429,20 @@ public:
 	void OnConsoleInit() override;
 	void OnStateChange(int NewState, int OldState) override;
 	template<typename T>
-	void ApplySkin7InfoFromGameMsg(const T *pMsg, int ClientId, CGameState &State);
-	void ApplySkin7InfoFromSnapObj(const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId, int Conn) override;
+	void ApplySkin7InfoFromGameMsg(CSessionId SessionId, const T *pMsg, int ClientId, CGameState &State);
+	void ApplySkin7InfoFromSnapObj(CSessionId SessionId, const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId, int Conn) override;
 	int OnDemoRecSnap7(CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn) override;
-	void *TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker *pUnpacker, int Conn, bool Dummy);
-	int TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn, bool Dummy) override;
-	void OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn, bool Dummy) override;
-	void InvalidateSnapshot() override;
+	void *TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker *pUnpacker, int Conn);
+	int TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn) override;
+	void OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn) override;
+	void InvalidateSnapshot(CSessionId SessionId) override;
 	void OnNewSnapshot(CSessionId SessionId, int Conn) override;
-	void OnPredict(int Conn) override;
+	void OnPredict(CSessionId SessionId, int Conn) override;
 	void OnActivateEditor() override;
-	void OnDummySwap() override;
-	int OnSnapInput(int *pData, int Conn, bool Force) override;
+	void OnConnectionFocusChanged(CSessionId SessionId, int PreviousConn, int Conn) override;
+	int OnSnapInput(CSessionId SessionId, int *pData, int Conn, bool Force) override;
 	void OnShutdown() override;
-	void OnEnterGame() override;
+	void OnEnterGame(CSessionId SessionId) override;
 	void OnRconType(bool UsernameReq) override;
 	void OnRconLine(const char *pLine) override;
 	virtual void OnGameOver();
@@ -478,11 +480,11 @@ public:
 	// actions
 	// TODO: move these
 	void SendSwitchTeam(int Team) const;
-	void SendStartInfo7(bool Dummy);
-	void SendSkinChange7(bool Dummy);
+	void SendStartInfo7(CSessionId SessionId, int Conn);
+	void SendSkinChange7(CSessionId SessionId, int Conn);
 	// Returns true if the requested skin change got applied by the server
-	bool GotWantedSkin7(bool Dummy);
-	void SendInfo(bool Start);
+	bool GotWantedSkin7(int Conn);
+	void SendInfo(CSessionId SessionId, bool Start);
 	void SendDummyInfo(bool Start) override;
 	void SendKill() const;
 	void SendReadyChange7(); // NOLINT(readability-make-member-function-const)
@@ -493,8 +495,6 @@ public:
 
 	const CTeamsCore &FocusedTeams() const { return GameState(ActiveConnection()).Teams(); }
 	const CGameInfo &FocusedGameInfo() const { return GameState(ActiveConnection()).CoreGameInfo(); }
-
-	int IntersectCharacter(vec2 HookPos, vec2 NewPos, vec2 &NewPos2, int OwnId, vec2 *pPlayerPosition = nullptr);
 
 	int LastRaceTick() const;
 	int CurrentRaceTime() const;
@@ -513,7 +513,7 @@ public:
 	bool AntiPingWeapons() const;
 	bool AntiPingGunfire() const;
 	bool Predict() const;
-	bool PredictDummy() const;
+	bool PredictDummy(const CGameState &OtherState) const;
 
 	const CTuningParams *GetTuning(int i) const { return &MapContext().TuningList()[i]; }
 	ColorRGBA GetDDTeamColor(int DDTeam, float Lightness = 0.5f) const;
@@ -730,7 +730,7 @@ public:
 
 private:
 	std::vector<CSnapEntities> m_vSnapEntities;
-	void SnapCollectEntities();
+	void SnapCollectEntities(CSessionId SessionId, int Conn);
 
 	class CImageAsset
 	{
@@ -748,8 +748,8 @@ private:
 	std::vector<std::shared_ptr<CManagedTeeRenderInfo>> m_vpManagedTeeRenderInfos;
 	void UpdateManagedTeeRenderInfos();
 
-	void UpdateInputRoutes();
-	void UpdateLocalTuning();
+	void UpdateInputRoutes(CSessionId SessionId);
+	void UpdateLocalTuning(CSessionId SessionId, CGameSessionContext &Session, CGameState &State, int Conn);
 	void UpdatePrediction();
 	void UpdateRenderedClients(const CGameSessionContext &Session, CGameState &State, int Conn, int64_t Now, const CGameTickInfo &Time, EPresentationPlayback Playback);
 	void UpdateSpectatorCursor(const CGameState &State, const CGameTickInfo &Time);

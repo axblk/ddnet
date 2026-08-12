@@ -42,7 +42,9 @@ const CSessionVoteState &CVoting::VoteState() const
 
 void CVoting::Callvote(const char *pType, const char *pValue, const char *pReason)
 {
-	if(Client()->IsSixup())
+	if(Client()->FocusedSessionId() != Client()->NetworkSessionId())
+		return;
+	if(Client()->IsSixup(Client()->NetworkSessionId()))
 	{
 		protocol7::CNetMsg_Cl_CallVote Msg;
 		Msg.m_pType = pType;
@@ -61,6 +63,8 @@ void CVoting::Callvote(const char *pType, const char *pValue, const char *pReaso
 
 void CVoting::CallvoteSpectate(int ClientId, const char *pReason, bool ForceVote)
 {
+	if(Client()->FocusedSessionId() != Client()->NetworkSessionId())
+		return;
 	if(ForceVote)
 	{
 		char aBuf[128];
@@ -77,6 +81,8 @@ void CVoting::CallvoteSpectate(int ClientId, const char *pReason, bool ForceVote
 
 void CVoting::CallvoteKick(int ClientId, const char *pReason, bool ForceVote)
 {
+	if(Client()->FocusedSessionId() != Client()->NetworkSessionId())
+		return;
 	if(ForceVote)
 	{
 		char aBuf[128];
@@ -93,6 +99,8 @@ void CVoting::CallvoteKick(int ClientId, const char *pReason, bool ForceVote)
 
 void CVoting::CallvoteOption(int OptionId, const char *pReason, bool ForceVote)
 {
+	if(Client()->FocusedSessionId() != Client()->NetworkSessionId())
+		return;
 	const std::string *pOption = VoteState().Option(OptionId);
 	if(!pOption)
 		return;
@@ -114,6 +122,8 @@ void CVoting::CallvoteOption(int OptionId, const char *pReason, bool ForceVote)
 
 void CVoting::RemovevoteOption(int OptionId)
 {
+	if(Client()->FocusedSessionId() != Client()->NetworkSessionId())
+		return;
 	const std::string *pOption = VoteState().Option(OptionId);
 	if(!pOption)
 		return;
@@ -127,6 +137,8 @@ void CVoting::RemovevoteOption(int OptionId)
 
 void CVoting::AddvoteOption(const char *pDescription, const char *pCommand)
 {
+	if(Client()->FocusedSessionId() != Client()->NetworkSessionId())
+		return;
 	char aBuf[128] = "add_vote \"";
 	char *pDst = aBuf + str_length(aBuf);
 	str_escape(&pDst, pDescription, aBuf + sizeof(aBuf));
@@ -139,6 +151,8 @@ void CVoting::AddvoteOption(const char *pDescription, const char *pCommand)
 
 void CVoting::Vote(int v)
 {
+	if(Client()->FocusedSessionId() != Client()->NetworkSessionId())
+		return;
 	CNetMsg_Cl_Vote Msg = {v};
 	Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL);
 }

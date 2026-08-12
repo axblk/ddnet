@@ -264,7 +264,7 @@ void CMenuBackground::LoadMenuBackground(bool HasDayHint, bool HasNightHint)
 		{
 			m_pLayers->Init(m_pMap, true, true);
 
-			m_pBackgroundImages->Load(m_pLayers, m_pMap, Client()->IsSixup());
+			m_pBackgroundImages->Load(m_pLayers, m_pMap, Client()->IsSixup(Client()->FocusedSessionId()));
 			CMapLayers::Load(m_pLayers, m_pBackgroundImages);
 
 			// look for custom positions

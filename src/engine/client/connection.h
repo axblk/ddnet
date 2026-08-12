@@ -35,6 +35,7 @@ public:
 	bool m_DidPostConnect = false;
 
 	CSmoothTime m_GameTime;
+	CSmoothTime m_PredictedTime;
 	CInput m_aInputs[200];
 	int m_CurrentInput = 0;
 	CGraph m_InputtimeMarginGraph;
@@ -60,6 +61,7 @@ public:
 	{
 		m_SnapshotStorage.Init();
 		m_GameTime.Init(0);
+		m_PredictedTime.Init(0);
 	}
 
 	void ResetInput()
@@ -91,6 +93,23 @@ public:
 		m_PredTick = 0;
 		m_PredIntraTick = 0.0f;
 		m_GameTime.Init(0);
+		m_PredictedTime.Init(0);
+	}
+
+	int UpdateTiming(int64_t GameNow, int64_t PredNow, int TickSpeed, int64_t Frequency)
+	{
+		const int64_t CurTickStart = m_CurGameTick * Frequency / TickSpeed;
+		const int64_t PrevTickStart = m_PrevGameTick * Frequency / TickSpeed;
+		const int PrevPredTick = static_cast<int>(PredNow * TickSpeed / Frequency);
+		const int NewPredTick = PrevPredTick + 1;
+
+		m_GameIntraTick = static_cast<float>(GameNow - PrevTickStart) / static_cast<float>(CurTickStart - PrevTickStart);
+		m_GameTickTime = static_cast<float>(GameNow - PrevTickStart) / static_cast<float>(Frequency);
+		m_GameIntraTickSincePrev = static_cast<float>(GameNow - PrevTickStart) / static_cast<float>(Frequency / TickSpeed);
+		const int64_t CurPredTickStart = NewPredTick * Frequency / TickSpeed;
+		const int64_t PrevPredTickStart = PrevPredTick * Frequency / TickSpeed;
+		m_PredIntraTick = static_cast<float>(PredNow - PrevPredTickStart) / static_cast<float>(CurPredTickStart - PrevPredTickStart);
+		return NewPredTick;
 	}
 
 	void ResetGameplay()

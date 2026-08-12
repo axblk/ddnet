@@ -177,6 +177,7 @@ private:
 	CGameSessionContextManager m_SessionContexts;
 	CGameViewManager m_GameViews;
 	CGameViewId m_LegacyGameViewId;
+	CGameViewId m_SecondaryGameViewId;
 	CUi m_UI;
 	CRaceHelper m_RaceHelper;
 
@@ -738,7 +739,7 @@ private:
 	void UpdateInputRoutes();
 	void UpdateLocalTuning();
 	void UpdatePrediction();
-	void UpdateRenderedClients(const CGameSessionContext &Session, CGameState &State, int Conn, const CGameTickInfo &Time, EPresentationPlayback Playback);
+	void UpdateRenderedClients(const CGameSessionContext &Session, CGameState &State, int Conn, int64_t Now, const CGameTickInfo &Time, EPresentationPlayback Playback);
 	void UpdateSpectatorCursor(const CGameState &State, const CGameTickInfo &Time);
 	void HandlePredictedEvents(int Tick);
 
@@ -746,7 +747,7 @@ private:
 
 	void DetectStrongHook(CGameState::CRuntimeState &Runtime);
 
-	vec2 GetSmoothPos(const CGameState &State, int Conn, int ClientId, const CCharacterCore &Prev, const CCharacterCore &Current);
+	vec2 GetSmoothPos(const CGameState &State, int Conn, int ClientId, int64_t Now, const CCharacterCore &Prev, const CCharacterCore &Current);
 
 	std::optional<CStreamId> m_PreviousFocusedStream;
 

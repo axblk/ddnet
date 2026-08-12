@@ -283,7 +283,7 @@ public:
 	virtual bool ServerCapAnyPlayerFlag() const = 0;
 
 	virtual int GetPredictionTime(int Conn) = 0;
-	virtual int GetPredictionTick() = 0;
+	virtual int GetPredictionTick(int Conn) = 0;
 
 	// snapshot interface
 
@@ -317,7 +317,7 @@ public:
 	virtual const char *DummyName() = 0;
 	virtual const char *ErrorString() const = 0;
 	virtual const char *LatestVersion() const = 0;
-	virtual bool ConnectionProblems() const = 0;
+	virtual bool ConnectionProblems(int Conn) const = 0;
 
 	virtual IGraphics::CTextureHandle GetDebugFont() const = 0; // TODO: remove this function
 
@@ -352,7 +352,7 @@ public:
 
 	virtual IFriends *Foes() = 0;
 
-	virtual void GetSmoothTick(int Conn, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) = 0;
+	virtual void GetSmoothTick(int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) = 0;
 
 	virtual void AddWarning(const SWarning &Warning) = 0;
 	virtual std::optional<SWarning> CurrentWarning() = 0;

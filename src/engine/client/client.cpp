@@ -124,8 +124,6 @@ CClient::CClient() :
 	mem_zero(m_aDemorecSnapshotHolders, sizeof(m_aDemorecSnapshotHolders));
 	m_CurrentServerInfo = {};
 	mem_zero(&m_Checksum, sizeof(m_Checksum));
-	m_PredictedTime.Init(0);
-
 	m_Sixup = false;
 }
 
@@ -332,9 +330,9 @@ float CClient::GotMaplistPercentage() const
 	return (float)m_vMaplistEntries.size() / (float)m_ExpectedMaplistEntries;
 }
 
-bool CClient::ConnectionProblems() const
+bool CClient::ConnectionProblems(int Conn) const
 {
-	return NetClient(ActiveConnection()).GotProblems(MaxLatencyTicks() * time_freq() / GameTickSpeed());
+	return NetClient(Conn).GotProblems(MaxLatencyTicks() * time_freq() / GameTickSpeed());
 }
 
 void CClient::SendInput()
@@ -358,6 +356,8 @@ void CClient::SendInput()
 			break;
 		}
 		CConnection &GameConnection = Connection(Conn);
+		if(GameConnection.m_PredTick <= 0)
+			continue;
 		int Size = GameClient()->OnSnapInput(GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_aData, Conn, Force);
 
 		if(Size)
@@ -365,11 +365,11 @@ void CClient::SendInput()
 			// pack input
 			CMsgPacker Msg(NETMSG_INPUT, true);
 			Msg.AddInt(GameConnection.m_AckGameTick);
-			Msg.AddInt(Connection(ActiveConn).m_PredTick);
+			Msg.AddInt(GameConnection.m_PredTick);
 			Msg.AddInt(Size);
 
-			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_Tick = Connection(ActiveConn).m_PredTick;
-			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_PredictedTime = m_PredictedTime.Get(Now);
+			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_Tick = GameConnection.m_PredTick;
+			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_PredictedTime = GameConnection.m_PredictedTime.Get(Now);
 			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_PredictionMargin = PredictionMargin() * time_freq() / 1000;
 			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_Time = Now;
 
@@ -513,8 +513,6 @@ void CClient::OnEnterGame(int Conn)
 	m_SnapCrcErrors = 0;
 	// Also make gameclient aware that snapshots have been purged
 	GameClient()->InvalidateSnapshot();
-	m_PredictedTime.Init(0);
-
 	if(Conn == CONN_MAIN)
 	{
 		m_LastDummyConnectTime = 0.0f;
@@ -2085,7 +2083,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn)
 			}
 
 			if(Target)
-				m_PredictedTime.Update(&Connection(Conn).m_InputtimeMarginGraph, Target, TimeLeft, CSmoothTime::ADJUSTDIRECTION_UP);
+				Connection(Conn).m_PredictedTime.Update(&Connection(Conn).m_InputtimeMarginGraph, Target, TimeLeft, CSmoothTime::ADJUSTDIRECTION_UP);
 		}
 		else if(Msg == NETMSG_SNAP || Msg == NETMSG_SNAPSINGLE || Msg == NETMSG_SNAPEMPTY)
 		{
@@ -2287,12 +2285,9 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn)
 					if(Connection(Conn).m_ReceivedSnapshots == 2)
 					{
 						// start at 200ms and work from there
-						if(!Dummy)
-						{
-							m_PredictedTime.Init(GameTick * time_freq() / GameTickSpeed());
-							m_PredictedTime.SetAdjustSpeed(CSmoothTime::ADJUSTDIRECTION_UP, 1000.0f);
-							m_PredictedTime.UpdateMargin(PredictionMargin() * time_freq() / 1000);
-						}
+						Connection(Conn).m_PredictedTime.Init(GameTick * time_freq() / GameTickSpeed());
+						Connection(Conn).m_PredictedTime.SetAdjustSpeed(CSmoothTime::ADJUSTDIRECTION_UP, 1000.0f);
+						Connection(Conn).m_PredictedTime.UpdateMargin(PredictionMargin() * time_freq() / 1000);
 						Connection(Conn).m_GameTime.Init((GameTick - 1) * time_freq() / GameTickSpeed());
 						Connection(Conn).m_apSnapshots[SNAP_PREV] = Connection(Conn).m_SnapshotStorage.m_pFirst;
 						Connection(Conn).m_apSnapshots[SNAP_CURRENT] = Connection(Conn).m_SnapshotStorage.m_pLast;
@@ -2848,6 +2843,8 @@ void CClient::Update()
 		const int OtherConn = ActiveConn == CONN_MAIN ? CONN_DUMMY : CONN_MAIN;
 		CConnection &ActiveGameConnection = Connection(ActiveConn);
 		CConnection &OtherGameConnection = Connection(OtherConn);
+		bool ActiveRepredict = false;
+		bool OtherRepredict = false;
 		if(m_LastActiveConnection != ActiveConn)
 		{
 			// Invalidate references to !m_ClDummy snapshots
@@ -2874,21 +2871,36 @@ void CClient::Update()
 				OtherGameConnection.m_CurGameTick = OtherGameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
 				OtherGameConnection.m_PrevGameTick = OtherGameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
 				GameClient()->OnNewSnapshot(m_NetworkSessionId, OtherConn);
+				OtherRepredict = true;
+			}
+			if(OtherGameConnection.m_apSnapshots[SNAP_PREV])
+			{
+				const int64_t CurTickStart = OtherGameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
+				const int NewPredTick = OtherGameConnection.UpdateTiming(Now, OtherGameConnection.m_PredictedTime.Get(time_get()), GameTickSpeed(), time_freq());
+				if(absolute(NewPredTick - OtherGameConnection.m_apSnapshots[SNAP_PREV]->m_Tick) > MaxLatencyTicks())
+				{
+					m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", "prediction time reset!");
+					OtherGameConnection.m_PredictedTime.Init(CurTickStart + 2 * time_freq() / GameTickSpeed());
+				}
+				if(NewPredTick > OtherGameConnection.m_PredTick)
+				{
+					OtherGameConnection.m_PredTick = NewPredTick;
+					OtherRepredict = true;
+				}
 			}
 		}
 
 		if(ActiveGameConnection.m_apSnapshots[SNAP_CURRENT])
 		{
 			// switch snapshot
-			bool Repredict = false;
 			int64_t Now = ActiveGameConnection.m_GameTime.Get(time_get());
-			int64_t PredNow = m_PredictedTime.Get(time_get());
+			int64_t PredNow = ActiveGameConnection.m_PredictedTime.Get(time_get());
 
 			if(m_LastActiveConnection != ActiveConn && ActiveGameConnection.m_apSnapshots[SNAP_PREV])
 			{
 				// Load snapshot for m_ClDummy
 				GameClient()->OnNewSnapshot(m_NetworkSessionId, ActiveConn);
-				Repredict = true;
+				ActiveRepredict = true;
 			}
 
 			while(true)
@@ -2907,45 +2919,28 @@ void CClient::Update()
 				ActiveGameConnection.m_PrevGameTick = ActiveGameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
 
 				GameClient()->OnNewSnapshot(m_NetworkSessionId, ActiveConn);
-				Repredict = true;
+				ActiveRepredict = true;
 			}
 
 			if(ActiveGameConnection.m_apSnapshots[SNAP_PREV])
 			{
 				int64_t CurTickStart = ActiveGameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
-				int64_t PrevTickStart = ActiveGameConnection.m_apSnapshots[SNAP_PREV]->m_Tick * time_freq() / GameTickSpeed();
-				int PrevPredTick = (int)(PredNow * GameTickSpeed() / time_freq());
-				int NewPredTick = PrevPredTick + 1;
-
-				ActiveGameConnection.m_GameIntraTick = (Now - PrevTickStart) / (float)(CurTickStart - PrevTickStart);
-				ActiveGameConnection.m_GameTickTime = (Now - PrevTickStart) / (float)time_freq();
-				ActiveGameConnection.m_GameIntraTickSincePrev = (Now - PrevTickStart) / (float)(time_freq() / GameTickSpeed());
-
-				int64_t CurPredTickStart = NewPredTick * time_freq() / GameTickSpeed();
-				int64_t PrevPredTickStart = PrevPredTick * time_freq() / GameTickSpeed();
-				ActiveGameConnection.m_PredIntraTick = (PredNow - PrevPredTickStart) / (float)(CurPredTickStart - PrevPredTickStart);
+				const int NewPredTick = ActiveGameConnection.UpdateTiming(Now, PredNow, GameTickSpeed(), time_freq());
 
 				if(absolute(NewPredTick - ActiveGameConnection.m_apSnapshots[SNAP_PREV]->m_Tick) > MaxLatencyTicks())
 				{
 					m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", "prediction time reset!");
-					m_PredictedTime.Init(CurTickStart + 2 * time_freq() / GameTickSpeed());
+					ActiveGameConnection.m_PredictedTime.Init(CurTickStart + 2 * time_freq() / GameTickSpeed());
 				}
 
 				if(NewPredTick > ActiveGameConnection.m_PredTick)
 				{
 					ActiveGameConnection.m_PredTick = NewPredTick;
-					Repredict = true;
+					ActiveRepredict = true;
 
 					// send input
 					SendInput();
 				}
-			}
-
-			// only do sane predictions
-			if(Repredict)
-			{
-				if(ActiveGameConnection.m_PredTick > ActiveGameConnection.m_CurGameTick && ActiveGameConnection.m_PredTick < ActiveGameConnection.m_CurGameTick + MaxLatencyTicks())
-					GameClient()->OnPredict(ActiveConn);
 			}
 
 			// fetch server info if we don't have it
@@ -2982,6 +2977,12 @@ void CClient::Update()
 				m_CurrentServerNextPingTime = NowPing + 600 * Freq; // ping every 10 minutes
 			}
 		}
+
+		// Predict after SendInput generated the input for both connections.
+		if(OtherRepredict && OtherGameConnection.m_PredTick > OtherGameConnection.m_CurGameTick && OtherGameConnection.m_PredTick < OtherGameConnection.m_CurGameTick + MaxLatencyTicks())
+			GameClient()->OnPredict(OtherConn);
+		if(ActiveRepredict && ActiveGameConnection.m_PredTick > ActiveGameConnection.m_CurGameTick && ActiveGameConnection.m_PredTick < ActiveGameConnection.m_CurGameTick + MaxLatencyTicks())
+			GameClient()->OnPredict(ActiveConn);
 
 		if(m_DummyDeactivateOnReconnect && ActiveConn == CONN_DUMMY)
 		{
@@ -3111,7 +3112,8 @@ void CClient::Update()
 		m_ReconnectTime = 0;
 	}
 
-	m_PredictedTime.UpdateMargin(PredictionMargin() * time_freq() / 1000);
+	for(const auto &pStream : m_pNetworkSessionSource->Streams())
+		pStream->m_Connection.m_PredictedTime.UpdateMargin(PredictionMargin() * time_freq() / 1000);
 }
 
 void CClient::RegisterInterfaces()
@@ -5327,12 +5329,12 @@ void CClient::RequestDDNetInfo()
 int CClient::GetPredictionTime(int Conn)
 {
 	int64_t Now = time_get();
-	return (int)((m_PredictedTime.Get(Now) - Connection(Conn).m_GameTime.Get(Now)) * 1000 / (float)time_freq());
+	return (int)((Connection(Conn).m_PredictedTime.Get(Now) - Connection(Conn).m_GameTime.Get(Now)) * 1000 / (float)time_freq());
 }
 
-int CClient::GetPredictionTick()
+int CClient::GetPredictionTick(int Conn)
 {
-	int PredictionTick = GetPredictionTime(ActiveConnection()) * GameTickSpeed() / 1000.0f;
+	int PredictionTick = GetPredictionTime(Conn) * GameTickSpeed() / 1000.0f;
 
 	int PredictionMin = g_Config.m_ClAntiPingLimit * GameTickSpeed() / 1000.0f;
 
@@ -5348,22 +5350,21 @@ int CClient::GetPredictionTick()
 	}
 
 	if(PredictionMin <= 0)
-		return PredGameTick(ActiveConnection());
+		return PredGameTick(Conn);
 
-	PredictionTick = PredGameTick(ActiveConnection()) - PredictionMin;
+	PredictionTick = PredGameTick(Conn) - PredictionMin;
 
-	if(PredictionTick < GameTick(ActiveConnection()) + 1)
+	if(PredictionTick < GameTick(Conn) + 1)
 	{
-		PredictionTick = GameTick(ActiveConnection()) + 1;
+		PredictionTick = GameTick(Conn) + 1;
 	}
 	return PredictionTick;
 }
 
-void CClient::GetSmoothTick(int Conn, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount)
+void CClient::GetSmoothTick(int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount)
 {
-	const int64_t Now = time_get();
 	int64_t GameTime = Connection(Conn).m_GameTime.Get(Now);
-	int64_t PredTime = m_PredictedTime.Get(Now);
+	int64_t PredTime = Connection(Conn).m_PredictedTime.Get(Now);
 	int64_t SmoothTime = std::clamp(GameTime + (int64_t)(MixAmount * (PredTime - GameTime)), GameTime, PredTime);
 
 	*pSmoothTick = (int)(SmoothTime * GameTickSpeed() / time_freq()) + 1;

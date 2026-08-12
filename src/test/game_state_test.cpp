@@ -1475,12 +1475,11 @@ TEST(GameView, SchedulerUpdatesEachStateBeforeRenderingExplicitOutputs)
 
 	CTestRenderOutput MainLeftOutput;
 	CTestRenderOutput DemoOffscreenOutput;
-	CTestRenderOutput DummyOutput;
 	CTestRenderOutput MainRightOutput;
 	const std::array aRequests = {
 		CGameRenderRequest(Network, *pMainState, *pMainLeft, MainTime, CVisibleWorldRect(vec2(0.0f, 0.0f), vec2(100.0f, 100.0f)), EPresentationPlayback::PLAYING, EPresentationAudio::MUTED, MainLeftOutput),
 		CGameRenderRequest(Demo, *pDemoState, *pDemoView, DemoTime, CVisibleWorldRect(vec2(400.0f, 400.0f), vec2(500.0f, 500.0f)), EPresentationPlayback::PAUSED, EPresentationAudio::MUTED, DemoOffscreenOutput),
-		CGameRenderRequest(Network, *pDummyState, *pDummyView, DummyTime, CVisibleWorldRect(vec2(-200.0f, -200.0f), vec2(-100.0f, -100.0f)), EPresentationPlayback::PLAYING, EPresentationAudio::MUTED, DummyOutput),
+		CGameRenderRequest(Network, *pDummyState, *pDummyView, DummyTime, CVisibleWorldRect(vec2(-200.0f, -200.0f), vec2(-100.0f, -100.0f)), EPresentationPlayback::PLAYING, EPresentationAudio::MUTED, MainLeftOutput),
 		CGameRenderRequest(Network, *pMainState, *pMainRight, MainTime, CVisibleWorldRect(vec2(200.0f, 200.0f), vec2(300.0f, 300.0f)), EPresentationPlayback::PLAYING, EPresentationAudio::AUDIBLE, MainRightOutput),
 	};
 	const CGameRenderRequest *pAudibleRequest = FindAudibleRenderRequest(aRequests);
@@ -1516,6 +1515,12 @@ TEST(GameView, SchedulerUpdatesEachStateBeforeRenderingExplicitOutputs)
 				EXPECT_FLOAT_EQ(Context.m_Time.m_AnimationPlaybackSpeed, 0.0f);
 				EXPECT_TRUE(Context.m_Time.m_IsDemoPlayback);
 			}
+			else if(&Context.m_State == pDummyState)
+			{
+				EXPECT_EQ(Context.m_Time.m_GameTick, 60);
+				EXPECT_EQ(Context.m_Time.m_PresentationTime, 2000);
+				EXPECT_EQ(Context.m_Audio, EPresentationAudio::MUTED);
+			}
 		},
 		[&](const CRenderContext &Context, CRenderOutput &Output) {
 			EXPECT_EQ(vpUpdatedStates.size(), 3U);
@@ -1538,15 +1543,17 @@ TEST(GameView, SchedulerUpdatesEachStateBeforeRenderingExplicitOutputs)
 	EXPECT_EQ(vpRenderedViews[3], pMainRight);
 	EXPECT_EQ(vpRenderOutputs[0], &MainLeftOutput);
 	EXPECT_EQ(vpRenderOutputs[1], &DemoOffscreenOutput);
-	EXPECT_EQ(vpRenderOutputs[2], &DummyOutput);
+	EXPECT_EQ(vpRenderOutputs[2], &MainLeftOutput);
 	EXPECT_EQ(vpRenderOutputs[3], &MainRightOutput);
 	EXPECT_EQ(vRenderedWorldRects[0].m_TopLeft, vec2(0.0f, 0.0f));
 	EXPECT_EQ(vRenderedWorldRects[1].m_TopLeft, vec2(400.0f, 400.0f));
 	EXPECT_EQ(vRenderedWorldRects[2].m_TopLeft, vec2(-200.0f, -200.0f));
 	EXPECT_EQ(vRenderedWorldRects[3].m_TopLeft, vec2(200.0f, 200.0f));
-	EXPECT_EQ(MainLeftOutput.m_EndedViews, 1);
+	ASSERT_EQ(MainLeftOutput.m_vViewports.size(), 2U);
+	EXPECT_EQ(MainLeftOutput.m_vViewports[0], (CViewport{0, 0, 640, 720}));
+	EXPECT_EQ(MainLeftOutput.m_vViewports[1], (CViewport{320, 0, 320, 180}));
+	EXPECT_EQ(MainLeftOutput.m_EndedViews, 2);
 	EXPECT_EQ(DemoOffscreenOutput.m_EndedViews, 1);
-	EXPECT_EQ(DummyOutput.m_EndedViews, 1);
 	EXPECT_EQ(MainRightOutput.m_EndedViews, 1);
 }
 

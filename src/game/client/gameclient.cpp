@@ -243,6 +243,10 @@ void CGameClient::OnConsoleInit()
 	dbg_assert(pNetworkContext != nullptr && pDemoContext != nullptr, "failed to create game session contexts");
 	m_LegacyGameViewId = m_GameViews.Create(pNetworkContext->Id(), pNetworkContext->GameStates().States().front()->Id());
 	dbg_assert(m_LegacyGameViewId.IsValid(), "failed to create legacy game view");
+	const CGameState *pDummyState = pNetworkContext->GameStates().FindByStream(CStreamId(IClient::CONN_DUMMY + 1));
+	dbg_assert(pDummyState != nullptr, "missing dummy game state");
+	m_SecondaryGameViewId = m_GameViews.Create(pNetworkContext->Id(), pDummyState->Id());
+	dbg_assert(m_SecondaryGameViewId.IsValid(), "failed to create secondary game view");
 	CGameView *pLegacyView = m_GameViews.Find(m_LegacyGameViewId);
 	dbg_assert(pLegacyView != nullptr, "missing legacy game view");
 	m_Camera.BindState(pLegacyView->Camera());
@@ -902,6 +906,10 @@ void CGameClient::OnReset()
 
 	LegacyGameView().SetSpectator(false);
 	LegacyGameView().SpectatorCursor().Reset();
+	CGameView *pSecondaryView = m_GameViews.Find(m_SecondaryGameViewId);
+	dbg_assert(pSecondaryView != nullptr, "missing secondary game view");
+	pSecondaryView->SetSpectator(false);
+	pSecondaryView->SpectatorCursor().Reset();
 
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnReset();
@@ -960,27 +968,49 @@ void CGameClient::OnRender()
 	CGameState &ActiveState = *pActiveState;
 	CGameView &View = LegacyGameView();
 	CGameView::CMultiViewState &MultiViewState = MultiView();
-	CGameTickInfo GameTickInfo;
-	GameTickInfo.m_PrevGameTick = Client()->PrevGameTick(ActiveConn);
-	GameTickInfo.m_GameTick = Client()->GameTick(ActiveConn);
-	GameTickInfo.m_PredGameTick = Client()->PredGameTick(ActiveConn);
-	GameTickInfo.m_PredictionTick = Client()->GetPredictionTick();
-	GameTickInfo.m_IntraGameTick = Client()->IntraGameTick(ActiveConn);
-	GameTickInfo.m_IntraGameTickSincePrev = Client()->IntraGameTickSincePrev(ActiveConn);
-	GameTickInfo.m_PredIntraGameTick = Client()->PredIntraGameTick(ActiveConn);
-	GameTickInfo.m_GameTickTime = Client()->GameTickTime(ActiveConn);
-	GameTickInfo.m_FrameTimeAverage = Client()->FrameTimeAverage();
-	GameTickInfo.m_GameTickSpeed = Client()->GameTickSpeed();
-	GameTickInfo.m_PredictionTime = Client()->GetPredictionTime(ActiveConn);
-	GameTickInfo.m_PresentationTime = CurrentPresentationTime();
-	GameTickInfo.m_PresentationTimeFrequency = time_freq();
-	GameTickInfo.m_AnimationPlaybackSpeed = GetAnimationPlaybackSpeed();
-	GameTickInfo.m_IsGameActive = Client()->State() == IClient::STATE_ONLINE || Client()->State() == IClient::STATE_DEMOPLAYBACK;
-	GameTickInfo.m_IsDemoPlayback = Client()->IsDemoPlayback();
-	GameTickInfo.m_IsDemoPlaybackPaused = IsDemoPlaybackPaused();
-	GameTickInfo.m_ConnectionProblems = Client()->ConnectionProblems();
-	const EPresentationPlayback Playback = GameTickInfo.m_AnimationPlaybackSpeed > 0.0f ? EPresentationPlayback::PLAYING : EPresentationPlayback::PAUSED;
-	UpdateRenderedClients(ActiveSession, ActiveState, ActiveConn, GameTickInfo, Playback);
+	const bool SplitScreen = g_Config.m_ClDummySplitScreen && Client()->IsOnline() && Client()->DummyConnected();
+	const int SecondaryConn = ActiveConn == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN;
+	CGameState *pSecondaryState = SplitScreen ? ActiveSession.GameStates().FindByStream(CStreamId(SecondaryConn + 1)) : nullptr;
+	CGameView *pSecondaryView = SplitScreen ? m_GameViews.Find(m_SecondaryGameViewId) : nullptr;
+	dbg_assert(!SplitScreen || (pSecondaryState != nullptr && pSecondaryView != nullptr), "missing split-screen state or view");
+	if(SplitScreen)
+		pSecondaryView->SetTarget(ActiveSession.Id(), pSecondaryState->Id());
+
+	const int64_t PresentationTime = CurrentPresentationTime();
+	const int64_t Now = time_get();
+	const int64_t PresentationTimeFrequency = time_freq();
+	const float AnimationPlaybackSpeed = GetAnimationPlaybackSpeed();
+	auto FreezeTime = [&](int Conn) {
+		CGameTickInfo Time;
+		Time.m_PrevGameTick = Client()->PrevGameTick(Conn);
+		Time.m_GameTick = Client()->GameTick(Conn);
+		Time.m_PredGameTick = Client()->PredGameTick(Conn);
+		Time.m_PredictionTick = Client()->GetPredictionTick(Conn);
+		Time.m_IntraGameTick = Client()->IntraGameTick(Conn);
+		Time.m_IntraGameTickSincePrev = Client()->IntraGameTickSincePrev(Conn);
+		Time.m_PredIntraGameTick = Client()->PredIntraGameTick(Conn);
+		Time.m_GameTickTime = Client()->GameTickTime(Conn);
+		Time.m_FrameTimeAverage = Client()->FrameTimeAverage();
+		Time.m_GameTickSpeed = Client()->GameTickSpeed();
+		Time.m_PredictionTime = Client()->GetPredictionTime(Conn);
+		Time.m_PresentationTime = PresentationTime;
+		Time.m_PresentationTimeFrequency = PresentationTimeFrequency;
+		Time.m_AnimationPlaybackSpeed = AnimationPlaybackSpeed;
+		Time.m_IsGameActive = Client()->State() == IClient::STATE_ONLINE || Client()->State() == IClient::STATE_DEMOPLAYBACK;
+		Time.m_IsDemoPlayback = Client()->IsDemoPlayback();
+		Time.m_IsDemoPlaybackPaused = IsDemoPlaybackPaused();
+		Time.m_ConnectionProblems = Client()->ConnectionProblems(Conn);
+		return Time;
+	};
+	std::array<CGameTickInfo, IClient::CONN_CONTACT> aGameTickInfo;
+	aGameTickInfo[ActiveConn] = FreezeTime(ActiveConn);
+	if(SplitScreen)
+		aGameTickInfo[SecondaryConn] = FreezeTime(SecondaryConn);
+	const CGameTickInfo &GameTickInfo = aGameTickInfo[ActiveConn];
+	const EPresentationPlayback Playback = AnimationPlaybackSpeed > 0.0f ? EPresentationPlayback::PLAYING : EPresentationPlayback::PAUSED;
+	UpdateRenderedClients(ActiveSession, ActiveState, ActiveConn, Now, GameTickInfo, Playback);
+	if(SplitScreen)
+		UpdateRenderedClients(ActiveSession, *pSecondaryState, SecondaryConn, Now, aGameTickInfo[SecondaryConn], Playback);
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
 
 	// check if multi view got activated
@@ -1023,22 +1053,51 @@ void CGameClient::OnRender()
 	m_Camera.UpdatePosition();
 
 	UpdateSpectatorCursor(ActiveState, GameTickInfo);
-	const CViewport &Viewport = View.Viewport();
-	const float ViewAspect = Viewport.m_Width > 0 && Viewport.m_Height > 0 ? Viewport.m_Width / (float)Viewport.m_Height : Graphics()->ScreenAspect();
-	const CScreenRect PresentationScreenRect = Graphics()->MapScreenToWorld(
-		View.CameraPosition().x, View.CameraPosition().y, 100.0f, 100.0f, 100.0f, 0.0f, 0.0f, ViewAspect, View.Zoom());
-	const CVisibleWorldRect VisibleWorldRect(PresentationScreenRect.m_TopLeft, PresentationScreenRect.m_BottomRight);
+	if(SplitScreen)
+	{
+		const int HalfWidth = Graphics()->ScreenWidth() / 2;
+		const CViewport MainViewport{0, 0, HalfWidth, Graphics()->ScreenHeight()};
+		const CViewport DummyViewport{HalfWidth, 0, Graphics()->ScreenWidth() - HalfWidth, Graphics()->ScreenHeight()};
+		View.SetViewport(ActiveConn == IClient::CONN_MAIN ? MainViewport : DummyViewport);
+		pSecondaryView->SetViewport(SecondaryConn == IClient::CONN_MAIN ? MainViewport : DummyViewport);
+		const int SecondaryLocalId = pSecondaryState->LocalClientId();
+		if(in_range(SecondaryLocalId, MAX_CLIENTS - 1) && pSecondaryState->RenderedClient(SecondaryLocalId).m_Active)
+			pSecondaryView->SetCameraPosition(pSecondaryState->RenderedClient(SecondaryLocalId).m_Position);
+		pSecondaryView->SetZoom(View.Zoom());
+	}
+	else
+	{
+		View.SetViewport({});
+	}
+
+	auto VisibleWorldRectFor = [this](const CGameView &RenderView) {
+		const CViewport &Viewport = RenderView.Viewport();
+		const float Aspect = Viewport.m_Width > 0 && Viewport.m_Height > 0 ? Viewport.m_Width / static_cast<float>(Viewport.m_Height) : Graphics()->ScreenAspect();
+		const CScreenRect ScreenRect = Graphics()->MapScreenToWorld(
+			RenderView.CameraPosition().x, RenderView.CameraPosition().y, 100.0f, 100.0f, 100.0f, 0.0f, 0.0f, Aspect, RenderView.Zoom());
+		return CVisibleWorldRect(ScreenRect.m_TopLeft, ScreenRect.m_BottomRight);
+	};
+	const CVisibleWorldRect VisibleWorldRect = VisibleWorldRectFor(View);
 	CScreenRenderOutput ScreenOutput(*Graphics(), ClearColor);
-	const std::array aRenderRequests = {CGameRenderRequest(
-		ActiveSession,
-		ActiveState,
-		View,
-		GameTickInfo,
-		VisibleWorldRect,
-		Playback,
-		EPresentationAudio::AUDIBLE,
-		ScreenOutput)};
-	const CGameRenderRequest *pAudibleRequest = FindAudibleRenderRequest(aRenderRequests);
+	std::vector<CGameRenderRequest> vRenderRequests;
+	vRenderRequests.reserve(SplitScreen ? 2 : 1);
+	auto AddRequest = [&](int Conn, CGameState &State, CGameView &RenderView) {
+		vRenderRequests.emplace_back(
+			ActiveSession,
+			State,
+			RenderView,
+			aGameTickInfo[Conn],
+			VisibleWorldRectFor(RenderView),
+			Playback,
+			Conn == ActiveConn ? EPresentationAudio::AUDIBLE : EPresentationAudio::MUTED,
+			ScreenOutput);
+	};
+	if(SplitScreen && SecondaryConn == IClient::CONN_MAIN)
+		AddRequest(SecondaryConn, *pSecondaryState, *pSecondaryView);
+	AddRequest(ActiveConn, ActiveState, View);
+	if(SplitScreen && SecondaryConn == IClient::CONN_DUMMY)
+		AddRequest(SecondaryConn, *pSecondaryState, *pSecondaryView);
+	const CGameRenderRequest *pAudibleRequest = FindAudibleRenderRequest(vRenderRequests);
 	m_Sounds.Update(pAudibleRequest != nullptr ? std::optional(pAudibleRequest->m_View.CameraPosition()) : std::nullopt);
 	if(pAudibleRequest != nullptr)
 	{
@@ -1051,7 +1110,7 @@ void CGameClient::OnRender()
 	}
 	CGameRenderScheduler Scheduler;
 	Scheduler.Run(
-		aRenderRequests,
+		vRenderRequests,
 		[this](const CPresentationContext &Context) {
 			SessionPresentation(Context.m_Session.Id()).UpdateClients(Context);
 			m_Effects.Update(Context);
@@ -1104,37 +1163,56 @@ void CGameClient::OnRender()
 	m_Chat.UpdateController(CompatibilityContext);
 	m_Statboard.UpdateController();
 
-	const std::array<CComponent *, 3> apCompatibilityOverlaysBeforeChat = {
+	const std::array<CComponent *, 1> apRequestOverlaysBeforeChat = {
 		&m_Hud,
+	};
+	const std::array<CComponent *, 2> apCompatibilityOverlaysBeforeChat = {
 		&m_Spectator,
 		&m_Emoticon,
 	};
-	const std::array<CComponent *, 4> apCompatibilityOverlaysAfterChat = {
+	const std::array<CComponent *, 2> apRequestOverlaysAfterChat = {
 		&m_Broadcast,
-		&m_ImportantAlert,
 		&m_DebugHud,
+	};
+	const std::array<CComponent *, 2> apCompatibilityOverlaysAfterChat = {
+		&m_ImportantAlert,
 		&m_TouchControls,
 	};
-	const std::array<CComponent *, 5> apCompatibilityOverlaysAfterScoreboard = {
+	const std::array<CComponent *, 2> apRequestOverlaysAfterScoreboard = {
 		&m_Statboard,
 		&m_Motd,
+	};
+	const std::array<CComponent *, 3> apApplicationOverlays = {
 		&m_Menus,
 		&m_Tooltips,
 		&m_GameConsole,
 	};
+	auto RenderRequestComponents = [&](std::span<CComponent *const> vpComponents) {
+		Scheduler.Run(
+			vRenderRequests,
+			[](const CPresentationContext &) {},
+			[vpComponents](const CRenderContext &Context, CRenderOutput &Output) {
+				Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
+				for(CComponent *pComponent : vpComponents)
+					pComponent->OnRender(Context);
+				Output.EndView();
+			});
+	};
+	RenderRequestComponents(apRequestOverlaysBeforeChat);
 	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
 	for(CComponent *pComponent : apCompatibilityOverlaysBeforeChat)
 		pComponent->OnRender(CompatibilityContext);
 	m_Chat.RenderApplicationOverlay(CompatibilityContext);
 	ScreenOutput.EndView();
 	Scheduler.Run(
-		aRenderRequests,
+		vRenderRequests,
 		[](const CPresentationContext &) {},
 		[this](const CRenderContext &Context, CRenderOutput &Output) {
 			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
 			m_Chat.OnRender(Context);
 			Output.EndView();
 		});
+	RenderRequestComponents(apRequestOverlaysAfterChat);
 	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
 	for(CComponent *pComponent : apCompatibilityOverlaysAfterChat)
 		pComponent->OnRender(CompatibilityContext);
@@ -1143,7 +1221,7 @@ void CGameClient::OnRender()
 	m_Scoreboard.PrepareApplicationOverlay(CompatibilityContext);
 	m_Scoreboard.BeginRenderFrame();
 	Scheduler.Run(
-		aRenderRequests,
+		vRenderRequests,
 		[](const CPresentationContext &) {},
 		[this](const CRenderContext &Context, CRenderOutput &Output) {
 			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
@@ -1152,9 +1230,10 @@ void CGameClient::OnRender()
 		});
 	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
 	m_Scoreboard.RenderApplicationOverlay(CompatibilityContext);
-	for(CComponent *pComponent : apCompatibilityOverlaysAfterScoreboard)
-		pComponent->OnRender(CompatibilityContext);
 	ScreenOutput.EndView();
+	RenderRequestComponents(apRequestOverlaysAfterScoreboard);
+	for(CComponent *pComponent : apApplicationOverlays)
+		pComponent->OnRender();
 	m_Spectator.CommitController(View, CompatibilityContext, ControllerLocalTime);
 
 	// clear all events/input for this frame
@@ -2996,8 +3075,9 @@ void CGameClient::ProcessPrediction()
 	}
 
 	vec2 aBeforeRender[MAX_CLIENTS];
+	const int64_t SmoothNow = time_get();
 	for(int i = 0; i < MAX_CLIENTS; i++)
-		aBeforeRender[i] = GetSmoothPos(ActiveState, ActiveConnection(), i, m_aClients[i].m_PrevPredicted, m_aClients[i].m_Predicted);
+		aBeforeRender[i] = GetSmoothPos(ActiveState, ActiveConnection(), i, SmoothNow, m_aClients[i].m_PrevPredicted, m_aClients[i].m_Predicted);
 
 	// init
 	const int PredictionConnection = ActiveConnection();
@@ -3030,7 +3110,7 @@ void CGameClient::ProcessPrediction()
 	if(PredictDummy())
 		pDummyChar = m_PredictedWorld.GetCharacterById(GameState(OtherConnection()).LocalClientId());
 
-	int PredictionTick = Client()->GetPredictionTick();
+	int PredictionTick = Client()->GetPredictionTick(ActiveConnection());
 	// predict
 	for(int Tick = Client()->GameTick(ActiveConnection()) + 1; Tick <= Client()->PredGameTick(ActiveConnection()); Tick++)
 	{
@@ -3950,7 +4030,7 @@ void CGameClient::UpdatePrediction()
 	m_GameWorld.NetObjEnd();
 }
 
-void CGameClient::UpdateRenderedClients(const CGameSessionContext &Session, CGameState &State, int Conn, const CGameTickInfo &Time, EPresentationPlayback Playback)
+void CGameClient::UpdateRenderedClients(const CGameSessionContext &Session, CGameState &State, int Conn, int64_t Now, const CGameTickInfo &Time, EPresentationPlayback Playback)
 {
 	const int LocalClientId = State.LocalClientId();
 	const CGameState::CClientSnapshot *pLocalClient = in_range(LocalClientId, MAX_CLIENTS - 1) ? &State.Client(LocalClientId) : nullptr;
@@ -3996,7 +4076,7 @@ void CGameClient::UpdateRenderedClients(const CGameSessionContext &Session, CGam
 			RenderedClient.m_Prev.m_Angle = SnapshotClient.m_PrevCharacter.m_Angle;
 			RenderedClient.m_Cur.m_Angle = SnapshotClient.m_Character.m_Angle;
 			if(g_Config.m_ClAntiPingSmooth)
-				RenderedClient.m_Position = GetSmoothPos(State, Conn, ClientId, PredictedClient.m_Prev, PredictedClient.m_Current);
+				RenderedClient.m_Position = GetSmoothPos(State, Conn, ClientId, Now, PredictedClient.m_Prev, PredictedClient.m_Current);
 		}
 	}
 }
@@ -4279,11 +4359,10 @@ void CGameClient::DetectStrongHook(CGameState::CRuntimeState &Runtime)
 	}
 }
 
-vec2 CGameClient::GetSmoothPos(const CGameState &State, int Conn, int ClientId, const CCharacterCore &Prev, const CCharacterCore &Current)
+vec2 CGameClient::GetSmoothPos(const CGameState &State, int Conn, int ClientId, int64_t Now, const CCharacterCore &Prev, const CCharacterCore &Current)
 {
 	vec2 Pos = mix(Prev.m_Pos, Current.m_Pos, Client()->PredIntraGameTick(Conn));
 	const CGameState::CClientPredictionHistory &PredictionHistory = State.PredictionHistory(ClientId);
-	int64_t Now = time_get();
 	for(int i = 0; i < 2; i++)
 	{
 		int64_t Len = std::clamp(PredictionHistory.m_aSmoothLen[i], (int64_t)1, time_freq());
@@ -4293,7 +4372,7 @@ vec2 CGameClient::GetSmoothPos(const CGameState &State, int Conn, int ClientId, 
 			float MixAmount = 1.f - std::pow(1.f - TimePassed / (float)Len, 1.2f);
 			int SmoothTick;
 			float SmoothIntra;
-			Client()->GetSmoothTick(Conn, &SmoothTick, &SmoothIntra, MixAmount);
+			Client()->GetSmoothTick(Conn, Now, &SmoothTick, &SmoothIntra, MixAmount);
 			if(SmoothTick > 0 && PredictionHistory.m_aPredTick[(SmoothTick - 1) % 200] >= Client()->PrevGameTick(Conn) && PredictionHistory.m_aPredTick[SmoothTick % 200] <= Client()->PredGameTick(Conn))
 				Pos[i] = mix(PredictionHistory.m_aPredPos[(SmoothTick - 1) % 200][i], PredictionHistory.m_aPredPos[SmoothTick % 200][i], SmoothIntra);
 		}

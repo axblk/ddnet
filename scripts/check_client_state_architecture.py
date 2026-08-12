@@ -102,6 +102,8 @@ TOUCH_RENDER_FUNCTIONS = (
 )
 SESSION_STATS_UPDATE_FUNCTIONS = (("src/game/client/session_context.h", re.compile(r"\bUpdateSnapshot\s*\(\s*const CGameState\s*&")),)
 GAME_CLIENT_RENDER_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::OnRender\s*\(")),)
+RENDER_PROJECTION_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::(?:GetSmoothPos|UpdateRenderedClients)\s*\(")),)
+ENGINE_TIMING_QUERY_FUNCTIONS = (("src/engine/client/client.cpp", re.compile(r"\bCClient::(?:ConnectionProblems|GetPredictionTick|GetPredictionTime|GetSmoothTick)\s*\(")),)
 MAP_SOUNDS_UPDATE_FUNCTIONS = (("src/game/client/components/mapsounds.cpp", re.compile(r"\bCMapSounds::Update\s*\(")),)
 MAP_SOUNDS_LOAD_FUNCTIONS = (("src/game/client/components/mapsounds.cpp", re.compile(r"\bCMapSounds::Load\s*\(")),)
 SCENE_UPDATE_FUNCTIONS = (
@@ -154,6 +156,13 @@ RENDER_TIMING_FILES = (
 	"src/game/client/components/race_demo.cpp",
 )
 GAME_CLIENT_OWNER_FILES = ("src/game/client/gameclient.h",)
+ENGINE_TIMING_OWNER_FILES = ("src/engine/client/client.h",)
+EXPLICIT_CONNECTION_TIMING_FILES = (
+	"src/engine/client.h",
+	"src/engine/client/client.cpp",
+	"src/engine/client/client.h",
+	"src/game/client/gameclient.cpp",
+)
 HUD_OWNER_FILES = ("src/game/client/components/hud.h",)
 INFO_MESSAGES_OWNER_FILES = ("src/game/client/components/infomessages.h",)
 CHAT_OWNER_FILES = ("src/game/client/components/chat.h",)
@@ -443,7 +452,18 @@ FORBIDDEN_SESSION_STATS_UPDATE_FOCUS = (
 	re.compile(r"\bm_Snap\b"),
 	re.compile(r"\b(?:Client|GameClient|SessionContext)\s*\(\)"),
 )
-FORBIDDEN_GAME_CLIENT_RENDER = (re.compile(r"\bm_vpAll\b"),)
+FORBIDDEN_GAME_CLIENT_RENDER = (
+	re.compile(r"\bm_vpAll\b"),
+	re.compile(r"\bm_GameViews\.Create\s*\("),
+	re.compile(r"\bm_Camera\.BindState\s*\("),
+)
+FORBIDDEN_RENDER_PROJECTION_TIME = (re.compile(r"\btime_get\s*\("),)
+FORBIDDEN_ENGINE_TIMING_QUERY_FOCUS = (re.compile(r"\bActiveConnection\s*\("),)
+FORBIDDEN_ENGINE_TIMING_OWNER = (re.compile(r"\bCSmoothTime\s+m_PredictedTime\b"),)
+FORBIDDEN_PARAMETERLESS_CONNECTION_TIMING = (
+	re.compile(r"\bGetPredictionTick\s*\(\s*\)"),
+	re.compile(r"\bConnectionProblems\s*\(\s*\)"),
+)
 FORBIDDEN_MAP_SOUNDS_UPDATE_FOCUS = (
 	re.compile(r"\bClient\(\)"),
 	re.compile(r"\bActiveConnection\s*\("),
@@ -654,6 +674,8 @@ errors = (
 	+ check_function_bodies(TOUCH_RENDER_FUNCTIONS, FORBIDDEN_TOUCH_RENDER_MUTATION)
 	+ check_function_bodies(SESSION_STATS_UPDATE_FUNCTIONS, FORBIDDEN_SESSION_STATS_UPDATE_FOCUS)
 	+ check_function_bodies(GAME_CLIENT_RENDER_FUNCTIONS, FORBIDDEN_GAME_CLIENT_RENDER)
+	+ check_function_bodies(RENDER_PROJECTION_FUNCTIONS, FORBIDDEN_RENDER_PROJECTION_TIME)
+	+ check_function_bodies(ENGINE_TIMING_QUERY_FUNCTIONS, FORBIDDEN_ENGINE_TIMING_QUERY_FOCUS)
 	+ check_function_bodies(MAP_SOUNDS_UPDATE_FUNCTIONS, FORBIDDEN_MAP_SOUNDS_UPDATE_FOCUS)
 	+ check_function_bodies(MAP_SOUNDS_LOAD_FUNCTIONS, FORBIDDEN_MAP_SOUNDS_LOAD_FOCUS)
 	+ check_function_bodies(SCENE_UPDATE_FUNCTIONS, FORBIDDEN_SCENE_UPDATE_FOCUS)
@@ -676,6 +698,8 @@ errors = (
 	+ check(PARTICLE_OWNER_FILES, FORBIDDEN_PARTICLE_OWNER)
 	+ check(RENDER_TIMING_FILES, FORBIDDEN_RENDER_TIMING)
 	+ check(GAME_CLIENT_OWNER_FILES, FORBIDDEN_GAME_CLIENT_OWNER)
+	+ check(ENGINE_TIMING_OWNER_FILES, FORBIDDEN_ENGINE_TIMING_OWNER)
+	+ check(EXPLICIT_CONNECTION_TIMING_FILES, FORBIDDEN_PARAMETERLESS_CONNECTION_TIMING)
 	+ check(HUD_OWNER_FILES, FORBIDDEN_HUD_OWNER)
 	+ check(INFO_MESSAGES_OWNER_FILES, FORBIDDEN_INFO_MESSAGES_OWNER)
 	+ check(CHAT_OWNER_FILES, FORBIDDEN_CHAT_OWNER)

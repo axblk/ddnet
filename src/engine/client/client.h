@@ -166,7 +166,6 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	std::shared_ptr<IHttpRequest> m_pDDNetInfoTask = nullptr;
 
 	// time
-	CSmoothTime m_PredictedTime;
 	int m_LastActiveConnection = CONN_MAIN;
 	bool m_DummySendConnInfo = false;
 	bool m_DummyConnecting = false;
@@ -319,7 +318,7 @@ public:
 	float GotMaplistPercentage() const override;
 	const std::vector<std::string> &MaplistEntries() const override { return m_vMaplistEntries; }
 
-	bool ConnectionProblems() const override;
+	bool ConnectionProblems(int Conn) const override;
 
 	IGraphics::CTextureHandle GetDebugFont() const override { return m_DebugFont; }
 
@@ -364,7 +363,7 @@ public:
 
 	int GetPredictionTime(int Conn) override;
 	CSnapItem SnapGetItem(int Conn, int SnapId, int Index) const override;
-	int GetPredictionTick() override;
+	int GetPredictionTick(int Conn) override;
 	const void *SnapFindItem(int Conn, int SnapId, int Type, int Id) const override;
 	int SnapNumItems(int Conn, int SnapId) const override;
 	void SnapSetStaticsize(int ItemType, int Size) override;
@@ -534,7 +533,7 @@ public:
 
 	IFriends *Foes() override { return &m_Foes; }
 
-	void GetSmoothTick(int Conn, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) override;
+	void GetSmoothTick(int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) override;
 
 	void AddWarning(const SWarning &Warning) override;
 	std::optional<SWarning> CurrentWarning() override;

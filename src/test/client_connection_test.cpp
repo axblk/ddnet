@@ -46,6 +46,28 @@ TEST(ClientConnection, ResetGameplayIsLocal)
 	EXPECT_EQ(UntouchedConnection.m_CurGameTick, 12);
 }
 
+TEST(ClientConnection, TimingUpdatesAreLocal)
+{
+	CConnection First;
+	CConnection Second;
+	First.m_PrevGameTick = 100;
+	First.m_CurGameTick = 101;
+	Second.m_PrevGameTick = 200;
+	Second.m_CurGameTick = 201;
+
+	EXPECT_EQ(First.UpdateTiming(2010, 2070, 50, 1000), 104);
+	EXPECT_FLOAT_EQ(First.m_GameIntraTick, 0.5f);
+	EXPECT_FLOAT_EQ(First.m_GameTickTime, 0.01f);
+	EXPECT_FLOAT_EQ(First.m_GameIntraTickSincePrev, 0.5f);
+	EXPECT_FLOAT_EQ(First.m_PredIntraTick, 0.5f);
+
+	EXPECT_EQ(Second.UpdateTiming(4015, 4075, 50, 1000), 204);
+	EXPECT_FLOAT_EQ(Second.m_GameIntraTick, 0.75f);
+	EXPECT_FLOAT_EQ(Second.m_PredIntraTick, 0.75f);
+	EXPECT_FLOAT_EQ(First.m_GameIntraTick, 0.5f);
+	EXPECT_FLOAT_EQ(First.m_PredIntraTick, 0.5f);
+}
+
 TEST(ClientConnection, DynamicStreamsKeepStableIdsAndStorage)
 {
 	CNetworkSessionSource Source;

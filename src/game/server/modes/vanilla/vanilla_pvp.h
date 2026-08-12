@@ -25,11 +25,9 @@ public:
 	CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team) override;
 	void ResetTuning() override;
 	bool OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam) override;
-	bool CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const override;
 	CWeaponFireResult OnCharacterFireWeapon(const CWeaponFireContext &Context) override;
 	CGamePickupResult OnCharacterPickup(CCharacter *pCharacter, int Type, int Subtype, vec2 Position) override;
 	int PickupInitialSpawnDelaySeconds(int Type, int Subtype) const override;
-	CGameProjectileRules ProjectileRules(const CGameProjectileContext &Context) const override;
 	void OnCharacterSpawn(CCharacter *pChr) override;
 	void OnPlayerConnect(CPlayer *pPlayer) override;
 	void OnPlayerDisconnect(CPlayer *pPlayer, const char *pReason) override;

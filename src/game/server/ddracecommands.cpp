@@ -24,6 +24,16 @@
 
 namespace
 {
+	CGameControllerDDRace &RaceController(CGameContext *pGameServer)
+	{
+		return *static_cast<CGameControllerDDRace *>(pGameServer->GameHost().Controller());
+	}
+
+	CGameTeams *RaceTeams(CGameContext *pGameServer)
+	{
+		return &RaceController(pGameServer).RaceTeams();
+	}
+
 	struct CCommandRegistration
 	{
 		const char *m_pName;
@@ -36,7 +46,7 @@ namespace
 
 static void MoveCharacter(CGameContext *pGameServer, int ClientId, int X, int Y, bool Raw = false);
 static void ModifyWeapons(IConsole::IResult *pResult, void *pUserData, int Weapon, bool Remove);
-static void Teleport(CCharacter *pCharacter, vec2 Pos);
+static void Teleport(CCharacterDDRace *pCharacter, vec2 Pos);
 static CCharacter *GetPracticeCharacter(CGameContext *pGameServer, IConsole::IResult *pResult);
 
 static void ConGoLeft(IConsole::IResult *pResult, void *pUserData)
@@ -99,7 +109,7 @@ static void ConMoveRaw(IConsole::IResult *pResult, void *pUserData)
 
 static void MoveCharacter(CGameContext *pGameServer, int ClientId, int X, int Y, bool Raw)
 {
-	CCharacter *pChr = pGameServer->GetPlayerChar(ClientId);
+	CCharacterDDRace *pChr = static_cast<CCharacterDDRace *>(pGameServer->GetPlayerChar(ClientId));
 
 	if(!pChr)
 		return;
@@ -403,7 +413,7 @@ static void ModifyWeapons(IConsole::IResult *pResult, void *pUserData,
 	int Weapon, bool Remove)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
-	CCharacter *pChr = pSelf->GetPlayerChar(pResult->m_ClientId);
+	CCharacterDDRace *pChr = static_cast<CCharacterDDRace *>(pSelf->GetPlayerChar(pResult->m_ClientId));
 	if(!pChr)
 		return;
 
@@ -428,7 +438,7 @@ static void ModifyWeapons(IConsole::IResult *pResult, void *pUserData,
 	pChr->m_DDRaceState = ERaceState::CHEATED;
 }
 
-static void Teleport(CCharacter *pChr, vec2 Pos)
+static void Teleport(CCharacterDDRace *pChr, vec2 Pos)
 {
 	pChr->SetPosition(Pos);
 	pChr->m_Pos = Pos;
@@ -443,7 +453,7 @@ static void ConToTeleporter(IConsole::IResult *pResult, void *pUserData)
 
 	if(!pSelf->Collision()->TeleOuts(TeleTo - 1).empty())
 	{
-		CCharacter *pChr = pSelf->GetPlayerChar(pResult->m_ClientId);
+		CCharacterDDRace *pChr = static_cast<CCharacterDDRace *>(pSelf->GetPlayerChar(pResult->m_ClientId));
 		if(pChr)
 		{
 			int TeleOut = pSelf->m_World.m_Core.RandomOr0(pSelf->Collision()->TeleOuts(TeleTo - 1).size());
@@ -459,7 +469,7 @@ static void ConToCheckTeleporter(IConsole::IResult *pResult, void *pUserData)
 
 	if(!pSelf->Collision()->TeleCheckOuts(TeleTo - 1).empty())
 	{
-		CCharacter *pChr = pSelf->GetPlayerChar(pResult->m_ClientId);
+		CCharacterDDRace *pChr = static_cast<CCharacterDDRace *>(pSelf->GetPlayerChar(pResult->m_ClientId));
 		if(pChr)
 		{
 			int TeleOut = pSelf->m_World.m_Core.RandomOr0(pSelf->Collision()->TeleCheckOuts(TeleTo - 1).size());
@@ -484,7 +494,7 @@ static void ConTeleport(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 
-	CCharacter *pChr = pSelf->GetPlayerChar(Tele);
+	CCharacterDDRace *pChr = static_cast<CCharacterDDRace *>(pSelf->GetPlayerChar(Tele));
 	CPlayer *pPlayer = pSelf->m_apPlayers[pResult->m_ClientId];
 
 	if(pChr && pPlayer && pSelf->GetPlayerChar(TeleTo))
@@ -558,7 +568,7 @@ void CGameContext::ConModerate(IConsole::IResult *pResult, void *pUserData)
 static void ConSetDDRTeam(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
-	CGameTeams &Teams = *pSelf->RaceTeams();
+	CGameTeams &Teams = *RaceTeams(pSelf);
 
 	if(g_Config.m_SvTeam == SV_TEAM_FORBIDDEN || g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO)
 	{
@@ -593,7 +603,7 @@ static void ConUninvite(IConsole::IResult *pResult, void *pUserData)
 	if(!pSelf->m_apPlayers[Target])
 		return;
 
-	pSelf->RaceTeams()->SetClientInvited(pResult->GetInteger(1), Target, false);
+	RaceTeams(pSelf)->SetClientInvited(pResult->GetInteger(1), Target, false);
 }
 
 void CGameContext::ConVoteNo(IConsole::IResult *pResult, void *pUserData)
@@ -613,8 +623,8 @@ static void ConDrySave(IConsole::IResult *pResult, void *pUserData)
 		return;
 
 	CSaveTeam SavedTeam;
-	int Team = pSelf->RaceTeams()->m_Core.Team(pResult->m_ClientId);
-	ESaveResult Result = SavedTeam.Save(pSelf, Team, true);
+	int Team = RaceTeams(pSelf)->m_Core.Team(pResult->m_ClientId);
+	ESaveResult Result = SavedTeam.Save(pSelf, RaceTeams(pSelf), Team, true);
 	if(CSaveTeam::HandleSaveError(Result, pResult->m_ClientId, pSelf))
 		return;
 
@@ -650,7 +660,7 @@ static void ConPractice(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 
-	CGameTeams &Teams = *pSelf->RaceTeams();
+	CGameTeams &Teams = *RaceTeams(pSelf);
 
 	int Team = Teams.m_Core.Team(pResult->m_ClientId);
 
@@ -726,7 +736,7 @@ static void ConUnPractice(IConsole::IResult *pResult, void *pUserData)
 	if(pSelf->ProcessSpamProtection(pResult->m_ClientId, false))
 		return;
 
-	CGameTeams &Teams = *pSelf->RaceTeams();
+	CGameTeams &Teams = *RaceTeams(pSelf);
 
 	int Team = Teams.m_Core.Team(pResult->m_ClientId);
 
@@ -748,7 +758,7 @@ static void ConUnPractice(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 
-	if(Teams.TeamSize(Team) > g_Config.m_SvMaxTeamSize && pSelf->RaceTeams()->TeamLocked(Team))
+	if(Teams.TeamSize(Team) > g_Config.m_SvMaxTeamSize && RaceTeams(pSelf)->TeamLocked(Team))
 	{
 		log_info("chatresp", "Can't disable practice. This team exceeds the maximum allowed size of %d players for regular team", g_Config.m_SvMaxTeamSize);
 		return;
@@ -814,8 +824,8 @@ static void ConRescue(IConsole::IResult *pResult, void *pUserData)
 	if(!pChr)
 		return;
 
-	CGameTeams &Teams = *pSelf->RaceTeams();
-	int Team = pSelf->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+	CGameTeams &Teams = *RaceTeams(pSelf);
+	int Team = RaceTeams(pSelf)->m_Core.Team(pResult->m_ClientId);
 	if(!g_Config.m_SvRescue && !Teams.IsPractice(Team))
 	{
 		pSelf->SendChatTarget(pPlayer->GetCid(), "Rescue is not enabled on this server and you're not in a team with /practice turned on. Note that you can't earn a rank with practice enabled.");
@@ -847,9 +857,9 @@ static void ConRescueMode(IConsole::IResult *pResult, void *pUserData)
 	if(!pPlayer)
 		return;
 
-	CGameTeams &Teams = *pSelf->RaceTeams();
+	CGameTeams &Teams = *RaceTeams(pSelf);
 	auto &PlayerState = Teams.PlayerState(pPlayer->GetCid());
-	int Team = pSelf->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+	int Team = RaceTeams(pSelf)->m_Core.Team(pResult->m_ClientId);
 	if(!g_Config.m_SvRescue && !Teams.IsPractice(Team))
 	{
 		pSelf->SendChatTarget(pPlayer->GetCid(), "Rescue is not enabled on this server and you're not in a team with /practice turned on. Note that you can't earn a rank with practice enabled.");
@@ -902,7 +912,7 @@ static void ConBack(IConsole::IResult *pResult, void *pUserData)
 	if(auto *pChr = static_cast<CCharacterDDRace *>(GetPracticeCharacter(pSelf, pResult)))
 	{
 		auto *pPlayer = pChr->GetPlayer();
-		auto &PlayerState = pSelf->RaceTeams()->PlayerState(pPlayer->GetCid());
+		auto &PlayerState = RaceTeams(pSelf)->PlayerState(pPlayer->GetCid());
 		if(!PlayerState.m_LastDeath.has_value())
 		{
 			pSelf->SendChatTarget(pPlayer->GetCid(), "There is nowhere to go back to.");
@@ -926,8 +936,8 @@ static void ConTeleTo(IConsole::IResult *pResult, void *pUserData)
 	if(!pCallingCharacter)
 		return;
 
-	CGameTeams &Teams = *pSelf->RaceTeams();
-	int Team = pSelf->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+	CGameTeams &Teams = *RaceTeams(pSelf);
+	int Team = RaceTeams(pSelf)->m_Core.Team(pResult->m_ClientId);
 	if(!Teams.IsPractice(Team))
 	{
 		pSelf->SendChatTarget(pCallingPlayer->GetCid(), "You're not in a team with /practice turned on. Note that you can't earn a rank with practice enabled.");
@@ -977,8 +987,8 @@ static void ConTeleXY(IConsole::IResult *pResult, void *pUserData)
 	if(!pCallingCharacter)
 		return;
 
-	CGameTeams &Teams = *pSelf->RaceTeams();
-	int Team = pSelf->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+	CGameTeams &Teams = *RaceTeams(pSelf);
+	int Team = RaceTeams(pSelf)->m_Core.Team(pResult->m_ClientId);
 	if(!Teams.IsPractice(Team))
 	{
 		pSelf->SendChatTarget(pCallingPlayer->GetCid(), "You're not in a team with /practice turned on. Note that you can't earn a rank with practice enabled.");
@@ -1055,8 +1065,8 @@ static void ConTeleCursor(IConsole::IResult *pResult, void *pUserData)
 	if(!pChr)
 		return;
 
-	CGameTeams &Teams = *pSelf->RaceTeams();
-	int Team = pSelf->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+	CGameTeams &Teams = *RaceTeams(pSelf);
+	int Team = RaceTeams(pSelf)->m_Core.Team(pResult->m_ClientId);
 	if(!Teams.IsPractice(Team))
 	{
 		pSelf->SendChatTarget(pPlayer->GetCid(), "You're not in a team with /practice turned on. Note that you can't earn a rank with practice enabled.");
@@ -1102,8 +1112,8 @@ static void ConLastTele(IConsole::IResult *pResult, void *pUserData)
 	if(!pChr)
 		return;
 
-	CGameTeams &Teams = *pSelf->RaceTeams();
-	int Team = pSelf->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+	CGameTeams &Teams = *RaceTeams(pSelf);
+	int Team = RaceTeams(pSelf)->m_Core.Team(pResult->m_ClientId);
 	if(!Teams.IsPractice(Team))
 	{
 		pSelf->SendChatTarget(pPlayer->GetCid(), "You're not in a team with /practice turned on. Note that you can't earn a rank with practice enabled.");
@@ -1128,8 +1138,8 @@ static CCharacter *GetPracticeCharacter(CGameContext *pGameServer, IConsole::IRe
 	if(!pChr)
 		return nullptr;
 
-	CGameTeams &Teams = *pGameServer->RaceTeams();
-	int Team = pGameServer->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+	CGameTeams &Teams = *RaceTeams(pGameServer);
+	int Team = RaceTeams(pGameServer)->m_Core.Team(pResult->m_ClientId);
 	if(!Teams.IsPractice(Team))
 	{
 		pGameServer->SendChatTarget(pPlayer->GetCid(), "You're not in a team with /practice turned on. Note that you can't earn a rank with practice enabled.");
@@ -1154,7 +1164,7 @@ static void ConPracticeToTeleporter(IConsole::IResult *pResult, void *pUserData)
 		pChr->ResetJumps();
 		pChr->Unfreeze();
 		pChr->ResetVelocity();
-		pSelf->RaceTeams()->SaveLastTeleport(pChr);
+		RaceTeams(pSelf)->SaveLastTeleport(pChr);
 	}
 }
 
@@ -1174,7 +1184,7 @@ static void ConPracticeToCheckTeleporter(IConsole::IResult *pResult, void *pUser
 		pChr->ResetJumps();
 		pChr->Unfreeze();
 		pChr->ResetVelocity();
-		pSelf->RaceTeams()->SaveLastTeleport(pChr);
+		RaceTeams(pSelf)->SaveLastTeleport(pChr);
 	}
 }
 
@@ -1196,8 +1206,8 @@ static void ConPracticeUnSolo(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 
-	CGameTeams &Teams = *pSelf->RaceTeams();
-	int Team = pSelf->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+	CGameTeams &Teams = *RaceTeams(pSelf);
+	int Team = RaceTeams(pSelf)->m_Core.Team(pResult->m_ClientId);
 	if(!Teams.IsPractice(Team))
 	{
 		pSelf->SendChatTarget(pPlayer->GetCid(), "You're not in a team with /practice turned on. Note that you can't earn a rank with practice enabled.");
@@ -1224,8 +1234,8 @@ static void ConPracticeSolo(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 
-	CGameTeams &Teams = *pSelf->RaceTeams();
-	int Team = pSelf->RaceTeams()->m_Core.Team(pResult->m_ClientId);
+	CGameTeams &Teams = *RaceTeams(pSelf);
+	int Team = RaceTeams(pSelf)->m_Core.Team(pResult->m_ClientId);
 	if(!Teams.IsPractice(Team))
 	{
 		pSelf->SendChatTarget(pPlayer->GetCid(), "You're not in a team with /practice turned on. Note that you can't earn a rank with practice enabled.");
@@ -1490,7 +1500,7 @@ static void ConchainPracticeByDefaultUpdate(IConsole::IResult *pResult, void *pU
 
 	pSelf->SendChat(-1, TEAM_ALL, aBuf);
 
-	CGameTeams &Teams = *pSelf->RaceTeams();
+	CGameTeams &Teams = *RaceTeams(pSelf);
 	for(int Team = 0; Team < NUM_DDRACE_TEAMS; Team++)
 	{
 		if(Team == TEAM_FLOCK || Teams.TeamSize(Team) == 0)

@@ -16,6 +16,7 @@
 class CCharacter;
 class CCharacterDDRace;
 class CPlayer;
+class CScore;
 struct CScoreSaveResult;
 
 class CGameTeams
@@ -67,6 +68,8 @@ private:
 	void UpdateLegacyTeamMap();
 
 	CGameContext *m_pGameContext;
+	CScore *m_pScore = nullptr;
+	CScore &Score() const;
 
 	/**
 	 * Kill the whole team.
@@ -83,10 +86,11 @@ public:
 	CTeamsCore &m_Core;
 
 	CGameTeams(CGameContext *pGameContext, CTeamsCore &TeamsCore);
+	void SetScore(CScore *pScore) { m_pScore = pScore; }
 
 	// helper methods
-	CCharacter *Character(int ClientId);
-	const CCharacter *Character(int ClientId) const;
+	CCharacterDDRace *Character(int ClientId);
+	const CCharacterDDRace *Character(int ClientId) const;
 	CPlayer *GetPlayer(int ClientId);
 	CGameContext *GameServer();
 	const CGameContext *GameServer() const;

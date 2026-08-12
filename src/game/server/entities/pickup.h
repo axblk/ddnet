@@ -18,7 +18,6 @@ public:
 	void Snap(int SnappingClient) override;
 
 	int Type() const { return m_Type; }
-	int Subtype() const { return m_Subtype; }
 	bool IsActive() const { return m_SpawnTick == -1; }
 
 private:

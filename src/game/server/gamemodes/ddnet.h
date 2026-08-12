@@ -4,8 +4,6 @@
 
 #include "ddrace.h"
 
-class CScore;
-
 class CGameControllerDDNet : public CGameControllerDDRace
 {
 public:
@@ -13,8 +11,6 @@ public:
 	~CGameControllerDDNet() override;
 	static CTuningParams DefaultTuning();
 	void ResetTuning() override;
-
-	CScore *RaceScore();
 
 	void HandleCharacterTiles(class CCharacter *pChr, int MapIndex) override;
 	void SetArmorProgress(CCharacter *pCharacter, int Progress) override;
@@ -34,5 +30,8 @@ protected:
 	int GameInfoFlags(int SnappingClient) const override;
 	int GameInfoFlags2(int SnappingClient) const override;
 	void SnapMode(int SnappingClient) override;
+
+private:
+	void SnapSwitchers(int SnappingClient);
 };
 #endif // GAME_SERVER_GAMEMODES_DDNET_H

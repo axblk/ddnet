@@ -46,12 +46,16 @@ CProjectile::CProjectile(
 	m_Freeze = Freeze;
 
 	m_InitDir = InitDir;
-	m_TuneZone = GameServer()->Collision()->IsTune(GameServer()->Collision()->GetMapIndex(m_Pos));
+	m_TuneZone = GameServer()->GameHost().Controller()->TuningZoneAt(m_Pos);
 
+	CPlayer *pOwnerPlayer = m_Owner >= 0 && m_Owner < MAX_CLIENTS ? GameServer()->m_apPlayers[m_Owner] : nullptr;
 	CCharacter *pOwnerChar = GameServer()->GetPlayerChar(m_Owner);
-	m_OwnerTeamGroup = m_Owner == -1 || !GameServer()->m_pController->UsesRaceTeams() ? TEAM_FLOCK : GameServer()->m_pController->PlayerTeamGroup(m_Owner);
-	m_BelongsToPracticeTeam = pOwnerChar && GameServer()->m_pController->IsTeamPractice(m_OwnerTeamGroup);
-	m_IsSolo = pOwnerChar && pOwnerChar->GetCore().m_Solo;
+	const int OwnerTeamGroup = pOwnerPlayer ? GameServer()->GameHost().Controller()->PlayerTeamGroup(m_Owner) : TEAM_FLOCK;
+	m_BelongsToPracticeTeam = pOwnerChar && GameServer()->GameHost().Controller()->IsTeamPractice(OwnerTeamGroup);
+	m_InteractState.Init(m_Owner, pOwnerPlayer ? pOwnerPlayer->GetUniqueCid() : 0);
+	m_InteractState.FillOwnerConnected(OwnerTeamGroup, pOwnerChar && pOwnerChar->GetCore().m_Solo, false, false, true);
+	if(!pOwnerPlayer)
+		m_InteractState.FillOwnerDisconnected();
 
 	GameWorld()->InsertEntity(this);
 }
@@ -67,6 +71,7 @@ void CProjectile::LoseOwner()
 	{
 		m_Owner = -1;
 		m_OwnerDetached = true;
+		m_InteractState.FillOwnerDisconnected();
 	}
 }
 
@@ -112,7 +117,7 @@ void CProjectile::Tick()
 		pOwnerChar = GameServer()->GetPlayerChar(m_Owner);
 
 	const bool OwnerConnected = m_Owner >= 0 && m_Owner < MAX_CLIENTS && GameServer()->m_apPlayers[m_Owner] != nullptr;
-	const CGameProjectileRules Rules = GameServer()->m_pController->ProjectileRules({m_Type, pOwnerChar, OwnerConnected, m_BelongsToPracticeTeam});
+	const CGameProjectileRules Rules = GameServer()->GameHost().Controller()->ProjectileRules({m_Type, pOwnerChar, OwnerConnected, m_BelongsToPracticeTeam});
 	CCharacter *pTargetChr = nullptr;
 
 	if(Rules.m_HitCharacters)
@@ -420,7 +425,7 @@ void CProjectile::Snap(int SnappingClient)
 		return;
 
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
-	const bool UseDDNetEntityNetObjs = GameServer()->m_pController->UseDDNetEntityNetObjs();
+	const bool UseDDNetEntityNetObjs = GameServer()->GameHost().Controller()->UseDDNetEntityNetObjs();
 	if(UseDDNetEntityNetObjs && SnappingClientVersion < VERSION_DDNET_ENTITY_NETOBJS)
 	{
 		CCharacter *pSnapChar = GameServer()->GetPlayerChar(SnappingClient);
@@ -475,13 +480,7 @@ void CProjectile::SwapClients(int Client1, int Client2)
 
 bool CProjectile::CanCollide(int ClientId)
 {
-	if(!GameServer()->m_pController->UsesRaceTeams())
-		return true;
-	if(m_OwnerTeamGroup != GameServer()->m_pController->PlayerTeamGroup(ClientId))
-		return false;
-	if(m_IsSolo)
-		return m_Owner == ClientId;
-	return true;
+	return m_InteractState.CanHit(GameServer(), ClientId);
 }
 
 void CProjectile::SetBouncing(int Value)

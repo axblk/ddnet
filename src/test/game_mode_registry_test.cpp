@@ -40,16 +40,19 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	EXPECT_STREQ(pDDNet->m_pGameType, "DDraceNetwork");
 	EXPECT_STREQ(GameModeScoreKindName(pDDNet->m_ScoreKind), "time");
 	EXPECT_EQ(pDDNet->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
+	EXPECT_TRUE(pDDNet->m_UseTuneZones);
 
 	const CGameModeInfo *pMod = Registry.Find("mod");
 	ASSERT_NE(pMod, nullptr);
 	EXPECT_STREQ(pMod->m_pTestingGameType, "TestMod");
+	EXPECT_TRUE(pMod->m_UseTuneZones);
 
 	const CGameModeInfo *pVanillaDM = Registry.Find("vanilla.dm");
 	ASSERT_NE(pVanillaDM, nullptr);
 	EXPECT_STREQ(pVanillaDM->m_pGameType, "DM");
 	EXPECT_EQ(pVanillaDM->m_ScoreKind, EGameModeScoreKind::POINTS);
 	EXPECT_EQ(pVanillaDM->m_ActivePlayerLimit, 0);
+	EXPECT_FALSE(pVanillaDM->m_UseTuneZones);
 
 	const CGameModeInfo *pVanilla1on1 = Registry.Find("vanilla.1on1");
 	ASSERT_NE(pVanilla1on1, nullptr);

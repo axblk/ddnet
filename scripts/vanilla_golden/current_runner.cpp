@@ -209,9 +209,7 @@ public:
 		m_pServer->InitMaplist();
 
 		m_pGameServer->GameHost().Shutdown();
-		m_pGameServer->m_pController = nullptr;
 		Check(m_pGameServer->GameHost().Select("vanilla.dm"), "vanilla.dm selection failed");
-		m_pGameServer->m_pController = m_pGameServer->GameHost().Controller();
 		m_pGameServer->GameHost().Init(m_pServer->DbPool());
 		m_pGameServer->m_World.m_ResetRequested = true;
 		m_pGameServer->m_World.Tick();
@@ -383,7 +381,7 @@ static void RunMatch(const std::string &Name)
 	CGameFixture Fixture;
 	CPlayerVanilla *pAlpha = Fixture.Player(0);
 	CPlayerVanilla *pBeta = Fixture.Player(1);
-	auto *pController = static_cast<CGameControllerVanillaDM *>(Fixture.m_pGameServer->m_pController);
+	auto *pController = static_cast<CGameControllerVanillaDM *>(Fixture.m_pGameServer->GameHost().Controller());
 	int RespawnBefore = -1;
 	int RespawnAt = -1;
 	if(Name == "kill")

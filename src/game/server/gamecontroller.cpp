@@ -33,7 +33,6 @@ IGameController::IGameController(CGameServices &Services, const CGameModeInfo &G
 {
 	RegisterMapEntityFactory(CreateCommonMapEntity);
 	m_pServices = &Services;
-	m_pConfig = GameServer()->Config();
 	m_pServer = Services.Server();
 	m_pGameType = g_Config.m_SvTestingCommands ? m_GameModeInfo.m_pTestingGameType : m_GameModeInfo.m_pGameType;
 
@@ -44,7 +43,6 @@ IGameController::IGameController(CGameServices &Services, const CGameModeInfo &G
 	m_RoundStartTick = Server()->Tick();
 	m_RoundCount = 0;
 	m_GameFlags = m_GameModeInfo.m_GameFlags;
-	m_aMapWish[0] = 0;
 }
 
 CGameContext *IGameController::GameServer() const
@@ -57,7 +55,7 @@ IGameController::~IGameController()
 	GameServer()->Console()->DeregisterOwner(this);
 }
 
-void IGameController::Init()
+void IGameController::Init(CDbConnectionPool *)
 {
 	RegisterCommands();
 	InitGameSettings();
@@ -66,6 +64,14 @@ void IGameController::Init()
 	m_TeamsCore.Reset();
 	if(!m_Warmup)
 		PublishMatchEvent(CMatchEventRoundStarted{});
+}
+
+int IGameController::TuningZoneAt(vec2 Position) const
+{
+	if(!Info().m_UseTuneZones)
+		return 0;
+	const int MapIndex = GameServer()->Collision()->GetMapIndex(Position);
+	return GameServer()->Collision()->IsTune(MapIndex);
 }
 
 CPlayer *IGameController::CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team)
@@ -77,16 +83,6 @@ CCharacter *IGameController::CreateCharacter(CPlayer *pPlayer)
 {
 	const int ClientId = pPlayer->GetCid();
 	return new(ClientId) CCharacter(&Services().World(), Services().LastPlayerInput(ClientId));
-}
-
-CGameTeams &IGameController::RaceTeams()
-{
-	return *GameServer()->RaceTeams();
-}
-
-const CGameTeams &IGameController::RaceTeams() const
-{
-	return *GameServer()->RaceTeams();
 }
 
 void IGameController::LoadGameSettings()
@@ -637,9 +633,9 @@ bool IGameController::OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int
 	return true;
 }
 
-bool IGameController::CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const
+bool IGameController::CanCharacterHitCharacter(CCharacter *, CCharacter *pTarget) const
 {
-	return pTarget->IsAlive() && pAttacker->CanCollide(pTarget->GetPlayer()->GetCid());
+	return pTarget->IsAlive();
 }
 
 CWeaponFireResult IGameController::OnCharacterFireWeapon(const CWeaponFireContext &Context)
@@ -746,115 +742,14 @@ CWeaponFireResult IGameController::OnCharacterFireWeapon(const CWeaponFireContex
 	return Result;
 }
 
-CGamePickupResult IGameController::OnCharacterPickup(CCharacter *pCharacter, int Type, int Subtype, vec2 Position)
+CGamePickupResult IGameController::OnCharacterPickup(CCharacter *, int, int, vec2)
 {
-	bool Sound = false;
-	switch(Type)
-	{
-	case POWERUP_HEALTH:
-		if(pCharacter->Freeze())
-			GameServer()->CreateSound(Position, SOUND_PICKUP_HEALTH, pCharacter->TeamMask());
-		break;
-	case POWERUP_ARMOR:
-		if(pCharacter->Team() == TEAM_SUPER)
-			break;
-		for(int Weapon = WEAPON_SHOTGUN; Weapon < NUM_WEAPONS; Weapon++)
-		{
-			if(pCharacter->GetWeaponGot(Weapon))
-			{
-				pCharacter->SetWeaponGot(Weapon, false);
-				pCharacter->SetWeaponAmmo(Weapon, 0);
-				Sound = true;
-			}
-		}
-		pCharacter->SetNinjaActivationDir(vec2(0, 0));
-		pCharacter->SetNinjaActivationTick(-500);
-		pCharacter->SetNinjaCurrentMoveTime(0);
-		if(Sound)
-		{
-			pCharacter->SetLastWeapon(WEAPON_GUN);
-			GameServer()->CreateSound(Position, SOUND_PICKUP_ARMOR, pCharacter->TeamMask());
-		}
-		if(pCharacter->GetActiveWeapon() >= WEAPON_SHOTGUN)
-			pCharacter->SetActiveWeapon(WEAPON_HAMMER);
-		break;
-	case POWERUP_ARMOR_SHOTGUN:
-		if(pCharacter->Team() == TEAM_SUPER)
-			break;
-		if(pCharacter->GetWeaponGot(WEAPON_SHOTGUN))
-		{
-			pCharacter->SetWeaponGot(WEAPON_SHOTGUN, false);
-			pCharacter->SetWeaponAmmo(WEAPON_SHOTGUN, 0);
-			pCharacter->SetLastWeapon(WEAPON_GUN);
-			GameServer()->CreateSound(Position, SOUND_PICKUP_ARMOR, pCharacter->TeamMask());
-		}
-		if(pCharacter->GetActiveWeapon() == WEAPON_SHOTGUN)
-			pCharacter->SetActiveWeapon(WEAPON_HAMMER);
-		break;
-	case POWERUP_ARMOR_GRENADE:
-		if(pCharacter->Team() == TEAM_SUPER)
-			break;
-		if(pCharacter->GetWeaponGot(WEAPON_GRENADE))
-		{
-			pCharacter->SetWeaponGot(WEAPON_GRENADE, false);
-			pCharacter->SetWeaponAmmo(WEAPON_GRENADE, 0);
-			pCharacter->SetLastWeapon(WEAPON_GUN);
-			GameServer()->CreateSound(Position, SOUND_PICKUP_ARMOR, pCharacter->TeamMask());
-		}
-		if(pCharacter->GetActiveWeapon() == WEAPON_GRENADE)
-			pCharacter->SetActiveWeapon(WEAPON_HAMMER);
-		break;
-	case POWERUP_ARMOR_NINJA:
-		if(pCharacter->Team() != TEAM_SUPER)
-		{
-			pCharacter->SetNinjaActivationDir(vec2(0, 0));
-			pCharacter->SetNinjaActivationTick(-500);
-			pCharacter->SetNinjaCurrentMoveTime(0);
-		}
-		break;
-	case POWERUP_ARMOR_LASER:
-		if(pCharacter->Team() == TEAM_SUPER)
-			break;
-		if(pCharacter->GetWeaponGot(WEAPON_LASER))
-		{
-			pCharacter->SetWeaponGot(WEAPON_LASER, false);
-			pCharacter->SetWeaponAmmo(WEAPON_LASER, 0);
-			pCharacter->SetLastWeapon(WEAPON_GUN);
-			GameServer()->CreateSound(Position, SOUND_PICKUP_ARMOR, pCharacter->TeamMask());
-		}
-		if(pCharacter->GetActiveWeapon() == WEAPON_LASER)
-			pCharacter->SetActiveWeapon(WEAPON_HAMMER);
-		break;
-	case POWERUP_WEAPON:
-		if(Subtype >= 0 && Subtype < NUM_WEAPONS && (!pCharacter->GetWeaponGot(Subtype) || pCharacter->GetWeaponAmmo(Subtype) != -1))
-		{
-			pCharacter->GiveWeapon(Subtype);
-			if(Subtype == WEAPON_GRENADE)
-				GameServer()->CreateSound(Position, SOUND_PICKUP_GRENADE, pCharacter->TeamMask());
-			else if(Subtype == WEAPON_SHOTGUN || Subtype == WEAPON_LASER)
-				GameServer()->CreateSound(Position, SOUND_PICKUP_SHOTGUN, pCharacter->TeamMask());
-			if(pCharacter->GetPlayer())
-				GameServer()->SendWeaponPickup(pCharacter->GetPlayer()->GetCid(), Subtype);
-		}
-		break;
-	case POWERUP_NINJA:
-		pCharacter->GiveNinja();
-		break;
-	default:
-		break;
-	}
 	return {};
 }
 
 CGameProjectileRules IGameController::ProjectileRules(const CGameProjectileContext &Context) const
 {
-	const EProjectileOwnerLossAction OwnerLossAction = Context.m_Weapon != WEAPON_GRENADE || g_Config.m_SvDestroyBulletsOnDeath || Context.m_BelongsToPracticeTeam ? EProjectileOwnerLossAction::DESTROY : EProjectileOwnerLossAction::KEEP;
-	return {
-		Context.m_pOwner ? !Context.m_pOwner->GrenadeHitDisabled() : g_Config.m_SvHit != 0,
-		true,
-		0.0f,
-		OwnerLossAction,
-	};
+	return {true, false, 0.001f, Context.m_OwnerConnected ? EProjectileOwnerLossAction::KEEP : EProjectileOwnerLossAction::DETACH};
 }
 
 void IGameController::OnExplosion(const CGameExplosionContext &Context)
@@ -1049,7 +944,7 @@ void IGameController::DoTeamChange(CPlayer *pPlayer, int Team, bool DoChatMsg)
 	char aBuf[128];
 	if(DoChatMsg)
 	{
-		str_format(aBuf, sizeof(aBuf), "'%s' joined the %s", Server()->ClientName(ClientId), GameServer()->m_pController->GetTeamName(Team));
+		str_format(aBuf, sizeof(aBuf), "'%s' joined the %s", Server()->ClientName(ClientId), GetTeamName(Team));
 		GameServer()->SendChat(-1, TEAM_ALL, aBuf);
 	}
 

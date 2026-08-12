@@ -16,9 +16,8 @@
 #include <game/server/gamecontext.h>
 #include <game/server/gamecontroller.h>
 #include <game/server/player.h>
-#include <game/server/score.h>
-#include <game/server/teams.h>
 #include <game/team_state.h>
+#include <game/teamscore.h>
 
 MACRO_ALLOC_POOL_ID_IMPL(CCharacter, MAX_CLIENTS)
 
@@ -37,13 +36,6 @@ CCharacter::CCharacter(CGameWorld *pWorld, CNetObj_PlayerInput LastInput) :
 	m_Input.m_TargetY = -1;
 
 	m_LatestPrevPrevInput = m_LatestPrevInput = m_LatestInput = m_PrevInput = m_SavedInput = m_Input;
-
-	m_LastTimeCp = -1;
-	m_LastTimeCpBroadcasted = -1;
-	for(float &CurrentTimeCp : m_aCurrentTimeCp)
-	{
-		CurrentTimeCp = 0.0f;
-	}
 
 	for(auto &Id : m_aUntranslatedId)
 		Id = Server()->SnapNewId();
@@ -89,13 +81,9 @@ bool CCharacter::Spawn(CPlayer *pPlayer, vec2 Pos)
 	m_Core.m_Id = m_pPlayer->GetCid();
 	m_Core.m_Jumps = 2;
 	m_Paused = false;
-	m_DDRaceState = ERaceState::NONE;
-	m_StartTime = 0;
 	m_PrevPos = m_Pos;
-	m_TuneZone = Collision()->IsTune(Collision()->GetMapIndex(Pos));
-	m_TuneZoneOld = m_TuneZone;
 	m_NeededFaketuning = 0;
-	m_Core.m_Tuning = TuningList()[m_TuneZone];
+	SetTuningZone(0);
 	GameServer()->m_World.m_Core.m_apCharacters[m_pPlayer->GetCid()] = &m_Core;
 
 	m_ReckoningTick = 0;
@@ -105,9 +93,9 @@ bool CCharacter::Spawn(CPlayer *pPlayer, vec2 Pos)
 	GameServer()->m_World.InsertEntity(this);
 	m_Alive = true;
 
-	GameServer()->m_pController->OnCharacterSpawn(this);
-	GameServer()->m_pController->RestoreCharacterAfterMapReload(this);
-	GameServer()->m_pController->PublishMatchEvent(CMatchEventSpawn{m_pPlayer->GetCid(), m_pPlayer->GetTeam()});
+	GameServer()->GameHost().Controller()->OnCharacterSpawn(this);
+	GameServer()->GameHost().Controller()->RestoreCharacterAfterMapReload(this);
+	GameServer()->GameHost().Controller()->PublishMatchEvent(CMatchEventSpawn{m_pPlayer->GetCid(), m_pPlayer->GetTeam()});
 
 	return true;
 }
@@ -229,7 +217,7 @@ void CCharacter::HandleJetpack()
 	{
 		if(m_Core.m_Jetpack)
 		{
-			float Strength = GetTuning(m_TuneZone)->m_JetpackStrength;
+			float Strength = m_Core.m_Tuning.m_JetpackStrength;
 			TakeDamage(Direction * -1.0f * (Strength / 100.0f / 6.11f), 0, m_pPlayer->GetCid(), m_Core.m_ActiveWeapon);
 		}
 	}
@@ -255,7 +243,7 @@ void CCharacter::HandleNinja()
 		GameServer()->CreateDamageInd(m_Pos, 0, NinjaTime / Server()->TickSpeed(), TeamMask() & GameServer()->ClientsMaskExcludeClientVersionAndHigher(VERSION_DDNET_NEW_HUD));
 	}
 
-	GameServer()->m_pController->SetArmorProgress(this, NinjaTime);
+	GameServer()->GameHost().Controller()->SetArmorProgress(this, NinjaTime);
 
 	// force ninja Weapon
 	SetWeapon(WEAPON_NINJA);
@@ -274,8 +262,8 @@ void CCharacter::HandleNinja()
 		m_Core.m_Vel = m_Core.m_Ninja.m_ActivationDir * g_pData->m_Weapons.m_Ninja.m_Velocity;
 		vec2 OldPos = m_Pos;
 		vec2 GroundElasticity = vec2(
-			GetTuning(m_TuneZone)->m_GroundElasticityX,
-			GetTuning(m_TuneZone)->m_GroundElasticityY);
+			m_Core.m_Tuning.m_GroundElasticityX,
+			m_Core.m_Tuning.m_GroundElasticityY);
 
 		Collision()->MoveBox(&m_Core.m_Pos, &m_Core.m_Vel, vec2(GetProximityRadius(), GetProximityRadius()), GroundElasticity);
 
@@ -447,8 +435,8 @@ void CCharacter::FireWeapon()
 	}
 
 	vec2 ProjStartPos = m_Pos + Direction * GetProximityRadius() * 0.75f;
-	CWeaponFireContext FireContext = {this, m_Core.m_ActiveWeapon, Direction, MouseTarget, ProjStartPos, GetTuning(m_TuneZone)};
-	const CWeaponFireResult FireResult = GameServer()->m_pController->OnCharacterFireWeapon(FireContext);
+	CWeaponFireContext FireContext = {this, m_Core.m_ActiveWeapon, Direction, MouseTarget, ProjStartPos, &m_Core.m_Tuning};
+	const CWeaponFireResult FireResult = GameServer()->GameHost().Controller()->OnCharacterFireWeapon(FireContext);
 	if(FireResult.m_ReloadTicks > 0)
 		m_ReloadTimer = FireResult.m_ReloadTicks;
 	if(!FireResult.m_Fired)
@@ -461,9 +449,9 @@ void CCharacter::FireWeapon()
 	// -1 is no weapon, handled here so pain sound still plays when firing in freeze
 	if(!m_ReloadTimer && m_Core.m_ActiveWeapon != -1)
 	{
-		m_ReloadTimer = GetTuning(m_TuneZone)->GetWeaponFireDelay(m_Core.m_ActiveWeapon) * Server()->TickSpeed();
+		m_ReloadTimer = m_Core.m_Tuning.GetWeaponFireDelay(m_Core.m_ActiveWeapon) * Server()->TickSpeed();
 	}
-	GameServer()->m_pController->PublishMatchEvent(CMatchEventShotFired{m_pPlayer->GetCid(), FireContext.m_Weapon});
+	GameServer()->GameHost().Controller()->PublishMatchEvent(CMatchEventShotFired{m_pPlayer->GetCid(), FireContext.m_Weapon});
 }
 
 void CCharacter::HandleWeapons()
@@ -625,15 +613,6 @@ void CCharacter::ResetInput()
 
 void CCharacter::PreTick()
 {
-	if(HasRaceTeams() && m_StartTime > Server()->Tick())
-	{
-		// Prevent the player from getting a negative time
-		// The main reason why this can happen is because of time penalty tiles
-		// However, other reasons are hereby also excluded
-		GameServer()->SendChatTarget(m_pPlayer->GetCid(), "You died of old age");
-		Die(m_pPlayer->GetCid(), WEAPON_WORLD);
-	}
-
 	if(m_Paused)
 		return;
 
@@ -643,7 +622,7 @@ void CCharacter::PreTick()
 		SetEmote(m_pPlayer->GetDefaultEmote(), -1);
 	}
 
-	GameServer()->m_pController->TickCharacterPreCore(this);
+	GameServer()->GameHost().Controller()->TickCharacterPreCore(this);
 
 	Antibot()->OnCharacterTick(m_pPlayer->GetCid());
 
@@ -673,7 +652,7 @@ void CCharacter::Tick()
 	// handle Weapons
 	HandleWeapons();
 
-	GameServer()->m_pController->TickCharacterPostCore(this);
+	GameServer()->GameHost().Controller()->TickCharacterPostCore(this);
 
 	if(m_Core.m_TriggeredEvents & COREEVENT_HOOK_ATTACH_PLAYER)
 	{
@@ -813,7 +792,6 @@ void CCharacter::TickDeferred()
 void CCharacter::TickPaused()
 {
 	++m_AttackTick;
-	++m_DamageTakenTick;
 	++m_Core.m_Ninja.m_ActivationTick;
 	++m_ReckoningTick;
 	if(m_LastAction != -1)
@@ -843,28 +821,14 @@ bool CCharacter::IncreaseArmor(int Amount)
 void CCharacter::StopRecording()
 {
 	if(Server()->IsRecording(m_pPlayer->GetCid()))
-	{
-		if(!GameServer()->HasRaceScore())
-		{
-			Server()->StopRecord(m_pPlayer->GetCid());
-			return;
-		}
-		CPlayerData *pData = GameServer()->RaceScore()->PlayerData(m_pPlayer->GetCid());
-
-		if(pData->m_RecordStopTick - Server()->Tick() <= Server()->TickSpeed() && pData->m_RecordStopTick != -1)
-			Server()->SaveDemo(m_pPlayer->GetCid(), pData->m_RecordFinishTime);
-		else
-			Server()->StopRecord(m_pPlayer->GetCid());
-
-		pData->m_RecordStopTick = -1;
-	}
+		Server()->StopRecord(m_pPlayer->GetCid());
 }
 
 void CCharacter::Die(int Killer, int Weapon, bool SendKillMsg)
 {
 	StopRecording();
 	CPlayer *pKiller = Killer >= 0 && Killer < MAX_CLIENTS ? GameServer()->m_apPlayers[Killer] : nullptr;
-	GameServer()->m_pController->OnCharacterDeath({this, pKiller, Killer, Weapon, SendKillMsg});
+	GameServer()->GameHost().Controller()->OnCharacterDeath({this, pKiller, Killer, Weapon, SendKillMsg});
 }
 
 void CCharacter::FinalizeDeath(int Killer, int Weapon, bool SendKillMessage, int ModeSpecial)
@@ -901,8 +865,8 @@ void CCharacter::FinalizeDeath(int Killer, int Weapon, bool SendKillMessage, int
 bool CCharacter::TakeDamage(vec2 Force, int Dmg, int From, int Weapon, bool CanDamage, int AttackerTeam)
 {
 	if(From >= 0 && From < MAX_CLIENTS && GameServer()->m_apPlayers[From] && Weapon >= 0 && Weapon < NUM_WEAPONS)
-		GameServer()->m_pController->PublishMatchEvent(CMatchEventWeaponHit{From, m_pPlayer->GetCid(), Weapon});
-	return GameServer()->m_pController->OnCharacterTakeDamage(this, Force, Dmg, From, Weapon, CanDamage, AttackerTeam);
+		GameServer()->GameHost().Controller()->PublishMatchEvent(CMatchEventWeaponHit{From, m_pPlayer->GetCid(), Weapon});
+	return GameServer()->GameHost().Controller()->OnCharacterTakeDamage(this, Force, Dmg, From, Weapon, CanDamage, AttackerTeam);
 }
 
 void CCharacter::SnapCharacter(int SnappingClient, int MapId)
@@ -913,7 +877,7 @@ void CCharacter::SnapCharacter(int SnappingClient, int MapId)
 	    Health = 0, Armor = 0;
 	int Emote = DetermineEyeEmote();
 	int Tick;
-	if(!m_ReckoningTick || GameServer()->m_pController->IsGamePaused())
+	if(!m_ReckoningTick || GameServer()->GameHost().Controller()->IsGamePaused())
 	{
 		Tick = 0;
 		pCore = &m_Core;
@@ -950,7 +914,7 @@ void CCharacter::SnapCharacter(int SnappingClient, int MapId)
 		if(Faketuning != m_NeededFaketuning)
 		{
 			m_NeededFaketuning = Faketuning;
-			GameServer()->SendTuningParams(m_pPlayer->GetCid(), m_TuneZone); // update tunings
+			GameServer()->SendTuningParams(m_pPlayer->GetCid(), TuningZone()); // update tunings
 		}
 	}
 
@@ -1030,7 +994,7 @@ void CCharacter::SnapCharacter(int SnappingClient, int MapId)
 
 bool CCharacter::CanSnapCharacter(int SnappingClient)
 {
-	return GameServer()->m_pController->CanSnapCharacter(this, SnappingClient);
+	return GameServer()->GameHost().Controller()->CanSnapCharacter(this, SnappingClient);
 }
 
 bool CCharacter::IsSnappingCharacterInView(int SnappingClientId)
@@ -1096,15 +1060,13 @@ void CCharacter::Snap(int SnappingClient)
 
 	// otherwise show our normal tee and send ddnet character stuff
 	SnapCharacter(SnappingClient, TranslatedId);
-	GameServer()->m_pController->SnapCharacterMode(this, SnappingClient, TranslatedId);
+	GameServer()->GameHost().Controller()->SnapCharacterMode(this, SnappingClient, TranslatedId);
 }
 
 void CCharacter::PostGlobalSnap()
 {
 	m_TriggeredEvents7 = 0;
 }
-
-// DDRace
 
 bool CCharacter::CanCollide(int ClientId)
 {
@@ -1189,11 +1151,10 @@ void CCharacter::SetTeamsCore(CTeamsCore *pTeamsCore)
 	m_Core.SetTeamsCore(m_pTeamsCore);
 }
 
-void CCharacter::SetRaceTeams(CGameTeams *pTeams)
+void CCharacter::SetTuningZone(int Zone)
 {
-	m_pRaceTeams = pTeams;
-	if(m_pRaceTeams != nullptr)
-		SetTeamsCore(&m_pRaceTeams->m_Core);
+	m_TuningZone = Zone;
+	m_Core.m_Tuning = TuningList()[Zone];
 }
 
 bool CCharacter::Freeze(int Seconds)
@@ -1318,7 +1279,7 @@ void CCharacter::Pause(bool Pause)
 
 CClientMask CCharacter::TeamMask()
 {
-	return GameServer()->m_pController->GetMaskForPlayerWorldEvent(GetPlayer()->GetCid());
+	return GameServer()->GameHost().Controller()->GetMaskForPlayerWorldEvent(GetPlayer()->GetCid());
 }
 
 void CCharacter::SetPosition(const vec2 &Position)

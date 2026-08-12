@@ -17,12 +17,14 @@ void CInteractions::FillOwnerConnected(
 	int DDRaceTeam,
 	bool Solo,
 	bool NoHitOthers,
-	bool NoHitSelf)
+	bool NoHitSelf,
+	bool RestrictToDDRaceTeam)
 {
 	m_DDRaceTeam = DDRaceTeam;
 	m_Solo = Solo;
 	m_NoHitOthers = NoHitOthers;
 	m_NoHitSelf = NoHitSelf;
+	m_RestrictToDDRaceTeam = RestrictToDDRaceTeam;
 }
 
 void CInteractions::FillOwnerDisconnected()
@@ -34,13 +36,13 @@ void CInteractions::FillOwnerDisconnected()
 bool CInteractions::CanSee(const CGameContext *pGameServer, int ClientId) const
 {
 	dbg_assert(ClientId >= 0 && ClientId < MAX_CLIENTS, "invalid client id %d", ClientId);
-	return pGameServer->m_apPlayers[ClientId] && pGameServer->m_pController->CanSeeInteraction(*this, ClientId);
+	return pGameServer->m_apPlayers[ClientId] && pGameServer->GameHost().Controller()->CanSeeInteraction(*this, ClientId);
 }
 
 bool CInteractions::CanHit(const CGameContext *pGameServer, int ClientId) const
 {
 	dbg_assert(ClientId >= 0 && ClientId < MAX_CLIENTS, "invalid client id %d", ClientId);
-	return pGameServer->m_apPlayers[ClientId] && pGameServer->m_pController->CanHitInteraction(*this, ClientId);
+	return pGameServer->m_apPlayers[ClientId] && pGameServer->GameHost().Controller()->CanHitInteraction(*this, ClientId);
 }
 
 CClientMask CInteractions::CanSeeMask(const CGameContext *pGameServer) const

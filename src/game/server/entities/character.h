@@ -3,12 +3,10 @@
 #ifndef GAME_SERVER_ENTITIES_CHARACTER_H
 #define GAME_SERVER_ENTITIES_CHARACTER_H
 
-#include <game/race_state.h>
 #include <game/server/entity.h>
 
 class CPlayer;
 class CCharacterDDRace;
-class CGameTeams;
 class CSaveHotReloadTee;
 class CSaveTee;
 class CTeamsCore;
@@ -44,7 +42,7 @@ public:
 
 	void Reset() override;
 	void Destroy() override;
-	void PreTick();
+	virtual void PreTick();
 	void Tick() override;
 	void TickDeferred() override;
 	void TickPaused() override;
@@ -86,7 +84,6 @@ public:
 	bool TakeDamage(vec2 Force, int Dmg, int From, int Weapon, bool CanDamage = true, int AttackerTeam = TEAM_SPECTATORS);
 
 	bool Spawn(class CPlayer *pPlayer, vec2 Pos);
-	bool Remove();
 
 	bool IncreaseHealth(int Amount);
 	bool IncreaseArmor(int Amount);
@@ -100,6 +97,7 @@ public:
 	int DetermineEyeEmote();
 
 	int NeededFaketuning() const { return m_NeededFaketuning; }
+	int TuningZone() const { return m_TuningZone; }
 	bool IsAlive() const { return m_Alive; }
 	bool IsPaused() const { return m_Paused; }
 	CPlayer *GetPlayer() { return m_pPlayer; }
@@ -157,8 +155,6 @@ private:
 	CNetObj_PlayerInput m_SavedInput;
 	int m_NumInputs;
 
-	int m_DamageTakenTick;
-
 	int m_Health;
 	int m_Armor;
 	int m_TriggeredEvents7;
@@ -166,14 +162,12 @@ private:
 	// the player core for the physics
 	CCharacterCore m_Core;
 	CTeamsCore *m_pTeamsCore = nullptr;
-	CGameTeams *m_pRaceTeams = nullptr;
+	int m_TuningZone = 0;
 
 	// info for dead reckoning
 	int m_ReckoningTick; // tick that we are performing dead reckoning From
 	CCharacterCore m_SendCore; // core that we should send
 	CCharacterCore m_ReckoningCore; // the dead reckoning core
-
-	// DDRace
 
 	void SnapCharacter(int SnappingClient, int Id);
 	void FinalizeDeath(int Killer, int Weapon, bool SendKillMessage, int ModeSpecial);
@@ -187,12 +181,12 @@ private:
 	};
 	std::optional<int> m_aUntranslatedId[EUntranslatedMap::NUM_IDS];
 
+protected:
+	void SetTuningZone(int Zone);
+
 public:
 	CTeamsCore *TeamsCore() { return m_pTeamsCore; }
-	CGameTeams *RaceTeams() { return m_pRaceTeams; }
-	bool HasRaceTeams() const { return m_pRaceTeams != nullptr; }
 	void SetTeamsCore(CTeamsCore *pTeamsCore);
-	void SetRaceTeams(CGameTeams *pTeams);
 
 	void FillAntibot(CAntibotCharacterData *pData);
 	void Pause(bool Pause);
@@ -202,28 +196,15 @@ public:
 	void GiveAllWeapons();
 	void ResetPickups();
 	void ResetJumps();
-	ERaceState m_DDRaceState;
 	int Team();
 	bool CanCollide(int ClientId) override;
 	bool SameTeam(int ClientId);
-	void StopRecording();
-	bool m_NinjaJetpack;
+	virtual void StopRecording();
 	int m_FreezeTime;
 	bool m_FrozenLastTick;
-	int m_TuneZone;
-	int m_TuneZoneOld;
 	int m_PainSoundTimer;
-	int m_LastMove;
-	int m_StartTime;
 	vec2 m_PrevPos;
-	int m_TeleCheckpoint;
 
-	int m_TimeCpBroadcastEndTick;
-	int m_LastTimeCp;
-	int m_LastTimeCpBroadcasted;
-	float m_aCurrentTimeCp[MAX_CHECKPOINTS];
-
-	int64_t m_LastStartWarning;
 	bool m_LastPenalty;
 	vec2 m_TeleGunPos;
 	bool m_TeleGunTeleport;
@@ -233,12 +214,9 @@ public:
 	int m_SpawnTick;
 	int m_WeaponChangeTick;
 
-	// Setters/Getters because i don't want to modify vanilla vars access modifiers
-	int GetLastWeapon() const { return m_LastWeapon; }
 	void SetLastWeapon(int LastWeap) { m_LastWeapon = LastWeap; }
 	int GetActiveWeapon() const { return m_Core.m_ActiveWeapon; }
 	void SetActiveWeapon(int ActiveWeap) { m_Core.m_ActiveWeapon = ActiveWeap; }
-	void SetLastAction(int LastAction) { m_LastAction = LastAction; }
 	int GetArmor() const { return m_Armor; }
 	void SetArmor(int Armor) { m_Armor = Armor; }
 	int GetHealth() const { return m_Health; }
@@ -273,7 +251,6 @@ public:
 
 	bool IsSuper() const { return m_Core.m_Super; }
 
-	CTuningParams *GetTuning(int Zone) { return &TuningList()[Zone]; }
 };
 
 #endif

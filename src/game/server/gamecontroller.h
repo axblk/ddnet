@@ -22,8 +22,8 @@
 class CCharacter;
 class CGameContext;
 class CGameControllerDDRace;
+class CDbConnectionPool;
 class CGameServices;
-class CGameTeams;
 class CInteractions;
 class CPlayer;
 class CTuningParams;
@@ -102,7 +102,6 @@ struct CGameCharacterDeathContext
 */
 class IGameController
 {
-	friend class CSaveTeam; // need access to GameServer() and Server()
 	friend class CGameControllerDDRace;
 
 protected:
@@ -122,7 +121,6 @@ private:
 	CEntityRegistry m_EntityRegistry;
 
 	CGameServices *m_pServices;
-	class CConfig *m_pConfig;
 	class IServer *m_pServer;
 
 	CTeamsCore m_TeamsCore;
@@ -134,7 +132,6 @@ protected:
 	void RegisterMapEntityFactory(CEntityRegistry::FMapEntityFactory pfnFactory) { m_EntityRegistry.RegisterMapEntityFactory(pfnFactory); }
 	void IgnoreMapEntityRange(int First, int Last) { m_EntityRegistry.IgnoreMapEntityRange(First, Last); }
 	CGameServices &Services() const { return *m_pServices; }
-	CConfig *Config() { return m_pConfig; }
 	IServer *Server() const { return m_pServer; }
 	IGameModeMapReloadState *MapReloadState() const;
 	void DiscardMapReloadState(int ClientId);
@@ -171,8 +168,6 @@ protected:
 
 	void ResetGame();
 
-	char m_aMapWish[MAX_MAP_LENGTH];
-
 	int m_RoundStartTick;
 	int m_GameOverTick;
 	int m_SuddenDeath;
@@ -187,8 +182,9 @@ public:
 
 	IGameController(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 	virtual ~IGameController();
-	virtual void Init();
+	virtual void Init(CDbConnectionPool *pDbPool);
 	const CGameModeInfo &Info() const { return m_GameModeInfo; }
+	int TuningZoneAt(vec2 Position) const;
 	virtual void ResetTuning();
 	virtual CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team);
 	virtual CCharacter *CreateCharacter(CPlayer *pPlayer);
@@ -227,8 +223,6 @@ public:
 	virtual bool CanSnapCharacter(CCharacter *pCharacter, int SnappingClient) const { return true; }
 	virtual void SnapCharacterMode(CCharacter *pCharacter, int SnappingClient, int TranslatedId) {}
 	virtual bool UseDDNetEntityNetObjs() const { return false; }
-	virtual bool UsesRaceTeams() const { return false; }
-	virtual bool UsesRaceScore() const { return false; }
 	virtual bool IsTeamPractice(int Team) const { return false; }
 	// Complete mode-owned phases around the shared CharacterCore tick.
 	virtual void TickCharacterPreCore(CCharacter *) {}
@@ -364,8 +358,6 @@ public:
 	bool IsTeamPlay() const { return m_GameFlags & GAMEFLAG_TEAMS; }
 	CTeamsCore &TeamsCore() { return m_TeamsCore; }
 	const CTeamsCore &TeamsCore() const { return m_TeamsCore; }
-	CGameTeams &RaceTeams();
-	const CGameTeams &RaceTeams() const;
 };
 
 #endif

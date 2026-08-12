@@ -29,6 +29,7 @@ struct CGameModeInfo
 	int m_GameFlags;
 	int m_Protocols;
 	int m_ActivePlayerLimit = 0;
+	bool m_UseTuneZones = false;
 };
 
 class CGameModeRegistry

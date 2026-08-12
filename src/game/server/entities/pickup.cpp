@@ -25,7 +25,7 @@ CPickup::CPickup(CGameWorld *pGameWorld, int Type, int SubType, int Layer, int N
 	m_Number = Number;
 	m_Flags = Flags;
 	m_RespawnSound = -1;
-	const int SpawnDelay = GameServer()->m_pController->PickupInitialSpawnDelaySeconds(m_Type, m_Subtype);
+	const int SpawnDelay = GameServer()->GameHost().Controller()->PickupInitialSpawnDelaySeconds(m_Type, m_Subtype);
 	m_SpawnTick = SpawnDelay > 0 ? Server()->Tick() + Server()->TickSpeed() * SpawnDelay : -1;
 
 	GameWorld()->InsertEntity(this);
@@ -63,7 +63,7 @@ void CPickup::Tick()
 		if(m_Layer == LAYER_SWITCH && m_Number > 0 && !Switchers()[m_Number].m_aStatus[pChr->Team()])
 			continue;
 
-		const CGamePickupResult Result = GameServer()->m_pController->OnCharacterPickup(pChr, m_Type, m_Subtype, m_Pos);
+		const CGamePickupResult Result = GameServer()->GameHost().Controller()->OnCharacterPickup(pChr, m_Type, m_Subtype, m_Pos);
 		if(!Result.m_Picked)
 			continue;
 
@@ -103,7 +103,7 @@ void CPickup::Snap(int SnappingClient)
 			return;
 	}
 
-	GameServer()->SnapPickup(CSnapContext(SnappingClientVersion, Sixup, SnappingClient), GetId().value(), m_Pos, m_Type, m_Subtype, m_Number, m_Flags);
+	GameServer()->SnapPickup(CSnapContext(SnappingClientVersion, Sixup), GetId().value(), m_Pos, m_Type, m_Subtype, m_Number, m_Flags);
 }
 
 void CPickup::Move()

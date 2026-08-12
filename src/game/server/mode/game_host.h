@@ -7,8 +7,6 @@
 #include <memory>
 
 class CGameContext;
-class CGameTeams;
-class CScore;
 class CDbConnectionPool;
 class IGameController;
 class IGameModeMapReloadState;
@@ -29,8 +27,6 @@ public:
 	IGameController *Controller() const { return m_pController.get(); }
 	CGameServices &Services() { return m_Services; }
 	const CGameServices &Services() const { return m_Services; }
-	CGameTeams *RaceTeams() const { return m_pRaceTeams.get(); }
-	CScore *RaceScore() const { return m_pRaceScore.get(); }
 	IGameModeMapReloadState *MapReloadState() const { return m_pMapReloadState.get(); }
 	void PrepareMapReloadState(std::unique_ptr<IGameModeMapReloadState> pState);
 	std::unique_ptr<IGameModeMapReloadState> TakeMapReloadState();
@@ -42,8 +38,6 @@ private:
 	CGameServices m_Services;
 	CGameModeRegistry m_Modes;
 	std::unique_ptr<IGameController> m_pController;
-	std::unique_ptr<CGameTeams> m_pRaceTeams;
-	std::unique_ptr<CScore> m_pRaceScore;
 	std::unique_ptr<IGameModeMapReloadState> m_pMapReloadState;
 	bool m_MapReloadStateFromPreviousContext = false;
 };

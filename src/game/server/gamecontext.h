@@ -54,29 +54,25 @@ class IConfigManager;
 class CConfig;
 class CHeap;
 class CPlayer;
-class CScore;
 class CUnpacker;
 class IAntibot;
 class IGameController;
 class IMap;
-class IEngine;
 class IStorage;
 struct CAntibotRoundData;
 struct CSnapContext
 {
-	CSnapContext(int Version, bool Sixup, int ClientId) :
-		m_ClientVersion(Version), m_Sixup(Sixup), m_ClientId(ClientId)
+	CSnapContext(int Version, bool Sixup) :
+		m_ClientVersion(Version), m_Sixup(Sixup)
 	{
 	}
 
 	int GetClientVersion() const { return m_ClientVersion; }
 	bool IsSixup() const { return m_Sixup; }
-	int ClientId() const { return m_ClientId; }
 
 private:
 	int m_ClientVersion;
 	bool m_Sixup;
-	int m_ClientId;
 };
 
 class CMute
@@ -115,7 +111,6 @@ class CGameContext : public IGameServer
 	IConfigManager *m_pConfigManager;
 	CConfig *m_pConfig;
 	IConsole *m_pConsole;
-	IEngine *m_pEngine;
 	IStorage *m_pStorage;
 	IAntibot *m_pAntibot;
 	std::unique_ptr<IMap> m_pMap;
@@ -197,7 +192,6 @@ public:
 	IConfigManager *ConfigManager() const { return m_pConfigManager; }
 	CConfig *Config() { return m_pConfig; }
 	IConsole *Console() { return m_pConsole; }
-	IEngine *Engine() { return m_pEngine; }
 	IStorage *Storage() { return m_pStorage; }
 	IMap *Map() override { return m_pMap.get(); }
 	const IMap *Map() const override { return m_pMap.get(); }
@@ -225,8 +219,6 @@ public:
 	// ClientId has to be valid
 	CNetObj_PlayerInput GetLastPlayerInput(int ClientId) const;
 
-	// ponytail: non-owning migration alias; replace callers with GameHost().Controller() as host/mode boundaries grow.
-	IGameController *m_pController;
 	CGameHost &GameHost() { return m_GameHost; }
 	const CGameHost &GameHost() const { return m_GameHost; }
 	CGameWorld m_World;
@@ -295,7 +287,6 @@ public:
 	void CreateSound(vec2 Pos, int Sound, CClientMask Mask = CClientMask().set());
 	void CreateSoundGlobal(int Sound, int Target = -1) const;
 
-	void SnapSwitchers(int SnappingClient);
 	void SnapLaserObject(const CSnapContext &Context, int SnapId, const vec2 &To, const vec2 &From, int StartTick, int Owner = -1, int LaserType = -1, int Subtype = -1, int SwitchNumber = -1) const;
 	void SnapPickup(const CSnapContext &Context, int SnapId, const vec2 &Pos, int Type, int SubType, int SwitchNumber, int Flags) const;
 
@@ -312,7 +303,6 @@ public:
 	void SendChatTarget(int To, const char *pText, int VersionFlags = FLAG_SIX | FLAG_SIXUP) const;
 	void SendChatTeam(int Team, const char *pText) const;
 	void SendChat(int ClientId, int Team, const char *pText, int SpamProtectionClientId = -1, int VersionFlags = FLAG_SIX | FLAG_SIXUP);
-	void SendStartWarning(int ClientId, const char *pMessage);
 	void SendEmoticon(int ClientId, int Emoticon, int TargetClientId) const;
 	void SendWeaponPickup(int ClientId, int Weapon) const;
 	void SendMotd(int ClientId) const;
@@ -504,11 +494,6 @@ private:
 
 public:
 	CLayers *Layers() { return &m_Layers; }
-	CGameTeams *RaceTeams() const;
-	bool HasRaceTeams() const { return m_GameHost.RaceTeams() != nullptr; }
-	CScore *RaceScore();
-	bool HasRaceScore() const { return m_GameHost.RaceScore() != nullptr; }
-
 	enum
 	{
 		VOTE_TYPE_UNKNOWN = 0,

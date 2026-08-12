@@ -4,6 +4,7 @@
 #define GAME_SERVER_ENTITIES_PROJECTILE_H
 
 #include <game/server/entity.h>
+#include <game/server/interactions.h>
 
 class CProjectile : public CEntity
 {
@@ -53,8 +54,7 @@ private:
 	bool m_Freeze;
 	int m_TuneZone;
 	bool m_BelongsToPracticeTeam;
-	int m_OwnerTeamGroup;
-	bool m_IsSolo;
+	CInteractions m_InteractState;
 	vec2 m_InitDir;
 
 public:

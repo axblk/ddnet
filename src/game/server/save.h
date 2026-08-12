@@ -13,6 +13,7 @@
 
 class IGameController;
 class CGameContext;
+class CGameTeams;
 class CGameWorld;
 class CCharacterDDRace;
 class CSaveTeam;
@@ -182,8 +183,8 @@ public:
 	int FromString(const char *pString);
 	// returns true if a team can load, otherwise writes a nice error Message in pMessage
 	bool MatchPlayers(const char (*paNames)[MAX_NAME_LENGTH], const int *pClientId, int NumPlayer, char *pMessage, int MessageLen) const;
-	ESaveResult Save(CGameContext *pGameServer, int Team, bool Dry = false, bool Force = false);
-	bool Load(CGameContext *pGameServer, int Team, bool KeepCurrentWeakStrong, bool IgnorePlayers = false);
+	ESaveResult Save(CGameContext *pGameServer, CGameTeams *pTeams, int Team, bool Dry = false, bool Force = false);
+	bool Load(CGameContext *pGameServer, CGameTeams *pTeams, int Team, bool KeepCurrentWeakStrong, bool IgnorePlayers = false);
 
 	CSaveTee *m_pSavedTees = nullptr;
 

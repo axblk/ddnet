@@ -6,16 +6,25 @@
 
 #include <game/server/gamecontroller.h>
 
+class CDbConnectionPool;
+class CGameTeams;
+class CScore;
+
 class CGameControllerDDRace : public IGameController
 {
-protected:
-	CGameContext *GameServer() const { return IGameController::GameServer(); }
-
 public:
 	CGameControllerDDRace(CGameServices &Services, const CGameModeInfo &GameModeInfo);
+	~CGameControllerDDRace() override;
 
-	void Init() override;
+	void Init(CDbConnectionPool *pDbPool) override;
+	CGameTeams &RaceTeams();
+	const CGameTeams &RaceTeams() const;
+	CScore &RaceScore();
+	const CScore &RaceScore() const;
 	CCharacterDDRace *CreateCharacter(CPlayer *pPlayer) override;
+	bool CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const override;
+	CGamePickupResult OnCharacterPickup(CCharacter *pCharacter, int Type, int Subtype, vec2 Position) override;
+	CGameProjectileRules ProjectileRules(const CGameProjectileContext &Context) const override;
 	void OnExplosion(const CGameExplosionContext &Context) override;
 	void OnCharacterDeath(const CGameCharacterDeathContext &Context) override;
 	void OnCharacterSpawn(CCharacter *pCharacter) override;
@@ -30,6 +39,7 @@ public:
 	bool OnPlayerChatMessage(int ClientId, const char *pMessage, int Team) override;
 	void OnPlayerNameChanged(int ClientId) override;
 	void OnPlayerDDNetVersionKnown(int ClientId) override;
+	void OnReset() override;
 	void OnPlayerSetTeam(int ClientId, int Team) override;
 	void OnPlayerKill(int ClientId) override;
 	bool CanSeeInteraction(const CInteractions &Interaction, int ClientId) const override;
@@ -47,17 +57,20 @@ public:
 	void SnapPlayerMode(CPlayer *pPlayer, int SnappingClient, int TranslatedId) override;
 	void Tick() override;
 	bool UseDDNetEntityNetObjs() const override { return true; }
-	bool UsesRaceTeams() const override { return true; }
-	bool UsesRaceScore() const override { return true; }
 	bool IsTeamPractice(int Team) const override;
 
 protected:
+	CGameContext *GameServer() const { return IGameController::GameServer(); }
+	void ApplyMapSettings();
+	void InitGameSettings() override;
 	void RegisterCommands() override;
 	void RegisterAdminCommands();
 	void RegisterPracticeCommands();
 
 private:
 	static bool CreateRaceMapEntity(IGameController &Controller, const CMapEntityContext &Context);
+	std::unique_ptr<CGameTeams> m_pRaceTeams;
+	std::unique_ptr<CScore> m_pRaceScore;
 };
 
 #endif // GAME_SERVER_GAMEMODES_DDRACE_H

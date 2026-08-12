@@ -4,11 +4,12 @@
 #define GAME_SERVER_ENTITY_H
 
 #include "gameworld.h"
-#include "save.h"
 
 #include <base/vmath.h>
 
 #include <game/alloc.h>
+
+#include <optional>
 
 class CCollision;
 class CGameContext;
@@ -74,7 +75,6 @@ public: // TODO: Maybe make protected
 
 	/* Getters */
 	CEntity *TypeNext() { return m_pNextTypeEntity; }
-	CEntity *TypePrev() { return m_pPrevTypeEntity; }
 	const vec2 &GetPos() const { return m_Pos; }
 	float GetProximityRadius() const { return m_ProximityRadius; }
 
@@ -134,15 +134,6 @@ public: // TODO: Maybe make protected
 			Client2 - Second client ID
 	*/
 	virtual void SwapClients(int Client1, int Client2) {}
-
-	/*
-		Function: BlocksSave
-			Called to check if a team can be saved
-
-		Arguments:
-			ClientId - Client ID
-	*/
-	virtual ESaveResult BlocksSave(int ClientId) { return ESaveResult::SUCCESS; }
 
 	/*
 		Function GetOwnerId

@@ -142,11 +142,6 @@ bool CGameControllerVanillaPvP::OnCharacterTakeDamage(CCharacter *pVictim, vec2 
 	return true;
 }
 
-bool CGameControllerVanillaPvP::CanCharacterHitCharacter(CCharacter *, CCharacter *pTarget) const
-{
-	return pTarget->IsAlive();
-}
-
 CWeaponFireResult CGameControllerVanillaPvP::OnCharacterFireWeapon(const CWeaponFireContext &Context)
 {
 	CCharacter *pCharacter = Context.m_pCharacter;
@@ -259,11 +254,6 @@ CGamePickupResult CGameControllerVanillaPvP::OnCharacterPickup(CCharacter *pChar
 int CGameControllerVanillaPvP::PickupInitialSpawnDelaySeconds(int Type, int Subtype) const
 {
 	return Type == POWERUP_NINJA ? 90 : 0;
-}
-
-CGameProjectileRules CGameControllerVanillaPvP::ProjectileRules(const CGameProjectileContext &Context) const
-{
-	return {true, false, 0.001f, Context.m_OwnerConnected ? EProjectileOwnerLossAction::KEEP : EProjectileOwnerLossAction::DETACH};
 }
 
 void CGameControllerVanillaPvP::OnCharacterSpawn(CCharacter *pChr)

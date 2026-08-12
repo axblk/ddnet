@@ -1,5 +1,6 @@
 /* (c) Shereef Marzouk. See "licence DDRace.txt" and the readme.txt in the root of the distribution for more information. */
 #include "gamecontext.h"
+#include "gamemodes/ddrace.h"
 #include "player.h"
 #include "score.h"
 
@@ -12,6 +13,15 @@
 #include <game/version.h>
 
 #include <algorithm>
+
+namespace
+{
+	CScore &RaceScore(CGameContext *pGameServer)
+	{
+		return static_cast<CGameControllerDDRace *>(pGameServer->GameHost().Controller())->RaceScore();
+	}
+}
+
 void CGameContext::ConInfo(IConsole::IResult *pResult, void *pUserData)
 {
 	log_info("chatresp", "DDraceNetwork Mod. Version: " GAME_VERSION);
@@ -162,7 +172,7 @@ void CGameContext::ConMap(IConsole::IResult *pResult, void *pUserData)
 	if(pSelf->RateLimitPlayerVote(pResult->m_ClientId) || pSelf->RateLimitPlayerMapVote(pResult->m_ClientId))
 		return;
 
-	pSelf->RaceScore()->MapVote(pResult->m_ClientId, pResult->GetString(0));
+	RaceScore(pSelf).MapVote(pResult->m_ClientId, pResult->GetString(0));
 }
 
 void CGameContext::ConMapInfo(IConsole::IResult *pResult, void *pUserData)
@@ -177,16 +187,16 @@ void CGameContext::ConMapInfo(IConsole::IResult *pResult, void *pUserData)
 
 	// use cached map info for current map
 	const bool IsCurrentMap = pResult->NumArguments() == 0 || str_comp_nocase(pResult->GetString(0), pSelf->Map()->BaseName()) == 0;
-	if(IsCurrentMap && pSelf->RaceScore()->MapInfoMessage()[0] != '\0')
+	if(IsCurrentMap && RaceScore(pSelf).MapInfoMessage()[0] != '\0')
 	{
-		pSelf->SendChatTarget(pResult->m_ClientId, pSelf->RaceScore()->MapInfoMessage());
+		pSelf->SendChatTarget(pResult->m_ClientId, RaceScore(pSelf).MapInfoMessage());
 		return;
 	}
 
 	if(pResult->NumArguments() > 0)
-		pSelf->RaceScore()->MapInfo(pResult->m_ClientId, pResult->GetString(0));
+		RaceScore(pSelf).MapInfo(pResult->m_ClientId, pResult->GetString(0));
 	else
-		pSelf->RaceScore()->MapInfo(pResult->m_ClientId, pSelf->Map()->BaseName());
+		RaceScore(pSelf).MapInfo(pResult->m_ClientId, pSelf->Map()->BaseName());
 }
 
 void CGameContext::ConTimeout(IConsole::IResult *pResult, void *pUserData)
@@ -212,7 +222,7 @@ void CGameContext::ConTimeout(IConsole::IResult *pResult, void *pUserData)
 		if(pSelf->Server()->SetTimedOut(i, pResult->m_ClientId))
 		{
 			if(pSelf->m_apPlayers[i]->GetCharacter())
-				pSelf->SendTuningParams(i, pSelf->m_apPlayers[i]->GetCharacter()->m_TuneZone);
+				pSelf->SendTuningParams(i, pSelf->m_apPlayers[i]->GetCharacter()->TuningZone());
 			return;
 		}
 	}

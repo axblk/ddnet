@@ -7,6 +7,7 @@
 
 class CDbConnectionPool;
 class CGameContext;
+class CGameTeams;
 class IDbConnection;
 class IServer;
 struct ISqlData;
@@ -28,6 +29,7 @@ class CScore
 	CPlayerData m_aPlayerData[MAX_CLIENTS];
 	CPlayerState m_aPlayerStates[MAX_CLIENTS];
 	CDbConnectionPool *m_pPool;
+	CGameTeams *m_pTeams;
 
 	CGameContext *GameServer() const { return m_pGameServer; }
 	IServer *Server() const { return m_pServer; }
@@ -59,7 +61,7 @@ class CScore
 	bool RateLimitPlayer(int ClientId);
 
 public:
-	CScore(CGameContext *pGameServer, CDbConnectionPool *pPool);
+	CScore(CGameContext *pGameServer, CDbConnectionPool *pPool, CGameTeams *pTeams);
 
 	CPlayerData *PlayerData(int Id) { return &m_aPlayerData[Id]; }
 	const std::optional<float> &CurrentRecord() const { return m_CurrentRecord; }

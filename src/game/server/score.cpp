@@ -100,8 +100,9 @@ void CScore::GeneratePassphrase(char *pBuf, int BufSize)
 	}
 }
 
-CScore::CScore(CGameContext *pGameServer, CDbConnectionPool *pPool) :
+CScore::CScore(CGameContext *pGameServer, CDbConnectionPool *pPool, CGameTeams *pTeams) :
 	m_pPool(pPool),
+	m_pTeams(pTeams),
 	m_pGameServer(pGameServer),
 	m_pServer(pGameServer->Server())
 {
@@ -599,7 +600,7 @@ void CScore::SaveTeam(int ClientId, const char *pCode, const char *pServer)
 {
 	if(RateLimitPlayer(ClientId))
 		return;
-	CGameTeams *pTeams = GameServer()->RaceTeams();
+	CGameTeams *pTeams = m_pTeams;
 	int Team = pTeams->m_Core.Team(ClientId);
 	if(pTeams->GetSaving(Team))
 	{
@@ -614,7 +615,7 @@ void CScore::SaveTeam(int ClientId, const char *pCode, const char *pServer)
 
 	auto SaveResult = std::make_shared<CScoreSaveResult>(ClientId, Server()->ClientName(ClientId), pServer);
 	SaveResult->m_SaveId = RandomUuid();
-	ESaveResult Result = SaveResult->m_SavedTeam.Save(GameServer(), Team);
+	ESaveResult Result = SaveResult->m_SavedTeam.Save(GameServer(), pTeams, Team);
 	if(CSaveTeam::HandleSaveError(Result, ClientId, GameServer()))
 		return;
 	pTeams->SetSaving(Team, SaveResult);
@@ -646,7 +647,7 @@ void CScore::LoadTeam(const char *pCode, int ClientId)
 {
 	if(RateLimitPlayer(ClientId))
 		return;
-	CGameTeams *pTeams = GameServer()->RaceTeams();
+	CGameTeams *pTeams = m_pTeams;
 	int Team = pTeams->m_Core.Team(ClientId);
 	if(pTeams->GetSaving(Team))
 	{

@@ -83,7 +83,6 @@ void CPlayer::Reset()
 	m_TuneZone = 0;
 	m_TuneZoneOld = m_TuneZone;
 	m_Halloween = false;
-	m_FirstPacket = true;
 
 	m_SendVoteIndex = -1;
 
@@ -167,20 +166,12 @@ void CPlayer::Tick()
 	{
 		IServer::CClientInfo Info;
 		if(Server()->GetClientInfo(m_ClientId, &Info))
-		{
-			m_Latency.m_Accum += Info.m_Latency;
-			m_Latency.m_AccumMax = std::max(m_Latency.m_AccumMax, Info.m_Latency);
 			m_Latency.m_AccumMin = std::min(m_Latency.m_AccumMin, Info.m_Latency);
-		}
 		// each second
 		if(Server()->Tick() % Server()->TickSpeed() == 0)
 		{
-			m_Latency.m_Avg = m_Latency.m_Accum / Server()->TickSpeed();
-			m_Latency.m_Max = m_Latency.m_AccumMax;
 			m_Latency.m_Min = m_Latency.m_AccumMin;
-			m_Latency.m_Accum = 0;
 			m_Latency.m_AccumMin = 1000;
-			m_Latency.m_AccumMax = 0;
 		}
 	}
 
@@ -194,9 +185,9 @@ void CPlayer::Tick()
 		Server()->ResetNetErrorString(m_ClientId);
 	}
 
-	if(!GameServer()->m_pController->IsGamePaused())
+	if(!GameServer()->GameHost().Controller()->IsGamePaused())
 	{
-		const int RespawnTick = GameServer()->m_pController->PlayerAutoRespawnTick(this);
+		const int RespawnTick = GameServer()->GameHost().Controller()->PlayerAutoRespawnTick(this);
 		if(!m_pCharacter && RespawnTick <= Server()->Tick())
 			m_Spawning = true;
 
@@ -227,13 +218,9 @@ void CPlayer::Tick()
 	}
 
 	m_TuneZoneOld = m_TuneZone; // determine needed tunings with viewpos
-	int CurrentIndex = GameServer()->Collision()->GetMapIndex(m_ViewPos);
-	m_TuneZone = GameServer()->Collision()->IsTune(CurrentIndex);
-
+	m_TuneZone = GameServer()->GameHost().Controller()->TuningZoneAt(m_ViewPos);
 	if(m_TuneZone != m_TuneZoneOld) // don't send tunings all the time
-	{
 		GameServer()->SendTuningParams(m_ClientId, m_TuneZone);
-	}
 
 	if(m_OverrideEmoteReset >= 0 && m_OverrideEmoteReset <= Server()->Tick())
 	{
@@ -265,7 +252,7 @@ void CPlayer::PostTick()
 	}
 
 	// update view pos for spectators
-	if((m_Team == TEAM_SPECTATORS || m_Paused || GameServer()->m_pController->IsPlayerDeadSpectator(m_ClientId)) && m_SpectatorId != SPEC_FREEVIEW && GameServer()->m_apPlayers[m_SpectatorId] && GameServer()->m_apPlayers[m_SpectatorId]->GetCharacter())
+	if((m_Team == TEAM_SPECTATORS || m_Paused || GameServer()->GameHost().Controller()->IsPlayerDeadSpectator(m_ClientId)) && m_SpectatorId != SPEC_FREEVIEW && GameServer()->m_apPlayers[m_SpectatorId] && GameServer()->m_apPlayers[m_SpectatorId]->GetCharacter())
 		m_ViewPos = GameServer()->m_apPlayers[m_SpectatorId]->GetCharacter()->m_Pos;
 
 	UpdateNetworkClipRadius();
@@ -276,7 +263,7 @@ void CPlayer::PostPostTick()
 	if(!Server()->ClientIngame(m_ClientId))
 		return;
 
-	if(!GameServer()->m_pController->IsGamePaused() && !m_pCharacter && m_Spawning && m_WeakHookSpawn)
+	if(!GameServer()->GameHost().Controller()->IsGamePaused() && !m_pCharacter && m_Spawning && m_WeakHookSpawn)
 		TryRespawn();
 }
 
@@ -301,8 +288,8 @@ void CPlayer::Snap(int SnappingClient)
 
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
 	int Latency = SnappingClient == SERVER_DEMO_CLIENT ? m_Latency.m_Min : GameServer()->m_apPlayers[SnappingClient]->m_aCurLatency[m_ClientId];
-	int Score = GameServer()->m_pController->SnapPlayerScore(SnappingClient, this);
-	const bool DeadSpectator = GameServer()->m_pController->IsPlayerDeadSpectator(m_ClientId);
+	int Score = GameServer()->GameHost().Controller()->SnapPlayerScore(SnappingClient, this);
+	const bool DeadSpectator = GameServer()->GameHost().Controller()->IsPlayerDeadSpectator(m_ClientId);
 
 	if(!Server()->IsSixup(SnappingClient))
 	{
@@ -361,7 +348,7 @@ void CPlayer::Snap(int SnappingClient)
 		}
 	}
 
-	GameServer()->m_pController->SnapPlayerMode(this, SnappingClient, TranslatedId);
+	GameServer()->GameHost().Controller()->SnapPlayerMode(this, SnappingClient, TranslatedId);
 }
 
 void CPlayer::FakeSnap()
@@ -488,7 +475,7 @@ void CPlayer::OnDirectInput(const CNetObj_PlayerInput *pNewInput)
 
 	AfkTimer();
 
-	if(((pNewInput->m_PlayerFlags & PLAYERFLAG_SPEC_CAM) || GetClientVersion() < VERSION_DDNET_PLAYERFLAG_SPEC_CAM) && ((!m_pCharacter && (m_Team == TEAM_SPECTATORS || GameServer()->m_pController->IsPlayerDeadSpectator(m_ClientId))) || m_Paused) && m_SpectatorId == SPEC_FREEVIEW)
+	if(((pNewInput->m_PlayerFlags & PLAYERFLAG_SPEC_CAM) || GetClientVersion() < VERSION_DDNET_PLAYERFLAG_SPEC_CAM) && ((!m_pCharacter && (m_Team == TEAM_SPECTATORS || GameServer()->GameHost().Controller()->IsPlayerDeadSpectator(m_ClientId))) || m_Paused) && m_SpectatorId == SPEC_FREEVIEW)
 		m_ViewPos = vec2(pNewInput->m_TargetX, pNewInput->m_TargetY);
 
 	// check for activity
@@ -567,7 +554,7 @@ CCharacter *CPlayer::ForceSpawn(vec2 Pos)
 	m_Spawning = false;
 	if(m_Team == TEAM_SPECTATORS)
 		m_Team = TEAM_GAME;
-	m_pCharacter = GameServer()->m_pController->CreateCharacter(this);
+	m_pCharacter = GameServer()->GameHost().Controller()->CreateCharacter(this);
 	dbg_assert(m_pCharacter, "game mode returned no character");
 	m_pCharacter->Spawn(this, Pos);
 	return m_pCharacter;
@@ -652,19 +639,16 @@ void CPlayer::TryRespawn()
 {
 	vec2 SpawnPos;
 
-	if(!GameServer()->m_pController->CanSpawn(m_Team, &SpawnPos, m_ClientId))
+	if(!GameServer()->GameHost().Controller()->CanSpawn(m_Team, &SpawnPos, m_ClientId))
 		return;
 
 	m_WeakHookSpawn = false;
 	m_Spawning = false;
-	m_pCharacter = GameServer()->m_pController->CreateCharacter(this);
+	m_pCharacter = GameServer()->GameHost().Controller()->CreateCharacter(this);
 	dbg_assert(m_pCharacter, "game mode returned no character");
 	m_ViewPos = SpawnPos;
 	m_pCharacter->Spawn(this, SpawnPos);
-	GameServer()->CreatePlayerSpawn(SpawnPos, GameServer()->m_pController->GetMaskForPlayerWorldEvent(m_ClientId));
-
-	if(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO)
-		m_pCharacter->SetSolo(true);
+	GameServer()->CreatePlayerSpawn(SpawnPos, GameServer()->GameHost().Controller()->GetMaskForPlayerWorldEvent(m_ClientId));
 }
 
 void CPlayer::UpdatePlaytime()
@@ -739,8 +723,8 @@ void CPlayer::ProcessPause()
 	if(m_Paused == PAUSE_SPEC && !m_pCharacter->IsPaused() && CanSpec())
 	{
 		m_pCharacter->Pause(true);
-		GameServer()->CreateDeath(m_pCharacter->m_Pos, m_ClientId, GameServer()->m_pController->GetMaskForPlayerWorldEvent(m_ClientId));
-		GameServer()->CreateSound(m_pCharacter->m_Pos, SOUND_PLAYER_DIE, GameServer()->m_pController->GetMaskForPlayerWorldEvent(m_ClientId));
+		GameServer()->CreateDeath(m_pCharacter->m_Pos, m_ClientId, GameServer()->GameHost().Controller()->GetMaskForPlayerWorldEvent(m_ClientId));
+		GameServer()->CreateSound(m_pCharacter->m_Pos, SOUND_PLAYER_DIE, GameServer()->GameHost().Controller()->GetMaskForPlayerWorldEvent(m_ClientId));
 	}
 }
 
@@ -769,7 +753,7 @@ int CPlayer::Pause(int State, bool Force)
 				}
 				m_pCharacter->Pause(false);
 				m_ViewPos = m_pCharacter->m_Pos;
-				GameServer()->CreatePlayerSpawn(m_pCharacter->m_Pos, GameServer()->m_pController->GetMaskForPlayerWorldEvent(m_ClientId));
+				GameServer()->CreatePlayerSpawn(m_pCharacter->m_Pos, GameServer()->GameHost().Controller()->GetMaskForPlayerWorldEvent(m_ClientId));
 			}
 			[[fallthrough]];
 		case PAUSE_SPEC:

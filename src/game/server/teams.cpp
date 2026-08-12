@@ -28,6 +28,12 @@ CGameTeams::CGameTeams(CGameContext *pGameContext, CTeamsCore &TeamsCore) :
 {
 }
 
+CScore &CGameTeams::Score() const
+{
+	dbg_assert(m_pScore, "DDRace teams require an initialized score service");
+	return *m_pScore;
+}
+
 bool CGameTeams::PracticeByDefault() const
 {
 	return g_Config.m_SvPracticeByDefault && g_Config.m_SvTestingCommands;
@@ -223,7 +229,7 @@ void CGameTeams::ResetSwitchers(int Team)
 void CGameTeams::OnCharacterStart(int ClientId)
 {
 	int Tick = Server()->Tick();
-	CCharacter *pStartingChar = Character(ClientId);
+	CCharacterDDRace *pStartingChar = Character(ClientId);
 	if(!pStartingChar)
 		return;
 	if(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO && pStartingChar->m_DDRaceState == ERaceState::STARTED)
@@ -370,7 +376,7 @@ void CGameTeams::Tick()
 
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{
-		CPlayerData *pData = GameServer()->RaceScore()->PlayerData(i);
+		CPlayerData *pData = Score().PlayerData(i);
 		if(!Server()->IsRecording(i))
 			continue;
 
@@ -404,7 +410,7 @@ void CGameTeams::Tick()
 	std::bitset<NUM_DDRACE_TEAMS> TeamHasWantedStartTime;
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{
-		CCharacter *pChar = GameServer()->m_apPlayers[i] ? GameServer()->m_apPlayers[i]->GetCharacter() : nullptr;
+		CCharacterDDRace *pChar = Character(i);
 		int Team = m_Core.Team(i);
 		if(!pChar || m_aTeamState[Team] != ETeamState::STARTED || m_aTeamFlock[Team] || m_aPlayerState[i].m_TeeStarted || m_aPractice[m_Core.Team(i)])
 		{
@@ -854,7 +860,7 @@ ERaceState CGameTeams::GetDDRaceState(const CPlayer *Player) const
 	if(!Player)
 		return ERaceState::NONE;
 
-	const CCharacter *pChar = Player->GetCharacter();
+	const CCharacterDDRace *pChar = Character(Player->GetCid());
 	if(pChar)
 		return pChar->m_DDRaceState;
 	return ERaceState::NONE;
@@ -865,7 +871,7 @@ void CGameTeams::SetDDRaceState(CPlayer *Player, ERaceState DDRaceState)
 	if(!Player)
 		return;
 
-	CCharacter *pChar = Player->GetCharacter();
+	CCharacterDDRace *pChar = Character(Player->GetCid());
 	if(pChar)
 		pChar->m_DDRaceState = DDRaceState;
 }
@@ -875,7 +881,7 @@ int CGameTeams::GetStartTime(CPlayer *Player)
 	if(!Player)
 		return 0;
 
-	CCharacter *pChar = Player->GetCharacter();
+	CCharacterDDRace *pChar = Character(Player->GetCid());
 	if(pChar)
 		return pChar->m_StartTime;
 	return 0;
@@ -886,7 +892,7 @@ void CGameTeams::SetStartTime(CPlayer *Player, int StartTime)
 	if(!Player)
 		return;
 
-	CCharacter *pChar = Player->GetCharacter();
+	CCharacterDDRace *pChar = Character(Player->GetCid());
 	if(pChar)
 		pChar->m_StartTime = StartTime;
 }
@@ -896,7 +902,7 @@ void CGameTeams::SetLastTimeCp(CPlayer *Player, int LastTimeCp)
 	if(!Player)
 		return;
 
-	CCharacter *pChar = Player->GetCharacter();
+	CCharacterDDRace *pChar = Character(Player->GetCid());
 	if(pChar)
 		pChar->m_LastTimeCp = LastTimeCp;
 }
@@ -906,7 +912,7 @@ float *CGameTeams::GetCurrentTimeCp(CPlayer *Player)
 	if(!Player)
 		return nullptr;
 
-	CCharacter *pChar = Player->GetCharacter();
+	CCharacterDDRace *pChar = Character(Player->GetCid());
 	if(pChar)
 		return pChar->m_aCurrentTimeCp;
 	return nullptr;
@@ -931,7 +937,7 @@ void CGameTeams::OnTeamFinish(int Team, CPlayer **Players, unsigned int Size, in
 	}
 
 	if(Size >= (unsigned int)g_Config.m_SvMinTeamSize)
-		GameServer()->RaceScore()->SaveTeamScore(Team, aPlayerCids, Size, TimeTicks, pTimestamp);
+		Score().SaveTeamScore(Team, aPlayerCids, Size, TimeTicks, pTimestamp);
 }
 
 void CGameTeams::OnFinish(CPlayer *pPlayer, int TimeTicks, const char *pTimestamp)
@@ -943,7 +949,7 @@ void CGameTeams::OnFinish(CPlayer *pPlayer, int TimeTicks, const char *pTimestam
 
 	// TODO:DDRace:btd: this ugly
 	const int ClientId = pPlayer->GetCid();
-	CPlayerData *pData = GameServer()->RaceScore()->PlayerData(ClientId);
+	CPlayerData *pData = Score().PlayerData(ClientId);
 
 	char aBuf[128];
 	SetLastTimeCp(pPlayer, -1);
@@ -1003,7 +1009,7 @@ void CGameTeams::OnFinish(CPlayer *pPlayer, int TimeTicks, const char *pTimestam
 		pData->m_RecordFinishTime = Time;
 	}
 
-	GameServer()->RaceScore()->SendFinish(ClientId, Time, pData->m_BestTime);
+	Score().SendFinish(ClientId, Time, pData->m_BestTime);
 	bool CallSaveScore = g_Config.m_SvSaveWorseScores;
 	bool NeedToSendNewPersonalRecord = false;
 	if(!pData->m_BestTime || Time < pData->m_BestTime)
@@ -1016,21 +1022,21 @@ void CGameTeams::OnFinish(CPlayer *pPlayer, int TimeTicks, const char *pTimestam
 
 	if(CallSaveScore)
 		if(g_Config.m_SvNamelessScore || !str_startswith(Server()->ClientName(ClientId), "nameless tee"))
-			GameServer()->RaceScore()->SaveScore(ClientId, TimeTicks, pTimestamp,
-				GetCurrentTimeCp(pPlayer), GameServer()->RaceScore()->NotEligibleForFinish(ClientId));
+			Score().SaveScore(ClientId, TimeTicks, pTimestamp,
+				GetCurrentTimeCp(pPlayer), Score().NotEligibleForFinish(ClientId));
 
 	bool NeedToSendNewServerRecord = false;
 	// update server best time
-	if(!GameServer()->RaceScore()->CurrentRecord().has_value())
+	if(!Score().CurrentRecord().has_value())
 	{
-		GameServer()->RaceScore()->LoadBestTime();
+		Score().LoadBestTime();
 	}
-	else if(Time < GameServer()->RaceScore()->CurrentRecord())
+	else if(Time < Score().CurrentRecord())
 	{
 		// check for nameless
 		if(g_Config.m_SvNamelessScore || !str_startswith(Server()->ClientName(ClientId), "nameless tee"))
 		{
-			GameServer()->RaceScore()->SetCurrentRecord(Time);
+			Score().SetCurrentRecord(Time);
 			NeedToSendNewServerRecord = true;
 		}
 	}
@@ -1042,18 +1048,18 @@ void CGameTeams::OnFinish(CPlayer *pPlayer, int TimeTicks, const char *pTimestam
 		{
 			if(GameServer()->m_apPlayers[i] && GameServer()->m_apPlayers[i]->GetClientVersion() >= VERSION_DDRACE)
 			{
-				GameServer()->RaceScore()->SendRecord(i);
+				Score().SendRecord(i);
 			}
 		}
 	}
 	if(!NeedToSendNewServerRecord && NeedToSendNewPersonalRecord && pPlayer->GetClientVersion() >= VERSION_DDRACE)
 	{
-		GameServer()->RaceScore()->SendRecord(ClientId);
+		Score().SendRecord(ClientId);
 	}
 
 	int TTime = (int)Time;
-	std::optional<float> Score = GameServer()->RaceScore()->PlayerData(ClientId)->m_BestTime;
-	if(!Score.has_value() || TTime < Score.value())
+	std::optional<float> BestTime = Score().PlayerData(ClientId)->m_BestTime;
+	if(!BestTime.has_value() || TTime < BestTime.value())
 	{
 		Server()->SetClientScore(ClientId, TTime);
 	}
@@ -1063,14 +1069,14 @@ void CGameTeams::OnFinish(CPlayer *pPlayer, int TimeTicks, const char *pTimestam
 	m_pGameContext->CreateFinishEffect(pChar->m_Pos, pChar->TeamMask());
 }
 
-CCharacter *CGameTeams::Character(int ClientId)
+CCharacterDDRace *CGameTeams::Character(int ClientId)
 {
-	return GameServer()->GetPlayerChar(ClientId);
+	return dynamic_cast<CCharacterDDRace *>(GameServer()->GetPlayerChar(ClientId));
 }
 
-const CCharacter *CGameTeams::Character(int ClientId) const
+const CCharacterDDRace *CGameTeams::Character(int ClientId) const
 {
-	return GameServer()->GetPlayerChar(ClientId);
+	return dynamic_cast<const CCharacterDDRace *>(GameServer()->GetPlayerChar(ClientId));
 }
 
 CPlayer *CGameTeams::GetPlayer(int ClientId)
@@ -1189,9 +1195,9 @@ void CGameTeams::SwapTeamCharacters(CCharacterDDRace *pPrimaryCharacter, CCharac
 	{
 		for(const auto &pPlayer : GameServer()->m_apPlayers)
 		{
-			CCharacter *pChar = pPlayer ? pPlayer->GetCharacter() : nullptr;
-			if(pChar && pChar->Team() == Team && pChar != pPrimaryPlayer->GetCharacter() && pChar != pTargetPlayer->GetCharacter())
-				pChar->m_StartTime = pPrimaryPlayer->GetCharacter()->m_StartTime;
+			CCharacterDDRace *pChar = pPlayer ? Character(pPlayer->GetCid()) : nullptr;
+			if(pChar && pChar->Team() == Team && pChar != pPrimaryCharacter && pChar != pTargetCharacter)
+				pChar->m_StartTime = pPrimaryCharacter->m_StartTime;
 		}
 	}
 	std::swap(m_aPlayerState[pPrimaryPlayer->GetCid()].m_TeeStarted, m_aPlayerState[pTargetPlayer->GetCid()].m_TeeStarted);
@@ -1332,7 +1338,7 @@ void CGameTeams::ProcessSaveTeam()
 			if(TeamSize(Team) > 0)
 			{
 				// load weak/strong order to prevent switching weak/strong while saving
-				m_apSaveTeamResult[Team]->m_SavedTeam.Load(GameServer(), Team, false);
+				m_apSaveTeamResult[Team]->m_SavedTeam.Load(GameServer(), this, Team, false);
 			}
 			break;
 		case CScoreSaveResult::LOAD_SUCCESS:
@@ -1349,7 +1355,7 @@ void CGameTeams::ProcessSaveTeam()
 			if(TeamSize(Team) > 0)
 			{
 				// keep current weak/strong order as on some maps there is no other way of switching
-				TeamValid = m_apSaveTeamResult[Team]->m_SavedTeam.Load(GameServer(), Team, true);
+				TeamValid = m_apSaveTeamResult[Team]->m_SavedTeam.Load(GameServer(), this, Team, true);
 			}
 
 			if(!TeamValid)

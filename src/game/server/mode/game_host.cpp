@@ -5,8 +5,6 @@
 
 #include <game/server/gamecontroller.h>
 #include <game/server/mode/game_mode_map_reload_state.h>
-#include <game/server/score.h>
-#include <game/server/teams.h>
 
 CGameHost::CGameHost(CGameContext *pGameServer) :
 	m_pGameServer(pGameServer),
@@ -34,22 +32,11 @@ bool CGameHost::Select(const char *pModeId)
 void CGameHost::Init(CDbConnectionPool *pDbPool)
 {
 	dbg_assert(m_pController, "cannot initialize game host without a selected mode");
-	if(m_pController->UsesRaceTeams())
-		m_pRaceTeams = std::make_unique<CGameTeams>(m_pGameServer, m_pController->TeamsCore());
-	if(m_pController->UsesRaceScore())
-	{
-		dbg_assert(pDbPool, "race score service requires a database pool");
-		m_pRaceScore = std::make_unique<CScore>(m_pGameServer, pDbPool);
-	}
-	m_pController->Init();
-	if(m_pRaceTeams)
-		m_pRaceTeams->Reset();
+	m_pController->Init(pDbPool);
 }
 
 void CGameHost::Shutdown()
 {
-	m_pRaceScore.reset();
-	m_pRaceTeams.reset();
 	m_pController.reset();
 }
 

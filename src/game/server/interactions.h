@@ -14,6 +14,7 @@ class CInteractions
 	bool m_Solo = false;
 	bool m_NoHitOthers = false;
 	bool m_NoHitSelf = false;
+	bool m_RestrictToDDRaceTeam = false;
 
 public:
 	void Init(int OwnerId, uint32_t UniqueOwnerId);
@@ -21,7 +22,8 @@ public:
 		int DDRaceTeam,
 		bool Solo,
 		bool NoHitOthers,
-		bool NoHitSelf);
+		bool NoHitSelf,
+		bool RestrictToDDRaceTeam = false);
 	void FillOwnerDisconnected();
 	int OwnerId() const { return m_OwnerId; }
 	uint32_t UniqueOwnerId() const { return m_UniqueOwnerId; }
@@ -29,6 +31,7 @@ public:
 	bool IsSolo() const { return m_Solo; }
 	bool NoHitOthers() const { return m_NoHitOthers; }
 	bool NoHitSelf() const { return m_NoHitSelf; }
+	bool RestrictToDDRaceTeam() const { return m_RestrictToDDRaceTeam; }
 	bool CanSee(const CGameContext *pGameServer, int ClientId) const;
 	bool CanHit(const CGameContext *pGameServer, int ClientId) const;
 	CClientMask CanSeeMask(const CGameContext *pGameServer) const;

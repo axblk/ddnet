@@ -22,11 +22,56 @@
 #include <cmath>
 #include <vector>
 
+void CCharacterDDRace::PreTick()
+{
+	if(m_StartTime > Server()->Tick())
+	{
+		// Time penalty tiles can move the race start into the future. Do not expose a negative race time.
+		GameServer()->SendChatTarget(GetPlayer()->GetCid(), "You died of old age");
+		Die(GetPlayer()->GetCid(), WEAPON_WORLD);
+	}
+	CCharacter::PreTick();
+}
+
 void CCharacterDDRace::Die(int Killer, int Weapon, bool SendKillMsg)
 {
 	if(Killer != WEAPON_GAME && m_SetSavePos[RESCUEMODE_AUTO])
 		RaceTeams()->PlayerState(GetPlayer()->GetCid()).m_LastDeath = m_RescueTee[RESCUEMODE_AUTO];
 	CCharacter::Die(Killer, Weapon, SendKillMsg);
+}
+
+void CCharacterDDRace::StopRecording()
+{
+	if(!Server()->IsRecording(GetPlayer()->GetCid()))
+		return;
+
+	CPlayerData *pData = RaceScore()->PlayerData(GetPlayer()->GetCid());
+	if(pData->m_RecordStopTick != -1 && pData->m_RecordStopTick - Server()->Tick() <= Server()->TickSpeed())
+		Server()->SaveDemo(GetPlayer()->GetCid(), pData->m_RecordFinishTime);
+	else
+		Server()->StopRecord(GetPlayer()->GetCid());
+	pData->m_RecordStopTick = -1;
+}
+
+bool CCharacterDDRace::TryStartWarning()
+{
+	if(m_LastStartWarning >= 0 && m_LastStartWarning >= Server()->Tick() - 3 * Server()->TickSpeed())
+		return false;
+	m_LastStartWarning = Server()->Tick();
+	return true;
+}
+
+void CCharacterDDRace::SendStartWarning(const char *pMessage)
+{
+	if(TryStartWarning())
+		GameServer()->SendChatTarget(GetPlayer()->GetCid(), pMessage);
+}
+
+void CCharacterDDRace::SetRaceTeams(CGameTeams *pTeams)
+{
+	m_pRaceTeams = pTeams;
+	if(m_pRaceTeams != nullptr)
+		SetTeamsCore(&m_pRaceTeams->m_Core);
 }
 
 void CCharacterDDRace::SetSuper(bool Super)
@@ -146,7 +191,7 @@ bool CCharacterDDRace::Rescue()
 
 void CCharacterDDRace::HandleBroadcast()
 {
-	CPlayerData *pData = GameServer()->RaceScore()->PlayerData(m_pPlayer->GetCid());
+	CPlayerData *pData = RaceScore()->PlayerData(m_pPlayer->GetCid());
 
 	if(m_DDRaceState == ERaceState::STARTED && m_pPlayer->GetClientVersion() == VERSION_VANILLA && !Server()->IsSixup(m_pPlayer->GetCid()) &&
 		m_LastTimeCpBroadcasted != m_LastTimeCp && m_LastTimeCp > -1 &&
@@ -269,8 +314,8 @@ void CCharacterDDRace::HandleSkippableTiles(int Index)
 			constexpr float MaxSpeedScale = 5.0f;
 			if(MaxSpeed == 0)
 			{
-				float MaxRampSpeed = GetTuning(m_TuneZone)->m_VelrampRange / (50 * log(std::max((float)GetTuning(m_TuneZone)->m_VelrampCurvature, 1.01f)));
-				MaxSpeed = std::max(MaxRampSpeed, GetTuning(m_TuneZone)->m_VelrampStart / 50) * MaxSpeedScale;
+				float MaxRampSpeed = GetTuning(TuningZone())->m_VelrampRange / (50 * log(std::max((float)GetTuning(TuningZone())->m_VelrampCurvature, 1.01f)));
+				MaxSpeed = std::max(MaxRampSpeed, GetTuning(TuningZone())->m_VelrampStart / 50) * MaxSpeedScale;
 			}
 
 			// (signed) length of projection
@@ -302,7 +347,7 @@ void CCharacterDDRace::SetTimeCheckpoint(int TimeCheckpoint)
 		m_TimeCpBroadcastEndTick = Server()->Tick() + Server()->TickSpeed() * 2;
 		if(m_pPlayer->GetClientVersion() >= VERSION_DDRACE || Server()->IsSixup(m_pPlayer->GetCid()))
 		{
-			CPlayerData *pData = GameServer()->RaceScore()->PlayerData(m_pPlayer->GetCid());
+			CPlayerData *pData = RaceScore()->PlayerData(m_pPlayer->GetCid());
 			if(pData->m_aBestTimeCp[m_LastTimeCp] != 0.0f)
 			{
 				if(Server()->IsSixup(m_pPlayer->GetCid()))
@@ -345,7 +390,7 @@ void CCharacterDDRace::HandleTiles(int Index)
 	if(TeleCheckpoint)
 		m_TeleCheckpoint = TeleCheckpoint;
 
-	GameServer()->m_pController->HandleCharacterTiles(this, Index);
+	GameServer()->GameHost().Controller()->HandleCharacterTiles(this, Index);
 	if(!m_Alive)
 		return;
 
@@ -658,7 +703,7 @@ void CCharacterDDRace::HandleTiles(int Index)
 			{
 				if(TeamsCore()->Team(i) == Team && i != m_Core.m_Id && GameServer()->m_apPlayers[i])
 				{
-					CCharacter *pChar = GameServer()->m_apPlayers[i]->GetCharacter();
+					CCharacterDDRace *pChar = static_cast<CCharacterDDRace *>(GameServer()->m_apPlayers[i]->GetCharacter());
 
 					if(pChar)
 						pChar->m_StartTime = m_StartTime;
@@ -684,7 +729,7 @@ void CCharacterDDRace::HandleTiles(int Index)
 			{
 				if(TeamsCore()->Team(i) == Team && i != m_Core.m_Id && GameServer()->m_apPlayers[i])
 				{
-					CCharacter *pChar = GameServer()->m_apPlayers[i]->GetCharacter();
+					CCharacterDDRace *pChar = static_cast<CCharacterDDRace *>(GameServer()->m_apPlayers[i]->GetCharacter());
 
 					if(pChar)
 						pChar->m_StartTime = m_StartTime;
@@ -767,7 +812,7 @@ void CCharacterDDRace::HandleTiles(int Index)
 		}
 		// if no checkpointout have been found (or if there no recorded checkpoint), teleport to start
 		vec2 SpawnPos;
-		if(GameServer()->m_pController->CanSpawn(m_pPlayer->GetTeam(), &SpawnPos, GetPlayer()->GetCid()))
+		if(GameServer()->GameHost().Controller()->CanSpawn(m_pPlayer->GetTeam(), &SpawnPos, GetPlayer()->GetCid()))
 		{
 			m_Core.m_Pos = SpawnPos;
 			m_Core.m_Vel = vec2(0, 0);
@@ -802,7 +847,7 @@ void CCharacterDDRace::HandleTiles(int Index)
 		}
 		// if no checkpointout have been found (or if there no recorded checkpoint), teleport to start
 		vec2 SpawnPos;
-		if(GameServer()->m_pController->CanSpawn(m_pPlayer->GetTeam(), &SpawnPos, GetPlayer()->GetCid()))
+		if(GameServer()->GameHost().Controller()->CanSpawn(m_pPlayer->GetTeam(), &SpawnPos, GetPlayer()->GetCid()))
 		{
 			m_Core.m_Pos = SpawnPos;
 
@@ -817,12 +862,10 @@ void CCharacterDDRace::HandleTiles(int Index)
 
 void CCharacterDDRace::HandleTuneLayer()
 {
-	m_TuneZoneOld = m_TuneZone;
-	int CurrentIndex = Collision()->GetMapIndex(m_Pos);
-	m_TuneZone = Collision()->IsTune(CurrentIndex);
-	m_Core.m_Tuning = TuningList()[m_TuneZone]; // throw tunings from specific zone into gamecore
+	m_TuneZoneOld = TuningZone();
+	SetTuningZone(GameServer()->GameHost().Controller()->TuningZoneAt(m_Pos));
 
-	if(m_TuneZone != m_TuneZoneOld) // don't send tunigs all the time
+	if(TuningZone() != m_TuneZoneOld) // don't send tunigs all the time
 	{
 		// send zone msgs
 		SendZoneMsgs();
@@ -848,9 +891,9 @@ void CCharacterDDRace::SendZoneMsgs()
 		GameServer()->SendChatTarget(m_pPlayer->GetCid(), pCur);
 	}
 	// send zone enter msg
-	if(GameServer()->m_aaZoneEnterMsg[m_TuneZone][0])
+	if(GameServer()->m_aaZoneEnterMsg[TuningZone()][0])
 	{
-		const char *pCur = GameServer()->m_aaZoneEnterMsg[m_TuneZone];
+		const char *pCur = GameServer()->m_aaZoneEnterMsg[TuningZone()];
 		const char *pPos;
 		while((pPos = str_find(pCur, "\\n")))
 		{
@@ -877,9 +920,9 @@ void CCharacterDDRace::SnapDDRace(int SnappingClient, int Id)
 		DDNetCharacter.m_Flags |= CHARACTERFLAG_INVINCIBLE;
 	if(m_Core.m_EndlessHook)
 		DDNetCharacter.m_Flags |= CHARACTERFLAG_ENDLESS_HOOK;
-	if(m_Core.m_CollisionDisabled || !GetTuning(m_TuneZone)->m_PlayerCollision)
+	if(m_Core.m_CollisionDisabled || !GetTuning(TuningZone())->m_PlayerCollision)
 		DDNetCharacter.m_Flags |= CHARACTERFLAG_COLLISION_DISABLED;
-	if(m_Core.m_HookHitDisabled || !GetTuning(m_TuneZone)->m_PlayerHooking)
+	if(m_Core.m_HookHitDisabled || !GetTuning(TuningZone())->m_PlayerHooking)
 		DDNetCharacter.m_Flags |= CHARACTERFLAG_HOOK_HIT_DISABLED;
 	if(m_Core.m_EndlessJump)
 		DDNetCharacter.m_Flags |= CHARACTERFLAG_ENDLESS_JUMP;
@@ -954,10 +997,7 @@ void CCharacterDDRace::SnapDDRace(int SnappingClient, int Id)
 void CCharacterDDRace::DDRaceTick()
 {
 	mem_copy(&m_Input, &m_SavedInput, sizeof(m_Input));
-	GameServer()->m_pController->SetArmorProgress(this, m_FreezeTime);
-	if(m_Input.m_Direction != 0 || m_Input.m_Jump != 0)
-		m_LastMove = Server()->Tick();
-
+	GameServer()->GameHost().Controller()->SetArmorProgress(this, m_FreezeTime);
 	if(m_Core.m_LiveFrozen && !m_Core.m_Super && !m_Core.m_Invincible)
 	{
 		m_Input.m_Direction = 0;
@@ -1085,6 +1125,8 @@ void CCharacterDDRace::DDRacePostCoreTick()
 
 void CCharacterDDRace::DDRaceInit()
 {
+	m_DDRaceState = ERaceState::NONE;
+	m_StartTime = 0;
 	for(bool &Set : m_SetSavePos)
 		Set = false;
 	m_LastBroadcast = 0;
@@ -1115,7 +1157,7 @@ void CCharacterDDRace::DDRaceInit()
 		{
 			if(TeamsCore()->Team(i) == Team && i != m_Core.m_Id && GameServer()->m_apPlayers[i])
 			{
-				CCharacter *pChar = GameServer()->m_apPlayers[i]->GetCharacter();
+				CCharacterDDRace *pChar = static_cast<CCharacterDDRace *>(GameServer()->m_apPlayers[i]->GetCharacter());
 
 				if(pChar)
 				{
@@ -1128,12 +1170,13 @@ void CCharacterDDRace::DDRaceInit()
 
 	if(g_Config.m_SvTeam == SV_TEAM_MANDATORY && Team == TEAM_FLOCK)
 	{
-		GameServer()->SendStartWarning(GetPlayer()->GetCid(), "Please join a team before you start");
+		SendStartWarning("Please join a team before you start");
 	}
 
+	SetTuningZone(GameServer()->GameHost().Controller()->TuningZoneAt(m_Pos));
 	m_TuneZoneOld = -1; // no zone leave msg on spawn
 	SendZoneMsgs(); // we want an enter message also on spawn
-	GameServer()->SendTuningParams(m_pPlayer->GetCid(), m_TuneZone);
+	GameServer()->SendTuningParams(m_pPlayer->GetCid(), TuningZone());
 	TrySetRescue(RESCUEMODE_MANUAL);
 	Server()->StartRecord(m_pPlayer->GetCid());
 }

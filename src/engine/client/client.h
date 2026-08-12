@@ -97,8 +97,6 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	char m_aConnectAddressStr[MAX_SERVER_ADDRESSES * NETADDR_MAXSTRSIZE] = "";
 
 	CUuid m_ConnectionId = UUID_ZEROED;
-	bool m_Sixup;
-
 	bool m_HaveGlobalTcpAddr = false;
 	NETADDR m_GlobalTcpAddr = NETADDR_ZEROED;
 
@@ -177,12 +175,21 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	// graphs
 	CGraph m_FpsGraph;
 
-	CSnapshotStorage::CHolder m_aDemorecSnapshotHolders[NUM_SNAPSHOT_TYPES];
-	CSnapshotBuffer m_aaDemorecSnapshotData[NUM_SNAPSHOT_TYPES][2];
-
-	CSnapshotDelta m_SnapshotDelta;
-	CSnapshotDelta m_SnapshotDeltaSixup;
 	CSnapshotDelta *SnapshotDelta();
+	CSessionSourceBase &SessionSource(CSessionId SessionId)
+	{
+		if(SessionId == m_DemoSessionId)
+			return *m_pDemoSessionSource;
+		dbg_assert(SessionId == m_NetworkSessionId, "invalid game session");
+		return *m_pNetworkSessionSource;
+	}
+	const CSessionSourceBase &SessionSource(CSessionId SessionId) const
+	{
+		if(SessionId == m_DemoSessionId)
+			return *m_pDemoSessionSource;
+		dbg_assert(SessionId == m_NetworkSessionId, "invalid game session");
+		return *m_pNetworkSessionSource;
+	}
 	CConnection &Connection(int Conn)
 	{
 		return m_pNetworkSessionSource->ConnectionAt(Conn);
@@ -190,6 +197,26 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	const CConnection &Connection(int Conn) const
 	{
 		return m_pNetworkSessionSource->ConnectionAt(Conn);
+	}
+	CConnection &Connection(CSessionId SessionId, int Conn)
+	{
+		if(SessionId == m_DemoSessionId)
+		{
+			dbg_assert(Conn == CONN_MAIN, "invalid demo stream");
+			return m_pDemoSessionSource->Connection();
+		}
+		dbg_assert(SessionId == m_NetworkSessionId, "invalid game session");
+		return Connection(Conn);
+	}
+	const CConnection &Connection(CSessionId SessionId, int Conn) const
+	{
+		if(SessionId == m_DemoSessionId)
+		{
+			dbg_assert(Conn == CONN_MAIN, "invalid demo stream");
+			return m_pDemoSessionSource->Connection();
+		}
+		dbg_assert(SessionId == m_NetworkSessionId, "invalid game session");
+		return Connection(Conn);
 	}
 	CDemoPlayer &DemoPlayer() { return m_pDemoSessionSource->DemoPlayer(); }
 	const CDemoPlayer &DemoPlayer() const { return m_pDemoSessionSource->DemoPlayer(); }
@@ -213,7 +240,6 @@ class CClient : public IClient, public CDemoPlayer::IListener
 
 	bool ServerCapAnyPlayerFlag() const override { return m_ServerCapabilities.m_AnyPlayerFlag; }
 
-	CServerInfo m_CurrentServerInfo;
 	int64_t m_CurrentServerInfoRequestTime = -1; // >= 0 should request, == -1 got info
 
 	int m_CurrentServerPingInfoType = -1;
@@ -271,16 +297,32 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	char m_aAutomaticDummyName[MAX_NAME_LENGTH];
 
 public:
+	using IClient::ConnectionProblems;
+	using IClient::GameTick;
+	using IClient::GameTickTime;
+	using IClient::GetPredictionTick;
+	using IClient::GetPredictionTime;
+	using IClient::GetSmoothTick;
+	using IClient::IntraGameTick;
+	using IClient::IntraGameTickSincePrev;
+	using IClient::PredGameTick;
+	using IClient::PredIntraGameTick;
+	using IClient::PrevGameTick;
+	using IClient::ServerInfo;
+	using IClient::SnapFindItem;
+	using IClient::SnapGetItem;
+	using IClient::SnapNumItems;
+
 	CSessionId FocusedSessionId() const override { return m_SessionManager.FocusedId(); }
 	CSessionId NetworkSessionId() const override { return m_NetworkSessionId; }
 	CSessionId DemoSessionId() const override { return m_DemoSessionId; }
-	int PrevGameTick(int Conn) const override { return Connection(Conn).m_PrevGameTick; }
-	int GameTick(int Conn) const override { return Connection(Conn).m_CurGameTick; }
-	int PredGameTick(int Conn) const override { return Connection(Conn).m_PredTick; }
-	float IntraGameTick(int Conn) const override { return Connection(Conn).m_GameIntraTick; }
-	float PredIntraGameTick(int Conn) const override { return Connection(Conn).m_PredIntraTick; }
-	float IntraGameTickSincePrev(int Conn) const override { return Connection(Conn).m_GameIntraTickSincePrev; }
-	float GameTickTime(int Conn) const override { return Connection(Conn).m_GameTickTime; }
+	int PrevGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PrevGameTick; }
+	int GameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_CurGameTick; }
+	int PredGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PredTick; }
+	float IntraGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_GameIntraTick; }
+	float PredIntraGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PredIntraTick; }
+	float IntraGameTickSincePrev(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_GameIntraTickSincePrev; }
+	float GameTickTime(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_GameTickTime; }
 
 	IConfigManager *ConfigManager() { return m_pConfigManager; }
 	CConfig *Config() { return m_pConfig; }
@@ -318,7 +360,7 @@ public:
 	float GotMaplistPercentage() const override;
 	const std::vector<std::string> &MaplistEntries() const override { return m_vMaplistEntries; }
 
-	bool ConnectionProblems(int Conn) const override;
+	bool ConnectionProblems(CSessionId SessionId, int Conn) const override;
 
 	IGraphics::CTextureHandle GetDebugFont() const override { return m_DebugFont; }
 
@@ -353,7 +395,7 @@ public:
 	bool DummyConnectingDelayed() const override;
 	bool DummyAllowed() const override;
 
-	const CServerInfo &ServerInfo() const override;
+	const CServerInfo &ServerInfo(CSessionId SessionId) const override { return SessionSource(SessionId).ServerInfo(); }
 	void ServerInfoRequest();
 	void SetCurrentServerInfo(const CServerInfo &ServerInfo);
 
@@ -361,11 +403,11 @@ public:
 
 	// ---
 
-	int GetPredictionTime(int Conn) override;
-	CSnapItem SnapGetItem(int Conn, int SnapId, int Index) const override;
-	int GetPredictionTick(int Conn) override;
-	const void *SnapFindItem(int Conn, int SnapId, int Type, int Id) const override;
-	int SnapNumItems(int Conn, int SnapId) const override;
+	int GetPredictionTime(CSessionId SessionId, int Conn) override;
+	CSnapItem SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const override;
+	int GetPredictionTick(CSessionId SessionId, int Conn) override;
+	const void *SnapFindItem(CSessionId SessionId, int Conn, int SnapId, int Type, int Id) const override;
+	int SnapNumItems(CSessionId SessionId, int Conn, int SnapId) const override;
 	void SnapSetStaticsize(int ItemType, int Size) override;
 	void SnapSetStaticsize7(int ItemType, int Size) override;
 
@@ -401,7 +443,7 @@ public:
 	void ResetDDNetInfoTask();
 	void LoadDDNetInfo();
 
-	bool IsSixup() const override { return m_Sixup; }
+	bool IsSixup(CSessionId SessionId) const override { return SessionSource(SessionId).IsSixup(); }
 
 	const NETADDR &ServerAddress() const override { return *NetClient(CONN_MAIN).ServerAddress(); }
 	int ConnectNetTypes() const override;
@@ -533,7 +575,7 @@ public:
 
 	IFriends *Foes() override { return &m_Foes; }
 
-	void GetSmoothTick(int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) override;
+	void GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) override;
 
 	void AddWarning(const SWarning &Warning) override;
 	std::optional<SWarning> CurrentWarning() override;

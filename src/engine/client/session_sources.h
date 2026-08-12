@@ -6,6 +6,7 @@
 #include "stream.h"
 
 #include <engine/client/enums.h>
+#include <engine/serverbrowser.h>
 #include <engine/shared/demo.h>
 
 #include <memory>
@@ -15,6 +16,8 @@ class CSessionSourceBase : public IGameSessionSource
 {
 	ESessionState m_State = ESessionState::OFFLINE;
 	std::string m_Error;
+	CServerInfo m_ServerInfo = {};
+	bool m_Sixup = false;
 
 public:
 	ESessionState State() const override { return m_State; }
@@ -23,6 +26,15 @@ public:
 	void Fail(const char *pError) override;
 	void Update() override;
 	void RequestStop() override;
+	CServerInfo &ServerInfo() { return m_ServerInfo; }
+	const CServerInfo &ServerInfo() const { return m_ServerInfo; }
+	bool IsSixup() const { return m_Sixup; }
+	void SetSixup(bool Sixup) { m_Sixup = Sixup; }
+	void ResetMetadata()
+	{
+		m_ServerInfo = {};
+		m_Sixup = false;
+	}
 };
 
 class CNetworkSessionSource : public CSessionSourceBase
@@ -43,6 +55,7 @@ public:
 private:
 	uint64_t m_NextStreamId = 1;
 	std::vector<std::unique_ptr<CStreamConnection>> m_vpStreams;
+	std::unique_ptr<CSnapshotDelta[]> m_pSnapshotDeltas = std::make_unique<CSnapshotDelta[]>(2);
 
 public:
 	CNetworkSessionSource();
@@ -57,17 +70,26 @@ public:
 	std::vector<std::unique_ptr<CStreamConnection>> &Streams() { return m_vpStreams; }
 	const std::vector<std::unique_ptr<CStreamConnection>> &Streams() const { return m_vpStreams; }
 	size_t NumStreams() const { return m_vpStreams.size(); }
+	CSnapshotDelta &SnapshotDelta(bool Sixup) { return m_pSnapshotDeltas[Sixup]; }
 };
 
 class CDemoSessionSource : public CSessionSourceBase
 {
+	std::unique_ptr<CSnapshotDelta[]> m_pSnapshotDeltas = std::make_unique<CSnapshotDelta[]>(2);
 	CDemoPlayer m_DemoPlayer;
+	CConnection m_Connection;
+	CSnapshotStorage::CHolder m_aSnapshotHolders[IClient::NUM_SNAPSHOT_TYPES];
+	CSnapshotBuffer m_aaSnapshotData[IClient::NUM_SNAPSHOT_TYPES][2];
 
 public:
-	CDemoSessionSource(CSnapshotDelta *pSnapshotDelta, CSnapshotDelta *pSnapshotDeltaSixup, bool UseVideo, TUpdateIntraTimesFunc &&UpdateIntraTimesFunc);
+	CDemoSessionSource(bool UseVideo, TUpdateIntraTimesFunc &&UpdateIntraTimesFunc);
 	ESessionSourceType Type() const override { return ESessionSourceType::DEMO; }
 	CDemoPlayer &DemoPlayer() { return m_DemoPlayer; }
 	const CDemoPlayer &DemoPlayer() const { return m_DemoPlayer; }
+	CSnapshotDelta &SnapshotDelta(bool Sixup) { return m_pSnapshotDeltas[Sixup]; }
+	CConnection &Connection() { return m_Connection; }
+	const CConnection &Connection() const { return m_Connection; }
+	void PrepareSnapshots();
 	void RequestStop() override;
 };
 

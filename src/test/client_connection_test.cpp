@@ -94,6 +94,36 @@ TEST(ClientConnection, DynamicStreamsKeepStableIdsAndStorage)
 	EXPECT_EQ(Source.NumStreams(), 3U);
 }
 
+TEST(ClientConnection, DemoStateDoesNotAliasNetworkMain)
+{
+	CNetworkSessionSource Network;
+	CDemoSessionSource Demo(false, [] {});
+	CConnection &NetworkMain = Network.ConnectionAt(IClient::CONN_MAIN);
+	NetworkMain.m_CurGameTick = 123;
+	CSnapshotStorage::CHolder NetworkSnapshot;
+	NetworkMain.m_apSnapshots[IClient::SNAP_CURRENT] = &NetworkSnapshot;
+	Network.SetSixup(false);
+	Demo.SetSixup(true);
+	str_copy(Network.ServerInfo().m_aMap, "network");
+	str_copy(Demo.ServerInfo().m_aMap, "demo");
+
+	Demo.PrepareSnapshots();
+	ASSERT_NE(Demo.Connection().m_apSnapshots[IClient::SNAP_CURRENT], nullptr);
+	EXPECT_NE(Demo.Connection().m_apSnapshots[IClient::SNAP_CURRENT], NetworkMain.m_apSnapshots[IClient::SNAP_CURRENT]);
+	EXPECT_NE(&Demo.SnapshotDelta(false), &Network.SnapshotDelta(false));
+	EXPECT_NE(&Demo.SnapshotDelta(true), &Network.SnapshotDelta(true));
+	Demo.Connection().m_CurGameTick = 456;
+	Demo.Connection().ResetSnapshots();
+	Demo.ResetMetadata();
+
+	EXPECT_EQ(NetworkMain.m_CurGameTick, 123);
+	EXPECT_EQ(NetworkMain.m_apSnapshots[IClient::SNAP_CURRENT], &NetworkSnapshot);
+	EXPECT_FALSE(Network.IsSixup());
+	EXPECT_STREQ(Network.ServerInfo().m_aMap, "network");
+	EXPECT_FALSE(Demo.IsSixup());
+	EXPECT_EQ(Demo.ServerInfo().m_aMap[0], '\0');
+}
+
 TEST(ClientConnection, StreamValueStorageGrowsWithoutChangingExistingValues)
 {
 	CStreamStorage<int> Values(2);

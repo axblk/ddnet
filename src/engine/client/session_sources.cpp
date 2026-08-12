@@ -1,6 +1,7 @@
 #include "session_sources.h"
 
 #include <base/dbg.h>
+#include <base/mem.h>
 
 #include <algorithm>
 #include <utility>
@@ -82,9 +83,27 @@ CStreamId CNetworkSessionSource::StreamIdAt(size_t Index) const
 	return Index < m_vpStreams.size() ? m_vpStreams[Index]->m_Id : CStreamId{};
 }
 
-CDemoSessionSource::CDemoSessionSource(CSnapshotDelta *pSnapshotDelta, CSnapshotDelta *pSnapshotDeltaSixup, bool UseVideo, TUpdateIntraTimesFunc &&UpdateIntraTimesFunc) :
-	m_DemoPlayer(pSnapshotDelta, pSnapshotDeltaSixup, UseVideo, std::move(UpdateIntraTimesFunc))
+CDemoSessionSource::CDemoSessionSource(bool UseVideo, TUpdateIntraTimesFunc &&UpdateIntraTimesFunc) :
+	m_DemoPlayer(&m_pSnapshotDeltas[0], &m_pSnapshotDeltas[1], UseVideo, std::move(UpdateIntraTimesFunc))
 {
+	mem_zero(m_aSnapshotHolders, sizeof(m_aSnapshotHolders));
+	mem_zero(m_aaSnapshotData, sizeof(m_aaSnapshotData));
+}
+
+void CDemoSessionSource::PrepareSnapshots()
+{
+	m_Connection.ResetGameplay();
+	mem_zero(m_aSnapshotHolders, sizeof(m_aSnapshotHolders));
+	mem_zero(m_aaSnapshotData, sizeof(m_aaSnapshotData));
+	for(int SnapshotType = 0; SnapshotType < IClient::NUM_SNAPSHOT_TYPES; SnapshotType++)
+	{
+		m_Connection.m_apSnapshots[SnapshotType] = &m_aSnapshotHolders[SnapshotType];
+		m_Connection.m_apSnapshots[SnapshotType]->m_pSnap = m_aaSnapshotData[SnapshotType][0].AsSnapshot();
+		m_Connection.m_apSnapshots[SnapshotType]->m_pAltSnap = m_aaSnapshotData[SnapshotType][1].AsSnapshot();
+		m_Connection.m_apSnapshots[SnapshotType]->m_SnapSize = 0;
+		m_Connection.m_apSnapshots[SnapshotType]->m_AltSnapSize = 0;
+		m_Connection.m_apSnapshots[SnapshotType]->m_Tick = -1;
+	}
 }
 
 void CDemoSessionSource::RequestStop()

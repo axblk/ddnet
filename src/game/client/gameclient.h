@@ -536,6 +536,18 @@ public:
 
 	IMap *Map() override { return MapContext().Map(); }
 	const IMap *Map() const override { return MapContext().Map(); }
+	IMap *Map(CSessionId SessionId) override
+	{
+		CGameSessionContext *pSession = FindSessionContext(SessionId);
+		dbg_assert(pSession != nullptr, "missing game session context");
+		return pSession->MapContext().Map();
+	}
+	const IMap *Map(CSessionId SessionId) const override
+	{
+		const CGameSessionContext *pSession = FindSessionContext(SessionId);
+		dbg_assert(pSession != nullptr, "missing game session context");
+		return pSession->MapContext().Map();
+	}
 	CNetObjHandler *GetNetObjHandler() override;
 	protocol7::CNetObjHandler *GetNetObjHandler7() override;
 
@@ -747,7 +759,7 @@ private:
 
 	void DetectStrongHook(CGameState::CRuntimeState &Runtime);
 
-	vec2 GetSmoothPos(const CGameState &State, int Conn, int ClientId, int64_t Now, const CCharacterCore &Prev, const CCharacterCore &Current);
+	vec2 GetSmoothPos(CSessionId SessionId, const CGameState &State, int Conn, int ClientId, int64_t Now, const CCharacterCore &Prev, const CCharacterCore &Current);
 
 	std::optional<CStreamId> m_PreviousFocusedStream;
 

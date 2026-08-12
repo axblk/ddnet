@@ -980,32 +980,32 @@ void CGameClient::OnRender()
 	const int64_t Now = time_get();
 	const int64_t PresentationTimeFrequency = time_freq();
 	const float AnimationPlaybackSpeed = GetAnimationPlaybackSpeed();
-	auto FreezeTime = [&](int Conn) {
+	auto FreezeTime = [&](CSessionId SessionId, int Conn) {
 		CGameTickInfo Time;
-		Time.m_PrevGameTick = Client()->PrevGameTick(Conn);
-		Time.m_GameTick = Client()->GameTick(Conn);
-		Time.m_PredGameTick = Client()->PredGameTick(Conn);
-		Time.m_PredictionTick = Client()->GetPredictionTick(Conn);
-		Time.m_IntraGameTick = Client()->IntraGameTick(Conn);
-		Time.m_IntraGameTickSincePrev = Client()->IntraGameTickSincePrev(Conn);
-		Time.m_PredIntraGameTick = Client()->PredIntraGameTick(Conn);
-		Time.m_GameTickTime = Client()->GameTickTime(Conn);
+		Time.m_PrevGameTick = Client()->PrevGameTick(SessionId, Conn);
+		Time.m_GameTick = Client()->GameTick(SessionId, Conn);
+		Time.m_PredGameTick = Client()->PredGameTick(SessionId, Conn);
+		Time.m_PredictionTick = Client()->GetPredictionTick(SessionId, Conn);
+		Time.m_IntraGameTick = Client()->IntraGameTick(SessionId, Conn);
+		Time.m_IntraGameTickSincePrev = Client()->IntraGameTickSincePrev(SessionId, Conn);
+		Time.m_PredIntraGameTick = Client()->PredIntraGameTick(SessionId, Conn);
+		Time.m_GameTickTime = Client()->GameTickTime(SessionId, Conn);
 		Time.m_FrameTimeAverage = Client()->FrameTimeAverage();
 		Time.m_GameTickSpeed = Client()->GameTickSpeed();
-		Time.m_PredictionTime = Client()->GetPredictionTime(Conn);
+		Time.m_PredictionTime = Client()->GetPredictionTime(SessionId, Conn);
 		Time.m_PresentationTime = PresentationTime;
 		Time.m_PresentationTimeFrequency = PresentationTimeFrequency;
 		Time.m_AnimationPlaybackSpeed = AnimationPlaybackSpeed;
 		Time.m_IsGameActive = Client()->State() == IClient::STATE_ONLINE || Client()->State() == IClient::STATE_DEMOPLAYBACK;
 		Time.m_IsDemoPlayback = Client()->IsDemoPlayback();
 		Time.m_IsDemoPlaybackPaused = IsDemoPlaybackPaused();
-		Time.m_ConnectionProblems = Client()->ConnectionProblems(Conn);
+		Time.m_ConnectionProblems = Client()->ConnectionProblems(SessionId, Conn);
 		return Time;
 	};
 	std::array<CGameTickInfo, IClient::CONN_CONTACT> aGameTickInfo;
-	aGameTickInfo[ActiveConn] = FreezeTime(ActiveConn);
+	aGameTickInfo[ActiveConn] = FreezeTime(ActiveSession.Id(), ActiveConn);
 	if(SplitScreen)
-		aGameTickInfo[SecondaryConn] = FreezeTime(SecondaryConn);
+		aGameTickInfo[SecondaryConn] = FreezeTime(ActiveSession.Id(), SecondaryConn);
 	const CGameTickInfo &GameTickInfo = aGameTickInfo[ActiveConn];
 	const EPresentationPlayback Playback = AnimationPlaybackSpeed > 0.0f ? EPresentationPlayback::PLAYING : EPresentationPlayback::PAUSED;
 	UpdateRenderedClients(ActiveSession, ActiveState, ActiveConn, Now, GameTickInfo, Playback);
@@ -2219,14 +2219,14 @@ void CGameClient::InvalidateSnapshot()
 
 void CGameClient::OnNewSnapshot(CSessionId SessionId, int Conn)
 {
-	CGameInfo GameInfo = GetGameInfo(nullptr, 0, &Client()->ServerInfo());
-	const int NumItems = Client()->SnapNumItems(Conn, IClient::SNAP_CURRENT);
+	CGameInfo GameInfo = GetGameInfo(nullptr, 0, &Client()->ServerInfo(SessionId));
+	const int NumItems = Client()->SnapNumItems(SessionId, Conn, IClient::SNAP_CURRENT);
 	for(int i = 0; i < NumItems; i++)
 	{
-		const IClient::CSnapItem Item = Client()->SnapGetItem(Conn, IClient::SNAP_CURRENT, i);
+		const IClient::CSnapItem Item = Client()->SnapGetItem(SessionId, Conn, IClient::SNAP_CURRENT, i);
 		if(Item.m_Type == NETOBJTYPE_GAMEINFOEX)
 		{
-			GameInfo = GetGameInfo(static_cast<const CNetObj_GameInfoEx *>(Item.m_pData), Item.m_DataSize, &Client()->ServerInfo());
+			GameInfo = GetGameInfo(static_cast<const CNetObj_GameInfoEx *>(Item.m_pData), Item.m_DataSize, &Client()->ServerInfo(SessionId));
 			break;
 		}
 	}
@@ -2236,9 +2236,9 @@ void CGameClient::OnNewSnapshot(CSessionId SessionId, int Conn)
 	dbg_assert(pState != nullptr, "missing snapshot game state");
 	CGameState &State = *pState;
 	State.SetCoreGameInfo(GameInfo);
-	State.ApplySnapshot(*Client(), Conn);
+	State.ApplySnapshot(*Client(), SessionId, Conn);
 	if(Conn == IClient::CONN_MAIN)
-		pSession->Stats().UpdateSnapshot(State, Client()->GameTick(Conn));
+		pSession->Stats().UpdateSnapshot(State, Client()->GameTick(SessionId, Conn));
 	if(SessionId == Client()->FocusedSessionId() && Conn == Client()->ActiveConnection())
 		ProcessSnapshot(SessionId);
 }
@@ -3077,7 +3077,7 @@ void CGameClient::ProcessPrediction()
 	vec2 aBeforeRender[MAX_CLIENTS];
 	const int64_t SmoothNow = time_get();
 	for(int i = 0; i < MAX_CLIENTS; i++)
-		aBeforeRender[i] = GetSmoothPos(ActiveState, ActiveConnection(), i, SmoothNow, m_aClients[i].m_PrevPredicted, m_aClients[i].m_Predicted);
+		aBeforeRender[i] = GetSmoothPos(SessionContext().Id(), ActiveState, ActiveConnection(), i, SmoothNow, m_aClients[i].m_PrevPredicted, m_aClients[i].m_Predicted);
 
 	// init
 	const int PredictionConnection = ActiveConnection();
@@ -4076,7 +4076,7 @@ void CGameClient::UpdateRenderedClients(const CGameSessionContext &Session, CGam
 			RenderedClient.m_Prev.m_Angle = SnapshotClient.m_PrevCharacter.m_Angle;
 			RenderedClient.m_Cur.m_Angle = SnapshotClient.m_Character.m_Angle;
 			if(g_Config.m_ClAntiPingSmooth)
-				RenderedClient.m_Position = GetSmoothPos(State, Conn, ClientId, Now, PredictedClient.m_Prev, PredictedClient.m_Current);
+				RenderedClient.m_Position = GetSmoothPos(Session.Id(), State, Conn, ClientId, Now, PredictedClient.m_Prev, PredictedClient.m_Current);
 		}
 	}
 }
@@ -4359,9 +4359,9 @@ void CGameClient::DetectStrongHook(CGameState::CRuntimeState &Runtime)
 	}
 }
 
-vec2 CGameClient::GetSmoothPos(const CGameState &State, int Conn, int ClientId, int64_t Now, const CCharacterCore &Prev, const CCharacterCore &Current)
+vec2 CGameClient::GetSmoothPos(CSessionId SessionId, const CGameState &State, int Conn, int ClientId, int64_t Now, const CCharacterCore &Prev, const CCharacterCore &Current)
 {
-	vec2 Pos = mix(Prev.m_Pos, Current.m_Pos, Client()->PredIntraGameTick(Conn));
+	vec2 Pos = mix(Prev.m_Pos, Current.m_Pos, Client()->PredIntraGameTick(SessionId, Conn));
 	const CGameState::CClientPredictionHistory &PredictionHistory = State.PredictionHistory(ClientId);
 	for(int i = 0; i < 2; i++)
 	{
@@ -4372,8 +4372,8 @@ vec2 CGameClient::GetSmoothPos(const CGameState &State, int Conn, int ClientId, 
 			float MixAmount = 1.f - std::pow(1.f - TimePassed / (float)Len, 1.2f);
 			int SmoothTick;
 			float SmoothIntra;
-			Client()->GetSmoothTick(Conn, Now, &SmoothTick, &SmoothIntra, MixAmount);
-			if(SmoothTick > 0 && PredictionHistory.m_aPredTick[(SmoothTick - 1) % 200] >= Client()->PrevGameTick(Conn) && PredictionHistory.m_aPredTick[SmoothTick % 200] <= Client()->PredGameTick(Conn))
+			Client()->GetSmoothTick(SessionId, Conn, Now, &SmoothTick, &SmoothIntra, MixAmount);
+			if(SmoothTick > 0 && PredictionHistory.m_aPredTick[(SmoothTick - 1) % 200] >= Client()->PrevGameTick(SessionId, Conn) && PredictionHistory.m_aPredTick[SmoothTick % 200] <= Client()->PredGameTick(SessionId, Conn))
 				Pos[i] = mix(PredictionHistory.m_aPredPos[(SmoothTick - 1) % 200][i], PredictionHistory.m_aPredPos[SmoothTick % 200][i], SmoothIntra);
 		}
 	}

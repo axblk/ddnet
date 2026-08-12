@@ -164,34 +164,41 @@ public:
 	 * Tick of the second to most recently received snapshot (usually 2
 	 * less than `GameTick`).
 	 */
-	virtual int PrevGameTick(int Conn) const = 0;
+	virtual int PrevGameTick(CSessionId SessionId, int Conn) const = 0;
+	int PrevGameTick(int Conn) const { return PrevGameTick(FocusedSessionId(), Conn); }
 	/**
 	 * Tick of most recently received snapshot.
 	 */
-	virtual int GameTick(int Conn) const = 0;
+	virtual int GameTick(CSessionId SessionId, int Conn) const = 0;
+	int GameTick(int Conn) const { return GameTick(FocusedSessionId(), Conn); }
 	/**
 	 * The tick we should predict to. Comes from a magic black box called
 	 * "smooth time".
 	 */
-	virtual int PredGameTick(int Conn) const = 0;
+	virtual int PredGameTick(CSessionId SessionId, int Conn) const = 0;
+	int PredGameTick(int Conn) const { return PredGameTick(FocusedSessionId(), Conn); }
 	/**
 	 * Linear interpolation parameter between `PrevGameTick` (0) and
 	 * `GameTick` (1). Can be outside the interval [0, 1].
 	 */
-	virtual float IntraGameTick(int Conn) const = 0;
+	virtual float IntraGameTick(CSessionId SessionId, int Conn) const = 0;
+	float IntraGameTick(int Conn) const { return IntraGameTick(FocusedSessionId(), Conn); }
 	/**
 	 * Linear interpolation parameter between `PredGameTick - 1` (0) and
 	 * `PredGameTick` (1). Can be outside the interval [0, 1].
 	 */
-	virtual float PredIntraGameTick(int Conn) const = 0;
+	virtual float PredIntraGameTick(CSessionId SessionId, int Conn) const = 0;
+	float PredIntraGameTick(int Conn) const { return PredIntraGameTick(FocusedSessionId(), Conn); }
 	/**
 	 * (Fractional) ticks since `PrevGameTick`.
 	 */
-	virtual float IntraGameTickSincePrev(int Conn) const = 0;
+	virtual float IntraGameTickSincePrev(CSessionId SessionId, int Conn) const = 0;
+	float IntraGameTickSincePrev(int Conn) const { return IntraGameTickSincePrev(FocusedSessionId(), Conn); }
 	/**
 	 * Time in seconds since the second to most recently received snapshot.
 	 */
-	virtual float GameTickTime(int Conn) const = 0;
+	virtual float GameTickTime(CSessionId SessionId, int Conn) const = 0;
+	float GameTickTime(int Conn) const { return GameTickTime(FocusedSessionId(), Conn); }
 	/**
 	 * 50
 	 */
@@ -279,11 +286,14 @@ public:
 	virtual const std::vector<std::string> &MaplistEntries() const = 0;
 
 	// server info
-	virtual const class CServerInfo &ServerInfo() const = 0;
+	virtual const class CServerInfo &ServerInfo(CSessionId SessionId) const = 0;
+	const CServerInfo &ServerInfo() const { return ServerInfo(FocusedSessionId()); }
 	virtual bool ServerCapAnyPlayerFlag() const = 0;
 
-	virtual int GetPredictionTime(int Conn) = 0;
-	virtual int GetPredictionTick(int Conn) = 0;
+	virtual int GetPredictionTime(CSessionId SessionId, int Conn) = 0;
+	int GetPredictionTime(int Conn) { return GetPredictionTime(FocusedSessionId(), Conn); }
+	virtual int GetPredictionTick(CSessionId SessionId, int Conn) = 0;
+	int GetPredictionTick(int Conn) { return GetPredictionTick(FocusedSessionId(), Conn); }
 
 	// snapshot interface
 
@@ -295,9 +305,12 @@ public:
 	};
 
 	// TODO: Refactor: should redo this a bit i think, too many virtual calls
-	virtual int SnapNumItems(int Conn, int SnapId) const = 0;
-	virtual const void *SnapFindItem(int Conn, int SnapId, int Type, int Id) const = 0;
-	virtual CSnapItem SnapGetItem(int Conn, int SnapId, int Index) const = 0;
+	virtual int SnapNumItems(CSessionId SessionId, int Conn, int SnapId) const = 0;
+	int SnapNumItems(int Conn, int SnapId) const { return SnapNumItems(FocusedSessionId(), Conn, SnapId); }
+	virtual const void *SnapFindItem(CSessionId SessionId, int Conn, int SnapId, int Type, int Id) const = 0;
+	const void *SnapFindItem(int Conn, int SnapId, int Type, int Id) const { return SnapFindItem(FocusedSessionId(), Conn, SnapId, Type, Id); }
+	virtual CSnapItem SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const = 0;
+	CSnapItem SnapGetItem(int Conn, int SnapId, int Index) const { return SnapGetItem(FocusedSessionId(), Conn, SnapId, Index); }
 
 	virtual void SnapSetStaticsize(int ItemType, int Size) = 0;
 	virtual void SnapSetStaticsize7(int ItemType, int Size) = 0;
@@ -317,7 +330,8 @@ public:
 	virtual const char *DummyName() = 0;
 	virtual const char *ErrorString() const = 0;
 	virtual const char *LatestVersion() const = 0;
-	virtual bool ConnectionProblems(int Conn) const = 0;
+	virtual bool ConnectionProblems(CSessionId SessionId, int Conn) const = 0;
+	bool ConnectionProblems(int Conn) const { return ConnectionProblems(FocusedSessionId(), Conn); }
 
 	virtual IGraphics::CTextureHandle GetDebugFont() const = 0; // TODO: remove this function
 
@@ -328,7 +342,8 @@ public:
 	int64_t ReconnectTime() const { return m_ReconnectTime; }
 	void SetReconnectTime(int64_t ReconnectTime) { m_ReconnectTime = ReconnectTime; }
 
-	virtual bool IsSixup() const = 0;
+	virtual bool IsSixup(CSessionId SessionId) const = 0;
+	bool IsSixup() const { return IsSixup(FocusedSessionId()); }
 
 	virtual void RaceRecord_Start(const char *pFilename) = 0;
 	virtual void RaceRecord_Stop() = 0;
@@ -352,7 +367,8 @@ public:
 
 	virtual IFriends *Foes() = 0;
 
-	virtual void GetSmoothTick(int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) = 0;
+	virtual void GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) = 0;
+	void GetSmoothTick(int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) { GetSmoothTick(FocusedSessionId(), Conn, Now, pSmoothTick, pSmoothIntraTick, MixAmount); }
 
 	virtual void AddWarning(const SWarning &Warning) = 0;
 	virtual std::optional<SWarning> CurrentWarning() = 0;
@@ -433,6 +449,8 @@ public:
 
 	virtual IMap *Map() = 0;
 	virtual const IMap *Map() const = 0;
+	virtual IMap *Map(CSessionId SessionId) = 0;
+	virtual const IMap *Map(CSessionId SessionId) const = 0;
 	virtual CNetObjHandler *GetNetObjHandler() = 0;
 	virtual protocol7::CNetObjHandler *GetNetObjHandler7() = 0;
 

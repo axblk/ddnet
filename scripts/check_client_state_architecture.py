@@ -131,6 +131,11 @@ SNAPSHOT_SOURCE_FUNCTIONS = (
 	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::OnNewSnapshot\s*\(")),
 	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::ProcessEvents\s*\(")),
 )
+SESSION_SNAPSHOT_FUNCTIONS = (
+	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::OnNewSnapshot\s*\(")),
+	("src/game/client/game_state.cpp", re.compile(r"\bCGameState::ApplySnapshot\s*\(")),
+)
+DEMO_CONNECTION_FUNCTIONS = (("src/engine/client/client.cpp", re.compile(r"\bCClient::(?:DisconnectDemoWithReason|OnDemoPlayerSnapshot|UpdateDemoIntraTimers)\s*\(")),)
 CAMERA_FILES = ("src/game/client/components/camera.h",)
 CONTROLS_OWNER_FILES = ("src/game/client/components/controls.h",)
 BROADCAST_OWNER_FILES = ("src/game/client/components/broadcast.h",)
@@ -515,6 +520,17 @@ FORBIDDEN_SESSION_CLIENT_PRESENTATION_FOCUS = (
 )
 FORBIDDEN_CROSS_SESSION_RESET = (re.compile(r"\bm_SessionContexts\.Contexts\s*\("),)
 FORBIDDEN_SNAPSHOT_SOURCE_FOCUS = (re.compile(r"\bSessionContext\s*\("),)
+FORBIDDEN_SESSION_SNAPSHOT_AMBIENT = (
+	re.compile(r"\bSnap(?:FindItem|GetItem|NumItems)\s*\(\s*Conn\b"),
+	re.compile(r"\b(?:GameTick|PrevGameTick)\s*\(\s*Conn\b"),
+	re.compile(r"\bServerInfo\s*\(\s*\)"),
+)
+FORBIDDEN_DEMO_CONNECTION_ALIAS = (
+	re.compile(r"\bConnection\s*\(\s*CONN_MAIN\s*\)"),
+	re.compile(r"\bIsSixup\s*\(\s*\)"),
+	re.compile(r"\bm_pNetworkSessionSource\b"),
+	re.compile(r"\bm_aa?DemorecSnapshot"),
+)
 FORBIDDEN_GAME_CLIENT = (
 	re.compile(r"\bCStreamStorage\b"),
 	re.compile(r"\bCFlow\b"),
@@ -687,6 +703,8 @@ errors = (
 	+ check_function_bodies(SESSION_CLIENT_PRESENTATION_FUNCTIONS, FORBIDDEN_SESSION_CLIENT_PRESENTATION_FOCUS)
 	+ check_function_bodies(SESSION_RESET_FUNCTIONS, FORBIDDEN_CROSS_SESSION_RESET)
 	+ check_function_bodies(SNAPSHOT_SOURCE_FUNCTIONS, FORBIDDEN_SNAPSHOT_SOURCE_FOCUS)
+	+ check_function_bodies(SESSION_SNAPSHOT_FUNCTIONS, FORBIDDEN_SESSION_SNAPSHOT_AMBIENT)
+	+ check_function_bodies(DEMO_CONNECTION_FUNCTIONS, FORBIDDEN_DEMO_CONNECTION_ALIAS)
 	+ check(CAMERA_FILES, FORBIDDEN_CAMERA)
 	+ check(CONTROLS_OWNER_FILES, FORBIDDEN_CONTROLS_OWNER)
 	+ check(BROADCAST_OWNER_FILES, FORBIDDEN_BROADCAST_OWNER)

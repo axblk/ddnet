@@ -21,6 +21,7 @@
 class IClient;
 class CMapContext;
 class CParticles;
+class CSessionId;
 
 class CGameInfo
 {
@@ -473,7 +474,7 @@ public:
 
 	void Reset();
 	void InitPrediction(CMapContext &MapContext);
-	void ApplySnapshot(const IClient &Client, int Conn);
+	void ApplySnapshot(const IClient &Client, CSessionId SessionId, int Conn);
 	void ApplySnapshotData(int Tick, int NumItems, std::array<CClientSnapshot, MAX_CLIENTS> aClients, const CNetObj_GameInfo *pGameInfo = nullptr, std::vector<CEntitySnapshot> vEntities = {});
 	void ApplySnapshotMetadata(int Tick, int NumItems, int LocalClientId);
 	void ApplyEmoticon(int ClientId, int Emoticon, int Tick, float StartFraction);

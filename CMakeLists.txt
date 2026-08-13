@@ -3387,6 +3387,10 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   list(REMOVE_ITEM TESTS ${PROJECT_SOURCE_DIR}/src/test/game_state_test.cpp)
   set(CLIENT_GAME_STATE_TEST_SOURCES
     # tidy-alphabetical-start
+    src/engine/client/graph.cpp
+    src/engine/client/session.cpp
+    src/engine/client/session_sources.cpp
+    src/engine/client/smooth_time.cpp
     src/game/client/game_state.cpp
     src/game/client/game_view.cpp
     src/game/client/laser_data.cpp

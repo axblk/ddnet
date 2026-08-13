@@ -2,6 +2,7 @@
 
 #include <base/str.h>
 
+#include <engine/client/session_sources.h>
 #include <engine/console.h>
 #include <engine/shared/config.h>
 #include <engine/shared/demo.h>
@@ -21,6 +22,34 @@
 
 namespace
 {
+	bool ApplySnapshot(CGameState &State, int Tick, const CSnapshot *pSnapshot, int Size)
+	{
+		if(!pSnapshot->IsValid(Size))
+			return false;
+		std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aClients = {};
+		for(int i = 0; i < pSnapshot->NumItems(); i++)
+		{
+			const CSnapshotItem *pItem = pSnapshot->GetItem(i);
+			if(pItem->Id() < 0 || pItem->Id() >= MAX_CLIENTS)
+				continue;
+			CGameState::CClientSnapshot &Client = aClients[pItem->Id()];
+			if(pItem->InternalType() == NETOBJTYPE_PLAYERINFO)
+			{
+				Client.m_Active = true;
+				Client.m_HasPlayerInfo = true;
+				Client.m_PlayerInfo = *reinterpret_cast<const CNetObj_PlayerInfo *>(pItem->Data());
+			}
+			else if(pItem->InternalType() == NETOBJTYPE_CHARACTER)
+			{
+				Client.m_Active = true;
+				Client.m_HasCharacter = true;
+				Client.m_Character = *reinterpret_cast<const CNetObj_Character *>(pItem->Data());
+			}
+		}
+		State.ApplySnapshotData(Tick, pSnapshot->NumItems(), std::move(aClients));
+		return true;
+	}
+
 	class CTestRenderOutput : public CRenderOutput
 	{
 	public:
@@ -80,29 +109,7 @@ namespace
 		{
 			m_NumSnapshots++;
 			const auto *pSnapshot = static_cast<const CSnapshot *>(pData);
-			if(!pSnapshot->IsValid(Size))
-				return;
-			std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aClients = {};
-			for(int i = 0; i < pSnapshot->NumItems(); i++)
-			{
-				const CSnapshotItem *pItem = pSnapshot->GetItem(i);
-				if(pItem->Id() < 0 || pItem->Id() >= MAX_CLIENTS)
-					continue;
-				CGameState::CClientSnapshot &Client = aClients[pItem->Id()];
-				if(pItem->InternalType() == NETOBJTYPE_PLAYERINFO)
-				{
-					Client.m_Active = true;
-					Client.m_HasPlayerInfo = true;
-					Client.m_PlayerInfo = *reinterpret_cast<const CNetObj_PlayerInfo *>(pItem->Data());
-				}
-				else if(pItem->InternalType() == NETOBJTYPE_CHARACTER)
-				{
-					Client.m_Active = true;
-					Client.m_HasCharacter = true;
-					Client.m_Character = *reinterpret_cast<const CNetObj_Character *>(pItem->Data());
-				}
-			}
-			m_State.ApplySnapshotData(m_Player.Info()->m_Info.m_CurrentTick, pSnapshot->NumItems(), std::move(aClients));
+			ApplySnapshot(m_State, m_Player.Info()->m_Info.m_CurrentTick, pSnapshot, Size);
 		}
 
 		void OnDemoPlayerMessage(void *pData, int Size) override {}
@@ -795,6 +802,101 @@ TEST(GameState, SessionsOwnDifferentMapsProtocolsAndStates)
 	pNetwork->Motd().Apply(LongMotd.c_str());
 	EXPECT_EQ(str_length(pNetwork->Motd().Text()), CSessionMotdState::MAX_TEXT_LENGTH);
 	EXPECT_EQ(pNetwork->Motd().Revision(), 3U);
+}
+
+TEST(GameState, NetworkSourcesDriveThreeStreamsAndTwoSessions)
+{
+	CSessionManager Manager;
+	auto pFirstSource = std::make_unique<CNetworkSessionSource>();
+	auto pSecondSource = std::make_unique<CNetworkSessionSource>();
+	CNetworkSessionSource *pFirstSourceRaw = pFirstSource.get();
+	CNetworkSessionSource *pSecondSourceRaw = pSecondSource.get();
+	const CStreamId ThirdStreamId = pFirstSource->CreateStream();
+	const CSessionId FirstSessionId = Manager.Create(std::move(pFirstSource));
+	const CSessionId SecondSessionId = Manager.Create(std::move(pSecondSource));
+	CGameSessionContext FirstSession(FirstSessionId, "first-map", EGameProtocol::SIX, {});
+	CGameSessionContext SecondSession(SecondSessionId, "second-map", EGameProtocol::SIXUP, {});
+	for(const auto &pStream : pFirstSourceRaw->Streams())
+		ASSERT_TRUE(FirstSession.GameStates().Create(pStream->m_Id).IsValid());
+	for(const auto &pStream : pSecondSourceRaw->Streams())
+		ASSERT_TRUE(SecondSession.GameStates().Create(pStream->m_Id).IsValid());
+	pFirstSourceRaw->SetSixup(false);
+	pSecondSourceRaw->SetSixup(true);
+	str_copy(pFirstSourceRaw->ServerInfo().m_aMap, FirstSession.MapName());
+	str_copy(pSecondSourceRaw->ServerInfo().m_aMap, SecondSession.MapName());
+
+	auto Drive = [](CNetworkSessionSource &Source, CGameSessionContext &Session, int TickStep) {
+		for(const auto &pStream : Source.Streams())
+		{
+			CConnection &Connection = pStream->m_Connection;
+			Connection.m_CurGameTick += TickStep;
+			const int ClientId = static_cast<int>(pStream->m_Id.Value() % MAX_CLIENTS);
+			CSnapshotBuilder Builder;
+			Builder.Init();
+			CNetObj_PlayerInfo PlayerInfo = {};
+			PlayerInfo.m_Local = 1;
+			PlayerInfo.m_ClientId = ClientId;
+			CNetObj_Character Character = {};
+			Character.m_X = Connection.m_CurGameTick;
+			Character.m_Y = TickStep;
+			EXPECT_TRUE(Builder.NewItem(NETOBJTYPE_CHARACTER, ClientId, &Character, sizeof(Character)));
+			EXPECT_TRUE(Builder.NewItem(NETOBJTYPE_PLAYERINFO, ClientId, &PlayerInfo, sizeof(PlayerInfo)));
+			CSnapshotBuffer Buffer;
+			const int Size = Builder.Finish(&Buffer);
+			CGameState *pState = Session.GameStates().FindByStream(pStream->m_Id);
+			ASSERT_NE(pState, nullptr);
+			EXPECT_TRUE(ApplySnapshot(*pState, Connection.m_CurGameTick, Buffer.AsSnapshot(), Size));
+		}
+	};
+	int FirstStops = 0;
+	pFirstSourceRaw->SetLifecycleCallbacks(
+		[&]() { Drive(*pFirstSourceRaw, FirstSession, 10); },
+		[&](const char *) {
+			FirstStops++;
+			for(const auto &pState : FirstSession.GameStates().States())
+				pState->Reset();
+		});
+	pSecondSourceRaw->SetLifecycleCallbacks(
+		[&]() { Drive(*pSecondSourceRaw, SecondSession, 100); },
+		[](const char *) {});
+	ASSERT_TRUE(pFirstSourceRaw->SetState(ESessionState::LOADING_MAP));
+	ASSERT_TRUE(pFirstSourceRaw->SetState(ESessionState::READY));
+	ASSERT_TRUE(pSecondSourceRaw->SetState(ESessionState::LOADING_MAP));
+	ASSERT_TRUE(pSecondSourceRaw->SetState(ESessionState::READY));
+
+	Manager.Update();
+	ASSERT_EQ(FirstSession.GameStates().NumStates(), 3U);
+	ASSERT_EQ(SecondSession.GameStates().NumStates(), 2U);
+	for(const auto &pStream : pFirstSourceRaw->Streams())
+		EXPECT_EQ(FirstSession.GameStates().FindByStream(pStream->m_Id)->SnapshotTick(), 10);
+	for(const auto &pStream : pSecondSourceRaw->Streams())
+		EXPECT_EQ(SecondSession.GameStates().FindByStream(pStream->m_Id)->SnapshotTick(), 100);
+	EXPECT_NE(FirstSession.GameStates().FindByStream(CStreamId(1))->SnapshotDigest(), SecondSession.GameStates().FindByStream(CStreamId(1))->SnapshotDigest());
+	EXPECT_STREQ(pFirstSourceRaw->ServerInfo().m_aMap, "first-map");
+	EXPECT_STREQ(pSecondSourceRaw->ServerInfo().m_aMap, "second-map");
+	EXPECT_FALSE(pFirstSourceRaw->IsSixup());
+	EXPECT_TRUE(pSecondSourceRaw->IsSixup());
+
+	CGameState *pThirdState = FirstSession.GameStates().FindByStream(ThirdStreamId);
+	const CStreamId RemovedStreamId = pFirstSourceRaw->StreamIdAt(1);
+	const CGameStateId RemovedStateId = FirstSession.GameStates().FindByStream(RemovedStreamId)->Id();
+	ASSERT_TRUE(pFirstSourceRaw->DestroyStream(RemovedStreamId));
+	ASSERT_TRUE(FirstSession.GameStates().Destroy(RemovedStateId));
+	Manager.Update();
+	EXPECT_EQ(pFirstSourceRaw->NumStreams(), 2U);
+	EXPECT_EQ(FirstSession.GameStates().NumStates(), 2U);
+	EXPECT_EQ(FirstSession.GameStates().FindByStream(RemovedStreamId), nullptr);
+	EXPECT_EQ(FirstSession.GameStates().FindByStream(ThirdStreamId), pThirdState);
+	EXPECT_EQ(pThirdState->SnapshotTick(), 20);
+	EXPECT_EQ(SecondSession.GameStates().FindByStream(CStreamId(1))->SnapshotTick(), 200);
+
+	ASSERT_TRUE(Manager.Close(FirstSessionId));
+	Manager.Update();
+	EXPECT_EQ(FirstStops, 1);
+	EXPECT_EQ(Manager.Find(FirstSessionId)->State(), ESessionState::OFFLINE);
+	EXPECT_EQ(Manager.Find(SecondSessionId)->State(), ESessionState::READY);
+	EXPECT_EQ(SecondSession.GameStates().FindByStream(CStreamId(1))->SnapshotTick(), 300);
+	EXPECT_EQ(pThirdState->SnapshotTick(), 0);
 }
 
 TEST(GameState, SessionMapMetadataIsIndependentAndResettable)

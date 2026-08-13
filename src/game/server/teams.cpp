@@ -373,6 +373,24 @@ void CGameTeams::OnCharacterFinish(int ClientId)
 void CGameTeams::Tick()
 {
 	int Now = Server()->Tick();
+	for(auto &Switcher : GameServer()->Switchers())
+	{
+		for(int Team = 0; Team < NUM_DDRACE_TEAMS; ++Team)
+		{
+			if(Switcher.m_aEndTick[Team] <= Now && Switcher.m_aType[Team] == TILE_SWITCHTIMEDOPEN)
+			{
+				Switcher.m_aStatus[Team] = false;
+				Switcher.m_aEndTick[Team] = 0;
+				Switcher.m_aType[Team] = TILE_SWITCHCLOSE;
+			}
+			else if(Switcher.m_aEndTick[Team] <= Now && Switcher.m_aType[Team] == TILE_SWITCHTIMEDCLOSE)
+			{
+				Switcher.m_aStatus[Team] = true;
+				Switcher.m_aEndTick[Team] = 0;
+				Switcher.m_aType[Team] = TILE_SWITCHOPEN;
+			}
+		}
+	}
 
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{

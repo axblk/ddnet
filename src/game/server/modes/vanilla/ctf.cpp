@@ -73,7 +73,7 @@ void CGameControllerVanillaCTF::OnCharacterDeath(const CGameCharacterDeathContex
 void CGameControllerVanillaCTF::Tick()
 {
 	CGameControllerVanillaTeamplay::Tick();
-	if(Services().World().ResetRequested() || Services().World().IsPaused() || m_GameOverTick != -1 || m_Warmup)
+	if(Services().World().ResetRequested() || Services().World().IsPaused() || !Match().IsRunning())
 		return;
 
 	ProcessFlags();
@@ -81,12 +81,12 @@ void CGameControllerVanillaCTF::Tick()
 	const bool ScoresTied = m_aTeamScores[TEAM_RED] / 100 == m_aTeamScores[TEAM_BLUE] / 100;
 	const int TopScore = std::max(m_aTeamScores[TEAM_RED], m_aTeamScores[TEAM_BLUE]);
 	const bool ScoreLimitReached = ScoreLimit() > 0 && TopScore >= ScoreLimit();
-	const bool TimeLimitReached = TimeLimit() > 0 && Server()->Tick() - m_RoundStartTick >= TimeLimit() * Server()->TickSpeed() * 60;
-	const EMatchResult MatchResult = EvaluateMatch(ScoresTied ? 2 : 1, ScoreLimitReached || TimeLimitReached, m_SuddenDeath != 0);
+	const bool TimeLimitReached = TimeLimit() > 0 && Server()->Tick() - Match().RoundStartTick() >= TimeLimit() * Server()->TickSpeed() * 60;
+	const EMatchResult MatchResult = EvaluateMatch(ScoresTied ? 2 : 1, ScoreLimitReached || TimeLimitReached, Match().IsSuddenDeath());
 	if(MatchResult == EMatchResult::END_ROUND)
 		EndRound();
 	else if(MatchResult == EMatchResult::SUDDEN_DEATH)
-		m_SuddenDeath = 1;
+		Match().BeginSuddenDeath();
 }
 
 void CGameControllerVanillaCTF::ProcessFlags()

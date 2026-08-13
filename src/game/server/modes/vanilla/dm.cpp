@@ -29,7 +29,7 @@ void CGameControllerVanillaDM::OnCharacterDeath(const CGameCharacterDeathContext
 void CGameControllerVanillaDM::Tick()
 {
 	IGameController::Tick();
-	if(m_GameOverTick != -1 || m_Warmup)
+	if(!Match().IsRunning())
 		return;
 
 	int TopScore = std::numeric_limits<int>::min();
@@ -53,12 +53,12 @@ void CGameControllerVanillaDM::Tick()
 	}
 
 	const bool ScoreLimitReached = ScoreLimit() > 0 && TopScore >= ScoreLimit();
-	const bool TimeLimitReached = TimeLimit() > 0 && Server()->Tick() - m_RoundStartTick >= TimeLimit() * Server()->TickSpeed() * 60;
-	const EMatchResult MatchResult = EvaluateMatch(NumTopScores, ScoreLimitReached || TimeLimitReached, m_SuddenDeath != 0);
+	const bool TimeLimitReached = TimeLimit() > 0 && Server()->Tick() - Match().RoundStartTick() >= TimeLimit() * Server()->TickSpeed() * 60;
+	const EMatchResult MatchResult = EvaluateMatch(NumTopScores, ScoreLimitReached || TimeLimitReached, Match().IsSuddenDeath());
 	if(MatchResult == EMatchResult::END_ROUND)
 		EndRound();
 	else if(MatchResult == EMatchResult::SUDDEN_DEATH)
-		m_SuddenDeath = 1;
+		Match().BeginSuddenDeath();
 }
 
 bool CGameControllerVanillaDM::CanSpawn(int Team, vec2 *pOutPos, int ClientId)

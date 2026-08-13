@@ -85,7 +85,7 @@ void CGameControllerVanillaTeamplay::UpdateTeamBalance(int Tick)
 		const CPlayer *pPlayer = Services().Player(ClientId);
 		if(!pPlayer || pPlayer->GetTeam() < TEAM_RED || pPlayer->GetTeam() > TEAM_BLUE)
 			continue;
-		const int ScoreStartTick = std::max(pPlayer->m_JoinTick, m_RoundStartTick);
+		const int ScoreStartTick = std::max(pPlayer->m_JoinTick, Match().RoundStartTick());
 		const int ScoreTicks = std::max(1, Tick - ScoreStartTick);
 		aPlayerScores[ClientId] = VanillaPlayer(ClientId)->m_Score * Server()->TickSpeed() * 60.0f / ScoreTicks;
 		aTeamScores[pPlayer->GetTeam()] += aPlayerScores[ClientId];

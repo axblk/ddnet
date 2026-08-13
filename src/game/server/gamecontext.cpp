@@ -1378,25 +1378,6 @@ void CGameContext::OnTick()
 			SendChat(-1, TEAM_ALL, pLine);
 	}
 
-	for(auto &Switcher : Switchers())
-	{
-		for(int j = 0; j < NUM_DDRACE_TEAMS; ++j)
-		{
-			if(Switcher.m_aEndTick[j] <= Server()->Tick() && Switcher.m_aType[j] == TILE_SWITCHTIMEDOPEN)
-			{
-				Switcher.m_aStatus[j] = false;
-				Switcher.m_aEndTick[j] = 0;
-				Switcher.m_aType[j] = TILE_SWITCHCLOSE;
-			}
-			else if(Switcher.m_aEndTick[j] <= Server()->Tick() && Switcher.m_aType[j] == TILE_SWITCHTIMEDCLOSE)
-			{
-				Switcher.m_aStatus[j] = true;
-				Switcher.m_aEndTick[j] = 0;
-				Switcher.m_aType[j] = TILE_SWITCHOPEN;
-			}
-		}
-	}
-
 	// Record player position at the end of the tick
 	if(m_TeeHistorianActive)
 	{
@@ -2841,98 +2822,6 @@ void CGameContext::ConTunes(IConsole::IResult *pResult, void *pUserData)
 	}
 }
 
-void CGameContext::ConTuneZone(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	int List = pResult->GetInteger(0);
-	const char *pParamName = pResult->GetString(1);
-	float NewValue = pResult->GetFloat(2);
-
-	if(List >= 0 && List < TuneZone::NUM)
-	{
-		char aBuf[256];
-		if(pSelf->TuningList()[List].Set(pParamName, NewValue) && pSelf->TuningList()[List].Get(pParamName, &NewValue))
-		{
-			str_format(aBuf, sizeof(aBuf), "%s in zone %d changed to %.2f", pParamName, List, NewValue);
-			pSelf->SendTuningParams(-1, List);
-		}
-		else
-		{
-			str_format(aBuf, sizeof(aBuf), "No such tuning parameter: %s", pParamName);
-		}
-		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", aBuf);
-	}
-}
-
-void CGameContext::ConTuneDumpZone(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	int List = pResult->GetInteger(0);
-	char aBuf[256];
-	if(List >= 0 && List < TuneZone::NUM)
-	{
-		for(int i = 0; i < CTuningParams::Num(); i++)
-		{
-			float Value;
-			pSelf->TuningList()[List].Get(i, &Value);
-			str_format(aBuf, sizeof(aBuf), "zone %d: %s %.2f", List, CTuningParams::Name(i), Value);
-			pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", aBuf);
-		}
-	}
-}
-
-void CGameContext::ConTuneResetZone(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	if(pResult->NumArguments())
-	{
-		int List = pResult->GetInteger(0);
-		if(List >= 0 && List < TuneZone::NUM)
-		{
-			pSelf->TuningList()[List] = CTuningParams::DEFAULT;
-			char aBuf[256];
-			str_format(aBuf, sizeof(aBuf), "Tunezone %d reset", List);
-			pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", aBuf);
-			pSelf->SendTuningParams(-1, List);
-		}
-	}
-	else
-	{
-		for(int i = 0; i < TuneZone::NUM; i++)
-		{
-			*(pSelf->TuningList() + i) = CTuningParams::DEFAULT;
-			pSelf->SendTuningParams(-1, i);
-		}
-		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", "All Tunezones reset");
-	}
-}
-
-void CGameContext::ConTuneSetZoneMsgEnter(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	if(pResult->NumArguments())
-	{
-		int List = pResult->GetInteger(0);
-		if(List >= 0 && List < TuneZone::NUM)
-		{
-			str_copy(pSelf->m_aaZoneEnterMsg[List], pResult->GetString(1));
-		}
-	}
-}
-
-void CGameContext::ConTuneSetZoneMsgLeave(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	if(pResult->NumArguments())
-	{
-		int List = pResult->GetInteger(0);
-		if(List >= 0 && List < TuneZone::NUM)
-		{
-			str_copy(pSelf->m_aaZoneLeaveMsg[List], pResult->GetString(1));
-		}
-	}
-}
-
 void CGameContext::ConMapbug(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
@@ -2956,20 +2845,6 @@ void CGameContext::ConMapbug(IConsole::IResult *pResult, void *pUserData)
 		break;
 	default:
 		dbg_assert_failed("unreachable");
-	}
-}
-
-void CGameContext::ConSwitchOpen(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	int Switch = pResult->GetInteger(0);
-
-	if(in_range(Switch, (int)pSelf->Switchers().size() - 1))
-	{
-		pSelf->Switchers()[Switch].m_Initial = false;
-		char aBuf[256];
-		str_format(aBuf, sizeof(aBuf), "switch %d opened by default", Switch);
-		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
 	}
 }
 
@@ -3505,13 +3380,7 @@ void CGameContext::OnConsoleInit()
 	Console()->Register("toggle_tune", "s[tuning] f[value 1] f[value 2]", CFGFLAG_SERVER, ConToggleTuneParam, this, "Toggle tune variable");
 	Console()->Register("tune_reset", "?s[tuning]", CFGFLAG_SERVER, ConTuneReset, this, "Reset all or one tuning variable to default");
 	Console()->Register("tunes", "", CFGFLAG_SERVER, ConTunes, this, "List all tuning variables and their values");
-	Console()->Register("tune_zone", "i[zone] s[tuning] f[value]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneZone, this, "Tune in zone a variable to value");
-	Console()->Register("tune_zone_dump", "i[zone]", CFGFLAG_SERVER, ConTuneDumpZone, this, "Dump zone tuning in zone x");
-	Console()->Register("tune_zone_reset", "?i[zone]", CFGFLAG_SERVER, ConTuneResetZone, this, "Reset zone tuning in zone x or in all zones");
-	Console()->Register("tune_zone_enter", "i[zone] r[message]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneSetZoneMsgEnter, this, "Which message to display on zone enter; use 0 for normal area");
-	Console()->Register("tune_zone_leave", "i[zone] r[message]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneSetZoneMsgLeave, this, "Which message to display on zone leave; use 0 for normal area");
 	Console()->Register("mapbug", "s[mapbug]", CFGFLAG_SERVER | CFGFLAG_GAME, ConMapbug, this, "Enable map compatibility mode using the specified bug (example: grenade-doubleexplosion@ddnet.tw)");
-	Console()->Register("switch_open", "i[switch]", CFGFLAG_SERVER | CFGFLAG_GAME, ConSwitchOpen, this, "Whether a switch is deactivated by default (otherwise activated)");
 	Console()->Register("pause_game", "", CFGFLAG_SERVER, ConPause, this, "Pause/unpause game");
 	Console()->Register("change_map", "r[map]", CFGFLAG_SERVER | CFGFLAG_STORE, ConChangeMap, this, "Change map");
 	Console()->Register("restart", "?i[seconds]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRestart, this, "Restart in x seconds (0 = abort)");

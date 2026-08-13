@@ -3032,8 +3032,6 @@ if(SERVER)
     gamemodes/ddrace_character.h
     gamemodes/ddrace_map_entities.cpp
     gamemodes/ddrace_map_entities.h
-    gamemodes/mod.cpp
-    gamemodes/mod.h
     gameworld.cpp
     gameworld.h
     interactions.cpp
@@ -3050,6 +3048,7 @@ if(SERVER)
     mode/game_services.cpp
     mode/game_services.h
     mode/match_events.h
+    mode/match_lifecycle.h
     mode/match_stats.cpp
     mode/match_stats.h
     modes/insta/game_modes.cpp

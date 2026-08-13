@@ -139,13 +139,7 @@ class CGameContext : public IGameServer
 	static void ConToggleTuneParam(IConsole::IResult *pResult, void *pUserData);
 	static void ConTuneReset(IConsole::IResult *pResult, void *pUserData);
 	static void ConTunes(IConsole::IResult *pResult, void *pUserData);
-	static void ConTuneZone(IConsole::IResult *pResult, void *pUserData);
-	static void ConTuneDumpZone(IConsole::IResult *pResult, void *pUserData);
-	static void ConTuneResetZone(IConsole::IResult *pResult, void *pUserData);
-	static void ConTuneSetZoneMsgEnter(IConsole::IResult *pResult, void *pUserData);
-	static void ConTuneSetZoneMsgLeave(IConsole::IResult *pResult, void *pUserData);
 	static void ConMapbug(IConsole::IResult *pResult, void *pUserData);
-	static void ConSwitchOpen(IConsole::IResult *pResult, void *pUserData);
 	static void ConPause(IConsole::IResult *pResult, void *pUserData);
 	static void ConChangeMap(IConsole::IResult *pResult, void *pUserData);
 	static void ConRestart(IConsole::IResult *pResult, void *pUserData);
@@ -395,7 +389,6 @@ public:
 	const char *Version() const override;
 	const char *NetVersion() const override;
 
-	// DDRace
 	void OnPreTickTeehistorian() override;
 	bool OnClientDDNetVersionKnown(int ClientId);
 	void FillAntibot(CAntibotRoundData *pData) override;
@@ -421,8 +414,6 @@ private:
 	// starting 1 to make 0 the special value "no client id"
 	uint32_t m_NextUniqueClientId = 1;
 	bool m_VoteWillPass;
-	// DDRace Console Commands
-
 	static void ConKillPlayer(IConsole::IResult *pResult, void *pUserData);
 	static void ConPositionPlayer(IConsole::IResult *pResult, void *pUserData);
 

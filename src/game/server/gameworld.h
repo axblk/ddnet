@@ -175,7 +175,6 @@ public:
 	*/
 	void SwapClients(int Client1, int Client2);
 
-	// DDRace
 	void ReleaseHooked(int ClientId);
 
 	/*

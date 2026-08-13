@@ -105,7 +105,7 @@ namespace
 			m_aCatcherIds[ClientId] = -1;
 			CBase::OnPlayerConnect(pPlayer);
 
-			if(pPlayer->GetTeam() == TEAM_SPECTATORS || m_GameOverTick != -1 || m_Warmup)
+			if(pPlayer->GetTeam() == TEAM_SPECTATORS || !Match().IsRunning())
 				return;
 			const int CatcherId = LeadingCatcherId(ClientId);
 			if(CatcherId == -1)
@@ -134,8 +134,8 @@ namespace
 
 		void Tick() override
 		{
-			CBase::Tick();
-			if(m_GameOverTick != -1 || m_Warmup)
+			IGameController::Tick();
+			if(!Match().IsRunning())
 				return;
 
 			int Contestants = 0;
@@ -152,6 +152,9 @@ namespace
 			if(Contestants >= 2 && Remaining <= 1)
 				EndRound();
 		}
+
+		int ScoreLimit() const override { return 0; }
+		int TimeLimit() const override { return 0; }
 	};
 }
 

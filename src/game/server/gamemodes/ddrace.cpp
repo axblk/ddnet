@@ -1291,6 +1291,98 @@ namespace
 
 		RaceScore(pGameServer)->RandomUnfinishedMap(ClientId, MinStars, MaxStars);
 	}
+
+	void ConSwitchOpen(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		const int Switch = pResult->GetInteger(0);
+		if(!in_range(Switch, (int)pGameServer->Switchers().size() - 1))
+			return;
+
+		pGameServer->Switchers()[Switch].m_Initial = false;
+		char aBuf[256];
+		str_format(aBuf, sizeof(aBuf), "switch %d opened by default", Switch);
+		pGameServer->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
+	}
+
+	void ConTuneZone(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		const int Zone = pResult->GetInteger(0);
+		const char *pParamName = pResult->GetString(1);
+		float Value = pResult->GetFloat(2);
+		if(!in_range(Zone, TuneZone::NUM - 1))
+			return;
+
+		char aBuf[256];
+		if(pGameServer->TuningList()[Zone].Set(pParamName, Value) && pGameServer->TuningList()[Zone].Get(pParamName, &Value))
+		{
+			str_format(aBuf, sizeof(aBuf), "%s in zone %d changed to %.2f", pParamName, Zone, Value);
+			pGameServer->SendTuningParams(-1, Zone);
+		}
+		else
+		{
+			str_format(aBuf, sizeof(aBuf), "No such tuning parameter: %s", pParamName);
+		}
+		pGameServer->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", aBuf);
+	}
+
+	void ConTuneDumpZone(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		const int Zone = pResult->GetInteger(0);
+		if(!in_range(Zone, TuneZone::NUM - 1))
+			return;
+
+		for(int i = 0; i < CTuningParams::Num(); i++)
+		{
+			float Value;
+			pGameServer->TuningList()[Zone].Get(i, &Value);
+			char aBuf[256];
+			str_format(aBuf, sizeof(aBuf), "zone %d: %s %.2f", Zone, CTuningParams::Name(i), Value);
+			pGameServer->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", aBuf);
+		}
+	}
+
+	void ConTuneResetZone(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(pResult->NumArguments())
+		{
+			const int Zone = pResult->GetInteger(0);
+			if(!in_range(Zone, TuneZone::NUM - 1))
+				return;
+			pGameServer->TuningList()[Zone] = CTuningParams::DEFAULT;
+			pGameServer->SendTuningParams(-1, Zone);
+			char aBuf[256];
+			str_format(aBuf, sizeof(aBuf), "Tunezone %d reset", Zone);
+			pGameServer->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", aBuf);
+			return;
+		}
+
+		for(int Zone = 0; Zone < TuneZone::NUM; Zone++)
+		{
+			pGameServer->TuningList()[Zone] = CTuningParams::DEFAULT;
+			pGameServer->SendTuningParams(-1, Zone);
+		}
+		pGameServer->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", "All Tunezones reset");
+	}
+
+	void ConTuneZoneEnter(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		const int Zone = pResult->GetInteger(0);
+		if(in_range(Zone, TuneZone::NUM - 1))
+			str_copy(pGameServer->m_aaZoneEnterMsg[Zone], pResult->GetString(1));
+	}
+
+	void ConTuneZoneLeave(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		const int Zone = pResult->GetInteger(0);
+		if(in_range(Zone, TuneZone::NUM - 1))
+			str_copy(pGameServer->m_aaZoneLeaveMsg[Zone], pResult->GetString(1));
+	}
 }
 
 void CGameControllerDDRace::ApplyMapSettings()
@@ -1511,6 +1603,16 @@ void CGameControllerDDRace::RegisterCommands()
 {
 	RegisterAdminCommands();
 	RegisterPracticeCommands();
+	dbg_assert(GameServer()->Console()->RegisterOwned("switch_open", "i[switch]", CFGFLAG_SERVER | CFGFLAG_GAME, ConSwitchOpen, GameServer(), "Whether a switch is deactivated by default (otherwise activated)", this), "duplicate mode command 'switch_open'");
+	static const CCommandRegistration s_aTuneZoneCommands[] = {
+		{"tune_zone", "i[zone] s[tuning] f[value]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneZone, "Tune in zone a variable to value"},
+		{"tune_zone_dump", "i[zone]", CFGFLAG_SERVER, ConTuneDumpZone, "Dump zone tuning in zone x"},
+		{"tune_zone_reset", "?i[zone]", CFGFLAG_SERVER, ConTuneResetZone, "Reset zone tuning in zone x or in all zones"},
+		{"tune_zone_enter", "i[zone] r[message]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneZoneEnter, "Which message to display on zone enter; use 0 for normal area"},
+		{"tune_zone_leave", "i[zone] r[message]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneZoneLeave, "Which message to display on zone leave; use 0 for normal area"},
+	};
+	for(const CCommandRegistration &Command : s_aTuneZoneCommands)
+		dbg_assert(GameServer()->Console()->RegisterOwned(Command.m_pName, Command.m_pParams, Command.m_Flags, Command.m_pfnCallback, GameServer(), Command.m_pHelp, this), "duplicate mode command '%s'", Command.m_pName);
 
 	static const CCommandRegistration s_aPlayerCommands[] = {
 		{"settings", "?s[configname]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSettings, "Shows gameplay information for this server"},

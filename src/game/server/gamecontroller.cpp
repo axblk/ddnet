@@ -29,20 +29,13 @@
 #include <algorithm>
 
 IGameController::IGameController(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
-	m_GameModeInfo(GameModeInfo)
+	m_GameModeInfo(GameModeInfo),
+	m_MatchLifecycle(Services.Server()->Tick())
 {
 	RegisterMapEntityFactory(CreateCommonMapEntity);
 	m_pServices = &Services;
 	m_pServer = Services.Server();
 	m_pGameType = g_Config.m_SvTestingCommands ? m_GameModeInfo.m_pTestingGameType : m_GameModeInfo.m_pGameType;
-
-	//
-	m_Warmup = 0;
-	m_GameOverTick = -1;
-	m_SuddenDeath = 0;
-	m_RoundStartTick = Server()->Tick();
-	m_RoundCount = 0;
-	m_GameFlags = m_GameModeInfo.m_GameFlags;
 }
 
 CGameContext *IGameController::GameServer() const
@@ -65,7 +58,7 @@ void IGameController::Init(CDbConnectionPool *)
 	m_pGameType = g_Config.m_SvTestingCommands ? m_GameModeInfo.m_pTestingGameType : m_GameModeInfo.m_pGameType;
 	DoWarmup(g_Config.m_SvWarmup);
 	m_TeamsCore.Reset();
-	if(!m_Warmup)
+	if(Match().IsRunning())
 		PublishMatchEvent(CMatchEventRoundStarted{});
 }
 
@@ -479,7 +472,7 @@ void IGameController::OnPlayerConnect(CPlayer *pPlayer)
 	{
 		{
 			protocol7::CNetMsg_Sv_GameInfo Msg;
-			Msg.m_GameFlags = m_GameFlags;
+			Msg.m_GameFlags = Info().m_GameFlags;
 			Msg.m_MatchCurrent = 1;
 			Msg.m_MatchNum = 0;
 			Msg.m_ScoreLimit = ScoreLimit();
@@ -537,12 +530,10 @@ void IGameController::RestoreCharacterAfterMapReload(CCharacter *pCharacter)
 
 void IGameController::EndRound()
 {
-	if(m_Warmup) // game can't end when we are running warmup
+	if(!Match().EndRound(Server()->Tick()))
 		return;
 
 	SetGamePaused(true);
-	m_GameOverTick = Server()->Tick();
-	m_SuddenDeath = 0;
 	log_info("game", "end round type='%s'", m_pGameType);
 	PublishMatchEvent(CMatchEventRoundEnded{});
 }
@@ -573,7 +564,7 @@ const char *IGameController::GetTeamName(int Team)
 void IGameController::SetGamePaused(bool Paused)
 {
 	// Cannot unpause the game while gameover is active
-	if(m_GameOverTick != -1 && !Paused)
+	if(Match().IsGameOver() && !Paused)
 	{
 		return;
 	}
@@ -589,12 +580,10 @@ void IGameController::StartRound()
 {
 	ResetGame();
 
-	m_RoundStartTick = Server()->Tick();
-	m_SuddenDeath = 0;
-	m_GameOverTick = -1;
+	Match().StartRound(Server()->Tick());
 	SetGamePaused(false);
 	Server()->DemoRecorder_HandleAutoStart();
-	log_info("game", "start round type='%s' teamplay='%d'", m_pGameType, m_GameFlags & GAMEFLAG_TEAMS);
+	log_info("game", "start round type='%s' teamplay='%d'", m_pGameType, Info().m_GameFlags & GAMEFLAG_TEAMS);
 	PublishMatchEvent(CMatchEventRoundStarted{});
 }
 
@@ -799,30 +788,18 @@ void IGameController::TickCharacterPostCore(CCharacter *pCharacter)
 
 void IGameController::DoWarmup(int Seconds)
 {
-	if(Seconds < 0)
-		m_Warmup = 0;
-	else
-		m_Warmup = Seconds * Server()->TickSpeed();
+	Match().SetWarmupTicks(Seconds < 0 ? 0 : Seconds * Server()->TickSpeed());
 }
 
 void IGameController::Tick()
 {
-	// do warmup
-	if(m_Warmup)
-	{
-		m_Warmup--;
-		if(!m_Warmup)
-			StartRound();
-	}
+	if(Match().TickWarmup())
+		StartRound();
 
-	if(m_GameOverTick != -1)
+	if(Match().ShouldRestartRound(Server()->Tick(), Server()->TickSpeed() * 10))
 	{
-		// game over.. wait for restart
-		if(Server()->Tick() > m_GameOverTick + Server()->TickSpeed() * 10)
-		{
-			StartRound();
-			m_RoundCount++;
-		}
+		StartRound();
+		Match().AdvanceRound();
 	}
 
 	DoActivityCheck();
@@ -832,19 +809,19 @@ void IGameController::Snap(int SnappingClient)
 {
 	CNetObj_GameInfo GameInfo = {};
 
-	GameInfo.m_GameFlags = GameFlags_ClampToSix(m_GameFlags);
+	GameInfo.m_GameFlags = GameFlags_ClampToSix(Info().m_GameFlags);
 	GameInfo.m_GameStateFlags = 0;
-	if(m_GameOverTick != -1)
+	if(Match().IsGameOver())
 		GameInfo.m_GameStateFlags |= GAMESTATEFLAG_GAMEOVER;
-	if(m_SuddenDeath)
+	if(Match().IsSuddenDeath())
 		GameInfo.m_GameStateFlags |= GAMESTATEFLAG_SUDDENDEATH;
 	if(IsGamePaused())
 		GameInfo.m_GameStateFlags |= GAMESTATEFLAG_PAUSED;
-	GameInfo.m_RoundStartTick = m_RoundStartTick;
-	GameInfo.m_WarmupTimer = m_Warmup;
+	GameInfo.m_RoundStartTick = Match().RoundStartTick();
+	GameInfo.m_WarmupTimer = Match().WarmupTicks();
 
 	GameInfo.m_RoundNum = 0;
-	GameInfo.m_RoundCurrent = m_RoundCount + 1;
+	GameInfo.m_RoundCurrent = Match().RoundCount() + 1;
 	UpdateGameInfo(GameInfo, SnappingClient);
 	Server()->SnapNewItem(0, GameInfo);
 
@@ -857,15 +834,15 @@ void IGameController::Snap(int SnappingClient)
 	if(Server()->IsSixup(SnappingClient))
 	{
 		protocol7::CNetObj_GameData GameData = {};
-		GameData.m_GameStartTick = m_RoundStartTick;
+		GameData.m_GameStartTick = Match().RoundStartTick();
 		GameData.m_GameStateFlags = 0;
-		if(m_GameOverTick != -1)
+		if(Match().IsGameOver())
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_GAMEOVER;
-		if(m_SuddenDeath)
+		if(Match().IsSuddenDeath())
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_SUDDENDEATH;
 		if(IsGamePaused())
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_PAUSED;
-		GameData.m_GameStateEndTick = TimeLimit() > 0 ? m_RoundStartTick + TimeLimit() * Server()->TickSpeed() * 60 : 0;
+		GameData.m_GameStateEndTick = TimeLimit() > 0 ? Match().RoundStartTick() + TimeLimit() * Server()->TickSpeed() * 60 : 0;
 		Server()->SnapNewItem(0, GameData);
 	}
 

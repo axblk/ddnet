@@ -5,7 +5,7 @@
 #include <generated/protocol7.h>
 
 #include <game/server/gamemodes/ddnet.h>
-#include <game/server/gamemodes/mod.h>
+#include <game/server/gamemodes/ddrace.h>
 #include <game/server/modes/insta/game_modes.h>
 #include <game/server/modes/vanilla/game_modes.h>
 #include <game/server/modes/zcatch/game_modes.h>
@@ -18,7 +18,7 @@ bool RegisterBuiltInGameModes(CGameModeRegistry &Registry)
 		       [](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerDDNet>(Services, Info); }) &&
 	       Registry.Register(
 		       {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, BothProtocols, 0, true, EPhysicsRuleset::DDNET},
-		       [](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerMod>(Services, Info); }) &&
+		       [](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerDDRace>(Services, Info); }) &&
 	       RegisterVanillaGameModes(Registry) &&
 	       RegisterInstagibGameModes(Registry) &&
 	       RegisterZCatchGameModes(Registry);

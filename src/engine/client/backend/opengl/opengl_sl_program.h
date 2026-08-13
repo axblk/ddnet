@@ -21,7 +21,6 @@ class CGLSLProgram
 {
 public:
 	void CreateProgram();
-	void DeleteProgram();
 
 	bool AddShader(CGLSL *pShader) const;
 
@@ -29,8 +28,6 @@ public:
 	void UseProgram() const;
 	TWGLuint GetProgramId() const;
 
-	void DetachShader(CGLSL *pShader) const;
-	void DetachShaderById(TWGLuint ShaderId) const;
 	void DetachAllShaders() const;
 
 	//Support various types
@@ -44,19 +41,18 @@ public:
 	//for performance reason we do not use SetUniform with using strings... save the Locations of the variables instead
 	int GetUniformLoc(const char *pName) const;
 
-	CGLSLProgram();
 	virtual ~CGLSLProgram();
 
 protected:
-	TWGLuint m_ProgramId;
-	bool m_IsLinked;
+	TWGLuint m_ProgramId = 0;
+	bool m_IsLinked = false;
 };
 
 class CGLSLTWProgram : public CGLSLProgram
 {
 public:
 	CGLSLTWProgram() :
-		m_LocPos(-1), m_LocTextureSampler(-1), m_LastTextureSampler(-1), m_LastIsTextured(-1)
+		m_LocPos(-1), m_LocTextureSampler(-1), m_LastTextureSampler(-1)
 	{
 		m_LastScreenTL = m_LastScreenBR = vec2(-1, -1);
 	}
@@ -65,7 +61,6 @@ public:
 	int m_LocTextureSampler;
 
 	int m_LastTextureSampler;
-	int m_LastIsTextured;
 	vec2 m_LastScreenTL;
 	vec2 m_LastScreenBR;
 };
@@ -151,14 +146,11 @@ class CGLSLTileProgram : public CGLSLTWProgram
 {
 public:
 	CGLSLTileProgram() :
-		m_LocColor(-1), m_LocOffset(-1), m_LocDir(-1), m_LocNum(-1), m_LocJumpIndex(-1) {}
+		m_LocColor(-1), m_LocOffset(-1) {}
 
 	int m_LocColor;
 	int m_LocOffset;
-	int m_LocDir;
 	int m_LocScale = -1;
-	int m_LocNum;
-	int m_LocJumpIndex;
 };
 
 #endif

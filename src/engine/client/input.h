@@ -121,6 +121,7 @@ public:
 	void ConsumeEvents(std::function<void(const CEvent &Event)> Consumer) const override;
 	void Clear() override;
 	float GetUpdateTime() const override;
+	bool IsWindowFocused() const override { return m_MouseFocus; }
 
 	bool ModifierIsPressed() const override { return KeyIsPressed(KEY_LCTRL) || KeyIsPressed(KEY_RCTRL) || KeyIsPressed(KEY_LGUI) || KeyIsPressed(KEY_RGUI); }
 	bool ShiftIsPressed() const override { return KeyIsPressed(KEY_LSHIFT) || KeyIsPressed(KEY_RSHIFT); }

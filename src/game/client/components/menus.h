@@ -452,6 +452,9 @@ protected:
 
 	// found in menus.cpp
 	void Render();
+	void RenderMenuBackground();
+	void DestroyMenuBackdropTextures();
+	bool EnsureMenuBackdropTextures();
 	void RenderPopupFullscreen(CUIRect Screen);
 	void RenderPopupConnecting(CUIRect Screen);
 	void RenderPopupLoading(CUIRect Screen);
@@ -649,9 +652,19 @@ protected:
 	void UpdateColors();
 
 	IGraphics::CTextureHandle m_TextureBlob;
+	IGraphics::CTextureHandle m_MenuBackdropSceneTexture;
+	IGraphics::CTextureHandle m_aMenuBackdropBlurTextures[2];
+	int m_MenuBackdropWidth = 0;
+	int m_MenuBackdropHeight = 0;
+	bool m_MenuBackdropActive = false;
+	bool m_MenuBackdropReady = false;
+	bool m_MenuBackdropBackgroundRendered = false;
 
 public:
 	void RenderBackground();
+	bool BeginMenuBackdrop(ColorRGBA ClearColor);
+	void FinishMenuBackdrop();
+	void RenderBackdropRegion(CUIRect Rect);
 
 	CMenus();
 	int Sizeof() const override { return sizeof(*this); }

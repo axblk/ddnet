@@ -990,6 +990,10 @@ void CClient::RenderDebug()
 	str_format(aBuffer, sizeof(aBuffer), "%16s: %" PRIu64 " KiB", "Staging memory", Graphics()->StagingMemoryUsage() / 1024);
 	Graphics()->QuadsText(32.0f * FontSize, 2 + 3 * FontSize, FontSize, aBuffer);
 
+	const IGraphics::SFrameMailboxStats MailboxStats = Graphics()->FrameMailboxStats();
+	str_format(aBuffer, sizeof(aBuffer), "%16s: %" PRIu64 " / %" PRIu64 " / %" PRIu64, "Frames P/R/D", MailboxStats.m_Produced, MailboxStats.m_Rendered, MailboxStats.m_Dropped);
+	Graphics()->QuadsText(32.0f * FontSize, 2 + 4 * FontSize, FontSize, aBuffer);
+
 	// Network
 	{
 		const uint64_t OverheadSize = 14 + 20 + 8; // ETH + IP + UDP
@@ -3366,21 +3370,15 @@ void CClient::Run()
 
 			bool IsRenderActive = (g_Config.m_GfxBackgroundRender || m_pGraphics->WindowOpen());
 
-			bool AsyncRenderOld = g_Config.m_GfxAsyncRenderOld;
-
 			int GfxRefreshRate = g_Config.m_GfxRefreshRate;
 
 #if defined(CONF_VIDEORECORDER)
 			// keep rendering synced
 			if(IVideo::Current())
-			{
-				AsyncRenderOld = false;
 				GfxRefreshRate = 0;
-			}
 #endif
 
 			if(IsRenderActive &&
-				(!AsyncRenderOld || m_pGraphics->IsIdle()) &&
 				(!GfxRefreshRate || (time_freq() / (int64_t)g_Config.m_GfxRefreshRate) <= Now - LastRenderTime))
 			{
 				// update frametime
@@ -3403,15 +3401,30 @@ void CClient::Run()
 				m_FrameTimeAverage = m_FrameTimeAverage * 0.9f + m_RenderFrameTime * 0.1f;
 
 				// keep the overflow time - it's used to make sure the gfx refreshrate is reached
-				int64_t AdditionalTime = g_Config.m_GfxRefreshRate ? ((Now - LastRenderTime) - (time_freq() / (int64_t)g_Config.m_GfxRefreshRate)) : 0;
+				int64_t AdditionalTime = GfxRefreshRate ? ((Now - LastRenderTime) - (time_freq() / (int64_t)GfxRefreshRate)) : 0;
 				// if the value is over the frametime of a 60 fps frame, reset the additional time (drop the frames, that are lost already)
 				if(AdditionalTime > (time_freq() / 60))
 					AdditionalTime = (time_freq() / 60);
 				LastRenderTime = Now - AdditionalTime;
 				m_LastRenderTime = Now;
 
+#if defined(CONF_VIDEORECORDER)
+				IVideo *pVideo = IVideo::Current();
+				bool VideoFrameHandled = false;
+				if(pVideo != nullptr)
+					VideoFrameHandled = pVideo->BeginVideoFrameRender();
+#endif
 				Render();
-				m_pGraphics->Swap();
+#if defined(CONF_VIDEORECORDER)
+				if(VideoFrameHandled)
+					pVideo->EndVideoFrameRender();
+				else
+#endif
+					m_pGraphics->Swap();
+#if defined(CONF_VIDEORECORDER)
+				if(pVideo != nullptr && pVideo->HasError())
+					pVideo->Stop();
+#endif
 			}
 			else if(!IsRenderActive)
 			{
@@ -3433,15 +3446,24 @@ void CClient::Run()
 		auto Now = time_get_nanoseconds();
 		decltype(Now) SleepTimeInNanoSeconds{0};
 		bool Slept = false;
-		if(g_Config.m_ClRefreshRateInactive && !m_pGraphics->WindowActive())
+		int ClientRefreshRate = g_Config.m_ClRefreshRate;
+		int InactiveRefreshRate = g_Config.m_ClRefreshRateInactive;
+#if defined(CONF_VIDEORECORDER)
+		if(IVideo::Current() && IVideo::Current()->IsRecording())
 		{
-			SleepTimeInNanoSeconds = (std::chrono::nanoseconds(1s) / (int64_t)g_Config.m_ClRefreshRateInactive) - (Now - LastTime);
+			ClientRefreshRate = 0;
+			InactiveRefreshRate = 0;
+		}
+#endif
+		if(InactiveRefreshRate && !m_pGraphics->WindowActive())
+		{
+			SleepTimeInNanoSeconds = (std::chrono::nanoseconds(1s) / (int64_t)InactiveRefreshRate) - (Now - LastTime);
 			std::this_thread::sleep_for(SleepTimeInNanoSeconds);
 			Slept = true;
 		}
-		else if(g_Config.m_ClRefreshRate)
+		else if(ClientRefreshRate)
 		{
-			SleepTimeInNanoSeconds = (std::chrono::nanoseconds(1s) / (int64_t)g_Config.m_ClRefreshRate) - (Now - LastTime);
+			SleepTimeInNanoSeconds = (std::chrono::nanoseconds(1s) / (int64_t)ClientRefreshRate) - (Now - LastTime);
 			auto SleepTimeInNanoSecondsInner = SleepTimeInNanoSeconds;
 			auto NowInner = Now;
 			while(std::chrono::duration_cast<std::chrono::microseconds>(SleepTimeInNanoSecondsInner) > 0us)

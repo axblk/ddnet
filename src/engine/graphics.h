@@ -5,6 +5,7 @@
 
 #include "image.h"
 #include "kernel.h"
+#include "render_handle.h"
 #include "warning.h"
 
 #include <base/color.h>
@@ -13,33 +14,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <vector>
 
-#define GRAPHICS_TYPE_UNSIGNED_BYTE 0x1401
-#define GRAPHICS_TYPE_UNSIGNED_SHORT 0x1403
-#define GRAPHICS_TYPE_INT 0x1404
-#define GRAPHICS_TYPE_UNSIGNED_INT 0x1405
-#define GRAPHICS_TYPE_FLOAT 0x1406
-
-struct SBufferContainerInfo
-{
-	int m_Stride;
-	int m_VertBufferBindingIndex;
-
-	// the attributes of the container
-	struct SAttribute
-	{
-		int m_DataTypeCount;
-		unsigned int m_Type;
-		bool m_Normalized;
-		void *m_pOffset;
-
-		//0: float, 1:integer
-		unsigned int m_FuncType;
-	};
-	std::vector<SAttribute> m_vAttributes;
-};
+struct SBufferContainerInfo;
 
 struct SQuadRenderInfo
 {
@@ -79,19 +59,16 @@ public:
 	int m_RefreshRate;
 };
 
-typedef vec2 GL_SPoint;
-typedef vec2 GL_STexCoord;
-
-struct GL_STexCoord3D
+struct SGraphicsTexCoord3D
 {
-	GL_STexCoord3D &operator=(const GL_STexCoord &TexCoord)
+	SGraphicsTexCoord3D &operator=(const vec2 &TexCoord)
 	{
 		u = TexCoord.u;
 		v = TexCoord.v;
 		return *this;
 	}
 
-	GL_STexCoord3D &operator=(const vec3 &TexCoord)
+	SGraphicsTexCoord3D &operator=(const vec3 &TexCoord)
 	{
 		u = TexCoord.u;
 		v = TexCoord.v;
@@ -102,30 +79,39 @@ struct GL_STexCoord3D
 	float u, v, w;
 };
 
-typedef ColorRGBA GL_SColorf;
 //use normalized color values
-typedef vector4_base<unsigned char> GL_SColor;
+using SGraphicsColor = vector4_base<unsigned char>;
 
-struct GL_SVertex
+struct SGraphicsVertex
 {
-	GL_SPoint m_Pos;
-	GL_STexCoord m_Tex;
-	GL_SColor m_Color;
+	vec2 m_Pos;
+	vec2 m_Tex;
+	SGraphicsColor m_Color;
 };
+static_assert(sizeof(SGraphicsVertex) == 20);
+static_assert(offsetof(SGraphicsVertex, m_Pos) == 0);
+static_assert(offsetof(SGraphicsVertex, m_Tex) == 8);
+static_assert(offsetof(SGraphicsVertex, m_Color) == 16);
 
-struct GL_SVertexTex3D
+struct SGraphicsVertexTex3D
 {
-	GL_SPoint m_Pos;
-	GL_SColorf m_Color;
-	GL_STexCoord3D m_Tex;
+	vec2 m_Pos;
+	ColorRGBA m_Color;
+	SGraphicsTexCoord3D m_Tex;
 };
+static_assert(sizeof(SGraphicsVertexTex3D) == 36);
+static_assert(offsetof(SGraphicsVertexTex3D, m_Color) == 8);
+static_assert(offsetof(SGraphicsVertexTex3D, m_Tex) == 24);
 
-struct GL_SVertexTex3DStream
+struct SGraphicsVertexTex3DStream
 {
-	GL_SPoint m_Pos;
-	GL_SColor m_Color;
-	GL_STexCoord3D m_Tex;
+	vec2 m_Pos;
+	SGraphicsColor m_Color;
+	SGraphicsTexCoord3D m_Tex;
 };
+static_assert(sizeof(SGraphicsVertexTex3DStream) == 24);
+static_assert(offsetof(SGraphicsVertexTex3DStream, m_Color) == 8);
+static_assert(offsetof(SGraphicsVertexTex3DStream, m_Tex) == 12);
 
 static constexpr size_t GRAPHICS_MAX_QUADS_RENDER_COUNT = 256;
 static constexpr size_t GRAPHICS_MAX_PARTICLES_RENDER_COUNT = 512;
@@ -144,6 +130,7 @@ enum EBackendType
 	BACKEND_TYPE_OPENGL = 0,
 	BACKEND_TYPE_OPENGL_ES,
 	BACKEND_TYPE_VULKAN,
+	BACKEND_TYPE_WEBGPU,
 
 	// special value to tell the backend to identify the current backend
 	BACKEND_TYPE_AUTO,
@@ -177,8 +164,6 @@ typedef STWGraphicGpu TTwGraphicsGpuList;
 
 typedef std::function<void()> WINDOW_RESIZE_FUNC;
 typedef std::function<void()> WINDOW_PROPS_CHANGED_FUNC;
-
-typedef std::function<bool(uint32_t &Width, uint32_t &Height, CImageInfo::EImageFormat &Format, std::vector<uint8_t> &vDstData)> TGLBackendReadPresentedImageData;
 
 struct CDataSprite;
 
@@ -254,22 +239,24 @@ public:
 		TEXLOAD_NO_2D_TEXTURE = 1 << 2,
 	};
 
-	class CTextureHandle
+	struct STextureHandleTag;
+	class CTextureHandle : public CGenerationHandle<STextureHandleTag>
 	{
-		friend class IGraphics;
-		int m_Id;
+		friend class CGenerationHandlePool<CTextureHandle>;
 
-	public:
-		CTextureHandle() :
-			m_Id(-1)
+		CTextureHandle(int Id, uint32_t Generation) :
+			CGenerationHandle(Id, Generation)
 		{
 		}
 
-		bool IsValid() const { return Id() >= 0; }
+	public:
+		CTextureHandle() = default;
 		bool IsNullTexture() const { return Id() == 0; }
-		int Id() const { return m_Id; }
-		void Invalidate() { m_Id = -1; }
 	};
+	struct SBufferHandleTag;
+	using CBufferHandle = CGenerationHandle<SBufferHandleTag>;
+	struct SBufferContainerHandleTag;
+	using CBufferContainerHandle = CGenerationHandle<SBufferContainerHandleTag>;
 
 	int ScreenWidth() const { return m_ScreenWidth; }
 	int ScreenHeight() const { return m_ScreenHeight; }
@@ -309,6 +296,38 @@ public:
 	// ForceClearNow forces the backend to trigger a clear, even at performance cost, else it might be delayed by one frame
 	virtual void Clear(float r, float g, float b, bool ForceClearNow = false) = 0;
 
+	enum class ERenderPassLoadOp : uint8_t
+	{
+		DISCARD,
+		CLEAR,
+	};
+
+	struct CRenderPassDesc
+	{
+		// An invalid handle selects the presentation target.
+		CTextureHandle m_ColorTarget;
+		ERenderPassLoadOp m_LoadOp = ERenderPassLoadOp::DISCARD;
+		ColorRGBA m_ClearColor = {0.0f, 0.0f, 0.0f, 0.0f};
+	};
+
+	// A presentation pass is active implicitly for backwards compatibility.
+	// Beginning another pass ends the current pass first.
+	virtual bool BeginRenderPass(const CRenderPassDesc &Desc) = 0;
+	virtual bool EndRenderPass() = 0;
+	// Orders all draws recorded so far before later draws in the same pass.
+	virtual bool FlushRenderPass() = 0;
+	// Draws Source over the active render pass using the existing transient
+	// primitive path. By default the complete target is covered; optionally the
+	// current pixel clip limits the result. This also provides backend-neutral scaling.
+	virtual bool BlitTexture(CTextureHandle Source, bool UseCurrentClip = false) = 0;
+	enum class EBlurDirection : uint8_t
+	{
+		HORIZONTAL,
+		VERTICAL,
+	};
+	// Applies one fixed separable blur pass over the complete active render pass.
+	virtual bool BlurTexture(CTextureHandle Source, EBlurDirection Direction) = 0;
+
 	virtual void ClipEnable(int x, int y, int w, int h) = 0;
 	virtual void ClipDisable() = 0;
 
@@ -335,6 +354,14 @@ public:
 	virtual uint64_t StreamedMemoryUsage() const = 0;
 	virtual uint64_t StagingMemoryUsage() const = 0;
 
+	struct SFrameMailboxStats
+	{
+		uint64_t m_Produced = 0;
+		uint64_t m_Rendered = 0;
+		uint64_t m_Dropped = 0;
+	};
+	virtual SFrameMailboxStats FrameMailboxStats() const = 0;
+
 	virtual const TTwGraphicsGpuList &GetGpus() const = 0;
 
 	virtual bool LoadPng(CImageInfo &Image, const char *pFilename, int StorageType) = 0;
@@ -345,14 +372,16 @@ public:
 
 	virtual void UnloadTexture(CTextureHandle *pIndex) = 0;
 	virtual CTextureHandle LoadTextureRaw(const CImageInfo &Image, int Flags, const char *pTexName = nullptr) = 0;
+	// Image data is consumed only when a valid texture handle is returned.
 	virtual CTextureHandle LoadTextureRawMove(CImageInfo &Image, int Flags, const char *pTexName = nullptr) = 0;
 	virtual CTextureHandle LoadTexture(const char *pFilename, int StorageType, int Flags = 0) = 0;
 	virtual void TextureSet(CTextureHandle Texture) = 0;
 	void TextureClear() { TextureSet(CTextureHandle()); }
 
-	// pTextData & pTextOutlineData are automatically free'd
+	// Moved upload pointers are consumed only when the command is accepted.
 	virtual bool LoadTextTextures(size_t Width, size_t Height, CTextureHandle &TextTexture, CTextureHandle &TextOutlineTexture, uint8_t *pTextData, uint8_t *pTextOutlineData) = 0;
 	virtual bool UnloadTextTextures(CTextureHandle &TextTexture, CTextureHandle &TextOutlineTexture) = 0;
+	// If IsMovedPointer is true, pData remains owned by the caller on failure.
 	virtual bool UpdateTextTexture(CTextureHandle TextureId, int x, int y, size_t Width, size_t Height, uint8_t *pData, bool IsMovedPointer) = 0;
 
 	virtual CTextureHandle LoadSpriteTexture(const CImageInfo &FromImageInfo, const std::optional<CImageInfo> &FallbackImageInfo, const struct CDataSprite *pSprite) = 0;
@@ -364,28 +393,195 @@ public:
 	virtual void FlushVerticesTex3D() = 0;
 
 	// specific render functions
-	virtual void RenderTileLayer(int BufferContainerIndex, const ColorRGBA &Color, char **pOffsets, unsigned int *pIndicedVertexDrawNum, size_t NumIndicesOffset) = 0;
-	virtual void RenderBorderTiles(int BufferContainerIndex, const ColorRGBA &Color, char *pIndexBufferOffset, const vec2 &Offset, const vec2 &Scale, uint32_t DrawNum) = 0;
-	virtual void RenderQuadLayer(int BufferContainerIndex, SQuadRenderInfo *pQuadInfo, size_t QuadNum, int QuadOffset, bool Grouped = false) = 0;
-	virtual void RenderText(int BufferContainerIndex, int TextQuadNum, int TextureSize, int TextureTextIndex, int TextureTextOutlineIndex, const ColorRGBA &TextColor, const ColorRGBA &TextOutlineColor) = 0;
+	virtual void RenderTileLayer(CBufferContainerHandle BufferContainer, const ColorRGBA &Color, char **pOffsets, unsigned int *pIndicedVertexDrawNum, size_t NumIndicesOffset) = 0;
+	virtual void RenderBorderTiles(CBufferContainerHandle BufferContainer, const ColorRGBA &Color, char *pIndexBufferOffset, const vec2 &Offset, const vec2 &Scale, uint32_t DrawNum) = 0;
+	virtual void RenderQuadLayer(CBufferContainerHandle BufferContainer, SQuadRenderInfo *pQuadInfo, size_t QuadNum, int QuadOffset, bool Grouped = false) = 0;
+	virtual void RenderText(CBufferContainerHandle BufferContainer, int TextQuadNum, int TextureSize, CTextureHandle TextTexture, CTextureHandle TextOutlineTexture, const ColorRGBA &TextColor, const ColorRGBA &TextOutlineColor) = 0;
+
+	enum class EIndexType : uint8_t
+	{
+		UINT16,
+		UINT32,
+	};
+
+	struct CTransientIndexedDrawRange
+	{
+		CTextureHandle m_Texture;
+		// Top-left based framebuffer pixels. The toolkit adapter applies its
+		// display offset and framebuffer scale before submitting the range.
+		int m_ClipX = 0;
+		int m_ClipY = 0;
+		int m_ClipW = 0;
+		int m_ClipH = 0;
+		uint32_t m_FirstIndex = 0;
+		uint32_t m_IndexCount = 0;
+		uint32_t m_VertexOffset = 0;
+	};
+
+	// Copies one toolkit-neutral draw list into frame-owned storage. Each range
+	// uses alpha blending, clamp addressing and its own texture and pixel clip.
+	[[nodiscard]] virtual bool RenderTransientIndexed(const SGraphicsVertex *pVertices, uint32_t VertexCount, const void *pIndices, uint32_t IndexCount, EIndexType IndexType, const CTransientIndexedDrawRange *pRanges, uint32_t RangeCount) = 0;
 
 	// opengl 3.3 functions
 
 	enum EBufferObjectCreateFlags
 	{
-		// tell the backend that the buffer only needs to be valid for the span of one frame. Buffer size is not allowed to be bigger than GL_SVertex * MAX_VERTICES
+		// tell the backend that the buffer only needs to be valid for the span of one frame. Buffer size is bounded by the largest streamed vertex format times MAX_VERTICES
 		BUFFER_OBJECT_CREATE_FLAGS_ONE_TIME_USE_BIT = 1 << 0,
 	};
 
-	// if a pointer is passed as moved pointer, it requires to be allocated with malloc()
-	virtual int CreateBufferObject(size_t UploadDataSize, void *pUploadData, int CreateFlags, bool IsMovedPointer = false) = 0;
-	virtual void RecreateBufferObject(int BufferIndex, size_t UploadDataSize, void *pUploadData, int CreateFlags, bool IsMovedPointer = false) = 0;
-	virtual void DeleteBufferObject(int BufferIndex) = 0;
+	enum class EBufferLifetime : uint8_t
+	{
+		PERSISTENT,
+		FRAME,
+	};
 
-	virtual int CreateBufferContainer(struct SBufferContainerInfo *pContainerInfo) = 0;
+	enum class EBufferUsage : uint8_t
+	{
+		VERTEX,
+		INDEX,
+	};
+
+	struct CBufferDesc
+	{
+		size_t m_Size = 0;
+		EBufferLifetime m_Lifetime = EBufferLifetime::PERSISTENT;
+		EBufferUsage m_Usage = EBufferUsage::VERTEX;
+	};
+
+	enum class ETextureFormat : uint8_t
+	{
+		RGBA8_UNORM,
+		R8_UNORM,
+	};
+
+	enum class ETextureMipmaps : uint8_t
+	{
+		NONE,
+		GENERATE,
+	};
+
+	// A layered texture is derived by splitting the uploaded 2D image into a grid.
+	enum class ETextureLayering : uint8_t
+	{
+		NONE,
+		ARRAY_2D,
+		VOLUME_3D,
+	};
+	static constexpr size_t MAX_TEXTURE_LAYERS = 256;
+
+	enum ETextureUsage : uint8_t
+	{
+		TEXTURE_USAGE_SAMPLED = 1 << 0,
+		TEXTURE_USAGE_COLOR_TARGET = 1 << 1,
+		TEXTURE_USAGE_COPY_SOURCE = 1 << 2,
+	};
+
+	struct CTextureDesc
+	{
+		size_t m_Width = 0;
+		size_t m_Height = 0;
+		ETextureFormat m_Format = ETextureFormat::RGBA8_UNORM;
+		ETextureMipmaps m_Mipmaps = ETextureMipmaps::GENERATE;
+		ETextureLayering m_Layering = ETextureLayering::NONE;
+		int m_LayerColumns = 1;
+		int m_LayerRows = 1;
+		uint8_t m_Usage = TEXTURE_USAGE_SAMPLED;
+		bool m_Create2D = true;
+
+		bool HasUsage(ETextureUsage Usage) const { return (m_Usage & Usage) != 0; }
+		size_t LayerCount() const { return static_cast<size_t>(m_LayerColumns) * m_LayerRows; }
+		bool IsValid() const
+		{
+			constexpr uint8_t AllUsages = TEXTURE_USAGE_SAMPLED | TEXTURE_USAGE_COLOR_TARGET | TEXTURE_USAGE_COPY_SOURCE;
+			if(m_Width == 0 || m_Height == 0 || m_Usage == 0 || (m_Usage & ~AllUsages) != 0)
+				return false;
+			if(m_LayerColumns <= 0 || m_LayerRows <= 0 || m_LayerColumns > std::numeric_limits<int>::max() / m_LayerRows)
+				return false;
+			if(LayerCount() > MAX_TEXTURE_LAYERS)
+				return false;
+			if(m_Layering == ETextureLayering::NONE && (m_LayerColumns != 1 || m_LayerRows != 1))
+				return false;
+			if(HasUsage(TEXTURE_USAGE_COLOR_TARGET) && (m_Format != ETextureFormat::RGBA8_UNORM || !HasUsage(TEXTURE_USAGE_SAMPLED) || !m_Create2D || m_Layering != ETextureLayering::NONE || m_Mipmaps != ETextureMipmaps::NONE))
+				return false;
+			if(HasUsage(TEXTURE_USAGE_COPY_SOURCE) && (!m_Create2D || m_Layering != ETextureLayering::NONE))
+				return false;
+			return m_Create2D || m_Layering != ETextureLayering::NONE;
+		}
+	};
+
+	// Initial data is copied before this call returns. A null pointer creates an
+	// uninitialized color target and is rejected for ordinary sampled textures.
+	virtual CTextureHandle CreateTexture(const CTextureDesc &Desc, const void *pInitialData = nullptr) = 0;
+	// Synchronously reads a completed COLOR_TARGET | COPY_SOURCE texture into a top-left RGBA image.
+	// The caller must end the texture's render pass first.
+	virtual bool ReadTexture(CTextureHandle Texture, CImageInfo &Image) = 0;
+	class ITextureReadback
+	{
+	public:
+		virtual ~ITextureReadback() = default;
+		[[nodiscard]] virtual bool IsReady() const = 0;
+		// Waits for completion and moves the image on success. May only be called once.
+		virtual bool Wait(CImageInfo &Image) = 0;
+	};
+	// Queues a readback without waiting for the render thread. Destroying the
+	// returned handle waits for pending work, so its command storage stays valid.
+	[[nodiscard]] virtual std::unique_ptr<ITextureReadback> ReadTextureAsync(CTextureHandle Texture) = 0;
+	// Redirects the presentation target to Texture for one complete frame. This
+	// includes presentation passes opened by nested effects such as menu blur.
+	virtual bool BeginOffscreenFrame(CTextureHandle Texture) = 0;
+	// Finishes the frame without presenting and returns its queued readback.
+	[[nodiscard]] virtual std::unique_ptr<ITextureReadback> EndOffscreenFrame() = 0;
+	// Presents the current frame and returns its queued top-left RGBA readback.
+	[[nodiscard]] virtual std::unique_ptr<ITextureReadback> PresentAndReadbackAsync() = 0;
+
+	struct CTextureRegion
+	{
+		size_t m_X = 0;
+		size_t m_Y = 0;
+		size_t m_Width = 0;
+		size_t m_Height = 0;
+	};
+	// Copies one tightly packed, non-empty region of an unmipmapped 2D texture
+	// created with CreateTexture before this call returns.
+	virtual bool UpdateTexture(CTextureHandle Texture, const CTextureRegion &Region, ETextureFormat Format, const void *pData) = 0;
+
+	enum class EVertexAttributeType : uint8_t
+	{
+		FLOAT32,
+		UINT8,
+		UINT16,
+		INT32,
+		UINT32,
+	};
+
+	enum class EVertexAttributeMode : uint8_t
+	{
+		FLOAT,
+		INTEGER,
+	};
+
+	struct CVertexAttributeDesc
+	{
+		uint32_t m_ComponentCount = 0;
+		EVertexAttributeType m_Type = EVertexAttributeType::FLOAT32;
+		bool m_Normalized = false;
+		size_t m_Offset = 0;
+		EVertexAttributeMode m_Mode = EVertexAttributeMode::FLOAT;
+	};
+
+	// A moved pointer must be allocated with malloc() and is consumed only when
+	// the command is accepted. Create returns an invalid handle on failure.
+	virtual CBufferHandle CreateBufferObject(size_t UploadDataSize, void *pUploadData, int CreateFlags, bool IsMovedPointer = false) = 0;
+	virtual bool RecreateBufferObject(CBufferHandle Buffer, size_t UploadDataSize, void *pUploadData, int CreateFlags, bool IsMovedPointer = false) = 0;
+	// Failed destroys leave the passed handle valid so they can be retried.
+	virtual void DeleteBufferObject(CBufferHandle &Buffer) = 0;
+
+	virtual CBufferContainerHandle CreateBufferContainer(struct SBufferContainerInfo *pContainerInfo) = 0;
 	// destroying all buffer objects means, that all referenced VBOs are destroyed automatically, so the user does not need to save references to them
-	virtual void DeleteBufferContainer(int &ContainerIndex, bool DestroyAllBO = true) = 0;
-	virtual void IndicesNumRequiredNotify(unsigned int RequiredIndicesCount) = 0;
+	// Failed destroys leave the passed handle valid so they can be retried.
+	virtual void DeleteBufferContainer(CBufferContainerHandle &Container, bool DestroyAllBO = true) = 0;
+	[[nodiscard]] virtual bool IndicesNumRequiredNotify(unsigned int RequiredIndicesCount) = 0;
 
 	// returns true if the driver age type is supported, passing BACKEND_TYPE_AUTO for BackendType will query the values for the currently used backend
 	virtual bool GetDriverVersion(EGraphicsDriverAgeType DriverAgeType, int &Major, int &Minor, int &Patch, const char *&pName, EBackendType BackendType) = 0;
@@ -577,10 +773,6 @@ public:
 	virtual void SetWindowGrab(bool Grab) = 0;
 	virtual void NotifyWindow() = 0;
 
-	// be aware that this function should only be called from the graphics thread, and even then you should really know what you are doing
-	// this function always returns the pixels in RGB
-	virtual TGLBackendReadPresentedImageData &GetReadPresentedImageDataFuncUnsafe() = 0;
-
 	virtual std::optional<SWarning> CurrentWarning() = 0;
 
 	/**
@@ -659,14 +851,16 @@ public:
 	virtual std::optional<int> ShowMessageBox(const CMessageBox &MessageBox) = 0;
 
 	virtual bool IsBackendInitialized() = 0;
+};
 
-protected:
-	CTextureHandle CreateTextureHandle(int Index)
-	{
-		CTextureHandle Tex;
-		Tex.m_Id = Index;
-		return Tex;
-	}
+struct SBufferContainerInfo
+{
+	size_t m_Stride;
+	IGraphics::CBufferHandle m_VertBufferBinding;
+
+	// the attributes of the container
+	using SAttribute = IGraphics::CVertexAttributeDesc;
+	std::vector<SAttribute> m_vAttributes;
 };
 
 class IEngineGraphics : public IGraphics

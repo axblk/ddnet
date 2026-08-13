@@ -20,14 +20,6 @@ void CGLSLProgram::CreateProgram()
 	m_ProgramId = glCreateProgram();
 }
 
-void CGLSLProgram::DeleteProgram()
-{
-	if(!m_IsLinked)
-		return;
-	m_IsLinked = false;
-	glDeleteProgram(m_ProgramId);
-}
-
 bool CGLSLProgram::AddShader(CGLSL *pShader) const
 {
 	if(pShader->IsLoaded())
@@ -36,19 +28,6 @@ bool CGLSLProgram::AddShader(CGLSL *pShader) const
 		return true;
 	}
 	return false;
-}
-
-void CGLSLProgram::DetachShader(CGLSL *pShader) const
-{
-	if(pShader->IsLoaded())
-	{
-		DetachShaderById(pShader->GetShaderId());
-	}
-}
-
-void CGLSLProgram::DetachShaderById(TWGLuint ShaderId) const
-{
-	glDetachShader(m_ProgramId, ShaderId);
 }
 
 bool CGLSLProgram::LinkProgram()
@@ -93,7 +72,7 @@ void CGLSLProgram::DetachAllShaders() const
 		{
 			for(GLsizei i = 0; i < ReturnedCount; ++i)
 			{
-				DetachShaderById(aShaders[i]);
+				glDetachShader(m_ProgramId, aShaders[i]);
 			}
 		}
 
@@ -148,14 +127,10 @@ TWGLuint CGLSLProgram::GetProgramId() const
 	return m_ProgramId;
 }
 
-CGLSLProgram::CGLSLProgram()
-{
-	m_IsLinked = false;
-}
-
 CGLSLProgram::~CGLSLProgram()
 {
-	DeleteProgram();
+	if(m_ProgramId != 0)
+		glDeleteProgram(m_ProgramId);
 }
 
 #endif

@@ -3,6 +3,8 @@
 
 #include <base/lock.h>
 
+#include <engine/graphics.h>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -10,13 +12,13 @@ extern "C" {
 
 #include <engine/shared/video.h>
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
 #include <vector>
 
-class IGraphics;
 class ISound;
 class IStorage;
 
@@ -48,9 +50,11 @@ public:
 	void Stop() override;
 	void Pause(bool Pause) override;
 	bool IsRecording() const override { return m_Recording; }
+	bool HasError() const override { return m_ReadbackError; }
 
 	void NextVideoFrame() override;
-	void NextVideoFrameThread() override;
+	bool BeginVideoFrameRender() override;
+	void EndVideoFrameRender() override;
 
 	void NextAudioFrame(ISoundMixFunc Mix) override;
 	void NextAudioFrameTimeline(ISoundMixFunc Mix) override;
@@ -64,7 +68,12 @@ public:
 private:
 	void RunVideoThread(size_t ParentThreadIndex, size_t ThreadIndex) REQUIRES(!m_WriteLock);
 	void FillVideoFrame(size_t ThreadIndex) REQUIRES(!m_WriteLock);
-	void UpdateVideoBufferFromGraphics(size_t ThreadIndex);
+	void SubmitVideoFrame(uint64_t FrameIndex, CImageInfo Image);
+	bool FinishReadbackSlot(size_t SlotIndex);
+	bool DrainReadbackSlots();
+	bool CreateOffscreenTargets();
+	void DestroyOffscreenTargets();
+	void DisableOffscreen(const char *pReason);
 
 	void RunAudioThread(size_t ParentThreadIndex, size_t ThreadIndex) REQUIRES(!m_WriteLock);
 	void FillAudioFrame(size_t ThreadIndex);
@@ -99,6 +108,20 @@ private:
 	bool m_Started;
 	bool m_Stopped;
 	bool m_Recording;
+	bool m_Offscreen = false;
+	bool m_OffscreenFrameActive = false;
+	bool m_ReadbackError = false;
+
+	static constexpr size_t READBACK_SLOT_COUNT = 3;
+	class CReadbackSlot
+	{
+	public:
+		IGraphics::CTextureHandle m_Target;
+		std::unique_ptr<IGraphics::ITextureReadback> m_pReadback;
+		uint64_t m_FrameIndex = 0;
+	};
+	std::array<CReadbackSlot, READBACK_SLOT_COUNT> m_aReadbackSlots;
+	size_t m_CurrentReadbackSlot = 0;
 
 	CLock m_WriteLock;
 	size_t m_VideoThreads = 2;
@@ -151,7 +174,7 @@ private:
 	class CVideoBuffer
 	{
 	public:
-		std::vector<uint8_t> m_vBuffer;
+		CImageInfo m_Image;
 	};
 	std::vector<CVideoBuffer> m_vVideoBuffers;
 	class CAudioBuffer

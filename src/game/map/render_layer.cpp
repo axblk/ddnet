@@ -16,6 +16,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 
 /************************
  * Render Buffer Helper *
@@ -291,7 +292,7 @@ CRenderLayerTile::CRenderLayerTile(int GroupId, int LayerId, int Flags, CMapItem
 void CRenderLayerTile::RenderTileLayer(const ColorRGBA &Color, const CRenderLayerParams &Params, CTileLayerVisuals *pTileLayerVisuals)
 {
 	CTileLayerVisuals &Visuals = pTileLayerVisuals ? *pTileLayerVisuals : m_VisualTiles.value();
-	if(Visuals.m_BufferContainerIndex == -1)
+	if(!Visuals.m_BufferContainerIndex.IsValid())
 		return; // no visuals were created
 
 	CScreenRect ScreenRect = Graphics()->GetScreen();
@@ -472,7 +473,7 @@ void CRenderLayerTile::RenderTileBorder(const ColorRGBA &Color, int BorderX0, in
 void CRenderLayerTile::RenderKillTileBorder(const ColorRGBA &Color)
 {
 	CTileLayerVisuals &Visuals = m_VisualTiles.value();
-	if(Visuals.m_BufferContainerIndex == -1)
+	if(!Visuals.m_BufferContainerIndex.IsValid())
 		return; // no visuals were created
 
 	CScreenRect ScreenRect = Graphics()->GetScreen();
@@ -808,7 +809,7 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 	InsertTiles(vTmpBorderLeftTiles, vTmpBorderLeftTilesTexCoords);
 	InsertTiles(vTmpBorderRightTiles, vTmpBorderRightTilesTexCoords);
 
-	Visuals.m_BufferContainerIndex = -1;
+	Visuals.m_BufferContainerIndex.Invalidate();
 
 	// upload data to gpu
 	size_t UploadDataSize = vTmpTileTexCoords.size() * sizeof(CGraphicTileTextureCoords) + vTmpTiles.size() * sizeof(CGraphicTile);
@@ -853,33 +854,43 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 	}
 
 	// first create the buffer object
-	int BufferObjectIndex = Graphics()->CreateBufferObject(UploadDataSize, pUploadData, 0, true);
+	IGraphics::CBufferHandle BufferObject = Graphics()->CreateBufferObject(UploadDataSize, pUploadData, 0, true);
+	if(!BufferObject.IsValid())
+	{
+		free(pUploadData);
+		RenderLoading();
+		return;
+	}
+	Visuals.m_BufferObjectIndex = BufferObject;
 
 	// then create the buffer container
 	SBufferContainerInfo ContainerInfo;
 	ContainerInfo.m_Stride = (DoTextureCoords ? (sizeof(float) * 2 + sizeof(ubvec4)) : 0);
-	ContainerInfo.m_VertBufferBindingIndex = BufferObjectIndex;
+	ContainerInfo.m_VertBufferBinding = BufferObject;
 	ContainerInfo.m_vAttributes.emplace_back();
 	SBufferContainerInfo::SAttribute *pAttr = &ContainerInfo.m_vAttributes.back();
-	pAttr->m_DataTypeCount = 2;
-	pAttr->m_Type = GRAPHICS_TYPE_FLOAT;
+	pAttr->m_ComponentCount = 2;
+	pAttr->m_Type = IGraphics::EVertexAttributeType::FLOAT32;
 	pAttr->m_Normalized = false;
-	pAttr->m_pOffset = nullptr;
-	pAttr->m_FuncType = 0;
+	pAttr->m_Offset = 0;
+	pAttr->m_Mode = IGraphics::EVertexAttributeMode::FLOAT;
 	if(DoTextureCoords)
 	{
 		ContainerInfo.m_vAttributes.emplace_back();
 		pAttr = &ContainerInfo.m_vAttributes.back();
-		pAttr->m_DataTypeCount = 4;
-		pAttr->m_Type = GRAPHICS_TYPE_UNSIGNED_BYTE;
+		pAttr->m_ComponentCount = 4;
+		pAttr->m_Type = IGraphics::EVertexAttributeType::UINT8;
 		pAttr->m_Normalized = false;
-		pAttr->m_pOffset = (void *)(sizeof(vec2));
-		pAttr->m_FuncType = 1;
+		pAttr->m_Offset = sizeof(vec2);
+		pAttr->m_Mode = IGraphics::EVertexAttributeMode::INTEGER;
 	}
 
+	if(!Graphics()->IndicesNumRequiredNotify(vTmpTiles.size() * 6))
+	{
+		RenderLoading();
+		return;
+	}
 	Visuals.m_BufferContainerIndex = Graphics()->CreateBufferContainer(&ContainerInfo);
-	// and finally inform the backend how many indices are required
-	Graphics()->IndicesNumRequiredNotify(vTmpTiles.size() * 6);
 
 	RenderLoading();
 }
@@ -888,14 +899,24 @@ void CRenderLayerTile::Unload()
 {
 	if(m_VisualTiles.has_value())
 	{
-		m_VisualTiles->Unload();
-		m_VisualTiles = std::nullopt;
+		if(m_VisualTiles->Unload())
+			m_VisualTiles = std::nullopt;
 	}
 }
 
-void CRenderLayerTile::CTileLayerVisuals::Unload()
+bool CRenderLayerTile::CTileLayerVisuals::Unload()
 {
-	Graphics()->DeleteBufferContainer(m_BufferContainerIndex);
+	if(m_BufferContainerIndex.IsValid())
+	{
+		Graphics()->DeleteBufferContainer(m_BufferContainerIndex);
+		if(!m_BufferContainerIndex.IsValid())
+			m_BufferObjectIndex.Invalidate();
+	}
+	else
+	{
+		Graphics()->DeleteBufferObject(m_BufferObjectIndex);
+	}
+	return !m_BufferContainerIndex.IsValid() && !m_BufferObjectIndex.IsValid();
 }
 
 int CRenderLayerTile::GetDataIndex(unsigned int &TileSize) const
@@ -996,7 +1017,7 @@ CRenderLayerQuads::CRenderLayerQuads(int GroupId, int LayerId, int Flags, CMapIt
 void CRenderLayerQuads::RenderQuadLayer(float Alpha, const CRenderLayerParams &Params)
 {
 	CQuadLayerVisuals &Visuals = m_VisualQuad.value();
-	if(Visuals.m_BufferContainerIndex == -1)
+	if(!Visuals.m_BufferContainerIndex.IsValid())
 		return; // no visuals were created
 
 	for(auto &QuadCluster : m_vQuadClusters)
@@ -1242,39 +1263,48 @@ void CRenderLayerQuads::Init()
 		else
 			pUploadData = vTmpQuads.data();
 		// create the buffer object
-		int BufferObjectIndex = Graphics()->CreateBufferObject(UploadDataSize, pUploadData, 0);
+		IGraphics::CBufferHandle BufferObject = Graphics()->CreateBufferObject(UploadDataSize, pUploadData, 0);
+		if(!BufferObject.IsValid())
+		{
+			RenderLoading();
+			return;
+		}
+		pQLayerVisuals->m_BufferObjectIndex = BufferObject;
 		// then create the buffer container
 		SBufferContainerInfo ContainerInfo;
 		ContainerInfo.m_Stride = (Textured ? (sizeof(CTmpQuadTextured) / 4) : (sizeof(CTmpQuad) / 4));
-		ContainerInfo.m_VertBufferBindingIndex = BufferObjectIndex;
+		ContainerInfo.m_VertBufferBinding = BufferObject;
 		ContainerInfo.m_vAttributes.emplace_back();
 		SBufferContainerInfo::SAttribute *pAttr = &ContainerInfo.m_vAttributes.back();
-		pAttr->m_DataTypeCount = 4;
-		pAttr->m_Type = GRAPHICS_TYPE_FLOAT;
+		pAttr->m_ComponentCount = 4;
+		pAttr->m_Type = IGraphics::EVertexAttributeType::FLOAT32;
 		pAttr->m_Normalized = false;
-		pAttr->m_pOffset = nullptr;
-		pAttr->m_FuncType = 0;
+		pAttr->m_Offset = 0;
+		pAttr->m_Mode = IGraphics::EVertexAttributeMode::FLOAT;
 		ContainerInfo.m_vAttributes.emplace_back();
 		pAttr = &ContainerInfo.m_vAttributes.back();
-		pAttr->m_DataTypeCount = 4;
-		pAttr->m_Type = GRAPHICS_TYPE_UNSIGNED_BYTE;
+		pAttr->m_ComponentCount = 4;
+		pAttr->m_Type = IGraphics::EVertexAttributeType::UINT8;
 		pAttr->m_Normalized = true;
-		pAttr->m_pOffset = (void *)(sizeof(float) * 4);
-		pAttr->m_FuncType = 0;
+		pAttr->m_Offset = sizeof(float) * 4;
+		pAttr->m_Mode = IGraphics::EVertexAttributeMode::FLOAT;
 		if(Textured)
 		{
 			ContainerInfo.m_vAttributes.emplace_back();
 			pAttr = &ContainerInfo.m_vAttributes.back();
-			pAttr->m_DataTypeCount = 2;
-			pAttr->m_Type = GRAPHICS_TYPE_FLOAT;
+			pAttr->m_ComponentCount = 2;
+			pAttr->m_Type = IGraphics::EVertexAttributeType::FLOAT32;
 			pAttr->m_Normalized = false;
-			pAttr->m_pOffset = (void *)(sizeof(float) * 4 + sizeof(unsigned char) * 4);
-			pAttr->m_FuncType = 0;
+			pAttr->m_Offset = sizeof(float) * 4 + sizeof(unsigned char) * 4;
+			pAttr->m_Mode = IGraphics::EVertexAttributeMode::FLOAT;
 		}
 
+		if(!Graphics()->IndicesNumRequiredNotify(m_pLayerQuads->m_NumQuads * 6))
+		{
+			RenderLoading();
+			return;
+		}
 		pQLayerVisuals->m_BufferContainerIndex = Graphics()->CreateBufferContainer(&ContainerInfo);
-		// and finally inform the backend how many indices are required
-		Graphics()->IndicesNumRequiredNotify(m_pLayerQuads->m_NumQuads * 6);
 	}
 	RenderLoading();
 }
@@ -1283,14 +1313,24 @@ void CRenderLayerQuads::Unload()
 {
 	if(m_VisualQuad.has_value())
 	{
-		m_VisualQuad->Unload();
-		m_VisualQuad = std::nullopt;
+		if(m_VisualQuad->Unload())
+			m_VisualQuad = std::nullopt;
 	}
 }
 
-void CRenderLayerQuads::CQuadLayerVisuals::Unload()
+bool CRenderLayerQuads::CQuadLayerVisuals::Unload()
 {
-	Graphics()->DeleteBufferContainer(m_BufferContainerIndex);
+	if(m_BufferContainerIndex.IsValid())
+	{
+		Graphics()->DeleteBufferContainer(m_BufferContainerIndex);
+		if(!m_BufferContainerIndex.IsValid())
+			m_BufferObjectIndex.Invalidate();
+	}
+	else
+	{
+		Graphics()->DeleteBufferObject(m_BufferObjectIndex);
+	}
+	return !m_BufferContainerIndex.IsValid() && !m_BufferObjectIndex.IsValid();
 }
 
 bool CRenderLayerQuads::CalculateQuadClipping(const CQuadCluster &QuadCluster, float aQuadOffsetMin[2], float aQuadOffsetMax[2]) const

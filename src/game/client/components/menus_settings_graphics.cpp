@@ -197,9 +197,10 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	{
 		if(Graphics()->SetMultiSampling(g_Config.m_GfxFsaaSamples, MultiSamplingCountBackend))
 		{
-			// try again with 0 if mouse click was increasing multi sampling
-			// else just accept the current value as is
-			if((uint32_t)g_Config.m_GfxFsaaSamples > MultiSamplingCountBackend && GfxFsaaSamplesMouseButton == 1)
+			// Skip unsupported sample counts when moving in either direction.
+			const bool SkipIncreasing = (uint32_t)g_Config.m_GfxFsaaSamples > MultiSamplingCountBackend && GfxFsaaSamplesMouseButton == 1;
+			const bool SkipDecreasing = (uint32_t)g_Config.m_GfxFsaaSamples < MultiSamplingCountBackend && GfxFsaaSamplesMouseButton == 2;
+			if(SkipIncreasing || SkipDecreasing)
 				Graphics()->SetMultiSampling(0, MultiSamplingCountBackend);
 			g_Config.m_GfxFsaaSamples = (int)MultiSamplingCountBackend;
 		}
@@ -213,6 +214,11 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	if(DoButton_CheckBox(&g_Config.m_GfxHighDetail, Localize("High Detail"), g_Config.m_GfxHighDetail, &Button))
 		g_Config.m_GfxHighDetail ^= 1;
 	GameClient()->m_Tooltips.DoToolTip(&g_Config.m_GfxHighDetail, &Button, Localize("Allows maps to render with more detail"));
+
+	MainView.HSplitTop(20.0f, &Button, &MainView);
+	if(DoButton_CheckBox(&g_Config.m_ClMenuBackgroundBlur, Localize("Blur menu background"), g_Config.m_ClMenuBackgroundBlur, &Button))
+		g_Config.m_ClMenuBackgroundBlur ^= 1;
+	GameClient()->m_Tooltips.DoToolTip(&g_Config.m_ClMenuBackgroundBlur, &Button, Localize("Improves menu readability by blurring the game or menu map behind it"));
 
 	MainView.HSplitTop(20.0f, &Button, &MainView);
 	if(DoButton_CheckBox(&g_Config.m_ClShowfps, Localize("Show FPS"), g_Config.m_ClShowfps, &Button))

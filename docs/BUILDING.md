@@ -53,6 +53,9 @@ FLUSH PRIVILEGES;
 	You need to install the [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) and set the `VULKAN_SDK` environment flag accordingly.
 	Default value is ON for Linux, and OFF for Windows and macOS.
 
+* **-DWEBGPU_BACKEND_PROTOTYPE=[ON|OFF]** <br>
+	Whether to enable the optional WebGPU graphics backend. On native platforms, run `python scripts/fetch_wgpu_native.py` first to download the pinned, SHA-256-verified `wgpu-native` package into `ddnet-libs`. Select it with `gfx_backend WebGPU`; `gfx_webgpu_backend` optionally restricts the native implementation to `auto`, `D3D12`, `Vulkan`, `Metal` or `OpenGL`. Availability depends on the platform and adapter. Default value is OFF.
+
 * **-GNinja** <br>
 	Use the Ninja build system instead of Make. This automatically parallelizes the build and is generally faster. Compile with `ninja` instead of `make`. Install Ninja with `sudo apt install ninja-build` on Debian, `sudo pacman -S --needed ninja` on Arch Linux.
 

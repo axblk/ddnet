@@ -17,15 +17,30 @@
 #include <engine/client/backend_sdl.h>
 #include <engine/gfx/image_manipulation.h>
 
+#include <algorithm>
+#include <memory>
+
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 // WebGL2 defines the type of a buffer at the first bind to a buffer target
 // this is different to GLES 3 (https://www.khronos.org/registry/webgl/specs/latest/2.0/#5.1)
-static constexpr GLenum BUFFER_INIT_INDEX_TARGET = GL_ELEMENT_ARRAY_BUFFER;
 static constexpr GLenum BUFFER_INIT_VERTEX_TARGET = GL_ARRAY_BUFFER;
 #else
-static constexpr GLenum BUFFER_INIT_INDEX_TARGET = GL_COPY_WRITE_BUFFER;
 static constexpr GLenum BUFFER_INIT_VERTEX_TARGET = GL_COPY_WRITE_BUFFER;
 #endif
+
+static GLenum VertexAttributeTypeToOpenGL(IGraphics::EVertexAttributeType Type)
+{
+	switch(Type)
+	{
+	case IGraphics::EVertexAttributeType::FLOAT32: return GL_FLOAT;
+	case IGraphics::EVertexAttributeType::UINT8: return GL_UNSIGNED_BYTE;
+	case IGraphics::EVertexAttributeType::UINT16: return GL_UNSIGNED_SHORT;
+	case IGraphics::EVertexAttributeType::INT32: return GL_INT;
+	case IGraphics::EVertexAttributeType::UINT32: return GL_UNSIGNED_INT;
+	}
+	dbg_assert_failed("invalid vertex attribute type");
+	return GL_FLOAT;
+}
 
 // ------------ CCommandProcessorFragment_OpenGL3_3
 void CCommandProcessorFragment_OpenGL3_3::UseProgram(CGLSLTWProgram *pProgram)
@@ -37,17 +52,15 @@ void CCommandProcessorFragment_OpenGL3_3::UseProgram(CGLSLTWProgram *pProgram)
 	}
 }
 
-void CCommandProcessorFragment_OpenGL3_3::InitPrimExProgram(CGLSLPrimitiveExProgram *pProgram, CGLSLCompiler *pCompiler, IStorage *pStorage, bool Textured, bool Rotationless)
+void CCommandProcessorFragment_OpenGL3_3::InitPrimExProgram(CGLSLPrimitiveExProgram *pProgram, CGLSLCompiler *pCompiler, IStorage *pStorage, bool Textured)
 {
 	CGLSL PrimitiveVertexShader;
 	CGLSL PrimitiveFragmentShader;
 	if(Textured)
 		pCompiler->AddDefine("TW_TEXTURED", "");
-	if(Rotationless)
-		pCompiler->AddDefine("TW_ROTATIONLESS", "");
 	PrimitiveVertexShader.LoadShader(pCompiler, pStorage, "shader/primex.vert", GL_VERTEX_SHADER);
 	PrimitiveFragmentShader.LoadShader(pCompiler, pStorage, "shader/primex.frag", GL_FRAGMENT_SHADER);
-	if(Textured || Rotationless)
+	if(Textured)
 		pCompiler->ClearDefines();
 
 	pProgram->CreateProgram();
@@ -63,12 +76,9 @@ void CCommandProcessorFragment_OpenGL3_3::InitPrimExProgram(CGLSLPrimitiveExProg
 	pProgram->m_LocCenter = pProgram->GetUniformLoc("gCenter");
 	pProgram->m_LocVertciesColor = pProgram->GetUniformLoc("gVerticesColor");
 
-	if(!Rotationless)
-	{
-		pProgram->SetUniform(pProgram->m_LocRotation, 0.0f);
-		float aCenter[2] = {0.f, 0.f};
-		pProgram->SetUniformVec2(pProgram->m_LocCenter, 1, aCenter);
-	}
+	pProgram->SetUniform(pProgram->m_LocRotation, 0.0f);
+	float aCenter[2] = {0.f, 0.f};
+	pProgram->SetUniformVec2(pProgram->m_LocCenter, 1, aCenter);
 }
 
 bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand)
@@ -81,7 +91,6 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 	glActiveTexture(GL_TEXTURE0);
 
 	m_Has2DArrayTextures = true;
-	m_Has2DArrayTexturesAsExtension = false;
 	m_2DArrayTarget = GL_TEXTURE_2D_ARRAY;
 	m_Has3DTextures = false;
 	m_HasMipMaps = true;
@@ -94,6 +103,7 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 	m_LastClipEnable = false;
 	m_pPrimitiveProgram = new CGLSLPrimitiveProgram;
 	m_pPrimitiveProgramTextured = new CGLSLPrimitiveProgram;
+	m_pBlurProgram = new CGLSLPrimitiveProgram;
 	m_pTileProgram = new CGLSLTileProgram;
 	m_pTileProgramTextured = new CGLSLTileProgram;
 	m_pPrimitive3DProgram = new CGLSLPrimitiveProgram;
@@ -107,8 +117,6 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 	m_pTextProgram = new CGLSLTextProgram;
 	m_pPrimitiveExProgram = new CGLSLPrimitiveExProgram;
 	m_pPrimitiveExProgramTextured = new CGLSLPrimitiveExProgram;
-	m_pPrimitiveExProgramRotationless = new CGLSLPrimitiveExProgram;
-	m_pPrimitiveExProgramTexturedRotationless = new CGLSLPrimitiveExProgram;
 	m_pSpriteProgramMultiple = new CGLSLSpriteMultipleProgram;
 	m_LastProgramId = 0;
 
@@ -152,6 +160,22 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 
 		m_pPrimitiveProgramTextured->m_LocPos = m_pPrimitiveProgramTextured->GetUniformLoc("gPos");
 		m_pPrimitiveProgramTextured->m_LocTextureSampler = m_pPrimitiveProgramTextured->GetUniformLoc("gTextureSampler");
+	}
+	{
+		CGLSL PrimitiveVertexShader;
+		CGLSL BlurFragmentShader;
+		PrimitiveVertexShader.LoadShader(&ShaderCompiler, pCommand->m_pStorage, "shader/prim.vert", GL_VERTEX_SHADER);
+		BlurFragmentShader.LoadShader(&ShaderCompiler, pCommand->m_pStorage, "shader/blur.frag", GL_FRAGMENT_SHADER);
+
+		m_pBlurProgram->CreateProgram();
+		m_pBlurProgram->AddShader(&PrimitiveVertexShader);
+		m_pBlurProgram->AddShader(&BlurFragmentShader);
+		m_pBlurProgram->LinkProgram();
+
+		UseProgram(m_pBlurProgram);
+
+		m_pBlurProgram->m_LocPos = m_pBlurProgram->GetUniformLoc("gPos");
+		m_pBlurProgram->m_LocTextureSampler = m_pBlurProgram->GetUniformLoc("gTextureSampler");
 	}
 
 	{
@@ -375,10 +399,8 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 		m_pTextProgram->m_LocOutlineColor = m_pTextProgram->GetUniformLoc("gVertOutlineColor");
 		m_pTextProgram->m_LocTextureSize = m_pTextProgram->GetUniformLoc("gTextureSize");
 	}
-	InitPrimExProgram(m_pPrimitiveExProgram, &ShaderCompiler, pCommand->m_pStorage, false, false);
-	InitPrimExProgram(m_pPrimitiveExProgramTextured, &ShaderCompiler, pCommand->m_pStorage, true, false);
-	InitPrimExProgram(m_pPrimitiveExProgramRotationless, &ShaderCompiler, pCommand->m_pStorage, false, true);
-	InitPrimExProgram(m_pPrimitiveExProgramTexturedRotationless, &ShaderCompiler, pCommand->m_pStorage, true, true);
+	InitPrimExProgram(m_pPrimitiveExProgram, &ShaderCompiler, pCommand->m_pStorage, false);
+	InitPrimExProgram(m_pPrimitiveExProgramTextured, &ShaderCompiler, pCommand->m_pStorage, true);
 	{
 		CGLSL PrimitiveVertexShader;
 		CGLSL PrimitiveFragmentShader;
@@ -405,6 +427,7 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 	m_LastStreamBuffer = 0;
 
 	glGenBuffers(MAX_STREAM_BUFFER_COUNT, m_aPrimitiveDrawBufferId);
+	glGenBuffers(MAX_STREAM_BUFFER_COUNT, m_aPrimitiveDrawIndexBufferId);
 	glGenVertexArrays(MAX_STREAM_BUFFER_COUNT, m_aPrimitiveDrawVertexId);
 	glGenBuffers(1, &m_PrimitiveDrawBufferIdTex3D);
 	glGenVertexArrays(1, &m_PrimitiveDrawVertexIdTex3D);
@@ -438,24 +461,6 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 	glGetIntegerv(GL_MAX_TEXTURE_SIZE, &m_MaxTexSize);
 
 	glBindVertexArray(0);
-	glGenBuffers(1, &m_QuadDrawIndexBufferId);
-	glBindBuffer(BUFFER_INIT_INDEX_TARGET, m_QuadDrawIndexBufferId);
-
-	unsigned int aIndices[CCommandBuffer::MAX_VERTICES / 4 * 6];
-	int Primq = 0;
-	for(int i = 0; i < CCommandBuffer::MAX_VERTICES / 4 * 6; i += 6)
-	{
-		aIndices[i] = Primq;
-		aIndices[i + 1] = Primq + 1;
-		aIndices[i + 2] = Primq + 2;
-		aIndices[i + 3] = Primq;
-		aIndices[i + 4] = Primq + 2;
-		aIndices[i + 5] = Primq + 3;
-		Primq += 4;
-	}
-	glBufferData(BUFFER_INIT_INDEX_TARGET, sizeof(unsigned int) * CCommandBuffer::MAX_VERTICES / 4 * 6, aIndices, GL_STATIC_DRAW);
-
-	m_CurrentIndicesInBuffer = CCommandBuffer::MAX_VERTICES / 4 * 6;
 
 	m_vTextures.resize(CCommandBuffer::MAX_TEXTURES);
 
@@ -471,28 +476,10 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Shutdown(const SCommand_Shutdown *
 {
 	glUseProgram(0);
 
-	m_pPrimitiveProgram->DeleteProgram();
-	m_pPrimitiveProgramTextured->DeleteProgram();
-	m_pBorderTileProgram->DeleteProgram();
-	m_pBorderTileProgramTextured->DeleteProgram();
-	m_pQuadProgram->DeleteProgram();
-	m_pQuadProgramTextured->DeleteProgram();
-	m_pQuadProgramGrouped->DeleteProgram();
-	m_pQuadProgramTexturedGrouped->DeleteProgram();
-	m_pTileProgram->DeleteProgram();
-	m_pTileProgramTextured->DeleteProgram();
-	m_pPrimitive3DProgram->DeleteProgram();
-	m_pPrimitive3DProgramTextured->DeleteProgram();
-	m_pTextProgram->DeleteProgram();
-	m_pPrimitiveExProgram->DeleteProgram();
-	m_pPrimitiveExProgramTextured->DeleteProgram();
-	m_pPrimitiveExProgramRotationless->DeleteProgram();
-	m_pPrimitiveExProgramTexturedRotationless->DeleteProgram();
-	m_pSpriteProgramMultiple->DeleteProgram();
-
 	// clean up everything
 	delete m_pPrimitiveProgram;
 	delete m_pPrimitiveProgramTextured;
+	delete m_pBlurProgram;
 	delete m_pBorderTileProgram;
 	delete m_pBorderTileProgramTextured;
 	delete m_pQuadProgram;
@@ -506,13 +493,11 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Shutdown(const SCommand_Shutdown *
 	delete m_pTextProgram;
 	delete m_pPrimitiveExProgram;
 	delete m_pPrimitiveExProgramTextured;
-	delete m_pPrimitiveExProgramRotationless;
-	delete m_pPrimitiveExProgramTexturedRotationless;
 	delete m_pSpriteProgramMultiple;
 
 	glBindVertexArray(0);
 	glDeleteBuffers(MAX_STREAM_BUFFER_COUNT, m_aPrimitiveDrawBufferId);
-	glDeleteBuffers(1, &m_QuadDrawIndexBufferId);
+	glDeleteBuffers(MAX_STREAM_BUFFER_COUNT, m_aPrimitiveDrawIndexBufferId);
 	glDeleteVertexArrays(MAX_STREAM_BUFFER_COUNT, m_aPrimitiveDrawVertexId);
 	glDeleteBuffers(1, &m_PrimitiveDrawBufferIdTex3D);
 	glDeleteVertexArrays(1, &m_PrimitiveDrawVertexIdTex3D);
@@ -532,6 +517,7 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Shutdown(const SCommand_Shutdown *
 
 void CCommandProcessorFragment_OpenGL3_3::TextureUpdate(int Slot, int X, int Y, int Width, int Height, int GLFormat, uint8_t *pTexData)
 {
+	std::unique_ptr<uint8_t, decltype(&free)> pOwnedTexData(nullptr, free);
 	glBindTexture(GL_TEXTURE_2D, m_vTextures[Slot].m_Tex);
 
 	if(m_vTextures[Slot].m_RescaleCount > 0)
@@ -545,13 +531,11 @@ void CCommandProcessorFragment_OpenGL3_3::TextureUpdate(int Slot, int X, int Y, 
 			Y /= 2;
 		}
 
-		uint8_t *pTmpData = ResizeImage(pTexData, Width, Height, Width, Height, GLFormatToPixelSize(GLFormat));
-		free(pTexData);
-		pTexData = pTmpData;
+		pOwnedTexData.reset(ResizeImage(pTexData, Width, Height, Width, Height, GLFormatToPixelSize(GLFormat)));
+		pTexData = pOwnedTexData.get();
 	}
 
 	glTexSubImage2D(GL_TEXTURE_2D, 0, X, Y, Width, Height, GLFormat, GL_UNSIGNED_BYTE, pTexData);
-	free(pTexData);
 }
 
 void CCommandProcessorFragment_OpenGL3_3::Cmd_Texture_Destroy(const CCommandBuffer::SCommand_Texture_Destroy *pCommand)
@@ -559,17 +543,26 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Texture_Destroy(const CCommandBuff
 	int Slot = 0;
 	glBindTexture(GL_TEXTURE_2D, 0);
 	glBindSampler(Slot, 0);
-	DestroyTexture(pCommand->m_Slot);
+	DestroyTexture(pCommand->m_Texture.Id());
 }
 
-void CCommandProcessorFragment_OpenGL3_3::TextureCreate(int Slot, int Width, int Height, int GLFormat, int GLStoreFormat, int Flags, uint8_t *pTexData)
+void CCommandProcessorFragment_OpenGL3_3::TextureCreate(int Slot, const IGraphics::CTextureDesc &Desc, uint8_t *pTexData)
 {
+	std::unique_ptr<uint8_t, decltype(&free)> pOwnedTexData(nullptr, free);
+	int Width = Desc.m_Width;
+	int Height = Desc.m_Height;
+	const int GLFormat = Desc.m_Format == IGraphics::ETextureFormat::RGBA8_UNORM ? GL_RGBA : GL_RED;
+	int GLStoreFormat = GLFormat;
 	while(Slot >= (int)m_vTextures.size())
 		m_vTextures.resize(m_vTextures.size() * 2);
+	m_vTextures[Slot].m_SourceWidth = Desc.m_Width;
+	m_vTextures[Slot].m_SourceHeight = Desc.m_Height;
+	m_vTextures[Slot].m_Format = Desc.m_Format;
+	m_vTextures[Slot].m_Usage = Desc.m_Usage;
 
 	// resample if needed
 	int RescaleCount = 0;
-	if(GLFormat == GL_RGBA)
+	if(GLFormat == GL_RGBA && pTexData != nullptr)
 	{
 		if(Width > m_MaxTexSize || Height > m_MaxTexSize)
 		{
@@ -580,9 +573,8 @@ void CCommandProcessorFragment_OpenGL3_3::TextureCreate(int Slot, int Width, int
 				++RescaleCount;
 			} while(Width > m_MaxTexSize || Height > m_MaxTexSize);
 
-			uint8_t *pTmpData = ResizeImage(pTexData, Width, Height, Width, Height, GLFormatToPixelSize(GLFormat));
-			free(pTexData);
-			pTexData = pTmpData;
+			pOwnedTexData.reset(ResizeImage(pTexData, Width, Height, Width, Height, GLFormatToPixelSize(GLFormat)));
+			pTexData = pOwnedTexData.get();
 		}
 	}
 	m_vTextures[Slot].m_Width = Width;
@@ -595,7 +587,7 @@ void CCommandProcessorFragment_OpenGL3_3::TextureCreate(int Slot, int Width, int
 
 	int SamplerSlot = 0;
 
-	if((Flags & TextureFlag::NO_2D_TEXTURE) == 0)
+	if(Desc.m_Create2D)
 	{
 		glGenTextures(1, &m_vTextures[Slot].m_Tex);
 		glBindTexture(GL_TEXTURE_2D, m_vTextures[Slot].m_Tex);
@@ -604,9 +596,9 @@ void CCommandProcessorFragment_OpenGL3_3::TextureCreate(int Slot, int Width, int
 		glBindSampler(SamplerSlot, m_vTextures[Slot].m_Sampler);
 	}
 
-	if(Flags & TextureFlag::NO_MIPMAPS)
+	if(Desc.m_Mipmaps == IGraphics::ETextureMipmaps::NONE)
 	{
-		if((Flags & TextureFlag::NO_2D_TEXTURE) == 0)
+		if(Desc.m_Create2D)
 		{
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -617,7 +609,7 @@ void CCommandProcessorFragment_OpenGL3_3::TextureCreate(int Slot, int Width, int
 	}
 	else
 	{
-		if((Flags & TextureFlag::NO_2D_TEXTURE) == 0)
+		if(Desc.m_Create2D)
 		{
 			glSamplerParameteri(m_vTextures[Slot].m_Sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 			glSamplerParameteri(m_vTextures[Slot].m_Sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
@@ -637,8 +629,11 @@ void CCommandProcessorFragment_OpenGL3_3::TextureCreate(int Slot, int Width, int
 			glGenerateMipmap(GL_TEXTURE_2D);
 		}
 
-		if((Flags & TextureFlag::TO_2D_ARRAY_TEXTURE) != 0)
+		if(Desc.m_Layering == IGraphics::ETextureLayering::ARRAY_2D)
 		{
+			const int LayerColumns = Desc.m_LayerColumns;
+			const int LayerRows = Desc.m_LayerRows;
+			const int LayerCount = static_cast<int>(Desc.LayerCount());
 			glGenTextures(1, &m_vTextures[Slot].m_Tex2DArray);
 			glBindTexture(GL_TEXTURE_2D_ARRAY, m_vTextures[Slot].m_Tex2DArray);
 
@@ -658,26 +653,42 @@ void CCommandProcessorFragment_OpenGL3_3::TextureCreate(int Slot, int Width, int
 			int ConvertWidth = Width;
 			int ConvertHeight = Height;
 
-			if(ConvertWidth == 0 || (ConvertWidth % 16) != 0 || ConvertHeight == 0 || (ConvertHeight % 16) != 0)
+			if(ConvertWidth == 0 || (ConvertWidth % LayerColumns) != 0 || ConvertHeight == 0 || (ConvertHeight % LayerRows) != 0)
 			{
-				int NewWidth = std::max(HighestBit(ConvertWidth), 16);
-				int NewHeight = std::max(HighestBit(ConvertHeight), 16);
-				uint8_t *pNewTexData = ResizeImage(pTexData, ConvertWidth, ConvertHeight, NewWidth, NewHeight, GLFormatToPixelSize(GLFormat));
+				int NewWidth = std::max(HighestBit(ConvertWidth / LayerColumns), 1) * LayerColumns;
+				int NewHeight = std::max(HighestBit(ConvertHeight / LayerRows), 1) * LayerRows;
+				pOwnedTexData.reset(ResizeImage(pTexData, ConvertWidth, ConvertHeight, NewWidth, NewHeight, GLFormatToPixelSize(GLFormat)));
 				log_debug("gfx/opengl", "3D/2D array texture was resized. Slot=%d Size=(%d, %d) Resized=(%d, %d)", Slot, ConvertWidth, ConvertHeight, NewWidth, NewHeight);
 
 				ConvertWidth = NewWidth;
 				ConvertHeight = NewHeight;
 
-				free(pTexData);
-				pTexData = pNewTexData;
+				pTexData = pOwnedTexData.get();
 			}
 
 			int Image3DWidth, Image3DHeight;
-			uint8_t *pImageData3D = static_cast<uint8_t *>(malloc((size_t)PixelSize * ConvertWidth * ConvertHeight));
-			Texture2DTo3D(pTexData, ConvertWidth, ConvertHeight, PixelSize, 16, 16, pImageData3D, Image3DWidth, Image3DHeight);
-			glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GLStoreFormat, Image3DWidth, Image3DHeight, 256, 0, GLFormat, GL_UNSIGNED_BYTE, pImageData3D);
+			std::unique_ptr<uint8_t, decltype(&free)> pImageData3D(static_cast<uint8_t *>(malloc((size_t)PixelSize * ConvertWidth * ConvertHeight)), free);
+			dbg_assert(pImageData3D != nullptr, "Failed to allocate 2D array texture conversion memory");
+			Texture2DTo3D(pTexData, ConvertWidth, ConvertHeight, PixelSize, LayerColumns, LayerRows, pImageData3D.get(), Image3DWidth, Image3DHeight);
+			glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GLStoreFormat, Image3DWidth, Image3DHeight, LayerCount, 0, GLFormat, GL_UNSIGNED_BYTE, pImageData3D.get());
 			glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
-			free(pImageData3D);
+		}
+	}
+
+	if(Desc.HasUsage(IGraphics::TEXTURE_USAGE_COLOR_TARGET))
+	{
+		GLint PreviousFramebuffer = 0;
+		glGetIntegerv(GL_FRAMEBUFFER_BINDING, &PreviousFramebuffer);
+		glGenFramebuffers(1, &m_vTextures[Slot].m_Framebuffer);
+		glBindFramebuffer(GL_FRAMEBUFFER, m_vTextures[Slot].m_Framebuffer);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_vTextures[Slot].m_Tex, 0);
+		const GLenum Status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+		glBindFramebuffer(GL_FRAMEBUFFER, PreviousFramebuffer);
+		if(Status != GL_FRAMEBUFFER_COMPLETE)
+		{
+			log_error("gfx/opengl", "Creating color target framebuffer failed. Status=%u", static_cast<unsigned>(Status));
+			glDeleteFramebuffers(1, &m_vTextures[Slot].m_Framebuffer);
+			m_vTextures[Slot].m_Framebuffer = 0;
 		}
 	}
 
@@ -693,30 +704,55 @@ void CCommandProcessorFragment_OpenGL3_3::TextureCreate(int Slot, int Width, int
 		m_vTextures[Slot].m_MemSize += (size_t)Width * Height * PixelSize;
 	}
 	m_pTextureMemoryUsage->store(m_pTextureMemoryUsage->load(std::memory_order_relaxed) + m_vTextures[Slot].m_MemSize, std::memory_order_relaxed);
-
-	free(pTexData);
 }
 
 void CCommandProcessorFragment_OpenGL3_3::Cmd_Texture_Create(const CCommandBuffer::SCommand_Texture_Create *pCommand)
 {
-	TextureCreate(pCommand->m_Slot, pCommand->m_Width, pCommand->m_Height, GL_RGBA, GL_RGBA, pCommand->m_Flags, pCommand->m_pData);
+	TextureCreate(pCommand->m_Texture.Id(), pCommand->m_Desc, pCommand->m_pData);
 }
 
-void CCommandProcessorFragment_OpenGL3_3::Cmd_TextTexture_Update(const CCommandBuffer::SCommand_TextTexture_Update *pCommand)
+void CCommandProcessorFragment_OpenGL3_3::Cmd_Texture_Update(const CCommandBuffer::SCommand_Texture_Update *pCommand)
 {
-	TextureUpdate(pCommand->m_Slot, pCommand->m_X, pCommand->m_Y, pCommand->m_Width, pCommand->m_Height, GL_RED, pCommand->m_pData);
+	if(!IsTextureUpdateValid(pCommand))
+		return;
+
+	const int GLFormat = pCommand->m_Format == IGraphics::ETextureFormat::RGBA8_UNORM ? GL_RGBA : GL_RED;
+	TextureUpdate(pCommand->m_Texture.Id(), static_cast<int>(pCommand->m_Region.m_X), static_cast<int>(pCommand->m_Region.m_Y), static_cast<int>(pCommand->m_Region.m_Width), static_cast<int>(pCommand->m_Region.m_Height), GLFormat, pCommand->m_pData);
 }
 
-void CCommandProcessorFragment_OpenGL3_3::Cmd_TextTextures_Destroy(const CCommandBuffer::SCommand_TextTextures_Destroy *pCommand)
+void CCommandProcessorFragment_OpenGL3_3::Cmd_Texture_Readback(const CCommandBuffer::SCommand_Texture_Readback *pCommand)
 {
-	DestroyTexture(pCommand->m_Slot);
-	DestroyTexture(pCommand->m_SlotOutline);
-}
+	pCommand->m_pResult->m_Ok = false;
+	const CTexture &Texture = m_vTextures[pCommand->m_Texture.Id()];
+	if(Texture.m_Framebuffer == 0 || (Texture.m_Usage & IGraphics::TEXTURE_USAGE_COLOR_TARGET) == 0 || (Texture.m_Usage & IGraphics::TEXTURE_USAGE_COPY_SOURCE) == 0)
+		return;
 
-void CCommandProcessorFragment_OpenGL3_3::Cmd_TextTextures_Create(const CCommandBuffer::SCommand_TextTextures_Create *pCommand)
-{
-	TextureCreate(pCommand->m_Slot, pCommand->m_Width, pCommand->m_Height, GL_RED, GL_RED, TextureFlag::NO_MIPMAPS, pCommand->m_pTextData);
-	TextureCreate(pCommand->m_SlotOutline, pCommand->m_Width, pCommand->m_Height, GL_RED, GL_RED, TextureFlag::NO_MIPMAPS, pCommand->m_pTextOutlineData);
+	CImageInfo &Image = pCommand->m_pResult->m_Image;
+	Image.m_Width = Texture.m_Width;
+	Image.m_Height = Texture.m_Height;
+	Image.m_Format = CImageInfo::FORMAT_RGBA;
+	Image.Allocate();
+	if(Image.m_pData == nullptr)
+		return;
+
+	GLint PreviousFramebuffer;
+	GLint PackAlignment;
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &PreviousFramebuffer);
+	glGetIntegerv(GL_PACK_ALIGNMENT, &PackAlignment);
+	glBindFramebuffer(GL_FRAMEBUFFER, Texture.m_Framebuffer);
+	glReadBuffer(GL_COLOR_ATTACHMENT0);
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	glReadPixels(0, 0, Texture.m_Width, Texture.m_Height, GL_RGBA, GL_UNSIGNED_BYTE, Image.m_pData);
+	glPixelStorei(GL_PACK_ALIGNMENT, PackAlignment);
+	glBindFramebuffer(GL_FRAMEBUFFER, PreviousFramebuffer);
+	const size_t RowSize = Image.m_Width * 4;
+	for(size_t Y = 0; Y < Image.m_Height / 2; ++Y)
+	{
+		uint8_t *pTop = Image.m_pData + Y * RowSize;
+		uint8_t *pBottom = Image.m_pData + (Image.m_Height - Y - 1) * RowSize;
+		std::swap_ranges(pTop, pTop + RowSize, pBottom);
+	}
+	pCommand->m_pResult->m_Ok = true;
 }
 
 void CCommandProcessorFragment_OpenGL3_3::Cmd_Clear(const CCommandBuffer::SCommand_Clear *pCommand)
@@ -727,9 +763,9 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Clear(const CCommandBuffer::SComma
 	{
 		glDisable(GL_SCISSOR_TEST);
 	}
-	if(pCommand->m_Color.r != m_ClearColor.r || pCommand->m_Color.g != m_ClearColor.g || pCommand->m_Color.b != m_ClearColor.b)
+	if(pCommand->m_Color != m_ClearColor)
 	{
-		glClearColor(pCommand->m_Color.r, pCommand->m_Color.g, pCommand->m_Color.b, 0.0f);
+		glClearColor(pCommand->m_Color.r, pCommand->m_Color.g, pCommand->m_Color.b, pCommand->m_Color.a);
 		m_ClearColor = pCommand->m_Color;
 	}
 	glClear(GL_COLOR_BUFFER_BIT);
@@ -739,93 +775,129 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Clear(const CCommandBuffer::SComma
 	}
 }
 
-void CCommandProcessorFragment_OpenGL3_3::UploadStreamBufferData(EPrimitiveType PrimitiveType, const void *pVertices, size_t VertSize, unsigned int PrimitiveCount, bool AsTex3D)
+void CCommandProcessorFragment_OpenGL3_3::Cmd_BeginRenderPass(const CCommandBuffer::SCommand_BeginRenderPass *pCommand)
 {
-	int Count = 0;
-	switch(PrimitiveType)
+	const IGraphics::CTextureHandle Target = pCommand->m_Desc.m_ColorTarget;
+	if(Target.IsValid())
 	{
-	case EPrimitiveType::LINES:
-		Count = PrimitiveCount * 2;
-		break;
-	case EPrimitiveType::TRIANGLES:
-		Count = PrimitiveCount * 3;
-		break;
-	case EPrimitiveType::QUADS:
-		Count = PrimitiveCount * 4;
-		break;
-	default:
-		return;
-	};
+		if(Target.Id() < 0 || static_cast<size_t>(Target.Id()) >= m_vTextures.size())
+		{
+			Cmd_EndRenderPass(nullptr);
+			return;
+		}
+		const CTexture &Texture = m_vTextures[Target.Id()];
+		if(Texture.m_Framebuffer == 0 || (Texture.m_Usage & IGraphics::TEXTURE_USAGE_COLOR_TARGET) == 0)
+		{
+			Cmd_EndRenderPass(nullptr);
+			return;
+		}
+		glBindFramebuffer(GL_FRAMEBUFFER, Texture.m_Framebuffer);
+		m_RenderTargetWidth = Texture.m_Width;
+		m_RenderTargetHeight = Texture.m_Height;
+		m_RenderingToTexture = true;
+		glViewport(0, 0, m_RenderTargetWidth, m_RenderTargetHeight);
+	}
+	else
+	{
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		m_RenderingToTexture = false;
+		glViewport(m_PresentationViewportX, m_PresentationViewportY, m_PresentationViewportWidth, m_PresentationViewportHeight);
+	}
 
-	if(AsTex3D)
+	if(pCommand->m_Desc.m_LoadOp == IGraphics::ERenderPassLoadOp::CLEAR)
+	{
+		CCommandBuffer::SCommand_Clear Clear;
+		Clear.m_Color = pCommand->m_Desc.m_ClearColor;
+		Clear.m_ForceClear = true;
+		Cmd_Clear(&Clear);
+	}
+}
+
+void CCommandProcessorFragment_OpenGL3_3::Cmd_EndRenderPass(const CCommandBuffer::SCommand_EndRenderPass *pCommand)
+{
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	m_RenderingToTexture = false;
+	glViewport(m_PresentationViewportX, m_PresentationViewportY, m_PresentationViewportWidth, m_PresentationViewportHeight);
+}
+
+void CCommandProcessorFragment_OpenGL3_3::UploadStreamBufferData(const void *pVertices, size_t DataSize, bool TextureArray)
+{
+	if(TextureArray)
 		glBindBuffer(GL_ARRAY_BUFFER, m_PrimitiveDrawBufferIdTex3D);
 	else
 		glBindBuffer(GL_ARRAY_BUFFER, m_aPrimitiveDrawBufferId[m_LastStreamBuffer]);
 
-	glBufferData(GL_ARRAY_BUFFER, VertSize * Count, pVertices, GL_STREAM_DRAW);
+	glBufferData(GL_ARRAY_BUFFER, DataSize, pVertices, GL_STREAM_DRAW);
 }
 
-void CCommandProcessorFragment_OpenGL3_3::Cmd_Render(const CCommandBuffer::SCommand_Render *pCommand)
+void CCommandProcessorFragment_OpenGL3_3::Cmd_Draw(const CCommandBuffer::SCommand_Draw *pCommand)
 {
-	CGLSLTWProgram *pProgram = m_pPrimitiveProgram;
-	if(IsTexturedState(pCommand->m_State))
-		pProgram = m_pPrimitiveProgramTextured;
+	const EPipelineProgram Program = PipelineProgram(pCommand->m_Pipeline);
+	const bool TextureArray = Program == EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY;
+	const bool Blur = Program == EPipelineProgram::BLUR;
+	if(!TextureArray && Program != EPipelineProgram::PRIMITIVE && !Blur)
+		return;
+	const uint32_t VerticesPerPrim = VerticesPerPrimitive(pCommand->m_PrimitiveType);
+	if(VerticesPerPrim == 0 || pCommand->m_VertexCount == 0 || pCommand->m_VertexCount % VerticesPerPrim != 0)
+		return;
+
+	const void *pVertices;
+	size_t VertexSize;
+	if(TextureArray)
+	{
+		pVertices = pCommand->m_VertexData.Get<CCommandBuffer::SVertexTex3DStream>(pCommand->m_VertexCount);
+		VertexSize = sizeof(CCommandBuffer::SVertexTex3DStream);
+	}
+	else
+	{
+		pVertices = pCommand->m_VertexData.Get<CCommandBuffer::SVertex>(pCommand->m_VertexCount);
+		VertexSize = sizeof(CCommandBuffer::SVertex);
+	}
+	if(pVertices == nullptr)
+		return;
+
+	const bool Textured = IsTexturedState(pCommand->m_State);
+	if(Blur && (!Textured || pCommand->m_State.m_BlendMode != EBlendMode::NONE))
+		return;
+	CGLSLTWProgram *pProgram = Blur ? static_cast<CGLSLTWProgram *>(m_pBlurProgram) : (TextureArray ? static_cast<CGLSLTWProgram *>(m_pPrimitive3DProgram) : m_pPrimitiveProgram);
+	if(Textured && !Blur)
+		pProgram = TextureArray ? static_cast<CGLSLTWProgram *>(m_pPrimitive3DProgramTextured) : m_pPrimitiveProgramTextured;
 	UseProgram(pProgram);
-	SetState(pCommand->m_State, pProgram);
+	SetState(pCommand->m_State, pProgram, TextureArray);
+	UploadStreamBufferData(pVertices, VertexSize * pCommand->m_VertexCount, TextureArray);
+	if(TextureArray)
+		glBindVertexArray(m_PrimitiveDrawVertexIdTex3D);
+	else
+		glBindVertexArray(m_aPrimitiveDrawVertexId[m_LastStreamBuffer]);
 
-	UploadStreamBufferData(pCommand->m_PrimType, pCommand->m_pVertices, sizeof(CCommandBuffer::SVertex), pCommand->m_PrimCount);
-
-	glBindVertexArray(m_aPrimitiveDrawVertexId[m_LastStreamBuffer]);
-
-	switch(pCommand->m_PrimType)
+	switch(pCommand->m_PrimitiveType)
 	{
 	// We don't support GL_QUADS due to core profile
 	case EPrimitiveType::LINES:
-		glDrawArrays(GL_LINES, 0, pCommand->m_PrimCount * 2);
+		glDrawArrays(GL_LINES, 0, pCommand->m_VertexCount);
 		break;
 	case EPrimitiveType::TRIANGLES:
-		glDrawArrays(GL_TRIANGLES, 0, pCommand->m_PrimCount * 3);
+		glDrawArrays(GL_TRIANGLES, 0, pCommand->m_VertexCount);
 		break;
 	case EPrimitiveType::QUADS:
-		if(m_aLastIndexBufferBound[m_LastStreamBuffer] != m_QuadDrawIndexBufferId)
-		{
-			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_QuadDrawIndexBufferId);
-			m_aLastIndexBufferBound[m_LastStreamBuffer] = m_QuadDrawIndexBufferId;
-		}
-		glDrawElements(GL_TRIANGLES, pCommand->m_PrimCount * 6, GL_UNSIGNED_INT, nullptr);
-		break;
-	default:
-		dbg_assert_failed("Invalid primitive type: %d", (int)pCommand->m_PrimType);
-	};
-
-	m_LastStreamBuffer = (m_LastStreamBuffer + 1 >= MAX_STREAM_BUFFER_COUNT ? 0 : m_LastStreamBuffer + 1);
-}
-
-void CCommandProcessorFragment_OpenGL3_3::Cmd_RenderTex3D(const CCommandBuffer::SCommand_RenderTex3D *pCommand)
-{
-	CGLSLPrimitiveProgram *pProg = m_pPrimitive3DProgram;
-	if(IsTexturedState(pCommand->m_State))
-		pProg = m_pPrimitive3DProgramTextured;
-	UseProgram(pProg);
-	SetState(pCommand->m_State, pProg, true);
-
-	UploadStreamBufferData(pCommand->m_PrimType, pCommand->m_pVertices, sizeof(CCommandBuffer::SVertexTex3DStream), pCommand->m_PrimCount, true);
-
-	glBindVertexArray(m_PrimitiveDrawVertexIdTex3D);
-
-	switch(pCommand->m_PrimType)
 	{
-	// We don't support GL_QUADS due to core profile
-	case EPrimitiveType::LINES:
-		glDrawArrays(GL_LINES, 0, pCommand->m_PrimCount * 2);
+		const TWGLuint IndexBuffer = m_vBufferObjectIndices[pCommand->m_IndexBuffer.Id()];
+		if(TextureArray)
+			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, IndexBuffer);
+		else if(m_aLastIndexBufferBound[m_LastStreamBuffer] != IndexBuffer)
+		{
+			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, IndexBuffer);
+			m_aLastIndexBufferBound[m_LastStreamBuffer] = IndexBuffer;
+		}
+		glDrawElements(GL_TRIANGLES, pCommand->m_VertexCount / 4 * 6, GL_UNSIGNED_INT, nullptr);
 		break;
-	case EPrimitiveType::QUADS:
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_QuadDrawIndexBufferId);
-		glDrawElements(GL_TRIANGLES, pCommand->m_PrimCount * 6, GL_UNSIGNED_INT, nullptr);
-		break;
+	}
 	default:
-		dbg_assert_failed("Invalid primitive type: %d", (int)pCommand->m_PrimType);
+		dbg_assert_failed("Invalid primitive type: %d", (int)pCommand->m_PrimitiveType);
 	};
+
+	if(!TextureArray)
+		m_LastStreamBuffer = (m_LastStreamBuffer + 1 >= MAX_STREAM_BUFFER_COUNT ? 0 : m_LastStreamBuffer + 1);
 }
 
 void CCommandProcessorFragment_OpenGL3_3::DestroyBufferContainer(int Index, bool DeleteBOs)
@@ -837,7 +909,7 @@ void CCommandProcessorFragment_OpenGL3_3::DestroyBufferContainer(int Index, bool
 	// all buffer objects can deleted automatically, so the program doesn't need to deal with them (e.g. causing crashes because of driver bugs)
 	if(DeleteBOs)
 	{
-		int VertBufferId = BufferContainer.m_ContainerInfo.m_VertBufferBindingIndex;
+		int VertBufferId = BufferContainer.m_ContainerInfo.m_VertBufferBinding.Id();
 		if(VertBufferId != -1)
 		{
 			glDeleteBuffers(1, &m_vBufferObjectIndices[VertBufferId]);
@@ -848,52 +920,10 @@ void CCommandProcessorFragment_OpenGL3_3::DestroyBufferContainer(int Index, bool
 	BufferContainer.m_ContainerInfo.m_vAttributes.clear();
 }
 
-void CCommandProcessorFragment_OpenGL3_3::AppendIndices(unsigned int NewIndicesCount)
-{
-	if(NewIndicesCount <= m_CurrentIndicesInBuffer)
-		return;
-	unsigned int AddCount = NewIndicesCount - m_CurrentIndicesInBuffer;
-	unsigned int *pIndices = new unsigned int[AddCount];
-	int Primq = (m_CurrentIndicesInBuffer / 6) * 4;
-	for(unsigned int i = 0; i < AddCount; i += 6)
-	{
-		pIndices[i] = Primq;
-		pIndices[i + 1] = Primq + 1;
-		pIndices[i + 2] = Primq + 2;
-		pIndices[i + 3] = Primq;
-		pIndices[i + 4] = Primq + 2;
-		pIndices[i + 5] = Primq + 3;
-		Primq += 4;
-	}
-
-	glBindBuffer(GL_COPY_READ_BUFFER, m_QuadDrawIndexBufferId);
-	GLuint NewIndexBufferId;
-	glGenBuffers(1, &NewIndexBufferId);
-	glBindBuffer(BUFFER_INIT_INDEX_TARGET, NewIndexBufferId);
-	constexpr GLsizeiptr Size = sizeof(unsigned int);
-	glBufferData(BUFFER_INIT_INDEX_TARGET, (GLsizeiptr)NewIndicesCount * Size, nullptr, GL_STATIC_DRAW);
-	glCopyBufferSubData(GL_COPY_READ_BUFFER, BUFFER_INIT_INDEX_TARGET, 0, 0, (GLsizeiptr)m_CurrentIndicesInBuffer * Size);
-	glBufferSubData(BUFFER_INIT_INDEX_TARGET, (GLsizeiptr)m_CurrentIndicesInBuffer * Size, (GLsizeiptr)AddCount * Size, pIndices);
-	glBindBuffer(BUFFER_INIT_INDEX_TARGET, 0);
-	glBindBuffer(GL_COPY_READ_BUFFER, 0);
-
-	glDeleteBuffers(1, &m_QuadDrawIndexBufferId);
-	m_QuadDrawIndexBufferId = NewIndexBufferId;
-
-	std::fill(std::begin(m_aLastIndexBufferBound), std::end(m_aLastIndexBufferBound), 0);
-	for(auto &BufferContainer : m_vBufferContainers)
-	{
-		BufferContainer.m_LastIndexBufferBound = 0;
-	}
-
-	m_CurrentIndicesInBuffer = NewIndicesCount;
-	delete[] pIndices;
-}
-
 void CCommandProcessorFragment_OpenGL3_3::Cmd_CreateBufferObject(const CCommandBuffer::SCommand_CreateBufferObject *pCommand)
 {
 	void *pUploadData = pCommand->m_pUploadData;
-	const int Index = pCommand->m_BufferIndex;
+	const int Index = pCommand->m_Buffer.Id();
 	// create necessary space
 	if((size_t)Index >= m_vBufferObjectIndices.size())
 	{
@@ -904,42 +934,33 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_CreateBufferObject(const CCommandB
 
 	glGenBuffers(1, &VertBufferId);
 	glBindBuffer(BUFFER_INIT_VERTEX_TARGET, VertBufferId);
-	glBufferData(BUFFER_INIT_VERTEX_TARGET, (GLsizeiptr)(pCommand->m_DataSize), pUploadData, GL_STATIC_DRAW);
+	glBufferData(BUFFER_INIT_VERTEX_TARGET, (GLsizeiptr)(pCommand->m_Desc.m_Size), pUploadData, GL_STATIC_DRAW);
 
 	m_vBufferObjectIndices[Index] = VertBufferId;
-
-	if(pCommand->m_DeletePointer)
-		free(pUploadData);
 }
 
 void CCommandProcessorFragment_OpenGL3_3::Cmd_RecreateBufferObject(const CCommandBuffer::SCommand_RecreateBufferObject *pCommand)
 {
 	void *pUploadData = pCommand->m_pUploadData;
-	int Index = pCommand->m_BufferIndex;
+	int Index = pCommand->m_Buffer.Id();
 
 	glBindBuffer(BUFFER_INIT_VERTEX_TARGET, m_vBufferObjectIndices[Index]);
-	glBufferData(BUFFER_INIT_VERTEX_TARGET, (GLsizeiptr)(pCommand->m_DataSize), pUploadData, GL_STATIC_DRAW);
-
-	if(pCommand->m_DeletePointer)
-		free(pUploadData);
+	glBufferData(BUFFER_INIT_VERTEX_TARGET, (GLsizeiptr)(pCommand->m_Desc.m_Size), pUploadData, GL_STATIC_DRAW);
 }
 
 void CCommandProcessorFragment_OpenGL3_3::Cmd_UpdateBufferObject(const CCommandBuffer::SCommand_UpdateBufferObject *pCommand)
 {
 	void *pUploadData = pCommand->m_pUploadData;
-	int Index = pCommand->m_BufferIndex;
+	int Index = pCommand->m_Buffer.Id();
 
 	glBindBuffer(BUFFER_INIT_VERTEX_TARGET, m_vBufferObjectIndices[Index]);
-	glBufferSubData(BUFFER_INIT_VERTEX_TARGET, (GLintptr)(pCommand->m_pOffset), (GLsizeiptr)(pCommand->m_DataSize), pUploadData);
-
-	if(pCommand->m_DeletePointer)
-		free(pUploadData);
+	glBufferSubData(BUFFER_INIT_VERTEX_TARGET, static_cast<GLintptr>(pCommand->m_Offset), (GLsizeiptr)(pCommand->m_DataSize), pUploadData);
 }
 
 void CCommandProcessorFragment_OpenGL3_3::Cmd_CopyBufferObject(const CCommandBuffer::SCommand_CopyBufferObject *pCommand)
 {
-	int WriteIndex = pCommand->m_WriteBufferIndex;
-	int ReadIndex = pCommand->m_ReadBufferIndex;
+	int WriteIndex = pCommand->m_WriteBuffer.Id();
+	int ReadIndex = pCommand->m_ReadBuffer.Id();
 
 	glBindBuffer(GL_COPY_WRITE_BUFFER, m_vBufferObjectIndices[WriteIndex]);
 	glBindBuffer(GL_COPY_READ_BUFFER, m_vBufferObjectIndices[ReadIndex]);
@@ -948,20 +969,23 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_CopyBufferObject(const CCommandBuf
 
 void CCommandProcessorFragment_OpenGL3_3::Cmd_DeleteBufferObject(const CCommandBuffer::SCommand_DeleteBufferObject *pCommand)
 {
-	int Index = pCommand->m_BufferIndex;
+	int Index = pCommand->m_Buffer.Id();
 
 	glDeleteBuffers(1, &m_vBufferObjectIndices[Index]);
+	std::fill(std::begin(m_aLastIndexBufferBound), std::end(m_aLastIndexBufferBound), 0);
+	for(auto &BufferContainer : m_vBufferContainers)
+		BufferContainer.m_LastIndexBufferBound = 0;
 }
 
 void CCommandProcessorFragment_OpenGL3_3::Cmd_CreateBufferContainer(const CCommandBuffer::SCommand_CreateBufferContainer *pCommand)
 {
-	const int Index = pCommand->m_BufferContainerIndex;
+	const int Index = pCommand->m_BufferContainer.Id();
 	// create necessary space
 	if((size_t)Index >= m_vBufferContainers.size())
 	{
 		SBufferContainer Container;
 		Container.m_ContainerInfo.m_Stride = 0;
-		Container.m_ContainerInfo.m_VertBufferBindingIndex = -1;
+		Container.m_ContainerInfo.m_VertBufferBinding.Invalidate();
 		m_vBufferContainers.resize(Index + 1, Container);
 	}
 
@@ -975,25 +999,27 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_CreateBufferContainer(const CComma
 	{
 		glEnableVertexAttribArray((GLuint)i);
 
-		glBindBuffer(GL_ARRAY_BUFFER, m_vBufferObjectIndices[pCommand->m_VertBufferBindingIndex]);
+		glBindBuffer(GL_ARRAY_BUFFER, m_vBufferObjectIndices[pCommand->m_VertBufferBinding.Id()]);
 
-		SBufferContainerInfo::SAttribute &Attr = pCommand->m_pAttributes[i];
+		const SBufferContainerInfo::SAttribute &Attr = pCommand->m_pAttributes[i];
+		const GLenum Type = VertexAttributeTypeToOpenGL(Attr.m_Type);
+		const void *pOffset = reinterpret_cast<const void *>(Attr.m_Offset);
 
-		if(Attr.m_FuncType == 0)
-			glVertexAttribPointer((GLuint)i, Attr.m_DataTypeCount, Attr.m_Type, (GLboolean)Attr.m_Normalized, pCommand->m_Stride, Attr.m_pOffset);
-		else if(Attr.m_FuncType == 1)
-			glVertexAttribIPointer((GLuint)i, Attr.m_DataTypeCount, Attr.m_Type, pCommand->m_Stride, Attr.m_pOffset);
+		if(Attr.m_Mode == IGraphics::EVertexAttributeMode::FLOAT)
+			glVertexAttribPointer((GLuint)i, Attr.m_ComponentCount, Type, (GLboolean)Attr.m_Normalized, static_cast<GLsizei>(pCommand->m_Stride), pOffset);
+		else
+			glVertexAttribIPointer((GLuint)i, Attr.m_ComponentCount, Type, static_cast<GLsizei>(pCommand->m_Stride), pOffset);
 
 		BufferContainer.m_ContainerInfo.m_vAttributes.push_back(Attr);
 	}
 
-	BufferContainer.m_ContainerInfo.m_VertBufferBindingIndex = pCommand->m_VertBufferBindingIndex;
+	BufferContainer.m_ContainerInfo.m_VertBufferBinding = pCommand->m_VertBufferBinding;
 	BufferContainer.m_ContainerInfo.m_Stride = pCommand->m_Stride;
 }
 
 void CCommandProcessorFragment_OpenGL3_3::Cmd_UpdateBufferContainer(const CCommandBuffer::SCommand_UpdateBufferContainer *pCommand)
 {
-	SBufferContainer &BufferContainer = m_vBufferContainers[pCommand->m_BufferContainerIndex];
+	SBufferContainer &BufferContainer = m_vBufferContainers[pCommand->m_BufferContainer.Id()];
 
 	glBindVertexArray(BufferContainer.m_VertArrayId);
 
@@ -1008,423 +1034,327 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_UpdateBufferContainer(const CComma
 	{
 		glEnableVertexAttribArray((GLuint)i);
 
-		glBindBuffer(GL_ARRAY_BUFFER, m_vBufferObjectIndices[pCommand->m_VertBufferBindingIndex]);
-		SBufferContainerInfo::SAttribute &Attr = pCommand->m_pAttributes[i];
-		if(Attr.m_FuncType == 0)
-			glVertexAttribPointer((GLuint)i, Attr.m_DataTypeCount, Attr.m_Type, Attr.m_Normalized, pCommand->m_Stride, Attr.m_pOffset);
-		else if(Attr.m_FuncType == 1)
-			glVertexAttribIPointer((GLuint)i, Attr.m_DataTypeCount, Attr.m_Type, pCommand->m_Stride, Attr.m_pOffset);
+		glBindBuffer(GL_ARRAY_BUFFER, m_vBufferObjectIndices[pCommand->m_VertBufferBinding.Id()]);
+		const SBufferContainerInfo::SAttribute &Attr = pCommand->m_pAttributes[i];
+		const GLenum Type = VertexAttributeTypeToOpenGL(Attr.m_Type);
+		const void *pOffset = reinterpret_cast<const void *>(Attr.m_Offset);
+		if(Attr.m_Mode == IGraphics::EVertexAttributeMode::FLOAT)
+			glVertexAttribPointer((GLuint)i, Attr.m_ComponentCount, Type, Attr.m_Normalized, static_cast<GLsizei>(pCommand->m_Stride), pOffset);
+		else
+			glVertexAttribIPointer((GLuint)i, Attr.m_ComponentCount, Type, static_cast<GLsizei>(pCommand->m_Stride), pOffset);
 
 		BufferContainer.m_ContainerInfo.m_vAttributes.push_back(Attr);
 	}
 
-	BufferContainer.m_ContainerInfo.m_VertBufferBindingIndex = pCommand->m_VertBufferBindingIndex;
+	BufferContainer.m_ContainerInfo.m_VertBufferBinding = pCommand->m_VertBufferBinding;
 	BufferContainer.m_ContainerInfo.m_Stride = pCommand->m_Stride;
 }
 
 void CCommandProcessorFragment_OpenGL3_3::Cmd_DeleteBufferContainer(const CCommandBuffer::SCommand_DeleteBufferContainer *pCommand)
 {
-	DestroyBufferContainer(pCommand->m_BufferContainerIndex, pCommand->m_DestroyAllBO);
+	DestroyBufferContainer(pCommand->m_BufferContainer.Id(), pCommand->m_DestroyAllBO);
 }
 
-void CCommandProcessorFragment_OpenGL3_3::Cmd_IndicesRequiredNumNotify(const CCommandBuffer::SCommand_IndicesRequiredNumNotify *pCommand)
+void CCommandProcessorFragment_OpenGL3_3::RenderDualAtlasComposite(const CCommandBuffer::SState &State, uint32_t IndexCount, size_t IndexOffset, int PrimaryTextureIndex, int SecondaryTextureIndex, const CCommandBuffer::SDrawDataDualAtlas &DrawData)
 {
-	if(pCommand->m_RequiredIndicesNum > m_CurrentIndicesInBuffer)
-		AppendIndices(pCommand->m_RequiredIndicesNum);
-}
-
-void CCommandProcessorFragment_OpenGL3_3::Cmd_RenderBorderTile(const CCommandBuffer::SCommand_RenderBorderTile *pCommand)
-{
-	int Index = pCommand->m_BufferContainerIndex;
-	// if space not there return
-	if((size_t)Index >= m_vBufferContainers.size())
-		return;
-
-	SBufferContainer &BufferContainer = m_vBufferContainers[Index];
-	if(BufferContainer.m_VertArrayId == 0)
-		return;
-
-	CGLSLTileProgram *pProgram = nullptr;
-	if(IsTexturedState(pCommand->m_State))
-		pProgram = m_pBorderTileProgramTextured;
-	else
-		pProgram = m_pBorderTileProgram;
-	UseProgram(pProgram);
-
-	SetState(pCommand->m_State, pProgram, true);
-	pProgram->SetUniformVec4(pProgram->m_LocColor, 1, (float *)&pCommand->m_Color);
-
-	pProgram->SetUniformVec2(pProgram->m_LocOffset, 1, (float *)&pCommand->m_Offset);
-	pProgram->SetUniformVec2(pProgram->m_LocScale, 1, (float *)&pCommand->m_Scale);
-
-	glBindVertexArray(BufferContainer.m_VertArrayId);
-	if(BufferContainer.m_LastIndexBufferBound != m_QuadDrawIndexBufferId)
-	{
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_QuadDrawIndexBufferId);
-		BufferContainer.m_LastIndexBufferBound = m_QuadDrawIndexBufferId;
-	}
-	glDrawElements(GL_TRIANGLES, pCommand->m_DrawNum * 6, GL_UNSIGNED_INT, pCommand->m_pIndicesOffset);
-}
-
-void CCommandProcessorFragment_OpenGL3_3::Cmd_RenderTileLayer(const CCommandBuffer::SCommand_RenderTileLayer *pCommand)
-{
-	int Index = pCommand->m_BufferContainerIndex;
-	// if space not there return
-	if((size_t)Index >= m_vBufferContainers.size())
-		return;
-
-	SBufferContainer &BufferContainer = m_vBufferContainers[Index];
-	if(BufferContainer.m_VertArrayId == 0)
-		return;
-
-	if(pCommand->m_IndicesDrawNum == 0)
-	{
-		return; // nothing to draw
-	}
-
-	CGLSLTileProgram *pProgram = nullptr;
-	if(IsTexturedState(pCommand->m_State))
-	{
-		pProgram = m_pTileProgramTextured;
-	}
-	else
-	{
-		pProgram = m_pTileProgram;
-	}
-
-	UseProgram(pProgram);
-
-	SetState(pCommand->m_State, pProgram, true);
-	pProgram->SetUniformVec4(pProgram->m_LocColor, 1, (float *)&pCommand->m_Color);
-
-	glBindVertexArray(BufferContainer.m_VertArrayId);
-	if(BufferContainer.m_LastIndexBufferBound != m_QuadDrawIndexBufferId)
-	{
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_QuadDrawIndexBufferId);
-		BufferContainer.m_LastIndexBufferBound = m_QuadDrawIndexBufferId;
-	}
-	for(int i = 0; i < pCommand->m_IndicesDrawNum; ++i)
-	{
-		glDrawElements(GL_TRIANGLES, pCommand->m_pDrawCount[i], GL_UNSIGNED_INT, pCommand->m_pIndicesOffsets[i]);
-	}
-}
-
-void CCommandProcessorFragment_OpenGL3_3::Cmd_RenderQuadLayer(const CCommandBuffer::SCommand_RenderQuadLayer *pCommand, bool Grouped)
-{
-	int Index = pCommand->m_BufferContainerIndex;
-	// if space not there return
-	if((size_t)Index >= m_vBufferContainers.size())
-		return;
-
-	SBufferContainer &BufferContainer = m_vBufferContainers[Index];
-	if(BufferContainer.m_VertArrayId == 0)
-		return;
-
-	if(pCommand->m_QuadNum == 0)
-	{
-		return; // nothing to draw
-	}
-
-	CGLSLQuadProgram *pProgram = nullptr;
-	if(Grouped)
-	{
-		if(IsTexturedState(pCommand->m_State))
-		{
-			pProgram = m_pQuadProgramTexturedGrouped;
-		}
-		else
-		{
-			pProgram = m_pQuadProgramGrouped;
-		}
-	}
-	else
-	{
-		if(IsTexturedState(pCommand->m_State))
-		{
-			pProgram = m_pQuadProgramTextured;
-		}
-		else
-		{
-			pProgram = m_pQuadProgram;
-		}
-	}
-
-	UseProgram(pProgram);
-	SetState(pCommand->m_State, pProgram);
-
-	glBindVertexArray(BufferContainer.m_VertArrayId);
-	if(BufferContainer.m_LastIndexBufferBound != m_QuadDrawIndexBufferId)
-	{
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_QuadDrawIndexBufferId);
-		BufferContainer.m_LastIndexBufferBound = m_QuadDrawIndexBufferId;
-	}
-
-	int QuadsLeft = pCommand->m_QuadNum;
-	size_t QuadOffset = 0;
-	// the extra offset is not related to the information from the command, but an actual offset in the buffer
-	size_t QuadOffsetExtra = pCommand->m_QuadOffset;
-
-	if(!Grouped)
-	{
-		ColorRGBA aColors[ms_MaxQuadsPossible];
-		vec2 aOffsets[ms_MaxQuadsPossible];
-		float aRotations[ms_MaxQuadsPossible];
-
-		while(QuadsLeft > 0)
-		{
-			int ActualQuadCount = std::min(QuadsLeft, m_MaxQuadsAtOnce);
-			for(size_t i = 0; i < (size_t)ActualQuadCount; ++i)
-			{
-				aColors[i] = pCommand->m_pQuadInfo[i + QuadOffset].m_Color;
-				aOffsets[i] = pCommand->m_pQuadInfo[i + QuadOffset].m_Offsets;
-				aRotations[i] = pCommand->m_pQuadInfo[i + QuadOffset].m_Rotation;
-			}
-
-			pProgram->SetUniformVec4(pProgram->m_LocColors, ActualQuadCount, (float *)aColors);
-			pProgram->SetUniformVec2(pProgram->m_LocOffsets, ActualQuadCount, (float *)aOffsets);
-			pProgram->SetUniform(pProgram->m_LocRotations, ActualQuadCount, (float *)aRotations);
-			pProgram->SetUniform(pProgram->m_LocQuadOffset, (int)(QuadOffset + QuadOffsetExtra));
-			glDrawElements(GL_TRIANGLES, ActualQuadCount * 6, GL_UNSIGNED_INT, (void *)((QuadOffset + QuadOffsetExtra) * 6 * sizeof(unsigned int)));
-
-			QuadsLeft -= ActualQuadCount;
-			QuadOffset += (size_t)ActualQuadCount;
-		}
-	}
-	else
-	{
-		ColorRGBA Colors = pCommand->m_pQuadInfo[0].m_Color;
-		vec2 Offsets = pCommand->m_pQuadInfo[0].m_Offsets;
-		float Rotations = pCommand->m_pQuadInfo[0].m_Rotation;
-
-		pProgram->SetUniformVec4(pProgram->m_LocColors, 1, (float *)(&Colors));
-		pProgram->SetUniformVec2(pProgram->m_LocOffsets, 1, (float *)(&Offsets));
-		pProgram->SetUniform(pProgram->m_LocRotations, 1, &Rotations);
-		glDrawElements(GL_TRIANGLES, QuadsLeft * 6, GL_UNSIGNED_INT, (void *)((QuadOffset + QuadOffsetExtra) * 6 * sizeof(unsigned int)));
-	}
-}
-
-void CCommandProcessorFragment_OpenGL3_3::RenderText(const CCommandBuffer::SState &State, int DrawNum, int TextTextureIndex, int TextOutlineTextureIndex, int TextureSize, const ColorRGBA &TextColor, const ColorRGBA &TextOutlineColor)
-{
-	if(DrawNum == 0)
-	{
-		return; // nothing to draw
-	}
-
 	UseProgram(m_pTextProgram);
 
-	int SlotText = 0;
-	int SlotTextOutline = 1;
-	glBindTexture(GL_TEXTURE_2D, m_vTextures[TextTextureIndex].m_Tex);
-	glBindSampler(SlotText, m_vTextures[TextTextureIndex].m_Sampler);
+	int SlotPrimary = 0;
+	int SlotSecondary = 1;
+	glBindTexture(GL_TEXTURE_2D, m_vTextures[PrimaryTextureIndex].m_Tex);
+	glBindSampler(SlotPrimary, m_vTextures[PrimaryTextureIndex].m_Sampler);
 	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, m_vTextures[TextOutlineTextureIndex].m_Tex);
-	glBindSampler(SlotTextOutline, m_vTextures[TextOutlineTextureIndex].m_Sampler);
+	glBindTexture(GL_TEXTURE_2D, m_vTextures[SecondaryTextureIndex].m_Tex);
+	glBindSampler(SlotSecondary, m_vTextures[SecondaryTextureIndex].m_Sampler);
 	glActiveTexture(GL_TEXTURE0);
 
-	if(m_pTextProgram->m_LastTextSampler != SlotText)
+	if(m_pTextProgram->m_LastTextSampler != SlotPrimary)
 	{
-		m_pTextProgram->SetUniform(m_pTextProgram->m_LocTextSampler, SlotText);
-		m_pTextProgram->m_LastTextSampler = SlotText;
+		m_pTextProgram->SetUniform(m_pTextProgram->m_LocTextSampler, SlotPrimary);
+		m_pTextProgram->m_LastTextSampler = SlotPrimary;
 	}
 
-	if(m_pTextProgram->m_LastTextOutlineSampler != SlotTextOutline)
+	if(m_pTextProgram->m_LastTextOutlineSampler != SlotSecondary)
 	{
-		m_pTextProgram->SetUniform(m_pTextProgram->m_LocTextOutlineSampler, SlotTextOutline);
-		m_pTextProgram->m_LastTextOutlineSampler = SlotTextOutline;
+		m_pTextProgram->SetUniform(m_pTextProgram->m_LocTextOutlineSampler, SlotSecondary);
+		m_pTextProgram->m_LastTextOutlineSampler = SlotSecondary;
 	}
 
 	SetState(State, m_pTextProgram);
 
-	if(m_pTextProgram->m_LastTextureSize != TextureSize)
+	if(m_pTextProgram->m_LastTextureSize != DrawData.m_TextureSize)
 	{
-		m_pTextProgram->SetUniform(m_pTextProgram->m_LocTextureSize, (float)TextureSize);
-		m_pTextProgram->m_LastTextureSize = TextureSize;
+		m_pTextProgram->SetUniform(m_pTextProgram->m_LocTextureSize, DrawData.m_TextureSize);
+		m_pTextProgram->m_LastTextureSize = DrawData.m_TextureSize;
 	}
 
-	if(m_pTextProgram->m_LastOutlineColor != TextOutlineColor)
+	if(m_pTextProgram->m_LastOutlineColor != DrawData.m_SecondaryColor)
 	{
-		m_pTextProgram->SetUniformVec4(m_pTextProgram->m_LocOutlineColor, 1, (float *)&TextOutlineColor);
-		m_pTextProgram->m_LastOutlineColor = TextOutlineColor;
+		m_pTextProgram->SetUniformVec4(m_pTextProgram->m_LocOutlineColor, 1, (float *)&DrawData.m_SecondaryColor);
+		m_pTextProgram->m_LastOutlineColor = DrawData.m_SecondaryColor;
 	}
 
-	if(m_pTextProgram->m_LastColor != TextColor)
+	if(m_pTextProgram->m_LastColor != DrawData.m_PrimaryColor)
 	{
-		m_pTextProgram->SetUniformVec4(m_pTextProgram->m_LocColor, 1, (float *)&TextColor);
-		m_pTextProgram->m_LastColor = TextColor;
+		m_pTextProgram->SetUniformVec4(m_pTextProgram->m_LocColor, 1, (float *)&DrawData.m_PrimaryColor);
+		m_pTextProgram->m_LastColor = DrawData.m_PrimaryColor;
 	}
 
-	glDrawElements(GL_TRIANGLES, DrawNum, GL_UNSIGNED_INT, nullptr);
+	glDrawElements(GL_TRIANGLES, IndexCount, GL_UNSIGNED_INT, reinterpret_cast<const void *>(IndexOffset));
 }
 
-void CCommandProcessorFragment_OpenGL3_3::Cmd_RenderText(const CCommandBuffer::SCommand_RenderText *pCommand)
+void CCommandProcessorFragment_OpenGL3_3::Cmd_DrawIndexed(const CCommandBuffer::SCommand_DrawIndexed *pCommand)
 {
-	int Index = pCommand->m_BufferContainerIndex;
-	// if space not there return
-	if((size_t)Index >= m_vBufferContainers.size())
-		return;
-
-	SBufferContainer &BufferContainer = m_vBufferContainers[Index];
-	if(BufferContainer.m_VertArrayId == 0)
-		return;
-
-	glBindVertexArray(BufferContainer.m_VertArrayId);
-	if(BufferContainer.m_LastIndexBufferBound != m_QuadDrawIndexBufferId)
+	const EPipelineProgram Program = PipelineProgram(pCommand->m_Pipeline);
+	if(pCommand->IsTransient())
 	{
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_QuadDrawIndexBufferId);
-		BufferContainer.m_LastIndexBufferBound = m_QuadDrawIndexBufferId;
-	}
-
-	RenderText(pCommand->m_State, pCommand->m_DrawNum, pCommand->m_TextTextureIndex, pCommand->m_TextOutlineTextureIndex, pCommand->m_TextureSize, pCommand->m_TextColor, pCommand->m_TextOutlineColor);
-}
-
-void CCommandProcessorFragment_OpenGL3_3::Cmd_RenderQuadContainer(const CCommandBuffer::SCommand_RenderQuadContainer *pCommand)
-{
-	if(pCommand->m_DrawNum == 0)
-	{
-		return; // nothing to draw
-	}
-
-	int Index = pCommand->m_BufferContainerIndex;
-	// if space not there return
-	if((size_t)Index >= m_vBufferContainers.size())
-		return;
-
-	SBufferContainer &BufferContainer = m_vBufferContainers[Index];
-	if(BufferContainer.m_VertArrayId == 0)
-		return;
-
-	glBindVertexArray(BufferContainer.m_VertArrayId);
-	if(BufferContainer.m_LastIndexBufferBound != m_QuadDrawIndexBufferId)
-	{
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_QuadDrawIndexBufferId);
-		BufferContainer.m_LastIndexBufferBound = m_QuadDrawIndexBufferId;
-	}
-
-	CGLSLTWProgram *pProgram = m_pPrimitiveProgram;
-	if(IsTexturedState(pCommand->m_State))
-		pProgram = m_pPrimitiveProgramTextured;
-	UseProgram(pProgram);
-	SetState(pCommand->m_State, pProgram);
-
-	glDrawElements(GL_TRIANGLES, pCommand->m_DrawNum, GL_UNSIGNED_INT, pCommand->m_pOffset);
-}
-
-void CCommandProcessorFragment_OpenGL3_3::Cmd_RenderQuadContainerEx(const CCommandBuffer::SCommand_RenderQuadContainerEx *pCommand)
-{
-	if(pCommand->m_DrawNum == 0)
-	{
-		return; // nothing to draw
-	}
-
-	int Index = pCommand->m_BufferContainerIndex;
-	// if space not there return
-	if((size_t)Index >= m_vBufferContainers.size())
-		return;
-
-	SBufferContainer &BufferContainer = m_vBufferContainers[Index];
-	if(BufferContainer.m_VertArrayId == 0)
-		return;
-
-	glBindVertexArray(BufferContainer.m_VertArrayId);
-	if(BufferContainer.m_LastIndexBufferBound != m_QuadDrawIndexBufferId)
-	{
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_QuadDrawIndexBufferId);
-		BufferContainer.m_LastIndexBufferBound = m_QuadDrawIndexBufferId;
-	}
-
-	CGLSLPrimitiveExProgram *pProgram = m_pPrimitiveExProgramRotationless;
-	if(IsTexturedState(pCommand->m_State))
-	{
-		if(pCommand->m_Rotation != 0.0f)
-			pProgram = m_pPrimitiveExProgramTextured;
+		const auto *pVertices = pCommand->m_VertexData.Get<CCommandBuffer::SVertex>(pCommand->m_VertexCount);
+		const auto *pRanges = pCommand->m_RangeData.Get<CCommandBuffer::SCommand_DrawIndexed::SIndexedDrawRange>(pCommand->m_RangeCount);
+		const void *pIndices;
+		GLenum IndexType;
+		size_t IndexElementSize;
+		if(pCommand->m_IndexType == IGraphics::EIndexType::UINT16)
+		{
+			pIndices = pCommand->m_IndexData.Get<uint16_t>(pCommand->m_IndexCount);
+			IndexType = GL_UNSIGNED_SHORT;
+			IndexElementSize = sizeof(uint16_t);
+		}
 		else
-			pProgram = m_pPrimitiveExProgramTexturedRotationless;
+		{
+			pIndices = pCommand->m_IndexData.Get<uint32_t>(pCommand->m_IndexCount);
+			IndexType = GL_UNSIGNED_INT;
+			IndexElementSize = sizeof(uint32_t);
+		}
+		const size_t VertexDataSize = pCommand->m_VertexData.m_Size;
+		const size_t IndexDataSize = pCommand->m_IndexData.m_Size;
+		const TWGLuint VertexBuffer = m_aPrimitiveDrawBufferId[m_LastStreamBuffer];
+		const TWGLuint IndexBuffer = m_aPrimitiveDrawIndexBufferId[m_LastStreamBuffer];
+		glBindVertexArray(m_aPrimitiveDrawVertexId[m_LastStreamBuffer]);
+		glBindBuffer(GL_ARRAY_BUFFER, VertexBuffer);
+		glBufferData(GL_ARRAY_BUFFER, VertexDataSize, pVertices, GL_STREAM_DRAW);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, IndexBuffer);
+		glBufferData(GL_ELEMENT_ARRAY_BUFFER, IndexDataSize, pIndices, GL_STREAM_DRAW);
+		m_aLastIndexBufferBound[m_LastStreamBuffer] = IndexBuffer;
+
+		auto SetVertexOffset = [](size_t VertexOffset) {
+			const size_t BaseOffset = VertexOffset * sizeof(CCommandBuffer::SVertex);
+			glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(CCommandBuffer::SVertex), reinterpret_cast<const void *>(BaseOffset));
+			glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(CCommandBuffer::SVertex), reinterpret_cast<const void *>(BaseOffset + sizeof(float) * 2));
+			glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(CCommandBuffer::SVertex), reinterpret_cast<const void *>(BaseOffset + sizeof(float) * 4));
+		};
+		for(uint32_t RangeIndex = 0; RangeIndex < pCommand->m_RangeCount; ++RangeIndex)
+		{
+			const auto &Range = pRanges[RangeIndex];
+			CGLSLPrimitiveProgram *pProgram = IsTexturedState(Range.m_State) ? m_pPrimitiveProgramTextured : m_pPrimitiveProgram;
+			UseProgram(pProgram);
+			SetState(Range.m_State, pProgram);
+			SetVertexOffset(Range.m_VertexOffset);
+			glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(Range.m_IndexCount), IndexType, reinterpret_cast<const void *>(static_cast<size_t>(Range.m_FirstIndex) * IndexElementSize));
+		}
+		SetVertexOffset(0);
+		m_LastStreamBuffer = (m_LastStreamBuffer + 1 >= MAX_STREAM_BUFFER_COUNT ? 0 : m_LastStreamBuffer + 1);
+		return;
+	}
+	if(pCommand->m_IndexCount == 0)
+	{
+		return; // nothing to draw
+	}
+
+	int Index = pCommand->m_BufferContainer.Id();
+	// if space not there return
+	if((size_t)Index >= m_vBufferContainers.size())
+		return;
+
+	SBufferContainer &BufferContainer = m_vBufferContainers[Index];
+	if(BufferContainer.m_VertArrayId == 0)
+		return;
+
+	const TWGLuint IndexBuffer = m_vBufferObjectIndices[pCommand->m_IndexBuffer.Id()];
+	glBindVertexArray(BufferContainer.m_VertArrayId);
+	if(BufferContainer.m_LastIndexBufferBound != IndexBuffer)
+	{
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, IndexBuffer);
+		BufferContainer.m_LastIndexBufferBound = IndexBuffer;
+	}
+
+	if(Program == EPipelineProgram::DUAL_ATLAS_COMPOSITE)
+	{
+		constexpr size_t QuadIndexBytes = 6 * sizeof(uint32_t);
+		const auto *pDrawData = pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataDualAtlas>();
+		if(!pCommand->m_TextureBinding.IsValid() || pCommand->m_IndexCount % 6 != 0 || pCommand->m_IndexOffset % QuadIndexBytes != 0 || pDrawData == nullptr)
+			return;
+		const auto &Binding = m_vTextureBindings[pCommand->m_TextureBinding.Id()];
+		RenderDualAtlasComposite(pCommand->m_State, pCommand->m_IndexCount, pCommand->m_IndexOffset, Binding.m_aTextures[0].Id(), Binding.m_aTextures[1].Id(), *pDrawData);
+		return;
+	}
+	else if(Program == EPipelineProgram::ARRAY_COLOR || Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM)
+	{
+		constexpr size_t TileIndexBytes = 6 * sizeof(uint32_t);
+		if(pCommand->m_IndexCount % 6 != 0 || pCommand->m_IndexOffset % TileIndexBytes != 0)
+			return;
+		const bool HasTransform = Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM;
+		const auto *pColorData = HasTransform ? nullptr : pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColor>();
+		const auto *pTransformData = HasTransform ? pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColorTransform>() : nullptr;
+		if((HasTransform && pTransformData == nullptr) || (!HasTransform && pColorData == nullptr))
+			return;
+
+		CGLSLTileProgram *pProgram;
+		if(HasTransform)
+			pProgram = IsTexturedState(pCommand->m_State) ? m_pBorderTileProgramTextured : m_pBorderTileProgram;
+		else
+			pProgram = IsTexturedState(pCommand->m_State) ? m_pTileProgramTextured : m_pTileProgram;
+		UseProgram(pProgram);
+		SetState(pCommand->m_State, pProgram, true);
+		const ColorRGBA &Color = HasTransform ? pTransformData->m_Color : pColorData->m_Color;
+		pProgram->SetUniformVec4(pProgram->m_LocColor, 1, (float *)&Color);
+		if(HasTransform)
+		{
+			pProgram->SetUniformVec2(pProgram->m_LocOffset, 1, (float *)&pTransformData->m_Offset);
+			pProgram->SetUniformVec2(pProgram->m_LocScale, 1, (float *)&pTransformData->m_Scale);
+		}
+		glDrawElements(GL_TRIANGLES, pCommand->m_IndexCount, GL_UNSIGNED_INT, reinterpret_cast<const void *>(pCommand->m_IndexOffset));
+		return;
+	}
+	else if(Program == EPipelineProgram::QUAD_PER_ITEM || Program == EPipelineProgram::QUAD_SHARED)
+	{
+		constexpr size_t QuadIndexBytes = 6 * sizeof(uint32_t);
+		if(pCommand->m_IndexCount % 6 != 0 || pCommand->m_IndexOffset % QuadIndexBytes != 0)
+			return;
+
+		const bool Grouped = Program == EPipelineProgram::QUAD_SHARED;
+		const uint32_t QuadCount = pCommand->m_IndexCount / 6;
+		const auto *pQuadData = Grouped ?
+						pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataQuadTransform>() :
+						pCommand->m_ArrayData.Get<CCommandBuffer::SDrawDataQuadTransform>(QuadCount);
+		if(pQuadData == nullptr)
+			return;
+
+		CGLSLQuadProgram *pProgram;
+		if(Grouped)
+			pProgram = IsTexturedState(pCommand->m_State) ? m_pQuadProgramTexturedGrouped : m_pQuadProgramGrouped;
+		else
+			pProgram = IsTexturedState(pCommand->m_State) ? m_pQuadProgramTextured : m_pQuadProgram;
+		UseProgram(pProgram);
+		SetState(pCommand->m_State, pProgram);
+
+		if(Grouped)
+		{
+			pProgram->SetUniformVec4(pProgram->m_LocColors, 1, (float *)&pQuadData->m_Color);
+			pProgram->SetUniformVec2(pProgram->m_LocOffsets, 1, (float *)&pQuadData->m_Offset);
+			pProgram->SetUniform(pProgram->m_LocRotations, 1, &pQuadData->m_Rotation);
+			glDrawElements(GL_TRIANGLES, pCommand->m_IndexCount, GL_UNSIGNED_INT, reinterpret_cast<const void *>(pCommand->m_IndexOffset));
+			return;
+		}
+
+		ColorRGBA aColors[ms_MaxQuadsPossible];
+		vec2 aOffsets[ms_MaxQuadsPossible];
+		float aRotations[ms_MaxQuadsPossible];
+		uint32_t QuadsLeft = QuadCount;
+		size_t QuadOffset = 0;
+		const size_t BaseQuadOffset = pCommand->m_IndexOffset / QuadIndexBytes;
+		while(QuadsLeft > 0)
+		{
+			const int ActualQuadCount = std::min<uint32_t>(QuadsLeft, m_MaxQuadsAtOnce);
+			for(int i = 0; i < ActualQuadCount; ++i)
+			{
+				aColors[i] = pQuadData[QuadOffset + i].m_Color;
+				aOffsets[i] = pQuadData[QuadOffset + i].m_Offset;
+				aRotations[i] = pQuadData[QuadOffset + i].m_Rotation;
+			}
+			pProgram->SetUniformVec4(pProgram->m_LocColors, ActualQuadCount, (float *)aColors);
+			pProgram->SetUniformVec2(pProgram->m_LocOffsets, ActualQuadCount, (float *)aOffsets);
+			pProgram->SetUniform(pProgram->m_LocRotations, ActualQuadCount, aRotations);
+			pProgram->SetUniform(pProgram->m_LocQuadOffset, static_cast<int>(BaseQuadOffset + QuadOffset));
+			glDrawElements(GL_TRIANGLES, ActualQuadCount * 6, GL_UNSIGNED_INT, reinterpret_cast<const void *>(pCommand->m_IndexOffset + QuadOffset * QuadIndexBytes));
+
+			QuadsLeft -= ActualQuadCount;
+			QuadOffset += ActualQuadCount;
+		}
+		return;
+	}
+	else if(Program == EPipelineProgram::PRIMITIVE)
+	{
+		CGLSLTWProgram *pProgram = m_pPrimitiveProgram;
+		if(IsTexturedState(pCommand->m_State))
+			pProgram = m_pPrimitiveProgramTextured;
+		UseProgram(pProgram);
+		SetState(pCommand->m_State, pProgram);
+	}
+	else if(Program == EPipelineProgram::PRIMITIVE_UNIFORM_COLOR)
+	{
+		const auto *pDrawData = pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataPrimitiveUniformColor>();
+		if(pDrawData == nullptr)
+			return;
+
+		CGLSLPrimitiveExProgram *pProgram = m_pPrimitiveExProgram;
+		if(IsTexturedState(pCommand->m_State))
+			pProgram = m_pPrimitiveExProgramTextured;
+
+		UseProgram(pProgram);
+		SetState(pCommand->m_State, pProgram);
+
+		if(pDrawData->m_Rotation != 0.0f && pProgram->m_LastCenter != pDrawData->m_RotationCenter)
+		{
+			pProgram->SetUniformVec2(pProgram->m_LocCenter, 1, (float *)&pDrawData->m_RotationCenter);
+			pProgram->m_LastCenter = pDrawData->m_RotationCenter;
+		}
+
+		if(pProgram->m_LastRotation != pDrawData->m_Rotation)
+		{
+			pProgram->SetUniform(pProgram->m_LocRotation, pDrawData->m_Rotation);
+			pProgram->m_LastRotation = pDrawData->m_Rotation;
+		}
+
+		if(pProgram->m_LastVerticesColor != pDrawData->m_Color)
+		{
+			pProgram->SetUniformVec4(pProgram->m_LocVertciesColor, 1, (float *)&pDrawData->m_Color);
+			pProgram->m_LastVerticesColor = pDrawData->m_Color;
+		}
+	}
+	else if(Program == EPipelineProgram::PRIMITIVE_INSTANCED)
+	{
+		const auto *pDrawData = pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataPrimitiveInstanced>();
+		const auto *pInstanceData = pCommand->m_ArrayData.Get<CCommandBuffer::SInstanceDataPositionScaleRotation>(pCommand->m_InstanceCount);
+		if(pDrawData == nullptr || pInstanceData == nullptr || pCommand->m_InstanceCount == 0)
+			return;
+
+		UseProgram(m_pSpriteProgramMultiple);
+		SetState(pCommand->m_State, m_pSpriteProgramMultiple);
+
+		if(m_pSpriteProgramMultiple->m_LastCenter != pDrawData->m_RotationCenter)
+		{
+			m_pSpriteProgramMultiple->SetUniformVec2(m_pSpriteProgramMultiple->m_LocCenter, 1, (float *)&pDrawData->m_RotationCenter);
+			m_pSpriteProgramMultiple->m_LastCenter = pDrawData->m_RotationCenter;
+		}
+
+		if(m_pSpriteProgramMultiple->m_LastVerticesColor != pDrawData->m_Color)
+		{
+			m_pSpriteProgramMultiple->SetUniformVec4(m_pSpriteProgramMultiple->m_LocVertciesColor, 1, (float *)&pDrawData->m_Color);
+			m_pSpriteProgramMultiple->m_LastVerticesColor = pDrawData->m_Color;
+		}
+
+		uint32_t RemainingInstances = pCommand->m_InstanceCount;
+		size_t InstanceOffset = 0;
+
+		// 4 for the center (always use vec4), 16 for the matrix and 8 for sampler/color.
+		constexpr uint32_t MaxInstancesPerDraw = 256 - 4 - 16 - 8;
+		while(RemainingInstances > 0)
+		{
+			const uint32_t InstanceCount = std::min(RemainingInstances, MaxInstancesPerDraw);
+			m_pSpriteProgramMultiple->SetUniformVec4(m_pSpriteProgramMultiple->m_LocRSP, InstanceCount, reinterpret_cast<const float *>(pInstanceData + InstanceOffset));
+			glDrawElementsInstanced(GL_TRIANGLES, pCommand->m_IndexCount, GL_UNSIGNED_INT, reinterpret_cast<const void *>(pCommand->m_IndexOffset), InstanceCount);
+
+			InstanceOffset += InstanceCount;
+			RemainingInstances -= InstanceCount;
+		}
+		return;
 	}
 	else
 	{
-		if(pCommand->m_Rotation != 0.0f)
-			pProgram = m_pPrimitiveExProgram;
-	}
-
-	UseProgram(pProgram);
-	SetState(pCommand->m_State, pProgram);
-
-	if(pCommand->m_Rotation != 0.0f && pProgram->m_LastCenter != pCommand->m_Center)
-	{
-		pProgram->SetUniformVec2(pProgram->m_LocCenter, 1, (float *)&pCommand->m_Center);
-		pProgram->m_LastCenter = pCommand->m_Center;
-	}
-
-	if(pProgram->m_LastRotation != pCommand->m_Rotation)
-	{
-		pProgram->SetUniform(pProgram->m_LocRotation, pCommand->m_Rotation);
-		pProgram->m_LastRotation = pCommand->m_Rotation;
-	}
-
-	if(pProgram->m_LastVerticesColor != pCommand->m_VertexColor)
-	{
-		pProgram->SetUniformVec4(pProgram->m_LocVertciesColor, 1, (float *)&pCommand->m_VertexColor);
-		pProgram->m_LastVerticesColor = pCommand->m_VertexColor;
-	}
-
-	glDrawElements(GL_TRIANGLES, pCommand->m_DrawNum, GL_UNSIGNED_INT, pCommand->m_pOffset);
-}
-
-void CCommandProcessorFragment_OpenGL3_3::Cmd_RenderQuadContainerAsSpriteMultiple(const CCommandBuffer::SCommand_RenderQuadContainerAsSpriteMultiple *pCommand)
-{
-	if(pCommand->m_DrawNum == 0 || pCommand->m_DrawCount == 0)
-	{
-		return; // nothing to draw
-	}
-
-	int Index = pCommand->m_BufferContainerIndex;
-	// if space not there return
-	if((size_t)Index >= m_vBufferContainers.size())
 		return;
-
-	SBufferContainer &BufferContainer = m_vBufferContainers[Index];
-	if(BufferContainer.m_VertArrayId == 0)
-		return;
-
-	glBindVertexArray(BufferContainer.m_VertArrayId);
-	if(BufferContainer.m_LastIndexBufferBound != m_QuadDrawIndexBufferId)
-	{
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_QuadDrawIndexBufferId);
-		BufferContainer.m_LastIndexBufferBound = m_QuadDrawIndexBufferId;
 	}
 
-	UseProgram(m_pSpriteProgramMultiple);
-	SetState(pCommand->m_State, m_pSpriteProgramMultiple);
-
-	if(m_pSpriteProgramMultiple->m_LastCenter != pCommand->m_Center)
-	{
-		m_pSpriteProgramMultiple->SetUniformVec2(m_pSpriteProgramMultiple->m_LocCenter, 1, (float *)&pCommand->m_Center);
-		m_pSpriteProgramMultiple->m_LastCenter = pCommand->m_Center;
-	}
-
-	if(m_pSpriteProgramMultiple->m_LastVerticesColor != pCommand->m_VertexColor)
-	{
-		m_pSpriteProgramMultiple->SetUniformVec4(m_pSpriteProgramMultiple->m_LocVertciesColor, 1, (float *)&pCommand->m_VertexColor);
-		m_pSpriteProgramMultiple->m_LastVerticesColor = pCommand->m_VertexColor;
-	}
-
-	int DrawCount = pCommand->m_DrawCount;
-	size_t RenderOffset = 0;
-
-	// 4 for the center (always use vec4) and 16 for the matrix(just to be sure), 4 for the sampler and vertex color
-	const int RSPCount = 256 - 4 - 16 - 8;
-
-	while(DrawCount > 0)
-	{
-		int UniformCount = (DrawCount > RSPCount ? RSPCount : DrawCount);
-
-		m_pSpriteProgramMultiple->SetUniformVec4(m_pSpriteProgramMultiple->m_LocRSP, UniformCount, (float *)(pCommand->m_pRenderInfo + RenderOffset));
-
-		glDrawElementsInstanced(GL_TRIANGLES, pCommand->m_DrawNum, GL_UNSIGNED_INT, pCommand->m_pOffset, UniformCount);
-
-		RenderOffset += RSPCount;
-		DrawCount -= RSPCount;
-	}
+	glDrawElements(GL_TRIANGLES, pCommand->m_IndexCount, GL_UNSIGNED_INT, reinterpret_cast<const void *>(pCommand->m_IndexOffset));
 }
 
 #endif

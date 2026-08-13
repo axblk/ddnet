@@ -96,19 +96,16 @@ bool CGLSL::LoadShader(CGLSLCompiler *pCompiler, IStorage *pStorage, const char 
 		vLines.push_back(Line);
 	}
 
-	const char **ShaderCode = new const char *[vLines.size()];
-
+	std::vector<const char *> vShaderCode(vLines.size());
 	for(size_t i = 0; i < vLines.size(); ++i)
 	{
-		ShaderCode[i] = vLines[i].c_str();
+		vShaderCode[i] = vLines[i].c_str();
 	}
 
 	const TWGLuint ShaderId = glCreateShader(Type);
 
-	glShaderSource(ShaderId, vLines.size(), ShaderCode, nullptr);
+	glShaderSource(ShaderId, static_cast<GLsizei>(vShaderCode.size()), vShaderCode.data(), nullptr);
 	glCompileShader(ShaderId);
-
-	delete[] ShaderCode;
 
 	TWGLint CompilationStatus;
 	glGetShaderiv(ShaderId, GL_COMPILE_STATUS, &CompilationStatus);
@@ -135,18 +132,9 @@ bool CGLSL::LoadShader(CGLSLCompiler *pCompiler, IStorage *pStorage, const char 
 		return false;
 	}
 
-	m_Type = Type;
 	m_IsLoaded = true;
 	m_ShaderId = ShaderId;
 	return true;
-}
-
-void CGLSL::DeleteShader()
-{
-	if(!IsLoaded())
-		return;
-	m_IsLoaded = false;
-	glDeleteShader(m_ShaderId);
 }
 
 bool CGLSL::IsLoaded() const
@@ -159,14 +147,10 @@ TWGLuint CGLSL::GetShaderId() const
 	return m_ShaderId;
 }
 
-CGLSL::CGLSL()
-{
-	m_IsLoaded = false;
-}
-
 CGLSL::~CGLSL()
 {
-	DeleteShader();
+	if(m_IsLoaded)
+		glDeleteShader(m_ShaderId);
 }
 
 #endif

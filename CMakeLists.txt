@@ -72,6 +72,7 @@ endif()
 
 include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
+include(CheckCSourceCompiles)
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.18)
   include(CheckLinkerFlag)
 endif()
@@ -107,6 +108,7 @@ option(HEADLESS_CLIENT "Build the client without graphics" OFF)
 option(CLIENT "Compile client" ON)
 option(SERVER "Compile server" ON)
 option(TOOLS "Compile tools" ON)
+option(WEBGPU_BACKEND_PROTOTYPE "Build the optional WebGPU client backend" OFF)
 option(DOWNLOAD_GTEST "Download and compile GTest" ${AUTO_DEPENDENCIES_DEFAULT})
 option(STEAM "Build the Steam release version" OFF)
 option(DISCORD "Enable Discord rich presence support" OFF)
@@ -582,6 +584,43 @@ if(UNIX)
   set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 endif()
 find_package(Threads)
+set(WEBGPU_NATIVE_BACKEND OFF)
+if(WEBGPU_BACKEND_PROTOTYPE)
+  if(NOT(TARGET_OS STREQUAL "windows" OR TARGET_OS STREQUAL "linux" OR TARGET_OS STREQUAL "mac" OR TARGET_OS STREQUAL "emscripten"))
+    message(FATAL_ERROR "The WebGPU backend supports Windows, Linux, macOS and Emscripten SDL surfaces")
+  endif()
+  if(TARGET_OS STREQUAL "mac" AND FAT)
+    message(FATAL_ERROR "The WebGPU backend requires a single-architecture macOS build")
+  endif()
+  if(TARGET_OS STREQUAL "mac" AND CMAKE_OSX_ARCHITECTURES AND NOT CMAKE_OSX_ARCHITECTURES STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
+    message(FATAL_ERROR "The WebGPU backend currently requires a native-architecture macOS build")
+  endif()
+  if(TARGET_OS STREQUAL "mac" AND CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS 11.0)
+    message(FATAL_ERROR "The pinned wgpu-native macOS library requires CMAKE_OSX_DEPLOYMENT_TARGET=11.0 or newer")
+  endif()
+  if(NOT SDL2_FOUND)
+    message(FATAL_ERROR "The WebGPU backend requires SDL2")
+  endif()
+  if(NOT CLIENT)
+    message(FATAL_ERROR "WEBGPU_BACKEND_PROTOTYPE requires CLIENT")
+  endif()
+  if(HEADLESS_CLIENT)
+    message(FATAL_ERROR "WEBGPU_BACKEND_PROTOTYPE does not support HEADLESS_CLIENT")
+  endif()
+  if(NOT(TARGET_OS STREQUAL "mac" OR TARGET_OS STREQUAL "emscripten"))
+    set(CMAKE_REQUIRED_INCLUDES ${ORIGINAL_CMAKE_REQUIRED_INCLUDES} ${SDL2_INCLUDE_DIRS})
+    check_c_source_compiles("#include <SDL_version.h>\n#if !SDL_VERSION_ATLEAST(2, 26, 0)\n#error SDL 2.26 required\n#endif\nint main(void) { return 0; }" WEBGPU_HAS_SDL_2_26)
+    set(CMAKE_REQUIRED_INCLUDES ${ORIGINAL_CMAKE_REQUIRED_INCLUDES})
+    if(NOT WEBGPU_HAS_SDL_2_26)
+      message(FATAL_ERROR "WEBGPU_BACKEND_PROTOTYPE requires SDL 2.26 or newer for physical window sizes")
+    endif()
+  endif()
+  if(NOT TARGET_OS STREQUAL "emscripten")
+    set(WEBGPU_NATIVE_BACKEND ON)
+    find_package(WgpuNative REQUIRED)
+    file(RELATIVE_PATH WGPU_NATIVE_RUNTIME_RELATIVE "${PROJECT_SOURCE_DIR}" "${WGPU_NATIVE_RUNTIME_LIBRARY}")
+  endif()
+endif()
 find_package(Wavpack)
 if(WEBSOCKETS)
   find_package(Websockets)
@@ -666,6 +705,9 @@ show_dependency_status("Python3" Python3)
 show_dependency_status("SDL2" SDL2)
 show_dependency_status("SQLite3" SQLite3)
 show_dependency_status("Wavpack" WAVPACK)
+if(WEBGPU_NATIVE_BACKEND)
+  show_dependency_status("wgpu-native" WgpuNative)
+endif()
 show_dependency_status("Zlib" ZLIB)
 if(DISCORD)
   show_dependency_status("DiscordSdk" DiscordSdk)
@@ -1668,6 +1710,7 @@ set(EXPECTED_DATA
   menuimages/settings.png
   particles.png
   race_flag.png
+  shader/blur.frag
   shader/pipeline.frag
   shader/pipeline.vert
   shader/prim.frag
@@ -1684,6 +1727,7 @@ set(EXPECTED_DATA
   shader/tile.vert
   shader/tile_border.frag
   shader/tile_border.vert
+  shader/vulkan/blur.frag
   shader/vulkan/prim.frag
   shader/vulkan/prim.vert
   shader/vulkan/prim3d.frag
@@ -1977,6 +2021,9 @@ set(COPY_FILES
   ${WEBSOCKETS_COPY_FILES}
   # tidy-alphabetical-end
 )
+if(WEBGPU_NATIVE_BACKEND)
+  list(APPEND COPY_FILES ${WGPU_NATIVE_RUNTIME_RELATIVE})
+endif()
 if(TARGET_OS STREQUAL "emscripten")
   list(APPEND COPY_FILES other/emscripten/background.png)
   list(APPEND COPY_FILES other/emscripten/index.html)
@@ -2202,6 +2249,7 @@ set_src(ENGINE_INTERFACE GLOB src/engine
   map.h
   message.h
   notifications.h
+  render_handle.h
   rust.h
   server.h
   serverbrowser.h
@@ -2461,6 +2509,8 @@ if(CLIENT)
     backend/opengles/opengles_sl_program.cpp
     backend/vulkan/backend_vulkan.cpp
     backend/vulkan/backend_vulkan.h
+    backend/webgpu/backend_webgpu.cpp
+    backend/webgpu/backend_webgpu.h
     backend_sdl.cpp
     backend_sdl.h
     blocklist_driver.cpp
@@ -2489,6 +2539,8 @@ if(CLIENT)
     keynames.h
     notifications.cpp
     notifications.h
+    render_command_queue.cpp
+    render_command_queue.h
     serverbrowser.cpp
     serverbrowser.h
     serverbrowser_http.cpp
@@ -2815,6 +2867,9 @@ if(CLIENT)
     ${PLATFORM_CLIENT_LIBS}
     ${LIBS}
   )
+  if(WEBGPU_NATIVE_BACKEND)
+    list(APPEND LIBS_CLIENT WGPU::Native)
+  endif()
 
   if(DISCORD)
     if(NOT DISCORD_DYNAMIC)
@@ -2882,6 +2937,11 @@ if(CLIENT)
   )
   target_link_libraries(game-client ${LIBS_CLIENT})
 
+  if(WEBGPU_BACKEND_PROTOTYPE AND TARGET_OS STREQUAL "emscripten")
+    target_compile_options(game-client PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+    target_link_options(game-client PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+  endif()
+
   if(MSVC)
     target_link_options(game-client PRIVATE /ENTRY:mainCRTStartup)
   endif()
@@ -2905,8 +2965,23 @@ if(CLIENT)
     ${PLATFORM_CLIENT_INCLUDE_DIRS}
   )
 
-  if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC)
+  if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC OR WEBGPU_NATIVE_BACKEND)
     set_own_rpath(game-client)
+  endif()
+  if(WEBGPU_NATIVE_BACKEND)
+    if(TARGET_OS STREQUAL "mac")
+      set_property(TARGET game-client PROPERTY BUILD_RPATH "@loader_path")
+      set_property(TARGET game-client PROPERTY INSTALL_RPATH "@loader_path/../lib/ddnet")
+    endif()
+    foreach(CLIENT_COPY_FILE ${COPY_FILES})
+      get_filename_component(CLIENT_COPY_FILE_ABSOLUTE "${CLIENT_COPY_FILE}" ABSOLUTE BASE_DIR "${PROJECT_SOURCE_DIR}")
+      add_custom_command(TARGET game-client POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CLIENT_COPY_FILE_ABSOLUTE}"
+          "$<TARGET_FILE_DIR:game-client>"
+        VERBATIM
+      )
+    endforeach()
   endif()
 
   set(PARAMS "${WAVPACK_INCLUDE_DIRS};${WAVPACK_LIBRARIES}")
@@ -2936,6 +3011,9 @@ if(CLIENT)
 
   if(VULKAN)
     target_compile_definitions(game-client PRIVATE CONF_BACKEND_VULKAN)
+  endif()
+  if(WEBGPU_BACKEND_PROTOTYPE)
+    target_compile_definitions(game-client PRIVATE CONF_BACKEND_WEBGPU)
   endif()
 
   list(APPEND TARGETS_OWN game-client)
@@ -3284,6 +3362,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     fs_test.cpp
     gameworld_test.cpp
     git_revision_test.cpp
+    graphics_threaded_test.cpp
     hash_test.cpp
     huffman_test.cpp
     io_test.cpp
@@ -3328,6 +3407,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     # tidy-alphabetical-start
     src/engine/client/blocklist_driver.cpp
     src/engine/client/blocklist_driver.h
+    src/engine/client/render_command_queue.cpp
+    src/engine/client/render_command_queue.h
     src/engine/client/serverbrowser.cpp
     src/engine/client/serverbrowser.h
     src/engine/client/serverbrowser_http.cpp
@@ -3603,7 +3684,6 @@ set(CPACK_FILES
 if(NOT TARGET_OS STREQUAL "emscripten")
   list(APPEND CPACK_FILES storage.cfg)
 endif()
-
 set(CPACK_GEN_FILES
   ${VULKAN_SHADER_FILE_LIST}
 )
@@ -3619,6 +3699,13 @@ if(NOT DEV)
   install(DIRECTORY data DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/ddnet COMPONENT data)
   if(TARGET game-client)
     install(TARGETS game-client DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT client)
+    if(WEBGPU_NATIVE_BACKEND)
+      if(TARGET_OS STREQUAL "windows")
+        install(FILES "${WGPU_NATIVE_RUNTIME_LIBRARY}" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT client)
+      else()
+        install(FILES "${WGPU_NATIVE_RUNTIME_LIBRARY}" DESTINATION ${CMAKE_INSTALL_LIBDIR}/ddnet COMPONENT client)
+      endif()
+    endif()
   endif()
   if(STEAMAPI_KIND STREQUAL SHARED)
     install(TARGETS ${TARGET_STEAMAPI} DESTINATION ${CMAKE_INSTALL_LIBDIR}/ddnet COMPONENT client)
@@ -3705,6 +3792,14 @@ if(CLIENT AND DMGBUILD_FOUND)
     set(STEAM_API_DYLIB_FOR_PACKAGE "${PROJECT_BINARY_DIR}/libsteam_api.dylib")
   endif()
 
+  if(WEBGPU_NATIVE_BACKEND)
+    set(DMG_WEBGPU_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy ${WGPU_NATIVE_RUNTIME_LIBRARY} ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/)
+    set(DMG_WEBGPU_DEPENDS ${WGPU_NATIVE_RUNTIME_LIBRARY})
+  else()
+    set(DMG_WEBGPU_COMMANDS)
+    set(DMG_WEBGPU_DEPENDS)
+  endif()
+
   if(MACOS_CODESIGN)
     set(CODESIGN_COMMANDS
         # tidy-alphabetical-start
@@ -3720,6 +3815,11 @@ if(CLIENT AND DMGBUILD_FOUND)
         COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/libswscale.8.dylib
         # tidy-alphabetical-end
     )
+    if(WEBGPU_NATIVE_BACKEND)
+      list(APPEND CODESIGN_COMMANDS
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/libwgpu_native.dylib
+      )
+    endif()
     foreach(target ${TARGET_TOOLS})
       list(APPEND CODESIGN_COMMANDS
           COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/MacOS/${target}
@@ -3790,6 +3890,7 @@ if(CLIENT AND DMGBUILD_FOUND)
     COMMAND ${CMAKE_COMMAND} -E copy bundle/client/Info.plist ${PROJECT_SOURCE_DIR}/other/bundle/client/PkgInfo ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:game-client> ${TARGET_TOOLS_FILES} ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/MacOS/
     COMMAND /bin/cp -a ${PROJECT_SOURCE_DIR}/ddnet-libs/sdl/${LIB_DIR}/SDL2.framework ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
+    ${DMG_WEBGPU_COMMANDS}
     # tidy-alphabetical-start
     COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/ddnet-libs/discord/${LIB_DIR}/discord_game_sdk.dylib ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
     COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/ddnet-libs/ffmpeg/${LIB_DIR}/libavcodec.61.dylib ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
@@ -3815,6 +3916,7 @@ if(CLIENT AND DMGBUILD_FOUND)
     DEPENDS
       game-client
       ${TARGET_STEAMAPI}
+      ${DMG_WEBGPU_DEPENDS}
       ${PROJECT_BINARY_DIR}/bundle/client/Info.plist
       ${DMG_SERVER_DEPENDS}
       # tidy-alphabetical-start

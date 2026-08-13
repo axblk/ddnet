@@ -15,13 +15,16 @@
 
 #include <SDL.h>
 #include <SDL_messagebox.h>
-#include <SDL_vulkan.h>
-
-#if defined(CONF_VIDEORECORDER)
-#include <engine/shared/video.h>
+#if defined(CONF_BACKEND_WEBGPU)
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#include <emscripten/html5.h>
+#elif defined(CONF_PLATFORM_MACOS)
+#include <SDL_metal.h>
 #endif
-
+#endif
 #include "backend_sdl.h"
+
+#include <SDL_vulkan.h>
 
 #if defined(CONF_HEADLESS_CLIENT)
 #include "backend/null/backend_null.h"
@@ -39,12 +42,20 @@
 #include "backend/vulkan/backend_vulkan.h"
 #endif
 
+#if defined(CONF_BACKEND_WEBGPU)
+#include "backend/webgpu/backend_webgpu.h"
+#endif
+
 #include "graphics_threaded.h"
 
 #include <engine/graphics.h>
 
 #include <algorithm>
 #include <cstdlib>
+
+#if defined(CONF_BACKEND_WEBGPU) && !defined(CONF_PLATFORM_EMSCRIPTEN) && !defined(CONF_PLATFORM_MACOS)
+#include <SDL_syswm.h>
+#endif
 
 class IStorage;
 
@@ -56,69 +67,62 @@ class IStorage;
 void CGraphicsBackend_Threaded::ThreadFunc(void *pUser)
 {
 	auto *pSelf = (CGraphicsBackend_Threaded *)pUser;
-	std::unique_lock<std::mutex> Lock(pSelf->m_BufferSwapMutex);
-	// notify, that the thread started
-	pSelf->m_Started = true;
-	pSelf->m_BufferSwapCond.notify_all();
-	while(!pSelf->m_Shutdown)
+	pSelf->m_ThreadStarted.Signal();
+	CRenderCommandQueue::SEntry QueuedBuffer;
+	while(pSelf->m_CommandQueue.WaitDequeue(QueuedBuffer))
 	{
-		pSelf->m_BufferSwapCond.wait(Lock, [&pSelf] { return pSelf->m_pBuffer != nullptr || pSelf->m_Shutdown; });
-		if(pSelf->m_pBuffer)
+		bool CanProcess;
 		{
-#ifdef CONF_PLATFORM_MACOS
-			CAutoreleasePool AutoreleasePool;
-#endif
-			pSelf->m_pProcessor->RunBuffer(pSelf->m_pBuffer);
-
-			pSelf->m_pBuffer = nullptr;
-			pSelf->m_BufferInProcess.store(false, std::memory_order_relaxed);
-			pSelf->m_BufferSwapCond.notify_all();
-
-#if defined(CONF_VIDEORECORDER)
-			if(IVideo::Current())
-				IVideo::Current()->NextVideoFrameThread();
-#endif
+			std::unique_lock Lock(pSelf->m_ProcessorErrorMutex);
+			CanProcess = pSelf->m_ProcessorError.m_ErrorType == GFX_ERROR_TYPE_NONE;
 		}
+#ifdef CONF_PLATFORM_MACOS
+		CAutoreleasePool AutoreleasePool;
+#endif
+		CCommandBuffer *pBuffer = QueuedBuffer.m_pBuffer;
+		SGfxErrorContainer ProcessorError;
+		if(CanProcess)
+		{
+			pSelf->m_pProcessor->RunBuffer(pBuffer);
+			ProcessorError = pSelf->m_pProcessor->GetError();
+		}
+		pBuffer->SignalCompletions();
+
+		{
+			std::unique_lock Lock(pSelf->m_ProcessorErrorMutex);
+			if(pSelf->m_ProcessorError.m_ErrorType == GFX_ERROR_TYPE_NONE && ProcessorError.m_ErrorType != GFX_ERROR_TYPE_NONE)
+				pSelf->m_ProcessorError = std::move(ProcessorError);
+		}
+		pSelf->m_CommandQueue.Recycle(std::move(QueuedBuffer), CanProcess);
 	}
 }
 #endif
 
-CGraphicsBackend_Threaded::CGraphicsBackend_Threaded(TTranslateFunc &&TranslateFunc) :
-	m_TranslateFunc(std::move(TranslateFunc))
-{
-	m_pProcessor = nullptr;
-	m_Shutdown = true;
-#if !defined(CONF_PLATFORM_EMSCRIPTEN)
-	m_pBuffer = nullptr;
-	m_BufferInProcess.store(false, std::memory_order_relaxed);
-#endif
-}
-
 void CGraphicsBackend_Threaded::StartProcessor(ICommandProcessor *pProcessor)
 {
-	dbg_assert(m_Shutdown, "Processor was already not shut down.");
-	m_Shutdown = false;
+	dbg_assert(m_CommandQueue.IsStopped(), "Processor was already not shut down.");
 	m_pProcessor = pProcessor;
+	{
+		std::unique_lock Lock(m_ProcessorErrorMutex);
+		m_ProcessorError = {};
+	}
+	m_CommandQueue.Start();
 #if !defined(CONF_PLATFORM_EMSCRIPTEN)
-	std::unique_lock<std::mutex> Lock(m_BufferSwapMutex);
 	m_pThread = thread_init(ThreadFunc, this, "Graphics thread");
-	// wait for the thread to start
-	m_BufferSwapCond.wait(Lock, [this]() -> bool { return m_Started; });
+	m_ThreadStarted.Wait();
 #endif
 }
 
 void CGraphicsBackend_Threaded::StopProcessor()
 {
-	dbg_assert(!m_Shutdown, "Processor was already shut down.");
-	m_Shutdown = true;
+	dbg_assert(!m_CommandQueue.IsStopped(), "Processor was already shut down.");
+	WaitForIdle();
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 	m_Warning = m_pProcessor->GetWarning();
+	m_CommandQueue.Stop();
 #else
-	{
-		std::unique_lock<std::mutex> Lock(m_BufferSwapMutex);
-		m_Warning = m_pProcessor->GetWarning();
-		m_BufferSwapCond.notify_all();
-	}
+	m_Warning = m_pProcessor->GetWarning();
+	m_CommandQueue.Stop();
 	thread_wait(m_pThread);
 #endif
 }
@@ -131,30 +135,90 @@ void CGraphicsBackend_Threaded::RunBuffer(CCommandBuffer *pBuffer)
 	if(Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
 	{
 		RunBufferSingleThreadedUnsafe(pBuffer);
-#if defined(CONF_VIDEORECORDER)
-		if(IVideo::Current())
-			IVideo::Current()->NextVideoFrameThread();
-#endif
+		pBuffer->SignalCompletions();
 	}
 #else
 	WaitForIdle();
 	{
-		std::unique_lock<std::mutex> Lock(m_BufferSwapMutex);
-		Error = m_pProcessor->GetError();
-		if(Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
-		{
-			m_pBuffer = pBuffer;
-			m_BufferInProcess.store(true, std::memory_order_relaxed);
-			m_BufferSwapCond.notify_all();
-		}
+		std::unique_lock Lock(m_ProcessorErrorMutex);
+		Error = m_ProcessorError;
+	}
+	if(Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
+	{
+		const bool Queued = m_CommandQueue.EnqueueBorrowed(pBuffer);
+		dbg_assert(Queued, "graphics: borrowed command buffer published while queue stopped");
 	}
 #endif
 
 	// Process error after lock is released to prevent deadlock
 	if(Error.m_ErrorType != GFX_ERROR_TYPE_NONE)
 	{
+		pBuffer->SignalCompletions();
 		ProcessError(Error);
 	}
+}
+
+bool CGraphicsBackend_Threaded::RunBufferQueued(CCommandBuffer *pBuffer, bool WaitForCapacity)
+{
+	dbg_assert(pBuffer->SubmissionInfo().m_Channel == CCommandBuffer::ECommandChannel::RELIABLE, "graphics: reliable publish received a frame packet");
+	return RunBufferQueuedInternal(pBuffer, WaitForCapacity);
+}
+
+bool CGraphicsBackend_Threaded::RunFramePacket(CCommandBuffer *pBuffer, bool WaitForCapacity)
+{
+	dbg_assert(pBuffer->SubmissionInfo().m_Channel == CCommandBuffer::ECommandChannel::FRAME, "graphics: frame publish received a reliable buffer");
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	(void)WaitForCapacity;
+	RunBuffer(pBuffer);
+	pBuffer->Reset();
+	m_CommandQueue.RecordSynchronousFrame(true);
+	return true;
+#else
+	SGfxErrorContainer Error;
+	{
+		std::unique_lock Lock(m_ProcessorErrorMutex);
+		Error = m_ProcessorError;
+	}
+	if(Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
+	{
+		if(WaitForCapacity)
+			return m_CommandQueue.WaitEnqueuePinnedFrame(pBuffer);
+		return m_CommandQueue.EnqueueFrame(pBuffer) != CRenderCommandQueue::EFrameEnqueueResult::RETRY;
+	}
+
+	m_CommandQueue.DiscardFrame(pBuffer);
+	ProcessError(Error);
+	return true;
+#endif
+}
+
+IGraphicsBackend::SFrameMailboxStats CGraphicsBackend_Threaded::GetFrameMailboxStats() const
+{
+	return m_CommandQueue.GetFrameMailboxStats();
+}
+
+bool CGraphicsBackend_Threaded::RunBufferQueuedInternal(CCommandBuffer *pBuffer, bool WaitForCapacity)
+{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	(void)WaitForCapacity;
+	RunBuffer(pBuffer);
+	pBuffer->Reset();
+	return true;
+#else
+	SGfxErrorContainer Error;
+	{
+		std::unique_lock Lock(m_ProcessorErrorMutex);
+		Error = m_ProcessorError;
+	}
+	if(Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
+		return WaitForCapacity ? m_CommandQueue.WaitEnqueueReliable(pBuffer) : m_CommandQueue.EnqueueReliable(pBuffer);
+
+	pBuffer->SignalCompletions();
+	pBuffer->FreeExternalData();
+	pBuffer->Reset();
+	ProcessError(Error);
+	return true;
+#endif
 }
 
 void CGraphicsBackend_Threaded::RunBufferSingleThreadedUnsafe(CCommandBuffer *pBuffer)
@@ -167,72 +231,46 @@ bool CGraphicsBackend_Threaded::IsIdle() const
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 	return true;
 #else
-	return !m_BufferInProcess.load(std::memory_order_relaxed);
+	return m_CommandQueue.IsIdle();
 #endif
 }
 
 void CGraphicsBackend_Threaded::WaitForIdle()
 {
 #if !defined(CONF_PLATFORM_EMSCRIPTEN)
-	std::unique_lock<std::mutex> Lock(m_BufferSwapMutex);
-	m_BufferSwapCond.wait(Lock, [this]() { return m_pBuffer == nullptr; });
+	m_CommandQueue.WaitForIdle();
 #endif
 }
 
 void CGraphicsBackend_Threaded::ProcessError(const SGfxErrorContainer &Error)
 {
-	m_FatalError = "";
+	m_Error = Error;
+	std::string LogMessage = "Graphics Error:";
 	for(const auto &ErrStr : Error.m_vErrors)
 	{
-		if(!m_FatalError.empty())
-		{
-			m_FatalError.append("\n");
-		}
-		if(ErrStr.m_RequiresTranslation)
-			m_FatalError.append(m_TranslateFunc(ErrStr.m_Err.c_str(), ""));
-		else
-			m_FatalError.append(ErrStr.m_Err);
+		LogMessage.append("\n");
+		LogMessage.append(ErrStr);
 	}
-	std::string LogMessage = "Graphics Error:\n" + m_FatalError;
 	dbg_assert_failed("%s", LogMessage.c_str());
 }
 
-const char *CGraphicsBackend_Threaded::GetFatalError() const
+const SGfxErrorContainer &CGraphicsBackend_Threaded::GetError() const
 {
-	return m_FatalError.c_str();
+	return m_Error;
 }
 
-bool CGraphicsBackend_Threaded::GetWarning(std::vector<std::string> &WarningStrings)
+bool CGraphicsBackend_Threaded::GetWarning(SGfxWarningContainer &Warning)
 {
 	if(m_Warning.m_WarningType != GFX_WARNING_TYPE_NONE)
 	{
-		m_Warning.m_WarningType = GFX_WARNING_TYPE_NONE;
-		WarningStrings = m_Warning.m_vWarnings;
+		Warning = std::move(m_Warning);
+		m_Warning = {};
 		return true;
 	}
 	return false;
 }
 
-// ------------ CCommandProcessorFragment_General
-
-void CCommandProcessorFragment_General::Cmd_Signal(const CCommandBuffer::SCommand_Signal *pCommand)
-{
-	pCommand->m_pSemaphore->Signal();
-}
-
-bool CCommandProcessorFragment_General::RunCommand(const CCommandBuffer::SCommand *pBaseCommand)
-{
-	switch(pBaseCommand->m_Cmd)
-	{
-	case CCommandBuffer::CMD_SIGNAL: Cmd_Signal(static_cast<const CCommandBuffer::SCommand_Signal *>(pBaseCommand)); break;
-	default: return false;
-	}
-
-	return true;
-}
-
-// ------------ CCommandProcessorFragment_SDL
-void CCommandProcessorFragment_SDL::Cmd_Init(const SCommand_Init *pCommand)
+void CCommandProcessor_SDL::Cmd_Init(const SCommand_Init *pCommand)
 {
 	m_GLContext = pCommand->m_GLContext;
 	m_pWindow = pCommand->m_pWindow;
@@ -240,19 +278,19 @@ void CCommandProcessorFragment_SDL::Cmd_Init(const SCommand_Init *pCommand)
 		SDL_GL_MakeCurrent(m_pWindow, m_GLContext);
 }
 
-void CCommandProcessorFragment_SDL::Cmd_Shutdown(const SCommand_Shutdown *pCommand)
+void CCommandProcessor_SDL::Cmd_Shutdown()
 {
 	if(m_GLContext)
 		SDL_GL_MakeCurrent(nullptr, nullptr);
 }
 
-void CCommandProcessorFragment_SDL::Cmd_Swap(const CCommandBuffer::SCommand_Swap *pCommand)
+void CCommandProcessor_SDL::Cmd_Swap()
 {
 	if(m_GLContext)
 		SDL_GL_SwapWindow(m_pWindow);
 }
 
-void CCommandProcessorFragment_SDL::Cmd_VSync(const CCommandBuffer::SCommand_VSync *pCommand)
+void CCommandProcessor_SDL::Cmd_VSync(const CCommandBuffer::SCommand_VSync *pCommand)
 {
 	if(m_GLContext)
 	{
@@ -260,14 +298,14 @@ void CCommandProcessorFragment_SDL::Cmd_VSync(const CCommandBuffer::SCommand_VSy
 		// SDL_GL_SetSwapInterval is not supported with Emscripten as this is only a wrapper for the
 		// emscripten_set_main_loop_timing function which does not work because we do not use the
 		// emscripten_set_main_loop function before.
-		*pCommand->m_pRetOk = !pCommand->m_VSync;
+		pCommand->m_pResult->m_Ok = !pCommand->m_VSync;
 #else
-		*pCommand->m_pRetOk = SDL_GL_SetSwapInterval(pCommand->m_VSync) == 0;
+		pCommand->m_pResult->m_Ok = SDL_GL_SetSwapInterval(pCommand->m_VSync) == 0;
 #endif
 	}
 }
 
-void CCommandProcessorFragment_SDL::Cmd_WindowCreateNtf(const CCommandBuffer::SCommand_WindowCreateNtf *pCommand)
+void CCommandProcessor_SDL::Cmd_WindowCreateNtf(const CCommandBuffer::SCommand_WindowCreateNtf *pCommand)
 {
 	m_pWindow = SDL_GetWindowFromID(pCommand->m_WindowId);
 	// Android destroys windows when they are not visible, so we get the new one and work with that
@@ -278,7 +316,7 @@ void CCommandProcessorFragment_SDL::Cmd_WindowCreateNtf(const CCommandBuffer::SC
 #endif
 }
 
-void CCommandProcessorFragment_SDL::Cmd_WindowDestroyNtf(const CCommandBuffer::SCommand_WindowDestroyNtf *pCommand)
+void CCommandProcessor_SDL::Cmd_WindowDestroyNtf()
 {
 	// Unbind the graphic context from the window, so it does not get destroyed
 #ifdef CONF_PLATFORM_ANDROID
@@ -287,145 +325,87 @@ void CCommandProcessorFragment_SDL::Cmd_WindowDestroyNtf(const CCommandBuffer::S
 #endif
 }
 
-CCommandProcessorFragment_SDL::CCommandProcessorFragment_SDL() = default;
-
-bool CCommandProcessorFragment_SDL::RunCommand(const CCommandBuffer::SCommand *pBaseCommand)
+void CCommandProcessor_SDL::RunBuffer(CCommandBuffer *pBuffer)
 {
-	switch(pBaseCommand->m_Cmd)
+	for(CCommandBuffer::SCommand *pCommand = pBuffer->Head(); pCommand; pCommand = pCommand->m_pNext)
 	{
-	case CCommandBuffer::CMD_WINDOW_CREATE_NTF: Cmd_WindowCreateNtf(static_cast<const CCommandBuffer::SCommand_WindowCreateNtf *>(pBaseCommand)); break;
-	case CCommandBuffer::CMD_WINDOW_DESTROY_NTF: Cmd_WindowDestroyNtf(static_cast<const CCommandBuffer::SCommand_WindowDestroyNtf *>(pBaseCommand)); break;
-	case CCommandBuffer::CMD_SWAP: Cmd_Swap(static_cast<const CCommandBuffer::SCommand_Swap *>(pBaseCommand)); break;
-	case CCommandBuffer::CMD_VSYNC: Cmd_VSync(static_cast<const CCommandBuffer::SCommand_VSync *>(pBaseCommand)); break;
-	case CCommandBuffer::CMD_MULTISAMPLING: break;
-	case CMD_INIT: Cmd_Init(static_cast<const SCommand_Init *>(pBaseCommand)); break;
-	case CMD_SHUTDOWN: Cmd_Shutdown(static_cast<const SCommand_Shutdown *>(pBaseCommand)); break;
-	case CCommandProcessorFragment_GLBase::CMD_PRE_INIT: break;
-	case CCommandProcessorFragment_GLBase::CMD_POST_SHUTDOWN: break;
-	default: return false;
-	}
+		if(pCommand->m_Cmd == CCommandBuffer::CMD_SIGNAL)
+		{
+			static_cast<const CCommandBuffer::SCommand_Signal *>(pCommand)->Signal();
+			continue;
+		}
 
-	return true;
-}
-
-// ------------ CCommandProcessor_SDL_GL
-
-void CCommandProcessor_SDL_GL::HandleError()
-{
-	switch(m_Error.m_ErrorType)
-	{
-	case GFX_ERROR_TYPE_INIT:
-		m_Error.m_vErrors.emplace_back(SGfxErrorContainer::SError{true, Localizable("Failed during initialization. Try to change gfx_backend to OpenGL or Vulkan in settings_ddnet.cfg in the config directory and try again.", "Graphics error")});
-		break;
-	case GFX_ERROR_TYPE_OUT_OF_MEMORY_IMAGE:
-		[[fallthrough]];
-	case GFX_ERROR_TYPE_OUT_OF_MEMORY_BUFFER:
-		[[fallthrough]];
-	case GFX_ERROR_TYPE_OUT_OF_MEMORY_STAGING:
-		m_Error.m_vErrors.emplace_back(SGfxErrorContainer::SError{true, Localizable("Out of VRAM. Try setting 'cl_skins_loaded_max' to a lower value or remove custom assets (skins, entities, etc.), especially those with high resolution.", "Graphics error")});
-		break;
-	case GFX_ERROR_TYPE_RENDER_RECORDING:
-		m_Error.m_vErrors.emplace_back(SGfxErrorContainer::SError{true, Localizable("An error during command recording occurred. Try to update your GPU drivers.", "Graphics error")});
-		break;
-	case GFX_ERROR_TYPE_RENDER_CMD_FAILED:
-		m_Error.m_vErrors.emplace_back(SGfxErrorContainer::SError{true, Localizable("A render command failed. Try to update your GPU drivers.", "Graphics error")});
-		break;
-	case GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED:
-		m_Error.m_vErrors.emplace_back(SGfxErrorContainer::SError{true, Localizable("Submitting the render commands failed. Try to update your GPU drivers.", "Graphics error")});
-		break;
-	case GFX_ERROR_TYPE_SWAP_FAILED:
-		m_Error.m_vErrors.emplace_back(SGfxErrorContainer::SError{true, Localizable("Failed to swap framebuffers. Try to update your GPU drivers.", "Graphics error")});
-		break;
-	case GFX_ERROR_TYPE_UNKNOWN:
-		[[fallthrough]];
-	default:
-		m_Error.m_vErrors.emplace_back(SGfxErrorContainer::SError{true, Localizable("Unknown error. Try to change gfx_backend to OpenGL or Vulkan in settings_ddnet.cfg in the config directory and try again.", "Graphics error")});
-		break;
-	}
-}
-
-void CCommandProcessor_SDL_GL::HandleWarning()
-{
-	switch(m_Warning.m_WarningType)
-	{
-	case GFX_WARNING_TYPE_INIT_FAILED:
-		m_Warning.m_vWarnings.emplace_back(Localizable("Could not initialize the given graphics backend, reverting to the default backend now.", "Graphics error"));
-		break;
-	case GFX_WARNING_TYPE_INIT_FAILED_MISSING_INTEGRATED_GPU_DRIVER:
-		m_Warning.m_vWarnings.emplace_back(Localizable("Could not initialize the given graphics backend, this is probably because you didn't install the driver of the integrated graphics card.", "Graphics error"));
-		break;
-	case GFX_WARNING_MISSING_EXTENSION:
-		// ignore this warning for now
-		return;
-	case GFX_WARNING_LOW_ON_MEMORY:
-		// ignore this warning for now
-		return;
-	case GFX_WARNING_TYPE_INIT_FAILED_NO_DEVICE_WITH_REQUIRED_VERSION:
-	{
-		// Ignore this warning for now completely.
-		// A console message was already printed by the backend
-		m_Warning.m_WarningType = GFX_WARNING_TYPE_NONE;
-		m_Warning.m_vWarnings.clear();
-		return;
-	}
-	default:
-		dbg_assert_failed("Unhandled graphics warning type %d", (int)m_Warning.m_WarningType);
-	}
-}
-
-void CCommandProcessor_SDL_GL::RunBuffer(CCommandBuffer *pBuffer)
-{
-	m_pGLBackend->StartCommands(pBuffer->m_CommandCount, pBuffer->m_RenderCallCount);
-
-	for(const CCommandBuffer::SCommand *pCommand = pBuffer->Head(); pCommand; pCommand = pCommand->m_pNext)
-	{
-		auto Res = m_pGLBackend->RunCommand(pCommand);
+		auto Res = m_pRendererBackend->RunCommand(pCommand);
 		if(Res == ERunCommandReturnTypes::RUN_COMMAND_COMMAND_HANDLED)
 		{
+			CCommandBuffer::FreeExternalData(pCommand);
 			continue;
 		}
 		else if(Res == ERunCommandReturnTypes::RUN_COMMAND_COMMAND_ERROR)
 		{
-			m_Error = m_pGLBackend->GetError();
-			HandleError();
+			m_Error = m_pRendererBackend->GetError();
+			pBuffer->FreeExternalDataFrom(pCommand);
 			return;
 		}
 		else if(Res == ERunCommandReturnTypes::RUN_COMMAND_COMMAND_WARNING)
 		{
-			m_Warning = m_pGLBackend->GetWarning();
-			HandleWarning();
+			if(m_pRendererBackend->GetError().m_ErrorType != GFX_ERROR_TYPE_NONE)
+			{
+				m_Error = m_pRendererBackend->GetError();
+			}
+			else
+			{
+				m_Warning = m_pRendererBackend->GetWarning();
+			}
+			pBuffer->FreeExternalDataFrom(pCommand);
 			return;
 		}
 
-		if(m_SDL.RunCommand(pCommand))
+		bool PlatformCommandHandled = true;
+		switch(pCommand->m_Cmd)
+		{
+		case CCommandBuffer::CMD_WINDOW_CREATE_NTF: Cmd_WindowCreateNtf(static_cast<const CCommandBuffer::SCommand_WindowCreateNtf *>(pCommand)); break;
+		case CCommandBuffer::CMD_WINDOW_DESTROY_NTF: Cmd_WindowDestroyNtf(); break;
+		case CCommandBuffer::CMD_SWAP: Cmd_Swap(); break;
+		case CCommandBuffer::CMD_VSYNC: Cmd_VSync(static_cast<const CCommandBuffer::SCommand_VSync *>(pCommand)); break;
+		case CCommandBuffer::CMD_MULTISAMPLING: break;
+		case CMD_INIT: Cmd_Init(static_cast<const SCommand_Init *>(pCommand)); break;
+		case CMD_SHUTDOWN: Cmd_Shutdown(); break;
+		case CCommandProcessorFragment_Renderer::CMD_PRE_INIT: break;
+		case CCommandProcessorFragment_Renderer::CMD_POST_SHUTDOWN: break;
+		default: PlatformCommandHandled = false;
+		}
+		if(PlatformCommandHandled)
+		{
+			CCommandBuffer::FreeExternalData(pCommand);
 			continue;
+		}
 
-		if(m_General.RunCommand(pCommand))
-			continue;
-
+		pBuffer->FreeExternalDataFrom(pCommand);
 		dbg_assert_failed("Unknown graphics command %d", pCommand->m_Cmd);
 	}
 
-	m_pGLBackend->EndCommands();
+	if(m_pRendererBackend->GetError().m_ErrorType != GFX_ERROR_TYPE_NONE)
+	{
+		m_Error = m_pRendererBackend->GetError();
+	}
 }
 
-CCommandProcessor_SDL_GL::CCommandProcessor_SDL_GL(EBackendType BackendType, int GLMajor, int GLMinor, int GLPatch)
+CCommandProcessor_SDL::CCommandProcessor_SDL(EBackendType BackendType, int GLMajor, int GLMinor, const SWebGpuNativeWindow &WebGpuNativeWindow, EWebGpuBackendType WebGpuBackendType)
 {
-	m_BackendType = BackendType;
-
 #if defined(CONF_HEADLESS_CLIENT)
-	m_pGLBackend = new CCommandProcessorFragment_Null();
+	m_pRendererBackend = new CCommandProcessorFragment_Null();
 #else
 	if(BackendType == BACKEND_TYPE_OPENGL_ES)
 	{
 #if defined(CONF_BACKEND_OPENGL_ES) || defined(CONF_BACKEND_OPENGL_ES3)
 		if(GLMajor < 3)
 		{
-			m_pGLBackend = new CCommandProcessorFragment_OpenGLES();
+			m_pRendererBackend = new CCommandProcessorFragment_OpenGLES();
 		}
 		else
 		{
-			m_pGLBackend = new CCommandProcessorFragment_OpenGLES3();
+			m_pRendererBackend = new CCommandProcessorFragment_OpenGLES3();
 		}
 #endif
 	}
@@ -434,52 +414,85 @@ CCommandProcessor_SDL_GL::CCommandProcessor_SDL_GL(EBackendType BackendType, int
 #if !defined(CONF_BACKEND_OPENGL_ES)
 		if(GLMajor < 2)
 		{
-			m_pGLBackend = new CCommandProcessorFragment_OpenGL();
+			m_pRendererBackend = new CCommandProcessorFragment_OpenGL();
 		}
 		if(GLMajor == 2)
 		{
-			m_pGLBackend = new CCommandProcessorFragment_OpenGL2();
+			m_pRendererBackend = new CCommandProcessorFragment_OpenGL2();
 		}
 		if(GLMajor == 3 && GLMinor == 0)
 		{
-			m_pGLBackend = new CCommandProcessorFragment_OpenGL3();
+			m_pRendererBackend = new CCommandProcessorFragment_OpenGL2();
 		}
 		else if((GLMajor == 3 && GLMinor == 3) || GLMajor >= 4)
 		{
-			m_pGLBackend = new CCommandProcessorFragment_OpenGL3_3();
+			m_pRendererBackend = new CCommandProcessorFragment_OpenGL3_3();
 		}
 #endif
 	}
 	else if(BackendType == BACKEND_TYPE_VULKAN)
 	{
 #if defined(CONF_BACKEND_VULKAN)
-		m_pGLBackend = CreateVulkanCommandProcessorFragment();
+		m_pRendererBackend = CreateVulkanCommandProcessorFragment();
+#endif
+	}
+	else if(BackendType == BACKEND_TYPE_WEBGPU)
+	{
+#if defined(CONF_BACKEND_WEBGPU)
+		m_pRendererBackend = CreateWebGpuCommandProcessorFragment(WebGpuNativeWindow, WebGpuBackendType);
 #endif
 	}
 #endif
+	dbg_assert(m_pRendererBackend != nullptr, "graphics command processor backend is unavailable");
 }
 
-CCommandProcessor_SDL_GL::~CCommandProcessor_SDL_GL()
+CCommandProcessor_SDL::~CCommandProcessor_SDL()
 {
-	delete m_pGLBackend;
+	delete m_pRendererBackend;
 }
 
-const SGfxErrorContainer &CCommandProcessor_SDL_GL::GetError() const
+static EWebGpuBackendType WebGpuBackendTypeFromConfig()
+{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "auto") != 0)
+	{
+		log_warn("gfx", "native WebGPU backend selection '%s' is unavailable in the browser, using auto", g_Config.m_GfxWebGpuBackend);
+		str_copy(g_Config.m_GfxWebGpuBackend, "auto");
+	}
+#else
+	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "D3D12") == 0 || str_comp_nocase(g_Config.m_GfxWebGpuBackend, "DX12") == 0)
+		return EWebGpuBackendType::D3D12;
+	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "Vulkan") == 0)
+		return EWebGpuBackendType::VULKAN;
+	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "Metal") == 0)
+		return EWebGpuBackendType::METAL;
+	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "OpenGL") == 0)
+		return EWebGpuBackendType::OPENGL;
+	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "auto") != 0)
+	{
+		log_warn("gfx", "unknown wgpu-native backend '%s', using auto", g_Config.m_GfxWebGpuBackend);
+		str_copy(g_Config.m_GfxWebGpuBackend, "auto");
+	}
+#endif
+	return EWebGpuBackendType::AUTO;
+}
+
+const SGfxErrorContainer &CCommandProcessor_SDL::GetError() const
 {
 	return m_Error;
 }
 
-void CCommandProcessor_SDL_GL::ErroneousCleanup()
+void CCommandProcessor_SDL::ErroneousCleanup()
 {
-	m_pGLBackend->ErroneousCleanup();
+	m_pRendererBackend->ErroneousCleanup();
 }
 
-const SGfxWarningContainer &CCommandProcessor_SDL_GL::GetWarning() const
+const SGfxWarningContainer &CCommandProcessor_SDL::GetWarning() const
 {
 	return m_Warning;
 }
 
-// ------------ CGraphicsBackend_SDL_GL
+// ------------ CGraphicsBackend_SDL
 
 #if !defined(CONF_HEADLESS_CLIENT)
 static bool BackendInitGlew(EBackendType BackendType, int &GlewMajor, int &GlewMinor, int &GlewPatch)
@@ -529,7 +542,7 @@ static bool BackendInitGlew(EBackendType BackendType, int &GlewMajor, int &GlewM
 			return true;
 		}
 #endif
-// Don't allow GL 3.3, if the driver doesn't support at least OpenGL 4.5
+// Don't use intermediate OpenGL 4.x versions on Windows.
 #ifndef CONF_FAMILY_WINDOWS
 		if(GLEW_VERSION_4_4)
 		{
@@ -566,6 +579,7 @@ static bool BackendInitGlew(EBackendType BackendType, int &GlewMajor, int &GlewM
 			GlewPatch = 0;
 			return true;
 		}
+#endif
 		if(GLEW_VERSION_3_3)
 		{
 			GlewMajor = 3;
@@ -573,7 +587,6 @@ static bool BackendInitGlew(EBackendType BackendType, int &GlewMajor, int &GlewM
 			GlewPatch = 0;
 			return true;
 		}
-#endif
 		if(GLEW_VERSION_3_0)
 		{
 			GlewMajor = 3;
@@ -748,37 +761,28 @@ static int IsVersionSupportedGlew(EBackendType BackendType, int VersionMajor, in
 }
 #endif // !CONF_HEADLESS_CLIENT
 
-EBackendType CGraphicsBackend_SDL_GL::DetectBackend()
+EBackendType CGraphicsBackend_SDL::DetectBackend() const
 {
 	EBackendType RetBackendType = BACKEND_TYPE_OPENGL;
-#if defined(CONF_BACKEND_VULKAN)
-	const char *pEnvDriver = SDL_getenv("DDNET_DRIVER");
-	if(pEnvDriver && str_comp_nocase(pEnvDriver, "GLES") == 0)
-	{
-		RetBackendType = BACKEND_TYPE_OPENGL_ES;
-	}
-	else if(pEnvDriver && str_comp_nocase(pEnvDriver, "Vulkan") == 0)
-	{
-		RetBackendType = BACKEND_TYPE_VULKAN;
-	}
-	else if(pEnvDriver && str_comp_nocase(pEnvDriver, "OpenGL") == 0)
-	{
-		RetBackendType = BACKEND_TYPE_OPENGL;
-	}
-	else if(pEnvDriver == nullptr)
+	if(m_BackendOverride != BACKEND_TYPE_AUTO)
+		RetBackendType = m_BackendOverride;
+	else
 	{
 		// load the config backend
 		const char *pConfBackend = g_Config.m_GfxBackend;
 		if(str_comp_nocase(pConfBackend, "GLES") == 0)
 			RetBackendType = BACKEND_TYPE_OPENGL_ES;
+#if defined(CONF_BACKEND_VULKAN)
 		else if(str_comp_nocase(pConfBackend, "Vulkan") == 0)
 			RetBackendType = BACKEND_TYPE_VULKAN;
+#endif
+#if defined(CONF_BACKEND_WEBGPU)
+		else if(str_comp_nocase(pConfBackend, "WebGPU") == 0)
+			RetBackendType = BACKEND_TYPE_WEBGPU;
+#endif
 		else if(str_comp_nocase(pConfBackend, "OpenGL") == 0)
 			RetBackendType = BACKEND_TYPE_OPENGL;
 	}
-#else
-	RetBackendType = BACKEND_TYPE_OPENGL;
-#endif
 #if !defined(CONF_BACKEND_OPENGL_ES) && !defined(CONF_BACKEND_OPENGL_ES3)
 	if(RetBackendType == BACKEND_TYPE_OPENGL_ES)
 		RetBackendType = BACKEND_TYPE_OPENGL;
@@ -789,7 +793,7 @@ EBackendType CGraphicsBackend_SDL_GL::DetectBackend()
 	return RetBackendType;
 }
 
-void CGraphicsBackend_SDL_GL::ClampDriverVersion(EBackendType BackendType)
+void CGraphicsBackend_SDL::ClampDriverVersion(EBackendType BackendType)
 {
 	if(BackendType == BACKEND_TYPE_OPENGL)
 	{
@@ -842,6 +846,83 @@ void CGraphicsBackend_SDL_GL::ClampDriverVersion(EBackendType BackendType)
 		g_Config.m_GfxGLPatch = 0;
 #endif
 	}
+	else if(BackendType == BACKEND_TYPE_WEBGPU)
+	{
+		g_Config.m_GfxGLMajor = 1;
+		g_Config.m_GfxGLMinor = 0;
+		g_Config.m_GfxGLPatch = 0;
+	}
+}
+
+static void GetDrawableSize(SDL_Window *pWindow, EBackendType BackendType, int *pWidth, int *pHeight)
+{
+	if(BackendType == BACKEND_TYPE_VULKAN)
+		SDL_Vulkan_GetDrawableSize(pWindow, pWidth, pHeight);
+	else if(BackendType == BACKEND_TYPE_WEBGPU)
+	{
+#if defined(CONF_BACKEND_WEBGPU) && defined(CONF_PLATFORM_EMSCRIPTEN)
+		if(emscripten_get_canvas_element_size("#canvas", pWidth, pHeight) != EMSCRIPTEN_RESULT_SUCCESS)
+			SDL_GetWindowSize(pWindow, pWidth, pHeight);
+#elif defined(CONF_BACKEND_WEBGPU) && defined(CONF_PLATFORM_MACOS)
+		SDL_Metal_GetDrawableSize(pWindow, pWidth, pHeight);
+#elif SDL_VERSION_ATLEAST(2, 26, 0)
+		SDL_GetWindowSizeInPixels(pWindow, pWidth, pHeight);
+#else
+		SDL_GetWindowSize(pWindow, pWidth, pHeight);
+#endif
+	}
+	else
+		SDL_GL_GetDrawableSize(pWindow, pWidth, pHeight);
+}
+
+#if defined(CONF_BACKEND_WEBGPU) && !defined(CONF_PLATFORM_MACOS) && !defined(CONF_PLATFORM_EMSCRIPTEN)
+static bool GetWebGpuNativeWindow(SDL_Window *pWindow, SWebGpuNativeWindow &NativeWindow)
+{
+	SDL_SysWMinfo Info{};
+	SDL_VERSION(&Info.version);
+	if(SDL_GetWindowWMInfo(pWindow, &Info) != SDL_TRUE)
+		return false;
+	switch(Info.subsystem)
+	{
+#if defined(SDL_VIDEO_DRIVER_WINDOWS)
+	case SDL_SYSWM_WINDOWS:
+		NativeWindow.m_Type = SWebGpuNativeWindow::EType::WINDOWS;
+		NativeWindow.m_pDisplay = Info.info.win.hinstance;
+		NativeWindow.m_pWindow = Info.info.win.window;
+		return true;
+#endif
+#if defined(SDL_VIDEO_DRIVER_X11)
+	case SDL_SYSWM_X11:
+		NativeWindow.m_Type = SWebGpuNativeWindow::EType::XLIB;
+		NativeWindow.m_pDisplay = Info.info.x11.display;
+		NativeWindow.m_WindowId = Info.info.x11.window;
+		return true;
+#endif
+#if defined(SDL_VIDEO_DRIVER_WAYLAND)
+	case SDL_SYSWM_WAYLAND:
+		NativeWindow.m_Type = SWebGpuNativeWindow::EType::WAYLAND;
+		NativeWindow.m_pDisplay = Info.info.wl.display;
+		NativeWindow.m_pWindow = Info.info.wl.surface;
+		return true;
+#endif
+	default:
+		return false;
+	}
+}
+#endif
+
+void CGraphicsBackend_SDL::DestroyWindow()
+{
+#if defined(CONF_BACKEND_WEBGPU) && defined(CONF_PLATFORM_MACOS)
+	if(m_pWebGpuMetalView != nullptr)
+	{
+		SDL_Metal_DestroyView(m_pWebGpuMetalView);
+		m_pWebGpuMetalView = nullptr;
+	}
+#endif
+	m_WebGpuNativeWindow = {};
+	SDL_DestroyWindow(m_pWindow);
+	m_pWindow = nullptr;
 }
 
 static Uint32 MessageBoxTypeToSdlFlags(IGraphics::EMessageBoxType Type)
@@ -899,8 +980,10 @@ std::optional<int> ShowMessageBoxWithoutGraphics(const IGraphics::CMessageBox &M
 	return ShowMessageBoxImpl(MessageBox, nullptr);
 }
 
-std::optional<int> CGraphicsBackend_SDL_GL::ShowMessageBox(const IGraphics::CMessageBox &MessageBox)
+std::optional<int> CGraphicsBackend_SDL::ShowMessageBox(const IGraphics::CMessageBox &MessageBox)
 {
+	if(m_BackendType == BACKEND_TYPE_WEBGPU)
+		return ShowMessageBoxImpl(MessageBox, nullptr);
 	if(m_pProcessor != nullptr)
 	{
 		m_pProcessor->ErroneousCleanup();
@@ -916,7 +999,7 @@ std::optional<int> CGraphicsBackend_SDL_GL::ShowMessageBox(const IGraphics::CMes
 	return ShowMessageBoxImpl(MessageBox, m_pWindow);
 }
 
-bool CGraphicsBackend_SDL_GL::IsModernAPI(EBackendType BackendType)
+bool CGraphicsBackend_SDL::IsModernAPI(EBackendType BackendType)
 {
 	if(BackendType == BACKEND_TYPE_OPENGL)
 		return (g_Config.m_GfxGLMajor == 3 && g_Config.m_GfxGLMinor == 3) || g_Config.m_GfxGLMajor >= 4;
@@ -924,11 +1007,13 @@ bool CGraphicsBackend_SDL_GL::IsModernAPI(EBackendType BackendType)
 		return g_Config.m_GfxGLMajor >= 3;
 	else if(BackendType == BACKEND_TYPE_VULKAN)
 		return true;
+	else if(BackendType == BACKEND_TYPE_WEBGPU)
+		return true;
 
 	return false;
 }
 
-bool CGraphicsBackend_SDL_GL::GetDriverVersion(EGraphicsDriverAgeType DriverAgeType, int &Major, int &Minor, int &Patch, const char *&pName, EBackendType BackendType)
+bool CGraphicsBackend_SDL::GetDriverVersion(EGraphicsDriverAgeType DriverAgeType, int &Major, int &Minor, int &Patch, const char *&pName, EBackendType BackendType)
 {
 	if(BackendType == BACKEND_TYPE_AUTO)
 		BackendType = m_BackendType;
@@ -1004,12 +1089,27 @@ bool CGraphicsBackend_SDL_GL::GetDriverVersion(EGraphicsDriverAgeType DriverAgeT
 		return false;
 #endif
 	}
+	else if(BackendType == BACKEND_TYPE_WEBGPU)
+	{
+		pName = "WebGPU";
+#ifdef CONF_BACKEND_WEBGPU
+		if(DriverAgeType == GRAPHICS_DRIVER_AGE_TYPE_DEFAULT)
+		{
+			Major = 1;
+			Minor = 0;
+			Patch = 0;
+			return true;
+		}
+#else
+		return false;
+#endif
+	}
 	return false;
 }
 
-const char *CGraphicsBackend_SDL_GL::GetScreenName(int Screen) const
+const char *CGraphicsBackend_SDL::GetScreenName(int ScreenIndex) const
 {
-	const char *pName = SDL_GetDisplayName(Screen);
+	const char *pName = SDL_GetDisplayName(ScreenIndex);
 	return pName == nullptr ? "unknown/error" : pName;
 }
 
@@ -1022,7 +1122,7 @@ static void DisplayToVideoMode(CVideoMode *pVMode, SDL_DisplayMode *pMode, float
 	pVMode->m_RefreshRate = RefreshRate;
 }
 
-void CGraphicsBackend_SDL_GL::GetVideoModes(CVideoMode *pModes, int MaxModes, int *pNumModes, float HiDPIScale, int MaxWindowWidth, int MaxWindowHeight, int ScreenId)
+void CGraphicsBackend_SDL::GetVideoModes(CVideoMode *pModes, int MaxModes, int *pNumModes, float HiDPIScale, int MaxWindowWidth, int MaxWindowHeight, int ScreenId)
 {
 	SDL_DisplayMode DesktopMode;
 	int MaxModesAvailable = SDL_GetNumDisplayModes(ScreenId);
@@ -1086,7 +1186,7 @@ void CGraphicsBackend_SDL_GL::GetVideoModes(CVideoMode *pModes, int MaxModes, in
 	*pNumModes = NumModesInserted;
 }
 
-void CGraphicsBackend_SDL_GL::GetCurrentVideoMode(CVideoMode &CurMode, float HiDPIScale, int MaxWindowWidth, int MaxWindowHeight, int ScreenId)
+void CGraphicsBackend_SDL::GetCurrentVideoMode(CVideoMode &CurMode, float HiDPIScale, int MaxWindowWidth, int MaxWindowHeight, int ScreenId)
 {
 	SDL_DisplayMode DpMode;
 	// if "real" fullscreen, obtain the video mode for that
@@ -1107,10 +1207,7 @@ void CGraphicsBackend_SDL_GL::GetCurrentVideoMode(CVideoMode &CurMode, float HiD
 		{
 			int Width = 0;
 			int Height = 0;
-			if(m_BackendType != EBackendType::BACKEND_TYPE_VULKAN)
-				SDL_GL_GetDrawableSize(m_pWindow, &Width, &Height);
-			else
-				SDL_Vulkan_GetDrawableSize(m_pWindow, &Width, &Height);
+			GetDrawableSize(m_pWindow, m_BackendType, &Width, &Height);
 			// SDL video modes are in screen space which are logical pixels
 			DpMode.w = Width / HiDPIScale;
 			DpMode.h = Height / HiDPIScale;
@@ -1119,13 +1216,13 @@ void CGraphicsBackend_SDL_GL::GetCurrentVideoMode(CVideoMode &CurMode, float HiD
 	DisplayToVideoMode(&CurMode, &DpMode, HiDPIScale, DpMode.refresh_rate);
 }
 
-CGraphicsBackend_SDL_GL::CGraphicsBackend_SDL_GL(TTranslateFunc &&TranslateFunc) :
-	CGraphicsBackend_Threaded(std::move(TranslateFunc))
+CGraphicsBackend_SDL::CGraphicsBackend_SDL(EBackendType BackendOverride) :
+	m_BackendOverride(BackendOverride)
 {
 	m_aErrorString[0] = '\0';
 }
 
-int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, int *pHeight, int *pRefreshRate, int *pFsaaSamples, int Flags, int *pDesktopWidth, int *pDesktopHeight, int *pCurrentWidth, int *pCurrentHeight, IStorage *pStorage)
+int CGraphicsBackend_SDL::Init(const char *pName, int *pScreen, int *pWidth, int *pHeight, int *pRefreshRate, int *pFsaaSamples, int Flags, int *pDesktopWidth, int *pDesktopHeight, int *pCurrentWidth, int *pCurrentHeight, IStorage *pStorage)
 {
 #if defined(CONF_HEADLESS_CLIENT)
 	m_BackendType = BACKEND_TYPE_OPENGL;
@@ -1173,6 +1270,14 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 
 	EBackendType OldBackendType = m_BackendType;
 	m_BackendType = DetectBackend();
+	if(OldBackendType == BACKEND_TYPE_WEBGPU && m_BackendType == BACKEND_TYPE_WEBGPU)
+	{
+		log_warn("gfx/webgpu", "initialization failed; retrying with OpenGL");
+		m_BackendType = BACKEND_TYPE_OPENGL;
+		g_Config.m_GfxGLMajor = 3;
+		g_Config.m_GfxGLMinor = 0;
+		g_Config.m_GfxGLPatch = 0;
+	}
 	// little fallback for Vulkan
 	if(OldBackendType != BACKEND_TYPE_AUTO &&
 		m_BackendType == BACKEND_TYPE_VULKAN)
@@ -1211,10 +1316,16 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 	case BACKEND_TYPE_VULKAN:
 		pBackendName = "Vulkan";
 		break;
+	case BACKEND_TYPE_WEBGPU:
+		pBackendName = "experimental WebGPU";
+		break;
 	default:
 		dbg_assert_failed("Invalid m_BackendType: %d", m_BackendType);
 	}
-	log_info("gfx", "Created %s %d.%d context", pBackendName, g_Config.m_GfxGLMajor, g_Config.m_GfxGLMinor);
+	if(m_BackendType == BACKEND_TYPE_WEBGPU)
+		log_info("gfx", "Created %s context", pBackendName);
+	else
+		log_info("gfx", "Created %s %d.%d context", pBackendName, g_Config.m_GfxGLMajor, g_Config.m_GfxGLMinor);
 
 	if(m_BackendType == BACKEND_TYPE_OPENGL)
 	{
@@ -1235,6 +1346,10 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 	if(IsOpenGLFamilyBackend)
 	{
 		*pFsaaSamples = std::clamp(*pFsaaSamples, 0, 8);
+	}
+	else if(m_BackendType == BACKEND_TYPE_WEBGPU)
+	{
+		*pFsaaSamples = *pFsaaSamples >= 2 ? 4 : 0;
 	}
 
 	// set screen
@@ -1288,7 +1403,14 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 
 	// set flags
 	int SdlFlags = SDL_WINDOW_INPUT_GRABBED | SDL_WINDOW_INPUT_FOCUS | SDL_WINDOW_MOUSE_FOCUS | SDL_WINDOW_ALLOW_HIGHDPI;
-	SdlFlags |= (IsOpenGLFamilyBackend) ? SDL_WINDOW_OPENGL : SDL_WINDOW_VULKAN;
+	if(IsOpenGLFamilyBackend)
+		SdlFlags |= SDL_WINDOW_OPENGL;
+	else if(m_BackendType == BACKEND_TYPE_VULKAN)
+		SdlFlags |= SDL_WINDOW_VULKAN;
+#if defined(CONF_BACKEND_WEBGPU) && defined(CONF_PLATFORM_MACOS)
+	else if(m_BackendType == BACKEND_TYPE_WEBGPU)
+		SdlFlags |= SDL_WINDOW_METAL;
+#endif
 	if(Flags & IGraphicsBackend::INITFLAG_RESIZABLE)
 		SdlFlags |= SDL_WINDOW_RESIZABLE;
 	if(Flags & IGraphicsBackend::INITFLAG_BORDERLESS)
@@ -1347,10 +1469,34 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 	{
 		log_error("gfx", "Unable to create window: %s", SDL_GetError());
 		if(m_BackendType == BACKEND_TYPE_VULKAN)
-			return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_GL_CONTEXT_FAILED;
+			return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_CONTEXT_FAILED;
 		else
 			return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_SDL_WINDOW_CREATE_FAILED;
 	}
+
+#if defined(CONF_BACKEND_WEBGPU)
+	if(m_BackendType == BACKEND_TYPE_WEBGPU)
+	{
+		bool HasNativeWindow;
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		m_WebGpuNativeWindow.m_Type = SWebGpuNativeWindow::EType::CANVAS;
+		HasNativeWindow = true;
+#elif defined(CONF_PLATFORM_MACOS)
+		m_pWebGpuMetalView = SDL_Metal_CreateView(m_pWindow);
+		m_WebGpuNativeWindow.m_Type = SWebGpuNativeWindow::EType::METAL;
+		m_WebGpuNativeWindow.m_pWindow = m_pWebGpuMetalView != nullptr ? SDL_Metal_GetLayer(m_pWebGpuMetalView) : nullptr;
+		HasNativeWindow = m_WebGpuNativeWindow.m_pWindow != nullptr;
+#else
+		HasNativeWindow = GetWebGpuNativeWindow(m_pWindow, m_WebGpuNativeWindow);
+#endif
+		if(!HasNativeWindow)
+		{
+			log_error("gfx/webgpu", "Unable to obtain the native SDL window: %s", SDL_GetError());
+			DestroyWindow();
+			return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_CONTEXT_FAILED;
+		}
+	}
+#endif
 
 	int GlewMajor = 0;
 	int GlewMinor = 0;
@@ -1363,17 +1509,15 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 		if(m_GLContext == nullptr)
 		{
 			log_error("gfx", "Unable to create graphics context: %s", SDL_GetError());
-			SDL_DestroyWindow(m_pWindow);
-			m_pWindow = nullptr;
-			return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_GL_CONTEXT_FAILED;
+			DestroyWindow();
+			return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_CONTEXT_FAILED;
 		}
 
 		if(!BackendInitGlew(m_BackendType, GlewMajor, GlewMinor, GlewPatch))
 		{
 			SDL_GL_DeleteContext(m_GLContext);
-			SDL_DestroyWindow(m_pWindow);
-			m_pWindow = nullptr;
-			return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_GLEW_INIT_FAILED;
+			DestroyWindow();
+			return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_INTERFACE_INIT_FAILED;
 		}
 	}
 
@@ -1382,10 +1526,7 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 	// SDL_GL_GetDrawableSize reports HiDPI resolution even with SDL_WINDOW_ALLOW_HIGHDPI not set, which is wrong
 	if(SdlFlags & SDL_WINDOW_ALLOW_HIGHDPI)
 	{
-		if(IsOpenGLFamilyBackend)
-			SDL_GL_GetDrawableSize(m_pWindow, pCurrentWidth, pCurrentHeight);
-		else
-			SDL_Vulkan_GetDrawableSize(m_pWindow, pCurrentWidth, pCurrentHeight);
+		GetDrawableSize(m_pWindow, m_BackendType, pCurrentWidth, pCurrentHeight);
 	}
 	else
 	{
@@ -1408,26 +1549,26 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 	{
 		if(m_GLContext)
 			SDL_GL_DeleteContext(m_GLContext);
-		SDL_DestroyWindow(m_pWindow);
-		m_pWindow = nullptr;
+		DestroyWindow();
 
 		// try setting to glew supported version
 		g_Config.m_GfxGLMajor = GlewMajor;
 		g_Config.m_GfxGLMinor = GlewMinor;
 		g_Config.m_GfxGLPatch = GlewPatch;
 
-		return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_GL_VERSION_FAILED;
+		return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_VERSION_FAILED;
 	}
 #endif // !CONF_HEADLESS_CLIENT
 
 	// start the command processor
 	dbg_assert(m_pProcessor == nullptr, "Processor was not cleaned up properly.");
-	m_pProcessor = new CCommandProcessor_SDL_GL(m_BackendType, g_Config.m_GfxGLMajor, g_Config.m_GfxGLMinor, g_Config.m_GfxGLPatch);
+	const EWebGpuBackendType WebGpuBackendType = m_BackendType == BACKEND_TYPE_WEBGPU ? WebGpuBackendTypeFromConfig() : EWebGpuBackendType::AUTO;
+	m_pProcessor = new CCommandProcessor_SDL(m_BackendType, g_Config.m_GfxGLMajor, g_Config.m_GfxGLMinor, m_WebGpuNativeWindow, WebGpuBackendType);
 	StartProcessor(m_pProcessor);
 
 	// issue init commands for OpenGL and SDL
 	CCommandBuffer CmdBuffer(1024, 512);
-	CCommandProcessorFragment_GLBase::SCommand_PreInit CmdPre;
+	CCommandProcessorFragment_Renderer::SCommand_PreInit CmdPre;
 	CmdPre.m_pWindow = m_pWindow;
 	CmdPre.m_Width = *pCurrentWidth;
 	CmdPre.m_Height = *pCurrentHeight;
@@ -1440,7 +1581,7 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 	CmdBuffer.Reset();
 
 	// run sdl first to have the context in the thread
-	CCommandProcessorFragment_SDL::SCommand_Init CmdSDL;
+	CCommandProcessor_SDL::SCommand_Init CmdSDL;
 	CmdSDL.m_pWindow = m_pWindow;
 	CmdSDL.m_GLContext = m_GLContext;
 	CmdBuffer.AddCommandUnsafe(CmdSDL);
@@ -1449,9 +1590,10 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 	CmdBuffer.Reset();
 
 	const char *pErrorStr = nullptr;
+	m_Capabilities = {};
 	if(InitError == 0)
 	{
-		CCommandProcessorFragment_GLBase::SCommand_Init CmdGL;
+		CCommandProcessorFragment_Renderer::SCommand_Init CmdGL;
 		CmdGL.m_pWindow = m_pWindow;
 		CmdGL.m_Width = *pCurrentWidth;
 		CmdGL.m_Height = *pCurrentHeight;
@@ -1460,13 +1602,14 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 		CmdGL.m_pStreamMemoryUsage = &m_StreamMemoryUsage;
 		CmdGL.m_pStagingMemoryUsage = &m_StagingMemoryUsage;
 		CmdGL.m_pGpuList = &m_GpuList;
-		CmdGL.m_pReadPresentedImageDataFunc = &m_ReadPresentedImageDataFunc;
 		CmdGL.m_pStorage = pStorage;
 		CmdGL.m_pCapabilities = &m_Capabilities;
 		CmdGL.m_pInitError = &InitError;
 		CmdGL.m_RequestedMajor = g_Config.m_GfxGLMajor;
 		CmdGL.m_RequestedMinor = g_Config.m_GfxGLMinor;
 		CmdGL.m_RequestedPatch = g_Config.m_GfxGLPatch;
+		CmdGL.m_VSync = (Flags & IGraphicsBackend::INITFLAG_VSYNC) != 0;
+		CmdGL.m_RequestedMultiSamplingCount = *pFsaaSamples;
 		CmdGL.m_GlewMajor = GlewMajor;
 		CmdGL.m_GlewMinor = GlewMinor;
 		CmdGL.m_GlewPatch = GlewPatch;
@@ -1487,20 +1630,20 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 		if(InitError != -2)
 		{
 			// shutdown the context, as it might have been initialized
-			CCommandProcessorFragment_GLBase::SCommand_Shutdown CmdGL;
+			CCommandProcessorFragment_Renderer::SCommand_Shutdown CmdGL;
 			CmdBuffer.AddCommandUnsafe(CmdGL);
 			RunBuffer(&CmdBuffer);
 			WaitForIdle();
 			CmdBuffer.Reset();
 		}
 
-		CCommandProcessorFragment_SDL::SCommand_Shutdown Cmd;
+		CCommandProcessor_SDL::SCommand_Shutdown Cmd;
 		CmdBuffer.AddCommandUnsafe(Cmd);
 		RunBuffer(&CmdBuffer);
 		WaitForIdle();
 		CmdBuffer.Reset();
 
-		CCommandProcessorFragment_GLBase::SCommand_PostShutdown CmdPost;
+		CCommandProcessorFragment_Renderer::SCommand_PostShutdown CmdPost;
 		CmdBuffer.AddCommandUnsafe(CmdPost);
 		RunBufferSingleThreadedUnsafe(&CmdBuffer);
 		CmdBuffer.Reset();
@@ -1512,8 +1655,7 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 
 		if(m_GLContext)
 			SDL_GL_DeleteContext(m_GLContext);
-		SDL_DestroyWindow(m_pWindow);
-		m_pWindow = nullptr;
+		DestroyWindow();
 
 		// try setting to version string's supported version
 		if(InitError == -2)
@@ -1528,7 +1670,7 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 			str_copy(m_aErrorString, pErrorStr);
 		}
 
-		return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_GL_VERSION_FAILED;
+		return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_VERSION_FAILED;
 	}
 
 	{
@@ -1537,6 +1679,8 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 		CmdSDL2.m_Y = 0;
 		CmdSDL2.m_Width = *pCurrentWidth;
 		CmdSDL2.m_Height = *pCurrentHeight;
+		CmdSDL2.m_SurfaceWidth = *pCurrentWidth;
+		CmdSDL2.m_SurfaceHeight = *pCurrentHeight;
 		CmdSDL2.m_ByResize = true;
 		CmdBuffer.AddCommandUnsafe(CmdSDL2);
 		RunBuffer(&CmdBuffer);
@@ -1547,25 +1691,25 @@ int CGraphicsBackend_SDL_GL::Init(const char *pName, int *pScreen, int *pWidth, 
 	return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_NONE;
 }
 
-int CGraphicsBackend_SDL_GL::Shutdown()
+int CGraphicsBackend_SDL::Shutdown()
 {
 	if(m_pProcessor != nullptr)
 	{
 		// issue a shutdown command
 		CCommandBuffer CmdBuffer(1024, 512);
-		CCommandProcessorFragment_GLBase::SCommand_Shutdown CmdGL;
+		CCommandProcessorFragment_Renderer::SCommand_Shutdown CmdGL;
 		CmdBuffer.AddCommandUnsafe(CmdGL);
 		RunBuffer(&CmdBuffer);
 		WaitForIdle();
 		CmdBuffer.Reset();
 
-		CCommandProcessorFragment_SDL::SCommand_Shutdown Cmd;
+		CCommandProcessor_SDL::SCommand_Shutdown Cmd;
 		CmdBuffer.AddCommandUnsafe(Cmd);
 		RunBuffer(&CmdBuffer);
 		WaitForIdle();
 		CmdBuffer.Reset();
 
-		CCommandProcessorFragment_GLBase::SCommand_PostShutdown CmdPost;
+		CCommandProcessorFragment_Renderer::SCommand_PostShutdown CmdPost;
 		CmdBuffer.AddCommandUnsafe(CmdPost);
 		RunBufferSingleThreadedUnsafe(&CmdBuffer);
 		CmdBuffer.Reset();
@@ -1578,44 +1722,43 @@ int CGraphicsBackend_SDL_GL::Shutdown()
 
 	if(m_GLContext != nullptr)
 		SDL_GL_DeleteContext(m_GLContext);
-	SDL_DestroyWindow(m_pWindow);
-	m_pWindow = nullptr;
+	DestroyWindow();
 
 	SDL_QuitSubSystem(SDL_INIT_VIDEO);
 	return 0;
 }
 
-uint64_t CGraphicsBackend_SDL_GL::TextureMemoryUsage() const
+uint64_t CGraphicsBackend_SDL::TextureMemoryUsage() const
 {
 	return m_TextureMemoryUsage;
 }
 
-uint64_t CGraphicsBackend_SDL_GL::BufferMemoryUsage() const
+uint64_t CGraphicsBackend_SDL::BufferMemoryUsage() const
 {
 	return m_BufferMemoryUsage;
 }
 
-uint64_t CGraphicsBackend_SDL_GL::StreamedMemoryUsage() const
+uint64_t CGraphicsBackend_SDL::StreamedMemoryUsage() const
 {
 	return m_StreamMemoryUsage;
 }
 
-uint64_t CGraphicsBackend_SDL_GL::StagingMemoryUsage() const
+uint64_t CGraphicsBackend_SDL::StagingMemoryUsage() const
 {
 	return m_StagingMemoryUsage;
 }
 
-const TTwGraphicsGpuList &CGraphicsBackend_SDL_GL::GetGpus() const
+const TTwGraphicsGpuList &CGraphicsBackend_SDL::GetGpus() const
 {
 	return m_GpuList;
 }
 
-void CGraphicsBackend_SDL_GL::Minimize()
+void CGraphicsBackend_SDL::Minimize()
 {
 	SDL_MinimizeWindow(m_pWindow);
 }
 
-void CGraphicsBackend_SDL_GL::SetWindowParams(int FullscreenMode, bool IsBorderless)
+void CGraphicsBackend_SDL::SetWindowParams(int FullscreenMode, bool IsBorderless)
 {
 	// The flags have to be kept consistent with flags set in the CGraphics_Threaded::IssueInit function!
 
@@ -1666,7 +1809,7 @@ void CGraphicsBackend_SDL_GL::SetWindowParams(int FullscreenMode, bool IsBorderl
 	}
 }
 
-bool CGraphicsBackend_SDL_GL::SetWindowScreen(int Index, bool MoveToCenter, ivec2 *pDesktopSize)
+bool CGraphicsBackend_SDL::SetWindowScreen(int Index, bool MoveToCenter, ivec2 *pDesktopSize)
 {
 	if(Index < 0 || Index >= m_NumScreens)
 	{
@@ -1697,7 +1840,7 @@ bool CGraphicsBackend_SDL_GL::SetWindowScreen(int Index, bool MoveToCenter, ivec
 	return UpdateDisplayMode(Index, pDesktopSize);
 }
 
-bool CGraphicsBackend_SDL_GL::UpdateDisplayMode(int Index, ivec2 *pDesktopSize)
+bool CGraphicsBackend_SDL::UpdateDisplayMode(int Index, ivec2 *pDesktopSize)
 {
 	SDL_DisplayMode DisplayMode;
 	if(SDL_GetDesktopDisplayMode(Index, &DisplayMode) < 0)
@@ -1712,22 +1855,22 @@ bool CGraphicsBackend_SDL_GL::UpdateDisplayMode(int Index, ivec2 *pDesktopSize)
 	return true;
 }
 
-int CGraphicsBackend_SDL_GL::GetWindowScreen()
+int CGraphicsBackend_SDL::GetWindowScreen()
 {
 	return SDL_GetWindowDisplayIndex(m_pWindow);
 }
 
-int CGraphicsBackend_SDL_GL::WindowActive()
+int CGraphicsBackend_SDL::WindowActive()
 {
 	return m_pWindow && SDL_GetWindowFlags(m_pWindow) & SDL_WINDOW_INPUT_FOCUS;
 }
 
-int CGraphicsBackend_SDL_GL::WindowOpen()
+int CGraphicsBackend_SDL::WindowOpen()
 {
 	return m_pWindow && SDL_GetWindowFlags(m_pWindow) & SDL_WINDOW_SHOWN;
 }
 
-void CGraphicsBackend_SDL_GL::SetWindowGrab(bool Grab)
+void CGraphicsBackend_SDL::SetWindowGrab(bool Grab)
 {
 	// Works around https://github.com/libsdl-org/sdl2-compat/issues/578.
 	if(!m_pWindow)
@@ -1736,7 +1879,7 @@ void CGraphicsBackend_SDL_GL::SetWindowGrab(bool Grab)
 	SDL_SetWindowGrab(m_pWindow, Grab ? SDL_TRUE : SDL_FALSE);
 }
 
-bool CGraphicsBackend_SDL_GL::ResizeWindow(int w, int h, int RefreshRate)
+bool CGraphicsBackend_SDL::ResizeWindow(int w, int h, int RefreshRate)
 {
 	// don't call resize events when the window is at fullscreen desktop
 	if(!m_pWindow || (SDL_GetWindowFlags(m_pWindow) & SDL_WINDOW_FULLSCREEN_DESKTOP) == SDL_WINDOW_FULLSCREEN_DESKTOP)
@@ -1774,15 +1917,12 @@ bool CGraphicsBackend_SDL_GL::ResizeWindow(int w, int h, int RefreshRate)
 	return false;
 }
 
-void CGraphicsBackend_SDL_GL::GetViewportSize(int &w, int &h)
+void CGraphicsBackend_SDL::GetViewportSize(int &w, int &h)
 {
-	if(m_BackendType != EBackendType::BACKEND_TYPE_VULKAN)
-		SDL_GL_GetDrawableSize(m_pWindow, &w, &h);
-	else
-		SDL_Vulkan_GetDrawableSize(m_pWindow, &w, &h);
+	GetDrawableSize(m_pWindow, m_BackendType, &w, &h);
 }
 
-void CGraphicsBackend_SDL_GL::NotifyWindow()
+void CGraphicsBackend_SDL::NotifyWindow()
 {
 	// Minimum version 2.0.16, after version 2.0.22 the naming is changed to 2.24.0 etc.
 #if SDL_MAJOR_VERSION > 2 || (SDL_MAJOR_VERSION == 2 && SDL_MINOR_VERSION == 0 && SDL_PATCHLEVEL >= 16) || (SDL_MAJOR_VERSION == 2 && SDL_MINOR_VERSION > 0)
@@ -1794,23 +1934,18 @@ void CGraphicsBackend_SDL_GL::NotifyWindow()
 #endif
 }
 
-bool CGraphicsBackend_SDL_GL::IsScreenKeyboardShown()
+bool CGraphicsBackend_SDL::IsScreenKeyboardShown()
 {
 	return SDL_IsScreenKeyboardShown(m_pWindow);
 }
 
-void CGraphicsBackend_SDL_GL::WindowDestroyNtf(uint32_t WindowId)
+void CGraphicsBackend_SDL::WindowDestroyNtf(uint32_t WindowId)
 {
 }
 
-void CGraphicsBackend_SDL_GL::WindowCreateNtf(uint32_t WindowId)
+void CGraphicsBackend_SDL::WindowCreateNtf(uint32_t WindowId)
 {
 	m_pWindow = SDL_GetWindowFromID(WindowId);
 }
 
-TGLBackendReadPresentedImageData &CGraphicsBackend_SDL_GL::GetReadPresentedImageDataFuncUnsafe()
-{
-	return m_ReadPresentedImageDataFunc;
-}
-
-IGraphicsBackend *CreateGraphicsBackend(TTranslateFunc &&TranslateFunc) { return new CGraphicsBackend_SDL_GL(std::move(TranslateFunc)); }
+IGraphicsBackend *CreateGraphicsBackend(EBackendType BackendOverride) { return new CGraphicsBackend_SDL(BackendOverride); }

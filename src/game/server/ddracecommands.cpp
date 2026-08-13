@@ -437,12 +437,12 @@ static void ModifyWeapons(IConsole::IResult *pResult, void *pUserData,
 	pChr->m_DDRaceState = ERaceState::CHEATED;
 }
 
-static void Teleport(CCharacterDDRace *pChr, vec2 Pos)
+static void Teleport(CCharacterDDRace *pCharacter, vec2 Pos)
 {
-	pChr->SetPosition(Pos);
-	pChr->m_Pos = Pos;
-	pChr->m_PrevPos = Pos;
-	pChr->m_DDRaceState = ERaceState::CHEATED;
+	pCharacter->SetPosition(Pos);
+	pCharacter->m_Pos = Pos;
+	pCharacter->m_PrevPos = Pos;
+	pCharacter->m_DDRaceState = ERaceState::CHEATED;
 }
 
 static void ConToTeleporter(IConsole::IResult *pResult, void *pUserData)

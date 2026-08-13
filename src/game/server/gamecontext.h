@@ -417,7 +417,7 @@ private:
 	uint32_t m_NextUniqueClientId = 1;
 	bool m_VoteWillPass;
 	static void ConKillPlayer(IConsole::IResult *pResult, void *pUserData);
-	static void ConPositionPlayer(IConsole::IResult *pResult, void *pUserData);
+	static void ConDamagePlayer(IConsole::IResult *pResult, void *pUserData);
 
 	static void ConInfo(IConsole::IResult *pResult, void *pUserData);
 	static void ConHelp(IConsole::IResult *pResult, void *pUserData);

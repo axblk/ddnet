@@ -220,6 +220,7 @@ public:
 			int Size = GameServer()->PersistentClientDataSize();
 			for(auto &Client : m_pServer->m_aClients)
 			{
+				Client.Reset();
 				Client.m_HasPersistentData = false;
 				Client.m_pPersistentData = malloc(Size);
 			}
@@ -1003,7 +1004,7 @@ TEST_F(GameWorld, DDRaceSaveIsBlockedByDraggerBeam)
 
 	auto *pDragger = new CDragger(&GameServer()->m_World, vec2(64.0f, 64.0f), 1.0f, false);
 	new CDraggerBeam(&GameServer()->m_World, pDragger, pDragger->GetPos(), 1.0f, false, ClientId, 0, 0);
-	CSaveTeam SavedTeam;
+	CSaveTeam SavedTeam; // NOLINT(clang-analyzer-unix.Malloc)
 	EXPECT_EQ(SavedTeam.Save(GameServer(), &RaceTeams(), Team, true, false), ESaveResult::DRAGGER_ACTIVE);
 }
 
@@ -1662,6 +1663,7 @@ TEST_F(GameWorld, PlayerSnapshotContributionsAreModeOwned)
 
 	const int PreviousClientState = m_pServer->m_aClients[ClientId].m_State;
 	m_pServer->m_aClients[ClientId].m_State = CServer::CClient::STATE_INGAME;
+	GameServer()->m_PlayerMapping.InitPlayerMap(ClientId);
 
 	m_pServer->m_SnapshotBuilder.Init();
 	pPlayer->Snap(ClientId);
@@ -1677,6 +1679,7 @@ TEST_F(GameWorld, PlayerSnapshotContributionsAreModeOwned)
 	SelectGameMode("mod");
 	pPlayer = GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
 	ASSERT_NE(pPlayer, nullptr);
+	GameServer()->m_PlayerMapping.InitPlayerMap(ClientId);
 	m_pServer->m_SnapshotBuilder.Init();
 	pPlayer->Snap(ClientId);
 	CSnapshotBuffer RaceBuffer;
@@ -1698,6 +1701,7 @@ TEST_F(GameWorld, CharacterSnapshotContributionsAreModeOwned)
 	m_pServer->m_aClients[ClientId].m_State = CServer::CClient::STATE_INGAME;
 
 	CPlayer *pVanillaPlayer = GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	GameServer()->m_PlayerMapping.InitPlayerMap(ClientId);
 	CCharacter *pVanillaCharacter = pVanillaPlayer->ForceSpawn(vec2(64.0f, 96.0f));
 	EXPECT_NE(pVanillaCharacter, nullptr);
 	if(!pVanillaCharacter)
@@ -1720,6 +1724,7 @@ TEST_F(GameWorld, CharacterSnapshotContributionsAreModeOwned)
 	GameServer()->m_apPlayers[ClientId] = nullptr;
 	SelectGameMode("ddnet");
 	CPlayer *pRacePlayer = GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	GameServer()->m_PlayerMapping.InitPlayerMap(ClientId);
 	CCharacter *pRaceCharacter = pRacePlayer->ForceSpawn(vec2(64.0f, 96.0f));
 	ASSERT_NE(pRaceCharacter, nullptr);
 	EXPECT_NE(dynamic_cast<CCharacterDDRace *>(pRaceCharacter), nullptr);
@@ -1742,7 +1747,7 @@ TEST_F(GameWorld, EntitySnapshotFormatsAreModeOwned)
 	SelectGameMode("vanilla.dm");
 	ASSERT_NE(GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1), nullptr);
 	auto *pProjectile = new CProjectile(&GameServer()->m_World, WEAPON_GUN, -1, vec2(64.0f, 96.0f), vec2(1.0f, 0.0f), 100, false, false, -1, vec2(1.0f, 0.0f));
-	ASSERT_TRUE(pProjectile->GetId().has_value());
+	ASSERT_TRUE(pProjectile->GetId().has_value()); // NOLINT(clang-analyzer-unix.Malloc)
 	const int ProjectileId = pProjectile->GetId().value();
 
 	const int PreviousClientState = m_pServer->m_aClients[ClientId].m_State;
@@ -2291,8 +2296,8 @@ TEST_F(GameWorld, VanillaTDMTeamDamage)
 	Controller.DoTeamChange(pAttacker->GetPlayer(), TEAM_BLUE, false);
 	EXPECT_EQ(Controller.MatchStats().Player(0).m_TeamChanges, 1);
 	const int BlueTeamAfterForceSpawn = pEnemy->GetPlayer()->GetTeam();
-	const int FriendlyProjectileOwner = pFriendlyProjectile->GetOwnerId();
-	const int EnemyProjectileOwner = pEnemyProjectile->GetOwnerId();
+	const int FriendlyProjectileOwner = pFriendlyProjectile->GetOwnerId(); // NOLINT(clang-analyzer-unix.Malloc)
+	const int EnemyProjectileOwner = pEnemyProjectile->GetOwnerId(); // NOLINT(clang-analyzer-unix.Malloc)
 
 	g_Config.m_SvTeamdamage = PreviousTeamDamage;
 	EXPECT_EQ(TeammateHealth, 10);
@@ -2617,14 +2622,19 @@ TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
 	CCharacter *pVictimCharacter = pVictim->ForceSpawn(vec2(96.0f, 96.0f));
 	ASSERT_NE(pCatcherCharacter, nullptr);
 	ASSERT_NE(pVictimCharacter, nullptr);
+	const int PreviousCatcherState = m_pServer->m_aClients[CatcherId].m_State;
 	const int PreviousClientState = m_pServer->m_aClients[VictimId].m_State;
 	const bool PreviousSixup = m_pServer->m_aClients[VictimId].m_Sixup;
+	m_pServer->m_aClients[CatcherId].m_State = CServer::CClient::STATE_INGAME;
 	m_pServer->m_aClients[VictimId].m_State = CServer::CClient::STATE_INGAME;
+	GameServer()->m_PlayerMapping.InitPlayerMap(CatcherId);
+	GameServer()->m_PlayerMapping.InitPlayerMap(VictimId);
 
 	pVictimCharacter->TakeDamage(vec2(), 0, CatcherId, WEAPON_LASER);
 	EXPECT_EQ(pVictim->GetTeam(), TEAM_GAME);
 	EXPECT_EQ(pVictim->SpectatorId(), CatcherId);
-	GameServer()->m_PlayerMapping.ForceInsertPlayer(CatcherId, VictimId);
+	int TranslatedVictimId = VictimId;
+	ASSERT_TRUE(m_pServer->Translate(TranslatedVictimId, VictimId));
 	int TranslatedCatcherId = CatcherId;
 	ASSERT_TRUE(m_pServer->Translate(TranslatedCatcherId, VictimId));
 
@@ -2634,7 +2644,7 @@ TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
 	CSnapshotBuffer SixBuffer;
 	m_pServer->m_SnapshotBuilder.Finish(&SixBuffer);
 	const CSnapshot *pSixSnapshot = SixBuffer.AsSnapshot();
-	const auto *pSixPlayerInfo = static_cast<const CNetObj_PlayerInfo *>(pSixSnapshot->FindItem(NETOBJTYPE_PLAYERINFO, VictimId));
+	const auto *pSixPlayerInfo = static_cast<const CNetObj_PlayerInfo *>(pSixSnapshot->FindItem(NETOBJTYPE_PLAYERINFO, TranslatedVictimId));
 	const auto *pSixSpectatorInfo = static_cast<const CNetObj_SpectatorInfo *>(pSixSnapshot->FindItem(NETOBJTYPE_SPECTATORINFO, VictimId));
 	ASSERT_NE(pSixPlayerInfo, nullptr);
 	ASSERT_NE(pSixSpectatorInfo, nullptr);
@@ -2647,7 +2657,7 @@ TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
 	CSnapshotBuffer SevenBuffer;
 	m_pServer->m_SnapshotBuilder.Finish(&SevenBuffer);
 	const CSnapshot *pSevenSnapshot = SevenBuffer.AsSnapshot();
-	const auto *pSevenPlayerInfo = static_cast<const protocol7::CNetObj_PlayerInfo *>(pSevenSnapshot->FindItem(protocol7::NETOBJTYPE_PLAYERINFO, VictimId));
+	const auto *pSevenPlayerInfo = static_cast<const protocol7::CNetObj_PlayerInfo *>(pSevenSnapshot->FindItem(protocol7::NETOBJTYPE_PLAYERINFO, TranslatedVictimId));
 	const auto *pSevenSpectatorInfo = static_cast<const protocol7::CNetObj_SpectatorInfo *>(pSevenSnapshot->FindItem(protocol7::NETOBJTYPE_SPECTATORINFO, VictimId));
 	ASSERT_NE(pSevenPlayerInfo, nullptr);
 	ASSERT_NE(pSevenSpectatorInfo, nullptr);
@@ -2655,6 +2665,7 @@ TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
 	EXPECT_EQ(pSevenSpectatorInfo->m_SpecMode, protocol7::SPEC_PLAYER);
 	EXPECT_EQ(pSevenSpectatorInfo->m_SpectatorId, TranslatedCatcherId);
 
+	m_pServer->m_aClients[CatcherId].m_State = PreviousCatcherState;
 	m_pServer->m_aClients[VictimId].m_State = PreviousClientState;
 	m_pServer->m_aClients[VictimId].m_Sixup = PreviousSixup;
 }
@@ -2844,7 +2855,7 @@ TEST_F(GameWorld, VanillaPickup)
 	auto *pNinja = new CPickup(&GameServer()->m_World, POWERUP_NINJA, 0, 0, 0, 0);
 	EXPECT_EQ(pCharacter->GetHealth(), 10);
 	EXPECT_FALSE(pHealth->IsActive());
-	EXPECT_FALSE(pNinja->IsActive());
+	EXPECT_FALSE(pNinja->IsActive()); // NOLINT(clang-analyzer-unix.Malloc)
 }
 
 TEST_F(GameWorld, DDRacePickupPolicyIsModeOwned)

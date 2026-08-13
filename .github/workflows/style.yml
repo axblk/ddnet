@@ -163,7 +163,7 @@ jobs:
     - name: Check maps
       run: |
         findings=$(find data -type f -name '*.map' ! -wholename 'data/maps/coverage.map' -print0 | xargs -0 ~/.cargo/bin/twmap-check-ddnet 2>&1 | \
-          grep -v -E "\"data/maps/(ctf|dm).*\.map\": Time cps are missing on the map" | \
+          grep -v -E "\"data/maps7?/(ctf|dm).*\.map\": Time cps are missing on the map" | \
           grep -v -E "\"data/themes/.*\.map\": Time cps are missing on the map" | \
           grep -v -E "\"data/maps/ctf4\.map\": Map - In Image at index 3 -> Image 'jungle_doodads_old' is not a valid external image for DDNet06" | \
           grep -v -E "\"data/themes/autumn_night\.map\": Map - In Image at index 3 -> Image 'generic_lamps' is not a valid external image for DDNet06" | \

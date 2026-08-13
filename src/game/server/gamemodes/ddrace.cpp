@@ -666,7 +666,7 @@ namespace
 		pGameServer->SendBroadcast(aBuf, pResult->m_ClientId);
 	}
 
-	static const char s_aaTimerTypeMessage[4][128] = {"game/round timer.", "broadcast.", "both game/round timer and broadcast.", "racetime."};
+	const char s_aaTimerTypeMessage[4][128] = {"game/round timer.", "broadcast.", "both game/round timer and broadcast.", "racetime."};
 
 	void ConSetTimerType(IConsole::IResult *pResult, void *pUserData)
 	{

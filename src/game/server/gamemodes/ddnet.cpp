@@ -174,19 +174,19 @@ void CGameControllerDDNet::SnapMode(int SnappingClient)
 	}
 }
 
-void CGameControllerDDNet::HandleRaceTiles(CCharacterDDRace *pRaceChr, int MapIndex)
+void CGameControllerDDNet::HandleRaceTiles(CCharacterDDRace *pCharacter, int MapIndex)
 {
-	CPlayer *pPlayer = pRaceChr->GetPlayer();
+	CPlayer *pPlayer = pCharacter->GetPlayer();
 	const int ClientId = pPlayer->GetCid();
 
 	int TileIndex = GameServer()->Collision()->GetTileIndex(MapIndex);
 	int TileFIndex = GameServer()->Collision()->GetFrontTileIndex(MapIndex);
 
 	//Sensitivity
-	int S1 = GameServer()->Collision()->GetPureMapIndex(vec2(pRaceChr->GetPos().x + pRaceChr->GetProximityRadius() / 3.f, pRaceChr->GetPos().y - pRaceChr->GetProximityRadius() / 3.f));
-	int S2 = GameServer()->Collision()->GetPureMapIndex(vec2(pRaceChr->GetPos().x + pRaceChr->GetProximityRadius() / 3.f, pRaceChr->GetPos().y + pRaceChr->GetProximityRadius() / 3.f));
-	int S3 = GameServer()->Collision()->GetPureMapIndex(vec2(pRaceChr->GetPos().x - pRaceChr->GetProximityRadius() / 3.f, pRaceChr->GetPos().y - pRaceChr->GetProximityRadius() / 3.f));
-	int S4 = GameServer()->Collision()->GetPureMapIndex(vec2(pRaceChr->GetPos().x - pRaceChr->GetProximityRadius() / 3.f, pRaceChr->GetPos().y + pRaceChr->GetProximityRadius() / 3.f));
+	int S1 = GameServer()->Collision()->GetPureMapIndex(vec2(pCharacter->GetPos().x + pCharacter->GetProximityRadius() / 3.f, pCharacter->GetPos().y - pCharacter->GetProximityRadius() / 3.f));
+	int S2 = GameServer()->Collision()->GetPureMapIndex(vec2(pCharacter->GetPos().x + pCharacter->GetProximityRadius() / 3.f, pCharacter->GetPos().y + pCharacter->GetProximityRadius() / 3.f));
+	int S3 = GameServer()->Collision()->GetPureMapIndex(vec2(pCharacter->GetPos().x - pCharacter->GetProximityRadius() / 3.f, pCharacter->GetPos().y - pCharacter->GetProximityRadius() / 3.f));
+	int S4 = GameServer()->Collision()->GetPureMapIndex(vec2(pCharacter->GetPos().x - pCharacter->GetProximityRadius() / 3.f, pCharacter->GetPos().y + pCharacter->GetProximityRadius() / 3.f));
 	int Tile1 = GameServer()->Collision()->GetTileIndex(S1);
 	int Tile2 = GameServer()->Collision()->GetTileIndex(S2);
 	int Tile3 = GameServer()->Collision()->GetTileIndex(S3);
@@ -196,7 +196,7 @@ void CGameControllerDDNet::HandleRaceTiles(CCharacterDDRace *pRaceChr, int MapIn
 	int FTile3 = GameServer()->Collision()->GetFrontTileIndex(S3);
 	int FTile4 = GameServer()->Collision()->GetFrontTileIndex(S4);
 
-	const ERaceState PlayerDDRaceState = pRaceChr->m_DDRaceState;
+	const ERaceState PlayerDDRaceState = pCharacter->m_DDRaceState;
 	bool IsOnStartTile = (TileIndex == TILE_START) || (TileFIndex == TILE_START) || FTile1 == TILE_START || FTile2 == TILE_START || FTile3 == TILE_START || FTile4 == TILE_START || Tile1 == TILE_START || Tile2 == TILE_START || Tile3 == TILE_START || Tile4 == TILE_START;
 	// start
 	if(IsOnStartTile && PlayerDDRaceState != ERaceState::CHEATED)
@@ -204,31 +204,31 @@ void CGameControllerDDNet::HandleRaceTiles(CCharacterDDRace *pRaceChr, int MapIn
 		const int Team = RaceTeams().m_Core.Team(ClientId);
 		if(RaceTeams().GetSaving(Team))
 		{
-			pRaceChr->SendStartWarning("You can't start while loading/saving of team is in progress");
-			pRaceChr->Die(ClientId, WEAPON_WORLD);
+			pCharacter->SendStartWarning("You can't start while loading/saving of team is in progress");
+			pCharacter->Die(ClientId, WEAPON_WORLD);
 			return;
 		}
 		if(g_Config.m_SvTeam == SV_TEAM_MANDATORY && (Team == TEAM_FLOCK || RaceTeams().TeamSize(Team) <= 1))
 		{
-			pRaceChr->SendStartWarning("You have to be in a team with other tees to start");
-			pRaceChr->Die(ClientId, WEAPON_WORLD);
+			pCharacter->SendStartWarning("You have to be in a team with other tees to start");
+			pCharacter->Die(ClientId, WEAPON_WORLD);
 			return;
 		}
 		if(g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO && Team != TEAM_FLOCK && RaceTeams().IsValidTeamNumber(Team) && RaceTeams().TeamSize(Team) < g_Config.m_SvMinTeamSize && !RaceTeams().TeamFlock(Team))
 		{
 			char aBuf[128];
 			str_format(aBuf, sizeof(aBuf), "Your team has fewer than %d players, so your team rank won't count", g_Config.m_SvMinTeamSize);
-			pRaceChr->SendStartWarning(aBuf);
+			pCharacter->SendStartWarning(aBuf);
 		}
 		if(g_Config.m_SvResetPickups)
 		{
-			pRaceChr->ResetPickups();
+			pCharacter->ResetPickups();
 		}
 
 		RaceTeams().OnCharacterStart(ClientId);
-		pRaceChr->m_LastTimeCp = -1;
-		pRaceChr->m_LastTimeCpBroadcasted = -1;
-		for(float &CurrentTimeCp : pRaceChr->m_aCurrentTimeCp)
+		pCharacter->m_LastTimeCp = -1;
+		pCharacter->m_LastTimeCpBroadcasted = -1;
+		for(float &CurrentTimeCp : pCharacter->m_aCurrentTimeCp)
 		{
 			CurrentTimeCp = 0.0f;
 		}

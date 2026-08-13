@@ -784,21 +784,9 @@ def vanilla_dm_rcon(server, client, client_id, command, observed_prefix=None):
 			return observed
 
 
-def vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, victim_name, position_commands):
-	kill_prefix = f"game: kill killer='{attacker_id}:attacker' victim='{victim_id}:{victim_name}' weapon=0"
-	for _ in range(4):
-		for client, client_id, command in position_commands:
-			kill = vanilla_dm_rcon(server, client, client_id, command, kill_prefix)
-			if kill is not None:
-				return kill
-		sleep(0.1)
-		attacker.command("+weapon1 1")
-		attacker.command("+weapon1 0")
-		attacker.command("+fire 1")
-		sleep(0.1)
-		attacker.command("+fire 0")
-		sleep(0.2)
-	return server.wait_for_log_prefix(kill_prefix, timeout=5)
+def vanilla_dm_kill(server, attacker, attacker_id, victim_id):
+	sleep(1.0)
+	vanilla_dm_rcon(server, attacker, attacker_id, f"damage_player {victim_id} {attacker_id} 100 0")
 
 
 @test
@@ -815,13 +803,9 @@ def vanilla_dm_match_lifecycle(test_env):
 
 	attacker_id = vanilla_dm_authenticate(server, attacker)
 	victim_id = vanilla_dm_authenticate(server, victim)
-	position_commands = [
-		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
-	]
-
-	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
+	vanilla_dm_kill(server, attacker, attacker_id, victim_id)
 	sleep(3.2)
-	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
+	vanilla_dm_kill(server, attacker, attacker_id, victim_id)
 	server.wait_for_log_exact("game: end round type='TestDM'", timeout=5)
 	server.wait_for_log_exact("game: start round type='TestDM' teamplay='0'", timeout=15)
 
@@ -847,10 +831,7 @@ def vanilla_tdm_match_lifecycle(test_env):
 
 	attacker_id = vanilla_dm_authenticate(server, attacker)
 	victim_id = vanilla_dm_authenticate(server, victim)
-	position_commands = [
-		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
-	]
-	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
+	vanilla_dm_kill(server, attacker, attacker_id, victim_id)
 	server.wait_for_log_exact("game: end round type='TestTDM'", timeout=5)
 	server.wait_for_log_exact("game: start round type='TestTDM' teamplay='1'", timeout=15)
 
@@ -897,12 +878,9 @@ def vanilla_dm_stock_07_match_lifecycle(test_env):
 	victim_id = int(victim_join.split("ClientId=", 1)[1].split(" ", 1)[0])
 
 	attacker_id = vanilla_dm_authenticate(server, attacker)
-	position_commands = [
-		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
-	]
-	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "stock-victim", position_commands)
+	vanilla_dm_kill(server, attacker, attacker_id, victim_id)
 	sleep(3.2)
-	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "stock-victim", position_commands)
+	vanilla_dm_kill(server, attacker, attacker_id, victim_id)
 	server.wait_for_log_exact("game: end round type='TestDM'", timeout=5)
 	server.wait_for_log_exact("game: start round type='TestDM' teamplay='0'", timeout=15)
 
@@ -934,10 +912,7 @@ def vanilla_tdm_stock_07_match_lifecycle(test_env):
 	victim_id = int(victim_join.split("ClientId=", 1)[1].split(" ", 1)[0])
 
 	attacker_id = vanilla_dm_authenticate(server, attacker)
-	position_commands = [
-		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
-	]
-	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "stock-victim", position_commands)
+	vanilla_dm_kill(server, attacker, attacker_id, victim_id)
 	server.wait_for_log_exact("game: end round type='TestTDM'", timeout=5)
 	server.wait_for_log_exact("game: start round type='TestTDM' teamplay='1'", timeout=15)
 

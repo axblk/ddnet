@@ -286,7 +286,7 @@ void CPlayers::RenderHookCollLine(
 	std::optional<IGraphics::CLineItem> HookTipLineSegment;
 	for(HookTick = 0; HookTick < MaxHookTicks; ++HookTick)
 	{
-		int Tele;
+		int Tele = 0;
 		vec2 HitPos, IntersectedPlayerPosition;
 		vec2 SegmentEndPos = SegmentStartPos + QuantizedDirection * HookFireSpeed;
 

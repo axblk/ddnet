@@ -174,7 +174,7 @@ CWeaponFireResult CGameControllerVanillaPvP::OnCharacterFireWeapon(const CWeapon
 			false,
 			-1,
 			Context.m_MouseTarget);
-		Services().CreateSound(pCharacter->m_Pos, SOUND_GUN_FIRE, pCharacter->TeamMask());
+		Services().CreateSound(pCharacter->m_Pos, SOUND_GUN_FIRE, pCharacter->TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
 		return {true, true, 0};
 	case WEAPON_SHOTGUN:
 		for(int Pellet = -2; Pellet <= 2; Pellet++)

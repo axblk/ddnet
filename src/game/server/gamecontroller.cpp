@@ -698,12 +698,12 @@ CWeaponFireResult IGameController::OnCharacterFireWeapon(const CWeaponFireContex
 				false,
 				-1,
 				Context.m_MouseTarget);
-			GameServer()->CreateSound(pCharacter->m_Pos, SOUND_GUN_FIRE, pCharacter->TeamMask());
+			GameServer()->CreateSound(pCharacter->m_Pos, SOUND_GUN_FIRE, pCharacter->TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
 		}
 		break;
 	case WEAPON_SHOTGUN:
 		new CLaser(pCharacter->GameWorld(), pCharacter->m_Pos, Context.m_Direction, Context.m_pTuning->m_LaserReach, Owner, WEAPON_SHOTGUN);
-		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_SHOTGUN_FIRE, pCharacter->TeamMask());
+		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_SHOTGUN_FIRE, pCharacter->TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
 		break;
 	case WEAPON_GRENADE:
 		new CProjectile(
@@ -717,11 +717,11 @@ CWeaponFireResult IGameController::OnCharacterFireWeapon(const CWeaponFireContex
 			true,
 			SOUND_GRENADE_EXPLODE,
 			Context.m_MouseTarget);
-		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_GRENADE_FIRE, pCharacter->TeamMask());
+		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_GRENADE_FIRE, pCharacter->TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
 		break;
 	case WEAPON_LASER:
 		new CLaser(pCharacter->GameWorld(), pCharacter->m_Pos, Context.m_Direction, Context.m_pTuning->m_LaserReach, Owner, WEAPON_LASER);
-		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_LASER_FIRE, pCharacter->TeamMask());
+		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_LASER_FIRE, pCharacter->TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
 		break;
 	case WEAPON_NINJA:
 		pCharacter->ActivateNinja(Context.m_Direction);

@@ -19,6 +19,13 @@ class CGameState;
 class CGameStateId;
 class CPresentationContext;
 
+enum class EPlayerSpeedChange
+{
+	NONE,
+	INCREASE,
+	DECREASE,
+};
+
 class CClientPresentation
 {
 public:
@@ -32,6 +39,8 @@ public:
 	bool m_DirectionLeft = false;
 	bool m_DirectionJump = false;
 	bool m_DirectionRight = false;
+	std::array<int, 2> m_aSpeed = {};
+	std::array<EPlayerSpeedChange, 2> m_aSpeedChange = {};
 	CTeeRenderInfo m_BaseRenderInfo;
 	CTeeRenderInfo m_RenderInfo;
 };

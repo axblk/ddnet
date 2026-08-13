@@ -31,16 +31,6 @@ CHud::CHud()
 {
 	m_FPSTextContainerIndex.Reset();
 	m_DDRaceEffectsTextContainerIndex.Reset();
-	m_PlayerAngleTextContainerIndex.Reset();
-	m_PlayerPrevAngle = -INFINITY;
-
-	for(int i = 0; i < 2; i++)
-	{
-		m_aPlayerSpeedTextContainers[i].Reset();
-		m_aPlayerPrevSpeed[i] = -INFINITY;
-		m_aPlayerPositionContainers[i].Reset();
-		m_aPlayerPrevPosition[i] = -INFINITY;
-	}
 }
 
 void CHud::ResetScoreHudContainers()
@@ -63,15 +53,6 @@ void CHud::ResetHudContainers()
 
 	TextRender()->DeleteTextContainer(m_FPSTextContainerIndex);
 	TextRender()->DeleteTextContainer(m_DDRaceEffectsTextContainerIndex);
-	TextRender()->DeleteTextContainer(m_PlayerAngleTextContainerIndex);
-	m_PlayerPrevAngle = -INFINITY;
-	for(int i = 0; i < 2; i++)
-	{
-		TextRender()->DeleteTextContainer(m_aPlayerSpeedTextContainers[i]);
-		m_aPlayerPrevSpeed[i] = -INFINITY;
-		TextRender()->DeleteTextContainer(m_aPlayerPositionContainers[i]);
-		m_aPlayerPrevPosition[i] = -INFINITY;
-	}
 }
 
 void CHud::OnWindowResize()
@@ -81,10 +62,6 @@ void CHud::OnWindowResize()
 
 void CHud::OnReset()
 {
-	m_aPlayerSpeed[0] = 0;
-	m_aPlayerSpeed[1] = 0;
-	m_aLastPlayerSpeedChange[0] = ESpeedChange::NONE;
-	m_aLastPlayerSpeedChange[1] = ESpeedChange::NONE;
 	ResetHudContainers();
 }
 
@@ -1442,27 +1419,14 @@ inline float CHud::GetMovementInformationBoxHeight(const CRenderContext &Context
 	return BoxHeight;
 }
 
-void CHud::UpdateMovementInformationTextContainer(STextContainerIndex &TextContainer, float FontSize, float Value, float &PrevValue)
+void CHud::RenderMovementInformationValue(float FontSize, float Value, const ColorRGBA &Color, float RightX, float Y)
 {
 	Value = std::round(Value * 100.0f) / 100.0f; // Round to 2dp
-	if(TextContainer.Valid() && PrevValue == Value)
-		return;
-	PrevValue = Value;
-
 	char aBuf[128];
 	str_format(aBuf, sizeof(aBuf), "%.2f", Value);
-
-	CTextCursor Cursor;
-	Cursor.m_FontSize = FontSize;
-	TextRender()->RecreateTextContainer(TextContainer, &Cursor, aBuf);
-}
-
-void CHud::RenderMovementInformationTextContainer(STextContainerIndex &TextContainer, const ColorRGBA &Color, float X, float Y)
-{
-	if(TextContainer.Valid())
-	{
-		TextRender()->RenderTextContainer(TextContainer, Color, TextRender()->DefaultTextOutlineColor(), X - TextRender()->GetBoundingBoxTextContainer(TextContainer).m_W, Y);
-	}
+	TextRender()->TextColor(Color);
+	TextRender()->Text(RightX - TextRender()->TextWidth(FontSize, aBuf), Y, FontSize, aBuf);
+	TextRender()->TextColor(TextRender()->DefaultTextColor());
 }
 
 CHud::CMovementInformation CHud::GetMovementInformation(const CRenderContext &Context, int ClientId) const
@@ -1556,13 +1520,11 @@ void CHud::RenderMovementInformation(const CRenderContext &Context)
 		y += MOVEMENT_INFORMATION_LINE_HEIGHT;
 
 		TextRender()->Text(LeftX, y, Fontsize, "X:", -1.0f);
-		UpdateMovementInformationTextContainer(m_aPlayerPositionContainers[0], Fontsize, Info.m_Pos.x, m_aPlayerPrevPosition[0]);
-		RenderMovementInformationTextContainer(m_aPlayerPositionContainers[0], TextRender()->DefaultTextColor(), RightX, y);
+		RenderMovementInformationValue(Fontsize, Info.m_Pos.x, TextRender()->DefaultTextColor(), RightX, y);
 		y += MOVEMENT_INFORMATION_LINE_HEIGHT;
 
 		TextRender()->Text(LeftX, y, Fontsize, "Y:", -1.0f);
-		UpdateMovementInformationTextContainer(m_aPlayerPositionContainers[1], Fontsize, Info.m_Pos.y, m_aPlayerPrevPosition[1]);
-		RenderMovementInformationTextContainer(m_aPlayerPositionContainers[1], TextRender()->DefaultTextColor(), RightX, y);
+		RenderMovementInformationValue(Fontsize, Info.m_Pos.y, TextRender()->DefaultTextColor(), RightX, y);
 		y += MOVEMENT_INFORMATION_LINE_HEIGHT;
 	}
 
@@ -1575,16 +1537,17 @@ void CHud::RenderMovementInformation(const CRenderContext &Context)
 		y += MOVEMENT_INFORMATION_LINE_HEIGHT;
 
 		const char aaCoordinates[][4] = {"X:", "Y:"};
+		const CClientPresentation *pClientPresentation = GameClient()->SessionPresentation(Context.m_Session.Id()).Client(Context.m_State.Id(), ClientId);
 		for(int i = 0; i < 2; i++)
 		{
 			ColorRGBA Color(1.0f, 1.0f, 1.0f, 1.0f);
-			if(m_aLastPlayerSpeedChange[i] == ESpeedChange::INCREASE)
+			const EPlayerSpeedChange SpeedChange = pClientPresentation != nullptr ? pClientPresentation->m_aSpeedChange[i] : EPlayerSpeedChange::NONE;
+			if(SpeedChange == EPlayerSpeedChange::INCREASE)
 				Color = ColorRGBA(0.0f, 1.0f, 0.0f, 1.0f);
-			if(m_aLastPlayerSpeedChange[i] == ESpeedChange::DECREASE)
+			if(SpeedChange == EPlayerSpeedChange::DECREASE)
 				Color = ColorRGBA(1.0f, 0.5f, 0.5f, 1.0f);
 			TextRender()->Text(LeftX, y, Fontsize, aaCoordinates[i], -1.0f);
-			UpdateMovementInformationTextContainer(m_aPlayerSpeedTextContainers[i], Fontsize, i == 0 ? Info.m_Speed.x : Info.m_Speed.y, m_aPlayerPrevSpeed[i]);
-			RenderMovementInformationTextContainer(m_aPlayerSpeedTextContainers[i], Color, RightX, y);
+			RenderMovementInformationValue(Fontsize, i == 0 ? Info.m_Speed.x : Info.m_Speed.y, Color, RightX, y);
 			y += MOVEMENT_INFORMATION_LINE_HEIGHT;
 		}
 
@@ -1596,8 +1559,7 @@ void CHud::RenderMovementInformation(const CRenderContext &Context)
 		TextRender()->Text(LeftX, y, Fontsize, Localize("Angle:"), -1.0f);
 		y += MOVEMENT_INFORMATION_LINE_HEIGHT;
 
-		UpdateMovementInformationTextContainer(m_PlayerAngleTextContainerIndex, Fontsize, Info.m_Angle, m_PlayerPrevAngle);
-		RenderMovementInformationTextContainer(m_PlayerAngleTextContainerIndex, TextRender()->DefaultTextColor(), RightX, y);
+		RenderMovementInformationValue(Fontsize, Info.m_Angle, TextRender()->DefaultTextColor(), RightX, y);
 	}
 }
 
@@ -1666,52 +1628,6 @@ void CHud::RenderLocalTime(const CRenderContext &Context, float x)
 	char aTimeStr[6];
 	str_timestamp_format(aTimeStr, sizeof(aTimeStr), "%H:%M");
 	TextRender()->Text(x - 25.0f, (12.5f - 5.f) / 2.f, 5.0f, aTimeStr, -1.0f);
-}
-
-void CHud::OnNewSnapshot()
-{
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
-		return;
-	if(!GameClient()->m_Snap.m_pGameInfoObj)
-		return;
-
-	int ClientId = -1;
-	if(GameClient()->m_Snap.m_pLocalCharacter && !GameClient()->m_Snap.m_SpecInfo.m_Active && !(GameClient()->m_Snap.m_pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_GAMEOVER))
-		ClientId = GameClient()->m_Snap.m_LocalClientId;
-	else if(GameClient()->m_Snap.m_SpecInfo.m_Active)
-		ClientId = GameClient()->m_Snap.m_SpecInfo.m_SpectatorId;
-
-	if(ClientId == -1)
-		return;
-
-	const CNetObj_Character *pPrevChar = &GameClient()->m_Snap.m_aCharacters[ClientId].m_Prev;
-	const CNetObj_Character *pCurChar = &GameClient()->m_Snap.m_aCharacters[ClientId].m_Cur;
-	const float IntraTick = Client()->IntraGameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection());
-	ivec2 Vel = mix(ivec2(pPrevChar->m_VelX, pPrevChar->m_VelY), ivec2(pCurChar->m_VelX, pCurChar->m_VelY), IntraTick);
-
-	CCharacter *pChar = GameClient()->m_PredictedWorld.GetCharacterById(ClientId);
-	if(pChar && pChar->IsGrounded())
-		Vel.y = 0;
-
-	int aVels[2] = {Vel.x, Vel.y};
-
-	for(int i = 0; i < 2; i++)
-	{
-		int AbsVel = abs(aVels[i]);
-		if(AbsVel > m_aPlayerSpeed[i])
-		{
-			m_aLastPlayerSpeedChange[i] = ESpeedChange::INCREASE;
-		}
-		if(AbsVel < m_aPlayerSpeed[i])
-		{
-			m_aLastPlayerSpeedChange[i] = ESpeedChange::DECREASE;
-		}
-		if(AbsVel < 2)
-		{
-			m_aLastPlayerSpeedChange[i] = ESpeedChange::NONE;
-		}
-		m_aPlayerSpeed[i] = AbsVel;
-	}
 }
 
 void CHud::OnRender(const CRenderContext &Context)

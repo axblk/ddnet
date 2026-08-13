@@ -179,6 +179,7 @@ private:
 	CGameViewId m_LegacyGameViewId;
 	CGameViewId m_SecondaryGameViewId;
 	CGameViewId m_TertiaryGameViewId;
+	float m_ControllerLocalTime = 0.0f;
 	CUi m_UI;
 	CRaceHelper m_RaceHelper;
 
@@ -186,6 +187,7 @@ private:
 	void ProcessSnapshot(CSessionId SessionId, int Conn);
 	void ProcessPrediction();
 	void UpdatePositions(const CGameState &State);
+	void UpdateNetworkPlayerInfo();
 	void BindLegacyWorld(CGameSessionContext &Session);
 	void AddChatLine(CSessionId SessionId, int Conn, int ClientId, int Team, const char *pText);
 	int64_t SessionMessageTime(CSessionId SessionId) const;
@@ -421,7 +423,9 @@ public:
 	void OnConnected(CSessionId SessionId) override;
 	void OnSessionClosed(CSessionId SessionId) override;
 	void OnSessionFocused(CSessionId SessionId) override;
+	void OnRenderPrepare() override;
 	void OnRender() override;
+	void OnRenderFinalize() override;
 	void OnUpdate() override;
 	void OnDummyDisconnect() override;
 	virtual void OnRelease();

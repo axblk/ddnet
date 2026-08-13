@@ -282,6 +282,10 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	NETADDR m_aFavoritesGroupAddresses[MAX_SERVER_ADDRESSES];
 
 	void UpdateDemoIntraTimers();
+	void UpdateDemoSession();
+	void UpdateNetworkSession();
+	void StopDemoSession(const char *pReason);
+	void StopNetworkSession(const char *pReason);
 	int MaxLatencyTicks() const;
 	int PredictionMargin() const;
 

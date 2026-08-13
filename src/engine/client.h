@@ -406,7 +406,9 @@ public:
 	virtual void OnNewSnapshot(CSessionId SessionId, int Conn) = 0;
 	virtual void OnEnterGame(CSessionId SessionId) = 0;
 	virtual void OnShutdown() = 0;
+	virtual void OnRenderPrepare() = 0;
 	virtual void OnRender() = 0;
+	virtual void OnRenderFinalize() = 0;
 	virtual void OnUpdate() = 0;
 	virtual void OnStateChange(int NewState, int OldState) = 0;
 	virtual void OnConnected(CSessionId SessionId) = 0;

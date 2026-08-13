@@ -8,7 +8,11 @@ public:
 	ESessionSourceType Type() const override { return ESessionSourceType::NETWORK; }
 	ESessionState State() const override { return m_State; }
 	const char *ErrorString() const override { return ""; }
-	void SetState(ESessionState State) override { m_State = State; }
+	bool SetState(ESessionState State) override
+	{
+		m_State = State;
+		return true;
+	}
 	void Fail(const char *) override { m_State = ESessionState::ERROR; }
 	void Update() override
 	{
@@ -17,7 +21,7 @@ public:
 		else if(m_State == ESessionState::STOPPING)
 			m_State = ESessionState::OFFLINE;
 	}
-	void RequestStop() override { m_State = ESessionState::STOPPING; }
+	void RequestStop(const char *) override { m_State = ESessionState::STOPPING; }
 };
 
 int main()

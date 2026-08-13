@@ -425,10 +425,10 @@ void CSpectator::UpdateController(CGameView &View, const CRenderContext &Context
 	State.m_WasActive = true;
 }
 
-void CSpectator::CommitController(CGameView &View, const CRenderContext &Context, float LocalTime)
+void CSpectator::CommitController(CGameView &View, CSessionId SessionId, CGameStateId StateId, float LocalTime)
 {
 	CGameView::CSpectatorSelectorState &State = View.SpectatorSelector();
-	if(State.m_OriginSessionId != Context.m_Session.Id() || State.m_OriginStateId != Context.m_State.Id())
+	if(State.m_OriginSessionId != SessionId || State.m_OriginStateId != StateId)
 	{
 		State.Reset();
 		return;

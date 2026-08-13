@@ -94,6 +94,21 @@ TEST(ClientConnection, DynamicStreamsKeepStableIdsAndStorage)
 	EXPECT_EQ(Source.NumStreams(), 3U);
 }
 
+TEST(ClientConnection, SessionSourceRejectsInvalidTransitions)
+{
+	CNetworkSessionSource Source;
+	EXPECT_FALSE(Source.SetState(ESessionState::READY));
+	EXPECT_EQ(Source.State(), ESessionState::OFFLINE);
+	EXPECT_TRUE(Source.SetState(ESessionState::CONNECTING));
+	EXPECT_FALSE(Source.SetState(ESessionState::READY));
+	EXPECT_EQ(Source.State(), ESessionState::CONNECTING);
+	EXPECT_TRUE(Source.SetState(ESessionState::LOADING_MAP));
+	EXPECT_TRUE(Source.SetState(ESessionState::READY));
+	EXPECT_TRUE(Source.SetState(ESessionState::STOPPING));
+	EXPECT_FALSE(Source.SetState(ESessionState::CONNECTING));
+	EXPECT_TRUE(Source.SetState(ESessionState::OFFLINE));
+}
+
 TEST(ClientConnection, DemoStateDoesNotAliasNetworkMain)
 {
 	CNetworkSessionSource Network;
@@ -106,8 +121,10 @@ TEST(ClientConnection, DemoStateDoesNotAliasNetworkMain)
 	Demo.SetSixup(true);
 	Network.TranslationContext().m_GameFlags = 10;
 	Demo.TranslationContext().m_GameFlags = 20;
-	Network.SetState(ESessionState::READY);
-	Demo.SetState(ESessionState::READY);
+	ASSERT_TRUE(Network.SetState(ESessionState::LOADING_MAP));
+	ASSERT_TRUE(Network.SetState(ESessionState::READY));
+	ASSERT_TRUE(Demo.SetState(ESessionState::LOADING_MAP));
+	ASSERT_TRUE(Demo.SetState(ESessionState::READY));
 	str_copy(Network.ServerInfo().m_aMap, "network");
 	str_copy(Demo.ServerInfo().m_aMap, "demo");
 

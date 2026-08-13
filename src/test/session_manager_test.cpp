@@ -1,6 +1,7 @@
 #include "test.h"
 
 #include <engine/client/session.h>
+#include <engine/client/session_sources.h>
 
 #include <gtest/gtest.h>
 
@@ -21,7 +22,11 @@ public:
 	ESessionSourceType Type() const override { return m_Type; }
 	ESessionState State() const override { return m_State; }
 	const char *ErrorString() const override { return m_Error.c_str(); }
-	void SetState(ESessionState State) override { m_State = State; }
+	bool SetState(ESessionState State) override
+	{
+		m_State = State;
+		return true;
+	}
 	void Fail(const char *pError) override
 	{
 		m_Error = pError;
@@ -35,7 +40,7 @@ public:
 		if(m_State == ESessionState::STOPPING)
 			m_State = ESessionState::OFFLINE;
 	}
-	void RequestStop() override { m_State = ESessionState::STOPPING; }
+	void RequestStop(const char *) override { m_State = ESessionState::STOPPING; }
 	int Updates() const { return m_Updates; }
 	int Tick() const { return m_Tick; }
 	void SetTick(int Tick) { m_Tick = Tick; }
@@ -115,4 +120,42 @@ TEST(SessionManager, NetworksProgressWhileDemoLoadsSeeksAndStops)
 	EXPECT_EQ(Manager.Find(SecondId)->State(), ESessionState::READY);
 	EXPECT_EQ(pFirstRaw->Tick(), 103);
 	EXPECT_EQ(pSecondRaw->Tick(), 503);
+}
+
+TEST(SessionManager, ConcreteSourceLifecycleRunsThroughManager)
+{
+	CSessionManager Manager;
+	auto pSource = std::make_unique<CNetworkSessionSource>();
+	CNetworkSessionSource *pSourceRaw = pSource.get();
+	CSessionId Id;
+	int Updates = 0;
+	bool CloseDuringUpdate = false;
+	std::string StopReason;
+	pSource->SetLifecycleCallbacks(
+		[&]() {
+			Updates++;
+			if(CloseDuringUpdate)
+				Manager.Close(Id, "inside");
+		},
+		[&StopReason](const char *pReason) { StopReason = pReason ? pReason : ""; });
+	Id = Manager.Create(std::move(pSource));
+	ASSERT_TRUE(pSourceRaw->SetState(ESessionState::LOADING_MAP));
+	ASSERT_TRUE(pSourceRaw->SetState(ESessionState::READY));
+
+	Manager.Update();
+	EXPECT_EQ(Updates, 1);
+	ASSERT_TRUE(Manager.Close(Id, "done"));
+	EXPECT_EQ(pSourceRaw->State(), ESessionState::STOPPING);
+	Manager.Update();
+	EXPECT_EQ(pSourceRaw->State(), ESessionState::OFFLINE);
+	EXPECT_EQ(Updates, 1);
+	EXPECT_EQ(StopReason, "done");
+
+	ASSERT_TRUE(pSourceRaw->SetState(ESessionState::LOADING_MAP));
+	ASSERT_TRUE(pSourceRaw->SetState(ESessionState::READY));
+	CloseDuringUpdate = true;
+	Manager.Update();
+	EXPECT_EQ(pSourceRaw->State(), ESessionState::OFFLINE);
+	EXPECT_EQ(Updates, 2);
+	EXPECT_EQ(StopReason, "inside");
 }

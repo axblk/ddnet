@@ -10,6 +10,7 @@
 #include <engine/shared/demo.h>
 #include <engine/shared/translation_context.h>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -20,14 +21,22 @@ class CSessionSourceBase : public IGameSessionSource
 	CServerInfo m_ServerInfo = {};
 	bool m_Sixup = false;
 	CTranslationContext m_TranslationContext;
+	std::function<void()> m_UpdateFunc;
+	std::function<void(const char *)> m_StopFunc;
+	std::string m_StopReason;
+	bool m_Updating = false;
+
+	void Stop();
 
 public:
 	ESessionState State() const override { return m_State; }
 	const char *ErrorString() const override { return m_Error.c_str(); }
-	void SetState(ESessionState State) override;
+	bool SetState(ESessionState State) override;
 	void Fail(const char *pError) override;
 	void Update() override;
-	void RequestStop() override;
+	void RequestStop(const char *pReason = nullptr) override;
+	void SetLifecycleCallbacks(std::function<void()> UpdateFunc, std::function<void(const char *)> StopFunc);
+	bool IsUpdating() const { return m_Updating; }
 	CServerInfo &ServerInfo() { return m_ServerInfo; }
 	const CServerInfo &ServerInfo() const { return m_ServerInfo; }
 	bool IsSixup() const { return m_Sixup; }
@@ -95,7 +104,6 @@ public:
 	CConnection &Connection() { return m_Connection; }
 	const CConnection &Connection() const { return m_Connection; }
 	void PrepareSnapshots();
-	void RequestStop() override;
 };
 
 #endif // ENGINE_CLIENT_SESSION_SOURCES_H

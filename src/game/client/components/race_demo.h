@@ -48,5 +48,6 @@ public:
 	void OnMapLoad() override;
 	void OnShutdown() override;
 	void OnNewSnapshot() override;
+	void OnNetworkSessionClosed();
 };
 #endif

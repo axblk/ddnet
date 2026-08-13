@@ -41,12 +41,12 @@ bool CSessionManager::SetFocused(CSessionId Id)
 	return true;
 }
 
-bool CSessionManager::Close(CSessionId Id)
+bool CSessionManager::Close(CSessionId Id, const char *pReason)
 {
 	CGameSession *pSession = Find(Id);
 	if(!pSession)
 		return false;
-	pSession->Source().RequestStop();
+	pSession->Source().RequestStop(pReason);
 	return true;
 }
 
@@ -69,4 +69,13 @@ void CSessionManager::Update()
 {
 	for(const auto &pSession : m_vpSessions)
 		pSession->Update();
+}
+
+bool CSessionManager::Update(CSessionId Id)
+{
+	CGameSession *pSession = Find(Id);
+	if(!pSession)
+		return false;
+	pSession->Update();
+	return true;
 }

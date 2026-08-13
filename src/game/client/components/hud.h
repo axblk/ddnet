@@ -61,20 +61,6 @@ class CHud : public CComponent
 	bool m_ScoreHudCacheValid = false;
 	STextContainerIndex m_FPSTextContainerIndex;
 	STextContainerIndex m_DDRaceEffectsTextContainerIndex;
-	STextContainerIndex m_PlayerAngleTextContainerIndex;
-	float m_PlayerPrevAngle;
-	STextContainerIndex m_aPlayerSpeedTextContainers[2];
-	float m_aPlayerPrevSpeed[2];
-	int m_aPlayerSpeed[2];
-	enum class ESpeedChange
-	{
-		NONE,
-		INCREASE,
-		DECREASE
-	};
-	ESpeedChange m_aLastPlayerSpeedChange[2];
-	STextContainerIndex m_aPlayerPositionContainers[2];
-	float m_aPlayerPrevPosition[2];
 
 	void RenderCursor(const CRenderContext &Context);
 	void ResetScoreHudContainers();
@@ -93,8 +79,7 @@ class CHud : public CComponent
 	void RenderDummyActions(const CRenderContext &Context);
 	void RenderMovementInformation(const CRenderContext &Context);
 
-	void UpdateMovementInformationTextContainer(STextContainerIndex &TextContainer, float FontSize, float Value, float &PrevValue);
-	void RenderMovementInformationTextContainer(STextContainerIndex &TextContainer, const ColorRGBA &Color, float X, float Y);
+	void RenderMovementInformationValue(float FontSize, float Value, const ColorRGBA &Color, float RightX, float Y);
 
 	class CMovementInformation
 	{
@@ -127,7 +112,6 @@ public:
 	void OnReset() override;
 	void OnRender(const CRenderContext &Context) override;
 	void OnInit() override;
-	void OnNewSnapshot() override;
 
 	// DDRace
 

@@ -54,7 +54,7 @@ void CRaceDemo::GetPath(char *pBuf, int Size, int Time) const
 
 void CRaceDemo::OnStateChange(int NewState, int OldState)
 {
-	if(OldState == IClient::STATE_ONLINE)
+	if(OldState == IClient::STATE_ONLINE && Client()->FocusedSessionId() == Client()->NetworkSessionId())
 		StopRecord();
 }
 
@@ -115,6 +115,12 @@ void CRaceDemo::OnNewSnapshot()
 }
 
 void CRaceDemo::OnReset()
+{
+	if(Client()->FocusedSessionId() == Client()->NetworkSessionId())
+		StopRecord();
+}
+
+void CRaceDemo::OnNetworkSessionClosed()
 {
 	StopRecord();
 }

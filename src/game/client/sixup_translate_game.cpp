@@ -189,7 +189,7 @@ void CGameClient::CClientData::UpdateSkin7BotDecoration(const CGameState::CProto
 
 void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker *pUnpacker, int Conn)
 {
-	const bool InactiveStream = SessionId == Client()->NetworkSessionId() && Conn != Client()->ActiveConnection();
+	const bool AdditionalStream = SessionId == Client()->NetworkSessionId() && Conn != IClient::CONN_MAIN;
 	CGameSessionContext *pSourceSession = m_SessionContexts.Find(SessionId);
 	dbg_assert(pSourceSession != nullptr, "missing translation session context");
 	CGameState *pSourceState = pSourceSession->GameStates().FindByStream(CStreamId(Conn + 1));
@@ -266,7 +266,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 			// }
 		}
 
-		if(InactiveStream)
+		if(AdditionalStream)
 			return nullptr;
 
 		if(pMsg7->m_Silent == 0)
@@ -404,7 +404,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 				if(pUnpacker->Error())
 					continue;
 
-				if(!InactiveStream && SessionId != Client()->DemoSessionId())
+				if(!AdditionalStream && SessionId != Client()->DemoSessionId())
 				{
 					CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
 					dbg_assert(pSession != nullptr, "missing vote option session context");
@@ -456,7 +456,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 		pMsg->m_pDescription = pMsg7->m_pDescription;
 		pMsg->m_pReason = pMsg7->m_pReason;
 
-		if(!InactiveStream)
+		if(!AdditionalStream)
 		{
 			char aBuf[128];
 			if(pMsg7->m_Timeout)
@@ -546,7 +546,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 		if(pMsg7->m_Silent)
 			return nullptr;
 
-		if(InactiveStream)
+		if(AdditionalStream)
 			return nullptr;
 
 		static char s_aBuf[128];
@@ -593,7 +593,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 		if(pMsg7->m_Silent || pMsg7->m_Local)
 			return nullptr;
 
-		if(InactiveStream)
+		if(AdditionalStream)
 			return nullptr;
 
 		DoTeamChangeMessage7(SessionId, Conn, *pSourceState,
@@ -673,10 +673,10 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 		 * Prints chat message only once
 		 * even if it is being sent to main tee and dummy
 		 */
-		auto SendChat = [SessionId, Conn, GameMsgId, InactiveStream, this](const char *pText) -> void {
+		auto SendChat = [SessionId, Conn, GameMsgId, AdditionalStream, this](const char *pText) -> void {
 			if(GameMsgId != protocol7::GAMEMSG_TEAM_BALANCE_VICTIM && GameMsgId != protocol7::GAMEMSG_SPEC_INVALIDID)
 			{
-				if(InactiveStream)
+				if(AdditionalStream)
 					return;
 			}
 			AddChatLine(SessionId, Conn, -1, 0, pText);
@@ -730,7 +730,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 				case STR_TEAM_BLUE: pMsg = "All players were moved to the blue team"; break;
 				case STR_TEAM_SPECTATORS: pMsg = "All players were moved to the spectators"; break;
 				}
-				if(!InactiveStream)
+				if(!AdditionalStream)
 					m_Broadcast.DoBroadcast(pSourceSession->Broadcast(), pMsg, Client()->GameTick(SessionId, Conn), Client()->GameTickSpeed()); // client side broadcast
 			}
 			break;
@@ -742,7 +742,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 				case STR_TEAM_RED: pMsg = "You were moved to the red team due to team balancing"; break;
 				case STR_TEAM_BLUE: pMsg = "You were moved to the blue team due to team balancing"; break;
 				}
-				if(!InactiveStream)
+				if(!AdditionalStream)
 					m_Broadcast.DoBroadcast(pSourceSession->Broadcast(), pMsg, Client()->GameTick(SessionId, Conn), Client()->GameTickSpeed()); // client side broadcast
 			}
 			break;
@@ -763,7 +763,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 				if(SessionId == Client()->FocusedSessionId() && Conn == ActiveConnection())
 					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_CAPTURE);
 				int ClientId = std::clamp(aParaI[1], 0, MAX_CLIENTS - 1);
-				if(!InactiveStream)
+				if(!AdditionalStream)
 					pSourceSession->Stats().Client(ClientId).m_FlagCaptures++;
 
 				float Time = aParaI[2] / (float)Client()->GameTickSpeed();
@@ -810,7 +810,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 			SendChat(pText);
 			break;
 		case DO_BROADCAST:
-			if(!InactiveStream)
+			if(!AdditionalStream)
 				m_Broadcast.DoBroadcast(pSourceSession->Broadcast(), pText, Client()->GameTick(SessionId, Conn), Client()->GameTickSpeed()); // client side broadcast
 			break;
 		}

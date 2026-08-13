@@ -39,7 +39,7 @@ public:
 	bool OnCursorMove(float x, float y, IInput::ECursorType CursorType) override;
 	bool OnInput(const IInput::CEvent &Event) override;
 	void UpdateController(CGameView &View, const CRenderContext &Context, float LocalTime);
-	void CommitController(CGameView &View, const CRenderContext &Context, float LocalTime);
+	void CommitController(CGameView &View, CSessionId SessionId, CGameStateId StateId, float LocalTime);
 	void OnRender(const CRenderContext &Context) override;
 	void OnRelease() override;
 	void OnReset() override;

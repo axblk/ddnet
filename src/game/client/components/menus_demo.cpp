@@ -54,13 +54,18 @@ void CMenus::HandleDemoSeeking(float PositionToSeek, float TimeToSeek)
 {
 	if((PositionToSeek >= 0.0f && PositionToSeek <= 1.0f) || TimeToSeek != 0.0f)
 	{
-		GameClient()->ResetChat(Client()->DemoSessionId());
-		GameClient()->GameState(GameClient()->ActiveConnection()).DamageIndicators().Reset();
-		GameClient()->ResetInfoMessages(Client()->DemoSessionId());
-		GameClient()->GameState(GameClient()->ActiveConnection()).Particles().Reset();
+		const CSessionId DemoSessionId = Client()->DemoSessionId();
+		CGameSessionContext *pDemoSession = GameClient()->FindSessionContext(DemoSessionId);
+		dbg_assert(pDemoSession != nullptr, "missing Demo session context");
+		CGameState *pDemoState = pDemoSession->GameStates().FindByStream(CStreamId(IClient::CONN_MAIN + 1));
+		dbg_assert(pDemoState != nullptr, "missing Demo game state");
+		GameClient()->ResetChat(DemoSessionId);
+		pDemoState->DamageIndicators().Reset();
+		GameClient()->ResetInfoMessages(DemoSessionId);
+		pDemoState->Particles().Reset();
 		GameClient()->m_Sounds.OnReset();
 		GameClient()->m_Scoreboard.OnReset();
-		GameClient()->SessionContext().Stats().Reset();
+		pDemoSession->Stats().Reset();
 		GameClient()->m_Statboard.OnReset();
 		GameClient()->m_SuppressEvents = true;
 		if(TimeToSeek != 0.0f)

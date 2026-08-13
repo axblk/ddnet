@@ -105,9 +105,11 @@ CClient::CClient() :
 {
 	auto pNetworkSource = std::make_unique<CNetworkSessionSource>();
 	m_pNetworkSessionSource = pNetworkSource.get();
+	pNetworkSource->SetLifecycleCallbacks([this]() { UpdateNetworkSession(); }, [this](const char *pReason) { StopNetworkSession(pReason); });
 	m_NetworkSessionId = m_SessionManager.Create(std::move(pNetworkSource));
 	auto pDemoSource = std::make_unique<CDemoSessionSource>(true, [&]() { UpdateDemoIntraTimers(); });
 	m_pDemoSessionSource = pDemoSource.get();
+	pDemoSource->SetLifecycleCallbacks([this]() { UpdateDemoSession(); }, [this](const char *pReason) { StopDemoSession(pReason); });
 	m_DemoSessionId = m_SessionManager.Create(std::move(pDemoSource));
 	m_SessionManager.SetFocused(m_NetworkSessionId);
 
@@ -776,6 +778,13 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 
 void CClient::DisconnectWithReason(const char *pReason)
 {
+	m_SessionManager.Close(m_NetworkSessionId, pReason);
+	if(!m_pNetworkSessionSource->IsUpdating())
+		m_SessionManager.Update(m_NetworkSessionId);
+}
+
+void CClient::StopNetworkSession(const char *pReason)
+{
 	const bool Focused = m_SessionManager.FocusedId() == m_NetworkSessionId;
 	if(pReason != nullptr && pReason[0] == '\0')
 		pReason = nullptr;
@@ -835,6 +844,13 @@ void CClient::DisconnectWithReason(const char *pReason)
 }
 
 void CClient::DisconnectDemoWithReason(const char *pReason)
+{
+	m_SessionManager.Close(m_DemoSessionId, pReason);
+	if(!m_pDemoSessionSource->IsUpdating())
+		m_SessionManager.Update(m_DemoSessionId);
+}
+
+void CClient::StopDemoSession(const char *pReason)
 {
 	const bool Focused = m_SessionManager.FocusedId() == m_DemoSessionId;
 	char aReason[256];
@@ -2859,15 +2875,8 @@ void CClient::UpdateDemoIntraTimers()
 	DemoConnection.m_GameIntraTickSincePrev = pInfo->m_IntraTickSincePrev;
 }
 
-void CClient::Update()
+void CClient::UpdateDemoSession()
 {
-	m_SessionManager.Update();
-
-	// Compatibility boundary: persistent cl_dummy drives the runtime focus until
-	// all UI and binds call SetActiveConnection directly.
-	SetActiveConnection(g_Config.m_ClDummy);
-	PumpNetwork();
-
 	if(m_pDemoSessionSource->State() == ESessionState::READY)
 	{
 		if(DemoPlayer().IsPlaying())
@@ -2896,7 +2905,7 @@ void CClient::Update()
 		{
 			// Disconnect when demo playback stopped, either due to playback error
 			// or because the end of the demo was reached when rendering it.
-			DisconnectDemoWithReason(DemoPlayer().ErrorMessage());
+			m_SessionManager.Close(m_DemoSessionId, DemoPlayer().ErrorMessage());
 			if(DemoPlayer().ErrorMessage()[0] != '\0')
 			{
 				SWarning Warning(Localize("Error playing demo"), DemoPlayer().ErrorMessage());
@@ -2905,6 +2914,11 @@ void CClient::Update()
 			}
 		}
 	}
+}
+
+void CClient::UpdateNetworkSession()
+{
+	PumpNetwork();
 	if(m_pNetworkSessionSource->State() == ESessionState::READY)
 	{
 		const int ActiveConn = ActiveConnection();
@@ -2915,7 +2929,7 @@ void CClient::Update()
 		bool OtherRepredict = false;
 		if(m_LastActiveConnection != ActiveConn && m_SessionManager.FocusedId() == m_NetworkSessionId)
 		{
-			// Invalidate references to !m_ClDummy snapshots
+			// Invalidate references to the previously focused snapshots.
 			GameClient()->InvalidateSnapshot(m_NetworkSessionId);
 			GameClient()->OnConnectionFocusChanged(m_NetworkSessionId, m_LastActiveConnection, ActiveConn);
 		}
@@ -2966,7 +2980,7 @@ void CClient::Update()
 
 			if(m_LastActiveConnection != ActiveConn && ActiveGameConnection.m_apSnapshots[SNAP_PREV])
 			{
-				// Load snapshot for m_ClDummy
+				// Load the newly focused snapshot.
 				GameClient()->OnNewSnapshot(m_NetworkSessionId, ActiveConn);
 				ActiveRepredict = true;
 			}
@@ -3066,6 +3080,25 @@ void CClient::Update()
 		m_LastActiveConnection = ActiveConnection();
 	}
 
+	if(m_pMapdownloadTask)
+	{
+		if(m_pMapdownloadTask->State() == EHttpState::DONE)
+		{
+			FinishMapDownload();
+		}
+		else if(m_pMapdownloadTask->State() == EHttpState::ERROR || m_pMapdownloadTask->State() == EHttpState::ABORTED)
+		{
+			dbg_msg("webdl", "http failed, falling back to gameserver");
+			ResetMapDownload(false);
+			SendMapRequest();
+		}
+	}
+}
+
+void CClient::Update()
+{
+	m_SessionManager.Update();
+
 	// STRESS TEST: join the server again
 	if(g_Config.m_DbgStress)
 	{
@@ -3088,20 +3121,6 @@ void CClient::Update()
 				Disconnect();
 				s_ActionTaken = Now;
 			}
-		}
-	}
-
-	if(m_pMapdownloadTask)
-	{
-		if(m_pMapdownloadTask->State() == EHttpState::DONE)
-		{
-			FinishMapDownload();
-		}
-		else if(m_pMapdownloadTask->State() == EHttpState::ERROR || m_pMapdownloadTask->State() == EHttpState::ABORTED)
-		{
-			dbg_msg("webdl", "http failed, falling back to gameserver");
-			ResetMapDownload(false);
-			SendMapRequest();
 		}
 	}
 
@@ -3522,7 +3541,11 @@ void CClient::Run()
 				LastRenderTime = Now - AdditionalTime;
 				m_LastRenderTime = Now;
 
+				if(!m_EditorActive)
+					GameClient()->OnRenderPrepare();
 				Render();
+				if(!m_EditorActive)
+					GameClient()->OnRenderFinalize();
 				m_pGraphics->Swap();
 			}
 			else if(!IsRenderActive)

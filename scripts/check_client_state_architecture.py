@@ -104,6 +104,13 @@ TOUCH_RENDER_FUNCTIONS = (
 )
 SESSION_STATS_UPDATE_FUNCTIONS = (("src/game/client/session_context.h", re.compile(r"\bUpdateSnapshot\s*\(\s*const CGameState\s*&")),)
 GAME_CLIENT_RENDER_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::OnRender\s*\(")),)
+CLIENT_UPDATE_FUNCTIONS = (("src/engine/client/client.cpp", re.compile(r"\bCClient::Update\s*\(")),)
+SESSION_CLOSE_ADAPTER_FUNCTIONS = (("src/engine/client/client.cpp", re.compile(r"\bCClient::Disconnect(?:Demo)?WithReason\s*\(")),)
+SESSION_MESSAGE_ROUTING_FUNCTIONS = (
+	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::OnMessage\s*\(")),
+	("src/game/client/sixup_translate_game.cpp", re.compile(r"\bCGameClient::TranslateGameMsg\s*\(")),
+)
+DEMO_SEEK_FUNCTIONS = (("src/game/client/components/menus_demo.cpp", re.compile(r"\bCMenus::HandleDemoSeeking\s*\(")),)
 RENDER_PROJECTION_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::(?:GetSmoothPos|UpdateRenderedClients)\s*\(")),)
 ENGINE_TIMING_QUERY_FUNCTIONS = (("src/engine/client/client.cpp", re.compile(r"\bCClient::(?:ConnectionProblems|GetPredictionTick|GetPredictionTime|GetSmoothTick)\s*\(")),)
 MAP_SOUNDS_UPDATE_FUNCTIONS = (("src/game/client/components/mapsounds.cpp", re.compile(r"\bCMapSounds::Update\s*\(")),)
@@ -325,6 +332,8 @@ FORBIDDEN_HUD_MOVEMENT_CONTEXT_FOCUS = (
 	re.compile(r"\bm_Snap\b"),
 	re.compile(r"GameClient\(\)->(?:GameState|m_aClients)\b"),
 	re.compile(r"\bClient\(\)"),
+	re.compile(r"\bRecreateTextContainer\s*\("),
+	re.compile(r"\bm_aPlayer(?:Position|Speed)"),
 )
 FORBIDDEN_HUD_SPECTATOR_CONTEXT_FOCUS = (
 	re.compile(r"\b(?:ActiveConnection|OtherConnection)\s*\("),
@@ -478,6 +487,29 @@ FORBIDDEN_GAME_CLIENT_RENDER = (
 	re.compile(r"\bm_vpAll\b"),
 	re.compile(r"\bm_GameViews\.Create\s*\("),
 	re.compile(r"\bm_Camera\.BindState\s*\("),
+	re.compile(r"\bInput\(\)->Clear\s*\("),
+	re.compile(r"\bm_New(?:Predicted)?Tick\s*="),
+	re.compile(r"\b(?:SendInfo|SendDummyInfo|SendSkinChange7)\s*\("),
+	re.compile(r"\bUpdateManagedTeeRenderInfos\s*\("),
+	re.compile(r"\bCommitController\s*\("),
+	re.compile(r"\bUpdateController\s*\("),
+	re.compile(r"\bPrepareApplicationOverlay\s*\("),
+)
+FORBIDDEN_CLIENT_UPDATE_FOCUS_CONFIG = (
+	re.compile(r"\bSetActiveConnection\s*\(\s*g_Config\.m_ClDummy\b"),
+	re.compile(r"\bUpdate(?:Demo|Network)Session\s*\("),
+	re.compile(r"\bDisconnect(?:Demo)?WithReason\s*\("),
+	re.compile(r"\bPumpNetwork\s*\("),
+	re.compile(r"\bm_pMapdownloadTask\b"),
+)
+FORBIDDEN_SESSION_CLOSE_ADAPTER_WORK = (
+	re.compile(r"\b(?:DemoPlayer|GameClient|NetClient)\s*\("),
+	re.compile(r"\b(?:ResetMetadata|ResetSnapshots|OnSessionClosed)\s*\("),
+)
+FORBIDDEN_SESSION_MESSAGE_ROUTING_FOCUS = (re.compile(r"Client\(\)->ActiveConnection\s*\("),)
+FORBIDDEN_DEMO_SEEK_FOCUS = (
+	re.compile(r"GameClient\(\)->(?:GameState|SessionContext)\s*\("),
+	re.compile(r"\bActiveConnection\s*\("),
 )
 FORBIDDEN_RENDER_PROJECTION_TIME = (re.compile(r"\btime_get\s*\("),)
 FORBIDDEN_ENGINE_TIMING_QUERY_FOCUS = (re.compile(r"\bActiveConnection\s*\("),)
@@ -742,6 +774,10 @@ errors = (
 	+ check_function_bodies(TOUCH_RENDER_FUNCTIONS, FORBIDDEN_TOUCH_RENDER_MUTATION)
 	+ check_function_bodies(SESSION_STATS_UPDATE_FUNCTIONS, FORBIDDEN_SESSION_STATS_UPDATE_FOCUS)
 	+ check_function_bodies(GAME_CLIENT_RENDER_FUNCTIONS, FORBIDDEN_GAME_CLIENT_RENDER)
+	+ check_function_bodies(CLIENT_UPDATE_FUNCTIONS, FORBIDDEN_CLIENT_UPDATE_FOCUS_CONFIG)
+	+ check_function_bodies(SESSION_CLOSE_ADAPTER_FUNCTIONS, FORBIDDEN_SESSION_CLOSE_ADAPTER_WORK)
+	+ check_function_bodies(SESSION_MESSAGE_ROUTING_FUNCTIONS, FORBIDDEN_SESSION_MESSAGE_ROUTING_FOCUS)
+	+ check_function_bodies(DEMO_SEEK_FUNCTIONS, FORBIDDEN_DEMO_SEEK_FOCUS)
 	+ check_function_bodies(RENDER_PROJECTION_FUNCTIONS, FORBIDDEN_RENDER_PROJECTION_TIME)
 	+ check_function_bodies(ENGINE_TIMING_QUERY_FUNCTIONS, FORBIDDEN_ENGINE_TIMING_QUERY_FOCUS)
 	+ check_function_bodies(MAP_SOUNDS_UPDATE_FUNCTIONS, FORBIDDEN_MAP_SOUNDS_UPDATE_FOCUS)

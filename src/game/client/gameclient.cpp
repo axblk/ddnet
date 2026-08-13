@@ -705,6 +705,82 @@ void CGameClient::OnUpdate()
 	{
 		pComponent->OnUpdate();
 	}
+
+	UpdateNetworkPlayerInfo();
+	m_NewTick = false;
+	m_NewPredictedTick = false;
+	UpdateManagedTeeRenderInfos();
+}
+
+void CGameClient::UpdateNetworkPlayerInfo()
+{
+	if(Client()->FocusedSessionId() == Client()->DemoSessionId())
+		return;
+
+	const int MainLocalId = GameState(IClient::CONN_MAIN).LocalClientId();
+	const int DummyLocalId = GameState(IClient::CONN_DUMMY).LocalClientId();
+	CGameState::CRuntimeState &MainRuntime = GameState(IClient::CONN_MAIN).Runtime();
+	CGameState::CRuntimeState &DummyRuntime = GameState(IClient::CONN_DUMMY).Runtime();
+	if(MainLocalId < 0 || !Client()->IsOnline() || m_Menus.IsActive() || !m_NewTick)
+		return;
+
+	if(MainRuntime.m_CheckInfo == 0)
+	{
+		if(m_pClient->IsSixup(Client()->NetworkSessionId()))
+		{
+			if(!GotWantedSkin7(IClient::CONN_MAIN))
+				SendSkinChange7(Client()->NetworkSessionId(), IClient::CONN_MAIN);
+			else
+				MainRuntime.m_CheckInfo = -1;
+		}
+		else
+		{
+			if(
+				str_comp(m_aClients[MainLocalId].m_aName, Client()->PlayerName()) ||
+				str_comp(m_aClients[MainLocalId].m_aClan, g_Config.m_PlayerClan) ||
+				m_aClients[MainLocalId].m_Country != g_Config.m_PlayerCountry ||
+				str_comp(m_aClients[MainLocalId].m_aSkinName, g_Config.m_ClPlayerSkin) ||
+				m_aClients[MainLocalId].m_UseCustomColor != g_Config.m_ClPlayerUseCustomColor ||
+				m_aClients[MainLocalId].m_ColorBody != (int)g_Config.m_ClPlayerColorBody ||
+				m_aClients[MainLocalId].m_ColorFeet != (int)g_Config.m_ClPlayerColorFeet)
+				SendInfo(Client()->NetworkSessionId(), false);
+			else
+				MainRuntime.m_CheckInfo = -1;
+		}
+	}
+
+	if(MainRuntime.m_CheckInfo > 0)
+		MainRuntime.m_CheckInfo -= std::min(Client()->GameTick(Client()->NetworkSessionId(), IClient::CONN_MAIN) - Client()->PrevGameTick(Client()->NetworkSessionId(), IClient::CONN_MAIN), MainRuntime.m_CheckInfo);
+
+	if(DummyLocalId < 0)
+		return;
+	if(DummyRuntime.m_CheckInfo == 0)
+	{
+		if(m_pClient->IsSixup(Client()->NetworkSessionId()))
+		{
+			if(!GotWantedSkin7(IClient::CONN_DUMMY))
+				SendSkinChange7(Client()->NetworkSessionId(), IClient::CONN_DUMMY);
+			else
+				DummyRuntime.m_CheckInfo = -1;
+		}
+		else
+		{
+			if(
+				str_comp(m_aClients[DummyLocalId].m_aName, Client()->DummyName()) ||
+				str_comp(m_aClients[DummyLocalId].m_aClan, g_Config.m_ClDummyClan) ||
+				m_aClients[DummyLocalId].m_Country != g_Config.m_ClDummyCountry ||
+				str_comp(m_aClients[DummyLocalId].m_aSkinName, g_Config.m_ClDummySkin) ||
+				m_aClients[DummyLocalId].m_UseCustomColor != g_Config.m_ClDummyUseCustomColor ||
+				m_aClients[DummyLocalId].m_ColorBody != (int)g_Config.m_ClDummyColorBody ||
+				m_aClients[DummyLocalId].m_ColorFeet != (int)g_Config.m_ClDummyColorFeet)
+				SendDummyInfo(false);
+			else
+				DummyRuntime.m_CheckInfo = -1;
+		}
+	}
+
+	if(DummyRuntime.m_CheckInfo > 0)
+		DummyRuntime.m_CheckInfo -= std::min(Client()->GameTick(Client()->NetworkSessionId(), IClient::CONN_DUMMY) - Client()->PrevGameTick(Client()->NetworkSessionId(), IClient::CONN_DUMMY), DummyRuntime.m_CheckInfo);
 }
 
 void CGameClient::OnInput(const IInput::CEvent &Event)
@@ -907,6 +983,11 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 	m_SessionPresentations.Unload(SessionId);
 	pSession->MapContext().Unload();
 	pSession->MapContext().Map()->Unload();
+	if(SessionId == Client()->NetworkSessionId())
+	{
+		m_RaceDemo.OnNetworkSessionClosed();
+		m_ActiveRecordings.reset();
+	}
 
 	if(SessionId != Client()->FocusedSessionId())
 		return;
@@ -928,8 +1009,6 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 	m_PredictedChar.Reset();
 
 	// m_Snap was cleared in InvalidateSnapshot
-
-	m_ActiveRecordings.reset();
 
 	for(auto &Client : m_aClients)
 		Client.Reset();
@@ -1198,9 +1277,18 @@ void CGameClient::OnRender()
 			if(Entry.m_pView == &View)
 				continue;
 			const int LocalId = Entry.m_pState->LocalClientId();
-			if(in_range(LocalId, MAX_CLIENTS - 1) && Entry.m_pState->RenderedClient(LocalId).m_Active)
+			const CGameState::CClientSnapshot *pLocalClient = in_range(LocalId, MAX_CLIENTS - 1) ? &Entry.m_pState->Client(LocalId) : nullptr;
+			const bool LocalPaused = pLocalClient != nullptr && pLocalClient->m_HasDDNetPlayer && (pLocalClient->m_DDNetPlayer.m_Flags & (EXPLAYERFLAG_PAUSED | EXPLAYERFLAG_SPEC)) != 0;
+			const bool HasSpectatorInfo = Entry.m_pState->HasSpectatorInfo();
+			const int SpectatorId = HasSpectatorInfo ? Entry.m_pState->SpectatorInfo().m_SpectatorId : LocalPaused ? LocalId :
+																 SPEC_FREEVIEW;
+			Entry.m_pView->SetSpectator(HasSpectatorInfo || LocalPaused, SpectatorId);
+			if(HasSpectatorInfo && SpectatorId == SPEC_FREEVIEW)
+				Entry.m_pView->SetCameraPosition(vec2(Entry.m_pState->SpectatorInfo().m_X, Entry.m_pState->SpectatorInfo().m_Y));
+			else if(Entry.m_pView->IsSpectating() && in_range(SpectatorId, MAX_CLIENTS - 1) && Entry.m_pState->RenderedClient(SpectatorId).m_Active)
+				Entry.m_pView->SetCameraPosition(Entry.m_pState->RenderedClient(SpectatorId).m_Position);
+			else if(in_range(LocalId, MAX_CLIENTS - 1) && Entry.m_pState->RenderedClient(LocalId).m_Active)
 				Entry.m_pView->SetCameraPosition(Entry.m_pState->RenderedClient(LocalId).m_Position);
-			Entry.m_pView->SetZoom(View.Zoom());
 		}
 	}
 	else
@@ -1286,18 +1374,13 @@ void CGameClient::OnRender()
 			}
 			for(CComponent *pComponent : apWorldComponents)
 				pComponent->OnRender(Context);
-			m_InfoMessages.OnRender(Context);
 			Output.EndView();
 		});
 
 	const CRenderContext CompatibilityContext(ActiveSession, ActiveState, View, GameTickInfo, VisibleWorldRect, ScreenOutput.PresentationCacheKey(), ScreenOutput.IsVideoOutput());
-	const float ControllerLocalTime = Client()->LocalTime();
-	m_Spectator.UpdateController(View, CompatibilityContext, ControllerLocalTime);
-	m_Emoticon.UpdateController(View, CompatibilityContext);
-	m_Chat.UpdateController(CompatibilityContext);
-	m_Statboard.UpdateController();
 
-	const std::array<CComponent *, 1> apRequestOverlaysBeforeChat = {
+	const std::array<CComponent *, 2> apRequestOverlaysBeforeChat = {
+		&m_InfoMessages,
 		&m_Hud,
 	};
 	const std::array<CComponent *, 2> apCompatibilityOverlaysBeforeChat = {
@@ -1352,7 +1435,6 @@ void CGameClient::OnRender()
 		pComponent->OnRender(CompatibilityContext);
 	m_TouchControls.RenderApplicationOverlay();
 	ScreenOutput.EndView();
-	m_Scoreboard.PrepareApplicationOverlay(CompatibilityContext);
 	m_Scoreboard.BeginRenderFrame();
 	Scheduler.Run(
 		vRenderRequests,
@@ -1368,90 +1450,37 @@ void CGameClient::OnRender()
 	RenderRequestComponents(apRequestOverlaysAfterScoreboard);
 	for(CComponent *pComponent : apApplicationOverlays)
 		pComponent->OnRender();
-	m_Spectator.CommitController(View, CompatibilityContext, ControllerLocalTime);
-
-	// clear all events/input for this frame
-	Input()->Clear();
 
 	CLineInput::RenderCandidates();
+}
 
-	const bool WasNewTick = m_NewTick;
+void CGameClient::OnRenderPrepare()
+{
+	CGameSessionContext &Session = SessionContext();
+	const int Conn = ActiveConnection();
+	CGameState *pState = Session.GameStates().FindByStream(CStreamId(Conn + 1));
+	dbg_assert(pState != nullptr, "missing controller game state");
+	CGameView &View = LegacyGameView();
+	CGameTickInfo Time;
+	Time.m_GameTickSpeed = Client()->GameTickSpeed();
+	Time.m_PresentationTime = CurrentPresentationTime();
+	Time.m_PresentationTimeFrequency = time_freq();
+	Time.m_IsGameActive = Client()->SessionState(Session.Id()) == ESessionState::READY;
+	Time.m_IsDemoPlayback = Session.Id() == Client()->DemoSessionId();
+	const CRenderContext Context(Session, *pState, View, Time, CVisibleWorldRect(vec2(), vec2()));
+	m_ControllerLocalTime = Client()->LocalTime();
+	m_Spectator.UpdateController(View, Context, m_ControllerLocalTime);
+	m_Emoticon.UpdateController(View, Context);
+	m_Chat.UpdateController(Context);
+	m_Statboard.UpdateController();
+	m_Scoreboard.PrepareApplicationOverlay(Context);
+}
 
-	// clear new tick flags
-	m_NewTick = false;
-	m_NewPredictedTick = false;
-
-	// resend player and dummy info if it was filtered by server
-	if(!FocusedDemo)
-	{
-		const int MainLocalId = GameState(IClient::CONN_MAIN).LocalClientId();
-		const int DummyLocalId = GameState(IClient::CONN_DUMMY).LocalClientId();
-		CGameState::CRuntimeState &MainRuntime = GameState(IClient::CONN_MAIN).Runtime();
-		CGameState::CRuntimeState &DummyRuntime = GameState(IClient::CONN_DUMMY).Runtime();
-		if(MainLocalId >= 0 && Client()->IsOnline() && !m_Menus.IsActive() && WasNewTick)
-		{
-			if(MainRuntime.m_CheckInfo == 0)
-			{
-				if(m_pClient->IsSixup(Client()->NetworkSessionId()))
-				{
-					if(!GotWantedSkin7(IClient::CONN_MAIN))
-						SendSkinChange7(Client()->NetworkSessionId(), IClient::CONN_MAIN);
-					else
-						MainRuntime.m_CheckInfo = -1;
-				}
-				else
-				{
-					if(
-						str_comp(m_aClients[MainLocalId].m_aName, Client()->PlayerName()) ||
-						str_comp(m_aClients[MainLocalId].m_aClan, g_Config.m_PlayerClan) ||
-						m_aClients[MainLocalId].m_Country != g_Config.m_PlayerCountry ||
-						str_comp(m_aClients[MainLocalId].m_aSkinName, g_Config.m_ClPlayerSkin) ||
-						m_aClients[MainLocalId].m_UseCustomColor != g_Config.m_ClPlayerUseCustomColor ||
-						m_aClients[MainLocalId].m_ColorBody != (int)g_Config.m_ClPlayerColorBody ||
-						m_aClients[MainLocalId].m_ColorFeet != (int)g_Config.m_ClPlayerColorFeet)
-						SendInfo(Client()->NetworkSessionId(), false);
-					else
-						MainRuntime.m_CheckInfo = -1;
-				}
-			}
-
-			if(MainRuntime.m_CheckInfo > 0)
-				MainRuntime.m_CheckInfo -= std::min(Client()->GameTick(Client()->NetworkSessionId(), IClient::CONN_MAIN) - Client()->PrevGameTick(Client()->NetworkSessionId(), IClient::CONN_MAIN), MainRuntime.m_CheckInfo);
-
-			if(DummyLocalId >= 0)
-			{
-				if(DummyRuntime.m_CheckInfo == 0)
-				{
-					if(m_pClient->IsSixup(Client()->NetworkSessionId()))
-					{
-						if(!GotWantedSkin7(IClient::CONN_DUMMY))
-							SendSkinChange7(Client()->NetworkSessionId(), IClient::CONN_DUMMY);
-						else
-							DummyRuntime.m_CheckInfo = -1;
-					}
-					else
-					{
-						if(
-							str_comp(m_aClients[DummyLocalId].m_aName, Client()->DummyName()) ||
-							str_comp(m_aClients[DummyLocalId].m_aClan, g_Config.m_ClDummyClan) ||
-							m_aClients[DummyLocalId].m_Country != g_Config.m_ClDummyCountry ||
-							str_comp(m_aClients[DummyLocalId].m_aSkinName, g_Config.m_ClDummySkin) ||
-							m_aClients[DummyLocalId].m_UseCustomColor != g_Config.m_ClDummyUseCustomColor ||
-							m_aClients[DummyLocalId].m_ColorBody != (int)g_Config.m_ClDummyColorBody ||
-							m_aClients[DummyLocalId].m_ColorFeet != (int)g_Config.m_ClDummyColorFeet)
-							SendDummyInfo(false);
-						else
-							DummyRuntime.m_CheckInfo = -1;
-					}
-				}
-
-				if(DummyRuntime.m_CheckInfo > 0)
-					DummyRuntime.m_CheckInfo -= std::min(Client()->GameTick(Client()->NetworkSessionId(), IClient::CONN_DUMMY) - Client()->PrevGameTick(Client()->NetworkSessionId(), IClient::CONN_DUMMY), DummyRuntime.m_CheckInfo);
-			}
-		}
-	}
-
-	UpdateManagedTeeRenderInfos();
+void CGameClient::OnRenderFinalize()
+{
+	CGameView &View = LegacyGameView();
+	m_Spectator.CommitController(View, View.SessionId(), View.StateId(), m_ControllerLocalTime);
+	Input()->Clear();
 }
 
 void CGameClient::OnDummyDisconnect()
@@ -1630,7 +1659,7 @@ void CGameClient::OnRelease()
 
 void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn)
 {
-	const bool InactiveStream = SessionId == Client()->NetworkSessionId() && Conn != Client()->ActiveConnection();
+	const bool AdditionalStream = SessionId == Client()->NetworkSessionId() && Conn != IClient::CONN_MAIN;
 	CGameSessionContext *pMessageSession = m_SessionContexts.Find(SessionId);
 	dbg_assert(pMessageSession != nullptr, "missing message session context");
 	CGameState *pMessageState = pMessageSession->GameStates().FindByStream(CStreamId(Conn + 1));
@@ -1726,7 +1755,7 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 				break;
 		}
 		pMessageState->SetDDrace16(i <= 16);
-		if(InactiveStream)
+		if(AdditionalStream)
 			return;
 
 		if(Focused)
@@ -1762,7 +1791,7 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 
 	if(MsgId == NETMSGTYPE_SV_BROADCAST)
 	{
-		if(!InactiveStream)
+		if(!AdditionalStream)
 		{
 			const CNetMsg_Sv_Broadcast *pMsg = static_cast<const CNetMsg_Sv_Broadcast *>(pRawMsg);
 			m_Broadcast.DoBroadcast(pMessageSession->Broadcast(), pMsg->m_pMessage, Client()->GameTick(SessionId, Conn), Client()->GameTickSpeed());
@@ -1771,7 +1800,7 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	}
 	if(MsgId == NETMSGTYPE_SV_MOTD)
 	{
-		if(!InactiveStream && SessionId != Client()->DemoSessionId())
+		if(!AdditionalStream && SessionId != Client()->DemoSessionId())
 		{
 			const CNetMsg_Sv_Motd *pMsg = static_cast<const CNetMsg_Sv_Motd *>(pRawMsg);
 			m_Motd.DoMotd(*pMessageSession, pMsg->m_pMessage, Focused);
@@ -1789,8 +1818,8 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	case NETMSGTYPE_SV_YOURVOTE:
 	case NETMSGTYPE_SV_VOTEOPTIONGROUPSTART:
 	case NETMSGTYPE_SV_VOTEOPTIONGROUPEND:
-		if(!InactiveStream && SessionId != Client()->DemoSessionId())
-			m_Voting.HandleMessage(pMessageSession->Vote(), MessageTime, time_freq(), Client()->RconAuthed(), MsgId, pRawMsg);
+		if(!AdditionalStream && SessionId != Client()->DemoSessionId())
+			m_Voting.HandleMessage(pMessageSession->Vote(), MessageTime, time_freq(), Focused && Client()->RconAuthed(), MsgId, pRawMsg);
 		return;
 	}
 	if(MsgId == NETMSGTYPE_SV_EMOTICON)
@@ -1799,7 +1828,7 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 		pMessageState->ApplyEmoticon(pMsg->m_ClientId, pMsg->m_Emoticon, Client()->GameTick(SessionId, Conn), Client()->IntraGameTickSincePrev(SessionId, Conn));
 	}
 
-	if(InactiveStream)
+	if(AdditionalStream)
 	{
 		const CGameState *pMainState = pMessageSession->GameStates().FindByStream(CStreamId(IClient::CONN_MAIN + 1));
 		const CGameState *pDummyState = pMessageSession->GameStates().FindByStream(CStreamId(IClient::CONN_DUMMY + 1));

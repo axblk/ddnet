@@ -46,10 +46,10 @@ public:
 	virtual ESessionSourceType Type() const = 0;
 	virtual ESessionState State() const = 0;
 	virtual const char *ErrorString() const = 0;
-	virtual void SetState(ESessionState State) = 0;
+	virtual bool SetState(ESessionState State) = 0;
 	virtual void Fail(const char *pError) = 0;
 	virtual void Update() = 0;
-	virtual void RequestStop() = 0;
+	virtual void RequestStop(const char *pReason = nullptr) = 0;
 };
 
 class CGameSession
@@ -81,8 +81,9 @@ public:
 	CSessionId FocusedId() const { return m_FocusedSessionId; }
 	CGameSession *Focused() { return Find(m_FocusedSessionId); }
 	const CGameSession *Focused() const { return Find(m_FocusedSessionId); }
-	bool Close(CSessionId Id);
+	bool Close(CSessionId Id, const char *pReason = nullptr);
 	bool Destroy(CSessionId Id);
+	bool Update(CSessionId Id);
 	void Update();
 	size_t NumSessions() const { return m_vpSessions.size(); }
 };

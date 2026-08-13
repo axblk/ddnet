@@ -5,6 +5,7 @@
 
 #include <game/client/game_view.h>
 #include <game/client/gameclient.h>
+#include <game/client/prediction/entities/character.h>
 #include <game/client/session_context.h>
 
 #include <algorithm>
@@ -22,6 +23,7 @@ public:
 	std::array<int, 2> m_aTeamSize = {};
 	int m_SpectatorCount = 0;
 	int m_LastZeroSpectatorCountTick = 0;
+	int m_LastMovementSnapshotTick = -1;
 
 	explicit CStateClientPresentation(CGameStateId StateId) :
 		m_StateId(StateId)
@@ -187,6 +189,7 @@ void CSessionPresentation::UpdateClients(const CPresentationContext &Context)
 	}
 
 	const CGameState &State = Context.m_State;
+	const bool NewMovementSnapshot = pStatePresentation->m_LastMovementSnapshotTick != State.SnapshotTick();
 	int SpectatorCount = 0;
 	if(Context.m_Session.Protocol() == EGameProtocol::SIXUP)
 	{
@@ -279,6 +282,25 @@ void CSessionPresentation::UpdateClients(const CPresentationContext &Context)
 			Client.m_DirectionJump = SnapshotClient.m_HasCharacter && (Character.m_Jumped & 1) != 0;
 			Client.m_DirectionRight = SnapshotClient.m_HasCharacter && Character.m_Direction == 1;
 		}
+		if(NewMovementSnapshot && SnapshotClient.m_HasPrevCharacter && SnapshotClient.m_HasCharacter)
+		{
+			ivec2 Velocity = mix(
+				ivec2(SnapshotClient.m_PrevCharacter.m_VelX, SnapshotClient.m_PrevCharacter.m_VelY),
+				ivec2(SnapshotClient.m_Character.m_VelX, SnapshotClient.m_Character.m_VelY),
+				Context.m_Time.m_IntraGameTick);
+			const CCharacter *pCharacter = State.PredictedWorld().GetCharacterById(ClientId);
+			const CCollision *pCollision = Context.m_Session.MapContext().Collision();
+			if(pCharacter != nullptr && (pCollision->IsOnGround(pCharacter->m_Pos, pCharacter->GetProximityRadius()) || (pCollision->GetMoveRestrictions(pCharacter->m_Pos + vec2(0, pCharacter->GetProximityRadius() / 2 + 4), 0.0f) & CANTMOVE_DOWN) != 0))
+				Velocity.y = 0;
+			for(int Axis = 0; Axis < 2; ++Axis)
+			{
+				const int Speed = absolute(Velocity[Axis]);
+				Client.m_aSpeedChange[Axis] = Speed < 2 ? EPlayerSpeedChange::NONE : Speed > Client.m_aSpeed[Axis] ? EPlayerSpeedChange::INCREASE :
+											     Speed < Client.m_aSpeed[Axis]         ? EPlayerSpeedChange::DECREASE :
+																     Client.m_aSpeedChange[Axis];
+				Client.m_aSpeed[Axis] = Speed;
+			}
+		}
 
 		CSkinDescriptor SkinDescriptor;
 		if(!GetClientSkinDescriptor(State, ClientId, Client.m_aSkinName, sizeof(Client.m_aSkinName), SkinDescriptor))
@@ -336,6 +358,7 @@ void CSessionPresentation::UpdateClients(const CPresentationContext &Context)
 			}
 		}
 	}
+	pStatePresentation->m_LastMovementSnapshotTick = State.SnapshotTick();
 	pStatePresentation->m_aClientsByName.fill(-1);
 	int NumClients = 0;
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)

@@ -794,7 +794,6 @@ void CPlayers::RenderPlayer(
 	if(!PreparePlayerRenderState(Context.m_Session, Context.m_State, Context.m_Time, Context.IsOtherTeam(ClientId), std::span<const CVisibleWorldRect>(&VisibleWorldRect, 1), vec2(0.0f, 0.0f), pPrevChar, pPlayerChar, pRenderInfo, ClientId, Intra, RenderState))
 		return;
 
-	CNetObj_Character &Prev = RenderState.m_Prev;
 	CNetObj_Character &Player = RenderState.m_Player;
 	CTeeRenderInfo &RenderInfo = RenderState.m_RenderInfo;
 	CAnimState &State = RenderState.m_Animation;

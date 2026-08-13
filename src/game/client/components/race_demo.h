@@ -20,7 +20,7 @@ class CRaceDemo : public CComponent
 
 	static const char *ms_pRaceDemoDir;
 
-	char m_aTmpFilename[128];
+	char m_aTmpFilename[128] = {};
 
 	int m_RaceState;
 	int m_RaceStartTick;

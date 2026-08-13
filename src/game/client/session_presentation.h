@@ -64,6 +64,7 @@ class CSessionPresentation : public CComponentInterfaces
 
 public:
 	CSessionPresentation(CSessionId SessionId, CMapImages &SharedMapImages);
+	~CSessionPresentation();
 
 	void OnInterfacesInit(CGameClient *pClient) override;
 	void Load(CGameSessionContext &Session);

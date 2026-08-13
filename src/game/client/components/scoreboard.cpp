@@ -679,7 +679,7 @@ void CScoreboard::RenderScoreboard(const CRenderContext &Context, CUIRect Scoreb
 
 					if(NumPlayers > 8)
 					{
-						if(DDTeam == GameClient()->m_Teams.TeamSuper())
+						if(DDTeam == Context.m_State.Teams().TeamSuper())
 							str_copy(aBuf, Localize("Super"));
 						else if(CurrentDDTeamSize <= 1)
 							str_format(aBuf, sizeof(aBuf), "%d", DDTeam);
@@ -689,7 +689,7 @@ void CScoreboard::RenderScoreboard(const CRenderContext &Context, CUIRect Scoreb
 					}
 					else
 					{
-						if(DDTeam == GameClient()->m_Teams.TeamSuper())
+						if(DDTeam == Context.m_State.Teams().TeamSuper())
 							str_copy(aBuf, Localize("Super"));
 						else if(CurrentDDTeamSize > 1)
 							str_format(aBuf, sizeof(aBuf), Localize("Team %d (%d/%d)"), DDTeam, CurrentDDTeamSize, MaxTeamSize);

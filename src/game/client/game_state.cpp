@@ -411,8 +411,8 @@ void CGameState::InitPrediction(CMapContext &MapContext)
 void CGameState::EvolveCharacter(CNetObj_Character &Character, int Tick)
 {
 	CWorldCore TempWorld;
-	CCharacterCore TempCore;
-	CTeamsCore TempTeams;
+	CCharacterCore TempCore{};
+	CTeamsCore TempTeams{};
 	TempCore.Init(&TempWorld, m_GameWorld.Collision(), &TempTeams);
 	TempCore.Read(&Character);
 	TempCore.m_ActiveWeapon = Character.m_Weapon;
@@ -485,7 +485,7 @@ void CGameState::ApplySnapshot(const IClient &Client, CSessionId SessionId, int 
 				SnapshotClient.m_Active = true;
 				SnapshotClient.m_HasPlayerInfo = true;
 				SnapshotClient.m_PlayerInfo = *static_cast<const CNetObj_PlayerInfo *>(Item.m_pData);
-				if(const auto *pPrev = static_cast<const CNetObj_PlayerInfo *>(Client.SnapFindItem(SessionId, Conn, IClient::SNAP_PREV, NETOBJTYPE_PLAYERINFO, Item.m_Id)))
+				if(Client.SnapFindItem(SessionId, Conn, IClient::SNAP_PREV, NETOBJTYPE_PLAYERINFO, Item.m_Id))
 				{
 					SnapshotClient.m_HasPrevPlayerInfo = true;
 				}

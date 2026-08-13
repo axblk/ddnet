@@ -54,14 +54,14 @@ void CMapContext::Load(const CConfig &BaseConfig)
 void CMapContext::ResetSettings(const CConfig &BaseConfig)
 {
 	m_GameConfig.Reset(BaseConfig);
-	for(int TuneZone = 0; TuneZone < TuneZone::NUM; TuneZone++)
+	for(auto &Tuning : m_aTuningList)
 	{
-		m_aTuningList[TuneZone] = CTuningParams::DEFAULT;
-		m_aTuningList[TuneZone].Set("gun_curvature", 0);
-		m_aTuningList[TuneZone].Set("gun_speed", 1400);
-		m_aTuningList[TuneZone].Set("shotgun_curvature", 0);
-		m_aTuningList[TuneZone].Set("shotgun_speed", 500);
-		m_aTuningList[TuneZone].Set("shotgun_speeddiff", 0);
+		Tuning = CTuningParams::DEFAULT;
+		Tuning.Set("gun_curvature", 0);
+		Tuning.Set("gun_speed", 1400);
+		Tuning.Set("shotgun_curvature", 0);
+		Tuning.Set("shotgun_speed", 500);
+		Tuning.Set("shotgun_speeddiff", 0);
 	}
 }
 

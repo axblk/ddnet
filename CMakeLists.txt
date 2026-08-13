@@ -3408,6 +3408,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/game/client/projectile_data.cpp
     src/game/client/session_game_config.cpp
     src/generated/client_data.cpp
+    src/generated/client_data.h
     src/headless/client_game_state_test_main.cpp
     src/test/game_state_test.cpp
     # tidy-alphabetical-end
@@ -4036,7 +4037,7 @@ foreach(target ${TARGETS})
     target_compile_options(${target} PRIVATE /wd4996) # Use of non-_s functions.
     # tidy-alphabetical-end
     # Enable Edit & Continue (Hot Reload) support
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.25)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.25 AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
       set_property(TARGET ${target} PROPERTY MSVC_DEBUG_INFORMATION_FORMAT $<IF:$<CONFIG:Debug>,EditAndContinue,Embedded>)
       target_link_options(${target} PRIVATE $<$<CONFIG:Debug>:/INCREMENTAL>)
     endif()

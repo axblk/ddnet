@@ -165,10 +165,6 @@ const char *CGameClient::DDNetVersionStr() const { return m_aDDNetVersionStr; }
 int CGameClient::ClientVersion7() const { return CLIENT_VERSION7; }
 const char *CGameClient::GetItemName(int Type) const { return m_NetObjHandler.GetObjName(Type); }
 
-CGameClient::CGameClient()
-{
-}
-
 CGameSessionContext &CGameClient::SessionContext()
 {
 	CGameSessionContext *pContext = m_SessionContexts.Find(Client()->FocusedSessionId());
@@ -2430,7 +2426,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 	CGameState &ActiveState = *pState;
 	CGameState::CRuntimeState &Runtime = ActiveState.Runtime();
 	const bool NetworkSource = SessionId == Client()->NetworkSessionId();
-	auto &&Evolve = [this, &Session](CNetObj_Character *pCharacter, int Tick) {
+	auto &&Evolve = [&Session](CNetObj_Character *pCharacter, int Tick) {
 		CWorldCore TempWorld;
 		CCharacterCore TempCore = CCharacterCore();
 		CTeamsCore TempTeams = CTeamsCore();

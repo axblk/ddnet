@@ -56,6 +56,8 @@ CSessionPresentation::CSessionPresentation(CSessionId SessionId, CMapImages &Sha
 {
 }
 
+CSessionPresentation::~CSessionPresentation() = default;
+
 void CSessionPresentation::OnInterfacesInit(CGameClient *pClient)
 {
 	CComponentInterfaces::OnInterfacesInit(pClient);

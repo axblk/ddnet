@@ -243,6 +243,7 @@ public:
 	virtual bool OnPlayerChatMessage(int, const char *, int) { return false; }
 	virtual void OnPlayerNameChanged(int ClientId) {}
 	virtual void OnPlayerDDNetVersionKnown(int ClientId) {}
+	virtual void OnPlayerMappingChanged(int ClientId) {}
 	virtual void OnPlayerSetTeam(int ClientId, int Team);
 	virtual void OnPlayerKill(int ClientId);
 	virtual void OnPlayerCallKickVote(int ClientId, int TargetId, const char *pReason);

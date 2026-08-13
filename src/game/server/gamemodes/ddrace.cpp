@@ -156,16 +156,16 @@ namespace
 			else
 			{
 				const char *pRequestedName = str_comp_nocase(pResult->GetString(0), "me") == 0 ?
-					pGameServer->Server()->ClientName(pResult->m_ClientId) :
-					pResult->GetString(0);
+								     pGameServer->Server()->ClientName(pResult->m_ClientId) :
+								     pResult->GetString(0);
 				RaceScore(pGameServer)->ShowPlayerTeamTop5(pResult->m_ClientId, pRequestedName, 0);
 			}
 		}
 		else if(pResult->NumArguments() == 2 && pResult->GetInteger(1) != 0)
 		{
 			const char *pRequestedName = str_comp_nocase(pResult->GetString(0), "me") == 0 ?
-				pGameServer->Server()->ClientName(pResult->m_ClientId) :
-				pResult->GetString(0);
+							     pGameServer->Server()->ClientName(pResult->m_ClientId) :
+							     pResult->GetString(0);
 			RaceScore(pGameServer)->ShowPlayerTeamTop5(pResult->m_ClientId, pRequestedName, pResult->GetInteger(1));
 		}
 		else
@@ -482,8 +482,8 @@ namespace
 		}
 
 		bool IsPlayerBeingVoted = pGameServer->m_VoteCloseTime &&
-			(pGameServer->IsKickVote() || pGameServer->IsSpecVote()) &&
-			pResult->m_ClientId != pGameServer->m_VoteVictim;
+					  (pGameServer->IsKickVote() || pGameServer->IsSpecVote()) &&
+					  pResult->m_ClientId != pGameServer->m_VoteVictim;
 		if((!IsPlayerBeingVoted && -PauseState == PauseType) ||
 			(IsPlayerBeingVoted && PauseState && pPlayer->SpectatorId() == pGameServer->m_VoteVictim))
 		{
@@ -1727,7 +1727,7 @@ void CGameControllerDDRace::OnCharacterDeath(const CGameCharacterDeathContext &C
 	const int VictimId = pVictim->GetPlayer()->GetCid();
 	const int Team = pVictim->Team();
 	const bool SendKillMessage = Context.m_SendKillMessage &&
-		(Team == TEAM_FLOCK || RaceTeams().TeamFlock(Team) || RaceTeams().TeamSize(Team) == 1 || RaceTeams().GetTeamState(Team) == ETeamState::OPEN || !RaceTeams().TeamLocked(Team));
+				     (Team == TEAM_FLOCK || RaceTeams().TeamFlock(Team) || RaceTeams().TeamSize(Team) == 1 || RaceTeams().GetTeamState(Team) == ETeamState::OPEN || !RaceTeams().TeamLocked(Team));
 
 	CGameCharacterDeathContext RaceContext = Context;
 	RaceContext.m_SendKillMessage = SendKillMessage;
@@ -1837,6 +1837,11 @@ void CGameControllerDDRace::OnPlayerDDNetVersionKnown(int ClientId)
 {
 	RaceTeams().SendTeamsState(ClientId);
 	RaceScore().SendRecord(ClientId);
+}
+
+void CGameControllerDDRace::OnPlayerMappingChanged(int ClientId)
+{
+	RaceTeams().SendTeamsState(ClientId);
 }
 
 void CGameControllerDDRace::OnPlayerSetTeam(int ClientId, int Team)

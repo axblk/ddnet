@@ -1,6 +1,5 @@
 /* (c) Shereef Marzouk. See "licence DDRace.txt" and the readme.txt in the root of the distribution for more information. */
 #include "gamecontext.h"
-
 #include "gamemodes/ddrace.h"
 
 #include <base/dbg.h>
@@ -13,8 +12,8 @@
 
 #include <game/mapitems.h>
 #include <game/server/entities/character.h>
-#include <game/server/gamemodes/ddrace_character.h>
 #include <game/server/gamemodes/ddnet.h>
+#include <game/server/gamemodes/ddrace_character.h>
 #include <game/server/player.h>
 #include <game/server/save.h>
 #include <game/server/teams.h>

@@ -228,7 +228,6 @@ public:
 	int GetDefaultEmote() const;
 	void OverrideDefaultEmote(int Emote, int Tick);
 	bool CanOverrideDefaultEmote() const;
-
 };
 
 #endif

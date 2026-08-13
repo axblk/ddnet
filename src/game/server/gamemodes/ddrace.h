@@ -41,6 +41,7 @@ public:
 	bool OnPlayerChatMessage(int ClientId, const char *pMessage, int Team) override;
 	void OnPlayerNameChanged(int ClientId) override;
 	void OnPlayerDDNetVersionKnown(int ClientId) override;
+	void OnPlayerMappingChanged(int ClientId) override;
 	void OnReset() override;
 	void OnPlayerSetTeam(int ClientId, int Team) override;
 	void OnPlayerKill(int ClientId) override;

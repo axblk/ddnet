@@ -370,7 +370,7 @@ void CGameControllerDDNet::SnapSwitchers(int SnappingClient)
 	if(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO)
 		SentTeam = 0;
 	else if(SnappingClient != SERVER_DEMO_CLIENT)
-		SentTeam = Teams().TeamForClient(SentTeam, SnappingClient);
+		SentTeam = RaceTeams().TeamForClient(SentTeam, SnappingClient);
 	CNetObj_SwitchState SwitchState = {};
 	SwitchState.m_HighestSwitchNumber = std::clamp((int)vSwitchers.size() - 1, 0, 255);
 	std::fill(std::begin(SwitchState.m_aStatus), std::end(SwitchState.m_aStatus), 0);

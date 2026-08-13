@@ -793,7 +793,7 @@ TEST_F(GameWorld, CharacterSpawnInitializationIsModeOwned)
 	pVanillaPlayer->Tick();
 	EXPECT_EQ(pVanillaPlayer->m_TuneZone, 0);
 	auto *pVanillaProjectile = new CProjectile(&GameServer()->m_World, WEAPON_GUN, 0, TunePosition, vec2(1.0f, 0.0f), 10, false, false, -1, vec2(1.0f, 0.0f));
-	EXPECT_EQ(pVanillaProjectile->NetInfo().m_TuneZone, 0);
+	EXPECT_EQ(pVanillaProjectile->NetInfo(SERVER_DEMO_CLIENT).m_TuneZone, 0);
 	delete pVanillaProjectile;
 	pVanillaCharacter->SetInvincible(true);
 	EXPECT_TRUE(pVanillaCharacter->GetCore().m_Invincible);
@@ -828,7 +828,7 @@ TEST_F(GameWorld, CharacterSpawnInitializationIsModeOwned)
 	GameServer()->m_apPlayers[1]->Tick();
 	EXPECT_EQ(GameServer()->m_apPlayers[1]->m_TuneZone, MapTuneZone);
 	auto *pDDNetProjectile = new CProjectile(&GameServer()->m_World, WEAPON_GUN, 1, TunePosition, vec2(1.0f, 0.0f), 10, false, false, -1, vec2(1.0f, 0.0f));
-	EXPECT_EQ(pDDNetProjectile->NetInfo().m_TuneZone, MapTuneZone);
+	EXPECT_EQ(pDDNetProjectile->NetInfo(SERVER_DEMO_CLIENT).m_TuneZone, MapTuneZone);
 	delete pDDNetProjectile;
 	EXPECT_TRUE(pDDRaceCharacter->HasRaceTeams());
 	pDDNetCharacter->Pause(true);
@@ -1750,7 +1750,7 @@ TEST_F(GameWorld, EntitySnapshotFormatsAreModeOwned)
 	const bool PreviousClientVersionSettled = m_pServer->m_aClients[ClientId].m_DDNetVersionSettled;
 	m_pServer->m_aClients[ClientId].m_State = CServer::CClient::STATE_INGAME;
 	m_pServer->SetClientDDNetVersion(ClientId, VERSION_DDNET_ENTITY_NETOBJS);
-	const CSnapContext SnapContext(VERSION_DDNET_ENTITY_NETOBJS, false);
+	const CSnapContext SnapContext(VERSION_DDNET_ENTITY_NETOBJS, false, SERVER_DEMO_CLIENT);
 
 	m_pServer->m_SnapshotBuilder.Init();
 	GameServer()->SnapLaserObject(SnapContext, LaserId, vec2(32.0f, 32.0f), vec2(64.0f, 32.0f), 1);
@@ -2624,6 +2624,9 @@ TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
 	pVictimCharacter->TakeDamage(vec2(), 0, CatcherId, WEAPON_LASER);
 	EXPECT_EQ(pVictim->GetTeam(), TEAM_GAME);
 	EXPECT_EQ(pVictim->SpectatorId(), CatcherId);
+	GameServer()->m_PlayerMapping.ForceInsertPlayer(CatcherId, VictimId);
+	int TranslatedCatcherId = CatcherId;
+	ASSERT_TRUE(m_pServer->Translate(TranslatedCatcherId, VictimId));
 
 	m_pServer->m_aClients[VictimId].m_Sixup = false;
 	m_pServer->m_SnapshotBuilder.Init(false);
@@ -2636,7 +2639,7 @@ TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
 	ASSERT_NE(pSixPlayerInfo, nullptr);
 	ASSERT_NE(pSixSpectatorInfo, nullptr);
 	EXPECT_EQ(pSixPlayerInfo->m_Team, TEAM_SPECTATORS);
-	EXPECT_EQ(pSixSpectatorInfo->m_SpectatorId, CatcherId);
+	EXPECT_EQ(pSixSpectatorInfo->m_SpectatorId, TranslatedCatcherId);
 
 	m_pServer->m_aClients[VictimId].m_Sixup = true;
 	m_pServer->m_SnapshotBuilder.Init(true);
@@ -2650,7 +2653,7 @@ TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
 	ASSERT_NE(pSevenSpectatorInfo, nullptr);
 	EXPECT_NE(pSevenPlayerInfo->m_PlayerFlags & protocol7::PLAYERFLAG_DEAD, 0);
 	EXPECT_EQ(pSevenSpectatorInfo->m_SpecMode, protocol7::SPEC_PLAYER);
-	EXPECT_EQ(pSevenSpectatorInfo->m_SpectatorId, CatcherId);
+	EXPECT_EQ(pSevenSpectatorInfo->m_SpectatorId, TranslatedCatcherId);
 
 	m_pServer->m_aClients[VictimId].m_State = PreviousClientState;
 	m_pServer->m_aClients[VictimId].m_Sixup = PreviousSixup;

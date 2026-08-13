@@ -14,10 +14,10 @@ bool RegisterBuiltInGameModes(CGameModeRegistry &Registry)
 {
 	const int BothProtocols = GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN;
 	return Registry.Register(
-		       {"ddnet", "DDNet", "DDraceNetwork", "TestDDraceNetwork", EGameModeScoreKind::TIME, protocol7::GAMEFLAG_RACE, BothProtocols, 0, true},
+		       {"ddnet", "DDNet", "DDraceNetwork", "TestDDraceNetwork", EGameModeScoreKind::TIME, protocol7::GAMEFLAG_RACE, BothProtocols, 0, true, EPhysicsRuleset::DDNET},
 		       [](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerDDNet>(Services, Info); }) &&
 	       Registry.Register(
-		       {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, BothProtocols, 0, true},
+		       {"mod", "Mod", "Mod", "TestMod", EGameModeScoreKind::TIME, 0, BothProtocols, 0, true, EPhysicsRuleset::DDNET},
 		       [](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerMod>(Services, Info); }) &&
 	       RegisterVanillaGameModes(Registry) &&
 	       RegisterInstagibGameModes(Registry) &&

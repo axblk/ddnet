@@ -57,8 +57,11 @@ IGameController::~IGameController()
 
 void IGameController::Init(CDbConnectionPool *)
 {
+	Services().World().m_Core.m_PhysicsRuleset = Info().m_PhysicsRuleset;
 	RegisterCommands();
 	InitGameSettings();
+	Services().World().m_Core.m_OldTeleportHook = Info().m_PhysicsRuleset == EPhysicsRuleset::DDNET && g_Config.m_SvOldTeleportHook;
+	Services().World().m_Core.m_OldTeleportWeapons = Info().m_PhysicsRuleset == EPhysicsRuleset::DDNET && g_Config.m_SvOldTeleportWeapons;
 	m_pGameType = g_Config.m_SvTestingCommands ? m_GameModeInfo.m_pTestingGameType : m_GameModeInfo.m_pGameType;
 	DoWarmup(g_Config.m_SvWarmup);
 	m_TeamsCore.Reset();
@@ -792,11 +795,6 @@ void IGameController::TickCharacterPostCore(CCharacter *pCharacter)
 {
 	if(pCharacter->GameLayerClipped(pCharacter->m_Pos) || pCharacter->IsOnDeathTile())
 		pCharacter->Die(pCharacter->GetPlayer()->GetCid(), WEAPON_WORLD);
-}
-
-void IGameController::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
-{
-	// Do nothing by default
 }
 
 void IGameController::DoWarmup(int Seconds)

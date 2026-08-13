@@ -814,6 +814,134 @@ TEST_F(GameWorld, CharacterSpawnInitializationIsModeOwned)
 	EXPECT_FALSE(pDDNetCharacter->IsAlive());
 }
 
+TEST_F(GameWorld, PhysicsRulesetIsModeOwned)
+{
+	const int PreviousTeamMode = g_Config.m_SvTeam;
+	g_Config.m_SvTeam = SV_TEAM_FORCED_SOLO;
+
+	SelectGameMode("vanilla.dm");
+	EXPECT_EQ(GameServer()->m_World.m_Core.m_PhysicsRuleset, EPhysicsRuleset::VANILLA);
+	GameServer()->CreatePlayer(0, TEAM_GAME, false, -1);
+	GameServer()->CreatePlayer(1, TEAM_GAME, false, -1);
+	ASSERT_NE(GameServer()->m_apPlayers[0]->ForceSpawn(vec2(64.0f, 96.0f)), nullptr);
+	ASSERT_NE(GameServer()->m_apPlayers[1]->ForceSpawn(vec2(192.0f, 96.0f)), nullptr);
+	EXPECT_TRUE(GameController()->TeamsCore().SameTeam(0, 1));
+	EXPECT_TRUE(GameController()->TeamsCore().CanCollide(0, 1));
+	DeletePlayers();
+
+	SelectGameMode("ddnet");
+	g_Config.m_SvTeam = SV_TEAM_FORCED_SOLO;
+	RaceTeams().Reset();
+	EXPECT_EQ(GameServer()->m_World.m_Core.m_PhysicsRuleset, EPhysicsRuleset::DDNET);
+	GameServer()->CreatePlayer(0, TEAM_GAME, false, -1);
+	GameServer()->CreatePlayer(1, TEAM_GAME, false, -1);
+	ASSERT_NE(GameServer()->m_apPlayers[0]->ForceSpawn(vec2(64.0f, 96.0f)), nullptr);
+	ASSERT_NE(GameServer()->m_apPlayers[1]->ForceSpawn(vec2(192.0f, 96.0f)), nullptr);
+	EXPECT_FALSE(GameController()->TeamsCore().SameTeam(0, 1));
+	EXPECT_FALSE(GameController()->TeamsCore().CanCollide(0, 1));
+
+	g_Config.m_SvTeam = PreviousTeamMode;
+}
+
+TEST_F(GameWorld, PhysicsRulesetGatesDDNetCoreFlags)
+{
+	auto HookedPlayer = [&](EPhysicsRuleset Ruleset) {
+		CWorldCore World;
+		World.m_PhysicsRuleset = Ruleset;
+		CTeamsCore Teams;
+		CCharacterCore Hooker;
+		CCharacterCore Target;
+		Hooker.Reset();
+		Target.Reset();
+		Hooker.Init(&World, GameServer()->Collision(), &Teams);
+		Target.Init(&World, GameServer()->Collision(), &Teams);
+		Hooker.m_Id = 0;
+		Target.m_Id = 1;
+		World.m_apCharacters[0] = &Hooker;
+		World.m_apCharacters[1] = &Target;
+		Hooker.m_Pos = vec2(64.0f, 96.0f);
+		Target.m_Pos = vec2(120.0f, 96.0f);
+		Hooker.m_HookPos = vec2(80.0f, 96.0f);
+		Hooker.m_HookDir = vec2(1.0f, 0.0f);
+		Hooker.m_HookState = HOOK_FLYING;
+		Hooker.m_HookHitDisabled = true;
+		Hooker.m_Input.m_TargetX = 1;
+		Hooker.m_Input.m_TargetY = 0;
+		Hooker.Tick(false, false);
+		return Hooker.HookedPlayer();
+	};
+
+	EXPECT_EQ(HookedPlayer(EPhysicsRuleset::VANILLA), 1);
+	EXPECT_EQ(HookedPlayer(EPhysicsRuleset::DDNET), -1);
+}
+
+TEST_F(GameWorld, PhysicsRulesetGatesOldHookTeleport)
+{
+	int TeleNumber = 0;
+	vec2 TelePosition;
+	for(int Index = 0; Index < GameServer()->Collision()->GetWidth() * GameServer()->Collision()->GetHeight(); ++Index)
+	{
+		TeleNumber = GameServer()->Collision()->IsTeleport(Index);
+		if(TeleNumber > 0 && !GameServer()->Collision()->TeleOuts(TeleNumber - 1).empty())
+		{
+			TelePosition = GameServer()->Collision()->GetPos(Index);
+			break;
+		}
+	}
+	ASSERT_GT(TeleNumber, 0);
+
+	auto HookUsesTeleport = [&](EPhysicsRuleset Ruleset) {
+		CWorldCore World;
+		World.m_PhysicsRuleset = Ruleset;
+		World.m_OldTeleportHook = true;
+		CTeamsCore Teams;
+		CCharacterCore Core;
+		Core.Reset();
+		Core.Init(&World, GameServer()->Collision(), &Teams);
+		Core.m_Pos = TelePosition - vec2(64.0f, 0.0f);
+		Core.m_HookPos = TelePosition - vec2(32.0f, 0.0f);
+		Core.m_HookDir = vec2(1.0f, 0.0f);
+		Core.m_HookState = HOOK_FLYING;
+		Core.m_Input.m_TargetX = 1;
+		Core.m_Input.m_TargetY = 0;
+		Core.Tick(false, false);
+		return Core.m_NewHook;
+	};
+
+	EXPECT_FALSE(HookUsesTeleport(EPhysicsRuleset::VANILLA));
+	EXPECT_TRUE(HookUsesTeleport(EPhysicsRuleset::DDNET));
+}
+
+TEST_F(GameWorld, PhysicsRulesetGatesStopperGround)
+{
+	vec2 StopperPosition;
+	bool Found = false;
+	for(int Index = 0; Index < GameServer()->Collision()->GetWidth() * GameServer()->Collision()->GetHeight(); ++Index)
+	{
+		const vec2 Position = GameServer()->Collision()->GetPos(Index) - vec2(0.0f, 18.0f);
+		if(!GameServer()->Collision()->IsOnGround(Position, CCharacterCore::PhysicalSize()) && (GameServer()->Collision()->GetMoveRestrictions(Position + vec2(0.0f, 18.0f), 0.0f) & CANTMOVE_DOWN))
+		{
+			StopperPosition = Position;
+			Found = true;
+			break;
+		}
+	}
+	ASSERT_TRUE(Found);
+
+	SelectGameMode("vanilla.dm");
+	GameServer()->CreatePlayer(0, TEAM_GAME, false, -1);
+	CCharacter *pVanillaCharacter = GameServer()->m_apPlayers[0]->ForceSpawn(StopperPosition);
+	ASSERT_NE(pVanillaCharacter, nullptr);
+	EXPECT_FALSE(pVanillaCharacter->IsGrounded());
+	DeletePlayers();
+
+	SelectGameMode("ddnet");
+	GameServer()->CreatePlayer(0, TEAM_GAME, false, -1);
+	CCharacter *pDDNetCharacter = GameServer()->m_apPlayers[0]->ForceSpawn(StopperPosition);
+	ASSERT_NE(pDDNetCharacter, nullptr);
+	EXPECT_TRUE(pDDNetCharacter->IsGrounded());
+}
+
 TEST_F(GameWorld, DDRaceStartWarningIsCharacterOwned)
 {
 	CPlayer *pPlayer = GameServer()->CreatePlayer(0, TEAM_GAME, false, -1);

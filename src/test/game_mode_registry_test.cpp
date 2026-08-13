@@ -41,11 +41,13 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	EXPECT_STREQ(GameModeScoreKindName(pDDNet->m_ScoreKind), "time");
 	EXPECT_EQ(pDDNet->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
 	EXPECT_TRUE(pDDNet->m_UseTuneZones);
+	EXPECT_EQ(pDDNet->m_PhysicsRuleset, EPhysicsRuleset::DDNET);
 
 	const CGameModeInfo *pMod = Registry.Find("mod");
 	ASSERT_NE(pMod, nullptr);
 	EXPECT_STREQ(pMod->m_pTestingGameType, "TestMod");
 	EXPECT_TRUE(pMod->m_UseTuneZones);
+	EXPECT_EQ(pMod->m_PhysicsRuleset, EPhysicsRuleset::DDNET);
 
 	const CGameModeInfo *pVanillaDM = Registry.Find("vanilla.dm");
 	ASSERT_NE(pVanillaDM, nullptr);
@@ -53,6 +55,7 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	EXPECT_EQ(pVanillaDM->m_ScoreKind, EGameModeScoreKind::POINTS);
 	EXPECT_EQ(pVanillaDM->m_ActivePlayerLimit, 0);
 	EXPECT_FALSE(pVanillaDM->m_UseTuneZones);
+	EXPECT_EQ(pVanillaDM->m_PhysicsRuleset, EPhysicsRuleset::VANILLA);
 
 	const CGameModeInfo *pVanilla1on1 = Registry.Find("vanilla.1on1");
 	ASSERT_NE(pVanilla1on1, nullptr);

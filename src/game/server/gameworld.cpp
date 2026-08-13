@@ -202,6 +202,9 @@ void CGameWorld::RemoveEntities()
 
 void CGameWorld::Tick()
 {
+	m_Core.m_OldTeleportHook = m_Core.m_PhysicsRuleset == EPhysicsRuleset::DDNET && g_Config.m_SvOldTeleportHook;
+	m_Core.m_OldTeleportWeapons = m_Core.m_PhysicsRuleset == EPhysicsRuleset::DDNET && g_Config.m_SvOldTeleportWeapons;
+
 	if(m_ResetRequested)
 		Reset();
 
@@ -212,7 +215,7 @@ void CGameWorld::Tick()
 		{
 			// It's important to call PreTick() and Tick() after each other.
 			// If we call PreTick() before, and Tick() after other entities have been processed, it causes physics changes such as a stronger shotgun or grenade.
-			if(g_Config.m_SvNoWeakHook && i == ENTTYPE_CHARACTER)
+			if(m_Core.m_PhysicsRuleset == EPhysicsRuleset::DDNET && g_Config.m_SvNoWeakHook && i == ENTTYPE_CHARACTER)
 			{
 				auto *pEnt = m_apFirstEntityTypes[i];
 				for(; pEnt;)

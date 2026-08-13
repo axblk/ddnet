@@ -174,20 +174,19 @@ void CGameControllerDDNet::SnapMode(int SnappingClient)
 	}
 }
 
-void CGameControllerDDNet::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
+void CGameControllerDDNet::HandleRaceTiles(CCharacterDDRace *pRaceChr, int MapIndex)
 {
-	CCharacterDDRace *pRaceChr = static_cast<CCharacterDDRace *>(pChr);
-	CPlayer *pPlayer = pChr->GetPlayer();
+	CPlayer *pPlayer = pRaceChr->GetPlayer();
 	const int ClientId = pPlayer->GetCid();
 
 	int TileIndex = GameServer()->Collision()->GetTileIndex(MapIndex);
 	int TileFIndex = GameServer()->Collision()->GetFrontTileIndex(MapIndex);
 
 	//Sensitivity
-	int S1 = GameServer()->Collision()->GetPureMapIndex(vec2(pChr->GetPos().x + pChr->GetProximityRadius() / 3.f, pChr->GetPos().y - pChr->GetProximityRadius() / 3.f));
-	int S2 = GameServer()->Collision()->GetPureMapIndex(vec2(pChr->GetPos().x + pChr->GetProximityRadius() / 3.f, pChr->GetPos().y + pChr->GetProximityRadius() / 3.f));
-	int S3 = GameServer()->Collision()->GetPureMapIndex(vec2(pChr->GetPos().x - pChr->GetProximityRadius() / 3.f, pChr->GetPos().y - pChr->GetProximityRadius() / 3.f));
-	int S4 = GameServer()->Collision()->GetPureMapIndex(vec2(pChr->GetPos().x - pChr->GetProximityRadius() / 3.f, pChr->GetPos().y + pChr->GetProximityRadius() / 3.f));
+	int S1 = GameServer()->Collision()->GetPureMapIndex(vec2(pRaceChr->GetPos().x + pRaceChr->GetProximityRadius() / 3.f, pRaceChr->GetPos().y - pRaceChr->GetProximityRadius() / 3.f));
+	int S2 = GameServer()->Collision()->GetPureMapIndex(vec2(pRaceChr->GetPos().x + pRaceChr->GetProximityRadius() / 3.f, pRaceChr->GetPos().y + pRaceChr->GetProximityRadius() / 3.f));
+	int S3 = GameServer()->Collision()->GetPureMapIndex(vec2(pRaceChr->GetPos().x - pRaceChr->GetProximityRadius() / 3.f, pRaceChr->GetPos().y - pRaceChr->GetProximityRadius() / 3.f));
+	int S4 = GameServer()->Collision()->GetPureMapIndex(vec2(pRaceChr->GetPos().x - pRaceChr->GetProximityRadius() / 3.f, pRaceChr->GetPos().y + pRaceChr->GetProximityRadius() / 3.f));
 	int Tile1 = GameServer()->Collision()->GetTileIndex(S1);
 	int Tile2 = GameServer()->Collision()->GetTileIndex(S2);
 	int Tile3 = GameServer()->Collision()->GetTileIndex(S3);
@@ -206,13 +205,13 @@ void CGameControllerDDNet::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
 		if(RaceTeams().GetSaving(Team))
 		{
 			pRaceChr->SendStartWarning("You can't start while loading/saving of team is in progress");
-			pChr->Die(ClientId, WEAPON_WORLD);
+			pRaceChr->Die(ClientId, WEAPON_WORLD);
 			return;
 		}
 		if(g_Config.m_SvTeam == SV_TEAM_MANDATORY && (Team == TEAM_FLOCK || RaceTeams().TeamSize(Team) <= 1))
 		{
 			pRaceChr->SendStartWarning("You have to be in a team with other tees to start");
-			pChr->Die(ClientId, WEAPON_WORLD);
+			pRaceChr->Die(ClientId, WEAPON_WORLD);
 			return;
 		}
 		if(g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO && Team != TEAM_FLOCK && RaceTeams().IsValidTeamNumber(Team) && RaceTeams().TeamSize(Team) < g_Config.m_SvMinTeamSize && !RaceTeams().TeamFlock(Team))
@@ -223,7 +222,7 @@ void CGameControllerDDNet::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
 		}
 		if(g_Config.m_SvResetPickups)
 		{
-			pChr->ResetPickups();
+			pRaceChr->ResetPickups();
 		}
 
 		RaceTeams().OnCharacterStart(ClientId);
@@ -245,21 +244,9 @@ void CGameControllerDDNet::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
 		RaceTeams().SetTeamLock(RaceTeams().m_Core.Team(ClientId), false);
 		GameServer()->SendChatTeam(RaceTeams().m_Core.Team(ClientId), "Your team was unlocked by an unlock team tile");
 	}
-
-	// solo part
-	if(((TileIndex == TILE_SOLO_ENABLE) || (TileFIndex == TILE_SOLO_ENABLE)) && !TeamsCore().GetSolo(ClientId))
-	{
-		GameServer()->SendChatTarget(ClientId, "You are now in a solo part");
-		pChr->SetSolo(true);
-	}
-	else if(((TileIndex == TILE_SOLO_DISABLE) || (TileFIndex == TILE_SOLO_DISABLE)) && TeamsCore().GetSolo(ClientId))
-	{
-		GameServer()->SendChatTarget(ClientId, "You are now out of the solo part");
-		pChr->SetSolo(false);
-	}
 }
 
-void CGameControllerDDNet::SetArmorProgress(CCharacter *pCharacter, int Progress)
+void CGameControllerDDNet::SetArmorProgress(CCharacterDDRace *pCharacter, int Progress)
 {
 	pCharacter->SetArmor(std::clamp(10 - (Progress / 15), 0, 10));
 }

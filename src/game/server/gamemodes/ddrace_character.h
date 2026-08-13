@@ -16,8 +16,11 @@ private:
 	void ForceSetRescue(int RescueMode);
 	static bool IsSwitchActiveCb(unsigned char Number, void *pUser);
 	void SetTimeCheckpoint(int TimeCheckpoint);
-	void HandleTiles(int Index);
-	void HandleSkippableTiles(int Index);
+	void HandleRaceTiles(int MapIndex);
+	void HandleRaceTimeTiles(int SwitchType, int SwitchNumber, int SwitchDelay);
+	void HandleRaceDeathTiles();
+	void HandleDDNetPhysicsTiles(int Index);
+	void HandleDDNetPhysicsSkippableTiles(int Index);
 	void HandleBroadcast();
 	void HandleTuneLayer();
 	void SendZoneMsgs();

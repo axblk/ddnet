@@ -1,6 +1,8 @@
 #ifndef GAME_SERVER_MODE_GAME_MODE_REGISTRY_H
 #define GAME_SERVER_MODE_GAME_MODE_REGISTRY_H
 
+#include <game/gamecore.h>
+
 #include <memory>
 #include <vector>
 
@@ -30,6 +32,7 @@ struct CGameModeInfo
 	int m_Protocols;
 	int m_ActivePlayerLimit = 0;
 	bool m_UseTuneZones = false;
+	EPhysicsRuleset m_PhysicsRuleset = EPhysicsRuleset::VANILLA;
 };
 
 class CGameModeRegistry

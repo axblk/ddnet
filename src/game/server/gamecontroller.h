@@ -228,9 +228,6 @@ public:
 	virtual void TickCharacterPreCore(CCharacter *) {}
 	virtual void TickCharacterPostCore(CCharacter *pCharacter);
 
-	virtual void HandleCharacterTiles(class CCharacter *pChr, int MapIndex);
-	virtual void SetArmorProgress(CCharacter *pCharacter, int Progress) {}
-
 	/*
 		Function: OnEntity
 			Called when the map is loaded to process an entity

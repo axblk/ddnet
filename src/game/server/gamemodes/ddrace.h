@@ -30,6 +30,8 @@ public:
 	void OnCharacterSpawn(CCharacter *pCharacter) override;
 	void TickCharacterPreCore(CCharacter *pCharacter) override;
 	void TickCharacterPostCore(CCharacter *pCharacter) override;
+	virtual void HandleRaceTiles(CCharacterDDRace *pCharacter, int MapIndex) {}
+	virtual void SetArmorProgress(CCharacterDDRace *pCharacter, int Progress) {}
 	int PlayerAutoRespawnTick(const CPlayer *pPlayer) const override;
 	std::unique_ptr<IGameModeMapReloadState> SaveStateForMapReload() override;
 	void RestoreCharacterAfterMapReload(CCharacter *pCharacter) override;

@@ -1717,6 +1717,9 @@ void CGameClient::OnNewSnapshot(bool DummySwapped)
 {
 	auto &&Evolve = [this](CNetObj_Character *pCharacter, int Tick) {
 		CWorldCore TempWorld;
+		TempWorld.m_PhysicsRuleset = m_GameInfo.m_PredictDDRace ? EPhysicsRuleset::DDNET : EPhysicsRuleset::VANILLA;
+		TempWorld.m_OldTeleportHook = TempWorld.m_PhysicsRuleset == EPhysicsRuleset::DDNET && g_Config.m_SvOldTeleportHook;
+		TempWorld.m_OldTeleportWeapons = TempWorld.m_PhysicsRuleset == EPhysicsRuleset::DDNET && g_Config.m_SvOldTeleportWeapons;
 		CCharacterCore TempCore = CCharacterCore();
 		CTeamsCore TempTeams = CTeamsCore();
 		TempCore.Init(&TempWorld, Collision(), &TempTeams);
@@ -3508,6 +3511,9 @@ void CGameClient::UpdatePrediction()
 {
 	m_GameWorld.m_WorldConfig.m_IsVanilla = m_GameInfo.m_PredictVanilla;
 	m_GameWorld.m_WorldConfig.m_IsDDRace = m_GameInfo.m_PredictDDRace;
+	m_GameWorld.m_Core.m_PhysicsRuleset = m_GameInfo.m_PredictDDRace ? EPhysicsRuleset::DDNET : EPhysicsRuleset::VANILLA;
+	m_GameWorld.m_Core.m_OldTeleportHook = m_GameWorld.m_Core.m_PhysicsRuleset == EPhysicsRuleset::DDNET && g_Config.m_SvOldTeleportHook;
+	m_GameWorld.m_Core.m_OldTeleportWeapons = m_GameWorld.m_Core.m_PhysicsRuleset == EPhysicsRuleset::DDNET && g_Config.m_SvOldTeleportWeapons;
 	m_GameWorld.m_WorldConfig.m_IsFNG = m_GameInfo.m_PredictFNG;
 	m_GameWorld.m_WorldConfig.m_PredictDDRace = m_GameInfo.m_PredictDDRace;
 	m_GameWorld.m_WorldConfig.m_PredictTiles = m_GameInfo.m_PredictDDRace && m_GameInfo.m_PredictDDRaceTiles;

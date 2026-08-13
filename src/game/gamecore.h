@@ -146,6 +146,12 @@ struct SSwitchers
 	int m_aLastUpdateTick[NUM_DDRACE_TEAMS];
 };
 
+enum class EPhysicsRuleset
+{
+	VANILLA,
+	DDNET,
+};
+
 class CWorldCore
 {
 public:
@@ -156,6 +162,9 @@ public:
 			pCharacter = nullptr;
 		}
 		m_pPrng = nullptr;
+		m_PhysicsRuleset = EPhysicsRuleset::VANILLA;
+		m_OldTeleportHook = false;
+		m_OldTeleportWeapons = false;
 	}
 
 	int RandomOr0(int BelowThis) // NOLINT(readability-make-member-function-const)
@@ -172,6 +181,9 @@ public:
 
 	class CCharacterCore *m_apCharacters[MAX_CLIENTS];
 	CPrng *m_pPrng;
+	EPhysicsRuleset m_PhysicsRuleset;
+	bool m_OldTeleportHook;
+	bool m_OldTeleportWeapons;
 
 	void InitSwitchers(int HighestSwitchNumber);
 	std::vector<SSwitchers> m_vSwitchers;
@@ -241,6 +253,7 @@ public:
 	void Read(const CNetObj_CharacterCore *pObjCore);
 	void Write(CNetObj_CharacterCore *pObjCore) const;
 	void Quantize();
+	bool UsesDDNetPhysics() const { return m_pWorld && m_pWorld->m_PhysicsRuleset == EPhysicsRuleset::DDNET; }
 
 	// DDRace
 	int m_Id;

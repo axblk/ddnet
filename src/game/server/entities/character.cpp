@@ -177,8 +177,7 @@ bool CCharacter::IsGrounded()
 	if(Collision()->IsOnGround(m_Pos, GetProximityRadius()))
 		return true;
 
-	int MoveRestrictionsBelow = Collision()->GetMoveRestrictions(m_Pos + vec2(0, GetProximityRadius() / 2 + 4), 0.0f);
-	return (MoveRestrictionsBelow & CANTMOVE_DOWN) != 0;
+	return m_Core.UsesDDNetPhysics() && (Collision()->GetMoveRestrictions(m_Pos + vec2(0, GetProximityRadius() / 2 + 4), 0.0f) & CANTMOVE_DOWN) != 0;
 }
 
 void CCharacter::HandleJetpack()
@@ -242,8 +241,6 @@ void CCharacter::HandleNinja()
 	{
 		GameServer()->CreateDamageInd(m_Pos, 0, NinjaTime / Server()->TickSpeed(), TeamMask() & GameServer()->ClientsMaskExcludeClientVersionAndHigher(VERSION_DDNET_NEW_HUD));
 	}
-
-	GameServer()->GameHost().Controller()->SetArmorProgress(this, NinjaTime);
 
 	// force ninja Weapon
 	SetWeapon(WEAPON_NINJA);
@@ -409,7 +406,7 @@ void CCharacter::FireWeapon()
 		FullAuto = true;
 
 	// don't fire hammer when player is deep and sv_deepfly is disabled
-	if(!g_Config.m_SvDeepfly && m_Core.m_ActiveWeapon == WEAPON_HAMMER && m_Core.m_DeepFrozen)
+	if(m_Core.UsesDDNetPhysics() && !g_Config.m_SvDeepfly && m_Core.m_ActiveWeapon == WEAPON_HAMMER && m_Core.m_DeepFrozen)
 		return;
 
 	// check if we gonna fire
@@ -627,12 +624,13 @@ void CCharacter::PreTick()
 	Antibot()->OnCharacterTick(m_pPlayer->GetCid());
 
 	m_Core.m_Input = m_Input;
-	m_Core.Tick(true, !g_Config.m_SvNoWeakHook);
+	const bool NoWeakHook = m_Core.UsesDDNetPhysics() && g_Config.m_SvNoWeakHook;
+	m_Core.Tick(true, !NoWeakHook);
 }
 
 void CCharacter::Tick()
 {
-	if(g_Config.m_SvNoWeakHook)
+	if(m_Core.UsesDDNetPhysics() && g_Config.m_SvNoWeakHook)
 	{
 		if(m_Paused)
 			return;

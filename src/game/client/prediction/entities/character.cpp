@@ -44,8 +44,7 @@ bool CCharacter::IsGrounded()
 	if(Collision()->IsOnGround(m_Pos, GetProximityRadius()))
 		return true;
 
-	int MoveRestrictionsBelow = Collision()->GetMoveRestrictions(m_Pos + vec2(0, GetProximityRadius() / 2 + 4), 0.0f);
-	return (MoveRestrictionsBelow & CANTMOVE_DOWN) != 0;
+	return m_Core.UsesDDNetPhysics() && (Collision()->GetMoveRestrictions(m_Pos + vec2(0, GetProximityRadius() / 2 + 4), 0.0f) & CANTMOVE_DOWN) != 0;
 }
 
 void CCharacter::HandleJetpack()
@@ -275,7 +274,7 @@ void CCharacter::FireWeapon()
 		FullAuto = true;
 
 	// don't fire hammer when player is deep and sv_deepfly is disabled
-	if(!g_Config.m_SvDeepfly && m_Core.m_ActiveWeapon == WEAPON_HAMMER && m_Core.m_DeepFrozen)
+	if(m_Core.UsesDDNetPhysics() && !g_Config.m_SvDeepfly && m_Core.m_ActiveWeapon == WEAPON_HAMMER && m_Core.m_DeepFrozen)
 		return;
 
 	// check if we gonna fire
@@ -781,10 +780,13 @@ void CCharacter::HandleTiles(int Index)
 	int MapIndex = Index;
 	m_TileIndex = Collision()->GetTileIndex(MapIndex);
 	m_TileFIndex = Collision()->GetFrontTileIndex(MapIndex);
-	m_MoveRestrictions = Collision()->GetMoveRestrictions(IsSwitchActiveCb, this, m_Pos, 18.0f, MapIndex);
 
 	if(!GameWorld()->m_WorldConfig.m_PredictTiles)
+	{
+		m_MoveRestrictions = 0;
 		return;
+	}
+	m_MoveRestrictions = Collision()->GetMoveRestrictions(IsSwitchActiveCb, this, m_Pos, 18.0f, MapIndex);
 
 	if(Index < 0)
 	{
@@ -1079,6 +1081,8 @@ void CCharacter::HandleTuneLayer()
 void CCharacter::DDRaceTick()
 {
 	mem_copy(&m_Input, &m_SavedInput, sizeof(m_Input));
+	if(!GameWorld()->m_WorldConfig.m_PredictDDRace)
+		return;
 	if(m_Core.m_LiveFrozen && !m_CanMoveInFreeze && !m_Core.m_Super && !m_Core.m_Invincible)
 	{
 		m_Input.m_Direction = 0;

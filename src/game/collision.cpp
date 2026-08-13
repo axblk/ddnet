@@ -8,7 +8,6 @@
 #include <base/vmath.h>
 
 #include <engine/map.h>
-#include <engine/shared/config.h>
 
 #include <game/collision.h>
 #include <game/layers.h>
@@ -365,7 +364,7 @@ int CCollision::IntersectLine(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *p
 	return 0;
 }
 
-int CCollision::IntersectLineTeleHook(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *pOutBeforeCollision, int *pTeleNr) const
+int CCollision::IntersectLineTeleHook(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *pOutBeforeCollision, int *pTeleNr, bool OldTeleport) const
 {
 	float Distance = distance(Pos0, Pos1);
 	int End(Distance + 1);
@@ -383,7 +382,7 @@ int CCollision::IntersectLineTeleHook(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision,
 		int Index = GetPureMapIndex(Pos);
 		if(pTeleNr)
 		{
-			if(g_Config.m_SvOldTeleportHook)
+			if(OldTeleport)
 				*pTeleNr = IsTeleport(Index);
 			else
 				*pTeleNr = IsTeleportHook(Index);
@@ -425,7 +424,7 @@ int CCollision::IntersectLineTeleHook(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision,
 	return 0;
 }
 
-int CCollision::IntersectLineTeleWeapon(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *pOutBeforeCollision, int *pTeleNr) const
+int CCollision::IntersectLineTeleWeapon(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *pOutBeforeCollision, int *pTeleNr, bool OldTeleport) const
 {
 	float Distance = distance(Pos0, Pos1);
 	int End(Distance + 1);
@@ -441,7 +440,7 @@ int CCollision::IntersectLineTeleWeapon(vec2 Pos0, vec2 Pos1, vec2 *pOutCollisio
 		int Index = GetPureMapIndex(Pos);
 		if(pTeleNr)
 		{
-			if(g_Config.m_SvOldTeleportWeapons)
+			if(OldTeleport)
 				*pTeleNr = IsTeleport(Index);
 			else
 				*pTeleNr = IsTeleportWeapon(Index);
@@ -841,9 +840,9 @@ int CCollision::MoverSpeed(int x, int y, vec2 *pSpeed) const
 	return Index;
 }
 
-bool CCollision::HasHookTeleIns() const
+bool CCollision::HasHookTeleIns(bool OldTeleport) const
 {
-	return m_HasHookTeleIns || (g_Config.m_SvOldTeleportHook && !m_TeleIns.empty());
+	return m_HasHookTeleIns || (OldTeleport && !m_TeleIns.empty());
 }
 
 int CCollision::GetPureMapIndex(float x, float y) const

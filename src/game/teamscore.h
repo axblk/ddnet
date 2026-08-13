@@ -43,7 +43,7 @@ public:
 	int Team(int ClientId) const;
 	void Team(int ClientId, int Team);
 
-	void Reset();
+	void Reset(bool IndividualGroups = false);
 	void SetSolo(int ClientId, bool Value);
 	bool GetSolo(int ClientId) const;
 };

@@ -12,8 +12,8 @@ public:
 	static CTuningParams DefaultTuning();
 	void ResetTuning() override;
 
-	void HandleCharacterTiles(class CCharacter *pChr, int MapIndex) override;
-	void SetArmorProgress(CCharacter *pCharacter, int Progress) override;
+	void HandleRaceTiles(CCharacterDDRace *pCharacter, int MapIndex) override;
+	void SetArmorProgress(CCharacterDDRace *pCharacter, int Progress) override;
 	int SnapPlayerScore(int SnappingClient, CPlayer *pPlayer) override;
 	CFinishTime SnapPlayerTime(int SnappingClient, CPlayer *pPlayer) override;
 	CFinishTime SnapMapBestTime(int SnappingClient) override;

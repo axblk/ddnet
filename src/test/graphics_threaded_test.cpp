@@ -835,12 +835,12 @@ TEST(GraphicsThreaded, ExternalDataCanBeReleasedPerCommand)
 	Update.m_pData = pFirstData.get();
 	ASSERT_NE(Update.m_pData, nullptr);
 	ASSERT_TRUE(Buffer.AddCommandUnsafe(Update));
-	pFirstData.release();
+	ASSERT_EQ(pFirstData.release(), Update.m_pData);
 	std::unique_ptr<uint8_t, decltype(&free)> pSecondData(static_cast<uint8_t *>(malloc(4)), free);
 	Update.m_pData = pSecondData.get();
 	ASSERT_NE(Update.m_pData, nullptr);
 	ASSERT_TRUE(Buffer.AddCommandUnsafe(Update));
-	pSecondData.release();
+	ASSERT_EQ(pSecondData.release(), Update.m_pData);
 	CCommandBuffer::SCommand_CreateBufferObject Create;
 	Create.m_DeletePointer = true;
 	Create.m_Desc.m_Size = 4;
@@ -848,7 +848,7 @@ TEST(GraphicsThreaded, ExternalDataCanBeReleasedPerCommand)
 	Create.m_pUploadData = pCreateData.get();
 	ASSERT_NE(Create.m_pUploadData, nullptr);
 	ASSERT_TRUE(Buffer.AddCommandUnsafe(Create));
-	pCreateData.release();
+	ASSERT_EQ(pCreateData.release(), Create.m_pUploadData);
 	ASSERT_EQ(Buffer.m_ExternalDataSize, 12u);
 
 	auto *pFirst = static_cast<CCommandBuffer::SCommand_Texture_Update *>(Buffer.Head());

@@ -1,0 +1,87 @@
+name: Web
+
+on:
+  push:
+    branches:
+    - web
+  workflow_dispatch:
+
+# What the Pages deployment needs: the artifact is uploaded with the job's own
+# token and the deployment is claimed with an OIDC token.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A page has one live version, so a second push waits for the first instead of
+# racing it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_HTTP_MULTIPLEXING: false
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Prepare Linux
+      run: |
+        curl -LO https://github.com/Kitware/CMake/releases/download/v3.22.1/cmake-3.22.1-Linux-x86_64.tar.gz
+        mkdir -p /home/runner/cmake
+        tar --strip-components 1 -C /home/runner/cmake -xf cmake-3.22.1-Linux-x86_64.tar.gz
+        rustup default 1.89.0
+        rustup target add wasm32-unknown-emscripten
+        git clone https://github.com/emscripten-core/emsdk emsdk
+        cd emsdk
+        ./emsdk install 4.0.22
+        ./emsdk activate 4.0.22
+
+    - name: Cache Rust dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+          cache-bin: false # WORKAROUND(https://github.com/Swatinem/rust-cache/issues/341)
+          workspaces: |
+              src/mastersrv
+              src/masterping
+              ./
+
+    - name: Build the client
+      run: |
+        export PATH=/home/runner/cmake/bin:$PATH
+        source emsdk/emsdk_env.sh
+        # -G "Unix Makefiles" required due to https://gitlab.kitware.com/cmake/cmake/-/issues/16395
+        # WebTransport is what a browser connects with; it needs no option of its
+        # own, the client speaks it wherever it is compiled for the web.
+        emcmake cmake -H. -G "Unix Makefiles" -B build-web -DCMAKE_BUILD_TYPE=Release -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DPREFER_BUNDLED_LIBS=ON -DWEBGPU_BACKEND_PROTOTYPE=ON
+        cmake --build build-web --target game-client -j$(nproc)
+
+    - name: Assemble the site
+      run: |
+        mkdir site
+        # Everything emscripten emitted for the client, next to the page that
+        # starts it. The names are not all fixed: the loader, the module, the
+        # preloaded data and, depending on the emscripten version, a worker.
+        cp build-web/DDNet.* site/
+        cp build-web/index.html build-web/background.png build-web/coi-serviceworker.js site/
+        ls -l site
+
+    - name: Upload the site
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4

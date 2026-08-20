@@ -6,6 +6,7 @@
 		<meta name="description" content="The DDNet client running in a web browser.">
 		<title>DDNet Web</title>
 		<link rel="icon" type="image/x-icon" href="DDNet.ico">
+		<script src="coi-serviceworker.js"></script>
 		<style>
 		body {
 			background: url('background.png') #ccc;
@@ -124,7 +125,7 @@
 		<div id="controls">
 			<h1>DDNet Web</h1>
 			<p>This is an experimental version of the <a href="https://ddnet.org/downloads/">DDNet client</a> running in a web browser.</p>
-			<p>Connecting to most servers is currently not possible. Servers must be compiled with support for WebSockets.</p>
+			<p>Connecting works over WebTransport, which a server announces next to its address. Servers that only speak the classic protocol cannot be reached from a browser.</p>
 			<div id="drop-target">
 				<p>You can drop a <code>.demo</code> file, <code>.map</code> file or a <code>ddnet://</code> link here, or click to select a file.
 				You can also drop files and links directly into the window after starting the client.</p>

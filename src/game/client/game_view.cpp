@@ -191,18 +191,8 @@ const CGameRenderRequest *FindAudibleRenderRequest(std::span<const CGameRenderRe
 	return pAudibleRequest;
 }
 
-void CGameRenderScheduler::Run(std::span<const CGameRenderRequest> vRequests, const FUpdatePresentation &UpdatePresentation, const FRenderView &RenderView) const
+void CGameRenderScheduler::Run(std::span<const CGameRenderRequest> vRequests, const FUpdatePresentation &UpdatePresentation, const FRenderView &RenderView)
 {
-	struct CStateGroup
-	{
-		const CGameSessionContext *m_pSession;
-		CGameState *m_pState;
-		CGameTickInfo m_Time;
-		EPresentationPlayback m_Playback;
-		EPresentationAudio m_Audio;
-		std::vector<CVisibleWorldRect> m_vVisibleWorldRects;
-	};
-
 	auto SameTime = [](const CGameTickInfo &Left, const CGameTickInfo &Right) {
 		return Left.m_PrevGameTick == Right.m_PrevGameTick &&
 		       Left.m_GameTick == Right.m_GameTick &&
@@ -224,19 +214,28 @@ void CGameRenderScheduler::Run(std::span<const CGameRenderRequest> vRequests, co
 		       Left.m_ConnectionProblems == Right.m_ConnectionProblems;
 	};
 
-	std::vector<CStateGroup> vGroups;
-	std::vector<size_t> vRequestGroups;
-	vGroups.reserve(vRequests.size());
-	vRequestGroups.reserve(vRequests.size());
+	size_t NumGroups = 0;
+	m_vRequestGroups.clear();
 	for(const CGameRenderRequest &Request : vRequests)
 	{
-		const auto Found = std::find_if(vGroups.begin(), vGroups.end(), [&Request](const CStateGroup &Group) {
+		const auto End = m_vGroups.begin() + NumGroups;
+		const auto Found = std::find_if(m_vGroups.begin(), End, [&Request](const CStateGroup &Group) {
 			return Group.m_pSession == &Request.m_Session && Group.m_pState == &Request.m_State;
 		});
-		if(Found == vGroups.end())
+		if(Found == End)
 		{
-			vGroups.push_back({&Request.m_Session, &Request.m_State, Request.m_Time, Request.m_Playback, Request.m_Audio, {Request.m_VisibleWorldRect}});
-			vRequestGroups.push_back(vGroups.size() - 1);
+			if(NumGroups == m_vGroups.size())
+				m_vGroups.emplace_back();
+			CStateGroup &Group = m_vGroups[NumGroups];
+			Group.m_pSession = &Request.m_Session;
+			Group.m_pState = &Request.m_State;
+			Group.m_Time = Request.m_Time;
+			Group.m_Playback = Request.m_Playback;
+			Group.m_Audio = Request.m_Audio;
+			Group.m_vVisibleWorldRects.clear();
+			Group.m_vVisibleWorldRects.push_back(Request.m_VisibleWorldRect);
+			m_vRequestGroups.push_back(NumGroups);
+			NumGroups++;
 			continue;
 		}
 
@@ -245,18 +244,19 @@ void CGameRenderScheduler::Run(std::span<const CGameRenderRequest> vRequests, co
 		if(Request.m_Audio == EPresentationAudio::AUDIBLE)
 			Found->m_Audio = EPresentationAudio::AUDIBLE;
 		Found->m_vVisibleWorldRects.push_back(Request.m_VisibleWorldRect);
-		vRequestGroups.push_back(Found - vGroups.begin());
+		m_vRequestGroups.push_back(Found - m_vGroups.begin());
 	}
 
-	for(CStateGroup &Group : vGroups)
+	for(size_t i = 0; i < NumGroups; i++)
 	{
+		CStateGroup &Group = m_vGroups[i];
 		UpdatePresentation(CPresentationContext(*Group.m_pSession, *Group.m_pState, Group.m_Time, Group.m_vVisibleWorldRects, Group.m_Playback, Group.m_Audio));
 	}
 
 	for(size_t i = 0; i < vRequests.size(); i++)
 	{
 		const CGameRenderRequest &Request = vRequests[i];
-		const CStateGroup &Group = vGroups[vRequestGroups[i]];
+		const CStateGroup &Group = m_vGroups[m_vRequestGroups[i]];
 		RenderView(CRenderContext(Request.m_Session, Request.m_State, Request.m_View, Group.m_Time, Request.m_VisibleWorldRect, Request.m_Output.PresentationCacheKey(), Request.m_Output.IsVideoOutput()), Request.m_Output);
 	}
 }

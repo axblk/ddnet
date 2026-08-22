@@ -1815,8 +1815,9 @@ void CClient::ProcessServerInfo(int RawType, NETADDR *pFrom, const void *pData, 
 		//
 		// SERVERINFO_EXTENDED_MORE doesn't carry any server
 		// information, so just skip it.
-		for(CSessionId SessionId : m_SessionManager.SessionIds())
+		for(size_t i = 0; i < m_SessionManager.NumSessions(); ++i)
 		{
+			const CSessionId SessionId = m_SessionManager.SessionAt(i)->Id();
 			if(SessionSource(SessionId).Type() != ESessionSourceType::NETWORK)
 				continue;
 			CNetworkSessionSource &Source = NetworkSource(SessionId);
@@ -3198,7 +3199,7 @@ void CClient::UpdateNetworkSession(CSessionId SessionId)
 		const CStreamId ActiveStreamId = Source.ActiveStreamId();
 		const CStreamId LastActiveStreamId = Source.LastActiveStreamId();
 		const int ActiveConn = Source.StreamIndex(ActiveStreamId);
-		std::vector<CStreamId> vRepredict;
+		m_vRepredict.clear();
 		bool SendNewInput = false;
 		const int64_t ClockNow = time_get();
 
@@ -3252,7 +3253,7 @@ void CClient::UpdateNetworkSession(CSessionId SessionId)
 			}
 
 			if(Repredict)
-				vRepredict.push_back(StreamId);
+				m_vRepredict.push_back(StreamId);
 		};
 
 		if(ActiveStreamId.IsValid())
@@ -3265,7 +3266,7 @@ void CClient::UpdateNetworkSession(CSessionId SessionId)
 
 		if(SendNewInput)
 			SendInput(SessionId);
-		for(CStreamId StreamId : vRepredict)
+		for(CStreamId StreamId : m_vRepredict)
 		{
 			const CConnection &GameConnection = Connection(SessionId, StreamId);
 			if(GameConnection.m_PredTick > GameConnection.m_CurGameTick && GameConnection.m_PredTick < GameConnection.m_CurGameTick + MaxLatencyTicks(SessionId))
@@ -3421,8 +3422,11 @@ void CClient::Update()
 		Steam()->ClearConnectAddress();
 	}
 
-	for(CSessionId SessionId : m_SessionManager.SessionIds())
+	// Walked by index: asking for the ids would hand back a fresh vector every
+	// frame, and this runs on every one of them.
+	for(size_t SessionIndex = 0; SessionIndex < m_SessionManager.NumSessions(); ++SessionIndex)
 	{
+		const CSessionId SessionId = m_SessionManager.SessionAt(SessionIndex)->Id();
 		if(SessionSource(SessionId).Type() != ESessionSourceType::NETWORK)
 			continue;
 		CNetworkSessionSource &Source = NetworkSource(SessionId);

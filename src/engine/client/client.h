@@ -261,6 +261,12 @@ class CClient : public IClient, public CDemoPlayer::IListener
 
 	void UpdateDemoIntraTimers();
 	void UpdateDemoSession();
+	// Storage for UpdateNetworkSession, kept so that advancing the streams of a
+	// session does not allocate on every frame. One buffer serves every session,
+	// which only holds while UpdateNetworkSession is not nested: the session
+	// manager updates one session at a time and nothing it calls updates another.
+	// Nesting it needs a buffer per session instead.
+	std::vector<CStreamId> m_vRepredict;
 	void UpdateNetworkSession(CSessionId SessionId);
 	void StopDemoSession(const char *pReason);
 	void StopNetworkSession(CSessionId SessionId, const char *pReason);

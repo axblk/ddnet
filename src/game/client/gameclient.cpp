@@ -221,18 +221,26 @@ int64_t CGameClient::SessionMessageTime(CSessionId SessionId) const
 
 CGameState &CGameClient::GameState(int Conn)
 {
-	CGameSessionContext &Session = SessionContext();
-	CGameState *pState = Session.GameStates().FindByStream(Client()->StreamId(Session.Id(), Conn));
-	dbg_assert(pState != nullptr, "missing game state for connection");
-	return *pState;
+	// Snap(), GameWorld() and everything else reaching the focused state goes
+	// through here, tens of thousands of times per snapshot, so the three
+	// lookups it takes to resolve a connection are worth remembering. The
+	// session lifecycle hooks drop the entry whenever a state can appear or
+	// disappear; the focused session and the connection are checked here.
+	const CSessionId SessionId = Client()->FocusedSessionId();
+	if(m_pStateCache == nullptr || m_StateCacheConn != Conn || m_StateCacheSessionId != SessionId)
+	{
+		CGameState *pState = SessionContext().GameStates().FindByStream(Client()->StreamId(SessionId, Conn));
+		dbg_assert(pState != nullptr, "missing game state for connection");
+		m_StateCacheSessionId = SessionId;
+		m_StateCacheConn = Conn;
+		m_pStateCache = pState;
+	}
+	return *m_pStateCache;
 }
 
 const CGameState &CGameClient::GameState(int Conn) const
 {
-	const CGameSessionContext &Session = SessionContext();
-	const CGameState *pState = Session.GameStates().FindByStream(Client()->StreamId(Session.Id(), Conn));
-	dbg_assert(pState != nullptr, "missing game state for connection");
-	return *pState;
+	return const_cast<CGameClient *>(this)->GameState(Conn);
 }
 
 CGameView &CGameClient::LegacyGameView()
@@ -454,6 +462,7 @@ void CGameClient::OnConsoleInit()
 
 void CGameClient::OnSessionCreated(CSessionId SessionId)
 {
+	m_pStateCache = nullptr;
 	if(m_SessionContexts.Find(SessionId) == nullptr)
 	{
 		CGameSessionContext *pContext = m_SessionContexts.Create(SessionId, "", EGameProtocol::SIX, Client()->StreamIds(SessionId));
@@ -469,6 +478,7 @@ void CGameClient::OnSessionCreated(CSessionId SessionId)
 
 void CGameClient::OnSessionStreamsChanged(CSessionId SessionId)
 {
+	m_pStateCache = nullptr;
 	CGameSessionContext *pSession = FindSessionContext(SessionId);
 	dbg_assert(pSession != nullptr, "missing changed game session context");
 	const std::vector<CStreamId> vStreamIds = Client()->StreamIds(SessionId);
@@ -504,6 +514,7 @@ void CGameClient::OnSessionStreamsChanged(CSessionId SessionId)
 
 void CGameClient::OnSessionDestroyed(CSessionId SessionId)
 {
+	m_pStateCache = nullptr;
 	const bool PresentationDestroyed = m_SessionPresentations.Destroy(SessionId);
 	dbg_assert(PresentationDestroyed, "failed to destroy session presentation");
 	const bool ContextDestroyed = m_SessionContexts.Destroy(SessionId);
@@ -1173,11 +1184,11 @@ void CGameClient::OnRender()
 	const CVisibleWorldRect &VisibleWorldRect = ActiveEntryIt->m_VisibleWorldRect;
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
 	CScreenRenderOutput ScreenOutput(*Graphics(), ClearColor);
-	std::vector<CGameRenderRequest> vRenderRequests;
-	vRenderRequests.reserve(m_vPreparedRenderEntries.size());
+	m_vRenderRequests.clear();
+	m_vRenderRequests.reserve(m_vPreparedRenderEntries.size());
 	for(const CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
 	{
-		vRenderRequests.emplace_back(
+		m_vRenderRequests.emplace_back(
 			*Entry.m_pSession,
 			*Entry.m_pState,
 			*Entry.m_pView,
@@ -1187,7 +1198,7 @@ void CGameClient::OnRender()
 			Entry.m_Audible ? EPresentationAudio::AUDIBLE : EPresentationAudio::MUTED,
 			ScreenOutput);
 	}
-	const CGameRenderRequest *pAudibleRequest = FindAudibleRenderRequest(vRenderRequests);
+	const CGameRenderRequest *pAudibleRequest = FindAudibleRenderRequest(m_vRenderRequests);
 	m_Sounds.Update(pAudibleRequest != nullptr ? std::optional(pAudibleRequest->m_View.CameraPosition()) : std::nullopt);
 	if(pAudibleRequest != nullptr)
 	{
@@ -1198,9 +1209,8 @@ void CGameClient::OnRender()
 	{
 		m_SessionPresentations.SetAudible(CSessionId());
 	}
-	CGameRenderScheduler Scheduler;
-	Scheduler.Run(
-		vRenderRequests,
+	m_RenderScheduler.Run(
+		m_vRenderRequests,
 		[this](const CPresentationContext &Context) {
 			SessionPresentation(Context.m_Session.Id()).UpdateClients(Context);
 			m_Effects.Update(Context);
@@ -1273,8 +1283,8 @@ void CGameClient::OnRender()
 		&m_GameConsole,
 	};
 	auto RenderRequestComponents = [&](std::span<CComponent *const> vpComponents) {
-		Scheduler.Run(
-			vRenderRequests,
+		m_RenderScheduler.Run(
+			m_vRenderRequests,
 			[](const CPresentationContext &) {},
 			[vpComponents](const CRenderContext &Context, CRenderOutput &Output) {
 				Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
@@ -1289,8 +1299,8 @@ void CGameClient::OnRender()
 		pComponent->OnRender(CompatibilityContext);
 	m_Chat.RenderApplicationOverlay(CompatibilityContext);
 	ScreenOutput.EndView();
-	Scheduler.Run(
-		vRenderRequests,
+	m_RenderScheduler.Run(
+		m_vRenderRequests,
 		[](const CPresentationContext &) {},
 		[this](const CRenderContext &Context, CRenderOutput &Output) {
 			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
@@ -1304,8 +1314,8 @@ void CGameClient::OnRender()
 	m_TouchControls.RenderApplicationOverlay();
 	ScreenOutput.EndView();
 	m_Scoreboard.BeginRenderFrame();
-	Scheduler.Run(
-		vRenderRequests,
+	m_RenderScheduler.Run(
+		m_vRenderRequests,
 		[](const CPresentationContext &) {},
 		[this](const CRenderContext &Context, CRenderOutput &Output) {
 			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
@@ -1320,6 +1330,8 @@ void CGameClient::OnRender()
 		pComponent->OnRenderApplicationOverlay();
 
 	CLineInput::RenderCandidates();
+
+	m_vRenderRequests.clear();
 }
 
 void CGameClient::OnRenderPrepare()
@@ -5382,16 +5394,16 @@ void CGameClient::SnapCollectEntities(CSessionId SessionId, int Conn)
 {
 	const int NumSnapItems = Client()->SnapNumItems(SessionId, Conn, IClient::SNAP_CURRENT);
 
-	std::vector<CSnapEntities> vItemData;
-	std::vector<CSnapEntities> vItemEx;
+	m_vSnapItemData.clear();
+	m_vSnapItemEx.clear();
 
 	for(int Index = 0; Index < NumSnapItems; Index++)
 	{
 		const IClient::CSnapItem Item = Client()->SnapGetItem(SessionId, Conn, IClient::SNAP_CURRENT, Index);
 		if(Item.m_Type == NETOBJTYPE_ENTITYEX)
-			vItemEx.push_back({Item, nullptr});
+			m_vSnapItemEx.push_back({Item, nullptr});
 		else if(Item.m_Type == NETOBJTYPE_PICKUP || Item.m_Type == NETOBJTYPE_DDNETPICKUP || Item.m_Type == NETOBJTYPE_LASER || Item.m_Type == NETOBJTYPE_DDNETLASER || Item.m_Type == NETOBJTYPE_PROJECTILE || Item.m_Type == NETOBJTYPE_DDRACEPROJECTILE || Item.m_Type == NETOBJTYPE_DDNETPROJECTILE)
-			vItemData.push_back({Item, nullptr});
+			m_vSnapItemData.push_back({Item, nullptr});
 	}
 
 	// sort by id
@@ -5404,21 +5416,21 @@ void CGameClient::SnapCollectEntities(CSessionId SessionId, int Conn)
 		}
 	};
 
-	std::sort(vItemData.begin(), vItemData.end(), CEntComparer());
-	std::sort(vItemEx.begin(), vItemEx.end(), CEntComparer());
+	std::sort(m_vSnapItemData.begin(), m_vSnapItemData.end(), CEntComparer());
+	std::sort(m_vSnapItemEx.begin(), m_vSnapItemEx.end(), CEntComparer());
 
 	// merge extended items with items they belong to
 	m_vSnapEntities.clear();
 
 	size_t IndexEx = 0;
-	for(const CSnapEntities &Ent : vItemData)
+	for(const CSnapEntities &Ent : m_vSnapItemData)
 	{
-		while(IndexEx < vItemEx.size() && vItemEx[IndexEx].m_Item.m_Id < Ent.m_Item.m_Id)
+		while(IndexEx < m_vSnapItemEx.size() && m_vSnapItemEx[IndexEx].m_Item.m_Id < Ent.m_Item.m_Id)
 			IndexEx++;
 
 		const CNetObj_EntityEx *pDataEx = nullptr;
-		if(IndexEx < vItemEx.size() && vItemEx[IndexEx].m_Item.m_Id == Ent.m_Item.m_Id)
-			pDataEx = (const CNetObj_EntityEx *)vItemEx[IndexEx].m_Item.m_pData;
+		if(IndexEx < m_vSnapItemEx.size() && m_vSnapItemEx[IndexEx].m_Item.m_Id == Ent.m_Item.m_Id)
+			pDataEx = (const CNetObj_EntityEx *)m_vSnapItemEx[IndexEx].m_Item.m_pData;
 
 		m_vSnapEntities.push_back({Ent.m_Item, pDataEx});
 	}

@@ -679,8 +679,11 @@ def client_can_connect(test_env):
 def client_can_connect_two_network_sessions(test_env):
 	client = test_env.client()
 	server1 = test_env.server()
+	# Both servers pick their port by probing from 8303 upwards, so the second one
+	# must not start before the first one has bound its port.
+	wait_for_startup([server1])
 	server2 = test_env.server(["sv_map dm1"])
-	wait_for_startup([client, server1, server2])
+	wait_for_startup([client, server2])
 	client.command(f"connect localhost:{server1.port}")
 	server1.wait_for_log_prefix("server: player has entered the game", timeout=10)
 	client.command(f"dbg_connect_session localhost:{server2.port}")

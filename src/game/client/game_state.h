@@ -512,6 +512,8 @@ private:
 	std::vector<CNetObj_Character> m_vEvolvedCharacters;
 	std::array<CProtocol7ClientState, MAX_CLIENTS> m_aProtocol7Clients;
 	std::vector<CEntitySnapshot> m_vEntities;
+	std::vector<CEntitySnapshot> m_vEntityBuffer;
+	std::vector<CEntitySnapshot> m_vEntityEx;
 	bool m_HasGameInfo = false;
 	CNetObj_GameInfo m_GameInfo = {};
 	bool m_HasSpectatorInfo = false;
@@ -544,7 +546,11 @@ public:
 	void Reset();
 	void InitPrediction(CMapContext &MapContext);
 	void ApplySnapshot(const IClient &Client, CSessionId SessionId, CStreamId StreamId);
-	void ApplySnapshotData(int Tick, int NumItems, std::array<CClientSnapshot, MAX_CLIENTS> aClients, const CNetObj_GameInfo *pGameInfo = nullptr, std::vector<CEntitySnapshot> vEntities = {});
+	/**
+	 * Applies snapshot data. The entities are swapped in, so the caller is handed
+	 * back the entities of the previous snapshot and can reuse their storage.
+	 */
+	void ApplySnapshotData(int Tick, int NumItems, const std::array<CClientSnapshot, MAX_CLIENTS> &aClients, const CNetObj_GameInfo *pGameInfo = nullptr, std::vector<CEntitySnapshot> *pEntities = nullptr);
 	void ApplySnapshotMetadata(int Tick, int NumItems, int LocalClientId);
 	void ApplyEmoticon(int ClientId, int Emoticon, int Tick, float StartFraction);
 	void ApplyTuning(const CTuningParams &Tuning, int TuneZone = 0);
@@ -565,7 +571,6 @@ public:
 	 */
 	void SetFullyPredicted(bool FullyPredicted) { m_FullyPredicted = FullyPredicted; }
 	bool IsFullyPredicted() const { return m_FullyPredicted; }
-	void ClearPredictedClients() { m_aPredictedClients = {}; }
 
 	CGameStateId Id() const { return m_Id; }
 	CStreamId StreamId() const { return m_StreamId; }

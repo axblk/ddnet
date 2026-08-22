@@ -173,6 +173,10 @@ private:
 	class IHttp *m_pHttp;
 
 	CGameSessionContextManager m_SessionContexts;
+	// Last state GameState() resolved, see there.
+	CSessionId m_StateCacheSessionId;
+	int m_StateCacheConn = -1;
+	CGameState *m_pStateCache = nullptr;
 	CGameViewManager m_GameViews;
 	CGameViewId m_LegacyGameViewId;
 	CGameViewId m_SecondaryGameViewId;
@@ -191,6 +195,10 @@ private:
 		CVisibleWorldRect m_VisibleWorldRect{vec2(), vec2()};
 	};
 	std::vector<CPreparedRenderEntry> m_vPreparedRenderEntries;
+	// Only used within a render frame and emptied again at its end, but kept so
+	// that the requests do not need storage of their own on every frame.
+	std::vector<CGameRenderRequest> m_vRenderRequests;
+	CGameRenderScheduler m_RenderScheduler;
 	CUi m_UI;
 	CRaceHelper m_RaceHelper;
 
@@ -707,6 +715,10 @@ public:
 
 private:
 	std::vector<CSnapEntities> m_vSnapEntities;
+	// Kept between snapshots so that collecting the entities does not allocate on
+	// every one of them.
+	std::vector<CSnapEntities> m_vSnapItemData;
+	std::vector<CSnapEntities> m_vSnapItemEx;
 	void SnapCollectEntities(CSessionId SessionId, int Conn);
 
 	class CImageAsset

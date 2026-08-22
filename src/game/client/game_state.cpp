@@ -431,14 +431,22 @@ void CGameState::ApplySnapshot(const IClient &Client, CSessionId SessionId, CStr
 {
 	const int NumItems = Client.SnapNumItems(SessionId, StreamId, IClient::SNAP_CURRENT);
 	std::array<CClientSnapshot, MAX_CLIENTS> aClients = {};
-	std::vector<CEntitySnapshot> vEntities;
 	CNetObj_GameInfo GameInfo = {};
 	bool HasGameInfo = false;
 	CNetObj_SpectatorInfo SpectatorInfo = {};
 	bool HasSpectatorInfo = false;
 	CNetObj_SpectatorCount SpectatorCount = {};
 	bool HasSpectatorCount = false;
-	std::vector<CEntitySnapshot> vEntityEx;
+	// The entities are written into buffers that outlive the snapshot, so the byte
+	// vectors of every entity keep the capacity they were given for the previous
+	// one instead of being allocated and freed again for each snapshot.
+	const auto EntitySlot = [](std::vector<CEntitySnapshot> &vEntities, size_t Index) -> CEntitySnapshot & {
+		if(Index == vEntities.size())
+			vEntities.emplace_back();
+		return vEntities[Index];
+	};
+	size_t NumEntities = 0;
+	size_t NumEntityEx = 0;
 	for(int i = 0; i < NumItems; i++)
 	{
 		const IClient::CSnapItem Item = Client.SnapGetItem(SessionId, StreamId, IClient::SNAP_CURRENT, i);
@@ -459,23 +467,25 @@ void CGameState::ApplySnapshot(const IClient &Client, CSessionId SessionId, CStr
 		}
 		else if(Item.m_Type == NETOBJTYPE_ENTITYEX)
 		{
-			CEntitySnapshot Entity;
-			Entity.m_Id = Item.m_Id;
-			Entity.m_Type = Item.m_Type;
-			Entity.m_HasEntityEx = true;
-			Entity.m_EntityEx = *static_cast<const CNetObj_EntityEx *>(Item.m_pData);
-			vEntityEx.push_back(std::move(Entity));
+			CEntitySnapshot &EntityEx = EntitySlot(m_vEntityEx, NumEntityEx++);
+			EntityEx.m_Id = Item.m_Id;
+			EntityEx.m_Type = Item.m_Type;
+			EntityEx.m_HasEntityEx = true;
+			EntityEx.m_EntityEx = *static_cast<const CNetObj_EntityEx *>(Item.m_pData);
 		}
 		else if(Item.m_Type == NETOBJTYPE_GAMEDATA || Item.m_Type == NETOBJTYPE_FLAG || Item.m_Type == NETOBJTYPE_PICKUP || Item.m_Type == NETOBJTYPE_DDNETPICKUP || Item.m_Type == NETOBJTYPE_LASER || Item.m_Type == NETOBJTYPE_DDNETLASER || Item.m_Type == NETOBJTYPE_PROJECTILE || Item.m_Type == NETOBJTYPE_DDRACEPROJECTILE || Item.m_Type == NETOBJTYPE_DDNETPROJECTILE)
 		{
-			CEntitySnapshot Entity;
+			CEntitySnapshot &Entity = EntitySlot(m_vEntityBuffer, NumEntities++);
 			Entity.m_Id = Item.m_Id;
 			Entity.m_Type = Item.m_Type;
+			Entity.m_HasEntityEx = false;
+			Entity.m_EntityEx = {};
 			const auto *pData = static_cast<const unsigned char *>(Item.m_pData);
 			Entity.m_vData.assign(pData, pData + Item.m_DataSize);
 			if(const auto *pPrevData = static_cast<const unsigned char *>(Client.SnapFindItem(SessionId, StreamId, IClient::SNAP_PREV, Item.m_Type, Item.m_Id)))
 				Entity.m_vPrevData.assign(pPrevData, pPrevData + Item.m_DataSize);
-			vEntities.push_back(std::move(Entity));
+			else
+				Entity.m_vPrevData.clear();
 		}
 		else if(Item.m_Id >= 0 && Item.m_Id < MAX_CLIENTS)
 		{
@@ -544,25 +554,30 @@ void CGameState::ApplySnapshot(const IClient &Client, CSessionId SessionId, CStr
 			}
 		}
 	}
-	for(CEntitySnapshot &Entity : vEntities)
+	m_vEntityBuffer.resize(NumEntities);
+	m_vEntityEx.resize(NumEntityEx);
+	// Sorted once so that every entity can find its extension by a binary search
+	// instead of scanning the whole list. The ids of one snapshot type are unique.
+	std::sort(m_vEntityEx.begin(), m_vEntityEx.end(), [](const CEntitySnapshot &Left, const CEntitySnapshot &Right) { return Left.m_Id < Right.m_Id; });
+	for(CEntitySnapshot &Entity : m_vEntityBuffer)
 	{
 		if(Entity.m_Type == NETOBJTYPE_GAMEDATA || Entity.m_Type == NETOBJTYPE_FLAG)
 			continue;
-		const auto Found = std::find_if(vEntityEx.begin(), vEntityEx.end(), [&Entity](const CEntitySnapshot &EntityEx) { return EntityEx.m_Id == Entity.m_Id; });
-		if(Found != vEntityEx.end())
+		const auto Found = std::lower_bound(m_vEntityEx.begin(), m_vEntityEx.end(), Entity.m_Id, [](const CEntitySnapshot &EntityEx, int Id) { return EntityEx.m_Id < Id; });
+		if(Found != m_vEntityEx.end() && Found->m_Id == Entity.m_Id)
 		{
 			Entity.m_HasEntityEx = true;
 			Entity.m_EntityEx = Found->m_EntityEx;
 		}
 	}
-	ApplySnapshotData(Client.GameTick(SessionId, StreamId), NumItems, aClients, HasGameInfo ? &GameInfo : nullptr, std::move(vEntities));
+	ApplySnapshotData(Client.GameTick(SessionId, StreamId), NumItems, aClients, HasGameInfo ? &GameInfo : nullptr, &m_vEntityBuffer);
 	if(HasSpectatorInfo)
 		ApplySpectatorInfo(SpectatorInfo);
 	if(HasSpectatorCount)
 		ApplySpectatorCount(SpectatorCount);
 }
 
-void CGameState::ApplySnapshotData(int Tick, int NumItems, std::array<CClientSnapshot, MAX_CLIENTS> aClients, const CNetObj_GameInfo *pGameInfo, std::vector<CEntitySnapshot> vEntities)
+void CGameState::ApplySnapshotData(int Tick, int NumItems, const std::array<CClientSnapshot, MAX_CLIENTS> &aClients, const CNetObj_GameInfo *pGameInfo, std::vector<CEntitySnapshot> *pEntities)
 {
 	m_aClients = aClients;
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
@@ -579,7 +594,12 @@ void CGameState::ApplySnapshotData(int Tick, int NumItems, std::array<CClientSna
 			m_vClientIdentities[ClientId].m_ClientInfo = SnapshotClient.m_ClientInfo;
 		}
 	}
-	m_vEntities = std::move(vEntities);
+	// Swapped, not moved: the caller gets the entities of the previous snapshot
+	// back and reuses their storage for the next one.
+	if(pEntities != nullptr)
+		m_vEntities.swap(*pEntities);
+	else
+		m_vEntities.clear();
 	m_HasGameInfo = pGameInfo != nullptr;
 	m_GameInfo = pGameInfo ? *pGameInfo : CNetObj_GameInfo{};
 	m_HasSpectatorInfo = false;
@@ -720,7 +740,15 @@ void CGameState::Predict(const IClient &Client, CSessionId SessionId, CStreamId 
 void CGameState::PredictTo(int TargetTick, const std::function<const CNetObj_PlayerInput *(int)> &InputAt)
 {
 	m_PredictionTick = TargetTick;
-	m_aPredictedClients = {};
+	// Only the flags are cleared. Assigning a fresh array would run a
+	// CCharacterCore constructor for every client twice over, and each of those
+	// builds a std::set, so a frame would start with a hundred allocations that
+	// nothing reads: the cores below are written before anyone looks at them.
+	for(CPredictedClient &PredictedClient : m_aPredictedClients)
+	{
+		PredictedClient.m_HasPrev = false;
+		PredictedClient.m_HasCurrent = false;
+	}
 	if(m_FullyPredicted)
 		return;
 	if(!m_PredictionInitialized || m_LocalClientId < 0 || m_LocalClientId >= MAX_CLIENTS || !m_aClients[m_LocalClientId].m_HasCharacter)

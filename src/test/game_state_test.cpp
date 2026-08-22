@@ -1357,7 +1357,7 @@ TEST(GameState, EntitySnapshotsOwnCurrentAndPreviousData)
 	PrevGameData.m_FlagCarrierRed = FLAG_ATSTAND;
 	AddEntity(0, NETOBJTYPE_GAMEDATA, CurrentGameData, PrevGameData);
 	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aClients = {};
-	Primary.ApplySnapshotData(10, 3, aClients, nullptr, std::move(vEntities));
+	Primary.ApplySnapshotData(10, 3, aClients, nullptr, &vEntities);
 	Additional.ApplySnapshotData(20, 0, std::move(aClients));
 
 	ASSERT_EQ(Primary.Entities().size(), 3U);
@@ -1704,6 +1704,32 @@ TEST(GameView, SchedulerUpdatesEachStateBeforeRenderingExplicitOutputs)
 	EXPECT_EQ(MainLeftOutput.m_EndedViews, 2);
 	EXPECT_EQ(DemoOutput.m_EndedViews, 1);
 	EXPECT_EQ(MainRightOutput.m_EndedViews, 1);
+
+	// The scheduler keeps its grouping scratch, so a second run must not see
+	// anything of the first one.
+	const std::array aSecondRequests = {
+		CGameRenderRequest(Demo, *pDemoState, *pDemoView, DemoTime, CVisibleWorldRect(vec2(700.0f, 700.0f), vec2(800.0f, 800.0f)), EPresentationPlayback::PAUSED, EPresentationAudio::MUTED, DemoOutput),
+	};
+	vpUpdatedStates.clear();
+	vpRenderedViews.clear();
+	vRenderedWorldRects.clear();
+	Scheduler.Run(
+		aSecondRequests,
+		[&](const CPresentationContext &Context) {
+			vpUpdatedStates.push_back(&Context.m_State);
+			EXPECT_EQ(Context.m_vVisibleWorldRects.size(), 1U);
+			EXPECT_TRUE(Context.IsVisible(vec2(750.0f, 750.0f), vec2(0.0f, 0.0f)));
+			EXPECT_FALSE(Context.IsVisible(vec2(450.0f, 450.0f), vec2(0.0f, 0.0f)));
+		},
+		[&](const CRenderContext &Context, CRenderOutput &Output) {
+			vpRenderedViews.push_back(&Context.m_View);
+			vRenderedWorldRects.push_back(Context.m_VisibleWorldRect);
+		});
+	ASSERT_EQ(vpUpdatedStates.size(), 1U);
+	EXPECT_EQ(vpUpdatedStates[0], pDemoState);
+	ASSERT_EQ(vpRenderedViews.size(), 1U);
+	EXPECT_EQ(vpRenderedViews[0], pDemoView);
+	EXPECT_EQ(vRenderedWorldRects[0].m_TopLeft, vec2(700.0f, 700.0f));
 }
 
 TEST(GameView, EqualStateIdsInDifferentSessionsRemainDistinct)

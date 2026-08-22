@@ -77,7 +77,12 @@ public:
 	int Entity(int x, int y, int Layer) const;
 	int GetPureMapIndex(float x, float y) const;
 	int GetPureMapIndex(vec2 Pos) const { return GetPureMapIndex(Pos.x, Pos.y); }
-	std::vector<int> GetMapIndices(vec2 PrevPos, vec2 Pos, unsigned MaxIndices = 0) const;
+	/**
+	 * @remark The returned indices are only valid until the next call, which
+	 * overwrites them. This runs for every character on every tick, so it does not
+	 * hand out a new vector for each of them.
+	 */
+	const std::vector<int> &GetMapIndices(vec2 PrevPos, vec2 Pos, unsigned MaxIndices = 0) const;
 	int GetMapIndex(vec2 Pos) const;
 	bool TileExists(int Index) const;
 	bool TileExistsNext(int Index) const;
@@ -174,6 +179,8 @@ private:
 	// TILE_TELEINEVIL, TILE_TELECHECK, TILE_TELECHECKIN, TILE_TELECHECKINEVIL, TILE_TELEINHOOK
 	std::map<int, std::vector<vec2>> m_TeleOthers;
 	bool m_HasHookTeleIns;
+
+	mutable std::vector<int> m_vMapIndices;
 };
 
 void ThroughOffset(vec2 Pos0, vec2 Pos1, int *pOffsetX, int *pOffsetY);

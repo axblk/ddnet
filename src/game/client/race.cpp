@@ -104,7 +104,7 @@ bool CRaceHelper::IsStart(vec2 Prev, vec2 Pos) const
 	}
 	else
 	{
-		std::vector<int> vIndices = m_pGameClient->Collision()->GetMapIndices(Prev, Pos);
+		const std::vector<int> &vIndices = m_pGameClient->Collision()->GetMapIndices(Prev, Pos);
 		if(!vIndices.empty())
 		{
 			for(const int Index : vIndices)

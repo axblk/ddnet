@@ -91,6 +91,7 @@ public:
 	bool Update(CSessionId Id);
 	void Update();
 	size_t NumSessions() const { return m_vpSessions.size(); }
+	CGameSession *SessionAt(size_t Index) { return Index < m_vpSessions.size() ? m_vpSessions[Index].get() : nullptr; }
 	std::vector<CSessionId> SessionIds() const;
 };
 

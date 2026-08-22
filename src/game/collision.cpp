@@ -918,9 +918,12 @@ int CCollision::GetMapIndex(vec2 Pos) const
 		return -1;
 }
 
-std::vector<int> CCollision::GetMapIndices(vec2 PrevPos, vec2 Pos, unsigned MaxIndices) const
+const std::vector<int> &CCollision::GetMapIndices(vec2 PrevPos, vec2 Pos, unsigned MaxIndices) const
 {
-	std::vector<int> vIndices;
+	// Reused between calls, see the declaration: this runs for every character on
+	// every tick and a vector of its own for each of them allocates on the tick path.
+	std::vector<int> &vIndices = m_vMapIndices;
+	vIndices.clear();
 	float d = distance(PrevPos, Pos);
 	int End(d + 1);
 	if(!d)

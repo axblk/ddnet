@@ -1,10 +1,6 @@
-#include <base/logger.h>
-#include <base/net.h>
-
 #include <algorithm>
 #include <array>
 #include <cstdlib>
-#include <fstream>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -35,15 +31,11 @@
 #undef protected
 #undef private
 
+#include "../parity/parity_trace.h"
+
 bool IsInterrupted()
 {
 	return false;
-}
-
-[[noreturn]] static void Fail(const std::string &Message)
-{
-	std::cerr << Message << '\n';
-	std::exit(1);
 }
 
 static void Check(bool Condition, const char *pMessage)
@@ -55,43 +47,13 @@ static void Check(bool Condition, const char *pMessage)
 class CCollisionFixture
 {
 public:
-	enum
-	{
-		WIDTH = 24,
-		HEIGHT = 14,
-	};
-
 	CCollisionFixture()
 	{
-		Install(m_Collision, m_aTiles);
+		ParityMap::Install(m_Collision, m_aTiles);
 	}
 
-	static void Install(CCollision &Collision, std::array<CTile, WIDTH * HEIGHT> &aTiles)
-	{
-		Collision.Unload();
-		aTiles.fill({});
-		Collision.m_Width = WIDTH;
-		Collision.m_Height = HEIGHT;
-		Collision.m_pTiles = aTiles.data();
-		for(int x = 0; x < WIDTH; ++x)
-		{
-			Solid(Collision, x, 0);
-			Solid(Collision, x, 10);
-			Solid(Collision, x, HEIGHT - 1);
-		}
-		for(int y = 0; y < HEIGHT; ++y)
-		{
-			Solid(Collision, 0, y);
-			Solid(Collision, WIDTH - 1, y);
-			Solid(Collision, 16, y);
-		}
-	}
-
-	std::array<CTile, WIDTH * HEIGHT> m_aTiles{};
+	ParityMap::CTiles m_aTiles{};
 	CCollision m_Collision;
-
-private:
-	static void Solid(CCollision &Collision, int X, int Y) { Collision.m_pTiles[Y * WIDTH + X].m_Index = TILE_SOLID; }
 };
 
 static void PrintCore(const std::string &Name, int Tick, const CCharacterCore &Core)
@@ -212,7 +174,7 @@ public:
 		m_pGameServer->GameHost().Init(m_pServer->DbPool());
 		m_pGameServer->m_World.m_ResetRequested = true;
 		m_pGameServer->m_World.Tick();
-		CCollisionFixture::Install(*m_pGameServer->Collision(), m_aTiles);
+		ParityMap::Install(*m_pGameServer->Collision(), m_aTiles);
 		g_Config.m_SvScorelimit = 2;
 		g_Config.m_SvTimelimit = 0;
 		g_Config.m_SvWarmup = 0;
@@ -232,7 +194,7 @@ public:
 	CCharacter *Character(int ClientId) { return m_pGameServer->m_apPlayers[ClientId]->GetCharacter(); }
 	CPlayerVanilla *Player(int ClientId) { return static_cast<CPlayerVanilla *>(m_pGameServer->m_apPlayers[ClientId]); }
 
-	std::array<CTile, CCollisionFixture::WIDTH * CCollisionFixture::HEIGHT> m_aTiles{};
+	ParityMap::CTiles m_aTiles{};
 	CServer *m_pServer;
 	CGameContext *m_pGameServer;
 	std::unique_ptr<IKernel> m_pKernel;
@@ -247,23 +209,6 @@ private:
 		Check(pPlayer->ForceSpawn(Position) != nullptr, "character spawn failed");
 	}
 };
-
-static int WeaponFromName(const std::string &Name)
-{
-	if(Name == "hammer")
-		return WEAPON_HAMMER;
-	if(Name == "gun")
-		return WEAPON_GUN;
-	if(Name == "shotgun")
-		return WEAPON_SHOTGUN;
-	if(Name == "grenade")
-		return WEAPON_GRENADE;
-	if(Name == "laser")
-		return WEAPON_LASER;
-	if(Name == "ninja")
-		return WEAPON_NINJA;
-	return -1;
-}
 
 static void PrintWeaponTick(CGameFixture &Fixture, const std::string &Name, int Tick, CCharacter *pAttacker, CCharacter *pVictim, int Weapon)
 {
@@ -435,6 +380,41 @@ static void RunMatch(const std::string &Name)
 		  << " respawn_before=" << RespawnBefore << " respawn_at=" << RespawnAt << '\n';
 }
 
+// The authoritative half of the parity harness, see scripts/parity_check.py.
+static void RunParity(const std::string &Name)
+{
+	const int Weapon = ParityWeapon(Name);
+	if(Weapon < 0)
+		Fail("invalid parity scenario: " + Name);
+	CGameFixture Fixture;
+	CCharacter *pChar = Fixture.Character(0);
+	if(Weapon != WEAPON_HAMMER)
+	{
+		pChar->GiveWeapon(Weapon);
+		pChar->SetWeaponAmmo(Weapon, 10);
+	}
+	pChar->SetWeapon(Weapon);
+	pChar->m_ReloadTimer = 0;
+
+	CGameWorld &World = Fixture.m_pGameServer->m_World;
+	for(int Tick = 0; Tick <= PARITY_TICKS; ++Tick)
+	{
+		if(Tick > 0)
+		{
+			CNetObj_PlayerInput Input;
+			ParityInput(Name, Tick, &Input);
+			pChar->OnDirectInput(&Input);
+			pChar->OnPredictedInput(&Input);
+			Fixture.SetTick(Tick);
+			World.Tick();
+		}
+		if(!pChar->IsAlive())
+			break;
+		ParityPrintCharacter(Name, Tick, 0, *pChar->Core(), pChar->GetWeaponAmmo(pChar->GetActiveWeapon()), pChar->m_ReloadTimer);
+		ParityPrintCounts(Name, Tick, CountEntities(World, CGameWorld::ENTTYPE_PROJECTILE), CountEntities(World, CGameWorld::ENTTYPE_LASER), CountEntities(World, CGameWorld::ENTTYPE_PICKUP));
+	}
+}
+
 static void Dispatch(const std::string &Line)
 {
 	std::istringstream Input(Line);
@@ -463,6 +443,8 @@ static void Dispatch(const std::string &Line)
 	}
 	else if(Kind == "match")
 		RunMatch(Name);
+	else if(Kind == "parity")
+		RunParity(Name);
 	else
 		Fail("unknown scenario: " + Line);
 	std::string Extra;
@@ -472,26 +454,5 @@ static void Dispatch(const std::string &Line)
 
 int main(int argc, char **argv)
 {
-	if(argc != 2)
-	{
-		std::cerr << "usage: vanilla-golden-current SCENARIOS\n";
-		return 2;
-	}
-	std::ifstream Input(argv[1]);
-	if(!Input)
-	{
-		std::cerr << "cannot open scenarios: " << argv[1] << '\n';
-		return 2;
-	}
-	log_set_global_logger(log_logger_noop().release());
-	net_init();
-	std::string Line;
-	while(std::getline(Input, Line))
-	{
-		const std::string::size_type First = Line.find_first_not_of(" \t\r");
-		if(First == std::string::npos || Line[First] == '#')
-			continue;
-		Dispatch(Line.substr(First));
-	}
-	return 0;
+	return RunScenarioFile(argc, argv, "vanilla-golden-current", Dispatch);
 }

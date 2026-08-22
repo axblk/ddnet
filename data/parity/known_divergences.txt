@@ -1,0 +1,32 @@
+# Fields in which the predicted world is known to differ from the authoritative
+# one, as scenario:field. scripts/parity_check.py fails on any other difference
+# and on a field listed here that no longer differs.
+
+# The prediction builds its world from snapshots and never creates the map's
+# pickups.
+move:pickups
+hook:pickups
+fire_gun:pickups
+fire_shotgun:pickups
+fire_grenade:pickups
+fire_laser:pickups
+
+# The predicted character has infinite ammunition (CGameState::Reset sets
+# m_InfiniteAmmo).
+fire_gun:ammo
+fire_shotgun:ammo
+fire_grenade:ammo
+fire_laser:ammo
+
+# So it keeps firing after the server's tenth shot around tick 80, and the
+# grenade's recoil moves it away from the server's character from then on.
+fire_gun:projectiles
+fire_grenade:projectiles
+fire_grenade:pos
+fire_grenade:vel
+fire_grenade:hook
+fire_laser:lasers
+
+# Both worlds create the same five pellets, but two of the predicted ones
+# outlive the server's.
+fire_shotgun:projectiles

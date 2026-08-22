@@ -1,0 +1,7 @@
+# Scenarios both parity runners play, see ParityInput in scripts/parity/parity_trace.h.
+parity move
+parity hook
+parity fire_gun
+parity fire_shotgun
+parity fire_grenade
+parity fire_laser

@@ -149,7 +149,10 @@ public:
 	const SHA256_DIGEST *CertificateSha256() const { return m_HasCertificateSha256 ? &m_CertificateSha256 : nullptr; }
 	const SHA256_DIGEST *NextCertificateSha256() const { return m_HasNextCertificateSha256 ? &m_NextCertificateSha256 : nullptr; }
 	const CServerIdentityBinding *ServerIdentity() const { return m_HasServerIdentity ? &m_ServerIdentity : nullptr; }
-	const CQuicTransportMetrics &Metrics() const { return m_Metrics; }
+	// Not const: the queue high water mark is a value the endpoint keeps, and it is
+	// read here rather than on every send, where locking the endpoint for it doubled
+	// what sending a packet cost.
+	const CQuicTransportMetrics &Metrics();
 };
 
 #endif

@@ -119,8 +119,11 @@ bool ValidateWebTransportUrl(const char *pUrl, int Port)
 
 bool FormatWebTransportUrl(char *pBuffer, int BufferSize, const char *pHostname, int Port)
 {
-	if(pHostname[0] == '\0' || str_format(pBuffer, BufferSize, "https://%s:%d/ddnet", pHostname, Port) >= BufferSize)
+	if(pHostname[0] == '\0')
 		return false;
+	// A buffer too small to hold the whole URL cuts the path off the end, and the
+	// path has to read exactly "/ddnet", so a truncated URL fails the reading below.
+	str_format(pBuffer, BufferSize, "https://%s:%d/ddnet", pHostname, Port);
 	return ValidateWebTransportUrl(pBuffer, Port);
 }
 
@@ -330,7 +333,6 @@ bool ParseQuicServerInfoExtra(CServerInfo *pInfo, const char *pExtraInfo, int Po
 			{
 				pInfo->m_WebTransport = true;
 				pInfo->m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::WEBPKI;
-				pInfo->m_QuicTrust = EModernTransportTrust::WEBPKI;
 			}
 		}
 		else if(const char *pCertificates = str_startswith(aSegment, "wt-cert-sha256="))
@@ -338,16 +340,19 @@ bool ParseQuicServerInfoExtra(CServerInfo *pInfo, const char *pExtraInfo, int Po
 			char aCertificate[SHA256_MAXSTRSIZE];
 			const char *pNext = str_find(pCertificates, ",");
 			str_truncate(aCertificate, sizeof(aCertificate), pCertificates, pNext ? pNext - pCertificates : str_length(pCertificates));
-			if(!sha256_from_str(&pInfo->m_QuicCertificateSha256, aCertificate))
+			if(!sha256_from_str(&pInfo->m_WebTransportCertificateSha256, aCertificate))
 			{
-				pInfo->m_QuicTrust = EModernTransportTrust::CERTIFICATE_HASH;
-				if(pNext != nullptr && !sha256_from_str(&pInfo->m_QuicNextCertificateSha256, pNext + 1))
-					pInfo->m_HasQuicNextCertificateSha256 = true;
+				if(pNext != nullptr && !sha256_from_str(&pInfo->m_WebTransportNextCertificateSha256, pNext + 1))
+					pInfo->m_HasWebTransportNextCertificateSha256 = true;
 			}
 		}
 		else if(const char *pHostname = str_startswith(aSegment, "hostname="))
 		{
-			str_copy(pInfo->m_aModernHostname, pHostname);
+			// This becomes the TLS server name and the host of the WebTransport URL,
+			// so it has to survive the same reading the announced URL gets.
+			char aUrl[256];
+			if(pHostname[0] != '[' && FormatWebTransportUrl(aUrl, sizeof(aUrl), pHostname, Port))
+				str_copy(pInfo->m_aModernHostname, pHostname);
 		}
 	}
 	return false;
@@ -356,10 +361,9 @@ bool ParseQuicServerInfoExtra(CServerInfo *pInfo, const char *pExtraInfo, int Po
 void PreserveWebTransportMetadata(CServerInfo *pInfo, const CServerInfo &PreviousInfo)
 {
 	pInfo->m_QuicCapabilities |= PreviousInfo.m_QuicCapabilities;
-	pInfo->m_QuicCertificateSha256 = PreviousInfo.m_QuicCertificateSha256;
-	pInfo->m_QuicNextCertificateSha256 = PreviousInfo.m_QuicNextCertificateSha256;
-	pInfo->m_HasQuicNextCertificateSha256 = PreviousInfo.m_HasQuicNextCertificateSha256;
-	pInfo->m_QuicTrust = PreviousInfo.m_QuicTrust;
+	pInfo->m_WebTransportCertificateSha256 = PreviousInfo.m_WebTransportCertificateSha256;
+	pInfo->m_WebTransportNextCertificateSha256 = PreviousInfo.m_WebTransportNextCertificateSha256;
+	pInfo->m_HasWebTransportNextCertificateSha256 = PreviousInfo.m_HasWebTransportNextCertificateSha256;
 	pInfo->m_WebTransport = true;
 	pInfo->m_WebTransportCertificateMode = PreviousInfo.m_WebTransportCertificateMode;
 	str_copy(pInfo->m_aWebTransportPath, PreviousInfo.m_aWebTransportPath);
@@ -440,8 +444,13 @@ static void ParseQuicTransport(CServerInfo2 *pOut, const json_value &ServerInfo)
 		if(Url.type == json_string)
 			str_copy(pOut->m_aWebTransportUrl, Url);
 	}
+	// This schema names one certificate for the whole shared port, so both
+	// transports are pinned to it.
 	pOut->m_QuicCertificateSha256 = ParsedCertificateSha256;
 	pOut->m_QuicNextCertificateSha256 = ParsedNextCertificateSha256;
+	pOut->m_WebTransportCertificateSha256 = ParsedCertificateSha256;
+	pOut->m_WebTransportNextCertificateSha256 = ParsedNextCertificateSha256;
+	pOut->m_HasWebTransportNextCertificateSha256 = HasNextCertificateSha256;
 	pOut->m_QuicPort = Port;
 	pOut->m_QuicCapabilities = CServerInfo::QUIC_CAPABILITY_DATAGRAM | CServerInfo::QUIC_CAPABILITY_MAP_STREAM | CServerInfo::QUIC_CAPABILITY_RESUME | CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7;
 	pOut->m_QuicSharedPort = HasQuic;
@@ -491,7 +500,7 @@ static void ParseExperimentalProtocol(CServerInfo2 *pOut, const json_value &Serv
 	const json_value &UdpPort = Protocol["udp_port"];
 	if(UdpPort.type != json_none)
 	{
-		if(UdpPort.type != json_integer || !in_range((int)UdpPort.u.integer, 1, 65535))
+		if(UdpPort.type != json_integer || UdpPort.u.integer < 1 || UdpPort.u.integer > 65535)
 			return;
 		Port = UdpPort.u.integer;
 	}
@@ -514,7 +523,10 @@ static void ParseExperimentalProtocol(CServerInfo2 *pOut, const json_value &Serv
 	SHA256_DIGEST CertificateSha256 = {};
 	SHA256_DIGEST NextCertificateSha256 = {};
 	SHA256_DIGEST IdentityFingerprint = {};
+	SHA256_DIGEST WebTransportCertificateSha256 = {};
+	SHA256_DIGEST WebTransportNextCertificateSha256 = {};
 	bool HasNextCertificateSha256 = false;
+	bool HasWebTransportNextCertificateSha256 = false;
 	if(Quic.type == json_object)
 	{
 		SHA256_DIGEST QuicFingerprint = {};
@@ -542,11 +554,9 @@ static void ParseExperimentalProtocol(CServerInfo2 *pOut, const json_value &Serv
 			return;
 		if(WebTransportTrust == EModernTransportTrust::CERTIFICATE_HASH)
 		{
-			if(QuicTrust == EModernTransportTrust::CERTIFICATE_HASH && (CertificateSha256 != WebTransportFingerprint || HasNextCertificateSha256 != HasWebTransportNextFingerprint || (HasNextCertificateSha256 && NextCertificateSha256 != WebTransportNextFingerprint)))
-				return;
-			CertificateSha256 = WebTransportFingerprint;
-			NextCertificateSha256 = WebTransportNextFingerprint;
-			HasNextCertificateSha256 = HasWebTransportNextFingerprint;
+			WebTransportCertificateSha256 = WebTransportFingerprint;
+			WebTransportNextCertificateSha256 = WebTransportNextFingerprint;
+			HasWebTransportNextCertificateSha256 = HasWebTransportNextFingerprint;
 		}
 	}
 	if(QuicTrust == EModernTransportTrust::WEBPKI && aHostname[0] == '\0')
@@ -554,6 +564,9 @@ static void ParseExperimentalProtocol(CServerInfo2 *pOut, const json_value &Serv
 
 	pOut->m_QuicCertificateSha256 = CertificateSha256;
 	pOut->m_QuicNextCertificateSha256 = NextCertificateSha256;
+	pOut->m_WebTransportCertificateSha256 = WebTransportCertificateSha256;
+	pOut->m_WebTransportNextCertificateSha256 = WebTransportNextCertificateSha256;
+	pOut->m_HasWebTransportNextCertificateSha256 = HasWebTransportNextCertificateSha256;
 	pOut->m_QuicIdentityFingerprint = IdentityFingerprint;
 	pOut->m_QuicPort = Port;
 	pOut->m_QuicCapabilities = CServerInfo::QUIC_CAPABILITY_DATAGRAM | CServerInfo::QUIC_CAPABILITY_MAP_STREAM | CServerInfo::QUIC_CAPABILITY_RESUME | CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7;
@@ -768,6 +781,9 @@ bool CServerInfo2::operator==(const CServerInfo2 &Other) const
 	Unequal = Unequal || m_QuicCertificateSha256 != Other.m_QuicCertificateSha256;
 	Unequal = Unequal || m_QuicNextCertificateSha256 != Other.m_QuicNextCertificateSha256;
 	Unequal = Unequal || m_QuicIdentityFingerprint != Other.m_QuicIdentityFingerprint;
+	Unequal = Unequal || m_WebTransportCertificateSha256 != Other.m_WebTransportCertificateSha256;
+	Unequal = Unequal || m_WebTransportNextCertificateSha256 != Other.m_WebTransportNextCertificateSha256;
+	Unequal = Unequal || m_HasWebTransportNextCertificateSha256 != Other.m_HasWebTransportNextCertificateSha256;
 	Unequal = Unequal || m_QuicPort != Other.m_QuicPort;
 	Unequal = Unequal || m_QuicCapabilities != Other.m_QuicCapabilities;
 	Unequal = Unequal || m_QuicSharedPort != Other.m_QuicSharedPort;

@@ -1030,16 +1030,21 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		return;
 	}
 #endif
-	auto SameCertificatePins = [](const CServerInfo &Left, const CServerInfo &Right) {
+	auto SameCertificatePins = [](const CServerInfo &Left, const CServerInfo &Right, bool WebTransport) {
 		if(Left.m_HasQuicIdentityFingerprint != Right.m_HasQuicIdentityFingerprint ||
 			Left.m_QuicTrust != Right.m_QuicTrust ||
 			str_comp(Left.m_aModernHostname, Right.m_aModernHostname) != 0 ||
-			(Left.m_HasQuicIdentityFingerprint && Left.m_QuicIdentityFingerprint != Right.m_QuicIdentityFingerprint) ||
-			Left.m_HasQuicNextCertificateSha256 != Right.m_HasQuicNextCertificateSha256)
+			(Left.m_HasQuicIdentityFingerprint && Left.m_QuicIdentityFingerprint != Right.m_QuicIdentityFingerprint))
 			return false;
-		const bool SameOrder = Left.m_QuicCertificateSha256 == Right.m_QuicCertificateSha256 &&
-				       (!Left.m_HasQuicNextCertificateSha256 || Left.m_QuicNextCertificateSha256 == Right.m_QuicNextCertificateSha256);
-		const bool ReverseOrder = Left.m_HasQuicNextCertificateSha256 && Left.m_QuicCertificateSha256 == Right.m_QuicNextCertificateSha256 && Left.m_QuicNextCertificateSha256 == Right.m_QuicCertificateSha256;
+		const bool HasNext = WebTransport ? Left.m_HasWebTransportNextCertificateSha256 : Left.m_HasQuicNextCertificateSha256;
+		if(HasNext != (WebTransport ? Right.m_HasWebTransportNextCertificateSha256 : Right.m_HasQuicNextCertificateSha256))
+			return false;
+		const SHA256_DIGEST &LeftFirst = WebTransport ? Left.m_WebTransportCertificateSha256 : Left.m_QuicCertificateSha256;
+		const SHA256_DIGEST &LeftNext = WebTransport ? Left.m_WebTransportNextCertificateSha256 : Left.m_QuicNextCertificateSha256;
+		const SHA256_DIGEST &RightFirst = WebTransport ? Right.m_WebTransportCertificateSha256 : Right.m_QuicCertificateSha256;
+		const SHA256_DIGEST &RightNext = WebTransport ? Right.m_WebTransportNextCertificateSha256 : Right.m_QuicNextCertificateSha256;
+		const bool SameOrder = LeftFirst == RightFirst && (!HasNext || LeftNext == RightNext);
+		const bool ReverseOrder = HasNext && LeftFirst == RightNext && LeftNext == RightFirst;
 		return SameOrder || ReverseOrder;
 	};
 	auto FindTransportEntry = [&](NETADDR Address) {
@@ -1114,7 +1119,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 			if(pWebTransportInfo &&
 				(str_comp(pWebTransportInfo->m_aWebTransportUrl, pEntry->m_Info.m_aWebTransportUrl) != 0 ||
 					pWebTransportInfo->m_WebTransportCertificateMode != pEntry->m_Info.m_WebTransportCertificateMode ||
-					!SameCertificatePins(*pWebTransportInfo, pEntry->m_Info)))
+					!SameCertificatePins(*pWebTransportInfo, pEntry->m_Info, true)))
 			{
 				MetadataAmbiguous = true;
 				break;
@@ -1142,8 +1147,8 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 								  pWebTransportUrl,
 								  &WebTransportAddress,
 								  UseCertificateHashes,
-								  pWebTransportInfo->m_QuicCertificateSha256,
-								  UseCertificateHashes && pWebTransportInfo->m_HasQuicNextCertificateSha256 ? &pWebTransportInfo->m_QuicNextCertificateSha256 : nullptr,
+								  pWebTransportInfo->m_WebTransportCertificateSha256,
+								  UseCertificateHashes && pWebTransportInfo->m_HasWebTransportNextCertificateSha256 ? &pWebTransportInfo->m_WebTransportNextCertificateSha256 : nullptr,
 								  OnlySixup))
 			{
 				m_UseQuic = true;
@@ -1260,7 +1265,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 			NETADDR NextQuicAddress;
 			if(!ToModernTransportAddress(PrefixAddress, &NextQuicAddress))
 				continue;
-			if(pQuicInfo && (QuicAddress.port != NextQuicAddress.port || !SameCertificatePins(*pQuicInfo, pEntry->m_Info)))
+			if(pQuicInfo && (QuicAddress.port != NextQuicAddress.port || !SameCertificatePins(*pQuicInfo, pEntry->m_Info, false)))
 			{
 				QuicMetadataAmbiguous = true;
 				break;
@@ -2114,6 +2119,9 @@ void CClient::ProcessServerInfo(int RawType, NETADDR *pFrom, const void *pData, 
 			Info.m_QuicCertificateSha256 = {};
 			Info.m_QuicNextCertificateSha256 = {};
 			Info.m_QuicIdentityFingerprint = {};
+			Info.m_WebTransportCertificateSha256 = {};
+			Info.m_WebTransportNextCertificateSha256 = {};
+			Info.m_HasWebTransportNextCertificateSha256 = false;
 			Info.m_QuicPort = 0;
 			Info.m_QuicCapabilities = 0;
 			Info.m_QuicSharedPort = false;

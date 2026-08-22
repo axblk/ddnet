@@ -1,3 +1,4 @@
+use bytes::BytesMut;
 use quinn_proto::{
     ClientConfig, Connection, ConnectionHandle, ConnectionId, ConnectionIdGenerator, DatagramEvent,
     Dir, Endpoint, Event, HashedConnectionIdGenerator, ServerConfig, StreamEvent, StreamId, VarInt,
@@ -41,6 +42,8 @@ pub(super) struct EndpointDriver {
     transmit_handles: Vec<ConnectionHandle>,
     next_transmit: Option<ConnectionHandle>,
     packet_buffers: Vec<Vec<u8>>,
+    /// Buffers incoming datagrams are copied into and handed to quinn as cuts of.
+    receive_buffers: VecDeque<BytesMut>,
     outgoing_drops: u64,
 }
 
@@ -66,6 +69,7 @@ impl EndpointDriver {
             transmit_handles: Vec::new(),
             next_transmit: None,
             packet_buffers: Vec::new(),
+            receive_buffers: VecDeque::new(),
             outgoing_drops: 0,
         }
     }
@@ -92,10 +96,18 @@ impl EndpointDriver {
         local_ip: Option<IpAddr>,
         payload: &[u8],
     ) -> bool {
-        let mut buffer = self.take_packet_buffer();
-        let Some(event) =
-            self.endpoint
-                .handle(now, remote, local_ip, None, payload.into(), &mut buffer)
+        let mut buffer = take_packet_buffer(&mut self.packet_buffers);
+        let mut source = take_datagram_buffer(
+            &mut self.receive_buffers,
+            super::MAX_UDP_DATAGRAM_SIZE.max(payload.len()),
+        );
+        source.extend_from_slice(payload);
+        let size = source.len();
+        let data = source.split_to(size);
+        recycle_datagram_buffer(&mut self.receive_buffers, source);
+        let Some(event) = self
+            .endpoint
+            .handle(now, remote, local_ip, None, data, &mut buffer)
         else {
             self.recycle_packet_buffer(buffer);
             return false;
@@ -105,6 +117,10 @@ impl EndpointDriver {
                 if let Some(connection) = self.connections.get_mut(&handle) {
                     connection.handle_event(event);
                 }
+                // This is the path a packet for an established connection takes,
+                // which is nearly all of them, and it was the one path that let the
+                // buffer it borrowed fall on the floor instead of handing it back.
+                self.recycle_packet_buffer(buffer);
             }
             DatagramEvent::NewConnection(incoming) => {
                 if self.connections.len() >= super::MAX_SESSIONS {
@@ -190,7 +206,7 @@ impl EndpointDriver {
             let handle = self.transmit_handles[index];
             next = (index + 1) % self.transmit_handles.len();
             let connection = self.connections.get_mut(&handle).unwrap();
-            let mut buffer = self.packet_buffers.pop().unwrap_or_default();
+            let mut buffer = take_packet_buffer(&mut self.packet_buffers);
             for _ in 0..TRANSMITS_PER_CONNECTION_PER_DRIVE {
                 if self.outgoing.len() + self.transmits.len() >= super::UDP_SIDECHANNEL_CAPACITY {
                     break;
@@ -199,12 +215,9 @@ impl EndpointDriver {
                     break;
                 };
                 self.transmits.push((transmit, buffer));
-                buffer = self.packet_buffers.pop().unwrap_or_default();
+                buffer = take_packet_buffer(&mut self.packet_buffers);
             }
-            buffer.clear();
-            if self.packet_buffers.len() < super::UDP_SIDECHANNEL_CAPACITY {
-                self.packet_buffers.push(buffer);
-            }
+            self.recycle_packet_buffer(buffer);
             if self.outgoing.len() + self.transmits.len() >= super::UDP_SIDECHANNEL_CAPACITY {
                 break 'connections;
             }
@@ -279,17 +292,15 @@ impl EndpointDriver {
         });
     }
 
-    fn take_packet_buffer(&mut self) -> Vec<u8> {
-        let mut buffer = self.packet_buffers.pop().unwrap_or_default();
-        buffer.clear();
-        buffer
-    }
-
     fn recycle_packet_buffer(&mut self, mut buffer: Vec<u8>) {
-        buffer.clear();
-        if self.packet_buffers.len() < super::UDP_SIDECHANNEL_CAPACITY {
-            self.packet_buffers.push(buffer);
+        // Buffers also come back from C++, where the first one of each polling round
+        // is empty. One with no room in it is worth nothing to the pool and would
+        // only have to be grown again the moment it is handed out.
+        if buffer.capacity() == 0 || self.packet_buffers.len() >= super::UDP_SIDECHANNEL_CAPACITY {
+            return;
         }
+        buffer.clear();
+        self.packet_buffers.push(buffer);
     }
 }
 
@@ -444,6 +455,11 @@ pub(super) struct RawEndpoint {
     next_session_id: u64,
     drops: u64,
     session_ids: Vec<u64>,
+    /// Buffers outgoing datagrams are encoded into and handed to quinn as cuts of.
+    send_buffers: VecDeque<BytesMut>,
+    /// Payload buffers handed out with events and given back once C++ is done
+    /// with them, so a received message costs no allocation.
+    event_payloads: Vec<Vec<u8>>,
     command_queue_high_water: usize,
     pending_reconnect: Option<(u64, bool, Instant)>,
 }
@@ -473,6 +489,8 @@ impl RawEndpoint {
             next_session_id: 1,
             drops: 0,
             session_ids: Vec::new(),
+            send_buffers: VecDeque::new(),
+            event_payloads: Vec::new(),
             command_queue_high_water: 0,
             pending_reconnect: None,
         }
@@ -505,6 +523,8 @@ impl RawEndpoint {
             next_session_id: 2,
             drops: 0,
             session_ids: Vec::new(),
+            send_buffers: VecDeque::new(),
+            event_payloads: Vec::new(),
             command_queue_high_water: 0,
             pending_reconnect: None,
         };
@@ -559,6 +579,25 @@ impl RawEndpoint {
         self.driver.recycle_outgoing(payload);
     }
 
+    pub fn recycle_event_payload(&mut self, mut payload: Vec<u8>) {
+        // A payload that never held anything has no room to give back, and the
+        // first one of every polling round comes back from C++ like that. Taking it
+        // would put a buffer into the pool that has to be grown the moment it is
+        // handed out again.
+        if payload.capacity() == 0 || self.event_payloads.len() >= super::EVENT_CAPACITY {
+            return;
+        }
+        payload.clear();
+        self.event_payloads.push(payload);
+    }
+
+    fn take_event_payload(&mut self, data: &[u8]) -> Vec<u8> {
+        let mut payload = self.event_payloads.pop().unwrap_or_default();
+        payload.clear();
+        payload.extend_from_slice(data);
+        payload
+    }
+
     pub fn poll_event(&mut self) -> Option<super::ffi::QuicEvent> {
         let mut event = self
             .events
@@ -607,35 +646,45 @@ impl RawEndpoint {
         if payload.is_empty() || payload.len() > super::game_wire::MAX_DATAGRAM_MESSAGE_SIZE {
             return false;
         }
-        let Some(session) = self.sessions.get_mut(&session_id) else {
+        let Some(session) = self.sessions.get(&session_id) else {
             return false;
         };
         if !matches!(session.handshake, Handshake::Active) {
             return false;
         }
-        let Some(datagram) = super::game_wire::encode_datagram(session.send_sequence, &[payload])
-        else {
+        let handle = session.handle;
+        let sequence = session.send_sequence;
+        let limit = session.peer_datagram_size;
+        // Encoded into a pooled buffer and handed to quinn as a cut of it, which a
+        // datagram still waiting to go out keeps alive until it has gone.
+        let mut buffer =
+            take_datagram_buffer(&mut self.send_buffers, super::game_wire::MAX_DATAGRAM_SIZE);
+        let encoded = super::game_wire::encode_datagram(sequence, &[payload], &mut buffer);
+        let size = buffer.len();
+        let datagram = buffer.split_to(size).freeze();
+        recycle_datagram_buffer(&mut self.send_buffers, buffer);
+        if !encoded {
             return false;
-        };
-        session.send_sequence = session.send_sequence.wrapping_add(1);
-        if datagram.len() > session.peer_datagram_size {
+        }
+        self.sessions.get_mut(&session_id).unwrap().send_sequence = sequence.wrapping_add(1);
+        if size > limit {
             return true;
         }
-        let datagram = match &session.transport {
+        let datagram = match &self.sessions[&session_id].transport {
             SessionTransport::Raw => datagram,
             SessionTransport::WebTransport(webtransport) => {
+                // The browser transport still wraps the datagram in a buffer of its
+                // own. It is not on the server's path and not worth the reach.
                 let Some(datagram) = webtransport.encode_datagram(&datagram) else {
                     return false;
                 };
-                datagram
+                datagram.into()
             }
             SessionTransport::Pending => return false,
         };
-        let sent = self
-            .driver
-            .connection_mut(session.handle)
-            .is_some_and(|connection| connection.datagrams().send(datagram.into(), false).is_ok());
-        sent
+        self.driver
+            .connection_mut(handle)
+            .is_some_and(|connection| connection.datagrams().send(datagram, false).is_ok())
     }
 
     pub fn close(&mut self, session_id: u64, reason: &str) -> bool {
@@ -1276,26 +1325,28 @@ impl RawEndpoint {
                 self.process_master_challenge(session_id);
                 return;
             }
-            let frame = {
+            let mut payload = self.event_payloads.pop().unwrap_or_default();
+            payload.clear();
+            let frame_type = {
                 let Some(session) = self.sessions.get_mut(&session_id) else {
                     return;
                 };
-                let frame = match super::game_wire::decode_frame(&session.receive) {
-                    Ok(frame) => (
-                        frame.frame_type,
-                        frame.payload.to_vec(),
-                        frame.bytes_consumed,
-                    ),
+                let (frame_type, consumed) = match super::game_wire::decode_frame(&session.receive)
+                {
+                    Ok(frame) => {
+                        payload.extend_from_slice(frame.payload);
+                        (frame.frame_type, frame.bytes_consumed)
+                    }
                     Err(super::game_wire::DecodeError::NeedMore) => return,
                     Err(_) => {
                         self.close(session_id, "invalid control frame");
                         return;
                     }
                 };
-                session.receive.drain(..frame.2);
-                frame
+                session.receive.drain(..consumed);
+                frame_type
             };
-            if !self.process_frame(session_id, frame.0, frame.1) {
+            if !self.process_frame(session_id, frame_type, payload) {
                 return;
             }
         }
@@ -1638,10 +1689,11 @@ impl RawEndpoint {
                     self.drops += 1;
                     continue;
                 }
+                let payload = self.take_event_payload(message);
                 self.push_event(
                     super::ffi::QuicEventKind::Datagram,
                     session_id,
-                    message.to_vec(),
+                    payload,
                     String::new(),
                     sixup,
                 );
@@ -2687,6 +2739,287 @@ mod tests {
         assert!(controls.iter().all(|received| *received));
         assert!(datagrams.iter().all(|received| *received));
     }
+
+    /// Counts the allocations made on the thread it runs on. The endpoints are
+    /// driven synchronously by the test, so the count is theirs alone and the
+    /// other tests, which run on other threads, do not disturb it.
+    struct CountingAllocator;
+
+    thread_local! {
+        static ALLOCATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    fn record() {
+        ALLOCATIONS.with(|count| count.set(count.get() + 1));
+    }
+
+    unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
+        unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+            record();
+            std::alloc::System.alloc(layout)
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+            record();
+            std::alloc::System.alloc_zeroed(layout)
+        }
+
+        unsafe fn realloc(
+            &self,
+            pointer: *mut u8,
+            layout: std::alloc::Layout,
+            new_size: usize,
+        ) -> *mut u8 {
+            record();
+            std::alloc::System.realloc(pointer, layout, new_size)
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, layout: std::alloc::Layout) {
+            std::alloc::System.dealloc(pointer, layout)
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+    fn counted<T>(total: &mut u64, body: impl FnOnce() -> T) -> T {
+        let before = ALLOCATIONS.with(std::cell::Cell::get);
+        let value = body();
+        *total += ALLOCATIONS.with(std::cell::Cell::get) - before;
+        value
+    }
+
+    /// Counts what the server endpoint allocates for one round of gameplay traffic,
+    /// which is what the per-tick cost is made of. The bounds are the point of the
+    /// test: the receive and the send path are meant to run out of pooled storage,
+    /// so a change that puts an allocation back on either of them fails here.
+    #[test]
+    fn gameplay_traffic_allocation_census() {
+        const CLIENTS: usize = 4;
+        const CLIENT_PORT: u16 = 30_000;
+        const WARMUP_ROUNDS: usize = 64;
+        const MEASURED_ROUNDS: usize = 256;
+
+        let identity = quic_generate_identity("localhost").unwrap();
+        let server_config = server_config(
+            true,
+            false,
+            identity.certificate_der.clone(),
+            identity.private_key_der,
+        )
+        .unwrap()
+        .0;
+        let (client_config, verification) =
+            client_config(ServerCertificatePin::Der(identity.certificate_der)).unwrap();
+        let server_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40_000).into();
+        let mut server = RawEndpoint::server(10, server_config, None, true, false);
+        let mut clients: Vec<_> = (0..CLIENTS)
+            .map(|index| {
+                RawEndpoint::client(
+                    100 + index as u64,
+                    client_config.clone(),
+                    verification.clone(),
+                    server_address,
+                    "localhost",
+                    false,
+                )
+                .unwrap()
+            })
+            .collect();
+        let mut sessions = Vec::new();
+        for _ in 0..1000 {
+            transfer_raw_clients(CLIENT_PORT, &mut clients, server_address, &mut server);
+            for client in &mut clients {
+                while client.poll_event().is_some() {}
+            }
+            while let Some(event) = server.poll_event() {
+                if event.kind == super::super::ffi::QuicEventKind::Connected {
+                    sessions.push(event.session_id);
+                }
+            }
+            if sessions.len() == CLIENTS {
+                break;
+            }
+        }
+        assert_eq!(sessions.len(), CLIENTS);
+        while transfer_raw_clients(CLIENT_PORT, &mut clients, server_address, &mut server) {}
+
+        // A round is what one server tick does with gameplay traffic: it takes one
+        // input datagram from every client and answers every client with a snapshot.
+        let input = [0x11; 64];
+        let snapshot = [0x22; 700];
+        let mut feeds = 0u64;
+        let mut sends = 0u64;
+        let mut feed_allocations = 0u64;
+        let mut send_allocations = 0u64;
+        let mut poll_allocations = 0u64;
+        let mut event_allocations = 0u64;
+        let mut spare_payload = Vec::new();
+        let mut spare_datagram = Vec::new();
+        for round in 0..WARMUP_ROUNDS + MEASURED_ROUNDS {
+            if round == WARMUP_ROUNDS {
+                feeds = 0;
+                sends = 0;
+                feed_allocations = 0;
+                send_allocations = 0;
+                poll_allocations = 0;
+                event_allocations = 0;
+            }
+            for (index, client) in clients.iter_mut().enumerate() {
+                assert!(client.send_datagram(1, &input));
+                let source =
+                    SocketAddrV4::new(Ipv4Addr::LOCALHOST, CLIENT_PORT + index as u16).into();
+                while let Some(datagram) = client.poll_outgoing() {
+                    counted(&mut feed_allocations, || {
+                        server.feed(source, &datagram.payload)
+                    });
+                    feeds += 1;
+                    client.recycle_outgoing(datagram.payload);
+                }
+            }
+            for &session in &sessions {
+                assert!(counted(&mut send_allocations, || server
+                    .send_datagram(session, &snapshot)));
+                sends += 1;
+            }
+            // Both loops mirror what the FFI does: the buffer C++ is done with goes
+            // back to the endpoint in the same call that fetches the next one.
+            loop {
+                let event = counted(&mut event_allocations, || {
+                    server.recycle_event_payload(std::mem::take(&mut spare_payload));
+                    server.poll_event()
+                });
+                let Some(event) = event else {
+                    break;
+                };
+                spare_payload = event.payload;
+            }
+            loop {
+                let datagram = counted(&mut poll_allocations, || {
+                    server.recycle_outgoing(std::mem::take(&mut spare_datagram));
+                    server.poll_outgoing()
+                });
+                let Some(datagram) = datagram else {
+                    break;
+                };
+                let index = usize::from(datagram.destination.port() - CLIENT_PORT);
+                clients[index].feed(server_address, &datagram.payload);
+                spare_datagram = datagram.payload;
+            }
+            // The clients hand their payloads back as well, so what is left in the
+            // site listing belongs to the server and not to the other side of the
+            // test.
+            for client in &mut clients {
+                let mut spare = Vec::new();
+                loop {
+                    client.recycle_event_payload(std::mem::take(&mut spare));
+                    let Some(event) = client.poll_event() else {
+                        break;
+                    };
+                    spare = event.payload;
+                }
+            }
+        }
+
+        let per_round = |value: u64| value as f64 / MEASURED_ROUNDS as f64;
+        println!(
+            "allocation census: {CLIENTS} clients, {MEASURED_ROUNDS} rounds, {:.4} feeds/round, {:.4} sends/round",
+            per_round(feeds),
+            per_round(sends)
+        );
+        println!(
+            "  feed          {:8.4}/round  {:.4}/feed",
+            per_round(feed_allocations),
+            feed_allocations as f64 / feeds as f64
+        );
+        println!(
+            "  send_datagram {:8.4}/round  {:.4}/send",
+            per_round(send_allocations),
+            send_allocations as f64 / sends as f64
+        );
+        println!("  poll_outgoing {:8.4}/round", per_round(poll_allocations));
+        println!("  poll_event    {:8.4}/round", per_round(event_allocations));
+        println!(
+            "  total         {:8.4}/round",
+            per_round(feed_allocations + send_allocations + poll_allocations + event_allocations)
+        );
+
+        let mut capacities: Vec<_> = server
+            .driver
+            .packet_buffers
+            .iter()
+            .map(Vec::capacity)
+            .collect();
+        capacities.sort_unstable();
+        println!(
+            "  transmit pool {} buffers, smallest capacity {:?}",
+            capacities.len(),
+            capacities.first()
+        );
+        assert_eq!(sends, (CLIENTS * MEASURED_ROUNDS) as u64);
+        assert!(
+            feed_allocations * 8 < feeds,
+            "the receive path allocates per packet: {feed_allocations} for {feeds} packets"
+        );
+        assert!(
+            send_allocations * 8 < sends,
+            "the send path allocates per datagram: {send_allocations} for {sends} datagrams"
+        );
+        assert!(
+            capacities.first().is_none_or(|smallest| *smallest > 0),
+            "the transmit pool holds a buffer with no room in it: {capacities:?}"
+        );
+    }
+}
+
+/// Takes a buffer with room for one datagram. A buffer whose last datagram quinn
+/// has not finished with cannot be written into again, so it is dropped here
+/// rather than waited on and the next one is tried.
+///
+/// One datagram per buffer is deliberate. Quinn charges a packet it holds on to
+/// against the size of the buffer behind it and drives its defragmentation from
+/// that, so a buffer shared between many packets would make it undercount by as
+/// many packets as fit, and let a peer pin far more memory than it sent.
+fn take_datagram_buffer(pool: &mut VecDeque<BytesMut>, wanted: usize) -> BytesMut {
+    // Oldest first, because that is the one whose datagram is most likely to have
+    // been dealt with. One that is still busy goes to the back rather than being
+    // thrown away, or the pool would drain itself every time a datagram is held.
+    //
+    // Every buffer gets a turn, not just the oldest. Stopping after one probe
+    // allocates a new buffer whenever the oldest datagram happens to still be in
+    // flight, even with the rest of the pool sitting free, and the fresh buffer
+    // then pays for a shared header on its first cut as well. Under a runner
+    // slow enough to make quinn hold on to a second datagram that is two
+    // allocations per send, which is what the traffic census is there to catch.
+    for _ in 0..pool.len() {
+        let mut buffer = pool.pop_front().expect("bounded by the pool length");
+        if buffer.try_reclaim(wanted) {
+            return buffer;
+        }
+        pool.push_back(buffer);
+    }
+    BytesMut::with_capacity(wanted)
+}
+
+/// Keeps a buffer a datagram was cut from. Cutting from a buffer that has been cut
+/// from before only counts a reference, which is what takes the allocation off the
+/// packet path; the first cut of a fresh buffer pays for the shared header once.
+fn recycle_datagram_buffer(pool: &mut VecDeque<BytesMut>, buffer: BytesMut) {
+    if pool.len() < super::UDP_SIDECHANNEL_CAPACITY {
+        pool.push_back(buffer);
+    }
+}
+
+/// Takes a buffer for one outgoing packet. A buffer is handed out with room for
+/// the largest datagram quinn will write, because quinn grows what it is given and
+/// a buffer grown from nothing costs an allocation every time it is handed out
+/// empty, which also puts an empty one back into the pool for the next caller.
+fn take_packet_buffer(pool: &mut Vec<Vec<u8>>) -> Vec<u8> {
+    let mut buffer = pool
+        .pop()
+        .unwrap_or_else(|| Vec::with_capacity(super::MAX_UDP_DATAGRAM_SIZE));
+    buffer.clear();
+    buffer
 }
 
 fn master_challenge_size(payload: &[u8]) -> Result<Option<usize>, ()> {

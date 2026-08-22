@@ -794,16 +794,16 @@ void CServerBrowser::SetInfo(CServerEntry *pEntry, const CServerInfo &Info, bool
 {
 	const CServerInfo TmpInfo = pEntry->m_Info;
 	pEntry->m_Info = Info;
-	auto PreserveNextCertificatePin = [&]() {
-		if(!TmpInfo.m_HasQuicNextCertificateSha256 || pEntry->m_Info.m_HasQuicNextCertificateSha256)
+	auto PreserveNextCertificatePin = [](const SHA256_DIGEST &OldFirst, const SHA256_DIGEST &OldNext, bool HadNext, const SHA256_DIGEST &First, SHA256_DIGEST *pNext, bool *pHasNext) {
+		if(!HadNext || *pHasNext)
 			return;
-		if(pEntry->m_Info.m_QuicCertificateSha256 == TmpInfo.m_QuicCertificateSha256)
-			pEntry->m_Info.m_QuicNextCertificateSha256 = TmpInfo.m_QuicNextCertificateSha256;
-		else if(pEntry->m_Info.m_QuicCertificateSha256 == TmpInfo.m_QuicNextCertificateSha256)
-			pEntry->m_Info.m_QuicNextCertificateSha256 = TmpInfo.m_QuicCertificateSha256;
+		if(First == OldFirst)
+			*pNext = OldNext;
+		else if(First == OldNext)
+			*pNext = OldFirst;
 		else
 			return;
-		pEntry->m_Info.m_HasQuicNextCertificateSha256 = true;
+		*pHasNext = true;
 	};
 	if(PreserveTransportMetadata && TmpInfo.m_QuicSharedPort && !pEntry->m_Info.m_QuicSharedPort)
 	{
@@ -819,7 +819,8 @@ void CServerBrowser::SetInfo(CServerEntry *pEntry, const CServerInfo &Info, bool
 		str_copy(pEntry->m_Info.m_aModernHostname, TmpInfo.m_aModernHostname);
 	}
 	else if(PreserveTransportMetadata && pEntry->m_Info.m_QuicSharedPort)
-		PreserveNextCertificatePin();
+		PreserveNextCertificatePin(TmpInfo.m_QuicCertificateSha256, TmpInfo.m_QuicNextCertificateSha256, TmpInfo.m_HasQuicNextCertificateSha256,
+			pEntry->m_Info.m_QuicCertificateSha256, &pEntry->m_Info.m_QuicNextCertificateSha256, &pEntry->m_Info.m_HasQuicNextCertificateSha256);
 	if(PreserveTransportMetadata && TmpInfo.m_WebTransport && !pEntry->m_Info.m_WebTransport)
 	{
 		PreserveWebTransportMetadata(&pEntry->m_Info, TmpInfo);
@@ -832,6 +833,9 @@ void CServerBrowser::SetInfo(CServerEntry *pEntry, const CServerInfo &Info, bool
 			str_copy(pEntry->m_Info.m_aModernHostname, TmpInfo.m_aModernHostname);
 		}
 	}
+	else if(PreserveTransportMetadata && pEntry->m_Info.m_WebTransport)
+		PreserveNextCertificatePin(TmpInfo.m_WebTransportCertificateSha256, TmpInfo.m_WebTransportNextCertificateSha256, TmpInfo.m_HasWebTransportNextCertificateSha256,
+			pEntry->m_Info.m_WebTransportCertificateSha256, &pEntry->m_Info.m_WebTransportNextCertificateSha256, &pEntry->m_Info.m_HasWebTransportNextCertificateSha256);
 	if(PreserveTransportMetadata && pEntry->m_Info.m_NumQuicAddresses == 0)
 	{
 		mem_copy(pEntry->m_Info.m_aQuicAddresses, TmpInfo.m_aQuicAddresses, sizeof(pEntry->m_Info.m_aQuicAddresses));

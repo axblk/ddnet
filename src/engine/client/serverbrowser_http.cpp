@@ -487,9 +487,20 @@ static bool ApplyProtocolTrust(CServerInfo *pInfo, const char *pUrl, bool Expect
 		}
 		if(Trust == EModernTransportTrust::CERTIFICATE_HASH)
 		{
-			pInfo->m_QuicCertificateSha256 = Fingerprint;
-			pInfo->m_QuicNextCertificateSha256 = NextFingerprint;
-			pInfo->m_HasQuicNextCertificateSha256 = HasNextFingerprint;
+			// The two transports carry their own certificate, so a pin taken from
+			// one link must not end up being used for the other.
+			if(WebTransport)
+			{
+				pInfo->m_WebTransportCertificateSha256 = Fingerprint;
+				pInfo->m_WebTransportNextCertificateSha256 = NextFingerprint;
+				pInfo->m_HasWebTransportNextCertificateSha256 = HasNextFingerprint;
+			}
+			else
+			{
+				pInfo->m_QuicCertificateSha256 = Fingerprint;
+				pInfo->m_QuicNextCertificateSha256 = NextFingerprint;
+				pInfo->m_HasQuicNextCertificateSha256 = HasNextFingerprint;
+			}
 		}
 	}
 	pInfo->m_QuicCapabilities = CServerInfo::QUIC_CAPABILITY_DATAGRAM | CServerInfo::QUIC_CAPABILITY_MAP_STREAM | CServerInfo::QUIC_CAPABILITY_RESUME | CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7;
@@ -659,10 +670,13 @@ bool ServerBrowserHttpParse(json_value *pJson, std::vector<CServerInfo> *pvServe
 					SetInfo.m_QuicCertificateSha256 = {};
 					SetInfo.m_QuicNextCertificateSha256 = {};
 					SetInfo.m_QuicIdentityFingerprint = {};
+					SetInfo.m_WebTransportCertificateSha256 = {};
+					SetInfo.m_WebTransportNextCertificateSha256 = {};
 					SetInfo.m_QuicPort = 0;
 					SetInfo.m_QuicCapabilities = 0;
 					SetInfo.m_QuicSharedPort = false;
 					SetInfo.m_HasQuicNextCertificateSha256 = false;
+					SetInfo.m_HasWebTransportNextCertificateSha256 = false;
 					SetInfo.m_HasQuicIdentityFingerprint = false;
 					SetInfo.m_QuicTrust = EModernTransportTrust::INVALID;
 					SetInfo.m_WebTransport = false;

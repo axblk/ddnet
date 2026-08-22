@@ -317,7 +317,6 @@ add_path {relpath(self.runner.data_dir, tmp_dir)}
 				"--tool=memcheck",
 				"--gen-suppressions=all",
 				"--suppressions={}".format(relpath(os.path.join(runner.repo_dir, "memcheck.supp"), self.tmp_dir)),
-				"--track-origins=yes",
 			]
 		self.name = name
 		self.num_clients = 0

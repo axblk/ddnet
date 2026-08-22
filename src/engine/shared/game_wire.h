@@ -156,7 +156,7 @@ namespace GameWire
 	bool EncodeResume(const CResumeView &Resume, std::vector<unsigned char> &vOut);
 	EDecodeResult DecodeResume(CByteView Payload, CResumeView &Resume);
 
-	bool EncodeDatagram(uint64_t Sequence, const std::vector<CByteView> &vMessages, std::vector<unsigned char> &vOut);
+	bool EncodeDatagram(uint64_t Sequence, const CByteView *pMessages, size_t NumMessages, std::vector<unsigned char> &vOut);
 	EDecodeResult DecodeDatagram(const unsigned char *pData, size_t Size, CDatagramView &Datagram);
 	bool NextDatagramMessage(CDatagramView &Datagram, CByteView &Message);
 }

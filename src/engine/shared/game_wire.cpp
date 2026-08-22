@@ -277,25 +277,31 @@ namespace GameWire
 		return EDecodeResult::OK;
 	}
 
-	bool EncodeDatagram(uint64_t Sequence, const std::vector<CByteView> &vMessages, std::vector<unsigned char> &vOut)
+	bool EncodeDatagram(uint64_t Sequence, const CByteView *pMessages, size_t NumMessages, std::vector<unsigned char> &vOut)
 	{
-		if(vMessages.empty() || vMessages.size() > MAX_DATAGRAM_MESSAGES)
+		// Written straight into the output and rolled back on failure, so a packet
+		// on the send path costs no allocation of its own.
+		const size_t Start = vOut.size();
+		auto Fail = [&]() {
+			vOut.resize(Start);
 			return false;
-		std::vector<unsigned char> vDatagram;
-		if(!EncodeVarInt(VERSION_MAJOR, vDatagram) ||
-			!EncodeVarInt(static_cast<uint64_t>(EDatagramType::MESSAGES), vDatagram) ||
-			!EncodeVarInt(Sequence, vDatagram) ||
-			!EncodeVarInt(vMessages.size(), vDatagram))
+		};
+		if(NumMessages == 0 || NumMessages > MAX_DATAGRAM_MESSAGES)
 			return false;
-		for(const CByteView Message : vMessages)
+		if(!EncodeVarInt(VERSION_MAJOR, vOut) ||
+			!EncodeVarInt(static_cast<uint64_t>(EDatagramType::MESSAGES), vOut) ||
+			!EncodeVarInt(Sequence, vOut) ||
+			!EncodeVarInt(NumMessages, vOut))
+			return Fail();
+		for(size_t i = 0; i < NumMessages; i++)
 		{
-			if(Message.m_Size == 0 || Message.m_Size > MAX_DATAGRAM_MESSAGE_SIZE || Message.m_pData == nullptr || !EncodeVarInt(Message.m_Size, vDatagram))
-				return false;
-			vDatagram.insert(vDatagram.end(), Message.m_pData, Message.m_pData + Message.m_Size);
+			const CByteView Message = pMessages[i];
+			if(Message.m_Size == 0 || Message.m_Size > MAX_DATAGRAM_MESSAGE_SIZE || Message.m_pData == nullptr || !EncodeVarInt(Message.m_Size, vOut))
+				return Fail();
+			vOut.insert(vOut.end(), Message.m_pData, Message.m_pData + Message.m_Size);
 		}
-		if(vDatagram.size() > MAX_DATAGRAM_SIZE)
-			return false;
-		vOut.insert(vOut.end(), vDatagram.begin(), vDatagram.end());
+		if(vOut.size() - Start > MAX_DATAGRAM_SIZE)
+			return Fail();
 		return true;
 	}
 

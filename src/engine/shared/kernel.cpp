@@ -92,6 +92,12 @@ public:
 		dbg_assert(pInfo != nullptr, "Interface '%s' not found", pName);
 		return pInfo->m_pInterface;
 	}
+
+	IInterface *TryGetInterfaceImpl(const char *pName) override
+	{
+		CInterfaceInfo *pInfo = FindInterfaceInfo(pName);
+		return pInfo == nullptr ? nullptr : pInfo->m_pInterface;
+	}
 };
 
 IKernel *IKernel::Create() { return new CKernel; }

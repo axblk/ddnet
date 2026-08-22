@@ -25,7 +25,6 @@ protected:
 
 	void SetUp() override
 	{
-		CNetBase::Init();
 		NETADDR BindAddress = {};
 		BindAddress.type = NETTYPE_IPV4;
 		do

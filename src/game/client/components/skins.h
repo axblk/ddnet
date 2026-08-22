@@ -3,15 +3,14 @@
 #ifndef GAME_CLIENT_COMPONENTS_SKINS_H
 #define GAME_CLIENT_COMPONENTS_SKINS_H
 
-#include <base/lock.h>
-
+#include <engine/client/asset_loader.h>
 #include <engine/shared/config.h>
-#include <engine/shared/jobs.h>
 
 #include <game/client/component.h>
 #include <game/client/skin.h>
 
 #include <chrono>
+#include <cstdint>
 #include <list>
 #include <optional>
 #include <set>
@@ -34,23 +33,18 @@ private:
 		CImageInfo m_InfoGrayscale;
 		CSkin::CSkinMetrics m_Metrics;
 		ColorRGBA m_BloodColor;
+		size_t m_OriginalWidth = 0;
+		size_t m_OriginalHeight = 0;
+		size_t m_ResizedWidth = 0;
+		size_t m_ResizedHeight = 0;
 	};
 
-	/**
-	 * An abstract job to load a skin from a source determined by the derived class.
-	 */
-	class CAbstractSkinLoadJob : public IJob
+	enum class ESkinDecodeSource
 	{
-	public:
-		CAbstractSkinLoadJob(CSkins *pSkins, const char *pName);
-		~CAbstractSkinLoadJob() override;
-
-		CSkinLoadData m_Data;
-		bool m_NotFound = false;
-
-	protected:
-		CSkins *m_pSkins;
-		char m_aName[MAX_SKIN_LENGTH];
+		NONE,
+		LOCAL,
+		DOWNLOAD_CACHE,
+		DOWNLOAD_RESPONSE,
 	};
 
 public:
@@ -86,7 +80,7 @@ public:
 			 */
 			PENDING,
 			/**
-			 * Skin is currently loading, iff @link m_pLoadJob @endlink is set.
+			 * Skin is currently loading from a local file, download cache or HTTP response.
 			 */
 			LOADING,
 			/**
@@ -135,7 +129,12 @@ public:
 
 		EState m_State = EState::UNLOADED;
 		std::unique_ptr<CSkin> m_pSkin = nullptr;
-		std::shared_ptr<CAbstractSkinLoadJob> m_pLoadJob = nullptr;
+		CImageResource m_LoadResource;
+		std::shared_ptr<CSkinLoadData> m_pLoadData = nullptr;
+		std::shared_ptr<IHttpRequest> m_pDownloadRequest = nullptr;
+		ESkinDecodeSource m_DecodeSource = ESkinDecodeSource::NONE;
+		bool m_DownloadRetried = false;
+		bool m_DownloadNotFound = false;
 
 		/**
 		 * The time when loading of this skin was first requested.
@@ -237,6 +236,7 @@ public:
 	void RefreshEventSkins();
 	void Refresh(TSkinLoadedCallback &&SkinLoadedCallback);
 	CSkinLoadingStats LoadingStats() const;
+	bool StartupAssetsLoaded() const;
 	CSkinList &SkinList();
 
 	const CSkinContainer *FindContainerOrNullptr(const char *pName);
@@ -266,34 +266,8 @@ private:
 		"pinky", "redbopp", "redstripe", "saddo", "toptri",
 		"twinbop", "twintri", "warpaint", "x_ninja", "x_spec"};
 
-	class CSkinLoadJob : public CAbstractSkinLoadJob
-	{
-	public:
-		CSkinLoadJob(CSkins *pSkins, const char *pName, int StorageType);
-
-	protected:
-		void Run() override;
-
-	private:
-		int m_StorageType;
-	};
-
-	class CSkinDownloadJob : public CAbstractSkinLoadJob
-	{
-	public:
-		CSkinDownloadJob(CSkins *pSkins, const char *pName);
-
-		bool Abort() override REQUIRES(!m_Lock);
-
-	protected:
-		void Run() override REQUIRES(!m_Lock);
-
-	private:
-		CLock m_Lock;
-		std::shared_ptr<IHttpRequest> m_pGetRequest GUARDED_BY(m_Lock);
-	};
-
 	std::unordered_map<std::string_view, std::unique_ptr<CSkinContainer>> m_Skins;
+	uint64_t m_Generation = 0;
 	std::optional<std::chrono::nanoseconds> m_ContainerUpdateTime;
 	/**
 	 * Sorted from most recently to least recently used. Must be kept synchronized with the skin containers.
@@ -307,9 +281,15 @@ private:
 	CSkin m_PlaceholderSkin;
 	char m_aEventSkinPrefix[MAX_SKIN_LENGTH];
 
-	bool LoadSkinData(const char *pName, CSkinLoadData &Data) const;
-	void LoadSkinFinish(CSkinContainer *pSkinContainer, const CSkinLoadData &Data);
+	static bool LoadSkinData(const char *pName, CImageInfo &Info, CSkinLoadData &Data, bool LogErrors);
+	bool LoadSkinFinish(CSkinContainer *pSkinContainer, const CSkinLoadData &Data);
 	void LoadSkinDirect(const char *pName);
+	void StartLocalSkinLoad(CSkinContainer *pSkinContainer);
+	void StartDownloadedSkinLoad(CSkinContainer *pSkinContainer);
+	void StartDownload(CSkinContainer *pSkinContainer, bool Force);
+	void StartSkinDecode(CSkinContainer *pSkinContainer, const char *pPath, int StorageType, ESkinDecodeSource Source);
+	void StartSkinDecode(CSkinContainer *pSkinContainer, std::vector<uint8_t> vData, const char *pContextName, ESkinDecodeSource Source);
+	void ResetSkinLoad(CSkinContainer *pSkinContainer);
 	const CSkinContainer *FindContainerImpl(const char *pName);
 	static int SkinScan(const char *pName, int IsDir, int StorageType, void *pUser);
 

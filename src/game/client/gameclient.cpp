@@ -98,6 +98,11 @@ const char *CGameClient::GetItemName(int Type) const { return m_NetObjHandler.Ge
 void CGameClient::OnConsoleInit()
 {
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
+	// At least as many as there are worker threads, so that none of them sits
+	// idle waiting for the main thread to hand out the next job, and a little
+	// more because a job alternates between reading a file and decoding it.
+	const size_t MaxConcurrentAssetJobs = std::clamp(m_pEngine->JobThreadCount() * 2, size_t{4}, size_t{16});
+	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs);
 	m_pClient = Kernel()->RequestInterface<IClient>();
 	m_pTextRender = Kernel()->RequestInterface<ITextRender>();
 	m_pSound = Kernel()->RequestInterface<ISound>();
@@ -296,7 +301,8 @@ void CGameClient::ForceUpdateConsoleRemoteCompletionSuggestions()
 
 void CGameClient::OnInit()
 {
-	const int64_t OnInitStart = time_get();
+	m_StartupStart = time_get_nanoseconds().count();
+	m_StartupAssetsStart = m_StartupStart;
 
 	Client()->SetLoadingCallback([this](IClient::ELoadingCallbackDetail Detail) {
 		const char *pTitle;
@@ -377,6 +383,7 @@ void CGameClient::OnInit()
 	const char *pLoadingMessageComponents = Localize("Initializing components");
 	const char *pLoadingMessageComponentsSpecial = Localize("Why are you slowmo replaying to read this?");
 	char aLoadingMessage[256];
+	StartLoadingCoreImages();
 
 	// init all components
 	int SkippedComps = 1;
@@ -399,26 +406,7 @@ void CGameClient::OnInit()
 		++CompCounter;
 	}
 
-	// setup load amount, load textures
-	const char *pLoadingMessageAssets = Localize("Initializing assets");
-	for(int i = 0; i < g_pData->m_NumImages; i++)
-	{
-		if(i == IMAGE_GAME)
-			LoadGameSkin(g_Config.m_ClAssetGame);
-		else if(i == IMAGE_EMOTICONS)
-			LoadEmoticonsSkin(g_Config.m_ClAssetEmoticons);
-		else if(i == IMAGE_PARTICLES)
-			LoadParticlesSkin(g_Config.m_ClAssetParticles);
-		else if(i == IMAGE_HUD)
-			LoadHudSkin(g_Config.m_ClAssetHud);
-		else if(i == IMAGE_EXTRAS)
-			LoadExtrasSkin(g_Config.m_ClAssetExtras);
-		else if(g_pData->m_aImages[i].m_pFilename[0] == '\0') // handle special null image without filename
-			g_pData->m_aImages[i].m_Id = IGraphics::CTextureHandle();
-		else
-			g_pData->m_aImages[i].m_Id = Graphics()->LoadTexture(g_pData->m_aImages[i].m_pFilename, IStorage::TYPE_ALL);
-		m_Menus.RenderLoading(pLoadingDDNetCaption, pLoadingMessageAssets, 1);
-	}
+	TryFinishLoadingCoreImages();
 
 	m_GameWorld.Init(Collision(), m_aTuningList, &m_MapBugs);
 	OnReset();
@@ -443,12 +431,21 @@ void CGameClient::OnInit()
 		pChecksum->m_aComponentsChecksum[i] = Size;
 	}
 
-	m_Menus.FinishLoading();
-	log_trace("gameclient", "initialization finished after %.2fms", (time_get() - OnInitStart) * 1000.0f / (float)time_freq());
+	if(m_vStartupImageLoads.empty())
+		FinishClientStartup();
 }
 
 void CGameClient::OnUpdate()
 {
+	m_AssetLoader.Update();
+	if(!m_vStartupImageLoads.empty())
+	{
+		TryFinishLoadingCoreImages();
+		if(!m_vStartupImageLoads.empty())
+			return;
+		FinishClientStartup();
+	}
+	UpdateAssetPackLoads();
 	HandleLanguageChanged();
 
 	CUIElementBase::Init(Ui()); // update static pointer because game and editor use separate UI
@@ -490,6 +487,7 @@ void CGameClient::OnUpdate()
 	{
 		pComponent->OnUpdate();
 	}
+	TryFinishStartupAssets();
 }
 
 void CGameClient::OnInput(const IInput::CEvent &Event)
@@ -764,6 +762,11 @@ void CGameClient::UpdatePositions()
 
 void CGameClient::OnRender()
 {
+	if(!m_vStartupImageLoads.empty())
+	{
+		m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Initializing assets"), 0, false);
+		return;
+	}
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
 	Graphics()->Clear(ClearColor.r, ClearColor.g, ClearColor.b);
 
@@ -1307,6 +1310,8 @@ void CGameClient::OnStateChange(int NewState, int OldState)
 
 void CGameClient::OnShutdown()
 {
+	++m_AssetGeneration;
+	m_AssetLoader.Shutdown();
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnShutdown();
 

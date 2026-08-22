@@ -33,31 +33,6 @@
 static constexpr float MARGIN = 10.0f;
 static constexpr const char *SCOREBOARD_CURSOR_BIND_NAME = "toggle_scoreboard_cursor";
 
-namespace
-{
-	const CMatchStanding *ReportStanding(const CMatchReport &Report, EMatchSubjectKind SubjectKind, int SubjectId)
-	{
-		for(const CMatchStanding &Standing : Report.m_vStandings)
-		{
-			if(Standing.m_SubjectKind == SubjectKind && Standing.m_SubjectId == SubjectId)
-				return &Standing;
-		}
-		return nullptr;
-	}
-
-	std::optional<int64_t> ReportMetric(const CMatchReport &Report, EMatchSubjectKind SubjectKind, int SubjectId, const char *pSuffix)
-	{
-		for(const CMatchMetric &Metric : Report.m_vMetrics)
-		{
-			const size_t Slash = Metric.m_MetricId.rfind('/');
-			if(Metric.m_SubjectKind == SubjectKind && Metric.m_SubjectId == SubjectId && Slash != std::string::npos && Metric.m_MetricId.compare(Slash + 1, std::string::npos, pSuffix) == 0)
-				return Metric.m_Value;
-		}
-		return std::nullopt;
-	}
-
-}
-
 void CScoreboard::CScoreboardPopupContext::Bind(CScoreboard *pScoreboard, const CRenderContext &Context, int ClientId, const char *pName, const char *pClan, bool IsLocal, bool IsSpectating)
 {
 	m_pScoreboard = pScoreboard;
@@ -1080,8 +1055,7 @@ bool CScoreboard::RenderMatchReport(const CStoredMatch &Stored, CUIRect Screen)
 	const float ActionsHeight = ActionRows * 20.0f + (ActionRows - 1) * 4.0f;
 	const float Height = 68.0f + (RowsPerColumn + 1) * RowHeight + 29.0f + ActionsHeight;
 	CUIRect Panel = {(Screen.w - Width) / 2.0f, 45.0f, Width, std::min(Height, 545.0f)};
-	GameClient()->m_Menus.RenderBackdropRegion(Panel);
-	Panel.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.65f), IGraphics::CORNER_ALL, 7.5f);
+	GameClient()->m_Menus.DrawSurface(Panel, ColorRGBA(0.0f, 0.0f, 0.0f, 0.65f), IGraphics::CORNER_ALL, 7.5f);
 	Panel.Margin(10.0f, &Panel);
 
 	const CMatchParticipant *pLocalParticipant = nullptr;
@@ -1205,7 +1179,7 @@ bool CScoreboard::RenderMatchReport(const CStoredMatch &Stored, CUIRect Screen)
 				}
 				else if(!Summary.empty())
 					Summary += ", ";
-				Summary += std::string(MatchMetricDisplayName(Metric.m_MetricId, Report.m_ModeSchemaVersion)) + ": " + std::to_string(Metric.m_Value);
+				Summary += MatchMetricDisplayName(Metric.m_MetricId, Report.m_ModeSchemaVersion) + ": " + std::to_string(Metric.m_Value);
 				if(Summary.size() > 220)
 					break;
 			}

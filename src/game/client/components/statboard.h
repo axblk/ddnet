@@ -17,6 +17,11 @@ private:
 	int64_t m_ScreenshotTime;
 	static void ConKeyStats(IConsole::IResult *pResult, void *pUserData);
 	void RenderGlobalStats(const CRenderContext &Context);
+	// Bound on the rows the live panel draws, so a full server cannot push the
+	// statboard off the screen.
+	static constexpr int MAX_LIVE_ROWS = 16;
+	float LiveMatchPanelHeight(const class CStoredMatch &Live) const;
+	void RenderLiveMatchPanel(const class CStoredMatch &Live, float X, float Y, float Width);
 	void AutoStatScreenshot();
 	void AutoStatCSV();
 

@@ -15,6 +15,7 @@
 #include <base/bezier.h>
 #include <base/fs.h>
 
+#include <engine/client/asset_loader.h>
 #include <engine/editor.h>
 #include <engine/graphics.h>
 
@@ -111,6 +112,7 @@ class CEditor : public IEditor
 	class IConfigManager *m_pConfigManager = nullptr;
 	class CConfig *m_pConfig = nullptr;
 	class IEngine *m_pEngine = nullptr;
+	CAssetLoader m_AssetLoader;
 	class IGraphics *m_pGraphics = nullptr;
 	class ITextRender *m_pTextRender = nullptr;
 	class ISound *m_pSound = nullptr;
@@ -151,6 +153,13 @@ public:
 	class IConfigManager *ConfigManager() const { return m_pConfigManager; }
 	class CConfig *Config() const { return m_pConfig; }
 	class IEngine *Engine() const { return m_pEngine; }
+	/**
+	 * The editor loads its assets through a loader of its own rather than the
+	 * game client's. The client stops updating while the editor is open, so a
+	 * shared loader would never be pumped, and an editor that is reading a
+	 * directory of images has nothing to do with what the client is loading.
+	 */
+	CAssetLoader &AssetLoader() { return m_AssetLoader; }
 	class IGraphics *Graphics() const { return m_pGraphics; }
 	class ISound *Sound() const { return m_pSound; }
 	class ITextRender *TextRender() const { return m_pTextRender; }
@@ -187,6 +196,8 @@ public:
 #define REGISTER_QUICK_ACTION(name, text, callback, disabled, active, button_color, description) CQuickAction m_QuickAction##name;
 #include <game/editor/quick_actions.h>
 #undef REGISTER_QUICK_ACTION
+
+	~CEditor() override { m_AssetLoader.Shutdown(); }
 
 	CEditor() :
 #define REGISTER_QUICK_ACTION(name, text, callback, disabled, active, button_color, description) m_QuickAction##name(text, description, callback, disabled, active, button_color),

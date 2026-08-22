@@ -928,6 +928,13 @@ public:
 	int m_MapBestTimeMillis;
 	char m_aMapDescription[512];
 
+	/**
+	 * Whether the assets the client waits for before it is fully started are
+	 * still loading. Components that pace themselves to keep the frame rate
+	 * smooth have nothing to keep smooth yet while this holds.
+	 */
+	bool StartupAssetsPending() const { return m_StartupAssetsStart != 0; }
+
 private:
 	std::unique_ptr<IMap> m_pMap;
 

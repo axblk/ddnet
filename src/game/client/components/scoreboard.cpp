@@ -109,7 +109,7 @@ void CScoreboard::OnConsoleInit()
 void CScoreboard::OnInit()
 {
 	++m_AssetGeneration;
-	m_DeadTeeResource = GameClient()->AssetLoader().LoadImage(Storage(), "deadtee.png", IStorage::TYPE_ALL, ASSET_OWNER_SCOREBOARD, m_AssetGeneration);
+	m_DeadTeeResource = GameClient()->AssetLoader().LoadImageFile(Storage(), "deadtee.png", IStorage::TYPE_ALL, ASSET_OWNER_SCOREBOARD, m_AssetGeneration);
 }
 
 void CScoreboard::OnUpdate()

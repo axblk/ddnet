@@ -29,6 +29,7 @@ class CEngine : public IEngine
 	char m_aAppName[256];
 
 	CJobPool m_JobPool;
+	size_t m_JobThreadCount = 0;
 
 	static void Con_DbgLognetwork(IConsole::IResult *pResult, void *pUserData)
 	{
@@ -78,11 +79,11 @@ public:
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 		// Make sure we don't use more threads than allowed in total (see PTHREAD_POOL_SIZE in Emscripten.toolchain)
 		// otherwise starting more threads may lead to deadlocks as the threads will simply not start.
-		const size_t ThreadCount = 4;
+		m_JobThreadCount = 4;
 #else
-		const size_t ThreadCount = std::max(4, (int)std::thread::hardware_concurrency()) - 2;
+		m_JobThreadCount = std::max(4, (int)std::thread::hardware_concurrency()) - 2;
 #endif
-		m_JobPool.Init(ThreadCount);
+		m_JobPool.Init(m_JobThreadCount);
 
 		m_Logging = false;
 	}
@@ -106,6 +107,11 @@ public:
 	void AddJob(std::shared_ptr<IJob> pJob) override
 	{
 		m_JobPool.Add(std::move(pJob));
+	}
+
+	size_t JobThreadCount() const override
+	{
+		return m_JobThreadCount;
 	}
 
 	void ShutdownJobs() override

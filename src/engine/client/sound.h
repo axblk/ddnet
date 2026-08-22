@@ -62,6 +62,8 @@ struct CVoice
 
 class CSound : public IEngineSound
 {
+	friend class CSoundTestAccess;
+
 	enum
 	{
 		NUM_SAMPLES = 512,
@@ -111,7 +113,7 @@ class CSound : public IEngineSound
 
 	// pContextName used for error
 	bool DecodeOpus(CSample &Sample, const void *pData, unsigned DataSize, const char *pContextName) const;
-	bool DecodeWV(CSample &Sample, const void *pData, unsigned DataSize, const char *pContextName) const;
+	bool DecodeWV(CSample &Sample, const void *pData, unsigned DataSize, const char *pContextName) const NO_THREAD_SAFETY_ANALYSIS;
 
 	void UpdateVolume();
 

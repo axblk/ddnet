@@ -2,44 +2,31 @@
 
 #include <base/log.h>
 
-#include <engine/engine.h>
+#include <engine/client/asset_loader.h>
 #include <engine/gfx/image_manipulation.h>
 #include <engine/http.h>
 #include <engine/storage.h>
 
-CCommunityIcons::CAbstractCommunityIconJob::CAbstractCommunityIconJob(CCommunityIcons *pCommunityIcons, const char *pCommunityId, int StorageType) :
-	m_pCommunityIcons(pCommunityIcons),
-	m_StorageType(StorageType)
+#include <game/client/gameclient.h>
+
+#include <string>
+
+namespace
+{
+	constexpr int ASSET_OWNER_COMMUNITY_ICONS = 4;
+}
+
+CCommunityIcons::CCommunityIconDownloadJob::CCommunityIconDownloadJob(CCommunityIcons *pCommunityIcons, const char *pCommunityId, const char *pUrl, const SHA256_DIGEST &Sha256, uint64_t Generation) :
+	m_Sha256(Sha256),
+	m_Generation(Generation)
 {
 	str_copy(m_aCommunityId, pCommunityId);
 	str_format(m_aPath, sizeof(m_aPath), "communityicons/%s.png", pCommunityId);
-}
-
-CCommunityIcons::CCommunityIconDownloadJob::CCommunityIconDownloadJob(CCommunityIcons *pCommunityIcons, const char *pCommunityId, const char *pUrl, const SHA256_DIGEST &Sha256) :
-	CAbstractCommunityIconJob(pCommunityIcons, pCommunityId, IStorage::TYPE_SAVE)
-{
 	m_pHttpRequest = CreateHttpRequest(pUrl);
 	m_pHttpRequest->WriteToFile(pCommunityIcons->Storage(), m_aPath, IStorage::TYPE_SAVE);
-	m_pHttpRequest->ExpectSha256(Sha256);
+	m_pHttpRequest->ExpectSha256(m_Sha256);
 	m_pHttpRequest->Timeout(CTimeout{0, 0, 0, 0});
 	m_pHttpRequest->LogProgress(HTTPLOG::FAILURE);
-}
-
-void CCommunityIcons::CCommunityIconLoadJob::Run()
-{
-	m_Success = m_pCommunityIcons->LoadFile(m_aPath, m_StorageType, m_ImageInfo, m_ImageInfoGrayscale, m_Sha256);
-}
-
-CCommunityIcons::CCommunityIconLoadJob::CCommunityIconLoadJob(CCommunityIcons *pCommunityIcons, const char *pCommunityId, int StorageType) :
-	CAbstractCommunityIconJob(pCommunityIcons, pCommunityId, StorageType)
-{
-	Abortable(true);
-}
-
-CCommunityIcons::CCommunityIconLoadJob::~CCommunityIconLoadJob()
-{
-	m_ImageInfo.Free();
-	m_ImageInfoGrayscale.Free();
 }
 
 int CCommunityIcons::FileScan(const char *pName, int IsDir, int DirType, void *pUser)
@@ -52,9 +39,7 @@ int CCommunityIcons::FileScan(const char *pName, int IsDir, int DirType, void *p
 	char aCommunityId[CServerInfo::MAX_COMMUNITY_ID_LENGTH];
 	str_truncate(aCommunityId, sizeof(aCommunityId), pName, str_length(pName) - str_length(pExtension));
 
-	std::shared_ptr<CCommunityIconLoadJob> pJob = std::make_shared<CCommunityIconLoadJob>(pSelf, aCommunityId, DirType);
-	pSelf->Engine()->AddJob(pJob);
-	pSelf->m_CommunityIconLoadJobs.push_back(pJob);
+	pSelf->StartLoad(aCommunityId, DirType);
 	return 0;
 }
 
@@ -66,28 +51,29 @@ const CCommunityIcon *CCommunityIcons::Find(const char *pCommunityId)
 	return Icon == m_vCommunityIcons.end() ? nullptr : &(*Icon);
 }
 
-bool CCommunityIcons::LoadFile(const char *pPath, int DirType, CImageInfo &Info, CImageInfo &InfoGrayscale, SHA256_DIGEST &Sha256)
+void CCommunityIcons::StartLoad(const char *pCommunityId, int StorageType)
 {
-	if(!Graphics()->LoadPng(Info, pPath, DirType))
-	{
-		log_error("menus/browser", "Failed to load community icon from '%s'", pPath);
-		return false;
-	}
-	if(Info.m_Format != CImageInfo::FORMAT_RGBA)
-	{
-		Info.Free();
-		log_error("menus/browser", "Failed to load community icon from '%s': must be an RGBA image", pPath);
-		return false;
-	}
-	if(!Storage()->CalculateHashes(pPath, DirType, &Sha256))
-	{
-		Info.Free();
-		log_error("menus/browser", "Failed to load community icon from '%s': could not calculate hash", pPath);
-		return false;
-	}
-	InfoGrayscale = Info.DeepCopy();
-	ConvertToGrayscale(InfoGrayscale);
-	return true;
+	char aPath[IO_MAX_PATH_LENGTH];
+	str_format(aPath, sizeof(aPath), "communityicons/%s.png", pCommunityId);
+	auto pResult = std::make_shared<CCommunityIconLoadResult>();
+	IStorage *pStorage = Storage();
+	const std::string Path(aPath);
+	CImageResource Resource = GameClient()->AssetLoader().LoadImage(pStorage, aPath, StorageType, ASSET_OWNER_COMMUNITY_ICONS, m_Generation, [pResult, pStorage, Path, StorageType](CImageInfo &Info) {
+		if(Info.m_Format != CImageInfo::FORMAT_RGBA)
+			return false;
+		if(!pStorage->CalculateHashes(Path.c_str(), StorageType, &pResult->m_Sha256))
+			return false;
+		pResult->m_ImageInfoGrayscale = Info.DeepCopy();
+		ConvertToGrayscale(pResult->m_ImageInfoGrayscale);
+		return true;
+	});
+
+	CCommunityIconLoad Load;
+	str_copy(Load.m_aCommunityId, pCommunityId);
+	Load.m_Generation = m_Generation;
+	Load.m_Resource = std::move(Resource);
+	Load.m_pResult = std::move(pResult);
+	m_CommunityIconLoadJobs.push_back(std::move(Load));
 }
 
 void CCommunityIcons::LoadFinish(const char *pCommunityId, CImageInfo &Info, CImageInfo &InfoGrayscale, const SHA256_DIGEST &Sha256)
@@ -97,6 +83,13 @@ void CCommunityIcons::LoadFinish(const char *pCommunityId, CImageInfo &Info, CIm
 	CommunityIcon.m_Sha256 = Sha256;
 	CommunityIcon.m_OrgTexture = Graphics()->LoadTextureRawMove(Info, 0, pCommunityId);
 	CommunityIcon.m_GreyTexture = Graphics()->LoadTextureRawMove(InfoGrayscale, 0, pCommunityId);
+	if(!CommunityIcon.m_OrgTexture.IsValid() || !CommunityIcon.m_GreyTexture.IsValid())
+	{
+		Graphics()->UnloadTexture(&CommunityIcon.m_OrgTexture);
+		Graphics()->UnloadTexture(&CommunityIcon.m_GreyTexture);
+		log_error("menus/browser", "Failed to create textures for community icon '%s'", pCommunityId);
+		return;
+	}
 
 	auto ExistingIcon = std::find_if(m_vCommunityIcons.begin(), m_vCommunityIcons.end(), [pCommunityId](const CCommunityIcon &Element) {
 		return str_comp(Element.m_aCommunityId, pCommunityId) == 0;
@@ -131,12 +124,17 @@ void CCommunityIcons::Render(const CCommunityIcon *pIcon, CUIRect Rect, bool Act
 
 void CCommunityIcons::Load()
 {
-	m_vCommunityIcons.clear();
+	++m_Generation;
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_COMMUNITY_ICONS, m_Generation);
+	m_CommunityIconLoadJobs.clear();
+	m_CommunityIconDownloadJobs.clear();
 	Storage()->ListDirectory(IStorage::TYPE_ALL, "communityicons", FileScan, this);
 }
 
 void CCommunityIcons::Shutdown()
 {
+	++m_Generation;
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_COMMUNITY_ICONS, m_Generation);
 	m_CommunityIconLoadJobs.clear();
 	m_CommunityIconDownloadJobs.clear();
 }
@@ -146,13 +144,17 @@ void CCommunityIcons::Update()
 	// Update load jobs (icon is loaded from existing file)
 	if(!m_CommunityIconLoadJobs.empty())
 	{
-		std::shared_ptr<CCommunityIconLoadJob> pJob = m_CommunityIconLoadJobs.front();
-		if(pJob->Done())
+		CCommunityIconLoad &Load = m_CommunityIconLoadJobs.front();
+		CImageResource &Resource = Load.m_Resource;
+		if(Resource.IsFinished())
 		{
-			if(pJob->State() == IJob::STATE_DONE && pJob->Success())
+			if(Load.m_Generation == m_Generation && Resource.IsReady(m_Generation))
 			{
-				LoadFinish(pJob->CommunityId(), pJob->ImageInfo(), pJob->ImageInfoGrayscale(), pJob->Sha256());
+				CImageInfo Info = Resource.TakeImage();
+				LoadFinish(Load.m_aCommunityId, Info, Load.m_pResult->m_ImageInfoGrayscale, Load.m_pResult->m_Sha256);
 			}
+			else if(Load.m_Generation == m_Generation && Resource.IsFailed(m_Generation))
+				log_error("menus/browser", "Failed to load community icon from '%s'", Resource.Path());
 			m_CommunityIconLoadJobs.pop_front();
 		}
 
@@ -167,12 +169,8 @@ void CCommunityIcons::Update()
 		std::shared_ptr<CCommunityIconDownloadJob> pJob = m_CommunityIconDownloadJobs.front();
 		if(pJob->HttpRequest()->Done())
 		{
-			if(pJob->HttpRequest()->State() == EHttpState::DONE)
-			{
-				std::shared_ptr<CCommunityIconLoadJob> pLoadJob = std::make_shared<CCommunityIconLoadJob>(this, pJob->CommunityId(), IStorage::TYPE_SAVE);
-				Engine()->AddJob(pLoadJob);
-				m_CommunityIconLoadJobs.push_back(pLoadJob);
-			}
+			if(pJob->HttpRequest()->State() == EHttpState::DONE && pJob->Generation() == m_Generation)
+				StartLoad(pJob->CommunityId(), IStorage::TYPE_SAVE);
 			m_CommunityIconDownloadJobs.pop_front();
 		}
 	}
@@ -211,7 +209,7 @@ void CCommunityIcons::Update()
 		});
 		if(ExistingDownload == m_CommunityIconDownloadJobs.end() && (ExistingIcon == m_vCommunityIcons.end() || ExistingIcon->m_Sha256 != Community.IconSha256().value()))
 		{
-			std::shared_ptr<CCommunityIconDownloadJob> pJob = std::make_shared<CCommunityIconDownloadJob>(this, Community.Id(), Community.IconUrl(), Community.IconSha256().value());
+			std::shared_ptr<CCommunityIconDownloadJob> pJob = std::make_shared<CCommunityIconDownloadJob>(this, Community.Id(), Community.IconUrl(), Community.IconSha256().value(), m_Generation);
 			Http()->Run(pJob->HttpRequest());
 			m_CommunityIconDownloadJobs.push_back(pJob);
 		}

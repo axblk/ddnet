@@ -8,6 +8,7 @@
 #include <base/types.h>
 #include <base/vmath.h>
 
+#include <engine/client/asset_loader.h>
 #include <engine/console.h>
 #include <engine/demo.h>
 #include <engine/friends.h>
@@ -27,8 +28,11 @@
 #include <game/voting.h>
 
 #include <chrono>
+#include <memory>
 #include <optional>
 #include <vector>
+
+class CImageInfo;
 
 class CMenus : public CComponent
 {
@@ -70,9 +74,11 @@ private:
 
 	// menus_settings_assets.cpp
 public:
+	bool StartupAssetsLoaded() const;
 	struct SCustomItem
 	{
 		IGraphics::CTextureHandle m_RenderTexture;
+		std::vector<CImageResource> m_vLoadResources;
 
 		char m_aName[50];
 
@@ -84,6 +90,7 @@ public:
 		struct SEntitiesImage
 		{
 			IGraphics::CTextureHandle m_Texture;
+			std::vector<CImageResource> m_vLoadResources;
 		};
 		SEntitiesImage m_aImages[MAP_IMAGE_MOD_TYPE_COUNT];
 	};
@@ -115,6 +122,8 @@ protected:
 	std::vector<SCustomParticle> m_vParticlesList;
 	std::vector<SCustomHud> m_vHudList;
 	std::vector<SCustomExtras> m_vExtrasList;
+	uint64_t m_AssetPreviewGeneration = 1;
+	void FinishAssetPreviewLoads();
 
 	bool m_IsInit = false;
 
@@ -177,13 +186,18 @@ protected:
 	// images
 	struct CMenuImage
 	{
-		char m_aName[64];
+		char m_aName[64] = {};
 		IGraphics::CTextureHandle m_OrgTexture;
 		IGraphics::CTextureHandle m_GreyTexture;
+		CImageResource m_Resource;
+		std::shared_ptr<CImageInfo> m_pGreyImage;
 	};
 	std::vector<CMenuImage> m_vMenuImages;
+	CImageResource m_BlobResource;
+	uint64_t m_AssetGeneration = 0;
 	static int MenuImageScan(const char *pName, int IsDir, int DirType, void *pUser);
 	const CMenuImage *FindMenuImage(const char *pName);
+	void FinishImageLoads();
 
 	// loading
 	class CLoadingState
@@ -659,8 +673,8 @@ public:
 	CMenus();
 	int Sizeof() const override { return sizeof(*this); }
 
-	void RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress);
-	void RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter);
+	void RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress, bool UpdateAndSwap = true);
+	void RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter, bool UpdateAndSwap = true);
 	void FinishLoading();
 
 	bool IsInit() const { return m_IsInit; }
@@ -670,6 +684,7 @@ public:
 
 	void OnInterfacesInit(CGameClient *pClient) override;
 	void OnInit() override;
+	void OnUpdate() override;
 
 	void OnStateChange(int NewState, int OldState) override;
 	void OnWindowResize() override;

@@ -1726,6 +1726,7 @@ void CGameClient::OnNewSnapshot(bool DummySwapped)
 {
 	auto &&Evolve = [this](CNetObj_Character *pCharacter, int Tick) {
 		CWorldCore TempWorld;
+		TempWorld.m_PhysicsRules = PredictedPhysicsRules();
 		CCharacterCore TempCore = CCharacterCore();
 		CTeamsCore TempTeams = CTeamsCore();
 		TempCore.Init(&TempWorld, Collision(), &TempTeams);
@@ -3516,10 +3517,17 @@ void CGameClient::UpdateLocalTuning()
 	}
 }
 
+CPhysicsRules CGameClient::PredictedPhysicsRules() const
+{
+	// TODO: the server does not send its physics, so this assumes it runs the local config
+	return m_GameInfo.m_PredictDDRace ? CPhysicsRules::DDNetFromConfig() : CPhysicsRules();
+}
+
 void CGameClient::UpdatePrediction()
 {
 	m_GameWorld.m_WorldConfig.m_IsVanilla = m_GameInfo.m_PredictVanilla;
 	m_GameWorld.m_WorldConfig.m_IsDDRace = m_GameInfo.m_PredictDDRace;
+	m_GameWorld.m_Core.m_PhysicsRules = PredictedPhysicsRules();
 	m_GameWorld.m_WorldConfig.m_IsFNG = m_GameInfo.m_PredictFNG;
 	m_GameWorld.m_WorldConfig.m_PredictDDRace = m_GameInfo.m_PredictDDRace;
 	m_GameWorld.m_WorldConfig.m_PredictTiles = m_GameInfo.m_PredictDDRace && m_GameInfo.m_PredictDDRaceTiles;

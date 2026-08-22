@@ -227,7 +227,7 @@ void CPlayers::RenderHookCollLine(
 
 	// Check, if the player is outside the screen-rect
 	// If the map contains hook teleports, we are out of luck since we don't know if it will enter the screen at any point.
-	if(!Collision()->HasHookTeleIns())
+	if(!Collision()->HasHookTeleIns(GameClient()->m_GameInfo.m_PredictDDRace && g_Config.m_SvOldTeleportHook))
 	{
 		const float MaxHookReach = HookLength + HookFireSpeed;
 
@@ -286,7 +286,7 @@ void CPlayers::RenderHookCollLine(
 	std::optional<IGraphics::CLineItem> HookTipLineSegment;
 	for(HookTick = 0; HookTick < MaxHookTicks; ++HookTick)
 	{
-		int Tele;
+		int Tele = 0;
 		vec2 HitPos, IntersectedPlayerPosition;
 		vec2 SegmentEndPos = SegmentStartPos + QuantizedDirection * HookFireSpeed;
 
@@ -298,7 +298,7 @@ void CPlayers::RenderHookCollLine(
 			{
 				vec2 RetractingHookEndPos = BasePos + normalize(SegmentEndPos - BasePos) * HookLength;
 				// you can't hook a player, if the hook is behind solids, however you miss the solids as well
-				int Hit = Collision()->IntersectLineTeleHook(SegmentStartPos, RetractingHookEndPos, &HitPos, nullptr, &Tele);
+				int Hit = GameClient()->m_GameInfo.m_PredictDDRace ? Collision()->IntersectLineTeleHook(SegmentStartPos, RetractingHookEndPos, &HitPos, nullptr, &Tele, g_Config.m_SvOldTeleportHook) : Collision()->IntersectLine(SegmentStartPos, RetractingHookEndPos, &HitPos, nullptr);
 
 				if(GameClient()->IntersectCharacter(SegmentStartPos, HitPos, RetractingHookEndPos, ClientId, &IntersectedPlayerPosition) != -1)
 				{
@@ -328,7 +328,7 @@ void CPlayers::RenderHookCollLine(
 		}
 
 		// check for map collisions
-		int Hit = Collision()->IntersectLineTeleHook(SegmentStartPos, SegmentEndPos, &HitPos, nullptr, &Tele);
+		int Hit = GameClient()->m_GameInfo.m_PredictDDRace ? Collision()->IntersectLineTeleHook(SegmentStartPos, SegmentEndPos, &HitPos, nullptr, &Tele, g_Config.m_SvOldTeleportHook) : Collision()->IntersectLine(SegmentStartPos, SegmentEndPos, &HitPos, nullptr);
 
 		// check if we intersect a player
 		if(GameClient()->IntersectCharacter(SegmentStartPos, HitPos, SegmentEndPos, ClientId, &IntersectedPlayerPosition) != -1)

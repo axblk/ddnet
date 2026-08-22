@@ -4,11 +4,12 @@
 #define GAME_SERVER_ENTITY_H
 
 #include "gameworld.h"
-#include "save.h"
 
 #include <base/vmath.h>
 
 #include <game/alloc.h>
+
+#include <optional>
 
 class CCollision;
 class CGameContext;
@@ -43,6 +44,8 @@ protected:
 	/* State */
 	bool m_MarkedForDestroy;
 
+	CGameContext *GameServer() { return m_pGameWorld->GameServer(); }
+
 public: // TODO: Maybe make protected
 	/*
 		Variable: m_Pos
@@ -66,13 +69,11 @@ public: // TODO: Maybe make protected
 	CTuningParams *TuningList() { return GameWorld()->TuningList(); }
 	CTuningParams *GetTuning(int i) { return GameWorld()->GetTuning(i); }
 	class CConfig *Config() { return m_pGameWorld->Config(); }
-	class CGameContext *GameServer() { return m_pGameWorld->GameServer(); }
 	class IServer *Server() { return m_pGameWorld->Server(); }
 	CCollision *Collision() { return m_pCCollision; }
 
 	/* Getters */
 	CEntity *TypeNext() { return m_pNextTypeEntity; }
-	CEntity *TypePrev() { return m_pPrevTypeEntity; }
 	const vec2 &GetPos() const { return m_Pos; }
 	float GetProximityRadius() const { return m_ProximityRadius; }
 
@@ -134,15 +135,6 @@ public: // TODO: Maybe make protected
 	virtual void SwapClients(int Client1, int Client2) {}
 
 	/*
-		Function: BlocksSave
-			Called to check if a team can be saved
-
-		Arguments:
-			ClientId - Client ID
-	*/
-	virtual ESaveResult BlocksSave(int ClientId) { return ESaveResult::SUCCESS; }
-
-	/*
 		Function GetOwnerId
 		Returns:
 			ClientId of the initiator from this entity. -1 created by map.
@@ -172,8 +164,6 @@ public: // TODO: Maybe make protected
 
 	bool GameLayerClipped(vec2 CheckPos);
 	virtual bool CanCollide(int ClientId) { return true; }
-
-	// DDRace
 
 	bool GetNearestAirPos(vec2 Pos, vec2 PrevPos, vec2 *pOutPos);
 	bool GetNearestAirPosPlayer(vec2 PlayerPos, vec2 *pOutPos);

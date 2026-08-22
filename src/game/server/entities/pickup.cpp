@@ -26,7 +26,7 @@ CPickup::CPickup(CGameWorld *pGameWorld, int Type, int SubType, int Layer, int N
 	m_Flags = Flags;
 	m_RespawnSound = -1;
 	const int SpawnDelay = GameServer()->GameHost().Controller()->PickupInitialSpawnDelaySeconds(m_Type, m_Subtype);
-	m_SpawnTick = SpawnDelay > 0 ? Server()->Tick() + Server()->TickSpeed() * SpawnDelay : -1;
+	m_SpawnTick = SpawnDelay > 0 ? GameWorld()->GameTick() + GameWorld()->GameTickSpeed() * SpawnDelay : -1;
 
 	GameWorld()->InsertEntity(this);
 }
@@ -41,7 +41,7 @@ void CPickup::Tick()
 	Move();
 	if(m_SpawnTick != -1)
 	{
-		if(Server()->Tick() > m_SpawnTick)
+		if(GameWorld()->GameTick() > m_SpawnTick)
 		{
 			m_SpawnTick = -1;
 			if(m_RespawnSound >= 0)
@@ -72,7 +72,7 @@ void CPickup::Tick()
 		GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "game", aBuf);
 		m_RespawnSound = Result.m_RespawnSound;
 		if(Result.m_RespawnSeconds >= 0)
-			m_SpawnTick = Server()->Tick() + Server()->TickSpeed() * Result.m_RespawnSeconds;
+			m_SpawnTick = GameWorld()->GameTick() + GameWorld()->GameTickSpeed() * Result.m_RespawnSeconds;
 		break;
 	}
 }
@@ -85,7 +85,7 @@ void CPickup::TickPaused()
 
 void CPickup::Snap(int SnappingClient)
 {
-	if(!IsActive() || NetworkClipped(SnappingClient) || !GetId().has_value())
+	if(!IsActive() || NetworkClipped(SnappingClient) || GetId() < 0)
 		return;
 
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
@@ -98,19 +98,19 @@ void CPickup::Snap(int SnappingClient)
 		if(SnappingClient != SERVER_DEMO_CLIENT && (GameServer()->m_apPlayers[SnappingClient]->GetTeam() == TEAM_SPECTATORS || GameServer()->m_apPlayers[SnappingClient]->IsPaused()) && GameServer()->m_apPlayers[SnappingClient]->SpectatorId() != SPEC_FREEVIEW)
 			pChar = GameServer()->GetPlayerChar(GameServer()->m_apPlayers[SnappingClient]->SpectatorId());
 
-		int Tick = (Server()->Tick() % Server()->TickSpeed()) % 11;
+		int Tick = (GameWorld()->GameTick() % GameWorld()->GameTickSpeed()) % 11;
 		if(pChar && pChar->IsAlive() && m_Layer == LAYER_SWITCH && m_Number > 0 && !Switchers()[m_Number].m_aStatus[pChar->Team()] && !Tick)
 			return;
 	}
 
-	GameServer()->SnapPickup(CSnapContext(SnappingClientVersion, Sixup, SnappingClient), GetId().value(), m_Pos, m_Type, m_Subtype, m_Number, m_Flags);
+	GameServer()->SnapPickup(CSnapContext(SnappingClientVersion, Sixup, SnappingClient), GetId(), m_Pos, m_Type, m_Subtype, m_Number, m_Flags);
 }
 
 void CPickup::Move()
 {
-	if(Server()->Tick() % (int)(Server()->TickSpeed() * 0.15f) == 0)
+	if(GameWorld()->GameTick() % (int)(GameWorld()->GameTickSpeed() * 0.15f) == 0)
 	{
-		GameServer()->Collision()->MoverSpeed(m_Pos.x, m_Pos.y, &m_Core);
+		Collision()->MoverSpeed(m_Pos.x, m_Pos.y, &m_Core);
 		m_Pos += m_Core;
 	}
 }

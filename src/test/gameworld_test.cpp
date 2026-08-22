@@ -1854,8 +1854,8 @@ TEST_F(GameWorld, EntitySnapshotFormatsAreModeOwned)
 	SelectGameMode("vanilla.dm");
 	ASSERT_NE(GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1), nullptr);
 	auto *pProjectile = new CProjectile(&GameServer()->m_World, WEAPON_GUN, -1, vec2(64.0f, 96.0f), vec2(1.0f, 0.0f), 100, false, false, -1, vec2(1.0f, 0.0f));
-	ASSERT_TRUE(pProjectile->GetId().has_value()); // NOLINT(clang-analyzer-unix.Malloc)
-	const int ProjectileId = pProjectile->GetId().value();
+	ASSERT_TRUE(pProjectile->GetId() >= 0); // NOLINT(clang-analyzer-unix.Malloc)
+	const int ProjectileId = pProjectile->GetId();
 
 	const int PreviousClientState = m_pServer->m_aClients[ClientId].m_State;
 	const int PreviousClientVersion = m_pServer->m_aClients[ClientId].m_DDNetVersion;
@@ -1892,8 +1892,8 @@ TEST_F(GameWorld, EntitySnapshotFormatsAreModeOwned)
 	SelectGameMode("mod");
 	ASSERT_NE(GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1), nullptr);
 	pProjectile = new CProjectile(&GameServer()->m_World, WEAPON_GUN, -1, vec2(64.0f, 96.0f), vec2(1.0f, 0.0f), 100, false, false, -1, vec2(1.0f, 0.0f));
-	ASSERT_TRUE(pProjectile->GetId().has_value());
-	const int RaceProjectileId = pProjectile->GetId().value();
+	ASSERT_TRUE(pProjectile->GetId() >= 0);
+	const int RaceProjectileId = pProjectile->GetId();
 	m_pServer->SetClientDDNetVersion(ClientId, VERSION_DDNET_ENTITY_NETOBJS);
 	m_pServer->m_SnapshotBuilder.Init();
 	GameServer()->SnapLaserObject(SnapContext, LaserId, vec2(32.0f, 32.0f), vec2(64.0f, 32.0f), 1);

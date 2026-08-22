@@ -37,7 +37,7 @@ CProjectile::CProjectile(
 	m_OwnerTeam = Owner >= 0 && Owner < MAX_CLIENTS && GameServer()->m_apPlayers[Owner] ? GameServer()->m_apPlayers[Owner]->GetTeam() : TEAM_SPECTATORS;
 	m_OwnerDetached = false;
 	m_SoundImpact = SoundImpact;
-	m_StartTick = Server()->Tick();
+	m_StartTick = GameWorld()->GameTick();
 	m_Explosive = Explosive;
 
 	m_Layer = Layer;
@@ -105,13 +105,13 @@ vec2 CProjectile::GetPos(float Time)
 
 void CProjectile::Tick()
 {
-	float Pt = (Server()->Tick() - m_StartTick - 1) / (float)Server()->TickSpeed();
-	float Ct = (Server()->Tick() - m_StartTick) / (float)Server()->TickSpeed();
+	float Pt = (GameWorld()->GameTick() - m_StartTick - 1) / (float)GameWorld()->GameTickSpeed();
+	float Ct = (GameWorld()->GameTick() - m_StartTick) / (float)GameWorld()->GameTickSpeed();
 	vec2 PrevPos = GetPos(Pt);
 	vec2 CurPos = GetPos(Ct);
 	vec2 ColPos;
 	vec2 NewPos;
-	int Collide = GameServer()->Collision()->IntersectLine(PrevPos, CurPos, &ColPos, &NewPos);
+	int Collide = Collision()->IntersectLine(PrevPos, CurPos, &ColPos, &NewPos);
 	CCharacter *pOwnerChar = nullptr;
 
 	if(m_Owner >= 0)
@@ -197,16 +197,16 @@ void CProjectile::Tick()
 		if(pOwnerChar && !GameLayerClipped(ColPos) &&
 			((m_Type == WEAPON_GRENADE && pOwnerChar->HasTelegunGrenade()) || (m_Type == WEAPON_GUN && pOwnerChar->HasTelegunGun())))
 		{
-			int MapIndex = GameServer()->Collision()->GetPureMapIndex(pTargetChr ? pTargetChr->m_Pos : ColPos);
-			int TileFIndex = GameServer()->Collision()->GetFrontTileIndex(MapIndex);
-			bool IsSwitchTeleGun = GameServer()->Collision()->GetSwitchType(MapIndex) == TILE_ALLOW_TELE_GUN;
-			bool IsBlueSwitchTeleGun = GameServer()->Collision()->GetSwitchType(MapIndex) == TILE_ALLOW_BLUE_TELE_GUN;
+			int MapIndex = Collision()->GetPureMapIndex(pTargetChr ? pTargetChr->m_Pos : ColPos);
+			int TileFIndex = Collision()->GetFrontTileIndex(MapIndex);
+			bool IsSwitchTeleGun = Collision()->GetSwitchType(MapIndex) == TILE_ALLOW_TELE_GUN;
+			bool IsBlueSwitchTeleGun = Collision()->GetSwitchType(MapIndex) == TILE_ALLOW_BLUE_TELE_GUN;
 
 			if(IsSwitchTeleGun || IsBlueSwitchTeleGun)
 			{
 				// Delay specifies which weapon the tile should work for.
 				// Delay = 0 means all.
-				int Delay = GameServer()->Collision()->GetSwitchDelay(MapIndex);
+				int Delay = Collision()->GetSwitchDelay(MapIndex);
 
 				if(Delay == 1 && m_Type != WEAPON_GUN)
 					IsSwitchTeleGun = IsBlueSwitchTeleGun = false;
@@ -237,7 +237,7 @@ void CProjectile::Tick()
 
 		if(Collide && m_Bouncing != 0)
 		{
-			m_StartTick = Server()->Tick();
+			m_StartTick = GameWorld()->GameTick();
 			m_Pos = NewPos + (-(m_Direction * 4));
 			if(m_Bouncing == 1)
 				m_Direction.x = -m_Direction.x;
@@ -284,13 +284,13 @@ void CProjectile::Tick()
 
 	if(GameServer()->m_World.m_Core.m_PhysicsRules.m_DDNetMovement)
 	{
-		const int Index = GameServer()->Collision()->GetIndex(PrevPos, CurPos);
-		const int TeleNumber = GameServer()->m_World.m_Core.m_PhysicsRules.m_TeleportWeaponsOld ? GameServer()->Collision()->IsTeleport(Index) : GameServer()->Collision()->IsTeleportWeapon(Index);
-		if(TeleNumber && !GameServer()->Collision()->TeleOuts(TeleNumber - 1).empty())
+		const int Index = Collision()->GetIndex(PrevPos, CurPos);
+		const int TeleNumber = GameServer()->m_World.m_Core.m_PhysicsRules.m_TeleportWeaponsOld ? Collision()->IsTeleport(Index) : Collision()->IsTeleportWeapon(Index);
+		if(TeleNumber && !Collision()->TeleOuts(TeleNumber - 1).empty())
 		{
-			const int TeleOut = GameServer()->m_World.m_Core.RandomOr0(GameServer()->Collision()->TeleOuts(TeleNumber - 1).size());
-			m_Pos = GameServer()->Collision()->TeleOuts(TeleNumber - 1)[TeleOut];
-			m_StartTick = Server()->Tick();
+			const int TeleOut = GameServer()->m_World.m_Core.RandomOr0(Collision()->TeleOuts(TeleNumber - 1).size());
+			m_Pos = Collision()->TeleOuts(TeleNumber - 1)[TeleOut];
+			m_StartTick = GameWorld()->GameTick();
 		}
 	}
 }
@@ -408,9 +408,9 @@ CNetObj_DDNetProjectile CProjectile::NetInfo(int SnappingClient)
 
 void CProjectile::Snap(int SnappingClient)
 {
-	float Ct = (Server()->Tick() - m_StartTick) / (float)Server()->TickSpeed();
+	float Ct = (GameWorld()->GameTick() - m_StartTick) / (float)GameWorld()->GameTickSpeed();
 
-	if(NetworkClipped(SnappingClient, GetPos(Ct)) || !GetId().has_value())
+	if(NetworkClipped(SnappingClient, GetPos(Ct)) || GetId() < 0)
 		return;
 
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
@@ -418,7 +418,7 @@ void CProjectile::Snap(int SnappingClient)
 	if(UseDDNetEntityNetObjs && SnappingClientVersion < VERSION_DDNET_ENTITY_NETOBJS)
 	{
 		CCharacter *pSnapChar = GameServer()->GetPlayerChar(SnappingClient);
-		int Tick = (Server()->Tick() % Server()->TickSpeed()) % ((m_Explosive) ? 6 : 20);
+		int Tick = (GameWorld()->GameTick() % GameWorld()->GameTickSpeed()) % ((m_Explosive) ? 6 : 20);
 		if(pSnapChar && pSnapChar->IsAlive() && (m_Layer == LAYER_SWITCH && m_Number > 0 && !Switchers()[m_Number].m_aStatus[pSnapChar->Team()] && (!Tick)))
 			return;
 	}
@@ -428,13 +428,13 @@ void CProjectile::Snap(int SnappingClient)
 
 	if(UseDDNetEntityNetObjs && SnappingClientVersion >= VERSION_DDNET_ENTITY_NETOBJS)
 	{
-		Server()->SnapNewItem(GetId().value(), NetInfo(SnappingClient));
+		Server()->SnapNewItem(GetId(), NetInfo(SnappingClient));
 	}
 	else if(UseDDNetEntityNetObjs && SnappingClientVersion >= VERSION_DDNET_ANTIPING_PROJECTILE && NetIsInfoLegacyCompatible())
 	{
 		if(SnappingClientVersion >= VERSION_DDNET_MSG_LEGACY)
 		{
-			Server()->SnapNewItem(GetId().value(), NetInfoLegacy(SnappingClient));
+			Server()->SnapNewItem(GetId(), NetInfoLegacy(SnappingClient));
 		}
 		else
 		{
@@ -442,12 +442,12 @@ void CProjectile::Snap(int SnappingClient)
 			CNetObj_Projectile Projectile = {};
 			static_assert(sizeof(DDRaceProjectile) == sizeof(Projectile));
 			mem_copy(&Projectile, &DDRaceProjectile, sizeof(Projectile));
-			Server()->SnapNewItem(GetId().value(), Projectile);
+			Server()->SnapNewItem(GetId(), Projectile);
 		}
 	}
 	else
 	{
-		Server()->SnapNewItem(GetId().value(), NetInfoVanilla());
+		Server()->SnapNewItem(GetId(), NetInfoVanilla());
 	}
 }
 

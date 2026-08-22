@@ -23,7 +23,7 @@ CDragger::CDragger(CGameWorld *pGameWorld, vec2 Pos, float Strength, bool Ignore
 	m_IgnoreWalls = IgnoreWalls;
 	m_Layer = Layer;
 	m_Number = Number;
-	m_EvalTick = Server()->Tick();
+	m_EvalTick = GameWorld()->GameTick();
 
 	for(auto &TargetId : m_aTargetIdInTeam)
 	{
@@ -35,10 +35,10 @@ CDragger::CDragger(CGameWorld *pGameWorld, vec2 Pos, float Strength, bool Ignore
 
 void CDragger::Tick()
 {
-	if(Server()->Tick() % (int)(Server()->TickSpeed() * 0.15f) == 0)
+	if(GameWorld()->GameTick() % (int)(GameWorld()->GameTickSpeed() * 0.15f) == 0)
 	{
-		m_EvalTick = Server()->Tick();
-		GameServer()->Collision()->MoverSpeed(m_Pos.x, m_Pos.y, &m_Core);
+		m_EvalTick = GameWorld()->GameTick();
+		Collision()->MoverSpeed(m_Pos.x, m_Pos.y, &m_Core);
 		m_Pos += m_Core;
 
 		// Adopt the new position for all outgoing laser beams
@@ -94,8 +94,8 @@ void CDragger::LookForPlayersToDrag()
 		// Dragger beams can be created only for reachable, alive players
 		int IsReachable =
 			m_IgnoreWalls ?
-				!GameServer()->Collision()->IntersectNoLaserNoWalls(m_Pos, pTarget->m_Pos, nullptr, nullptr) :
-				!GameServer()->Collision()->IntersectNoLaser(m_Pos, pTarget->m_Pos, nullptr, nullptr);
+				!Collision()->IntersectNoLaserNoWalls(m_Pos, pTarget->m_Pos, nullptr, nullptr) :
+				!Collision()->IntersectNoLaser(m_Pos, pTarget->m_Pos, nullptr, nullptr);
 		if(IsReachable && pTarget->IsAlive())
 		{
 			const int &TargetClientId = pTarget->GetPlayer()->GetCid();
@@ -192,7 +192,7 @@ void CDragger::Reset()
 void CDragger::Snap(int SnappingClient)
 {
 	// Only players with the dragger in their field of view or who want to see everything will receive the snap
-	if(NetworkClipped(SnappingClient) || !GetId().has_value())
+	if(NetworkClipped(SnappingClient) || GetId() < 0)
 		return;
 
 	// Send the dragger in its resting position if the player would not otherwise see a dragger beam within its own team
@@ -218,19 +218,19 @@ void CDragger::Snap(int SnappingClient)
 			GameServer()->m_apPlayers[SnappingClient]->SpectatorId() != SPEC_FREEVIEW)
 			pChar = GameServer()->GetPlayerChar(GameServer()->m_apPlayers[SnappingClient]->SpectatorId());
 
-		int Tick = (Server()->Tick() % Server()->TickSpeed()) % 11;
+		int Tick = (GameWorld()->GameTick() % GameWorld()->GameTickSpeed()) % 11;
 		if(pChar && m_Layer == LAYER_SWITCH && m_Number > 0 &&
 			!Switchers()[m_Number].m_aStatus[pChar->Team()] && !Tick)
 			return;
 
 		StartTick = m_EvalTick;
-		if(StartTick < Server()->Tick() - 4)
-			StartTick = Server()->Tick() - 4;
-		else if(StartTick > Server()->Tick())
-			StartTick = Server()->Tick();
+		if(StartTick < GameWorld()->GameTick() - 4)
+			StartTick = GameWorld()->GameTick() - 4;
+		else if(StartTick > GameWorld()->GameTick())
+			StartTick = GameWorld()->GameTick();
 	}
 
-	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), GetId().value(),
+	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), GetId(),
 		m_Pos, m_Pos, StartTick, -1, LASERTYPE_DRAGGER, Subtype, m_Number);
 }
 

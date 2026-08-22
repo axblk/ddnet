@@ -123,7 +123,6 @@ private:
 	CGameServices *m_pServices;
 	class IServer *m_pServer;
 
-	CTeamsCore m_TeamsCore;
 	const CGameModeInfo m_GameModeInfo;
 	CMatchLifecycle m_MatchLifecycle;
 	CGameContext *GameServer() const;
@@ -350,8 +349,8 @@ public:
 	virtual CClientMask GetMaskForPlayerWorldEvent(int Asker, int ExceptID = -1);
 
 	bool IsTeamPlay() const { return Info().m_GameFlags & GAMEFLAG_TEAMS; }
-	CTeamsCore &TeamsCore() { return m_TeamsCore; }
-	const CTeamsCore &TeamsCore() const { return m_TeamsCore; }
+	CTeamsCore &TeamsCore();
+	const CTeamsCore &TeamsCore() const;
 };
 
 #endif

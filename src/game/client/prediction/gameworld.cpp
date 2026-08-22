@@ -34,6 +34,9 @@ CGameWorld::CGameWorld()
 	for(auto &pCharacter : m_apCharacters)
 		pCharacter = nullptr;
 	m_pCollision = nullptr;
+	m_pTuningList = nullptr;
+	m_pMapBugs = nullptr;
+	m_pGameConfig = nullptr;
 	m_GameTick = 0;
 	m_pParent = nullptr;
 	m_pChild = nullptr;
@@ -51,14 +54,20 @@ CGameWorld::~CGameWorld()
 		m_pParent->m_pChild = nullptr;
 }
 
-void CGameWorld::Init(CCollision *pCollision, CTuningParams *pTuningList, const CMapBugs *pMapBugs)
+void CGameWorld::Init(CCollision *pCollision, CTuningParams *pTuningList, const CMapBugs *pMapBugs, const CSessionGameConfig *pGameConfig)
 {
 	m_pCollision = pCollision;
 	m_pTuningList = pTuningList;
 	m_pMapBugs = pMapBugs;
+	m_pGameConfig = pGameConfig;
 }
 
 CEntity *CGameWorld::FindFirst(int Type)
+{
+	return Type < 0 || Type >= NUM_ENTTYPES ? nullptr : m_apFirstEntityTypes[Type];
+}
+
+const CEntity *CGameWorld::FindFirst(int Type) const
 {
 	return Type < 0 || Type >= NUM_ENTTYPES ? nullptr : m_apFirstEntityTypes[Type];
 }
@@ -344,6 +353,14 @@ CEntity *CGameWorld::GetEntity(int Id, int EntityType)
 	return nullptr;
 }
 
+const CEntity *CGameWorld::GetEntity(int Id, int EntityType) const
+{
+	for(const CEntity *pEnt = m_apFirstEntityTypes[EntityType]; pEnt; pEnt = pEnt->m_pNextTypeEntity)
+		if(pEnt->m_Id == Id)
+			return pEnt;
+	return nullptr;
+}
+
 void CGameWorld::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int ActivatedTeam, CClientMask Mask, int Id)
 {
 	if(Owner < 0 && m_WorldConfig.m_IsSolo && !(Weapon == WEAPON_SHOTGUN && m_WorldConfig.m_IsDDRace))
@@ -378,7 +395,7 @@ void CGameWorld::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage,
 
 		float Dmg = Strength * l;
 		if((int)Dmg)
-			if((pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : g_Config.m_SvHit || NoDamage) || Owner == pChar->GetCid())
+			if((pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : GameConfig()->m_SvHit || NoDamage) || Owner == pChar->GetCid())
 			{
 				if(Owner != -1 && !pChar->CanCollide(Owner))
 					continue;
@@ -389,7 +406,7 @@ void CGameWorld::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage,
 				{
 					pOwnerChar->AntiPingInterference(pChar->GetCid());
 				}
-				if(pOwnerChar ? pOwnerChar->GrenadeHitDisabled() : !g_Config.m_SvHit || NoDamage)
+				if(pOwnerChar ? pOwnerChar->GrenadeHitDisabled() : !GameConfig()->m_SvHit || NoDamage)
 					break;
 			}
 	}
@@ -681,6 +698,7 @@ void CGameWorld::CopyWorld(CGameWorld *pFrom)
 	m_WorldConfig = pFrom->m_WorldConfig;
 	m_pTuningList = pFrom->m_pTuningList;
 	m_pMapBugs = pFrom->m_pMapBugs;
+	m_pGameConfig = pFrom->m_pGameConfig;
 	m_Teams = pFrom->m_Teams;
 	m_Core.m_vSwitchers = pFrom->m_Core.m_vSwitchers;
 	m_PredictedEvents = pFrom->m_PredictedEvents;
@@ -720,14 +738,16 @@ void CGameWorld::CopyWorld(CGameWorld *pFrom)
 	m_IsValidCopy = true;
 }
 
-CEntity *CGameWorld::FindMatch(int ObjId, int ObjType, const void *pObjData)
+const CEntity *CGameWorld::FindMatch(int ObjId, int ObjType, const void *pObjData) const
 {
+	CGameWorld *pMutableWorld = const_cast<CGameWorld *>(this);
 	switch(ObjType)
 	{
 	case NETOBJTYPE_CHARACTER:
 	{
-		CCharacter *pEnt = (CCharacter *)GetEntity(ObjId, ENTTYPE_CHARACTER);
-		if(pEnt && CCharacter(this, ObjId, (CNetObj_Character *)pObjData).Match(pEnt))
+		const auto *pEnt = static_cast<const CCharacter *>(GetEntity(ObjId, ENTTYPE_CHARACTER));
+		const auto *pCharacter = static_cast<const CNetObj_Character *>(pObjData);
+		if(pEnt && distance(pEnt->Core()->m_Pos, vec2(pCharacter->m_X, pCharacter->m_Y)) <= 32.0f)
 		{
 			return pEnt;
 		}
@@ -738,8 +758,8 @@ CEntity *CGameWorld::FindMatch(int ObjId, int ObjType, const void *pObjData)
 	case NETOBJTYPE_DDNETPROJECTILE:
 	{
 		CProjectileData Data = ExtractProjectileInfo(ObjType, pObjData, this, nullptr);
-		CProjectile *pEnt = (CProjectile *)GetEntity(ObjId, ENTTYPE_PROJECTILE);
-		if(pEnt && CProjectile(this, ObjId, &Data).Match(pEnt))
+		const auto *pEnt = static_cast<const CProjectile *>(GetEntity(ObjId, ENTTYPE_PROJECTILE));
+		if(pEnt && CProjectile(pMutableWorld, ObjId, &Data).Match(pEnt))
 		{
 			return pEnt;
 		}
@@ -751,32 +771,32 @@ CEntity *CGameWorld::FindMatch(int ObjId, int ObjType, const void *pObjData)
 		CLaserData Data = ExtractLaserInfo(ObjType, pObjData, this, nullptr);
 		if(Data.m_Type == LASERTYPE_RIFLE || Data.m_Type == LASERTYPE_SHOTGUN)
 		{
-			CLaser *pEnt = (CLaser *)GetEntity(ObjId, ENTTYPE_LASER);
-			if(pEnt && CLaser(this, ObjId, &Data).Match(pEnt))
+			const auto *pEnt = static_cast<const CLaser *>(GetEntity(ObjId, ENTTYPE_LASER));
+			if(pEnt && CLaser(pMutableWorld, ObjId, &Data).Match(pEnt))
 			{
 				return pEnt;
 			}
 		}
 		else if(Data.m_Type == LASERTYPE_DRAGGER)
 		{
-			CDragger *pEnt = (CDragger *)GetEntity(ObjId, ENTTYPE_DRAGGER);
-			if(pEnt && CDragger(this, ObjId, &Data).Match(pEnt))
+			const auto *pEnt = static_cast<const CDragger *>(GetEntity(ObjId, ENTTYPE_DRAGGER));
+			if(pEnt && CDragger(pMutableWorld, ObjId, &Data).Match(pEnt))
 			{
 				return pEnt;
 			}
 		}
 		else if(Data.m_Type == LASERTYPE_DOOR)
 		{
-			CDoor *pEnt = (CDoor *)GetEntity(ObjId, ENTTYPE_DOOR);
-			if(pEnt && CDoor(this, ObjId, &Data).Match(pEnt))
+			const auto *pEnt = static_cast<const CDoor *>(GetEntity(ObjId, ENTTYPE_DOOR));
+			if(pEnt && CDoor(pMutableWorld, ObjId, &Data).Match(pEnt))
 			{
 				return pEnt;
 			}
 		}
 		else if(Data.m_Type == LASERTYPE_PLASMA)
 		{
-			CPlasma *pEnt = (CPlasma *)GetEntity(ObjId, ENTTYPE_PLASMA);
-			if(pEnt && CPlasma(this, ObjId, &Data).Match(pEnt))
+			const auto *pEnt = static_cast<const CPlasma *>(GetEntity(ObjId, ENTTYPE_PLASMA));
+			if(pEnt && CPlasma(pMutableWorld, ObjId, &Data).Match(pEnt))
 			{
 				return pEnt;
 			}
@@ -787,8 +807,8 @@ CEntity *CGameWorld::FindMatch(int ObjId, int ObjType, const void *pObjData)
 	case NETOBJTYPE_DDNETPICKUP:
 	{
 		CPickupData Data = ExtractPickupInfo(ObjType, pObjData, nullptr);
-		CPickup *pEnt = (CPickup *)GetEntity(ObjId, ENTTYPE_PICKUP);
-		if(pEnt && CPickup(this, ObjId, &Data).Match(pEnt))
+		const auto *pEnt = static_cast<const CPickup *>(GetEntity(ObjId, ENTTYPE_PICKUP));
+		if(pEnt && CPickup(pMutableWorld, ObjId, &Data).Match(pEnt))
 		{
 			return pEnt;
 		}
@@ -796,6 +816,11 @@ CEntity *CGameWorld::FindMatch(int ObjId, int ObjType, const void *pObjData)
 	}
 	}
 	return nullptr;
+}
+
+CEntity *CGameWorld::FindMatch(int ObjId, int ObjType, const void *pObjData)
+{
+	return const_cast<CEntity *>(std::as_const(*this).FindMatch(ObjId, ObjType, pObjData));
 }
 
 void CGameWorld::OnModified() const

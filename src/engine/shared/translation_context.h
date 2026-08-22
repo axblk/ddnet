@@ -1,7 +1,7 @@
 #ifndef ENGINE_SHARED_TRANSLATION_CONTEXT_H
 #define ENGINE_SHARED_TRANSLATION_CONTEXT_H
 
-#include <engine/client/enums.h>
+#include <engine/client/stream.h>
 #include <engine/shared/protocol.h>
 
 #include <generated/protocol7.h>
@@ -85,7 +85,8 @@ public:
 	int m_aDamageTaken[MAX_CLIENTS];
 	float m_aDamageTakenTick[MAX_CLIENTS];
 
-	int m_aLocalClientId[NUM_DUMMIES];
+	int &LocalClientId(int Conn) { return m_LocalClientIds[Conn]; }
+	int LocalClientId(int Conn) const { return m_LocalClientIds[Conn]; }
 
 	bool m_ShouldSendGameInfo;
 	int m_GameStateFlags7;
@@ -109,6 +110,9 @@ public:
 
 	int m_GameStartTick7;
 	int m_GameStateEndTick7;
+
+private:
+	CStreamStorage<int> m_LocalClientIds{2};
 };
 
 #endif

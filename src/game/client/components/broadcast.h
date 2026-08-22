@@ -3,28 +3,35 @@
 #ifndef GAME_CLIENT_COMPONENTS_BROADCAST_H
 #define GAME_CLIENT_COMPONENTS_BROADCAST_H
 
+#include <engine/client/session.h>
 #include <engine/textrender.h>
 
 #include <game/client/component.h>
 
+#include <cstdint>
+
+class CSessionBroadcastState;
+
 class CBroadcast : public CComponent
 {
-	// broadcasts
-	char m_aBroadcastText[1024];
-	int m_BroadcastTick;
 	float m_BroadcastRenderOffset;
 	STextContainerIndex m_TextContainerIndex;
+	CSessionId m_RenderedSessionId;
+	uint64_t m_RenderedRevision = 0;
+	uint64_t m_RenderedViewId = 0;
+	int m_RenderedViewportWidth = 0;
+	int m_RenderedViewportHeight = 0;
 
-	void RenderServerBroadcast();
+	void InvalidateRenderCache();
+	void RenderServerBroadcast(const CRenderContext &Context);
 
 public:
 	int Sizeof() const override { return sizeof(*this); }
 	void OnReset() override;
 	void OnWindowResize() override;
-	void OnRender() override;
-	void OnMessage(int MsgType, void *pRawMsg) override;
+	void OnRender(const CRenderContext &Context) override;
 
-	void DoBroadcast(const char *pText);
+	void DoBroadcast(CSessionBroadcastState &Broadcast, const char *pText, int GameTick, int GameTickSpeed);
 };
 
 #endif

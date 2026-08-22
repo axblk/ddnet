@@ -275,7 +275,7 @@ void CCharacter::FireWeapon()
 		FullAuto = true;
 
 	// don't fire hammer when player is deep and sv_deepfly is disabled
-	if(!g_Config.m_SvDeepfly && m_Core.m_ActiveWeapon == WEAPON_HAMMER && m_Core.m_DeepFrozen)
+	if(!GameWorld()->GameConfig()->m_SvDeepfly && m_Core.m_ActiveWeapon == WEAPON_HAMMER && m_Core.m_DeepFrozen)
 		return;
 
 	// check if we gonna fire
@@ -1200,7 +1200,7 @@ bool CCharacter::Freeze(int Seconds)
 
 bool CCharacter::Freeze()
 {
-	return Freeze(g_Config.m_SvFreezeDelay);
+	return Freeze(GameWorld()->GameConfig()->m_SvFreezeDelay);
 }
 
 bool CCharacter::Unfreeze()

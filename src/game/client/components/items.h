@@ -9,26 +9,37 @@
 
 #include <game/client/component.h>
 
+#include <span>
+
 class CProjectileData;
 class CLaserData;
+class CGameState;
+class CGameTickInfo;
+class CPresentationContext;
+class CRenderContext;
 class CScreenRect;
+class CVisibleWorldRect;
 
 class CItems : public CComponent
 {
-	void RenderProjectile(const CProjectileData *pCurrent, int ItemId, const CScreenRect &ScreenRect);
-	void RenderPickup(const CNetObj_Pickup *pPrev, const CNetObj_Pickup *pCurrent, bool IsPredicted, int Flags);
-	void RenderFlags();
-	void RenderFlag(const CNetObj_Flag *pPrev, const CNetObj_Flag *pCurrent, const CNetObj_GameData *pPrevGameData, const CNetObj_GameData *pCurGameData);
-	void RenderLaser(const CLaserData *pCurrent, bool IsPredicted = false);
+	bool GetProjectileRenderInfo(const CGameState &State, const CGameTickInfo &Time, bool PredictProjectiles, bool IsOtherTeam, const CProjectileData *pCurrent, std::span<const CVisibleWorldRect> vVisibleWorldRects, vec2 VisibilityMargin, int &CurWeapon, vec2 &Pos, vec2 &Vel, float &Alpha) const;
+	vec2 GetPickupPosition(const CGameTickInfo &Time, const CNetObj_Pickup *pPrev, const CNetObj_Pickup *pCurrent, bool IsPredicted) const;
+	void RenderProjectile(const CRenderContext &Context, const CProjectileData *pCurrent, int ItemId, const CScreenRect &ScreenRect, bool PredictProjectiles);
+	void RenderPickup(const CRenderContext &Context, const CNetObj_Pickup *pPrev, const CNetObj_Pickup *pCurrent, bool IsPredicted, int Flags);
+	void RenderFlags(const CRenderContext &Context);
+	void RenderFlag(const CRenderContext &Context, const CNetObj_Flag *pPrev, const CNetObj_Flag *pCurrent, const CNetObj_GameData *pPrevGameData, const CNetObj_GameData *pCurGameData);
+	void RenderLaser(const CRenderContext &Context, const CLaserData *pCurrent, bool IsPredicted = false);
+	void RenderLaser(vec2 From, vec2 Pos, ColorRGBA OuterColor, ColorRGBA InnerColor, float TicksBody, float TicksHead, int Type, float LaserBounceDelay, int GameTickSpeed) const;
 
 	int m_ItemsQuadContainerIndex;
 
 public:
 	int Sizeof() const override { return sizeof(*this); }
-	void OnRender() override;
+	void OnRender(const CRenderContext &Context) override;
 	void OnInit() override;
 
-	void ReconstructSmokeTrail(const CProjectileData *pCurrent, int DestroyTick);
+	void UpdatePresentation(const CPresentationContext &Context);
+	void ReconstructSmokeTrail(CGameState &State, const CGameTickInfo &Time, const CProjectileData *pCurrent, int DestroyTick);
 	void RenderLaser(vec2 From, vec2 Pos, ColorRGBA OuterColor, ColorRGBA InnerColor, float TicksBody, float TicksHead, int Type) const;
 
 private:

@@ -9,6 +9,8 @@
 
 CMapLayers::CMapLayers(ERenderType Type, bool OnlineOnly)
 {
+	m_pLayers = nullptr;
+	m_pImages = nullptr;
 	m_Type = Type;
 	m_OnlineOnly = OnlineOnly;
 
@@ -21,18 +23,30 @@ CMapLayers::CMapLayers(ERenderType Type, bool OnlineOnly)
 
 void CMapLayers::OnInit()
 {
-	m_pLayers = Layers();
-	m_pImages = &GameClient()->m_MapImages;
 	m_MapRenderer.Clear();
 }
 
-CCamera *CMapLayers::GetCurCamera()
+void CMapLayers::Unload()
 {
-	return &GameClient()->m_Camera;
+	m_MapRenderer.Clear();
+	m_EnvEvaluator = CEnvelopeState();
+	m_pLayers = nullptr;
+	m_pImages = nullptr;
 }
 
 void CMapLayers::OnMapLoad()
 {
+	dbg_assert(m_pLayers != nullptr && m_pImages != nullptr, "map layers must be explicitly bound before loading");
+	Load(m_pLayers, m_pImages);
+}
+
+void CMapLayers::Load(CLayers *pLayers, IMapImages *pImages)
+{
+	dbg_assert(pLayers != nullptr && pImages != nullptr, "map layers require layers and images");
+	Unload();
+	m_pLayers = pLayers;
+	m_pImages = pImages;
+
 	char aCaption[64 + MAX_MAP_LENGTH];
 	str_format(aCaption, sizeof(aCaption), "%s: %s", Localize("Loading map"), m_pLayers->Map()->BaseName());
 
@@ -48,15 +62,20 @@ void CMapLayers::OnMapLoad()
 	m_MapRenderer.Load(m_Type, m_pLayers, m_pImages, &m_EnvEvaluator, ProgressBarCallback);
 }
 
-void CMapLayers::OnRender()
+void CMapLayers::OnRender(const CRenderContext &Context)
 {
-	if(m_OnlineOnly && Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(m_OnlineOnly && !Context.m_Time.m_IsGameActive)
 		return;
 
+	Render(Context.m_View.CameraPosition(), Context.m_View.Zoom());
+}
+
+void CMapLayers::Render(vec2 Center, float Zoom)
+{
 	// dynamic parameters for ingame rendering
 	m_Params.m_EntityOverlayVal = m_Type == RENDERTYPE_FULL_DESIGN ? 0 : g_Config.m_ClOverlayEntities;
-	m_Params.m_Center = GetCurCamera()->m_Center;
-	m_Params.m_Zoom = GetCurCamera()->m_Zoom;
+	m_Params.m_Center = Center;
+	m_Params.m_Zoom = Zoom;
 	m_Params.m_RenderText = g_Config.m_ClTextEntities;
 	m_Params.m_DebugRenderGroupClips = g_Config.m_DbgRenderGroupClips;
 	m_Params.m_DebugRenderQuadClips = g_Config.m_DbgRenderQuadClips;

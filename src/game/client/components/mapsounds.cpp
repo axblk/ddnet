@@ -2,11 +2,11 @@
 
 #include <base/log.h>
 
-#include <engine/demo.h>
 #include <engine/sound.h>
 
-#include <game/client/components/camera.h>
+#include <game/client/components/envelope_state.h>
 #include <game/client/components/sounds.h>
+#include <game/client/game_state.h>
 #include <game/client/gameclient.h>
 #include <game/layers.h>
 #include <game/localization.h>
@@ -14,12 +14,14 @@
 
 CMapSounds::CMapSounds()
 {
+	std::fill(std::begin(m_aSounds), std::end(m_aSounds), -1);
 	m_Count = 0;
+	m_Time = 0.0f;
 }
 
 void CMapSounds::Play(int Channel, int SoundId)
 {
-	if(SoundId < 0 || SoundId >= m_Count)
+	if(!m_Audible || SoundId < 0 || SoundId >= m_Count || m_aSounds[SoundId] < 0)
 		return;
 
 	GameClient()->m_Sounds.PlaySample(Channel, m_aSounds[SoundId], 0, 1.0f);
@@ -27,17 +29,15 @@ void CMapSounds::Play(int Channel, int SoundId)
 
 void CMapSounds::PlayAt(int Channel, int SoundId, vec2 Position)
 {
-	if(SoundId < 0 || SoundId >= m_Count)
+	if(!m_Audible || SoundId < 0 || SoundId >= m_Count || m_aSounds[SoundId] < 0)
 		return;
 
 	GameClient()->m_Sounds.PlaySampleAt(Channel, m_aSounds[SoundId], 0, 1.0f, Position);
 }
 
-void CMapSounds::OnMapLoad()
+void CMapSounds::Load(IMap *pMap, CLayers *pLayers)
 {
-	IMap *pMap = GameClient()->Map();
-
-	Clear();
+	Unload();
 
 	if(!Sound()->IsSoundEnabled())
 		return;
@@ -93,15 +93,15 @@ void CMapSounds::OnMapLoad()
 	}
 
 	// enqueue sound sources
-	for(int GroupIndex = 0; GroupIndex < Layers()->NumGroups(); GroupIndex++)
+	for(int GroupIndex = 0; GroupIndex < pLayers->NumGroups(); GroupIndex++)
 	{
-		const CMapItemGroup *pGroup = Layers()->GetGroup(GroupIndex);
+		const CMapItemGroup *pGroup = pLayers->GetGroup(GroupIndex);
 		if(!pGroup)
 			continue;
 
 		for(int LayerIndex = 0; LayerIndex < pGroup->m_NumLayers; LayerIndex++)
 		{
-			const CMapItemLayer *pLayer = Layers()->GetLayer(pGroup->m_StartLayer + LayerIndex);
+			const CMapItemLayer *pLayer = pLayers->GetLayer(pGroup->m_StartLayer + LayerIndex);
 			if(!pLayer)
 				continue;
 			if(pLayer->m_Type != LAYERTYPE_SOUNDS)
@@ -113,11 +113,11 @@ void CMapSounds::OnMapLoad()
 			if(pSoundLayer->m_Sound < 0 || pSoundLayer->m_Sound >= m_Count || m_aSounds[pSoundLayer->m_Sound] == -1)
 				continue;
 
-			const CSoundSource *pSources = static_cast<CSoundSource *>(Layers()->Map()->GetDataSwapped(pSoundLayer->m_Data));
+			const CSoundSource *pSources = static_cast<CSoundSource *>(pLayers->Map()->GetDataSwapped(pSoundLayer->m_Data));
 			if(!pSources)
 				continue;
 
-			const size_t NumSources = std::min((size_t)pSoundLayer->m_NumSources, (size_t)Layers()->Map()->GetDataSize(pSoundLayer->m_Data) / sizeof(CSoundSource));
+			const size_t NumSources = std::min((size_t)pSoundLayer->m_NumSources, (size_t)pLayers->Map()->GetDataSize(pSoundLayer->m_Data) / sizeof(CSoundSource));
 			for(size_t SourceIndex = 0; SourceIndex < NumSources; SourceIndex++)
 			{
 				CSourceQueueEntry Source;
@@ -131,24 +131,22 @@ void CMapSounds::OnMapLoad()
 	}
 }
 
-void CMapSounds::OnRender()
+void CMapSounds::Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator)
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(!m_Audible)
 		return;
 
-	const bool DemoPlayerPaused = GameClient()->IsDemoPlaybackPaused();
+	if(State.HasGameInfo())
+	{
+		m_Time = mix((Time.m_PrevGameTick - State.GameInfo().m_RoundStartTick) / (float)Time.m_GameTickSpeed,
+			(Time.m_GameTick - State.GameInfo().m_RoundStartTick) / (float)Time.m_GameTickSpeed,
+			Time.m_IntraGameTick);
+	}
 
 	// enqueue sounds
 	for(auto &Source : m_vSourceQueue)
 	{
-		static float s_Time = 0.0f;
-		if(GameClient()->m_Snap.m_pGameInfoObj)
-		{
-			s_Time = mix((Client()->PrevGameTick(g_Config.m_ClDummy) - GameClient()->m_Snap.m_pGameInfoObj->m_RoundStartTick) / (float)Client()->GameTickSpeed(),
-				(Client()->GameTick(g_Config.m_ClDummy) - GameClient()->m_Snap.m_pGameInfoObj->m_RoundStartTick) / (float)Client()->GameTickSpeed(),
-				Client()->IntraGameTick(g_Config.m_ClDummy));
-		}
-		float Offset = s_Time - Source.m_pSource->m_TimeDelay;
+		float Offset = m_Time - Source.m_pSource->m_TimeDelay;
 		if(!DemoPlayerPaused && Offset >= 0.0f && g_Config.m_SndEnable && (g_Config.m_GfxHighDetail || !Source.m_HighDetail))
 		{
 			if(Source.m_Voice.IsValid())
@@ -192,21 +190,19 @@ void CMapSounds::OnRender()
 		}
 	}
 
-	const vec2 Center = GameClient()->m_Camera.m_Center;
 	for(const auto &Source : m_vSourceQueue)
 	{
 		if(!Source.m_Voice.IsValid())
 			continue;
 
 		ColorRGBA Position = ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f);
-		CEnvelopeState &EnvEvaluator = GameClient()->m_MapLayersBackground.EnvEvaluator();
 		EnvEvaluator.EnvelopeEval(Source.m_pSource->m_PosEnvOffset, Source.m_pSource->m_PosEnv, Position, 2);
 
 		float x = fx2f(Source.m_pSource->m_Position.x) + Position.r;
 		float y = fx2f(Source.m_pSource->m_Position.y) + Position.g;
 
-		x += Center.x * (1.0f - Source.m_pGroup->m_ParallaxX / 100.0f);
-		y += Center.y * (1.0f - Source.m_pGroup->m_ParallaxY / 100.0f);
+		x += ListenerPosition.x * (1.0f - Source.m_pGroup->m_ParallaxX / 100.0f);
+		y += ListenerPosition.y * (1.0f - Source.m_pGroup->m_ParallaxY / 100.0f);
 
 		x -= Source.m_pGroup->m_OffsetX;
 		y -= Source.m_pGroup->m_OffsetY;
@@ -220,20 +216,39 @@ void CMapSounds::OnRender()
 	}
 }
 
-void CMapSounds::Clear()
+void CMapSounds::StopVoices()
 {
+	for(auto &Source : m_vSourceQueue)
+	{
+		Sound()->StopVoice(Source.m_Voice);
+		Source.m_Voice = ISound::CVoiceHandle();
+	}
+	for(int i = 0; i < m_Count; i++)
+	{
+		if(m_aSounds[i] >= 0)
+			Sound()->Stop(m_aSounds[i]);
+	}
+}
+
+void CMapSounds::SetAudible(bool Audible)
+{
+	if(m_Audible == Audible)
+		return;
+	m_Audible = Audible;
+	if(!m_Audible)
+		StopVoices();
+}
+
+void CMapSounds::Unload()
+{
+	SetAudible(false);
 	// unload all samples
 	m_vSourceQueue.clear();
+	m_Time = 0.0f;
 	for(int i = 0; i < m_Count; i++)
 	{
 		Sound()->UnloadSample(m_aSounds[i]);
 		m_aSounds[i] = -1;
 	}
 	m_Count = 0;
-}
-
-void CMapSounds::OnStateChange(int NewState, int OldState)
-{
-	if(NewState < IClient::STATE_ONLINE)
-		Clear();
 }

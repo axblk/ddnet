@@ -8,10 +8,18 @@
 
 #include <vector>
 
-class CMapSounds : public CComponent
+class CEnvelopeState;
+class CGameState;
+class CGameTickInfo;
+class CLayers;
+class IMap;
+
+class CMapSounds : public CComponentInterfaces
 {
 	int m_aSounds[MAX_MAPSOUNDS];
 	int m_Count;
+	float m_Time;
+	bool m_Audible = false;
 
 	class CSourceQueueEntry
 	{
@@ -23,18 +31,18 @@ class CMapSounds : public CComponent
 		const CSoundSource *m_pSource;
 	};
 	std::vector<CSourceQueueEntry> m_vSourceQueue;
-	void Clear();
+	void StopVoices();
 
 public:
 	CMapSounds();
-	int Sizeof() const override { return sizeof(*this); }
 
 	void Play(int Channel, int SoundId);
 	void PlayAt(int Channel, int SoundId, vec2 Position);
 
-	void OnMapLoad() override;
-	void OnRender() override;
-	void OnStateChange(int NewState, int OldState) override;
+	void Load(IMap *pMap, CLayers *pLayers);
+	void SetAudible(bool Audible);
+	void Unload();
+	void Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator);
 };
 
 #endif // GAME_CLIENT_COMPONENTS_MAPSOUNDS_H

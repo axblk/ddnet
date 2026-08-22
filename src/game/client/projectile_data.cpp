@@ -18,7 +18,7 @@ static bool UseProjectileExtraInfo(const CNetObj_Projectile *pProj)
 	return pProj->m_VelY >= 0 && (pProj->m_VelY & LEGACYPROJECTILEFLAG_IS_DDNET) != 0;
 }
 
-CProjectileData ExtractProjectileInfo(int NetObjType, const void *pData, CGameWorld *pGameWorld, const CNetObj_EntityEx *pEntEx)
+CProjectileData ExtractProjectileInfo(int NetObjType, const void *pData, const CGameWorld *pGameWorld, const CNetObj_EntityEx *pEntEx)
 {
 	CNetObj_Projectile *pProj = (CNetObj_Projectile *)pData;
 
@@ -45,7 +45,7 @@ CProjectileData ExtractProjectileInfo(int NetObjType, const void *pData, CGameWo
 	return Result;
 }
 
-CProjectileData ExtractProjectileInfoDDRace(const CNetObj_DDRaceProjectile *pProj, CGameWorld *pGameWorld, const CNetObj_EntityEx *pEntEx)
+CProjectileData ExtractProjectileInfoDDRace(const CNetObj_DDRaceProjectile *pProj, const CGameWorld *pGameWorld, const CNetObj_EntityEx *pEntEx)
 {
 	CProjectileData Result;
 

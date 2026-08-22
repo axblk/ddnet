@@ -4,6 +4,7 @@
 #include <base/color.h>
 #include <base/vmath.h>
 
+#include <engine/client/stream.h>
 #include <engine/input.h>
 
 #include <game/client/component.h>
@@ -14,11 +15,33 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 class CJsonWriter;
+class CCollision;
+class CGameSessionContext;
+class CGameState;
+class CGameView;
+class CRenderContext;
 typedef struct _json_value json_value;
+
+struct CTouchControllerContext
+{
+	CGameSessionContext &m_Session;
+	CGameState &m_State;
+	CGameView &m_View;
+	CCollision &m_Collision;
+	CStreamId m_StreamId;
+	bool m_IsGameActive;
+	bool m_IsDemoPlayback;
+	bool m_DummyAllowed;
+	bool m_DummyConnected;
+	bool m_RconAuthed;
+	float m_AspectRatio;
+	std::chrono::nanoseconds m_Now;
+};
 
 class CTouchControls : public CComponent
 {
@@ -47,8 +70,9 @@ public:
 	void OnInit() override;
 	void OnReset() override;
 	void OnWindowResize() override;
-	bool OnTouchState(const std::vector<IInput::CTouchFingerState> &vTouchFingerStates) override;
-	void OnRender() override;
+	void OnRender(const CRenderContext &Context) override;
+	bool UpdateController(const CTouchControllerContext &Context, std::span<const IInput::CTouchFingerState> vTouchFingerStates, bool AcceptInput);
+	void RenderApplicationOverlay();
 
 	bool LoadConfigurationFromFile(int StorageType);
 	bool LoadConfigurationFromClipboard();
@@ -224,7 +248,7 @@ public:
 		CTouchButton *m_pTouchButton;
 		CTouchControls *m_pTouchControls;
 
-		bool m_Active; // variables below must only be used when active
+		bool m_Active = false; // variables below must only be used when active
 		IInput::CTouchFinger m_Finger;
 		vec2 m_ActivePosition;
 		vec2 m_AccumulatedDelta;
@@ -589,7 +613,6 @@ private:
 	int NextActiveAction(int Action) const;
 	int NextDirectTouchAction() const;
 	void UpdateButtonsGame(const std::vector<IInput::CTouchFingerState> &vTouchFingerStates);
-	void ResetButtons();
 	void RenderButtonsGame();
 	vec2 CalculateScreenSize() const;
 
@@ -639,6 +662,26 @@ private:
 
 	bool m_UnsavedChanges = false;
 	bool m_PreviewAllButtons = false;
+
+	CGameSessionContext *m_pControllerSession = nullptr;
+	CGameState *m_pControllerState = nullptr;
+	CGameView *m_pControllerView = nullptr;
+	CCollision *m_pControllerCollision = nullptr;
+	CStreamId m_ControllerStreamId;
+	bool m_ControllerDemoPlayback = false;
+	bool m_ControllerDummyAllowed = false;
+	bool m_ControllerDummyConnected = false;
+	bool m_ControllerRconAuthed = false;
+	float m_ControllerAspectRatio = 1.0f;
+	std::chrono::nanoseconds m_ControllerNow = std::chrono::nanoseconds::zero();
+	bool m_RenderGameButtons = false;
+	bool m_RenderEditor = false;
+
+	bool MatchesController(const CTouchControllerContext &Context) const;
+	bool MatchesRenderContext(const CRenderContext &Context) const;
+	void BindController(const CTouchControllerContext &Context);
+	void CancelController(std::span<const IInput::CTouchFingerState> vTouchFingerStates);
+	void ExecuteStroked(int Stroke, const char *pCommand);
 
 public:
 	CTouchButton *NewButton();

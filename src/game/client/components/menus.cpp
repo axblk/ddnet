@@ -636,7 +636,7 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 		if(DoButton_MenuTab(&s_NetworkButton, Localize("Browser"), ActivePage == PAGE_NETWORK, &Button, IGraphics::CORNER_NONE))
 			NewPage = PAGE_NETWORK;
 
-		if(GameClient()->m_GameInfo.m_Race)
+		if(GameClient()->FocusedGameInfo().m_Race)
 		{
 			Box.VSplitLeft(90.0f, &Button, &Box);
 			static CButtonContainer s_GhostButton;
@@ -2276,7 +2276,7 @@ void CMenus::SetActive(bool Active)
 	{
 		if(m_NeedSendinfo)
 		{
-			GameClient()->SendInfo(false);
+			GameClient()->SendInfo(Client()->NetworkSessionId(), false);
 			m_NeedSendinfo = false;
 		}
 
@@ -2377,7 +2377,7 @@ void CMenus::OnRender()
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		SetActive(true);
 
-	if(Client()->State() == IClient::STATE_ONLINE && GameClient()->m_ServerMode == CGameClient::SERVERMODE_PUREMOD)
+	if(Client()->State() == IClient::STATE_ONLINE && GameClient()->GameState(GameClient()->ActiveConnection()).Runtime().m_ServerMode == CGameState::SERVERMODE_PUREMOD)
 	{
 		Client()->Disconnect();
 		SetActive(true);

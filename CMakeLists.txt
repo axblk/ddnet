@@ -2477,6 +2477,7 @@ if(CLIENT)
     checksum.h
     client.cpp
     client.h
+    connection.h
     demoedit.cpp
     demoedit.h
     discord.cpp
@@ -2504,6 +2505,10 @@ if(CLIENT)
     serverbrowser_http.h
     serverbrowser_ping_cache.cpp
     serverbrowser_ping_cache.h
+    session.cpp
+    session.h
+    session_sources.cpp
+    session_sources.h
     sixup_translate_system.cpp
     smooth_time.cpp
     smooth_time.h
@@ -2511,6 +2516,7 @@ if(CLIENT)
     sound.h
     sqlite.cpp
     steam.cpp
+    stream.h
     text.cpp
     updater.cpp
     updater.h
@@ -2555,8 +2561,6 @@ if(CLIENT)
     components/emoticon.h
     components/envelope_state.cpp
     components/envelope_state.h
-    components/flow.cpp
-    components/flow.h
     components/freezebars.cpp
     components/freezebars.h
     components/ghost.cpp
@@ -2612,6 +2616,7 @@ if(CLIENT)
     components/particles.h
     components/players.cpp
     components/players.h
+    components/players_context.cpp
     components/race_demo.cpp
     components/race_demo.h
     components/scoreboard.cpp
@@ -2632,12 +2637,22 @@ if(CLIENT)
     components/touch_controls.h
     components/voting.cpp
     components/voting.h
+    game_state.cpp
+    game_state.h
+    game_view.cpp
+    game_view.h
     gameclient.cpp
     gameclient.h
+    input_policy.cpp
+    input_policy.h
     laser_data.cpp
     laser_data.h
     lineinput.cpp
     lineinput.h
+    local_player_profile.cpp
+    local_player_profile.h
+    map_context.cpp
+    map_context.h
     pickup_data.cpp
     pickup_data.h
     prediction/entities/character.cpp
@@ -2664,6 +2679,11 @@ if(CLIENT)
     race.h
     render.cpp
     render.h
+    session_context.h
+    session_game_config.cpp
+    session_game_config.h
+    session_presentation.cpp
+    session_presentation.h
     sixup_translate_connless.cpp
     sixup_translate_game.cpp
     sixup_translate_snapshot.cpp
@@ -3276,6 +3296,12 @@ add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/src/generated/checksum.cpp
 # TESTS
 ########################################################################
 
+add_executable(client-session-headless-smoke EXCLUDE_FROM_ALL
+  src/engine/client/session.cpp
+  src/headless/session_headless.cpp
+)
+list(APPEND TARGETS_OWN client-session-headless-smoke)
+
 if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   set_src(TESTS GLOB src/test
     # tidy-alphabetical-start
@@ -3284,6 +3310,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     blocklist_driver_test.cpp
     bytes_be_test.cpp
     chunk_header_test.cpp
+    client_connection_test.cpp
     color_test.cpp
     compression_test.cpp
     csv_test.cpp
@@ -3291,6 +3318,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     dbg_test.cpp
     editor_test.cpp
     fs_test.cpp
+    game_state_test.cpp
     gameworld_test.cpp
     git_revision_test.cpp
     hash_test.cpp
@@ -3300,6 +3328,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     json_test.cpp
     jsonwriter_test.cpp
     linereader_test.cpp
+    map_context_test.cpp
     mapbugs_test.cpp
     mapitems_test.cpp
     math_test.cpp
@@ -3318,6 +3347,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     server_test.cpp
     serverbrowser_test.cpp
     serverinfo_test.cpp
+    session_manager_test.cpp
     snapshot_test.cpp
     str_test.cpp
     swap_endian_test.cpp
@@ -3337,17 +3367,75 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     # tidy-alphabetical-start
     src/engine/client/blocklist_driver.cpp
     src/engine/client/blocklist_driver.h
+    src/engine/client/graph.cpp
     src/engine/client/serverbrowser.cpp
     src/engine/client/serverbrowser.h
     src/engine/client/serverbrowser_http.cpp
     src/engine/client/serverbrowser_http.h
     src/engine/client/serverbrowser_ping_cache.cpp
     src/engine/client/serverbrowser_ping_cache.h
+    src/engine/client/session.cpp
+    src/engine/client/session_sources.cpp
+    src/engine/client/session_sources.h
+    src/engine/client/smooth_time.cpp
     src/engine/client/sqlite.cpp
+    src/engine/client/stream.h
     src/game/client/components/censor.cpp
     src/game/client/components/censor.h
+    src/game/client/input_policy.cpp
+    src/game/client/input_policy.h
+    src/game/client/local_player_profile.cpp
+    src/game/client/local_player_profile.h
+    src/game/client/map_context.cpp
+    src/game/client/map_context.h
+    src/game/client/session_game_config.cpp
+    src/game/client/session_game_config.h
     # tidy-alphabetical-end
   )
+
+  list(REMOVE_ITEM TESTS ${PROJECT_SOURCE_DIR}/src/test/game_state_test.cpp)
+  set(CLIENT_GAME_STATE_TEST_SOURCES
+    # tidy-alphabetical-start
+    src/engine/client/graph.cpp
+    src/engine/client/session.cpp
+    src/engine/client/session_sources.cpp
+    src/engine/client/smooth_time.cpp
+    src/game/client/game_state.cpp
+    src/game/client/game_view.cpp
+    src/game/client/laser_data.cpp
+    src/game/client/map_context.cpp
+    src/game/client/pickup_data.cpp
+    src/game/client/prediction/entities/character.cpp
+    src/game/client/prediction/entities/door.cpp
+    src/game/client/prediction/entities/dragger.cpp
+    src/game/client/prediction/entities/laser.cpp
+    src/game/client/prediction/entities/pickup.cpp
+    src/game/client/prediction/entities/plasma.cpp
+    src/game/client/prediction/entities/projectile.cpp
+    src/game/client/prediction/entity.cpp
+    src/game/client/prediction/gameworld.cpp
+    src/game/client/projectile_data.cpp
+    src/game/client/session_game_config.cpp
+    src/generated/client_data.cpp
+    src/generated/client_data.h
+    src/headless/client_game_state_test_main.cpp
+    src/test/game_state_test.cpp
+    # tidy-alphabetical-end
+  )
+  set(TARGET_CLIENT_GAME_STATE_TESTS client-game-state-tests)
+  add_executable(${TARGET_CLIENT_GAME_STATE_TESTS} EXCLUDE_FROM_ALL
+    ${CLIENT_GAME_STATE_TEST_SOURCES}
+    # tidy-alphabetical-start
+    $<TARGET_OBJECTS:engine-shared>
+    $<TARGET_OBJECTS:game-shared>
+    $<TARGET_OBJECTS:rust-bridge-shared>
+    # tidy-alphabetical-end
+    ${DEPS}
+  )
+  target_link_libraries(${TARGET_CLIENT_GAME_STATE_TESTS} ${GTEST_LIBRARIES} ${LIBS_SERVER})
+  target_include_directories(${TARGET_CLIENT_GAME_STATE_TESTS} SYSTEM PRIVATE ${GTEST_INCLUDE_DIRS})
+  list(APPEND TARGETS_OWN ${TARGET_CLIENT_GAME_STATE_TESTS})
+  list(APPEND TARGETS_LINK ${TARGET_CLIENT_GAME_STATE_TESTS})
 
   set(TARGET_TESTRUNNER testrunner)
   add_executable(${TARGET_TESTRUNNER} EXCLUDE_FROM_ALL
@@ -3368,10 +3456,17 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   list(APPEND TARGETS_OWN ${TARGET_TESTRUNNER})
   list(APPEND TARGETS_LINK ${TARGET_TESTRUNNER})
 
+  add_custom_target(check_client_state_architecture
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/check_client_state_architecture.py ${PROJECT_SOURCE_DIR}
+    COMMENT Checking client multi-state architecture boundaries
+    VERBATIM
+  )
+
   add_custom_target(run_cxx_tests
     COMMAND $<TARGET_FILE:${TARGET_TESTRUNNER}> ${TESTRUNNER_ARGS}
+    COMMAND $<TARGET_FILE:${TARGET_CLIENT_GAME_STATE_TESTS}>
     COMMENT Running unit tests
-    DEPENDS ${TARGET_TESTRUNNER}
+    DEPENDS ${TARGET_TESTRUNNER} ${TARGET_CLIENT_GAME_STATE_TESTS} check_client_state_architecture
     USES_TERMINAL
   )
   add_custom_target(run_tests
@@ -3952,7 +4047,7 @@ foreach(target ${TARGETS})
     target_compile_options(${target} PRIVATE /wd4996) # Use of non-_s functions.
     # tidy-alphabetical-end
     # Enable Edit & Continue (Hot Reload) support
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.25)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.25 AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
       set_property(TARGET ${target} PROPERTY MSVC_DEBUG_INFORMATION_FORMAT $<IF:$<CONFIG:Debug>,EditAndContinue,Embedded>)
       target_link_options(${target} PRIVATE $<$<CONFIG:Debug>:/INCREMENTAL>)
     endif()

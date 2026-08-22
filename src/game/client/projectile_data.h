@@ -28,8 +28,8 @@ public:
 	int m_TuneZone;
 };
 
-CProjectileData ExtractProjectileInfo(int NetObjType, const void *pData, class CGameWorld *pGameWorld, const CNetObj_EntityEx *pEntEx);
-CProjectileData ExtractProjectileInfoDDRace(const CNetObj_DDRaceProjectile *pProj, class CGameWorld *pGameWorld, const CNetObj_EntityEx *pEntEx);
+CProjectileData ExtractProjectileInfo(int NetObjType, const void *pData, const class CGameWorld *pGameWorld, const CNetObj_EntityEx *pEntEx);
+CProjectileData ExtractProjectileInfoDDRace(const CNetObj_DDRaceProjectile *pProj, const class CGameWorld *pGameWorld, const CNetObj_EntityEx *pEntEx);
 CProjectileData ExtractProjectileInfoDDNet(const CNetObj_DDNetProjectile *pProj);
 
 void DemoObjectRemoveExtraProjectileInfo(CNetObj_Projectile *pProj);

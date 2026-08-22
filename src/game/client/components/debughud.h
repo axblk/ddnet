@@ -8,9 +8,9 @@
 
 class CDebugHud : public CComponent
 {
-	void RenderNetCorrections();
-	void RenderTuning();
-	void RenderHint();
+	void RenderNetCorrections(const CRenderContext &Context);
+	void RenderTuning(const CRenderContext &Context);
+	void RenderHint(const CRenderContext &Context);
 
 	CGraph m_RampGraph;
 	CGraph m_ZoomedInGraph;
@@ -23,7 +23,7 @@ class CDebugHud : public CComponent
 public:
 	CDebugHud();
 	int Sizeof() const override { return sizeof(*this); }
-	void OnRender() override;
+	void OnRender(const CRenderContext &Context) override;
 };
 
 #endif

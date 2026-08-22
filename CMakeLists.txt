@@ -2573,11 +2573,13 @@ set(DEPS ${DEP_JSON} ${DEP_MD5} ${ZLIB_DEP})
 # The network half of the shared engine. Sixteen of the twenty-one tools never
 # open a socket, and an object library is linked whole, so this is what decides
 # whether a tool that only reads a map carries curl, OpenSSL, libwebsockets and
-# the Rust static library with it. `engine.cpp` is in here because `CEngine` is
-# what opens the network log; nothing outside the client and the server creates
-# one, and the 0.7 translation is only ever asked to translate what came over
-# a wire.
-set(ENGINE_NET_PATTERN "src/engine/shared/(econ|engine|game_wire|host_lookup|http_curl|http_emscripten|masterserver|netban|network[a-z_]*|protocolglue|quic_transport|server_identity|serverinfo|sixup_translate_snapshot|stun|translation_context|websockets)\.(cpp|h)$")
+# the Rust static library with it.
+#
+# The 0.7 translation is not in here: a demo of a 0.7 game has to be translated
+# the same way a packet does, and a program that renders demos has no wire.
+# Neither is `engine.cpp` — `CEngine` is the job pool, and everything creates
+# one; the network log it used to open is registered by the network itself now.
+set(ENGINE_NET_PATTERN "src/engine/shared/(econ|game_wire|host_lookup|http_curl|http_emscripten|masterserver|netban|network[a-z_]*|quic_transport|server_identity|serverinfo|stun|websockets)\.(cpp|h)$")
 set(ENGINE_NET ${ENGINE_SHARED})
 list(FILTER ENGINE_NET INCLUDE REGEX "${ENGINE_NET_PATTERN}")
 list(FILTER ENGINE_SHARED EXCLUDE REGEX "${ENGINE_NET_PATTERN}")
@@ -2680,8 +2682,15 @@ if(CLIENT)
     checksum.h
     client.cpp
     client.h
+    client_core.cpp
+    client_core.h
+    client_net.cpp
+    client_net.h
+    client_offline.h
     command_buffer.h
     connection.h
+    demo_render_client.cpp
+    demo_render_client.h
     demo_render_main.cpp
     demoedit.cpp
     demoedit.h
@@ -2720,6 +2729,10 @@ if(CLIENT)
     serverbrowser_ping_cache.h
     session.cpp
     session.h
+    session_source_demo.cpp
+    session_source_demo.h
+    session_source_net.cpp
+    session_source_net.h
     session_sources.cpp
     session_sources.h
     sixup_translate_system.cpp
@@ -3378,6 +3391,12 @@ if(CLIENT)
     set(DEMO_RENDERER_SRC ${ENGINE_CLIENT} ${GAME_CLIENT_MENUS_NULL} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/window_sdl\\.(cpp|h)$")
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/input\\.(cpp|h)$")
+    # Translating a 0.7 connless packet needs a program that receives one.
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
+    # The tool brings its own client, so the game's client and everything only
+    # that one needs stays out: the server browser, the updater, friends and
+    # favorites, demo and ghost recording, and the network behind all of them.
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/(client|client_net|session_source_net|sixup_translate_system|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|updater|favorites|demoedit|blocklist_driver|discord|steam|notifications)\\.(cpp|h)$")
     # A developer tool, not part of the game. It compiles a second copy of the
     # client, so building it by default would roughly double the build time,
     # and it is not shipped with the release either. Build it explicitly with
@@ -3389,7 +3408,6 @@ if(CLIENT)
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-client-graphics>
       $<TARGET_OBJECTS:engine-gfx>
-      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3409,6 +3427,9 @@ if(CLIENT)
     if(WEBGPU_NATIVE_BACKEND)
       target_compile_definitions(demo-renderer PRIVATE CONF_BACKEND_WEBGPU)
     endif()
+    # No `${LIBS}`: without the network there is nothing left that talks to
+    # curl, OpenSSL or libwebsockets, and a tool that turns a file into another
+    # file should not carry a TLS stack around.
     target_link_libraries(demo-renderer
       # tidy-alphabetical-start
       ${CRYPTO_LIBRARIES}
@@ -3419,13 +3440,15 @@ if(CLIENT)
       ${SQLite3_LIBRARIES}
       ${VULKAN_LIBRARIES}
       ${WAVPACK_LIBRARIES}
+      ${ZLIB_LIBRARIES}
       # tidy-alphabetical-end
       ${OPUSFILE_LIBRARIES}
       ${OPUS_LIBRARIES}
       ${OGG_LIBRARIES}
       ${PLATFORM_CLIENT_LIBS}
       rust_engine_shared
-      ${LIBS}
+      ${PLATFORM_LIBS}
+      ${CMAKE_THREAD_LIBS_INIT}
     )
     if(WEBGPU_NATIVE_BACKEND)
       target_link_libraries(demo-renderer WGPU::Native)
@@ -4009,6 +4032,10 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/engine/client/serverbrowser_ping_cache.cpp
     src/engine/client/serverbrowser_ping_cache.h
     src/engine/client/session.cpp
+    src/engine/client/session_source_demo.cpp
+    src/engine/client/session_source_demo.h
+    src/engine/client/session_source_net.cpp
+    src/engine/client/session_source_net.h
     src/engine/client/session_sources.cpp
     src/engine/client/session_sources.h
     src/engine/client/smooth_time.cpp
@@ -4038,6 +4065,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     # tidy-alphabetical-start
     src/engine/client/graph.cpp
     src/engine/client/session.cpp
+    src/engine/client/session_source_demo.cpp
+    src/engine/client/session_source_net.cpp
     src/engine/client/session_sources.cpp
     src/engine/client/smooth_time.cpp
     src/game/client/game_state.cpp

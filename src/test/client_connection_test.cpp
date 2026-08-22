@@ -1,7 +1,8 @@
 #include "test.h"
 
 #include <engine/client/connection.h>
-#include <engine/client/session_sources.h>
+#include <engine/client/session_source_demo.h>
+#include <engine/client/session_source_net.h>
 
 #include <game/client/input_policy.h>
 #include <game/client/local_player_profile.h>

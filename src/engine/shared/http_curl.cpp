@@ -276,16 +276,9 @@ int CHttpRequestCurl::ProgressCallback(void *pUser, double DlTotal, double DlCur
 	return pTask->m_Abort ? -1 : 0;
 }
 
-std::unique_ptr<IHttpRequest> CreateHttpRequest(const char *pUrl)
+std::unique_ptr<IHttpRequest> CHttpCurl::CreateRequest(const char *pUrl)
 {
 	return std::make_unique<CHttpRequestCurl>(pUrl);
-}
-
-void EscapeUrl(char *pBuf, size_t Size, const char *pStr)
-{
-	char *pEsc = curl_easy_escape(nullptr, pStr, 0);
-	str_copy(pBuf, pEsc, Size);
-	curl_free(pEsc);
 }
 
 bool CHttpCurl::Init(std::chrono::milliseconds ShutdownDelay)

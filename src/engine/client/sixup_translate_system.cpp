@@ -2,7 +2,7 @@
 
 #include <engine/client/client.h>
 
-int CClient::TranslateSysMsg(CSessionId SessionId, int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, const NETADDR *pPeerAddress, bool *pIsExMsg)
+int CClientWithConnection::TranslateSysMsg(CSessionId SessionId, int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, const NETADDR *pPeerAddress, bool *pIsExMsg)
 {
 	*pIsExMsg = false;
 	if(!System)

@@ -785,7 +785,11 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 		// Both fields stay where they are whether or not there is a choice, so
 		// the row does not jump and the address always reads under the same
 		// caret. Only a field with something to pick becomes a dropdown.
+		// The two fields answer different questions, so they are two elements: a
+		// gap and a rounded edge on either side of it keep them apart at any
+		// width, where sharing the edge made them read as one wide control.
 		ServerAddrEditBox.VSplitRight(46.0f, &ServerAddrEditBox, &FamilyDropDown);
+		ServerAddrEditBox.VSplitRight(4.0f, &ServerAddrEditBox, nullptr);
 		ServerAddrEditBox.VSplitRight(52.0f, &ServerAddrEditBox, &ProtocolDropDown);
 
 		Ui()->DoLabel(&ServerAddrLabel, Localize("Server address:"), 14.0f, TEXTALIGN_ML);
@@ -800,7 +804,7 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 			static CUi::SDropDownState s_ProtocolDropDownState;
 			static CScrollRegion s_ProtocolDropDownScrollRegion;
 			s_ProtocolDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_ProtocolDropDownScrollRegion;
-			s_ProtocolDropDownState.m_Corners = IGraphics::CORNER_NONE;
+			s_ProtocolDropDownState.m_Corners = IGraphics::CORNER_R;
 			s_ProtocolDropDownState.m_Rounding = 3.0f;
 			int Current = 0;
 			for(int i = 0; i < Choices.m_NumProtocols; ++i)
@@ -821,7 +825,7 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 			}
 			else
 			{
-				RenderConnectChoiceLabel(ProtocolDropDown, apLabels[0], IGraphics::CORNER_NONE);
+				RenderConnectChoiceLabel(ProtocolDropDown, apLabels[0], IGraphics::CORNER_R);
 			}
 		}
 
@@ -832,7 +836,7 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 			static CUi::SDropDownState s_FamilyDropDownState;
 			static CScrollRegion s_FamilyDropDownScrollRegion;
 			s_FamilyDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_FamilyDropDownScrollRegion;
-			s_FamilyDropDownState.m_Corners = IGraphics::CORNER_R;
+			s_FamilyDropDownState.m_Corners = IGraphics::CORNER_ALL;
 			s_FamilyDropDownState.m_Rounding = 3.0f;
 			int Current = 0;
 			for(int i = 0; i < Choices.m_NumFamilies; ++i)
@@ -849,7 +853,7 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 			}
 			else
 			{
-				RenderConnectChoiceLabel(FamilyDropDown, apLabels[0], IGraphics::CORNER_R);
+				RenderConnectChoiceLabel(FamilyDropDown, apLabels[0], IGraphics::CORNER_ALL);
 			}
 		}
 	}

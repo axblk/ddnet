@@ -4,10 +4,26 @@ use quinn_proto::{
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 const TRANSMITS_PER_CONNECTION_PER_DRIVE: usize = 8;
+
+/// Delay inserted between dropping and re-establishing the transport on an
+/// application resume, so an integration test can outlive the server grace window.
+static RECONNECT_DELAY: LazyLock<Duration> = LazyLock::new(|| {
+    Duration::from_millis(
+        std::env::var("DDNET_TEST_QUIC_RECONNECT_DELAY_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0),
+    )
+});
+
+/// Keeps the first resume binding instead of adopting rotated ones, so an
+/// integration test can replay a spent token.
+static KEEP_RESUME_TOKEN: LazyLock<bool> =
+    LazyLock::new(|| std::env::var_os("DDNET_TEST_QUIC_KEEP_RESUME_TOKEN").is_some());
 
 pub(super) struct OutgoingDatagram {
     pub destination: SocketAddr,
@@ -104,6 +120,20 @@ impl EndpointDriver {
                 {
                     self.endpoint.ignore(incoming);
                     self.recycle_packet_buffer(buffer);
+                    return true;
+                }
+                if !incoming.remote_address_validated() {
+                    // A first Initial proves nothing about its source address, and
+                    // accepting one costs a key schedule and a signature. Answer with
+                    // a Retry instead, which costs one small packet and no state, and
+                    // only do the work once the address has answered for itself.
+                    match self.endpoint.retry(incoming, &mut buffer) {
+                        Ok(transmit) => self.queue_transmit(transmit, buffer),
+                        Err(error) => {
+                            self.endpoint.ignore(error.into_incoming());
+                            self.recycle_packet_buffer(buffer);
+                        }
+                    }
                     return true;
                 }
                 match self.endpoint.accept(incoming, now, &mut buffer, None) {
@@ -451,6 +481,7 @@ pub(super) struct RawEndpoint {
     drops: u64,
     session_ids: Vec<u64>,
     command_queue_high_water: usize,
+    pending_reconnect: Option<(u64, bool, Instant)>,
 }
 
 impl RawEndpoint {
@@ -479,6 +510,7 @@ impl RawEndpoint {
             drops: 0,
             session_ids: Vec::new(),
             command_queue_high_water: 0,
+            pending_reconnect: None,
         }
     }
 
@@ -510,6 +542,7 @@ impl RawEndpoint {
             drops: 0,
             session_ids: Vec::new(),
             command_queue_high_water: 0,
+            pending_reconnect: None,
         };
         let handle = endpoint
             .driver
@@ -750,6 +783,10 @@ impl RawEndpoint {
         self.sessions.remove(&session_id);
         self.handles.remove(&handle);
         self.driver.remove_connection(handle);
+        if !RECONNECT_DELAY.is_zero() {
+            self.pending_reconnect = Some((session_id, sixup, Instant::now() + *RECONNECT_DELAY));
+            return true;
+        }
         self.start_client_connection(session_id, sixup, true)
             .is_ok()
     }
@@ -834,6 +871,12 @@ impl RawEndpoint {
 
     fn pump(&mut self) {
         let now = Instant::now();
+        if let Some((session_id, sixup, deadline)) = self.pending_reconnect {
+            if now >= deadline {
+                self.pending_reconnect = None;
+                let _ = self.start_client_connection(session_id, sixup, true);
+            }
+        }
         let mut flush_maps = true;
         loop {
             self.driver.drive(now);
@@ -1337,7 +1380,9 @@ impl RawEndpoint {
                         return false;
                     }
                     if let Mode::Client { resume, .. } = &mut self.mode {
-                        *resume = payload;
+                        if resume.is_empty() || !*KEEP_RESUME_TOKEN {
+                            *resume = payload;
+                        }
                     }
                     true
                 }
@@ -1493,10 +1538,28 @@ impl RawEndpoint {
         {
             return false;
         }
-        let Ok(fingerprint) =
-            super::verify_server_identity_proof(verification, payload, nonce, &channel_binding)
-        else {
-            return false;
+        let fingerprint = match super::verify_server_identity_proof(
+            verification,
+            payload,
+            nonce,
+            &channel_binding,
+        ) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => {
+                // Dropping the frame would leave the connect waiting for a
+                // handshake that can no longer finish, so the session ends here
+                // and carries the reason the identity was refused.
+                let sixup = self.sessions[&session_id].sixup;
+                self.close_protocol(session_id, &error);
+                self.push_event(
+                    super::ffi::QuicEventKind::ConnectFailedIdentity,
+                    session_id,
+                    Vec::new(),
+                    error,
+                    sixup,
+                );
+                return false;
+            }
         };
         let resume = match &self.mode {
             Mode::Client { resume, .. } => resume.clone(),

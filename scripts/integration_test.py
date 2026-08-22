@@ -264,6 +264,10 @@ class TestRunner:
 				print(f"{test.name} ... {YELLOW}skipped{RESET}")
 				num_skipped += 1
 				continue
+			if test.requires_linux and not sys.platform.startswith("linux"):
+				print(f"{test.name} ... {YELLOW}skipped{RESET}")
+				num_skipped += 1
+				continue
 			print(f"{test.name} ... ", end="", flush=True)
 			tmp_dir, error = self.run_test(test)
 			tmp_dir_formatted = f" ({tmp_dir})" if tmp_dir is not None else ""
@@ -679,13 +683,14 @@ json = {communities_json_filename!r}
 ALL_TESTS = []
 
 
-def test(test=None, *, requires_mastersrv=False, requires_websockets=False, requires_quic=False, requires_baseline=False, timeout=60):
+def test(test=None, *, requires_mastersrv=False, requires_websockets=False, requires_quic=False, requires_baseline=False, requires_linux=False, timeout=60):
 	def apply(test):
 		test.name = test.__name__
 		test.requires_mastersrv = requires_mastersrv
 		test.requires_websockets = requires_websockets
 		test.requires_quic = requires_quic
 		test.requires_baseline = requires_baseline
+		test.requires_linux = requires_linux
 		test.timeout = timeout
 		ALL_TESTS.append(test)
 		return test
@@ -930,7 +935,9 @@ def client_uses_quic_control_stream(test_env):
 	server.wait_for_exit()
 
 
-@test(requires_quic=True)
+# Server and client need distinct source addresses so the ban matches only the client.
+# 192.0.2.1 and 192.0.2.2 are locally bindable on Linux but not on other platforms.
+@test(requires_quic=True, requires_linux=True)
 def client_ban_blocks_quic_reconnect(test_env):
 	server = test_env.server([
 		"sv_ipv4only 1",
@@ -1600,12 +1607,24 @@ def server_can_register(test_env):
 	wait_for_startup([server])
 	server.wait_for_log_suffix("successfully registered", timeout=5)
 	server.wait_for_log_suffix("successfully registered", timeout=5)
-	servers_json = mastersrv.servers_json()
-	if len(servers_json["servers"]) != 1 or servers_json["servers"][0]["info"]["map"]["name"] != "Tutorial" or len(servers_json["servers"][0]["addresses"]) != 2 or "transport" in servers_json["servers"][0]["info"]:
+	# QUIC and WebTransport are both on by default, so a plain server announces
+	# six addresses, not two. The four modern ones arrive a moment after the
+	# legacy pair because they are challenged first, so the list has to be
+	# waited for rather than read once.
+	expected_addresses = {
+		f"tw-0.6+udp://[::1]:{server.port}",
+		f"tw-0.7+udp://[::1]:{server.port}",
+		f"ddnet+wt://[::1]:{server.port}",
+		f"ddnet+quic://[::1]:{server.port}",
+		f"tw-0.7+quic://[::1]:{server.port}",
+		f"tw-0.7+wt://[::1]:{server.port}",
+	}
+	servers_json = wait_for_server_address_bases(mastersrv, expected_addresses)
+	if servers_json["servers"][0]["info"]["map"]["name"] != "Tutorial" or "transport" in servers_json["servers"][0]["info"]:
 		raise AssertionError(f"unexpected servers.json\n{servers_json}")
 	server.exit()
-	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
-	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	for _ in expected_addresses:
+		mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
 	servers_json = mastersrv.servers_json()
 	if len(servers_json["servers"]) != 0:
 		raise AssertionError(f"unexpected servers.json\n{servers_json}")
@@ -1652,7 +1671,9 @@ def server_registers_shared_quic_transport_metadata(test_env):
 		mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
 	server.wait_for_exit()
 
-	server = test_env.server([arg for arg in common_args if arg != "sv_quic 1"])
+	# Not just dropping the line: QUIC is on by default now, so a server that is
+	# meant to speak WebTransport only has to say so.
+	server = test_env.server(["sv_quic 0" if arg == "sv_quic 1" else arg for arg in common_args])
 	wait_for_startup([server])
 	expected_addresses = {
 		f"tw-0.6+udp://[::1]:{server.port}",

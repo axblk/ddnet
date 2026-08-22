@@ -102,5 +102,6 @@ void CBackground::OnRender()
 	if(g_Config.m_ClOverlayEntities != 100)
 		return;
 
+	m_pBackgroundImages->Update();
 	CMapLayers::OnRender();
 }

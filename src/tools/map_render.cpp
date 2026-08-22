@@ -38,12 +38,15 @@ static constexpr const char *TOOL_NAME = "map_render";
 
 namespace MapRenderer
 {
+	static constexpr size_t JOB_THREADS = 2;
+
 	class CMinimalEngine final : public IEngine
 	{
 	public:
 		CJobPool m_JobPool;
 
 		void Init() override {}
+		size_t JobThreadCount() const override { return JOB_THREADS; }
 		void AddJob(std::shared_ptr<IJob> pJob) override
 		{
 			m_JobPool.Add(std::move(pJob));
@@ -424,7 +427,7 @@ int main(int argc, const char **argv)
 	}
 
 	CMinimalEngine *pEngine = new CMinimalEngine();
-	pEngine->m_JobPool.Init(2);
+	pEngine->m_JobPool.Init(JOB_THREADS);
 	pKernel->RegisterInterface(pEngine);
 
 	pKernel->RegisterInterface(pStorage.get(), false);

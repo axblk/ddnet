@@ -6,6 +6,7 @@
 #include <base/color.h>
 #include <base/vmath.h>
 
+#include <engine/client/asset_loader.h>
 #include <engine/client/enums.h>
 #include <engine/graphics.h>
 
@@ -16,6 +17,8 @@
 #include <game/client/render.h>
 
 #include <chrono>
+#include <memory>
+#include <optional>
 #include <vector>
 
 class CSkins7 : public CComponent
@@ -36,13 +39,21 @@ public:
 
 	class CSkinPart
 	{
+		int m_StorageType = 0;
+		bool m_LoadPending = false;
+		CImageResource m_LoadResource;
+		class CLoadData;
+		std::shared_ptr<CLoadData> m_pLoadData;
+
+		friend class CSkins7;
+
 	public:
-		int m_Type;
-		int m_Flags;
-		char m_aName[24];
+		int m_Type = 0;
+		int m_Flags = 0;
+		char m_aName[24] = {};
 		IGraphics::CTextureHandle m_OriginalTexture;
 		IGraphics::CTextureHandle m_ColorableTexture;
-		ColorRGBA m_BloodColor;
+		ColorRGBA m_BloodColor = ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f);
 
 		void ApplyTo(CTeeRenderInfo::CSixup &SixupRenderInfo) const;
 
@@ -73,9 +84,12 @@ public:
 
 	int Sizeof() const override { return sizeof(*this); }
 	void OnInit() override;
+	void OnUpdate() override;
+	void OnShutdown() override;
 
 	void Refresh(TSkinLoadedCallback &&SkinLoadedCallback);
 	std::chrono::nanoseconds LastRefreshTime() const { return m_LastRefreshTime; }
+	bool StartupAssetsLoaded() const;
 
 	const std::vector<CSkin> &GetSkins() const;
 	const std::vector<CSkinPart> &GetSkinParts(int Part) const;
@@ -108,15 +122,18 @@ private:
 
 	IGraphics::CTextureHandle m_XmasHatTexture;
 	IGraphics::CTextureHandle m_BotTexture;
+	CImageResource m_XmasHatResource;
+	CImageResource m_BotResource;
+	std::optional<std::chrono::nanoseconds> m_PartUpdateTime;
 
 	static int SkinPartScan(const char *pName, int IsDir, int DirType, void *pUser);
-	bool LoadSkinPart(int PartType, const char *pName, int DirType);
+	bool RegisterSkinPart(int PartType, const char *pName, int DirType);
 	static int SkinScan(const char *pName, int IsDir, int DirType, void *pUser);
 	bool LoadSkin(const char *pName, int DirType);
+	void StartPendingLoads();
+	void FinishLoads();
 
 	void InitPlaceholderSkinParts();
-	void LoadXmasHat();
-	void LoadBotDecoration();
 
 	void AddSkinFromConfigVariables(const char *pName, int Dummy);
 };

@@ -1244,7 +1244,9 @@ void CDemoPlayer::Update(bool RealTime)
 
 		m_Info.m_CurrentTime += (int64_t)(DeltaTime * (double)m_Info.m_Info.m_Speed);
 
-		// Do more ticks until we reach the current time.
+		// Do more ticks until we reach the current time. Limit the time spent
+		// catching up, so that slow playback falls behind instead of stalling.
+		const std::chrono::nanoseconds CatchUpDeadline = time_get_nanoseconds() + std::chrono::milliseconds(200);
 		while(!m_Info.m_Info.m_Paused)
 		{
 			const int64_t CurrentTickStart = m_Info.m_Info.m_CurrentTick * Freq / SERVER_TICK_SPEED;
@@ -1256,6 +1258,11 @@ void CDemoPlayer::Update(bool RealTime)
 			if(!IsPlaying())
 			{
 				return;
+			}
+			if(RealTime && time_get_nanoseconds() > CatchUpDeadline)
+			{
+				m_Info.m_CurrentTime = m_Info.m_Info.m_CurrentTick * Freq / SERVER_TICK_SPEED;
+				break;
 			}
 		}
 	}

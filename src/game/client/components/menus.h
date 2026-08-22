@@ -8,11 +8,14 @@
 #include <base/types.h>
 #include <base/vmath.h>
 
+#include <engine/client/asset_loader.h>
+#include <engine/client/ghost.h>
 #include <engine/console.h>
 #include <engine/demo.h>
 #include <engine/friends.h>
 #include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
+#include <engine/shared/jobs.h>
 #include <engine/textrender.h>
 
 #include <game/client/component.h>
@@ -27,8 +30,11 @@
 #include <game/voting.h>
 
 #include <chrono>
+#include <memory>
 #include <optional>
 #include <vector>
+
+class CImageInfo;
 
 class CMenus : public CComponent
 {
@@ -73,9 +79,11 @@ private:
 
 	// menus_settings_assets.cpp
 public:
+	bool StartupAssetsLoaded() const;
 	struct SCustomItem
 	{
 		IGraphics::CTextureHandle m_RenderTexture;
+		std::vector<CImageResource> m_vLoadResources;
 
 		char m_aName[50];
 
@@ -87,6 +95,7 @@ public:
 		struct SEntitiesImage
 		{
 			IGraphics::CTextureHandle m_Texture;
+			std::vector<CImageResource> m_vLoadResources;
 		};
 		SEntitiesImage m_aImages[MAP_IMAGE_MOD_TYPE_COUNT];
 	};
@@ -118,6 +127,7 @@ protected:
 	std::vector<SCustomParticle> m_vParticlesList;
 	std::vector<SCustomHud> m_vHudList;
 	std::vector<SCustomExtras> m_vExtrasList;
+	void FinishAssetPreviewLoads();
 
 	bool m_IsInit = false;
 
@@ -180,13 +190,17 @@ protected:
 	// images
 	struct CMenuImage
 	{
-		char m_aName[64];
+		char m_aName[64] = {};
 		IGraphics::CTextureHandle m_OrgTexture;
 		IGraphics::CTextureHandle m_GreyTexture;
+		CImageResource m_Resource;
+		std::shared_ptr<CImageInfo> m_pGreyImage;
 	};
 	std::vector<CMenuImage> m_vMenuImages;
+	CImageResource m_BlobResource;
 	static int MenuImageScan(const char *pName, int IsDir, int DirType, void *pUser);
 	const CMenuImage *FindMenuImage(const char *pName);
+	void FinishImageLoads();
 
 	// loading
 	class CLoadingState
@@ -661,8 +675,8 @@ public:
 	CMenus();
 	int Sizeof() const override { return sizeof(*this); }
 
-	void RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress);
-	void RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter);
+	void RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress, bool UpdateAndSwap = true);
+	void RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter, bool UpdateAndSwap = true);
 	void FinishLoading();
 
 	bool IsInit() const { return m_IsInit; }
@@ -672,6 +686,7 @@ public:
 
 	void OnInterfacesInit(CGameClient *pClient) override;
 	void OnInit() override;
+	void OnUpdate() override;
 
 	void OnStateChange(int NewState, int OldState) override;
 	void OnWindowResize() override;
@@ -779,7 +794,7 @@ public:
 		time_t m_Date;
 
 		CGhostItem() :
-			m_Slot(-1), m_Own(false) { m_aFilename[0] = 0; }
+			m_Failed(false), m_Slot(-1), m_Own(false) { m_aFilename[0] = 0; }
 
 		bool operator<(const CGhostItem &Other) const { return m_Time < Other.m_Time; }
 
@@ -795,13 +810,35 @@ public:
 		GHOST_SORT_DATE,
 	};
 
+	// Reads the headers of the ghosts of the current map
+	class CGhostlistScanJob : public IJob
+	{
+		IStorage *m_pStorage;
+		std::unique_ptr<CGhostLoader> m_pGhostLoader;
+		char m_aGhostDir[IO_MAX_PATH_LENGTH];
+		char m_aMapName[MAX_MAP_LENGTH];
+		SHA256_DIGEST m_MapSha256;
+		unsigned m_MapCrc;
+		std::vector<CGhostItem> m_vGhosts;
+
+		static int FetchCallback(const CFsFileInfo *pInfo, int IsDir, int StorageType, void *pUser);
+		void Run() override;
+
+	public:
+		CGhostlistScanJob(IStorage *pStorage, std::unique_ptr<CGhostLoader> pGhostLoader, const char *pGhostDir, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc);
+
+		std::vector<CGhostItem> &Ghosts() { return m_vGhosts; }
+	};
+
 	std::vector<CGhostItem> m_vGhosts;
 
-	std::chrono::nanoseconds m_GhostPopulateStartTime{0};
+	std::shared_ptr<CGhostlistScanJob> m_pGhostlistScanJob;
 
 	void GhostlistPopulate();
+	void UpdateGhostlistScan();
 	CGhostItem *GetOwnGhost();
 	void UpdateOwnGhost(CGhostItem Item);
+	void OnGhostLoadFailed(int Slot);
 	void DeleteGhostItem(int Index);
 	void SortGhostlist();
 
@@ -856,8 +893,6 @@ private:
 	CMenusSettingsControls m_MenusSettingsControls;
 	friend CMenusSettingsControls;
 	CMenusStart m_MenusStart;
-
-	static int GhostlistFetchCallback(const CFsFileInfo *pInfo, int IsDir, int StorageType, void *pUser);
 
 	// found in menus_ingame.cpp
 	void RenderInGameNetwork(CUIRect MainView);

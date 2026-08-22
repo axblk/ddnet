@@ -13,8 +13,48 @@
 #include <game/localization.h>
 #include <game/mapitems.h>
 
+class CMapSounds::CMapSoundLoading final : public CAssetJob
+{
+	ISound *m_pSound;
+	int m_SampleId = -1;
+
+protected:
+	bool Process() override
+	{
+		m_SampleId = m_pSound->LoadOpusFromMem(Data().data(), static_cast<unsigned>(Data().size()), false, Path());
+		return m_SampleId >= 0;
+	}
+
+public:
+	CMapSoundLoading(ISound *pSound, IStorage *pStorage, const char *pPath) :
+		CAssetJob(pStorage, pPath, IStorage::TYPE_ALL),
+		m_pSound(pSound)
+	{
+	}
+
+	CMapSoundLoading(ISound *pSound, std::vector<uint8_t> vData, const char *pContextName) :
+		CAssetJob(std::move(vData), pContextName),
+		m_pSound(pSound)
+	{
+	}
+
+	~CMapSoundLoading() override
+	{
+		if(m_SampleId >= 0)
+			m_pSound->UnloadSample(m_SampleId);
+	}
+
+	int TakeSample()
+	{
+		const int SampleId = m_SampleId;
+		m_SampleId = -1;
+		return SampleId;
+	}
+};
+
 CMapSounds::CMapSounds()
 {
+	std::fill(std::begin(m_aSounds), std::end(m_aSounds), -1);
 	m_Count = 0;
 }
 
@@ -63,7 +103,7 @@ void CMapSounds::OnMapLoad()
 	m_Count = std::clamp<int>(m_Count, 0, MAX_MAPSOUNDS);
 
 	// load new samples
-	bool ShowWarning = false;
+	m_LoadWarning = false;
 	for(int i = 0; i < m_Count; i++)
 	{
 		CMapItemSound *pSound = (CMapItemSound *)pMap->GetItem(Start + i);
@@ -73,8 +113,7 @@ void CMapSounds::OnMapLoad()
 			if(pSound->m_External)
 			{
 				log_error("mapsounds", "Failed to load map sound %d: failed to load name.", i);
-				ShowWarning = true;
-				m_aSounds[i] = -1;
+				m_LoadWarning = true;
 				continue;
 			}
 			pName = "(error)";
@@ -84,7 +123,7 @@ void CMapSounds::OnMapLoad()
 		{
 			char aBuf[IO_MAX_PATH_LENGTH];
 			str_format(aBuf, sizeof(aBuf), "mapres/%s.opus", pName);
-			m_aSounds[i] = Sound()->LoadOpus(aBuf);
+			m_vSoundLoads.push_back({i, GameClient()->AssetLoader().Load(std::make_shared<CMapSoundLoading>(Sound(), Storage(), aBuf))});
 			pMap->UnloadData(pSound->m_SoundName);
 		}
 		else
@@ -93,19 +132,22 @@ void CMapSounds::OnMapLoad()
 			if(pData == nullptr)
 			{
 				log_error("mapsounds", "Failed to load map sound %d: failed to load data.", i);
-				ShowWarning = true;
-				m_aSounds[i] = -1;
+				m_LoadWarning = true;
 				continue;
 			}
 			const int SoundDataSize = pMap->GetDataSize(pSound->m_SoundData);
-			m_aSounds[i] = Sound()->LoadOpusFromMem(pData, SoundDataSize, false, pName);
+			if(SoundDataSize <= 0)
+			{
+				log_error("mapsounds", "Failed to load map sound %d: invalid data size.", i);
+				m_LoadWarning = true;
+				pMap->UnloadData(pSound->m_SoundData);
+				continue;
+			}
+			const auto *pBytes = static_cast<const uint8_t *>(pData);
+			std::vector<uint8_t> vData(pBytes, pBytes + SoundDataSize);
+			m_vSoundLoads.push_back({i, GameClient()->AssetLoader().Load(std::make_shared<CMapSoundLoading>(Sound(), std::move(vData), pName))});
 			pMap->UnloadData(pSound->m_SoundData);
 		}
-		ShowWarning = ShowWarning || m_aSounds[i] == -1;
-	}
-	if(ShowWarning)
-	{
-		Client()->AddWarning(SWarning(Localize("Some map sounds could not be loaded. Check the local console for details.")));
 	}
 
 	// enqueue sound sources
@@ -126,7 +168,7 @@ void CMapSounds::OnMapLoad()
 			const CMapItemLayerSounds *pSoundLayer = reinterpret_cast<const CMapItemLayerSounds *>(pLayer);
 			if(pSoundLayer->m_Version < 1 || pSoundLayer->m_Version > 2)
 				continue;
-			if(pSoundLayer->m_Sound < 0 || pSoundLayer->m_Sound >= m_Count || m_aSounds[pSoundLayer->m_Sound] == -1)
+			if(pSoundLayer->m_Sound < 0 || pSoundLayer->m_Sound >= m_Count)
 				continue;
 
 			const CSoundSource *pSources = static_cast<CSoundSource *>(Layers()->Map()->GetDataSwapped(pSoundLayer->m_Data));
@@ -147,8 +189,36 @@ void CMapSounds::OnMapLoad()
 	}
 }
 
+void CMapSounds::FinishSoundLoads()
+{
+	for(auto It = m_vSoundLoads.begin(); It != m_vSoundLoads.end();)
+	{
+		if(!It->m_Resource.IsFinished())
+		{
+			++It;
+			continue;
+		}
+		if(It->m_Resource.IsReady())
+		{
+			m_aSounds[It->m_Sound] = It->m_Resource.Result().TakeSample();
+		}
+		else if(It->m_Resource.IsFailed())
+		{
+			log_error("mapsounds", "Failed to load map sound '%s'", It->m_Resource.Path());
+			m_LoadWarning = true;
+		}
+		It = m_vSoundLoads.erase(It);
+	}
+	if(m_vSoundLoads.empty() && m_LoadWarning)
+	{
+		Client()->AddWarning(SWarning(Localize("Some map sounds could not be loaded. Check the local console for details.")));
+		m_LoadWarning = false;
+	}
+}
+
 void CMapSounds::OnRender()
 {
+	FinishSoundLoads();
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		return;
 
@@ -157,6 +227,8 @@ void CMapSounds::OnRender()
 	// enqueue sounds
 	for(auto &Source : m_vSourceQueue)
 	{
+		if(m_aSounds[Source.m_Sound] < 0)
+			continue;
 		static float s_Time = 0.0f;
 		if(GameClient()->m_Snap.m_pGameInfoObj)
 		{
@@ -238,6 +310,8 @@ void CMapSounds::OnRender()
 
 void CMapSounds::Clear()
 {
+	m_vSoundLoads.clear();
+	m_LoadWarning = false;
 	// unload all samples
 	m_vSourceQueue.clear();
 	for(int i = 0; i < m_Count; i++)

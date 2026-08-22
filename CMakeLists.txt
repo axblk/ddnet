@@ -1669,6 +1669,7 @@ set(EXPECTED_DATA
   maps7/Sunny\ Side\ Up.map
   maps7/Tsunami.map
   maps7/Tutorial.map
+  maps7/ctf1.map
   maps7/readme.txt
   menuimages/demos.png
   menuimages/editor.png
@@ -1954,11 +1955,13 @@ set(EXPECTED_DATA
   themes/winter_day.map
   themes/winter_night.map
   touch_controls.json
+  vanilla_golden/scenarios.txt
+  vanilla_golden/stock-0.7.5.trace
   wordlist.txt
   # tidy-alphabetical-end
 )
 
-set_glob(DATA GLOB_RECURSE "cfg;frag;json;map;otf;png;rules;ttc;ttf;txt;vert;wv" data ${EXPECTED_DATA})
+set_glob(DATA GLOB_RECURSE "cfg;frag;json;map;otf;png;rules;trace;ttc;ttf;txt;vert;wv" data ${EXPECTED_DATA})
 
 ########################################################################
 # COPY DATA AND SHARED LIBS
@@ -3032,12 +3035,52 @@ if(SERVER)
     gamecontroller.h
     gamemodes/ddnet.cpp
     gamemodes/ddnet.h
+    gamemodes/ddrace.cpp
+    gamemodes/ddrace.h
+    gamemodes/ddrace_character.cpp
+    gamemodes/ddrace_character.h
+    gamemodes/ddrace_map_entities.cpp
+    gamemodes/ddrace_map_entities.h
     gamemodes/mod.cpp
     gamemodes/mod.h
     gameworld.cpp
     gameworld.h
     interactions.cpp
     interactions.h
+    mode/builtin_game_modes.cpp
+    mode/builtin_game_modes.h
+    mode/entity_registry.cpp
+    mode/entity_registry.h
+    mode/game_host.cpp
+    mode/game_host.h
+    mode/game_mode_map_reload_state.h
+    mode/game_mode_registry.cpp
+    mode/game_mode_registry.h
+    mode/game_services.cpp
+    mode/game_services.h
+    mode/match_events.h
+    mode/match_stats.cpp
+    mode/match_stats.h
+    modes/insta/game_modes.cpp
+    modes/insta/game_modes.h
+    modes/insta/rules.h
+    modes/vanilla/ctf.cpp
+    modes/vanilla/ctf.h
+    modes/vanilla/dm.cpp
+    modes/vanilla/dm.h
+    modes/vanilla/flag.cpp
+    modes/vanilla/flag.h
+    modes/vanilla/game_modes.cpp
+    modes/vanilla/game_modes.h
+    modes/vanilla/player.h
+    modes/vanilla/tdm.cpp
+    modes/vanilla/tdm.h
+    modes/vanilla/teamplay.cpp
+    modes/vanilla/teamplay.h
+    modes/vanilla/vanilla_pvp.cpp
+    modes/vanilla/vanilla_pvp.h
+    modes/zcatch/game_modes.cpp
+    modes/zcatch/game_modes.h
     mutes.cpp
     player.cpp
     player.h
@@ -3286,11 +3329,13 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     chunk_header_test.cpp
     color_test.cpp
     compression_test.cpp
+    console_test.cpp
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp
     editor_test.cpp
     fs_test.cpp
+    game_mode_registry_test.cpp
     gameworld_test.cpp
     git_revision_test.cpp
     hash_test.cpp
@@ -3368,14 +3413,35 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   list(APPEND TARGETS_OWN ${TARGET_TESTRUNNER})
   list(APPEND TARGETS_LINK ${TARGET_TESTRUNNER})
 
+  set(TARGET_VANILLA_GOLDEN vanilla-golden-current)
+  add_executable(${TARGET_VANILLA_GOLDEN} EXCLUDE_FROM_ALL
+    scripts/vanilla_golden/current_runner.cpp
+    $<TARGET_OBJECTS:engine-shared>
+    $<TARGET_OBJECTS:game-server-without-main>
+    $<TARGET_OBJECTS:game-shared>
+    $<TARGET_OBJECTS:rust-bridge-shared>
+    ${DEPS}
+  )
+  target_link_libraries(${TARGET_VANILLA_GOLDEN} ${LIBS_SERVER})
+  list(APPEND TARGETS_OWN ${TARGET_VANILLA_GOLDEN})
+  list(APPEND TARGETS_LINK ${TARGET_VANILLA_GOLDEN})
+
   add_custom_target(run_cxx_tests
     COMMAND $<TARGET_FILE:${TARGET_TESTRUNNER}> ${TESTRUNNER_ARGS}
     COMMENT Running unit tests
     DEPENDS ${TARGET_TESTRUNNER}
     USES_TERMINAL
   )
+  add_custom_target(run_vanilla_golden_tests
+    COMMAND ${Python3_EXECUTABLE} scripts/vanilla_golden.py compare --runner $<TARGET_FILE:${TARGET_VANILLA_GOLDEN}>
+    COMMENT Running Vanilla golden tests
+    DEPENDS ${TARGET_VANILLA_GOLDEN}
+    USES_TERMINAL
+    VERBATIM
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  )
   add_custom_target(run_tests
-    DEPENDS run_cxx_tests
+    DEPENDS run_cxx_tests run_vanilla_golden_tests
   )
   if(NOT MSVC OR CMAKE_BUILD_TYPE STREQUAL Release)
     # On MSVC, Rust tests only work in the release mode because we link our C++

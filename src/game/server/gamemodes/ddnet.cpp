@@ -14,27 +14,169 @@
 #include <game/server/gamecontext.h>
 #include <game/server/player.h>
 #include <game/server/score.h>
+#include <game/server/teams.h>
 #include <game/version.h>
 
-#define GAME_TYPE_NAME "DDraceNetwork"
-#define TEST_TYPE_NAME "TestDDraceNetwork"
+#include <algorithm>
+#include <vector>
 
-CGameControllerDDNet::CGameControllerDDNet(class CGameContext *pGameServer) :
-	IGameController(pGameServer)
+CGameControllerDDNet::CGameControllerDDNet(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
+	CGameControllerDDRace(Services, GameModeInfo)
 {
-	m_pGameType = g_Config.m_SvTestingCommands ? TEST_TYPE_NAME : GAME_TYPE_NAME;
-	m_GameFlags = protocol7::GAMEFLAG_RACE;
 }
 
 CGameControllerDDNet::~CGameControllerDDNet() = default;
 
-CScore *CGameControllerDDNet::Score()
+CTuningParams CGameControllerDDNet::DefaultTuning()
 {
-	return GameServer()->Score();
+	CTuningParams Tuning = CTuningParams::DEFAULT;
+	Tuning.Set("gun_speed", 1400);
+	Tuning.Set("gun_curvature", 0);
+	Tuning.Set("shotgun_speed", 500);
+	Tuning.Set("shotgun_speeddiff", 0);
+	Tuning.Set("shotgun_curvature", 0);
+	return Tuning;
+}
+
+void CGameControllerDDNet::ResetTuning()
+{
+	*GameServer()->GlobalTuning() = DefaultTuning();
+	GameServer()->SendTuningParams(-1);
+}
+
+void CGameControllerDDNet::InitGameSettings()
+{
+	const CTuningParams Tuning = DefaultTuning();
+	for(int i = 0; i < TuneZone::NUM; i++)
+	{
+		GameServer()->TuningList()[i] = Tuning;
+		GameServer()->m_aaZoneEnterMsg[i][0] = 0;
+		GameServer()->m_aaZoneLeaveMsg[i][0] = 0;
+	}
+	if(g_Config.m_SvTuneReset)
+		ResetTuning();
+
+	if(g_Config.m_SvDDRaceTuneReset)
+	{
+		g_Config.m_SvHit = 1;
+		g_Config.m_SvEndlessDrag = 0;
+		g_Config.m_SvOldLaser = 0;
+		g_Config.m_SvOldTeleportHook = 0;
+		g_Config.m_SvOldTeleportWeapons = 0;
+		g_Config.m_SvTeleportHoldHook = 0;
+		g_Config.m_SvTeam = SV_TEAM_ALLOWED;
+		g_Config.m_SvShowOthersDefault = SHOW_OTHERS_OFF;
+
+		for(auto &Switcher : GameServer()->Switchers())
+			Switcher.m_Initial = true;
+	}
+
+	LoadGameSettings();
+
+	if(g_Config.m_SvSoloServer)
+	{
+		g_Config.m_SvTeam = SV_TEAM_FORCED_SOLO;
+		g_Config.m_SvShowOthersDefault = SHOW_OTHERS_ON;
+
+		GameServer()->GlobalTuning()->Set("player_collision", 0);
+		GameServer()->GlobalTuning()->Set("player_hooking", 0);
+
+		for(int i = 0; i < TuneZone::NUM; i++)
+		{
+			GameServer()->TuningList()[i].Set("player_collision", 0);
+			GameServer()->TuningList()[i].Set("player_hooking", 0);
+		}
+	}
+
+	ApplyMapSettings();
+}
+
+void CGameControllerDDNet::UpdateGameInfo(CNetObj_GameInfo &GameInfo, int SnappingClient)
+{
+	CPlayer *pPlayer = SnappingClient != SERVER_DEMO_CLIENT ? GameServer()->m_apPlayers[SnappingClient] : nullptr;
+	if(!pPlayer || (pPlayer->m_TimerType != CPlayer::TIMERTYPE_GAMETIMER && pPlayer->m_TimerType != CPlayer::TIMERTYPE_GAMETIMER_AND_BROADCAST) || pPlayer->GetClientVersion() < VERSION_DDNET_GAMETICK)
+		return;
+
+	CCharacterDDRace *pChr = nullptr;
+	if((pPlayer->GetTeam() == TEAM_SPECTATORS || pPlayer->IsPaused()) && pPlayer->SpectatorId() != SPEC_FREEVIEW)
+	{
+		CPlayer *pSpectatedPlayer = GameServer()->m_apPlayers[pPlayer->SpectatorId()];
+		if(pSpectatedPlayer)
+			pChr = static_cast<CCharacterDDRace *>(pSpectatedPlayer->GetCharacter());
+	}
+	else
+	{
+		pChr = static_cast<CCharacterDDRace *>(pPlayer->GetCharacter());
+	}
+
+	if(pChr && pChr->m_DDRaceState == ERaceState::STARTED)
+	{
+		GameInfo.m_WarmupTimer = -pChr->m_StartTime;
+		GameInfo.m_GameStateFlags |= GAMESTATEFLAG_RACETIME;
+	}
+}
+
+int CGameControllerDDNet::GameInfoFlags(int SnappingClient) const
+{
+	return GAMEINFOFLAG_TIMESCORE |
+	       GAMEINFOFLAG_GAMETYPE_RACE |
+	       GAMEINFOFLAG_GAMETYPE_DDRACE |
+	       GAMEINFOFLAG_GAMETYPE_DDNET |
+	       GAMEINFOFLAG_UNLIMITED_AMMO |
+	       GAMEINFOFLAG_RACE_RECORD_MESSAGE |
+	       GAMEINFOFLAG_ALLOW_EYE_WHEEL |
+	       GAMEINFOFLAG_ALLOW_HOOK_COLL |
+	       GAMEINFOFLAG_ALLOW_ZOOM |
+	       GAMEINFOFLAG_BUG_DDRACE_GHOST |
+	       GAMEINFOFLAG_BUG_DDRACE_INPUT |
+	       GAMEINFOFLAG_PREDICT_DDRACE |
+	       GAMEINFOFLAG_PREDICT_DDRACE_TILES |
+	       GAMEINFOFLAG_ENTITIES_DDNET |
+	       GAMEINFOFLAG_ENTITIES_DDRACE |
+	       GAMEINFOFLAG_ENTITIES_RACE |
+	       GAMEINFOFLAG_RACE;
+}
+
+int CGameControllerDDNet::GameInfoFlags2(int SnappingClient) const
+{
+	int Flags = GAMEINFOFLAG2_HUD_DDRACE | GAMEINFOFLAG2_DDRACE_TEAM | GAMEINFOFLAG2_PREDICT_EVENTS | GAMEINFOFLAG2_SUPPORTS_128_TEAMS;
+	if(g_Config.m_SvNoWeakHook)
+		Flags |= GAMEINFOFLAG2_NO_WEAK_HOOK;
+	return Flags;
+}
+
+void CGameControllerDDNet::SnapMode(int SnappingClient)
+{
+	if(Server()->IsSixup(SnappingClient))
+	{
+		protocol7::CNetObj_GameDataRace RaceData = {};
+		CFinishTime MapTime = SnapMapBestTime(SnappingClient);
+		const int BestTime = MapTime.m_Seconds > 0 ? MapTime.m_Seconds * 1000 + MapTime.m_Milliseconds : -1;
+
+		RaceData.m_BestTime = BestTime;
+		RaceData.m_Precision = 2;
+		RaceData.m_RaceFlags = protocol7::RACEFLAG_KEEP_WANTED_WEAPON;
+		Server()->SnapNewItem(0, RaceData);
+	}
+
+	SnapSwitchers(SnappingClient);
+
+	if(!Server()->IsSixup(SnappingClient))
+	{
+		CFinishTime MapTime = SnapMapBestTime(SnappingClient);
+		if(MapTime.m_Seconds != FinishTime::UNSET)
+		{
+			CNetObj_MapBestTime MapBestTime = {};
+			MapBestTime.m_MapBestTimeSeconds = MapTime.m_Seconds;
+			MapBestTime.m_MapBestTimeMillis = MapTime.m_Milliseconds;
+			Server()->SnapNewItem(0, MapBestTime);
+		}
+	}
 }
 
 void CGameControllerDDNet::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
 {
+	CCharacterDDRace *pRaceChr = static_cast<CCharacterDDRace *>(pChr);
 	CPlayer *pPlayer = pChr->GetPlayer();
 	const int ClientId = pPlayer->GetCid();
 
@@ -55,39 +197,39 @@ void CGameControllerDDNet::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
 	int FTile3 = GameServer()->Collision()->GetFrontTileIndex(S3);
 	int FTile4 = GameServer()->Collision()->GetFrontTileIndex(S4);
 
-	const ERaceState PlayerDDRaceState = pChr->m_DDRaceState;
+	const ERaceState PlayerDDRaceState = pRaceChr->m_DDRaceState;
 	bool IsOnStartTile = (TileIndex == TILE_START) || (TileFIndex == TILE_START) || FTile1 == TILE_START || FTile2 == TILE_START || FTile3 == TILE_START || FTile4 == TILE_START || Tile1 == TILE_START || Tile2 == TILE_START || Tile3 == TILE_START || Tile4 == TILE_START;
 	// start
 	if(IsOnStartTile && PlayerDDRaceState != ERaceState::CHEATED)
 	{
-		const int Team = GameServer()->GetDDRaceTeam(ClientId);
-		if(Teams().GetSaving(Team))
+		const int Team = RaceTeams().m_Core.Team(ClientId);
+		if(RaceTeams().GetSaving(Team))
 		{
-			GameServer()->SendStartWarning(ClientId, "You can't start while loading/saving of team is in progress");
+			pRaceChr->SendStartWarning("You can't start while loading/saving of team is in progress");
 			pChr->Die(ClientId, WEAPON_WORLD);
 			return;
 		}
-		if(g_Config.m_SvTeam == SV_TEAM_MANDATORY && (Team == TEAM_FLOCK || Teams().TeamSize(Team) <= 1))
+		if(g_Config.m_SvTeam == SV_TEAM_MANDATORY && (Team == TEAM_FLOCK || RaceTeams().TeamSize(Team) <= 1))
 		{
-			GameServer()->SendStartWarning(ClientId, "You have to be in a team with other tees to start");
+			pRaceChr->SendStartWarning("You have to be in a team with other tees to start");
 			pChr->Die(ClientId, WEAPON_WORLD);
 			return;
 		}
-		if(g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO && Team != TEAM_FLOCK && Teams().IsValidTeamNumber(Team) && Teams().TeamSize(Team) < g_Config.m_SvMinTeamSize && !Teams().TeamFlock(Team))
+		if(g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO && Team != TEAM_FLOCK && RaceTeams().IsValidTeamNumber(Team) && RaceTeams().TeamSize(Team) < g_Config.m_SvMinTeamSize && !RaceTeams().TeamFlock(Team))
 		{
 			char aBuf[128];
 			str_format(aBuf, sizeof(aBuf), "Your team has fewer than %d players, so your team rank won't count", g_Config.m_SvMinTeamSize);
-			GameServer()->SendStartWarning(ClientId, aBuf);
+			pRaceChr->SendStartWarning(aBuf);
 		}
 		if(g_Config.m_SvResetPickups)
 		{
 			pChr->ResetPickups();
 		}
 
-		Teams().OnCharacterStart(ClientId);
-		pChr->m_LastTimeCp = -1;
-		pChr->m_LastTimeCpBroadcasted = -1;
-		for(float &CurrentTimeCp : pChr->m_aCurrentTimeCp)
+		RaceTeams().OnCharacterStart(ClientId);
+		pRaceChr->m_LastTimeCp = -1;
+		pRaceChr->m_LastTimeCpBroadcasted = -1;
+		for(float &CurrentTimeCp : pRaceChr->m_aCurrentTimeCp)
 		{
 			CurrentTimeCp = 0.0f;
 		}
@@ -95,22 +237,22 @@ void CGameControllerDDNet::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
 
 	// finish
 	if(((TileIndex == TILE_FINISH) || (TileFIndex == TILE_FINISH) || FTile1 == TILE_FINISH || FTile2 == TILE_FINISH || FTile3 == TILE_FINISH || FTile4 == TILE_FINISH || Tile1 == TILE_FINISH || Tile2 == TILE_FINISH || Tile3 == TILE_FINISH || Tile4 == TILE_FINISH) && PlayerDDRaceState == ERaceState::STARTED)
-		Teams().OnCharacterFinish(ClientId);
+		RaceTeams().OnCharacterFinish(ClientId);
 
 	// unlock team
-	else if(((TileIndex == TILE_UNLOCK_TEAM) || (TileFIndex == TILE_UNLOCK_TEAM)) && Teams().TeamLocked(GameServer()->GetDDRaceTeam(ClientId)))
+	else if(((TileIndex == TILE_UNLOCK_TEAM) || (TileFIndex == TILE_UNLOCK_TEAM)) && RaceTeams().TeamLocked(RaceTeams().m_Core.Team(ClientId)))
 	{
-		Teams().SetTeamLock(GameServer()->GetDDRaceTeam(ClientId), false);
-		GameServer()->SendChatTeam(GameServer()->GetDDRaceTeam(ClientId), "Your team was unlocked by an unlock team tile");
+		RaceTeams().SetTeamLock(RaceTeams().m_Core.Team(ClientId), false);
+		GameServer()->SendChatTeam(RaceTeams().m_Core.Team(ClientId), "Your team was unlocked by an unlock team tile");
 	}
 
 	// solo part
-	if(((TileIndex == TILE_SOLO_ENABLE) || (TileFIndex == TILE_SOLO_ENABLE)) && !Teams().m_Core.GetSolo(ClientId))
+	if(((TileIndex == TILE_SOLO_ENABLE) || (TileFIndex == TILE_SOLO_ENABLE)) && !TeamsCore().GetSolo(ClientId))
 	{
 		GameServer()->SendChatTarget(ClientId, "You are now in a solo part");
 		pChr->SetSolo(true);
 	}
-	else if(((TileIndex == TILE_SOLO_DISABLE) || (TileFIndex == TILE_SOLO_DISABLE)) && Teams().m_Core.GetSolo(ClientId))
+	else if(((TileIndex == TILE_SOLO_DISABLE) || (TileFIndex == TILE_SOLO_DISABLE)) && TeamsCore().GetSolo(ClientId))
 	{
 		GameServer()->SendChatTarget(ClientId, "You are now out of the solo part");
 		pChr->SetSolo(false);
@@ -125,7 +267,7 @@ void CGameControllerDDNet::SetArmorProgress(CCharacter *pCharacter, int Progress
 int CGameControllerDDNet::SnapPlayerScore(int SnappingClient, CPlayer *pPlayer)
 {
 	bool HideScore = g_Config.m_SvHideScore && SnappingClient != pPlayer->GetCid();
-	std::optional<float> Score = GameServer()->Score()->PlayerData(pPlayer->GetCid())->m_BestTime;
+	std::optional<float> Score = RaceScore().PlayerData(pPlayer->GetCid())->m_BestTime;
 
 	if(Server()->IsSixup(SnappingClient))
 	{
@@ -155,7 +297,7 @@ int CGameControllerDDNet::SnapPlayerScore(int SnappingClient, CPlayer *pPlayer)
 
 IGameController::CFinishTime CGameControllerDDNet::SnapPlayerTime(int SnappingClient, CPlayer *pPlayer)
 {
-	std::optional<float> BestTime = GameServer()->Score()->PlayerData(pPlayer->GetCid())->m_BestTime;
+	std::optional<float> BestTime = RaceScore().PlayerData(pPlayer->GetCid())->m_BestTime;
 	if(BestTime.has_value() && (!g_Config.m_SvHideScore || SnappingClient == pPlayer->GetCid()))
 	{
 		// same as in str_time_float
@@ -169,10 +311,11 @@ IGameController::CFinishTime CGameControllerDDNet::SnapPlayerTime(int SnappingCl
 
 IGameController::CFinishTime CGameControllerDDNet::SnapMapBestTime(int SnappingClient)
 {
-	if(m_CurrentRecord.has_value() && !g_Config.m_SvHideScore)
+	const std::optional<float> &CurrentRecord = RaceScore().CurrentRecord();
+	if(CurrentRecord.has_value() && !g_Config.m_SvHideScore)
 	{
 		// same as in str_time_float
-		int64_t TimeMilliseconds = time_milliseconds_from_seconds(m_CurrentRecord.value());
+		int64_t TimeMilliseconds = time_milliseconds_from_seconds(CurrentRecord.value());
 		int Seconds = static_cast<int>(TimeMilliseconds / 1000);
 		int Millis = static_cast<int>(TimeMilliseconds % 1000);
 		return CFinishTime(Seconds, Millis);
@@ -182,15 +325,12 @@ IGameController::CFinishTime CGameControllerDDNet::SnapMapBestTime(int SnappingC
 
 void CGameControllerDDNet::OnPlayerConnect(CPlayer *pPlayer)
 {
-	IGameController::OnPlayerConnect(pPlayer);
+	CGameControllerDDRace::OnPlayerConnect(pPlayer);
 	int ClientId = pPlayer->GetCid();
-
-	// init the player
-	Score()->PlayerData(ClientId)->Reset();
 
 	// Can't set score here as LoadScore() is threaded, run it in
 	// LoadScoreThreaded() instead
-	Score()->LoadPlayerData(ClientId);
+	RaceScore().LoadPlayerData(ClientId);
 
 	if(!Server()->ClientPrevIngame(ClientId))
 	{
@@ -208,30 +348,79 @@ void CGameControllerDDNet::OnPlayerDisconnect(CPlayer *pPlayer, const char *pRea
 	int ClientId = pPlayer->GetCid();
 	bool WasModerator = pPlayer->m_Moderating && Server()->ClientIngame(ClientId);
 
-	IGameController::OnPlayerDisconnect(pPlayer, pReason);
+	CGameControllerDDRace::OnPlayerDisconnect(pPlayer, pReason);
 
 	if(!GameServer()->PlayerModerating() && WasModerator)
 		GameServer()->SendChat(-1, TEAM_ALL, "Server kick/spec votes are no longer actively moderated.");
 
 	if(g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO)
-		Teams().SetForceCharacterTeam(ClientId, TEAM_FLOCK);
+		RaceTeams().SetForceCharacterTeam(ClientId, TEAM_FLOCK);
 
 	for(int Team = TEAM_FLOCK + 1; Team < TEAM_SUPER; Team++)
-		if(Teams().IsInvited(Team, ClientId))
-			Teams().SetClientInvited(Team, ClientId, false);
+		if(RaceTeams().IsInvited(Team, ClientId))
+			RaceTeams().SetClientInvited(Team, ClientId, false);
+
+	if(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO && RaceTeams().PracticeByDefault())
+		RaceTeams().SetPractice(RaceTeams().m_Core.Team(ClientId), true);
+}
+
+void CGameControllerDDNet::SnapSwitchers(int SnappingClient)
+{
+	auto &vSwitchers = GameServer()->Switchers();
+	if(vSwitchers.empty())
+		return;
+
+	CPlayer *pPlayer = SnappingClient != SERVER_DEMO_CLIENT ? GameServer()->m_apPlayers[SnappingClient] : nullptr;
+	int Team = pPlayer && pPlayer->GetCharacter() ? pPlayer->GetCharacter()->Team() : 0;
+
+	if(pPlayer && (pPlayer->GetTeam() == TEAM_SPECTATORS || pPlayer->IsPaused()) && pPlayer->SpectatorId() != SPEC_FREEVIEW && GameServer()->m_apPlayers[pPlayer->SpectatorId()] && GameServer()->m_apPlayers[pPlayer->SpectatorId()]->GetCharacter())
+		Team = GameServer()->m_apPlayers[pPlayer->SpectatorId()]->GetCharacter()->Team();
+
+	if(Team == TEAM_SUPER)
+		return;
+
+	int SentTeam = Team;
+	if(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO)
+		SentTeam = 0;
+	else if(SnappingClient != SERVER_DEMO_CLIENT)
+		SentTeam = Teams().TeamForClient(SentTeam, SnappingClient);
+	CNetObj_SwitchState SwitchState = {};
+	SwitchState.m_HighestSwitchNumber = std::clamp((int)vSwitchers.size() - 1, 0, 255);
+	std::fill(std::begin(SwitchState.m_aStatus), std::end(SwitchState.m_aStatus), 0);
+
+	std::vector<std::pair<int, int>> vEndTicks; // <EndTick, SwitchNumber>
+	for(int i = 0; i <= SwitchState.m_HighestSwitchNumber; i++)
+	{
+		const int Status = (int)vSwitchers[i].m_aStatus[Team];
+		SwitchState.m_aStatus[i / 32] |= Status << (i % 32);
+
+		const int EndTick = vSwitchers[i].m_aEndTick[Team];
+		if(EndTick > 0 && EndTick < Server()->Tick() + 3 * Server()->TickSpeed() && vSwitchers[i].m_aLastUpdateTick[Team] < Server()->Tick())
+		{
+			// only keep track of EndTicks that have less than three second left and are not currently being updated by a player being present on a switch tile, to limit how often these are sent
+			vEndTicks.emplace_back(EndTick, i);
+		}
+	}
+
+	// send the endtick of switchers that are about to toggle back (up to four, prioritizing those with the earliest endticks)
+	std::fill(std::begin(SwitchState.m_aSwitchNumbers), std::end(SwitchState.m_aSwitchNumbers), 0);
+	std::fill(std::begin(SwitchState.m_aEndTicks), std::end(SwitchState.m_aEndTicks), 0);
+	std::sort(vEndTicks.begin(), vEndTicks.end());
+	const size_t NumTimedSwitchers = std::min(vEndTicks.size(), std::size(SwitchState.m_aEndTicks));
+
+	for(size_t i = 0; i < NumTimedSwitchers; i++)
+	{
+		SwitchState.m_aSwitchNumbers[i] = vEndTicks[i].second;
+		SwitchState.m_aEndTicks[i] = vEndTicks[i].first;
+	}
+
+	Server()->SnapNewItem(SentTeam, SwitchState);
 }
 
 void CGameControllerDDNet::OnReset()
 {
-	IGameController::OnReset();
-	Teams().Reset();
-}
-
-void CGameControllerDDNet::Tick()
-{
-	IGameController::Tick();
-	Teams().ProcessSaveTeam();
-	Teams().Tick();
+	CGameControllerDDRace::OnReset();
+	RaceTeams().Reset();
 }
 
 void CGameControllerDDNet::DoTeamChange(class CPlayer *pPlayer, int Team, bool DoChatMsg)
@@ -248,12 +437,12 @@ void CGameControllerDDNet::DoTeamChange(class CPlayer *pPlayer, int Team, bool D
 	{
 		if(g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO && pCharacter)
 		{
-			Teams().OnCharacterDeath(pPlayer->GetCid(), WEAPON_GAME);
+			RaceTeams().OnCharacterDeath(pPlayer->GetCid(), WEAPON_GAME);
 			// Joining spectators should not kill a locked team, but should still
 			// check if the team finished by you leaving it.
 			int DDRTeam = pCharacter->Team();
-			Teams().SetForceCharacterTeam(pPlayer->GetCid(), TEAM_FLOCK);
-			Teams().CheckTeamFinished(DDRTeam);
+			RaceTeams().SetForceCharacterTeam(pPlayer->GetCid(), TEAM_FLOCK);
+			RaceTeams().CheckTeamFinished(DDRTeam);
 		}
 	}
 

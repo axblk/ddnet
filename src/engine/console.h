@@ -112,16 +112,20 @@ public:
 
 	virtual void Init() = 0;
 	virtual const ICommandInfo *FirstCommandInfo(int ClientId, int FlagMask) const = 0;
+	virtual const ICommandInfo *FirstCommandInfoAtOrAfter(const char *pName, int ClientId, int FlagMask) const = 0;
 	virtual const ICommandInfo *NextCommandInfo(const IConsole::ICommandInfo *pInfo, int ClientId, int FlagMask) const = 0;
 	virtual const ICommandInfo *GetCommandInfo(const char *pName, int FlagMask, bool Temp) = 0;
 	virtual int PossibleCommands(const char *pStr, int FlagMask, bool Temp, FPossibleCallback pfnCallback = EmptyPossibleCommandCallback, void *pUser = nullptr) = 0;
 	virtual void ParseArguments(int NumArgs, const char **ppArguments) = 0;
 
 	virtual void Register(const char *pName, const char *pParams, int Flags, FCommandCallback pfnFunc, void *pUser, const char *pHelp) = 0;
+	virtual bool RegisterOwned(const char *pName, const char *pParams, int Flags, FCommandCallback pfnFunc, void *pUser, const char *pHelp, const void *pOwner) = 0;
+	virtual void DeregisterOwner(const void *pOwner) = 0;
 	virtual void RegisterTemp(const char *pName, const char *pParams, int Flags, const char *pHelp) = 0;
 	virtual void DeregisterTemp(const char *pName) = 0;
 	virtual void DeregisterTempAll() = 0;
 	virtual void Chain(const char *pName, FChainCommandCallback pfnChainFunc, void *pUser) = 0;
+	virtual bool ChainOwned(const char *pName, FChainCommandCallback pfnChainFunc, void *pUser, const void *pOwner) = 0;
 	virtual void StoreCommands(bool Store) = 0;
 
 	virtual bool LineIsValid(const char *pStr) = 0;

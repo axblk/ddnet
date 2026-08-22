@@ -11,9 +11,89 @@
 
 #include <generated/protocol.h>
 
-#include <game/server/teams.h>
+#include <game/server/mode/entity_registry.h>
+#include <game/server/mode/game_mode_map_reload_state.h>
+#include <game/server/mode/game_mode_registry.h>
+#include <game/server/mode/match_stats.h>
+#include <game/teamscore.h>
 
-struct CScoreLoadBestTimeResult;
+#include <memory>
+
+class CCharacter;
+class CGameContext;
+class CGameControllerDDRace;
+class CDbConnectionPool;
+class CGameServices;
+class CInteractions;
+class CPlayer;
+class CTuningParams;
+
+struct CWeaponFireContext
+{
+	CCharacter *m_pCharacter;
+	int m_Weapon;
+	vec2 m_Direction;
+	vec2 m_MouseTarget;
+	vec2 m_ProjectileStartPosition;
+	const CTuningParams *m_pTuning;
+};
+
+struct CWeaponFireResult
+{
+	bool m_Fired = false;
+	bool m_ConsumeAmmo = false;
+	int m_ReloadTicks = 0;
+};
+
+struct CGamePickupResult
+{
+	bool m_Picked = false;
+	int m_RespawnSeconds = 0;
+	int m_RespawnSound = -1;
+};
+
+enum class EProjectileOwnerLossAction
+{
+	KEEP,
+	DETACH,
+	DESTROY,
+};
+
+struct CGameProjectileContext
+{
+	int m_Weapon;
+	CCharacter *m_pOwner;
+	bool m_OwnerConnected;
+	bool m_BelongsToPracticeTeam;
+};
+
+struct CGameProjectileRules
+{
+	bool m_HitCharacters;
+	bool m_RespectCharacterCollision;
+	float m_DirectImpactForce;
+	EProjectileOwnerLossAction m_OwnerLossAction;
+};
+
+struct CGameExplosionContext
+{
+	vec2 m_Position;
+	int m_Owner;
+	int m_Weapon;
+	bool m_NoDamage;
+	int m_ActivatedTeam;
+	CClientMask m_Mask;
+	int m_AttackerTeam;
+};
+
+struct CGameCharacterDeathContext
+{
+	CCharacter *m_pVictim;
+	CPlayer *m_pKiller;
+	int m_Killer;
+	int m_Weapon;
+	bool m_SendKillMessage;
+};
 
 /*
 	Class: Game Controller
@@ -22,7 +102,7 @@ struct CScoreLoadBestTimeResult;
 */
 class IGameController
 {
-	friend class CSaveTeam; // need access to GameServer() and Server()
+	friend class CGameControllerDDRace;
 
 protected:
 	enum ESpawnType
@@ -35,20 +115,38 @@ protected:
 	};
 
 private:
-	std::vector<vec2> m_avSpawnPoints[NUM_SPAWNTYPES];
+	static bool CreateCommonMapEntity(IGameController &Controller, const CMapEntityContext &Context);
 
-	class CGameContext *m_pGameServer;
-	class CConfig *m_pConfig;
+	std::vector<vec2> m_avSpawnPoints[NUM_SPAWNTYPES];
+	CEntityRegistry m_EntityRegistry;
+
+	CGameServices *m_pServices;
 	class IServer *m_pServer;
 
-	CGameTeams m_Teams;
+	CTeamsCore m_TeamsCore;
+	const CGameModeInfo m_GameModeInfo;
+	CMatchStats m_MatchStats;
+	CGameContext *GameServer() const;
 
 protected:
-	CGameContext *GameServer() const { return m_pGameServer; }
-	CConfig *Config() { return m_pConfig; }
+	void RegisterMapEntityFactory(CEntityRegistry::FMapEntityFactory pfnFactory) { m_EntityRegistry.RegisterMapEntityFactory(pfnFactory); }
+	void IgnoreMapEntityRange(int First, int Last) { m_EntityRegistry.IgnoreMapEntityRange(First, Last); }
+	CGameServices &Services() const { return *m_pServices; }
 	IServer *Server() const { return m_pServer; }
+	IGameModeMapReloadState *MapReloadState() const;
+	void DiscardMapReloadState(int ClientId);
 
+	void LoadGameSettings();
+	virtual void RegisterCommands() {}
+	virtual void InitGameSettings();
+	virtual void UpdateGameInfo(CNetObj_GameInfo &GameInfo, int SnappingClient) {}
+	virtual int GameInfoFlags(int SnappingClient) const { return 0; }
+	virtual int GameInfoFlags2(int SnappingClient) const { return 0; }
+	virtual void SnapMode(int SnappingClient) {}
+	virtual int ScoreLimit() const { return 0; }
+	virtual int TimeLimit() const { return 0; }
 	void DoActivityCheck();
+	void FinalizeCharacterDeath(const CGameCharacterDeathContext &Context, int ModeSpecial = 0);
 
 	struct CSpawnEval
 	{
@@ -70,8 +168,6 @@ protected:
 
 	void ResetGame();
 
-	char m_aMapWish[MAX_MAP_LENGTH];
-
 	int m_RoundStartTick;
 	int m_GameOverTick;
 	int m_SuddenDeath;
@@ -84,8 +180,16 @@ protected:
 public:
 	const char *m_pGameType;
 
-	IGameController(class CGameContext *pGameServer);
+	IGameController(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 	virtual ~IGameController();
+	virtual void Init(CDbConnectionPool *pDbPool);
+	const CGameModeInfo &Info() const { return m_GameModeInfo; }
+	int TuningZoneAt(vec2 Position) const;
+	virtual void ResetTuning();
+	virtual CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team);
+	virtual CCharacter *CreateCharacter(CPlayer *pPlayer);
+	void PublishMatchEvent(CMatchEvent Event) { m_MatchStats.OnEvent(Event); }
+	const CMatchStats &MatchStats() const { return m_MatchStats; }
 
 	// event
 	/*
@@ -98,7 +202,16 @@ public:
 			weapon - What weapon that killed it. Can be -1 for undefined
 				weapon when switching team or player suicides.
 	*/
-	virtual int OnCharacterDeath(class CCharacter *pVictim, class CPlayer *pKiller, int Weapon);
+	virtual void OnCharacterDeath(const CGameCharacterDeathContext &Context);
+	virtual bool OnCharacterTakeDamage(class CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam = TEAM_SPECTATORS);
+	virtual bool CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const;
+	virtual bool CanSeeInteraction(const CInteractions &, int) const { return true; }
+	virtual bool CanHitInteraction(const CInteractions &, int) const { return true; }
+	virtual CWeaponFireResult OnCharacterFireWeapon(const CWeaponFireContext &Context);
+	virtual CGamePickupResult OnCharacterPickup(CCharacter *pCharacter, int Type, int Subtype, vec2 Position);
+	virtual int PickupInitialSpawnDelaySeconds(int Type, int Subtype) const { return 0; }
+	virtual CGameProjectileRules ProjectileRules(const CGameProjectileContext &Context) const;
+	virtual void OnExplosion(const CGameExplosionContext &Context);
 	/*
 		Function: OnCharacterSpawn
 			Called when a CCharacter spawns into the game world.
@@ -107,6 +220,13 @@ public:
 			chr - The CCharacter that was spawned.
 	*/
 	virtual void OnCharacterSpawn(class CCharacter *pChr);
+	virtual bool CanSnapCharacter(CCharacter *pCharacter, int SnappingClient) const { return true; }
+	virtual void SnapCharacterMode(CCharacter *pCharacter, int SnappingClient, int TranslatedId) {}
+	virtual bool UseDDNetEntityNetObjs() const { return false; }
+	virtual bool IsTeamPractice(int Team) const { return false; }
+	// Complete mode-owned phases around the shared CharacterCore tick.
+	virtual void TickCharacterPreCore(CCharacter *) {}
+	virtual void TickCharacterPostCore(CCharacter *pCharacter);
 
 	virtual void HandleCharacterTiles(class CCharacter *pChr, int MapIndex);
 	virtual void SetArmorProgress(CCharacter *pCharacter, int Progress) {}
@@ -121,12 +241,29 @@ public:
 			pos - Where the entity is located in the world.
 
 		Returns:
-			bool?
+			True if the entity index was recognized by this controller.
 	*/
-	virtual bool OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number = 0);
+	bool OnEntity(int Index, int x, int y, int Layer, int Flags, bool Initial, int Number = 0);
 
 	virtual void OnPlayerConnect(class CPlayer *pPlayer);
+	virtual void OnPlayerEnter(CPlayer *) {}
 	virtual void OnPlayerDisconnect(class CPlayer *pPlayer, const char *pReason);
+	virtual bool OnPlayerChatMessage(int, const char *, int) { return false; }
+	virtual void OnPlayerNameChanged(int ClientId) {}
+	virtual void OnPlayerDDNetVersionKnown(int ClientId) {}
+	virtual void OnPlayerSetTeam(int ClientId, int Team);
+	virtual void OnPlayerKill(int ClientId);
+	virtual void OnPlayerCallKickVote(int ClientId, int TargetId, const char *pReason);
+	virtual void OnPlayerCallSpectateVote(int ClientId, int TargetId, const char *pReason);
+	virtual bool CanPlayerVoteOnTargetVote(int VoteCreatorId, int VoterId) const;
+	virtual int PlayerVetoActivityStartTick(int ClientId) const;
+	virtual int PlayerTeamGroup(int ClientId) const;
+	virtual bool CanPlayerReceivePreInput(int SenderId, int ReceiverId) const;
+	virtual bool IsPlayerDeadSpectator(int ClientId) const { return false; }
+	virtual void OnPlayerShowOthers(int ClientId, int Show) {}
+	virtual int PlayerAutoRespawnTick(const CPlayer *pPlayer) const;
+	virtual std::unique_ptr<IGameModeMapReloadState> SaveStateForMapReload() { return nullptr; }
+	virtual void RestoreCharacterAfterMapReload(CCharacter *pCharacter);
 
 	virtual void OnReset();
 
@@ -155,6 +292,7 @@ public:
 	 * @return the score value that will be included in the snapshot.
 	 */
 	virtual int SnapPlayerScore(int SnappingClient, CPlayer *pPlayer) { return 0; }
+	virtual void SnapPlayerMode(CPlayer *pPlayer, int SnappingClient, int TranslatedId) {}
 
 	class CFinishTime
 	{
@@ -211,17 +349,15 @@ public:
 	*/
 	virtual bool IsValidTeam(int Team);
 	virtual const char *GetTeamName(int Team);
+	int ActivePlayerSlots() const;
 	virtual int GetAutoTeam(int NotThisId);
 	virtual bool CanJoinTeam(int Team, int NotThisId, char *pErrorReason, int ErrorReasonSize);
 
-	CClientMask GetMaskForPlayerWorldEvent(int Asker, int ExceptID = -1);
+	virtual CClientMask GetMaskForPlayerWorldEvent(int Asker, int ExceptID = -1);
 
 	bool IsTeamPlay() const { return m_GameFlags & GAMEFLAG_TEAMS; }
-	// DDRace
-
-	std::optional<float> m_CurrentRecord;
-	CGameTeams &Teams() { return m_Teams; }
-	std::shared_ptr<CScoreLoadBestTimeResult> m_pLoadBestTimeResult;
+	CTeamsCore &TeamsCore() { return m_TeamsCore; }
+	const CTeamsCore &TeamsCore() const { return m_TeamsCore; }
 };
 
 #endif

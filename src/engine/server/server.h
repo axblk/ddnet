@@ -180,7 +180,7 @@ public:
 		std::array<char, NETADDR_MAXSTRSIZE> m_aDebugDummyAddrString;
 		std::array<char, NETADDR_MAXSTRSIZE> m_aDebugDummyAddrStringNoPort;
 
-		const IConsole::ICommandInfo *m_pRconCmdToSend;
+		std::string m_RconCmdToSend;
 		enum
 		{
 			MAPLIST_UNINITIALIZED = -1,

@@ -3,10 +3,10 @@
 #include "gamecontext.h"
 
 #include "entities/character.h"
-#include "gamemodes/ddnet.h"
-#include "gamemodes/mod.h"
+#include "gamecontroller.h"
+#include "mode/builtin_game_modes.h"
+#include "mode/game_mode_registry.h"
 #include "player.h"
-#include "score.h"
 #include "teeinfo.h"
 
 #include <antibot/antibot_data.h>
@@ -23,7 +23,6 @@
 #include <base/time.h>
 
 #include <engine/console.h>
-#include <engine/engine.h>
 #include <engine/map.h>
 #include <engine/server/server.h>
 #include <engine/shared/config.h>
@@ -80,6 +79,7 @@ void CClientChatLogger::Log(const CLogMessage *pMessage)
 }
 
 CGameContext::CGameContext(bool Resetting) :
+	m_GameHost(this),
 	m_Mutes("mutes"),
 	m_VoteMutes("votemutes")
 {
@@ -92,18 +92,9 @@ CGameContext::CGameContext(bool Resetting) :
 	mem_zero(&m_aLastPlayerInput, sizeof(m_aLastPlayerInput));
 	std::fill(std::begin(m_aPlayerHasInput), std::end(m_aPlayerHasInput), false);
 
-	m_pController = nullptr;
-
 	m_pVoteOptionFirst = nullptr;
 	m_pVoteOptionLast = nullptr;
 	m_LastMapVote = 0;
-
-	m_SqlRandomMapResult = nullptr;
-
-	m_pLoadMapInfoResult = nullptr;
-	m_aMapInfoMessage[0] = '\0';
-
-	m_pScore = nullptr;
 
 	m_VoteCreator = -1;
 	m_VoteType = VOTE_TYPE_UNKNOWN;
@@ -131,14 +122,6 @@ CGameContext::CGameContext(bool Resetting) :
 	{
 		m_pMap = CreateMap();
 
-		for(auto &pSavedTee : m_apSavedTees)
-			pSavedTee = nullptr;
-
-		for(auto &pSavedTeam : m_apSavedTeams)
-			pSavedTeam = nullptr;
-
-		std::fill(std::begin(m_aTeamMapping), std::end(m_aTeamMapping), -1);
-
 		m_NonEmptySince = 0;
 		m_pVoteOptionHeap = new CHeap();
 	}
@@ -157,21 +140,14 @@ CGameContext::~CGameContext()
 		m_pMap->Unload();
 		m_pMap = nullptr;
 
-		for(auto &pSavedTee : m_apSavedTees)
-			delete pSavedTee;
-
-		for(auto &pSavedTeam : m_apSavedTeams)
-			delete pSavedTeam;
-
 		delete m_pVoteOptionHeap;
 	}
-
-	delete m_pScore;
-	m_pScore = nullptr;
 }
 
 void CGameContext::Clear()
 {
+	dbg_assert(!m_GameHost.Controller(), "game host must be shut down before clearing game context");
+
 	CHeap *pVoteOptionHeap = m_pVoteOptionHeap;
 	CVoteOptionServer *pVoteOptionFirst = m_pVoteOptionFirst;
 	CVoteOptionServer *pVoteOptionLast = m_pVoteOptionLast;
@@ -179,6 +155,7 @@ void CGameContext::Clear()
 	CTuningParams Tuning = m_aTuningList[0];
 	CMutes Mutes = m_Mutes;
 	CMutes VoteMutes = m_VoteMutes;
+	std::unique_ptr<IGameModeMapReloadState> pMapReloadState = m_GameHost.TakeMapReloadState();
 	std::unique_ptr<IMap> pMap;
 	std::swap(pMap, m_pMap);
 
@@ -193,6 +170,7 @@ void CGameContext::Clear()
 	m_aTuningList[0] = Tuning;
 	m_Mutes = Mutes;
 	m_VoteMutes = VoteMutes;
+	m_GameHost.RestoreMapReloadState(std::move(pMapReloadState));
 	std::swap(pMap, m_pMap);
 }
 
@@ -257,6 +235,18 @@ const CCharacter *CGameContext::GetPlayerChar(int ClientId) const
 	if(ClientId < 0 || ClientId >= MAX_CLIENTS || !m_apPlayers[ClientId])
 		return nullptr;
 	return m_apPlayers[ClientId]->GetCharacter();
+}
+
+void CGameContext::ConPositionPlayer(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameContext *pSelf = static_cast<CGameContext *>(pUserData);
+	CCharacter *pCharacter = pSelf->GetPlayerChar(pResult->GetInteger(0));
+	const CCharacter *pTarget = pSelf->GetPlayerChar(pResult->GetInteger(1));
+	if(!pCharacter || !pTarget)
+		return;
+
+	pCharacter->SetPosition(pTarget->GetPos() + vec2(pResult->GetInteger(2), pResult->GetInteger(3)));
+	pCharacter->ResetVelocity();
 }
 
 const CPlayer *CGameContext::FindPlayerByName(const char *pName) const
@@ -375,61 +365,18 @@ void CGameContext::CreateHammerHit(vec2 Pos, CClientMask Mask)
 	}
 }
 
-void CGameContext::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int ActivatedTeam, CClientMask Mask)
+void CGameContext::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int ActivatedTeam, CClientMask Mask, int AttackerTeam) // NOLINT(readability-make-member-function-const)
 {
-	// create the event
+	m_GameHost.Controller()->OnExplosion({Pos, Owner, Weapon, NoDamage, ActivatedTeam, Mask, AttackerTeam});
+}
+
+void CGameContext::CreateExplosionEvent(vec2 Pos, CClientMask Mask)
+{
 	CNetEvent_Explosion *pEvent = m_Events.Create<CNetEvent_Explosion>(Mask);
 	if(pEvent)
 	{
 		pEvent->m_X = (int)Pos.x;
 		pEvent->m_Y = (int)Pos.y;
-	}
-
-	// deal damage
-	CEntity *apEnts[MAX_CLIENTS];
-	float Radius = 135.0f;
-	float InnerRadius = 48.0f;
-	int Num = m_World.FindEntities(Pos, Radius, apEnts, MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
-	CClientMask TeamMask = CClientMask().set();
-	for(int i = 0; i < Num; i++)
-	{
-		auto *pChr = static_cast<CCharacter *>(apEnts[i]);
-		vec2 Diff = pChr->m_Pos - Pos;
-		vec2 ForceDir(0, 1);
-		float l = length(Diff);
-		if(l)
-			ForceDir = normalize(Diff);
-		l = 1 - std::clamp((l - InnerRadius) / (Radius - InnerRadius), 0.0f, 1.0f);
-		float Strength;
-		if(Owner == -1 || !m_apPlayers[Owner] || !m_apPlayers[Owner]->m_TuneZone)
-			Strength = GlobalTuning()->m_ExplosionStrength;
-		else
-			Strength = TuningList()[m_apPlayers[Owner]->m_TuneZone].m_ExplosionStrength;
-
-		float Dmg = Strength * l;
-		if(!(int)Dmg)
-			continue;
-
-		if((GetPlayerChar(Owner) ? !GetPlayerChar(Owner)->GrenadeHitDisabled() : g_Config.m_SvHit) || NoDamage || Owner == pChr->GetPlayer()->GetCid())
-		{
-			if(Owner != -1 && pChr->IsAlive() && !pChr->CanCollide(Owner))
-				continue;
-			if(Owner == -1 && ActivatedTeam != -1 && pChr->IsAlive() && pChr->Team() != ActivatedTeam)
-				continue;
-
-			// Explode at most once per team
-			int PlayerTeam = pChr->Team();
-			if((GetPlayerChar(Owner) ? GetPlayerChar(Owner)->GrenadeHitDisabled() : !g_Config.m_SvHit) || NoDamage)
-			{
-				if(PlayerTeam == TEAM_SUPER)
-					continue;
-				if(!TeamMask.test(PlayerTeam))
-					continue;
-				TeamMask.reset(PlayerTeam);
-			}
-
-			pChr->TakeDamage(ForceDir * Dmg * 2, (int)Dmg, Owner, Weapon);
-		}
 	}
 }
 
@@ -491,81 +438,80 @@ void CGameContext::CreateSound(vec2 Pos, int Sound, CClientMask Mask)
 
 void CGameContext::CreateSoundGlobal(int Sound, int Target) const
 {
+	CreateSoundGlobal(Sound, Target, FLAG_SIX | FLAG_SIXUP);
+}
+
+void CGameContext::CreateSoundGlobal(int Sound, int Target, int VersionFlags) const
+{
 	if(Sound < 0)
 		return;
 
 	CNetMsg_Sv_SoundGlobal Msg;
 	Msg.m_SoundId = Sound;
 	if(Target == -2)
-		Server()->SendPackMsg(&Msg, MSGFLAG_NOSEND, -1);
-	else
 	{
-		int Flag = MSGFLAG_VITAL;
-		if(Target != -1)
-			Flag |= MSGFLAG_NORECORD;
-		Server()->SendPackMsg(&Msg, Flag, Target);
+		if(VersionFlags & FLAG_SIX)
+			Server()->SendPackMsg(&Msg, MSGFLAG_NOSEND, -1);
+		return;
+	}
+
+	const auto MatchesVersion = [&](int ClientId) {
+		return (Server()->IsSixup(ClientId) && (VersionFlags & FLAG_SIXUP)) ||
+		       (!Server()->IsSixup(ClientId) && (VersionFlags & FLAG_SIX));
+	};
+	if(Target >= 0)
+	{
+		if(MatchesVersion(Target))
+			Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, Target);
+		return;
+	}
+	if(Target != -1)
+		return;
+
+	if(VersionFlags == (FLAG_SIX | FLAG_SIXUP))
+	{
+		Server()->SendPackMsg(&Msg, MSGFLAG_VITAL, -1);
+		return;
+	}
+
+	if(VersionFlags & FLAG_SIX)
+		Server()->SendPackMsg(&Msg, MSGFLAG_NOSEND, -1);
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		if(m_apPlayers[ClientId] && MatchesVersion(ClientId))
+			Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
 	}
 }
 
-void CGameContext::SnapSwitchers(int SnappingClient)
+void CGameContext::SendGameMessage7(int GameMessageId, std::initializer_list<int> Parameters, int Target) const
 {
-	if(Switchers().empty())
+	if(GameMessageId < 0 || GameMessageId >= protocol7::NUM_GAMEMSGS)
 		return;
 
-	CPlayer *pPlayer = SnappingClient != SERVER_DEMO_CLIENT ? m_apPlayers[SnappingClient] : nullptr;
-	int Team = pPlayer && pPlayer->GetCharacter() ? pPlayer->GetCharacter()->Team() : 0;
+	const auto SendTo = [&](int ClientId) {
+		if(!m_apPlayers[ClientId] || !Server()->IsSixup(ClientId))
+			return;
+		CMsgPacker Msg(protocol7::NETMSGTYPE_SV_GAMEMSG, false, true);
+		Msg.AddInt(GameMessageId);
+		for(const int Parameter : Parameters)
+			Msg.AddInt(Parameter);
+		Server()->SendMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
+	};
 
-	if(pPlayer && (pPlayer->GetTeam() == TEAM_SPECTATORS || pPlayer->IsPaused()) && pPlayer->SpectatorId() != SPEC_FREEVIEW && m_apPlayers[pPlayer->SpectatorId()] && m_apPlayers[pPlayer->SpectatorId()]->GetCharacter())
-		Team = m_apPlayers[pPlayer->SpectatorId()]->GetCharacter()->Team();
-
-	if(Team == TEAM_SUPER)
+	if(Target >= 0 && Target < MAX_CLIENTS)
+	{
+		SendTo(Target);
 		return;
-
-	int SentTeam = Team;
-	if(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO)
-		SentTeam = 0;
-	else if(SnappingClient != SERVER_DEMO_CLIENT)
-		SentTeam = m_pController->Teams().TeamForClient(SentTeam, SnappingClient);
-
-	CNetObj_SwitchState SwitchState = {};
-
-	SwitchState.m_HighestSwitchNumber = std::clamp((int)Switchers().size() - 1, 0, 255);
-	std::fill(std::begin(SwitchState.m_aStatus), std::end(SwitchState.m_aStatus), 0);
-
-	std::vector<std::pair<int, int>> vEndTicks; // <EndTick, SwitchNumber>
-
-	for(int i = 0; i <= SwitchState.m_HighestSwitchNumber; i++)
-	{
-		int Status = (int)Switchers()[i].m_aStatus[Team];
-		SwitchState.m_aStatus[i / 32] |= (Status << (i % 32));
-
-		int EndTick = Switchers()[i].m_aEndTick[Team];
-		if(EndTick > 0 && EndTick < Server()->Tick() + 3 * Server()->TickSpeed() && Switchers()[i].m_aLastUpdateTick[Team] < Server()->Tick())
-		{
-			// only keep track of EndTicks that have less than three second left and are not currently being updated by a player being present on a switch tile, to limit how often these are sent
-			vEndTicks.emplace_back(Switchers()[i].m_aEndTick[Team], i);
-		}
 	}
-
-	// send the endtick of switchers that are about to toggle back (up to four, prioritizing those with the earliest endticks)
-	std::fill(std::begin(SwitchState.m_aSwitchNumbers), std::end(SwitchState.m_aSwitchNumbers), 0);
-	std::fill(std::begin(SwitchState.m_aEndTicks), std::end(SwitchState.m_aEndTicks), 0);
-
-	std::sort(vEndTicks.begin(), vEndTicks.end());
-	const size_t NumTimedSwitchers = std::min(vEndTicks.size(), std::size(SwitchState.m_aEndTicks));
-
-	for(size_t i = 0; i < NumTimedSwitchers; i++)
-	{
-		SwitchState.m_aSwitchNumbers[i] = vEndTicks[i].second;
-		SwitchState.m_aEndTicks[i] = vEndTicks[i].first;
-	}
-
-	Server()->SnapNewItem(SentTeam, SwitchState);
+	if(Target != -1)
+		return;
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+		SendTo(ClientId);
 }
 
 void CGameContext::SnapLaserObject(const CSnapContext &Context, int SnapId, const vec2 &To, const vec2 &From, int StartTick, int Owner, int LaserType, int Subtype, int SwitchNumber) const
 {
-	if(Context.GetClientVersion() >= VERSION_DDNET_MULTI_LASER)
+	if(m_GameHost.Controller()->UseDDNetEntityNetObjs() && Context.GetClientVersion() >= VERSION_DDNET_MULTI_LASER)
 	{
 		CNetObj_DDNetLaser Laser = {};
 		Laser.m_ToX = (int)To.x;
@@ -604,7 +550,7 @@ void CGameContext::SnapPickup(const CSnapContext &Context, int SnapId, const vec
 		Pickup.m_Type = PickupType_SixToSeven(Type, SubType);
 		Server()->SnapNewItem(SnapId, Pickup);
 	}
-	else if(Context.GetClientVersion() >= VERSION_DDNET_ENTITY_NETOBJS)
+	else if(m_GameHost.Controller()->UseDDNetEntityNetObjs() && Context.GetClientVersion() >= VERSION_DDNET_ENTITY_NETOBJS)
 	{
 		CNetObj_DDNetPickup Pickup = {};
 		Pickup.m_X = (int)Pos.x;
@@ -696,7 +642,7 @@ void CGameContext::SendChatTarget(int To, const char *pText, int VersionFlags) c
 void CGameContext::SendChatTeam(int Team, const char *pText) const
 {
 	for(int i = 0; i < MAX_CLIENTS; i++)
-		if(m_apPlayers[i] != nullptr && GetDDRaceTeam(i) == Team)
+		if(m_apPlayers[i] != nullptr && m_GameHost.Controller()->PlayerTeamGroup(i) == Team)
 			SendChatTarget(i, pText);
 }
 
@@ -749,7 +695,6 @@ void CGameContext::SendChat(int ChatterClientId, int Team, const char *pText, in
 	}
 	else
 	{
-		CTeamsCore *pTeams = &m_pController->Teams().m_Core;
 		CNetMsg_Sv_Chat Msg;
 		Msg.m_Team = 1;
 		Msg.m_ClientId = ChatterClientId;
@@ -773,23 +718,13 @@ void CGameContext::SendChat(int ChatterClientId, int Team, const char *pText, in
 				}
 				else
 				{
-					if(pTeams->Team(i) == Team && m_apPlayers[i]->GetTeam() != TEAM_SPECTATORS)
+					if(m_GameHost.Controller()->PlayerTeamGroup(i) == Team && m_apPlayers[i]->GetTeam() != TEAM_SPECTATORS)
 					{
 						Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, i);
 					}
 				}
 			}
 		}
-	}
-}
-
-void CGameContext::SendStartWarning(int ClientId, const char *pMessage)
-{
-	CCharacter *pChr = GetPlayerChar(ClientId);
-	if(pChr && pChr->m_LastStartWarning < Server()->Tick() - 3 * Server()->TickSpeed())
-	{
-		SendChatTarget(ClientId, pMessage);
-		pChr->m_LastStartWarning = Server()->Tick();
 	}
 }
 
@@ -822,8 +757,8 @@ void CGameContext::SendSettings(int ClientId) const
 	Msg.m_KickMin = g_Config.m_SvVoteKickMin;
 	Msg.m_SpecVote = g_Config.m_SvVoteSpectate;
 	Msg.m_TeamLock = 0;
-	Msg.m_TeamBalance = 0;
-	Msg.m_PlayerSlots = Server()->MaxClients() - g_Config.m_SvSpectatorSlots;
+	Msg.m_TeamBalance = m_GameHost.Controller()->IsTeamPlay() && g_Config.m_SvTeambalanceTime != 0;
+	Msg.m_PlayerSlots = m_GameHost.Controller()->ActivePlayerSlots();
 	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
 }
 
@@ -1116,7 +1051,7 @@ void CGameContext::SendTuningParams(int ClientId, int Zone)
 			{
 				if(m_apPlayers[i]->GetCharacter())
 				{
-					if(m_apPlayers[i]->GetCharacter()->m_TuneZone == Zone)
+					if(m_apPlayers[i]->GetCharacter()->TuningZone() == Zone)
 						SendTuningParams(i, Zone);
 				}
 				else if(m_apPlayers[i]->m_TuneZone == Zone)
@@ -1189,13 +1124,13 @@ void CGameContext::OnPreTickTeehistorian()
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{
 		if(m_apPlayers[i] != nullptr)
-			m_TeeHistorian.RecordPlayerTeam(i, GetDDRaceTeam(i));
+			m_TeeHistorian.RecordPlayerTeam(i, m_apPlayers[i]->GetTeam() == TEAM_SPECTATORS ? 0 : m_GameHost.Controller()->PlayerTeamGroup(i));
 		else
 			m_TeeHistorian.RecordPlayerTeam(i, 0);
 	}
 	for(int i = 0; i < TEAM_SUPER; i++)
 	{
-		m_TeeHistorian.RecordTeamPractice(i, m_pController->Teams().IsPractice(i));
+		m_TeeHistorian.RecordTeamPractice(i, m_GameHost.Controller()->IsTeamPractice(i));
 	}
 }
 
@@ -1224,7 +1159,7 @@ void CGameContext::OnTick()
 	m_World.Tick();
 	m_PlayerMapping.Tick();
 
-	m_pController->Tick();
+	m_GameHost.Controller()->Tick();
 
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{
@@ -1313,9 +1248,7 @@ void CGameContext::OnTick()
 					if(!m_apPlayers[i] || aVoteChecked[i])
 						continue;
 
-					if((IsKickVote() || IsSpecVote()) && (m_apPlayers[i]->GetTeam() == TEAM_SPECTATORS ||
-										     (GetPlayerChar(m_VoteCreator) && GetPlayerChar(i) &&
-											     GetPlayerChar(m_VoteCreator)->Team() != GetPlayerChar(i)->Team())))
+					if((IsKickVote() || IsSpecVote()) && !m_GameHost.Controller()->CanPlayerVoteOnTargetVote(m_VoteCreator, i))
 						continue;
 
 					if(m_apPlayers[i]->IsAfk() && i != m_VoteCreator)
@@ -1370,9 +1303,7 @@ void CGameContext::OnTick()
 								continue;
 
 							if(m_apPlayers[j] && !m_apPlayers[j]->IsAfk() && m_apPlayers[j]->GetTeam() != TEAM_SPECTATORS &&
-								((Server()->Tick() - m_apPlayers[j]->m_JoinTick) / (Server()->TickSpeed() * 60) > g_Config.m_SvVoteVetoTime ||
-									(m_apPlayers[j]->GetCharacter() && m_apPlayers[j]->GetCharacter()->m_DDRaceState == ERaceState::STARTED &&
-										(Server()->Tick() - m_apPlayers[j]->GetCharacter()->m_StartTime) / (Server()->TickSpeed() * 60) > g_Config.m_SvVoteVetoTime)))
+								(Server()->Tick() - m_GameHost.Controller()->PlayerVetoActivityStartTick(j)) / (Server()->TickSpeed() * 60) > g_Config.m_SvVoteVetoTime)
 							{
 								if(CurVote == 0)
 									Veto = true;
@@ -1479,33 +1410,6 @@ void CGameContext::OnTick()
 		}
 	}
 
-	if(m_SqlRandomMapResult != nullptr && m_SqlRandomMapResult->m_Completed)
-	{
-		if(m_SqlRandomMapResult->m_Success)
-		{
-			if(m_SqlRandomMapResult->m_ClientId != -1 && m_apPlayers[m_SqlRandomMapResult->m_ClientId] && m_SqlRandomMapResult->m_aMessage[0] != '\0')
-				SendChat(-1, TEAM_ALL, m_SqlRandomMapResult->m_aMessage);
-			if(m_SqlRandomMapResult->m_aMap[0] != '\0')
-				Server()->ChangeMap(m_SqlRandomMapResult->m_aMap);
-			else
-				m_LastMapVote = 0;
-		}
-		m_SqlRandomMapResult = nullptr;
-	}
-
-	// check for map info result from database
-	if(m_pLoadMapInfoResult != nullptr && m_pLoadMapInfoResult->m_Completed)
-	{
-		if(m_pLoadMapInfoResult->m_Success && m_pLoadMapInfoResult->m_Data.m_aaMessages[0][0] != '\0')
-		{
-			str_copy(m_aMapInfoMessage, m_pLoadMapInfoResult->m_Data.m_aaMessages[0]);
-			CNetMsg_Sv_MapInfo MapInfoMsg;
-			MapInfoMsg.m_pDescription = m_aMapInfoMessage;
-			Server()->SendPackMsg(&MapInfoMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, -1);
-		}
-		m_pLoadMapInfoResult = nullptr;
-	}
-
 	// Record player position at the end of the tick
 	if(m_TeeHistorianActive)
 	{
@@ -1537,8 +1441,6 @@ void CGameContext::PreInputClients(int ClientId, bool *pClients)
 	if(!pInputChr || m_apPlayers[ClientId]->GetTeam() == TEAM_SPECTATORS || m_apPlayers[ClientId]->IsAfk())
 		return;
 
-	const int Team = GetDDRaceTeam(ClientId);
-
 	for(int Id = 0; Id < MAX_CLIENTS; Id++)
 	{
 		if(ClientId == Id)
@@ -1548,7 +1450,7 @@ void CGameContext::PreInputClients(int ClientId, bool *pClients)
 		if(!pPlayer)
 			continue;
 
-		if(pPlayer->GetTeam() == TEAM_SPECTATORS || Team != GetDDRaceTeam(Id) || pPlayer->IsAfk())
+		if(pPlayer->GetTeam() == TEAM_SPECTATORS || pPlayer->IsAfk() || !m_GameHost.Controller()->CanPlayerReceivePreInput(ClientId, Id))
 			continue;
 
 		if(Server()->GetClientVersion(Id) < VERSION_DDNET_PREINPUT)
@@ -1574,7 +1476,7 @@ void CGameContext::OnClientDirectInput(int ClientId, const void *pInput)
 {
 	const CNetObj_PlayerInput *pPlayerInput = static_cast<const CNetObj_PlayerInput *>(pInput);
 
-	if(!m_pController->IsGamePaused())
+	if(!m_GameHost.Controller()->IsGamePaused())
 		m_apPlayers[ClientId]->OnDirectInput(pPlayerInput);
 
 	int Flags = pPlayerInput->m_PlayerFlags;
@@ -1599,7 +1501,7 @@ void CGameContext::OnClientPredictedInput(int ClientId, const void *pInput)
 		pApplyInput = &m_aLastPlayerInput[ClientId];
 	}
 
-	if(!m_pController->IsGamePaused())
+	if(!m_GameHost.Controller()->IsGamePaused())
 		m_apPlayers[ClientId]->OnPredictedInput(pApplyInput);
 }
 
@@ -1627,7 +1529,7 @@ void CGameContext::OnClientPredictedEarlyInput(int ClientId, const void *pInput)
 		m_aPlayerHasInput[ClientId] = true;
 	}
 
-	if(!m_pController->IsGamePaused())
+	if(!m_GameHost.Controller()->IsGamePaused())
 		m_apPlayers[ClientId]->OnPredictedEarlyInput(pApplyInput);
 
 	if(m_TeeHistorianActive)
@@ -1732,7 +1634,7 @@ void CGameContext::OnClientEnter(int ClientId)
 	{
 		m_TeeHistorian.RecordPlayerReady(ClientId);
 	}
-	m_pController->OnPlayerConnect(m_apPlayers[ClientId]);
+	m_GameHost.Controller()->OnPlayerConnect(m_apPlayers[ClientId]);
 
 	{
 		CNetMsg_Sv_CommandInfoGroupStart Msg;
@@ -1788,14 +1690,6 @@ void CGameContext::OnClientEnter(int ClientId)
 	{
 		if(g_Config.m_SvWelcome[0] != 0)
 			SendChatTarget(ClientId, g_Config.m_SvWelcome);
-
-		if(g_Config.m_SvShowOthersDefault > SHOW_OTHERS_OFF)
-		{
-			if(g_Config.m_SvShowOthers)
-				SendChatTarget(ClientId, "You can see other players. To disable this use DDNet client and type /showothers");
-
-			m_apPlayers[ClientId]->m_ShowOthers = g_Config.m_SvShowOthersDefault;
-		}
 	}
 	m_VoteUpdate = true;
 
@@ -1808,13 +1702,7 @@ void CGameContext::OnClientEnter(int ClientId)
 
 	Server()->ExpireServerInfo();
 
-	// send map info if loaded from database
-	if(m_aMapInfoMessage[0] != '\0')
-	{
-		CNetMsg_Sv_MapInfo MapInfoMsg;
-		MapInfoMsg.m_pDescription = m_aMapInfoMessage;
-		Server()->SendPackMsg(&MapInfoMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
-	}
+	m_GameHost.Controller()->OnPlayerEnter(m_apPlayers[ClientId]);
 
 	mem_zero(&m_aLastPlayerInput[ClientId], sizeof(m_aLastPlayerInput[ClientId]));
 	m_aPlayerHasInput[ClientId] = false;
@@ -1885,7 +1773,7 @@ void CGameContext::OnClientConnected(int ClientId, void *pData)
 	}
 
 	// Check which team the player should be on
-	const int StartTeam = (Spec || g_Config.m_SvTournamentMode) ? TEAM_SPECTATORS : m_pController->GetAutoTeam(ClientId);
+	const int StartTeam = (Spec || g_Config.m_SvTournamentMode) ? TEAM_SPECTATORS : m_GameHost.Controller()->GetAutoTeam(ClientId);
 	CreatePlayer(ClientId, StartTeam, Afk, LastWhisperTo);
 
 	SendMotd(ClientId);
@@ -1905,20 +1793,11 @@ void CGameContext::OnClientDrop(int ClientId, const char *pReason)
 	LogEvent("Disconnect", ClientId);
 
 	AbortVoteKickOnDisconnect(ClientId);
-	m_pController->OnPlayerDisconnect(m_apPlayers[ClientId], pReason);
+	m_GameHost.Controller()->OnPlayerDisconnect(m_apPlayers[ClientId], pReason);
 	delete m_apPlayers[ClientId];
 	m_apPlayers[ClientId] = nullptr;
 
-	delete m_apSavedTeams[ClientId];
-	m_apSavedTeams[ClientId] = nullptr;
-
-	delete m_apSavedTees[ClientId];
-	m_apSavedTees[ClientId] = nullptr;
-
-	m_aTeamMapping[ClientId] = -1;
-
-	if(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO && PracticeByDefault())
-		m_pController->Teams().SetPractice(GetDDRaceTeam(ClientId), true);
+	m_GameHost.DiscardMapReloadState(ClientId);
 
 	m_VoteUpdate = true;
 	if(m_VoteCreator == ClientId)
@@ -2043,11 +1922,7 @@ bool CGameContext::OnClientDDNetVersionKnown(int ClientId)
 	if(ClientVersion >= VERSION_DDNET_GAMETICK)
 		pPlayer->m_TimerType = g_Config.m_SvDefaultTimerType;
 
-	// First update the teams state.
-	m_pController->Teams().SendTeamsState(ClientId);
-
-	// Then send records.
-	SendRecord(ClientId);
+	m_GameHost.Controller()->OnPlayerDDNetVersionKnown(ClientId);
 
 	// And report correct tunings.
 	if(ClientVersion < VERSION_DDNET_EARLY_VERSION)
@@ -2264,16 +2139,16 @@ void CGameContext::OnMessage(int MsgId, CUnpacker *pUnpacker, int ClientId)
 			OnVoteNetMessage(static_cast<CNetMsg_Cl_Vote *>(pRawMsg), ClientId);
 			break;
 		case NETMSGTYPE_CL_SETTEAM:
-			OnSetTeamNetMessage(static_cast<CNetMsg_Cl_SetTeam *>(pRawMsg), ClientId);
+			m_GameHost.Controller()->OnPlayerSetTeam(ClientId, static_cast<CNetMsg_Cl_SetTeam *>(pRawMsg)->m_Team);
 			break;
 		case NETMSGTYPE_CL_ISDDNETLEGACY:
 			OnIsDDNetLegacyNetMessage(static_cast<CNetMsg_Cl_IsDDNetLegacy *>(pRawMsg), ClientId, pUnpacker);
 			break;
 		case NETMSGTYPE_CL_SHOWOTHERSLEGACY:
-			OnShowOthersLegacyNetMessage(static_cast<CNetMsg_Cl_ShowOthersLegacy *>(pRawMsg), ClientId);
+			m_GameHost.Controller()->OnPlayerShowOthers(ClientId, static_cast<CNetMsg_Cl_ShowOthersLegacy *>(pRawMsg)->m_Show);
 			break;
 		case NETMSGTYPE_CL_SHOWOTHERS:
-			OnShowOthersNetMessage(static_cast<CNetMsg_Cl_ShowOthers *>(pRawMsg), ClientId);
+			m_GameHost.Controller()->OnPlayerShowOthers(ClientId, static_cast<CNetMsg_Cl_ShowOthers *>(pRawMsg)->m_Show);
 			break;
 		case NETMSGTYPE_CL_SHOWDISTANCE:
 			OnShowDistanceNetMessage(static_cast<CNetMsg_Cl_ShowDistance *>(pRawMsg), ClientId);
@@ -2291,7 +2166,7 @@ void CGameContext::OnMessage(int MsgId, CUnpacker *pUnpacker, int ClientId)
 			OnEmoticonNetMessage(static_cast<CNetMsg_Cl_Emoticon *>(pRawMsg), ClientId);
 			break;
 		case NETMSGTYPE_CL_KILL:
-			OnKillNetMessage(static_cast<CNetMsg_Cl_Kill *>(pRawMsg), ClientId);
+			m_GameHost.Controller()->OnPlayerKill(ClientId);
 			break;
 		case NETMSGTYPE_CL_ENABLESPECTATORCOUNT:
 			OnEnableSpectatorCountNetMessage(static_cast<CNetMsg_Cl_EnableSpectatorCount *>(pRawMsg), ClientId);
@@ -2308,16 +2183,13 @@ void CGameContext::OnMessage(int MsgId, CUnpacker *pUnpacker, int ClientId)
 void CGameContext::OnSayNetMessage(const CNetMsg_Cl_Say *pMsg, int ClientId, const CUnpacker *pUnpacker)
 {
 	CPlayer *pPlayer = m_apPlayers[ClientId];
-	bool Check = !pPlayer->m_NotEligibleForFinish && pPlayer->m_EligibleForFinishCheck + 10 * time_freq() >= time_get();
-	if(Check && str_comp(pMsg->m_pMessage, "xd sure chillerbot.png is lyfe") == 0 && pMsg->m_Team == 0)
+	if(m_GameHost.Controller()->OnPlayerChatMessage(ClientId, pMsg->m_pMessage, pMsg->m_Team))
 	{
 		if(m_TeeHistorianActive)
 		{
 			m_TeeHistorian.RecordPlayerMessage(ClientId, pUnpacker->CompleteData(), pUnpacker->CompleteSize());
 		}
 
-		pPlayer->m_NotEligibleForFinish = true;
-		dbg_msg("hack", "bot detected, cid=%d", ClientId);
 		return;
 	}
 	int Team = pMsg->m_Team;
@@ -2352,7 +2224,7 @@ void CGameContext::OnSayNetMessage(const CNetMsg_Cl_Say *pMsg, int ClientId, con
 	if(Length == 0 || (pMsg->m_pMessage[0] != '/' && (g_Config.m_SvSpamprotection && pPlayer->m_LastChat && pPlayer->m_LastChat + Server()->TickSpeed() * ((31 + Length) / 32) > Server()->Tick())))
 		return;
 
-	int GameTeam = GetDDRaceTeam(pPlayer->GetCid());
+	const int GameTeam = m_GameHost.Controller()->PlayerTeamGroup(ClientId);
 	if(Team)
 		Team = ((pPlayer->GetTeam() == TEAM_SPECTATORS) ? TEAM_SPECTATORS : GameTeam);
 	else
@@ -2423,7 +2295,6 @@ void CGameContext::OnCallVoteNetMessage(const CNetMsg_Cl_CallVote *pMsg, int Cli
 	m_VoteType = VOTE_TYPE_UNKNOWN;
 	char aChatmsg[512] = {0};
 	char aDesc[VOTE_DESC_LENGTH] = {0};
-	char aSixupDesc[VOTE_DESC_LENGTH] = {0};
 	char aCmd[VOTE_CMD_LENGTH] = {0};
 	char aReason[VOTE_REASON_LENGTH] = "No reason given";
 	if(pMsg->m_pReason[0])
@@ -2516,44 +2387,6 @@ void CGameContext::OnCallVoteNetMessage(const CNetMsg_Cl_CallVote *pMsg, int Cli
 			return;
 		}
 
-		if(g_Config.m_SvVoteKickMin && !GetDDRaceTeam(ClientId))
-		{
-			const NETADDR *apAddresses[MAX_CLIENTS];
-			for(int i = 0; i < MAX_CLIENTS; i++)
-			{
-				if(m_apPlayers[i])
-				{
-					apAddresses[i] = Server()->ClientAddr(i);
-				}
-			}
-			int NumPlayers = 0;
-			for(int i = 0; i < MAX_CLIENTS; ++i)
-			{
-				if(m_apPlayers[i] && m_apPlayers[i]->GetTeam() != TEAM_SPECTATORS && !GetDDRaceTeam(i))
-				{
-					NumPlayers++;
-					for(int j = 0; j < i; j++)
-					{
-						if(m_apPlayers[j] && m_apPlayers[j]->GetTeam() != TEAM_SPECTATORS && !GetDDRaceTeam(j))
-						{
-							if(!net_addr_comp_noport(apAddresses[i], apAddresses[j]))
-							{
-								NumPlayers--;
-								break;
-							}
-						}
-					}
-				}
-			}
-
-			if(NumPlayers < g_Config.m_SvVoteKickMin)
-			{
-				str_format(aChatmsg, sizeof(aChatmsg), "Kick voting requires %d players", g_Config.m_SvVoteKickMin);
-				SendChatTarget(ClientId, aChatmsg);
-				return;
-			}
-		}
-
 		int KickId = str_toint(pMsg->m_pValue);
 
 		if(!Server()->ReverseTranslate(KickId, ClientId))
@@ -2582,54 +2415,8 @@ void CGameContext::OnCallVoteNetMessage(const CNetMsg_Cl_CallVote *pMsg, int Cli
 			return;
 		}
 
-		// Don't allow kicking if a player has no character
-		if(!GetPlayerChar(ClientId) || !GetPlayerChar(KickId))
-		{
-			SendChatTarget(ClientId, "You can kick only your team member");
-			return;
-		}
-
-		if(GetDDRaceTeam(ClientId) != GetDDRaceTeam(KickId))
-		{
-			if(!g_Config.m_SvVoteKickMuteTime)
-			{
-				str_format(aChatmsg, sizeof(aChatmsg), "'%s' called for vote to mute '%s' (%s)", Server()->ClientName(ClientId), Server()->ClientName(KickId), aReason);
-				str_format(aSixupDesc, sizeof(aSixupDesc), "%2d: %s", KickId, Server()->ClientName(KickId));
-				str_format(aCmd, sizeof(aCmd), "muteid %d %d Muted by vote", KickId, g_Config.m_SvVoteKickMuteTime);
-				str_format(aDesc, sizeof(aDesc), "Mute '%s'", Server()->ClientName(KickId));
-			}
-			else
-			{
-				SendChatTarget(ClientId, "You can kick only your team member");
-				return;
-			}
-		}
-		else
-		{
-			str_format(aChatmsg, sizeof(aChatmsg), "'%s' called for vote to kick '%s' (%s)", Server()->ClientName(ClientId), Server()->ClientName(KickId), aReason);
-			str_format(aSixupDesc, sizeof(aSixupDesc), "%2d: %s", KickId, Server()->ClientName(KickId));
-			if(!GetDDRaceTeam(ClientId))
-			{
-				if(!g_Config.m_SvVoteKickBantime)
-				{
-					str_format(aCmd, sizeof(aCmd), "kick %d Kicked by vote", KickId);
-					str_format(aDesc, sizeof(aDesc), "Kick '%s'", Server()->ClientName(KickId));
-				}
-				else
-				{
-					str_format(aCmd, sizeof(aCmd), "ban %s %d Banned by vote", Server()->ClientAddrString(KickId, false), g_Config.m_SvVoteKickBantime);
-					str_format(aDesc, sizeof(aDesc), "Ban '%s'", Server()->ClientName(KickId));
-				}
-			}
-			else
-			{
-				str_format(aCmd, sizeof(aCmd), "uninvite %d %d; set_team_ddr %d 0", KickId, GetDDRaceTeam(KickId), KickId);
-				str_format(aDesc, sizeof(aDesc), "Move '%s' to team 0", Server()->ClientName(KickId));
-			}
-		}
-		m_apPlayers[ClientId]->m_LastKickVote = time_get();
-		m_VoteType = VOTE_TYPE_KICK;
-		m_VoteVictim = KickId;
+		m_GameHost.Controller()->OnPlayerCallKickVote(ClientId, KickId, aReason);
+		return;
 	}
 	else if(str_comp_nocase(pMsg->m_pType, "spectate") == 0)
 	{
@@ -2666,31 +2453,12 @@ void CGameContext::OnCallVoteNetMessage(const CNetMsg_Cl_CallVote *pMsg, int Cli
 			return;
 		}
 
-		if(!GetPlayerChar(ClientId) || !GetPlayerChar(SpectateId) || GetDDRaceTeam(ClientId) != GetDDRaceTeam(SpectateId))
-		{
-			SendChatTarget(ClientId, "You can only move your team member to spectators");
-			return;
-		}
-
-		str_format(aSixupDesc, sizeof(aSixupDesc), "%2d: %s", SpectateId, Server()->ClientName(SpectateId));
-		if(g_Config.m_SvPauseable && g_Config.m_SvVotePause)
-		{
-			str_format(aChatmsg, sizeof(aChatmsg), "'%s' called for vote to pause '%s' for %d seconds (%s)", Server()->ClientName(ClientId), Server()->ClientName(SpectateId), g_Config.m_SvVotePauseTime, aReason);
-			str_format(aDesc, sizeof(aDesc), "Pause '%s' (%ds)", Server()->ClientName(SpectateId), g_Config.m_SvVotePauseTime);
-			str_format(aCmd, sizeof(aCmd), "uninvite %d %d; force_pause %d %d", SpectateId, GetDDRaceTeam(SpectateId), SpectateId, g_Config.m_SvVotePauseTime);
-		}
-		else
-		{
-			str_format(aChatmsg, sizeof(aChatmsg), "'%s' called for vote to move '%s' to spectators (%s)", Server()->ClientName(ClientId), Server()->ClientName(SpectateId), aReason);
-			str_format(aDesc, sizeof(aDesc), "Move '%s' to spectators", Server()->ClientName(SpectateId));
-			str_format(aCmd, sizeof(aCmd), "uninvite %d %d; set_team %d -1 %d", SpectateId, GetDDRaceTeam(SpectateId), SpectateId, g_Config.m_SvVoteSpectateRejoindelay);
-		}
-		m_VoteType = VOTE_TYPE_SPECTATE;
-		m_VoteVictim = SpectateId;
+		m_GameHost.Controller()->OnPlayerCallSpectateVote(ClientId, SpectateId, aReason);
+		return;
 	}
 
 	if(aCmd[0] && str_comp_nocase(aCmd, "info") != 0)
-		CallVote(ClientId, aDesc, aCmd, aReason, aChatmsg, aSixupDesc[0] ? aSixupDesc : nullptr);
+		CallVote(ClientId, aDesc, aCmd, aReason, aChatmsg);
 }
 
 void CGameContext::OnVoteNetMessage(const CNetMsg_Cl_Vote *pMsg, int ClientId)
@@ -2724,55 +2492,6 @@ void CGameContext::OnVoteNetMessage(const CNetMsg_Cl_Vote *pMsg, int ClientId)
 	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL, ClientId);
 }
 
-void CGameContext::OnSetTeamNetMessage(const CNetMsg_Cl_SetTeam *pMsg, int ClientId)
-{
-	if(m_pController->IsGamePaused())
-		return;
-
-	CPlayer *pPlayer = m_apPlayers[ClientId];
-
-	if(pPlayer->GetTeam() == pMsg->m_Team)
-		return;
-	if(g_Config.m_SvSpamprotection && pPlayer->m_LastSetTeam && pPlayer->m_LastSetTeam + Server()->TickSpeed() * g_Config.m_SvTeamChangeDelay > Server()->Tick())
-		return;
-
-	// Kill Protection
-	CCharacter *pChr = pPlayer->GetCharacter();
-	if(pChr)
-	{
-		int CurrTime = (Server()->Tick() - pChr->m_StartTime) / Server()->TickSpeed();
-		if(g_Config.m_SvKillProtection != 0 && CurrTime >= (60 * g_Config.m_SvKillProtection) && pChr->m_DDRaceState == ERaceState::STARTED)
-		{
-			SendChatTarget(ClientId, "Kill Protection enabled. If you really want to join the spectators, first type /kill");
-			return;
-		}
-	}
-
-	if(pPlayer->m_TeamChangeTick > Server()->Tick())
-	{
-		pPlayer->m_LastSetTeam = Server()->Tick();
-		int TimeLeft = (pPlayer->m_TeamChangeTick - Server()->Tick()) / Server()->TickSpeed();
-		char aTime[32];
-		str_time((int64_t)TimeLeft * 100, ETimeFormat::HOURS, aTime, sizeof(aTime));
-		char aBuf[128];
-		str_format(aBuf, sizeof(aBuf), "Time to wait before changing team: %s", aTime);
-		SendBroadcast(aBuf, ClientId);
-		return;
-	}
-
-	// Switch team on given client and kill/respawn them
-	char aTeamJoinError[512];
-	if(m_pController->CanJoinTeam(pMsg->m_Team, ClientId, aTeamJoinError, sizeof(aTeamJoinError)))
-	{
-		if(pPlayer->GetTeam() == TEAM_SPECTATORS || pMsg->m_Team == TEAM_SPECTATORS)
-			m_VoteUpdate = true;
-		m_pController->DoTeamChange(pPlayer, pMsg->m_Team, true);
-		pPlayer->m_TeamChangeTick = Server()->Tick();
-	}
-	else
-		SendBroadcast(aTeamJoinError, ClientId);
-}
-
 void CGameContext::OnIsDDNetLegacyNetMessage(const CNetMsg_Cl_IsDDNetLegacy *pMsg, int ClientId, CUnpacker *pUnpacker)
 {
 	IServer::CClientInfo Info;
@@ -2794,24 +2513,6 @@ void CGameContext::OnIsDDNetLegacyNetMessage(const CNetMsg_Cl_IsDDNetLegacy *pMs
 	m_PlayerMapping.InitPlayerMap(ClientId, SixupCfg);
 }
 
-void CGameContext::OnShowOthersLegacyNetMessage(const CNetMsg_Cl_ShowOthersLegacy *pMsg, int ClientId)
-{
-	if(g_Config.m_SvShowOthers && !g_Config.m_SvShowOthersDefault)
-	{
-		CPlayer *pPlayer = m_apPlayers[ClientId];
-		pPlayer->m_ShowOthers = pMsg->m_Show;
-	}
-}
-
-void CGameContext::OnShowOthersNetMessage(const CNetMsg_Cl_ShowOthers *pMsg, int ClientId)
-{
-	if(g_Config.m_SvShowOthers && !g_Config.m_SvShowOthersDefault)
-	{
-		CPlayer *pPlayer = m_apPlayers[ClientId];
-		pPlayer->m_ShowOthers = pMsg->m_Show;
-	}
-}
-
 void CGameContext::OnShowDistanceNetMessage(const CNetMsg_Cl_ShowDistance *pMsg, int ClientId)
 {
 	CPlayer *pPlayer = m_apPlayers[ClientId];
@@ -2826,7 +2527,7 @@ void CGameContext::OnCameraInfoNetMessage(const CNetMsg_Cl_CameraInfo *pMsg, int
 
 void CGameContext::OnSetSpectatorModeNetMessage(const CNetMsg_Cl_SetSpectatorMode *pMsg, int ClientId)
 {
-	if(m_pController->IsGamePaused())
+	if(m_GameHost.Controller()->IsGamePaused())
 		return;
 
 	CPlayer *pPlayer = m_apPlayers[ClientId];
@@ -2880,10 +2581,7 @@ void CGameContext::OnChangeInfoNetMessage(const CNetMsg_Cl_ChangeInfo *pMsg, int
 		str_format(aChatText, sizeof(aChatText), "'%s' changed name to '%s'", aOldName, Server()->ClientName(ClientId));
 		SendChat(-1, TEAM_ALL, aChatText);
 
-		// reload scores
-		Score()->PlayerData(ClientId)->Reset();
-		Server()->SetClientScore(ClientId, std::nullopt);
-		Score()->LoadPlayerData(ClientId);
+		m_GameHost.Controller()->OnPlayerNameChanged(ClientId);
 
 		SixupNeedsUpdate = true;
 
@@ -2918,7 +2616,7 @@ void CGameContext::OnChangeInfoNetMessage(const CNetMsg_Cl_ChangeInfo *pMsg, int
 
 void CGameContext::OnEmoticonNetMessage(const CNetMsg_Cl_Emoticon *pMsg, int ClientId)
 {
-	if(m_pController->IsGamePaused())
+	if(m_GameHost.Controller()->IsGamePaused())
 		return;
 
 	CPlayer *pPlayer = m_apPlayers[ClientId];
@@ -2993,39 +2691,6 @@ void CGameContext::OnEmoticonNetMessage(const CNetMsg_Cl_Emoticon *pMsg, int Cli
 		}
 		pChr->SetEmote(EmoteType, Server()->Tick() + 2 * Server()->TickSpeed());
 	}
-}
-
-void CGameContext::OnKillNetMessage(const CNetMsg_Cl_Kill *pMsg, int ClientId)
-{
-	if(m_pController->IsGamePaused())
-		return;
-
-	if(IsRunningKickOrSpecVote(ClientId) && GetDDRaceTeam(ClientId))
-	{
-		SendChatTarget(ClientId, "You are running a vote please try again after the vote is done!");
-		return;
-	}
-	CPlayer *pPlayer = m_apPlayers[ClientId];
-	if(pPlayer->m_LastKill && pPlayer->m_LastKill + Server()->TickSpeed() * g_Config.m_SvKillDelay > Server()->Tick())
-		return;
-	if(pPlayer->IsPaused())
-		return;
-
-	CCharacter *pChr = pPlayer->GetCharacter();
-	if(!pChr)
-		return;
-
-	// Kill Protection
-	int CurrTime = (Server()->Tick() - pChr->m_StartTime) / Server()->TickSpeed();
-	if(g_Config.m_SvKillProtection != 0 && CurrTime >= (60 * g_Config.m_SvKillProtection) && pChr->m_DDRaceState == ERaceState::STARTED)
-	{
-		SendChatTarget(ClientId, "Kill Protection enabled. If you really want to kill, type /kill");
-		return;
-	}
-
-	pPlayer->m_LastKill = Server()->Tick();
-	pPlayer->KillCharacter(WEAPON_SELF);
-	pPlayer->Respawn();
 }
 
 void CGameContext::OnEnableSpectatorCountNetMessage(const CNetMsg_Cl_EnableSpectatorCount *pMsg, int ClientId)
@@ -3160,7 +2825,7 @@ void CGameContext::ConTuneReset(IConsole::IResult *pResult, void *pUserData)
 	}
 	else
 	{
-		pSelf->ResetTuning();
+		pSelf->GameHost().Controller()->ResetTuning();
 		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", "Tuning reset");
 	}
 }
@@ -3274,7 +2939,7 @@ void CGameContext::ConMapbug(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
 
-	if(pSelf->m_pController)
+	if(pSelf->GameHost().Controller())
 	{
 		log_info("mapbugs", "can't add map bugs after the game started");
 		return;
@@ -3314,50 +2979,22 @@ void CGameContext::ConPause(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
 
-	pSelf->m_pController->SetGamePaused(!pSelf->m_pController->IsGamePaused());
+	pSelf->GameHost().Controller()->SetGamePaused(!pSelf->GameHost().Controller()->IsGamePaused());
 }
 
 void CGameContext::ConChangeMap(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
-	pSelf->m_pController->ChangeMap(pResult->GetString(0));
-}
-
-void CGameContext::ConRandomMap(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-
-	const int ClientId = pResult->m_ClientId == -1 ? pSelf->m_VoteCreator : pResult->m_ClientId;
-	int MinStars = pResult->NumArguments() > 0 ? pResult->GetInteger(0) : -1;
-	int MaxStars = pResult->NumArguments() > 1 ? pResult->GetInteger(1) : MinStars;
-
-	if(!in_range(MinStars, -1, 5) || !in_range(MaxStars, -1, 5))
-		return;
-
-	pSelf->m_pScore->RandomMap(ClientId, MinStars, MaxStars);
-}
-
-void CGameContext::ConRandomUnfinishedMap(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-
-	const int ClientId = pResult->m_ClientId == -1 ? pSelf->m_VoteCreator : pResult->m_ClientId;
-	int MinStars = pResult->NumArguments() > 0 ? pResult->GetInteger(0) : -1;
-	int MaxStars = pResult->NumArguments() > 1 ? pResult->GetInteger(1) : MinStars;
-
-	if(!in_range(MinStars, -1, 5) || !in_range(MaxStars, -1, 5))
-		return;
-
-	pSelf->m_pScore->RandomUnfinishedMap(ClientId, MinStars, MaxStars);
+	pSelf->GameHost().Controller()->ChangeMap(pResult->GetString(0));
 }
 
 void CGameContext::ConRestart(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
 	if(pResult->NumArguments())
-		pSelf->m_pController->DoWarmup(pResult->GetInteger(0));
+		pSelf->GameHost().Controller()->DoWarmup(pResult->GetInteger(0));
 	else
-		pSelf->m_pController->StartRound();
+		pSelf->GameHost().Controller()->StartRound();
 }
 
 static void UnescapeNewlines(char *pBuf)
@@ -3428,7 +3065,7 @@ void CGameContext::ConSetTeam(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
 	int Team = pResult->GetInteger(1);
-	if(!pSelf->m_pController->IsValidTeam(Team))
+	if(!pSelf->GameHost().Controller()->IsValidTeam(Team))
 	{
 		log_info("server", "Invalid Team: %d", Team);
 		return;
@@ -3440,12 +3077,12 @@ void CGameContext::ConSetTeam(IConsole::IResult *pResult, void *pUserData)
 		return;
 
 	char aBuf[256];
-	str_format(aBuf, sizeof(aBuf), "moved client %d to the %s", ClientId, pSelf->m_pController->GetTeamName(Team));
+	str_format(aBuf, sizeof(aBuf), "moved client %d to the %s", ClientId, pSelf->GameHost().Controller()->GetTeamName(Team));
 	pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
 
 	pSelf->m_apPlayers[ClientId]->Pause(CPlayer::PAUSE_NONE, false); // reset /spec and /pause to allow rejoin
 	pSelf->m_apPlayers[ClientId]->m_TeamChangeTick = pSelf->Server()->Tick() + pSelf->Server()->TickSpeed() * Delay * 60;
-	pSelf->m_pController->DoTeamChange(pSelf->m_apPlayers[ClientId], Team, true);
+	pSelf->GameHost().Controller()->DoTeamChange(pSelf->m_apPlayers[ClientId], Team, true);
 	if(Team == TEAM_SPECTATORS)
 		pSelf->m_apPlayers[ClientId]->Pause(CPlayer::PAUSE_NONE, true);
 }
@@ -3454,47 +3091,31 @@ void CGameContext::ConSetTeamAll(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
 	int Team = pResult->GetInteger(0);
-	if(!pSelf->m_pController->IsValidTeam(Team))
+	if(!pSelf->GameHost().Controller()->IsValidTeam(Team))
 	{
 		log_info("server", "Invalid Team: %d", Team);
 		return;
 	}
 
 	char aBuf[256];
-	str_format(aBuf, sizeof(aBuf), "All players were moved to the %s", pSelf->m_pController->GetTeamName(Team));
+	str_format(aBuf, sizeof(aBuf), "All players were moved to the %s", pSelf->GameHost().Controller()->GetTeamName(Team));
 	pSelf->SendChat(-1, TEAM_ALL, aBuf);
 
 	for(auto &pPlayer : pSelf->m_apPlayers)
 		if(pPlayer)
-			pSelf->m_pController->DoTeamChange(pPlayer, Team, false);
+			pSelf->GameHost().Controller()->DoTeamChange(pPlayer, Team, false);
 }
 
 void CGameContext::ConHotReload(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
-	for(int i = 0; i < MAX_CLIENTS; i++)
+	std::unique_ptr<IGameModeMapReloadState> pState = pSelf->GameHost().Controller()->SaveStateForMapReload();
+	if(!pState)
 	{
-		if(!pSelf->GetPlayerChar(i))
-			continue;
-
-		CCharacter *pChar = pSelf->GetPlayerChar(i);
-
-		// Save the tee individually
-		delete pSelf->m_apSavedTees[i];
-		pSelf->m_apSavedTees[i] = new CSaveHotReloadTee();
-		pSelf->m_apSavedTees[i]->Save(pChar, false);
-
-		// Save the team state
-		pSelf->m_aTeamMapping[i] = pSelf->GetDDRaceTeam(i);
-		if(pSelf->m_aTeamMapping[i] == TEAM_SUPER)
-			pSelf->m_aTeamMapping[i] = pChar->m_TeamBeforeSuper;
-
-		if(pSelf->m_apSavedTeams[pSelf->m_aTeamMapping[i]])
-			continue;
-
-		pSelf->m_apSavedTeams[pSelf->m_aTeamMapping[i]] = new CSaveTeam();
-		pSelf->m_apSavedTeams[pSelf->m_aTeamMapping[i]]->Save(pSelf, pSelf->m_aTeamMapping[i], true, true);
+		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "The active game mode does not support state-preserving hot reload.");
+		return;
 	}
+	pSelf->m_GameHost.PrepareMapReloadState(std::move(pState));
 	pSelf->Server()->ReloadMap();
 }
 
@@ -3875,46 +3496,12 @@ void CGameContext::ConchainSettingUpdate(IConsole::IResult *pResult, void *pUser
 	}
 }
 
-void CGameContext::ConchainPracticeByDefaultUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
-{
-	const int OldValue = g_Config.m_SvPracticeByDefault;
-	pfnCallback(pResult, pCallbackUserData);
-
-	if(pResult->NumArguments() && g_Config.m_SvTestingCommands)
-	{
-		CGameContext *pSelf = (CGameContext *)pUserData;
-
-		if(pSelf->m_pController == nullptr)
-			return;
-
-		const int Enable = pResult->GetInteger(0);
-		if(Enable == OldValue)
-			return;
-
-		char aBuf[256];
-		str_format(aBuf, sizeof(aBuf), "Practice is %s by default.", Enable ? "enabled" : "disabled");
-		if(Enable)
-			str_append(aBuf, " Join a team and /unpractice to turn it off for your team.");
-
-		pSelf->SendChat(-1, TEAM_ALL, aBuf);
-
-		for(int Team = 0; Team < NUM_DDRACE_TEAMS; Team++)
-		{
-			if(Team == TEAM_FLOCK || pSelf->m_pController->Teams().TeamSize(Team) == 0)
-			{
-				pSelf->m_pController->Teams().SetPractice(Team, Enable);
-			}
-		}
-	}
-}
-
 void CGameContext::OnConsoleInit()
 {
 	m_pServer = Kernel()->RequestInterface<IServer>();
 	m_pConfigManager = Kernel()->RequestInterface<IConfigManager>();
 	m_pConfig = m_pConfigManager->Values();
 	m_pConsole = Kernel()->RequestInterface<IConsole>();
-	m_pEngine = Kernel()->RequestInterface<IEngine>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 
 	Console()->Register("tune", "s[tuning] ?f[value]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneParam, this, "Tune variable to value or show current value");
@@ -3930,8 +3517,6 @@ void CGameContext::OnConsoleInit()
 	Console()->Register("switch_open", "i[switch]", CFGFLAG_SERVER | CFGFLAG_GAME, ConSwitchOpen, this, "Whether a switch is deactivated by default (otherwise activated)");
 	Console()->Register("pause_game", "", CFGFLAG_SERVER, ConPause, this, "Pause/unpause game");
 	Console()->Register("change_map", "r[map]", CFGFLAG_SERVER | CFGFLAG_STORE, ConChangeMap, this, "Change map");
-	Console()->Register("random_map", "?i[stars] ?i[max stars]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRandomMap, this, "Random map");
-	Console()->Register("random_unfinished_map", "?i[stars] ?i[max stars]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRandomUnfinishedMap, this, "Random unfinished map");
 	Console()->Register("restart", "?i[seconds]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRestart, this, "Restart in x seconds (0 = abort)");
 	Console()->Register("server_alert", "r[message]", CFGFLAG_SERVER, ConServerAlert, this, "Send a server alert message to all players");
 	Console()->Register("mod_alert", "v[id] r[message]", CFGFLAG_SERVER, ConModAlert, this, "Send a moderator alert message to player");
@@ -3940,6 +3525,7 @@ void CGameContext::OnConsoleInit()
 	Console()->Register("set_team", "i[id] i[team-id] ?i[delay in minutes]", CFGFLAG_SERVER, ConSetTeam, this, "Set team for a player (spectators = -1, game = 0)");
 	Console()->Register("set_team_all", "i[team-id]", CFGFLAG_SERVER, ConSetTeamAll, this, "Set team for all players (spectators = -1, game = 0)");
 	Console()->Register("hot_reload", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConHotReload, this, "Reload the map while preserving the state of tees and teams");
+	Console()->Register("position_player", "i[id] i[target-id] i[offset-x] i[offset-y]", CFGFLAG_SERVER | CMDFLAG_TEST, ConPositionPlayer, this, "Position a player relative to another player for testing");
 	Console()->Register("reload_censorlist", "", CFGFLAG_SERVER, ConReloadCensorlist, this, "Reload the censorlist");
 
 	Console()->Register("add_vote", "s[name] r[command]", CFGFLAG_SERVER, ConAddVote, this, "Add a voting option");
@@ -3958,62 +3544,15 @@ void CGameContext::OnConsoleInit()
 	Console()->Chain("sv_vote_kick_min", ConchainSettingUpdate, this);
 	Console()->Chain("sv_vote_spectate", ConchainSettingUpdate, this);
 	Console()->Chain("sv_spectator_slots", ConchainSettingUpdate, this);
+	Console()->Chain("sv_teambalance_time", ConchainSettingUpdate, this);
 
-	RegisterDDRaceCommands();
+	RegisterModerationCommands();
 	RegisterChatCommands();
 }
 
-void CGameContext::RegisterDDRaceCommands()
+void CGameContext::RegisterModerationCommands()
 {
 	Console()->Register("kill_pl", "v[id] ?r[reason]", CFGFLAG_SERVER, ConKillPlayer, this, "Kills a player and announces the kill");
-	Console()->Register("totele", "i[number]", CFGFLAG_SERVER | CMDFLAG_TEST, ConToTeleporter, this, "Teleports you to teleporter i");
-	Console()->Register("totelecp", "i[number]", CFGFLAG_SERVER | CMDFLAG_TEST, ConToCheckTeleporter, this, "Teleports you to checkpoint teleporter i");
-	Console()->Register("tele", "?i[id] ?i[id]", CFGFLAG_SERVER | CMDFLAG_TEST, ConTeleport, this, "Teleports player i (or you) to player i (or you to where you look at)");
-	Console()->Register("addweapon", "i[weapon-id]", CFGFLAG_SERVER | CMDFLAG_TEST, ConAddWeapon, this, "Gives weapon with id i to you (all = -1, hammer = 0, gun = 1, shotgun = 2, grenade = 3, laser = 4, ninja = 5)");
-	Console()->Register("removeweapon", "i[weapon-id]", CFGFLAG_SERVER | CMDFLAG_TEST, ConRemoveWeapon, this, "removes weapon with id i from you (all = -1, hammer = 0, gun = 1, shotgun = 2, grenade = 3, laser = 4, ninja = 5)");
-	Console()->Register("shotgun", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConShotgun, this, "Gives a shotgun to you");
-	Console()->Register("grenade", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConGrenade, this, "Gives a grenade launcher to you");
-	Console()->Register("laser", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConLaser, this, "Gives a laser to you");
-	Console()->Register("rifle", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConLaser, this, "Gives a laser to you");
-	Console()->Register("jetpack", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConJetpack, this, "Gives jetpack to you");
-	Console()->Register("setjumps", "i[jumps]", CFGFLAG_SERVER | CMDFLAG_TEST, ConSetJumps, this, "Gives you as many jumps as you specify");
-	Console()->Register("weapons", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConWeapons, this, "Gives all weapons to you");
-	Console()->Register("unshotgun", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnShotgun, this, "Removes the shotgun from you");
-	Console()->Register("ungrenade", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnGrenade, this, "Removes the grenade launcher from you");
-	Console()->Register("unlaser", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnLaser, this, "Removes the laser from you");
-	Console()->Register("unrifle", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnLaser, this, "Removes the laser from you");
-	Console()->Register("unjetpack", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnJetpack, this, "Removes the jetpack from you");
-	Console()->Register("unweapons", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnWeapons, this, "Removes all weapons from you");
-	Console()->Register("ninja", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConNinja, this, "Makes you a ninja");
-	Console()->Register("unninja", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnNinja, this, "Removes ninja from you");
-	Console()->Register("super", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConSuper, this, "Makes you super");
-	Console()->Register("unsuper", "", CFGFLAG_SERVER, ConUnSuper, this, "Removes super from you");
-	Console()->Register("invincible", "?i['0'|'1']", CFGFLAG_SERVER | CMDFLAG_TEST, ConToggleInvincible, this, "Toggles invincible mode");
-	Console()->Register("infinite_jump", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConEndlessJump, this, "Gives you infinite jump");
-	Console()->Register("uninfinite_jump", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnEndlessJump, this, "Removes infinite jump from you");
-	Console()->Register("endless_hook", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConEndlessHook, this, "Gives you endless hook");
-	Console()->Register("unendless_hook", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnEndlessHook, this, "Removes endless hook from you");
-	Console()->Register("setswitch", "i[switch] ?i['0'|'1'] ?i[seconds]", CFGFLAG_SERVER | CMDFLAG_TEST, ConSetSwitch, this, "Toggle or set the switch on or off for the specified time (or indefinitely by default)");
-	Console()->Register("solo", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConSolo, this, "Puts you into solo part");
-	Console()->Register("unsolo", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnSolo, this, "Puts you out of solo part");
-	Console()->Register("freeze", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConFreeze, this, "Puts you into freeze");
-	Console()->Register("unfreeze", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnfreeze, this, "Puts you out of freeze");
-	Console()->Register("deep", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConDeep, this, "Puts you into deep freeze");
-	Console()->Register("undeep", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnDeep, this, "Puts you out of deep freeze");
-	Console()->Register("livefreeze", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConLiveFreeze, this, "Makes you live frozen");
-	Console()->Register("unlivefreeze", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnLiveFreeze, this, "Puts you out of live freeze");
-	Console()->Register("left", "?i[tiles]", CFGFLAG_SERVER | CMDFLAG_TEST, ConGoLeft, this, "Makes you move 1 tile left");
-	Console()->Register("right", "?i[tiles]", CFGFLAG_SERVER | CMDFLAG_TEST, ConGoRight, this, "Makes you move 1 tile right");
-	Console()->Register("up", "?i[tiles]", CFGFLAG_SERVER | CMDFLAG_TEST, ConGoUp, this, "Makes you move 1 tile up");
-	Console()->Register("down", "?i[tiles]", CFGFLAG_SERVER | CMDFLAG_TEST, ConGoDown, this, "Makes you move 1 tile down");
-
-	Console()->Register("move", "i[x] i[y]", CFGFLAG_SERVER | CMDFLAG_TEST, ConMove, this, "Moves to the tile with x/y-number ii");
-	Console()->Register("move_raw", "i[x] i[y]", CFGFLAG_SERVER | CMDFLAG_TEST, ConMoveRaw, this, "Moves to the point with x/y-coordinates ii");
-	Console()->Register("force_pause", "v[id] i[seconds]", CFGFLAG_SERVER, ConForcePause, this, "Force i to pause for i seconds");
-	Console()->Register("force_unpause", "v[id]", CFGFLAG_SERVER, ConForcePause, this, "Set force-pause timer of i to 0.");
-
-	Console()->Register("set_team_ddr", "v[id] i[team]", CFGFLAG_SERVER, ConSetDDRTeam, this, "Set ddrace team for a player");
-	Console()->Register("uninvite", "v[id] i[team]", CFGFLAG_SERVER, ConUninvite, this, "Uninvite player from team");
 
 	Console()->Register("mute", "", CFGFLAG_SERVER, ConMute, this, "Deprecated. Use either 'muteid <client_id> <seconds> <reason>' or 'muteip <ip> <seconds> <reason>'");
 	Console()->Register("muteid", "v[id] i[seconds] ?r[reason]", CFGFLAG_SERVER, ConMuteId, this, "Mute player with client ID");
@@ -4033,10 +3572,7 @@ void CGameContext::RegisterDDRaceCommands()
 
 	Console()->Register("moderate", "", CFGFLAG_SERVER, ConModerate, this, "Enables/disables active moderator mode for the player");
 	Console()->Register("vote_no", "", CFGFLAG_SERVER, ConVoteNo, this, "Same as \"vote no\"");
-	Console()->Register("save_dry", "", CFGFLAG_SERVER, ConDrySave, this, "Dump the current savestring");
 	Console()->Register("dump_log", "?i[seconds]", CFGFLAG_SERVER, ConDumpLog, this, "Show logs of the last i seconds");
-
-	Console()->Chain("sv_practice_by_default", ConchainPracticeByDefaultUpdate, this);
 }
 
 void CGameContext::RegisterChatCommands()
@@ -4044,7 +3580,6 @@ void CGameContext::RegisterChatCommands()
 	Console()->Register("rules", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConRules, this, "Shows the server rules");
 	Console()->Register("emote", "?s[emote name] i[duration in seconds]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConEyeEmote, this, "Sets your tee's eye emote");
 	Console()->Register("eyeemote", "?s['on'|'off'|'toggle']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSetEyeEmote, this, "Toggles use of standard eye-emotes on/off, eyeemote s, where s = on for on, off for off, toggle for toggle and nothing to show current status");
-	Console()->Register("settings", "?s[configname]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSettings, this, "Shows gameplay information for this server");
 	Console()->Register("help", "?r[command]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConHelp, this, "Shows help to command r, general help if left blank");
 	Console()->Register("info", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConInfo, this, "Shows info about this server");
 	Console()->Register("list", "?s[filter]", CFGFLAG_CHAT, ConList, this, "List connected players with optional case-insensitive substring matching filter");
@@ -4052,97 +3587,13 @@ void CGameContext::RegisterChatCommands()
 	Console()->Register("whisper", "s[player name] r[message]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConWhisper, this, "Whisper something to someone (private message)");
 	Console()->Register("c", "r[message]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConConverse, this, "Converse with the last person you whispered to (private message)");
 	Console()->Register("converse", "r[message]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConConverse, this, "Converse with the last person you whispered to (private message)");
-	Console()->Register("pause", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTogglePause, this, "Toggles pause");
-	Console()->Register("spec", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConToggleSpec, this, "Toggles spec (if not available behaves as /pause)");
-	Console()->Register("pausevoted", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTogglePauseVoted, this, "Toggles pause on the currently voted player");
-	Console()->Register("specvoted", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConToggleSpecVoted, this, "Toggles spec on the currently voted player");
 	Console()->Register("dnd", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConDND, this, "Toggle Do Not Disturb (no chat and server messages)");
 	Console()->Register("whispers", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConWhispers, this, "Toggle receiving whispers");
 	Console()->Register("mapinfo", "?r[map]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConMapInfo, this, "Show info about the map with name r gives (current map by default)");
 	Console()->Register("timeout", "?s[code]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTimeout, this, "Set timeout protection code s");
-	Console()->Register("practice", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConPractice, this, "Enable cheats for your current team's run, but you can't earn a rank");
-	Console()->Register("unpractice", "", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConUnPractice, this, "Kills team and disables practice mode");
-	Console()->Register("practicecmdlist", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConPracticeCmdList, this, "List all commands that are available in practice mode");
-	Console()->Register("swap", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSwap, this, "Request to swap your tee with another team member");
-	Console()->Register("cancelswap", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConCancelSwap, this, "Cancel your swap request");
-	Console()->Register("save", "?r[code]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSave, this, "Save team with code r.");
-	Console()->Register("load", "?r[code]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConLoad, this, "Load with code r. /load to check your existing saves");
 	Console()->Register("map", "?r[map]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConMap, this, "Vote a map by name");
 
-	Console()->Register("rankteam", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeamRank, this, "Shows the team rank of player with name r (your team rank by default)");
-	Console()->Register("teamrank", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeamRank, this, "Shows the team rank of player with name r (your team rank by default)");
-
-	Console()->Register("rank", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConRank, this, "Shows the rank of player with name r (your rank by default)");
-	Console()->Register("top5team", "?s[player name] ?i[rank to start with]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeamTop5, this, "Shows five team ranks of the ladder or of a player beginning with rank i (1 by default, -1 for worst)");
-	Console()->Register("teamtop5", "?s[player name] ?i[rank to start with]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeamTop5, this, "Shows five team ranks of the ladder or of a player beginning with rank i (1 by default, -1 for worst)");
-	Console()->Register("top", "?i[rank to start with]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTop, this, "Shows the top ranks of the global and regional ladder beginning with rank i (1 by default, -1 for worst)");
-	Console()->Register("top5", "?i[rank to start with]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTop, this, "Shows the top ranks of the global and regional ladder beginning with rank i (1 by default, -1 for worst)");
-	Console()->Register("times", "?s[player name] ?i[number of times to skip]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTimes, this, "/times ?s?i shows last 5 times of the server or of a player beginning with name s starting with time i (i = 1 by default, -1 for first)");
-	Console()->Register("points", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConPoints, this, "Shows the global points of a player beginning with name r (your rank by default)");
-	Console()->Register("top5points", "?i[number]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTopPoints, this, "Shows five points of the global point ladder beginning with rank i (1 by default)");
-	Console()->Register("timecp", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTimeCP, this, "Set your checkpoints based on another player");
-
-	Console()->Register("team", "?i[id]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeam, this, "Lets you join team i (shows your team if left blank)");
-	Console()->Register("lock", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConLock, this, "Toggle team lock so no one else can join and so the team restarts when a player dies. /lock 0 to unlock, /lock 1 to lock");
-	Console()->Register("unlock", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConUnlock, this, "Unlock a team");
-	Console()->Register("invite", "r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConInvite, this, "Invite a person to a locked team");
-	Console()->Register("join", "r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConJoin, this, "Join the team of the specified player");
-	Console()->Register("team0mode", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeam0Mode, this, "Toggle team between team 0 and team mode. This mode will make your team behave like team 0.");
-
-	Console()->Register("showothers", "?i['0'|'1'|'2']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConShowOthers, this, "Whether to show players from other teams or not (off by default), optional i = 0 for off, i = 1 for on, i = 2 for own team only");
 	Console()->Register("showall", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConShowAll, this, "Whether to show players at any distance (off by default), optional i = 0 for off else for on");
-	Console()->Register("specteam", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSpecTeam, this, "Whether to show players from other teams when spectating (on by default), optional i = 0 for off else for on");
-	Console()->Register("ninjajetpack", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConNinjaJetpack, this, "Whether to use ninja jetpack or not. Makes jetpack look more awesome");
-	Console()->Register("saytime", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConSayTime, this, "Privately messages someone's current time in this current running race (your time by default)");
-	Console()->Register("saytimeall", "", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConSayTimeAll, this, "Publicly messages everyone your current time in this current running race");
-	Console()->Register("time", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTime, this, "Privately shows you your current time in this current running race in the broadcast message");
-	Console()->Register("timer", "?s['gametimer'|'broadcast'|'both'|'none'|'cycle']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSetTimerType, this, "Personal Setting of showing time in either broadcast or game/round timer, timer s, where s = broadcast for broadcast, gametimer for game/round timer, cycle for cycle, both for both, none for no timer and nothing to show current status");
-	Console()->Register("r", "", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConRescue, this, "Teleport yourself out of freeze if auto rescue mode is enabled, otherwise it will set position for rescuing if grounded and teleport you out of freeze if not (use sv_rescue 1 to enable this feature)");
-	Console()->Register("rescue", "", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConRescue, this, "Teleport yourself out of freeze if auto rescue mode is enabled, otherwise it will set position for rescuing if grounded and teleport you out of freeze if not (use sv_rescue 1 to enable this feature)");
-	Console()->Register("back", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConBack, this, "Teleport yourself to the last auto rescue position before you died (use sv_rescue 1 to enable this feature)");
-	Console()->Register("rescuemode", "?r['auto'|'manual']", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConRescueMode, this, "Sets one of the two rescue modes (auto or manual). Prints current mode if no arguments provided");
-	Console()->Register("tp", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConTeleTo, this, "Depending on the number of supplied arguments, teleport yourself to; (0.) where you are spectating or aiming; (1.) the specified player name");
-	Console()->Register("teleport", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConTeleTo, this, "Depending on the number of supplied arguments, teleport yourself to; (0.) where you are spectating or aiming; (1.) the specified player name");
-	Console()->Register("tpxy", "s[x] s[y]", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConTeleXY, this, "Teleport yourself to the specified coordinates. A tilde (~) can be used to denote your current position, e.g. '/tpxy ~1 ~' to teleport one tile to the right");
-	Console()->Register("lasttp", "", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConLastTele, this, "Teleport yourself to the last location you teleported to");
-	Console()->Register("tc", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConTeleCursor, this, "Teleport yourself to player or to where you are spectating/or looking if no player name is given");
-	Console()->Register("telecursor", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER | CMDFLAG_PRACTICE, ConTeleCursor, this, "Teleport yourself to player or to where you are spectating/or looking if no player name is given");
-	Console()->Register("totele", "i[number]", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeToTeleporter, this, "Teleports you to teleporter i");
-	Console()->Register("totelecp", "i[number]", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeToCheckTeleporter, this, "Teleports you to checkpoint teleporter i");
-	Console()->Register("unsolo", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeUnSolo, this, "Puts you out of solo part");
-	Console()->Register("solo", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeSolo, this, "Puts you into solo part");
-	Console()->Register("undeep", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeUnDeep, this, "Puts you out of deep freeze");
-	Console()->Register("deep", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeDeep, this, "Puts you into deep freeze");
-	Console()->Register("unlivefreeze", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeUnLiveFreeze, this, "Puts you out of live freeze");
-	Console()->Register("livefreeze", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeLiveFreeze, this, "Makes you live frozen");
-	Console()->Register("addweapon", "i[weapon-id]", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeAddWeapon, this, "Gives weapon with id i to you (all = -1, hammer = 0, gun = 1, shotgun = 2, grenade = 3, laser = 4, ninja = 5)");
-	Console()->Register("removeweapon", "i[weapon-id]", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeRemoveWeapon, this, "removes weapon with id i from you (all = -1, hammer = 0, gun = 1, shotgun = 2, grenade = 3, laser = 4, ninja = 5)");
-	Console()->Register("shotgun", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeShotgun, this, "Gives a shotgun to you");
-	Console()->Register("grenade", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeGrenade, this, "Gives a grenade launcher to you");
-	Console()->Register("laser", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeLaser, this, "Gives a laser to you");
-	Console()->Register("rifle", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeLaser, this, "Gives a laser to you");
-	Console()->Register("jetpack", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeJetpack, this, "Gives jetpack to you");
-	Console()->Register("setjumps", "i[jumps]", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeSetJumps, this, "Gives you as many jumps as you specify");
-	Console()->Register("weapons", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeWeapons, this, "Gives all weapons to you");
-	Console()->Register("unshotgun", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeUnShotgun, this, "Removes the shotgun from you");
-	Console()->Register("ungrenade", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeUnGrenade, this, "Removes the grenade launcher from you");
-	Console()->Register("unlaser", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeUnLaser, this, "Removes the laser from you");
-	Console()->Register("unrifle", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeUnLaser, this, "Removes the laser from you");
-	Console()->Register("unjetpack", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeUnJetpack, this, "Removes the jetpack from you");
-	Console()->Register("unweapons", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeUnWeapons, this, "Removes all weapons from you");
-	Console()->Register("ninja", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeNinja, this, "Makes you a ninja");
-	Console()->Register("unninja", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeUnNinja, this, "Removes ninja from you");
-	Console()->Register("infjump", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeEndlessJump, this, "Gives you infinite jump");
-	Console()->Register("uninfjump", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeUnEndlessJump, this, "Removes infinite jump from you");
-	Console()->Register("endless", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeEndlessHook, this, "Gives you endless hook");
-	Console()->Register("unendless", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeUnEndlessHook, this, "Removes endless hook from you");
-	Console()->Register("setswitch", "i[switch] ?i['0'|'1'] ?i[seconds]", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeSetSwitch, this, "Toggle or set the switch on or off for the specified time (or indefinitely by default)");
-	Console()->Register("invincible", "?i['0'|'1']", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeToggleInvincible, this, "Toggles invincible mode");
-	Console()->Register("collision", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeToggleCollision, this, "Toggles collision");
-	Console()->Register("hookcollision", "", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeToggleHookCollision, this, "Toggles hook collision");
-	Console()->Register("hitothers", "?s['all'|'hammer'|'shotgun'|'grenade'|'laser']", CFGFLAG_CHAT | CMDFLAG_PRACTICE, ConPracticeToggleHitOthers, this, "Toggles hit others");
-
-	Console()->Register("kill", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConProtectedKill, this, "Kill yourself when kill-protected during a long game (use f1, kill for regular kill)");
 }
 
 void CGameContext::OnInit(const void *pPersistentData)
@@ -4153,7 +3604,6 @@ void CGameContext::OnInit(const void *pPersistentData)
 	m_pConfigManager = Kernel()->RequestInterface<IConfigManager>();
 	m_pConfig = m_pConfigManager->Values();
 	m_pConsole = Kernel()->RequestInterface<IConsole>();
-	m_pEngine = Kernel()->RequestInterface<IEngine>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 	m_pAntibot = Kernel()->RequestInterface<IAntibot>();
 	m_World.SetGameServer(this);
@@ -4189,86 +3639,18 @@ void CGameContext::OnInit(const void *pPersistentData)
 	m_World.Init(&m_Collision, m_aTuningList);
 	m_MapBugs = CMapBugs::Create(Map()->BaseName(), Map()->Size(), Map()->Sha256());
 
-	// Reset Tunezones
-	for(int i = 0; i < TuneZone::NUM; i++)
+	dbg_assert(RegisterBuiltInGameModes(m_GameHost.Modes()), "failed to register built-in game modes");
+	if(!m_GameHost.Select(Config()->m_SvGametype))
 	{
-		TuningList()[i] = CTuningParams::DEFAULT;
-		TuningList()[i].Set("gun_curvature", 0);
-		TuningList()[i].Set("gun_speed", 1400);
-		TuningList()[i].Set("shotgun_curvature", 0);
-		TuningList()[i].Set("shotgun_speed", 500);
-		TuningList()[i].Set("shotgun_speeddiff", 0);
+		log_error("server", "unknown game type '%s'", Config()->m_SvGametype);
+		dbg_assert(m_GameHost.Select("ddnet"), "failed to create fallback controller for shutdown");
+		dbg_assert(m_GameHost.Controller(), "failed to create fallback controller for shutdown");
+		Server()->SetErrorShutdown("unknown game type");
+		return;
 	}
 
-	for(int i = 0; i < TuneZone::NUM; i++)
-	{
-		// Send no text by default when changing tune zones.
-		m_aaZoneEnterMsg[i][0] = 0;
-		m_aaZoneLeaveMsg[i][0] = 0;
-	}
-	// Reset Tuning
-	if(g_Config.m_SvTuneReset)
-	{
-		ResetTuning();
-	}
-	else
-	{
-		GlobalTuning()->Set("gun_speed", 1400);
-		GlobalTuning()->Set("gun_curvature", 0);
-		GlobalTuning()->Set("shotgun_speed", 500);
-		GlobalTuning()->Set("shotgun_speeddiff", 0);
-		GlobalTuning()->Set("shotgun_curvature", 0);
-	}
-
-	if(g_Config.m_SvDDRaceTuneReset)
-	{
-		g_Config.m_SvHit = 1;
-		g_Config.m_SvEndlessDrag = 0;
-		g_Config.m_SvOldLaser = 0;
-		g_Config.m_SvOldTeleportHook = 0;
-		g_Config.m_SvOldTeleportWeapons = 0;
-		g_Config.m_SvTeleportHoldHook = 0;
-		g_Config.m_SvTeam = SV_TEAM_ALLOWED;
-		g_Config.m_SvShowOthersDefault = SHOW_OTHERS_OFF;
-
-		for(auto &Switcher : Switchers())
-			Switcher.m_Initial = true;
-	}
-
-	m_pConfigManager->SetGameSettingsReadOnly(false);
-
-	Console()->ExecuteFile(g_Config.m_SvResetFile, IConsole::CLIENT_ID_UNSPECIFIED);
-
-	LoadMapSettings();
-
-	m_pConfigManager->SetGameSettingsReadOnly(true);
-
+	m_GameHost.Init(((CServer *)Server())->DbPool());
 	m_MapBugs.Dump();
-
-	if(g_Config.m_SvSoloServer)
-	{
-		g_Config.m_SvTeam = SV_TEAM_FORCED_SOLO;
-		g_Config.m_SvShowOthersDefault = SHOW_OTHERS_ON;
-
-		GlobalTuning()->Set("player_collision", 0);
-		GlobalTuning()->Set("player_hooking", 0);
-
-		for(int i = 0; i < TuneZone::NUM; i++)
-		{
-			TuningList()[i].Set("player_collision", 0);
-			TuningList()[i].Set("player_hooking", 0);
-		}
-	}
-
-	if(!str_comp(Config()->m_SvGametype, "mod"))
-		m_pController = new CGameControllerMod(this);
-	else
-		m_pController = new CGameControllerDDNet(this);
-
-	for(const char *pReservedGameType : {"DM", "TDM", "CTF", "LMS", "LTS"})
-	{
-		dbg_assert(str_comp(m_pController->m_pGameType, pReservedGameType) != 0, "Using reserved gametype '%s' is not allowed", m_pController->m_pGameType);
-	}
 
 	ReadCensorList();
 
@@ -4311,7 +3693,7 @@ void CGameContext::OnInit(const void *pPersistentData)
 
 		GameInfo.m_pServerName = g_Config.m_SvName;
 		GameInfo.m_ServerPort = Server()->Port();
-		GameInfo.m_pGameType = m_pController->m_pGameType;
+		GameInfo.m_pGameType = m_GameHost.Controller()->m_pGameType;
 
 		GameInfo.m_pConfig = &g_Config;
 		GameInfo.m_pTuning = GlobalTuning();
@@ -4338,14 +3720,6 @@ void CGameContext::OnInit(const void *pPersistentData)
 
 	Server()->DemoRecorder_HandleAutoStart();
 
-	if(!m_pScore)
-	{
-		m_pScore = new CScore(this, ((CServer *)Server())->DbPool());
-	}
-
-	// load map info from database
-	Score()->LoadMapInfo();
-
 	// create all entities from the game layer
 	CreateAllEntities(true);
 
@@ -4367,68 +3741,18 @@ void CGameContext::CreateAllEntities(bool Initial)
 			// Game layer
 			{
 				const int GameIndex = pTiles[Index].m_Index;
-				if(GameIndex == TILE_OLDLASER)
+				if(GameIndex >= ENTITY_OFFSET)
 				{
-					g_Config.m_SvOldLaser = 1;
-					dbg_msg("game_layer", "found old laser tile");
-				}
-				else if(GameIndex == TILE_NPC)
-				{
-					GlobalTuning()->Set("player_collision", 0);
-					dbg_msg("game_layer", "found no collision tile");
-				}
-				else if(GameIndex == TILE_EHOOK)
-				{
-					g_Config.m_SvEndlessDrag = 1;
-					dbg_msg("game_layer", "found unlimited hook time tile");
-				}
-				else if(GameIndex == TILE_NOHIT)
-				{
-					g_Config.m_SvHit = 0;
-					dbg_msg("game_layer", "found no weapons hitting others tile");
-				}
-				else if(GameIndex == TILE_NPH)
-				{
-					GlobalTuning()->Set("player_hooking", 0);
-					dbg_msg("game_layer", "found no player hooking tile");
-				}
-				else if(GameIndex >= ENTITY_OFFSET)
-				{
-					m_pController->OnEntity(GameIndex - ENTITY_OFFSET, x, y, LAYER_GAME, pTiles[Index].m_Flags, Initial);
+					m_GameHost.Controller()->OnEntity(GameIndex - ENTITY_OFFSET, x, y, LAYER_GAME, pTiles[Index].m_Flags, Initial);
 				}
 			}
 
 			if(pFront)
 			{
 				const int FrontIndex = pFront[Index].m_Index;
-				if(FrontIndex == TILE_OLDLASER)
+				if(FrontIndex >= ENTITY_OFFSET)
 				{
-					g_Config.m_SvOldLaser = 1;
-					dbg_msg("front_layer", "found old laser tile");
-				}
-				else if(FrontIndex == TILE_NPC)
-				{
-					GlobalTuning()->Set("player_collision", 0);
-					dbg_msg("front_layer", "found no collision tile");
-				}
-				else if(FrontIndex == TILE_EHOOK)
-				{
-					g_Config.m_SvEndlessDrag = 1;
-					dbg_msg("front_layer", "found unlimited hook time tile");
-				}
-				else if(FrontIndex == TILE_NOHIT)
-				{
-					g_Config.m_SvHit = 0;
-					dbg_msg("front_layer", "found no weapons hitting others tile");
-				}
-				else if(FrontIndex == TILE_NPH)
-				{
-					GlobalTuning()->Set("player_hooking", 0);
-					dbg_msg("front_layer", "found no player hooking tile");
-				}
-				else if(FrontIndex >= ENTITY_OFFSET)
-				{
-					m_pController->OnEntity(FrontIndex - ENTITY_OFFSET, x, y, LAYER_FRONT, pFront[Index].m_Flags, Initial);
+					m_GameHost.Controller()->OnEntity(FrontIndex - ENTITY_OFFSET, x, y, LAYER_FRONT, pFront[Index].m_Flags, Initial);
 				}
 			}
 
@@ -4439,7 +3763,7 @@ void CGameContext::CreateAllEntities(bool Initial)
 				// if(SwitchType == TILE_DOOR_OFF)
 				if(SwitchType >= ENTITY_OFFSET)
 				{
-					m_pController->OnEntity(SwitchType - ENTITY_OFFSET, x, y, LAYER_SWITCH, pSwitch[Index].m_Flags, Initial, pSwitch[Index].m_Number);
+					m_GameHost.Controller()->OnEntity(SwitchType - ENTITY_OFFSET, x, y, LAYER_SWITCH, pSwitch[Index].m_Flags, Initial, pSwitch[Index].m_Number);
 				}
 			}
 		}
@@ -4448,9 +3772,11 @@ void CGameContext::CreateAllEntities(bool Initial)
 
 CPlayer *CGameContext::CreatePlayer(int ClientId, int StartTeam, bool Afk, int LastWhisperTo)
 {
+	dbg_assert(m_GameHost.Controller()->IsValidTeam(StartTeam), "Invalid Team: %d", StartTeam);
 	if(m_apPlayers[ClientId])
 		delete m_apPlayers[ClientId];
-	m_apPlayers[ClientId] = new(ClientId) CPlayer(this, m_NextUniqueClientId, ClientId, StartTeam);
+	m_apPlayers[ClientId] = m_GameHost.Controller()->CreatePlayer(m_NextUniqueClientId, ClientId, StartTeam);
+	dbg_assert(m_apPlayers[ClientId], "game mode returned no player");
 	m_apPlayers[ClientId]->SetInitialAfk(Afk);
 	m_apPlayers[ClientId]->m_LastWhisperTo = LastWhisperTo;
 	m_NextUniqueClientId += 1;
@@ -4623,11 +3949,15 @@ void CGameContext::OnShutdown(void *pPersistentData)
 	Server()->StopDemos();
 
 	DeleteTempfile();
+	for(auto &pPlayer : m_apPlayers)
+	{
+		delete pPlayer;
+		pPlayer = nullptr;
+	}
 	ConfigManager()->ResetGameSettings();
 	Collision()->Unload();
 	Layers()->Unload();
-	delete m_pController;
-	m_pController = nullptr;
+	m_GameHost.Shutdown();
 	Clear();
 }
 
@@ -4682,7 +4012,7 @@ void CGameContext::OnSnap(int ClientId, bool GlobalSnap, bool RecordingDemo)
 		Server()->SendMsg(&Msg, MSGFLAG_NOSEND, ClientId);
 	}
 
-	m_pController->Snap(ClientId);
+	m_GameHost.Controller()->Snap(ClientId);
 
 	for(auto &pPlayer : m_apPlayers)
 	{
@@ -4732,9 +4062,15 @@ bool CGameContext::IsClientHighBandwidth(int ClientId) const
 CUuid CGameContext::GameUuid() const { return m_GameUuid; }
 const char *CGameContext::GameType() const
 {
-	dbg_assert(m_pController, "no controller");
-	dbg_assert(m_pController->m_pGameType, "no gametype");
-	return m_pController->m_pGameType;
+	dbg_assert(m_GameHost.Controller(), "no controller");
+	dbg_assert(m_GameHost.Controller()->m_pGameType, "no gametype");
+	return m_GameHost.Controller()->m_pGameType;
+}
+
+const char *CGameContext::ClientScoreKind() const
+{
+	dbg_assert(m_GameHost.Controller(), "no controller");
+	return GameModeScoreKindName(m_GameHost.Controller()->Info().m_ScoreKind);
 }
 const char *CGameContext::Version() const { return m_aVersionString; }
 const char *CGameContext::NetVersion() const { return GAME_NETVERSION; }
@@ -4777,172 +4113,6 @@ bool CGameContext::IsRunningKickOrSpecVote(int ClientId) const
 	return IsRunningVote(ClientId) && (IsKickVote() || IsSpecVote());
 }
 
-void CGameContext::SendRecord(int ClientId)
-{
-	if(Server()->IsSixup(ClientId) || GetClientVersion(ClientId) >= VERSION_DDNET_MAP_BESTTIME)
-		return;
-
-	CNetMsg_Sv_Record Msg;
-	CNetMsg_Sv_RecordLegacy MsgLegacy;
-	MsgLegacy.m_PlayerTimeBest = Msg.m_PlayerTimeBest = round_to_int(Score()->PlayerData(ClientId)->m_BestTime.value_or(0.0f) * 100.0f);
-	MsgLegacy.m_ServerTimeBest = Msg.m_ServerTimeBest = m_pController->m_CurrentRecord.has_value() && !g_Config.m_SvHideScore ? round_to_int(m_pController->m_CurrentRecord.value() * 100.0f) : 0;
-	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL, ClientId);
-	if(GetClientVersion(ClientId) < VERSION_DDNET_MSG_LEGACY)
-	{
-		Server()->SendPackMsg(&MsgLegacy, MSGFLAG_VITAL, ClientId);
-	}
-}
-
-void CGameContext::SendFinish(int ClientId, float Time, std::optional<float> PreviousBestTime)
-{
-	int ClientVersion = m_apPlayers[ClientId]->GetClientVersion();
-
-	if(!Server()->IsSixup(ClientId))
-	{
-		CNetMsg_Sv_DDRaceTime Msg;
-		CNetMsg_Sv_DDRaceTimeLegacy MsgLegacy;
-		MsgLegacy.m_Time = Msg.m_Time = (int)(Time * 100.0f);
-		MsgLegacy.m_Check = Msg.m_Check = 0;
-		MsgLegacy.m_Finish = Msg.m_Finish = 1;
-
-		if(PreviousBestTime.has_value())
-		{
-			float Diff100 = (Time - PreviousBestTime.value()) * 100;
-			MsgLegacy.m_Check = Msg.m_Check = (int)Diff100;
-		}
-		if(VERSION_DDRACE <= ClientVersion)
-		{
-			if(ClientVersion < VERSION_DDNET_MSG_LEGACY)
-			{
-				Server()->SendPackMsg(&Msg, MSGFLAG_VITAL, ClientId);
-			}
-			else
-			{
-				Server()->SendPackMsg(&MsgLegacy, MSGFLAG_VITAL, ClientId);
-			}
-		}
-	}
-
-	CNetMsg_Sv_RaceFinish RaceFinishMsg;
-	RaceFinishMsg.m_ClientId = ClientId;
-	RaceFinishMsg.m_Time = Time * 1000;
-	RaceFinishMsg.m_Diff = 0;
-	if(PreviousBestTime.has_value())
-	{
-		float Diff = absolute(Time - PreviousBestTime.value());
-		RaceFinishMsg.m_Diff = Diff * 1000 * (Time < PreviousBestTime.value() ? -1 : 1);
-	}
-	RaceFinishMsg.m_RecordPersonal = (!PreviousBestTime.has_value() || Time < PreviousBestTime.value());
-	RaceFinishMsg.m_RecordServer = Time < m_pController->m_CurrentRecord;
-	Server()->SendPackMsg(&RaceFinishMsg, MSGFLAG_VITAL | MSGFLAG_NORECORD, g_Config.m_SvHideScore ? ClientId : -1);
-}
-
-void CGameContext::SendSaveCode(int Team, int TeamSize, int State, const char *pError, const char *pSaveRequester, const char *pServerName, const char *pGeneratedCode, const char *pCode)
-{
-	char aBuf[512];
-
-	CMsgPacker Msg(NETMSGTYPE_SV_SAVECODE);
-	Msg.AddInt(State);
-	Msg.AddString(pError);
-	Msg.AddString(pSaveRequester);
-	Msg.AddString(pServerName);
-	Msg.AddString(pGeneratedCode);
-	Msg.AddString(pCode);
-	char aTeamMembers[1024];
-	aTeamMembers[0] = '\0';
-	int NumMembersSent = 0;
-	for(int MemberId = 0; MemberId < MAX_CLIENTS; MemberId++)
-	{
-		if(!m_apPlayers[MemberId])
-			continue;
-		if(GetDDRaceTeam(MemberId) != Team)
-			continue;
-		if(NumMembersSent++ > 10)
-		{
-			str_format(aBuf, sizeof(aBuf), " and %d others", (TeamSize - NumMembersSent) + 1);
-			str_append(aTeamMembers, aBuf);
-			break;
-		}
-
-		if(NumMembersSent > 1)
-			str_append(aTeamMembers, ", ");
-		str_append(aTeamMembers, Server()->ClientName(MemberId));
-	}
-	Msg.AddString(aTeamMembers);
-
-	for(int MemberId = 0; MemberId < MAX_CLIENTS; MemberId++)
-	{
-		if(!m_apPlayers[MemberId])
-			continue;
-		if(GetDDRaceTeam(MemberId) != Team)
-			continue;
-
-		if(GetClientVersion(MemberId) >= VERSION_DDNET_SAVE_CODE)
-		{
-			Server()->SendMsg(&Msg, MSGFLAG_VITAL, MemberId);
-		}
-		else
-		{
-			switch(State)
-			{
-			case SAVESTATE_PENDING:
-				if(pCode[0] == '\0')
-				{
-					str_format(aBuf,
-						sizeof(aBuf),
-						"Team save in progress. You'll be able to load with '/load %s'",
-						pGeneratedCode);
-				}
-				else
-				{
-					str_format(aBuf,
-						sizeof(aBuf),
-						"Team save in progress. You'll be able to load with '/load %s' if save is successful or with '/load %s' if it fails",
-						pCode,
-						pGeneratedCode);
-				}
-				break;
-			case SAVESTATE_DONE:
-				if(str_comp(pServerName, g_Config.m_SvSqlServerName) == 0)
-				{
-					str_format(aBuf, sizeof(aBuf),
-						"Team successfully saved by %s. Use '/load %s' to continue",
-						pSaveRequester, pCode[0] ? pCode : pGeneratedCode);
-				}
-				else
-				{
-					str_format(aBuf, sizeof(aBuf),
-						"Team successfully saved by %s. Use '/load %s' on %s to continue",
-						pSaveRequester, pCode[0] ? pCode : pGeneratedCode, pServerName);
-				}
-				break;
-			case SAVESTATE_FALLBACKFILE:
-				SendBroadcast("Database connection failed, teamsave written to a file instead. On official DDNet servers this will automatically be inserted into the database every full hour.", MemberId);
-				if(str_comp(pServerName, g_Config.m_SvSqlServerName) == 0)
-				{
-					str_format(aBuf, sizeof(aBuf),
-						"Team successfully saved by %s. The database connection failed, using generated save code instead to avoid collisions. Use '/load %s' to continue",
-						pSaveRequester, pCode[0] ? pCode : pGeneratedCode);
-				}
-				else
-				{
-					str_format(aBuf, sizeof(aBuf),
-						"Team successfully saved by %s. The database connection failed, using generated save code instead to avoid collisions. Use '/load %s' on %s to continue",
-						pSaveRequester, pCode[0] ? pCode : pGeneratedCode, pServerName);
-				}
-				break;
-			case SAVESTATE_ERROR:
-			case SAVESTATE_WARNING:
-				str_copy(aBuf, pError);
-				break;
-			default:
-				dbg_assert_failed("Unexpected save state %d", State);
-			}
-			SendChatTarget(MemberId, aBuf);
-		}
-	}
-}
-
 bool CGameContext::ProcessSpamProtection(int ClientId, bool RespectChatInitialDelay)
 {
 	if(!m_apPlayers[ClientId])
@@ -4981,22 +4151,6 @@ bool CGameContext::ProcessSpamProtection(int ClientId, bool RespectChatInitialDe
 	}
 
 	return false;
-}
-
-int CGameContext::GetDDRaceTeam(int ClientId) const
-{
-	return m_pController->Teams().m_Core.Team(ClientId);
-}
-
-void CGameContext::ResetTuning()
-{
-	*GlobalTuning() = CTuningParams::DEFAULT;
-	GlobalTuning()->Set("gun_speed", 1400);
-	GlobalTuning()->Set("gun_curvature", 0);
-	GlobalTuning()->Set("shotgun_speed", 500);
-	GlobalTuning()->Set("shotgun_speeddiff", 0);
-	GlobalTuning()->Set("shotgun_curvature", 0);
-	SendTuningParams(-1);
 }
 
 void CGameContext::Whisper(int ClientId, char *pStr)
@@ -5392,7 +4546,7 @@ void CGameContext::OnUpdatePlayerServerInfo(CJsonWriter *pJsonWriter, int Client
 	pJsonWriter->WriteAttribute("afk");
 	pJsonWriter->WriteBoolValue(m_apPlayers[ClientId]->IsAfk());
 
-	const int Team = m_pController->IsTeamPlay() ? m_apPlayers[ClientId]->GetTeam() : (m_apPlayers[ClientId]->GetTeam() == TEAM_SPECTATORS ? -1 : GetDDRaceTeam(ClientId));
+	const int Team = m_apPlayers[ClientId]->GetTeam() == TEAM_SPECTATORS ? -1 : m_GameHost.Controller()->PlayerTeamGroup(ClientId);
 
 	pJsonWriter->WriteAttribute("team");
 	pJsonWriter->WriteIntValue(Team);
@@ -5418,11 +4572,6 @@ void CGameContext::ReadCensorList()
 	{
 		dbg_msg("censorlist", "failed to open '%s'", pCensorFilename);
 	}
-}
-
-bool CGameContext::PracticeByDefault() const
-{
-	return g_Config.m_SvPracticeByDefault && g_Config.m_SvTestingCommands;
 }
 
 void CGameContext::ReinitPlayerMap(int ClientId, bool Timeout)

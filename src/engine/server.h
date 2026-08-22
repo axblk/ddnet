@@ -451,6 +451,7 @@ public:
 
 	virtual CUuid GameUuid() const = 0;
 	virtual const char *GameType() const = 0;
+	virtual const char *ClientScoreKind() const = 0;
 	virtual const char *Version() const = 0;
 	virtual const char *NetVersion() const = 0;
 

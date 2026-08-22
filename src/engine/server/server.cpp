@@ -1174,7 +1174,7 @@ int CServer::ClientRejoinCallback(int ClientId, void *pUser)
 	CServer *pThis = (CServer *)pUser;
 
 	pThis->m_aClients[ClientId].m_AuthKey = -1;
-	pThis->m_aClients[ClientId].m_pRconCmdToSend = nullptr;
+	pThis->m_aClients[ClientId].m_RconCmdToSend.clear();
 	pThis->m_aClients[ClientId].m_MaplistEntryToSend = CClient::MAPLIST_UNINITIALIZED;
 	pThis->m_aClients[ClientId].m_DDNetVersion = VERSION_NONE;
 	pThis->m_aClients[ClientId].m_GotDDNetVersionPacket = false;
@@ -1204,7 +1204,7 @@ int CServer::NewClientNoAuthCallback(int ClientId, void *pUser)
 	pThis->m_aClients[ClientId].m_AuthKey = -1;
 	pThis->m_aClients[ClientId].m_AuthTries = 0;
 	pThis->m_aClients[ClientId].m_AuthHidden = false;
-	pThis->m_aClients[ClientId].m_pRconCmdToSend = nullptr;
+	pThis->m_aClients[ClientId].m_RconCmdToSend.clear();
 	pThis->m_aClients[ClientId].m_MaplistEntryToSend = CClient::MAPLIST_UNINITIALIZED;
 	pThis->m_aClients[ClientId].m_ShowIps = false;
 	pThis->m_aClients[ClientId].m_DebugDummy = false;
@@ -1236,7 +1236,7 @@ int CServer::NewClientCallback(int ClientId, void *pUser, bool Sixup)
 	pThis->m_aClients[ClientId].m_AuthKey = -1;
 	pThis->m_aClients[ClientId].m_AuthTries = 0;
 	pThis->m_aClients[ClientId].m_AuthHidden = false;
-	pThis->m_aClients[ClientId].m_pRconCmdToSend = nullptr;
+	pThis->m_aClients[ClientId].m_RconCmdToSend.clear();
 	pThis->m_aClients[ClientId].m_MaplistEntryToSend = CClient::MAPLIST_UNINITIALIZED;
 	pThis->m_aClients[ClientId].m_Traffic = 0;
 	pThis->m_aClients[ClientId].m_TrafficSince = 0;
@@ -1325,7 +1325,7 @@ int CServer::DelClientCallback(int ClientId, const char *pReason, void *pUser)
 	pThis->m_aClients[ClientId].m_AuthKey = -1;
 	pThis->m_aClients[ClientId].m_AuthTries = 0;
 	pThis->m_aClients[ClientId].m_AuthHidden = false;
-	pThis->m_aClients[ClientId].m_pRconCmdToSend = nullptr;
+	pThis->m_aClients[ClientId].m_RconCmdToSend.clear();
 	pThis->m_aClients[ClientId].m_MaplistEntryToSend = CClient::MAPLIST_UNINITIALIZED;
 	pThis->m_aClients[ClientId].m_Traffic = 0;
 	pThis->m_aClients[ClientId].m_TrafficSince = 0;
@@ -1526,19 +1526,26 @@ void CServer::UpdateClientRconCommands(int ClientId)
 	CClient &Client = m_aClients[ClientId];
 	if(Client.m_State != CClient::STATE_INGAME ||
 		!IsRconAuthed(ClientId) ||
-		Client.m_pRconCmdToSend == nullptr)
+		Client.m_RconCmdToSend.empty())
 	{
 		return;
 	}
 
-	for(int i = 0; i < MAX_RCONCMD_SEND && Client.m_pRconCmdToSend; ++i)
+	for(int i = 0; i < MAX_RCONCMD_SEND && !Client.m_RconCmdToSend.empty(); ++i)
 	{
-		SendRconCmdAdd(Client.m_pRconCmdToSend, ClientId);
-		Client.m_pRconCmdToSend = Console()->NextCommandInfo(Client.m_pRconCmdToSend, ClientId, CFGFLAG_SERVER);
-		if(Client.m_pRconCmdToSend == nullptr)
+		const IConsole::ICommandInfo *pCommandInfo = Console()->FirstCommandInfoAtOrAfter(Client.m_RconCmdToSend.c_str(), ClientId, CFGFLAG_SERVER);
+		if(!pCommandInfo)
 		{
+			Client.m_RconCmdToSend.clear();
 			SendRconCmdGroupEnd(ClientId);
+			break;
 		}
+
+		SendRconCmdAdd(pCommandInfo, ClientId);
+		const IConsole::ICommandInfo *pNextCommandInfo = Console()->NextCommandInfo(pCommandInfo, ClientId, CFGFLAG_SERVER);
+		Client.m_RconCmdToSend = pNextCommandInfo ? pNextCommandInfo->Name() : "";
+		if(Client.m_RconCmdToSend.empty())
+			SendRconCmdGroupEnd(ClientId);
 	}
 }
 
@@ -1571,7 +1578,7 @@ void CServer::UpdateClientMaplistEntries(int ClientId)
 	if(Client.m_State != CClient::STATE_INGAME ||
 		!IsRconAuthed(ClientId) ||
 		Client.m_Sixup ||
-		Client.m_pRconCmdToSend != nullptr || // wait for command sending
+		!Client.m_RconCmdToSend.empty() || // wait for command sending
 		Client.m_MaplistEntryToSend == CClient::MAPLIST_DISABLED ||
 		Client.m_MaplistEntryToSend == CClient::MAPLIST_DONE)
 	{
@@ -2202,9 +2209,10 @@ void CServer::OnNetMsgRconAuth(int ClientId, const char *pName, const char *pPw,
 			m_aClients[ClientId].m_AuthKey = KeySlot;
 			if(SendRconCmds)
 			{
-				m_aClients[ClientId].m_pRconCmdToSend = Console()->FirstCommandInfo(ClientId, CFGFLAG_SERVER);
+				const IConsole::ICommandInfo *pFirstCommandInfo = Console()->FirstCommandInfo(ClientId, CFGFLAG_SERVER);
+				m_aClients[ClientId].m_RconCmdToSend = pFirstCommandInfo ? pFirstCommandInfo->Name() : "";
 				SendRconCmdGroupStart(ClientId);
-				if(m_aClients[ClientId].m_pRconCmdToSend == nullptr)
+				if(m_aClients[ClientId].m_RconCmdToSend.empty())
 				{
 					SendRconCmdGroupEnd(ClientId);
 				}
@@ -2782,7 +2790,7 @@ void CServer::UpdateRegisterServerInfo()
 	JsonWriter.WriteStrValue(GameServer()->Version());
 
 	JsonWriter.WriteAttribute("client_score_kind");
-	JsonWriter.WriteStrValue("time"); // "points" or "time"
+	JsonWriter.WriteStrValue(GameServer()->ClientScoreKind());
 
 	JsonWriter.WriteAttribute("requires_login");
 	JsonWriter.WriteBoolValue(false);
@@ -4328,7 +4336,7 @@ void CServer::ConchainCommandAccessUpdate(IConsole::IResult *pResult, void *pUse
 				if(HadAccess == HasAccess)
 					continue;
 				// Command not sent yet. The sending will happen in alphabetical order with correctly updated permissions.
-				if(pThis->m_aClients[i].m_pRconCmdToSend && str_comp(pResult->GetString(0), pThis->m_aClients[i].m_pRconCmdToSend->Name()) >= 0)
+				if(!pThis->m_aClients[i].m_RconCmdToSend.empty() && str_comp(pResult->GetString(0), pThis->m_aClients[i].m_RconCmdToSend.c_str()) >= 0)
 					continue;
 
 				if(HasAccess)
@@ -4360,7 +4368,7 @@ void CServer::LogoutClient(int ClientId, const char *pReason)
 	}
 
 	m_aClients[ClientId].m_AuthTries = 0;
-	m_aClients[ClientId].m_pRconCmdToSend = nullptr;
+	m_aClients[ClientId].m_RconCmdToSend.clear();
 	m_aClients[ClientId].m_MaplistEntryToSend = CClient::MAPLIST_UNINITIALIZED;
 
 	if(*pReason)

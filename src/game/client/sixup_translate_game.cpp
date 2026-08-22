@@ -400,7 +400,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 				if(pUnpacker->Error())
 					continue;
 
-				if(!DummyConnection && SessionId != Client()->DemoSessionId())
+				if(!DummyConnection && Client()->SessionType(SessionId) != ESessionSourceType::DEMO)
 				{
 					CGameSessionContext &Session = SessionContext(SessionId);
 					Session.m_Vote.AddOption(pDescription);
@@ -703,17 +703,19 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 		// handle special messages
 		char aBuf[256];
 		const bool TeamPlay = SourceState.HasGameInfo() && (SourceState.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
+		bool OfflineAudio = false;
+		const bool AudioActive = AudioForSession(SessionId, OfflineAudio) && Conn == Client()->ActiveConnection(SessionId);
 		if(gs_GameMsgList7[GameMsgId].m_Action == DO_SPECIAL)
 		{
 			switch(GameMsgId)
 			{
 			case protocol7::GAMEMSG_CTF_DROP:
-				if(SessionId == Client()->FocusedSessionId() && Conn == ActiveConnection())
-					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_DROP);
+				if(AudioActive)
+					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_DROP, OfflineAudio);
 				break;
 			case protocol7::GAMEMSG_CTF_RETURN:
-				if(SessionId == Client()->FocusedSessionId() && Conn == ActiveConnection())
-					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_RETURN);
+				if(AudioActive)
+					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_RETURN, OfflineAudio);
 				break;
 			case protocol7::GAMEMSG_TEAM_ALL:
 			{
@@ -742,8 +744,8 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 			}
 			break;
 			case protocol7::GAMEMSG_CTF_GRAB:
-				if(SessionId == Client()->FocusedSessionId() && Conn == ActiveConnection())
-					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_GRAB_EN);
+				if(AudioActive)
+					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_GRAB_EN, OfflineAudio);
 				break;
 			case protocol7::GAMEMSG_GAME_PAUSED:
 			{
@@ -755,8 +757,8 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 			}
 			break;
 			case protocol7::GAMEMSG_CTF_CAPTURE:
-				if(SessionId == Client()->FocusedSessionId() && Conn == ActiveConnection())
-					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_CAPTURE);
+				if(AudioActive)
+					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_CAPTURE, OfflineAudio);
 				int ClientId = std::clamp(aParaI[1], 0, MAX_CLIENTS - 1);
 				if(!DummyConnection)
 					SourceSession.m_Stats.Client(ClientId).m_FlagCaptures++;

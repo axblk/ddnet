@@ -95,6 +95,10 @@ public:
 	void Refresh(TSkinLoadedCallback &&SkinLoadedCallback);
 	std::chrono::nanoseconds LastRefreshTime() const { return m_LastRefreshTime; }
 	bool StartupAssetsLoaded() const;
+	/**
+	 * Whether a part a tee is drawn with is still loading.
+	 */
+	bool WornPartsLoading() const;
 
 	// Loads the skin list on first use
 	const std::vector<CSkin> &GetSkins();

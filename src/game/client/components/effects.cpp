@@ -13,7 +13,7 @@
 #include <game/client/game_view.h>
 #include <game/client/gameclient.h>
 
-void CEffects::AirJump(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha, float Volume)
+void CEffects::AirJump(CSessionId SessionId, CGameState &State, vec2 Pos, int OwnerClientId, float Alpha, float Volume)
 {
 	CParticle p;
 	p.SetDefault();
@@ -35,8 +35,9 @@ void CEffects::AirJump(CGameState &State, vec2 Pos, int OwnerClientId, float Alp
 	p.m_Pos = Pos + vec2(6.0f, 16.0f);
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 
-	if(g_Config.m_SndGame)
-		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_AIRJUMP, Volume, Pos);
+	bool OfflineAudio;
+	if(g_Config.m_SndGame && GameClient()->AudioForSession(SessionId, OfflineAudio))
+		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_AIRJUMP, Volume, Pos, OfflineAudio);
 }
 
 void CEffects::DamageIndicator(CGameState &State, vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha)
@@ -136,7 +137,7 @@ void CEffects::SmokeTrail(CGameState &State, vec2 Pos, vec2 Vel, int OwnerClient
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_PROJECTILE_TRAIL, p, TimePassed);
 }
 
-void CEffects::SkidTrail(CGameState &State, const CGameTickInfo &Time, vec2 Pos, vec2 Vel, int Direction, int OwnerClientId, float Alpha, float Volume, bool PlaySound)
+void CEffects::SkidTrail(CSessionId SessionId, CGameState &State, const CGameTickInfo &Time, vec2 Pos, vec2 Vel, int Direction, int OwnerClientId, float Alpha, float Volume, bool PlaySound)
 {
 	CGameState::CEffectClockState &EffectClock = State.m_EffectClock;
 	if(EffectClock.m_Add100hz)
@@ -159,7 +160,11 @@ void CEffects::SkidTrail(CGameState &State, const CGameTickInfo &Time, vec2 Pos,
 	if(PlaySound && g_Config.m_SndGame)
 	{
 		if(EffectClock.TrySkidSound(Time.m_PresentationTime, Time.m_PresentationTimeFrequency))
-			GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_SKID, Volume, Pos);
+		{
+			bool OfflineAudio;
+			if(GameClient()->AudioForSession(SessionId, OfflineAudio))
+				GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_SKID, Volume, Pos, OfflineAudio);
+		}
 	}
 }
 
@@ -182,7 +187,7 @@ void CEffects::BulletTrail(CGameState &State, vec2 Pos, int OwnerClientId, float
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_PROJECTILE_TRAIL, p, TimePassed);
 }
 
-void CEffects::PlayerSpawn(CGameState &State, vec2 Pos, float Alpha, float Volume)
+void CEffects::PlayerSpawn(CSessionId SessionId, CGameState &State, vec2 Pos, float Alpha, float Volume)
 {
 	for(int i = 0; i < 32; i++)
 	{
@@ -202,8 +207,9 @@ void CEffects::PlayerSpawn(CGameState &State, vec2 Pos, float Alpha, float Volum
 		p.m_StartAlpha = Alpha;
 		GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 	}
-	if(g_Config.m_SndGame)
-		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_SPAWN, Volume, Pos);
+	bool OfflineAudio;
+	if(g_Config.m_SndGame && GameClient()->AudioForSession(SessionId, OfflineAudio))
+		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_SPAWN, Volume, Pos, OfflineAudio);
 }
 
 void CEffects::PlayerDeath(CSessionId SessionId, CGameState &State, vec2 Pos, int ClientId, float Alpha)
@@ -372,7 +378,7 @@ void CEffects::Explosion(CGameState &State, const CCollision &Collision, vec2 Po
 	}
 }
 
-void CEffects::HammerHit(CGameState &State, vec2 Pos, float Alpha, float Volume)
+void CEffects::HammerHit(CSessionId SessionId, CGameState &State, vec2 Pos, float Alpha, float Volume)
 {
 	// add the explosion
 	CParticle p;
@@ -386,8 +392,9 @@ void CEffects::HammerHit(CGameState &State, vec2 Pos, float Alpha, float Volume)
 	p.m_Color.a = Alpha;
 	p.m_StartAlpha = Alpha;
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_EXPLOSIONS, p);
-	if(g_Config.m_SndGame)
-		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_HAMMER_HIT, Volume, Pos);
+	bool OfflineAudio;
+	if(g_Config.m_SndGame && GameClient()->AudioForSession(SessionId, OfflineAudio))
+		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_HAMMER_HIT, Volume, Pos, OfflineAudio);
 }
 
 void CEffects::Update(const CPresentationContext &Context)

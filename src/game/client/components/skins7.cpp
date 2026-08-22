@@ -441,6 +441,13 @@ bool CSkins7::StartupAssetsLoaded() const
 	});
 }
 
+bool CSkins7::WornPartsLoading() const
+{
+	return std::any_of(std::begin(m_avSkinParts), std::end(m_avSkinParts), [](const std::vector<CSkinPart> &vSkinParts) {
+		return std::any_of(vSkinParts.begin(), vSkinParts.end(), [](const CSkinPart &Part) { return Part.m_Wanted && (Part.m_LoadPending || Part.m_LoadResource); });
+	});
+}
+
 void CSkins7::InitPlaceholderSkinParts()
 {
 	for(int Part = 0; Part < protocol7::NUM_SKINPARTS; Part++)

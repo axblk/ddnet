@@ -47,15 +47,26 @@ class CMapSounds : public CComponentInterfaces
 public:
 	CMapSounds();
 
-	void Play(int Channel, int SoundId);
-	void PlayAt(int Channel, int SoundId, vec2 Position);
+	void Play(int Channel, int SoundId, bool Offline = false);
+	void PlayAt(int Channel, int SoundId, vec2 Position, bool Offline = false);
 	// Stops every playing map sound voice, for when sound is switched off.
 	void StopVoices();
 
 	void Load(IMap *pMap, CLayers *pLayers);
 	void SetAudible(bool Audible);
 	void Unload();
-	void Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator);
+	/**
+	 * Starts, moves and stops the map's sound sources for the moment shown.
+	 *
+	 * @param State The game state whose round the sources are timed by.
+	 * @param Time The ticks of the moment shown.
+	 * @param ListenerPosition Where the sources are heard from.
+	 * @param DemoPlayerPaused Whether a paused demo keeps new sources from starting.
+	 * @param EnvEvaluator What evaluates the envelopes the sources move and fade by.
+	 * @param Offline Whether the sources play into the offline mix of a video
+	 * export, which is always audible while it runs.
+	 */
+	void Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator, bool Offline = false);
 };
 
 #endif // GAME_CLIENT_COMPONENTS_MAPSOUNDS_H

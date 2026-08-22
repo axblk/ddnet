@@ -14,6 +14,8 @@
 #include <game/collision.h>
 #include <game/mapitems.h>
 
+#include <algorithm>
+
 // Character, "physical" player's part
 
 void CCharacter::SetWeapon(int Weapon)
@@ -24,6 +26,8 @@ void CCharacter::SetWeapon(int Weapon)
 	m_LastWeapon = m_Core.m_ActiveWeapon;
 	m_QueuedWeapon = -1;
 	SetActiveWeapon(Weapon);
+	if(m_Core.m_ActiveWeapon >= 0)
+		m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart = -1;
 
 	GameWorld()->CreatePredictedSound(m_Pos, SOUND_WEAPON_SWITCH, GetCid());
 }
@@ -518,6 +522,31 @@ void CCharacter::HandleWeapons()
 
 	// fire Weapon, if wanted
 	FireWeapon();
+
+	// ammo regen
+	if(m_Core.m_ActiveWeapon < 0 || m_Core.m_ActiveWeapon >= NUM_WEAPONS)
+		return;
+	const int AmmoRegenTime = g_pData->m_Weapons.m_aId[m_Core.m_ActiveWeapon].m_Ammoregentime;
+	if(AmmoRegenTime && m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo >= 0)
+	{
+		if(m_ReloadTimer <= 0)
+		{
+			if(m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart < 0)
+				m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart = GameWorld()->GameTick();
+
+			if(GameWorld()->GameTick() - m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart >= AmmoRegenTime * GameWorld()->GameTickSpeed() / 1000)
+			{
+				m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo = std::min(
+					m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo + 1,
+					g_pData->m_Weapons.m_aId[m_Core.m_ActiveWeapon].m_Maxammo);
+				m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart = -1;
+			}
+		}
+		else
+		{
+			m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart = -1;
+		}
+	}
 }
 
 void CCharacter::GiveNinja()

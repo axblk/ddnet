@@ -14,7 +14,6 @@
 #include <game/teamscore.h>
 
 #include <limits>
-#include <set>
 #include <vector>
 
 class CCollision;
@@ -191,6 +190,8 @@ public:
 	 */
 	bool m_DestroyLasersOnDeath = false;
 
+	bool operator==(const CPhysicsRules &Other) const = default;
+
 	static CPhysicsRules Vanilla()
 	{
 		return CPhysicsRules();
@@ -254,7 +255,7 @@ public:
 	vec2 m_HookTeleBase;
 	int m_HookTick;
 	int m_HookState;
-	std::set<int> m_AttachedPlayers;
+	CClientMask m_AttachedPlayers;
 	int HookedPlayer() const { return m_HookedPlayer; }
 	void SetHookedPlayer(int HookedPlayer);
 

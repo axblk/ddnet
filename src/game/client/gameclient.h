@@ -712,6 +712,9 @@ public:
 	bool AntiPingGunfire() const;
 	bool Predict() const;
 	bool PredictDummy() const;
+	// The physics the prediction runs under. Anything that traces the same
+	// lines as the physics has to read them from here.
+	CPhysicsRules PredictedPhysicsRules() const;
 
 	const CTuningParams *GetTuning(int i) const { return &m_aTuningList[i]; }
 	ColorRGBA GetDDTeamColor(int DDTeam, float Lightness = 0.5f) const;
@@ -947,7 +950,6 @@ private:
 	void UpdateManagedTeeRenderInfos();
 
 	void UpdateLocalTuning();
-	CPhysicsRules PredictedPhysicsRules() const;
 	void UpdatePrediction();
 	void UpdateSpectatorCursor();
 	void UpdateRenderedCharacters();

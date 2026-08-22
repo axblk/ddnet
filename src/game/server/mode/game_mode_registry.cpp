@@ -9,6 +9,14 @@ bool CGameModeRegistry::Register(const CGameModeInfo &Info, FCreateController pf
 	if(!Info.m_pId || !Info.m_pId[0] || !Info.m_pDisplayName || !Info.m_pGameType || !Info.m_pTestingGameType || !pfnCreateController || Find(Info.m_pId))
 		return false;
 
+	// A client works out the physics it predicts from a single bit in the game
+	// info and cannot be told anything finer, so a mode running rules that are
+	// neither plain vanilla nor plain DDNet would be mispredicted by every
+	// client with nothing to show for it. Refusing it here says so at startup
+	// instead of leaving players to find out by rubber-banding.
+	if(!(Info.m_PhysicsRules == (Info.m_PhysicsRules.m_DDNetMovement ? CPhysicsRules::DDNet() : CPhysicsRules::Vanilla())))
+		return false;
+
 	m_vEntries.push_back({Info, pfnCreateController});
 	return true;
 }
@@ -49,12 +57,6 @@ const CGameModeRegistry::CEntry *CGameModeRegistry::ResolveEntry(const char *pId
 const CGameModeInfo *CGameModeRegistry::Find(const char *pId) const
 {
 	const CEntry *pEntry = FindEntry(pId);
-	return pEntry == nullptr ? nullptr : &pEntry->m_Info;
-}
-
-const CGameModeInfo *CGameModeRegistry::Resolve(const char *pId) const
-{
-	const CEntry *pEntry = ResolveEntry(pId);
 	return pEntry == nullptr ? nullptr : &pEntry->m_Info;
 }
 

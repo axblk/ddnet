@@ -47,8 +47,10 @@ public:
 	int GetWidth() const { return m_Width; }
 	int GetHeight() const { return m_Height; }
 	int IntersectLine(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *pOutBeforeCollision) const;
-	int IntersectLineTeleWeapon(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *pOutBeforeCollision, int *pTeleNr = nullptr, bool OldTeleport = false) const;
-	int IntersectLineTeleHook(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *pOutBeforeCollision, int *pTeleNr = nullptr, bool OldTeleport = false) const;
+	// The teleport behaviour is not defaulted: client and server have to trace
+	// the same line, so a call site that forgets it has to be a compile error.
+	int IntersectLineTeleWeapon(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *pOutBeforeCollision, int *pTeleNr, bool OldTeleport) const;
+	int IntersectLineTeleHook(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *pOutBeforeCollision, int *pTeleNr, bool OldTeleport) const;
 	void MovePoint(vec2 *pInoutPos, vec2 *pInoutVel, float Elasticity, int *pBounces) const;
 	void MoveBox(vec2 *pInoutPos, vec2 *pInoutVel, vec2 Size, vec2 Elasticity, bool *pGrounded = nullptr) const;
 	bool TestBox(vec2 Pos, vec2 Size) const;
@@ -111,7 +113,7 @@ public:
 	int IsFrontTimeCheckpoint(int Index) const;
 
 	int MoverSpeed(int x, int y, vec2 *pSpeed) const;
-	bool HasHookTeleIns(bool OldTeleport = false) const;
+	bool HasHookTeleIns(bool OldTeleport) const;
 
 	const CLayers *Layers() const { return m_pLayers; }
 	const CTile *GameLayer() const { return m_pTiles; }

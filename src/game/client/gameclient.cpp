@@ -3532,15 +3532,18 @@ CPhysicsRules CGameClient::PredictedPhysicsRules() const
 	if(!m_GameInfo.m_PredictDDRace)
 		return CPhysicsRules::Vanilla();
 	CPhysicsRules Rules = CPhysicsRules::DDNet();
-	// TODO: The server does not tell the client which physics it runs, so these
-	// still come from the local config and only predict correctly as long as
-	// the server runs the same values. A mode that picks its own rules needs
-	// them on the wire.
+	Rules.m_WeakHook = !m_GameInfo.m_NoWeakHookAndBounce;
+	// The game info carries one bit of physics, the weak hook above. The rest
+	// of these settings reach the client only because they are game settings,
+	// which means both sides read the same value out of the map. A server that
+	// sets one from its own configuration or from rcon instead is predicted
+	// wrong, and so is one that changes it while the round runs. Putting them
+	// on the wire needs a protocol version, so the registry refuses a mode
+	// whose rules are not one of the two shapes this function can produce.
 	Rules.m_TeleportHookOld = g_Config.m_SvOldTeleportHook;
 	Rules.m_TeleportWeaponsOld = g_Config.m_SvOldTeleportWeapons;
 	Rules.m_WeaponsHitOthers = g_Config.m_SvHit;
 	Rules.m_OldLaser = g_Config.m_SvOldLaser;
-	Rules.m_WeakHook = !g_Config.m_SvNoWeakHook;
 	Rules.m_Deepfly = g_Config.m_SvDeepfly;
 	Rules.m_DestroyLasersOnDeath = g_Config.m_SvDestroyLasersOnDeath;
 	return Rules;

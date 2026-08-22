@@ -20,7 +20,7 @@ CGameControllerVanillaPvP::CGameControllerVanillaPvP(CGameServices &Services, co
 
 CPlayer *CGameControllerVanillaPvP::CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team)
 {
-	return new(ClientId) CPlayerVanilla(Services(), UniqueClientId, ClientId, Team);
+	return new CPlayerVanilla(Services(), UniqueClientId, ClientId, Team);
 }
 
 CPlayerVanilla *CGameControllerVanillaPvP::VanillaPlayer(int ClientId) const

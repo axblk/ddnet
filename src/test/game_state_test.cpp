@@ -106,14 +106,14 @@ namespace
 		{
 		}
 
-		void OnDemoPlayerSnapshot(void *pData, int Size) override
+		void OnDemoPlayerSnapshot(CDemoPlayer &, void *pData, int Size) override
 		{
 			m_NumSnapshots++;
 			const auto *pSnapshot = static_cast<const CSnapshot *>(pData);
 			ApplySnapshot(m_State, m_Player.Info()->m_Info.m_CurrentTick, pSnapshot, Size);
 		}
 
-		void OnDemoPlayerMessage(void *pData, int Size) override {}
+		void OnDemoPlayerMessage(CDemoPlayer &, void *pData, int Size) override {}
 
 		int NumSnapshots() const { return m_NumSnapshots; }
 	};
@@ -2131,7 +2131,7 @@ TEST(GameState, GeneratedDemoPlaysToKnownDigestHeadlessly)
 
 	const auto pPlaybackDelta = std::make_unique<CSnapshotDelta>();
 	const auto pPlaybackDeltaSixup = std::make_unique<CSnapshotDelta>();
-	const auto pPlayer = std::make_unique<CDemoPlayer>(pPlaybackDelta.get(), pPlaybackDeltaSixup.get(), false, [] {});
+	const auto pPlayer = std::make_unique<CDemoPlayer>(pPlaybackDelta.get(), pPlaybackDeltaSixup.get(), false, [](CDemoPlayer &) {});
 	const auto pState = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
 	CGameState &State = *pState;
 	CDemoGameStateListener Listener(*pPlayer, State);

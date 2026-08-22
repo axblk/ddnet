@@ -2,6 +2,7 @@
 #define ENGINE_CLIENT_VIDEO_H
 
 #include <base/lock.h>
+#include <base/types.h>
 
 #include <engine/graphics.h>
 
@@ -43,14 +44,18 @@ public:
 class CVideo : public IVideo
 {
 public:
-	CVideo(IGraphics *pGraphics, ISound *pSound, IStorage *pStorage, int Width, int Height, int64_t LocalStartTime, const char *pName);
+	CVideo(IGraphics *pGraphics, ISound *pSound, IStorage *pStorage, CVideoExportSettings Settings, int64_t LocalStartTime, const char *pName, int OutputStorageType, bool AllowOverwrite, bool PauseLiveAudio);
 	~CVideo() override;
 
 	bool Start() override REQUIRES(!m_WriteLock);
 	void Stop() override;
+	void Cancel();
 	void Pause(bool Pause) override;
 	bool IsRecording() const override { return m_Recording; }
-	bool HasError() const override { return m_ReadbackError; }
+	bool IsStopped() const { return m_Stopped; }
+	bool HasError() const override { return m_HasError.load(std::memory_order_acquire); }
+	bool HasAudio() const override { return m_HasAudio; }
+	CVideoExportStatus Status() const override NO_THREAD_SAFETY_ANALYSIS;
 
 	void NextVideoFrame() override;
 	bool BeginVideoFrameRender() override;
@@ -67,7 +72,7 @@ public:
 
 private:
 	void RunVideoThread(size_t ParentThreadIndex, size_t ThreadIndex) REQUIRES(!m_WriteLock);
-	void FillVideoFrame(size_t ThreadIndex) REQUIRES(!m_WriteLock);
+	bool FillVideoFrame(size_t ThreadIndex) REQUIRES(!m_WriteLock);
 	void SubmitVideoFrame(uint64_t FrameIndex, CImageInfo Image);
 	bool FinishReadbackSlot(size_t SlotIndex);
 	bool DrainReadbackSlots();
@@ -76,7 +81,7 @@ private:
 	void DisableOffscreen(const char *pReason);
 
 	void RunAudioThread(size_t ParentThreadIndex, size_t ThreadIndex) REQUIRES(!m_WriteLock);
-	void FillAudioFrame(size_t ThreadIndex);
+	bool FillAudioFrame(size_t ThreadIndex);
 
 	bool OpenVideo();
 	bool OpenAudio();
@@ -87,19 +92,22 @@ private:
 	void FinishFrames(COutputStream *pStream);
 	void CloseStream(COutputStream *pStream);
 
-	bool AddStream(COutputStream *pStream, AVFormatContext *pFormatContext, const AVCodec **ppCodec, enum AVCodecID CodecId) const;
+	bool AddStream(COutputStream *pStream, AVFormatContext *pFormatContext, const AVCodec **ppCodec, enum AVCodecID CodecId);
+	[[gnu::format(printf, 2, 3)]] void SetError(const char *pFormat, ...) NO_THREAD_SAFETY_ANALYSIS;
+	void SetAvError(const char *pOperation, int Error);
 
 	IGraphics *m_pGraphics;
 	IStorage *m_pStorage;
 	ISound *m_pSound;
 
-	int m_Width;
-	int m_Height;
-	char m_aName[256];
+	const CVideoExportSettings m_Settings;
+	const int m_OutputStorageType;
+	const bool m_AllowOverwrite;
+	char m_aName[IO_MAX_PATH_LENGTH];
+	char m_aTemporaryName[IO_MAX_PATH_LENGTH];
 	uint64_t m_VideoFrameIndex = 0;
 	uint64_t m_AudioFrameIndex = 0;
 
-	int m_FPS;
 	int64_t m_TickTime;
 	int64_t m_LocalStartTime;
 	float m_LocalTime;
@@ -108,9 +116,14 @@ private:
 	bool m_Started;
 	bool m_Stopped;
 	bool m_Recording;
+	bool m_Cancelled = false;
 	bool m_Offscreen = false;
 	bool m_OffscreenFrameActive = false;
-	bool m_ReadbackError = false;
+	std::atomic<bool> m_HasError = false;
+	std::atomic<uint64_t> m_SubmittedFrames = 0;
+	std::atomic<uint64_t> m_EncodedFrames = 0;
+	mutable CLock m_StatusMutex;
+	char m_aError[256] GUARDED_BY(m_StatusMutex) = {};
 	// Roughly half a second of frames at 60 FPS, after which a dropped frame is
 	// no longer a hiccup but a broken readback path.
 	static constexpr int MAX_CONSECUTIVE_DROPPED_FRAMES = 30;
@@ -174,6 +187,7 @@ private:
 	std::atomic<int32_t> m_ProcessingAudioFrame;
 
 	bool m_HasAudio;
+	bool m_PauseLiveAudio;
 
 	class CVideoBuffer
 	{

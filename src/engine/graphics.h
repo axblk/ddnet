@@ -138,6 +138,12 @@ enum EBackendType
 	BACKEND_TYPE_COUNT,
 };
 
+enum class EGraphicsBackendMode
+{
+	PRESENTATION,
+	OFFSCREEN,
+};
+
 struct STWGraphicGpu
 {
 	enum ETWGraphicsGpuType
@@ -253,6 +259,8 @@ class IGraphics : public IInterface
 protected:
 	int m_ScreenWidth;
 	int m_ScreenHeight;
+	int m_RenderWidth = 0;
+	int m_RenderHeight = 0;
 	int m_ScreenRefreshRate;
 	float m_ScreenHiDPIScale;
 	ivec2 m_DesktopSize;
@@ -284,9 +292,9 @@ public:
 	struct SBufferContainerHandleTag;
 	using CBufferContainerHandle = CGenerationHandle<SBufferContainerHandleTag>;
 
-	int ScreenWidth() const { return m_ScreenWidth; }
-	int ScreenHeight() const { return m_ScreenHeight; }
-	vec2 ScreenSize() const { return vec2(m_ScreenWidth, m_ScreenHeight); }
+	int ScreenWidth() const { return m_RenderWidth > 0 ? m_RenderWidth : m_ScreenWidth; }
+	int ScreenHeight() const { return m_RenderHeight > 0 ? m_RenderHeight : m_ScreenHeight; }
+	vec2 ScreenSize() const { return vec2(ScreenWidth(), ScreenHeight()); }
 	float ScreenAspect() const { return (float)ScreenWidth() / (float)ScreenHeight(); }
 	float ScreenHiDPIScale() const { return m_ScreenHiDPIScale; }
 	int WindowWidth() const { return m_ScreenWidth / m_ScreenHiDPIScale; }
@@ -927,7 +935,7 @@ public:
 	virtual int WindowOpen() = 0;
 };
 
-extern IEngineGraphics *CreateEngineGraphicsThreaded();
+extern IEngineGraphics *CreateEngineGraphicsThreaded(EGraphicsBackendMode BackendMode, bool HiddenWindow);
 
 /**
  * This function should only be used when the graphics are not initialized or when @link IGraphics::ShowMessageBox @endlink failed.

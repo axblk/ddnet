@@ -13,11 +13,10 @@
 #include <engine/shared/config.h>
 #include <engine/storage.h>
 
+#if !defined(CONF_DEMO_RENDER_TOOL)
 #include <SDL.h>
-
-#if defined(CONF_VIDEORECORDER)
-#include <engine/shared/video.h>
 #endif
+
 extern "C" {
 #include <opusfile.h>
 #include <wavpack.h>
@@ -28,18 +27,21 @@ extern "C" {
 static constexpr int SAMPLE_INDEX_USED = -2;
 static constexpr int SAMPLE_INDEX_FULL = -1;
 
-void CSound::Mix(short *pFinalOut, unsigned Frames)
+void CSound::MixVoices(short *pFinalOut, unsigned Frames, bool Offline)
 {
+	const CLockScope LockScope(m_SoundLock);
 	Frames = std::min(Frames, m_MaxFrames);
 	mem_zero(m_pMixBuffer, Frames * 2 * sizeof(int));
 
-	// acquire lock while we are mixing
-	m_SoundLock.lock();
+	const int MasterVol = (Offline ? m_OfflineSoundVolume : m_SoundVolume).load(std::memory_order_relaxed);
+	const float ListenerPositionX = (Offline ? m_OfflineListenerPositionX : m_ListenerPositionX).load(std::memory_order_relaxed);
+	const float ListenerPositionY = (Offline ? m_OfflineListenerPositionY : m_ListenerPositionY).load(std::memory_order_relaxed);
+	const int FirstVoice = Offline ? NUM_VOICES_PER_CONTEXT : 0;
+	const int LastVoice = FirstVoice + NUM_VOICES_PER_CONTEXT;
 
-	const int MasterVol = m_SoundVolume.load(std::memory_order_relaxed);
-
-	for(auto &Voice : m_aVoices)
+	for(int VoiceId = FirstVoice; VoiceId < LastVoice; ++VoiceId)
 	{
+		CVoice &Voice = m_aVoices[VoiceId];
 		if(!Voice.m_pSample)
 			continue;
 
@@ -67,7 +69,7 @@ void CSound::Mix(short *pFinalOut, unsigned Frames)
 		if(Voice.m_Flags & ISound::FLAG_POS && Voice.m_pChannel->m_Pan)
 		{
 			// TODO: we should respect the channel panning value
-			const vec2 Delta = Voice.m_Position - vec2(m_ListenerPositionX.load(std::memory_order_relaxed), m_ListenerPositionY.load(std::memory_order_relaxed));
+			const vec2 Delta = Voice.m_Position - vec2(ListenerPositionX, ListenerPositionY);
 			vec2 Falloff = vec2(0.0f, 0.0f);
 
 			float RangeX = 0.0f; // for panning
@@ -160,8 +162,6 @@ void CSound::Mix(short *pFinalOut, unsigned Frames)
 		}
 	}
 
-	m_SoundLock.unlock();
-
 	// clamp accumulated values
 	for(unsigned i = 0; i < Frames * 2; i++)
 		pFinalOut[i] = std::clamp<int>(((m_pMixBuffer[i] * MasterVol) / 101) >> 8, std::numeric_limits<short>::min(), std::numeric_limits<short>::max());
@@ -171,23 +171,23 @@ void CSound::Mix(short *pFinalOut, unsigned Frames)
 #endif
 }
 
+void CSound::Mix(short *pFinalOut, unsigned Frames)
+{
+	MixVoices(pFinalOut, Frames, false);
+}
+
+void CSound::MixOffline(short *pFinalOut, unsigned Frames)
+{
+	MixVoices(pFinalOut, Frames, true);
+}
+
+#if !defined(CONF_DEMO_RENDER_TOOL)
 static void SdlCallback(void *pUser, Uint8 *pStream, int Len)
 {
 	CSound *pSound = static_cast<CSound *>(pUser);
-
-#if defined(CONF_VIDEORECORDER)
-	if(!(IVideo::Current() && g_Config.m_ClVideoSndEnable))
-	{
-		pSound->Mix((short *)pStream, Len / sizeof(short) / 2);
-	}
-	else
-	{
-		mem_zero(pStream, Len);
-	}
-#else
 	pSound->Mix((short *)pStream, Len / sizeof(short) / 2);
-#endif
 }
+#endif
 
 int CSound::Init()
 {
@@ -208,9 +208,21 @@ int CSound::Init()
 	m_aSamples[std::size(m_aSamples) - 1].m_Index = std::size(m_aSamples) - 1;
 	m_aSamples[std::size(m_aSamples) - 1].m_NextFreeSampleIndex = SAMPLE_INDEX_FULL;
 
+#if !defined(CONF_DEMO_RENDER_TOOL)
 	if(!g_Config.m_SndEnable)
 		return 0;
+#endif
 
+#if defined(CONF_DEMO_RENDER_TOOL)
+	m_MixingRate = g_Config.m_SndRate;
+	m_MaxFrames = 2048;
+	m_pMixBuffer = static_cast<int *>(calloc(m_MaxFrames * 2, sizeof(int)));
+	if(m_pMixBuffer == nullptr)
+		return -1;
+	m_SoundEnabled = true;
+	Update();
+	return 0;
+#else
 	if(SDL_InitSubSystem(SDL_INIT_AUDIO) < 0)
 	{
 		log_error("sound", "Unable to init SDL audio: %s", SDL_GetError());
@@ -249,6 +261,7 @@ int CSound::Init()
 
 	SDL_PauseAudioDevice(m_Device, 0);
 	return 0;
+#endif
 }
 
 int CSound::Update()
@@ -260,6 +273,7 @@ int CSound::Update()
 void CSound::UpdateVolume()
 {
 	int WantedVolume = g_Config.m_SndVolume;
+	m_OfflineSoundVolume.store(WantedVolume, std::memory_order_relaxed);
 	if(!m_pGraphics->WindowActive() && g_Config.m_SndNonactiveMute)
 		WantedVolume = 0;
 	m_SoundVolume.store(WantedVolume, std::memory_order_relaxed);
@@ -268,11 +282,14 @@ void CSound::UpdateVolume()
 void CSound::Shutdown()
 {
 	StopAll();
+	StopOffline();
 
+#if !defined(CONF_DEMO_RENDER_TOOL)
 	// Stop sound callback before freeing sample data
 	SDL_CloseAudioDevice(m_Device);
 	SDL_QuitSubSystem(SDL_INIT_AUDIO);
 	m_Device = 0;
+#endif
 
 	const CLockScope LockScope(m_SoundLock);
 	for(auto &Sample : m_aSamples)
@@ -718,8 +735,9 @@ float CSound::GetSampleCurrentTime(int SampleId)
 	const CLockScope LockScope(m_SoundLock);
 	dbg_assert(m_aSamples[SampleId].IsLoaded(), "Sample not loaded");
 	CSample *pSample = &m_aSamples[SampleId];
-	for(auto &Voice : m_aVoices)
+	for(int VoiceId = 0; VoiceId < NUM_VOICES_PER_CONTEXT; ++VoiceId)
 	{
+		CVoice &Voice = m_aVoices[VoiceId];
 		if(Voice.m_pSample == pSample)
 		{
 			return Voice.m_Tick / (float)pSample->m_Rate;
@@ -736,8 +754,9 @@ void CSound::SetSampleCurrentTime(int SampleId, float Time)
 	const CLockScope LockScope(m_SoundLock);
 	dbg_assert(m_aSamples[SampleId].IsLoaded(), "Sample not loaded");
 	CSample *pSample = &m_aSamples[SampleId];
-	for(auto &Voice : m_aVoices)
+	for(int VoiceId = 0; VoiceId < NUM_VOICES_PER_CONTEXT; ++VoiceId)
 	{
+		CVoice &Voice = m_aVoices[VoiceId];
 		if(Voice.m_pSample == pSample)
 		{
 			Voice.m_Tick = pSample->m_NumFrames * Time;
@@ -761,6 +780,12 @@ void CSound::SetListenerPosition(vec2 Position)
 {
 	m_ListenerPositionX.store(Position.x, std::memory_order_relaxed);
 	m_ListenerPositionY.store(Position.y, std::memory_order_relaxed);
+}
+
+void CSound::SetOfflineListenerPosition(vec2 Position)
+{
+	m_OfflineListenerPositionX.store(Position.x, std::memory_order_relaxed);
+	m_OfflineListenerPositionY.store(Position.y, std::memory_order_relaxed);
 }
 
 void CSound::SetVoiceVolume(CVoiceHandle Voice, float Volume)
@@ -891,19 +916,21 @@ void CSound::SetVoiceRectangle(CVoiceHandle Voice, float Width, float Height)
 	m_aVoices[VoiceId].m_Rectangle.m_Height = std::max(0.0f, Height);
 }
 
-ISound::CVoiceHandle CSound::Play(int ChannelId, int SampleId, int Flags, float Volume, vec2 Position)
+ISound::CVoiceHandle CSound::StartVoice(int ChannelId, int SampleId, int Flags, float Volume, vec2 Position, bool Offline)
 {
 	const CLockScope LockScope(m_SoundLock);
 
-	// search for voice
+	// search for voice in the selected context
+	const int FirstVoice = Offline ? NUM_VOICES_PER_CONTEXT : 0;
+	int &NextVoice = Offline ? m_NextOfflineVoice : m_NextVoice;
 	int VoiceId = -1;
-	for(int i = 0; i < NUM_VOICES; i++)
+	for(int i = 0; i < NUM_VOICES_PER_CONTEXT; i++)
 	{
-		int NextId = (m_NextVoice + i) % NUM_VOICES;
+		const int NextId = FirstVoice + (NextVoice + i) % NUM_VOICES_PER_CONTEXT;
 		if(!m_aVoices[NextId].m_pSample)
 		{
 			VoiceId = NextId;
-			m_NextVoice = NextId + 1;
+			NextVoice = (NextVoice + i + 1) % NUM_VOICES_PER_CONTEXT;
 			break;
 		}
 	}
@@ -915,11 +942,11 @@ ISound::CVoiceHandle CSound::Play(int ChannelId, int SampleId, int Flags, float 
 	// voice found, use it
 	m_aVoices[VoiceId].m_pSample = &m_aSamples[SampleId];
 	m_aVoices[VoiceId].m_pChannel = &m_aChannels[ChannelId];
-	if(Flags & FLAG_LOOP)
+	if(!Offline && Flags & FLAG_LOOP)
 	{
 		m_aVoices[VoiceId].m_Tick = m_aSamples[SampleId].m_PausedAt;
 	}
-	else if(Flags & FLAG_PREVIEW)
+	else if(!Offline && Flags & FLAG_PREVIEW)
 	{
 		m_aVoices[VoiceId].m_Tick = m_aSamples[SampleId].m_PausedAt;
 		m_aSamples[SampleId].m_PausedAt = 0;
@@ -939,12 +966,22 @@ ISound::CVoiceHandle CSound::Play(int ChannelId, int SampleId, int Flags, float 
 
 ISound::CVoiceHandle CSound::PlayAt(int ChannelId, int SampleId, int Flags, float Volume, vec2 Position)
 {
-	return Play(ChannelId, SampleId, Flags | ISound::FLAG_POS, Volume, Position);
+	return StartVoice(ChannelId, SampleId, Flags | ISound::FLAG_POS, Volume, Position, false);
 }
 
 ISound::CVoiceHandle CSound::Play(int ChannelId, int SampleId, int Flags, float Volume)
 {
-	return Play(ChannelId, SampleId, Flags, Volume, vec2(0.0f, 0.0f));
+	return StartVoice(ChannelId, SampleId, Flags, Volume, vec2(0.0f, 0.0f), false);
+}
+
+ISound::CVoiceHandle CSound::PlayAtOffline(int ChannelId, int SampleId, int Flags, float Volume, vec2 Position)
+{
+	return StartVoice(ChannelId, SampleId, Flags | ISound::FLAG_POS, Volume, Position, true);
+}
+
+ISound::CVoiceHandle CSound::PlayOffline(int ChannelId, int SampleId, int Flags, float Volume)
+{
+	return StartVoice(ChannelId, SampleId, Flags, Volume, vec2(0.0f, 0.0f), true);
 }
 
 void CSound::Pause(int SampleId)
@@ -955,8 +992,9 @@ void CSound::Pause(int SampleId)
 	const CLockScope LockScope(m_SoundLock);
 	CSample *pSample = &m_aSamples[SampleId];
 	dbg_assert(m_aSamples[SampleId].IsLoaded(), "Sample not loaded");
-	for(auto &Voice : m_aVoices)
+	for(int VoiceId = 0; VoiceId < NUM_VOICES_PER_CONTEXT; ++VoiceId)
 	{
+		CVoice &Voice = m_aVoices[VoiceId];
 		if(Voice.m_pSample == pSample)
 		{
 			Voice.m_pSample->m_PausedAt = Voice.m_Tick;
@@ -973,8 +1011,9 @@ void CSound::Stop(int SampleId)
 	const CLockScope LockScope(m_SoundLock);
 	CSample *pSample = &m_aSamples[SampleId];
 	dbg_assert(m_aSamples[SampleId].IsLoaded(), "Sample not loaded");
-	for(auto &Voice : m_aVoices)
+	for(int VoiceId = 0; VoiceId < NUM_VOICES_PER_CONTEXT; ++VoiceId)
 	{
+		CVoice &Voice = m_aVoices[VoiceId];
 		if(Voice.m_pSample == pSample)
 		{
 			if(Voice.m_Flags & FLAG_LOOP)
@@ -990,8 +1029,9 @@ void CSound::StopAll()
 {
 	// TODO: a nice fade out
 	const CLockScope LockScope(m_SoundLock);
-	for(auto &Voice : m_aVoices)
+	for(int VoiceId = 0; VoiceId < NUM_VOICES_PER_CONTEXT; ++VoiceId)
 	{
+		CVoice &Voice = m_aVoices[VoiceId];
 		if(Voice.m_pSample)
 		{
 			if(Voice.m_Flags & FLAG_LOOP)
@@ -1000,6 +1040,17 @@ void CSound::StopAll()
 				Voice.m_pSample->m_PausedAt = 0;
 		}
 		Voice.m_pSample = nullptr;
+	}
+}
+
+void CSound::StopOffline()
+{
+	const CLockScope LockScope(m_SoundLock);
+	for(int VoiceId = NUM_VOICES_PER_CONTEXT; VoiceId < NUM_VOICES; ++VoiceId)
+	{
+		CVoice &Voice = m_aVoices[VoiceId];
+		Voice.m_pSample = nullptr;
+		Voice.m_Age++;
 	}
 }
 
@@ -1024,17 +1075,21 @@ bool CSound::IsPlaying(int SampleId)
 	const CLockScope LockScope(m_SoundLock);
 	const CSample *pSample = &m_aSamples[SampleId];
 	dbg_assert(m_aSamples[SampleId].IsLoaded(), "Sample not loaded");
-	return std::any_of(std::begin(m_aVoices), std::end(m_aVoices), [pSample](const auto &Voice) { return Voice.m_pSample == pSample; });
+	return std::any_of(std::begin(m_aVoices), std::begin(m_aVoices) + NUM_VOICES_PER_CONTEXT, [pSample](const auto &Voice) { return Voice.m_pSample == pSample; });
 }
 
 void CSound::PauseAudioDevice()
 {
+#if !defined(CONF_DEMO_RENDER_TOOL)
 	SDL_PauseAudioDevice(m_Device, 1);
+#endif
 }
 
 void CSound::UnpauseAudioDevice()
 {
+#if !defined(CONF_DEMO_RENDER_TOOL)
 	SDL_PauseAudioDevice(m_Device, 0);
+#endif
 }
 
 IEngineSound *CreateEngineSound() { return new CSound; }

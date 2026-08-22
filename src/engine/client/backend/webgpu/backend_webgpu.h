@@ -34,6 +34,7 @@ struct SWebGpuNativeWindow
 
 #if defined(CONF_BACKEND_WEBGPU)
 CCommandProcessorFragment_Renderer *CreateWebGpuCommandProcessorFragment(const SWebGpuNativeWindow &NativeWindow, EWebGpuBackendType BackendType);
+EWebGpuBackendType WebGpuBackendTypeFromConfig();
 #endif
 
 #endif

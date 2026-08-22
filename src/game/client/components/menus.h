@@ -342,6 +342,14 @@ protected:
 	CLineInputBuffered<IO_MAX_PATH_LENGTH> m_DemoSearchInput;
 #if defined(CONF_VIDEORECORDER)
 	CLineInputBuffered<IO_MAX_PATH_LENGTH> m_DemoRenderInput;
+	CLineInputNumber m_DemoRenderWidthInput;
+	CLineInputNumber m_DemoRenderHeightInput;
+	int m_DemoRenderFPS = 60;
+	int m_DemoRenderCrf = 18;
+	bool m_DemoRenderQueueOnly = false;
+	CButtonContainer m_DemoRenderCancelButton;
+	std::chrono::nanoseconds m_DemoRenderStartTime{0};
+	uint64_t m_DemoRenderLastSubmittedFrames = 0;
 #endif
 	int m_DemolistSelectedIndex;
 	bool m_DemolistSelectedReveal = false;
@@ -738,6 +746,9 @@ public:
 
 	void RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress);
 	void RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter);
+#if defined(CONF_VIDEORECORDER)
+	bool RenderVideoProgress(bool Overlay);
+#endif
 	void FinishLoading();
 
 	bool IsInit() const { return m_IsInit; }

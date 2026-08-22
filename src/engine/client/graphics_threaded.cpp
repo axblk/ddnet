@@ -125,7 +125,9 @@ void CGraphics_Threaded::AddVertices(int Count, CCommandBuffer::SVertexTex3DStre
 		FlushVerticesTex3D();
 }
 
-CGraphics_Threaded::CGraphics_Threaded()
+CGraphics_Threaded::CGraphics_Threaded(EGraphicsBackendMode BackendMode, bool HiddenWindow) :
+	m_BackendMode(BackendMode),
+	m_HiddenWindow(HiddenWindow)
 {
 	m_State.m_ScreenTL.x = 0;
 	m_State.m_ScreenTL.y = 0;
@@ -547,15 +549,26 @@ bool CGraphics_Threaded::BeginOffscreenFrame(CTextureHandle Texture)
 	if(m_OffscreenFrameTarget.IsValid() || m_Drawing != EDrawing::NONE || !m_TextureHandles.IsAllocated(Texture) || static_cast<size_t>(Texture.Id()) >= m_vTextureInfos.size())
 		return false;
 	const STextureInfo &Info = m_vTextureInfos[Texture.Id()];
-	if(Info.m_Handle != Texture || !Info.m_Desc.HasUsage(TEXTURE_USAGE_COLOR_TARGET) || !Info.m_Desc.HasUsage(TEXTURE_USAGE_COPY_SOURCE))
+	if(Info.m_Handle != Texture || !Info.m_Desc.HasUsage(TEXTURE_USAGE_COLOR_TARGET) || !Info.m_Desc.HasUsage(TEXTURE_USAGE_COPY_SOURCE) || Info.m_Desc.m_Width > std::numeric_limits<int>::max() || Info.m_Desc.m_Height > std::numeric_limits<int>::max())
 		return false;
+	if(m_BackendMode == EGraphicsBackendMode::OFFSCREEN && !m_pCommandBuffer->IsEmpty())
+	{
+		// The surface-less client can accumulate an implicit loading frame before
+		// the export target exists. It has no presentation target and is obsolete.
+		m_pCommandBuffer->Reset();
+		m_DropCurrentFrame = false;
+	}
 
 	m_OffscreenFrameTarget = Texture;
+	m_RenderWidth = static_cast<int>(Info.m_Desc.m_Width);
+	m_RenderHeight = static_cast<int>(Info.m_Desc.m_Height);
 	CRenderPassDesc Pass;
 	Pass.m_ColorTarget = Texture;
 	if(!BeginRenderPass(Pass))
 	{
 		m_OffscreenFrameTarget.Invalidate();
+		m_RenderWidth = 0;
+		m_RenderHeight = 0;
 		return false;
 	}
 	return true;
@@ -569,6 +582,8 @@ std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFra
 	const bool CanFinish = m_Drawing == EDrawing::NONE && m_RenderPassActive && m_RenderPassTarget == Target;
 	const bool FrameEnded = CanFinish && EndRenderPass();
 	m_OffscreenFrameTarget.Invalidate();
+	m_RenderWidth = 0;
+	m_RenderHeight = 0;
 
 	auto pReadback = FrameEnded ? ReadTextureAsync(Target, std::move(Recycled)) : nullptr;
 	if(!FrameEnded)
@@ -3061,7 +3076,11 @@ int CGraphics_Threaded::IssueInit()
 #endif
 
 	int Flags = 0;
-	if(IsExclusiveFullscreen)
+	if(m_HiddenWindow)
+	{
+		Flags |= IGraphicsBackend::INITFLAG_HIDDEN;
+	}
+	else if(IsExclusiveFullscreen)
 	{
 		Flags |= IGraphicsBackend::INITFLAG_FULLSCREEN;
 	}
@@ -3077,7 +3096,7 @@ int CGraphics_Threaded::IssueInit()
 			Flags |= IGraphicsBackend::INITFLAG_BORDERLESS;
 		}
 	}
-	if(g_Config.m_GfxVsync)
+	if(!m_HiddenWindow && g_Config.m_GfxVsync)
 	{
 		Flags |= IGraphicsBackend::INITFLAG_VSYNC;
 	}
@@ -3299,7 +3318,12 @@ int CGraphics_Threaded::Init()
 	m_BufferContainerHandles.Reset(0);
 	m_FirstFreeQuadContainer = -1;
 
-	m_pBackend = CreateGraphicsBackend(BackendOverrideFromEnvironment());
+	m_pBackend = CreateGraphicsBackend(BackendOverrideFromEnvironment(), m_BackendMode);
+	if(m_pBackend == nullptr)
+	{
+		log_error("gfx", "The requested graphics backend does not support offscreen rendering.");
+		return -1;
+	}
 	if(InitWindow() != 0)
 		return -1;
 
@@ -3366,7 +3390,7 @@ int CGraphics_Threaded::Init()
 	log_info_color(GPU_INFO_LOG_COLOR, "gfx", "GPU renderer: %s", GetRendererString());
 	log_info_color(GPU_INFO_LOG_COLOR, "gfx", "GPU version: %s", GetVersionString());
 
-	AdjustViewport(true);
+	AdjustViewport(m_BackendMode == EGraphicsBackendMode::PRESENTATION);
 
 	return 0;
 }
@@ -3971,7 +3995,7 @@ void CGraphics_Threaded::GetCurrentVideoMode(CVideoMode &CurMode, int Screen)
 	m_pBackend->GetCurrentVideoMode(CurMode, m_ScreenHiDPIScale, m_DesktopSize.x, m_DesktopSize.y, Screen);
 }
 
-extern IEngineGraphics *CreateEngineGraphicsThreaded()
+extern IEngineGraphics *CreateEngineGraphicsThreaded(EGraphicsBackendMode BackendMode, bool HiddenWindow)
 {
-	return new CGraphics_Threaded();
+	return new CGraphics_Threaded(BackendMode, HiddenWindow);
 }

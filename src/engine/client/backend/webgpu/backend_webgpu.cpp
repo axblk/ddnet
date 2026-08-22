@@ -5,7 +5,7 @@
 #include <base/log.h>
 #include <base/str.h>
 
-#include <engine/client/backend_sdl.h>
+#include <engine/client/backend/backend_base.h>
 #include <engine/gfx/image_manipulation.h>
 #include <engine/shared/config.h>
 
@@ -266,6 +266,7 @@ namespace
 
 		SWebGpuNativeWindow m_NativeWindow;
 		EWebGpuBackendType m_BackendType;
+		EGraphicsBackendMode m_BackendMode = EGraphicsBackendMode::PRESENTATION;
 		WGPUInstance m_Instance = nullptr;
 		WGPUSurface m_Surface = nullptr;
 		WGPUAdapter m_Adapter = nullptr;
@@ -1046,6 +1047,8 @@ namespace
 
 		bool CreatePrimitivePipelines()
 		{
+			if(m_BackendMode == EGraphicsBackendMode::OFFSCREEN)
+				return CreatePipelineSet(m_aPipelineSets[1], WGPUTextureFormat_RGBA8Unorm, 1);
 			return CreatePipelineSet(m_aPipelineSets[0], m_SurfaceFormat, SampleCount()) && CreatePipelineSet(m_aPipelineSets[1], WGPUTextureFormat_RGBA8Unorm, 1);
 		}
 
@@ -1998,6 +2001,11 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			if(m_RenderPass != nullptr)
 				return true;
 			STexture *pTarget = RenderTarget();
+			if(m_BackendMode == EGraphicsBackendMode::OFFSCREEN && pTarget == nullptr)
+			{
+				SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU offscreen draws require a render target");
+				return false;
+			}
 			if(m_RenderTarget.IsValid() && pTarget == nullptr)
 				return false;
 			if(pTarget == nullptr && (m_Minimized || !AcquireFrame()))
@@ -2865,6 +2873,7 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 
 		bool Initialize(const SCommand_Init *pCommand)
 		{
+			m_BackendMode = pCommand->m_BackendMode;
 			m_pTextureMemoryUsage = pCommand->m_pTextureMemoryUsage;
 			m_pBufferMemoryUsage = pCommand->m_pBufferMemoryUsage;
 			m_pStreamMemoryUsage = pCommand->m_pStreamMemoryUsage;
@@ -2946,16 +2955,19 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 				m_ErrorMessage = std::string(WEBGPU_IMPLEMENTATION_NAME) + " could not create the requested " + pBackendName + " backend instance";
 				return false;
 			}
-			m_Surface = CreateSurface();
-			if(m_Surface == nullptr)
+			if(m_BackendMode == EGraphicsBackendMode::PRESENTATION)
 			{
-				m_ErrorMessage = std::string(WEBGPU_IMPLEMENTATION_NAME) + " could not create the presentation surface";
-				return false;
+				m_Surface = CreateSurface();
+				if(m_Surface == nullptr)
+				{
+					m_ErrorMessage = std::string(WEBGPU_IMPLEMENTATION_NAME) + " could not create the presentation surface";
+					return false;
+				}
 			}
 
 			m_AdapterResult = {};
 			WGPURequestAdapterOptions AdapterOptions = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
-			AdapterOptions.compatibleSurface = m_Surface;
+			AdapterOptions.compatibleSurface = m_BackendMode == EGraphicsBackendMode::PRESENTATION ? m_Surface : nullptr;
 			AdapterOptions.powerPreference = WGPUPowerPreference_HighPerformance;
 			WGPURequestAdapterCallbackInfo AdapterCallbackInfo = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
 			AdapterCallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
@@ -3007,9 +3019,9 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			}
 			m_Device = m_DeviceResult.m_Device;
 			m_Queue = wgpuDeviceGetQueue(m_Device);
-			if(m_Queue == nullptr || !QuerySurfaceConfiguration())
+			if(m_Queue == nullptr || (m_BackendMode == EGraphicsBackendMode::PRESENTATION && !QuerySurfaceConfiguration()))
 				return false;
-			if(!pCommand->m_VSync)
+			if(m_BackendMode == EGraphicsBackendMode::PRESENTATION && !pCommand->m_VSync)
 			{
 				const WGPUPresentMode PresentMode = m_SupportsImmediate ? WGPUPresentMode_Immediate : WGPUPresentMode_Mailbox;
 				if(SupportsPresentMode(PresentMode))
@@ -3035,7 +3047,7 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			m_ViewportWidth = m_SurfaceWidth;
 			m_ViewportHeight = m_SurfaceHeight;
 			m_SurfaceDirty = true;
-			return ConfigureIfNeeded();
+			return m_BackendMode == EGraphicsBackendMode::OFFSCREEN || ConfigureIfNeeded();
 		}
 
 		void Cleanup()
@@ -3318,6 +3330,32 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 CCommandProcessorFragment_Renderer *CreateWebGpuCommandProcessorFragment(const SWebGpuNativeWindow &NativeWindow, EWebGpuBackendType BackendType)
 {
 	return new CCommandProcessorFragment_WebGpu(NativeWindow, BackendType);
+}
+
+EWebGpuBackendType WebGpuBackendTypeFromConfig()
+{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "auto") != 0)
+	{
+		log_warn("gfx", "native WebGPU backend selection '%s' is unavailable in the browser, using auto", g_Config.m_GfxWebGpuBackend);
+		str_copy(g_Config.m_GfxWebGpuBackend, "auto");
+	}
+#else
+	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "D3D12") == 0 || str_comp_nocase(g_Config.m_GfxWebGpuBackend, "DX12") == 0)
+		return EWebGpuBackendType::D3D12;
+	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "Vulkan") == 0)
+		return EWebGpuBackendType::VULKAN;
+	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "Metal") == 0)
+		return EWebGpuBackendType::METAL;
+	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "OpenGL") == 0)
+		return EWebGpuBackendType::OPENGL;
+	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "auto") != 0)
+	{
+		log_warn("gfx", "unknown wgpu-native backend '%s', using auto", g_Config.m_GfxWebGpuBackend);
+		str_copy(g_Config.m_GfxWebGpuBackend, "auto");
+	}
+#endif
+	return EWebGpuBackendType::AUTO;
 }
 
 #endif

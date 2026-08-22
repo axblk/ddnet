@@ -862,7 +862,7 @@ errors = (
 	+ check_function_bodies(SIXUP_SNAPSHOT_FUNCTIONS, FORBIDDEN_SIXUP_SNAPSHOT_AMBIENT)
 	+ check_function_bodies(SESSION_MESSAGE_TIME_FUNCTIONS, FORBIDDEN_SESSION_MESSAGE_TIME_FOCUS)
 	+ check_function_bodies(NETWORK_DUMMY_FUNCTIONS, FORBIDDEN_NETWORK_DUMMY_AMBIENT)
-	+ check_ordered_calls("src/engine/client/client.cpp", re.compile(r"\bvoid CClient::Run\s*\("), ("GameClient()->OnRenderPrepare();", "Render();", "GameClient()->OnRenderFinalize();"))
+	+ check_ordered_calls("src/engine/client/client.cpp", re.compile(r"\bvoid CClient::RenderScreen\s*\("), ("GameClient()->OnRenderPrepare();", "Render();", "GameClient()->OnRenderFinalize();"))
 	+ check_ordered_calls("src/engine/client/client.cpp", re.compile(r"\bvoid CClient::Render\s*\("), ("GameClient()->OnRender();",))
 	+ check(CAMERA_FILES, FORBIDDEN_CAMERA)
 	+ check(CONTROLS_OWNER_FILES, FORBIDDEN_CONTROLS_OWNER)

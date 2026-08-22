@@ -4,8 +4,6 @@
 #include <engine/client/graphics_threaded.h>
 #include <engine/graphics.h>
 
-#include <SDL_video.h>
-
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -94,7 +92,8 @@ public:
 		SCommand_PreInit() :
 			SCommand(CMD_PRE_INIT) {}
 
-		SDL_Window *m_pWindow;
+		void *m_pWindow;
+		EGraphicsBackendMode m_BackendMode;
 		uint32_t m_Width;
 		uint32_t m_Height;
 
@@ -110,7 +109,8 @@ public:
 		SCommand_Init() :
 			SCommand(CMD_INIT) {}
 
-		SDL_Window *m_pWindow;
+		void *m_pWindow;
+		EGraphicsBackendMode m_BackendMode;
 		uint32_t m_Width;
 		uint32_t m_Height;
 

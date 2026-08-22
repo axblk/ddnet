@@ -114,7 +114,7 @@ class CChat : public CComponent
 	};
 	CHistoryEntry *m_pHistoryEntry;
 	CStaticRingBuffer<CHistoryEntry, 64 * 1024, CRingBufferBase::FLAG_RECYCLE> m_History;
-	int64_t m_aLastSoundPlayed[CHAT_NUM];
+	int64_t m_aaLastSoundPlayed[2][CHAT_NUM];
 	bool m_IsInputCensored;
 	char m_aCurrentInputText[MAX_LINE_LENGTH];
 	bool m_EditingNewLine;

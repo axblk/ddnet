@@ -139,12 +139,12 @@ public:
 	CDemoPlayer *m_pDemoPlayer;
 	CClientSnapshotHandler *m_pClientSnapshotHandler;
 
-	void OnDemoPlayerSnapshot(void *pData, int Size) override
+	void OnDemoPlayerSnapshot(CDemoPlayer &, void *pData, int Size) override
 	{
 		m_pClientSnapshotHandler->OnDemoPlayerSnapshot(pData, Size);
 	}
 
-	void OnDemoPlayerMessage(void *pData, int Size) override
+	void OnDemoPlayerMessage(CDemoPlayer &, void *pData, int Size) override
 	{
 		CUnpacker Unpacker;
 		Unpacker.Reset(pData, Size);

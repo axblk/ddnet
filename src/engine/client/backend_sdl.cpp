@@ -6,9 +6,7 @@
 
 #include <base/log.h>
 #include <base/math.h>
-#include <base/sphore.h>
 #include <base/str.h>
-#include <base/thread.h>
 
 #include <engine/shared/config.h>
 #include <engine/shared/localization.h>
@@ -58,217 +56,6 @@
 #endif
 
 class IStorage;
-
-// ------------ CGraphicsBackend_Threaded
-
-// Run everything single threaded when compiling for Emscripten, as context binding does not work outside of the main thread with SDL2.
-// TODO SDL3: Check if SDL3 supports threaded graphics and PROXY_TO_PTHREAD, OFFSCREENCANVAS_SUPPORT and OFFSCREEN_FRAMEBUFFER correctly.
-#if !defined(CONF_PLATFORM_EMSCRIPTEN)
-void CGraphicsBackend_Threaded::ThreadFunc(void *pUser)
-{
-	auto *pSelf = (CGraphicsBackend_Threaded *)pUser;
-	pSelf->m_ThreadStarted.Signal();
-	CRenderCommandQueue::SEntry QueuedBuffer;
-	while(pSelf->m_CommandQueue.WaitDequeue(QueuedBuffer))
-	{
-		bool CanProcess;
-		{
-			std::unique_lock Lock(pSelf->m_ProcessorErrorMutex);
-			CanProcess = pSelf->m_ProcessorError.m_ErrorType == GFX_ERROR_TYPE_NONE;
-		}
-#ifdef CONF_PLATFORM_MACOS
-		CAutoreleasePool AutoreleasePool;
-#endif
-		CCommandBuffer *pBuffer = QueuedBuffer.m_pBuffer;
-		SGfxErrorContainer ProcessorError;
-		if(CanProcess)
-		{
-			pSelf->m_pProcessor->RunBuffer(pBuffer);
-			ProcessorError = pSelf->m_pProcessor->GetError();
-		}
-		pBuffer->SignalCompletions();
-
-		{
-			std::unique_lock Lock(pSelf->m_ProcessorErrorMutex);
-			if(pSelf->m_ProcessorError.m_ErrorType == GFX_ERROR_TYPE_NONE && ProcessorError.m_ErrorType != GFX_ERROR_TYPE_NONE)
-				pSelf->m_ProcessorError = std::move(ProcessorError);
-		}
-		pSelf->m_CommandQueue.Recycle(std::move(QueuedBuffer), CanProcess);
-	}
-}
-#endif
-
-void CGraphicsBackend_Threaded::StartProcessor(ICommandProcessor *pProcessor)
-{
-	dbg_assert(m_CommandQueue.IsStopped(), "Processor was already not shut down.");
-	m_pProcessor = pProcessor;
-	{
-		std::unique_lock Lock(m_ProcessorErrorMutex);
-		m_ProcessorError = {};
-	}
-	m_CommandQueue.Start();
-#if !defined(CONF_PLATFORM_EMSCRIPTEN)
-	m_pThread = thread_init(ThreadFunc, this, "Graphics thread");
-	m_ThreadStarted.Wait();
-#endif
-}
-
-void CGraphicsBackend_Threaded::StopProcessor()
-{
-	dbg_assert(!m_CommandQueue.IsStopped(), "Processor was already shut down.");
-	WaitForIdle();
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
-	m_Warning = m_pProcessor->GetWarning();
-	m_CommandQueue.Stop();
-#else
-	m_Warning = m_pProcessor->GetWarning();
-	m_CommandQueue.Stop();
-	thread_wait(m_pThread);
-#endif
-}
-
-void CGraphicsBackend_Threaded::RunBuffer(CCommandBuffer *pBuffer)
-{
-	SGfxErrorContainer Error;
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
-	Error = m_pProcessor->GetError();
-	if(Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
-	{
-		RunBufferSingleThreadedUnsafe(pBuffer);
-		pBuffer->SignalCompletions();
-	}
-#else
-	WaitForIdle();
-	{
-		std::unique_lock Lock(m_ProcessorErrorMutex);
-		Error = m_ProcessorError;
-	}
-	if(Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
-	{
-		const bool Queued = m_CommandQueue.EnqueueBorrowed(pBuffer);
-		dbg_assert(Queued, "graphics: borrowed command buffer published while queue stopped");
-	}
-#endif
-
-	// Process error after lock is released to prevent deadlock
-	if(Error.m_ErrorType != GFX_ERROR_TYPE_NONE)
-	{
-		pBuffer->SignalCompletions();
-		ProcessError(Error);
-	}
-}
-
-bool CGraphicsBackend_Threaded::RunBufferQueued(CCommandBuffer *pBuffer, bool WaitForCapacity)
-{
-	dbg_assert(pBuffer->SubmissionInfo().m_Channel == CCommandBuffer::ECommandChannel::RELIABLE, "graphics: reliable publish received a frame packet");
-	return RunBufferQueuedInternal(pBuffer, WaitForCapacity);
-}
-
-bool CGraphicsBackend_Threaded::RunFramePacket(CCommandBuffer *pBuffer, bool WaitForCapacity)
-{
-	dbg_assert(pBuffer->SubmissionInfo().m_Channel == CCommandBuffer::ECommandChannel::FRAME, "graphics: frame publish received a reliable buffer");
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
-	(void)WaitForCapacity;
-	RunBuffer(pBuffer);
-	pBuffer->Reset();
-	m_CommandQueue.RecordSynchronousFrame(true);
-	return true;
-#else
-	SGfxErrorContainer Error;
-	{
-		std::unique_lock Lock(m_ProcessorErrorMutex);
-		Error = m_ProcessorError;
-	}
-	if(Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
-	{
-		if(WaitForCapacity)
-			return m_CommandQueue.WaitEnqueuePinnedFrame(pBuffer);
-		return m_CommandQueue.EnqueueFrame(pBuffer) != CRenderCommandQueue::EFrameEnqueueResult::RETRY;
-	}
-
-	m_CommandQueue.DiscardFrame(pBuffer);
-	ProcessError(Error);
-	return true;
-#endif
-}
-
-IGraphicsBackend::SFrameMailboxStats CGraphicsBackend_Threaded::GetFrameMailboxStats() const
-{
-	return m_CommandQueue.GetFrameMailboxStats();
-}
-
-bool CGraphicsBackend_Threaded::RunBufferQueuedInternal(CCommandBuffer *pBuffer, bool WaitForCapacity)
-{
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
-	(void)WaitForCapacity;
-	RunBuffer(pBuffer);
-	pBuffer->Reset();
-	return true;
-#else
-	SGfxErrorContainer Error;
-	{
-		std::unique_lock Lock(m_ProcessorErrorMutex);
-		Error = m_ProcessorError;
-	}
-	if(Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
-		return WaitForCapacity ? m_CommandQueue.WaitEnqueueReliable(pBuffer) : m_CommandQueue.EnqueueReliable(pBuffer);
-
-	pBuffer->SignalCompletions();
-	pBuffer->FreeExternalData();
-	pBuffer->Reset();
-	ProcessError(Error);
-	return true;
-#endif
-}
-
-void CGraphicsBackend_Threaded::RunBufferSingleThreadedUnsafe(CCommandBuffer *pBuffer)
-{
-	m_pProcessor->RunBuffer(pBuffer);
-}
-
-bool CGraphicsBackend_Threaded::IsIdle() const
-{
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
-	return true;
-#else
-	return m_CommandQueue.IsIdle();
-#endif
-}
-
-void CGraphicsBackend_Threaded::WaitForIdle()
-{
-#if !defined(CONF_PLATFORM_EMSCRIPTEN)
-	m_CommandQueue.WaitForIdle();
-#endif
-}
-
-void CGraphicsBackend_Threaded::ProcessError(const SGfxErrorContainer &Error)
-{
-	m_Error = Error;
-	std::string LogMessage = "Graphics Error:";
-	for(const auto &ErrStr : Error.m_vErrors)
-	{
-		LogMessage.append("\n");
-		LogMessage.append(ErrStr);
-	}
-	dbg_assert_failed("%s", LogMessage.c_str());
-}
-
-const SGfxErrorContainer &CGraphicsBackend_Threaded::GetError() const
-{
-	return m_Error;
-}
-
-bool CGraphicsBackend_Threaded::GetWarning(SGfxWarningContainer &Warning)
-{
-	if(m_Warning.m_WarningType != GFX_WARNING_TYPE_NONE)
-	{
-		Warning = std::move(m_Warning);
-		m_Warning = {};
-		return true;
-	}
-	return false;
-}
 
 void CCommandProcessor_SDL::Cmd_Init(const SCommand_Init *pCommand)
 {
@@ -325,87 +112,38 @@ void CCommandProcessor_SDL::Cmd_WindowDestroyNtf()
 #endif
 }
 
-void CCommandProcessor_SDL::RunBuffer(CCommandBuffer *pBuffer)
+bool CCommandProcessor_SDL::RunPlatformCommand(const CCommandBuffer::SCommand *pCommand)
 {
-	for(CCommandBuffer::SCommand *pCommand = pBuffer->Head(); pCommand; pCommand = pCommand->m_pNext)
+	switch(pCommand->m_Cmd)
 	{
-		if(pCommand->m_Cmd == CCommandBuffer::CMD_SIGNAL)
-		{
-			static_cast<const CCommandBuffer::SCommand_Signal *>(pCommand)->Signal();
-			continue;
-		}
-
-		auto Res = m_pRendererBackend->RunCommand(pCommand);
-		if(Res == ERunCommandReturnTypes::RUN_COMMAND_COMMAND_HANDLED)
-		{
-			CCommandBuffer::FreeExternalData(pCommand);
-			continue;
-		}
-		else if(Res == ERunCommandReturnTypes::RUN_COMMAND_COMMAND_ERROR)
-		{
-			m_Error = m_pRendererBackend->GetError();
-			pBuffer->FreeExternalDataFrom(pCommand);
-			return;
-		}
-		else if(Res == ERunCommandReturnTypes::RUN_COMMAND_COMMAND_WARNING)
-		{
-			if(m_pRendererBackend->GetError().m_ErrorType != GFX_ERROR_TYPE_NONE)
-			{
-				m_Error = m_pRendererBackend->GetError();
-			}
-			else
-			{
-				m_Warning = m_pRendererBackend->GetWarning();
-			}
-			pBuffer->FreeExternalDataFrom(pCommand);
-			return;
-		}
-
-		bool PlatformCommandHandled = true;
-		switch(pCommand->m_Cmd)
-		{
-		case CCommandBuffer::CMD_WINDOW_CREATE_NTF: Cmd_WindowCreateNtf(static_cast<const CCommandBuffer::SCommand_WindowCreateNtf *>(pCommand)); break;
-		case CCommandBuffer::CMD_WINDOW_DESTROY_NTF: Cmd_WindowDestroyNtf(); break;
-		case CCommandBuffer::CMD_SWAP: Cmd_Swap(); break;
-		case CCommandBuffer::CMD_VSYNC: Cmd_VSync(static_cast<const CCommandBuffer::SCommand_VSync *>(pCommand)); break;
-		case CCommandBuffer::CMD_MULTISAMPLING: break;
-		case CMD_INIT: Cmd_Init(static_cast<const SCommand_Init *>(pCommand)); break;
-		case CMD_SHUTDOWN: Cmd_Shutdown(); break;
-		case CCommandProcessorFragment_Renderer::CMD_PRE_INIT: break;
-		case CCommandProcessorFragment_Renderer::CMD_POST_SHUTDOWN: break;
-		default: PlatformCommandHandled = false;
-		}
-		if(PlatformCommandHandled)
-		{
-			CCommandBuffer::FreeExternalData(pCommand);
-			continue;
-		}
-
-		pBuffer->FreeExternalDataFrom(pCommand);
-		dbg_assert_failed("Unknown graphics command %d", pCommand->m_Cmd);
+	case CCommandBuffer::CMD_WINDOW_CREATE_NTF: Cmd_WindowCreateNtf(static_cast<const CCommandBuffer::SCommand_WindowCreateNtf *>(pCommand)); break;
+	case CCommandBuffer::CMD_WINDOW_DESTROY_NTF: Cmd_WindowDestroyNtf(); break;
+	case CCommandBuffer::CMD_SWAP: Cmd_Swap(); break;
+	case CCommandBuffer::CMD_VSYNC: Cmd_VSync(static_cast<const CCommandBuffer::SCommand_VSync *>(pCommand)); break;
+	case CCommandBuffer::CMD_MULTISAMPLING: break;
+	case CMD_INIT: Cmd_Init(static_cast<const SCommand_Init *>(pCommand)); break;
+	case CMD_SHUTDOWN: Cmd_Shutdown(); break;
+	default: return CCommandProcessor_Threaded::RunPlatformCommand(pCommand);
 	}
-
-	if(m_pRendererBackend->GetError().m_ErrorType != GFX_ERROR_TYPE_NONE)
-	{
-		m_Error = m_pRendererBackend->GetError();
-	}
+	return true;
 }
 
-CCommandProcessor_SDL::CCommandProcessor_SDL(EBackendType BackendType, int GLMajor, int GLMinor, const SWebGpuNativeWindow &WebGpuNativeWindow, EWebGpuBackendType WebGpuBackendType)
+static CCommandProcessorFragment_Renderer *CreateRendererBackend(EBackendType BackendType, int GLMajor, int GLMinor, const SWebGpuNativeWindow &WebGpuNativeWindow, EWebGpuBackendType WebGpuBackendType)
 {
+	CCommandProcessorFragment_Renderer *pRendererBackend = nullptr;
 #if defined(CONF_HEADLESS_CLIENT)
-	m_pRendererBackend = new CCommandProcessorFragment_Null();
+	pRendererBackend = new CCommandProcessorFragment_Null();
 #else
 	if(BackendType == BACKEND_TYPE_OPENGL_ES)
 	{
 #if defined(CONF_BACKEND_OPENGL_ES) || defined(CONF_BACKEND_OPENGL_ES3)
 		if(GLMajor < 3)
 		{
-			m_pRendererBackend = new CCommandProcessorFragment_OpenGLES();
+			pRendererBackend = new CCommandProcessorFragment_OpenGLES();
 		}
 		else
 		{
-			m_pRendererBackend = new CCommandProcessorFragment_OpenGLES3();
+			pRendererBackend = new CCommandProcessorFragment_OpenGLES3();
 		}
 #endif
 	}
@@ -414,82 +152,41 @@ CCommandProcessor_SDL::CCommandProcessor_SDL(EBackendType BackendType, int GLMaj
 #if !defined(CONF_BACKEND_OPENGL_ES)
 		if(GLMajor < 2)
 		{
-			m_pRendererBackend = new CCommandProcessorFragment_OpenGL();
+			pRendererBackend = new CCommandProcessorFragment_OpenGL();
 		}
 		if(GLMajor == 2)
 		{
-			m_pRendererBackend = new CCommandProcessorFragment_OpenGL2();
+			pRendererBackend = new CCommandProcessorFragment_OpenGL2();
 		}
 		if(GLMajor == 3 && GLMinor == 0)
 		{
-			m_pRendererBackend = new CCommandProcessorFragment_OpenGL2();
+			pRendererBackend = new CCommandProcessorFragment_OpenGL2();
 		}
 		else if((GLMajor == 3 && GLMinor == 3) || GLMajor >= 4)
 		{
-			m_pRendererBackend = new CCommandProcessorFragment_OpenGL3_3();
+			pRendererBackend = new CCommandProcessorFragment_OpenGL3_3();
 		}
 #endif
 	}
 	else if(BackendType == BACKEND_TYPE_VULKAN)
 	{
 #if defined(CONF_BACKEND_VULKAN)
-		m_pRendererBackend = CreateVulkanCommandProcessorFragment();
+		pRendererBackend = CreateVulkanCommandProcessorFragment();
 #endif
 	}
 	else if(BackendType == BACKEND_TYPE_WEBGPU)
 	{
 #if defined(CONF_BACKEND_WEBGPU)
-		m_pRendererBackend = CreateWebGpuCommandProcessorFragment(WebGpuNativeWindow, WebGpuBackendType);
+		pRendererBackend = CreateWebGpuCommandProcessorFragment(WebGpuNativeWindow, WebGpuBackendType);
 #endif
 	}
 #endif
-	dbg_assert(m_pRendererBackend != nullptr, "graphics command processor backend is unavailable");
+	return pRendererBackend;
 }
 
-CCommandProcessor_SDL::~CCommandProcessor_SDL()
+CCommandProcessor_SDL::CCommandProcessor_SDL(EBackendType BackendType, int GLMajor, int GLMinor, const SWebGpuNativeWindow &WebGpuNativeWindow, EWebGpuBackendType WebGpuBackendType) :
+	CCommandProcessor_Threaded(CreateRendererBackend(BackendType, GLMajor, GLMinor, WebGpuNativeWindow, WebGpuBackendType))
 {
-	delete m_pRendererBackend;
-}
-
-static EWebGpuBackendType WebGpuBackendTypeFromConfig()
-{
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
-	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "auto") != 0)
-	{
-		log_warn("gfx", "native WebGPU backend selection '%s' is unavailable in the browser, using auto", g_Config.m_GfxWebGpuBackend);
-		str_copy(g_Config.m_GfxWebGpuBackend, "auto");
-	}
-#else
-	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "D3D12") == 0 || str_comp_nocase(g_Config.m_GfxWebGpuBackend, "DX12") == 0)
-		return EWebGpuBackendType::D3D12;
-	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "Vulkan") == 0)
-		return EWebGpuBackendType::VULKAN;
-	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "Metal") == 0)
-		return EWebGpuBackendType::METAL;
-	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "OpenGL") == 0)
-		return EWebGpuBackendType::OPENGL;
-	if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, "auto") != 0)
-	{
-		log_warn("gfx", "unknown wgpu-native backend '%s', using auto", g_Config.m_GfxWebGpuBackend);
-		str_copy(g_Config.m_GfxWebGpuBackend, "auto");
-	}
-#endif
-	return EWebGpuBackendType::AUTO;
-}
-
-const SGfxErrorContainer &CCommandProcessor_SDL::GetError() const
-{
-	return m_Error;
-}
-
-void CCommandProcessor_SDL::ErroneousCleanup()
-{
-	m_pRendererBackend->ErroneousCleanup();
-}
-
-const SGfxWarningContainer &CCommandProcessor_SDL::GetWarning() const
-{
-	return m_Warning;
 }
 
 // ------------ CGraphicsBackend_SDL
@@ -1419,6 +1116,8 @@ int CGraphicsBackend_SDL::Init(const char *pName, int *pScreen, int *pWidth, int
 		SdlFlags |= SDL_WINDOW_RESIZABLE;
 	if(Flags & IGraphicsBackend::INITFLAG_BORDERLESS)
 		SdlFlags |= SDL_WINDOW_BORDERLESS;
+	if(Flags & IGraphicsBackend::INITFLAG_HIDDEN)
+		SdlFlags |= SDL_WINDOW_HIDDEN;
 	if(Flags & IGraphicsBackend::INITFLAG_FULLSCREEN)
 		SdlFlags |= SDL_WINDOW_FULLSCREEN;
 	else if(Flags & (IGraphicsBackend::INITFLAG_DESKTOP_FULLSCREEN))
@@ -1566,7 +1265,11 @@ int CGraphicsBackend_SDL::Init(const char *pName, int *pScreen, int *pWidth, int
 
 	// start the command processor
 	dbg_assert(m_pProcessor == nullptr, "Processor was not cleaned up properly.");
-	const EWebGpuBackendType WebGpuBackendType = m_BackendType == BACKEND_TYPE_WEBGPU ? WebGpuBackendTypeFromConfig() : EWebGpuBackendType::AUTO;
+	EWebGpuBackendType WebGpuBackendType = EWebGpuBackendType::AUTO;
+#if defined(CONF_BACKEND_WEBGPU)
+	if(m_BackendType == BACKEND_TYPE_WEBGPU)
+		WebGpuBackendType = WebGpuBackendTypeFromConfig();
+#endif
 	m_pProcessor = new CCommandProcessor_SDL(m_BackendType, g_Config.m_GfxGLMajor, g_Config.m_GfxGLMinor, m_WebGpuNativeWindow, WebGpuBackendType);
 	StartProcessor(m_pProcessor);
 
@@ -1574,6 +1277,7 @@ int CGraphicsBackend_SDL::Init(const char *pName, int *pScreen, int *pWidth, int
 	CCommandBuffer CmdBuffer(1024, 512);
 	CCommandProcessorFragment_Renderer::SCommand_PreInit CmdPre;
 	CmdPre.m_pWindow = m_pWindow;
+	CmdPre.m_BackendMode = EGraphicsBackendMode::PRESENTATION;
 	CmdPre.m_Width = *pCurrentWidth;
 	CmdPre.m_Height = *pCurrentHeight;
 	CmdPre.m_pVendorString = m_aVendorString;
@@ -1599,6 +1303,7 @@ int CGraphicsBackend_SDL::Init(const char *pName, int *pScreen, int *pWidth, int
 	{
 		CCommandProcessorFragment_Renderer::SCommand_Init CmdGL;
 		CmdGL.m_pWindow = m_pWindow;
+		CmdGL.m_BackendMode = EGraphicsBackendMode::PRESENTATION;
 		CmdGL.m_Width = *pCurrentWidth;
 		CmdGL.m_Height = *pCurrentHeight;
 		CmdGL.m_pTextureMemoryUsage = &m_TextureMemoryUsage;
@@ -1952,4 +1657,7 @@ void CGraphicsBackend_SDL::WindowCreateNtf(uint32_t WindowId)
 	m_pWindow = SDL_GetWindowFromID(WindowId);
 }
 
-IGraphicsBackend *CreateGraphicsBackend(EBackendType BackendOverride) { return new CGraphicsBackend_SDL(BackendOverride); }
+IGraphicsBackend *CreatePresentationGraphicsBackend(EBackendType BackendOverride)
+{
+	return new CGraphicsBackend_SDL(BackendOverride);
+}

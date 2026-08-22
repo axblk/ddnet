@@ -22,6 +22,9 @@
 #include <engine/keys.h>
 #include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
+#if defined(CONF_VIDEORECORDER)
+#include <engine/shared/video.h>
+#endif
 #include <engine/storage.h>
 #include <engine/textrender.h>
 
@@ -755,6 +758,85 @@ void CMenus::RenderLoading(const char *pCaption, const char *pContent, int Incre
 	dbg_assert(m_LoadingState.m_Current <= m_LoadingState.m_Total, "Invalid progress for RenderLoading");
 	RenderLoadingDirect(pCaption, pContent, m_LoadingState.m_Total > 0 ? std::make_optional(CurLoadRenderCount / (float)m_LoadingState.m_Total) : std::nullopt);
 }
+
+#if defined(CONF_VIDEORECORDER)
+bool CMenus::RenderVideoProgress(bool Overlay)
+{
+	int FirstTick;
+	int CurrentTick;
+	int LastTick;
+	if(!Client()->DemoPlayer_RenderInfo(&FirstTick, &CurrentTick, &LastTick) || IVideo::Current() == nullptr)
+		return false;
+	const CVideoExportStatus Status = IVideo::Current()->Status();
+	const int TotalTicks = LastTick - FirstTick;
+	const int CurrentTicks = std::clamp(CurrentTick - FirstTick, 0, std::max(TotalTicks, 0));
+	const float Progress = TotalTicks > 0 ? CurrentTicks / static_cast<float>(TotalTicks) : 0.0f;
+	const std::chrono::nanoseconds Now = time_get_nanoseconds();
+	if(m_DemoRenderStartTime == std::chrono::nanoseconds::zero() || Status.m_SubmittedFrames < m_DemoRenderLastSubmittedFrames)
+		m_DemoRenderStartTime = Now;
+	m_DemoRenderLastSubmittedFrames = Status.m_SubmittedFrames;
+	const float Elapsed = std::chrono::duration<float>(Now - m_DemoRenderStartTime).count();
+
+	if(!Overlay)
+		Graphics()->Clear(0.03f, 0.03f, 0.04f);
+	Graphics()->TextureClear();
+	Ui()->MapScreen();
+	Ui()->StartCheck();
+	CUIRect Box;
+	Ui()->Screen()->Margin(160.0f, &Box);
+	Box.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.65f), IGraphics::CORNER_ALL, 15.0f);
+	Box.Margin(20.0f, &Box);
+
+	CUIRect Row;
+	Box.HSplitTop(30.0f, &Row, &Box);
+	Ui()->DoLabel(&Row, Localize("Rendering demo"), 24.0f, TEXTALIGN_MC);
+	Box.HSplitTop(20.0f, nullptr, &Box);
+	Box.HSplitTop(25.0f, &Row, &Box);
+	Ui()->RenderProgressBar(Row, Progress);
+	Box.HSplitTop(15.0f, nullptr, &Box);
+	Box.HSplitTop(22.0f, &Row, &Box);
+	char aStatus[128];
+	str_format(aStatus, sizeof(aStatus), "%.1f%% — %llu / %llu %s", Progress * 100.0f, static_cast<unsigned long long>(Status.m_EncodedFrames), static_cast<unsigned long long>(Status.m_SubmittedFrames), Localize("frames encoded"));
+	Ui()->DoLabel(&Row, aStatus, 16.0f, TEXTALIGN_MC);
+
+	Box.HSplitTop(8.0f, nullptr, &Box);
+	Box.HSplitTop(22.0f, &Row, &Box);
+	char aElapsed[32];
+	str_time_float(Elapsed, ETimeFormat::HOURS, aElapsed, sizeof(aElapsed));
+	if(Elapsed >= 1.0f && Progress > 0.01f)
+	{
+		char aEta[32];
+		str_time_float(Elapsed * (1.0f - Progress) / Progress, ETimeFormat::HOURS, aEta, sizeof(aEta));
+		str_format(aStatus, sizeof(aStatus), "%s: %s — %s: %s", Localize("Elapsed"), aElapsed, Localize("Remaining"), aEta);
+	}
+	else
+	{
+		str_format(aStatus, sizeof(aStatus), "%s: %s", Localize("Elapsed"), aElapsed);
+	}
+	Ui()->DoLabel(&Row, aStatus, 14.0f, TEXTALIGN_MC);
+	const size_t QueueSize = Client()->DemoPlayer_RenderQueueSize();
+	if(QueueSize > 1)
+	{
+		Box.HSplitTop(8.0f, nullptr, &Box);
+		Box.HSplitTop(22.0f, &Row, &Box);
+		str_format(aStatus, sizeof(aStatus), Localize("%d jobs including this one"), static_cast<int>(QueueSize));
+		Ui()->DoLabel(&Row, aStatus, 14.0f, TEXTALIGN_MC);
+	}
+
+	CUIRect CancelButton, CancelAllButton;
+	Box.HSplitBottom(24.0f, &Box, &CancelButton);
+	CancelButton.VMargin(50.0f, &CancelButton);
+	CancelButton.VSplitMid(&CancelButton, &CancelAllButton, 20.0f);
+	const bool Cancel = DoButton_Menu(&m_DemoRenderCancelButton, Localize("Cancel current"), 0, &CancelButton);
+	static CButtonContainer s_DemoRenderCancelAllButton;
+	const bool CancelAll = DoButton_Menu(&s_DemoRenderCancelAllButton, Localize("Cancel all"), 0, &CancelAllButton);
+	if(CancelAll)
+		Client()->DemoPlayer_ClearRenderQueue();
+	Ui()->FinishCheck();
+	Ui()->ClearHotkeys();
+	return Cancel || CancelAll;
+}
+#endif
 
 void CMenus::FinishLoading()
 {
@@ -1571,13 +1653,15 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 #if defined(CONF_VIDEORECORDER)
 	else if(m_Popup == POPUP_RENDER_DEMO)
 	{
-		CUIRect Row, Ok, Abort;
+		CUIRect Row, Queue, Render, Abort;
 		Box.VMargin(60.0f, &Box);
 		Box.HMargin(20.0f, &Box);
 		Box.HSplitBottom(24.0f, &Box, &Row);
 		Box.HSplitBottom(40.0f, &Box, nullptr);
 		Row.VMargin(40.0f, &Row);
-		Row.VSplitMid(&Abort, &Ok, 40.0f);
+		Row.VSplitLeft(Row.w / 3.0f, &Abort, &Row);
+		Row.VSplitLeft(20.0f, nullptr, &Row);
+		Row.VSplitMid(&Queue, &Render, 20.0f);
 
 		static CButtonContainer s_ButtonAbort;
 		if(DoButton_Menu(&s_ButtonAbort, Localize("Abort"), 0, &Abort) || Ui()->ConsumeHotkey(CUi::HOTKEY_ESCAPE))
@@ -1586,17 +1670,27 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			m_Popup = POPUP_NONE;
 		}
 
-		static CButtonContainer s_ButtonOk;
-		if(DoButton_Menu(&s_ButtonOk, Localize("Ok"), 0, &Ok) || Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER))
+		static CButtonContainer s_ButtonQueue;
+		static CButtonContainer s_ButtonRender;
+		const bool QueueClicked = DoButton_Menu(&s_ButtonQueue, Localize("Add to queue"), 0, &Queue);
+		const bool RenderClicked = DoButton_Menu(&s_ButtonRender, Localize("Render"), 0, &Render) || Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER);
+		if(QueueClicked || RenderClicked)
 		{
+			m_DemoRenderQueueOnly = QueueClicked;
 			m_Popup = POPUP_NONE;
+			const int VideoWidth = m_DemoRenderWidthInput.GetInteger();
+			const int VideoHeight = m_DemoRenderHeightInput.GetInteger();
 			// render video
 			char aVideoPath[IO_MAX_PATH_LENGTH];
 			str_format(aVideoPath, sizeof(aVideoPath), "videos/%s", m_DemoRenderInput.GetString());
 			if(!str_endswith(aVideoPath, ".mp4"))
 				str_append(aVideoPath, ".mp4");
 
-			if(!str_valid_filename(m_DemoRenderInput.GetString()))
+			if(VideoWidth < 2 || VideoHeight < 2 || VideoWidth > 8192 || VideoHeight > 8192 || static_cast<int64_t>(VideoWidth) * VideoHeight > 8192LL * 4320 || VideoWidth % 2 != 0 || VideoHeight % 2 != 0)
+			{
+				PopupMessage(Localize("Error"), Localize("Video resolution must be even, at most 8192 per side, and no more than 35 megapixels"), Localize("Ok"), POPUP_RENDER_DEMO);
+			}
+			else if(!str_valid_filename(m_DemoRenderInput.GetString()))
 			{
 				PopupMessage(Localize("Error"), Localize("This name cannot be used for files and folders"), Localize("Ok"), POPUP_RENDER_DEMO);
 			}
@@ -1671,6 +1765,24 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		TextBox.VSplitLeft(10.0f, nullptr, &TextBox);
 		Ui()->DoLabel(&Label, Localize("Video name:"), 12.8f, TEXTALIGN_ML);
 		Ui()->DoEditBox(&m_DemoRenderInput, &TextBox, 12.8f);
+
+		Box.HSplitBottom(8.0f, &Box, nullptr);
+		Box.HSplitBottom(24.0f, &Box, &Row);
+		Row.VSplitLeft(110.0f, &Label, &TextBox);
+		TextBox.VSplitLeft(10.0f, nullptr, &TextBox);
+		Ui()->DoLabel(&Label, Localize("Resolution:"), 12.8f, TEXTALIGN_ML);
+		CUIRect WidthInput, Separator, HeightInput;
+		TextBox.VSplitMid(&WidthInput, &HeightInput, 24.0f);
+		WidthInput.VSplitRight(12.0f, &WidthInput, &Separator);
+		Ui()->DoEditBox(&m_DemoRenderWidthInput, &WidthInput, 12.8f);
+		Ui()->DoLabel(&Separator, "×", 12.8f, TEXTALIGN_MC);
+		Ui()->DoEditBox(&m_DemoRenderHeightInput, &HeightInput, 12.8f);
+
+		Box.HSplitBottom(8.0f, &Box, nullptr);
+		Box.HSplitBottom(24.0f, &Box, &Row);
+		Ui()->DoScrollbarOption(&m_DemoRenderFPS, &m_DemoRenderFPS, &Row, Localize("Frames per second"), 1, 1000);
+		Box.HSplitBottom(24.0f, &Box, &Row);
+		Ui()->DoScrollbarOption(&m_DemoRenderCrf, &m_DemoRenderCrf, &Row, Localize("Constant rate factor (CRF)"), 0, 51);
 
 		// Warn about disconnect if online
 		if(Client()->State() == IClient::STATE_ONLINE)
@@ -2270,7 +2382,19 @@ void CMenus::PopupConfirmDemoReplaceVideo()
 	str_format(aBuf, sizeof(aBuf), "%s/%s.demo", m_aCurrentDemoFolder, m_aCurrentDemoSelectionName);
 	char aVideoName[IO_MAX_PATH_LENGTH];
 	str_copy(aVideoName, m_DemoRenderInput.GetString());
-	const char *pError = Client()->DemoPlayer_Render(aBuf, m_DemolistStorageType, aVideoName, m_Speed, m_StartPaused);
+	CVideoExportSettings Settings;
+	Settings.m_Width = m_DemoRenderWidthInput.GetInteger();
+	Settings.m_Height = m_DemoRenderHeightInput.GetInteger();
+	Settings.m_FPS = m_DemoRenderFPS;
+	Settings.m_Audio = g_Config.m_ClVideoSndEnable != 0;
+	Settings.m_Crf = m_DemoRenderCrf;
+	Settings.m_Preset = g_Config.m_ClVideoX264Preset;
+	const char *pError = Client()->DemoPlayer_Render(aBuf, m_DemolistStorageType, aVideoName, Settings, m_Speed, m_StartPaused, !m_DemoRenderQueueOnly);
+	if(!pError)
+	{
+		m_DemoRenderStartTime = std::chrono::nanoseconds::zero();
+		m_DemoRenderLastSubmittedFrames = 0;
+	}
 	m_Speed = DEMO_SPEED_INDEX_DEFAULT;
 	m_StartPaused = false;
 	m_LastPauseChange = -1.0f;

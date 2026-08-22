@@ -2,98 +2,19 @@
 #define ENGINE_CLIENT_BACKEND_SDL_H
 
 #include <base/detect.h>
-#include <base/sphore.h>
 
 #include <engine/client/backend/backend_base.h>
 #include <engine/client/backend/webgpu/backend_webgpu.h>
+#include <engine/client/backend_threaded.h>
 #include <engine/client/graphics_threaded.h>
-#include <engine/client/render_command_queue.h>
 #include <engine/graphics.h>
 
 #include <SDL_video.h>
 
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
 
-#if defined(CONF_PLATFORM_MACOS)
-#include <objc/objc-runtime.h>
-
-class CAutoreleasePool
-{
-private:
-	id m_Pool;
-
-public:
-	CAutoreleasePool()
-	{
-		Class NSAutoreleasePoolClass = (Class)objc_getClass("NSAutoreleasePool");
-		m_Pool = class_createInstance(NSAutoreleasePoolClass, 0);
-		SEL selector = sel_registerName("init");
-		((id (*)(id, SEL))objc_msgSend)(m_Pool, selector);
-	}
-
-	~CAutoreleasePool()
-	{
-		SEL selector = sel_registerName("drain");
-		((id (*)(id, SEL))objc_msgSend)(m_Pool, selector);
-	}
-};
-#endif
-
-// basic threaded backend, abstract, missing init and shutdown functions
-class CGraphicsBackend_Threaded : public IGraphicsBackend
-{
-private:
-	SGfxErrorContainer m_Error;
-	SGfxErrorContainer m_ProcessorError;
-	SGfxWarningContainer m_Warning;
-
-public:
-	// constructed on the main thread, the rest of the functions is run on the render thread
-	class ICommandProcessor
-	{
-	public:
-		virtual ~ICommandProcessor() = default;
-		virtual void RunBuffer(CCommandBuffer *pBuffer) = 0;
-
-		virtual const SGfxErrorContainer &GetError() const = 0;
-		virtual void ErroneousCleanup() = 0;
-
-		virtual const SGfxWarningContainer &GetWarning() const = 0;
-	};
-
-	void RunBuffer(CCommandBuffer *pBuffer) override;
-	bool RunBufferQueued(CCommandBuffer *pBuffer, bool WaitForCapacity) override;
-	bool RunFramePacket(CCommandBuffer *pBuffer, bool WaitForCapacity) override;
-	SFrameMailboxStats GetFrameMailboxStats() const override;
-	void RunBufferSingleThreadedUnsafe(CCommandBuffer *pBuffer) override;
-	bool IsIdle() const override;
-	void WaitForIdle() override;
-
-	void ProcessError(const SGfxErrorContainer &Error);
-	bool RunBufferQueuedInternal(CCommandBuffer *pBuffer, bool WaitForCapacity);
-
-protected:
-	void StartProcessor(ICommandProcessor *pProcessor);
-	void StopProcessor();
-
-private:
-	ICommandProcessor *m_pProcessor = nullptr;
-	mutable std::mutex m_ProcessorErrorMutex;
-	CRenderCommandQueue m_CommandQueue;
-#if !defined(CONF_PLATFORM_EMSCRIPTEN)
-	CSemaphore m_ThreadStarted;
-	void *m_pThread;
-	static void ThreadFunc(void *pUser);
-#endif
-
-public:
-	const SGfxErrorContainer &GetError() const override;
-	bool GetWarning(SGfxWarningContainer &Warning) override;
-};
-
-class CCommandProcessor_SDL : public CGraphicsBackend_Threaded::ICommandProcessor
+class CCommandProcessor_SDL : public CCommandProcessor_Threaded
 {
 public:
 	enum
@@ -119,10 +40,6 @@ public:
 private:
 	SDL_Window *m_pWindow = nullptr;
 	SDL_GLContext m_GLContext = nullptr;
-	CCommandProcessorFragment_Renderer *m_pRendererBackend = nullptr;
-
-	SGfxErrorContainer m_Error;
-	SGfxWarningContainer m_Warning;
 
 	void Cmd_Init(const SCommand_Init *pCommand);
 	void Cmd_Shutdown();
@@ -130,19 +47,11 @@ private:
 	void Cmd_VSync(const CCommandBuffer::SCommand_VSync *pCommand);
 	void Cmd_WindowCreateNtf(const CCommandBuffer::SCommand_WindowCreateNtf *pCommand);
 	void Cmd_WindowDestroyNtf();
+	bool RunPlatformCommand(const CCommandBuffer::SCommand *pCommand) override;
 
 public:
 	CCommandProcessor_SDL(EBackendType BackendType, int GLMajor, int GLMinor, const SWebGpuNativeWindow &WebGpuNativeWindow, EWebGpuBackendType WebGpuBackendType);
-	~CCommandProcessor_SDL() override;
-	void RunBuffer(CCommandBuffer *pBuffer) override;
-
-	const SGfxErrorContainer &GetError() const override;
-	void ErroneousCleanup() override;
-
-	const SGfxWarningContainer &GetWarning() const override;
 };
-
-static constexpr size_t GPU_INFO_STRING_SIZE = 256;
 
 // graphics backend implemented with SDL and the graphics library @see EBackendType
 class CGraphicsBackend_SDL : public CGraphicsBackend_Threaded

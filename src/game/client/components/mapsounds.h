@@ -20,6 +20,7 @@ class CMapSounds : public CComponentInterfaces
 	int m_Count;
 	float m_Time;
 	bool m_Audible = false;
+	bool m_Offline = false;
 
 	class CSourceQueueEntry
 	{
@@ -38,11 +39,16 @@ public:
 
 	void Play(int Channel, int SoundId);
 	void PlayAt(int Channel, int SoundId, vec2 Position);
+	void PlayForAudio(int Channel, int SoundId, bool Offline);
+	void PlayAtForAudio(int Channel, int SoundId, vec2 Position, bool Offline);
 
 	void Load(IMap *pMap, CLayers *pLayers);
 	void SetAudible(bool Audible);
 	void Unload();
-	void Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator);
+	void Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator, bool Offline);
+
+private:
+	void SetAudio(bool Audible, bool Offline);
 };
 
 #endif // GAME_CLIENT_COMPONENTS_MAPSOUNDS_H

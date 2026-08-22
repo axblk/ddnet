@@ -334,7 +334,23 @@ void CGameState::InitPrediction(CMapContext &MapContext)
 	m_GameWorld.Init(MapContext.Collision(), m_aTuning.data(), MapContext.MapBugs(), &MapContext.GameConfig());
 	m_GameWorld.m_Core.InitSwitchers(MapContext.Collision()->m_HighestSwitchNumber);
 	m_PredictionInitialized = true;
+	UpdatePhysicsRules();
 	RebuildGameWorld();
+}
+
+CPhysicsRules PredictedPhysicsRules(const CGameInfo &GameInfo, const CConfig &GameConfig)
+{
+	if(!GameInfo.m_PredictDDRace)
+		return CPhysicsRules();
+	const bool OldLaser = GameInfo.m_OldLaserKnown ? GameInfo.m_OldLaser : GameConfig.m_SvOldLaser;
+	return CPhysicsRules::DDNet(GameConfig.m_SvOldTeleportHook, GameConfig.m_SvOldTeleportWeapons, GameConfig.m_SvHit, OldLaser, GameInfo.m_NoWeakHookAndBounce, GameConfig.m_SvDeepfly, GameConfig.m_SvDestroyLasersOnDeath);
+}
+
+void CGameState::UpdatePhysicsRules()
+{
+	// the map's settings are only there once the prediction is initialised
+	if(m_PredictionInitialized)
+		m_GameWorld.m_Core.m_PhysicsRules = PredictedPhysicsRules(m_CoreGameInfo, *m_GameWorld.GameConfig());
 }
 
 void CGameState::EvolveCharacter(CNetObj_Character &Character, int Tick)
@@ -600,6 +616,7 @@ void CGameState::SetCoreGameInfo(const CGameInfo &GameInfo)
 	m_GameWorld.m_WorldConfig.m_BugDDRaceInput = GameInfo.m_BugDDRaceInput;
 	m_GameWorld.m_WorldConfig.m_NoWeakHookAndBounce = GameInfo.m_NoWeakHookAndBounce;
 	m_GameWorld.m_WorldConfig.m_PredictEvents = GameInfo.m_PredictEvents;
+	UpdatePhysicsRules();
 }
 
 void CGameState::UpdateWorldConfigFromSnapshot()

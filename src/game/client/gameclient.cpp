@@ -2547,6 +2547,7 @@ static CGameInfo GetGameInfo(const CNetObj_GameInfoEx *pInfoEx, int InfoExSize, 
 	Info.m_MaxTeamSize = 0;
 	Info.m_NumDDRaceTeams = 65; // `TEAM_SUPER + 1`, fallback for ddrace64 servers
 	Info.m_OldLaser = false;
+	Info.m_OldLaserKnown = false;
 
 	if(Version >= 0)
 	{
@@ -2623,6 +2624,7 @@ static CGameInfo GetGameInfo(const CNetObj_GameInfoEx *pInfoEx, int InfoExSize, 
 		const int NumDDRaceTeams = pInfoEx->m_NumDDRaceTeams;
 		Info.m_NumDDRaceTeams = NumDDRaceTeams > TEAM_FLOCK + 1 && NumDDRaceTeams <= NUM_DDRACE_TEAMS ? NumDDRaceTeams : NUM_DDRACE_TEAMS;
 		Info.m_OldLaser = Flags2 & GAMEINFOFLAG2_OLD_LASER;
+		Info.m_OldLaserKnown = true;
 	}
 
 	return Info;
@@ -4313,16 +4315,7 @@ void CGameClient::UpdateLocalTuning(CSessionId SessionId, CGameSessionContext &S
 
 CPhysicsRules CGameClient::PredictedPhysicsRules(const CGameSessionContext &Session, const CGameState &State) const
 {
-	const CGameInfo &GameInfo = State.CoreGameInfo();
-	if(!GameInfo.m_PredictDDRace)
-		return CPhysicsRules();
-	// only the weak hook is in the game info, the rest are game settings the map sets on both sides
-	CPhysicsRules Rules = CPhysicsRules::DDNetFromConfig();
-	Rules.m_WeakHook = !GameInfo.m_NoWeakHookAndBounce;
-	const CConfig &GameConfig = Session.m_MapContext.GameConfig().Values();
-	Rules.m_WeaponsHitOthers = GameConfig.m_SvHit;
-	Rules.m_Deepfly = GameConfig.m_SvDeepfly;
-	return Rules;
+	return ::PredictedPhysicsRules(State.CoreGameInfo(), Session.m_MapContext.GameConfig().Values());
 }
 
 void CGameClient::UpdatePrediction()
@@ -4335,7 +4328,6 @@ void CGameClient::UpdatePrediction()
 	CGameState::CRuntimeState &Runtime = ActiveState.m_Runtime;
 	GameWorld().m_WorldConfig.m_IsVanilla = FocusedGameInfo().m_PredictVanilla;
 	GameWorld().m_WorldConfig.m_IsDDRace = FocusedGameInfo().m_PredictDDRace;
-	GameWorld().m_Core.m_PhysicsRules = PredictedPhysicsRules(SessionContext(SessionId), ActiveState);
 	GameWorld().m_WorldConfig.m_IsFNG = FocusedGameInfo().m_PredictFNG;
 	GameWorld().m_WorldConfig.m_PredictDDRace = FocusedGameInfo().m_PredictDDRace;
 	GameWorld().m_WorldConfig.m_PredictTiles = FocusedGameInfo().m_PredictDDRace && FocusedGameInfo().m_PredictDDRaceTiles;

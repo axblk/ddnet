@@ -361,6 +361,11 @@ if(NOT MSVC AND NOT HAIKU)
     add_cxx_compiler_flag_if_supported(OUR_FLAGS -ffloat-store)
   endif()
 
+  # No fused multiply-add: the server and the prediction must round the same
+  # physics the same way, also across platforms where FMA is part of the base
+  # instruction set (AArch64). MSVC's /fp:precise does not contract.
+  add_cxx_compiler_flag_if_supported(OUR_FLAGS -ffp-contract=off)
+
   # We assume that char is signed in various places in the code. In particular,
   # the Str.StrToInts test will fail when char is not signed and names containing
   # special characters will be displayed incorrectly on servers.

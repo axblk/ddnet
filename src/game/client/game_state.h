@@ -73,6 +73,8 @@ public:
 	bool m_PredictEvents = false;
 
 	bool m_OldLaser = false;
+	// GameInfoEx carries m_OldLaser from version 12 on
+	bool m_OldLaserKnown = false;
 
 	// zero if the server does not send them
 	int m_MinTeamSize = 0;
@@ -98,6 +100,11 @@ public:
 	 */
 	bool m_DeclaresRuleset = false;
 };
+
+// The physics a server runs as far as the client can tell: the game info says
+// whether DDNet physics apply, the weak hook and (from GameInfoEx version 12)
+// the old laser; the rest are game settings the map sets on both sides.
+CPhysicsRules PredictedPhysicsRules(const CGameInfo &GameInfo, const CConfig &GameConfig);
 
 class CGameTickInfo
 {
@@ -548,6 +555,7 @@ private:
 	bool m_FullyPredicted = false;
 
 	void RebuildGameWorld();
+	void UpdatePhysicsRules();
 	void UpdateWorldConfigFromSnapshot();
 	void EvolveCharacter(CNetObj_Character &Character, int Tick);
 

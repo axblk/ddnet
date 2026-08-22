@@ -134,12 +134,13 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	EXPECT_FALSE(pVanillaDM->m_PhysicsRules.m_DDNetMovement);
 	EXPECT_EQ(pVanillaDM->m_Report.m_ModeId, "vanilla.dm@ddnet.org");
 	EXPECT_EQ(pVanillaDM->m_Report.m_SchemaVersion, 1);
-	ASSERT_EQ(pVanillaDM->m_Report.m_vMetrics.size(), 34u);
+	// Ten metrics that stand on their own and six weapons with six each.
+	ASSERT_EQ(pVanillaDM->m_Report.m_vMetrics.size(), 46u);
 	EXPECT_EQ(pVanillaDM->m_Report.m_vMetrics[0].m_Aggregation, EMatchMetricAggregation::SUM);
 	EXPECT_EQ(pVanillaDM->m_Report.m_vMetrics[2].m_Aggregation, EMatchMetricAggregation::MATCH_ONLY);
 	EXPECT_EQ(pVanillaDM->m_Report.m_vMetrics[8].m_Unit, EGameModeMetricUnit::DAMAGE);
-	EXPECT_EQ(pVanillaDM->m_Report.m_vMetrics[10].m_Id, "vanilla.dm@ddnet.org/weapon_0_shots");
-	EXPECT_EQ(pVanillaDM->m_Report.m_vMetrics[33].m_Id, "vanilla.dm@ddnet.org/weapon_5_damage_taken");
+	EXPECT_EQ(pVanillaDM->m_Report.m_vMetrics[10].m_Id, "vanilla.dm@ddnet.org/weapon_0_kills");
+	EXPECT_EQ(pVanillaDM->m_Report.m_vMetrics[45].m_Id, "vanilla.dm@ddnet.org/weapon_5_damage_taken");
 
 	const CGameModeInfo *pVanilla1on1 = Registry.Find("vanilla.1on1");
 	ASSERT_NE(pVanilla1on1, nullptr);
@@ -157,7 +158,7 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	ASSERT_NE(pVanillaCTF, nullptr);
 	EXPECT_STREQ(pVanillaCTF->m_pGameType, "CTF");
 	EXPECT_EQ(pVanillaCTF->m_GameFlags, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS);
-	ASSERT_EQ(pVanillaCTF->m_Report.m_vMetrics.size(), 37u);
+	ASSERT_EQ(pVanillaCTF->m_Report.m_vMetrics.size(), 49u);
 	EXPECT_EQ(pVanillaCTF->m_Report.m_vMetrics.back().m_Id, "vanilla.ctf@ddnet.org/flag_captures");
 
 	const CGameModeInfo *pInstagibDM = Registry.Find("insta.idm");
@@ -203,7 +204,7 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	EXPECT_EQ(pZCatch->m_ScoreKind, EGameModeScoreKind::POINTS);
 	EXPECT_EQ(pZCatch->m_GameFlags, 0);
 	EXPECT_EQ(pZCatch->m_Report.m_ModeId, "zcatch.laser@ddnet.org");
-	ASSERT_EQ(pZCatch->m_Report.m_vMetrics.size(), 35u);
+	ASSERT_EQ(pZCatch->m_Report.m_vMetrics.size(), 47u);
 	EXPECT_EQ(pZCatch->m_Report.m_vMetrics.back().m_Id, "zcatch.laser@ddnet.org/catches");
 }
 

@@ -86,6 +86,16 @@ public:
 	 * @return `true` if key was pressed down during input updates for the current frame, `false` otherwise.
 	 */
 	virtual bool KeyPress(int Key) const = 0;
+	/**
+	 * Spends the @link KeyPress @endlink state of the given key for this frame.
+	 *
+	 * Consuming an input event stops it from being handed to further components, but it does not touch the
+	 * per-frame state this function clears. A component that reacts to a key by putting a different screen in
+	 * front of the player has to call this, or the same key press is read again by whatever it just opened.
+	 *
+	 * @param Key The key code (see `keys.h`).
+	 */
+	virtual void ClearFrameKey(int Key) = 0;
 	virtual const char *KeyName(int Key) const = 0;
 	virtual int FindKeyByName(const char *pKeyName) const = 0;
 

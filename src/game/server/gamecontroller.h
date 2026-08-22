@@ -123,7 +123,6 @@ private:
 	CGameServices *m_pServices;
 	class IServer *m_pServer;
 
-	CTeamsCore m_TeamsCore;
 	const CGameModeInfo m_GameModeInfo;
 	CMatchLifecycle m_MatchLifecycle;
 	CGameContext *GameServer() const;
@@ -353,8 +352,8 @@ public:
 	void SendGameInfoSixup(int ClientId);
 	int GameFlags() const { return Info().m_GameFlags; }
 
-	CTeamsCore &TeamsCore() { return m_TeamsCore; }
-	const CTeamsCore &TeamsCore() const { return m_TeamsCore; }
+	CTeamsCore &TeamsCore();
+	const CTeamsCore &TeamsCore() const;
 };
 
 #endif

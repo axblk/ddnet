@@ -9,8 +9,6 @@
 
 #include <game/alloc.h>
 
-#include <optional>
-
 class CCollision;
 class CGameContext;
 
@@ -29,9 +27,8 @@ private:
 
 	/* Identity */
 	CGameWorld *m_pGameWorld;
-	CCollision *m_pCCollision;
 
-	std::optional<int> m_Id;
+	int m_Id = -1;
 	int m_ObjType;
 
 	/*
@@ -55,7 +52,7 @@ public: // TODO: Maybe make protected
 	vec2 m_Pos;
 
 	/* Getters */
-	std::optional<int> GetId() const { return m_Id; }
+	int GetId() const { return m_Id; }
 
 	/* Constructor */
 	CEntity(CGameWorld *pGameWorld, int Objtype, bool RequestSnapId, vec2 Pos = vec2(0, 0), int ProximityRadius = 0);
@@ -64,14 +61,14 @@ public: // TODO: Maybe make protected
 	virtual ~CEntity();
 
 	/* Objects */
-	std::vector<SSwitchers> &Switchers() { return m_pGameWorld->m_Core.m_vSwitchers; }
+	std::vector<SSwitchers> &Switchers() { return m_pGameWorld->Switchers(); }
 	CGameWorld *GameWorld() { return m_pGameWorld; }
 	CTuningParams *GlobalTuning() { return &GameWorld()->TuningList()[0]; }
 	CTuningParams *TuningList() { return GameWorld()->TuningList(); }
 	CTuningParams *GetTuning(int i) { return GameWorld()->GetTuning(i); }
 	class CConfig *Config() { return m_pGameWorld->Config(); }
 	class IServer *Server() { return m_pGameWorld->Server(); }
-	CCollision *Collision() { return m_pCCollision; }
+	CCollision *Collision() { return m_pGameWorld->Collision(); }
 
 	/* Getters */
 	CEntity *TypeNext() { return m_pNextTypeEntity; }
@@ -98,6 +95,13 @@ public: // TODO: Maybe make protected
 			Called to progress the entity to the next tick. Updates
 			and moves the entity to its new state and position.
 	*/
+	/*
+		Function: PreTick
+			Called before every entity's Tick(), for the entities that
+			need the whole world to have been read before they move.
+	*/
+	virtual void PreTick() {}
+
 	virtual void Tick() {}
 
 	/*

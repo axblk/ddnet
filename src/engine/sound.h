@@ -77,6 +77,7 @@ public:
 
 	virtual void SetChannel(int ChannelId, float Volume, float Panning) = 0;
 	virtual void SetListenerPosition(vec2 Position) = 0;
+	virtual void SetOfflineListenerPosition(vec2 Position) = 0;
 
 	virtual void SetVoiceVolume(CVoiceHandle Voice, float Volume) = 0;
 	virtual void SetVoiceFalloff(CVoiceHandle Voice, float Falloff) = 0;
@@ -88,16 +89,19 @@ public:
 
 	virtual CVoiceHandle PlayAt(int ChannelId, int SampleId, int Flags, float Volume, vec2 Position) = 0;
 	virtual CVoiceHandle Play(int ChannelId, int SampleId, int Flags, float Volume) = 0;
+	virtual CVoiceHandle PlayAtOffline(int ChannelId, int SampleId, int Flags, float Volume, vec2 Position) = 0;
+	virtual CVoiceHandle PlayOffline(int ChannelId, int SampleId, int Flags, float Volume) = 0;
 	virtual void Pause(int SampleId) = 0;
 	virtual void Stop(int SampleId) = 0;
 	virtual void StopAll() = 0;
+	virtual void StopOffline() = 0;
 	virtual void StopVoice(CVoiceHandle Voice) = 0;
 	virtual bool IsPlaying(int SampleId) = 0;
 
 	virtual int MixingRate() const = 0;
 	virtual void Mix(short *pFinalOut, unsigned Frames) = 0;
+	virtual void MixOffline(short *pFinalOut, unsigned Frames) = 0;
 
-	// useful for thread synchronization
 	virtual void PauseAudioDevice() = 0;
 	virtual void UnpauseAudioDevice() = 0;
 

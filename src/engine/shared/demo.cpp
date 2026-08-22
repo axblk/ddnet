@@ -531,6 +531,17 @@ void CDemoPlayer::SetListener(IListener *pListener)
 	m_pListener = pListener;
 }
 
+#if defined(CONF_VIDEORECORDER)
+void CDemoPlayer::SetVideo(IVideo *pVideo)
+{
+	dbg_assert(m_UseVideo || pVideo == nullptr, "video is disabled for this demo player");
+	if(m_pVideo != nullptr && pVideo == nullptr)
+		m_Info.m_LastUpdate = time_get();
+	m_pVideo = pVideo;
+	m_WasRecording = false;
+}
+#endif
+
 CDemoPlayer::EReadChunkHeaderResult CDemoPlayer::ReadChunkHeader(int *pType, int *pSize, int *pTick)
 {
 	*pSize = 0;
@@ -698,7 +709,7 @@ void CDemoPlayer::DoTick()
 				Pause();
 				// Stop rendering when reaching end of file
 #if defined(CONF_VIDEORECORDER)
-				if(m_UseVideo && IVideo::Current())
+				if(m_pVideo)
 					Stop();
 #endif
 			}
@@ -767,7 +778,7 @@ void CDemoPlayer::DoTick()
 			else
 			{
 				if(m_pListener)
-					m_pListener->OnDemoPlayerSnapshot(m_Snapshot.AsSnapshot(), DataSize);
+					m_pListener->OnDemoPlayerSnapshot(*this, m_Snapshot.AsSnapshot(), DataSize);
 
 				m_LastSnapshotDataSize = DataSize;
 				mem_copy(&m_LastSnapshotData, &m_Snapshot, DataSize);
@@ -794,7 +805,7 @@ void CDemoPlayer::DoTick()
 				m_LastSnapshotDataSize = DataSize;
 				mem_copy(&m_LastSnapshotData, m_aChunkData, DataSize);
 				if(m_pListener)
-					m_pListener->OnDemoPlayerSnapshot(m_aChunkData, DataSize);
+					m_pListener->OnDemoPlayerSnapshot(*this, m_aChunkData, DataSize);
 			}
 		}
 		else
@@ -803,7 +814,7 @@ void CDemoPlayer::DoTick()
 			if(!GotSnapshot && m_pListener && m_LastSnapshotDataSize != -1)
 			{
 				GotSnapshot = true;
-				m_pListener->OnDemoPlayerSnapshot(&m_LastSnapshotData, m_LastSnapshotDataSize);
+				m_pListener->OnDemoPlayerSnapshot(*this, &m_LastSnapshotData, m_LastSnapshotDataSize);
 			}
 
 			// check the remaining types
@@ -815,7 +826,7 @@ void CDemoPlayer::DoTick()
 			else if(ChunkType == CHUNKTYPE_MESSAGE)
 			{
 				if(m_pListener)
-					m_pListener->OnDemoPlayerMessage(m_aChunkData, DataSize);
+					m_pListener->OnDemoPlayerMessage(*this, m_aChunkData, DataSize);
 			}
 		}
 	}
@@ -825,8 +836,8 @@ void CDemoPlayer::Pause()
 {
 	m_Info.m_Info.m_Paused = true;
 #if defined(CONF_VIDEORECORDER)
-	if(m_UseVideo && IVideo::Current() && g_Config.m_ClVideoPauseWithDemo)
-		IVideo::Current()->Pause(true);
+	if(m_pVideo && g_Config.m_ClVideoPauseWithDemo)
+		m_pVideo->Pause(true);
 #endif
 }
 
@@ -834,8 +845,8 @@ void CDemoPlayer::Unpause()
 {
 	m_Info.m_Info.m_Paused = false;
 #if defined(CONF_VIDEORECORDER)
-	if(m_UseVideo && IVideo::Current() && g_Config.m_ClVideoPauseWithDemo)
-		IVideo::Current()->Pause(false);
+	if(m_pVideo && g_Config.m_ClVideoPauseWithDemo)
+		m_pVideo->Pause(false);
 #endif
 }
 
@@ -973,14 +984,14 @@ bool CDemoPlayer::ExtractMap(IStorage *pStorage)
 int64_t CDemoPlayer::Time()
 {
 #if defined(CONF_VIDEORECORDER)
-	if(m_UseVideo && IVideo::Current())
+	if(m_pVideo)
 	{
 		if(!m_WasRecording)
 		{
 			m_WasRecording = true;
-			m_Info.m_LastUpdate = IVideo::Current()->Time();
+			m_Info.m_LastUpdate = m_pVideo->Time();
 		}
-		return IVideo::Current()->Time();
+		return m_pVideo->Time();
 	}
 	else
 	{
@@ -1286,15 +1297,27 @@ void CDemoPlayer::UpdateTimes()
 
 	if(m_UpdateIntraTimesFunc)
 	{
-		m_UpdateIntraTimesFunc();
+		m_UpdateIntraTimesFunc(*this);
 	}
 }
 
 void CDemoPlayer::Stop(const char *pErrorMessage)
 {
+	const char *pFinalErrorMessage = pErrorMessage;
 #if defined(CONF_VIDEORECORDER)
-	if(m_UseVideo && IVideo::Current())
-		IVideo::Current()->Stop();
+	char aVideoError[256] = {};
+	if(m_pVideo)
+	{
+		IVideo *pVideo = m_pVideo;
+		pVideo->Stop();
+		const CVideoExportStatus Status = pVideo->Status();
+		if(pFinalErrorMessage[0] == '\0' && Status.m_HasError)
+		{
+			str_copy(aVideoError, Status.m_aError);
+			pFinalErrorMessage = aVideoError;
+		}
+	}
+	m_pVideo = nullptr;
 	m_WasRecording = false;
 #endif
 
@@ -1304,10 +1327,10 @@ void CDemoPlayer::Stop(const char *pErrorMessage)
 	if(m_pConsole)
 	{
 		char aBuf[256];
-		if(pErrorMessage[0] == '\0')
+		if(pFinalErrorMessage[0] == '\0')
 			str_copy(aBuf, "Stopped playback");
 		else
-			str_format(aBuf, sizeof(aBuf), "Stopped playback due to error: %s", pErrorMessage);
+			str_format(aBuf, sizeof(aBuf), "Stopped playback due to error: %s", pFinalErrorMessage);
 		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "demo_player", aBuf);
 	}
 
@@ -1315,7 +1338,7 @@ void CDemoPlayer::Stop(const char *pErrorMessage)
 	m_File = nullptr;
 	m_vKeyFrames.clear();
 	str_copy(m_aFilename, "");
-	str_copy(m_aErrorMessage, pErrorMessage);
+	str_copy(m_aErrorMessage, pFinalErrorMessage);
 }
 
 void CDemoPlayer::GetDemoName(char *pBuffer, size_t BufferSize) const
@@ -1429,7 +1452,7 @@ public:
 	int m_StartTick;
 	int m_EndTick;
 
-	void OnDemoPlayerSnapshot(void *pData, int Size) override
+	void OnDemoPlayerSnapshot(CDemoPlayer &, void *pData, int Size) override
 	{
 		const CDemoPlayer::CPlaybackInfo *pInfo = m_pDemoPlayer->Info();
 
@@ -1439,7 +1462,7 @@ public:
 			m_pDemoRecorder->RecordSnapshot(pInfo->m_Info.m_CurrentTick, pData, Size);
 	}
 
-	void OnDemoPlayerMessage(void *pData, int Size) override
+	void OnDemoPlayerMessage(CDemoPlayer &, void *pData, int Size) override
 	{
 		const CDemoPlayer::CPlaybackInfo *pInfo = m_pDemoPlayer->Info();
 

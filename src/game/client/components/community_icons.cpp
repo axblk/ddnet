@@ -69,7 +69,7 @@ void CCommunityIcons::StartDownload(const char *pCommunityId, const char *pUrl, 
 {
 	char aPath[IO_MAX_PATH_LENGTH];
 	str_format(aPath, sizeof(aPath), "communityicons/%s.png", pCommunityId);
-	std::shared_ptr<IHttpRequest> pRequest = CreateHttpRequest(pUrl);
+	std::shared_ptr<IHttpRequest> pRequest = Http()->CreateRequest(pUrl);
 	pRequest->WriteToFile(Storage(), aPath, IStorage::TYPE_SAVE);
 	pRequest->ExpectSha256(Sha256);
 	pRequest->Timeout(CTimeout{0, 0, 0, 0});

@@ -13,7 +13,6 @@
 #include <engine/engine.h>
 #include <engine/shared/config.h>
 #include <engine/shared/jobs.h>
-#include <engine/shared/network.h>
 #include <engine/storage.h>
 
 #include <thread>
@@ -23,35 +22,12 @@ class CEngine : public IEngine
 	IConsole *m_pConsole;
 	IStorage *m_pStorage;
 
-	bool m_Logging;
 	std::shared_ptr<CFutureLogger> m_pFutureLogger;
 
 	char m_aAppName[256];
 
 	CJobPool m_JobPool;
 	size_t m_JobThreadCount = 0;
-
-	static void Con_DbgLognetwork(IConsole::IResult *pResult, void *pUserData)
-	{
-		CEngine *pEngine = static_cast<CEngine *>(pUserData);
-
-		if(pEngine->m_Logging)
-		{
-			CNetBase::CloseLog();
-			pEngine->m_Logging = false;
-		}
-		else
-		{
-			char aBuf[32];
-			str_timestamp(aBuf, sizeof(aBuf));
-			char aFilenameSent[IO_MAX_PATH_LENGTH], aFilenameRecv[IO_MAX_PATH_LENGTH];
-			str_format(aFilenameSent, sizeof(aFilenameSent), "dumps/network_sent_%s.txt", aBuf);
-			str_format(aFilenameRecv, sizeof(aFilenameRecv), "dumps/network_recv_%s.txt", aBuf);
-			CNetBase::OpenLog(pEngine->m_pStorage->OpenFile(aFilenameSent, IOFLAG_WRITE, IStorage::TYPE_SAVE),
-				pEngine->m_pStorage->OpenFile(aFilenameRecv, IOFLAG_WRITE, IStorage::TYPE_SAVE));
-			pEngine->m_Logging = true;
-		}
-	}
 
 public:
 	CEngine(bool Test, const char *pAppname, std::shared_ptr<CFutureLogger> pFutureLogger) :
@@ -83,13 +59,6 @@ public:
 		m_JobThreadCount = std::max(4, (int)std::thread::hardware_concurrency()) - 2;
 #endif
 		m_JobPool.Init(m_JobThreadCount);
-
-		m_Logging = false;
-	}
-
-	~CEngine() override
-	{
-		CNetBase::CloseLog();
 	}
 
 	void Init() override
@@ -99,8 +68,6 @@ public:
 
 		if(!m_pConsole || !m_pStorage)
 			return;
-
-		m_pConsole->Register("dbg_lognetwork", "", CFGFLAG_SERVER | CFGFLAG_CLIENT, Con_DbgLognetwork, this, "Log the network");
 	}
 
 	void AddJob(std::shared_ptr<IJob> pJob) override

@@ -255,6 +255,7 @@ private:
 	void PrepareScreenRender(bool VideoOutput);
 	CVisibleWorldRect VisibleWorldRectFor(const CGameView &View) const;
 	bool m_PreparedVideoOutput = false;
+	CVideoExportSettings m_PreparedVideoSettings;
 	bool m_PreparedIsolatedVideoOutput = false;
 	bool m_PreparedOfflineVideoAudio = false;
 	void UpdateNetworkPlayerInfo();
@@ -451,7 +452,7 @@ public:
 	void OnSessionFocused(CSessionId SessionId) override;
 	void OnRenderPrepare() override;
 #if defined(CONF_VIDEORECORDER)
-	void OnRenderVideoPrepare(CSessionId SessionId) override;
+	void OnRenderVideoPrepare(CSessionId SessionId, const CVideoExportSettings &Settings) override;
 #endif
 	void OnRender() override;
 	void OnRenderFinalize() override;

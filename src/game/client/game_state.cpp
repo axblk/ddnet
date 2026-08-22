@@ -9,6 +9,7 @@
 #include <generated/protocol.h>
 
 #include <game/client/prediction/entities/character.h>
+#include <game/map_door_collision.h>
 
 #include <algorithm>
 #include <utility>
@@ -405,6 +406,7 @@ void CGameState::InitPrediction(CMapContext &MapContext)
 	std::copy(MapContext.TuningList(), MapContext.TuningList() + TuneZone::NUM, m_aTuning.begin());
 	m_GameWorld.Init(MapContext.Collision(), m_aTuning.data(), MapContext.MapBugs(), &MapContext.GameConfig());
 	m_GameWorld.m_Core.InitSwitchers(MapContext.Collision()->m_HighestSwitchNumber);
+	m_MapDoorsBuilt = false;
 	m_GameWorld.UpdatePhysicsRules();
 	m_PredictionInitialized = true;
 	RebuildGameWorld();
@@ -689,6 +691,17 @@ void CGameState::SetCoreGameInfo(const CGameInfo &GameInfo)
 	m_GameWorld.m_WorldConfig.m_NoWeakHookAndBounce = GameInfo.m_NoWeakHookAndBounce;
 	m_GameWorld.m_WorldConfig.m_PredictEvents = GameInfo.m_PredictEvents;
 	m_GameWorld.UpdatePhysicsRules();
+
+	// The stop tiles a door adds are map geometry - the same on both sides,
+	// stamped once, never taken back - so the grid is built from the map rather
+	// than rebuilt from every snapshot. It cannot happen at map load: whether
+	// the server runs the tile physics doors belong to is only known once the
+	// game info has arrived.
+	if(!m_MapDoorsBuilt && m_GameWorld.m_WorldConfig.m_PredictTiles && m_GameWorld.Collision() != nullptr)
+	{
+		BuildMapDoorCollision(m_GameWorld.Collision());
+		m_MapDoorsBuilt = true;
+	}
 }
 
 void CGameState::UpdateWorldConfigFromSnapshot()

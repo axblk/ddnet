@@ -546,6 +546,7 @@ private:
 	CGameWorld m_PredictedWorld;
 	CGameWorld m_PrevPredictedWorld;
 	bool m_PredictionInitialized = false;
+	bool m_MapDoorsBuilt = false;
 	bool m_FullyPredicted = false;
 	CRuntimeState m_Runtime;
 	CEffectClockState m_EffectClock;

@@ -24,8 +24,8 @@ CPlasma::CPlasma(CGameWorld *pGameWorld, vec2 Pos, vec2 Dir, bool Freeze,
 	m_Freeze = Freeze;
 	m_Explosive = Explosive;
 	m_ForClientId = ForClientId;
-	m_EvalTick = Server()->Tick();
-	m_LifeTime = Server()->TickSpeed() * 1.5f;
+	m_EvalTick = GameWorld()->GameTick();
+	m_LifeTime = GameWorld()->GameTickSpeed() * 1.5f;
 
 	GameWorld()->InsertEntity(this);
 }
@@ -89,7 +89,7 @@ bool CPlasma::HitCharacter(CCharacter *pTarget)
 bool CPlasma::HitObstacle(CCharacter *pTarget)
 {
 	// Check if the plasma bullet is stopped by a solid block or a laser stopper
-	int HasIntersection = GameServer()->Collision()->IntersectNoLaser(m_Pos, m_Pos + m_Core, nullptr, nullptr);
+	int HasIntersection = Collision()->IntersectNoLaser(m_Pos, m_Pos + m_Core, nullptr, nullptr);
 	if(HasIntersection)
 	{
 		if(m_Explosive)
@@ -119,13 +119,13 @@ void CPlasma::Snap(int SnappingClient)
 	}
 
 	// Only players with the plasma bullet in their field of view or who want to see everything will receive the snap
-	if(NetworkClipped(SnappingClient) || !GetId().has_value())
+	if(NetworkClipped(SnappingClient) || GetId() < 0)
 		return;
 
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
 
 	int Subtype = (m_Explosive ? 1 : 0) | (m_Freeze ? 2 : 0);
-	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), GetId().value(),
+	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), GetId(),
 		m_Pos, m_Pos, m_EvalTick, m_ForClientId, LASERTYPE_PLASMA, Subtype, m_Number);
 }
 

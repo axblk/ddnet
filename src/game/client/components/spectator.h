@@ -9,6 +9,8 @@
 #include <game/client/component.h>
 #include <game/client/ui.h>
 
+#include <array>
+
 class CSpectator : public CComponent
 {
 	enum
@@ -26,6 +28,9 @@ class CSpectator : public CComponent
 	CUi::CTouchState m_TouchState;
 
 	float m_MultiViewActivateDelay;
+	std::array<CCachedText, 3> m_aHeaderTexts;
+	std::array<CCachedText, MAX_CLIENTS> m_aPlayerTexts;
+	void ResetTexts();
 
 	bool CanChangeSpectatorId();
 	void SpectateNext(bool Reverse);
@@ -47,6 +52,8 @@ public:
 	void OnRender() override;
 	void OnRelease() override;
 	void OnReset() override;
+	void OnShutdown() override;
+	void OnWindowResize() override;
 
 	void Spectate(int SpectatorId);
 	void SpectateClosest();

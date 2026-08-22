@@ -40,6 +40,14 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 {
 	char aBuf[128];
 	static int s_CurTab = 0;
+	size_t LabelIndex = 0;
+	const auto DoLabel_AutoLineSize = [&](const char *pText, float FontSize, int Align, CUIRect *pRect, float LineSize) {
+		CUIRect LabelRect;
+		pRect->HSplitTop(LineSize, &LabelRect, pRect);
+		if(LabelIndex == m_vpSettingsAppearanceLabelUiElements.size())
+			m_vpSettingsAppearanceLabelUiElements.push_back(Ui()->GetNewUIElement(1));
+		Ui()->DoLabelStreamed(*m_vpSettingsAppearanceLabelUiElements[LabelIndex++]->Rect(0), &LabelRect, pText, FontSize, Align);
+	};
 
 	CUIRect TabBar, LeftView, RightView, Button;
 
@@ -81,7 +89,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 		MainView.VSplitMid(&LeftView, &RightView, MarginBetweenViews);
 
 		// ***** HUD ***** //
-		Ui()->DoLabel_AutoLineSize(Localize("HUD"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("HUD"), HeadlineFontSize,
 			TEXTALIGN_ML, &LeftView, HeadlineHeight);
 		LeftView.HSplitTop(MarginSmall, nullptr, &LeftView);
 
@@ -99,7 +107,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 
 		// ***** Scoreboard ***** //
 		LeftView.HSplitTop(MarginBetweenViews, nullptr, &LeftView);
-		Ui()->DoLabel_AutoLineSize(Localize("Scoreboard"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Scoreboard"), HeadlineFontSize,
 			TEXTALIGN_ML, &LeftView, HeadlineHeight);
 		LeftView.HSplitTop(MarginSmall, nullptr, &LeftView);
 
@@ -109,7 +117,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 		DoLine_ColorPicker(&s_SameClanColor, ColorPickerLineSize, ColorPickerLabelSize, ColorPickerLineSpacing, &LeftView, Localize("Same clan color in scoreboard"), &g_Config.m_ClSameClanColor, GreenDefault, false);
 
 		// ***** DDRace HUD ***** //
-		Ui()->DoLabel_AutoLineSize(Localize("DDRace HUD"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("DDRace HUD"), HeadlineFontSize,
 			TEXTALIGN_ML, &RightView, HeadlineHeight);
 		RightView.HSplitTop(MarginSmall, nullptr, &RightView);
 
@@ -153,7 +161,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 		TopView.VSplitMid(&LeftView, &RightView, MarginBetweenViews);
 
 		// ***** Chat ***** //
-		Ui()->DoLabel_AutoLineSize(Localize("Chat"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Chat"), HeadlineFontSize,
 			TEXTALIGN_ML, &LeftView, HeadlineHeight);
 		LeftView.HSplitTop(MarginSmall, nullptr, &LeftView);
 
@@ -198,7 +206,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 		DoLine_ColorPicker(&s_BackgroundColor, ColorPickerLineSize, ColorPickerLabelSize, ColorPickerLineSpacing, &LeftView, Localize("Chat background color"), &g_Config.m_ClChatBackgroundColor, color_cast<ColorRGBA>(ColorHSLA(DefaultConfig::ClChatBackgroundColor, true)), false, nullptr, true);
 
 		// ***** Messages ***** //
-		Ui()->DoLabel_AutoLineSize(Localize("Messages"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Messages"), HeadlineFontSize,
 			TEXTALIGN_ML, &RightView, HeadlineHeight);
 		RightView.HSplitTop(MarginSmall, nullptr, &RightView);
 
@@ -219,7 +227,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 		DoLine_ColorPicker(&s_ClientMessageColor, ColorPickerLineSize, ColorPickerLabelSize, ColorPickerLineSpacing, &RightView, aBuf, &g_Config.m_ClMessageClientColor, ColorRGBA(0.5f, 0.78f, 1.0f));
 
 		// ***** Chat Preview ***** //
-		Ui()->DoLabel_AutoLineSize(Localize("Preview"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Preview"), HeadlineFontSize,
 			TEXTALIGN_ML, &PreviewView, HeadlineHeight);
 		PreviewView.HSplitTop(MarginSmall, nullptr, &PreviewView);
 
@@ -509,7 +517,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 		MainView.VSplitMid(&LeftView, &RightView, MarginBetweenViews);
 
 		// ***** Name Plate ***** //
-		Ui()->DoLabel_AutoLineSize(Localize("Name Plate"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Name Plate"), HeadlineFontSize,
 			TEXTALIGN_ML, &LeftView, HeadlineHeight);
 		LeftView.HSplitTop(MarginSmall, nullptr, &LeftView);
 
@@ -550,7 +558,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 
 		// ***** Hook Strength ***** //
 		LeftView.HSplitTop(MarginBetweenViews, nullptr, &LeftView);
-		Ui()->DoLabel_AutoLineSize(Localize("Hook Strength"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Hook Strength"), HeadlineFontSize,
 			TEXTALIGN_ML, &LeftView, HeadlineHeight);
 		LeftView.HSplitTop(MarginSmall, nullptr, &LeftView);
 
@@ -575,7 +583,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 
 		// ***** Key Presses ***** //
 		LeftView.HSplitTop(MarginBetweenViews, nullptr, &LeftView);
-		Ui()->DoLabel_AutoLineSize(Localize("Key Presses"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Key Presses"), HeadlineFontSize,
 			TEXTALIGN_ML, &LeftView, HeadlineHeight);
 		LeftView.HSplitTop(MarginSmall, nullptr, &LeftView);
 
@@ -590,7 +598,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 			Ui()->DoScrollbarOption(&g_Config.m_ClDirectionSize, &g_Config.m_ClDirectionSize, &Button, Localize("Size of key press icons"), -50, 100);
 
 		// ***** Name Plate Preview ***** //
-		Ui()->DoLabel_AutoLineSize(Localize("Preview"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Preview"), HeadlineFontSize,
 			TEXTALIGN_ML, &RightView, HeadlineHeight);
 		RightView.HSplitTop(2.0f * MarginSmall, nullptr, &RightView);
 
@@ -610,7 +618,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 		MainView.VSplitMid(&LeftView, &RightView, MarginBetweenViews);
 
 		// ***** Hookline ***** //
-		Ui()->DoLabel_AutoLineSize(Localize("Hook collision line"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Hook collision line"), HeadlineFontSize,
 			TEXTALIGN_ML, &LeftView, HeadlineHeight);
 		LeftView.HSplitTop(MarginSmall, nullptr, &LeftView);
 
@@ -653,7 +661,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 		static CButtonContainer s_HookCollNoCollResetId, s_HookCollHookableCollResetId, s_HookCollTeeCollResetId, s_HookCollTipColorResetId;
 		static int s_HookCollToolTip;
 
-		Ui()->DoLabel_AutoLineSize(Localize("Colors of the hook collision line:"), 13.0f,
+		DoLabel_AutoLineSize(Localize("Colors of the hook collision line:"), 13.0f,
 			TEXTALIGN_ML, &LeftView, HeadlineHeight);
 
 		Ui()->DoButtonLogic(&s_HookCollToolTip, 0, &LeftView, BUTTONFLAG_NONE); // Just for the tooltip, result ignored
@@ -664,7 +672,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 		DoLine_ColorPicker(&s_HookCollTipColorResetId, ColorPickerLineSize, ColorPickerLabelSize, ColorPickerLineSpacing, &LeftView, Localize("Hook collision line tip", "Hook collision line color"), &g_Config.m_ClHookCollTipColor, ColorRGBA(1.0f, 1.0f, 0.0f, 0.5f), false, nullptr, true);
 
 		// ***** Hook collisions preview ***** //
-		Ui()->DoLabel_AutoLineSize(Localize("Preview"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Preview"), HeadlineFontSize,
 			TEXTALIGN_ML, &RightView, HeadlineHeight);
 		RightView.HSplitTop(2 * MarginSmall, nullptr, &RightView);
 
@@ -801,7 +809,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 		MainView.VSplitMid(&LeftView, &RightView, MarginBetweenViews);
 
 		// ***** Info Messages ***** //
-		Ui()->DoLabel_AutoLineSize(Localize("Info Messages"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Info Messages"), HeadlineFontSize,
 			TEXTALIGN_ML, &LeftView, HeadlineHeight);
 		LeftView.HSplitTop(MarginSmall, nullptr, &LeftView);
 
@@ -827,7 +835,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 		MainView.VSplitMid(&LeftView, &RightView, MarginBetweenViews);
 
 		// ***** Weapons ***** //
-		Ui()->DoLabel_AutoLineSize(Localize("Weapons"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Weapons"), HeadlineFontSize,
 			TEXTALIGN_ML, &LeftView, HeadlineHeight);
 		LeftView.HSplitTop(MarginSmall, nullptr, &LeftView);
 
@@ -841,7 +849,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 
 		// ***** Entities ***** //
 		LeftView.HSplitTop(10.0f, nullptr, &LeftView);
-		Ui()->DoLabel_AutoLineSize(Localize("Entities"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Entities"), HeadlineFontSize,
 			TEXTALIGN_ML, &LeftView, HeadlineHeight);
 		LeftView.HSplitTop(MarginSmall, nullptr, &LeftView);
 
@@ -889,7 +897,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 		}
 
 		// ***** Laser Preview ***** //
-		Ui()->DoLabel_AutoLineSize(Localize("Preview"), HeadlineFontSize,
+		DoLabel_AutoLineSize(Localize("Preview"), HeadlineFontSize,
 			TEXTALIGN_ML, &RightView, HeadlineHeight);
 		RightView.HSplitTop(MarginSmall, nullptr, &RightView);
 

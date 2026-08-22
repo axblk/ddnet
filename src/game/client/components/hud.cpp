@@ -57,6 +57,7 @@ void CHud::ResetHudContainers()
 	}
 
 	TextRender()->DeleteTextContainer(m_FPSTextContainerIndex);
+	m_LastFPS = -1;
 	TextRender()->DeleteTextContainer(m_DDRaceEffectsTextContainerIndex);
 	TextRender()->DeleteTextContainer(m_PlayerAngleTextContainerIndex);
 	m_PlayerPrevAngle = -INFINITY;
@@ -67,6 +68,10 @@ void CHud::ResetHudContainers()
 		TextRender()->DeleteTextContainer(m_aPlayerPositionContainers[i]);
 		m_aPlayerPrevPosition[i] = -INFINITY;
 	}
+	m_GameTimerText.Reset(TextRender());
+	m_LastGameTimerTime.reset();
+	m_LocalTimeText.Reset(TextRender());
+	m_SpectatorHudText.Reset(TextRender());
 }
 
 void CHud::OnWindowResize()
@@ -124,7 +129,6 @@ void CHud::RenderGameTimer()
 
 	if(!(GameClient()->m_Snap.m_pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_SUDDENDEATH))
 	{
-		char aBuf[32];
 		int Time = 0;
 		if(GameClient()->m_Snap.m_pGameInfoObj->m_TimeLimit && (GameClient()->m_Snap.m_pGameInfoObj->m_WarmupTimer <= 0))
 		{
@@ -143,8 +147,14 @@ void CHud::RenderGameTimer()
 			Time = (Client()->GameTick(g_Config.m_ClDummy) - GameClient()->m_Snap.m_pGameInfoObj->m_RoundStartTick) / Client()->GameTickSpeed();
 		}
 
-		str_time((int64_t)Time * 100, ETimeFormat::DAYS, aBuf, sizeof(aBuf));
 		float FontSize = 10.0f;
+		if(m_LastGameTimerTime != Time)
+		{
+			char aBuf[32];
+			str_time((int64_t)Time * 100, ETimeFormat::DAYS, aBuf, sizeof(aBuf));
+			m_GameTimerText.Update(TextRender(), aBuf, FontSize);
+			m_LastGameTimerTime = Time;
+		}
 		static float s_TextWidthM = TextRender()->TextWidth(FontSize, "00:00", -1, -1.0f);
 		static float s_TextWidthH = TextRender()->TextWidth(FontSize, "00:00:00", -1, -1.0f);
 		static float s_TextWidth0D = TextRender()->TextWidth(FontSize, "0d 00:00:00", -1, -1.0f);
@@ -152,13 +162,13 @@ void CHud::RenderGameTimer()
 		static float s_TextWidth000D = TextRender()->TextWidth(FontSize, "000d 00:00:00", -1, -1.0f);
 		float w = Time >= 3600 * 24 * 100 ? s_TextWidth000D : (Time >= 3600 * 24 * 10 ? s_TextWidth00D : (Time >= 3600 * 24 ? s_TextWidth0D : (Time >= 3600 ? s_TextWidthH : s_TextWidthM)));
 		// last 60 sec red, last 10 sec blink
+		ColorRGBA Color(1.0f, 1.0f, 1.0f, 1.0f);
 		if(GameClient()->m_Snap.m_pGameInfoObj->m_TimeLimit && Time <= 60 && (GameClient()->m_Snap.m_pGameInfoObj->m_WarmupTimer <= 0))
 		{
 			float Alpha = Time <= 10 && (2 * time() / time_freq()) % 2 ? 0.5f : 1.0f;
-			TextRender()->TextColor(1.0f, 0.25f, 0.25f, Alpha);
+			Color = ColorRGBA(1.0f, 0.25f, 0.25f, Alpha);
 		}
-		TextRender()->Text(Half - w / 2, 2, FontSize, aBuf, -1.0f);
-		TextRender()->TextColor(1.0f, 1.0f, 1.0f, 1.0f);
+		m_GameTimerText.Render(TextRender(), vec2(Half - w / 2, 2.0f), Color);
 	}
 }
 
@@ -553,29 +563,33 @@ void CHud::RenderTextInfo()
 #endif
 	if(Showfps)
 	{
-		char aBuf[16];
 		const int FramesPerSecond = round_to_int(1.0f / Client()->FrameTimeAverage());
-		str_format(aBuf, sizeof(aBuf), "%d", FramesPerSecond);
+		if(m_LastFPS != FramesPerSecond || !m_FPSTextContainerIndex.Valid())
+		{
+			char aBuf[16];
+			str_format(aBuf, sizeof(aBuf), "%d", FramesPerSecond);
 
-		static float s_TextWidth0 = TextRender()->TextWidth(12.f, "0", -1, -1.0f);
-		static float s_TextWidth00 = TextRender()->TextWidth(12.f, "00", -1, -1.0f);
-		static float s_TextWidth000 = TextRender()->TextWidth(12.f, "000", -1, -1.0f);
-		static float s_TextWidth0000 = TextRender()->TextWidth(12.f, "0000", -1, -1.0f);
-		static float s_TextWidth00000 = TextRender()->TextWidth(12.f, "00000", -1, -1.0f);
-		static const float s_aTextWidth[5] = {s_TextWidth0, s_TextWidth00, s_TextWidth000, s_TextWidth0000, s_TextWidth00000};
+			static float s_TextWidth0 = TextRender()->TextWidth(12.f, "0", -1, -1.0f);
+			static float s_TextWidth00 = TextRender()->TextWidth(12.f, "00", -1, -1.0f);
+			static float s_TextWidth000 = TextRender()->TextWidth(12.f, "000", -1, -1.0f);
+			static float s_TextWidth0000 = TextRender()->TextWidth(12.f, "0000", -1, -1.0f);
+			static float s_TextWidth00000 = TextRender()->TextWidth(12.f, "00000", -1, -1.0f);
+			static const float s_aTextWidth[5] = {s_TextWidth0, s_TextWidth00, s_TextWidth000, s_TextWidth0000, s_TextWidth00000};
 
-		int DigitIndex = GetDigitsIndex(FramesPerSecond, 4);
-
-		CTextCursor Cursor;
-		Cursor.SetPosition(vec2(m_Width - 10 - s_aTextWidth[DigitIndex], 5));
-		Cursor.m_FontSize = 12.0f;
-		auto OldFlags = TextRender()->GetRenderFlags();
-		TextRender()->SetRenderFlags(OldFlags | TEXT_RENDER_FLAG_ONE_TIME_USE);
-		if(m_FPSTextContainerIndex.Valid())
-			TextRender()->RecreateTextContainerSoft(m_FPSTextContainerIndex, &Cursor, aBuf);
-		else
-			TextRender()->CreateTextContainer(m_FPSTextContainerIndex, &Cursor, "0");
-		TextRender()->SetRenderFlags(OldFlags);
+			const int DigitIndex = GetDigitsIndex(FramesPerSecond, 4);
+			CTextCursor Cursor;
+			Cursor.SetPosition(vec2(m_Width - 10 - s_aTextWidth[DigitIndex], 5));
+			Cursor.m_FontSize = 12.0f;
+			// No TEXT_RENDER_FLAG_ONE_TIME_USE here, unlike the version that
+			// rebuilt this every frame: the geometry now survives until the
+			// number changes, and a one-time-use buffer only lives for the
+			// frame it was created in.
+			if(m_FPSTextContainerIndex.Valid())
+				TextRender()->RecreateTextContainerSoft(m_FPSTextContainerIndex, &Cursor, aBuf);
+			else
+				TextRender()->CreateTextContainer(m_FPSTextContainerIndex, &Cursor, aBuf);
+			m_LastFPS = FramesPerSecond;
+		}
 		if(m_FPSTextContainerIndex.Valid())
 		{
 			TextRender()->RenderTextContainer(m_FPSTextContainerIndex, TextRender()->DefaultTextColor(), TextRender()->DefaultTextOutlineColor());
@@ -1636,7 +1650,8 @@ void CHud::RenderSpectatorHud()
 	{
 		str_copy(aBuf, Localize("Free-View"));
 	}
-	TextRender()->Text(m_Width - 174.0f, m_Height - 15.0f + (15.f - 8.f) / 2.f, 8.0f, aBuf, -1.0f);
+	m_SpectatorHudText.Update(TextRender(), aBuf, 8.0f);
+	m_SpectatorHudText.Render(TextRender(), vec2(m_Width - 174.0f, m_Height - 15.0f + (15.f - 8.f) / 2.f), TextRender()->DefaultTextColor());
 
 	// draw the camera info
 	if(Client()->State() != IClient::STATE_DEMOPLAYBACK && GameClient()->m_Camera.SpectatingPlayer() && GameClient()->m_Camera.CanUseAutoSpecCamera() && g_Config.m_ClSpecAutoSync)
@@ -1671,7 +1686,8 @@ void CHud::RenderLocalTime(float x)
 	// draw the text
 	char aTimeStr[6];
 	str_timestamp_format(aTimeStr, sizeof(aTimeStr), "%H:%M");
-	TextRender()->Text(x - 25.0f, (12.5f - 5.f) / 2.f, 5.0f, aTimeStr, -1.0f);
+	m_LocalTimeText.Update(TextRender(), aTimeStr, 5.0f);
+	m_LocalTimeText.Render(TextRender(), vec2(x - 25.0f, (12.5f - 5.f) / 2.f), TextRender()->DefaultTextColor());
 }
 
 void CHud::OnNewSnapshot()

@@ -399,9 +399,14 @@ public:
 	std::vector<unsigned char> m_vRawEvent = std::vector<unsigned char>(GameWire::MAX_CONTROL_MESSAGE_SIZE + 16);
 	std::vector<unsigned char> m_vEventPayload;
 	std::vector<unsigned char> m_vControlBuffer;
+	// Where the undecoded part of the control buffer starts. Decoding moves this
+	// forward instead of shifting the rest of the buffer down after every frame,
+	// which a peer packing many small frames into one burst would make quadratic.
+	size_t m_ControlBufferOffset = 0;
 	std::vector<unsigned char> m_vPendingDatagram;
 	std::vector<unsigned char> m_vResumeBinding;
 	std::vector<unsigned char> m_vMapHeaderBuffer;
+	std::vector<unsigned char> m_vSendBuffer;
 	uint64_t m_DatagramSequence = 0;
 	uint64_t m_LastReceivedDatagramSequence = 0;
 	GameWire::CDatagramView m_PendingDatagram = {};
@@ -786,6 +791,15 @@ bool CQuicTransport::IsRunning() const
 	return m_pImpl != nullptr;
 }
 
+const CQuicTransportMetrics &CQuicTransport::Metrics()
+{
+#if defined(CONF_QUIC)
+	if(m_pImpl)
+		m_Metrics.m_CommandQueueHighWater = std::max(m_Metrics.m_CommandQueueHighWater, ModernQuic::quic_command_queue_high_water(*m_pImpl->m_Endpoint));
+#endif
+	return m_Metrics;
+}
+
 bool CQuicTransport::Send(CQuicSessionId Session, const void *pData, int DataSize, bool Vital)
 {
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
@@ -800,22 +814,21 @@ bool CQuicTransport::Send(CQuicSessionId Session, const void *pData, int DataSiz
 		}
 		return false;
 	}
-	std::vector<unsigned char> vPayload;
+	// One buffer kept for the whole session, so sending a packet allocates nothing.
+	std::vector<unsigned char> &vPayload = m_pImpl->m_vSendBuffer;
+	vPayload.clear();
+	const GameWire::CByteView Message = {static_cast<const unsigned char *>(pData), static_cast<size_t>(DataSize)};
 	bool Queued;
 	if(Vital)
 	{
-		Queued = GameWire::EncodeFrame(
-				 GameWire::EFrameType::MESSAGE,
-				 {static_cast<const unsigned char *>(pData), static_cast<size_t>(DataSize)},
-				 vPayload) &&
+		Queued = GameWire::EncodeFrame(GameWire::EFrameType::MESSAGE, Message, vPayload) &&
 			 BrowserWebTransportSendControl(m_pImpl->m_WebTransportHandle, vPayload.data(), static_cast<int>(vPayload.size()));
 	}
 	else
 	{
-		const std::vector<GameWire::CByteView> vMessages = {{static_cast<const unsigned char *>(pData), static_cast<size_t>(DataSize)}};
 		const size_t MaxDatagramSize = std::min(m_pImpl->m_LocalMaxDatagramSize, m_pImpl->m_PeerMaxDatagramSize);
 		Queued = MaxDatagramSize > 0 &&
-			 GameWire::EncodeDatagram(m_pImpl->m_DatagramSequence, vMessages, vPayload) &&
+			 GameWire::EncodeDatagram(m_pImpl->m_DatagramSequence, &Message, 1, vPayload) &&
 			 vPayload.size() <= MaxDatagramSize &&
 			 BrowserWebTransportSendDatagram(m_pImpl->m_WebTransportHandle, vPayload.data(), static_cast<int>(vPayload.size()));
 		if(Queued)
@@ -836,7 +849,6 @@ bool CQuicTransport::Send(CQuicSessionId Session, const void *pData, int DataSiz
 	const bool Queued = Vital ?
 				    ModernQuic::quic_send_control(*m_pImpl->m_Endpoint, Session.Value(), Payload) :
 				    ModernQuic::quic_send_datagram(*m_pImpl->m_Endpoint, Session.Value(), Payload);
-	m_Metrics.m_CommandQueueHighWater = std::max(m_Metrics.m_CommandQueueHighWater, ModernQuic::quic_command_queue_high_water(*m_pImpl->m_Endpoint));
 	if(!Queued && m_ClientMode && !ModernQuic::quic_session_active(*m_pImpl->m_Endpoint, Session.Value()))
 	{
 		m_Metrics.m_ResumeSendDrops++;
@@ -930,6 +942,7 @@ bool CQuicTransport::Reconnect(CQuicSessionId Session)
 	m_pImpl->m_LocalMaxDatagramSize = 0;
 	m_pImpl->m_PeerMaxDatagramSize = 0;
 	m_pImpl->m_vControlBuffer.clear();
+	m_pImpl->m_ControlBufferOffset = 0;
 	m_pImpl->m_MapStreamId = 0;
 	m_pImpl->m_MapBytesRemaining = 0;
 	m_pImpl->m_MapHeaderReceived = false;
@@ -983,16 +996,21 @@ bool CQuicTransport::Poll(CQuicEvent &Event)
 		return true;
 	};
 	auto PollControlFrame = [&]() {
-		while(!m_pImpl->m_vControlBuffer.empty())
+		if(m_pImpl->m_ControlBufferOffset == m_pImpl->m_vControlBuffer.size())
+		{
+			m_pImpl->m_vControlBuffer.clear();
+			m_pImpl->m_ControlBufferOffset = 0;
+		}
+		while(m_pImpl->m_ControlBufferOffset < m_pImpl->m_vControlBuffer.size())
 		{
 			GameWire::CFrameView Frame;
-			const GameWire::EDecodeResult Result = GameWire::DecodeFrame(m_pImpl->m_vControlBuffer.data(), m_pImpl->m_vControlBuffer.size(), Frame);
+			const GameWire::EDecodeResult Result = GameWire::DecodeFrame(m_pImpl->m_vControlBuffer.data() + m_pImpl->m_ControlBufferOffset, m_pImpl->m_vControlBuffer.size() - m_pImpl->m_ControlBufferOffset, Frame);
 			if(Result == GameWire::EDecodeResult::NEED_MORE)
 				return false;
 			if(Result != GameWire::EDecodeResult::OK)
 				return DisconnectEvent(EQuicConnectFailure::PROTOCOL, "invalid WebTransport control frame");
 			m_pImpl->m_vEventPayload.assign(Frame.m_Payload.m_pData, Frame.m_Payload.m_pData + Frame.m_Payload.m_Size);
-			m_pImpl->m_vControlBuffer.erase(m_pImpl->m_vControlBuffer.begin(), m_pImpl->m_vControlBuffer.begin() + Frame.m_BytesConsumed);
+			m_pImpl->m_ControlBufferOffset += Frame.m_BytesConsumed;
 			if(!m_pImpl->m_WebTransportConnected)
 			{
 				GameWire::CHelloView Hello;
@@ -1127,6 +1145,11 @@ bool CQuicTransport::Poll(CQuicEvent &Event)
 	}
 	if(BrowserEvent == EBrowserWebTransportEvent::CONTROL_DATA)
 	{
+		if(m_pImpl->m_ControlBufferOffset != 0)
+		{
+			m_pImpl->m_vControlBuffer.erase(m_pImpl->m_vControlBuffer.begin(), m_pImpl->m_vControlBuffer.begin() + m_pImpl->m_ControlBufferOffset);
+			m_pImpl->m_ControlBufferOffset = 0;
+		}
 		if(m_pImpl->m_vControlBuffer.size() + PayloadSize > GameWire::MAX_CONTROL_MESSAGE_SIZE + 32768 + 16)
 			return DisconnectEvent(EQuicConnectFailure::PROTOCOL, "WebTransport control buffer exceeded limit");
 		m_pImpl->m_vControlBuffer.insert(m_pImpl->m_vControlBuffer.end(), pPayload, pPayload + PayloadSize);

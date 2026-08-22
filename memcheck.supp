@@ -88,15 +88,16 @@
    QuicRingPacketProtectionSendmsg
    Memcheck:Param
    sendmsg(msg.msg_iov[0])
-   fun:sendmsg
-   fun:_ZN9quinn_udp*
+   fun:*sendmsg*
+   ...
+   fun:*quinn_udp*send*
    ...
 }
 
 {
    RingAeadTagComparison
    Memcheck:Cond
-   fun:_ZN4ring2bb23verify_slices_are_equal*
-   fun:_ZN4ring4aead*
+   fun:*ring*verify_slices_are_equal*
+   fun:*ring*aead*
    ...
 }

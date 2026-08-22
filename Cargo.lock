@@ -228,6 +228,7 @@ dependencies = [
 name = "ddnet-engine-shared"
 version = "0.0.1"
 dependencies = [
+ "bytes",
  "cxx",
  "ddnet-base",
  "ddnet-engine",

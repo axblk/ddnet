@@ -28,6 +28,9 @@ const COMMAND_CAPACITY: usize = 128;
 const EVENT_CAPACITY: usize = 256;
 const MAP_EVENT_CAPACITY: usize = 16;
 const UDP_SIDECHANNEL_CAPACITY: usize = 256;
+// Room for the largest datagram quinn will write, so a buffer made for the pool
+// does not have to be grown while a packet is being put into it.
+const MAX_UDP_DATAGRAM_SIZE: usize = 2048;
 const MAX_SESSIONS: usize = 1024;
 // One address may hold a few sessions at once - a player and their dummy, a
 // reconnect that overlaps the old session - but not the whole endpoint. Without
@@ -965,15 +968,16 @@ pub fn quic_close_session(endpoint: &QuicEndpoint, session_id: u64, reason: &str
 
 /// Polls the bounded event queue without blocking.
 pub fn quic_poll_event(endpoint: &QuicEndpoint, event: &mut ffi::QuicEvent) -> bool {
-    endpoint
-        .inner
-        .lock()
-        .ok()
-        .and_then(|mut endpoint| endpoint.poll_event())
-        .is_some_and(|received| {
-            *event = received;
-            true
-        })
+    let Ok(mut endpoint) = endpoint.inner.lock() else {
+        return false;
+    };
+    // The payload C++ is done with goes back into the pool the next one comes from.
+    endpoint.recycle_event_payload(std::mem::take(&mut event.payload));
+    let Some(received) = endpoint.poll_event() else {
+        return false;
+    };
+    *event = received;
+    true
 }
 
 /// Offers one datagram from the C++ gameplay socket to Quinn.

@@ -64,7 +64,12 @@ fuzz_target!(|data: &[u8]| {
         while let Some(message) = datagram.next_message() {
             messages.push(message);
         }
-        let encoded = game_wire::encode_datagram(sequence, &messages).unwrap();
+        let mut encoded = Vec::new();
+        assert!(game_wire::encode_datagram(
+            sequence,
+            &messages,
+            &mut encoded
+        ));
         let mut roundtrip = game_wire::decode_datagram(&encoded).unwrap();
         assert_eq!(roundtrip.sequence, sequence);
         for message in messages {

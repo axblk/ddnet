@@ -116,7 +116,7 @@ TEST(ServerInfo, QuicTransport)
 	EXPECT_FALSE(WebTransportOnly.m_QuicSharedPort);
 	EXPECT_TRUE(WebTransportOnly.m_WebTransport);
 	EXPECT_EQ(WebTransportOnly.m_WebTransportCertificateMode, CServerInfo::EWebTransportCertificateMode::WEBPKI);
-	EXPECT_EQ(WebTransportOnly.m_QuicCertificateSha256, CertificateSha256);
+	EXPECT_EQ(WebTransportOnly.m_WebTransportCertificateSha256, CertificateSha256);
 	EXPECT_EQ(WebTransportOnly.m_QuicCapabilities, CServerInfo::QUIC_CAPABILITY_DATAGRAM | CServerInfo::QUIC_CAPABILITY_MAP_STREAM | CServerInfo::QUIC_CAPABILITY_RESUME | CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7);
 
 	const CServerInfo2 InvalidInfo = ParseServerInfoWithTransport(R"({"udp_port":8303,"tls_certificate_sha256":"invalid","quic":true})");
@@ -153,7 +153,8 @@ TEST(ServerInfo, ExperimentalProtocolTransport)
 	SHA256_DIGEST IdentitySha256;
 	ASSERT_EQ(sha256_from_str(&CertificateSha256, CERTIFICATE_SHA256), 0);
 	ASSERT_EQ(sha256_from_str(&IdentitySha256, IDENTITY_SHA256), 0);
-	EXPECT_EQ(Info.m_QuicCertificateSha256, CertificateSha256);
+	EXPECT_EQ(Info.m_WebTransportCertificateSha256, CertificateSha256);
+	EXPECT_EQ(Info.m_QuicCertificateSha256, SHA256_DIGEST{});
 	EXPECT_EQ(Info.m_QuicIdentityFingerprint, IdentitySha256);
 
 	const CServerInfo2 WebPki = ParseServerInfoWithExperimental(R"({"proto":{"hostname":"example.com","quic":{"verify":"webpki"},"webtransport":{"verify":"webpki"}}})");
@@ -290,9 +291,12 @@ TEST(ServerInfo, QuicLanExtraWebTransport)
 	EXPECT_EQ(Info.m_QuicIdentityFingerprint, Fingerprint);
 	EXPECT_TRUE(Info.m_WebTransport);
 	EXPECT_EQ(Info.m_WebTransportCertificateMode, CServerInfo::EWebTransportCertificateMode::HASH);
-	EXPECT_EQ(Info.m_QuicCertificateSha256, Certificate);
-	EXPECT_TRUE(Info.m_HasQuicNextCertificateSha256);
-	EXPECT_EQ(Info.m_QuicNextCertificateSha256, NextCertificate);
+	EXPECT_EQ(Info.m_WebTransportCertificateSha256, Certificate);
+	EXPECT_TRUE(Info.m_HasWebTransportNextCertificateSha256);
+	EXPECT_EQ(Info.m_WebTransportNextCertificateSha256, NextCertificate);
+	// The WebTransport certificate must not be taken for the raw QUIC one.
+	EXPECT_EQ(Info.m_QuicCertificateSha256, SHA256_DIGEST{});
+	EXPECT_EQ(Info.m_QuicTrust, EModernTransportTrust::IDENTITY);
 
 	Extra.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::WEBPKI;
 	Extra.m_pHostname = "server.example.com";
@@ -301,7 +305,7 @@ TEST(ServerInfo, QuicLanExtraWebTransport)
 	EXPECT_FALSE(ParseQuicServerInfoExtra(&Info, aExtraInfo, 8303));
 	EXPECT_TRUE(Info.m_WebTransport);
 	EXPECT_EQ(Info.m_WebTransportCertificateMode, CServerInfo::EWebTransportCertificateMode::WEBPKI);
-	EXPECT_EQ(Info.m_QuicTrust, EModernTransportTrust::WEBPKI);
+	EXPECT_EQ(Info.m_QuicTrust, EModernTransportTrust::IDENTITY);
 	EXPECT_STREQ(Info.m_aModernHostname, "server.example.com");
 
 	// A server that only speaks QUIC must still produce the string an older
@@ -344,7 +348,7 @@ TEST(ServerInfo, QuicLanExtraWebTransportOnly)
 	EXPECT_TRUE(Info.m_WebTransport);
 	EXPECT_TRUE(Info.m_QuicSharedPort);
 	EXPECT_EQ(Info.m_QuicPort, 8303);
-	EXPECT_EQ(Info.m_QuicCertificateSha256, Certificate);
+	EXPECT_EQ(Info.m_WebTransportCertificateSha256, Certificate);
 
 	// A client that predates the prefix reads nothing from it rather than a
 	// server that is not there.
@@ -358,9 +362,9 @@ TEST(ServerInfo, PreserveWebTransportMetadataWithLanIdentity)
 	PreviousInfo.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::HASH;
 	str_copy(PreviousInfo.m_aWebTransportPath, "/ddnet");
 	str_copy(PreviousInfo.m_aWebTransportUrl, "https://example.com:8303/ddnet");
-	PreviousInfo.m_QuicCertificateSha256.data[0] = 1;
-	PreviousInfo.m_QuicNextCertificateSha256.data[0] = 2;
-	PreviousInfo.m_HasQuicNextCertificateSha256 = true;
+	PreviousInfo.m_WebTransportCertificateSha256.data[0] = 1;
+	PreviousInfo.m_WebTransportNextCertificateSha256.data[0] = 2;
+	PreviousInfo.m_HasWebTransportNextCertificateSha256 = true;
 	PreviousInfo.m_QuicCapabilities = CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7;
 
 	CServerInfo LanInfo = {};
@@ -373,9 +377,9 @@ TEST(ServerInfo, PreserveWebTransportMetadataWithLanIdentity)
 	EXPECT_EQ(LanInfo.m_WebTransportCertificateMode, CServerInfo::EWebTransportCertificateMode::HASH);
 	EXPECT_STREQ(LanInfo.m_aWebTransportPath, "/ddnet");
 	EXPECT_STREQ(LanInfo.m_aWebTransportUrl, "https://example.com:8303/ddnet");
-	EXPECT_EQ(LanInfo.m_QuicCertificateSha256, PreviousInfo.m_QuicCertificateSha256);
-	EXPECT_EQ(LanInfo.m_QuicNextCertificateSha256, PreviousInfo.m_QuicNextCertificateSha256);
-	EXPECT_TRUE(LanInfo.m_HasQuicNextCertificateSha256);
+	EXPECT_EQ(LanInfo.m_WebTransportCertificateSha256, PreviousInfo.m_WebTransportCertificateSha256);
+	EXPECT_EQ(LanInfo.m_WebTransportNextCertificateSha256, PreviousInfo.m_WebTransportNextCertificateSha256);
+	EXPECT_TRUE(LanInfo.m_HasWebTransportNextCertificateSha256);
 	EXPECT_EQ(LanInfo.m_QuicIdentityFingerprint.data[0], 3);
 	EXPECT_TRUE(LanInfo.m_HasQuicIdentityFingerprint);
 	EXPECT_TRUE(LanInfo.m_QuicCapabilities & CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7);

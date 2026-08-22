@@ -106,7 +106,8 @@ TEST(GameWire, DatagramGoldenVector)
 	const unsigned char aFirst[] = {0xaa, 0xbb};
 	const unsigned char aSecond[] = {0xcc};
 	std::vector<unsigned char> vEncoded;
-	ASSERT_TRUE(EncodeDatagram(300, {{aFirst, sizeof(aFirst)}, {aSecond, sizeof(aSecond)}}, vEncoded));
+	const CByteView aMessages[] = {{aFirst, sizeof(aFirst)}, {aSecond, sizeof(aSecond)}};
+	ASSERT_TRUE(EncodeDatagram(300, aMessages, std::size(aMessages), vEncoded));
 	EXPECT_EQ(vEncoded, (std::vector<unsigned char>{0x01, 0x00, 0x41, 0x2c, 0x02, 0x02, 0xaa, 0xbb, 0x01, 0xcc}));
 
 	CDatagramView Datagram;

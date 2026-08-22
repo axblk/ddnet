@@ -66,6 +66,7 @@ class CGraphics_Threaded : public IEngineGraphics
 	bool m_DoScreenshot;
 	char m_aScreenshotName[IO_MAX_PATH_LENGTH];
 	bool m_RenderStatsEnabled = false;
+	uint64_t m_RenderStatsGpuStartSample = 0;
 	CFrameRenderStats m_CurrentFrameRenderStats;
 	CFrameRenderStats m_LastFrameRenderStats;
 
@@ -363,6 +364,8 @@ public:
 	SFrameMailboxStats FrameMailboxStats() const override;
 	CFrameRenderStats FrameRenderStats() const override;
 	void SetRenderStatsEnabled(bool Enabled) override;
+	void GpuRenderZoneBegin(EGpuRenderZone Zone) override;
+	void GpuRenderZoneEnd(EGpuRenderZone Zone) override;
 
 	const TTwGraphicsGpuList &GetGpus() const override;
 

@@ -383,7 +383,8 @@ void CSpectator::OnRender()
 		}
 	}
 	TextRender()->TextColor(1.0f, 1.0f, 1.0f, FreeViewSelected ? 1.0f : 0.5f);
-	TextRender()->Text(Width / 2.0f - (ObjWidth - 40.0f), Height / 2.0f - 280.f + (60.f - BigFontSize) / 2.f, BigFontSize, Localize("Free-View"), -1.0f);
+	m_aHeaderTexts[0].Update(TextRender(), Localize("Free-View"), BigFontSize);
+	m_aHeaderTexts[0].Render(TextRender(), vec2(Width / 2.0f - (ObjWidth - 40.0f), Height / 2.0f - 280.f + (60.f - BigFontSize) / 2.f), TextRender()->GetTextColor());
 
 	if(m_SelectorMouse.x >= -(ObjWidth - 20.0f) + (ObjWidth * 2.0f / 3.0f) && m_SelectorMouse.x <= -(ObjWidth - 20.0f) + (ObjWidth * 2.0f / 3.0f) + ((ObjWidth * 2.0f) / 3.0f) - 40.0f &&
 		m_SelectorMouse.y >= -280.0f && m_SelectorMouse.y <= -220.0f)
@@ -396,7 +397,8 @@ void CSpectator::OnRender()
 		}
 	}
 	TextRender()->TextColor(1.0f, 1.0f, 1.0f, MultiViewSelected ? 1.0f : 0.5f);
-	TextRender()->Text(Width / 2.0f - (ObjWidth - 40.0f) + (ObjWidth * 2.0f / 3.0f), Height / 2.0f - 280.f + (60.f - BigFontSize) / 2.f, BigFontSize, Localize("Multi-View"), -1.0f);
+	m_aHeaderTexts[1].Update(TextRender(), Localize("Multi-View"), BigFontSize);
+	m_aHeaderTexts[1].Render(TextRender(), vec2(Width / 2.0f - (ObjWidth - 40.0f) + (ObjWidth * 2.0f / 3.0f), Height / 2.0f - 280.f + (60.f - BigFontSize) / 2.f), TextRender()->GetTextColor());
 
 	if(Client()->State() == IClient::STATE_DEMOPLAYBACK && GameClient()->m_Snap.m_LocalClientId >= 0)
 	{
@@ -413,7 +415,8 @@ void CSpectator::OnRender()
 			}
 		}
 		TextRender()->TextColor(1.0f, 1.0f, 1.0f, FollowSelected ? 1.0f : 0.5f);
-		TextRender()->Text(Width / 2.0f - (ObjWidth - 40.0f) + (ObjWidth * 2.0f * 2.0f / 3.0f), Height / 2.0f - 280.0f + (60.f - BigFontSize) / 2.f, BigFontSize, Localize("Follow"), -1.0f);
+		m_aHeaderTexts[2].Update(TextRender(), Localize("Follow"), BigFontSize);
+		m_aHeaderTexts[2].Render(TextRender(), vec2(Width / 2.0f - (ObjWidth - 40.0f) + (ObjWidth * 2.0f * 2.0f / 3.0f), Height / 2.0f - 280.0f + (60.f - BigFontSize) / 2.f), TextRender()->GetTextColor());
 	}
 
 	float x = -(ObjWidth - 35.0f), y = StartY;
@@ -529,18 +532,19 @@ void CSpectator::OnRender()
 			TextRender()->TextColor(1.0f, 1.0f, 1.0f, PlayerSelected ? 1.0f : 0.5f);
 			TeeAlpha = 1.0f;
 		}
-		CTextCursor NameCursor;
-		NameCursor.SetPosition(vec2(Width / 2.0f + x + 50.0f, Height / 2.0f + y + BoxMove + (LineHeight - FontSize) / 2.f));
-		NameCursor.m_FontSize = FontSize;
-		NameCursor.m_Flags |= TEXTFLAG_ELLIPSIS_AT_END;
-		NameCursor.m_LineWidth = 180.0f;
+		char aName[MAX_NAME_LENGTH + 16];
 		if(g_Config.m_ClShowIds)
 		{
 			char aClientId[16];
 			GameClient()->FormatClientId(GameClient()->m_Snap.m_apInfoByDDTeamName[i]->m_ClientId, aClientId, EClientIdFormat::INDENT_AUTO);
-			TextRender()->TextEx(&NameCursor, aClientId);
+			str_copy(aName, aClientId);
+			str_append(aName, GameClient()->m_aClients[GameClient()->m_Snap.m_apInfoByDDTeamName[i]->m_ClientId].m_aName);
 		}
-		TextRender()->TextEx(&NameCursor, GameClient()->m_aClients[GameClient()->m_Snap.m_apInfoByDDTeamName[i]->m_ClientId].m_aName);
+		else
+			str_copy(aName, GameClient()->m_aClients[GameClient()->m_Snap.m_apInfoByDDTeamName[i]->m_ClientId].m_aName);
+		CCachedText &NameText = m_aPlayerTexts[GameClient()->m_Snap.m_apInfoByDDTeamName[i]->m_ClientId];
+		NameText.Update(TextRender(), aName, FontSize, 180.0f, TEXTFLAG_RENDER | TEXTFLAG_ELLIPSIS_AT_END);
+		NameText.Render(TextRender(), vec2(Width / 2.0f + x + 50.0f, Height / 2.0f + y + BoxMove + (LineHeight - FontSize) / 2.f), TextRender()->GetTextColor());
 
 		if(GameClient()->m_MultiViewActivated)
 		{
@@ -603,6 +607,24 @@ void CSpectator::OnReset()
 	m_WasActive = false;
 	m_Active = false;
 	m_SelectedSpectatorId = NO_SELECTION;
+}
+
+void CSpectator::ResetTexts()
+{
+	for(CCachedText &Text : m_aHeaderTexts)
+		Text.Reset(TextRender());
+	for(CCachedText &Text : m_aPlayerTexts)
+		Text.Reset(TextRender());
+}
+
+void CSpectator::OnShutdown()
+{
+	ResetTexts();
+}
+
+void CSpectator::OnWindowResize()
+{
+	ResetTexts();
 }
 
 void CSpectator::Spectate(int SpectatorId)

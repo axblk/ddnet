@@ -11,6 +11,7 @@
 
 #include <chrono>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class CScrollRegion;
@@ -172,6 +173,14 @@ public:
 
 		std::string m_Text;
 		int m_ReadCursorGlyphCount;
+		float m_ReadCursorX;
+		float m_ReadCursorY;
+		float m_FontSize;
+		float m_LineWidth;
+		float m_MinimumFontSize;
+		int m_TextFlags;
+		bool m_EnableWidthCheck;
+		std::vector<STextColorSplit> m_vTextColorSplits;
 
 		CTextCursor m_Cursor;
 
@@ -329,6 +338,7 @@ public:
 	void Reset(ITextRender *pTextRender);
 
 	float Width() const { return m_BoundingBox.m_W; }
+	float Height() const { return m_BoundingBox.m_H; }
 	float MaxCharacterHeight() const { return m_MaxCharacterHeight; }
 };
 
@@ -492,6 +502,9 @@ private:
 
 	std::vector<CUIElement *> m_vpOwnUIElements; // ui elements maintained by CUi class
 	std::vector<CUIElement *> m_vpUIElements;
+	std::unordered_map<const void *, CUIElement *> m_FontIconUiElements;
+	std::unordered_map<const void *, CUIElement *> m_DropDownIconUiElements;
+	std::unordered_map<const void *, CUIElement *> m_ScrollbarOptionUiElements;
 
 public:
 	static const CLinearScrollbarScale ms_LinearScrollbarScale;
@@ -655,7 +668,7 @@ public:
 	 *
 	 * @return true if the value of the input field changed since the last call.
 	 */
-	bool DoEditBox(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, int Corners = IGraphics::CORNER_ALL, const std::vector<STextColorSplit> &vColorSplits = {});
+	bool DoEditBox(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, int Corners = IGraphics::CORNER_ALL, const std::vector<STextColorSplit> &vColorSplits = {}, CUIElement *pUIElement = nullptr);
 
 	/**
 	 * Creates an input field with a clear [x] button attached to it.
@@ -673,7 +686,7 @@ public:
 	 *
 	 * @return true if the value of the input field changed since the last call.
 	 */
-	bool DoClearableEditBox(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, int Corners = IGraphics::CORNER_ALL, const std::vector<STextColorSplit> &vColorSplits = {});
+	bool DoClearableEditBox(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, int Corners = IGraphics::CORNER_ALL, const std::vector<STextColorSplit> &vColorSplits = {}, CUIElement *pUIElement = nullptr);
 
 	/**
 	 * Creates an input field with a search icon and a clear [x] button attached to it.
@@ -692,9 +705,11 @@ public:
 	 * @return true if the value of the input field changed since the last call.
 	 */
 	bool DoEditBox_Search(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, bool HotkeyEnabled);
+	bool DoEditBox_SearchCached(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, bool HotkeyEnabled, CUIElement *pSearchIconUiElement, CUIElement *pEditBoxUiElement);
 
 	int DoButton_Menu(CUIElement &UIElement, const CButtonContainer *pId, const std::function<const char *()> &GetTextLambda, const CUIRect *pRect, const SMenuButtonProperties &Props = {});
-	void DrawButton_FontIcon(const char *pText, const CUIRect *pRect, ColorRGBA Color, int Corners = IGraphics::CORNER_ALL, bool Enabled = true) const;
+	// The icon's text geometry is cached per pCacheId; without one it is laid out every call.
+	void DrawButton_FontIcon(const char *pText, const CUIRect *pRect, ColorRGBA Color, int Corners = IGraphics::CORNER_ALL, bool Enabled = true, const void *pCacheId = nullptr);
 	int DoButton_FontIcon(CButtonContainer *pButtonContainer, const char *pText, int Checked, const CUIRect *pRect, unsigned Flags, int Corners = IGraphics::CORNER_ALL, bool Enabled = true, std::optional<ColorRGBA> ButtonColor = std::nullopt);
 	// only used for popup menus
 	int DoButton_PopupMenu(CButtonContainer *pButtonContainer, const char *pText, const CUIRect *pRect, float Size, int Align, float Padding = 0.0f, bool TransparentInactive = false, bool Enabled = true, std::optional<ColorRGBA> ButtonColor = std::nullopt);

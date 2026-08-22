@@ -31,7 +31,7 @@ bool CKeyBinder::OnInput(const IInput::CEvent &Event)
 	return true;
 }
 
-CKeyBinder::CKeyReaderResult CKeyBinder::DoKeyReader(CButtonContainer *pReaderButton, CButtonContainer *pClearButton, const CUIRect *pRect, const CBindSlot &CurrentBind, bool Activate)
+CKeyBinder::CKeyReaderResult CKeyBinder::DoKeyReader(CButtonContainer *pReaderButton, CButtonContainer *pClearButton, CUIElement *pLabelUiElement, const CUIRect *pRect, const CBindSlot &CurrentBind, bool Activate)
 {
 	CKeyReaderResult Result = {CurrentBind, false};
 
@@ -88,7 +88,7 @@ CKeyBinder::CKeyReaderResult CKeyBinder::DoKeyReader(CButtonContainer *pReaderBu
 	KeyReaderButton.Draw(Color, IGraphics::CORNER_L, 5.0f);
 	CUIRect Label;
 	KeyReaderButton.HMargin(1.0f, &Label);
-	Ui()->DoLabel(&Label, aBuf, Label.h * CUi::ms_FontmodHeight, TEXTALIGN_MC);
+	Ui()->DoLabelStreamed(*pLabelUiElement->Rect(0), &Label, aBuf, Label.h * CUi::ms_FontmodHeight, TEXTALIGN_MC);
 
 	return Result;
 }

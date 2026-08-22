@@ -965,6 +965,7 @@ void CLayerTiles::FillGameTiles(EGameTileOp Fill)
 					}
 				}
 			}
+			pTLayer->InvalidateTileRenderCache();
 
 			vpActions.push_back(std::make_shared<CEditorBrushDrawAction>(Map(), GameGroupIndex));
 			char aDisplay[256];

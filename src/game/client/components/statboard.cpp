@@ -13,7 +13,14 @@
 #include <game/client/components/motd.h>
 #include <game/client/components/statboard.h>
 #include <game/client/gameclient.h>
+#include <game/client/match_report_view.h>
 #include <game/localization.h>
+
+#include <algorithm>
+#include <cinttypes>
+#include <limits>
+#include <optional>
+#include <vector>
 
 CStatboard::CStatboard()
 {
@@ -193,8 +200,21 @@ void CStatboard::RenderGlobalStats(const CRenderContext &Context)
 
 	Graphics()->MapScreenToSize(StatboardWidth, StatboardHeight);
 
-	GameClient()->m_Menus.RenderBackdropRegion({x - 10.f, y - 10.f, StatboardContentWidth, StatboardContentHeight});
-	Graphics()->DrawRect(x - 10.f, y - 10.f, StatboardContentWidth, StatboardContentHeight, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 17.0f);
+	// While a server reports the running match, its numbers are the
+	// authoritative version of what the rest of this overlay estimates, so they
+	// get a line of their own above the table. This is where a live match
+	// belongs: in the game, not in a menu tab.
+	const CStoredMatch *pLive = GameClient()->LiveStats(Context.m_Session.Id());
+	const float LiveHeight = pLive == nullptr ? 0.0f : LiveMatchPanelHeight(*pLive);
+
+	GameClient()->m_Menus.RenderBackdropRegion({x - 10.f, y - 10.f - LiveHeight, StatboardContentWidth, StatboardContentHeight + LiveHeight});
+	Graphics()->DrawRect(x - 10.f, y - 10.f - LiveHeight, StatboardContentWidth, StatboardContentHeight + LiveHeight, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 17.0f);
+	if(pLive != nullptr)
+	{
+		RenderLiveMatchPanel(*pLive, x + 10.0f, y - LiveHeight, StatboardContentWidth - 20.0f);
+		// A rule between what the server reports and what this client counted
+		Graphics()->DrawRect(x, y - 16.0f, StatboardContentWidth - 20.0f, 1.0f, ColorRGBA(1.0f, 1.0f, 1.0f, 0.15f), IGraphics::CORNER_NONE, 0.0f);
+	}
 
 	int px = 325;
 
@@ -385,6 +405,96 @@ void CStatboard::RenderGlobalStats(const CRenderContext &Context)
 			TextRender()->Text(x - TextWidth + px, y + (LineHeight * 0.95f - FontSize) / 2.f, FontSize, aBuf, -1.0f);
 		}
 		y += LineHeight;
+	}
+}
+
+float CStatboard::LiveMatchPanelHeight(const CStoredMatch &Live) const
+{
+	const int Rows = std::min<int>(Live.m_Report.m_vParticipants.size(), MAX_LIVE_ROWS);
+	return 34.0f + 26.0f + Rows * 24.0f + 10.0f;
+}
+
+void CStatboard::RenderLiveMatchPanel(const CStoredMatch &Live, float X, float Y, float Width)
+{
+	const CMatchReport &Report = Live.m_Report;
+
+	char aDuration[64];
+	FormatMatchDuration(Report.m_DurationTicks, Report.m_TickRate, aDuration, sizeof(aDuration));
+	char aTitle[320];
+	str_format(aTitle, sizeof(aTitle), "%s  ·  %s  ·  %s", Report.m_MapName.c_str(), Report.m_ModeId.c_str(), aDuration);
+	TextRender()->Text(X, Y, 22.0f, aTitle, Width);
+	// Says where these numbers come from: the server, not this client's count.
+	TextRender()->TextColor(ColorRGBA(0.30f, 0.62f, 1.0f, 1.0f));
+	const char *pSource = Localize("Live from server");
+	TextRender()->Text(X + Width - TextRender()->TextWidth(18.0f, pSource, -1, -1.0f), Y + 2.0f, 18.0f, pSource, -1.0f);
+	TextRender()->TextColor(TextRender()->DefaultTextColor());
+	Y += 34.0f;
+
+	// Rank, name and clan on the left, the numbers right-aligned in fixed
+	// columns so that they line up down the panel.
+	const float NameWidth = Width - 60.0f - 4 * 110.0f;
+	const auto Row = [&](float RowY, const char *pRank, const char *pName, const char *const *ppValues, float FontSize) {
+		TextRender()->Text(X + 4.0f, RowY, FontSize, pRank, 56.0f);
+		TextRender()->Text(X + 60.0f, RowY, FontSize, pName, NameWidth);
+		for(int Column = 0; Column < 4; ++Column)
+		{
+			const float Right = X + 60.0f + NameWidth + (Column + 1) * 110.0f;
+			TextRender()->Text(Right - TextRender()->TextWidth(FontSize, ppValues[Column], -1, -1.0f), RowY, FontSize, ppValues[Column], -1.0f);
+		}
+	};
+
+	const char *apHeaders[4] = {Localize("Score"), Localize("Frags"), Localize("Deaths"), Localize("Accuracy")};
+	TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.6f));
+	Row(Y, Localize("#"), Localize("Name"), apHeaders, 18.0f);
+	TextRender()->TextColor(TextRender()->DefaultTextColor());
+	Y += 26.0f;
+
+	std::vector<const CMatchParticipant *> vpRanked;
+	vpRanked.reserve(Report.m_vParticipants.size());
+	for(const CMatchParticipant &Participant : Report.m_vParticipants)
+		vpRanked.push_back(&Participant);
+	std::stable_sort(vpRanked.begin(), vpRanked.end(), [&](const CMatchParticipant *pLeft, const CMatchParticipant *pRight) {
+		const CMatchStanding *pLeftStanding = ReportStanding(Report, EMatchSubjectKind::PARTICIPANT, pLeft->m_ParticipantId);
+		const CMatchStanding *pRightStanding = ReportStanding(Report, EMatchSubjectKind::PARTICIPANT, pRight->m_ParticipantId);
+		const int LeftRank = pLeftStanding == nullptr ? std::numeric_limits<int>::max() : pLeftStanding->m_Rank;
+		const int RightRank = pRightStanding == nullptr ? std::numeric_limits<int>::max() : pRightStanding->m_Rank;
+		if(LeftRank != RightRank)
+			return LeftRank < RightRank;
+		return ReportMetric(Report, EMatchSubjectKind::PARTICIPANT, pLeft->m_ParticipantId, "score").value_or(0) > ReportMetric(Report, EMatchSubjectKind::PARTICIPANT, pRight->m_ParticipantId, "score").value_or(0);
+	});
+
+	const int Rows = std::min<int>(vpRanked.size(), MAX_LIVE_ROWS);
+	for(int Index = 0; Index < Rows; ++Index)
+	{
+		const CMatchParticipant &Participant = *vpRanked[Index];
+		const bool Local = Live.m_LocalParticipantId.has_value() && *Live.m_LocalParticipantId == Participant.m_ParticipantId;
+		if(Local)
+			Graphics()->DrawRect(X - 4.0f, Y - 2.0f, Width + 8.0f, 24.0f, ColorRGBA(0.30f, 0.62f, 1.0f, 0.18f), IGraphics::CORNER_ALL, 3.0f);
+
+		char aRank[16] = "-";
+		if(const CMatchStanding *pStanding = ReportStanding(Report, EMatchSubjectKind::PARTICIPANT, Participant.m_ParticipantId))
+			str_format(aRank, sizeof(aRank), "%d", pStanding->m_Rank);
+		char aaValues[4][32];
+		const char *apValues[4];
+		for(int Column = 0; Column < 4; ++Column)
+			apValues[Column] = aaValues[Column];
+		static const char *s_apSuffixes[3] = {"score", "kills", "deaths"};
+		for(int Column = 0; Column < 3; ++Column)
+		{
+			const std::optional<int64_t> Value = ReportMetric(Report, EMatchSubjectKind::PARTICIPANT, Participant.m_ParticipantId, s_apSuffixes[Column]);
+			if(Value.has_value())
+				str_format(aaValues[Column], sizeof(aaValues[Column]), "%" PRId64, *Value);
+			else
+				str_copy(aaValues[Column], "-");
+		}
+		const CMatchCombatStats Combat = BuildMatchCombatStats(Report, Participant.m_ParticipantId);
+		FormatMatchAccuracy(Combat.m_Total.m_Hits, Combat.m_Total.m_Shots, aaValues[3], sizeof(aaValues[3]));
+
+		std::string Name = Participant.m_DisplayName;
+		if(!Participant.m_Clan.empty())
+			Name += "  " + Participant.m_Clan;
+		Row(Y, aRank, Name.c_str(), apValues, 20.0f);
+		Y += 24.0f;
 	}
 }
 

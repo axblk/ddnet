@@ -415,6 +415,7 @@ void CGameClient::OnConsoleInit()
 	Console()->Register("team", "i[team-id]", CFGFLAG_CLIENT, ConTeam, this, "Switch team");
 	Console()->Register("kill", "", CFGFLAG_CLIENT, ConKill, this, "Kill yourself to restart");
 	Console()->Register("ready_change", "", CFGFLAG_CLIENT, ConReadyChange7, this, "Change ready state (0.7 only)");
+	Console()->Register("dbg_match_stats_samples", "?i[count]", CFGFLAG_CLIENT, ConGenerateMatchStatsSamples, this, "Add generated matches to the local statistics for testing the statistics pages");
 
 	// register game commands to allow the client prediction to load settings from the map
 	Console()->Register("tune", "s[tuning] ?f[value]", CFGFLAG_GAME, ConTuneParam, this, "Tune variable to value");
@@ -4258,6 +4259,22 @@ void CGameClient::ConReadyChange7(IConsole::IResult *pResult, void *pUserData)
 	CGameClient *pClient = static_cast<CGameClient *>(pUserData);
 	if(pClient->Client()->IsOnline())
 		pClient->SendReadyChange7();
+}
+
+void CGameClient::ConGenerateMatchStatsSamples(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameClient *pClient = static_cast<CGameClient *>(pUserData);
+	const int Count = std::clamp(pResult->NumArguments() > 0 ? pResult->GetInteger(0) : 25, 1, 500);
+	std::string Error;
+	if(!GenerateSampleMatches(pClient->m_MatchJournal, Count, pClient->Client()->PlayerName(), &Error))
+	{
+		pClient->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-journal", Error.c_str());
+		return;
+	}
+	char aBuf[64];
+	str_format(aBuf, sizeof(aBuf), "Added %d generated matches", Count);
+	pClient->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-journal", aBuf);
+	pClient->m_Menus.InvalidateStats();
 }
 
 void CGameClient::ConchainLanguageUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)

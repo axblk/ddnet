@@ -463,3 +463,27 @@ TEST_F(MatchJournal, TenThousandMatchesStayWithinUiQueryBudget)
 	RecordProperty("query_latency_ms", std::chrono::duration_cast<std::chrono::milliseconds>(QueryDuration).count());
 	RecordProperty("database_size_bytes", Info.m_DatabaseSize);
 }
+
+TEST_F(MatchJournal, GeneratedSampleMatchesAreStoredAndQueryable)
+{
+	std::string Error;
+	ASSERT_TRUE(GenerateSampleMatches(m_Journal, 12, "Local", &Error)) << Error;
+
+	std::vector<CMatchHistoryEntry> vEntries;
+	ASSERT_TRUE(m_Journal.ListMatches(CMatchHistoryFilter(), vEntries, &Error)) << Error;
+	EXPECT_EQ(vEntries.size(), 12);
+	for(const CMatchHistoryEntry &Entry : vEntries)
+	{
+		EXPECT_TRUE(Entry.m_LocalOutcome.has_value());
+		EXPECT_TRUE(Entry.m_LocalScore.has_value());
+		CStoredMatch Loaded;
+		ASSERT_TRUE(m_Journal.LoadMatch(Entry.m_OriginId.c_str(), Entry.m_MatchId, Loaded, &Error)) << Error;
+		EXPECT_EQ(Loaded.m_LocalParticipantId, 0);
+		EXPECT_EQ(Loaded.m_Report.m_vParticipants.front().m_DisplayName, "Local");
+	}
+
+	CMatchProfile Profile;
+	ASSERT_TRUE(m_Journal.QueryProfile(CMatchProfileFilter(), Profile, &Error)) << Error;
+	EXPECT_GT(Profile.m_Matches, 0);
+	EXPECT_FALSE(Profile.m_vMetrics.empty());
+}

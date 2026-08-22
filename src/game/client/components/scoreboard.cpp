@@ -31,31 +31,6 @@
 // Horizontal spacing of the scoreboard contents, both to its edges and between columns
 static constexpr float MARGIN = 10.0f;
 
-namespace
-{
-	const CMatchStanding *ReportStanding(const CMatchReport &Report, EMatchSubjectKind SubjectKind, int SubjectId)
-	{
-		for(const CMatchStanding &Standing : Report.m_vStandings)
-		{
-			if(Standing.m_SubjectKind == SubjectKind && Standing.m_SubjectId == SubjectId)
-				return &Standing;
-		}
-		return nullptr;
-	}
-
-	std::optional<int64_t> ReportMetric(const CMatchReport &Report, EMatchSubjectKind SubjectKind, int SubjectId, const char *pSuffix)
-	{
-		for(const CMatchMetric &Metric : Report.m_vMetrics)
-		{
-			const size_t Slash = Metric.m_MetricId.rfind('/');
-			if(Metric.m_SubjectKind == SubjectKind && Metric.m_SubjectId == SubjectId && Slash != std::string::npos && Metric.m_MetricId.compare(Slash + 1, std::string::npos, pSuffix) == 0)
-				return Metric.m_Value;
-		}
-		return std::nullopt;
-	}
-
-}
-
 void CScoreboard::CScoreboardPopupContext::Bind(CScoreboard *pScoreboard, const CRenderContext &Context, int ClientId, const char *pName, const char *pClan, bool IsLocal, bool IsSpectating)
 {
 	m_pScoreboard = pScoreboard;
@@ -1160,7 +1135,7 @@ bool CScoreboard::RenderMatchReport(const CStoredMatch &Stored, CUIRect Screen)
 				}
 				else if(!Summary.empty())
 					Summary += ", ";
-				Summary += std::string(MatchMetricDisplayName(Metric.m_MetricId, Report.m_ModeSchemaVersion)) + ": " + std::to_string(Metric.m_Value);
+				Summary += MatchMetricDisplayName(Metric.m_MetricId, Report.m_ModeSchemaVersion) + ": " + std::to_string(Metric.m_Value);
 				if(Summary.size() > 220)
 					break;
 			}

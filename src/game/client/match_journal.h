@@ -137,4 +137,17 @@ public:
 	bool Info(CMatchJournalInfo &Info, std::string *pError) const;
 };
 
+/**
+ * Fills the journal with matches that look like played ones, so that the
+ * statistics pages can be looked at without playing a season first.
+ *
+ * @param Journal Journal that takes the matches, must be open.
+ * @param Count Number of matches to add, spread over the last weeks.
+ * @param pLocalName Name of the local participant in the generated matches.
+ * @param pError Set to the reason when the function returns false.
+ *
+ * @return true when all matches were stored.
+ */
+bool GenerateSampleMatches(CMatchJournal &Journal, int Count, const char *pLocalName, std::string *pError);
+
 #endif // GAME_CLIENT_MATCH_JOURNAL_H

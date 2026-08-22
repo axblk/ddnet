@@ -243,9 +243,13 @@ TEST(MatchReportView, CategorizesKnownAndUnknownMetrics)
 	EXPECT_EQ(MatchMetricCategory("vanilla.ctf@ddnet.org/flag_captures", 1), EMatchMetricCategory::OBJECTIVES);
 	EXPECT_EQ(MatchMetricCategory("zcatch.laser@ddnet.org/catches", 1), EMatchMetricCategory::OBJECTIVES);
 	EXPECT_EQ(MatchMetricCategory("ddnet.race@ddnet.org/personal_best_ticks", 1), EMatchMetricCategory::OVERVIEW);
-	EXPECT_EQ(MatchMetricCategory("custom@server.example/kills", 1), EMatchMetricCategory::OTHER);
+	// A mode this build has never heard of uses the same metric vocabulary, so
+	// its metrics are categorised and named like everyone else's.
+	EXPECT_EQ(MatchMetricCategory("custom@server.example/kills", 1), EMatchMetricCategory::COMBAT);
+	EXPECT_EQ(MatchMetricDisplayName("custom@server.example/kills", 1), "Kills");
 	EXPECT_EQ(MatchMetricCategory("vanilla.dm@ddnet.org/kills", 2), EMatchMetricCategory::OTHER);
-	EXPECT_STREQ(MatchMetricDisplayName("custom@server.example/kills", 1), "custom@server.example/kills");
+	// An unknown metric still gets a readable label instead of its raw id
+	EXPECT_EQ(MatchMetricDisplayName("custom@server.example/wall_runs", 1), "Wall runs");
 	EXPECT_EQ(MatchMetricSuffix("custom@server.example/frozen_teammates"), "frozen_teammates");
 	char aTime[64];
 	FormatMatchDuration(MatchReportLimits::MAX_DURATION_TICKS, 1, aTime, sizeof(aTime));
@@ -255,7 +259,12 @@ TEST(MatchReportView, CategorizesKnownAndUnknownMetrics)
 	CMatchMetric Rank = {EMatchSubjectKind::PARTICIPANT, 0, "ddnet.race@ddnet.org/map_rank", 7};
 	FormatMatchMetricValue(Rank, 1, 50, aTime, sizeof(aTime));
 	EXPECT_STREQ(aTime, "#7");
-	CMatchMetric Unknown = {EMatchSubjectKind::PARTICIPANT, 0, "custom@server.example/current_run_ticks", 500};
+	// A tick metric formats as a duration whatever mode reported it
+	CMatchMetric ModRun = {EMatchSubjectKind::PARTICIPANT, 0, "custom@server.example/current_run_ticks", 500};
+	FormatMatchMetricValue(ModRun, 1, 50, aTime, sizeof(aTime));
+	EXPECT_STREQ(aTime, "00:10");
+	// A suffix nobody knows stays a plain number
+	CMatchMetric Unknown = {EMatchSubjectKind::PARTICIPANT, 0, "custom@server.example/wall_runs", 500};
 	FormatMatchMetricValue(Unknown, 1, 50, aTime, sizeof(aTime));
 	EXPECT_STREQ(aTime, "500");
 }
@@ -283,11 +292,11 @@ TEST(MatchReportView, BuildsWeaponCombatStatsAndAccuracy)
 	EXPECT_EQ(Stats.m_Total.m_Hits, 3);
 	EXPECT_EQ(Stats.m_Total.m_DamageDone, 30);
 	EXPECT_EQ(Stats.m_Total.m_DamageTaken, 12);
-	EXPECT_EQ(Stats.m_aWeapons[WEAPON_GUN].m_Shots, 4);
-	EXPECT_EQ(Stats.m_aWeapons[WEAPON_GUN].m_Hits, 3);
-	EXPECT_EQ(Stats.m_aWeapons[WEAPON_GUN].m_DamageDone, 30);
-	EXPECT_EQ(Stats.m_aWeapons[WEAPON_GUN].m_DamageTaken, 12);
-	EXPECT_FALSE(Stats.m_aWeapons[WEAPON_HAMMER].HasData());
+	EXPECT_EQ(Stats.m_vWeapons[WEAPON_GUN].m_Shots, 4);
+	EXPECT_EQ(Stats.m_vWeapons[WEAPON_GUN].m_Hits, 3);
+	EXPECT_EQ(Stats.m_vWeapons[WEAPON_GUN].m_DamageDone, 30);
+	EXPECT_EQ(Stats.m_vWeapons[WEAPON_GUN].m_DamageTaken, 12);
+	EXPECT_FALSE(Stats.m_vWeapons[WEAPON_HAMMER].HasData());
 
 	char aAccuracy[32];
 	FormatMatchAccuracy(Stats.m_Total.m_Hits, Stats.m_Total.m_Shots, aAccuracy, sizeof(aAccuracy));
@@ -303,6 +312,24 @@ TEST(MatchReportView, BuildsWeaponCombatStatsAndAccuracy)
 		{"vanilla.dm@ddnet.org", 1, "vanilla.dm@ddnet.org/weapon_4_hits", 6},
 	};
 	const CMatchCombatStats ProfileStats = BuildMatchCombatStats(Profile);
-	EXPECT_EQ(ProfileStats.m_aWeapons[WEAPON_LASER].m_Shots, 8);
-	EXPECT_EQ(ProfileStats.m_aWeapons[WEAPON_LASER].m_Hits, 6);
+	EXPECT_EQ(ProfileStats.m_vWeapons[WEAPON_LASER].m_Shots, 8);
+	EXPECT_EQ(ProfileStats.m_vWeapons[WEAPON_LASER].m_Hits, 6);
+}
+
+TEST(MatchReportView, ModWeaponsBeyondTheKnownOnes)
+{
+	CMatchReport Report;
+	Report.m_ModeSchemaVersion = 1;
+	Report.m_vMetrics = {
+		{EMatchSubjectKind::PARTICIPANT, 0, "custom@server.example/weapon_11_shots", 20},
+		{EMatchSubjectKind::PARTICIPANT, 0, "custom@server.example/weapon_11_hits", 9},
+		{EMatchSubjectKind::PARTICIPANT, 0, "custom@server.example/weapon_99_shots", 5},
+	};
+	const CMatchCombatStats Stats = BuildMatchCombatStats(Report, 0);
+	ASSERT_GT(Stats.m_vWeapons.size(), 11u);
+	EXPECT_EQ(Stats.m_vWeapons[11].m_Shots, 20);
+	EXPECT_EQ(Stats.m_vWeapons[11].m_Hits, 9);
+	// Beyond the limit the metric is ignored instead of allocating a row per index
+	EXPECT_LE(Stats.m_vWeapons.size(), static_cast<size_t>(MAX_MATCH_WEAPONS));
+	EXPECT_EQ(MatchWeaponDisplayName(11), "Weapon 11");
 }

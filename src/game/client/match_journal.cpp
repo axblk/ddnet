@@ -3,8 +3,11 @@
 #include "match_report_assembler.h"
 
 #include <base/str.h>
+#include <base/time.h>
 
 #include <engine/storage.h>
+
+#include <generated/protocol.h>
 
 #include <sqlite3.h>
 
@@ -650,4 +653,167 @@ bool PersistLiveStatsSnapshotOnDisconnect(CMatchJournal &Journal, ESessionSource
 	const bool ReplaceObserved = ShouldReplaceObservedMatch(ObservedMatch, *Live);
 	const CMatchJournal::EInsertResult Result = ReplaceObserved ? Journal.InsertReplacingObserved(*Live, ObservedMatch->m_OriginId.c_str(), ObservedMatch->m_Report.m_MatchId, pError) : Journal.Insert(*Live, pError);
 	return Result != CMatchJournal::EInsertResult::ERROR;
+}
+
+namespace
+{
+	// Deterministic so that two runs produce the same journal and a reported
+	// oddity can be looked at again.
+	class CSampleRandom
+	{
+		uint64_t m_State = 0x2545f4914f6cdd1dULL;
+
+	public:
+		int Next(int Min, int Max)
+		{
+			m_State = m_State * 6364136223846793005ULL + 1442695040888963407ULL;
+			return Min + static_cast<int>((m_State >> 33) % static_cast<uint64_t>(Max - Min + 1));
+		}
+	};
+
+	class CSampleMode
+	{
+	public:
+		const char *m_pModeId;
+		const char *m_pMapName;
+		bool m_Teams;
+	};
+}
+
+bool GenerateSampleMatches(CMatchJournal &Journal, int Count, const char *pLocalName, std::string *pError)
+{
+	if(!Journal.IsOpen())
+	{
+		if(pError != nullptr)
+			*pError = "match journal is unavailable";
+		return false;
+	}
+
+	static const CSampleMode s_aModes[] = {
+		{"vanilla.ctf@ddnet.org", "ctf1", true},
+		{"vanilla.dm@ddnet.org", "dm1", false},
+		{"vanilla.tdm@ddnet.org", "dm2", true},
+		{"insta.ictf@ddnet.org", "ctf5", true},
+		{"insta.idm@ddnet.org", "dm6", false},
+		{"vanilla.1on1@ddnet.org", "dm1", false},
+	};
+	static const char *const s_apNames[] = {"nameless tee", "Chillerdragon", "deen", "Learath2", "Ryozuki", "heinrich5991", "Jupeyy", "fokkonaut", "Zwelf", "trml", "Patiga", "murpi"};
+	static const char *const s_apClans[] = {"", "DDNet", "Chillerbot", "", "iMebi", "", "GER", ""};
+	static const char *const s_apOrigins[] = {"ger10.ddnet.org:8303", "nl2.ddnet.org:8305", "chi2.ddnet.org:8303"};
+
+	CSampleRandom Random;
+	const int64_t Now = time_timestamp();
+	for(int Match = 0; Match < Count; ++Match)
+	{
+		const CSampleMode &Mode = s_aModes[Random.Next(0, std::size(s_aModes) - 1)];
+		const int NumParticipants = Mode.m_Teams ? Random.Next(6, 12) : Random.Next(2, 8);
+		const int TickRate = 50;
+		const int64_t DurationTicks = static_cast<int64_t>(Random.Next(240, 900)) * TickRate;
+		const int64_t EndTimeUtc = Now - static_cast<int64_t>(Match) * Random.Next(2, 30) * 3600;
+
+		CMatchReport Report;
+		Report.m_MatchId = RandomUuid();
+		Report.m_ModeId = Mode.m_pModeId;
+		Report.m_MapName = Mode.m_pMapName;
+		Report.m_StartTimeUtc = EndTimeUtc - DurationTicks / TickRate;
+		Report.m_EndTimeUtc = EndTimeUtc;
+		Report.m_DurationTicks = DurationTicks;
+		Report.m_TickRate = TickRate;
+		Report.m_Ranked = true;
+		CMatchReportBuilder Builder(std::move(Report));
+
+		const auto MetricId = [&Mode](const char *pSuffix) { return std::string(Mode.m_pModeId) + "/" + pSuffix; };
+		if(Mode.m_Teams)
+		{
+			Builder.AddTeam({0, "Red"});
+			Builder.AddTeam({1, "Blue"});
+		}
+
+		// The local player is participant 0 and keeps a plausible spread of
+		// results so that the profile page shows wins as well as losses.
+		std::vector<int> vScores(NumParticipants);
+		for(int Participant = 0; Participant < NumParticipants; ++Participant)
+		{
+			CMatchParticipant Entry;
+			Entry.m_ParticipantId = Participant;
+			Entry.m_DisplayName = Participant == 0 ? pLocalName : s_apNames[(Participant + Match) % std::size(s_apNames)];
+			Entry.m_Clan = s_apClans[(Participant + Match) % std::size(s_apClans)];
+			if(Mode.m_Teams)
+				Entry.m_TeamId = Participant % 2;
+			if(Participant != 0 && Random.Next(0, 5) == 0)
+				Entry.m_LeftTick = Random.Next(1, static_cast<int>(DurationTicks));
+			Builder.AddParticipant(Entry);
+			vScores[Participant] = Random.Next(0, 40);
+		}
+
+		std::vector<int> vRanking(NumParticipants);
+		for(int Participant = 0; Participant < NumParticipants; ++Participant)
+			vRanking[Participant] = Participant;
+		std::stable_sort(vRanking.begin(), vRanking.end(), [&vScores](int Left, int Right) { return vScores[Left] > vScores[Right]; });
+
+		int aTeamScores[2] = {0, 0};
+		for(int Rank = 0; Rank < NumParticipants; ++Rank)
+		{
+			const int Participant = vRanking[Rank];
+			const int Score = vScores[Participant];
+			if(Mode.m_Teams)
+				aTeamScores[Participant % 2] += Score;
+			const EMatchOutcome Outcome = Mode.m_Teams ? EMatchOutcome::FINISHED : Rank == 0 ? EMatchOutcome::WIN :
+													   EMatchOutcome::LOSS;
+			Builder.AddStanding({EMatchSubjectKind::PARTICIPANT, Participant, Rank + 1, Outcome});
+			const int Deaths = Random.Next(0, 30);
+			Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("score"), Score, EMatchMetricAggregation::SUM});
+			Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("kills"), Score, EMatchMetricAggregation::SUM});
+			Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("deaths"), Deaths, EMatchMetricAggregation::SUM});
+			Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("suicides"), Random.Next(0, 4), EMatchMetricAggregation::SUM});
+			Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("best_spree"), Random.Next(0, 12), EMatchMetricAggregation::MAXIMUM});
+			for(int Weapon = WEAPON_HAMMER; Weapon <= WEAPON_LASER; ++Weapon)
+			{
+				const int Shots = Random.Next(0, 160);
+				if(Shots == 0)
+					continue;
+				const int Hits = Shots * Random.Next(10, 70) / 100;
+				char aSuffix[32];
+				str_format(aSuffix, sizeof(aSuffix), "weapon_%d_shots", Weapon);
+				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId(aSuffix), Shots, EMatchMetricAggregation::SUM});
+				str_format(aSuffix, sizeof(aSuffix), "weapon_%d_hits", Weapon);
+				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId(aSuffix), Hits, EMatchMetricAggregation::SUM});
+				str_format(aSuffix, sizeof(aSuffix), "weapon_%d_damage_done", Weapon);
+				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId(aSuffix), Hits * Random.Next(1, 6), EMatchMetricAggregation::SUM});
+				str_format(aSuffix, sizeof(aSuffix), "weapon_%d_damage_taken", Weapon);
+				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId(aSuffix), Random.Next(0, 90), EMatchMetricAggregation::SUM});
+			}
+			if(str_find(Mode.m_pModeId, "ctf") != nullptr)
+			{
+				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("flag_grabs"), Random.Next(0, 9), EMatchMetricAggregation::SUM});
+				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("flag_returns"), Random.Next(0, 6), EMatchMetricAggregation::SUM});
+				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("flag_captures"), Random.Next(0, 4), EMatchMetricAggregation::SUM});
+			}
+		}
+
+		if(Mode.m_Teams)
+		{
+			for(int Team = 0; Team < 2; ++Team)
+			{
+				const bool Won = aTeamScores[Team] > aTeamScores[1 - Team];
+				const bool Drawn = aTeamScores[Team] == aTeamScores[1 - Team];
+				Builder.AddStanding({EMatchSubjectKind::TEAM, Team, Won || Drawn ? 1 : 2, Drawn ? EMatchOutcome::DRAW : Won ? EMatchOutcome::WIN :
+																	      EMatchOutcome::LOSS});
+				Builder.AddMetric({EMatchSubjectKind::TEAM, Team, MetricId("score"), aTeamScores[Team], EMatchMetricAggregation::SUM});
+			}
+		}
+		Builder.AddMetric({EMatchSubjectKind::MATCH, std::nullopt, MetricId("playtime_ticks"), DurationTicks, EMatchMetricAggregation::SUM});
+
+		CStoredMatch Stored;
+		if(!Builder.Finalize(pError, &Stored.m_RawReport))
+			return false;
+		Stored.m_Report = Builder.Report();
+		Stored.m_OriginId = s_apOrigins[Match % std::size(s_apOrigins)];
+		Stored.m_Source = Match % 3 == 0 ? EMatchReportSource::CLIENT_OBSERVED : EMatchReportSource::SERVER_REPORT;
+		Stored.m_Completeness = Match % 7 == 0 ? EMatchCompleteness::PARTIAL_SINCE_JOIN : EMatchCompleteness::COMPLETE;
+		Stored.m_LocalParticipantId = 0;
+		if(Journal.Insert(Stored, pError) == CMatchJournal::EInsertResult::ERROR)
+			return false;
+	}
+	return true;
 }

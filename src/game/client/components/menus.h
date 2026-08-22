@@ -473,10 +473,8 @@ protected:
 	// found in menus_stats.cpp
 	enum class EStatsTab
 	{
-		LIVE,
-		HISTORY,
+		MATCHES,
 		PROFILE,
-		DETAILS,
 	};
 	enum class EStatsQualityFilter
 	{
@@ -485,24 +483,61 @@ protected:
 		SERVER,
 	};
 	bool m_StatsInitialized = false;
-	EStatsTab m_StatsTab = EStatsTab::HISTORY;
+	EStatsTab m_StatsTab = EStatsTab::MATCHES;
+	// The selected match takes over the whole page instead of sitting in a tab
+	// of its own, so that a report is read the way it was opened.
+	bool m_StatsShowMatch = false;
 	EStatsQualityFilter m_StatsQualityFilter = EStatsQualityFilter::ALL;
-	int m_StatsPeriodDays = 30;
+	// The profile shows three periods side by side instead of one at a time,
+	// so all three are queried and kept.
+	enum class EStatsPeriod
+	{
+		WEEK,
+		MONTH,
+		ALL_TIME,
+		COUNT,
+	};
+	// Whether profile numbers are shown as they are, or divided by the number
+	// of matches or the time played.
+	enum class EStatsScale
+	{
+		TOTAL,
+		PER_MATCH,
+		PER_MINUTE,
+	};
+	EStatsScale m_StatsScale = EStatsScale::TOTAL;
 	int m_StatsSelectedIndex = -1;
 	CLineInputBuffered<128> m_StatsHistorySearchInput;
 	CLineInputBuffered<128> m_StatsProfileModeInput;
 	std::vector<CMatchHistoryEntry> m_vStatsHistory;
 	std::optional<CStoredMatch> m_StatsSelectedMatch;
-	CMatchProfile m_StatsProfile;
+	CMatchProfile m_aStatsProfiles[(int)EStatsPeriod::COUNT];
 	CMatchJournalInfo m_StatsInfo;
 	std::string m_StatsError;
 	void RefreshStats();
 	void LoadSelectedStatsMatch();
 	void RenderStats(CUIRect MainView);
+	void RenderStatsMatchList(CUIRect View);
+	void RenderStatsMatchSummary(CUIRect View);
+	void RenderStatsProfile(CUIRect View);
+	void StatsPeriodHeader(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pLabel);
+	void StatsPeriodRow(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pLabel, const char *const *ppValues);
+	void StatsHeading(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pText);
+	void StatsTiles(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *const *ppLabels, const char *const *ppValues, int Count);
+	void StatsMetricLine(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pLabel, const char *pValue);
+	void StatsWeaponMatrix(class CScrollRegion *pScrollRegion, CUIRect *pContent, const class CMatchCombatStats &Stats);
 	void ExportSelectedStats(bool Csv);
 	void PopupConfirmDeleteStatsMatch();
 	void PopupConfirmDeleteStatsPeriod();
 
+public:
+	/**
+	 * Makes the statistics page reload from the journal on its next frame,
+	 * for when something outside the page changed what is stored.
+	 */
+	void InvalidateStats() { m_StatsInitialized = false; }
+
+private:
 	// found in menus_demo.cpp
 	vec2 m_DemoControlsPositionOffset = vec2(0.0f, 0.0f);
 	bool m_PausedBeforeSeeking;

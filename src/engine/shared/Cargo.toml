@@ -11,7 +11,7 @@ crate-type = ["rlib", "staticlib"]
 path = "lib.rs"
 
 [features]
-quic = ["dep:quinn-proto", "dep:rcgen", "dep:ring", "dep:rustls", "dep:rustls-pemfile", "dep:time", "dep:webpki-roots", "dep:wtransport-proto"]
+quic = ["dep:bytes", "dep:quinn-proto", "dep:rcgen", "dep:ring", "dep:rustls", "dep:rustls-pemfile", "dep:time", "dep:webpki-roots", "dep:wtransport-proto"]
 quic-tests = ["quic"]
 
 [dependencies]
@@ -19,6 +19,8 @@ ddnet-base = { path = "../../base" }
 ddnet-engine = { path = ".." }
 
 cxx = { workspace = true }
+# The version quinn-proto uses, so the buffers handed to it are the same type.
+bytes = { version = "=1.12.1", optional = true }
 quinn-proto = { version = "=0.11.16", default-features = false, features = ["rustls-ring"], optional = true }
 rcgen = { version = "=0.14.7", default-features = false, features = ["ring"], optional = true }
 ring = { version = "=0.17.14", optional = true }

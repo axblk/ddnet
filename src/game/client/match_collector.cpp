@@ -275,10 +275,10 @@ bool CSessionStatsState::FinalizeObservedMatch(const CObservedMatchMetadata &Met
 	// uses. Exceeding the report limits would only show up when the finished
 	// report is rejected at the end of the match, when the counts it holds are
 	// already gone, so the bounds that rule that out are a build error instead.
-	constexpr int MAX_OBSERVED_METRICS_PER_PARTICIPANT = 7 + 3 * NUM_WEAPONS;
+	constexpr int MaxObservedMetricsPerParticipant = 7 + 3 * NUM_WEAPONS;
 	static_assert(MAX_CLIENTS <= MatchReportLimits::MAX_PARTICIPANTS);
-	static_assert(MAX_OBSERVED_METRICS_PER_PARTICIPANT <= MatchReportLimits::MAX_METRICS_PER_PARTICIPANT);
-	static_assert(MAX_CLIENTS * MAX_OBSERVED_METRICS_PER_PARTICIPANT + 2 <= MatchReportLimits::MAX_METRICS);
+	static_assert(MaxObservedMetricsPerParticipant <= MatchReportLimits::MAX_METRICS_PER_PARTICIPANT);
+	static_assert(MAX_CLIENTS * MaxObservedMetricsPerParticipant + 2 <= MatchReportLimits::MAX_METRICS);
 	const std::string MetricPrefix = Metadata.m_ModeId + "/";
 	bool HasLocalParticipant = false;
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)

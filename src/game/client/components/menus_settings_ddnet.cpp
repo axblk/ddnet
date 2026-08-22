@@ -247,7 +247,7 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 	DoLabel(Label, Localize("Map"), 14.0f, TEXTALIGN_ML);
 
 	static CLineInput s_BackgroundEntitiesInput(g_Config.m_ClBackgroundEntities, sizeof(g_Config.m_ClBackgroundEntities));
-	Ui()->DoEditBox(&s_BackgroundEntitiesInput, &EditBox, 14.0f, IGraphics::CORNER_ALL, {}, &m_aSettingsDdnetEditBoxUiElements[0]);
+	Ui()->DoEditBox(&s_BackgroundEntitiesInput, &EditBox, 14.0f, IGraphics::CORNER_ALL, {}, m_aSettingsDdnetEditBoxUiElements.data());
 
 	static CButtonContainer s_BackgroundEntitiesMapPicker, s_BackgroundEntitiesReload;
 

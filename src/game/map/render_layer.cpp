@@ -287,8 +287,24 @@ void CRenderLayerGroup::Render(const CRenderLayerParams &Params)
 {
 	int ParallaxZoom = std::clamp(std::max(m_pGroup->m_ParallaxX, m_pGroup->m_ParallaxY), 0, 100);
 	CScreenRect ScreenRect = Graphics()->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y, m_pGroup->m_ParallaxX, m_pGroup->m_ParallaxY, (float)ParallaxZoom,
-		m_pGroup->m_OffsetX, m_pGroup->m_OffsetY, Graphics()->ScreenAspect(), Params.m_Zoom);
+		m_pGroup->m_OffsetX, m_pGroup->m_OffsetY, Graphics()->ScreenAspect(), BackgroundZoom(Params.m_Zoom));
 	Graphics()->MapScreen(ScreenRect);
+}
+
+float CRenderLayerGroup::BackgroundZoom(float Zoom) const
+{
+	// A map was drawn for a view that ended at 16:9, so a wider one runs past the
+	// sides its background covers. Backgrounds that were not made for it are
+	// scaled up until they do cover, which shows the same width the map was drawn
+	// for and less of its height. Only groups behind the game are moved; anything
+	// at the game's own parallax has to stay where the game is.
+	const float MaxAspect = g_Config.m_ClViewMaxAspect / 100.0f;
+	const float Aspect = Graphics()->ScreenAspect();
+	if(!g_Config.m_ClMapBackgroundCover || MaxAspect <= 0.0f || Aspect <= MaxAspect)
+		return Zoom;
+	if(m_pGroup->m_ParallaxX >= 100 || m_pGroup->m_ParallaxY >= 100)
+		return Zoom;
+	return Zoom * MaxAspect / Aspect;
 }
 
 /**************

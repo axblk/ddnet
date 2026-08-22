@@ -1206,14 +1206,6 @@ bool CGraphics_Threaded::EndRenderPass()
 	return true;
 }
 
-bool CGraphics_Threaded::FlushRenderPass()
-{
-	if(m_Drawing != EDrawing::NONE || !m_RenderPassActive)
-		return false;
-	CCommandBuffer::SCommand_FlushRenderPass Cmd;
-	return AddCmd(Cmd);
-}
-
 bool CGraphics_Threaded::DrawFullscreenTexture(CTextureHandle Source, CCommandBuffer::CPipelineHandle Pipeline, SGraphicsColor Color, uint8_t RequiredUsage, bool UseCurrentClip)
 {
 	if(m_Drawing != EDrawing::NONE || !m_RenderPassActive || !m_TextureHandles.IsAllocated(Source) || Source == m_RenderPassTarget || static_cast<size_t>(Source.Id()) >= m_vTextureInfos.size())
@@ -1895,8 +1887,8 @@ void CGraphics_Threaded::RenderTileLayer(CBufferContainerHandle BufferContainer,
 		return;
 	dbg_assert(m_BufferContainerHandles.IsAllocated(BufferContainer), "Cannot render with stale buffer container handle");
 
-	// ponytail: one command per visible span; add a generic multi-draw range only
-	// if real maps exceed the fixed command arena.
+	// One command per visible span. A generic multi-draw range is only worth
+	// adding if real maps turn out to exceed the fixed command arena.
 	for(size_t i = 0; i < NumIndicesOffset; ++i)
 	{
 		if(pIndicedVertexDrawNum[i] == 0)
@@ -2702,8 +2694,9 @@ void *CGraphics_Threaded::AllocCommandBufferData(size_t AllocSize)
 	void *pData = pCommandBuffer->AllocData(AllocSize);
 	if(pData == nullptr)
 	{
-		// ponytail: a frame larger than the fixed arena is discarded; add chunked
-		// frame storage only if real maps demonstrate that this bound is too small.
+		// A frame larger than the fixed arena is discarded. Chunked frame
+		// storage is only worth adding if real maps show this bound is too
+		// small.
 		DropCurrentFrame();
 		pCommandBuffer = GetCommandBuffer(CCommandBuffer::CMD_DRAW);
 

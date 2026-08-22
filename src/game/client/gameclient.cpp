@@ -711,7 +711,7 @@ void CGameClient::OnReset()
 
 	m_LastShowDistanceZoom = 0.0f;
 	m_LastZoom = 0.0f;
-	m_LastScreenAspect = 0.0f;
+	m_LastShowDistance = vec2(0.0f, 0.0f);
 	m_LastDeadzone = 0.0f;
 	m_LastFollowFactor = 0.0f;
 	m_LastDummyConnected = false;
@@ -825,8 +825,19 @@ void CGameClient::OnRender()
 	{
 		if(pComponent == &m_Scoreboard)
 			m_Menus.FinishMenuBackdrop();
+		// After the backdrop, so that opening the scoreboard does not smear the
+		// cursor along with the scene behind it, and after the boards that blur
+		// it, because a crosshair that is aimed through has to be on top of what
+		// it is aimed through. The menu and the console still cover it: they
+		// take the mouse over and bring their own pointer.
+		if(pComponent == &m_Menus)
+			m_Hud.RenderCursor();
 		pComponent->OnRender();
 	}
+
+	// Nothing captured what was drawn over the scene, so it goes to the screen
+	// as it is.
+	m_Menus.PresentMenuBackdrop();
 
 	// clear all events/input for this frame
 	Input()->Clear();
@@ -1611,6 +1622,9 @@ static CGameInfo GetGameInfo(const CNetObj_GameInfoEx *pInfoEx, int InfoExSize, 
 	}
 
 	CGameInfo Info;
+	// Anything that sends the extended game info also knows Cl_ShowDistance;
+	// both are DDNet extensions and no server has one without the other.
+	Info.m_ClipsToShowDistance = Version >= 0;
 	Info.m_FlagStartsRace = FastCap;
 	Info.m_TimeScore = Race;
 	Info.m_UnlimitedAmmo = Race;
@@ -2406,13 +2420,16 @@ void CGameClient::OnNewSnapshot(bool DummySwapped)
 	}
 
 	// send show distance
-	if(ShowDistanceZoom != m_LastShowDistanceZoom || Graphics()->ScreenAspect() != m_LastScreenAspect)
+	// The size itself decides, not what went into it: the zoom, the screen and
+	// the setting for wide screens all move it, and the server only cares that it
+	// clips to what is on screen.
+	float ShowDistanceX, ShowDistanceY;
+	Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), ShowDistanceZoom, &ShowDistanceX, &ShowDistanceY);
+	if(ShowDistanceX != m_LastShowDistance.x || ShowDistanceY != m_LastShowDistance.y)
 	{
 		CNetMsg_Cl_ShowDistance Msg;
-		float x, y;
-		Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), ShowDistanceZoom, &x, &y);
-		Msg.m_X = x;
-		Msg.m_Y = y;
+		Msg.m_X = ShowDistanceX;
+		Msg.m_Y = ShowDistanceY;
 		Client()->ChecksumData()->m_Zoom = ShowDistanceZoom;
 		CMsgPacker Packer(&Msg);
 		Msg.Pack(&Packer);
@@ -2438,8 +2455,8 @@ void CGameClient::OnNewSnapshot(bool DummySwapped)
 	}
 
 	m_LastShowDistanceZoom = ShowDistanceZoom;
+	m_LastShowDistance = vec2(ShowDistanceX, ShowDistanceY);
 	m_LastZoom = Zoom;
-	m_LastScreenAspect = Graphics()->ScreenAspect();
 	m_LastDeadzone = Deadzone;
 	m_LastFollowFactor = FollowFactor;
 	m_LastDummyConnected = Client()->DummyConnected();

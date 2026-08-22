@@ -221,6 +221,32 @@ public:
 	vec2 m_BottomRight;
 };
 
+/**
+ * The size of the world the view shows, in world units.
+ *
+ * @param Aspect Width over height of the screen.
+ * @param Zoom Zoom factor, 1.0f is the default view.
+ * @param MaxAspect Aspect above which the view stops trading height for width
+ * and only grows sideways, 0 to always trade.
+ * @param pWidth Receives the width of the view in world units.
+ * @param pHeight Receives the height of the view in world units.
+ */
+void CalcViewSize(float Aspect, float Zoom, float MaxAspect, float *pWidth, float *pHeight);
+
+/**
+ * How far the view reaches past the part of the world that is guaranteed to be
+ * filled, on the left and on the right.
+ *
+ * @param ViewWidth Width of the view in world units.
+ * @param ViewCenterX World x the view is centred on.
+ * @param FilledCenterX World x the filled part is centred on.
+ * @param FilledHalfWidth How far the filled part reaches from its centre.
+ *
+ * @return The uncovered width on the left in x and on the right in y, both zero
+ * while the view stays inside the filled part.
+ */
+vec2 CalcUncoveredViewSides(float ViewWidth, float ViewCenterX, float FilledCenterX, float FilledHalfWidth);
+
 class IGraphics : public IInterface
 {
 	MACRO_INTERFACE("graphics")
@@ -314,8 +340,6 @@ public:
 	// Beginning another pass ends the current pass first.
 	virtual bool BeginRenderPass(const CRenderPassDesc &Desc) = 0;
 	virtual bool EndRenderPass() = 0;
-	// Orders all draws recorded so far before later draws in the same pass.
-	virtual bool FlushRenderPass() = 0;
 	// Draws Source over the active render pass using the existing transient
 	// primitive path. By default the complete target is covered; optionally the
 	// current pixel clip limits the result. This also provides backend-neutral scaling.

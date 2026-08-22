@@ -784,7 +784,9 @@ public:
 	struct SSelectionPopupContext : public SPopupMenuId
 	{
 		CUi *m_pUI; // set by CUi when popup is shown
-		CScrollRegion *m_pScrollRegion;
+		// The popup scrolls when it does not fit on the screen, so whoever shows
+		// one has to give it a scroll region that lives as long as the popup.
+		CScrollRegion *m_pScrollRegion = nullptr;
 		SPopupMenuProperties m_Props;
 		char m_aMessage[256];
 		std::vector<std::string> m_vEntries;

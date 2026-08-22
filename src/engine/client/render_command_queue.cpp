@@ -42,7 +42,8 @@ bool CRenderCommandQueue::WaitDequeue(SEntry &Entry)
 	if(m_vQueue.empty())
 		return false;
 	Entry = std::move(m_vQueue.front());
-	// ponytail: This queue has exactly seven entries. Use a deque only if that fixed capacity grows.
+	// The queue holds exactly seven entries, so erasing from the front is
+	// cheaper than the bookkeeping a deque would add.
 	m_vQueue.erase(m_vQueue.begin());
 	return true;
 }

@@ -3408,6 +3408,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     timestamp_test.cpp
     unix_test.cpp
     uuid_test.cpp
+    view_size_test.cpp
     vmath_test.cpp
     windows_test.cpp
     # tidy-alphabetical-end

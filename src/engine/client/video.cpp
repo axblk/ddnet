@@ -439,16 +439,26 @@ void CVideo::EndVideoFrameRender()
 	Slot.m_pReadback = m_Offscreen ? m_pGraphics->EndOffscreenFrame() : m_pGraphics->PresentAndReadbackAsync();
 	if(Slot.m_pReadback == nullptr)
 	{
+		if(!m_Offscreen)
+			m_pGraphics->Swap();
+		// A frame that the graphics frontend dropped, usually because its
+		// command arena overflowed, is recoverable and the next frame renders
+		// normally. Frame indices stay contiguous, so the export is one frame
+		// shorter instead of ending. Only give up once nothing gets through.
+		++m_ConsecutiveDroppedFrames;
+		if(m_ConsecutiveDroppedFrames < MAX_CONSECUTIVE_DROPPED_FRAMES)
+		{
+			log_warn("videorecorder", "Skipped a video frame that could not be read back");
+			return;
+		}
 		if(m_Offscreen)
 			log_error("videorecorder", "Could not finish offscreen video frame");
 		else
-		{
 			log_error("videorecorder", "Could not read the presented video frame");
-			m_pGraphics->Swap();
-		}
 		m_ReadbackError = true;
 		return;
 	}
+	m_ConsecutiveDroppedFrames = 0;
 	Slot.m_FrameIndex = ++m_VideoFrameIndex;
 	m_CurrentReadbackSlot = (m_CurrentReadbackSlot + 1) % READBACK_SLOT_COUNT;
 }

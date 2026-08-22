@@ -1187,6 +1187,18 @@ void CGameConsole::OnRender()
 
 	Ui()->MapScreen();
 
+	// The console background is translucent, so the blurred backdrop belongs
+	// behind it the same way it does behind the scoreboard. Only while the
+	// console is the first thing over the scene, though: the backdrop is a
+	// picture of the scene taken before the menu and the scoreboard were drawn,
+	// and painting it over those would cut a hole into them.
+	// The console covers whatever is behind it, the game as well as a menu, so
+	// it blurs a picture of everything that was drawn up to here rather than of
+	// the scene alone. Without that it would paint the scene over the menu and
+	// cut a hole into it.
+	if(GameClient()->m_Menus.CaptureMenuBackdrop())
+		GameClient()->m_Menus.RenderBackdropRegion({0.0f, 0.0f, Screen.w, ConsoleHeight});
+
 	// background
 	Graphics()->TextureSet(g_pData->m_aImages[IMAGE_BACKGROUND_NOISE].m_Id);
 	Graphics()->QuadsBegin();

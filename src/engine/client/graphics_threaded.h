@@ -9,6 +9,7 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdlib>
 #include <limits>
@@ -260,22 +261,36 @@ public:
 		void FinishFrame() { ++m_CurrentFrameSerial; }
 	};
 
+	/**
+	 * Tells the frontend that the render thread is done with a command.
+	 *
+	 * The waiting side usually destroys the object as soon as it sees the
+	 * completion, so the signalling side must be finished touching it by then.
+	 * The lock provides that: a waiter can only leave while the signal holds no
+	 * lock anymore, which is after it published the completion.
+	 */
 	class CCompletion
 	{
-		CSemaphore m_Semaphore;
-		std::atomic_bool m_Completed{false};
+		mutable std::mutex m_Mutex;
+		std::condition_variable m_Condition;
+		bool m_Completed = false;
 
 	public:
 		void Wait()
 		{
-			if(!IsComplete())
-				m_Semaphore.Wait();
+			std::unique_lock<std::mutex> Lock(m_Mutex);
+			m_Condition.wait(Lock, [this]() { return m_Completed; });
 		}
-		[[nodiscard]] bool IsComplete() const { return m_Completed.load(std::memory_order_acquire); }
+		[[nodiscard]] bool IsComplete() const
+		{
+			const std::unique_lock<std::mutex> Lock(m_Mutex);
+			return m_Completed;
+		}
 		void Signal()
 		{
-			m_Completed.store(true, std::memory_order_release);
-			m_Semaphore.Signal();
+			const std::unique_lock<std::mutex> Lock(m_Mutex);
+			m_Completed = true;
+			m_Condition.notify_all();
 		}
 	};
 
@@ -1494,7 +1509,6 @@ public:
 	void Clear(float r, float g, float b, bool ForceClearNow = false) override;
 	bool BeginRenderPass(const CRenderPassDesc &Desc) override;
 	bool EndRenderPass() override;
-	bool FlushRenderPass() override;
 	bool BlitTexture(CTextureHandle Source, bool UseCurrentClip = false) override;
 	bool BlurTexture(CTextureHandle Source, EBlurDirection Direction) override;
 

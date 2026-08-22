@@ -3409,14 +3409,17 @@ void CClient::Run()
 				m_LastRenderTime = Now;
 
 #if defined(CONF_VIDEORECORDER)
-				IVideo *pVideo = IVideo::Current();
 				bool VideoFrameHandled = false;
-				if(pVideo != nullptr)
-					VideoFrameHandled = pVideo->BeginVideoFrameRender();
+				if(IVideo::Current() != nullptr)
+					VideoFrameHandled = IVideo::Current()->BeginVideoFrameRender();
 #endif
 				Render();
 #if defined(CONF_VIDEORECORDER)
-				if(VideoFrameHandled)
+				// Rendering dispatches user input, which can stop the recording
+				// through the console. Stopping destroys the recorder, so the
+				// current one has to be looked up again instead of remembered.
+				IVideo *pVideo = IVideo::Current();
+				if(VideoFrameHandled && pVideo != nullptr)
 					pVideo->EndVideoFrameRender();
 				else
 #endif

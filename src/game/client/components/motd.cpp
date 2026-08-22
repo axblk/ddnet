@@ -72,6 +72,11 @@ void CMotd::OnRender()
 	const float RectWidth = 630.0f + 2.0f * FontSize;
 	const float RectX = ScreenWidth / 2.0f - RectWidth / 2.0f;
 	const float RectY = 160.0f;
+	// The backdrop is a picture of the scene taken before the boards were drawn,
+	// so it only belongs behind this box while the box is the first thing over
+	// the scene. Over a scoreboard it would cut a hole into it.
+	if(!GameClient()->m_Scoreboard.IsActive() && !GameClient()->m_Statboard.IsActive())
+		GameClient()->m_Menus.RenderBackdropRegion({RectX, RectY, RectWidth, RectHeight});
 
 	if(m_RectQuadContainer == -1)
 	{

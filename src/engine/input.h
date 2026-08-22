@@ -57,7 +57,6 @@ public:
 	 * calls of the Update function.
 	 */
 	virtual float GetUpdateTime() const = 0;
-	virtual bool IsWindowFocused() const = 0;
 
 	// keys
 	virtual bool ModifierIsPressed() const = 0;

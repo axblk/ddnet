@@ -107,6 +107,8 @@ public:
 	void InitCallback() const override;
 
 protected:
+	float BackgroundZoom(float Zoom) const;
+
 	IGraphics::CTextureHandle GetTexture() const override
 	{
 		return IGraphics::CTextureHandle();

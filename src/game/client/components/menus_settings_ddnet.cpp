@@ -148,6 +148,14 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 	if(Ui()->DoScrollbarOption(&g_Config.m_ClDefaultZoom, &g_Config.m_ClDefaultZoom, &Button, Localize("Default zoom"), 0, 20))
 		GameClient()->m_Camera.SetZoom(CCamera::ZoomStepsToValue(g_Config.m_ClDefaultZoom - 10), g_Config.m_ClSmoothZoomTime, true);
 
+	Left.HSplitTop(20.0f, &Button, &Left);
+	const bool WideView = g_Config.m_ClViewMaxAspect > 0;
+	if(DoButton_CheckBox(&g_Config.m_ClViewMaxAspect, Localize("Widen the view on wide screens"), WideView, &Button))
+	{
+		g_Config.m_ClViewMaxAspect = WideView ? 0 : 178;
+	}
+	GameClient()->m_Tooltips.DoToolTip(&g_Config.m_ClViewMaxAspect, &Button, Localize("Screens wider than 16:9 keep the view height of 16:9 and show more to the sides, instead of standing closer to the tee"));
+
 	Right.HSplitTop(20.0f, &Button, &Right);
 	Ui()->DoScrollbarOption(&g_Config.m_ClPredictionMargin, &g_Config.m_ClPredictionMargin, &Button, Localize("Prediction margin"), 1, 300);
 

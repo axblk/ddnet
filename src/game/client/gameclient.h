@@ -129,6 +129,15 @@ public:
 	// zero if the server does not send them
 	int m_MinTeamSize;
 	int m_MaxTeamSize;
+
+	/**
+	 * Whether the server clips its snapshot to the size the client asked for.
+	 *
+	 * Cl_ShowDistance is a DDNet extension. A server that does not know it clips
+	 * to a fixed distance around the player instead, and a view that reaches past
+	 * that shows empty space where entities should be.
+	 */
+	bool m_ClipsToShowDistance;
 };
 
 class CSnapEntities
@@ -972,7 +981,7 @@ private:
 
 	float m_LastShowDistanceZoom;
 	float m_LastZoom;
-	float m_LastScreenAspect;
+	vec2 m_LastShowDistance;
 	float m_LastDeadzone;
 	float m_LastFollowFactor;
 	bool m_LastDummyConnected;

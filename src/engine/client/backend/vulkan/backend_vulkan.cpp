@@ -882,6 +882,7 @@ class CCommandProcessorFragment_Vulkan : public CCommandProcessorFragment_Render
 	bool m_SwapchainCreated = false;
 	bool m_SwapchainRecreationDeferred = false;
 	bool m_RenderingPaused = false;
+	bool m_FrameCommandsRecording = false;
 	bool m_AcquireSemaphorePending = false;
 	bool m_HasDynamicViewport = false;
 	VkOffset2D m_DynamicViewportOffset;
@@ -1250,6 +1251,11 @@ protected:
 		UploadNonFlushedBuffers<true>();
 
 		auto &CommandBuffer = GetMainGraphicCommandBuffer();
+		// A minimized window can leave a frame without a recording buffer, and a
+		// readback still has to work there. There is then nothing to flush and
+		// the readback records into a buffer of its own.
+		if(!m_FrameCommandsRecording)
+			return RestartReadbackCommandBuffer(CommandBuffer);
 		if(vkEndCommandBuffer(CommandBuffer) != VK_SUCCESS)
 		{
 			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Ending the pending readback command buffer failed.");
@@ -1300,6 +1306,15 @@ protected:
 			return false;
 		}
 
+		return RestartReadbackCommandBuffer(CommandBuffer);
+	}
+
+	/**
+	 * Puts the main command buffer back into recording state so the readback can
+	 * record its copy commands.
+	 */
+	[[nodiscard]] bool RestartReadbackCommandBuffer(VkCommandBuffer CommandBuffer)
+	{
 		if(vkResetCommandBuffer(CommandBuffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
 		{
 			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Resetting the readback command buffer failed.");
@@ -1313,6 +1328,7 @@ protected:
 			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Beginning the readback command buffer failed.");
 			return false;
 		}
+		m_FrameCommandsRecording = true;
 		return true;
 	}
 
@@ -2213,7 +2229,11 @@ protected:
 
 	[[nodiscard]] bool BeginCurrentRenderPass(const IGraphics::CRenderPassDesc &Desc)
 	{
-		if(m_RenderingPaused)
+		// A render target does not need the swapchain, so it is still drawn
+		// while the window is minimized. Only the screen pass has nowhere to go.
+		// Losing the swapchain takes the render passes and framebuffers with it,
+		// so nothing is recorded until a frame was started again.
+		if(!m_FrameCommandsRecording || (m_RenderingPaused && !Desc.m_ColorTarget.IsValid()))
 			return true;
 		if(!EndCurrentRenderPass())
 			return false;
@@ -2251,7 +2271,12 @@ protected:
 		return true;
 	}
 
-	[[nodiscard]] bool WaitFrame()
+	/**
+	 * Ends the recorded command buffer and submits it. Everything that needs a
+	 * swapchain image lives in @link WaitFrame @endlink instead, so a frame that
+	 * only rendered into a render target can be submitted without one.
+	 */
+	[[nodiscard]] bool SubmitFrameCommands()
 	{
 		if(m_RenderPassActive)
 		{
@@ -2298,7 +2323,10 @@ protected:
 		SubmitInfo.pWaitDstStageMask = aWaitStages.data();
 
 		std::array<VkSemaphore, 1> aSignalSemaphores = {m_vQueueSubmitSemaphores[m_CurImageIndex]};
-		SubmitInfo.signalSemaphoreCount = aSignalSemaphores.size();
+		// Nothing presents this frame while the swapchain is unusable, so the
+		// semaphore would stay signalled and the next submit would signal it
+		// again.
+		SubmitInfo.signalSemaphoreCount = m_RenderingPaused ? 0 : aSignalSemaphores.size();
 		SubmitInfo.pSignalSemaphores = aSignalSemaphores.data();
 
 		vkResetFences(m_VKDevice, 1, &m_vQueueSubmitFences[m_CurImageIndex]);
@@ -2314,9 +2342,19 @@ protected:
 			}
 		}
 		m_AcquireSemaphorePending = false;
+		m_FrameCommandsRecording = false;
+
+		return true;
+	}
+
+	[[nodiscard]] bool WaitFrame()
+	{
+		if(!SubmitFrameCommands())
+			return false;
 
 		std::swap(m_vBusyAcquireImageSemaphores[m_CurImageIndex], m_AcquireImageSemaphore);
 
+		const std::array<VkSemaphore, 1> aSignalSemaphores = {m_vQueueSubmitSemaphores[m_CurImageIndex]};
 		VkPresentInfoKHR PresentInfo{};
 		PresentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 
@@ -2354,8 +2392,11 @@ protected:
 			}
 			if(RecreateSwapChain() != 0)
 				return false;
+			// Start recording even though there is no image. A paused frame draws
+			// into render targets, and without this the first one would record
+			// into a command buffer that the last submit already ended.
 			if(m_RenderingPaused)
-				return true;
+				return !m_SwapchainCreated || BeginFrameCommands();
 		}
 
 		auto AcqResult = vkAcquireNextImageKHR(m_VKDevice, m_VKSwapChain, std::numeric_limits<uint64_t>::max(), m_AcquireImageSemaphore, VK_NULL_HANDLE, &m_CurImageIndex);
@@ -2371,7 +2412,7 @@ protected:
 				if(RecreateSwapChain() != 0)
 					return false;
 				if(m_RenderingPaused)
-					return true;
+					return !m_SwapchainCreated || BeginFrameCommands();
 				return PrepareFrame();
 			}
 			else
@@ -2385,12 +2426,27 @@ protected:
 				else if(AcqResult == VK_ERROR_SURFACE_LOST_KHR)
 				{
 					m_RenderingPaused = true;
-					return true;
+					return !m_SwapchainCreated || BeginFrameCommands();
 				}
 			}
 		}
 
 		m_AcquireSemaphorePending = true;
+		if(!BeginFrameCommands())
+			return false;
+
+		IGraphics::CRenderPassDesc Pass;
+		Pass.m_LoadOp = IGraphics::ERenderPassLoadOp::CLEAR;
+		Pass.m_ClearColor = {m_aClearColor[0], m_aClearColor[1], m_aClearColor[2], m_aClearColor[3]};
+		return BeginCurrentRenderPass(Pass);
+	}
+
+	/**
+	 * Starts recording the next frame. Holds everything that works without a
+	 * swapchain image, so a paused frame can record render target work.
+	 */
+	[[nodiscard]] bool BeginFrameCommands()
+	{
 		vkWaitForFences(m_VKDevice, 1, &m_vQueueSubmitFences[m_CurImageIndex], VK_TRUE, std::numeric_limits<uint64_t>::max());
 
 		// next frame
@@ -2426,11 +2482,8 @@ protected:
 			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Command buffer cannot be filled anymore.");
 			return false;
 		}
-
-		IGraphics::CRenderPassDesc Pass;
-		Pass.m_LoadOp = IGraphics::ERenderPassLoadOp::CLEAR;
-		Pass.m_ClearColor = {m_aClearColor[0], m_aClearColor[1], m_aClearColor[2], m_aClearColor[3]};
-		return BeginCurrentRenderPass(Pass);
+		m_FrameCommandsRecording = true;
+		return true;
 	}
 
 	void UploadStagingBuffers()
@@ -2480,19 +2533,30 @@ protected:
 		{
 			if(!WaitFrame())
 				return false;
-			if(!PrepareFrame())
-				return false;
-		}
-		// else only execute the memory command buffer
-		else
-		{
-			if(m_SwapchainRecreationDeferred)
-				return ResumeRendering();
-			if(!PureMemoryFrame())
-				return false;
+			return PrepareFrame();
 		}
 
-		return true;
+		// A minimized window has no swapchain image to draw into, but the device
+		// keeps working. Render target work is submitted anyway, so a video
+		// export or a screenshot still finishes while minimized; only the
+		// swapchain image and the present are skipped.
+		if(m_FrameCommandsRecording && !SubmitFrameCommands())
+			return false;
+		if(m_SwapchainRecreationDeferred)
+		{
+			if(!ResumeRendering())
+				return false;
+			if(!m_RenderingPaused)
+				return true;
+		}
+		if(!PureMemoryFrame())
+			return false;
+		// A resume that paused again already started recording, and the window
+		// destroy path can leave the swapchain and its per image command buffers
+		// gone, which is what a frame records into.
+		if(m_FrameCommandsRecording || !m_SwapchainCreated)
+			return true;
+		return BeginFrameCommands();
 	}
 
 	/************************
@@ -6556,7 +6620,7 @@ public:
 			SRenderCommandExecuteBuffer Buffer;
 			const auto *pCommand = static_cast<const CCommandBuffer::SCommand_Clear *>(pBaseCommand);
 			Cmd_Clear_FillExecuteBuffer(Buffer, pCommand);
-			return CommandResult(m_RenderingPaused || Cmd_Clear(Buffer, pCommand));
+			return CommandResult(Cmd_Clear(Buffer, pCommand));
 		}
 		case CCommandBuffer::CMD_DRAW:
 		{
@@ -6565,7 +6629,7 @@ public:
 			SRenderCommandExecuteBuffer Buffer;
 			const auto *pCommand = static_cast<const CCommandBuffer::SCommand_Draw *>(pBaseCommand);
 			Cmd_Draw_FillExecuteBuffer(Buffer, pCommand);
-			return CommandResult(m_RenderingPaused || Cmd_Draw(pCommand, Buffer));
+			return CommandResult(Cmd_Draw(pCommand, Buffer));
 		}
 		case CCommandBuffer::CMD_CREATE_BUFFER_OBJECT: return CommandResult(Cmd_CreateBufferObject(static_cast<const CCommandBuffer::SCommand_CreateBufferObject *>(pBaseCommand)));
 		case CCommandBuffer::CMD_RECREATE_BUFFER_OBJECT: return CommandResult(Cmd_RecreateBufferObject(static_cast<const CCommandBuffer::SCommand_RecreateBufferObject *>(pBaseCommand)));
@@ -6582,7 +6646,7 @@ public:
 			SRenderCommandExecuteBuffer Buffer;
 			const auto *pCommand = static_cast<const CCommandBuffer::SCommand_DrawIndexed *>(pBaseCommand);
 			Cmd_DrawIndexed_FillExecuteBuffer(Buffer, pCommand);
-			return CommandResult(m_RenderingPaused || Cmd_DrawIndexed(pCommand, Buffer));
+			return CommandResult(Cmd_DrawIndexed(pCommand, Buffer));
 		}
 		case CCommandBuffer::CMD_SWAP: return CommandResult(Cmd_Swap(static_cast<const CCommandBuffer::SCommand_Swap *>(pBaseCommand)));
 		case CCommandBuffer::CMD_MULTISAMPLING: return CommandResult(Cmd_MultiSampling(static_cast<const CCommandBuffer::SCommand_MultiSampling *>(pBaseCommand)));
@@ -6817,7 +6881,7 @@ public:
 	[[nodiscard]] bool Cmd_Texture_Readback(const CCommandBuffer::SCommand_Texture_Readback *pCommand)
 	{
 		pCommand->m_pResult->m_Ok = false;
-		if(m_RenderingPaused || !m_TextureHandles.IsActive(pCommand->m_Texture))
+		if(!m_TextureHandles.IsActive(pCommand->m_Texture))
 			return true;
 		const CTexture &Texture = m_vTextures[pCommand->m_Texture.Id()];
 		if((Texture.m_Usage & IGraphics::TEXTURE_USAGE_COLOR_TARGET) == 0 || (Texture.m_Usage & IGraphics::TEXTURE_USAGE_COPY_SOURCE) == 0 || Texture.m_Layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
@@ -6857,12 +6921,12 @@ public:
 
 	[[nodiscard]] bool Cmd_EndRenderPass(const CCommandBuffer::SCommand_EndRenderPass *pCommand)
 	{
-		return m_RenderingPaused || EndCurrentRenderPass();
+		return EndCurrentRenderPass();
 	}
 
 	[[nodiscard]] bool Cmd_FlushRenderPass(const CCommandBuffer::SCommand_FlushRenderPass *pCommand)
 	{
-		return m_RenderingPaused || !m_RenderPassActive || FlushRenderCommands();
+		return !m_RenderPassActive || FlushRenderCommands();
 	}
 
 	void Cmd_Clear_FillExecuteBuffer(SRenderCommandExecuteBuffer &ExecBuffer, const CCommandBuffer::SCommand_Clear *pCommand)
@@ -7604,9 +7668,16 @@ public:
 				return false;
 			m_RenderingPaused = true;
 		}
+		// A paused frame is already recording, and the cleanup below frees what it
+		// references. Submitting first keeps that buffer from outliving them.
+		else if(m_FrameCommandsRecording && !SubmitFrameCommands())
+			return false;
 		m_SwapchainRecreationDeferred = false;
-#ifdef CONF_PLATFORM_ANDROID
+		// The surface is gone once this returns, so everything still referencing it
+		// has to have finished. This is not Android specific, the window is
+		// destroyed on every platform that can minimize.
 		vkDeviceWaitIdle(m_VKDevice);
+#ifdef CONF_PLATFORM_ANDROID
 		if(m_SwapchainCreated)
 			CleanupVulkanSwapChain(true);
 		else if(m_VKSwapChain != VK_NULL_HANDLE)

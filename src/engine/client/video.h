@@ -111,6 +111,10 @@ private:
 	bool m_Offscreen = false;
 	bool m_OffscreenFrameActive = false;
 	bool m_ReadbackError = false;
+	// Roughly half a second of frames at 60 FPS, after which a dropped frame is
+	// no longer a hiccup but a broken readback path.
+	static constexpr int MAX_CONSECUTIVE_DROPPED_FRAMES = 30;
+	int m_ConsecutiveDroppedFrames = 0;
 
 	static constexpr size_t READBACK_SLOT_COUNT = 3;
 	class CReadbackSlot

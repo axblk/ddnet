@@ -154,7 +154,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 
 		SkinPrefix.HSplitTop(20.0f, &Button, &SkinPrefix);
 		static CLineInput s_SkinPrefixInput(g_Config.m_ClSkinPrefix, sizeof(g_Config.m_ClSkinPrefix));
-		if(Ui()->DoClearableEditBox(&s_SkinPrefixInput, &Button, 14.0f, IGraphics::CORNER_ALL, {}, &m_aSettingsTeeEditBoxUiElements[0]))
+		if(Ui()->DoClearableEditBox(&s_SkinPrefixInput, &Button, 14.0f, IGraphics::CORNER_ALL, {}, m_aSettingsTeeEditBoxUiElements.data()))
 		{
 			ShouldRefresh = true;
 		}
@@ -477,7 +477,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 		}
 	}
 
-	if(Ui()->DoEditBox_SearchCached(&s_SkinFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), &m_aSettingsTeeSearchUiElements[0], &m_aSettingsTeeSearchUiElements[1]))
+	if(Ui()->DoEditBox_SearchCached(&s_SkinFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), m_aSettingsTeeSearchUiElements.data(), m_aSettingsTeeSearchUiElements.data() + 1))
 	{
 		SkinList.ForceRefresh();
 	}

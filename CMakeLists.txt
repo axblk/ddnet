@@ -568,7 +568,7 @@ find_package(Crypto)
 if(NOT TARGET_OS STREQUAL "emscripten")
   find_package(Curl)
 endif()
-if(CLIENT AND VIDEORECORDER)
+if(CLIENT AND VIDEORECORDER AND NOT TARGET_OS STREQUAL "emscripten")
   find_package(FFMPEG)
 endif()
 find_package(Freetype)
@@ -697,7 +697,7 @@ endfunction()
 if(NOT TARGET_OS STREQUAL "emscripten")
   show_dependency_status("Curl" CURL)
 endif()
-if(CLIENT AND VIDEORECORDER)
+if(CLIENT AND VIDEORECORDER AND NOT TARGET_OS STREQUAL "emscripten")
   show_dependency_status("FFmpeg" FFMPEG)
 endif()
 show_dependency_status("Freetype" FREETYPE)
@@ -2626,6 +2626,7 @@ if(CLIENT)
     updater.h
     video.cpp
     video.h
+    video_webcodecs.cpp
     warning.cpp
     # tidy-alphabetical-end
   )

@@ -1,4 +1,4 @@
-#if defined(CONF_VIDEORECORDER)
+#if defined(CONF_VIDEORECORDER) && !defined(__EMSCRIPTEN__)
 
 #include "video.h"
 

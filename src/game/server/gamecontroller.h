@@ -146,6 +146,7 @@ private:
 	std::vector<CMatchParticipantState> m_vMatchParticipants;
 	int m_NextMatchParticipantId = 0;
 	int m_MatchReportStartTick = 0;
+	// Only so that the participant limit is reported once per round
 	bool m_MatchReportOverflow = false;
 	CUuid m_LiveStatsInstanceId = UUID_ZEROED;
 	int m_LiveStatsStartTick = 0;

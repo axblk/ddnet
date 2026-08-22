@@ -2,10 +2,8 @@
 
 #include <engine/shared/protocol.h>
 
-#include <game/server/entities/character.h>
 #include <game/server/gamecontext.h>
 #include <game/server/gamecontroller.h>
-#include <game/server/player.h>
 
 void CInteractions::Init(int OwnerId, uint32_t UniqueOwnerId)
 {
@@ -61,14 +59,4 @@ CClientMask CInteractions::CanSeeMask(const CGameContext *pGameServer) const
 		}
 	}
 	return Mask;
-}
-
-const CCharacter *CInteractions::OwnerCharacter(const CGameContext *pGameServer) const
-{
-	const CCharacter *pChr = pGameServer->GetPlayerChar(m_OwnerId);
-	if(!pChr)
-		return nullptr;
-	if(pChr->GetPlayer()->GetUniqueCid() != m_UniqueOwnerId)
-		return nullptr;
-	return pChr;
 }

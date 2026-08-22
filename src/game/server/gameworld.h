@@ -4,6 +4,7 @@
 #define GAME_SERVER_GAMEWORLD_H
 
 #include <game/gamecore.h>
+#include <game/teamscore.h>
 
 #include <vector>
 
@@ -44,6 +45,7 @@ private:
 	class CConfig *m_pConfig;
 	class IServer *m_pServer;
 	CTuningParams *m_pTuningList;
+	CCollision *m_pCollision;
 	CPhysicsRules m_ModePhysicsRules;
 
 	void UpdatePhysicsRules();
@@ -51,12 +53,21 @@ private:
 public:
 	class CConfig *Config() { return m_pConfig; }
 	class IServer *Server() { return m_pServer; }
+	int GameTick() const;
+	int AllocSnapId();
+	void FreeSnapId(int Id);
+	int GameTickSpeed() const;
+	const CCollision *Collision() const { return m_pCollision; }
+	CCollision *Collision() { return m_pCollision; }
+	CTeamsCore *Teams() { return &m_Teams; }
+	std::vector<SSwitchers> &Switchers() { return m_Core.m_vSwitchers; }
 
 	bool m_ResetRequested;
 	bool m_Paused;
 	bool ResetRequested() const { return m_ResetRequested; }
 	bool IsPaused() const { return m_Paused; }
 	CWorldCore m_Core;
+	CTeamsCore m_Teams;
 
 	/**
 	 * Sets the physics the game mode registered.

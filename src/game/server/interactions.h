@@ -4,7 +4,6 @@
 #include <engine/shared/protocol.h>
 
 class CGameContext;
-class CCharacter;
 
 class CInteractions
 {
@@ -35,7 +34,6 @@ public:
 	bool CanSee(const CGameContext *pGameServer, int ClientId) const;
 	bool CanHit(const CGameContext *pGameServer, int ClientId) const;
 	CClientMask CanSeeMask(const CGameContext *pGameServer) const;
-	const CCharacter *OwnerCharacter(const CGameContext *pGameServer) const;
 };
 
 #endif

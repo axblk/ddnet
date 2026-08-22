@@ -106,7 +106,7 @@ bool CLaser::HitCharacter(vec2 From, vec2 To)
 
 void CLaser::DoBounce()
 {
-	m_EvalTick = Server()->Tick();
+	m_EvalTick = GameWorld()->GameTick();
 
 	if(m_Energy < 0)
 	{
@@ -128,7 +128,7 @@ void CLaser::DoBounce()
 
 	vec2 To = m_Pos + m_Dir * m_Energy;
 
-	Res = GameServer()->m_World.m_Core.m_PhysicsRules.m_DDNetMovement ? GameServer()->Collision()->IntersectLineTeleWeapon(m_Pos, To, &Coltile, &To, &z, GameServer()->m_World.m_Core.m_PhysicsRules.m_TeleportWeaponsOld) : GameServer()->Collision()->IntersectLine(m_Pos, To, &Coltile, &To);
+	Res = GameServer()->m_World.m_Core.m_PhysicsRules.m_DDNetMovement ? Collision()->IntersectLineTeleWeapon(m_Pos, To, &Coltile, &To, &z, GameServer()->m_World.m_Core.m_PhysicsRules.m_TeleportWeaponsOld) : Collision()->IntersectLine(m_Pos, To, &Coltile, &To);
 
 	if(Res)
 	{
@@ -144,13 +144,13 @@ void CLaser::DoBounce()
 			int f = 0;
 			if(Res == -1)
 			{
-				f = GameServer()->Collision()->GetTile(round_to_int(Coltile.x), round_to_int(Coltile.y));
-				GameServer()->Collision()->SetCollisionAt(round_to_int(Coltile.x), round_to_int(Coltile.y), TILE_SOLID);
+				f = Collision()->GetTile(round_to_int(Coltile.x), round_to_int(Coltile.y));
+				Collision()->SetCollisionAt(round_to_int(Coltile.x), round_to_int(Coltile.y), TILE_SOLID);
 			}
-			GameServer()->Collision()->MovePoint(&TempPos, &TempDir, 1.0f, nullptr);
+			Collision()->MovePoint(&TempPos, &TempDir, 1.0f, nullptr);
 			if(Res == -1)
 			{
-				GameServer()->Collision()->SetCollisionAt(round_to_int(Coltile.x), round_to_int(Coltile.y), f);
+				Collision()->SetCollisionAt(round_to_int(Coltile.x), round_to_int(Coltile.y), f);
 			}
 			m_Pos = TempPos;
 			m_Dir = normalize(TempDir);
@@ -163,14 +163,14 @@ void CLaser::DoBounce()
 			}
 			else
 			{
-				m_Energy -= Distance + GameServer()->TuningList()[m_TuneZone].m_LaserBounceCost;
+				m_Energy -= Distance + TuningList()[m_TuneZone].m_LaserBounceCost;
 			}
 			m_ZeroEnergyBounceInLastTick = Distance == 0.0f;
 
-			if(Res == TILE_TELEINWEAPON && !GameServer()->Collision()->TeleOuts(z - 1).empty())
+			if(Res == TILE_TELEINWEAPON && !Collision()->TeleOuts(z - 1).empty())
 			{
-				int TeleOut = GameServer()->m_World.m_Core.RandomOr0(GameServer()->Collision()->TeleOuts(z - 1).size());
-				m_TelePos = GameServer()->Collision()->TeleOuts(z - 1)[TeleOut];
+				int TeleOut = GameServer()->m_World.m_Core.RandomOr0(Collision()->TeleOuts(z - 1).size());
+				m_TelePos = Collision()->TeleOuts(z - 1)[TeleOut];
 				m_WasTele = true;
 			}
 			else
@@ -229,11 +229,11 @@ void CLaser::DoBounce()
 	}
 	else if(m_Owner >= 0)
 	{
-		int MapIndex = GameServer()->Collision()->GetPureMapIndex(Coltile);
-		int TileFIndex = GameServer()->Collision()->GetFrontTileIndex(MapIndex);
-		bool IsSwitchTeleGun = GameServer()->Collision()->GetSwitchType(MapIndex) == TILE_ALLOW_TELE_GUN;
-		bool IsBlueSwitchTeleGun = GameServer()->Collision()->GetSwitchType(MapIndex) == TILE_ALLOW_BLUE_TELE_GUN;
-		int IsTeleInWeapon = GameServer()->Collision()->IsTeleportWeapon(MapIndex);
+		int MapIndex = Collision()->GetPureMapIndex(Coltile);
+		int TileFIndex = Collision()->GetFrontTileIndex(MapIndex);
+		bool IsSwitchTeleGun = Collision()->GetSwitchType(MapIndex) == TILE_ALLOW_TELE_GUN;
+		bool IsBlueSwitchTeleGun = Collision()->GetSwitchType(MapIndex) == TILE_ALLOW_BLUE_TELE_GUN;
+		int IsTeleInWeapon = Collision()->IsTeleportWeapon(MapIndex);
 
 		if(!IsTeleInWeapon)
 		{
@@ -241,7 +241,7 @@ void CLaser::DoBounce()
 			{
 				// Delay specifies which weapon the tile should work for.
 				// Delay = 0 means all.
-				const int Delay = GameServer()->Collision()->GetSwitchDelay(MapIndex);
+				const int Delay = Collision()->GetSwitchDelay(MapIndex);
 
 				if((Delay != 3 && Delay != 0) && m_Type == WEAPON_LASER)
 				{
@@ -277,7 +277,7 @@ void CLaser::Tick()
 	}
 
 	float Delay = TuningList()[m_TuneZone].m_LaserBounceDelay;
-	if((Server()->Tick() - m_EvalTick) > (Server()->TickSpeed() * Delay / 1000.0f))
+	if((GameWorld()->GameTick() - m_EvalTick) > (GameWorld()->GameTickSpeed() * Delay / 1000.0f))
 		DoBounce();
 }
 
@@ -288,7 +288,7 @@ void CLaser::TickPaused()
 
 void CLaser::Snap(int SnappingClient)
 {
-	if((NetworkClipped(SnappingClient) && NetworkClipped(SnappingClient, m_From)) || !GetId().has_value())
+	if((NetworkClipped(SnappingClient) && NetworkClipped(SnappingClient, m_From)) || GetId() < 0)
 		return;
 
 	if(SnappingClient != SERVER_DEMO_CLIENT && !m_InteractState.CanSee(GameServer(), SnappingClient))
@@ -297,7 +297,7 @@ void CLaser::Snap(int SnappingClient)
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
 	int LaserType = m_Type == WEAPON_LASER ? LASERTYPE_RIFLE : (m_Type == WEAPON_SHOTGUN ? LASERTYPE_SHOTGUN : -1);
 
-	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), GetId().value(),
+	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), GetId(),
 		m_Pos, m_From, m_EvalTick, m_Owner, LaserType, 0, m_Number);
 }
 

@@ -119,6 +119,7 @@ public:
 	// has nothing to dial it with.
 	static bool IsWebTransportServerCompiled();
 	static bool IsWebTransportClientCompiled();
+	static bool IsWebTransportClientAvailable();
 	bool StartServer(const char *pLocalAddress, bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath);
 	bool MaybeRotateManagedCertificate(bool *pRotated);
 	bool StartClient(const char *pBindAddress, const char *pServerAddress, const char *pServerName, const char *pCertificatePath, bool Sixup);

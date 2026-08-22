@@ -52,10 +52,12 @@ public:
 	bool m_QuicSharedPort;
 	bool m_HasQuicNextCertificateSha256;
 	bool m_HasQuicIdentityFingerprint;
+	EModernTransportTrust m_QuicTrust;
 	bool m_WebTransport;
 	CServerInfo::EWebTransportCertificateMode m_WebTransportCertificateMode;
 	char m_aWebTransportPath[16];
 	char m_aWebTransportUrl[256];
+	char m_aModernHostname[256];
 
 	bool operator==(const CServerInfo2 &Other) const;
 	bool operator!=(const CServerInfo2 &Other) const { return !(*this == Other); }
@@ -69,6 +71,7 @@ public:
 bool ParseCrc(unsigned int *pResult, const char *pString);
 bool FormatWebTransportUrl(char *pBuffer, int BufferSize, const char *pHostname, int Port);
 bool ValidateWebTransportUrl(const char *pUrl, int Port);
+bool ParseModernTransportUrl(const char *pUrl, bool *pWebTransport, EModernTransportTrust *pTrust, SHA256_DIGEST *pFingerprint, SHA256_DIGEST *pNextFingerprint, bool *pHasNextFingerprint);
 bool ParseQuicDirectLinkFingerprint(const char *pUrl, SHA256_DIGEST *pFingerprint);
 void FormatQuicServerInfoExtra(char *pBuffer, int BufferSize, SHA256_DIGEST IdentityFingerprint);
 bool ParseQuicServerInfoExtra(CServerInfo *pInfo, const char *pExtraInfo, int Port);

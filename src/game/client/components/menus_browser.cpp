@@ -600,14 +600,37 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 
 	// address info
 	{
-		CUIRect ServerAddrLabel, ServerAddrEditBox;
+		CUIRect ServerAddrLabel, ServerAddrEditBox, ProtocolDropDown, FamilyDropDown;
 		ServerAddr.Margin(2.0f, &ServerAddr);
 		ServerAddr.VSplitLeft(SearchExcludeAddrStrMax + 5.0f + ExcludeSearchIconMax + 5.0f, &ServerAddrLabel, &ServerAddrEditBox);
+		// Transport and address family sit with the address they apply to, and
+		// keep whatever was picked last, because a server that needs one of
+		// them usually needs it again.
+		ServerAddrEditBox.VSplitRight(70.0f, &ServerAddrEditBox, &FamilyDropDown);
+		ServerAddrEditBox.VSplitRight(5.0f, &ServerAddrEditBox, nullptr);
+		ServerAddrEditBox.VSplitRight(120.0f, &ServerAddrEditBox, &ProtocolDropDown);
+		ServerAddrEditBox.VSplitRight(5.0f, &ServerAddrEditBox, nullptr);
 
 		Ui()->DoLabel(&ServerAddrLabel, Localize("Server address:"), 14.0f, TEXTALIGN_ML);
 		static CLineInput s_ServerAddressInput(g_Config.m_UiServerAddress, sizeof(g_Config.m_UiServerAddress));
 		if(Ui()->DoClearableEditBox(&s_ServerAddressInput, &ServerAddrEditBox, 12.0f))
 			m_ServerBrowserShouldRevealSelection = true;
+
+		const char *apProtocols[(int)EConnectProtocol::COUNT];
+		apProtocols[(int)EConnectProtocol::AUTOMATIC] = Localize("Automatic");
+		apProtocols[(int)EConnectProtocol::LEGACY] = Localize("UDP");
+		apProtocols[(int)EConnectProtocol::QUIC] = Localize("QUIC");
+		apProtocols[(int)EConnectProtocol::WEBSOCKET] = Localize("Websocket");
+		apProtocols[(int)EConnectProtocol::WEBTRANSPORT] = Localize("WebTransport");
+		static CUi::SDropDownState s_ProtocolDropDownState;
+		g_Config.m_ClConnectProtocol = Ui()->DoDropDown(&ProtocolDropDown, g_Config.m_ClConnectProtocol, apProtocols, (int)EConnectProtocol::COUNT, s_ProtocolDropDownState);
+
+		const char *apFamilies[(int)EConnectAddressFamily::COUNT];
+		apFamilies[(int)EConnectAddressFamily::AUTOMATIC] = Localize("Automatic");
+		apFamilies[(int)EConnectAddressFamily::IPV4] = Localize("IPv4");
+		apFamilies[(int)EConnectAddressFamily::IPV6] = Localize("IPv6");
+		static CUi::SDropDownState s_FamilyDropDownState;
+		g_Config.m_ClConnectAddressFamily = Ui()->DoDropDown(&FamilyDropDown, g_Config.m_ClConnectAddressFamily, apFamilies, (int)EConnectAddressFamily::COUNT, s_FamilyDropDownState);
 	}
 
 	// buttons

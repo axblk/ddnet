@@ -164,14 +164,24 @@ class TestHttpServer(ThreadingHTTPServer):
 		super().handle_error(request, client_address)
 
 
-def server_list(port, certificate_sha256, next_certificate_sha256=None, certificate_mode="hash"):
+def server_list(port, certificate_sha256, next_certificate_sha256=None, certificate_mode="hash", modern_only=False):
+	fragment = "" if certificate_mode == "webpki" else f"#cert-sha256={certificate_sha256}"
+	if next_certificate_sha256 is not None and fragment:
+		fragment += f",{next_certificate_sha256}"
+	addresses = [
+		f"ddnet+wt://127.0.0.1:{port}{fragment}",
+		f"tw-0.7+wt://127.0.0.1:{port}{fragment}",
+	]
+	if not modern_only:
+		addresses[:0] = [
+			f"tw-0.6+udp://127.0.0.1:{port}",
+			f"tw-0.7+udp://127.0.0.1:{port}",
+		]
 	result = {
+		"modern_transport_challenge": True,
 		"servers": [
 			{
-				"addresses": [
-					f"tw-0.6+udp://127.0.0.1:{port}",
-					f"tw-0.7+udp://127.0.0.1:{port}",
-				],
+				"addresses": addresses,
 				"info": {
 					"max_clients": 64,
 					"max_players": 64,
@@ -186,21 +196,11 @@ def server_list(port, certificate_sha256, next_certificate_sha256=None, certific
 					"version": "0.6, browser WebTransport test",
 					"client_score_kind": "time",
 					"requires_login": False,
-					"transport": {
-						"udp_port": port,
-						"tls_certificate_sha256": certificate_sha256,
-						"webtransport": {
-							"url": f"https://127.0.0.1:{port}/ddnet",
-							"certificate_mode": certificate_mode,
-						},
-					},
 					"clients": [],
 				},
 			}
 		],
 	}
-	if next_certificate_sha256 is not None:
-		result["servers"][0]["info"]["transport"]["tls_certificate_sha256_next"] = next_certificate_sha256
 	return result
 
 
@@ -309,7 +309,7 @@ def main():
 			stderr=subprocess.DEVNULL,
 		)
 		web_root = args.web_root
-		if args.transport in ("webpki", "expired-hash", "fallback", "no-datagrams", "lifecycle"):
+		if uses_webtransport or args.transport in ("fallback", "no-datagrams"):
 			web_root = temporary / "web-root"
 			shutil.copytree(args.web_root, web_root, copy_function=link_or_copy)
 			index = web_root / "index.html"
@@ -398,7 +398,16 @@ def main():
 			# copytree may have hard-linked this large web root. Detach files before
 			# modifying them so the original build artifacts remain untouched.
 			index.unlink()
-			index.write_text(contents.replace(marker, injection + marker, 1), encoding="utf-8")
+			contents = contents.replace(marker, injection + marker, 1)
+			launch_marker = "\t\t\t\t\tModule.callMain(arguments);"
+			if launch_marker not in contents:
+				raise RuntimeError("could not inject local server list into index.html")
+			contents = contents.replace(
+				launch_marker,
+				'\t\t\t\t\tFS.writeFile(`${homePath}/ddnet-serverlist-urls.cfg`, "https://127.0.0.1:8000/servers.json\\n");\n' + launch_marker,
+				1,
+			)
+			index.write_text(contents, encoding="utf-8")
 		port = free_game_port()
 		server_arguments = [
 			args.server.resolve(),
@@ -429,11 +438,11 @@ def main():
 				)
 				advertised_sha256 = hashlib.sha256(advertised_certificate.read_bytes()).hexdigest()
 				next_certificate_sha256 = None if args.transport == "expired-hash" else hashlib.sha256(quic_certificate.read_bytes()).hexdigest()
-			(web_root / "servers.json").write_text(json.dumps(server_list(port, advertised_sha256, next_certificate_sha256, "webpki" if args.transport == "webpki" else "hash")), encoding="utf-8")
+			(web_root / "servers.json").write_text(json.dumps(server_list(port, advertised_sha256, next_certificate_sha256, "webpki" if args.transport == "webpki" else "hash", modern_only=True)), encoding="utf-8")
 			server_arguments.extend([
+				"sv_legacy_udp 0",
 				"sv_quic 0",
 				"sv_webtransport 1",
-				"sv_webtransport_origin https://127.0.0.1:8000",
 				"sv_webtransport_hostname 127.0.0.1",
 				f"sv_webtransport_certificate_mode {'webpki' if args.transport == 'webpki' else 'hash'}",
 				f"sv_quic_cert {quic_certificate}",

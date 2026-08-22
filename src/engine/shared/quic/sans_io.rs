@@ -308,13 +308,14 @@ enum Role {
 #[derive(Debug)]
 enum Handshake {
     ClientHello {
-        nonce: [u8; super::modern_wire::NONCE_SIZE],
+        nonce: [u8; super::game_wire::NONCE_SIZE],
     },
     ClientIdentity {
-        nonce: [u8; super::modern_wire::NONCE_SIZE],
+        nonce: [u8; super::game_wire::NONCE_SIZE],
     },
     ServerHello,
     ServerIdentity,
+    MasterChallenge,
     Active,
     Closing,
 }
@@ -367,7 +368,7 @@ struct OutgoingMap {
 struct IncomingMap {
     generation: u64,
     buffer: Vec<u8>,
-    header: Option<([u8; super::modern_wire::MAP_SHA256_SIZE], usize)>,
+    header: Option<([u8; super::game_wire::MAP_SHA256_SIZE], usize)>,
     digest: ring::digest::Context,
 }
 
@@ -383,7 +384,7 @@ impl Session {
             send_offset: 0,
             handshake: if role == Role::Client {
                 Handshake::ClientHello {
-                    nonce: [0; super::modern_wire::NONCE_SIZE],
+                    nonce: [0; super::game_wire::NONCE_SIZE],
                 }
             } else {
                 Handshake::ServerHello
@@ -412,7 +413,7 @@ impl Session {
         if self.send.len() >= super::COMMAND_CAPACITY {
             return false;
         }
-        let Some(frame) = super::modern_wire::encode_frame(frame_type, payload) else {
+        let Some(frame) = super::game_wire::encode_frame(frame_type, payload) else {
             return false;
         };
         self.send.push_back(frame);
@@ -431,11 +432,11 @@ enum Mode {
     Server {
         identity: Option<super::ServerIdentityProof>,
         raw_quic: bool,
-        webtransport_origin: Option<String>,
+        webtransport: bool,
     },
 }
 
-/// Synchronous Raw QUIC + Modern Wire state. C++ owns all UDP I/O and calls this from its pump.
+/// Synchronous Raw QUIC + game wire state. C++ owns all UDP I/O and calls this from its pump.
 pub(super) struct RawEndpoint {
     driver: EndpointDriver,
     mode: Mode,
@@ -458,14 +459,14 @@ impl RawEndpoint {
         config: ServerConfig,
         identity: Option<super::ServerIdentityProof>,
         raw_quic: bool,
-        webtransport_origin: Option<String>,
+        webtransport: bool,
     ) -> Self {
         Self {
             driver: EndpointDriver::new(cid_key, Some(config)),
             mode: Mode::Server {
                 identity,
                 raw_quic,
-                webtransport_origin,
+                webtransport,
             },
             sessions: HashMap::new(),
             handles: HashMap::new(),
@@ -587,7 +588,7 @@ impl RawEndpoint {
     }
 
     pub fn send_control(&mut self, session_id: u64, payload: &[u8]) -> bool {
-        if payload.is_empty() || payload.len() > super::modern_wire::MAX_CONTROL_MESSAGE_SIZE {
+        if payload.is_empty() || payload.len() > super::game_wire::MAX_CONTROL_MESSAGE_SIZE {
             return false;
         }
         let Some(session) = self
@@ -606,7 +607,7 @@ impl RawEndpoint {
     }
 
     pub fn send_datagram(&mut self, session_id: u64, payload: &[u8]) -> bool {
-        if payload.is_empty() || payload.len() > super::modern_wire::MAX_DATAGRAM_MESSAGE_SIZE {
+        if payload.is_empty() || payload.len() > super::game_wire::MAX_DATAGRAM_MESSAGE_SIZE {
             return false;
         }
         let Some(session) = self.sessions.get_mut(&session_id) else {
@@ -615,7 +616,7 @@ impl RawEndpoint {
         if !matches!(session.handshake, Handshake::Active) {
             return false;
         }
-        let Some(datagram) = super::modern_wire::encode_datagram(session.send_sequence, &[payload])
+        let Some(datagram) = super::game_wire::encode_datagram(session.send_sequence, &[payload])
         else {
             return false;
         };
@@ -671,18 +672,15 @@ impl RawEndpoint {
         };
         let mut send = connection.send_stream(stream);
         let _ = send.set_priority(-10);
-        let Some(map_header) =
-            super::modern_wire::encode_map_header(&super::modern_wire::MapHeader {
-                size: map.data.len() as u64,
-                crc: map.crc,
-                sha256: map.sha256,
-                name: &map.name,
-            })
-        else {
+        let Some(map_header) = super::game_wire::encode_map_header(&super::game_wire::MapHeader {
+            size: map.data.len() as u64,
+            crc: map.crc,
+            sha256: map.sha256,
+            name: &map.name,
+        }) else {
             return false;
         };
-        let Some(frame) =
-            super::modern_wire::encode_frame(super::MAP_HEADER_FRAME_TYPE, &map_header)
+        let Some(frame) = super::game_wire::encode_frame(super::MAP_HEADER_FRAME_TYPE, &map_header)
         else {
             return false;
         };
@@ -698,8 +696,8 @@ impl RawEndpoint {
         if let Some(webtransport_header) = webtransport_header {
             header.extend_from_slice(&webtransport_header);
         }
-        super::modern_wire::encode_varint(super::MAP_STREAM_KIND, &mut header);
-        super::modern_wire::encode_varint(super::FRAMING_VERSION, &mut header);
+        super::game_wire::encode_varint(super::MAP_STREAM_KIND, &mut header);
+        super::game_wire::encode_varint(super::FRAMING_VERSION, &mut header);
         header.extend_from_slice(&frame);
         session.outgoing_map = Some(OutgoingMap {
             stream,
@@ -797,6 +795,16 @@ impl RawEndpoint {
     pub fn local_address_changed(&mut self) {
         self.driver.local_address_changed();
         self.pump();
+    }
+
+    pub fn update_server_certificate_hash(&mut self, certificate_sha256: [u8; 32]) {
+        if let Mode::Server {
+            identity: Some(identity),
+            ..
+        } = &mut self.mode
+        {
+            identity.certificate_sha256 = certificate_sha256;
+        }
     }
 
     fn start_client_connection(
@@ -1046,8 +1054,8 @@ impl RawEndpoint {
             };
             session.control = Some(stream);
             let mut prelude = Vec::new();
-            super::modern_wire::encode_varint(super::CONTROL_STREAM_KIND, &mut prelude);
-            super::modern_wire::encode_varint(super::FRAMING_VERSION, &mut prelude);
+            super::game_wire::encode_varint(super::CONTROL_STREAM_KIND, &mut prelude);
+            super::game_wire::encode_varint(super::FRAMING_VERSION, &mut prelude);
             session.send.push_back(prelude);
             let extra = if identity_required {
                 super::CAPABILITY_SERVER_IDENTITY
@@ -1075,22 +1083,19 @@ impl RawEndpoint {
                     .ok()
             })
             .and_then(|data| data.protocol.clone());
-        let (raw_quic, webtransport_origin) = match &self.mode {
+        let (raw_quic, webtransport) = match &self.mode {
             Mode::Server {
                 raw_quic,
-                webtransport_origin,
+                webtransport,
                 ..
-            } => (*raw_quic, webtransport_origin.clone()),
+            } => (*raw_quic, *webtransport),
             Mode::Client { .. } => unreachable!(),
         };
         if protocol.as_deref() == Some(super::ALPN) && raw_quic {
             session.transport = SessionTransport::Raw;
             return;
         }
-        if protocol.as_deref() == Some(wtransport_proto::WEBTRANSPORT_ALPN) {
-            let Some(origin) = webtransport_origin else {
-                return;
-            };
+        if protocol.as_deref() == Some(wtransport_proto::WEBTRANSPORT_ALPN) && webtransport {
             let Some(settings_stream) = self
                 .driver
                 .connection_mut(session.handle)
@@ -1099,7 +1104,7 @@ impl RawEndpoint {
                 return;
             };
             session.transport =
-                SessionTransport::WebTransport(super::webtransport::ServerState::new(origin));
+                SessionTransport::WebTransport(super::webtransport::ServerState::new());
             session.stream_writes.push_back(StreamWrite {
                 stream: settings_stream,
                 payload: super::webtransport::ServerState::server_settings(),
@@ -1145,7 +1150,7 @@ impl RawEndpoint {
                 let Ok(mut chunks) = receive.read(true) else {
                     return;
                 };
-                match chunks.next(super::modern_wire::MAX_CONTROL_MESSAGE_SIZE + 32) {
+                match chunks.next(super::game_wire::MAX_CONTROL_MESSAGE_SIZE + 32) {
                     Ok(Some(chunk)) => chunk.bytes,
                     Ok(None) | Err(_) => return,
                 }
@@ -1169,7 +1174,7 @@ impl RawEndpoint {
         };
         let mut bytes = Vec::new();
         loop {
-            match chunks.next(super::modern_wire::MAX_CONTROL_MESSAGE_SIZE + 32) {
+            match chunks.next(super::game_wire::MAX_CONTROL_MESSAGE_SIZE + 32) {
                 Ok(Some(chunk)) => bytes.extend_from_slice(&chunk.bytes),
                 Ok(None) | Err(_) => break,
             }
@@ -1224,34 +1229,57 @@ impl RawEndpoint {
             if self.events.len() >= super::EVENT_CAPACITY {
                 return;
             }
-            let frame = {
+            let master_challenge = {
                 let Some(session) = self.sessions.get_mut(&session_id) else {
                     return;
                 };
                 if !session.prelude_read {
-                    let Ok((kind, first)) = super::modern_wire::decode_varint(&session.receive)
+                    let Ok((kind, first)) = super::game_wire::decode_varint(&session.receive)
                     else {
                         return;
                     };
                     let Ok((version, second)) =
-                        super::modern_wire::decode_varint(&session.receive[first..])
+                        super::game_wire::decode_varint(&session.receive[first..])
                     else {
                         return;
                     };
-                    if kind != super::CONTROL_STREAM_KIND || version != super::FRAMING_VERSION {
+                    let challenge_only = matches!(
+                        &session.transport,
+                        SessionTransport::WebTransport(webtransport) if webtransport.master_challenge()
+                    );
+                    let master_challenge = session.role == Role::Server
+                        && kind == super::MASTER_CHALLENGE_STREAM_KIND
+                        && (matches!(&session.transport, SessionTransport::Raw) || challenge_only);
+                    if version != super::FRAMING_VERSION
+                        || (!master_challenge
+                            && (kind != super::CONTROL_STREAM_KIND || challenge_only))
+                    {
                         self.close(session_id, "unsupported control stream");
                         return;
                     }
                     session.receive.drain(..first + second);
                     session.prelude_read = true;
+                    if master_challenge {
+                        session.handshake = Handshake::MasterChallenge;
+                    }
                 }
-                let frame = match super::modern_wire::decode_frame(&session.receive) {
+                matches!(session.handshake, Handshake::MasterChallenge)
+            };
+            if master_challenge {
+                self.process_master_challenge(session_id);
+                return;
+            }
+            let frame = {
+                let Some(session) = self.sessions.get_mut(&session_id) else {
+                    return;
+                };
+                let frame = match super::game_wire::decode_frame(&session.receive) {
                     Ok(frame) => (
                         frame.frame_type,
                         frame.payload.to_vec(),
                         frame.bytes_consumed,
                     ),
-                    Err(super::modern_wire::DecodeError::NeedMore) => return,
+                    Err(super::game_wire::DecodeError::NeedMore) => return,
                     Err(_) => {
                         self.close(session_id, "invalid control frame");
                         return;
@@ -1276,7 +1304,7 @@ impl RawEndpoint {
                 self.server_hello(session_id, &payload)
             }
             Handshake::ServerIdentity if frame_type == super::CLIENT_IDENTITY_READY_FRAME_TYPE => {
-                if payload.len() > super::modern_wire::MAX_RESUME_TOKEN_SIZE {
+                if payload.len() > super::game_wire::MAX_RESUME_TOKEN_SIZE {
                     return false;
                 }
                 self.activate(session_id, payload, None);
@@ -1305,7 +1333,7 @@ impl RawEndpoint {
                     true
                 }
                 super::RESUME_FRAME_TYPE if matches!(self.mode, Mode::Client { .. }) => {
-                    if super::modern_wire::decode_resume(&payload).is_err() {
+                    if super::game_wire::decode_resume(&payload).is_err() {
                         return false;
                     }
                     if let Mode::Client { resume, .. } = &mut self.mode {
@@ -1412,7 +1440,7 @@ impl RawEndpoint {
         &mut self,
         session_id: u64,
         payload: &[u8],
-        nonce: [u8; super::modern_wire::NONCE_SIZE],
+        nonce: [u8; super::game_wire::NONCE_SIZE],
     ) -> bool {
         let Ok(hello) = super::validate_hello(payload) else {
             return false;
@@ -1440,7 +1468,7 @@ impl RawEndpoint {
         &mut self,
         session_id: u64,
         payload: &[u8],
-        nonce: &[u8; super::modern_wire::NONCE_SIZE],
+        nonce: &[u8; super::game_wire::NONCE_SIZE],
     ) -> bool {
         let Mode::Client {
             verification: Some(verification),
@@ -1566,7 +1594,7 @@ impl RawEndpoint {
             let modern_payload = webtransport_datagram
                 .as_ref()
                 .map_or(payload.as_ref(), |datagram| datagram.payload());
-            let Ok(mut datagram) = super::modern_wire::decode_datagram(modern_payload) else {
+            let Ok(mut datagram) = super::game_wire::decode_datagram(modern_payload) else {
                 continue;
             };
             let session = self.sessions.get_mut(&session_id).unwrap();
@@ -1768,22 +1796,22 @@ impl RawEndpoint {
             };
             if map.header.is_none() {
                 let parsed = (|| {
-                    let (kind, first) = super::modern_wire::decode_varint(&map.buffer).ok()?;
+                    let (kind, first) = super::game_wire::decode_varint(&map.buffer).ok()?;
                     let (version, second) =
-                        super::modern_wire::decode_varint(&map.buffer[first..]).ok()?;
+                        super::game_wire::decode_varint(&map.buffer[first..]).ok()?;
                     if kind != super::MAP_STREAM_KIND || version != super::FRAMING_VERSION {
                         return Some(Err("unsupported map stream"));
                     }
-                    let frame =
-                        match super::modern_wire::decode_frame(&map.buffer[first + second..]) {
-                            Ok(frame) => frame,
-                            Err(super::modern_wire::DecodeError::NeedMore) => return None,
-                            Err(_) => return Some(Err("invalid map header")),
-                        };
+                    let frame = match super::game_wire::decode_frame(&map.buffer[first + second..])
+                    {
+                        Ok(frame) => frame,
+                        Err(super::game_wire::DecodeError::NeedMore) => return None,
+                        Err(_) => return Some(Err("invalid map header")),
+                    };
                     if frame.frame_type != super::MAP_HEADER_FRAME_TYPE {
                         return Some(Err("expected map header"));
                     }
-                    let header = match super::modern_wire::decode_map_header(frame.payload) {
+                    let header = match super::game_wire::decode_map_header(frame.payload) {
                         Ok(header) => header,
                         Err(_) => return Some(Err("invalid map metadata")),
                     };
@@ -1944,6 +1972,44 @@ impl RawEndpoint {
             detail,
         });
     }
+
+    fn process_master_challenge(&mut self, session_id: u64) {
+        let result = self
+            .sessions
+            .get(&session_id)
+            .map(|session| master_challenge_size(&session.receive));
+        let Some(result) = result else {
+            return;
+        };
+        let size = match result {
+            Ok(Some(size)) => size,
+            Ok(None) => return,
+            Err(()) => {
+                self.close_protocol(session_id, "invalid master challenge");
+                return;
+            }
+        };
+        let (handle, payload) = {
+            let session = self.sessions.get_mut(&session_id).unwrap();
+            session.reconnect_on_loss = false;
+            session.handshake = Handshake::Closing;
+            (session.handle, session.receive.drain(..size).collect())
+        };
+        self.push_event(
+            super::ffi::QuicEventKind::MasterChallenge,
+            session_id,
+            payload,
+            String::new(),
+            false,
+        );
+        if let Some(connection) = self.driver.connection_mut(handle) {
+            connection.close(
+                Instant::now(),
+                VarInt::from_u32(super::CLOSE_SHUTDOWN),
+                b"master challenge complete".to_vec().into(),
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1952,6 +2018,24 @@ mod tests {
     use crate::quic::{client_config, quic_generate_identity, server_config, ServerCertificatePin};
     use quinn_proto::{Dir, Event, StreamEvent};
     use std::net::{Ipv4Addr, SocketAddrV4};
+
+    #[test]
+    fn parses_master_challenge_packet() {
+        assert_eq!(master_challenge_size(b"\xff\xff"), Ok(None));
+        assert_eq!(
+            master_challenge_size(b"\xff\xff\xff\xffchalchallenge:ddnet+quic/ipv4\0token"),
+            Ok(None)
+        );
+        let packet = b"\xff\xff\xff\xffchalchallenge:ddnet+quic/ipv4\0token\0";
+        assert_eq!(master_challenge_size(packet), Ok(Some(packet.len())));
+        assert_eq!(master_challenge_size(b"invalid"), Err(()));
+        assert_eq!(
+            master_challenge_size(
+                b"\xff\xff\xff\xffchalchallenge:ddnet+quic/ipv4\0token\0trailing"
+            ),
+            Err(())
+        );
+    }
 
     fn transfer(
         now: Instant,
@@ -2000,7 +2084,8 @@ mod tests {
             identity.certificate_der.clone(),
             identity.private_key_der,
         )
-        .unwrap();
+        .unwrap()
+        .0;
         let (client_config, _) =
             client_config(ServerCertificatePin::Der(identity.certificate_der)).unwrap();
         let client_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30000).into();
@@ -2140,7 +2225,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_modern_wire_runs_without_a_runtime() {
+    fn raw_game_wire_runs_without_a_runtime() {
         let identity = quic_generate_identity("localhost").unwrap();
         let server_config = server_config(
             true,
@@ -2148,12 +2233,13 @@ mod tests {
             identity.certificate_der.clone(),
             identity.private_key_der,
         )
-        .unwrap();
+        .unwrap()
+        .0;
         let (client_config, verification) =
             client_config(ServerCertificatePin::Der(identity.certificate_der)).unwrap();
         let client_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30000).into();
         let server_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30001).into();
-        let mut server = RawEndpoint::server(10, server_config, None, true, Some(String::new()));
+        let mut server = RawEndpoint::server(10, server_config, None, true, true);
         let mut client = RawEndpoint::client(
             11,
             client_config,
@@ -2270,7 +2356,7 @@ mod tests {
         assert!(ended, "events={map_events:?}");
 
         let resume_payload =
-            super::super::modern_wire::encode_resume(&super::super::modern_wire::Resume {
+            super::super::game_wire::encode_resume(&super::super::game_wire::Resume {
                 session_id: 77,
                 token: &[9; 32],
             })
@@ -2279,7 +2365,7 @@ mod tests {
         drive_raw_pair(client_address, &mut client, server_address, &mut server);
         assert!(matches!(
             &client.mode,
-            Mode::Client { resume, .. } if resume == &resume_payload
+            Mode::Client { resume, .. } if resume.as_slice() == resume_payload
         ));
         assert!(client.reconnect(client_connected.session_id));
         drive_raw_pair(client_address, &mut client, server_address, &mut server);
@@ -2315,12 +2401,13 @@ mod tests {
             identity.certificate_der.clone(),
             identity.private_key_der,
         )
-        .unwrap();
+        .unwrap()
+        .0;
         let (client_config, verification) =
             client_config(ServerCertificatePin::Der(identity.certificate_der)).unwrap();
         let client_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30000).into();
         let server_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30001).into();
-        let mut server = RawEndpoint::server(10, server_config, None, true, None);
+        let mut server = RawEndpoint::server(10, server_config, None, true, false);
         let mut client = RawEndpoint::client(
             11,
             client_config,
@@ -2382,11 +2469,12 @@ mod tests {
             identity.certificate_der.clone(),
             identity.private_key_der,
         )
-        .unwrap();
+        .unwrap()
+        .0;
         let (client_config, verification) =
             client_config(ServerCertificatePin::Der(identity.certificate_der)).unwrap();
         let server_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40_000).into();
-        let mut server = RawEndpoint::server(10, server_config, None, true, None);
+        let mut server = RawEndpoint::server(10, server_config, None, true, false);
         let mut clients: Vec<_> = (0..2)
             .map(|index| {
                 RawEndpoint::client(
@@ -2491,11 +2579,12 @@ mod tests {
             identity.certificate_der.clone(),
             identity.private_key_der,
         )
-        .unwrap();
+        .unwrap()
+        .0;
         let (client_config, verification) =
             client_config(ServerCertificatePin::Der(identity.certificate_der)).unwrap();
         let server_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40_000).into();
-        let mut server = RawEndpoint::server(10, server_config, None, true, None);
+        let mut server = RawEndpoint::server(10, server_config, None, true, false);
         let mut clients: Vec<_> = (0..CLIENTS)
             .map(|index| {
                 RawEndpoint::client(
@@ -2618,4 +2707,35 @@ mod tests {
             "a flooded address locked out every other one"
         );
     }
+}
+
+fn master_challenge_size(payload: &[u8]) -> Result<Option<usize>, ()> {
+    if payload.len() > super::MAX_MASTER_CHALLENGE_SIZE {
+        return Err(());
+    }
+    if payload.len() < super::MASTER_CHALLENGE_PREFIX.len() {
+        return super::MASTER_CHALLENGE_PREFIX
+            .starts_with(payload)
+            .then_some(None)
+            .ok_or(());
+    }
+    if !payload.starts_with(super::MASTER_CHALLENGE_PREFIX) {
+        return Err(());
+    }
+    let strings = &payload[super::MASTER_CHALLENGE_PREFIX.len()..];
+    let Some(secret_end) = strings.iter().position(|byte| *byte == 0) else {
+        return Ok(None);
+    };
+    if secret_end == 0 {
+        return Err(());
+    }
+    let token = &strings[secret_end + 1..];
+    let Some(token_end) = token.iter().position(|byte| *byte == 0) else {
+        return Ok(None);
+    };
+    if token_end == 0 {
+        return Err(());
+    }
+    let size = super::MASTER_CHALLENGE_PREFIX.len() + secret_end + 1 + token_end + 1;
+    (size == payload.len()).then_some(Some(size)).ok_or(())
 }

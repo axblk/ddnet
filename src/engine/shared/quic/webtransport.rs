@@ -6,7 +6,7 @@ use wtransport_proto::frame::{Frame, FrameKind};
 use wtransport_proto::headers::Headers;
 use wtransport_proto::ids::{QStreamId, SessionId, StreamId as WebTransportStreamId};
 use wtransport_proto::session::{SessionRequest, SessionResponse};
-use wtransport_proto::settings::Settings;
+use wtransport_proto::settings::{SettingId, Settings};
 use wtransport_proto::stream_header::{StreamHeader, StreamKind};
 use wtransport_proto::varint::VarInt;
 
@@ -33,23 +33,23 @@ pub(super) enum Action {
 
 /// Minimal HTTP/3 and WebTransport server state for one QUIC connection.
 pub(super) struct ServerState {
-    expected_origin: String,
     streams: HashMap<StreamId, StreamState>,
     settings_received: bool,
     pending_connect: Option<(StreamId, SessionId)>,
     session_id: Option<SessionId>,
     application_stream: Option<StreamId>,
+    master_challenge: bool,
 }
 
 impl ServerState {
-    pub fn new(expected_origin: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            expected_origin,
             streams: HashMap::new(),
             settings_received: false,
             pending_connect: None,
             session_id: None,
             application_stream: None,
+            master_challenge: false,
         }
     }
 
@@ -108,6 +108,10 @@ impl ServerState {
         Some(payload)
     }
 
+    pub fn master_challenge(&self) -> bool {
+        self.master_challenge
+    }
+
     pub fn encode_datagram(&self, payload: &[u8]) -> Option<Vec<u8>> {
         let session_id = self.session_id?;
         let datagram = Datagram::new(QStreamId::from_session_id(session_id), payload);
@@ -149,11 +153,16 @@ impl ServerState {
                 .insert(stream, StreamState::Unidirectional(buffer));
             return Ok(Vec::new());
         };
-        if !matches!(frame.kind(), FrameKind::Settings)
-            || Settings::with_frame(&frame).is_err()
-            || self.settings_received
-        {
+        if !matches!(frame.kind(), FrameKind::Settings) || self.settings_received {
             return Err("invalid or duplicate HTTP/3 SETTINGS".into());
+        }
+        let settings =
+            Settings::with_frame(&frame).map_err(|_| "invalid or duplicate HTTP/3 SETTINGS")?;
+        if settings.get(SettingId::EnableConnectProtocol) != Some(VarInt::from_u32(1))
+            || settings.get(SettingId::EnableWebTransport) != Some(VarInt::from_u32(1))
+            || settings.get(SettingId::H3Datagram) != Some(VarInt::from_u32(1))
+        {
+            return Err("client did not enable WebTransport datagrams".into());
         }
         self.settings_received = true;
         self.streams.insert(stream, StreamState::Drain);
@@ -191,12 +200,9 @@ impl ServerState {
                             .map_err(|error| format!("invalid CONNECT headers: {error}"))?,
                     )
                     .map_err(|error| format!("invalid WebTransport CONNECT request: {error}"))?;
-                    let response = if request.path() != "/ddnet" {
+                    let master_challenge = request.path() == "/ddnet/master";
+                    let response = if request.path() != "/ddnet" && !master_challenge {
                         Some(SessionResponse::not_found())
-                    } else if !self.expected_origin.is_empty()
-                        && request.origin() != Some(self.expected_origin.as_str())
-                    {
-                        Some(SessionResponse::forbidden())
                     } else {
                         None
                     };
@@ -204,6 +210,7 @@ impl ServerState {
                     if let Some(response) = response {
                         return Ok(vec![response_action(stream, response, true)]);
                     }
+                    self.master_challenge = master_challenge;
                     self.pending_connect = Some((stream, webtransport_session_id(stream)?));
                     return Ok(self.accept_pending());
                 }
@@ -272,8 +279,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn master_challenge_session_uses_reserved_path() {
+        let mut server = ServerState::new();
+        server.settings_received = true;
+        let stream = StreamId::new(Side::Client, Dir::Bi, 0);
+        server.accept_stream(stream, Dir::Bi);
+        let request = SessionRequest::new("https://localhost:8080/ddnet/master").unwrap();
+        let mut request_bytes = Vec::new();
+        request
+            .headers()
+            .generate_frame()
+            .write(&mut request_bytes)
+            .unwrap();
+        assert!(matches!(
+            server.feed(stream, &request_bytes).unwrap().as_slice(),
+            [Action::Write { finish: false, .. }]
+        ));
+        assert!(server.master_challenge());
+    }
+
+    #[test]
     fn accepts_one_session_and_unwraps_application_data() {
-        let mut server = ServerState::new(String::new());
+        let mut server = ServerState::new();
         let settings_stream = StreamId::new(Side::Client, Dir::Uni, 0);
         server.accept_stream(settings_stream, Dir::Uni);
         let settings = Settings::builder()
@@ -316,11 +343,11 @@ mod tests {
         Frame::new_webtransport(server.session_id.unwrap())
             .write(&mut application)
             .unwrap();
-        application.extend_from_slice(b"modern wire");
+        application.extend_from_slice(b"game wire");
         let actions = server.feed(application_stream, &application).unwrap();
         assert!(matches!(
             actions.as_slice(),
-            [Action::ApplicationStream { initial, .. }] if initial == b"modern wire"
+            [Action::ApplicationStream { initial, .. }] if initial == b"game wire"
         ));
 
         let encoded = server.encode_datagram(b"snapshot").unwrap();
@@ -328,5 +355,22 @@ mod tests {
             server.decode_datagram(&encoded).unwrap().payload(),
             b"snapshot"
         );
+    }
+
+    #[test]
+    fn requires_webtransport_datagram_settings() {
+        let mut server = ServerState::new();
+        let stream = StreamId::new(Side::Client, Dir::Uni, 0);
+        server.accept_stream(stream, Dir::Uni);
+        let mut bytes = Vec::new();
+        StreamHeader::new_control().write(&mut bytes).unwrap();
+        Settings::builder()
+            .enable_connect_protocol()
+            .enable_webtransport()
+            .build()
+            .generate_frame()
+            .write(&mut bytes)
+            .unwrap();
+        assert!(server.feed(stream, &bytes).is_err());
     }
 }

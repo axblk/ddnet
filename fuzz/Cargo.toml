@@ -18,8 +18,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "modern_wire"
-path = "fuzz_targets/modern_wire.rs"
+name = "game_wire"
+path = "fuzz_targets/game_wire.rs"
 test = false
 doc = false
 bench = false

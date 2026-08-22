@@ -1,11 +1,11 @@
-#include "modern_wire.h"
+#include "game_wire.h"
 
 #include <base/mem.h>
 
 #include <bit>
 #include <limits>
 
-namespace ModernWire
+namespace GameWire
 {
 	namespace
 	{

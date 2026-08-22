@@ -1,13 +1,13 @@
-#include <engine/shared/modern_wire.h>
+#include <engine/shared/game_wire.h>
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <vector>
 
-using namespace ModernWire;
+using namespace GameWire;
 
-TEST(ModernWire, VarIntGoldenVectors)
+TEST(GameWire, VarIntGoldenVectors)
 {
 	struct CVector
 	{
@@ -40,7 +40,7 @@ TEST(ModernWire, VarIntGoldenVectors)
 	EXPECT_FALSE(EncodeVarInt(MAX_VARINT + 1, vEncoded));
 }
 
-TEST(ModernWire, StreamAndFrameGoldenVectors)
+TEST(GameWire, StreamAndFrameGoldenVectors)
 {
 	std::vector<unsigned char> vStream;
 	ASSERT_TRUE(EncodeStreamHeader(EStreamKind::CONTROL, vStream));
@@ -74,7 +74,7 @@ TEST(ModernWire, StreamAndFrameGoldenVectors)
 	EXPECT_EQ(DecodeFrame(vOversized.data(), vOversized.size(), Frame), EDecodeResult::LIMIT_EXCEEDED);
 }
 
-TEST(ModernWire, HelloRoundtripAndLimits)
+TEST(GameWire, HelloRoundtripAndLimits)
 {
 	CHelloView Hello = {};
 	Hello.m_Major = VERSION_MAJOR;
@@ -101,7 +101,7 @@ TEST(ModernWire, HelloRoundtripAndLimits)
 	EXPECT_EQ(DecodeHello({vEncoded.data(), vEncoded.size()}, Decoded), EDecodeResult::VERSION_MISMATCH);
 }
 
-TEST(ModernWire, DatagramGoldenVector)
+TEST(GameWire, DatagramGoldenVector)
 {
 	const unsigned char aFirst[] = {0xaa, 0xbb};
 	const unsigned char aSecond[] = {0xcc};
@@ -127,7 +127,7 @@ TEST(ModernWire, DatagramGoldenVector)
 	EXPECT_EQ(DecodeDatagram(aOversized.data(), aOversized.size(), Datagram), EDecodeResult::LIMIT_EXCEEDED);
 }
 
-TEST(ModernWire, MapHeaderAndResumeGoldenVectors)
+TEST(GameWire, MapHeaderAndResumeGoldenVectors)
 {
 	CMapHeaderView Header = {};
 	Header.m_Format = EMapFormat::DATAFILE;
@@ -174,7 +174,7 @@ TEST(ModernWire, MapHeaderAndResumeGoldenVectors)
 	EXPECT_EQ(DecodeMapHeader({vExpected.data(), vExpected.size()}, Decoded), EDecodeResult::MALFORMED);
 }
 
-TEST(ModernWire, DeterministicParserFuzz)
+TEST(GameWire, DeterministicParserFuzz)
 {
 	std::array<unsigned char, MAX_DATAGRAM_SIZE> aData = {};
 	uint32_t State = 0x4d595df4;

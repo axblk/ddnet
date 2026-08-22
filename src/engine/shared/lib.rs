@@ -15,7 +15,7 @@
 extern crate ddnet_test;
 
 mod config;
-mod modern_wire;
+mod game_wire;
 #[cfg(feature = "quic")]
 mod quic;
 mod rust_version;

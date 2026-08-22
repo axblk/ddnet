@@ -52,7 +52,7 @@ void CTooltips::DoToolTip(const void *pId, const CUIRect *pNearRect, const char 
 	}
 }
 
-void CTooltips::OnRender()
+void CTooltips::OnRenderApplicationOverlay()
 {
 	if(m_ActiveTooltip.has_value())
 	{

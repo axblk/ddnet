@@ -3,6 +3,7 @@
 #ifndef GAME_CLIENT_PREDICTION_GAMEWORLD_H
 #define GAME_CLIENT_PREDICTION_GAMEWORLD_H
 
+#include <game/client/session_game_config.h>
 #include <game/gamecore.h>
 #include <game/teamscore.h>
 
@@ -37,9 +38,10 @@ public:
 
 	CGameWorld();
 	~CGameWorld();
-	void Init(CCollision *pCollision, CTuningParams *pTuningList, const CMapBugs *pMapBugs);
+	void Init(CCollision *pCollision, CTuningParams *pTuningList, const CMapBugs *pMapBugs, const CSessionGameConfig *pGameConfig);
 
 	CEntity *FindFirst(int Type);
+	const CEntity *FindFirst(int Type) const;
 	CEntity *FindLast(int Type);
 	int FindEntities(vec2 Pos, float Radius, CEntity **ppEnts, int Max, int Type);
 	CCharacter *IntersectCharacter(vec2 Pos0, vec2 Pos1, float Radius, vec2 &NewPos, const CCharacter *pNotThis = nullptr, int CollideWith = -1, const CCharacter *pThisOnly = nullptr);
@@ -63,7 +65,9 @@ public:
 	CTeamsCore *Teams() { return &m_Teams; }
 	std::vector<SSwitchers> &Switchers() { return m_Core.m_vSwitchers; }
 	CEntity *GetEntity(int Id, int EntityType);
+	const CEntity *GetEntity(int Id, int EntityType) const;
 	CCharacter *GetCharacterById(int Id) { return (Id >= 0 && Id < MAX_CLIENTS) ? m_apCharacters[Id] : nullptr; }
+	const CCharacter *GetCharacterById(int Id) const { return (Id >= 0 && Id < MAX_CLIENTS) ? m_apCharacters[Id] : nullptr; }
 
 	// from gamecontext
 	void CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int ActivatedTeam, CClientMask Mask, int Id = -1);
@@ -101,6 +105,7 @@ public:
 	void NetObjEnd();
 	void CopyWorld(CGameWorld *pFrom);
 	CEntity *FindMatch(int ObjId, int ObjType, const void *pObjData);
+	const CEntity *FindMatch(int ObjId, int ObjType, const void *pObjData) const;
 	void Clear();
 
 	const CTuningParams *TuningList() const { return m_pTuningList; }
@@ -109,6 +114,7 @@ public:
 	CTuningParams *GlobalTuning() { return &TuningList()[0]; }
 	const CTuningParams *GetTuning(int i) const { return &TuningList()[i]; }
 	CTuningParams *GetTuning(int i) { return &TuningList()[i]; }
+	const CSessionGameConfig *GameConfig() const { return m_pGameConfig; }
 
 	bool EmulateBug(int Bug) const;
 
@@ -133,7 +139,6 @@ public:
 
 	void CreatePredictedEvent(const CPredictedEvent &NewEvent);
 	bool CheckPredictedEventHandled(const CPredictedEvent &CheckEvent);
-	void PlayPredictedEvents(int Tick);
 
 	void CreatePredictedSound(vec2 Pos, int SoundId, int Id = -1);
 	void CreatePredictedExplosionEvent(vec2 Pos, int Id = -1);
@@ -151,6 +156,7 @@ private:
 	CCollision *m_pCollision;
 	CTuningParams *m_pTuningList;
 	const CMapBugs *m_pMapBugs;
+	const CSessionGameConfig *m_pGameConfig;
 };
 
 class CCharOrder

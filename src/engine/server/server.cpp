@@ -27,6 +27,7 @@
 #include <engine/shared/econ.h>
 #include <engine/shared/fifo.h>
 #include <engine/shared/filecollection.h>
+#include <engine/shared/game_wire.h>
 #include <engine/shared/host_lookup.h>
 #include <engine/shared/json.h>
 #include <engine/shared/jsonwriter.h>
@@ -39,7 +40,9 @@
 #include <engine/shared/protocol7.h>
 #include <engine/shared/protocol_ex.h>
 #include <engine/shared/rust_version.h>
+#include <engine/shared/serverinfo.h>
 #include <engine/shared/snapshot.h>
+#include <engine/shared/websockets.h>
 #include <engine/storage.h>
 
 #include <game/version.h>
@@ -48,6 +51,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -123,7 +127,7 @@ int CServerBan::BanExt(T *pBanPool, const typename T::CDataType *pData, int Seco
 			CNetHash NetHash(&Data);
 			char aBuf[256];
 			MakeBanInfo(pBanPool->Find(&Data, &NetHash), aBuf, sizeof(aBuf), MSGTYPE_PLAYER);
-			Server()->m_NetServer.Drop(i, aBuf);
+			Server()->DropClient(i, aBuf);
 		}
 	}
 
@@ -220,7 +224,10 @@ void CServer::CClient::Reset()
 {
 	// reset input
 	for(auto &Input : m_aInputs)
+	{
 		Input.m_GameTick = -1;
+		Input.m_ReceiveTime = 0;
+	}
 	m_CurrentInput = 0;
 	mem_zero(&m_LastPreInput, sizeof(m_LastPreInput));
 	mem_zero(&m_LatestInput, sizeof(m_LatestInput));
@@ -239,6 +246,12 @@ void CServer::CClient::Reset()
 
 	std::fill(std::begin(m_aIdMap), std::end(m_aIdMap), -1);
 	std::fill(std::begin(m_aReverseIdMap), std::end(m_aReverseIdMap), -1);
+	m_QuicResumeSessionId = 0;
+	m_aQuicResumeToken.fill(0);
+	m_QuicResumeDeadline = 0;
+	m_QuicResumeArmed = false;
+	m_QuicDetached = false;
+	m_QuicDropPending = false;
 }
 
 CServer::CServer()
@@ -530,7 +543,20 @@ void CServer::Kick(int ClientId, const char *pReason)
 		return;
 	}
 
-	m_NetServer.Drop(ClientId, pReason);
+	DropClient(ClientId, pReason);
+}
+
+void CServer::DropClient(int ClientId, const char *pReason)
+{
+	if(ClientId < 0 || ClientId >= MAX_CLIENTS || m_aClients[ClientId].m_State == CClient::STATE_EMPTY)
+		return;
+	if(!m_aClients[ClientId].m_Quic)
+	{
+		m_NetServer.Drop(ClientId, pReason);
+		return;
+	}
+	m_QuicTransport.Close(m_aClients[ClientId].m_QuicSession, pReason);
+	DelClientCallback(ClientId, pReason, this);
 }
 
 void CServer::Ban(int ClientId, int Seconds, const char *pReason, bool VerbatimReason)
@@ -611,6 +637,15 @@ int CServer::Init()
 		Client.m_TrafficSince = 0;
 		Client.m_ShowIps = false;
 		Client.m_DebugDummy = false;
+		Client.m_Quic = false;
+		Client.m_WebTransport = false;
+		Client.m_QuicSession = CQuicSessionId();
+		Client.m_QuicResumeSessionId = 0;
+		Client.m_aQuicResumeToken.fill(0);
+		Client.m_QuicResumeDeadline = 0;
+		Client.m_QuicResumeArmed = false;
+		Client.m_QuicDetached = false;
+		Client.m_QuicDropPending = false;
 		Client.m_AuthKey = -1;
 		Client.m_Latency = 0;
 		Client.m_Sixup = false;
@@ -749,6 +784,8 @@ const NETADDR *CServer::ClientAddr(int ClientId) const
 	{
 		return &m_aClients[ClientId].m_DebugDummyAddr;
 	}
+	if(m_aClients[ClientId].m_Quic)
+		return &m_aClients[ClientId].m_QuicAddr;
 	return m_NetServer.ClientAddr(ClientId);
 }
 
@@ -760,7 +797,18 @@ const std::array<char, NETADDR_MAXSTRSIZE> &CServer::ClientAddrStringImpl(int Cl
 	{
 		return IncludePort ? m_aClients[ClientId].m_aDebugDummyAddrString : m_aClients[ClientId].m_aDebugDummyAddrStringNoPort;
 	}
+	if(m_aClients[ClientId].m_Quic)
+		return IncludePort ? m_aClients[ClientId].m_aQuicAddrString : m_aClients[ClientId].m_aQuicAddrStringNoPort;
 	return m_NetServer.ClientAddrString(ClientId, IncludePort);
+}
+
+const char *CServer::ClientTransportName(int ClientId) const
+{
+	if(ClientId < 0 || ClientId >= MAX_CLIENTS)
+		return "unknown";
+	if(!m_aClients[ClientId].m_Quic)
+		return "udp";
+	return m_aClients[ClientId].m_WebTransport ? "webtransport" : "quic";
 }
 
 const char *CServer::ClientName(int ClientId) const
@@ -921,12 +969,12 @@ static inline bool RepackMsg(const CMsgPacker *pMsg, CPacker &Packer, bool Sixup
 
 int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientId)
 {
-	CNetChunk Packet;
-	mem_zero(&Packet, sizeof(CNetChunk));
+	CNetChunk Packet = {};
 	if(Flags & MSGFLAG_VITAL)
 		Packet.m_Flags |= NETSENDFLAG_VITAL;
 	if(Flags & MSGFLAG_FLUSH)
 		Packet.m_Flags |= NETSENDFLAG_FLUSH;
+	const bool Vital = (Flags & MSGFLAG_VITAL) != 0;
 
 	if(ClientId < 0)
 	{
@@ -958,7 +1006,15 @@ int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientId)
 					{
 						continue;
 					}
-					m_NetServer.Send(&Packet);
+					if(m_aClients[i].m_Quic)
+					{
+						if(m_aClients[i].m_QuicDetached || m_aClients[i].m_QuicDropPending)
+							continue;
+						if(!m_QuicTransport.Send(m_aClients[i].m_QuicSession, Packet.m_pData, Packet.m_DataSize, Vital) && Vital)
+							m_aClients[i].m_QuicDropPending = true;
+					}
+					else
+						m_NetServer.Send(&Packet);
 				}
 			}
 		}
@@ -990,7 +1046,17 @@ int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientId)
 		}
 
 		if(!(Flags & MSGFLAG_NOSEND))
-			m_NetServer.Send(&Packet);
+		{
+			if(m_aClients[ClientId].m_Quic)
+			{
+				if(m_aClients[ClientId].m_QuicDetached || m_aClients[ClientId].m_QuicDropPending)
+					return 0;
+				if(!m_QuicTransport.Send(m_aClients[ClientId].m_QuicSession, Packet.m_pData, Packet.m_DataSize, Vital) && Vital)
+					m_aClients[ClientId].m_QuicDropPending = true;
+			}
+			else
+				m_NetServer.Send(&Packet);
+		}
 	}
 
 	return 0;
@@ -998,6 +1064,15 @@ int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientId)
 
 void CServer::SendMsgRaw(int ClientId, const void *pData, int Size, int Flags)
 {
+	if(m_aClients[ClientId].m_Quic)
+	{
+		if(m_aClients[ClientId].m_QuicDetached || m_aClients[ClientId].m_QuicDropPending)
+			return;
+		const bool Vital = (Flags & MSGFLAG_VITAL) != 0;
+		if(!m_QuicTransport.Send(m_aClients[ClientId].m_QuicSession, pData, Size, Vital) && Vital)
+			m_aClients[ClientId].m_QuicDropPending = true;
+		return;
+	}
 	CNetChunk Packet;
 	mem_zero(&Packet, sizeof(CNetChunk));
 	Packet.m_ClientId = ClientId;
@@ -1040,7 +1115,7 @@ void CServer::DoSnapshot()
 	for(int i = 0; i < MaxClients(); i++)
 	{
 		// client must be ingame to receive snapshots
-		if(m_aClients[i].m_State != CClient::STATE_INGAME)
+		if(m_aClients[i].m_State != CClient::STATE_INGAME || m_aClients[i].m_QuicDetached)
 			continue;
 
 		// this client is trying to recover, don't spam snapshots
@@ -1174,7 +1249,7 @@ int CServer::ClientRejoinCallback(int ClientId, void *pUser)
 	CServer *pThis = (CServer *)pUser;
 
 	pThis->m_aClients[ClientId].m_AuthKey = -1;
-	pThis->m_aClients[ClientId].m_pRconCmdToSend = nullptr;
+	pThis->m_aClients[ClientId].m_RconCmdToSend.clear();
 	pThis->m_aClients[ClientId].m_MaplistEntryToSend = CClient::MAPLIST_UNINITIALIZED;
 	pThis->m_aClients[ClientId].m_DDNetVersion = VERSION_NONE;
 	pThis->m_aClients[ClientId].m_GotDDNetVersionPacket = false;
@@ -1204,10 +1279,13 @@ int CServer::NewClientNoAuthCallback(int ClientId, void *pUser)
 	pThis->m_aClients[ClientId].m_AuthKey = -1;
 	pThis->m_aClients[ClientId].m_AuthTries = 0;
 	pThis->m_aClients[ClientId].m_AuthHidden = false;
-	pThis->m_aClients[ClientId].m_pRconCmdToSend = nullptr;
+	pThis->m_aClients[ClientId].m_RconCmdToSend.clear();
 	pThis->m_aClients[ClientId].m_MaplistEntryToSend = CClient::MAPLIST_UNINITIALIZED;
 	pThis->m_aClients[ClientId].m_ShowIps = false;
 	pThis->m_aClients[ClientId].m_DebugDummy = false;
+	pThis->m_aClients[ClientId].m_Quic = false;
+	pThis->m_aClients[ClientId].m_WebTransport = false;
+	pThis->m_aClients[ClientId].m_QuicSession = CQuicSessionId();
 	pThis->m_aClients[ClientId].m_ForceHighBandwidthOnSpectate = false;
 	pThis->m_aClients[ClientId].m_DDNetVersion = VERSION_NONE;
 	pThis->m_aClients[ClientId].m_GotDDNetVersionPacket = false;
@@ -1236,7 +1314,7 @@ int CServer::NewClientCallback(int ClientId, void *pUser, bool Sixup)
 	pThis->m_aClients[ClientId].m_AuthKey = -1;
 	pThis->m_aClients[ClientId].m_AuthTries = 0;
 	pThis->m_aClients[ClientId].m_AuthHidden = false;
-	pThis->m_aClients[ClientId].m_pRconCmdToSend = nullptr;
+	pThis->m_aClients[ClientId].m_RconCmdToSend.clear();
 	pThis->m_aClients[ClientId].m_MaplistEntryToSend = CClient::MAPLIST_UNINITIALIZED;
 	pThis->m_aClients[ClientId].m_Traffic = 0;
 	pThis->m_aClients[ClientId].m_TrafficSince = 0;
@@ -1304,9 +1382,12 @@ void CServer::SendConnLoggingCommand(CONN_LOGGING_CMD Cmd, const NETADDR *pAddr)
 int CServer::DelClientCallback(int ClientId, const char *pReason, void *pUser)
 {
 	CServer *pThis = (CServer *)pUser;
+	const bool ExternalSlot = pThis->m_aClients[ClientId].m_Quic || pThis->m_aClients[ClientId].m_DebugDummy;
+	if(pThis->m_aClients[ClientId].m_Quic)
+		pThis->m_aClients[ClientId].m_QuicDetached = true;
 
 	char aBuf[256];
-	str_format(aBuf, sizeof(aBuf), "client dropped. cid=%d addr=<{%s}> reason='%s'", ClientId, pThis->ClientAddrString(ClientId, true), pReason);
+	str_format(aBuf, sizeof(aBuf), "client dropped. cid=%d addr=<{%s}> transport=%s reason='%s'", ClientId, pThis->ClientAddrString(ClientId, true), pThis->ClientTransportName(ClientId), pReason);
 	pThis->Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "server", aBuf);
 
 #if defined(CONF_FAMILY_UNIX)
@@ -1325,13 +1406,22 @@ int CServer::DelClientCallback(int ClientId, const char *pReason, void *pUser)
 	pThis->m_aClients[ClientId].m_AuthKey = -1;
 	pThis->m_aClients[ClientId].m_AuthTries = 0;
 	pThis->m_aClients[ClientId].m_AuthHidden = false;
-	pThis->m_aClients[ClientId].m_pRconCmdToSend = nullptr;
+	pThis->m_aClients[ClientId].m_RconCmdToSend.clear();
 	pThis->m_aClients[ClientId].m_MaplistEntryToSend = CClient::MAPLIST_UNINITIALIZED;
 	pThis->m_aClients[ClientId].m_Traffic = 0;
 	pThis->m_aClients[ClientId].m_TrafficSince = 0;
 	pThis->m_aClients[ClientId].m_ShowIps = false;
 	pThis->m_aClients[ClientId].m_DebugDummy = false;
 	pThis->m_aClients[ClientId].m_ForceHighBandwidthOnSpectate = false;
+	pThis->m_aClients[ClientId].m_Quic = false;
+	pThis->m_aClients[ClientId].m_WebTransport = false;
+	pThis->m_aClients[ClientId].m_QuicSession = CQuicSessionId();
+	pThis->m_aClients[ClientId].m_QuicResumeSessionId = 0;
+	pThis->m_aClients[ClientId].m_aQuicResumeToken.fill(0);
+	pThis->m_aClients[ClientId].m_QuicResumeDeadline = 0;
+	pThis->m_aClients[ClientId].m_QuicResumeArmed = false;
+	pThis->m_aClients[ClientId].m_QuicDetached = false;
+	pThis->m_aClients[ClientId].m_QuicDropPending = false;
 	pThis->m_aPrevStates[ClientId] = CClient::STATE_EMPTY;
 	pThis->m_aClients[ClientId].m_Snapshots.PurgeAll();
 	pThis->m_aClients[ClientId].m_Sixup = false;
@@ -1340,6 +1430,8 @@ int CServer::DelClientCallback(int ClientId, const char *pReason, void *pUser)
 
 	pThis->GameServer()->TeehistorianRecordPlayerDrop(ClientId, pReason);
 	pThis->Antibot()->OnEngineClientDrop(ClientId, pReason);
+	if(ExternalSlot)
+		pThis->m_NetServer.SetExternalSlot(ClientId, nullptr);
 #if defined(CONF_FAMILY_UNIX)
 	pThis->SendConnLoggingCommand(CLOSE_SESSION, &Addr);
 #endif
@@ -1441,6 +1533,26 @@ void CServer::SendMapData(int ClientId, int Chunk)
 	}
 }
 
+bool CServer::UpdateQuicMaps()
+{
+	if(!m_QuicTransport.IsRunning())
+		return true;
+	for(uint32_t MapType = MAP_TYPE_SIX; MapType <= MAP_TYPE_SIXUP; ++MapType)
+	{
+		if(MapType == MAP_TYPE_SIXUP && !Config()->m_SvSixup)
+			continue;
+		if(!m_QuicTransport.SetMap(
+			   MapType,
+			   GameServer()->Map()->BaseName(),
+			   m_aCurrentMapCrc[MapType],
+			   m_aCurrentMapSha256[MapType].data,
+			   m_apCurrentMapData[MapType],
+			   m_aCurrentMapSize[MapType]))
+			return false;
+	}
+	return true;
+}
+
 void CServer::SendMapReload(int ClientId)
 {
 	CMsgPacker Msg(NETMSG_MAP_RELOAD, true);
@@ -1526,19 +1638,26 @@ void CServer::UpdateClientRconCommands(int ClientId)
 	CClient &Client = m_aClients[ClientId];
 	if(Client.m_State != CClient::STATE_INGAME ||
 		!IsRconAuthed(ClientId) ||
-		Client.m_pRconCmdToSend == nullptr)
+		Client.m_RconCmdToSend.empty())
 	{
 		return;
 	}
 
-	for(int i = 0; i < MAX_RCONCMD_SEND && Client.m_pRconCmdToSend; ++i)
+	for(int i = 0; i < MAX_RCONCMD_SEND && !Client.m_RconCmdToSend.empty(); ++i)
 	{
-		SendRconCmdAdd(Client.m_pRconCmdToSend, ClientId);
-		Client.m_pRconCmdToSend = Console()->NextCommandInfo(Client.m_pRconCmdToSend, ClientId, CFGFLAG_SERVER);
-		if(Client.m_pRconCmdToSend == nullptr)
+		const IConsole::ICommandInfo *pCommandInfo = Console()->FirstCommandInfoAtOrAfter(Client.m_RconCmdToSend.c_str(), ClientId, CFGFLAG_SERVER);
+		if(!pCommandInfo)
 		{
+			Client.m_RconCmdToSend.clear();
 			SendRconCmdGroupEnd(ClientId);
+			break;
 		}
+
+		SendRconCmdAdd(pCommandInfo, ClientId);
+		const IConsole::ICommandInfo *pNextCommandInfo = Console()->NextCommandInfo(pCommandInfo, ClientId, CFGFLAG_SERVER);
+		Client.m_RconCmdToSend = pNextCommandInfo ? pNextCommandInfo->Name() : "";
+		if(Client.m_RconCmdToSend.empty())
+			SendRconCmdGroupEnd(ClientId);
 	}
 }
 
@@ -1571,7 +1690,7 @@ void CServer::UpdateClientMaplistEntries(int ClientId)
 	if(Client.m_State != CClient::STATE_INGAME ||
 		!IsRconAuthed(ClientId) ||
 		Client.m_Sixup ||
-		Client.m_pRconCmdToSend != nullptr || // wait for command sending
+		!Client.m_RconCmdToSend.empty() || // wait for command sending
 		Client.m_MaplistEntryToSend == CClient::MAPLIST_DISABLED ||
 		Client.m_MaplistEntryToSend == CClient::MAPLIST_DONE)
 	{
@@ -1695,6 +1814,8 @@ bool CServer::TakePreInputBudget(int ClientId)
 void CServer::ProcessClientPacket(CNetChunk *pPacket)
 {
 	int ClientId = pPacket->m_ClientId;
+	if(ClientId < 0 || ClientId >= MAX_CLIENTS || m_aClients[ClientId].m_State == CClient::STATE_EMPTY)
+		return;
 	CUnpacker Unpacker;
 	Unpacker.Reset(pPacket->m_pData, pPacket->m_DataSize);
 	CMsgPacker Packer(NETMSG_EX, true);
@@ -1785,6 +1906,25 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 		{
 			if(m_aClients[ClientId].m_State < CClient::STATE_CONNECTING)
 				return;
+			if(m_aClients[ClientId].m_Quic)
+			{
+				if(!m_aClients[ClientId].m_Sixup)
+				{
+					const int Chunk = Unpacker.GetInt();
+					if(Unpacker.Error() || Chunk != 0)
+						return;
+				}
+				if(m_aClients[ClientId].m_NextMapChunk != 0)
+					return;
+				const uint32_t MapType = m_aClients[ClientId].m_Sixup ? MAP_TYPE_SIXUP : MAP_TYPE_SIX;
+				if(!m_QuicTransport.SendMap(m_aClients[ClientId].m_QuicSession, MapType))
+				{
+					m_QuicTransport.Close(m_aClients[ClientId].m_QuicSession, "map stream queue full");
+					return;
+				}
+				m_aClients[ClientId].m_NextMapChunk = -1;
+				return;
+			}
 
 			if(m_aClients[ClientId].m_Sixup)
 			{
@@ -1826,7 +1966,7 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 		}
 		else if(Msg == NETMSG_INPUT)
 		{
-			if((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0)
+			if(pPacket->m_Flags & NET_CHUNKFLAG_VITAL)
 			{
 				return;
 			}
@@ -1860,6 +2000,7 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 				return;
 			}
 
+			const int PreviousAckedSnapshot = m_aClients[ClientId].m_LastAckedSnapshot;
 			m_aClients[ClientId].m_LastAckedSnapshot = LastAckedSnapshot;
 			if(m_aClients[ClientId].m_LastAckedSnapshot >= MIN_TICK)
 			{
@@ -1868,7 +2009,10 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 				int64_t TagTime;
 				if(m_aClients[ClientId].m_Snapshots.Get(m_aClients[ClientId].m_LastAckedSnapshot, &TagTime, nullptr, nullptr) >= 0)
 				{
-					m_aClients[ClientId].m_Latency = (int)(((time_get() - TagTime) * 1000) / time_freq());
+					const int64_t Age = time_get() - TagTime;
+					m_aClients[ClientId].m_Latency = (int)((Age * 1000) / time_freq());
+					if(Config()->m_SvTestingCommands && LastAckedSnapshot > PreviousAckedSnapshot && m_vBaselineSnapshotAckAgeMicroseconds.size() < 10000)
+						m_vBaselineSnapshotAckAgeMicroseconds.push_back(Age * 1000000 / time_freq());
 				}
 			}
 
@@ -1897,6 +2041,7 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 			{
 				return;
 			}
+			pInput->m_ReceiveTime = time_get();
 
 			if(g_Config.m_SvPreInput &&
 				IntendedTick <= Tick() + 4 * TickSpeed() + 1 &&
@@ -1980,8 +2125,7 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 		else if(Msg == NETMSG_PING)
 		{
 			CMsgPacker Msgp(NETMSG_PING_REPLY, true);
-			int Vital = (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 ? MSGFLAG_VITAL : 0;
-			SendMsg(&Msgp, MSGFLAG_FLUSH | Vital, ClientId);
+			SendMsg(&Msgp, ((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) ? MSGFLAG_VITAL : 0) | MSGFLAG_FLUSH, ClientId);
 		}
 		else if(Msg == NETMSG_PINGEX)
 		{
@@ -1992,8 +2136,7 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 			}
 			CMsgPacker Msgp(NETMSG_PONGEX, true);
 			Msgp.AddRaw(pId, sizeof(*pId));
-			int Vital = (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 ? MSGFLAG_VITAL : 0;
-			SendMsg(&Msgp, MSGFLAG_FLUSH | Vital, ClientId);
+			SendMsg(&Msgp, ((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) ? MSGFLAG_VITAL : 0) | MSGFLAG_FLUSH, ClientId);
 		}
 		else
 		{
@@ -2042,7 +2185,7 @@ void CServer::OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPass
 		// wrong version
 		char aReason[256];
 		str_format(aReason, sizeof(aReason), "Wrong version. Server is running '%s' and client '%s'", GameServer()->NetVersion(), pVersion);
-		m_NetServer.Drop(ClientId, aReason);
+		DropClient(ClientId, aReason);
 		return;
 	}
 
@@ -2053,7 +2196,7 @@ void CServer::OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPass
 	if(Config()->m_Password[0] != 0 && str_comp(Config()->m_Password, pPassword) != 0)
 	{
 		// wrong password
-		m_NetServer.Drop(ClientId, "Wrong password");
+		DropClient(ClientId, "Wrong password");
 		return;
 	}
 
@@ -2069,7 +2212,7 @@ void CServer::OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPass
 	// reserved slot
 	if(NumConnectedClients > MaxClients() - Config()->m_SvReservedSlots && !CheckReservedSlotAuth(ClientId, pPassword))
 	{
-		m_NetServer.Drop(ClientId, "This server is full");
+		DropClient(ClientId, "This server is full");
 		return;
 	}
 
@@ -2085,9 +2228,10 @@ void CServer::OnNetMsgReady(int ClientId)
 	{
 		log_debug(
 			"server",
-			"player is ready. ClientId=%d addr=<{%s}> secure=%s",
+			"player is ready. ClientId=%d addr=<{%s}> transport=%s secure=%s",
 			ClientId,
 			ClientAddrString(ClientId, true),
+			ClientTransportName(ClientId),
 			m_NetServer.HasSecurityToken(ClientId) ? "yes" : "no");
 
 		void *pPersistentData = nullptr;
@@ -2114,9 +2258,10 @@ void CServer::OnNetMsgEnterGame(int ClientId)
 
 	log_info(
 		"server",
-		"player has entered the game. ClientId=%d addr=<{%s}> sixup=%d",
+		"player has entered the game. ClientId=%d addr=<{%s}> transport=%s sixup=%d",
 		ClientId,
 		ClientAddrString(ClientId, true),
+		ClientTransportName(ClientId),
 		IsSixup(ClientId));
 	m_aClients[ClientId].m_State = CClient::STATE_INGAME;
 	if(!IsSixup(ClientId))
@@ -2130,6 +2275,8 @@ void CServer::OnNetMsgEnterGame(int ClientId)
 		SendMsg(&ServerInfoMessage, MSGFLAG_VITAL | MSGFLAG_FLUSH, ClientId);
 	}
 	GameServer()->OnClientEnter(ClientId);
+	if(m_aClients[ClientId].m_Quic && !IssueQuicResume(ClientId))
+		DropClient(ClientId, "Could not issue QUIC resume token");
 }
 
 void CServer::OnNetMsgRconCmd(int ClientId, const char *pCmd)
@@ -2202,9 +2349,10 @@ void CServer::OnNetMsgRconAuth(int ClientId, const char *pName, const char *pPw,
 			m_aClients[ClientId].m_AuthKey = KeySlot;
 			if(SendRconCmds)
 			{
-				m_aClients[ClientId].m_pRconCmdToSend = Console()->FirstCommandInfo(ClientId, CFGFLAG_SERVER);
+				const IConsole::ICommandInfo *pFirstCommandInfo = Console()->FirstCommandInfo(ClientId, CFGFLAG_SERVER);
+				m_aClients[ClientId].m_RconCmdToSend = pFirstCommandInfo ? pFirstCommandInfo->Name() : "";
 				SendRconCmdGroupStart(ClientId);
-				if(m_aClients[ClientId].m_pRconCmdToSend == nullptr)
+				if(m_aClients[ClientId].m_RconCmdToSend.empty())
 				{
 					SendRconCmdGroupEnd(ClientId);
 				}
@@ -2246,7 +2394,7 @@ void CServer::OnNetMsgRconAuth(int ClientId, const char *pName, const char *pPw,
 		if(m_aClients[ClientId].m_AuthTries >= Config()->m_SvRconMaxTries)
 		{
 			if(!Config()->m_SvRconBantime)
-				m_NetServer.Drop(ClientId, "Too many remote console authentication tries");
+				DropClient(ClientId, "Too many remote console authentication tries");
 			else
 				m_ServerBan.BanAddr(ClientAddr(ClientId), Config()->m_SvRconBantime * 60, "Too many remote console authentication tries", false);
 		}
@@ -2311,6 +2459,13 @@ void CServer::CCache::AddChunk(const void *pData, int Size)
 void CServer::CCache::Clear()
 {
 	m_vCache.clear();
+}
+
+const SHA256_DIGEST *CServer::SharedQuicCertificateSha256() const
+{
+	if(!m_QuicStarted)
+		return nullptr;
+	return m_QuicTransport.CertificateSha256();
 }
 
 void CServer::CacheServerInfo(CCache *pCache, int Type, bool SendClients)
@@ -2400,7 +2555,38 @@ void CServer::CacheServerInfo(CCache *pCache, int Type, bool SendClients)
 	ADD_INT(p, std::min(MaxClientsProtocol, std::max(MaxClients - Config()->m_SvReservedSlots, ClientCount))); // max clients
 
 	if(Type == SERVERINFO_EXTENDED)
-		p.AddString("", 0); // extra info, reserved
+	{
+		char aExtraInfo[QUIC_SERVERINFO_EXTRA_MAXSIZE] = {};
+		// There is no master server on a LAN, so this answer is the only place a
+		// client learns about the modern transports. WebTransport runs without an
+		// identity binding, so a server that serves it alone has to be able to say
+		// so without one.
+		const CServerIdentityBinding *pIdentity = m_QuicStarted ? m_QuicTransport.ServerIdentity() : nullptr;
+		if(pIdentity != nullptr || m_WebTransportStarted)
+		{
+			CQuicServerInfoExtra Extra = {};
+			Extra.m_RawQuic = pIdentity != nullptr;
+			if(pIdentity != nullptr)
+				Extra.m_IdentityFingerprint = sha256(pIdentity->m_PublicKey.data(), pIdentity->m_PublicKey.size());
+			Extra.m_WebTransport = m_WebTransportStarted;
+			Extra.m_pHostname = m_aModernTransportHostname;
+			if(m_WebTransportStarted && m_WebTransportUseCertificateHashes)
+			{
+				Extra.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::HASH;
+				if(const SHA256_DIGEST *pCertificate = m_QuicTransport.CertificateSha256())
+					Extra.m_WebTransportCertificateSha256 = *pCertificate;
+				if(const SHA256_DIGEST *pNextCertificate = m_QuicTransport.NextCertificateSha256())
+				{
+					Extra.m_WebTransportNextCertificateSha256 = *pNextCertificate;
+					Extra.m_HasWebTransportNextCertificateSha256 = true;
+				}
+			}
+			else if(m_WebTransportStarted)
+				Extra.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::WEBPKI;
+			FormatQuicServerInfoExtra(aExtraInfo, sizeof(aExtraInfo), Extra);
+		}
+		p.AddString(aExtraInfo, sizeof(aExtraInfo), false);
+	}
 
 	const void *pPrefix = p.Data();
 	int PrefixSize = p.Size();
@@ -2782,10 +2968,65 @@ void CServer::UpdateRegisterServerInfo()
 	JsonWriter.WriteStrValue(GameServer()->Version());
 
 	JsonWriter.WriteAttribute("client_score_kind");
-	JsonWriter.WriteStrValue("time"); // "points" or "time"
+	JsonWriter.WriteStrValue(GameServer()->ClientScoreKind());
 
 	JsonWriter.WriteAttribute("requires_login");
 	JsonWriter.WriteBoolValue(false);
+
+	const SHA256_DIGEST *pCertificateSha256 = m_QuicStarted || m_WebTransportStarted ? m_QuicTransport.CertificateSha256() : nullptr;
+	if(pCertificateSha256)
+	{
+		char aCertificateSha256[SHA256_MAXSTRSIZE];
+		sha256_str(*pCertificateSha256, aCertificateSha256, sizeof(aCertificateSha256));
+		char aNextCertificateSha256[SHA256_MAXSTRSIZE] = {};
+		if(const SHA256_DIGEST *pNextCertificateSha256 = m_QuicTransport.NextCertificateSha256())
+			sha256_str(*pNextCertificateSha256, aNextCertificateSha256, sizeof(aNextCertificateSha256));
+		JsonWriter.WriteAttribute("experimental");
+		JsonWriter.BeginObject();
+		JsonWriter.WriteAttribute("proto");
+		JsonWriter.BeginObject();
+		if(m_aModernTransportHostname[0] != '\0')
+		{
+			JsonWriter.WriteAttribute("hostname");
+			JsonWriter.WriteStrValue(m_aModernTransportHostname);
+		}
+		if(m_QuicStarted)
+		{
+			JsonWriter.WriteAttribute("quic");
+			JsonWriter.BeginObject();
+			JsonWriter.WriteAttribute("verify");
+			JsonWriter.WriteStrValue(m_QuicUseWebPki ? "webpki" : "identity");
+			if(!m_QuicUseWebPki)
+			{
+				const CServerIdentityBinding *pIdentity = m_QuicTransport.ServerIdentity();
+				dbg_assert(pIdentity != nullptr, "QUIC server identity must be available");
+				char aIdentityFingerprint[SHA256_MAXSTRSIZE];
+				sha256_str(sha256(pIdentity->m_PublicKey.data(), pIdentity->m_PublicKey.size()), aIdentityFingerprint, sizeof(aIdentityFingerprint));
+				JsonWriter.WriteAttribute("sha256");
+				JsonWriter.WriteStrValue(aIdentityFingerprint);
+			}
+			JsonWriter.EndObject();
+		}
+		if(m_WebTransportStarted)
+		{
+			JsonWriter.WriteAttribute("webtransport");
+			JsonWriter.BeginObject();
+			JsonWriter.WriteAttribute("verify");
+			JsonWriter.WriteStrValue(m_WebTransportUseCertificateHashes ? "hash" : "webpki");
+			if(m_WebTransportUseCertificateHashes)
+			{
+				JsonWriter.WriteAttribute("sha256");
+				JsonWriter.BeginArray();
+				JsonWriter.WriteStrValue(aCertificateSha256);
+				if(aNextCertificateSha256[0] != '\0')
+					JsonWriter.WriteStrValue(aNextCertificateSha256);
+				JsonWriter.EndArray();
+			}
+			JsonWriter.EndObject();
+		}
+		JsonWriter.EndObject();
+		JsonWriter.EndObject();
+	}
 
 	{
 		bool FoundFlags = false;
@@ -2890,6 +3131,291 @@ void CServer::UpdateServerInfo(bool Resend)
 	m_ServerInfoNeedsUpdate = false;
 }
 
+int CServer::FindQuicClient(CQuicSessionId Session) const
+{
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		if(m_aClients[ClientId].m_Quic && m_aClients[ClientId].m_QuicSession == Session)
+			return ClientId;
+	}
+	return -1;
+}
+
+int CServer::FindQuicResume(const CQuicMessage &Message) const
+{
+	GameWire::CResumeView Resume = {};
+	if(GameWire::DecodeResume(
+		   {static_cast<const unsigned char *>(Message.m_pData), static_cast<size_t>(Message.m_DataSize)},
+		   Resume) != GameWire::EDecodeResult::OK ||
+		Resume.m_Token.m_Size != QUIC_RESUME_TOKEN_SIZE)
+		return -1;
+	const int64_t Now = time_get();
+	for(int ClientId = 0; ClientId < MaxClients(); ++ClientId)
+	{
+		const CClient &Client = m_aClients[ClientId];
+		if(!Client.m_QuicResumeArmed || Client.m_QuicResumeSessionId != Resume.m_SessionId ||
+			(Client.m_QuicDetached && Now > Client.m_QuicResumeDeadline))
+			continue;
+		unsigned char Difference = 0;
+		for(size_t i = 0; i < Client.m_aQuicResumeToken.size(); ++i)
+			Difference |= Client.m_aQuicResumeToken[i] ^ Resume.m_Token.m_pData[i];
+		if(Difference == 0)
+			return ClientId;
+	}
+	return -1;
+}
+
+bool CServer::IssueQuicResume(int ClientId)
+{
+	CClient &Client = m_aClients[ClientId];
+	if(!Client.m_Quic || !Client.m_QuicSession.IsValid())
+		return false;
+	if(Client.m_QuicResumeSessionId == 0)
+	{
+		do
+		{
+			secure_random_fill(&Client.m_QuicResumeSessionId, sizeof(Client.m_QuicResumeSessionId));
+			Client.m_QuicResumeSessionId &= (uint64_t{1} << 62) - 1;
+		} while(Client.m_QuicResumeSessionId == 0);
+	}
+	secure_random_fill(Client.m_aQuicResumeToken.data(), Client.m_aQuicResumeToken.size());
+	Client.m_QuicResumeArmed = true;
+	Client.m_QuicDetached = false;
+	Client.m_QuicResumeDeadline = 0;
+	if(m_QuicTransport.IssueResume(Client.m_QuicSession, Client.m_QuicResumeSessionId, Client.m_aQuicResumeToken.data(), Client.m_aQuicResumeToken.size()))
+		return true;
+	Client.m_aQuicResumeToken.fill(0);
+	Client.m_QuicResumeArmed = false;
+	return false;
+}
+
+void CServer::ExpireQuicResumes()
+{
+	const int64_t Now = time_get();
+	for(int ClientId = 0; ClientId < MaxClients(); ++ClientId)
+	{
+		if(m_aClients[ClientId].m_QuicDetached && Now > m_aClients[ClientId].m_QuicResumeDeadline)
+			DelClientCallback(ClientId, "QUIC resume timed out", this);
+	}
+}
+
+void CServer::FormatModernTransportFragments(char *pQuicFragment, int QuicFragmentSize, char *pWebTransportFragment, int WebTransportFragmentSize) const
+{
+	pQuicFragment[0] = '\0';
+	pWebTransportFragment[0] = '\0';
+	if(m_QuicStarted)
+	{
+		if(m_QuicUseWebPki)
+			str_copy(pQuicFragment, "webpki", QuicFragmentSize);
+		else if(const CServerIdentityBinding *pIdentity = m_QuicTransport.ServerIdentity())
+		{
+			char aFingerprint[SHA256_MAXSTRSIZE];
+			sha256_str(sha256(pIdentity->m_PublicKey.data(), pIdentity->m_PublicKey.size()), aFingerprint, sizeof(aFingerprint));
+			str_format(pQuicFragment, QuicFragmentSize, "identity-sha256=%s", aFingerprint);
+		}
+	}
+	if(m_WebTransportStarted && m_WebTransportUseCertificateHashes)
+	{
+		char aFingerprint[SHA256_MAXSTRSIZE];
+		sha256_str(*m_QuicTransport.CertificateSha256(), aFingerprint, sizeof(aFingerprint));
+		if(const SHA256_DIGEST *pNextFingerprint = m_QuicTransport.NextCertificateSha256())
+		{
+			char aNextFingerprint[SHA256_MAXSTRSIZE];
+			sha256_str(*pNextFingerprint, aNextFingerprint, sizeof(aNextFingerprint));
+			str_format(pWebTransportFragment, WebTransportFragmentSize, "cert-sha256=%s,%s", aFingerprint, aNextFingerprint);
+		}
+		else
+			str_format(pWebTransportFragment, WebTransportFragmentSize, "cert-sha256=%s", aFingerprint);
+	}
+}
+
+void CServer::PumpQuicNetwork()
+{
+	if(m_QuicStarted || m_WebTransportStarted)
+	{
+		bool Rotated;
+		if(!m_QuicTransport.MaybeRotateManagedCertificate(&Rotated))
+			log_error("quic", "could not rotate managed TLS certificate: %s", m_QuicTransport.ErrorString());
+		else if(Rotated)
+		{
+			char aQuicFragment[160];
+			char aWebTransportFragment[160];
+			FormatModernTransportFragments(aQuicFragment, sizeof(aQuicFragment), aWebTransportFragment, sizeof(aWebTransportFragment));
+			if(m_pRegister)
+				m_pRegister->OnModernTrustChanged(aQuicFragment, aWebTransportFragment);
+			ExpireServerInfo();
+			log_info("quic", "rotated managed TLS certificate");
+		}
+	}
+	NETADDR Address;
+	unsigned char *pData;
+	int DataSize;
+	while((DataSize = m_QuicTransport.PollUdpSend(&Address, &pData)) > 0)
+		m_NetServer.SendRaw(&Address, pData, DataSize);
+
+	CQuicEvent Event;
+	while(m_QuicTransport.Poll(Event))
+	{
+		if(Event.m_Type == EQuicEventType::MASTER_CHALLENGE)
+		{
+			CNetChunk Packet = {};
+			Packet.m_ClientId = -1;
+			Packet.m_Address = Event.m_Message.m_PeerAddress;
+			Packet.m_Flags = NETSENDFLAG_CONNLESS;
+			Packet.m_pData = Event.m_Message.m_pData;
+			Packet.m_DataSize = Event.m_Message.m_DataSize;
+			if(m_pRegister)
+				m_pRegister->OnPacket(&Packet);
+		}
+		else if(Event.m_Type == EQuicEventType::CONNECTED)
+		{
+			char aReason[256];
+			if(m_ServerBan.IsBanned(&Event.m_Message.m_PeerAddress, aReason, sizeof(aReason)))
+			{
+				m_QuicTransport.Close(Event.m_Message.m_Session, aReason);
+				continue;
+			}
+			const bool HasResume = Event.m_Message.m_DataSize > 0;
+			const int ResumeClientId = HasResume ? FindQuicResume(Event.m_Message) : -1;
+			if(HasResume && ResumeClientId < 0)
+			{
+				if(Config()->m_SvTestingCommands)
+					log_info("server", "rejected invalid or expired QUIC resume token");
+				m_QuicTransport.Close(Event.m_Message.m_Session, "Invalid or expired resume token");
+				continue;
+			}
+			// Taking a fresh slot is what the legacy accept path rate limits, so it is
+			// rate limited here too. A resume reattaches a slot the address already
+			// holds and is left out for the same reason.
+			if(ResumeClientId < 0 && m_NetServer.Connlimit(Event.m_Message.m_PeerAddress))
+			{
+				m_QuicTransport.Close(Event.m_Message.m_Session, "Too many connections in a short time");
+				continue;
+			}
+			int SameIp = 0;
+			int ClientId = ResumeClientId;
+			for(int i = 0; i < MaxClients(); i++)
+			{
+				if(i == ResumeClientId)
+					continue;
+				if(m_aClients[i].m_State == CClient::STATE_EMPTY && ClientId == -1)
+					ClientId = i;
+				else if(m_aClients[i].m_State != CClient::STATE_EMPTY && net_addr_comp_noport(ClientAddr(i), &Event.m_Message.m_PeerAddress) == 0)
+					SameIp++;
+			}
+			if(ClientId == -1 || SameIp >= Config()->m_SvMaxClientsPerIp)
+			{
+				m_QuicTransport.Close(Event.m_Message.m_Session, ClientId == -1 ? "This server is full" : "Too many connections from this IP");
+				continue;
+			}
+			auto &Client = m_aClients[ClientId];
+			if(ResumeClientId >= 0)
+			{
+				if(Client.m_Sixup != Event.m_Sixup)
+				{
+					m_QuicTransport.Close(Event.m_Message.m_Session, "Game protocol changed during resume");
+					continue;
+				}
+				const CQuicSessionId OldSession = Client.m_QuicSession;
+				Client.m_QuicSession = Event.m_Message.m_Session;
+				Client.m_WebTransport = Event.m_WebTransport;
+				Client.m_QuicAddr = Event.m_Message.m_PeerAddress;
+				m_NetServer.SetExternalSlot(ClientId, &Client.m_QuicAddr);
+				net_addr_str(&Client.m_QuicAddr, Client.m_aQuicAddrString.data(), Client.m_aQuicAddrString.size(), true);
+				net_addr_str(&Client.m_QuicAddr, Client.m_aQuicAddrStringNoPort.data(), Client.m_aQuicAddrStringNoPort.size(), false);
+				Client.m_QuicDetached = false;
+				Client.m_QuicResumeDeadline = 0;
+				Client.m_LastAckedSnapshot = -1;
+				Client.m_SnapRate = CClient::SNAPRATE_INIT;
+				Client.m_Snapshots.PurgeAll();
+				if(OldSession.IsValid() && !(OldSession == Client.m_QuicSession))
+					m_QuicTransport.Close(OldSession, "Session resumed elsewhere");
+				if(!IssueQuicResume(ClientId))
+				{
+					DropClient(ClientId, "Could not rotate QUIC resume token");
+					continue;
+				}
+				log_info("server", "resumed QUIC session. ClientId=%d addr=<{%s}>", ClientId, ClientAddrString(ClientId, true));
+				continue;
+			}
+			Client.m_Quic = true;
+			Client.m_WebTransport = Event.m_WebTransport;
+			Client.m_QuicSession = Event.m_Message.m_Session;
+			Client.m_QuicAddr = Event.m_Message.m_PeerAddress;
+			m_NetServer.SetExternalSlot(ClientId, &Client.m_QuicAddr);
+			net_addr_str(&Client.m_QuicAddr, Client.m_aQuicAddrString.data(), Client.m_aQuicAddrString.size(), true);
+			net_addr_str(&Client.m_QuicAddr, Client.m_aQuicAddrStringNoPort.data(), Client.m_aQuicAddrStringNoPort.size(), false);
+			NewClientCallback(ClientId, this, Event.m_Sixup);
+		}
+		else if(Event.m_Type == EQuicEventType::MESSAGE)
+		{
+			const int ClientId = FindQuicClient(Event.m_Message.m_Session);
+			if(ClientId < 0 || m_aClients[ClientId].m_State == CClient::STATE_REDIRECTED)
+				continue;
+			CNetChunk Packet = {};
+			Packet.m_ClientId = ClientId;
+			Packet.m_Address = m_aClients[ClientId].m_QuicAddr;
+			Packet.m_Flags = Event.m_Message.m_Vital ? NET_CHUNKFLAG_VITAL : 0;
+			Packet.m_pData = Event.m_Message.m_pData;
+			Packet.m_DataSize = Event.m_Message.m_DataSize;
+			const int GameFlags = Event.m_Message.m_Vital ? MSGFLAG_VITAL : 0;
+			if(!Antibot()->OnEngineClientMessage(ClientId, Packet.m_pData, Packet.m_DataSize, GameFlags))
+				ProcessClientPacket(&Packet);
+		}
+		else if(Event.m_Type == EQuicEventType::PEER_MIGRATED)
+		{
+			const int ClientId = FindQuicClient(Event.m_Message.m_Session);
+			if(ClientId < 0)
+				continue;
+			char aReason[256];
+			if(m_ServerBan.IsBanned(&Event.m_Message.m_PeerAddress, aReason, sizeof(aReason)))
+			{
+				m_QuicTransport.Close(Event.m_Message.m_Session, aReason);
+				continue;
+			}
+			int SameIp = 0;
+			for(int i = 0; i < MaxClients(); i++)
+			{
+				if(i != ClientId && m_aClients[i].m_State != CClient::STATE_EMPTY && net_addr_comp_noport(ClientAddr(i), &Event.m_Message.m_PeerAddress) == 0)
+					SameIp++;
+			}
+			if(SameIp >= Config()->m_SvMaxClientsPerIp)
+			{
+				m_QuicTransport.Close(Event.m_Message.m_Session, "Too many connections from this IP");
+				continue;
+			}
+			CClient &Client = m_aClients[ClientId];
+			Client.m_QuicAddr = Event.m_Message.m_PeerAddress;
+			m_NetServer.SetExternalSlot(ClientId, &Client.m_QuicAddr);
+			net_addr_str(&Client.m_QuicAddr, Client.m_aQuicAddrString.data(), Client.m_aQuicAddrString.size(), true);
+			net_addr_str(&Client.m_QuicAddr, Client.m_aQuicAddrStringNoPort.data(), Client.m_aQuicAddrStringNoPort.size(), false);
+			log_info("server", "migrated QUIC path. ClientId=%d addr=<{%s}>", ClientId, ClientAddrString(ClientId, true));
+		}
+		else if(Event.m_Type == EQuicEventType::DISCONNECTED)
+		{
+			const int ClientId = FindQuicClient(Event.m_Message.m_Session);
+			if(ClientId >= 0)
+			{
+				CClient &Client = m_aClients[ClientId];
+				if(Client.m_QuicResumeArmed && Client.m_State >= CClient::STATE_READY &&
+					str_comp(Event.m_pReason, "application disconnect") != 0)
+				{
+					Client.m_QuicDetached = true;
+					Client.m_QuicResumeDeadline = time_get() + time_freq() * Config()->m_SvQuicResumeGraceMs / 1000;
+					log_info("server", "holding QUIC slot for resume. ClientId=%d grace_ms=%d", ClientId, Config()->m_SvQuicResumeGraceMs);
+				}
+				else
+				{
+					char aReason[256];
+					str_copy(aReason, Event.m_pReason ? Event.m_pReason : "QUIC connection closed");
+					DelClientCallback(ClientId, aReason, this);
+				}
+			}
+		}
+	}
+	ExpireQuicResumes();
+}
+
 int CServer::GetMaxClients(int ClientId) const
 {
 	// Shouldn't catch anything currently
@@ -2922,6 +3448,7 @@ void CServer::PumpNetwork()
 	SECURITY_TOKEN ResponseToken;
 
 	m_NetServer.Update();
+	PumpQuicNetwork();
 
 	// Coalesce the flushes triggered while handling this burst of incoming
 	// packets (preinput broadcasts, timing/ping replies, ...) into one packet
@@ -2982,7 +3509,7 @@ void CServer::PumpNetwork()
 						Packer.AddRaw(SERVERBROWSE_INFO, sizeof(SERVERBROWSE_INFO));
 						Packer.AddInt(SrvBrwsToken);
 						GetServerInfoSixup(&Packer, SendClients.value());
-						CNetBase::SendPacketConnlessWithToken7(m_NetServer.Socket(), &Packet.m_Address, Packer.Data(), Packer.Size(), ResponseToken, m_NetServer.GetToken(Packet.m_Address));
+						m_NetServer.SendPacketConnlessWithToken7(Packet.m_Address, Packer.Data(), Packer.Size(), ResponseToken, m_NetServer.GetToken(Packet.m_Address));
 					}
 					else if(Type != -1)
 					{
@@ -3003,11 +3530,7 @@ void CServer::PumpNetwork()
 				if(m_aClients[Packet.m_ClientId].m_State == CClient::STATE_REDIRECTED)
 					continue;
 
-				int GameFlags = 0;
-				if(Packet.m_Flags & NET_CHUNKFLAG_VITAL)
-				{
-					GameFlags |= MSGFLAG_VITAL;
-				}
+				const int GameFlags = (Packet.m_Flags & NET_CHUNKFLAG_VITAL) ? MSGFLAG_VITAL : 0;
 				if(Antibot()->OnEngineClientMessage(Packet.m_ClientId, Packet.m_pData, Packet.m_DataSize, GameFlags))
 				{
 					continue;
@@ -3019,17 +3542,17 @@ void CServer::PumpNetwork()
 	}
 	{
 		unsigned char aBuffer[NET_MAX_CHUNK_SIZE];
+		int ClientId;
+		int DataSize;
 		int Flags;
-		mem_zero(&Packet, sizeof(Packet));
-		Packet.m_pData = aBuffer;
-		while(Antibot()->OnEngineSimulateClientMessage(&Packet.m_ClientId, aBuffer, sizeof(aBuffer), &Packet.m_DataSize, &Flags))
+		while(Antibot()->OnEngineSimulateClientMessage(&ClientId, aBuffer, sizeof(aBuffer), &DataSize, &Flags))
 		{
-			Packet.m_Flags = 0;
-			if(Flags & MSGFLAG_VITAL)
-			{
-				Packet.m_Flags |= NET_CHUNKFLAG_VITAL;
-			}
-			ProcessClientPacket(&Packet);
+			CNetChunk SimulatedPacket = {};
+			SimulatedPacket.m_ClientId = ClientId;
+			SimulatedPacket.m_Flags = (Flags & MSGFLAG_VITAL) ? NET_CHUNKFLAG_VITAL : 0;
+			SimulatedPacket.m_pData = aBuffer;
+			SimulatedPacket.m_DataSize = DataSize;
+			ProcessClientPacket(&SimulatedPacket);
 		}
 	}
 
@@ -3138,6 +3661,11 @@ int CServer::LoadMap(const char *pMapName)
 
 	for(int i = 0; i < MAX_CLIENTS; i++)
 		m_aPrevStates[i] = m_aClients[i].m_State;
+	if(!UpdateQuicMaps())
+	{
+		log_error("server", "could not register the current map with QUIC");
+		return 0;
+	}
 
 	return 1;
 }
@@ -3174,6 +3702,7 @@ void CServer::UpdateDebugDummies(bool ForceDisconnect)
 			uint_to_bytes_be(&Client.m_DebugDummyAddr.ip[12], ClientId);
 			// Port: random like normal clients
 			Client.m_DebugDummyAddr.port = secure_rand_below(65535 - 1024) + 1024;
+			m_NetServer.SetExternalSlot(ClientId, &Client.m_DebugDummyAddr);
 			net_addr_str(&Client.m_DebugDummyAddr, Client.m_aDebugDummyAddrString.data(), Client.m_aDebugDummyAddrString.size(), true);
 			net_addr_str(&Client.m_DebugDummyAddr, Client.m_aDebugDummyAddrStringNoPort.data(), Client.m_aDebugDummyAddrStringNoPort.size(), false);
 
@@ -3270,7 +3799,123 @@ int CServer::Run()
 	BindAddr.type = Config()->m_SvIpv4Only ? (NETTYPE_IPV4 | NETTYPE_WEBSOCKET_IPV4) : NETTYPE_ALL;
 
 	int Port = Config()->m_SvPort;
-	for(BindAddr.port = Port != 0 ? Port : 8303; !m_NetServer.Open(BindAddr, &m_ServerBan, Config()->m_SvMaxClients, Config()->m_SvMaxClientsPerIp); BindAddr.port++)
+	BindAddr.port = Port != 0 ? Port : 8303;
+	// Both transports are on where the build can carry them. The settings exist
+	// in every build, so a build without them says once that it is going
+	// without, which is a fact about the build and not a misconfiguration.
+	bool QuicEnabled = Config()->m_SvQuic != 0;
+	bool WebTransportEnabled = Config()->m_SvWebtransport != 0;
+	if(QuicEnabled && !CQuicTransport::IsCompiled())
+	{
+		log_info("server", "this build has no QUIC, continuing without it");
+		QuicEnabled = false;
+	}
+	if(WebTransportEnabled && !CQuicTransport::IsWebTransportServerCompiled())
+	{
+		log_info("server", "this build has no WebTransport, continuing without it");
+		WebTransportEnabled = false;
+	}
+	const bool ModernTransportEnabled = QuicEnabled || WebTransportEnabled;
+	const bool SharedTlsConfigured = Config()->m_SvTlsCert[0] != '\0' || Config()->m_SvTlsCertNext[0] != '\0' || Config()->m_SvTlsKey[0] != '\0';
+	const char *pModernHostname = Config()->m_SvRegisterHostname[0] != '\0' ? Config()->m_SvRegisterHostname : Config()->m_SvWebtransportHostname;
+	const char *pTlsCertificate = SharedTlsConfigured ? Config()->m_SvTlsCert : Config()->m_SvQuicCert;
+	const char *pNextTlsCertificate = SharedTlsConfigured ? Config()->m_SvTlsCertNext : Config()->m_SvQuicCertNext;
+	const char *pTlsPrivateKey = SharedTlsConfigured ? Config()->m_SvTlsKey : Config()->m_SvQuicKey;
+	m_LegacyUdpStarted = Config()->m_SvLegacyUdp != 0;
+	if(!m_LegacyUdpStarted && !ModernTransportEnabled)
+	{
+		log_error("server", "sv_legacy_udp is disabled, but neither QUIC nor WebTransport is enabled");
+		return -1;
+	}
+	m_QuicStarted = false;
+	m_WebTransportStarted = false;
+	m_QuicUseWebPki = false;
+	m_WebTransportUseCertificateHashes = false;
+	m_aModernTransportHostname[0] = '\0';
+	if(WebTransportEnabled && str_comp(Config()->m_SvWebtransportCertificateMode, "webpki") == 0 && pModernHostname[0] == '\0')
+	{
+		log_error("server", "sv_webtransport_hostname is required for WebTransport with Web PKI");
+		return -1;
+	}
+	if(WebTransportEnabled && str_comp(Config()->m_SvWebtransportCertificateMode, "webpki") != 0 && str_comp(Config()->m_SvWebtransportCertificateMode, "hash") != 0)
+	{
+		log_error("server", "sv_webtransport_certificate_mode must be webpki or hash");
+		return -1;
+	}
+	auto StartQuic = [&]() {
+		if(SharedTlsConfigured && (pTlsCertificate[0] == '\0' || pTlsPrivateKey[0] == '\0'))
+		{
+			log_error("server", "sv_tls_cert and sv_tls_key must either both be set or both be empty");
+			return false;
+		}
+		if((QuicEnabled || pTlsCertificate[0] == '\0') && Config()->m_SvQuicIdentityKey[0] == '\0')
+		{
+			log_error("server", "sv_quic_identity_key must not be empty when native QUIC or managed TLS is enabled");
+			return false;
+		}
+		if(WebTransportEnabled && str_comp(Config()->m_SvWebtransportCertificateMode, "webpki") == 0 && (pTlsCertificate[0] == '\0' || pTlsPrivateKey[0] == '\0'))
+		{
+			log_error("server", "sv_tls_cert and sv_tls_key are required for WebTransport with Web PKI");
+			return false;
+		}
+		NETADDR QuicBindAddr = {};
+		if(g_Config.m_Bindaddr[0] == '\0')
+			QuicBindAddr.type = Config()->m_SvIpv4Only ? NETTYPE_IPV4 : NETTYPE_IPV6;
+		else if(net_host_lookup(g_Config.m_Bindaddr, &QuicBindAddr, Config()->m_SvIpv4Only ? NETTYPE_IPV4 : NETTYPE_ALL) != 0)
+		{
+			log_error("server", "The configured bindaddr '%s' cannot be resolved for QUIC", g_Config.m_Bindaddr);
+			return false;
+		}
+		QuicBindAddr.port = BindAddr.port;
+		char aModernAddress[NETADDR_MAXSTRSIZE];
+		net_addr_str(&QuicBindAddr, aModernAddress, sizeof(aModernAddress), true);
+		char aIdentityPath[IO_MAX_PATH_LENGTH] = {};
+		if(Config()->m_SvQuicIdentityKey[0] != '\0')
+			Storage()->GetCompletePath(IStorage::TYPE_SAVE_OR_ABSOLUTE, Config()->m_SvQuicIdentityKey, aIdentityPath, sizeof(aIdentityPath));
+		if(!m_QuicTransport.StartServer(aModernAddress, QuicEnabled, WebTransportEnabled, pTlsCertificate, pNextTlsCertificate, pTlsPrivateKey, aIdentityPath))
+		{
+			log_error("server", "could not start modern transport: %s", m_QuicTransport.ErrorString());
+			return false;
+		}
+		if(!UpdateQuicMaps())
+		{
+			log_error("server", "could not register the current map with QUIC");
+			m_QuicTransport.Shutdown();
+			return false;
+		}
+		if(QuicEnabled)
+		{
+			const CServerIdentityBinding *pIdentity = m_QuicTransport.ServerIdentity();
+			if(!pIdentity)
+				return false;
+			const SHA256_DIGEST Fingerprint = sha256(pIdentity->m_PublicKey.data(), pIdentity->m_PublicKey.size());
+			char aFingerprint[SHA256_MAXSTRSIZE];
+			sha256_str(Fingerprint, aFingerprint, sizeof(aFingerprint));
+			log_info("server", "native QUIC listening on %s identity-sha256=%s", aModernAddress, aFingerprint);
+		}
+		if(WebTransportEnabled)
+		{
+			// The hash is what a browser needs to accept a certificate nobody
+			// signed, and a connect link is where it goes, so it belongs where
+			// it can be read off rather than only in the server info.
+			char aWebTransportFragment[160];
+			char aQuicFragment[160];
+			FormatModernTransportFragments(aQuicFragment, sizeof(aQuicFragment), aWebTransportFragment, sizeof(aWebTransportFragment));
+			if(aWebTransportFragment[0] != '\0')
+				log_info("server", "WebTransport listening on %s path=/ddnet #%s", aModernAddress, aWebTransportFragment);
+			else
+				log_info("server", "WebTransport listening on %s path=/ddnet", aModernAddress);
+		}
+		return true;
+	};
+
+	const NETFUNC_UDP_FILTER pfnQuicFilter = ModernTransportEnabled ?
+							 +[](void *pUser, const NETADDR *pAddress, const void *pData, int DataSize) { return static_cast<CQuicTransport *>(pUser)->FeedUdp(pAddress, pData, DataSize); } :
+							 nullptr;
+	const NETFUNC_UDP_PEER pfnQuicPeer = ModernTransportEnabled ?
+						     +[](void *pUser, const NETADDR *pAddress, bool Known) { static_cast<CQuicTransport *>(pUser)->SetLegacyPeer(pAddress, Known); } :
+						     nullptr;
+	for(; !m_NetServer.Open(BindAddr, &m_ServerBan, Config()->m_SvMaxClients, Config()->m_SvMaxClientsPerIp, pfnQuicFilter, pfnQuicPeer, &m_QuicTransport); BindAddr.port++)
 	{
 		if(Port != 0 || BindAddr.port >= 8310)
 		{
@@ -3278,6 +3923,35 @@ int CServer::Run()
 			return -1;
 		}
 	}
+	m_NetServer.SetLegacyConnections(m_LegacyUdpStarted);
+	if(ModernTransportEnabled)
+	{
+		// What is running is known before it runs, because starting it already
+		// logs the connect fragments that are read from here.
+		if(pModernHostname[0] != '\0')
+			str_copy(m_aModernTransportHostname, pModernHostname);
+		m_QuicStarted = QuicEnabled;
+		m_WebTransportStarted = WebTransportEnabled;
+		m_WebTransportUseCertificateHashes = WebTransportEnabled && str_comp(Config()->m_SvWebtransportCertificateMode, "hash") == 0;
+		m_QuicUseWebPki = QuicEnabled && m_aModernTransportHostname[0] != '\0' && SharedTlsConfigured;
+		if(!StartQuic())
+			return -1;
+		const int ModernTransportPort = Config()->m_SvRegisterPort > 0 ? Config()->m_SvRegisterPort : BindAddr.port;
+		char aWebTransportUrl[256];
+		if(Config()->m_SvRegisterHostname[0] != '\0' && (Config()->m_SvRegisterHostname[0] == '[' || !FormatWebTransportUrl(aWebTransportUrl, sizeof(aWebTransportUrl), Config()->m_SvRegisterHostname, ModernTransportPort)))
+		{
+			log_error("server", "sv_register_hostname must be a DNS name without a port");
+			m_QuicTransport.Shutdown();
+			return -1;
+		}
+		if(WebTransportEnabled && pModernHostname[0] != '\0' && !FormatWebTransportUrl(aWebTransportUrl, sizeof(aWebTransportUrl), pModernHostname, ModernTransportPort))
+		{
+			log_error("server", "sv_webtransport_hostname must be a DNS name or bracketed IP address without a port");
+			m_QuicTransport.Shutdown();
+			return -1;
+		}
+	}
+	log_info("server", "network transports: legacy-udp=%s quic=%s webtransport=%s", m_LegacyUdpStarted ? "enabled" : "disabled", m_QuicStarted ? "enabled" : "disabled", m_WebTransportStarted ? "enabled" : "disabled");
 
 	if(Port == 0)
 		log_info("server", "using port %d", BindAddr.port);
@@ -3293,7 +3967,10 @@ int CServer::Run()
 	}
 
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
-	m_pRegister = CreateRegister(&g_Config, m_pConsole, m_pEngine, m_pHttp, g_Config.m_SvRegisterPort > 0 ? g_Config.m_SvRegisterPort : this->Port(), m_NetServer.GetGlobalToken());
+	char aQuicFragment[160];
+	char aWebTransportFragment[160];
+	FormatModernTransportFragments(aQuicFragment, sizeof(aQuicFragment), aWebTransportFragment, sizeof(aWebTransportFragment));
+	m_pRegister = CreateRegister(&g_Config, m_pConsole, m_pEngine, m_pHttp, g_Config.m_SvRegisterPort > 0 ? g_Config.m_SvRegisterPort : this->Port(), m_NetServer.GetGlobalToken(), m_LegacyUdpStarted, m_QuicStarted, m_WebTransportStarted, g_Config.m_SvRegisterHostname, aQuicFragment, aWebTransportFragment);
 
 	m_NetServer.SetCallbacks(NewClientCallback, NewClientNoAuthCallback, ClientRejoinCallback, DelClientCallback, this);
 
@@ -3427,6 +4104,7 @@ int CServer::Run()
 
 			while(LastTime > TickStartTime(m_CurrentGameTick + 1))
 			{
+				const std::chrono::nanoseconds TickWorkStart = time_get_nanoseconds();
 				GameServer()->OnPreTickTeehistorian();
 				UpdateDebugDummies(false);
 
@@ -3461,6 +4139,8 @@ int CServer::Run()
 					{
 						if(Input.m_GameTick == Tick())
 						{
+							if(Config()->m_SvTestingCommands && Input.m_ReceiveTime > 0 && m_vBaselineInputQueueAgeMicroseconds.size() < 10000)
+								m_vBaselineInputQueueAgeMicroseconds.push_back((time_get() - Input.m_ReceiveTime) * 1000000 / time_freq());
 							GameServer()->OnClientPredictedInput(c, Input.m_aData);
 							ClientHadInput = true;
 							break;
@@ -3471,6 +4151,8 @@ int CServer::Run()
 				}
 
 				GameServer()->OnTick();
+				if(Config()->m_SvTestingCommands && m_vBaselineTickWorkMicroseconds.size() < 10000)
+					m_vBaselineTickWorkMicroseconds.push_back((time_get_nanoseconds() - TickWorkStart).count() / 1000);
 				if(ErrorShutdown())
 				{
 					break;
@@ -3552,7 +4234,7 @@ int CServer::Run()
 					{
 						if(time_get() > m_aClients[i].m_RedirectDropTime)
 						{
-							m_NetServer.Drop(i, "redirected");
+							DropClient(i, "redirected");
 						}
 					}
 				}
@@ -3560,6 +4242,14 @@ int CServer::Run()
 
 			if(!NonActive)
 				PumpNetwork();
+
+			for(int ClientId = 0; ClientId < MaxClients(); ++ClientId)
+			{
+				if(!m_aClients[ClientId].m_QuicDropPending)
+					continue;
+				m_aClients[ClientId].m_QuicDropPending = false;
+				DropClient(ClientId, "QUIC reliable queue full");
+			}
 
 			NonActive = true;
 			for(const auto &Client : m_aClients)
@@ -3598,15 +4288,40 @@ int CServer::Run()
 				!m_aDemoRecorder[RECORDER_MANUAL].IsRecording() &&
 				!m_aDemoRecorder[RECORDER_AUTO].IsRecording())
 			{
-				net_socket_read_wait(m_NetServer.Socket(), 1s);
+				if(m_NetServer.Socket())
+				{
+					auto Wait = std::chrono::duration_cast<std::chrono::microseconds>(1s);
+					const int64_t QuicWait = m_QuicTransport.NextTimeoutMicroseconds();
+					if(QuicWait >= 0)
+						Wait = std::min(Wait, std::chrono::microseconds(QuicWait));
+					if(Wait > 0us)
+						net_socket_read_wait(m_NetServer.Socket(), Wait);
+				}
+				else
+				{
+					// WebTransport-only servers have no UDP socket to sleep on
+					std::this_thread::sleep_for(1ms);
+				}
 			}
 			else
 			{
 				set_new_tick();
 				LastTime = time_get();
 				const auto MicrosecondsToWait = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::nanoseconds(TickStartTime(m_CurrentGameTick + 1) - LastTime)) + 1us;
-				if(MicrosecondsToWait > 0us)
-					net_socket_read_wait(m_NetServer.Socket(), MicrosecondsToWait);
+				if(m_NetServer.Socket())
+				{
+					auto Wait = MicrosecondsToWait;
+					const int64_t QuicWait = m_QuicTransport.NextTimeoutMicroseconds();
+					if(QuicWait >= 0)
+						Wait = std::min(Wait, std::chrono::microseconds(QuicWait));
+					if(Wait > 0us)
+						net_socket_read_wait(m_NetServer.Socket(), Wait);
+				}
+				else if(MicrosecondsToWait > 0us)
+				{
+					// WebTransport-only servers have no UDP socket to sleep on
+					std::this_thread::sleep_for(std::min(MicrosecondsToWait, 1000us));
+				}
 			}
 			if(IsInterrupted())
 			{
@@ -3625,11 +4340,58 @@ int CServer::Run()
 		pDisconnectReason = m_aErrorShutdownReason;
 	}
 	// disconnect all clients on shutdown
+	int PendingQuicClients = 0;
 	for(int i = 0; i < MAX_CLIENTS; ++i)
 	{
 		if(m_aClients[i].m_State != CClient::STATE_EMPTY)
-			m_NetServer.Drop(i, pDisconnectReason);
+		{
+			PendingQuicClients += m_aClients[i].m_Quic;
+			DropClient(i, pDisconnectReason);
+		}
 	}
+	if(PendingQuicClients > 0)
+	{
+		auto Deadline = std::chrono::steady_clock::now() + 1s;
+		while(std::chrono::steady_clock::now() < Deadline)
+		{
+			m_NetServer.Update();
+			CNetChunk Packet;
+			SECURITY_TOKEN ResponseToken;
+			while(m_NetServer.Recv(&Packet, &ResponseToken))
+			{
+			}
+			NETADDR Address;
+			unsigned char *pData;
+			int DataSize;
+			while((DataSize = m_QuicTransport.PollUdpSend(&Address, &pData)) > 0)
+				m_NetServer.SendRaw(&Address, pData, DataSize);
+			CQuicEvent Event;
+			while(m_QuicTransport.Poll(Event))
+			{
+				if(Event.m_Type == EQuicEventType::DISCONNECTED && PendingQuicClients > 0)
+				{
+					PendingQuicClients--;
+					if(PendingQuicClients == 0)
+						Deadline = std::chrono::steady_clock::now() + 100ms;
+				}
+			}
+			std::this_thread::sleep_for(1ms);
+		}
+	}
+	if(m_QuicTransport.IsRunning())
+	{
+		const auto &Metrics = m_QuicTransport.Metrics();
+		log_info("quic", "connections=%llu/%llu sent=%llu/%llu recv=%llu/%llu bytes=%llu/%llu queue_drop=%llu/%llu queue_high_water=%llu raw_drop=%llu path_change=%llu",
+			static_cast<unsigned long long>(Metrics.m_Connections), static_cast<unsigned long long>(Metrics.m_Disconnections),
+			static_cast<unsigned long long>(Metrics.m_ReliableSent), static_cast<unsigned long long>(Metrics.m_DatagramsSent),
+			static_cast<unsigned long long>(Metrics.m_ReliableReceived), static_cast<unsigned long long>(Metrics.m_DatagramsReceived),
+			static_cast<unsigned long long>(Metrics.m_BytesSent), static_cast<unsigned long long>(Metrics.m_BytesReceived),
+			static_cast<unsigned long long>(Metrics.m_ReliableQueueFull), static_cast<unsigned long long>(Metrics.m_DatagramsDropped),
+			static_cast<unsigned long long>(Metrics.m_CommandQueueHighWater),
+			static_cast<unsigned long long>(m_QuicTransport.RawDropCount()),
+			static_cast<unsigned long long>(Metrics.m_PathChanges));
+	}
+	m_QuicTransport.Shutdown();
 
 	m_pRegister->OnShutdown();
 	m_Econ.Shutdown();
@@ -3668,6 +4430,8 @@ void CServer::ConStatus(IConsole::IResult *pResult, void *pUser)
 	char aBuf[1024];
 	CServer *pThis = static_cast<CServer *>(pUser);
 	const char *pName = pResult->NumArguments() == 1 ? pResult->GetString(0) : "";
+	str_format(aBuf, sizeof(aBuf), "transports legacy-udp=%s quic=%s webtransport=%s", pThis->m_LegacyUdpStarted ? "enabled" : "disabled", pThis->m_QuicStarted ? "enabled" : "disabled", pThis->m_WebTransportStarted ? "enabled" : "disabled");
+	pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
 
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{
@@ -3714,16 +4478,49 @@ void CServer::ConStatus(IConsole::IResult *pResult, void *pUser)
 			{
 				pClientPrefix = "0.7:";
 			}
-			str_format(aBuf, sizeof(aBuf), "id=%d addr=<{%s}> name='%s' client=%s%d secure=%s flags=%d%s%s",
-				i, pThis->ClientAddrString(i, true), pThis->m_aClients[i].m_aName, pClientPrefix, pThis->m_aClients[i].m_DDNetVersion,
+			str_format(aBuf, sizeof(aBuf), "id=%d addr=<{%s}> name='%s' transport=%s client=%s%d secure=%s flags=%d%s%s",
+				i, pThis->ClientAddrString(i, true), pThis->m_aClients[i].m_aName, pThis->ClientTransportName(i), pClientPrefix, pThis->m_aClients[i].m_DDNetVersion,
 				pThis->m_NetServer.HasSecurityToken(i) ? "yes" : "no", pThis->m_aClients[i].m_Flags, aDnsblStr, aAuthStr);
 		}
 		else
 		{
-			str_format(aBuf, sizeof(aBuf), "id=%d addr=<{%s}> connecting", i, pThis->ClientAddrString(i, true));
+			str_format(aBuf, sizeof(aBuf), "id=%d addr=<{%s}> transport=%s connecting", i, pThis->ClientAddrString(i, true), pThis->ClientTransportName(i));
 		}
 		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
 	}
+}
+
+void CServer::ConBaselineStats(IConsole::IResult *, void *pUser)
+{
+	CServer *pSelf = static_cast<CServer *>(pUser);
+	auto Percentile = [](const std::vector<int64_t> &vSamples, int Percent) {
+		if(vSamples.empty())
+			return int64_t{-1};
+		std::vector<int64_t> vSorted = vSamples;
+		std::sort(vSorted.begin(), vSorted.end());
+		return vSorted[(vSorted.size() * Percent - 1) / 100];
+	};
+	NETSTATS NetStats = {};
+	net_stats(&NetStats);
+	int RttMilliseconds = -1;
+	for(const CClient &Client : pSelf->m_aClients)
+	{
+		if(Client.m_State == CClient::STATE_INGAME)
+		{
+			RttMilliseconds = Client.m_Latency;
+			break;
+		}
+	}
+	char aBuf[1024];
+	str_format(aBuf, sizeof(aBuf),
+		"rtt_ms=%d snapshot_ack_age_us=%" PRId64 "/%" PRId64 "/%" PRId64 " input_queue_age_us=%" PRId64 "/%" PRId64 "/%" PRId64 " tick_work_us=%" PRId64 "/%" PRId64 "/%" PRId64 " samples=%" PRIzu "/%" PRIzu "/%" PRIzu " packets=%" PRIu64 "/%" PRIu64 " bytes=%" PRIu64 "/%" PRIu64,
+		RttMilliseconds,
+		Percentile(pSelf->m_vBaselineSnapshotAckAgeMicroseconds, 50), Percentile(pSelf->m_vBaselineSnapshotAckAgeMicroseconds, 95), Percentile(pSelf->m_vBaselineSnapshotAckAgeMicroseconds, 99),
+		Percentile(pSelf->m_vBaselineInputQueueAgeMicroseconds, 50), Percentile(pSelf->m_vBaselineInputQueueAgeMicroseconds, 95), Percentile(pSelf->m_vBaselineInputQueueAgeMicroseconds, 99),
+		Percentile(pSelf->m_vBaselineTickWorkMicroseconds, 50), Percentile(pSelf->m_vBaselineTickWorkMicroseconds, 95), Percentile(pSelf->m_vBaselineTickWorkMicroseconds, 99),
+		pSelf->m_vBaselineSnapshotAckAgeMicroseconds.size(), pSelf->m_vBaselineInputQueueAgeMicroseconds.size(), pSelf->m_vBaselineTickWorkMicroseconds.size(),
+		NetStats.sent_packets, NetStats.recv_packets, NetStats.sent_bytes, NetStats.recv_bytes);
+	pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "baseline", aBuf);
 }
 
 static int GetAuthLevel(const char *pLevel)
@@ -4277,6 +5074,13 @@ void CServer::ConReloadAnnouncement(IConsole::IResult *pResult, void *pUserData)
 	pThis->ReadAnnouncementsFile();
 }
 
+#if defined(CONF_WEBSOCKETS)
+void CServer::ConReloadWebsocketCert(IConsole::IResult *pResult, void *pUserData)
+{
+	websocket_reload_certs();
+}
+#endif
+
 void CServer::ConReloadMaplist(IConsole::IResult *pResult, void *pUserData)
 {
 	CServer *pThis = static_cast<CServer *>(pUserData);
@@ -4328,7 +5132,7 @@ void CServer::ConchainCommandAccessUpdate(IConsole::IResult *pResult, void *pUse
 				if(HadAccess == HasAccess)
 					continue;
 				// Command not sent yet. The sending will happen in alphabetical order with correctly updated permissions.
-				if(pThis->m_aClients[i].m_pRconCmdToSend && str_comp(pResult->GetString(0), pThis->m_aClients[i].m_pRconCmdToSend->Name()) >= 0)
+				if(!pThis->m_aClients[i].m_RconCmdToSend.empty() && str_comp(pResult->GetString(0), pThis->m_aClients[i].m_RconCmdToSend.c_str()) >= 0)
 					continue;
 
 				if(HasAccess)
@@ -4360,7 +5164,7 @@ void CServer::LogoutClient(int ClientId, const char *pReason)
 	}
 
 	m_aClients[ClientId].m_AuthTries = 0;
-	m_aClients[ClientId].m_pRconCmdToSend = nullptr;
+	m_aClients[ClientId].m_RconCmdToSend.clear();
 	m_aClients[ClientId].m_MaplistEntryToSend = CClient::MAPLIST_UNINITIALIZED;
 
 	if(*pReason)
@@ -4557,6 +5361,7 @@ void CServer::RegisterCommands()
 	// register console commands
 	Console()->Register("kick", "v[id] ?r[reason]", CFGFLAG_SERVER, ConKick, this, "Kick player with specified id for any reason");
 	Console()->Register("status", "?r[name]", CFGFLAG_SERVER, ConStatus, this, "List players containing name or all players");
+	Console()->Register("dump_baseline_stats", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConBaselineStats, this, "Print bounded transport baseline statistics");
 	Console()->Register("shutdown", "?r[reason]", CFGFLAG_SERVER, ConShutdown, this, "Shut down");
 	Console()->Register("logout", "", CFGFLAG_SERVER, ConLogout, this, "Logout of rcon");
 	Console()->Register("show_ips", "?i[show]", CFGFLAG_SERVER, ConShowIps, this, "Show IP addresses in rcon commands (1 = on, 0 = off)");
@@ -4580,6 +5385,9 @@ void CServer::RegisterCommands()
 
 	Console()->Register("reload_announcement", "", CFGFLAG_SERVER, ConReloadAnnouncement, this, "Reload the announcements");
 	Console()->Register("reload_maplist", "", CFGFLAG_SERVER, ConReloadMaplist, this, "Reload the maplist");
+#if defined(CONF_WEBSOCKETS)
+	Console()->Register("reload_websocket_cert", "", CFGFLAG_SERVER, ConReloadWebsocketCert, this, "Reload the TLS certificate used for websocket connections");
+#endif
 
 	RustVersionRegister(*Console());
 

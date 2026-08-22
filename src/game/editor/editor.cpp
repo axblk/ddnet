@@ -4741,7 +4741,7 @@ void CEditor::HandleWriterFinishJobs()
 	// send rcon.. if we can
 	if(Client()->RconAuthed() && g_Config.m_EdAutoMapReload)
 	{
-		const CServerInfo &CurrentServerInfo = Client()->ServerInfo();
+		const CServerInfo &CurrentServerInfo = Client()->ServerInfo(Client()->NetworkSessionId());
 		if(net_addr_is_local(&Client()->ServerAddress()))
 		{
 			char aMapName[MAX_MAP_LENGTH];
@@ -4952,7 +4952,7 @@ void CEditor::LoadIngameMap()
 		Map()->m_ValidSaveFilename = false;
 	}
 
-	vec2 Center = pGameClient->m_Camera.m_Center;
+	vec2 Center = pGameClient->m_Camera.Center();
 	MapView()->SetWorldOffset(Center);
 }
 

@@ -8,6 +8,7 @@
 #include <base/types.h>
 #include <base/vmath.h>
 
+#include <engine/client/session.h>
 #include <engine/console.h>
 #include <engine/demo.h>
 #include <engine/friends.h>
@@ -27,6 +28,7 @@
 #include <game/voting.h>
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -494,6 +496,9 @@ protected:
 
 	// found in menus_ingame.cpp
 	STextContainerIndex m_MotdTextContainerIndex;
+	float m_MotdTextHeight = 0.0f;
+	CSessionId m_MotdTextSessionId;
+	uint64_t m_MotdTextRevision = 0;
 	void RenderGame(CUIRect MainView);
 	void PopupConfirmDisconnect();
 	void PopupConfirmDisconnectDummy();
@@ -520,6 +525,22 @@ protected:
 	bool m_ServerBrowserShouldRevealSelection;
 	std::vector<CUIElement *> m_avpServerBrowserUiElements[IServerBrowser::NUM_TYPES];
 	void RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemActivated);
+	// What the address row may offer for one server: the transports the client
+	// was built with that the server also announces, and the address families
+	// it actually has. Anything with a single entry is not a choice and is not
+	// shown as one.
+	struct CConnectChoices
+	{
+		EConnectProtocol m_aProtocols[(int)EConnectProtocol::COUNT] = {EConnectProtocol::LEGACY};
+		int m_NumProtocols = 0;
+		EConnectAddressFamily m_aFamilies[(int)EConnectAddressFamily::COUNT] = {EConnectAddressFamily::IPV6};
+		int m_NumFamilies = 0;
+	};
+	void RenderConnectChoiceLabel(CUIRect Field, const char *pLabel, int Corners);
+	static const char *ConnectProtocolShortName(EConnectProtocol Protocol, const char *pAddress);
+	static CConnectChoices ConnectChoicesFor(const CServerInfo *pServer, const char *pAddress);
+	static bool ServerHasAddress(const CServerInfo *pServer, const char *pAddress);
+	static void UpdateConnectAddress(const CServerInfo *pServer);
 	void RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItemActivated);
 	void Connect(const char *pAddress);
 	void PopupConfirmSwitchServer();
@@ -729,7 +750,7 @@ public:
 
 	void OnStateChange(int NewState, int OldState) override;
 	void OnWindowResize() override;
-	void OnRender() override;
+	void OnRenderApplicationOverlay() override;
 	bool OnInput(const IInput::CEvent &Event) override;
 	bool OnCursorMove(float x, float y, IInput::ECursorType CursorType) override;
 	void OnShutdown() override;

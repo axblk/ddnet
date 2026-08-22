@@ -839,6 +839,9 @@ public:
 		CUIElement m_UiElement;
 		CButtonContainer m_ButtonContainer;
 		bool m_Init = false;
+		// Set these to join the dropdown to what it sits next to.
+		int m_Corners = IGraphics::CORNER_ALL;
+		float m_Rounding = 5.0f;
 	};
 	int DoDropDown(CUIRect *pRect, int CurSelection, const char **pStrs, int Num, SDropDownState &State);
 };

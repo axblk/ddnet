@@ -224,6 +224,23 @@ jobs:
         cd release
         ./DDNet-Server shutdown
 
+    # The transport is compiled in by default, so the builds above cover it.
+    # What nothing else covers is the build without it, where the transport
+    # falls back to its stub and the QUIC-only files drop out.
+    - name: Build without QUIC
+      if: contains(matrix.name, 'ubuntu-latest-fancy')
+      run: |
+        mkdir noquic
+        cd noquic
+        cmake ${{ matrix.cmake-args }} -DQUIC=OFF -DCMAKE_BUILD_TYPE=Release -Werror=dev -DDOWNLOAD_GTEST=ON -DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=. ..
+        cmake --build . --config Release --target everything
+
+    - name: Test without QUIC
+      if: contains(matrix.name, 'ubuntu-latest-fancy')
+      run: |
+        cd noquic
+        cmake -E env ${{ matrix.gtest-env }} cmake --build . --config Release --target run_tests
+
     - name: Build headless client
       if: ${{ !contains(matrix.os, 'ubuntu') }}
       run: |

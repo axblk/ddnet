@@ -3,32 +3,41 @@
 #ifndef GAME_CLIENT_COMPONENTS_MOTD_H
 #define GAME_CLIENT_COMPONENTS_MOTD_H
 
-#include <engine/shared/config.h>
+#include <engine/client/session.h>
 #include <engine/textrender.h>
 
 #include <game/client/component.h>
 
+#include <cstdint>
+
+class CGameSessionContext;
+
 class CMotd : public CComponent
 {
-	char m_aServerMotd[std::size(g_Config.m_SvMotd)];
-	int64_t m_ServerMotdTime;
-	int64_t m_ServerMotdUpdateTime;
 	int m_RectQuadContainer = -1;
 	STextContainerIndex m_TextContainerIndex;
+	CSessionId m_RenderedSessionId;
+	uint64_t m_RenderedRevision = 0;
+	uint64_t m_RenderedViewId = 0;
+	int m_RenderedViewportWidth = 0;
+	int m_RenderedViewportHeight = 0;
+
+	void InvalidateRenderCache();
+	bool IsActive(const CRenderContext &Context) const;
 
 public:
-	CMotd();
 	int Sizeof() const override { return sizeof(*this); }
 
-	const char *ServerMotd() const { return m_aServerMotd; }
-	int64_t ServerMotdUpdateTime() const { return m_ServerMotdUpdateTime; }
+	const char *ServerMotd() const;
+	uint64_t ServerMotdRevision() const;
 	void Clear();
+	void DoMotd(CGameSessionContext &Session, const char *pText, bool Show);
 	bool IsActive() const;
 
-	void OnRender() override;
+	void OnUpdate() override;
+	void OnRender(const CRenderContext &Context) override;
 	void OnStateChange(int NewState, int OldState) override;
 	void OnWindowResize() override;
-	void OnMessage(int MsgType, void *pRawMsg) override;
 	bool OnInput(const IInput::CEvent &Event) override;
 };
 

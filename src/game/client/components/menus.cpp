@@ -636,7 +636,7 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 		if(DoButton_MenuTab(&s_NetworkButton, Localize("Browser"), ActivePage == PAGE_NETWORK, &Button, IGraphics::CORNER_NONE))
 			NewPage = PAGE_NETWORK;
 
-		if(GameClient()->m_GameInfo.m_Race)
+		if(GameClient()->FocusedGameInfo().m_Race)
 		{
 			Box.VSplitLeft(90.0f, &Button, &Box);
 			static CButtonContainer s_GhostButton;
@@ -2071,7 +2071,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		if(DoButton_Menu(&s_Button, pButtonText, 0, &Part) || Ui()->ConsumeHotkey(CUi::HOTKEY_ESCAPE) || Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER))
 		{
 			if(m_Popup == POPUP_DISCONNECTED && Client()->ReconnectTime() > 0)
-				Client()->SetReconnectTime(0);
+				Client()->CancelReconnect();
 			m_Popup = POPUP_NONE;
 		}
 	}
@@ -2295,7 +2295,7 @@ void CMenus::SetActive(bool Active)
 	{
 		if(m_NeedSendinfo)
 		{
-			GameClient()->SendInfo(false);
+			GameClient()->SendInfo(Client()->NetworkSessionId(), false);
 			m_NeedSendinfo = false;
 		}
 
@@ -2622,12 +2622,12 @@ void CMenus::RenderBackdropRegion(CUIRect Rect)
 		m_MenuBackdropReady = false;
 }
 
-void CMenus::OnRender()
+void CMenus::OnRenderApplicationOverlay()
 {
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		SetActive(true);
 
-	if(Client()->State() == IClient::STATE_ONLINE && GameClient()->m_ServerMode == CGameClient::SERVERMODE_PUREMOD)
+	if(Client()->State() == IClient::STATE_ONLINE && GameClient()->GameState(GameClient()->ActiveConnection()).Runtime().m_ServerMode == CGameState::SERVERMODE_PUREMOD)
 	{
 		Client()->Disconnect();
 		SetActive(true);

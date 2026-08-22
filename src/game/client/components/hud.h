@@ -48,41 +48,38 @@ class CHud : public CComponent
 
 	int m_HudQuadContainerIndex;
 	SScoreInfo m_aScoreInfo[2];
+	uint64_t m_ScoreHudSessionId = 0;
+	uint64_t m_ScoreHudStateId = 0;
+	uint64_t m_ScoreHudViewId = 0;
+	uint64_t m_ScoreHudOutputKey = 0;
+	int m_ScoreHudViewportX = 0;
+	int m_ScoreHudViewportY = 0;
+	int m_ScoreHudViewportWidth = 0;
+	int m_ScoreHudViewportHeight = 0;
+	int m_ScoreHudGameFlags = 0;
+	bool m_ScoreHudHasGameData = false;
+	bool m_ScoreHudCacheValid = false;
 	STextContainerIndex m_FPSTextContainerIndex;
 	STextContainerIndex m_DDRaceEffectsTextContainerIndex;
-	STextContainerIndex m_PlayerAngleTextContainerIndex;
-	float m_PlayerPrevAngle;
-	STextContainerIndex m_aPlayerSpeedTextContainers[2];
-	float m_aPlayerPrevSpeed[2];
-	int m_aPlayerSpeed[2];
-	enum class ESpeedChange
-	{
-		NONE,
-		INCREASE,
-		DECREASE
-	};
-	ESpeedChange m_aLastPlayerSpeedChange[2];
-	STextContainerIndex m_aPlayerPositionContainers[2];
-	float m_aPlayerPrevPosition[2];
 
-	void RenderTextInfo();
-	void RenderConnectionWarning();
-	void RenderViewEdgeFade();
-	void RenderTeambalanceWarning();
+	void ResetScoreHudContainers();
+
+	void RenderTextInfo(const CRenderContext &Context);
+	void RenderConnectionWarning(const CRenderContext &Context);
+	void RenderViewEdgeFade(const CRenderContext &Context);
+	void RenderTeambalanceWarning(const CRenderContext &Context);
 
 	void PrepareAmmoHealthAndArmorQuads();
-	void RenderAmmoHealthAndArmor(const CNetObj_Character *pCharacter);
+	void RenderAmmoHealthAndArmor(const CRenderContext &Context, const CNetObj_Character *pCharacter);
 
 	void PreparePlayerStateQuads();
-	void RenderPlayerState(int ClientId);
+	void RenderPlayerState(const CRenderContext &Context, int ClientId);
 
-	int m_LastSpectatorCountTick;
-	void RenderSpectatorCount();
-	void RenderDummyActions();
-	void RenderMovementInformation();
+	void RenderSpectatorCount(const CRenderContext &Context);
+	void RenderDummyActions(const CRenderContext &Context);
+	void RenderMovementInformation(const CRenderContext &Context);
 
-	void UpdateMovementInformationTextContainer(STextContainerIndex &TextContainer, float FontSize, float Value, float &PrevValue);
-	void RenderMovementInformationTextContainer(STextContainerIndex &TextContainer, const ColorRGBA &Color, float X, float Y);
+	void RenderMovementInformationValue(float FontSize, float Value, const ColorRGBA &Color, float RightX, float Y);
 
 	class CMovementInformation
 	{
@@ -91,18 +88,18 @@ class CHud : public CComponent
 		vec2 m_Speed;
 		float m_Angle = 0.0f;
 	};
-	class CMovementInformation GetMovementInformation(int ClientId, int Conn) const;
+	class CMovementInformation GetMovementInformation(const CRenderContext &Context, int ClientId) const;
 
-	void RenderGameTimer();
-	void RenderPauseNotification();
-	void RenderSuddenDeath();
+	void RenderGameTimer(const CRenderContext &Context);
+	void RenderPauseNotification(const CRenderContext &Context);
+	void RenderSuddenDeath(const CRenderContext &Context);
 
-	void RenderScoreHud();
+	void RenderScoreHud(const CRenderContext &Context);
 	int m_LastLocalClientId = -1;
 
-	void RenderSpectatorHud();
-	void RenderWarmupTimer();
-	void RenderLocalTime(float x);
+	void RenderSpectatorHud(const CRenderContext &Context);
+	void RenderWarmupTimer(const CRenderContext &Context);
+	void RenderLocalTime(const CRenderContext &Context, float x);
 
 	static constexpr float MOVEMENT_INFORMATION_LINE_HEIGHT = 8.0f;
 
@@ -114,30 +111,21 @@ public:
 	// Drawn after the backdrop was taken rather than as part of the scene: it
 	// is the thing on screen that moves most, and a blurred cursor is the one
 	// thing nobody wants to look at.
-	void RenderCursor();
+	void RenderCursor(const CRenderContext &Context);
 	void OnWindowResize() override;
 	void OnReset() override;
-	void OnRender() override;
+	void OnRender(const CRenderContext &Context) override;
 	void OnInit() override;
-	void OnNewSnapshot() override;
 
 	// DDRace
 
-	void OnMessage(int MsgType, void *pRawMsg) override;
 	void RenderNinjaBarPos(float x, float y, float Width, float Height, float Progress, float Alpha = 1.0f);
 
 private:
-	void RenderRecord();
-	void RenderDDRaceEffects();
-	float m_TimeCpDiff;
-	float m_aPlayerRecord[NUM_DUMMIES];
-	float m_FinishTimeDiff;
-	int m_DDRaceTime;
-	int m_FinishTimeLastReceivedTick;
-	int m_TimeCpLastReceivedTick;
-	bool m_ShowFinishTime;
+	void RenderRecord(const CRenderContext &Context);
+	void RenderDDRaceEffects(const CRenderContext &Context);
 
-	inline float GetMovementInformationBoxHeight();
+	inline float GetMovementInformationBoxHeight(const CRenderContext &Context);
 	inline int GetDigitsIndex(int Value, int Max);
 
 	// Quad Offsets

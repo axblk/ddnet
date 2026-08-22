@@ -26,7 +26,7 @@ public:
 	int m_TuneZone;
 };
 
-CLaserData ExtractLaserInfo(int NetObjType, const void *pData, class CGameWorld *pGameWorld, const CNetObj_EntityEx *pEntEx);
-CLaserData ExtractLaserInfoDDNet(const CNetObj_DDNetLaser *pLaser, class CGameWorld *pGameWorld);
+CLaserData ExtractLaserInfo(int NetObjType, const void *pData, const class CGameWorld *pGameWorld, const CNetObj_EntityEx *pEntEx);
+CLaserData ExtractLaserInfoDDNet(const CNetObj_DDNetLaser *pLaser, const class CGameWorld *pGameWorld);
 
 #endif // GAME_CLIENT_LASER_DATA_H

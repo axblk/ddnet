@@ -23,7 +23,7 @@ CGun::CGun(CGameWorld *pGameWorld, vec2 Pos, bool Freeze, bool Explosive, int La
 	m_Explosive = Explosive;
 	m_Layer = Layer;
 	m_Number = Number;
-	m_EvalTick = Server()->Tick();
+	m_EvalTick = GameWorld()->GameTick();
 
 	std::fill(std::begin(m_aLastFireTeam), std::end(m_aLastFireTeam), 0);
 	std::fill(std::begin(m_aLastFireSolo), std::end(m_aLastFireSolo), 0);
@@ -32,10 +32,10 @@ CGun::CGun(CGameWorld *pGameWorld, vec2 Pos, bool Freeze, bool Explosive, int La
 
 void CGun::Tick()
 {
-	if(Server()->Tick() % (int)(Server()->TickSpeed() * 0.15f) == 0)
+	if(GameWorld()->GameTick() % (int)(GameWorld()->GameTickSpeed() * 0.15f) == 0)
 	{
-		m_EvalTick = Server()->Tick();
-		GameServer()->Collision()->MoverSpeed(m_Pos.x, m_Pos.y, &m_Core);
+		m_EvalTick = GameWorld()->GameTick();
+		Collision()->MoverSpeed(m_Pos.x, m_Pos.y, &m_Core);
 		m_Pos += m_Core;
 	}
 	if(g_Config.m_SvPlasmaPerSec > 0)
@@ -79,24 +79,24 @@ void CGun::Fire()
 
 		// Turrets can only shoot at a speed of sv_plasma_per_sec
 		const int &TargetClientId = pTarget->GetPlayer()->GetCid();
-		const bool &TargetIsSolo = pTarget->Teams()->m_Core.GetSolo(TargetClientId);
+		const bool &TargetIsSolo = pTarget->TeamsCore()->GetSolo(TargetClientId);
 		if((TargetIsSolo &&
-			   m_aLastFireSolo[TargetClientId] + Server()->TickSpeed() / g_Config.m_SvPlasmaPerSec > Server()->Tick()) ||
+			   m_aLastFireSolo[TargetClientId] + GameWorld()->GameTickSpeed() / g_Config.m_SvPlasmaPerSec > GameWorld()->GameTick()) ||
 			(!TargetIsSolo &&
-				m_aLastFireTeam[TargetTeam] + Server()->TickSpeed() / g_Config.m_SvPlasmaPerSec > Server()->Tick()))
+				m_aLastFireTeam[TargetTeam] + GameWorld()->GameTickSpeed() / g_Config.m_SvPlasmaPerSec > GameWorld()->GameTick()))
 		{
 			continue;
 		}
 
 		// Turrets can shoot only at reachable, alive players
-		int IsReachable = !GameServer()->Collision()->IntersectLine(m_Pos, pTarget->m_Pos, nullptr, nullptr);
+		int IsReachable = !Collision()->IntersectLine(m_Pos, pTarget->m_Pos, nullptr, nullptr);
 		if(IsReachable && pTarget->IsAlive())
 		{
 			// Turrets fire on solo players regardless of the rest of the team
 			if(TargetIsSolo)
 			{
 				aIsTarget[TargetClientId] = true;
-				m_aLastFireSolo[TargetClientId] = Server()->Tick();
+				m_aLastFireSolo[TargetClientId] = GameWorld()->GameTick();
 			}
 			else
 			{
@@ -116,7 +116,7 @@ void CGun::Fire()
 		if(aTargetIdInTeam[i] != -1)
 		{
 			aIsTarget[aTargetIdInTeam[i]] = true;
-			m_aLastFireTeam[i] = Server()->Tick();
+			m_aLastFireTeam[i] = GameWorld()->GameTick();
 		}
 	}
 
@@ -138,7 +138,7 @@ void CGun::Reset()
 
 void CGun::Snap(int SnappingClient)
 {
-	if(NetworkClipped(SnappingClient) || !GetId().has_value())
+	if(NetworkClipped(SnappingClient) || GetId() < 0)
 		return;
 
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
@@ -161,7 +161,7 @@ void CGun::Snap(int SnappingClient)
 			GameServer()->m_apPlayers[SnappingClient]->SpectatorId() != SPEC_FREEVIEW)
 			pChar = GameServer()->GetPlayerChar(GameServer()->m_apPlayers[SnappingClient]->SpectatorId());
 
-		int Tick = (Server()->Tick() % Server()->TickSpeed()) % 11;
+		int Tick = (GameWorld()->GameTick() % GameWorld()->GameTickSpeed()) % 11;
 		if(pChar && m_Layer == LAYER_SWITCH && m_Number > 0 &&
 			!Switchers()[m_Number].m_aStatus[pChar->Team()] && (!Tick))
 			return;
@@ -169,6 +169,6 @@ void CGun::Snap(int SnappingClient)
 		StartTick = m_EvalTick;
 	}
 
-	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), GetId().value(),
+	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), GetId(),
 		m_Pos, m_Pos, StartTick, -1, LASERTYPE_GUN, Subtype, m_Number);
 }

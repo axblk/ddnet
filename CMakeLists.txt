@@ -105,7 +105,17 @@ elseif(TARGET_OS STREQUAL "mac")
   set(AUTO_VULKAN_BACKEND OFF)
 endif()
 
+# The QUIC transport is written in Rust, which every build needs anyway, so it
+# is compiled in wherever it can run. The two targets that are left out have no
+# native socket for it: emscripten reaches servers through WebTransport, and
+# the Android build does not carry the Rust QUIC dependencies.
+set(AUTO_QUIC ON)
+if(TARGET_OS STREQUAL "emscripten" OR TARGET_OS STREQUAL "android")
+  set(AUTO_QUIC OFF)
+endif()
+
 option(WEBSOCKETS "Enable websockets support" OFF)
+option(QUIC "Build the native QUIC and WebTransport transport" ${AUTO_QUIC})
 option(MYSQL "Enable mysql support" OFF)
 option(TEST_MYSQL "Test mysql support in unit tests (also sets -DMYSQL=ON)" OFF)
 option(AUTOUPDATE "Enable the autoupdater" OFF)
@@ -970,8 +980,13 @@ set_glob(RUST_ENGINE_SHARED GLOB_RECURSE "rs;toml" src/engine/shared
   Cargo.toml
   build.rs
   config.rs
+  game_wire.rs
   lib.rs
+  quic.rs
+  quic/sans_io.rs
+  quic/webtransport.rs
   rust_version.rs
+  udp_port_mux_classifier.rs
   # tidy-alphabetical-end
 )
 
@@ -979,10 +994,15 @@ set_src(RUST_BRIDGE_SHARED GLOB_RECURSE src/rust-bridge
   # tidy-alphabetical-start
   cpp/console.cpp
   cpp/console.h
+  engine/shared/quic.cpp
+  engine/shared/quic.h
   engine/shared/rust_version.cpp
   engine/shared/rust_version.h
   # tidy-alphabetical-end
 )
+if(NOT QUIC)
+  list(FILTER RUST_BRIDGE_SHARED EXCLUDE REGEX "engine/shared/quic\\.(cpp|h)$")
+endif()
 
 set_glob(RUST_MASTERSRV GLOB "rs;toml" src/mastersrv/src
   # tidy-alphabetical-start
@@ -996,6 +1016,15 @@ set_glob(RUST_MASTERSRV GLOB "rs;toml" src/mastersrv/src
 
 add_library(rust-bridge-shared EXCLUDE_FROM_ALL OBJECT ${RUST_BRIDGE_SHARED})
 list(APPEND TARGETS_OWN rust-bridge-shared)
+if(QUIC AND NOT MSVC)
+  # cxx maps Rust Result errors to C++ exceptions, which the adapter catches.
+  # A source option follows the global -fno-exceptions flag on the command line.
+  set_property(SOURCE
+    src/engine/shared/quic_transport.cpp
+    src/rust-bridge/engine/shared/quic.cpp
+    src/tools/quic_cli.cpp
+    APPEND PROPERTY COMPILE_OPTIONS -fexceptions)
+endif()
 
 if(TARGET_OS STREQUAL "android")
   set(CARGO_BUILD_DIR "${CARGO_NDK_TARGET}/")
@@ -1005,6 +1034,13 @@ else()
   set(CARGO_BUILD_DIR "")
   set(CARGO_BUILD ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} DDNET_TEST_NO_LINK=1 ${RUST_CARGO} build --locked --manifest-path "${PROJECT_SOURCE_DIR}/Cargo.toml")
   set(CARGO_TEST ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} ${RUST_CARGO} test --locked)
+endif()
+if(QUIC)
+  if(TARGET_OS STREQUAL "emscripten")
+    message(FATAL_ERROR "QUIC is a native-only build target")
+  endif()
+  list(APPEND CARGO_BUILD --features ddnet-engine-shared/quic)
+  list(APPEND CARGO_TEST --features ddnet-engine-shared/quic-tests)
 endif()
 if(MSVC)
   list(INSERT CARGO_BUILD 0 ${CMAKE_COMMAND} -E env $<$<CONFIG:Debug>:CFLAGS=/MTd> $<$<CONFIG:Debug>:CXXFLAGS=/MTd>)
@@ -1711,6 +1747,7 @@ set(EXPECTED_DATA
   maps7/Sunny\ Side\ Up.map
   maps7/Tsunami.map
   maps7/Tutorial.map
+  maps7/ctf1.map
   maps7/readme.txt
   menuimages/demos.png
   menuimages/editor.png
@@ -2000,11 +2037,13 @@ set(EXPECTED_DATA
   themes/winter_day.map
   themes/winter_night.map
   touch_controls.json
+  vanilla_golden/scenarios.txt
+  vanilla_golden/stock-0.7.5.trace
   wordlist.txt
   # tidy-alphabetical-end
 )
 
-set_glob(DATA GLOB_RECURSE "cfg;frag;json;map;otf;png;rules;ttc;ttf;txt;vert;wv" data ${EXPECTED_DATA})
+set_glob(DATA GLOB_RECURSE "cfg;frag;json;map;otf;png;rules;trace;ttc;ttf;txt;vert;wv" data ${EXPECTED_DATA})
 
 ########################################################################
 # COPY DATA AND SHARED LIBS
@@ -2298,6 +2337,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   fifo.h
   filecollection.cpp
   filecollection.h
+  game_wire.cpp
+  game_wire.h
   global_uuid_manager.cpp
   host_lookup.cpp
   host_lookup.h
@@ -2342,8 +2383,12 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   protocol_ex_msgs.h
   protocolglue.cpp
   protocolglue.h
+  quic_transport.cpp
+  quic_transport.h
   ringbuffer.cpp
   ringbuffer.h
+  server_identity.cpp
+  server_identity.h
   serverinfo.cpp
   serverinfo.h
   sixup_translate_snapshot.cpp
@@ -2385,6 +2430,8 @@ set_src(GAME_SHARED GLOB src/game
   layers.h
   localization.cpp
   localization.h
+  map_door_collision.cpp
+  map_door_collision.h
   mapbugs.cpp
   mapbugs.h
   mapbugs_list.h
@@ -2529,6 +2576,7 @@ if(CLIENT)
     checksum.h
     client.cpp
     client.h
+    connection.h
     demoedit.cpp
     demoedit.h
     discord.cpp
@@ -2558,6 +2606,10 @@ if(CLIENT)
     serverbrowser_http.h
     serverbrowser_ping_cache.cpp
     serverbrowser_ping_cache.h
+    session.cpp
+    session.h
+    session_sources.cpp
+    session_sources.h
     sixup_translate_system.cpp
     smooth_time.cpp
     smooth_time.h
@@ -2565,6 +2617,7 @@ if(CLIENT)
     sound.h
     sqlite.cpp
     steam.cpp
+    stream.h
     text.cpp
     updater.cpp
     updater.h
@@ -2609,8 +2662,6 @@ if(CLIENT)
     components/emoticon.h
     components/envelope_state.cpp
     components/envelope_state.h
-    components/flow.cpp
-    components/flow.h
     components/freezebars.cpp
     components/freezebars.h
     components/ghost.cpp
@@ -2686,12 +2737,22 @@ if(CLIENT)
     components/touch_controls.h
     components/voting.cpp
     components/voting.h
+    game_state.cpp
+    game_state.h
+    game_view.cpp
+    game_view.h
     gameclient.cpp
     gameclient.h
+    input_policy.cpp
+    input_policy.h
     laser_data.cpp
     laser_data.h
     lineinput.cpp
     lineinput.h
+    local_player_profile.cpp
+    local_player_profile.h
+    map_context.cpp
+    map_context.h
     pickup_data.cpp
     pickup_data.h
     prediction/entities/character.cpp
@@ -2718,6 +2779,11 @@ if(CLIENT)
     race.h
     render.cpp
     render.h
+    session_context.h
+    session_game_config.cpp
+    session_game_config.h
+    session_presentation.cpp
+    session_presentation.h
     sixup_translate_connless.cpp
     sixup_translate_game.cpp
     sixup_translate_snapshot.cpp
@@ -3112,12 +3178,48 @@ if(SERVER)
     gamecontroller.h
     gamemodes/ddnet.cpp
     gamemodes/ddnet.h
-    gamemodes/mod.cpp
-    gamemodes/mod.h
+    gamemodes/ddrace.cpp
+    gamemodes/ddrace.h
+    gamemodes/ddrace_character.cpp
+    gamemodes/ddrace_character.h
+    gamemodes/ddrace_map_entities.cpp
+    gamemodes/ddrace_map_entities.h
     gameworld.cpp
     gameworld.h
     interactions.cpp
     interactions.h
+    mode/builtin_game_modes.cpp
+    mode/builtin_game_modes.h
+    mode/entity_registry.cpp
+    mode/entity_registry.h
+    mode/game_host.cpp
+    mode/game_host.h
+    mode/game_mode_map_reload_state.h
+    mode/game_mode_registry.cpp
+    mode/game_mode_registry.h
+    mode/game_services.cpp
+    mode/game_services.h
+    mode/match_lifecycle.h
+    modes/insta/game_modes.cpp
+    modes/insta/game_modes.h
+    modes/insta/rules.h
+    modes/vanilla/ctf.cpp
+    modes/vanilla/ctf.h
+    modes/vanilla/dm.cpp
+    modes/vanilla/dm.h
+    modes/vanilla/flag.cpp
+    modes/vanilla/flag.h
+    modes/vanilla/game_modes.cpp
+    modes/vanilla/game_modes.h
+    modes/vanilla/player.h
+    modes/vanilla/tdm.cpp
+    modes/vanilla/tdm.h
+    modes/vanilla/teamplay.cpp
+    modes/vanilla/teamplay.h
+    modes/vanilla/vanilla_pvp.cpp
+    modes/vanilla/vanilla_pvp.h
+    modes/zcatch/game_modes.cpp
+    modes/zcatch/game_modes.h
     mutes.cpp
     player.cpp
     player.h
@@ -3273,12 +3375,16 @@ if(TOOLS)
     map_resave.cpp
     map_test.cpp
     packetgen.cpp
+    quic_cli.cpp
     stun.cpp
     twping.cpp
     unicode_confusables.cpp
     uuid.cpp
     # tidy-alphabetical-end
   )
+  if(NOT QUIC)
+    list(FILTER TOOLS_SRC EXCLUDE REGEX "quic_cli\\.cpp$")
+  endif()
   foreach(ABS_T ${TOOLS_SRC})
     file(RELATIVE_PATH T "${PROJECT_SOURCE_DIR}/src/tools/" ${ABS_T})
     if(T MATCHES "\\.cpp$")
@@ -3293,6 +3399,12 @@ if(TOOLS)
       endif()
       if(TOOL MATCHES "^config_")
         list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")
+      endif()
+      if(QUIC)
+        # In this configuration engine-shared carries the QUIC transport, so
+        # every tool that links it needs the C++ side of the Rust bridge, not
+        # just the spike tool itself. The Rust library is already in ${LIBS}.
+        list(APPEND EXTRA_TOOL_SRC $<TARGET_OBJECTS:rust-bridge-shared>)
       endif()
       set(EXCLUDE_FROM_ALL)
       if(DEV)
@@ -3317,6 +3429,14 @@ if(TOOLS)
   list(APPEND TARGETS_LINK ${TARGETS_TOOLS})
 
   add_custom_target(tools DEPENDS ${TARGETS_TOOLS})
+endif()
+if(QUIC)
+  add_custom_target(quic)
+  if(TOOLS)
+    add_dependencies(quic quic_cli)
+  else()
+    add_dependencies(quic rust_engine_shared_target rust-bridge-shared)
+  endif()
 endif()
 add_custom_target(everything DEPENDS ${TARGETS_OWN})
 
@@ -3356,6 +3476,12 @@ add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/src/generated/checksum.cpp
 # TESTS
 ########################################################################
 
+add_executable(client-session-headless-smoke EXCLUDE_FROM_ALL
+  src/engine/client/session.cpp
+  src/headless/session_headless.cpp
+)
+list(APPEND TARGETS_OWN client-session-headless-smoke)
+
 if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   set_src(TESTS GLOB src/test
     # tidy-alphabetical-start
@@ -3364,13 +3490,18 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     blocklist_driver_test.cpp
     bytes_be_test.cpp
     chunk_header_test.cpp
+    client_connection_test.cpp
     color_test.cpp
     compression_test.cpp
+    console_test.cpp
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp
     editor_test.cpp
     fs_test.cpp
+    game_mode_registry_test.cpp
+    game_state_test.cpp
+    game_wire_test.cpp
     gameworld_test.cpp
     git_revision_test.cpp
     graphics_threaded_test.cpp
@@ -3381,6 +3512,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     json_test.cpp
     jsonwriter_test.cpp
     linereader_test.cpp
+    map_context_test.cpp
     mapbugs_test.cpp
     mapitems_test.cpp
     math_test.cpp
@@ -3399,6 +3531,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     server_test.cpp
     serverbrowser_test.cpp
     serverinfo_test.cpp
+    session_manager_test.cpp
     snapshot_test.cpp
     str_test.cpp
     swap_endian_test.cpp
@@ -3419,6 +3552,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     # tidy-alphabetical-start
     src/engine/client/blocklist_driver.cpp
     src/engine/client/blocklist_driver.h
+    src/engine/client/graph.cpp
     src/engine/client/render_command_queue.cpp
     src/engine/client/render_command_queue.h
     src/engine/client/serverbrowser.cpp
@@ -3427,11 +3561,68 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/engine/client/serverbrowser_http.h
     src/engine/client/serverbrowser_ping_cache.cpp
     src/engine/client/serverbrowser_ping_cache.h
+    src/engine/client/session.cpp
+    src/engine/client/session_sources.cpp
+    src/engine/client/session_sources.h
+    src/engine/client/smooth_time.cpp
     src/engine/client/sqlite.cpp
+    src/engine/client/stream.h
     src/game/client/components/censor.cpp
     src/game/client/components/censor.h
+    src/game/client/input_policy.cpp
+    src/game/client/input_policy.h
+    src/game/client/local_player_profile.cpp
+    src/game/client/local_player_profile.h
+    src/game/client/map_context.cpp
+    src/game/client/map_context.h
+    src/game/client/session_game_config.cpp
+    src/game/client/session_game_config.h
     # tidy-alphabetical-end
   )
+
+  list(REMOVE_ITEM TESTS ${PROJECT_SOURCE_DIR}/src/test/game_state_test.cpp)
+  set(CLIENT_GAME_STATE_TEST_SOURCES
+    # tidy-alphabetical-start
+    src/engine/client/graph.cpp
+    src/engine/client/session.cpp
+    src/engine/client/session_sources.cpp
+    src/engine/client/smooth_time.cpp
+    src/game/client/game_state.cpp
+    src/game/client/game_view.cpp
+    src/game/client/laser_data.cpp
+    src/game/client/map_context.cpp
+    src/game/client/pickup_data.cpp
+    src/game/client/prediction/entities/character.cpp
+    src/game/client/prediction/entities/door.cpp
+    src/game/client/prediction/entities/dragger.cpp
+    src/game/client/prediction/entities/laser.cpp
+    src/game/client/prediction/entities/pickup.cpp
+    src/game/client/prediction/entities/plasma.cpp
+    src/game/client/prediction/entities/projectile.cpp
+    src/game/client/prediction/entity.cpp
+    src/game/client/prediction/gameworld.cpp
+    src/game/client/projectile_data.cpp
+    src/game/client/session_game_config.cpp
+    src/generated/client_data.cpp
+    src/generated/client_data.h
+    src/headless/client_game_state_test_main.cpp
+    src/test/game_state_test.cpp
+    # tidy-alphabetical-end
+  )
+  set(TARGET_CLIENT_GAME_STATE_TESTS client-game-state-tests)
+  add_executable(${TARGET_CLIENT_GAME_STATE_TESTS} EXCLUDE_FROM_ALL
+    ${CLIENT_GAME_STATE_TEST_SOURCES}
+    # tidy-alphabetical-start
+    $<TARGET_OBJECTS:engine-shared>
+    $<TARGET_OBJECTS:game-shared>
+    $<TARGET_OBJECTS:rust-bridge-shared>
+    # tidy-alphabetical-end
+    ${DEPS}
+  )
+  target_link_libraries(${TARGET_CLIENT_GAME_STATE_TESTS} ${GTEST_LIBRARIES} ${LIBS_SERVER})
+  target_include_directories(${TARGET_CLIENT_GAME_STATE_TESTS} SYSTEM PRIVATE ${GTEST_INCLUDE_DIRS})
+  list(APPEND TARGETS_OWN ${TARGET_CLIENT_GAME_STATE_TESTS})
+  list(APPEND TARGETS_LINK ${TARGET_CLIENT_GAME_STATE_TESTS})
 
   set(TARGET_TESTRUNNER testrunner)
   add_executable(${TARGET_TESTRUNNER} EXCLUDE_FROM_ALL
@@ -3452,14 +3643,42 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   list(APPEND TARGETS_OWN ${TARGET_TESTRUNNER})
   list(APPEND TARGETS_LINK ${TARGET_TESTRUNNER})
 
+  set(TARGET_VANILLA_GOLDEN vanilla-golden-current)
+  add_executable(${TARGET_VANILLA_GOLDEN} EXCLUDE_FROM_ALL
+    scripts/vanilla_golden/current_runner.cpp
+    $<TARGET_OBJECTS:engine-shared>
+    $<TARGET_OBJECTS:game-server-without-main>
+    $<TARGET_OBJECTS:game-shared>
+    $<TARGET_OBJECTS:rust-bridge-shared>
+    ${DEPS}
+  )
+  target_link_libraries(${TARGET_VANILLA_GOLDEN} ${LIBS_SERVER})
+  list(APPEND TARGETS_OWN ${TARGET_VANILLA_GOLDEN})
+  list(APPEND TARGETS_LINK ${TARGET_VANILLA_GOLDEN})
+
+  add_custom_target(check_client_state_architecture
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/check_client_state_architecture.py ${PROJECT_SOURCE_DIR}
+    COMMENT Checking client multi-state architecture boundaries
+    VERBATIM
+  )
+
   add_custom_target(run_cxx_tests
     COMMAND $<TARGET_FILE:${TARGET_TESTRUNNER}> ${TESTRUNNER_ARGS}
+    COMMAND $<TARGET_FILE:${TARGET_CLIENT_GAME_STATE_TESTS}>
     COMMENT Running unit tests
-    DEPENDS ${TARGET_TESTRUNNER}
+    DEPENDS ${TARGET_TESTRUNNER} ${TARGET_CLIENT_GAME_STATE_TESTS} check_client_state_architecture
     USES_TERMINAL
   )
+  add_custom_target(run_vanilla_golden_tests
+    COMMAND ${Python3_EXECUTABLE} scripts/vanilla_golden.py compare --runner $<TARGET_FILE:${TARGET_VANILLA_GOLDEN}>
+    COMMENT Running Vanilla golden tests
+    DEPENDS ${TARGET_VANILLA_GOLDEN}
+    USES_TERMINAL
+    VERBATIM
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  )
   add_custom_target(run_tests
-    DEPENDS run_cxx_tests
+    DEPENDS run_cxx_tests run_vanilla_golden_tests
   )
   if(NOT MSVC OR CMAKE_BUILD_TYPE STREQUAL Release)
     # On MSVC, Rust tests only work in the release mode because we link our C++
@@ -3494,6 +3713,15 @@ add_custom_target(run_rust_tests
   DEPENDS rust_test
   VERBATIM
 )
+if(QUIC)
+  add_custom_target(run_quic_load_test
+    COMMAND ${CMAKE_COMMAND} -E env "DDNET_TEST_LIBRARIES=${RUST_TEST_LIBS}" ${CARGO_TEST} -p ddnet-engine-shared thousand_connections_with_active_subset -- --ignored --nocapture
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    USES_TERMINAL
+    DEPENDS rust_test
+    VERBATIM
+  )
+endif()
 
 ########################################################################
 # INSTALLATION
@@ -4057,7 +4285,7 @@ foreach(target ${TARGETS})
     target_compile_options(${target} PRIVATE /wd4996) # Use of non-_s functions.
     # tidy-alphabetical-end
     # Enable Edit & Continue (Hot Reload) support
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.25)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.25 AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
       set_property(TARGET ${target} PROPERTY MSVC_DEBUG_INFORMATION_FORMAT $<IF:$<CONFIG:Debug>,EditAndContinue,Embedded>)
       target_link_options(${target} PRIVATE $<$<CONFIG:Debug>:/INCREMENTAL>)
     endif()
@@ -4156,6 +4384,9 @@ foreach(target ${TARGETS_OWN})
   if(CRYPTO_FOUND)
     target_compile_definitions(${target} PRIVATE CONF_OPENSSL)
     target_include_directories(${target} SYSTEM PRIVATE ${CRYPTO_INCLUDE_DIRS})
+  endif()
+  if(QUIC)
+    target_compile_definitions(${target} PRIVATE CONF_QUIC)
   endif()
   if(WEBSOCKETS)
     target_compile_definitions(${target} PRIVATE CONF_WEBSOCKETS)

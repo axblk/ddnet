@@ -9,14 +9,20 @@
 
 #include <game/client/gameclient.h>
 
-int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn, bool Dummy)
+int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, CStreamId StreamId)
 {
+	const int Conn = Client()->StreamIndex(SessionId, StreamId);
+	dbg_assert(Conn >= 0, "missing snapshot translation stream index");
 	CSnapshotBuilder Builder;
 	Builder.Init();
 
 	float LocalTime = Client()->LocalTime();
-	int GameTick = Client()->GameTick(g_Config.m_ClDummy);
-	CTranslationContext &TranslationContext = Client()->m_TranslationContext;
+	int GameTick = Client()->GameTick(SessionId, Conn);
+	CTranslationContext &TranslationContext = Client()->TranslationContext(SessionId);
+	CGameSessionContext *pSourceSession = FindSessionContext(SessionId);
+	dbg_assert(pSourceSession != nullptr, "missing snapshot translation session");
+	CGameState *pSourceState = pSourceSession->GameStates().FindByStream(StreamId);
+	dbg_assert(pSourceState != nullptr, "missing snapshot translation state");
 
 	for(auto &PlayerInfosRace : TranslationContext.m_apPlayerInfosRace)
 		PlayerInfosRace = nullptr;
@@ -121,7 +127,7 @@ int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrc
 			Info6.m_WarmupTimer = TranslationContext.m_GameStateEndTick7 - GameTick;
 
 		// hack to port 0.7 race timer to ddnet warmup gametimer hack
-		int TimerClientId = TranslationContext.m_aLocalClientId[Conn];
+		int TimerClientId = TranslationContext.LocalClientId(Conn);
 		if(SpectatorId >= 0)
 			TimerClientId = SpectatorId;
 		const protocol7::CNetObj_PlayerInfoRace *pRaceInfo = TimerClientId == -1 ? nullptr : TranslationContext.m_apPlayerInfosRace[TimerClientId];
@@ -241,7 +247,7 @@ int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrc
 				Builder.NewItem(NETEVENTTYPE_SOUNDWORLD, pItem7->Id(), &Sound, sizeof(Sound));
 			}
 
-			if(TranslationContext.m_aLocalClientId[Conn] != pItem7->Id())
+			if(TranslationContext.LocalClientId(Conn) != pItem7->Id())
 			{
 				if(pChar7->m_TriggeredEvents & protocol7::COREEVENTFLAG_GROUND_JUMP)
 				{
@@ -273,13 +279,14 @@ int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrc
 		{
 			const protocol7::CNetObj_PlayerInfo *pInfo7 = (const protocol7::CNetObj_PlayerInfo *)pItem7->Data();
 			CNetObj_PlayerInfo Info6 = {};
-			Info6.m_Local = TranslationContext.m_aLocalClientId[Conn] == pItem7->Id();
+			Info6.m_Local = TranslationContext.LocalClientId(Conn) == pItem7->Id();
 			Info6.m_ClientId = pItem7->Id();
 			Info6.m_Team = 0;
 			if(pItem7->Id() >= 0 && pItem7->Id() < MAX_CLIENTS)
 			{
 				Info6.m_Team = TranslationContext.m_aClients[pItem7->Id()].m_Team;
 				TranslationContext.m_aClients[pItem7->Id()].m_PlayerFlags7 = pInfo7->m_PlayerFlags;
+				pSourceState->Protocol7Client(pItem7->Id()).m_PlayerFlags = pInfo7->m_PlayerFlags;
 			}
 			Info6.m_Score = pInfo7->m_Score;
 			Info6.m_Latency = pInfo7->m_Latency;
@@ -396,7 +403,7 @@ int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrc
 
 			if(pInfo->m_Local)
 			{
-				TranslationContext.m_aLocalClientId[Conn] = ClientId;
+				TranslationContext.LocalClientId(Conn) = ClientId;
 			}
 			CTranslationContext::CClientData &Client = TranslationContext.m_aClients[ClientId];
 			Client.m_Active = true;
@@ -409,7 +416,7 @@ int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrc
 				Client.m_Country = CountryCode::DEFAULT;
 			}
 
-			ApplySkin7InfoFromSnapObj(pInfo, ClientId);
+			ApplySkin7InfoFromSnapObj(SessionId, pInfo, ClientId, StreamId);
 		}
 		else if(ItemType == protocol7::NETOBJTYPE_DE_GAMEINFO)
 		{
@@ -437,24 +444,31 @@ int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrc
 	return Builder.FinishIfNoDroppedItems(pSnapDstSix);
 }
 
-int CGameClient::OnDemoRecSnap7(CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn)
+int CGameClient::OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapshotBuffer *pTo, CStreamId StreamId)
 {
+	const int Conn = Client()->StreamIndex(SessionId, StreamId);
+	dbg_assert(Conn >= 0, "missing recorder stream index");
+	CTranslationContext &TranslationContext = Client()->TranslationContext(SessionId);
+	CGameSessionContext *pNetworkSession = FindSessionContext(SessionId);
+	dbg_assert(pNetworkSession != nullptr, "missing recorder Network session context");
+	CGameState *pState = pNetworkSession->GameStates().FindByStream(StreamId);
+	dbg_assert(pState != nullptr, "missing recorder Network game state");
 	CSnapshotBuilder Builder;
 	Builder.Init7(pFrom);
 
 	// add client info
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{
-		if(!m_aClients[i].m_Active)
+		CTranslationContext::CClientData &ClientData = TranslationContext.m_aClients[i];
+		if(!ClientData.m_Active)
 			continue;
-
-		CTranslationContext::CClientData &ClientData = Client()->m_TranslationContext.m_aClients[i];
+		const CGameState::CProtocol7ClientState &Protocol7Client = pState->Protocol7Client(i);
 
 		protocol7::CNetObj_De_ClientInfo ClientInfoObj;
-		ClientInfoObj.m_Local = i == Client()->m_TranslationContext.m_aLocalClientId[Conn];
+		ClientInfoObj.m_Local = i == TranslationContext.LocalClientId(Conn);
 		ClientInfoObj.m_Team = ClientData.m_Team;
-		StrToInts(ClientInfoObj.m_aName, std::size(ClientInfoObj.m_aName), m_aClients[i].m_aName);
-		StrToInts(ClientInfoObj.m_aClan, std::size(ClientInfoObj.m_aClan), m_aClients[i].m_aClan);
+		StrToInts(ClientInfoObj.m_aName, std::size(ClientInfoObj.m_aName), ClientData.m_aName);
+		StrToInts(ClientInfoObj.m_aClan, std::size(ClientInfoObj.m_aClan), ClientData.m_aClan);
 		ClientInfoObj.m_Country = ClientData.m_Country;
 
 		for(int Part = 0; Part < protocol7::NUM_SKINPARTS; Part++)
@@ -462,29 +476,30 @@ int CGameClient::OnDemoRecSnap7(CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn
 			StrToInts(
 				ClientInfoObj.m_aaSkinPartNames[Part],
 				std::size(ClientInfoObj.m_aaSkinPartNames[Part]),
-				m_aClients[i].m_aSixup[Conn].m_aaSkinPartNames[Part]);
-			ClientInfoObj.m_aUseCustomColors[Part] = m_aClients[i].m_aSixup[Conn].m_aUseCustomColors[Part];
-			ClientInfoObj.m_aSkinPartColors[Part] = m_aClients[i].m_aSixup[Conn].m_aSkinPartColors[Part];
+				Protocol7Client.m_aaSkinPartNames[Part]);
+			ClientInfoObj.m_aUseCustomColors[Part] = Protocol7Client.m_aUseCustomColors[Part];
+			ClientInfoObj.m_aSkinPartColors[Part] = Protocol7Client.m_aSkinPartColors[Part];
 		}
 
 		Builder.NewItem(protocol7::NETOBJTYPE_DE_CLIENTINFO, i, &ClientInfoObj, sizeof(ClientInfoObj));
 	}
 
 	// add tuning
-	if(mem_comp(&CTuningParams::DEFAULT, &m_aTuning[Conn], sizeof(CTuningParams)) != 0)
+	const CTuningParams &CurrentTuning = pState->Runtime().m_CurrentTuning;
+	if(mem_comp(&CTuningParams::DEFAULT, &CurrentTuning, sizeof(CTuningParams)) != 0)
 	{
 		protocol7::CNetObj_De_TuneParams TuneParams;
-		mem_copy(&TuneParams.m_aTuneParams, &m_aTuning[Conn], sizeof(TuneParams.m_aTuneParams));
+		mem_copy(&TuneParams.m_aTuneParams, &CurrentTuning, sizeof(TuneParams.m_aTuneParams));
 		Builder.NewItem(protocol7::NETOBJTYPE_DE_TUNEPARAMS, 0, &TuneParams, sizeof(TuneParams));
 	}
 
 	// add game info
 	protocol7::CNetObj_De_GameInfo GameInfo;
-	GameInfo.m_GameFlags = Client()->m_TranslationContext.m_GameFlags;
-	GameInfo.m_ScoreLimit = Client()->m_TranslationContext.m_ScoreLimit;
-	GameInfo.m_TimeLimit = Client()->m_TranslationContext.m_TimeLimit;
-	GameInfo.m_MatchNum = Client()->m_TranslationContext.m_MatchNum;
-	GameInfo.m_MatchCurrent = Client()->m_TranslationContext.m_MatchCurrent;
+	GameInfo.m_GameFlags = TranslationContext.m_GameFlags;
+	GameInfo.m_ScoreLimit = TranslationContext.m_ScoreLimit;
+	GameInfo.m_TimeLimit = TranslationContext.m_TimeLimit;
+	GameInfo.m_MatchNum = TranslationContext.m_MatchNum;
+	GameInfo.m_MatchCurrent = TranslationContext.m_MatchCurrent;
 	Builder.NewItem(protocol7::NETOBJTYPE_DE_GAMEINFO, 0, &GameInfo, sizeof(GameInfo));
 
 	return Builder.FinishIfNoDroppedItems(pTo);

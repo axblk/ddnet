@@ -18,6 +18,7 @@
 #include <engine/shared/netban.h>
 #include <engine/shared/network.h>
 #include <engine/shared/protocol.h>
+#include <engine/shared/quic_transport.h>
 #include <engine/shared/snapshot.h>
 #include <engine/shared/uuid_manager.h>
 
@@ -99,6 +100,7 @@ public:
 	enum
 	{
 		MAX_RCONCMD_SEND = 16,
+		QUIC_RESUME_TOKEN_SIZE = 32,
 	};
 
 	enum class EDnsblState
@@ -137,6 +139,7 @@ public:
 		public:
 			int m_aData[MAX_INPUT_SIZE];
 			int m_GameTick; // the tick that was chosen for the input
+			int64_t m_ReceiveTime;
 		};
 
 		// connection state info
@@ -175,12 +178,24 @@ public:
 		int m_Flags;
 		bool m_ShowIps;
 		bool m_DebugDummy;
+		bool m_Quic;
+		bool m_WebTransport;
+		CQuicSessionId m_QuicSession;
+		uint64_t m_QuicResumeSessionId;
+		std::array<unsigned char, QUIC_RESUME_TOKEN_SIZE> m_aQuicResumeToken;
+		int64_t m_QuicResumeDeadline;
+		bool m_QuicResumeArmed;
+		bool m_QuicDetached;
+		bool m_QuicDropPending;
+		NETADDR m_QuicAddr;
+		std::array<char, NETADDR_MAXSTRSIZE> m_aQuicAddrString;
+		std::array<char, NETADDR_MAXSTRSIZE> m_aQuicAddrStringNoPort;
 		bool m_ForceHighBandwidthOnSpectate;
 		NETADDR m_DebugDummyAddr;
 		std::array<char, NETADDR_MAXSTRSIZE> m_aDebugDummyAddrString;
 		std::array<char, NETADDR_MAXSTRSIZE> m_aDebugDummyAddrStringNoPort;
 
-		const IConsole::ICommandInfo *m_pRconCmdToSend;
+		std::string m_RconCmdToSend;
 		enum
 		{
 			MAPLIST_UNINITIALIZED = -1,
@@ -227,11 +242,21 @@ public:
 	CSnapshotBuilder m_SnapshotBuilder;
 	CSnapIdPool m_IdPool;
 	CNetServer m_NetServer;
+	CQuicTransport m_QuicTransport;
+	bool m_QuicStarted = false;
+	bool m_WebTransportStarted = false;
+	bool m_LegacyUdpStarted = true;
+	bool m_QuicUseWebPki = false;
+	bool m_WebTransportUseCertificateHashes = false;
+	char m_aModernTransportHostname[256] = {};
 	CEcon m_Econ;
 	CFifo m_Fifo;
 	CServerBan m_ServerBan;
 
 	int64_t m_GameStartTime;
+	std::vector<int64_t> m_vBaselineSnapshotAckAgeMicroseconds;
+	std::vector<int64_t> m_vBaselineInputQueueAgeMicroseconds;
+	std::vector<int64_t> m_vBaselineTickWorkMicroseconds;
 
 	enum
 	{
@@ -304,6 +329,7 @@ public:
 	void SetClientFlags(int ClientId, int Flags) override;
 
 	void Kick(int ClientId, const char *pReason) override;
+	void DropClient(int ClientId, const char *pReason);
 	void Ban(int ClientId, int Seconds, const char *pReason, bool VerbatimReason) override;
 	void ReconnectClient(int ClientId);
 	void RedirectClient(int ClientId, int Port) override;
@@ -326,6 +352,7 @@ public:
 	void SetClientDDNetVersion(int ClientId, int DDNetVersion) override;
 	const NETADDR *ClientAddr(int ClientId) const override;
 	const std::array<char, NETADDR_MAXSTRSIZE> &ClientAddrStringImpl(int ClientId, bool IncludePort) const override;
+	const char *ClientTransportName(int ClientId) const;
 	const char *ClientName(int ClientId) const override;
 	const char *ClientClan(int ClientId) const override;
 	int ClientCountry(int ClientId) const override;
@@ -351,6 +378,7 @@ public:
 	void SendCapabilities(int ClientId);
 	void SendMap(int ClientId);
 	void SendMapData(int ClientId, int Chunk);
+	bool UpdateQuicMaps();
 	void SendMapReload(int ClientId);
 	void SendConnectionReady(int ClientId);
 	void SendRconLine(int ClientId, const char *pLine);
@@ -381,6 +409,12 @@ public:
 	bool CheckReservedSlotAuth(int ClientId, const char *pPassword);
 	bool TakePreInputBudget(int ClientId);
 	void ProcessClientPacket(CNetChunk *pPacket);
+	void FormatModernTransportFragments(char *pQuicFragment, int QuicFragmentSize, char *pWebTransportFragment, int WebTransportFragmentSize) const;
+	void PumpQuicNetwork();
+	int FindQuicClient(CQuicSessionId Session) const;
+	int FindQuicResume(const CQuicMessage &Message) const;
+	bool IssueQuicResume(int ClientId);
+	void ExpireQuicResumes();
 	void OnNetMsgClientVer(int ClientId, CUuid *pConnectionId, int DDNetVersion, const char *pDDNetVersionStr);
 	void OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPasswordOrNullptr);
 	void OnNetMsgReady(int ClientId);
@@ -425,6 +459,8 @@ public:
 	// Whether a connection-less server info response may be sent, and if so whether it
 	// includes the client list.
 	std::optional<bool> RateLimitServerInfoConnless();
+	void SendServerInfoConnless(const NETADDR *pAddr, int Token, int Type);
+	const SHA256_DIGEST *SharedQuicCertificateSha256() const;
 	void UpdateRegisterServerInfo();
 	void UpdateServerInfo(bool Resend);
 
@@ -444,6 +480,7 @@ public:
 
 	static void ConKick(IConsole::IResult *pResult, void *pUser);
 	static void ConStatus(IConsole::IResult *pResult, void *pUser);
+	static void ConBaselineStats(IConsole::IResult *pResult, void *pUser);
 	static void ConShutdown(IConsole::IResult *pResult, void *pUser);
 	static void ConRecord(IConsole::IResult *pResult, void *pUser);
 	static void ConStopRecord(IConsole::IResult *pResult, void *pUser);
@@ -466,6 +503,9 @@ public:
 
 	static void ConReloadAnnouncement(IConsole::IResult *pResult, void *pUserData);
 	static void ConReloadMaplist(IConsole::IResult *pResult, void *pUserData);
+#if defined(CONF_WEBSOCKETS)
+	static void ConReloadWebsocketCert(IConsole::IResult *pResult, void *pUserData);
+#endif
 
 	static void ConchainSpecialInfoupdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainMaxclientsperipUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);

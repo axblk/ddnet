@@ -1,5 +1,7 @@
 #include "nameplates.h"
 
+#include <base/dbg.h>
+
 #include <engine/font_icons.h>
 #include <engine/graphics.h>
 #include <engine/shared/config.h>
@@ -26,6 +28,8 @@ class CNamePlateData
 {
 public:
 	bool m_InGame;
+	vec2 m_CameraPosition;
+	float m_AspectRatio;
 	ColorRGBA m_Color;
 	bool m_ShowName;
 	char m_aName[std::max((size_t)MAX_NAME_LENGTH, (size_t)protocol7::MAX_NAME_ARRAY_SIZE)];
@@ -108,7 +112,7 @@ public:
 		{
 			// Create text at standard zoom
 			CScreenRect ScreenRect = This.Graphics()->GetScreen();
-			This.Graphics()->MapScreenToInterface(This.m_Camera.m_Center.x, This.m_Camera.m_Center.y);
+			This.Graphics()->MapScreen(This.Graphics()->MapScreenToWorld(Data.m_CameraPosition.x, Data.m_CameraPosition.y, 100.0f, 100.0f, 100.0f, 0.0f, 0.0f, Data.m_AspectRatio, 1.0f));
 			This.TextRender()->DeleteTextContainer(m_TextContainerIndex);
 			UpdateText(This, Data);
 			This.Graphics()->MapScreen(ScreenRect);
@@ -620,12 +624,33 @@ class CNamePlates::CNamePlatesData
 {
 public:
 	CNamePlate m_aNamePlates[MAX_CLIENTS];
+	CSessionId m_SessionId;
+	CGameStateId m_StateId;
+	CGameViewId m_ViewId;
+	CViewport m_Viewport;
+	uint64_t m_OutputCacheKey = 0;
+	bool m_CacheKeyValid = false;
+
+	bool Matches(const CRenderContext &Context) const
+	{
+		return m_CacheKeyValid && m_SessionId == Context.m_Session.Id() && m_StateId == Context.m_State.Id() && m_ViewId == Context.m_View.Id() && m_Viewport == Context.m_View.Viewport() && m_OutputCacheKey == Context.m_OutputCacheKey;
+	}
+
+	void Bind(const CRenderContext &Context)
+	{
+		m_SessionId = Context.m_Session.Id();
+		m_StateId = Context.m_State.Id();
+		m_ViewId = Context.m_View.Id();
+		m_Viewport = Context.m_View.Viewport();
+		m_OutputCacheKey = Context.m_OutputCacheKey;
+		m_CacheKeyValid = true;
+	}
 };
 
-void CNamePlates::RenderNamePlateGame(vec2 Position, const CNetObj_PlayerInfo *pPlayerInfo, float Alpha)
+void CNamePlates::RenderNamePlateGame(const CRenderContext &Context, vec2 Position, int ClientId, const CClientPresentation &Client, float Alpha)
 {
 	// Get screen edges to avoid rendering offscreen
-	CScreenRect ScreenRect = Graphics()->GetScreen();
+	CScreenRect ScreenRect(Context.m_VisibleWorldRect.m_TopLeft, Context.m_VisibleWorldRect.m_BottomRight);
 
 	// Assume that the name plate fits into a 800x800 box placed directly above the tee
 	ScreenRect.m_TopLeft.x -= 400;
@@ -636,46 +661,48 @@ void CNamePlates::RenderNamePlateGame(vec2 Position, const CNetObj_PlayerInfo *p
 
 	CNamePlateData Data;
 
-	const auto &ClientData = GameClient()->m_aClients[pPlayerInfo->m_ClientId];
-	const bool OtherTeam = GameClient()->IsOtherTeam(pPlayerInfo->m_ClientId);
+	const CNetObj_PlayerInfo &PlayerInfo = Context.m_State.Client(ClientId).m_PlayerInfo;
+	const bool OtherTeam = Context.IsOtherTeam(ClientId);
 
 	Data.m_InGame = true;
+	Data.m_CameraPosition = Context.m_View.CameraPosition();
+	Data.m_AspectRatio = Context.AspectRatio(Graphics()->ScreenAspect());
 
-	Data.m_ShowName = pPlayerInfo->m_Local ? g_Config.m_ClNamePlatesOwn : g_Config.m_ClNamePlates;
-	str_copy(Data.m_aName, GameClient()->m_aClients[pPlayerInfo->m_ClientId].m_aName);
-	Data.m_ShowFriendMark = Data.m_ShowName && g_Config.m_ClNamePlatesFriendMark && GameClient()->m_aClients[pPlayerInfo->m_ClientId].m_Friend;
+	Data.m_ShowName = PlayerInfo.m_Local ? g_Config.m_ClNamePlatesOwn : g_Config.m_ClNamePlates;
+	str_copy(Data.m_aName, Client.m_aName);
+	Data.m_ShowFriendMark = Data.m_ShowName && g_Config.m_ClNamePlatesFriendMark && Client.m_Friend;
 	Data.m_ShowClientId = Data.m_ShowName && (g_Config.m_Debug || g_Config.m_ClNamePlatesIds);
 	Data.m_FontSize = 18.0f + 20.0f * g_Config.m_ClNamePlatesSize / 100.0f;
 
-	Data.m_ClientId = pPlayerInfo->m_ClientId;
+	Data.m_ClientId = ClientId;
 	Data.m_ClientIdSeparateLine = g_Config.m_ClNamePlatesIdsSeparateLine;
 	Data.m_FontSizeClientId = Data.m_ClientIdSeparateLine ? (18.0f + 20.0f * g_Config.m_ClNamePlatesIdsSize / 100.0f) : Data.m_FontSize;
 
 	Data.m_ShowClan = Data.m_ShowName && g_Config.m_ClNamePlatesClan;
-	str_copy(Data.m_aClan, GameClient()->m_aClients[pPlayerInfo->m_ClientId].m_aClan);
+	str_copy(Data.m_aClan, Client.m_aClan);
 	Data.m_FontSizeClan = 18.0f + 20.0f * g_Config.m_ClNamePlatesClanSize / 100.0f;
 
 	Data.m_FontSizeHookStrongWeak = 18.0f + 20.0f * g_Config.m_ClNamePlatesStrongSize / 100.0f;
 	Data.m_FontSizeDirection = 18.0f + 20.0f * g_Config.m_ClDirectionSize / 100.0f;
 
 	if(g_Config.m_ClNamePlatesAlways == 0)
-		Alpha *= std::clamp(1.0f - std::pow(distance(GameClient()->m_Controls.m_aTargetPos[g_Config.m_ClDummy], Position) / 200.0f, 16.0f), 0.0f, 1.0f);
+		Alpha *= std::clamp(1.0f - std::pow(distance(Context.m_State.Input().m_TargetPos, Position) / 200.0f, 16.0f), 0.0f, 1.0f);
 	if(OtherTeam)
 		Alpha *= (float)g_Config.m_ClShowOthersAlpha / 100.0f;
 
 	Data.m_Color = ColorRGBA(1.0f, 1.0f, 1.0f);
 	if(g_Config.m_ClNamePlatesTeamcolors)
 	{
-		if(GameClient()->IsTeamPlay())
+		if(Context.m_State.HasGameInfo() && (Context.m_State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0)
 		{
-			if(ClientData.m_Team == TEAM_RED)
+			if(Client.m_Team == TEAM_RED)
 				Data.m_Color = ColorRGBA(1.0f, 0.5f, 0.5f);
-			else if(ClientData.m_Team == TEAM_BLUE)
+			else if(Client.m_Team == TEAM_BLUE)
 				Data.m_Color = ColorRGBA(0.7f, 0.7f, 1.0f);
 		}
 		else
 		{
-			const int Team = GameClient()->m_Teams.Team(pPlayerInfo->m_ClientId);
+			const int Team = Context.m_State.Teams().Team(ClientId);
 			if(Team)
 				Data.m_Color = GameClient()->GetDDTeamColor(Team, 0.75f);
 		}
@@ -684,7 +711,7 @@ void CNamePlates::RenderNamePlateGame(vec2 Position, const CNetObj_PlayerInfo *p
 
 	int ShowDirectionConfig = g_Config.m_ClShowDirection;
 #if defined(CONF_VIDEORECORDER)
-	if(IVideo::Current())
+	if(Context.m_IsVideoOutput)
 		ShowDirectionConfig = g_Config.m_ClVideoShowDirection;
 #endif
 	Data.m_DirLeft = Data.m_DirJump = Data.m_DirRight = false;
@@ -694,41 +721,22 @@ void CNamePlates::RenderNamePlateGame(vec2 Position, const CNetObj_PlayerInfo *p
 		Data.m_ShowDirection = false;
 		break;
 	case 1: // Others
-		Data.m_ShowDirection = !pPlayerInfo->m_Local;
+		Data.m_ShowDirection = !PlayerInfo.m_Local;
 		break;
 	case 2: // Everyone
 		Data.m_ShowDirection = true;
 		break;
 	case 3: // Only self
-		Data.m_ShowDirection = pPlayerInfo->m_Local;
+		Data.m_ShowDirection = PlayerInfo.m_Local;
 		break;
 	default:
 		dbg_assert_failed("ShowDirectionConfig invalid");
 	}
 	if(Data.m_ShowDirection)
 	{
-		if(Client()->State() != IClient::STATE_DEMOPLAYBACK &&
-			pPlayerInfo->m_ClientId == GameClient()->m_aLocalIds[!g_Config.m_ClDummy])
-		{
-			const auto &InputData = GameClient()->m_Controls.m_aInputData[!g_Config.m_ClDummy];
-			Data.m_DirLeft = InputData.m_Direction == -1;
-			Data.m_DirJump = InputData.m_Jump == 1;
-			Data.m_DirRight = InputData.m_Direction == 1;
-		}
-		else if(Client()->State() != IClient::STATE_DEMOPLAYBACK && pPlayerInfo->m_Local) // Always render local input when not in demo playback
-		{
-			const auto &InputData = GameClient()->m_Controls.m_aInputData[g_Config.m_ClDummy];
-			Data.m_DirLeft = InputData.m_Direction == -1;
-			Data.m_DirJump = InputData.m_Jump == 1;
-			Data.m_DirRight = InputData.m_Direction == 1;
-		}
-		else
-		{
-			const auto &Character = GameClient()->m_Snap.m_aCharacters[pPlayerInfo->m_ClientId];
-			Data.m_DirLeft = Character.m_Cur.m_Direction == -1;
-			Data.m_DirJump = Character.m_Cur.m_Jumped & 1;
-			Data.m_DirRight = Character.m_Cur.m_Direction == 1;
-		}
+		Data.m_DirLeft = Client.m_DirectionLeft;
+		Data.m_DirJump = Client.m_DirectionJump;
+		Data.m_DirRight = Client.m_DirectionRight;
 	}
 
 	Data.m_ShowHookStrongWeak = false;
@@ -736,32 +744,39 @@ void CNamePlates::RenderNamePlateGame(vec2 Position, const CNetObj_PlayerInfo *p
 	Data.m_ShowHookStrongWeakId = false;
 	Data.m_HookStrongWeakId = 0;
 
-	const bool Following = (GameClient()->m_Snap.m_SpecInfo.m_Active && !GameClient()->m_MultiViewActivated && GameClient()->m_Snap.m_SpecInfo.m_SpectatorId != SPEC_FREEVIEW);
-	if(GameClient()->m_Snap.m_LocalClientId != -1 || Following)
+	const int SpectatorId = Context.m_View.SpectatorId();
+	const bool Following = Context.m_View.IsSpectating() && !Context.m_View.MultiView().m_Active && SpectatorId >= 0 && SpectatorId < MAX_CLIENTS;
+	const int LocalClientId = Context.m_State.LocalClientId();
+	if(LocalClientId != -1 || Following)
 	{
-		const int SelectedId = Following ? GameClient()->m_Snap.m_SpecInfo.m_SpectatorId : GameClient()->m_Snap.m_LocalClientId;
-		const CGameClient::CSnapState::CCharacterInfo &Selected = GameClient()->m_Snap.m_aCharacters[SelectedId];
-		const CGameClient::CSnapState::CCharacterInfo &Other = GameClient()->m_Snap.m_aCharacters[pPlayerInfo->m_ClientId];
+		const int SelectedId = Following ? SpectatorId : LocalClientId;
+		const CGameState::CClientSnapshot &Selected = Context.m_State.Client(SelectedId);
+		const CGameState::CClientSnapshot &Other = Context.m_State.Client(ClientId);
 
-		if((Selected.m_HasExtendedData || GameClient()->m_aClients[SelectedId].m_SpecCharPresent) && Other.m_HasExtendedData)
+		if((Selected.m_HasExtendedCharacter || Selected.m_HasSpecChar) && Other.m_HasExtendedCharacter)
 		{
-			int SelectedStrongWeakId = Selected.m_HasExtendedData ? Selected.m_ExtendedData.m_StrongWeakId : 0;
-			Data.m_HookStrongWeakId = Other.m_ExtendedData.m_StrongWeakId;
+			int SelectedStrongWeakId = Selected.m_HasExtendedCharacter ? Selected.m_ExtendedCharacter.m_StrongWeakId : 0;
+			Data.m_HookStrongWeakId = Other.m_ExtendedCharacter.m_StrongWeakId;
 			Data.m_ShowHookStrongWeakId = g_Config.m_Debug || g_Config.m_ClNamePlatesStrong == 2;
-			if(SelectedId == pPlayerInfo->m_ClientId)
+			if(SelectedId == ClientId)
 			{
 				Data.m_ShowHookStrongWeak = Data.m_ShowHookStrongWeakId;
 			}
 			else
 			{
-				Data.m_HookStrongWeakState = SelectedStrongWeakId > Other.m_ExtendedData.m_StrongWeakId ? EHookStrongWeakState::STRONG : EHookStrongWeakState::WEAK;
+				Data.m_HookStrongWeakState = SelectedStrongWeakId > Other.m_ExtendedCharacter.m_StrongWeakId ? EHookStrongWeakState::STRONG : EHookStrongWeakState::WEAK;
 				Data.m_ShowHookStrongWeak = g_Config.m_Debug || g_Config.m_ClNamePlatesStrong > 0;
 			}
 		}
 	}
 
 	// Check if the nameplate is actually on screen
-	CNamePlate &NamePlate = m_pData->m_aNamePlates[pPlayerInfo->m_ClientId];
+	if(!m_pData->Matches(Context))
+	{
+		ResetNamePlates();
+		m_pData->Bind(Context);
+	}
+	CNamePlate &NamePlate = m_pData->m_aNamePlates[ClientId];
 	NamePlate.Update(*GameClient(), Data);
 	NamePlate.Render(*GameClient(), Position - vec2(0.0f, (float)g_Config.m_ClNamePlatesOffset));
 }
@@ -808,7 +823,7 @@ void CNamePlates::RenderNamePlatePreview(vec2 Position, int Dummy)
 	Data.m_FontSizeHookStrongWeak = FontSizeHookStrongWeak;
 	Data.m_HookStrongWeakId = Data.m_ClientId;
 	Data.m_ShowHookStrongWeakId = g_Config.m_ClNamePlatesStrong == 2;
-	if(Dummy == g_Config.m_ClDummy)
+	if(Dummy == GameClient()->ActiveConnection())
 	{
 		Data.m_HookStrongWeakState = EHookStrongWeakState::NEUTRAL;
 		Data.m_ShowHookStrongWeak = Data.m_ShowHookStrongWeakId;
@@ -851,38 +866,43 @@ void CNamePlates::ResetNamePlates()
 {
 	for(CNamePlate &NamePlate : m_pData->m_aNamePlates)
 		NamePlate.Reset(*GameClient());
+	m_pData->m_CacheKeyValid = false;
 }
 
-void CNamePlates::OnRender()
+void CNamePlates::OnRender(const CRenderContext &Context)
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(!Context.m_Time.m_IsGameActive)
 		return;
 
 	int ShowDirection = g_Config.m_ClShowDirection;
 #if defined(CONF_VIDEORECORDER)
-	if(IVideo::Current())
+	if(Context.m_IsVideoOutput)
 		ShowDirection = g_Config.m_ClVideoShowDirection;
 #endif
 	if(!g_Config.m_ClNamePlates && !g_Config.m_ClNamePlatesOwn && ShowDirection == 0)
 		return;
 
+	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{
-		const CNetObj_PlayerInfo *pInfo = GameClient()->m_Snap.m_apPlayerInfos[i];
-		if(!pInfo)
+		const CGameState::CClientSnapshot &SnapshotClient = Context.m_State.Client(i);
+		if(!SnapshotClient.m_HasPlayerInfo)
+			continue;
+		const CClientPresentation *pClient = Presentation.Client(Context.m_State.Id(), i);
+		if(pClient == nullptr || !pClient->m_Active)
 			continue;
 
 		// Each player can also have a spectator char whose name plate is displayed independently
-		if(GameClient()->m_aClients[i].m_SpecCharPresent)
+		if(SnapshotClient.m_HasSpecChar)
 		{
-			const vec2 RenderPos = GameClient()->m_aClients[i].m_SpecChar;
-			RenderNamePlateGame(RenderPos, pInfo, 0.4f);
+			const vec2 RenderPos(SnapshotClient.m_SpecChar.m_X, SnapshotClient.m_SpecChar.m_Y);
+			RenderNamePlateGame(Context, RenderPos, i, *pClient, 0.4f);
 		}
 		// Only render name plates for active characters
-		if(GameClient()->m_Snap.m_aCharacters[i].m_Active)
+		const CGameState::CRenderedClient &RenderedClient = Context.m_State.RenderedClient(i);
+		if(RenderedClient.m_Active)
 		{
-			const vec2 RenderPos = GameClient()->m_aClients[i].m_RenderPos;
-			RenderNamePlateGame(RenderPos, pInfo, 1.0f);
+			RenderNamePlateGame(Context, RenderedClient.m_Position, i, *pClient, 1.0f);
 		}
 	}
 }

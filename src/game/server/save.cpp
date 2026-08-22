@@ -1,6 +1,7 @@
 #include "save.h"
 
 #include "player.h"
+#include "score.h"
 #include "teams.h"
 
 #include <base/log.h>
@@ -11,15 +12,17 @@
 
 #include <game/mapitems.h>
 #include <game/server/entities/character.h>
+#include <game/server/entities/dragger_beam.h>
 #include <game/server/gamecontext.h>
 #include <game/server/gamemodes/ddnet.h>
+#include <game/server/gamemodes/ddrace_character.h>
 #include <game/team_state.h>
 
 #include <cstdio> // sscanf
 
 CSaveTee::CSaveTee() = default;
 
-void CSaveTee::Save(CCharacter *pChr, bool AddPenalty)
+void CSaveTee::Save(CCharacterDDRace *pChr, bool AddPenalty)
 {
 	m_ClientId = pChr->m_pPlayer->GetCid();
 	str_copy(m_aName, pChr->Server()->ClientName(m_ClientId));
@@ -35,8 +38,8 @@ void CSaveTee::Save(CCharacter *pChr, bool AddPenalty)
 
 	m_NeededFaketuning = pChr->m_NeededFaketuning;
 
-	m_TeeStarted = pChr->Teams()->TeeStarted(m_ClientId);
-	m_TeeFinished = pChr->Teams()->TeeFinished(m_ClientId);
+	m_TeeStarted = pChr->RaceTeams()->TeeStarted(m_ClientId);
+	m_TeeFinished = pChr->RaceTeams()->TeeFinished(m_ClientId);
 	m_IsSolo = pChr->m_Core.m_Solo;
 
 	for(int i = 0; i < NUM_WEAPONS; i++)
@@ -60,7 +63,7 @@ void CSaveTee::Save(CCharacter *pChr, bool AddPenalty)
 
 	m_EndlessJump = pChr->m_Core.m_EndlessJump;
 	m_Jetpack = pChr->m_Core.m_Jetpack;
-	m_NinjaJetpack = pChr->m_NinjaJetpack;
+	m_NinjaJetpack = pChr->m_pPlayer->m_NinjaJetpack;
 	m_FreezeTime = pChr->m_FreezeTime;
 	m_FreezeStart = pChr->Server()->Tick() - pChr->m_Core.m_FreezeStart;
 
@@ -79,7 +82,7 @@ void CSaveTee::Save(CCharacter *pChr, bool AddPenalty)
 	if(pChr->m_Core.m_LaserHitDisabled)
 		m_HitDisabledFlags |= CSaveTee::LASER_HIT_DISABLED;
 
-	m_TuneZone = pChr->m_TuneZone;
+	m_TuneZone = pChr->TuningZone();
 	m_TuneZoneOld = pChr->m_TuneZoneOld;
 
 	if(pChr->m_StartTime)
@@ -104,7 +107,7 @@ void CSaveTee::Save(CCharacter *pChr, bool AddPenalty)
 	for(int i = 0; i < MAX_CHECKPOINTS; i++)
 		m_aCurrentTimeCp[i] = pChr->m_aCurrentTimeCp[i];
 
-	m_NotEligibleForFinish = pChr->m_pPlayer->m_NotEligibleForFinish;
+	m_NotEligibleForFinish = pChr->RaceScore()->NotEligibleForFinish(m_ClientId);
 
 	m_HasTelegunGun = pChr->m_Core.m_HasTelegunGun;
 	m_HasTelegunGrenade = pChr->m_Core.m_HasTelegunGrenade;
@@ -139,7 +142,7 @@ void CSaveTee::Save(CCharacter *pChr, bool AddPenalty)
 	FormatUuid(pChr->GameServer()->GameUuid(), m_aGameUuid, sizeof(m_aGameUuid));
 }
 
-bool CSaveTee::Load(CCharacter *pChr, std::optional<int> Team)
+bool CSaveTee::Load(CCharacterDDRace *pChr, std::optional<int> Team)
 {
 	bool Valid = true;
 
@@ -150,9 +153,9 @@ bool CSaveTee::Load(CCharacter *pChr, std::optional<int> Team)
 
 	if(Team.has_value())
 	{
-		pChr->Teams()->SetForceCharacterTeam(pChr->m_pPlayer->GetCid(), Team.value());
-		pChr->Teams()->SetStarted(pChr->m_pPlayer->GetCid(), m_TeeStarted);
-		pChr->Teams()->SetFinished(pChr->m_pPlayer->GetCid(), m_TeeFinished);
+		pChr->RaceTeams()->SetForceCharacterTeam(pChr->m_pPlayer->GetCid(), Team.value());
+		pChr->RaceTeams()->SetStarted(pChr->m_pPlayer->GetCid(), m_TeeStarted);
+		pChr->RaceTeams()->SetFinished(pChr->m_pPlayer->GetCid(), m_TeeFinished);
 	}
 
 	for(int i = 0; i < NUM_WEAPONS; i++)
@@ -177,7 +180,7 @@ bool CSaveTee::Load(CCharacter *pChr, std::optional<int> Team)
 
 	pChr->m_Core.m_EndlessJump = m_EndlessJump;
 	pChr->m_Core.m_Jetpack = m_Jetpack;
-	pChr->m_NinjaJetpack = m_NinjaJetpack;
+	pChr->m_pPlayer->m_NinjaJetpack = m_NinjaJetpack;
 	pChr->m_FreezeTime = m_FreezeTime;
 	pChr->m_Core.m_FreezeStart = pChr->Server()->Tick() - m_FreezeStart;
 
@@ -191,7 +194,7 @@ bool CSaveTee::Load(CCharacter *pChr, std::optional<int> Team)
 	pChr->m_Core.m_GrenadeHitDisabled = m_HitDisabledFlags & CSaveTee::GRENADE_HIT_DISABLED;
 	pChr->m_Core.m_LaserHitDisabled = m_HitDisabledFlags & CSaveTee::LASER_HIT_DISABLED;
 
-	pChr->m_TuneZone = m_TuneZone;
+	pChr->SetTuningZone(m_TuneZone);
 	pChr->m_TuneZoneOld = m_TuneZoneOld;
 
 	if(m_Time)
@@ -211,7 +214,8 @@ bool CSaveTee::Load(CCharacter *pChr, std::optional<int> Team)
 	for(int i = 0; i < MAX_CHECKPOINTS; i++)
 		pChr->m_aCurrentTimeCp[i] = m_aCurrentTimeCp[i];
 
-	pChr->m_pPlayer->m_NotEligibleForFinish = pChr->m_pPlayer->m_NotEligibleForFinish || m_NotEligibleForFinish;
+	if(m_NotEligibleForFinish)
+		pChr->RaceScore()->SetNotEligibleForFinish(pChr->m_pPlayer->GetCid());
 
 	pChr->m_Core.m_HasTelegunGun = m_HasTelegunGun;
 	pChr->m_Core.m_HasTelegunLaser = m_HasTelegunLaser;
@@ -233,7 +237,7 @@ bool CSaveTee::Load(CCharacter *pChr, std::optional<int> Team)
 	pChr->m_Core.m_HookTick = m_HookTick;
 
 	pChr->m_Core.m_HookState = m_HookState;
-	if(m_HookedPlayer != -1 && Team.has_value() && pChr->Teams()->m_Core.Team(m_HookedPlayer) != Team.value())
+	if(m_HookedPlayer != -1 && Team.has_value() && pChr->RaceTeams()->m_Core.Team(m_HookedPlayer) != Team.value())
 	{
 		pChr->m_Core.SetHookedPlayer(-1);
 		pChr->m_Core.m_HookState = HOOK_FLYING;
@@ -533,22 +537,24 @@ bool CSaveTee::IsHooking() const
 	return m_HookState == HOOK_GRABBED || m_HookState == HOOK_FLYING;
 }
 
-void CSaveHotReloadTee::Save(CCharacter *pChr, bool AddPenalty)
+void CSaveHotReloadTee::Save(CCharacterDDRace *pChr, bool AddPenalty)
 {
 	m_SaveTee.Save(pChr, AddPenalty);
 	m_Super = pChr->m_Core.m_Super;
 	m_Invincible = pChr->m_Core.m_Invincible;
-	m_SavedTeleTee = pChr->GetPlayer()->m_LastTeleTee;
-	m_LastDeath = pChr->GetPlayer()->m_LastDeath;
+	const auto &PlayerState = pChr->RaceTeams()->PlayerState(pChr->GetPlayer()->GetCid());
+	m_SavedTeleTee = PlayerState.m_LastTeleTee;
+	m_LastDeath = PlayerState.m_LastDeath;
 }
 
-bool CSaveHotReloadTee::Load(CCharacter *pChr, int Team)
+bool CSaveHotReloadTee::Load(CCharacterDDRace *pChr, int Team)
 {
 	bool Result = m_SaveTee.Load(pChr, Team);
 	pChr->SetSuper(m_Super);
 	pChr->m_Core.m_Invincible = m_Invincible;
-	pChr->GetPlayer()->m_LastTeleTee = m_SavedTeleTee;
-	pChr->GetPlayer()->m_LastDeath = m_LastDeath;
+	auto &PlayerState = pChr->RaceTeams()->PlayerState(pChr->GetPlayer()->GetCid());
+	PlayerState.m_LastTeleTee = m_SavedTeleTee;
+	PlayerState.m_LastDeath = m_LastDeath;
 
 	return Result;
 }
@@ -564,11 +570,8 @@ CSaveTeam::~CSaveTeam()
 	delete[] m_pSavedTees;
 }
 
-ESaveResult CSaveTeam::Save(CGameContext *pGameServer, int Team, bool Dry, bool Force)
+ESaveResult CSaveTeam::Save(CGameContext *pGameServer, CGameTeams *pTeams, int Team, bool Dry, bool Force)
 {
-	IGameController *pController = pGameServer->m_pController;
-	CGameTeams *pTeams = &pController->Teams();
-
 	if(g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO && (Team == TEAM_FLOCK || !pTeams->IsValidTeamNumber(Team)) && !Force)
 		return ESaveResult::TEAM_FLOCK;
 
@@ -597,16 +600,22 @@ ESaveResult CSaveTeam::Save(CGameContext *pGameServer, int Team, bool Dry, bool 
 	m_pSavedTees = new CSaveTee[m_MembersCount];
 	int aPlayerCids[MAX_CLIENTS];
 	int j = 0;
-	CCharacter *p = (CCharacter *)pGameServer->m_World.FindFirst(CGameWorld::ENTTYPE_CHARACTER);
-	for(; p; p = (CCharacter *)p->TypeNext())
+	CCharacterDDRace *p = static_cast<CCharacterDDRace *>(pGameServer->m_World.FindFirst(CGameWorld::ENTTYPE_CHARACTER));
+	for(; p; p = static_cast<CCharacterDDRace *>(p->TypeNext()))
 	{
 		if(pTeams->m_Core.Team(p->GetPlayer()->GetCid()) != Team)
 			continue;
 		if(m_MembersCount == j && !Force)
 			return ESaveResult::CHAR_NOT_FOUND;
-		ESaveResult Result = pGameServer->m_World.BlocksSave(p->GetPlayer()->GetCid());
-		if(Result != ESaveResult::SUCCESS && !Force)
-			return Result;
+		if(!Force)
+		{
+			for(CEntity *pEntity = pGameServer->m_World.FindFirst(CGameWorld::ENTTYPE_LASER); pEntity; pEntity = pEntity->TypeNext())
+			{
+				auto *pDraggerBeam = dynamic_cast<CDraggerBeam *>(pEntity);
+				if(pDraggerBeam && pDraggerBeam->TargetsClient(p->GetPlayer()->GetCid()))
+					return ESaveResult::DRAGGER_ACTIVE;
+			}
+		}
 		m_pSavedTees[j].Save(p);
 		aPlayerCids[j] = p->GetPlayer()->GetCid();
 		j++;
@@ -622,7 +631,7 @@ ESaveResult CSaveTeam::Save(CGameContext *pGameServer, int Team, bool Dry, bool 
 		{
 			m_pSwitchers[i].m_Status = pGameServer->Switchers()[i].m_aStatus[Team];
 			if(pGameServer->Switchers()[i].m_aEndTick[Team])
-				m_pSwitchers[i].m_EndTime = pController->Server()->Tick() - pGameServer->Switchers()[i].m_aEndTick[Team];
+				m_pSwitchers[i].m_EndTime = pGameServer->Server()->Tick() - pGameServer->Switchers()[i].m_aEndTick[Team];
 			else
 				m_pSwitchers[i].m_EndTime = 0;
 			m_pSwitchers[i].m_Type = pGameServer->Switchers()[i].m_aType[Team];
@@ -663,11 +672,8 @@ bool CSaveTeam::HandleSaveError(ESaveResult Result, int ClientId, CGameContext *
 	return true;
 }
 
-bool CSaveTeam::Load(CGameContext *pGameServer, int Team, bool KeepCurrentWeakStrong, bool IgnorePlayers)
+bool CSaveTeam::Load(CGameContext *pGameServer, CGameTeams *pTeams, int Team, bool KeepCurrentWeakStrong, bool IgnorePlayers)
 {
-	IGameController *pController = pGameServer->m_pController;
-	CGameTeams *pTeams = &pController->Teams();
-
 	pTeams->ChangeTeamState(Team, m_TeamState);
 	pTeams->SetTeamLock(Team, m_TeamLocked);
 	pTeams->SetPractice(Team, m_Practice);
@@ -683,7 +689,7 @@ bool CSaveTeam::Load(CGameContext *pGameServer, int Team, bool KeepCurrentWeakSt
 			aPlayerCids[i] = ClientId;
 			if(pGameServer->m_apPlayers[ClientId] && pTeams->m_Core.Team(ClientId) == Team)
 			{
-				CCharacter *pChr = MatchCharacter(pGameServer, m_pSavedTees[i].GetClientId(), i, KeepCurrentWeakStrong);
+				CCharacterDDRace *pChr = MatchCharacter(pGameServer, m_pSavedTees[i].GetClientId(), i, KeepCurrentWeakStrong);
 				ContainsInvalidPlayer |= !m_pSavedTees[i].Load(pChr, Team);
 			}
 		}
@@ -695,7 +701,7 @@ bool CSaveTeam::Load(CGameContext *pGameServer, int Team, bool KeepCurrentWeakSt
 		{
 			pGameServer->Switchers()[i].m_aStatus[Team] = m_pSwitchers[i].m_Status;
 			if(m_pSwitchers[i].m_EndTime)
-				pGameServer->Switchers()[i].m_aEndTick[Team] = pController->Server()->Tick() - m_pSwitchers[i].m_EndTime;
+				pGameServer->Switchers()[i].m_aEndTick[Team] = pGameServer->Server()->Tick() - m_pSwitchers[i].m_EndTime;
 			pGameServer->Switchers()[i].m_aType[Team] = m_pSwitchers[i].m_Type;
 		}
 	}
@@ -706,15 +712,15 @@ bool CSaveTeam::Load(CGameContext *pGameServer, int Team, bool KeepCurrentWeakSt
 	return !ContainsInvalidPlayer;
 }
 
-CCharacter *CSaveTeam::MatchCharacter(CGameContext *pGameServer, int ClientId, int SaveId, bool KeepCurrentCharacter) const
+CCharacterDDRace *CSaveTeam::MatchCharacter(CGameContext *pGameServer, int ClientId, int SaveId, bool KeepCurrentCharacter) const
 {
 	if(KeepCurrentCharacter && pGameServer->m_apPlayers[ClientId]->GetCharacter())
 	{
 		// keep old character to retain current weak/strong order
-		return pGameServer->m_apPlayers[ClientId]->GetCharacter();
+		return static_cast<CCharacterDDRace *>(pGameServer->m_apPlayers[ClientId]->GetCharacter());
 	}
 	pGameServer->m_apPlayers[ClientId]->KillCharacter(WEAPON_GAME);
-	return pGameServer->m_apPlayers[ClientId]->ForceSpawn(m_pSavedTees[SaveId].GetPos());
+	return static_cast<CCharacterDDRace *>(pGameServer->m_apPlayers[ClientId]->ForceSpawn(m_pSavedTees[SaveId].GetPos()));
 }
 
 char *CSaveTeam::GetString()

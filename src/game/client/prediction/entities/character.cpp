@@ -5,12 +5,16 @@
 #include "laser.h"
 #include "projectile.h"
 
+#include <base/dbg.h>
+
 #include <engine/shared/config.h>
 
 #include <generated/client_data.h>
 
 #include <game/collision.h>
 #include <game/mapitems.h>
+
+#include <algorithm>
 
 // Character, "physical" player's part
 
@@ -22,6 +26,8 @@ void CCharacter::SetWeapon(int Weapon)
 	m_LastWeapon = m_Core.m_ActiveWeapon;
 	m_QueuedWeapon = -1;
 	SetActiveWeapon(Weapon);
+	if(m_Core.m_ActiveWeapon >= 0)
+		m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart = -1;
 
 	GameWorld()->CreatePredictedSound(m_Pos, SOUND_WEAPON_SWITCH, GetCid());
 }
@@ -44,8 +50,7 @@ bool CCharacter::IsGrounded()
 	if(Collision()->IsOnGround(m_Pos, GetProximityRadius()))
 		return true;
 
-	int MoveRestrictionsBelow = Collision()->GetMoveRestrictions(m_Pos + vec2(0, GetProximityRadius() / 2 + 4), 0.0f);
-	return (MoveRestrictionsBelow & CANTMOVE_DOWN) != 0;
+	return m_Core.UsesDDNetPhysics() && (Collision()->GetMoveRestrictions(m_Pos + vec2(0, GetProximityRadius() / 2 + 4), 0.0f) & CANTMOVE_DOWN) != 0;
 }
 
 void CCharacter::HandleJetpack()
@@ -254,9 +259,11 @@ void CCharacter::HandleWeaponSwitch()
 
 void CCharacter::FireWeapon()
 {
-	if(m_NumInputs < 2)
-		return;
-
+	// No m_NumInputs guard here, unlike HandleWeaponSwitch and HandleJetpack: by
+	// the time this runs OnDirectInput has copied the new input over both halves,
+	// so a stale one cannot be acted on and only a held full-auto trigger fires -
+	// which is what the server does on the same tick. The guard used to skip the
+	// first replayed tick of every prediction pass, one tick per pass, forever.
 	if(!GameWorld()->m_WorldConfig.m_PredictWeapons)
 		return;
 
@@ -275,7 +282,7 @@ void CCharacter::FireWeapon()
 		FullAuto = true;
 
 	// don't fire hammer when player is deep and sv_deepfly is disabled
-	if(!g_Config.m_SvDeepfly && m_Core.m_ActiveWeapon == WEAPON_HAMMER && m_Core.m_DeepFrozen)
+	if(!GameWorld()->m_Core.m_PhysicsRules.m_Deepfly && m_Core.m_ActiveWeapon == WEAPON_HAMMER && m_Core.m_DeepFrozen)
 		return;
 
 	// check if we gonna fire
@@ -517,6 +524,31 @@ void CCharacter::HandleWeapons()
 
 	// fire Weapon, if wanted
 	FireWeapon();
+
+	// ammo regen
+	if(m_Core.m_ActiveWeapon < 0 || m_Core.m_ActiveWeapon >= NUM_WEAPONS)
+		return;
+	const int AmmoRegenTime = g_pData->m_Weapons.m_aId[m_Core.m_ActiveWeapon].m_Ammoregentime;
+	if(AmmoRegenTime && m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo >= 0)
+	{
+		if(m_ReloadTimer <= 0)
+		{
+			if(m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart < 0)
+				m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart = GameWorld()->GameTick();
+
+			if(GameWorld()->GameTick() - m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart >= AmmoRegenTime * GameWorld()->GameTickSpeed() / 1000)
+			{
+				m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo = std::min(
+					m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo + 1,
+					g_pData->m_Weapons.m_aId[m_Core.m_ActiveWeapon].m_Maxammo);
+				m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart = -1;
+			}
+		}
+		else
+		{
+			m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_AmmoRegenStart = -1;
+		}
+	}
 }
 
 void CCharacter::GiveNinja()
@@ -781,10 +813,13 @@ void CCharacter::HandleTiles(int Index)
 	int MapIndex = Index;
 	m_TileIndex = Collision()->GetTileIndex(MapIndex);
 	m_TileFIndex = Collision()->GetFrontTileIndex(MapIndex);
-	m_MoveRestrictions = Collision()->GetMoveRestrictions(IsSwitchActiveCb, this, m_Pos, 18.0f, MapIndex);
 
 	if(!GameWorld()->m_WorldConfig.m_PredictTiles)
+	{
+		m_MoveRestrictions = 0;
 		return;
+	}
+	m_MoveRestrictions = Collision()->GetMoveRestrictions(IsSwitchActiveCb, this, m_Pos, 18.0f, MapIndex);
 
 	if(Index < 0)
 	{
@@ -1079,6 +1114,8 @@ void CCharacter::HandleTuneLayer()
 void CCharacter::DDRaceTick()
 {
 	mem_copy(&m_Input, &m_SavedInput, sizeof(m_Input));
+	if(!GameWorld()->m_WorldConfig.m_PredictDDRace)
+		return;
 	if(m_Core.m_LiveFrozen && !m_CanMoveInFreeze && !m_Core.m_Super && !m_Core.m_Invincible)
 	{
 		m_Input.m_Direction = 0;
@@ -1170,7 +1207,7 @@ void CCharacter::DDRacePostCoreTick()
 	HandleSkippableTiles(CurrentIndex);
 
 	// handle Anti-Skip tiles
-	std::vector<int> vIndices = Collision()->GetMapIndices(m_PrevPos, m_Pos);
+	const std::vector<int> &vIndices = Collision()->GetMapIndices(m_PrevPos, m_Pos);
 	if(!vIndices.empty())
 	{
 		for(int Index : vIndices)
@@ -1200,7 +1237,7 @@ bool CCharacter::Freeze(int Seconds)
 
 bool CCharacter::Freeze()
 {
-	return Freeze(g_Config.m_SvFreezeDelay);
+	return Freeze(GameWorld()->GameConfig()->m_SvFreezeDelay);
 }
 
 bool CCharacter::Unfreeze()

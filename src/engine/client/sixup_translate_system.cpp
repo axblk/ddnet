@@ -2,7 +2,7 @@
 
 #include <engine/client/client.h>
 
-int CClient::TranslateSysMsg(int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, CNetChunk *pPacket, bool *pIsExMsg)
+int CClient::TranslateSysMsg(CSessionId SessionId, int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, const NETADDR *pPeerAddress, bool *pIsExMsg)
 {
 	*pIsExMsg = false;
 	if(!System)
@@ -19,18 +19,19 @@ int CClient::TranslateSysMsg(int *pMsgId, bool System, CUnpacker *pUnpacker, CPa
 
 	if(*pMsgId == protocol7::NETMSG_MAP_CHANGE)
 	{
+		CTranslationContext &TranslationContext = NetworkSource(SessionId).TranslationContext();
 		*pMsgId = NETMSG_MAP_CHANGE;
 		const char *pMapName = pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES);
 		int MapCrc = pUnpacker->GetInt();
 		int Size = pUnpacker->GetInt();
-		m_TranslationContext.m_MapDownloadChunksPerRequest = pUnpacker->GetInt();
+		TranslationContext.m_MapDownloadChunksPerRequest = pUnpacker->GetInt();
 		int ChunkSize = pUnpacker->GetInt();
 		// void *pSha256 = pUnpacker->GetRaw(); // probably safe to ignore
 		pPacker->AddString(pMapName, 0);
 		pPacker->AddInt(MapCrc);
 		pPacker->AddInt(Size);
-		m_TranslationContext.m_MapdownloadTotalsize = Size;
-		m_TranslationContext.m_MapDownloadChunkSize = ChunkSize;
+		TranslationContext.m_MapdownloadTotalsize = Size;
+		TranslationContext.m_MapDownloadChunkSize = ChunkSize;
 		return 0;
 	}
 	else if(*pMsgId == protocol7::NETMSG_SERVERINFO)
@@ -38,24 +39,25 @@ int CClient::TranslateSysMsg(int *pMsgId, bool System, CUnpacker *pUnpacker, CPa
 		// side effect only
 		// this is a 0.7 only message and not handled in 0.6 code
 		*pMsgId = -1;
-		net_addr_str(&pPacket->m_Address, m_CurrentServerInfo.m_aAddress, sizeof(m_CurrentServerInfo.m_aAddress), true);
-		str_copy(m_CurrentServerInfo.m_aVersion, pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES));
-		str_copy(m_CurrentServerInfo.m_aName, pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES));
-		str_clean_whitespaces(m_CurrentServerInfo.m_aName);
+		CServerInfo &ServerInfo = NetworkSource(SessionId).ServerInfo();
+		net_addr_str(pPeerAddress, ServerInfo.m_aAddress, sizeof(ServerInfo.m_aAddress), true);
+		str_copy(ServerInfo.m_aVersion, pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES));
+		str_copy(ServerInfo.m_aName, pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES));
+		str_clean_whitespaces(ServerInfo.m_aName);
 		pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES); // Hostname
 		pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES); // Map, determined based on filename
-		str_copy(m_CurrentServerInfo.m_aGameType, pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES));
+		str_copy(ServerInfo.m_aGameType, pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES));
 		int Flags = pUnpacker->GetInt();
 		if(Flags & SERVER_FLAG_PASSWORD)
-			m_CurrentServerInfo.m_Flags |= SERVER_FLAG_PASSWORD;
+			ServerInfo.m_Flags |= SERVER_FLAG_PASSWORD;
 		// ddnets http master server handles timescore for us already
 		// if(Flags&SERVER_FLAG_TIMESCORE)
 		// 	m_CurrentServerInfo.m_Flags |= SERVER_FLAG_TIMESCORE;
 		pUnpacker->GetInt(); // Server level
-		m_CurrentServerInfo.m_NumPlayers = pUnpacker->GetInt();
-		m_CurrentServerInfo.m_MaxPlayers = pUnpacker->GetInt();
-		m_CurrentServerInfo.m_NumClients = pUnpacker->GetInt();
-		m_CurrentServerInfo.m_MaxClients = pUnpacker->GetInt();
+		ServerInfo.m_NumPlayers = pUnpacker->GetInt();
+		ServerInfo.m_MaxPlayers = pUnpacker->GetInt();
+		ServerInfo.m_NumClients = pUnpacker->GetInt();
+		ServerInfo.m_MaxClients = pUnpacker->GetInt();
 		return 0;
 	}
 	else if(*pMsgId == protocol7::NETMSG_RCON_AUTH_ON)

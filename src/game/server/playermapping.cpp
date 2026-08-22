@@ -198,7 +198,7 @@ void CPlayerMapping::CPlayerMap::Add(int MapId, int ClientId)
 	Remove(m_pReverseMap[ClientId]);
 
 	int OldClientId = Remove(MapId);
-	if((OldClientId == -1 && m_pPlayerMapping->GameServer()->GetDDRaceTeam(ClientId) > 0) || (OldClientId != -1 && m_pPlayerMapping->GameServer()->GetDDRaceTeam(OldClientId) != m_pPlayerMapping->GameServer()->GetDDRaceTeam(ClientId)))
+	if((OldClientId == -1 && m_pPlayerMapping->InteractionTeam(ClientId) > 0) || (OldClientId != -1 && m_pPlayerMapping->InteractionTeam(OldClientId) != m_pPlayerMapping->InteractionTeam(ClientId)))
 		m_UpdateTeamsState = true;
 
 	if(m_aReserved[ClientId])
@@ -218,7 +218,7 @@ int CPlayerMapping::CPlayerMap::Remove(int MapId)
 	int ClientId = m_pMap[MapId];
 	if(ClientId != -1)
 	{
-		if(m_pPlayerMapping->GameServer()->GetDDRaceTeam(ClientId) > 0)
+		if(m_pPlayerMapping->InteractionTeam(ClientId) > 0)
 			m_UpdateTeamsState = true;
 
 		if(m_aReserved[ClientId])
@@ -267,7 +267,7 @@ void CPlayerMapping::CPlayerMap::Update()
 
 		// If a team (not 0) has more than 10 players, do not reserve their slots because it can get messy quickly if a few huge teams form.
 		// To keep teams state the same on main and dummy big teams do not get highlighted at all.
-		int DDTeam = m_pPlayerMapping->GameServer()->GetDDRaceTeam(i);
+		int DDTeam = m_pPlayerMapping->InteractionTeam(i);
 		bool ReserveTeamSlots = m_pPlayerMapping->ReserveTeamSlots(DDTeam, m_ClientId);
 
 		if(m_aReserved[i])
@@ -330,7 +330,7 @@ void CPlayerMapping::CPlayerMap::Update()
 
 	if(m_UpdateTeamsState)
 	{
-		m_pPlayerMapping->GameServer()->m_pController->Teams().SendTeamsState(m_ClientId);
+		m_pPlayerMapping->GameServer()->GameHost().Controller()->OnPlayerMappingChanged(m_ClientId);
 		m_UpdateTeamsState = false;
 	}
 }
@@ -435,6 +435,11 @@ int CPlayerMapping::TotalOverhang(int ClientId) const
 	return m_aMap[ClientId].m_TotalOverhang;
 }
 
+int CPlayerMapping::InteractionTeam(int ClientId) const
+{
+	return m_pGameServer->GameHost().Controller()->TeamsCore().Team(ClientId);
+}
+
 void CPlayerMapping::UpdatePlayerMap(int ClientId)
 {
 	if(ClientId == -1)
@@ -451,7 +456,7 @@ void CPlayerMapping::UpdatePlayerMap(int ClientId)
 				CPlayer *pPlayer = GameServer()->m_apPlayers[i];
 				if(!pPlayer)
 					continue;
-				int DDTeam = GameServer()->GetDDRaceTeam(i);
+				int DDTeam = InteractionTeam(i);
 				m_aTeamSizes[DDTeam]++;
 			}
 		}

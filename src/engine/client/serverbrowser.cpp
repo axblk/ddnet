@@ -24,6 +24,7 @@
 #include <engine/shared/network.h>
 #include <engine/shared/packer.h>
 #include <engine/shared/protocol.h>
+#include <engine/shared/quic_transport.h>
 #include <engine/shared/serverinfo.h>
 #include <engine/storage.h>
 
@@ -230,7 +231,8 @@ void CServerBrowser::Con_LeakIpAddress(IConsole::IResult *pResult, void *pUserDa
 	vSortedServers.reserve(pThis->m_vpServerlist.size());
 	for(int i = 0; i < (int)pThis->m_vpServerlist.size(); i++)
 	{
-		vSortedServers.push_back(i);
+		if(pThis->m_vpServerlist[i]->m_Info.m_NumAddresses > 0)
+			vSortedServers.push_back(i);
 	}
 	std::sort(vSortedServers.begin(), vSortedServers.end(), CAddrComparer{pThis});
 
@@ -335,10 +337,16 @@ const CServerInfo *CServerBrowser::Get(int Index) const
 
 int CServerBrowser::GenerateToken(const NETADDR &Addr) const
 {
+	NETADDR Address;
+	mem_zero(&Address, sizeof(Address));
+	Address.type = Addr.type;
+	mem_copy(Address.ip, Addr.ip, sizeof(Address.ip));
+	Address.port = Addr.port;
+
 	SHA256_CTX Sha256;
 	sha256_init(&Sha256);
 	sha256_update(&Sha256, m_aTokenSeed, sizeof(m_aTokenSeed));
-	sha256_update(&Sha256, (unsigned char *)&Addr, sizeof(Addr));
+	sha256_update(&Sha256, (unsigned char *)&Address, sizeof(Address));
 	SHA256_DIGEST Digest = sha256_finish(&Sha256);
 	return (Digest.data[0] << 16) | (Digest.data[1] << 8) | Digest.data[2];
 }
@@ -432,6 +440,53 @@ bool CServerBrowser::SortCompareFavoritesNumPlayersAndPing(int Index1, int Index
 	return IsFavorite1 && !IsFavorite2;
 }
 
+bool ServerBrowserCanConnectAddress(const NETADDR &Addr, int NetTypes, bool WebsocketOnly, bool SecureWebsocketOnly)
+{
+	if((Addr.type & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) == 0)
+		return !WebsocketOnly;
+	if((Addr.type & NETTYPE_WEBSOCKET_TLS) != 0)
+		return WebsocketOnly;
+	if(SecureWebsocketOnly)
+		return false;
+	if(WebsocketOnly)
+		return true;
+	return (NetTypes & Addr.type & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) != 0;
+}
+
+bool ServerBrowserHasCompatibleAddress(const CServerInfo &Info, int NetTypes, bool WebsocketOnly, bool SecureWebsocketOnly, bool QuicSupported, bool WebTransportSupported)
+{
+	for(int AddressIndex = 0; AddressIndex < Info.m_NumAddresses; AddressIndex++)
+	{
+		if(ServerBrowserCanConnectAddress(Info.m_aAddresses[AddressIndex], NetTypes, WebsocketOnly, SecureWebsocketOnly))
+			return true;
+	}
+
+	// Only addresses the master server actually verified count. Guessing a
+	// modern endpoint from advertised metadata was removed together with the
+	// automatic transport selection.
+	if(QuicSupported && Info.m_QuicPort != 0 && Info.m_NumQuicAddresses > 0)
+		return true;
+
+	if(WebTransportSupported && Info.m_WebTransport && Info.m_QuicPort != 0 && Info.m_NumWebTransportAddresses > 0)
+		return true;
+
+	return false;
+}
+
+bool CServerBrowser::HasCompatibleAddress(const CServerInfo &Info) const
+{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	return ServerBrowserHasCompatibleAddress(Info, 0, true, net_websocket_secure_default(), false, CQuicTransport::IsWebTransportClientAvailable());
+#else
+#if defined(CONF_QUIC)
+	static constexpr bool QuicSupported = true;
+#else
+	static constexpr bool QuicSupported = false;
+#endif
+	return ServerBrowserHasCompatibleAddress(Info, m_pNetClient->NetType(), false, false, QuicSupported, false);
+#endif
+}
+
 void CServerBrowser::Filter()
 {
 	m_NumSortedPlayers = 0;
@@ -448,6 +503,12 @@ void CServerBrowser::Filter()
 	for(int ServerIndex = 0; ServerIndex < (int)m_vpServerlist.size(); ServerIndex++)
 	{
 		CServerInfo &Info = m_vpServerlist[ServerIndex]->m_Info;
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		// A browser reaches websockets and WebTransport and nothing else, so a
+		// server it cannot dial has no business being in the list at all.
+		if(!HasCompatibleAddress(Info))
+			continue;
+#endif
 		bool Filtered = false;
 
 		if(g_Config.m_BrFilterEmpty && Info.m_NumFilteredPlayers == 0)
@@ -729,26 +790,77 @@ static void ServerBrowserFormatAddresses(char *pBuffer, int BufferSize, NETADDR 
 		{
 			str_append(pBuffer, ",", BufferSize);
 		}
-		if(pAddrs[i].type & NETTYPE_TW7)
-		{
-			str_append(pBuffer, "tw-0.7+udp://", BufferSize);
-		}
-		char aIpAddr[NETADDR_MAXSTRSIZE];
-		net_addr_str(&pAddrs[i], aIpAddr, sizeof(aIpAddr), true);
+		char aIpAddr[NETADDR_URL_MAXSTRSIZE];
+		net_addr_url_str(&pAddrs[i], aIpAddr, sizeof(aIpAddr), true);
 		str_append(pBuffer, aIpAddr, BufferSize);
 	}
 }
 
-void CServerBrowser::SetInfo(CServerEntry *pEntry, const CServerInfo &Info) const
+void CServerBrowser::SetInfo(CServerEntry *pEntry, const CServerInfo &Info, bool PreserveTransportMetadata) const
 {
 	const CServerInfo TmpInfo = pEntry->m_Info;
 	pEntry->m_Info = Info;
+	auto PreserveNextCertificatePin = [](const SHA256_DIGEST &OldFirst, const SHA256_DIGEST &OldNext, bool HadNext, const SHA256_DIGEST &First, SHA256_DIGEST *pNext, bool *pHasNext) {
+		if(!HadNext || *pHasNext)
+			return;
+		if(First == OldFirst)
+			*pNext = OldNext;
+		else if(First == OldNext)
+			*pNext = OldFirst;
+		else
+			return;
+		*pHasNext = true;
+	};
+	if(PreserveTransportMetadata && TmpInfo.m_QuicSharedPort && !pEntry->m_Info.m_QuicSharedPort)
+	{
+		pEntry->m_Info.m_QuicCertificateSha256 = TmpInfo.m_QuicCertificateSha256;
+		pEntry->m_Info.m_QuicNextCertificateSha256 = TmpInfo.m_QuicNextCertificateSha256;
+		pEntry->m_Info.m_QuicIdentityFingerprint = TmpInfo.m_QuicIdentityFingerprint;
+		pEntry->m_Info.m_QuicPort = TmpInfo.m_QuicPort;
+		pEntry->m_Info.m_QuicCapabilities = TmpInfo.m_QuicCapabilities;
+		pEntry->m_Info.m_QuicSharedPort = true;
+		pEntry->m_Info.m_HasQuicNextCertificateSha256 = TmpInfo.m_HasQuicNextCertificateSha256;
+		pEntry->m_Info.m_HasQuicIdentityFingerprint = TmpInfo.m_HasQuicIdentityFingerprint;
+		pEntry->m_Info.m_QuicTrust = TmpInfo.m_QuicTrust;
+		str_copy(pEntry->m_Info.m_aModernHostname, TmpInfo.m_aModernHostname);
+	}
+	else if(PreserveTransportMetadata && pEntry->m_Info.m_QuicSharedPort)
+		PreserveNextCertificatePin(TmpInfo.m_QuicCertificateSha256, TmpInfo.m_QuicNextCertificateSha256, TmpInfo.m_HasQuicNextCertificateSha256,
+			pEntry->m_Info.m_QuicCertificateSha256, &pEntry->m_Info.m_QuicNextCertificateSha256, &pEntry->m_Info.m_HasQuicNextCertificateSha256);
+	if(PreserveTransportMetadata && TmpInfo.m_WebTransport && !pEntry->m_Info.m_WebTransport)
+	{
+		PreserveWebTransportMetadata(&pEntry->m_Info, TmpInfo);
+		if(!pEntry->m_Info.m_QuicSharedPort)
+		{
+			pEntry->m_Info.m_QuicIdentityFingerprint = TmpInfo.m_QuicIdentityFingerprint;
+			pEntry->m_Info.m_QuicPort = TmpInfo.m_QuicPort;
+			pEntry->m_Info.m_HasQuicIdentityFingerprint = TmpInfo.m_HasQuicIdentityFingerprint;
+			pEntry->m_Info.m_QuicTrust = TmpInfo.m_QuicTrust;
+			str_copy(pEntry->m_Info.m_aModernHostname, TmpInfo.m_aModernHostname);
+		}
+	}
+	else if(PreserveTransportMetadata && pEntry->m_Info.m_WebTransport)
+		PreserveNextCertificatePin(TmpInfo.m_WebTransportCertificateSha256, TmpInfo.m_WebTransportNextCertificateSha256, TmpInfo.m_HasWebTransportNextCertificateSha256,
+			pEntry->m_Info.m_WebTransportCertificateSha256, &pEntry->m_Info.m_WebTransportNextCertificateSha256, &pEntry->m_Info.m_HasWebTransportNextCertificateSha256);
+	if(PreserveTransportMetadata && pEntry->m_Info.m_NumQuicAddresses == 0)
+	{
+		mem_copy(pEntry->m_Info.m_aQuicAddresses, TmpInfo.m_aQuicAddresses, sizeof(pEntry->m_Info.m_aQuicAddresses));
+		pEntry->m_Info.m_NumQuicAddresses = TmpInfo.m_NumQuicAddresses;
+	}
+	if(PreserveTransportMetadata && pEntry->m_Info.m_NumWebTransportAddresses == 0)
+	{
+		mem_copy(pEntry->m_Info.m_aWebTransportAddresses, TmpInfo.m_aWebTransportAddresses, sizeof(pEntry->m_Info.m_aWebTransportAddresses));
+		pEntry->m_Info.m_NumWebTransportAddresses = TmpInfo.m_NumWebTransportAddresses;
+	}
+	if(PreserveTransportMetadata && TmpInfo.m_MasterChallengesModernTransports)
+		pEntry->m_Info.m_MasterChallengesModernTransports = true;
 	pEntry->m_Info.m_Favorite = TmpInfo.m_Favorite;
 	pEntry->m_Info.m_FavoriteAllowPing = TmpInfo.m_FavoriteAllowPing;
 	pEntry->m_Info.m_ServerIndex = TmpInfo.m_ServerIndex;
 	mem_copy(pEntry->m_Info.m_aAddresses, TmpInfo.m_aAddresses, sizeof(pEntry->m_Info.m_aAddresses));
 	pEntry->m_Info.m_NumAddresses = TmpInfo.m_NumAddresses;
-	ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info.m_aAddresses, pEntry->m_Info.m_NumAddresses);
+	if(pEntry->m_Info.m_NumAddresses > 0)
+		ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info.m_aAddresses, pEntry->m_Info.m_NumAddresses);
 	str_copy(pEntry->m_Info.m_aCommunityId, TmpInfo.m_aCommunityId);
 	str_copy(pEntry->m_Info.m_aCommunityCountry, TmpInfo.m_aCommunityCountry);
 	str_copy(pEntry->m_Info.m_aCommunityType, TmpInfo.m_aCommunityType);
@@ -982,14 +1094,37 @@ void CServerBrowser::OnServerInfoUpdate(const NETADDR &Addr, int Token, const CS
 
 	if(m_ServerlistType == IServerBrowser::TYPE_LAN)
 	{
-		SetInfo(pEntry, *pInfo);
+		SetInfo(pEntry, *pInfo, true);
+		// There is no master server on a LAN, so the modern endpoints the answer
+		// advertises are the only ones there will ever be. Without them every
+		// gate sees an empty address list and offers legacy UDP only. This
+		// belongs here and not into the info parser, so that pinging an internet
+		// server directly cannot replace its master-verified addresses.
+		if(pEntry->m_Info.m_QuicPort != 0 && pEntry->m_Info.m_QuicSharedPort)
+		{
+			NETADDR ModernAddr = Addr;
+			ModernAddr.port = pEntry->m_Info.m_QuicPort;
+			// Both transports share the port, so only what the answer claims to
+			// serve gets an address. A WebTransport-only server that handed out a
+			// QUIC address would be offered a handshake nothing answers.
+			if(pEntry->m_Info.m_RawQuic)
+			{
+				pEntry->m_Info.m_aQuicAddresses[0] = ModernAddr;
+				pEntry->m_Info.m_NumQuicAddresses = 1;
+			}
+			if(pEntry->m_Info.m_WebTransport)
+			{
+				pEntry->m_Info.m_aWebTransportAddresses[0] = ModernAddr;
+				pEntry->m_Info.m_NumWebTransportAddresses = 1;
+			}
+		}
 		pEntry->m_Info.m_Latency = std::min(static_cast<int>((time_get() - m_BroadcastTime) * 1000 / time_freq()), 999);
 	}
 	else if(pEntry->m_RequestTime > 0)
 	{
 		if(!pEntry->m_RequestIgnoreInfo)
 		{
-			SetInfo(pEntry, *pInfo);
+			SetInfo(pEntry, *pInfo, true);
 		}
 
 		int Latency = std::min(static_cast<int>((time_get() - pEntry->m_RequestTime) * 1000 / time_freq()), 999);
@@ -1215,8 +1350,36 @@ void CServerBrowser::UpdateFromHttp()
 			continue;
 		}
 		UpdateServerLatency(&Info, OwnLocation);
-		CServerEntry *pEntry = Add(Info.m_aAddresses, Info.m_NumAddresses);
-		SetInfo(pEntry, Info);
+		const NETADDR *pIndexAddresses = Info.m_aAddresses;
+		int NumIndexAddresses = Info.m_NumAddresses;
+		if(NumIndexAddresses == 0)
+		{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+			pIndexAddresses = Info.m_aWebTransportAddresses;
+			NumIndexAddresses = Info.m_NumWebTransportAddresses;
+#else
+			pIndexAddresses = Info.m_aQuicAddresses;
+			NumIndexAddresses = Info.m_NumQuicAddresses;
+#endif
+			if(NumIndexAddresses > 0)
+				Info.m_aAddresses[0] = pIndexAddresses[0];
+		}
+		CServerEntry *pEntry = Add(pIndexAddresses, NumIndexAddresses);
+		SetInfo(pEntry, Info, false);
+		for(int AddressIndex = 0; AddressIndex < Info.m_NumQuicAddresses; AddressIndex++)
+		{
+			m_ByAddr[Info.m_aQuicAddresses[AddressIndex]] = pEntry->m_Info.m_ServerIndex;
+			NETADDR Address = Info.m_aQuicAddresses[AddressIndex];
+			Address.type &= ~NETTYPE_TW7;
+			m_ByAddr[Address] = pEntry->m_Info.m_ServerIndex;
+		}
+		for(int AddressIndex = 0; AddressIndex < Info.m_NumWebTransportAddresses; AddressIndex++)
+		{
+			m_ByAddr[Info.m_aWebTransportAddresses[AddressIndex]] = pEntry->m_Info.m_ServerIndex;
+			NETADDR Address = Info.m_aWebTransportAddresses[AddressIndex];
+			Address.type &= ~NETTYPE_TW7;
+			m_ByAddr[Address] = pEntry->m_Info.m_ServerIndex;
+		}
 		pEntry->m_RequestIgnoreInfo = true;
 	}
 
@@ -1285,6 +1448,7 @@ void CServerBrowser::Update()
 		m_RefreshingHttp = false;
 		CleanUp();
 		UpdateFromHttp();
+		log_info("serverbrowser", "loaded %d servers from HTTP", NumServers());
 		// TODO: move this somewhere else
 		Sort();
 		return;
@@ -1771,7 +1935,7 @@ bool CServerBrowser::IsRefreshing() const
 
 bool CServerBrowser::IsGettingServerlist() const
 {
-	return m_pHttp->IsRefreshing();
+	return m_RefreshingHttp;
 }
 
 bool CServerBrowser::IsServerlistError() const
@@ -2430,6 +2594,22 @@ bool CServerBrowser::IsRegistered(const NETADDR &Addr)
 			{
 				return true;
 			}
+		}
+		NETADDR NormalizedAddr = Addr;
+		NormalizedAddr.type &= ~NETTYPE_TW7;
+		for(int j = 0; j < Info.m_NumQuicAddresses; j++)
+		{
+			NETADDR Address = Info.m_aQuicAddresses[j];
+			Address.type &= ~NETTYPE_TW7;
+			if(net_addr_comp(&Address, &NormalizedAddr) == 0)
+				return true;
+		}
+		for(int j = 0; j < Info.m_NumWebTransportAddresses; j++)
+		{
+			NETADDR Address = Info.m_aWebTransportAddresses[j];
+			Address.type &= ~NETTYPE_TW7;
+			if(net_addr_comp(&Address, &NormalizedAddr) == 0)
+				return true;
 		}
 	}
 	return false;

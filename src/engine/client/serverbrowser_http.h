@@ -2,10 +2,16 @@
 #define ENGINE_CLIENT_SERVERBROWSER_HTTP_H
 #include <base/types.h>
 
+#include <engine/external/json-parser/json.h>
+
+#include <vector>
+
 class CServerInfo;
 class IEngine;
 class IStorage;
 class IHttp;
+
+bool ServerBrowserHttpParse(json_value *pJson, std::vector<CServerInfo> *pvServers);
 
 class IServerBrowserHttp
 {

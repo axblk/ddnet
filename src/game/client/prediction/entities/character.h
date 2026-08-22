@@ -89,7 +89,7 @@ public:
 	void SetLastWeapon(int LastWeap) { m_LastWeapon = LastWeap; }
 	int GetActiveWeapon() const { return m_Core.m_ActiveWeapon; }
 	void SetActiveWeapon(int ActiveWeapon);
-	CCharacterCore GetCore() { return m_Core; }
+	CCharacterCore GetCore() const { return m_Core; }
 	void SetCore(const CCharacterCore &Core) { m_Core = Core; }
 	const CCharacterCore *Core() const { return &m_Core; }
 	bool GetWeaponGot(int Type) { return m_Core.m_aWeapons[Type].m_Got; }
@@ -128,12 +128,12 @@ public:
 	int GetOverriddenTuneZone() const;
 	int GetPureTuneZone() const;
 
-	bool HammerHitDisabled() const { return m_Core.m_HammerHitDisabled; }
-	bool ShotgunHitDisabled() const { return m_Core.m_ShotgunHitDisabled; }
-	bool LaserHitDisabled() const { return m_Core.m_LaserHitDisabled; }
-	bool GrenadeHitDisabled() const { return m_Core.m_GrenadeHitDisabled; }
+	bool HammerHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_HammerHitDisabled; }
+	bool ShotgunHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_ShotgunHitDisabled; }
+	bool LaserHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_LaserHitDisabled; }
+	bool GrenadeHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_GrenadeHitDisabled; }
 
-	bool IsSuper() const { return m_Core.m_Super; }
+	bool IsSuper() const { return m_Core.UsesDDNetPhysics() && m_Core.m_Super; }
 
 	// antiping
 	void AntiPingInterference(int ClientId, bool DisallowReset = false, bool HasToBeUnfrozen = false);

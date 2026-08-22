@@ -16,6 +16,44 @@ class CHuffman;
 class CNetBan;
 class CPacker;
 
+using NETFUNC_UDP_FILTER = bool (*)(void *pUser, const NETADDR *pAddr, const void *pData, int DataSize);
+using NETFUNC_UDP_PEER = void (*)(void *pUser, const NETADDR *pAddr, bool Known);
+
+class CNetUdpEndpoint
+{
+	NETSOCKET m_Socket = nullptr;
+	NETFUNC_UDP_FILTER m_pfnFilter = nullptr;
+	NETFUNC_UDP_PEER m_pfnPeer = nullptr;
+	void *m_pUser = nullptr;
+
+public:
+	static CNetUdpEndpoint FromSocket(NETSOCKET Socket, NETFUNC_UDP_FILTER pfnFilter = nullptr, NETFUNC_UDP_PEER pfnPeer = nullptr, void *pUser = nullptr)
+	{
+		CNetUdpEndpoint Endpoint;
+		Endpoint.m_Socket = Socket;
+		Endpoint.m_pfnFilter = pfnFilter;
+		Endpoint.m_pfnPeer = pfnPeer;
+		Endpoint.m_pUser = pUser;
+		return Endpoint;
+	}
+
+	int Send(const NETADDR *pAddr, const void *pData, int DataSize) const
+	{
+		return net_udp_send(m_Socket, pAddr, pData, DataSize);
+	}
+
+	// Receives one datagram. `*pFiltered` says that another transport sharing this
+	// socket has taken it, so the caller must not process it, but must still count
+	// it against whatever per-batch budget it keeps.
+	int Recv(NETADDR *pAddr, unsigned char **ppData, bool *pFiltered, const CNetBan *pNetBan = nullptr) const;
+
+	void SetLegacyPeer(const NETADDR *pAddr, bool Known) const
+	{
+		if(m_pfnPeer)
+			m_pfnPeer(m_pUser, pAddr, Known);
+	}
+};
+
 /*
 
 CURRENT:
@@ -273,7 +311,7 @@ private:
 	NETADDR m_aConnectAddrs[16];
 	int m_NumConnectAddrs;
 	NETADDR m_PeerAddr;
-	NETSOCKET m_Socket;
+	CNetUdpEndpoint m_Endpoint;
 	NETSTATS m_Stats;
 
 	std::array<char, NETADDR_MAXSTRSIZE> m_aPeerAddrStr;
@@ -307,6 +345,7 @@ public:
 
 	void Reset(bool Rejoin = false);
 	void Init(NETSOCKET Socket, bool BlockCloseMsg);
+	void Init(const CNetUdpEndpoint &Endpoint, bool BlockCloseMsg);
 	int Connect(const NETADDR *pAddr, int NumAddrs);
 	int Connect7(const NETADDR *pAddr, int NumAddrs);
 	void Disconnect(const char *pReason);
@@ -442,13 +481,17 @@ class CNetServer
 
 	NETADDR m_Address;
 	NETSOCKET m_Socket;
+	CNetUdpEndpoint m_Endpoint;
 	CNetBan *m_pNetBan;
 	CSlot m_aSlots[NET_MAX_CLIENTS];
+	bool m_aExternalSlots[NET_MAX_CLIENTS] = {};
+	NETADDR m_aExternalSlotAddresses[NET_MAX_CLIENTS] = {};
 	int m_MaxClients = NET_MAX_CLIENTS;
 	int m_MaxClientsPerIp;
 
 	bool m_FlushBatch = false;
 	bool m_aFlushPending[NET_MAX_CLIENTS] = {};
+	bool m_LegacyConnections = true;
 
 	NETFUNC_NEWCLIENT m_pfnNewClient;
 	NETFUNC_NEWCLIENT_NOAUTH m_pfnNewClientNoAuth;
@@ -484,15 +527,19 @@ class CNetServer
 
 	int TryAcceptClient(NETADDR &Addr, SECURITY_TOKEN SecurityToken, bool VanillaAuth = false, bool Sixup = false, SECURITY_TOKEN Token = 0);
 	int NumClientsWithAddr(NETADDR Addr);
-	bool Connlimit(NETADDR Addr);
 	void SendMsgs(NETADDR &Addr, const CPacker **ppMsgs, int Num);
 
 public:
+	// Counts one connection attempt from this address and says whether it exceeds
+	// sv_connlimit. Transports that accept clients outside this class have to ask
+	// for themselves, so they are covered by the same limit.
+	bool Connlimit(NETADDR Addr);
+
 	int SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_DELCLIENT pfnDelClient, void *pUser);
 	int SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_NEWCLIENT_NOAUTH pfnNewClientNoAuth, NETFUNC_CLIENTREJOIN pfnClientRejoin, NETFUNC_DELCLIENT pfnDelClient, void *pUser);
 
 	//
-	bool Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int MaxClientsPerIp);
+	bool Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int MaxClientsPerIp, NETFUNC_UDP_FILTER pfnFilter = nullptr, NETFUNC_UDP_PEER pfnPeer = nullptr, void *pUser = nullptr);
 	void Close();
 
 	//
@@ -509,6 +556,8 @@ public:
 
 	//
 	void Drop(int ClientId, const char *pReason);
+	void SetExternalSlot(int ClientId, const NETADDR *pAddress);
+	void SetLegacyConnections(bool Enabled) { m_LegacyConnections = Enabled; }
 
 	// status requests
 	const NETADDR *ClientAddr(int ClientId) const { return m_aSlots[ClientId].m_Connection.PeerAddress(); }
@@ -516,11 +565,13 @@ public:
 	bool HasSecurityToken(int ClientId) const { return m_aSlots[ClientId].m_Connection.SecurityToken() != NET_SECURITY_TOKEN_UNSUPPORTED; }
 	NETADDR Address() const { return m_Address; }
 	NETSOCKET Socket() const { return m_Socket; }
+	int SendRaw(const NETADDR *pAddress, const void *pData, int DataSize) const { return m_Endpoint.Send(pAddress, pData, DataSize); }
 	CNetBan *NetBan() const { return m_pNetBan; }
-	int NetType() const { return net_socket_type(m_Socket); }
+	int NetType() const { return m_Socket ? net_socket_type(m_Socket) : m_Address.type; }
 	int MaxClients() const { return m_MaxClients; }
 
 	void SendTokenSixup(NETADDR &Addr, SECURITY_TOKEN Token);
+	void SendPacketConnlessWithToken7(NETADDR &Addr, const void *pData, int DataSize, SECURITY_TOKEN Token, SECURITY_TOKEN ResponseToken);
 
 	//
 	void SetMaxClientsPerIp(int Max);
@@ -617,9 +668,17 @@ class CNetClient
 	CNetTokenCache m_TokenCache;
 
 	CStun *m_pStun = nullptr;
+	NETFUNC_UDP_FILTER m_pfnFilter = nullptr;
+	void *m_pFilterUser = nullptr;
 
 public:
 	NETSOCKET m_Socket = nullptr;
+	// The socket and the STUN client are owned, so destroying a client that was
+	// never closed explicitly must not leak them.
+	~CNetClient() { Close(); }
+	CNetClient() = default;
+	CNetClient(const CNetClient &) = delete;
+	CNetClient &operator=(const CNetClient &) = delete;
 	// openness
 	bool Open(NETADDR BindAddr);
 	void Close();
@@ -632,6 +691,12 @@ public:
 	// communication
 	int Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Sixup);
 	int Send(CNetChunk *pChunk);
+	int SendRaw(const NETADDR *pAddress, const void *pData, int DataSize) const { return net_udp_send(m_Socket, pAddress, pData, DataSize); }
+	void SetPacketFilter(NETFUNC_UDP_FILTER pfnFilter, void *pUser)
+	{
+		m_pfnFilter = pfnFilter;
+		m_pFilterUser = pUser;
+	}
 
 	// pumping
 	void Update();
@@ -670,10 +735,15 @@ public:
 	static bool IsValidConnectionOrientedPacket(const CNetPacketConstruct *pPacket);
 
 	static void SendControlMsg(NETSOCKET Socket, NETADDR *pAddr, int Ack, int ControlMsg, const void *pExtra, int ExtraSize, SECURITY_TOKEN SecurityToken, bool Sixup = false);
+	static void SendControlMsg(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, int Ack, int ControlMsg, const void *pExtra, int ExtraSize, SECURITY_TOKEN SecurityToken, bool Sixup = false);
 	static void SendControlMsgWithToken7(NETSOCKET Socket, NETADDR *pAddr, TOKEN Token, int Ack, int ControlMsg, TOKEN MyToken, bool Extended);
+	static void SendControlMsgWithToken7(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, TOKEN Token, int Ack, int ControlMsg, TOKEN MyToken, bool Extended);
 	static void SendPacketConnless(NETSOCKET Socket, NETADDR *pAddr, const void *pData, int DataSize, bool Extended, unsigned char aExtra[NET_CONNLESS_EXTRA_SIZE]);
+	static void SendPacketConnless(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, const void *pData, int DataSize, bool Extended, unsigned char aExtra[NET_CONNLESS_EXTRA_SIZE]);
 	static void SendPacketConnlessWithToken7(NETSOCKET Socket, NETADDR *pAddr, const void *pData, int DataSize, SECURITY_TOKEN Token, SECURITY_TOKEN ResponseToken);
+	static void SendPacketConnlessWithToken7(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, const void *pData, int DataSize, SECURITY_TOKEN Token, SECURITY_TOKEN ResponseToken);
 	static void SendPacket(NETSOCKET Socket, NETADDR *pAddr, CNetPacketConstruct *pPacket, SECURITY_TOKEN SecurityToken, bool Sixup = false);
+	static void SendPacket(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, CNetPacketConstruct *pPacket, SECURITY_TOKEN SecurityToken, bool Sixup = false);
 
 	static std::optional<int> UnpackPacketFlags(unsigned char *pBuffer, int Size);
 	// `AllowDecompression` false rejects compressed packets instead of decompressing them,

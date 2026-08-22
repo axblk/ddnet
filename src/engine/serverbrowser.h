@@ -11,6 +11,7 @@
 
 #include <engine/map.h>
 #include <engine/shared/protocol.h>
+#include <engine/shared/server_identity.h>
 
 #include <generated/protocol7.h>
 
@@ -22,6 +23,51 @@ static constexpr const char *DDNET_INFO_FILE = "ddnet-info.json";
 static constexpr const char *DDNET_INFO_URL = "https://info.ddnet.org/info";
 
 class CUIElement;
+
+enum class EModernTransportTrust
+{
+	INVALID,
+	TOFU,
+	WEBPKI,
+	CERTIFICATE_HASH,
+	IDENTITY,
+};
+
+/**
+ * Which transport a connect attempt prefers, as chosen next to the address
+ * field. This is an order of preference and not a demand: a transport a listed
+ * server does not announce is skipped and the connect falls back to the legacy
+ * one, so picking QUIC is safe on a server that has never heard of it. An
+ * address the browser does not list announces nothing to skip, so there the
+ * pick is taken at its word.
+ *
+ * The values are stored in `cl_connect_protocol`, so they must not be
+ * reordered.
+ */
+enum class EConnectProtocol
+{
+	LEGACY = 0,
+	QUIC,
+	WEBSOCKET,
+	WEBTRANSPORT,
+	COUNT,
+};
+
+/**
+ * Which address family a connect attempt resolves to, as chosen next to the
+ * address field. Like the transport this is a preference: IPv6 leaves the
+ * choice to the resolver, which takes IPv6 where the server has it and IPv4
+ * where it does not, while IPv4 rules IPv6 out.
+ *
+ * The values are stored in `cl_connect_address_family`, so they must not be
+ * reordered.
+ */
+enum class EConnectAddressFamily
+{
+	IPV4 = 0,
+	IPV6,
+	COUNT,
+};
 
 class CServerInfo
 {
@@ -56,6 +102,21 @@ public:
 		RANK_UNAVAILABLE,
 		RANK_RANKED,
 		RANK_UNRANKED,
+	};
+
+	enum EQuicCapability
+	{
+		QUIC_CAPABILITY_DATAGRAM = 1 << 0,
+		QUIC_CAPABILITY_MAP_STREAM = 1 << 1,
+		QUIC_CAPABILITY_RESUME = 1 << 2,
+		QUIC_CAPABILITY_GAME_PROTOCOL_7 = 1 << 3,
+	};
+
+	enum class EWebTransportCertificateMode
+	{
+		NONE,
+		WEBPKI,
+		HASH,
 	};
 
 	enum
@@ -96,6 +157,11 @@ public:
 
 	int m_NumAddresses;
 	NETADDR m_aAddresses[MAX_SERVER_ADDRESSES];
+	int m_NumQuicAddresses;
+	NETADDR m_aQuicAddresses[MAX_SERVER_ADDRESSES];
+	int m_NumWebTransportAddresses;
+	NETADDR m_aWebTransportAddresses[MAX_SERVER_ADDRESSES];
+	bool m_MasterChallengesModernTransports;
 
 	int m_QuickSearchHit;
 	int m_FriendState;
@@ -124,6 +190,30 @@ public:
 	int m_MapSize;
 	char m_aVersion[32];
 	char m_aAddress[MAX_SERVER_ADDRESSES * NETADDR_MAXSTRSIZE];
+	SHA256_DIGEST m_QuicCertificateSha256;
+	SHA256_DIGEST m_QuicNextCertificateSha256;
+	SHA256_DIGEST m_QuicIdentityFingerprint;
+	// WebTransport runs on its own certificate, so its pins are kept apart from the
+	// raw QUIC ones. A server can offer both, and then the two differ.
+	SHA256_DIGEST m_WebTransportCertificateSha256;
+	SHA256_DIGEST m_WebTransportNextCertificateSha256;
+	int m_QuicPort;
+	int m_QuicCapabilities;
+	bool m_QuicSharedPort;
+	// A server can serve WebTransport without serving raw QUIC. Both live on
+	// the same port, so the port alone does not say which of the two is there.
+	// Only the answer a server gives directly carries this; a listing from the
+	// master server names both transports by address instead.
+	bool m_RawQuic;
+	bool m_HasQuicNextCertificateSha256;
+	bool m_HasWebTransportNextCertificateSha256;
+	bool m_HasQuicIdentityFingerprint;
+	EModernTransportTrust m_QuicTrust;
+	bool m_WebTransport;
+	EWebTransportCertificateMode m_WebTransportCertificateMode;
+	char m_aWebTransportPath[16];
+	char m_aWebTransportUrl[256];
+	char m_aModernHostname[256];
 	std::vector<CClient> m_vClients;
 	int m_NumFilteredPlayers;
 	bool m_RequiresLogin;

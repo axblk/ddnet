@@ -24,8 +24,6 @@ CStatboard::CStatboard()
 
 void CStatboard::OnReset()
 {
-	for(auto &Stat : GameClient()->m_aStats)
-		Stat.Reset();
 	m_Active = false;
 	m_ScreenshotTaken = false;
 	m_ScreenshotTime = -1;
@@ -51,44 +49,84 @@ bool CStatboard::IsActive() const
 	return m_Active;
 }
 
-void CStatboard::OnMessage(int MsgType, void *pRawMsg)
+bool CStatboard::IsRenderable() const
 {
-	if(GameClient()->m_SuppressEvents)
+	if(!IsActive())
+		return false;
+	const CSessionStatsState &Stats = GameClient()->SessionContext().Stats();
+
+	int NumPlayers = 0;
+	for(const auto *pInfo : GameClient()->Snap().m_apInfoByScore)
+	{
+		if(!pInfo || !Stats.Client(pInfo->m_ClientId).IsActive())
+			continue;
+		if(GameClient()->m_aClients[pInfo->m_ClientId].m_Team == TEAM_RED ||
+			(GameClient()->IsTeamPlay() && GameClient()->m_aClients[pInfo->m_ClientId].m_Team == TEAM_BLUE))
+			NumPlayers++;
+	}
+	return NumPlayers <= 32;
+}
+
+bool CStatboard::IsRenderable(const CRenderContext &Context) const
+{
+	if(!IsActive())
+		return false;
+	const CSessionStatsState &Stats = Context.m_Session.Stats();
+	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
+	const std::array<int, MAX_CLIENTS> *pClientsByScore = Presentation.ClientsByScore(Context.m_State.Id());
+	if(pClientsByScore == nullptr)
+		return false;
+	const bool TeamPlay = Context.m_State.HasGameInfo() && (Context.m_State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
+	int NumPlayers = 0;
+	for(const int ClientId : *pClientsByScore)
+	{
+		if(ClientId < 0)
+			break;
+		const CClientPresentation *pClient = Presentation.Client(Context.m_State.Id(), ClientId);
+		if(pClient == nullptr || !Stats.Client(ClientId).IsActive())
+			continue;
+		if(pClient->m_Team == TEAM_RED || (TeamPlay && pClient->m_Team == TEAM_BLUE))
+			++NumPlayers;
+	}
+	return NumPlayers <= 32;
+}
+
+void CStatboard::HandleMessage(CSessionStatsState &Stats, const CGameState &State, bool SuppressEvents, int MsgType, void *pRawMsg)
+{
+	if(SuppressEvents)
 		return;
 
 	if(MsgType == NETMSGTYPE_SV_KILLMSG)
 	{
 		CNetMsg_Sv_KillMsg *pMsg = (CNetMsg_Sv_KillMsg *)pRawMsg;
-		CGameClient::CClientStats *pStats = GameClient()->m_aStats;
-
-		pStats[pMsg->m_Victim].m_Deaths++;
-		pStats[pMsg->m_Victim].m_CurrentSpree = 0;
+		CSessionClientStats &VictimStats = Stats.Client(pMsg->m_Victim);
+		VictimStats.m_Deaths++;
+		VictimStats.m_CurrentSpree = 0;
 		if(pMsg->m_Weapon >= 0)
-			pStats[pMsg->m_Victim].m_aDeathsFrom[pMsg->m_Weapon]++;
+			VictimStats.m_aDeathsFrom[pMsg->m_Weapon]++;
 		if(pMsg->m_Victim != pMsg->m_Killer)
 		{
-			pStats[pMsg->m_Killer].m_Frags++;
-			pStats[pMsg->m_Killer].m_CurrentSpree++;
+			CSessionClientStats &KillerStats = Stats.Client(pMsg->m_Killer);
+			KillerStats.m_Frags++;
+			KillerStats.m_CurrentSpree++;
 
-			if(pStats[pMsg->m_Killer].m_CurrentSpree > pStats[pMsg->m_Killer].m_BestSpree)
-				pStats[pMsg->m_Killer].m_BestSpree = pStats[pMsg->m_Killer].m_CurrentSpree;
+			if(KillerStats.m_CurrentSpree > KillerStats.m_BestSpree)
+				KillerStats.m_BestSpree = KillerStats.m_CurrentSpree;
 			if(pMsg->m_Weapon >= 0)
-				pStats[pMsg->m_Killer].m_aFragsWith[pMsg->m_Weapon]++;
+				KillerStats.m_aFragsWith[pMsg->m_Weapon]++;
 		}
 		else
-			pStats[pMsg->m_Victim].m_Suicides++;
+			VictimStats.m_Suicides++;
 	}
 	else if(MsgType == NETMSGTYPE_SV_KILLMSGTEAM)
 	{
 		CNetMsg_Sv_KillMsgTeam *pMsg = (CNetMsg_Sv_KillMsgTeam *)pRawMsg;
-		CGameClient::CClientStats *pStats = GameClient()->m_aStats;
-
 		for(int i = 0; i < MAX_CLIENTS; i++)
 		{
-			if(GameClient()->m_Teams.Team(i) == pMsg->m_Team)
+			if(State.Teams().Team(i) == pMsg->m_Team)
 			{
-				pStats[i].m_Deaths++;
-				pStats[i].m_Suicides++;
+				Stats.Client(i).m_Deaths++;
+				Stats.Client(i).m_Suicides++;
 			}
 		}
 	}
@@ -111,12 +149,14 @@ void CStatboard::OnMessage(int MsgType, void *pRawMsg)
 
 				for(int i = 0; i < MAX_CLIENTS; i++)
 				{
-					if(!GameClient()->m_aStats[i].IsActive())
+					if(!Stats.Client(i).IsActive())
 						continue;
 
-					if(str_comp(GameClient()->m_aClients[i].m_aName, aName) == 0)
+					const CGameState::CClientIdentityState &Identity = State.ClientIdentity(i);
+					char aClientName[MAX_NAME_LENGTH];
+					if(Identity.m_Active && IntsToStr(Identity.m_ClientInfo.m_aName, std::size(Identity.m_ClientInfo.m_aName), aClientName, std::size(aClientName)) && str_comp(aClientName, aName) == 0)
 					{
-						GameClient()->m_aStats[i].m_FlagCaptures++;
+						Stats.Client(i).m_FlagCaptures++;
 						break;
 					}
 				}
@@ -125,14 +165,14 @@ void CStatboard::OnMessage(int MsgType, void *pRawMsg)
 	}
 }
 
-void CStatboard::OnRender()
+void CStatboard::UpdateController()
 {
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		return;
 
 	if((g_Config.m_ClAutoStatboardScreenshot || g_Config.m_ClAutoCSV) && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 	{
-		if(m_ScreenshotTime < 0 && GameClient()->m_Snap.m_pGameInfoObj && GameClient()->m_Snap.m_pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_GAMEOVER)
+		if(m_ScreenshotTime < 0 && GameClient()->Snap().m_pGameInfoObj && GameClient()->Snap().m_pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_GAMEOVER)
 			m_ScreenshotTime = time_get() + time_freq() * 3;
 		if(m_ScreenshotTime > -1 && m_ScreenshotTime < time_get())
 			m_Active = true;
@@ -145,39 +185,57 @@ void CStatboard::OnRender()
 			m_ScreenshotTaken = true;
 		}
 	}
-
-	if(IsActive())
-		RenderGlobalStats();
 }
 
-void CStatboard::RenderGlobalStats()
+void CStatboard::OnRender(const CRenderContext &Context)
 {
-	const float StatboardWidth = 400 * 3.0f * Graphics()->ScreenAspect();
+	if(!Context.m_Time.m_IsGameActive)
+		return;
+
+	if(IsRenderable(Context))
+		RenderGlobalStats(Context);
+}
+
+void CStatboard::RenderGlobalStats(const CRenderContext &Context)
+{
+	const CSessionStatsState &Stats = Context.m_Session.Stats();
+	const CGameState &State = Context.m_State;
+	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
+	const std::array<int, MAX_CLIENTS> *pClientsByScore = Presentation.ClientsByScore(State.Id());
+	if(pClientsByScore == nullptr)
+		return;
+	const float StatboardWidth = 400 * 3.0f * Context.AspectRatio(Graphics()->ScreenAspect());
 	const float StatboardHeight = 400 * 3.0f;
 	float StatboardContentWidth = 260.0f;
 	float StatboardContentHeight = 750.0f;
 
-	const CNetObj_PlayerInfo *apPlayers[MAX_CLIENTS] = {nullptr};
+	std::array<int, MAX_CLIENTS> aPlayers;
+	aPlayers.fill(-1);
 	int NumPlayers = 0;
+	const bool TeamPlay = State.HasGameInfo() && (State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
 
 	// sort red or dm players by score
-	for(const auto *pInfo : GameClient()->m_Snap.m_apInfoByScore)
+	for(const int ClientId : *pClientsByScore)
 	{
-		if(!pInfo || !GameClient()->m_aStats[pInfo->m_ClientId].IsActive() || GameClient()->m_aClients[pInfo->m_ClientId].m_Team != TEAM_RED)
+		if(ClientId < 0)
+			break;
+		const CClientPresentation *pClient = Presentation.Client(State.Id(), ClientId);
+		if(pClient == nullptr || !Stats.Client(ClientId).IsActive() || pClient->m_Team != TEAM_RED)
 			continue;
-		apPlayers[NumPlayers] = pInfo;
-		NumPlayers++;
+		aPlayers[NumPlayers++] = ClientId;
 	}
 
 	// sort blue players by score after
-	if(GameClient()->IsTeamPlay())
+	if(TeamPlay)
 	{
-		for(const auto *pInfo : GameClient()->m_Snap.m_apInfoByScore)
+		for(const int ClientId : *pClientsByScore)
 		{
-			if(!pInfo || !GameClient()->m_aStats[pInfo->m_ClientId].IsActive() || GameClient()->m_aClients[pInfo->m_ClientId].m_Team != TEAM_BLUE)
+			if(ClientId < 0)
+				break;
+			const CClientPresentation *pClient = Presentation.Client(State.Id(), ClientId);
+			if(pClient == nullptr || !Stats.Client(ClientId).IsActive() || pClient->m_Team != TEAM_BLUE)
 				continue;
-			apPlayers[NumPlayers] = pInfo;
-			NumPlayers++;
+			aPlayers[NumPlayers++] = ClientId;
 		}
 	}
 
@@ -186,12 +244,7 @@ void CStatboard::RenderGlobalStats()
 	if(NumPlayers > 32)
 		return;
 
-	//clear motd if it is active
-	if(GameClient()->m_Motd.IsActive())
-		GameClient()->m_Motd.Clear();
-
-	bool GameWithFlags = GameClient()->m_Snap.m_pGameInfoObj &&
-			     GameClient()->m_Snap.m_pGameInfoObj->m_GameFlags & GAMEFLAG_FLAGS;
+	const bool GameWithFlags = State.HasGameInfo() && (State.GameInfo().m_GameFlags & GAMEFLAG_FLAGS) != 0;
 
 	StatboardContentWidth += 7 * 85 + 95; // Suicides 95; other labels 85
 
@@ -201,7 +254,7 @@ void CStatboard::RenderGlobalStats()
 	bool aDisplayWeapon[NUM_WEAPONS] = {false};
 	for(int i = 0; i < NumPlayers; i++)
 	{
-		const CGameClient::CClientStats *pStats = &GameClient()->m_aStats[apPlayers[i]->m_ClientId];
+		const CSessionClientStats *pStats = &Stats.Client(aPlayers[i]);
 		for(int j = 0; j < NUM_WEAPONS; j++)
 			aDisplayWeapon[j] = aDisplayWeapon[j] || pStats->m_aFragsWith[j] || pStats->m_aDeathsFrom[j];
 	}
@@ -286,16 +339,18 @@ void CStatboard::RenderGlobalStats()
 
 	for(int j = 0; j < NumPlayers; j++)
 	{
-		const CNetObj_PlayerInfo *pInfo = apPlayers[j];
-		const CGameClient::CClientStats *pStats = &GameClient()->m_aStats[pInfo->m_ClientId];
+		const int ClientId = aPlayers[j];
+		const CSessionClientStats *pStats = &Stats.Client(ClientId);
+		const CClientPresentation *pClient = Presentation.Client(State.Id(), ClientId);
+		dbg_assert(pClient != nullptr, "statboard client presentation missing");
 
-		if(GameClient()->m_Snap.m_LocalClientId == pInfo->m_ClientId || (GameClient()->m_Snap.m_SpecInfo.m_Active && pInfo->m_ClientId == GameClient()->m_Snap.m_SpecInfo.m_SpectatorId))
+		if(State.LocalClientId() == ClientId || (Context.m_View.IsSpectating() && ClientId == Context.m_View.SpectatorId()))
 		{
 			// background so it's easy to find the local player
 			Graphics()->DrawRect(x - 10, y + ContentLineOffset / 2, StatboardContentWidth, LineHeight - ContentLineOffset, ColorRGBA(1.0f, 1.0f, 1.0f, 0.25f), IGraphics::CORNER_NONE, 0.0f);
 		}
 
-		CTeeRenderInfo Teeinfo = GameClient()->m_aClients[pInfo->m_ClientId].m_RenderInfo;
+		CTeeRenderInfo Teeinfo = pClient->m_BaseRenderInfo;
 		Teeinfo.m_Size *= TeeSizemod;
 
 		const CAnimState *pIdleState = CAnimState::GetIdle();
@@ -311,7 +366,7 @@ void CStatboard::RenderGlobalStats()
 		Cursor.m_FontSize = FontSize;
 		Cursor.m_Flags |= TEXTFLAG_STOP_AT_END;
 		Cursor.m_LineWidth = 220;
-		TextRender()->TextEx(&Cursor, GameClient()->m_aClients[pInfo->m_ClientId].m_aName, -1);
+		TextRender()->TextEx(&Cursor, pClient->m_aName, -1);
 
 		px = 325;
 
@@ -356,7 +411,7 @@ void CStatboard::RenderGlobalStats()
 		}
 		// FPM
 		{
-			float Fpm = pStats->GetFPM(Client()->GameTick(g_Config.m_ClDummy), Client()->GameTickSpeed());
+			const float Fpm = pStats->GetFPM(Context.m_Time.m_GameTick, Context.m_Time.m_GameTickSpeed);
 			str_format(aBuf, sizeof(aBuf), "%.1f", Fpm);
 			const float TextWidth = TextRender()->TextWidth(FontSize, aBuf, -1, -1.0f);
 			TextRender()->Text(x - TextWidth + px, y + (LineHeight * 0.95f - FontSize) / 2.f, FontSize, aBuf, -1.0f);
@@ -456,8 +511,10 @@ std::string CStatboard::ReplaceCommata(const char *pStr)
 
 void CStatboard::FormatStats(char *pDest, size_t DestSize)
 {
+	const CSessionId SessionId = GameClient()->SessionContext().Id();
+	const CSessionStatsState &Stats = GameClient()->SessionContext().Stats();
 	// server stats
-	const CServerInfo &CurrentServerInfo = Client()->ServerInfo();
+	const CServerInfo &CurrentServerInfo = Client()->ServerInfo(SessionId);
 
 	char aServerStats[1024];
 	str_format(aServerStats, sizeof(aServerStats), "Servername,Game-type,Map\n%s,%s,%s", ReplaceCommata(CurrentServerInfo.m_aName).c_str(), ReplaceCommata(CurrentServerInfo.m_aGameType).c_str(), ReplaceCommata(CurrentServerInfo.m_aMap).c_str());
@@ -469,9 +526,9 @@ void CStatboard::FormatStats(char *pDest, size_t DestSize)
 	int NumPlayers = 0;
 
 	// sort red or dm players by score
-	for(const auto *pInfo : GameClient()->m_Snap.m_apInfoByScore)
+	for(const auto *pInfo : GameClient()->Snap().m_apInfoByScore)
 	{
-		if(!pInfo || !GameClient()->m_aStats[pInfo->m_ClientId].IsActive() || GameClient()->m_aClients[pInfo->m_ClientId].m_Team != TEAM_RED)
+		if(!pInfo || !Stats.Client(pInfo->m_ClientId).IsActive() || GameClient()->m_aClients[pInfo->m_ClientId].m_Team != TEAM_RED)
 			continue;
 		apPlayers[NumPlayers] = pInfo;
 		NumPlayers++;
@@ -480,9 +537,9 @@ void CStatboard::FormatStats(char *pDest, size_t DestSize)
 	// sort blue players by score after
 	if(GameClient()->IsTeamPlay())
 	{
-		for(const auto *pInfo : GameClient()->m_Snap.m_apInfoByScore)
+		for(const auto *pInfo : GameClient()->Snap().m_apInfoByScore)
 		{
-			if(!pInfo || !GameClient()->m_aStats[pInfo->m_ClientId].IsActive() || GameClient()->m_aClients[pInfo->m_ClientId].m_Team != TEAM_BLUE)
+			if(!pInfo || !Stats.Client(pInfo->m_ClientId).IsActive() || GameClient()->m_aClients[pInfo->m_ClientId].m_Team != TEAM_BLUE)
 				continue;
 			apPlayers[NumPlayers] = pInfo;
 			NumPlayers++;
@@ -493,7 +550,7 @@ void CStatboard::FormatStats(char *pDest, size_t DestSize)
 	for(int i = 0; i < NumPlayers; i++)
 	{
 		const CNetObj_PlayerInfo *pInfo = apPlayers[i];
-		const CGameClient::CClientStats *pStats = &GameClient()->m_aStats[pInfo->m_ClientId];
+		const CSessionClientStats *pStats = &Stats.Client(pInfo->m_ClientId);
 
 		// Pre-formatting
 
@@ -513,10 +570,10 @@ void CStatboard::FormatStats(char *pDest, size_t DestSize)
 			KillRatio = (float)(pStats->m_Frags) / pStats->m_Deaths;
 
 		// Local player
-		bool LocalPlayer = (GameClient()->m_Snap.m_LocalClientId == pInfo->m_ClientId || (GameClient()->m_Snap.m_SpecInfo.m_Active && pInfo->m_ClientId == GameClient()->m_Snap.m_SpecInfo.m_SpectatorId));
+		bool LocalPlayer = (GameClient()->Snap().m_LocalClientId == pInfo->m_ClientId || (GameClient()->Snap().m_SpecInfo.m_Active && pInfo->m_ClientId == GameClient()->Snap().m_SpecInfo.m_SpectatorId));
 
 		// Game with flags
-		bool GameWithFlags = (GameClient()->m_Snap.m_pGameInfoObj && GameClient()->m_Snap.m_pGameInfoObj->m_GameFlags & GAMEFLAG_FLAGS);
+		bool GameWithFlags = (GameClient()->Snap().m_pGameInfoObj && GameClient()->Snap().m_pGameInfoObj->m_GameFlags & GAMEFLAG_FLAGS);
 
 		char aBuf[1024];
 		str_format(aBuf, sizeof(aBuf), "%d,%d,%s,%s,%d,%d,%d,%d,%.2f,%i,%.1f,%d,%d,%s,%d,%d,%d\n",
@@ -530,7 +587,7 @@ void CStatboard::FormatStats(char *pDest, size_t DestSize)
 			pStats->m_Suicides, // Suicides
 			KillRatio, // Kill ratio
 			pStats->m_Frags - pStats->m_Deaths, // Net
-			pStats->GetFPM(Client()->GameTick(g_Config.m_ClDummy), Client()->GameTickSpeed()), // FPM
+			pStats->GetFPM(Client()->GameTick(SessionId, GameClient()->ActiveConnection()), Client()->GameTickSpeed()), // FPM
 			pStats->m_CurrentSpree, // CurSpree
 			pStats->m_BestSpree, // BestSpree
 			aWeaponFD, // WeaponFD

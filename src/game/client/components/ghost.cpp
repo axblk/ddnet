@@ -118,12 +118,32 @@ void CGhost::CGhostPath::Add(const CGhostCharacter &Char)
 
 CGhostCharacter *CGhost::CGhostPath::Get(int Index)
 {
+	return const_cast<CGhostCharacter *>(static_cast<const CGhostPath *>(this)->Get(Index));
+}
+
+const CGhostCharacter *CGhost::CGhostPath::Get(int Index) const
+{
 	if(Index < 0 || Index >= m_NumItems)
 		return nullptr;
 
 	int Chunk = Index / m_ChunkSize;
 	int Pos = Index % m_ChunkSize;
 	return &m_vpChunks[Chunk][Pos];
+}
+
+int CGhost::CGhostPath::FindFirstAtOrAfterTick(int Tick) const
+{
+	int Begin = 0;
+	int End = m_NumItems;
+	while(Begin < End)
+	{
+		const int Middle = Begin + (End - Begin) / 2;
+		if(Get(Middle)->m_Tick < Tick)
+			Begin = Middle + 1;
+		else
+			End = Middle;
+	}
+	return Begin < m_NumItems ? Begin : -1;
 }
 
 void CGhost::GetPath(char *pBuf, int Size, const char *pPlayerName, int Time) const
@@ -188,10 +208,10 @@ int CGhost::FreeSlots() const
 
 void CGhost::CheckStart()
 {
-	int RaceTick = -GameClient()->m_Snap.m_pGameInfoObj->m_WarmupTimer;
+	int RaceTick = -GameClient()->Snap().m_pGameInfoObj->m_WarmupTimer;
 	int RenderTick = m_NewRenderTick;
 
-	if(GameClient()->LastRaceTick() != RaceTick && Client()->GameTick(g_Config.m_ClDummy) - RaceTick < Client()->GameTickSpeed())
+	if(GameClient()->LastRaceTick() != RaceTick && Client()->GameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection()) - RaceTick < Client()->GameTickSpeed())
 	{
 		if(m_Rendering && m_RenderingStartedByServer) // race restarted: stop rendering
 			StopRender();
@@ -203,7 +223,7 @@ void CGhost::CheckStart()
 			GhostRecorder()->Stop(0, -1);
 		int StartTick = RaceTick;
 
-		if(GameClient()->m_GameInfo.m_BugDDRaceGhost) // the client recognizes the start one tick earlier than ddrace servers
+		if(GameClient()->FocusedGameInfo().m_BugDDRaceGhost) // the client recognizes the start one tick earlier than ddrace servers
 			StartTick--;
 		StartRecord(StartTick);
 		RenderTick = StartTick;
@@ -224,17 +244,17 @@ void CGhost::CheckStartLocal(bool Predicted)
 		{
 			if(m_Rendering && !m_RenderingStartedByServer) // race restarted: stop rendering
 				StopRender();
-			RenderTick = Client()->PredGameTick(g_Config.m_ClDummy);
+			RenderTick = Client()->PredGameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection());
 		}
 
 		TryRenderStart(RenderTick, false);
 	}
 	else // recording
 	{
-		int PrevTick = GameClient()->m_Snap.m_pLocalPrevCharacter->m_Tick;
-		int CurTick = GameClient()->m_Snap.m_pLocalCharacter->m_Tick;
-		vec2 PrevPos = vec2(GameClient()->m_Snap.m_pLocalPrevCharacter->m_X, GameClient()->m_Snap.m_pLocalPrevCharacter->m_Y);
-		vec2 Pos = vec2(GameClient()->m_Snap.m_pLocalCharacter->m_X, GameClient()->m_Snap.m_pLocalCharacter->m_Y);
+		int PrevTick = GameClient()->Snap().m_pLocalPrevCharacter->m_Tick;
+		int CurTick = GameClient()->Snap().m_pLocalCharacter->m_Tick;
+		vec2 PrevPos = vec2(GameClient()->Snap().m_pLocalPrevCharacter->m_X, GameClient()->Snap().m_pLocalPrevCharacter->m_Y);
+		vec2 Pos = vec2(GameClient()->Snap().m_pLocalCharacter->m_X, GameClient()->Snap().m_pLocalCharacter->m_Y);
 
 		// detecting death, needed because race allows immediate respawning
 		if((!m_Recording || m_AllowRestart) && m_LastDeathTick < PrevTick)
@@ -275,12 +295,12 @@ void CGhost::TryRenderStart(int Tick, bool ServerControl)
 
 void CGhost::OnNewSnapshot()
 {
-	if(!GameClient()->m_GameInfo.m_Race || !g_Config.m_ClRaceGhost || Client()->State() != IClient::STATE_ONLINE)
+	if(!GameClient()->FocusedGameInfo().m_Race || !g_Config.m_ClRaceGhost || Client()->State() != IClient::STATE_ONLINE)
 		return;
-	if(!GameClient()->m_Snap.m_pGameInfoObj || GameClient()->m_Snap.m_SpecInfo.m_Active || !GameClient()->m_Snap.m_pLocalCharacter || !GameClient()->m_Snap.m_pLocalPrevCharacter)
+	if(!GameClient()->Snap().m_pGameInfoObj || GameClient()->Snap().m_SpecInfo.m_Active || !GameClient()->Snap().m_pLocalCharacter || !GameClient()->Snap().m_pLocalPrevCharacter)
 		return;
 
-	const bool RaceFlag = GameClient()->m_Snap.m_pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_RACETIME;
+	const bool RaceFlag = GameClient()->Snap().m_pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_RACETIME;
 	const bool ServerControl = RaceFlag && g_Config.m_ClRaceGhostServerControl;
 
 	if(!ServerControl)
@@ -289,24 +309,25 @@ void CGhost::OnNewSnapshot()
 		CheckStart();
 
 	if(m_Recording)
-		AddInfos(GameClient()->m_Snap.m_pLocalCharacter, (GameClient()->m_Snap.m_LocalClientId != -1 && GameClient()->m_Snap.m_aCharacters[GameClient()->m_Snap.m_LocalClientId].m_HasExtendedData) ? &GameClient()->m_Snap.m_aCharacters[GameClient()->m_Snap.m_LocalClientId].m_ExtendedData : nullptr);
+		AddInfos(GameClient()->Snap().m_pLocalCharacter, (GameClient()->Snap().m_LocalClientId != -1 && GameClient()->Snap().m_aCharacters[GameClient()->Snap().m_LocalClientId].m_HasExtendedData) ? &GameClient()->Snap().m_aCharacters[GameClient()->Snap().m_LocalClientId].m_ExtendedData : nullptr);
 }
 
 void CGhost::OnNewPredictedSnapshot()
 {
-	if(!GameClient()->m_GameInfo.m_Race || !g_Config.m_ClRaceGhost || Client()->State() != IClient::STATE_ONLINE)
+	if(!GameClient()->FocusedGameInfo().m_Race || !g_Config.m_ClRaceGhost || Client()->State() != IClient::STATE_ONLINE)
 		return;
-	if(!GameClient()->m_Snap.m_pGameInfoObj || GameClient()->m_Snap.m_SpecInfo.m_Active || !GameClient()->m_Snap.m_pLocalCharacter || !GameClient()->m_Snap.m_pLocalPrevCharacter)
+	if(!GameClient()->Snap().m_pGameInfoObj || GameClient()->Snap().m_SpecInfo.m_Active || !GameClient()->Snap().m_pLocalCharacter || !GameClient()->Snap().m_pLocalPrevCharacter)
 		return;
 
-	const bool RaceFlag = GameClient()->m_Snap.m_pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_RACETIME;
+	const bool RaceFlag = GameClient()->Snap().m_pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_RACETIME;
 	const bool ServerControl = RaceFlag && g_Config.m_ClRaceGhostServerControl;
 
 	if(!ServerControl)
 		CheckStartLocal(true);
 }
 
-void CGhost::OnRender()
+template<typename F>
+void CGhost::ForEachGhostFrame(const CGameState &State, const CGameTickInfo &Time, F &&Function) const
 {
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		return;
@@ -315,31 +336,18 @@ void CGhost::OnRender()
 	if(!m_Rendering || !g_Config.m_ClRaceShowGhost)
 		return;
 
-	int PlaybackTick = Client()->PredGameTick(g_Config.m_ClDummy) - m_StartRenderTick;
+	int PlaybackTick = Time.m_PredGameTick - m_StartRenderTick;
 
-	CScreenRect ScreenRect = Graphics()->GetScreen();
-
-	// 200x200 box around the player
-	ScreenRect.Expand(100.0f);
-
-	for(auto &Ghost : m_aActiveGhosts)
+	for(const auto &Ghost : m_aActiveGhosts)
 	{
 		if(Ghost.Empty())
 			continue;
 
 		int GhostTick = Ghost.m_StartTick + PlaybackTick;
-		while(Ghost.m_PlaybackPos >= 0 && Ghost.m_Path.Get(Ghost.m_PlaybackPos)->m_Tick < GhostTick)
-		{
-			if(Ghost.m_PlaybackPos < Ghost.m_Path.Size() - 1)
-				Ghost.m_PlaybackPos++;
-			else
-				Ghost.m_PlaybackPos = -1;
-		}
-
-		if(Ghost.m_PlaybackPos < 0)
+		const int CurPos = Ghost.m_Path.FindFirstAtOrAfterTick(GhostTick);
+		if(CurPos < 0)
 			continue;
 
-		int CurPos = Ghost.m_PlaybackPos;
 		int PrevPos = std::max(0, CurPos - 1);
 		if(Ghost.m_Path.Get(PrevPos)->m_Tick > GhostTick)
 			continue;
@@ -351,9 +359,9 @@ void CGhost::OnRender()
 		int TickDiff = Player.m_Tick - Prev.m_Tick;
 		float IntraTick = 0.f;
 		if(TickDiff > 0)
-			IntraTick = (GhostTick - Prev.m_Tick - 1 + Client()->PredIntraGameTick(g_Config.m_ClDummy)) / TickDiff;
+			IntraTick = (GhostTick - Prev.m_Tick - 1 + Time.m_PredIntraGameTick) / TickDiff;
 
-		Player.m_AttackTick += Client()->GameTick(g_Config.m_ClDummy) - GhostTick;
+		Player.m_AttackTick += Time.m_GameTick - GhostTick;
 
 		const CTeeRenderInfo *pRenderInfo = &Ghost.m_pManagedTeeRenderInfo->TeeRenderInfo();
 		CTeeRenderInfo GhostNinjaRenderInfo;
@@ -362,7 +370,7 @@ void CGhost::OnRender()
 			// change the skin for the ghost to the ninja
 			GhostNinjaRenderInfo = Ghost.m_pManagedTeeRenderInfo->TeeRenderInfo();
 			GhostNinjaRenderInfo.ApplySkin(GameClient()->m_Players.NinjaTeeRenderInfo()->TeeRenderInfo());
-			GhostNinjaRenderInfo.m_CustomColoredSkin = GameClient()->IsTeamPlay();
+			GhostNinjaRenderInfo.m_CustomColoredSkin = State.HasGameInfo() && (State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
 			if(!GhostNinjaRenderInfo.m_CustomColoredSkin)
 			{
 				GhostNinjaRenderInfo.m_ColorBody = ColorRGBA(1, 1, 1);
@@ -371,9 +379,27 @@ void CGhost::OnRender()
 			pRenderInfo = &GhostNinjaRenderInfo;
 		}
 
-		GameClient()->m_Players.RenderHook(ScreenRect, &Prev, &Player, pRenderInfo, -2, IntraTick);
-		GameClient()->m_Players.RenderPlayer(ScreenRect, &Prev, &Player, pRenderInfo, -2, IntraTick);
+		Function(Prev, Player, *pRenderInfo, IntraTick);
 	}
+}
+
+void CGhost::UpdatePresentation(const CPresentationContext &Context)
+{
+	if(Context.m_Playback == EPresentationPlayback::PAUSED)
+		return;
+	ForEachGhostFrame(Context.m_State, Context.m_Time, [&](const CNetObj_Character &Prev, const CNetObj_Character &Player, const CTeeRenderInfo &RenderInfo, float IntraTick) {
+		GameClient()->m_Players.UpdatePlayerPresentation(Context, &Prev, &Player, &RenderInfo, -2, IntraTick);
+	});
+}
+
+void CGhost::OnRender(const CRenderContext &Context)
+{
+	CScreenRect ScreenRect(Context.m_VisibleWorldRect.m_TopLeft, Context.m_VisibleWorldRect.m_BottomRight);
+	ScreenRect.Expand(100.0f);
+	ForEachGhostFrame(Context.m_State, Context.m_Time, [&](const CNetObj_Character &Prev, const CNetObj_Character &Player, const CTeeRenderInfo &RenderInfo, float IntraTick) {
+		GameClient()->m_Players.RenderHook(Context, ScreenRect, &Prev, &Player, &RenderInfo, -2, IntraTick);
+		GameClient()->m_Players.RenderPlayer(Context, ScreenRect, &Prev, &Player, &RenderInfo, -2, IntraTick);
+	});
 }
 
 void CGhost::UpdateTeeRenderInfo(CGhostItem &Ghost)
@@ -399,7 +425,7 @@ void CGhost::StartRecord(int Tick)
 	m_CurGhost.Reset();
 	m_CurGhost.m_StartTick = Tick;
 
-	const CGameClient::CClientData *pData = &GameClient()->m_aClients[GameClient()->m_Snap.m_LocalClientId];
+	const CGameClient::CClientData *pData = &GameClient()->m_aClients[GameClient()->Snap().m_LocalClientId];
 	str_copy(m_CurGhost.m_aPlayer, Client()->PlayerName());
 	SetGhostSkinData(&m_CurGhost.m_Skin, pData->m_aSkinName, pData->m_UseCustomColor, pData->m_ColorBody, pData->m_ColorFeet);
 	UpdateTeeRenderInfo(m_CurGhost);
@@ -450,8 +476,6 @@ void CGhost::StartRender(int Tick)
 {
 	m_Rendering = true;
 	m_StartRenderTick = Tick;
-	for(auto &Ghost : m_aActiveGhosts)
-		Ghost.m_PlaybackPos = 0;
 }
 
 void CGhost::StopRender()
@@ -617,7 +641,7 @@ void CGhost::SaveGhost(CMenus::CGhostItem *pItem)
 void CGhost::ConGPlay(IConsole::IResult *pResult, void *pUserData)
 {
 	CGhost *pGhost = (CGhost *)pUserData;
-	pGhost->StartRender(pGhost->Client()->PredGameTick(g_Config.m_ClDummy));
+	pGhost->StartRender(pGhost->Client()->PredGameTick(pGhost->Client()->FocusedSessionId(), pGhost->GameClient()->ActiveConnection()));
 }
 
 void CGhost::OnConsoleInit()
@@ -634,12 +658,12 @@ void CGhost::OnMessage(int MsgType, void *pRawMsg)
 	if(MsgType == NETMSGTYPE_SV_KILLMSG)
 	{
 		CNetMsg_Sv_KillMsg *pMsg = (CNetMsg_Sv_KillMsg *)pRawMsg;
-		if(pMsg->m_Victim == GameClient()->m_Snap.m_LocalClientId)
+		if(pMsg->m_Victim == GameClient()->Snap().m_LocalClientId)
 		{
 			if(m_Recording)
 				StopRecord();
 			StopRender();
-			m_LastDeathTick = Client()->GameTick(g_Config.m_ClDummy);
+			m_LastDeathTick = Client()->GameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection());
 		}
 	}
 	else if(MsgType == NETMSGTYPE_SV_KILLMSGTEAM)
@@ -647,12 +671,12 @@ void CGhost::OnMessage(int MsgType, void *pRawMsg)
 		CNetMsg_Sv_KillMsgTeam *pMsg = (CNetMsg_Sv_KillMsgTeam *)pRawMsg;
 		for(int i = 0; i < MAX_CLIENTS; i++)
 		{
-			if(GameClient()->m_Teams.Team(i) == pMsg->m_Team && i == GameClient()->m_Snap.m_LocalClientId)
+			if(GameClient()->FocusedTeams().Team(i) == pMsg->m_Team && i == GameClient()->Snap().m_LocalClientId)
 			{
 				if(m_Recording)
 					StopRecord();
 				StopRender();
-				m_LastDeathTick = Client()->GameTick(g_Config.m_ClDummy);
+				m_LastDeathTick = Client()->GameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection());
 			}
 		}
 	}
@@ -663,7 +687,7 @@ void CGhost::OnMessage(int MsgType, void *pRawMsg)
 		{
 			char aName[MAX_NAME_LENGTH];
 			int Time = CRaceHelper::TimeFromFinishMessage(pMsg->m_pMessage, aName, sizeof(aName));
-			if(Time > 0 && GameClient()->m_Snap.m_LocalClientId >= 0 && str_comp(aName, GameClient()->m_aClients[GameClient()->m_Snap.m_LocalClientId].m_aName) == 0)
+			if(Time > 0 && GameClient()->Snap().m_LocalClientId >= 0 && str_comp(aName, GameClient()->m_aClients[GameClient()->Snap().m_LocalClientId].m_aName) == 0)
 			{
 				if(m_Recording)
 					StopRecord(Time);
@@ -674,7 +698,7 @@ void CGhost::OnMessage(int MsgType, void *pRawMsg)
 	else if(MsgType == NETMSGTYPE_SV_RACEFINISH)
 	{
 		CNetMsg_Sv_RaceFinish *pMsg = (CNetMsg_Sv_RaceFinish *)pRawMsg;
-		if(m_Recording && pMsg->m_ClientId == GameClient()->m_Snap.m_LocalClientId)
+		if(m_Recording && pMsg->m_ClientId == GameClient()->Snap().m_LocalClientId)
 		{
 			if(m_Recording)
 				StopRecord(pMsg->m_Time);

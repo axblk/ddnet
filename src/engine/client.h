@@ -270,10 +270,16 @@ public:
 	 */
 	virtual size_t DemoPlayer_RenderQueuePending() const = 0;
 	/**
-	 * Video name of the pending export at @p Index, which must be less than
-	 * `DemoPlayer_RenderQueuePending()`.
+	 * Demo of the pending export at @p Index, which must be less than
+	 * `DemoPlayer_RenderQueuePending()`. That is what the queue was filled
+	 * with and what a name in it should say; the video name is derived from
+	 * it and says the same thing twice.
 	 */
 	virtual const char *DemoPlayer_RenderQueueName(size_t Index) const = 0;
+	/**
+	 * Demo of the export that is running, or an empty string when none is.
+	 */
+	virtual const char *DemoPlayer_ActiveRenderName() const = 0;
 	/**
 	 * Removes the pending export at @p Index, which must be less than
 	 * `DemoPlayer_RenderQueuePending()`. The active export is not affected.

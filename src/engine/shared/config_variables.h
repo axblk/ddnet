@@ -322,8 +322,8 @@ MACRO_CONFIG_INT(ClVideoX264Preset, cl_video_preset, 5, 0, 9, CFGFLAG_CLIENT | C
 MACRO_CONFIG_INT(ClVideoShowProgress, cl_video_show_progress, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Show a small progress box while a demo video is rendered in the background")
 MACRO_CONFIG_STR(ClVideoCodec, cl_video_codec, 32, "", CFGFLAG_CLIENT | CFGFLAG_SAVE, "Encoder used for rendering videos (empty for the default)")
 MACRO_CONFIG_INT(ClVideoEncodeThreads, cl_video_encode_threads, 0, 0, 64, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Hardware threads the video encoder may use (0 leaves a quarter of them to the game)")
-MACRO_CONFIG_INT(ClVideoWidth, cl_video_width, 0, 0, 8192, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Width of rendered videos in pixels (0 to use the window width)")
-MACRO_CONFIG_INT(ClVideoHeight, cl_video_height, 0, 0, 8192, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Height of rendered videos in pixels (0 to use the window height)")
+MACRO_CONFIG_INT(ClVideoWidth, cl_video_width, 1920, 0, 8192, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Width of rendered videos in pixels (0 to use the window width)")
+MACRO_CONFIG_INT(ClVideoHeight, cl_video_height, 1080, 0, 8192, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Height of rendered videos in pixels (0 to use the window height)")
 
 // debug
 MACRO_CONFIG_INT(DbgDummies, dbg_dummies, 0, 0, SERVER_MAX_CLIENTS, CFGFLAG_DEBUG_SERVER, "Add debug dummies to server (Debug build only)")

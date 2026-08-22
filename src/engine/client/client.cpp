@@ -4835,9 +4835,26 @@ void CClient::Run()
 				{
 					pVideo->EndVideoFrameRender();
 					const std::chrono::nanoseconds ProgressRenderTime = time_get_nanoseconds();
-					const std::chrono::nanoseconds ProgressInterval = m_CommandLineVideoExport ? std::chrono::seconds(1) : std::chrono::milliseconds(100);
+					// A frame that goes to the export does not go to the screen, so this
+					// is what decides how often the game and the menu are drawn while a
+					// demo renders in the background. The export is the job and may run as
+					// fast as it can; the screen only has to stay usable, which is a floor
+					// to hold rather than a rate to reach. Every picture drawn for the
+					// watcher is a picture the export does not encode. A command line
+					// export has nobody watching and only prints a line.
+					constexpr int MinInteractiveRefreshRate = 30;
+					const int InteractiveRefreshRate = std::min(g_Config.m_GfxRefreshRate > 0 ? g_Config.m_GfxRefreshRate : MinInteractiveRefreshRate, MinInteractiveRefreshRate);
+					const std::chrono::nanoseconds ProgressInterval = m_CommandLineVideoExport ? std::chrono::nanoseconds(std::chrono::seconds(1)) : std::chrono::nanoseconds(std::chrono::seconds(1)) / InteractiveRefreshRate;
 					if(ProgressRenderTime - m_LastVideoProgressRender >= ProgressInterval)
 					{
+						// Everything on the screen moves with the frame time, and
+						// during an export that is the time one exported frame took.
+						// The watcher sees a picture far less often than that, so
+						// without this the menu and the game animate in the export's
+						// steps instead of in the ones they are shown in.
+						const float ExportFrameTime = m_RenderFrameTime;
+						if(m_LastVideoProgressRender != std::chrono::nanoseconds::zero())
+							m_RenderFrameTime = std::chrono::duration<float>(ProgressRenderTime - m_LastVideoProgressRender).count();
 						m_LastVideoProgressRender = ProgressRenderTime;
 						bool Cancel = false;
 						if(m_CommandLineVideoExport)
@@ -4860,6 +4877,7 @@ void CClient::Run()
 						}
 						if(!m_CommandLineVideoExport)
 							m_pGraphics->Swap();
+						m_RenderFrameTime = ExportFrameTime;
 						if(Cancel && IVideo::Current() == m_pVideo.get())
 						{
 							str_copy(m_aVideoExportQueueError, "Video rendering cancelled.");
@@ -5377,11 +5395,28 @@ void CClient::Con_StartVideo(IConsole::IResult *pResult, void *pUserData)
 	}
 }
 
+// Queues a demo the way the demo browser does, so that a render can be started
+// from a config or a bind while the game keeps running.
+void CClient::Con_RenderDemo(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = static_cast<CClient *>(pUserData);
+	char aVideoName[IO_MAX_PATH_LENGTH];
+	str_copy(aVideoName, fs_filename(pResult->GetString(0)));
+	if(char *pExtension = (char *)str_endswith(aVideoName, ".demo"))
+		*pExtension = '\0';
+	const char *pError = pSelf->QueueVideoExport(pResult->GetString(0), IStorage::TYPE_ALL, aVideoName, pSelf->DefaultVideoExportSettings(), DEMO_SPEED_INDEX_DEFAULT, true, false);
+	if(pError != nullptr)
+		log_error("videorecorder", "Could not queue '%s': %s", pResult->GetString(0), pError);
+}
+
 CVideoExportSettings CClient::DefaultVideoExportSettings()
 {
 	CVideoExportSettings Settings;
-	Settings.m_Width = Graphics()->ScreenWidth() & ~1;
-	Settings.m_Height = Graphics()->ScreenHeight() & ~1;
+	// A command from the command line runs before the window exists, so the
+	// configured size stands in for the one nobody can be asked for yet.
+	const bool HasScreen = Graphics() != nullptr && Graphics()->ScreenWidth() > 0 && Graphics()->ScreenHeight() > 0;
+	Settings.m_Width = (HasScreen ? Graphics()->ScreenWidth() : g_Config.m_GfxScreenWidth) & ~1;
+	Settings.m_Height = (HasScreen ? Graphics()->ScreenHeight() : g_Config.m_GfxScreenHeight) & ~1;
 	Settings.m_FPS = g_Config.m_ClVideoRecorderFPS;
 	Settings.m_Audio = g_Config.m_ClVideoSndEnable != 0;
 	Settings.m_Crf = g_Config.m_ClVideoX264Crf;
@@ -6414,6 +6449,7 @@ void CClient::RegisterCommands()
 #if defined(CONF_VIDEORECORDER)
 	m_pConsole->Register("start_video", "?r[file]", CFGFLAG_CLIENT, Con_StartVideo, this, "Start recording a video");
 	m_pConsole->Register("stop_video", "", CFGFLAG_CLIENT, Con_StopVideo, this, "Stop recording a video");
+	m_pConsole->Register("render_demo", "r[file]", CFGFLAG_CLIENT, Con_RenderDemo, this, "Queue a demo to be rendered into a video");
 #endif
 
 	m_pConsole->Register("rcon", "r[rcon-command]", CFGFLAG_CLIENT, Con_Rcon, this, "Send specified command to rcon");

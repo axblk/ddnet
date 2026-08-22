@@ -614,6 +614,7 @@ public:
 	CVideoExportSettings DefaultVideoExportSettings();
 	const char *StartVideo(CSessionId SessionId, const char *pFilename, bool WithTimestamp, const CVideoExportSettings &Settings, bool ExactFilename);
 	static void Con_StartVideo(IConsole::IResult *pResult, void *pUserData);
+	static void Con_RenderDemo(IConsole::IResult *pResult, void *pUserData);
 	static void Con_StopVideo(IConsole::IResult *pResult, void *pUserData);
 	const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue) override;
 	void DemoPlayer_StartRenderQueue() override { m_VideoExportQueueRunning = true; }
@@ -628,7 +629,11 @@ public:
 	const char *DemoPlayer_RenderQueueName(size_t Index) const override
 	{
 		dbg_assert(Index < m_VideoExportQueue.size(), "render queue index out of bounds");
-		return m_VideoExportQueue[Index].m_aVideoName;
+		return m_VideoExportQueue[Index].m_aDemoPath;
+	}
+	const char *DemoPlayer_ActiveRenderName() const override
+	{
+		return m_ActiveVideoExport.has_value() ? m_ActiveVideoExport->m_aDemoPath : "";
 	}
 	void DemoPlayer_RenderQueueErase(size_t Index) override
 	{

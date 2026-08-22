@@ -683,6 +683,11 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 		}
 	}
 
+#if defined(CONF_VIDEORECORDER)
+	// Whatever is left between the page tabs and the icons on the right.
+	RenderVideoProgressChip(Box);
+#endif
+
 	if(NewPage != -1)
 	{
 		if(ClientState == IClient::STATE_OFFLINE)
@@ -691,6 +696,63 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 			m_GamePage = NewPage;
 	}
 }
+
+#if defined(CONF_VIDEORECORDER)
+void CMenus::RenderVideoProgressChip(CUIRect Gap)
+{
+	if(!g_Config.m_ClVideoShowProgress || IVideo::Current() == nullptr)
+		return;
+	int FirstTick, CurrentTick, LastTick;
+	if(!Client()->DemoPlayer_RenderInfo(&FirstTick, &CurrentTick, &LastTick))
+		return;
+	// A tab bar that is already full has nowhere to put this, and the floating
+	// box takes over again in that case.
+	constexpr float ChipWidth = 230.0f;
+	if(Gap.w < ChipWidth + 20.0f)
+		return;
+	m_VideoProgressInMenubar = true;
+
+	CUIRect Chip;
+	Gap.VMargin(10.0f, &Gap);
+	Gap.VSplitRight(ChipWidth, nullptr, &Chip);
+	Chip.HMargin(3.0f, &Chip);
+	Chip.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 3.0f);
+	Chip.VMargin(5.0f, &Chip);
+
+	const int TotalTicks = LastTick - FirstTick;
+	const float Progress = TotalTicks > 0 ? std::clamp(CurrentTick - FirstTick, 0, TotalTicks) / static_cast<float>(TotalTicks) : 0.0f;
+	CUIRect Label, Bar;
+	Chip.VSplitRight(44.0f, &Label, &Bar);
+	Bar.HMargin(4.0f, &Bar);
+	Bar.VSplitLeft(4.0f, nullptr, &Bar);
+	char aLabel[128];
+	const size_t QueueSize = Client()->DemoPlayer_RenderQueueSize();
+	// The bar alone says how far it got but not whether it is getting anywhere,
+	// so the numbers that answer that come with it.
+	if(QueueSize > 1)
+		str_format(aLabel, sizeof(aLabel), "%s (%d) %.0f%%", Localize("Rendering"), static_cast<int>(QueueSize), Progress * 100.0f);
+	else
+		str_format(aLabel, sizeof(aLabel), "%s %.0f%%", Localize("Rendering"), Progress * 100.0f);
+	const CVideoExportStatus ChipStatus = IVideo::Current()->Status();
+	if(ChipStatus.m_FramesPerSecond >= 1.0f)
+	{
+		char aRate[32];
+		str_format(aRate, sizeof(aRate), " · %.0f %s", ChipStatus.m_FramesPerSecond, Localize("FPS"));
+		str_append(aLabel, aRate);
+	}
+	const float ChipElapsed = m_DemoRenderStartTime == std::chrono::nanoseconds::zero() ? 0.0f : std::chrono::duration<float>(time_get_nanoseconds() - m_DemoRenderStartTime).count();
+	if(ChipElapsed >= 1.0f && Progress > 0.01f)
+	{
+		char aEta[32];
+		str_time_float(ChipElapsed * (1.0f - Progress) / Progress, ETimeFormat::HOURS, aEta, sizeof(aEta));
+		char aRemaining[48];
+		str_format(aRemaining, sizeof(aRemaining), " · %s", aEta);
+		str_append(aLabel, aRemaining);
+	}
+	Ui()->DoLabel(&Label, aLabel, 8.0f, TEXTALIGN_ML);
+	Ui()->RenderProgressBar(Bar, Progress);
+}
+#endif
 
 void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress)
 {
@@ -707,6 +769,14 @@ void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std
 	int RefreshRate = g_Config.m_GfxVsync || !Progress.has_value() ? 60 : (in_range(g_Config.m_GfxRefreshRate, 1, 300) ? g_Config.m_GfxRefreshRate : 300);
 	if(RefreshRate > 0 && Now - m_LoadingState.m_LastRender < std::chrono::nanoseconds(1s) / RefreshRate)
 		return;
+
+#if defined(CONF_VIDEORECORDER)
+	// An export running in the background loads its next demo without anybody
+	// waiting for it, so its loading screen would flash over whatever the user
+	// is actually doing. The export overlay already says that something runs.
+	if(Client()->VideoSessionId().IsValid() && Client()->VideoSessionId() != Client()->FocusedSessionId())
+		return;
+#endif
 
 	// need up date this here to get correct
 	ms_GuiColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_UiColor, true));
@@ -789,14 +859,16 @@ bool CMenus::RenderVideoProgress(bool Overlay)
 	{
 		// The export runs in a background session while the game stays usable,
 		// so this is a passive info box; cancelling happens in the queue popup.
-		if(!g_Config.m_ClVideoShowProgress)
+		const bool MenubarShowsIt = m_VideoProgressInMenubar;
+		m_VideoProgressInMenubar = false;
+		if(!g_Config.m_ClVideoShowProgress || MenubarShowsIt)
 			return false;
 		Graphics()->TextureClear();
 		Ui()->MapScreen();
 		CUIRect Box, Row;
 		Ui()->Screen()->Margin(10.0f, &Box);
-		Box.HSplitTop(52.0f, &Box, nullptr);
-		Box.VSplitRight(210.0f, nullptr, &Box);
+		Box.HSplitTop(70.0f, &Box, nullptr);
+		Box.VSplitRight(260.0f, nullptr, &Box);
 		Box.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.6f), IGraphics::CORNER_ALL, 5.0f);
 		Box.Margin(6.0f, &Box);
 		Box.HSplitTop(14.0f, &Row, &Box);
@@ -811,13 +883,21 @@ bool CMenus::RenderVideoProgress(bool Overlay)
 		Ui()->RenderProgressBar(Row, Progress);
 		Box.HSplitTop(2.0f, nullptr, &Box);
 		Box.HSplitTop(12.0f, &Row, &Box);
+		str_format(aStatus, sizeof(aStatus), "%.1f%% — %llu / %llu %s", Progress * 100.0f, static_cast<unsigned long long>(Status.m_EncodedFrames), static_cast<unsigned long long>(Status.m_SubmittedFrames), Localize("frames"));
+		Ui()->DoLabel(&Row, aStatus, 10.0f, TEXTALIGN_ML);
+		Box.HSplitTop(2.0f, nullptr, &Box);
+		Box.HSplitTop(12.0f, &Row, &Box);
+		char aOverlayElapsed[32];
+		str_time_float(Elapsed, ETimeFormat::HOURS, aOverlayElapsed, sizeof(aOverlayElapsed));
 		char aOverlayEta[32] = "";
 		if(Elapsed >= 1.0f && Progress > 0.01f)
 			str_time_float(Elapsed * (1.0f - Progress) / Progress, ETimeFormat::HOURS, aOverlayEta, sizeof(aOverlayEta));
-		if(aOverlayEta[0] != '\0')
-			str_format(aStatus, sizeof(aStatus), "%.1f%% — %s %s", Progress * 100.0f, Localize("Remaining"), aOverlayEta);
+		if(Status.m_FramesPerSecond >= 1.0f && aOverlayEta[0] != '\0')
+			str_format(aStatus, sizeof(aStatus), "%.0f %s — %s / %s", Status.m_FramesPerSecond, Localize("FPS"), aOverlayElapsed, aOverlayEta);
+		else if(aOverlayEta[0] != '\0')
+			str_format(aStatus, sizeof(aStatus), "%s / %s", aOverlayElapsed, aOverlayEta);
 		else
-			str_format(aStatus, sizeof(aStatus), "%.1f%%", Progress * 100.0f);
+			str_format(aStatus, sizeof(aStatus), "%s", aOverlayElapsed);
 		Ui()->DoLabel(&Row, aStatus, 10.0f, TEXTALIGN_ML);
 		return false;
 	}
@@ -844,6 +924,12 @@ bool CMenus::RenderVideoProgress(bool Overlay)
 	Box.HSplitTop(15.0f, nullptr, &Box);
 	Box.HSplitTop(22.0f, &Row, &Box);
 	str_format(aStatus, sizeof(aStatus), "%.1f%% — %llu / %llu %s", Progress * 100.0f, static_cast<unsigned long long>(Status.m_EncodedFrames), static_cast<unsigned long long>(Status.m_SubmittedFrames), Localize("frames encoded"));
+	if(Status.m_FramesPerSecond >= 1.0f)
+	{
+		char aRate[32];
+		str_format(aRate, sizeof(aRate), " — %.0f %s", Status.m_FramesPerSecond, Localize("FPS"));
+		str_append(aStatus, aRate);
+	}
 	Ui()->DoLabel(&Row, aStatus, 16.0f, TEXTALIGN_MC);
 
 	Box.HSplitTop(8.0f, nullptr, &Box);
@@ -1707,8 +1793,17 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 #if defined(CONF_VIDEORECORDER)
 	else if(m_Popup == POPUP_RENDER_DEMO)
 	{
+		// Finding out which encoders work here opens every one of them once,
+		// and opening a hardware encoder starts its driver. That takes seconds,
+		// so it runs while the dialog is being read rather than in the frame
+		// somebody unfolds the encoder settings in.
+		ProbeVideoEncoders(Engine());
+
 		CUIRect Row, Queue, Render, Abort;
-		Box.VMargin(60.0f, &Box);
+		// The encoder settings go beside the picture settings rather than under
+		// them: the dialog is as tall as it can get, and stacking both columns
+		// pushed the last rows out of it.
+		Box.VMargin(m_DemoRenderAdvanced ? 20.0f : 60.0f, &Box);
 		Box.HMargin(20.0f, &Box);
 		Box.HSplitBottom(24.0f, &Box, &Row);
 		Box.HSplitBottom(10.0f, &Box, nullptr);
@@ -1720,10 +1815,19 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		// The settings are laid out from top to bottom so that the code order
 		// matches the visible order; the button bar above stays at the bottom.
 		CUIRect Settings = Box;
+		CUIRect Advanced;
+		if(m_DemoRenderAdvanced)
+			Settings.VSplitMid(&Settings, &Advanced, 30.0f);
 		const auto NextRow = [&Settings](float Height) {
 			CUIRect Result;
 			Settings.HSplitTop(Height, &Result, &Settings);
 			Settings.HSplitTop(5.0f, nullptr, &Settings);
+			return Result;
+		};
+		const auto NextAdvancedRow = [&Advanced](float Height) {
+			CUIRect Result;
+			Advanced.HSplitTop(Height, &Result, &Advanced);
+			Advanced.HSplitTop(5.0f, nullptr, &Advanced);
 			return Result;
 		};
 		const auto SplitOption = [](const CUIRect &Source, CUIRect *pLabel, CUIRect *pValue) {
@@ -1873,16 +1977,19 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			m_DemoRenderAdvanced = !m_DemoRenderAdvanced;
 		if(m_DemoRenderAdvanced)
 		{
-			Row = NextRow(24.0f);
+			CUIRect AdvancedHeading = NextAdvancedRow(20.0f);
+			Ui()->DoLabel(&AdvancedHeading, Localize("Encoder settings"), 14.0f, TEXTALIGN_ML);
+
+			Row = NextAdvancedRow(24.0f);
 			Ui()->DoScrollbarOption(&g_Config.m_ClVideoX264Crf, &g_Config.m_ClVideoX264Crf, &Row, Localize("Quality (lower is better)"), 0, 51);
 
-			Row = NextRow(24.0f);
+			Row = NextAdvancedRow(24.0f);
 			static const char *s_apEncoderPresets[] = {Localizable("ultrafast"), Localizable("superfast"), Localizable("veryfast"), Localizable("faster"), Localizable("fast"), Localizable("medium"), Localizable("slow"), Localizable("slower"), Localizable("veryslow"), Localizable("placebo")};
 			char aEncoderPreset[64];
 			str_format(aEncoderPreset, sizeof(aEncoderPreset), " (%s)", Localize(s_apEncoderPresets[std::clamp(g_Config.m_ClVideoX264Preset, 0, (int)std::size(s_apEncoderPresets) - 1)]));
 			Ui()->DoScrollbarOption(&g_Config.m_ClVideoX264Preset, &g_Config.m_ClVideoX264Preset, &Row, Localize("Encoder effort (slower is smaller)"), 0, (int)std::size(s_apEncoderPresets) - 1, &CUi::ms_LinearScrollbarScale, 0u, aEncoderPreset);
 
-			Row = NextRow(24.0f);
+			Row = NextAdvancedRow(24.0f);
 			char aEncodeThreads[64] = "";
 			if(g_Config.m_ClVideoEncodeThreads == 0)
 				str_format(aEncodeThreads, sizeof(aEncodeThreads), " (%s)", Localize("automatic"));
@@ -1892,33 +1999,43 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			// over from a build with more encoders is replaced here, because it
 			// would otherwise fail the export with "not available" while this
 			// list shows a different encoder.
-			const std::vector<CVideoEncoder> &vEncoders = VideoEncoders();
-			std::vector<const char *> vpEncoderNames;
-			vpEncoderNames.reserve(vEncoders.size());
-			int CurrentEncoder = -1;
-			for(const CVideoEncoder &Encoder : vEncoders)
+			if(!VideoEncodersProbed())
 			{
-				if(str_comp(Encoder.m_aName, g_Config.m_ClVideoCodec) == 0)
-					CurrentEncoder = (int)vpEncoderNames.size();
-				vpEncoderNames.push_back(Encoder.m_aDisplayName);
+				CUIRect ProbeRow = NextAdvancedRow(24.0f);
+				Ui()->DoLabel(&ProbeRow, Localize("Looking for encoders…"), 12.8f, TEXTALIGN_ML);
 			}
-			if(CurrentEncoder < 0)
+			else
 			{
-				CurrentEncoder = 0;
-				str_copy(g_Config.m_ClVideoCodec, vEncoders[0].m_aName);
-			}
-			// A list of one is not a choice, and the bundled build used to be
-			// exactly that.
-			if(vEncoders.size() > 1)
-			{
-				SplitOption(NextRow(24.0f), &Label, &Value);
-				Ui()->DoLabel(&Label, Localize("Encoder:"), 12.8f, TEXTALIGN_ML);
-				static CUi::SDropDownState s_EncoderDropDownState;
-				static CScrollRegion s_EncoderDropDownScrollRegion;
-				s_EncoderDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_EncoderDropDownScrollRegion;
-				const int NewEncoder = Ui()->DoDropDown(&Value, CurrentEncoder, vpEncoderNames.data(), (int)vpEncoderNames.size(), s_EncoderDropDownState);
-				if(NewEncoder != CurrentEncoder)
-					str_copy(g_Config.m_ClVideoCodec, vEncoders[NewEncoder].m_aName);
+				const std::vector<CVideoEncoder> &vEncoders = VideoEncoders();
+				std::vector<const char *> vpEncoderNames;
+				vpEncoderNames.reserve(vEncoders.size());
+				int CurrentEncoder = -1;
+				for(const CVideoEncoder &Encoder : vEncoders)
+				{
+					if(str_comp(Encoder.m_aName, g_Config.m_ClVideoCodec) == 0)
+						CurrentEncoder = (int)vpEncoderNames.size();
+					vpEncoderNames.push_back(Encoder.m_aDisplayName);
+				}
+				if(CurrentEncoder < 0)
+				{
+					CurrentEncoder = 0;
+					str_copy(g_Config.m_ClVideoCodec, vEncoders[0].m_aName);
+				}
+				// A list of one is not a choice, and the bundled build used to be
+				// exactly that.
+				if(vEncoders.size() > 1)
+				{
+					CUIRect EncoderRow = NextAdvancedRow(24.0f);
+					EncoderRow.VSplitLeft(110.0f, &Label, &Value);
+					Value.VSplitLeft(10.0f, nullptr, &Value);
+					Ui()->DoLabel(&Label, Localize("Encoder:"), 12.8f, TEXTALIGN_ML);
+					static CUi::SDropDownState s_EncoderDropDownState;
+					static CScrollRegion s_EncoderDropDownScrollRegion;
+					s_EncoderDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_EncoderDropDownScrollRegion;
+					const int NewEncoder = Ui()->DoDropDown(&Value, CurrentEncoder, vpEncoderNames.data(), (int)vpEncoderNames.size(), s_EncoderDropDownState);
+					if(NewEncoder != CurrentEncoder)
+						str_copy(g_Config.m_ClVideoCodec, vEncoders[NewEncoder].m_aName);
+				}
 			}
 		}
 
@@ -1971,6 +2088,14 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 	}
 	else if(m_Popup == POPUP_RENDER_QUEUE)
 	{
+		// The queue holds demo paths, and what belongs on screen is the name of
+		// the demo the way it reads in the browser.
+		const auto &&DemoName = [](const char *pPath, char (&aName)[128]) -> const char * {
+			str_copy(aName, fs_filename(pPath));
+			if(char *pExtension = const_cast<char *>(str_endswith(aName, ".demo")))
+				*pExtension = 0;
+			return aName;
+		};
 		CUIRect ActiveRow, ButtonBar, CloseButton, RemoveButton, StartButton;
 		Box.VMargin(60.0f, &Box);
 		Box.HMargin(20.0f, &Box);
@@ -1988,7 +2113,10 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			Box.HSplitTop(6.0f, nullptr, &Box);
 			ActiveRow.VSplitRight(110.0f, &ActiveLabel, &CancelActiveButton);
 			ActiveLabel.VSplitRight(10.0f, &ActiveLabel, nullptr);
-			Ui()->DoLabel(&ActiveLabel, Localize("Currently rendering"), 12.8f, TEXTALIGN_ML);
+			char aActiveName[128];
+			char aActive[192];
+			str_format(aActive, sizeof(aActive), "%s: %s", Localize("Currently rendering"), DemoName(Client()->DemoPlayer_ActiveRenderName(), aActiveName));
+			Ui()->DoLabel(&ActiveLabel, aActive, 12.8f, TEXTALIGN_ML, {.m_MaxWidth = ActiveLabel.w, .m_EllipsisAtEnd = true});
 			static CButtonContainer s_ButtonCancelActive;
 			if(DoButton_Menu(&s_ButtonCancelActive, Localize("Cancel current"), 0, &CancelActiveButton))
 				Client()->DemoPlayer_CancelActiveRender();
@@ -2006,16 +2134,17 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		s_ListBox.DoStart(20.0f, PendingCount, 1, 3, s_SelectedIndex, &Box);
 		for(int i = 0; i < PendingCount; ++i)
 		{
-			const char *pVideoName = Client()->DemoPlayer_RenderQueueName(static_cast<size_t>(i));
-			const CListboxItem Item = s_ListBox.DoNextItem(pVideoName, i == s_SelectedIndex);
+			const char *pDemoPath = Client()->DemoPlayer_RenderQueueName(static_cast<size_t>(i));
+			const CListboxItem Item = s_ListBox.DoNextItem(pDemoPath, i == s_SelectedIndex);
 			if(!Item.m_Visible)
 				continue;
 			CUIRect Label, MoveUpButton, MoveDownButton;
 			Item.m_Rect.VMargin(5.0f, &Label);
 			Label.VSplitRight(40.0f, &Label, &MoveDownButton);
 			MoveDownButton.VSplitLeft(20.0f, &MoveUpButton, &MoveDownButton);
-			char aPosition[64];
-			str_format(aPosition, sizeof(aPosition), "%d. %s", i + 1, pVideoName);
+			char aName[128];
+			char aPosition[160];
+			str_format(aPosition, sizeof(aPosition), "%d. %s", i + 1, DemoName(pDemoPath, aName));
 			Ui()->DoLabel(&Label, aPosition, 12.8f, TEXTALIGN_ML, {.m_MaxWidth = Label.w, .m_EllipsisAtEnd = true});
 			if(i > 0 && Ui()->DoButton_FontIcon(&m_RenderQueueRowIds[i].m_Up, FontIcon::CHEVRON_UP, 0, &MoveUpButton, BUTTONFLAG_LEFT))
 			{

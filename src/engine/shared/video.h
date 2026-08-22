@@ -32,6 +32,32 @@ public:
  */
 const std::vector<CVideoEncoder> &VideoEncoders();
 
+/**
+ * Whether @link VideoEncoders @endlink can be called without waiting.
+ *
+ * Finding out which encoders work here opens each of them once, and opening a
+ * hardware encoder starts its driver, which takes seconds. Anything that asks
+ * while a user is looking at it should wait for this instead of blocking the
+ * frame it is drawn in.
+ *
+ * @return `true` once the list is built.
+ */
+bool VideoEncodersProbed();
+
+/**
+ * Builds the encoder list on a worker thread if that has not happened yet.
+ *
+ * @param pEngine Engine whose job pool runs the probe.
+ */
+void ProbeVideoEncoders(class IEngine *pEngine);
+
+/**
+ * Logs how the video export arguments are used.
+ *
+ * @param pUsageName Name of the program as the usage message should show it.
+ */
+void PrintVideoExportUsage(const char *pUsageName);
+
 class CVideoExportSettings
 {
 public:
@@ -61,6 +87,9 @@ class CVideoExportStatus
 public:
 	uint64_t m_SubmittedFrames = 0;
 	uint64_t m_EncodedFrames = 0;
+	// Frames encoded per second over the last stretch, so that the number says
+	// what the export is doing now rather than what it averaged since it began.
+	float m_FramesPerSecond = 0.0f;
 	bool m_HasError = false;
 	char m_aError[256] = {};
 };

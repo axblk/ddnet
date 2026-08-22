@@ -576,7 +576,7 @@ public:
 	// A valid YuvTarget converts the finished frame into it first and reads
 	// that back instead, which is the same picture in a quarter less than half
 	// the bytes. See ConvertTextureToPlanarYuv for what the target has to be.
-	[[nodiscard]] virtual std::unique_ptr<ITextureReadback> EndOffscreenFrame(CImageInfo &&Recycled = CImageInfo()) = 0;
+	[[nodiscard]] virtual std::unique_ptr<ITextureReadback> EndOffscreenFrame(CImageInfo &&Recycled = CImageInfo(), CTextureHandle YuvTarget = CTextureHandle(), EPlanarYuvFormat YuvFormat = EPlanarYuvFormat::NV12) = 0;
 	// Presents the current frame and returns its queued top-left RGBA readback.
 	[[nodiscard]] virtual std::unique_ptr<ITextureReadback> PresentAndReadbackAsync(CImageInfo &&Recycled = CImageInfo()) = 0;
 

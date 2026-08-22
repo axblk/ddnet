@@ -354,6 +354,9 @@ protected:
 	bool m_DemoRenderQueueOnly = false;
 	CButtonContainer m_DemoRenderCancelButton;
 	std::chrono::nanoseconds m_DemoRenderStartTime{0};
+	// Set while the menu bar has room to show the export progress itself, which
+	// keeps the floating box off the menu it would cover.
+	bool m_VideoProgressInMenubar = false;
 	uint64_t m_DemoRenderLastSubmittedFrames = 0;
 	class CRenderQueueRowIds
 	{
@@ -766,6 +769,7 @@ public:
 	void RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter);
 #if defined(CONF_VIDEORECORDER)
 	bool RenderVideoProgress(bool Overlay);
+	void RenderVideoProgressChip(CUIRect Gap);
 #endif
 	void FinishLoading();
 

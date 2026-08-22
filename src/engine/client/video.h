@@ -16,6 +16,7 @@ extern "C" {
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -72,9 +73,9 @@ public:
 	static void Init();
 
 private:
-	void RunVideoThread(size_t ParentThreadIndex, size_t ThreadIndex) REQUIRES(!m_WriteLock);
-	bool FillVideoFrame(size_t ThreadIndex) REQUIRES(!m_WriteLock);
-	void SubmitVideoFrame(uint64_t FrameIndex, CImageInfo Image);
+	void RunVideoThread(size_t ThreadIndex) REQUIRES(!m_WriteLock);
+	bool FillVideoFrame(size_t ThreadIndex, size_t FrameIndex) REQUIRES(!m_WriteLock);
+	void SubmitVideoFrame(CImageInfo Image);
 	bool FinishReadbackSlot(size_t SlotIndex);
 	bool DrainReadbackSlots();
 	bool CreateOffscreenTargets();
@@ -89,7 +90,7 @@ private:
 	AVFrame *AllocPicture(enum AVPixelFormat PixFmt, int Width, int Height);
 	AVFrame *AllocAudioFrame(enum AVSampleFormat SampleFmt, uint64_t ChannelLayout, int SampleRate, int NbSamples);
 
-	void WriteFrame(COutputStream *pStream, size_t ThreadIndex) REQUIRES(m_WriteLock);
+	void WriteFrame(COutputStream *pStream, size_t FrameIndex, int64_t Pts) REQUIRES(!m_WriteLock);
 	void FinishFrames(COutputStream *pStream);
 	void CloseStream(COutputStream *pStream);
 
@@ -119,12 +120,23 @@ private:
 	bool m_Recording;
 	bool m_Cancelled = false;
 	bool m_Offscreen = false;
+	// The backend hands the frames over already converted, so no thread of ours
+	// has to touch a pixel between the graphics card and the encoder.
+	bool m_YuvReadback = false;
+	IGraphics::EPlanarYuvFormat m_YuvFormat = IGraphics::EPlanarYuvFormat::NV12;
+	std::chrono::nanoseconds m_ExportStartTime{0};
 	bool m_OffscreenFrameActive = false;
 	std::atomic<bool> m_HasError = false;
 	std::atomic<uint64_t> m_SubmittedFrames = 0;
 	std::atomic<uint64_t> m_EncodedFrames = 0;
 	mutable CLock m_StatusMutex;
 	char m_aError[256] GUARDED_BY(m_StatusMutex) = {};
+	// Sampled where the status is asked for, which both the export log and the
+	// progress display do often enough to keep the number current.
+	static constexpr std::chrono::milliseconds RATE_SAMPLE_INTERVAL{500};
+	mutable std::chrono::nanoseconds m_RateSampleTime GUARDED_BY(m_StatusMutex){0};
+	mutable uint64_t m_RateSampleFrames GUARDED_BY(m_StatusMutex) = 0;
+	mutable float m_FramesPerSecond GUARDED_BY(m_StatusMutex) = 0.0f;
 	// Roughly half a second of frames at 60 FPS, after which a dropped frame is
 	// no longer a hiccup but a broken readback path.
 	static constexpr int MAX_CONSECUTIVE_DROPPED_FRAMES = 30;
@@ -135,18 +147,58 @@ private:
 	{
 	public:
 		IGraphics::CTextureHandle m_Target;
+		// Only set while the graphics backend converts frames itself: a quarter
+		// as wide and half again as tall, holding four YUV bytes per pixel.
+		IGraphics::CTextureHandle m_YuvTarget;
 		std::unique_ptr<IGraphics::ITextureReadback> m_pReadback;
 		uint64_t m_FrameIndex = 0;
 	};
 	std::array<CReadbackSlot, READBACK_SLOT_COUNT> m_aReadbackSlots;
 	size_t m_CurrentReadbackSlot = 0;
+	// A read frame is eight megabytes at 1080p. Asking the system for that much
+	// sixty times a second costs more than filling it does, so the frames come
+	// back from the encoder threads and are handed to the next read instead.
+	std::mutex m_RecycledImageMutex;
+	std::vector<CImageInfo> m_vRecycledImages;
+	CImageInfo TakeRecycledImage();
+	void RecycleImage(CImageInfo &&Image);
 
+	// Only the file is shared between the streams, and only while a finished
+	// packet goes into it. An encoder takes one frame at a time, but there is
+	// one per stream, so the sound never waits behind the picture.
 	CLock m_WriteLock;
+	std::mutex m_VideoEncodeMutex;
+	std::mutex m_AudioEncodeMutex;
 	// Upper bound for the configurable encoder thread budget
 	static constexpr int MAX_ENCODE_THREADS = 64;
 	int m_EncodeThreads = 1;
 	size_t m_VideoThreads = 2;
-	size_t m_CurVideoThreadIndex = 0;
+	// A frame goes to whichever encoder thread is free, not to the next one in
+	// turn: the frames cost different amounts of work, and handing them out in
+	// a fixed rotation makes every one of them wait for the slowest thread of
+	// the round. The order the encoder needs comes back further down, where the
+	// finished frames are written.
+	std::mutex m_VideoDispatchMutex;
+	std::condition_variable m_VideoDispatchCond;
+	std::vector<size_t> m_vFreeVideoThreads;
+	uint64_t m_VideoDispatchSequence = 0;
+	// One thread writes, so that no encoder thread has to be woken for its
+	// turn: waking the right one of eight per frame costs more than the write
+	// itself, and the frames arrive nearly in order anyway. A converted frame
+	// is left here and its thread goes straight back to work.
+	std::mutex m_VideoWriteMutex;
+	std::condition_variable m_VideoWriteCond;
+	std::map<uint64_t, size_t> m_PendingVideoWrites;
+	uint64_t m_NextVideoFrameToWrite = 0;
+	bool m_VideoWriterFinished = false;
+	std::thread m_VideoWriterThread;
+	// Frames the converting threads fill and the writer hands back. There are
+	// more of them than there are threads, so that a thread that is done never
+	// waits for the writer to catch up.
+	std::mutex m_VideoFrameMutex;
+	std::condition_variable m_VideoFrameCond;
+	std::vector<size_t> m_vFreeVideoFrames;
+	void RunVideoWriterThread() REQUIRES(!m_WriteLock);
 	size_t m_AudioThreads = 2;
 	size_t m_CurAudioThreadIndex = 0;
 
@@ -160,9 +212,6 @@ private:
 		bool m_Started = false;
 		bool m_Finished = false;
 		bool m_HasVideoFrame = false;
-
-		std::mutex m_VideoFillMutex;
-		std::condition_variable m_VideoFillCond;
 		uint64_t m_VideoFrameToFill = 0;
 	};
 

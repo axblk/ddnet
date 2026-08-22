@@ -574,7 +574,7 @@ bool CGraphics_Threaded::BeginOffscreenFrame(CTextureHandle Texture)
 	return true;
 }
 
-std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFrame(CImageInfo &&Recycled)
+std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFrame(CImageInfo &&Recycled, CTextureHandle YuvTarget, EPlanarYuvFormat YuvFormat)
 {
 	if(!m_OffscreenFrameTarget.IsValid())
 		return nullptr;
@@ -585,7 +585,23 @@ std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFra
 	m_RenderWidth = 0;
 	m_RenderHeight = 0;
 
-	auto pReadback = FrameEnded ? ReadTextureAsync(Target, std::move(Recycled)) : nullptr;
+	// The conversion is a second pass over the finished frame, so it runs
+	// after the frame's own pass closed and before anything is read back.
+	CTextureHandle ReadbackTarget = Target;
+	if(FrameEnded && YuvTarget.IsValid() && m_Capabilities.m_PlanarYuvConversion &&
+		m_TextureHandles.IsAllocated(YuvTarget) && static_cast<size_t>(YuvTarget.Id()) < m_vTextureInfos.size())
+	{
+		const STextureInfo &PackedInfo = m_vTextureInfos[YuvTarget.Id()];
+		CRenderPassDesc Pass;
+		Pass.m_ColorTarget = YuvTarget;
+		m_RenderWidth = static_cast<int>(PackedInfo.m_Desc.m_Width);
+		m_RenderHeight = static_cast<int>(PackedInfo.m_Desc.m_Height);
+		if(BeginRenderPass(Pass) && ConvertTextureToPlanarYuv(Target, YuvFormat) && EndRenderPass())
+			ReadbackTarget = YuvTarget;
+		m_RenderWidth = 0;
+		m_RenderHeight = 0;
+	}
+	auto pReadback = FrameEnded ? ReadTextureAsync(ReadbackTarget, std::move(Recycled)) : nullptr;
 	if(!FrameEnded)
 		DropCurrentFrame();
 	if(pReadback != nullptr)
@@ -596,11 +612,15 @@ std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFra
 	// The offscreen pass is closed and the frame it belonged to is gone, so the
 	// screen needs a pass of its own again. Whoever draws next expects the one
 	// that a presented frame leaves behind, and without it everything drawn
-	// between two export frames would be dropped.
+	// between two export frames would be dropped. A backend without a surface
+	// has no screen to start one on.
 	m_RenderPassActive = false;
 	m_RenderPassTarget.Invalidate();
-	CRenderPassDesc PresentationPass;
-	BeginRenderPass(PresentationPass);
+	if(m_BackendMode != EGraphicsBackendMode::OFFSCREEN)
+	{
+		CRenderPassDesc PresentationPass;
+		BeginRenderPass(PresentationPass);
+	}
 	return pReadback;
 }
 

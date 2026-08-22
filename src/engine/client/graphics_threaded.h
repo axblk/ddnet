@@ -1498,7 +1498,7 @@ public:
 	IGraphics::CTextureHandle CreateTexture(const CTextureDesc &Desc, const void *pInitialData = nullptr) override;
 	std::unique_ptr<ITextureReadback> ReadTextureAsync(CTextureHandle Texture, CImageInfo &&Recycled = CImageInfo()) override;
 	bool BeginOffscreenFrame(CTextureHandle Texture) override;
-	std::unique_ptr<ITextureReadback> EndOffscreenFrame(CImageInfo &&Recycled = CImageInfo()) override;
+	std::unique_ptr<ITextureReadback> EndOffscreenFrame(CImageInfo &&Recycled = CImageInfo(), CTextureHandle YuvTarget = CTextureHandle(), EPlanarYuvFormat YuvFormat = EPlanarYuvFormat::NV12) override;
 	std::unique_ptr<ITextureReadback> PresentAndReadbackAsync(CImageInfo &&Recycled = CImageInfo()) override;
 	bool PlanarYuvConversionSupported() const override { return m_Capabilities.m_PlanarYuvConversion; }
 	bool ConvertTextureToPlanarYuv(CTextureHandle Source, EPlanarYuvFormat Format) override;

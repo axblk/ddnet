@@ -200,10 +200,9 @@ private:
 	void UpdatePositions(const CGameState &State, const CGameTickInfo &Time, float LocalTime);
 	CVisibleWorldRect VisibleWorldRectFor(const CGameView &View) const;
 	void UpdateNetworkPlayerInfo();
-	void BindLegacyWorld(CGameSessionContext &Session);
 	void AddChatLine(CSessionId SessionId, int Conn, int ClientId, int Team, const char *pText);
 	int64_t SessionMessageTime(CSessionId SessionId) const;
-	const CLocalPlayerProfile &RefreshLegacyPlayerProfile(CSessionId SessionId, int Conn);
+	const CLocalPlayerProfile &RefreshPlayerProfile(CSessionId SessionId, CStreamId StreamId);
 
 	int m_EditorMovementDelay = 5;
 	void UpdateEditorIngameMoved();
@@ -234,7 +233,11 @@ public:
 	IEngine *Engine() const { return m_pEngine; }
 	class IGraphics *Graphics() const { return m_pGraphics; }
 	class IClient *Client() const { return m_pClient; }
-	int ActiveConnection() const { return Client()->FocusedSessionId() == Client()->DemoSessionId() ? IClient::CONN_MAIN : Client()->ActiveConnection(); }
+	int ActiveConnection() const
+	{
+		const CSessionId SessionId = Client()->FocusedSessionId();
+		return Client()->StreamIndex(SessionId, Client()->ActiveStreamId(SessionId));
+	}
 	CGameSessionContext &SessionContext();
 	const CGameSessionContext &SessionContext() const;
 	CGameSessionContext *FindSessionContext(CSessionId SessionId) { return m_SessionContexts.Find(SessionId); }
@@ -306,69 +309,14 @@ public:
 	 */
 	CCharacterCore m_PredictedChar;
 
-	// snap pointers
-	class CSnapState
-	{
-	public:
-		const CNetObj_Character *m_pLocalCharacter;
-		const CNetObj_Character *m_pLocalPrevCharacter;
-		const CNetObj_PlayerInfo *m_pLocalInfo;
-		const CNetObj_SpectatorInfo *m_pSpectatorInfo;
-		const CNetObj_SpectatorInfo *m_pPrevSpectatorInfo;
-		const CNetObj_SpectatorCount *m_pSpectatorCount;
-		int m_NumFlags;
-		const CNetObj_Flag *m_apFlags[CSnapshot::MAX_ITEMS];
-		const CNetObj_Flag *m_apPrevFlags[CSnapshot::MAX_ITEMS];
-		const CNetObj_GameInfo *m_pGameInfoObj;
-		const CNetObj_GameData *m_pGameDataObj;
-		const CNetObj_GameData *m_pPrevGameDataObj;
-
-		const CNetObj_PlayerInfo *m_apPlayerInfos[MAX_CLIENTS];
-		const CNetObj_PlayerInfo *m_apPrevPlayerInfos[MAX_CLIENTS];
-
-		const CNetObj_PlayerInfo *m_apInfoByScore[MAX_CLIENTS];
-		const CNetObj_PlayerInfo *m_apInfoByName[MAX_CLIENTS];
-		const CNetObj_PlayerInfo *m_apInfoByDDTeamScore[MAX_CLIENTS];
-		const CNetObj_PlayerInfo *m_apInfoByDDTeamName[MAX_CLIENTS];
-
-		int m_LocalClientId;
-		int m_NumPlayers;
-		int m_aTeamSize[2];
-		int m_HighestClientId;
-
-		class CSpectateInfo
-		{
-		public:
-			bool m_Active;
-			int m_SpectatorId;
-			bool m_UsePosition;
-			vec2 m_Position;
-
-			bool m_HasCameraInfo;
-			float m_Zoom;
-			int m_Deadzone;
-			int m_FollowFactor;
-		};
-		CSpectateInfo m_SpecInfo;
-
-		class CCharacterInfo
-		{
-		public:
-			bool m_Active;
-
-			// snapshots
-			CNetObj_Character m_Prev;
-			CNetObj_Character m_Cur;
-
-			CNetObj_DDNetCharacter m_ExtendedData;
-			const CNetObj_DDNetCharacter *m_pPrevExtendedData;
-			bool m_HasExtendedData;
-			bool m_HasExtendedDisplayInfo;
-		};
-		CCharacterInfo m_aCharacters[MAX_CLIENTS];
-	};
-
-	CSnapState m_Snap;
+	/**
+	 * The focused connection's view of its snapshot.
+	 *
+	 * It belongs to the game state that connection has; the client only shows
+	 * one of them at a time and this is the shortcut to that one.
+	 */
+	CGameState::CSnapState &Snap() { return GameState(ActiveConnection()).Snap(); }
+	const CGameState::CSnapState &Snap() const { return GameState(ActiveConnection()).Snap(); }
 
 	std::bitset<RECORDER_MAX> m_ActiveRecordings;
 
@@ -433,7 +381,10 @@ public:
 
 	// hooks
 	void OnConnected(CSessionId SessionId) override;
+	void OnSessionCreated(CSessionId SessionId) override;
+	void OnSessionStreamsChanged(CSessionId SessionId) override;
 	void OnSessionClosed(CSessionId SessionId) override;
+	void OnSessionDestroyed(CSessionId SessionId) override;
 	void OnSessionFocused(CSessionId SessionId) override;
 	void OnRenderPrepare() override;
 	void OnRender() override;
@@ -496,12 +447,13 @@ public:
 	// actions
 	// TODO: move these
 	void SendSwitchTeam(int Team) const;
-	void SendStartInfo7(CSessionId SessionId, int Conn);
-	void SendSkinChange7(CSessionId SessionId, int Conn);
+	void SendStartInfo7(CSessionId SessionId, CStreamId StreamId);
+	void SendSkinChange7(CSessionId SessionId, CStreamId StreamId);
 	// Returns true if the requested skin change got applied by the server
 	bool GotWantedSkin7(int Conn);
 	void SendInfo(CSessionId SessionId, bool Start);
 	void SendDummyInfo(bool Start) override;
+	void SendStreamInfo(CSessionId SessionId, CStreamId StreamId, bool Start) override;
 	void SendKill() const;
 	void SendReadyChange7(); // NOLINT(readability-make-member-function-const)
 
@@ -538,12 +490,19 @@ public:
 	void FormatClientId(int ClientId, char (&aClientId)[16], EClientIdFormat Format) const;
 	void FormatClientId(int ClientId, char (&aClientId)[16], int HighestClientId) const;
 
-	CGameWorld m_GameWorld;
-	CGameWorld m_PredictedWorld;
-	CGameWorld m_PrevPredictedWorld;
+	/**
+	 * The worlds the full prediction runs in.
+	 *
+	 * They belong to the game state of the connection being predicted, which is
+	 * the one Snap() describes. A state the client does not predict keeps the
+	 * same three worlds and fills them from its own snapshot instead.
+	 */
+	CGameWorld &GameWorld() { return GameState(ActiveConnection()).GameWorld(); }
+	CGameWorld &PredictedWorld() { return GameState(ActiveConnection()).PredictedWorld(); }
+	CGameWorld &PrevPredictedWorld() { return GameState(ActiveConnection()).PrevPredictedWorld(); }
 
-	std::vector<SSwitchers> &Switchers() { return m_GameWorld.m_Core.m_vSwitchers; }
-	std::vector<SSwitchers> &PredSwitchers() { return m_PredictedWorld.m_Core.m_vSwitchers; }
+	std::vector<SSwitchers> &Switchers() { return GameWorld().m_Core.m_vSwitchers; }
+	std::vector<SSwitchers> &PredSwitchers() { return PredictedWorld().m_Core.m_vSwitchers; }
 
 	void DummyResetInput() override;
 	void Echo(const char *pString) override;

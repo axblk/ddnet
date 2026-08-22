@@ -100,7 +100,6 @@ protected:
 
 	char m_aNews[3000] = "";
 	int m_Points = -1;
-	int64_t m_ReconnectTime = 0;
 	// A connection is one local network endpoint. A stream is its ordered
 	// snapshots, messages and ticks. Sessions, game states and views are owned
 	// above this engine interface and must pass the connection explicitly.
@@ -172,41 +171,41 @@ public:
 	 * Tick of the second to most recently received snapshot (usually 2
 	 * less than `GameTick`).
 	 */
-	virtual int PrevGameTick(CSessionId SessionId, int Conn) const = 0;
-	int PrevGameTick(CSessionId SessionId, CStreamId StreamId) const { return PrevGameTick(SessionId, StreamIndex(SessionId, StreamId)); }
+	int PrevGameTick(CSessionId SessionId, int Conn) const { return PrevGameTick(SessionId, StreamId(SessionId, Conn)); }
+	virtual int PrevGameTick(CSessionId SessionId, CStreamId StreamId) const = 0;
 	/**
 	 * Tick of most recently received snapshot.
 	 */
-	virtual int GameTick(CSessionId SessionId, int Conn) const = 0;
-	int GameTick(CSessionId SessionId, CStreamId StreamId) const { return GameTick(SessionId, StreamIndex(SessionId, StreamId)); }
+	int GameTick(CSessionId SessionId, int Conn) const { return GameTick(SessionId, StreamId(SessionId, Conn)); }
+	virtual int GameTick(CSessionId SessionId, CStreamId StreamId) const = 0;
 	/**
 	 * The tick we should predict to. Comes from a magic black box called
 	 * "smooth time".
 	 */
-	virtual int PredGameTick(CSessionId SessionId, int Conn) const = 0;
-	int PredGameTick(CSessionId SessionId, CStreamId StreamId) const { return PredGameTick(SessionId, StreamIndex(SessionId, StreamId)); }
+	int PredGameTick(CSessionId SessionId, int Conn) const { return PredGameTick(SessionId, StreamId(SessionId, Conn)); }
+	virtual int PredGameTick(CSessionId SessionId, CStreamId StreamId) const = 0;
 	/**
 	 * Linear interpolation parameter between `PrevGameTick` (0) and
 	 * `GameTick` (1). Can be outside the interval [0, 1].
 	 */
-	virtual float IntraGameTick(CSessionId SessionId, int Conn) const = 0;
-	float IntraGameTick(CSessionId SessionId, CStreamId StreamId) const { return IntraGameTick(SessionId, StreamIndex(SessionId, StreamId)); }
+	float IntraGameTick(CSessionId SessionId, int Conn) const { return IntraGameTick(SessionId, StreamId(SessionId, Conn)); }
+	virtual float IntraGameTick(CSessionId SessionId, CStreamId StreamId) const = 0;
 	/**
 	 * Linear interpolation parameter between `PredGameTick - 1` (0) and
 	 * `PredGameTick` (1). Can be outside the interval [0, 1].
 	 */
-	virtual float PredIntraGameTick(CSessionId SessionId, int Conn) const = 0;
-	float PredIntraGameTick(CSessionId SessionId, CStreamId StreamId) const { return PredIntraGameTick(SessionId, StreamIndex(SessionId, StreamId)); }
+	float PredIntraGameTick(CSessionId SessionId, int Conn) const { return PredIntraGameTick(SessionId, StreamId(SessionId, Conn)); }
+	virtual float PredIntraGameTick(CSessionId SessionId, CStreamId StreamId) const = 0;
 	/**
 	 * (Fractional) ticks since `PrevGameTick`.
 	 */
-	virtual float IntraGameTickSincePrev(CSessionId SessionId, int Conn) const = 0;
-	float IntraGameTickSincePrev(CSessionId SessionId, CStreamId StreamId) const { return IntraGameTickSincePrev(SessionId, StreamIndex(SessionId, StreamId)); }
+	float IntraGameTickSincePrev(CSessionId SessionId, int Conn) const { return IntraGameTickSincePrev(SessionId, StreamId(SessionId, Conn)); }
+	virtual float IntraGameTickSincePrev(CSessionId SessionId, CStreamId StreamId) const = 0;
 	/**
 	 * Time in seconds since the second to most recently received snapshot.
 	 */
-	virtual float GameTickTime(CSessionId SessionId, int Conn) const = 0;
-	float GameTickTime(CSessionId SessionId, CStreamId StreamId) const { return GameTickTime(SessionId, StreamIndex(SessionId, StreamId)); }
+	float GameTickTime(CSessionId SessionId, int Conn) const { return GameTickTime(SessionId, StreamId(SessionId, Conn)); }
+	virtual float GameTickTime(CSessionId SessionId, CStreamId StreamId) const = 0;
 	/**
 	 * 50
 	 */
@@ -269,8 +268,8 @@ public:
 	virtual void UpdateAndSwap() = 0;
 
 	// networking
-	virtual void EnterGame(CSessionId SessionId, int Conn) = 0;
-	void EnterGame(CSessionId SessionId, CStreamId StreamId) { EnterGame(SessionId, StreamIndex(SessionId, StreamId)); }
+	void EnterGame(CSessionId SessionId, int Conn) { EnterGame(SessionId, StreamId(SessionId, Conn)); }
+	virtual void EnterGame(CSessionId SessionId, CStreamId StreamId) = 0;
 
 	//
 	virtual const NETADDR &ServerAddress() const = 0;
@@ -281,8 +280,8 @@ public:
 	virtual int MapDownloadTotalsize() const = 0;
 
 	// input
-	virtual int *GetInput(int Conn, int Tick) const = 0;
-	int *GetInput(CSessionId SessionId, CStreamId StreamId, int Tick) const { return GetInput(StreamIndex(SessionId, StreamId), Tick); }
+	int *GetInput(int Conn, int Tick) const { return GetInput(NetworkSessionId(), StreamId(NetworkSessionId(), Conn), Tick); }
+	virtual int *GetInput(CSessionId SessionId, CStreamId StreamId, int Tick) const = 0;
 
 	// remote console
 	virtual void RconAuth(int Conn, const char *pUsername, const char *pPassword) = 0;
@@ -297,12 +296,13 @@ public:
 
 	// server info
 	virtual const class CServerInfo &ServerInfo(CSessionId SessionId) const = 0;
-	virtual bool ServerCapAnyPlayerFlag() const = 0;
+	bool ServerCapAnyPlayerFlag() const { return ServerCapAnyPlayerFlag(NetworkSessionId()); }
+	virtual bool ServerCapAnyPlayerFlag(CSessionId SessionId) const = 0;
 
-	virtual int GetPredictionTime(CSessionId SessionId, int Conn) = 0;
-	virtual int GetPredictionTick(CSessionId SessionId, int Conn) = 0;
-	int GetPredictionTime(CSessionId SessionId, CStreamId StreamId) { return GetPredictionTime(SessionId, StreamIndex(SessionId, StreamId)); }
-	int GetPredictionTick(CSessionId SessionId, CStreamId StreamId) { return GetPredictionTick(SessionId, StreamIndex(SessionId, StreamId)); }
+	int GetPredictionTime(CSessionId SessionId, int Conn) { return GetPredictionTime(SessionId, StreamId(SessionId, Conn)); }
+	int GetPredictionTick(CSessionId SessionId, int Conn) { return GetPredictionTick(SessionId, StreamId(SessionId, Conn)); }
+	virtual int GetPredictionTime(CSessionId SessionId, CStreamId StreamId) = 0;
+	virtual int GetPredictionTick(CSessionId SessionId, CStreamId StreamId) = 0;
 
 	// snapshot interface
 
@@ -314,17 +314,18 @@ public:
 	};
 
 	// TODO: Refactor: should redo this a bit i think, too many virtual calls
-	virtual int SnapNumItems(CSessionId SessionId, int Conn, int SnapId) const = 0;
-	virtual const void *SnapFindItem(CSessionId SessionId, int Conn, int SnapId, int Type, int Id) const = 0;
-	virtual CSnapItem SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const = 0;
-	int SnapNumItems(CSessionId SessionId, CStreamId StreamId, int SnapId) const { return SnapNumItems(SessionId, StreamIndex(SessionId, StreamId), SnapId); }
-	const void *SnapFindItem(CSessionId SessionId, CStreamId StreamId, int SnapId, int Type, int Id) const { return SnapFindItem(SessionId, StreamIndex(SessionId, StreamId), SnapId, Type, Id); }
-	CSnapItem SnapGetItem(CSessionId SessionId, CStreamId StreamId, int SnapId, int Index) const { return SnapGetItem(SessionId, StreamIndex(SessionId, StreamId), SnapId, Index); }
+	int SnapNumItems(CSessionId SessionId, int Conn, int SnapId) const { return SnapNumItems(SessionId, StreamId(SessionId, Conn), SnapId); }
+	const void *SnapFindItem(CSessionId SessionId, int Conn, int SnapId, int Type, int Id) const { return SnapFindItem(SessionId, StreamId(SessionId, Conn), SnapId, Type, Id); }
+	CSnapItem SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const { return SnapGetItem(SessionId, StreamId(SessionId, Conn), SnapId, Index); }
+	virtual int SnapNumItems(CSessionId SessionId, CStreamId StreamId, int SnapId) const = 0;
+	virtual const void *SnapFindItem(CSessionId SessionId, CStreamId StreamId, int SnapId, int Type, int Id) const = 0;
+	virtual CSnapItem SnapGetItem(CSessionId SessionId, CStreamId StreamId, int SnapId, int Index) const = 0;
 
 	virtual void SnapSetStaticsize(int ItemType, int Size) = 0;
 	virtual void SnapSetStaticsize7(int ItemType, int Size) = 0;
 
-	virtual int SendMsg(int Conn, CMsgPacker *pMsg, int Flags) = 0;
+	int SendMsg(int Conn, CMsgPacker *pMsg, int Flags) { return SendMsg(NetworkSessionId(), StreamId(NetworkSessionId(), Conn), pMsg, Flags); }
+	virtual int SendMsg(CSessionId SessionId, CStreamId StreamId, CMsgPacker *pMsg, int Flags) = 0;
 	template<class T>
 	int SendPackMsg(int Conn, T *pMsg, int Flags, bool NoTranslate = false)
 	{
@@ -339,8 +340,8 @@ public:
 	virtual const char *DummyName() = 0;
 	virtual const char *ErrorString() const = 0;
 	virtual const char *LatestVersion() const = 0;
-	virtual bool ConnectionProblems(CSessionId SessionId, int Conn) const = 0;
-	bool ConnectionProblems(CSessionId SessionId, CStreamId StreamId) const { return ConnectionProblems(SessionId, StreamIndex(SessionId, StreamId)); }
+	bool ConnectionProblems(CSessionId SessionId, int Conn) const { return ConnectionProblems(SessionId, StreamId(SessionId, Conn)); }
+	virtual bool ConnectionProblems(CSessionId SessionId, CStreamId StreamId) const = 0;
 
 	virtual IGraphics::CTextureHandle GetDebugFont() const = 0; // TODO: remove this function
 
@@ -348,8 +349,8 @@ public:
 
 	const char *News() const { return m_aNews; }
 	int Points() const { return m_Points; }
-	int64_t ReconnectTime() const { return m_ReconnectTime; }
-	void SetReconnectTime(int64_t ReconnectTime) { m_ReconnectTime = ReconnectTime; }
+	virtual int64_t ReconnectTime() const = 0;
+	virtual void CancelReconnect() = 0;
 
 	virtual bool IsSixup(CSessionId SessionId) const = 0;
 	virtual CTranslationContext &TranslationContext(CSessionId SessionId) = 0;
@@ -377,8 +378,8 @@ public:
 
 	virtual IFriends *Foes() = 0;
 
-	virtual void GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) = 0;
-	void GetSmoothTick(CSessionId SessionId, CStreamId StreamId, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) { GetSmoothTick(SessionId, StreamIndex(SessionId, StreamId), Now, pSmoothTick, pSmoothIntraTick, MixAmount); }
+	void GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) { GetSmoothTick(SessionId, StreamId(SessionId, Conn), Now, pSmoothTick, pSmoothIntraTick, MixAmount); }
+	virtual void GetSmoothTick(CSessionId SessionId, CStreamId StreamId, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) = 0;
 
 	virtual void AddWarning(const SWarning &Warning) = 0;
 	virtual std::optional<SWarning> CurrentWarning() = 0;
@@ -436,7 +437,10 @@ public:
 	virtual void OnUpdate() = 0;
 	virtual void OnStateChange(int NewState, int OldState) = 0;
 	virtual void OnConnected(CSessionId SessionId) = 0;
+	virtual void OnSessionCreated(CSessionId SessionId) = 0;
+	virtual void OnSessionStreamsChanged(CSessionId SessionId) = 0;
 	virtual void OnSessionClosed(CSessionId SessionId) = 0;
+	virtual void OnSessionDestroyed(CSessionId SessionId) = 0;
 	virtual void OnSessionFocused(CSessionId SessionId) = 0;
 	virtual void OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId) = 0;
 	virtual void OnPredict(CSessionId SessionId, CStreamId StreamId) = 0;
@@ -446,6 +450,7 @@ public:
 	virtual int OnSnapInput(CSessionId SessionId, int *pData, CStreamId StreamId, bool Force) = 0;
 	virtual void OnConnectionFocusChanged(CSessionId SessionId, CStreamId PreviousStreamId, CStreamId StreamId) = 0;
 	virtual void SendDummyInfo(bool Start) = 0;
+	virtual void SendStreamInfo(CSessionId SessionId, CStreamId StreamId, bool Start) = 0;
 
 	virtual const char *GetItemName(int Type) const = 0;
 	virtual const char *Version() const = 0;

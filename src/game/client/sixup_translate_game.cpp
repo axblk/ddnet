@@ -189,7 +189,7 @@ void CGameClient::CClientData::UpdateSkin7BotDecoration(const CGameState::CProto
 
 void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker *pUnpacker, int Conn)
 {
-	const bool AdditionalStream = SessionId == Client()->NetworkSessionId() && Conn != IClient::CONN_MAIN;
+	const bool AdditionalStream = Client()->SessionType(SessionId) == ESessionSourceType::NETWORK && Client()->StreamId(SessionId, Conn) != Client()->PrimaryStreamId(SessionId);
 	CGameSessionContext *pSourceSession = m_SessionContexts.Find(SessionId);
 	dbg_assert(pSourceSession != nullptr, "missing translation session context");
 	CGameState *pSourceState = pSourceSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn));

@@ -386,6 +386,7 @@ void CGameState::Reset()
 	m_SpectatorCount = {};
 	m_CoreGameInfo = {};
 	m_Teams.Reset();
+	m_FullyPredicted = false;
 	m_GameWorld.Clear();
 	m_GameWorld.m_WorldConfig = {};
 	m_GameWorld.m_WorldConfig.m_InfiniteAmmo = true;
@@ -686,7 +687,9 @@ void CGameState::RebuildGameWorld()
 			m_Teams.SetSolo(ClientId, (m_aClients[ClientId].m_ExtendedCharacter.m_Flags & CHARACTERFLAG_SOLO) != 0);
 	}
 
-	if(!m_PredictionInitialized)
+	// The full prediction advances this world itself and reconciles it with the
+	// snapshot, so rebuilding it here would drop what it computed.
+	if(!m_PredictionInitialized || m_FullyPredicted)
 		return;
 	UpdateWorldConfigFromSnapshot();
 
@@ -718,6 +721,8 @@ void CGameState::PredictTo(int TargetTick, const std::function<const CNetObj_Pla
 {
 	m_PredictionTick = TargetTick;
 	m_aPredictedClients = {};
+	if(m_FullyPredicted)
+		return;
 	if(!m_PredictionInitialized || m_LocalClientId < 0 || m_LocalClientId >= MAX_CLIENTS || !m_aClients[m_LocalClientId].m_HasCharacter)
 		return;
 	if(m_HasGameInfo && (m_GameInfo.m_GameStateFlags & GAMESTATEFLAG_PAUSED))

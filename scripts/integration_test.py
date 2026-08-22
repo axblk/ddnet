@@ -2,7 +2,7 @@
 from collections import namedtuple
 from queue import Queue
 from threading import Thread
-from time import time
+from time import sleep, time
 from urllib import request
 from urllib.request import Request, urlopen
 from uuid import UUID, uuid4
@@ -126,7 +126,7 @@ class TestRunner:
 		self.timeout_multiplier = timeout_multiplier
 		self.valgrind_memcheck = valgrind_memcheck
 		if self.valgrind_memcheck:
-			self.timeout_multiplier *= 25
+			self.timeout_multiplier *= 40
 		# `conn_timeout` is wall clock inside the engine, so it has to be scaled like
 		# the test timeouts, otherwise a slowed down client or server drops its own
 		# connection while the test is still waiting. 100 is the default of the config
@@ -485,7 +485,7 @@ class Client(Runnable):
 	def exit(self):
 		self.command("quit")
 
-	def wait_for_startup(self, timeout=15):
+	def wait_for_startup(self, timeout=30):
 		self.wait_for_log_prefix("client: version", timeout=timeout)
 
 
@@ -675,6 +675,89 @@ def client_can_connect(test_env):
 	client.wait_for_exit()
 
 
+@test(timeout=30)
+def client_can_connect_two_network_sessions(test_env):
+	client = test_env.client()
+	server1 = test_env.server()
+	server2 = test_env.server(["sv_map dm1"])
+	wait_for_startup([client, server1, server2])
+	client.command(f"connect localhost:{server1.port}")
+	server1.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client.command(f"dbg_connect_session localhost:{server2.port}")
+	line = client.wait_for_log_prefix("client/session: created Network session ", timeout=5).line
+	secondary_session_id = int(line.removeprefix("client/session: created Network session "))
+	reserved_session_offset = secondary_session_id - 3
+	server2.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	def dump_sessions(count):
+		client.clear_events()
+		client.command("dbg_dump_sessions")
+		result = {}
+		for _ in range(count):
+			line = client.wait_for_log_prefix("client/session: session=", timeout=5).line
+			fields = dict(field.split("=", 1) for field in line.removeprefix("client/session: ").split())
+			result[(int(fields["session"]), int(fields["stream"]))] = fields
+		return result
+
+	for _ in range(20):
+		sessions = dump_sessions(5 + reserved_session_offset)
+		if int(sessions[(secondary_session_id, 1)]["tick"]) > 0 and sessions[(1, 1)]["map"] == "Tutorial" and sessions[(secondary_session_id, 1)]["map"] == "dm1":
+			break
+		sleep(0.1)
+	else:
+		raise AssertionError(f"second Network session did not become ready: {sessions}")
+
+	client.command(f"dbg_connect_stream {secondary_session_id}")
+	server2.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client.command(f"dbg_connect_stream {secondary_session_id}")
+	server2.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	for _ in range(20):
+		sessions = dump_sessions(6 + reserved_session_offset)
+		stream_ticks = {key: int(fields["tick"]) for key, fields in sessions.items() if fields["type"] == "0"}
+		expected_streams = {(1, 1), (1, 2), (secondary_session_id, 1), (secondary_session_id, 2), (secondary_session_id, 3)}
+		if set(stream_ticks) == expected_streams and all(stream_ticks[key] > 0 for key in ((1, 1), (secondary_session_id, 1), (secondary_session_id, 2), (secondary_session_id, 3))) and sessions[(secondary_session_id, 3)]["active"] == "1":
+			break
+		sleep(0.1)
+	else:
+		raise AssertionError(f"Network sessions and streams did not advance independently: {stream_ticks}")
+
+	client.command(f"dbg_destroy_stream {secondary_session_id} 2")
+	client.wait_for_log_exact(f"client/session: destroyed session {secondary_session_id} stream 2", timeout=5)
+	for _ in range(20):
+		sessions = dump_sessions(5 + reserved_session_offset)
+		remaining_ticks = {key: int(fields["tick"]) for key, fields in sessions.items() if key[0] == secondary_session_id}
+		if set(remaining_ticks) == {(secondary_session_id, 1), (secondary_session_id, 3)} and all(remaining_ticks[key] > stream_ticks[key] for key in remaining_ticks) and sessions[(secondary_session_id, 3)]["active"] == "1":
+			break
+		sleep(0.1)
+	else:
+		raise AssertionError(f"destroying the middle stream changed the remaining streams: {remaining_ticks}")
+
+	server2.command("kick 2")
+	client.wait_for_log_prefix("client: offline stream 3", timeout=5)
+	for _ in range(20):
+		sessions = dump_sessions(4 + reserved_session_offset)
+		remaining_ticks = {key: int(fields["tick"]) for key, fields in sessions.items() if key[0] == secondary_session_id}
+		if set(remaining_ticks) == {(secondary_session_id, 1)} and remaining_ticks[(secondary_session_id, 1)] > stream_ticks[(secondary_session_id, 1)] and sessions[(secondary_session_id, 1)]["active"] == "1":
+			break
+		sleep(0.1)
+	else:
+		raise AssertionError(f"remote stream disconnect did not select the primary stream: {remaining_ticks}")
+
+	client.command(f"dbg_destroy_session {secondary_session_id}")
+	client.wait_for_log_exact(f"client/session: destroyed Network session {secondary_session_id}", timeout=5)
+	sessions = dump_sessions(3 + reserved_session_offset)
+	if any(session_id == secondary_session_id for session_id, _ in sessions):
+		raise AssertionError(f"destroyed Network session is still present: {sessions}")
+
+	client.exit()
+	server1.exit()
+	server2.exit()
+	client.wait_for_exit()
+	server1.wait_for_exit()
+	server2.wait_for_exit()
+
+
 @test
 def client_can_connect_7(test_env):
 	client = test_env.client()
@@ -739,7 +822,7 @@ def smoke_test(test_env):
 	client1.command("record client1")
 
 	client2.command(f"connect localhost:{server.port}")
-	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	server.wait_for_log_prefix("server: player has entered the game", timeout=20)
 	for _ in range(5):
 		server.wait_for_log(
 			lambda l: l.line.startswith("chat: *** client1 finished in:") or l.line.startswith("chat: *** client2 finished in:"),

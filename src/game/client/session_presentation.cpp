@@ -423,6 +423,13 @@ void CSessionPresentation::UpdateClients(const CPresentationContext &Context)
 	}
 }
 
+void CSessionPresentation::RemoveState(CGameStateId StateId)
+{
+	const auto It = std::find_if(m_vpClientPresentations.begin(), m_vpClientPresentations.end(), [StateId](const auto &pPresentation) { return pPresentation->m_StateId == StateId; });
+	if(It != m_vpClientPresentations.end())
+		m_vpClientPresentations.erase(It);
+}
+
 const CClientPresentation *CSessionPresentation::Client(CGameStateId StateId, int ClientId) const
 {
 	if(!in_range(ClientId, MAX_CLIENTS - 1))
@@ -547,6 +554,18 @@ void CSessionPresentationManager::Unload(CSessionId SessionId)
 	if(m_AudibleSessionId == SessionId)
 		m_AudibleSessionId = CSessionId();
 	pPresentation->Unload();
+}
+
+bool CSessionPresentationManager::Destroy(CSessionId SessionId)
+{
+	const auto It = std::find_if(m_vpPresentations.begin(), m_vpPresentations.end(), [SessionId](const auto &pPresentation) { return pPresentation->SessionId() == SessionId; });
+	if(It == m_vpPresentations.end())
+		return false;
+	if(m_AudibleSessionId == SessionId)
+		m_AudibleSessionId = CSessionId();
+	(*It)->Unload();
+	m_vpPresentations.erase(It);
+	return true;
 }
 
 void CSessionPresentationManager::UnloadAll()

@@ -55,7 +55,7 @@ public:
 	void DoToolTip(const void *pId, const CUIRect *pNearRect, const char *pText, float WidthHint = -1.0f);
 
 	void OnReset() override;
-	void OnRender() override;
+	void OnRenderApplicationOverlay() override;
 };
 
 #endif

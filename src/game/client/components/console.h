@@ -201,7 +201,7 @@ public:
 	void OnConsoleInit() override;
 	void OnInit() override;
 	void OnReset() override;
-	void OnRender() override;
+	void OnRenderApplicationOverlay() override;
 	void OnMessage(int MsgType, void *pRawMsg) override;
 	bool OnInput(const IInput::CEvent &Event) override;
 	void Prompt(char (&aPrompt)[32]);

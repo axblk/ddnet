@@ -2054,7 +2054,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		if(DoButton_Menu(&s_Button, pButtonText, 0, &Part) || Ui()->ConsumeHotkey(CUi::HOTKEY_ESCAPE) || Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER))
 		{
 			if(m_Popup == POPUP_DISCONNECTED && Client()->ReconnectTime() > 0)
-				Client()->SetReconnectTime(0);
+				Client()->CancelReconnect();
 			m_Popup = POPUP_NONE;
 		}
 	}
@@ -2372,7 +2372,7 @@ void CMenus::OnWindowResize()
 	TextRender()->DeleteTextContainer(m_MotdTextContainerIndex);
 }
 
-void CMenus::OnRender()
+void CMenus::OnRenderApplicationOverlay()
 {
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		SetActive(true);

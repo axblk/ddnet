@@ -1137,7 +1137,7 @@ void CGameConsole::Prompt(char (&aPrompt)[32])
 	}
 }
 
-void CGameConsole::OnRender()
+void CGameConsole::OnRenderApplicationOverlay()
 {
 	CUIRect Screen = *Ui()->Screen();
 	CInstance *pConsole = CurrentConsole();

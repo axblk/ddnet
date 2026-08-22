@@ -47,16 +47,6 @@ class INotifications;
 class IStorage;
 class IUpdater;
 
-class CServerCapabilities
-{
-public:
-	bool m_ChatTimeoutCode = false;
-	bool m_AnyPlayerFlag = false;
-	bool m_PingEx = false;
-	bool m_AllowDummy = false;
-	bool m_SyncWeaponInput = false;
-};
-
 class CClient : public IClient, public CDemoPlayer::IListener
 {
 	// needed interfaces
@@ -84,6 +74,9 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	CNetworkSessionSource *m_pNetworkSessionSource = nullptr;
 	CDemoSessionSource *m_pDemoSessionSource = nullptr;
 	CNetClient m_ContactNetClient;
+	NETADDR m_NetworkBindAddr = NETADDR_ZEROED;
+	bool m_NetworkInitialized = false;
+	std::array<std::vector<std::pair<int, int>>, 2> m_avSnapshotStaticSizes;
 	CDemoRecorder m_aDemoRecorders[RECORDER_MAX];
 	CDemoRecorder m_aDemoRecordersSixup[RECORDER_MAX];
 	CDemoEditor m_DemoEditor;
@@ -94,9 +87,6 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	CFriends m_Friends;
 	CFriends m_Foes;
 
-	char m_aConnectAddressStr[MAX_SERVER_ADDRESSES * NETADDR_MAXSTRSIZE] = "";
-
-	CUuid m_ConnectionId = UUID_ZEROED;
 	bool m_HaveGlobalTcpAddr = false;
 	NETADDR m_GlobalTcpAddr = NETADDR_ZEROED;
 
@@ -107,7 +97,6 @@ class CClient : public IClient, public CDemoPlayer::IListener
 
 	int64_t m_LastRenderTime;
 
-	int m_SnapCrcErrors = 0;
 	bool m_AutoScreenshotRecycle = false;
 	bool m_AutoStatScreenshotRecycle = false;
 	bool m_AutoCSVRecycle = false;
@@ -115,14 +104,6 @@ class CClient : public IClient, public CDemoPlayer::IListener
 
 	char m_aRconUsername[64] = "";
 	char m_aRconPassword[sizeof(g_Config.m_SvRconPassword)] = "";
-	int m_UseTempRconCommands = 0;
-	int m_ExpectedRconCommands = -1;
-	int m_GotRconCommands = 0;
-	char m_aPassword[sizeof(g_Config.m_Password)] = "";
-	bool m_SendPassword = false;
-
-	int m_ExpectedMaplistEntries = -1;
-	std::vector<std::string> m_vMaplistEntries;
 
 	// version-checking
 	char m_aVersionStr[10] = "0";
@@ -138,27 +119,6 @@ class CClient : public IClient, public CDemoPlayer::IListener
 
 	// map download
 	char m_aMapDownloadUrl[256] = "";
-	std::shared_ptr<IHttpRequest> m_pMapdownloadTask = nullptr;
-	char m_aMapdownloadFilename[256] = "";
-	char m_aMapdownloadFilenameTemp[256] = "";
-	char m_aMapdownloadName[256] = "";
-	IOHANDLE m_MapdownloadFileTemp = nullptr;
-	int m_MapdownloadChunk = 0;
-	int m_MapdownloadCrc = 0;
-	int m_MapdownloadAmount = -1;
-	int m_MapdownloadTotalsize = -1;
-	std::optional<SHA256_DIGEST> m_MapdownloadSha256;
-
-	class CMapDetails
-	{
-	public:
-		char m_aName[256];
-		int m_Size;
-		int m_Crc;
-		SHA256_DIGEST m_Sha256;
-		char m_aUrl[256];
-	};
-	std::optional<CMapDetails> m_MapDetails;
 
 	EInfoState m_InfoState = EInfoState::ERROR;
 	std::shared_ptr<IHttpRequest> m_pDDNetInfoTask = nullptr;
@@ -214,8 +174,7 @@ class CClient : public IClient, public CDemoPlayer::IListener
 			dbg_assert(Conn == CONN_MAIN, "invalid demo stream");
 			return m_pDemoSessionSource->Connection();
 		}
-		dbg_assert(SessionId == m_NetworkSessionId, "invalid game session");
-		return Connection(Conn);
+		return NetworkSource(SessionId).ConnectionAt(Conn);
 	}
 	const CConnection &Connection(CSessionId SessionId, int Conn) const
 	{
@@ -224,8 +183,7 @@ class CClient : public IClient, public CDemoPlayer::IListener
 			dbg_assert(Conn == CONN_MAIN, "invalid demo stream");
 			return m_pDemoSessionSource->Connection();
 		}
-		dbg_assert(SessionId == m_NetworkSessionId, "invalid game session");
-		return Connection(Conn);
+		return NetworkSource(SessionId).ConnectionAt(Conn);
 	}
 	CConnection &Connection(CSessionId SessionId, CStreamId StreamId)
 	{
@@ -265,20 +223,9 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	std::deque<std::shared_ptr<CDemoEdit>> m_EditJobs;
 
 	//
-	bool m_CanReceiveServerCapabilities = false;
-	bool m_ServerSentCapabilities = false;
-	CServerCapabilities m_ServerCapabilities;
-
-	bool ServerCapAnyPlayerFlag() const override { return m_ServerCapabilities.m_AnyPlayerFlag; }
+	bool ServerCapAnyPlayerFlag(CSessionId SessionId) const override { return NetworkSource(SessionId).m_ServerCapabilities.m_AnyPlayerFlag; }
 
 	int64_t m_CurrentServerInfoRequestTime = -1; // >= 0 should request, == -1 got info
-
-	int m_CurrentServerPingInfoType = -1;
-	int m_CurrentServerPingBasicToken = -1;
-	int m_CurrentServerPingToken = -1;
-	CUuid m_CurrentServerPingUuid = UUID_ZEROED;
-	int64_t m_CurrentServerCurrentPingTime = -1; // >= 0 request running
-	int64_t m_CurrentServerNextPingTime = -1; // >= 0 should request
 
 	// version info
 	struct CVersionInfo
@@ -316,9 +263,9 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	void UpdateDemoSession();
 	void UpdateNetworkSession(CSessionId SessionId);
 	void StopDemoSession(const char *pReason);
-	void StopNetworkSession(const char *pReason);
-	int MaxLatencyTicks() const;
-	int PredictionMargin() const;
+	void StopNetworkSession(CSessionId SessionId, const char *pReason);
+	int MaxLatencyTicks(CSessionId SessionId) const;
+	int PredictionMargin(CSessionId SessionId) const;
 
 	std::shared_ptr<ILogger> m_pFileLogger = nullptr;
 	std::shared_ptr<ILogger> m_pStdoutLogger = nullptr;
@@ -333,8 +280,10 @@ class CClient : public IClient, public CDemoPlayer::IListener
 
 public:
 	using IClient::ConnectionProblems;
+	using IClient::EnterGame;
 	using IClient::GameTick;
 	using IClient::GameTickTime;
+	using IClient::GetInput;
 	using IClient::GetPredictionTick;
 	using IClient::GetPredictionTime;
 	using IClient::GetSmoothTick;
@@ -343,6 +292,7 @@ public:
 	using IClient::PredGameTick;
 	using IClient::PredIntraGameTick;
 	using IClient::PrevGameTick;
+	using IClient::SendMsg;
 	using IClient::ServerInfo;
 	using IClient::SnapFindItem;
 	using IClient::SnapGetItem;
@@ -375,13 +325,13 @@ public:
 		return NetworkSource(SessionId).StreamIndex(StreamId);
 	}
 	ESessionState SessionState(CSessionId SessionId) const override { return SessionSource(SessionId).State(); }
-	int PrevGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PrevGameTick; }
-	int GameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_CurGameTick; }
-	int PredGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PredTick; }
-	float IntraGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_GameIntraTick; }
-	float PredIntraGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PredIntraTick; }
-	float IntraGameTickSincePrev(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_GameIntraTickSincePrev; }
-	float GameTickTime(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_GameTickTime; }
+	int PrevGameTick(CSessionId SessionId, CStreamId StreamId) const override { return Connection(SessionId, StreamId).m_PrevGameTick; }
+	int GameTick(CSessionId SessionId, CStreamId StreamId) const override { return Connection(SessionId, StreamId).m_CurGameTick; }
+	int PredGameTick(CSessionId SessionId, CStreamId StreamId) const override { return Connection(SessionId, StreamId).m_PredTick; }
+	float IntraGameTick(CSessionId SessionId, CStreamId StreamId) const override { return Connection(SessionId, StreamId).m_GameIntraTick; }
+	float PredIntraGameTick(CSessionId SessionId, CStreamId StreamId) const override { return Connection(SessionId, StreamId).m_PredIntraTick; }
+	float IntraGameTickSincePrev(CSessionId SessionId, CStreamId StreamId) const override { return Connection(SessionId, StreamId).m_GameIntraTickSincePrev; }
+	float GameTickTime(CSessionId SessionId, CStreamId StreamId) const override { return Connection(SessionId, StreamId).m_GameTickTime; }
 
 	IConfigManager *ConfigManager() { return m_pConfigManager; }
 	CConfig *Config() { return m_pConfig; }
@@ -402,33 +352,35 @@ public:
 	CClient();
 
 	// ----- send functions -----
-	int SendMsg(int Conn, CMsgPacker *pMsg, int Flags) override;
-
-	void SendInfo(int Conn);
+	void SendInfo(CSessionId SessionId, CStreamId StreamId);
 	void SendEnterGame(int Conn);
+	void SendEnterGame(CSessionId SessionId, CStreamId StreamId);
 	void SendReady(int Conn);
-	void SendMapRequest();
+	void SendReady(CSessionId SessionId, CStreamId StreamId);
+	void SendMapRequest(CSessionId SessionId);
 
 	bool RconAuthed() const override { return Connection(ActiveConnection()).m_RconAuthed != 0; }
-	bool UseTempRconCommands() const override { return m_UseTempRconCommands != 0; }
+	bool UseTempRconCommands() const override { return m_pNetworkSessionSource->m_UseTempRconCommands != 0; }
 	void RconAuth(int Conn, const char *pName, const char *pPassword) override;
 	void Rcon(const char *pCmd) override;
-	bool ReceivingRconCommands() const override { return m_ExpectedRconCommands > 0; }
+	bool ReceivingRconCommands() const override { return m_pNetworkSessionSource->m_ExpectedRconCommands > 0; }
 	float GotRconCommandsPercentage() const override;
-	bool ReceivingMaplist() const override { return m_ExpectedMaplistEntries > 0; }
+	bool ReceivingMaplist() const override { return m_pNetworkSessionSource->m_ExpectedMaplistEntries > 0; }
 	float GotMaplistPercentage() const override;
-	const std::vector<std::string> &MaplistEntries() const override { return m_vMaplistEntries; }
+	const std::vector<std::string> &MaplistEntries() const override { return m_pNetworkSessionSource->m_vMaplistEntries; }
 
-	bool ConnectionProblems(CSessionId SessionId, int Conn) const override;
+	bool ConnectionProblems(CSessionId SessionId, CStreamId StreamId) const override;
 
 	IGraphics::CTextureHandle GetDebugFont() const override { return m_DebugFont; }
 
 	void SendInput(CSessionId SessionId);
 
 	// TODO: OPT: do this a lot smarter!
-	int *GetInput(int Conn, int Tick) const override;
+	int *GetInput(CSessionId SessionId, CStreamId StreamId, int Tick) const override;
 
 	const char *LatestVersion() const override;
+	int64_t ReconnectTime() const override { return m_pNetworkSessionSource->ReconnectTime(); }
+	void CancelReconnect() override { m_pNetworkSessionSource->CancelReconnect(); }
 
 	// ------ state handling -----
 	void SetState(EClientState State);
@@ -439,12 +391,17 @@ public:
 
 	// called when the map is loaded and we should init for a new round
 	void OnEnterGame(int Conn);
-	void EnterGame(CSessionId SessionId, int Conn) override;
+	void EnterGame(CSessionId SessionId, CStreamId StreamId) override;
 
 	// called once after being ingame for 1 second
 	void OnPostConnect(int Conn);
 
 	void Connect(const char *pAddress, const char *pPassword = nullptr) override;
+	CSessionId CreateNetworkSession();
+	CStreamId ConnectAdditionalStream(CSessionId SessionId);
+	bool DestroyNetworkStream(CSessionId SessionId, CStreamId StreamId);
+	bool DestroyNetworkSession(CSessionId SessionId);
+	void ConnectSession(CSessionId SessionId, const char *pAddress, const char *pPassword);
 	void DisconnectWithReason(const char *pReason);
 	void DisconnectDemoWithReason(const char *pReason);
 	void Disconnect() override;
@@ -457,18 +414,18 @@ public:
 	bool DummyAllowed() const override;
 
 	const CServerInfo &ServerInfo(CSessionId SessionId) const override { return SessionSource(SessionId).ServerInfo(); }
-	void ServerInfoRequest();
-	void SetCurrentServerInfo(const CServerInfo &ServerInfo);
+	void RequestServerInfo(CSessionId SessionId);
+	void SetSessionServerInfo(CSessionId SessionId, const CServerInfo &ServerInfo);
 
 	void LoadDebugFont();
 
 	// ---
 
-	int GetPredictionTime(CSessionId SessionId, int Conn) override;
-	CSnapItem SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const override;
-	int GetPredictionTick(CSessionId SessionId, int Conn) override;
-	const void *SnapFindItem(CSessionId SessionId, int Conn, int SnapId, int Type, int Id) const override;
-	int SnapNumItems(CSessionId SessionId, int Conn, int SnapId) const override;
+	int GetPredictionTime(CSessionId SessionId, CStreamId StreamId) override;
+	CSnapItem SnapGetItem(CSessionId SessionId, CStreamId StreamId, int SnapId, int Index) const override;
+	int GetPredictionTick(CSessionId SessionId, CStreamId StreamId) override;
+	const void *SnapFindItem(CSessionId SessionId, CStreamId StreamId, int SnapId, int Type, int Id) const override;
+	int SnapNumItems(CSessionId SessionId, CStreamId StreamId, int SnapId) const override;
 	void SnapSetStaticsize(int ItemType, int Size) override;
 	void SnapSetStaticsize7(int ItemType, int Size) override;
 
@@ -487,7 +444,7 @@ public:
 	const char *LoadMap(CSessionId SessionId, const char *pName, const char *pFilename, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc);
 	const char *LoadMapSearch(CSessionId SessionId, const char *pMapName, const std::optional<SHA256_DIGEST> &WantedSha256, int WantedCrc);
 
-	int TranslateSysMsg(int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, CNetChunk *pPacket, bool *pIsExMsg);
+	int TranslateSysMsg(CSessionId SessionId, int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, CNetChunk *pPacket, bool *pIsExMsg);
 
 	bool PreprocessConnlessPacket7(CNetChunk *pPacket);
 	void ProcessConnlessPacket(CNetChunk *pPacket);
@@ -496,8 +453,8 @@ public:
 
 	int UnpackAndValidateSnapshot(CSnapshot *pFrom, CSnapshotBuffer *pTo);
 
-	void ResetMapDownload(bool ResetActive);
-	void FinishMapDownload();
+	void ResetMapDownload(CSessionId SessionId, bool ResetActive);
+	void FinishMapDownload(CSessionId SessionId);
 
 	EInfoState InfoState() const override { return m_InfoState; }
 	void RequestDDNetInfo() override;
@@ -510,13 +467,13 @@ public:
 
 	const NETADDR &ServerAddress() const override { return *NetClient(CONN_MAIN).ServerAddress(); }
 	int ConnectNetTypes() const override;
-	const char *ConnectAddressString() const override { return m_aConnectAddressStr; }
-	const char *MapDownloadName() const override { return m_aMapdownloadName; }
-	int MapDownloadAmount() const override { return !m_pMapdownloadTask ? m_MapdownloadAmount : (int)m_pMapdownloadTask->Current(); }
-	int MapDownloadTotalsize() const override { return !m_pMapdownloadTask ? m_MapdownloadTotalsize : (int)m_pMapdownloadTask->Size(); }
+	const char *ConnectAddressString() const override { return m_pNetworkSessionSource->m_ConnectAddress.c_str(); }
+	const char *MapDownloadName() const override { return m_pNetworkSessionSource->m_aMapdownloadName; }
+	int MapDownloadAmount() const override { return !m_pNetworkSessionSource->m_pMapdownloadTask ? m_pNetworkSessionSource->m_MapdownloadAmount : (int)m_pNetworkSessionSource->m_pMapdownloadTask->Current(); }
+	int MapDownloadTotalsize() const override { return !m_pNetworkSessionSource->m_pMapdownloadTask ? m_pNetworkSessionSource->m_MapdownloadTotalsize : (int)m_pNetworkSessionSource->m_pMapdownloadTask->Size(); }
 
 	void PumpNetwork(CSessionId SessionId);
-	int SendMsg(CSessionId SessionId, CStreamId StreamId, CMsgPacker *pMsg, int Flags);
+	int SendMsg(CSessionId SessionId, CStreamId StreamId, CMsgPacker *pMsg, int Flags) override;
 
 	void OnDemoPlayerSnapshot(void *pData, int Size) override;
 	void OnDemoPlayerMessage(void *pData, int Size) override;
@@ -530,9 +487,15 @@ public:
 
 	bool InitNetworkClient(char *pError, size_t ErrorSize);
 	bool InitNetworkClientImpl(NETADDR BindAddr, int Conn, char *pError, size_t ErrorSize);
+	bool InitNetworkStream(NETADDR BindAddr, CNetClient &NetClient, int &Port, const char *pName, char *pError, size_t ErrorSize);
 	bool CtrlShiftKey(int Key, bool &Last);
 
 	static void Con_Connect(IConsole::IResult *pResult, void *pUserData);
+	static void Con_DbgConnectSession(IConsole::IResult *pResult, void *pUserData);
+	static void Con_DbgConnectStream(IConsole::IResult *pResult, void *pUserData);
+	static void Con_DbgDestroyStream(IConsole::IResult *pResult, void *pUserData);
+	static void Con_DbgDestroySession(IConsole::IResult *pResult, void *pUserData);
+	static void Con_DbgDumpSessions(IConsole::IResult *pResult, void *pUserData);
 	static void Con_Disconnect(IConsole::IResult *pResult, void *pUserData);
 
 	static void Con_DummyConnect(IConsole::IResult *pResult, void *pUserData);
@@ -612,7 +575,7 @@ public:
 	void HandleMapPath(const char *pPath);
 
 	virtual void InitChecksum();
-	virtual int HandleChecksum(int Conn, CUuid Uuid, CUnpacker *pUnpacker);
+	virtual int HandleChecksum(CSessionId SessionId, CStreamId StreamId, CUuid Uuid, CUnpacker *pUnpacker);
 
 	// gfx
 	void Notify(const char *pTitle, const char *pMessage) override;
@@ -624,7 +587,7 @@ public:
 	// DDRace
 
 	void GenerateTimeoutSeed() override;
-	void GenerateTimeoutCodes(const NETADDR *pAddrs, int NumAddrs);
+	void GenerateTimeoutCodes(CSessionId SessionId, const NETADDR *pAddrs, int NumAddrs);
 
 	void RaceRecord_Start(const char *pFilename) override;
 	void RaceRecord_Stop() override;
@@ -639,7 +602,7 @@ public:
 
 	IFriends *Foes() override { return &m_Foes; }
 
-	void GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) override;
+	void GetSmoothTick(CSessionId SessionId, CStreamId StreamId, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) override;
 
 	void AddWarning(const SWarning &Warning) override;
 	std::optional<SWarning> CurrentWarning() override;

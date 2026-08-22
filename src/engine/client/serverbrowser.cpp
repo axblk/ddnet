@@ -335,10 +335,16 @@ const CServerInfo *CServerBrowser::Get(int Index) const
 
 int CServerBrowser::GenerateToken(const NETADDR &Addr) const
 {
+	NETADDR Address;
+	mem_zero(&Address, sizeof(Address));
+	Address.type = Addr.type;
+	mem_copy(Address.ip, Addr.ip, sizeof(Address.ip));
+	Address.port = Addr.port;
+
 	SHA256_CTX Sha256;
 	sha256_init(&Sha256);
 	sha256_update(&Sha256, m_aTokenSeed, sizeof(m_aTokenSeed));
-	sha256_update(&Sha256, (unsigned char *)&Addr, sizeof(Addr));
+	sha256_update(&Sha256, (unsigned char *)&Address, sizeof(Address));
 	SHA256_DIGEST Digest = sha256_finish(&Sha256);
 	return (Digest.data[0] << 16) | (Digest.data[1] << 8) | Digest.data[2];
 }

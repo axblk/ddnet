@@ -30,7 +30,7 @@ RENDER_FILES = (
 	"src/game/client/render.cpp",
 	"src/game/client/render.h",
 )
-CONTEXT_RENDER_FILES = ("src/game/client/components/players_context.cpp",)
+CONTEXT_RENDER_FUNCTIONS = (("src/game/client/components/players.cpp", re.compile(r"\bCPlayers::RenderSpectatorCharacters\s*\(")),)
 RENDER_PURITY_FUNCTIONS = (
 	("src/game/client/components/ghost.cpp", re.compile(r"\bCGhost::OnRender\s*\(")),
 	("src/game/client/components/items.cpp", re.compile(r"\bCItems::(?:OnRender|Render[A-Za-z0-9_]*)\s*\(")),
@@ -113,6 +113,7 @@ SESSION_MESSAGE_ROUTING_FUNCTIONS = (
 DEMO_SEEK_FUNCTIONS = (("src/game/client/components/menus_demo.cpp", re.compile(r"\bCMenus::HandleDemoSeeking\s*\(")),)
 RENDER_PROJECTION_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::(?:GetSmoothPos|UpdateRenderedClients)\s*\(")),)
 ENGINE_TIMING_QUERY_FUNCTIONS = (("src/engine/client/client.cpp", re.compile(r"\bCClient::(?:ConnectionProblems|GetPredictionTick|GetPredictionTime|GetSmoothTick)\s*\(")),)
+PROCESS_SERVER_PACKET_FUNCTIONS = (("src/engine/client/client.cpp", re.compile(r"\bCClient::ProcessServerPacket\s*\(")),)
 MAP_SOUNDS_UPDATE_FUNCTIONS = (("src/game/client/components/mapsounds.cpp", re.compile(r"\bCMapSounds::Update\s*\(")),)
 MAP_SOUNDS_LOAD_FUNCTIONS = (("src/game/client/components/mapsounds.cpp", re.compile(r"\bCMapSounds::Load\s*\(")),)
 SCENE_UPDATE_FUNCTIONS = (
@@ -135,7 +136,10 @@ MAP_RENDER_IMAGE_FUNCTIONS = (("src/game/client/components/mapimages.cpp", re.co
 MAP_LAYER_BINDING_FUNCTIONS = (("src/game/client/components/maplayers.cpp", re.compile(r"\bCMapLayers::(?:Load|Unload)\s*\(")),)
 SESSION_PRESENTATION_FUNCTIONS = (("src/game/client/session_presentation.cpp", re.compile(r"\bCSessionPresentation::(?:Load|PrepareRender|Unload|UpdateMapSounds)\s*\(")),)
 SESSION_CLIENT_PRESENTATION_FUNCTIONS = (("src/game/client/session_presentation.cpp", re.compile(r"\bCSessionPresentation::(?:ApplyClientColors|CreateClientTee|GetClientSkinDescriptor|UpdateClients)\s*\(")),)
-SESSION_RESET_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::OnReset\s*\(")),)
+# Resetting one session must not reach into the others. This used to guard
+# CGameClient::OnReset, which no longer exists; the per session resets it was
+# split into carry the same rule.
+SESSION_RESET_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::Reset(?:Chat|InfoMessages)\s*\(")),)
 SNAPSHOT_SOURCE_FUNCTIONS = (
 	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::OnNewSnapshot\s*\(")),
 	("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::ProcessEvents\s*\(")),
@@ -668,7 +672,18 @@ FORBIDDEN_SOURCE_CALLBACK_OWNER = (
 	re.compile(r"\bOnDummySwap\b"),
 	re.compile(r"\b(?:OnNewSnapshot|OnMessage|OnPredict|OnSnapInput|OnConnectionFocusChanged|TranslateSnap|ApplySkin7InfoFromSnapObj|OnDemoRecSnap7)\s*\([^;{}]*\bint\s+(?:Previous)?Conn\b"),
 )
-FORBIDDEN_STABLE_STREAM_LOOKUP = (re.compile(r"\bCStreamId\s*\(\s*(?:Conn|IClient::CONN_(?:MAIN|DUMMY))\s*\+\s*1\s*\)"),)
+FORBIDDEN_STABLE_STREAM_LOOKUP = (
+	re.compile(r"\bCStreamId(?:\s+[A-Za-z_]\w*)?\s*\(\s*(?:Conn|IClient::CONN_(?:MAIN|DUMMY))\s*\+\s*1\s*\)"),
+	re.compile(r"\bStreamId\s*\(\s*\)\s*\.\s*Value\s*\(\s*\)\s*-\s*1\b"),
+)
+FORBIDDEN_PROCESS_SERVER_PACKET_AMBIENT = (
+	re.compile(r"\bConnection\s*\(\s*Conn\s*\)"),
+	re.compile(r"\bm_pNetworkSessionSource\b"),
+	re.compile(r"\bDisconnectWithReason\s*\("),
+	re.compile(r"\b(?:SendMsg|SendReady|SendEnterGame)\s*\(\s*(?:CONN_|IClient::CONN_)"),
+	re.compile(r"(?<!Source\.)(?<!TranslationContext\.)\b(?:m_MapDetails|m_pMapdownloadTask|m_aMapdownloadFilename(?:Temp)?|m_aMapdownloadName|m_MapdownloadFileTemp|m_MapdownloadChunk|m_MapdownloadCrc|m_MapdownloadAmount|m_MapdownloadTotalsize|m_MapdownloadSha256)\b"),
+	re.compile(r"(?<!Source\.)\bm_(?:UseTempRconCommands|ExpectedRconCommands|GotRconCommands|ExpectedMaplistEntries|vMaplistEntries)\b"),
+)
 FORBIDDEN_FOCUSED_CLIENT_SOURCE_API = (
 	re.compile(r"\b(?:PrevGameTick|GameTick|PredGameTick|IntraGameTick|PredIntraGameTick|IntraGameTickSincePrev|GameTickTime|GetPredictionTime|GetPredictionTick|SnapNumItems|SnapFindItem|SnapGetItem|ConnectionProblems|GetSmoothTick)\s*\(\s*int\s+Conn\b"),
 	re.compile(r"\b(?:ServerInfo|IsSixup)\s*\(\s*\)\s*const"),
@@ -729,6 +744,11 @@ def check_function_bodies(functions: tuple[tuple[str, re.Pattern[str]], ...], pa
 	errors = []
 	for relative, function_pattern in functions:
 		text = (ROOT / relative).read_text(encoding="utf-8")
+		# A pattern that matches nothing would silently stop enforcing its rules,
+		# which is what renaming one of the functions below would do.
+		if function_pattern.search(text) is None:
+			errors.append(f"{relative}: no function matches {function_pattern.pattern}, so its architecture rules are not checked")
+			continue
 		for function_match in function_pattern.finditer(text):
 			body_start = text.find("{", function_match.end())
 			if body_start < 0:
@@ -749,10 +769,36 @@ def check_function_bodies(functions: tuple[tuple[str, re.Pattern[str]], ...], pa
 	return errors
 
 
+def check_ordered_calls(relative: str, function_pattern: re.Pattern[str], calls: tuple[str, ...]) -> list[str]:
+	text = (ROOT / relative).read_text(encoding="utf-8")
+	function_match = function_pattern.search(text)
+	if function_match is None:
+		return [f"{relative}: missing function for render-hook order check"]
+	body_start = text.find("{", function_match.end())
+	depth = 1
+	body_end = body_start + 1
+	while body_end < len(text) and depth > 0:
+		if text[body_end] == "{":
+			depth += 1
+		elif text[body_end] == "}":
+			depth -= 1
+		body_end += 1
+	body = text[body_start:body_end]
+	positions = []
+	for call in calls:
+		matches = list(re.finditer(rf"(?<![A-Za-z0-9_]){re.escape(call)}", body))
+		if len(matches) != 1:
+			return [f"{relative}: expected exactly one `{call}` in render-hook boundary"]
+		positions.append(matches[0].start())
+	if positions != sorted(positions):
+		return [f"{relative}: render hooks are not ordered as {' -> '.join(calls)}"]
+	return []
+
+
 errors = (
 	check(CORE_FILES, FORBIDDEN_CORE)
 	+ check(RENDER_FILES, FORBIDDEN_RENDER)
-	+ check(CONTEXT_RENDER_FILES, FORBIDDEN_CONTEXT_RENDER)
+	+ check_function_bodies(CONTEXT_RENDER_FUNCTIONS, FORBIDDEN_CONTEXT_RENDER)
 	+ check_function_bodies(RENDER_PURITY_FUNCTIONS, FORBIDDEN_RENDER_MUTATION)
 	+ check_function_bodies(PRESENTATION_UPDATE_FUNCTIONS, FORBIDDEN_PRESENTATION_VIEW)
 	+ check_function_bodies(PRESENTATION_UPDATE_FUNCTIONS, FORBIDDEN_PRESENTATION_EFFECT_ALPHA)
@@ -798,6 +844,7 @@ errors = (
 	+ check_function_bodies(DEMO_SEEK_FUNCTIONS, FORBIDDEN_DEMO_SEEK_FOCUS)
 	+ check_function_bodies(RENDER_PROJECTION_FUNCTIONS, FORBIDDEN_RENDER_PROJECTION_TIME)
 	+ check_function_bodies(ENGINE_TIMING_QUERY_FUNCTIONS, FORBIDDEN_ENGINE_TIMING_QUERY_FOCUS)
+	+ check_function_bodies(PROCESS_SERVER_PACKET_FUNCTIONS, FORBIDDEN_PROCESS_SERVER_PACKET_AMBIENT)
 	+ check_function_bodies(MAP_SOUNDS_UPDATE_FUNCTIONS, FORBIDDEN_MAP_SOUNDS_UPDATE_FOCUS)
 	+ check_function_bodies(MAP_SOUNDS_LOAD_FUNCTIONS, FORBIDDEN_MAP_SOUNDS_LOAD_FOCUS)
 	+ check_function_bodies(SCENE_UPDATE_FUNCTIONS, FORBIDDEN_SCENE_UPDATE_FOCUS)
@@ -815,6 +862,8 @@ errors = (
 	+ check_function_bodies(SIXUP_SNAPSHOT_FUNCTIONS, FORBIDDEN_SIXUP_SNAPSHOT_AMBIENT)
 	+ check_function_bodies(SESSION_MESSAGE_TIME_FUNCTIONS, FORBIDDEN_SESSION_MESSAGE_TIME_FOCUS)
 	+ check_function_bodies(NETWORK_DUMMY_FUNCTIONS, FORBIDDEN_NETWORK_DUMMY_AMBIENT)
+	+ check_ordered_calls("src/engine/client/client.cpp", re.compile(r"\bvoid CClient::Run\s*\("), ("GameClient()->OnRenderPrepare();", "Render();", "GameClient()->OnRenderFinalize();"))
+	+ check_ordered_calls("src/engine/client/client.cpp", re.compile(r"\bvoid CClient::Render\s*\("), ("GameClient()->OnRender();",))
 	+ check(CAMERA_FILES, FORBIDDEN_CAMERA)
 	+ check(CONTROLS_OWNER_FILES, FORBIDDEN_CONTROLS_OWNER)
 	+ check(BROADCAST_OWNER_FILES, FORBIDDEN_BROADCAST_OWNER)

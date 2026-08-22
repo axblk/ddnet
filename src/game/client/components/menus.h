@@ -675,7 +675,7 @@ public:
 
 	void OnStateChange(int NewState, int OldState) override;
 	void OnWindowResize() override;
-	void OnRender() override;
+	void OnRenderApplicationOverlay() override;
 	bool OnInput(const IInput::CEvent &Event) override;
 	bool OnCursorMove(float x, float y, IInput::ECursorType CursorType) override;
 	void OnShutdown() override;

@@ -118,6 +118,7 @@ class CScoreboard : public CComponent
 		CSessionId m_SessionId;
 		CGameStateId m_StateId;
 		CGameViewId m_ViewId;
+		CViewport m_Viewport;
 		std::array<CPlayerInteraction, MAX_CLIENTS> m_aPlayers;
 		CUIRect m_MapTitleRect;
 		bool m_Active = false;

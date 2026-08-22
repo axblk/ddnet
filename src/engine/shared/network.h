@@ -620,6 +620,12 @@ class CNetClient
 
 public:
 	NETSOCKET m_Socket = nullptr;
+	// The socket and the STUN client are owned, so destroying a client that was
+	// never closed explicitly must not leak them.
+	~CNetClient() { Close(); }
+	CNetClient() = default;
+	CNetClient(const CNetClient &) = delete;
+	CNetClient &operator=(const CNetClient &) = delete;
 	// openness
 	bool Open(NETADDR BindAddr);
 	void Close();

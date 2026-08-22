@@ -106,7 +106,7 @@ CClient::CClient() :
 	auto pNetworkSource = std::make_unique<CNetworkSessionSource>();
 	m_pNetworkSessionSource = pNetworkSource.get();
 	m_NetworkSessionId = m_SessionManager.Create(std::move(pNetworkSource));
-	m_pNetworkSessionSource->SetLifecycleCallbacks([this, SessionId = m_NetworkSessionId]() { UpdateNetworkSession(SessionId); }, [this](const char *pReason) { StopNetworkSession(pReason); });
+	m_pNetworkSessionSource->SetLifecycleCallbacks([this, SessionId = m_NetworkSessionId]() { UpdateNetworkSession(SessionId); }, [this, SessionId = m_NetworkSessionId](const char *pReason) { StopNetworkSession(SessionId, pReason); });
 	auto pDemoSource = std::make_unique<CDemoSessionSource>(true, [&]() { UpdateDemoIntraTimers(); });
 	m_pDemoSessionSource = pDemoSource.get();
 	pDemoSource->SetLifecycleCallbacks([this]() { UpdateDemoSession(); }, [this](const char *pReason) { StopDemoSession(pReason); });
@@ -120,6 +120,132 @@ CClient::CClient() :
 		DemoRecorder = CDemoRecorder(&m_pNetworkSessionSource->SnapshotDelta(true));
 	m_LastRenderTime = time_get();
 	mem_zero(&m_Checksum, sizeof(m_Checksum));
+}
+
+CSessionId CClient::CreateNetworkSession()
+{
+	auto pSource = std::make_unique<CNetworkSessionSource>();
+	CNetworkSessionSource *pSourceRaw = pSource.get();
+	const CSessionId SessionId = m_SessionManager.Create(std::move(pSource));
+	if(!SessionId.IsValid())
+		return {};
+	if(m_NetworkInitialized)
+	{
+		for(const auto &pStream : pSourceRaw->Streams())
+		{
+			int Port = 0;
+			char aName[64];
+			str_format(aName, sizeof(aName), "session %" PRIu64 " stream %" PRIu64, SessionId.Value(), pStream->m_Id.Value());
+			char aError[256];
+			if(InitNetworkStream(m_NetworkBindAddr, pStream->m_Connection.m_NetClient, Port, aName, aError, sizeof(aError)))
+				continue;
+			for(const auto &pOpenedStream : pSourceRaw->Streams())
+				pOpenedStream->m_Connection.m_NetClient.Close();
+			m_SessionManager.Destroy(SessionId);
+			AddWarning(SWarning(Localize("Network error"), aError));
+			return {};
+		}
+	}
+	for(bool Sixup : {false, true})
+	{
+		for(const auto &[ItemType, Size] : m_avSnapshotStaticSizes[Sixup])
+			pSourceRaw->SnapshotDelta(Sixup).SetStaticsize(ItemType, Size);
+	}
+	pSourceRaw->SetLifecycleCallbacks([this, SessionId]() { UpdateNetworkSession(SessionId); }, [this, SessionId](const char *pReason) { StopNetworkSession(SessionId, pReason); });
+	GameClient()->OnSessionCreated(SessionId);
+	return SessionId;
+}
+
+CStreamId CClient::ConnectAdditionalStream(CSessionId SessionId)
+{
+	CGameSession *pSession = m_SessionManager.Find(SessionId);
+	if(pSession == nullptr || SessionId == m_NetworkSessionId || pSession->Source().Type() != ESessionSourceType::NETWORK)
+		return {};
+	CNetworkSessionSource &Source = NetworkSource(SessionId);
+	if(Source.State() != ESessionState::READY)
+		return {};
+
+	CStreamId StreamId;
+	for(const auto &pStream : Source.Streams())
+	{
+		if(pStream->m_Id != Source.PrimaryStreamId() && pStream->m_Connection.m_NetClient.State() == NETSTATE_OFFLINE)
+		{
+			StreamId = pStream->m_Id;
+			break;
+		}
+	}
+	if(!StreamId.IsValid())
+	{
+		StreamId = Source.CreateStream();
+		CConnection *pConnection = Source.Connection(StreamId);
+		dbg_assert(pConnection != nullptr, "failed to create Network stream");
+		int Port = 0;
+		char aName[64];
+		str_format(aName, sizeof(aName), "session %" PRIu64 " stream %" PRIu64, SessionId.Value(), StreamId.Value());
+		char aError[256];
+		if(!InitNetworkStream(m_NetworkBindAddr, pConnection->m_NetClient, Port, aName, aError, sizeof(aError)))
+		{
+			Source.DestroyStream(StreamId);
+			AddWarning(SWarning(Localize("Network error"), aError));
+			return {};
+		}
+		GameClient()->OnSessionStreamsChanged(SessionId);
+	}
+
+	CNetworkSessionSource::CStreamConnection *pStream = nullptr;
+	for(const auto &pCandidate : Source.Streams())
+	{
+		if(pCandidate->m_Id == StreamId)
+		{
+			pStream = pCandidate.get();
+			break;
+		}
+	}
+	dbg_assert(pStream != nullptr, "missing additional Network stream");
+	const NETADDR ServerAddress = *Source.Connection(Source.PrimaryStreamId())->m_NetClient.ServerAddress();
+	if(IsSixup(SessionId))
+		pStream->m_Connection.m_NetClient.Connect7(&ServerAddress, 1);
+	else
+		pStream->m_Connection.m_NetClient.Connect(&ServerAddress, 1);
+	pStream->m_Connection.m_NetClient.RefreshStun();
+	pStream->m_Connection.m_InputtimeMarginGraph.Init(-150.0f, 150.0f);
+	pStream->m_Connection.m_GametimeMarginGraph.Init(-150.0f, 150.0f);
+	pStream->m_SendConnectionInfo = true;
+	Source.SetActiveStream(StreamId);
+	GenerateTimeoutCodes(SessionId, &ServerAddress, 1);
+	return StreamId;
+}
+
+bool CClient::DestroyNetworkStream(CSessionId SessionId, CStreamId StreamId)
+{
+	CGameSession *pSession = m_SessionManager.Find(SessionId);
+	if(pSession == nullptr || pSession->Source().Type() != ESessionSourceType::NETWORK)
+		return false;
+	if(SessionId == m_NetworkSessionId && StreamId == this->StreamId(SessionId, CONN_DUMMY))
+		return false;
+	CNetworkSessionSource &Source = NetworkSource(SessionId);
+	if(!Source.DestroyStream(StreamId))
+		return false;
+	GameClient()->OnSessionStreamsChanged(SessionId);
+	return true;
+}
+
+bool CClient::DestroyNetworkSession(CSessionId SessionId)
+{
+	CGameSession *pSession = m_SessionManager.Find(SessionId);
+	if(pSession == nullptr || SessionId == m_NetworkSessionId || pSession->Source().Type() != ESessionSourceType::NETWORK)
+		return false;
+	CSessionSourceBase &Source = SessionSource(SessionId);
+	if(Source.State() != ESessionState::OFFLINE)
+	{
+		m_SessionManager.Close(SessionId);
+		if(!Source.IsUpdating())
+			m_SessionManager.Update(SessionId);
+	}
+	if(Source.State() != ESessionState::OFFLINE)
+		return false;
+	GameClient()->OnSessionDestroyed(SessionId);
+	return m_SessionManager.Destroy(SessionId);
 }
 
 // ----- send functions -----
@@ -178,11 +304,6 @@ static inline bool RepackMsg(const CMsgPacker *pMsg, CPacker &Packer, bool Sixup
 	return true;
 }
 
-int CClient::SendMsg(int Conn, CMsgPacker *pMsg, int Flags)
-{
-	return SendMsg(m_NetworkSessionId, StreamId(m_NetworkSessionId, Conn), pMsg, Flags);
-}
-
 int CClient::SendMsg(CSessionId SessionId, CStreamId StreamId, CMsgPacker *pMsg, int Flags)
 {
 	CNetChunk Packet;
@@ -224,56 +345,68 @@ int CClient::SendMsg(CSessionId SessionId, CStreamId StreamId, CMsgPacker *pMsg,
 	return 0;
 }
 
-void CClient::SendInfo(int Conn)
+void CClient::SendInfo(CSessionId SessionId, CStreamId StreamId)
 {
+	CNetworkSessionSource &Source = NetworkSource(SessionId);
 	CMsgPacker MsgVer(NETMSG_CLIENTVER, true);
-	MsgVer.AddRaw(&m_ConnectionId, sizeof(m_ConnectionId));
+	MsgVer.AddRaw(&Source.m_ConnectionId, sizeof(Source.m_ConnectionId));
 	MsgVer.AddInt(GameClient()->DDNetVersion());
 	MsgVer.AddString(GameClient()->DDNetVersionStr());
-	SendMsg(Conn, &MsgVer, MSGFLAG_VITAL);
+	SendMsg(SessionId, StreamId, &MsgVer, MSGFLAG_VITAL);
 
-	if(IsSixup(m_NetworkSessionId))
+	if(IsSixup(SessionId))
 	{
 		CMsgPacker Msg(NETMSG_INFO, true);
 		Msg.AddString(GAME_NETVERSION7, 128);
-		Msg.AddString(Config()->m_Password);
+		Msg.AddString(Source.m_Password.c_str());
 		Msg.AddInt(GameClient()->ClientVersion7());
-		SendMsg(Conn, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+		SendMsg(SessionId, StreamId, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 		return;
 	}
 
 	CMsgPacker Msg(NETMSG_INFO, true);
 	Msg.AddString(GameClient()->NetVersion());
-	Msg.AddString(m_aPassword);
-	SendMsg(Conn, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+	Msg.AddString(Source.m_Password.c_str());
+	SendMsg(SessionId, StreamId, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 }
 
 void CClient::SendEnterGame(int Conn)
 {
+	SendEnterGame(m_NetworkSessionId, StreamId(m_NetworkSessionId, Conn));
+}
+
+void CClient::SendEnterGame(CSessionId SessionId, CStreamId StreamId)
+{
 	CMsgPacker Msg(NETMSG_ENTERGAME, true);
-	SendMsg(Conn, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+	SendMsg(SessionId, StreamId, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 }
 
 void CClient::SendReady(int Conn)
 {
-	CMsgPacker Msg(NETMSG_READY, true);
-	SendMsg(Conn, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+	SendReady(m_NetworkSessionId, StreamId(m_NetworkSessionId, Conn));
 }
 
-void CClient::SendMapRequest()
+void CClient::SendReady(CSessionId SessionId, CStreamId StreamId)
 {
-	dbg_assert(!m_MapdownloadFileTemp, "Map download already in progress");
-	m_MapdownloadFileTemp = Storage()->OpenFile(m_aMapdownloadFilenameTemp, IOFLAG_WRITE, IStorage::TYPE_SAVE);
-	if(IsSixup(m_NetworkSessionId))
+	CMsgPacker Msg(NETMSG_READY, true);
+	SendMsg(SessionId, StreamId, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+}
+
+void CClient::SendMapRequest(CSessionId SessionId)
+{
+	CNetworkSessionSource &Source = NetworkSource(SessionId);
+	dbg_assert(!Source.m_MapdownloadFileTemp, "Map download already in progress");
+	Source.m_MapdownloadFileTemp = Storage()->OpenFile(Source.m_aMapdownloadFilenameTemp, IOFLAG_WRITE, IStorage::TYPE_SAVE);
+	if(IsSixup(SessionId))
 	{
 		CMsgPacker MsgP(protocol7::NETMSG_REQUEST_MAP_DATA, true, true);
-		SendMsg(CONN_MAIN, &MsgP, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+		SendMsg(SessionId, Source.PrimaryStreamId(), &MsgP, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 	}
 	else
 	{
 		CMsgPacker Msg(NETMSG_REQUEST_MAP_DATA, true);
-		Msg.AddInt(m_MapdownloadChunk);
-		SendMsg(CONN_MAIN, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+		Msg.AddInt(Source.m_MapdownloadChunk);
+		SendMsg(SessionId, Source.PrimaryStreamId(), &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 	}
 }
 
@@ -312,30 +445,29 @@ void CClient::Rcon(const char *pCmd)
 
 float CClient::GotRconCommandsPercentage() const
 {
-	if(m_ExpectedRconCommands <= 0)
+	const CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+	if(Source.m_ExpectedRconCommands <= 0)
 		return -1.0f;
-	if(m_GotRconCommands > m_ExpectedRconCommands)
+	if(Source.m_GotRconCommands > Source.m_ExpectedRconCommands)
 		return -1.0f;
 
-	return (float)m_GotRconCommands / (float)m_ExpectedRconCommands;
+	return (float)Source.m_GotRconCommands / (float)Source.m_ExpectedRconCommands;
 }
 
 float CClient::GotMaplistPercentage() const
 {
-	if(m_ExpectedMaplistEntries <= 0)
+	const CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+	if(Source.m_ExpectedMaplistEntries <= 0)
 		return -1.0f;
-	if(m_vMaplistEntries.size() > (size_t)m_ExpectedMaplistEntries)
+	if(Source.m_vMaplistEntries.size() > (size_t)Source.m_ExpectedMaplistEntries)
 		return -1.0f;
 
-	return (float)m_vMaplistEntries.size() / (float)m_ExpectedMaplistEntries;
+	return (float)Source.m_vMaplistEntries.size() / (float)Source.m_ExpectedMaplistEntries;
 }
 
-bool CClient::ConnectionProblems(CSessionId SessionId, int Conn) const
+bool CClient::ConnectionProblems(CSessionId SessionId, CStreamId StreamId) const
 {
-	if(SessionId == m_DemoSessionId)
-		return false;
-	dbg_assert(SessionId == m_NetworkSessionId, "invalid game session");
-	return NetClient(Conn).GotProblems(MaxLatencyTicks() * time_freq() / GameTickSpeed());
+	return SessionId != m_DemoSessionId && Connection(SessionId, StreamId).m_NetClient.GotProblems(MaxLatencyTicks(SessionId) * time_freq() / GameTickSpeed());
 }
 
 void CClient::SendInput(CSessionId SessionId)
@@ -363,7 +495,7 @@ void CClient::SendInput(CSessionId SessionId)
 
 			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_Tick = GameConnection.m_PredTick;
 			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_PredictedTime = GameConnection.m_PredictedTime.Get(Now);
-			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_PredictionMargin = PredictionMargin() * time_freq() / 1000;
+			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_PredictionMargin = PredictionMargin(SessionId) * time_freq() / 1000;
 			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_Time = Now;
 
 			// pack it
@@ -406,11 +538,10 @@ const char *CClient::LatestVersion() const
 }
 
 // TODO: OPT: do this a lot smarter!
-int *CClient::GetInput(int Conn, int Tick) const
+int *CClient::GetInput(CSessionId SessionId, CStreamId StreamId, int Tick) const
 {
 	int Best = -1;
-	dbg_assert(Conn == CONN_MAIN || Conn == CONN_DUMMY, "invalid game connection");
-	const CConnection &GameConnection = Connection(Conn);
+	const CConnection &GameConnection = Connection(SessionId, StreamId);
 	for(int i = 0; i < 200; i++)
 	{
 		if(GameConnection.m_aInputs[i].m_Tick != -1 && GameConnection.m_aInputs[i].m_Tick <= Tick && (Best == -1 || GameConnection.m_aInputs[Best].m_Tick < GameConnection.m_aInputs[i].m_Tick))
@@ -491,14 +622,6 @@ void CClient::SetFocusedState(EClientState State, bool ResetSession)
 	m_StateStartTime = time_get();
 	GameClient()->OnStateChange(m_State, OldState);
 
-	if(State == IClient::STATE_OFFLINE && m_ReconnectTime == 0)
-	{
-		if(g_Config.m_ClReconnectFull > 0 && (str_find_nocase(ErrorString(), "full") || str_find_nocase(ErrorString(), "reserved")))
-			m_ReconnectTime = time_get() + time_freq() * g_Config.m_ClReconnectFull;
-		else if(g_Config.m_ClReconnectTimeout > 0 && (str_find_nocase(ErrorString(), "Timeout") || str_find_nocase(ErrorString(), "Too weak connection")))
-			m_ReconnectTime = time_get() + time_freq() * g_Config.m_ClReconnectTimeout;
-	}
-
 	if(State == IClient::STATE_ONLINE)
 	{
 		const bool Registered = m_ServerBrowser.IsRegistered(ServerAddress());
@@ -514,6 +637,8 @@ void CClient::SetFocusedState(EClientState State, bool ResetSession)
 
 void CClient::FocusSession(CSessionId SessionId)
 {
+	if(SessionId != m_NetworkSessionId && SessionId != m_DemoSessionId)
+		return;
 	if(!m_SessionManager.SetFocused(SessionId))
 		return;
 	const CGameSession *pSession = m_SessionManager.Find(SessionId);
@@ -544,7 +669,6 @@ void CClient::OnEnterGame(int Conn)
 {
 	CConnection &GameConnection = Connection(Conn);
 	GameConnection.ResetGameplay();
-	m_SnapCrcErrors = 0;
 	// Also make gameclient aware that snapshots have been purged
 	GameClient()->InvalidateSnapshot(m_NetworkSessionId);
 	if(Conn == CONN_MAIN)
@@ -555,24 +679,33 @@ void CClient::OnEnterGame(int Conn)
 	GameClient()->OnEnterGame(m_NetworkSessionId);
 }
 
-void CClient::EnterGame(CSessionId SessionId, int Conn)
+void CClient::EnterGame(CSessionId SessionId, CStreamId StreamId)
 {
-	if(SessionId != m_NetworkSessionId)
+	if(SessionSource(SessionId).Type() != ESessionSourceType::NETWORK)
 		return;
-	Connection(Conn).m_DidPostConnect = false;
+	CConnection &GameConnection = Connection(SessionId, StreamId);
+	GameConnection.m_DidPostConnect = false;
 
 	// now we will wait for two snapshots
 	// to finish the connection
-	SendEnterGame(Conn);
-	OnEnterGame(Conn);
+	SendEnterGame(SessionId, StreamId);
+	GameConnection.ResetGameplay();
+	GameClient()->InvalidateSnapshot(SessionId);
+	GameClient()->OnEnterGame(SessionId);
 
-	ServerInfoRequest(); // fresh one for timeout protection
-	m_CurrentServerNextPingTime = time_get() + time_freq() / 2;
+	if(StreamId == NetworkSource(SessionId).PrimaryStreamId())
+	{
+		CNetworkSessionSource &Source = NetworkSource(SessionId);
+		if(SessionId == m_NetworkSessionId)
+			m_LastDummyConnectTime = 0.0f;
+		Source.m_NextPingTime = time_get() + time_freq() / 2;
+		RequestServerInfo(SessionId); // fresh one for timeout protection
+	}
 }
 
 void CClient::OnPostConnect(int Conn)
 {
-	if(!m_ServerCapabilities.m_ChatTimeoutCode)
+	if(!m_pNetworkSessionSource->m_ServerCapabilities.m_ChatTimeoutCode)
 		return;
 
 	char aBufMsg[256];
@@ -635,7 +768,12 @@ static void GenerateTimeoutCode(char *pBuffer, unsigned Size, char *pSeed, const
 	md5_update(&Md5, (unsigned char *)pSeed, str_length(pSeed) + 1);
 	for(int i = 0; i < NumAddrs; i++)
 	{
-		md5_update(&Md5, (unsigned char *)&pAddrs[i], sizeof(pAddrs[i]));
+		NETADDR Address;
+		mem_zero(&Address, sizeof(Address));
+		Address.type = pAddrs[i].type;
+		mem_copy(Address.ip, pAddrs[i].ip, sizeof(Address.ip));
+		Address.port = pAddrs[i].port;
+		md5_update(&Md5, (unsigned char *)&Address, sizeof(Address));
 	}
 	MD5_DIGEST Digest = md5_finish(&Md5);
 
@@ -649,36 +787,57 @@ void CClient::GenerateTimeoutSeed()
 	secure_random_password(g_Config.m_ClTimeoutSeed, sizeof(g_Config.m_ClTimeoutSeed), 16);
 }
 
-void CClient::GenerateTimeoutCodes(const NETADDR *pAddrs, int NumAddrs)
+void CClient::GenerateTimeoutCodes(CSessionId SessionId, const NETADDR *pAddrs, int NumAddrs)
 {
 	if(g_Config.m_ClTimeoutSeed[0] == '\0')
 	{
 		GenerateTimeoutSeed();
 	}
-	for(int Conn = CONN_MAIN; Conn <= CONN_DUMMY; Conn++)
+	CNetworkSessionSource &Source = NetworkSource(SessionId);
+	for(size_t StreamIndex = 0; StreamIndex < Source.NumStreams(); ++StreamIndex)
 	{
-		CConnection &GameConnection = Connection(Conn);
-		GenerateTimeoutCode(GameConnection.m_aTimeoutCode, sizeof(GameConnection.m_aTimeoutCode), g_Config.m_ClTimeoutSeed, pAddrs, NumAddrs, Conn == CONN_DUMMY);
-		log_debug("client", "timeout code '%s' (%s)", GameConnection.m_aTimeoutCode, Conn == CONN_MAIN ? "normal" : "dummy");
+		CConnection &GameConnection = Source.ConnectionAt(StreamIndex);
+		GenerateTimeoutCode(GameConnection.m_aTimeoutCode, sizeof(GameConnection.m_aTimeoutCode), g_Config.m_ClTimeoutSeed, pAddrs, NumAddrs, StreamIndex != 0);
+		log_debug("client", "timeout code '%s' (stream %" PRIu64 ")", GameConnection.m_aTimeoutCode, Source.StreamIdAt(StreamIndex).Value());
 	}
 }
 
 void CClient::Connect(const char *pAddress, const char *pPassword)
 {
+	ConnectSession(m_NetworkSessionId, pAddress, pPassword);
+}
+
+void CClient::ConnectSession(CSessionId SessionId, const char *pAddress, const char *pPassword)
+{
 	// Disconnect will not change the state if we are already quitting/restarting
 	if(m_State == IClient::STATE_QUITTING || m_State == IClient::STATE_RESTARTING)
 		return;
-	if(m_pNetworkSessionSource->State() != ESessionState::OFFLINE)
-		DisconnectWithReason(nullptr);
-	dbg_assert(m_pNetworkSessionSource->State() == ESessionState::OFFLINE, "network session must be offline before connecting");
+	CNetworkSessionSource &Source = NetworkSource(SessionId);
+	if(Source.IsUpdating())
+	{
+		// Closing a session only requests the stop, and the stop runs once the
+		// session update returns. Servers ask for a reconnect or a redirect
+		// from inside that update, so the connect has to wait for the next
+		// client update instead of finding the session still stopping.
+		Source.ScheduleServerConnect(pAddress, pPassword);
+		m_SessionManager.Close(SessionId);
+		return;
+	}
+	Source.CancelReconnect();
+	if(Source.State() != ESessionState::OFFLINE)
+	{
+		m_SessionManager.Close(SessionId);
+		m_SessionManager.Update(SessionId);
+	}
+	dbg_assert(Source.State() == ESessionState::OFFLINE, "network session must be offline before connecting");
 
-	const NETADDR LastAddr = ServerAddress();
+	const NETADDR LastAddr = *Source.Connection(Source.PrimaryStreamId())->m_NetClient.ServerAddress();
 
-	if(pAddress != m_aConnectAddressStr)
-		str_copy(m_aConnectAddressStr, pAddress);
+	if(pAddress != Source.m_ConnectAddress)
+		Source.m_ConnectAddress = pAddress;
 
 	char aMsg[512];
-	str_format(aMsg, sizeof(aMsg), "connecting to '%s'", m_aConnectAddressStr);
+	str_format(aMsg, sizeof(aMsg), "connecting to '%s'", Source.m_ConnectAddress.c_str());
 	m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aMsg, CLIENT_NETWORK_PRINT_COLOR);
 
 	int NumConnectAddrs = 0;
@@ -696,7 +855,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		if(UrlParseResult > 0)
 			str_copy(aHost, aBuffer);
 
-		if(net_host_lookup(aHost, &NextAddr, NetClient(CONN_MAIN).NetType()) != 0)
+		if(net_host_lookup(aHost, &NextAddr, Source.Connection(Source.PrimaryStreamId())->m_NetClient.NetType()) != 0)
 		{
 			log_error("client", "could not find address of %s", aHost);
 			continue;
@@ -721,7 +880,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 
 		if(NextAddr == LastAddr)
 		{
-			m_SendPassword = true;
+			Source.m_SendPassword = true;
 		}
 
 		aConnectAddrs[NumConnectAddrs] = NextAddr;
@@ -732,49 +891,56 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	{
 		log_error("client", "could not find any connect address");
 		char aWarning[256];
-		str_format(aWarning, sizeof(aWarning), Localize("Could not resolve connect address '%s'. See local console for details."), m_aConnectAddressStr);
+		str_format(aWarning, sizeof(aWarning), Localize("Could not resolve connect address '%s'. See local console for details."), Source.m_ConnectAddress.c_str());
 		SWarning Warning(Localize("Connect address error"), aWarning);
 		Warning.m_AutoHide = false;
 		AddWarning(Warning);
 		return;
 	}
 
-	m_ConnectionId = RandomUuid();
-	ServerInfoRequest();
+	Source.m_ConnectionId = RandomUuid();
+	if(SessionId == m_NetworkSessionId)
+		RequestServerInfo(SessionId);
 
-	if(m_SendPassword)
+	if(pPassword)
 	{
-		str_copy(m_aPassword, g_Config.m_Password);
-		m_SendPassword = false;
+		Source.m_Password = pPassword;
+		Source.m_SendPassword = false;
 	}
-	else if(!pPassword)
+	else if(Source.m_SendPassword)
 	{
-		m_aPassword[0] = 0;
-	}
-	else
-	{
-		str_copy(m_aPassword, pPassword);
-	}
-
-	m_CanReceiveServerCapabilities = true;
-
-	m_pNetworkSessionSource->SetSixup(OnlySixup);
-	if(IsSixup(m_NetworkSessionId))
-	{
-		NetClient(CONN_MAIN).Connect7(aConnectAddrs, NumConnectAddrs);
+		Source.m_Password = g_Config.m_Password;
+		Source.m_SendPassword = false;
 	}
 	else
 	{
-		NetClient(CONN_MAIN).Connect(aConnectAddrs, NumConnectAddrs);
+		Source.m_Password.clear();
 	}
 
-	NetClient(CONN_MAIN).RefreshStun();
-	SetState(IClient::STATE_CONNECTING);
+	Source.m_CanReceiveServerCapabilities = true;
 
-	Connection(CONN_MAIN).m_InputtimeMarginGraph.Init(-150.0f, 150.0f);
-	Connection(CONN_MAIN).m_GametimeMarginGraph.Init(-150.0f, 150.0f);
+	Source.SetSixup(OnlySixup);
+	CNetClient &PrimaryNetClient = Source.Connection(Source.PrimaryStreamId())->m_NetClient;
+	if(IsSixup(SessionId))
+	{
+		PrimaryNetClient.Connect7(aConnectAddrs, NumConnectAddrs);
+	}
+	else
+	{
+		PrimaryNetClient.Connect(aConnectAddrs, NumConnectAddrs);
+	}
 
-	GenerateTimeoutCodes(aConnectAddrs, NumConnectAddrs);
+	PrimaryNetClient.RefreshStun();
+	if(m_SessionManager.FocusedId() == SessionId)
+		SetFocusedState(IClient::STATE_CONNECTING, true);
+	else
+		Source.SetState(ESessionState::CONNECTING);
+
+	CConnection &PrimaryConnection = *Source.Connection(Source.PrimaryStreamId());
+	PrimaryConnection.m_InputtimeMarginGraph.Init(-150.0f, 150.0f);
+	PrimaryConnection.m_GametimeMarginGraph.Init(-150.0f, 150.0f);
+
+	GenerateTimeoutCodes(SessionId, aConnectAddrs, NumConnectAddrs);
 }
 
 void CClient::DisconnectWithReason(const char *pReason)
@@ -784,11 +950,33 @@ void CClient::DisconnectWithReason(const char *pReason)
 		m_SessionManager.Update(m_NetworkSessionId);
 }
 
-void CClient::StopNetworkSession(const char *pReason)
+void CClient::StopNetworkSession(CSessionId SessionId, const char *pReason)
 {
-	const bool Focused = m_SessionManager.FocusedId() == m_NetworkSessionId;
+	CNetworkSessionSource &Source = NetworkSource(SessionId);
+	char aReconnectError[256];
+	str_copy(aReconnectError, Source.Connection(Source.PrimaryStreamId())->m_NetClient.ErrorString());
+	const bool Focused = m_SessionManager.FocusedId() == SessionId;
 	if(pReason != nullptr && pReason[0] == '\0')
 		pReason = nullptr;
+	if(SessionId != m_NetworkSessionId)
+	{
+		char aBuf[512];
+		str_format(aBuf, sizeof(aBuf), "disconnecting session %" PRIu64 ". reason='%s'", SessionId.Value(), pReason ? pReason : "unknown");
+		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_COLOR);
+		for(const auto &pStream : Source.Streams())
+		{
+			pStream->m_Connection.m_NetClient.Disconnect(pReason);
+			pStream->m_Connection.ResetSnapshots();
+		}
+		ResetMapDownload(SessionId, true);
+		if(m_State < IClient::STATE_QUITTING)
+			GameClient()->OnSessionClosed(SessionId);
+		Source.ResetAfterDisconnect(aReconnectError, g_Config.m_ClReconnectFull, g_Config.m_ClReconnectTimeout, time_get(), time_freq());
+		Source.SetState(ESessionState::OFFLINE);
+		if(Focused && m_State < IClient::STATE_QUITTING)
+			FocusSession(m_NetworkSessionId);
+		return;
+	}
 
 	DummyDisconnect(pReason);
 
@@ -802,46 +990,28 @@ void CClient::StopNetworkSession(const char *pReason)
 		DemoRecorder(Recorder)->Stop(Recorder == RECORDER_REPLAYS ? IDemoRecorder::EStopMode::REMOVE_FILE : IDemoRecorder::EStopMode::KEEP_FILE);
 	}
 
-	Connection(m_NetworkSessionId, CONN_MAIN).m_RconAuthed = 0;
 	// Make sure to clear credentials completely from memory
 	mem_zero(m_aRconUsername, sizeof(m_aRconUsername));
 	mem_zero(m_aRconPassword, sizeof(m_aRconPassword));
-	m_MapDetails = std::nullopt;
-	m_ServerSentCapabilities = false;
-	m_UseTempRconCommands = 0;
-	m_ExpectedRconCommands = -1;
-	m_GotRconCommands = 0;
 	m_pConsole->DeregisterTempAll();
-	m_ExpectedMaplistEntries = -1;
-	m_vMaplistEntries.clear();
 	GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
 	NetClient(CONN_MAIN).Disconnect(pReason);
 	if(Focused && m_State < IClient::STATE_QUITTING)
 		SetFocusedState(IClient::STATE_OFFLINE, true);
 	else
 	{
-		GameClient()->OnSessionClosed(m_NetworkSessionId);
+		if(m_State < IClient::STATE_QUITTING)
+			GameClient()->OnSessionClosed(m_NetworkSessionId);
 		m_pNetworkSessionSource->SetState(ESessionState::OFFLINE);
 	}
-	m_CurrentServerPingInfoType = -1;
-	m_CurrentServerPingBasicToken = -1;
-	m_CurrentServerPingToken = -1;
-	mem_zero(&m_CurrentServerPingUuid, sizeof(m_CurrentServerPingUuid));
-	m_CurrentServerCurrentPingTime = -1;
-	m_CurrentServerNextPingTime = -1;
-
-	ResetMapDownload(true);
+	ResetMapDownload(SessionId, true);
 
 	// clear the current server info
-	m_pNetworkSessionSource->ResetMetadata();
+	m_pNetworkSessionSource->ResetAfterDisconnect(aReconnectError, g_Config.m_ClReconnectFull, g_Config.m_ClReconnectTimeout, time_get(), time_freq());
 
 	// clear snapshots
 	Connection(m_NetworkSessionId, CONN_MAIN).ResetSnapshots();
 	SetActiveConnection(CONN_MAIN);
-	m_pNetworkSessionSource->SetLastActiveStreamId(m_pNetworkSessionSource->PrimaryStreamId());
-
-	// 0.7
-	m_pNetworkSessionSource->TranslationContext().Reset();
 }
 
 void CClient::DisconnectDemoWithReason(const char *pReason)
@@ -857,7 +1027,8 @@ void CClient::StopDemoSession(const char *pReason)
 	char aReason[256];
 	str_copy(aReason, pReason ? pReason : "");
 	DemoPlayer().Stop(aReason);
-	GameClient()->OnSessionClosed(m_DemoSessionId);
+	if(m_State < IClient::STATE_QUITTING)
+		GameClient()->OnSessionClosed(m_DemoSessionId);
 	m_pDemoSessionSource->SetState(ESessionState::OFFLINE);
 	Connection(m_DemoSessionId, CONN_MAIN).ResetSnapshots();
 	m_pDemoSessionSource->ResetMetadata();
@@ -877,9 +1048,12 @@ void CClient::Disconnect()
 	{
 		DisconnectDemoWithReason(nullptr);
 	}
-	else if(m_pNetworkSessionSource->State() != ESessionState::OFFLINE)
+	else if(pFocusedSession && pFocusedSession->Source().Type() == ESessionSourceType::NETWORK && pFocusedSession->State() != ESessionState::OFFLINE)
 	{
-		DisconnectWithReason(nullptr);
+		const CSessionId SessionId = pFocusedSession->Id();
+		m_SessionManager.Close(SessionId);
+		if(!NetworkSource(SessionId).IsUpdating())
+			m_SessionManager.Update(SessionId);
 	}
 }
 
@@ -964,21 +1138,26 @@ void CClient::DummyDisconnect(const char *pReason)
 
 bool CClient::DummyAllowed() const
 {
-	return m_ServerCapabilities.m_AllowDummy;
+	return m_pNetworkSessionSource->m_ServerCapabilities.m_AllowDummy;
 }
 
-void CClient::ServerInfoRequest()
+void CClient::RequestServerInfo(CSessionId SessionId)
 {
-	m_pNetworkSessionSource->ServerInfo() = {};
-	m_CurrentServerInfoRequestTime = 0;
+	CNetworkSessionSource &Source = NetworkSource(SessionId);
+	Source.ServerInfo() = {};
+	if(SessionId == m_NetworkSessionId)
+		m_CurrentServerInfoRequestTime = 0;
+	else
+		m_ServerBrowser.RequestCurrentServer(*Source.Connection(Source.PrimaryStreamId())->m_NetClient.ServerAddress());
 }
 
-void CClient::SetCurrentServerInfo(const CServerInfo &ServerInfo)
+void CClient::SetSessionServerInfo(CSessionId SessionId, const CServerInfo &ServerInfo)
 {
-	CServerInfo &CurrentServerInfo = m_pNetworkSessionSource->ServerInfo();
+	CServerInfo &CurrentServerInfo = NetworkSource(SessionId).ServerInfo();
 	CurrentServerInfo = ServerInfo;
-	m_CurrentServerInfoRequestTime = -1;
-	const IMap *pMap = GameClient()->Map(m_NetworkSessionId);
+	if(SessionId == m_NetworkSessionId)
+		m_CurrentServerInfoRequestTime = -1;
+	const IMap *pMap = GameClient()->Map(SessionId);
 	str_copy(CurrentServerInfo.m_aMap, pMap->BaseName());
 	CurrentServerInfo.m_MapCrc = pMap->Crc();
 	CurrentServerInfo.m_MapSize = pMap->Size();
@@ -991,11 +1170,10 @@ void CClient::LoadDebugFont()
 
 // ---
 
-IClient::CSnapItem CClient::SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const
+IClient::CSnapItem CClient::SnapGetItem(CSessionId SessionId, CStreamId StreamId, int SnapId, int Index) const
 {
-	dbg_assert(Conn == CONN_MAIN || Conn == CONN_DUMMY, "invalid game connection");
 	dbg_assert(SnapId >= 0 && SnapId < NUM_SNAPSHOT_TYPES, "invalid SnapId");
-	const CSnapshot *pSnapshot = Connection(SessionId, Conn).m_apSnapshots[SnapId]->m_pAltSnap;
+	const CSnapshot *pSnapshot = Connection(SessionId, StreamId).m_apSnapshots[SnapId]->m_pAltSnap;
 	const CSnapshotItem *pSnapshotItem = pSnapshot->GetItem(Index);
 	CSnapItem Item;
 	Item.m_Type = pSnapshot->GetItemType(Index);
@@ -1005,33 +1183,41 @@ IClient::CSnapItem CClient::SnapGetItem(CSessionId SessionId, int Conn, int Snap
 	return Item;
 }
 
-const void *CClient::SnapFindItem(CSessionId SessionId, int Conn, int SnapId, int Type, int Id) const
+const void *CClient::SnapFindItem(CSessionId SessionId, CStreamId StreamId, int SnapId, int Type, int Id) const
 {
-	dbg_assert(Conn == CONN_MAIN || Conn == CONN_DUMMY, "invalid game connection");
-	if(!Connection(SessionId, Conn).m_apSnapshots[SnapId])
+	if(!Connection(SessionId, StreamId).m_apSnapshots[SnapId])
 		return nullptr;
 
-	return Connection(SessionId, Conn).m_apSnapshots[SnapId]->m_pAltSnap->FindItem(Type, Id);
+	return Connection(SessionId, StreamId).m_apSnapshots[SnapId]->m_pAltSnap->FindItem(Type, Id);
 }
 
-int CClient::SnapNumItems(CSessionId SessionId, int Conn, int SnapId) const
+int CClient::SnapNumItems(CSessionId SessionId, CStreamId StreamId, int SnapId) const
 {
-	dbg_assert(Conn == CONN_MAIN || Conn == CONN_DUMMY, "invalid game connection");
 	dbg_assert(SnapId >= 0 && SnapId < NUM_SNAPSHOT_TYPES, "invalid SnapId");
-	if(!Connection(SessionId, Conn).m_apSnapshots[SnapId])
+	if(!Connection(SessionId, StreamId).m_apSnapshots[SnapId])
 		return 0;
-	return Connection(SessionId, Conn).m_apSnapshots[SnapId]->m_pAltSnap->NumItems();
+	return Connection(SessionId, StreamId).m_apSnapshots[SnapId]->m_pAltSnap->NumItems();
 }
 
 void CClient::SnapSetStaticsize(int ItemType, int Size)
 {
-	m_pNetworkSessionSource->SnapshotDelta(false).SetStaticsize(ItemType, Size);
+	m_avSnapshotStaticSizes[false].emplace_back(ItemType, Size);
+	for(CSessionId SessionId : m_SessionManager.SessionIds())
+	{
+		if(SessionSource(SessionId).Type() == ESessionSourceType::NETWORK)
+			NetworkSource(SessionId).SnapshotDelta(false).SetStaticsize(ItemType, Size);
+	}
 	m_pDemoSessionSource->SnapshotDelta(false).SetStaticsize(ItemType, Size);
 }
 
 void CClient::SnapSetStaticsize7(int ItemType, int Size)
 {
-	m_pNetworkSessionSource->SnapshotDelta(true).SetStaticsize(ItemType, Size);
+	m_avSnapshotStaticSizes[true].emplace_back(ItemType, Size);
+	for(CSessionId SessionId : m_SessionManager.SessionIds())
+	{
+		if(SessionSource(SessionId).Type() == ESessionSourceType::NETWORK)
+			NetworkSource(SessionId).SnapshotDelta(true).SetStaticsize(ItemType, Size);
+	}
 	m_pDemoSessionSource->SnapshotDelta(true).SetStaticsize(ItemType, Size);
 }
 
@@ -1210,12 +1396,33 @@ void CClient::ResetSocket()
 		return;
 	}
 	BindAddr.type = NETTYPE_ALL;
-	for(int Conn = 0; Conn < NUM_CONNS; Conn++)
+	m_NetworkBindAddr = BindAddr;
+	for(CSessionId SessionId : m_SessionManager.SessionIds())
 	{
-		char aError[256];
-		if(!InitNetworkClientImpl(BindAddr, Conn, aError, sizeof(aError)))
-			log_error("client", "%s", aError);
+		if(SessionSource(SessionId).Type() != ESessionSourceType::NETWORK)
+			continue;
+		CNetworkSessionSource &Source = NetworkSource(SessionId);
+		for(size_t StreamIndex = 0; StreamIndex < Source.NumStreams(); ++StreamIndex)
+		{
+			char aError[256];
+			if(SessionId == m_NetworkSessionId && StreamIndex <= CONN_DUMMY)
+			{
+				if(!InitNetworkClientImpl(BindAddr, static_cast<int>(StreamIndex), aError, sizeof(aError)))
+					log_error("client", "%s", aError);
+			}
+			else
+			{
+				int Port = 0;
+				char aName[64];
+				str_format(aName, sizeof(aName), "session %" PRIu64 " stream %" PRIu64, SessionId.Value(), Source.StreamIdAt(StreamIndex).Value());
+				if(!InitNetworkStream(BindAddr, Source.ConnectionAt(StreamIndex).m_NetClient, Port, aName, aError, sizeof(aError)))
+					log_error("client", "%s", aError);
+			}
+		}
 	}
+	char aContactError[256];
+	if(!InitNetworkClientImpl(BindAddr, CONN_CONTACT, aContactError, sizeof(aContactError)))
+		log_error("client", "%s", aContactError);
 }
 const char *CClient::PlayerName() const
 {
@@ -1300,14 +1507,13 @@ const char *CClient::LoadMap(CSessionId SessionId, const char *pName, const char
 	// Unload the current map and reset all snapshots before loading a new map,
 	// because the snapshots are only valid for the old map.
 	IMap *pMap = GameClient()->Map(SessionId);
-	if(SessionId == m_NetworkSessionId)
+	if(SessionSource(SessionId).Type() == ESessionSourceType::NETWORK)
 	{
-		for(int Conn = CONN_MAIN; Conn <= CONN_DUMMY; Conn++)
-			Connection(SessionId, Conn).ResetSnapshots();
+		for(const auto &pStream : NetworkSource(SessionId).Streams())
+			pStream->m_Connection.ResetSnapshots();
 	}
 	else
 		Connection(SessionId, CONN_MAIN).ResetSnapshots();
-	m_SnapCrcErrors = 0;
 	GameClient()->InvalidateSnapshot(SessionId);
 
 	if(!pMap->Load(pName, Storage(), pFilename, IStorage::TYPE_ALL))
@@ -1609,38 +1815,42 @@ void CClient::ProcessServerInfo(int RawType, NETADDR *pFrom, const void *pData, 
 		//
 		// SERVERINFO_EXTENDED_MORE doesn't carry any server
 		// information, so just skip it.
-		if(NetClient(CONN_MAIN).State() == NETSTATE_ONLINE &&
-			ServerAddress() == *pFrom &&
-			RawType != SERVERINFO_EXTENDED_MORE)
+		for(CSessionId SessionId : m_SessionManager.SessionIds())
 		{
+			if(SessionSource(SessionId).Type() != ESessionSourceType::NETWORK)
+				continue;
+			CNetworkSessionSource &Source = NetworkSource(SessionId);
+			CNetClient &PrimaryNetClient = Source.Connection(Source.PrimaryStreamId())->m_NetClient;
+			if(PrimaryNetClient.State() != NETSTATE_ONLINE || *PrimaryNetClient.ServerAddress() != *pFrom || RawType == SERVERINFO_EXTENDED_MORE)
+				continue;
 			// Only accept server info that has a type that is
 			// newer or equal to something the server already sent
 			// us.
-			if(SavedType >= ServerInfo(m_NetworkSessionId).m_Type &&
-				GameClient()->Map(m_NetworkSessionId)->IsLoaded())
+			if(SavedType >= ServerInfo(SessionId).m_Type && GameClient()->Map(SessionId)->IsLoaded())
 			{
-				SetCurrentServerInfo(Info);
-				Discord()->UpdateServerInfo(ServerInfo(m_NetworkSessionId));
+				SetSessionServerInfo(SessionId, Info);
+				if(SessionId == m_NetworkSessionId)
+					Discord()->UpdateServerInfo(ServerInfo(SessionId));
 			}
 
 			bool ValidPong = false;
-			if(!m_ServerCapabilities.m_PingEx && m_CurrentServerCurrentPingTime >= 0 && SavedType >= m_CurrentServerPingInfoType)
+			if(!Source.m_ServerCapabilities.m_PingEx && Source.m_CurrentPingTime >= 0 && SavedType >= Source.m_PingInfoType)
 			{
 				if(RawType == SERVERINFO_VANILLA)
 				{
-					ValidPong = Token == m_CurrentServerPingBasicToken;
+					ValidPong = Token == Source.m_PingBasicToken;
 				}
 				else if(RawType == SERVERINFO_EXTENDED)
 				{
-					ValidPong = Token == m_CurrentServerPingToken;
+					ValidPong = Token == Source.m_PingToken;
 				}
 			}
 			if(ValidPong)
 			{
-				int LatencyMs = (time_get() - m_CurrentServerCurrentPingTime) * 1000 / time_freq();
-				m_ServerBrowser.SetCurrentServerPing(ServerAddress(), LatencyMs);
-				m_CurrentServerPingInfoType = SavedType;
-				m_CurrentServerCurrentPingTime = -1;
+				int LatencyMs = (time_get() - Source.m_CurrentPingTime) * 1000 / time_freq();
+				m_ServerBrowser.SetCurrentServerPing(*PrimaryNetClient.ServerAddress(), LatencyMs);
+				Source.m_PingInfoType = SavedType;
+				Source.m_CurrentPingTime = -1;
 
 				char aBuf[64];
 				str_format(aBuf, sizeof(aBuf), "got pong from current server, latency=%dms", LatencyMs);
@@ -1692,6 +1902,7 @@ static CServerCapabilities GetServerCapabilities(int Version, int Flags, bool Si
 void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNetChunk *pPacket)
 {
 	CNetworkSessionSource &Source = NetworkSource(SessionId);
+	CConnection &GameConnection = Connection(SessionId, StreamId);
 	const int Conn = Source.StreamIndex(StreamId);
 	dbg_assert(Conn >= 0, "missing packet stream index");
 	const bool PrimaryStream = StreamId == Source.PrimaryStreamId();
@@ -1720,7 +1931,7 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 	if(IsSixup(SessionId))
 	{
 		bool IsExMsg = false;
-		int Success = !TranslateSysMsg(&Msg, Sys, &Unpacker, &Packer6, pPacket, &IsExMsg);
+		int Success = !TranslateSysMsg(SessionId, &Msg, Sys, &Unpacker, &Packer6, pPacket, &IsExMsg);
 		if(Msg < 0)
 			return;
 		if(Success && !IsExMsg)
@@ -1749,8 +1960,8 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 				pMapUrl = "";
 			}
 
-			m_MapDetails = std::make_optional<CMapDetails>();
-			CMapDetails &MapDetails = m_MapDetails.value();
+			Source.m_MapDetails = CNetworkSessionSource::CMapDetails{};
+			CNetworkSessionSource::CMapDetails &MapDetails = Source.m_MapDetails.value();
 			str_copy(MapDetails.m_aName, pMap);
 			MapDetails.m_Size = MapSize;
 			MapDetails.m_Crc = MapCrc;
@@ -1759,7 +1970,7 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 		}
 		else if(PrimaryStream && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_CAPABILITIES)
 		{
-			if(!m_CanReceiveServerCapabilities)
+			if(!Source.m_CanReceiveServerCapabilities)
 			{
 				return;
 			}
@@ -1769,19 +1980,19 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			{
 				return;
 			}
-			m_ServerCapabilities = GetServerCapabilities(Version, Flags, IsSixup(SessionId));
-			m_CanReceiveServerCapabilities = false;
-			m_ServerSentCapabilities = true;
+			Source.m_ServerCapabilities = GetServerCapabilities(Version, Flags, IsSixup(SessionId));
+			Source.m_CanReceiveServerCapabilities = false;
+			Source.m_ServerSentCapabilities = true;
 		}
 		else if(PrimaryStream && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAP_CHANGE)
 		{
-			if(m_CanReceiveServerCapabilities)
+			if(Source.m_CanReceiveServerCapabilities)
 			{
-				m_ServerCapabilities = GetServerCapabilities(0, 0, IsSixup(SessionId));
-				m_CanReceiveServerCapabilities = false;
+				Source.m_ServerCapabilities = GetServerCapabilities(0, 0, IsSixup(SessionId));
+				Source.m_CanReceiveServerCapabilities = false;
 			}
-			std::optional<CMapDetails> MapDetails = std::nullopt;
-			std::swap(MapDetails, m_MapDetails);
+			std::optional<CNetworkSessionSource::CMapDetails> MapDetails = std::nullopt;
+			std::swap(MapDetails, Source.m_MapDetails);
 
 			const char *pMap = Unpacker.GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES);
 			int MapCrc = Unpacker.GetInt();
@@ -1792,22 +2003,22 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			}
 			if(MapSize < 0 || MapSize > 1024 * 1024 * 1024) // 1 GiB
 			{
-				DisconnectWithReason("invalid map size");
+				m_SessionManager.Close(SessionId, "invalid map size");
 				return;
 			}
 
 			if(!str_valid_filename(pMap))
 			{
-				DisconnectWithReason("map name is not a valid filename");
+				m_SessionManager.Close(SessionId, "map name is not a valid filename");
 				return;
 			}
 
-			if(m_DummyConnected && !m_DummyReconnectOnReload)
+			if(SessionId == m_NetworkSessionId && m_DummyConnected && !m_DummyReconnectOnReload)
 			{
 				DummyDisconnect(nullptr);
 			}
 
-			ResetMapDownload(true);
+			ResetMapDownload(SessionId, true);
 
 			std::optional<SHA256_DIGEST> MapSha256;
 			const char *pMapUrl = nullptr;
@@ -1823,47 +2034,57 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			if(LoadMapSearch(SessionId, pMap, MapSha256, MapCrc) == nullptr)
 			{
 				m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", "loading done");
-				SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_SENDING_READY);
-				SendReady(CONN_MAIN);
+				if(m_SessionManager.FocusedId() == SessionId)
+					SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_SENDING_READY);
+				SendReady(SessionId, Source.PrimaryStreamId());
 			}
 			else
 			{
 				// start map download
-				FormatMapDownloadFilename(pMap, MapSha256, MapCrc, false, m_aMapdownloadFilename, sizeof(m_aMapdownloadFilename));
-				FormatMapDownloadFilename(pMap, MapSha256, MapCrc, true, m_aMapdownloadFilenameTemp, sizeof(m_aMapdownloadFilenameTemp));
+				FormatMapDownloadFilename(pMap, MapSha256, MapCrc, false, Source.m_aMapdownloadFilename, sizeof(Source.m_aMapdownloadFilename));
+				FormatMapDownloadFilename(pMap, MapSha256, MapCrc, true, Source.m_aMapdownloadFilenameTemp, sizeof(Source.m_aMapdownloadFilenameTemp));
+				if(SessionId != m_NetworkSessionId)
+				{
+					char aBase[sizeof(Source.m_aMapdownloadFilenameTemp)];
+					char aSuffix[32];
+					str_copy(aBase, Source.m_aMapdownloadFilenameTemp);
+					str_format(aSuffix, sizeof(aSuffix), ".session%" PRIu64, SessionId.Value());
+					str_truncate(Source.m_aMapdownloadFilenameTemp, sizeof(Source.m_aMapdownloadFilenameTemp), aBase, sizeof(Source.m_aMapdownloadFilenameTemp) - str_length(aSuffix) - 1);
+					str_append(Source.m_aMapdownloadFilenameTemp, aSuffix);
+				}
 
 				char aBuf[256];
-				str_format(aBuf, sizeof(aBuf), "starting to download map to '%s'", m_aMapdownloadFilenameTemp);
+				str_format(aBuf, sizeof(aBuf), "starting to download map to '%s'", Source.m_aMapdownloadFilenameTemp);
 				m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", aBuf);
 
-				str_copy(m_aMapdownloadName, pMap);
-				m_MapdownloadSha256 = MapSha256;
-				m_MapdownloadCrc = MapCrc;
-				m_MapdownloadTotalsize = MapSize;
+				str_copy(Source.m_aMapdownloadName, pMap);
+				Source.m_MapdownloadSha256 = MapSha256;
+				Source.m_MapdownloadCrc = MapCrc;
+				Source.m_MapdownloadTotalsize = MapSize;
 
 				if(MapSha256.has_value())
 				{
 					char aUrl[256];
 					char aEscaped[256];
-					EscapeUrl(aEscaped, str_startswith(m_aMapdownloadFilename, "downloadedmaps/"));
+					EscapeUrl(aEscaped, str_startswith(Source.m_aMapdownloadFilename, "downloadedmaps/"));
 					bool UseConfigUrl = str_comp(g_Config.m_ClMapDownloadUrl, "https://maps.ddnet.org") != 0 || m_aMapDownloadUrl[0] == '\0';
 					str_format(aUrl, sizeof(aUrl), "%s/%s", UseConfigUrl ? g_Config.m_ClMapDownloadUrl : m_aMapDownloadUrl, aEscaped);
 
-					m_pMapdownloadTask = HttpGetFile(pMapUrl ? pMapUrl : aUrl, Storage(), m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE);
-					m_pMapdownloadTask->Timeout(CTimeout{g_Config.m_ClMapDownloadConnectTimeoutMs, 0, g_Config.m_ClMapDownloadLowSpeedLimit, g_Config.m_ClMapDownloadLowSpeedTime});
-					m_pMapdownloadTask->MaxResponseSize(MapSize);
-					m_pMapdownloadTask->ExpectSha256(MapSha256.value());
-					Http()->Run(m_pMapdownloadTask);
+					Source.m_pMapdownloadTask = HttpGetFile(pMapUrl ? pMapUrl : aUrl, Storage(), Source.m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE);
+					Source.m_pMapdownloadTask->Timeout(CTimeout{g_Config.m_ClMapDownloadConnectTimeoutMs, 0, g_Config.m_ClMapDownloadLowSpeedLimit, g_Config.m_ClMapDownloadLowSpeedTime});
+					Source.m_pMapdownloadTask->MaxResponseSize(MapSize);
+					Source.m_pMapdownloadTask->ExpectSha256(MapSha256.value());
+					Http()->Run(Source.m_pMapdownloadTask);
 				}
 				else
 				{
-					SendMapRequest();
+					SendMapRequest(SessionId);
 				}
 			}
 		}
 		else if(PrimaryStream && Msg == NETMSG_MAP_DATA)
 		{
-			if(!m_MapdownloadFileTemp)
+			if(!Source.m_MapdownloadFileTemp)
 			{
 				return;
 			}
@@ -1871,7 +2092,7 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			int MapCRC = -1;
 			int Chunk = -1;
 			int Size = -1;
-			CTranslationContext &TranslationContext = m_pNetworkSessionSource->TranslationContext();
+			CTranslationContext &TranslationContext = Source.TranslationContext();
 
 			if(IsSixup(SessionId))
 			{
@@ -1881,9 +2102,9 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 				{
 					return;
 				}
-				MapCRC = m_MapdownloadCrc;
-				Chunk = m_MapdownloadChunk;
-				Size = std::min(TranslationContext.m_MapDownloadChunkSize, TranslationContext.m_MapdownloadTotalsize - m_MapdownloadAmount);
+				MapCRC = Source.m_MapdownloadCrc;
+				Chunk = Source.m_MapdownloadChunk;
+				Size = std::min(TranslationContext.m_MapDownloadChunkSize, TranslationContext.m_MapdownloadTotalsize - Source.m_MapdownloadAmount);
 			}
 			else
 			{
@@ -1894,33 +2115,33 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			}
 
 			const unsigned char *pData = Unpacker.GetRaw(Size);
-			if(Unpacker.Error() || Size <= 0 || MapCRC != m_MapdownloadCrc || Chunk != m_MapdownloadChunk)
+			if(Unpacker.Error() || Size <= 0 || MapCRC != Source.m_MapdownloadCrc || Chunk != Source.m_MapdownloadChunk)
 			{
 				return;
 			}
 
-			io_write(m_MapdownloadFileTemp, pData, Size);
+			io_write(Source.m_MapdownloadFileTemp, pData, Size);
 
-			m_MapdownloadAmount += Size;
+			Source.m_MapdownloadAmount += Size;
 
 			if(IsSixup(SessionId))
-				Last = m_MapdownloadAmount == TranslationContext.m_MapdownloadTotalsize;
+				Last = Source.m_MapdownloadAmount == TranslationContext.m_MapdownloadTotalsize;
 
 			if(Last)
 			{
-				if(m_MapdownloadFileTemp)
+				if(Source.m_MapdownloadFileTemp)
 				{
-					io_close(m_MapdownloadFileTemp);
-					m_MapdownloadFileTemp = nullptr;
+					io_close(Source.m_MapdownloadFileTemp);
+					Source.m_MapdownloadFileTemp = nullptr;
 				}
-				FinishMapDownload();
+				FinishMapDownload(SessionId);
 			}
 			else
 			{
 				// request new chunk
-				m_MapdownloadChunk++;
+				Source.m_MapdownloadChunk++;
 
-				if(IsSixup(SessionId) && (m_MapdownloadChunk % TranslationContext.m_MapDownloadChunksPerRequest == 0))
+				if(IsSixup(SessionId) && (Source.m_MapdownloadChunk % TranslationContext.m_MapDownloadChunksPerRequest == 0))
 				{
 					CMsgPacker MsgP(protocol7::NETMSG_REQUEST_MAP_DATA, true, true);
 					SendMsg(SessionId, Source.PrimaryStreamId(), &MsgP, MSGFLAG_VITAL | MSGFLAG_FLUSH);
@@ -1928,28 +2149,28 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 				else
 				{
 					CMsgPacker MsgP(NETMSG_REQUEST_MAP_DATA, true);
-					MsgP.AddInt(m_MapdownloadChunk);
+					MsgP.AddInt(Source.m_MapdownloadChunk);
 					SendMsg(SessionId, Source.PrimaryStreamId(), &MsgP, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 				}
 
 				if(g_Config.m_Debug)
 				{
 					char aBuf[256];
-					str_format(aBuf, sizeof(aBuf), "requested chunk %d", m_MapdownloadChunk);
+					str_format(aBuf, sizeof(aBuf), "requested chunk %d", Source.m_MapdownloadChunk);
 					m_pConsole->Print(IConsole::OUTPUT_LEVEL_DEBUG, "client/network", aBuf);
 				}
 			}
 		}
 		else if(PrimaryStream && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAP_RELOAD)
 		{
-			if(m_DummyConnected)
+			if(SessionId == m_NetworkSessionId && m_DummyConnected)
 			{
 				m_DummyReconnectOnReload = true;
 				m_DummyDeactivateOnReconnect = ActiveConnection() == CONN_MAIN;
 				g_Config.m_ClDummy = 0;
 				SetActiveConnection(CONN_MAIN);
 			}
-			else
+			else if(SessionId == m_NetworkSessionId)
 			{
 				m_DummyDeactivateOnReconnect = false;
 			}
@@ -1961,13 +2182,13 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 				return;
 			}
 			GameClient()->OnConnected(SessionId);
-			if(m_DummyReconnectOnReload)
+			if(SessionId == m_NetworkSessionId && m_DummyReconnectOnReload)
 			{
 				m_DummySendConnInfo = true;
 				m_DummyReconnectOnReload = false;
 			}
 		}
-		else if(Conn == CONN_DUMMY && Msg == NETMSG_CON_READY)
+		else if(SessionId == m_NetworkSessionId && Conn == CONN_DUMMY && Msg == NETMSG_CON_READY)
 		{
 			m_DummyConnected = true;
 			m_DummyConnecting = false;
@@ -2002,11 +2223,11 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			{
 				return;
 			}
-			if(m_ServerCapabilities.m_PingEx && m_CurrentServerCurrentPingTime >= 0 && *pId == m_CurrentServerPingUuid)
+			if(Source.m_ServerCapabilities.m_PingEx && Source.m_CurrentPingTime >= 0 && *pId == Source.m_PingUuid)
 			{
-				int LatencyMs = (time_get() - m_CurrentServerCurrentPingTime) * 1000 / time_freq();
-				m_ServerBrowser.SetCurrentServerPing(ServerAddress(), LatencyMs);
-				m_CurrentServerCurrentPingTime = -1;
+				int LatencyMs = (time_get() - Source.m_CurrentPingTime) * 1000 / time_freq();
+				m_ServerBrowser.SetCurrentServerPing(*Source.Connection(Source.PrimaryStreamId())->m_NetClient.ServerAddress(), LatencyMs);
+				Source.m_CurrentPingTime = -1;
 
 				char aBuf[64];
 				str_format(aBuf, sizeof(aBuf), "got pong from current server, latency=%dms", LatencyMs);
@@ -2020,7 +2241,7 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			{
 				return;
 			}
-			int ResultCheck = HandleChecksum(Conn, *pUuid, &Unpacker);
+			int ResultCheck = HandleChecksum(SessionId, StreamId, *pUuid, &Unpacker);
 			if(ResultCheck)
 			{
 				CMsgPacker MsgP(NETMSG_CHECKSUM_ERROR, true);
@@ -2033,9 +2254,11 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 		{
 			if(PrimaryStream)
 			{
-				Connect(m_aConnectAddressStr);
+				const std::string ConnectAddress = Source.m_ConnectAddress;
+				const std::string Password = Source.m_SendPassword ? g_Config.m_Password : Source.m_Password;
+				ConnectSession(SessionId, ConnectAddress.c_str(), Password.c_str());
 			}
-			else
+			else if(SessionId == m_NetworkSessionId)
 			{
 				DummyDisconnect("reconnect");
 				// Reset dummy connect time to allow immediate reconnect
@@ -2052,13 +2275,14 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			}
 			if(PrimaryStream)
 			{
-				NETADDR ServerAddr = ServerAddress();
+				NETADDR ServerAddr = *Source.Connection(Source.PrimaryStreamId())->m_NetClient.ServerAddress();
 				ServerAddr.port = RedirectPort;
 				char aAddr[NETADDR_MAXSTRSIZE];
 				net_addr_str(&ServerAddr, aAddr, sizeof(aAddr), true);
-				Connect(aAddr);
+				const std::string Password = Source.m_SendPassword ? g_Config.m_Password : Source.m_Password;
+				ConnectSession(SessionId, aAddr, Password.c_str());
 			}
-			else
+			else if(SessionId == m_NetworkSessionId)
 			{
 				DummyDisconnect("redirect");
 				if(ServerAddress().port != RedirectPort)
@@ -2078,17 +2302,17 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			const char *pName = Unpacker.GetString(CUnpacker::SANITIZE_CC);
 			const char *pHelp = Unpacker.GetString(CUnpacker::SANITIZE_CC);
 			const char *pParams = Unpacker.GetString(CUnpacker::SANITIZE_CC);
-			if(!Unpacker.Error())
+			if(!Unpacker.Error() && SessionId == m_NetworkSessionId)
 			{
 				m_pConsole->RegisterTemp(pName, pParams, CFGFLAG_SERVER, pHelp);
 				GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
 			}
-			m_GotRconCommands++;
+			Source.m_GotRconCommands++;
 		}
 		else if(PrimaryStream && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_CMD_REM)
 		{
 			const char *pName = Unpacker.GetString(CUnpacker::SANITIZE_CC);
-			if(!Unpacker.Error())
+			if(!Unpacker.Error() && SessionId == m_NetworkSessionId)
 			{
 				m_pConsole->DeregisterTemp(pName);
 				GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
@@ -2099,38 +2323,41 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			int ResultInt = Unpacker.GetInt();
 			if(!Unpacker.Error())
 			{
-				Connection(Conn).m_RconAuthed = ResultInt;
+				GameConnection.m_RconAuthed = ResultInt;
 
-				if(Connection(Conn).m_RconAuthed)
+				if(SessionId == m_NetworkSessionId && GameConnection.m_RconAuthed)
 					RconAuth(ActiveConnection() == CONN_MAIN ? CONN_DUMMY : CONN_MAIN, m_aRconUsername, m_aRconPassword);
 			}
 			if(PrimaryStream)
 			{
-				int Old = m_UseTempRconCommands;
-				m_UseTempRconCommands = Unpacker.GetInt();
+				const int Old = Source.m_UseTempRconCommands;
+				Source.m_UseTempRconCommands = Unpacker.GetInt();
 				if(Unpacker.Error())
 				{
-					m_UseTempRconCommands = 0;
+					Source.m_UseTempRconCommands = 0;
 				}
-				if(Old != 0 && m_UseTempRconCommands == 0)
+				if(Old != 0 && Source.m_UseTempRconCommands == 0)
 				{
-					m_pConsole->DeregisterTempAll();
-					m_ExpectedRconCommands = -1;
-					m_vMaplistEntries.clear();
-					GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
-					m_ExpectedMaplistEntries = -1;
+					Source.m_ExpectedRconCommands = -1;
+					Source.m_vMaplistEntries.clear();
+					Source.m_ExpectedMaplistEntries = -1;
+					if(SessionId == m_NetworkSessionId)
+					{
+						m_pConsole->DeregisterTempAll();
+						GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
+					}
 				}
 			}
 		}
 		else if(!InactiveStream && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_LINE)
 		{
 			const char *pLine = Unpacker.GetString();
-			if(!Unpacker.Error())
+			if(!Unpacker.Error() && SessionId == m_NetworkSessionId)
 			{
 				GameClient()->OnRconLine(pLine);
 			}
 		}
-		else if(PrimaryStream && Msg == NETMSG_PING_REPLY)
+		else if(SessionId == m_NetworkSessionId && PrimaryStream && Msg == NETMSG_PING_REPLY)
 		{
 			char aBuf[256];
 			str_format(aBuf, sizeof(aBuf), "latency %.2f", (time_get() - m_PingStartTime) * 1000 / (float)time_freq());
@@ -2149,7 +2376,7 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 
 			// adjust our prediction time
 			int64_t Target = 0;
-			for(const auto &Input : Connection(Conn).m_aInputs)
+			for(const auto &Input : GameConnection.m_aInputs)
 			{
 				if(Input.m_Tick == InputPredTick)
 				{
@@ -2160,12 +2387,12 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			}
 
 			if(Target)
-				Connection(Conn).m_PredictedTime.Update(&Connection(Conn).m_InputtimeMarginGraph, Target, TimeLeft, CSmoothTime::ADJUSTDIRECTION_UP);
+				GameConnection.m_PredictedTime.Update(&GameConnection.m_InputtimeMarginGraph, Target, TimeLeft, CSmoothTime::ADJUSTDIRECTION_UP);
 		}
 		else if(Msg == NETMSG_SNAP || Msg == NETMSG_SNAPSINGLE || Msg == NETMSG_SNAPEMPTY)
 		{
 			// We are not allowed to process snapshots yet.
-			if(m_pNetworkSessionSource->State() != ESessionState::LOADING_MAP && m_pNetworkSessionSource->State() != ESessionState::READY)
+			if(Source.State() != ESessionState::LOADING_MAP && Source.State() != ESessionState::READY)
 			{
 				return;
 			}
@@ -2200,37 +2427,37 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			}
 
 			// Check m_aAckGameTick to see if we already got a snapshot for that tick
-			if(GameTick >= Connection(Conn).m_CurrentRecvTick && GameTick > Connection(Conn).m_AckGameTick)
+			if(GameTick >= GameConnection.m_CurrentRecvTick && GameTick > GameConnection.m_AckGameTick)
 			{
-				if(GameTick != Connection(Conn).m_CurrentRecvTick)
+				if(GameTick != GameConnection.m_CurrentRecvTick)
 				{
-					Connection(Conn).m_SnapshotParts = 0;
-					Connection(Conn).m_CurrentRecvTick = GameTick;
-					Connection(Conn).m_SnapshotIncomingDataSize = 0;
+					GameConnection.m_SnapshotParts = 0;
+					GameConnection.m_CurrentRecvTick = GameTick;
+					GameConnection.m_SnapshotIncomingDataSize = 0;
 				}
 
-				mem_copy(Connection(Conn).m_aSnapshotIncomingData + Part * MAX_SNAPSHOT_PACKSIZE, pData, std::clamp(PartSize, 0, (int)sizeof(Connection(Conn).m_aSnapshotIncomingData) - Part * MAX_SNAPSHOT_PACKSIZE));
-				Connection(Conn).m_SnapshotParts |= (uint64_t)(1) << Part;
+				mem_copy(GameConnection.m_aSnapshotIncomingData + Part * MAX_SNAPSHOT_PACKSIZE, pData, std::clamp(PartSize, 0, (int)sizeof(GameConnection.m_aSnapshotIncomingData) - Part * MAX_SNAPSHOT_PACKSIZE));
+				GameConnection.m_SnapshotParts |= (uint64_t)(1) << Part;
 
 				if(Part == NumParts - 1)
 				{
-					Connection(Conn).m_SnapshotIncomingDataSize = (NumParts - 1) * MAX_SNAPSHOT_PACKSIZE + PartSize;
+					GameConnection.m_SnapshotIncomingDataSize = (NumParts - 1) * MAX_SNAPSHOT_PACKSIZE + PartSize;
 				}
 
-				if((NumParts < CSnapshot::MAX_PARTS && Connection(Conn).m_SnapshotParts == (((uint64_t)(1) << NumParts) - 1)) ||
-					(NumParts == CSnapshot::MAX_PARTS && Connection(Conn).m_SnapshotParts == std::numeric_limits<uint64_t>::max()))
+				if((NumParts < CSnapshot::MAX_PARTS && GameConnection.m_SnapshotParts == (((uint64_t)(1) << NumParts) - 1)) ||
+					(NumParts == CSnapshot::MAX_PARTS && GameConnection.m_SnapshotParts == std::numeric_limits<uint64_t>::max()))
 				{
 					unsigned char aTmpBuffer2[CSnapshot::MAX_SIZE];
 					CSnapshotBuffer TmpBuffer3;
 
 					// reset snapshotting
-					Connection(Conn).m_SnapshotParts = 0;
+					GameConnection.m_SnapshotParts = 0;
 
 					// find snapshot that we should use as delta
 					const CSnapshot *pDeltaShot = CSnapshot::EmptySnapshot();
 					if(DeltaTick >= 0)
 					{
-						int DeltashotSize = Connection(Conn).m_SnapshotStorage.Get(DeltaTick, nullptr, &pDeltaShot, nullptr);
+						int DeltashotSize = GameConnection.m_SnapshotStorage.Get(DeltaTick, nullptr, &pDeltaShot, nullptr);
 
 						if(DeltashotSize < 0)
 						{
@@ -2242,7 +2469,7 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 							}
 
 							// ack snapshot
-							Connection(Conn).m_AckGameTick = -1;
+							GameConnection.m_AckGameTick = -1;
 							SendInput(SessionId);
 							return;
 						}
@@ -2252,9 +2479,9 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 					const void *pDeltaData = Source.SnapshotDelta(IsSixup(SessionId)).EmptyDelta();
 					int DeltaSize = sizeof(int) * 3;
 
-					if(Connection(Conn).m_SnapshotIncomingDataSize)
+					if(GameConnection.m_SnapshotIncomingDataSize)
 					{
-						int IntSize = CVariableInt::Decompress(Connection(Conn).m_aSnapshotIncomingData, Connection(Conn).m_SnapshotIncomingDataSize, aTmpBuffer2, sizeof(aTmpBuffer2));
+						int IntSize = CVariableInt::Decompress(GameConnection.m_aSnapshotIncomingData, GameConnection.m_SnapshotIncomingDataSize, aTmpBuffer2, sizeof(aTmpBuffer2));
 
 						if(IntSize < 0) // failure during decompression
 							return;
@@ -2279,31 +2506,31 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 					if(Msg != NETMSG_SNAPEMPTY && TmpBuffer3.AsSnapshot()->Crc() != Crc)
 					{
 						log_error("client", "snapshot crc error #%d - tick=%d wantedcrc=%d gotcrc=%d compressed_size=%d delta_tick=%d",
-							m_SnapCrcErrors, GameTick, Crc, TmpBuffer3.AsSnapshot()->Crc(), Connection(Conn).m_SnapshotIncomingDataSize, DeltaTick);
+							GameConnection.m_SnapCrcErrors, GameTick, Crc, TmpBuffer3.AsSnapshot()->Crc(), GameConnection.m_SnapshotIncomingDataSize, DeltaTick);
 
-						m_SnapCrcErrors++;
-						if(m_SnapCrcErrors > 10)
+						GameConnection.m_SnapCrcErrors++;
+						if(GameConnection.m_SnapCrcErrors > 10)
 						{
 							// to many errors, send reset
-							Connection(Conn).m_AckGameTick = -1;
+							GameConnection.m_AckGameTick = -1;
 							SendInput(SessionId);
-							m_SnapCrcErrors = 0;
+							GameConnection.m_SnapCrcErrors = 0;
 						}
 						return;
 					}
 					else
 					{
-						if(m_SnapCrcErrors)
-							m_SnapCrcErrors--;
+						if(GameConnection.m_SnapCrcErrors)
+							GameConnection.m_SnapCrcErrors--;
 					}
 
 					// purge old snapshots
 					int PurgeTick = DeltaTick;
-					if(Connection(Conn).m_apSnapshots[SNAP_PREV] && Connection(Conn).m_apSnapshots[SNAP_PREV]->m_Tick < PurgeTick)
-						PurgeTick = Connection(Conn).m_apSnapshots[SNAP_PREV]->m_Tick;
-					if(Connection(Conn).m_apSnapshots[SNAP_CURRENT] && Connection(Conn).m_apSnapshots[SNAP_CURRENT]->m_Tick < PurgeTick)
-						PurgeTick = Connection(Conn).m_apSnapshots[SNAP_CURRENT]->m_Tick;
-					Connection(Conn).m_SnapshotStorage.PurgeUntil(PurgeTick);
+					if(GameConnection.m_apSnapshots[SNAP_PREV] && GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick < PurgeTick)
+						PurgeTick = GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
+					if(GameConnection.m_apSnapshots[SNAP_CURRENT] && GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick < PurgeTick)
+						PurgeTick = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
+					GameConnection.m_SnapshotStorage.PurgeUntil(PurgeTick);
 
 					// create a verified and unpacked snapshot
 					int AltSnapSize = -1;
@@ -2327,9 +2554,9 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 					}
 
 					// add new
-					Connection(Conn).m_SnapshotStorage.Add(GameTick, time_get(), SnapSize, TmpBuffer3.AsSnapshot(), AltSnapSize, AltSnapBuffer.AsSnapshot());
+					GameConnection.m_SnapshotStorage.Add(GameTick, time_get(), SnapSize, TmpBuffer3.AsSnapshot(), AltSnapSize, AltSnapBuffer.AsSnapshot());
 
-					if(!InactiveStream)
+					if(SessionId == m_NetworkSessionId && !InactiveStream)
 					{
 						GameClient()->ProcessDemoSnapshot(TmpBuffer3.AsSnapshot());
 
@@ -2359,21 +2586,21 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 					}
 
 					// apply snapshot, cycle pointers
-					Connection(Conn).m_ReceivedSnapshots++;
+					GameConnection.m_ReceivedSnapshots++;
 
 					// we got two snapshots until we see us self as connected
-					if(Connection(Conn).m_ReceivedSnapshots == 2)
+					if(GameConnection.m_ReceivedSnapshots == 2)
 					{
 						// start at 200ms and work from there
-						Connection(Conn).m_PredictedTime.Init(GameTick * time_freq() / GameTickSpeed());
-						Connection(Conn).m_PredictedTime.SetAdjustSpeed(CSmoothTime::ADJUSTDIRECTION_UP, 1000.0f);
-						Connection(Conn).m_PredictedTime.UpdateMargin(PredictionMargin() * time_freq() / 1000);
-						Connection(Conn).m_GameTime.Init((GameTick - 1) * time_freq() / GameTickSpeed());
-						Connection(Conn).m_apSnapshots[SNAP_PREV] = Connection(Conn).m_SnapshotStorage.m_pFirst;
-						Connection(Conn).m_apSnapshots[SNAP_CURRENT] = Connection(Conn).m_SnapshotStorage.m_pLast;
-						Connection(Conn).m_PrevGameTick = Connection(Conn).m_apSnapshots[SNAP_PREV]->m_Tick;
-						Connection(Conn).m_CurGameTick = Connection(Conn).m_apSnapshots[SNAP_CURRENT]->m_Tick;
-						if(PrimaryStream)
+						GameConnection.m_PredictedTime.Init(GameTick * time_freq() / GameTickSpeed());
+						GameConnection.m_PredictedTime.SetAdjustSpeed(CSmoothTime::ADJUSTDIRECTION_UP, 1000.0f);
+						GameConnection.m_PredictedTime.UpdateMargin(PredictionMargin(SessionId) * time_freq() / 1000);
+						GameConnection.m_GameTime.Init((GameTick - 1) * time_freq() / GameTickSpeed());
+						GameConnection.m_apSnapshots[SNAP_PREV] = GameConnection.m_SnapshotStorage.m_pFirst;
+						GameConnection.m_apSnapshots[SNAP_CURRENT] = GameConnection.m_SnapshotStorage.m_pLast;
+						GameConnection.m_PrevGameTick = GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
+						GameConnection.m_CurGameTick = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
+						if(SessionId == m_NetworkSessionId && PrimaryStream)
 						{
 							m_LocalStartTime = time_get();
 #if defined(CONF_VIDEORECORDER)
@@ -2387,37 +2614,38 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 						if(m_SessionManager.FocusedId() == SessionId)
 							SetFocusedState(IClient::STATE_ONLINE, false);
 						else
-							m_pNetworkSessionSource->SetState(ESessionState::READY);
-						if(PrimaryStream)
+							Source.SetState(ESessionState::READY);
+						if(SessionId == m_NetworkSessionId && PrimaryStream)
 						{
 							DemoRecorder_HandleAutoStart();
 						}
 					}
 
 					// adjust game time
-					if(Connection(Conn).m_ReceivedSnapshots > 2)
+					if(GameConnection.m_ReceivedSnapshots > 2)
 					{
-						int64_t Now = Connection(Conn).m_GameTime.Get(time_get());
+						int64_t Now = GameConnection.m_GameTime.Get(time_get());
 						int64_t TickStart = GameTick * time_freq() / GameTickSpeed();
 						int64_t TimeLeft = (TickStart - Now) * 1000 / time_freq();
-						Connection(Conn).m_GameTime.Update(&Connection(Conn).m_GametimeMarginGraph, (GameTick - 1) * time_freq() / GameTickSpeed(), TimeLeft, CSmoothTime::ADJUSTDIRECTION_DOWN);
+						GameConnection.m_GameTime.Update(&GameConnection.m_GametimeMarginGraph, (GameTick - 1) * time_freq() / GameTickSpeed(), TimeLeft, CSmoothTime::ADJUSTDIRECTION_DOWN);
 					}
 
-					if(Connection(Conn).m_ReceivedSnapshots > GameTickSpeed() && !Connection(Conn).m_DidPostConnect)
+					if(GameConnection.m_ReceivedSnapshots > GameTickSpeed() && !GameConnection.m_DidPostConnect)
 					{
-						OnPostConnect(Conn);
-						Connection(Conn).m_DidPostConnect = true;
+						if(SessionId == m_NetworkSessionId)
+							OnPostConnect(Conn);
+						GameConnection.m_DidPostConnect = true;
 					}
 
 					// ack snapshot
-					Connection(Conn).m_AckGameTick = GameTick;
+					GameConnection.m_AckGameTick = GameTick;
 				}
 			}
 		}
 		else if(PrimaryStream && Msg == NETMSG_RCONTYPE)
 		{
-			bool UsernameReq = Unpacker.GetInt() & 1;
-			if(!Unpacker.Error())
+			const bool UsernameReq = (Unpacker.GetInt() & 1) != 0;
+			if(!Unpacker.Error() && SessionId == m_NetworkSessionId)
 			{
 				GameClient()->OnRconType(UsernameReq);
 			}
@@ -2428,12 +2656,12 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			if(Unpacker.Error() || ExpectedRconCommands < 0)
 				return;
 
-			m_ExpectedRconCommands = ExpectedRconCommands;
-			m_GotRconCommands = 0;
+			Source.m_ExpectedRconCommands = ExpectedRconCommands;
+			Source.m_GotRconCommands = 0;
 		}
 		else if(PrimaryStream && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_CMD_GROUP_END)
 		{
-			m_ExpectedRconCommands = -1;
+			Source.m_ExpectedRconCommands = -1;
 		}
 		else if(PrimaryStream && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAPLIST_ADD)
 		{
@@ -2446,8 +2674,9 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 				}
 				if(pMapName[0] != '\0')
 				{
-					m_vMaplistEntries.emplace_back(pMapName);
-					GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
+					Source.m_vMaplistEntries.emplace_back(pMapName);
+					if(SessionId == m_NetworkSessionId)
+						GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
 				}
 			}
 		}
@@ -2457,20 +2686,21 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 			if(Unpacker.Error() || ExpectedMaplistEntries < 0)
 				return;
 
-			m_vMaplistEntries.clear();
-			GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
-			m_ExpectedMaplistEntries = ExpectedMaplistEntries;
+			Source.m_vMaplistEntries.clear();
+			Source.m_ExpectedMaplistEntries = ExpectedMaplistEntries;
+			if(SessionId == m_NetworkSessionId)
+				GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
 		}
 		else if(PrimaryStream && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAPLIST_GROUP_END)
 		{
-			m_ExpectedMaplistEntries = -1;
+			Source.m_ExpectedMaplistEntries = -1;
 		}
 	}
 	// the client handles only vital messages https://github.com/ddnet/ddnet/issues/11178
 	else if((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 || Msg == NETMSGTYPE_SV_PREINPUT)
 	{
 		// game message
-		if(!InactiveStream)
+		if(SessionId == m_NetworkSessionId && !InactiveStream)
 		{
 			for(auto &DemoRecorder : DemoRecorders())
 			{
@@ -2532,65 +2762,67 @@ int CClient::UnpackAndValidateSnapshot(CSnapshot *pFrom, CSnapshotBuffer *pTo)
 	return Builder.Finish(pTo);
 }
 
-void CClient::ResetMapDownload(bool ResetActive)
+void CClient::ResetMapDownload(CSessionId SessionId, bool ResetActive)
 {
-	if(m_pMapdownloadTask)
+	CNetworkSessionSource &Source = NetworkSource(SessionId);
+	if(Source.m_pMapdownloadTask)
 	{
-		m_pMapdownloadTask->Abort();
-		m_pMapdownloadTask = nullptr;
+		Source.m_pMapdownloadTask->Abort();
+		Source.m_pMapdownloadTask = nullptr;
 	}
 
-	if(m_MapdownloadFileTemp)
+	if(Source.m_MapdownloadFileTemp)
 	{
-		io_close(m_MapdownloadFileTemp);
-		m_MapdownloadFileTemp = nullptr;
+		io_close(Source.m_MapdownloadFileTemp);
+		Source.m_MapdownloadFileTemp = nullptr;
 	}
 
-	if(Storage()->FileExists(m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE))
+	if(Storage()->FileExists(Source.m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE))
 	{
-		Storage()->RemoveFile(m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE);
+		Storage()->RemoveFile(Source.m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE);
 	}
 
 	if(ResetActive)
 	{
-		m_MapdownloadChunk = 0;
-		m_MapdownloadSha256 = std::nullopt;
-		m_MapdownloadCrc = 0;
-		m_MapdownloadTotalsize = -1;
-		m_MapdownloadAmount = 0;
-		m_aMapdownloadFilename[0] = '\0';
-		m_aMapdownloadFilenameTemp[0] = '\0';
-		m_aMapdownloadName[0] = '\0';
+		Source.m_MapdownloadChunk = 0;
+		Source.m_MapdownloadSha256 = std::nullopt;
+		Source.m_MapdownloadCrc = 0;
+		Source.m_MapdownloadTotalsize = -1;
+		Source.m_MapdownloadAmount = 0;
+		Source.m_aMapdownloadFilename[0] = '\0';
+		Source.m_aMapdownloadFilenameTemp[0] = '\0';
+		Source.m_aMapdownloadName[0] = '\0';
 	}
 }
 
-void CClient::FinishMapDownload()
+void CClient::FinishMapDownload(CSessionId SessionId)
 {
+	CNetworkSessionSource &Source = NetworkSource(SessionId);
 	m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", "download complete, loading map");
 
-	if(!Storage()->RenameFile(m_aMapdownloadFilenameTemp, m_aMapdownloadFilename, IStorage::TYPE_SAVE))
+	if(!Storage()->RenameFile(Source.m_aMapdownloadFilenameTemp, Source.m_aMapdownloadFilename, IStorage::TYPE_SAVE))
 	{
 		char aError[128 + IO_MAX_PATH_LENGTH];
-		str_format(aError, sizeof(aError), Localize("Could not save downloaded map. Try manually deleting this file: %s"), m_aMapdownloadFilename);
-		DisconnectWithReason(aError);
+		str_format(aError, sizeof(aError), Localize("Could not save downloaded map. Try manually deleting this file: %s"), Source.m_aMapdownloadFilename);
+		m_SessionManager.Close(SessionId, aError);
 		return;
 	}
 
-	const char *pError = LoadMap(m_NetworkSessionId, m_aMapdownloadName, m_aMapdownloadFilename, m_MapdownloadSha256, m_MapdownloadCrc);
+	const char *pError = LoadMap(SessionId, Source.m_aMapdownloadName, Source.m_aMapdownloadFilename, Source.m_MapdownloadSha256, Source.m_MapdownloadCrc);
 	if(!pError)
 	{
-		ResetMapDownload(true);
+		ResetMapDownload(SessionId, true);
 		m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", "loading done");
-		SendReady(CONN_MAIN);
+		SendReady(SessionId, Source.PrimaryStreamId());
 	}
-	else if(m_pMapdownloadTask) // fallback
+	else if(Source.m_pMapdownloadTask) // fallback
 	{
-		ResetMapDownload(false);
-		SendMapRequest();
+		ResetMapDownload(SessionId, false);
+		SendMapRequest(SessionId);
 	}
 	else
 	{
-		DisconnectWithReason(pError);
+		m_SessionManager.Close(SessionId, pError);
 	}
 }
 
@@ -2735,17 +2967,17 @@ void CClient::PumpNetwork(CSessionId SessionId)
 		m_ContactNetClient.Update();
 
 	// check for errors of main and dummy
-	if(SessionId == m_NetworkSessionId && Source.State() != ESessionState::OFFLINE && m_State < IClient::STATE_QUITTING)
+	if(Source.State() != ESessionState::OFFLINE && m_State < IClient::STATE_QUITTING)
 	{
-		if(NetClient(CONN_MAIN).State() == NETSTATE_OFFLINE)
+		CNetClient &PrimaryNetClient = Source.Connection(Source.PrimaryStreamId())->m_NetClient;
+		if(PrimaryNetClient.State() == NETSTATE_OFFLINE)
 		{
-			// This will also disconnect the dummy, so the branch below is an `else if`.
-			DisconnectWithReason(nullptr);
+			m_SessionManager.Close(SessionId);
 			char aBuf[256];
-			str_format(aBuf, sizeof(aBuf), "offline error='%s'", NetClient(CONN_MAIN).ErrorString());
+			str_format(aBuf, sizeof(aBuf), "offline error='%s'", PrimaryNetClient.ErrorString());
 			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_ERROR_COLOR);
 		}
-		else if((DummyConnecting() || DummyConnected()) && NetClient(CONN_DUMMY).State() == NETSTATE_OFFLINE)
+		else if(SessionId == m_NetworkSessionId && (DummyConnecting() || DummyConnected()) && NetClient(CONN_DUMMY).State() == NETSTATE_OFFLINE)
 		{
 			const bool WasConnecting = DummyConnecting();
 			DummyDisconnect(nullptr);
@@ -2758,33 +2990,59 @@ void CClient::PumpNetwork(CSessionId SessionId)
 				GameClient()->Echo(aBuf);
 			}
 		}
+		for(const auto &pStream : Source.Streams())
+		{
+			if(pStream->m_Id == Source.PrimaryStreamId() || (SessionId == m_NetworkSessionId && pStream->m_Id == Source.StreamIdAt(CONN_DUMMY)) || pStream->m_Connection.m_NetClient.State() != NETSTATE_OFFLINE || pStream->m_Connection.m_NetClient.ErrorString()[0] == '\0')
+				continue;
+			const CStreamId StreamId = pStream->m_Id;
+			char aError[256];
+			str_copy(aError, pStream->m_Connection.m_NetClient.ErrorString());
+			if(DestroyNetworkStream(SessionId, StreamId))
+			{
+				char aBuf[320];
+				str_format(aBuf, sizeof(aBuf), "offline stream %" PRIu64 " error='%s'", StreamId.Value(), aError);
+				m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_ERROR_COLOR);
+			}
+			break;
+		}
 	}
 
 	// check if main was connected
-	if(SessionId == m_NetworkSessionId && Source.State() == ESessionState::CONNECTING && NetClient(CONN_MAIN).State() == NETSTATE_ONLINE)
+	if(Source.State() == ESessionState::CONNECTING && Source.Connection(Source.PrimaryStreamId())->m_NetClient.State() == NETSTATE_ONLINE)
 	{
 		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
-		if(m_SessionManager.FocusedId() == m_NetworkSessionId)
+		if(m_SessionManager.FocusedId() == SessionId)
 			SetFocusedState(IClient::STATE_LOADING, true);
 		else
 		{
-			GameClient()->OnSessionClosed(m_NetworkSessionId);
+			GameClient()->OnSessionClosed(SessionId);
 			Source.SetState(ESessionState::LOADING_MAP);
 		}
-		if(m_SessionManager.FocusedId() == m_NetworkSessionId)
+		if(m_SessionManager.FocusedId() == SessionId)
 			SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_INITIAL);
-		SendInfo(CONN_MAIN);
+		SendInfo(SessionId, Source.PrimaryStreamId());
 	}
 
 	// progress on dummy connect when the connection is online
 	if(SessionId == m_NetworkSessionId && m_DummySendConnInfo && NetClient(CONN_DUMMY).State() == NETSTATE_ONLINE)
 	{
 		m_DummySendConnInfo = false;
-		SendInfo(CONN_DUMMY);
+		SendInfo(SessionId, Source.StreamIdAt(CONN_DUMMY));
 		NetClient(CONN_DUMMY).Update();
 		SendReady(CONN_DUMMY);
 		GameClient()->SendDummyInfo(true);
 		SendEnterGame(CONN_DUMMY);
+	}
+	for(const auto &pStream : Source.Streams())
+	{
+		if(!pStream->m_SendConnectionInfo || pStream->m_Connection.m_NetClient.State() != NETSTATE_ONLINE)
+			continue;
+		pStream->m_SendConnectionInfo = false;
+		SendInfo(SessionId, pStream->m_Id);
+		pStream->m_Connection.m_NetClient.Update();
+		SendReady(SessionId, pStream->m_Id);
+		GameClient()->SendStreamInfo(SessionId, pStream->m_Id, true);
+		SendEnterGame(SessionId, pStream->m_Id);
 	}
 
 	// process packets
@@ -2937,196 +3195,107 @@ void CClient::UpdateNetworkSession(CSessionId SessionId)
 	CNetworkSessionSource &Source = NetworkSource(SessionId);
 	if(Source.State() == ESessionState::READY)
 	{
-		const int ActiveConn = Source.StreamIndex(Source.ActiveStreamId());
-		const int LastActiveConn = Source.StreamIndex(Source.LastActiveStreamId());
-		const int OtherConn = ActiveConn == CONN_MAIN ? CONN_DUMMY : CONN_MAIN;
-		CConnection &ActiveGameConnection = Source.ConnectionAt(ActiveConn);
-		CConnection &OtherGameConnection = Source.ConnectionAt(OtherConn);
-		bool ActiveRepredict = false;
-		bool OtherRepredict = false;
-		std::vector<CStreamId> vAdditionalRepredict;
-		if(LastActiveConn != ActiveConn && m_SessionManager.FocusedId() == SessionId)
+		const CStreamId ActiveStreamId = Source.ActiveStreamId();
+		const CStreamId LastActiveStreamId = Source.LastActiveStreamId();
+		const int ActiveConn = Source.StreamIndex(ActiveStreamId);
+		std::vector<CStreamId> vRepredict;
+		bool SendNewInput = false;
+		const int64_t ClockNow = time_get();
+
+		if(LastActiveStreamId != ActiveStreamId && m_SessionManager.FocusedId() == SessionId)
 		{
-			// Invalidate references to the previously focused snapshots.
 			GameClient()->InvalidateSnapshot(SessionId);
-			GameClient()->OnConnectionFocusChanged(SessionId, Source.LastActiveStreamId(), Source.ActiveStreamId());
+			GameClient()->OnConnectionFocusChanged(SessionId, LastActiveStreamId, ActiveStreamId);
 		}
 
-		if(OtherGameConnection.m_apSnapshots[SNAP_CURRENT])
-		{
-			// switch dummy snapshot
-			int64_t Now = OtherGameConnection.m_GameTime.Get(time_get());
-			while(true)
+		auto AdvanceStream = [&](CStreamId StreamId) {
+			CConnection &GameConnection = Connection(SessionId, StreamId);
+			if(!GameConnection.m_apSnapshots[SNAP_CURRENT])
+				return;
+
+			bool Repredict = false;
+			const int64_t Now = GameConnection.m_GameTime.Get(ClockNow);
+			if(StreamId == ActiveStreamId && LastActiveStreamId != ActiveStreamId && GameConnection.m_apSnapshots[SNAP_PREV])
 			{
-				if(!OtherGameConnection.m_apSnapshots[SNAP_CURRENT]->m_pNext)
-					break;
-				int64_t TickStart = OtherGameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
+				GameClient()->OnNewSnapshot(SessionId, StreamId);
+				Repredict = true;
+			}
+
+			while(GameConnection.m_apSnapshots[SNAP_CURRENT]->m_pNext)
+			{
+				const int64_t TickStart = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
 				if(TickStart >= Now)
 					break;
-
-				OtherGameConnection.m_apSnapshots[SNAP_PREV] = OtherGameConnection.m_apSnapshots[SNAP_CURRENT];
-				OtherGameConnection.m_apSnapshots[SNAP_CURRENT] = OtherGameConnection.m_apSnapshots[SNAP_CURRENT]->m_pNext;
-
-				// set ticks
-				OtherGameConnection.m_CurGameTick = OtherGameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
-				OtherGameConnection.m_PrevGameTick = OtherGameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
-				GameClient()->OnNewSnapshot(SessionId, Source.StreamIdAt(OtherConn));
-				OtherRepredict = true;
+				GameConnection.m_apSnapshots[SNAP_PREV] = GameConnection.m_apSnapshots[SNAP_CURRENT];
+				GameConnection.m_apSnapshots[SNAP_CURRENT] = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_pNext;
+				GameConnection.m_CurGameTick = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
+				GameConnection.m_PrevGameTick = GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
+				GameClient()->OnNewSnapshot(SessionId, StreamId);
+				Repredict = true;
 			}
-			if(OtherGameConnection.m_apSnapshots[SNAP_PREV])
+
+			if(GameConnection.m_apSnapshots[SNAP_PREV])
 			{
-				const int64_t CurTickStart = OtherGameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
-				const int NewPredTick = OtherGameConnection.UpdateTiming(Now, OtherGameConnection.m_PredictedTime.Get(time_get()), GameTickSpeed(), time_freq());
-				if(absolute(NewPredTick - OtherGameConnection.m_apSnapshots[SNAP_PREV]->m_Tick) > MaxLatencyTicks())
+				const int64_t CurTickStart = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
+				const int NewPredTick = GameConnection.UpdateTiming(Now, GameConnection.m_PredictedTime.Get(ClockNow), GameTickSpeed(), time_freq());
+				if(absolute(NewPredTick - GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick) > MaxLatencyTicks(SessionId))
 				{
 					m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", "prediction time reset!");
-					OtherGameConnection.m_PredictedTime.Init(CurTickStart + 2 * time_freq() / GameTickSpeed());
+					GameConnection.m_PredictedTime.Init(CurTickStart + 2 * time_freq() / GameTickSpeed());
 				}
-				if(NewPredTick > OtherGameConnection.m_PredTick)
+				if(NewPredTick > GameConnection.m_PredTick)
 				{
-					OtherGameConnection.m_PredTick = NewPredTick;
-					OtherRepredict = true;
-				}
-			}
-		}
-
-		if(ActiveGameConnection.m_apSnapshots[SNAP_CURRENT])
-		{
-			// switch snapshot
-			int64_t Now = ActiveGameConnection.m_GameTime.Get(time_get());
-			int64_t PredNow = ActiveGameConnection.m_PredictedTime.Get(time_get());
-
-			if(LastActiveConn != ActiveConn && ActiveGameConnection.m_apSnapshots[SNAP_PREV])
-			{
-				// Load the newly focused snapshot.
-				GameClient()->OnNewSnapshot(SessionId, Source.ActiveStreamId());
-				ActiveRepredict = true;
-			}
-
-			while(true)
-			{
-				if(!ActiveGameConnection.m_apSnapshots[SNAP_CURRENT]->m_pNext)
-					break;
-				int64_t TickStart = ActiveGameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
-				if(TickStart >= Now)
-					break;
-
-				ActiveGameConnection.m_apSnapshots[SNAP_PREV] = ActiveGameConnection.m_apSnapshots[SNAP_CURRENT];
-				ActiveGameConnection.m_apSnapshots[SNAP_CURRENT] = ActiveGameConnection.m_apSnapshots[SNAP_CURRENT]->m_pNext;
-
-				// set ticks
-				ActiveGameConnection.m_CurGameTick = ActiveGameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
-				ActiveGameConnection.m_PrevGameTick = ActiveGameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
-
-				GameClient()->OnNewSnapshot(SessionId, Source.ActiveStreamId());
-				ActiveRepredict = true;
-			}
-
-			if(ActiveGameConnection.m_apSnapshots[SNAP_PREV])
-			{
-				int64_t CurTickStart = ActiveGameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
-				const int NewPredTick = ActiveGameConnection.UpdateTiming(Now, PredNow, GameTickSpeed(), time_freq());
-
-				if(absolute(NewPredTick - ActiveGameConnection.m_apSnapshots[SNAP_PREV]->m_Tick) > MaxLatencyTicks())
-				{
-					m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", "prediction time reset!");
-					ActiveGameConnection.m_PredictedTime.Init(CurTickStart + 2 * time_freq() / GameTickSpeed());
-				}
-
-				if(NewPredTick > ActiveGameConnection.m_PredTick)
-				{
-					ActiveGameConnection.m_PredTick = NewPredTick;
-					ActiveRepredict = true;
-
-					// send input
-					SendInput(SessionId);
-				}
-			}
-
-			for(size_t StreamIndex = 2; StreamIndex < Source.NumStreams(); ++StreamIndex)
-			{
-				const CStreamId StreamId = Source.StreamIdAt(StreamIndex);
-				CConnection &GameConnection = Source.ConnectionAt(StreamIndex);
-				if(!GameConnection.m_apSnapshots[SNAP_CURRENT])
-					continue;
-				bool Repredict = false;
-				const int64_t Now = GameConnection.m_GameTime.Get(time_get());
-				while(GameConnection.m_apSnapshots[SNAP_CURRENT]->m_pNext)
-				{
-					const int64_t TickStart = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
-					if(TickStart >= Now)
-						break;
-					GameConnection.m_apSnapshots[SNAP_PREV] = GameConnection.m_apSnapshots[SNAP_CURRENT];
-					GameConnection.m_apSnapshots[SNAP_CURRENT] = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_pNext;
-					GameConnection.m_CurGameTick = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
-					GameConnection.m_PrevGameTick = GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
-					GameClient()->OnNewSnapshot(SessionId, StreamId);
+					GameConnection.m_PredTick = NewPredTick;
 					Repredict = true;
+					SendNewInput |= StreamId == ActiveStreamId;
 				}
-				if(GameConnection.m_apSnapshots[SNAP_PREV])
-				{
-					const int64_t CurTickStart = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
-					const int NewPredTick = GameConnection.UpdateTiming(Now, GameConnection.m_PredictedTime.Get(time_get()), GameTickSpeed(), time_freq());
-					if(absolute(NewPredTick - GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick) > MaxLatencyTicks())
-					{
-						m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", "prediction time reset!");
-						GameConnection.m_PredictedTime.Init(CurTickStart + 2 * time_freq() / GameTickSpeed());
-					}
-					if(NewPredTick > GameConnection.m_PredTick)
-					{
-						GameConnection.m_PredTick = NewPredTick;
-						Repredict = true;
-					}
-				}
-				if(Repredict)
-					vAdditionalRepredict.push_back(StreamId);
 			}
 
-			// fetch server info if we don't have it
-			if(m_CurrentServerInfoRequestTime >= 0 &&
-				time_get() > m_CurrentServerInfoRequestTime)
+			if(Repredict)
+				vRepredict.push_back(StreamId);
+		};
+
+		if(ActiveStreamId.IsValid())
+			AdvanceStream(ActiveStreamId);
+		for(const auto &pStream : Source.Streams())
+		{
+			if(pStream->m_Id != ActiveStreamId)
+				AdvanceStream(pStream->m_Id);
+		}
+
+		if(SendNewInput)
+			SendInput(SessionId);
+		for(CStreamId StreamId : vRepredict)
+		{
+			const CConnection &GameConnection = Connection(SessionId, StreamId);
+			if(GameConnection.m_PredTick > GameConnection.m_CurGameTick && GameConnection.m_PredTick < GameConnection.m_CurGameTick + MaxLatencyTicks(SessionId))
+				GameClient()->OnPredict(SessionId, StreamId);
+		}
+
+		if(ActiveStreamId.IsValid() && Connection(SessionId, ActiveStreamId).m_apSnapshots[SNAP_CURRENT])
+		{
+			if(SessionId == m_NetworkSessionId && m_CurrentServerInfoRequestTime >= 0 && ClockNow > m_CurrentServerInfoRequestTime)
 			{
 				m_ServerBrowser.RequestCurrentServer(ServerAddress());
-				m_CurrentServerInfoRequestTime = time_get() + time_freq() * 2;
+				m_CurrentServerInfoRequestTime = ClockNow + time_freq() * 2;
 			}
-
-			// periodically ping server
-			if(m_CurrentServerNextPingTime >= 0 &&
-				time_get() > m_CurrentServerNextPingTime)
+			if(Source.m_NextPingTime >= 0 && ClockNow > Source.m_NextPingTime)
 			{
-				int64_t NowPing = time_get();
-				int64_t Freq = time_freq();
-
 				char aBuf[64];
-				str_format(aBuf, sizeof(aBuf), "pinging current server%s", !m_ServerCapabilities.m_PingEx ? ", using fallback via server info" : "");
+				str_format(aBuf, sizeof(aBuf), "pinging current server%s", !Source.m_ServerCapabilities.m_PingEx ? ", using fallback via server info" : "");
 				m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", aBuf);
-
-				m_CurrentServerPingUuid = RandomUuid();
-				if(!m_ServerCapabilities.m_PingEx)
-				{
-					m_ServerBrowser.RequestCurrentServerWithRandomToken(ServerAddress(), &m_CurrentServerPingBasicToken, &m_CurrentServerPingToken);
-				}
+				Source.m_PingUuid = RandomUuid();
+				if(!Source.m_ServerCapabilities.m_PingEx)
+					m_ServerBrowser.RequestCurrentServerWithRandomToken(*Source.Connection(Source.PrimaryStreamId())->m_NetClient.ServerAddress(), &Source.m_PingBasicToken, &Source.m_PingToken);
 				else
 				{
 					CMsgPacker Msg(NETMSG_PINGEX, true);
-					Msg.AddRaw(&m_CurrentServerPingUuid, sizeof(m_CurrentServerPingUuid));
-					SendMsg(CONN_MAIN, &Msg, MSGFLAG_FLUSH);
+					Msg.AddRaw(&Source.m_PingUuid, sizeof(Source.m_PingUuid));
+					SendMsg(SessionId, Source.PrimaryStreamId(), &Msg, MSGFLAG_FLUSH);
 				}
-				m_CurrentServerCurrentPingTime = NowPing;
-				m_CurrentServerNextPingTime = NowPing + 600 * Freq; // ping every 10 minutes
+				Source.m_CurrentPingTime = ClockNow;
+				Source.m_NextPingTime = ClockNow + 600 * time_freq();
 			}
-		}
-
-		// Predict after SendInput generated the input for both connections.
-		if(OtherRepredict && OtherGameConnection.m_PredTick > OtherGameConnection.m_CurGameTick && OtherGameConnection.m_PredTick < OtherGameConnection.m_CurGameTick + MaxLatencyTicks())
-			GameClient()->OnPredict(SessionId, Source.StreamIdAt(OtherConn));
-		if(ActiveRepredict && ActiveGameConnection.m_PredTick > ActiveGameConnection.m_CurGameTick && ActiveGameConnection.m_PredTick < ActiveGameConnection.m_CurGameTick + MaxLatencyTicks())
-			GameClient()->OnPredict(SessionId, Source.ActiveStreamId());
-		for(CStreamId StreamId : vAdditionalRepredict)
-		{
-			const CConnection &GameConnection = Connection(SessionId, StreamId);
-			if(GameConnection.m_PredTick > GameConnection.m_CurGameTick && GameConnection.m_PredTick < GameConnection.m_CurGameTick + MaxLatencyTicks())
-				GameClient()->OnPredict(SessionId, StreamId);
 		}
 
 		if(SessionId == m_NetworkSessionId && m_DummyDeactivateOnReconnect && ActiveConn == CONN_DUMMY)
@@ -3140,24 +3309,21 @@ void CClient::UpdateNetworkSession(CSessionId SessionId)
 			m_DummyDeactivateOnReconnect = false;
 		}
 
-		Source.SetLastActiveStreamId(Source.ActiveStreamId());
+		Source.SetLastActiveStreamId(ActiveStreamId);
 	}
 
-	if(SessionId == m_NetworkSessionId && m_pMapdownloadTask)
+	if(Source.m_pMapdownloadTask)
 	{
-		if(m_pMapdownloadTask->State() == EHttpState::DONE)
-		{
-			FinishMapDownload();
-		}
-		else if(m_pMapdownloadTask->State() == EHttpState::ERROR || m_pMapdownloadTask->State() == EHttpState::ABORTED)
+		if(Source.m_pMapdownloadTask->State() == EHttpState::DONE)
+			FinishMapDownload(SessionId);
+		else if(Source.m_pMapdownloadTask->State() == EHttpState::ERROR || Source.m_pMapdownloadTask->State() == EHttpState::ABORTED)
 		{
 			dbg_msg("webdl", "http failed, falling back to gameserver");
-			ResetMapDownload(false);
-			SendMapRequest();
+			ResetMapDownload(SessionId, false);
+			SendMapRequest(SessionId);
 		}
 	}
 }
-
 void CClient::Update()
 {
 	m_SessionManager.Update();
@@ -3255,15 +3421,26 @@ void CClient::Update()
 		Steam()->ClearConnectAddress();
 	}
 
-	if(m_ReconnectTime > 0 && time_get() > m_ReconnectTime)
+	for(CSessionId SessionId : m_SessionManager.SessionIds())
 	{
-		if(!IsOnline())
-			Connect(m_aConnectAddressStr);
-		m_ReconnectTime = 0;
+		if(SessionSource(SessionId).Type() != ESessionSourceType::NETWORK)
+			continue;
+		CNetworkSessionSource &Source = NetworkSource(SessionId);
+		std::string PendingAddress;
+		std::string PendingPassword;
+		if(Source.ConsumePendingConnect(PendingAddress, PendingPassword))
+		{
+			ConnectSession(SessionId, PendingAddress.c_str(), PendingPassword.c_str());
+		}
+		else if(Source.ConsumeReconnect(time_get()))
+		{
+			const std::string ConnectAddress = Source.m_ConnectAddress;
+			const std::string Password = Source.m_SendPassword ? g_Config.m_Password : Source.m_Password;
+			ConnectSession(SessionId, ConnectAddress.c_str(), Password.c_str());
+		}
+		for(const auto &pStream : Source.Streams())
+			pStream->m_Connection.m_PredictedTime.UpdateMargin(PredictionMargin(SessionId) * time_freq() / 1000);
 	}
-
-	for(const auto &pStream : m_pNetworkSessionSource->Streams())
-		pStream->m_Connection.m_PredictedTime.UpdateMargin(PredictionMargin() * time_freq() / 1000);
 }
 
 void CClient::RegisterInterfaces()
@@ -3679,8 +3856,14 @@ void CClient::Run()
 	GameClient()->RenderShutdownMessage();
 	if(m_pDemoSessionSource->State() != ESessionState::OFFLINE)
 		DisconnectDemoWithReason(nullptr);
-	if(m_pNetworkSessionSource->State() != ESessionState::OFFLINE)
-		DisconnectWithReason(nullptr);
+	for(CSessionId SessionId : m_SessionManager.SessionIds())
+	{
+		if(SessionSource(SessionId).Type() == ESessionSourceType::NETWORK && SessionSource(SessionId).State() != ESessionState::OFFLINE)
+		{
+			m_SessionManager.Close(SessionId);
+			m_SessionManager.Update(SessionId);
+		}
+	}
 
 	if(!m_pConfigManager->Save())
 	{
@@ -3698,8 +3881,13 @@ void CClient::Run()
 	delete m_pEditor;
 
 	// close sockets
-	for(const auto &pStream : m_pNetworkSessionSource->Streams())
-		pStream->m_Connection.m_NetClient.Close();
+	for(CSessionId SessionId : m_SessionManager.SessionIds())
+	{
+		if(SessionSource(SessionId).Type() != ESessionSourceType::NETWORK)
+			continue;
+		for(const auto &pStream : NetworkSource(SessionId).Streams())
+			pStream->m_Connection.m_NetClient.Close();
+	}
 	m_ContactNetClient.Close();
 
 	// shutdown text render while graphics are still available
@@ -3719,6 +3907,7 @@ bool CClient::InitNetworkClient(char *pError, size_t ErrorSize)
 		return false;
 	}
 	BindAddr.type = NETTYPE_ALL;
+	m_NetworkBindAddr = BindAddr;
 	for(int i = 0; i < NUM_CONNS; i++)
 	{
 		if(!InitNetworkClientImpl(BindAddr, i, pError, ErrorSize))
@@ -3726,6 +3915,7 @@ bool CClient::InitNetworkClient(char *pError, size_t ErrorSize)
 			return false;
 		}
 	}
+	m_NetworkInitialized = true;
 	return true;
 }
 
@@ -3750,17 +3940,22 @@ bool CClient::InitNetworkClientImpl(NETADDR BindAddr, int Conn, char *pError, si
 	default:
 		dbg_assert_failed("unreachable");
 	}
-	if(NetClient(Conn).State() != NETSTATE_OFFLINE)
+	return InitNetworkStream(BindAddr, NetClient(Conn), *pPort, pName, pError, ErrorSize);
+}
+
+bool CClient::InitNetworkStream(NETADDR BindAddr, CNetClient &NetClient, int &Port, const char *pName, char *pError, size_t ErrorSize)
+{
+	if(NetClient.State() != NETSTATE_OFFLINE)
 	{
 		str_format(pError, ErrorSize, "Could not open network client %s while already connected.", pName);
 		return false;
 	}
-	if(*pPort < 1024) // Reject users setting ports that we don't want to use
-		*pPort = 0;
-	BindAddr.port = *pPort;
+	if(Port < 1024) // Reject users setting ports that we don't want to use
+		Port = 0;
+	BindAddr.port = Port;
 
 	unsigned RemainingAttempts = 25;
-	while(!NetClient(Conn).Open(BindAddr))
+	while(!NetClient.Open(BindAddr))
 	{
 		--RemainingAttempts;
 		if(RemainingAttempts == 0)
@@ -3796,6 +3991,67 @@ void CClient::Con_Connect(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
 	pSelf->HandleConnectLink(pResult->GetString(0));
+}
+
+void CClient::Con_DbgConnectSession(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	const CSessionId SessionId = pSelf->CreateNetworkSession();
+	if(!SessionId.IsValid())
+		return;
+	char aBuf[64];
+	str_format(aBuf, sizeof(aBuf), "created Network session %" PRIu64, SessionId.Value());
+	pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client/session", aBuf);
+	pSelf->ConnectSession(SessionId, pResult->GetString(0), nullptr);
+}
+
+void CClient::Con_DbgConnectStream(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	const CSessionId SessionId(pResult->GetInteger(0));
+	const CStreamId StreamId = pSelf->ConnectAdditionalStream(SessionId);
+	if(!StreamId.IsValid())
+		return;
+	char aBuf[96];
+	str_format(aBuf, sizeof(aBuf), "connected session %" PRIu64 " stream %" PRIu64, SessionId.Value(), StreamId.Value());
+	pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client/session", aBuf);
+}
+
+void CClient::Con_DbgDestroyStream(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	const CSessionId SessionId(pResult->GetInteger(0));
+	const CStreamId StreamId(pResult->GetInteger(1));
+	if(!pSelf->DestroyNetworkStream(SessionId, StreamId))
+		return;
+	char aBuf[96];
+	str_format(aBuf, sizeof(aBuf), "destroyed session %" PRIu64 " stream %" PRIu64, SessionId.Value(), StreamId.Value());
+	pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client/session", aBuf);
+}
+
+void CClient::Con_DbgDestroySession(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	const CSessionId SessionId(pResult->GetInteger(0));
+	if(!pSelf->DestroyNetworkSession(SessionId))
+		return;
+	char aBuf[64];
+	str_format(aBuf, sizeof(aBuf), "destroyed Network session %" PRIu64, SessionId.Value());
+	pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client/session", aBuf);
+}
+
+void CClient::Con_DbgDumpSessions(IConsole::IResult *, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	for(CSessionId SessionId : pSelf->m_SessionManager.SessionIds())
+	{
+		for(CStreamId StreamId : pSelf->SessionSource(SessionId).StreamIds())
+		{
+			char aBuf[192];
+			str_format(aBuf, sizeof(aBuf), "session=%" PRIu64 " type=%d state=%d stream=%" PRIu64 " active=%d tick=%d map=%s", SessionId.Value(), static_cast<int>(pSelf->SessionType(SessionId)), static_cast<int>(pSelf->SessionState(SessionId)), StreamId.Value(), StreamId == pSelf->ActiveStreamId(SessionId), pSelf->GameTick(SessionId, StreamId), pSelf->ServerInfo(SessionId).m_aMap);
+			pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client/session", aBuf);
+		}
+	}
 }
 
 void CClient::Con_Disconnect(IConsole::IResult *pResult, void *pUserData)
@@ -4512,7 +4768,7 @@ void CClient::InitChecksum()
 	}
 #endif
 
-int CClient::HandleChecksum(int Conn, CUuid Uuid, CUnpacker *pUnpacker)
+int CClient::HandleChecksum(CSessionId SessionId, CStreamId StreamId, CUuid Uuid, CUnpacker *pUnpacker)
 {
 	int Start = pUnpacker->GetInt();
 	int Length = pUnpacker->GetInt();
@@ -4605,7 +4861,7 @@ int CClient::HandleChecksum(int Conn, CUuid Uuid, CUnpacker *pUnpacker)
 	CMsgPacker Msg(NETMSG_CHECKSUM_RESPONSE, true);
 	Msg.AddRaw(&Uuid, sizeof(Uuid));
 	Msg.AddRaw(&Sha256, sizeof(Sha256));
-	SendMsg(Conn, &Msg, MSGFLAG_VITAL);
+	SendMsg(SessionId, StreamId, &Msg, MSGFLAG_VITAL);
 
 	return 0;
 }
@@ -4705,8 +4961,8 @@ void CClient::ConchainPassword(IConsole::IResult *pResult, void *pUserData, ICon
 {
 	CClient *pSelf = (CClient *)pUserData;
 	pfnCallback(pResult, pCallbackUserData);
-	if(pResult->NumArguments() && pSelf->m_LocalStartTime) //won't set m_SendPassword before game has started
-		pSelf->m_SendPassword = true;
+	if(pResult->NumArguments() && pSelf->m_LocalStartTime) //won't set m_pNetworkSessionSource->m_SendPassword before game has started
+		pSelf->m_pNetworkSessionSource->m_SendPassword = true;
 }
 
 void CClient::ConchainReplays(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
@@ -4771,6 +5027,11 @@ void CClient::RegisterCommands()
 	m_pConsole->Register("restart", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Restart, this, "Restart the client");
 	m_pConsole->Register("minimize", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Minimize, this, "Minimize the client");
 	m_pConsole->Register("connect", "r[host|ip]", CFGFLAG_CLIENT, Con_Connect, this, "Connect to the specified host/ip");
+	m_pConsole->Register("dbg_connect_session", "r[host|ip]", CFGFLAG_CLIENT, Con_DbgConnectSession, this, "Connect an additional Network session");
+	m_pConsole->Register("dbg_connect_stream", "i[session]", CFGFLAG_CLIENT, Con_DbgConnectStream, this, "Connect an additional stream for a Network session");
+	m_pConsole->Register("dbg_destroy_stream", "i[session] i[stream]", CFGFLAG_CLIENT, Con_DbgDestroyStream, this, "Destroy an additional Network stream");
+	m_pConsole->Register("dbg_destroy_session", "i[session]", CFGFLAG_CLIENT, Con_DbgDestroySession, this, "Destroy an additional Network session");
+	m_pConsole->Register("dbg_dump_sessions", "", CFGFLAG_CLIENT, Con_DbgDumpSessions, this, "Print game session and stream ticks");
 	m_pConsole->Register("disconnect", "", CFGFLAG_CLIENT, Con_Disconnect, this, "Disconnect from the server");
 	m_pConsole->Register("ping", "", CFGFLAG_CLIENT, Con_Ping, this, "Ping the current server");
 	m_pConsole->Register("screenshot", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Screenshot, this, "Take a screenshot");
@@ -5475,15 +5736,15 @@ void CClient::RequestDDNetInfo()
 	m_InfoState = EInfoState::LOADING;
 }
 
-int CClient::GetPredictionTime(CSessionId SessionId, int Conn)
+int CClient::GetPredictionTime(CSessionId SessionId, CStreamId StreamId)
 {
 	int64_t Now = time_get();
-	return (int)((Connection(SessionId, Conn).m_PredictedTime.Get(Now) - Connection(SessionId, Conn).m_GameTime.Get(Now)) * 1000 / (float)time_freq());
+	return (int)((Connection(SessionId, StreamId).m_PredictedTime.Get(Now) - Connection(SessionId, StreamId).m_GameTime.Get(Now)) * 1000 / (float)time_freq());
 }
 
-int CClient::GetPredictionTick(CSessionId SessionId, int Conn)
+int CClient::GetPredictionTick(CSessionId SessionId, CStreamId StreamId)
 {
-	int PredictionTick = GetPredictionTime(SessionId, Conn) * GameTickSpeed() / 1000.0f;
+	int PredictionTick = GetPredictionTime(SessionId, StreamId) * GameTickSpeed() / 1000.0f;
 
 	int PredictionMin = g_Config.m_ClAntiPingLimit * GameTickSpeed() / 1000.0f;
 
@@ -5499,21 +5760,21 @@ int CClient::GetPredictionTick(CSessionId SessionId, int Conn)
 	}
 
 	if(PredictionMin <= 0)
-		return PredGameTick(SessionId, Conn);
+		return PredGameTick(SessionId, StreamId);
 
-	PredictionTick = PredGameTick(SessionId, Conn) - PredictionMin;
+	PredictionTick = PredGameTick(SessionId, StreamId) - PredictionMin;
 
-	if(PredictionTick < GameTick(SessionId, Conn) + 1)
+	if(PredictionTick < GameTick(SessionId, StreamId) + 1)
 	{
-		PredictionTick = GameTick(SessionId, Conn) + 1;
+		PredictionTick = GameTick(SessionId, StreamId) + 1;
 	}
 	return PredictionTick;
 }
 
-void CClient::GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount)
+void CClient::GetSmoothTick(CSessionId SessionId, CStreamId StreamId, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount)
 {
-	int64_t GameTime = Connection(SessionId, Conn).m_GameTime.Get(Now);
-	int64_t PredTime = Connection(SessionId, Conn).m_PredictedTime.Get(Now);
+	int64_t GameTime = Connection(SessionId, StreamId).m_GameTime.Get(Now);
+	int64_t PredTime = Connection(SessionId, StreamId).m_PredictedTime.Get(Now);
 	int64_t SmoothTime = std::clamp(GameTime + (int64_t)(MixAmount * (PredTime - GameTime)), GameTime, PredTime);
 
 	*pSmoothTick = (int)(SmoothTime * GameTickSpeed() / time_freq()) + 1;
@@ -5541,14 +5802,14 @@ std::optional<SWarning> CClient::CurrentWarning()
 	}
 }
 
-int CClient::MaxLatencyTicks() const
+int CClient::MaxLatencyTicks(CSessionId SessionId) const
 {
-	return GameTickSpeed() + (PredictionMargin() * GameTickSpeed()) / 1000;
+	return GameTickSpeed() + (PredictionMargin(SessionId) * GameTickSpeed()) / 1000;
 }
 
-int CClient::PredictionMargin() const
+int CClient::PredictionMargin(CSessionId SessionId) const
 {
-	return m_ServerCapabilities.m_SyncWeaponInput ? g_Config.m_ClPredictionMargin : 10;
+	return NetworkSource(SessionId).m_ServerCapabilities.m_SyncWeaponInput ? g_Config.m_ClPredictionMargin : 10;
 }
 
 int CClient::UdpConnectivity(int NetType)

@@ -293,10 +293,6 @@ void CMenuBackground::OnMapLoad()
 {
 }
 
-void CMenuBackground::OnRender()
-{
-}
-
 bool CMenuBackground::Render()
 {
 	if(!m_Loaded)

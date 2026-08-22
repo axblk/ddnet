@@ -72,6 +72,7 @@ public:
 	void PrepareRender(const CRenderContext &Context, bool UsePredictedTime);
 	void UpdateMapSounds(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool UsePredictedTime);
 	void UpdateClients(const CPresentationContext &Context);
+	void RemoveState(CGameStateId StateId);
 	std::shared_ptr<CManagedTeeRenderInfo> CreateClientTee(const CGameState &State, int ClientId) const;
 	const CClientPresentation *Client(CGameStateId StateId, int ClientId) const;
 	const std::array<int, MAX_CLIENTS> *ClientsByName(CGameStateId StateId) const;
@@ -109,6 +110,7 @@ public:
 	const CSessionPresentation *Find(CSessionId SessionId) const;
 	void SetAudible(CSessionId SessionId);
 	void Unload(CSessionId SessionId);
+	bool Destroy(CSessionId SessionId);
 	void UnloadAll();
 };
 

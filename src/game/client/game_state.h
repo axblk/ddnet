@@ -5,6 +5,7 @@
 #include <base/vmath.h>
 
 #include <engine/client/stream.h>
+#include <engine/shared/snapshot.h>
 
 #include <generated/protocol.h>
 #include <generated/protocol7.h>
@@ -421,6 +422,67 @@ public:
 		void Reset();
 	};
 
+	class CSnapState
+	{
+	public:
+		const CNetObj_Character *m_pLocalCharacter;
+		const CNetObj_Character *m_pLocalPrevCharacter;
+		const CNetObj_PlayerInfo *m_pLocalInfo;
+		const CNetObj_SpectatorInfo *m_pSpectatorInfo;
+		const CNetObj_SpectatorInfo *m_pPrevSpectatorInfo;
+		const CNetObj_SpectatorCount *m_pSpectatorCount;
+		int m_NumFlags;
+		const CNetObj_Flag *m_apFlags[CSnapshot::MAX_ITEMS];
+		const CNetObj_Flag *m_apPrevFlags[CSnapshot::MAX_ITEMS];
+		const CNetObj_GameInfo *m_pGameInfoObj;
+		const CNetObj_GameData *m_pGameDataObj;
+		const CNetObj_GameData *m_pPrevGameDataObj;
+
+		const CNetObj_PlayerInfo *m_apPlayerInfos[MAX_CLIENTS];
+		const CNetObj_PlayerInfo *m_apPrevPlayerInfos[MAX_CLIENTS];
+
+		const CNetObj_PlayerInfo *m_apInfoByScore[MAX_CLIENTS];
+		const CNetObj_PlayerInfo *m_apInfoByName[MAX_CLIENTS];
+		const CNetObj_PlayerInfo *m_apInfoByDDTeamScore[MAX_CLIENTS];
+		const CNetObj_PlayerInfo *m_apInfoByDDTeamName[MAX_CLIENTS];
+
+		int m_LocalClientId;
+		int m_NumPlayers;
+		int m_aTeamSize[2];
+		int m_HighestClientId;
+
+		class CSpectateInfo
+		{
+		public:
+			bool m_Active;
+			int m_SpectatorId;
+			bool m_UsePosition;
+			vec2 m_Position;
+
+			bool m_HasCameraInfo;
+			float m_Zoom;
+			int m_Deadzone;
+			int m_FollowFactor;
+		};
+		CSpectateInfo m_SpecInfo;
+
+		class CCharacterInfo
+		{
+		public:
+			bool m_Active;
+
+			// snapshots
+			CNetObj_Character m_Prev;
+			CNetObj_Character m_Cur;
+
+			CNetObj_DDNetCharacter m_ExtendedData;
+			const CNetObj_DDNetCharacter *m_pPrevExtendedData;
+			bool m_HasExtendedData;
+			bool m_HasExtendedDisplayInfo;
+		};
+		CCharacterInfo m_aCharacters[MAX_CLIENTS];
+	};
+
 	class CEntitySnapshot
 	{
 	public:
@@ -458,10 +520,12 @@ private:
 	CNetObj_SpectatorCount m_SpectatorCount = {};
 	CGameInfo m_CoreGameInfo;
 	CTeamsCore m_Teams;
+	CSnapState m_Snap = {};
 	CGameWorld m_GameWorld;
 	CGameWorld m_PredictedWorld;
 	CGameWorld m_PrevPredictedWorld;
 	bool m_PredictionInitialized = false;
+	bool m_FullyPredicted = false;
 	CRuntimeState m_Runtime;
 	CEffectClockState m_EffectClock;
 	CSceneClockState m_SceneClock;
@@ -491,6 +555,17 @@ public:
 	void PredictTo(int TargetTick, const std::function<const CNetObj_PlayerInput *(int)> &InputAt);
 	void UpdateRenderedClient(int ClientId, bool UsePredicted, bool PredictedLocal, float IntraGameTick, float PredIntraGameTick);
 	void MarkPredicted(int Tick) { m_PredictionTick = Tick; }
+	/**
+	 * Whether somebody else runs the full DDNet prediction in these worlds.
+	 *
+	 * That prediction keeps the game world across snapshots and reconciles it
+	 * with each new one, so rebuilding the world from the snapshot would throw
+	 * away exactly what it computed. A state nobody drives falls back to the
+	 * simple prediction here, which builds its world fresh every snapshot.
+	 */
+	void SetFullyPredicted(bool FullyPredicted) { m_FullyPredicted = FullyPredicted; }
+	bool IsFullyPredicted() const { return m_FullyPredicted; }
+	void ClearPredictedClients() { m_aPredictedClients = {}; }
 
 	CGameStateId Id() const { return m_Id; }
 	CStreamId StreamId() const { return m_StreamId; }
@@ -519,8 +594,11 @@ public:
 	const CProtocol7ClientState &Protocol7Client(int ClientId) const { return m_aProtocol7Clients[ClientId]; }
 	const CTeamsCore &Teams() const { return m_Teams; }
 	const CGameInfo &CoreGameInfo() const { return m_CoreGameInfo; }
+	CSnapState &Snap() { return m_Snap; }
+	const CSnapState &Snap() const { return m_Snap; }
 	CGameWorld &GameWorld() { return m_GameWorld; }
 	const CGameWorld &GameWorld() const { return m_GameWorld; }
+	CGameWorld &PredictedWorld() { return m_PredictedWorld; }
 	const CGameWorld &PredictedWorld() const { return m_PredictedWorld; }
 	CGameWorld &PrevPredictedWorld() { return m_PrevPredictedWorld; }
 	const CGameWorld &PrevPredictedWorld() const { return m_PrevPredictedWorld; }

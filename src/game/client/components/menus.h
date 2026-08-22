@@ -24,6 +24,7 @@
 #include <game/client/components/menus_start.h>
 #include <game/client/components/skins7.h>
 #include <game/client/lineinput.h>
+#include <game/client/match_journal.h>
 #include <game/client/ui.h>
 #include <game/voting.h>
 
@@ -469,6 +470,39 @@ protected:
 	static void ConchainUpdateMusicState(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	void UpdateMusicState();
 
+	// found in menus_stats.cpp
+	enum class EStatsTab
+	{
+		LIVE,
+		HISTORY,
+		PROFILE,
+		DETAILS,
+	};
+	enum class EStatsQualityFilter
+	{
+		ALL,
+		COMPLETE,
+		SERVER,
+	};
+	bool m_StatsInitialized = false;
+	EStatsTab m_StatsTab = EStatsTab::HISTORY;
+	EStatsQualityFilter m_StatsQualityFilter = EStatsQualityFilter::ALL;
+	int m_StatsPeriodDays = 30;
+	int m_StatsSelectedIndex = -1;
+	CLineInputBuffered<128> m_StatsHistorySearchInput;
+	CLineInputBuffered<128> m_StatsProfileModeInput;
+	std::vector<CMatchHistoryEntry> m_vStatsHistory;
+	std::optional<CStoredMatch> m_StatsSelectedMatch;
+	CMatchProfile m_StatsProfile;
+	CMatchJournalInfo m_StatsInfo;
+	std::string m_StatsError;
+	void RefreshStats();
+	void LoadSelectedStatsMatch();
+	void RenderStats(CUIRect MainView);
+	void ExportSelectedStats(bool Csv);
+	void PopupConfirmDeleteStatsMatch();
+	void PopupConfirmDeleteStatsPeriod();
+
 	// found in menus_demo.cpp
 	vec2 m_DemoControlsPositionOffset = vec2(0.0f, 0.0f);
 	bool m_PausedBeforeSeeking;
@@ -771,6 +805,7 @@ public:
 		PAGE_FAVORITE_COMMUNITY_4,
 		PAGE_FAVORITE_COMMUNITY_5,
 		PAGE_DEMOS,
+		PAGE_STATS,
 		PAGE_SETTINGS,
 		PAGE_NETWORK,
 		PAGE_GHOST,
@@ -818,6 +853,7 @@ public:
 		SMALL_TAB_SETTINGS,
 		SMALL_TAB_EDITOR,
 		SMALL_TAB_DEMOBUTTON,
+		SMALL_TAB_STATSBUTTON,
 		SMALL_TAB_SERVER,
 		SMALL_TAB_BROWSER_FILTER,
 		SMALL_TAB_BROWSER_INFO,
@@ -917,6 +953,9 @@ public:
 	};
 
 	void SetMenuPage(int NewPage);
+	void OpenDemos();
+	void OpenStats();
+	void ExportMatchStats(const CStoredMatch &Stored, bool Csv);
 	void RefreshBrowserTab(bool Force);
 	void ForceRefreshLanPage();
 	void SetShowStart(bool ShowStart);

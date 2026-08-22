@@ -65,6 +65,7 @@
 #include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
 #include <engine/shared/csv.h>
+#include <engine/shared/protocol_ex.h>
 #include <engine/shared/video.h>
 #include <engine/sound.h>
 #include <engine/storage.h>
@@ -90,10 +91,55 @@ using namespace std::chrono_literals;
 
 namespace
 {
+	bool UnpackUuid(CUnpacker *pUnpacker, CUuid &Uuid)
+	{
+		const unsigned char *pData = pUnpacker->GetRaw(sizeof(Uuid));
+		if(pData == nullptr)
+			return false;
+		mem_copy(&Uuid, pData, sizeof(Uuid));
+		return true;
+	}
+
+	bool UnpackSha256(CUnpacker *pUnpacker, SHA256_DIGEST &Digest)
+	{
+		const unsigned char *pData = pUnpacker->GetRaw(sizeof(Digest));
+		if(pData == nullptr)
+			return false;
+		mem_copy(&Digest, pData, sizeof(Digest));
+		return true;
+	}
+
 	int LegacyProfileIndex(int Conn)
 	{
 		dbg_assert(Conn == IClient::CONN_MAIN || Conn == IClient::CONN_DUMMY, "legacy profile stream must be main or dummy");
 		return Conn == IClient::CONN_DUMMY;
+	}
+
+	std::string ClientObservedModeId(const CGameInfo &GameInfo, const char *pGameType)
+	{
+		if(GameInfo.m_Race)
+			return {};
+		if(str_comp_nocase(pGameType, "DM") == 0)
+			return "vanilla.dm@ddnet.org";
+		if(str_comp_nocase(pGameType, "TDM") == 0)
+			return "vanilla.tdm@ddnet.org";
+		if(str_comp_nocase(pGameType, "CTF") == 0)
+			return "vanilla.ctf@ddnet.org";
+
+		std::string Slug;
+		for(const unsigned char *pCharacter = reinterpret_cast<const unsigned char *>(pGameType); *pCharacter != '\0'; ++pCharacter)
+		{
+			const unsigned char Character = *pCharacter;
+			if((Character >= 'a' && Character <= 'z') || (Character >= '0' && Character <= '9'))
+				Slug.push_back(static_cast<char>(Character));
+			else if(Character >= 'A' && Character <= 'Z')
+				Slug.push_back(static_cast<char>(Character - 'A' + 'a'));
+			else if(!Slug.empty() && Slug.back() != '-')
+				Slug.push_back('-');
+		}
+		while(!Slug.empty() && Slug.back() == '-')
+			Slug.pop_back();
+		return Slug.empty() ? std::string() : "observed." + Slug + "@client.local";
 	}
 
 	int64_t CurrentPresentationTime()
@@ -539,6 +585,9 @@ void CGameClient::ForceUpdateConsoleRemoteCompletionSuggestions()
 void CGameClient::OnInit()
 {
 	const int64_t OnInitStart = time_get();
+	std::string MatchJournalError;
+	if(!m_MatchJournal.Open(Storage(), &MatchJournalError))
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-journal", MatchJournalError.c_str());
 
 	Client()->SetLoadingCallback([this](IClient::ELoadingCallbackDetail Detail) {
 		const char *pTitle;
@@ -697,6 +746,8 @@ void CGameClient::OnInit()
 void CGameClient::OnUpdate()
 {
 	HandleLanguageChanged();
+	for(const auto &pSession : m_SessionContexts.Contexts())
+		RequestLiveStats(pSession->Id(), false);
 
 	CUIElementBase::Init(Ui()); // update static pointer because game and editor use separate UI
 
@@ -1026,10 +1077,51 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	}
 }
 
+void CGameClient::FinalizeObservedMatch(CSessionId SessionId, CGameSessionContext &Session, CGameState &State, int Tick, EMatchTermination Termination)
+{
+	const CServerInfo &ServerInfo = Client()->ServerInfo(SessionId);
+	const std::string ModeId = ClientObservedModeId(State.CoreGameInfo(), ServerInfo.m_aGameType);
+	const IMap *pMap = Map(SessionId);
+	if(ModeId.empty() || pMap == nullptr)
+		return;
+	CObservedMatchMetadata Metadata;
+	Metadata.m_OriginId = ServerInfo.m_aAddress;
+	Metadata.m_ModeId = ModeId;
+	Metadata.m_MapName = ServerInfo.m_aMap;
+	Metadata.m_MapSha256 = pMap->Sha256();
+	Metadata.m_EndTimeUtc = time_timestamp();
+	Metadata.m_TickRate = Client()->GameTickSpeed();
+	Metadata.m_Termination = Termination;
+	std::string Error;
+	if(!Session.Stats().FinalizeObservedMatch(Metadata, State, Tick, &Error))
+	{
+		if(!Error.empty())
+			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-collector", Error.c_str());
+		return;
+	}
+	if(ShouldPersistMatchReport(Client()->SessionType(SessionId), g_Config.m_ClSaveMatchStats != 0, Session.Stats().LatestMatch()->m_LocalParticipantId.has_value()) && m_MatchJournal.IsOpen())
+	{
+		const CMatchJournal::EInsertResult Result = m_MatchJournal.Insert(*Session.Stats().LatestMatch(), &Error);
+		if(Result == CMatchJournal::EInsertResult::ERROR)
+			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-journal", Error.c_str());
+	}
+}
+
 void CGameClient::OnSessionClosed(CSessionId SessionId)
 {
 	CGameSessionContext *pSession = FindSessionContext(SessionId);
 	dbg_assert(pSession != nullptr, "missing closed game session context");
+	if(Client()->SessionType(SessionId) == ESessionSourceType::NETWORK)
+	{
+		const CStreamId PrimaryStreamId = Client()->PrimaryStreamId(SessionId);
+		CGameState *pState = pSession->GameStates().FindByStream(PrimaryStreamId);
+		const int Conn = Client()->StreamIndex(SessionId, PrimaryStreamId);
+		if(pState != nullptr && Conn >= 0)
+		{
+			FinalizeObservedMatch(SessionId, *pSession, *pState, Client()->GameTick(SessionId, Conn), EMatchTermination::ABORTED);
+			PersistLiveStatsOnDisconnect(SessionId, *pSession);
+		}
+	}
 	for(const auto &pGameState : pSession->GameStates().States())
 		pGameState->Reset();
 	pSession->Broadcast().Reset();
@@ -1038,6 +1130,9 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 	ResetInfoMessages(SessionId);
 	ResetChat(SessionId);
 	pSession->Stats().Reset();
+	pSession->MatchReportAssembler().Reset();
+	pSession->LiveStatsAssembler().Reset();
+	pSession->SetLastLiveStatsRequest(0);
 	pSession->InputRouter().Reset();
 	m_SessionPresentations.Unload(SessionId);
 	pSession->MapContext().Unload();
@@ -1103,6 +1198,186 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 
 	Editor()->ResetMentions();
 	Editor()->ResetIngameMoved();
+}
+
+void CGameClient::PersistLiveStatsOnDisconnect(CSessionId SessionId, CGameSessionContext &Session)
+{
+	const std::optional<CStoredMatch> &Live = Session.LiveStatsAssembler().Latest();
+	const bool IsCurrentMatch = Live.has_value() && Session.Stats().IsCurrentServerMatch(Live->m_Report);
+	const bool HasFinalServerReport = Live.has_value() && Session.Stats().LatestMatch().has_value() && Session.Stats().LatestMatch()->m_Source == EMatchReportSource::SERVER_REPORT && Session.Stats().LatestMatch()->m_Report.m_MatchId == Live->m_Report.m_MatchId;
+	std::string Error;
+	if(PersistLiveStatsSnapshotOnDisconnect(m_MatchJournal, Client()->SessionType(SessionId), g_Config.m_ClSaveMatchStats != 0, IsCurrentMatch, HasFinalServerReport, Session.Stats().ObservedMatchForReplacement(), Session.LiveStatsAssembler(), &Error))
+		return;
+	Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-journal", Error.c_str());
+}
+
+bool CGameClient::HandleMatchReportMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId)
+{
+	if(MsgId != NETMSG_MATCH_REPORT_START && MsgId != NETMSG_MATCH_REPORT_CHUNK && MsgId != NETMSG_MATCH_REPORT_END && MsgId != NETMSG_MATCH_REPORT_LOCAL_PARTICIPANT)
+		return false;
+
+	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
+	dbg_assert(pSession != nullptr, "missing message session context");
+	CMatchReportAssembler &Assembler = pSession->MatchReportAssembler();
+	if(StreamId != Client()->PrimaryStreamId(SessionId))
+		return true;
+
+	CUuid MatchId;
+	std::string Error;
+	bool Success = false;
+	if(!UnpackUuid(pUnpacker, MatchId))
+	{
+		Error = "invalid match report message";
+	}
+	else if(MsgId == NETMSG_MATCH_REPORT_START)
+	{
+		const int ReportSchemaVersion = pUnpacker->GetInt();
+		const int TotalSize = pUnpacker->GetInt();
+		const int NumChunks = pUnpacker->GetInt();
+		if(!pUnpacker->Error() && pUnpacker->RemainingSize() == 0)
+			Success = Assembler.Start(MatchId, ReportSchemaVersion, TotalSize, NumChunks, &Error);
+	}
+	else if(MsgId == NETMSG_MATCH_REPORT_CHUNK)
+	{
+		const int ChunkIndex = pUnpacker->GetInt();
+		const int ChunkSize = pUnpacker->GetInt();
+		const unsigned char *pChunk = nullptr;
+		if(!pUnpacker->Error() && ChunkSize >= 0 && ChunkSize == pUnpacker->RemainingSize())
+			pChunk = pUnpacker->GetRaw(ChunkSize);
+		if(pChunk != nullptr && !pUnpacker->Error() && pUnpacker->RemainingSize() == 0)
+			Success = Assembler.AddChunk(MatchId, ChunkIndex, pChunk, ChunkSize, &Error);
+	}
+	else if(MsgId == NETMSG_MATCH_REPORT_LOCAL_PARTICIPANT)
+	{
+		const int ParticipantId = pUnpacker->GetInt();
+		if(!pUnpacker->Error() && pUnpacker->RemainingSize() == 0)
+			Success = Assembler.SetLocalParticipant(MatchId, ParticipantId, &Error);
+	}
+	else
+	{
+		SHA256_DIGEST PayloadSha256;
+		if(UnpackSha256(pUnpacker, PayloadSha256) && !pUnpacker->Error() && pUnpacker->RemainingSize() == 0)
+		{
+			CStoredMatch Match;
+			Success = Assembler.Finish(MatchId, PayloadSha256, Match, &Error);
+			if(Success)
+			{
+				Match.m_OriginId = Client()->ServerInfo(SessionId).m_aAddress;
+				const bool CurrentMatch = pSession->Stats().IsCurrentServerMatch(Match.m_Report);
+				std::string ObservedOriginId;
+				CUuid ObservedMatchId = UUID_ZEROED;
+				if(ShouldReplaceObservedMatch(pSession->Stats().ObservedMatchForReplacement(), Match))
+				{
+					ObservedOriginId = pSession->Stats().ObservedMatchForReplacement()->m_OriginId;
+					ObservedMatchId = pSession->Stats().ObservedMatchForReplacement()->m_Report.m_MatchId;
+				}
+				if(!CurrentMatch && ObservedMatchId == UUID_ZEROED)
+					return true;
+				if(ShouldPersistMatchReport(Client()->SessionType(SessionId), g_Config.m_ClSaveMatchStats != 0, Match.m_LocalParticipantId.has_value()) && m_MatchJournal.IsOpen())
+				{
+					const CMatchJournal::EInsertResult Result = ObservedMatchId == UUID_ZEROED ? m_MatchJournal.Insert(Match, &Error) :
+														     m_MatchJournal.InsertReplacingObserved(Match, ObservedOriginId.c_str(), ObservedMatchId, &Error);
+					if(Result == CMatchJournal::EInsertResult::ERROR)
+						Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-journal", Error.c_str());
+				}
+				if(CurrentMatch)
+				{
+					pSession->LiveStatsAssembler().ClearMatch(Match.m_Report.m_MatchId);
+					pSession->Stats().SetLatestServerMatch(std::move(Match));
+				}
+				else
+					pSession->Stats().ClearPreviousObservedMatch();
+			}
+		}
+	}
+
+	if(!Success)
+	{
+		Assembler.Reset();
+		if(Error.empty())
+			Error = "invalid match report message";
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-report", Error.c_str());
+	}
+	return true;
+}
+
+bool CGameClient::HandleLiveStatsMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId)
+{
+	if(MsgId != NETMSG_LIVE_STATS_START && MsgId != NETMSG_LIVE_STATS_CHUNK && MsgId != NETMSG_LIVE_STATS_END)
+		return false;
+	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
+	dbg_assert(pSession != nullptr, "missing live stats session context");
+	if(StreamId != Client()->PrimaryStreamId(SessionId) || Client()->SessionType(SessionId) != ESessionSourceType::NETWORK)
+		return true;
+
+	CUuid MatchId;
+	std::string Error;
+	bool Success = false;
+	if(!UnpackUuid(pUnpacker, MatchId))
+		Error = "invalid live stats message";
+	else
+	{
+		const int Revision = pUnpacker->GetInt();
+		if(MsgId == NETMSG_LIVE_STATS_START)
+		{
+			const int ReportSchemaVersion = pUnpacker->GetInt();
+			const int LocalParticipantId = pUnpacker->GetInt();
+			const int PersistOnDisconnect = pUnpacker->GetInt();
+			const int TotalSize = pUnpacker->GetInt();
+			const int NumChunks = pUnpacker->GetInt();
+			if(!pUnpacker->Error() && pUnpacker->RemainingSize() == 0 && (PersistOnDisconnect == 0 || PersistOnDisconnect == 1))
+				Success = pSession->LiveStatsAssembler().Start(MatchId, Revision, ReportSchemaVersion, LocalParticipantId, PersistOnDisconnect != 0, TotalSize, NumChunks, &Error);
+		}
+		else if(MsgId == NETMSG_LIVE_STATS_CHUNK)
+		{
+			const int ChunkIndex = pUnpacker->GetInt();
+			const int ChunkSize = pUnpacker->GetInt();
+			const unsigned char *pChunk = nullptr;
+			if(!pUnpacker->Error() && ChunkSize >= 0 && ChunkSize == pUnpacker->RemainingSize())
+				pChunk = pUnpacker->GetRaw(ChunkSize);
+			if(pChunk != nullptr && !pUnpacker->Error() && pUnpacker->RemainingSize() == 0)
+				Success = pSession->LiveStatsAssembler().AddChunk(MatchId, Revision, ChunkIndex, pChunk, ChunkSize, &Error);
+		}
+		else
+		{
+			SHA256_DIGEST PayloadSha256;
+			if(UnpackSha256(pUnpacker, PayloadSha256) && !pUnpacker->Error() && pUnpacker->RemainingSize() == 0)
+				Success = pSession->LiveStatsAssembler().Finish(MatchId, Revision, PayloadSha256, Client()->ServerInfo(SessionId).m_aAddress, &Error);
+		}
+	}
+	if(!Success)
+	{
+		pSession->LiveStatsAssembler().Cancel();
+		if(Error.empty())
+			Error = "invalid live stats message";
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "live-stats", Error.c_str());
+	}
+	return true;
+}
+
+void CGameClient::RequestLiveStats(CSessionId SessionId, bool Force)
+{
+	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
+	if(pSession == nullptr || Client()->SessionType(SessionId) != ESessionSourceType::NETWORK || Client()->SessionState(SessionId) != ESessionState::READY)
+		return;
+	const int64_t Now = time_get();
+	if(!Force && pSession->LastLiveStatsRequest() != 0 && Now - pSession->LastLiveStatsRequest() < time_freq() * 10)
+		return;
+	CMsgPacker Request(NETMSG_LIVE_STATS_REQUEST, false);
+	if(Request.Error() || Client()->SendMsg(SessionId, Client()->PrimaryStreamId(SessionId), &Request, MSGFLAG_VITAL) < 0)
+		return;
+	pSession->SetLastLiveStatsRequest(Now);
+}
+
+const CStoredMatch *CGameClient::LiveStats(CSessionId SessionId) const
+{
+	const CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
+	return pSession != nullptr && pSession->LiveStatsAssembler().Latest().has_value() ? &*pSession->LiveStatsAssembler().Latest() : nullptr;
+}
+
+void CGameClient::RequestLiveStatsNow()
+{
+	RequestLiveStats(Client()->FocusedSessionId(), true);
 }
 
 void CGameClient::OnSessionFocused(CSessionId SessionId)
@@ -1712,6 +1987,10 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	const bool Focused = SessionId == Client()->FocusedSessionId();
 	const bool SuppressEvents = m_SuppressEvents && SessionId == Client()->DemoSessionId();
 	const int64_t MessageTime = SessionMessageTime(SessionId);
+	if(HandleMatchReportMessage(SessionId, MsgId, pUnpacker, StreamId))
+		return;
+	if(HandleLiveStatsMessage(SessionId, MsgId, pUnpacker, StreamId))
+		return;
 
 	// special messages
 	static_assert((int)NETMSGTYPE_SV_TUNEPARAMS == (int)protocol7::NETMSGTYPE_SV_TUNEPARAMS, "0.6 and 0.7 tune message id do not match");
@@ -1897,7 +2176,7 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	}
 	m_Chat.HandleMessage(*pMessageSession, *pMessageState, MessageTime, SuppressEvents, SessionId == Client()->DemoSessionId(), Focused, MsgId, pRawMsg);
 	m_InfoMessages.HandleMessage(pMessageSession->InfoMessages(), *pMessageSession, *pMessageState, Client()->GameTick(SessionId, Conn), SuppressEvents, MsgId, pRawMsg);
-	m_Statboard.HandleMessage(pMessageSession->Stats(), *pMessageState, SuppressEvents, MsgId, pRawMsg);
+	pMessageSession->Stats().HandleMessage(*pMessageState, SuppressEvents, MsgId, pRawMsg);
 	if(MsgId == NETMSGTYPE_SV_RECORD || MsgId == NETMSGTYPE_SV_RECORDLEGACY)
 	{
 		const CNetMsg_Sv_Record *pMsg = static_cast<const CNetMsg_Sv_Record *>(pRawMsg);
@@ -2474,10 +2753,14 @@ void CGameClient::OnNewSnapshot(CSessionId SessionId, CStreamId StreamId)
 	State.SetFullyPredicted(SessionId == Client()->FocusedSessionId() && StreamId == Client()->ActiveStreamId(SessionId));
 	State.SetCoreGameInfo(GameInfo);
 	State.ApplySnapshot(*Client(), SessionId, StreamId);
+	bool EnteredGameOver = false;
 	if(StreamId == Client()->PrimaryStreamId(SessionId))
-		pSession->Stats().UpdateSnapshot(State, Client()->GameTick(SessionId, Conn));
+		EnteredGameOver = pSession->Stats().UpdateSnapshot(State, Client()->GameTick(SessionId, Conn));
 	if(SessionId == Client()->FocusedSessionId() && StreamId == Client()->ActiveStreamId(SessionId))
 		ProcessSnapshot(SessionId, Conn);
+	if(!EnteredGameOver)
+		return;
+	FinalizeObservedMatch(SessionId, *pSession, State, Client()->GameTick(SessionId, Conn), EMatchTermination::COMPLETED);
 }
 
 void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)

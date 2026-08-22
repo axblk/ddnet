@@ -211,12 +211,15 @@
 					}
 				},
 				onExit: function() {
-					FS.syncfs(error => {
-						if (error) {
-							appendOutput(`Failed to synchronize filesystem with IndexedDB: ${error}`, true, "red");
-							return;
-						}
-					});
+					if (Module['ddnetSyncPersistentStorage'] !== undefined) {
+						Module['ddnetSyncPersistentStorage'](true);
+					} else {
+						FS.syncfs(error => {
+							if (error) {
+								appendOutput(`Failed to synchronize filesystem with IndexedDB: ${error}`, true, "red");
+							}
+						});
+					}
 					// After client quits, hide the canvas and reset the cursor, as the canvas
 					// will be entirely black, also blocking the view of the console output.
 					Module['canvas'].style.display = "none";

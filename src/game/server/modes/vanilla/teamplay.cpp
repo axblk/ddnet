@@ -134,8 +134,14 @@ bool CGameControllerVanillaTeamplay::CanBeMovedOnBalance(const CPlayer *pPlayer)
 
 void CGameControllerVanillaTeamplay::StartRound()
 {
+	FinalizeMatchReportForRestart();
 	m_aTeamScores.fill(0);
 	CGameControllerVanillaPvP::StartRound();
+}
+
+void CGameControllerVanillaTeamplay::AddMatchReportStandings()
+{
+	AddTeamMatchReportStandings(m_aTeamScores[TEAM_RED], m_aTeamScores[TEAM_BLUE]);
 }
 
 bool CGameControllerVanillaTeamplay::CanSpawn(int Team, vec2 *pOutPos, int ClientId)

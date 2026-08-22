@@ -495,6 +495,13 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 	{
 		Box.VSplitRight(10.0f, &Box, nullptr);
 		Box.VSplitRight(33.0f, &Box, &Button);
+		static CButtonContainer s_StatsButton;
+		if(DoButton_MenuTab(&s_StatsButton, FontIcon::LIST_UL, ActivePage == PAGE_STATS, &Button, IGraphics::CORNER_T, &m_aAnimatorsSmallPage[SMALL_TAB_STATSBUTTON]))
+			NewPage = PAGE_STATS;
+		GameClient()->m_Tooltips.DoToolTip(&s_StatsButton, &Button, Localize("Statistics"));
+
+		Box.VSplitRight(10.0f, &Box, nullptr);
+		Box.VSplitRight(33.0f, &Box, &Button);
 		static CButtonContainer s_DemoButton;
 		if(DoButton_MenuTab(&s_DemoButton, FontIcon::CLAPPERBOARD, ActivePage == PAGE_DEMOS, &Button, IGraphics::CORNER_T, &m_aAnimatorsSmallPage[SMALL_TAB_DEMOBUTTON]))
 		{
@@ -653,7 +660,7 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 			m_ControlPageOpening = true;
 		}
 
-		if(Box.w >= 10.0f + 33.0f + 10.0f)
+		if(Box.w >= 10.0f + 33.0f + 10.0f + 33.0f + 10.0f)
 		{
 			TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
 			TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE);
@@ -666,6 +673,12 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 				NewPage = PAGE_DEMOS;
 			}
 			GameClient()->m_Tooltips.DoToolTip(&s_DemoButton, &Button, Localize("Demos"));
+			Box.VSplitRight(10.0f, &Box, nullptr);
+			Box.VSplitRight(33.0f, &Box, &Button);
+			static CButtonContainer s_StatsButton;
+			if(DoButton_MenuTab(&s_StatsButton, FontIcon::LIST_UL, ActivePage == PAGE_STATS, &Button, IGraphics::CORNER_T, &m_aAnimatorsSmallPage[SMALL_TAB_STATSBUTTON]))
+				NewPage = PAGE_STATS;
+			GameClient()->m_Tooltips.DoToolTip(&s_StatsButton, &Button, Localize("Statistics"));
 			Box.VSplitRight(10.0f, &Box, nullptr);
 
 			TextRender()->SetRenderFlags(0);
@@ -1078,6 +1091,10 @@ void CMenus::Render()
 			{
 				RenderDemoBrowser(MainView);
 			}
+			else if(m_MenuPage == PAGE_STATS)
+			{
+				RenderStats(MainView);
+			}
 			else if(m_MenuPage == PAGE_SETTINGS)
 			{
 				RenderSettings(MainView);
@@ -1143,6 +1160,10 @@ void CMenus::Render()
 			else if(m_GamePage == PAGE_DEMOS)
 			{
 				RenderDemoBrowser(MainView);
+			}
+			else if(m_GamePage == PAGE_STATS)
+			{
+				RenderStats(MainView);
 			}
 			else if(m_GamePage == PAGE_SETTINGS)
 			{

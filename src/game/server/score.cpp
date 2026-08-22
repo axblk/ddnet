@@ -156,8 +156,14 @@ void CScore::Tick()
 		}
 		if(pState->m_pFinishResult != nullptr && pState->m_pFinishResult->m_Completed)
 		{
+			pState->m_ReloadPlayerData |= pState->m_pFinishResult->m_Success;
 			ProcessPlayerResult(ClientId, *pState->m_pFinishResult);
 			pState->m_pFinishResult = nullptr;
+		}
+		if(pState->m_ReloadPlayerData && pState->m_pQueryResult == nullptr)
+		{
+			pState->m_ReloadPlayerData = false;
+			LoadPlayerData(ClientId);
 		}
 	}
 
@@ -293,6 +299,7 @@ void CScore::ProcessPlayerResult(int ClientId, CScorePlayerResult &Result)
 		break;
 	case CScorePlayerResult::PLAYER_INFO:
 	{
+		PlayerData(ClientId)->m_PlayerDataLoaded = true;
 		if(Result.m_Data.m_Info.m_Time.has_value())
 		{
 			PlayerData(ClientId)->Set(Result.m_Data.m_Info.m_Time.value(), Result.m_Data.m_Info.m_aTimeCp);
@@ -300,6 +307,8 @@ void CScore::ProcessPlayerResult(int ClientId, CScorePlayerResult &Result)
 			if(!CurrentRecord().has_value() || Result.m_Data.m_Info.m_Time.value() < CurrentRecord().value())
 				LoadBestTime();
 		}
+		PlayerData(ClientId)->m_MapRank = Result.m_Data.m_Info.m_MapRank;
+		PlayerData(ClientId)->m_MapFinishes = Result.m_Data.m_Info.m_MapFinishes;
 		Server()->ExpireServerInfo();
 		int Birthday = Result.m_Data.m_Info.m_Birthday;
 		if(Birthday != 0 && !pState->m_BirthdayAnnounced && pPlayer->GetCharacter())
@@ -429,6 +438,7 @@ void CScore::LoadMapInfo()
 
 void CScore::LoadPlayerData(int ClientId, const char *pName)
 {
+	PlayerData(ClientId)->m_PlayerDataLoaded = false;
 	ExecPlayerThread(CScoreWorker::LoadPlayerData, "load player data", ClientId, pName, 0);
 }
 

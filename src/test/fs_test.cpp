@@ -4,7 +4,18 @@
 #include <base/io.h>
 #include <base/str.h>
 
+#include <engine/storage.h>
+
 #include <gtest/gtest.h>
+
+TEST(Storage, SyncPersistentStorage)
+{
+	CTestInfo Info;
+	Info.m_DeleteTestStorageFilesOnSuccess = true;
+	const std::unique_ptr<IStorage> pStorage = Info.CreateTestStorage();
+	ASSERT_NE(pStorage, nullptr);
+	pStorage->SyncPersistentStorage();
+}
 
 TEST(Filesystem, Filename)
 {

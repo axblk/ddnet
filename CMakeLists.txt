@@ -2440,6 +2440,8 @@ set_src(GAME_SHARED GLOB src/game
   mapitems_ex.cpp
   mapitems_ex.h
   mapitems_ex_types.h
+  match_report.cpp
+  match_report.h
   prng.cpp
   prng.h
   race_state.h
@@ -2709,6 +2711,7 @@ if(CLIENT)
     components/menus_settings_tee7.cpp
     components/menus_start.cpp
     components/menus_start.h
+    components/menus_stats.cpp
     components/motd.cpp
     components/motd.h
     components/nameplates.cpp
@@ -2753,6 +2756,14 @@ if(CLIENT)
     local_player_profile.h
     map_context.cpp
     map_context.h
+    match_collector.cpp
+    match_collector.h
+    match_journal.cpp
+    match_journal.h
+    match_report_assembler.cpp
+    match_report_assembler.h
+    match_report_view.h
+    match_stats_export.h
     pickup_data.cpp
     pickup_data.h
     prediction/entities/character.cpp
@@ -3515,6 +3526,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     map_context_test.cpp
     mapbugs_test.cpp
     mapitems_test.cpp
+    match_journal_test.cpp
+    match_report_test.cpp
     math_test.cpp
     mem_test.cpp
     mutes_test.cpp
@@ -3575,6 +3588,10 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/game/client/local_player_profile.h
     src/game/client/map_context.cpp
     src/game/client/map_context.h
+    src/game/client/match_journal.cpp
+    src/game/client/match_journal.h
+    src/game/client/match_report_assembler.cpp
+    src/game/client/match_report_assembler.h
     src/game/client/session_game_config.cpp
     src/game/client/session_game_config.h
     # tidy-alphabetical-end
@@ -3591,6 +3608,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/game/client/game_view.cpp
     src/game/client/laser_data.cpp
     src/game/client/map_context.cpp
+    src/game/client/match_collector.cpp
+    src/game/client/match_report_assembler.cpp
     src/game/client/pickup_data.cpp
     src/game/client/prediction/entities/character.cpp
     src/game/client/prediction/entities/door.cpp

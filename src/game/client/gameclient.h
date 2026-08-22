@@ -172,6 +172,7 @@ private:
 #endif
 	class IHttp *m_pHttp;
 
+	CMatchJournal m_MatchJournal;
 	CGameSessionContextManager m_SessionContexts;
 	// Last state GameState() resolved, see there.
 	CSessionId m_StateCacheSessionId;
@@ -204,6 +205,11 @@ private:
 
 	void ProcessEvents(CSessionId SessionId, int Conn);
 	void ProcessSnapshot(CSessionId SessionId, int Conn);
+	void FinalizeObservedMatch(CSessionId SessionId, CGameSessionContext &Session, CGameState &State, int Tick, EMatchTermination Termination);
+	void PersistLiveStatsOnDisconnect(CSessionId SessionId, CGameSessionContext &Session);
+	bool HandleMatchReportMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId);
+	bool HandleLiveStatsMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId);
+	void RequestLiveStats(CSessionId SessionId, bool Force);
 	void ProcessPrediction();
 	void UpdatePositions(const CGameState &State, const CGameTickInfo &Time, float LocalTime);
 	CVisibleWorldRect VisibleWorldRectFor(const CGameView &View) const;
@@ -250,6 +256,10 @@ public:
 	const CGameSessionContext &SessionContext() const;
 	CGameSessionContext *FindSessionContext(CSessionId SessionId) { return m_SessionContexts.Find(SessionId); }
 	const CGameSessionContext *FindSessionContext(CSessionId SessionId) const { return m_SessionContexts.Find(SessionId); }
+	CMatchJournal &MatchJournal() { return m_MatchJournal; }
+	const CMatchJournal &MatchJournal() const { return m_MatchJournal; }
+	const CStoredMatch *LiveStats(CSessionId SessionId) const;
+	void RequestLiveStatsNow();
 	CSessionPresentation &SessionPresentation(CSessionId SessionId);
 	const CSessionPresentation &SessionPresentation(CSessionId SessionId) const;
 	void ResetInfoMessages(CSessionId SessionId);

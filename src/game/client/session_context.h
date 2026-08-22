@@ -5,6 +5,8 @@
 #include "input_policy.h"
 #include "local_player_profile.h"
 #include "map_context.h"
+#include "match_collector.h"
+#include "match_report_assembler.h"
 
 #include <base/dbg.h>
 #include <base/str.h>
@@ -362,108 +364,6 @@ public:
 	}
 };
 
-class CSessionClientStats
-{
-	int m_IngameTicks = 0;
-	int m_JoinTick = 0;
-	bool m_Active = false;
-
-public:
-	std::array<int, NUM_WEAPONS> m_aFragsWith = {};
-	std::array<int, NUM_WEAPONS> m_aDeathsFrom = {};
-	int m_Frags = 0;
-	int m_Deaths = 0;
-	int m_Suicides = 0;
-	int m_BestSpree = 0;
-	int m_CurrentSpree = 0;
-	int m_FlagGrabs = 0;
-	int m_FlagCaptures = 0;
-
-	void Reset() { *this = {}; }
-	bool IsActive() const { return m_Active; }
-	void JoinGame(int Tick)
-	{
-		m_Active = true;
-		m_JoinTick = Tick;
-	}
-	void JoinSpec(int Tick)
-	{
-		m_Active = false;
-		m_IngameTicks += Tick - m_JoinTick;
-	}
-	int GetIngameTicks(int Tick) const { return m_IngameTicks + Tick - m_JoinTick; }
-	float GetFPM(int Tick, int TickSpeed) const { return static_cast<float>(m_Frags * TickSpeed * 60) / GetIngameTicks(Tick); }
-};
-
-class CSessionStatsState
-{
-	std::array<CSessionClientStats, MAX_CLIENTS> m_aClients;
-	bool m_HasGameInfo = false;
-	int m_LastRoundStartTick = 0;
-	bool m_GameOver = false;
-	bool m_GamePaused = false;
-	int m_LastFlagCarrierRed = FLAG_MISSING;
-	int m_LastFlagCarrierBlue = FLAG_MISSING;
-
-	void ResetClients()
-	{
-		for(CSessionClientStats &Client : m_aClients)
-			Client.Reset();
-	}
-
-public:
-	void Reset()
-	{
-		ResetClients();
-		m_HasGameInfo = false;
-		m_LastRoundStartTick = 0;
-		m_GameOver = false;
-		m_GamePaused = false;
-		m_LastFlagCarrierRed = FLAG_MISSING;
-		m_LastFlagCarrierBlue = FLAG_MISSING;
-	}
-	void UpdateSnapshot(const CGameState &State, int Tick)
-	{
-		for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
-		{
-			const CGameState::CClientSnapshot &SnapshotClient = State.Client(ClientId);
-			const bool Present = SnapshotClient.m_HasPlayerInfo && SnapshotClient.m_PlayerInfo.m_ClientId == ClientId;
-			CSessionClientStats &Stats = m_aClients[ClientId];
-			if(!Present)
-				Stats.Reset();
-			else if(SnapshotClient.m_PlayerInfo.m_Team != TEAM_SPECTATORS && !Stats.IsActive())
-				Stats.JoinGame(Tick);
-			else if(SnapshotClient.m_PlayerInfo.m_Team == TEAM_SPECTATORS && Stats.IsActive())
-				Stats.JoinSpec(Tick);
-		}
-
-		if(State.HasGameInfo())
-		{
-			const CNetObj_GameInfo &GameInfo = State.GameInfo();
-			const bool GameOver = (GameInfo.m_GameStateFlags & GAMESTATEFLAG_GAMEOVER) != 0;
-			const bool GamePaused = (GameInfo.m_GameStateFlags & GAMESTATEFLAG_PAUSED) != 0;
-			if(m_HasGameInfo && ((m_GameOver && !GameOver) || (GameInfo.m_RoundStartTick != m_LastRoundStartTick && !(GameOver || GamePaused || m_GamePaused))))
-				ResetClients();
-			m_HasGameInfo = true;
-			m_LastRoundStartTick = GameInfo.m_RoundStartTick;
-			m_GameOver = GameOver;
-			m_GamePaused = GamePaused;
-		}
-
-		if(const CNetObj_GameData *pGameData = State.GameData())
-		{
-			if(m_LastFlagCarrierRed == FLAG_ATSTAND && pGameData->m_FlagCarrierRed >= 0)
-				m_aClients[pGameData->m_FlagCarrierRed].m_FlagGrabs++;
-			else if(m_LastFlagCarrierBlue == FLAG_ATSTAND && pGameData->m_FlagCarrierBlue >= 0)
-				m_aClients[pGameData->m_FlagCarrierBlue].m_FlagGrabs++;
-			m_LastFlagCarrierRed = pGameData->m_FlagCarrierRed;
-			m_LastFlagCarrierBlue = pGameData->m_FlagCarrierBlue;
-		}
-	}
-	CSessionClientStats &Client(int ClientId) { return m_aClients[ClientId]; }
-	const CSessionClientStats &Client(int ClientId) const { return m_aClients[ClientId]; }
-};
-
 class CSessionVoteState
 {
 	int64_t m_OpenTime = 0;
@@ -599,6 +499,9 @@ class CGameSessionContext
 	CSessionInfoMessageState m_InfoMessages;
 	CSessionChatState m_Chat;
 	CSessionStatsState m_Stats;
+	CMatchReportAssembler m_MatchReportAssembler;
+	CLiveStatsAssembler m_LiveStatsAssembler;
+	int64_t m_LastLiveStatsRequest = 0;
 	CSessionVoteState m_Vote;
 
 public:
@@ -640,6 +543,12 @@ public:
 	const CSessionChatState &Chat() const { return m_Chat; }
 	CSessionStatsState &Stats() { return m_Stats; }
 	const CSessionStatsState &Stats() const { return m_Stats; }
+	CMatchReportAssembler &MatchReportAssembler() { return m_MatchReportAssembler; }
+	const CMatchReportAssembler &MatchReportAssembler() const { return m_MatchReportAssembler; }
+	CLiveStatsAssembler &LiveStatsAssembler() { return m_LiveStatsAssembler; }
+	const CLiveStatsAssembler &LiveStatsAssembler() const { return m_LiveStatsAssembler; }
+	int64_t LastLiveStatsRequest() const { return m_LastLiveStatsRequest; }
+	void SetLastLiveStatsRequest(int64_t Time) { m_LastLiveStatsRequest = Time; }
 	CSessionVoteState &Vote() { return m_Vote; }
 	const CSessionVoteState &Vote() const { return m_Vote; }
 };

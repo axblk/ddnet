@@ -1591,8 +1591,7 @@ void CClient::StopNetworkSession(CSessionId SessionId, const char *pReason)
 			pStream->m_Connection.ResetSnapshots();
 		}
 		ResetMapDownload(SessionId, true);
-		if(m_State < IClient::STATE_QUITTING)
-			GameClient()->OnSessionClosed(SessionId);
+		GameClient()->OnSessionClosed(SessionId);
 		Source.ResetAfterDisconnect(aReconnectError, g_Config.m_ClReconnectFull, g_Config.m_ClReconnectTimeout, time_get(), time_freq());
 		Source.SetState(ESessionState::OFFLINE);
 		if(Focused && m_State < IClient::STATE_QUITTING)
@@ -1675,8 +1674,7 @@ void CClient::StopNetworkSession(CSessionId SessionId, const char *pReason)
 		SetFocusedState(IClient::STATE_OFFLINE, true);
 	else
 	{
-		if(m_State < IClient::STATE_QUITTING)
-			GameClient()->OnSessionClosed(m_NetworkSessionId);
+		GameClient()->OnSessionClosed(m_NetworkSessionId);
 		m_pNetworkSessionSource->SetState(ESessionState::OFFLINE);
 	}
 	ResetMapDownload(SessionId, true);
@@ -3417,7 +3415,7 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 	else if(Vital || Msg == NETMSGTYPE_SV_PREINPUT)
 	{
 		// game message
-		if(SessionId == m_NetworkSessionId && !InactiveStream)
+		if(SessionId == m_NetworkSessionId && !InactiveStream && Msg != NETMSG_MATCH_REPORT_LOCAL_PARTICIPANT)
 		{
 			for(auto &DemoRecorder : DemoRecorders())
 			{

@@ -74,6 +74,7 @@ protected:
 	void RegisterCommands() override;
 	void RegisterAdminCommands();
 	void RegisterPracticeCommands();
+	bool BuildLiveStatsReport(int ClientId, CMatchReport &Report, int &LocalParticipantId, std::string &Payload) override;
 
 private:
 	static bool CreateRaceMapEntity(IGameController &Controller, const CMapEntityContext &Context);

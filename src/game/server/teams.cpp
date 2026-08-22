@@ -972,6 +972,8 @@ void CGameTeams::OnFinish(CPlayer *pPlayer, int TimeTicks, const char *pTimestam
 	// TODO:DDRace:btd: this ugly
 	const int ClientId = pPlayer->GetCid();
 	CPlayerData *pData = Score().PlayerData(ClientId);
+	pData->m_SessionFinishes++;
+	pData->m_LastFinishTime = Time;
 
 	char aBuf[128];
 	SetLastTimeCp(pPlayer, -1);

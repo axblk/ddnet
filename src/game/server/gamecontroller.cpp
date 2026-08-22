@@ -16,8 +16,10 @@
 
 #include <engine/antibot.h>
 #include <engine/config.h>
+#include <engine/message.h>
 #include <engine/server.h>
 #include <engine/shared/config.h>
+#include <engine/shared/protocol_ex.h>
 #include <engine/shared/protocolglue.h>
 
 #include <generated/protocol.h>
@@ -27,6 +29,7 @@
 #include <game/teamscore.h>
 
 #include <algorithm>
+#include <limits>
 
 IGameController::IGameController(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
 	m_GameModeInfo(GameModeInfo),
@@ -36,6 +39,7 @@ IGameController::IGameController(CGameServices &Services, const CGameModeInfo &G
 	m_pServices = &Services;
 	m_pServer = Services.Server();
 	m_pGameType = g_Config.m_SvTestingCommands ? m_GameModeInfo.m_pTestingGameType : m_GameModeInfo.m_pGameType;
+	m_aLastLiveStatsRequestTick.fill(std::numeric_limits<int>::min());
 }
 
 CGameContext *IGameController::GameServer() const
@@ -58,14 +62,440 @@ IGameController::~IGameController()
 	GameServer()->Console()->DeregisterOwner(this);
 }
 
+IGameController::CMatchParticipantState *IGameController::MatchParticipant(const CPlayer *pPlayer)
+{
+	for(CMatchParticipantState &State : m_vMatchParticipants)
+		if(State.m_UniqueClientId == pPlayer->GetUniqueCid())
+			return &State;
+	return nullptr;
+}
+
+IGameController::CMatchParticipantState *IGameController::EnsureMatchParticipant(CPlayer *pPlayer)
+{
+	if(!m_pMatchReportBuilder || pPlayer->GetTeam() == TEAM_SPECTATORS)
+		return nullptr;
+	if(CMatchParticipantState *pState = MatchParticipant(pPlayer))
+		return pState;
+	if(m_vMatchParticipants.size() >= MatchReportLimits::MAX_PARTICIPANTS)
+	{
+		m_MatchReportOverflow = true;
+		return nullptr;
+	}
+
+	CMatchParticipant Participant;
+	Participant.m_ParticipantId = m_NextMatchParticipantId++;
+	Participant.m_DisplayName = Server()->ClientName(pPlayer->GetCid());
+	Participant.m_Clan = Server()->ClientClan(pPlayer->GetCid());
+	Participant.m_JoinedTick = std::max(0, Server()->Tick() - m_MatchReportStartTick);
+	if(IsTeamPlay())
+		Participant.m_TeamId = pPlayer->GetTeam();
+	m_vMatchParticipants.push_back({pPlayer->GetUniqueCid(), std::move(Participant), Server()->Tick()});
+	return &m_vMatchParticipants.back();
+}
+
+void IGameController::UpdateMatchParticipant(CPlayer *pPlayer, bool Leaving)
+{
+	CMatchParticipantState *pState = MatchParticipant(pPlayer);
+	if(!pState && !Leaving)
+		pState = EnsureMatchParticipant(pPlayer);
+	if(!pState)
+		return;
+
+	pState->m_Participant.m_DisplayName = Server()->ClientName(pPlayer->GetCid());
+	pState->m_Participant.m_Clan = Server()->ClientClan(pPlayer->GetCid());
+	pState->m_Score = SnapPlayerScore(SERVER_DEMO_CLIENT, pPlayer);
+	if(IsTeamPlay() && pPlayer->GetTeam() != TEAM_SPECTATORS)
+		pState->m_Participant.m_TeamId = pPlayer->GetTeam();
+	if(!Leaving && pState->m_ActiveSinceTick < 0)
+	{
+		pState->m_ActiveSinceTick = Server()->Tick();
+		pState->m_Participant.m_LeftTick.reset();
+	}
+	if(Leaving && pState->m_ActiveSinceTick >= 0)
+	{
+		pState->m_PlaytimeTicks += Server()->Tick() - pState->m_ActiveSinceTick;
+		pState->m_ActiveSinceTick = -1;
+		pState->m_Participant.m_LeftTick = std::max(0, Server()->Tick() - m_MatchReportStartTick);
+	}
+}
+
+void IGameController::StartMatchReport()
+{
+	if(Info().m_Report.m_ModeId.empty() || Match().IsWarmup())
+		return;
+
+	CMatchReport Report;
+	Report.m_MatchId = RandomUuid();
+	Report.m_GameUuid = GameServer()->GameUuid();
+	Report.m_ModeId = Info().m_Report.m_ModeId;
+	Report.m_ModeSchemaVersion = Info().m_Report.m_SchemaVersion;
+	Report.m_MapName = GameServer()->Map()->FullName();
+	Report.m_MapSha256 = GameServer()->Map()->Sha256();
+	Report.m_StartTimeUtc = time_timestamp();
+	Report.m_TickRate = Server()->TickSpeed();
+	Report.m_RoundStartTick = Match().RoundStartTick();
+	Report.m_Ranked = false;
+	Report.m_UnrankedReason = "server_not_ranked";
+	if(IsTeamPlay())
+	{
+		Report.m_vTeams.push_back({TEAM_RED, "Red"});
+		Report.m_vTeams.push_back({TEAM_BLUE, "Blue"});
+	}
+	m_MatchReportStartTick = Match().RoundStartTick();
+	m_NextMatchParticipantId = 0;
+	m_MatchReportOverflow = false;
+	m_vMatchParticipants.clear();
+	m_pMatchReportBuilder = std::make_unique<CMatchReportBuilder>(std::move(Report));
+	for(CPlayer *pPlayer : GameServer()->m_apPlayers)
+		if(pPlayer)
+			EnsureMatchParticipant(pPlayer);
+}
+
+EMatchMetricAggregation IGameController::MatchMetricAggregation(const char *pMetricId) const
+{
+	for(const CGameModeMetricInfo &Metric : Info().m_Report.m_vMetrics)
+		if(Metric.m_Id == pMetricId)
+			return Metric.m_Aggregation;
+	return EMatchMetricAggregation::INVALID;
+}
+
+const CGameModeReportInfo &IGameController::LiveStatsInfo() const
+{
+	return Info().m_LiveStats.m_ModeId.empty() ? Info().m_Report : Info().m_LiveStats;
+}
+
+bool IGameController::InitializeLiveStatsReport(CMatchReport &Report) const
+{
+	const CGameModeReportInfo &LiveInfo = LiveStatsInfo();
+	if(LiveInfo.m_ModeId.empty() || m_LiveStatsInstanceId == UUID_ZEROED)
+		return false;
+	Report = {};
+	Report.m_MatchId = m_LiveStatsInstanceId;
+	Report.m_GameUuid = GameServer()->GameUuid();
+	Report.m_ModeId = LiveInfo.m_ModeId;
+	Report.m_ModeSchemaVersion = LiveInfo.m_SchemaVersion;
+	Report.m_MapName = GameServer()->Map()->FullName();
+	Report.m_MapSha256 = GameServer()->Map()->Sha256();
+	Report.m_StartTimeUtc = m_LiveStatsStartTimeUtc;
+	Report.m_EndTimeUtc = time_timestamp();
+	Report.m_DurationTicks = std::max(0, Server()->Tick() - m_LiveStatsStartTick);
+	Report.m_TickRate = Server()->TickSpeed();
+	Report.m_RoundStartTick = m_LiveStatsStartTick;
+	Report.m_Termination = EMatchTermination::ABORTED;
+	Report.m_Ranked = false;
+	Report.m_UnrankedReason = "live_snapshot";
+	return true;
+}
+
+bool IGameController::BuildLiveStatsReport(int ClientId, CMatchReport &Report, int &LocalParticipantId, std::string &Payload)
+{
+	if(!m_pMatchReportBuilder || m_MatchReportOverflow || ClientId < 0 || ClientId >= MAX_CLIENTS)
+		return false;
+	CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+	if(!pPlayer)
+		return false;
+	if(pPlayer->GetTeam() != TEAM_SPECTATORS)
+		UpdateMatchParticipant(pPlayer, false);
+	CMatchParticipantState *pState = MatchParticipant(pPlayer);
+	if(!pState)
+		return false;
+
+	Report = m_pMatchReportBuilder->Report();
+	Report.m_EndTimeUtc = time_timestamp();
+	Report.m_DurationTicks = std::max(0, Server()->Tick() - m_MatchReportStartTick);
+	Report.m_Termination = EMatchTermination::ABORTED;
+	Report.m_vParticipants.clear();
+	Report.m_vStandings.clear();
+	Report.m_vMetrics.erase(std::remove_if(Report.m_vMetrics.begin(), Report.m_vMetrics.end(), [pState](const CMatchMetric &Metric) {
+		return Metric.m_SubjectKind != EMatchSubjectKind::MATCH &&
+		       (Metric.m_SubjectKind != EMatchSubjectKind::PARTICIPANT || Metric.m_SubjectId != pState->m_Participant.m_ParticipantId);
+	}),
+		Report.m_vMetrics.end());
+
+	CMatchParticipant Participant = pState->m_Participant;
+	if(pPlayer->GetTeam() != TEAM_SPECTATORS)
+		Participant.m_LeftTick.reset();
+	Participant.m_JoinedTick = std::clamp<int64_t>(Participant.m_JoinedTick, 0, Report.m_DurationTicks);
+	CMatchReportBuilder Builder(std::move(Report));
+	if(!Builder.AddParticipant(std::move(Participant)))
+		return false;
+	const std::string ScoreMetricId = Info().m_Report.m_ModeId + "/score";
+	const std::string PlaytimeMetricId = Info().m_Report.m_ModeId + "/playtime_ticks";
+	const int64_t PlaytimeTicks = pState->m_PlaytimeTicks + (pState->m_ActiveSinceTick >= 0 ? Server()->Tick() - pState->m_ActiveSinceTick : 0);
+	if(!Builder.SetMetricValue(EMatchSubjectKind::PARTICIPANT, pState->m_Participant.m_ParticipantId, ScoreMetricId.c_str(), pState->m_Score, MatchMetricAggregation(ScoreMetricId.c_str())) ||
+		!Builder.SetMetricValue(EMatchSubjectKind::PARTICIPANT, pState->m_Participant.m_ParticipantId, PlaytimeMetricId.c_str(), PlaytimeTicks, MatchMetricAggregation(PlaytimeMetricId.c_str())))
+		return false;
+	if(Match().IsSuddenDeath())
+	{
+		const std::string MetricId = Info().m_Report.m_ModeId + "/sudden_death";
+		if(!Builder.SetMetricValue(EMatchSubjectKind::MATCH, std::nullopt, MetricId.c_str(), 1, MatchMetricAggregation(MetricId.c_str())))
+			return false;
+	}
+	std::string Error;
+	if(!Builder.Finalize(&Error, &Payload))
+	{
+		log_error("game", "failed to build live stats: %s", Error.c_str());
+		return false;
+	}
+	Report = Builder.Report();
+	LocalParticipantId = pState->m_Participant.m_ParticipantId;
+	return true;
+}
+
+bool IGameController::AddParticipantMatchMetric(CPlayer *pPlayer, const char *pSuffix, int64_t Value)
+{
+	CMatchParticipantState *pState = EnsureMatchParticipant(pPlayer);
+	if(!pState)
+		return false;
+	const std::string MetricId = Info().m_Report.m_ModeId + "/" + pSuffix;
+	return m_pMatchReportBuilder->AddMetricValue(EMatchSubjectKind::PARTICIPANT, pState->m_Participant.m_ParticipantId, MetricId.c_str(), Value, MatchMetricAggregation(MetricId.c_str()));
+}
+
+void IGameController::AddParticipantWeaponMatchMetric(CPlayer *pPlayer, int Weapon, const char *pSuffix, int64_t Value)
+{
+	char aSuffix[64];
+	str_format(aSuffix, sizeof(aSuffix), "weapon_%d_%s", Weapon, pSuffix);
+	AddParticipantMatchMetric(pPlayer, aSuffix, Value);
+}
+
+void IGameController::AddCharacterDamageMatchMetrics(CPlayer *pAttacker, CPlayer *pVictim, int Weapon, int Damage)
+{
+	if(!m_pMatchReportBuilder || !pVictim || pAttacker == pVictim || Weapon < WEAPON_HAMMER || Weapon >= NUM_WEAPONS || Damage <= 0)
+		return;
+
+	if(pAttacker)
+	{
+		AddParticipantMatchMetric(pAttacker, "hits", 1);
+		AddParticipantWeaponMatchMetric(pAttacker, Weapon, "hits", 1);
+		AddParticipantMatchMetric(pAttacker, "damage_done", Damage);
+		AddParticipantWeaponMatchMetric(pAttacker, Weapon, "damage_done", Damage);
+	}
+	AddParticipantMatchMetric(pVictim, "damage_taken", Damage);
+	AddParticipantWeaponMatchMetric(pVictim, Weapon, "damage_taken", Damage);
+}
+
+void IGameController::AddMatchReportStandings()
+{
+	std::vector<CMatchParticipantState *> vStandings;
+	vStandings.reserve(m_vMatchParticipants.size());
+	for(CMatchParticipantState &State : m_vMatchParticipants)
+		vStandings.push_back(&State);
+	std::stable_sort(vStandings.begin(), vStandings.end(), [](const CMatchParticipantState *pLeft, const CMatchParticipantState *pRight) {
+		return pLeft->m_Score > pRight->m_Score;
+	});
+
+	const bool TopTied = vStandings.size() > 1 && vStandings[0]->m_Score == vStandings[1]->m_Score;
+	int Rank = 0;
+	for(size_t i = 0; i < vStandings.size(); ++i)
+	{
+		if(i == 0 || vStandings[i]->m_Score != vStandings[i - 1]->m_Score)
+			Rank = static_cast<int>(i) + 1;
+		const EMatchOutcome Outcome = Rank == 1 ? (TopTied ? EMatchOutcome::DRAW : EMatchOutcome::WIN) : EMatchOutcome::LOSS;
+		m_pMatchReportBuilder->AddStanding({EMatchSubjectKind::PARTICIPANT, vStandings[i]->m_Participant.m_ParticipantId, Rank, Outcome});
+	}
+}
+
+void IGameController::AddTeamMatchReportStandings(int RedScore, int BlueScore)
+{
+	const std::string ScoreMetricId = Info().m_Report.m_ModeId + "/score";
+	const bool Draw = RedScore == BlueScore;
+	for(int Team = TEAM_RED; Team <= TEAM_BLUE; ++Team)
+	{
+		const int Score = Team == TEAM_RED ? RedScore : BlueScore;
+		const bool Won = Draw || (Team == TEAM_RED ? RedScore > BlueScore : BlueScore > RedScore);
+		m_pMatchReportBuilder->AddStanding({EMatchSubjectKind::TEAM, Team, Won ? 1 : 2, Draw ? EMatchOutcome::DRAW : (Won ? EMatchOutcome::WIN : EMatchOutcome::LOSS)});
+		m_pMatchReportBuilder->SetMetricValue(EMatchSubjectKind::TEAM, Team, ScoreMetricId.c_str(), Score, MatchMetricAggregation(ScoreMetricId.c_str()));
+	}
+	for(const CMatchParticipantState &State : m_vMatchParticipants)
+	{
+		if(!State.m_Participant.m_TeamId.has_value())
+			continue;
+		const int Team = *State.m_Participant.m_TeamId;
+		const bool Won = RedScore == BlueScore || (Team == TEAM_RED ? RedScore > BlueScore : BlueScore > RedScore);
+		m_pMatchReportBuilder->AddStanding({EMatchSubjectKind::PARTICIPANT, State.m_Participant.m_ParticipantId, Won ? 1 : 2, RedScore == BlueScore ? EMatchOutcome::DRAW : (Won ? EMatchOutcome::WIN : EMatchOutcome::LOSS)});
+	}
+}
+
+void IGameController::FinalizeMatchReport(EMatchTermination Termination)
+{
+	if(!m_pMatchReportBuilder)
+		return;
+	if(m_MatchReportOverflow)
+	{
+		log_error("game", "match report participant limit exceeded");
+		m_pMatchReportBuilder.reset();
+		return;
+	}
+
+	CMatchReport &Report = m_pMatchReportBuilder->Report();
+	Report.m_EndTimeUtc = time_timestamp();
+	Report.m_DurationTicks = std::max(0, Server()->Tick() - m_MatchReportStartTick);
+	Report.m_Termination = Termination;
+	for(CPlayer *pPlayer : GameServer()->m_apPlayers)
+		if(pPlayer)
+			UpdateMatchParticipant(pPlayer, pPlayer->GetTeam() == TEAM_SPECTATORS);
+	for(CMatchParticipantState &State : m_vMatchParticipants)
+	{
+		const int64_t PlaytimeTicks = State.m_PlaytimeTicks + (State.m_ActiveSinceTick >= 0 ? Server()->Tick() - State.m_ActiveSinceTick : 0);
+		m_pMatchReportBuilder->AddParticipant(State.m_Participant);
+		const std::string ScoreMetricId = Info().m_Report.m_ModeId + "/score";
+		m_pMatchReportBuilder->SetMetricValue(EMatchSubjectKind::PARTICIPANT, State.m_Participant.m_ParticipantId, ScoreMetricId.c_str(), State.m_Score, MatchMetricAggregation(ScoreMetricId.c_str()));
+		const std::string PlaytimeMetricId = Info().m_Report.m_ModeId + "/playtime_ticks";
+		m_pMatchReportBuilder->SetMetricValue(EMatchSubjectKind::PARTICIPANT, State.m_Participant.m_ParticipantId, PlaytimeMetricId.c_str(), PlaytimeTicks, MatchMetricAggregation(PlaytimeMetricId.c_str()));
+	}
+	AddMatchReportStandings();
+	if(Termination != EMatchTermination::COMPLETED)
+	{
+		for(CMatchStanding &Standing : Report.m_vStandings)
+			Standing.m_Outcome = EMatchOutcome::DNF;
+	}
+
+	std::string Error;
+	std::string Payload;
+	if(m_pMatchReportBuilder->Finalize(&Error, &Payload))
+	{
+		m_pLatestMatchReport = std::make_unique<CMatchReport>(m_pMatchReportBuilder->Report());
+		SendMatchReport(*m_pLatestMatchReport, Payload);
+	}
+	else
+		log_error("game", "failed to finalize match report: %s", Error.c_str());
+	m_pMatchReportBuilder.reset();
+}
+
+void IGameController::SendMatchReport(const CMatchReport &Report, const std::string &Payload)
+{
+	const int PayloadSize = static_cast<int>(Payload.size());
+	const int NumChunks = (PayloadSize + MatchReportTransportLimits::MAX_CHUNK_SIZE - 1) / MatchReportTransportLimits::MAX_CHUNK_SIZE;
+	const SHA256_DIGEST PayloadSha256 = sha256(Payload.data(), Payload.size());
+
+	CMsgPacker Start(NETMSG_MATCH_REPORT_START, false);
+	Start.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
+	Start.AddInt(Report.m_ReportSchemaVersion);
+	Start.AddInt(PayloadSize);
+	Start.AddInt(NumChunks);
+	if(Start.Error() || Server()->SendMsg(&Start, MSGFLAG_VITAL, -1) < 0)
+	{
+		log_error("game", "failed to send match report start");
+		return;
+	}
+
+	for(CPlayer *pPlayer : GameServer()->m_apPlayers)
+	{
+		if(pPlayer == nullptr || !Server()->ClientIngame(pPlayer->GetCid()))
+			continue;
+		const CMatchParticipantState *pParticipant = MatchParticipant(pPlayer);
+		if(pParticipant == nullptr)
+			continue;
+		CMsgPacker LocalParticipant(NETMSG_MATCH_REPORT_LOCAL_PARTICIPANT, false);
+		LocalParticipant.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
+		LocalParticipant.AddInt(pParticipant->m_Participant.m_ParticipantId);
+		if(LocalParticipant.Error() || Server()->SendMsg(&LocalParticipant, MSGFLAG_VITAL | MSGFLAG_NORECORD, pPlayer->GetCid()) < 0)
+			log_error("game", "failed to send local match participant to client %d", pPlayer->GetCid());
+	}
+
+	for(int ChunkIndex = 0; ChunkIndex < NumChunks; ++ChunkIndex)
+	{
+		const int Offset = ChunkIndex * MatchReportTransportLimits::MAX_CHUNK_SIZE;
+		const int ChunkSize = std::min(MatchReportTransportLimits::MAX_CHUNK_SIZE, PayloadSize - Offset);
+		CMsgPacker Chunk(NETMSG_MATCH_REPORT_CHUNK, false);
+		Chunk.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
+		Chunk.AddInt(ChunkIndex);
+		Chunk.AddInt(ChunkSize);
+		Chunk.AddRaw(Payload.data() + Offset, ChunkSize);
+		if(Chunk.Error() || Server()->SendMsg(&Chunk, MSGFLAG_VITAL, -1) < 0)
+		{
+			log_error("game", "failed to send match report chunk %d", ChunkIndex);
+			return;
+		}
+	}
+
+	CMsgPacker End(NETMSG_MATCH_REPORT_END, false);
+	End.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
+	End.AddRaw(&PayloadSha256, sizeof(PayloadSha256));
+	if(End.Error() || Server()->SendMsg(&End, MSGFLAG_VITAL, -1) < 0)
+		log_error("game", "failed to send match report end");
+}
+
+void IGameController::SendLiveStatsReport(int ClientId, int Revision, const CMatchReport &Report, int LocalParticipantId, bool PersistOnDisconnect, const std::string &Payload)
+{
+	const int PayloadSize = static_cast<int>(Payload.size());
+	const int NumChunks = (PayloadSize + MatchReportTransportLimits::MAX_CHUNK_SIZE - 1) / MatchReportTransportLimits::MAX_CHUNK_SIZE;
+	const SHA256_DIGEST PayloadSha256 = sha256(Payload.data(), Payload.size());
+	const int Flags = MSGFLAG_VITAL | MSGFLAG_NORECORD;
+
+	CMsgPacker Start(NETMSG_LIVE_STATS_START, false);
+	Start.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
+	Start.AddInt(Revision);
+	Start.AddInt(Report.m_ReportSchemaVersion);
+	Start.AddInt(LocalParticipantId);
+	Start.AddInt(PersistOnDisconnect);
+	Start.AddInt(PayloadSize);
+	Start.AddInt(NumChunks);
+	if(Start.Error() || Server()->SendMsg(&Start, Flags, ClientId) < 0)
+		return;
+
+	for(int ChunkIndex = 0; ChunkIndex < NumChunks; ++ChunkIndex)
+	{
+		const int Offset = ChunkIndex * MatchReportTransportLimits::MAX_CHUNK_SIZE;
+		const int ChunkSize = std::min(MatchReportTransportLimits::MAX_CHUNK_SIZE, PayloadSize - Offset);
+		CMsgPacker Chunk(NETMSG_LIVE_STATS_CHUNK, false);
+		Chunk.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
+		Chunk.AddInt(Revision);
+		Chunk.AddInt(ChunkIndex);
+		Chunk.AddInt(ChunkSize);
+		Chunk.AddRaw(Payload.data() + Offset, ChunkSize);
+		if(Chunk.Error() || Server()->SendMsg(&Chunk, Flags, ClientId) < 0)
+			return;
+	}
+
+	CMsgPacker End(NETMSG_LIVE_STATS_END, false);
+	End.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
+	End.AddInt(Revision);
+	End.AddRaw(&PayloadSha256, sizeof(PayloadSha256));
+	Server()->SendMsg(&End, Flags, ClientId);
+}
+
+void IGameController::SendLiveStats(int ClientId)
+{
+	if(ClientId < 0 || ClientId >= MAX_CLIENTS || !Server()->ClientIngame(ClientId))
+		return;
+	const int Revision = Server()->Tick();
+	const int LastRequestTick = m_aLastLiveStatsRequestTick[ClientId];
+	if(LastRequestTick != std::numeric_limits<int>::min() && Revision - LastRequestTick < Server()->TickSpeed() * 2)
+		return;
+	m_aLastLiveStatsRequestTick[ClientId] = Revision;
+
+	CMatchReport Report;
+	int LocalParticipantId = -1;
+	std::string Payload;
+	if(!BuildLiveStatsReport(ClientId, Report, LocalParticipantId, Payload) || Payload.empty() || Payload.size() > MatchReportLimits::MAX_PAYLOAD_SIZE)
+		return;
+	const bool PersistOnDisconnect = !Info().m_Report.m_ModeId.empty() && Report.m_ModeId == Info().m_Report.m_ModeId;
+	SendLiveStatsReport(ClientId, Revision, Report, LocalParticipantId, PersistOnDisconnect, Payload);
+}
+
+void IGameController::FinalizeMatchReportForRestart()
+{
+	FinalizeMatchReport(EMatchTermination::ADMIN_ENDED);
+}
+
+void IGameController::FinalizeMatchReportForShutdown()
+{
+	FinalizeMatchReport(EMatchTermination::ADMIN_ENDED);
+}
+
 void IGameController::Init(CDbConnectionPool *)
 {
 	Services().World().SetModePhysicsRules(Info().m_PhysicsRules);
 	RegisterCommands();
 	InitGameSettings();
 	m_pGameType = g_Config.m_SvTestingCommands ? m_GameModeInfo.m_pTestingGameType : m_GameModeInfo.m_pGameType;
+	m_LiveStatsInstanceId = RandomUuid();
+	m_LiveStatsStartTick = Server()->Tick();
+	m_LiveStatsStartTimeUtc = time_timestamp();
 	DoWarmup(g_Config.m_SvWarmup);
 	TeamsCore().Reset();
+	StartMatchReport();
 }
 
 int IGameController::TuningZoneAt(vec2 Position) const
@@ -466,6 +896,7 @@ void IGameController::OnPlayerConnect(CPlayer *pPlayer)
 {
 	int ClientId = pPlayer->GetCid();
 	pPlayer->Respawn();
+	EnsureMatchParticipant(pPlayer);
 
 	if(!Server()->ClientPrevIngame(ClientId))
 	{
@@ -490,6 +921,7 @@ void IGameController::OnPlayerConnect(CPlayer *pPlayer)
 
 void IGameController::OnPlayerDisconnect(class CPlayer *pPlayer, const char *pReason)
 {
+	UpdateMatchParticipant(pPlayer, true);
 	pPlayer->OnDisconnect();
 	int ClientId = pPlayer->GetCid();
 	if(Server()->ClientIngame(ClientId))
@@ -528,8 +960,15 @@ void IGameController::RestoreCharacterAfterMapReload(CCharacter *pCharacter)
 
 void IGameController::EndRound()
 {
+	const bool SuddenDeath = Match().IsSuddenDeath();
 	if(!Match().EndRound(Server()->Tick()))
 		return;
+	if(SuddenDeath && m_pMatchReportBuilder)
+	{
+		const std::string MetricId = Info().m_Report.m_ModeId + "/sudden_death";
+		m_pMatchReportBuilder->SetMetricValue(EMatchSubjectKind::MATCH, std::nullopt, MetricId.c_str(), 1, MatchMetricAggregation(MetricId.c_str()));
+	}
+	FinalizeMatchReport(EMatchTermination::COMPLETED);
 
 	SetGamePaused(true);
 	log_info("game", "end round type='%s'", m_pGameType);
@@ -575,9 +1014,11 @@ bool IGameController::IsGamePaused() const
 
 void IGameController::StartRound()
 {
+	FinalizeMatchReportForRestart();
 	ResetGame();
 
 	Match().StartRound(Server()->Tick());
+	StartMatchReport();
 	SetGamePaused(false);
 	Server()->DemoRecorder_HandleAutoStart();
 	log_info("game", "start round type='%s' teamplay='%d'", m_pGameType, Info().m_GameFlags & GAMEFLAG_TEAMS);
@@ -585,6 +1026,7 @@ void IGameController::StartRound()
 
 void IGameController::ChangeMap(const char *pToMap)
 {
+	FinalizeMatchReportForRestart();
 	Server()->ChangeMap(pToMap);
 }
 
@@ -600,6 +1042,12 @@ void IGameController::FinalizeCharacterDeath(const CGameCharacterDeathContext &C
 	Context.m_pVictim->FinalizeDeath(Context.m_Killer, Context.m_Weapon, Context.m_SendKillMessage, ModeSpecial);
 	if(Context.m_Weapon == WEAPON_GAME)
 		return;
+	CPlayer *pVictim = Context.m_pVictim->GetPlayer();
+	AddParticipantMatchMetric(pVictim, "deaths", 1);
+	if(Context.m_pKiller == pVictim)
+		AddParticipantMatchMetric(pVictim, "suicides", 1);
+	else if(Context.m_pKiller)
+		AddParticipantMatchMetric(Context.m_pKiller, "kills", 1);
 }
 
 void IGameController::OnCharacterDeath(const CGameCharacterDeathContext &Context)
@@ -614,6 +1062,14 @@ bool IGameController::OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int
 
 	pVictim->AddVelocity(Force);
 	return true;
+}
+
+void IGameController::OnCharacterFiredWeapon(CCharacter *pCharacter, int Weapon)
+{
+	if(!m_pMatchReportBuilder || !pCharacter || Weapon < WEAPON_HAMMER || Weapon >= NUM_WEAPONS)
+		return;
+	AddParticipantMatchMetric(pCharacter->GetPlayer(), "shots", 1);
+	AddParticipantWeaponMatchMetric(pCharacter->GetPlayer(), Weapon, "shots", 1);
 }
 
 bool IGameController::CanCharacterHitCharacter(CCharacter *, CCharacter *pTarget) const
@@ -933,6 +1389,7 @@ void IGameController::DoTeamChange(CPlayer *pPlayer, int Team, bool DoChatMsg)
 		return;
 
 	pPlayer->SetTeam(Team);
+	UpdateMatchParticipant(pPlayer, Team == TEAM_SPECTATORS);
 	int ClientId = pPlayer->GetCid();
 
 	char aBuf[128];

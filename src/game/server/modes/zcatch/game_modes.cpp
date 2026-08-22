@@ -105,7 +105,7 @@ namespace
 			m_aCatcherIds[ClientId] = -1;
 			CBase::OnPlayerConnect(pPlayer);
 
-			if(pPlayer->GetTeam() == TEAM_SPECTATORS || m_GameOverTick != -1 || m_Warmup)
+			if(pPlayer->GetTeam() == TEAM_SPECTATORS || !Match().IsRunning())
 				return;
 			const int CatcherId = LeadingCatcherId(ClientId);
 			if(CatcherId == -1)
@@ -132,10 +132,9 @@ namespace
 			CBase::OnPlayerDisconnect(pPlayer, pReason);
 		}
 
-		void Tick() override
+		void TickMatch() override
 		{
-			CBase::Tick();
-			if(m_GameOverTick != -1 || m_Warmup)
+			if(!Match().IsRunning())
 				return;
 
 			int Contestants = 0;
@@ -152,12 +151,15 @@ namespace
 			if(Contestants >= 2 && Remaining <= 1)
 				EndRound();
 		}
+
+		int ScoreLimit() const override { return 0; }
+		int TimeLimit() const override { return 0; }
 	};
 }
 
 bool RegisterZCatchGameModes(CGameModeRegistry &Registry)
 {
 	return Registry.Register(
-		{"zcatch.laser", "Laser zCatch", "zCatch", "TestZCatch", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN},
+		{"zcatch.laser", "Laser zCatch", "zCatch", "TestZCatch", EGameModeScoreKind::POINTS, 0},
 		[](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerZCatch>(Services, Info); });
 }

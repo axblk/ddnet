@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <array>
 #include <memory>
+#include <vector>
 
 namespace
 {
@@ -156,16 +157,16 @@ namespace
 			else
 			{
 				const char *pRequestedName = str_comp_nocase(pResult->GetString(0), "me") == 0 ?
-					pGameServer->Server()->ClientName(pResult->m_ClientId) :
-					pResult->GetString(0);
+								     pGameServer->Server()->ClientName(pResult->m_ClientId) :
+								     pResult->GetString(0);
 				RaceScore(pGameServer)->ShowPlayerTeamTop5(pResult->m_ClientId, pRequestedName, 0);
 			}
 		}
 		else if(pResult->NumArguments() == 2 && pResult->GetInteger(1) != 0)
 		{
 			const char *pRequestedName = str_comp_nocase(pResult->GetString(0), "me") == 0 ?
-				pGameServer->Server()->ClientName(pResult->m_ClientId) :
-				pResult->GetString(0);
+							     pGameServer->Server()->ClientName(pResult->m_ClientId) :
+							     pResult->GetString(0);
 			RaceScore(pGameServer)->ShowPlayerTeamTop5(pResult->m_ClientId, pRequestedName, pResult->GetInteger(1));
 		}
 		else
@@ -482,8 +483,8 @@ namespace
 		}
 
 		bool IsPlayerBeingVoted = pGameServer->m_VoteCloseTime &&
-			(pGameServer->IsKickVote() || pGameServer->IsSpecVote()) &&
-			pResult->m_ClientId != pGameServer->m_VoteVictim;
+					  (pGameServer->IsKickVote() || pGameServer->IsSpecVote()) &&
+					  pResult->m_ClientId != pGameServer->m_VoteVictim;
 		if((!IsPlayerBeingVoted && -PauseState == PauseType) ||
 			(IsPlayerBeingVoted && PauseState && pPlayer->SpectatorId() == pGameServer->m_VoteVictim))
 		{
@@ -666,7 +667,7 @@ namespace
 		pGameServer->SendBroadcast(aBuf, pResult->m_ClientId);
 	}
 
-	static const char s_aaTimerTypeMessage[4][128] = {"game/round timer.", "broadcast.", "both game/round timer and broadcast.", "racetime."};
+	const char s_aaTimerTypeMessage[4][128] = {"game/round timer.", "broadcast.", "both game/round timer and broadcast.", "racetime."};
 
 	void ConSetTimerType(IConsole::IResult *pResult, void *pUserData)
 	{
@@ -1291,6 +1292,98 @@ namespace
 
 		RaceScore(pGameServer)->RandomUnfinishedMap(ClientId, MinStars, MaxStars);
 	}
+
+	void ConSwitchOpen(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		const int Switch = pResult->GetInteger(0);
+		if(!in_range(Switch, (int)pGameServer->Switchers().size() - 1))
+			return;
+
+		pGameServer->Switchers()[Switch].m_Initial = false;
+		char aBuf[256];
+		str_format(aBuf, sizeof(aBuf), "switch %d opened by default", Switch);
+		pGameServer->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
+	}
+
+	void ConTuneZone(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		const int Zone = pResult->GetInteger(0);
+		const char *pParamName = pResult->GetString(1);
+		float Value = pResult->GetFloat(2);
+		if(!in_range(Zone, TuneZone::NUM - 1))
+			return;
+
+		char aBuf[256];
+		if(pGameServer->TuningList()[Zone].Set(pParamName, Value) && pGameServer->TuningList()[Zone].Get(pParamName, &Value))
+		{
+			str_format(aBuf, sizeof(aBuf), "%s in zone %d changed to %.2f", pParamName, Zone, Value);
+			pGameServer->SendTuningParams(-1, Zone);
+		}
+		else
+		{
+			str_format(aBuf, sizeof(aBuf), "No such tuning parameter: %s", pParamName);
+		}
+		pGameServer->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", aBuf);
+	}
+
+	void ConTuneDumpZone(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		const int Zone = pResult->GetInteger(0);
+		if(!in_range(Zone, TuneZone::NUM - 1))
+			return;
+
+		for(int i = 0; i < CTuningParams::Num(); i++)
+		{
+			float Value;
+			pGameServer->TuningList()[Zone].Get(i, &Value);
+			char aBuf[256];
+			str_format(aBuf, sizeof(aBuf), "zone %d: %s %.2f", Zone, CTuningParams::Name(i), Value);
+			pGameServer->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", aBuf);
+		}
+	}
+
+	void ConTuneResetZone(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		if(pResult->NumArguments())
+		{
+			const int Zone = pResult->GetInteger(0);
+			if(!in_range(Zone, TuneZone::NUM - 1))
+				return;
+			pGameServer->TuningList()[Zone] = CTuningParams::DEFAULT;
+			pGameServer->SendTuningParams(-1, Zone);
+			char aBuf[256];
+			str_format(aBuf, sizeof(aBuf), "Tunezone %d reset", Zone);
+			pGameServer->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", aBuf);
+			return;
+		}
+
+		for(int Zone = 0; Zone < TuneZone::NUM; Zone++)
+		{
+			pGameServer->TuningList()[Zone] = CTuningParams::DEFAULT;
+			pGameServer->SendTuningParams(-1, Zone);
+		}
+		pGameServer->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tuning", "All Tunezones reset");
+	}
+
+	void ConTuneZoneEnter(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		const int Zone = pResult->GetInteger(0);
+		if(in_range(Zone, TuneZone::NUM - 1))
+			str_copy(pGameServer->m_aaZoneEnterMsg[Zone], pResult->GetString(1));
+	}
+
+	void ConTuneZoneLeave(IConsole::IResult *pResult, void *pUserData)
+	{
+		CGameContext *pGameServer = static_cast<CGameContext *>(pUserData);
+		const int Zone = pResult->GetInteger(0);
+		if(in_range(Zone, TuneZone::NUM - 1))
+			str_copy(pGameServer->m_aaZoneLeaveMsg[Zone], pResult->GetString(1));
+	}
 }
 
 void CGameControllerDDRace::ApplyMapSettings()
@@ -1511,8 +1604,21 @@ void CGameControllerDDRace::RegisterCommands()
 {
 	RegisterAdminCommands();
 	RegisterPracticeCommands();
+	dbg_assert(GameServer()->Console()->RegisterOwned("switch_open", "i[switch]", CFGFLAG_SERVER | CFGFLAG_GAME, ConSwitchOpen, GameServer(), "Whether a switch is deactivated by default (otherwise activated)", this), "duplicate mode command 'switch_open'");
+	static const CCommandRegistration s_aTuneZoneCommands[] = {
+		{"tune_zone", "i[zone] s[tuning] f[value]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneZone, "Tune in zone a variable to value"},
+		{"tune_zone_dump", "i[zone]", CFGFLAG_SERVER, ConTuneDumpZone, "Dump zone tuning in zone x"},
+		{"tune_zone_reset", "?i[zone]", CFGFLAG_SERVER, ConTuneResetZone, "Reset zone tuning in zone x or in all zones"},
+		{"tune_zone_enter", "i[zone] r[message]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneZoneEnter, "Which message to display on zone enter; use 0 for normal area"},
+		{"tune_zone_leave", "i[zone] r[message]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneZoneLeave, "Which message to display on zone leave; use 0 for normal area"},
+	};
+	for(const CCommandRegistration &Command : s_aTuneZoneCommands)
+		dbg_assert(GameServer()->Console()->RegisterOwned(Command.m_pName, Command.m_pParams, Command.m_Flags, Command.m_pfnCallback, GameServer(), Command.m_pHelp, this), "duplicate mode command '%s'", Command.m_pName);
 
 	static const CCommandRegistration s_aPlayerCommands[] = {
+		{"info", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConInfo, "Shows info about this server"},
+		{"mapinfo", "?r[map]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConMapInfo, "Show info about the map with name r gives (current map by default)"},
+		{"map", "?r[map]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConMap, "Vote a map by name"},
 		{"settings", "?s[configname]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSettings, "Shows gameplay information for this server"},
 		{"pause", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTogglePause, "Toggles pause"},
 		{"spec", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConToggleSpec, "Toggles spec (if not available behaves as /pause)"},
@@ -1625,7 +1731,7 @@ void CGameControllerDDRace::OnCharacterDeath(const CGameCharacterDeathContext &C
 	const int VictimId = pVictim->GetPlayer()->GetCid();
 	const int Team = pVictim->Team();
 	const bool SendKillMessage = Context.m_SendKillMessage &&
-		(Team == TEAM_FLOCK || RaceTeams().TeamFlock(Team) || RaceTeams().TeamSize(Team) == 1 || RaceTeams().GetTeamState(Team) == ETeamState::OPEN || !RaceTeams().TeamLocked(Team));
+				     (Team == TEAM_FLOCK || RaceTeams().TeamFlock(Team) || RaceTeams().TeamSize(Team) == 1 || RaceTeams().GetTeamState(Team) == ETeamState::OPEN || !RaceTeams().TeamLocked(Team));
 
 	CGameCharacterDeathContext RaceContext = Context;
 	RaceContext.m_SendKillMessage = SendKillMessage;
@@ -1735,6 +1841,11 @@ void CGameControllerDDRace::OnPlayerDDNetVersionKnown(int ClientId)
 {
 	RaceTeams().SendTeamsState(ClientId);
 	RaceScore().SendRecord(ClientId);
+}
+
+void CGameControllerDDRace::OnPlayerMappingChanged(int ClientId)
+{
+	RaceTeams().SendTeamsState(ClientId);
 }
 
 void CGameControllerDDRace::OnPlayerSetTeam(int ClientId, int Team)
@@ -2030,6 +2141,86 @@ bool CGameControllerDDRace::CanSnapCharacter(CCharacter *pCharacter, int Snappin
 	return true;
 }
 
+int CGameControllerDDRace::GameInfoFlags(int SnappingClient) const
+{
+	return GAMEINFOFLAG_UNLIMITED_AMMO |
+	       GAMEINFOFLAG_ALLOW_EYE_WHEEL |
+	       GAMEINFOFLAG_ALLOW_HOOK_COLL |
+	       GAMEINFOFLAG_ALLOW_ZOOM |
+	       GAMEINFOFLAG_BUG_DDRACE_GHOST |
+	       GAMEINFOFLAG_BUG_DDRACE_INPUT |
+	       GAMEINFOFLAG_PREDICT_DDRACE |
+	       GAMEINFOFLAG_PREDICT_DDRACE_TILES |
+	       GAMEINFOFLAG_ENTITIES_DDNET |
+	       GAMEINFOFLAG_ENTITIES_DDRACE;
+}
+
+int CGameControllerDDRace::GameInfoFlags2(int SnappingClient) const
+{
+	int Flags = GAMEINFOFLAG2_HUD_DDRACE | GAMEINFOFLAG2_DDRACE_TEAM | GAMEINFOFLAG2_PREDICT_EVENTS | GAMEINFOFLAG2_SUPPORTS_128_TEAMS;
+	if(g_Config.m_SvNoWeakHook)
+		Flags |= GAMEINFOFLAG2_NO_WEAK_HOOK;
+	return Flags;
+}
+
+void CGameControllerDDRace::SnapMode(int SnappingClient)
+{
+	SnapSwitchers(SnappingClient);
+}
+
+void CGameControllerDDRace::SnapSwitchers(int SnappingClient)
+{
+	auto &vSwitchers = GameServer()->Switchers();
+	if(vSwitchers.empty())
+		return;
+
+	CPlayer *pPlayer = SnappingClient != SERVER_DEMO_CLIENT ? GameServer()->m_apPlayers[SnappingClient] : nullptr;
+	int Team = pPlayer && pPlayer->GetCharacter() ? pPlayer->GetCharacter()->Team() : 0;
+
+	if(pPlayer && (pPlayer->GetTeam() == TEAM_SPECTATORS || pPlayer->IsPaused()) && pPlayer->SpectatorId() != SPEC_FREEVIEW && GameServer()->m_apPlayers[pPlayer->SpectatorId()] && GameServer()->m_apPlayers[pPlayer->SpectatorId()]->GetCharacter())
+		Team = GameServer()->m_apPlayers[pPlayer->SpectatorId()]->GetCharacter()->Team();
+
+	if(Team == TEAM_SUPER)
+		return;
+
+	int SentTeam = Team;
+	if(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO)
+		SentTeam = 0;
+	else if(SnappingClient != SERVER_DEMO_CLIENT)
+		SentTeam = RaceTeams().TeamForClient(SentTeam, SnappingClient);
+	CNetObj_SwitchState SwitchState = {};
+	SwitchState.m_HighestSwitchNumber = std::clamp((int)vSwitchers.size() - 1, 0, 255);
+	std::fill(std::begin(SwitchState.m_aStatus), std::end(SwitchState.m_aStatus), 0);
+
+	std::vector<std::pair<int, int>> vEndTicks; // <EndTick, SwitchNumber>
+	for(int i = 0; i <= SwitchState.m_HighestSwitchNumber; i++)
+	{
+		const int Status = (int)vSwitchers[i].m_aStatus[Team];
+		SwitchState.m_aStatus[i / 32] |= Status << (i % 32);
+
+		const int EndTick = vSwitchers[i].m_aEndTick[Team];
+		if(EndTick > 0 && EndTick < Server()->Tick() + 3 * Server()->TickSpeed() && vSwitchers[i].m_aLastUpdateTick[Team] < Server()->Tick())
+		{
+			// only keep track of EndTicks that have less than three second left and are not currently being updated by a player being present on a switch tile, to limit how often these are sent
+			vEndTicks.emplace_back(EndTick, i);
+		}
+	}
+
+	// send the endtick of switchers that are about to toggle back (up to four, prioritizing those with the earliest endticks)
+	std::fill(std::begin(SwitchState.m_aSwitchNumbers), std::end(SwitchState.m_aSwitchNumbers), 0);
+	std::fill(std::begin(SwitchState.m_aEndTicks), std::end(SwitchState.m_aEndTicks), 0);
+	std::sort(vEndTicks.begin(), vEndTicks.end());
+	const size_t NumTimedSwitchers = std::min(vEndTicks.size(), std::size(SwitchState.m_aEndTicks));
+
+	for(size_t i = 0; i < NumTimedSwitchers; i++)
+	{
+		SwitchState.m_aSwitchNumbers[i] = vEndTicks[i].second;
+		SwitchState.m_aEndTicks[i] = vEndTicks[i].first;
+	}
+
+	Server()->SnapNewItem(SentTeam, SwitchState);
+}
+
 void CGameControllerDDRace::SnapCharacterMode(CCharacter *pCharacter, int SnappingClient, int TranslatedId)
 {
 	DDRaceCharacter(pCharacter)->SnapDDRace(SnappingClient, TranslatedId);
@@ -2040,7 +2231,8 @@ void CGameControllerDDRace::SnapPlayerMode(CPlayer *pPlayer, int SnappingClient,
 	if(pPlayer->GetCid() == SnappingClient)
 	{
 		// Send extended spectator info even when playing, so demos record the local camera settings.
-		const int SpectatingClient = ((pPlayer->GetTeam() != TEAM_SPECTATORS && !pPlayer->IsPaused()) || pPlayer->SpectatorId() < 0 || pPlayer->SpectatorId() >= MAX_CLIENTS) ? TranslatedId : pPlayer->SpectatorId();
+		const int ClientId = pPlayer->GetCid();
+		const int SpectatingClient = ((pPlayer->GetTeam() != TEAM_SPECTATORS && !pPlayer->IsPaused()) || pPlayer->SpectatorId() < 0 || pPlayer->SpectatorId() >= MAX_CLIENTS) ? ClientId : pPlayer->SpectatorId();
 		const CPlayer *pSpectatedPlayer = GameServer()->m_apPlayers[SpectatingClient];
 		if(pSpectatedPlayer)
 		{
@@ -2050,21 +2242,21 @@ void CGameControllerDDRace::SnapPlayerMode(CPlayer *pPlayer, int SnappingClient,
 			DDNetSpectatorInfo.m_Deadzone = pSpectatedPlayer->m_CameraInfo.Deadzone();
 			DDNetSpectatorInfo.m_FollowFactor = pSpectatedPlayer->m_CameraInfo.FollowFactor();
 
-			if(pSpectatedPlayer->m_EnableSpectatorCount && SpectatingClient == TranslatedId && SnappingClient != SERVER_DEMO_CLIENT && pPlayer->GetTeam() != TEAM_SPECTATORS && !pPlayer->IsPaused())
+			if(pSpectatedPlayer->m_EnableSpectatorCount && SpectatingClient == ClientId && SnappingClient != SERVER_DEMO_CLIENT && pPlayer->GetTeam() != TEAM_SPECTATORS && !pPlayer->IsPaused())
 			{
 				int SpectatorCount = 0;
 				for(const CPlayer *pOtherPlayer : GameServer()->m_apPlayers)
 				{
-					if(!pOtherPlayer || !pOtherPlayer->m_EnableSpectatorCount || pOtherPlayer->GetCid() == TranslatedId || pOtherPlayer->IsAfk() ||
+					if(!pOtherPlayer || !pOtherPlayer->m_EnableSpectatorCount || pOtherPlayer->GetCid() == ClientId || pOtherPlayer->IsAfk() ||
 						(Server()->IsRconAuthed(pOtherPlayer->GetCid()) && Server()->HasAuthHidden(pOtherPlayer->GetCid())) ||
 						!(pOtherPlayer->IsPaused() || pOtherPlayer->GetTeam() == TEAM_SPECTATORS))
 						continue;
 
-					if(pOtherPlayer->SpectatorId() == TranslatedId)
+					if(pOtherPlayer->SpectatorId() == ClientId)
 						SpectatorCount++;
-					else if(GameServer()->m_apPlayers[TranslatedId]->GetCharacter())
+					else if(pPlayer->GetCharacter())
 					{
-						const vec2 CheckPos = GameServer()->m_apPlayers[TranslatedId]->GetCharacter()->GetPos();
+						const vec2 CheckPos = pPlayer->GetCharacter()->GetPos();
 						const float Dx = pOtherPlayer->m_ViewPos.x - CheckPos.x;
 						const float Dy = pOtherPlayer->m_ViewPos.y - CheckPos.y;
 						if(absolute(Dx) < pOtherPlayer->m_ShowDistance.x / 2.5f && absolute(Dy) < pOtherPlayer->m_ShowDistance.y / 2.3f)

@@ -29,20 +29,13 @@
 #include <algorithm>
 
 IGameController::IGameController(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
-	m_GameModeInfo(GameModeInfo)
+	m_GameModeInfo(GameModeInfo),
+	m_MatchLifecycle(Services.Server()->Tick())
 {
 	RegisterMapEntityFactory(CreateCommonMapEntity);
 	m_pServices = &Services;
 	m_pServer = Services.Server();
 	m_pGameType = g_Config.m_SvTestingCommands ? m_GameModeInfo.m_pTestingGameType : m_GameModeInfo.m_pGameType;
-
-	//
-	m_Warmup = 0;
-	m_GameOverTick = -1;
-	m_SuddenDeath = 0;
-	m_RoundStartTick = Server()->Tick();
-	m_RoundCount = 0;
-	m_GameFlags = m_GameModeInfo.m_GameFlags;
 }
 
 CGameContext *IGameController::GameServer() const
@@ -57,13 +50,12 @@ IGameController::~IGameController()
 
 void IGameController::Init(CDbConnectionPool *)
 {
+	Services().World().SetModePhysicsRules(Info().m_PhysicsRules);
 	RegisterCommands();
 	InitGameSettings();
 	m_pGameType = g_Config.m_SvTestingCommands ? m_GameModeInfo.m_pTestingGameType : m_GameModeInfo.m_pGameType;
 	DoWarmup(g_Config.m_SvWarmup);
 	m_TeamsCore.Reset();
-	if(!m_Warmup)
-		PublishMatchEvent(CMatchEventRoundStarted{});
 }
 
 int IGameController::TuningZoneAt(vec2 Position) const
@@ -474,15 +466,7 @@ void IGameController::OnPlayerConnect(CPlayer *pPlayer)
 
 	if(Server()->IsSixup(ClientId))
 	{
-		{
-			protocol7::CNetMsg_Sv_GameInfo Msg;
-			Msg.m_GameFlags = m_GameFlags;
-			Msg.m_MatchCurrent = 1;
-			Msg.m_MatchNum = 0;
-			Msg.m_ScoreLimit = ScoreLimit();
-			Msg.m_TimeLimit = TimeLimit();
-			Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
-		}
+		SendGameInfoSixup(ClientId);
 
 		// Override Sixup's built-in /team only when the active mode provides its own command.
 		if(GameServer()->Console()->GetCommandInfo("team", CFGFLAG_CHAT, false))
@@ -534,14 +518,11 @@ void IGameController::RestoreCharacterAfterMapReload(CCharacter *pCharacter)
 
 void IGameController::EndRound()
 {
-	if(m_Warmup) // game can't end when we are running warmup
+	if(!Match().EndRound(Server()->Tick()))
 		return;
 
 	SetGamePaused(true);
-	m_GameOverTick = Server()->Tick();
-	m_SuddenDeath = 0;
 	log_info("game", "end round type='%s'", m_pGameType);
-	PublishMatchEvent(CMatchEventRoundEnded{});
 }
 
 void IGameController::ResetGame()
@@ -570,7 +551,7 @@ const char *IGameController::GetTeamName(int Team)
 void IGameController::SetGamePaused(bool Paused)
 {
 	// Cannot unpause the game while gameover is active
-	if(m_GameOverTick != -1 && !Paused)
+	if(Match().IsGameOver() && !Paused)
 	{
 		return;
 	}
@@ -586,13 +567,10 @@ void IGameController::StartRound()
 {
 	ResetGame();
 
-	m_RoundStartTick = Server()->Tick();
-	m_SuddenDeath = 0;
-	m_GameOverTick = -1;
+	Match().StartRound(Server()->Tick());
 	SetGamePaused(false);
 	Server()->DemoRecorder_HandleAutoStart();
-	log_info("game", "start round type='%s' teamplay='%d'", m_pGameType, m_GameFlags & GAMEFLAG_TEAMS);
-	PublishMatchEvent(CMatchEventRoundStarted{});
+	log_info("game", "start round type='%s' teamplay='%d'", m_pGameType, Info().m_GameFlags & GAMEFLAG_TEAMS);
 }
 
 void IGameController::ChangeMap(const char *pToMap)
@@ -612,11 +590,6 @@ void IGameController::FinalizeCharacterDeath(const CGameCharacterDeathContext &C
 	Context.m_pVictim->FinalizeDeath(Context.m_Killer, Context.m_Weapon, Context.m_SendKillMessage, ModeSpecial);
 	if(Context.m_Weapon == WEAPON_GAME)
 		return;
-	const int VictimId = Context.m_pVictim->GetPlayer()->GetCid();
-	if(Context.m_Killer == VictimId)
-		PublishMatchEvent(CMatchEventSuicide{VictimId, Context.m_Weapon});
-	else
-		PublishMatchEvent(CMatchEventKill{Context.m_Killer, VictimId, Context.m_Weapon});
 }
 
 void IGameController::OnCharacterDeath(const CGameCharacterDeathContext &Context)
@@ -706,12 +679,12 @@ CWeaponFireResult IGameController::OnCharacterFireWeapon(const CWeaponFireContex
 				false,
 				-1,
 				Context.m_MouseTarget);
-			GameServer()->CreateSound(pCharacter->m_Pos, SOUND_GUN_FIRE, pCharacter->TeamMask());
+			GameServer()->CreateSound(pCharacter->m_Pos, SOUND_GUN_FIRE, pCharacter->TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
 		}
 		break;
 	case WEAPON_SHOTGUN:
 		new CLaser(pCharacter->GameWorld(), pCharacter->m_Pos, Context.m_Direction, Context.m_pTuning->m_LaserReach, Owner, WEAPON_SHOTGUN);
-		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_SHOTGUN_FIRE, pCharacter->TeamMask());
+		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_SHOTGUN_FIRE, pCharacter->TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
 		break;
 	case WEAPON_GRENADE:
 		new CProjectile(
@@ -725,11 +698,11 @@ CWeaponFireResult IGameController::OnCharacterFireWeapon(const CWeaponFireContex
 			true,
 			SOUND_GRENADE_EXPLODE,
 			Context.m_MouseTarget);
-		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_GRENADE_FIRE, pCharacter->TeamMask());
+		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_GRENADE_FIRE, pCharacter->TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
 		break;
 	case WEAPON_LASER:
 		new CLaser(pCharacter->GameWorld(), pCharacter->m_Pos, Context.m_Direction, Context.m_pTuning->m_LaserReach, Owner, WEAPON_LASER);
-		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_LASER_FIRE, pCharacter->TeamMask());
+		GameServer()->CreateSound(pCharacter->m_Pos, SOUND_LASER_FIRE, pCharacter->TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
 		break;
 	case WEAPON_NINJA:
 		pCharacter->ActivateNinja(Context.m_Direction);
@@ -794,37 +767,45 @@ void IGameController::TickCharacterPostCore(CCharacter *pCharacter)
 		pCharacter->Die(pCharacter->GetPlayer()->GetCid(), WEAPON_WORLD);
 }
 
-void IGameController::HandleCharacterTiles(CCharacter *pChr, int MapIndex)
-{
-	// Do nothing by default
-}
-
 void IGameController::DoWarmup(int Seconds)
 {
-	if(Seconds < 0)
-		m_Warmup = 0;
-	else
-		m_Warmup = Seconds * Server()->TickSpeed();
+	Match().SetWarmupTicks(Seconds < 0 ? 0 : Seconds * Server()->TickSpeed());
+}
+
+void IGameController::SendGameInfoSixup(int ClientId)
+{
+	protocol7::CNetMsg_Sv_GameInfo Msg;
+	Msg.m_GameFlags = Info().m_GameFlags;
+	Msg.m_MatchCurrent = 1;
+	Msg.m_MatchNum = 0;
+	Msg.m_ScoreLimit = ScoreLimit();
+	Msg.m_TimeLimit = TimeLimit();
+	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
 }
 
 void IGameController::Tick()
 {
-	// do warmup
-	if(m_Warmup)
+	// The 0.6 protocol carries the limits in every snapshot, the 0.7 one only in
+	// a message. A server that switches modes or has its limits set from the
+	// console would leave those clients on whatever was true when they joined.
+	if(ScoreLimit() != m_SixupScoreLimit || TimeLimit() != m_SixupTimeLimit)
 	{
-		m_Warmup--;
-		if(!m_Warmup)
-			StartRound();
+		m_SixupScoreLimit = ScoreLimit();
+		m_SixupTimeLimit = TimeLimit();
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+		{
+			if(Server()->ClientIngame(ClientId) && Server()->IsSixup(ClientId))
+				SendGameInfoSixup(ClientId);
+		}
 	}
 
-	if(m_GameOverTick != -1)
+	if(Match().TickWarmup())
+		StartRound();
+
+	if(Match().ShouldRestartRound(Server()->Tick(), Server()->TickSpeed() * 10))
 	{
-		// game over.. wait for restart
-		if(Server()->Tick() > m_GameOverTick + Server()->TickSpeed() * 10)
-		{
-			StartRound();
-			m_RoundCount++;
-		}
+		StartRound();
+		Match().AdvanceRound();
 	}
 
 	DoActivityCheck();
@@ -834,19 +815,23 @@ void IGameController::Snap(int SnappingClient)
 {
 	CNetObj_GameInfo GameInfo = {};
 
-	GameInfo.m_GameFlags = GameFlags_ClampToSix(m_GameFlags);
+	GameInfo.m_GameFlags = GameFlags_ClampToSix(Info().m_GameFlags);
 	GameInfo.m_GameStateFlags = 0;
-	if(m_GameOverTick != -1)
+	if(Match().IsGameOver())
 		GameInfo.m_GameStateFlags |= GAMESTATEFLAG_GAMEOVER;
-	if(m_SuddenDeath)
+	if(Match().IsSuddenDeath())
 		GameInfo.m_GameStateFlags |= GAMESTATEFLAG_SUDDENDEATH;
 	if(IsGamePaused())
 		GameInfo.m_GameStateFlags |= GAMESTATEFLAG_PAUSED;
-	GameInfo.m_RoundStartTick = m_RoundStartTick;
-	GameInfo.m_WarmupTimer = m_Warmup;
+	GameInfo.m_RoundStartTick = Match().RoundStartTick();
+	GameInfo.m_WarmupTimer = Match().WarmupTicks();
+	// A mode that ends on a score or a clock has to say so, or the client counts
+	// up towards nothing and the scoreboard has no target to show.
+	GameInfo.m_ScoreLimit = ScoreLimit();
+	GameInfo.m_TimeLimit = TimeLimit();
 
 	GameInfo.m_RoundNum = 0;
-	GameInfo.m_RoundCurrent = m_RoundCount + 1;
+	GameInfo.m_RoundCurrent = Match().RoundCount() + 1;
 	UpdateGameInfo(GameInfo, SnappingClient);
 	Server()->SnapNewItem(0, GameInfo);
 
@@ -861,15 +846,15 @@ void IGameController::Snap(int SnappingClient)
 	if(Server()->IsSixup(SnappingClient))
 	{
 		protocol7::CNetObj_GameData GameData = {};
-		GameData.m_GameStartTick = m_RoundStartTick;
+		GameData.m_GameStartTick = Match().RoundStartTick();
 		GameData.m_GameStateFlags = 0;
-		if(m_GameOverTick != -1)
+		if(Match().IsGameOver())
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_GAMEOVER;
-		if(m_SuddenDeath)
+		if(Match().IsSuddenDeath())
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_SUDDENDEATH;
 		if(IsGamePaused())
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_PAUSED;
-		GameData.m_GameStateEndTick = TimeLimit() > 0 ? m_RoundStartTick + TimeLimit() * Server()->TickSpeed() * 60 : 0;
+		GameData.m_GameStateEndTick = TimeLimit() > 0 ? Match().RoundStartTick() + TimeLimit() * Server()->TickSpeed() * 60 : 0;
 		Server()->SnapNewItem(0, GameData);
 	}
 
@@ -939,7 +924,6 @@ void IGameController::DoTeamChange(CPlayer *pPlayer, int Team, bool DoChatMsg)
 	if(Team == pPlayer->GetTeam())
 		return;
 
-	const int OldTeam = pPlayer->GetTeam();
 	pPlayer->SetTeam(Team);
 	int ClientId = pPlayer->GetCid();
 
@@ -952,7 +936,6 @@ void IGameController::DoTeamChange(CPlayer *pPlayer, int Team, bool DoChatMsg)
 
 	str_format(aBuf, sizeof(aBuf), "team_join player='%d:%s' m_Team=%d", ClientId, Server()->ClientName(ClientId), Team);
 	GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_DEBUG, "game", aBuf);
-	PublishMatchEvent(CMatchEventTeamChanged{ClientId, OldTeam, Team});
 
 	// OnPlayerInfoChange(pPlayer);
 }

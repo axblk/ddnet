@@ -1,5 +1,7 @@
 #include "ddrace_character.h"
 
+#include "ddrace.h"
+
 #include <base/log.h>
 #include <base/mem.h>
 #include <base/time.h>
@@ -215,7 +217,7 @@ void CCharacterDDRace::HandleBroadcast()
 	}
 }
 
-void CCharacterDDRace::HandleSkippableTiles(int Index)
+void CCharacterDDRace::HandleRaceDeathTiles()
 {
 	// handle death-tiles and leaving gamelayer
 	if(IsOnDeathTile() &&
@@ -242,9 +244,11 @@ void CCharacterDDRace::HandleSkippableTiles(int Index)
 	if(GameLayerClipped(m_Pos))
 	{
 		Die(m_pPlayer->GetCid(), WEAPON_WORLD);
-		return;
 	}
+}
 
+void CCharacterDDRace::HandleDDNetPhysicsSkippableTiles(int Index)
+{
 	if(Index < 0)
 		return;
 
@@ -371,7 +375,54 @@ void CCharacterDDRace::SetTimeCheckpoint(int TimeCheckpoint)
 	}
 }
 
-void CCharacterDDRace::HandleTiles(int Index)
+void CCharacterDDRace::HandleRaceTiles(int MapIndex)
+{
+	SetTimeCheckpoint(Collision()->IsTimeCheckpoint(MapIndex));
+	SetTimeCheckpoint(Collision()->IsFrontTimeCheckpoint(MapIndex));
+	const int TeleCheckpoint = Collision()->IsTeleCheckpoint(MapIndex);
+	if(TeleCheckpoint)
+		m_TeleCheckpoint = TeleCheckpoint;
+
+	static_cast<CGameControllerDDRace *>(GameServer()->GameHost().Controller())->HandleRaceTiles(this, MapIndex);
+}
+
+void CCharacterDDRace::HandleRaceTimeTiles(int SwitchType, int SwitchNumber, int SwitchDelay)
+{
+	bool Changed = false;
+	if(SwitchType == TILE_ADD_TIME && !m_LastPenalty)
+	{
+		m_StartTime -= (SwitchDelay * 60 + SwitchNumber) * Server()->TickSpeed();
+		m_LastPenalty = true;
+		Changed = true;
+	}
+	else if(SwitchType == TILE_SUBTRACT_TIME && !m_LastBonus)
+	{
+		m_StartTime += (SwitchDelay * 60 + SwitchNumber) * Server()->TickSpeed();
+		m_StartTime = std::min(m_StartTime, Server()->Tick());
+		m_LastBonus = true;
+		Changed = true;
+	}
+
+	if(Changed && (g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO || (Team() != TEAM_FLOCK && !RaceTeams()->TeamFlock(Team()))) && Team() != TEAM_SUPER)
+	{
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+		{
+			if(TeamsCore()->Team(ClientId) == Team() && ClientId != m_Core.m_Id && GameServer()->m_apPlayers[ClientId])
+			{
+				CCharacterDDRace *pCharacter = static_cast<CCharacterDDRace *>(GameServer()->m_apPlayers[ClientId]->GetCharacter());
+				if(pCharacter)
+					pCharacter->m_StartTime = m_StartTime;
+			}
+		}
+	}
+
+	if(SwitchType != TILE_ADD_TIME)
+		m_LastPenalty = false;
+	if(SwitchType != TILE_SUBTRACT_TIME)
+		m_LastBonus = false;
+}
+
+void CCharacterDDRace::HandleDDNetPhysicsTiles(int Index)
 {
 	int MapIndex = Index;
 	m_TileIndex = Collision()->GetTileIndex(MapIndex);
@@ -384,13 +435,7 @@ void CCharacterDDRace::HandleTiles(int Index)
 		m_LastBonus = false;
 		return;
 	}
-	SetTimeCheckpoint(Collision()->IsTimeCheckpoint(MapIndex));
-	SetTimeCheckpoint(Collision()->IsFrontTimeCheckpoint(MapIndex));
-	int TeleCheckpoint = Collision()->IsTeleCheckpoint(MapIndex);
-	if(TeleCheckpoint)
-		m_TeleCheckpoint = TeleCheckpoint;
-
-	GameServer()->GameHost().Controller()->HandleCharacterTiles(this, Index);
+	HandleRaceTiles(MapIndex);
 	if(!m_Alive)
 		return;
 
@@ -557,6 +602,18 @@ void CCharacterDDRace::HandleTiles(int Index)
 		GameServer()->SendChatTarget(GetPlayer()->GetCid(), "Teleport laser disabled");
 	}
 
+	// solo part
+	if(((m_TileIndex == TILE_SOLO_ENABLE) || (m_TileFIndex == TILE_SOLO_ENABLE)) && !TeamsCore()->GetSolo(GetPlayer()->GetCid()))
+	{
+		GameServer()->SendChatTarget(GetPlayer()->GetCid(), "You are now in a solo part");
+		SetSolo(true);
+	}
+	else if(((m_TileIndex == TILE_SOLO_DISABLE) || (m_TileFIndex == TILE_SOLO_DISABLE)) && TeamsCore()->GetSolo(GetPlayer()->GetCid()))
+	{
+		GameServer()->SendChatTarget(GetPlayer()->GetCid(), "You are now out of the solo part");
+		SetSolo(false);
+	}
+
 	// stopper
 	if(m_Core.m_Vel.y > 0 && (m_MoveRestrictions & CANTMOVE_DOWN))
 	{
@@ -689,66 +746,7 @@ void CCharacterDDRace::HandleTiles(int Index)
 			m_Core.m_Jumps = NewJumps;
 		}
 	}
-	else if(SwitchType == TILE_ADD_TIME && !m_LastPenalty)
-	{
-		const int Minutes = SwitchDelay;
-		const int Seconds = SwitchNumber;
-		int Team = TeamsCore()->Team(m_Core.m_Id);
-
-		m_StartTime -= (Minutes * 60 + Seconds) * Server()->TickSpeed();
-
-		if((g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO || (Team != TEAM_FLOCK && !RaceTeams()->TeamFlock(Team))) && Team != TEAM_SUPER)
-		{
-			for(int i = 0; i < MAX_CLIENTS; i++)
-			{
-				if(TeamsCore()->Team(i) == Team && i != m_Core.m_Id && GameServer()->m_apPlayers[i])
-				{
-					CCharacterDDRace *pChar = static_cast<CCharacterDDRace *>(GameServer()->m_apPlayers[i]->GetCharacter());
-
-					if(pChar)
-						pChar->m_StartTime = m_StartTime;
-				}
-			}
-		}
-
-		m_LastPenalty = true;
-	}
-	else if(SwitchType == TILE_SUBTRACT_TIME && !m_LastBonus)
-	{
-		const int Minutes = SwitchDelay;
-		const int Seconds = SwitchNumber;
-		int Team = TeamsCore()->Team(m_Core.m_Id);
-
-		m_StartTime += (Minutes * 60 + Seconds) * Server()->TickSpeed();
-		if(m_StartTime > Server()->Tick())
-			m_StartTime = Server()->Tick();
-
-		if((g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO || (Team != TEAM_FLOCK && !RaceTeams()->TeamFlock(Team))) && Team != TEAM_SUPER)
-		{
-			for(int i = 0; i < MAX_CLIENTS; i++)
-			{
-				if(TeamsCore()->Team(i) == Team && i != m_Core.m_Id && GameServer()->m_apPlayers[i])
-				{
-					CCharacterDDRace *pChar = static_cast<CCharacterDDRace *>(GameServer()->m_apPlayers[i]->GetCharacter());
-
-					if(pChar)
-						pChar->m_StartTime = m_StartTime;
-				}
-			}
-		}
-
-		m_LastBonus = true;
-	}
-
-	if(SwitchType != TILE_ADD_TIME)
-	{
-		m_LastPenalty = false;
-	}
-
-	if(SwitchType != TILE_SUBTRACT_TIME)
-	{
-		m_LastBonus = false;
-	}
+	HandleRaceTimeTiles(SwitchType, SwitchNumber, SwitchDelay);
 
 	int z = Collision()->IsTeleport(MapIndex);
 	if(!g_Config.m_SvOldTeleportHook && !g_Config.m_SvOldTeleportWeapons && z && !Collision()->TeleOuts(z - 1).empty())
@@ -997,7 +995,7 @@ void CCharacterDDRace::SnapDDRace(int SnappingClient, int Id)
 void CCharacterDDRace::DDRaceTick()
 {
 	mem_copy(&m_Input, &m_SavedInput, sizeof(m_Input));
-	GameServer()->GameHost().Controller()->SetArmorProgress(this, m_FreezeTime);
+	static_cast<CGameControllerDDRace *>(GameServer()->GameHost().Controller())->SetArmorProgress(this, m_FreezeTime);
 	if(m_Core.m_LiveFrozen && !m_Core.m_Super && !m_Core.m_Invincible)
 	{
 		m_Input.m_Direction = 0;
@@ -1047,6 +1045,11 @@ void CCharacterDDRace::DDRaceTick()
 void CCharacterDDRace::DDRacePostCoreTick()
 {
 	m_Time = (float)(Server()->Tick() - m_StartTime) / ((float)Server()->TickSpeed());
+	if(m_Core.m_ActiveWeapon == WEAPON_NINJA)
+	{
+		const int NinjaTime = m_Core.m_Ninja.m_ActivationTick + (g_pData->m_Weapons.m_Ninja.m_Duration * Server()->TickSpeed() / 1000) - Server()->Tick();
+		static_cast<CGameControllerDDRace *>(GameServer()->GameHost().Controller())->SetArmorProgress(this, NinjaTime);
+	}
 
 	if(m_Core.m_EndlessHook || (m_Core.m_Super && g_Config.m_SvEndlessSuperHook))
 		m_Core.m_HookTick = 0;
@@ -1085,7 +1088,10 @@ void CCharacterDDRace::DDRacePostCoreTick()
 	}
 
 	int CurrentIndex = Collision()->GetMapIndex(m_Pos);
-	HandleSkippableTiles(CurrentIndex);
+	HandleRaceDeathTiles();
+	if(!m_Alive)
+		return;
+	HandleDDNetPhysicsSkippableTiles(CurrentIndex);
 	if(!m_Alive)
 		return;
 
@@ -1095,14 +1101,14 @@ void CCharacterDDRace::DDRacePostCoreTick()
 	{
 		for(int &Index : vIndices)
 		{
-			HandleTiles(Index);
+			HandleDDNetPhysicsTiles(Index);
 			if(!m_Alive)
 				return;
 		}
 	}
 	else
 	{
-		HandleTiles(CurrentIndex);
+		HandleDDNetPhysicsTiles(CurrentIndex);
 		if(!m_Alive)
 			return;
 	}

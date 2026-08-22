@@ -1736,6 +1736,7 @@ void CGameClient::OnNewSnapshot(bool DummySwapped)
 {
 	auto &&Evolve = [this](CNetObj_Character *pCharacter, int Tick) {
 		CWorldCore TempWorld;
+		TempWorld.m_PhysicsRules = PredictedPhysicsRules();
 		CCharacterCore TempCore = CCharacterCore();
 		CTeamsCore TempTeams = CTeamsCore();
 		TempCore.Init(&TempWorld, Collision(), &TempTeams);
@@ -3526,10 +3527,30 @@ void CGameClient::UpdateLocalTuning()
 	}
 }
 
+CPhysicsRules CGameClient::PredictedPhysicsRules() const
+{
+	if(!m_GameInfo.m_PredictDDRace)
+		return CPhysicsRules::Vanilla();
+	CPhysicsRules Rules = CPhysicsRules::DDNet();
+	// TODO: The server does not tell the client which physics it runs, so these
+	// still come from the local config and only predict correctly as long as
+	// the server runs the same values. A mode that picks its own rules needs
+	// them on the wire.
+	Rules.m_TeleportHookOld = g_Config.m_SvOldTeleportHook;
+	Rules.m_TeleportWeaponsOld = g_Config.m_SvOldTeleportWeapons;
+	Rules.m_WeaponsHitOthers = g_Config.m_SvHit;
+	Rules.m_OldLaser = g_Config.m_SvOldLaser;
+	Rules.m_WeakHook = !g_Config.m_SvNoWeakHook;
+	Rules.m_Deepfly = g_Config.m_SvDeepfly;
+	Rules.m_DestroyLasersOnDeath = g_Config.m_SvDestroyLasersOnDeath;
+	return Rules;
+}
+
 void CGameClient::UpdatePrediction()
 {
 	m_GameWorld.m_WorldConfig.m_IsVanilla = m_GameInfo.m_PredictVanilla;
 	m_GameWorld.m_WorldConfig.m_IsDDRace = m_GameInfo.m_PredictDDRace;
+	m_GameWorld.m_Core.m_PhysicsRules = PredictedPhysicsRules();
 	m_GameWorld.m_WorldConfig.m_IsFNG = m_GameInfo.m_PredictFNG;
 	m_GameWorld.m_WorldConfig.m_PredictDDRace = m_GameInfo.m_PredictDDRace;
 	m_GameWorld.m_WorldConfig.m_PredictTiles = m_GameInfo.m_PredictDDRace && m_GameInfo.m_PredictDDRaceTiles;

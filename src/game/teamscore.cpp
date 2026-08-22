@@ -3,8 +3,6 @@
 
 #include <base/dbg.h>
 
-#include <engine/shared/config.h>
-
 CTeamsCore::CTeamsCore()
 {
 	Reset();
@@ -42,14 +40,14 @@ bool CTeamsCore::CanCollide(int ClientId1, int ClientId2) const
 	return m_aTeam[ClientId1] == m_aTeam[ClientId2];
 }
 
-void CTeamsCore::Reset()
+void CTeamsCore::Reset(bool IndividualGroups)
 {
 	m_IsDDRace16 = false;
 	m_IsDDRace64 = false;
 
 	for(int i = 0; i < MAX_CLIENTS; ++i)
 	{
-		if(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO)
+		if(IndividualGroups)
 			m_aTeam[i] = i;
 		else
 			m_aTeam[i] = TEAM_FLOCK;

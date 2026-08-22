@@ -474,7 +474,10 @@ bool CConsole::LineIsValid(const char *pStr)
 					pNextPart = pEnd + 1;
 					break;
 				}
-				else if(*pEnd == '#') // comment, no need to do anything more
+				// A comment starts a word, the way a shell reads one. Breaking on
+				// any '#' would cut a connect link short at its fragment, and
+				// that fragment is where the certificate hashes are.
+				else if(*pEnd == '#' && (pEnd == pStr || pEnd[-1] == ' ' || pEnd[-1] == '\t')) // comment, no need to do anything more
 				{
 					break;
 				}
@@ -534,7 +537,10 @@ void CConsole::ExecuteLineStroked(int Stroke, const char *pStr, int ClientId, bo
 					pNextPart = pEnd + 1;
 					break;
 				}
-				else if(*pEnd == '#') // comment, no need to do anything more
+				// A comment starts a word, the way a shell reads one. Breaking on
+				// any '#' would cut a connect link short at its fragment, and
+				// that fragment is where the certificate hashes are.
+				else if(*pEnd == '#' && (pEnd == pStr || pEnd[-1] == ' ' || pEnd[-1] == '\t')) // comment, no need to do anything more
 				{
 					break;
 				}

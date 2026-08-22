@@ -33,7 +33,16 @@ def run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
 
 
 def sha256(path: Path) -> str:
-	return hashlib.sha256(path.read_bytes()).hexdigest()
+	return hashlib.sha256(path.read_text(encoding="utf-8").encode()).hexdigest()
+
+
+def input_hashes() -> dict[str, str]:
+	return {
+		"generator": sha256(Path(__file__)),
+		"reference.cmake": sha256(OVERLAY / "reference.cmake"),
+		"reference_runner.cpp": sha256(OVERLAY / "reference_runner.cpp"),
+		"scenarios.txt": sha256(SCENARIOS),
+	}
 
 
 def executable(build: Path) -> Path:
@@ -99,18 +108,12 @@ def generate(reference_repo: Path, cmake_command: str) -> str:
 		run([cmake_command, "--build", str(build), "--target", "vanilla-golden-reference"])
 		body = run([str(executable(build)), str(SCENARIOS)], capture_output=True).stdout
 
-	inputs = {
-		"generator": sha256(Path(__file__)),
-		"reference.cmake": sha256(OVERLAY / "reference.cmake"),
-		"reference_runner.cpp": sha256(OVERLAY / "reference_runner.cpp"),
-		"scenarios.txt": sha256(SCENARIOS),
-	}
 	header = [
 		"# vanilla-golden-v1",
 		f"# reference_commit {REFERENCE_COMMIT}",
 		f"# reference_tree {tree}",
 	]
-	header.extend(f"# sha256 {name} {digest}" for name, digest in sorted(inputs.items()))
+	header.extend(f"# sha256 {name} {digest}" for name, digest in sorted(input_hashes().items()))
 	return "\n".join(header) + "\n" + body
 
 
@@ -119,8 +122,17 @@ def compare(runner: Path) -> int:
 		print(f"missing {TRACE.relative_to(ROOT)}", file=sys.stderr)
 		return 2
 	expected = TRACE.read_text(encoding="utf-8")
-	scenario_hash = f"# sha256 scenarios.txt {sha256(SCENARIOS)}\n"
-	if scenario_hash not in expected:
+	header = []
+	for line in expected.splitlines():
+		if not line.startswith("#"):
+			break
+		header.append(line)
+	required = [
+		("# vanilla-golden-", "# vanilla-golden-v1"),
+		("# reference_commit ", f"# reference_commit {REFERENCE_COMMIT}"),
+	]
+	required.extend((f"# sha256 {name} ", f"# sha256 {name} {digest}") for name, digest in sorted(input_hashes().items()))
+	if any(sum(line.startswith(prefix) for line in header) != 1 or expected_line not in header for prefix, expected_line in required):
 		print(f"stale {TRACE.relative_to(ROOT)}; regenerate it", file=sys.stderr)
 		return 2
 	expected_body = "".join(line for line in expected.splitlines(keepends=True) if not line.startswith("#"))

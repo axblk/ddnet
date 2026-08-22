@@ -235,22 +235,21 @@ public:
 	int GetLastAction() const { return m_LastAction; }
 	bool IsIdle() const { return !m_SavedInput.m_Direction && !m_SavedInput.m_Hook && !m_SavedInput.m_Jump && !(m_SavedInput.m_Fire & 1); }
 
-	bool HasTelegunGun() const { return m_Core.m_HasTelegunGun; }
-	bool HasTelegunGrenade() const { return m_Core.m_HasTelegunGrenade; }
-	bool HasTelegunLaser() const { return m_Core.m_HasTelegunLaser; }
+	bool HasTelegunGun() const { return m_Core.UsesDDNetPhysics() && m_Core.m_HasTelegunGun; }
+	bool HasTelegunGrenade() const { return m_Core.UsesDDNetPhysics() && m_Core.m_HasTelegunGrenade; }
+	bool HasTelegunLaser() const { return m_Core.UsesDDNetPhysics() && m_Core.m_HasTelegunLaser; }
 
-	bool HammerHitDisabled() const { return m_Core.m_HammerHitDisabled; }
-	bool ShotgunHitDisabled() const { return m_Core.m_ShotgunHitDisabled; }
-	bool LaserHitDisabled() const { return m_Core.m_LaserHitDisabled; }
-	bool GrenadeHitDisabled() const { return m_Core.m_GrenadeHitDisabled; }
+	bool HammerHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_HammerHitDisabled; }
+	bool ShotgunHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_ShotgunHitDisabled; }
+	bool LaserHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_LaserHitDisabled; }
+	bool GrenadeHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_GrenadeHitDisabled; }
 
 	void SetHammerHitDisabled(bool HammerHitDisabled) { m_Core.m_HammerHitDisabled = HammerHitDisabled; }
 	void SetShotgunHitDisabled(bool ShotgunHitDisabled) { m_Core.m_ShotgunHitDisabled = ShotgunHitDisabled; }
 	void SetGrenadeHitDisabled(bool GrenadeHitDisabled) { m_Core.m_GrenadeHitDisabled = GrenadeHitDisabled; }
 	void SetLaserHitDisabled(bool LaserHitDisabled) { m_Core.m_LaserHitDisabled = LaserHitDisabled; }
 
-	bool IsSuper() const { return m_Core.m_Super; }
-
+	bool IsSuper() const { return m_Core.UsesDDNetPhysics() && m_Core.m_Super; }
 };
 
 #endif

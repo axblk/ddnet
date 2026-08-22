@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
+
 namespace
 {
 	void CountCalls(IConsole::IResult *pResult, void *pUser)
@@ -97,4 +99,55 @@ TEST(Console, OwnedChainsHaveBoundedLifetime)
 	EXPECT_EQ(Calls, 3);
 	EXPECT_EQ(ChainCalls, 1);
 	EXPECT_EQ(OtherChainCalls, 2);
+}
+
+namespace
+{
+	void CaptureArgument(IConsole::IResult *pResult, void *pUser)
+	{
+		str_copy(static_cast<char *>(pUser), pResult->GetString(0), 256);
+	}
+}
+
+class ConsoleComments : public ::testing::Test // NOLINT(readability-identifier-naming)
+{
+protected:
+	ConsoleComments() :
+		m_pConsole(CreateConsole(CFGFLAG_SERVER))
+	{
+		m_aCaptured[0] = '\0';
+		m_pConsole->Register("capture", "r[text]", CFGFLAG_SERVER, CaptureArgument, m_aCaptured, "Remember the argument");
+	}
+
+	std::unique_ptr<IConsole> m_pConsole;
+	char m_aCaptured[256];
+};
+
+TEST_F(ConsoleComments, CommentStartsAWord)
+{
+	// A connect link carries its certificate hashes behind a '#', so reading
+	// every '#' as a comment would cut the link short and drop the hashes.
+	m_pConsole->ExecuteLine("capture ddnet+wt://localhost:8303#cert-sha256=abc", IConsole::CLIENT_ID_UNSPECIFIED, true);
+	EXPECT_STREQ(m_aCaptured, "ddnet+wt://localhost:8303#cert-sha256=abc");
+	EXPECT_TRUE(m_pConsole->LineIsValid("capture ddnet+wt://localhost:8303#cert-sha256=abc"));
+}
+
+TEST_F(ConsoleComments, CommentAfterWhitespaceStillEndsTheLine)
+{
+	m_pConsole->ExecuteLine("capture value # a comment", IConsole::CLIENT_ID_UNSPECIFIED, true);
+	EXPECT_EQ(str_find(m_aCaptured, "#"), nullptr);
+	EXPECT_EQ(str_find(m_aCaptured, "comment"), nullptr);
+}
+
+TEST_F(ConsoleComments, CommentAtLineStartExecutesNothing)
+{
+	m_pConsole->ExecuteLine("# capture value", IConsole::CLIENT_ID_UNSPECIFIED, true);
+	EXPECT_STREQ(m_aCaptured, "");
+	EXPECT_FALSE(m_pConsole->LineIsValid("# capture value"));
+}
+
+TEST_F(ConsoleComments, CommentInsideStringIsKept)
+{
+	m_pConsole->ExecuteLine("capture \"quoted # text\"", IConsole::CLIENT_ID_UNSPECIFIED, true);
+	EXPECT_NE(str_find(m_aCaptured, "#"), nullptr);
 }

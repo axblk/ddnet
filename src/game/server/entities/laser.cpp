@@ -49,12 +49,15 @@ bool CLaser::HitCharacter(vec2 From, vec2 To)
 	vec2 At;
 	CCharacter *pOwnerChar = GameServer()->GetPlayerChar(m_Owner);
 	CCharacter *pHit;
-	bool pDontHitSelf = g_Config.m_SvOldLaser || (m_Bounces == 0 && !m_WasTele);
+	const CPhysicsRules &Rules = GameServer()->m_World.m_Core.m_PhysicsRules;
+	const bool OldLaser = Rules.m_OldLaser;
+	const bool HitOthers = Rules.m_WeaponsHitOthers;
+	const bool DontHitSelf = OldLaser || (m_Bounces == 0 && !m_WasTele);
 
-	if(pOwnerChar ? (!pOwnerChar->LaserHitDisabled() && m_Type == WEAPON_LASER) || (!pOwnerChar->ShotgunHitDisabled() && m_Type == WEAPON_SHOTGUN) : g_Config.m_SvHit)
-		pHit = GameWorld()->IntersectCharacter(m_Pos, To, 0.f, At, pDontHitSelf ? pOwnerChar : nullptr, m_Owner);
+	if(pOwnerChar ? (!pOwnerChar->LaserHitDisabled() && m_Type == WEAPON_LASER) || (!pOwnerChar->ShotgunHitDisabled() && m_Type == WEAPON_SHOTGUN) : HitOthers)
+		pHit = GameWorld()->IntersectCharacter(m_Pos, To, 0.f, At, DontHitSelf ? pOwnerChar : nullptr, m_Owner);
 	else
-		pHit = GameWorld()->IntersectCharacter(m_Pos, To, 0.f, At, pDontHitSelf ? pOwnerChar : nullptr, m_Owner, pOwnerChar);
+		pHit = GameWorld()->IntersectCharacter(m_Pos, To, 0.f, At, DontHitSelf ? pOwnerChar : nullptr, m_Owner, pOwnerChar);
 
 	if(!pHit || !m_InteractState.CanHit(GameServer(), pHit->GetPlayer()->GetCid()))
 		return false;
@@ -65,7 +68,7 @@ bool CLaser::HitCharacter(vec2 From, vec2 To)
 	{
 		float Strength = TuningList()[m_TuneZone].m_ShotgunStrength;
 		const vec2 &HitPos = pHit->Core()->m_Pos;
-		if(!g_Config.m_SvOldLaser)
+		if(!OldLaser)
 		{
 			if(m_PrevPos != HitPos)
 			{
@@ -76,7 +79,7 @@ bool CLaser::HitCharacter(vec2 From, vec2 To)
 				pHit->SetRawVelocity(StackedLaserShotgunBugSpeed);
 			}
 		}
-		else if(g_Config.m_SvOldLaser && pOwnerChar)
+		else if(pOwnerChar)
 		{
 			if(pOwnerChar->Core()->m_Pos != HitPos)
 			{
@@ -114,7 +117,7 @@ void CLaser::DoBounce()
 	vec2 Coltile;
 
 	int Res;
-	int z;
+	int z = 0;
 
 	if(m_WasTele)
 	{
@@ -125,7 +128,7 @@ void CLaser::DoBounce()
 
 	vec2 To = m_Pos + m_Dir * m_Energy;
 
-	Res = GameServer()->Collision()->IntersectLineTeleWeapon(m_Pos, To, &Coltile, &To, &z);
+	Res = GameServer()->m_World.m_Core.m_PhysicsRules.m_DDNetMovement ? GameServer()->Collision()->IntersectLineTeleWeapon(m_Pos, To, &Coltile, &To, &z, GameServer()->m_World.m_Core.m_PhysicsRules.m_TeleportWeaponsOld) : GameServer()->Collision()->IntersectLine(m_Pos, To, &Coltile, &To);
 
 	if(Res)
 	{
@@ -202,10 +205,12 @@ void CLaser::DoBounce()
 		bool Found = false;
 
 		// Check if the laser hits a player.
-		bool DontHitSelf = g_Config.m_SvOldLaser || (m_Bounces == 0 && !m_WasTele);
+		const CPhysicsRules &Rules = GameServer()->m_World.m_Core.m_PhysicsRules;
+		const bool DontHitSelf = Rules.m_OldLaser || (m_Bounces == 0 && !m_WasTele);
+		const bool HitOthers = Rules.m_WeaponsHitOthers;
 		vec2 At;
 		CCharacter *pHit;
-		if(pOwnerChar ? (!pOwnerChar->LaserHitDisabled() && m_Type == WEAPON_LASER) : g_Config.m_SvHit)
+		if(pOwnerChar ? (!pOwnerChar->LaserHitDisabled() && m_Type == WEAPON_LASER) : HitOthers)
 			pHit = GameServer()->m_World.IntersectCharacter(m_Pos, To, 0.f, At, DontHitSelf ? pOwnerChar : nullptr, m_Owner);
 		else
 			pHit = GameServer()->m_World.IntersectCharacter(m_Pos, To, 0.f, At, DontHitSelf ? pOwnerChar : nullptr, m_Owner, pOwnerChar);
@@ -262,7 +267,7 @@ void CLaser::Reset()
 void CLaser::Tick()
 {
 	SyncInteractState();
-	if((g_Config.m_SvDestroyLasersOnDeath || m_BelongsToPracticeTeam) && m_Owner >= 0)
+	if((GameServer()->m_World.m_Core.m_PhysicsRules.m_DestroyLasersOnDeath || m_BelongsToPracticeTeam) && m_Owner >= 0)
 	{
 		CCharacter *pOwnerChar = GameServer()->GetPlayerChar(m_Owner);
 		if(!(pOwnerChar && pOwnerChar->IsAlive()))
@@ -292,7 +297,7 @@ void CLaser::Snap(int SnappingClient)
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
 	int LaserType = m_Type == WEAPON_LASER ? LASERTYPE_RIFLE : (m_Type == WEAPON_SHOTGUN ? LASERTYPE_SHOTGUN : -1);
 
-	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient)), GetId().value(),
+	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), GetId().value(),
 		m_Pos, m_From, m_EvalTick, m_Owner, LaserType, 0, m_Number);
 }
 
@@ -311,13 +316,14 @@ void CLaser::SyncInteractState()
 	// as soon as the owner disconnects keep that state
 	if(pOwnerPlayer)
 	{
-		bool NoHitOthers = g_Config.m_SvHit;
+		const CPhysicsRules &Rules = GameServer()->m_World.m_Core.m_PhysicsRules;
+		bool NoHitOthers = Rules.m_DDNetMovement && Rules.m_WeaponsHitOthers;
 		if(pOwnerChar)
 			NoHitOthers = (m_Type == WEAPON_LASER && pOwnerChar->LaserHitDisabled()) || (m_Type == WEAPON_SHOTGUN && pOwnerChar->ShotgunHitDisabled());
-		bool NoHitSelf = g_Config.m_SvOldLaser || (m_Bounces == 0 && !m_WasTele);
+		bool NoHitSelf = Rules.m_OldLaser || (m_Bounces == 0 && !m_WasTele);
 		m_InteractState.FillOwnerConnected(
 			GameServer()->GameHost().Controller()->PlayerTeamGroup(m_Owner),
-			pOwnerChar && pOwnerChar->Core()->m_Solo,
+			pOwnerChar && pOwnerChar->Core()->UsesDDNetPhysics() && pOwnerChar->Core()->m_Solo,
 			NoHitOthers,
 			NoHitSelf);
 	}

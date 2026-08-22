@@ -166,8 +166,6 @@ public: // TODO: Maybe make protected
 	bool GameLayerClipped(vec2 CheckPos);
 	virtual bool CanCollide(int ClientId) { return true; }
 
-	// DDRace
-
 	bool GetNearestAirPos(vec2 Pos, vec2 PrevPos, vec2 *pOutPos);
 	bool GetNearestAirPosPlayer(vec2 PlayerPos, vec2 *pOutPos);
 

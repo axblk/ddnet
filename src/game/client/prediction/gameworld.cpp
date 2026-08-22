@@ -378,7 +378,9 @@ void CGameWorld::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage,
 
 		float Dmg = Strength * l;
 		if((int)Dmg)
-			if((pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : g_Config.m_SvHit || NoDamage) || Owner == pChar->GetCid())
+		{
+			const bool HitOthers = m_Core.m_PhysicsRules.m_WeaponsHitOthers;
+			if((pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : HitOthers || NoDamage) || Owner == pChar->GetCid())
 			{
 				if(Owner != -1 && !pChar->CanCollide(Owner))
 					continue;
@@ -389,9 +391,10 @@ void CGameWorld::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage,
 				{
 					pOwnerChar->AntiPingInterference(pChar->GetCid());
 				}
-				if(pOwnerChar ? pOwnerChar->GrenadeHitDisabled() : !g_Config.m_SvHit || NoDamage)
+				if(pOwnerChar ? pOwnerChar->GrenadeHitDisabled() : !HitOthers || NoDamage)
 					break;
 			}
+		}
 	}
 }
 
@@ -679,6 +682,7 @@ void CGameWorld::CopyWorld(CGameWorld *pFrom)
 	m_GameTick = pFrom->m_GameTick;
 	m_pCollision = pFrom->m_pCollision;
 	m_WorldConfig = pFrom->m_WorldConfig;
+	m_Core.m_PhysicsRules = pFrom->m_Core.m_PhysicsRules;
 	m_pTuningList = pFrom->m_pTuningList;
 	m_pMapBugs = pFrom->m_pMapBugs;
 	m_Teams = pFrom->m_Teams;

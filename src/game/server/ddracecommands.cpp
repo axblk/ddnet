@@ -1,6 +1,5 @@
 /* (c) Shereef Marzouk. See "licence DDRace.txt" and the readme.txt in the root of the distribution for more information. */
 #include "gamecontext.h"
-
 #include "gamemodes/ddrace.h"
 
 #include <base/dbg.h>
@@ -13,8 +12,8 @@
 
 #include <game/mapitems.h>
 #include <game/server/entities/character.h>
-#include <game/server/gamemodes/ddrace_character.h>
 #include <game/server/gamemodes/ddnet.h>
+#include <game/server/gamemodes/ddrace_character.h>
 #include <game/server/player.h>
 #include <game/server/save.h>
 #include <game/server/teams.h>
@@ -438,12 +437,12 @@ static void ModifyWeapons(IConsole::IResult *pResult, void *pUserData,
 	pChr->m_DDRaceState = ERaceState::CHEATED;
 }
 
-static void Teleport(CCharacterDDRace *pChr, vec2 Pos)
+static void Teleport(CCharacterDDRace *pCharacter, vec2 Pos)
 {
-	pChr->SetPosition(Pos);
-	pChr->m_Pos = Pos;
-	pChr->m_PrevPos = Pos;
-	pChr->m_DDRaceState = ERaceState::CHEATED;
+	pCharacter->SetPosition(Pos);
+	pCharacter->m_Pos = Pos;
+	pCharacter->m_PrevPos = Pos;
+	pCharacter->m_DDRaceState = ERaceState::CHEATED;
 }
 
 static void ConToTeleporter(IConsole::IResult *pResult, void *pUserData)

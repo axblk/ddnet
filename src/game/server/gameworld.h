@@ -44,6 +44,9 @@ private:
 	class CConfig *m_pConfig;
 	class IServer *m_pServer;
 	CTuningParams *m_pTuningList;
+	CPhysicsRules m_ModePhysicsRules;
+
+	void UpdatePhysicsRules();
 
 public:
 	class CConfig *Config() { return m_pConfig; }
@@ -54,6 +57,14 @@ public:
 	bool ResetRequested() const { return m_ResetRequested; }
 	bool IsPaused() const { return m_Paused; }
 	CWorldCore m_Core;
+
+	/**
+	 * Sets the physics the game mode registered.
+	 *
+	 * The server config is applied on top of them every tick, so config
+	 * changes take effect without restarting the round.
+	 */
+	void SetModePhysicsRules(const CPhysicsRules &Rules);
 
 	CGameWorld();
 	~CGameWorld();
@@ -175,7 +186,6 @@ public:
 	*/
 	void SwapClients(int Client1, int Client2);
 
-	// DDRace
 	void ReleaseHooked(int ClientId);
 
 	/*

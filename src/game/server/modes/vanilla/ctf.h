@@ -18,6 +18,7 @@ public:
 
 protected:
 	void SnapMode(int SnappingClient) override;
+	bool CanBeMovedOnBalance(const CPlayer *pPlayer) const override;
 
 private:
 	static bool CreateFlagMapEntity(IGameController &Controller, const CMapEntityContext &Context);

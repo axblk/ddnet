@@ -471,6 +471,12 @@ bool CInput::KeyPress(int Key) const
 	return m_aFrameKeyStates[Key];
 }
 
+void CInput::ClearFrameKey(int Key)
+{
+	dbg_assert(Key >= KEY_FIRST && Key < KEY_LAST, "Key invalid: %d", Key);
+	m_aFrameKeyStates[Key] = false;
+}
+
 const char *CInput::KeyName(int Key) const
 {
 	dbg_assert(Key >= KEY_FIRST && Key < KEY_LAST, "Key invalid: %d", Key);

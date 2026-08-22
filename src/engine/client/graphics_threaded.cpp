@@ -1018,7 +1018,14 @@ bool CGraphics_Threaded::SubmitReliableCommandBuffer(CCommandBuffer *pCommandBuf
 	}
 
 	if(!m_pBackend->RunBufferQueued(pCommandBuffer, true))
+	{
+		// Nothing will ever execute these commands anymore, so drop them instead of
+		// leaving them behind pointing at results their callers are about to destroy.
+		pCommandBuffer->SignalCompletions();
+		pCommandBuffer->FreeExternalData();
+		pCommandBuffer->Reset();
 		return false;
+	}
 	CollectBackendQueueWarnings();
 
 	if(pCommandBuffer == m_pReliableCommandBuffer)
@@ -2769,12 +2776,8 @@ CGraphics_Threaded::CBufferHandle CGraphics_Threaded::CreateBufferObjectInternal
 	else
 	{
 		Cmd.m_pUploadData = UploadDataSize <= CMD_BUFFER_DATA_BUFFER_SIZE ? AllocReliableCommandBufferData(UploadDataSize) : nullptr;
-		if(Cmd.m_pUploadData != nullptr)
-		{
-			mem_copy(Cmd.m_pUploadData, pUploadData, UploadDataSize);
-			Cmd.m_DeletePointer = false;
-		}
-		else
+		Cmd.m_DeletePointer = Cmd.m_pUploadData == nullptr;
+		if(Cmd.m_DeletePointer)
 		{
 			Cmd.m_pUploadData = malloc(UploadDataSize);
 			if(Cmd.m_pUploadData == nullptr && UploadDataSize != 0)
@@ -2782,17 +2785,24 @@ CGraphics_Threaded::CBufferHandle CGraphics_Threaded::CreateBufferObjectInternal
 				m_BufferHandles.Release(&Buffer);
 				return Buffer;
 			}
-			mem_copy(Cmd.m_pUploadData, pUploadData, UploadDataSize);
-			Cmd.m_DeletePointer = true;
 		}
 	}
 
-	if(!AddCmd(Cmd))
+	if(!AddCmd(Cmd, [&] {
+		   if(Cmd.m_DeletePointer)
+			   return true;
+		   Cmd.m_pUploadData = m_pReliableCommandBuffer == nullptr ? nullptr : m_pReliableCommandBuffer->AllocData(UploadDataSize);
+		   return Cmd.m_pUploadData != nullptr;
+	   }))
 	{
 		if(Cmd.m_DeletePointer && !IsMovedPointer)
 			free(Cmd.m_pUploadData);
 		m_BufferHandles.Release(&Buffer);
+		return Buffer;
 	}
+
+	if(!IsMovedPointer)
+		mem_copy(Cmd.m_pUploadData, pUploadData, UploadDataSize);
 	return Buffer;
 }
 
@@ -2821,25 +2831,30 @@ bool CGraphics_Threaded::RecreateBufferObjectInternal(CBufferHandle Buffer, size
 	else
 	{
 		Cmd.m_pUploadData = UploadDataSize <= CMD_BUFFER_DATA_BUFFER_SIZE ? AllocReliableCommandBufferData(UploadDataSize) : nullptr;
-		if(Cmd.m_pUploadData != nullptr)
-		{
-			mem_copy(Cmd.m_pUploadData, pUploadData, UploadDataSize);
-			Cmd.m_DeletePointer = false;
-		}
-		else
+		Cmd.m_DeletePointer = Cmd.m_pUploadData == nullptr;
+		if(Cmd.m_DeletePointer)
 		{
 			Cmd.m_pUploadData = malloc(UploadDataSize);
 			if(Cmd.m_pUploadData == nullptr && UploadDataSize != 0)
 				return false;
-			mem_copy(Cmd.m_pUploadData, pUploadData, UploadDataSize);
-			Cmd.m_DeletePointer = true;
 		}
 	}
-	if(AddCmd(Cmd))
-		return true;
-	if(Cmd.m_DeletePointer && !IsMovedPointer)
-		free(Cmd.m_pUploadData);
-	return false;
+
+	if(!AddCmd(Cmd, [&] {
+		   if(Cmd.m_DeletePointer)
+			   return true;
+		   Cmd.m_pUploadData = m_pReliableCommandBuffer == nullptr ? nullptr : m_pReliableCommandBuffer->AllocData(UploadDataSize);
+		   return Cmd.m_pUploadData != nullptr;
+	   }))
+	{
+		if(Cmd.m_DeletePointer && !IsMovedPointer)
+			free(Cmd.m_pUploadData);
+		return false;
+	}
+
+	if(!IsMovedPointer)
+		mem_copy(Cmd.m_pUploadData, pUploadData, UploadDataSize);
+	return true;
 }
 
 bool CGraphics_Threaded::RecreateBufferObject(CBufferHandle Buffer, size_t UploadDataSize, void *pUploadData, int CreateFlags, bool IsMovedPointer)
@@ -2863,22 +2878,30 @@ bool CGraphics_Threaded::UpdateBufferObjectInternal(CBufferHandle Buffer, size_t
 	else
 	{
 		Cmd.m_pUploadData = AllocReliableCommandBufferData(UploadDataSize);
-		if(Cmd.m_pUploadData != nullptr)
-			mem_copy(Cmd.m_pUploadData, pUploadData, UploadDataSize);
-		else
+		Cmd.m_DeletePointer = Cmd.m_pUploadData == nullptr;
+		if(Cmd.m_DeletePointer)
 		{
 			Cmd.m_pUploadData = malloc(UploadDataSize);
 			if(Cmd.m_pUploadData == nullptr && UploadDataSize != 0)
 				return false;
-			mem_copy(Cmd.m_pUploadData, pUploadData, UploadDataSize);
-			Cmd.m_DeletePointer = true;
 		}
 	}
-	if(AddCmd(Cmd))
-		return true;
-	if(Cmd.m_DeletePointer && !IsMovedPointer)
-		free(Cmd.m_pUploadData);
-	return false;
+
+	if(!AddCmd(Cmd, [&] {
+		   if(Cmd.m_DeletePointer)
+			   return true;
+		   Cmd.m_pUploadData = m_pReliableCommandBuffer == nullptr ? nullptr : m_pReliableCommandBuffer->AllocData(UploadDataSize);
+		   return Cmd.m_pUploadData != nullptr;
+	   }))
+	{
+		if(Cmd.m_DeletePointer && !IsMovedPointer)
+			free(Cmd.m_pUploadData);
+		return false;
+	}
+
+	if(!IsMovedPointer)
+		mem_copy(Cmd.m_pUploadData, pUploadData, UploadDataSize);
+	return true;
 }
 
 void CGraphics_Threaded::CopyBufferObjectInternal(CBufferHandle WriteBuffer, CBufferHandle ReadBuffer, size_t WriteOffset, size_t ReadOffset, size_t CopyDataSize)

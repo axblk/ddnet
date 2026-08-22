@@ -30,35 +30,61 @@
 #include <vector>
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-EM_ASYNC_JS(void, WaitForAnimationFrame, (), {
+// Handing control back to the browser. Waiting for an animation frame is what a
+// frame wants: the canvas is composited once per refresh whatever the loop does.
+// A wait inside a frame, and a loop that is meant to run faster than the screen,
+// want the shortest turn instead, and that is not a timer: a timer costs a
+// millisecond, and four once a handful of them nest, which is most of a frame
+// spent waiting for nothing. A message channel posts a plain task with no such
+// floor, so the browser gets its turn and we get it straight back.
+//
+// Neither wait works on a hidden page. It gets no animation frames, and it must
+// not be spun through microtasks either -- a microtask that queues another one
+// never lets the browser run the task that says we are visible again, so the page
+// would stay hidden and busy for good. A slow timer is the only way out.
+// clang-format off
+EM_ASYNC_JS(void, YieldToBrowser, (int WaitForFrame), {
 	if(document.hidden)
+	{
+		await new Promise(function(resolve) { setTimeout(resolve, 100); });
 		return;
-	await new Promise(function(resolve) {
-		var frame = requestAnimationFrame(function() {
-			document.removeEventListener("visibilitychange", hidden);
-			resolve();
-		});
-		function hidden()
-		{
-			if(document.hidden)
-			{
-				cancelAnimationFrame(frame);
+	}
+	if(WaitForFrame)
+	{
+		await new Promise(function(resolve) {
+			var frame = requestAnimationFrame(function() {
 				document.removeEventListener("visibilitychange", hidden);
 				resolve();
+			});
+			function hidden()
+			{
+				if(document.hidden)
+				{
+					cancelAnimationFrame(frame);
+					document.removeEventListener("visibilitychange", hidden);
+					resolve();
+				}
 			}
-		}
-		document.addEventListener("visibilitychange", hidden);
+			document.addEventListener("visibilitychange", hidden);
+		});
+		return;
+	}
+	if(Module.ddnetYield === undefined)
+	{
+		var channel = new MessageChannel();
+		Module.ddnetYield = {channel: channel, resolve: null};
+		channel.port1.onmessage = function() {
+			var resolve = Module.ddnetYield.resolve;
+			Module.ddnetYield.resolve = null;
+			resolve();
+		};
+	}
+	await new Promise(function(resolve) {
+		Module.ddnetYield.resolve = resolve;
+		Module.ddnetYield.channel.port2.postMessage(0);
 	});
 });
-
-// Yielding without waiting for a frame, for the case where the loop is meant
-// to run faster than the screen. The browser resumes this from a timer, so the
-// rate is the loop's own rather than the display's.
-EM_ASYNC_JS(void, YieldToBrowser, (), {
-	if(document.hidden)
-		return;
-	await new Promise(function(resolve) { setTimeout(resolve, 0); });
-});
+// clang-format on
 #endif
 
 namespace
@@ -417,7 +443,10 @@ namespace
 				if(std::chrono::steady_clock::now() >= Deadline)
 					break;
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-				emscripten_sleep(1);
+				// The browser has to run before it can resolve anything we are
+				// waiting for, but a timer would hold a frame that is already
+				// half rendered for a millisecond or more per poll.
+				YieldToBrowser(0);
 #else
 				std::this_thread::sleep_for(1ms);
 #endif
@@ -2804,15 +2833,11 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			const WGPUStatus Status = WGPUStatus_Success;
 			ReleaseFrame();
 			// The canvas is composited once per refresh whatever this does, so
-			// waiting for a frame is the right default: it costs nothing and it
-			// keeps a hidden tab from spinning. Someone who asked for a rate of
-			// their own gets the plain yield instead and lets the client's own
-			// limiter do the pacing -- for a benchmark, or for the shortest path
-			// from an input to the frame that carries it.
-			if(g_Config.m_GfxRefreshRate > 0)
-				YieldToBrowser();
-			else
-				WaitForAnimationFrame();
+			// waiting for a frame is the right default: it costs nothing. Someone
+			// who asked for a rate of their own gets the short yield instead and
+			// lets the client's own limiter do the pacing -- for a benchmark, or
+			// for the shortest path from an input to the frame that carries it.
+			YieldToBrowser(g_Config.m_GfxRefreshRate == 0 ? 1 : 0);
 #else
 			const WGPUStatus Status = wgpuSurfacePresent(m_Surface);
 			ReleaseFrame();

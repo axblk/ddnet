@@ -2479,11 +2479,11 @@ bool CMenus::RenderMenuBackdropTexture(IGraphics::CTextureHandle Target, IGraphi
 bool CMenus::BlurIntoMenuBackdrop(IGraphics::CTextureHandle Source)
 {
 	IGraphics::CTextureHandle Current = Source;
-	for(int i = 0; i < NUM_MENU_BACKDROP_DOWNSAMPLES; ++i)
+	for(const IGraphics::CTextureHandle &Downsample : m_aMenuBackdropDownsampleTextures)
 	{
-		if(!RenderMenuBackdropTexture(m_aMenuBackdropDownsampleTextures[i], Current, std::nullopt))
+		if(!RenderMenuBackdropTexture(Downsample, Current, std::nullopt))
 			return false;
-		Current = m_aMenuBackdropDownsampleTextures[i];
+		Current = Downsample;
 	}
 	return RenderMenuBackdropTexture(m_aMenuBackdropBlurTextures[1], Current, IGraphics::EBlurDirection::HORIZONTAL) &&
 	       RenderMenuBackdropTexture(m_aMenuBackdropBlurTextures[0], m_aMenuBackdropBlurTextures[1], IGraphics::EBlurDirection::VERTICAL);

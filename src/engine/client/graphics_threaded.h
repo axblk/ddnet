@@ -1379,9 +1379,8 @@ class CGraphics_Threaded : public IEngineGraphics
 		}
 	}
 
-	template<typename TName>
-	bool AddCmd(
-		TName &Cmd, const std::function<bool()> &FailFunc = [] { return true; })
+	template<typename TName, typename TFailFunc>
+	bool AddCmd(TName &Cmd, TFailFunc &&FailFunc)
 	{
 		if constexpr(std::is_same_v<TName, CCommandBuffer::SCommand_Draw> || std::is_same_v<TName, CCommandBuffer::SCommand_DrawIndexed>)
 		{
@@ -1412,6 +1411,12 @@ class CGraphics_Threaded : public IEngineGraphics
 		if(!FailFunc())
 			return false;
 		return pCommandBuffer->AddCommandUnsafe(Cmd);
+	}
+
+	template<typename TName>
+	bool AddCmd(TName &Cmd)
+	{
+		return AddCmd(Cmd, [] { return true; });
 	}
 
 	template<typename TName>

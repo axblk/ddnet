@@ -127,6 +127,7 @@ public:
 	bool AltIsPressed() const override { return KeyIsPressed(KEY_LALT) || KeyIsPressed(KEY_RALT); }
 	bool KeyIsPressed(int Key) const override;
 	bool KeyPress(int Key) const override;
+	void ClearFrameKey(int Key) override;
 	const char *KeyName(int Key) const override;
 	int FindKeyByName(const char *pKeyName) const override;
 

@@ -3125,6 +3125,20 @@ void CClient::InitInterfaces()
 	m_GhostLoader.Init();
 }
 
+static void SleepIdle(std::chrono::nanoseconds Duration)
+{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// Sleeping keeps the browser's main thread to itself, so the page neither
+	// paints nor delivers input for as long as it lasts. Emscripten's sleep is the
+	// one that hands control back, and it counts in whole milliseconds.
+	const int64_t Milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(Duration).count();
+	if(Milliseconds > 0)
+		emscripten_sleep(Milliseconds);
+#else
+	std::this_thread::sleep_for(Duration);
+#endif
+}
+
 void CClient::Run()
 {
 	m_LocalStartTime = m_GlobalStartTime = time_get();
@@ -3461,12 +3475,18 @@ void CClient::Run()
 		if(InactiveRefreshRate && !m_pGraphics->WindowActive())
 		{
 			SleepTimeInNanoSeconds = (std::chrono::nanoseconds(1s) / (int64_t)InactiveRefreshRate) - (Now - LastTime);
-			std::this_thread::sleep_for(SleepTimeInNanoSeconds);
+			SleepIdle(SleepTimeInNanoSeconds);
 			Slept = true;
 		}
 		else if(ClientRefreshRate)
 		{
 			SleepTimeInNanoSeconds = (std::chrono::nanoseconds(1s) / (int64_t)ClientRefreshRate) - (Now - LastTime);
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+			// Waiting on a socket cannot block in the browser: the wait reports what
+			// is ready and returns, so the loop below would spin the budget away
+			// instead of waiting it out, and hold the page for the whole of it.
+			SleepIdle(SleepTimeInNanoSeconds);
+#else
 			auto SleepTimeInNanoSecondsInner = SleepTimeInNanoSeconds;
 			auto NowInner = Now;
 			while(std::chrono::duration_cast<std::chrono::microseconds>(SleepTimeInNanoSecondsInner) > 0us)
@@ -3476,6 +3496,7 @@ void CClient::Run()
 				SleepTimeInNanoSecondsInner -= (NowInnerCalc - NowInner);
 				NowInner = NowInnerCalc;
 			}
+#endif
 			Slept = true;
 		}
 		if(Slept)

@@ -72,6 +72,26 @@ class StaticServerList:
 		self.thread.join()
 
 
+def wait_for_server_addresses(mastersrv, expected_addresses, timeout=15):
+	end = time() + timeout
+	while time() < end:
+		servers_json = mastersrv.servers_json()
+		if len(servers_json["servers"]) == 1 and set(servers_json["servers"][0]["addresses"]) == expected_addresses:
+			return servers_json
+		sleep(0.1)
+	raise AssertionError(f"server addresses were not registered within {timeout} seconds\n{servers_json}")
+
+
+def wait_for_server_address_bases(mastersrv, expected_addresses, timeout=15):
+	end = time() + timeout
+	while time() < end:
+		servers_json = mastersrv.servers_json()
+		if len(servers_json["servers"]) == 1 and {address.split("#", 1)[0] for address in servers_json["servers"][0]["addresses"]} == expected_addresses:
+			return servers_json
+		sleep(0.1)
+	raise AssertionError(f"server addresses were not registered within {timeout} seconds\n{servers_json}")
+
+
 # TODO: less strict default timeouts?
 
 # TODO: what kind of ASAN support did integration_test.sh have?
@@ -1067,7 +1087,8 @@ def client_can_connect_quic_shared_port(test_env):
 	server.wait_for_startup()
 	server.wait_for_log_suffix("successfully registered", timeout=5)
 	server.wait_for_log_suffix("successfully registered", timeout=5)
-	server.wait_for_log_exact("register/quic/ipv6: successfully registered", timeout=15)
+	server.wait_for_log_exact("register/quic/6/ipv6: successfully registered", timeout=15)
+	server.wait_for_log_exact("register/quic/7/ipv6: successfully registered", timeout=15)
 	identity_line = next((line for line in server.full_stdout if "server: native QUIC listening on" in line), "")
 	identity_match = re.search(r" identity-sha256=([0-9a-f]{64})$", identity_line)
 	if not identity_match:
@@ -1129,7 +1150,7 @@ def client_can_connect_quic_shared_port(test_env):
 		if len(fields) <= 12 or fields[12] != expected_lan_metadata:
 			raise AssertionError(f"unexpected extended serverinfo metadata: {fields!r}")
 	servers_json = mastersrv.servers_json()
-	if len(servers_json["servers"]) != 1 or servers_json["servers"][0]["info"].get("transport", {}).get("udp_port") != shared_port:
+	if len(servers_json["servers"]) != 1 or servers_json["servers"][0]["info"].get("experimental", {}).get("proto", {}).get("quic", {}).get("verify") not in ("identity", "webpki"):
 		raise AssertionError(f"shared-port server is not registered at the master\n{servers_json}")
 	server.exit()
 	client.exit()
@@ -1143,8 +1164,8 @@ def client_can_connect_quic_shared_port(test_env):
 	legacy_client.wait_for_exit()
 	sixup_client.wait_for_exit()
 	blocked_client.wait_for_exit()
-	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
-	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	for _ in range(4):
+		mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
 	mastersrv.exit()
 	mastersrv.wait_for_exit()
 
@@ -1603,66 +1624,129 @@ def server_registers_shared_quic_transport_metadata(test_env):
 	common_args = [
 		"http_allow_insecure 1",
 		"sv_quic 1",
-		f"sv_quic_cert {test_env.runner.quic_certificate}",
-		f"sv_quic_cert_next {test_env.runner.quic_wrong_certificate}",
-		f"sv_quic_key {test_env.runner.quic_private_key}",
+		f"sv_tls_cert {test_env.runner.quic_certificate}",
+		f"sv_tls_cert_next {test_env.runner.quic_wrong_certificate}",
+		f"sv_tls_key {test_env.runner.quic_private_key}",
 		"sv_webtransport 1",
-		"sv_webtransport_origin https://localhost",
-		"sv_webtransport_hostname localhost",
+		"sv_register_hostname localhost",
 		"sv_register ipv6",
 		f"sv_register_url http://[::1]:{mastersrv.port}/ddnet/15/register",
 	]
 	server = test_env.server(common_args)
 	wait_for_startup([server])
-	server.wait_for_log_suffix("successfully registered", timeout=5)
-	server.wait_for_log_suffix("successfully registered", timeout=5)
-	server.wait_for_log_exact("register/quic/ipv6: successfully registered", timeout=15)
-	servers_json = mastersrv.servers_json()
-	if len(servers_json["servers"]) != 1:
-		raise AssertionError(f"unexpected servers.json\n{servers_json}")
-	server_info = servers_json["servers"][0]["info"]
-	expected_transport = {
-		"udp_port": server.port,
-		"tls_certificate_sha256": certificate_sha256,
-		"tls_certificate_sha256_next": next_certificate_sha256,
-		"quic": True,
-		"webtransport": {
-			"url": f"https://localhost:{server.port}/ddnet",
-			"certificate_mode": "hash",
-		},
+	expected_addresses = {
+		f"tw-0.6+udp://[::1]:{server.port}",
+		f"tw-0.7+udp://[::1]:{server.port}",
+		f"ddnet+quic://localhost:{server.port}",
+		f"tw-0.7+quic://localhost:{server.port}",
+		f"ddnet+wt://localhost:{server.port}",
+		f"tw-0.7+wt://localhost:{server.port}",
 	}
-	if f"ddnet+quic://[::1]:{server.port}" not in servers_json["servers"][0]["addresses"]:
-		raise AssertionError(f"missing challenged QUIC address: {servers_json}")
-	if server_info.get("transport") != expected_transport:
-		raise AssertionError(f"unexpected shared-port transport metadata\n{servers_json}")
+	servers_json = wait_for_server_address_bases(mastersrv, expected_addresses)
+	server_info = servers_json["servers"][0]["info"]
+	proto = server_info.get("experimental", {}).get("proto", {})
+	if "transport" in server_info or proto.get("hostname") != "localhost" or proto.get("webtransport") != {"verify": "hash", "sha256": [certificate_sha256, next_certificate_sha256]} or proto.get("quic") != {"verify": "webpki"}:
+		raise AssertionError(f"unexpected shared-port protocol metadata\n{servers_json}")
 	server.exit()
-	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
-	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
-	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	for _ in range(6):
+		mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
 	server.wait_for_exit()
 
 	server = test_env.server([arg for arg in common_args if arg != "sv_quic 1"])
 	wait_for_startup([server])
-	server.wait_for_log_suffix("successfully registered", timeout=5)
-	server.wait_for_log_suffix("successfully registered", timeout=5)
-	servers_json = mastersrv.servers_json()
-	server_info = servers_json["servers"][0]["info"] if len(servers_json["servers"]) == 1 else {}
-	expected_transport = {
-		"udp_port": server.port,
-		"tls_certificate_sha256": certificate_sha256,
-		"tls_certificate_sha256_next": next_certificate_sha256,
-		"webtransport": {
-			"url": f"https://localhost:{server.port}/ddnet",
-			"certificate_mode": "hash",
-		},
+	expected_addresses = {
+		f"tw-0.6+udp://[::1]:{server.port}",
+		f"tw-0.7+udp://[::1]:{server.port}",
+		f"ddnet+wt://localhost:{server.port}",
+		f"tw-0.7+wt://localhost:{server.port}",
 	}
-	if len(servers_json["servers"]) != 1 or server_info.get("transport") != expected_transport:
-		raise AssertionError(f"unexpected WebTransport-only metadata\n{servers_json}")
+	servers_json = wait_for_server_address_bases(mastersrv, expected_addresses)
+	server_info = servers_json["servers"][0]["info"]
+	proto = server_info.get("experimental", {}).get("proto", {})
+	if "transport" in server_info or "quic" in proto or proto.get("hostname") != "localhost" or proto.get("webtransport") != {"verify": "hash", "sha256": [certificate_sha256, next_certificate_sha256]}:
+		raise AssertionError(f"unexpected WebTransport-only protocol metadata\n{servers_json}")
 	server.exit()
-	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
-	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	for _ in range(4):
+		mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
 	server.wait_for_exit()
 
+	mastersrv.exit()
+	mastersrv.wait_for_exit()
+
+
+@test(requires_mastersrv=True, requires_quic=True)
+def server_runs_without_legacy_udp(test_env):
+	mastersrv = test_env.mastersrv()
+	wait_for_startup([mastersrv])
+	server = test_env.server([
+		"http_allow_insecure 1",
+		"sv_legacy_udp 0",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+		"sv_register ipv6",
+		f"sv_register_url http://[::1]:{mastersrv.port}/ddnet/15/register",
+	])
+	wait_for_startup([server])
+	expected_addresses = {
+		f"ddnet+quic://[::1]:{server.port}",
+		f"tw-0.7+quic://[::1]:{server.port}",
+	}
+	servers_json = wait_for_server_address_bases(mastersrv, expected_addresses)
+	if "proto" not in servers_json["servers"][0]["info"].get("experimental", {}):
+		raise AssertionError(f"modern-only server omitted compatibility metadata\n{servers_json}")
+	quic_address = next(address for address in servers_json["servers"][0]["addresses"] if address.startswith("ddnet+quic://"))
+	quic7_address = next(address for address in servers_json["servers"][0]["addresses"] if address.startswith("tw-0.7+quic://"))
+
+	with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as connectionless:
+		connectionless.settimeout(1)
+		request_data = b"xe" + b"\x00" * 4 + b"\xff" * 4 + b"gie3\x01"
+		connectionless.sendto(request_data, ("::1", server.port))
+		response, _ = connectionless.recvfrom(1400)
+		if not response.startswith(b"\xff\xff\xff\xff\xff\xff"):
+			raise AssertionError(f"invalid modern-only connectionless response: {response[:12]!r}")
+
+	with StaticServerList(servers_json) as serverlist_url:
+		with open(os.path.join(test_env.tmp_dir, "ddnet-serverlist-urls.cfg"), "w", encoding="utf-8") as urls_file:
+			urls_file.write(f"{serverlist_url}\n")
+		client_args = [
+			"http_allow_insecure 1",
+			"cl_quic_auto 1",
+			f"br_cached_best_serverinfo_url {serverlist_url}",
+		]
+		client = test_env.client(client_args)
+		sixup_client = test_env.client(client_args)
+		wait_for_startup([client, sixup_client])
+		client.wait_for_log_exact("serverbrowser: loaded 1 servers from HTTP", timeout=10)
+		sixup_client.wait_for_log_exact("serverbrowser: loaded 1 servers from HTTP", timeout=10)
+		client.command(f'connect "{quic_address}"')
+		sixup_client.command(f'connect "{quic7_address}"')
+		client.wait_for_log_exact("client: QUIC connected, sending info", timeout=10)
+		join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+		if "sixup=0" not in join:
+			raise AssertionError(f"modern-only 0.6 join used unexpected protocol: {join!r}")
+		sixup_client.wait_for_log_exact("client: QUIC connected, sending info", timeout=10)
+		join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+		if "sixup=1" not in join:
+			raise AssertionError(f"modern-only 0.7 join used unexpected protocol: {join!r}")
+
+	legacy_client = test_env.client()
+	legacy_client.wait_for_startup()
+	legacy_client.command(f"connect [::1]:{server.port}")
+	sleep(1)
+	if len([line for line in server.full_stdout if "player has entered the game" in line]) != 2:
+		raise AssertionError("legacy UDP client joined while sv_legacy_udp was disabled")
+
+	server.exit()
+	client.exit()
+	sixup_client.exit()
+	legacy_client.exit()
+	for _ in range(2):
+		mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	server.wait_for_exit()
+	client.wait_for_exit()
+	sixup_client.wait_for_exit()
+	legacy_client.wait_for_exit()
 	mastersrv.exit()
 	mastersrv.wait_for_exit()
 
@@ -1682,7 +1766,11 @@ def client_auto_connects_quic_from_master(test_env):
 	wait_for_startup([server])
 	server.wait_for_log_suffix("successfully registered", timeout=5)
 	server.wait_for_log_suffix("successfully registered", timeout=5)
-	with StaticServerList(mastersrv.servers_json()) as serverlist_url:
+	servers_json = mastersrv.servers_json()
+	servers_json.pop("modern_transport_challenge", None)
+	for server_entry in servers_json["servers"]:
+		server_entry["addresses"] = [address for address in server_entry["addresses"] if address.startswith(("tw-0.6+udp://", "tw-0.7+udp://"))]
+	with StaticServerList(servers_json) as serverlist_url:
 		with open(os.path.join(test_env.tmp_dir, "ddnet-serverlist-urls.cfg"), "w", encoding="utf-8") as urls_file:
 			urls_file.write(f"{serverlist_url}\n")
 		client = test_env.client([
@@ -1707,7 +1795,54 @@ def client_auto_connects_quic_from_master(test_env):
 
 
 @test(requires_mastersrv=True, requires_quic=True)
+def client_does_not_use_metadata_fallback_from_modern_master(test_env):
+	mastersrv = test_env.mastersrv()
+	wait_for_startup([mastersrv])
+	server = test_env.server([
+		"http_allow_insecure 1",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+		"sv_register ipv6",
+		f"sv_register_url http://[::1]:{mastersrv.port}/ddnet/15/register",
+	])
+	wait_for_startup([server])
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	servers_json = mastersrv.servers_json()
+	servers_json["modern_transport_challenge"] = True
+	for server_entry in servers_json["servers"]:
+		server_entry["addresses"] = [address for address in server_entry["addresses"] if address.startswith(("tw-0.6+udp://", "tw-0.7+udp://"))]
+	with StaticServerList(servers_json) as serverlist_url:
+		with open(os.path.join(test_env.tmp_dir, "ddnet-serverlist-urls.cfg"), "w", encoding="utf-8") as urls_file:
+			urls_file.write(f"{serverlist_url}\n")
+		client = test_env.client([
+			"http_allow_insecure 1",
+			"cl_quic_auto 1",
+			f"br_cached_best_serverinfo_url {serverlist_url}",
+		])
+		client.wait_for_startup()
+		client.wait_for_log_exact("serverbrowser: loaded 1 servers from HTTP", timeout=10)
+		client.command(f"connect [::1]:{server.port}")
+		join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+		if "transport=udp" not in join:
+			raise AssertionError(f"modern master metadata fallback bypassed prefix gating: {join!r}")
+		if any("QUIC connected" in line for line in client.full_stdout):
+			raise AssertionError("modern master metadata fallback attempted QUIC without a challenged prefix")
+	server.exit()
+	client.exit()
+	mastersrv.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+	mastersrv.wait_for_exit()
+
+
+@test(requires_mastersrv=True, requires_quic=True)
 def client_auto_quic_accepts_next_certificate_pin(test_env):
+	with open(test_env.runner.quic_certificate, "rb") as certificate_file:
+		certificate_sha256 = hashlib.sha256(certificate_file.read()).hexdigest()
+	with open(test_env.runner.quic_wrong_certificate, "rb") as certificate_file:
+		next_certificate_sha256 = hashlib.sha256(certificate_file.read()).hexdigest()
 	mastersrv = test_env.mastersrv()
 	wait_for_startup([mastersrv])
 	server = test_env.server([
@@ -1723,6 +1858,10 @@ def client_auto_quic_accepts_next_certificate_pin(test_env):
 	server.wait_for_log_suffix("successfully registered", timeout=5)
 	server.wait_for_log_suffix("successfully registered", timeout=5)
 	servers_json = mastersrv.servers_json()
+	servers_json.pop("modern_transport_challenge", None)
+	for server_entry in servers_json["servers"]:
+		server_entry["addresses"] = [address for address in server_entry["addresses"] if address.startswith(("tw-0.6+udp://", "tw-0.7+udp://"))]
+		server_entry["info"]["experimental"] = {"proto": {"quic": {"verify": "hash", "sha256": [certificate_sha256, next_certificate_sha256]}}}
 	server_port = server.port
 	server.exit()
 	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
@@ -1769,11 +1908,8 @@ def client_auto_quic_network_failure_falls_back(test_env):
 	server.wait_for_log_suffix("successfully registered", timeout=5)
 	server.wait_for_log_suffix("successfully registered", timeout=5)
 	servers_json = mastersrv.servers_json()
-	servers_json["servers"][0]["info"]["transport"] = {
-		"udp_port": server.port,
-		"tls_certificate_sha256": "00" * 32,
-		"quic": True,
-	}
+	servers_json.pop("modern_transport_challenge", None)
+	servers_json["servers"][0]["info"]["experimental"] = {"proto": {"quic": {"verify": "hash", "sha256": ["00" * 32]}}}
 	with StaticServerList(servers_json) as serverlist_url:
 		with open(os.path.join(test_env.tmp_dir, "ddnet-serverlist-urls.cfg"), "w", encoding="utf-8") as urls_file:
 			urls_file.write(f"{serverlist_url}\n")
@@ -1816,9 +1952,13 @@ def client_auto_quic_pin_mismatch_never_falls_back(test_env):
 	wait_for_startup([server])
 	server.wait_for_log_suffix("successfully registered", timeout=5)
 	server.wait_for_log_suffix("successfully registered", timeout=5)
-	server.wait_for_log_exact("register/quic/ipv6: successfully registered", timeout=15)
+	server.wait_for_log_exact("register/quic/6/ipv6: successfully registered", timeout=15)
+	server.wait_for_log_exact("register/quic/7/ipv6: successfully registered", timeout=15)
 	servers_json = mastersrv.servers_json()
-	servers_json["servers"][0]["info"]["transport"]["tls_certificate_sha256"] = wrong_sha256
+	servers_json.pop("modern_transport_challenge", None)
+	for server_entry in servers_json["servers"]:
+		server_entry["addresses"] = [address for address in server_entry["addresses"] if address.startswith(("tw-0.6+udp://", "tw-0.7+udp://"))]
+		server_entry["info"]["experimental"] = {"proto": {"quic": {"verify": "hash", "sha256": [wrong_sha256]}}}
 	with StaticServerList(servers_json) as serverlist_url:
 		with open(os.path.join(test_env.tmp_dir, "ddnet-serverlist-urls.cfg"), "w", encoding="utf-8") as urls_file:
 			urls_file.write(f"{serverlist_url}\n")

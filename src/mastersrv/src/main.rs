@@ -12,14 +12,12 @@ use rustls::client::danger::ServerCertVerifier;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::ServerName;
 use rustls::pki_types::UnixTime;
-use rustls::CertificateError;
 use rustls::DigitallySignedStruct;
 use rustls::SignatureScheme;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json as json;
 use sha2::Digest;
-use sha2::Sha256;
 use sha2::Sha512_256 as SecureHash;
 use std::borrow::Cow;
 use std::collections::hash_map;
@@ -49,11 +47,24 @@ use tokio::io::AsyncReadExt;
 use tokio::time;
 use warp::http::StatusCode;
 use warp::Filter;
+use wtransport_proto::bytes::BufferReader;
+use wtransport_proto::bytes::BytesWriter;
+use wtransport_proto::frame::Frame;
+use wtransport_proto::frame::FrameKind;
+use wtransport_proto::headers::Headers;
+use wtransport_proto::ids::SessionId;
+use wtransport_proto::ids::StreamId as WebTransportStreamId;
+use wtransport_proto::session::SessionRequest;
+use wtransport_proto::session::SessionResponse;
+use wtransport_proto::settings::Settings;
+use wtransport_proto::stream_header::StreamHeader;
+use wtransport_proto::varint::VarInt;
 
 #[macro_use]
 extern crate log;
 
 use crate::addr::Addr;
+use crate::addr::Host;
 use crate::addr::Protocol;
 use crate::addr::RegisterAddr;
 use crate::config::Config;
@@ -184,6 +195,7 @@ impl Timekeeper {
 
 #[derive(Debug, Serialize)]
 struct SerializedServers<'a> {
+    pub modern_transport_challenge: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub communities: Option<&'a json::value::RawValue>,
     pub servers: Vec<SerializedServer<'a>>,
@@ -192,6 +204,7 @@ struct SerializedServers<'a> {
 impl<'a> SerializedServers<'a> {
     fn new(communities: Option<&'a json::value::RawValue>) -> SerializedServers<'a> {
         SerializedServers {
+            modern_transport_challenge: true,
             communities,
             servers: Vec::new(),
         }
@@ -296,9 +309,6 @@ impl Challenge {
     fn is_valid(&self, challenge: &str) -> bool {
         challenge == &self.current || challenge == &self.prev
     }
-    fn current(&self) -> &str {
-        &self.current
-    }
 }
 
 struct Challenger {
@@ -326,7 +336,13 @@ impl Challenger {
                 base64::encode_config_slice(&hash.finalize()[..16], base64::STANDARD, &mut buf);
             ShortString::from(str::from_utf8(&buf[..len]).unwrap()).unwrap()
         }
-        let mut buf: ArrayVec<[u8; 128]> = ArrayVec::new();
+        let mut addr = *addr;
+        addr.protocol = match addr.protocol {
+            Protocol::Quic7 => Protocol::Quic,
+            Protocol::WebTransport7 => Protocol::WebTransport,
+            protocol => protocol,
+        };
+        let mut buf: ArrayVec<[u8; 512]> = ArrayVec::new();
         write!(&mut buf, "{}", addr).unwrap();
         Challenge {
             current: hash(&self.seed, &buf),
@@ -340,37 +356,48 @@ struct Shared<'a> {
     config: &'a Config,
     servers: &'a Mutex<Servers>,
     socket: &'a Arc<tokio::net::UdpSocket>,
-    quic_challenges: &'a Arc<Mutex<HashMap<Addr, QuicChallenge>>>,
     timekeeper: Timekeeper,
 }
 
-struct QuicChallenge {
-    secret: ShortString,
-    verified: bool,
-    updated: Instant,
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ModernTransport {
+    Quic,
+    WebTransport,
+}
+
+impl ModernTransport {
+    fn alpn(self) -> &'static [u8] {
+        match self {
+            ModernTransport::Quic => b"ddnet/1",
+            ModernTransport::WebTransport => b"h3",
+        }
+    }
+}
+
+impl Protocol {
+    fn modern_transport(self) -> Option<ModernTransport> {
+        match self {
+            Protocol::Quic | Protocol::Quic7 => Some(ModernTransport::Quic),
+            Protocol::WebTransport | Protocol::WebTransport7 => Some(ModernTransport::WebTransport),
+            Protocol::V5 | Protocol::V6 | Protocol::V7 => None,
+        }
+    }
 }
 
 #[derive(Debug)]
-struct QuicServerVerifier {
-    pins: Vec<[u8; 32]>,
+struct HandshakeServerVerifier {
     provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
-impl ServerCertVerifier for QuicServerVerifier {
+impl ServerCertVerifier for HandshakeServerVerifier {
     fn verify_server_cert(
         &self,
-        end_entity: &CertificateDer<'_>,
+        _end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        let actual: [u8; 32] = Sha256::digest(end_entity.as_ref()).into();
-        if !self.pins.contains(&actual) {
-            return Err(rustls::Error::InvalidCertificate(
-                CertificateError::ApplicationVerificationFailure,
-            ));
-        }
         Ok(ServerCertVerified::assertion())
     }
 
@@ -409,10 +436,29 @@ impl ServerCertVerifier for QuicServerVerifier {
     }
 }
 
-async fn probe_quic(target: SocketAddr, pins: Vec<[u8; 32]>) -> Result<(), String> {
+const MODERN_CHALLENGE_STREAM_KIND: u64 = 64;
+const MODERN_CHALLENGE_STREAM_VERSION: u64 = 1;
+const MAX_HTTP3_RESPONSE_SIZE: usize = 8 * 1024;
+
+fn modern_challenge_payload(packet: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(3 + packet.len());
+    payload
+        .put_varint(VarInt::try_from_u64(MODERN_CHALLENGE_STREAM_KIND).unwrap())
+        .unwrap();
+    payload
+        .put_varint(VarInt::try_from_u64(MODERN_CHALLENGE_STREAM_VERSION).unwrap())
+        .unwrap();
+    payload.extend_from_slice(packet);
+    payload
+}
+
+async fn connect_modern(
+    target: SocketAddr,
+    server_name: &str,
+    transport: ModernTransport,
+) -> Result<(quinn::Endpoint, quinn::Connection), String> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let verifier = Arc::new(QuicServerVerifier {
-        pins,
+    let verifier = Arc::new(HandshakeServerVerifier {
         provider: provider.clone(),
     });
     let mut tls = rustls::ClientConfig::builder_with_provider(provider)
@@ -421,7 +467,7 @@ async fn probe_quic(target: SocketAddr, pins: Vec<[u8; 32]>) -> Result<(), Strin
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
-    tls.alpn_protocols = vec![b"ddnet/1".to_vec()];
+    tls.alpn_protocols = vec![transport.alpn().to_vec()];
     let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)
         .map_err(|error| error.to_string())?;
     let bind = if target.is_ipv4() {
@@ -434,34 +480,162 @@ async fn probe_quic(target: SocketAddr, pins: Vec<[u8; 32]>) -> Result<(), Strin
     let mut endpoint = quinn::Endpoint::client(bind).map_err(|error| error.to_string())?;
     endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(crypto)));
     let connecting = endpoint
-        .connect(target, "localhost")
+        .connect(target, server_name)
         .map_err(|error| error.to_string())?;
     let connection = time::timeout(Duration::from_secs(5), connecting)
         .await
-        .map_err(|_| "QUIC challenge timed out".to_string())?
+        .map_err(|_| "modern transport challenge handshake timed out".to_string())?
         .map_err(|error| error.to_string())?;
-    connection.close(0u32.into(), b"master challenge complete");
-    endpoint.close(0u32.into(), b"master challenge complete");
-    Ok(())
+    Ok((endpoint, connection))
 }
 
-fn parse_quic_pins(info: &json::Value) -> Option<Vec<[u8; 32]>> {
-    let transport = info.get("transport")?;
-    if transport.get("quic")?.as_bool()? != true {
-        return None;
+async fn send_challenge_stream(mut send: quinn::SendStream, payload: &[u8]) -> Result<(), String> {
+    send.write_all(payload)
+        .await
+        .map_err(|error| error.to_string())?;
+    send.finish().map_err(|error| error.to_string())?;
+    match time::timeout(Duration::from_secs(5), send.stopped()).await {
+        Ok(Ok(None)) => Ok(()),
+        Ok(Ok(Some(code))) => Err(format!("challenge stream stopped with code {code}")),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Err("challenge stream acknowledgement timed out".into()),
     }
-    let mut pins = Vec::with_capacity(2);
-    for name in ["tls_certificate_sha256", "tls_certificate_sha256_next"] {
-        let Some(value) = transport.get(name) else {
-            continue;
-        };
-        let mut pin = [0; 32];
-        hex::decode_to_slice(value.as_str()?, &mut pin).ok()?;
-        if !pins.contains(&pin) {
-            pins.push(pin);
+}
+
+async fn read_webtransport_response(recv: &mut quinn::RecvStream) -> Result<(), String> {
+    let mut buffer = Vec::new();
+    loop {
+        {
+            let mut reader = BufferReader::new(&buffer);
+            if let Some(frame) = Frame::read_from_buffer(&mut reader)
+                .map_err(|error| format!("invalid WebTransport CONNECT response: {error:?}"))?
+            {
+                if !matches!(frame.kind(), FrameKind::Headers) {
+                    return Err("WebTransport CONNECT response is not HEADERS".into());
+                }
+                let headers = Headers::with_frame(&frame).map_err(|error| error.to_string())?;
+                let response =
+                    SessionResponse::try_from(headers).map_err(|error| error.to_string())?;
+                return if response.code().is_successful() {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "WebTransport CONNECT failed with status {}",
+                        response.code()
+                    ))
+                };
+            }
+        }
+        if buffer.len() >= MAX_HTTP3_RESPONSE_SIZE {
+            return Err("WebTransport CONNECT response is too large".into());
+        }
+        let chunk = time::timeout(
+            Duration::from_secs(5),
+            recv.read_chunk(MAX_HTTP3_RESPONSE_SIZE - buffer.len(), true),
+        )
+        .await
+        .map_err(|_| "WebTransport CONNECT response timed out".to_string())?
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "WebTransport CONNECT response ended before HEADERS".to_string())?;
+        buffer.extend_from_slice(&chunk.bytes);
+    }
+}
+
+async fn send_webtransport_challenge(
+    connection: &quinn::Connection,
+    authority: &str,
+    payload: &[u8],
+) -> Result<(), String> {
+    let settings = Settings::builder()
+        .qpack_max_table_capacity(VarInt::from_u32(0))
+        .qpack_blocked_streams(VarInt::from_u32(0))
+        .enable_connect_protocol()
+        .enable_webtransport()
+        .enable_h3_datagrams()
+        .webtransport_max_sessions(VarInt::from_u32(1))
+        .build();
+    let settings_frame = settings.generate_frame();
+    let control_header = StreamHeader::new_control();
+    let mut control_payload =
+        Vec::with_capacity(control_header.write_size() + settings_frame.write_size());
+    control_header.write(&mut control_payload).unwrap();
+    settings_frame.write(&mut control_payload).unwrap();
+    let mut control = connection
+        .open_uni()
+        .await
+        .map_err(|error| error.to_string())?;
+    control
+        .write_all(&control_payload)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let (mut connect_send, mut connect_recv) = connection
+        .open_bi()
+        .await
+        .map_err(|error| error.to_string())?;
+    let stream_id =
+        WebTransportStreamId::new(VarInt::try_from_u64(u64::from(connect_send.id())).unwrap());
+    let session_id =
+        SessionId::try_from_session_stream(stream_id).map_err(|error| error.to_string())?;
+    let request = SessionRequest::new(format!("https://{authority}/ddnet/master"))
+        .map_err(|error| error.to_string())?;
+    let request_frame = request.headers().generate_frame();
+    let mut request_payload = Vec::with_capacity(request_frame.write_size());
+    request_frame.write(&mut request_payload).unwrap();
+    connect_send
+        .write_all(&request_payload)
+        .await
+        .map_err(|error| error.to_string())?;
+    read_webtransport_response(&mut connect_recv).await?;
+
+    let (application_send, _application_recv) = connection
+        .open_bi()
+        .await
+        .map_err(|error| error.to_string())?;
+    let application_header = Frame::new_webtransport(session_id);
+    let mut application_payload =
+        Vec::with_capacity(application_header.write_size() + payload.len());
+    application_header.write(&mut application_payload).unwrap();
+    application_payload.extend_from_slice(payload);
+    send_challenge_stream(application_send, &application_payload).await
+}
+
+async fn send_modern_challenge(
+    target: SocketAddr,
+    hostname: Option<String>,
+    transport: ModernTransport,
+    packet: Vec<u8>,
+) -> Result<(), String> {
+    if let Some(hostname) = &hostname {
+        let mut resolved = tokio::net::lookup_host((hostname.as_str(), target.port()))
+            .await
+            .map_err(|error| error.to_string())?;
+        if !resolved.any(|address| address == target) {
+            return Err(format!("{hostname} does not resolve to {target}"));
         }
     }
-    (!pins.is_empty()).then_some(pins)
+    let payload = modern_challenge_payload(&packet);
+    let server_name = hostname.as_deref().unwrap_or("localhost");
+    let authority = hostname
+        .as_deref()
+        .map(|hostname| format!("{hostname}:{}", target.port()))
+        .unwrap_or_else(|| target.to_string());
+    let (endpoint, connection) = connect_modern(target, server_name, transport).await?;
+    let result = match transport {
+        ModernTransport::Quic => {
+            let (send, _recv) = connection
+                .open_bi()
+                .await
+                .map_err(|error| error.to_string())?;
+            send_challenge_stream(send, &payload).await
+        }
+        ModernTransport::WebTransport => {
+            send_webtransport_challenge(&connection, &authority, &payload).await
+        }
+    };
+    connection.close(0u32.into(), b"master challenge complete");
+    endpoint.close(0u32.into(), b"master challenge complete");
+    result
 }
 
 impl<'a> Shared<'a> {
@@ -475,59 +649,6 @@ impl<'a> Shared<'a> {
         self.servers
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-    }
-
-    fn quic_challenge_verified(
-        &self,
-        addr: Addr,
-        secret: ShortString,
-        pins: Vec<[u8; 32]>,
-    ) -> bool {
-        let mut challenges = self
-            .quic_challenges
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        challenges.retain(|_, challenge| challenge.updated.elapsed() < Duration::from_secs(60));
-        if let Some(challenge) = challenges.get_mut(&addr) {
-            if challenge.secret == secret {
-                challenge.updated = Instant::now();
-                return challenge.verified;
-            }
-        }
-        challenges.insert(
-            addr,
-            QuicChallenge {
-                secret,
-                verified: false,
-                updated: Instant::now(),
-            },
-        );
-        let challenges = self.quic_challenges.clone();
-        tokio::spawn(async move {
-            let result = probe_quic(addr.to_socket_addr(), pins).await;
-            let mut challenges = challenges
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            let Some(challenge) = challenges.get_mut(&addr) else {
-                return;
-            };
-            if challenge.secret != secret {
-                return;
-            }
-            if result.is_ok() {
-                challenge.verified = true;
-                challenge.updated = Instant::now();
-                debug!("successfully challenged {}", addr);
-            } else {
-                challenges.remove(&addr);
-                debug!(
-                    "QUIC challenge failed for {}: {}",
-                    addr,
-                    result.unwrap_err()
-                );
-            }
-        });
-        false
     }
 }
 
@@ -562,10 +683,6 @@ impl Servers {
         }
     }
 
-    fn quic_pins(&self, secret: &ShortString) -> Option<Vec<[u8; 32]>> {
-        let info: json::Value = json::from_str(self.servers.get(secret)?.info.get()).ok()?;
-        parse_quic_pins(&info)
-    }
     fn add(
         &mut self,
         addr: Addr,
@@ -928,25 +1045,46 @@ async fn handle_config_reread(config_location: ConfigLocation, config: Arc<ArcSw
     }
 }
 
-async fn send_challenge(
+fn challenge_packet(
     connless_request_token_7: Option<[u8; 4]>,
-    socket: Arc<tokio::net::UdpSocket>,
-    target: SocketAddr,
-    challenge_secret: ShortString,
-    challenge: ShortString,
-) {
+    challenge_secret: &str,
+    challenge: &str,
+) -> Vec<u8> {
     let mut packet = Vec::with_capacity(128);
     if let Some(t) = connless_request_token_7 {
         packet.extend_from_slice(b"\x21");
         packet.extend_from_slice(&t);
-        packet.extend_from_slice(b"\xff\xff\xff\xff\xff\xff\xff\xffchal");
+        packet.extend_from_slice(b"\xff\xff\xff\xff");
     } else {
-        packet.extend_from_slice(b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xffchal");
+        packet.extend_from_slice(b"\xff\xff\xff\xff\xff\xff");
     }
+    packet.extend_from_slice(&challenge_payload(challenge_secret, challenge));
+    packet
+}
+
+fn challenge_payload(challenge_secret: &str, challenge: &str) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(128);
+    packet.extend_from_slice(b"\xff\xff\xff\xffchal");
     packet.extend_from_slice(challenge_secret.as_bytes());
     packet.push(0);
     packet.extend_from_slice(challenge.as_bytes());
     packet.push(0);
+    packet
+}
+
+fn challenge_verified(
+    challenge: &Challenge,
+    token: Option<&ShortString>,
+    modern: bool,
+    exempt: bool,
+) -> bool {
+    token
+        .map(|token| challenge.is_valid(token))
+        .unwrap_or(false)
+        || (!modern && exempt)
+}
+
+async fn send_challenge(socket: Arc<tokio::net::UdpSocket>, target: SocketAddr, packet: Vec<u8>) {
     socket.send_to(&packet, target).await.unwrap();
 }
 
@@ -958,7 +1096,7 @@ fn handle_register(
     let connless_request_token_7 = match register.address.protocol {
         Protocol::V5 => None,
         Protocol::V6 => None,
-        Protocol::Quic => None,
+        Protocol::Quic | Protocol::Quic7 | Protocol::WebTransport | Protocol::WebTransport7 => None,
         Protocol::V7 => {
             let token_hex = register
                 .connless_request_token
@@ -972,43 +1110,30 @@ fn handle_register(
         }
     };
 
+    let observed_addr = Addr {
+        host: Host::Ip(remote_addr),
+        port: register.address.port,
+        protocol: register.address.protocol,
+        fragment: register.address.fragment,
+    };
     let addr = register.address.with_ip(remote_addr);
 
-    if let Some(reason) = shared.config.is_banned(addr) {
+    if let Some(reason) = shared.config.is_banned(observed_addr) {
         return Err(RegisterError::banned(reason));
     }
 
-    let quic_pins = if addr.protocol == Protocol::Quic {
-        register
-            .info
-            .as_ref()
-            .and_then(parse_quic_pins)
-            .or_else(|| shared.lock_servers().quic_pins(&register.secret))
-    } else {
-        None
-    };
-    if addr.protocol == Protocol::Quic && quic_pins.is_none() {
-        return Ok(RegisterResponse::NeedInfo);
-    }
-    let quic_verified = addr.protocol == Protocol::Quic
-        && shared.quic_challenge_verified(addr, register.secret.clone(), quic_pins.unwrap());
-    let is_exempt = shared.config.is_exempt_from_port_forward_check(addr);
+    let modern_transport = addr.protocol.modern_transport();
+    let is_exempt = shared
+        .config
+        .is_exempt_from_port_forward_check(observed_addr);
     let challenge = shared.challenge_for_addr(&addr);
-    let correct_challenge = quic_verified
-        || (addr.protocol != Protocol::Quic
-            && (is_exempt
-                || register
-                    .challenge_token
-                    .as_ref()
-                    .map(|ct| challenge.is_valid(ct))
-                    .unwrap_or(false)));
-    let should_send_challenge = addr.protocol != Protocol::Quic
-        && !is_exempt
-        && register
-            .challenge_token
-            .as_ref()
-            .map(|ct| ct != challenge.current())
-            .unwrap_or(true);
+    let correct_challenge = challenge_verified(
+        &challenge,
+        register.challenge_token.as_ref(),
+        modern_transport.is_some(),
+        is_exempt,
+    );
+    let should_send_challenge = !correct_challenge;
 
     let community = register
         .community_token
@@ -1035,7 +1160,7 @@ fn handle_register(
             AddrInfo {
                 kind: EntryKind::Mastersrv,
                 ping_time: shared.timekeeper.now(),
-                location: shared.config.locations.lookup(addr.ip),
+                location: shared.config.locations.lookup(remote_addr),
                 secret: register.secret,
             },
             register.info_serial,
@@ -1068,13 +1193,31 @@ fn handle_register(
         } else {
             trace!("sending challenge to {}", addr);
         }
-        tokio::spawn(send_challenge(
-            connless_request_token_7,
-            shared.socket.clone(),
-            addr.to_socket_addr(),
-            register.challenge_secret,
-            challenge.current,
-        ));
+        if let Some(transport) = modern_transport {
+            let packet = challenge_payload(&register.challenge_secret, &challenge.current);
+            let hostname = addr.hostname().map(str::to_owned);
+            let target = SocketAddr::new(remote_addr, addr.port);
+            tokio::spawn(async move {
+                if let Err(error) =
+                    send_modern_challenge(target, hostname, transport, packet).await
+                {
+                    debug!("modern transport challenge failed for {}: {}", addr, error);
+                } else {
+                    debug!("successfully sent modern transport challenge to {}", addr);
+                }
+            });
+        } else {
+            let packet = challenge_packet(
+                connless_request_token_7,
+                &register.challenge_secret,
+                &challenge.current,
+            );
+            tokio::spawn(send_challenge(
+                shared.socket.clone(),
+                SocketAddr::new(remote_addr, addr.port),
+                packet,
+            ));
+        }
     }
 
     Ok(result)
@@ -1086,13 +1229,6 @@ fn handle_delete(
     delete: Delete,
 ) -> Result<RegisterResponse, RegisterError> {
     let addr = delete.address.with_ip(remote_addr);
-    if addr.protocol == Protocol::Quic {
-        shared
-            .quic_challenges
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .remove(&addr);
-    }
     match shared.lock_servers().remove(addr, delete.secret) {
         RemoveResult::Removed => {
             debug!("successfully removed {}", addr);
@@ -1323,7 +1459,6 @@ async fn main() {
         None => {}
     }
     let servers = Arc::new(Mutex::new(servers));
-    let quic_challenges = Arc::new(Mutex::new(HashMap::new()));
     let socket = Arc::new(tokio::net::UdpSocket::bind("[::]:0").await.unwrap());
     let socket = AssertUnwindSafe(socket);
 
@@ -1378,6 +1513,9 @@ async fn main() {
         };
         let mut body = json::to_value(body).unwrap();
         body["quic_challenge"] = json::Value::Bool(true);
+        body["webtransport_challenge"] = json::Value::Bool(true);
+        body["domain_registration"] = json::Value::Bool(true);
+        body["scheme_fragments"] = json::Value::Bool(true);
         warp::http::Response::builder()
             .status(http_status)
             .header(warp::http::header::CONTENT_TYPE, "application/json")
@@ -1401,7 +1539,6 @@ async fn main() {
                         config: &config,
                         servers: &servers,
                         socket: &socket.0,
-                        quic_challenges: &quic_challenges,
                         timekeeper,
                     };
                     let addr = connecting_addr(addr, &headers)?;
@@ -1469,5 +1606,192 @@ async fn main() {
     match tokio::try_join!(task_reseed, task_writeout, task_reread, task_server) {
         Ok(((), (), (), ())) => unreachable!(),
         Err(e) => panic::resume_unwind(e.into_panic()),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use rustls::pki_types::PrivatePkcs8KeyDer;
+
+    fn test_server_config(alpn: &[u8]) -> quinn::ServerConfig {
+        const CERTIFICATE: &str = "3082015e30820104a003020102021428b0f2c21fa528276fc839f201b3729770f16980300a06082a8648ce3d0403023021311f301d06035504030c16726367656e2073656c66207369676e656420636572743020170d3735303130313030303030305a180f34303936303130313030303030305a3021311f301d06035504030c16726367656e2073656c66207369676e656420636572743059301306072a8648ce3d020106082a8648ce3d030107034200047c57107ca9876eff773b51b72ac92775e56ddf0f950dbe40877bc48ac00b98dabcc5c6744f090ec41765cf990de2b876bf938918af683342050964995c53d498a318301630140603551d11040d300b82096c6f63616c686f7374300a06082a8648ce3d0403020348003045022100b059cdaaf2ee839aa5d073e2357da41f6aae561495ce59d95900b5d44c6b71d002206e4a8c52a5b6579ae58986d87922631e4ac61fb4938b3f227dbdcd6677e9fede";
+        const PRIVATE_KEY: &str = "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b0201010420f1f8b9ca06f5d739945cdaa83554f3753921447a7c5f47cb01a665c3396da446a144034200047c57107ca9876eff773b51b72ac92775e56ddf0f950dbe40877bc48ac00b98dabcc5c6744f090ec41765cf990de2b876bf938918af683342050964995c53d498";
+        let mut tls = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(hex::decode(CERTIFICATE).unwrap())],
+                PrivatePkcs8KeyDer::from(hex::decode(PRIVATE_KEY).unwrap()).into(),
+            )
+            .unwrap();
+        tls.alpn_protocols = vec![alpn.to_vec()];
+        let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls).unwrap();
+        quinn::ServerConfig::with_crypto(Arc::new(crypto))
+    }
+
+    #[test]
+    fn game_protocols_share_transport() {
+        assert_eq!(
+            Protocol::Quic.modern_transport(),
+            Protocol::Quic7.modern_transport()
+        );
+        assert_eq!(
+            Protocol::WebTransport.modern_transport(),
+            Protocol::WebTransport7.modern_transport()
+        );
+        assert_ne!(
+            Protocol::Quic.modern_transport(),
+            Protocol::WebTransport.modern_transport()
+        );
+
+        let challenger = Challenger {
+            seed: [1; 16],
+            prev_seed: [2; 16],
+        };
+        let quic: Addr = "ddnet+quic://127.0.0.1:8303".parse().unwrap();
+        let quic7: Addr = "tw-0.7+quic://127.0.0.1:8303".parse().unwrap();
+        let webtransport: Addr = "ddnet+wt://127.0.0.1:8303".parse().unwrap();
+        let webtransport7: Addr = "tw-0.7+wt://127.0.0.1:8303".parse().unwrap();
+        assert_eq!(
+            challenger.for_addr(&quic).current,
+            challenger.for_addr(&quic7).current
+        );
+        assert_eq!(
+            challenger.for_addr(&webtransport).current,
+            challenger.for_addr(&webtransport7).current
+        );
+        assert_ne!(
+            challenger.for_addr(&quic).current,
+            challenger.for_addr(&webtransport).current
+        );
+    }
+
+    #[test]
+    fn server_list_advertises_authoritative_modern_challenges() {
+        let value = json::to_value(SerializedServers::new(None)).unwrap();
+        assert_eq!(value["modern_transport_challenge"], true);
+    }
+
+    #[test]
+    fn modern_registration_requires_returned_token() {
+        let challenge = Challenge {
+            current: ShortString::from("current").unwrap(),
+            prev: ShortString::from("previous").unwrap(),
+        };
+        let current = ShortString::from("current").unwrap();
+        assert!(!challenge_verified(&challenge, None, true, true));
+        assert!(challenge_verified(&challenge, Some(&current), true, false));
+    }
+
+    #[tokio::test]
+    async fn raw_quic_sends_token_challenge() {
+        let endpoint = quinn::Endpoint::server(
+            test_server_config(b"ddnet/1"),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .unwrap();
+        let target = endpoint.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let connection = endpoint.accept().await.unwrap().await.unwrap();
+            let (_send, mut recv) = connection.accept_bi().await.unwrap();
+            let payload = recv.read_to_end(1024).await.unwrap();
+            connection.closed().await;
+            payload
+        });
+        let packet = challenge_payload("challenge:ddnet+quic/ipv4", "token");
+		send_modern_challenge(target, Some("localhost".into()), ModernTransport::Quic, packet.clone())
+            .await
+            .unwrap();
+        assert_eq!(server.await.unwrap(), modern_challenge_payload(&packet));
+    }
+
+    #[tokio::test]
+    async fn webtransport_establishes_session_and_sends_token_challenge() {
+        let endpoint =
+            quinn::Endpoint::server(test_server_config(b"h3"), "127.0.0.1:0".parse().unwrap())
+                .unwrap();
+        let target = endpoint.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let connection = endpoint.accept().await.unwrap().await.unwrap();
+            let mut control = connection.accept_uni().await.unwrap();
+            let mut control_buffer = Vec::new();
+            loop {
+                let parsed = {
+                    let mut reader = BufferReader::new(&control_buffer);
+                    StreamHeader::read_from_buffer(&mut reader)
+                        .unwrap()
+                        .and_then(|header| {
+                            Frame::read_from_buffer(&mut reader)
+                                .unwrap()
+                                .filter(|frame| {
+                                    matches!(
+                                        header.kind(),
+                                        wtransport_proto::stream_header::StreamKind::Control
+                                    ) && matches!(frame.kind(), FrameKind::Settings)
+                                })
+                        })
+                        .is_some()
+                };
+                if parsed {
+                    break;
+                }
+                control_buffer.extend_from_slice(
+                    &control.read_chunk(4096, true).await.unwrap().unwrap().bytes,
+                );
+            }
+
+            let (mut response_send, mut request_recv) = connection.accept_bi().await.unwrap();
+            let session_id = SessionId::try_from_session_stream(WebTransportStreamId::new(
+                VarInt::try_from_u64(u64::from(response_send.id())).unwrap(),
+            ))
+            .unwrap();
+            let mut request_buffer = Vec::new();
+            loop {
+                let path = {
+                    let mut reader = BufferReader::new(&request_buffer);
+                    Frame::read_from_buffer(&mut reader)
+                        .unwrap()
+                        .and_then(|frame| {
+                            Headers::with_frame(&frame)
+                                .ok()
+                                .and_then(|headers| SessionRequest::try_from(headers).ok())
+                                .map(|request| request.path().to_string())
+                        })
+                };
+                if let Some(path) = path {
+                    assert_eq!(path, "/ddnet/master");
+                    break;
+                }
+                request_buffer.extend_from_slice(
+                    &request_recv
+                        .read_chunk(4096, true)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .bytes,
+                );
+            }
+            let response = SessionResponse::ok().headers().generate_frame();
+            let mut response_payload = Vec::with_capacity(response.write_size());
+            response.write(&mut response_payload).unwrap();
+            response_send.write_all(&response_payload).await.unwrap();
+
+            let (_send, mut application_recv) = connection.accept_bi().await.unwrap();
+            let application = application_recv.read_to_end(1024).await.unwrap();
+            let packet = {
+                let mut reader = BufferReader::new(&application);
+                let header = Frame::read_from_buffer(&mut reader).unwrap().unwrap();
+                assert!(matches!(header.kind(), FrameKind::WebTransport));
+                assert_eq!(header.session_id(), Some(session_id));
+                application[reader.offset()..].to_vec()
+            };
+            connection.closed().await;
+            packet
+        });
+        let packet = challenge_payload("challenge:ddnet+wt/ipv4", "token");
+        send_modern_challenge(target, None, ModernTransport::WebTransport, packet.clone())
+            .await
+            .unwrap();
+        assert_eq!(server.await.unwrap(), modern_challenge_payload(&packet));
     }
 }

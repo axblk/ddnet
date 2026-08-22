@@ -71,6 +71,21 @@ static CServerInfo2 ParseServerInfoWithTransport(const char *pTransport)
 	return Info;
 }
 
+static CServerInfo2 ParseServerInfoWithExperimental(const char *pExperimental)
+{
+	char aJson[2048];
+	str_format(aJson, sizeof(aJson), R"({"max_clients":16,"max_players":16,"client_score_kind":"points","passworded":false,"game_type":"DDRace","name":"test","map":{"name":"Tutorial"},"version":"test","clients":[],"experimental":%s})", pExperimental);
+	json_value *pJson = JsonParse(aJson, str_length(aJson));
+	EXPECT_NE(pJson, nullptr);
+	CServerInfo2 Info = {};
+	if(pJson != nullptr)
+	{
+		EXPECT_FALSE(CServerInfo2::FromJson(&Info, pJson));
+		json_value_free(pJson);
+	}
+	return Info;
+}
+
 TEST(ServerInfo, QuicTransport)
 {
 	static constexpr const char *CERTIFICATE_SHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -123,6 +138,36 @@ TEST(ServerInfo, QuicTransport)
 	EXPECT_FALSE(DuplicatePinInfo.m_QuicSharedPort);
 }
 
+TEST(ServerInfo, ExperimentalProtocolTransport)
+{
+	static constexpr const char *CERTIFICATE_SHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	static constexpr const char *IDENTITY_SHA256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+	const CServerInfo2 Info = ParseServerInfoWithExperimental(R"({"proto":{"quic":{"verify":"identity","sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"},"webtransport":{"verify":"hash","sha256":["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]}}})");
+	EXPECT_TRUE(Info.m_QuicSharedPort);
+	EXPECT_EQ(Info.m_QuicTrust, EModernTransportTrust::IDENTITY);
+	EXPECT_TRUE(Info.m_HasQuicIdentityFingerprint);
+	EXPECT_TRUE(Info.m_WebTransport);
+	EXPECT_EQ(Info.m_WebTransportCertificateMode, CServerInfo::EWebTransportCertificateMode::HASH);
+	EXPECT_EQ(Info.m_QuicPort, 0);
+	SHA256_DIGEST CertificateSha256;
+	SHA256_DIGEST IdentitySha256;
+	ASSERT_EQ(sha256_from_str(&CertificateSha256, CERTIFICATE_SHA256), 0);
+	ASSERT_EQ(sha256_from_str(&IdentitySha256, IDENTITY_SHA256), 0);
+	EXPECT_EQ(Info.m_QuicCertificateSha256, CertificateSha256);
+	EXPECT_EQ(Info.m_QuicIdentityFingerprint, IdentitySha256);
+
+	const CServerInfo2 WebPki = ParseServerInfoWithExperimental(R"({"proto":{"hostname":"example.com","quic":{"verify":"webpki"},"webtransport":{"verify":"webpki"}}})");
+	EXPECT_EQ(WebPki.m_QuicTrust, EModernTransportTrust::WEBPKI);
+	EXPECT_EQ(WebPki.m_WebTransportCertificateMode, CServerInfo::EWebTransportCertificateMode::WEBPKI);
+	EXPECT_STREQ(WebPki.m_aModernHostname, "example.com");
+	EXPECT_STREQ(WebPki.m_aWebTransportUrl, "");
+
+	const CServerInfo2 MissingWebPkiHostname = ParseServerInfoWithExperimental(R"({"proto":{"quic":{"verify":"webpki"}}})");
+	EXPECT_FALSE(MissingWebPkiHostname.m_QuicSharedPort);
+	const CServerInfo2 InvalidWebTransportIdentity = ParseServerInfoWithExperimental(R"({"proto":{"webtransport":{"verify":"identity","sha256":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}}})");
+	EXPECT_FALSE(InvalidWebTransportIdentity.m_WebTransport);
+}
+
 TEST(ServerInfo, WebTransportUrl)
 {
 	char aUrl[256];
@@ -150,11 +195,39 @@ TEST(ServerInfo, QuicDirectLinkFingerprint)
 	sha256_str(Fingerprint, aFingerprint, sizeof(aFingerprint));
 	EXPECT_STREQ(aFingerprint, FINGERPRINT);
 	EXPECT_TRUE(ParseQuicDirectLinkFingerprint("ddnet+quic://[::1]:8303#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &Fingerprint));
+	EXPECT_TRUE(ParseQuicDirectLinkFingerprint("tw-0.7+quic://example.com:8303#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &Fingerprint));
 	EXPECT_FALSE(ParseQuicDirectLinkFingerprint("example.com:8303", &Fingerprint));
 	EXPECT_FALSE(ParseQuicDirectLinkFingerprint("ddnet+quic://example.com:8303", &Fingerprint));
 	EXPECT_FALSE(ParseQuicDirectLinkFingerprint("ddnet+quic://example.com:8303/path#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &Fingerprint));
 	EXPECT_FALSE(ParseQuicDirectLinkFingerprint("ddnet+quic://user@example.com:8303#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &Fingerprint));
 	EXPECT_FALSE(ParseQuicDirectLinkFingerprint("ddnet+quic://example.com:8303#sha256=00", &Fingerprint));
+}
+
+TEST(ServerInfo, ModernTransportUrl)
+{
+	static constexpr const char *FINGERPRINT = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	static constexpr const char *NEXT_FINGERPRINT = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+	bool WebTransport;
+	EModernTransportTrust Trust;
+	SHA256_DIGEST Fingerprint;
+	SHA256_DIGEST NextFingerprint;
+	bool HasNextFingerprint;
+	EXPECT_TRUE(ParseModernTransportUrl("ddnet+quic://example.com:8303", &WebTransport, &Trust, &Fingerprint, &NextFingerprint, &HasNextFingerprint));
+	EXPECT_FALSE(WebTransport);
+	EXPECT_EQ(Trust, EModernTransportTrust::TOFU);
+	EXPECT_TRUE(ParseModernTransportUrl("ddnet+quic://example.com:8303#webpki", &WebTransport, &Trust, &Fingerprint, &NextFingerprint, &HasNextFingerprint));
+	EXPECT_EQ(Trust, EModernTransportTrust::WEBPKI);
+	char aUrl[256];
+	str_format(aUrl, sizeof(aUrl), "ddnet+quic://example.com:8303#cert-sha256=%s,%s", FINGERPRINT, NEXT_FINGERPRINT);
+	EXPECT_TRUE(ParseModernTransportUrl(aUrl, &WebTransport, &Trust, &Fingerprint, &NextFingerprint, &HasNextFingerprint));
+	EXPECT_EQ(Trust, EModernTransportTrust::CERTIFICATE_HASH);
+	EXPECT_TRUE(HasNextFingerprint);
+	EXPECT_TRUE(ParseModernTransportUrl("ddnet+wt://example.com:8303", &WebTransport, &Trust, &Fingerprint, &NextFingerprint, &HasNextFingerprint));
+	EXPECT_TRUE(WebTransport);
+	EXPECT_EQ(Trust, EModernTransportTrust::WEBPKI);
+	EXPECT_FALSE(ParseModernTransportUrl("ddnet+wt://example.com:8303#identity-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &WebTransport, &Trust, &Fingerprint, &NextFingerprint, &HasNextFingerprint));
+	EXPECT_FALSE(ParseModernTransportUrl("ddnet+quic://example.com:8303/path", &WebTransport, &Trust, &Fingerprint, &NextFingerprint, &HasNextFingerprint));
+	EXPECT_FALSE(ParseModernTransportUrl("ddnet+quic://example.com:8303#unknown", &WebTransport, &Trust, &Fingerprint, &NextFingerprint, &HasNextFingerprint));
 }
 
 TEST(ServerInfo, QuicLanExtra)

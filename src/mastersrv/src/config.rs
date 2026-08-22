@@ -230,10 +230,13 @@ impl ParsedConfig {
 impl ConfigAddr {
     fn matches(&self, addr: Addr) -> bool {
         use self::ConfigAddr::*;
+        let Some(ip) = addr.ip() else {
+            return false;
+        };
         match *self {
-            WithPort(i) => addr.ip == i.ip() && addr.port == i.port(),
-            OnlyIp(i) => addr.ip == i,
-            Range(i) => i.contains(&addr.ip),
+            WithPort(i) => ip == i.ip() && addr.port == i.port(),
+            OnlyIp(i) => ip == i,
+            Range(i) => i.contains(&ip),
         }
     }
 }

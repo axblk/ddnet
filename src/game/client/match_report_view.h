@@ -31,12 +31,14 @@ class CMatchWeaponStats
 {
 public:
 	int m_Weapon = -1;
+	int64_t m_Kills = 0;
+	int64_t m_Deaths = 0;
 	int64_t m_Shots = 0;
 	int64_t m_Hits = 0;
 	int64_t m_DamageDone = 0;
 	int64_t m_DamageTaken = 0;
 
-	bool HasData() const { return m_Shots != 0 || m_Hits != 0 || m_DamageDone != 0 || m_DamageTaken != 0; }
+	bool HasData() const { return m_Kills != 0 || m_Deaths != 0 || m_Shots != 0 || m_Hits != 0 || m_DamageDone != 0 || m_DamageTaken != 0; }
 };
 
 /**
@@ -280,7 +282,11 @@ inline bool AddMatchCombatMetric(CMatchCombatStats &Stats, const std::string &Me
 		StatName = WeaponMetric.substr(Separator + 1);
 	}
 
-	if(StatName == "shots")
+	if(StatName == "kills")
+		AddMatchCombatValue(pStats->m_Kills, Value);
+	else if(StatName == "deaths")
+		AddMatchCombatValue(pStats->m_Deaths, Value);
+	else if(StatName == "shots")
 		AddMatchCombatValue(pStats->m_Shots, Value);
 	else if(StatName == "hits")
 		AddMatchCombatValue(pStats->m_Hits, Value);

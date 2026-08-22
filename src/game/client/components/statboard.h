@@ -17,6 +17,7 @@ private:
 	int64_t m_ScreenshotTime;
 	static void ConKeyStats(IConsole::IResult *pResult, void *pUserData);
 	void RenderGlobalStats(const CRenderContext &Context);
+	void RenderLiveMatch(const CRenderContext &Context, const class CStoredMatch &Live);
 	// Bound on the rows the live panel draws, so a full server cannot push the
 	// statboard off the screen.
 	static constexpr int MAX_LIVE_ROWS = 16;

@@ -1493,7 +1493,7 @@ bool CGameControllerDDRace::BuildLiveStatsReport(int ClientId, CMatchReport &Rep
 			return false;
 	}
 	std::string Error;
-	if(!Builder.Finalize(&Error, &Payload))
+	if(!Builder.Finalize(&Error) || !MatchReportToPacked(Builder.Report(), Payload, &Error))
 	{
 		log_error("game", "failed to build race live stats: %s", Error.c_str());
 		return false;

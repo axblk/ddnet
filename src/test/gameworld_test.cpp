@@ -121,6 +121,23 @@ public:
 		return (CGameContext *)m_pGameServer;
 	}
 
+	/**
+	 * Runs the ticks a queued report needs to reach the client.
+	 *
+	 * Report chunks are spread over ticks so that they do not overrun the
+	 * resend buffer of a connection, so a test that wants the whole report has
+	 * to let the server run. The bound is well below the round restart delay.
+	 */
+	void DrainReportSends(int EndMsgId)
+	{
+		for(int Tick = 0; Tick < 200; ++Tick)
+		{
+			if(!m_pServer->m_vCapturedMatchReportMessages.empty() && m_pServer->m_vCapturedMatchReportMessages.back().m_MsgId == EndMsgId)
+				return;
+			GameController()->Tick();
+		}
+	}
+
 	CGameServices &GameServices() // NOLINT(readability-make-member-function-const)
 	{
 		return GameServer()->GameHost().Services();
@@ -315,7 +332,7 @@ namespace
 			return ::testing::AssertionFailure() << "invalid live end";
 
 		std::string Error;
-		if(!MatchReportFromJson(Payload.data(), Payload.size(), Report, &Error) || Report.m_MatchId != MatchId || Report.m_ReportSchemaVersion != ReportSchemaVersion)
+		if(!MatchReportFromPacked(Payload.data(), Payload.size(), Report, &Error) || Report.m_MatchId != MatchId || Report.m_ReportSchemaVersion != ReportSchemaVersion)
 			return ::testing::AssertionFailure() << Error;
 		return ::testing::AssertionSuccess();
 	}
@@ -957,7 +974,7 @@ TEST_F(GameWorld, MatchReportRejectsSerializedPayloadOverflow)
 	auto &Controller = *dynamic_cast<CTestVanillaCTF *>(GameController());
 	CPlayer *pPlayer = GameServer()->CreatePlayer(0, TEAM_RED, false, -1);
 	GameController()->OnPlayerConnect(pPlayer);
-	ASSERT_TRUE(Controller.AddPayloadMetrics(pPlayer, 2000));
+	ASSERT_TRUE(Controller.AddPayloadMetrics(pPlayer, MatchReportLimits::MAX_METRICS));
 	Controller.EndRound();
 	EXPECT_EQ(Controller.LatestMatchReport(), nullptr);
 }
@@ -975,20 +992,27 @@ TEST_F(GameWorld, MatchReportWireOrderFlagsAndChunks)
 	ASSERT_TRUE(Controller.AddPayloadMetrics(pPlayer, 20));
 	m_pServer->m_CaptureMatchReportMessages = true;
 	Controller.EndRound();
+	// A report can be far larger than the resend buffer of a connection, so
+	// ending the round only announces it and the chunks follow over the ticks
+	// after it. Queueing them all here would drop everything that did not fit.
+	const size_t AnnouncedMessages = m_pServer->m_vCapturedMatchReportMessages.size();
+	EXPECT_EQ(AnnouncedMessages, 2u);
+	DrainReportSends(NETMSG_MATCH_REPORT_END);
 	m_pServer->m_CaptureMatchReportMessages = false;
 	ASSERT_NE(Controller.LatestMatchReport(), nullptr);
 
 	const auto &vMessages = m_pServer->m_vCapturedMatchReportMessages;
 	ASSERT_GE(vMessages.size(), 4u);
+	// Only a participant can store the report and no demo needs a copy, so every
+	// message goes to that one client and is not recorded.
+	for(const auto &Message : vMessages)
+	{
+		EXPECT_EQ(Message.m_Flags, MSGFLAG_VITAL | MSGFLAG_NORECORD);
+		EXPECT_EQ(Message.m_ClientId, ClientId);
+	}
 	EXPECT_EQ(vMessages.front().m_MsgId, NETMSG_MATCH_REPORT_START);
-	EXPECT_EQ(vMessages.front().m_Flags, MSGFLAG_VITAL);
-	EXPECT_EQ(vMessages.front().m_ClientId, -1);
 	EXPECT_EQ(vMessages[1].m_MsgId, NETMSG_MATCH_REPORT_LOCAL_PARTICIPANT);
-	EXPECT_EQ(vMessages[1].m_Flags, MSGFLAG_VITAL | MSGFLAG_NORECORD);
-	EXPECT_EQ(vMessages[1].m_ClientId, ClientId);
 	EXPECT_EQ(vMessages.back().m_MsgId, NETMSG_MATCH_REPORT_END);
-	EXPECT_EQ(vMessages.back().m_Flags, MSGFLAG_VITAL);
-	EXPECT_EQ(vMessages.back().m_ClientId, -1);
 
 	CUnpacker Start;
 	Start.Reset(vMessages.front().m_vData.data(), vMessages.front().m_vData.size());
@@ -1016,8 +1040,6 @@ TEST_F(GameWorld, MatchReportWireOrderFlagsAndChunks)
 	{
 		const auto &Message = vMessages[ChunkIndex + 2];
 		EXPECT_EQ(Message.m_MsgId, NETMSG_MATCH_REPORT_CHUNK);
-		EXPECT_EQ(Message.m_Flags, MSGFLAG_VITAL);
-		EXPECT_EQ(Message.m_ClientId, -1);
 		CUnpacker Chunk;
 		Chunk.Reset(Message.m_vData.data(), Message.m_vData.size());
 		const unsigned char *pChunkMatchId = Chunk.GetRaw(sizeof(CUuid));
@@ -1076,6 +1098,7 @@ TEST_F(GameWorld, CompetitiveLiveStatsArePrivateRateLimitedAndUseMatchId)
 
 	m_pServer->m_CaptureMatchReportMessages = true;
 	GameController()->SendLiveStats(ClientId);
+	DrainReportSends(NETMSG_LIVE_STATS_END);
 	const size_t FirstResponseSize = m_pServer->m_vCapturedMatchReportMessages.size();
 	GameController()->SendLiveStats(ClientId);
 	EXPECT_EQ(m_pServer->m_vCapturedMatchReportMessages.size(), FirstResponseSize);
@@ -1102,6 +1125,7 @@ TEST_F(GameWorld, CompetitiveLiveStatsArePrivateRateLimitedAndUseMatchId)
 	m_pServer->AdvanceTick(m_pServer->TickSpeed() * 2);
 	m_pServer->m_CaptureMatchReportMessages = true;
 	GameController()->SendLiveStats(ClientId);
+	DrainReportSends(NETMSG_LIVE_STATS_END);
 	m_pServer->m_CaptureMatchReportMessages = false;
 	EXPECT_GT(m_pServer->m_vCapturedMatchReportMessages.size(), FirstResponseSize);
 	GameController()->EndRound();
@@ -1134,6 +1158,7 @@ TEST_F(GameWorld, RaceLiveStatsUseCachedProgressWithoutFinalReport)
 	RaceScore().SetCurrentRecord(50.0f);
 	m_pServer->m_CaptureMatchReportMessages = true;
 	GameController()->SendLiveStats(ClientId);
+	DrainReportSends(NETMSG_LIVE_STATS_END);
 	m_pServer->m_CaptureMatchReportMessages = false;
 	CMatchReport LoadingReport;
 	CUuid LoadingMatchId;
@@ -1152,6 +1177,7 @@ TEST_F(GameWorld, RaceLiveStatsUseCachedProgressWithoutFinalReport)
 
 	m_pServer->m_CaptureMatchReportMessages = true;
 	GameController()->SendLiveStats(ClientId);
+	DrainReportSends(NETMSG_LIVE_STATS_END);
 	m_pServer->m_CaptureMatchReportMessages = false;
 	CMatchReport Report;
 	CUuid MatchId;

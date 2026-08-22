@@ -103,7 +103,10 @@ bool CMatchReportAssembler::Finish(CUuid MatchId, SHA256_DIGEST PayloadSha256, C
 		return Fail(pError, "match report digest mismatch");
 
 	CMatchReport Report;
-	if(!MatchReportFromJson(Payload.data(), Payload.size(), Report, pError))
+	// The wire carries the packed form, the journal stores JSON, so what was
+	// received is turned into the journal format right here.
+	std::string RawReport;
+	if(!MatchReportFromPacked(Payload.data(), Payload.size(), Report, pError) || !MatchReportToJson(Report, RawReport, pError))
 	{
 		ResetAssembly();
 		return false;
@@ -125,7 +128,7 @@ bool CMatchReportAssembler::Finish(CUuid MatchId, SHA256_DIGEST PayloadSha256, C
 	Match.m_Completeness = EMatchCompleteness::COMPLETE;
 	Match.m_LocalParticipantId = LocalParticipantId;
 	Match.m_Report = std::move(Report);
-	Match.m_RawReport = std::move(Payload);
+	Match.m_RawReport = std::move(RawReport);
 	Reset();
 	return true;
 }

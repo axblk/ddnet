@@ -55,6 +55,71 @@ TEST(MatchReport, CanonicalJsonRoundTrip)
 	EXPECT_EQ(Reserialized, Json);
 }
 
+TEST(MatchReport, PackedRoundTrip)
+{
+	const CMatchReport Original = SampleReport();
+	std::string Error;
+	std::string Json;
+	ASSERT_TRUE(MatchReportToJson(Original, Json, &Error)) << Error;
+	std::string Packed;
+	ASSERT_TRUE(MatchReportToPacked(Original, Packed, &Error)) << Error;
+	EXPECT_LT(Packed.size(), Json.size());
+
+	// The report has no comparison operator, so the canonical JSON of what came
+	// back out is what says the packed round trip lost nothing.
+	CMatchReport Parsed;
+	ASSERT_TRUE(MatchReportFromPacked(Packed.data(), Packed.size(), Parsed, &Error)) << Error;
+	std::string Reserialized;
+	ASSERT_TRUE(MatchReportToJson(Parsed, Reserialized, &Error)) << Error;
+	EXPECT_EQ(Reserialized, Json);
+}
+
+TEST(MatchReport, RejectsMalformedPackedPayloads)
+{
+	std::string Error;
+	std::string Packed;
+	ASSERT_TRUE(MatchReportToPacked(SampleReport(), Packed, &Error)) << Error;
+
+	CMatchReport Parsed;
+	EXPECT_FALSE(MatchReportFromPacked(Packed.data(), 0, Parsed, &Error));
+	// Every field is read back, so no prefix of the payload may parse.
+	for(size_t Size = 1; Size < Packed.size(); ++Size)
+		EXPECT_FALSE(MatchReportFromPacked(Packed.data(), Size, Parsed, &Error)) << "truncated to " << Size;
+	std::string Trailing = Packed;
+	Trailing.push_back(0);
+	EXPECT_FALSE(MatchReportFromPacked(Trailing.data(), Trailing.size(), Parsed, &Error));
+	std::string WrongVersion = Packed;
+	WrongVersion[0] = 2;
+	EXPECT_FALSE(MatchReportFromPacked(WrongVersion.data(), WrongVersion.size(), Parsed, &Error));
+}
+
+TEST(MatchReport, SurvivesEverySingleByteChangeInAPackedPayload)
+{
+	std::string Error;
+	std::string Packed;
+	ASSERT_TRUE(MatchReportToPacked(SampleReport(), Packed, &Error)) << Error;
+
+	// The payload arrives from the network, so every byte of it is an input a
+	// server can choose. What comes out has to be a report that passes
+	// validation or nothing at all, and never a read past the payload, which is
+	// what the sanitizer build turns into a failure here.
+	for(size_t Index = 0; Index < Packed.size(); ++Index)
+	{
+		for(const unsigned char Value : {0x00, 0x01, 0x7F, 0x80, 0xFF})
+		{
+			std::string Mutated = Packed;
+			if((unsigned char)Mutated[Index] == Value)
+				continue;
+			Mutated[Index] = (char)Value;
+			CMatchReport Parsed;
+			if(MatchReportFromPacked(Mutated.data(), Mutated.size(), Parsed, &Error))
+			{
+				EXPECT_TRUE(MatchReportValidate(Parsed, &Error)) << "byte " << Index << " set to " << (int)Value << ": " << Error;
+			}
+		}
+	}
+}
+
 TEST(MatchReport, CanonicalJsonGoldenBytesAndDigest)
 {
 	CMatchReport Report;
@@ -224,15 +289,19 @@ TEST(MatchReportBuilder, RejectsSerializedPayloadOverflow)
 	Report.m_vStandings.clear();
 	Report.m_vMetrics.clear();
 	CMatchReportBuilder Builder(std::move(Report));
-	for(int i = 0; i < 3000; ++i)
+	// Enough long metric ids to exceed the payload limit whatever it is set to
+	for(int i = 0; i < MatchReportLimits::MAX_METRICS; ++i)
 	{
 		const std::string MetricId = "large@ddnet.org/metric_" + std::to_string(i) + "_" + std::string(70, 'x');
 		ASSERT_TRUE(Builder.AddMetric({EMatchSubjectKind::MATCH, std::nullopt, MetricId, i}));
 	}
 	std::string Error;
-	std::string Json;
-	EXPECT_FALSE(Builder.Finalize(&Error, &Json));
-	EXPECT_TRUE(Json.empty());
+	std::string Payload;
+	ASSERT_TRUE(Builder.Finalize(&Error)) << Error;
+	EXPECT_FALSE(MatchReportToJson(Builder.Report(), Payload, &Error));
+	// The same report still packs, which is the point of the packed form. A
+	// client that receives it only fails once it writes its JSON journal.
+	EXPECT_TRUE(MatchReportToPacked(Builder.Report(), Payload, &Error)) << Error;
 }
 
 TEST(MatchReportView, CategorizesKnownAndUnknownMetrics)
@@ -332,4 +401,39 @@ TEST(MatchReportView, ModWeaponsBeyondTheKnownOnes)
 	// Beyond the limit the metric is ignored instead of allocating a row per index
 	EXPECT_LE(Stats.m_vWeapons.size(), static_cast<size_t>(MAX_MATCH_WEAPONS));
 	EXPECT_EQ(MatchWeaponDisplayName(11), "Weapon 11");
+}
+
+TEST(MatchReportLimitsFit, AFullServerOfParticipants)
+{
+	// A report that a real server can produce has to survive validation; the
+	// limits used to be picked independently and a full server exceeded them.
+	EXPECT_GE(MatchReportLimits::MAX_METRICS, MatchReportLimits::MAX_PARTICIPANTS * MatchReportLimits::MAX_METRICS_PER_PARTICIPANT);
+	EXPECT_GE(MatchReportLimits::MAX_STANDINGS, MatchReportLimits::MAX_PARTICIPANTS);
+
+	CMatchReport Report = SampleReport();
+	Report.m_vParticipants.clear();
+	Report.m_vStandings.clear();
+	Report.m_vMetrics.clear();
+	for(int Participant = 0; Participant < 64; ++Participant)
+	{
+		Report.m_vParticipants.push_back({Participant, std::nullopt, "Player", "", 0, std::nullopt, false});
+		Report.m_vStandings.push_back({EMatchSubjectKind::PARTICIPANT, Participant, Participant + 1, EMatchOutcome::LOSS});
+		for(int Metric = 0; Metric < 30; ++Metric)
+		{
+			char aMetricId[64];
+			str_format(aMetricId, sizeof(aMetricId), "vanilla.ctf@ddnet.org/weapon_%d_shots", Metric);
+			Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, Participant, aMetricId, 1234});
+		}
+	}
+	std::string Error;
+	EXPECT_TRUE(MatchReportValidate(Report, &Error)) << Error;
+	std::string Json;
+	ASSERT_TRUE(MatchReportToJson(Report, Json, &Error)) << Error;
+	EXPECT_LE(static_cast<int>(Json.size()), MatchReportLimits::MAX_PAYLOAD_SIZE);
+
+	// This is the report that live statistics resend every few seconds, so the
+	// packed form has to be an order of magnitude smaller than the JSON.
+	std::string Packed;
+	ASSERT_TRUE(MatchReportToPacked(Report, Packed, &Error)) << Error;
+	EXPECT_LT(Packed.size() * 10, Json.size());
 }

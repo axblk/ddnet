@@ -83,6 +83,13 @@ public:
 	void MapInfo(int ClientId, const char *pMapName);
 	void MapVote(int ClientId, const char *pMapName);
 	void LoadPlayerData(int ClientId, const char *pName = "");
+	/**
+	 * Asks for this player's stored data again once the pending queries are
+	 * done, for when something happened that can have changed their map rank.
+	 *
+	 * @param ClientId Client whose data is out of date.
+	 */
+	void ScheduleReloadPlayerData(int ClientId);
 	void LoadPlayerTimeCp(int ClientId, const char *pName = "");
 	void SaveScore(int ClientId, int TimeTicks, const char *pTimestamp, const float aTimeCp[NUM_CHECKPOINTS], bool NotEligible);
 

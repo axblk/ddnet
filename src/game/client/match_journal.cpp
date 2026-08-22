@@ -261,6 +261,19 @@ CMatchJournal::EInsertResult CMatchJournal::InsertImpl(const CStoredMatch &Match
 	CMatchReport Parsed;
 	if(!MatchReportFromJson(Match.m_RawReport.data(), Match.m_RawReport.size(), Parsed, pError))
 		return EInsertResult::ERROR;
+	// The profile page sums these across every stored match. A single absurd
+	// value, from a broken or hostile server, would make that sum overflow and
+	// leave the page unusable until the journal is cleared, so such a report is
+	// refused rather than stored.
+	for(const CMatchMetric &Metric : Parsed.m_vMetrics)
+	{
+		if(Metric.m_Value < -MatchReportLimits::MAX_METRIC_VALUE || Metric.m_Value > MatchReportLimits::MAX_METRIC_VALUE)
+		{
+			if(pError != nullptr)
+				*pError = "metric value out of range";
+			return EInsertResult::ERROR;
+		}
+	}
 	if(Match.m_LocalParticipantId.has_value())
 	{
 		bool Found = false;
@@ -605,24 +618,6 @@ bool CMatchJournal::DeleteAll(std::string *pError)
 	return true;
 }
 
-bool CMatchJournal::DeleteMatchesSince(int64_t SinceUtc, std::string *pError)
-{
-	if(m_pSqlite == nullptr || !Execute("BEGIN IMMEDIATE", pError))
-		return false;
-	CSqliteStmt pStatement;
-	if(!Prepare(m_pSqlite.get(), "DELETE FROM matches WHERE end_time_utc >= ?", pStatement, pError) ||
-		!SqlSuccess(sqlite3_bind_int64(pStatement.get(), 1, SinceUtc), m_pSqlite.get(), pError, "bind delete cutoff") ||
-		!SqlSuccess(sqlite3_step(pStatement.get()), m_pSqlite.get(), pError, "delete matches by time") ||
-		!Execute("DELETE FROM origins WHERE NOT EXISTS (SELECT 1 FROM matches WHERE matches.origin_id = origins.origin_id)", pError) ||
-		!Execute("COMMIT", pError))
-	{
-		Rollback(pError);
-		return false;
-	}
-	m_pStorage->SyncPersistentStorage();
-	return true;
-}
-
 bool CMatchJournal::Info(CMatchJournalInfo &Info, std::string *pError) const
 {
 	Info = {};
@@ -805,7 +800,7 @@ bool GenerateSampleMatches(CMatchJournal &Journal, int Count, const char *pLocal
 		Builder.AddMetric({EMatchSubjectKind::MATCH, std::nullopt, MetricId("playtime_ticks"), DurationTicks, EMatchMetricAggregation::SUM});
 
 		CStoredMatch Stored;
-		if(!Builder.Finalize(pError, &Stored.m_RawReport))
+		if(!Builder.Finalize(pError) || !MatchReportToJson(Builder.Report(), Stored.m_RawReport, pError))
 			return false;
 		Stored.m_Report = Builder.Report();
 		Stored.m_OriginId = s_apOrigins[Match % std::size(s_apOrigins)];

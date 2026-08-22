@@ -132,7 +132,6 @@ public:
 	bool LoadMatch(const char *pOriginId, CUuid MatchId, CStoredMatch &Match, std::string *pError) const;
 	bool QueryProfile(const CMatchProfileFilter &Filter, CMatchProfile &Profile, std::string *pError) const;
 	bool DeleteMatch(const char *pOriginId, CUuid MatchId, std::string *pError);
-	bool DeleteMatchesSince(int64_t SinceUtc, std::string *pError);
 	bool DeleteAll(std::string *pError);
 	bool Info(CMatchJournalInfo &Info, std::string *pError) const;
 };

@@ -488,10 +488,11 @@ protected:
 	// of its own, so that a report is read the way it was opened.
 	bool m_StatsShowMatch = false;
 	EStatsQualityFilter m_StatsQualityFilter = EStatsQualityFilter::ALL;
-	// The profile shows three periods side by side instead of one at a time,
-	// so all three are queried and kept.
+	// The profile shows the periods side by side instead of one at a time, so
+	// all of them are queried and kept.
 	enum class EStatsPeriod
 	{
+		DAY,
 		WEEK,
 		MONTH,
 		ALL_TIME,
@@ -506,9 +507,16 @@ protected:
 		PER_MINUTE,
 	};
 	EStatsScale m_StatsScale = EStatsScale::TOTAL;
+	// The weapon numbers are a table of their own, so they show one period
+	// rather than all of them next to each other.
+	EStatsPeriod m_StatsWeaponPeriod = EStatsPeriod::ALL_TIME;
 	int m_StatsSelectedIndex = -1;
 	CLineInputBuffered<128> m_StatsHistorySearchInput;
-	CLineInputBuffered<128> m_StatsProfileModeInput;
+	// The gametypes the journal actually holds, so the filter offers what is
+	// there instead of asking the reader to type a mode id. Index 0 is every
+	// gametype at once.
+	std::vector<std::string> m_vStatsModes;
+	int m_StatsModeIndex = 0;
 	std::vector<CMatchHistoryEntry> m_vStatsHistory;
 	std::optional<CStoredMatch> m_StatsSelectedMatch;
 	CMatchProfile m_aStatsProfiles[(int)EStatsPeriod::COUNT];
@@ -525,7 +533,10 @@ protected:
 	void StatsHeading(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pText);
 	void StatsTiles(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *const *ppLabels, const char *const *ppValues, int Count);
 	void StatsMetricLine(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pLabel, const char *pValue);
-	void StatsWeaponMatrix(class CScrollRegion *pScrollRegion, CUIRect *pContent, const class CMatchCombatStats &Stats);
+	void StatsWeaponMatrix(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pHeading, const class CMatchCombatStats &Stats);
+	const char *StatsModeFilter() const;
+	bool StatsModeDropDown(CUIRect Rect);
+	static const char *StatsPeriodName(EStatsPeriod Period);
 	void ExportSelectedStats(bool Csv);
 	void PopupConfirmDeleteStatsMatch();
 	void PopupConfirmDeleteStatsPeriod();

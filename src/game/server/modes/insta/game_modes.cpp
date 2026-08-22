@@ -21,21 +21,21 @@ namespace
 bool RegisterInstagibGameModes(CGameModeRegistry &Registry)
 {
 	return Registry.Register(
-		       {"insta.idm", "Instagib DM", "iDM", "TestiDM", EGameModeScoreKind::POINTS, 0, 0, false, EPhysicsRuleset::VANILLA, CompetitiveGameModeReport("insta.idm@ddnet.org", false)},
+		       {"insta.idm", "Instagib DM", "iDM", "TestiDM", EGameModeScoreKind::POINTS, 0, 0, false, CPhysicsRules::Vanilla(), CompetitiveGameModeReport("insta.idm@ddnet.org", false)},
 		       [](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerInstagibDM>(Services, Info); }) &&
 	       Registry.Register(
-		       {"insta.itdm", "Instagib TDM", "iTDM", "TestiTDM", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS, 0, false, EPhysicsRuleset::VANILLA, CompetitiveGameModeReport("insta.itdm@ddnet.org", false)},
+		       {"insta.itdm", "Instagib TDM", "iTDM", "TestiTDM", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS, 0, false, CPhysicsRules::Vanilla(), CompetitiveGameModeReport("insta.itdm@ddnet.org", false)},
 		       [](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerInstagibTDM>(Services, Info); }) &&
 	       Registry.Register(
-		       {"insta.ictf", "Instagib CTF", "iCTF", "TestiCTF", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS, 0, false, EPhysicsRuleset::VANILLA, CompetitiveGameModeReport("insta.ictf@ddnet.org", true)},
+		       {"insta.ictf", "Instagib CTF", "iCTF", "TestiCTF", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS, 0, false, CPhysicsRules::Vanilla(), CompetitiveGameModeReport("insta.ictf@ddnet.org", true)},
 		       [](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerInstagibCTF>(Services, Info); }) &&
 	       Registry.Register(
-		       {"insta.gdm", "Grenade Instagib DM", "gDM", "TestgDM", EGameModeScoreKind::POINTS, 0, 0, false, EPhysicsRuleset::VANILLA, CompetitiveGameModeReport("insta.gdm@ddnet.org", false)},
+		       {"insta.gdm", "Grenade Instagib DM", "gDM", "TestgDM", EGameModeScoreKind::POINTS, 0, 0, false, CPhysicsRules::Vanilla(), CompetitiveGameModeReport("insta.gdm@ddnet.org", false)},
 		       [](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerGrenadeDM>(Services, Info); }) &&
 	       Registry.Register(
-		       {"insta.gtdm", "Grenade Instagib TDM", "gTDM", "TestgTDM", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS, 0, false, EPhysicsRuleset::VANILLA, CompetitiveGameModeReport("insta.gtdm@ddnet.org", false)},
+		       {"insta.gtdm", "Grenade Instagib TDM", "gTDM", "TestgTDM", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS, 0, false, CPhysicsRules::Vanilla(), CompetitiveGameModeReport("insta.gtdm@ddnet.org", false)},
 		       [](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerGrenadeTDM>(Services, Info); }) &&
 	       Registry.Register(
-		       {"insta.gctf", "Grenade Instagib CTF", "gCTF", "TestgCTF", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS, 0, false, EPhysicsRuleset::VANILLA, CompetitiveGameModeReport("insta.gctf@ddnet.org", true)},
+		       {"insta.gctf", "Grenade Instagib CTF", "gCTF", "TestgCTF", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS, 0, false, CPhysicsRules::Vanilla(), CompetitiveGameModeReport("insta.gctf@ddnet.org", true)},
 		       [](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerGrenadeCTF>(Services, Info); });
 }

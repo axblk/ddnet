@@ -74,7 +74,6 @@ STATBOARD_CONTEXT_FUNCTIONS = (
 	("src/game/client/components/statboard.cpp", re.compile(r"\bCStatboard::(?:OnRender|RenderGlobalStats)\s*\(")),
 	("src/game/client/components/statboard.cpp", re.compile(r"\bCStatboard::IsRenderable\s*\(\s*const CRenderContext\s*&")),
 )
-STATBOARD_MESSAGE_FUNCTIONS = (("src/game/client/components/statboard.cpp", re.compile(r"\bCStatboard::HandleMessage\s*\(")),)
 INFO_MESSAGES_CONTEXT_FUNCTIONS = (("src/game/client/components/infomessages.cpp", re.compile(r"\bCInfoMessages::(?:CreateTextContainersIfNotCreated|OnRender|RenderFinishMsg|RenderKillMsg)\s*\(")),)
 INFO_MESSAGES_MESSAGE_FUNCTIONS = (("src/game/client/components/infomessages.cpp", re.compile(r"\bCInfoMessages::(?:HandleMessage|OnKillMessage|OnRaceFinishMessage|OnTeamKillMessage)\s*\(")),)
 VOTING_CONTEXT_FUNCTIONS = (("src/game/client/components/voting.cpp", re.compile(r"\bCVoting::(?:Render|RenderBars)\s*\(")),)
@@ -102,7 +101,8 @@ TOUCH_RENDER_FUNCTIONS = (
 	("src/game/client/components/touch_controls.cpp", re.compile(r"\bCTouchControls::CTouchButton::Render\s*\(")),
 	("src/game/client/components/touch_controls.cpp", re.compile(r"\bCTouchControls::C[A-Za-z0-9_]*TouchButtonBehavior::GetLabel\s*\(")),
 )
-SESSION_STATS_UPDATE_FUNCTIONS = (("src/game/client/session_context.h", re.compile(r"\bUpdateSnapshot\s*\(\s*const CGameState\s*&")),)
+# The per session statistics update moved into the match collector.
+SESSION_STATS_UPDATE_FUNCTIONS = (("src/game/client/match_collector.cpp", re.compile(r"\bCSessionStatsState::UpdateSnapshot\s*\(")),)
 GAME_CLIENT_RENDER_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::OnRender\s*\(")),)
 CLIENT_UPDATE_FUNCTIONS = (("src/engine/client/client.cpp", re.compile(r"\bCClient::Update\s*\(")),)
 SESSION_CLOSE_ADAPTER_FUNCTIONS = (("src/engine/client/client.cpp", re.compile(r"\bCClient::Disconnect(?:Demo)?WithReason\s*\(")),)
@@ -379,12 +379,6 @@ FORBIDDEN_STATBOARD_CONTEXT_FOCUS = (
 	re.compile(r"\b(?:ActiveConnection|OtherConnection)\s*\("),
 	re.compile(r"\bm_Snap\b"),
 	re.compile(r"GameClient\(\)->(?:GameState|SessionContext|FocusedTeams|IsTeamPlay|m_aClients)\b"),
-	re.compile(r"\bClient\(\)"),
-)
-FORBIDDEN_STATBOARD_MESSAGE_FOCUS = (
-	re.compile(r"\b(?:ActiveConnection|OtherConnection|Focused[A-Za-z0-9_]*)\s*\("),
-	re.compile(r"\bm_Snap\b"),
-	re.compile(r"GameClient\(\)->(?:GameState|SessionContext|m_aClients)\b"),
 	re.compile(r"\bClient\(\)"),
 )
 FORBIDDEN_INFO_MESSAGES_CONTEXT_FOCUS = (
@@ -821,7 +815,6 @@ errors = (
 	+ check_function_bodies(SCOREBOARD_CONTEXT_FUNCTIONS, FORBIDDEN_SCOREBOARD_CONTEXT_FOCUS)
 	+ check_function_bodies(SCOREBOARD_VISUAL_FUNCTIONS, FORBIDDEN_SCOREBOARD_VISUAL_SIDE_EFFECT)
 	+ check_function_bodies(STATBOARD_CONTEXT_FUNCTIONS, FORBIDDEN_STATBOARD_CONTEXT_FOCUS)
-	+ check_function_bodies(STATBOARD_MESSAGE_FUNCTIONS, FORBIDDEN_STATBOARD_MESSAGE_FOCUS)
 	+ check_function_bodies(INFO_MESSAGES_CONTEXT_FUNCTIONS, FORBIDDEN_INFO_MESSAGES_CONTEXT_FOCUS)
 	+ check_function_bodies(INFO_MESSAGES_MESSAGE_FUNCTIONS, FORBIDDEN_INFO_MESSAGES_MESSAGE_FOCUS)
 	+ check_function_bodies(VOTING_CONTEXT_FUNCTIONS, FORBIDDEN_VOTING_CONTEXT_FOCUS)

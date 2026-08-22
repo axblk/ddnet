@@ -1,16 +1,20 @@
 #include "match_report.h"
 
+#include <base/dbg.h>
 #include <base/math.h>
+#include <base/mem.h>
 #include <base/str.h>
 
 #include <engine/shared/json.h>
 #include <engine/shared/jsonwriter.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <set>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 
 namespace
@@ -351,6 +355,376 @@ bool MatchReportValidate(const CMatchReport &Report, std::string *pError)
 	return true;
 }
 
+namespace
+{
+	// The packed format is only ever produced and consumed by this file, so it uses
+	// the smallest encoding that does the job: unsigned values as LEB128, signed
+	// ones zigzagged first, strings as indices into one table at the head.
+	constexpr unsigned char PACKED_FORMAT_VERSION = 1;
+
+	void PackUnsigned(std::string &Out, uint64_t Value)
+	{
+		while(Value >= 0x80)
+		{
+			Out.push_back((char)(unsigned char)(Value | 0x80));
+			Value >>= 7;
+		}
+		Out.push_back((char)(unsigned char)Value);
+	}
+
+	void PackSigned(std::string &Out, int64_t Value)
+	{
+		PackUnsigned(Out, ((uint64_t)Value << 1) ^ (uint64_t)(Value >> 63));
+	}
+
+	class CPackedReader
+	{
+		const unsigned char *m_pData;
+		size_t m_Size;
+		size_t m_Offset = 0;
+		bool m_Error = false;
+
+	public:
+		CPackedReader(const char *pData, size_t Size) :
+			m_pData((const unsigned char *)pData), m_Size(Size)
+		{
+		}
+
+		bool Error() const { return m_Error; }
+
+		uint64_t Unsigned()
+		{
+			uint64_t Value = 0;
+			for(int Shift = 0; Shift < 64; Shift += 7)
+			{
+				if(m_Offset >= m_Size)
+				{
+					m_Error = true;
+					return 0;
+				}
+				const unsigned char Byte = m_pData[m_Offset++];
+				Value |= (uint64_t)(Byte & 0x7F) << Shift;
+				if((Byte & 0x80) == 0)
+					return Value;
+			}
+			m_Error = true;
+			return 0;
+		}
+
+		int64_t Signed()
+		{
+			const uint64_t Value = Unsigned();
+			return (int64_t)(Value >> 1) ^ -(int64_t)(Value & 1);
+		}
+
+		int Int()
+		{
+			const int64_t Value = Signed();
+			if(Value < std::numeric_limits<int>::min() || Value > std::numeric_limits<int>::max())
+				m_Error = true;
+			return (int)Value;
+		}
+
+		bool Bool() { return Unsigned() != 0; }
+
+		const unsigned char *Raw(size_t Size)
+		{
+			if(m_Size - m_Offset < Size)
+			{
+				m_Error = true;
+				return nullptr;
+			}
+			const unsigned char *pResult = m_pData + m_Offset;
+			m_Offset += Size;
+			return pResult;
+		}
+
+		bool AtEnd() const { return m_Offset == m_Size; }
+	};
+
+	class CStringTable
+	{
+		std::vector<std::string> m_vStrings;
+		std::unordered_map<std::string, uint64_t> m_Indices;
+
+	public:
+		void Add(const std::string &Value)
+		{
+			if(m_Indices.find(Value) != m_Indices.end())
+				return;
+			m_Indices[Value] = m_vStrings.size();
+			m_vStrings.push_back(Value);
+		}
+
+		// Every string is collected before the table is written, so looking one up
+		// afterwards can never grow it.
+		uint64_t Index(const std::string &Value) const
+		{
+			const auto Found = m_Indices.find(Value);
+			dbg_assert(Found != m_Indices.end(), "match report string was not collected");
+			return Found->second;
+		}
+
+		void Write(std::string &Out) const
+		{
+			PackUnsigned(Out, m_vStrings.size());
+			for(const std::string &Value : m_vStrings)
+			{
+				PackUnsigned(Out, Value.size());
+				Out.append(Value);
+			}
+		}
+	};
+
+	void CollectStrings(const CMatchReport &Report, CStringTable &Table)
+	{
+		Table.Add(Report.m_ModeId);
+		Table.Add(Report.m_MapName);
+		Table.Add(Report.m_UnrankedReason);
+		for(const CMatchTeam &Team : Report.m_vTeams)
+			Table.Add(Team.m_DisplayName);
+		for(const CMatchParticipant &Participant : Report.m_vParticipants)
+		{
+			Table.Add(Participant.m_DisplayName);
+			Table.Add(Participant.m_Clan);
+		}
+		for(const CMatchMetric &Metric : Report.m_vMetrics)
+			Table.Add(Metric.m_MetricId);
+	}
+} // namespace
+
+bool MatchReportToPacked(const CMatchReport &Report, std::string &Packed, std::string *pError)
+{
+	if(!MatchReportValidate(Report, pError))
+		return false;
+
+	CStringTable Table;
+	CollectStrings(Report, Table);
+
+	std::string Out;
+	Out.push_back((char)PACKED_FORMAT_VERSION);
+	Table.Write(Out);
+
+	Out.append((const char *)&Report.m_MatchId, sizeof(Report.m_MatchId));
+	PackUnsigned(Out, Report.m_GameUuid.has_value() ? 1 : 0);
+	if(Report.m_GameUuid.has_value())
+		Out.append((const char *)&*Report.m_GameUuid, sizeof(CUuid));
+	PackSigned(Out, Report.m_ReportSchemaVersion);
+	PackUnsigned(Out, Table.Index(Report.m_ModeId));
+	PackSigned(Out, Report.m_ModeSchemaVersion);
+	PackUnsigned(Out, Table.Index(Report.m_MapName));
+	Out.append((const char *)&Report.m_MapSha256, sizeof(Report.m_MapSha256));
+	PackSigned(Out, Report.m_StartTimeUtc);
+	PackSigned(Out, Report.m_EndTimeUtc);
+	PackSigned(Out, Report.m_DurationTicks);
+	PackSigned(Out, Report.m_TickRate);
+	PackSigned(Out, Report.m_RoundStartTick);
+	PackUnsigned(Out, (uint64_t)Report.m_Termination);
+	PackUnsigned(Out, Report.m_Ranked ? 1 : 0);
+	PackUnsigned(Out, Table.Index(Report.m_UnrankedReason));
+
+	PackUnsigned(Out, Report.m_vTeams.size());
+	for(const CMatchTeam &Team : Report.m_vTeams)
+	{
+		PackSigned(Out, Team.m_TeamId);
+		PackUnsigned(Out, Table.Index(Team.m_DisplayName));
+	}
+
+	PackUnsigned(Out, Report.m_vParticipants.size());
+	for(const CMatchParticipant &Participant : Report.m_vParticipants)
+	{
+		PackSigned(Out, Participant.m_ParticipantId);
+		PackUnsigned(Out, Participant.m_TeamId.has_value() ? 1 : 0);
+		if(Participant.m_TeamId.has_value())
+			PackSigned(Out, *Participant.m_TeamId);
+		PackUnsigned(Out, Table.Index(Participant.m_DisplayName));
+		PackUnsigned(Out, Table.Index(Participant.m_Clan));
+		PackSigned(Out, Participant.m_JoinedTick);
+		PackUnsigned(Out, Participant.m_LeftTick.has_value() ? 1 : 0);
+		if(Participant.m_LeftTick.has_value())
+			PackSigned(Out, *Participant.m_LeftTick);
+		PackUnsigned(Out, Participant.m_Bot ? 1 : 0);
+	}
+
+	PackUnsigned(Out, Report.m_vStandings.size());
+	for(const CMatchStanding &Standing : Report.m_vStandings)
+	{
+		PackUnsigned(Out, (uint64_t)Standing.m_SubjectKind);
+		PackSigned(Out, Standing.m_SubjectId);
+		PackSigned(Out, Standing.m_Rank);
+		PackUnsigned(Out, (uint64_t)Standing.m_Outcome);
+	}
+
+	PackUnsigned(Out, Report.m_vMetrics.size());
+	for(const CMatchMetric &Metric : Report.m_vMetrics)
+	{
+		PackUnsigned(Out, (uint64_t)Metric.m_SubjectKind);
+		PackUnsigned(Out, Metric.m_SubjectId.has_value() ? 1 : 0);
+		if(Metric.m_SubjectId.has_value())
+			PackSigned(Out, *Metric.m_SubjectId);
+		PackUnsigned(Out, Table.Index(Metric.m_MetricId));
+		PackSigned(Out, Metric.m_Value);
+		PackSigned(Out, (int64_t)Metric.m_Aggregation);
+	}
+
+	if(Out.size() > MatchReportLimits::MAX_PAYLOAD_SIZE)
+		return Fail(pError, "packed report exceeds payload limit");
+	Packed = std::move(Out);
+	return true;
+}
+
+bool MatchReportFromPacked(const char *pData, size_t Size, CMatchReport &Report, std::string *pError)
+{
+	Report = {};
+	CPackedReader Reader(pData, Size);
+	if(pData == nullptr || Size == 0 || Size > MatchReportLimits::MAX_PAYLOAD_SIZE || (unsigned char)pData[0] != PACKED_FORMAT_VERSION)
+		return Fail(pError, "unknown packed match report format");
+	Reader.Raw(1);
+
+	std::vector<std::string> vStrings;
+	// Every string costs at least its length byte, so the size of the input is
+	// the bound that keeps a bogus count from reserving gigabytes.
+	const uint64_t NumStrings = Reader.Unsigned();
+	if(Reader.Error() || NumStrings > Size)
+		return Fail(pError, "malformed packed match report string table");
+	// A payload can claim far more strings than it carries, so the count only
+	// steers the first allocation and the loop below is what has to run out.
+	vStrings.reserve(std::min<uint64_t>(NumStrings, 4096));
+	for(uint64_t i = 0; i < NumStrings; ++i)
+	{
+		const uint64_t Length = Reader.Unsigned();
+		const unsigned char *pBytes = Reader.Error() ? nullptr : Reader.Raw(Length);
+		if(pBytes == nullptr)
+			return Fail(pError, "truncated packed match report string");
+		vStrings.emplace_back((const char *)pBytes, Length);
+	}
+	const auto String = [&](uint64_t Index, std::string &Out) {
+		if(Index >= vStrings.size())
+			return false;
+		Out = vStrings[Index];
+		return true;
+	};
+	// The enums are numbers on the wire and their names are what the rest of the
+	// code validates, so an unknown number has to be rejected here.
+	const auto Enum = [&](uint64_t Count) {
+		const uint64_t Value = Reader.Unsigned();
+		if(Value >= Count)
+			return Count;
+		return Value;
+	};
+
+	const unsigned char *pMatchId = Reader.Raw(sizeof(Report.m_MatchId));
+	if(pMatchId == nullptr)
+		return Fail(pError, "truncated packed match report");
+	mem_copy(&Report.m_MatchId, pMatchId, sizeof(Report.m_MatchId));
+	if(Reader.Bool())
+	{
+		const unsigned char *pGameUuid = Reader.Raw(sizeof(CUuid));
+		if(pGameUuid == nullptr)
+			return Fail(pError, "truncated packed match report");
+		CUuid GameUuid;
+		mem_copy(&GameUuid, pGameUuid, sizeof(GameUuid));
+		Report.m_GameUuid = GameUuid;
+	}
+	Report.m_ReportSchemaVersion = Reader.Int();
+	if(!String(Reader.Unsigned(), Report.m_ModeId))
+		return Fail(pError, "packed match report references an unknown string");
+	Report.m_ModeSchemaVersion = Reader.Int();
+	if(!String(Reader.Unsigned(), Report.m_MapName))
+		return Fail(pError, "packed match report references an unknown string");
+	const unsigned char *pMapSha256 = Reader.Raw(sizeof(Report.m_MapSha256));
+	if(pMapSha256 == nullptr)
+		return Fail(pError, "truncated packed match report");
+	mem_copy(&Report.m_MapSha256, pMapSha256, sizeof(Report.m_MapSha256));
+	Report.m_StartTimeUtc = Reader.Signed();
+	Report.m_EndTimeUtc = Reader.Signed();
+	Report.m_DurationTicks = Reader.Signed();
+	Report.m_TickRate = Reader.Int();
+	Report.m_RoundStartTick = Reader.Int();
+	const uint64_t Termination = Enum(3);
+	if(Termination >= 3)
+		return Fail(pError, "packed match report has an unknown termination");
+	Report.m_Termination = (EMatchTermination)Termination;
+	Report.m_Ranked = Reader.Bool();
+	if(!String(Reader.Unsigned(), Report.m_UnrankedReason))
+		return Fail(pError, "packed match report references an unknown string");
+
+	const uint64_t NumTeams = Reader.Unsigned();
+	if(Reader.Error() || NumTeams > (uint64_t)MatchReportLimits::MAX_TEAMS)
+		return Fail(pError, "packed match report has too many teams");
+	Report.m_vTeams.resize(NumTeams);
+	for(CMatchTeam &Team : Report.m_vTeams)
+	{
+		Team.m_TeamId = Reader.Int();
+		if(!String(Reader.Unsigned(), Team.m_DisplayName))
+			return Fail(pError, "packed match report references an unknown string");
+	}
+
+	const uint64_t NumParticipants = Reader.Unsigned();
+	if(Reader.Error() || NumParticipants > (uint64_t)MatchReportLimits::MAX_PARTICIPANTS)
+		return Fail(pError, "packed match report has too many participants");
+	Report.m_vParticipants.resize(NumParticipants);
+	for(CMatchParticipant &Participant : Report.m_vParticipants)
+	{
+		Participant.m_ParticipantId = Reader.Int();
+		if(Reader.Bool())
+			Participant.m_TeamId = Reader.Int();
+		if(!String(Reader.Unsigned(), Participant.m_DisplayName) || !String(Reader.Unsigned(), Participant.m_Clan))
+			return Fail(pError, "packed match report references an unknown string");
+		Participant.m_JoinedTick = Reader.Signed();
+		if(Reader.Bool())
+			Participant.m_LeftTick = Reader.Signed();
+		Participant.m_Bot = Reader.Bool();
+	}
+
+	const uint64_t NumStandings = Reader.Unsigned();
+	if(Reader.Error() || NumStandings > (uint64_t)MatchReportLimits::MAX_STANDINGS)
+		return Fail(pError, "packed match report has too many standings");
+	Report.m_vStandings.resize(NumStandings);
+	for(CMatchStanding &Standing : Report.m_vStandings)
+	{
+		const uint64_t SubjectKind = Enum(3);
+		const int SubjectId = Reader.Int();
+		const int Rank = Reader.Int();
+		const uint64_t Outcome = Enum(6);
+		if(SubjectKind >= 3 || Outcome >= 6)
+			return Fail(pError, "packed match report has an unknown standing kind");
+		Standing.m_SubjectKind = (EMatchSubjectKind)SubjectKind;
+		Standing.m_SubjectId = SubjectId;
+		Standing.m_Rank = Rank;
+		Standing.m_Outcome = (EMatchOutcome)Outcome;
+	}
+
+	const uint64_t NumMetrics = Reader.Unsigned();
+	if(Reader.Error() || NumMetrics > (uint64_t)MatchReportLimits::MAX_METRICS)
+		return Fail(pError, "packed match report has too many metrics");
+	Report.m_vMetrics.resize(NumMetrics);
+	for(CMatchMetric &Metric : Report.m_vMetrics)
+	{
+		const uint64_t SubjectKind = Enum(3);
+		if(SubjectKind >= 3)
+			return Fail(pError, "packed match report has an unknown metric kind");
+		Metric.m_SubjectKind = (EMatchSubjectKind)SubjectKind;
+		if(Reader.Bool())
+			Metric.m_SubjectId = Reader.Int();
+		if(!String(Reader.Unsigned(), Metric.m_MetricId))
+			return Fail(pError, "packed match report references an unknown string");
+		Metric.m_Value = Reader.Signed();
+		// Aggregation is the one enum that starts below zero, so it is read as a
+		// number and named before it becomes one.
+		const int64_t Aggregation = Reader.Signed();
+		if(Aggregation < (int64_t)EMatchMetricAggregation::SUM || Aggregation > (int64_t)EMatchMetricAggregation::MATCH_ONLY)
+			return Fail(pError, "packed match report has an unknown metric aggregation");
+		Metric.m_Aggregation = (EMatchMetricAggregation)Aggregation;
+	}
+
+	if(Reader.Error() || !Reader.AtEnd())
+		return Fail(pError, "malformed packed match report");
+	// The enums above are read as numbers, so the report is only trustworthy
+	// after the same validation the JSON path runs.
+	return MatchReportValidate(Report, pError);
+}
+
 bool MatchReportToJson(const CMatchReport &Report, std::string &Json, std::string *pError)
 {
 	if(!MatchReportValidate(Report, pError))
@@ -636,7 +1010,8 @@ CMatchReportBuilder::CMatchReportBuilder(CMatchReport Report) :
 
 CMatchMetric *CMatchReportBuilder::FindMetric(EMatchSubjectKind SubjectKind, std::optional<int> SubjectId, const char *pMetricId)
 {
-	// ponytail: linear lookup is bounded by MAX_METRICS; add an index only if report construction is measured hot.
+	// The scan is bounded by MAX_METRICS and only runs while a report is being
+	// built, so an index would cost more than it saves.
 	for(CMatchMetric &Metric : m_Report.m_vMetrics)
 	{
 		if(Metric.m_SubjectKind == SubjectKind && Metric.m_SubjectId == SubjectId && Metric.m_MetricId == pMetricId)
@@ -730,20 +1105,12 @@ bool CMatchReportBuilder::SetMetricValue(EMatchSubjectKind SubjectKind, std::opt
 
 bool CMatchReportBuilder::Finalize(std::string *pError)
 {
-	return Finalize(pError, nullptr);
-}
-
-bool CMatchReportBuilder::Finalize(std::string *pError, std::string *pJson)
-{
 	if(m_Finalized)
 		return Fail(pError, "report already finalized");
 	if(m_MutationFailed)
 		return Fail(pError, "report builder mutation failed");
-	std::string Json;
-	if(!MatchReportToJson(m_Report, Json, pError))
+	if(!MatchReportValidate(m_Report, pError))
 		return false;
 	m_Finalized = true;
-	if(pJson != nullptr)
-		*pJson = std::move(Json);
 	return true;
 }

@@ -156,7 +156,6 @@ void CScore::Tick()
 		}
 		if(pState->m_pFinishResult != nullptr && pState->m_pFinishResult->m_Completed)
 		{
-			pState->m_ReloadPlayerData |= pState->m_pFinishResult->m_Success;
 			ProcessPlayerResult(ClientId, *pState->m_pFinishResult);
 			pState->m_pFinishResult = nullptr;
 		}
@@ -434,6 +433,12 @@ void CScore::LoadMapInfo()
 	str_copy(Tmp->m_aName, GameServer()->Map()->BaseName());
 	Tmp->m_aRequestingPlayer[0] = '\0'; // no player, so no "your time" in result
 	m_pPool->Execute(CScoreWorker::MapInfo, std::move(Tmp), "load map info");
+}
+
+void CScore::ScheduleReloadPlayerData(int ClientId)
+{
+	if(CPlayerState *pState = PlayerState(ClientId))
+		pState->m_ReloadPlayerData = true;
 }
 
 void CScore::LoadPlayerData(int ClientId, const char *pName)

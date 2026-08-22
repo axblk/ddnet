@@ -26,7 +26,7 @@
 
 namespace
 {
-	std::string MatchReportPayload(const char *pMatchName, CUuid &MatchId)
+	CMatchReport SampleMatchReport(const char *pMatchName, CUuid &MatchId)
 	{
 		CMatchReport Report;
 		MatchId = CalculateUuid(pMatchName);
@@ -40,9 +40,25 @@ namespace
 		Report.m_TickRate = 50;
 		Report.m_vParticipants.push_back({7, std::nullopt, "Tee", "", 0, std::nullopt, false});
 		Report.m_vStandings.push_back({EMatchSubjectKind::PARTICIPANT, 7, 1, EMatchOutcome::WIN});
+		return Report;
+	}
+
+	// The wire carries the packed report, the journal keeps the JSON the client
+	// makes out of it again.
+	std::string MatchReportPayload(const char *pMatchName, CUuid &MatchId)
+	{
+		std::string Packed;
+		std::string Error;
+		EXPECT_TRUE(MatchReportToPacked(SampleMatchReport(pMatchName, MatchId), Packed, &Error)) << Error;
+		return Packed;
+	}
+
+	std::string MatchReportJournalJson(const char *pMatchName)
+	{
+		CUuid MatchId;
 		std::string Json;
 		std::string Error;
-		EXPECT_TRUE(MatchReportToJson(Report, Json, &Error)) << Error;
+		EXPECT_TRUE(MatchReportToJson(SampleMatchReport(pMatchName, MatchId), Json, &Error)) << Error;
 		return Json;
 	}
 
@@ -2379,7 +2395,7 @@ TEST(GameState, DemoPreservesCommonMatchReportWithoutImportingIt)
 	pPlayer->Play();
 	ASSERT_TRUE(pPlayer->SetPos(300)) << pPlayer->ErrorMessage();
 	ASSERT_TRUE(Listener.Match().has_value()) << Listener.Error();
-	EXPECT_EQ(Listener.Match()->m_RawReport, Payload);
+	EXPECT_EQ(Listener.Match()->m_RawReport, MatchReportJournalJson("demo-report@ddnet.org"));
 	EXPECT_FALSE(Listener.Match()->m_LocalParticipantId.has_value());
 	EXPECT_FALSE(ShouldPersistMatchReport(ESessionSourceType::DEMO, true, true));
 	pPlayer->Stop();
@@ -2405,7 +2421,7 @@ TEST(MatchReportAssembler, AssemblesOutOfOrderAndMapsLocalParticipant)
 	EXPECT_EQ(Match.m_Completeness, EMatchCompleteness::COMPLETE);
 	ASSERT_TRUE(Match.m_LocalParticipantId.has_value());
 	EXPECT_EQ(*Match.m_LocalParticipantId, 7);
-	EXPECT_EQ(Match.m_RawReport, Payload);
+	EXPECT_EQ(Match.m_RawReport, MatchReportJournalJson("assembler-out-of-order@ddnet.org"));
 }
 
 TEST(LiveStatsAssembler, RejectsStaleRevisionsAndKeepsSessionsIndependent)

@@ -232,7 +232,7 @@ bool IGameController::BuildLiveStatsReport(int ClientId, CMatchReport &Report, i
 			return false;
 	}
 	std::string Error;
-	if(!Builder.Finalize(&Error, &Payload))
+	if(!Builder.Finalize(&Error) || !MatchReportToPacked(Builder.Report(), Payload, &Error))
 	{
 		log_error("game", "failed to build live stats: %s", Error.c_str());
 		return false;
@@ -253,6 +253,10 @@ bool IGameController::AddParticipantMatchMetric(CPlayer *pPlayer, const char *pS
 
 void IGameController::AddParticipantWeaponMatchMetric(CPlayer *pPlayer, int Weapon, const char *pSuffix, int64_t Value)
 {
+	// A death can come from the world or from the player itself, which are
+	// negative weapon numbers and name no weapon to count this against.
+	if(Weapon < WEAPON_HAMMER || Weapon >= NUM_WEAPONS)
+		return;
 	char aSuffix[64];
 	str_format(aSuffix, sizeof(aSuffix), "weapon_%d_%s", Weapon, pSuffix);
 	AddParticipantMatchMetric(pPlayer, aSuffix, Value);
@@ -352,7 +356,7 @@ void IGameController::FinalizeMatchReport(EMatchTermination Termination)
 
 	std::string Error;
 	std::string Payload;
-	if(m_pMatchReportBuilder->Finalize(&Error, &Payload))
+	if(m_pMatchReportBuilder->Finalize(&Error) && MatchReportToPacked(m_pMatchReportBuilder->Report(), Payload, &Error))
 	{
 		m_pLatestMatchReport = std::make_unique<CMatchReport>(m_pMatchReportBuilder->Report());
 		SendMatchReport(*m_pLatestMatchReport, Payload);
@@ -367,17 +371,13 @@ void IGameController::SendMatchReport(const CMatchReport &Report, const std::str
 	const int PayloadSize = static_cast<int>(Payload.size());
 	const int NumChunks = (PayloadSize + MatchReportTransportLimits::MAX_CHUNK_SIZE - 1) / MatchReportTransportLimits::MAX_CHUNK_SIZE;
 	const SHA256_DIGEST PayloadSha256 = sha256(Payload.data(), Payload.size());
-
-	CMsgPacker Start(NETMSG_MATCH_REPORT_START, false);
-	Start.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
-	Start.AddInt(Report.m_ReportSchemaVersion);
-	Start.AddInt(PayloadSize);
-	Start.AddInt(NumChunks);
-	if(Start.Error() || Server()->SendMsg(&Start, MSGFLAG_VITAL, -1) < 0)
-	{
-		log_error("game", "failed to send match report start");
-		return;
-	}
+	// Every participant gets the same bytes, and they are handed out over the
+	// next ticks, so the payload outlives this call once.
+	const auto pSharedPayload = std::make_shared<const std::string>(Payload);
+	// Only a participant can store this report, and no demo needs a copy of it,
+	// so it does not go to everyone and it is not recorded. The live stats path
+	// has always done it this way.
+	const int Flags = MSGFLAG_VITAL | MSGFLAG_NORECORD;
 
 	for(CPlayer *pPlayer : GameServer()->m_apPlayers)
 	{
@@ -386,34 +386,93 @@ void IGameController::SendMatchReport(const CMatchReport &Report, const std::str
 		const CMatchParticipantState *pParticipant = MatchParticipant(pPlayer);
 		if(pParticipant == nullptr)
 			continue;
+		const int ClientId = pPlayer->GetCid();
+
+		CMsgPacker Start(NETMSG_MATCH_REPORT_START, false);
+		Start.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
+		Start.AddInt(Report.m_ReportSchemaVersion);
+		Start.AddInt(PayloadSize);
+		Start.AddInt(NumChunks);
+		if(Start.Error() || Server()->SendMsg(&Start, Flags, ClientId) < 0)
+		{
+			log_error("game", "failed to send match report start to client %d", ClientId);
+			continue;
+		}
+
 		CMsgPacker LocalParticipant(NETMSG_MATCH_REPORT_LOCAL_PARTICIPANT, false);
 		LocalParticipant.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
 		LocalParticipant.AddInt(pParticipant->m_Participant.m_ParticipantId);
-		if(LocalParticipant.Error() || Server()->SendMsg(&LocalParticipant, MSGFLAG_VITAL | MSGFLAG_NORECORD, pPlayer->GetCid()) < 0)
-			log_error("game", "failed to send local match participant to client %d", pPlayer->GetCid());
-	}
+		if(LocalParticipant.Error() || Server()->SendMsg(&LocalParticipant, Flags, ClientId) < 0)
+			log_error("game", "failed to send local match participant to client %d", ClientId);
 
-	for(int ChunkIndex = 0; ChunkIndex < NumChunks; ++ChunkIndex)
+		CPendingReportSend Send;
+		Send.m_ClientId = ClientId;
+		Send.m_LiveStats = false;
+		Send.m_MatchId = Report.m_MatchId;
+		Send.m_pPayload = pSharedPayload;
+		Send.m_PayloadSha256 = PayloadSha256;
+		Send.m_NumChunks = NumChunks;
+		m_vPendingReportSends.push_back(Send);
+	}
+}
+
+void IGameController::QueueReportChunks(const CPendingReportSend &Send)
+{
+	m_vPendingReportSends.push_back(Send);
+}
+
+void IGameController::TickReportSends()
+{
+	const int Flags = MSGFLAG_VITAL | MSGFLAG_NORECORD;
+	for(size_t Index = 0; Index < m_vPendingReportSends.size();)
 	{
-		const int Offset = ChunkIndex * MatchReportTransportLimits::MAX_CHUNK_SIZE;
-		const int ChunkSize = std::min(MatchReportTransportLimits::MAX_CHUNK_SIZE, PayloadSize - Offset);
-		CMsgPacker Chunk(NETMSG_MATCH_REPORT_CHUNK, false);
-		Chunk.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
-		Chunk.AddInt(ChunkIndex);
-		Chunk.AddInt(ChunkSize);
-		Chunk.AddRaw(Payload.data() + Offset, ChunkSize);
-		if(Chunk.Error() || Server()->SendMsg(&Chunk, MSGFLAG_VITAL, -1) < 0)
+		CPendingReportSend &Send = m_vPendingReportSends[Index];
+		if(!Server()->ClientIngame(Send.m_ClientId))
 		{
-			log_error("game", "failed to send match report chunk %d", ChunkIndex);
-			return;
+			m_vPendingReportSends.erase(m_vPendingReportSends.begin() + Index);
+			continue;
 		}
-	}
 
-	CMsgPacker End(NETMSG_MATCH_REPORT_END, false);
-	End.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
-	End.AddRaw(&PayloadSha256, sizeof(PayloadSha256));
-	if(End.Error() || Server()->SendMsg(&End, MSGFLAG_VITAL, -1) < 0)
-		log_error("game", "failed to send match report end");
+		const std::string &Payload = *Send.m_pPayload;
+		const int PayloadSize = static_cast<int>(Payload.size());
+		bool Failed = false;
+		const int LastChunk = std::min(Send.m_NumChunks, Send.m_NextChunk + REPORT_CHUNKS_PER_TICK);
+		for(; Send.m_NextChunk < LastChunk; ++Send.m_NextChunk)
+		{
+			const int Offset = Send.m_NextChunk * MatchReportTransportLimits::MAX_CHUNK_SIZE;
+			const int ChunkSize = std::min(MatchReportTransportLimits::MAX_CHUNK_SIZE, PayloadSize - Offset);
+			CMsgPacker Chunk(Send.m_LiveStats ? NETMSG_LIVE_STATS_CHUNK : NETMSG_MATCH_REPORT_CHUNK, false);
+			Chunk.AddRaw(&Send.m_MatchId, sizeof(Send.m_MatchId));
+			if(Send.m_LiveStats)
+				Chunk.AddInt(Send.m_Revision);
+			Chunk.AddInt(Send.m_NextChunk);
+			Chunk.AddInt(ChunkSize);
+			Chunk.AddRaw(Payload.data() + Offset, ChunkSize);
+			if(Chunk.Error() || Server()->SendMsg(&Chunk, Flags, Send.m_ClientId) < 0)
+			{
+				log_error("game", "failed to send report chunk %d to client %d", Send.m_NextChunk, Send.m_ClientId);
+				Failed = true;
+				break;
+			}
+		}
+
+		if(!Failed && Send.m_NextChunk == Send.m_NumChunks)
+		{
+			CMsgPacker End(Send.m_LiveStats ? NETMSG_LIVE_STATS_END : NETMSG_MATCH_REPORT_END, false);
+			End.AddRaw(&Send.m_MatchId, sizeof(Send.m_MatchId));
+			if(Send.m_LiveStats)
+				End.AddInt(Send.m_Revision);
+			End.AddRaw(&Send.m_PayloadSha256, sizeof(Send.m_PayloadSha256));
+			if(End.Error() || Server()->SendMsg(&End, Flags, Send.m_ClientId) < 0)
+				log_error("game", "failed to send report end to client %d", Send.m_ClientId);
+			Failed = true;
+		}
+
+		if(Failed)
+			m_vPendingReportSends.erase(m_vPendingReportSends.begin() + Index);
+		else
+			++Index;
+	}
 }
 
 void IGameController::SendLiveStatsReport(int ClientId, int Revision, const CMatchReport &Report, int LocalParticipantId, bool PersistOnDisconnect, const std::string &Payload)
@@ -434,25 +493,21 @@ void IGameController::SendLiveStatsReport(int ClientId, int Revision, const CMat
 	if(Start.Error() || Server()->SendMsg(&Start, Flags, ClientId) < 0)
 		return;
 
-	for(int ChunkIndex = 0; ChunkIndex < NumChunks; ++ChunkIndex)
-	{
-		const int Offset = ChunkIndex * MatchReportTransportLimits::MAX_CHUNK_SIZE;
-		const int ChunkSize = std::min(MatchReportTransportLimits::MAX_CHUNK_SIZE, PayloadSize - Offset);
-		CMsgPacker Chunk(NETMSG_LIVE_STATS_CHUNK, false);
-		Chunk.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
-		Chunk.AddInt(Revision);
-		Chunk.AddInt(ChunkIndex);
-		Chunk.AddInt(ChunkSize);
-		Chunk.AddRaw(Payload.data() + Offset, ChunkSize);
-		if(Chunk.Error() || Server()->SendMsg(&Chunk, Flags, ClientId) < 0)
-			return;
-	}
+	// A client asks for live stats repeatedly, so an older answer that is still
+	// on its way is dropped rather than sent alongside the new one.
+	std::erase_if(m_vPendingReportSends, [ClientId](const CPendingReportSend &Send) {
+		return Send.m_LiveStats && Send.m_ClientId == ClientId;
+	});
 
-	CMsgPacker End(NETMSG_LIVE_STATS_END, false);
-	End.AddRaw(&Report.m_MatchId, sizeof(Report.m_MatchId));
-	End.AddInt(Revision);
-	End.AddRaw(&PayloadSha256, sizeof(PayloadSha256));
-	Server()->SendMsg(&End, Flags, ClientId);
+	CPendingReportSend Send;
+	Send.m_ClientId = ClientId;
+	Send.m_LiveStats = true;
+	Send.m_Revision = Revision;
+	Send.m_MatchId = Report.m_MatchId;
+	Send.m_pPayload = std::make_shared<const std::string>(Payload);
+	Send.m_PayloadSha256 = PayloadSha256;
+	Send.m_NumChunks = NumChunks;
+	QueueReportChunks(Send);
 }
 
 void IGameController::SendLiveStats(int ClientId)
@@ -1044,10 +1099,14 @@ void IGameController::FinalizeCharacterDeath(const CGameCharacterDeathContext &C
 		return;
 	CPlayer *pVictim = Context.m_pVictim->GetPlayer();
 	AddParticipantMatchMetric(pVictim, "deaths", 1);
+	AddParticipantWeaponMatchMetric(pVictim, Context.m_Weapon, "deaths", 1);
 	if(Context.m_pKiller == pVictim)
 		AddParticipantMatchMetric(pVictim, "suicides", 1);
 	else if(Context.m_pKiller)
+	{
 		AddParticipantMatchMetric(Context.m_pKiller, "kills", 1);
+		AddParticipantWeaponMatchMetric(Context.m_pKiller, Context.m_Weapon, "kills", 1);
+	}
 }
 
 void IGameController::OnCharacterDeath(const CGameCharacterDeathContext &Context)
@@ -1262,6 +1321,7 @@ void IGameController::Tick()
 				SendGameInfoSixup(ClientId);
 		}
 	}
+	TickReportSends();
 
 	if(Match().TickWarmup())
 		StartRound();

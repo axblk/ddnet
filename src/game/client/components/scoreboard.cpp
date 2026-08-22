@@ -236,31 +236,42 @@ bool CScoreboard::OnInput(const IInput::CEvent &Event)
 	const auto ReportLayout = std::find_if(m_vInteractionLayouts.begin(), m_vInteractionLayouts.end(), [](const CInteractionLayout &Layout) { return Layout.m_Active && Layout.m_HasReportHistoryRect; });
 	if((Event.m_Flags & IInput::FLAG_PRESS) && ReportLayout != m_vInteractionLayouts.end())
 	{
+		bool Handled = true;
 		if(Event.m_Key == KEY_H)
 		{
 			GameClient()->m_Menus.OpenStats();
-			return true;
 		}
-		if(Event.m_Key == KEY_D)
+		else if(Event.m_Key == KEY_D)
 		{
 			GameClient()->m_Menus.OpenDemos();
-			return true;
 		}
-		if(Event.m_Key == KEY_C)
+		else if(Event.m_Key == KEY_C)
 		{
 			const CGameSessionContext *pSession = GameClient()->FindSessionContext(ReportLayout->m_SessionId);
 			if(pSession != nullptr && pSession->Stats().LatestMatch().has_value())
 				GameClient()->m_Menus.ExportMatchStats(*pSession->Stats().LatestMatch(), true);
-			return true;
 		}
-		if(Event.m_Key == KEY_S)
+		else if(Event.m_Key == KEY_S)
 		{
 			Console()->ExecuteLine("screenshot", IConsole::CLIENT_ID_UNSPECIFIED);
-			return true;
 		}
-		if((Event.m_Key == KEY_RETURN || Event.m_Key == KEY_KP_ENTER) && ReportLayout->m_HasReportContinueRect)
+		else if((Event.m_Key == KEY_RETURN || Event.m_Key == KEY_KP_ENTER) && ReportLayout->m_HasReportContinueRect)
 		{
 			DismissMatchReport(ReportLayout->m_SessionId, ReportLayout->m_ReportMatchId);
+		}
+		else
+		{
+			Handled = false;
+		}
+		if(Handled)
+		{
+			// These shortcuts put a menu page in front of the player, and the
+			// demo browser reads the very same plain letters. Consuming the
+			// event does not reach the per-frame key state those read, so the
+			// key has to be spent here: opening the demo list with D would
+			// otherwise land on its delete shortcut in the same frame, and ask
+			// about deleting whatever the list happened to have selected.
+			Input()->ClearFrameKey(Event.m_Key);
 			return true;
 		}
 	}

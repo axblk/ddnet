@@ -125,8 +125,32 @@ void CStatboard::OnRender(const CRenderContext &Context)
 	if(!Context.m_Time.m_IsGameActive)
 		return;
 
-	if(IsRenderable(Context))
+	if(!IsRenderable(Context))
+		return;
+
+	// Either or, not both: while a server reports the running match, its numbers
+	// are the authoritative version of everything the table below estimates, so
+	// the live panel takes the place of the table instead of sitting on top of
+	// it. This is where a live match belongs: in the game, not in a menu tab.
+	if(const CStoredMatch *pLive = GameClient()->LiveStats(Context.m_Session.Id()))
+		RenderLiveMatch(Context, *pLive);
+	else
 		RenderGlobalStats(Context);
+}
+
+void CStatboard::RenderLiveMatch(const CRenderContext &Context, const CStoredMatch &Live)
+{
+	const float StatboardWidth = 400 * 3.0f * Context.AspectRatio(Graphics()->ScreenAspect());
+	const float StatboardHeight = 400 * 3.0f;
+	Graphics()->MapScreenToSize(StatboardWidth, StatboardHeight);
+
+	const float PanelWidth = 760.0f;
+	const float PanelHeight = LiveMatchPanelHeight(Live);
+	const float X = StatboardWidth / 2.0f - PanelWidth / 2.0f;
+	const float Y = 200.0f;
+	GameClient()->m_Menus.RenderBackdropRegion({X, Y, PanelWidth, PanelHeight});
+	Graphics()->DrawRect(X, Y, PanelWidth, PanelHeight, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 17.0f);
+	RenderLiveMatchPanel(Live, X + 10.0f, Y + 10.0f, PanelWidth - 20.0f);
 }
 
 void CStatboard::RenderGlobalStats(const CRenderContext &Context)
@@ -200,21 +224,8 @@ void CStatboard::RenderGlobalStats(const CRenderContext &Context)
 
 	Graphics()->MapScreenToSize(StatboardWidth, StatboardHeight);
 
-	// While a server reports the running match, its numbers are the
-	// authoritative version of what the rest of this overlay estimates, so they
-	// get a line of their own above the table. This is where a live match
-	// belongs: in the game, not in a menu tab.
-	const CStoredMatch *pLive = GameClient()->LiveStats(Context.m_Session.Id());
-	const float LiveHeight = pLive == nullptr ? 0.0f : LiveMatchPanelHeight(*pLive);
-
-	GameClient()->m_Menus.RenderBackdropRegion({x - 10.f, y - 10.f - LiveHeight, StatboardContentWidth, StatboardContentHeight + LiveHeight});
-	Graphics()->DrawRect(x - 10.f, y - 10.f - LiveHeight, StatboardContentWidth, StatboardContentHeight + LiveHeight, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 17.0f);
-	if(pLive != nullptr)
-	{
-		RenderLiveMatchPanel(*pLive, x + 10.0f, y - LiveHeight, StatboardContentWidth - 20.0f);
-		// A rule between what the server reports and what this client counted
-		Graphics()->DrawRect(x, y - 16.0f, StatboardContentWidth - 20.0f, 1.0f, ColorRGBA(1.0f, 1.0f, 1.0f, 0.15f), IGraphics::CORNER_NONE, 0.0f);
-	}
+	GameClient()->m_Menus.RenderBackdropRegion({x - 10.f, y - 10.f, StatboardContentWidth, StatboardContentHeight});
+	Graphics()->DrawRect(x - 10.f, y - 10.f, StatboardContentWidth, StatboardContentHeight, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 17.0f);
 
 	int px = 325;
 

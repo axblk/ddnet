@@ -275,7 +275,7 @@ TEST_F(MatchJournal, DeleteAndInfo)
 	EXPECT_EQ(Info.m_OldestMatchUtc, 3000);
 
 	ASSERT_EQ(m_Journal.Insert(First, &Error), CMatchJournal::EInsertResult::INSERTED) << Error;
-	EXPECT_TRUE(m_Journal.DeleteMatchesSince(2500, &Error)) << Error;
+	EXPECT_TRUE(m_Journal.DeleteMatch(Second.m_OriginId.c_str(), Second.m_Report.m_MatchId, &Error)) << Error;
 	ASSERT_TRUE(m_Journal.Info(Info, &Error)) << Error;
 	EXPECT_EQ(Info.m_NumMatches, 1);
 	EXPECT_EQ(Info.m_OldestMatchUtc, 2000);
@@ -304,7 +304,7 @@ TEST_F(MatchJournal, DeletesPruneOrphanOrigins)
 	ASSERT_EQ(m_Journal.Insert(Third, &Error), CMatchJournal::EInsertResult::INSERTED) << Error;
 	EXPECT_EQ(OriginCount(), 2);
 
-	EXPECT_TRUE(m_Journal.DeleteMatchesSince(3500, &Error)) << Error;
+	EXPECT_TRUE(m_Journal.DeleteMatch(Third.m_OriginId.c_str(), Third.m_Report.m_MatchId, &Error)) << Error;
 	EXPECT_EQ(OriginCount(), 1);
 	EXPECT_TRUE(m_Journal.DeleteAll(&Error)) << Error;
 	EXPECT_EQ(OriginCount(), 0);
@@ -348,17 +348,19 @@ TEST_F(MatchJournal, StoresDisconnectSnapshotWithoutDowngradingFinalReport)
 	Snapshot.m_Report.m_Termination = EMatchTermination::ABORTED;
 	std::string Error;
 	ASSERT_TRUE(MatchReportToJson(Snapshot.m_Report, Snapshot.m_RawReport, &Error)) << Error;
+	std::string Packed;
+	ASSERT_TRUE(MatchReportToPacked(Snapshot.m_Report, Packed, &Error)) << Error;
 	ASSERT_EQ(m_Journal.Insert(Observed, &Error), CMatchJournal::EInsertResult::INSERTED) << Error;
 	CLiveStatsAssembler LiveStats;
-	const int NumChunks = (Snapshot.m_RawReport.size() + MatchReportTransportLimits::MAX_CHUNK_SIZE - 1) / MatchReportTransportLimits::MAX_CHUNK_SIZE;
-	ASSERT_TRUE(LiveStats.Start(Snapshot.m_Report.m_MatchId, 0, Snapshot.m_Report.m_ReportSchemaVersion, 0, true, Snapshot.m_RawReport.size(), NumChunks, &Error)) << Error;
+	const int NumChunks = (Packed.size() + MatchReportTransportLimits::MAX_CHUNK_SIZE - 1) / MatchReportTransportLimits::MAX_CHUNK_SIZE;
+	ASSERT_TRUE(LiveStats.Start(Snapshot.m_Report.m_MatchId, 0, Snapshot.m_Report.m_ReportSchemaVersion, 0, true, Packed.size(), NumChunks, &Error)) << Error;
 	for(int Chunk = 0; Chunk < NumChunks; ++Chunk)
 	{
 		const size_t Offset = Chunk * MatchReportTransportLimits::MAX_CHUNK_SIZE;
-		const size_t Size = std::min(Snapshot.m_RawReport.size() - Offset, static_cast<size_t>(MatchReportTransportLimits::MAX_CHUNK_SIZE));
-		ASSERT_TRUE(LiveStats.AddChunk(Snapshot.m_Report.m_MatchId, 0, Chunk, Snapshot.m_RawReport.data() + Offset, Size, &Error)) << Error;
+		const size_t Size = std::min(Packed.size() - Offset, static_cast<size_t>(MatchReportTransportLimits::MAX_CHUNK_SIZE));
+		ASSERT_TRUE(LiveStats.AddChunk(Snapshot.m_Report.m_MatchId, 0, Chunk, Packed.data() + Offset, Size, &Error)) << Error;
 	}
-	ASSERT_TRUE(LiveStats.Finish(Snapshot.m_Report.m_MatchId, 0, sha256(Snapshot.m_RawReport.data(), Snapshot.m_RawReport.size()), Snapshot.m_OriginId.c_str(), &Error)) << Error;
+	ASSERT_TRUE(LiveStats.Finish(Snapshot.m_Report.m_MatchId, 0, sha256(Packed.data(), Packed.size()), Snapshot.m_OriginId.c_str(), &Error)) << Error;
 	ASSERT_TRUE(PersistLiveStatsSnapshotOnDisconnect(m_Journal, ESessionSourceType::NETWORK, true, true, false, Observed, LiveStats, &Error)) << Error;
 
 	std::vector<CMatchHistoryEntry> vEntries;
@@ -486,4 +488,17 @@ TEST_F(MatchJournal, GeneratedSampleMatchesAreStoredAndQueryable)
 	ASSERT_TRUE(m_Journal.QueryProfile(CMatchProfileFilter(), Profile, &Error)) << Error;
 	EXPECT_GT(Profile.m_Matches, 0);
 	EXPECT_FALSE(Profile.m_vMetrics.empty());
+}
+
+TEST_F(MatchJournal, RefusesMetricValuesThatWouldOverflowTheProfileSum)
+{
+	CStoredMatch Stored = StoredMatch("overflow", 1720000000, EMatchCompleteness::COMPLETE, EMatchOutcome::WIN, 1);
+	Stored.m_Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, 0, "vanilla.dm@ddnet.org/damage_done", std::numeric_limits<int64_t>::max()});
+	std::string Error;
+	ASSERT_TRUE(MatchReportToJson(Stored.m_Report, Stored.m_RawReport, &Error)) << Error;
+	EXPECT_EQ(m_Journal.Insert(Stored, &Error), CMatchJournal::EInsertResult::ERROR);
+
+	CMatchProfile Profile;
+	ASSERT_TRUE(m_Journal.QueryProfile(CMatchProfileFilter(), Profile, &Error)) << Error;
+	EXPECT_EQ(Profile.m_Matches, 0);
 }

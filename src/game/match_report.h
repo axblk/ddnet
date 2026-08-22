@@ -13,11 +13,31 @@
 
 namespace MatchReportLimits
 {
-	inline constexpr int MAX_PAYLOAD_SIZE = 256 * 1024;
 	inline constexpr int MAX_TEAMS = 64;
 	inline constexpr int MAX_PARTICIPANTS = 128;
 	inline constexpr int MAX_STANDINGS = MAX_PARTICIPANTS + MAX_TEAMS;
-	inline constexpr int MAX_METRICS = 4096;
+	/**
+	 * Metrics one participant is expected to need: score, playtime, the combat
+	 * counters and four numbers for each of a handful of weapons, with room for
+	 * what a mode adds on top.
+	 */
+	inline constexpr int MAX_METRICS_PER_PARTICIPANT = 48;
+	// A full server has to fit, otherwise its report is built and then thrown
+	// away at the last moment for being too large.
+	inline constexpr int MAX_METRICS = MAX_PARTICIPANTS * MAX_METRICS_PER_PARTICIPANT + MAX_TEAMS * 16 + 256;
+	// Bounds both forms of a report: the JSON of the journal, which costs
+	// roughly 100 bytes per metric, and the packed form on the wire, which is
+	// an order of magnitude smaller and only comes near this in the pathological
+	// case of a mode giving every single metric its own long name.
+	inline constexpr int MAX_PAYLOAD_SIZE = MAX_METRICS * 128;
+	/**
+	 * Bound on a single metric value.
+	 *
+	 * Values are summed across matches when a profile is queried, so a report
+	 * full of values near the integer limit would make that sum overflow and
+	 * break the profile page for good.
+	 */
+	inline constexpr int64_t MAX_METRIC_VALUE = 1000000000000LL;
 	inline constexpr int MAX_MODE_ID_LENGTH = 96;
 	inline constexpr int MAX_METRIC_ID_LENGTH = 128;
 	inline constexpr int MAX_MAP_NAME_LENGTH = 128;
@@ -140,6 +160,23 @@ bool MatchReportValidate(const CMatchReport &Report, std::string *pError);
 bool MatchReportToJson(const CMatchReport &Report, std::string &Json, std::string *pError);
 bool MatchReportFromJson(const char *pJson, size_t JsonSize, CMatchReport &Report, std::string *pError);
 
+/**
+ * Packs a report for the network.
+ *
+ * The strings of a report repeat heavily: every participant carries the same
+ * metric ids, which as JSON costs about a hundred bytes for a number and a
+ * name. Packed, every distinct string is written once and referenced by index,
+ * and the numbers are variable length. That is roughly fifteen times smaller,
+ * which is what makes sending live statistics repeatedly affordable.
+ *
+ * The result stays self describing: it carries its own string table, so a
+ * client can store what it received without knowing the mode. JSON remains the
+ * format of the local journal, where reports are read back months later and
+ * size does not matter.
+ */
+bool MatchReportToPacked(const CMatchReport &Report, std::string &Packed, std::string *pError);
+bool MatchReportFromPacked(const char *pData, size_t Size, CMatchReport &Report, std::string *pError);
+
 class CMatchReportBuilder
 {
 	CMatchReport m_Report;
@@ -159,7 +196,6 @@ public:
 	bool AddMetricValue(EMatchSubjectKind SubjectKind, std::optional<int> SubjectId, const char *pMetricId, int64_t Value, EMatchMetricAggregation Aggregation);
 	bool SetMetricValue(EMatchSubjectKind SubjectKind, std::optional<int> SubjectId, const char *pMetricId, int64_t Value, EMatchMetricAggregation Aggregation);
 	bool Finalize(std::string *pError);
-	bool Finalize(std::string *pError, std::string *pJson);
 
 	bool IsFinalized() const { return m_Finalized; }
 	CMatchReport &Report() { return m_Report; }

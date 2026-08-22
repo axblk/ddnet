@@ -19,13 +19,15 @@
 namespace
 {
 	constexpr int ASSET_OWNER_COUNTRY_FLAGS = 6;
-	constexpr size_t MAX_CONCURRENT_COUNTRY_FLAG_LOADS = 4;
+	constexpr size_t MAX_CONCURRENT_COUNTRY_FLAG_LOADS = 16;
 }
 
-void CCountryFlags::CCountryFlag::RequestLoad() const
+bool CCountryFlags::CCountryFlag::RequestLoad() const
 {
-	if(m_State == EState::UNLOADED)
-		m_State = EState::PENDING;
+	if(m_State != EState::UNLOADED)
+		return false;
+	m_State = EState::PENDING;
+	return true;
 }
 
 bool CCountryFlags::CCountryFlag::operator<(const CCountryFlag &Other) const
@@ -147,6 +149,7 @@ void CCountryFlags::LoadCountryflagsIndexfile()
 		m_aCountryCodeToIndexTable[m_vCountryFlags[i].m_CountryCode - CountryCode::MINIMUM] = i;
 	}
 	m_vCountryFlags[DefaultIndex].m_State = CCountryFlag::EState::PENDING;
+	m_LoadsPending = true;
 
 	log_debug("countryflags", "Loaded %" PRIzu " country flags", m_vCountryFlags.size());
 }
@@ -164,6 +167,10 @@ void CCountryFlags::OnInit()
 
 void CCountryFlags::OnUpdate()
 {
+	// Both passes walk every known flag, so they must not run once all of them
+	// are resident. Rendering a flag that is not loaded yet asks for them again.
+	if(!m_LoadsPending)
+		return;
 	FinishLoads();
 	StartPendingLoads();
 }
@@ -193,10 +200,13 @@ void CCountryFlags::StartPendingLoads()
 			continue;
 		char aFlagPath[IO_MAX_PATH_LENGTH];
 		str_format(aFlagPath, sizeof(aFlagPath), "countryflags/%s.png", CountryFlag.m_aCountryCodeString);
-		CountryFlag.m_LoadResource = GameClient()->AssetLoader().LoadImage(Storage(), aFlagPath, IStorage::TYPE_ALL, ASSET_OWNER_COUNTRY_FLAGS, m_Generation);
+		CountryFlag.m_LoadResource = GameClient()->AssetLoader().LoadImageFile(Storage(), aFlagPath, IStorage::TYPE_ALL, ASSET_OWNER_COUNTRY_FLAGS, m_Generation);
 		CountryFlag.m_State = CCountryFlag::EState::LOADING;
 		++NumLoading;
 	}
+	// Every pending flag has been started, so the only work left is the one
+	// still in flight.
+	m_LoadsPending = NumLoading != 0;
 }
 
 void CCountryFlags::FinishLoads()
@@ -260,9 +270,9 @@ const CCountryFlags::CCountryFlag &CCountryFlags::GetByIndex(size_t Index) const
 
 void CCountryFlags::Render(const CCountryFlag &Flag, ColorRGBA Color, float x, float y, float w, float h)
 {
-	Flag.RequestLoad();
+	m_LoadsPending |= Flag.RequestLoad();
 	const CCountryFlag &RenderedFlag = Flag.m_Texture.IsValid() ? Flag : GetByCountryCode(CountryCode::DEFAULT);
-	RenderedFlag.RequestLoad();
+	m_LoadsPending |= RenderedFlag.RequestLoad();
 	if(RenderedFlag.m_Texture.IsValid())
 	{
 		Graphics()->TextureSet(RenderedFlag.m_Texture);

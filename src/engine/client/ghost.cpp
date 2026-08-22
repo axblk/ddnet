@@ -44,9 +44,9 @@ CGhostRecorder::CGhostRecorder()
 	ResetBuffer();
 }
 
-void CGhostRecorder::Init()
+void CGhostRecorder::Init(IStorage *pStorage)
 {
-	m_pStorage = Kernel()->RequestInterface<IStorage>();
+	m_pStorage = pStorage;
 }
 
 int CGhostRecorder::Start(const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, const char *pName)
@@ -219,9 +219,9 @@ CGhostLoader::CGhostLoader()
 	ResetBuffer();
 }
 
-void CGhostLoader::Init()
+void CGhostLoader::Init(IStorage *pStorage)
 {
-	m_pStorage = Kernel()->RequestInterface<IStorage>();
+	m_pStorage = pStorage;
 }
 
 void CGhostLoader::ResetBuffer()

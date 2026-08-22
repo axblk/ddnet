@@ -58,7 +58,7 @@ void CCommunityIcons::StartLoad(const char *pCommunityId, int StorageType)
 	auto pResult = std::make_shared<CCommunityIconLoadResult>();
 	IStorage *pStorage = Storage();
 	const std::string Path(aPath);
-	CImageResource Resource = GameClient()->AssetLoader().LoadImage(pStorage, aPath, StorageType, ASSET_OWNER_COMMUNITY_ICONS, m_Generation, [pResult, pStorage, Path, StorageType](CImageInfo &Info) {
+	CImageResource Resource = GameClient()->AssetLoader().LoadImageFile(pStorage, aPath, StorageType, ASSET_OWNER_COMMUNITY_ICONS, m_Generation, [pResult, pStorage, Path, StorageType](CImageInfo &Info) {
 		if(Info.m_Format != CImageInfo::FORMAT_RGBA)
 			return false;
 		if(!pStorage->CalculateHashes(Path.c_str(), StorageType, &pResult->m_Sha256))

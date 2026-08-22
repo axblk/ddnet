@@ -22,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 struct SQuadRenderInfo
@@ -345,6 +346,25 @@ protected:
 	void QuadsDrawTLImpl(TName *pVertices, const CQuadItem *pArray, int Num);
 
 public:
+	// A zone the GPU time of a frame is split into. The game registers zones by
+	// name; to the engine a zone is an index and nothing more. The default zone
+	// is none: what is drawn in it is not timed apart.
+	class CGpuRenderZone
+	{
+	public:
+		constexpr CGpuRenderZone() = default;
+		constexpr explicit CGpuRenderZone(int Index) :
+			m_Index(Index) {}
+		constexpr bool IsValid() const { return m_Index >= 0; }
+		constexpr int Index() const { return m_Index; }
+		constexpr bool operator==(const CGpuRenderZone &Other) const = default;
+
+	private:
+		int m_Index = -1;
+	};
+	// One bit of a frame's zone mask each.
+	static constexpr size_t MAX_GPU_RENDER_ZONES = 32;
+
 	enum
 	{
 		// The texture is a grid of layers, sampled by layer index.
@@ -492,9 +512,13 @@ public:
 		uint64_t m_UploadBytes = 0;
 		uint64_t m_StreamedBytes = 0;
 		uint64_t m_GpuTimeNanoseconds = 0;
+		std::array<uint64_t, MAX_GPU_RENDER_ZONES> m_aGpuRenderZoneNanoseconds{};
+		uint32_t m_GpuRenderZoneMask = 0;
 		uint64_t m_GpuSample = 0;
 		bool m_GpuTimingSupported = false;
 
+		// Only the counters the command buffers carry are summed. The GPU
+		// timings are measured by the backend and filled in by FrameRenderStats().
 		CFrameRenderStats &operator+=(const CFrameRenderStats &Other)
 		{
 			m_Commands += Other.m_Commands;
@@ -515,6 +539,15 @@ public:
 	};
 	virtual CFrameRenderStats FrameRenderStats() const = 0;
 	virtual void SetRenderStatsEnabled(bool Enabled) = 0;
+	// The zone registered under this name, registered first if it is new.
+	// The name is copied. Once all zones are taken the zone is none.
+	virtual CGpuRenderZone RegisterGpuRenderZone(const char *pName) = 0;
+	// The registered names, indexed by zone. Owned by the graphics, and neither
+	// moved nor changed while it lives.
+	virtual std::span<const std::string> GpuRenderZoneNames() const = 0;
+	// Draws between the two are timed as the zone. Does nothing for none.
+	virtual void GpuRenderZoneBegin(CGpuRenderZone Zone) = 0;
+	virtual void GpuRenderZoneEnd(CGpuRenderZone Zone) = 0;
 
 	virtual const TTwGraphicsGpuList &GetGpus() const = 0;
 

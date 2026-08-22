@@ -12,6 +12,7 @@
 #include <engine/client.h>
 #include <engine/client/enums.h>
 #include <engine/console.h>
+#include <engine/graphics.h>
 #include <engine/shared/config.h>
 #include <engine/shared/snapshot.h>
 
@@ -211,6 +212,16 @@ public:
 private:
 	std::vector<class CComponent *> m_vpAll;
 	std::vector<class CComponent *> m_vpInput;
+	// Render trace name and GPU zone per component, parallel to m_vpAll.
+	struct SRenderComponentInfo
+	{
+		const char *m_pTraceName;
+		IGraphics::CGpuRenderZone m_GpuZone;
+	};
+	std::vector<SRenderComponentInfo> m_vRenderComponentInfo;
+	SRenderComponentInfo RenderComponentInfo(const CComponent *pComponent);
+	IGraphics::CGpuRenderZone m_GpuZoneWorld;
+	IGraphics::CGpuRenderZone m_GpuZoneInterface;
 	CNetObjHandler m_NetObjHandler;
 	protocol7::CNetObjHandler m_NetObjHandler7;
 
@@ -220,6 +231,7 @@ private:
 	class IGraphicsWindow *m_pWindow;
 	class ITextRender *m_pTextRender;
 	class IClient *m_pClient;
+	class CRenderTrace *m_pRenderTrace;
 	class ISound *m_pSound;
 	class IConfigManager *m_pConfigManager;
 	class CConfig *m_pConfig;

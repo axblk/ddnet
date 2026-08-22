@@ -17,6 +17,7 @@
 
 #include <engine/client.h>
 #include <engine/client/keyboard.h>
+#include <engine/client/render_trace.h>
 #include <engine/engine.h>
 #include <engine/font_icons.h>
 #include <engine/gfx/image_loader.h>
@@ -3766,6 +3767,7 @@ void CEditor::Exit()
 
 void CEditor::Render()
 {
+	CRenderTrace *pTrace = Client()->RenderTrace();
 	// basic start
 	Graphics()->Clear(0.0f, 0.0f, 0.0f);
 	CUIRect View = *Ui()->Screen();
@@ -3805,7 +3807,15 @@ void CEditor::Render()
 
 	//	a little hack for now
 	if(m_Mode == MODE_LAYERS)
+	{
+		CRenderTraceScope TraceScope(pTrace, "editor/map");
+		Graphics()->GpuRenderZoneBegin(m_GpuZoneWorld);
+		Graphics()->GpuRenderZoneBegin(m_GpuZoneMap);
 		MapView()->Render(View);
+		Graphics()->GpuRenderZoneEnd(m_GpuZoneMap);
+		Graphics()->GpuRenderZoneEnd(m_GpuZoneWorld);
+	}
+	Graphics()->GpuRenderZoneBegin(m_GpuZoneInterface);
 
 	if(m_Dialog == DIALOG_NONE && CLineInput::GetActiveInput() == nullptr)
 	{
@@ -3859,6 +3869,8 @@ void CEditor::Render()
 
 	// do the toolbar
 	{
+		CRenderTraceScope TraceScope(pTrace, "editor/toolbar");
+		Graphics()->GpuRenderZoneBegin(m_GpuZoneToolbar);
 		m_pActiveLabelUiElements = &m_vpToolbarUiElements;
 		m_ActiveLabelUiElementIndex = 0;
 		CUIRect MapTabs;
@@ -3872,6 +3884,7 @@ void CEditor::Render()
 		else if(m_Mode == MODE_SOUNDS)
 			DoToolbarSounds(ToolBar);
 		m_pActiveLabelUiElements = nullptr;
+		Graphics()->GpuRenderZoneEnd(m_GpuZoneToolbar);
 	}
 
 	if(m_Dialog == DIALOG_NONE)
@@ -3929,6 +3942,8 @@ void CEditor::Render()
 
 	if(m_GuiActive)
 	{
+		CRenderTraceScope TraceScope(pTrace, "editor/toolbox");
+		Graphics()->GpuRenderZoneBegin(m_GpuZoneToolbox);
 		CUIRect DragBar;
 		ToolBox.VSplitRight(1.0f, &ToolBox, &DragBar);
 		DragBar.x -= 2.0f;
@@ -3944,6 +3959,7 @@ void CEditor::Render()
 		}
 		else if(m_Mode == MODE_SOUNDS)
 			RenderSounds(ToolBox);
+		Graphics()->GpuRenderZoneEnd(m_GpuZoneToolbox);
 	}
 
 	Ui()->MapScreen();
@@ -3951,6 +3967,8 @@ void CEditor::Render()
 	CUIRect TooltipRect;
 	if(m_GuiActive)
 	{
+		CRenderTraceScope TraceScope(pTrace, "editor/chrome");
+		Graphics()->GpuRenderZoneBegin(m_GpuZoneChrome);
 		m_pActiveLabelUiElements = &m_vpEditorChromeUiElements;
 		m_ActiveLabelUiElementIndex = 0;
 		RenderMenubar(MenuBar);
@@ -3981,6 +3999,7 @@ void CEditor::Render()
 		}
 		RenderStatusbar(StatusBar, &TooltipRect);
 		m_pActiveLabelUiElements = nullptr;
+		Graphics()->GpuRenderZoneEnd(m_GpuZoneChrome);
 	}
 
 	RenderPressedKeys(View);
@@ -4063,9 +4082,14 @@ void CEditor::Render()
 		}
 	}
 
-	m_FileBrowser.Render();
-	m_Prompt.Render();
-	m_FontTyper.Render();
+	{
+		CRenderTraceScope TraceScope(pTrace, "editor/dialogs");
+		Graphics()->GpuRenderZoneBegin(m_GpuZoneDialogs);
+		m_FileBrowser.Render();
+		m_Prompt.Render();
+		m_FontTyper.Render();
+		Graphics()->GpuRenderZoneEnd(m_GpuZoneDialogs);
+	}
 
 	MapView()->UpdateZoom();
 
@@ -4092,6 +4116,7 @@ void CEditor::Render()
 
 	Ui()->RenderBackButton();
 	RenderMousePointer();
+	Graphics()->GpuRenderZoneEnd(m_GpuZoneInterface);
 }
 
 void CEditor::UpdateBrushPicker()
@@ -4625,6 +4650,13 @@ void CEditor::Init()
 	m_pConfig = m_pConfigManager->Values();
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
 	m_pGraphics = Kernel()->RequestInterface<IGraphics>();
+	m_GpuZoneWorld = m_pGraphics->RegisterGpuRenderZone("world");
+	m_GpuZoneInterface = m_pGraphics->RegisterGpuRenderZone("interface");
+	m_GpuZoneMap = m_pGraphics->RegisterGpuRenderZone("editor_map");
+	m_GpuZoneToolbar = m_pGraphics->RegisterGpuRenderZone("editor_toolbar");
+	m_GpuZoneToolbox = m_pGraphics->RegisterGpuRenderZone("editor_toolbox");
+	m_GpuZoneChrome = m_pGraphics->RegisterGpuRenderZone("editor_chrome");
+	m_GpuZoneDialogs = m_pGraphics->RegisterGpuRenderZone("editor_dialogs");
 	m_pTextRender = Kernel()->RequestInterface<ITextRender>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 	m_pSound = Kernel()->RequestInterface<ISound>();

@@ -54,6 +54,7 @@
 
 #include <engine/client/checksum.h>
 #include <engine/client/enums.h>
+#include <engine/client/render_trace.h>
 #include <engine/demo.h>
 #include <engine/discord.h>
 #include <engine/editor.h>
@@ -85,6 +86,7 @@
 
 #include <chrono>
 #include <limits>
+#include <utility>
 
 using namespace std::chrono_literals;
 
@@ -100,6 +102,7 @@ void CGameClient::OnConsoleInit()
 {
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
 	m_pClient = Kernel()->RequestInterface<IClient>();
+	m_pRenderTrace = m_pClient->RenderTrace();
 	m_pTextRender = Kernel()->RequestInterface<ITextRender>();
 	m_pSound = Kernel()->RequestInterface<ISound>();
 	m_pConfigManager = Kernel()->RequestInterface<IConfigManager>();
@@ -327,6 +330,14 @@ void CGameClient::OnInit()
 
 	m_pGraphics = Kernel()->RequestInterface<IGraphics>();
 	m_pWindow = Kernel()->RequestInterface<IGraphicsWindow>();
+
+	// The two zones everything is drawn in first, so that they come first.
+	m_GpuZoneWorld = Graphics()->RegisterGpuRenderZone("world");
+	m_GpuZoneInterface = Graphics()->RegisterGpuRenderZone("interface");
+	m_vRenderComponentInfo.clear();
+	m_vRenderComponentInfo.reserve(m_vpAll.size());
+	for(const CComponent *pComponent : m_vpAll)
+		m_vRenderComponentInfo.push_back(RenderComponentInfo(pComponent));
 
 	// propagate pointers
 	m_UI.Init(Kernel(), &m_RenderTools);
@@ -772,6 +783,71 @@ void CGameClient::UpdatePositions()
 	UpdateRenderedCharacters();
 }
 
+CGameClient::SRenderComponentInfo CGameClient::RenderComponentInfo(const CComponent *pComponent)
+{
+	// The trace name, and the GPU zone the component is timed in, if any.
+	struct SEntry
+	{
+		const CComponent *m_pComponent;
+		const char *m_pTraceName;
+		const char *m_pGpuZone;
+	};
+	const std::array<SEntry, 46> aEntries = {{
+		{&m_Skins, "game/skins", nullptr},
+		{&m_Skins7, "game/skins7", nullptr},
+		{&m_CountryFlags, "game/country_flags", nullptr},
+		{&m_MapImages, "game/map_images", nullptr},
+		{&m_Effects, "game/effects", nullptr},
+		{&m_Binds, "game/binds", nullptr},
+		{&m_Binds.m_SpecialBinds, "game/special_binds", nullptr},
+		{&m_Controls, "game/controls", nullptr},
+		{&m_Camera, "game/camera", nullptr},
+		{&m_Sounds, "game/sounds", nullptr},
+		{&m_Voting, "game/voting", nullptr},
+		{&m_Particles, "game/particles_update", nullptr},
+		{&m_RaceDemo, "game/race_demo", nullptr},
+		{&m_MapSounds, "game/map_sounds", nullptr},
+		{&m_Censor, "game/censor", nullptr},
+		{&m_Background, "world/background", "map_background"},
+		{&m_MapLayersBackground, "world/map_background", "map_background"},
+		{&m_Particles.m_RenderTrail, "world/particles_trail", "particles"},
+		{&m_Particles.m_RenderTrailExtra, "world/particles_trail_extra", "particles"},
+		{&m_Items, "world/items", "items"},
+		{&m_Ghost, "world/ghost", "ghost"},
+		{&m_Players, "world/players", "players"},
+		{&m_MapLayersForeground, "world/map_foreground", "map_foreground"},
+		{&m_Particles.m_RenderExplosions, "world/particles_explosions", "particles"},
+		{&m_NamePlates, "world/nameplates", "nameplates"},
+		{&m_Particles.m_RenderExtra, "world/particles_extra", "particles"},
+		{&m_Particles.m_RenderGeneral, "world/particles_general", "particles"},
+		{&m_FreezeBars, "world/freezebars", "freezebars"},
+		{&m_DamageInd, "world/damage_indicators", "damage_indicators"},
+		{&m_Hud, "ui/hud", "hud"},
+		{&m_Spectator, "ui/spectator", "spectator"},
+		{&m_Emoticon, "ui/emoticon", "emoticon"},
+		{&m_InfoMessages, "ui/info_messages", "info_messages"},
+		{&m_Chat, "ui/chat", "chat"},
+		{&m_Broadcast, "ui/broadcast", "broadcast"},
+		{&m_ImportantAlert, "ui/important_alert", "important_alert"},
+		{&m_DebugHud, "ui/debug_hud", "debug_hud"},
+		{&m_TouchControls, "ui/touch_controls", "touch_controls"},
+		{&m_Scoreboard, "ui/scoreboard", "scoreboard"},
+		{&m_Statboard, "ui/statboard", "statboard"},
+		{&m_Motd, "ui/motd", "motd"},
+		{&m_Menus, "ui/menus", "menus"},
+		{&m_Tooltips, "ui/tooltips", "tooltips"},
+		{&m_KeyBinder, "ui/key_binder", nullptr},
+		{&m_GameConsole, "ui/console", "console"},
+		{&m_MenuBackground, "ui/menu_background", nullptr},
+	}};
+	for(const SEntry &Entry : aEntries)
+	{
+		if(Entry.m_pComponent == pComponent)
+			return {Entry.m_pTraceName, Entry.m_pGpuZone == nullptr ? IGraphics::CGpuRenderZone() : Graphics()->RegisterGpuRenderZone(Entry.m_pGpuZone)};
+	}
+	return {"game/component", IGraphics::CGpuRenderZone()};
+}
+
 void CGameClient::OnRender()
 {
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
@@ -818,8 +894,18 @@ void CGameClient::OnRender()
 	UpdateSpectatorCursor();
 
 	// render all systems
-	for(auto &pComponent : m_vpAll)
+	CRenderTrace *pTrace = m_pRenderTrace;
+	Graphics()->GpuRenderZoneBegin(m_GpuZoneWorld);
+	for(size_t i = 0; i < m_vpAll.size(); ++i)
 	{
+		CComponent *pComponent = m_vpAll[i];
+		const SRenderComponentInfo &Info = m_vRenderComponentInfo[i];
+		// The HUD is the first thing drawn over the world.
+		if(pComponent == &m_Hud)
+		{
+			Graphics()->GpuRenderZoneEnd(m_GpuZoneWorld);
+			Graphics()->GpuRenderZoneBegin(m_GpuZoneInterface);
+		}
 		if(pComponent == &m_Scoreboard)
 			m_Menus.FinishMenuBackdrop();
 		// After the backdrop, so that opening the scoreboard does not smear the
@@ -829,7 +915,10 @@ void CGameClient::OnRender()
 		// take the mouse over and bring their own pointer.
 		if(pComponent == &m_Menus)
 			m_Hud.RenderCursor();
+		CRenderTraceScope TraceScope(pTrace, Info.m_pTraceName);
+		Graphics()->GpuRenderZoneBegin(Info.m_GpuZone);
 		pComponent->OnRender();
+		Graphics()->GpuRenderZoneEnd(Info.m_GpuZone);
 	}
 
 	// Nothing captured what was drawn over the scene, so it goes to the screen
@@ -839,7 +928,11 @@ void CGameClient::OnRender()
 	// clear all events/input for this frame
 	Input()->Clear();
 
-	CLineInput::RenderCandidates();
+	{
+		CRenderTraceScope TraceScope(pTrace, "ui/line_input");
+		CLineInput::RenderCandidates();
+	}
+	Graphics()->GpuRenderZoneEnd(m_GpuZoneInterface);
 
 	const bool WasNewTick = m_NewTick;
 

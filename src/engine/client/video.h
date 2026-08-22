@@ -69,8 +69,6 @@ public:
 	float LocalTime() const override { return m_LocalTime; }
 	void SetLocalStartTime(int64_t LocalStartTime) override { m_LocalStartTime = LocalStartTime; }
 
-	static void Init();
-
 private:
 	void RunVideoThread(size_t ThreadIndex) REQUIRES(!m_WriteLock);
 	bool FillVideoFrame(size_t ThreadIndex, size_t FrameIndex) REQUIRES(!m_WriteLock);

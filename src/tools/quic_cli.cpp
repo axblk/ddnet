@@ -1,4 +1,5 @@
 #include <base/hash.h>
+#include <base/rust.h>
 
 #include <engine/shared/quic.h>
 
@@ -36,6 +37,8 @@ namespace
 
 int main(int Argc, const char **ppArgv)
 {
+	// A panic in the Rust half should fail the same way an assertion does.
+	rust_panic_use_dbg_assert();
 	try
 	{
 		if(Argc >= 2 && std::strcmp(ppArgv[1], "generate") == 0)

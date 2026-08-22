@@ -57,44 +57,48 @@ void CParticles::UpdatePhysics(CGameState::CParticleSystemState &State, const CC
 		int i = FirstPart;
 		while(i != -1)
 		{
-			int Next = State.m_vParticles[i].m_NextPart;
-			State.m_vParticles[i].m_Vel.y += State.m_vParticles[i].m_Gravity * TimePassed;
+			// One lookup for the whole body. Every field access used to index the
+			// container again, and in a debug build that is an out-of-line checked
+			// call each time - about twenty of them per particle per frame.
+			CGameState::CParticle &Particle = State.m_vParticles[i];
+			int Next = Particle.m_NextPart;
+			Particle.m_Vel.y += Particle.m_Gravity * TimePassed;
 
 			for(int f = 0; f < FrictionCount; f++) // apply friction
-				State.m_vParticles[i].m_Vel *= State.m_vParticles[i].m_Friction;
+				Particle.m_Vel *= Particle.m_Friction;
 
 			// move the point
-			vec2 Vel = State.m_vParticles[i].m_Vel * TimePassed;
-			if(State.m_vParticles[i].m_Collides)
+			vec2 Vel = Particle.m_Vel * TimePassed;
+			if(Particle.m_Collides)
 			{
-				Collision.MovePoint(&State.m_vParticles[i].m_Pos, &Vel, random_float(0.1f, 1.0f), nullptr);
+				Collision.MovePoint(&Particle.m_Pos, &Vel, random_float(0.1f, 1.0f), nullptr);
 			}
 			else
 			{
-				State.m_vParticles[i].m_Pos += Vel;
+				Particle.m_Pos += Vel;
 			}
-			State.m_vParticles[i].m_Vel = Vel * (1.0f / TimePassed);
+			Particle.m_Vel = Vel * (1.0f / TimePassed);
 
-			State.m_vParticles[i].m_Life += TimePassed;
-			State.m_vParticles[i].m_Rot += TimePassed * State.m_vParticles[i].m_Rotspeed;
+			Particle.m_Life += TimePassed;
+			Particle.m_Rot += TimePassed * Particle.m_Rotspeed;
 
 			// check particle death
-			if(State.m_vParticles[i].m_Life > State.m_vParticles[i].m_LifeSpan)
+			if(Particle.m_Life > Particle.m_LifeSpan)
 			{
 				// remove it from the group list
-				if(State.m_vParticles[i].m_PrevPart != -1)
-					State.m_vParticles[State.m_vParticles[i].m_PrevPart].m_NextPart = State.m_vParticles[i].m_NextPart;
+				if(Particle.m_PrevPart != -1)
+					State.m_vParticles[Particle.m_PrevPart].m_NextPart = Particle.m_NextPart;
 				else
-					FirstPart = State.m_vParticles[i].m_NextPart;
+					FirstPart = Particle.m_NextPart;
 
-				if(State.m_vParticles[i].m_NextPart != -1)
-					State.m_vParticles[State.m_vParticles[i].m_NextPart].m_PrevPart = State.m_vParticles[i].m_PrevPart;
+				if(Particle.m_NextPart != -1)
+					State.m_vParticles[Particle.m_NextPart].m_PrevPart = Particle.m_PrevPart;
 
 				// insert to the free list
 				if(State.m_FirstFree != -1)
 					State.m_vParticles[State.m_FirstFree].m_PrevPart = i;
-				State.m_vParticles[i].m_PrevPart = -1;
-				State.m_vParticles[i].m_NextPart = State.m_FirstFree;
+				Particle.m_PrevPart = -1;
+				Particle.m_NextPart = State.m_FirstFree;
 				State.m_FirstFree = i;
 				State.m_NumParticles--;
 			}
@@ -192,34 +196,36 @@ void CParticles::RenderGroup(const CRenderContext &Context, int Group)
 
 		if(i != -1)
 		{
-			const float LifeFraction = State.m_vParticles[i].m_Life / State.m_vParticles[i].m_LifeSpan;
-			const float Alpha = ParticleAlpha(State.m_vParticles[i], LifeFraction);
-			LastColor.r = State.m_vParticles[i].m_Color.r;
-			LastColor.g = State.m_vParticles[i].m_Color.g;
-			LastColor.b = State.m_vParticles[i].m_Color.b;
+			const CGameState::CParticle &Particle = State.m_vParticles[i];
+			const float LifeFraction = Particle.m_Life / Particle.m_LifeSpan;
+			const float Alpha = ParticleAlpha(Particle, LifeFraction);
+			LastColor.r = Particle.m_Color.r;
+			LastColor.g = Particle.m_Color.g;
+			LastColor.b = Particle.m_Color.b;
 			LastColor.a = Alpha;
 
 			Graphics()->SetColor(
-				State.m_vParticles[i].m_Color.r,
-				State.m_vParticles[i].m_Color.g,
-				State.m_vParticles[i].m_Color.b,
+				Particle.m_Color.r,
+				Particle.m_Color.g,
+				Particle.m_Color.b,
 				Alpha);
 
-			LastQuadOffset = State.m_vParticles[i].m_Spr;
+			LastQuadOffset = Particle.m_Spr;
 		}
 
 		while(i != -1)
 		{
-			int QuadOffset = State.m_vParticles[i].m_Spr;
-			float a = State.m_vParticles[i].m_Life / State.m_vParticles[i].m_LifeSpan;
-			vec2 p = State.m_vParticles[i].m_Pos;
-			float Size = mix(State.m_vParticles[i].m_StartSize, State.m_vParticles[i].m_EndSize, a);
-			const float Alpha = ParticleAlpha(State.m_vParticles[i], a);
+			const CGameState::CParticle &Particle = State.m_vParticles[i];
+			int QuadOffset = Particle.m_Spr;
+			float a = Particle.m_Life / Particle.m_LifeSpan;
+			vec2 p = Particle.m_Pos;
+			float Size = mix(Particle.m_StartSize, Particle.m_EndSize, a);
+			const float Alpha = ParticleAlpha(Particle, a);
 
 			// the current position, respecting the size, is inside the viewport, render it, else ignore
 			if(ParticleIsVisibleOnScreen(Context, p, Size))
 			{
-				if((size_t)CurParticleRenderCount == GRAPHICS_MAX_PARTICLES_RENDER_COUNT || LastColor.r != State.m_vParticles[i].m_Color.r || LastColor.g != State.m_vParticles[i].m_Color.g || LastColor.b != State.m_vParticles[i].m_Color.b || LastColor.a != Alpha || LastQuadOffset != QuadOffset)
+				if((size_t)CurParticleRenderCount == GRAPHICS_MAX_PARTICLES_RENDER_COUNT || LastColor.r != Particle.m_Color.r || LastColor.g != Particle.m_Color.g || LastColor.b != Particle.m_Color.b || LastColor.a != Alpha || LastQuadOffset != QuadOffset)
 				{
 					dbg_assert(LastQuadOffset >= FirstParticleOffset, "Invalid particle offsets: %d < %d", LastQuadOffset, FirstParticleOffset);
 					Graphics()->TextureSet(aParticles[LastQuadOffset - FirstParticleOffset]);
@@ -228,26 +234,26 @@ void CParticles::RenderGroup(const CRenderContext &Context, int Group)
 					LastQuadOffset = QuadOffset;
 
 					Graphics()->SetColor(
-						State.m_vParticles[i].m_Color.r,
-						State.m_vParticles[i].m_Color.g,
-						State.m_vParticles[i].m_Color.b,
+						Particle.m_Color.r,
+						Particle.m_Color.g,
+						Particle.m_Color.b,
 						Alpha);
 
-					LastColor.r = State.m_vParticles[i].m_Color.r;
-					LastColor.g = State.m_vParticles[i].m_Color.g;
-					LastColor.b = State.m_vParticles[i].m_Color.b;
+					LastColor.r = Particle.m_Color.r;
+					LastColor.g = Particle.m_Color.g;
+					LastColor.b = Particle.m_Color.b;
 					LastColor.a = Alpha;
 				}
 
 				s_aParticleRenderInfo[CurParticleRenderCount].m_Pos[0] = p.x;
 				s_aParticleRenderInfo[CurParticleRenderCount].m_Pos[1] = p.y;
 				s_aParticleRenderInfo[CurParticleRenderCount].m_Scale = Size;
-				s_aParticleRenderInfo[CurParticleRenderCount].m_Rotation = State.m_vParticles[i].m_Rot;
+				s_aParticleRenderInfo[CurParticleRenderCount].m_Rotation = Particle.m_Rot;
 
 				++CurParticleRenderCount;
 			}
 
-			i = State.m_vParticles[i].m_NextPart;
+			i = Particle.m_NextPart;
 		}
 
 		if(CurParticleRenderCount > 0)
@@ -265,23 +271,24 @@ void CParticles::RenderGroup(const CRenderContext &Context, int Group)
 
 		while(i != -1)
 		{
-			float a = State.m_vParticles[i].m_Life / State.m_vParticles[i].m_LifeSpan;
-			vec2 p = State.m_vParticles[i].m_Pos;
-			float Size = mix(State.m_vParticles[i].m_StartSize, State.m_vParticles[i].m_EndSize, a);
-			const float Alpha = ParticleAlpha(State.m_vParticles[i], a);
+			const CGameState::CParticle &Particle = State.m_vParticles[i];
+			float a = Particle.m_Life / Particle.m_LifeSpan;
+			vec2 p = Particle.m_Pos;
+			float Size = mix(Particle.m_StartSize, Particle.m_EndSize, a);
+			const float Alpha = ParticleAlpha(Particle, a);
 
 			// the current position, respecting the size, is inside the viewport, render it, else ignore
 			if(ParticleIsVisibleOnScreen(Context, p, Size))
 			{
-				Graphics()->TextureSet(aParticles[State.m_vParticles[i].m_Spr - FirstParticleOffset]);
+				Graphics()->TextureSet(aParticles[Particle.m_Spr - FirstParticleOffset]);
 				Graphics()->QuadsBegin();
 
-				Graphics()->QuadsSetRotation(State.m_vParticles[i].m_Rot);
+				Graphics()->QuadsSetRotation(Particle.m_Rot);
 
 				Graphics()->SetColor(
-					State.m_vParticles[i].m_Color.r,
-					State.m_vParticles[i].m_Color.g,
-					State.m_vParticles[i].m_Color.b,
+					Particle.m_Color.r,
+					Particle.m_Color.g,
+					Particle.m_Color.b,
 					Alpha);
 
 				IGraphics::CQuadItem QuadItem(p.x, p.y, Size, Size);
@@ -289,7 +296,7 @@ void CParticles::RenderGroup(const CRenderContext &Context, int Group)
 				Graphics()->QuadsEnd();
 			}
 
-			i = State.m_vParticles[i].m_NextPart;
+			i = Particle.m_NextPart;
 		}
 		Graphics()->WrapNormal();
 	}

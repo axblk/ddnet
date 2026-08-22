@@ -15,6 +15,7 @@ CSessionId CSessionManager::Create(std::unique_ptr<IGameSessionSource> pSource)
 		return {};
 
 	const CSessionId Id(m_NextId++);
+	m_pLastFound = nullptr;
 	m_vpSessions.push_back(std::make_unique<CGameSession>(Id, std::move(pSource)));
 	if(!m_FocusedSessionId.IsValid())
 		m_FocusedSessionId = Id;
@@ -23,14 +24,19 @@ CSessionId CSessionManager::Create(std::unique_ptr<IGameSessionSource> pSource)
 
 CGameSession *CSessionManager::Find(CSessionId Id)
 {
+	if(m_pLastFound != nullptr && m_LastFoundId == Id)
+		return m_pLastFound;
 	const auto It = std::find_if(m_vpSessions.begin(), m_vpSessions.end(), [Id](const auto &pSession) { return pSession->Id() == Id; });
-	return It == m_vpSessions.end() ? nullptr : It->get();
+	if(It == m_vpSessions.end())
+		return nullptr;
+	m_LastFoundId = Id;
+	m_pLastFound = It->get();
+	return m_pLastFound;
 }
 
 const CGameSession *CSessionManager::Find(CSessionId Id) const
 {
-	const auto It = std::find_if(m_vpSessions.begin(), m_vpSessions.end(), [Id](const auto &pSession) { return pSession->Id() == Id; });
-	return It == m_vpSessions.end() ? nullptr : It->get();
+	return const_cast<CSessionManager *>(this)->Find(Id);
 }
 
 bool CSessionManager::SetFocused(CSessionId Id)
@@ -59,6 +65,7 @@ bool CSessionManager::Destroy(CSessionId Id)
 	if(State != ESessionState::OFFLINE && State != ESessionState::ERROR)
 		return false;
 
+	m_pLastFound = nullptr;
 	m_vpSessions.erase(It);
 	if(m_FocusedSessionId == Id)
 		m_FocusedSessionId = m_vpSessions.empty() ? CSessionId() : m_vpSessions.front()->Id();

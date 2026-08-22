@@ -474,22 +474,17 @@ public:
 
 	int LastRaceTick() const;
 	int CurrentRaceTime() const;
-	int FlagDropTick(int Team) const;
 	bool ReceivedDDNetPlayer() const;
-	bool ReceivedDDNetPlayerFinishTimes() const;
-	bool ReceivedDDNetPlayerFinishTimesMillis() const;
 
 	bool IsTeamPlay() const;
 	int MinTeamSize() const;
 	int MaxTeamSize() const;
 	bool IsWorldPaused() const;
 	bool IsDemoPlaybackPaused() const;
-	float GetAnimationPlaybackSpeed() const;
 
 	int AntiPingPlayers() const;
 	bool AntiPingGrenade() const;
 	bool AntiPingWeapons() const;
-	bool AntiPingGunfire() const;
 	bool Predict() const;
 	bool PredictDummy(const CGameState &OtherState) const;
 
@@ -515,8 +510,6 @@ public:
 	void DummyResetInput() override;
 	void Echo(const char *pString) override;
 	bool IsOtherTeam(int ClientId) const;
-	int SwitchStateTeam() const;
-	bool IsLocalCharSuper() const;
 	bool CanDisplayWarning() const override;
 
 	IMap *Map() override { return MapContext().Map(); }

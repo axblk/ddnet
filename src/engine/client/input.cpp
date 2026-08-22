@@ -474,6 +474,12 @@ bool CInput::KeyPress(int Key) const
 	return m_aFrameKeyStates[Key];
 }
 
+void CInput::ClearFrameKey(int Key)
+{
+	dbg_assert(Key >= KEY_FIRST && Key < KEY_LAST, "Key invalid: %d", Key);
+	m_aFrameKeyStates[Key] = false;
+}
+
 int CInput::FindKeyByName(const char *pKeyName) const
 {
 	// check for numeric

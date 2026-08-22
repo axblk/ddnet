@@ -21,6 +21,48 @@
 
 #include <zlib.h>
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#include <emscripten/emscripten.h>
+
+// clang-format off
+EM_JS(void, SyncPersistentStorageImpl, (), {
+	if(Module['ddnetSyncPersistentStorage'] === undefined) {
+		Module['ddnetSyncPersistentStorage'] = immediate => {
+			const sync = () => {
+				if(Module['ddnetPersistentStorageSyncInProgress']) {
+					Module['ddnetPersistentStorageSyncPending'] = true;
+					return;
+				}
+				Module['ddnetPersistentStorageSyncInProgress'] = true;
+				FS.syncfs(error => {
+					Module['ddnetPersistentStorageSyncInProgress'] = false;
+					if(error)
+						console.error('Failed to synchronize filesystem with IndexedDB:', error);
+					if(Module['ddnetPersistentStorageSyncPending']) {
+						Module['ddnetPersistentStorageSyncPending'] = false;
+						sync();
+					}
+				});
+			};
+			if(Module['ddnetPersistentStorageSyncTimeout'] !== undefined) {
+				clearTimeout(Module['ddnetPersistentStorageSyncTimeout']);
+				Module['ddnetPersistentStorageSyncTimeout'] = undefined;
+			}
+			if(immediate) {
+				sync();
+			} else {
+				Module['ddnetPersistentStorageSyncTimeout'] = setTimeout(() => {
+					Module['ddnetPersistentStorageSyncTimeout'] = undefined;
+					sync();
+				}, 1000);
+			}
+		};
+	}
+	Module['ddnetSyncPersistentStorage'](false);
+});
+// clang-format on
+#endif
+
 class CStorage : public IStorage
 {
 	char m_aaStoragePaths[MAX_PATHS][IO_MAX_PATH_LENGTH];
@@ -875,6 +917,13 @@ public:
 		TranslateType(Type, pDir);
 		dbg_assert(Type >= TYPE_SAVE && Type < m_NumPaths, "Type invalid");
 		GetPath(Type, pDir, pBuffer, BufferSize);
+	}
+
+	void SyncPersistentStorage() override
+	{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		SyncPersistentStorageImpl();
+#endif
 	}
 
 	const char *GetBinaryPath(const char *pFilename, char *pBuffer, unsigned BufferSize) override

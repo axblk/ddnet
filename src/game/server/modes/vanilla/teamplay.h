@@ -26,7 +26,7 @@ public:
 	const char *GetTeamName(int Team) override;
 	int GetAutoTeam(int NotThisId) override;
 	bool CanJoinTeam(int Team, int NotThisId, char *pErrorReason, int ErrorReasonSize) override;
-	int TeamScore(int Team) const;
+	int TeamScore(int Team) const override;
 
 protected:
 	void SnapTeamData(int SnappingClient, int FlagCarrierRed, int FlagCarrierBlue, int FlagDropTickRed = 0, int FlagDropTickBlue = 0, bool SnapFlags = false);

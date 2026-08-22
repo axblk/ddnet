@@ -220,6 +220,8 @@ TEST_P(SingleScore, LoadPlayerData)
 
 	EXPECT_EQ(m_pPlayerResult->m_MessageKind, CScorePlayerResult::PLAYER_INFO);
 	ASSERT_FALSE(m_pPlayerResult->m_Data.m_Info.m_Time.has_value());
+	EXPECT_EQ(m_pPlayerResult->m_Data.m_Info.m_MapRank, 0);
+	EXPECT_EQ(m_pPlayerResult->m_Data.m_Info.m_MapFinishes, 0);
 	for(auto &Time : m_pPlayerResult->m_Data.m_Info.m_aTimeCp)
 	{
 		ASSERT_EQ(Time, 0);
@@ -232,6 +234,8 @@ TEST_P(SingleScore, LoadPlayerData)
 	EXPECT_EQ(m_pPlayerResult->m_MessageKind, CScorePlayerResult::PLAYER_INFO);
 	ASSERT_TRUE(m_pPlayerResult->m_Data.m_Info.m_Time.has_value());
 	ASSERT_EQ(*m_pPlayerResult->m_Data.m_Info.m_Time, 100.0);
+	EXPECT_EQ(m_pPlayerResult->m_Data.m_Info.m_MapRank, 1);
+	EXPECT_EQ(m_pPlayerResult->m_Data.m_Info.m_MapFinishes, 2);
 	for(int i = 0; i < NUM_CHECKPOINTS; i++)
 	{
 		ASSERT_EQ(m_pPlayerResult->m_Data.m_Info.m_aTimeCp[i], i);
@@ -243,6 +247,8 @@ TEST_P(SingleScore, LoadPlayerData)
 
 	EXPECT_EQ(m_pPlayerResult->m_MessageKind, CScorePlayerResult::PLAYER_INFO);
 	ASSERT_FALSE(m_pPlayerResult->m_Data.m_Info.m_Time.has_value());
+	EXPECT_EQ(m_pPlayerResult->m_Data.m_Info.m_MapRank, 0);
+	EXPECT_EQ(m_pPlayerResult->m_Data.m_Info.m_MapFinishes, 0);
 	for(int i = 0; i < NUM_CHECKPOINTS; i++)
 	{
 		ASSERT_EQ(m_pPlayerResult->m_Data.m_Info.m_aTimeCp[i], i);

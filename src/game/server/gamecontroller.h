@@ -15,6 +15,7 @@
 #include <game/server/mode/game_mode_registry.h>
 #include <game/server/mode/game_services.h>
 #include <game/server/mode/match_lifecycle.h>
+#include <game/server/mode/match_recorder.h>
 #include <game/teamscore.h>
 
 #include <memory>
@@ -136,8 +137,14 @@ private:
 	const CGameModeInfo m_GameModeInfo;
 	CMatchLifecycle m_MatchLifecycle;
 	char m_aTestingGameType[32];
+	CMatchRecorder m_MatchRecorder;
+	CMatchReportSender m_MatchReportSender;
 
 	CGameContext *GameServer() const { return m_pGameServer; }
+	void StartMatchReport();
+	void UpdateMatchParticipants();
+	void FinishMatchReport(EMatchTermination Termination, bool SuddenDeath = false);
+	CMatchRecorder::CParticipant *MatchParticipant(CPlayer *pPlayer);
 
 protected:
 	IServer *Server() const { return m_pServer; }
@@ -159,6 +166,12 @@ protected:
 	int m_SixupRoundCount = -1;
 	void DoActivityCheck();
 	void FinalizeCharacterDeath(const CGameCharacterDeathContext &Context, int ModeSpecial = 0);
+	// counts a metric of the mode's own for the match report, pMetricId must be a static string
+	void AddMatchMetric(CPlayer *pPlayer, const char *pMetricId, int64_t Value = 1);
+	void AddMatchDamage(CPlayer *pAttacker, CPlayer *pVictim, int Weapon, int Damage);
+	CMatchReport MatchReportHeader(CUuid MatchId, int StartTick) const;
+	// the live statistics the player asked for, the running round by default
+	virtual bool BuildLiveStats(int ClientId, CMatchReport &Report, int &LocalParticipantId);
 
 	struct CSpawnEval
 	{
@@ -196,6 +209,9 @@ public:
 	virtual int GameInfoFlags(int SnappingClient) const { return 0; }
 	virtual int GameInfoFlags2(int SnappingClient) const { return 0; }
 	int TuningZoneAt(vec2 Position) const;
+	void SendLiveStats(int ClientId);
+	// ends the report of the running round without a result
+	void AbortMatchReport();
 	void ResetTuning();
 	virtual CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team);
 	virtual CCharacter *CreateCharacter(CPlayer *pPlayer);
@@ -213,6 +229,7 @@ public:
 	*/
 	virtual void OnCharacterDeath(const CGameCharacterDeathContext &Context);
 	virtual bool OnCharacterTakeDamage(class CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam = TEAM_SPECTATORS);
+	void OnCharacterFiredWeapon(CCharacter *pCharacter, int Weapon);
 	virtual bool CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const;
 	virtual bool CanSeeInteraction(const CInteractions &, int) const { return true; }
 	virtual bool CanHitInteraction(const CInteractions &, int) const { return true; }
@@ -362,6 +379,7 @@ public:
 	virtual CClientMask GetMaskForPlayerWorldEvent(int Asker, int ExceptID = -1);
 
 	bool IsTeamPlay() const { return Info().m_GameFlags & GAMEFLAG_TEAMS; }
+	virtual int TeamScore(int Team) const { return 0; }
 	// The 0.7 game info message; the context sends it with the start messages.
 	void SendGameInfoSixup(int ClientId);
 	int GameFlags() const { return Info().m_GameFlags; }

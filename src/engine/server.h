@@ -67,6 +67,11 @@ public:
 	virtual int ClientCountry(int ClientId) const = 0;
 	virtual bool ClientSlotEmpty(int ClientId) const = 0;
 	virtual bool ClientIngame(int ClientId) const = 0;
+	/**
+	 * Whether the slot is taken by a client the server plays itself, such as
+	 * a debug dummy, whatever state it is in.
+	 */
+	virtual bool ClientIsDummy(int ClientId) const = 0;
 	virtual bool GetClientInfo(int ClientId, CClientInfo *pInfo) const = 0;
 	virtual void SetClientDDNetVersion(int ClientId, int DDNetVersion) = 0;
 	virtual const NETADDR *ClientAddr(int ClientId) const = 0;

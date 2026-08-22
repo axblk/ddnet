@@ -6,11 +6,16 @@
 #include <engine/client/asset_loader.h>
 #include <engine/console.h>
 #include <engine/graphics.h>
+#include <engine/shared/uuid_manager.h>
 
 #include <game/client/component.h>
 #include <game/client/game_view.h>
+#include <game/client/match_report_view.h>
 #include <game/client/ui.h>
 #include <game/client/ui_rect.h>
+
+#include <array>
+#include <span>
 
 class CGameState;
 class CRenderContext;
@@ -34,6 +39,9 @@ class CScoreboard : public CComponent
 	void RenderSpectators(const CRenderContext &Context, CUIRect Spectators);
 	void RenderMouseHint(CUIRect MouseHint);
 	void RenderScoreboard(const CRenderContext &Context, CUIRect Scoreboard, int Team, int CountStart, int CountEnd, CScoreboardRenderState &State, int NumPlayersForSize = -1);
+	void RenderMatchReport(const CStoredMatch &Stored, CUIRect Screen);
+	void RenderMatchReportColumn(const CStoredMatch &Stored, std::span<const CMatchReportRow> vRows, CUIRect Column, float RowHeight);
+	void RenderMatchReportSummary(const CStoredMatch &Stored, CUIRect Summary);
 	void RenderRecordingNotification(float x);
 	bool UpdateApplicationOverlay(const CRenderContext &Context);
 
@@ -87,6 +95,19 @@ class CScoreboard : public CComponent
 	} m_MapTitlePopupContext;
 	char m_MapTitleButtonId;
 
+	enum
+	{
+		REPORT_ACTION_HISTORY,
+		REPORT_ACTION_DEMOS,
+		REPORT_ACTION_CSV,
+		REPORT_ACTION_SCREENSHOT,
+		REPORT_ACTION_CONTINUE,
+		NUM_REPORT_ACTIONS,
+	};
+	std::array<char, NUM_REPORT_ACTIONS> m_aReportActionButtonIds;
+	void RunReportAction(int Action, CSessionId SessionId, CUuid MatchId);
+	CMatchReportRanking m_ReportRanking;
+
 	class CPlayerElement
 	{
 	public:
@@ -120,6 +141,9 @@ class CScoreboard : public CComponent
 		CViewport m_Viewport;
 		std::array<CPlayerInteraction, MAX_CLIENTS> m_aPlayers;
 		CUIRect m_MapTitleRect;
+		std::array<CUIRect, NUM_REPORT_ACTIONS> m_aReportActionRects;
+		// zero while no match report is shown
+		CUuid m_ReportMatchId = UUID_ZEROED;
 		bool m_Active = false;
 		bool m_HasMapTitleRect = false;
 
@@ -131,8 +155,19 @@ class CScoreboard : public CComponent
 	CViewBinding m_HighlightBinding;
 	int m_HighlightClientId = -1;
 	bool m_HighlightMapTitle = false;
+	int m_HighlightReportAction = -1;
 	bool m_ApplicationOverlayReady = false;
 	bool IsHighlighted(const CRenderContext &Context, int ClientId) const;
+
+	class CDismissedMatchReport
+	{
+	public:
+		CSessionId m_SessionId;
+		CUuid m_MatchId = UUID_ZEROED;
+	};
+	std::vector<CDismissedMatchReport> m_vDismissedMatchReports;
+	bool IsMatchReportDismissed(CSessionId SessionId, CUuid MatchId) const;
+	void DismissMatchReport(CSessionId SessionId, CUuid MatchId);
 
 	CCachedText m_TitleScore;
 	CCachedText m_TitleScoreMillis;

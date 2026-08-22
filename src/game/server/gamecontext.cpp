@@ -2073,6 +2073,12 @@ void CGameContext::CensorMessage(char *pCensoredMessage, const char *pMessage, i
 
 void CGameContext::OnMessage(int MsgId, CUnpacker *pUnpacker, int ClientId)
 {
+	if(MsgId == NETMSG_LIVE_STATS_REQUEST)
+	{
+		if(Server()->ClientIngame(ClientId))
+			m_GameHost.Controller()->SendLiveStats(ClientId);
+		return;
+	}
 	if(m_TeeHistorianActive)
 	{
 		if(m_NetObjHandler.TeeHistorianRecordMsg(MsgId))
@@ -3778,6 +3784,8 @@ void CGameContext::OnShutdown(void *pPersistentData)
 		new(pPersistent) CPersistentData();
 		pPersistent->m_PrevGameUuid = m_GameUuid;
 	}
+	if(GameHost().Controller())
+		GameHost().Controller()->AbortMatchReport();
 
 	Antibot()->RoundEnd();
 

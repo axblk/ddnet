@@ -70,6 +70,7 @@ namespace
 			{
 				m_aCatcherIds[VictimId] = KillerId;
 				pVictim->GetPlayer()->SetSpectatorId(KillerId);
+				AddMatchMetric(pKiller, "catches");
 			}
 			CBase::OnCharacterDeath(Context);
 		}

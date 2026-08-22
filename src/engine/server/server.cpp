@@ -856,6 +856,11 @@ bool CServer::ClientIngame(int ClientId) const
 	return ClientId >= 0 && ClientId < MAX_CLIENTS && m_aClients[ClientId].IsKnownToGame();
 }
 
+bool CServer::ClientIsDummy(int ClientId) const
+{
+	return ClientId >= 0 && ClientId < MAX_CLIENTS && m_aClients[ClientId].m_State != CClient::STATE_EMPTY && m_aClients[ClientId].m_DebugDummy;
+}
+
 int CServer::Port() const
 {
 	return m_NetServer.Address().port;

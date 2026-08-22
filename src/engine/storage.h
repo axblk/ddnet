@@ -67,6 +67,10 @@ public:
 	virtual bool RenameFile(const char *pOldFilename, const char *pNewFilename, int Type) = 0;
 	virtual bool CreateFolder(const char *pFoldername, int Type) = 0;
 	virtual void GetCompletePath(int Type, const char *pDir, char *pBuffer, unsigned BufferSize) = 0;
+	/**
+	 * Schedules synchronization of persistent storage where required by the platform.
+	 */
+	virtual void SyncPersistentStorage() = 0;
 
 	virtual bool RemoveBinaryFile(const char *pFilename) = 0;
 	virtual bool RenameBinaryFile(const char *pOldFilename, const char *pNewFilename) = 0;

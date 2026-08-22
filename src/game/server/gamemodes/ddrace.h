@@ -79,6 +79,7 @@ protected:
 	void RegisterCommands() override;
 	void RegisterAdminCommands();
 	void RegisterPracticeCommands();
+	bool BuildLiveStats(int ClientId, CMatchReport &Report, int &LocalParticipantId) override;
 
 private:
 	static void ConInfo(IConsole::IResult *pResult, void *pUserData);
@@ -87,6 +88,9 @@ private:
 	void SnapSwitchers(int SnappingClient);
 	std::unique_ptr<CGameTeams> m_pRaceTeams;
 	std::unique_ptr<CScore> m_pRaceScore;
+	// a race has no rounds, its live statistics count from the start of the map
+	CUuid m_LiveStatsId = RandomUuid();
+	int m_LiveStatsStartTick = 0;
 };
 
 #endif // GAME_SERVER_GAMEMODES_DDRACE_H

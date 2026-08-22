@@ -29,6 +29,7 @@ public:
 	bool AltIsPressed() const override { return false; }
 	bool KeyIsPressed(int) const override { return false; }
 	bool KeyPress(int) const override { return false; }
+	void ClearFrameKey(int) override {}
 	int FindKeyByName(const char *pKeyName) const override
 	{
 		for(int Key = KEY_FIRST; Key < KEY_LAST; ++Key)

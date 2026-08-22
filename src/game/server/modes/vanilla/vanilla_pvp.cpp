@@ -96,6 +96,7 @@ bool CGameControllerVanillaPvP::OnCharacterTakeDamage(CCharacter *pVictim, vec2 
 		Services().CreateDamageInd(pVictim->m_Pos, 0.0f, Damage, pVictim->TeamMask());
 	}
 	pVictimPlayer->m_DamageTakenTick = Server()->Tick();
+	AddMatchDamage(From != VictimId ? Services().Player(From) : nullptr, pVictimPlayer, Weapon, Damage);
 
 	int Health = pVictim->GetHealth();
 	int Armor = pVictim->GetArmor();

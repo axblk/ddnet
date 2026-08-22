@@ -54,6 +54,8 @@ struct CScorePlayerResult : ISqlResult
 		{
 			std::optional<float> m_Time;
 			float m_aTimeCp[NUM_CHECKPOINTS];
+			int m_MapRank;
+			int m_MapFinishes;
 			int m_Birthday; // 0 indicates no birthday
 			char m_aRequestedPlayer[MAX_NAME_LENGTH];
 		} m_Info = {};
@@ -238,7 +240,12 @@ public:
 
 	void Reset()
 	{
+		m_PlayerDataLoaded = false;
 		m_BestTime.reset();
+		m_MapRank = 0;
+		m_MapFinishes = 0;
+		m_SessionFinishes = 0;
+		m_LastFinishTime.reset();
 		std::fill(std::begin(m_aBestTimeCp), std::end(m_aBestTimeCp), 0.0f);
 		m_RecordStopTick = -1;
 	}
@@ -257,7 +264,12 @@ public:
 	}
 
 	std::optional<float> m_BestTime;
+	bool m_PlayerDataLoaded;
 	float m_aBestTimeCp[NUM_CHECKPOINTS];
+	int m_MapRank;
+	int m_MapFinishes;
+	int m_SessionFinishes;
+	std::optional<float> m_LastFinishTime;
 
 	int m_RecordStopTick;
 	float m_RecordFinishTime;

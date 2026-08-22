@@ -2,7 +2,7 @@
 from collections import namedtuple
 from queue import Queue
 from threading import Thread
-from time import time
+from time import sleep, time
 from urllib import request
 from urllib.request import Request, urlopen
 from uuid import UUID, uuid4
@@ -43,6 +43,11 @@ class Log(namedtuple("Log", "timestamp level line")):
 		if line.startswith("=="):
 			pid, line = line[2:].split("== ", 1)
 			return cls(None, "valgrind", f"{pid}: {line}")
+		elif line.startswith("[") and "][" in line and "]: " in line:
+			# Teeworlds 0.7 log: [timestamp][system]: message
+			timestamp, rest = line[1:].split("][", 1)
+			system, line = rest.split("]: ", 1)
+			return cls(timestamp, system, line)
 		elif not line.startswith("["):
 			# DDNet log
 			date, time, level, line = line.split(" ", 3)
@@ -112,10 +117,11 @@ YELLOW = "\x1b[33m"
 
 
 class TestRunner:
-	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, repo_dir, test_dir, show_full_output, test_websockets, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
+	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, teeworlds_client, repo_dir, test_dir, show_full_output, test_websockets, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
 		self.ddnet = ddnet
 		self.ddnet_server = ddnet_server
 		self.ddnet_mastersrv = ddnet_mastersrv
+		self.teeworlds_client = teeworlds_client
 		self.repo_dir = repo_dir
 		self.data_dir = os.path.join(test_dir, "data")
 		self.test_dir = test_dir
@@ -181,6 +187,10 @@ class TestRunner:
 				print(f"{test.name} ... {YELLOW}skipped{RESET}")
 				num_skipped += 1
 				continue
+			if test.requires_teeworlds_client and self.teeworlds_client is None:
+				print(f"{test.name} ... {YELLOW}skipped{RESET}")
+				num_skipped += 1
+				continue
 			print(f"{test.name} ... ", end="", flush=True)
 			tmp_dir, error = self.run_test(test)
 			tmp_dir_formatted = f" ({tmp_dir})" if tmp_dir is not None else ""
@@ -223,6 +233,7 @@ add_path {relpath(self.runner.data_dir, tmp_dir)}
 		self.ddnet = os.path.relpath(runner.ddnet, self.tmp_dir)
 		self.ddnet_server = os.path.relpath(runner.ddnet_server, self.tmp_dir)
 		self.ddnet_mastersrv = os.path.relpath(runner.ddnet_mastersrv, self.tmp_dir) if runner.ddnet_mastersrv is not None else None
+		self.teeworlds_client = os.path.relpath(runner.teeworlds_client, self.tmp_dir) if runner.teeworlds_client is not None else None
 		self.run_prefix_args = []
 		if self.runner.valgrind_memcheck:
 			self.run_prefix_args = [
@@ -236,6 +247,7 @@ add_path {relpath(self.runner.data_dir, tmp_dir)}
 		self.num_clients = 0
 		self.num_servers = 0
 		self.num_mastersrvs = 0
+		self.num_teeworlds_clients = 0
 		self.processes = []
 		self.run_id = uuid4()
 		self.full_stdouts_stderrs = []
@@ -260,6 +272,9 @@ add_path {relpath(self.runner.data_dir, tmp_dir)}
 
 	def mastersrv(self, *args, **kwargs):
 		return Mastersrv(self, *args, **kwargs)
+
+	def teeworlds(self, *args, **kwargs):
+		return TeeworldsClient(self, *args, **kwargs)
 
 	def kill_all(self):
 		for process in self.processes:
@@ -483,10 +498,32 @@ class Client(Runnable):
 		self.fifo.write(f"{command}\n")
 
 	def exit(self):
-		self.command("quit")
+		try:
+			self.command("quit")
+		except OSError:
+			# On Windows the client can close its named pipe while this write is completing.
+			# wait_for_exit still verifies that the process terminated cleanly.
+			pass
+		finally:
+			if self.fifo is not None:
+				try:
+					self.fifo.close()
+				except OSError:
+					pass
+				self.fifo = None
 
 	def wait_for_startup(self, timeout=15):
 		self.wait_for_log_prefix("client: version", timeout=timeout)
+
+
+class TeeworldsClient(Runnable):
+	def __init__(self, test_env, extra_args=[]):  # noqa: B006 mutable-default-arguments
+		name = f"teeworlds{test_env.num_teeworlds_clients}"
+		super().__init__(test_env, name, [test_env.teeworlds_client] + extra_args, allow_unclean_exit=True)
+		test_env.num_teeworlds_clients += 1
+
+	def exit(self):
+		self.process.terminate()
 
 
 class Server(Runnable):
@@ -594,11 +631,12 @@ json = {communities_json_filename!r}
 ALL_TESTS = []
 
 
-def test(test=None, *, requires_mastersrv=False, requires_websockets=False, timeout=60):
+def test(test=None, *, requires_mastersrv=False, requires_websockets=False, requires_teeworlds_client=False, timeout=60):
 	def apply(test):
 		test.name = test.__name__
 		test.requires_mastersrv = requires_mastersrv
 		test.requires_websockets = requires_websockets
+		test.requires_teeworlds_client = requires_teeworlds_client
 		test.timeout = timeout
 		ALL_TESTS.append(test)
 		return test
@@ -689,6 +727,283 @@ def client_can_connect_7(test_env):
 	client.exit()
 	server.wait_for_exit()
 	client.wait_for_exit()
+
+
+def vanilla_dm_client_can_connect_impl(test_env, address, expected_sixup):
+	client = test_env.client()
+	# Tutorial ships in both maps/ and maps7/, unlike the classic DM maps.
+	server = test_env.server(["sv_gametype vanilla.dm", "sv_map Tutorial"])
+	client.wait_for_startup()
+	server.wait_for_log_exact("game: selected mode id='vanilla.dm' name='Vanilla DM'", timeout=10)
+	server.wait_for_startup()
+	client.command(f"connect {address.format(port=server.port)}")
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if f"sixup={expected_sixup}" not in join:
+		raise AssertionError(f"sixup={expected_sixup} not found in {join!r}")
+	server.exit()
+	client.wait_for_log_exact("client: offline error='Server shutdown'")
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+@test
+def vanilla_dm_client_can_connect(test_env):
+	vanilla_dm_client_can_connect_impl(test_env, "localhost:{port}", 0)
+
+
+@test
+def vanilla_dm_client_can_connect_7(test_env):
+	vanilla_dm_client_can_connect_impl(test_env, "tw-0.7+udp://127.0.0.1:{port}", 1)
+
+
+def vanilla_dm_authenticate(server, client):
+	client.command(f"rcon_auth {server.rcon_password}")
+	auth = server.wait_for_log(
+		lambda log: log.line.startswith("server: ClientId=") and log.line.endswith(" authed with key='default_admin' (admin)"),
+		description="successful admin authentication",
+		timeout=5,
+	)
+	return int(auth.line.split("ClientId=", 1)[1].split(" ", 1)[0])
+
+
+def vanilla_dm_rcon(server, client, client_id, command, observed_prefix=None):
+	client.command(f"rcon {command}")
+	expected = f"server: ClientId={client_id} key='default_admin' rcon='{command}'"
+	timeout_id = server.register_timeout(2, f"RCON `{command}`")
+	observed = None
+	while True:
+		event = server.next_event(timeout_id)
+		if isinstance(event, Exit):
+			raise EOFError(f"server exited unexpectedly waiting for RCON `{command}`")  # noqa: TRY004
+		if not isinstance(event, Log):
+			continue
+		if observed_prefix is not None and event.line.startswith(observed_prefix):
+			observed = event
+		if event.line == expected:
+			return observed
+
+
+def vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, victim_name, position_commands):
+	kill_prefix = f"game: kill killer='{attacker_id}:attacker' victim='{victim_id}:{victim_name}' weapon=0"
+	for _ in range(4):
+		for client, client_id, command in position_commands:
+			kill = vanilla_dm_rcon(server, client, client_id, command, kill_prefix)
+			if kill is not None:
+				return kill
+		sleep(0.1)
+		attacker.command("+weapon1 1")
+		attacker.command("+weapon1 0")
+		attacker.command("+fire 1")
+		sleep(0.1)
+		attacker.command("+fire 0")
+		sleep(0.2)
+	return server.wait_for_log_prefix(kill_prefix, timeout=5)
+
+
+@test
+def vanilla_dm_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker"])
+	victim = test_env.client(["player_name victim"])
+	server = test_env.server(["sv_gametype vanilla.dm", "sv_map Tutorial", "sv_scorelimit 2", "sv_test_cmds 1"])
+	wait_for_startup([attacker, victim, server])
+
+	attacker.command(f"connect localhost:{server.port}")
+	victim.command(f"connect localhost:{server.port}")
+	for _ in range(2):
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+	victim_id = vanilla_dm_authenticate(server, victim)
+	position_commands = [
+		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
+	]
+
+	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
+	sleep(3.2)
+	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
+	server.wait_for_log_exact("game: end round type='TestDM'", timeout=5)
+	server.wait_for_log_exact("game: start round type='TestDM' teamplay='0'", timeout=15)
+
+	attacker.exit()
+	victim.exit()
+	server.exit()
+	server.wait_for_exit()
+	attacker.wait_for_exit()
+	victim.wait_for_exit()
+
+
+@test
+def vanilla_tdm_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker"])
+	victim = test_env.client(["player_name victim"])
+	server = test_env.server(["sv_gametype vanilla.tdm", "sv_map Tutorial", "sv_scorelimit 1", "sv_test_cmds 1"])
+	wait_for_startup([attacker, victim, server])
+
+	attacker.command(f"connect localhost:{server.port}")
+	victim.command(f"connect localhost:{server.port}")
+	for _ in range(2):
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+	victim_id = vanilla_dm_authenticate(server, victim)
+	position_commands = [
+		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
+	]
+	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
+	server.wait_for_log_exact("game: end round type='TestTDM'", timeout=5)
+	server.wait_for_log_exact("game: start round type='TestTDM' teamplay='1'", timeout=15)
+
+	attacker.exit()
+	victim.exit()
+	server.exit()
+	server.wait_for_exit()
+	attacker.wait_for_exit()
+	victim.wait_for_exit()
+
+
+@test(requires_teeworlds_client=True)
+def vanilla_dm_stock_07_client_can_connect(test_env):
+	server = test_env.server(["sv_gametype vanilla.dm", "sv_map Tutorial"])
+	server.wait_for_log_exact("game: selected mode id='vanilla.dm' name='Vanilla DM'", timeout=10)
+	server.wait_for_startup()
+	client = test_env.teeworlds([f"connect 127.0.0.1:{server.port}"])
+	client.wait_for_log_prefix("game version 0.7.", timeout=10)
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in join:
+		raise AssertionError(f"sixup=1 not found in {join!r}")
+	server.exit()
+	client.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+@test(requires_teeworlds_client=True)
+def vanilla_dm_stock_07_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker"])
+	server = test_env.server(["sv_gametype vanilla.dm", "sv_map Tutorial", "sv_scorelimit 2", "sv_test_cmds 1"])
+	wait_for_startup([attacker, server])
+	attacker.command(f"connect localhost:{server.port}")
+	attacker_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=0" not in attacker_join:
+		raise AssertionError(f"sixup=0 not found in {attacker_join!r}")
+
+	victim = test_env.teeworlds(["player_name stock-victim", f"connect 127.0.0.1:{server.port}"])
+	victim.wait_for_log_prefix("game version 0.7.", timeout=10)
+	victim_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in victim_join:
+		raise AssertionError(f"sixup=1 not found in {victim_join!r}")
+	victim_id = int(victim_join.split("ClientId=", 1)[1].split(" ", 1)[0])
+
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+	position_commands = [
+		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
+	]
+	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "stock-victim", position_commands)
+	sleep(3.2)
+	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "stock-victim", position_commands)
+	server.wait_for_log_exact("game: end round type='TestDM'", timeout=5)
+	server.wait_for_log_exact("game: start round type='TestDM' teamplay='0'", timeout=15)
+
+	server.exit()
+	victim.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
+	attacker.wait_for_log_exact("client: offline error='Server shutdown'", timeout=10)
+	attacker.exit()
+	victim.exit()
+	server.wait_for_exit()
+	attacker.wait_for_exit()
+	victim.wait_for_exit()
+
+
+@test(requires_teeworlds_client=True)
+def vanilla_tdm_stock_07_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker"])
+	server = test_env.server(["sv_gametype vanilla.tdm", "sv_map Tutorial", "sv_scorelimit 1", "sv_test_cmds 1"])
+	wait_for_startup([attacker, server])
+	attacker.command(f"connect localhost:{server.port}")
+	attacker_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=0" not in attacker_join:
+		raise AssertionError(f"sixup=0 not found in {attacker_join!r}")
+
+	victim = test_env.teeworlds(["player_name stock-victim", f"connect 127.0.0.1:{server.port}"])
+	victim.wait_for_log_prefix("game version 0.7.", timeout=10)
+	victim_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in victim_join:
+		raise AssertionError(f"sixup=1 not found in {victim_join!r}")
+	victim_id = int(victim_join.split("ClientId=", 1)[1].split(" ", 1)[0])
+
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+	position_commands = [
+		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
+	]
+	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "stock-victim", position_commands)
+	server.wait_for_log_exact("game: end round type='TestTDM'", timeout=5)
+	server.wait_for_log_exact("game: start round type='TestTDM' teamplay='1'", timeout=15)
+
+	server.exit()
+	victim.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
+	attacker.wait_for_log_exact("client: offline error='Server shutdown'", timeout=10)
+	attacker.exit()
+	victim.exit()
+	server.wait_for_exit()
+	attacker.wait_for_exit()
+	victim.wait_for_exit()
+
+
+@test(requires_teeworlds_client=True)
+def vanilla_ctf_stock_07_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker", "cl_auto_demo_record 0"])
+	server = test_env.server([
+		"sv_gametype vanilla.ctf",
+		"sv_map ctf1",
+		"sv_scorelimit 100",
+		"sv_test_cmds 1",
+		"sv_practice_by_default 1",
+	])
+	attacker.wait_for_startup()
+	server.wait_for_log_exact("game: selected mode id='vanilla.ctf' name='Vanilla CTF'", timeout=10)
+
+	stands = {}
+	for _ in range(2):
+		stand = server.wait_for_log_prefix("game: flag_stand team=", timeout=10).line
+		team = int(stand.split("team=", 1)[1].split(" ", 1)[0])
+		x = float(stand.split("x=", 1)[1].split(" ", 1)[0]) / 32.0
+		y = float(stand.split("y=", 1)[1]) / 32.0
+		stands[team] = (x, y)
+	if set(stands) != {0, 1}:
+		raise AssertionError(f"expected red and blue flag stands, got {stands!r}")
+	server.wait_for_startup()
+
+	attacker.command(f"connect localhost:{server.port}")
+	attacker_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=0" not in attacker_join:
+		raise AssertionError(f"sixup=0 not found in {attacker_join!r}")
+	attacker_id = int(attacker_join.split("ClientId=", 1)[1].split(" ", 1)[0])
+
+	observer = test_env.teeworlds(["player_name stock-observer", f"connect 127.0.0.1:{server.port}"])
+	observer.wait_for_log_prefix("game version 0.7.", timeout=10)
+	observer_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in observer_join:
+		raise AssertionError(f"sixup=1 not found in {observer_join!r}")
+
+	blue_x, blue_y = stands[1]
+	attacker.command(f"say /tpxy {blue_x} {blue_y}")
+	server.wait_for_log_prefix(f"game: flag_grab player='{attacker_id}:attacker' team=0", timeout=5)
+
+	red_x, red_y = stands[0]
+	attacker.command(f"say /tpxy {red_x} {red_y}")
+	server.wait_for_log_prefix(f"game: flag_capture player='{attacker_id}:attacker' team=0", timeout=5)
+	observer.wait_for_log_prefix("*** The blue flag was captured by 'attacker' (", timeout=5)
+	server.wait_for_log_exact("game: end round type='TestCTF'", timeout=5)
+	attacker.exit()
+
+	server.wait_for_log_exact("game: start round type='TestCTF' teamplay='1'", timeout=15)
+	server.exit()
+	observer.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
+	observer.exit()
+	server.wait_for_exit()
+	observer.wait_for_exit()
 
 
 @test(requires_websockets=True)
@@ -1002,6 +1317,16 @@ if os.name == "nt":
 	EXE_SUFFIX = ".exe"
 
 
+def find_build_executable(builddir, name):
+	candidates = [
+		os.path.join(builddir, f"{name}{EXE_SUFFIX}"),
+		os.path.join(builddir, "Release", f"{name}{EXE_SUFFIX}"),
+		os.path.join(builddir, "Debug", f"{name}{EXE_SUFFIX}"),
+		os.path.join(builddir, "RelWithDebInfo", f"{name}{EXE_SUFFIX}"),
+	]
+	return next((candidate for candidate in candidates if os.path.exists(candidate)), candidates[0])
+
+
 def main():
 	repo_dir = relpath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -1012,15 +1337,16 @@ def main():
 	parser.add_argument("--show-full-output", action="store_true", help="print the full stdout and stderr on test failures")
 	parser.add_argument("--test-mastersrv", action="store_true", help="enforce testing of mastersrv")
 	parser.add_argument("--test-websockets", action="store_true", help="run tests that require compiling with websockets support")
+	parser.add_argument("--teeworlds-client", help="path to an optional stock Teeworlds 0.7 client")
 	parser.add_argument("--timeout-multiplier", type=float, default=1, help="multiply all timeouts by this value")
 	parser.add_argument("--valgrind-memcheck", action="store_true", help="use valgrind's memcheck on client and server")
 	parser.add_argument("builddir", metavar="BUILDDIR", help="path to ddnet build directory")
 	parser.add_argument("test", metavar="TEST", nargs="?", help="name of test to run")
 	args = parser.parse_args()
 
-	ddnet = os.path.join(args.builddir, f"DDNet{EXE_SUFFIX}")
-	ddnet_server = os.path.join(args.builddir, f"DDNet-Server{EXE_SUFFIX}")
-	ddnet_mastersrv = os.path.join(args.builddir, f"mastersrv{EXE_SUFFIX}")
+	ddnet = find_build_executable(args.builddir, "DDNet")
+	ddnet_server = find_build_executable(args.builddir, "DDNet-Server")
+	ddnet_mastersrv = find_build_executable(args.builddir, "mastersrv")
 	if not os.path.exists(ddnet):
 		raise RuntimeError(f"client binary {ddnet!r} not found")
 	if not os.path.exists(ddnet_server):
@@ -1030,6 +1356,8 @@ def main():
 			raise RuntimeError(f"mastersrv binary {ddnet_mastersrv!r} not found, compile it from src/mastersrv")
 		else:
 			ddnet_mastersrv = None
+	if args.teeworlds_client is not None and not os.path.exists(args.teeworlds_client):
+		raise RuntimeError(f"Teeworlds client binary {args.teeworlds_client!r} not found")
 
 	tests = ALL_TESTS
 	if args.test is not None:
@@ -1039,6 +1367,7 @@ def main():
 		ddnet=ddnet,
 		ddnet_server=ddnet_server,
 		ddnet_mastersrv=ddnet_mastersrv,
+		teeworlds_client=args.teeworlds_client,
 		repo_dir=repo_dir,
 		test_dir=args.builddir,
 		show_full_output=args.show_full_output,

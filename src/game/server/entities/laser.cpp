@@ -11,7 +11,7 @@
 
 #include <game/mapitems.h>
 #include <game/server/gamecontext.h>
-#include <game/server/gamemodes/ddnet.h>
+#include <game/server/gamecontroller.h>
 #include <game/server/player.h>
 
 CLaser::CLaser(CGameWorld *pGameWorld, vec2 Pos, vec2 Direction, float StartEnergy, int Owner, int Type) :
@@ -31,9 +31,9 @@ CLaser::CLaser(CGameWorld *pGameWorld, vec2 Pos, vec2 Direction, float StartEner
 	m_TeleportCancelled = false;
 	m_IsBlueTeleport = false;
 	m_ZeroEnergyBounceInLastTick = false;
-	m_TuneZone = GameServer()->Collision()->IsTune(GameServer()->Collision()->GetMapIndex(m_Pos));
+	m_TuneZone = GameServer()->GameHost().Controller()->TuningZoneAt(m_Pos);
 	CCharacter *pOwnerChar = GameServer()->GetPlayerChar(m_Owner);
-	m_BelongsToPracticeTeam = pOwnerChar && pOwnerChar->Teams()->IsPractice(pOwnerChar->Team());
+	m_BelongsToPracticeTeam = pOwnerChar && GameServer()->GameHost().Controller()->IsTeamPractice(pOwnerChar->Team());
 
 	CPlayer *pOwnerPlayer = (Owner >= 0 && Owner < MAX_CLIENTS) ? GameServer()->m_apPlayers[m_Owner] : nullptr;
 	m_InteractState.Init(Owner, pOwnerPlayer ? pOwnerPlayer->GetUniqueCid() : 0);
@@ -292,7 +292,7 @@ void CLaser::Snap(int SnappingClient)
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
 	int LaserType = m_Type == WEAPON_LASER ? LASERTYPE_RIFLE : (m_Type == WEAPON_SHOTGUN ? LASERTYPE_SHOTGUN : -1);
 
-	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), GetId().value(),
+	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient)), GetId().value(),
 		m_Pos, m_From, m_EvalTick, m_Owner, LaserType, 0, m_Number);
 }
 
@@ -316,8 +316,7 @@ void CLaser::SyncInteractState()
 			NoHitOthers = (m_Type == WEAPON_LASER && pOwnerChar->LaserHitDisabled()) || (m_Type == WEAPON_SHOTGUN && pOwnerChar->ShotgunHitDisabled());
 		bool NoHitSelf = g_Config.m_SvOldLaser || (m_Bounces == 0 && !m_WasTele);
 		m_InteractState.FillOwnerConnected(
-			pOwnerChar && pOwnerChar->IsAlive(),
-			pOwnerPlayer ? GameServer()->GetDDRaceTeam(m_Owner) : 0,
+			GameServer()->GameHost().Controller()->PlayerTeamGroup(m_Owner),
 			pOwnerChar && pOwnerChar->Core()->m_Solo,
 			NoHitOthers,
 			NoHitSelf);

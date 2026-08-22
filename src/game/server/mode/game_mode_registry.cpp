@@ -83,6 +83,8 @@ CGameModeReportInfo CompetitiveGameModeReport(const char *pModeId, bool HasObjec
 	{
 		const std::string Prefix = "weapon_" + std::to_string(Weapon) + "_";
 		const std::string DisplayPrefix = std::string(apWeaponNames[Weapon]) + " ";
+		Add((Prefix + "kills").c_str(), (DisplayPrefix + "kills").c_str(), EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM);
+		Add((Prefix + "deaths").c_str(), (DisplayPrefix + "deaths").c_str(), EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM);
 		Add((Prefix + "shots").c_str(), (DisplayPrefix + "shots").c_str(), EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM);
 		Add((Prefix + "hits").c_str(), (DisplayPrefix + "hits").c_str(), EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM);
 		Add((Prefix + "damage_done").c_str(), (DisplayPrefix + "damage done").c_str(), EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::DAMAGE, EMatchMetricAggregation::SUM);

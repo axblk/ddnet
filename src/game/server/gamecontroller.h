@@ -21,6 +21,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <vector>
 
 class CCharacter;
 class CGameContext;
@@ -150,6 +151,34 @@ private:
 	int m_LiveStatsStartTick = 0;
 	int64_t m_LiveStatsStartTimeUtc = 0;
 	std::array<int, MAX_CLIENTS> m_aLastLiveStatsRequestTick;
+
+	/**
+	 * One report that is still being handed to one client.
+	 *
+	 * Reports are vital messages and can be far larger than the 32 KB resend
+	 * buffer of a connection, so their chunks are spread over ticks instead of
+	 * being queued in one go, which would overrun the buffer and lose the
+	 * chunks that no longer fit.
+	 */
+	class CPendingReportSend
+	{
+	public:
+		int m_ClientId = -1;
+		bool m_LiveStats = false;
+		int m_Revision = 0;
+		CUuid m_MatchId = UUID_ZEROED;
+		std::shared_ptr<const std::string> m_pPayload;
+		SHA256_DIGEST m_PayloadSha256 = {};
+		int m_NextChunk = 0;
+		int m_NumChunks = 0;
+	};
+	// At 8 chunks a tick a connection receives roughly 7 KB per tick, which
+	// leaves the resend buffer four ticks to drain before it could fill up.
+	static constexpr int REPORT_CHUNKS_PER_TICK = 8;
+	std::vector<CPendingReportSend> m_vPendingReportSends;
+
+	void QueueReportChunks(const CPendingReportSend &Send);
+	void TickReportSends();
 
 	CMatchParticipantState *MatchParticipant(const CPlayer *pPlayer);
 	CMatchParticipantState *EnsureMatchParticipant(CPlayer *pPlayer);

@@ -771,7 +771,7 @@ def client_connects_quic_and_receives_shutdown(test_env):
 		f"sv_quic_key {test_env.runner.quic_private_key}",
 	])
 	client = test_env.client([
-		"cl_quic 1",
+		"cl_connect_protocol 1",
 		f"cl_quic_cert {test_env.runner.quic_certificate}",
 		"cl_quic_server_name localhost",
 	])
@@ -861,7 +861,7 @@ def client_tofu_persists_identity_and_rejects_key_change(test_env):
 
 	server = start_server(0, test_env.runner.quic_wrong_certificate, test_env.runner.quic_wrong_private_key)
 	server_port = server.port
-	client = test_env.client(["cl_quic 1", "cl_save_settings 1", "cl_quic_server_name localhost"])
+	client = test_env.client(["cl_connect_protocol 1", "cl_save_settings 1", "cl_quic_server_name localhost"])
 	client.wait_for_startup(timeout=30)
 	client.command(f"connect 127.0.0.1:{server_port}")
 	client.wait_for_log_exact("client: QUIC connected, sending info", timeout=10)
@@ -874,7 +874,7 @@ def client_tofu_persists_identity_and_rejects_key_change(test_env):
 	client.wait_for_exit()
 
 	rotated_server = start_server(server_port, test_env.runner.quic_certificate, test_env.runner.quic_private_key)
-	rotated_client = test_env.client(["cl_quic 1", "cl_quic_server_name localhost"])
+	rotated_client = test_env.client(["cl_connect_protocol 1", "cl_quic_server_name localhost"])
 	rotated_client.wait_for_startup(timeout=30)
 	rotated_client.command(f"connect 127.0.0.1:{server_port}")
 	rotated_client.wait_for_log_exact("client: QUIC connected, sending info", timeout=10)
@@ -885,7 +885,7 @@ def client_tofu_persists_identity_and_rejects_key_change(test_env):
 	rotated_client.wait_for_exit()
 
 	changed_server = start_server(server_port, test_env.runner.quic_certificate, test_env.runner.quic_private_key, "quic_identity_changed.pk8")
-	changed_client = test_env.client(["cl_quic 1", "cl_quic_server_name localhost"])
+	changed_client = test_env.client(["cl_connect_protocol 1", "cl_quic_server_name localhost"])
 	changed_client.wait_for_startup(timeout=30)
 	changed_client.command(f"connect 127.0.0.1:{server_port}")
 	changed_client.wait_for_log_prefix("client: disconnecting. reason='server identity fingerprint mismatch (presented ", timeout=10)
@@ -909,7 +909,7 @@ def client_uses_quic_control_stream(test_env):
 	])
 	client = test_env.client([
 		"player_name quic-control",
-		"cl_quic 1",
+		"cl_connect_protocol 1",
 		f"cl_quic_cert {test_env.runner.quic_certificate}",
 		"cl_quic_server_name localhost",
 	])
@@ -941,7 +941,7 @@ def client_ban_blocks_quic_reconnect(test_env):
 	])
 	client_args = [
 		"bindaddr 192.0.2.2",
-		"cl_quic 1",
+		"cl_connect_protocol 1",
 		f"cl_quic_cert {test_env.runner.quic_certificate}",
 		"cl_quic_server_name localhost",
 	]
@@ -1007,7 +1007,7 @@ def run_transport_baseline_case(test_env, transport):
 			f"sv_quic_key {test_env.runner.quic_private_key}",
 		]
 		client_args += [
-			"cl_quic 1",
+			"cl_connect_protocol 1",
 			f"cl_quic_cert {test_env.runner.quic_certificate}",
 			"cl_quic_server_name localhost",
 		]
@@ -1096,7 +1096,7 @@ def client_can_connect_quic_shared_port(test_env):
 	expected_lan_metadata = f"ddnet-transport-v2|quic|identity-sha256={identity_match.group(1)}|capabilities=datagram,map-stream,resume-v1,game-protocol-7".encode()
 	shared_port = server.port
 	quic_client_args = [
-		"cl_quic 1",
+		"cl_connect_protocol 1",
 		f"cl_quic_cert {test_env.runner.quic_certificate}",
 		"cl_quic_server_name localhost",
 	]
@@ -1180,7 +1180,7 @@ def client_can_connect_quic_ipv6_shared_port(test_env):
 	])
 	server.wait_for_startup()
 	client = test_env.client([
-		"cl_quic 1",
+		"cl_connect_protocol 1",
 		f"cl_quic_cert {test_env.runner.quic_certificate}",
 		"cl_quic_server_name localhost",
 	])
@@ -1226,7 +1226,7 @@ def client_downloads_map_over_quic(test_env):
 	# forces the client through the transport download path.
 	os.remove(server_map)
 	client = test_env.client([
-		"cl_quic 1",
+		"cl_connect_protocol 1",
 		f"cl_quic_cert {test_env.runner.quic_certificate}",
 		"cl_quic_server_name localhost",
 		"cl_map_download_url https://127.0.0.1:1",
@@ -1255,7 +1255,7 @@ def client_resumes_quic_session(test_env):
 	server.wait_for_startup()
 	shared_port = server.port
 	client = test_env.client([
-		"cl_quic 1",
+		"cl_connect_protocol 1",
 		f"cl_quic_cert {test_env.runner.quic_certificate}",
 		"cl_quic_server_name localhost",
 	])
@@ -1297,7 +1297,7 @@ def client_rebinds_quic_socket(test_env):
 	client = test_env.client([
 		"player_name quic-rebind",
 		"bindaddr 127.0.0.1",
-		"cl_quic 1",
+		"cl_connect_protocol 1",
 		f"cl_quic_cert {test_env.runner.quic_certificate}",
 		"cl_quic_server_name localhost",
 	])
@@ -1329,7 +1329,7 @@ def client_rejects_quic_resume_expired(test_env):
 	server.wait_for_startup()
 	client = test_env.client(
 		[
-			"cl_quic 1",
+			"cl_connect_protocol 1",
 			f"cl_quic_cert {test_env.runner.quic_certificate}",
 			"cl_quic_server_name localhost",
 		],
@@ -1362,7 +1362,7 @@ def client_rejects_quic_resume_reused(test_env):
 	server.wait_for_startup()
 	client = test_env.client(
 		[
-			"cl_quic 1",
+			"cl_connect_protocol 1",
 			f"cl_quic_cert {test_env.runner.quic_certificate}",
 			"cl_quic_server_name localhost",
 		],
@@ -1395,7 +1395,7 @@ def client_rejects_wrong_quic_certificate(test_env):
 		f"sv_quic_key {test_env.runner.quic_private_key}",
 	])
 	client = test_env.client([
-		"cl_quic 1",
+		"cl_connect_protocol 1",
 		f"cl_quic_cert {test_env.runner.quic_wrong_certificate}",
 		"cl_quic_server_name localhost",
 	])
@@ -1711,7 +1711,6 @@ def server_runs_without_legacy_udp(test_env):
 			urls_file.write(f"{serverlist_url}\n")
 		client_args = [
 			"http_allow_insecure 1",
-			"cl_quic_auto 1",
 			f"br_cached_best_serverinfo_url {serverlist_url}",
 		]
 		client = test_env.client(client_args)
@@ -1775,8 +1774,7 @@ def client_auto_connects_quic_from_master(test_env):
 			urls_file.write(f"{serverlist_url}\n")
 		client = test_env.client([
 			"http_allow_insecure 1",
-			"cl_quic 0",
-			"cl_quic_auto 1",
+			"cl_connect_protocol 1",
 			f"br_cached_best_serverinfo_url {serverlist_url}",
 		])
 		client.wait_for_startup()
@@ -1818,7 +1816,6 @@ def client_does_not_use_metadata_fallback_from_modern_master(test_env):
 			urls_file.write(f"{serverlist_url}\n")
 		client = test_env.client([
 			"http_allow_insecure 1",
-			"cl_quic_auto 1",
 			f"br_cached_best_serverinfo_url {serverlist_url}",
 		])
 		client.wait_for_startup()
@@ -1879,7 +1876,6 @@ def client_auto_quic_accepts_next_certificate_pin(test_env):
 			urls_file.write(f"{serverlist_url}\n")
 		client = test_env.client([
 			"http_allow_insecure 1",
-			"cl_quic_auto 1",
 			f"br_cached_best_serverinfo_url {serverlist_url}",
 		])
 		client.wait_for_startup()
@@ -1915,7 +1911,6 @@ def client_auto_quic_network_failure_falls_back(test_env):
 			urls_file.write(f"{serverlist_url}\n")
 		client = test_env.client([
 			"http_allow_insecure 1",
-			"cl_quic_auto 1",
 			"cl_quic_fallback_delay_ms 0",
 			f"br_cached_best_serverinfo_url {serverlist_url}",
 		])
@@ -1965,7 +1960,6 @@ def client_auto_quic_pin_mismatch_never_falls_back(test_env):
 		client = test_env.client([
 			"cl_quic_fallback_delay_ms 0",
 			"http_allow_insecure 1",
-			"cl_quic_auto 1",
 			f"br_cached_best_serverinfo_url {serverlist_url}",
 		])
 		client.wait_for_startup()

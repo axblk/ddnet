@@ -34,19 +34,17 @@ enum class EModernTransportTrust
 };
 
 /**
- * Which transport a connect attempt uses, as chosen next to the address field.
+ * Which transport a connect attempt prefers, as chosen next to the address
+ * field. This is an order of preference and not a demand: a transport the
+ * server does not announce is skipped and the connect falls back to the legacy
+ * one, so picking QUIC is safe on a server that has never heard of it.
  *
  * The values are stored in `cl_connect_protocol`, so they must not be
  * reordered.
  */
 enum class EConnectProtocol
 {
-	/**
-	 * Take what the server offers, preferring QUIC. This is what almost every
-	 * connect should use.
-	 */
-	AUTOMATIC = 0,
-	LEGACY,
+	LEGACY = 0,
 	QUIC,
 	WEBSOCKET,
 	WEBTRANSPORT,
@@ -55,18 +53,16 @@ enum class EConnectProtocol
 
 /**
  * Which address family a connect attempt resolves to, as chosen next to the
- * address field.
+ * address field. Like the transport this is a preference: IPv6 leaves the
+ * choice to the resolver, which takes IPv6 where the server has it and IPv4
+ * where it does not, while IPv4 rules IPv6 out.
  *
  * The values are stored in `cl_connect_address_family`, so they must not be
  * reordered.
  */
 enum class EConnectAddressFamily
 {
-	/**
-	 * Both, preferring IPv6 where a server offers it.
-	 */
-	AUTOMATIC = 0,
-	IPV4,
+	IPV4 = 0,
 	IPV6,
 	COUNT,
 };
@@ -198,6 +194,11 @@ public:
 	int m_QuicPort;
 	int m_QuicCapabilities;
 	bool m_QuicSharedPort;
+	// A server can serve WebTransport without serving raw QUIC. Both live on
+	// the same port, so the port alone does not say which of the two is there.
+	// Only the answer a server gives directly carries this; a listing from the
+	// master server names both transports by address instead.
+	bool m_RawQuic;
 	bool m_HasQuicNextCertificateSha256;
 	bool m_HasQuicIdentityFingerprint;
 	EModernTransportTrust m_QuicTrust;

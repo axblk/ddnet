@@ -19,15 +19,15 @@
 
 const unsigned char SECURITY_TOKEN_MAGIC[4] = {'T', 'K', 'E', 'N'};
 
-int CNetUdpEndpoint::Recv(NETADDR *pAddr, unsigned char **ppData, const CNetBan *pNetBan) const
+int CNetUdpEndpoint::Recv(NETADDR *pAddr, unsigned char **ppData, bool *pFiltered, const CNetBan *pNetBan) const
 {
-	while(true)
-	{
-		const int Bytes = net_udp_recv(m_Socket, pAddr, ppData);
-		char aReason[128];
-		if(Bytes <= 0 || (pNetBan && pNetBan->IsBanned(pAddr, aReason, sizeof(aReason))) || !m_pfnFilter || !m_pfnFilter(m_pUser, pAddr, *ppData, Bytes))
-			return Bytes;
-	}
+	*pFiltered = false;
+	const int Bytes = net_udp_recv(m_Socket, pAddr, ppData);
+	char aReason[128];
+	if(Bytes <= 0 || (pNetBan && pNetBan->IsBanned(pAddr, aReason, sizeof(aReason))) || !m_pfnFilter)
+		return Bytes;
+	*pFiltered = m_pfnFilter(m_pUser, pAddr, *ppData, Bytes);
+	return Bytes;
 }
 
 SECURITY_TOKEN ToSecurityToken(const unsigned char *pData)

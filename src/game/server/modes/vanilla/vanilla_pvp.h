@@ -36,6 +36,8 @@ public:
 	int SnapPlayerScore(int SnappingClient, CPlayer *pPlayer) override;
 
 protected:
+	const std::vector<CGameModeMetricInfo> &ExtraReportMetrics() const override { return m_vPickupReportMetrics; }
+	void SetRespawnDelay(int VictimId, int Weapon);
 	CPlayerVanilla *VanillaPlayer(int ClientId) const;
 	void DetachProjectiles(int ClientId);
 	void InitGameSettings() override;
@@ -43,6 +45,9 @@ protected:
 	int GameInfoFlags2(int SnappingClient) const override;
 	int ScoreLimit() const override;
 	int TimeLimit() const override;
+
+private:
+	std::vector<CGameModeMetricInfo> m_vPickupReportMetrics;
 };
 
 #endif // GAME_SERVER_MODES_VANILLA_VANILLA_PVP_H

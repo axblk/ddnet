@@ -8,6 +8,26 @@
 
 #include <algorithm>
 #include <limits>
+#include <vector>
+
+namespace
+{
+	/**
+	 * Counts the weapon a dying client was holding.
+	 *
+	 * The kill message says which weapon did the killing, never which one the
+	 * victim had drawn, so this reads it from the snapshot instead. That
+	 * snapshot is the last one before the death, which makes the count
+	 * approximate: a victim who switched weapons in the fraction of a second
+	 * before dying is counted with the weapon they switched away from.
+	 */
+	void CountDeathHolding(const CGameState &State, CSessionClientStats &Stats, int ClientId)
+	{
+		const CGameState::CClientSnapshot &Snapshot = State.Client(ClientId);
+		if(Snapshot.m_HasCharacter && Snapshot.m_Character.m_Weapon >= 0 && Snapshot.m_Character.m_Weapon < NUM_WEAPONS)
+			Stats.m_aDeathsHolding[Snapshot.m_Character.m_Weapon]++;
+	}
+}
 
 void CSessionClientStats::JoinGame(int Tick)
 {
@@ -31,6 +51,7 @@ void CSessionClientStats::JoinSpec(int Tick)
 	{
 		m_IngameTicks += std::max(0, Tick - m_JoinTick);
 		m_Active = false;
+		m_LeaveTick = Tick;
 	}
 }
 
@@ -118,8 +139,18 @@ bool CSessionStatsState::UpdateSnapshot(const CGameState &State, int Tick)
 		}
 		if(!Stats.IsPresent() && Stats.HasJoined())
 			Stats.Reset();
+		const CGameState::CClientIdentityState &Identity = State.ClientIdentity(ClientId);
+		if(Identity.m_Active)
+		{
+			Stats.m_ClientInfo = Identity.m_ClientInfo;
+			Stats.m_HasClientInfo = true;
+		}
+		Stats.m_LastScore = SnapshotClient.m_PlayerInfo.m_Score;
 		if(SnapshotClient.m_PlayerInfo.m_Team != TEAM_SPECTATORS)
+		{
+			Stats.m_LastTeam = SnapshotClient.m_PlayerInfo.m_Team;
 			Stats.JoinGame(Tick);
+		}
 		else
 			Stats.JoinSpec(Tick);
 	}
@@ -154,6 +185,7 @@ void CSessionStatsState::HandleMessage(const CGameState &State, bool SuppressEve
 		CSessionClientStats &VictimStats = Client(pMsg->m_Victim);
 		VictimStats.m_Deaths++;
 		VictimStats.m_CurrentSpree = 0;
+		CountDeathHolding(State, VictimStats, pMsg->m_Victim);
 		if(pMsg->m_Weapon >= 0 && pMsg->m_Weapon < NUM_WEAPONS)
 			VictimStats.m_aDeathsFrom[pMsg->m_Weapon]++;
 		if(pMsg->m_Victim == pMsg->m_Killer)
@@ -177,6 +209,7 @@ void CSessionStatsState::HandleMessage(const CGameState &State, bool SuppressEve
 			{
 				Client(ClientId).m_Deaths++;
 				Client(ClientId).m_Suicides++;
+				CountDeathHolding(State, Client(ClientId), ClientId);
 			}
 		}
 	}
@@ -214,18 +247,7 @@ bool CSessionStatsState::FinalizeObservedMatch(const CObservedMatchMetadata &Met
 	const int LocalClientId = State.LocalClientId();
 	if(LocalClientId < 0 || LocalClientId >= MAX_CLIENTS || !m_aClients[LocalClientId].HasJoined())
 		return false;
-	const CGameState::CClientIdentityState &Identity = State.ClientIdentity(LocalClientId);
-	if(!Identity.m_Active)
-		return false;
 
-	char aName[MAX_NAME_LENGTH];
-	char aClan[MAX_CLAN_LENGTH];
-	if(!IntsToStr(Identity.m_ClientInfo.m_aName, std::size(Identity.m_ClientInfo.m_aName), aName, sizeof(aName)))
-		return false;
-	if(!IntsToStr(Identity.m_ClientInfo.m_aClan, std::size(Identity.m_ClientInfo.m_aClan), aClan, sizeof(aClan)))
-		aClan[0] = '\0';
-
-	const CSessionClientStats &Stats = m_aClients[LocalClientId];
 	const int64_t DurationTicks = std::max<int64_t>(0, Tick - m_RoundStartTick);
 	CMatchReport Report;
 	Report.m_MatchId = RandomUuid();
@@ -240,65 +262,129 @@ bool CSessionStatsState::FinalizeObservedMatch(const CObservedMatchMetadata &Met
 	Report.m_Termination = Metadata.m_Termination;
 	Report.m_Ranked = false;
 	Report.m_UnrankedReason = "client_observed";
-	const CGameState::CClientSnapshot &LocalSnapshot = State.Client(LocalClientId);
-	const std::optional<int> TeamId = LocalSnapshot.m_HasPlayerInfo && LocalSnapshot.m_PlayerInfo.m_Team >= TEAM_RED ? std::optional<int>(LocalSnapshot.m_PlayerInfo.m_Team) : std::nullopt;
-	if(TeamId.has_value())
-		Report.m_vTeams.push_back({*TeamId, *TeamId == TEAM_RED ? "Red" : "Blue"});
-	Report.m_vParticipants.push_back({0, TeamId, aName, aClan, std::clamp<int64_t>(Stats.FirstJoinTick() - m_RoundStartTick, 0, DurationTicks), std::nullopt, false});
-
-	int Rank = 1;
-	EMatchOutcome Outcome = EMatchOutcome::DRAW;
-	const int LocalScore = LocalSnapshot.m_HasPlayerInfo ? LocalSnapshot.m_PlayerInfo.m_Score : 0;
-	if((State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0 && State.GameData() != nullptr && TeamId.has_value())
+	const bool TeamPlay = (State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
+	if(TeamPlay)
 	{
-		const int OwnScore = *TeamId == TEAM_RED ? State.GameData()->m_TeamscoreRed : State.GameData()->m_TeamscoreBlue;
-		const int OtherScore = *TeamId == TEAM_RED ? State.GameData()->m_TeamscoreBlue : State.GameData()->m_TeamscoreRed;
-		Rank = OwnScore >= OtherScore ? 1 : 2;
-		Outcome = OwnScore > OtherScore ? EMatchOutcome::WIN : OwnScore < OtherScore ? EMatchOutcome::LOSS :
-											       EMatchOutcome::DRAW;
+		Report.m_vTeams.push_back({TEAM_RED, "Red"});
+		Report.m_vTeams.push_back({TEAM_BLUE, "Blue"});
+	}
+
+	// Client ids double as participant ids. They are unique for as long as a
+	// client is connected and a report only asks its ids to be distinct, so this
+	// saves carrying a second numbering next to the one every lookup here already
+	// uses. Exceeding the report limits would only show up when the finished
+	// report is rejected at the end of the match, when the counts it holds are
+	// already gone, so the bounds that rule that out are a build error instead.
+	constexpr int MAX_OBSERVED_METRICS_PER_PARTICIPANT = 7 + 3 * NUM_WEAPONS;
+	static_assert(MAX_CLIENTS <= MatchReportLimits::MAX_PARTICIPANTS);
+	static_assert(MAX_OBSERVED_METRICS_PER_PARTICIPANT <= MatchReportLimits::MAX_METRICS_PER_PARTICIPANT);
+	static_assert(MAX_CLIENTS * MAX_OBSERVED_METRICS_PER_PARTICIPANT + 2 <= MatchReportLimits::MAX_METRICS);
+	const std::string MetricPrefix = Metadata.m_ModeId + "/";
+	bool HasLocalParticipant = false;
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+	{
+		const CSessionClientStats &Stats = m_aClients[ClientId];
+		char aName[MAX_NAME_LENGTH];
+		char aClan[MAX_CLAN_LENGTH];
+		// A client that never played has nothing to report, and one whose name
+		// never arrived cannot be named: an empty name would make the whole
+		// report invalid and cost every other client their statistics too.
+		if(!Stats.HasJoined() || !Stats.m_HasClientInfo || !IntsToStr(Stats.m_ClientInfo.m_aName, std::size(Stats.m_ClientInfo.m_aName), aName, sizeof(aName)) || aName[0] == '\0')
+			continue;
+		if(!IntsToStr(Stats.m_ClientInfo.m_aClan, std::size(Stats.m_ClientInfo.m_aClan), aClan, sizeof(aClan)))
+			aClan[0] = '\0';
+		HasLocalParticipant = HasLocalParticipant || ClientId == LocalClientId;
+
+		CMatchParticipant Participant;
+		Participant.m_ParticipantId = ClientId;
+		if(TeamPlay && (Stats.m_LastTeam == TEAM_RED || Stats.m_LastTeam == TEAM_BLUE))
+			Participant.m_TeamId = Stats.m_LastTeam;
+		Participant.m_DisplayName = aName;
+		Participant.m_Clan = aClan;
+		Participant.m_JoinedTick = std::clamp<int64_t>(Stats.FirstJoinTick() - m_RoundStartTick, 0, DurationTicks);
+		// Only a client that is still playing has an open end. One that went to
+		// the spectators or disconnected stopped taking part when it did so,
+		// which is also the moment its playtime stopped counting.
+		if(!Stats.IsActive())
+			Participant.m_LeftTick = std::clamp<int64_t>(Stats.LeaveTick() - m_RoundStartTick, Participant.m_JoinedTick, DurationTicks);
+		// Nothing the client receives tells a bot or a dummy apart from a human,
+		// so claiming either way would put a guess into the journal.
+		Report.m_vParticipants.push_back(std::move(Participant));
+
+		Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, MetricPrefix + "score", Stats.m_LastScore});
+		Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, MetricPrefix + "kills", Stats.m_Frags});
+		Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, MetricPrefix + "deaths", Stats.m_Deaths});
+		Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, MetricPrefix + "suicides", Stats.m_Suicides});
+		Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, MetricPrefix + "best_spree", Stats.m_BestSpree, EMatchMetricAggregation::MAXIMUM});
+		Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, MetricPrefix + "flag_grabs", Stats.m_FlagGrabs});
+		Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, MetricPrefix + "playtime_ticks", Stats.GetIngameTicks(Tick)});
+		for(int Weapon = 0; Weapon < NUM_WEAPONS; ++Weapon)
+		{
+			const std::string WeaponPrefix = MetricPrefix + "weapon_" + std::to_string(Weapon) + "_";
+			if(Stats.m_aFragsWith[Weapon] != 0)
+				Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, WeaponPrefix + "kills", Stats.m_aFragsWith[Weapon]});
+			if(Stats.m_aDeathsFrom[Weapon] != 0)
+				Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, WeaponPrefix + "deaths", Stats.m_aDeathsFrom[Weapon]});
+			if(Stats.m_aDeathsHolding[Weapon] != 0)
+				Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, WeaponPrefix + "deaths_holding", Stats.m_aDeathsHolding[Weapon]});
+		}
+	}
+	// The report is the local player's own record of the match, so it is worth
+	// nothing without them in it.
+	if(!HasLocalParticipant)
+		return false;
+
+	// Both ways of ranking follow what the server writes into its own reports, so
+	// that a match seen by the client places its players like the same match
+	// reported by a server that knows the mode.
+	if(TeamPlay && State.GameData() != nullptr)
+	{
+		const int RedScore = State.GameData()->m_TeamscoreRed;
+		const int BlueScore = State.GameData()->m_TeamscoreBlue;
+		const bool Draw = RedScore == BlueScore;
+		for(int Team = TEAM_RED; Team <= TEAM_BLUE; ++Team)
+		{
+			const bool Won = Draw || (Team == TEAM_RED ? RedScore > BlueScore : BlueScore > RedScore);
+			Report.m_vStandings.push_back({EMatchSubjectKind::TEAM, Team, Won ? 1 : 2, Draw ? EMatchOutcome::DRAW : (Won ? EMatchOutcome::WIN : EMatchOutcome::LOSS)});
+			Report.m_vMetrics.push_back({EMatchSubjectKind::TEAM, Team, MetricPrefix + "score", Team == TEAM_RED ? RedScore : BlueScore});
+		}
+		for(const CMatchParticipant &Participant : Report.m_vParticipants)
+		{
+			if(!Participant.m_TeamId.has_value())
+				continue;
+			const bool Won = Draw || (*Participant.m_TeamId == TEAM_RED ? RedScore > BlueScore : BlueScore > RedScore);
+			Report.m_vStandings.push_back({EMatchSubjectKind::PARTICIPANT, Participant.m_ParticipantId, Won ? 1 : 2, Draw ? EMatchOutcome::DRAW : (Won ? EMatchOutcome::WIN : EMatchOutcome::LOSS)});
+		}
 	}
 	else
 	{
-		int NumEqual = 0;
-		for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+		std::vector<int> vRankedIds;
+		vRankedIds.reserve(Report.m_vParticipants.size());
+		for(const CMatchParticipant &Participant : Report.m_vParticipants)
+			vRankedIds.push_back(Participant.m_ParticipantId);
+		std::stable_sort(vRankedIds.begin(), vRankedIds.end(), [this](int Left, int Right) { return m_aClients[Left].m_LastScore > m_aClients[Right].m_LastScore; });
+		const bool TopTied = vRankedIds.size() > 1 && m_aClients[vRankedIds[0]].m_LastScore == m_aClients[vRankedIds[1]].m_LastScore;
+		int Rank = 0;
+		for(size_t Index = 0; Index < vRankedIds.size(); ++Index)
 		{
-			const CGameState::CClientSnapshot &Client = State.Client(ClientId);
-			if(!Client.m_HasPlayerInfo || Client.m_PlayerInfo.m_Team == TEAM_SPECTATORS)
-				continue;
-			Rank += Client.m_PlayerInfo.m_Score > LocalScore ? 1 : 0;
-			NumEqual += Client.m_PlayerInfo.m_Score == LocalScore ? 1 : 0;
+			// Everyone on the same score shares the rank of the first of them, and
+			// the ranks after them keep the gap that the tie leaves behind.
+			if(Index == 0 || m_aClients[vRankedIds[Index]].m_LastScore != m_aClients[vRankedIds[Index - 1]].m_LastScore)
+				Rank = static_cast<int>(Index) + 1;
+			Report.m_vStandings.push_back({EMatchSubjectKind::PARTICIPANT, vRankedIds[Index], Rank, Rank == 1 ? (TopTied ? EMatchOutcome::DRAW : EMatchOutcome::WIN) : EMatchOutcome::LOSS});
 		}
-		Outcome = Rank == 1 && NumEqual == 1 ? EMatchOutcome::WIN : Rank == 1 ? EMatchOutcome::DRAW :
-											EMatchOutcome::LOSS;
 	}
 	if(Metadata.m_Termination != EMatchTermination::COMPLETED)
 	{
-		Rank = 1;
-		Outcome = EMatchOutcome::DNF;
-	}
-	Report.m_vStandings.push_back({EMatchSubjectKind::PARTICIPANT, 0, Rank, Outcome});
-	const std::string MetricPrefix = Metadata.m_ModeId + "/";
-	Report.m_vMetrics = {
-		{EMatchSubjectKind::PARTICIPANT, 0, MetricPrefix + "score", LocalScore},
-		{EMatchSubjectKind::PARTICIPANT, 0, MetricPrefix + "kills", Stats.m_Frags},
-		{EMatchSubjectKind::PARTICIPANT, 0, MetricPrefix + "deaths", Stats.m_Deaths},
-		{EMatchSubjectKind::PARTICIPANT, 0, MetricPrefix + "suicides", Stats.m_Suicides},
-		{EMatchSubjectKind::PARTICIPANT, 0, MetricPrefix + "best_spree", Stats.m_BestSpree, EMatchMetricAggregation::MAXIMUM},
-		{EMatchSubjectKind::PARTICIPANT, 0, MetricPrefix + "flag_grabs", Stats.m_FlagGrabs},
-		{EMatchSubjectKind::PARTICIPANT, 0, MetricPrefix + "playtime_ticks", Stats.GetIngameTicks(Tick)}};
-	for(int Weapon = 0; Weapon < NUM_WEAPONS; ++Weapon)
-	{
-		if(Stats.m_aFragsWith[Weapon] != 0)
-			Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, 0, MetricPrefix + "weapon_" + std::to_string(Weapon) + "_kills", Stats.m_aFragsWith[Weapon]});
-		if(Stats.m_aDeathsFrom[Weapon] != 0)
-			Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, 0, MetricPrefix + "weapon_" + std::to_string(Weapon) + "_deaths", Stats.m_aDeathsFrom[Weapon]});
+		for(CMatchStanding &Standing : Report.m_vStandings)
+			Standing.m_Outcome = EMatchOutcome::DNF;
 	}
 
 	CStoredMatch Stored;
 	Stored.m_OriginId = Metadata.m_OriginId;
 	Stored.m_Source = EMatchReportSource::CLIENT_OBSERVED;
 	Stored.m_Completeness = Metadata.m_Termination == EMatchTermination::COMPLETED ? (m_Complete ? EMatchCompleteness::COMPLETE : EMatchCompleteness::PARTIAL_SINCE_JOIN) : EMatchCompleteness::ABORTED;
-	Stored.m_LocalParticipantId = 0;
+	Stored.m_LocalParticipantId = LocalClientId;
 	Stored.m_Report = std::move(Report);
 	if(!MatchReportToJson(Stored.m_Report, Stored.m_RawReport, pError))
 		return false;

@@ -16,11 +16,23 @@
 CGameControllerVanillaPvP::CGameControllerVanillaPvP(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
 	IGameController(Services, GameModeInfo)
 {
+	// A mode that produces no report at all has no namespace to hang metric ids
+	// off, so there is nothing to declare either.
+	if(!Info().m_Report.m_ModeId.empty())
+		m_vPickupReportMetrics = VanillaPickupGameModeMetrics(Info().m_Report.m_ModeId, static_cast<int>(Info().m_Report.m_vMetrics.size()));
 }
 
 CPlayer *CGameControllerVanillaPvP::CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team)
 {
 	return new CPlayerVanilla(Services(), UniqueClientId, ClientId, Team);
+}
+
+void CGameControllerVanillaPvP::SetRespawnDelay(int VictimId, int Weapon)
+{
+	// Stock 0.7 waits half a second before respawning, and three seconds when the
+	// tee killed itself.
+	const int Delay = Weapon == WEAPON_SELF ? Server()->TickSpeed() * 3 : Server()->TickSpeed() / 2;
+	VanillaPlayer(VictimId)->m_EarliestRespawnTick = Server()->Tick() + Delay;
 }
 
 CPlayerVanilla *CGameControllerVanillaPvP::VanillaPlayer(int ClientId) const
@@ -118,7 +130,14 @@ bool CGameControllerVanillaPvP::OnCharacterTakeDamage(CCharacter *pVictim, vec2 
 	const int DamageTaken = OldHealth - Health + OldArmor - Armor;
 	if(DamageTaken > 0)
 	{
-		Services().CreateDamageInd(pVictim->m_Pos, 0.0f, DamageTaken, pVictim->TeamMask());
+		// Hits that land in quick succession are spread around the tee instead of
+		// printing every number on top of the last one.
+		CPlayerVanilla *pVictimPlayer = VanillaPlayer(VictimId);
+		if(Server()->Tick() >= pVictimPlayer->m_DamageTakenTick + Server()->TickSpeed() / 2)
+			pVictimPlayer->m_DamageTaken = 0;
+		Services().CreateDamageInd(pVictim->m_Pos, pVictimPlayer->m_DamageTaken * 0.25f, DamageTaken, pVictim->TeamMask());
+		pVictimPlayer->m_DamageTaken++;
+		pVictimPlayer->m_DamageTakenTick = Server()->Tick();
 		AddCharacterDamageMatchMetrics(From != VictimId ? Services().Player(From) : nullptr, pVictim->GetPlayer(), Weapon, DamageTaken);
 	}
 
@@ -207,8 +226,11 @@ CGamePickupResult CGameControllerVanillaPvP::OnCharacterPickup(CCharacter *pChar
 	switch(Type)
 	{
 	case POWERUP_HEALTH:
+		// A full tee refuses the pickup, so reaching here means the point was
+		// really gained and is worth counting.
 		if(pCharacter->IncreaseHealth(1))
 		{
+			AddParticipantMatchMetric(pCharacter->GetPlayer(), "health_picked_up", 1);
 			Services().CreateSound(Position, SOUND_PICKUP_HEALTH, pCharacter->TeamMask());
 			return {true, 15, -1};
 		}
@@ -216,6 +238,7 @@ CGamePickupResult CGameControllerVanillaPvP::OnCharacterPickup(CCharacter *pChar
 	case POWERUP_ARMOR:
 		if(pCharacter->IncreaseArmor(1))
 		{
+			AddParticipantMatchMetric(pCharacter->GetPlayer(), "armor_picked_up", 1);
 			Services().CreateSound(Position, SOUND_PICKUP_ARMOR, pCharacter->TeamMask());
 			return {true, 15, -1};
 		}
@@ -311,14 +334,21 @@ int CGameControllerVanillaPvP::SnapPlayerScore(int SnappingClient, CPlayer *pPla
 
 int CGameControllerVanillaPvP::GameInfoFlags(int SnappingClient) const
 {
+	// The game type alone tells the client nothing anymore, so the ruleset has to
+	// be spelled out: without it the shotgun spread this mode fires is not
+	// predicted at all and the entities overlay is drawn from the DDNet tileset.
 	return GAMEINFOFLAG_GAMETYPE_VANILLA |
 	       GAMEINFOFLAG_ALLOW_EYE_WHEEL |
-	       GAMEINFOFLAG_ALLOW_ZOOM;
+	       GAMEINFOFLAG_ALLOW_ZOOM |
+	       GAMEINFOFLAG_PREDICT_VANILLA |
+	       GAMEINFOFLAG_ENTITIES_VANILLA;
 }
 
 int CGameControllerVanillaPvP::GameInfoFlags2(int SnappingClient) const
 {
-	return GAMEINFOFLAG2_HUD_AMMO | GAMEINFOFLAG2_HUD_HEALTH_ARMOR;
+	// Firing, bouncing and exploding are predicted here, so their effects may play
+	// on the spot instead of a ping late.
+	return GAMEINFOFLAG2_HUD_AMMO | GAMEINFOFLAG2_HUD_HEALTH_ARMOR | GAMEINFOFLAG2_PREDICT_EVENTS;
 }
 
 int CGameControllerVanillaPvP::ScoreLimit() const

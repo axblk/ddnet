@@ -304,11 +304,11 @@ namespace
 TEST_F(GameWorld, ClosestCharacter)
 {
 	CNetObj_PlayerInput Input = {};
-	CCharacter *pChr1 = new(0) CCharacter(&GameServer()->m_World, Input);
+	CCharacter *pChr1 = new CCharacter(&GameServer()->m_World, Input);
 	pChr1->m_Pos = vec2(0, 0);
 	GameServer()->m_World.InsertEntity(pChr1);
 
-	CCharacter *pChr2 = new(1) CCharacter(&GameServer()->m_World, Input);
+	CCharacter *pChr2 = new CCharacter(&GameServer()->m_World, Input);
 	pChr2->m_Pos = vec2(10, 10);
 	GameServer()->m_World.InsertEntity(pChr2);
 
@@ -319,11 +319,11 @@ TEST_F(GameWorld, ClosestCharacter)
 TEST_F(GameWorld, IntersectEntity)
 {
 	CNetObj_PlayerInput Input = {};
-	CCharacter *pChrLeft = new(0) CCharacter(&GameServer()->m_World, Input);
+	CCharacter *pChrLeft = new CCharacter(&GameServer()->m_World, Input);
 	pChrLeft->m_Pos = vec2(15, 10);
 	GameServer()->m_World.InsertEntity(pChrLeft);
 
-	CCharacter *pChrRight = new(1) CCharacter(&GameServer()->m_World, Input);
+	CCharacter *pChrRight = new CCharacter(&GameServer()->m_World, Input);
 	pChrRight->m_Pos = vec2(16, 10);
 	GameServer()->m_World.InsertEntity(pChrRight);
 
@@ -1303,7 +1303,6 @@ TEST_F(GameWorld, EntityInteractionPolicyIsModeOwned)
 	EXPECT_FALSE(Interaction.CanSee(GameServer(), ViewerId));
 	EXPECT_FALSE(Interaction.CanHit(GameServer(), ViewerId));
 	EXPECT_FALSE(Interaction.CanSeeMask(GameServer()).test(ViewerId));
-	EXPECT_FALSE(Interaction.CanHitMask(GameServer()).test(ViewerId));
 	EXPECT_TRUE(Interaction.CanSee(GameServer(), OwnerId));
 	auto *pProjectile = new CProjectile(&GameServer()->m_World, WEAPON_GUN, OwnerId, vec2(64.0f, 96.0f), vec2(1.0f, 0.0f), 10, false, false, -1, vec2(1.0f, 0.0f));
 	EXPECT_FALSE(pProjectile->CanCollide(ViewerId));

@@ -23,7 +23,7 @@ struct CNetObj_PlayerInput;
 // player object
 class CPlayer
 {
-	MACRO_ALLOC_POOL_ID()
+	MACRO_ALLOC_HEAP()
 
 public:
 	CPlayer(CGameServices &Services, uint32_t UniqueClientId, int ClientId, int Team);

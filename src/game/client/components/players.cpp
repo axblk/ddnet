@@ -175,6 +175,10 @@ void CPlayers::RenderHookCollLine(
 	if(!GameClient()->m_GameInfo.m_AllowHookColl)
 		return;
 
+	// The line has to be traced the way the hook itself is, so it reads the
+	// same rules the prediction runs under instead of the config behind them.
+	const CPhysicsRules Rules = GameClient()->PredictedPhysicsRules();
+
 	bool Local = GameClient()->m_Snap.m_LocalClientId == ClientId;
 
 #if defined(CONF_VIDEORECORDER)
@@ -227,7 +231,7 @@ void CPlayers::RenderHookCollLine(
 
 	// Check, if the player is outside the screen-rect
 	// If the map contains hook teleports, we are out of luck since we don't know if it will enter the screen at any point.
-	if(!Collision()->HasHookTeleIns(GameClient()->m_GameInfo.m_PredictDDRace && g_Config.m_SvOldTeleportHook))
+	if(!Collision()->HasHookTeleIns(Rules.m_DDNetMovement && Rules.m_TeleportHookOld))
 	{
 		const float MaxHookReach = HookLength + HookFireSpeed;
 
@@ -298,7 +302,7 @@ void CPlayers::RenderHookCollLine(
 			{
 				vec2 RetractingHookEndPos = BasePos + normalize(SegmentEndPos - BasePos) * HookLength;
 				// you can't hook a player, if the hook is behind solids, however you miss the solids as well
-				int Hit = GameClient()->m_GameInfo.m_PredictDDRace ? Collision()->IntersectLineTeleHook(SegmentStartPos, RetractingHookEndPos, &HitPos, nullptr, &Tele, g_Config.m_SvOldTeleportHook) : Collision()->IntersectLine(SegmentStartPos, RetractingHookEndPos, &HitPos, nullptr);
+				int Hit = Rules.m_DDNetMovement ? Collision()->IntersectLineTeleHook(SegmentStartPos, RetractingHookEndPos, &HitPos, nullptr, &Tele, Rules.m_TeleportHookOld) : Collision()->IntersectLine(SegmentStartPos, RetractingHookEndPos, &HitPos, nullptr);
 
 				if(GameClient()->IntersectCharacter(SegmentStartPos, HitPos, RetractingHookEndPos, ClientId, &IntersectedPlayerPosition) != -1)
 				{
@@ -328,7 +332,7 @@ void CPlayers::RenderHookCollLine(
 		}
 
 		// check for map collisions
-		int Hit = GameClient()->m_GameInfo.m_PredictDDRace ? Collision()->IntersectLineTeleHook(SegmentStartPos, SegmentEndPos, &HitPos, nullptr, &Tele, g_Config.m_SvOldTeleportHook) : Collision()->IntersectLine(SegmentStartPos, SegmentEndPos, &HitPos, nullptr);
+		int Hit = Rules.m_DDNetMovement ? Collision()->IntersectLineTeleHook(SegmentStartPos, SegmentEndPos, &HitPos, nullptr, &Tele, Rules.m_TeleportHookOld) : Collision()->IntersectLine(SegmentStartPos, SegmentEndPos, &HitPos, nullptr);
 
 		// check if we intersect a player
 		if(GameClient()->IntersectCharacter(SegmentStartPos, HitPos, SegmentEndPos, ClientId, &IntersectedPlayerPosition) != -1)

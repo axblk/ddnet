@@ -66,4 +66,6 @@ TEST(Csv, LetTheQuotingBegin)
 	Expect(2, apCols3, "\",,\",\",\"\"\"\"\"\"\"");
 	const char *apCols4[] = {"\",", " "};
 	Expect(2, apCols4, "\"\"\",\", ");
+	const char *apCols5[] = {"line 1\nline 2", "line 1\rline 2"};
+	Expect(2, apCols5, "\"line 1\nline 2\",\"line 1\rline 2\"");
 }

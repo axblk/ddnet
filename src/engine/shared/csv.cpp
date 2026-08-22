@@ -13,7 +13,7 @@ void CsvWrite(IOHANDLE File, int NumColumns, const char *const *ppColumns)
 		}
 		const char *pColumn = ppColumns[i];
 		int ColumnLength = str_length(pColumn);
-		if(!str_find(pColumn, "\"") && !str_find(pColumn, ","))
+		if(!str_find(pColumn, "\"") && !str_find(pColumn, ",") && !str_find(pColumn, "\r") && !str_find(pColumn, "\n"))
 		{
 			io_write(File, pColumn, ColumnLength);
 			continue;

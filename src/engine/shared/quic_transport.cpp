@@ -1,6 +1,6 @@
 #include "quic_transport.h"
 
-#include "modern_wire.h"
+#include "game_wire.h"
 
 #include <base/hash_ctxt.h>
 #include <base/mem.h>
@@ -336,6 +336,51 @@ namespace
 	{
 		return {vData.data(), vData.size()};
 	}
+
+	struct CPreparedServerIdentity
+	{
+		SHA256_DIGEST m_CertificateSha256 = {};
+		SHA256_DIGEST m_NextCertificateSha256 = {};
+		CServerIdentityBinding m_ServerIdentity = {};
+		bool m_HasNextCertificate = false;
+	};
+
+	bool PrepareServerIdentity(const std::vector<uint8_t> &vCertificate, const std::vector<uint8_t> &vNextCertificate, const char *pIdentityPath, bool RawQuic, CPreparedServerIdentity &Prepared, char *pError, size_t ErrorSize)
+	{
+		try
+		{
+			const auto CertificateDer = ModernQuic::quic_leaf_certificate_der(Slice(vCertificate));
+			const auto NextCertificateDer = vNextCertificate.empty() ? rust::Vec<uint8_t>{} : ModernQuic::quic_leaf_certificate_der(Slice(vNextCertificate));
+			Prepared.m_CertificateSha256 = sha256(CertificateDer.data(), CertificateDer.size());
+			Prepared.m_NextCertificateSha256 = NextCertificateDer.empty() ? SHA256_DIGEST{} : sha256(NextCertificateDer.data(), NextCertificateDer.size());
+			Prepared.m_HasNextCertificate = !NextCertificateDer.empty() && Prepared.m_NextCertificateSha256 != Prepared.m_CertificateSha256;
+			if(!RawQuic)
+				return true;
+			const auto Identity = ModernQuic::quic_server_identity_binding(
+				pIdentityPath,
+				{Prepared.m_CertificateSha256.data, SHA256_DIGEST_LENGTH},
+				{Prepared.m_NextCertificateSha256.data, Prepared.m_HasNextCertificate ? size_t{SHA256_DIGEST_LENGTH} : size_t{0}});
+			if(Identity.public_key.size() != SERVER_IDENTITY_PUBLIC_KEY_SIZE ||
+				Identity.certificate_signature.size() != SERVER_IDENTITY_SIGNATURE_SIZE ||
+				(Prepared.m_HasNextCertificate && Identity.next_certificate_signature.size() != SERVER_IDENTITY_SIGNATURE_SIZE) ||
+				(!Prepared.m_HasNextCertificate && !Identity.next_certificate_signature.empty()))
+				throw std::runtime_error("invalid server identity binding size");
+
+			std::copy(Identity.public_key.begin(), Identity.public_key.end(), Prepared.m_ServerIdentity.m_PublicKey.begin());
+			std::copy(Identity.certificate_signature.begin(), Identity.certificate_signature.end(), Prepared.m_ServerIdentity.m_CertificateSignature.begin());
+			if(!Identity.next_certificate_signature.empty())
+			{
+				std::copy(Identity.next_certificate_signature.begin(), Identity.next_certificate_signature.end(), Prepared.m_ServerIdentity.m_NextCertificateSignature.begin());
+				Prepared.m_ServerIdentity.m_HasNextCertificateSignature = true;
+			}
+			return true;
+		}
+		catch(const std::exception &Error)
+		{
+			str_copy(pError, Error.what(), ErrorSize);
+			return false;
+		}
+	}
 #endif
 }
 
@@ -347,7 +392,7 @@ public:
 	NETADDR m_PeerAddress = {};
 	std::string m_Url;
 	std::vector<unsigned char> m_vCertificateHashes;
-	std::vector<unsigned char> m_vRawEvent = std::vector<unsigned char>(ModernWire::MAX_CONTROL_MESSAGE_SIZE + 16);
+	std::vector<unsigned char> m_vRawEvent = std::vector<unsigned char>(GameWire::MAX_CONTROL_MESSAGE_SIZE + 16);
 	std::vector<unsigned char> m_vEventPayload;
 	std::vector<unsigned char> m_vControlBuffer;
 	std::vector<unsigned char> m_vPendingDatagram;
@@ -355,7 +400,7 @@ public:
 	std::vector<unsigned char> m_vMapHeaderBuffer;
 	uint64_t m_DatagramSequence = 0;
 	uint64_t m_LastReceivedDatagramSequence = 0;
-	ModernWire::CDatagramView m_PendingDatagram = {};
+	GameWire::CDatagramView m_PendingDatagram = {};
 	size_t m_LocalMaxDatagramSize = 0;
 	size_t m_PeerMaxDatagramSize = 0;
 	uint32_t m_MapStreamId = 0;
@@ -376,6 +421,8 @@ public:
 	ModernQuic::QuicEvent m_Event = {};
 	ModernQuic::UdpDatagram m_UdpDatagram = {};
 	std::unordered_map<uint64_t, NETADDR> m_PeerAddresses;
+	std::string m_ManagedIdentityPath;
+	int64_t m_ManagedCertificateRotateAt = 0;
 
 	explicit CImpl(rust::Box<ModernQuic::QuicEndpoint> Endpoint) :
 		m_Endpoint(std::move(Endpoint))
@@ -408,7 +455,7 @@ bool CQuicTransport::IsWebTransportCompiled()
 #endif
 }
 
-bool CQuicTransport::StartServer(const char *pLocalAddress, bool RawQuic, bool WebTransport, const char *pWebTransportOrigin, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath)
+bool CQuicTransport::StartServer(const char *pLocalAddress, bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath)
 {
 	Shutdown();
 	m_Metrics = {};
@@ -417,18 +464,21 @@ bool CQuicTransport::StartServer(const char *pLocalAddress, bool RawQuic, bool W
 	std::vector<uint8_t> vCertificate;
 	std::vector<uint8_t> vNextCertificate;
 	std::vector<uint8_t> vPrivateKey;
+	int64_t ManagedCertificateRotateAt = 0;
 	if((pCertificatePath[0] == '\0') != (pPrivateKeyPath[0] == '\0'))
 	{
-		str_copy(m_aError, "sv_quic_cert and sv_quic_key must either both be set or both be empty");
+		str_copy(m_aError, "TLS certificate and private key must either both be set or both be empty");
 		return false;
 	}
 	if(pCertificatePath[0] == '\0')
 	{
 		try
 		{
-			auto Identity = ModernQuic::quic_generate_identity("localhost");
+			auto Identity = ModernQuic::quic_managed_identity(pIdentityPath, time_timestamp());
 			vCertificate.assign(Identity.certificate_der.begin(), Identity.certificate_der.end());
 			vPrivateKey.assign(Identity.private_key_der.begin(), Identity.private_key_der.end());
+			vNextCertificate.assign(Identity.next_certificate_der.begin(), Identity.next_certificate_der.end());
+			ManagedCertificateRotateAt = Identity.rotate_at;
 		}
 		catch(const std::exception &Error)
 		{
@@ -441,40 +491,31 @@ bool CQuicTransport::StartServer(const char *pLocalAddress, bool RawQuic, bool W
 		return false;
 	if(pNextCertificatePath[0] != '\0' && !ReadFile(pNextCertificatePath, 64 * 1024, vNextCertificate, m_aError, sizeof(m_aError)))
 		return false;
+	CPreparedServerIdentity Prepared;
+	if(!PrepareServerIdentity(vCertificate, vNextCertificate, pIdentityPath, RawQuic, Prepared, m_aError, sizeof(m_aError)))
+		return false;
 	try
 	{
-		const SHA256_DIGEST CertificateSha256 = sha256(vCertificate.data(), vCertificate.size());
-		const SHA256_DIGEST NextCertificateSha256 = vNextCertificate.empty() ? SHA256_DIGEST{} : sha256(vNextCertificate.data(), vNextCertificate.size());
-		const auto Identity = ModernQuic::quic_server_identity_binding(
-			pIdentityPath,
-			{CertificateSha256.data, SHA256_DIGEST_LENGTH},
-			{NextCertificateSha256.data, vNextCertificate.empty() ? size_t{0} : size_t{SHA256_DIGEST_LENGTH}});
-		if(Identity.public_key.size() != SERVER_IDENTITY_PUBLIC_KEY_SIZE ||
-			Identity.certificate_signature.size() != SERVER_IDENTITY_SIGNATURE_SIZE ||
-			(!vNextCertificate.empty() && Identity.next_certificate_signature.size() != SERVER_IDENTITY_SIGNATURE_SIZE) ||
-			(vNextCertificate.empty() && !Identity.next_certificate_signature.empty()))
-			throw std::runtime_error("invalid server identity binding size");
-
-		CServerIdentityBinding ServerIdentity = {};
-		std::copy(Identity.public_key.begin(), Identity.public_key.end(), ServerIdentity.m_PublicKey.begin());
-		std::copy(Identity.certificate_signature.begin(), Identity.certificate_signature.end(), ServerIdentity.m_CertificateSignature.begin());
-		if(!Identity.next_certificate_signature.empty())
-		{
-			std::copy(Identity.next_certificate_signature.begin(), Identity.next_certificate_signature.end(), ServerIdentity.m_NextCertificateSignature.begin());
-			ServerIdentity.m_HasNextCertificateSignature = true;
-		}
 		m_pImpl = std::make_unique<CImpl>(ModernQuic::quic_server_start_external(
-			pLocalAddress, RawQuic, WebTransport, pWebTransportOrigin, Slice(vCertificate), Slice(vNextCertificate), Slice(vPrivateKey),
-			pIdentityPath, {ServerIdentity.m_PublicKey.data(), ServerIdentity.m_PublicKey.size()}));
-		m_CertificateSha256 = CertificateSha256;
-		m_HasCertificateSha256 = true;
-		if(!vNextCertificate.empty())
+			pLocalAddress, RawQuic, WebTransport, Slice(vCertificate), Slice(vNextCertificate), Slice(vPrivateKey),
+			pIdentityPath, {Prepared.m_ServerIdentity.m_PublicKey.data(), RawQuic ? Prepared.m_ServerIdentity.m_PublicKey.size() : size_t{0}}));
+		if(ManagedCertificateRotateAt != 0)
 		{
-			m_NextCertificateSha256 = NextCertificateSha256;
-			m_HasNextCertificateSha256 = m_NextCertificateSha256 != m_CertificateSha256;
+			m_pImpl->m_ManagedIdentityPath = pIdentityPath;
+			m_pImpl->m_ManagedCertificateRotateAt = ManagedCertificateRotateAt;
 		}
-		m_ServerIdentity = ServerIdentity;
-		m_HasServerIdentity = true;
+		m_CertificateSha256 = Prepared.m_CertificateSha256;
+		m_HasCertificateSha256 = true;
+		if(Prepared.m_HasNextCertificate)
+		{
+			m_NextCertificateSha256 = Prepared.m_NextCertificateSha256;
+			m_HasNextCertificateSha256 = true;
+		}
+		if(RawQuic)
+		{
+			m_ServerIdentity = Prepared.m_ServerIdentity;
+			m_HasServerIdentity = true;
+		}
 		return true;
 	}
 	catch(const std::exception &Error)
@@ -485,6 +526,48 @@ bool CQuicTransport::StartServer(const char *pLocalAddress, bool RawQuic, bool W
 	str_copy(m_aError, "QUIC support is not compiled in");
 #endif
 	return false;
+}
+
+bool CQuicTransport::MaybeRotateManagedCertificate(bool *pRotated)
+{
+	*pRotated = false;
+#if defined(CONF_QUIC)
+	if(!m_pImpl || m_pImpl->m_ManagedIdentityPath.empty() || time_timestamp() < m_pImpl->m_ManagedCertificateRotateAt)
+		return true;
+	try
+	{
+		auto Identity = ModernQuic::quic_managed_identity(m_pImpl->m_ManagedIdentityPath, time_timestamp());
+		std::vector<uint8_t> vCertificate(Identity.certificate_der.begin(), Identity.certificate_der.end());
+		std::vector<uint8_t> vNextCertificate(Identity.next_certificate_der.begin(), Identity.next_certificate_der.end());
+		std::vector<uint8_t> vPrivateKey(Identity.private_key_der.begin(), Identity.private_key_der.end());
+		CPreparedServerIdentity Prepared;
+		if(!PrepareServerIdentity(vCertificate, vNextCertificate, m_pImpl->m_ManagedIdentityPath.c_str(), m_HasServerIdentity, Prepared, m_aError, sizeof(m_aError)))
+			throw std::runtime_error(m_aError);
+		if(m_HasServerIdentity && Prepared.m_ServerIdentity.m_PublicKey != m_ServerIdentity.m_PublicKey)
+			throw std::runtime_error("server identity changed while rotating the TLS certificate");
+		ModernQuic::quic_server_update_certificate(
+			*m_pImpl->m_Endpoint,
+			Slice(vCertificate),
+			Slice(vPrivateKey),
+			{Prepared.m_CertificateSha256.data, SHA256_DIGEST_LENGTH});
+		m_CertificateSha256 = Prepared.m_CertificateSha256;
+		m_NextCertificateSha256 = Prepared.m_NextCertificateSha256;
+		m_HasNextCertificateSha256 = Prepared.m_HasNextCertificate;
+		if(m_HasServerIdentity)
+			m_ServerIdentity = Prepared.m_ServerIdentity;
+		m_pImpl->m_ManagedCertificateRotateAt = Identity.rotate_at;
+		*pRotated = true;
+		return true;
+	}
+	catch(const std::exception &Error)
+	{
+		str_copy(m_aError, Error.what());
+		m_pImpl->m_ManagedCertificateRotateAt = time_timestamp() + 60;
+		return false;
+	}
+#else
+	return true;
+#endif
 }
 
 bool CQuicTransport::StartClient(const char *pBindAddress, const char *pServerAddress, const char *pServerName, const char *pCertificatePath, bool Sixup)
@@ -537,6 +620,33 @@ bool CQuicTransport::StartClientSha256(const char *pBindAddress, const char *pSe
 		str_copy(m_aError, Error.what());
 	}
 #else
+	(void)Sixup;
+	str_copy(m_aError, "QUIC support is not compiled in");
+#endif
+	return false;
+}
+
+bool CQuicTransport::StartClientWebPki(const char *pBindAddress, const char *pServerAddress, const char *pServerName, bool Sixup)
+{
+	Shutdown();
+	m_Metrics = {};
+	m_Metrics.m_ConnectAttempts = 1;
+	m_ConnectStartTime = time_get_impl();
+	m_ClientMode = true;
+#if defined(CONF_QUIC)
+	try
+	{
+		m_pImpl = std::make_unique<CImpl>(ModernQuic::quic_client_start_webpki_external(pBindAddress, pServerAddress, pServerName, Sixup));
+		return true;
+	}
+	catch(const std::exception &Error)
+	{
+		str_copy(m_aError, Error.what());
+	}
+#else
+	(void)pBindAddress;
+	(void)pServerAddress;
+	(void)pServerName;
 	(void)Sixup;
 	str_copy(m_aError, "QUIC support is not compiled in");
 #endif
@@ -670,18 +780,18 @@ bool CQuicTransport::Send(CQuicSessionId Session, const void *pData, int DataSiz
 	bool Queued;
 	if(Vital)
 	{
-		Queued = ModernWire::EncodeFrame(
-				 ModernWire::EFrameType::MESSAGE,
+		Queued = GameWire::EncodeFrame(
+				 GameWire::EFrameType::MESSAGE,
 				 {static_cast<const unsigned char *>(pData), static_cast<size_t>(DataSize)},
 				 vPayload) &&
 			 BrowserWebTransportSendControl(m_pImpl->m_WebTransportHandle, vPayload.data(), static_cast<int>(vPayload.size()));
 	}
 	else
 	{
-		const std::vector<ModernWire::CByteView> vMessages = {{static_cast<const unsigned char *>(pData), static_cast<size_t>(DataSize)}};
+		const std::vector<GameWire::CByteView> vMessages = {{static_cast<const unsigned char *>(pData), static_cast<size_t>(DataSize)}};
 		const size_t MaxDatagramSize = std::min(m_pImpl->m_LocalMaxDatagramSize, m_pImpl->m_PeerMaxDatagramSize);
 		Queued = MaxDatagramSize > 0 &&
-			 ModernWire::EncodeDatagram(m_pImpl->m_DatagramSequence, vMessages, vPayload) &&
+			 GameWire::EncodeDatagram(m_pImpl->m_DatagramSequence, vMessages, vPayload) &&
 			 vPayload.size() <= MaxDatagramSize &&
 			 BrowserWebTransportSendDatagram(m_pImpl->m_WebTransportHandle, vPayload.data(), static_cast<int>(vPayload.size()));
 		if(Queued)
@@ -851,25 +961,25 @@ bool CQuicTransport::Poll(CQuicEvent &Event)
 	auto PollControlFrame = [&]() {
 		while(!m_pImpl->m_vControlBuffer.empty())
 		{
-			ModernWire::CFrameView Frame;
-			const ModernWire::EDecodeResult Result = ModernWire::DecodeFrame(m_pImpl->m_vControlBuffer.data(), m_pImpl->m_vControlBuffer.size(), Frame);
-			if(Result == ModernWire::EDecodeResult::NEED_MORE)
+			GameWire::CFrameView Frame;
+			const GameWire::EDecodeResult Result = GameWire::DecodeFrame(m_pImpl->m_vControlBuffer.data(), m_pImpl->m_vControlBuffer.size(), Frame);
+			if(Result == GameWire::EDecodeResult::NEED_MORE)
 				return false;
-			if(Result != ModernWire::EDecodeResult::OK)
+			if(Result != GameWire::EDecodeResult::OK)
 				return DisconnectEvent(EQuicConnectFailure::PROTOCOL, "invalid WebTransport control frame");
 			m_pImpl->m_vEventPayload.assign(Frame.m_Payload.m_pData, Frame.m_Payload.m_pData + Frame.m_Payload.m_Size);
 			m_pImpl->m_vControlBuffer.erase(m_pImpl->m_vControlBuffer.begin(), m_pImpl->m_vControlBuffer.begin() + Frame.m_BytesConsumed);
 			if(!m_pImpl->m_WebTransportConnected)
 			{
-				ModernWire::CHelloView Hello;
-				if(Frame.m_Type != static_cast<uint64_t>(ModernWire::EFrameType::SERVER_HELLO) ||
-					ModernWire::DecodeHello({m_pImpl->m_vEventPayload.data(), m_pImpl->m_vEventPayload.size()}, Hello) != ModernWire::EDecodeResult::OK ||
-					Hello.m_ProtocolVersion != ModernWire::VERSION_MAJOR ||
-					(Hello.m_Capabilities & (ModernWire::CAPABILITY_DATAGRAM | ModernWire::CAPABILITY_MAP_STREAM | ModernWire::CAPABILITY_RESUME)) != (ModernWire::CAPABILITY_DATAGRAM | ModernWire::CAPABILITY_MAP_STREAM | ModernWire::CAPABILITY_RESUME) ||
-					((Hello.m_Capabilities & ModernWire::CAPABILITY_GAME_PROTOCOL_7) != 0) != m_pImpl->m_Sixup ||
+				GameWire::CHelloView Hello;
+				if(Frame.m_Type != static_cast<uint64_t>(GameWire::EFrameType::SERVER_HELLO) ||
+					GameWire::DecodeHello({m_pImpl->m_vEventPayload.data(), m_pImpl->m_vEventPayload.size()}, Hello) != GameWire::EDecodeResult::OK ||
+					Hello.m_ProtocolVersion != GameWire::VERSION_MAJOR ||
+					(Hello.m_Capabilities & (GameWire::CAPABILITY_DATAGRAM | GameWire::CAPABILITY_MAP_STREAM | GameWire::CAPABILITY_RESUME)) != (GameWire::CAPABILITY_DATAGRAM | GameWire::CAPABILITY_MAP_STREAM | GameWire::CAPABILITY_RESUME) ||
+					((Hello.m_Capabilities & GameWire::CAPABILITY_GAME_PROTOCOL_7) != 0) != m_pImpl->m_Sixup ||
 					Hello.m_MaxDatagramSize == 0)
 					return DisconnectEvent(EQuicConnectFailure::PROTOCOL, "invalid WebTransport ServerHello");
-				m_pImpl->m_PeerMaxDatagramSize = std::min(static_cast<size_t>(Hello.m_MaxDatagramSize), ModernWire::MAX_DATAGRAM_SIZE);
+				m_pImpl->m_PeerMaxDatagramSize = std::min(static_cast<size_t>(Hello.m_MaxDatagramSize), GameWire::MAX_DATAGRAM_SIZE);
 				m_pImpl->m_WebTransportConnected = true;
 				m_Metrics.m_LastHandshakeMilliseconds = m_ConnectStartTime == 0 ? 0 : (time_get_impl() - m_ConnectStartTime) * 1000 / time_freq();
 				m_ConnectFailure = EQuicConnectFailure::NONE;
@@ -885,22 +995,22 @@ bool CQuicTransport::Poll(CQuicEvent &Event)
 				Event.m_WebTransport = true;
 				return true;
 			}
-			if(Frame.m_Type == static_cast<uint64_t>(ModernWire::EFrameType::MESSAGE))
+			if(Frame.m_Type == static_cast<uint64_t>(GameWire::EFrameType::MESSAGE))
 			{
 				m_Metrics.m_ReliableReceived++;
 				m_Metrics.m_BytesReceived += m_pImpl->m_vEventPayload.size();
 				Event = {EQuicEventType::MESSAGE, {Session, m_pImpl->m_PeerAddress, true, m_pImpl->m_vEventPayload.data(), static_cast<int>(m_pImpl->m_vEventPayload.size())}, nullptr};
 				return true;
 			}
-			if(Frame.m_Type == static_cast<uint64_t>(ModernWire::EFrameType::RESUME))
+			if(Frame.m_Type == static_cast<uint64_t>(GameWire::EFrameType::RESUME))
 			{
-				ModernWire::CResumeView Resume;
-				if(ModernWire::DecodeResume({m_pImpl->m_vEventPayload.data(), m_pImpl->m_vEventPayload.size()}, Resume) != ModernWire::EDecodeResult::OK)
+				GameWire::CResumeView Resume;
+				if(GameWire::DecodeResume({m_pImpl->m_vEventPayload.data(), m_pImpl->m_vEventPayload.size()}, Resume) != GameWire::EDecodeResult::OK)
 					return DisconnectEvent(EQuicConnectFailure::PROTOCOL, "invalid WebTransport resume binding");
 				m_pImpl->m_vResumeBinding = m_pImpl->m_vEventPayload;
 				continue;
 			}
-			if(Frame.m_Type == static_cast<uint64_t>(ModernWire::EFrameType::DISCONNECT))
+			if(Frame.m_Type == static_cast<uint64_t>(GameWire::EFrameType::DISCONNECT))
 			{
 				char aReason[256];
 				if(m_pImpl->m_vEventPayload.size() >= sizeof(aReason))
@@ -919,8 +1029,8 @@ bool CQuicTransport::Poll(CQuicEvent &Event)
 	auto PollDatagramMessage = [&]() {
 		if(!m_pImpl->m_HasPendingDatagram)
 			return false;
-		ModernWire::CByteView Message;
-		if(!ModernWire::NextDatagramMessage(m_pImpl->m_PendingDatagram, Message))
+		GameWire::CByteView Message;
+		if(!GameWire::NextDatagramMessage(m_pImpl->m_PendingDatagram, Message))
 		{
 			m_pImpl->m_HasPendingDatagram = false;
 			return false;
@@ -970,30 +1080,30 @@ bool CQuicTransport::Poll(CQuicEvent &Event)
 		if(PayloadSize != 4)
 			return DisconnectEvent(EQuicConnectFailure::PROTOCOL, "invalid WebTransport ready event");
 		const uint32_t MaxDatagramSize = static_cast<uint32_t>(pPayload[0]) | (static_cast<uint32_t>(pPayload[1]) << 8) | (static_cast<uint32_t>(pPayload[2]) << 16) | (static_cast<uint32_t>(pPayload[3]) << 24);
-		if(MaxDatagramSize == 0 || MaxDatagramSize > ModernWire::MAX_DATAGRAM_SIZE)
+		if(MaxDatagramSize == 0 || MaxDatagramSize > GameWire::MAX_DATAGRAM_SIZE)
 			return DisconnectEvent(EQuicConnectFailure::PROTOCOL, "invalid WebTransport datagram size");
 		m_pImpl->m_LocalMaxDatagramSize = MaxDatagramSize;
-		ModernWire::CHelloView Hello = {};
-		Hello.m_Major = ModernWire::VERSION_MAJOR;
-		Hello.m_Minor = ModernWire::VERSION_MINOR;
-		Hello.m_ProtocolVersion = ModernWire::VERSION_MAJOR;
-		Hello.m_Capabilities = ModernWire::CAPABILITY_DATAGRAM | ModernWire::CAPABILITY_MAP_STREAM | ModernWire::CAPABILITY_RESUME |
-				       (m_pImpl->m_Sixup ? ModernWire::CAPABILITY_GAME_PROTOCOL_7 : 0);
+		GameWire::CHelloView Hello = {};
+		Hello.m_Major = GameWire::VERSION_MAJOR;
+		Hello.m_Minor = GameWire::VERSION_MINOR;
+		Hello.m_ProtocolVersion = GameWire::VERSION_MAJOR;
+		Hello.m_Capabilities = GameWire::CAPABILITY_DATAGRAM | GameWire::CAPABILITY_MAP_STREAM | GameWire::CAPABILITY_RESUME |
+				       (m_pImpl->m_Sixup ? GameWire::CAPABILITY_GAME_PROTOCOL_7 : 0);
 		Hello.m_MaxDatagramSize = MaxDatagramSize;
 		secure_random_fill(Hello.m_aNonce, sizeof(Hello.m_aNonce));
 		Hello.m_ResumeToken = {m_pImpl->m_vResumeBinding.data(), m_pImpl->m_vResumeBinding.size()};
 		std::vector<unsigned char> vHello;
 		std::vector<unsigned char> vControl;
-		if(!ModernWire::EncodeHello(Hello, vHello) ||
-			!ModernWire::EncodeStreamHeader(ModernWire::EStreamKind::CONTROL, vControl) ||
-			!ModernWire::EncodeFrame(ModernWire::EFrameType::CLIENT_HELLO, {vHello.data(), vHello.size()}, vControl) ||
+		if(!GameWire::EncodeHello(Hello, vHello) ||
+			!GameWire::EncodeStreamHeader(GameWire::EStreamKind::CONTROL, vControl) ||
+			!GameWire::EncodeFrame(GameWire::EFrameType::CLIENT_HELLO, {vHello.data(), vHello.size()}, vControl) ||
 			!BrowserWebTransportSendControl(m_pImpl->m_WebTransportHandle, vControl.data(), static_cast<int>(vControl.size())))
 			return DisconnectEvent(EQuicConnectFailure::PROTOCOL, "could not send WebTransport ClientHello");
 		return false;
 	}
 	if(BrowserEvent == EBrowserWebTransportEvent::CONTROL_DATA)
 	{
-		if(m_pImpl->m_vControlBuffer.size() + PayloadSize > ModernWire::MAX_CONTROL_MESSAGE_SIZE + 32768 + 16)
+		if(m_pImpl->m_vControlBuffer.size() + PayloadSize > GameWire::MAX_CONTROL_MESSAGE_SIZE + 32768 + 16)
 			return DisconnectEvent(EQuicConnectFailure::PROTOCOL, "WebTransport control buffer exceeded limit");
 		m_pImpl->m_vControlBuffer.insert(m_pImpl->m_vControlBuffer.end(), pPayload, pPayload + PayloadSize);
 		return PollControlFrame();
@@ -1001,8 +1111,8 @@ bool CQuicTransport::Poll(CQuicEvent &Event)
 	if(BrowserEvent == EBrowserWebTransportEvent::DATAGRAM)
 	{
 		m_pImpl->m_vPendingDatagram.assign(pPayload, pPayload + PayloadSize);
-		ModernWire::CDatagramView Datagram;
-		if(ModernWire::DecodeDatagram(m_pImpl->m_vPendingDatagram.data(), m_pImpl->m_vPendingDatagram.size(), Datagram) != ModernWire::EDecodeResult::OK)
+		GameWire::CDatagramView Datagram;
+		if(GameWire::DecodeDatagram(m_pImpl->m_vPendingDatagram.data(), m_pImpl->m_vPendingDatagram.size(), Datagram) != GameWire::EDecodeResult::OK)
 			return DisconnectEvent(EQuicConnectFailure::PROTOCOL, "invalid WebTransport datagram");
 		if(m_pImpl->m_HasReceivedDatagram && Datagram.m_Sequence <= m_pImpl->m_LastReceivedDatagramSequence)
 			return false;
@@ -1046,23 +1156,23 @@ bool CQuicTransport::Poll(CQuicEvent &Event)
 			Event = {EQuicEventType::MAP_DATA, {Session, m_pImpl->m_PeerAddress, true, m_pImpl->m_vEventPayload.data(), static_cast<int>(DataSize)}, nullptr};
 			return true;
 		}
-		if(m_pImpl->m_vMapHeaderBuffer.size() + DataSize > ModernWire::MAX_MAP_HEADER_SIZE + 32768 + 16)
+		if(m_pImpl->m_vMapHeaderBuffer.size() + DataSize > GameWire::MAX_MAP_HEADER_SIZE + 32768 + 16)
 			return MapFailedEvent("WebTransport map header exceeded limit");
 		m_pImpl->m_vMapHeaderBuffer.insert(m_pImpl->m_vMapHeaderBuffer.end(), pData, pData + DataSize);
-		ModernWire::CStreamHeader StreamHeader;
-		ModernWire::EDecodeResult Result = ModernWire::DecodeStreamHeader(m_pImpl->m_vMapHeaderBuffer.data(), m_pImpl->m_vMapHeaderBuffer.size(), StreamHeader);
-		if(Result == ModernWire::EDecodeResult::NEED_MORE)
+		GameWire::CStreamHeader StreamHeader;
+		GameWire::EDecodeResult Result = GameWire::DecodeStreamHeader(m_pImpl->m_vMapHeaderBuffer.data(), m_pImpl->m_vMapHeaderBuffer.size(), StreamHeader);
+		if(Result == GameWire::EDecodeResult::NEED_MORE)
 			return false;
-		if(Result != ModernWire::EDecodeResult::OK || StreamHeader.m_Kind != ModernWire::EStreamKind::MAP)
+		if(Result != GameWire::EDecodeResult::OK || StreamHeader.m_Kind != GameWire::EStreamKind::MAP)
 			return MapFailedEvent("unsupported WebTransport map stream");
-		ModernWire::CFrameView Frame;
-		Result = ModernWire::DecodeFrame(m_pImpl->m_vMapHeaderBuffer.data() + StreamHeader.m_BytesConsumed, m_pImpl->m_vMapHeaderBuffer.size() - StreamHeader.m_BytesConsumed, Frame);
-		if(Result == ModernWire::EDecodeResult::NEED_MORE)
+		GameWire::CFrameView Frame;
+		Result = GameWire::DecodeFrame(m_pImpl->m_vMapHeaderBuffer.data() + StreamHeader.m_BytesConsumed, m_pImpl->m_vMapHeaderBuffer.size() - StreamHeader.m_BytesConsumed, Frame);
+		if(Result == GameWire::EDecodeResult::NEED_MORE)
 			return false;
-		if(Result != ModernWire::EDecodeResult::OK || Frame.m_Type != static_cast<uint64_t>(ModernWire::EFrameType::MAP_HEADER))
+		if(Result != GameWire::EDecodeResult::OK || Frame.m_Type != static_cast<uint64_t>(GameWire::EFrameType::MAP_HEADER))
 			return MapFailedEvent("invalid WebTransport map header frame");
-		ModernWire::CMapHeaderView Header;
-		if(ModernWire::DecodeMapHeader(Frame.m_Payload, Header) != ModernWire::EDecodeResult::OK)
+		GameWire::CMapHeaderView Header;
+		if(GameWire::DecodeMapHeader(Frame.m_Payload, Header) != GameWire::EDecodeResult::OK)
 			return MapFailedEvent("invalid WebTransport map header");
 		m_pImpl->m_MapBytesRemaining = static_cast<size_t>(Header.m_Size);
 		std::memcpy(m_pImpl->m_MapExpectedSha256.data, Header.m_aSha256, sizeof(m_pImpl->m_MapExpectedSha256.data));
@@ -1132,6 +1242,12 @@ bool CQuicTransport::Poll(CQuicEvent &Event)
 			m_Metrics.m_LastHandshakeMilliseconds = m_ConnectStartTime == 0 ? 0 : (time_get_impl() - m_ConnectStartTime) * 1000 / time_freq();
 			Event = {EQuicEventType::CONNECTED, {Session, PeerAddress, true, m_pImpl->m_Event.payload.data(), static_cast<int>(m_pImpl->m_Event.payload.size())}, nullptr};
 			Event.m_Sixup = m_pImpl->m_Event.sixup;
+			Event.m_WebTransport = m_pImpl->m_Event.webtransport;
+			return true;
+		}
+		if(m_pImpl->m_Event.kind == ModernQuic::QuicEventKind::MasterChallenge)
+		{
+			Event = {EQuicEventType::MASTER_CHALLENGE, {Session, PeerAddress, true, m_pImpl->m_Event.payload.data(), static_cast<int>(m_pImpl->m_Event.payload.size())}, nullptr};
 			Event.m_WebTransport = m_pImpl->m_Event.webtransport;
 			return true;
 		}

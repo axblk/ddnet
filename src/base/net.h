@@ -213,6 +213,13 @@ int net_host_lookup(const char *hostname, NETADDR *addr, int types);
 void net_websocket_set_secure(bool secure);
 
 /**
+ * Returns whether websockets use `wss` by default.
+ *
+ * @ingroup Network-General
+ */
+bool net_websocket_secure_default();
+
+/**
  * Resets the websocket scheme to the default, which is determined by the protocol
  * of the page, see `other/emscripten/index.html`.
  *

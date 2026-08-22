@@ -37,6 +37,7 @@ struct CQuicMessage
 enum class EQuicEventType
 {
 	CONNECTED,
+	MASTER_CHALLENGE,
 	MESSAGE,
 	MAP_HEADER,
 	MAP_DATA,
@@ -113,8 +114,10 @@ public:
 
 	static bool IsCompiled();
 	static bool IsWebTransportCompiled();
-	bool StartServer(const char *pLocalAddress, bool RawQuic, bool WebTransport, const char *pWebTransportOrigin, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath);
+	bool StartServer(const char *pLocalAddress, bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath);
+	bool MaybeRotateManagedCertificate(bool *pRotated);
 	bool StartClient(const char *pBindAddress, const char *pServerAddress, const char *pServerName, const char *pCertificatePath, bool Sixup);
+	bool StartClientWebPki(const char *pBindAddress, const char *pServerAddress, const char *pServerName, bool Sixup);
 	bool StartClientSha256(const char *pBindAddress, const char *pServerAddress, const char *pServerName, SHA256_DIGEST CertificateSha256, const SHA256_DIGEST *pNextCertificateSha256, bool Sixup);
 	bool StartClientIdentity(const char *pBindAddress, const char *pServerAddress, const char *pServerName, SHA256_DIGEST IdentityFingerprint, bool Sixup);
 	bool StartClientTofu(const char *pBindAddress, const char *pServerAddress, const char *pServerName, bool Sixup);

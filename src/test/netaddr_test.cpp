@@ -18,6 +18,14 @@ TEST(NetAddr, FromUrlStringInvalid)
 	EXPECT_EQ(net_addr_from_url(&Addr, "wsss://127.0.0.1", nullptr, 0), 1); // invalid scheme
 	EXPECT_EQ(net_addr_from_url(&Addr, "http://127.0.0.1", nullptr, 0), 1); // invalid scheme
 	EXPECT_EQ(net_addr_from_url(&Addr, "wss://127.0.0.1:8303", nullptr, 0), 1); // only the ddnet-20+ schemes are supported
+
+	// A known scheme with an unparsable authority must not be reported as
+	// "not a URL", or looking it up retries the whole string as a host name
+	// and ends up back here.
+	char aHost[128] = "unchanged";
+	EXPECT_EQ(net_addr_from_url(&Addr, "ws://a@b@c", aHost, sizeof(aHost)), -1);
+	EXPECT_STREQ(aHost, "");
+	EXPECT_EQ(net_addr_from_url_lookup(&Addr, "ws://a@b@c", NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6), -1);
 }
 
 TEST(NetAddr, FromUrlStringValid)
@@ -66,6 +74,15 @@ TEST(NetAddr, FromUrlStringValid)
 	EXPECT_EQ(net_addr_from_url(&Addr, "ddnet+quic://127.0.0.1:8303#sha256=00", nullptr, 0), 0);
 	EXPECT_EQ(Addr.type, NETTYPE_IPV4);
 	EXPECT_EQ(Addr.port, 8303);
+	EXPECT_EQ(net_addr_from_url(&Addr, "tw-0.7+quic://127.0.0.1:8304", nullptr, 0), 0);
+	EXPECT_EQ(Addr.type, NETTYPE_IPV4 | NETTYPE_TW7);
+	EXPECT_EQ(Addr.port, 8304);
+	EXPECT_EQ(net_addr_from_url(&Addr, "ddnet+wt://[::1]:8305", nullptr, 0), 0);
+	EXPECT_EQ(Addr.type, NETTYPE_IPV6);
+	EXPECT_EQ(Addr.port, 8305);
+	EXPECT_EQ(net_addr_from_url(&Addr, "tw-0.7+wt://[::1]:8306", nullptr, 0), 0);
+	EXPECT_EQ(Addr.type, NETTYPE_IPV6 | NETTYPE_TW7);
+	EXPECT_EQ(Addr.port, 8306);
 
 	char aHost[128];
 	EXPECT_EQ(net_addr_from_url(&Addr, "tw-0.6+udp://ger10.ddnet.org:5678", aHost, sizeof(aHost)), -1);

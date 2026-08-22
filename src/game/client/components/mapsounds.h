@@ -33,6 +33,7 @@ class CMapSounds : public CComponentInterfaces
 	uint64_t m_LoadGeneration = 1;
 	bool m_LoadWarning = false;
 	std::vector<CMapSoundLoad> m_vSoundLoads;
+	bool m_Offline = false;
 
 	class CSourceQueueEntry
 	{
@@ -53,11 +54,16 @@ public:
 	void PlayAt(int Channel, int SoundId, vec2 Position);
 	// Stops every playing map sound voice, for when sound is switched off.
 	void StopVoices();
+	void PlayForAudio(int Channel, int SoundId, bool Offline);
+	void PlayAtForAudio(int Channel, int SoundId, vec2 Position, bool Offline);
 
 	void Load(IMap *pMap, CLayers *pLayers);
 	void SetAudible(bool Audible);
 	void Unload();
-	void Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator);
+	void Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator, bool Offline);
+
+private:
+	void SetAudio(bool Audible, bool Offline);
 };
 
 #endif // GAME_CLIENT_COMPONENTS_MAPSOUNDS_H

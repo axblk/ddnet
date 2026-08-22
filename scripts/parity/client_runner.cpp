@@ -71,6 +71,35 @@ static CNetObj_Character SeedCharacter(int PosX, int PosY, int Weapon)
 	return Net;
 }
 
+// The extension a DDNet server always sends alongside it. Without one the
+// client has to guess, and its guess is jetpack whenever the tuning has a
+// jetpack strength - which turns the gun full auto and diverges from a server
+// that never handed out a jetpack. Guessing is worth its own scenario one day;
+// it is not what the rest of the tape is measuring.
+static CNetObj_DDNetCharacter SeedExtended(int Weapon)
+{
+	static const int s_aWeaponFlags[NUM_WEAPONS] = {
+		CHARACTERFLAG_WEAPON_HAMMER,
+		CHARACTERFLAG_WEAPON_GUN,
+		CHARACTERFLAG_WEAPON_SHOTGUN,
+		CHARACTERFLAG_WEAPON_GRENADE,
+		CHARACTERFLAG_WEAPON_LASER,
+		CHARACTERFLAG_WEAPON_NINJA,
+	};
+	CNetObj_DDNetCharacter Net;
+	mem_zero(&Net, sizeof(Net));
+	Net.m_Flags = CHARACTERFLAG_WEAPON_HAMMER | CHARACTERFLAG_WEAPON_GUN | s_aWeaponFlags[Weapon];
+	Net.m_FreezeEnd = 0;
+	Net.m_Jumps = 2;
+	Net.m_TeleCheckpoint = 0;
+	Net.m_StrongWeakId = 0;
+	Net.m_JumpedTotal = -1;
+	Net.m_NinjaActivationTick = -1;
+	Net.m_FreezeStart = -1;
+	Net.m_TuneZoneOverride = TuneZone::OVERRIDE_NONE;
+	return Net;
+}
+
 static int CountEntities(CGameWorld &World, int Type)
 {
 	int Count = 0;
@@ -104,9 +133,11 @@ static void RunParity(const std::string &Name)
 
 	CNetObj_Character SeedOne = SeedCharacter(160, 304, Weapon);
 	CNetObj_Character SeedTwo = SeedCharacter(195, 304, WEAPON_GUN);
-	auto *pChar = new CCharacter(&World, 0, &SeedOne);
+	CNetObj_DDNetCharacter ExtendedOne = SeedExtended(Weapon);
+	CNetObj_DDNetCharacter ExtendedTwo = SeedExtended(WEAPON_GUN);
+	auto *pChar = new CCharacter(&World, 0, &SeedOne, &ExtendedOne);
 	World.InsertEntity(pChar);
-	auto *pOther = new CCharacter(&World, 1, &SeedTwo);
+	auto *pOther = new CCharacter(&World, 1, &SeedTwo, &ExtendedTwo);
 	World.InsertEntity(pOther);
 	pChar->SetWeaponGot(Weapon, true);
 	pChar->SetWeaponAmmo(Weapon, 10);

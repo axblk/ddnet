@@ -133,7 +133,7 @@ def main():
 		if scope is not None:
 			seen.add(scope)
 			continue
-		ticks = sorted((int(key[2]) for key in keys))
+		ticks = sorted(int(key[2]) for key in keys)
 		failures.append(f"{scenario}: only the {side} world has {len(keys)} line(s), ticks {ticks[0]}-{ticks[-1]}, and no ledger entry covers it")
 
 	for scope, (name, _reason) in sorted(ledger.items()):

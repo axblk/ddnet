@@ -1,0 +1,7 @@
+# The parity tape. Inputs only; both runners turn a name into the same ticks.
+parity move
+parity hook
+parity fire_gun
+parity fire_shotgun
+parity fire_grenade
+parity fire_laser

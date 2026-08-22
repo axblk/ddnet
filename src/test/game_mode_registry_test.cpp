@@ -30,32 +30,24 @@ TEST(GameModeRegistry, RegisterAndFind)
 	EXPECT_FALSE(Registry.Register(Info, CreateNothing));
 }
 
-TEST(GameModeRegistry, ResolvesGameTypeNames)
+TEST(GameModeRegistry, RefusesRulesTheClientCannotPredict)
+{
+	CGameModeRegistry Registry;
+	CPhysicsRules Rules = CPhysicsRules::Vanilla();
+	Rules.m_OldLaser = false;
+	EXPECT_FALSE(Registry.Register({"unpredictable", "Unpredictable", "Unpredictable", "TestUnpredictable", EGameModeScoreKind::POINTS, 0, 0, false, Rules}, CreateNothing));
+	EXPECT_TRUE(Registry.Register({"vanilla", "Vanilla", "Vanilla", "TestVanilla", EGameModeScoreKind::POINTS, 0, 0, false, CPhysicsRules::Vanilla()}, CreateNothing));
+	EXPECT_TRUE(Registry.Register({"ddnet", "DDNet", "DDNet", "TestDDNet", EGameModeScoreKind::POINTS, 0, 0, false, CPhysicsRules::DDNet()}, CreateNothing));
+}
+
+TEST(GameModeRegistry, FindStaysExact)
 {
 	CGameModeRegistry Registry;
 	ASSERT_TRUE(RegisterBuiltInGameModes(Registry));
 
-	// What `sv_gametype` has always been set to.
-	EXPECT_STREQ(Registry.Resolve("ctf")->m_pId, "vanilla.ctf");
-	EXPECT_STREQ(Registry.Resolve("CTF")->m_pId, "vanilla.ctf");
-	EXPECT_STREQ(Registry.Resolve("tdm")->m_pId, "vanilla.tdm");
-	EXPECT_STREQ(Registry.Resolve("iCTF")->m_pId, "insta.ictf");
-	EXPECT_STREQ(Registry.Resolve("DDraceNetwork")->m_pId, "ddnet");
-	// The id still wins and nothing else resolves.
-	EXPECT_STREQ(Registry.Resolve("vanilla.ctf")->m_pId, "vanilla.ctf");
-	EXPECT_EQ(Registry.Resolve("nonsense"), nullptr);
-	EXPECT_EQ(Registry.Resolve(nullptr), nullptr);
-	// Find stays exact, so registration is never confused by a name.
+	// So that registering a mode is never confused by a name.
 	EXPECT_EQ(Registry.Find("ctf"), nullptr);
-}
-
-TEST(GameModeRegistry, ResolvesADuplicateNameToTheFirstMode)
-{
-	CGameModeRegistry Registry;
-	EXPECT_TRUE(Registry.Register({"one", "One", "Shared", "TestOne", EGameModeScoreKind::POINTS, 0}, CreateNothing));
-	EXPECT_TRUE(Registry.Register({"two", "Two", "shared", "TestTwo", EGameModeScoreKind::POINTS, 0}, CreateNothing));
-	EXPECT_STREQ(Registry.Resolve("shared")->m_pId, "one");
-	EXPECT_STREQ(Registry.Resolve("two")->m_pId, "two");
+	EXPECT_STREQ(Registry.Find("vanilla.ctf")->m_pId, "vanilla.ctf");
 }
 
 TEST(GameModeRegistry, BuiltInMetadata)

@@ -1481,7 +1481,7 @@ const CScore &CGameControllerDDRace::RaceScore() const
 CCharacterDDRace *CGameControllerDDRace::CreateCharacter(CPlayer *pPlayer)
 {
 	const int ClientId = pPlayer->GetCid();
-	return new(ClientId) CCharacterDDRace(&Services().World(), Services().LastPlayerInput(ClientId));
+	return new CCharacterDDRace(&Services().World(), Services().LastPlayerInput(ClientId));
 }
 
 bool CGameControllerDDRace::CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const

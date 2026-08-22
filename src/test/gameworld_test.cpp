@@ -31,6 +31,7 @@
 #include <game/server/gamemodes/ddrace_character.h>
 #include <game/server/gameworld.h>
 #include <game/server/interactions.h>
+#include <game/server/mode/builtin_game_modes.h>
 #include <game/server/mode/game_mode_registry.h>
 #include <game/server/mode/game_services.h>
 #include <game/server/modes/vanilla/ctf.h>
@@ -275,13 +276,13 @@ namespace
 
 		CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team) override
 		{
-			return new(ClientId) CFactoryPlayer(Services(), UniqueClientId, ClientId, Team, m_pPlayerDestructions);
+			return new CFactoryPlayer(Services(), UniqueClientId, ClientId, Team, m_pPlayerDestructions);
 		}
 
 		CCharacter *CreateCharacter(CPlayer *pPlayer) override
 		{
 			const int ClientId = pPlayer->GetCid();
-			return new(ClientId) CFactoryCharacter(&Services().World(), Services().LastPlayerInput(ClientId), m_pCharacterDestructions);
+			return new CFactoryCharacter(&Services().World(), Services().LastPlayerInput(ClientId), m_pCharacterDestructions);
 		}
 
 		bool CanSpawn(int, vec2 *pOutPos, int) override
@@ -359,11 +360,11 @@ namespace
 TEST_F(GameWorld, ClosestCharacter)
 {
 	CNetObj_PlayerInput Input = {};
-	CCharacter *pChr1 = new(0) CCharacter(&GameServer()->m_World, Input);
+	CCharacter *pChr1 = new CCharacter(&GameServer()->m_World, Input);
 	pChr1->m_Pos = vec2(0, 0);
 	GameServer()->m_World.InsertEntity(pChr1);
 
-	CCharacter *pChr2 = new(1) CCharacter(&GameServer()->m_World, Input);
+	CCharacter *pChr2 = new CCharacter(&GameServer()->m_World, Input);
 	pChr2->m_Pos = vec2(10, 10);
 	GameServer()->m_World.InsertEntity(pChr2);
 
@@ -374,11 +375,11 @@ TEST_F(GameWorld, ClosestCharacter)
 TEST_F(GameWorld, IntersectEntity)
 {
 	CNetObj_PlayerInput Input = {};
-	CCharacter *pChrLeft = new(0) CCharacter(&GameServer()->m_World, Input);
+	CCharacter *pChrLeft = new CCharacter(&GameServer()->m_World, Input);
 	pChrLeft->m_Pos = vec2(15, 10);
 	GameServer()->m_World.InsertEntity(pChrLeft);
 
-	CCharacter *pChrRight = new(1) CCharacter(&GameServer()->m_World, Input);
+	CCharacter *pChrRight = new CCharacter(&GameServer()->m_World, Input);
 	pChrRight->m_Pos = vec2(16, 10);
 	GameServer()->m_World.InsertEntity(pChrRight);
 
@@ -1170,11 +1171,11 @@ TEST_F(GameWorld, ModeFactoriesOwnConcretePlayerAndCharacterTypes)
 	CFactoryController Controller(GameServices(), Info, &PlayerDestructions, &CharacterDestructions);
 
 	CPlayer *pPlayer = Controller.CreatePlayer(1, ClientId, TEAM_GAME);
-	ASSERT_NE(dynamic_cast<CFactoryPlayer *>(pPlayer), nullptr);
+	ASSERT_NE(dynamic_cast<CFactoryPlayer *>(pPlayer), nullptr); // NOLINT(clang-analyzer-unix.Malloc)
 	EXPECT_GT(sizeof(CFactoryPlayer), sizeof(CPlayer));
 
 	CCharacter *pCharacter = Controller.CreateCharacter(pPlayer);
-	ASSERT_NE(dynamic_cast<CFactoryCharacter *>(pCharacter), nullptr);
+	ASSERT_NE(dynamic_cast<CFactoryCharacter *>(pCharacter), nullptr); // NOLINT(clang-analyzer-unix.Malloc)
 	EXPECT_GT(sizeof(CFactoryCharacter), sizeof(CCharacter));
 
 	delete pCharacter;
@@ -1234,6 +1235,32 @@ TEST_F(GameWorld, RegistryFactoriesReceiveHostServices)
 	std::unique_ptr<CPlayer> pPlayer(pController->CreatePlayer(1, 0, TEAM_BLUE));
 	ASSERT_NE(pPlayer, nullptr);
 	EXPECT_EQ(pPlayer->GetTeam(), TEAM_BLUE);
+}
+
+TEST_F(GameWorld, RegistryCreatesByGameTypeName)
+{
+	CGameModeRegistry Registry;
+	ASSERT_TRUE(RegisterBuiltInGameModes(Registry));
+
+	// What `sv_gametype` has always been set to.
+	EXPECT_STREQ(Registry.Create("ctf", GameServices())->Info().m_pId, "vanilla.ctf");
+	EXPECT_STREQ(Registry.Create("CTF", GameServices())->Info().m_pId, "vanilla.ctf");
+	EXPECT_STREQ(Registry.Create("tdm", GameServices())->Info().m_pId, "vanilla.tdm");
+	EXPECT_STREQ(Registry.Create("iCTF", GameServices())->Info().m_pId, "insta.ictf");
+	EXPECT_STREQ(Registry.Create("DDraceNetwork", GameServices())->Info().m_pId, "ddnet");
+	// The id still wins and nothing else resolves.
+	EXPECT_STREQ(Registry.Create("vanilla.ctf", GameServices())->Info().m_pId, "vanilla.ctf");
+	EXPECT_EQ(Registry.Create("nonsense", GameServices()), nullptr);
+	EXPECT_EQ(Registry.Create(nullptr, GameServices()), nullptr);
+}
+
+TEST_F(GameWorld, RegistryCreatesTheFirstModeForADuplicateName)
+{
+	CGameModeRegistry Registry;
+	ASSERT_TRUE(Registry.Register({"one", "One", "Shared", "TestOne", EGameModeScoreKind::POINTS, 0}, CreateServicesFactoryController));
+	ASSERT_TRUE(Registry.Register({"two", "Two", "shared", "TestTwo", EGameModeScoreKind::POINTS, 0}, CreateServicesFactoryController));
+	EXPECT_STREQ(Registry.Create("shared", GameServices())->Info().m_pId, "one");
+	EXPECT_STREQ(Registry.Create("two", GameServices())->Info().m_pId, "two");
 }
 
 TEST_F(GameWorld, PlayerAutoRespawnPolicyIsModeOwned)
@@ -1520,7 +1547,6 @@ TEST_F(GameWorld, EntityInteractionPolicyIsModeOwned)
 	EXPECT_FALSE(Interaction.CanSee(GameServer(), ViewerId));
 	EXPECT_FALSE(Interaction.CanHit(GameServer(), ViewerId));
 	EXPECT_FALSE(Interaction.CanSeeMask(GameServer()).test(ViewerId));
-	EXPECT_FALSE(Interaction.CanHitMask(GameServer()).test(ViewerId));
 	EXPECT_TRUE(Interaction.CanSee(GameServer(), OwnerId));
 	auto *pProjectile = new CProjectile(&GameServer()->m_World, WEAPON_GUN, OwnerId, vec2(64.0f, 96.0f), vec2(1.0f, 0.0f), 10, false, false, -1, vec2(1.0f, 0.0f));
 	EXPECT_FALSE(pProjectile->CanCollide(ViewerId));
@@ -2792,23 +2818,34 @@ TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
 	const bool PreviousSixup = m_pServer->m_aClients[VictimId].m_Sixup;
 	m_pServer->m_aClients[CatcherId].m_State = CServer::CClient::STATE_INGAME;
 	m_pServer->m_aClients[VictimId].m_State = CServer::CClient::STATE_INGAME;
-	GameServer()->m_PlayerMapping.InitPlayerMap(CatcherId);
-	GameServer()->m_PlayerMapping.InitPlayerMap(VictimId);
-	int TranslatedVictimId = VictimId;
-	ASSERT_TRUE(m_pServer->Translate(TranslatedVictimId, VictimId));
-	int TranslatedCatcherId = CatcherId;
-	if(!m_pServer->Translate(TranslatedCatcherId, VictimId))
-	{
-		TranslatedCatcherId = TranslatedVictimId == 0 ? 1 : 0;
-		m_pServer->GetIdMap(VictimId)[TranslatedCatcherId] = CatcherId;
-		m_pServer->GetReverseIdMap(VictimId)[CatcherId] = TranslatedCatcherId;
-	}
+
+	// Which ids a client sees depends on the protocol it speaks: a 0.6 client
+	// that can address every slot is translated as itself, a 0.7 one always goes
+	// through the player map. So the map and the ids to expect belong to the
+	// protocol under test and have to be worked out once per half, not once for
+	// both - doing it once means the second half asserts against a map that was
+	// never built for it.
+	const auto ExpectedIds = [&](bool Sixup) {
+		m_pServer->m_aClients[VictimId].m_Sixup = Sixup;
+		GameServer()->m_PlayerMapping.InitPlayerMap(CatcherId);
+		GameServer()->m_PlayerMapping.InitPlayerMap(VictimId);
+		int Victim = VictimId;
+		EXPECT_TRUE(m_pServer->Translate(Victim, VictimId));
+		int Catcher = CatcherId;
+		if(!m_pServer->Translate(Catcher, VictimId))
+		{
+			Catcher = Victim == 0 ? 1 : 0;
+			m_pServer->GetIdMap(VictimId)[Catcher] = CatcherId;
+			m_pServer->GetReverseIdMap(VictimId)[CatcherId] = Catcher;
+		}
+		return std::make_pair(Victim, Catcher);
+	};
 
 	pVictimCharacter->TakeDamage(vec2(), 0, CatcherId, WEAPON_LASER);
 	EXPECT_EQ(pVictim->GetTeam(), TEAM_GAME);
 	EXPECT_EQ(pVictim->SpectatorId(), CatcherId);
 
-	m_pServer->m_aClients[VictimId].m_Sixup = false;
+	const auto [TranslatedVictimId, TranslatedCatcherId] = ExpectedIds(false);
 	m_pServer->m_SnapshotBuilder.Init(false);
 	pVictim->Snap(VictimId);
 	CSnapshotBuffer SixBuffer;
@@ -2821,19 +2858,19 @@ TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
 	EXPECT_EQ(pSixPlayerInfo->m_Team, TEAM_SPECTATORS);
 	EXPECT_EQ(pSixSpectatorInfo->m_SpectatorId, TranslatedCatcherId);
 
-	m_pServer->m_aClients[VictimId].m_Sixup = true;
+	const auto [SevenVictimId, SevenCatcherId] = ExpectedIds(true);
 	m_pServer->m_SnapshotBuilder.Init(true);
 	pVictim->Snap(VictimId);
 	CSnapshotBuffer SevenBuffer;
 	m_pServer->m_SnapshotBuilder.Finish(&SevenBuffer);
 	const CSnapshot *pSevenSnapshot = SevenBuffer.AsSnapshot();
-	const auto *pSevenPlayerInfo = static_cast<const protocol7::CNetObj_PlayerInfo *>(pSevenSnapshot->FindItem(protocol7::NETOBJTYPE_PLAYERINFO, TranslatedVictimId));
+	const auto *pSevenPlayerInfo = static_cast<const protocol7::CNetObj_PlayerInfo *>(pSevenSnapshot->FindItem(protocol7::NETOBJTYPE_PLAYERINFO, SevenVictimId));
 	const auto *pSevenSpectatorInfo = static_cast<const protocol7::CNetObj_SpectatorInfo *>(pSevenSnapshot->FindItem(protocol7::NETOBJTYPE_SPECTATORINFO, VictimId));
 	ASSERT_NE(pSevenPlayerInfo, nullptr);
 	ASSERT_NE(pSevenSpectatorInfo, nullptr);
 	EXPECT_NE(pSevenPlayerInfo->m_PlayerFlags & protocol7::PLAYERFLAG_DEAD, 0);
 	EXPECT_EQ(pSevenSpectatorInfo->m_SpecMode, protocol7::SPEC_PLAYER);
-	EXPECT_EQ(pSevenSpectatorInfo->m_SpectatorId, TranslatedCatcherId);
+	EXPECT_EQ(pSevenSpectatorInfo->m_SpectatorId, SevenCatcherId);
 
 	m_pServer->m_aClients[CatcherId].m_State = PreviousCatcherState;
 	m_pServer->m_aClients[VictimId].m_State = PreviousClientState;

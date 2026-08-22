@@ -8,13 +8,22 @@
 #include <cstdlib>
 #include <new>
 
+// Zeroes the storage before the constructor runs, so a member that nobody
+// initialises reads as zero instead of as whatever the allocator handed out.
+//
+// calloc and not malloc followed by mem_zero, because the two are only
+// equivalent while the compiler cannot see them. Once this is inlined into a
+// caller the zeroing is a store into storage no object lives in yet, and an
+// optimising build is free to drop it; the constructor then runs over whatever
+// malloc returned. That is not theoretical: it cost a Release-only crash in
+// CPlayer, which was fine only as long as its allocator lived out of line in a
+// translation unit of its own. Zeroing that the allocation itself performs
+// cannot be separated from it.
 #define MACRO_ALLOC_HEAP() \
 public: \
 	void *operator new(size_t Size) \
 	{ \
-		void *pObj = malloc(Size); \
-		mem_zero(pObj, Size); \
-		return pObj; \
+		return calloc(1, Size); \
 	} \
 	void operator delete(void *pPtr) \
 	{ \
@@ -22,34 +31,5 @@ public: \
 	} \
 \
 private:
-
-#define MACRO_ALLOC_POOL_ID() \
-public: \
-	void *operator new(size_t Size, int Id); \
-	void operator delete(void *pObj, int Id); \
-	void operator delete(void *pObj); /* NOLINT(misc-new-delete-overloads) */ \
-\
-private:
-
-// The id says which client an object belongs to, not where it lives. A pool
-// indexed by it is one array for the whole process, so a second game in the
-// same process finds every slot taken, and the two games would share memory if
-// it did not. Players and characters are allocated when someone joins or
-// respawns, which is far too rare to pay for with global state.
-#define MACRO_ALLOC_POOL_ID_IMPL(POOLTYPE, PoolSize) \
-	void *POOLTYPE::operator new(size_t Size, [[maybe_unused]] int Id) \
-	{ \
-		void *pObj = malloc(Size); \
-		mem_zero(pObj, Size); \
-		return pObj; \
-	} \
-	void POOLTYPE::operator delete(void *pObj, [[maybe_unused]] int Id) \
-	{ \
-		free(pObj); \
-	} \
-	void POOLTYPE::operator delete(void *pObj) /* NOLINT(misc-new-delete-overloads) */ \
-	{ \
-		free(pObj); \
-	}
 
 #endif

@@ -935,14 +935,7 @@ void CMenus::RenderDemoPlayerSliceSavePopup(CUIRect MainView)
 #if defined(CONF_VIDEORECORDER)
 		if(s_RenderCut)
 		{
-			m_Popup = POPUP_RENDER_DEMO;
-			m_StartPaused = false;
-			m_DemoRenderInput.Set(m_aCurrentDemoSelectionName);
-			m_DemoRenderWidthInput.SetInteger(Graphics()->ScreenWidth() & ~1);
-			m_DemoRenderHeightInput.SetInteger(Graphics()->ScreenHeight() & ~1);
-			m_DemoRenderFPS = g_Config.m_ClVideoRecorderFPS;
-			m_DemoRenderCrf = g_Config.m_ClVideoX264Crf;
-			Ui()->SetActiveItem(&m_DemoRenderInput);
+			OpenDemoRenderPopup(m_aCurrentDemoSelectionName);
 			if(m_DemolistStorageType != IStorage::TYPE_ALL && m_DemolistStorageType != IStorage::TYPE_SAVE)
 				m_DemolistStorageType = IStorage::TYPE_ALL; // Select a storage type containing the sliced demo
 		}
@@ -1530,7 +1523,8 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 	}
 
 #if defined(CONF_VIDEORECORDER)
-	if(Client()->DemoPlayer_RenderQueueSize() > 0 && !Client()->DemoPlayer_RenderQueueActive())
+	// Also shown while an export is running so that it can be inspected and cancelled
+	if(Client()->DemoPlayer_RenderQueueSize() > 0)
 	{
 		CUIRect StartQueueButton, ClearQueueButton;
 		ButtonBarTop.VSplitRight(ButtonBarBottom.h * 10.0f, &ButtonBarTop, &StartQueueButton);
@@ -1541,7 +1535,8 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 		char aLabel[64];
 		str_format(aLabel, sizeof(aLabel), Localize("Render queue (%d)"), static_cast<int>(Client()->DemoPlayer_RenderQueueSize()));
 		if(DoButton_Menu(&s_StartQueueButton, aLabel, 0, &StartQueueButton))
-			Client()->DemoPlayer_StartRenderQueue();
+			m_Popup = POPUP_RENDER_QUEUE;
+		GameClient()->m_Tooltips.DoToolTip(&s_StartQueueButton, &StartQueueButton, Localize("Show and start the render queue"));
 		static CButtonContainer s_ClearQueueButton;
 		SetIconMode(true);
 		if(DoButton_Menu(&s_ClearQueueButton, FontIcon::TRASH, 0, &ClearQueueButton))
@@ -1724,16 +1719,9 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 				if(DoButton_Menu(&s_RenderButton, FontIcon::VIDEO, 0, &RenderButton) || (Input()->KeyPress(KEY_R) && !GameClient()->m_GameConsole.IsActive() && !m_DemoSearchInput.IsActive()))
 				{
 					SetIconMode(false);
-					m_Popup = POPUP_RENDER_DEMO;
-					m_StartPaused = false;
 					char aNameWithoutExt[IO_MAX_PATH_LENGTH];
 					fs_split_file_extension(m_vpFilteredDemos[m_DemolistSelectedIndex]->m_aFilename, aNameWithoutExt, sizeof(aNameWithoutExt));
-					m_DemoRenderInput.Set(aNameWithoutExt);
-					m_DemoRenderWidthInput.SetInteger(Graphics()->ScreenWidth() & ~1);
-					m_DemoRenderHeightInput.SetInteger(Graphics()->ScreenHeight() & ~1);
-					m_DemoRenderFPS = g_Config.m_ClVideoRecorderFPS;
-					m_DemoRenderCrf = g_Config.m_ClVideoX264Crf;
-					Ui()->SetActiveItem(&m_DemoRenderInput);
+					OpenDemoRenderPopup(aNameWithoutExt);
 					return;
 				}
 				SetIconMode(false);

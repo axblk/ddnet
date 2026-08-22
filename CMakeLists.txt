@@ -3326,7 +3326,11 @@ if(CLIENT)
     set(DEMO_RENDERER_SRC ${ENGINE_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/window_sdl\\.(cpp|h)$")
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/input\\.(cpp|h)$")
-    add_executable(demo-renderer
+    # A developer tool, not part of the game. It compiles a second copy of the
+    # client, so building it by default would roughly double the build time,
+    # and it is not shipped with the release either. Build it explicitly with
+    # `cmake --build . --target demo-renderer`.
+    add_executable(demo-renderer EXCLUDE_FROM_ALL
       ${DEMO_RENDERER_SRC}
       ${DEPS} ${GLEW_DEP}
       ${WAVPACK_DEP}
@@ -4329,9 +4333,6 @@ set(CPACK_TARGETS)
 if(TARGET game-client)
   list(APPEND CPACK_TARGETS game-client)
 endif()
-if(TARGET demo-renderer)
-  list(APPEND CPACK_TARGETS demo-renderer)
-endif()
 if(TARGET game-server)
   list(APPEND CPACK_TARGETS game-server)
 endif()
@@ -4373,9 +4374,6 @@ if(NOT DEV)
         install(FILES "${WGPU_NATIVE_RUNTIME_LIBRARY}" DESTINATION ${CMAKE_INSTALL_LIBDIR}/ddnet COMPONENT client)
       endif()
     endif()
-  endif()
-  if(TARGET demo-renderer)
-    install(TARGETS demo-renderer DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT client)
   endif()
   if(STEAMAPI_KIND STREQUAL SHARED)
     install(TARGETS ${TARGET_STEAMAPI} DESTINATION ${CMAKE_INSTALL_LIBDIR}/ddnet COMPONENT client)

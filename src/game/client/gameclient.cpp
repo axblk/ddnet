@@ -119,16 +119,18 @@ namespace
 		ColorRGBA m_ClearColor;
 		uint64_t m_CacheKey;
 		bool m_VideoOutput;
+		CVideoExportSettings m_VideoSettings;
 		bool m_Cleared = false;
 		bool m_CustomViewport = false;
 
 	public:
 		// The menu backdrop starts a render pass that clears for us.
-		CScreenRenderOutput(IGraphics &Graphics, ColorRGBA ClearColor, bool Cleared, bool VideoOutput) :
+		CScreenRenderOutput(IGraphics &Graphics, ColorRGBA ClearColor, bool Cleared, bool VideoOutput, CVideoExportSettings VideoSettings) :
 			m_Graphics(Graphics),
 			m_ClearColor(ClearColor),
 			m_CacheKey((static_cast<uint64_t>(VideoOutput) << 63) | (static_cast<uint64_t>(static_cast<uint32_t>(Graphics.ScreenWidth())) << 32) | static_cast<uint32_t>(Graphics.ScreenHeight())),
 			m_VideoOutput(VideoOutput),
+			m_VideoSettings(VideoSettings),
 			m_Cleared(Cleared)
 		{
 		}
@@ -138,6 +140,7 @@ namespace
 		{
 			return m_VideoOutput;
 		}
+		CVideoExportSettings VideoSettings() const override { return m_VideoSettings; }
 
 		void BeginView(const CViewport &Viewport, vec2 CameraPosition, float Zoom) override
 		{
@@ -1275,7 +1278,7 @@ void CGameClient::OnRender()
 	CRenderTrace *pTrace = m_pRenderTrace;
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
 	const bool MenuBackdropActive = !m_PreparedIsolatedVideoOutput && m_Menus.BeginMenuBackdrop(ClearColor);
-	CScreenRenderOutput ScreenOutput(*Graphics(), ClearColor, MenuBackdropActive, m_PreparedVideoOutput);
+	CScreenRenderOutput ScreenOutput(*Graphics(), ClearColor, MenuBackdropActive, m_PreparedVideoOutput, m_PreparedVideoSettings);
 	m_vRenderRequests.clear();
 	m_vRenderRequests.reserve(m_vPreparedRenderEntries.size());
 	for(const CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
@@ -1730,8 +1733,9 @@ void CGameClient::OnRenderPrepare()
 }
 
 #if defined(CONF_VIDEORECORDER)
-void CGameClient::OnRenderVideoPrepare(CSessionId SessionId)
+void CGameClient::OnRenderVideoPrepare(CSessionId SessionId, const CVideoExportSettings &Settings)
 {
+	m_PreparedVideoSettings = Settings;
 	if(SessionId == Client()->FocusedSessionId() && !Client()->VideoUsesOfflineAudio())
 	{
 		PrepareScreenRender(true);

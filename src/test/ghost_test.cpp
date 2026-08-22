@@ -5,7 +5,6 @@
 #include <base/mem.h>
 
 #include <engine/client/ghost.h>
-#include <engine/shared/network.h>
 #include <engine/storage.h>
 
 #include <gtest/gtest.h>
@@ -69,11 +68,6 @@ namespace
 	// Writes the ghost that every test here reads.
 	void RecordGhost(IStorage *pStorage, const char *pFilename)
 	{
-		// The chunks are huffman compressed, and the table for that is a static
-		// the network code sets up. Without this the compression quietly yields
-		// nothing and the ghost ends up as headers without payload.
-		CNetBase::Init();
-
 		CGhostRecorder Recorder;
 		Recorder.Init(pStorage);
 		ASSERT_EQ(Recorder.Start(pFilename, GHOST_MAP, TestMapSha256(), GHOST_OWNER), 0);

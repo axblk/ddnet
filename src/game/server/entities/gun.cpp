@@ -79,7 +79,7 @@ void CGun::Fire()
 
 		// Turrets can only shoot at a speed of sv_plasma_per_sec
 		const int &TargetClientId = pTarget->GetPlayer()->GetCid();
-		const bool &TargetIsSolo = pTarget->Teams()->m_Core.GetSolo(TargetClientId);
+		const bool &TargetIsSolo = pTarget->TeamsCore()->GetSolo(TargetClientId);
 		if((TargetIsSolo &&
 			   m_aLastFireSolo[TargetClientId] + Server()->TickSpeed() / g_Config.m_SvPlasmaPerSec > Server()->Tick()) ||
 			(!TargetIsSolo &&
@@ -169,6 +169,6 @@ void CGun::Snap(int SnappingClient)
 		StartTick = m_EvalTick;
 	}
 
-	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), GetId().value(),
+	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient)), GetId().value(),
 		m_Pos, m_Pos, StartTick, -1, LASERTYPE_GUN, Subtype, m_Number);
 }

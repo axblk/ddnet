@@ -7,14 +7,29 @@
 
 class CDbConnectionPool;
 class CGameContext;
+class CGameTeams;
 class IDbConnection;
 class IServer;
 struct ISqlData;
 
 class CScore
 {
+	class CPlayerState
+	{
+	public:
+		uint32_t m_UniqueClientId = 0;
+		int64_t m_LastSqlQuery = 0;
+		std::shared_ptr<CScorePlayerResult> m_pQueryResult;
+		std::shared_ptr<CScorePlayerResult> m_pFinishResult;
+		bool m_NotEligibleForFinish = false;
+		std::optional<int64_t> m_FinishEligibilityCheck;
+		bool m_BirthdayAnnounced = false;
+	};
+
 	CPlayerData m_aPlayerData[MAX_CLIENTS];
+	CPlayerState m_aPlayerStates[MAX_CLIENTS];
 	CDbConnectionPool *m_pPool;
+	CGameTeams *m_pTeams;
 
 	CGameContext *GameServer() const { return m_pGameServer; }
 	IServer *Server() const { return m_pServer; }
@@ -23,7 +38,14 @@ class CScore
 
 	std::vector<std::string> m_vWordlist;
 	CPrng m_Prng;
+	std::optional<float> m_CurrentRecord;
+	std::shared_ptr<CScoreLoadBestTimeResult> m_pLoadBestTimeResult;
+	std::shared_ptr<CScoreRandomMapResult> m_pRandomMapResult;
+	std::shared_ptr<CScorePlayerResult> m_pLoadMapInfoResult;
+	char m_aMapInfoMessage[512] = {};
 	void GeneratePassphrase(char *pBuf, int BufSize);
+	CPlayerState *PlayerState(int ClientId);
+	void ProcessPlayerResult(int ClientId, CScorePlayerResult &Result);
 
 	// returns new SqlResult bound to the player, if no current Thread is active for this player
 	std::shared_ptr<CScorePlayerResult> NewSqlPlayerResult(int ClientId);
@@ -39,9 +61,21 @@ class CScore
 	bool RateLimitPlayer(int ClientId);
 
 public:
-	CScore(CGameContext *pGameServer, CDbConnectionPool *pPool);
+	CScore(CGameContext *pGameServer, CDbConnectionPool *pPool, CGameTeams *pTeams);
 
 	CPlayerData *PlayerData(int Id) { return &m_aPlayerData[Id]; }
+	const std::optional<float> &CurrentRecord() const { return m_CurrentRecord; }
+	void SetCurrentRecord(float Time) { m_CurrentRecord = Time; }
+	const char *MapInfoMessage() const { return m_aMapInfoMessage; }
+	void Tick();
+	void ResetPlayer(int ClientId);
+	void BeginFinishEligibilityCheck(int ClientId);
+	bool FinishEligibilityCheckActive(int ClientId);
+	bool NotEligibleForFinish(int ClientId);
+	void SetNotEligibleForFinish(int ClientId);
+	void SendRecord(int ClientId);
+	void SendFinish(int ClientId, float Time, std::optional<float> PreviousBestTime);
+	void SendMapInfoMessage(int ClientId) const;
 
 	void LoadBestTime();
 	void LoadMapInfo();

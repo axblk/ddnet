@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from glob import glob
+from pathlib import Path
 import csv
 import html
 import io
@@ -199,6 +200,8 @@ def export_block(title, content):
 
 def read_files(pattern):
 	for file in glob(pattern, recursive=True):
+		if Path(file).parts[:2] == ("src", "test"):
+			continue
 		with open(file, "r", encoding="utf-8", errors="ignore") as f:
 			yield from f
 

@@ -1,0 +1,1014 @@
+# vanilla-golden-v1
+# reference_commit 4fc25a17fef3e6c2bf4d52b0421e0d69ecaa1e79
+# reference_tree 6ec8f5cfa32c9cd10c2d326b1df866d5dccbb716
+# sha256 generator 8dfdeb796d2114e2306575a77b680c31d49c8bed800fe5878585705ad8075f0b
+# sha256 reference.cmake d9b27c468875656c52c5249ec0485e194528bb5110a80af7fdac68baaedc0e24
+# sha256 reference_runner.cpp 834a715546a6b653cf53df511981971405a326aedb7d116f98dc63e55b051d37
+# sha256 scenarios.txt 33d2f4fa6acf256e94d60fb8c3c431cebe57fa197f30a711d0c338ffca9fa970
+core run tick=0 pos=160,304 vel=0,0 jumped=0 hook=0,-1,0,0
+core run tick=1 pos=162,304 vel=512,128 jumped=0 hook=0,-1,160,304
+core run tick=2 pos=166,305 vel=1024,256 jumped=0 hook=0,-1,162,304
+core run tick=3 pos=172,305 vel=1536,0 jumped=0 hook=0,-1,166,305
+core run tick=4 pos=180,305 vel=2048,128 jumped=0 hook=0,-1,172,305
+core run tick=5 pos=190,305 vel=2560,0 jumped=0 hook=0,-1,180,305
+core run tick=6 pos=200,305 vel=2560,128 jumped=0 hook=0,-1,190,305
+core run tick=7 pos=210,305 vel=2560,0 jumped=0 hook=0,-1,200,305
+core run tick=8 pos=220,305 vel=2560,128 jumped=0 hook=0,-1,210,305
+core run tick=9 pos=230,305 vel=2560,0 jumped=0 hook=0,-1,220,305
+core run tick=10 pos=240,305 vel=2560,128 jumped=0 hook=0,-1,230,305
+core run tick=11 pos=250,305 vel=2560,0 jumped=0 hook=0,-1,240,305
+core run tick=12 pos=260,305 vel=2560,128 jumped=0 hook=0,-1,250,305
+core run tick=13 pos=270,305 vel=2560,0 jumped=0 hook=0,-1,260,305
+core run tick=14 pos=280,305 vel=2560,128 jumped=0 hook=0,-1,270,305
+core run tick=15 pos=290,305 vel=2560,0 jumped=0 hook=0,-1,280,305
+core run tick=16 pos=300,305 vel=2560,128 jumped=0 hook=0,-1,290,305
+core run tick=17 pos=310,305 vel=2560,0 jumped=0 hook=0,-1,300,305
+core run tick=18 pos=320,305 vel=2560,128 jumped=0 hook=0,-1,310,305
+core run tick=19 pos=330,305 vel=2560,0 jumped=0 hook=0,-1,320,305
+core run tick=20 pos=340,305 vel=2560,128 jumped=0 hook=0,-1,330,305
+core run tick=21 pos=350,305 vel=2560,0 jumped=0 hook=0,-1,340,305
+core run tick=22 pos=360,305 vel=2560,128 jumped=0 hook=0,-1,350,305
+core run tick=23 pos=370,305 vel=2560,0 jumped=0 hook=0,-1,360,305
+core run tick=24 pos=380,305 vel=2560,128 jumped=0 hook=0,-1,370,305
+core run tick=25 pos=390,305 vel=2560,0 jumped=0 hook=0,-1,380,305
+core run tick=26 pos=400,305 vel=2560,128 jumped=0 hook=0,-1,390,305
+core run tick=27 pos=410,305 vel=2560,0 jumped=0 hook=0,-1,400,305
+core run tick=28 pos=420,305 vel=2560,128 jumped=0 hook=0,-1,410,305
+core run tick=29 pos=430,305 vel=2560,0 jumped=0 hook=0,-1,420,305
+core run tick=30 pos=440,305 vel=2560,128 jumped=0 hook=0,-1,430,305
+core run tick=31 pos=445,305 vel=1280,0 jumped=0 hook=0,-1,440,305
+core run tick=32 pos=448,305 vel=640,128 jumped=0 hook=0,-1,445,305
+core run tick=33 pos=449,305 vel=320,0 jumped=0 hook=0,-1,448,305
+core run tick=34 pos=450,305 vel=160,0 jumped=0 hook=0,-1,449,305
+core run tick=35 pos=450,305 vel=80,0 jumped=0 hook=0,-1,450,305
+core run tick=36 pos=450,305 vel=40,0 jumped=0 hook=0,-1,450,305
+core run tick=37 pos=450,305 vel=20,0 jumped=0 hook=0,-1,450,305
+core run tick=38 pos=450,305 vel=10,0 jumped=0 hook=0,-1,450,305
+core run tick=39 pos=450,305 vel=5,0 jumped=0 hook=0,-1,450,305
+core run tick=40 pos=450,305 vel=3,0 jumped=0 hook=0,-1,450,305
+core jump tick=0 pos=160,304 vel=0,0 jumped=0 hook=0,-1,0,0
+core jump tick=1 pos=162,304 vel=512,128 jumped=0 hook=0,-1,160,304
+core jump tick=2 pos=166,291 vel=1024,-3379 jumped=1 hook=0,-1,162,304
+core jump tick=3 pos=171,278 vel=1280,-3251 jumped=0 hook=0,-1,166,291
+core jump tick=4 pos=176,266 vel=1280,-3123 jumped=0 hook=0,-1,171,278
+core jump tick=5 pos=181,254 vel=1280,-2995 jumped=0 hook=0,-1,176,266
+core jump tick=6 pos=186,243 vel=1280,-2867 jumped=0 hook=0,-1,181,254
+core jump tick=7 pos=191,232 vel=1280,-2739 jumped=0 hook=0,-1,186,243
+core jump tick=8 pos=196,222 vel=1280,-2611 jumped=0 hook=0,-1,191,232
+core jump tick=9 pos=201,212 vel=1280,-2483 jumped=0 hook=0,-1,196,222
+core jump tick=10 pos=206,203 vel=1280,-2355 jumped=0 hook=0,-1,201,212
+core jump tick=11 pos=211,194 vel=1280,-2227 jumped=0 hook=0,-1,206,203
+core jump tick=12 pos=216,186 vel=1280,-2099 jumped=0 hook=0,-1,211,194
+core jump tick=13 pos=221,178 vel=1280,-1971 jumped=0 hook=0,-1,216,186
+core jump tick=14 pos=226,171 vel=1280,-1843 jumped=0 hook=0,-1,221,178
+core jump tick=15 pos=231,164 vel=1280,-1715 jumped=0 hook=0,-1,226,171
+core jump tick=16 pos=236,158 vel=1280,-1587 jumped=0 hook=0,-1,231,164
+core jump tick=17 pos=241,152 vel=1280,-1459 jumped=0 hook=0,-1,236,158
+core jump tick=18 pos=246,147 vel=1280,-1331 jumped=0 hook=0,-1,241,152
+core jump tick=19 pos=251,142 vel=1280,-1203 jumped=0 hook=0,-1,246,147
+core jump tick=20 pos=256,138 vel=1280,-1075 jumped=0 hook=0,-1,251,142
+core jump tick=21 pos=261,134 vel=1280,-947 jumped=0 hook=0,-1,256,138
+core jump tick=22 pos=266,131 vel=1280,-819 jumped=0 hook=0,-1,261,134
+core jump tick=23 pos=271,128 vel=1280,-691 jumped=0 hook=0,-1,266,131
+core jump tick=24 pos=276,126 vel=1280,-563 jumped=0 hook=0,-1,271,128
+core jump tick=25 pos=281,124 vel=1280,-435 jumped=0 hook=0,-1,276,126
+core jump tick=26 pos=286,123 vel=1280,-307 jumped=0 hook=0,-1,281,124
+core jump tick=27 pos=291,122 vel=1280,-179 jumped=0 hook=0,-1,286,123
+core jump tick=28 pos=296,110 vel=1280,-3072 jumped=3 hook=0,-1,291,122
+core jump tick=29 pos=301,99 vel=1280,-2944 jumped=2 hook=0,-1,296,110
+core jump tick=30 pos=306,88 vel=1280,-2816 jumped=2 hook=0,-1,301,99
+core jump tick=31 pos=311,78 vel=1280,-2688 jumped=2 hook=0,-1,306,88
+core jump tick=32 pos=316,68 vel=1280,-2560 jumped=2 hook=0,-1,311,78
+core jump tick=33 pos=321,58 vel=1280,-2432 jumped=2 hook=0,-1,316,68
+core jump tick=34 pos=326,49 vel=1280,-2304 jumped=2 hook=0,-1,321,58
+core jump tick=35 pos=331,46 vel=1280,0 jumped=2 hook=0,-1,326,49
+core jump tick=36 pos=336,46 vel=1280,128 jumped=2 hook=0,-1,331,46
+core jump tick=37 pos=341,47 vel=1280,256 jumped=2 hook=0,-1,336,46
+core jump tick=38 pos=346,49 vel=1280,384 jumped=2 hook=0,-1,341,47
+core jump tick=39 pos=351,51 vel=1280,512 jumped=2 hook=0,-1,346,49
+core jump tick=40 pos=356,54 vel=1280,640 jumped=2 hook=0,-1,351,51
+core jump tick=41 pos=361,57 vel=1280,768 jumped=2 hook=0,-1,356,54
+core jump tick=42 pos=366,61 vel=1280,896 jumped=2 hook=0,-1,361,57
+core jump tick=43 pos=371,65 vel=1280,1024 jumped=2 hook=0,-1,366,61
+core jump tick=44 pos=376,70 vel=1280,1152 jumped=2 hook=0,-1,371,65
+core jump tick=45 pos=381,75 vel=1280,1280 jumped=2 hook=0,-1,376,70
+core jump tick=46 pos=386,81 vel=1280,1408 jumped=2 hook=0,-1,381,75
+core jump tick=47 pos=391,87 vel=1280,1536 jumped=2 hook=0,-1,386,81
+core jump tick=48 pos=396,93 vel=1280,1664 jumped=2 hook=0,-1,391,87
+core jump tick=49 pos=401,100 vel=1280,1792 jumped=2 hook=0,-1,396,93
+core jump tick=50 pos=406,108 vel=1280,1920 jumped=2 hook=0,-1,401,100
+core jump tick=51 pos=411,116 vel=1280,2048 jumped=2 hook=0,-1,406,108
+core jump tick=52 pos=416,124 vel=1280,2176 jumped=2 hook=0,-1,411,116
+core jump tick=53 pos=421,133 vel=1280,2304 jumped=2 hook=0,-1,416,124
+core jump tick=54 pos=426,142 vel=1280,2432 jumped=2 hook=0,-1,421,133
+core jump tick=55 pos=431,152 vel=1280,2560 jumped=2 hook=0,-1,426,142
+core jump tick=56 pos=436,163 vel=1280,2688 jumped=2 hook=0,-1,431,152
+core jump tick=57 pos=441,174 vel=1280,2816 jumped=2 hook=0,-1,436,163
+core jump tick=58 pos=446,185 vel=1280,2944 jumped=2 hook=0,-1,441,174
+core jump tick=59 pos=451,197 vel=1280,3072 jumped=2 hook=0,-1,446,185
+core jump tick=60 pos=456,209 vel=1280,3200 jumped=2 hook=0,-1,451,197
+core hook_wall tick=0 pos=160,304 vel=0,0 jumped=0 hook=0,-1,0,0
+core hook_wall tick=1 pos=160,305 vel=0,128 jumped=0 hook=4,-1,282,304
+core hook_wall tick=2 pos=160,305 vel=0,0 jumped=0 hook=4,-1,362,304
+core hook_wall tick=3 pos=160,305 vel=0,0 jumped=0 hook=4,-1,442,304
+core hook_wall tick=4 pos=162,305 vel=576,126 jumped=0 hook=5,-1,512,304
+core hook_wall tick=5 pos=165,305 vel=864,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=6 pos=169,305 vel=1008,126 jumped=0 hook=5,-1,512,304
+core hook_wall tick=7 pos=173,305 vel=1080,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=8 pos=177,305 vel=1116,126 jumped=0 hook=5,-1,512,304
+core hook_wall tick=9 pos=181,305 vel=1134,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=10 pos=185,305 vel=1143,126 jumped=0 hook=5,-1,512,304
+core hook_wall tick=11 pos=189,305 vel=1147,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=12 pos=193,305 vel=1149,126 jumped=0 hook=5,-1,512,304
+core hook_wall tick=13 pos=197,305 vel=1150,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=14 pos=201,305 vel=1151,126 jumped=0 hook=5,-1,512,304
+core hook_wall tick=15 pos=205,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=16 pos=209,305 vel=1151,125 jumped=0 hook=5,-1,512,304
+core hook_wall tick=17 pos=213,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=18 pos=217,305 vel=1151,125 jumped=0 hook=5,-1,512,304
+core hook_wall tick=19 pos=221,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=20 pos=225,305 vel=1151,125 jumped=0 hook=5,-1,512,304
+core hook_wall tick=21 pos=229,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=22 pos=233,305 vel=1151,125 jumped=0 hook=5,-1,512,304
+core hook_wall tick=23 pos=237,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=24 pos=241,305 vel=1151,125 jumped=0 hook=5,-1,512,304
+core hook_wall tick=25 pos=245,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=26 pos=249,305 vel=1151,125 jumped=0 hook=5,-1,512,304
+core hook_wall tick=27 pos=253,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=28 pos=257,305 vel=1151,125 jumped=0 hook=5,-1,512,304
+core hook_wall tick=29 pos=261,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=30 pos=265,305 vel=1151,125 jumped=0 hook=5,-1,512,304
+core hook_wall tick=31 pos=269,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=32 pos=273,305 vel=1151,125 jumped=0 hook=5,-1,512,304
+core hook_wall tick=33 pos=277,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=34 pos=281,305 vel=1151,125 jumped=0 hook=5,-1,512,304
+core hook_wall tick=35 pos=285,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=36 pos=289,305 vel=1151,125 jumped=0 hook=5,-1,512,304
+core hook_wall tick=37 pos=293,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=38 pos=297,305 vel=1151,124 jumped=0 hook=5,-1,512,304
+core hook_wall tick=39 pos=301,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=40 pos=305,305 vel=1151,124 jumped=0 hook=5,-1,512,304
+core hook_wall tick=41 pos=309,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=42 pos=313,305 vel=1151,124 jumped=0 hook=5,-1,512,304
+core hook_wall tick=43 pos=317,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=44 pos=321,305 vel=1151,124 jumped=0 hook=5,-1,512,304
+core hook_wall tick=45 pos=325,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=46 pos=329,305 vel=1151,124 jumped=0 hook=5,-1,512,304
+core hook_wall tick=47 pos=333,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=48 pos=337,305 vel=1151,124 jumped=0 hook=5,-1,512,304
+core hook_wall tick=49 pos=341,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=50 pos=345,305 vel=1151,124 jumped=0 hook=5,-1,512,304
+core hook_wall tick=51 pos=349,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=52 pos=353,305 vel=1151,123 jumped=0 hook=5,-1,512,304
+core hook_wall tick=53 pos=357,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=54 pos=361,305 vel=1151,123 jumped=0 hook=5,-1,512,304
+core hook_wall tick=55 pos=365,305 vel=1151,0 jumped=0 hook=5,-1,512,304
+core hook_wall tick=56 pos=367,305 vel=576,128 jumped=0 hook=0,-1,365,305
+core hook_wall tick=57 pos=368,305 vel=288,0 jumped=0 hook=0,-1,367,305
+core hook_wall tick=58 pos=369,305 vel=144,0 jumped=0 hook=0,-1,368,305
+core hook_wall tick=59 pos=369,305 vel=72,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=60 pos=369,305 vel=36,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=61 pos=369,305 vel=18,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=62 pos=369,305 vel=9,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=63 pos=369,305 vel=5,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=64 pos=369,305 vel=3,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=65 pos=369,305 vel=2,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=66 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=67 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=68 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=69 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=70 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=71 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=72 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=73 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=74 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=75 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=76 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=77 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=78 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=79 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_wall tick=80 pos=369,305 vel=1,0 jumped=0 hook=0,-1,369,305
+core hook_player tick=0 pos=160,304 vel=0,0 jumped=0 hook=0,-1,0,0
+core hook_player tick=1 pos=160,305 vel=71,128 jumped=0 hook=5,1,300,304
+core hook_player tick=2 pos=160,305 vel=106,0 jumped=0 hook=5,1,300,304
+core hook_player tick=3 pos=160,305 vel=124,127 jumped=0 hook=5,1,300,304
+core hook_player tick=4 pos=161,305 vel=133,0 jumped=0 hook=5,1,300,304
+core hook_player tick=5 pos=162,305 vel=137,127 jumped=0 hook=5,1,300,304
+core hook_player tick=6 pos=163,305 vel=138,0 jumped=0 hook=5,1,300,304
+core hook_player tick=7 pos=164,305 vel=138,127 jumped=0 hook=5,1,300,304
+core hook_player tick=8 pos=165,305 vel=138,0 jumped=0 hook=5,1,300,304
+core hook_player tick=9 pos=166,305 vel=137,127 jumped=0 hook=5,1,300,304
+core hook_player tick=10 pos=167,305 vel=136,0 jumped=0 hook=5,1,300,304
+core hook_player tick=11 pos=168,305 vel=135,127 jumped=0 hook=5,1,300,304
+core hook_player tick=12 pos=169,305 vel=134,0 jumped=0 hook=5,1,300,304
+core hook_player tick=13 pos=170,305 vel=133,127 jumped=0 hook=5,1,300,304
+core hook_player tick=14 pos=171,305 vel=132,0 jumped=0 hook=5,1,300,304
+core hook_player tick=15 pos=172,305 vel=131,127 jumped=0 hook=5,1,300,304
+core hook_player tick=16 pos=173,305 vel=130,0 jumped=0 hook=5,1,300,304
+core hook_player tick=17 pos=174,305 vel=129,127 jumped=0 hook=5,1,300,304
+core hook_player tick=18 pos=175,305 vel=128,0 jumped=0 hook=5,1,300,304
+core hook_player tick=19 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=20 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=21 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=22 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=23 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=24 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=25 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=26 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=27 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=28 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=29 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=30 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=31 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=32 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=33 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=34 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=35 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=36 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=37 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=38 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=39 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=40 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=41 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=42 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=43 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=44 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=45 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=46 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=47 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=48 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=49 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=50 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=51 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=52 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=53 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=54 pos=175,305 vel=127,0 jumped=0 hook=5,1,300,304
+core hook_player tick=55 pos=175,305 vel=127,127 jumped=0 hook=5,1,300,304
+core hook_player tick=56 pos=175,305 vel=64,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=57 pos=175,305 vel=32,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=58 pos=175,305 vel=16,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=59 pos=175,305 vel=8,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=60 pos=175,305 vel=4,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=61 pos=175,305 vel=2,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=62 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=63 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=64 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=65 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=66 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=67 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=68 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=69 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=70 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=71 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=72 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=73 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=74 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=75 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=76 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=77 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=78 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=79 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+core hook_player tick=80 pos=175,305 vel=1,0 jumped=0 hook=0,-1,175,305
+weapon_tick hammer tick=0 ammo=-1 reload=16 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=1 ammo=-1 reload=15 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=2 ammo=-1 reload=14 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=3 ammo=-1 reload=13 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=4 ammo=-1 reload=12 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=5 ammo=-1 reload=11 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=6 ammo=-1 reload=10 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=7 ammo=-1 reload=9 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=8 ammo=-1 reload=8 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=9 ammo=-1 reload=7 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=10 ammo=-1 reload=6 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=11 ammo=-1 reload=5 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=12 ammo=-1 reload=4 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=13 ammo=-1 reload=3 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=14 ammo=-1 reload=2 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=15 ammo=-1 reload=1 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=16 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=17 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=18 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=19 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=20 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=21 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=22 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=23 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=24 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=25 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=26 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=27 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=28 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=29 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=30 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=31 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=32 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=33 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=34 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=35 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=36 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=37 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=38 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=39 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=40 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=41 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=42 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=43 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=44 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=45 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=46 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=47 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=48 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=49 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=50 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=51 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=52 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=53 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=54 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=55 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=56 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=57 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=58 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=59 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=60 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=61 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=62 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=63 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=64 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=65 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=66 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=67 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=68 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=69 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=70 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=71 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=72 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=73 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=74 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=75 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=76 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=77 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=78 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=79 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=80 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=81 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=82 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=83 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=84 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=85 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=86 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=87 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=88 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=89 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=90 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=91 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=92 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=93 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=94 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=95 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=96 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=97 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=98 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=99 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=100 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=101 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=102 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=103 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=104 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=105 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=106 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=107 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=108 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=109 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=110 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=111 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=112 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=113 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=114 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=115 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=116 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=117 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=118 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=119 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick hammer tick=120 ammo=-1 reload=0 victim=7,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon hammer ammo=-1 reload=0 projectiles=0,0 lasers=0,0 victim=7,0 victim_vel=1,0
+weapon_tick gun tick=0 ammo=9 reload=6 victim=10,0 projectiles=1 life=100,100 lasers=0 laser=-1,-1
+weapon_tick gun tick=1 ammo=9 reload=5 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=2 ammo=9 reload=4 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=3 ammo=9 reload=3 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=4 ammo=9 reload=2 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=5 ammo=9 reload=1 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=6 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=7 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=8 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=9 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=10 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=11 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=12 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=13 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=14 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=15 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=16 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=17 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=18 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=19 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=20 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=21 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=22 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=23 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=24 ammo=9 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=25 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=26 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=27 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=28 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=29 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=30 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=31 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=32 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=33 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=34 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=35 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=36 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=37 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=38 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=39 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=40 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=41 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=42 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=43 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=44 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=45 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=46 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=47 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=48 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=49 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=50 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=51 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=52 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=53 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=54 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=55 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=56 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=57 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=58 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=59 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=60 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=61 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=62 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=63 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=64 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=65 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=66 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=67 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=68 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=69 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=70 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=71 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=72 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=73 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=74 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=75 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=76 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=77 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=78 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=79 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=80 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=81 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=82 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=83 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=84 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=85 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=86 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=87 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=88 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=89 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=90 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=91 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=92 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=93 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=94 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=95 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=96 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=97 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=98 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=99 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=100 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=101 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=102 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=103 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=104 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=105 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=106 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=107 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=108 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=109 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=110 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=111 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=112 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=113 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=114 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=115 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=116 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=117 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=118 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=119 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick gun tick=120 ammo=10 reload=0 victim=9,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon gun ammo=10 reload=0 projectiles=1,0 lasers=0,0 victim=9,0 victim_vel=0,0 projectile=181,304,100,0,1
+weapon_tick shotgun tick=0 ammo=9 reload=25 victim=10,0 projectiles=5 life=10,10 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=1 ammo=9 reload=24 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=2 ammo=9 reload=23 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=3 ammo=9 reload=22 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=4 ammo=9 reload=21 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=5 ammo=9 reload=20 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=6 ammo=9 reload=19 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=7 ammo=9 reload=18 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=8 ammo=9 reload=17 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=9 ammo=9 reload=16 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=10 ammo=9 reload=15 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=11 ammo=9 reload=14 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=12 ammo=9 reload=13 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=13 ammo=9 reload=12 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=14 ammo=9 reload=11 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=15 ammo=9 reload=10 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=16 ammo=9 reload=9 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=17 ammo=9 reload=8 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=18 ammo=9 reload=7 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=19 ammo=9 reload=6 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=20 ammo=9 reload=5 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=21 ammo=9 reload=4 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=22 ammo=9 reload=3 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=23 ammo=9 reload=2 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=24 ammo=9 reload=1 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=25 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=26 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=27 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=28 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=29 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=30 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=31 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=32 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=33 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=34 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=35 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=36 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=37 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=38 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=39 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=40 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=41 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=42 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=43 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=44 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=45 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=46 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=47 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=48 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=49 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=50 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=51 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=52 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=53 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=54 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=55 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=56 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=57 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=58 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=59 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=60 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=61 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=62 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=63 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=64 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=65 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=66 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=67 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=68 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=69 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=70 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=71 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=72 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=73 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=74 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=75 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=76 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=77 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=78 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=79 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=80 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=81 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=82 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=83 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=84 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=85 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=86 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=87 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=88 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=89 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=90 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=91 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=92 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=93 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=94 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=95 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=96 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=97 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=98 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=99 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=100 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=101 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=102 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=103 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=104 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=105 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=106 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=107 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=108 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=109 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=110 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=111 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=112 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=113 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=114 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=115 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=116 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=117 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=118 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=119 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick shotgun tick=120 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon shotgun ammo=9 reload=0 projectiles=5,0 lasers=0,0 victim=5,0 victim_vel=1,0 projectile=181,304,100,0,2 projectile=181,304,78,-14,2 projectile=181,304,78,14,2 projectile=181,304,89,-6,2 projectile=181,304,89,6,2
+weapon_tick grenade tick=0 ammo=9 reload=25 victim=10,0 projectiles=1 life=100,100 lasers=0 laser=-1,-1
+weapon_tick grenade tick=1 ammo=9 reload=24 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=2 ammo=9 reload=23 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=3 ammo=9 reload=22 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=4 ammo=9 reload=21 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=5 ammo=9 reload=20 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=6 ammo=9 reload=19 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=7 ammo=9 reload=18 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=8 ammo=9 reload=17 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=9 ammo=9 reload=16 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=10 ammo=9 reload=15 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=11 ammo=9 reload=14 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=12 ammo=9 reload=13 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=13 ammo=9 reload=12 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=14 ammo=9 reload=11 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=15 ammo=9 reload=10 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=16 ammo=9 reload=9 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=17 ammo=9 reload=8 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=18 ammo=9 reload=7 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=19 ammo=9 reload=6 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=20 ammo=9 reload=5 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=21 ammo=9 reload=4 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=22 ammo=9 reload=3 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=23 ammo=9 reload=2 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=24 ammo=9 reload=1 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=25 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=26 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=27 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=28 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=29 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=30 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=31 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=32 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=33 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=34 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=35 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=36 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=37 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=38 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=39 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=40 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=41 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=42 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=43 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=44 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=45 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=46 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=47 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=48 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=49 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=50 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=51 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=52 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=53 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=54 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=55 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=56 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=57 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=58 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=59 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=60 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=61 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=62 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=63 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=64 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=65 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=66 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=67 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=68 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=69 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=70 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=71 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=72 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=73 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=74 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=75 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=76 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=77 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=78 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=79 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=80 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=81 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=82 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=83 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=84 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=85 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=86 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=87 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=88 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=89 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=90 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=91 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=92 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=93 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=94 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=95 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=96 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=97 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=98 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=99 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=100 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=101 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=102 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=103 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=104 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=105 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=106 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=107 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=108 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=109 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=110 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=111 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=112 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=113 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=114 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=115 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=116 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=117 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=118 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=119 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick grenade tick=120 ammo=9 reload=0 victim=4,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon grenade ammo=9 reload=0 projectiles=1,0 lasers=0,0 victim=4,0 victim_vel=1,0 projectile=181,304,100,0,3
+weapon_tick laser tick=0 ammo=9 reload=40 victim=5,0 projectiles=0 life=-1,-1 lasers=1 laser=-256,0
+weapon_tick laser tick=1 ammo=9 reload=39 victim=5,0 projectiles=0 life=-1,-1 lasers=1 laser=-256,0
+weapon_tick laser tick=2 ammo=9 reload=38 victim=5,0 projectiles=0 life=-1,-1 lasers=1 laser=-256,0
+weapon_tick laser tick=3 ammo=9 reload=37 victim=5,0 projectiles=0 life=-1,-1 lasers=1 laser=-256,0
+weapon_tick laser tick=4 ammo=9 reload=36 victim=5,0 projectiles=0 life=-1,-1 lasers=1 laser=-256,0
+weapon_tick laser tick=5 ammo=9 reload=35 victim=5,0 projectiles=0 life=-1,-1 lasers=1 laser=-256,0
+weapon_tick laser tick=6 ammo=9 reload=34 victim=5,0 projectiles=0 life=-1,-1 lasers=1 laser=-256,0
+weapon_tick laser tick=7 ammo=9 reload=33 victim=5,0 projectiles=0 life=-1,-1 lasers=1 laser=-256,0
+weapon_tick laser tick=8 ammo=9 reload=32 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=9 ammo=9 reload=31 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=10 ammo=9 reload=30 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=11 ammo=9 reload=29 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=12 ammo=9 reload=28 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=13 ammo=9 reload=27 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=14 ammo=9 reload=26 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=15 ammo=9 reload=25 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=16 ammo=9 reload=24 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=17 ammo=9 reload=23 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=18 ammo=9 reload=22 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=19 ammo=9 reload=21 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=20 ammo=9 reload=20 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=21 ammo=9 reload=19 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=22 ammo=9 reload=18 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=23 ammo=9 reload=17 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=24 ammo=9 reload=16 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=25 ammo=9 reload=15 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=26 ammo=9 reload=14 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=27 ammo=9 reload=13 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=28 ammo=9 reload=12 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=29 ammo=9 reload=11 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=30 ammo=9 reload=10 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=31 ammo=9 reload=9 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=32 ammo=9 reload=8 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=33 ammo=9 reload=7 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=34 ammo=9 reload=6 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=35 ammo=9 reload=5 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=36 ammo=9 reload=4 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=37 ammo=9 reload=3 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=38 ammo=9 reload=2 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=39 ammo=9 reload=1 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=40 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=41 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=42 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=43 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=44 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=45 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=46 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=47 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=48 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=49 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=50 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=51 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=52 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=53 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=54 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=55 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=56 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=57 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=58 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=59 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=60 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=61 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=62 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=63 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=64 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=65 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=66 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=67 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=68 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=69 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=70 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=71 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=72 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=73 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=74 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=75 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=76 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=77 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=78 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=79 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=80 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=81 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=82 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=83 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=84 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=85 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=86 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=87 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=88 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=89 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=90 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=91 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=92 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=93 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=94 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=95 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=96 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=97 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=98 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=99 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=100 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=101 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=102 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=103 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=104 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=105 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=106 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=107 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=108 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=109 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=110 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=111 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=112 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=113 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=114 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=115 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=116 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=117 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=118 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=119 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick laser tick=120 ammo=9 reload=0 victim=5,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon laser ammo=9 reload=0 projectiles=0,0 lasers=1,0 victim=5,0 victim_vel=0,0
+weapon_tick ninja tick=0 ammo=-1 reload=40 victim=10,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=1 ammo=-1 reload=39 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=2 ammo=-1 reload=38 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=3 ammo=-1 reload=37 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=4 ammo=-1 reload=36 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=5 ammo=-1 reload=35 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=6 ammo=-1 reload=34 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=7 ammo=-1 reload=33 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=8 ammo=-1 reload=32 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=9 ammo=-1 reload=31 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=10 ammo=-1 reload=30 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=11 ammo=-1 reload=29 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=12 ammo=-1 reload=28 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=13 ammo=-1 reload=27 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=14 ammo=-1 reload=26 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=15 ammo=-1 reload=25 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=16 ammo=-1 reload=24 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=17 ammo=-1 reload=23 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=18 ammo=-1 reload=22 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=19 ammo=-1 reload=21 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=20 ammo=-1 reload=20 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=21 ammo=-1 reload=19 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=22 ammo=-1 reload=18 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=23 ammo=-1 reload=17 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=24 ammo=-1 reload=16 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=25 ammo=-1 reload=15 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=26 ammo=-1 reload=14 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=27 ammo=-1 reload=13 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=28 ammo=-1 reload=12 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=29 ammo=-1 reload=11 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=30 ammo=-1 reload=10 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=31 ammo=-1 reload=9 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=32 ammo=-1 reload=8 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=33 ammo=-1 reload=7 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=34 ammo=-1 reload=6 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=35 ammo=-1 reload=5 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=36 ammo=-1 reload=4 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=37 ammo=-1 reload=3 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=38 ammo=-1 reload=2 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=39 ammo=-1 reload=1 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=40 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=41 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=42 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=43 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=44 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=45 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=46 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=47 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=48 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=49 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=50 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=51 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=52 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=53 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=54 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=55 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=56 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=57 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=58 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=59 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=60 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=61 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=62 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=63 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=64 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=65 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=66 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=67 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=68 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=69 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=70 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=71 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=72 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=73 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=74 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=75 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=76 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=77 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=78 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=79 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=80 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=81 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=82 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=83 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=84 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=85 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=86 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=87 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=88 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=89 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=90 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=91 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=92 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=93 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=94 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=95 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=96 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=97 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=98 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=99 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=100 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=101 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=102 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=103 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=104 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=105 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=106 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=107 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=108 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=109 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=110 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=111 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=112 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=113 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=114 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=115 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=116 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=117 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=118 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=119 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon_tick ninja tick=120 ammo=-1 reload=0 victim=1,0 projectiles=0 life=-1,-1 lasers=0 laser=-1,-1
+weapon ninja ammo=-1 reload=0 projectiles=0,0 lasers=0,0 victim=1,0 victim_vel=-1,0
+damage gun amount=5 health=9 armor=1 vel=512,-768
+damage shotgun amount=7 health=8 armor=0 vel=512,-768
+damage grenade_self amount=6 health=9 armor=3 vel=512,-768
+damage grenade_explosion amount=6 health=9 armor=0 vel=3072,0
+damage laser amount=5 health=9 armor=1 vel=512,-768
+match kill score=1,0 sudden_death=0 running=1 warmup=0 paused=0 match_ended=0 alive=1 respawn_before=-1 respawn_at=-1
+match suicide score=-1,0 sudden_death=0 running=1 warmup=0 paused=0 match_ended=0 alive=0 respawn_before=-1 respawn_at=-1
+match respawn_normal score=0,1 sudden_death=0 running=1 warmup=0 paused=0 match_ended=0 alive=1 respawn_before=0 respawn_at=1
+match respawn_self score=-1,0 sudden_death=0 running=1 warmup=0 paused=0 match_ended=0 alive=1 respawn_before=0 respawn_at=1
+match sudden_death score=2,2 sudden_death=1 running=1 warmup=0 paused=0 match_ended=0 alive=1 respawn_before=-1 respawn_at=-1
+match score_limit score=2,1 sudden_death=0 running=0 warmup=0 paused=0 match_ended=1 alive=1 respawn_before=-1 respawn_at=-1

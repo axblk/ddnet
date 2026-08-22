@@ -56,7 +56,12 @@ private:
 	[[maybe_unused]] static int gs_PoolDummy##POOLTYPE = (ASAN_POISON_MEMORY_REGION(gs_PoolData##POOLTYPE, sizeof(gs_PoolData##POOLTYPE)), 0); \
 	void *POOLTYPE::operator new(size_t Size, int Id) \
 	{ \
-		dbg_assert(sizeof(POOLTYPE) >= Size, "size error"); \
+		if(Size > sizeof(POOLTYPE)) \
+		{ \
+			void *pObj = malloc(Size); \
+			mem_zero(pObj, Size); \
+			return pObj; \
+		} \
 		dbg_assert(!gs_PoolUsed##POOLTYPE[Id], "already used"); \
 		ASAN_UNPOISON_MEMORY_REGION(gs_PoolData##POOLTYPE[Id], sizeof(gs_PoolData##POOLTYPE[Id])); \
 		gs_PoolUsed##POOLTYPE[Id] = 1; \
@@ -65,19 +70,29 @@ private:
 	} \
 	void POOLTYPE::operator delete(void *pObj, int Id) \
 	{ \
+		if(pObj != gs_PoolData##POOLTYPE[Id]) \
+		{ \
+			free(pObj); \
+			return; \
+		} \
 		dbg_assert(gs_PoolUsed##POOLTYPE[Id], "not used"); \
-		dbg_assert(Id == (POOLTYPE *)pObj - (POOLTYPE *)gs_PoolData##POOLTYPE, "invalid id"); /* NOLINT(bugprone-pointer-arithmetic-on-polymorphic-object) */ \
 		gs_PoolUsed##POOLTYPE[Id] = 0; \
 		mem_zero(gs_PoolData##POOLTYPE[Id], sizeof(gs_PoolData##POOLTYPE[Id])); \
 		ASAN_POISON_MEMORY_REGION(gs_PoolData##POOLTYPE[Id], sizeof(gs_PoolData##POOLTYPE[Id])); \
 	} \
 	void POOLTYPE::operator delete(void *pObj) /* NOLINT(misc-new-delete-overloads) */ \
 	{ \
-		int Id = (POOLTYPE *)pObj - (POOLTYPE *)gs_PoolData##POOLTYPE; /* NOLINT(bugprone-pointer-arithmetic-on-polymorphic-object) */ \
-		dbg_assert(gs_PoolUsed##POOLTYPE[Id], "not used"); \
-		gs_PoolUsed##POOLTYPE[Id] = 0; \
-		mem_zero(gs_PoolData##POOLTYPE[Id], sizeof(gs_PoolData##POOLTYPE[Id])); \
-		ASAN_POISON_MEMORY_REGION(gs_PoolData##POOLTYPE[Id], sizeof(gs_PoolData##POOLTYPE[Id])); \
+		for(int Id = 0; Id < PoolSize; Id++) \
+		{ \
+			if(pObj != gs_PoolData##POOLTYPE[Id]) \
+				continue; \
+			dbg_assert(gs_PoolUsed##POOLTYPE[Id], "not used"); \
+			gs_PoolUsed##POOLTYPE[Id] = 0; \
+			mem_zero(gs_PoolData##POOLTYPE[Id], sizeof(gs_PoolData##POOLTYPE[Id])); \
+			ASAN_POISON_MEMORY_REGION(gs_PoolData##POOLTYPE[Id], sizeof(gs_PoolData##POOLTYPE[Id])); \
+			return; \
+		} \
+		free(pObj); \
 	}
 
 #endif

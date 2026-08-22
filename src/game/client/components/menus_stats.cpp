@@ -18,9 +18,8 @@
 
 #include <algorithm>
 #include <ctime>
-#include <functional>
 #include <limits>
-#include <vector>
+#include <string>
 
 namespace
 {
@@ -59,10 +58,10 @@ namespace
 	}
 
 	// The mode ids carry a vendor suffix that says nothing in a list of matches.
-	std::string ShortModeName(const std::string &ModeId)
+	void ShortModeName(const std::string &ModeId, char *pBuffer, int BufferSize)
 	{
 		const size_t At = ModeId.find('@');
-		return At == std::string::npos ? ModeId : ModeId.substr(0, At);
+		str_truncate(pBuffer, BufferSize, ModeId.c_str(), static_cast<int>(At == std::string::npos ? ModeId.size() : At));
 	}
 
 	void FormatRatio(int64_t Numerator, int64_t Denominator, char *pBuffer, int BufferSize)
@@ -102,19 +101,13 @@ const char *CMenus::StatsModeFilter() const
 
 bool CMenus::StatsModeDropDown(CUIRect Rect)
 {
-	std::vector<std::string> vNames;
-	vNames.reserve(m_vStatsModes.size() + 1);
-	vNames.emplace_back(Localize("All gametypes"));
-	for(const std::string &ModeId : m_vStatsModes)
-		vNames.push_back(ShortModeName(ModeId));
-	std::vector<const char *> vpNames;
-	vpNames.reserve(vNames.size());
-	for(const std::string &Name : vNames)
-		vpNames.push_back(Name.c_str());
+	// The names of the gametypes are collected when the journal is read, only
+	// the entry for all of them at once follows the current language.
+	m_vpStatsModeNames[0] = Localize("All gametypes");
 	static CUi::SDropDownState s_DropDownState;
 	static CScrollRegion s_DropDownScrollRegion;
 	s_DropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_DropDownScrollRegion;
-	const int Picked = Ui()->DoDropDown(&Rect, std::clamp(m_StatsModeIndex, 0, static_cast<int>(vpNames.size()) - 1), vpNames.data(), vpNames.size(), s_DropDownState);
+	const int Picked = Ui()->DoDropDown(&Rect, std::clamp(m_StatsModeIndex, 0, static_cast<int>(m_vpStatsModeNames.size()) - 1), m_vpStatsModeNames.data(), m_vpStatsModeNames.size(), s_DropDownState);
 	if(Picked == m_StatsModeIndex)
 		return false;
 	m_StatsModeIndex = Picked;
@@ -152,6 +145,18 @@ void CMenus::RefreshStats()
 		if(std::find(m_vStatsModes.begin(), m_vStatsModes.end(), Entry.m_ModeId) == m_vStatsModes.end())
 			m_vStatsModes.push_back(Entry.m_ModeId);
 	std::sort(m_vStatsModes.begin(), m_vStatsModes.end());
+	// The drop down wants its labels as one array of pointers, and neither the
+	// gametypes nor their names change again until the next refresh.
+	m_vStatsModeNames.clear();
+	m_vpStatsModeNames.assign(1, nullptr);
+	char aModeName[MatchReportLimits::MAX_MODE_ID_LENGTH];
+	for(const std::string &ModeId : m_vStatsModes)
+	{
+		ShortModeName(ModeId, aModeName, sizeof(aModeName));
+		m_vStatsModeNames.emplace_back(aModeName);
+	}
+	for(const std::string &Name : m_vStatsModeNames)
+		m_vpStatsModeNames.push_back(Name.c_str());
 	if(m_StatsModeIndex > static_cast<int>(m_vStatsModes.size()))
 		m_StatsModeIndex = 0;
 	const char *pMode = StatsModeFilter();
@@ -329,17 +334,18 @@ void CMenus::StatsWeaponMatrix(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 		return;
 	// Weapons are columns and the numbers are rows, which is the only layout
 	// that stays readable when a mod reports more weapons than the game knows.
-	std::vector<const CMatchWeaponStats *> vpColumns;
-	vpColumns.push_back(&Stats.m_Total);
+	const CMatchWeaponStats *apColumns[MAX_MATCH_WEAPONS + 1];
+	int NumColumns = 0;
+	apColumns[NumColumns++] = &Stats.m_Total;
 	for(const CMatchWeaponStats &WeaponStats : Stats.m_vWeapons)
-		if(WeaponStats.HasData())
-			vpColumns.push_back(&WeaponStats);
+		if(WeaponStats.HasData() && NumColumns < MAX_MATCH_WEAPONS + 1)
+			apColumns[NumColumns++] = &WeaponStats;
 
 	StatsHeading(pScrollRegion, pContent, pHeading);
 
 	CUIRect Header;
 	pContent->HSplitTop(24.0f, &Header, pContent);
-	const float ColumnWidth = (Header.w - STATS_LABEL_WIDTH) / vpColumns.size();
+	const float ColumnWidth = (Header.w - STATS_LABEL_WIDTH) / NumColumns;
 	if(pScrollRegion->AddRect(Header))
 	{
 		Header.Draw(COLOR_TABLE_HEADER, IGraphics::CORNER_T, 4.0f);
@@ -351,10 +357,10 @@ void CMenus::StatsWeaponMatrix(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 		Properties.m_EllipsisAtEnd = true;
 		Properties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.6f));
 		Ui()->DoLabel(&Cell, Localize("Weapon"), 10.0f, TEXTALIGN_ML, Properties);
-		for(size_t Column = 0; Column < vpColumns.size(); ++Column)
+		for(int Column = 0; Column < NumColumns; ++Column)
 		{
 			Header.VSplitLeft(ColumnWidth, &Cell, &Header);
-			const int Weapon = Column == 0 ? -1 : vpColumns[Column]->m_Weapon;
+			const int Weapon = Column == 0 ? -1 : apColumns[Column]->m_Weapon;
 			// The icon says which weapon it is at a glance; a weapon without a
 			// sprite falls back to its name so the column is not anonymous.
 			if(Weapon >= 0 && Weapon < NUM_WEAPONS && GameClient()->m_GameSkin.m_aSpriteWeapons[Weapon].IsValid())
@@ -373,17 +379,21 @@ void CMenus::StatsWeaponMatrix(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 			}
 			else
 			{
-				const std::string Name = Column == 0 ? Localize("Total") : MatchWeaponDisplayName(Weapon);
+				char aName[64];
+				if(Column == 0)
+					str_copy(aName, Localize("Total"));
+				else
+					MatchWeaponDisplayName(Weapon, aName, sizeof(aName));
 				Properties.m_MaxWidth = Cell.w - 4.0f;
-				Ui()->DoLabel(&Cell, Name.c_str(), 10.0f, TEXTALIGN_MC, Properties);
+				Ui()->DoLabel(&Cell, aName, 10.0f, TEXTALIGN_MC, Properties);
 			}
 		}
 	}
 
-	const auto MatrixRow = [&](const char *pLabel, const std::function<int64_t(const CMatchWeaponStats &)> &Value, const std::function<void(const CMatchWeaponStats &, char *, int)> &Format, bool AccuracyBar) {
+	const auto MatrixRow = [&](const char *pLabel, const auto &Value, const auto &Format, bool AccuracyBar) {
 		// Nothing reported it, so there is nothing to say about it. A table of
 		// dashes reads as missing data even when the data was never possible.
-		if(std::none_of(vpColumns.begin(), vpColumns.end(), [&](const CMatchWeaponStats *pWeaponStats) { return Value(*pWeaponStats) != 0; }))
+		if(std::none_of(apColumns, apColumns + NumColumns, [&](const CMatchWeaponStats *pWeaponStats) { return Value(*pWeaponStats) != 0; }))
 			return;
 		CUIRect Row;
 		pContent->HSplitTop(20.0f, &Row, pContent);
@@ -398,8 +408,9 @@ void CMenus::StatsWeaponMatrix(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 		LabelProperties.m_EllipsisAtEnd = true;
 		LabelProperties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.65f));
 		Ui()->DoLabel(&Cell, pLabel, 11.5f, TEXTALIGN_ML, LabelProperties);
-		for(const CMatchWeaponStats *pWeaponStats : vpColumns)
+		for(int Column = 0; Column < NumColumns; ++Column)
 		{
+			const CMatchWeaponStats *pWeaponStats = apColumns[Column];
 			Row.VSplitLeft(ColumnWidth, &Cell, &Row);
 			if(AccuracyBar && pWeaponStats->m_Shots > 0)
 			{
@@ -499,8 +510,10 @@ void CMenus::RenderStatsMatchList(CUIRect View)
 		Row.HMargin(3.0f, &Row);
 		Row.HSplitTop(16.0f, &Title, &Detail);
 
+		char aMode[MatchReportLimits::MAX_MODE_ID_LENGTH];
+		ShortModeName(Entry.m_ModeId, aMode, sizeof(aMode));
 		char aTitle[192];
-		str_format(aTitle, sizeof(aTitle), "%s  ·  %s", Entry.m_MapName.c_str(), ShortModeName(Entry.m_ModeId).c_str());
+		str_format(aTitle, sizeof(aTitle), "%s  ·  %s", Entry.m_MapName.c_str(), aMode);
 		Ui()->DoLabel(&Title, aTitle, 12.5f, TEXTALIGN_ML, {.m_MaxWidth = Title.w, .m_EllipsisAtEnd = true});
 
 		char aDate[64];
@@ -515,7 +528,10 @@ void CMenus::RenderStatsMatchList(CUIRect View)
 		DetailProperties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f));
 		Ui()->DoLabel(&Detail, aDetail, 9.5f, TEXTALIGN_ML, DetailProperties);
 
-		Ui()->DoLabel(&Score, Entry.m_LocalScore.has_value() ? std::to_string(*Entry.m_LocalScore).c_str() : "-", 16.0f, TEXTALIGN_MC);
+		char aScore[32] = "-";
+		if(Entry.m_LocalScore.has_value())
+			str_format(aScore, sizeof(aScore), "%" PRId64, *Entry.m_LocalScore);
+		Ui()->DoLabel(&Score, aScore, 16.0f, TEXTALIGN_MC);
 		SLabelProperties ResultProperties;
 		ResultProperties.m_MaxWidth = Result.w;
 		ResultProperties.m_EllipsisAtEnd = true;
@@ -582,8 +598,10 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 		FormatMatchTimestamp(Report.m_EndTimeUtc, aDate, sizeof(aDate));
 		char aDuration[64];
 		FormatMatchDuration(Report.m_DurationTicks, Report.m_TickRate, aDuration, sizeof(aDuration));
+		char aMode[MatchReportLimits::MAX_MODE_ID_LENGTH];
+		ShortModeName(Report.m_ModeId, aMode, sizeof(aMode));
 		char aSubtitle[320];
-		str_format(aSubtitle, sizeof(aSubtitle), "%s  ·  %s  ·  %s  ·  %s", Report.m_MapName.c_str(), ShortModeName(Report.m_ModeId).c_str(), aDuration, aDate);
+		str_format(aSubtitle, sizeof(aSubtitle), "%s  ·  %s  ·  %s  ·  %s", Report.m_MapName.c_str(), aMode, aDuration, aDate);
 		SLabelProperties SubtitleProperties;
 		SubtitleProperties.m_MaxWidth = Subtitle.w;
 		SubtitleProperties.m_EllipsisAtEnd = true;
@@ -591,9 +609,12 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 		Ui()->DoLabel(&Subtitle, aSubtitle, 11.0f, TEXTALIGN_MC, SubtitleProperties);
 	}
 
+	// Kept between frames, because this page is redrawn like any other and the
+	// weapon rows would otherwise be allocated again on each of them.
+	static CMatchCombatStats s_Combat;
 	if(pLocal != nullptr)
 	{
-		const CMatchCombatStats Combat = BuildMatchCombatStats(Report, pLocal->m_ParticipantId);
+		BuildMatchCombatStats(Report, pLocal->m_ParticipantId, s_Combat);
 		const int64_t Kills = ReportMetric(Report, EMatchSubjectKind::PARTICIPANT, pLocal->m_ParticipantId, "kills").value_or(0);
 		const int64_t Deaths = ReportMetric(Report, EMatchSubjectKind::PARTICIPANT, pLocal->m_ParticipantId, "deaths").value_or(0);
 		char aScore[32] = "-";
@@ -605,17 +626,13 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 		char aKd[32];
 		FormatRatio(Kills, Deaths, aKd, sizeof(aKd));
 		char aAccuracy[32];
-		FormatMatchAccuracy(Combat.m_Total.m_Hits, Combat.m_Total.m_Shots, aAccuracy, sizeof(aAccuracy));
+		FormatMatchAccuracy(s_Combat.m_Total.m_Hits, s_Combat.m_Total.m_Shots, aAccuracy, sizeof(aAccuracy));
 		char aKills[32];
 		str_format(aKills, sizeof(aKills), "%" PRId64 " / %" PRId64, Kills, Deaths);
 		const char *apLabels[5] = {Localize("Rank"), Localize("Score"), Localize("Kills / deaths"), Localize("K/D"), Localize("Accuracy")};
 		const char *apValues[5] = {aRank, aScore, aKills, aKd, aAccuracy};
 		StatsTiles(&s_ScrollRegion, &View, apLabels, apValues, 5);
-	}
-
-	if(pLocal != nullptr)
-	{
-		StatsWeaponMatrix(&s_ScrollRegion, &View, Localize("Weapons"), BuildMatchCombatStats(Report, pLocal->m_ParticipantId));
+		StatsWeaponMatrix(&s_ScrollRegion, &View, Localize("Weapons"), s_Combat);
 	}
 	else
 	{
@@ -625,7 +642,8 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 		{
 			char aHeading[MatchReportLimits::MAX_DISPLAY_NAME_LENGTH + 32];
 			str_format(aHeading, sizeof(aHeading), "%s — %s", Localize("Weapons"), Participant.m_DisplayName.c_str());
-			StatsWeaponMatrix(&s_ScrollRegion, &View, aHeading, BuildMatchCombatStats(Report, Participant.m_ParticipantId));
+			BuildMatchCombatStats(Report, Participant.m_ParticipantId, s_Combat);
+			StatsWeaponMatrix(&s_ScrollRegion, &View, aHeading, s_Combat);
 		}
 	}
 
@@ -722,21 +740,27 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 	RenderParticipantRow(Localize("#"), Localize("Name"), Localize("Clan"), Localize("Score"), Localize("Result"), true, false);
 	// A table with a rank column is expected to be ordered by it, the report
 	// itself keeps the order in which participants joined.
-	std::vector<const CMatchParticipant *> vpRanked;
-	vpRanked.reserve(Report.m_vParticipants.size());
+	const CMatchParticipant *apRanked[MatchReportLimits::MAX_PARTICIPANTS];
+	int NumRanked = 0;
 	for(const CMatchParticipant &Participant : Report.m_vParticipants)
-		vpRanked.push_back(&Participant);
+		if(NumRanked < MatchReportLimits::MAX_PARTICIPANTS)
+			apRanked[NumRanked++] = &Participant;
 	const auto RankOf = [&](EMatchSubjectKind Kind, int SubjectId) {
 		const CMatchStanding *pStanding = ReportStanding(Report, Kind, SubjectId);
 		// Whatever has no standing is listed last.
 		return pStanding == nullptr ? std::numeric_limits<int>::max() : pStanding->m_Rank;
 	};
-	std::stable_sort(vpRanked.begin(), vpRanked.end(), [&](const CMatchParticipant *pLeft, const CMatchParticipant *pRight) {
-		return RankOf(EMatchSubjectKind::PARTICIPANT, pLeft->m_ParticipantId) < RankOf(EMatchSubjectKind::PARTICIPANT, pRight->m_ParticipantId);
+	// Equal ranks keep the order of the report, which the addresses already
+	// carry, so the sort needs no buffer of its own on every frame.
+	std::sort(apRanked, apRanked + NumRanked, [&](const CMatchParticipant *pLeft, const CMatchParticipant *pRight) {
+		const int LeftRank = RankOf(EMatchSubjectKind::PARTICIPANT, pLeft->m_ParticipantId);
+		const int RightRank = RankOf(EMatchSubjectKind::PARTICIPANT, pRight->m_ParticipantId);
+		return LeftRank != RightRank ? LeftRank < RightRank : pLeft < pRight;
 	});
 	const auto RenderParticipants = [&](const std::optional<int> &TeamId) {
-		for(const CMatchParticipant *pParticipant : vpRanked)
+		for(int Ranked = 0; Ranked < NumRanked; ++Ranked)
 		{
+			const CMatchParticipant *pParticipant = apRanked[Ranked];
 			if(pParticipant->m_TeamId != TeamId)
 				continue;
 			const CMatchStanding *pStanding = ReportStanding(Report, EMatchSubjectKind::PARTICIPANT, pParticipant->m_ParticipantId);
@@ -750,11 +774,13 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 			char aScore[32] = "-";
 			if(const std::optional<int64_t> Score = ReportMetric(Report, EMatchSubjectKind::PARTICIPANT, pParticipant->m_ParticipantId, "score"))
 				str_format(aScore, sizeof(aScore), "%" PRId64, *Score);
-			std::string Name = pParticipant->m_DisplayName;
+			char aName[MatchReportLimits::MAX_DISPLAY_NAME_LENGTH + 64];
 			if(pParticipant->m_LeftTick.has_value())
-				Name += " (" + std::string(Localize("left")) + ")";
+				str_format(aName, sizeof(aName), "%s (%s)", pParticipant->m_DisplayName.c_str(), Localize("left"));
+			else
+				str_copy(aName, pParticipant->m_DisplayName.c_str());
 			const bool Local = Stored.m_LocalParticipantId.has_value() && *Stored.m_LocalParticipantId == pParticipant->m_ParticipantId;
-			RenderParticipantRow(aRank, Name.c_str(), pParticipant->m_Clan.c_str(), aScore, pOutcome, false, Local);
+			RenderParticipantRow(aRank, aName, pParticipant->m_Clan.c_str(), aScore, pOutcome, false, Local);
 		}
 	};
 	if(Report.m_vTeams.empty())
@@ -763,19 +789,22 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 	}
 	else
 	{
-		std::vector<const CMatchTeam *> vpTeams;
-		vpTeams.reserve(Report.m_vTeams.size());
+		const CMatchTeam *apTeams[MatchReportLimits::MAX_TEAMS];
+		int NumTeams = 0;
 		for(const CMatchTeam &Team : Report.m_vTeams)
-			vpTeams.push_back(&Team);
-		std::stable_sort(vpTeams.begin(), vpTeams.end(), [&](const CMatchTeam *pLeft, const CMatchTeam *pRight) {
-			return RankOf(EMatchSubjectKind::TEAM, pLeft->m_TeamId) < RankOf(EMatchSubjectKind::TEAM, pRight->m_TeamId);
+			if(NumTeams < MatchReportLimits::MAX_TEAMS)
+				apTeams[NumTeams++] = &Team;
+		std::sort(apTeams, apTeams + NumTeams, [&](const CMatchTeam *pLeft, const CMatchTeam *pRight) {
+			const int LeftRank = RankOf(EMatchSubjectKind::TEAM, pLeft->m_TeamId);
+			const int RightRank = RankOf(EMatchSubjectKind::TEAM, pRight->m_TeamId);
+			return LeftRank != RightRank ? LeftRank < RightRank : pLeft < pRight;
 		});
-		for(const CMatchTeam *pTeam : vpTeams)
+		for(int Team = 0; Team < NumTeams; ++Team)
 		{
-			RenderTeamRow(pTeam);
-			RenderParticipants(pTeam->m_TeamId);
+			RenderTeamRow(apTeams[Team]);
+			RenderParticipants(apTeams[Team]->m_TeamId);
 		}
-		const bool AnyWithoutTeam = std::any_of(vpRanked.begin(), vpRanked.end(), [](const CMatchParticipant *pParticipant) { return !pParticipant->m_TeamId.has_value(); });
+		const bool AnyWithoutTeam = std::any_of(apRanked, apRanked + NumRanked, [](const CMatchParticipant *pParticipant) { return !pParticipant->m_TeamId.has_value(); });
 		if(AnyWithoutTeam)
 		{
 			RenderTeamRow(nullptr);
@@ -818,7 +847,9 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 			{
 				char aValue[64];
 				FormatMatchMetricValue(Metric, Report.m_ModeSchemaVersion, Report.m_TickRate, aValue, sizeof(aValue));
-				StatsMetricLine(&s_ScrollRegion, &View, MatchMetricDisplayName(Metric.m_MetricId, Report.m_ModeSchemaVersion).c_str(), aValue);
+				char aLabel[64];
+				MatchMetricDisplayName(Metric.m_MetricId, Report.m_ModeSchemaVersion, aLabel, sizeof(aLabel));
+				StatsMetricLine(&s_ScrollRegion, &View, aLabel, aValue);
 			}
 	}
 
@@ -1027,7 +1058,9 @@ void CMenus::RenderStatsProfile(CUIRect View)
 	}
 	char aWeaponHeading[64];
 	str_format(aWeaponHeading, sizeof(aWeaponHeading), "%s — %s", Localize("Weapons"), StatsPeriodName(m_StatsWeaponPeriod));
-	StatsWeaponMatrix(&s_ScrollRegion, &View, aWeaponHeading, BuildMatchCombatStats(m_aStatsProfiles[(int)m_StatsWeaponPeriod]));
+	static CMatchCombatStats s_ProfileCombat;
+	BuildMatchCombatStats(m_aStatsProfiles[(int)m_StatsWeaponPeriod], s_ProfileCombat);
+	StatsWeaponMatrix(&s_ScrollRegion, &View, aWeaponHeading, s_ProfileCombat);
 
 	// Everything the reports carried that is not a weapon number. Which metrics
 	// exist is decided by the reports, not by a list in here, so a mod's own
@@ -1056,7 +1089,8 @@ void CMenus::RenderStatsProfile(CUIRect View)
 		{
 			if(Metric.m_Value == 0 || IsMatchCombatStatMetric(Metric.m_MetricId, Metric.m_ModeSchemaVersion) || MatchMetricCategory(Metric.m_MetricId, Metric.m_ModeSchemaVersion) != Category)
 				continue;
-			const std::string Label = MatchMetricDisplayName(Metric.m_MetricId, Metric.m_ModeSchemaVersion);
+			char aLabel[64];
+			MatchMetricDisplayName(Metric.m_MetricId, Metric.m_ModeSchemaVersion, aLabel, sizeof(aLabel));
 			for(int Period = 0; Period < (int)EStatsPeriod::COUNT; ++Period)
 			{
 				const CMatchProfile &Profile = m_aStatsProfiles[Period];
@@ -1077,7 +1111,7 @@ void CMenus::RenderStatsProfile(CUIRect View)
 				StatsPeriodHeader(&s_ScrollRegion, &View, Localize("Metric"));
 				WroteHeading = true;
 			}
-			PeriodRow(Label.c_str());
+			PeriodRow(aLabel);
 		}
 	}
 	s_ScrollRegion.End();

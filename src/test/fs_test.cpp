@@ -11,7 +11,6 @@
 TEST(Storage, SyncPersistentStorage)
 {
 	CTestInfo Info;
-	Info.m_DeleteTestStorageFilesOnSuccess = true;
 	const std::unique_ptr<IStorage> pStorage = Info.CreateTestStorage();
 	ASSERT_NE(pStorage, nullptr);
 	pStorage->SyncPersistentStorage();

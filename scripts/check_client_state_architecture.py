@@ -112,8 +112,11 @@ SESSION_MESSAGE_ROUTING_FUNCTIONS = (
 )
 DEMO_SEEK_FUNCTIONS = (("src/game/client/components/menus_demo.cpp", re.compile(r"\bCMenus::HandleDemoSeeking\s*\(")),)
 RENDER_PROJECTION_FUNCTIONS = (("src/game/client/gameclient.cpp", re.compile(r"\bCGameClient::(?:GetSmoothPos|UpdateRenderedClients)\s*\(")),)
-ENGINE_TIMING_QUERY_FUNCTIONS = (("src/engine/client/client.cpp", re.compile(r"\bCClient::(?:ConnectionProblems|GetPredictionTick|GetPredictionTime|GetSmoothTick)\s*\(")),)
-PROCESS_SERVER_PACKET_FUNCTIONS = (("src/engine/client/client.cpp", re.compile(r"\bCClient::ProcessServerPacket\s*\(")),)
+ENGINE_TIMING_QUERY_FUNCTIONS = (
+	("src/engine/client/client_core.cpp", re.compile(r"\bCClientCore::(?:GetPredictionTick|GetPredictionTime|GetSmoothTick)\s*\(")),
+	("src/engine/client/client_net.cpp", re.compile(r"\bCClientWithConnection::ConnectionProblems\s*\(")),
+)
+PROCESS_SERVER_PACKET_FUNCTIONS = (("src/engine/client/client_net.cpp", re.compile(r"\bCClientWithConnection::ProcessServerPacket\s*\(")),)
 MAP_SOUNDS_UPDATE_FUNCTIONS = (("src/game/client/components/mapsounds.cpp", re.compile(r"\bCMapSounds::Update\s*\(")),)
 MAP_SOUNDS_LOAD_FUNCTIONS = (("src/game/client/components/mapsounds.cpp", re.compile(r"\bCMapSounds::Load\s*\(")),)
 SCENE_UPDATE_FUNCTIONS = (

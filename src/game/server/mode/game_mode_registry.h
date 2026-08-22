@@ -98,5 +98,15 @@ private:
 const char *GameModeScoreKindName(EGameModeScoreKind ScoreKind);
 CGameModeReportInfo CompetitiveGameModeReport(const char *pModeId, bool HasObjectives);
 CGameModeReportInfo RaceLiveStatsReport(const char *pModeId);
+/**
+ * The health and armor pickup metrics of the vanilla rule set.
+ *
+ * These count what a player actually healed, which only means anything where
+ * those pickups heal at all; in DDRace the same items do something else
+ * entirely. They are therefore kept out of the shared competitive schema and
+ * declared by the modes that book them, through
+ * `IGameController::ExtraReportMetrics`.
+ */
+std::vector<CGameModeMetricInfo> VanillaPickupGameModeMetrics(const std::string &ModeId, int FirstDisplayOrder);
 
 #endif // GAME_SERVER_MODE_GAME_MODE_REGISTRY_H

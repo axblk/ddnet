@@ -31,6 +31,7 @@ class CSessionClientStats
 	int64_t m_IngameTicks = 0;
 	int m_JoinTick = 0;
 	int m_FirstJoinTick = 0;
+	int m_LeaveTick = 0;
 	bool m_HasJoined = false;
 	bool m_Present = false;
 	bool m_Active = false;
@@ -38,6 +39,7 @@ class CSessionClientStats
 public:
 	std::array<int, NUM_WEAPONS> m_aFragsWith = {};
 	std::array<int, NUM_WEAPONS> m_aDeathsFrom = {};
+	std::array<int, NUM_WEAPONS> m_aDeathsHolding = {};
 	int m_Frags = 0;
 	int m_Deaths = 0;
 	int m_Suicides = 0;
@@ -45,12 +47,25 @@ public:
 	int m_CurrentSpree = 0;
 	int m_FlagGrabs = 0;
 	int m_FlagCaptures = 0;
+	/**
+	 * Identity, team and score as they were last seen in a snapshot.
+	 *
+	 * A client that leaves is dropped from the snapshot and from the identities
+	 * of the game state, so a report written at the end of the match can only
+	 * name and place a player who left while it was running if the collector
+	 * kept a copy of what it saw while they were still there.
+	 */
+	CNetObj_ClientInfo m_ClientInfo = {};
+	bool m_HasClientInfo = false;
+	int m_LastTeam = TEAM_SPECTATORS;
+	int m_LastScore = 0;
 
 	void Reset() { *this = {}; }
 	bool IsPresent() const { return m_Present; }
 	bool IsActive() const { return m_Active; }
 	bool HasJoined() const { return m_HasJoined; }
 	int FirstJoinTick() const { return m_FirstJoinTick; }
+	int LeaveTick() const { return m_LeaveTick; }
 	void JoinGame(int Tick);
 	void JoinSpec(int Tick);
 	void Leave(int Tick);

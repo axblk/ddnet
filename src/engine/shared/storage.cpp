@@ -25,6 +25,50 @@
 #include <emscripten/emscripten.h>
 
 // clang-format off
+EM_ASYNC_JS(int, RequestFilesFromUserImpl, (const char *pFolder, const char *pAccept), {
+	const input = document.createElement('input');
+	input.type = 'file';
+	input.accept = UTF8ToString(pAccept);
+	input.multiple = true;
+	input.style.display = 'none';
+	document.body.appendChild(input);
+	// An older browser fires nothing when the picker is cancelled, so the wait
+	// also ends when the page has the focus back and nothing was chosen.
+	const files = await new Promise(resolve => {
+		input.addEventListener('change', () => resolve(Array.from(input.files)), {once: true});
+		input.addEventListener('cancel', () => resolve([]), {once: true});
+		window.addEventListener('focus', () => setTimeout(() => resolve(Array.from(input.files)), 1000), {once: true});
+		input.click();
+	});
+	input.remove();
+	const folder = UTF8ToString(pFolder);
+	let count = 0;
+	for(const file of files) {
+		try {
+			FS.writeFile(folder + '/' + file.name, new Uint8Array(await file.arrayBuffer()));
+			++count;
+		} catch(error) {
+			console.error('Failed to store ' + file.name + ':', error);
+		}
+	}
+	return count;
+});
+
+EM_JS(void, SendFileToUserImpl, (const char *pName, const unsigned char *pData, int Size), {
+	// The bytes are copied out of the heap because the blob outlives this call
+	// and the heap can move underneath it.
+	const url = URL.createObjectURL(new Blob([HEAPU8.slice(pData, pData + Size)], {type: 'application/octet-stream'}));
+	const link = document.createElement('a');
+	link.href = url;
+	link.download = UTF8ToString(pName);
+	document.body.appendChild(link);
+	link.click();
+	link.remove();
+	// Revoking right away races the download in some browsers, so the URL is
+	// kept alive for a while instead.
+	setTimeout(() => URL.revokeObjectURL(url), 60000);
+});
+
 EM_JS(void, SyncPersistentStorageImpl, (), {
 	if(Module['ddnetSyncPersistentStorage'] === undefined) {
 		Module['ddnetSyncPersistentStorage'] = immediate => {
@@ -923,6 +967,36 @@ public:
 	{
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 		SyncPersistentStorageImpl();
+#endif
+	}
+
+	void SendFileToUser([[maybe_unused]] const char *pFilename, [[maybe_unused]] int Type) override
+	{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		void *pData;
+		unsigned Size;
+		if(!ReadFile(pFilename, Type, &pData, &Size))
+		{
+			log_error("storage", "could not read '%s' to hand it to the user", pFilename);
+			return;
+		}
+		SendFileToUserImpl(fs_filename(pFilename), static_cast<const unsigned char *>(pData), Size);
+		free(pData);
+#endif
+	}
+
+	int RequestFilesFromUser([[maybe_unused]] const char *pFolder, [[maybe_unused]] const char *pAccept) override
+	{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		CreateFolder(pFolder, TYPE_SAVE);
+		char aPath[IO_MAX_PATH_LENGTH];
+		GetCompletePath(TYPE_SAVE, pFolder, aPath, sizeof(aPath));
+		const int Count = RequestFilesFromUserImpl(aPath, pAccept);
+		if(Count > 0)
+			SyncPersistentStorage();
+		return Count;
+#else
+		return 0;
 #endif
 	}
 

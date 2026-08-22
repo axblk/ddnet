@@ -6,6 +6,7 @@
 #include <engine/client/asset_loader.h>
 #include <engine/console.h>
 #include <engine/graphics.h>
+#include <engine/shared/uuid_manager.h>
 
 #include <game/client/component.h>
 #include <game/client/game_view.h>
@@ -14,6 +15,7 @@
 
 class CGameState;
 class CRenderContext;
+class CStoredMatch;
 
 class CScoreboard : public CComponent
 {
@@ -33,6 +35,7 @@ class CScoreboard : public CComponent
 	void RenderGoals(const CRenderContext &Context, CUIRect Goals);
 	void RenderSpectators(const CRenderContext &Context, CUIRect Spectators);
 	void RenderScoreboard(const CRenderContext &Context, CUIRect Scoreboard, int Team, int CountStart, int CountEnd, CScoreboardRenderState &State, int NumPlayersForSize = -1);
+	bool RenderMatchReport(const CStoredMatch &Stored, CUIRect Screen);
 	void RenderRecordingNotification(float x);
 	bool UpdateApplicationOverlay(const CRenderContext &Context);
 
@@ -88,6 +91,11 @@ class CScoreboard : public CComponent
 		static CUi::EPopupMenuFunctionResult Render(void *pContext, CUIRect View, bool Active);
 	} m_MapTitlePopupContext;
 	char m_MapTitleButtonId;
+	char m_ReportHistoryButtonId;
+	char m_ReportDemosButtonId;
+	char m_ReportCsvButtonId;
+	char m_ReportScreenshotButtonId;
+	char m_ReportContinueButtonId;
 
 	class CPlayerElement
 	{
@@ -124,8 +132,19 @@ class CScoreboard : public CComponent
 		CViewport m_Viewport;
 		std::array<CPlayerInteraction, MAX_CLIENTS> m_aPlayers;
 		CUIRect m_MapTitleRect;
+		CUIRect m_ReportHistoryRect;
+		CUIRect m_ReportDemosRect;
+		CUIRect m_ReportCsvRect;
+		CUIRect m_ReportScreenshotRect;
+		CUIRect m_ReportContinueRect;
+		CUuid m_ReportMatchId = UUID_ZEROED;
 		bool m_Active = false;
 		bool m_HasMapTitleRect = false;
+		bool m_HasReportHistoryRect = false;
+		bool m_HasReportDemosRect = false;
+		bool m_HasReportCsvRect = false;
+		bool m_HasReportScreenshotRect = false;
+		bool m_HasReportContinueRect = false;
 
 		bool Matches(const CRenderContext &Context) const;
 	};
@@ -137,8 +156,23 @@ class CScoreboard : public CComponent
 	CGameViewId m_HighlightViewId;
 	int m_HighlightClientId = -1;
 	bool m_HighlightMapTitle = false;
+	bool m_HighlightReportHistory = false;
+	bool m_HighlightReportDemos = false;
+	bool m_HighlightReportCsv = false;
+	bool m_HighlightReportScreenshot = false;
+	bool m_HighlightReportContinue = false;
 	bool m_ApplicationOverlayReady = false;
 	bool IsHighlighted(const CRenderContext &Context, int ClientId) const;
+
+	class CDismissedMatchReport
+	{
+	public:
+		CSessionId m_SessionId;
+		CUuid m_MatchId = UUID_ZEROED;
+	};
+	std::vector<CDismissedMatchReport> m_vDismissedMatchReports;
+	bool IsMatchReportDismissed(CSessionId SessionId, CUuid MatchId) const;
+	void DismissMatchReport(CSessionId SessionId, CUuid MatchId);
 
 	CCachedText m_TitleScore;
 	CCachedText m_TitleScoreMillis;

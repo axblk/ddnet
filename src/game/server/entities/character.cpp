@@ -436,6 +436,7 @@ void CCharacter::FireWeapon()
 		m_ReloadTimer = FireResult.m_ReloadTicks;
 	if(!FireResult.m_Fired)
 		return;
+	GameServer()->GameHost().Controller()->OnCharacterFiredWeapon(this, m_Core.m_ActiveWeapon);
 
 	m_AttackTick = GameWorld()->GameTick();
 	if(FireResult.m_ConsumeAmmo && m_Core.m_ActiveWeapon >= 0 && m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo > 0)

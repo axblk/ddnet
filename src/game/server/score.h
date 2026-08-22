@@ -21,6 +21,7 @@ class CScore
 		int64_t m_LastSqlQuery = 0;
 		std::shared_ptr<CScorePlayerResult> m_pQueryResult;
 		std::shared_ptr<CScorePlayerResult> m_pFinishResult;
+		bool m_ReloadPlayerData = false;
 		bool m_NotEligibleForFinish = false;
 		std::optional<int64_t> m_FinishEligibilityCheck;
 		bool m_BirthdayAnnounced = false;

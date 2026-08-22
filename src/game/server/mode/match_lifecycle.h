@@ -33,7 +33,7 @@ public:
 
 	bool EndRound(int Tick)
 	{
-		if(IsWarmup())
+		if(IsWarmup() || IsGameOver())
 			return false;
 		m_GameOverTick = Tick;
 		m_SuddenDeath = false;

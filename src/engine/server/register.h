@@ -21,9 +21,10 @@ public:
 	virtual bool OnPacket(const CNetChunk *pPacket) = 0;
 	// `pInfo` must be an encoded JSON object.
 	virtual void OnNewInfo(const char *pInfo) = 0;
+	virtual void OnModernTrustChanged(const char *pQuicFragment, const char *pWebTransportFragment) = 0;
 	virtual void OnShutdown() = 0;
 };
 
-IRegister *CreateRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHttp *pHttp, int ServerPort, unsigned SixupSecurityToken);
+IRegister *CreateRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHttp *pHttp, int ServerPort, unsigned SixupSecurityToken, bool LegacyUdpStarted, bool QuicStarted, bool WebTransportStarted, const char *pRegisterHostname, const char *pQuicFragment, const char *pWebTransportFragment);
 
 #endif

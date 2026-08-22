@@ -27,12 +27,12 @@
 #include <engine/shared/econ.h>
 #include <engine/shared/fifo.h>
 #include <engine/shared/filecollection.h>
+#include <engine/shared/game_wire.h>
 #include <engine/shared/host_lookup.h>
 #include <engine/shared/json.h>
 #include <engine/shared/jsonwriter.h>
 #include <engine/shared/linereader.h>
 #include <engine/shared/masterserver.h>
-#include <engine/shared/modern_wire.h>
 #include <engine/shared/netban.h>
 #include <engine/shared/network.h>
 #include <engine/shared/packer.h>
@@ -2947,35 +2947,50 @@ void CServer::UpdateRegisterServerInfo()
 		char aNextCertificateSha256[SHA256_MAXSTRSIZE] = {};
 		if(const SHA256_DIGEST *pNextCertificateSha256 = m_QuicTransport.NextCertificateSha256())
 			sha256_str(*pNextCertificateSha256, aNextCertificateSha256, sizeof(aNextCertificateSha256));
-		JsonWriter.WriteAttribute("transport");
+		JsonWriter.WriteAttribute("experimental");
 		JsonWriter.BeginObject();
-		JsonWriter.WriteAttribute("udp_port");
-		JsonWriter.WriteIntValue(m_ModernTransportPort);
-		JsonWriter.WriteAttribute("tls_certificate_sha256");
-		JsonWriter.WriteStrValue(aCertificateSha256);
-		if(aNextCertificateSha256[0] != '\0')
+		JsonWriter.WriteAttribute("proto");
+		JsonWriter.BeginObject();
+		if(m_aModernTransportHostname[0] != '\0')
 		{
-			JsonWriter.WriteAttribute("tls_certificate_sha256_next");
-			JsonWriter.WriteStrValue(aNextCertificateSha256);
+			JsonWriter.WriteAttribute("hostname");
+			JsonWriter.WriteStrValue(m_aModernTransportHostname);
 		}
 		if(m_QuicStarted)
 		{
 			JsonWriter.WriteAttribute("quic");
-			JsonWriter.WriteBoolValue(true);
+			JsonWriter.BeginObject();
+			JsonWriter.WriteAttribute("verify");
+			JsonWriter.WriteStrValue(m_QuicUseWebPki ? "webpki" : "identity");
+			if(!m_QuicUseWebPki)
+			{
+				const CServerIdentityBinding *pIdentity = m_QuicTransport.ServerIdentity();
+				dbg_assert(pIdentity != nullptr, "QUIC server identity must be available");
+				char aIdentityFingerprint[SHA256_MAXSTRSIZE];
+				sha256_str(sha256(pIdentity->m_PublicKey.data(), pIdentity->m_PublicKey.size()), aIdentityFingerprint, sizeof(aIdentityFingerprint));
+				JsonWriter.WriteAttribute("sha256");
+				JsonWriter.WriteStrValue(aIdentityFingerprint);
+			}
+			JsonWriter.EndObject();
 		}
 		if(m_WebTransportStarted)
 		{
 			JsonWriter.WriteAttribute("webtransport");
 			JsonWriter.BeginObject();
-			if(m_aWebTransportUrl[0] != '\0')
-			{
-				JsonWriter.WriteAttribute("url");
-				JsonWriter.WriteStrValue(m_aWebTransportUrl);
-			}
-			JsonWriter.WriteAttribute("certificate_mode");
+			JsonWriter.WriteAttribute("verify");
 			JsonWriter.WriteStrValue(m_WebTransportUseCertificateHashes ? "hash" : "webpki");
+			if(m_WebTransportUseCertificateHashes)
+			{
+				JsonWriter.WriteAttribute("sha256");
+				JsonWriter.BeginArray();
+				JsonWriter.WriteStrValue(aCertificateSha256);
+				if(aNextCertificateSha256[0] != '\0')
+					JsonWriter.WriteStrValue(aNextCertificateSha256);
+				JsonWriter.EndArray();
+			}
 			JsonWriter.EndObject();
 		}
+		JsonWriter.EndObject();
 		JsonWriter.EndObject();
 	}
 
@@ -3120,10 +3135,10 @@ int CServer::FindQuicClient(CQuicSessionId Session) const
 
 int CServer::FindQuicResume(const CQuicMessage &Message) const
 {
-	ModernWire::CResumeView Resume = {};
-	if(ModernWire::DecodeResume(
+	GameWire::CResumeView Resume = {};
+	if(GameWire::DecodeResume(
 		   {static_cast<const unsigned char *>(Message.m_pData), static_cast<size_t>(Message.m_DataSize)},
-		   Resume) != ModernWire::EDecodeResult::OK ||
+		   Resume) != GameWire::EDecodeResult::OK ||
 		Resume.m_Token.m_Size != QUIC_RESUME_TOKEN_SIZE)
 		return -1;
 	const int64_t Now = time_get();
@@ -3176,8 +3191,54 @@ void CServer::ExpireQuicResumes()
 	}
 }
 
+void CServer::FormatModernTransportFragments(char *pQuicFragment, int QuicFragmentSize, char *pWebTransportFragment, int WebTransportFragmentSize) const
+{
+	pQuicFragment[0] = '\0';
+	pWebTransportFragment[0] = '\0';
+	if(m_QuicStarted)
+	{
+		if(m_QuicUseWebPki)
+			str_copy(pQuicFragment, "webpki", QuicFragmentSize);
+		else if(const CServerIdentityBinding *pIdentity = m_QuicTransport.ServerIdentity())
+		{
+			char aFingerprint[SHA256_MAXSTRSIZE];
+			sha256_str(sha256(pIdentity->m_PublicKey.data(), pIdentity->m_PublicKey.size()), aFingerprint, sizeof(aFingerprint));
+			str_format(pQuicFragment, QuicFragmentSize, "identity-sha256=%s", aFingerprint);
+		}
+	}
+	if(m_WebTransportStarted && m_WebTransportUseCertificateHashes)
+	{
+		char aFingerprint[SHA256_MAXSTRSIZE];
+		sha256_str(*m_QuicTransport.CertificateSha256(), aFingerprint, sizeof(aFingerprint));
+		if(const SHA256_DIGEST *pNextFingerprint = m_QuicTransport.NextCertificateSha256())
+		{
+			char aNextFingerprint[SHA256_MAXSTRSIZE];
+			sha256_str(*pNextFingerprint, aNextFingerprint, sizeof(aNextFingerprint));
+			str_format(pWebTransportFragment, WebTransportFragmentSize, "cert-sha256=%s,%s", aFingerprint, aNextFingerprint);
+		}
+		else
+			str_format(pWebTransportFragment, WebTransportFragmentSize, "cert-sha256=%s", aFingerprint);
+	}
+}
+
 void CServer::PumpQuicNetwork()
 {
+	if(m_QuicStarted || m_WebTransportStarted)
+	{
+		bool Rotated;
+		if(!m_QuicTransport.MaybeRotateManagedCertificate(&Rotated))
+			log_error("quic", "could not rotate managed TLS certificate: %s", m_QuicTransport.ErrorString());
+		else if(Rotated)
+		{
+			char aQuicFragment[160];
+			char aWebTransportFragment[160];
+			FormatModernTransportFragments(aQuicFragment, sizeof(aQuicFragment), aWebTransportFragment, sizeof(aWebTransportFragment));
+			if(m_pRegister)
+				m_pRegister->OnModernTrustChanged(aQuicFragment, aWebTransportFragment);
+			ExpireServerInfo();
+			log_info("quic", "rotated managed TLS certificate");
+		}
+	}
 	NETADDR Address;
 	unsigned char *pData;
 	int DataSize;
@@ -3187,7 +3248,18 @@ void CServer::PumpQuicNetwork()
 	CQuicEvent Event;
 	while(m_QuicTransport.Poll(Event))
 	{
-		if(Event.m_Type == EQuicEventType::CONNECTED)
+		if(Event.m_Type == EQuicEventType::MASTER_CHALLENGE)
+		{
+			CNetChunk Packet = {};
+			Packet.m_ClientId = -1;
+			Packet.m_Address = Event.m_Message.m_PeerAddress;
+			Packet.m_Flags = NETSENDFLAG_CONNLESS;
+			Packet.m_pData = Event.m_Message.m_pData;
+			Packet.m_DataSize = Event.m_Message.m_DataSize;
+			if(m_pRegister)
+				m_pRegister->OnPacket(&Packet);
+		}
+		else if(Event.m_Type == EQuicEventType::CONNECTED)
 		{
 			char aReason[256];
 			if(m_ServerBan.IsBanned(&Event.m_Message.m_PeerAddress, aReason, sizeof(aReason)))
@@ -3686,15 +3758,39 @@ int CServer::Run()
 
 	int Port = Config()->m_SvPort;
 	BindAddr.port = Port != 0 ? Port : 8303;
-	const bool QuicEnabled = Config()->m_SvQuic != 0;
-	const bool WebTransportEnabled = Config()->m_SvWebtransport != 0;
+	// These settings exist in every build, but only a build with the transport
+	// compiled in can act on them. Saying so beats looking enabled and doing
+	// nothing.
+	bool QuicEnabled = Config()->m_SvQuic != 0;
+	bool WebTransportEnabled = Config()->m_SvWebtransport != 0;
+	if(QuicEnabled && !CQuicTransport::IsCompiled())
+	{
+		log_error("server", "sv_quic needs a build with QUIC=ON, continuing without QUIC");
+		QuicEnabled = false;
+	}
+	if(WebTransportEnabled && !CQuicTransport::IsWebTransportCompiled())
+	{
+		log_error("server", "sv_webtransport needs a build with QUIC=ON, continuing without WebTransport");
+		WebTransportEnabled = false;
+	}
 	const bool ModernTransportEnabled = QuicEnabled || WebTransportEnabled;
+	const bool SharedTlsConfigured = Config()->m_SvTlsCert[0] != '\0' || Config()->m_SvTlsCertNext[0] != '\0' || Config()->m_SvTlsKey[0] != '\0';
+	const char *pModernHostname = Config()->m_SvRegisterHostname[0] != '\0' ? Config()->m_SvRegisterHostname : Config()->m_SvWebtransportHostname;
+	const char *pTlsCertificate = SharedTlsConfigured ? Config()->m_SvTlsCert : Config()->m_SvQuicCert;
+	const char *pNextTlsCertificate = SharedTlsConfigured ? Config()->m_SvTlsCertNext : Config()->m_SvQuicCertNext;
+	const char *pTlsPrivateKey = SharedTlsConfigured ? Config()->m_SvTlsKey : Config()->m_SvQuicKey;
+	m_LegacyUdpStarted = Config()->m_SvLegacyUdp != 0;
+	if(!m_LegacyUdpStarted && !ModernTransportEnabled)
+	{
+		log_error("server", "sv_legacy_udp is disabled, but neither QUIC nor WebTransport is enabled");
+		return -1;
+	}
 	m_QuicStarted = false;
 	m_WebTransportStarted = false;
+	m_QuicUseWebPki = false;
 	m_WebTransportUseCertificateHashes = false;
-	m_ModernTransportPort = 0;
-	m_aWebTransportUrl[0] = '\0';
-	if(WebTransportEnabled && str_comp(Config()->m_SvWebtransportCertificateMode, "webpki") == 0 && Config()->m_SvWebtransportHostname[0] == '\0')
+	m_aModernTransportHostname[0] = '\0';
+	if(WebTransportEnabled && str_comp(Config()->m_SvWebtransportCertificateMode, "webpki") == 0 && pModernHostname[0] == '\0')
 	{
 		log_error("server", "sv_webtransport_hostname is required for WebTransport with Web PKI");
 		return -1;
@@ -3705,14 +3801,19 @@ int CServer::Run()
 		return -1;
 	}
 	auto StartQuic = [&]() {
-		if(Config()->m_SvQuicIdentityKey[0] == '\0')
+		if(SharedTlsConfigured && (pTlsCertificate[0] == '\0' || pTlsPrivateKey[0] == '\0'))
 		{
-			log_error("server", "sv_quic_identity_key must not be empty");
+			log_error("server", "sv_tls_cert and sv_tls_key must either both be set or both be empty");
 			return false;
 		}
-		if(WebTransportEnabled && str_comp(Config()->m_SvWebtransportCertificateMode, "webpki") == 0 && (Config()->m_SvQuicCert[0] == '\0' || Config()->m_SvQuicKey[0] == '\0'))
+		if((QuicEnabled || pTlsCertificate[0] == '\0') && Config()->m_SvQuicIdentityKey[0] == '\0')
 		{
-			log_error("server", "sv_quic_cert and sv_quic_key are required for WebTransport with Web PKI");
+			log_error("server", "sv_quic_identity_key must not be empty when native QUIC or managed TLS is enabled");
+			return false;
+		}
+		if(WebTransportEnabled && str_comp(Config()->m_SvWebtransportCertificateMode, "webpki") == 0 && (pTlsCertificate[0] == '\0' || pTlsPrivateKey[0] == '\0'))
+		{
+			log_error("server", "sv_tls_cert and sv_tls_key are required for WebTransport with Web PKI");
 			return false;
 		}
 		NETADDR QuicBindAddr = {};
@@ -3726,9 +3827,10 @@ int CServer::Run()
 		QuicBindAddr.port = BindAddr.port;
 		char aModernAddress[NETADDR_MAXSTRSIZE];
 		net_addr_str(&QuicBindAddr, aModernAddress, sizeof(aModernAddress), true);
-		char aIdentityPath[IO_MAX_PATH_LENGTH];
-		Storage()->GetCompletePath(IStorage::TYPE_SAVE_OR_ABSOLUTE, Config()->m_SvQuicIdentityKey, aIdentityPath, sizeof(aIdentityPath));
-		if(!m_QuicTransport.StartServer(aModernAddress, QuicEnabled, WebTransportEnabled, Config()->m_SvWebtransportOrigin, Config()->m_SvQuicCert, Config()->m_SvQuicCertNext, Config()->m_SvQuicKey, aIdentityPath))
+		char aIdentityPath[IO_MAX_PATH_LENGTH] = {};
+		if(Config()->m_SvQuicIdentityKey[0] != '\0')
+			Storage()->GetCompletePath(IStorage::TYPE_SAVE_OR_ABSOLUTE, Config()->m_SvQuicIdentityKey, aIdentityPath, sizeof(aIdentityPath));
+		if(!m_QuicTransport.StartServer(aModernAddress, QuicEnabled, WebTransportEnabled, pTlsCertificate, pNextTlsCertificate, pTlsPrivateKey, aIdentityPath))
 		{
 			log_error("server", "could not start modern transport: %s", m_QuicTransport.ErrorString());
 			return false;
@@ -3750,7 +3852,7 @@ int CServer::Run()
 			log_info("server", "native QUIC listening on %s identity-sha256=%s", aModernAddress, aFingerprint);
 		}
 		if(WebTransportEnabled)
-			log_info("server", "WebTransport listening on %s path=/ddnet origin=%s", aModernAddress, Config()->m_SvWebtransportOrigin[0] == '\0' ? "*" : Config()->m_SvWebtransportOrigin);
+			log_info("server", "WebTransport listening on %s path=/ddnet", aModernAddress);
 		return true;
 	};
 
@@ -3768,12 +3870,22 @@ int CServer::Run()
 			return -1;
 		}
 	}
+	m_NetServer.SetLegacyConnections(m_LegacyUdpStarted);
 	if(ModernTransportEnabled && !StartQuic())
 		return -1;
 	if(ModernTransportEnabled)
 	{
-		m_ModernTransportPort = Config()->m_SvRegisterPort > 0 ? Config()->m_SvRegisterPort : BindAddr.port;
-		if(WebTransportEnabled && Config()->m_SvWebtransportHostname[0] != '\0' && !FormatWebTransportUrl(m_aWebTransportUrl, sizeof(m_aWebTransportUrl), Config()->m_SvWebtransportHostname, m_ModernTransportPort))
+		const int ModernTransportPort = Config()->m_SvRegisterPort > 0 ? Config()->m_SvRegisterPort : BindAddr.port;
+		char aWebTransportUrl[256];
+		if(pModernHostname[0] != '\0')
+			str_copy(m_aModernTransportHostname, pModernHostname);
+		if(Config()->m_SvRegisterHostname[0] != '\0' && (Config()->m_SvRegisterHostname[0] == '[' || !FormatWebTransportUrl(aWebTransportUrl, sizeof(aWebTransportUrl), Config()->m_SvRegisterHostname, ModernTransportPort)))
+		{
+			log_error("server", "sv_register_hostname must be a DNS name without a port");
+			m_QuicTransport.Shutdown();
+			return -1;
+		}
+		if(WebTransportEnabled && pModernHostname[0] != '\0' && !FormatWebTransportUrl(aWebTransportUrl, sizeof(aWebTransportUrl), pModernHostname, ModernTransportPort))
 		{
 			log_error("server", "sv_webtransport_hostname must be a DNS name or bracketed IP address without a port");
 			m_QuicTransport.Shutdown();
@@ -3782,7 +3894,9 @@ int CServer::Run()
 		m_QuicStarted = QuicEnabled;
 		m_WebTransportStarted = WebTransportEnabled;
 		m_WebTransportUseCertificateHashes = WebTransportEnabled && str_comp(Config()->m_SvWebtransportCertificateMode, "hash") == 0;
+		m_QuicUseWebPki = QuicEnabled && m_aModernTransportHostname[0] != '\0' && SharedTlsConfigured;
 	}
+	log_info("server", "network transports: legacy-udp=%s quic=%s webtransport=%s", m_LegacyUdpStarted ? "enabled" : "disabled", m_QuicStarted ? "enabled" : "disabled", m_WebTransportStarted ? "enabled" : "disabled");
 
 	if(Port == 0)
 		log_info("server", "using port %d", BindAddr.port);
@@ -3798,7 +3912,10 @@ int CServer::Run()
 	}
 
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
-	m_pRegister = CreateRegister(&g_Config, m_pConsole, m_pEngine, m_pHttp, g_Config.m_SvRegisterPort > 0 ? g_Config.m_SvRegisterPort : this->Port(), m_NetServer.GetGlobalToken());
+	char aQuicFragment[160];
+	char aWebTransportFragment[160];
+	FormatModernTransportFragments(aQuicFragment, sizeof(aQuicFragment), aWebTransportFragment, sizeof(aWebTransportFragment));
+	m_pRegister = CreateRegister(&g_Config, m_pConsole, m_pEngine, m_pHttp, g_Config.m_SvRegisterPort > 0 ? g_Config.m_SvRegisterPort : this->Port(), m_NetServer.GetGlobalToken(), m_LegacyUdpStarted, m_QuicStarted, m_WebTransportStarted, g_Config.m_SvRegisterHostname, aQuicFragment, aWebTransportFragment);
 
 	m_NetServer.SetCallbacks(NewClientCallback, NewClientNoAuthCallback, ClientRejoinCallback, DelClientCallback, this);
 
@@ -4258,6 +4375,8 @@ void CServer::ConStatus(IConsole::IResult *pResult, void *pUser)
 	char aBuf[1024];
 	CServer *pThis = static_cast<CServer *>(pUser);
 	const char *pName = pResult->NumArguments() == 1 ? pResult->GetString(0) : "";
+	str_format(aBuf, sizeof(aBuf), "transports legacy-udp=%s quic=%s webtransport=%s", pThis->m_LegacyUdpStarted ? "enabled" : "disabled", pThis->m_QuicStarted ? "enabled" : "disabled", pThis->m_WebTransportStarted ? "enabled" : "disabled");
+	pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
 
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{

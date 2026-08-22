@@ -714,6 +714,10 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 		{
 			continue;
 		}
+		if(!m_LegacyConnections && (Addr.type & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) == 0 && (*Flags & NET_PACKETFLAG_CONNLESS) == 0)
+		{
+			continue;
+		}
 
 		SECURITY_TOKEN Token;
 		int Slot = (*Flags & NET_PACKETFLAG_CONNLESS) == 0 ? GetClientSlot(Addr) : -1;

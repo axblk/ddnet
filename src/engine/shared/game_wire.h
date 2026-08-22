@@ -1,11 +1,18 @@
-#ifndef ENGINE_SHARED_MODERN_WIRE_H
-#define ENGINE_SHARED_MODERN_WIRE_H
+#ifndef ENGINE_SHARED_GAME_WIRE_H
+#define ENGINE_SHARED_GAME_WIRE_H
 
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
-namespace ModernWire
+// This is one of two implementations of the same framing. The other one is
+// `game_wire.rs`, which the native QUIC transport uses; this one is the whole
+// protocol stack of the emscripten WebTransport client, which has no Rust.
+// They are not layered on each other, they are held together by the golden
+// vectors in `src/test/game_wire_test.cpp` and in the `#[cfg(test)]` block of
+// `game_wire.rs`, which assert the same literal bytes. Change one, change both,
+// including the values reserved below.
+namespace GameWire
 {
 	constexpr uint64_t VERSION_MAJOR = 1;
 	constexpr uint64_t VERSION_MINOR = 0;
@@ -36,6 +43,9 @@ namespace ModernWire
 	{
 		CONTROL = 0,
 		MAP = 1,
+		// Used by the native transport only, reserved so that this side does
+		// not hand the number out twice.
+		MASTER_CHALLENGE = 64,
 	};
 
 	enum class EFrameType : uint64_t
@@ -46,6 +56,10 @@ namespace ModernWire
 		DISCONNECT = 3,
 		RESUME = 4,
 		MAP_HEADER = 5,
+		// Reserved as above. Both are skippable, so this side ignores them
+		// instead of failing the connection.
+		SERVER_IDENTITY = 64,
+		CLIENT_IDENTITY_READY = 65,
 	};
 
 	enum class EDatagramType : uint64_t
@@ -63,6 +77,8 @@ namespace ModernWire
 		CAPABILITY_DATAGRAM = 1 << 0,
 		CAPABILITY_MAP_STREAM = 1 << 1,
 		CAPABILITY_RESUME = 1 << 2,
+		// Reserved as above; this side never announces it.
+		CAPABILITY_SERVER_IDENTITY = 1 << 3,
 		CAPABILITY_GAME_PROTOCOL_7 = 1 << 4,
 	};
 

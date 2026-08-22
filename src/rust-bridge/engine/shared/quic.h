@@ -969,6 +969,7 @@ namespace ModernQuic {
   enum class QuicEventKind : ::std::uint8_t;
   struct QuicEvent;
   struct QuicIdentity;
+  struct QuicManagedIdentity;
   struct QuicServerIdentityBinding;
   struct UdpDatagram;
   struct QuicEndpoint;
@@ -992,6 +993,7 @@ enum class QuicEventKind : ::std::uint8_t {
   ConnectFailedIdentity = 11,
   ConnectFailedProtocol = 12,
   PeerMigrated = 13,
+  MasterChallenge = 14,
 };
 #endif // CXXBRIDGE1_ENUM_ModernQuic$QuicEventKind
 
@@ -1019,6 +1021,19 @@ struct QuicIdentity final {
   using IsRelocatable = ::std::true_type;
 };
 #endif // CXXBRIDGE1_STRUCT_ModernQuic$QuicIdentity
+
+#ifndef CXXBRIDGE1_STRUCT_ModernQuic$QuicManagedIdentity
+#define CXXBRIDGE1_STRUCT_ModernQuic$QuicManagedIdentity
+struct QuicManagedIdentity final {
+  ::rust::Vec<::std::uint8_t> certificate_der;
+  ::rust::Vec<::std::uint8_t> private_key_der;
+  ::rust::Vec<::std::uint8_t> next_certificate_der;
+  ::rust::Vec<::std::uint8_t> next_private_key_der;
+  ::std::int64_t rotate_at CXX_DEFAULT_VALUE(0);
+
+  using IsRelocatable = ::std::true_type;
+};
+#endif // CXXBRIDGE1_STRUCT_ModernQuic$QuicManagedIdentity
 
 #ifndef CXXBRIDGE1_STRUCT_ModernQuic$QuicServerIdentityBinding
 #define CXXBRIDGE1_STRUCT_ModernQuic$QuicServerIdentityBinding
@@ -1059,11 +1074,19 @@ private:
 
 ::ModernQuic::QuicIdentity quic_generate_identity(::rust::Str server_name);
 
+::ModernQuic::QuicManagedIdentity quic_managed_identity(::rust::Str identity_path, ::std::int64_t now);
+
+::rust::Vec<::std::uint8_t> quic_leaf_certificate_der(::rust::Slice<::std::uint8_t const> certificate_file);
+
 ::ModernQuic::QuicServerIdentityBinding quic_server_identity_binding(::rust::Str identity_path, ::rust::Slice<::std::uint8_t const> certificate_sha256, ::rust::Slice<::std::uint8_t const> next_certificate_sha256);
 
-::rust::Box<::ModernQuic::QuicEndpoint> quic_server_start_external(::rust::Str local_address, bool raw_quic, bool webtransport, ::rust::Str webtransport_origin, ::rust::Slice<::std::uint8_t const> certificate_der, ::rust::Slice<::std::uint8_t const> next_certificate_der, ::rust::Slice<::std::uint8_t const> private_key_der, ::rust::Str identity_path, ::rust::Slice<::std::uint8_t const> server_identity_public_key);
+::rust::Box<::ModernQuic::QuicEndpoint> quic_server_start_external(::rust::Str local_address, bool raw_quic, bool webtransport, ::rust::Slice<::std::uint8_t const> certificate_der, ::rust::Slice<::std::uint8_t const> next_certificate_der, ::rust::Slice<::std::uint8_t const> private_key_der, ::rust::Str identity_path, ::rust::Slice<::std::uint8_t const> server_identity_public_key);
+
+void quic_server_update_certificate(::ModernQuic::QuicEndpoint const &endpoint, ::rust::Slice<::std::uint8_t const> certificate_der, ::rust::Slice<::std::uint8_t const> private_key_der, ::rust::Slice<::std::uint8_t const> certificate_sha256);
 
 ::rust::Box<::ModernQuic::QuicEndpoint> quic_client_start_external(::rust::Str local_address, ::rust::Str server_address, ::rust::Str server_name, ::rust::Slice<::std::uint8_t const> certificate_der, bool sixup);
+
+::rust::Box<::ModernQuic::QuicEndpoint> quic_client_start_webpki_external(::rust::Str local_address, ::rust::Str server_address, ::rust::Str server_name, bool sixup);
 
 ::rust::Box<::ModernQuic::QuicEndpoint> quic_client_start_sha256_external(::rust::Str local_address, ::rust::Str server_address, ::rust::Str server_name, ::rust::Slice<::std::uint8_t const> certificate_sha256, bool sixup);
 

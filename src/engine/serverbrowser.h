@@ -24,6 +24,53 @@ static constexpr const char *DDNET_INFO_URL = "https://info.ddnet.org/info";
 
 class CUIElement;
 
+enum class EModernTransportTrust
+{
+	INVALID,
+	TOFU,
+	WEBPKI,
+	CERTIFICATE_HASH,
+	IDENTITY,
+};
+
+/**
+ * Which transport a connect attempt uses, as chosen next to the address field.
+ *
+ * The values are stored in `cl_connect_protocol`, so they must not be
+ * reordered.
+ */
+enum class EConnectProtocol
+{
+	/**
+	 * Take what the server offers, preferring QUIC. This is what almost every
+	 * connect should use.
+	 */
+	AUTOMATIC = 0,
+	LEGACY,
+	QUIC,
+	WEBSOCKET,
+	WEBTRANSPORT,
+	COUNT,
+};
+
+/**
+ * Which address family a connect attempt resolves to, as chosen next to the
+ * address field.
+ *
+ * The values are stored in `cl_connect_address_family`, so they must not be
+ * reordered.
+ */
+enum class EConnectAddressFamily
+{
+	/**
+	 * Both, preferring IPv6 where a server offers it.
+	 */
+	AUTOMATIC = 0,
+	IPV4,
+	IPV6,
+	COUNT,
+};
+
 class CServerInfo
 {
 public:
@@ -112,6 +159,11 @@ public:
 
 	int m_NumAddresses;
 	NETADDR m_aAddresses[MAX_SERVER_ADDRESSES];
+	int m_NumQuicAddresses;
+	NETADDR m_aQuicAddresses[MAX_SERVER_ADDRESSES];
+	int m_NumWebTransportAddresses;
+	NETADDR m_aWebTransportAddresses[MAX_SERVER_ADDRESSES];
+	bool m_MasterChallengesModernTransports;
 
 	int m_QuickSearchHit;
 	int m_FriendState;
@@ -148,10 +200,12 @@ public:
 	bool m_QuicSharedPort;
 	bool m_HasQuicNextCertificateSha256;
 	bool m_HasQuicIdentityFingerprint;
+	EModernTransportTrust m_QuicTrust;
 	bool m_WebTransport;
 	EWebTransportCertificateMode m_WebTransportCertificateMode;
 	char m_aWebTransportPath[16];
 	char m_aWebTransportUrl[256];
+	char m_aModernHostname[256];
 	std::vector<CClient> m_vClients;
 	int m_NumFilteredPlayers;
 	bool m_RequiresLogin;

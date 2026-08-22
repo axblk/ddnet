@@ -1,9 +1,9 @@
-//! Bounded Quinn transport for the native Modern Wire session.
+//! Bounded Quinn transport for the native game wire session.
 
 mod sans_io;
 mod webtransport;
 
-use super::modern_wire;
+use super::game_wire;
 use quinn_proto::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use quinn_proto::{
     ClientConfig, ConnectionError, ServerConfig, TransportConfig, TransportErrorCode,
@@ -13,10 +13,12 @@ use ring::rand::{SecureRandom, SystemRandom};
 use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
-use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
+use rustls::server::{ClientHello, ResolvesServerCert};
+use rustls::sign::CertifiedKey;
 use rustls::{AlertDescription, CertificateError, DigitallySignedStruct, SignatureScheme};
 use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::io::{Cursor, ErrorKind, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -31,6 +33,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAP_CHUNK_SIZE: usize = 32 * 1024;
 const CONTROL_STREAM_KIND: u64 = 0;
 const MAP_STREAM_KIND: u64 = 1;
+const MASTER_CHALLENGE_STREAM_KIND: u64 = 64;
 const CONTROL_FRAME_TYPE: u64 = 2;
 const DISCONNECT_FRAME_TYPE: u64 = 3;
 const RESUME_FRAME_TYPE: u64 = 4;
@@ -57,6 +60,12 @@ const SHA256_OUTPUT_LEN: usize = 32;
 const SERVER_IDENTITY_PUBLIC_KEY_LEN: usize = 32;
 const SERVER_IDENTITY_SIGNATURE_LEN: usize = 64;
 const MAX_DISCONNECT_REASON_SIZE: usize = 255;
+const MASTER_CHALLENGE_PREFIX: &[u8] = b"\xff\xff\xff\xffchal";
+const MAX_MASTER_CHALLENGE_SIZE: usize = 256;
+const MANAGED_CERTIFICATE_MAGIC: &[u8; 8] = b"DDNWTLS1";
+const MANAGED_CERTIFICATE_ROTATION_SECONDS: i64 = 6 * 24 * 60 * 60;
+const MANAGED_CERTIFICATE_RESET_SECONDS: i64 = 12 * 24 * 60 * 60;
+const MANAGED_CERTIFICATE_MAX_SIZE: usize = 160 * 1024;
 
 #[cxx::bridge(namespace = "ModernQuic")]
 #[allow(missing_docs)]
@@ -77,6 +86,7 @@ pub mod ffi {
         ConnectFailedIdentity = 11,
         ConnectFailedProtocol = 12,
         PeerMigrated = 13,
+        MasterChallenge = 14,
     }
 
     struct QuicEvent {
@@ -92,6 +102,14 @@ pub mod ffi {
     struct QuicIdentity {
         certificate_der: Vec<u8>,
         private_key_der: Vec<u8>,
+    }
+
+    struct QuicManagedIdentity {
+        certificate_der: Vec<u8>,
+        private_key_der: Vec<u8>,
+        next_certificate_der: Vec<u8>,
+        next_private_key_der: Vec<u8>,
+        rotate_at: i64,
     }
 
     struct QuicServerIdentityBinding {
@@ -111,6 +129,8 @@ pub mod ffi {
         type QuicEndpoint;
 
         fn quic_generate_identity(server_name: &str) -> Result<QuicIdentity>;
+        fn quic_managed_identity(identity_path: &str, now: i64) -> Result<QuicManagedIdentity>;
+        fn quic_leaf_certificate_der(certificate_file: &[u8]) -> Result<Vec<u8>>;
         fn quic_server_identity_binding(
             identity_path: &str,
             certificate_sha256: &[u8],
@@ -120,18 +140,29 @@ pub mod ffi {
             local_address: &str,
             raw_quic: bool,
             webtransport: bool,
-            webtransport_origin: &str,
             certificate_der: &[u8],
             next_certificate_der: &[u8],
             private_key_der: &[u8],
             identity_path: &str,
             server_identity_public_key: &[u8],
         ) -> Result<Box<QuicEndpoint>>;
+        fn quic_server_update_certificate(
+            endpoint: &QuicEndpoint,
+            certificate_der: &[u8],
+            private_key_der: &[u8],
+            certificate_sha256: &[u8],
+        ) -> Result<()>;
         fn quic_client_start_external(
             local_address: &str,
             server_address: &str,
             server_name: &str,
             certificate_der: &[u8],
+            sixup: bool,
+        ) -> Result<Box<QuicEndpoint>>;
+        fn quic_client_start_webpki_external(
+            local_address: &str,
+            server_address: &str,
+            server_name: &str,
             sixup: bool,
         ) -> Result<Box<QuicEndpoint>>;
         fn quic_client_start_sha256_external(
@@ -201,7 +232,7 @@ pub mod ffi {
 struct MapTransfer {
     name: Vec<u8>,
     crc: u32,
-    sha256: [u8; modern_wire::MAP_SHA256_SIZE],
+    sha256: [u8; game_wire::MAP_SHA256_SIZE],
     data: Vec<u8>,
 }
 
@@ -221,6 +252,7 @@ struct ClientIdentityVerification {
 #[derive(Debug)]
 enum ServerCertificatePin {
     Der(Vec<u8>),
+    WebPki,
     Sha256(Vec<[u8; 32]>),
     Identity(ClientIdentityVerification),
 }
@@ -298,6 +330,7 @@ impl ServerCertVerifier for PinnedServerVerifier {
     ) -> Result<ServerCertVerified, rustls::Error> {
         let pin_matches = match &self.pin {
             ServerCertificatePin::Der(certificate) => end_entity.as_ref() == certificate,
+            ServerCertificatePin::WebPki => true,
             ServerCertificatePin::Sha256(expected) => {
                 let mut context = DigestContext::new(&SHA256);
                 context.update(end_entity.as_ref());
@@ -323,13 +356,11 @@ impl ServerCertVerifier for PinnedServerVerifier {
             ));
         }
         match &self.pin {
-            ServerCertificatePin::Der(_) => self.web_pki.as_ref().unwrap().verify_server_cert(
-                end_entity,
-                intermediates,
-                server_name,
-                ocsp_response,
-                now,
-            ),
+            ServerCertificatePin::Der(_) | ServerCertificatePin::WebPki => self
+                .web_pki
+                .as_ref()
+                .unwrap()
+                .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now),
             ServerCertificatePin::Sha256(_) | ServerCertificatePin::Identity(_) => {
                 Ok(ServerCertVerified::assertion())
             }
@@ -374,10 +405,25 @@ impl ServerCertVerifier for PinnedServerVerifier {
 /// Owns one QUIC transport implementation.
 pub struct QuicEndpoint {
     inner: Mutex<sans_io::RawEndpoint>,
+    certificate_resolver: Option<Arc<RotatingServerCert>>,
 }
 
-/// Generates a short-lived self-signed identity suitable for QUIC certificate pinning.
-pub fn quic_generate_identity(server_name: &str) -> Result<ffi::QuicIdentity, String> {
+#[derive(Debug)]
+struct RotatingServerCert {
+    current: Mutex<Arc<CertifiedKey>>,
+}
+
+impl ResolvesServerCert for RotatingServerCert {
+    fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        self.current.lock().ok().map(|current| current.clone())
+    }
+}
+
+fn generate_identity(
+    server_name: &str,
+    not_before: time::OffsetDateTime,
+    not_after: time::OffsetDateTime,
+) -> Result<ffi::QuicIdentity, String> {
     if server_name.is_empty() {
         return Err("server name must not be empty".into());
     }
@@ -385,9 +431,8 @@ pub fn quic_generate_identity(server_name: &str) -> Result<ffi::QuicIdentity, St
         .map_err(|error| error.to_string())?;
     let mut parameters = rcgen::CertificateParams::new(vec![server_name.into()])
         .map_err(|error| error.to_string())?;
-    let now = time::OffsetDateTime::now_utc();
-    parameters.not_before = now - time::Duration::hours(1);
-    parameters.not_after = now + time::Duration::days(13);
+    parameters.not_before = not_before;
+    parameters.not_after = not_after;
     let certificate = parameters
         .self_signed(&signing_key)
         .map_err(|error| error.to_string())?;
@@ -395,6 +440,180 @@ pub fn quic_generate_identity(server_name: &str) -> Result<ffi::QuicIdentity, St
         certificate_der: certificate.der().to_vec(),
         private_key_der: signing_key.serialize_der(),
     })
+}
+
+/// Generates a short-lived self-signed identity suitable for QUIC certificate pinning.
+pub fn quic_generate_identity(server_name: &str) -> Result<ffi::QuicIdentity, String> {
+    let now = time::OffsetDateTime::now_utc();
+    generate_identity(
+        server_name,
+        now - time::Duration::hours(1),
+        now + time::Duration::days(13),
+    )
+}
+
+fn generate_managed_identity(now: i64) -> Result<ffi::QuicManagedIdentity, String> {
+    let now = time::OffsetDateTime::from_unix_timestamp(now).map_err(|error| error.to_string())?;
+    let current = generate_identity(
+        "localhost",
+        now - time::Duration::hours(1),
+        now + time::Duration::days(13),
+    )?;
+    let next = generate_identity(
+        "localhost",
+        now + time::Duration::days(5),
+        now + time::Duration::days(18),
+    )?;
+    Ok(ffi::QuicManagedIdentity {
+        certificate_der: current.certificate_der,
+        private_key_der: current.private_key_der,
+        next_certificate_der: next.certificate_der,
+        next_private_key_der: next.private_key_der,
+        rotate_at: now.unix_timestamp() + MANAGED_CERTIFICATE_ROTATION_SECONDS,
+    })
+}
+
+fn managed_identity_bytes(identity: &ffi::QuicManagedIdentity) -> Result<Vec<u8>, String> {
+    let lengths = [
+        identity.certificate_der.len(),
+        identity.private_key_der.len(),
+        identity.next_certificate_der.len(),
+        identity.next_private_key_der.len(),
+    ];
+    if lengths.iter().any(|length| *length > u32::MAX as usize) {
+        return Err("managed TLS identity is too large".into());
+    }
+    let generated_at = identity.rotate_at - MANAGED_CERTIFICATE_ROTATION_SECONDS;
+    let mut data = Vec::with_capacity(8 + 8 + 16 + lengths.iter().sum::<usize>());
+    data.extend_from_slice(MANAGED_CERTIFICATE_MAGIC);
+    data.extend_from_slice(&generated_at.to_le_bytes());
+    for length in lengths {
+        data.extend_from_slice(&(length as u32).to_le_bytes());
+    }
+    data.extend_from_slice(&identity.certificate_der);
+    data.extend_from_slice(&identity.private_key_der);
+    data.extend_from_slice(&identity.next_certificate_der);
+    data.extend_from_slice(&identity.next_private_key_der);
+    Ok(data)
+}
+
+fn parse_managed_identity(data: &[u8]) -> Result<ffi::QuicManagedIdentity, String> {
+    if data.len() < 32
+        || data.len() > MANAGED_CERTIFICATE_MAX_SIZE
+        || &data[..8] != MANAGED_CERTIFICATE_MAGIC
+    {
+        return Err("invalid managed TLS identity".into());
+    }
+    let generated_at = i64::from_le_bytes(data[8..16].try_into().unwrap());
+    let lengths: [usize; 4] = std::array::from_fn(|index| {
+        let offset = 16 + index * 4;
+        u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize
+    });
+    if 32 + lengths.iter().sum::<usize>() != data.len() || lengths.contains(&0) {
+        return Err("invalid managed TLS identity lengths".into());
+    }
+    let mut offset = 32;
+    let mut take = |length: usize| {
+        let value = data[offset..offset + length].to_vec();
+        offset += length;
+        value
+    };
+    Ok(ffi::QuicManagedIdentity {
+        certificate_der: take(lengths[0]),
+        private_key_der: take(lengths[1]),
+        next_certificate_der: take(lengths[2]),
+        next_private_key_der: take(lengths[3]),
+        rotate_at: generated_at + MANAGED_CERTIFICATE_ROTATION_SECONDS,
+    })
+}
+
+fn write_managed_identity(path: &str, identity: &ffi::QuicManagedIdentity) -> Result<(), String> {
+    let data = managed_identity_bytes(identity)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|error| error.to_string())?;
+    file.write_all(&data)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| error.to_string())
+}
+
+/// Loads and periodically advances the server-managed WebTransport hash identity.
+pub fn quic_managed_identity(
+    identity_path: &str,
+    now: i64,
+) -> Result<ffi::QuicManagedIdentity, String> {
+    if identity_path.is_empty() {
+        return Err("server identity path must not be empty".into());
+    }
+    let path = format!("{identity_path}.tls");
+    let mut identity = match fs::read(&path) {
+        Ok(data) => parse_managed_identity(&data)?,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            let identity = generate_managed_identity(now)?;
+            write_managed_identity(&path, &identity)?;
+            return Ok(identity);
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let generated_at = identity.rotate_at - MANAGED_CERTIFICATE_ROTATION_SECONDS;
+    if now < generated_at || now >= generated_at + MANAGED_CERTIFICATE_RESET_SECONDS {
+        identity = generate_managed_identity(now)?;
+    } else if now >= identity.rotate_at {
+        let next = generate_identity(
+            "localhost",
+            time::OffsetDateTime::from_unix_timestamp(now).map_err(|error| error.to_string())?
+                + time::Duration::days(5),
+            time::OffsetDateTime::from_unix_timestamp(now).map_err(|error| error.to_string())?
+                + time::Duration::days(18),
+        )?;
+        identity.certificate_der = std::mem::take(&mut identity.next_certificate_der);
+        identity.private_key_der = std::mem::take(&mut identity.next_private_key_der);
+        identity.next_certificate_der = next.certificate_der;
+        identity.next_private_key_der = next.private_key_der;
+        identity.rotate_at = now + MANAGED_CERTIFICATE_ROTATION_SECONDS;
+    } else {
+        return Ok(identity);
+    }
+    write_managed_identity(&path, &identity)?;
+    Ok(identity)
+}
+
+fn certificate_chain(certificate_file: &[u8]) -> Result<Vec<CertificateDer<'static>>, String> {
+    if certificate_file.starts_with(b"-----BEGIN") {
+        let certificates = rustls_pemfile::certs(&mut Cursor::new(certificate_file))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        if certificates.is_empty() {
+            return Err("TLS certificate file contains no certificates".into());
+        }
+        Ok(certificates)
+    } else if certificate_file.is_empty() {
+        Err("TLS certificate is empty".into())
+    } else {
+        Ok(vec![CertificateDer::from(certificate_file.to_vec())])
+    }
+}
+
+fn private_key(private_key_file: &[u8]) -> Result<PrivateKeyDer<'static>, String> {
+    if private_key_file.starts_with(b"-----BEGIN") {
+        rustls_pemfile::private_key(&mut Cursor::new(private_key_file))
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "TLS key file contains no private key".into())
+    } else if private_key_file.is_empty() {
+        Err("TLS private key is empty".into())
+    } else {
+        Ok(PrivatePkcs8KeyDer::from(private_key_file.to_vec()).into())
+    }
+}
+
+/// Returns the end-entity DER certificate from a DER or PEM certificate file.
+pub fn quic_leaf_certificate_der(certificate_file: &[u8]) -> Result<Vec<u8>, String> {
+    Ok(certificate_chain(certificate_file)?[0].as_ref().to_vec())
 }
 
 fn read_server_identity(path: &str) -> Result<Vec<u8>, String> {
@@ -454,13 +673,13 @@ fn server_identity_binding_message(certificate_sha256: &[u8]) -> Option<Vec<u8>>
 
 fn server_identity_session_message(
     certificate_sha256: &[u8; SHA256_OUTPUT_LEN],
-    client_nonce: &[u8; modern_wire::NONCE_SIZE],
+    client_nonce: &[u8; game_wire::NONCE_SIZE],
     channel_binding: &[u8; SHA256_OUTPUT_LEN],
 ) -> Vec<u8> {
     let mut message = Vec::with_capacity(
         SERVER_IDENTITY_SESSION_CONTEXT.len()
             + SHA256_OUTPUT_LEN
-            + modern_wire::NONCE_SIZE
+            + game_wire::NONCE_SIZE
             + SHA256_OUTPUT_LEN,
     );
     message.extend_from_slice(SERVER_IDENTITY_SESSION_CONTEXT);
@@ -473,7 +692,7 @@ fn server_identity_session_message(
 fn verify_server_identity_proof(
     verification: &ClientIdentityVerification,
     payload: &[u8],
-    client_nonce: &[u8; modern_wire::NONCE_SIZE],
+    client_nonce: &[u8; game_wire::NONCE_SIZE],
     channel_binding: &[u8; SHA256_OUTPUT_LEN],
 ) -> Result<[u8; SHA256_OUTPUT_LEN], String> {
     if payload.len() != SERVER_IDENTITY_PUBLIC_KEY_LEN + SERVER_IDENTITY_SIGNATURE_LEN {
@@ -543,7 +762,6 @@ pub fn quic_server_start_external(
     local_address: &str,
     raw_quic: bool,
     webtransport: bool,
-    webtransport_origin: &str,
     certificate_der: &[u8],
     next_certificate_der: &[u8],
     private_key_der: &[u8],
@@ -556,30 +774,36 @@ pub fn quic_server_start_external(
     if !next_certificate_der.is_empty() {
         let mut roots = rustls::RootCertStore::empty();
         roots
-            .add(CertificateDer::from(next_certificate_der.to_vec()))
+            .add(certificate_chain(next_certificate_der)?[0].clone())
             .map_err(|error| format!("invalid next certificate: {error}"))?;
     }
-    let identity_key = read_server_identity(identity_path)?;
-    let identity_key = Arc::new(
-        Ed25519KeyPair::from_pkcs8(&identity_key)
-            .map_err(|error| format!("invalid server identity key: {error}"))?,
-    );
-    if identity_key.public_key().as_ref() != server_identity_public_key {
-        return Err("server identity key changed while starting transport".into());
-    }
-    let identity_proof = ServerIdentityProof {
-        public_key: server_identity_public_key
-            .try_into()
-            .map_err(|_| "server identity public key must contain exactly 32 bytes")?,
-        signing_key: identity_key,
-        certificate_sha256: ring::digest::digest(&SHA256, certificate_der)
+    let identity_proof = if raw_quic {
+        let identity_key = read_server_identity(identity_path)?;
+        let identity_key = Arc::new(
+            Ed25519KeyPair::from_pkcs8(&identity_key)
+                .map_err(|error| format!("invalid server identity key: {error}"))?,
+        );
+        if identity_key.public_key().as_ref() != server_identity_public_key {
+            return Err("server identity key changed while starting transport".into());
+        }
+        Some(ServerIdentityProof {
+            public_key: server_identity_public_key
+                .try_into()
+                .map_err(|_| "server identity public key must contain exactly 32 bytes")?,
+            signing_key: identity_key,
+            certificate_sha256: ring::digest::digest(
+                &SHA256,
+                certificate_chain(certificate_der)?[0].as_ref(),
+            )
             .as_ref()
             .try_into()
             .unwrap(),
+        })
+    } else {
+        None
     };
     parse_address(local_address)?;
-    let webtransport_origin = webtransport.then(|| webtransport_origin.to_string());
-    let config = server_config(
+    let (config, certificate_resolver) = server_config(
         raw_quic,
         webtransport,
         certificate_der.to_vec(),
@@ -589,11 +813,39 @@ pub fn quic_server_start_external(
         inner: Mutex::new(sans_io::RawEndpoint::server(
             random_cid_key()?,
             config,
-            Some(identity_proof),
+            identity_proof,
             raw_quic,
-            webtransport_origin,
+            webtransport,
         )),
+        certificate_resolver: Some(certificate_resolver),
     }))
+}
+
+/// Replaces the certificate used by new server handshakes without restarting the endpoint.
+pub fn quic_server_update_certificate(
+    endpoint: &QuicEndpoint,
+    certificate_der: &[u8],
+    private_key_der: &[u8],
+    certificate_sha256: &[u8],
+) -> Result<(), String> {
+    let certificate_sha256: [u8; SHA256_OUTPUT_LEN] = certificate_sha256
+        .try_into()
+        .map_err(|_| "certificate SHA-256 must contain exactly 32 bytes")?;
+    let resolver = endpoint
+        .certificate_resolver
+        .as_ref()
+        .ok_or("client endpoint has no server certificate")?;
+    let key = certified_key(certificate_der, private_key_der)?;
+    *resolver
+        .current
+        .lock()
+        .map_err(|_| "server certificate resolver lock poisoned")? = key;
+    endpoint
+        .inner
+        .lock()
+        .map_err(|_| "QUIC endpoint lock poisoned")?
+        .update_server_certificate_hash(certificate_sha256);
+    Ok(())
 }
 
 /// Reports whether a client session currently has an established transport.
@@ -632,13 +884,13 @@ pub fn quic_set_map(
     data: &[u8],
 ) -> bool {
     if name.is_empty()
-        || name.len() > modern_wire::MAX_MAP_NAME_SIZE
+        || name.len() > game_wire::MAX_MAP_NAME_SIZE
         || data.is_empty()
-        || data.len() as u64 > modern_wire::MAX_MAP_SIZE
+        || data.len() as u64 > game_wire::MAX_MAP_SIZE
     {
         return false;
     }
-    let Ok(sha256) = <[u8; modern_wire::MAP_SHA256_SIZE]>::try_from(sha256) else {
+    let Ok(sha256) = <[u8; game_wire::MAP_SHA256_SIZE]>::try_from(sha256) else {
         return false;
     };
     let map = Arc::new(MapTransfer {
@@ -674,7 +926,7 @@ pub fn quic_issue_resume(
     if session_id == 0 {
         return false;
     }
-    let Some(payload) = modern_wire::encode_resume(&modern_wire::Resume {
+    let Some(payload) = game_wire::encode_resume(&game_wire::Resume {
         session_id: logical_session_id,
         token,
     }) else {
@@ -821,6 +1073,25 @@ pub fn quic_client_start_external(
     )
 }
 
+/// Starts an externally-driven client using the public Web PKI root set.
+pub fn quic_client_start_webpki_external(
+    local_address: &str,
+    server_address: &str,
+    server_name: &str,
+    sixup: bool,
+) -> Result<Box<QuicEndpoint>, String> {
+    if server_name.is_empty() {
+        return Err("server name must not be empty".into());
+    }
+    start_sans_io_client(
+        local_address,
+        server_address,
+        server_name,
+        ServerCertificatePin::WebPki,
+        sixup,
+    )
+}
+
 /// Starts an externally-driven client pinned to the end-entity certificate digest.
 pub fn quic_client_start_sha256_external(
     local_address: &str,
@@ -925,6 +1196,7 @@ fn start_sans_io_client(
     )?;
     Ok(Box::new(QuicEndpoint {
         inner: Mutex::new(endpoint),
+        certificate_resolver: None,
     }))
 }
 
@@ -945,9 +1217,9 @@ fn socket_address(ip: &[u8], port: u16, ipv6: bool) -> Option<SocketAddr> {
 
 fn send(endpoint: &QuicEndpoint, session_id: u64, payload: &[u8], reliable: bool) -> bool {
     let limit = if reliable {
-        modern_wire::MAX_CONTROL_MESSAGE_SIZE
+        game_wire::MAX_CONTROL_MESSAGE_SIZE
     } else {
-        modern_wire::MAX_DATAGRAM_MESSAGE_SIZE
+        game_wire::MAX_DATAGRAM_MESSAGE_SIZE
     };
     if payload.is_empty() || payload.len() > limit || session_id == 0 {
         return false;
@@ -987,19 +1259,31 @@ fn transport_config(webtransport: bool) -> Arc<TransportConfig> {
     Arc::new(transport)
 }
 
+fn certified_key(
+    certificate_file: &[u8],
+    private_key_file: &[u8],
+) -> Result<Arc<CertifiedKey>, String> {
+    CertifiedKey::from_der(
+        certificate_chain(certificate_file)?,
+        private_key(private_key_file)?,
+        &rustls::crypto::ring::default_provider(),
+    )
+    .map(Arc::new)
+    .map_err(|error| error.to_string())
+}
+
 fn server_config(
     raw_quic: bool,
     webtransport: bool,
-    certificate_der: Vec<u8>,
-    private_key_der: Vec<u8>,
-) -> Result<ServerConfig, String> {
+    certificate_file: Vec<u8>,
+    private_key_file: Vec<u8>,
+) -> Result<(ServerConfig, Arc<RotatingServerCert>), String> {
+    let resolver = Arc::new(RotatingServerCert {
+        current: Mutex::new(certified_key(&certificate_file, &private_key_file)?),
+    });
     let mut tls = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(
-            vec![CertificateDer::from(certificate_der)],
-            PrivatePkcs8KeyDer::from(private_key_der).into(),
-        )
-        .map_err(|error| error.to_string())?;
+        .with_cert_resolver(resolver.clone());
     tls.alpn_protocols = Vec::new();
     if raw_quic {
         tls.alpn_protocols.push(ALPN.to_vec());
@@ -1013,7 +1297,7 @@ fn server_config(
     let mut config = ServerConfig::with_crypto(Arc::new(crypto));
     config.transport_config(transport_config(webtransport));
     config.migration(true);
-    Ok(config)
+    Ok((config, resolver))
 }
 
 fn client_config(
@@ -1023,11 +1307,20 @@ fn client_config(
         ServerCertificatePin::Identity(verification) => Some(verification.clone()),
         _ => None,
     };
-    let web_pki = if let ServerCertificatePin::Der(certificate) = &certificate_pin {
-        let mut roots = rustls::RootCertStore::empty();
-        roots
-            .add(CertificateDer::from(certificate.clone()))
-            .map_err(|error| error.to_string())?;
+    let web_pki = if matches!(
+        &certificate_pin,
+        ServerCertificatePin::Der(_) | ServerCertificatePin::WebPki
+    ) {
+        let mut roots = if matches!(&certificate_pin, ServerCertificatePin::WebPki) {
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned())
+        } else {
+            rustls::RootCertStore::empty()
+        };
+        if let ServerCertificatePin::Der(certificate) = &certificate_pin {
+            roots
+                .add(CertificateDer::from(certificate.clone()))
+                .map_err(|error| error.to_string())?;
+        }
         Some(
             WebPkiServerVerifier::builder(roots.into())
                 .build()
@@ -1056,13 +1349,13 @@ fn hello_payload(
     resume_binding: &[u8],
     extra_capabilities: u64,
     sixup: bool,
-) -> Result<(Vec<u8>, [u8; modern_wire::NONCE_SIZE]), String> {
-    let mut nonce = [0; modern_wire::NONCE_SIZE];
+) -> Result<(Vec<u8>, [u8; game_wire::NONCE_SIZE]), String> {
+    let mut nonce = [0; game_wire::NONCE_SIZE];
     SystemRandom::new()
         .fill(&mut nonce)
-        .map_err(|_| "could not generate Modern Wire nonce".to_string())?;
-    let payload = modern_wire::encode_hello(&modern_wire::Hello {
-        major: modern_wire::VERSION_MAJOR,
+        .map_err(|_| "could not generate game wire nonce".to_string())?;
+    let payload = game_wire::encode_hello(&game_wire::Hello {
+        major: game_wire::VERSION_MAJOR,
         minor: 0,
         protocol_version: PROTOCOL_VERSION,
         capabilities: CAPABILITY_DATAGRAM
@@ -1070,27 +1363,71 @@ fn hello_payload(
             | CAPABILITY_RESUME
             | extra_capabilities
             | if sixup { CAPABILITY_GAME_PROTOCOL_7 } else { 0 },
-        max_datagram_size: modern_wire::MAX_DATAGRAM_SIZE as u64,
+        max_datagram_size: game_wire::MAX_DATAGRAM_SIZE as u64,
         nonce,
         resume_token: resume_binding,
     })
-    .ok_or_else(|| "could not encode Modern Wire hello".to_string())?;
+    .ok_or_else(|| "could not encode game wire hello".to_string())?;
     Ok((payload, nonce))
 }
 
-fn hello_datagram_limit(hello: &modern_wire::Hello<'_>) -> usize {
+fn hello_datagram_limit(hello: &game_wire::Hello<'_>) -> usize {
     usize::try_from(hello.max_datagram_size).unwrap_or(usize::MAX)
 }
 
-fn validate_hello(payload: &[u8]) -> Result<modern_wire::Hello<'_>, String> {
+fn validate_hello(payload: &[u8]) -> Result<game_wire::Hello<'_>, String> {
     let hello =
-        modern_wire::decode_hello(payload).map_err(|error| format!("invalid hello: {error:?}"))?;
+        game_wire::decode_hello(payload).map_err(|error| format!("invalid hello: {error:?}"))?;
     if hello.protocol_version != PROTOCOL_VERSION
         || hello.capabilities & (CAPABILITY_DATAGRAM | CAPABILITY_MAP_STREAM | CAPABILITY_RESUME)
             != CAPABILITY_DATAGRAM | CAPABILITY_MAP_STREAM | CAPABILITY_RESUME
         || hello.max_datagram_size == 0
     {
-        return Err("incompatible Modern Wire peer".into());
+        return Err("incompatible game wire peer".into());
     }
     Ok(hello)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn managed_identity_persists_and_rotates() {
+        let mut random = [0; 8];
+        SystemRandom::new().fill(&mut random).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "ddnet-managed-tls-{}-{}",
+            std::process::id(),
+            u64::from_le_bytes(random)
+        ));
+        let path = path.to_str().unwrap();
+        let now = 1_800_000_000;
+        let first = quic_managed_identity(path, now).unwrap();
+        let persisted = quic_managed_identity(path, now + 1).unwrap();
+        assert_eq!(first.certificate_der, persisted.certificate_der);
+        assert_eq!(first.next_certificate_der, persisted.next_certificate_der);
+
+        let rotated = quic_managed_identity(path, first.rotate_at).unwrap();
+        assert_eq!(first.next_certificate_der, rotated.certificate_der);
+        assert_ne!(first.certificate_der, rotated.certificate_der);
+        assert_ne!(first.next_certificate_der, rotated.next_certificate_der);
+        fs::remove_file(format!("{path}.tls")).unwrap();
+    }
+
+    #[test]
+    fn webtransport_only_does_not_require_server_identity() {
+        let identity = quic_generate_identity("localhost").unwrap();
+        quic_server_start_external(
+            "127.0.0.1:0",
+            false,
+            true,
+            &identity.certificate_der,
+            &[],
+            &identity.private_key_der,
+            "",
+            &[],
+        )
+        .unwrap();
+    }
 }

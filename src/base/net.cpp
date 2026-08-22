@@ -398,6 +398,9 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 		{"tw-0.7+udp://", NETTYPE_TW7},
 		// The identity fragment is consumed by the client before connecting.
 		{"ddnet+quic://", 0},
+		{"tw-0.7+quic://", NETTYPE_TW7},
+		{"ddnet+wt://", 0},
+		{"tw-0.7+wt://", NETTYPE_TW7},
 		// Backwards-compatible input alias. Addresses are formatted with the
 		// versioned ddnet-20+ scheme below.
 		{"ws://", NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6},
@@ -429,8 +432,13 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 		{
 			if(start != 0)
 			{
-				// Two at signs.
-				return true;
+				// Two at signs. The scheme matched, so this is a malformed URL
+				// and not a plain host name. Reporting it as "no URL" would
+				// make the caller retry the whole string, scheme included, as
+				// a host name, which leads straight back here.
+				if(host_buf)
+					host_buf[0] = '\0';
+				return -1;
 			}
 			start = i + 1;
 		}
@@ -477,6 +485,8 @@ int net_addr_from_url_lookup(NETADDR *addr, const char *string, int types)
 	}
 	else
 	{
+		if(host[0] == '\0')
+			return -1;
 		url_types = addr->type;
 	}
 
@@ -749,6 +759,11 @@ void net_websocket_set_secure(bool secure)
 		{
 			SOCKFS.websocketArgs["url"] = url;
 		} }, secure);
+}
+
+bool net_websocket_secure_default()
+{
+	return websocket_secure_default;
 }
 
 void net_websocket_reset_secure()

@@ -90,14 +90,11 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	CQuicTransport m_QuicTransport;
 	CQuicSessionId m_QuicSession;
 	NETADDR m_QuicServerAddress = {};
-	NETADDR m_aQuicFallbackAddrs[MAX_SERVER_ADDRESSES] = {};
-	int m_NumQuicFallbackAddrs = 0;
-	int64_t m_QuicFallbackStartTime = 0;
 	bool m_UseQuic = false;
 	bool m_UseWebTransport = false;
 	bool m_QuicConnected = false;
-	bool m_QuicAuto = false;
-	bool m_QuicFallbackStarted = false;
+	// When the last message arrived over QUIC, for the connection warning
+	int64_t m_QuicLastRecvTime = 0;
 	std::vector<CQuicKnownHost> m_vQuicKnownHosts;
 	char m_aQuicTrustHost[128] = {};
 	int m_QuicTrustPort = 0;
@@ -410,7 +407,6 @@ public:
 	void ProcessConnlessPacket(CNetChunk *pPacket);
 	void ProcessServerInfo(int Type, NETADDR *pFrom, const void *pData, int DataSize);
 	void ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy);
-	void ClearQuicFallback();
 	void ClearQuicTrust();
 	const CQuicKnownHost *FindQuicKnownHost(const char *pHost, int Port) const;
 	bool AddQuicKnownHost(const char *pHost, int Port, SHA256_DIGEST IdentityFingerprint);

@@ -45,8 +45,8 @@
 #include <engine/shared/demo.h>
 #include <engine/shared/fifo.h>
 #include <engine/shared/filecollection.h>
+#include <engine/shared/game_wire.h>
 #include <engine/shared/masterserver.h>
-#include <engine/shared/modern_wire.h>
 #include <engine/shared/network.h>
 #include <engine/shared/packer.h>
 #include <engine/shared/protocol.h>
@@ -383,7 +383,12 @@ float CClient::GotMaplistPercentage() const
 
 bool CClient::ConnectionProblems() const
 {
-	return m_aNetClient[g_Config.m_ClDummy].GotProblems(MaxLatencyTicks() * time_freq() / GameTickSpeed());
+	const int64_t MaxLatency = MaxLatencyTicks() * time_freq() / GameTickSpeed();
+	// Over QUIC nothing arrives through the legacy connection, so asking it when
+	// the last packet came in reports trouble for the whole session.
+	if(m_UseQuic && m_QuicConnected)
+		return time_get() - m_QuicLastRecvTime > MaxLatency;
+	return m_aNetClient[g_Config.m_ClDummy].GotProblems(MaxLatency);
 }
 
 void CClient::SendInput()
@@ -674,19 +679,6 @@ void CClient::StartLegacyConnection(const NETADDR *pAddrs, int NumAddrs, bool Si
 	GenerateTimeoutCodes(pAddrs, NumAddrs);
 }
 
-void CClient::ClearQuicFallback()
-{
-	if(m_QuicTransport.IsRunning())
-	{
-		for(int i = 0; i < m_NumQuicFallbackAddrs; i++)
-			m_QuicTransport.SetLegacyPeer(&m_aQuicFallbackAddrs[i], false);
-	}
-	m_QuicFallbackStarted = false;
-	m_NumQuicFallbackAddrs = 0;
-	m_QuicFallbackStartTime = 0;
-	mem_zero(m_aQuicFallbackAddrs, sizeof(m_aQuicFallbackAddrs));
-}
-
 void CClient::ClearQuicTrust()
 {
 	m_aQuicTrustHost[0] = '\0';
@@ -723,6 +715,45 @@ bool CClient::AddQuicKnownHost(const char *pHost, int Port, SHA256_DIGEST Identi
 	return true;
 }
 
+// A websocket address carries no IPv4 or IPv6 bit, so reducing it to the
+// address family leaves a type of zero, which cannot be formatted or connected
+// to. QUIC and WebTransport never run over such an address.
+static bool ToModernTransportAddress(const NETADDR &Address, NETADDR *pResult)
+{
+	if((Address.type & (NETTYPE_IPV4 | NETTYPE_IPV6)) == 0)
+		return false;
+	*pResult = Address;
+	pResult->type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+	return true;
+}
+
+static bool FindModernAddress(const NETADDR *pAddresses, int NumAddresses, const NETADDR &Reference, bool Sixup, NETADDR *pResult)
+{
+	const NETADDR *pFallback = nullptr;
+	NETADDR ReferenceAddress = Reference;
+	ReferenceAddress.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+	for(int i = 0; i < NumAddresses; i++)
+	{
+		if(((pAddresses[i].type & NETTYPE_TW7) != 0) != Sixup)
+			continue;
+		// Without a match the address family is ours to pick, and IPv6 is
+		// the one to grow into.
+		if(!pFallback || ((pFallback->type & NETTYPE_IPV6) == 0 && (pAddresses[i].type & NETTYPE_IPV6) != 0))
+			pFallback = &pAddresses[i];
+		NETADDR Address = pAddresses[i];
+		Address.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+		if(net_addr_comp_noport(&Address, &ReferenceAddress) == 0)
+		{
+			*pResult = pAddresses[i];
+			return true;
+		}
+	}
+	if(!pFallback)
+		return false;
+	*pResult = *pFallback;
+	return true;
+}
+
 void CClient::Connect(const char *pAddress, const char *pPassword)
 {
 	// Disconnect will not change the state if we are already quitting/restarting
@@ -750,8 +781,27 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	int NumConnectTokens = 0;
 	bool OnlySixup = true;
 	bool DirectQuic = false;
+	bool DirectWebTransport = false;
 	bool InvalidDirectQuicLink = false;
-	SHA256_DIGEST DirectQuicIdentityFingerprint = {};
+	bool ExplicitQuic = false;
+	bool ExplicitWebTransport = false;
+	bool HasLegacyConnectTarget = false;
+	const EConnectProtocol Protocol = (EConnectProtocol)std::clamp(g_Config.m_ClConnectProtocol, 0, (int)EConnectProtocol::COUNT - 1);
+	// A hostname that resolves to both families is left to the resolver, which
+	// already prefers IPv6; picking a family here is about forcing one.
+	int LookupNetType = m_aNetClient[CONN_MAIN].NetType();
+	if((EConnectAddressFamily)g_Config.m_ClConnectAddressFamily == EConnectAddressFamily::IPV4)
+		LookupNetType &= ~(NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV6);
+	else if((EConnectAddressFamily)g_Config.m_ClConnectAddressFamily == EConnectAddressFamily::IPV6)
+		LookupNetType &= ~(NETTYPE_IPV4 | NETTYPE_WEBSOCKET_IPV4);
+	EModernTransportTrust DirectQuicTrust = EModernTransportTrust::INVALID;
+	SHA256_DIGEST DirectQuicFingerprint = {};
+	SHA256_DIGEST DirectQuicNextFingerprint = {};
+	bool DirectQuicHasNextFingerprint = false;
+	[[maybe_unused]] EModernTransportTrust DirectWebTransportTrust = EModernTransportTrust::INVALID;
+	[[maybe_unused]] SHA256_DIGEST DirectWebTransportFingerprint = {};
+	[[maybe_unused]] SHA256_DIGEST DirectWebTransportNextFingerprint = {};
+	[[maybe_unused]] bool DirectWebTransportHasNextFingerprint = false;
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 	int WebsocketSecure = -1;
 	bool MixedWebsocketSchemes = false;
@@ -759,19 +809,56 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	while((pNextAddr = str_next_token(pNextAddr, ",", aBuffer, sizeof(aBuffer))))
 	{
 		NumConnectTokens++;
-		if(str_startswith(aBuffer, QUIC_CONNECTLINK_DOUBLE_SLASH))
+		const bool QuicUrl = str_startswith(aBuffer, QUIC_CONNECTLINK_DOUBLE_SLASH) || str_startswith(aBuffer, QUIC_CONNECTLINK7_DOUBLE_SLASH);
+		const bool WebTransportUrl = str_startswith(aBuffer, "ddnet+wt://") || str_startswith(aBuffer, "tw-0.7+wt://");
+		ExplicitQuic |= QuicUrl;
+		ExplicitWebTransport |= WebTransportUrl;
+		HasLegacyConnectTarget |= !QuicUrl && !WebTransportUrl;
+		bool ParsedWebTransport = false;
+		EModernTransportTrust ParsedTrust = EModernTransportTrust::INVALID;
+		SHA256_DIGEST ParsedFingerprint = {};
+		SHA256_DIGEST ParsedNextFingerprint = {};
+		bool ParsedHasNextFingerprint = false;
+		if(QuicUrl && (!ParseModernTransportUrl(aBuffer, &ParsedWebTransport, &ParsedTrust, &ParsedFingerprint, &ParsedNextFingerprint, &ParsedHasNextFingerprint) || ParsedWebTransport))
 		{
-			if(DirectQuic || NumConnectTokens != 1 || !ParseQuicDirectLinkFingerprint(aBuffer, &DirectQuicIdentityFingerprint))
+			InvalidDirectQuicLink = true;
+			continue;
+		}
+		if(WebTransportUrl && (!ParseModernTransportUrl(aBuffer, &ParsedWebTransport, &ParsedTrust, &ParsedFingerprint, &ParsedNextFingerprint, &ParsedHasNextFingerprint) || !ParsedWebTransport))
+		{
+			InvalidDirectQuicLink = true;
+			continue;
+		}
+		if(QuicUrl)
+		{
+			if(DirectQuic || DirectWebTransport || NumConnectTokens != 1)
 			{
 				InvalidDirectQuicLink = true;
 				continue;
 			}
 			DirectQuic = true;
+			DirectQuicTrust = ParsedTrust;
+			DirectQuicFingerprint = ParsedFingerprint;
+			DirectQuicNextFingerprint = ParsedNextFingerprint;
+			DirectQuicHasNextFingerprint = ParsedHasNextFingerprint;
 		}
-		else if(DirectQuic)
+		else if(DirectQuic || DirectWebTransport)
 		{
 			InvalidDirectQuicLink = true;
 			continue;
+		}
+		if(WebTransportUrl)
+		{
+			if(DirectWebTransport || DirectQuic || NumConnectTokens != 1)
+			{
+				InvalidDirectQuicLink = true;
+				continue;
+			}
+			DirectWebTransport = true;
+			DirectWebTransportTrust = ParsedTrust;
+			DirectWebTransportFingerprint = ParsedFingerprint;
+			DirectWebTransportNextFingerprint = ParsedNextFingerprint;
+			DirectWebTransportHasNextFingerprint = ParsedHasNextFingerprint;
 		}
 		NETADDR NextAddr;
 		char aHost[128];
@@ -792,7 +879,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 			net_addr_str(&ParsedAddr, aHost, sizeof(aHost), false);
 		else if(char *pPort = const_cast<char *>(str_rchr(aHost, ':')))
 			*pPort = '\0';
-		if(net_addr_from_url_lookup(&NextAddr, aBuffer, m_aNetClient[CONN_MAIN].NetType()) != 0)
+		if(net_addr_from_url_lookup(&NextAddr, aBuffer, LookupNetType) != 0)
 		{
 			log_error("client", "could not find address of %s", aBuffer);
 			continue;
@@ -856,7 +943,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	}
 	if(InvalidDirectQuicLink)
 	{
-		log_error("client", "direct QUIC links must contain exactly one host and a 64-digit #sha256 identity fingerprint");
+		log_error("client", "invalid direct QUIC link or multiple connect addresses");
 		return;
 	}
 
@@ -907,8 +994,17 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	m_aGametimeMarginGraphs[CONN_MAIN].Init(-150.0f, 150.0f);
 
 	m_Sixup = OnlySixup;
+#if !defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(DirectWebTransport)
+	{
+		log_error("client", "WebTransport links are only supported by the web client");
+		return;
+	}
+#endif
 	auto SameCertificatePins = [](const CServerInfo &Left, const CServerInfo &Right) {
 		if(Left.m_HasQuicIdentityFingerprint != Right.m_HasQuicIdentityFingerprint ||
+			Left.m_QuicTrust != Right.m_QuicTrust ||
+			str_comp(Left.m_aModernHostname, Right.m_aModernHostname) != 0 ||
 			(Left.m_HasQuicIdentityFingerprint && Left.m_QuicIdentityFingerprint != Right.m_QuicIdentityFingerprint) ||
 			Left.m_HasQuicNextCertificateSha256 != Right.m_HasQuicNextCertificateSha256)
 			return false;
@@ -923,8 +1019,52 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		Address.type &= ~NETTYPE_TW7;
 		return m_ServerBrowser.Find(Address);
 	};
+
+	// A server that offers QUIC says so in the browser, including the port it
+	// listens on, which is not always the one the legacy transport uses.
+	NETADDR AdvertisedQuicAddress = {};
+	bool ServerOffersQuic = false;
+	for(int i = 0; i < NumConnectAddrs && !ServerOffersQuic; i++)
+	{
+		const CServerBrowser::CServerEntry *pEntry = FindTransportEntry(aConnectAddrs[i]);
+		if(pEntry == nullptr || pEntry->m_Info.m_NumQuicAddresses == 0)
+			continue;
+		ServerOffersQuic = FindModernAddress(pEntry->m_Info.m_aQuicAddresses, pEntry->m_Info.m_NumQuicAddresses, aConnectAddrs[i], OnlySixup, &AdvertisedQuicAddress);
+	}
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	if(g_Config.m_ClWebtransport && !DirectQuic)
+	if(DirectWebTransport)
+	{
+		NETADDR WebTransportAddress;
+		if(!ToModernTransportAddress(aConnectAddrs[0], &WebTransportAddress))
+		{
+			log_error("client", "WebTransport cannot be used with this address");
+			return;
+		}
+		char aWebTransportUrl[256];
+		const bool UseCertificateHashes = DirectWebTransportTrust == EModernTransportTrust::CERTIFICATE_HASH;
+		if(FormatWebTransportUrl(aWebTransportUrl, sizeof(aWebTransportUrl), aaConnectHosts[0], WebTransportAddress.port) &&
+			m_QuicTransport.StartWebTransportClient(aWebTransportUrl, &WebTransportAddress, UseCertificateHashes, DirectWebTransportFingerprint,
+				UseCertificateHashes && DirectWebTransportHasNextFingerprint ? &DirectWebTransportNextFingerprint : nullptr, OnlySixup))
+		{
+			m_UseQuic = true;
+			m_UseWebTransport = true;
+			m_QuicConnected = false;
+			m_QuicServerAddress = WebTransportAddress;
+			SetState(IClient::STATE_CONNECTING);
+			return;
+		}
+		log_error("client", "could not start direct WebTransport: %s", m_QuicTransport.ErrorString());
+		return;
+	}
+	// Picking any other transport next to the address field rules WebTransport
+	// out, picking it rules the rest out.
+	const bool WantWebTransport = Protocol == EConnectProtocol::WEBTRANSPORT ||
+				      (Protocol == EConnectProtocol::AUTOMATIC && (g_Config.m_ClWebtransport || ExplicitWebTransport) && !DirectQuic && !ExplicitQuic);
+	if(WantWebTransport && !CQuicTransport::IsWebTransportCompiled())
+	{
+		log_error("client", "this build has no WebTransport, connecting over the legacy transport");
+	}
+	else if(WantWebTransport)
 	{
 		const CServerInfo *pWebTransportInfo = nullptr;
 		NETADDR WebTransportAddress = {};
@@ -932,8 +1072,10 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		for(int i = 0; i < NumConnectAddrs; i++)
 		{
 			const CServerBrowser::CServerEntry *pEntry = FindTransportEntry(aConnectAddrs[i]);
-			if(!pEntry || !pEntry->m_Info.m_WebTransport || pEntry->m_Info.m_QuicPort != aConnectAddrs[i].port ||
-				(OnlySixup && !(pEntry->m_Info.m_QuicCapabilities & CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7)))
+			if(!pEntry || !pEntry->m_Info.m_WebTransport)
+				continue;
+			NETADDR PrefixAddress;
+			if(!FindModernAddress(pEntry->m_Info.m_aWebTransportAddresses, pEntry->m_Info.m_NumWebTransportAddresses, aConnectAddrs[i], OnlySixup, &PrefixAddress))
 				continue;
 			if(pWebTransportInfo &&
 				(str_comp(pWebTransportInfo->m_aWebTransportUrl, pEntry->m_Info.m_aWebTransportUrl) != 0 ||
@@ -943,9 +1085,9 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 				MetadataAmbiguous = true;
 				break;
 			}
+			if(!ToModernTransportAddress(PrefixAddress, &WebTransportAddress))
+				continue;
 			pWebTransportInfo = &pEntry->m_Info;
-			WebTransportAddress = aConnectAddrs[i];
-			WebTransportAddress.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
 		}
 		if(pWebTransportInfo && !MetadataAmbiguous)
 		{
@@ -955,7 +1097,10 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 			if(pWebTransportUrl[0] == '\0')
 			{
 				char aWebTransportHost[NETADDR_MAXSTRSIZE];
-				net_addr_str(&WebTransportAddress, aWebTransportHost, sizeof(aWebTransportHost), false);
+				if(pWebTransportInfo->m_aModernHostname[0] != '\0')
+					str_copy(aWebTransportHost, pWebTransportInfo->m_aModernHostname);
+				else
+					net_addr_str(&WebTransportAddress, aWebTransportHost, sizeof(aWebTransportHost), false);
 				if(FormatWebTransportUrl(aWebTransportUrl, sizeof(aWebTransportUrl), aWebTransportHost, WebTransportAddress.port))
 					pWebTransportUrl = aWebTransportUrl;
 			}
@@ -970,12 +1115,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 				m_UseQuic = true;
 				m_UseWebTransport = true;
 				m_QuicConnected = false;
-				m_QuicAuto = true;
 				m_QuicServerAddress = WebTransportAddress;
-				mem_copy(m_aQuicFallbackAddrs, aConnectAddrs, NumConnectAddrs * sizeof(aConnectAddrs[0]));
-				m_NumQuicFallbackAddrs = NumConnectAddrs;
-				m_QuicFallbackStartTime = time_get() + g_Config.m_ClQuicFallbackDelayMs * time_freq() / 1000;
-				m_QuicFallbackStarted = false;
 				SetState(IClient::STATE_CONNECTING);
 				return;
 			}
@@ -991,10 +1131,27 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 			log_warn("client", "conflicting WebTransport identities for connect addresses, using the configured legacy transport");
 	}
 #endif
-	if(DirectQuic || g_Config.m_ClQuic)
+	// Explicitly asked for, offered by the server and not turned off, or part
+	// of a direct link. There is no fallback: a QUIC connect that fails is
+	// reported, not quietly retried over the legacy transport, because that is
+	// what made connection problems hard to read before.
+	const bool WantQuic = DirectQuic ||
+			      Protocol == EConnectProtocol::QUIC ||
+			      (Protocol == EConnectProtocol::AUTOMATIC && g_Config.m_ClQuic && ServerOffersQuic);
+	if(WantQuic && !CQuicTransport::IsCompiled())
 	{
-		NETADDR QuicAddress = aConnectAddrs[0];
-		QuicAddress.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+		log_error("client", "this build has no QUIC transport, connecting over the legacy transport");
+	}
+	else if(WantQuic)
+	{
+		NETADDR QuicAddress;
+		if(ServerOffersQuic)
+			QuicAddress = AdvertisedQuicAddress;
+		else if(!ToModernTransportAddress(aConnectAddrs[0], &QuicAddress))
+		{
+			log_error("client", "QUIC cannot be used with this address");
+			return;
+		}
 		char aServerAddress[NETADDR_MAXSTRSIZE];
 		net_addr_str(&QuicAddress, aServerAddress, sizeof(aServerAddress), true);
 		char aBindAddress[NETADDR_MAXSTRSIZE];
@@ -1002,13 +1159,17 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		const char *pServerName = g_Config.m_ClQuicServerName[0] != '\0' ? g_Config.m_ClQuicServerName : aQuicServerName;
 		const CQuicKnownHost *pKnownHost = FindQuicKnownHost(aaConnectHosts[0], QuicAddress.port);
 		bool Started;
-		if(DirectQuic)
+		if(DirectQuic && DirectQuicTrust == EModernTransportTrust::IDENTITY)
 		{
-			m_QuicExpectedIdentity = DirectQuicIdentityFingerprint;
+			m_QuicExpectedIdentity = DirectQuicFingerprint;
 			m_QuicIdentityRequired = true;
-			Started = m_QuicTransport.StartClientIdentity(aBindAddress, aServerAddress, pServerName, DirectQuicIdentityFingerprint, OnlySixup);
+			Started = m_QuicTransport.StartClientIdentity(aBindAddress, aServerAddress, pServerName, DirectQuicFingerprint, OnlySixup);
 		}
-		else if(g_Config.m_ClQuicCert[0] != '\0')
+		else if(DirectQuic && DirectQuicTrust == EModernTransportTrust::CERTIFICATE_HASH)
+			Started = m_QuicTransport.StartClientSha256(aBindAddress, aServerAddress, pServerName, DirectQuicFingerprint, DirectQuicHasNextFingerprint ? &DirectQuicNextFingerprint : nullptr, OnlySixup);
+		else if(DirectQuic && DirectQuicTrust == EModernTransportTrust::WEBPKI)
+			Started = m_QuicTransport.StartClientWebPki(aBindAddress, aServerAddress, pServerName, OnlySixup);
+		else if(!DirectQuic && g_Config.m_ClQuicCert[0] != '\0')
 			Started = m_QuicTransport.StartClient(aBindAddress, aServerAddress, pServerName, g_Config.m_ClQuicCert, OnlySixup);
 		else if(pKnownHost)
 		{
@@ -1044,27 +1205,31 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 
 	const CServerInfo *pQuicInfo = nullptr;
 	NETADDR QuicAddress = {};
-	int QuicAddressIndex = -1;
 	bool QuicMetadataAmbiguous = false;
-	if(g_Config.m_ClQuicAuto)
+	// QUIC is used when the player asked for it. Picking it automatically and
+	// racing a legacy connection against it as a safety net was removed: it
+	// made every connect depend on browser metadata that may be stale, and the
+	// upstream WebTransport work will decide how selection should work.
+	if(ExplicitQuic)
 	{
-		const int RequiredCapabilities = CServerInfo::QUIC_CAPABILITY_DATAGRAM | CServerInfo::QUIC_CAPABILITY_MAP_STREAM | CServerInfo::QUIC_CAPABILITY_RESUME |
-						 (OnlySixup ? CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7 : 0);
 		for(int i = 0; i < NumConnectAddrs; i++)
 		{
 			const CServerBrowser::CServerEntry *pEntry = FindTransportEntry(aConnectAddrs[i]);
-			if(!pEntry || !pEntry->m_Info.m_QuicSharedPort || pEntry->m_Info.m_QuicPort != aConnectAddrs[i].port ||
-				(pEntry->m_Info.m_QuicCapabilities & RequiredCapabilities) != RequiredCapabilities)
+			if(!pEntry)
 				continue;
-			if(pQuicInfo && (pQuicInfo->m_QuicPort != pEntry->m_Info.m_QuicPort || !SameCertificatePins(*pQuicInfo, pEntry->m_Info)))
+			NETADDR PrefixAddress;
+			if(!FindModernAddress(pEntry->m_Info.m_aQuicAddresses, pEntry->m_Info.m_NumQuicAddresses, aConnectAddrs[i], OnlySixup, &PrefixAddress))
+				continue;
+			NETADDR NextQuicAddress;
+			if(!ToModernTransportAddress(PrefixAddress, &NextQuicAddress))
+				continue;
+			if(pQuicInfo && (QuicAddress.port != NextQuicAddress.port || !SameCertificatePins(*pQuicInfo, pEntry->m_Info)))
 			{
 				QuicMetadataAmbiguous = true;
 				break;
 			}
 			pQuicInfo = &pEntry->m_Info;
-			QuicAddress = aConnectAddrs[i];
-			QuicAddress.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
-			QuicAddressIndex = i;
+			QuicAddress = NextQuicAddress;
 		}
 	}
 	if(pQuicInfo && !QuicMetadataAmbiguous)
@@ -1081,21 +1246,18 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 			mem_move(aAutoQuicServerName, aAutoQuicServerName + 1, Length - 2);
 			aAutoQuicServerName[Length - 2] = '\0';
 		}
-		const char *pServerName = g_Config.m_ClQuicServerName[0] != '\0' ? g_Config.m_ClQuicServerName : aAutoQuicServerName;
-		const char *pTrustHost = QuicAddressIndex >= 0 ? aaConnectHosts[QuicAddressIndex] : aQuicServerName;
-		const CQuicKnownHost *pKnownHost = FindQuicKnownHost(pTrustHost, QuicAddress.port);
+		const char *pServerName = g_Config.m_ClQuicServerName[0] != '\0' ? g_Config.m_ClQuicServerName : pQuicInfo->m_aModernHostname[0] != '\0' ? pQuicInfo->m_aModernHostname :
+																			   aAutoQuicServerName;
 		bool Started = false;
 		if(pQuicInfo->m_HasQuicIdentityFingerprint)
 		{
-			const SHA256_DIGEST IdentityFingerprint = pKnownHost ? pKnownHost->m_IdentityFingerprint : pQuicInfo->m_QuicIdentityFingerprint;
-			str_copy(m_aQuicTrustHost, pTrustHost);
-			m_QuicTrustPort = QuicAddress.port;
-			m_QuicExpectedIdentity = IdentityFingerprint;
+			m_QuicExpectedIdentity = pQuicInfo->m_QuicIdentityFingerprint;
 			m_QuicIdentityRequired = true;
-			m_QuicIdentityKnown = pKnownHost != nullptr;
-			m_QuicRememberIdentity = pKnownHost == nullptr;
-			Started = m_QuicTransport.StartClientIdentity(aBindAddress, aServerAddress, pServerName, IdentityFingerprint, OnlySixup);
+			m_QuicIdentityKnown = true;
+			Started = m_QuicTransport.StartClientIdentity(aBindAddress, aServerAddress, pServerName, pQuicInfo->m_QuicIdentityFingerprint, OnlySixup);
 		}
+		else if(pQuicInfo->m_QuicTrust == EModernTransportTrust::WEBPKI)
+			Started = m_QuicTransport.StartClientWebPki(aBindAddress, aServerAddress, pServerName, OnlySixup);
 		else
 			Started = m_QuicTransport.StartClientSha256(aBindAddress, aServerAddress, pServerName, pQuicInfo->m_QuicCertificateSha256,
 				pQuicInfo->m_HasQuicNextCertificateSha256 ? &pQuicInfo->m_QuicNextCertificateSha256 : nullptr, OnlySixup);
@@ -1106,21 +1268,21 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 				[](void *pUser, const NETADDR *pRemoteAddress, const void *pData, int DataSize) { return static_cast<CQuicTransport *>(pUser)->FeedUdp(pRemoteAddress, pData, DataSize); },
 				&m_QuicTransport);
 			m_QuicConnected = false;
-			m_QuicAuto = true;
 			m_QuicServerAddress = QuicAddress;
-			mem_copy(m_aQuicFallbackAddrs, aConnectAddrs, NumConnectAddrs * sizeof(aConnectAddrs[0]));
-			m_NumQuicFallbackAddrs = NumConnectAddrs;
-			m_QuicFallbackStartTime = m_QuicIdentityRequired ? 0 : time_get() + g_Config.m_ClQuicFallbackDelayMs * time_freq() / 1000;
-			m_QuicFallbackStarted = false;
 			SetState(IClient::STATE_CONNECTING);
 			return;
 		}
-		log_error("client", "could not start automatic QUIC: %s", m_QuicTransport.ErrorString());
+		log_error("client", "could not start QUIC: %s", m_QuicTransport.ErrorString());
 		return;
 	}
 	else if(QuicMetadataAmbiguous)
 	{
 		log_warn("client", "conflicting QUIC identities for connect addresses, using legacy UDP");
+	}
+	if(ExplicitQuic || ExplicitWebTransport)
+	{
+		log_error("client", "the requested modern transport endpoint is unavailable");
+		return;
 	}
 	SetState(IClient::STATE_CONNECTING);
 	StartLegacyConnection(aConnectAddrs, NumConnectAddrs, OnlySixup);
@@ -1209,8 +1371,6 @@ void CClient::DisconnectWithReason(const char *pReason)
 	m_UseQuic = false;
 	m_UseWebTransport = false;
 	m_QuicConnected = false;
-	m_QuicAuto = false;
-	ClearQuicFallback();
 	ClearQuicTrust();
 	m_aNetClient[CONN_MAIN].Disconnect(pReason);
 	SetState(IClient::STATE_OFFLINE);
@@ -3143,16 +3303,10 @@ void CClient::PumpNetwork()
 						log_warn("client", "could not persist trusted QUIC server identity");
 				}
 			}
-			if(m_QuicAuto)
-			{
-				if(m_QuicFallbackStarted)
-					m_aNetClient[CONN_MAIN].Disconnect(nullptr);
-				m_QuicAuto = false;
-				ClearQuicFallback();
-			}
 			m_QuicSession = QuicEvent.m_Message.m_Session;
 			m_QuicServerAddress = QuicEvent.m_Message.m_PeerAddress;
 			m_QuicConnected = true;
+			m_QuicLastRecvTime = time_get();
 			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", m_UseWebTransport ? "WebTransport connected, sending info" : "QUIC connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
 			SetState(IClient::STATE_LOADING);
 			SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_INITIAL);
@@ -3160,6 +3314,7 @@ void CClient::PumpNetwork()
 		}
 		else if(QuicEvent.m_Type == EQuicEventType::MESSAGE && QuicEvent.m_Message.m_Session == m_QuicSession)
 		{
+			m_QuicLastRecvTime = time_get();
 			CNetChunk Packet = {};
 			Packet.m_ClientId = 0;
 			Packet.m_Address = QuicEvent.m_Message.m_PeerAddress;
@@ -3170,12 +3325,12 @@ void CClient::PumpNetwork()
 		}
 		else if(QuicEvent.m_Type == EQuicEventType::MAP_HEADER && QuicEvent.m_Message.m_Session == m_QuicSession)
 		{
-			ModernWire::CMapHeaderView Header = {};
-			const auto Result = ModernWire::DecodeMapHeader(
+			GameWire::CMapHeaderView Header = {};
+			const auto Result = GameWire::DecodeMapHeader(
 				{static_cast<const unsigned char *>(QuicEvent.m_Message.m_pData), static_cast<size_t>(QuicEvent.m_Message.m_DataSize)},
 				Header);
 			const size_t NameLength = str_length(m_aMapdownloadName);
-			if(Result != ModernWire::EDecodeResult::OK ||
+			if(Result != GameWire::EDecodeResult::OK ||
 				!m_MapdownloadFileTemp ||
 				Header.m_Size != static_cast<uint64_t>(m_MapdownloadTotalsize) ||
 				Header.m_Crc != static_cast<uint32_t>(m_MapdownloadCrc) ||
@@ -3228,26 +3383,6 @@ void CClient::PumpNetwork()
 			m_QuicConnected = false;
 			char aReason[256];
 			str_copy(aReason, QuicEvent.m_pReason ? QuicEvent.m_pReason : "QUIC connection closed");
-			if(m_QuicAuto && !m_QuicConnected && m_QuicTransport.ConnectFailure() == EQuicConnectFailure::NETWORK)
-			{
-				m_QuicTransport.RecordFallback();
-				const auto &Metrics = m_QuicTransport.Metrics();
-				log_info("quic", "transport=%s attempts=%llu connections=%llu failures=%llu/%llu/%llu fallback=%llu handshake_ms=%llu",
-					m_UseWebTransport ? "webtransport" : "quic",
-					static_cast<unsigned long long>(Metrics.m_ConnectAttempts), static_cast<unsigned long long>(Metrics.m_Connections),
-					static_cast<unsigned long long>(Metrics.m_ConnectFailuresNetwork), static_cast<unsigned long long>(Metrics.m_ConnectFailuresIdentity), static_cast<unsigned long long>(Metrics.m_ConnectFailuresProtocol),
-					static_cast<unsigned long long>(Metrics.m_Fallbacks), static_cast<unsigned long long>(Metrics.m_LastHandshakeMilliseconds));
-				log_info("client", "%s unavailable, using legacy UDP: %s", m_UseWebTransport ? "WebTransport" : "automatic QUIC", aReason);
-				m_QuicTransport.Shutdown();
-				m_aNetClient[CONN_MAIN].SetPacketFilter(nullptr, nullptr);
-				m_UseQuic = false;
-				m_UseWebTransport = false;
-				m_QuicAuto = false;
-				if(!m_QuicFallbackStarted)
-					StartLegacyConnection(m_aQuicFallbackAddrs, m_NumQuicFallbackAddrs, m_Sixup);
-				ClearQuicFallback();
-				break;
-			}
 			if(m_QuicIdentityKnown && m_QuicTransport.ConnectFailure() == EQuicConnectFailure::IDENTITY)
 			{
 				char aExpected[SHA256_MAXSTRSIZE];
@@ -3261,12 +3396,6 @@ void CClient::PumpNetwork()
 			DisconnectWithReason(aReason);
 			break;
 		}
-	}
-
-	if(m_QuicAuto && m_QuicFallbackStartTime != 0 && !m_QuicConnected && !m_QuicFallbackStarted && State() == IClient::STATE_CONNECTING && time_get() >= m_QuicFallbackStartTime)
-	{
-		StartLegacyConnection(m_aQuicFallbackAddrs, m_NumQuicFallbackAddrs, m_Sixup);
-		m_QuicFallbackStarted = true;
 	}
 
 	if(State() != IClient::STATE_DEMOPLAYBACK)
@@ -3334,8 +3463,6 @@ void CClient::PumpNetwork()
 				ProcessConnlessPacket(&Packet);
 				continue;
 			}
-			if(Conn == CONN_MAIN && m_QuicAuto)
-				continue;
 			if(Conn == CONN_MAIN || Conn == CONN_DUMMY)
 			{
 				ProcessServerPacket(&Packet, Conn, g_Config.m_ClDummy ^ Conn);
@@ -3973,7 +4100,7 @@ void CClient::Run()
 		char aFile[IO_MAX_PATH_LENGTH];
 		if(Input()->GetDropFile(aFile, sizeof(aFile)))
 		{
-			if(str_startswith(aFile, CONNECTLINK_NO_SLASH) || str_startswith(aFile, QUIC_CONNECTLINK_DOUBLE_SLASH))
+			if(str_startswith(aFile, CONNECTLINK_NO_SLASH) || str_startswith(aFile, QUIC_CONNECTLINK_DOUBLE_SLASH) || str_startswith(aFile, QUIC_CONNECTLINK7_DOUBLE_SLASH))
 				HandleConnectLink(aFile);
 			else if(str_endswith(aFile, ".demo"))
 				HandleDemoPath(aFile);
@@ -5400,7 +5527,7 @@ void CClient::HandleMapPath(const char *pPath)
 static bool UnknownArgumentCallback(const char *pCommand, void *pUser)
 {
 	CClient *pClient = static_cast<CClient *>(pUser);
-	if(str_startswith(pCommand, CONNECTLINK_NO_SLASH) || str_startswith(pCommand, QUIC_CONNECTLINK_DOUBLE_SLASH))
+	if(str_startswith(pCommand, CONNECTLINK_NO_SLASH) || str_startswith(pCommand, QUIC_CONNECTLINK_DOUBLE_SLASH) || str_startswith(pCommand, QUIC_CONNECTLINK7_DOUBLE_SLASH))
 	{
 		pClient->HandleConnectLink(pCommand);
 		return true;
@@ -6184,6 +6311,8 @@ void CClient::ShellRegister()
 		log_error("client", "Failed to register ddnet protocol");
 	if(!windows_shell_register_protocol("ddnet+quic", aFullPath, &Updated))
 		log_error("client", "Failed to register ddnet+quic protocol");
+	if(!windows_shell_register_protocol("tw-0.7+quic", aFullPath, &Updated))
+		log_error("client", "Failed to register tw-0.7+quic protocol");
 	if(!windows_shell_register_extension(".map", "Map File", GAME_NAME, aFullPath, &Updated))
 		log_error("client", "Failed to register .map file extension");
 	if(!windows_shell_register_extension(".demo", "Demo File", GAME_NAME, aFullPath, &Updated))
@@ -6209,6 +6338,8 @@ void CClient::ShellUnregister()
 		log_error("client", "Failed to unregister ddnet protocol");
 	if(!windows_shell_unregister_class("ddnet+quic", &Updated))
 		log_error("client", "Failed to unregister ddnet+quic protocol");
+	if(!windows_shell_unregister_class("tw-0.7+quic", &Updated))
+		log_error("client", "Failed to unregister tw-0.7+quic protocol");
 	if(!windows_shell_unregister_class(GAME_NAME ".map", &Updated))
 		log_error("client", "Failed to unregister .map file extension");
 	if(!windows_shell_unregister_class(GAME_NAME ".demo", &Updated))

@@ -432,6 +432,95 @@ static bool ServerbrowserParseUrl(NETADDR *pOut, const char *pUrl)
 		return true;
 	return false;
 }
+
+static void AddModernAddress(NETADDR *pAddresses, int *pNumAddresses, const char *pUrl)
+{
+	NETADDR Address;
+	if(ServerbrowserParseUrl(&Address, pUrl))
+	{
+		// TODO: This resolves on the calling thread. Host names in the server
+		// list are rare today, but an operator publishing one that does not
+		// answer stalls the browser refresh for as long as the resolver takes.
+		// Resolving the server list asynchronously would remove that.
+		if(net_addr_from_url_lookup(&Address, pUrl, NETTYPE_ALL) != 0 || Address.port == 0)
+			return;
+	}
+	for(int i = 0; i < *pNumAddresses; i++)
+	{
+		if(pAddresses[i] == Address)
+			return;
+	}
+	if(*pNumAddresses < MAX_SERVER_ADDRESSES)
+		pAddresses[(*pNumAddresses)++] = Address;
+}
+
+static bool ApplyProtocolTrust(CServerInfo *pInfo, const char *pUrl, bool ExpectedWebTransport)
+{
+	if(!str_find(pUrl, "#"))
+	{
+		if(ExpectedWebTransport)
+			pInfo->m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::WEBPKI;
+		else if(pInfo->m_QuicTrust == EModernTransportTrust::INVALID)
+			return false;
+	}
+	else
+	{
+		bool WebTransport;
+		EModernTransportTrust Trust;
+		SHA256_DIGEST Fingerprint;
+		SHA256_DIGEST NextFingerprint;
+		bool HasNextFingerprint;
+		if(!ParseModernTransportUrl(pUrl, &WebTransport, &Trust, &Fingerprint, &NextFingerprint, &HasNextFingerprint) || WebTransport != ExpectedWebTransport || Trust == EModernTransportTrust::TOFU)
+			return false;
+		if(WebTransport)
+		{
+			if(Trust == EModernTransportTrust::IDENTITY)
+				return false;
+			pInfo->m_WebTransportCertificateMode = Trust == EModernTransportTrust::WEBPKI ? CServerInfo::EWebTransportCertificateMode::WEBPKI : CServerInfo::EWebTransportCertificateMode::HASH;
+		}
+		else
+		{
+			pInfo->m_QuicTrust = Trust;
+			pInfo->m_HasQuicIdentityFingerprint = Trust == EModernTransportTrust::IDENTITY;
+			if(pInfo->m_HasQuicIdentityFingerprint)
+				pInfo->m_QuicIdentityFingerprint = Fingerprint;
+		}
+		if(Trust == EModernTransportTrust::CERTIFICATE_HASH)
+		{
+			pInfo->m_QuicCertificateSha256 = Fingerprint;
+			pInfo->m_QuicNextCertificateSha256 = NextFingerprint;
+			pInfo->m_HasQuicNextCertificateSha256 = HasNextFingerprint;
+		}
+	}
+	pInfo->m_QuicCapabilities = CServerInfo::QUIC_CAPABILITY_DATAGRAM | CServerInfo::QUIC_CAPABILITY_MAP_STREAM | CServerInfo::QUIC_CAPABILITY_RESUME | CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7;
+	if(ExpectedWebTransport)
+	{
+		pInfo->m_WebTransport = true;
+		str_copy(pInfo->m_aWebTransportPath, "/ddnet");
+	}
+	else
+		pInfo->m_QuicSharedPort = true;
+	return true;
+}
+
+static void FormatModernAddress(char *pBuffer, int BufferSize, const NETADDR &Address, bool WebTransport)
+{
+	char aAddress[NETADDR_MAXSTRSIZE];
+	net_addr_str(&Address, aAddress, sizeof(aAddress), true);
+	const bool Sixup = (Address.type & NETTYPE_TW7) != 0;
+	str_format(pBuffer, BufferSize, "%s://%s", WebTransport ? (Sixup ? "tw-0.7+wt" : "ddnet+wt") : (Sixup ? "tw-0.7+quic" : "ddnet+quic"), aAddress);
+}
+
+static void RemoveAddressesWithWrongPort(NETADDR *pAddresses, int *pNumAddresses, int Port)
+{
+	int NumValid = 0;
+	for(int i = 0; i < *pNumAddresses; i++)
+	{
+		if(pAddresses[i].port == Port)
+			pAddresses[NumValid++] = pAddresses[i];
+	}
+	*pNumAddresses = NumValid;
+}
 bool CServerBrowserHttp::Validate(json_value *pJson)
 {
 	std::vector<CServerInfo> vServers;
@@ -443,10 +532,12 @@ bool ServerBrowserHttpParse(json_value *pJson, std::vector<CServerInfo> *pvServe
 
 	const json_value &Json = *pJson;
 	const json_value &Servers = Json["servers"];
-	if(Servers.type != json_array)
+	const json_value &ModernTransportChallenge = Json["modern_transport_challenge"];
+	if(Servers.type != json_array || (ModernTransportChallenge.type != json_none && ModernTransportChallenge.type != json_boolean))
 	{
 		return true;
 	}
+	const bool MasterChallengesModernTransports = ModernTransportChallenge.type == json_boolean && (bool)ModernTransportChallenge;
 	for(unsigned int i = 0; i < Servers.u.array.length; i++)
 	{
 		const json_value &Server = Servers[i];
@@ -477,6 +568,9 @@ bool ServerBrowserHttpParse(json_value *pJson, std::vector<CServerInfo> *pvServe
 		CServerInfo SetInfo = ParsedInfo;
 		SetInfo.m_Location = ParsedLocation;
 		SetInfo.m_NumAddresses = 0;
+		SetInfo.m_NumQuicAddresses = 0;
+		SetInfo.m_NumWebTransportAddresses = 0;
+		SetInfo.m_MasterChallengesModernTransports = MasterChallengesModernTransports;
 		bool GotVersion6 = false;
 		for(unsigned int a = 0; a < Addresses.u.array.length; a++)
 		{
@@ -502,10 +596,16 @@ bool ServerBrowserHttpParse(json_value *pJson, std::vector<CServerInfo> *pvServe
 			{
 				continue;
 			}
-			// QUIC addresses describe the modern transport endpoint and must not
-			// participate in legacy protocol selection or port validation.
-			if(str_startswith(Addresses[a], "ddnet+quic://"))
+			if(str_startswith(Addresses[a], "ddnet+quic://") || str_startswith(Addresses[a], "tw-0.7+quic://"))
 			{
+				if(MasterChallengesModernTransports && ApplyProtocolTrust(&SetInfo, Addresses[a], false))
+					AddModernAddress(SetInfo.m_aQuicAddresses, &SetInfo.m_NumQuicAddresses, Addresses[a]);
+				continue;
+			}
+			if(str_startswith(Addresses[a], "ddnet+wt://") || str_startswith(Addresses[a], "tw-0.7+wt://"))
+			{
+				if(MasterChallengesModernTransports && ApplyProtocolTrust(&SetInfo, Addresses[a], true))
+					AddModernAddress(SetInfo.m_aWebTransportAddresses, &SetInfo.m_NumWebTransportAddresses, Addresses[a]);
 				continue;
 			}
 			NETADDR ParsedAddr;
@@ -520,9 +620,36 @@ bool ServerBrowserHttpParse(json_value *pJson, std::vector<CServerInfo> *pvServe
 				SetInfo.m_NumAddresses += 1;
 			}
 		}
-		if(SetInfo.m_NumAddresses > 0)
+		if(MasterChallengesModernTransports)
 		{
-			if(SetInfo.m_QuicSharedPort || SetInfo.m_WebTransport)
+			if(SetInfo.m_NumQuicAddresses > 0)
+				SetInfo.m_QuicPort = SetInfo.m_aQuicAddresses[0].port;
+			else if(SetInfo.m_NumWebTransportAddresses > 0)
+				SetInfo.m_QuicPort = SetInfo.m_aWebTransportAddresses[0].port;
+		}
+		else if(SetInfo.m_QuicPort == 0 && (SetInfo.m_QuicSharedPort || SetInfo.m_WebTransport))
+		{
+			for(int AddressIndex = 0; AddressIndex < SetInfo.m_NumAddresses; AddressIndex++)
+			{
+				const NETADDR &Address = SetInfo.m_aAddresses[AddressIndex];
+				if((Address.type & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) != 0)
+					continue;
+				if(SetInfo.m_QuicPort == 0)
+					SetInfo.m_QuicPort = Address.port;
+				else if(SetInfo.m_QuicPort != Address.port)
+				{
+					SetInfo.m_QuicPort = 0;
+					break;
+				}
+			}
+			if(SetInfo.m_WebTransport && SetInfo.m_aModernHostname[0] != '\0' && SetInfo.m_QuicPort != 0)
+				FormatWebTransportUrl(SetInfo.m_aWebTransportUrl, sizeof(SetInfo.m_aWebTransportUrl), SetInfo.m_aModernHostname, SetInfo.m_QuicPort);
+		}
+		RemoveAddressesWithWrongPort(SetInfo.m_aQuicAddresses, &SetInfo.m_NumQuicAddresses, SetInfo.m_QuicPort);
+		RemoveAddressesWithWrongPort(SetInfo.m_aWebTransportAddresses, &SetInfo.m_NumWebTransportAddresses, SetInfo.m_QuicPort);
+		if(SetInfo.m_NumAddresses > 0 || SetInfo.m_NumQuicAddresses > 0 || SetInfo.m_NumWebTransportAddresses > 0)
+		{
+			if(SetInfo.m_NumQuicAddresses == 0 && SetInfo.m_NumWebTransportAddresses == 0 && (SetInfo.m_QuicSharedPort || SetInfo.m_WebTransport))
 			{
 				bool PortsMatch = true;
 				for(int AddressIndex = 0; AddressIndex < SetInfo.m_NumAddresses; AddressIndex++)
@@ -537,11 +664,27 @@ bool ServerBrowserHttpParse(json_value *pJson, std::vector<CServerInfo> *pvServe
 					SetInfo.m_QuicSharedPort = false;
 					SetInfo.m_HasQuicNextCertificateSha256 = false;
 					SetInfo.m_HasQuicIdentityFingerprint = false;
+					SetInfo.m_QuicTrust = EModernTransportTrust::INVALID;
 					SetInfo.m_WebTransport = false;
 					SetInfo.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::NONE;
 					SetInfo.m_aWebTransportPath[0] = '\0';
 					SetInfo.m_aWebTransportUrl[0] = '\0';
+					SetInfo.m_aModernHostname[0] = '\0';
 				}
+			}
+			if(SetInfo.m_NumAddresses == 0)
+			{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+				if(SetInfo.m_NumWebTransportAddresses > 0)
+					FormatModernAddress(SetInfo.m_aAddress, sizeof(SetInfo.m_aAddress), SetInfo.m_aWebTransportAddresses[0], true);
+				else
+					continue;
+#else
+				if(SetInfo.m_NumQuicAddresses > 0)
+					FormatModernAddress(SetInfo.m_aAddress, sizeof(SetInfo.m_aAddress), SetInfo.m_aQuicAddresses[0], false);
+				else
+					continue;
+#endif
 			}
 			vServers.push_back(SetInfo);
 		}

@@ -245,9 +245,10 @@ public:
 	CQuicTransport m_QuicTransport;
 	bool m_QuicStarted = false;
 	bool m_WebTransportStarted = false;
+	bool m_LegacyUdpStarted = true;
+	bool m_QuicUseWebPki = false;
 	bool m_WebTransportUseCertificateHashes = false;
-	int m_ModernTransportPort = 0;
-	char m_aWebTransportUrl[256] = {};
+	char m_aModernTransportHostname[256] = {};
 	CEcon m_Econ;
 	CFifo m_Fifo;
 	CServerBan m_ServerBan;
@@ -408,6 +409,7 @@ public:
 	bool CheckReservedSlotAuth(int ClientId, const char *pPassword);
 	bool TakePreInputBudget(int ClientId);
 	void ProcessClientPacket(CNetChunk *pPacket);
+	void FormatModernTransportFragments(char *pQuicFragment, int QuicFragmentSize, char *pWebTransportFragment, int WebTransportFragmentSize) const;
 	void PumpQuicNetwork();
 	int FindQuicClient(CQuicSessionId Session) const;
 	int FindQuicResume(const CQuicMessage &Message) const;

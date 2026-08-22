@@ -488,6 +488,7 @@ class CNetServer
 
 	bool m_FlushBatch = false;
 	bool m_aFlushPending[NET_MAX_CLIENTS] = {};
+	bool m_LegacyConnections = true;
 
 	NETFUNC_NEWCLIENT m_pfnNewClient;
 	NETFUNC_NEWCLIENT_NOAUTH m_pfnNewClientNoAuth;
@@ -549,6 +550,7 @@ public:
 	//
 	void Drop(int ClientId, const char *pReason);
 	void SetExternalSlot(int ClientId, const NETADDR *pAddress);
+	void SetLegacyConnections(bool Enabled) { m_LegacyConnections = Enabled; }
 
 	// status requests
 	const NETADDR *ClientAddr(int ClientId) const { return m_aSlots[ClientId].m_Connection.PeerAddress(); }

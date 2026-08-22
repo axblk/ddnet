@@ -27,6 +27,9 @@ class IServerBrowserPingCache;
 class IStorage;
 class IHttp;
 
+bool ServerBrowserCanConnectAddress(const NETADDR &Addr, int NetTypes, bool WebsocketOnly, bool SecureWebsocketOnly);
+bool ServerBrowserHasCompatibleAddress(const CServerInfo &Info, int NetTypes, bool WebsocketOnly, bool SecureWebsocketOnly, bool QuicSupported, bool WebTransportSupported);
+
 class CCommunityId
 {
 	char m_aId[CServerInfo::MAX_COMMUNITY_ID_LENGTH];
@@ -390,6 +393,7 @@ private:
 	bool SortCompareFavoritesNumPlayersAndPing(int Index1, int Index2) const;
 
 	//
+	bool HasCompatibleAddress(const CServerInfo &Info) const;
 	void Filter();
 	void Sort();
 	int SortHash() const;

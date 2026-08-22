@@ -1,3 +1,11 @@
+//! Transport-neutral DDNet game framing.
+//!
+//! This is one of two implementations of the same framing. The other one is
+//! `game_wire.h`/`game_wire.cpp`, which is the whole protocol stack of the
+//! emscripten WebTransport client, where there is no Rust to call. They are
+//! not layered on each other, they are held together by the golden vectors in
+//! the `#[cfg(test)]` block below and in `src/test/game_wire_test.cpp`, which
+//! assert the same literal bytes. Change one, change both.
 #![allow(dead_code)]
 
 pub(crate) const VERSION_MAJOR: u64 = 1;

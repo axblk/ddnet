@@ -104,8 +104,17 @@ elseif(TARGET_OS STREQUAL "mac")
   set(AUTO_VULKAN_BACKEND OFF)
 endif()
 
+# The QUIC transport is written in Rust, which every build needs anyway, so it
+# is compiled in wherever it can run. The two targets that are left out have no
+# native socket for it: emscripten reaches servers through WebTransport, and
+# the Android build does not carry the Rust QUIC dependencies.
+set(AUTO_QUIC ON)
+if(TARGET_OS STREQUAL "emscripten" OR TARGET_OS STREQUAL "android")
+  set(AUTO_QUIC OFF)
+endif()
+
 option(WEBSOCKETS "Enable websockets support" OFF)
-option(QUIC "Build the isolated native QUIC transport spike" OFF)
+option(QUIC "Build the native QUIC and WebTransport transport" ${AUTO_QUIC})
 option(MYSQL "Enable mysql support" OFF)
 option(TEST_MYSQL "Test mysql support in unit tests (also sets -DMYSQL=ON)" OFF)
 option(AUTOUPDATE "Enable the autoupdater" OFF)
@@ -929,8 +938,8 @@ set_glob(RUST_ENGINE_SHARED GLOB_RECURSE "rs;toml" src/engine/shared
   Cargo.toml
   build.rs
   config.rs
+  game_wire.rs
   lib.rs
-  modern_wire.rs
   quic.rs
   quic/sans_io.rs
   quic/webtransport.rs
@@ -2275,6 +2284,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   fifo.h
   filecollection.cpp
   filecollection.h
+  game_wire.cpp
+  game_wire.h
   global_uuid_manager.cpp
   host_lookup.cpp
   host_lookup.h
@@ -2300,8 +2311,6 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   masterserver.h
   memheap.cpp
   memheap.h
-  modern_wire.cpp
-  modern_wire.h
   netban.cpp
   netban.h
   network.cpp
@@ -3251,7 +3260,10 @@ if(TOOLS)
       if(TOOL MATCHES "^config_")
         list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")
       endif()
-      if(TOOL STREQUAL "quic_cli")
+      if(QUIC)
+        # In this configuration engine-shared carries the QUIC transport, so
+        # every tool that links it needs the C++ side of the Rust bridge, not
+        # just the spike tool itself. The Rust library is already in ${LIBS}.
         list(APPEND EXTRA_TOOL_SRC $<TARGET_OBJECTS:rust-bridge-shared>)
       endif()
       set(EXCLUDE_FROM_ALL)
@@ -3339,6 +3351,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     dbg_test.cpp
     editor_test.cpp
     fs_test.cpp
+    game_wire_test.cpp
     gameworld_test.cpp
     git_revision_test.cpp
     hash_test.cpp
@@ -3352,7 +3365,6 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     mapitems_test.cpp
     math_test.cpp
     mem_test.cpp
-    modern_wire_test.cpp
     mutes_test.cpp
     name_ban_test.cpp
     net_test.cpp

@@ -124,18 +124,87 @@ bool FormatWebTransportUrl(char *pBuffer, int BufferSize, const char *pHostname,
 	return ValidateWebTransportUrl(pBuffer, Port);
 }
 
-bool ParseQuicDirectLinkFingerprint(const char *pUrl, SHA256_DIGEST *pFingerprint)
+static bool ParseFingerprintList(const char *pValue, SHA256_DIGEST *pFingerprint, SHA256_DIGEST *pNextFingerprint, bool *pHasNextFingerprint)
+{
+	const char *pSeparator = str_find(pValue, ",");
+	if(!pSeparator)
+	{
+		*pHasNextFingerprint = false;
+		return sha256_from_str(pFingerprint, pValue) == 0;
+	}
+	if(pSeparator - pValue != SHA256_DIGEST_LENGTH * 2 || str_find(pSeparator + 1, ","))
+		return false;
+	char aFingerprint[SHA256_MAXSTRSIZE];
+	str_copy(aFingerprint, pValue, sizeof(aFingerprint));
+	aFingerprint[SHA256_DIGEST_LENGTH * 2] = '\0';
+	*pHasNextFingerprint = true;
+	return sha256_from_str(pFingerprint, aFingerprint) == 0 && sha256_from_str(pNextFingerprint, pSeparator + 1) == 0 && *pFingerprint != *pNextFingerprint;
+}
+
+bool ParseModernTransportUrl(const char *pUrl, bool *pWebTransport, EModernTransportTrust *pTrust, SHA256_DIGEST *pFingerprint, SHA256_DIGEST *pNextFingerprint, bool *pHasNextFingerprint)
 {
 	const char *pHost = str_startswith(pUrl, "ddnet+quic://");
 	if(!pHost)
+		pHost = str_startswith(pUrl, "tw-0.7+quic://");
+	*pWebTransport = false;
+	if(!pHost)
+	{
+		pHost = str_startswith(pUrl, "ddnet+wt://");
+		if(!pHost)
+			pHost = str_startswith(pUrl, "tw-0.7+wt://");
+		*pWebTransport = pHost != nullptr;
+	}
+	if(!pHost)
 		return false;
+
+	*pFingerprint = {};
+	*pNextFingerprint = {};
+	*pHasNextFingerprint = false;
 	const char *pFragment = str_find(pHost, "#");
 	const char *pPath = str_find(pHost, "/");
 	const char *pQuery = str_find(pHost, "?");
 	const char *pUserInfo = str_find(pHost, "@");
-	return pFragment && pFragment != pHost && str_startswith(pFragment, "#sha256=") &&
-	       (!pPath || pPath > pFragment) && (!pQuery || pQuery > pFragment) && (!pUserInfo || pUserInfo > pFragment) &&
-	       sha256_from_str(pFingerprint, pFragment + str_length("#sha256=")) == 0;
+	if(pHost[0] == '\0' || (pPath && (!pFragment || pPath < pFragment)) || (pQuery && (!pFragment || pQuery < pFragment)) || (pUserInfo && (!pFragment || pUserInfo < pFragment)))
+		return false;
+	if(!pFragment)
+	{
+		*pTrust = *pWebTransport ? EModernTransportTrust::WEBPKI : EModernTransportTrust::TOFU;
+		return true;
+	}
+	if(pFragment == pHost || pFragment[1] == '\0')
+		return false;
+	const char *pValue = str_startswith(pFragment, "#cert-sha256=");
+	if(pValue)
+	{
+		*pTrust = EModernTransportTrust::CERTIFICATE_HASH;
+		return ParseFingerprintList(pValue, pFingerprint, pNextFingerprint, pHasNextFingerprint);
+	}
+	if(str_comp(pFragment, "#webpki") == 0)
+	{
+		*pTrust = EModernTransportTrust::WEBPKI;
+		return true;
+	}
+	if(!*pWebTransport)
+	{
+		pValue = str_startswith(pFragment, "#identity-sha256=");
+		if(!pValue)
+			pValue = str_startswith(pFragment, "#sha256=");
+		if(pValue)
+		{
+			*pTrust = EModernTransportTrust::IDENTITY;
+			return sha256_from_str(pFingerprint, pValue) == 0;
+		}
+	}
+	return false;
+}
+
+bool ParseQuicDirectLinkFingerprint(const char *pUrl, SHA256_DIGEST *pFingerprint)
+{
+	bool WebTransport;
+	EModernTransportTrust Trust;
+	SHA256_DIGEST NextFingerprint;
+	bool HasNextFingerprint;
+	return ParseModernTransportUrl(pUrl, &WebTransport, &Trust, pFingerprint, &NextFingerprint, &HasNextFingerprint) && !WebTransport && Trust == EModernTransportTrust::IDENTITY;
 }
 
 static constexpr char QUIC_SERVERINFO_EXTRA_V1_PREFIX[] = "ddnet-transport-v1|quic|tls-certificate-sha256=";
@@ -185,10 +254,12 @@ void PreserveWebTransportMetadata(CServerInfo *pInfo, const CServerInfo &Previou
 	pInfo->m_QuicCertificateSha256 = PreviousInfo.m_QuicCertificateSha256;
 	pInfo->m_QuicNextCertificateSha256 = PreviousInfo.m_QuicNextCertificateSha256;
 	pInfo->m_HasQuicNextCertificateSha256 = PreviousInfo.m_HasQuicNextCertificateSha256;
+	pInfo->m_QuicTrust = PreviousInfo.m_QuicTrust;
 	pInfo->m_WebTransport = true;
 	pInfo->m_WebTransportCertificateMode = PreviousInfo.m_WebTransportCertificateMode;
 	str_copy(pInfo->m_aWebTransportPath, PreviousInfo.m_aWebTransportPath);
 	str_copy(pInfo->m_aWebTransportUrl, PreviousInfo.m_aWebTransportUrl);
+	str_copy(pInfo->m_aModernHostname, PreviousInfo.m_aModernHostname);
 }
 
 bool CServerInfo2::FromJson(CServerInfo2 *pOut, const json_value *pJson)
@@ -269,8 +340,130 @@ static void ParseQuicTransport(CServerInfo2 *pOut, const json_value &ServerInfo)
 	pOut->m_QuicPort = Port;
 	pOut->m_QuicCapabilities = CServerInfo::QUIC_CAPABILITY_DATAGRAM | CServerInfo::QUIC_CAPABILITY_MAP_STREAM | CServerInfo::QUIC_CAPABILITY_RESUME | CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7;
 	pOut->m_QuicSharedPort = HasQuic;
+	pOut->m_QuicTrust = HasQuic ? EModernTransportTrust::CERTIFICATE_HASH : EModernTransportTrust::INVALID;
 	pOut->m_HasQuicNextCertificateSha256 = HasNextCertificateSha256;
 	pOut->m_WebTransport = HasWebTransport;
+}
+
+static bool ParseModernHashes(const json_value &Hashes, SHA256_DIGEST *pCertificateSha256, SHA256_DIGEST *pNextCertificateSha256, bool *pHasNextCertificateSha256)
+{
+	if(Hashes.type != json_array || Hashes.u.array.length < 1 || Hashes.u.array.length > 2 || Hashes[0].type != json_string || sha256_from_str(pCertificateSha256, Hashes[0]))
+		return false;
+	*pHasNextCertificateSha256 = Hashes.u.array.length == 2;
+	return !*pHasNextCertificateSha256 || (Hashes[1].type == json_string && sha256_from_str(pNextCertificateSha256, Hashes[1]) == 0 && *pCertificateSha256 != *pNextCertificateSha256);
+}
+
+static bool ParseProtocolDescriptor(const json_value &Descriptor, bool AllowIdentity, EModernTransportTrust *pTrust, SHA256_DIGEST *pFingerprint, SHA256_DIGEST *pNextFingerprint, bool *pHasNextFingerprint)
+{
+	if(Descriptor.type != json_object || Descriptor["verify"].type != json_string)
+		return false;
+	const json_value &Verify = Descriptor["verify"];
+	const json_value &Hashes = Descriptor["sha256"];
+	if(str_comp(Verify, "webpki") == 0)
+	{
+		*pTrust = EModernTransportTrust::WEBPKI;
+		return Hashes.type == json_none;
+	}
+	if(str_comp(Verify, "hash") == 0)
+	{
+		*pTrust = EModernTransportTrust::CERTIFICATE_HASH;
+		return ParseModernHashes(Hashes, pFingerprint, pNextFingerprint, pHasNextFingerprint);
+	}
+	if(AllowIdentity && str_comp(Verify, "identity") == 0 && Hashes.type == json_string && sha256_from_str(pFingerprint, Hashes) == 0)
+	{
+		*pTrust = EModernTransportTrust::IDENTITY;
+		return true;
+	}
+	return false;
+}
+
+static void ParseExperimentalProtocol(CServerInfo2 *pOut, const json_value &ServerInfo)
+{
+	const json_value &Protocol = ServerInfo["experimental"]["proto"];
+	if(Protocol.type != json_object)
+		return;
+	int Port = pOut->m_QuicPort;
+	const json_value &UdpPort = Protocol["udp_port"];
+	if(UdpPort.type != json_none)
+	{
+		if(UdpPort.type != json_integer || !in_range((int)UdpPort.u.integer, 1, 65535))
+			return;
+		Port = UdpPort.u.integer;
+	}
+	const json_value &Hostname = Protocol["hostname"];
+	char aHostname[256] = {};
+	if(Hostname.type != json_none)
+	{
+		char aUrl[256];
+		if(Hostname.type != json_string || !FormatWebTransportUrl(aUrl, sizeof(aUrl), Hostname, Port != 0 ? Port : 443))
+			return;
+		str_copy(aHostname, Hostname);
+	}
+
+	const json_value &Quic = Protocol["quic"];
+	const json_value &WebTransport = Protocol["webtransport"];
+	if((Quic.type != json_none && Quic.type != json_object) || (WebTransport.type != json_none && WebTransport.type != json_object) || (Quic.type == json_none && WebTransport.type == json_none))
+		return;
+	EModernTransportTrust QuicTrust = EModernTransportTrust::INVALID;
+	EModernTransportTrust WebTransportTrust = EModernTransportTrust::INVALID;
+	SHA256_DIGEST CertificateSha256 = {};
+	SHA256_DIGEST NextCertificateSha256 = {};
+	SHA256_DIGEST IdentityFingerprint = {};
+	bool HasNextCertificateSha256 = false;
+	if(Quic.type == json_object)
+	{
+		SHA256_DIGEST QuicFingerprint = {};
+		SHA256_DIGEST QuicNextFingerprint = {};
+		bool HasQuicNextFingerprint = false;
+		if(!ParseProtocolDescriptor(Quic, true, &QuicTrust, &QuicFingerprint, &QuicNextFingerprint, &HasQuicNextFingerprint))
+			return;
+		if(QuicTrust == EModernTransportTrust::IDENTITY)
+			IdentityFingerprint = QuicFingerprint;
+		else if(QuicTrust == EModernTransportTrust::CERTIFICATE_HASH)
+		{
+			CertificateSha256 = QuicFingerprint;
+			NextCertificateSha256 = QuicNextFingerprint;
+			HasNextCertificateSha256 = HasQuicNextFingerprint;
+		}
+	}
+	if(WebTransport.type == json_object)
+	{
+		SHA256_DIGEST WebTransportFingerprint = {};
+		SHA256_DIGEST WebTransportNextFingerprint = {};
+		bool HasWebTransportNextFingerprint = false;
+		if(!ParseProtocolDescriptor(WebTransport, false, &WebTransportTrust, &WebTransportFingerprint, &WebTransportNextFingerprint, &HasWebTransportNextFingerprint))
+			return;
+		if(WebTransportTrust == EModernTransportTrust::WEBPKI && aHostname[0] == '\0')
+			return;
+		if(WebTransportTrust == EModernTransportTrust::CERTIFICATE_HASH)
+		{
+			if(QuicTrust == EModernTransportTrust::CERTIFICATE_HASH && (CertificateSha256 != WebTransportFingerprint || HasNextCertificateSha256 != HasWebTransportNextFingerprint || (HasNextCertificateSha256 && NextCertificateSha256 != WebTransportNextFingerprint)))
+				return;
+			CertificateSha256 = WebTransportFingerprint;
+			NextCertificateSha256 = WebTransportNextFingerprint;
+			HasNextCertificateSha256 = HasWebTransportNextFingerprint;
+		}
+	}
+	if(QuicTrust == EModernTransportTrust::WEBPKI && aHostname[0] == '\0')
+		return;
+
+	pOut->m_QuicCertificateSha256 = CertificateSha256;
+	pOut->m_QuicNextCertificateSha256 = NextCertificateSha256;
+	pOut->m_QuicIdentityFingerprint = IdentityFingerprint;
+	pOut->m_QuicPort = Port;
+	pOut->m_QuicCapabilities = CServerInfo::QUIC_CAPABILITY_DATAGRAM | CServerInfo::QUIC_CAPABILITY_MAP_STREAM | CServerInfo::QUIC_CAPABILITY_RESUME | CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7;
+	pOut->m_QuicSharedPort = Quic.type == json_object;
+	pOut->m_HasQuicNextCertificateSha256 = HasNextCertificateSha256;
+	pOut->m_HasQuicIdentityFingerprint = QuicTrust == EModernTransportTrust::IDENTITY;
+	pOut->m_QuicTrust = QuicTrust;
+	pOut->m_WebTransport = WebTransport.type == json_object;
+	pOut->m_WebTransportCertificateMode = WebTransportTrust == EModernTransportTrust::WEBPKI ? CServerInfo::EWebTransportCertificateMode::WEBPKI : WebTransportTrust == EModernTransportTrust::CERTIFICATE_HASH ? CServerInfo::EWebTransportCertificateMode::HASH :
+																										      CServerInfo::EWebTransportCertificateMode::NONE;
+	str_copy(pOut->m_aWebTransportPath, pOut->m_WebTransport ? "/ddnet" : "");
+	pOut->m_aWebTransportUrl[0] = '\0';
+	if(pOut->m_WebTransport && aHostname[0] != '\0' && Port != 0)
+		FormatWebTransportUrl(pOut->m_aWebTransportUrl, sizeof(pOut->m_aWebTransportUrl), aHostname, Port);
+	str_copy(pOut->m_aModernHostname, aHostname);
 }
 
 bool CServerInfo2::FromJsonRaw(CServerInfo2 *pOut, const json_value *pJson)
@@ -327,6 +520,7 @@ bool CServerInfo2::FromJsonRaw(CServerInfo2 *pOut, const json_value *pJson)
 	str_copy(pOut->m_aMapName, MapName);
 	str_copy(pOut->m_aVersion, Version);
 	ParseQuicTransport(pOut, ServerInfo);
+	ParseExperimentalProtocol(pOut, ServerInfo);
 
 	pOut->m_NumClients = 0;
 	pOut->m_NumPlayers = 0;
@@ -474,10 +668,12 @@ bool CServerInfo2::operator==(const CServerInfo2 &Other) const
 	Unequal = Unequal || m_QuicSharedPort != Other.m_QuicSharedPort;
 	Unequal = Unequal || m_HasQuicNextCertificateSha256 != Other.m_HasQuicNextCertificateSha256;
 	Unequal = Unequal || m_HasQuicIdentityFingerprint != Other.m_HasQuicIdentityFingerprint;
+	Unequal = Unequal || m_QuicTrust != Other.m_QuicTrust;
 	Unequal = Unequal || m_WebTransport != Other.m_WebTransport;
 	Unequal = Unequal || m_WebTransportCertificateMode != Other.m_WebTransportCertificateMode;
 	Unequal = Unequal || str_comp(m_aWebTransportPath, Other.m_aWebTransportPath) != 0;
 	Unequal = Unequal || str_comp(m_aWebTransportUrl, Other.m_aWebTransportUrl) != 0;
+	Unequal = Unequal || str_comp(m_aModernHostname, Other.m_aModernHostname) != 0;
 	if(Unequal)
 	{
 		return false;
@@ -516,10 +712,12 @@ CServerInfo2::operator CServerInfo() const
 	Result.m_QuicSharedPort = m_QuicSharedPort;
 	Result.m_HasQuicNextCertificateSha256 = m_HasQuicNextCertificateSha256;
 	Result.m_HasQuicIdentityFingerprint = m_HasQuicIdentityFingerprint;
+	Result.m_QuicTrust = m_QuicTrust;
 	Result.m_WebTransport = m_WebTransport;
 	Result.m_WebTransportCertificateMode = m_WebTransportCertificateMode;
 	str_copy(Result.m_aWebTransportPath, m_aWebTransportPath);
 	str_copy(Result.m_aWebTransportUrl, m_aWebTransportUrl);
+	str_copy(Result.m_aModernHostname, m_aModernHostname);
 	Result.m_Flags = m_Passworded ? SERVER_FLAG_PASSWORD : 0;
 	str_copy(Result.m_aGameType, m_aGameType);
 	str_copy(Result.m_aName, m_aName);

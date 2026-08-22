@@ -391,7 +391,9 @@ void CCharacterCore::Tick(bool UseInput, bool DoDeferredTick)
 				m_HookState = HOOK_RETRACT_START;
 			}
 
-			if(GoingThroughTele && m_pWorld && !m_pCollision->TeleOuts(TeleNr - 1).empty())
+			// only the server can draw between several exits, the prediction waits for it
+			if(GoingThroughTele && m_pWorld && !m_pCollision->TeleOuts(TeleNr - 1).empty() &&
+				(m_pWorld->m_pPrng != nullptr || m_pCollision->TeleOuts(TeleNr - 1).size() == 1))
 			{
 				m_TriggeredEvents = 0;
 				SetHookedPlayer(-1);

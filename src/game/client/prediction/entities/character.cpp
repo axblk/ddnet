@@ -259,9 +259,7 @@ void CCharacter::HandleWeaponSwitch()
 
 void CCharacter::FireWeapon()
 {
-	if(m_NumInputs < 2)
-		return;
-
+	// no m_NumInputs guard: OnDirectInput already copied the new input over both halves
 	if(!GameWorld()->m_WorldConfig.m_PredictWeapons)
 		return;
 

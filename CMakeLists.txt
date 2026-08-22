@@ -2487,12 +2487,26 @@ set(GAME_GENERATED_SHARED
 )
 set(DEPS ${DEP_JSON} ${DEP_MD5} ${ZLIB_DEP})
 
+# The network half of the shared engine. Sixteen of the twenty-one tools never
+# open a socket, and an object library is linked whole, so this is what decides
+# whether a tool that only reads a map carries curl, OpenSSL, libwebsockets and
+# the Rust static library with it. `engine.cpp` is in here because `CEngine` is
+# what opens the network log; nothing outside the client and the server creates
+# one, and the 0.7 translation is only ever asked to translate what came over
+# a wire.
+set(ENGINE_NET_PATTERN "src/engine/shared/(econ|engine|game_wire|host_lookup|http_curl|http_emscripten|masterserver|netban|network[a-z_]*|protocolglue|quic_transport|server_identity|serverinfo|sixup_translate_snapshot|stun|translation_context|websockets)\.(cpp|h)$")
+set(ENGINE_NET ${ENGINE_SHARED})
+list(FILTER ENGINE_NET INCLUDE REGEX "${ENGINE_NET_PATTERN}")
+list(FILTER ENGINE_SHARED EXCLUDE REGEX "${ENGINE_NET_PATTERN}")
+
 # Libraries
+# Everything that links engine-shared needs these. SQLite is not among them:
+# only the client (ping cache, match journal) and the server (ranks) talk to a
+# database, and the twenty tools that link engine-shared should not carry one.
 set(LIBS
   # tidy-alphabetical-start
   ${CRYPTO_LIBRARIES}
   ${CURL_LIBRARIES}
-  ${SQLite3_LIBRARIES}
   ${WEBSOCKETS_LIBRARIES}
   ${ZLIB_LIBRARIES}
   # tidy-alphabetical-end
@@ -2507,13 +2521,15 @@ set(LIBS
 # Targets
 add_library(engine-gfx EXCLUDE_FROM_ALL OBJECT ${ENGINE_GFX})
 target_include_directories(engine-gfx PRIVATE ${PNG_INCLUDE_DIRS})
+add_library(engine-net EXCLUDE_FROM_ALL OBJECT ${ENGINE_NET})
 add_library(engine-shared EXCLUDE_FROM_ALL OBJECT ${ENGINE_INTERFACE} ${ENGINE_SHARED} ${ENGINE_UUID_SHARED} ${BASE})
 add_library(game-shared EXCLUDE_FROM_ALL OBJECT ${GAME_SHARED} ${GAME_GENERATED_SHARED})
 # tidy-alphabetical-start
+add_dependencies(engine-net generate_protocol)
 add_dependencies(engine-shared generate_protocol)
 add_dependencies(game-shared generate_protocol)
 # tidy-alphabetical-end
-list(APPEND TARGETS_OWN engine-gfx engine-shared game-shared)
+list(APPEND TARGETS_OWN engine-gfx engine-net engine-shared game-shared)
 
 if(DISCORD AND NOT DISCORD_DYNAMIC)
   add_library(discord-shared SHARED IMPORTED)
@@ -2602,6 +2618,7 @@ if(CLIENT)
     client.cpp
     client.h
     connection.h
+    demo_render_main.cpp
     demoedit.cpp
     demoedit.h
     discord.cpp
@@ -2717,11 +2734,13 @@ if(CLIENT)
     components/menu_background.h
     components/menus.cpp
     components/menus.h
+    components/menus_backdrop.cpp
     components/menus_browser.cpp
     components/menus_demo.cpp
     components/menus_ingame.cpp
     components/menus_ingame_touch_controls.cpp
     components/menus_ingame_touch_controls.h
+    components/menus_null.cpp
     components/menus_settings.cpp
     components/menus_settings_appearance.cpp
     components/menus_settings_assets.cpp
@@ -2957,7 +2976,23 @@ if(CLIENT)
     src/generated/client_data7.h
     # tidy-alphabetical-end
   )
-  set(CLIENT_SRC ${ENGINE_CLIENT} ${PLATFORM_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
+  # The client gets the menu pages, a program without them gets the stand-in.
+  # The backdrop is not a page and stays in both.
+  set(GAME_CLIENT_MENUS_FULL ${GAME_CLIENT})
+  list(FILTER GAME_CLIENT_MENUS_FULL EXCLUDE REGEX "src/game/client/components/menus_null\.cpp$")
+  set(GAME_CLIENT_MENUS_NULL ${GAME_CLIENT})
+  list(FILTER GAME_CLIENT_MENUS_NULL EXCLUDE REGEX "src/game/client/components/(community_icons|menus)[^/]*\.(cpp|h)$")
+  list(APPEND GAME_CLIENT_MENUS_NULL
+    src/game/client/components/menus.h
+    src/game/client/components/menus_backdrop.cpp
+    src/game/client/components/menus_null.cpp
+  )
+  # The demo render tool brings its own entry point, so the client's stays out of
+  # the tool and the tool's out of the client.
+  set(ENGINE_CLIENT_GAME ${ENGINE_CLIENT})
+  list(FILTER ENGINE_CLIENT_GAME EXCLUDE REGEX "src/engine/client/demo_render_main\.cpp$")
+
+  set(CLIENT_SRC ${ENGINE_CLIENT_GAME} ${PLATFORM_CLIENT} ${GAME_CLIENT_MENUS_FULL} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
 
   set(DEPS_CLIENT ${DEPS} ${GLEW_DEP} ${WAVPACK_DEP})
 
@@ -2969,6 +3004,7 @@ if(CLIENT)
     ${GLEW_LIBRARIES}
     ${PNG_LIBRARIES}
     ${SDL2_LIBRARIES}
+    ${SQLite3_LIBRARIES}
     ${VULKAN_LIBRARIES}
     ${WAVPACK_LIBRARIES}
     # tidy-alphabetical-end
@@ -3025,6 +3061,7 @@ if(CLIENT)
       ${DEPS_CLIENT}
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3039,6 +3076,7 @@ if(CLIENT)
       ${DEPS_CLIENT}
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3083,7 +3121,9 @@ if(CLIENT)
   )
 
   if(VIDEORECORDER AND (VULKAN OR WEBGPU_NATIVE_BACKEND) AND NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "emscripten"))
-    set(DEMO_RENDERER_SRC ${ENGINE_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
+    # A tool that renders a demo to a video file never opens the editor, and
+    # compiling it is 265 of the 908 seconds this target used to take.
+    set(DEMO_RENDERER_SRC ${ENGINE_CLIENT} ${GAME_CLIENT_MENUS_NULL} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/backend/(null|opengl|opengles)/")
     if(NOT VULKAN)
       list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/backend/vulkan/")
@@ -3104,6 +3144,7 @@ if(CLIENT)
       ${WAVPACK_DEP}
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3116,6 +3157,7 @@ if(CLIENT)
     set_property(TARGET demo-renderer PROPERTY OUTPUT_NAME ddnet-demo-render)
     set_own_rpath(demo-renderer)
     target_compile_definitions(demo-renderer PRIVATE CONF_DEMO_RENDER_TOOL)
+    set_property(TARGET demo-renderer PROPERTY DDNET_NO_CLIENT_INTEGRATIONS TRUE)
     if(VULKAN)
       target_compile_definitions(demo-renderer PRIVATE CONF_BACKEND_VULKAN)
     endif()
@@ -3124,9 +3166,11 @@ if(CLIENT)
     endif()
     target_link_libraries(demo-renderer
       # tidy-alphabetical-start
+      ${CRYPTO_LIBRARIES}
       ${FFMPEG_LIBRARIES}
       ${FREETYPE_LIBRARIES}
       ${PNG_LIBRARIES}
+      ${SQLite3_LIBRARIES}
       ${VULKAN_LIBRARIES}
       ${WAVPACK_LIBRARIES}
       # tidy-alphabetical-end
@@ -3377,6 +3421,7 @@ if(SERVER)
   set(LIBS_SERVER
     ${MINIUPNPC_LIBRARIES}
     ${MYSQL_LIBRARIES}
+    ${SQLite3_LIBRARIES}
     ${TARGET_ANTIBOT}
     rust_engine_shared
 
@@ -3407,6 +3452,7 @@ if(SERVER)
       ${SERVER_VERSIONINFO}
       $<TARGET_OBJECTS:game-server-without-main>
       # tidy-alphabetical-sort
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3420,6 +3466,7 @@ if(SERVER)
       ${SERVER_VERSIONINFO}
       $<TARGET_OBJECTS:game-server-without-main>
       # tidy-alphabetical-sort
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3498,8 +3545,24 @@ if(TOOLS)
     if(T MATCHES "\\.cpp$")
       string(REGEX REPLACE "\\.cpp$" "" TOOL "${T}")
       set(TOOL_DEPS ${DEPS})
-      set(TOOL_LIBS ${LIBS})
       unset(EXTRA_TOOL_SRC)
+      # Five of the tools open a socket. The rest read and write files, and an
+      # object library is linked whole, so leaving the network half out is also
+      # what lets them link without curl, OpenSSL, libwebsockets and the Rust
+      # static library the QUIC transport needs.
+      if(TOOL MATCHES "^(crapnet|packetgen|quic_cli|stun|twping)$")
+        set(TOOL_LIBS ${LIBS})
+        list(APPEND EXTRA_TOOL_SRC $<TARGET_OBJECTS:engine-net>)
+        if(QUIC)
+          # engine-net carries the QUIC transport, so a tool that links it needs
+          # the C++ side of the Rust bridge too. The Rust library is in ${LIBS}.
+          list(APPEND EXTRA_TOOL_SRC $<TARGET_OBJECTS:rust-bridge-shared>)
+        endif()
+      else()
+        # Hashing in `base` uses OpenSSL where it is available, so that stays.
+        # curl, libwebsockets and the Rust library go with the network half.
+        set(TOOL_LIBS ${CRYPTO_LIBRARIES} ${ZLIB_LIBRARIES} ${PLATFORM_LIBS} ${CMAKE_THREAD_LIBS_INIT})
+      endif()
       if(TOOL MATCHES "^(dilate|map_convert_07|map_optimize|map_extract|map_replace_image)$")
         list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS})
         list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-gfx>)
@@ -3507,12 +3570,6 @@ if(TOOLS)
       endif()
       if(TOOL MATCHES "^config_")
         list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")
-      endif()
-      if(QUIC)
-        # In this configuration engine-shared carries the QUIC transport, so
-        # every tool that links it needs the C++ side of the Rust bridge, not
-        # just the spike tool itself. The Rust library is already in ${LIBS}.
-        list(APPEND EXTRA_TOOL_SRC $<TARGET_OBJECTS:rust-bridge-shared>)
       endif()
       set(EXCLUDE_FROM_ALL)
       if(DEV)
@@ -3740,6 +3797,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   add_executable(${TARGET_CLIENT_GAME_STATE_TESTS} EXCLUDE_FROM_ALL
     ${CLIENT_GAME_STATE_TEST_SOURCES}
     # tidy-alphabetical-start
+    $<TARGET_OBJECTS:engine-net>
     $<TARGET_OBJECTS:engine-shared>
     $<TARGET_OBJECTS:game-shared>
     $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3757,6 +3815,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     ${TESTS_EXTRA}
     # tidy-alphabetical-start
     $<TARGET_OBJECTS:engine-gfx>
+    $<TARGET_OBJECTS:engine-net>
     $<TARGET_OBJECTS:engine-shared>
     $<TARGET_OBJECTS:game-server-without-main>
     $<TARGET_OBJECTS:game-shared>
@@ -3796,6 +3855,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   set(TARGET_VANILLA_GOLDEN vanilla-golden-current)
   add_executable(${TARGET_VANILLA_GOLDEN} EXCLUDE_FROM_ALL
     scripts/vanilla_golden/current_runner.cpp
+    $<TARGET_OBJECTS:engine-net>
     $<TARGET_OBJECTS:engine-shared>
     $<TARGET_OBJECTS:game-server-without-main>
     $<TARGET_OBJECTS:game-shared>
@@ -3843,6 +3903,7 @@ endif()
 add_library(rust_test STATIC EXCLUDE_FROM_ALL
   # tidy-alphabetical-start
   $<TARGET_OBJECTS:engine-gfx>
+  $<TARGET_OBJECTS:engine-net>
   $<TARGET_OBJECTS:engine-shared>
   $<TARGET_OBJECTS:game-shared>
   $<TARGET_OBJECTS:rust-bridge-shared>
@@ -4535,14 +4596,18 @@ foreach(target ${TARGETS_OWN})
     target_compile_definitions(${target} PRIVATE CONF_OPENSSL)
     target_include_directories(${target} SYSTEM PRIVATE ${CRYPTO_INCLUDE_DIRS})
   endif()
-  if(QUIC AND NOT "${target}" STREQUAL "demo-renderer")
+  # These three reach into config_variables.h, so a target that sees them
+  # differently than the engine-shared objects it links gets a CConfig with
+  # different members and reads every later one at the wrong offset. They are
+  # therefore set for every target, whether or not it uses the feature.
+  if(QUIC)
     target_compile_definitions(${target} PRIVATE CONF_QUIC)
   endif()
-  if(WEBSOCKETS AND NOT "${target}" STREQUAL "demo-renderer")
+  if(WEBSOCKETS)
     target_compile_definitions(${target} PRIVATE CONF_WEBSOCKETS)
     target_include_directories(${target} SYSTEM PRIVATE ${WEBSOCKETS_INCLUDE_DIRS})
   endif()
-  if(UPNP AND NOT "${target}" STREQUAL "demo-renderer")
+  if(UPNP)
     target_compile_definitions(${target} PRIVATE CONF_UPNP)
     target_include_directories(${target} SYSTEM PRIVATE ${MINIUPNPC_INCLUDE_DIRS})
   endif()
@@ -4565,16 +4630,20 @@ foreach(target ${TARGETS_OWN})
   if(TEST_MYSQL)
     target_compile_definitions(${target} PRIVATE CONF_TEST_MYSQL)
   endif()
-  if(AUTOUPDATE AND NOT STEAM AND NOT "${target}" STREQUAL "demo-renderer")
+  # A tool is not the shipped client: it has no update prompt, no store page and
+  # nobody to show a rich presence to. Unlike the three above, none of these
+  # reach into a type the target shares with the objects it links.
+  get_target_property(NO_CLIENT_INTEGRATIONS ${target} DDNET_NO_CLIENT_INTEGRATIONS)
+  if(AUTOUPDATE AND NOT STEAM AND NOT NO_CLIENT_INTEGRATIONS)
     target_compile_definitions(${target} PRIVATE CONF_AUTOUPDATE)
   endif()
-  if(INFORM_UPDATE AND NOT STEAM AND NOT "${target}" STREQUAL "demo-renderer")
+  if(INFORM_UPDATE AND NOT STEAM AND NOT NO_CLIENT_INTEGRATIONS)
     target_compile_definitions(${target} PRIVATE CONF_INFORM_UPDATE)
   endif()
-  if(STEAM AND NOT "${target}" STREQUAL "demo-renderer")
+  if(STEAM AND NOT NO_CLIENT_INTEGRATIONS)
     target_compile_definitions(${target} PRIVATE PLATFORM_SUFFIX=-steam)
   endif()
-  if(DISCORD AND NOT "${target}" STREQUAL "demo-renderer")
+  if(DISCORD AND NOT NO_CLIENT_INTEGRATIONS)
     target_compile_definitions(${target} PRIVATE CONF_DISCORD)
     if(DISCORD_DYNAMIC)
       target_compile_definitions(${target} PRIVATE CONF_DISCORD_DYNAMIC)

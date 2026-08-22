@@ -4437,7 +4437,9 @@ void CClient::InitInterfaces()
 {
 	// fetch interfaces
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
-	m_pEditor = Kernel()->RequestInterface<IEditor>();
+	// A build without an editor registers none, and everything that would
+	// open one is skipped instead of calling into a stand-in that does nothing.
+	m_pEditor = Kernel()->TryGetInterface<IEditor>();
 	m_pFavorites = Kernel()->RequestInterface<IFavorites>();
 	m_pSound = Kernel()->RequestInterface<IEngineSound>();
 	m_pGameClient = Kernel()->RequestInterface<IGameClient>();
@@ -4599,7 +4601,8 @@ void CClient::Run()
 	Input()->Init();
 
 	// init the editor
-	m_pEditor->Init();
+	if(m_pEditor != nullptr)
+		m_pEditor->Init();
 
 	m_ServerBrowser.OnInit();
 	// loads the existing ddnet info file if it exists
@@ -4725,7 +4728,7 @@ void CClient::Run()
 		}
 
 		// handle pending map edits
-		if(m_aCmdEditMap[0])
+		if(m_aCmdEditMap[0] && m_pEditor != nullptr)
 		{
 			int Result = m_pEditor->HandleMapDrop(m_aCmdEditMap, IStorage::TYPE_ALL_OR_ABSOLUTE);
 			if(Result)
@@ -4768,7 +4771,7 @@ void CClient::Run()
 		if(CtrlShiftKey(KEY_G, LastG))
 			g_Config.m_DbgGraphs ^= 1;
 
-		if(CtrlShiftKey(KEY_E, LastE))
+		if(CtrlShiftKey(KEY_E, LastE) && m_pEditor != nullptr)
 		{
 			if(g_Config.m_ClEditor)
 				m_pEditor->OnClose();
@@ -4777,7 +4780,7 @@ void CClient::Run()
 
 		// render
 		{
-			if(g_Config.m_ClEditor)
+			if(g_Config.m_ClEditor && m_pEditor != nullptr)
 			{
 				if(!m_EditorActive)
 				{
@@ -5091,12 +5094,17 @@ void CClient::Run()
 		}
 	}
 
+	// The demo render tool reads the settings to render the way the client would,
+	// but it is a command line tool that may well run while the client is open,
+	// so it does not write them back.
+#if !defined(CONF_DEMO_RENDER_TOOL)
 	if(!m_pConfigManager->Save())
 	{
 		char aError[128];
 		str_format(aError, sizeof(aError), Localize("Saving settings to '%s' failed"), CONFIG_FILE);
 		m_vQuittingWarnings.emplace_back(Localize("Error saving settings"), aError);
 	}
+#endif
 	m_Fifo.Shutdown();
 	m_pHttp->Shutdown();
 	Engine()->ShutdownJobs();
@@ -6028,14 +6036,28 @@ const char *CClient::DemoPlayer_Render(const char *pFilename, int StorageType, c
 	return QueueVideoExport(pFilename, StorageType, pVideoName, Settings, SpeedIndex, StartQueue, false);
 }
 
-void CClient::ConfigureCommandLineVideoExport(const char *pDemoPath, const char *pVideoPath, const CVideoExportSettings &Settings)
+bool CClient::ConfigureCommandLineVideoExport(const CCommandLineVideoExport &Export)
 {
+	str_copy(m_aCommandLineVideoPath, Export.m_aVideoPath);
+	if(!str_endswith(m_aCommandLineVideoPath, ".mp4"))
+		str_append(m_aCommandLineVideoPath, ".mp4");
+	if(Storage()->FileExists(m_aCommandLineVideoPath, IStorage::TYPE_SAVE_OR_ABSOLUTE))
+	{
+		log_error("videorecorder", "Output file '%s' already exists.", m_aCommandLineVideoPath);
+		return false;
+	}
+
 	m_CommandLineVideoExport = true;
 	m_CommandLineExitCode = 1;
 	m_HiddenWindow = true;
-	str_copy(m_aCommandLineDemoPath, pDemoPath);
-	str_copy(m_aCommandLineVideoPath, pVideoPath);
-	m_CommandLineVideoSettings = Settings;
+	str_copy(m_aCommandLineDemoPath, Export.m_aDemoPath);
+	m_CommandLineVideoSettings = Export.Settings();
+
+	// The export writes the video file as it goes, so an interrupt has to reach
+	// the encoder instead of killing the process with a half written file.
+	signal(SIGINT, HandleVideoExportInterrupt);
+	signal(SIGTERM, HandleVideoExportInterrupt);
+	return true;
 }
 #endif
 
@@ -6438,7 +6460,8 @@ void CClient::Notify(const char *pTitle, const char *pMessage)
 void CClient::OnWindowResize()
 {
 	GameClient()->OnWindowResize();
-	m_pEditor->OnWindowResize();
+	if(m_pEditor != nullptr)
+		m_pEditor->OnWindowResize();
 	TextRender()->OnWindowResize();
 }
 
@@ -6628,7 +6651,7 @@ void CClient::RegisterCommands()
 	m_pConsole->Chain("stdout_output_level", ConchainStdoutOutputLevel, this);
 }
 
-static CClient *CreateClient()
+CClient *CreateClient()
 {
 	return new CClient;
 }
@@ -6665,6 +6688,32 @@ void CClient::HandleMapPath(const char *pPath)
 	str_copy(m_aCmdEditMap, pPath);
 }
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+extern "C" {
+
+// This will be called from Emscripten JS code
+void EmscriptenCallbackQuitForce()
+{
+	emscripten_force_exit(-1);
+}
+}
+#endif
+
+/*
+	Server Time
+	Client Mirror Time
+	Client Predicted Time
+
+	Snapshot Latency
+		Downstream latency
+
+	Prediction Latency
+		Upstream latency
+*/
+
+// The demo render tool has an entry point of its own, in demo_render_main.cpp.
+#if !defined(CONF_DEMO_RENDER_TOOL)
+
 static bool UnknownArgumentCallback(const char *pCommand, void *pUser)
 {
 	CClient *pClient = static_cast<CClient *>(pUser);
@@ -6692,29 +6741,6 @@ static bool SaveUnknownCommandCallback(const char *pCommand, void *pUser)
 	pClient->ConfigManager()->StoreUnknownCommand(pCommand);
 	return true;
 }
-
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
-extern "C" {
-
-// This will be called from Emscripten JS code
-void EmscriptenCallbackQuitForce()
-{
-	emscripten_force_exit(-1);
-}
-}
-#endif
-
-/*
-	Server Time
-	Client Mirror Time
-	Client Predicted Time
-
-	Snapshot Latency
-		Downstream latency
-
-	Prediction Latency
-		Upstream latency
-*/
 
 #if defined(CONF_PLATFORM_MACOS)
 extern "C" int TWMain(int argc, const char **argv)
@@ -6782,14 +6808,6 @@ int main(int argc, const char **argv)
 	vpLoggers.push_back(pFutureAssertionLogger);
 	log_set_global_logger(log_logger_collection(std::move(vpLoggers)).release());
 
-#if defined(CONF_DEMO_RENDER_TOOL)
-	if(!CommandLineVideoExportRequested)
-	{
-		log_error("videorecorder", "Usage: ddnet-demo-render --render-demo <demo> --output <video.mp4> [--width <even>] [--height <even>] [--fps <1-1000>] [--crf <0-51>] [--preset <0-9>] [--no-audio]");
-		return -1;
-	}
-#endif
-
 #if defined(CONF_PLATFORM_ANDROID)
 	// Initialize Android after logger is available
 	const char *pAndroidInitError = InitAndroid();
@@ -6837,9 +6855,7 @@ int main(int argc, const char **argv)
 	// Register SDL for cleanup before creating the kernel and client,
 	// so SDL is shutdown after kernel and client. Otherwise the client
 	// may crash when shutting down after SDL is already shutdown.
-#if !defined(CONF_DEMO_RENDER_TOOL)
 	CleanerFunctions.emplace([]() { SDL_Quit(); });
-#endif
 
 	CClient *pClient = CreateClient();
 	pClient->SetLoggers(pFutureFileLogger, std::move(pStdoutLogger));
@@ -7110,102 +7126,13 @@ int main(int argc, const char **argv)
 	// Parse video export arguments separately, so the remaining arguments keep
 	// using the regular console command line interface.
 #if defined(CONF_VIDEORECORDER)
-	bool CommandLineVideoExport = false;
-	bool HasVideoExportArgument = false;
-	bool CommandLineVideoNoAudio = false;
-	int CommandLineVideoWidth = 0;
-	int CommandLineVideoHeight = 0;
-	int CommandLineVideoFps = 0;
-	int CommandLineVideoCrf = -1;
-	int CommandLineVideoPreset = -1;
-	char aCommandLineDemoPath[IO_MAX_PATH_LENGTH] = {};
-	char aCommandLineVideoPath[IO_MAX_PATH_LENGTH] = {};
-	char aVideoArgumentError[256] = {};
+	CCommandLineVideoExport VideoExport;
 	std::vector<const char *> vArguments;
-	vArguments.reserve(argc);
-	vArguments.push_back(argv[0]);
-	for(int Argument = 1; Argument < argc && aVideoArgumentError[0] == '\0'; ++Argument)
+	if(!VideoExport.ParseArguments(argc, argv, vArguments, "DDNet"))
 	{
-		const char *pArgument = argv[Argument];
-		auto ReadValue = [&]() -> const char * {
-			if(Argument + 1 >= argc)
-				return nullptr;
-			return argv[++Argument];
-		};
-		auto ReadInteger = [&](int &Value) {
-			const char *pValue = ReadValue();
-			return pValue != nullptr && pValue[0] != '\0' && str_toint(pValue, &Value);
-		};
-		if(str_comp(pArgument, "--render-demo") == 0)
-		{
-			HasVideoExportArgument = true;
-			const char *pValue = ReadValue();
-			if(pValue == nullptr || pValue[0] == '\0' || str_length(pValue) >= static_cast<int>(sizeof(aCommandLineDemoPath)))
-				str_copy(aVideoArgumentError, "Invalid value for --render-demo.");
-			else
-			{
-				str_copy(aCommandLineDemoPath, pValue);
-				CommandLineVideoExport = true;
-			}
-		}
-		else if(str_comp(pArgument, "--output") == 0)
-		{
-			HasVideoExportArgument = true;
-			const char *pValue = ReadValue();
-			if(pValue == nullptr || pValue[0] == '\0' || str_length(pValue) >= static_cast<int>(sizeof(aCommandLineVideoPath)) - str_length(".mp4.partial"))
-				str_copy(aVideoArgumentError, "Invalid value for --output.");
-			else
-				str_copy(aCommandLineVideoPath, pValue);
-		}
-		else if(str_comp(pArgument, "--width") == 0)
-		{
-			HasVideoExportArgument = true;
-			if(!ReadInteger(CommandLineVideoWidth) || CommandLineVideoWidth < 2 || CommandLineVideoWidth > 8192 || CommandLineVideoWidth % 2 != 0)
-				str_copy(aVideoArgumentError, "--width must be an even number between 2 and 8192.");
-		}
-		else if(str_comp(pArgument, "--height") == 0)
-		{
-			HasVideoExportArgument = true;
-			if(!ReadInteger(CommandLineVideoHeight) || CommandLineVideoHeight < 2 || CommandLineVideoHeight > 8192 || CommandLineVideoHeight % 2 != 0)
-				str_copy(aVideoArgumentError, "--height must be an even number between 2 and 8192.");
-		}
-		else if(str_comp(pArgument, "--fps") == 0)
-		{
-			HasVideoExportArgument = true;
-			if(!ReadInteger(CommandLineVideoFps) || CommandLineVideoFps < 1 || CommandLineVideoFps > 1000)
-				str_copy(aVideoArgumentError, "--fps must be between 1 and 1000.");
-		}
-		else if(str_comp(pArgument, "--crf") == 0)
-		{
-			HasVideoExportArgument = true;
-			if(!ReadInteger(CommandLineVideoCrf) || CommandLineVideoCrf < 0 || CommandLineVideoCrf > 51)
-				str_copy(aVideoArgumentError, "--crf must be between 0 and 51.");
-		}
-		else if(str_comp(pArgument, "--preset") == 0)
-		{
-			HasVideoExportArgument = true;
-			if(!ReadInteger(CommandLineVideoPreset) || CommandLineVideoPreset < 0 || CommandLineVideoPreset > 9)
-				str_copy(aVideoArgumentError, "--preset must be between 0 and 9.");
-		}
-		else if(str_comp(pArgument, "--no-audio") == 0)
-		{
-			HasVideoExportArgument = true;
-			CommandLineVideoNoAudio = true;
-		}
-		else
-			vArguments.push_back(pArgument);
-	}
-	if(aVideoArgumentError[0] == '\0' && HasVideoExportArgument && (!CommandLineVideoExport || aCommandLineVideoPath[0] == '\0'))
-		str_copy(aVideoArgumentError, "--render-demo and --output must be used together.");
-	if(aVideoArgumentError[0] != '\0')
-	{
-		log_error("videorecorder", "%s", aVideoArgumentError);
-		log_error("videorecorder", "Usage: DDNet --render-demo <demo> --output <video.mp4> [--width <even>] [--height <even>] [--fps <1-1000>] [--crf <0-51>] [--preset <0-9>] [--no-audio]");
 		PerformAllCleanup();
 		return -1;
 	}
-	argc = static_cast<int>(vArguments.size());
-	argv = vArguments.data();
 #else
 	if(CommandLineVideoExportRequested)
 	{
@@ -7221,31 +7148,10 @@ int main(int argc, const char **argv)
 	pConsole->SetUnknownCommandCallback(IConsole::EmptyUnknownCommandCallback, nullptr);
 
 #if defined(CONF_VIDEORECORDER)
-	if(CommandLineVideoExport)
+	if(VideoExport.m_Export && !pClient->ConfigureCommandLineVideoExport(VideoExport))
 	{
-		if(!str_endswith(aCommandLineVideoPath, ".mp4"))
-			str_append(aCommandLineVideoPath, ".mp4");
-		if(pStorage->FileExists(aCommandLineVideoPath, IStorage::TYPE_SAVE_OR_ABSOLUTE))
-		{
-			log_error("videorecorder", "Output file '%s' already exists.", aCommandLineVideoPath);
-			PerformAllCleanup();
-			return -1;
-		}
-		CVideoExportSettings Settings;
-		Settings.m_Width = CommandLineVideoWidth;
-		Settings.m_Height = CommandLineVideoHeight;
-		Settings.m_FPS = CommandLineVideoFps == 0 ? g_Config.m_ClVideoRecorderFPS : CommandLineVideoFps;
-		Settings.m_Audio = !CommandLineVideoNoAudio && g_Config.m_ClVideoSndEnable != 0;
-		Settings.m_Crf = CommandLineVideoCrf < 0 ? g_Config.m_ClVideoX264Crf : CommandLineVideoCrf;
-		Settings.m_Preset = CommandLineVideoPreset < 0 ? g_Config.m_ClVideoX264Preset : CommandLineVideoPreset;
-		Settings.m_ShowHud = g_Config.m_ClVideoShowhud != 0;
-		Settings.m_ShowChat = g_Config.m_ClVideoShowChat != 0;
-		Settings.m_ShowHookCollOther = g_Config.m_ClVideoShowHookCollOther != 0;
-		Settings.m_ShowDirection = g_Config.m_ClVideoShowDirection;
-		Settings.m_ShowImportantAlerts = g_Config.m_ClVideoShowImportantAlerts != 0;
-		pClient->ConfigureCommandLineVideoExport(aCommandLineDemoPath, aCommandLineVideoPath, Settings);
-		signal(SIGINT, HandleVideoExportInterrupt);
-		signal(SIGTERM, HandleVideoExportInterrupt);
+		PerformAllCleanup();
+		return -1;
 	}
 #endif
 
@@ -7277,11 +7183,10 @@ int main(int argc, const char **argv)
 	}
 
 	// Register protocol and file extensions
-#if defined(CONF_FAMILY_WINDOWS) && !defined(CONF_DEMO_RENDER_TOOL)
+#if defined(CONF_FAMILY_WINDOWS)
 	pClient->ShellRegister();
 #endif
 
-#if !defined(CONF_DEMO_RENDER_TOOL)
 	// Do not automatically translate touch events to mouse events and vice versa.
 	SDL_SetHint("SDL_TOUCH_MOUSE_EVENTS", "0");
 	SDL_SetHint("SDL_MOUSE_TOUCH_EVENTS", "0");
@@ -7322,7 +7227,6 @@ int main(int argc, const char **argv)
 		PerformAllCleanup();
 		return -1;
 	}
-#endif
 
 	// run the client
 	log_trace("client", "initialization finished after %.2fms, starting...", (time_get() - MainStart) * 1000.0f / (float)time_freq());
@@ -7365,6 +7269,8 @@ int main(int argc, const char **argv)
 
 	return ExitCode;
 }
+
+#endif
 
 // DDRace
 

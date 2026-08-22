@@ -140,3 +140,29 @@ TEST(Huffman, DecompressionTableLookupIntegerOverflow)
 	EXPECT_EQ(Huffman.Decompress(aInput2, sizeof(aInput2), aUncompressed, sizeof(aUncompressed)), -1);
 	EXPECT_EQ(Huffman.Decompress(aInput3, sizeof(aInput3), aUncompressed, sizeof(aUncompressed)), -1);
 }
+
+TEST(Huffman, SharedTableIsTheSameTable)
+{
+	// Demos and ghosts are written by one of these and read by the other, so
+	// the shared table has to be the table an instance builds for itself, down
+	// to the byte.
+	CHuffman Huffman;
+	Huffman.Init();
+
+	unsigned char aInput[64];
+	for(size_t i = 0; i < sizeof(aInput); ++i)
+	{
+		aInput[i] = (i * 37) & 0xFF;
+	}
+
+	unsigned char aCompressed[2048];
+	unsigned char aSharedCompressed[2048];
+	const int CompressedSize = Huffman.Compress(aInput, sizeof(aInput), aCompressed, sizeof(aCompressed));
+	ASSERT_GT(CompressedSize, 0);
+	ASSERT_EQ(HuffmanCompress(aInput, sizeof(aInput), aSharedCompressed, sizeof(aSharedCompressed)), CompressedSize);
+	EXPECT_EQ(mem_comp(aCompressed, aSharedCompressed, CompressedSize), 0);
+
+	unsigned char aDecompressed[2048];
+	ASSERT_EQ(HuffmanDecompress(aCompressed, CompressedSize, aDecompressed, sizeof(aDecompressed)), (int)sizeof(aInput));
+	EXPECT_EQ(mem_comp(aInput, aDecompressed, sizeof(aInput)), 0);
+}

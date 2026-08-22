@@ -659,7 +659,13 @@ public:
 	bool DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const override;
 	CSessionId VideoSessionId() const override { return m_VideoSessionId; }
 	bool VideoUsesOfflineAudio() const override { return m_VideoOfflineAudio; }
-	void ConfigureCommandLineVideoExport(const char *pDemoPath, const char *pVideoPath, const CVideoExportSettings &Settings);
+	/**
+	 * Sets up the video export that the command line asked for.
+	 *
+	 * @return `false` when the output file cannot be written, which has already
+	 * been logged.
+	 */
+	bool ConfigureCommandLineVideoExport(const CCommandLineVideoExport &Export);
 	int CommandLineExitCode() const { return m_CommandLineExitCode; }
 #endif
 
@@ -748,7 +754,7 @@ public:
 	void DemoSlice(const char *pDstPath, CLIENTFUNC_FILTER pfnFilter, void *pUser) override;
 	virtual void SaveReplay(int Length, const char *pFilename = "");
 
-	bool EditorHasUnsavedData() const override { return m_pEditor->HasUnsavedData(); }
+	bool EditorHasUnsavedData() const override { return m_pEditor != nullptr && m_pEditor->HasUnsavedData(); }
 
 	IFriends *Foes() override { return &m_Foes; }
 
@@ -773,5 +779,11 @@ public:
 	void GetGpuInfoString(char (&aGpuInfo)[512]) override;
 	void SetLoggers(std::shared_ptr<ILogger> &&pFileLogger, std::shared_ptr<ILogger> &&pStdoutLogger);
 };
+
+/**
+ * Creates the client that an entry point then runs, either the game's or the
+ * demo render tool's.
+ */
+CClient *CreateClient();
 
 #endif

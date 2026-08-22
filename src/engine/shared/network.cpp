@@ -253,7 +253,7 @@ void CNetBase::SendPacket(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, CNetP
 	int CompressedSize = -1;
 	if((pPacket->m_Flags & NET_PACKETFLAG_CONTROL) == 0)
 	{
-		CompressedSize = ms_Huffman.Compress(pPacket->m_aChunkData, pPacket->m_DataSize, &aBuffer[HeaderSize], NET_MAX_PACKETSIZE - HeaderSize);
+		CompressedSize = HuffmanCompress(pPacket->m_aChunkData, pPacket->m_DataSize, &aBuffer[HeaderSize], NET_MAX_PACKETSIZE - HeaderSize);
 	}
 
 	// check if the compression was enabled, successful and good enough
@@ -400,7 +400,7 @@ int CNetBase::UnpackPacket(unsigned char *pBuffer, int Size, CNetPacketConstruct
 			{
 				*pDecompressed = true;
 			}
-			pPacket->m_DataSize = ms_Huffman.Decompress(&pBuffer[DataStart], pPacket->m_DataSize, pPacket->m_aChunkData, sizeof(pPacket->m_aChunkData));
+			pPacket->m_DataSize = HuffmanDecompress(&pBuffer[DataStart], pPacket->m_DataSize, pPacket->m_aChunkData, sizeof(pPacket->m_aChunkData));
 			if(pPacket->m_DataSize < 0)
 			{
 				return -1;
@@ -526,7 +526,6 @@ bool CNetBase::IsSeqInBackroom(int Seq, int Ack)
 
 IOHANDLE CNetBase::ms_DataLogSent = nullptr;
 IOHANDLE CNetBase::ms_DataLogRecv = nullptr;
-CHuffman CNetBase::ms_Huffman;
 
 void CNetBase::OpenLog(IOHANDLE DataLogSent, IOHANDLE DataLogRecv)
 {
@@ -566,21 +565,6 @@ void CNetBase::CloseLog()
 		io_close(ms_DataLogRecv);
 		ms_DataLogRecv = nullptr;
 	}
-}
-
-int CNetBase::Compress(const void *pData, int DataSize, void *pOutput, int OutputSize)
-{
-	return ms_Huffman.Compress(pData, DataSize, pOutput, OutputSize);
-}
-
-int CNetBase::Decompress(const void *pData, int DataSize, void *pOutput, int OutputSize)
-{
-	return ms_Huffman.Decompress(pData, DataSize, pOutput, OutputSize);
-}
-
-void CNetBase::Init()
-{
-	ms_Huffman.Init();
 }
 
 void CNetTokenCache::Init(NETSOCKET Socket)

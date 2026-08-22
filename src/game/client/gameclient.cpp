@@ -370,7 +370,7 @@ void CGameClient::OnConsoleInit()
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 	m_pDemoPlayer = Kernel()->RequestInterface<IDemoPlayer>();
 	m_pServerBrowser = Kernel()->RequestInterface<IServerBrowser>();
-	m_pEditor = Kernel()->RequestInterface<IEditor>();
+	m_pEditor = Kernel()->TryGetInterface<IEditor>();
 	m_pFavorites = Kernel()->RequestInterface<IFavorites>();
 	m_pFriends = Kernel()->RequestInterface<IFriends>();
 	m_pFoes = Client()->Foes();
@@ -1228,8 +1228,11 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnReset();
 
-	Editor()->ResetMentions();
-	Editor()->ResetIngameMoved();
+	if(Editor() != nullptr)
+	{
+		Editor()->ResetMentions();
+		Editor()->ResetIngameMoved();
+	}
 }
 
 void CGameClient::PersistLiveStatsOnDisconnect(CSessionId SessionId, CGameSessionContext &Session)
@@ -3765,7 +3768,7 @@ void CGameClient::UpdateEditorIngameMoved()
 	{
 		--m_EditorMovementDelay;
 	}
-	if(m_EditorMovementDelay == 0 && LocalCharacterMoved)
+	if(m_EditorMovementDelay == 0 && LocalCharacterMoved && Editor() != nullptr)
 	{
 		Editor()->OnIngameMoved();
 	}

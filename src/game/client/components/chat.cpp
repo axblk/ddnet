@@ -914,7 +914,7 @@ void CChat::AddLine(CGameSessionContext &Session, const CGameState &State, int64
 				char aBuf[1024];
 				str_format(aBuf, sizeof(aBuf), "%s: %s", StoredLine.m_aName, StoredLine.m_aText);
 				Client()->Notify("DDNet Chat", aBuf);
-				if(g_Config.m_ClEditor)
+				if(g_Config.m_ClEditor && GameClient()->Editor() != nullptr)
 					GameClient()->Editor()->UpdateMentions();
 			}
 			if(AudioEffects && g_Config.m_SndHighlight)

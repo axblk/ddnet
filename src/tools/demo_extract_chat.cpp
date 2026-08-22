@@ -7,7 +7,6 @@
 
 #include <engine/client.h>
 #include <engine/shared/demo.h>
-#include <engine/shared/network.h>
 #include <engine/shared/snapshot.h>
 #include <engine/storage.h>
 
@@ -224,7 +223,6 @@ static int ExtractDemoChat(const char *pDemoFilePath, CSnapshotDelta *pSnapshotD
 	DemoPlayer.SetListener(&Listener);
 
 	const CDemoPlayer::CPlaybackInfo *pInfo = DemoPlayer.Info();
-	CNetBase::Init();
 	DemoPlayer.Play();
 
 	while(DemoPlayer.IsPlaying())

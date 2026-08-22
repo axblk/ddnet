@@ -42,6 +42,13 @@ class CHuffman
 	void ConstructTree(const unsigned *pFrequencies);
 
 public:
+	CHuffman() = default;
+
+	// The decode table points into the nodes of the object that built it, so a
+	// copy would decode through the nodes of the original.
+	CHuffman(const CHuffman &Other) = delete;
+	CHuffman &operator=(const CHuffman &Other) = delete;
+
 	/*
 		Function: Init
 			Inits the compressor/decompressor.
@@ -82,4 +89,31 @@ public:
 	*/
 	int Decompress(const void *pInput, int InputSize, void *pOutput, int OutputSize) const;
 };
+
+/**
+ * Compresses with the Teeworlds frequency table.
+ *
+ * Everything that stores or sends data in the wire format shares this table:
+ * the network, demos and ghosts. The tree behind it is built on first use.
+ *
+ * @param pInput Buffer to compress.
+ * @param InputSize Size of the buffer to compress.
+ * @param pOutput Buffer to put the compressed data into.
+ * @param OutputSize Size of the output buffer.
+ *
+ * @return The size of the compressed data, negative on failure.
+ */
+int HuffmanCompress(const void *pInput, int InputSize, void *pOutput, int OutputSize);
+
+/**
+ * Decompresses what @link HuffmanCompress @endlink wrote.
+ *
+ * @param pInput Buffer to decompress.
+ * @param InputSize Size of the buffer to decompress.
+ * @param pOutput Buffer to put the decompressed data into.
+ * @param OutputSize Size of the output buffer.
+ *
+ * @return The size of the decompressed data, negative on failure.
+ */
+int HuffmanDecompress(const void *pInput, int InputSize, void *pOutput, int OutputSize);
 #endif // ENGINE_SHARED_HUFFMAN_H

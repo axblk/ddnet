@@ -36,6 +36,7 @@ class IKernel
 	virtual void RegisterInterfaceImpl(const char *pInterfaceName, IInterface *pInterface, bool Destroy) = 0;
 	virtual void ReregisterInterfaceImpl(const char *pInterfaceName, IInterface *pInterface) = 0;
 	virtual IInterface *RequestInterfaceImpl(const char *pInterfaceName) = 0;
+	virtual IInterface *TryGetInterfaceImpl(const char *pInterfaceName) = 0;
 
 public:
 	static IKernel *Create();
@@ -60,6 +61,13 @@ public:
 	TINTERFACE *RequestInterface()
 	{
 		return reinterpret_cast<TINTERFACE *>(RequestInterfaceImpl(TINTERFACE::InterfaceName()));
+	}
+	// For interfaces a program may leave out entirely, so that a build without
+	// one does not have to link a stand-in that does nothing.
+	template<class TINTERFACE>
+	TINTERFACE *TryGetInterface()
+	{
+		return reinterpret_cast<TINTERFACE *>(TryGetInterfaceImpl(TINTERFACE::InterfaceName()));
 	}
 };
 

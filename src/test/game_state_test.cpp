@@ -2277,7 +2277,6 @@ TEST(GameState, GeneratedDemoPlaysToKnownDigestHeadlessly)
 	static constexpr const char *pFilename = "client-game-state-headless.demo";
 	const std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
 	const std::unique_ptr<IConsole> pConsole = CreateConsole(CFGFLAG_CLIENT);
-	CNetBase::Init();
 	const auto pSnapshotDelta = std::make_unique<CSnapshotDelta>();
 	const auto pRecorder = std::make_unique<CDemoRecorder>(pSnapshotDelta.get(), true);
 	unsigned char DummyMapData = 0;
@@ -2342,7 +2341,6 @@ TEST(GameState, DemoPreservesCommonMatchReportWithoutImportingIt)
 	static constexpr const char *pFilename = "client-match-report-headless.demo";
 	const std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
 	const std::unique_ptr<IConsole> pConsole = CreateConsole(CFGFLAG_CLIENT);
-	CNetBase::Init();
 	const auto pSnapshotDelta = std::make_unique<CSnapshotDelta>();
 	const auto pRecorder = std::make_unique<CDemoRecorder>(pSnapshotDelta.get(), true);
 	unsigned char DummyMapData = 0;

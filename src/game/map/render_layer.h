@@ -151,12 +151,11 @@ protected:
 		{
 			m_Width = 0;
 			m_Height = 0;
-			m_BufferContainerIndex = -1;
 			m_IsTextured = false;
 		}
 
 		bool Init(unsigned int Width, unsigned int Height);
-		void Unload();
+		bool Unload();
 
 		class CTileVisual
 		{
@@ -210,7 +209,8 @@ protected:
 
 		unsigned int m_Width;
 		unsigned int m_Height;
-		int m_BufferContainerIndex;
+		IGraphics::CBufferHandle m_BufferObjectIndex;
+		IGraphics::CBufferContainerHandle m_BufferContainerIndex;
 		bool m_IsTextured;
 	};
 
@@ -246,11 +246,12 @@ protected:
 	{
 	public:
 		CQuadLayerVisuals() :
-			m_QuadNum(0), m_BufferContainerIndex(-1), m_IsTextured(false) {}
-		void Unload();
+			m_QuadNum(0), m_IsTextured(false) {}
+		bool Unload();
 
 		int m_QuadNum;
-		int m_BufferContainerIndex;
+		IGraphics::CBufferHandle m_BufferObjectIndex;
+		IGraphics::CBufferContainerHandle m_BufferContainerIndex;
 		bool m_IsTextured;
 	};
 	void RenderQuadLayer(float Alpha, const CRenderLayerParams &Params);

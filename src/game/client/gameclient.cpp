@@ -342,6 +342,7 @@ void CGameClient::OnInit()
 		}
 		OnInput(Event);
 	});
+	m_UI.SetRenderPopupMenuBackdropCallback([this](CUIRect Rect) { m_Menus.RenderBackdropRegion(Rect); });
 	m_RenderTools.Init(Graphics(), TextRender());
 	m_RenderMap.Init(Graphics(), TextRender());
 
@@ -777,7 +778,8 @@ void CGameClient::UpdatePositions()
 void CGameClient::OnRender()
 {
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
-	Graphics()->Clear(ClearColor.r, ClearColor.g, ClearColor.b);
+	if(!m_Menus.BeginMenuBackdrop(ClearColor))
+		Graphics()->Clear(ClearColor.r, ClearColor.g, ClearColor.b);
 
 	// check if multi view got activated
 	if(!m_MultiView.m_IsInit && m_MultiViewActivated)
@@ -820,7 +822,11 @@ void CGameClient::OnRender()
 
 	// render all systems
 	for(auto &pComponent : m_vpAll)
+	{
+		if(pComponent == &m_Scoreboard)
+			m_Menus.FinishMenuBackdrop();
 		pComponent->OnRender();
+	}
 
 	// clear all events/input for this frame
 	Input()->Clear();

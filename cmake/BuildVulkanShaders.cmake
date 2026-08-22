@@ -86,6 +86,9 @@ generate_shader_file("" "" "prim.vert" "prim.vert.spv")
 generate_shader_file("-DTW_TEXTURED" "" "prim.frag" "prim_textured.frag.spv")
 generate_shader_file("-DTW_TEXTURED" "" "prim.vert" "prim_textured.vert.spv")
 
+# Blur
+generate_shader_file("" "" "blur.frag" "blur.frag.spv")
+
 generate_shader_file("" "" "prim3d.frag" "prim3d.frag.spv")
 generate_shader_file("" "" "prim3d.vert" "prim3d.vert.spv")
 
@@ -100,14 +103,8 @@ generate_shader_file("" "" "text.vert" "text.vert.spv")
 generate_shader_file("" "" "primex.frag" "primex.frag.spv")
 generate_shader_file("" "" "primex.vert" "primex.vert.spv")
 
-generate_shader_file("" "" "primex.frag" "primex_rotationless.frag.spv")
-generate_shader_file("-DTW_ROTATIONLESS" "" "primex.vert" "primex_rotationless.vert.spv")
-
 generate_shader_file("-DTW_TEXTURED" "" "primex.frag" "primex_tex.frag.spv")
 generate_shader_file("" "" "primex.vert" "primex_tex.vert.spv")
-
-generate_shader_file("-DTW_TEXTURED" "" "primex.frag" "primex_tex_rotationless.frag.spv")
-generate_shader_file("-DTW_ROTATIONLESS" "" "primex.vert" "primex_tex_rotationless.vert.spv")
 
 generate_shader_file("" "" "spritemulti.frag" "spritemulti.frag.spv")
 generate_shader_file("" "" "spritemulti.vert" "spritemulti.vert.spv")

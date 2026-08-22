@@ -103,6 +103,7 @@ CVideo::CVideo(IGraphics *pGraphics, ISound *pSound, IStorage *pStorage, int Wid
 	m_Recording = false;
 	m_Started = false;
 	m_Stopped = false;
+	m_ReadbackError = false;
 	m_ProcessingVideoFrame = 0;
 	m_ProcessingAudioFrame = 0;
 
@@ -163,12 +164,7 @@ bool CVideo::Start()
 	m_CurVideoThreadIndex = 0;
 	m_CurAudioThreadIndex = 0;
 
-	const size_t VideoBufferSize = (size_t)4 * m_Width * m_Height * sizeof(uint8_t);
 	m_vVideoBuffers.resize(m_VideoThreads);
-	for(size_t i = 0; i < m_VideoThreads; ++i)
-	{
-		m_vVideoBuffers[i].m_vBuffer.resize(VideoBufferSize);
-	}
 
 	m_vAudioBuffers.resize(m_AudioThreads);
 
@@ -274,6 +270,12 @@ bool CVideo::Start()
 		return false;
 	}
 
+	m_Offscreen = CreateOffscreenTargets();
+	if(m_Offscreen)
+		log_info("videorecorder", "Using %d offscreen readback slots at %dx%d", static_cast<int>(READBACK_SLOT_COUNT), m_Width, m_Height);
+	else
+		log_info("videorecorder", "Offscreen rendering unavailable, using presented-frame capture");
+
 	m_Recording = true;
 	m_Started = true;
 	m_Stopped = false;
@@ -288,12 +290,59 @@ void CVideo::Pause(bool Pause)
 		m_Recording = !Pause;
 }
 
+bool CVideo::CreateOffscreenTargets()
+{
+	IGraphics::CTextureDesc Desc;
+	Desc.m_Width = m_Width;
+	Desc.m_Height = m_Height;
+	Desc.m_Mipmaps = IGraphics::ETextureMipmaps::NONE;
+	Desc.m_Usage = IGraphics::TEXTURE_USAGE_SAMPLED | IGraphics::TEXTURE_USAGE_COLOR_TARGET | IGraphics::TEXTURE_USAGE_COPY_SOURCE;
+	for(auto &Slot : m_aReadbackSlots)
+	{
+		Slot.m_Target = m_pGraphics->CreateTexture(Desc);
+		if(!Slot.m_Target.IsValid())
+		{
+			DestroyOffscreenTargets();
+			return false;
+		}
+	}
+	m_CurrentReadbackSlot = 0;
+	return true;
+}
+
+void CVideo::DestroyOffscreenTargets()
+{
+	m_OffscreenFrameActive = false;
+	for(auto &Slot : m_aReadbackSlots)
+	{
+		Slot.m_pReadback.reset();
+		Slot.m_FrameIndex = 0;
+		m_pGraphics->UnloadTexture(&Slot.m_Target);
+	}
+	m_Offscreen = false;
+}
+
+void CVideo::DisableOffscreen(const char *pReason)
+{
+	log_error("videorecorder", "%s, falling back to presented-frame capture", pReason);
+	if(!DrainReadbackSlots())
+	{
+		log_error("videorecorder", "Failed to drain an offscreen video frame, stopping recording");
+		m_ReadbackError = true;
+	}
+	DestroyOffscreenTargets();
+}
+
 void CVideo::Stop()
 {
 	dbg_assert(!m_Stopped, "Already stopped");
 	m_Stopped = true;
 
+	if(m_OffscreenFrameActive)
+		EndVideoFrameRender();
+	DrainReadbackSlots();
 	m_pGraphics->WaitForIdle();
+	DestroyOffscreenTargets();
 
 	for(auto &pVideoThread : m_vpVideoThreads)
 	{
@@ -352,57 +401,6 @@ void CVideo::Stop()
 	pSound->UnpauseAudioDevice();
 }
 
-void CVideo::NextVideoFrameThread()
-{
-	if(m_Recording)
-	{
-		m_VideoFrameIndex += 1;
-		if(m_VideoFrameIndex >= 2)
-		{
-			m_ProcessingVideoFrame.fetch_add(1);
-
-			size_t NextVideoThreadIndex = m_CurVideoThreadIndex + 1;
-			if(NextVideoThreadIndex == m_VideoThreads)
-				NextVideoThreadIndex = 0;
-
-			// always wait for the next video thread too, to prevent a dead lock
-			{
-				auto *pVideoThread = m_vpVideoThreads[NextVideoThreadIndex].get();
-				std::unique_lock<std::mutex> Lock(pVideoThread->m_Mutex);
-
-				if(pVideoThread->m_HasVideoFrame)
-				{
-					pVideoThread->m_Cond.wait(Lock, [&pVideoThread]() -> bool { return !pVideoThread->m_HasVideoFrame; });
-				}
-			}
-
-			// after reading the graphic libraries' frame buffer, go threaded
-			{
-				auto *pVideoThread = m_vpVideoThreads[m_CurVideoThreadIndex].get();
-				std::unique_lock<std::mutex> Lock(pVideoThread->m_Mutex);
-
-				if(pVideoThread->m_HasVideoFrame)
-				{
-					pVideoThread->m_Cond.wait(Lock, [&pVideoThread]() -> bool { return !pVideoThread->m_HasVideoFrame; });
-				}
-
-				UpdateVideoBufferFromGraphics(m_CurVideoThreadIndex);
-
-				pVideoThread->m_HasVideoFrame = true;
-				{
-					std::unique_lock<std::mutex> LockParent(pVideoThread->m_VideoFillMutex);
-					pVideoThread->m_VideoFrameToFill = m_VideoFrameIndex;
-				}
-				pVideoThread->m_Cond.notify_all();
-			}
-
-			++m_CurVideoThreadIndex;
-			if(m_CurVideoThreadIndex == m_VideoThreads)
-				m_CurVideoThreadIndex = 0;
-		}
-	}
-}
-
 void CVideo::NextVideoFrame()
 {
 	if(m_Recording)
@@ -410,6 +408,112 @@ void CVideo::NextVideoFrame()
 		m_Time += m_TickTime;
 		m_LocalTime = (m_Time - m_LocalStartTime) / (float)time_freq();
 	}
+}
+
+bool CVideo::BeginVideoFrameRender()
+{
+	if(!m_Recording || m_OffscreenFrameActive)
+		return false;
+	if(!FinishReadbackSlot(m_CurrentReadbackSlot))
+	{
+		log_error("videorecorder", "Video frame readback failed, stopping recording");
+		m_ReadbackError = true;
+		return false;
+	}
+	if(m_Offscreen && !m_pGraphics->BeginOffscreenFrame(m_aReadbackSlots[m_CurrentReadbackSlot].m_Target))
+	{
+		DisableOffscreen("Could not begin offscreen video frame");
+		if(m_ReadbackError)
+			return false;
+	}
+	m_OffscreenFrameActive = true;
+	return true;
+}
+
+void CVideo::EndVideoFrameRender()
+{
+	if(!m_OffscreenFrameActive)
+		return;
+	m_OffscreenFrameActive = false;
+	auto &Slot = m_aReadbackSlots[m_CurrentReadbackSlot];
+	Slot.m_pReadback = m_Offscreen ? m_pGraphics->EndOffscreenFrame() : m_pGraphics->PresentAndReadbackAsync();
+	if(Slot.m_pReadback == nullptr)
+	{
+		if(m_Offscreen)
+			log_error("videorecorder", "Could not finish offscreen video frame");
+		else
+		{
+			log_error("videorecorder", "Could not read the presented video frame");
+			m_pGraphics->Swap();
+		}
+		m_ReadbackError = true;
+		return;
+	}
+	Slot.m_FrameIndex = ++m_VideoFrameIndex;
+	m_CurrentReadbackSlot = (m_CurrentReadbackSlot + 1) % READBACK_SLOT_COUNT;
+}
+
+bool CVideo::FinishReadbackSlot(size_t SlotIndex)
+{
+	auto &Slot = m_aReadbackSlots[SlotIndex];
+	if(Slot.m_pReadback == nullptr)
+		return true;
+	CImageInfo Image;
+	const bool ReadSucceeded = Slot.m_pReadback->Wait(Image);
+	Slot.m_pReadback.reset();
+	const uint64_t FrameIndex = Slot.m_FrameIndex;
+	Slot.m_FrameIndex = 0;
+	if(!ReadSucceeded || Image.m_Width != static_cast<size_t>(m_Width) || Image.m_Height != static_cast<size_t>(m_Height) || Image.m_Format != CImageInfo::FORMAT_RGBA)
+		return false;
+	if(FrameIndex >= 2)
+		SubmitVideoFrame(FrameIndex, std::move(Image));
+	return true;
+}
+
+bool CVideo::DrainReadbackSlots()
+{
+	bool Success = true;
+	for(size_t Offset = 0; Offset < READBACK_SLOT_COUNT; ++Offset)
+	{
+		const size_t SlotIndex = (m_CurrentReadbackSlot + Offset) % READBACK_SLOT_COUNT;
+		if(!FinishReadbackSlot(SlotIndex))
+		{
+			log_error("videorecorder", "Failed to drain video frame readback");
+			Success = false;
+		}
+	}
+	return Success;
+}
+
+void CVideo::SubmitVideoFrame(uint64_t FrameIndex, CImageInfo Image)
+{
+	m_ProcessingVideoFrame.fetch_add(1);
+
+	const size_t NextVideoThreadIndex = (m_CurVideoThreadIndex + 1) % m_VideoThreads;
+	{
+		auto *pVideoThread = m_vpVideoThreads[NextVideoThreadIndex].get();
+		std::unique_lock<std::mutex> Lock(pVideoThread->m_Mutex);
+		if(pVideoThread->m_HasVideoFrame)
+			pVideoThread->m_Cond.wait(Lock, [&pVideoThread]() -> bool { return !pVideoThread->m_HasVideoFrame; });
+	}
+
+	{
+		auto *pVideoThread = m_vpVideoThreads[m_CurVideoThreadIndex].get();
+		std::unique_lock<std::mutex> Lock(pVideoThread->m_Mutex);
+		if(pVideoThread->m_HasVideoFrame)
+			pVideoThread->m_Cond.wait(Lock, [&pVideoThread]() -> bool { return !pVideoThread->m_HasVideoFrame; });
+
+		m_vVideoBuffers[m_CurVideoThreadIndex].m_Image = std::move(Image);
+
+		pVideoThread->m_HasVideoFrame = true;
+		{
+			std::unique_lock<std::mutex> FillLock(pVideoThread->m_VideoFillMutex);
+			pVideoThread->m_VideoFrameToFill = FrameIndex;
+		}
+		pVideoThread->m_Cond.notify_all();
+	}
+
+	m_CurVideoThreadIndex = NextVideoThreadIndex;
 }
 
 void CVideo::NextAudioFrameTimeline(ISoundMixFunc Mix)
@@ -625,19 +729,11 @@ void CVideo::RunVideoThread(size_t ParentThreadIndex, size_t ThreadIndex)
 void CVideo::FillVideoFrame(size_t ThreadIndex)
 {
 	const int InLineSize = 4 * m_VideoStream.m_pCodecContext->width;
-	auto *pRGBAData = m_vVideoBuffers[ThreadIndex].m_vBuffer.data();
+	auto &VideoBuffer = m_vVideoBuffers[ThreadIndex];
+	auto *pRGBAData = VideoBuffer.m_Image.m_pData;
 	sws_scale(m_VideoStream.m_vpSwsContexts[ThreadIndex], (const uint8_t *const *)&pRGBAData, &InLineSize, 0,
 		m_VideoStream.m_pCodecContext->height, m_VideoStream.m_vpFrames[ThreadIndex]->data, m_VideoStream.m_vpFrames[ThreadIndex]->linesize);
-}
-
-void CVideo::UpdateVideoBufferFromGraphics(size_t ThreadIndex)
-{
-	uint32_t Width;
-	uint32_t Height;
-	CImageInfo::EImageFormat Format;
-	m_pGraphics->GetReadPresentedImageDataFuncUnsafe()(Width, Height, Format, m_vVideoBuffers[ThreadIndex].m_vBuffer);
-	dbg_assert((int)Width == m_Width && (int)Height == m_Height, "Size mismatch between video (%d x %d) and graphics (%d x %d)", m_Width, m_Height, Width, Height);
-	dbg_assert(Format == CImageInfo::FORMAT_RGBA, "Unexpected image format %d", (int)Format);
+	VideoBuffer.m_Image.Free();
 }
 
 AVFrame *CVideo::AllocPicture(enum AVPixelFormat PixFmt, int Width, int Height)

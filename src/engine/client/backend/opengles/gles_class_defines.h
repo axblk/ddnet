@@ -5,7 +5,6 @@
 
 #ifdef GLES_CLASS_DEFINES_DO_DEFINE
 #define CCommandProcessorFragment_OpenGL3_3 CCommandProcessorFragment_OpenGLES3
-#define CCommandProcessorFragment_OpenGL3 CCommandProcessorFragment_OpenGLES3Wrapper
 #define CCommandProcessorFragment_OpenGL2 CCommandProcessorFragment_OpenGLES2
 #define CCommandProcessorFragment_OpenGL CCommandProcessorFragment_OpenGLES
 
@@ -20,7 +19,6 @@
 #define CGLSLTileProgram CGLSL_ESTileProgram
 #else
 #undef CCommandProcessorFragment_OpenGL3_3
-#undef CCommandProcessorFragment_OpenGL3
 #undef CCommandProcessorFragment_OpenGL2
 #undef CCommandProcessorFragment_OpenGL
 

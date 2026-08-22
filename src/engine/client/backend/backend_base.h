@@ -12,8 +12,6 @@
 #include <string>
 #include <vector>
 
-struct SBackendCapabilities;
-
 enum EDebugGfxModes
 {
 	DEBUG_GFX_MODE_NONE = 0,
@@ -51,25 +49,13 @@ enum EGfxWarningType
 	GFX_WARNING_TYPE_INIT_FAILED,
 	GFX_WARNING_TYPE_INIT_FAILED_MISSING_INTEGRATED_GPU_DRIVER,
 	GFX_WARNING_TYPE_INIT_FAILED_NO_DEVICE_WITH_REQUIRED_VERSION,
-	GFX_WARNING_LOW_ON_MEMORY,
 	GFX_WARNING_MISSING_EXTENSION,
-	GFX_WARNING_TYPE_UNKNOWN,
 };
 
 struct SGfxErrorContainer
 {
-	struct SError
-	{
-		bool m_RequiresTranslation;
-		std::string m_Err;
-
-		bool operator==(const SError &Other) const
-		{
-			return m_RequiresTranslation == Other.m_RequiresTranslation && m_Err == Other.m_Err;
-		}
-	};
 	EGfxErrorType m_ErrorType = EGfxErrorType::GFX_ERROR_TYPE_NONE;
-	std::vector<SError> m_vErrors;
+	std::vector<std::string> m_vErrors;
 };
 
 struct SGfxWarningContainer
@@ -78,7 +64,7 @@ struct SGfxWarningContainer
 	std::vector<std::string> m_vWarnings;
 };
 
-class CCommandProcessorFragment_GLBase
+class CCommandProcessorFragment_Renderer
 {
 protected:
 	SGfxErrorContainer m_Error;
@@ -86,14 +72,9 @@ protected:
 
 	static void Texture2DTo3D(uint8_t *pImageBuffer, int ImageWidth, int ImageHeight, size_t PixelSize, int SplitCountWidth, int SplitCountHeight, uint8_t *pTarget3DImageData, int &Target3DImageWidth, int &Target3DImageHeight);
 
-	virtual bool GetPresentedImageData(uint32_t &Width, uint32_t &Height, CImageInfo::EImageFormat &Format, std::vector<uint8_t> &vDstData) = 0;
-
 public:
-	virtual ~CCommandProcessorFragment_GLBase() = default;
+	virtual ~CCommandProcessorFragment_Renderer() = default;
 	virtual ERunCommandReturnTypes RunCommand(const CCommandBuffer::SCommand *pBaseCommand) = 0;
-
-	virtual void StartCommands(size_t CommandCount, size_t EstimatedRenderCallCount) {}
-	virtual void EndCommands() {}
 
 	const SGfxErrorContainer &GetError() { return m_Error; }
 	virtual void ErroneousCleanup() {}
@@ -102,7 +83,7 @@ public:
 
 	enum
 	{
-		CMD_PRE_INIT = CCommandBuffer::CMDGROUP_PLATFORM_GL,
+		CMD_PRE_INIT = CCommandBuffer::CMDGROUP_RENDERER,
 		CMD_INIT,
 		CMD_SHUTDOWN,
 		CMD_POST_SHUTDOWN,
@@ -141,8 +122,6 @@ public:
 
 		TTwGraphicsGpuList *m_pGpuList;
 
-		TGLBackendReadPresentedImageData *m_pReadPresentedImageDataFunc;
-
 		SBackendCapabilities *m_pCapabilities;
 		int *m_pInitError;
 
@@ -155,6 +134,8 @@ public:
 		int m_RequestedMajor;
 		int m_RequestedMinor;
 		int m_RequestedPatch;
+		bool m_VSync;
+		uint32_t m_RequestedMultiSamplingCount;
 
 		EBackendType m_RequestedBackend;
 

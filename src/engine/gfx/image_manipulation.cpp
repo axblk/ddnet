@@ -329,6 +329,7 @@ static void ResizeImage(const uint8_t *pSourceImage, uint32_t SW, uint32_t SH, u
 uint8_t *ResizeImage(const uint8_t *pImageData, int Width, int Height, int NewWidth, int NewHeight, int BPP)
 {
 	uint8_t *pTmpData = (uint8_t *)malloc((size_t)NewWidth * NewHeight * BPP);
+	dbg_assert(pTmpData != nullptr, "Failed to allocate resized image");
 	ResizeImage(pImageData, Width, Height, pTmpData, NewWidth, NewHeight, BPP);
 	return pTmpData;
 }

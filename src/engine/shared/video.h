@@ -15,9 +15,11 @@ public:
 	virtual void Stop() = 0;
 	virtual void Pause(bool Pause) = 0;
 	virtual bool IsRecording() const = 0;
+	virtual bool HasError() const = 0;
 
 	virtual void NextVideoFrame() = 0;
-	virtual void NextVideoFrameThread() = 0;
+	virtual bool BeginVideoFrameRender() = 0;
+	virtual void EndVideoFrameRender() = 0;
 
 	virtual void NextAudioFrame(ISoundMixFunc Mix) = 0;
 	virtual void NextAudioFrameTimeline(ISoundMixFunc Mix) = 0;

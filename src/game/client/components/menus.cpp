@@ -1020,10 +1020,8 @@ void CMenus::Render()
 	}
 	else
 	{
-		if(!GameClient()->m_MenuBackground.Render())
-		{
-			RenderBackground();
-		}
+		if(!m_MenuBackdropBackgroundRendered)
+			RenderMenuBackground();
 		ms_ColorTabbarInactive = ms_ColorTabbarInactiveOutgame;
 		ms_ColorTabbarActive = ms_ColorTabbarActiveOutgame;
 		ms_ColorTabbarHover = ms_ColorTabbarHoverOutgame;
@@ -1063,6 +1061,7 @@ void CMenus::Render()
 		{
 			CUIRect TabBar, MainView;
 			Screen.HSplitTop(24.0f, &TabBar, &MainView);
+			RenderBackdropRegion(Screen);
 
 			if(m_MenuPage == PAGE_NEWS)
 			{
@@ -1098,6 +1097,7 @@ void CMenus::Render()
 		{
 			CUIRect TabBar, MainView;
 			Screen.HSplitTop(24.0f, &TabBar, &MainView);
+			RenderBackdropRegion(Screen);
 
 			if(m_GamePage == PAGE_GAME)
 			{
@@ -1278,6 +1278,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 	}
 
 	// Background
+	RenderBackdropRegion(Box);
 	Box.Draw(BgColor, IGraphics::CORNER_ALL, 15.0f);
 
 	// Title
@@ -2069,6 +2070,7 @@ void CMenus::RenderPopupConnecting(CUIRect Screen)
 
 	CUIRect Box, Label;
 	Screen.Margin(150.0f, &Box);
+	RenderBackdropRegion(Box);
 	Box.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 15.0f);
 	Box.Margin(20.0f, &Box);
 
@@ -2200,6 +2202,7 @@ void CMenus::RenderPopupLoading(CUIRect Screen)
 
 	CUIRect Box, Label;
 	Screen.Margin(150.0f, &Box);
+	RenderBackdropRegion(Box);
 	Box.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 15.0f);
 	Box.Margin(20.0f, &Box);
 
@@ -2299,6 +2302,7 @@ void CMenus::SetActive(bool Active)
 
 void CMenus::OnShutdown()
 {
+	DestroyMenuBackdropTextures();
 	m_CommunityIcons.Shutdown();
 }
 
@@ -2370,6 +2374,149 @@ void CMenus::OnStateChange(int NewState, int OldState)
 void CMenus::OnWindowResize()
 {
 	TextRender()->DeleteTextContainer(m_MotdTextContainerIndex);
+	DestroyMenuBackdropTextures();
+}
+
+void CMenus::DestroyMenuBackdropTextures()
+{
+	m_MenuBackdropActive = false;
+	m_MenuBackdropReady = false;
+	Graphics()->UnloadTexture(&m_MenuBackdropSceneTexture);
+	Graphics()->UnloadTexture(&m_aMenuBackdropBlurTextures[0]);
+	Graphics()->UnloadTexture(&m_aMenuBackdropBlurTextures[1]);
+	m_MenuBackdropWidth = 0;
+	m_MenuBackdropHeight = 0;
+}
+
+bool CMenus::EnsureMenuBackdropTextures()
+{
+	const int Width = Graphics()->ScreenWidth();
+	const int Height = Graphics()->ScreenHeight();
+	if(Width <= 0 || Height <= 0)
+		return false;
+	if(Width == m_MenuBackdropWidth && Height == m_MenuBackdropHeight)
+		return m_MenuBackdropSceneTexture.IsValid() && m_aMenuBackdropBlurTextures[0].IsValid() && m_aMenuBackdropBlurTextures[1].IsValid();
+
+	DestroyMenuBackdropTextures();
+	m_MenuBackdropWidth = Width;
+	m_MenuBackdropHeight = Height;
+
+	IGraphics::CTextureDesc Desc;
+	Desc.m_Width = Width;
+	Desc.m_Height = Height;
+	Desc.m_Mipmaps = IGraphics::ETextureMipmaps::NONE;
+	Desc.m_Usage = IGraphics::TEXTURE_USAGE_SAMPLED | IGraphics::TEXTURE_USAGE_COLOR_TARGET;
+	m_MenuBackdropSceneTexture = Graphics()->CreateTexture(Desc);
+
+	Desc.m_Width = std::max(1, (Width + 3) / 4);
+	Desc.m_Height = std::max(1, (Height + 3) / 4);
+	m_aMenuBackdropBlurTextures[0] = Graphics()->CreateTexture(Desc);
+	m_aMenuBackdropBlurTextures[1] = Graphics()->CreateTexture(Desc);
+	if(m_MenuBackdropSceneTexture.IsValid() && m_aMenuBackdropBlurTextures[0].IsValid() && m_aMenuBackdropBlurTextures[1].IsValid())
+	{
+		log_debug("menus", "Created menu backdrop targets: scene=%dx%d blur=%dx%d", Width, Height, static_cast<int>(Desc.m_Width), static_cast<int>(Desc.m_Height));
+		return true;
+	}
+
+	Graphics()->UnloadTexture(&m_MenuBackdropSceneTexture);
+	Graphics()->UnloadTexture(&m_aMenuBackdropBlurTextures[0]);
+	Graphics()->UnloadTexture(&m_aMenuBackdropBlurTextures[1]);
+	log_debug("menus", "Menu backdrop render targets unavailable, using direct rendering");
+	return false;
+}
+
+bool CMenus::BeginMenuBackdrop(ColorRGBA ClearColor)
+{
+	m_MenuBackdropActive = false;
+	m_MenuBackdropReady = false;
+	m_MenuBackdropBackgroundRendered = false;
+	if(!g_Config.m_ClMenuBackgroundBlur)
+	{
+		if(m_MenuBackdropSceneTexture.IsValid())
+			DestroyMenuBackdropTextures();
+		return false;
+	}
+
+	const IClient::EClientState ClientState = Client()->State();
+	const bool BackdropConsumerActive = GameClient()->m_Scoreboard.IsActive() || GameClient()->m_Statboard.IsActive();
+	if(!IsActive() && !BackdropConsumerActive && (ClientState == IClient::STATE_ONLINE || ClientState == IClient::STATE_DEMOPLAYBACK))
+		return false;
+	if(!EnsureMenuBackdropTextures())
+		return false;
+
+	IGraphics::CRenderPassDesc Pass;
+	Pass.m_ColorTarget = m_MenuBackdropSceneTexture;
+	Pass.m_LoadOp = IGraphics::ERenderPassLoadOp::CLEAR;
+	Pass.m_ClearColor = ClearColor.WithAlpha(0.0f);
+	m_MenuBackdropActive = Graphics()->BeginRenderPass(Pass);
+	return m_MenuBackdropActive;
+}
+
+void CMenus::RenderMenuBackground()
+{
+	if(!GameClient()->m_MenuBackground.Render())
+		RenderBackground();
+}
+
+void CMenus::FinishMenuBackdrop()
+{
+	if(!m_MenuBackdropActive)
+		return;
+
+	const IClient::EClientState ClientState = Client()->State();
+	const bool RenderedBackground = ClientState != IClient::STATE_ONLINE && ClientState != IClient::STATE_DEMOPLAYBACK;
+	if(RenderedBackground)
+		RenderMenuBackground();
+
+	const bool SceneEnded = Graphics()->EndRenderPass();
+	const auto RenderTexturePass = [this](IGraphics::CTextureHandle Target, IGraphics::CTextureHandle Source, std::optional<IGraphics::EBlurDirection> BlurDirection) {
+		IGraphics::CRenderPassDesc Pass;
+		Pass.m_ColorTarget = Target;
+		if(!Graphics()->BeginRenderPass(Pass))
+			return false;
+		const bool Drawn = BlurDirection.has_value() ? Graphics()->BlurTexture(Source, BlurDirection.value()) : Graphics()->BlitTexture(Source);
+		const bool Ended = Graphics()->EndRenderPass();
+		return Drawn && Ended;
+	};
+
+	const bool ApplyBlur = IsActive() || GameClient()->m_Scoreboard.IsActive() || GameClient()->m_Statboard.IsActive() || RenderedBackground;
+	const bool Blurred = SceneEnded && ApplyBlur &&
+			     RenderTexturePass(m_aMenuBackdropBlurTextures[0], m_MenuBackdropSceneTexture, std::nullopt) &&
+			     RenderTexturePass(m_aMenuBackdropBlurTextures[1], m_aMenuBackdropBlurTextures[0], IGraphics::EBlurDirection::HORIZONTAL) &&
+			     RenderTexturePass(m_aMenuBackdropBlurTextures[0], m_aMenuBackdropBlurTextures[1], IGraphics::EBlurDirection::VERTICAL);
+
+	IGraphics::CRenderPassDesc PresentationPass;
+	const bool PresentationStarted = Graphics()->BeginRenderPass(PresentationPass);
+	const bool Composited = PresentationStarted && Graphics()->BlitTexture(m_MenuBackdropSceneTexture) && Graphics()->FlushRenderPass();
+	m_MenuBackdropReady = Blurred && Composited;
+	m_MenuBackdropBackgroundRendered = RenderedBackground && Composited;
+	m_MenuBackdropActive = false;
+}
+
+void CMenus::RenderBackdropRegion(CUIRect Rect)
+{
+	if(!m_MenuBackdropReady || Rect.w <= 0.0f || Rect.h <= 0.0f)
+		return;
+
+	const CScreenRect Screen = Graphics()->GetScreen();
+	const float Left = std::max(Rect.x, Screen.m_TopLeft.x);
+	const float Top = std::max(Rect.y, Screen.m_TopLeft.y);
+	const float Right = std::min(Rect.x + Rect.w, Screen.m_BottomRight.x);
+	const float Bottom = std::min(Rect.y + Rect.h, Screen.m_BottomRight.y);
+	if(Left >= Right || Top >= Bottom)
+		return;
+
+	const float XScale = Graphics()->ScreenWidth() / Screen.Width();
+	const float YScale = Graphics()->ScreenHeight() / Screen.Height();
+	const int ClipX = std::round((Left - Screen.m_TopLeft.x) * XScale);
+	const int ClipY = std::round((Top - Screen.m_TopLeft.y) * YScale);
+	const int ClipRight = std::round((Right - Screen.m_TopLeft.x) * XScale);
+	const int ClipBottom = std::round((Bottom - Screen.m_TopLeft.y) * YScale);
+	Graphics()->ClipEnable(ClipX, ClipY, ClipRight - ClipX, ClipBottom - ClipY);
+	const bool Drawn = Graphics()->BlitTexture(m_aMenuBackdropBlurTextures[0], true);
+	Graphics()->ClipDisable();
+	if(!Drawn || !Graphics()->FlushRenderPass())
+		m_MenuBackdropReady = false;
 }
 
 void CMenus::OnRender()
@@ -2392,6 +2539,7 @@ void CMenus::OnRender()
 		}
 		else if(Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		{
+			FinishMenuBackdrop();
 			Ui()->ClearHotkeys();
 			return;
 		}
@@ -2399,6 +2547,7 @@ void CMenus::OnRender()
 
 	Ui()->StartCheck();
 	UpdateColors();
+	FinishMenuBackdrop();
 
 	Ui()->Update();
 

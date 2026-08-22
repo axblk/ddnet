@@ -290,6 +290,7 @@ private:
 	void StartSkinDecode(CSkinContainer *pSkinContainer, const char *pPath, int StorageType, ESkinDecodeSource Source);
 	void StartSkinDecode(CSkinContainer *pSkinContainer, std::vector<uint8_t> vData, const char *pContextName, ESkinDecodeSource Source);
 	void ResetSkinLoad(CSkinContainer *pSkinContainer);
+	void FinishSkinLoad(CSkinLoadingStats &Stats, CSkinContainer *pSkinContainer, bool Stale);
 	const CSkinContainer *FindContainerImpl(const char *pName);
 	static int SkinScan(const char *pName, int IsDir, int StorageType, void *pUser);
 

@@ -63,11 +63,6 @@ CAssetJob::CAssetJob(EAssetType Type, const char *pPath, int OwnerId, uint64_t G
 	Abortable(true);
 }
 
-bool CAssetJob::Abort()
-{
-	return AbortQueued();
-}
-
 void CAssetLoader::Init(IEngine *pEngine, size_t MaxConcurrentJobs)
 {
 	dbg_assert(m_pEngine == nullptr, "Asset loader already initialized");
@@ -96,14 +91,14 @@ uint64_t CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob)
 	return RequestId;
 }
 
-CImageResource CAssetLoader::LoadImage(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess)
+CImageResource CAssetLoader::LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess)
 {
 	auto pJob = std::make_shared<CImageAssetJob>(pStorage, pPath, StorageType, OwnerId, Generation, std::move(Postprocess));
 	Submit(pJob);
 	return CImageResource(std::move(pJob));
 }
 
-CImageResource CAssetLoader::LoadImage(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess)
+CImageResource CAssetLoader::LoadImageData(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess)
 {
 	auto pJob = std::make_shared<CImageAssetJob>(std::move(vData), pContextName, OwnerId, Generation, std::move(Postprocess));
 	Submit(pJob);

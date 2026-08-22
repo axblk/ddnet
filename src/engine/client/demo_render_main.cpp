@@ -44,8 +44,15 @@ int main(int argc, const char **argv)
 	pFutureFileLogger->Set(log_logger_noop());
 	log_set_global_logger(log_logger_collection({pStdoutLogger, pFutureConsoleLogger, pFutureAssertionLogger, pFutureFileLogger}).release());
 
+	// Setting the game up and reading its settings is not news. It registers a
+	// hundred default key bindings for a keyboard nobody is at, and complains
+	// about every command in the configuration that this program does not have,
+	// which is more output than the whole render produces. Until the settings
+	// say what was actually asked for, only warnings and errors are printed.
+	pStdoutLogger->SetFilter(CLogFilter{IConsole::ToLogLevelFilter(-1)});
+
 	CDemoRenderClient *pClient = new CDemoRenderClient;
-	pClient->SetLoggers(std::shared_ptr<ILogger>(pFutureFileLogger), std::move(pStdoutLogger));
+	pClient->SetLoggers(std::shared_ptr<ILogger>(pFutureFileLogger), std::shared_ptr<ILogger>(pStdoutLogger));
 
 	IKernel *pKernel = IKernel::Create();
 	pKernel->RegisterInterface(static_cast<IClient *>(pClient), false);
@@ -114,6 +121,14 @@ int main(int argc, const char **argv)
 		g_Config.m_ClAntiPingGrenade = 1;
 		g_Config.m_ClAntiPingWeapons = 1;
 	}
+	// The settings decide how much a demo renders like the client, and how much
+	// the client says while it does, so `stdout_output_level` counts here too.
+	// The command line may set it as well, which is why this runs again once
+	// the arguments have been read.
+	const auto ApplyStdoutLogLevel = [&]() {
+		pStdoutLogger->SetFilter(CLogFilter{IConsole::ToLogLevelFilter(g_Config.m_StdoutOutputLevel)});
+	};
+	ApplyStdoutLogLevel();
 
 	CCommandLineVideoExport VideoExport;
 	std::vector<const char *> vArguments;
@@ -144,6 +159,7 @@ int main(int argc, const char **argv)
 	// Everything the video arguments left over configures the client the same
 	// way it does in the client itself, so `gfx_backend` and the like work here.
 	pConsole->ParseArguments(argc - 1, &argv[1]);
+	ApplyStdoutLogLevel();
 
 	if(!pClient->Configure(VideoExport))
 	{

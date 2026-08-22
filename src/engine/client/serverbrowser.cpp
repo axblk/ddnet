@@ -1078,6 +1078,29 @@ void CServerBrowser::OnServerInfoUpdate(const NETADDR &Addr, int Token, const CS
 	if(m_ServerlistType == IServerBrowser::TYPE_LAN)
 	{
 		SetInfo(pEntry, *pInfo, true);
+		// There is no master server on a LAN, so the modern endpoints the answer
+		// advertises are the only ones there will ever be. Without them every
+		// gate sees an empty address list and offers legacy UDP only. This
+		// belongs here and not into the info parser, so that pinging an internet
+		// server directly cannot replace its master-verified addresses.
+		if(pEntry->m_Info.m_QuicPort != 0 && pEntry->m_Info.m_QuicSharedPort)
+		{
+			NETADDR ModernAddr = Addr;
+			ModernAddr.port = pEntry->m_Info.m_QuicPort;
+			// Both transports share the port, so only what the answer claims to
+			// serve gets an address. A WebTransport-only server that handed out a
+			// QUIC address would be offered a handshake nothing answers.
+			if(pEntry->m_Info.m_RawQuic)
+			{
+				pEntry->m_Info.m_aQuicAddresses[0] = ModernAddr;
+				pEntry->m_Info.m_NumQuicAddresses = 1;
+			}
+			if(pEntry->m_Info.m_WebTransport)
+			{
+				pEntry->m_Info.m_aWebTransportAddresses[0] = ModernAddr;
+				pEntry->m_Info.m_NumWebTransportAddresses = 1;
+			}
+		}
 		pEntry->m_Info.m_Latency = std::min(static_cast<int>((time_get() - m_BroadcastTime) * 1000 / time_freq()), 999);
 	}
 	else if(pEntry->m_RequestTime > 0)

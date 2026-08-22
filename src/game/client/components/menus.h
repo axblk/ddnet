@@ -517,6 +517,19 @@ protected:
 	bool m_ServerBrowserShouldRevealSelection;
 	std::vector<CUIElement *> m_avpServerBrowserUiElements[IServerBrowser::NUM_TYPES];
 	void RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemActivated);
+	// What the address row may offer for one server: the transports the client
+	// was built with that the server also announces, and the address families
+	// it actually has. Anything with a single entry is not a choice and is not
+	// shown as one.
+	struct CConnectChoices
+	{
+		EConnectProtocol m_aProtocols[(int)EConnectProtocol::COUNT] = {EConnectProtocol::LEGACY};
+		int m_NumProtocols = 0;
+		EConnectAddressFamily m_aFamilies[(int)EConnectAddressFamily::COUNT] = {EConnectAddressFamily::IPV6};
+		int m_NumFamilies = 0;
+	};
+	static const char *ConnectProtocolShortName(EConnectProtocol Protocol);
+	static CConnectChoices ConnectChoicesFor(const CServerInfo *pServer, const char *pAddress);
 	void RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItemActivated);
 	void Connect(const char *pAddress);
 	void PopupConfirmSwitchServer();

@@ -785,15 +785,13 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	bool InvalidDirectQuicLink = false;
 	bool ExplicitQuic = false;
 	bool ExplicitWebTransport = false;
-	bool HasLegacyConnectTarget = false;
 	const EConnectProtocol Protocol = (EConnectProtocol)std::clamp(g_Config.m_ClConnectProtocol, 0, (int)EConnectProtocol::COUNT - 1);
-	// A hostname that resolves to both families is left to the resolver, which
-	// already prefers IPv6; picking a family here is about forcing one.
+	// IPv6 is the preference and not a demand, so it is left to the resolver,
+	// which already takes IPv6 where a hostname has it and IPv4 where it does
+	// not. IPv4 is the one that rules a family out.
 	int LookupNetType = m_aNetClient[CONN_MAIN].NetType();
 	if((EConnectAddressFamily)g_Config.m_ClConnectAddressFamily == EConnectAddressFamily::IPV4)
 		LookupNetType &= ~(NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV6);
-	else if((EConnectAddressFamily)g_Config.m_ClConnectAddressFamily == EConnectAddressFamily::IPV6)
-		LookupNetType &= ~(NETTYPE_IPV4 | NETTYPE_WEBSOCKET_IPV4);
 	EModernTransportTrust DirectQuicTrust = EModernTransportTrust::INVALID;
 	SHA256_DIGEST DirectQuicFingerprint = {};
 	SHA256_DIGEST DirectQuicNextFingerprint = {};
@@ -813,7 +811,6 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		const bool WebTransportUrl = str_startswith(aBuffer, "ddnet+wt://") || str_startswith(aBuffer, "tw-0.7+wt://");
 		ExplicitQuic |= QuicUrl;
 		ExplicitWebTransport |= WebTransportUrl;
-		HasLegacyConnectTarget |= !QuicUrl && !WebTransportUrl;
 		bool ParsedWebTransport = false;
 		EModernTransportTrust ParsedTrust = EModernTransportTrust::INVALID;
 		SHA256_DIGEST ParsedFingerprint = {};
@@ -1057,10 +1054,11 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		return;
 	}
 	// Picking any other transport next to the address field rules WebTransport
-	// out, picking it rules the rest out.
+	// out, picking it rules the rest out. A WebTransport link asks for it the
+	// same way, as long as no QUIC link is asking for the other one.
 	const bool WantWebTransport = Protocol == EConnectProtocol::WEBTRANSPORT ||
-				      (Protocol == EConnectProtocol::AUTOMATIC && (g_Config.m_ClWebtransport || ExplicitWebTransport) && !DirectQuic && !ExplicitQuic);
-	if(WantWebTransport && !CQuicTransport::IsWebTransportCompiled())
+				      (ExplicitWebTransport && !DirectQuic && !ExplicitQuic);
+	if(WantWebTransport && !CQuicTransport::IsWebTransportClientCompiled())
 	{
 		log_error("client", "this build has no WebTransport, connecting over the legacy transport");
 	}
@@ -1131,13 +1129,13 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 			log_warn("client", "conflicting WebTransport identities for connect addresses, using the configured legacy transport");
 	}
 #endif
-	// Explicitly asked for, offered by the server and not turned off, or part
-	// of a direct link. There is no fallback: a QUIC connect that fails is
+	// Preferred next to the address field and announced by the server, or part
+	// of a direct link, which carries the address and the identity to use with
+	// it. A server that does not announce QUIC gets the legacy transport, but
+	// once QUIC is used there is no fallback: a QUIC connect that fails is
 	// reported, not quietly retried over the legacy transport, because that is
 	// what made connection problems hard to read before.
-	const bool WantQuic = DirectQuic ||
-			      Protocol == EConnectProtocol::QUIC ||
-			      (Protocol == EConnectProtocol::AUTOMATIC && g_Config.m_ClQuic && ServerOffersQuic);
+	const bool WantQuic = DirectQuic || (Protocol == EConnectProtocol::QUIC && ServerOffersQuic);
 	if(WantQuic && !CQuicTransport::IsCompiled())
 	{
 		log_error("client", "this build has no QUIC transport, connecting over the legacy transport");

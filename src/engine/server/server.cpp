@@ -2548,9 +2548,35 @@ void CServer::CacheServerInfo(CCache *pCache, int Type, bool SendClients)
 
 	if(Type == SERVERINFO_EXTENDED)
 	{
-		char aExtraInfo[192] = {};
-		if(const CServerIdentityBinding *pIdentity = m_QuicStarted ? m_QuicTransport.ServerIdentity() : nullptr)
-			FormatQuicServerInfoExtra(aExtraInfo, sizeof(aExtraInfo), sha256(pIdentity->m_PublicKey.data(), pIdentity->m_PublicKey.size()));
+		char aExtraInfo[QUIC_SERVERINFO_EXTRA_MAXSIZE] = {};
+		// There is no master server on a LAN, so this answer is the only place a
+		// client learns about the modern transports. WebTransport runs without an
+		// identity binding, so a server that serves it alone has to be able to say
+		// so without one.
+		const CServerIdentityBinding *pIdentity = m_QuicStarted ? m_QuicTransport.ServerIdentity() : nullptr;
+		if(pIdentity != nullptr || m_WebTransportStarted)
+		{
+			CQuicServerInfoExtra Extra = {};
+			Extra.m_RawQuic = pIdentity != nullptr;
+			if(pIdentity != nullptr)
+				Extra.m_IdentityFingerprint = sha256(pIdentity->m_PublicKey.data(), pIdentity->m_PublicKey.size());
+			Extra.m_WebTransport = m_WebTransportStarted;
+			Extra.m_pHostname = m_aModernTransportHostname;
+			if(m_WebTransportStarted && m_WebTransportUseCertificateHashes)
+			{
+				Extra.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::HASH;
+				if(const SHA256_DIGEST *pCertificate = m_QuicTransport.CertificateSha256())
+					Extra.m_WebTransportCertificateSha256 = *pCertificate;
+				if(const SHA256_DIGEST *pNextCertificate = m_QuicTransport.NextCertificateSha256())
+				{
+					Extra.m_WebTransportNextCertificateSha256 = *pNextCertificate;
+					Extra.m_HasWebTransportNextCertificateSha256 = true;
+				}
+			}
+			else if(m_WebTransportStarted)
+				Extra.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::WEBPKI;
+			FormatQuicServerInfoExtra(aExtraInfo, sizeof(aExtraInfo), Extra);
+		}
 		p.AddString(aExtraInfo, sizeof(aExtraInfo), false);
 	}
 
@@ -3768,7 +3794,7 @@ int CServer::Run()
 		log_error("server", "sv_quic needs a build with QUIC=ON, continuing without QUIC");
 		QuicEnabled = false;
 	}
-	if(WebTransportEnabled && !CQuicTransport::IsWebTransportCompiled())
+	if(WebTransportEnabled && !CQuicTransport::IsWebTransportServerCompiled())
 	{
 		log_error("server", "sv_webtransport needs a build with QUIC=ON, continuing without WebTransport");
 		WebTransportEnabled = false;

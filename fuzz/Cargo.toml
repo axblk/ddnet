@@ -10,6 +10,9 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "=0.4.13"
 
+[build-dependencies]
+cc = "1"
+
 [[bin]]
 name = "udp_port_mux"
 path = "fuzz_targets/udp_port_mux.rs"
@@ -20,6 +23,13 @@ bench = false
 [[bin]]
 name = "game_wire"
 path = "fuzz_targets/game_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "game_wire_differential"
+path = "fuzz_targets/game_wire_differential.rs"
 test = false
 doc = false
 bench = false

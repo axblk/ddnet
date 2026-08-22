@@ -32,6 +32,10 @@ bool CNetClient::Open(NETADDR BindAddr)
 
 void CNetClient::Close()
 {
+	// The filter points at something the caller owns, and a reopened client
+	// would otherwise hand the next packet to it.
+	m_pfnFilter = nullptr;
+	m_pFilterUser = nullptr;
 	if(!m_Socket)
 	{
 		return;

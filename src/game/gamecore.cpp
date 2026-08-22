@@ -391,7 +391,13 @@ void CCharacterCore::Tick(bool UseInput, bool DoDeferredTick)
 				m_HookState = HOOK_RETRACT_START;
 			}
 
-			if(GoingThroughTele && m_pWorld && !m_pCollision->TeleOuts(TeleNr - 1).empty())
+			// A teleporter with more than one exit draws between them, and only the
+			// server holds the generator that draws. A client without one would pick
+			// exit zero every time, which is the wrong one as often as not and puts
+			// the hook somewhere the next snapshot yanks it back from. Leaving the
+			// hook alone is wrong for as long as the snapshot takes and right after.
+			if(GoingThroughTele && m_pWorld && !m_pCollision->TeleOuts(TeleNr - 1).empty() &&
+				(m_pWorld->m_pPrng != nullptr || m_pCollision->TeleOuts(TeleNr - 1).size() == 1))
 			{
 				m_TriggeredEvents = 0;
 				SetHookedPlayer(-1);

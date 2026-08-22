@@ -259,9 +259,11 @@ void CCharacter::HandleWeaponSwitch()
 
 void CCharacter::FireWeapon()
 {
-	if(m_NumInputs < 2)
-		return;
-
+	// No m_NumInputs guard here, unlike HandleWeaponSwitch and HandleJetpack: by
+	// the time this runs OnDirectInput has copied the new input over both halves,
+	// so a stale one cannot be acted on and only a held full-auto trigger fires -
+	// which is what the server does on the same tick. The guard used to skip the
+	// first replayed tick of every prediction pass, one tick per pass, forever.
 	if(!GameWorld()->m_WorldConfig.m_PredictWeapons)
 		return;
 

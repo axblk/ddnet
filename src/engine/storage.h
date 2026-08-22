@@ -72,6 +72,27 @@ public:
 	 */
 	virtual void SyncPersistentStorage() = 0;
 
+	/**
+	 * Hands a file to the user on a platform where they cannot reach the file
+	 * system themselves. Does nothing where they can.
+	 *
+	 * @param pFilename Path of the file to hand over.
+	 * @param Type Storage type to look the file up in.
+	 */
+	virtual void SendFileToUser(const char *pFilename, int Type) = 0;
+
+	/**
+	 * Asks the user for files and stores them in the given folder of TYPE_SAVE.
+	 * Blocks until the user has chosen or cancelled. Does nothing on a platform
+	 * where the user can reach the file system themselves.
+	 *
+	 * @param pFolder Folder to store the files in.
+	 * @param pAccept Comma separated file extensions to offer, e.g. ".demo".
+	 *
+	 * @return Number of files that were stored.
+	 */
+	virtual int RequestFilesFromUser(const char *pFolder, const char *pAccept) = 0;
+
 	virtual bool RemoveBinaryFile(const char *pFilename) = 0;
 	virtual bool RenameBinaryFile(const char *pOldFilename, const char *pNewFilename) = 0;
 	virtual const char *GetBinaryPath(const char *pFilename, char *pBuffer, unsigned BufferSize) = 0;

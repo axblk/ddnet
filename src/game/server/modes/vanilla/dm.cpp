@@ -18,8 +18,7 @@ void CGameControllerVanillaDM::OnCharacterDeath(const CGameCharacterDeathContext
 	CCharacter *pVictim = Context.m_pVictim;
 	CPlayer *pKiller = Context.m_pKiller;
 	const int VictimId = pVictim->GetPlayer()->GetCid();
-	const int RespawnDelay = Context.m_Weapon == WEAPON_SELF ? Server()->TickSpeed() * 3 : Server()->TickSpeed() / 2;
-	VanillaPlayer(VictimId)->m_EarliestRespawnTick = Server()->Tick() + RespawnDelay;
+	SetRespawnDelay(VictimId, Context.m_Weapon);
 	const int KillerId = pKiller ? pKiller->GetCid() : -1;
 	if(CPlayerVanilla *pKillerPlayer = VanillaPlayer(KillerId))
 		pKillerPlayer->m_Score += DeathScoreDelta(VictimId, KillerId, Context.m_Weapon);

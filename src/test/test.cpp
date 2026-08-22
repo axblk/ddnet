@@ -120,8 +120,10 @@ static void TestDeleteTestStorageFiles(const char *pPath)
 	// Sorts directories after files.
 	std::sort(vEntries.begin(), vEntries.end());
 
-	// Don't delete too many files.
-	ASSERT_LE(vEntries.size(), 10);
+	// The path is this test's own directory, named after the test and the
+	// process, so nothing else can be under it. A limit on the number of
+	// entries used to stand in for that and silently left the directory behind
+	// whenever a test wrote more files than the limit allowed.
 	for(auto &Entry : vEntries)
 	{
 		if(Entry.m_IsDirectory)
@@ -137,7 +139,10 @@ static void TestDeleteTestStorageFiles(const char *pPath)
 
 CTestInfo::~CTestInfo()
 {
-	if(!::testing::Test::HasFailure() && m_DeleteTestStorageFilesOnSuccess)
+	// A test that failed keeps its storage so that it can be looked at; one that
+	// passed has no reason to leave a directory behind, and asking each test to
+	// opt into that meant most of them did not.
+	if(!::testing::Test::HasFailure())
 	{
 		TestDeleteTestStorageFiles(m_aFilename);
 	}

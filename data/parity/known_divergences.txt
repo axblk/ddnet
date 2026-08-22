@@ -1,0 +1,31 @@
+# Where the predicted world is known to disagree with the authoritative one.
+#
+#   id | scenario:field,... | reason
+#
+# `*:field` waives a field in every scenario; a scenario-specific line wins over
+# it. Scope matters: a blanket waiver on `pos` would hide every future drift
+# everywhere, which is the failure a ledger exists to prevent rather than cause.
+#
+# Checked in both directions by scripts/parity_check.py. A field that differs
+# without a line here fails the build, and a line here that stops reproducing
+# fails it too with "stale". So closing a divergence is deleting its line in the
+# commit that closes it, and opening one costs a reason a reviewer sees.
+#
+# `move` and `hook` appear nowhere below except for the three structural entries:
+# plain movement and hooking are byte-identical between the two worlds, which is
+# what one expects from code both sides genuinely share, and is the evidence that
+# the harness itself is not inventing anything.
+
+client-does-not-model-damage | *:health,*:armor | The predicted CCharacter has no health, no armor and no death - it carries only what the snapshot last said, so it cannot tell that a hit landed until the server says so. The predicted side reports -1 for both. Closing this means deciding whether the client should model damage at all, which is a product question, not a refactoring one.
+
+client-does-not-build-map-entities | *:pickups | The predicted world is built from the snapshot alone and never reads the map, so the pickups, doors, draggers, guns and lights the server creates at load do not exist in it. Phase 1 step S9 closes this.
+
+predicted-ammunition-is-infinite | fire_gun:ammo,fire_shotgun:ammo,fire_grenade:ammo,fire_laser:ammo | Deliberate, not an oversight: CGameState::Reset sets m_GameWorld.m_WorldConfig.m_InfiniteAmmo = true (src/game/client/game_state.cpp:392), so the predicted character fires without ever spending a shot while the server decrements on every shot. This is the divergence the rework was started over.
+
+predicted-shot-is-a-tick-late | fire_shotgun:reload,fire_grenade:reload,fire_laser:reload | On the tick the input arrives the server has already fired and set its reload timer; the predicted character has not fired yet and reports zero. Only the first tick of each scenario differs, so the two agree about the reload once it is running. Cause not yet established - it is either the m_NumInputs < 2 guard in the predicted FireWeapon or the order in which the world ticks the character.
+
+predicted-world-misses-projectiles | fire_shotgun:projectiles,fire_grenade:projectiles,fire_gun:projectiles | The shotgun's five projectiles and the grenade's one never appear in the predicted world at all; the gun's do appear and then outlive the server's by the tail of the scenario. Two different faults sharing a field, and separating them is the first thing step S8 has to do.
+
+predicted-world-misses-lasers | fire_laser:lasers | The laser the server creates on the firing tick has no counterpart in the predicted world.
+
+firing-moves-the-two-apart | fire_gun:pos,fire_gun:vel,fire_gun:hook,fire_grenade:pos,fire_grenade:vel,fire_grenade:hook | Once a weapon acts, the two characters stop agreeing about where they are: the gun parts company at tick 5 and never recovers, the grenade only in the last third. Movement without a weapon is identical, so this is downstream of the entity divergences above rather than a difference in the shared core.

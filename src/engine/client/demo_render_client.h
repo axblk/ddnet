@@ -13,7 +13,6 @@
 
 #include <memory>
 
-class CVideo;
 class IEngineGraphics;
 class IEngineSound;
 class IEngineTextRender;
@@ -42,7 +41,7 @@ class CDemoRenderClient : public CClientWithoutConnection
 	CFriends m_Foes;
 	IGraphics::CTextureHandle m_DebugFont;
 
-	std::unique_ptr<CVideo> m_pVideo;
+	std::unique_ptr<IVideo> m_pVideo;
 	CVideoExportSettings m_Settings;
 	char m_aDemoPath[IO_MAX_PATH_LENGTH] = "";
 	char m_aVideoPath[IO_MAX_PATH_LENGTH] = "";

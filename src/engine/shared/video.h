@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <vector>
 
 typedef std::function<void(short *pFinalOut, unsigned Frames)> ISoundMixFunc;
@@ -159,6 +160,12 @@ public:
 
 	virtual bool Start() = 0;
 	virtual void Stop() = 0;
+	/**
+	 * Stops the export and throws away what was written, which is what an
+	 * export that the user interrupted wants.
+	 */
+	virtual void Cancel() = 0;
+	virtual bool IsStopped() const = 0;
 	virtual void Pause(bool Pause) = 0;
 	virtual bool IsRecording() const = 0;
 	virtual bool HasError() const = 0;
@@ -182,5 +189,32 @@ public:
 protected:
 	static IVideo *ms_pCurrentVideo;
 };
+
+/**
+ * Prepares whatever the linked video export needs before the first one is
+ * created, which for libavcodec is where its logging goes.
+ */
+void InitVideoBackend();
+
+/**
+ * Creates the video export that this build was linked with: the one that
+ * encodes with libavcodec, or the one that hands the frames to the browser.
+ *
+ * @param pGraphics Graphics the frames are read back from.
+ * @param pSound Sound the audio track is mixed from.
+ * @param pStorage Storage the output file is created in.
+ * @param Settings Resolution, rate and quality of the export.
+ * @param LocalStartTime Time the exported timeline starts at.
+ * @param pName Output file, in the given storage.
+ * @param OutputStorageType Storage type the output path is relative to.
+ * @param AllowOverwrite Whether an existing file may be replaced.
+ * @param PauseLiveAudio Whether the sound device should be silenced while the
+ * export runs, which is what an export of what is being watched wants.
+ *
+ * @return The export, which still has to be started.
+ */
+std::unique_ptr<IVideo> CreateVideo(class IGraphics *pGraphics, class ISound *pSound, class IStorage *pStorage,
+	CVideoExportSettings Settings, int64_t LocalStartTime, const char *pName, int OutputStorageType,
+	bool AllowOverwrite, bool PauseLiveAudio);
 
 #endif

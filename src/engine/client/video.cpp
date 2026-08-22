@@ -261,7 +261,7 @@ void ProbeVideoEncoders(IEngine *pEngine)
 	pEngine->AddJob(std::make_shared<CProbeJob>());
 }
 
-void CVideo::Init()
+void InitVideoBackend()
 {
 	av_log_set_callback(AvLogCallback);
 }
@@ -298,6 +298,13 @@ CVideo::CVideo(IGraphics *pGraphics, ISound *pSound, IStorage *pStorage, CVideoE
 
 	dbg_assert(ms_pCurrentVideo == nullptr, "ms_pCurrentVideo is NOT set to nullptr while creating a new Video.");
 	ms_pCurrentVideo = this;
+}
+
+std::unique_ptr<IVideo> CreateVideo(IGraphics *pGraphics, ISound *pSound, IStorage *pStorage,
+	CVideoExportSettings Settings, int64_t LocalStartTime, const char *pName, int OutputStorageType,
+	bool AllowOverwrite, bool PauseLiveAudio)
+{
+	return std::make_unique<CVideo>(pGraphics, pSound, pStorage, Settings, LocalStartTime, pName, OutputStorageType, AllowOverwrite, PauseLiveAudio);
 }
 
 CVideo::~CVideo()

@@ -20,6 +20,7 @@
 #include <base/mem.h>
 #include <base/os.h>
 #include <base/process.h>
+#include <base/rust.h>
 #include <base/secure.h>
 #include <base/str.h>
 #include <base/time.h>
@@ -70,7 +71,6 @@
 #include <game/version.h>
 
 #if defined(CONF_VIDEORECORDER)
-#include "video.h"
 #endif
 
 #if defined(CONF_PLATFORM_ANDROID)
@@ -1110,7 +1110,7 @@ void CClient::Run()
 
 #if defined(CONF_VIDEORECORDER)
 	// init video recorder aka ffmpeg
-	CVideo::Init();
+	InitVideoBackend();
 #endif
 
 	// init text render
@@ -1880,7 +1880,7 @@ const char *CClient::StartVideo(CSessionId SessionId, const char *pFilename, boo
 	Graphics()->WaitForIdle();
 	const int OutputStorageType = ExactFilename && !fs_is_relative_path(aFilename) ? IStorage::TYPE_ABSOLUTE : IStorage::TYPE_SAVE;
 	const bool OfflineAudio = SessionId != FocusedSessionId();
-	m_pVideo = std::make_unique<CVideo>(Graphics(), Sound(), Storage(), Settings, m_LocalStartTime, aFilename, OutputStorageType, !ExactFilename, !OfflineAudio);
+	m_pVideo = CreateVideo(Graphics(), Sound(), Storage(), Settings, m_LocalStartTime, aFilename, OutputStorageType, !ExactFilename, !OfflineAudio);
 	CDemoPlayer &Player = DemoSource(SessionId).DemoPlayer();
 	m_VideoSessionId = SessionId;
 	m_VideoOfflineAudio = OfflineAudio;
@@ -3063,6 +3063,10 @@ int main(int argc, const char **argv)
 	CWindowsComLifecycle WindowsComLifecycle(true);
 #endif
 	CCmdlineFix CmdlineFix(&argc, &argv);
+	// A panic in the Rust half should fail the same way an assertion does.
+	// The engine used to install this, which made every program that has a
+	// job pool link the Rust library, and most of them run no Rust at all.
+	rust_panic_use_dbg_assert();
 	bool CommandLineVideoExportRequested = false;
 	for(int Argument = 1; Argument < argc; ++Argument)
 	{

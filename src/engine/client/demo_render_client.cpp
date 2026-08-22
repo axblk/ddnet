@@ -2,8 +2,6 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "demo_render_client.h"
 
-#include "video.h"
-
 #include <base/fs.h>
 #include <base/log.h>
 #include <base/str.h>
@@ -156,7 +154,7 @@ const char *CDemoRenderClient::StartVideo()
 {
 	Graphics()->WaitForIdle();
 	const int StorageType = fs_is_relative_path(m_aVideoPath) ? IStorage::TYPE_SAVE : IStorage::TYPE_ABSOLUTE;
-	m_pVideo = std::make_unique<CVideo>(Graphics(), Sound(), Storage(), m_Settings, m_LocalStartTime, m_aVideoPath, StorageType, false, true);
+	m_pVideo = CreateVideo(Graphics(), Sound(), Storage(), m_Settings, m_LocalStartTime, m_aVideoPath, StorageType, false, true);
 	CDemoPlayer &Player = DemoSource(m_DemoSessionId).DemoPlayer();
 	Player.SetVideo(m_pVideo.get());
 	if(!m_pVideo->Start())
@@ -206,7 +204,8 @@ void CDemoRenderClient::LogProgress()
 	const int CurrentTicks = std::clamp(pInfo->m_CurrentTick - pInfo->m_FirstTick, 0, TotalTicks);
 	const float Progress = TotalTicks == 0 ? 0.0f : CurrentTicks / static_cast<float>(TotalTicks);
 	const CVideoExportStatus Status = m_pVideo->Status();
-	log_info("videorecorder", "Rendering %.1f%% (%" PRIu64 " / %" PRIu64 " frames encoded)", Progress * 100.0f, Status.m_EncodedFrames, Status.m_SubmittedFrames);
+	log_info("videorecorder", "Rendering %.1f%% (%" PRIu64 " / %" PRIu64 " frames encoded, %.0f per second)",
+		Progress * 100.0f, Status.m_EncodedFrames, Status.m_SubmittedFrames, Status.m_FramesPerSecond);
 }
 
 void CDemoRenderClient::RenderFrame()
@@ -247,7 +246,7 @@ void CDemoRenderClient::Run()
 		log_warn("videorecorder", "The audio device could not be initialised, rendering without sound.");
 		m_Settings.m_Audio = false;
 	}
-	CVideo::Init();
+	InitVideoBackend();
 
 	m_pTextRender = Kernel()->RequestInterface<IEngineTextRender>();
 	m_pTextRender->Init();

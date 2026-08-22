@@ -49,10 +49,10 @@ public:
 
 	bool Start() override REQUIRES(!m_WriteLock, !m_StatusMutex);
 	void Stop() override;
-	void Cancel();
+	void Cancel() override;
 	void Pause(bool Pause) override;
 	bool IsRecording() const override { return m_Recording; }
-	bool IsStopped() const { return m_Stopped; }
+	bool IsStopped() const override { return m_Stopped; }
 	bool HasError() const override { return m_HasError.load(std::memory_order_acquire); }
 	bool HasAudio() const override { return m_HasAudio; }
 	CVideoExportStatus Status() const override NO_THREAD_SAFETY_ANALYSIS;
@@ -68,8 +68,6 @@ public:
 	int64_t Time() const override { return m_Time; }
 	float LocalTime() const override { return m_LocalTime; }
 	void SetLocalStartTime(int64_t LocalStartTime) override { m_LocalStartTime = LocalStartTime; }
-
-	static void Init();
 
 private:
 	void RunVideoThread(size_t ThreadIndex) REQUIRES(!m_WriteLock);

@@ -143,7 +143,7 @@ def main():
 	# reported per scenario rather than per line - one side stopping early is one
 	# finding, not sixty.
 	for scenario, side, keys in scenarios_only_on_one_side(server, client):
-		ticks = sorted((int(key[2]) for key in keys))
+		ticks = sorted(int(key[2]) for key in keys)
 		# The earliest tick decides: a waiver that starts later does not cover a
 		# line that is missing before it.
 		scope = waiver(ledger, scenario, "ticks", ticks[0])

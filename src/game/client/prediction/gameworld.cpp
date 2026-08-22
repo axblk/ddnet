@@ -4,7 +4,6 @@
 #include "gameworld.h"
 
 #include "entities/character.h"
-#include "entities/door.h"
 #include "entities/dragger.h"
 #include "entities/laser.h"
 #include "entities/pickup.h"
@@ -542,9 +541,7 @@ void CGameWorld::NetObjAdd(int ObjId, int ObjType, const void *pObjData, const C
 			return;
 		}
 
-		// Doors are static world geometry that only ever adds move restrictions to tiles,
-		// so they follow the tile physics config rather than the weapon prediction config.
-		if(!(Data.m_Type == LASERTYPE_DOOR ? m_WorldConfig.m_PredictTiles : m_WorldConfig.m_PredictWeapons))
+		if(!m_WorldConfig.m_PredictWeapons)
 		{
 			return;
 		}
@@ -596,19 +593,6 @@ void CGameWorld::NetObjAdd(int ObjId, int ObjType, const void *pObjData, const C
 				InsertEntity(pEnt);
 			}
 		}
-		else if(Data.m_Type == LASERTYPE_DOOR)
-		{
-			CDoor NetDoor = CDoor(this, ObjId, &Data);
-			auto *pDoor = dynamic_cast<CDoor *>(GetEntity(ObjId, ENTTYPE_DOOR));
-			if(pDoor && NetDoor.Match(pDoor))
-			{
-				pDoor->Keep();
-				pDoor->Read(&Data);
-				return;
-			}
-			CDoor *pEnt = new CDoor(NetDoor);
-			InsertEntity(pEnt);
-		}
 		else if(Data.m_Type == LASERTYPE_PLASMA)
 		{
 			CPlasma NetPlasma = CPlasma(this, ObjId, &Data);
@@ -623,29 +607,6 @@ void CGameWorld::NetObjAdd(int ObjId, int ObjType, const void *pObjData, const C
 			InsertEntity(pEnt);
 		}
 	}
-}
-
-void CGameWorld::ResetDoorCollision()
-{
-	// Doors add their move restrictions to the collision grid shared by the whole client
-	// rather than keeping them on the entity, so the grid is rebuilt after every snapshot:
-	// a destroyed door clears its entire span, including tiles another door still occupies.
-	// Doors are applied in map order, the order the server creates them in, so intersecting
-	// doors resolve to the same tile on both sides. Two doors originating on the same tile
-	// share a map index; the server creates the game/front-layer door before the switch-layer
-	// one, so the switch door (m_Number > 0) stamps the shared origin tile last and wins.
-	std::vector<CDoor *> vpDoors;
-	for(CEntity *pEnt = FindFirst(ENTTYPE_DOOR); pEnt; pEnt = pEnt->TypeNext())
-		vpDoors.push_back(static_cast<CDoor *>(pEnt));
-	std::stable_sort(vpDoors.begin(), vpDoors.end(), [this](const CDoor *pLeft, const CDoor *pRight) {
-		const int LeftIndex = Collision()->GetPureMapIndex(pLeft->m_Pos);
-		const int RightIndex = Collision()->GetPureMapIndex(pRight->m_Pos);
-		if(LeftIndex != RightIndex)
-			return LeftIndex < RightIndex;
-		return (pLeft->m_Number > 0) < (pRight->m_Number > 0);
-	});
-	for(CDoor *pDoor : vpDoors)
-		pDoor->ResetCollision();
 }
 
 void CGameWorld::NetObjEnd()
@@ -665,7 +626,6 @@ void CGameWorld::NetObjEnd()
 						pHookedChar->m_MarkedForDestroy = false;
 					}
 	RemoveEntities();
-	ResetDoorCollision();
 
 	// Update character IDs and pointers
 	for(int i = 0; i < MAX_CLIENTS; i++)
@@ -784,14 +744,6 @@ static auto FindMatchIn(TWorld &World, int ObjId, int ObjType, const void *pObjD
 		{
 			auto *pEnt = World.GetEntity(ObjId, CGameWorld::ENTTYPE_DRAGGER);
 			if(pEnt && static_cast<const CDragger *>(pEnt)->Match(Data))
-			{
-				return pEnt;
-			}
-		}
-		else if(Data.m_Type == LASERTYPE_DOOR)
-		{
-			auto *pEnt = World.GetEntity(ObjId, CGameWorld::ENTTYPE_DOOR);
-			if(pEnt && static_cast<const CDoor *>(pEnt)->Match(Data))
 			{
 				return pEnt;
 			}

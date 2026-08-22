@@ -42,22 +42,61 @@ fn varint_size(value: u64) -> Option<usize> {
     }
 }
 
-pub(crate) fn encode_varint(value: u64, out: &mut Vec<u8>) -> bool {
-    let Some(length) = varint_size(value) else {
-        return false;
-    };
-    let start = out.len();
-    out.resize(start + length, 0);
+fn varint_bytes(value: u64) -> Option<([u8; 8], usize)> {
+    let length = varint_size(value)?;
+    let mut bytes = [0u8; 8];
     for i in 0..length {
-        out[start + length - i - 1] = (value >> (i * 8)) as u8;
+        bytes[length - i - 1] = (value >> (i * 8)) as u8;
     }
-    out[start] |= match length {
+    bytes[0] |= match length {
         1 => 0,
         2 => 1 << 6,
         4 => 2 << 6,
         8 => 3 << 6,
         _ => unreachable!(),
     };
+    Some((bytes, length))
+}
+
+/// The buffers the wire format is written into: a `Vec` in the tests and the
+/// fuzz targets, and the `BytesMut` the QUIC send path hands to quinn as a cut
+/// of itself. Only the three operations the encoders need are on it.
+pub(crate) trait ByteSink {
+    fn len(&self) -> usize;
+    fn truncate(&mut self, length: usize);
+    fn extend_from_slice(&mut self, data: &[u8]);
+}
+
+impl ByteSink for Vec<u8> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+    fn truncate(&mut self, length: usize) {
+        self.truncate(length);
+    }
+    fn extend_from_slice(&mut self, data: &[u8]) {
+        self.extend_from_slice(data);
+    }
+}
+
+#[cfg(feature = "quic")]
+impl ByteSink for bytes::BytesMut {
+    fn len(&self) -> usize {
+        self.len()
+    }
+    fn truncate(&mut self, length: usize) {
+        self.truncate(length);
+    }
+    fn extend_from_slice(&mut self, data: &[u8]) {
+        self.extend_from_slice(data);
+    }
+}
+
+pub(crate) fn encode_varint(value: u64, out: &mut impl ByteSink) -> bool {
+    let Some((bytes, length)) = varint_bytes(value) else {
+        return false;
+    };
+    out.extend_from_slice(&bytes[..length]);
     true
 }
 
@@ -309,24 +348,34 @@ pub(crate) fn decode_resume(payload: &[u8]) -> Result<Resume<'_>, DecodeError> {
     })
 }
 
-pub(crate) fn encode_datagram(sequence: u64, messages: &[&[u8]]) -> Option<Vec<u8>> {
-    if messages.is_empty() || messages.len() > MAX_DATAGRAM_MESSAGES as usize {
-        return None;
-    }
-    let mut out = Vec::with_capacity(MAX_DATAGRAM_SIZE);
-    for value in [VERSION_MAJOR, 0, sequence, messages.len() as u64] {
-        if !encode_varint(value, &mut out) {
-            return None;
+/// Appends one datagram to `out`, leaving it as it was if the datagram does not
+/// fit the wire format. Writing straight into the caller's buffer is what lets the
+/// send path run without an allocation of its own.
+pub(crate) fn encode_datagram<S: ByteSink>(sequence: u64, messages: &[&[u8]], out: &mut S) -> bool {
+    let start = out.len();
+    let encode = |out: &mut S| {
+        if messages.is_empty() || messages.len() > MAX_DATAGRAM_MESSAGES as usize {
+            return false;
         }
-    }
-    for message in messages {
-        if message.is_empty() || message.len() > MAX_DATAGRAM_MESSAGE_SIZE {
-            return None;
+        for value in [VERSION_MAJOR, 0, sequence, messages.len() as u64] {
+            if !encode_varint(value, out) {
+                return false;
+            }
         }
-        encode_varint(message.len() as u64, &mut out);
-        out.extend_from_slice(message);
+        for message in messages {
+            if message.is_empty() || message.len() > MAX_DATAGRAM_MESSAGE_SIZE {
+                return false;
+            }
+            encode_varint(message.len() as u64, out);
+            out.extend_from_slice(message);
+        }
+        out.len() - start <= MAX_DATAGRAM_SIZE
+    };
+    if encode(out) {
+        return true;
     }
-    (out.len() <= MAX_DATAGRAM_SIZE).then_some(out)
+    out.truncate(start);
+    false
 }
 
 pub(crate) struct Datagram<'a> {
@@ -429,10 +478,22 @@ mod tests {
         assert_eq!(decoded.frame_type, 2);
         assert_eq!(decoded.payload, [1, 2, 3]);
         assert_eq!(decoded.bytes_consumed, frame.len());
+    }
 
-        let datagram = encode_datagram(300, &[&[0xaa, 0xbb], &[0xcc]]).unwrap();
+    // Encoding a datagram needs the buffer type quinn uses, which is only a
+    // dependency of the QUIC build. Decoding one is always compiled, so only
+    // this half of the golden vector is gated.
+    #[cfg(feature = "quic")]
+    #[test]
+    fn datagram_golden_vector_matches_cpp() {
+        let mut datagram = bytes::BytesMut::new();
+        assert!(encode_datagram(
+            300,
+            &[&[0xaa, 0xbb], &[0xcc]],
+            &mut datagram
+        ));
         assert_eq!(
-            datagram,
+            &datagram[..],
             [0x01, 0x00, 0x41, 0x2c, 0x02, 0x02, 0xaa, 0xbb, 0x01, 0xcc]
         );
         let mut decoded = decode_datagram(&datagram).unwrap();

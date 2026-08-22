@@ -193,6 +193,10 @@ public:
 	SHA256_DIGEST m_QuicCertificateSha256;
 	SHA256_DIGEST m_QuicNextCertificateSha256;
 	SHA256_DIGEST m_QuicIdentityFingerprint;
+	// WebTransport runs on its own certificate, so its pins are kept apart from the
+	// raw QUIC ones. A server can offer both, and then the two differ.
+	SHA256_DIGEST m_WebTransportCertificateSha256;
+	SHA256_DIGEST m_WebTransportNextCertificateSha256;
 	int m_QuicPort;
 	int m_QuicCapabilities;
 	bool m_QuicSharedPort;
@@ -202,6 +206,7 @@ public:
 	// master server names both transports by address instead.
 	bool m_RawQuic;
 	bool m_HasQuicNextCertificateSha256;
+	bool m_HasWebTransportNextCertificateSha256;
 	bool m_HasQuicIdentityFingerprint;
 	EModernTransportTrust m_QuicTrust;
 	bool m_WebTransport;

@@ -158,10 +158,18 @@ impl ServerState {
         }
         let settings =
             Settings::with_frame(&frame).map_err(|_| "invalid or duplicate HTTP/3 SETTINGS")?;
-        if settings.get(SettingId::EnableConnectProtocol) != Some(VarInt::from_u32(1))
-            || settings.get(SettingId::EnableWebTransport) != Some(VarInt::from_u32(1))
-            || settings.get(SettingId::H3Datagram) != Some(VarInt::from_u32(1))
-        {
+        // What a client has to say before a session can be opened, and only
+        // that. The two WebTransport drafts spell the same thing differently:
+        // draft-02 sends `ENABLE_WEBTRANSPORT`, everything after it sends
+        // `WEBTRANSPORT_MAX_SESSIONS`, and a browser sends only the newer one.
+        // `ENABLE_CONNECT_PROTOCOL` is not asked for at all: RFC 9220 has the
+        // server send it to the client to allow extended CONNECT, not the other
+        // way round, so demanding it turned every browser away.
+        let webtransport = settings.get(SettingId::EnableWebTransport) == Some(VarInt::from_u32(1))
+            || settings
+                .get(SettingId::WebTransportMaxSessions)
+                .is_some_and(|sessions| sessions.into_inner() > 0);
+        if !webtransport || settings.get(SettingId::H3Datagram) != Some(VarInt::from_u32(1)) {
             return Err("client did not enable WebTransport datagrams".into());
         }
         self.settings_received = true;
@@ -296,6 +304,49 @@ mod tests {
             [Action::Write { finish: false, .. }]
         ));
         assert!(server.master_challenge());
+    }
+
+    #[test]
+    fn accepts_the_settings_a_browser_sends() {
+        // No `ENABLE_WEBTRANSPORT` and no `ENABLE_CONNECT_PROTOCOL`, which is
+        // what every current browser offers.
+        let mut server = ServerState::new();
+        let settings_stream = StreamId::new(Side::Client, Dir::Uni, 0);
+        server.accept_stream(settings_stream, Dir::Uni);
+        let settings = Settings::builder()
+            .enable_h3_datagrams()
+            .webtransport_max_sessions(VarInt::from_u32(1))
+            .build();
+        let mut settings_bytes = Vec::new();
+        StreamHeader::new_control()
+            .write(&mut settings_bytes)
+            .unwrap();
+        settings
+            .generate_frame()
+            .write(&mut settings_bytes)
+            .unwrap();
+        assert!(server
+            .feed(settings_stream, &settings_bytes)
+            .unwrap()
+            .is_empty());
+        assert!(server.settings_received);
+    }
+
+    #[test]
+    fn rejects_settings_without_webtransport() {
+        let mut server = ServerState::new();
+        let settings_stream = StreamId::new(Side::Client, Dir::Uni, 0);
+        server.accept_stream(settings_stream, Dir::Uni);
+        let settings = Settings::builder().enable_h3_datagrams().build();
+        let mut settings_bytes = Vec::new();
+        StreamHeader::new_control()
+            .write(&mut settings_bytes)
+            .unwrap();
+        settings
+            .generate_frame()
+            .write(&mut settings_bytes)
+            .unwrap();
+        assert!(server.feed(settings_stream, &settings_bytes).is_err());
     }
 
     #[test]

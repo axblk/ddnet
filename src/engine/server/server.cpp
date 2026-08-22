@@ -3878,7 +3878,18 @@ int CServer::Run()
 			log_info("server", "native QUIC listening on %s identity-sha256=%s", aModernAddress, aFingerprint);
 		}
 		if(WebTransportEnabled)
-			log_info("server", "WebTransport listening on %s path=/ddnet", aModernAddress);
+		{
+			// The hash is what a browser needs to accept a certificate nobody
+			// signed, and a connect link is where it goes, so it belongs where
+			// it can be read off rather than only in the server info.
+			char aWebTransportFragment[160];
+			char aQuicFragment[160];
+			FormatModernTransportFragments(aQuicFragment, sizeof(aQuicFragment), aWebTransportFragment, sizeof(aWebTransportFragment));
+			if(aWebTransportFragment[0] != '\0')
+				log_info("server", "WebTransport listening on %s path=/ddnet #%s", aModernAddress, aWebTransportFragment);
+			else
+				log_info("server", "WebTransport listening on %s path=/ddnet", aModernAddress);
+		}
 		return true;
 	};
 
@@ -3897,14 +3908,20 @@ int CServer::Run()
 		}
 	}
 	m_NetServer.SetLegacyConnections(m_LegacyUdpStarted);
-	if(ModernTransportEnabled && !StartQuic())
-		return -1;
 	if(ModernTransportEnabled)
 	{
-		const int ModernTransportPort = Config()->m_SvRegisterPort > 0 ? Config()->m_SvRegisterPort : BindAddr.port;
-		char aWebTransportUrl[256];
+		// What is running is known before it runs, because starting it already
+		// logs the connect fragments that are read from here.
 		if(pModernHostname[0] != '\0')
 			str_copy(m_aModernTransportHostname, pModernHostname);
+		m_QuicStarted = QuicEnabled;
+		m_WebTransportStarted = WebTransportEnabled;
+		m_WebTransportUseCertificateHashes = WebTransportEnabled && str_comp(Config()->m_SvWebtransportCertificateMode, "hash") == 0;
+		m_QuicUseWebPki = QuicEnabled && m_aModernTransportHostname[0] != '\0' && SharedTlsConfigured;
+		if(!StartQuic())
+			return -1;
+		const int ModernTransportPort = Config()->m_SvRegisterPort > 0 ? Config()->m_SvRegisterPort : BindAddr.port;
+		char aWebTransportUrl[256];
 		if(Config()->m_SvRegisterHostname[0] != '\0' && (Config()->m_SvRegisterHostname[0] == '[' || !FormatWebTransportUrl(aWebTransportUrl, sizeof(aWebTransportUrl), Config()->m_SvRegisterHostname, ModernTransportPort)))
 		{
 			log_error("server", "sv_register_hostname must be a DNS name without a port");
@@ -3917,10 +3934,6 @@ int CServer::Run()
 			m_QuicTransport.Shutdown();
 			return -1;
 		}
-		m_QuicStarted = QuicEnabled;
-		m_WebTransportStarted = WebTransportEnabled;
-		m_WebTransportUseCertificateHashes = WebTransportEnabled && str_comp(Config()->m_SvWebtransportCertificateMode, "hash") == 0;
-		m_QuicUseWebPki = QuicEnabled && m_aModernTransportHostname[0] != '\0' && SharedTlsConfigured;
 	}
 	log_info("server", "network transports: legacy-udp=%s quic=%s webtransport=%s", m_LegacyUdpStarted ? "enabled" : "disabled", m_QuicStarted ? "enabled" : "disabled", m_WebTransportStarted ? "enabled" : "disabled");
 

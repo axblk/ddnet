@@ -528,8 +528,11 @@ protected:
 		EConnectAddressFamily m_aFamilies[(int)EConnectAddressFamily::COUNT] = {EConnectAddressFamily::IPV6};
 		int m_NumFamilies = 0;
 	};
-	static const char *ConnectProtocolShortName(EConnectProtocol Protocol);
+	void RenderConnectChoiceLabel(CUIRect Field, const char *pLabel, int Corners);
+	static const char *ConnectProtocolShortName(EConnectProtocol Protocol, const char *pAddress);
 	static CConnectChoices ConnectChoicesFor(const CServerInfo *pServer, const char *pAddress);
+	static bool ServerHasAddress(const CServerInfo *pServer, const char *pAddress);
+	static void UpdateConnectAddress(const CServerInfo *pServer);
 	void RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItemActivated);
 	void Connect(const char *pAddress);
 	void PopupConfirmSwitchServer();

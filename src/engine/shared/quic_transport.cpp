@@ -48,6 +48,10 @@ namespace
 	};
 
 	// clang-format off
+	EM_JS(int, BrowserWebTransportAvailable, (), {
+		return typeof WebTransport === 'undefined' ? 0 : 1;
+	});
+
 	EM_JS(int, BrowserWebTransportStart, (const char *pUrl, const unsigned char *pCertificateHashes, int CertificateHashCount), {
 		if(typeof WebTransport === 'undefined')
 			return -1;
@@ -75,7 +79,7 @@ namespace
 			state.terminal = true;
 			try { if(state.transport) state.transport.close({closeCode: 2, reason: 'transport failure'}); } catch(_) {}
 		};
-		const push = (kind, payload, reason = '') => {
+		const push = (kind, payload, reason = "") => {
 			if(!active())
 				return false;
 			if(state.events.length >= 256) {
@@ -107,7 +111,7 @@ namespace
 				payload[2] = (id >>> 16) & 255;
 				payload[3] = (id >>> 24) & 255;
 				payload.set(chunk, 4);
-				state.mapEvents.push({kind, payload, reason: ''});
+				state.mapEvents.push({kind, payload, reason: ""});
 			}
 			return true;
 		};
@@ -273,7 +277,7 @@ namespace
 		}
 		HEAPU8.set(event.payload, pPayload);
 		HEAP32[pPayloadSize >> 2] = event.payload.length;
-		stringToUTF8(event.reason || '', pReason, ReasonCapacity);
+		stringToUTF8(event.reason || "", pReason, ReasonCapacity);
 		return event.kind;
 	});
 
@@ -459,6 +463,17 @@ bool CQuicTransport::IsWebTransportClientCompiled()
 {
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 	return true;
+#else
+	return false;
+#endif
+}
+
+bool CQuicTransport::IsWebTransportClientAvailable()
+{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// Compiled in is not the same as usable: a browser without WebTransport
+	// leaves the client with nothing to dial.
+	return BrowserWebTransportAvailable() != 0;
 #else
 	return false;
 #endif

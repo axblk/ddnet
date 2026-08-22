@@ -754,6 +754,23 @@ static bool FindModernAddress(const NETADDR *pAddresses, int NumAddresses, const
 	return true;
 }
 
+// A connect link carries its certificate hashes as `#cert-sha256=A,B`, so the
+// commas that separate addresses are only the ones before the fragment.
+static const char *NextConnectAddress(const char *pStr, char *pBuffer, int BufferSize)
+{
+	while(*pStr == ',')
+		pStr++;
+	if(*pStr == '\0')
+		return nullptr;
+	const char *pEnd = pStr;
+	while(*pEnd != '\0' && *pEnd != ',' && *pEnd != '#')
+		pEnd++;
+	if(*pEnd == '#')
+		pEnd = pStr + str_length(pStr);
+	str_truncate(pBuffer, BufferSize, pStr, pEnd - pStr);
+	return pEnd;
+}
+
 void CClient::Connect(const char *pAddress, const char *pPassword)
 {
 	// Disconnect will not change the state if we are already quitting/restarting
@@ -785,7 +802,15 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	bool InvalidDirectQuicLink = false;
 	bool ExplicitQuic = false;
 	bool ExplicitWebTransport = false;
-	const EConnectProtocol Protocol = (EConnectProtocol)std::clamp(g_Config.m_ClConnectProtocol, 0, (int)EConnectProtocol::COUNT - 1);
+	// Nothing picked yet means the best there is, which is QUIC where the client
+	// has it and the server announces it; everything below falls back to the
+	// legacy transport on its own.
+	const EConnectProtocol Protocol = []() {
+		if(g_Config.m_ClConnectProtocol >= 0)
+			return (EConnectProtocol)std::clamp(g_Config.m_ClConnectProtocol, 0, (int)EConnectProtocol::COUNT - 1);
+		return g_Config.m_ClQuic && CQuicTransport::IsCompiled() ? EConnectProtocol::QUIC : EConnectProtocol::LEGACY;
+	}();
+	const bool ProtocolPicked = g_Config.m_ClConnectProtocol >= 0;
 	// IPv6 is the preference and not a demand, so it is left to the resolver,
 	// which already takes IPv6 where a hostname has it and IPv4 where it does
 	// not. IPv4 is the one that rules a family out.
@@ -804,11 +829,11 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	int WebsocketSecure = -1;
 	bool MixedWebsocketSchemes = false;
 #endif
-	while((pNextAddr = str_next_token(pNextAddr, ",", aBuffer, sizeof(aBuffer))))
+	while((pNextAddr = NextConnectAddress(pNextAddr, aBuffer, sizeof(aBuffer))))
 	{
 		NumConnectTokens++;
 		const bool QuicUrl = str_startswith(aBuffer, QUIC_CONNECTLINK_DOUBLE_SLASH) || str_startswith(aBuffer, QUIC_CONNECTLINK7_DOUBLE_SLASH);
-		const bool WebTransportUrl = str_startswith(aBuffer, "ddnet+wt://") || str_startswith(aBuffer, "tw-0.7+wt://");
+		const bool WebTransportUrl = str_startswith(aBuffer, WT_CONNECTLINK_DOUBLE_SLASH) || str_startswith(aBuffer, WT_CONNECTLINK7_DOUBLE_SLASH);
 		ExplicitQuic |= QuicUrl;
 		ExplicitWebTransport |= WebTransportUrl;
 		bool ParsedWebTransport = false;
@@ -941,6 +966,13 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	if(InvalidDirectQuicLink)
 	{
 		log_error("client", "invalid direct QUIC link or multiple connect addresses");
+		// A connect that only returns leaves the menu waiting for something that
+		// never happens, so the reason has to reach the screen as well.
+		char aWarning[256];
+		str_format(aWarning, sizeof(aWarning), Localize("'%s' is not a valid connect address. See local console for details."), m_aConnectAddressStr);
+		SWarning Warning(Localize("Connect address error"), aWarning);
+		Warning.m_AutoHide = false;
+		AddWarning(Warning);
 		return;
 	}
 
@@ -1021,10 +1053,14 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	// listens on, which is not always the one the legacy transport uses.
 	NETADDR AdvertisedQuicAddress = {};
 	bool ServerOffersQuic = false;
+	bool ServerKnown = false;
 	for(int i = 0; i < NumConnectAddrs && !ServerOffersQuic; i++)
 	{
 		const CServerBrowser::CServerEntry *pEntry = FindTransportEntry(aConnectAddrs[i]);
-		if(pEntry == nullptr || pEntry->m_Info.m_NumQuicAddresses == 0)
+		if(pEntry == nullptr)
+			continue;
+		ServerKnown = true;
+		if(pEntry->m_Info.m_NumQuicAddresses == 0)
 			continue;
 		ServerOffersQuic = FindModernAddress(pEntry->m_Info.m_aQuicAddresses, pEntry->m_Info.m_NumQuicAddresses, aConnectAddrs[i], OnlySixup, &AdvertisedQuicAddress);
 	}
@@ -1131,11 +1167,14 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 #endif
 	// Preferred next to the address field and announced by the server, or part
 	// of a direct link, which carries the address and the identity to use with
-	// it. A server that does not announce QUIC gets the legacy transport, but
-	// once QUIC is used there is no fallback: a QUIC connect that fails is
-	// reported, not quietly retried over the legacy transport, because that is
-	// what made connection problems hard to read before.
-	const bool WantQuic = DirectQuic || (Protocol == EConnectProtocol::QUIC && ServerOffersQuic);
+	// it. A known server that does not announce QUIC gets the legacy transport;
+	// an address the browser has never seen announces nothing either way, so
+	// there a transport picked by hand is the only thing to go on, while the
+	// automatic pick stays on the legacy transport rather than guessing. Once
+	// QUIC is used there is no fallback: a QUIC connect that fails is reported,
+	// not quietly retried over the legacy transport, because that is what made
+	// connection problems hard to read before.
+	const bool WantQuic = DirectQuic || (Protocol == EConnectProtocol::QUIC && (ServerOffersQuic || (ProtocolPicked && !ServerKnown)));
 	if(WantQuic && !CQuicTransport::IsCompiled())
 	{
 		log_error("client", "this build has no QUIC transport, connecting over the legacy transport");
@@ -4098,7 +4137,7 @@ void CClient::Run()
 		char aFile[IO_MAX_PATH_LENGTH];
 		if(Input()->GetDropFile(aFile, sizeof(aFile)))
 		{
-			if(str_startswith(aFile, CONNECTLINK_NO_SLASH) || str_startswith(aFile, QUIC_CONNECTLINK_DOUBLE_SLASH) || str_startswith(aFile, QUIC_CONNECTLINK7_DOUBLE_SLASH))
+			if(str_startswith(aFile, CONNECTLINK_NO_SLASH) || str_startswith(aFile, QUIC_CONNECTLINK_DOUBLE_SLASH) || str_startswith(aFile, QUIC_CONNECTLINK7_DOUBLE_SLASH) || str_startswith(aFile, WT_CONNECTLINK_DOUBLE_SLASH) || str_startswith(aFile, WT_CONNECTLINK7_DOUBLE_SLASH))
 				HandleConnectLink(aFile);
 			else if(str_endswith(aFile, ".demo"))
 				HandleDemoPath(aFile);
@@ -5525,7 +5564,7 @@ void CClient::HandleMapPath(const char *pPath)
 static bool UnknownArgumentCallback(const char *pCommand, void *pUser)
 {
 	CClient *pClient = static_cast<CClient *>(pUser);
-	if(str_startswith(pCommand, CONNECTLINK_NO_SLASH) || str_startswith(pCommand, QUIC_CONNECTLINK_DOUBLE_SLASH) || str_startswith(pCommand, QUIC_CONNECTLINK7_DOUBLE_SLASH))
+	if(str_startswith(pCommand, CONNECTLINK_NO_SLASH) || str_startswith(pCommand, QUIC_CONNECTLINK_DOUBLE_SLASH) || str_startswith(pCommand, QUIC_CONNECTLINK7_DOUBLE_SLASH) || str_startswith(pCommand, WT_CONNECTLINK_DOUBLE_SLASH) || str_startswith(pCommand, WT_CONNECTLINK7_DOUBLE_SLASH))
 	{
 		pClient->HandleConnectLink(pCommand);
 		return true;

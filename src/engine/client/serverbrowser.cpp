@@ -24,6 +24,7 @@
 #include <engine/shared/network.h>
 #include <engine/shared/packer.h>
 #include <engine/shared/protocol.h>
+#include <engine/shared/quic_transport.h>
 #include <engine/shared/serverinfo.h>
 #include <engine/storage.h>
 
@@ -469,7 +470,7 @@ bool ServerBrowserHasCompatibleAddress(const CServerInfo &Info, int NetTypes, bo
 bool CServerBrowser::HasCompatibleAddress(const CServerInfo &Info) const
 {
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	return ServerBrowserHasCompatibleAddress(Info, 0, true, net_websocket_secure_default(), false, true);
+	return ServerBrowserHasCompatibleAddress(Info, 0, true, net_websocket_secure_default(), false, CQuicTransport::IsWebTransportClientAvailable());
 #else
 #if defined(CONF_QUIC)
 	static constexpr bool QuicSupported = true;
@@ -496,6 +497,12 @@ void CServerBrowser::Filter()
 	for(int ServerIndex = 0; ServerIndex < (int)m_vpServerlist.size(); ServerIndex++)
 	{
 		CServerInfo &Info = m_vpServerlist[ServerIndex]->m_Info;
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		// A browser reaches websockets and WebTransport and nothing else, so a
+		// server it cannot dial has no business being in the list at all.
+		if(!HasCompatibleAddress(Info))
+			continue;
+#endif
 		bool Filtered = false;
 
 		if(g_Config.m_BrFilterEmpty && Info.m_NumFilteredPlayers == 0)

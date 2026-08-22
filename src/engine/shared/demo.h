@@ -13,11 +13,15 @@
 #include <functional>
 #include <vector>
 
-typedef std::function<void()> TUpdateIntraTimesFunc;
-
+class CDemoPlayer;
 class CSnapshotDelta;
 class IConsole;
 class IStorage;
+#if defined(CONF_VIDEORECORDER)
+class IVideo;
+#endif
+
+typedef std::function<void(CDemoPlayer &)> TUpdateIntraTimesFunc;
 
 class CDemoRecorder : public IDemoRecorder
 {
@@ -71,8 +75,8 @@ public:
 	{
 	public:
 		virtual ~IListener() = default;
-		virtual void OnDemoPlayerSnapshot(void *pData, int Size) = 0;
-		virtual void OnDemoPlayerMessage(void *pData, int Size) = 0;
+		virtual void OnDemoPlayerSnapshot(CDemoPlayer &DemoPlayer, void *pData, int Size) = 0;
+		virtual void OnDemoPlayerMessage(CDemoPlayer &DemoPlayer, void *pData, int Size) = 0;
 	};
 
 	class CPlaybackInfo
@@ -143,6 +147,7 @@ private:
 
 	bool m_UseVideo;
 #if defined(CONF_VIDEORECORDER)
+	IVideo *m_pVideo = nullptr;
 	bool m_WasRecording = false;
 #endif
 
@@ -175,6 +180,10 @@ public:
 	~CDemoPlayer() override;
 
 	void SetListener(IListener *pListener);
+#if defined(CONF_VIDEORECORDER)
+	void SetVideo(IVideo *pVideo);
+	IVideo *Video() const { return m_pVideo; }
+#endif
 
 	int Load(IStorage *pStorage, IConsole *pConsole, const char *pFilename, int StorageType);
 	unsigned char *GetMapData(IStorage *pStorage);

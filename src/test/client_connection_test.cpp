@@ -230,7 +230,7 @@ TEST(ClientConnection, NetworkMetadataResetIsLocal)
 TEST(ClientConnection, DemoStateDoesNotAliasNetworkMain)
 {
 	CNetworkSessionSource Network;
-	CDemoSessionSource Demo(false, [] {});
+	CDemoSessionSource Demo(false, [](CDemoPlayer &) {});
 	CConnection &NetworkMain = Network.ConnectionAt(IClient::CONN_MAIN);
 	NetworkMain.m_CurGameTick = 123;
 	CSnapshotStorage::CHolder NetworkSnapshot;

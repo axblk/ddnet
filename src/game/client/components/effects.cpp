@@ -35,8 +35,9 @@ void CEffects::AirJump(CGameState &State, vec2 Pos, int OwnerClientId, float Alp
 	p.m_Pos = Pos + vec2(6.0f, 16.0f);
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 
-	if(g_Config.m_SndGame)
-		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_AIRJUMP, Volume, Pos);
+	bool OfflineAudio;
+	if(g_Config.m_SndGame && GameClient()->AudioForState(State, OfflineAudio))
+		GameClient()->m_Sounds.PlayAtForAudio(CSounds::CHN_WORLD, SOUND_PLAYER_AIRJUMP, Volume, Pos, OfflineAudio);
 }
 
 void CEffects::DamageIndicator(CGameState &State, vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha)
@@ -159,7 +160,11 @@ void CEffects::SkidTrail(CGameState &State, const CGameTickInfo &Time, vec2 Pos,
 	if(PlaySound && g_Config.m_SndGame)
 	{
 		if(EffectClock.TrySkidSound(Time.m_PresentationTime, Time.m_PresentationTimeFrequency))
-			GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_SKID, Volume, Pos);
+		{
+			bool OfflineAudio;
+			if(GameClient()->AudioForState(State, OfflineAudio))
+				GameClient()->m_Sounds.PlayAtForAudio(CSounds::CHN_WORLD, SOUND_PLAYER_SKID, Volume, Pos, OfflineAudio);
+		}
 	}
 }
 
@@ -202,8 +207,9 @@ void CEffects::PlayerSpawn(CGameState &State, vec2 Pos, float Alpha, float Volum
 		p.m_StartAlpha = Alpha;
 		GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 	}
-	if(g_Config.m_SndGame)
-		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_SPAWN, Volume, Pos);
+	bool OfflineAudio;
+	if(g_Config.m_SndGame && GameClient()->AudioForState(State, OfflineAudio))
+		GameClient()->m_Sounds.PlayAtForAudio(CSounds::CHN_WORLD, SOUND_PLAYER_SPAWN, Volume, Pos, OfflineAudio);
 }
 
 void CEffects::PlayerDeath(CSessionId SessionId, CGameState &State, vec2 Pos, int ClientId, float Alpha)
@@ -319,6 +325,8 @@ void CEffects::Confetti(CGameState &State, vec2 Pos, float Alpha)
 
 void CEffects::Explosion(CGameState &State, vec2 Pos, float Alpha)
 {
+	CCollision *pCollision = State.GameWorld().Collision();
+	dbg_assert(pCollision != nullptr, "missing explosion collision");
 	// add the explosion
 	CParticle p;
 	p.SetDefault();
@@ -334,7 +342,7 @@ void CEffects::Explosion(CGameState &State, vec2 Pos, float Alpha)
 
 	// Nudge position slightly to edge of closest tile so the
 	// smoke doesn't get stuck inside the tile.
-	if(Collision()->CheckPoint(Pos))
+	if(pCollision->CheckPoint(Pos))
 	{
 		const vec2 DistanceToTopLeft = Pos - vec2(round_truncate(Pos.x / 32), round_truncate(Pos.y / 32)) * 32;
 
@@ -346,7 +354,7 @@ void CEffects::Explosion(CGameState &State, vec2 Pos, float Alpha)
 		for(vec2 Mask : {vec2(1.0f, 0.0f), vec2(0.0f, 1.0f), vec2(1.0f, 1.0f)})
 		{
 			const vec2 NewPos = Pos + CheckOffset * Mask;
-			if(!Collision()->CheckPoint(NewPos))
+			if(!pCollision->CheckPoint(NewPos))
 			{
 				Pos = NewPos;
 				break;
@@ -386,8 +394,9 @@ void CEffects::HammerHit(CGameState &State, vec2 Pos, float Alpha, float Volume)
 	p.m_Color.a = Alpha;
 	p.m_StartAlpha = Alpha;
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_EXPLOSIONS, p);
-	if(g_Config.m_SndGame)
-		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_HAMMER_HIT, Volume, Pos);
+	bool OfflineAudio;
+	if(g_Config.m_SndGame && GameClient()->AudioForState(State, OfflineAudio))
+		GameClient()->m_Sounds.PlayAtForAudio(CSounds::CHN_WORLD, SOUND_HAMMER_HIT, Volume, Pos, OfflineAudio);
 }
 
 void CEffects::Update(const CPresentationContext &Context)

@@ -86,13 +86,16 @@
 #include <emscripten/emscripten.h>
 #endif
 
+#if !defined(CONF_DEMO_RENDER_TOOL)
 #include "SDL.h"
 #ifdef main
 #undef main
 #endif
+#endif
 
 #include <algorithm>
 #include <chrono>
+#include <csignal>
 #include <iterator>
 #include <limits>
 #include <stack>
@@ -101,6 +104,17 @@
 #include <tuple>
 
 using namespace std::chrono_literals;
+
+#if defined(CONF_VIDEORECORDER)
+static volatile sig_atomic_t gs_VideoExportInterruptSignaled = 0;
+
+static void HandleVideoExportInterrupt(int)
+{
+	gs_VideoExportInterruptSignaled = 1;
+	signal(SIGINT, SIG_DFL);
+	signal(SIGTERM, SIG_DFL);
+}
+#endif
 
 static constexpr ColorRGBA CLIENT_NETWORK_PRINT_COLOR = ColorRGBA(0.7f, 1, 0.7f, 1.0f);
 static constexpr ColorRGBA CLIENT_NETWORK_PRINT_ERROR_COLOR = ColorRGBA(1.0f, 0.25f, 0.25f, 1.0f);
@@ -174,10 +188,16 @@ CClient::CClient() :
 	m_pNetworkSessionSource = pNetworkSource.get();
 	m_NetworkSessionId = m_SessionManager.Create(std::move(pNetworkSource));
 	m_pNetworkSessionSource->SetLifecycleCallbacks([this, SessionId = m_NetworkSessionId]() { UpdateNetworkSession(SessionId); }, [this, SessionId = m_NetworkSessionId](const char *pReason) { StopNetworkSession(SessionId, pReason); });
-	auto pDemoSource = std::make_unique<CDemoSessionSource>(true, [&]() { UpdateDemoIntraTimers(); });
+	auto pDemoSource = std::make_unique<CDemoSessionSource>(true, [this](CDemoPlayer &DemoPlayer) { UpdateDemoIntraTimers(DemoPlayer); });
 	m_pDemoSessionSource = pDemoSource.get();
-	pDemoSource->SetLifecycleCallbacks([this]() { UpdateDemoSession(); }, [this](const char *pReason) { StopDemoSession(pReason); });
 	m_DemoSessionId = m_SessionManager.Create(std::move(pDemoSource));
+	m_pDemoSessionSource->SetLifecycleCallbacks([this, SessionId = m_DemoSessionId]() { UpdateDemoSession(SessionId); }, [this, SessionId = m_DemoSessionId](const char *pReason) { StopDemoSession(SessionId, pReason); });
+#if defined(CONF_VIDEORECORDER)
+	auto pVideoExportSource = std::make_unique<CDemoSessionSource>(true, [this](CDemoPlayer &DemoPlayer) { UpdateDemoIntraTimers(DemoPlayer); });
+	m_pVideoExportSessionSource = pVideoExportSource.get();
+	m_VideoExportSessionId = m_SessionManager.Create(std::move(pVideoExportSource));
+	m_pVideoExportSessionSource->SetLifecycleCallbacks([this, SessionId = m_VideoExportSessionId]() { UpdateDemoSession(SessionId); }, [this, SessionId = m_VideoExportSessionId](const char *pReason) { StopDemoSession(SessionId, pReason); });
+#endif
 	m_SessionManager.SetFocused(m_NetworkSessionId);
 
 	m_StateStartTime = time_get();
@@ -188,6 +208,8 @@ CClient::CClient() :
 	m_LastRenderTime = time_get();
 	mem_zero(&m_Checksum, sizeof(m_Checksum));
 }
+
+CClient::~CClient() = default;
 
 CSessionId CClient::CreateNetworkSession()
 {
@@ -542,7 +564,7 @@ float CClient::GotMaplistPercentage() const
 
 bool CClient::ConnectionProblems(CSessionId SessionId, CStreamId StreamId) const
 {
-	if(SessionId == m_DemoSessionId)
+	if(SessionSource(SessionId).Type() != ESessionSourceType::NETWORK)
 		return false;
 	const int64_t MaxLatency = MaxLatencyTicks(SessionId) * time_freq() / GameTickSpeed();
 	// Over QUIC nothing arrives through the legacy connection, so asking it when
@@ -1720,24 +1742,30 @@ void CClient::StopNetworkSession(CSessionId SessionId, const char *pReason)
 	SetActiveConnection(CONN_MAIN);
 }
 
-void CClient::DisconnectDemoWithReason(const char *pReason)
+void CClient::DisconnectDemoWithReason(CSessionId SessionId, const char *pReason)
 {
-	m_SessionManager.Close(m_DemoSessionId, pReason);
-	if(!m_pDemoSessionSource->IsUpdating())
-		m_SessionManager.Update(m_DemoSessionId);
+	m_SessionManager.Close(SessionId, pReason);
+	if(!DemoSource(SessionId).IsUpdating())
+		m_SessionManager.Update(SessionId);
 }
 
-void CClient::StopDemoSession(const char *pReason)
+void CClient::StopDemoSession(CSessionId SessionId, const char *pReason)
 {
-	const bool Focused = m_SessionManager.FocusedId() == m_DemoSessionId;
+#if defined(CONF_VIDEORECORDER)
+	if(SessionId == m_VideoSessionId && m_ActiveVideoExport.has_value() && pReason && pReason[0] != '\0' && m_aVideoExportQueueError[0] == '\0')
+		str_copy(m_aVideoExportQueueError, pReason);
+#endif
+	CDemoSessionSource &Source = DemoSource(SessionId);
+	CDemoPlayer &Player = Source.DemoPlayer();
+	const bool Focused = m_SessionManager.FocusedId() == SessionId;
 	char aReason[256];
 	str_copy(aReason, pReason ? pReason : "");
-	DemoPlayer().Stop(aReason);
+	Player.Stop(aReason);
 	if(m_State < IClient::STATE_QUITTING)
-		GameClient()->OnSessionClosed(m_DemoSessionId);
-	m_pDemoSessionSource->SetState(ESessionState::OFFLINE);
-	Connection(m_DemoSessionId, CONN_MAIN).ResetSnapshots();
-	m_pDemoSessionSource->ResetMetadata();
+		GameClient()->OnSessionClosed(SessionId);
+	Source.SetState(ESessionState::OFFLINE);
+	Connection(SessionId, CONN_MAIN).ResetSnapshots();
+	Source.ResetMetadata();
 	if(Focused && m_State < IClient::STATE_QUITTING)
 	{
 		FocusSession(m_NetworkSessionId);
@@ -1920,8 +1948,9 @@ void CClient::SnapSetStaticsize(int ItemType, int Size)
 	{
 		if(SessionSource(SessionId).Type() == ESessionSourceType::NETWORK)
 			NetworkSource(SessionId).SnapshotDelta(false).SetStaticsize(ItemType, Size);
+		else
+			DemoSource(SessionId).SnapshotDelta(false).SetStaticsize(ItemType, Size);
 	}
-	m_pDemoSessionSource->SnapshotDelta(false).SetStaticsize(ItemType, Size);
 }
 
 void CClient::SnapSetStaticsize7(int ItemType, int Size)
@@ -1931,8 +1960,9 @@ void CClient::SnapSetStaticsize7(int ItemType, int Size)
 	{
 		if(SessionSource(SessionId).Type() == ESessionSourceType::NETWORK)
 			NetworkSource(SessionId).SnapshotDelta(true).SetStaticsize(ItemType, Size);
+		else
+			DemoSource(SessionId).SnapshotDelta(true).SetStaticsize(ItemType, Size);
 	}
-	m_pDemoSessionSource->SnapshotDelta(true).SetStaticsize(ItemType, Size);
 }
 
 void CClient::RenderDebug()
@@ -1958,7 +1988,7 @@ void CClient::RenderDebug()
 	Graphics()->QuadsBegin();
 
 	const CSessionId SessionId = FocusedSessionId();
-	const int Conn = SessionId == m_DemoSessionId ? CONN_MAIN : ActiveConnection();
+	const int Conn = SessionSource(SessionId).Type() == ESessionSourceType::DEMO ? CONN_MAIN : ActiveConnection();
 	str_format(aBuffer, sizeof(aBuffer), "Game/predicted tick: %d/%d", GameTick(SessionId, Conn), PredGameTick(SessionId, Conn));
 	Graphics()->QuadsText(2, 2, FontSize, aBuffer);
 
@@ -2264,6 +2294,15 @@ void CClient::Render()
 		RenderDebug();
 		RenderGraphs();
 	}
+}
+
+void CClient::RenderScreen()
+{
+	if(!m_EditorActive)
+		GameClient()->OnRenderPrepare();
+	Render();
+	if(!m_EditorActive)
+		GameClient()->OnRenderFinalize();
 }
 
 const char *CClient::LoadMap(CSessionId SessionId, const char *pName, const char *pFilename, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc)
@@ -3423,12 +3462,6 @@ void CClient::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNet
 						if(SessionId == m_NetworkSessionId && PrimaryStream)
 						{
 							m_LocalStartTime = time_get();
-#if defined(CONF_VIDEORECORDER)
-							if(IVideo::Current())
-							{
-								IVideo::Current()->SetLocalStartTime(m_LocalStartTime);
-							}
-#endif
 						}
 						GameClient()->OnNewSnapshot(SessionId, StreamId);
 						if(m_SessionManager.FocusedId() == SessionId)
@@ -3657,6 +3690,13 @@ void CClient::ResetDDNetInfoTask()
 
 typedef std::tuple<int, int, int> TVersion;
 static const TVersion gs_InvalidVersion = std::make_tuple(-1, -1, -1);
+
+#if defined(CONF_VIDEORECORDER)
+// How long a queued export waits for the sound assets before it is given up on.
+// Long enough for a slow disk, short enough that a run without a sound device
+// ends instead of hanging.
+static constexpr int VIDEO_EXPORT_SOUND_WAIT_SECONDS = 30;
+#endif
 
 static TVersion ToVersion(char *pStr)
 {
@@ -4053,11 +4093,13 @@ void CClient::PumpNetwork(CSessionId SessionId)
 	}
 }
 
-void CClient::OnDemoPlayerSnapshot(void *pData, int Size)
+void CClient::OnDemoPlayerSnapshot(CDemoPlayer &DemoPlayer, void *pData, int Size)
 {
+	const CSessionId SessionId = FindDemoSessionId(DemoPlayer);
+	dbg_assert(SessionId.IsValid(), "missing demo player session");
 	// update ticks, they could have changed
-	const CDemoPlayer::CPlaybackInfo *pInfo = DemoPlayer().Info();
-	CConnection &DemoConnection = Connection(m_DemoSessionId, CONN_MAIN);
+	const CDemoPlayer::CPlaybackInfo *pInfo = DemoPlayer.Info();
+	CConnection &DemoConnection = Connection(SessionId, CONN_MAIN);
 	DemoConnection.m_CurGameTick = pInfo->m_Info.m_CurrentTick;
 	DemoConnection.m_PrevGameTick = pInfo->m_PreviousTick;
 
@@ -4065,9 +4107,9 @@ void CClient::OnDemoPlayerSnapshot(void *pData, int Size)
 	CSnapshotBuffer AltSnapBuffer;
 	int AltSnapSize;
 
-	if(IsSixup(m_DemoSessionId))
+	if(IsSixup(SessionId))
 	{
-		AltSnapSize = GameClient()->TranslateSnap(m_DemoSessionId, &AltSnapBuffer, (CSnapshot *)pData, PrimaryStreamId(m_DemoSessionId));
+		AltSnapSize = GameClient()->TranslateSnap(SessionId, &AltSnapBuffer, (CSnapshot *)pData, PrimaryStreamId(SessionId));
 		if(AltSnapSize < 0)
 		{
 			dbg_msg("sixup", "failed to translate snapshot. error=%d", AltSnapSize);
@@ -4089,11 +4131,13 @@ void CClient::OnDemoPlayerSnapshot(void *pData, int Size)
 	mem_copy(DemoConnection.m_apSnapshots[SNAP_CURRENT]->m_pSnap, pData, Size);
 	mem_copy(DemoConnection.m_apSnapshots[SNAP_CURRENT]->m_pAltSnap, &AltSnapBuffer, AltSnapSize);
 
-	GameClient()->OnNewSnapshot(m_DemoSessionId, PrimaryStreamId(m_DemoSessionId));
+	GameClient()->OnNewSnapshot(SessionId, PrimaryStreamId(SessionId));
 }
 
-void CClient::OnDemoPlayerMessage(void *pData, int Size)
+void CClient::OnDemoPlayerMessage(CDemoPlayer &DemoPlayer, void *pData, int Size)
 {
+	const CSessionId SessionId = FindDemoSessionId(DemoPlayer);
+	dbg_assert(SessionId.IsValid(), "missing demo player session");
 	CUnpacker Unpacker;
 	Unpacker.Reset(pData, Size);
 	CMsgPacker Packer(NETMSG_EX, true);
@@ -4110,14 +4154,26 @@ void CClient::OnDemoPlayerMessage(void *pData, int Size)
 	}
 
 	if(!Sys)
-		GameClient()->OnMessage(m_DemoSessionId, Msg, &Unpacker, PrimaryStreamId(m_DemoSessionId));
+		GameClient()->OnMessage(SessionId, Msg, &Unpacker, PrimaryStreamId(SessionId));
 }
 
-void CClient::UpdateDemoIntraTimers()
+CSessionId CClient::FindDemoSessionId(const CDemoPlayer &DemoPlayer) const
 {
+	for(CSessionId SessionId : m_SessionManager.SessionIds())
+	{
+		if(SessionSource(SessionId).Type() == ESessionSourceType::DEMO && &DemoSource(SessionId).DemoPlayer() == &DemoPlayer)
+			return SessionId;
+	}
+	return {};
+}
+
+void CClient::UpdateDemoIntraTimers(CDemoPlayer &DemoPlayer)
+{
+	const CSessionId SessionId = FindDemoSessionId(DemoPlayer);
+	dbg_assert(SessionId.IsValid(), "missing demo player session");
 	// update timers
-	const CDemoPlayer::CPlaybackInfo *pInfo = DemoPlayer().Info();
-	CConnection &DemoConnection = Connection(m_DemoSessionId, CONN_MAIN);
+	const CDemoPlayer::CPlaybackInfo *pInfo = DemoPlayer.Info();
+	CConnection &DemoConnection = Connection(SessionId, CONN_MAIN);
 	DemoConnection.m_CurGameTick = pInfo->m_Info.m_CurrentTick;
 	DemoConnection.m_PrevGameTick = pInfo->m_PreviousTick;
 	DemoConnection.m_GameIntraTick = pInfo->m_IntraTick;
@@ -4125,34 +4181,42 @@ void CClient::UpdateDemoIntraTimers()
 	DemoConnection.m_GameIntraTickSincePrev = pInfo->m_IntraTickSincePrev;
 }
 
-void CClient::UpdateDemoSession()
+int64_t CClient::DemoPlaybackTime(CSessionId SessionId) const
 {
 #if defined(CONF_VIDEORECORDER)
-	// The demo player stops the recording when the demo ends, and nothing else
-	// holds the video, so this is where a finished one is let go.
-	if(m_pVideo && m_pVideo->IsStopped())
-		m_pVideo.reset();
+	if(const IVideo *pVideo = DemoSource(SessionId).DemoPlayer().Video())
+		return pVideo->Time();
 #endif
+	return time_get();
+}
 
-	if(m_pDemoSessionSource->State() == ESessionState::READY)
+float CClient::DemoPlaybackLocalTime(CSessionId SessionId) const
+{
+#if defined(CONF_VIDEORECORDER)
+	if(const IVideo *pVideo = DemoSource(SessionId).DemoPlayer().Video())
+		return pVideo->LocalTime();
+#endif
+	return LocalTime();
+}
+
+void CClient::UpdateDemoSession(CSessionId SessionId)
+{
+	CDemoSessionSource &Source = DemoSource(SessionId);
+	CDemoPlayer &Player = Source.DemoPlayer();
+	if(Source.State() == ESessionState::READY)
 	{
-		if(DemoPlayer().IsPlaying())
+		if(Player.IsPlaying())
 		{
 #if defined(CONF_VIDEORECORDER)
-			if(m_SessionManager.FocusedId() == m_DemoSessionId && IVideo::Current())
-			{
-				IVideo::Current()->NextVideoFrame();
-				IVideo::Current()->NextAudioFrameTimeline([this](short *pFinalOut, unsigned Frames) {
-					Sound()->Mix(pFinalOut, Frames);
-				});
-			}
+			if(Player.Video())
+				Player.Video()->NextVideoFrame();
 #endif
 
-			DemoPlayer().Update();
+			Player.Update();
 
 			// update timers
-			const CDemoPlayer::CPlaybackInfo *pInfo = DemoPlayer().Info();
-			CConnection &DemoConnection = Connection(m_DemoSessionId, CONN_MAIN);
+			const CDemoPlayer::CPlaybackInfo *pInfo = Player.Info();
+			CConnection &DemoConnection = Connection(SessionId, CONN_MAIN);
 			DemoConnection.m_CurGameTick = pInfo->m_Info.m_CurrentTick;
 			DemoConnection.m_PrevGameTick = pInfo->m_PreviousTick;
 			DemoConnection.m_GameIntraTick = pInfo->m_IntraTick;
@@ -4162,10 +4226,10 @@ void CClient::UpdateDemoSession()
 		{
 			// Disconnect when demo playback stopped, either due to playback error
 			// or because the end of the demo was reached when rendering it.
-			m_SessionManager.Close(m_DemoSessionId, DemoPlayer().ErrorMessage());
-			if(DemoPlayer().ErrorMessage()[0] != '\0')
+			m_SessionManager.Close(SessionId, Player.ErrorMessage());
+			if(Player.ErrorMessage()[0] != '\0' && m_SessionManager.FocusedId() == SessionId)
 			{
-				SWarning Warning(Localize("Error playing demo"), DemoPlayer().ErrorMessage());
+				SWarning Warning(Localize("Error playing demo"), Player.ErrorMessage());
 				Warning.m_AutoHide = false;
 				AddWarning(Warning);
 			}
@@ -4317,6 +4381,9 @@ void CClient::Update()
 		GameClient()->OnUpdate();
 
 	m_SessionManager.Update();
+#if defined(CONF_VIDEORECORDER)
+	UpdateVideoExportQueue();
+#endif
 
 	// STRESS TEST: join the server again
 	if(g_Config.m_DbgStress)
@@ -4496,6 +4563,10 @@ static void SleepIdle(std::chrono::nanoseconds Duration)
 
 void CClient::Run()
 {
+	bool NonInteractive = false;
+#if defined(CONF_VIDEORECORDER)
+	NonInteractive = m_CommandLineVideoExport;
+#endif
 	m_LocalStartTime = m_GlobalStartTime = time_get();
 	Connection(CONN_MAIN).m_SnapshotParts = 0;
 	Connection(CONN_DUMMY).m_SnapshotParts = 0;
@@ -4518,7 +4589,11 @@ void CClient::Run()
 	if(!InitNetworkClient(aNetworkError, sizeof(aNetworkError)))
 	{
 		log_error("client", "%s", aNetworkError);
-		ShowMessageBox({.m_pTitle = "Network Error", .m_pMessage = aNetworkError});
+		if(!NonInteractive)
+			ShowMessageBox({.m_pTitle = "Network Error", .m_pMessage = aNetworkError});
+#if defined(CONF_VIDEORECORDER)
+		m_CommandLineExitCode = 1;
+#endif
 		return;
 	}
 
@@ -4526,7 +4601,11 @@ void CClient::Run()
 	{
 		const char *pErrorMessage = "Failed to initialize the HTTP client.";
 		log_error("client", "%s", pErrorMessage);
-		ShowMessageBox({.m_pTitle = "HTTP Error", .m_pMessage = pErrorMessage});
+		if(!NonInteractive)
+			ShowMessageBox({.m_pTitle = "HTTP Error", .m_pMessage = pErrorMessage});
+#if defined(CONF_VIDEORECORDER)
+		m_CommandLineExitCode = 1;
+#endif
 		return;
 	}
 
@@ -4535,13 +4614,21 @@ void CClient::Run()
 	// GFX_SURFACELESS asks for the backend that draws without a window at all,
 	// the one the demo renderer wants. Vulkan and WebGPU can both produce a
 	// device without a surface, so this is the only way to exercise either of
-	// them on a machine with no display.
+	// them on a machine with no display. A command-line export wants the same
+	// thing, and the demo render tool has no window system to fall back to.
 	//
 	// The window comes first and is registered first: the kernel shuts
 	// interfaces down in reverse order, and the window has to outlive the
 	// graphics that draw into it.
-	const bool Surfaceless = std::getenv("GFX_SURFACELESS") != nullptr;
+#if defined(CONF_DEMO_RENDER_TOOL)
+	m_pWindow = CreateOffscreenGraphicsWindow();
+#else
+	bool Surfaceless = std::getenv("GFX_SURFACELESS") != nullptr;
+#if defined(CONF_VIDEORECORDER)
+	Surfaceless = Surfaceless || m_CommandLineVideoExport;
+#endif
 	m_pWindow = Surfaceless ? CreateOffscreenGraphicsWindow() : CreateSdlGraphicsWindow();
+#endif
 	Kernel()->RegisterInterface(m_pWindow); // IEngineGraphicsWindow
 	Kernel()->RegisterInterface(static_cast<IGraphicsWindow *>(m_pWindow), false);
 	m_pGraphics = CreateEngineGraphicsThreaded();
@@ -4568,18 +4655,24 @@ void CClient::Run()
 				{.m_pLabel = "Show Wiki"},
 				{.m_pLabel = "OK", .m_Confirm = true, .m_Cancel = true},
 			};
-			const std::optional<int> MessageResult = ShowMessageBox({.m_pTitle = "Graphics Initialization Error", .m_pMessage = Message.c_str(), .m_vButtons = vButtons});
+			const std::optional<int> MessageResult = NonInteractive ? std::nullopt : ShowMessageBox({.m_pTitle = "Graphics Initialization Error", .m_pMessage = Message.c_str(), .m_vButtons = vButtons});
 			if(MessageResult && *MessageResult == 0)
 			{
 				ViewLink("https://wiki.ddnet.org/wiki/GFX_Troubleshooting");
 			}
+#if defined(CONF_VIDEORECORDER)
+			m_CommandLineExitCode = 1;
+#endif
 			return;
 		}
 	}
 
 	// make sure the first frame just clears everything to prevent undesired colors when waiting for io
-	Graphics()->Clear(0, 0, 0);
-	Graphics()->Swap();
+	if(!NonInteractive)
+	{
+		Graphics()->Clear(0, 0, 0);
+		Graphics()->Swap();
+	}
 
 	// init localization first, making sure all errors during init can be localized
 	GameClient()->InitializeLanguage();
@@ -4663,9 +4756,46 @@ void CClient::Run()
 	int64_t NextUpdateTime = time_get();
 	int64_t NextRenderTime = time_get();
 
+#if defined(CONF_VIDEORECORDER)
+	if(m_CommandLineVideoExport)
+	{
+		CVideoExportSettings Settings = m_CommandLineVideoSettings;
+		const CVideoExportSettings Defaults = DefaultVideoExportSettings();
+		if(Settings.m_Width == 0)
+			Settings.m_Width = Defaults.m_Width;
+		if(Settings.m_Height == 0)
+			Settings.m_Height = Defaults.m_Height;
+		const char *pError = QueueVideoExport(m_aCommandLineDemoPath, IStorage::TYPE_ALL_OR_ABSOLUTE, m_aCommandLineVideoPath, Settings, DEMO_SPEED_INDEX_DEFAULT, false, true, true);
+		if(pError)
+		{
+			log_error("videorecorder", "Could not queue command-line export: %s", pError);
+			m_CommandLineExitCode = 1;
+			return;
+		}
+	}
+#endif
+
 	while(true)
 	{
 		set_new_tick();
+#if defined(CONF_VIDEORECORDER)
+		if(m_CommandLineVideoExport && gs_VideoExportInterruptSignaled)
+		{
+			gs_VideoExportInterruptSignaled = 0;
+			str_copy(m_aVideoExportQueueError, "Video rendering interrupted.");
+			m_VideoExportQueue.clear();
+			if(m_pVideo && IVideo::Current() == m_pVideo.get())
+			{
+				m_pVideo->Cancel();
+				if(CDemoPlayer *pPlayer = VideoDemoPlayer())
+					pPlayer->Stop(m_aVideoExportQueueError);
+			}
+			else if(m_ActiveVideoExport.has_value() && m_VideoSessionId.IsValid())
+				DisconnectDemoWithReason(m_VideoSessionId, m_aVideoExportQueueError);
+			else
+				m_VideoExportQueueRunning = true;
+		}
+#endif
 
 		// handle pending connects
 		if(m_aCmdConnect[0]
@@ -4792,7 +4922,10 @@ void CClient::Run()
 #if defined(CONF_VIDEORECORDER)
 			// keep rendering synced
 			if(IVideo::Current())
+			{
 				GfxRefreshRate = 0;
+				IsRenderActive = true;
+			}
 #endif
 
 			const bool RenderDue = GfxRefreshRate ? Now >= NextRenderTime : UpdateDue;
@@ -4815,24 +4948,77 @@ void CClient::Run()
 
 #if defined(CONF_VIDEORECORDER)
 				bool VideoFrameHandled = false;
-				if(IVideo::Current() != nullptr)
-					VideoFrameHandled = IVideo::Current()->BeginVideoFrameRender();
-#endif
-				if(!m_EditorActive)
-					GameClient()->OnRenderPrepare();
-				Render();
-				if(!m_EditorActive)
+				IVideo *pVideo = IVideo::Current();
+				if(pVideo != nullptr)
+					VideoFrameHandled = pVideo->BeginVideoFrameRender();
+				if(VideoFrameHandled)
+				{
+					dbg_assert(m_VideoSessionId.IsValid(), "missing video session");
+					GameClient()->OnRenderVideoPrepare(m_VideoSessionId);
+					GameClient()->OnRender();
+					if(pVideo->HasAudio())
+					{
+						const bool OfflineAudio = m_VideoOfflineAudio;
+						pVideo->NextAudioFrameTimeline([this, OfflineAudio](short *pFinalOut, unsigned Frames) {
+							if(OfflineAudio)
+								Sound()->MixOffline(pFinalOut, Frames);
+							else
+								Sound()->Mix(pFinalOut, Frames);
+						});
+					}
 					GameClient()->OnRenderFinalize();
+				}
+				else if(!m_CommandLineVideoExport)
+#endif
+					RenderScreen();
 #if defined(CONF_VIDEORECORDER)
 				// Rendering dispatches user input, which can stop the recording
 				// through the console. Stopping destroys the recorder, so the
-				// current one has to be looked up again instead of remembered.
-				IVideo *pVideo = IVideo::Current();
+				// current one has to be looked up again instead of reused.
+				pVideo = IVideo::Current();
 				if(VideoFrameHandled && pVideo != nullptr)
+				{
 					pVideo->EndVideoFrameRender();
-				else
-#endif
+					const std::chrono::nanoseconds ProgressRenderTime = time_get_nanoseconds();
+					const std::chrono::nanoseconds ProgressInterval = m_CommandLineVideoExport ? std::chrono::seconds(1) : std::chrono::milliseconds(100);
+					if(ProgressRenderTime - m_LastVideoProgressRender >= ProgressInterval)
+					{
+						m_LastVideoProgressRender = ProgressRenderTime;
+						bool Cancel = false;
+						if(m_CommandLineVideoExport)
+						{
+							const CDemoPlayer *pPlayer = VideoDemoPlayer();
+							dbg_assert(pPlayer != nullptr, "missing video demo player");
+							const IDemoPlayer::CInfo *pInfo = pPlayer->BaseInfo();
+							const int TotalTicks = std::max(pInfo->m_LastTick - pInfo->m_FirstTick, 0);
+							const int CurrentTicks = std::clamp(pInfo->m_CurrentTick - pInfo->m_FirstTick, 0, TotalTicks);
+							const float Progress = TotalTicks == 0 ? 0.0f : CurrentTicks / static_cast<float>(TotalTicks);
+							const CVideoExportStatus Status = pVideo->Status();
+							log_info("videorecorder", "Rendering %.1f%% (%" PRIu64 " / %" PRIu64 " frames encoded)", Progress * 100.0f, Status.m_EncodedFrames, Status.m_SubmittedFrames);
+						}
+						else
+						{
+							const bool BackgroundExport = m_VideoSessionId == m_VideoExportSessionId;
+							if(BackgroundExport)
+								RenderScreen();
+							Cancel = GameClient()->OnRenderVideoProgress(BackgroundExport);
+						}
+						if(!m_CommandLineVideoExport)
+							m_pGraphics->Swap();
+						if(Cancel && IVideo::Current() == m_pVideo.get())
+						{
+							str_copy(m_aVideoExportQueueError, "Video rendering cancelled.");
+							m_pVideo->Cancel();
+							if(CDemoPlayer *pPlayer = VideoDemoPlayer())
+								pPlayer->Stop("Video rendering cancelled.");
+						}
+					}
+				}
+				else if(!m_CommandLineVideoExport)
 					m_pGraphics->Swap();
+#else
+				m_pGraphics->Swap();
+#endif
 				if(MeasureRenderWall)
 					m_RenderWallTimeNanoseconds = (time_get_nanoseconds() - RenderWallStart).count();
 				if(m_RenderTrace.Enabled())
@@ -4885,7 +5071,13 @@ void CClient::Run()
 				}
 #if defined(CONF_VIDEORECORDER)
 				if(pVideo != nullptr && pVideo->HasError())
+				{
+					const CVideoExportStatus Status = pVideo->Status();
+					str_copy(m_aVideoError, Status.m_aError[0] == '\0' ? "Video recording failed." : Status.m_aError);
 					pVideo->Stop();
+					if(CDemoPlayer *pPlayer = VideoDemoPlayer())
+						pPlayer->Stop(m_aVideoError);
+				}
 #endif
 			}
 
@@ -4952,9 +5144,23 @@ void CClient::Run()
 	if(m_RenderTrace.Enabled())
 		StopRenderTrace();
 
-	GameClient()->RenderShutdownMessage();
-	if(m_pDemoSessionSource->State() != ESessionState::OFFLINE)
-		DisconnectDemoWithReason(nullptr);
+	if(!NonInteractive)
+		GameClient()->RenderShutdownMessage();
+	for(CSessionId SessionId : m_SessionManager.SessionIds())
+	{
+		if(SessionSource(SessionId).Type() == ESessionSourceType::DEMO && SessionSource(SessionId).State() != ESessionState::OFFLINE)
+			DisconnectDemoWithReason(SessionId, nullptr);
+	}
+#if defined(CONF_VIDEORECORDER)
+	if(m_pVideo)
+	{
+		if(IVideo::Current() == m_pVideo.get())
+			m_pVideo->Stop();
+		m_pVideo.reset();
+		m_VideoSessionId = {};
+		m_VideoOfflineAudio = false;
+	}
+#endif
 	for(CSessionId SessionId : m_SessionManager.SessionIds())
 	{
 		if(SessionSource(SessionId).Type() == ESessionSourceType::NETWORK && SessionSource(SessionId).State() != ESessionState::OFFLINE)
@@ -4976,7 +5182,8 @@ void CClient::Run()
 	m_pHttp->Shutdown();
 	Engine()->ShutdownJobs();
 
-	GameClient()->RenderShutdownMessage();
+	if(!NonInteractive)
+		GameClient()->RenderShutdownMessage();
 	GameClient()->OnShutdown();
 	delete m_pEditor;
 
@@ -5352,30 +5559,76 @@ void CClient::Con_StartVideo(IConsole::IResult *pResult, void *pUserData)
 
 	if(pResult->NumArguments())
 	{
-		pSelf->StartVideo(pResult->GetString(0), false);
+		pSelf->StartVideo(pSelf->m_DemoSessionId, pResult->GetString(0), false, pSelf->DefaultVideoExportSettings(), false);
 	}
 	else
 	{
-		pSelf->StartVideo("video", true);
+		pSelf->StartVideo(pSelf->m_DemoSessionId, "video", true, pSelf->DefaultVideoExportSettings(), false);
 	}
 }
 
-void CClient::StartVideo(const char *pFilename, bool WithTimestamp)
+CVideoExportSettings CClient::DefaultVideoExportSettings()
 {
-	if(!IsDemoPlayback())
+	CVideoExportSettings Settings;
+	// An asked-for export size wins over the window, which is what the dialog
+	// offers as well; libx264 needs both sides even, and a window size rarely is.
+	Settings.m_Width = (g_Config.m_ClVideoWidth > 0 ? g_Config.m_ClVideoWidth : Graphics()->ScreenWidth()) & ~1;
+	Settings.m_Height = (g_Config.m_ClVideoHeight > 0 ? g_Config.m_ClVideoHeight : Graphics()->ScreenHeight()) & ~1;
+	Settings.m_FPS = g_Config.m_ClVideoRecorderFPS;
+	Settings.m_Audio = g_Config.m_ClVideoSndEnable != 0;
+	Settings.m_Crf = g_Config.m_ClVideoX264Crf;
+	Settings.m_Preset = g_Config.m_ClVideoX264Preset;
+	return Settings;
+}
+
+CDemoPlayer *CClient::VideoDemoPlayer()
+{
+	return m_VideoSessionId.IsValid() ? &DemoSource(m_VideoSessionId).DemoPlayer() : nullptr;
+}
+
+bool CClient::DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const
+{
+	if(!m_VideoSessionId.IsValid())
+		return false;
+	const IDemoPlayer::CInfo *pInfo = DemoSource(m_VideoSessionId).DemoPlayer().BaseInfo();
+	*pFirstTick = pInfo->m_FirstTick;
+	*pCurrentTick = pInfo->m_CurrentTick;
+	*pLastTick = pInfo->m_LastTick;
+	return true;
+}
+
+const char *CClient::StartVideo(CSessionId SessionId, const char *pFilename, bool WithTimestamp, const CVideoExportSettings &Settings, bool ExactFilename)
+{
+	m_aVideoError[0] = '\0';
+	if(SessionSource(SessionId).Type() != ESessionSourceType::DEMO || SessionSource(SessionId).State() != ESessionState::READY)
 	{
-		log_error("videorecorder", "Video can only be recorded in demo player.");
-		return;
+		str_copy(m_aVideoError, "Video can only be recorded in demo player.");
+		log_error("videorecorder", "%s", m_aVideoError);
+		return m_aVideoError;
 	}
 
 	if(IVideo::Current())
 	{
-		log_error("videorecorder", "Already recording.");
-		return;
+		str_copy(m_aVideoError, "Already recording.");
+		log_error("videorecorder", "%s", m_aVideoError);
+		return m_aVideoError;
 	}
+	if(Settings.m_Audio && !GameClient()->IsSoundReady())
+	{
+		str_copy(m_aVideoError, "Sound assets are still loading.");
+		log_error("videorecorder", "%s", m_aVideoError);
+		return m_aVideoError;
+	}
+	m_pVideo.reset();
 
 	char aFilename[IO_MAX_PATH_LENGTH];
-	if(WithTimestamp)
+	if(ExactFilename)
+	{
+		str_copy(aFilename, pFilename);
+		if(!str_endswith(aFilename, ".mp4"))
+			str_append(aFilename, ".mp4");
+	}
+	else if(WithTimestamp)
 	{
 		char aTimestamp[20];
 		str_timestamp(aTimestamp, sizeof(aTimestamp));
@@ -5388,49 +5641,48 @@ void CClient::StartVideo(const char *pFilename, bool WithTimestamp)
 
 	// wait for idle, so there is no data race
 	Graphics()->WaitForIdle();
-	// pause the sound device while creating the video instance
-	Sound()->PauseAudioDevice();
-	CVideoExportSettings Settings;
-	Settings.m_Width = Graphics()->ScreenWidth() & ~1;
-	Settings.m_Height = Graphics()->ScreenHeight() & ~1;
-	Settings.m_FPS = g_Config.m_ClVideoRecorderFPS;
-	Settings.m_Audio = g_Config.m_ClVideoSndEnable != 0;
-	Settings.m_Crf = g_Config.m_ClVideoX264Crf;
-	Settings.m_Preset = g_Config.m_ClVideoX264Preset;
-	m_pVideo = std::make_unique<CVideo>(Graphics(), Sound(), Storage(), Settings, m_LocalStartTime, aFilename, IStorage::TYPE_SAVE, true, false);
-	Sound()->UnpauseAudioDevice();
+	const int OutputStorageType = ExactFilename && !fs_is_relative_path(aFilename) ? IStorage::TYPE_ABSOLUTE : IStorage::TYPE_SAVE;
+	const bool OfflineAudio = SessionId != FocusedSessionId();
+	m_pVideo = std::make_unique<CVideo>(Graphics(), Sound(), Storage(), Settings, m_LocalStartTime, aFilename, OutputStorageType, !ExactFilename, !OfflineAudio);
+	CDemoPlayer &Player = DemoSource(SessionId).DemoPlayer();
+	m_VideoSessionId = SessionId;
+	m_VideoOfflineAudio = OfflineAudio;
+	Player.SetVideo(m_pVideo.get());
 	if(!m_pVideo->Start())
 	{
 		log_error("videorecorder", "Failed to start recording to '%s'", aFilename);
-		DemoPlayer().Stop("Failed to start video recording. See local console for details.");
-		StopVideo();
-		return;
+		Player.Stop("Failed to start video recording. See local console for details.");
+		const CVideoExportStatus Status = m_pVideo->Status();
+		str_copy(m_aVideoError, Status.m_aError[0] == '\0' ? "Failed to start video recording." : Status.m_aError);
+		return m_aVideoError;
 	}
-	if(DemoPlayer().Info()->m_Info.m_Paused)
+	if(Player.Info()->m_Info.m_Paused)
 	{
 		IVideo::Current()->Pause(true);
 	}
 	log_info("videorecorder", "Recording to '%s'", aFilename);
-}
-
-void CClient::StopVideo()
-{
-	if(!m_pVideo)
-		return;
-	m_pVideo->Stop();
-	m_pVideo.reset();
+	return nullptr;
 }
 
 void CClient::Con_StopVideo(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = static_cast<CClient *>(pUserData);
-	if(!pSelf->m_pVideo)
+	if(!pSelf->m_pVideo || IVideo::Current() != pSelf->m_pVideo.get())
 	{
 		log_error("videorecorder", "Not recording.");
 		return;
 	}
 
-	pSelf->StopVideo();
+	pSelf->m_pVideo->Stop();
+	CDemoPlayer *pPlayer = pSelf->VideoDemoPlayer();
+	if(pPlayer && pPlayer->Video() == pSelf->m_pVideo.get())
+		pPlayer->SetVideo(nullptr);
+	if(pSelf->m_ActiveVideoExport.has_value())
+	{
+		str_copy(pSelf->m_aVideoExportQueueError, "Video rendering stopped.");
+		if(pPlayer)
+			pPlayer->Stop(pSelf->m_aVideoExportQueueError);
+	}
 	log_info("videorecorder", "Stopped recording.");
 }
 
@@ -5652,84 +5904,218 @@ void CClient::DemoSlice(const char *pDstPath, CLIENTFUNC_FILTER pfnFilter, void 
 
 const char *CClient::DemoPlayer_Play(const char *pFilename, int StorageType)
 {
+#if defined(CONF_VIDEORECORDER)
+	if(m_ActiveVideoExport.has_value() && !m_LoadingQueuedVideoExport)
+		return "A queued video export is active.";
+#endif
+	return DemoPlayer_Play(m_DemoSessionId, pFilename, StorageType, true);
+}
+
+const char *CClient::DemoPlayer_Play(CSessionId SessionId, const char *pFilename, int StorageType, bool Focus)
+{
 	// Don't disconnect unless the file exists (only for play command)
 	if(!Storage()->FileExists(pFilename, StorageType))
 		return Localize("No demo with this filename exists");
 
-	if(DemoPlayer().IsPlaying() || m_pDemoSessionSource->State() != ESessionState::OFFLINE)
-		DisconnectDemoWithReason(nullptr);
+	CDemoSessionSource &Source = DemoSource(SessionId);
+	CDemoPlayer &Player = Source.DemoPlayer();
+	if(Player.IsPlaying() || Source.State() != ESessionState::OFFLINE)
+		DisconnectDemoWithReason(SessionId, nullptr);
 
-	m_SessionManager.SetFocused(m_DemoSessionId);
-	SetFocusedState(IClient::STATE_LOADING, false);
-	GameClient()->OnSessionFocused(m_DemoSessionId);
-	SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_LOADING_DEMO);
-	if((bool)m_LoadingCallback)
-		m_LoadingCallback(IClient::LOADING_CALLBACK_DETAIL_DEMO);
+	if(Focus)
+	{
+		m_SessionManager.SetFocused(SessionId);
+		SetFocusedState(IClient::STATE_LOADING, false);
+		GameClient()->OnSessionFocused(SessionId);
+		SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_LOADING_DEMO);
+		if((bool)m_LoadingCallback)
+			m_LoadingCallback(IClient::LOADING_CALLBACK_DETAIL_DEMO);
+	}
+	else
+		Source.SetState(ESessionState::LOADING_MAP);
 
 	// try to start playback
-	DemoPlayer().SetListener(this);
-	if(DemoPlayer().Load(Storage(), m_pConsole, pFilename, StorageType))
+	Player.SetListener(this);
+	if(Player.Load(Storage(), m_pConsole, pFilename, StorageType))
 	{
-		DisconnectDemoWithReason(DemoPlayer().ErrorMessage());
-		return DemoPlayer().ErrorMessage();
+		DisconnectDemoWithReason(SessionId, Player.ErrorMessage());
+		return Player.ErrorMessage();
 	}
 
-	m_pDemoSessionSource->SetSixup(DemoPlayer().IsSixup());
+	Source.SetSixup(Player.IsSixup());
 
 	// load map
-	const CMapInfo *pMapInfo = DemoPlayer().GetMapInfo();
-	const char *pError = LoadMapSearch(m_DemoSessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
+	const CMapInfo *pMapInfo = Player.GetMapInfo();
+	const char *pError = LoadMapSearch(SessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
 	if(pError)
 	{
-		if(!DemoPlayer().ExtractMap(Storage()))
+		if(!Player.ExtractMap(Storage()))
 		{
-			DisconnectDemoWithReason(pError);
+			DisconnectDemoWithReason(SessionId, pError);
 			return pError;
 		}
 
-		pError = LoadMapSearch(m_DemoSessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
+		pError = LoadMapSearch(SessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
 		if(pError)
 		{
-			DisconnectDemoWithReason(pError);
+			DisconnectDemoWithReason(SessionId, pError);
 			return pError;
 		}
 	}
 
 	// setup current server info
-	CServerInfo &DemoServerInfo = m_pDemoSessionSource->ServerInfo();
+	CServerInfo &DemoServerInfo = Source.ServerInfo();
 	DemoServerInfo = {};
 	str_copy(DemoServerInfo.m_aMap, pMapInfo->m_aName);
 	DemoServerInfo.m_MapCrc = pMapInfo->m_Crc;
 	DemoServerInfo.m_MapSize = pMapInfo->m_Size;
 
 	// enter demo playback state
-	SetState(IClient::STATE_DEMOPLAYBACK);
+	if(Focus)
+		SetState(IClient::STATE_DEMOPLAYBACK);
+	else
+		Source.SetState(ESessionState::READY);
 
-	GameClient()->OnConnected(m_DemoSessionId);
+	GameClient()->OnConnected(SessionId);
 
 	// setup buffers
-	m_pDemoSessionSource->PrepareSnapshots();
+	Source.PrepareSnapshots();
 
-	DemoPlayer().Play();
-	GameClient()->OnEnterGame(m_DemoSessionId);
+	Player.Play();
+	GameClient()->OnEnterGame(SessionId);
 
 	return nullptr;
 }
 
 #if defined(CONF_VIDEORECORDER)
-const char *CClient::DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, int SpeedIndex, bool StartPaused)
+void CClient::UpdateVideoExportQueue()
 {
-	const char *pError = DemoPlayer_Play(pFilename, StorageType);
-	if(pError)
-		return pError;
-
-	StartVideo(pVideoName, false);
-	DemoPlayer().SetSpeedIndex(SpeedIndex);
-	if(StartPaused)
+	if(m_ActiveVideoExport.has_value())
 	{
-		DemoPlayer().Pause();
+		if(!m_VideoSessionId.IsValid() || DemoSource(m_VideoSessionId).State() != ESessionState::OFFLINE || (m_pVideo && !m_pVideo->IsStopped()))
+			return;
+		if(m_pVideo)
+		{
+			const CVideoExportStatus Status = m_pVideo->Status();
+			if(Status.m_HasError)
+			{
+				if(m_aVideoExportQueueError[0] == '\0')
+					str_copy(m_aVideoExportQueueError, Status.m_aError[0] == '\0' ? "Video recording failed." : Status.m_aError);
+				log_error("videorecorder", "Export of '%s' failed: %s", m_ActiveVideoExport->m_aDemoPath, Status.m_aError);
+			}
+		}
+		m_pVideo.reset();
+		m_VideoSessionId = {};
+		m_VideoOfflineAudio = false;
+		m_ActiveVideoExport.reset();
 	}
+	if(m_CommandLineVideoExport && !m_ActiveVideoExport.has_value() && m_VideoExportQueue.empty() && m_VideoExportQueueRunning)
+	{
+		m_VideoExportQueueRunning = false;
+		m_CommandLineExitCode = m_aVideoExportQueueError[0] == '\0' ? 0 : 1;
+		if(m_CommandLineExitCode == 0)
+			log_info("videorecorder", "Export completed: %s", m_aCommandLineVideoPath);
+		else
+			log_error("videorecorder", "Export failed: %s", m_aVideoExportQueueError);
+		Quit();
+		return;
+	}
+
+	if(!m_VideoExportQueueRunning || m_VideoExportQueue.empty())
+	{
+		if(m_VideoExportQueue.empty())
+			m_VideoExportQueueRunning = false;
+		return;
+	}
+	if(m_VideoExportQueue.front().m_Settings.m_Audio && !GameClient()->IsSoundReady())
+	{
+		// The assets load in the background, so the first export of a session
+		// usually does have to wait a moment. It must not wait forever: without
+		// an end the queue stands still and says nothing about it, and an export
+		// started from the command line never returns at all.
+		const int64_t Now = time_get();
+		if(m_VideoExportSoundWaitStart == 0)
+		{
+			m_VideoExportSoundWaitStart = Now;
+			log_info("videorecorder", "Waiting for sound assets before exporting '%s'", m_VideoExportQueue.front().m_aDemoPath);
+			return;
+		}
+		if(Now - m_VideoExportSoundWaitStart < time_freq() * VIDEO_EXPORT_SOUND_WAIT_SECONDS)
+			return;
+		const char *pWaitError = "Sound assets are still loading.";
+		if(m_aVideoExportQueueError[0] == '\0')
+			str_copy(m_aVideoExportQueueError, pWaitError);
+		log_error("videorecorder", "Could not start queued export '%s': %s", m_VideoExportQueue.front().m_aDemoPath, pWaitError);
+		m_VideoExportQueue.pop_front();
+		m_VideoExportSoundWaitStart = 0;
+		return;
+	}
+	m_VideoExportSoundWaitStart = 0;
+
+	m_ActiveVideoExport = m_VideoExportQueue.front();
+	m_VideoExportQueue.pop_front();
+	const CVideoExportJob &Job = *m_ActiveVideoExport;
+	const CSessionId SessionId = m_VideoExportSessionId;
+	m_VideoSessionId = SessionId;
+	m_VideoOfflineAudio = true;
+	m_LoadingQueuedVideoExport = true;
+	const char *pError = DemoPlayer_Play(SessionId, Job.m_aDemoPath, Job.m_StorageType, false);
+	m_LoadingQueuedVideoExport = false;
+	if(!pError)
+		pError = StartVideo(SessionId, Job.m_aVideoName, false, Job.m_Settings, Job.m_ExactVideoPath);
+	if(pError)
+	{
+		if(m_aVideoExportQueueError[0] == '\0')
+			str_copy(m_aVideoExportQueueError, pError);
+		log_error("videorecorder", "Could not start queued export '%s': %s", Job.m_aDemoPath, pError);
+		DisconnectDemoWithReason(SessionId, pError);
+		return;
+	}
+	CDemoPlayer &Player = DemoSource(SessionId).DemoPlayer();
+	Player.SetSpeedIndex(Job.m_SpeedIndex);
+}
+
+const char *CClient::QueueVideoExport(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartPaused, bool StartQueue, bool ExactVideoPath)
+{
+	if(IVideo::Current() && !m_ActiveVideoExport.has_value())
+		return "Already recording.";
+	if(!pFilename[0] || !pVideoName[0])
+		return "Demo and video names must not be empty.";
+	if(StartPaused)
+		return "Starting video exports paused is not supported.";
+	if(Settings.m_Width < 2 || Settings.m_Height < 2 || Settings.m_Width > 8192 || Settings.m_Height > 8192 || static_cast<int64_t>(Settings.m_Width) * Settings.m_Height > 8192LL * 4320 || Settings.m_Width % 2 != 0 || Settings.m_Height % 2 != 0)
+		return "Invalid video resolution.";
+
+	CVideoExportJob Job;
+	str_copy(Job.m_aDemoPath, pFilename);
+	Job.m_StorageType = StorageType;
+	str_copy(Job.m_aVideoName, pVideoName);
+	Job.m_Settings = Settings;
+	Job.m_SpeedIndex = SpeedIndex;
+	Job.m_ExactVideoPath = ExactVideoPath;
+	auto UsesVideoName = [&Job](const CVideoExportJob &Other) { return str_comp(Other.m_aVideoName, Job.m_aVideoName) == 0; };
+	if((m_ActiveVideoExport.has_value() && UsesVideoName(*m_ActiveVideoExport)) || std::ranges::any_of(m_VideoExportQueue, UsesVideoName))
+		return "A video with this name is already queued.";
+	if(!m_ActiveVideoExport.has_value() && m_VideoExportQueue.empty())
+		m_aVideoExportQueueError[0] = '\0';
+	m_VideoExportQueue.push_back(Job);
+	if(StartQueue)
+		m_VideoExportQueueRunning = true;
 	return nullptr;
+}
+
+const char *CClient::DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartPaused, bool StartQueue)
+{
+	return QueueVideoExport(pFilename, StorageType, pVideoName, Settings, SpeedIndex, StartPaused, StartQueue, false);
+}
+
+void CClient::ConfigureCommandLineVideoExport(const char *pDemoPath, const char *pVideoPath, const CVideoExportSettings &Settings)
+{
+	m_CommandLineVideoExport = true;
+	m_CommandLineExitCode = 1;
+	str_copy(m_aCommandLineDemoPath, pDemoPath);
+	str_copy(m_aCommandLineVideoPath, pVideoPath);
+	m_CommandLineVideoSettings = Settings;
 }
 #endif
 
@@ -5950,6 +6336,10 @@ void CClient::StopRenderTrace()
 void CClient::UpdateAndSwap()
 {
 	Input()->Update();
+#if defined(CONF_VIDEORECORDER)
+	if(m_CommandLineVideoExport)
+		return;
+#endif
 	Graphics()->Swap();
 	Graphics()->Clear(0, 0, 0);
 	m_GlobalTime = (time_get() - m_GlobalStartTime) / (float)time_freq();
@@ -6453,6 +6843,15 @@ int main(int argc, const char **argv)
 	CWindowsComLifecycle WindowsComLifecycle(true);
 #endif
 	CCmdlineFix CmdlineFix(&argc, &argv);
+	bool CommandLineVideoExportRequested = false;
+	for(int Argument = 1; Argument < argc; ++Argument)
+	{
+		if(str_comp(argv[Argument], "--render-demo") == 0)
+		{
+			CommandLineVideoExportRequested = true;
+			break;
+		}
+	}
 
 	std::vector<std::shared_ptr<ILogger>> vpLoggers;
 	std::shared_ptr<ILogger> pStdoutLogger = nullptr;
@@ -6483,6 +6882,14 @@ int main(int argc, const char **argv)
 	std::shared_ptr<CFutureLogger> pFutureAssertionLogger = std::make_shared<CFutureLogger>();
 	vpLoggers.push_back(pFutureAssertionLogger);
 	log_set_global_logger(log_logger_collection(std::move(vpLoggers)).release());
+
+#if defined(CONF_DEMO_RENDER_TOOL)
+	if(!CommandLineVideoExportRequested)
+	{
+		log_error("videorecorder", "Usage: ddnet-demo-render --render-demo <demo> --output <video.mp4> [--width <even>] [--height <even>] [--fps <1-1000>] [--crf <0-51>] [--preset <0-9>] [--no-audio]");
+		return -1;
+	}
+#endif
 
 #if defined(CONF_PLATFORM_ANDROID)
 	// Initialize Android after logger is available
@@ -6545,7 +6952,9 @@ int main(int argc, const char **argv)
 	// Register SDL for cleanup before creating the kernel and client,
 	// so SDL is shutdown after kernel and client. Otherwise the client
 	// may crash when shutting down after SDL is already shutdown.
+#if !defined(CONF_DEMO_RENDER_TOOL)
 	CleanerFunctions.emplace([]() { SDL_Quit(); });
+#endif
 
 	CClient *pClient = CreateClient();
 	pClient->SetLoggers(pFutureFileLogger, std::move(pStdoutLogger));
@@ -6562,7 +6971,7 @@ int main(int argc, const char **argv)
 	});
 
 	const std::thread::id MainThreadId = std::this_thread::get_id();
-	dbg_assert_set_handler([MainThreadId, pClient](const char *pMsg) {
+	dbg_assert_set_handler([MainThreadId, pClient, CommandLineVideoExportRequested](const char *pMsg) {
 		if(MainThreadId != std::this_thread::get_id())
 			return;
 
@@ -6663,7 +7072,7 @@ int main(int argc, const char **argv)
 		}
 #endif
 		vButtons.push_back({.m_pLabel = "OK", .m_Confirm = true, .m_Cancel = true});
-		const std::optional<int> MessageResult = pClient->ShowMessageBox({.m_pTitle = pTitle, .m_pMessage = aMessage, .m_vButtons = vButtons});
+		const std::optional<int> MessageResult = CommandLineVideoExportRequested ? std::nullopt : pClient->ShowMessageBox({.m_pTitle = pTitle, .m_pMessage = aMessage, .m_vButtons = vButtons});
 		if(GotGraphicsError && MessageResult && *MessageResult == 0)
 		{
 			pClient->ViewLink("https://wiki.ddnet.org/wiki/GFX_Troubleshooting");
@@ -6699,7 +7108,8 @@ int main(int argc, const char **argv)
 		{
 			log_error("client", "Failed to initialize the storage location (see details above)");
 			std::string Message = std::string("Failed to initialize the storage location. See details below.\n\n") + MemoryLogger.ConcatenatedLines();
-			pClient->ShowMessageBox({.m_pTitle = "Storage Error", .m_pMessage = Message.c_str()});
+			if(!CommandLineVideoExportRequested)
+				pClient->ShowMessageBox({.m_pTitle = "Storage Error", .m_pMessage = Message.c_str()});
 			PerformAllCleanup();
 			return -1;
 		}
@@ -6783,7 +7193,8 @@ int main(int argc, const char **argv)
 		{
 			const char *pError = "Failed to load config from '" CONFIG_FILE "'.";
 			log_error("client", "%s", pError);
-			pClient->ShowMessageBox({.m_pTitle = "Config File Error", .m_pMessage = pError});
+			if(!CommandLineVideoExportRequested)
+				pClient->ShowMessageBox({.m_pTitle = "Config File Error", .m_pMessage = pError});
 			PerformAllCleanup();
 			return -1;
 		}
@@ -6811,10 +7222,142 @@ int main(int argc, const char **argv)
 	}
 	g_Config.m_ClConfigVersion = 1;
 
+	// Parse video export arguments separately, so the remaining arguments keep
+	// using the regular console command line interface.
+#if defined(CONF_VIDEORECORDER)
+	bool CommandLineVideoExport = false;
+	bool HasVideoExportArgument = false;
+	bool CommandLineVideoNoAudio = false;
+	int CommandLineVideoWidth = 0;
+	int CommandLineVideoHeight = 0;
+	int CommandLineVideoFps = 0;
+	int CommandLineVideoCrf = -1;
+	int CommandLineVideoPreset = -1;
+	char aCommandLineDemoPath[IO_MAX_PATH_LENGTH] = {};
+	char aCommandLineVideoPath[IO_MAX_PATH_LENGTH] = {};
+	char aVideoArgumentError[256] = {};
+	std::vector<const char *> vArguments;
+	vArguments.reserve(argc);
+	vArguments.push_back(argv[0]);
+	for(int Argument = 1; Argument < argc && aVideoArgumentError[0] == '\0'; ++Argument)
+	{
+		const char *pArgument = argv[Argument];
+		auto ReadValue = [&]() -> const char * {
+			if(Argument + 1 >= argc)
+				return nullptr;
+			return argv[++Argument];
+		};
+		auto ReadInteger = [&](int &Value) {
+			const char *pValue = ReadValue();
+			return pValue != nullptr && pValue[0] != '\0' && str_toint(pValue, &Value);
+		};
+		if(str_comp(pArgument, "--render-demo") == 0)
+		{
+			HasVideoExportArgument = true;
+			const char *pValue = ReadValue();
+			if(pValue == nullptr || pValue[0] == '\0' || str_length(pValue) >= static_cast<int>(sizeof(aCommandLineDemoPath)))
+				str_copy(aVideoArgumentError, "Invalid value for --render-demo.");
+			else
+			{
+				str_copy(aCommandLineDemoPath, pValue);
+				CommandLineVideoExport = true;
+			}
+		}
+		else if(str_comp(pArgument, "--output") == 0)
+		{
+			HasVideoExportArgument = true;
+			const char *pValue = ReadValue();
+			if(pValue == nullptr || pValue[0] == '\0' || str_length(pValue) >= static_cast<int>(sizeof(aCommandLineVideoPath)) - str_length(".mp4.partial"))
+				str_copy(aVideoArgumentError, "Invalid value for --output.");
+			else
+				str_copy(aCommandLineVideoPath, pValue);
+		}
+		else if(str_comp(pArgument, "--width") == 0)
+		{
+			HasVideoExportArgument = true;
+			if(!ReadInteger(CommandLineVideoWidth) || CommandLineVideoWidth < 2 || CommandLineVideoWidth > 8192 || CommandLineVideoWidth % 2 != 0)
+				str_copy(aVideoArgumentError, "--width must be an even number between 2 and 8192.");
+		}
+		else if(str_comp(pArgument, "--height") == 0)
+		{
+			HasVideoExportArgument = true;
+			if(!ReadInteger(CommandLineVideoHeight) || CommandLineVideoHeight < 2 || CommandLineVideoHeight > 8192 || CommandLineVideoHeight % 2 != 0)
+				str_copy(aVideoArgumentError, "--height must be an even number between 2 and 8192.");
+		}
+		else if(str_comp(pArgument, "--fps") == 0)
+		{
+			HasVideoExportArgument = true;
+			if(!ReadInteger(CommandLineVideoFps) || CommandLineVideoFps < 1 || CommandLineVideoFps > 1000)
+				str_copy(aVideoArgumentError, "--fps must be between 1 and 1000.");
+		}
+		else if(str_comp(pArgument, "--crf") == 0)
+		{
+			HasVideoExportArgument = true;
+			if(!ReadInteger(CommandLineVideoCrf) || CommandLineVideoCrf < 0 || CommandLineVideoCrf > 51)
+				str_copy(aVideoArgumentError, "--crf must be between 0 and 51.");
+		}
+		else if(str_comp(pArgument, "--preset") == 0)
+		{
+			HasVideoExportArgument = true;
+			if(!ReadInteger(CommandLineVideoPreset) || CommandLineVideoPreset < 0 || CommandLineVideoPreset > 9)
+				str_copy(aVideoArgumentError, "--preset must be between 0 and 9.");
+		}
+		else if(str_comp(pArgument, "--no-audio") == 0)
+		{
+			HasVideoExportArgument = true;
+			CommandLineVideoNoAudio = true;
+		}
+		else
+			vArguments.push_back(pArgument);
+	}
+	if(aVideoArgumentError[0] == '\0' && HasVideoExportArgument && (!CommandLineVideoExport || aCommandLineVideoPath[0] == '\0'))
+		str_copy(aVideoArgumentError, "--render-demo and --output must be used together.");
+	if(aVideoArgumentError[0] != '\0')
+	{
+		log_error("videorecorder", "%s", aVideoArgumentError);
+		log_error("videorecorder", "Usage: DDNet --render-demo <demo> --output <video.mp4> [--width <even>] [--height <even>] [--fps <1-1000>] [--crf <0-51>] [--preset <0-9>] [--no-audio]");
+		PerformAllCleanup();
+		return -1;
+	}
+	argc = static_cast<int>(vArguments.size());
+	argv = vArguments.data();
+#else
+	if(CommandLineVideoExportRequested)
+	{
+		log_error("videorecorder", "This client was built without video recorder support.");
+		PerformAllCleanup();
+		return -1;
+	}
+#endif
+
 	// parse the command line arguments
 	pConsole->SetUnknownCommandCallback(UnknownArgumentCallback, pClient);
 	pConsole->ParseArguments(argc - 1, &argv[1]);
 	pConsole->SetUnknownCommandCallback(IConsole::EmptyUnknownCommandCallback, nullptr);
+
+#if defined(CONF_VIDEORECORDER)
+	if(CommandLineVideoExport)
+	{
+		if(!str_endswith(aCommandLineVideoPath, ".mp4"))
+			str_append(aCommandLineVideoPath, ".mp4");
+		if(pStorage->FileExists(aCommandLineVideoPath, IStorage::TYPE_SAVE_OR_ABSOLUTE))
+		{
+			log_error("videorecorder", "Output file '%s' already exists.", aCommandLineVideoPath);
+			PerformAllCleanup();
+			return -1;
+		}
+		CVideoExportSettings Settings;
+		Settings.m_Width = CommandLineVideoWidth;
+		Settings.m_Height = CommandLineVideoHeight;
+		Settings.m_FPS = CommandLineVideoFps == 0 ? g_Config.m_ClVideoRecorderFPS : CommandLineVideoFps;
+		Settings.m_Audio = !CommandLineVideoNoAudio && g_Config.m_ClVideoSndEnable != 0;
+		Settings.m_Crf = CommandLineVideoCrf < 0 ? g_Config.m_ClVideoX264Crf : CommandLineVideoCrf;
+		Settings.m_Preset = CommandLineVideoPreset < 0 ? g_Config.m_ClVideoX264Preset : CommandLineVideoPreset;
+		pClient->ConfigureCommandLineVideoExport(aCommandLineDemoPath, aCommandLineVideoPath, Settings);
+		signal(SIGINT, HandleVideoExportInterrupt);
+		signal(SIGTERM, HandleVideoExportInterrupt);
+	}
+#endif
 
 	if(pSteam->GetConnectAddress())
 	{
@@ -6844,10 +7387,11 @@ int main(int argc, const char **argv)
 	}
 
 	// Register protocol and file extensions
-#if defined(CONF_FAMILY_WINDOWS)
+#if defined(CONF_FAMILY_WINDOWS) && !defined(CONF_DEMO_RENDER_TOOL)
 	pClient->ShellRegister();
 #endif
 
+#if !defined(CONF_DEMO_RENDER_TOOL)
 	// Do not automatically translate touch events to mouse events and vice versa.
 	SDL_SetHint("SDL_TOUCH_MOUSE_EVENTS", "0");
 	SDL_SetHint("SDL_MOUSE_TOUCH_EVENTS", "0");
@@ -6879,10 +7423,12 @@ int main(int argc, const char **argv)
 		char aError[256];
 		str_format(aError, sizeof(aError), "Unable to initialize SDL base: %s", SDL_GetError());
 		log_error("client", "%s", aError);
-		pClient->ShowMessageBox({.m_pTitle = "SDL Error", .m_pMessage = aError});
+		if(!CommandLineVideoExportRequested)
+			pClient->ShowMessageBox({.m_pTitle = "SDL Error", .m_pMessage = aError});
 		PerformAllCleanup();
 		return -1;
 	}
+#endif
 
 	// SDL raises the timer resolution on Windows while initializing, the other platforms need this.
 	thread_request_precise_wakeups();
@@ -6892,6 +7438,11 @@ int main(int argc, const char **argv)
 	pClient->Run();
 
 	const bool Restarting = pClient->State() == CClient::STATE_RESTARTING;
+#if defined(CONF_VIDEORECORDER)
+	const int ExitCode = pClient->CommandLineExitCode();
+#else
+	const int ExitCode = 0;
+#endif
 #if !defined(CONF_PLATFORM_ANDROID)
 	char aRestartBinaryPath[IO_MAX_PATH_LENGTH];
 	if(Restarting)
@@ -6906,7 +7457,8 @@ int main(int argc, const char **argv)
 
 	for(const SWarning &Warning : vQuittingWarnings)
 	{
-		ShowMessageBoxWithoutGraphics({.m_pTitle = Warning.m_aWarningTitle, .m_pMessage = Warning.m_aWarningMsg});
+		if(!CommandLineVideoExportRequested)
+			ShowMessageBoxWithoutGraphics({.m_pTitle = Warning.m_aWarningTitle, .m_pMessage = Warning.m_aWarningMsg});
 	}
 
 	if(Restarting)
@@ -6920,7 +7472,7 @@ int main(int argc, const char **argv)
 
 	PerformFinalCleanup();
 
-	return 0;
+	return ExitCode;
 }
 
 // DDRace

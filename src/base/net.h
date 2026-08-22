@@ -238,6 +238,35 @@ void net_websocket_reset_secure();
 void net_init();
 
 /**
+ * The websocket transport. It is built on libwebsockets, which lives in the
+ * engine, so that a program which never opens a websocket links neither of
+ * them. While none is installed the websocket address types cannot be used.
+ *
+ * @ingroup Network-General
+ *
+ * @remark The set the last two take is an `fd_set`. It is passed untyped so
+ * that this header does not have to pull in the platform socket headers.
+ */
+struct NETWEBSOCKET
+{
+	int (*create)(const NETADDR *bindaddr);
+	void (*destroy)(int socket);
+	int (*recv)(int socket, unsigned char *data, size_t maxsize, NETADDR *addr);
+	int (*send)(int socket, const unsigned char *data, size_t size, const NETADDR *addr);
+	int (*fd_set)(int socket, void *set);
+	int (*fd_get)(int socket, void *set);
+};
+
+/**
+ * Installs the websocket transport.
+ *
+ * @ingroup Network-General
+ *
+ * @param transport The transport, which has to outlive every socket opened with it.
+ */
+void net_websocket_transport(const NETWEBSOCKET *transport);
+
+/**
  * If a network operation failed, the error code.
  *
  * @ingroup Network-General

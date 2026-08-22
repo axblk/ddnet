@@ -6,12 +6,16 @@
 #include <game/client/component.h>
 #include <game/client/ui_rect.h>
 
+class CUIElement;
+
 class CMenusStart : public CComponentInterfaces
 {
 public:
 	void RenderStartMenu(CUIRect MainView);
 
 private:
+	CUIElement *m_pVersionUiElement = nullptr;
+
 	bool CheckHotKey(int Key) const;
 };
 

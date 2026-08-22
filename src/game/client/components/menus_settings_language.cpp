@@ -33,24 +33,13 @@ void CMenus::RenderLanguageSettings(CUIRect MainView)
 	ScrollParams.m_ScrollUnit = CreditsFontSize;
 	s_CreditsScrollRegion.Begin(&CreditsScroll, &ScrollParams);
 
-	CTextCursor Cursor;
-	Cursor.m_FontSize = CreditsFontSize;
-	Cursor.m_LineWidth = CreditsScroll.w - 2.0f * CreditsMargin;
-
-	const unsigned OldRenderFlags = TextRender()->GetRenderFlags();
-	TextRender()->SetRenderFlags(OldRenderFlags | TEXT_RENDER_FLAG_ONE_TIME_USE);
-	STextContainerIndex CreditsTextContainer;
-	TextRender()->CreateTextContainer(CreditsTextContainer, &Cursor, Localize("English translation by the DDNet Team", "Translation credits: Add your own name here when you update translations"));
-	TextRender()->SetRenderFlags(OldRenderFlags);
-	if(CreditsTextContainer.Valid())
-	{
-		CUIRect CreditsLabel;
-		CreditsScroll.HSplitTop(TextRender()->GetBoundingBoxTextContainer(CreditsTextContainer).m_H + 2.0f * CreditsMargin, &CreditsLabel, &CreditsScroll);
-		s_CreditsScrollRegion.AddRect(CreditsLabel);
-		CreditsLabel.Margin(CreditsMargin, &CreditsLabel);
-		TextRender()->RenderTextContainer(CreditsTextContainer, TextRender()->DefaultTextColor(), TextRender()->DefaultTextOutlineColor(), CreditsLabel.x, CreditsLabel.y);
-		TextRender()->DeleteTextContainer(CreditsTextContainer);
-	}
+	const float CreditsLineWidth = CreditsScroll.w - 2.0f * CreditsMargin;
+	m_SettingsLanguageCreditsText.Update(TextRender(), Localize("English translation by the DDNet Team", "Translation credits: Add your own name here when you update translations"), CreditsFontSize, CreditsLineWidth);
+	CUIRect CreditsLabel;
+	CreditsScroll.HSplitTop(m_SettingsLanguageCreditsText.Height() + 2.0f * CreditsMargin, &CreditsLabel, &CreditsScroll);
+	s_CreditsScrollRegion.AddRect(CreditsLabel);
+	CreditsLabel.Margin(CreditsMargin, &CreditsLabel);
+	m_SettingsLanguageCreditsText.Render(TextRender(), vec2(CreditsLabel.x, CreditsLabel.y), TextRender()->DefaultTextColor());
 
 	s_CreditsScrollRegion.End();
 }
@@ -78,6 +67,7 @@ bool CMenus::RenderLanguageSelection(CUIRect MainView)
 
 	s_ListBox.DoStart(24.0f, g_Localization.Languages().size(), 1, 3, s_SelectedLanguage, &MainView);
 
+	size_t VisibleIndex = 0;
 	for(const auto &Language : g_Localization.Languages())
 	{
 		const CListboxItem Item = s_ListBox.DoNextItem(&Language.m_Name, s_SelectedLanguage != -1 && !str_comp(g_Localization.Languages()[s_SelectedLanguage].m_Name.c_str(), Language.m_Name.c_str()));
@@ -90,7 +80,10 @@ bool CMenus::RenderLanguageSelection(CUIRect MainView)
 		FlagRect.HMargin(3.0f, &FlagRect);
 		GameClient()->m_CountryFlags.Render(Language.m_CountryCode, ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f), FlagRect.x, FlagRect.y, FlagRect.w, FlagRect.h);
 
-		Ui()->DoLabel(&Label, Language.m_Name.c_str(), 16.0f, TEXTALIGN_ML);
+		if(VisibleIndex == m_vpSettingsLanguageNameUiElements.size())
+			m_vpSettingsLanguageNameUiElements.push_back(Ui()->GetNewUIElement(1));
+		Ui()->DoLabelStreamed(*m_vpSettingsLanguageNameUiElements[VisibleIndex]->Rect(0), &Label, Language.m_Name.c_str(), 16.0f, TEXTALIGN_ML);
+		++VisibleIndex;
 	}
 
 	s_SelectedLanguage = s_ListBox.DoEnd();

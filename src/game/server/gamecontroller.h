@@ -153,8 +153,6 @@ protected:
 	void ResetTuningZones();
 	virtual void InitGameSettings();
 	virtual void UpdateGameInfo(CNetObj_GameInfo &GameInfo, int SnappingClient) {}
-	virtual int GameInfoFlags(int SnappingClient) const { return 0; }
-	virtual int GameInfoFlags2(int SnappingClient) const { return 0; }
 	virtual void SnapMode(int SnappingClient) {}
 	virtual int ScoreLimit() const { return 0; }
 	virtual int TimeLimit() const { return 0; }
@@ -192,6 +190,10 @@ public:
 	virtual ~IGameController();
 	virtual void Init(CDbConnectionPool *pDbPool);
 	const CGameModeInfo &Info() const { return m_GameModeInfo; }
+	// What the mode tells a client about itself, and with that which physics
+	// the client will predict under.
+	virtual int GameInfoFlags(int SnappingClient) const { return 0; }
+	virtual int GameInfoFlags2(int SnappingClient) const { return 0; }
 	int TuningZoneAt(vec2 Position) const;
 	void ResetTuning();
 	virtual CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team);

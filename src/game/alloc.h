@@ -8,13 +8,13 @@
 #include <cstdlib>
 #include <new>
 
+// Zeroed storage for members nobody initialises. calloc, because an optimising
+// build may drop a mem_zero into storage no object lives in yet.
 #define MACRO_ALLOC_HEAP() \
 public: \
 	void *operator new(size_t Size) \
 	{ \
-		void *pObj = malloc(Size); \
-		mem_zero(pObj, Size); \
-		return pObj; \
+		return calloc(1, Size); \
 	} \
 	void operator delete(void *pPtr) \
 	{ \
@@ -22,31 +22,5 @@ public: \
 	} \
 \
 private:
-
-#define MACRO_ALLOC_POOL_ID() \
-public: \
-	void *operator new(size_t Size, int Id); \
-	void operator delete(void *pObj, int Id); \
-	void operator delete(void *pObj); /* NOLINT(misc-new-delete-overloads) */ \
-\
-private:
-
-// Heap allocated: a pool indexed by client id would be shared by every game in
-// the process, and players and characters are not allocated often enough to need one.
-#define MACRO_ALLOC_POOL_ID_IMPL(POOLTYPE, PoolSize) \
-	void *POOLTYPE::operator new(size_t Size, [[maybe_unused]] int Id) \
-	{ \
-		void *pObj = malloc(Size); \
-		mem_zero(pObj, Size); \
-		return pObj; \
-	} \
-	void POOLTYPE::operator delete(void *pObj, [[maybe_unused]] int Id) \
-	{ \
-		free(pObj); \
-	} \
-	void POOLTYPE::operator delete(void *pObj) /* NOLINT(misc-new-delete-overloads) */ \
-	{ \
-		free(pObj); \
-	}
 
 #endif

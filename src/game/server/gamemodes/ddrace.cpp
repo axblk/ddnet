@@ -1473,7 +1473,7 @@ const CScore &CGameControllerDDRace::RaceScore() const
 CCharacterDDRace *CGameControllerDDRace::CreateCharacter(CPlayer *pPlayer)
 {
 	const int ClientId = pPlayer->GetCid();
-	return new(ClientId) CCharacterDDRace(&GameServer()->m_World, GameServer()->GetLastPlayerInput(ClientId));
+	return new CCharacterDDRace(&GameServer()->m_World, GameServer()->GetLastPlayerInput(ClientId));
 }
 
 bool CGameControllerDDRace::CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const

@@ -3519,8 +3519,12 @@ void CGameClient::UpdateLocalTuning()
 
 CPhysicsRules CGameClient::PredictedPhysicsRules() const
 {
-	// TODO: the server does not send its physics, so this assumes it runs the local config
-	return m_GameInfo.m_PredictDDRace ? CPhysicsRules::DDNetFromConfig() : CPhysicsRules();
+	if(!m_GameInfo.m_PredictDDRace)
+		return CPhysicsRules();
+	// only the weak hook is in the game info, the rest are game settings the map sets on both sides
+	CPhysicsRules Rules = CPhysicsRules::DDNetFromConfig();
+	Rules.m_WeakHook = !m_GameInfo.m_NoWeakHookAndBounce;
+	return Rules;
 }
 
 void CGameClient::UpdatePrediction()

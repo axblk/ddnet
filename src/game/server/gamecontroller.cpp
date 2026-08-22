@@ -62,13 +62,13 @@ int IGameController::TuningZoneAt(vec2 Position) const
 
 CPlayer *IGameController::CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team)
 {
-	return new(ClientId) CPlayer(Services(), UniqueClientId, ClientId, Team);
+	return new CPlayer(Services(), UniqueClientId, ClientId, Team);
 }
 
 CCharacter *IGameController::CreateCharacter(CPlayer *pPlayer)
 {
 	const int ClientId = pPlayer->GetCid();
-	return new(ClientId) CCharacter(&GameServer()->m_World, GameServer()->GetLastPlayerInput(ClientId));
+	return new CCharacter(&GameServer()->m_World, GameServer()->GetLastPlayerInput(ClientId));
 }
 
 void IGameController::LoadGameSettings()

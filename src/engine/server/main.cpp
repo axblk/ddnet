@@ -4,6 +4,7 @@
 #include <base/logger.h>
 #include <base/os.h>
 #include <base/process.h>
+#include <base/rust.h>
 #include <base/str.h>
 #include <base/windows.h>
 
@@ -56,6 +57,10 @@ int main(int argc, const char **argv)
 	const int64_t MainStart = time_get();
 
 	CCmdlineFix CmdlineFix(&argc, &argv);
+	// A panic in the Rust half should fail the same way an assertion does.
+	// The engine used to install this, which made every program that has a
+	// job pool link the Rust library, and most of them run no Rust at all.
+	rust_panic_use_dbg_assert();
 
 #if !defined(CONF_PLATFORM_ANDROID)
 	bool Silent = false;

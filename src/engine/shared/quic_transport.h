@@ -113,7 +113,12 @@ public:
 	CQuicTransport &operator=(const CQuicTransport &) = delete;
 
 	static bool IsCompiled();
-	static bool IsWebTransportCompiled();
+	// Serving WebTransport and dialing it are two different builds. The Rust
+	// endpoint answers a WebTransport handshake wherever QUIC is compiled in,
+	// but only a browser brings a WebTransport client, so the native client
+	// has nothing to dial it with.
+	static bool IsWebTransportServerCompiled();
+	static bool IsWebTransportClientCompiled();
 	bool StartServer(const char *pLocalAddress, bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath);
 	bool MaybeRotateManagedCertificate(bool *pRotated);
 	bool StartClient(const char *pBindAddress, const char *pServerAddress, const char *pServerName, const char *pCertificatePath, bool Sixup);

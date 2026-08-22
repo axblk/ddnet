@@ -80,11 +80,26 @@ int CEditor::DoButtonLogic(const void *pId, int Checked, const CUIRect *pRect, i
 	return Ui()->DoButtonLogic(pId, Checked, pRect, Flags);
 }
 
+CUIElement::SUIElementRect *CEditor::NextCachedLabelUiElement()
+{
+	if(m_pActiveLabelUiElements == nullptr)
+		return nullptr;
+	if(m_ActiveLabelUiElementIndex == m_pActiveLabelUiElements->size())
+		m_pActiveLabelUiElements->push_back(Ui()->GetNewUIElement(1));
+	return (*m_pActiveLabelUiElements)[m_ActiveLabelUiElementIndex++]->Rect(0);
+}
+
 int CEditor::DoButton_Editor(const void *pId, const char *pText, int Checked, const CUIRect *pRect, int Flags, const char *pToolTip)
 {
 	pRect->Draw(GetButtonColor(pId, Checked), IGraphics::CORNER_ALL, 3.0f);
-	CUIRect NewRect = *pRect;
-	Ui()->DoLabel(&NewRect, pText, 10.0f, TEXTALIGN_MC);
+	if(pText[0] != '\0')
+	{
+		CUIRect NewRect = *pRect;
+		if(CUIElement::SUIElementRect *pUiElementRect = NextCachedLabelUiElement())
+			Ui()->DoLabelStreamed(*pUiElementRect, &NewRect, pText, 10.0f, TEXTALIGN_MC);
+		else
+			Ui()->DoLabel(&NewRect, pText, 10.0f, TEXTALIGN_MC);
+	}
 	Checked %= 2;
 	return DoButtonLogic(pId, Checked, pRect, Flags, pToolTip);
 }
@@ -108,21 +123,32 @@ int CEditor::DoButton_Ex(const void *pId, const char *pText, int Checked, const 
 	CUIRect Rect;
 	pRect->VMargin(((Align & TEXTALIGN_MASK_HORIZONTAL) == TEXTALIGN_CENTER) ? 1.0f : 5.0f, &Rect);
 
-	SLabelProperties Props;
-	Props.m_MaxWidth = Rect.w;
-	Props.m_EllipsisAtEnd = true;
-	Ui()->DoLabel(&Rect, pText, FontSize, Align, Props);
+	if(pText[0] != '\0')
+	{
+		SLabelProperties Props;
+		Props.m_MaxWidth = Rect.w;
+		Props.m_EllipsisAtEnd = true;
+		if(CUIElement::SUIElementRect *pUiElementRect = NextCachedLabelUiElement())
+			Ui()->DoLabelStreamed(*pUiElementRect, &Rect, pText, FontSize, Align, Props);
+		else
+			Ui()->DoLabel(&Rect, pText, FontSize, Align, Props);
+	}
 
 	return DoButtonLogic(pId, Checked, pRect, Flags, pToolTip);
 }
 
-int CEditor::DoButton_FontIcon(const void *pId, const char *pText, int Checked, const CUIRect *pRect, int Flags, const char *pToolTip, int Corners, float FontSize)
+int CEditor::DoButton_FontIcon(const void *pId, const char *pText, int Checked, const CUIRect *pRect, int Flags, const char *pToolTip, int Corners, float FontSize, CUIElement::SUIElementRect *pUiElementRect)
 {
 	pRect->Draw(GetButtonColor(pId, Checked), Corners, 3.0f);
 
 	TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
 	TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING);
-	Ui()->DoLabel(pRect, pText, FontSize, TEXTALIGN_MC);
+	if(pUiElementRect == nullptr)
+		pUiElementRect = NextCachedLabelUiElement();
+	if(pUiElementRect != nullptr)
+		Ui()->DoLabelStreamed(*pUiElementRect, pRect, pText, FontSize, TEXTALIGN_MC);
+	else
+		Ui()->DoLabel(pRect, pText, FontSize, TEXTALIGN_MC);
 	TextRender()->SetRenderFlags(0);
 	TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
 
@@ -149,17 +175,23 @@ int CEditor::DoButton_MenuItem(const void *pId, const char *pText, int Checked, 
 	return DoButtonLogic(pId, Checked, pRect, Flags, pToolTip);
 }
 
-int CEditor::DoButton_DraggableEx(const void *pId, const char *pText, int Checked, const CUIRect *pRect, bool *pClicked, bool *pAbrupted, int Flags, const char *pToolTip, int Corners, float FontSize)
+int CEditor::DoButton_DraggableEx(const void *pId, const char *pText, int Checked, const CUIRect *pRect, bool *pClicked, bool *pAbrupted, int Flags, const char *pToolTip, int Corners, float FontSize, CUIElement::SUIElementRect *pUiElementRect)
 {
 	pRect->Draw(GetButtonColor(pId, Checked), Corners, 3.0f);
 
 	CUIRect Rect;
 	pRect->VMargin(pRect->w > 20.0f ? 5.0f : 0.0f, &Rect);
 
-	SLabelProperties Props;
-	Props.m_MaxWidth = Rect.w;
-	Props.m_EllipsisAtEnd = true;
-	Ui()->DoLabel(&Rect, pText, FontSize, TEXTALIGN_MC, Props);
+	if(pText[0] != '\0')
+	{
+		SLabelProperties Props;
+		Props.m_MaxWidth = Rect.w;
+		Props.m_EllipsisAtEnd = true;
+		if(pUiElementRect != nullptr)
+			Ui()->DoLabelStreamed(*pUiElementRect, &Rect, pText, FontSize, TEXTALIGN_MC, Props);
+		else
+			Ui()->DoLabel(&Rect, pText, FontSize, TEXTALIGN_MC, Props);
+	}
 
 	if(Ui()->MouseInside(pRect))
 	{
@@ -295,7 +327,10 @@ SEditResult<int> CEditor::UiDoValueSelector(const void *pId, CUIRect *pRect, con
 		else
 			str_format(aBuf, sizeof(aBuf), "%d", Current);
 		pRect->Draw(pColor ? *pColor : GetButtonColor(pId, 0), Corners, 3.0f);
-		Ui()->DoLabel(pRect, aBuf, 10, TEXTALIGN_MC);
+		if(CUIElement::SUIElementRect *pUiElementRect = NextCachedLabelUiElement())
+			Ui()->DoLabelStreamed(*pUiElementRect, pRect, aBuf, 10, TEXTALIGN_MC);
+		else
+			Ui()->DoLabel(pRect, aBuf, 10, TEXTALIGN_MC);
 	}
 
 	if(Inside && !Ui()->MouseButton(0) && !Ui()->MouseButton(1))

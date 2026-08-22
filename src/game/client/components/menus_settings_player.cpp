@@ -71,8 +71,12 @@ void CMenus::RenderSettingsPlayer(CUIRect MainView)
 	Button.VSplitLeft(150.0f, &Button, nullptr);
 	char aBuf[128];
 	str_format(aBuf, sizeof(aBuf), "%s:", Localize("Name"));
-	Ui()->DoLabel(&Label, aBuf, 14.0f, TEXTALIGN_ML);
-	if(Ui()->DoEditBox(&s_NameInput, &Button, 14.0f))
+	if(m_apSettingsPlayerLabelUiElements[0] == nullptr)
+		m_apSettingsPlayerLabelUiElements[0] = Ui()->GetNewUIElement(1);
+	Ui()->DoLabelStreamed(*m_apSettingsPlayerLabelUiElements[0]->Rect(0), &Label, aBuf, 14.0f, TEXTALIGN_ML);
+	if(m_apSettingsPlayerEditBoxUiElements[0] == nullptr)
+		m_apSettingsPlayerEditBoxUiElements[0] = Ui()->GetNewUIElement(1);
+	if(Ui()->DoEditBox(&s_NameInput, &Button, 14.0f, IGraphics::CORNER_ALL, {}, m_apSettingsPlayerEditBoxUiElements[0]))
 	{
 		SetNeedSendInfo();
 	}
@@ -83,8 +87,12 @@ void CMenus::RenderSettingsPlayer(CUIRect MainView)
 	Button.VSplitLeft(80.0f, &Label, &Button);
 	Button.VSplitLeft(150.0f, &Button, nullptr);
 	str_format(aBuf, sizeof(aBuf), "%s:", Localize("Clan"));
-	Ui()->DoLabel(&Label, aBuf, 14.0f, TEXTALIGN_ML);
-	if(Ui()->DoEditBox(&s_ClanInput, &Button, 14.0f))
+	if(m_apSettingsPlayerLabelUiElements[1] == nullptr)
+		m_apSettingsPlayerLabelUiElements[1] = Ui()->GetNewUIElement(1);
+	Ui()->DoLabelStreamed(*m_apSettingsPlayerLabelUiElements[1]->Rect(0), &Label, aBuf, 14.0f, TEXTALIGN_ML);
+	if(m_apSettingsPlayerEditBoxUiElements[1] == nullptr)
+		m_apSettingsPlayerEditBoxUiElements[1] = Ui()->GetNewUIElement(1);
+	if(Ui()->DoEditBox(&s_ClanInput, &Button, 14.0f, IGraphics::CORNER_ALL, {}, m_apSettingsPlayerEditBoxUiElements[1]))
 	{
 		SetNeedSendInfo();
 	}
@@ -126,6 +134,7 @@ void CMenus::RenderSettingsPlayer(CUIRect MainView)
 	static CListBox s_ListBox;
 	s_ListBox.DoStart(48.0f, vFilteredFlags.size(), 10, 3, OldSelected, &MainView);
 
+	size_t VisibleIndex = 0;
 	for(size_t i = 0; i < vFilteredFlags.size(); i++)
 	{
 		const CCountryFlagEntry &Entry = vFilteredFlags[i];
@@ -155,7 +164,10 @@ void CMenus::RenderSettingsPlayer(CUIRect MainView)
 				const auto [MatchStart, MatchLength] = Entry.m_NameMatch.value();
 				Props.m_vColorSplits.emplace_back(MatchStart, MatchLength, ColorRGBA(0.4f, 0.4f, 1.0f, 1.0f));
 			}
-			Ui()->DoLabel(&Label, Entry.m_pFlag->m_aCountryCodeString, 10.0f, TEXTALIGN_MC, Props);
+			if(VisibleIndex == m_vpSettingsPlayerFlagUiElements.size())
+				m_vpSettingsPlayerFlagUiElements.push_back(Ui()->GetNewUIElement(1));
+			Ui()->DoLabelStreamed(*m_vpSettingsPlayerFlagUiElements[VisibleIndex]->Rect(0), &Label, Entry.m_pFlag->m_aCountryCodeString, 10.0f, TEXTALIGN_MC, Props);
+			++VisibleIndex;
 		}
 	}
 
@@ -181,5 +193,9 @@ void CMenus::RenderSettingsPlayer(CUIRect MainView)
 		}
 	}
 
-	Ui()->DoEditBox_Search(&s_FlagFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive());
+	if(m_apSettingsPlayerSearchUiElements[0] == nullptr)
+		m_apSettingsPlayerSearchUiElements[0] = Ui()->GetNewUIElement(1);
+	if(m_apSettingsPlayerSearchUiElements[1] == nullptr)
+		m_apSettingsPlayerSearchUiElements[1] = Ui()->GetNewUIElement(2);
+	Ui()->DoEditBox_SearchCached(&s_FlagFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), m_apSettingsPlayerSearchUiElements[0], m_apSettingsPlayerSearchUiElements[1]);
 }

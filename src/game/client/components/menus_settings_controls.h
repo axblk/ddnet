@@ -9,6 +9,7 @@
 #include <game/client/ui.h>
 #include <game/client/ui_scrollregion.h>
 
+#include <array>
 #include <vector>
 
 enum class EBindOptionGroup
@@ -29,6 +30,7 @@ public:
 	CBindSlot m_Bind;
 	CButtonContainer m_KeyReaderButton;
 	CButtonContainer m_KeyResetButton;
+	CUIElement *m_pKeyReaderLabelUiElement = nullptr;
 	bool m_ToBeDeleted = false;
 
 	bool operator<(const CBindSlotUiElement &Other) const;
@@ -43,6 +45,7 @@ public:
 	std::vector<CBindSlotUiElement> m_vCurrentBinds;
 	CButtonContainer m_AddBindButtonContainer;
 	char m_TooltipButtonId;
+	CUIElement *m_pLabelUiElement = nullptr;
 	bool m_AddNewBind = false;
 	bool m_AddNewBindActivate = false;
 	bool m_ToBeDeleted = false;
@@ -67,12 +70,14 @@ private:
 	CScrollRegion m_SettingsScrollRegion;
 	CButtonContainer m_ResetToDefaultButton;
 	CLineInputBuffered<128> m_FilterInput;
+	std::array<CUIElement, 2> m_aSearchUiElements;
+	std::array<CUIElement, (int)EBindOptionGroup::NUM + 2> m_aSettingsBlockTitleUiElements;
 	int m_CurrentSearchMatch = 0;
 	std::vector<int> m_vSearchMatches;
 	bool m_SearchMatchReveal = false;
 	void UpdateSearchMatches();
 
-	void RenderSettingsBlock(float Height, CUIRect *pParentRect, const char *pTitle,
+	void RenderSettingsBlock(float Height, CUIRect *pParentRect, const char *pTitle, CUIElement &TitleUiElement,
 		bool *pExpanded, CButtonContainer *pExpandButton, const std::function<void(CUIRect Rect)> &RenderContentFunction);
 
 	void RenderSettingsBindsBlock(EBindOptionGroup Group, CUIRect *pParentRect, const char *pTitle);

@@ -20,7 +20,7 @@ public:
 		CBindSlot m_Bind;
 		bool m_Aborted;
 	};
-	CKeyReaderResult DoKeyReader(CButtonContainer *pReaderButton, CButtonContainer *pClearButton, const CUIRect *pRect, const CBindSlot &CurrentBind, bool Activate);
+	CKeyReaderResult DoKeyReader(CButtonContainer *pReaderButton, CButtonContainer *pClearButton, CUIElement *pLabelUiElement, const CUIRect *pRect, const CBindSlot &CurrentBind, bool Activate);
 	bool IsActive() const;
 	bool HasPendingKeyReader() const { return m_pKeyReaderId != nullptr; }
 	bool AbortPendingKey();

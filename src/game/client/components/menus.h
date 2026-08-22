@@ -36,6 +36,7 @@
 #include <deque>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 class CImageInfo;
@@ -58,7 +59,7 @@ public:
 	int DoButton_Menu(CButtonContainer *pButtonContainer, const char *pText, int Checked, const CUIRect *pRect, unsigned Flags = BUTTONFLAG_LEFT, const char *pImageName = nullptr, int Corners = IGraphics::CORNER_ALL, float Rounding = 5.0f, float FontFactor = 0.0f, ColorRGBA Color = ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f));
 	int DoButton_MenuTab(CButtonContainer *pButtonContainer, const char *pText, int Checked, const CUIRect *pRect, int Corners, SUIAnimator *pAnimator = nullptr, const ColorRGBA *pDefaultColor = nullptr, const ColorRGBA *pActiveColor = nullptr, const ColorRGBA *pHoverColor = nullptr, float EdgeRounding = 10.0f, const CCommunityIcon *pCommunityIcon = nullptr);
 
-	int DoButton_CheckBox_Common(const void *pId, const char *pText, const char *pBoxText, const CUIRect *pRect, unsigned Flags);
+	int DoButton_CheckBox_Common(const void *pId, const char *pText, const char *pBoxText, const CUIRect *pRect, unsigned Flags, CUIElement *pUIElement = nullptr);
 	int DoButton_CheckBox(const void *pId, const char *pText, int Checked, const CUIRect *pRect);
 	int DoButton_CheckBoxAutoVMarginAndSet(const void *pId, const char *pText, int *pValue, CUIRect *pRect, float VMargin);
 	int DoButton_CheckBox_Number(const void *pId, const char *pText, int Checked, const CUIRect *pRect);
@@ -72,6 +73,11 @@ private:
 
 	int DoButton_GridHeader(const void *pId, const char *pText, int Checked, const CUIRect *pRect, int Align = TEXTALIGN_ML);
 	int DoButton_Favorite(const void *pButtonId, const void *pParentId, bool Checked, const CUIRect *pRect);
+	CUIElement &ButtonLabelUiElement(const void *pId);
+	CUIElement &CheckBoxUiElement(const void *pId);
+	std::unordered_map<const void *, CUIElement *> m_ButtonLabelUiElements;
+	std::unordered_map<const void *, CUIElement *> m_CheckBoxUiElements;
+	std::unordered_map<const void *, CUIElement *> m_ColorPickerLabelUiElements;
 
 	std::optional<std::chrono::nanoseconds> m_SkinList7LastRefreshTime;
 	std::optional<std::chrono::nanoseconds> m_SkinPartsList7LastRefreshTime;
@@ -655,6 +661,10 @@ private:
 	int m_SelectedIndex;
 	bool m_ServerBrowserShouldRevealSelection;
 	std::vector<CUIElement *> m_avpServerBrowserUiElements[IServerBrowser::NUM_TYPES];
+	std::vector<CUIElement *> m_vpServerBrowserCommunityUiElements;
+	std::array<CUIElement, 11> m_aServerBrowserFilterUiElements;
+	std::array<CUIElement, 10> m_aServerBrowserStatusUiElements;
+	std::array<CUIElement, 4> m_aServerBrowserFilterTextUiElements;
 	void RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemActivated);
 	// What the address row may offer for one server: the transports the client
 	// was built with that the server also announces, and the address families
@@ -717,10 +727,13 @@ private:
 
 	// found in menus_settings_assets.cpp
 	void RenderSettingsAssets(CUIRect MainView);
+	std::array<CUIElement, 2> m_aSettingsAssetsSearchUiElements;
+	std::vector<CUIElement *> m_vpSettingsAssetsItemUiElements;
 
 	// found in menus_settings_appearance.cpp
 	void RenderSettingsAppearance(CUIRect MainView);
 	void DoLaserPreview(const CUIRect *pRect, ColorHSLA OutlineColor, ColorHSLA InnerColor, int LaserType);
+	std::vector<CUIElement *> m_vpSettingsAppearanceLabelUiElements;
 
 	// found in menus_settings_controls.cpp
 	// TODO: Change PopupConfirm to avoid using a function pointer to a CMenus
@@ -729,23 +742,36 @@ private:
 
 	// found in menus_settings_credits.cpp
 	void RenderSettingsCredits(CUIRect MainView);
+	std::array<CCachedText, 9> m_aSettingsCreditsLinkTexts;
+	CCachedText m_SettingsCreditsText;
 
 	// found in menus_settings_ddnet.cpp
 	void RenderSettingsDDNet(CUIRect MainView);
+	std::array<CUIElement, 2> m_aSettingsDdnetEditBoxUiElements;
+	std::vector<CUIElement *> m_vpSettingsDdnetLabelUiElements;
+	CCachedText m_SettingsDdnetUpdaterText;
 
 	// found in menus_settings_general.cpp
 	void RenderSettingsGeneral(CUIRect MainView);
 	void RenderThemeSelection(CUIRect MainView);
+	std::vector<CUIElement *> m_vpSettingsGeneralLabelUiElements;
 
 	// found in menus_settings_graphics.cpp
 	void RenderSettingsGraphics(CUIRect MainView);
+	std::vector<CUIElement *> m_vpSettingsGraphicsLabelUiElements;
 
 	// found in menus_settings_language.cpp
 	void RenderLanguageSettings(CUIRect MainView);
 	bool RenderLanguageSelection(CUIRect MainView);
+	std::vector<CUIElement *> m_vpSettingsLanguageNameUiElements;
+	CCachedText m_SettingsLanguageCreditsText;
 
 	// found in menus_settings_player.cpp
 	void RenderSettingsPlayer(CUIRect MainView);
+	std::array<CUIElement *, 2> m_apSettingsPlayerLabelUiElements = {};
+	std::array<CUIElement *, 2> m_apSettingsPlayerEditBoxUiElements = {};
+	std::array<CUIElement *, 2> m_apSettingsPlayerSearchUiElements = {};
+	std::vector<CUIElement *> m_vpSettingsPlayerFlagUiElements;
 
 	// found in menus_settings_sound.cpp
 	void RenderSettingsSound(CUIRect MainView);
@@ -753,6 +779,10 @@ private:
 	// found in menus_settings_tee.cpp
 	void RenderSettingsTee(CUIRect MainView);
 	bool m_SkinListScrollToSelected = false;
+	std::array<CUIElement, 2> m_aSettingsTeeEditBoxUiElements;
+	std::array<CUIElement, 2> m_aSettingsTeeSearchUiElements;
+	std::vector<CUIElement *> m_vpSettingsTeeLabelUiElements;
+	std::vector<CUIElement *> m_vpSettingsTeeSkinNameUiElements;
 
 	// found in menus_settings_tee7.cpp
 	void RenderSettingsTee7(CUIRect MainView);

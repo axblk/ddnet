@@ -11,7 +11,9 @@
 #include <game/editor/editor.h>
 #include <game/editor/editor_actions.h>
 #include <game/editor/enums.h>
+#include <game/map/render_layer.h>
 
+#include <cmath>
 #include <iterator>
 #include <numeric>
 
@@ -73,6 +75,7 @@ CLayerTiles::CLayerTiles(const CLayerTiles &Other) :
 
 CLayerTiles::~CLayerTiles()
 {
+	ClearTileRenderCache();
 	delete[] m_pTiles;
 }
 
@@ -110,9 +113,10 @@ void CLayerTiles::SetTile(int x, int y, CTile Tile)
 	}
 }
 
-void CLayerTiles::SetTileIgnoreHistory(int x, int y, CTile Tile) const
+void CLayerTiles::SetTileIgnoreHistory(int x, int y, CTile Tile)
 {
 	m_pTiles[y * m_Width + x] = Tile;
+	InvalidateTileRenderCache(x, y, 1, 1);
 }
 
 void CLayerTiles::RecordStateChange(int x, int y, CTile Previous, CTile Tile)
@@ -135,13 +139,177 @@ void CLayerTiles::PrepareForSave()
 			for(int x = 0; x < m_Width; x++)
 				m_pTiles[y * m_Width + x].m_Flags |= Map()->m_vpImages[m_Image]->m_aTileFlags[m_pTiles[y * m_Width + x].m_Index];
 	}
+	InvalidateTileRenderCache();
 }
 
-void CLayerTiles::MakePalette() const
+void CLayerTiles::ExtractTiles(const CTile *pSavedTiles, size_t SavedTilesSize)
+{
+	const size_t DestSize = (size_t)m_Width * m_Height;
+	if(SavedTilesSize >= DestSize)
+	{
+		mem_copy(m_pTiles, pSavedTiles, DestSize * sizeof(CTile));
+		for(size_t TileIndex = 0; TileIndex < DestSize; ++TileIndex)
+		{
+			m_pTiles[TileIndex].m_Skip = 0;
+			m_pTiles[TileIndex].m_MustBe0 = 0;
+		}
+		InvalidateTileRenderCache();
+	}
+}
+
+void CLayerTiles::MakePalette()
 {
 	for(int y = 0; y < m_Height; y++)
 		for(int x = 0; x < m_Width; x++)
 			m_pTiles[y * m_Width + x].m_Index = y * 16 + x;
+	InvalidateTileRenderCache();
+}
+
+void CLayerTiles::ClearTileRenderCache()
+{
+	for(auto &Chunk : m_vTileRenderChunks)
+		DeleteTileBuffer(Graphics(), Chunk.m_BufferObject, Chunk.m_BufferContainer);
+	m_vTileRenderChunks.clear();
+	m_TileRenderChunkColumns = 0;
+	m_TileRenderChunkRows = 0;
+}
+
+void CLayerTiles::EnsureTileRenderCache(bool Textured)
+{
+	const int Columns = (m_Width + TILE_RENDER_CHUNK_SIZE - 1) / TILE_RENDER_CHUNK_SIZE;
+	const int Rows = (m_Height + TILE_RENDER_CHUNK_SIZE - 1) / TILE_RENDER_CHUNK_SIZE;
+	if(Columns == m_TileRenderChunkColumns && Rows == m_TileRenderChunkRows && Textured == m_TileRenderChunksTextured)
+		return;
+
+	ClearTileRenderCache();
+	m_TileRenderChunkColumns = Columns;
+	m_TileRenderChunkRows = Rows;
+	m_TileRenderChunksTextured = Textured;
+	m_vTileRenderChunks.resize((size_t)Columns * Rows);
+}
+
+void CLayerTiles::InvalidateTileRenderCache(int x, int y, int w, int h)
+{
+	if(m_vTileRenderChunks.empty())
+		return;
+	if(w < 0 || h < 0)
+	{
+		for(auto &Chunk : m_vTileRenderChunks)
+			Chunk.m_Dirty = true;
+		return;
+	}
+
+	const int X0 = std::clamp(x, 0, m_Width);
+	const int Y0 = std::clamp(y, 0, m_Height);
+	const int X1 = std::clamp(x + w, 0, m_Width);
+	const int Y1 = std::clamp(y + h, 0, m_Height);
+	if(X0 >= X1 || Y0 >= Y1)
+		return;
+
+	for(int ChunkY = Y0 / TILE_RENDER_CHUNK_SIZE; ChunkY <= (Y1 - 1) / TILE_RENDER_CHUNK_SIZE; ++ChunkY)
+		for(int ChunkX = X0 / TILE_RENDER_CHUNK_SIZE; ChunkX <= (X1 - 1) / TILE_RENDER_CHUNK_SIZE; ++ChunkX)
+			m_vTileRenderChunks[ChunkY * m_TileRenderChunkColumns + ChunkX].m_Dirty = true;
+}
+
+bool CLayerTiles::RebuildTileRenderChunk(int ChunkX, int ChunkY, bool Textured)
+{
+	STileRenderChunk &Chunk = m_vTileRenderChunks[ChunkY * m_TileRenderChunkColumns + ChunkX];
+	std::vector<CGraphicTile> vTiles;
+	std::vector<CGraphicTileTextureCoords> vTextureCoords;
+	const int X0 = ChunkX * TILE_RENDER_CHUNK_SIZE;
+	const int Y0 = ChunkY * TILE_RENDER_CHUNK_SIZE;
+	const int X1 = std::min(X0 + TILE_RENDER_CHUNK_SIZE, m_Width);
+	const int Y1 = std::min(Y0 + TILE_RENDER_CHUNK_SIZE, m_Height);
+	Chunk.m_Width = X1 - X0;
+	Chunk.m_Height = Y1 - Y0;
+	const size_t Capacity = (size_t)Chunk.m_Width * Chunk.m_Height;
+	vTiles.reserve(Capacity);
+	if(Textured)
+		vTextureCoords.reserve(Capacity);
+
+	for(int Pass = 0; Pass < 2; ++Pass)
+	{
+		const bool Opaque = Pass == 0;
+		std::vector<unsigned int> &vOffsets = Opaque ? Chunk.m_vOpaqueTileOffsets : Chunk.m_vTransparentTileOffsets;
+		vOffsets.resize(Capacity + 1);
+		const unsigned int FirstTile = vTiles.size();
+		for(int y = Y0; y < Y1; ++y)
+		{
+			for(int x = X0; x < X1; ++x)
+			{
+				const size_t LocalIndex = (size_t)(y - Y0) * Chunk.m_Width + x - X0;
+				vOffsets[LocalIndex] = vTiles.size() - FirstTile;
+				const CTile &Tile = m_pTiles[y * m_Width + x];
+				if(((Tile.m_Flags & TILEFLAG_OPAQUE) != 0) == Opaque)
+					AddTileToBuffer(vTiles, vTextureCoords, Tile.m_Index, Tile.m_Flags, x, y, Textured);
+			}
+		}
+		vOffsets[Capacity] = vTiles.size() - FirstTile;
+		if(Opaque)
+			Chunk.m_OpaqueTiles = vTiles.size();
+	}
+	Chunk.m_TransparentTiles = vTiles.size() - Chunk.m_OpaqueTiles;
+	if(!UploadTileBuffer(Graphics(), vTiles, vTextureCoords, Chunk.m_BufferObject, Chunk.m_BufferContainer))
+		return false;
+	Chunk.m_Dirty = false;
+	return true;
+}
+
+void CLayerTiles::RenderTileChunks(const ColorRGBA &Color, bool Textured, bool TransparentPass, bool ForceTransparent)
+{
+	EnsureTileRenderCache(Textured);
+	const CScreenRect ScreenRect = Graphics()->GetScreen();
+	const int X0 = std::clamp((int)std::floor(ScreenRect.m_TopLeft.x / 32.0f), 0, m_Width);
+	const int Y0 = std::clamp((int)std::floor(ScreenRect.m_TopLeft.y / 32.0f), 0, m_Height);
+	const int X1 = std::clamp((int)std::ceil(ScreenRect.m_BottomRight.x / 32.0f), 0, m_Width);
+	const int Y1 = std::clamp((int)std::ceil(ScreenRect.m_BottomRight.y / 32.0f), 0, m_Height);
+	if(X0 >= X1 || Y0 >= Y1)
+		return;
+
+	const bool AllTransparent = ForceTransparent || Color.a <= 254.0f / 255.0f;
+	if(AllTransparent && !TransparentPass)
+		return;
+
+	for(int ChunkY = Y0 / TILE_RENDER_CHUNK_SIZE; ChunkY <= (Y1 - 1) / TILE_RENDER_CHUNK_SIZE; ++ChunkY)
+	{
+		for(int ChunkX = X0 / TILE_RENDER_CHUNK_SIZE; ChunkX <= (X1 - 1) / TILE_RENDER_CHUNK_SIZE; ++ChunkX)
+		{
+			STileRenderChunk &Chunk = m_vTileRenderChunks[ChunkY * m_TileRenderChunkColumns + ChunkX];
+			if(Chunk.m_Dirty && !RebuildTileRenderChunk(ChunkX, ChunkY, Textured))
+				continue;
+			if(!Chunk.m_BufferContainer.IsValid())
+				continue;
+
+			const int ChunkTileX = ChunkX * TILE_RENDER_CHUNK_SIZE;
+			const int ChunkTileY = ChunkY * TILE_RENDER_CHUNK_SIZE;
+			const int LocalX0 = std::max(X0 - ChunkTileX, 0);
+			const int LocalY0 = std::max(Y0 - ChunkTileY, 0);
+			const int LocalX1 = std::min(X1 - ChunkTileX, Chunk.m_Width);
+			const int LocalY1 = std::min(Y1 - ChunkTileY, Chunk.m_Height);
+			const size_t FirstLocalTile = (size_t)LocalY0 * Chunk.m_Width + LocalX0;
+			const size_t LastLocalTile = (size_t)(LocalY1 - 1) * Chunk.m_Width + LocalX1;
+
+			offset_ptr_size apByteOffsets[2];
+			unsigned int aIndexCounts[2];
+			size_t RangeCount = 0;
+			auto AddRange = [&](const std::vector<unsigned int> &vOffsets, unsigned int BaseTile) {
+				const unsigned int StartTile = BaseTile + vOffsets[FirstLocalTile];
+				const unsigned int TileCount = vOffsets[LastLocalTile] - vOffsets[FirstLocalTile];
+				if(TileCount == 0)
+					return;
+				apByteOffsets[RangeCount] = (offset_ptr_size)((offset_ptr)StartTile * 6 * sizeof(uint32_t));
+				aIndexCounts[RangeCount] = TileCount * 6;
+				++RangeCount;
+			};
+			if(AllTransparent || !TransparentPass)
+				AddRange(Chunk.m_vOpaqueTileOffsets, 0);
+			if(AllTransparent || TransparentPass)
+				AddRange(Chunk.m_vTransparentTileOffsets, Chunk.m_OpaqueTiles);
+			if(RangeCount == 0)
+				continue;
+			Graphics()->RenderTileLayer(Chunk.m_BufferContainer, Color, apByteOffsets, aIndexCounts, RangeCount);
+		}
+	}
 }
 
 void CLayerTiles::Render(const CEditorMap *pRenderMap)
@@ -185,17 +353,31 @@ void CLayerTiles::Render(const CEditorMap *pRenderMap)
 	pRenderMap->m_EnvelopeEvaluator.EnvelopeEval(m_ColorEnvOffset, m_ColorEnv, ColorEnv, 4);
 	const ColorRGBA Color = ColorRGBA(m_Color.r / 255.0f, m_Color.g / 255.0f, m_Color.b / 255.0f, m_Color.a / 255.0f).Multiply(ColorEnv);
 
-	if(IsEntitiesLayer())
+	if(!Graphics()->IsTileBufferingEnabled())
 	{
-		Graphics()->BlendNormal();
-		Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, Texture.IsValid(), TILERENDERFLAG_FORCE_TRANSPARENT | LAYERRENDERFLAG_TRANSPARENT);
+		if(IsEntitiesLayer())
+		{
+			Graphics()->BlendNormal();
+			Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, Texture.IsValid(), TILERENDERFLAG_FORCE_TRANSPARENT | LAYERRENDERFLAG_TRANSPARENT);
+		}
+		else
+		{
+			Graphics()->BlendNone();
+			Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, Texture.IsValid(), LAYERRENDERFLAG_OPAQUE);
+			Graphics()->BlendNormal();
+			Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, Texture.IsValid(), LAYERRENDERFLAG_TRANSPARENT);
+		}
 	}
 	else
 	{
-		Graphics()->BlendNone();
-		Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, Texture.IsValid(), LAYERRENDERFLAG_OPAQUE);
+		const bool ForceTransparent = IsEntitiesLayer();
+		if(!ForceTransparent)
+		{
+			Graphics()->BlendNone();
+			RenderTileChunks(Color, Texture.IsValid(), false, false);
+		}
 		Graphics()->BlendNormal();
-		Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, Texture.IsValid(), LAYERRENDERFLAG_TRANSPARENT);
+		RenderTileChunks(Color, Texture.IsValid(), true, ForceTransparent);
 	}
 
 	// Render DDRace Layers
@@ -607,6 +789,7 @@ void CLayerTiles::BrushDraw(CLayer *pBrush, vec2 WorldPos)
 
 void CLayerTiles::BrushFlipX()
 {
+	InvalidateTileRenderCache();
 	BrushFlipXImpl(m_pTiles);
 
 	if(m_HasTele || m_HasSpeedup || m_HasTune)
@@ -623,6 +806,7 @@ void CLayerTiles::BrushFlipX()
 
 void CLayerTiles::BrushFlipY()
 {
+	InvalidateTileRenderCache();
 	BrushFlipYImpl(m_pTiles);
 
 	if(m_HasTele || m_HasSpeedup || m_HasTune)
@@ -639,6 +823,7 @@ void CLayerTiles::BrushFlipY()
 
 void CLayerTiles::BrushRotate(float Amount)
 {
+	InvalidateTileRenderCache();
 	int Rotation = (round_to_int(360.0f * Amount / (pi * 2)) / 90) % 4; // 0=0°, 1=90°, 2=180°, 3=270°
 	if(Rotation < 0)
 		Rotation += 4;
@@ -687,6 +872,7 @@ const char *CLayerTiles::TypeName() const
 
 void CLayerTiles::Resize(int NewW, int NewH)
 {
+	ClearTileRenderCache();
 	CTile *pNewData = new CTile[NewW * NewH];
 	mem_zero(pNewData, (size_t)NewW * NewH * sizeof(CTile));
 
@@ -724,6 +910,7 @@ void CLayerTiles::Resize(int NewW, int NewH)
 void CLayerTiles::Shift(EShiftDirection Direction)
 {
 	ShiftImpl(m_pTiles, Direction, Map()->m_ShiftBy);
+	InvalidateTileRenderCache();
 }
 
 void CLayerTiles::ShowInfo()
@@ -840,7 +1027,6 @@ void CLayerTiles::FillGameTiles(EGameTileOp Fill)
 					}
 				}
 			}
-
 			vpActions.push_back(std::make_shared<CEditorBrushDrawAction>(Map(), GameGroupIndex));
 			char aDisplay[256];
 			str_format(aDisplay, sizeof(aDisplay), "Construct '%s' game tiles (x%d)", GAME_TILE_OP_NAMES[(int)Fill], Changes);
@@ -936,6 +1122,7 @@ void CLayerTiles::FillGameTiles(EGameTileOp Fill)
 					}
 				}
 			}
+			pTLayer->InvalidateTileRenderCache();
 
 			vpActions.push_back(std::make_shared<CEditorBrushDrawAction>(Map(), GameGroupIndex));
 			char aDisplay[256];
@@ -1361,6 +1548,7 @@ CUi::EPopupMenuFunctionResult CLayerTiles::RenderCommonProperties(SCommonPropSta
 
 void CLayerTiles::FlagModified(int x, int y, int w, int h)
 {
+	InvalidateTileRenderCache(x, y, w, h);
 	Map()->OnModify();
 	if(m_Seed != 0 && m_AutomapperConfig != -1 && m_AutoAutomapper && m_Image >= 0)
 	{

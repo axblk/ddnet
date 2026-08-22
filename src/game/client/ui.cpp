@@ -18,6 +18,7 @@
 
 #include <game/localization.h>
 
+#include <algorithm>
 #include <limits>
 
 void CUIElement::Init(CUi *pUI, int RequestedRectCount)
@@ -54,6 +55,14 @@ void CUIElement::SUIElementRect::Reset()
 	m_TextOutlineColor = ColorRGBA(-1, -1, -1, -1);
 	m_QuadColor = ColorRGBA(-1, -1, -1, -1);
 	m_ReadCursorGlyphCount = -1;
+	m_ReadCursorX = -1.0f;
+	m_ReadCursorY = -1.0f;
+	m_FontSize = -1.0f;
+	m_LineWidth = -1.0f;
+	m_MinimumFontSize = -1.0f;
+	m_TextFlags = 0;
+	m_EnableWidthCheck = false;
+	m_vTextColorSplits.clear();
 }
 
 void CUIElement::SUIElementRect::Draw(const CUIRect *pRect, ColorRGBA Color, int Corners, float Rounding)
@@ -127,6 +136,7 @@ CUi::CUi()
 
 CUi::~CUi()
 {
+	CLineInput::ResetActiveInputRenderCache();
 	for(CUIElement *&pEl : m_vpOwnUIElements)
 	{
 		delete pEl;
@@ -168,6 +178,7 @@ void CUi::OnElementsReset()
 
 void CUi::OnWindowResize()
 {
+	CLineInput::ResetActiveInputRenderCache();
 	OnElementsReset();
 }
 
@@ -855,9 +866,14 @@ void CUi::DoLabel(CUIElement::SUIElementRect &RectEl, const CUIRect *pRect, cons
 void CUi::DoLabelStreamed(CUIElement::SUIElementRect &RectEl, const CUIRect *pRect, const char *pText, float Size, int Align, const SLabelProperties &LabelProps, int StrLen, const CTextCursor *pReadCursor) const
 {
 	const int ReadCursorGlyphCount = pReadCursor == nullptr ? -1 : pReadCursor->m_GlyphCount;
+	const float ReadCursorX = pReadCursor == nullptr ? -1.0f : pReadCursor->m_X;
+	const float ReadCursorY = pReadCursor == nullptr ? -1.0f : pReadCursor->m_Y;
+	const int TextFlags = GetFlagsForLabelProperties(LabelProps, pReadCursor);
+	const bool ColorSplitsChanged = RectEl.m_vTextColorSplits.size() != LabelProps.m_vColorSplits.size() || !std::equal(RectEl.m_vTextColorSplits.begin(), RectEl.m_vTextColorSplits.end(), LabelProps.m_vColorSplits.begin(), [](const STextColorSplit &Left, const STextColorSplit &Right) {
+		return Left.m_CharIndex == Right.m_CharIndex && Left.m_Length == Right.m_Length && Left.m_Color == Right.m_Color;
+	});
 	bool NeedsRecreate = false;
-	bool ColorChanged = RectEl.m_TextColor != TextRender()->GetTextColor() || RectEl.m_TextOutlineColor != TextRender()->GetTextOutlineColor();
-	if((!RectEl.m_UITextContainer.Valid() && pText[0] != '\0' && StrLen != 0) || RectEl.m_Width != pRect->w || RectEl.m_Height != pRect->h || ColorChanged || RectEl.m_ReadCursorGlyphCount != ReadCursorGlyphCount)
+	if((!RectEl.m_UITextContainer.Valid() && pText[0] != '\0' && StrLen != 0) || RectEl.m_Width != pRect->w || RectEl.m_FontSize != Size || RectEl.m_LineWidth != LabelProps.m_MaxWidth || RectEl.m_MinimumFontSize != LabelProps.m_MinimumFontSize || RectEl.m_TextFlags != TextFlags || RectEl.m_EnableWidthCheck != LabelProps.m_EnableWidthCheck || ColorSplitsChanged || RectEl.m_ReadCursorGlyphCount != ReadCursorGlyphCount || RectEl.m_ReadCursorX != ReadCursorX || RectEl.m_ReadCursorY != ReadCursorY)
 	{
 		NeedsRecreate = true;
 	}
@@ -876,12 +892,20 @@ void CUi::DoLabelStreamed(CUIElement::SUIElementRect &RectEl, const CUIRect *pRe
 	}
 	RectEl.m_X = pRect->x;
 	RectEl.m_Y = pRect->y;
+	RectEl.m_TextColor = TextRender()->GetTextColor();
+	RectEl.m_TextOutlineColor = TextRender()->GetTextOutlineColor();
 	if(NeedsRecreate)
 	{
 		TextRender()->DeleteTextContainer(RectEl.m_UITextContainer);
 
 		RectEl.m_Width = pRect->w;
 		RectEl.m_Height = pRect->h;
+		RectEl.m_FontSize = Size;
+		RectEl.m_LineWidth = LabelProps.m_MaxWidth;
+		RectEl.m_MinimumFontSize = LabelProps.m_MinimumFontSize;
+		RectEl.m_TextFlags = TextFlags;
+		RectEl.m_EnableWidthCheck = LabelProps.m_EnableWidthCheck;
+		RectEl.m_vTextColorSplits = LabelProps.m_vColorSplits;
 
 		if(StrLen > 0)
 			RectEl.m_Text = std::string(pText, StrLen);
@@ -891,6 +915,8 @@ void CUi::DoLabelStreamed(CUIElement::SUIElementRect &RectEl, const CUIRect *pRe
 			RectEl.m_Text.clear();
 
 		RectEl.m_ReadCursorGlyphCount = ReadCursorGlyphCount;
+		RectEl.m_ReadCursorX = ReadCursorX;
+		RectEl.m_ReadCursorY = ReadCursorY;
 
 		CUIRect TmpRect;
 		TmpRect.x = 0;
@@ -916,7 +942,7 @@ CLabelResult CUi::DoLabel_AutoLineSize(const char *pText, float FontSize, int Al
 	return DoLabel(&LabelRect, pText, FontSize, Align);
 }
 
-bool CUi::DoEditBox(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, int Corners, const std::vector<STextColorSplit> &vColorSplits)
+bool CUi::DoEditBox(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, int Corners, const std::vector<STextColorSplit> &vColorSplits, CUIElement *pUIElement)
 {
 	const bool Inside = MouseHovered(pRect);
 	const bool Active = m_pLastActiveItem == pLineInput;
@@ -1002,7 +1028,31 @@ bool CUi::DoEditBox(CLineInput *pLineInput, const CUIRect *pRect, float FontSize
 	pRect->Draw(ms_LightButtonColorFunction.GetColor(Active, HotItem() == pLineInput), Corners, 3.0f);
 	ClipEnable(pRect);
 	Textbox.x -= ScrollOffset;
-	const STextBoundingBox BoundingBox = pLineInput->Render(&Textbox, FontSize, TEXTALIGN_ML, Changed || CursorChanged, -1.0f, 0.0f, vColorSplits);
+	STextBoundingBox BoundingBox;
+	if(pUIElement != nullptr && !Active)
+	{
+		if(!pUIElement->AreRectsInit())
+			pUIElement->Init(this, 1);
+		pLineInput->UpdateStrData();
+		const char *pDisplayText = pLineInput->GetDisplayedString();
+		const bool EmptyText = pDisplayText[0] == '\0' && pLineInput->GetEmptyText() != nullptr;
+		if(EmptyText)
+		{
+			pDisplayText = pLineInput->GetEmptyText();
+			TextRender()->TextColor(1.0f, 1.0f, 1.0f, 0.75f);
+		}
+		SLabelProperties LabelProps;
+		LabelProps.m_EnableWidthCheck = false;
+		LabelProps.m_vColorSplits = vColorSplits;
+		DoLabelStreamed(*pUIElement->Rect(0), &Textbox, pDisplayText, FontSize, TEXTALIGN_ML, LabelProps);
+		BoundingBox = pUIElement->Rect(0)->m_Cursor.BoundingBox();
+		if(EmptyText)
+			TextRender()->TextColor(TextRender()->DefaultTextColor());
+	}
+	else
+	{
+		BoundingBox = pLineInput->Render(&Textbox, FontSize, TEXTALIGN_ML, Changed || CursorChanged, -1.0f, 0.0f, vColorSplits);
+	}
 	ClipDisable();
 
 	// Scroll left or right if necessary
@@ -1023,16 +1073,21 @@ bool CUi::DoEditBox(CLineInput *pLineInput, const CUIRect *pRect, float FontSize
 	return Changed;
 }
 
-bool CUi::DoClearableEditBox(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, int Corners, const std::vector<STextColorSplit> &vColorSplits)
+bool CUi::DoClearableEditBox(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, int Corners, const std::vector<STextColorSplit> &vColorSplits, CUIElement *pUIElement)
 {
+	if(pUIElement != nullptr && !pUIElement->AreRectsInit())
+		pUIElement->Init(this, 2);
 	CUIRect EditBox, ClearButton;
 	pRect->VSplitRight(pRect->h, &EditBox, &ClearButton);
 
-	bool ReturnValue = DoEditBox(pLineInput, &EditBox, FontSize, Corners & ~IGraphics::CORNER_R, vColorSplits);
+	bool ReturnValue = DoEditBox(pLineInput, &EditBox, FontSize, Corners & ~IGraphics::CORNER_R, vColorSplits, pUIElement);
 
 	ClearButton.Draw(ColorRGBA(1.0f, 1.0f, 1.0f, 0.33f * ButtonColorMul(pLineInput->GetClearButtonId())), Corners & ~IGraphics::CORNER_L, 3.0f);
 	TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE);
-	DoLabel(&ClearButton, "×", ClearButton.h * CUi::ms_FontmodHeight * 0.8f, TEXTALIGN_MC);
+	if(pUIElement != nullptr)
+		DoLabelStreamed(*pUIElement->Rect(1), &ClearButton, "×", ClearButton.h * CUi::ms_FontmodHeight * 0.8f, TEXTALIGN_MC);
+	else
+		DoLabel(&ClearButton, "×", ClearButton.h * CUi::ms_FontmodHeight * 0.8f, TEXTALIGN_MC);
 	TextRender()->SetRenderFlags(0);
 	if(DoButtonLogic(pLineInput->GetClearButtonId(), 0, &ClearButton, BUTTONFLAG_LEFT))
 	{
@@ -1046,11 +1101,27 @@ bool CUi::DoClearableEditBox(CLineInput *pLineInput, const CUIRect *pRect, float
 
 bool CUi::DoEditBox_Search(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, bool HotkeyEnabled)
 {
+	return DoEditBox_SearchCached(pLineInput, pRect, FontSize, HotkeyEnabled, nullptr, nullptr);
+}
+
+bool CUi::DoEditBox_SearchCached(CLineInput *pLineInput, const CUIRect *pRect, float FontSize, bool HotkeyEnabled, CUIElement *pSearchIconUiElement, CUIElement *pEditBoxUiElement)
+{
 	CUIRect QuickSearch = *pRect;
 	TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
 	TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE);
-	DoLabel(&QuickSearch, FontIcon::MAGNIFYING_GLASS, FontSize, TEXTALIGN_ML);
-	const float SearchWidth = TextRender()->TextWidth(FontSize, FontIcon::MAGNIFYING_GLASS);
+	float SearchWidth;
+	if(pSearchIconUiElement != nullptr)
+	{
+		if(!pSearchIconUiElement->AreRectsInit())
+			pSearchIconUiElement->Init(this, 1);
+		DoLabelStreamed(*pSearchIconUiElement->Rect(0), &QuickSearch, FontIcon::MAGNIFYING_GLASS, FontSize, TEXTALIGN_ML);
+		SearchWidth = pSearchIconUiElement->Rect(0)->m_Cursor.m_LongestLineWidth;
+	}
+	else
+	{
+		DoLabel(&QuickSearch, FontIcon::MAGNIFYING_GLASS, FontSize, TEXTALIGN_ML);
+		SearchWidth = TextRender()->TextWidth(FontSize, FontIcon::MAGNIFYING_GLASS);
+	}
 	TextRender()->SetRenderFlags(0);
 	TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
 	QuickSearch.VSplitLeft(SearchWidth + 5.0f, nullptr, &QuickSearch);
@@ -1060,7 +1131,7 @@ bool CUi::DoEditBox_Search(CLineInput *pLineInput, const CUIRect *pRect, float F
 		pLineInput->SelectAll();
 	}
 	pLineInput->SetEmptyText(Localize("Search"));
-	return DoClearableEditBox(pLineInput, &QuickSearch, FontSize);
+	return DoClearableEditBox(pLineInput, &QuickSearch, FontSize, IGraphics::CORNER_ALL, {}, pEditBoxUiElement);
 }
 
 int CUi::DoButton_Menu(CUIElement &UIElement, const CButtonContainer *pId, const std::function<const char *()> &GetTextLambda, const CUIRect *pRect, const SMenuButtonProperties &Props)
@@ -1154,7 +1225,10 @@ int CUi::DoButton_Menu(CUIElement &UIElement, const CButtonContainer *pId, const
 	{
 		TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
 		TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE);
-		DoLabel(&DropDownIcon, FontIcon::CIRCLE_CHEVRON_DOWN, DropDownIcon.h * CUi::ms_FontmodHeight, TEXTALIGN_MR);
+		auto [Iterator, Inserted] = m_DropDownIconUiElements.try_emplace(pId, nullptr);
+		if(Inserted)
+			Iterator->second = GetNewUIElement(1);
+		DoLabelStreamed(*Iterator->second->Rect(0), &DropDownIcon, FontIcon::CIRCLE_CHEVRON_DOWN, DropDownIcon.h * CUi::ms_FontmodHeight, TEXTALIGN_MR);
 		TextRender()->SetRenderFlags(0);
 		TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
 	}
@@ -1176,13 +1250,16 @@ int CUi::DoButton_FontIcon(CButtonContainer *pButtonContainer, const char *pText
 
 	CUIRect Label;
 	pRect->HMargin(2.0f, &Label);
-	DoLabel(&Label, pText, Label.h * ms_FontmodHeight, TEXTALIGN_MC);
+	auto [Iterator, Inserted] = m_FontIconUiElements.try_emplace(pButtonContainer, nullptr);
+	if(Inserted)
+		Iterator->second = GetNewUIElement(2);
+	DoLabelStreamed(*Iterator->second->Rect(0), &Label, pText, Label.h * ms_FontmodHeight, TEXTALIGN_MC);
 
 	if(!Enabled)
 	{
 		TextRender()->TextColor(ColorRGBA(1.0f, 0.0f, 0.0f, 1.0f));
 		TextRender()->TextOutlineColor(ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f));
-		DoLabel(&Label, FontIcon::SLASH, Label.h * ms_FontmodHeight, TEXTALIGN_MC);
+		DoLabelStreamed(*Iterator->second->Rect(1), &Label, FontIcon::SLASH, Label.h * ms_FontmodHeight, TEXTALIGN_MC);
 		TextRender()->TextOutlineColor(TextRender()->DefaultTextOutlineColor());
 		TextRender()->TextColor(TextRender()->DefaultTextColor());
 	}
@@ -1545,7 +1622,10 @@ bool CUi::DoScrollbarOption(const void *pId, int *pOption, const CUIRect *pRect,
 		pRect->VSplitMid(&Label, &ScrollBar, std::min(10.0f, pRect->w * 0.05f));
 
 	const float FontSize = Label.h * CUi::ms_FontmodHeight * 0.8f;
-	DoLabel(&Label, aBuf, FontSize, TEXTALIGN_ML);
+	auto [Iterator, Inserted] = m_ScrollbarOptionUiElements.try_emplace(pId, nullptr);
+	if(Inserted)
+		Iterator->second = GetNewUIElement(1);
+	DoLabelStreamed(*Iterator->second->Rect(0), &Label, aBuf, FontSize, TEXTALIGN_ML);
 
 	Value = pScale->ToAbsolute(DoScrollbarH(pId, &ScrollBar, pScale->ToRelative(Value, Min, Max)), Min, Max);
 	if(NoClampValue && ((Value == Min && PrevValue < Min) || (Value == Max && PrevValue > Max)))

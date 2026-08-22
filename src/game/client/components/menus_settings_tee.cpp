@@ -26,6 +26,13 @@
 
 void CMenus::RenderSettingsTee(CUIRect MainView)
 {
+	size_t LabelIndex = 0;
+	const auto DoLabel = [&](const CUIRect &Rect, const char *pText, float Size, int Align, const SLabelProperties &Props = {}) {
+		if(m_vpSettingsTeeLabelUiElements.size() <= LabelIndex)
+			m_vpSettingsTeeLabelUiElements.push_back(Ui()->GetNewUIElement(1));
+		Ui()->DoLabelStreamed(*m_vpSettingsTeeLabelUiElements[LabelIndex++]->Rect(0), &Rect, pText, Size, Align, Props);
+	};
+
 	CUIRect TabBar, PlayerTab, DummyTab, ChangeInfo;
 	MainView.HSplitTop(20.0f, &TabBar, &MainView);
 	TabBar.VSplitMid(&TabBar, &ChangeInfo, 20.f);
@@ -52,7 +59,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 		char aChangeInfo[128], aTimeLeft[32];
 		str_format(aTimeLeft, sizeof(aTimeLeft), Localize("%ds left"), (GameClient()->GameState(m_Dummy).Runtime().m_NextChangeInfo - Client()->GameTick(Client()->NetworkSessionId(), m_Dummy) + Client()->GameTickSpeed() - 1) / Client()->GameTickSpeed());
 		str_format(aChangeInfo, sizeof(aChangeInfo), "%s: %s", Localize("Player info change cooldown"), aTimeLeft);
-		Ui()->DoLabel(&ChangeInfo, aChangeInfo, 10.f, TEXTALIGN_ML);
+		DoLabel(ChangeInfo, aChangeInfo, 10.f, TEXTALIGN_ML);
 	}
 
 	if(g_Config.m_Debug)
@@ -61,7 +68,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 		char aStats[256];
 		str_format(aStats, sizeof(aStats), "unloaded: %" PRIzu ", pending: %" PRIzu ", loading: %" PRIzu ",\nloaded: %" PRIzu ", error: %" PRIzu ", notfound: %" PRIzu,
 			Stats.m_NumUnloaded, Stats.m_NumPending, Stats.m_NumLoading, Stats.m_NumLoaded, Stats.m_NumError, Stats.m_NumNotFound);
-		Ui()->DoLabel(&ChangeInfo, aStats, 9.0f, TEXTALIGN_MR);
+		DoLabel(ChangeInfo, aStats, 9.0f, TEXTALIGN_MR);
 	}
 
 	char *pSkinName;
@@ -144,11 +151,11 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 	// Skin prefix
 	{
 		SkinPrefix.HSplitTop(20.0f, &Label, &SkinPrefix);
-		Ui()->DoLabel(&Label, Localize("Skin prefix"), 14.0f, TEXTALIGN_ML);
+		DoLabel(Label, Localize("Skin prefix"), 14.0f, TEXTALIGN_ML);
 
 		SkinPrefix.HSplitTop(20.0f, &Button, &SkinPrefix);
 		static CLineInput s_SkinPrefixInput(g_Config.m_ClSkinPrefix, sizeof(g_Config.m_ClSkinPrefix));
-		if(Ui()->DoClearableEditBox(&s_SkinPrefixInput, &Button, 14.0f))
+		if(Ui()->DoClearableEditBox(&s_SkinPrefixInput, &Button, 14.0f, IGraphics::CORNER_ALL, {}, &m_aSettingsTeeEditBoxUiElements[0]))
 		{
 			ShouldRefresh = true;
 		}
@@ -181,7 +188,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 
 	char aBuf[128 + IO_MAX_PATH_LENGTH];
 	str_format(aBuf, sizeof(aBuf), "%s:", Localize("Your skin"));
-	Ui()->DoLabel(&Label, aBuf, 14.0f, TEXTALIGN_ML);
+	DoLabel(Label, aBuf, 14.0f, TEXTALIGN_ML);
 
 	CSkins::CSkinList &SkinList = GameClient()->m_Skins.SkinList();
 	const CSkin *pDefaultSkin = GameClient()->m_Skins.Find("default");
@@ -261,7 +268,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 	static CLineInput s_SkinInput;
 	s_SkinInput.SetBuffer(pSkinName, SkinNameSize);
 	s_SkinInput.SetEmptyText("default");
-	if(Ui()->DoClearableEditBox(&s_SkinInput, &Button, 14.0f))
+	if(Ui()->DoClearableEditBox(&s_SkinInput, &Button, 14.0f, IGraphics::CORNER_ALL, {}, &m_aSettingsTeeEditBoxUiElements[1]))
 	{
 		SetNeedSendInfo();
 		m_SkinListScrollToSelected = true;
@@ -339,7 +346,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 		for(int i = 0; i < 2; i++)
 		{
 			aRects[i].HSplitTop(20.0f, &Label, &aRects[i]);
-			Ui()->DoLabel(&Label, apParts[i], 14.0f, TEXTALIGN_ML);
+			DoLabel(Label, apParts[i], 14.0f, TEXTALIGN_ML);
 			if(RenderHslaScrollbars(&aRects[i], apColors[i], false, ColorHSLA::DARKEST_LGT))
 			{
 				SetNeedSendInfo();
@@ -363,6 +370,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 	static CListBox s_ListBox;
 	std::vector<CSkins::CSkinListEntry> &vSkinList = SkinList.Skins();
 	int OldSelected = -1;
+	size_t VisibleSkinIndex = 0;
 	s_ListBox.DoStart(50.0f, vSkinList.size(), 4, 2, OldSelected, &MainView);
 	for(size_t i = 0; i < vSkinList.size(); ++i)
 	{
@@ -400,6 +408,8 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 		}
 
 		{
+			if(m_vpSettingsTeeSkinNameUiElements.size() <= VisibleSkinIndex)
+				m_vpSettingsTeeSkinNameUiElements.push_back(Ui()->GetNewUIElement(1));
 			SLabelProperties Props;
 			Props.m_MaxWidth = Label.w - 5.0f;
 			const auto &NameMatch = SkinListEntry.NameMatch();
@@ -408,7 +418,8 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 				const auto [MatchStart, MatchLength] = NameMatch.value();
 				Props.m_vColorSplits.emplace_back(MatchStart, MatchLength, ColorRGBA(0.4f, 0.4f, 1.0f, 1.0f));
 			}
-			Ui()->DoLabel(&Label, pSkinContainer->Name(), 12.0f, TEXTALIGN_ML, Props);
+			Ui()->DoLabelStreamed(*m_vpSettingsTeeSkinNameUiElements[VisibleSkinIndex]->Rect(0), &Label, pSkinContainer->Name(), 12.0f, TEXTALIGN_ML, Props);
+			++VisibleSkinIndex;
 		}
 
 		if(g_Config.m_Debug)
@@ -458,7 +469,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 		FilterLabel.HSplitTop(16.0f, &FilterLabel, &ResetButton);
 		ResetButton.HSplitTop(8.0f, nullptr, &ResetButton);
 		ResetButton.VMargin((ResetButton.w - 200.0f) / 2.0f, &ResetButton);
-		Ui()->DoLabel(&FilterLabel, Localize("No skins match your filter criteria"), 16.0f, TEXTALIGN_MC);
+		DoLabel(FilterLabel, Localize("No skins match your filter criteria"), 16.0f, TEXTALIGN_MC);
 		static CButtonContainer s_ResetButton;
 		if(DoButton_Menu(&s_ResetButton, Localize("Reset filter"), 0, &ResetButton))
 		{
@@ -467,7 +478,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 		}
 	}
 
-	if(Ui()->DoEditBox_Search(&s_SkinFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive()))
+	if(Ui()->DoEditBox_SearchCached(&s_SkinFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), &m_aSettingsTeeSearchUiElements[0], &m_aSettingsTeeSearchUiElements[1]))
 	{
 		SkinList.ForceRefresh();
 	}

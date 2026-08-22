@@ -12,6 +12,8 @@
 #include <game/client/lineinput.h>
 #include <game/client/ui.h>
 
+#include <deque>
+
 enum
 {
 	CONSOLE_CLOSED,
@@ -36,7 +38,16 @@ class CGameConsole : public CComponent
 			size_t m_Length;
 			char m_aText[1];
 		};
+		struct CBacklogTextCacheEntry
+		{
+			CBacklogEntry *m_pEntry = nullptr;
+			std::string m_Text;
+			STextContainerIndex m_TextContainerIndex;
+			uint64_t m_LastUsedFrame = 0;
+		};
 		CStaticRingBuffer<CBacklogEntry, 1024 * 1024, CRingBufferBase::FLAG_RECYCLE> m_Backlog;
+		std::deque<CBacklogTextCacheEntry> m_BacklogTextCache;
+		uint64_t m_BacklogTextCacheFrame = 0;
 		CLock m_BacklogPendingLock;
 		CStaticRingBuffer<CBacklogEntry, 1024 * 1024, CRingBufferBase::FLAG_RECYCLE> m_BacklogPending GUARDED_BY(m_BacklogPendingLock);
 		CStaticRingBuffer<char, 64 * 1024, CRingBufferBase::FLAG_RECYCLE> m_History;
@@ -135,6 +146,8 @@ class CGameConsole : public CComponent
 		void GetCommand(const char *pInput, char (&aCmd)[IConsole::CMDLINE_LENGTH]);
 
 		void UpdateEntryTextAttributes(CBacklogEntry *pEntry) const;
+		void RenderBacklogText(CBacklogEntry *pEntry, vec2 Position, float LineWidth);
+		void ResetBacklogTextCache();
 
 		bool IsInputHidden() const;
 		void UpdateCompletionSuggestions();
@@ -163,6 +176,10 @@ class CGameConsole : public CComponent
 
 	bool m_WantsSelectionCopy = false;
 	CUi::CTouchState m_TouchState;
+	CCachedText m_PromptText;
+	CCachedText m_StatusText;
+	CCachedText m_VersionText;
+	float m_LineHeight = 0.0f;
 
 	static constexpr ColorRGBA ms_SearchHighlightColor = ColorRGBA(1.0f, 0.0f, 0.0f, 1.0f);
 	static constexpr ColorRGBA ms_SearchSelectedColor = ColorRGBA(1.0f, 1.0f, 0.0f, 1.0f);
@@ -200,6 +217,8 @@ public:
 	void OnStateChange(int NewState, int OldState) override;
 	void OnConsoleInit() override;
 	void OnInit() override;
+	void OnWindowResize() override;
+	void OnShutdown() override;
 	void OnReset() override;
 	void OnRenderApplicationOverlay() override;
 	void OnMessage(int MsgType, void *pRawMsg) override;

@@ -104,7 +104,7 @@ static void FillTmpTileSpeedup(CGraphicTile *pTmpTile, CGraphicTileTextureCoords
 	FillTmpTile(pTmpTile, pTmpTex, Angle >= 270 ? ROTATION_270 : (Angle >= 180 ? ROTATION_180 : (Angle >= 90 ? ROTATION_90 : 0)), AngleRotate % 90, x, y, Offset, Scale);
 }
 
-static bool AddTile(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicTileTextureCoords> &vTmpTileTexCoords, unsigned char Index, unsigned char Flags, int x, int y, bool DoTextureCoords, bool FillSpeedup = false, int AngleRotate = -1, const ivec2 &Offset = ivec2{0, 0}, int Scale = 32)
+bool AddTileToBuffer(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicTileTextureCoords> &vTmpTileTexCoords, unsigned char Index, unsigned char Flags, int x, int y, bool DoTextureCoords, bool FillSpeedup, int AngleRotate, const ivec2 &Offset, int Scale)
 {
 	if(Index <= 0)
 		return false;
@@ -124,6 +124,95 @@ static bool AddTile(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicTi
 		FillTmpTile(&Tile, pTileTex, Flags, Index, x, y, Offset, Scale);
 
 	return true;
+}
+
+void DeleteTileBuffer(IGraphics *pGraphics, IGraphics::CBufferHandle &BufferObject, IGraphics::CBufferContainerHandle &BufferContainer)
+{
+	if(BufferContainer.IsValid())
+	{
+		pGraphics->DeleteBufferContainer(BufferContainer);
+		if(!BufferContainer.IsValid())
+			BufferObject.Invalidate();
+	}
+	else
+	{
+		pGraphics->DeleteBufferObject(BufferObject);
+	}
+}
+
+bool UploadTileBuffer(IGraphics *pGraphics, const std::vector<CGraphicTile> &vTiles, const std::vector<CGraphicTileTextureCoords> &vTextureCoords, IGraphics::CBufferHandle &BufferObject, IGraphics::CBufferContainerHandle &BufferContainer)
+{
+	const bool Textured = !vTextureCoords.empty();
+	dbg_assert(!Textured || vTextureCoords.size() == vTiles.size(), "Tile texture coordinate count must match tile count");
+	if(vTiles.empty())
+	{
+		DeleteTileBuffer(pGraphics, BufferObject, BufferContainer);
+		return true;
+	}
+
+	if(!pGraphics->IndicesNumRequiredNotify(vTiles.size() * 6))
+		return false;
+
+	const size_t UploadDataSize = vTiles.size() * sizeof(CGraphicTile) + vTextureCoords.size() * sizeof(CGraphicTileTextureCoords);
+	void *pUploadData = malloc(UploadDataSize);
+	if(pUploadData == nullptr)
+		return false;
+
+	if(Textured)
+	{
+		class CVertex
+		{
+		public:
+			vec2 m_Pos;
+			ubvec4 m_Tex;
+		};
+		static_assert(sizeof(CVertex) == sizeof(vec2) + sizeof(ubvec4));
+
+		CVertex *pDst = static_cast<CVertex *>(pUploadData);
+		dbg_assert(UploadDataSize == vTiles.size() * sizeof(*pDst) * 4, "invalid upload size");
+		for(size_t TileIndex = 0; TileIndex < vTiles.size(); ++TileIndex)
+		{
+			const auto &Tile = vTiles[TileIndex];
+			const auto &Coords = vTextureCoords[TileIndex];
+			*pDst++ = {Tile.m_TopLeft, Coords.m_TexCoordTopLeft};
+			*pDst++ = {Tile.m_TopRight, Coords.m_TexCoordTopRight};
+			*pDst++ = {Tile.m_BottomRight, Coords.m_TexCoordBottomRight};
+			*pDst++ = {Tile.m_BottomLeft, Coords.m_TexCoordBottomLeft};
+		}
+	}
+	else
+	{
+		dbg_assert(UploadDataSize == vTiles.size() * sizeof(CGraphicTile), "invalid upload size");
+		mem_copy(pUploadData, vTiles.data(), UploadDataSize);
+	}
+
+	if(BufferObject.IsValid())
+	{
+		if(pGraphics->RecreateBufferObject(BufferObject, UploadDataSize, pUploadData, 0, true))
+			return true;
+		free(pUploadData);
+		return false;
+	}
+
+	BufferObject = pGraphics->CreateBufferObject(UploadDataSize, pUploadData, 0, true);
+	if(!BufferObject.IsValid())
+	{
+		free(pUploadData);
+		return false;
+	}
+
+	SBufferContainerInfo ContainerInfo;
+	ContainerInfo.m_Stride = Textured ? sizeof(vec2) + sizeof(ubvec4) : 0;
+	ContainerInfo.m_VertBufferBinding = BufferObject;
+	ContainerInfo.m_vAttributes.emplace_back(2, IGraphics::EVertexAttributeType::FLOAT32, false, 0, IGraphics::EVertexAttributeMode::FLOAT);
+	if(Textured)
+		ContainerInfo.m_vAttributes.emplace_back(4, IGraphics::EVertexAttributeType::UINT8, false, sizeof(vec2), IGraphics::EVertexAttributeMode::INTEGER);
+	BufferContainer = pGraphics->CreateBufferContainer(&ContainerInfo);
+	if(BufferContainer.IsValid())
+		return true;
+
+	pGraphics->DeleteBufferObject(BufferObject);
+	return false;
 }
 
 class CTmpQuadVertexTextured
@@ -694,7 +783,7 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 			int TilesHandledCount = vTmpTiles.size();
 			Visuals.m_vTilesOfLayer[y * m_pLayerTilemap->m_Width + x].SetIndexBufferByteOffset((offset_ptr32)(TilesHandledCount));
 
-			if(AddTile(vTmpTiles, vTmpTileTexCoords, Index, Flags, x, y, DoTextureCoords, AddAsSpeedup, AngleRotate))
+			if(AddTileToBuffer(vTmpTiles, vTmpTileTexCoords, Index, Flags, x, y, DoTextureCoords, AddAsSpeedup, AngleRotate))
 			{
 				Visuals.m_vTilesOfLayer[y * m_pLayerTilemap->m_Width + x].Draw(true);
 
@@ -711,17 +800,17 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 				if(y == 0)
 				{
 					Visuals.m_BorderTopLeft.SetIndexBufferByteOffset((offset_ptr32)(vTmpBorderCorners.size()));
-					if(AddTile(vTmpBorderCorners, vTmpBorderCornersTexCoords, Index, Flags, 0, 0, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{-32, -32}))
+					if(AddTileToBuffer(vTmpBorderCorners, vTmpBorderCornersTexCoords, Index, Flags, 0, 0, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{-32, -32}))
 						Visuals.m_BorderTopLeft.Draw(true);
 				}
 				else if(y == m_pLayerTilemap->m_Height - 1)
 				{
 					Visuals.m_BorderBottomLeft.SetIndexBufferByteOffset((offset_ptr32)(vTmpBorderCorners.size()));
-					if(AddTile(vTmpBorderCorners, vTmpBorderCornersTexCoords, Index, Flags, 0, 0, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{-32, 0}))
+					if(AddTileToBuffer(vTmpBorderCorners, vTmpBorderCornersTexCoords, Index, Flags, 0, 0, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{-32, 0}))
 						Visuals.m_BorderBottomLeft.Draw(true);
 				}
 				Visuals.m_vBorderLeft[y].SetIndexBufferByteOffset((offset_ptr32)(vTmpBorderLeftTiles.size()));
-				if(AddTile(vTmpBorderLeftTiles, vTmpBorderLeftTilesTexCoords, Index, Flags, 0, y, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{-32, 0}))
+				if(AddTileToBuffer(vTmpBorderLeftTiles, vTmpBorderLeftTilesTexCoords, Index, Flags, 0, y, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{-32, 0}))
 					Visuals.m_vBorderLeft[y].Draw(true);
 			}
 			else if(x == m_pLayerTilemap->m_Width - 1)
@@ -729,29 +818,29 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 				if(y == 0)
 				{
 					Visuals.m_BorderTopRight.SetIndexBufferByteOffset((offset_ptr32)(vTmpBorderCorners.size()));
-					if(AddTile(vTmpBorderCorners, vTmpBorderCornersTexCoords, Index, Flags, 0, 0, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{0, -32}))
+					if(AddTileToBuffer(vTmpBorderCorners, vTmpBorderCornersTexCoords, Index, Flags, 0, 0, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{0, -32}))
 						Visuals.m_BorderTopRight.Draw(true);
 				}
 				else if(y == m_pLayerTilemap->m_Height - 1)
 				{
 					Visuals.m_BorderBottomRight.SetIndexBufferByteOffset((offset_ptr32)(vTmpBorderCorners.size()));
-					if(AddTile(vTmpBorderCorners, vTmpBorderCornersTexCoords, Index, Flags, 0, 0, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{0, 0}))
+					if(AddTileToBuffer(vTmpBorderCorners, vTmpBorderCornersTexCoords, Index, Flags, 0, 0, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{0, 0}))
 						Visuals.m_BorderBottomRight.Draw(true);
 				}
 				Visuals.m_vBorderRight[y].SetIndexBufferByteOffset((offset_ptr32)(vTmpBorderRightTiles.size()));
-				if(AddTile(vTmpBorderRightTiles, vTmpBorderRightTilesTexCoords, Index, Flags, 0, y, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{0, 0}))
+				if(AddTileToBuffer(vTmpBorderRightTiles, vTmpBorderRightTilesTexCoords, Index, Flags, 0, y, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{0, 0}))
 					Visuals.m_vBorderRight[y].Draw(true);
 			}
 			if(y == 0)
 			{
 				Visuals.m_vBorderTop[x].SetIndexBufferByteOffset((offset_ptr32)(vTmpBorderTopTiles.size()));
-				if(AddTile(vTmpBorderTopTiles, vTmpBorderTopTilesTexCoords, Index, Flags, x, 0, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{0, -32}))
+				if(AddTileToBuffer(vTmpBorderTopTiles, vTmpBorderTopTilesTexCoords, Index, Flags, x, 0, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{0, -32}))
 					Visuals.m_vBorderTop[x].Draw(true);
 			}
 			else if(y == m_pLayerTilemap->m_Height - 1)
 			{
 				Visuals.m_vBorderBottom[x].SetIndexBufferByteOffset((offset_ptr32)(vTmpBorderBottomTiles.size()));
-				if(AddTile(vTmpBorderBottomTiles, vTmpBorderBottomTilesTexCoords, Index, Flags, x, 0, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{0, 0}))
+				if(AddTileToBuffer(vTmpBorderBottomTiles, vTmpBorderBottomTilesTexCoords, Index, Flags, x, 0, DoTextureCoords, AddAsSpeedup, AngleRotate, ivec2{0, 0}))
 					Visuals.m_vBorderBottom[x].Draw(true);
 			}
 		}
@@ -781,7 +870,7 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 	if(IsGameLayer)
 	{
 		Visuals.m_BorderKillTile.SetIndexBufferByteOffset((offset_ptr32)(vTmpTiles.size()));
-		if(AddTile(vTmpTiles, vTmpTileTexCoords, TILE_DEATH, 0, 0, 0, DoTextureCoords))
+		if(AddTileToBuffer(vTmpTiles, vTmpTileTexCoords, TILE_DEATH, 0, 0, 0, DoTextureCoords))
 			Visuals.m_BorderKillTile.Draw(true);
 	}
 
@@ -832,84 +921,10 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 	InsertTiles(vTmpBorderRightTiles, vTmpBorderRightTilesTexCoords);
 
 	Visuals.m_BufferContainerIndex.Invalidate();
-
-	// upload data to gpu
-	size_t UploadDataSize = vTmpTileTexCoords.size() * sizeof(CGraphicTileTextureCoords) + vTmpTiles.size() * sizeof(CGraphicTile);
-	if(UploadDataSize == 0)
+	if(!UploadTileBuffer(Graphics(), vTmpTiles, vTmpTileTexCoords, Visuals.m_BufferObjectIndex, Visuals.m_BufferContainerIndex))
 	{
 		return;
 	}
-
-	void *pUploadData = malloc(UploadDataSize);
-
-	if(DoTextureCoords)
-	{
-		class CVertex
-		{
-		public:
-			vec2 m_Pos;
-			ubvec4 m_Tex;
-		};
-
-		static_assert(sizeof(CVertex) == sizeof(vec2) + sizeof(ubvec4)); // no padding
-
-		CVertex *pDst = static_cast<CVertex *>(pUploadData);
-		dbg_assert(UploadDataSize == vTmpTiles.size() * sizeof(*pDst) * 4, "invalid upload size");
-
-		for(size_t TileIndex = 0; TileIndex < vTmpTiles.size(); ++TileIndex)
-		{
-			const auto &GraphicTile = vTmpTiles[TileIndex];
-			const auto &GraphicCoords = vTmpTileTexCoords[TileIndex];
-
-			*pDst++ = {GraphicTile.m_TopLeft, GraphicCoords.m_TexCoordTopLeft};
-			*pDst++ = {GraphicTile.m_TopRight, GraphicCoords.m_TexCoordTopRight};
-			*pDst++ = {GraphicTile.m_BottomRight, GraphicCoords.m_TexCoordBottomRight};
-			*pDst++ = {GraphicTile.m_BottomLeft, GraphicCoords.m_TexCoordBottomLeft};
-		}
-	}
-	else
-	{
-		// we don't have texture coords, so we can optimize
-		dbg_assert(UploadDataSize == vTmpTiles.size() * sizeof(CGraphicTile), "invalid upload size");
-		mem_copy(pUploadData, vTmpTiles.data(), vTmpTiles.size() * sizeof(CGraphicTile));
-	}
-
-	// first create the buffer object
-	IGraphics::CBufferHandle BufferObject = Graphics()->CreateBufferObject(UploadDataSize, pUploadData, 0, true);
-	if(!BufferObject.IsValid())
-	{
-		free(pUploadData);
-		return;
-	}
-	Visuals.m_BufferObjectIndex = BufferObject;
-
-	// then create the buffer container
-	SBufferContainerInfo ContainerInfo;
-	ContainerInfo.m_Stride = (DoTextureCoords ? (sizeof(float) * 2 + sizeof(ubvec4)) : 0);
-	ContainerInfo.m_VertBufferBinding = BufferObject;
-	ContainerInfo.m_vAttributes.emplace_back();
-	SBufferContainerInfo::SAttribute *pAttr = &ContainerInfo.m_vAttributes.back();
-	pAttr->m_ComponentCount = 2;
-	pAttr->m_Type = IGraphics::EVertexAttributeType::FLOAT32;
-	pAttr->m_Normalized = false;
-	pAttr->m_Offset = 0;
-	pAttr->m_Mode = IGraphics::EVertexAttributeMode::FLOAT;
-	if(DoTextureCoords)
-	{
-		ContainerInfo.m_vAttributes.emplace_back();
-		pAttr = &ContainerInfo.m_vAttributes.back();
-		pAttr->m_ComponentCount = 4;
-		pAttr->m_Type = IGraphics::EVertexAttributeType::UINT8;
-		pAttr->m_Normalized = false;
-		pAttr->m_Offset = sizeof(vec2);
-		pAttr->m_Mode = IGraphics::EVertexAttributeMode::INTEGER;
-	}
-
-	if(!Graphics()->IndicesNumRequiredNotify(vTmpTiles.size() * 6))
-	{
-		return;
-	}
-	Visuals.m_BufferContainerIndex = Graphics()->CreateBufferContainer(&ContainerInfo);
 }
 
 void CRenderLayerTile::Unload()
@@ -923,16 +938,7 @@ void CRenderLayerTile::Unload()
 
 bool CRenderLayerTile::CTileLayerVisuals::Unload()
 {
-	if(m_BufferContainerIndex.IsValid())
-	{
-		Graphics()->DeleteBufferContainer(m_BufferContainerIndex);
-		if(!m_BufferContainerIndex.IsValid())
-			m_BufferObjectIndex.Invalidate();
-	}
-	else
-	{
-		Graphics()->DeleteBufferObject(m_BufferObjectIndex);
-	}
+	DeleteTileBuffer(Graphics(), m_BufferObjectIndex, m_BufferContainerIndex);
 	return !m_BufferContainerIndex.IsValid() && !m_BufferObjectIndex.IsValid();
 }
 

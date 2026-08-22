@@ -116,6 +116,7 @@ void CMenus::RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemAct
 		UI_ELEM_FINISH_ICON,
 		UI_ELEM_PLAYERS,
 		UI_ELEM_FRIEND_ICON,
+		UI_ELEM_FRIEND_COUNT,
 		UI_ELEM_PING,
 		UI_ELEM_KEY_ICON,
 		NUM_UI_ELEMS,
@@ -191,17 +192,19 @@ void CMenus::RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemAct
 
 		if(Col.m_Id == COL_FRIENDS)
 		{
+			static CButtonContainer s_HeaderIcon;
 			TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
 			TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE);
-			Ui()->DoLabel(&Col.m_Rect, FontIcon::HEART, 14.0f, TEXTALIGN_MC);
+			Ui()->DoLabelStreamed(*ButtonLabelUiElement(&s_HeaderIcon).Rect(0), &Col.m_Rect, FontIcon::HEART, 14.0f, TEXTALIGN_MC);
 			TextRender()->SetRenderFlags(0);
 			TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
 		}
 		else if(Col.m_Id == COL_FLAG_FAV)
 		{
+			static CButtonContainer s_HeaderIcon;
 			TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
 			TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE);
-			Ui()->DoLabel(&Col.m_Rect, FontIcon::STAR, 14.0f, TEXTALIGN_MC);
+			Ui()->DoLabelStreamed(*ButtonLabelUiElement(&s_HeaderIcon).Rect(0), &Col.m_Rect, FontIcon::STAR, 14.0f, TEXTALIGN_MC);
 			TextRender()->SetRenderFlags(0);
 			TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
 		}
@@ -433,7 +436,7 @@ void CMenus::RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemAct
 					{
 						str_format(aTemp, sizeof(aTemp), "%d", pItem->m_FriendNum);
 						TextRender()->TextColor(0.94f, 0.8f, 0.8f, 1.0f);
-						Ui()->DoLabel(&Button, aTemp, 9.0f, TEXTALIGN_MC);
+						Ui()->DoLabelStreamed(*pUiElement->Rect(UI_ELEM_FRIEND_COUNT), &Button, aTemp, 9.0f, TEXTALIGN_MC);
 						TextRender()->TextColor(TextRender()->DefaultTextColor());
 					}
 				}
@@ -633,6 +636,25 @@ void CMenus::UpdateConnectAddress(const CServerInfo *pServer)
 
 void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItemActivated)
 {
+	enum
+	{
+		UI_ELEM_SEARCH_ICON,
+		UI_ELEM_SEARCH_LABEL,
+		UI_ELEM_SEARCH_INPUT,
+		UI_ELEM_EXCLUDE_ICON,
+		UI_ELEM_EXCLUDE_LABEL,
+		UI_ELEM_EXCLUDE_INPUT,
+		UI_ELEM_SERVER_COUNT,
+		UI_ELEM_PLAYER_COUNT,
+		UI_ELEM_ADDRESS_LABEL,
+		UI_ELEM_ADDRESS_INPUT,
+	};
+	const auto RenderCachedLabel = [&](int Index, const CUIRect &Rect, const char *pText, float FontSize, int Align) {
+		CUIElement &UIElement = m_aServerBrowserStatusUiElements[Index];
+		if(!UIElement.AreRectsInit())
+			UIElement.Init(Ui(), 1);
+		Ui()->DoLabelStreamed(*UIElement.Rect(0), &Rect, pText, FontSize, Align);
+	};
 	// Render bar that shows the loading progression.
 	// The bar is only shown while loading and fades out when it's done.
 	CUIRect RefreshBar;
@@ -654,8 +676,8 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 	TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
 	TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE);
 	const float SearchExcludeAddrStrMax = 130.0f;
-	const float SearchIconWidth = TextRender()->TextWidth(16.0f, FontIcon::MAGNIFYING_GLASS);
-	const float ExcludeIconWidth = TextRender()->TextWidth(16.0f, FontIcon::BAN);
+	static const float SearchIconWidth = TextRender()->TextWidth(16.0f, FontIcon::MAGNIFYING_GLASS);
+	static const float ExcludeIconWidth = TextRender()->TextWidth(16.0f, FontIcon::BAN);
 	const float ExcludeSearchIconMax = std::max(SearchIconWidth, ExcludeIconWidth);
 	TextRender()->SetRenderFlags(0);
 	TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
@@ -680,7 +702,7 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 	{
 		TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
 		TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE);
-		Ui()->DoLabel(&QuickSearch, FontIcon::MAGNIFYING_GLASS, 16.0f, TEXTALIGN_ML);
+		RenderCachedLabel(UI_ELEM_SEARCH_ICON, QuickSearch, FontIcon::MAGNIFYING_GLASS, 16.0f, TEXTALIGN_ML);
 		TextRender()->SetRenderFlags(0);
 		TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
 		QuickSearch.VSplitLeft(ExcludeSearchIconMax, nullptr, &QuickSearch);
@@ -688,7 +710,7 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 
 		char aBufSearch[64];
 		str_format(aBufSearch, sizeof(aBufSearch), "%s:", Localize("Search"));
-		Ui()->DoLabel(&QuickSearch, aBufSearch, 14.0f, TEXTALIGN_ML);
+		RenderCachedLabel(UI_ELEM_SEARCH_LABEL, QuickSearch, aBufSearch, 14.0f, TEXTALIGN_ML);
 		QuickSearch.VSplitLeft(SearchExcludeAddrStrMax, nullptr, &QuickSearch);
 		QuickSearch.VSplitLeft(5.0f, nullptr, &QuickSearch);
 
@@ -701,7 +723,7 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 			Ui()->SetActiveItem(&s_FilterInput);
 			s_FilterInput.SelectAll();
 		}
-		if(Ui()->DoClearableEditBox(&s_FilterInput, &QuickSearch, 12.0f))
+		if(Ui()->DoClearableEditBox(&s_FilterInput, &QuickSearch, 12.0f, IGraphics::CORNER_ALL, {}, &m_aServerBrowserStatusUiElements[UI_ELEM_SEARCH_INPUT]))
 			Client()->ServerBrowserUpdate();
 	}
 
@@ -709,7 +731,7 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 	{
 		TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
 		TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE);
-		Ui()->DoLabel(&QuickExclude, FontIcon::BAN, 16.0f, TEXTALIGN_ML);
+		RenderCachedLabel(UI_ELEM_EXCLUDE_ICON, QuickExclude, FontIcon::BAN, 16.0f, TEXTALIGN_ML);
 		TextRender()->SetRenderFlags(0);
 		TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
 		QuickExclude.VSplitLeft(ExcludeSearchIconMax, nullptr, &QuickExclude);
@@ -717,7 +739,7 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 
 		char aBufExclude[64];
 		str_format(aBufExclude, sizeof(aBufExclude), "%s:", Localize("Exclude"));
-		Ui()->DoLabel(&QuickExclude, aBufExclude, 14.0f, TEXTALIGN_ML);
+		RenderCachedLabel(UI_ELEM_EXCLUDE_LABEL, QuickExclude, aBufExclude, 14.0f, TEXTALIGN_ML);
 		QuickExclude.VSplitLeft(SearchExcludeAddrStrMax, nullptr, &QuickExclude);
 		QuickExclude.VSplitLeft(5.0f, nullptr, &QuickExclude);
 
@@ -730,7 +752,7 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 			Ui()->SetActiveItem(&s_ExcludeInput);
 			s_ExcludeInput.SelectAll();
 		}
-		if(Ui()->DoClearableEditBox(&s_ExcludeInput, &QuickExclude, 12.0f))
+		if(Ui()->DoClearableEditBox(&s_ExcludeInput, &QuickExclude, 12.0f, IGraphics::CORNER_ALL, {}, &m_aServerBrowserStatusUiElements[UI_ELEM_EXCLUDE_INPUT]))
 			Client()->ServerBrowserUpdate();
 	}
 
@@ -744,13 +766,13 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 			str_format(aBuf, sizeof(aBuf), Localize("%d of %d servers"), ServerBrowser()->NumSortedServers(), ServerBrowser()->NumServers());
 		else
 			str_format(aBuf, sizeof(aBuf), Localize("%d of %d server"), ServerBrowser()->NumSortedServers(), ServerBrowser()->NumServers());
-		Ui()->DoLabel(&ServersOnline, aBuf, 12.0f, TEXTALIGN_MR);
+		RenderCachedLabel(UI_ELEM_SERVER_COUNT, ServersOnline, aBuf, 12.0f, TEXTALIGN_MR);
 
 		if(ServerBrowser()->NumSortedPlayers() != 1)
 			str_format(aBuf, sizeof(aBuf), Localize("%d players"), ServerBrowser()->NumSortedPlayers());
 		else
 			str_format(aBuf, sizeof(aBuf), Localize("%d player"), ServerBrowser()->NumSortedPlayers());
-		Ui()->DoLabel(&PlayersOnline, aBuf, 12.0f, TEXTALIGN_MR);
+		RenderCachedLabel(UI_ELEM_PLAYER_COUNT, PlayersOnline, aBuf, 12.0f, TEXTALIGN_MR);
 	}
 
 	// address info
@@ -792,9 +814,9 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 		ServerAddrEditBox.VSplitRight(4.0f, &ServerAddrEditBox, nullptr);
 		ServerAddrEditBox.VSplitRight(52.0f, &ServerAddrEditBox, &ProtocolDropDown);
 
-		Ui()->DoLabel(&ServerAddrLabel, Localize("Server address:"), 14.0f, TEXTALIGN_ML);
+		RenderCachedLabel(UI_ELEM_ADDRESS_LABEL, ServerAddrLabel, Localize("Server address:"), 14.0f, TEXTALIGN_ML);
 		static CLineInput s_ServerAddressInput(g_Config.m_UiServerAddress, sizeof(g_Config.m_UiServerAddress));
-		if(Ui()->DoClearableEditBox(&s_ServerAddressInput, &ServerAddrEditBox, 12.0f, IGraphics::CORNER_L))
+		if(Ui()->DoClearableEditBox(&s_ServerAddressInput, &ServerAddrEditBox, 12.0f, IGraphics::CORNER_L, {}, &m_aServerBrowserStatusUiElements[UI_ELEM_ADDRESS_INPUT]))
 			m_ServerBrowserShouldRevealSelection = true;
 
 		{
@@ -922,59 +944,76 @@ void CMenus::PopupConfirmSwitchServer()
 
 void CMenus::RenderServerbrowserFilters(CUIRect View)
 {
+	enum
+	{
+		UI_ELEM_GAMETYPE_LABEL,
+		UI_ELEM_GAMETYPE_INPUT,
+		UI_ELEM_ADDRESS_LABEL,
+		UI_ELEM_ADDRESS_INPUT,
+	};
+	const auto RenderCachedLabel = [&](int Index, const CUIRect &Rect, const char *pText, float FontSize) {
+		CUIElement &UIElement = m_aServerBrowserFilterTextUiElements[Index];
+		if(!UIElement.AreRectsInit())
+			UIElement.Init(Ui(), 1);
+		Ui()->DoLabelStreamed(*UIElement.Rect(0), &Rect, pText, FontSize, TEXTALIGN_ML);
+	};
 	const float RowHeight = 18.0f;
 	const float FontSize = (RowHeight - 4.0f) * CUi::ms_FontmodHeight; // based on DoButton_CheckBox
 
 	View.Margin(5.0f, &View);
+	size_t FilterUiElementIndex = 0;
+	const auto DoFilterCheckBox = [&](const void *pId, const char *pText, int Checked, const CUIRect *pRect) {
+		return DoButton_CheckBox_Common(pId, pText, Checked ? "X" : "", pRect, BUTTONFLAG_LEFT, &m_aServerBrowserFilterUiElements[FilterUiElementIndex++]);
+	};
 
 	CUIRect Button, ResetButton;
 	View.HSplitBottom(RowHeight, &View, &ResetButton);
 	View.HSplitBottom(3.0f, &View, nullptr);
 
 	View.HSplitTop(RowHeight, &Button, &View);
-	if(DoButton_CheckBox(&g_Config.m_BrFilterEmpty, Localize("Has people playing"), g_Config.m_BrFilterEmpty, &Button))
+	if(DoFilterCheckBox(&g_Config.m_BrFilterEmpty, Localize("Has people playing"), g_Config.m_BrFilterEmpty, &Button))
 		g_Config.m_BrFilterEmpty ^= 1;
 
 	View.HSplitTop(RowHeight, &Button, &View);
-	if(DoButton_CheckBox(&g_Config.m_BrFilterSpectators, Localize("Count players only"), g_Config.m_BrFilterSpectators, &Button))
+	if(DoFilterCheckBox(&g_Config.m_BrFilterSpectators, Localize("Count players only"), g_Config.m_BrFilterSpectators, &Button))
 		g_Config.m_BrFilterSpectators ^= 1;
 
 	View.HSplitTop(RowHeight, &Button, &View);
-	if(DoButton_CheckBox(&g_Config.m_BrFilterFull, Localize("Server not full"), g_Config.m_BrFilterFull, &Button))
+	if(DoFilterCheckBox(&g_Config.m_BrFilterFull, Localize("Server not full"), g_Config.m_BrFilterFull, &Button))
 		g_Config.m_BrFilterFull ^= 1;
 
 	View.HSplitTop(RowHeight, &Button, &View);
-	if(DoButton_CheckBox(&g_Config.m_BrFilterFriends, Localize("Show friends only"), g_Config.m_BrFilterFriends, &Button))
+	if(DoFilterCheckBox(&g_Config.m_BrFilterFriends, Localize("Show friends only"), g_Config.m_BrFilterFriends, &Button))
 		g_Config.m_BrFilterFriends ^= 1;
 
 	View.HSplitTop(RowHeight, &Button, &View);
-	if(DoButton_CheckBox(&g_Config.m_BrFilterPw, Localize("No password"), g_Config.m_BrFilterPw, &Button))
+	if(DoFilterCheckBox(&g_Config.m_BrFilterPw, Localize("No password"), g_Config.m_BrFilterPw, &Button))
 		g_Config.m_BrFilterPw ^= 1;
 
 	View.HSplitTop(RowHeight, &Button, &View);
-	if(DoButton_CheckBox(&g_Config.m_BrFilterLogin, Localize("No login required"), g_Config.m_BrFilterLogin, &Button))
+	if(DoFilterCheckBox(&g_Config.m_BrFilterLogin, Localize("No login required"), g_Config.m_BrFilterLogin, &Button))
 		g_Config.m_BrFilterLogin ^= 1;
 
 	View.HSplitTop(RowHeight, &Button, &View);
-	if(DoButton_CheckBox(&g_Config.m_BrFilterGametypeStrict, Localize("Strict gametype filter"), g_Config.m_BrFilterGametypeStrict, &Button))
+	if(DoFilterCheckBox(&g_Config.m_BrFilterGametypeStrict, Localize("Strict gametype filter"), g_Config.m_BrFilterGametypeStrict, &Button))
 		g_Config.m_BrFilterGametypeStrict ^= 1;
 
 	View.HSplitTop(3.0f, nullptr, &View);
 	View.HSplitTop(RowHeight, &Button, &View);
-	Ui()->DoLabel(&Button, Localize("Game types:"), FontSize, TEXTALIGN_ML);
+	RenderCachedLabel(UI_ELEM_GAMETYPE_LABEL, Button, Localize("Game types:"), FontSize);
 	Button.VSplitRight(60.0f, nullptr, &Button);
 	static CLineInput s_GametypeInput(g_Config.m_BrFilterGametype, sizeof(g_Config.m_BrFilterGametype));
-	if(Ui()->DoEditBox(&s_GametypeInput, &Button, FontSize))
+	if(Ui()->DoEditBox(&s_GametypeInput, &Button, FontSize, IGraphics::CORNER_ALL, {}, &m_aServerBrowserFilterTextUiElements[UI_ELEM_GAMETYPE_INPUT]))
 		Client()->ServerBrowserUpdate();
 
 	// server address
 	View.HSplitTop(6.0f, nullptr, &View);
 	View.HSplitTop(RowHeight, &Button, &View);
 	View.HSplitTop(6.0f, nullptr, &View);
-	Ui()->DoLabel(&Button, Localize("Server address:"), FontSize, TEXTALIGN_ML);
+	RenderCachedLabel(UI_ELEM_ADDRESS_LABEL, Button, Localize("Server address:"), FontSize);
 	Button.VSplitRight(60.0f, nullptr, &Button);
 	static CLineInput s_FilterServerAddressInput(g_Config.m_BrFilterServerAddress, sizeof(g_Config.m_BrFilterServerAddress));
-	if(Ui()->DoEditBox(&s_FilterServerAddressInput, &Button, FontSize))
+	if(Ui()->DoEditBox(&s_FilterServerAddressInput, &Button, FontSize, IGraphics::CORNER_ALL, {}, &m_aServerBrowserFilterTextUiElements[UI_ELEM_ADDRESS_INPUT]))
 		Client()->ServerBrowserUpdate();
 
 	// player country
@@ -982,7 +1021,7 @@ void CMenus::RenderServerbrowserFilters(CUIRect View)
 		CUIRect Flag;
 		View.HSplitTop(RowHeight, &Button, &View);
 		Button.VSplitRight(60.0f, &Button, &Flag);
-		if(DoButton_CheckBox(&g_Config.m_BrFilterCountry, Localize("Player country:"), g_Config.m_BrFilterCountry, &Button))
+		if(DoFilterCheckBox(&g_Config.m_BrFilterCountry, Localize("Player country:"), g_Config.m_BrFilterCountry, &Button))
 			g_Config.m_BrFilterCountry ^= 1;
 
 		const float OldWidth = Flag.w;
@@ -1002,14 +1041,14 @@ void CMenus::RenderServerbrowserFilters(CUIRect View)
 	}
 
 	View.HSplitTop(RowHeight, &Button, &View);
-	if(DoButton_CheckBox(&g_Config.m_BrFilterConnectingPlayers, Localize("Filter connecting players"), g_Config.m_BrFilterConnectingPlayers, &Button))
+	if(DoFilterCheckBox(&g_Config.m_BrFilterConnectingPlayers, Localize("Filter connecting players"), g_Config.m_BrFilterConnectingPlayers, &Button))
 		g_Config.m_BrFilterConnectingPlayers ^= 1;
 
 	// map finish filters
 	if(ServerBrowser()->CommunityCache().AnyRanksAvailable())
 	{
 		View.HSplitTop(RowHeight, &Button, &View);
-		if(DoButton_CheckBox(&g_Config.m_BrIndicateFinished, Localize("Indicate map finish"), g_Config.m_BrIndicateFinished, &Button))
+		if(DoFilterCheckBox(&g_Config.m_BrIndicateFinished, Localize("Indicate map finish"), g_Config.m_BrIndicateFinished, &Button))
 		{
 			g_Config.m_BrIndicateFinished ^= 1;
 			if(g_Config.m_BrIndicateFinished)
@@ -1019,7 +1058,7 @@ void CMenus::RenderServerbrowserFilters(CUIRect View)
 		if(g_Config.m_BrIndicateFinished)
 		{
 			View.HSplitTop(RowHeight, &Button, &View);
-			if(DoButton_CheckBox(&g_Config.m_BrFilterUnfinishedMap, Localize("Unfinished map"), g_Config.m_BrFilterUnfinishedMap, &Button))
+			if(DoFilterCheckBox(&g_Config.m_BrFilterUnfinishedMap, Localize("Unfinished map"), g_Config.m_BrFilterUnfinishedMap, &Button))
 				g_Config.m_BrFilterUnfinishedMap ^= 1;
 		}
 		else
@@ -1230,13 +1269,24 @@ void CMenus::RenderServerbrowserDDNetFilter(CUIRect View,
 
 void CMenus::RenderServerbrowserCommunitiesFilter(CUIRect View)
 {
+	enum
+	{
+		UI_ELEM_NAME = 0,
+		UI_ELEM_PLAYER_COUNT,
+		UI_ELEM_PLAYER_COUNT_ICON,
+		NUM_UI_ELEMS,
+	};
+
 	CUIRect Tab;
 	View.HSplitTop(19.0f, &Tab, &View);
 	Tab.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.3f), IGraphics::CORNER_T, 4.0f);
-	Ui()->DoLabel(&Tab, Localize("Communities"), 12.0f, TEXTALIGN_MC);
+	static CButtonContainer s_CommunitiesLabel;
+	Ui()->DoLabelStreamed(*ButtonLabelUiElement(&s_CommunitiesLabel).Rect(0), &Tab, Localize("Communities"), 12.0f, TEXTALIGN_MC);
 	View.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.15f), IGraphics::CORNER_B, 4.0f);
 
 	const int MaxEntries = ServerBrowser()->Communities().size();
+	if(m_vpServerBrowserCommunityUiElements.size() < (size_t)MaxEntries)
+		m_vpServerBrowserCommunityUiElements.resize(MaxEntries, nullptr);
 	if(MaxEntries == 0)
 	{
 		CUIRect ErrorLabel;
@@ -1261,6 +1311,9 @@ void CMenus::RenderServerbrowserCommunitiesFilter(CUIRect View)
 		return ServerBrowser()->Communities()[ItemIndex].Id();
 	};
 	const auto &&RenderItem = [&](int ItemIndex, CUIRect Item, const void *pItemId, bool Active) {
+		if(m_vpServerBrowserCommunityUiElements[ItemIndex] == nullptr)
+			m_vpServerBrowserCommunityUiElements[ItemIndex] = Ui()->GetNewUIElement(NUM_UI_ELEMS);
+		CUIElement *pUiElement = m_vpServerBrowserCommunityUiElements[ItemIndex];
 		const auto &Community = ServerBrowser()->Communities()[ItemIndex];
 		const float Alpha = (Active ? 0.9f : 0.2f) + (Ui()->HotItem() == pItemId ? 0.1f : 0.0f);
 
@@ -1282,12 +1335,12 @@ void CMenus::RenderServerbrowserCommunitiesFilter(CUIRect View)
 		}
 
 		TextRender()->TextColor(1.0f, 1.0f, 1.0f, Alpha);
-		Ui()->DoLabel(&NameLabel, Community.Name(), NameLabel.h * CUi::ms_FontmodHeight, TEXTALIGN_ML);
+		Ui()->DoLabelStreamed(*pUiElement->Rect(UI_ELEM_NAME), &NameLabel, Community.Name(), NameLabel.h * CUi::ms_FontmodHeight, TEXTALIGN_ML);
 		char aNumPlayersLabel[8];
 		str_format(aNumPlayersLabel, sizeof(aNumPlayersLabel), "%d", Community.NumPlayers());
-		Ui()->DoLabel(&PlayerCountLabel, aNumPlayersLabel, 7.0f, TEXTALIGN_MR);
+		Ui()->DoLabelStreamed(*pUiElement->Rect(UI_ELEM_PLAYER_COUNT), &PlayerCountLabel, aNumPlayersLabel, 7.0f, TEXTALIGN_MR);
 		TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
-		Ui()->DoLabel(&PlayerCountIcon, FontIcon::USER, 7.0f, TEXTALIGN_MC);
+		Ui()->DoLabelStreamed(*pUiElement->Rect(UI_ELEM_PLAYER_COUNT_ICON), &PlayerCountIcon, FontIcon::USER, 7.0f, TEXTALIGN_MC);
 		TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
 		TextRender()->TextColor(TextRender()->DefaultTextColor());
 

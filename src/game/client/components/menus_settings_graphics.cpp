@@ -22,6 +22,12 @@
 
 void CMenus::RenderSettingsGraphics(CUIRect MainView)
 {
+	size_t LabelIndex = 0;
+	const auto DoLabel = [&](const CUIRect &Rect, const char *pText, float Size, int Align) {
+		if(LabelIndex == m_vpSettingsGraphicsLabelUiElements.size())
+			m_vpSettingsGraphicsLabelUiElements.push_back(Ui()->GetNewUIElement(1));
+		Ui()->DoLabelStreamed(*m_vpSettingsGraphicsLabelUiElements[LabelIndex++]->Rect(0), &Rect, pText, Size, Align);
+	};
 	CUIRect Button;
 	char aBuf[128];
 	bool CheckSettings = false;
@@ -73,7 +79,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 			g_Config.m_GfxScreenRefreshRate,
 			g_Config.m_GfxScreenWidth / G,
 			g_Config.m_GfxScreenHeight / G);
-		Ui()->DoLabel(&ModeLabel, aBuf, sc_FontSizeResListHeader, TEXTALIGN_MC);
+		DoLabel(ModeLabel, aBuf, sc_FontSizeResListHeader, TEXTALIGN_MC);
 	}
 
 	int OldSelected = -1;
@@ -95,7 +101,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 
 		int G = std::gcd(s_aModes[i].m_WindowWidth, s_aModes[i].m_WindowHeight);
 		str_format(aBuf, sizeof(aBuf), " %dx%d @%dhz (%d:%d)", s_aModes[i].m_CanvasWidth, s_aModes[i].m_CanvasHeight, s_aModes[i].m_RefreshRate, s_aModes[i].m_WindowWidth / G, s_aModes[i].m_WindowHeight / G);
-		Ui()->DoLabel(&Item.m_Rect, aBuf, sc_FontSizeResList, TEXTALIGN_ML);
+		DoLabel(Item.m_Rect, aBuf, sc_FontSizeResList, TEXTALIGN_ML);
 	}
 
 	const int NewSelected = s_ListBox.DoEnd();
@@ -271,7 +277,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 		MainView.HSplitTop(20.0f, &Text, &MainView);
 		MainView.HSplitTop(2.0f, nullptr, &MainView);
 		MainView.HSplitTop(20.0f, &BackendDropDown, &MainView);
-		Ui()->DoLabel(&Text, Localize("Renderer"), 16.0f, TEXTALIGN_MC);
+		DoLabel(Text, Localize("Renderer"), 16.0f, TEXTALIGN_MC);
 
 		static std::vector<std::string> s_vBackendIdNames;
 		static std::vector<const char *> s_vpBackendIdNamesCStr;
@@ -360,7 +366,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 		MainView.HSplitTop(20.0f, &Text, &MainView);
 		MainView.HSplitTop(2.0f, nullptr, &MainView);
 		MainView.HSplitTop(20.0f, &GpuDropDown, &MainView);
-		Ui()->DoLabel(&Text, Localize("Graphics card"), 16.0f, TEXTALIGN_MC);
+		DoLabel(Text, Localize("Graphics card"), 16.0f, TEXTALIGN_MC);
 
 		static std::vector<const char *> s_vpGpuIdNames;
 

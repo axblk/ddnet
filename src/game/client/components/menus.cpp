@@ -171,7 +171,8 @@ int CMenus::DoButton_Menu(CButtonContainer *pButtonContainer, const char *pText,
 
 	Text.HMargin(pRect->h >= 20.0f ? 2.0f : 1.0f, &Text);
 	Text.HMargin((Text.h * FontFactor) / 2.0f, &Text);
-	Ui()->DoLabel(&Text, pText, Text.h * CUi::ms_FontmodHeight, TEXTALIGN_MC);
+	CUIElement &LabelUiElement = ButtonLabelUiElement(pButtonContainer);
+	Ui()->DoLabelStreamed(*LabelUiElement.Rect(0), &Text, pText, Text.h * CUi::ms_FontmodHeight, TEXTALIGN_MC);
 
 	return Ui()->DoButtonLogic(pButtonContainer, Checked, pRect, Flags);
 }
@@ -259,7 +260,8 @@ int CMenus::DoButton_MenuTab(CButtonContainer *pButtonContainer, const char *pTe
 	{
 		CUIRect Label;
 		Rect.HMargin(2.0f, &Label);
-		Ui()->DoLabel(&Label, pText, Label.h * CUi::ms_FontmodHeight, TEXTALIGN_MC);
+		CUIElement &LabelUiElement = ButtonLabelUiElement(pButtonContainer);
+		Ui()->DoLabelStreamed(*LabelUiElement.Rect(0), &Label, pText, Label.h * CUi::ms_FontmodHeight, TEXTALIGN_MC);
 	}
 
 	return Ui()->DoButtonLogic(pButtonContainer, Checked, pRect, BUTTONFLAG_LEFT);
@@ -274,8 +276,25 @@ int CMenus::DoButton_GridHeader(const void *pId, const char *pText, int Checked,
 
 	CUIRect Temp;
 	pRect->VMargin(5.0f, &Temp);
-	Ui()->DoLabel(&Temp, pText, pRect->h * CUi::ms_FontmodHeight, Align);
+	CUIElement &LabelUiElement = ButtonLabelUiElement(pId);
+	Ui()->DoLabelStreamed(*LabelUiElement.Rect(0), &Temp, pText, pRect->h * CUi::ms_FontmodHeight, Align);
 	return Ui()->DoButtonLogic(pId, Checked, pRect, BUTTONFLAG_LEFT);
+}
+
+CUIElement &CMenus::ButtonLabelUiElement(const void *pId)
+{
+	auto [Iterator, Inserted] = m_ButtonLabelUiElements.try_emplace(pId, nullptr);
+	if(Inserted)
+		Iterator->second = Ui()->GetNewUIElement(1);
+	return *Iterator->second;
+}
+
+CUIElement &CMenus::CheckBoxUiElement(const void *pId)
+{
+	auto [Iterator, Inserted] = m_CheckBoxUiElements.try_emplace(pId, nullptr);
+	if(Inserted)
+		Iterator->second = Ui()->GetNewUIElement(2);
+	return *Iterator->second;
 }
 
 int CMenus::DoButton_Favorite(const void *pButtonId, const void *pParentId, bool Checked, const CUIRect *pRect)
@@ -296,11 +315,19 @@ int CMenus::DoButton_Favorite(const void *pButtonId, const void *pParentId, bool
 	return Ui()->DoButtonLogic(pButtonId, 0, pRect, BUTTONFLAG_LEFT);
 }
 
-int CMenus::DoButton_CheckBox_Common(const void *pId, const char *pText, const char *pBoxText, const CUIRect *pRect, const unsigned Flags)
+int CMenus::DoButton_CheckBox_Common(const void *pId, const char *pText, const char *pBoxText, const CUIRect *pRect, const unsigned Flags, CUIElement *pUIElement)
 {
 	CUIRect Box, Label;
 	pRect->VSplitLeft(pRect->h, &Box, &Label);
 	Label.VSplitLeft(5.0f, nullptr, &Label);
+	if(pUIElement != nullptr && !pUIElement->AreRectsInit())
+		pUIElement->Init(Ui(), 2);
+	const auto RenderLabel = [&](int Index, const CUIRect &Rect, const char *pLabel, float FontSize, int Align) {
+		if(pUIElement != nullptr)
+			Ui()->DoLabelStreamed(*pUIElement->Rect(Index), &Rect, pLabel, FontSize, Align);
+		else
+			Ui()->DoLabel(&Rect, pLabel, FontSize, Align);
+	};
 
 	Box.Margin(2.0f, &Box);
 	Box.Draw(ColorRGBA(1, 1, 1, 0.25f * Ui()->ButtonColorMul(pId)), IGraphics::CORNER_ALL, 3.0f);
@@ -310,16 +337,16 @@ int CMenus::DoButton_CheckBox_Common(const void *pId, const char *pText, const c
 	{
 		TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE | ETextRenderFlags::TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT);
 		TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
-		Ui()->DoLabel(&Box, FontIcon::XMARK, Box.h * CUi::ms_FontmodHeight, TEXTALIGN_MC);
+		RenderLabel(0, Box, FontIcon::XMARK, Box.h * CUi::ms_FontmodHeight, TEXTALIGN_MC);
 		TextRender()->SetFontPreset(EFontPreset::DEFAULT_FONT);
 	}
 	else
 	{
-		Ui()->DoLabel(&Box, pBoxText, Box.h * CUi::ms_FontmodHeight, TEXTALIGN_MC);
+		RenderLabel(0, Box, pBoxText, Box.h * CUi::ms_FontmodHeight, TEXTALIGN_MC);
 	}
 
 	TextRender()->SetRenderFlags(0);
-	Ui()->DoLabel(&Label, pText, Box.h * CUi::ms_FontmodHeight, TEXTALIGN_ML);
+	RenderLabel(1, Label, pText, Box.h * CUi::ms_FontmodHeight, TEXTALIGN_ML);
 
 	return Ui()->DoButtonLogic(pId, 0, pRect, Flags);
 }
@@ -381,7 +408,10 @@ ColorHSLA CMenus::DoLine_ColorPicker(CButtonContainer *pResetId, const float Lin
 	}
 	if(pCheckBoxValue == nullptr)
 	{
-		Ui()->DoLabel(&Label, pText, LabelSize, TEXTALIGN_ML);
+		auto [Iterator, Inserted] = m_ColorPickerLabelUiElements.try_emplace(pResetId, nullptr);
+		if(Inserted)
+			Iterator->second = Ui()->GetNewUIElement(1);
+		Ui()->DoLabelStreamed(*Iterator->second->Rect(0), &Label, pText, LabelSize, TEXTALIGN_ML);
 	}
 
 	const ColorHSLA PickedColor = DoButton_ColorPicker(&ColorPickerButton, pColorValue, Alpha);
@@ -430,7 +460,7 @@ int CMenus::DoButton_CheckBoxAutoVMarginAndSet(const void *pId, const char *pTex
 	CUIRect CheckBoxRect;
 	pRect->HSplitTop(VMargin, &CheckBoxRect, pRect);
 
-	int Logic = DoButton_CheckBox_Common(pId, pText, *pValue ? "X" : "", &CheckBoxRect, BUTTONFLAG_LEFT);
+	int Logic = DoButton_CheckBox_Common(pId, pText, *pValue ? "X" : "", &CheckBoxRect, BUTTONFLAG_LEFT, &CheckBoxUiElement(pId));
 
 	if(Logic)
 		*pValue ^= 1;
@@ -440,14 +470,14 @@ int CMenus::DoButton_CheckBoxAutoVMarginAndSet(const void *pId, const char *pTex
 
 int CMenus::DoButton_CheckBox(const void *pId, const char *pText, int Checked, const CUIRect *pRect)
 {
-	return DoButton_CheckBox_Common(pId, pText, Checked ? "X" : "", pRect, BUTTONFLAG_LEFT);
+	return DoButton_CheckBox_Common(pId, pText, Checked ? "X" : "", pRect, BUTTONFLAG_LEFT, &CheckBoxUiElement(pId));
 }
 
 int CMenus::DoButton_CheckBox_Number(const void *pId, const char *pText, int Checked, const CUIRect *pRect)
 {
 	char aBuf[16];
 	str_format(aBuf, sizeof(aBuf), "%d", Checked);
-	return DoButton_CheckBox_Common(pId, pText, aBuf, pRect, BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT);
+	return DoButton_CheckBox_Common(pId, pText, aBuf, pRect, BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT, &CheckBoxUiElement(pId));
 }
 
 void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
@@ -2911,6 +2941,11 @@ void CMenus::SetActive(bool Active)
 
 void CMenus::OnShutdown()
 {
+	for(CCachedText &Text : m_aSettingsCreditsLinkTexts)
+		Text.Reset(TextRender());
+	m_SettingsCreditsText.Reset(TextRender());
+	m_SettingsDdnetUpdaterText.Reset(TextRender());
+	m_SettingsLanguageCreditsText.Reset(TextRender());
 	++m_AssetPreviewGeneration;
 	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_ASSET_PREVIEWS, m_AssetPreviewGeneration);
 	++m_AssetGeneration;
@@ -2996,6 +3031,11 @@ void CMenus::OnStateChange(int NewState, int OldState)
 
 void CMenus::OnWindowResize()
 {
+	for(CCachedText &Text : m_aSettingsCreditsLinkTexts)
+		Text.Reset(TextRender());
+	m_SettingsCreditsText.Reset(TextRender());
+	m_SettingsDdnetUpdaterText.Reset(TextRender());
+	m_SettingsLanguageCreditsText.Reset(TextRender());
 	TextRender()->DeleteTextContainer(m_MotdTextContainerIndex);
 	DestroyMenuBackdropTextures();
 }
@@ -3367,11 +3407,11 @@ int CMenus::DoButton_CheckBox_Tristate(const void *pId, const char *pText, TRIST
 	switch(Checked)
 	{
 	case TRISTATE::NONE:
-		return DoButton_CheckBox_Common(pId, pText, "", pRect, BUTTONFLAG_LEFT);
+		return DoButton_CheckBox_Common(pId, pText, "", pRect, BUTTONFLAG_LEFT, &CheckBoxUiElement(pId));
 	case TRISTATE::SOME:
-		return DoButton_CheckBox_Common(pId, pText, "O", pRect, BUTTONFLAG_LEFT);
+		return DoButton_CheckBox_Common(pId, pText, "O", pRect, BUTTONFLAG_LEFT, &CheckBoxUiElement(pId));
 	case TRISTATE::ALL:
-		return DoButton_CheckBox_Common(pId, pText, "X", pRect, BUTTONFLAG_LEFT);
+		return DoButton_CheckBox_Common(pId, pText, "X", pRect, BUTTONFLAG_LEFT, &CheckBoxUiElement(pId));
 	default:
 		dbg_assert_failed("Invalid tristate. Checked: %d", static_cast<int>(Checked));
 	}

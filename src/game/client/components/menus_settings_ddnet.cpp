@@ -25,6 +25,12 @@
 
 void CMenus::RenderSettingsDDNet(CUIRect MainView)
 {
+	size_t LabelIndex = 0;
+	const auto DoLabel = [&](const CUIRect &Rect, const char *pText, float Size, int Align) {
+		if(LabelIndex == m_vpSettingsDdnetLabelUiElements.size())
+			m_vpSettingsDdnetLabelUiElements.push_back(Ui()->GetNewUIElement(1));
+		Ui()->DoLabelStreamed(*m_vpSettingsDdnetLabelUiElements[LabelIndex++]->Rect(0), &Rect, pText, Size, Align);
+	};
 	CUIRect Button, Left, Right, LeftLeft, Label;
 
 #if defined(CONF_AUTOUPDATE)
@@ -37,9 +43,9 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 	CUIRect Demo;
 	MainView.HSplitTop(110.0f, &Demo, &MainView);
 	Demo.HSplitTop(30.0f, &Label, &Demo);
-	Ui()->DoLabel(&Label, Localize("Demo"), 20.0f, TEXTALIGN_ML);
+	DoLabel(Label, Localize("Demo"), 20.0f, TEXTALIGN_ML);
 	Label.VSplitMid(nullptr, &Label, 20.0f);
-	Ui()->DoLabel(&Label, Localize("Ghost"), 20.0f, TEXTALIGN_ML);
+	DoLabel(Label, Localize("Ghost"), 20.0f, TEXTALIGN_ML);
 
 	Demo.HSplitTop(5.0f, nullptr, &Demo);
 	Demo.VSplitMid(&Left, &Right, 20.0f);
@@ -101,7 +107,7 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 	CUIRect Gameplay;
 	MainView.HSplitTop(190.0f, &Gameplay, &MainView);
 	Gameplay.HSplitTop(30.0f, &Label, &Gameplay);
-	Ui()->DoLabel(&Label, Localize("Gameplay"), 20.0f, TEXTALIGN_ML);
+	DoLabel(Label, Localize("Gameplay"), 20.0f, TEXTALIGN_ML);
 	Gameplay.HSplitTop(5.0f, nullptr, &Gameplay);
 	Gameplay.VSplitMid(&Left, &Right, 20.0f);
 
@@ -220,7 +226,7 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 	// background
 	Background.HSplitTop(30.0f, &Label, &Background);
 	Background.HSplitTop(5.0f, nullptr, &Background);
-	Ui()->DoLabel(&Label, Localize("Background"), 20.0f, TEXTALIGN_ML);
+	DoLabel(Label, Localize("Background"), 20.0f, TEXTALIGN_ML);
 
 	ColorRGBA GreyDefault(0.5f, 0.5f, 0.5f, 1);
 
@@ -238,10 +244,10 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 	Button.VSplitMid(&ReloadButton, &Button, 5.0f);
 	EditBox.VSplitRight(5.0f, &EditBox, nullptr);
 
-	Ui()->DoLabel(&Label, Localize("Map"), 14.0f, TEXTALIGN_ML);
+	DoLabel(Label, Localize("Map"), 14.0f, TEXTALIGN_ML);
 
 	static CLineInput s_BackgroundEntitiesInput(g_Config.m_ClBackgroundEntities, sizeof(g_Config.m_ClBackgroundEntities));
-	Ui()->DoEditBox(&s_BackgroundEntitiesInput, &EditBox, 14.0f);
+	Ui()->DoEditBox(&s_BackgroundEntitiesInput, &EditBox, 14.0f, IGraphics::CORNER_ALL, {}, &m_aSettingsDdnetEditBoxUiElements[0]);
 
 	static CButtonContainer s_BackgroundEntitiesMapPicker, s_BackgroundEntitiesReload;
 
@@ -279,7 +285,7 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 	Miscellaneous.HSplitTop(30.0f, &Label, &Miscellaneous);
 	Miscellaneous.HSplitTop(5.0f, nullptr, &Miscellaneous);
 
-	Ui()->DoLabel(&Label, Localize("Miscellaneous"), 20.0f, TEXTALIGN_ML);
+	DoLabel(Label, Localize("Miscellaneous"), 20.0f, TEXTALIGN_ML);
 
 	static CButtonContainer s_ButtonTimeout;
 	Miscellaneous.HSplitTop(20.0f, &Button, &Miscellaneous);
@@ -291,11 +297,11 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 	Miscellaneous.HSplitTop(5.0f, nullptr, &Miscellaneous);
 	Miscellaneous.HSplitTop(20.0f, &Label, &Miscellaneous);
 	Miscellaneous.HSplitTop(2.0f, nullptr, &Miscellaneous);
-	Ui()->DoLabel(&Label, Localize("Run on join"), 14.0f, TEXTALIGN_ML);
+	DoLabel(Label, Localize("Run on join"), 14.0f, TEXTALIGN_ML);
 	Miscellaneous.HSplitTop(20.0f, &Button, &Miscellaneous);
 	static CLineInput s_RunOnJoinInput(g_Config.m_ClRunOnJoin, sizeof(g_Config.m_ClRunOnJoin));
 	s_RunOnJoinInput.SetEmptyText(Localize("Chat command (e.g. showall 1)"));
-	Ui()->DoEditBox(&s_RunOnJoinInput, &Button, 14.0f);
+	Ui()->DoEditBox(&s_RunOnJoinInput, &Button, 14.0f, IGraphics::CORNER_ALL, {}, &m_aSettingsDdnetEditBoxUiElements[1]);
 
 #if defined(CONF_FAMILY_WINDOWS)
 	static CButtonContainer s_ButtonUnregisterShell;
@@ -318,7 +324,8 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 		if(NeedUpdate && State <= IUpdater::CLEAN)
 		{
 			str_format(aBuf, sizeof(aBuf), Localize("DDNet %s is available:"), Client()->LatestVersion());
-			UpdaterRect.VSplitLeft(TextRender()->TextWidth(14.0f, aBuf, -1, -1.0f) + 10.0f, &UpdaterRect, &Button);
+			m_SettingsDdnetUpdaterText.Update(TextRender(), aBuf, 14.0f);
+			UpdaterRect.VSplitLeft(m_SettingsDdnetUpdaterText.Width() + 10.0f, &UpdaterRect, &Button);
 			Button.VSplitLeft(100.0f, &Button, nullptr);
 			static CButtonContainer s_ButtonUpdate;
 			if(DoButton_Menu(&s_ButtonUpdate, Localize("Update now"), 0, &Button))
@@ -336,7 +343,8 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 		else
 		{
 			str_copy(aBuf, Localize("No updates available"));
-			UpdaterRect.VSplitLeft(TextRender()->TextWidth(14.0f, aBuf, -1, -1.0f) + 10.0f, &UpdaterRect, &Button);
+			m_SettingsDdnetUpdaterText.Update(TextRender(), aBuf, 14.0f);
+			UpdaterRect.VSplitLeft(m_SettingsDdnetUpdaterText.Width() + 10.0f, &UpdaterRect, &Button);
 			Button.VSplitLeft(100.0f, &Button, nullptr);
 			static CButtonContainer s_ButtonUpdate;
 			if(DoButton_Menu(&s_ButtonUpdate, Localize("Check now"), 0, &Button))
@@ -344,7 +352,9 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 				Client()->RequestDDNetInfo();
 			}
 		}
-		Ui()->DoLabel(&UpdaterRect, aBuf, 14.0f, TEXTALIGN_ML);
+		m_SettingsDdnetUpdaterText.Update(TextRender(), aBuf, 14.0f);
+		const float TextY = UpdaterRect.y + (UpdaterRect.h - m_SettingsDdnetUpdaterText.MaxCharacterHeight()) / 2.0f - (m_SettingsDdnetUpdaterText.Height() - m_SettingsDdnetUpdaterText.MaxCharacterHeight());
+		m_SettingsDdnetUpdaterText.Render(TextRender(), vec2(UpdaterRect.x, TextY), TextRender()->DefaultTextColor());
 		TextRender()->TextColor(1.0f, 1.0f, 1.0f, 1.0f);
 	}
 #endif

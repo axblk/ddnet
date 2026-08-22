@@ -494,17 +494,20 @@ void CSpectator::OnRender(const CRenderContext &Context)
 
 	const bool FreeViewSelected = State.m_SelectedSpectatorId == SPEC_FREEVIEW;
 	TextRender()->TextColor(1.0f, 1.0f, 1.0f, FreeViewSelected ? 1.0f : 0.5f);
-	TextRender()->Text(Width / 2.0f - (ObjWidth - 40.0f), Height / 2.0f - 280.f + (60.f - BigFontSize) / 2.f, BigFontSize, Localize("Free-View"), -1.0f);
+	m_aHeaderTexts[0].Update(TextRender(), Localize("Free-View"), BigFontSize);
+	m_aHeaderTexts[0].Render(TextRender(), vec2(Width / 2.0f - (ObjWidth - 40.0f), Height / 2.0f - 280.f + (60.f - BigFontSize) / 2.f), TextRender()->GetTextColor());
 
 	const bool MultiViewSelected = State.m_SelectedSpectatorId == MULTI_VIEW;
 	TextRender()->TextColor(1.0f, 1.0f, 1.0f, MultiViewSelected ? 1.0f : 0.5f);
-	TextRender()->Text(Width / 2.0f - (ObjWidth - 40.0f) + (ObjWidth * 2.0f / 3.0f), Height / 2.0f - 280.f + (60.f - BigFontSize) / 2.f, BigFontSize, Localize("Multi-View"), -1.0f);
+	m_aHeaderTexts[1].Update(TextRender(), Localize("Multi-View"), BigFontSize);
+	m_aHeaderTexts[1].Render(TextRender(), vec2(Width / 2.0f - (ObjWidth - 40.0f) + (ObjWidth * 2.0f / 3.0f), Height / 2.0f - 280.f + (60.f - BigFontSize) / 2.f), TextRender()->GetTextColor());
 
 	if(State.m_OriginDemo && Context.m_State.LocalClientId() >= 0)
 	{
 		const bool FollowSelected = State.m_SelectedSpectatorId == SPEC_FOLLOW;
 		TextRender()->TextColor(1.0f, 1.0f, 1.0f, FollowSelected ? 1.0f : 0.5f);
-		TextRender()->Text(Width / 2.0f - (ObjWidth - 40.0f) + (ObjWidth * 2.0f * 2.0f / 3.0f), Height / 2.0f - 280.0f + (60.f - BigFontSize) / 2.f, BigFontSize, Localize("Follow"), -1.0f);
+		m_aHeaderTexts[2].Update(TextRender(), Localize("Follow"), BigFontSize);
+		m_aHeaderTexts[2].Render(TextRender(), vec2(Width / 2.0f - (ObjWidth - 40.0f) + (ObjWidth * 2.0f * 2.0f / 3.0f), Height / 2.0f - 280.0f + (60.f - BigFontSize) / 2.f), TextRender()->GetTextColor());
 	}
 
 	float x = -(ObjWidth - 35.0f), y = StartY;
@@ -558,18 +561,19 @@ void CSpectator::OnRender(const CRenderContext &Context)
 			TextRender()->TextColor(1.0f, 1.0f, 1.0f, PlayerSelected ? 1.0f : 0.5f);
 			TeeAlpha = 1.0f;
 		}
-		CTextCursor NameCursor;
-		NameCursor.SetPosition(vec2(Width / 2.0f + x + 50.0f, Height / 2.0f + y + BoxMove + (LineHeight - FontSize) / 2.f));
-		NameCursor.m_FontSize = FontSize;
-		NameCursor.m_Flags |= TEXTFLAG_ELLIPSIS_AT_END;
-		NameCursor.m_LineWidth = 180.0f;
+		char aName[MAX_NAME_LENGTH + 16];
 		if(g_Config.m_ClShowIds)
 		{
 			char aClientId[16];
 			GameClient()->FormatClientId(ClientId, aClientId, HighestClientId);
-			TextRender()->TextEx(&NameCursor, aClientId);
+			str_copy(aName, aClientId);
+			str_append(aName, pClient->m_aName);
 		}
-		TextRender()->TextEx(&NameCursor, pClient->m_aName);
+		else
+			str_copy(aName, pClient->m_aName);
+		CCachedText &NameText = m_aPlayerTexts[ClientId];
+		NameText.Update(TextRender(), aName, FontSize, 180.0f, TEXTFLAG_RENDER | TEXTFLAG_ELLIPSIS_AT_END);
+		NameText.Render(TextRender(), vec2(Width / 2.0f + x + 50.0f, Height / 2.0f + y + BoxMove + (LineHeight - FontSize) / 2.f), TextRender()->GetTextColor());
 
 		if(Context.m_View.MultiView().m_Active)
 		{
@@ -631,6 +635,24 @@ void CSpectator::OnReset()
 {
 	Selector().Reset();
 	m_TouchState = {};
+}
+
+void CSpectator::ResetTexts()
+{
+	for(CCachedText &Text : m_aHeaderTexts)
+		Text.Reset(TextRender());
+	for(CCachedText &Text : m_aPlayerTexts)
+		Text.Reset(TextRender());
+}
+
+void CSpectator::OnShutdown()
+{
+	ResetTexts();
+}
+
+void CSpectator::OnWindowResize()
+{
+	ResetTexts();
 }
 
 bool CSpectator::IsActive() const

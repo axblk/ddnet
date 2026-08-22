@@ -9,6 +9,9 @@
 #include <generated/protocol.h>
 
 #include <game/client/component.h>
+#include <game/client/ui.h>
+
+#include <optional>
 
 struct SScoreInfo
 {
@@ -60,7 +63,12 @@ class CHud : public CComponent
 	bool m_ScoreHudHasGameData = false;
 	bool m_ScoreHudCacheValid = false;
 	STextContainerIndex m_FPSTextContainerIndex;
+	int m_LastFPS = -1;
 	STextContainerIndex m_DDRaceEffectsTextContainerIndex;
+	CCachedText m_GameTimerText;
+	std::optional<int> m_LastGameTimerTime;
+	CCachedText m_LocalTimeText;
+	CCachedText m_SpectatorHudText;
 
 	void ResetScoreHudContainers();
 

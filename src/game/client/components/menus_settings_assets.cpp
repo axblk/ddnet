@@ -554,6 +554,7 @@ void CMenus::RenderSettingsAssets(CUIRect MainView)
 
 	static CListBox s_ListBox;
 	s_ListBox.DoStart(TextureHeight + 15.0f + 10.0f + Margin, SearchListSize, CustomList.w / (Margin + TextureWidth), 1, OldSelected, &CustomList, false);
+	size_t VisibleIndex = 0;
 	for(size_t i = 0; i < SearchListSize; ++i)
 	{
 		const SCustomItem *pItem = GetCustomItem(s_CurCustomTab, i);
@@ -600,7 +601,10 @@ void CMenus::RenderSettingsAssets(CUIRect MainView)
 		CUIRect TextureRect;
 		ItemRect.HSplitTop(15, &ItemRect, &TextureRect);
 		TextureRect.HSplitTop(10, nullptr, &TextureRect);
-		Ui()->DoLabel(&ItemRect, pItem->m_aName, ItemRect.h - 2, TEXTALIGN_MC);
+		if(VisibleIndex == m_vpSettingsAssetsItemUiElements.size())
+			m_vpSettingsAssetsItemUiElements.push_back(Ui()->GetNewUIElement(1));
+		Ui()->DoLabelStreamed(*m_vpSettingsAssetsItemUiElements[VisibleIndex]->Rect(0), &ItemRect, pItem->m_aName, ItemRect.h - 2, TEXTALIGN_MC);
+		++VisibleIndex;
 		if(pItem->m_RenderTexture.IsValid())
 		{
 			Graphics()->WrapClamp();
@@ -656,7 +660,7 @@ void CMenus::RenderSettingsAssets(CUIRect MainView)
 	MainView.HSplitBottom(ms_ButtonHeight, &MainView, &QuickSearch);
 	QuickSearch.VSplitLeft(220.0f, &QuickSearch, &DirectoryButton);
 	QuickSearch.HSplitTop(5.0f, nullptr, &QuickSearch);
-	if(Ui()->DoEditBox_Search(&s_aFilterInputs[s_CurCustomTab], &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive()))
+	if(Ui()->DoEditBox_SearchCached(&s_aFilterInputs[s_CurCustomTab], &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), &m_aSettingsAssetsSearchUiElements[0], &m_aSettingsAssetsSearchUiElements[1]))
 	{
 		gs_aInitCustomList[s_CurCustomTab] = true;
 	}

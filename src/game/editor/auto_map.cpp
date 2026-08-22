@@ -453,6 +453,8 @@ void CAutomapper::ProceedLocalized(CLayerTiles *pLayer, CLayerTiles *pGameLayer,
 			pGameLayer->RecordStateChange(x, y, PreviousGame, *pOutGame);
 		}
 	}
+	pLayer->InvalidateTileRenderCache(CommitFromX, CommitFromY, CommitToX - CommitFromX, CommitToY - CommitFromY);
+	pGameLayer->InvalidateTileRenderCache(CommitFromX, CommitFromY, CommitToX - CommitFromX, CommitToY - CommitFromY);
 
 	delete pUpdateLayer;
 	delete pUpdateGame;

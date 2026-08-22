@@ -99,7 +99,8 @@ protected:
 public:
 	void Update(CGameClient &This, const CNamePlateData &Data) override
 	{
-		if(!UpdateNeeded(This, Data) && m_TextContainerIndex.Valid())
+		const bool NeedsUpdate = UpdateNeeded(This, Data);
+		if(!m_Visible || (!NeedsUpdate && m_TextContainerIndex.Valid()))
 			return;
 
 		// Set flags
@@ -378,8 +379,8 @@ private:
 protected:
 	bool UpdateNeeded(CGameClient &This, const CNamePlateData &Data) override
 	{
-		m_Visible = Data.m_ShowClan;
-		if(!m_Visible && Data.m_aClan[0] != '\0')
+		m_Visible = Data.m_ShowClan && Data.m_aClan[0] != '\0';
+		if(!m_Visible)
 			return false;
 		m_Color = Data.m_Color;
 		return m_FontSize != Data.m_FontSizeClan || str_comp(m_aText, Data.m_aClan) != 0;

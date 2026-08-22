@@ -16,6 +16,8 @@
 
 void CMenus::RenderSettingsGeneral(CUIRect MainView)
 {
+	while(m_vpSettingsGeneralLabelUiElements.size() < 2)
+		m_vpSettingsGeneralLabelUiElements.push_back(Ui()->GetNewUIElement(1));
 	char aBuf[128 + IO_MAX_PATH_LENGTH];
 	CUIRect Label, Button, Left, Right, Game, ClientSettings;
 	MainView.HSplitTop(150.0f, &Game, &ClientSettings);
@@ -24,7 +26,7 @@ void CMenus::RenderSettingsGeneral(CUIRect MainView)
 	{
 		// headline
 		Game.HSplitTop(30.0f, &Label, &Game);
-		Ui()->DoLabel(&Label, Localize("Game"), 20.0f, TEXTALIGN_ML);
+		Ui()->DoLabelStreamed(*m_vpSettingsGeneralLabelUiElements[0]->Rect(0), &Label, Localize("Game"), 20.0f, TEXTALIGN_ML);
 		Game.HSplitTop(5.0f, nullptr, &Game);
 		Game.VSplitMid(&Left, nullptr, 20.0f);
 
@@ -80,7 +82,7 @@ void CMenus::RenderSettingsGeneral(CUIRect MainView)
 	{
 		// headline
 		ClientSettings.HSplitTop(30.0f, &Label, &ClientSettings);
-		Ui()->DoLabel(&Label, Localize("Client"), 20.0f, TEXTALIGN_ML);
+		Ui()->DoLabelStreamed(*m_vpSettingsGeneralLabelUiElements[1]->Rect(0), &Label, Localize("Client"), 20.0f, TEXTALIGN_ML);
 		ClientSettings.HSplitTop(5.0f, nullptr, &ClientSettings);
 		ClientSettings.VSplitMid(&Left, &Right, 20.0f);
 
@@ -209,6 +211,7 @@ void CMenus::RenderSettingsGeneral(CUIRect MainView)
 
 void CMenus::RenderThemeSelection(CUIRect MainView)
 {
+	size_t VisibleIndex = 2;
 	const std::vector<CTheme> &vThemes = GameClient()->m_MenuBackground.GetThemes();
 
 	int SelectedTheme = -1;
@@ -266,7 +269,10 @@ void CMenus::RenderThemeSelection(CUIRect MainView)
 		else // generic
 			str_copy(aName, Theme.m_Name.c_str());
 
-		Ui()->DoLabel(&Label, aName, 16.0f * CUi::ms_FontmodHeight, TEXTALIGN_ML);
+		if(VisibleIndex == m_vpSettingsGeneralLabelUiElements.size())
+			m_vpSettingsGeneralLabelUiElements.push_back(Ui()->GetNewUIElement(1));
+		Ui()->DoLabelStreamed(*m_vpSettingsGeneralLabelUiElements[VisibleIndex]->Rect(0), &Label, aName, 16.0f * CUi::ms_FontmodHeight, TEXTALIGN_ML);
+		++VisibleIndex;
 	}
 
 	SelectedTheme = s_ListBox.DoEnd();

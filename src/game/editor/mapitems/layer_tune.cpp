@@ -186,6 +186,10 @@ void CLayerTune::BrushFlipY()
 
 void CLayerTune::BrushRotate(float Amount)
 {
+	// These layers rotate their own two tile arrays instead of going
+	// through the base class, and used to skip its cache invalidation with
+	// it, so the preview kept showing the tiles from before the rotation.
+	InvalidateTileRenderCache();
 	int Rotation = (round_to_int(360.0f * Amount / (pi * 2)) / 90) % 4; // 0=0°, 1=90°, 2=180°, 3=270°
 	if(Rotation < 0)
 		Rotation += 4;

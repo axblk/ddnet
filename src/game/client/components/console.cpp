@@ -271,6 +271,7 @@ void CGameConsole::CInstance::Init(CGameConsole *pGameConsole)
 
 void CGameConsole::CInstance::ClearBacklog()
 {
+	ResetBacklogTextCache();
 	{
 		// We must ensure that no log messages are printed while owning
 		// m_BacklogPendingLock or this will result in a dead lock.
@@ -828,6 +829,55 @@ void CGameConsole::CInstance::UpdateEntryTextAttributes(CBacklogEntry *pEntry) c
 	pEntry->m_LineCount = Cursor.m_LineCount;
 }
 
+void CGameConsole::CInstance::RenderBacklogText(CBacklogEntry *pEntry, vec2 Position, float LineWidth)
+{
+	CBacklogTextCacheEntry *pCached = nullptr;
+	CBacklogTextCacheEntry *pReusable = nullptr;
+	for(auto &Cached : m_BacklogTextCache)
+	{
+		if(Cached.m_pEntry == pEntry && Cached.m_TextContainerIndex.Valid() && Cached.m_Text == pEntry->m_aText)
+		{
+			pCached = &Cached;
+			break;
+		}
+		if(Cached.m_LastUsedFrame != m_BacklogTextCacheFrame && (pReusable == nullptr || Cached.m_LastUsedFrame < pReusable->m_LastUsedFrame))
+			pReusable = &Cached;
+	}
+	if(pCached == nullptr)
+	{
+		if(pReusable == nullptr)
+		{
+			m_BacklogTextCache.emplace_back();
+			pReusable = &m_BacklogTextCache.back();
+		}
+		m_pGameConsole->TextRender()->DeleteTextContainer(pReusable->m_TextContainerIndex);
+		pReusable->m_pEntry = pEntry;
+		pReusable->m_Text = pEntry->m_aText;
+
+		CTextCursor Cursor;
+		Cursor.m_FontSize = FONT_SIZE;
+		Cursor.m_LineWidth = LineWidth;
+		Cursor.m_MaxLines = pEntry->m_LineCount;
+		Cursor.m_LineSpacing = LINE_SPACING;
+		const ColorRGBA OldColor = m_pGameConsole->TextRender()->GetTextColor();
+		m_pGameConsole->TextRender()->TextColor(m_pGameConsole->TextRender()->DefaultTextColor());
+		m_pGameConsole->TextRender()->CreateTextContainer(pReusable->m_TextContainerIndex, &Cursor, pReusable->m_Text.c_str());
+		m_pGameConsole->TextRender()->TextColor(OldColor);
+		pCached = pReusable;
+	}
+	pCached->m_LastUsedFrame = m_BacklogTextCacheFrame;
+	if(pCached->m_TextContainerIndex.Valid())
+		m_pGameConsole->TextRender()->RenderTextContainer(pCached->m_TextContainerIndex, pEntry->m_PrintColor, m_pGameConsole->TextRender()->DefaultTextOutlineColor().WithMultipliedAlpha(pEntry->m_PrintColor.a), Position.x, Position.y);
+}
+
+void CGameConsole::CInstance::ResetBacklogTextCache()
+{
+	for(auto &Cached : m_BacklogTextCache)
+		m_pGameConsole->TextRender()->DeleteTextContainer(Cached.m_TextContainerIndex);
+	m_BacklogTextCache.clear();
+	m_BacklogTextCacheFrame = 0;
+}
+
 bool CGameConsole::CInstance::IsInputHidden() const
 {
 	if(m_Type != CONSOLETYPE_REMOTE)
@@ -1226,7 +1276,9 @@ void CGameConsole::OnRenderApplicationOverlay()
 
 	{
 		// Get height of 1 line
-		const float LineHeight = TextRender()->TextBoundingBox(FONT_SIZE, " ", -1, -1.0f, LINE_SPACING).m_H;
+		if(m_LineHeight == 0.0f)
+			m_LineHeight = TextRender()->TextBoundingBox(FONT_SIZE, " ", -1, -1.0f, LINE_SPACING).m_H;
+		const float LineHeight = m_LineHeight;
 
 		const float RowHeight = FONT_SIZE * 2.0f;
 
@@ -1237,13 +1289,10 @@ void CGameConsole::OnRenderApplicationOverlay()
 		const float InitialY = y;
 
 		// render prompt
-		CTextCursor PromptCursor;
-		PromptCursor.SetPosition(vec2(x, y + FONT_SIZE / 2.0f));
-		PromptCursor.m_FontSize = FONT_SIZE;
-
 		char aPrompt[32];
 		Prompt(aPrompt);
-		TextRender()->TextEx(&PromptCursor, aPrompt);
+		m_PromptText.Update(TextRender(), aPrompt, FONT_SIZE);
+		m_PromptText.Render(TextRender(), vec2(x, y + FONT_SIZE / 2.0f), TextRender()->DefaultTextColor());
 
 		// check if mouse is pressed
 		const vec2 WindowSize = vec2(Graphics()->WindowWidth(), Graphics()->WindowHeight());
@@ -1292,7 +1341,7 @@ void CGameConsole::OnRenderApplicationOverlay()
 			pConsole->m_HasSelection = false;
 		}
 
-		x = PromptCursor.m_X;
+		x += m_PromptText.Width();
 
 		if(m_ConsoleState == CONSOLE_OPEN)
 		{
@@ -1420,7 +1469,6 @@ void CGameConsole::OnRenderApplicationOverlay()
 				TextRender()->TextEx(&MatchInfoCursor, Localize("No results"), -1);
 			}
 		}
-
 		pConsole->PumpBacklogPending();
 		if(pConsole->m_NewLineCounter != 0)
 		{
@@ -1456,6 +1504,7 @@ void CGameConsole::OnRenderApplicationOverlay()
 		const float CalcOffsetY = LineHeight * std::floor((y - RowHeight) / LineHeight);
 		const float ClipStartY = (y - CalcOffsetY) * YScale;
 		Graphics()->ClipEnable(0, ClipStartY, Screen.w * XScale, (y + 2.0f) * YScale - ClipStartY);
+		++pConsole->m_BacklogTextCacheFrame;
 
 		while(pEntry)
 		{
@@ -1524,7 +1573,10 @@ void CGameConsole::OnRenderApplicationOverlay()
 				}
 			}
 
-			TextRender()->TextEx(&EntryCursor, pEntry->m_aText, -1);
+			if(EntryCursor.m_CalculateSelectionMode == TEXT_CURSOR_SELECTION_MODE_NONE && EntryCursor.m_vColorSplits.empty())
+				pConsole->RenderBacklogText(pEntry, vec2(0.0f, y - OffsetY), EntryCursor.m_LineWidth);
+			else
+				TextRender()->TextEx(&EntryCursor, pEntry->m_aText, -1);
 			EntryCursor.m_vColorSplits = {};
 
 			if(EntryCursor.m_CalculateSelectionMode == TEXT_CURSOR_SELECTION_MODE_CALCULATE)
@@ -1585,7 +1637,8 @@ void CGameConsole::OnRenderApplicationOverlay()
 		// render current lines and status (locked, following)
 		char aBuf[128];
 		str_format(aBuf, sizeof(aBuf), Localize("Lines %d - %d (%s)"), pConsole->m_BacklogCurLine + 1, pConsole->m_BacklogCurLine + pConsole->m_LinesRendered, pConsole->m_BacklogCurLine != 0 ? Localize("Locked") : Localize("Following"));
-		TextRender()->Text(10.0f, FONT_SIZE / 2.f, FONT_SIZE, aBuf);
+		m_StatusText.Update(TextRender(), aBuf, FONT_SIZE);
+		m_StatusText.Render(TextRender(), vec2(10.0f, FONT_SIZE / 2.0f), TextRender()->DefaultTextColor());
 
 		if(m_ConsoleType == CONSOLETYPE_REMOTE && (Client()->ReceivingRconCommands() || Client()->ReceivingMaplist()))
 		{
@@ -1607,7 +1660,8 @@ void CGameConsole::OnRenderApplicationOverlay()
 
 		// render version
 		str_copy(aBuf, "v" GAME_VERSION " on " CONF_PLATFORM_STRING " " CONF_ARCH_STRING);
-		TextRender()->Text(Screen.w - TextRender()->TextWidth(FONT_SIZE, aBuf) - 10.0f, FONT_SIZE / 2.f, FONT_SIZE, aBuf);
+		m_VersionText.Update(TextRender(), aBuf, FONT_SIZE);
+		m_VersionText.Render(TextRender(), vec2(Screen.w - m_VersionText.Width() - 10.0f, FONT_SIZE / 2.0f), TextRender()->DefaultTextColor());
 	}
 }
 
@@ -1785,13 +1839,33 @@ void CGameConsole::OnConsoleInit()
 void CGameConsole::OnInit()
 {
 	Engine()->SetAdditionalLogger(std::unique_ptr<ILogger>(m_pConsoleLogger));
-	// add resize event
-	Graphics()->AddWindowResizeListener([this]() {
-		m_LocalConsole.UpdateBacklogTextAttributes();
-		m_LocalConsole.m_HasSelection = false;
-		m_RemoteConsole.UpdateBacklogTextAttributes();
-		m_RemoteConsole.m_HasSelection = false;
-	});
+}
+
+void CGameConsole::OnWindowResize()
+{
+	// This has to run before the text render checks that every container was
+	// released, and a graphics resize listener runs after that check. It is a
+	// component hook for the same reason a language change has to reach it:
+	// the listener list is not the only path a resize takes.
+	m_PromptText.Reset(TextRender());
+	m_StatusText.Reset(TextRender());
+	m_VersionText.Reset(TextRender());
+	m_LineHeight = 0.0f;
+	m_LocalConsole.ResetBacklogTextCache();
+	m_LocalConsole.UpdateBacklogTextAttributes();
+	m_LocalConsole.m_HasSelection = false;
+	m_RemoteConsole.ResetBacklogTextCache();
+	m_RemoteConsole.UpdateBacklogTextAttributes();
+	m_RemoteConsole.m_HasSelection = false;
+}
+
+void CGameConsole::OnShutdown()
+{
+	m_PromptText.Reset(TextRender());
+	m_StatusText.Reset(TextRender());
+	m_VersionText.Reset(TextRender());
+	m_LocalConsole.ResetBacklogTextCache();
+	m_RemoteConsole.ResetBacklogTextCache();
 }
 
 void CGameConsole::OnStateChange(int NewState, int OldState)

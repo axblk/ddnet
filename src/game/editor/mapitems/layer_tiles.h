@@ -10,6 +10,7 @@
 #include <game/editor/enums.h>
 
 #include <map>
+#include <vector>
 
 struct STileStateChange
 {
@@ -114,12 +115,12 @@ public:
 
 	[[nodiscard]] virtual CTile GetTile(int x, int y) const;
 	virtual void SetTile(int x, int y, CTile Tile);
-	void SetTileIgnoreHistory(int x, int y, CTile Tile) const;
+	void SetTileIgnoreHistory(int x, int y, CTile Tile);
 
 	virtual void Resize(int NewW, int NewH);
 	virtual void Shift(EShiftDirection Direction);
 
-	void MakePalette() const;
+	void MakePalette();
 	void Render(const CEditorMap *pRenderMap) override;
 
 	int ConvertX(float x) const;
@@ -168,6 +169,7 @@ public:
 	void ModifyEnvelopeIndex(const FIndexModifyFunction &IndexModifyFunction) override;
 
 	void PrepareForSave();
+	void ExtractTiles(const CTile *pSavedTiles, size_t SavedTilesSize);
 
 	void GetSize(float *pWidth, float *pHeight) override
 	{
@@ -176,6 +178,7 @@ public:
 	}
 
 	void FlagModified(int x, int y, int w, int h);
+	void InvalidateTileRenderCache(int x = 0, int y = 0, int w = -1, int h = -1);
 
 	bool m_HasGame;
 	int m_Image;
@@ -209,6 +212,30 @@ public:
 	static bool HasAutomapEffect(ETilesProp Prop);
 
 protected:
+	static constexpr int TILE_RENDER_CHUNK_SIZE = 64;
+	struct STileRenderChunk
+	{
+		IGraphics::CBufferHandle m_BufferObject;
+		IGraphics::CBufferContainerHandle m_BufferContainer;
+		unsigned int m_OpaqueTiles = 0;
+		unsigned int m_TransparentTiles = 0;
+		int m_Width = 0;
+		int m_Height = 0;
+		std::vector<unsigned int> m_vOpaqueTileOffsets;
+		std::vector<unsigned int> m_vTransparentTileOffsets;
+		bool m_Dirty = true;
+	};
+
+	void ClearTileRenderCache();
+	void EnsureTileRenderCache(bool Textured);
+	bool RebuildTileRenderChunk(int ChunkX, int ChunkY, bool Textured);
+	void RenderTileChunks(const ColorRGBA &Color, bool Textured, bool TransparentPass, bool ForceTransparent);
+
+	std::vector<STileRenderChunk> m_vTileRenderChunks;
+	int m_TileRenderChunkColumns = 0;
+	int m_TileRenderChunkRows = 0;
+	bool m_TileRenderChunksTextured = false;
+
 	void RecordStateChange(int x, int y, CTile Previous, CTile Tile);
 
 	void ShowPreventUnusedTilesWarning();

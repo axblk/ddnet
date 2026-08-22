@@ -446,6 +446,58 @@ STextBoundingBox CLineInput::Render(const CUIRect *pRect, float FontSize, int Al
 			pDisplayStr = DisplayStrBuffer.c_str();
 		}
 
+		const int CursorCharacter = str_utf8_offset_bytes_to_chars(pDisplayStr, DisplayCursorOffset);
+		const int SelectionStart = str_utf8_offset_bytes_to_chars(pDisplayStr, OffsetFromActualToDisplay(GetSelectionStart()));
+		const int SelectionEnd = str_utf8_offset_bytes_to_chars(pDisplayStr, OffsetFromActualToDisplay(GetSelectionEnd()));
+		const ColorRGBA TextColor = TextRender()->GetTextColor();
+		const ColorRGBA SelectionColor = TextRender()->GetTextSelectionColor();
+		const unsigned RenderFlags = TextRender()->GetRenderFlags();
+		const bool ColorSplitsChanged = m_RenderCursor.m_vColorSplits.size() != vColorSplits.size() || !std::equal(m_RenderCursor.m_vColorSplits.begin(), m_RenderCursor.m_vColorSplits.end(), vColorSplits.begin(), [](const STextColorSplit &Left, const STextColorSplit &Right) {
+			return Left.m_CharIndex == Right.m_CharIndex && Left.m_Length == Right.m_Length && Left.m_Color == Right.m_Color;
+		});
+		if(!Changed && !HasComposition && !m_MouseSelection.m_Selecting)
+		{
+			const bool NeedsRecreate = !m_RenderTextContainerIndex.Valid() || m_RenderText != pDisplayStr || m_RenderCursor.m_FontSize != FontSize || m_RenderCursor.m_LineWidth != LineWidth || m_RenderCursor.m_LineSpacing != LineSpacing || m_RenderCursor.m_CursorCharacter != CursorCharacter || m_RenderCursor.m_SelectionStart != SelectionStart || m_RenderCursor.m_SelectionEnd != SelectionEnd || m_RenderFlags != RenderFlags || m_RenderTextColor != TextColor || m_RenderSelectionColor != SelectionColor || ColorSplitsChanged;
+			if(NeedsRecreate)
+			{
+				ResetRenderCache();
+				m_RenderText = pDisplayStr;
+				m_RenderFlags = RenderFlags;
+				m_RenderTextColor = TextColor;
+				m_RenderSelectionColor = SelectionColor;
+
+				CTextCursor CachedCursor;
+				CachedCursor.m_FontSize = FontSize;
+				CachedCursor.m_LineWidth = LineWidth;
+				CachedCursor.m_LineSpacing = LineSpacing;
+				CachedCursor.m_CursorMode = TEXT_CURSOR_CURSOR_MODE_SET;
+				CachedCursor.m_CursorCharacter = CursorCharacter;
+				CachedCursor.m_vColorSplits = vColorSplits;
+				if(SelectionStart != SelectionEnd)
+				{
+					CachedCursor.m_CalculateSelectionMode = TEXT_CURSOR_SELECTION_MODE_SET;
+					CachedCursor.m_SelectionStart = SelectionStart;
+					CachedCursor.m_SelectionEnd = SelectionEnd;
+				}
+				TextRender()->CreateTextContainer(m_RenderTextContainerIndex, &CachedCursor, pDisplayStr);
+				m_RenderCursor = CachedCursor;
+				m_RenderCursor.m_CursorCharacter = CursorCharacter;
+				m_RenderCursor.m_SelectionStart = SelectionStart;
+				m_RenderCursor.m_SelectionEnd = SelectionEnd;
+			}
+
+			const vec2 CursorPos = CUi::CalcAlignedCursorPos(pRect, m_RenderCursor.BoundingBox().Size(), Align);
+			if(m_RenderTextContainerIndex.Valid())
+				TextRender()->RenderTextContainer(m_RenderTextContainerIndex, TextRender()->DefaultTextColor(), TextRender()->DefaultTextOutlineColor(), CursorPos.x, CursorPos.y);
+			m_CaretPosition = m_RenderCursor.m_CursorRenderedPosition + CursorPos;
+			SetCompositionWindowPosition(m_CaretPosition + vec2(0.0f, m_RenderCursor.m_AlignedFontSize / 2.0f), m_RenderCursor.m_AlignedFontSize);
+			STextBoundingBox BoundingBox = m_RenderCursor.BoundingBox();
+			BoundingBox.MoveBy(CursorPos);
+			TextRender()->TextColor(TextRender()->DefaultTextColor());
+			return BoundingBox;
+		}
+		ResetRenderCache();
+
 		const STextBoundingBox BoundingBox = TextRender()->TextBoundingBox(FontSize, pDisplayStr, -1, LineWidth, LineSpacing);
 		const vec2 CursorPos = CUi::CalcAlignedCursorPos(pRect, BoundingBox.Size(), Align);
 
@@ -546,6 +598,18 @@ STextBoundingBox CLineInput::Render(const CUIRect *pRect, float FontSize, int Al
 	TextRender()->TextColor(TextRender()->DefaultTextColor());
 
 	return Cursor.BoundingBox();
+}
+
+void CLineInput::ResetRenderCache()
+{
+	TextRender()->DeleteTextContainer(m_RenderTextContainerIndex);
+	m_RenderText.clear();
+}
+
+void CLineInput::ResetActiveInputRenderCache()
+{
+	if(ms_pActiveInput != nullptr)
+		ms_pActiveInput->ResetRenderCache();
 }
 
 void CLineInput::RenderCandidates()
@@ -672,6 +736,7 @@ void CLineInput::OnDeactivate()
 {
 	Input()->StopTextInput();
 	m_MouseSelection.m_Selecting = false;
+	ResetRenderCache();
 }
 
 void CLineInputNumber::SetInteger(int Number, int Base, int HexPrefix)

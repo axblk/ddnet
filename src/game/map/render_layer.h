@@ -31,6 +31,10 @@ typedef std::function<void(int GroupId, int LayerId)> FCallbackLayerInit;
 
 constexpr int BorderRenderDistance = 201;
 
+bool AddTileToBuffer(std::vector<CGraphicTile> &vTiles, std::vector<CGraphicTileTextureCoords> &vTextureCoords, unsigned char Index, unsigned char Flags, int x, int y, bool AddTextureCoords, bool FillSpeedup = false, int AngleRotate = -1, const ivec2 &Offset = ivec2{0, 0}, int Scale = 32);
+bool UploadTileBuffer(IGraphics *pGraphics, const std::vector<CGraphicTile> &vTiles, const std::vector<CGraphicTileTextureCoords> &vTextureCoords, IGraphics::CBufferHandle &BufferObject, IGraphics::CBufferContainerHandle &BufferContainer);
+void DeleteTileBuffer(IGraphics *pGraphics, IGraphics::CBufferHandle &BufferObject, IGraphics::CBufferContainerHandle &BufferContainer);
+
 class CClipRegion
 {
 public:

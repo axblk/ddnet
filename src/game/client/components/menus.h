@@ -17,6 +17,8 @@
 #include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
 #include <engine/shared/jobs.h>
+#include <engine/shared/video.h>
+#include <engine/storage.h>
 #include <engine/textrender.h>
 
 #include <game/client/component.h>
@@ -158,11 +160,11 @@ protected:
 
 	void ClearCustomItems(int CurTab);
 
-	int m_MenuPage;
-	int m_GamePage;
-	int m_Popup;
-	bool m_ShowStart;
-	bool m_MenuActive;
+	int m_MenuPage = 0;
+	int m_GamePage = PAGE_GAME;
+	int m_Popup = POPUP_NONE;
+	bool m_ShowStart = true;
+	bool m_MenuActive = true;
 
 	bool m_DummyNamePlatePreview = false;
 
@@ -264,11 +266,11 @@ protected:
 	static float ms_ListitemAdditionalHeight;
 
 	// for settings
-	bool m_NeedRestartGraphics;
-	bool m_NeedRestartSound;
+	bool m_NeedRestartGraphics = false;
+	bool m_NeedRestartSound = false;
 	bool m_NeedRestartUpdate;
-	bool m_NeedSendinfo;
-	bool m_NeedSendDummyinfo;
+	bool m_NeedSendinfo = false;
+	bool m_NeedSendDummyinfo = false;
 
 	// for map download popup
 	int64_t m_DownloadLastCheckTime;
@@ -360,7 +362,7 @@ protected:
 		}
 	};
 
-	char m_aCurrentDemoFolder[IO_MAX_PATH_LENGTH];
+	char m_aCurrentDemoFolder[IO_MAX_PATH_LENGTH] = "demos";
 	char m_aCurrentDemoSelectionName[IO_MAX_PATH_LENGTH];
 	CLineInputBuffered<IO_MAX_PATH_LENGTH> m_DemoRenameInput;
 	CLineInputBuffered<IO_MAX_PATH_LENGTH> m_DemoSliceInput;
@@ -393,7 +395,7 @@ protected:
 #endif
 	int m_DemolistSelectedIndex;
 	bool m_DemolistSelectedReveal = false;
-	int m_DemolistStorageType;
+	int m_DemolistStorageType = IStorage::TYPE_ALL;
 	bool m_DemolistMultipleStorages = false;
 	int m_Speed = 4;
 
@@ -934,6 +936,9 @@ public:
 	void RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress, bool UpdateAndSwap = true);
 	void RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter, bool UpdateAndSwap = true);
 #if defined(CONF_VIDEORECORDER)
+	// What both progress screens count, so the full client and the render tool
+	// draw the same numbers rather than each working them out for itself.
+	bool VideoProgress(CVideoExportStatus &Status, float &Progress, float &Elapsed);
 	bool RenderVideoProgress(bool Overlay);
 	void RenderVideoProgressChip(CUIRect Gap);
 #endif
@@ -1039,7 +1044,7 @@ public:
 	void DemolistPopulate();
 	void RefreshFilteredDemos();
 	void DemoSeekTick(IDemoPlayer::ETickOffset TickOffset);
-	bool m_Dummy;
+	bool m_Dummy = false;
 
 	const char *GetCurrentDemoFolder() const { return m_aCurrentDemoFolder; }
 
@@ -1117,7 +1122,7 @@ public:
 	std::chrono::nanoseconds m_PopupWarningLastTime;
 	std::chrono::nanoseconds m_PopupWarningDuration;
 
-	int m_DemoPlayerState;
+	int m_DemoPlayerState = DEMOPLAYER_NONE;
 
 	enum
 	{

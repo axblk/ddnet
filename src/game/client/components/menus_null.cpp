@@ -1,5 +1,6 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
+#if defined(CONF_DEMO_RENDER_TOOL)
 
 #include "menus.h"
 
@@ -71,21 +72,11 @@ bool CMenus::StartupAssetsLoaded() const
 #if defined(CONF_VIDEORECORDER)
 bool CMenus::RenderVideoProgress(bool Overlay)
 {
-	int FirstTick;
-	int CurrentTick;
-	int LastTick;
-	if(!Client()->DemoPlayer_RenderInfo(&FirstTick, &CurrentTick, &LastTick) || IVideo::Current() == nullptr)
+	CVideoExportStatus Status;
+	float Progress;
+	float Elapsed;
+	if(!VideoProgress(Status, Progress, Elapsed))
 		return false;
-	const int TotalTicks = LastTick - FirstTick;
-	const int CurrentTicks = std::clamp(CurrentTick - FirstTick, 0, std::max(TotalTicks, 0));
-	const float Progress = TotalTicks > 0 ? CurrentTicks / static_cast<float>(TotalTicks) : 0.0f;
-
-	const CVideoExportStatus Status = IVideo::Current()->Status();
-	const std::chrono::nanoseconds Now = time_get_nanoseconds();
-	if(m_DemoRenderStartTime == std::chrono::nanoseconds::zero() || Status.m_SubmittedFrames < m_DemoRenderLastSubmittedFrames)
-		m_DemoRenderStartTime = Now;
-	m_DemoRenderLastSubmittedFrames = Status.m_SubmittedFrames;
-	const float Elapsed = std::chrono::duration<float>(Now - m_DemoRenderStartTime).count();
 
 	// No buttons: the tool has no input device, so the only way out is the
 	// interrupt signal the entry point listens for.
@@ -156,3 +147,5 @@ void CMenusSettingsControls::OnInterfacesInit(CGameClient *pClient)
 {
 	CComponentInterfaces::OnInterfacesInit(pClient);
 }
+
+#endif

@@ -78,23 +78,6 @@ float CMenus::ms_ListheaderHeight = 17.0f;
 
 CMenus::CMenus()
 {
-	m_Popup = POPUP_NONE;
-	m_MenuPage = 0;
-	m_GamePage = PAGE_GAME;
-
-	m_NeedRestartGraphics = false;
-	m_NeedRestartSound = false;
-	m_NeedSendinfo = false;
-	m_NeedSendDummyinfo = false;
-	m_MenuActive = true;
-	m_ShowStart = true;
-
-	str_copy(m_aCurrentDemoFolder, "demos");
-	m_DemolistStorageType = IStorage::TYPE_ALL;
-
-	m_DemoPlayerState = DEMOPLAYER_NONE;
-	m_Dummy = false;
-
 	for(SUIAnimator &Animator : m_aAnimatorsSettingsTab)
 	{
 		Animator.m_YOffset = -2.5f;
@@ -890,20 +873,11 @@ void CMenus::RenderLoading(const char *pCaption, const char *pContent, int Incre
 #if defined(CONF_VIDEORECORDER)
 bool CMenus::RenderVideoProgress(bool Overlay)
 {
-	int FirstTick;
-	int CurrentTick;
-	int LastTick;
-	if(!Client()->DemoPlayer_RenderInfo(&FirstTick, &CurrentTick, &LastTick) || IVideo::Current() == nullptr)
+	CVideoExportStatus Status;
+	float Progress;
+	float Elapsed;
+	if(!VideoProgress(Status, Progress, Elapsed))
 		return false;
-	const CVideoExportStatus Status = IVideo::Current()->Status();
-	const int TotalTicks = LastTick - FirstTick;
-	const int CurrentTicks = std::clamp(CurrentTick - FirstTick, 0, std::max(TotalTicks, 0));
-	const float Progress = TotalTicks > 0 ? CurrentTicks / static_cast<float>(TotalTicks) : 0.0f;
-	const std::chrono::nanoseconds Now = time_get_nanoseconds();
-	if(m_DemoRenderStartTime == std::chrono::nanoseconds::zero() || Status.m_SubmittedFrames < m_DemoRenderLastSubmittedFrames)
-		m_DemoRenderStartTime = Now;
-	m_DemoRenderLastSubmittedFrames = Status.m_SubmittedFrames;
-	const float Elapsed = std::chrono::duration<float>(Now - m_DemoRenderStartTime).count();
 
 	char aStatus[128];
 	if(Overlay)

@@ -2496,7 +2496,7 @@ set(DEPS ${DEP_JSON} ${DEP_MD5} ${ZLIB_DEP})
 # the same way a packet does, and a program that renders demos has no wire.
 # Neither is `engine.cpp` — `CEngine` is the job pool, and everything creates
 # one; the network log it used to open is registered by the network itself now.
-set(ENGINE_NET_PATTERN "src/engine/shared/(econ|game_wire|host_lookup|http_curl|http_emscripten|masterserver|netban|network[a-z_]*|quic_transport|server_identity|serverinfo|stun|websockets)\.(cpp|h)$")
+set(ENGINE_NET_PATTERN "src/engine/shared/(econ|game_wire|host_lookup|http_curl|http_emscripten|masterserver|netban|network[a-z_]*|quic_transport|server_identity|serverinfo|stun|websockets)\\.(cpp|h)$")
 set(ENGINE_NET ${ENGINE_SHARED})
 list(FILTER ENGINE_NET INCLUDE REGEX "${ENGINE_NET_PATTERN}")
 list(FILTER ENGINE_SHARED EXCLUDE REGEX "${ENGINE_NET_PATTERN}")
@@ -2991,12 +2991,11 @@ if(CLIENT)
     src/generated/client_data7.h
     # tidy-alphabetical-end
   )
-  # The client gets the menu pages, a program without them gets the stand-in.
-  # The backdrop is not a page and stays in both.
-  set(GAME_CLIENT_MENUS_FULL ${GAME_CLIENT})
-  list(FILTER GAME_CLIENT_MENUS_FULL EXCLUDE REGEX "src/game/client/components/menus_null\.cpp$")
+  # The client gets the menu pages, a program without them gets the stand-in,
+  # which compiles to nothing unless it is that program. The backdrop is not a
+  # page and stays in both.
   set(GAME_CLIENT_MENUS_NULL ${GAME_CLIENT})
-  list(FILTER GAME_CLIENT_MENUS_NULL EXCLUDE REGEX "src/game/client/components/(community_icons|menus)[^/]*\.(cpp|h)$")
+  list(FILTER GAME_CLIENT_MENUS_NULL EXCLUDE REGEX "src/game/client/components/(community_icons|menus)[^/]*\\.(cpp|h)$")
   list(APPEND GAME_CLIENT_MENUS_NULL
     src/game/client/components/menus.h
     src/game/client/components/menus_backdrop.cpp
@@ -3007,9 +3006,9 @@ if(CLIENT)
   # out of the client. The client never names them, and they are written for a
   # program that has the video recorder, which the client can be built without.
   set(ENGINE_CLIENT_GAME ${ENGINE_CLIENT})
-  list(FILTER ENGINE_CLIENT_GAME EXCLUDE REGEX "src/engine/client/demo_render_(client|main)\.(cpp|h)$")
+  list(FILTER ENGINE_CLIENT_GAME EXCLUDE REGEX "src/engine/client/demo_render_(client|main)\\.(cpp|h)$")
 
-  set(CLIENT_SRC ${ENGINE_CLIENT_GAME} ${PLATFORM_CLIENT} ${GAME_CLIENT_MENUS_FULL} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
+  set(CLIENT_SRC ${ENGINE_CLIENT_GAME} ${PLATFORM_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
 
   set(DEPS_CLIENT ${DEPS} ${GLEW_DEP} ${WAVPACK_DEP})
 
@@ -3154,8 +3153,9 @@ if(CLIENT)
     # Translating a 0.7 connless packet needs a program that receives one.
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
     # The tool brings its own client, so the game's client and everything only
-    # that one needs stays out: the server browser, the updater, friends and
-    # favorites, demo and ghost recording, and the network behind all of them.
+    # that one needs stays out: the server browser, the updater, favorites, demo
+    # editing and the network behind all of them. Friends and ghost recording
+    # stay: the tool registers its own, see `demo_render_client.cpp`.
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/(client|client_net|session_source_net|sixup_translate_system|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|updater|favorites|demoedit|blocklist_driver|discord|steam|notifications)\\.(cpp|h)$")
     # A developer tool, not part of the game. It compiles a second copy of the
     # client, so building it by default would roughly double the build time,
@@ -3571,6 +3571,7 @@ if(TOOLS)
       string(REGEX REPLACE "\\.cpp$" "" TOOL "${T}")
       set(TOOL_DEPS ${DEPS})
       unset(EXTRA_TOOL_SRC)
+      unset(TOOL_INCLUDE_DIRS)
       # Five of the tools open a socket. The rest read and write files, and an
       # object library is linked whole, so leaving the network half out is also
       # what lets them link without curl, OpenSSL, libwebsockets and the Rust
@@ -3938,10 +3939,15 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   endif()
 endif()
 
+# No `engine-net`: no Rust test calls into the network half, and
+# `quic_transport.cpp` is the only object here that calls the C++ side of the
+# QUIC bridge. The Rust side of that bridge lives in `ddnet-engine-shared`,
+# which the test binary of another crate does not link, so whenever the linker
+# reaches for the one it cannot find the other. Leaving the network half out
+# puts the bridge shim out of reach entirely.
 add_library(rust_test STATIC EXCLUDE_FROM_ALL
   # tidy-alphabetical-start
   $<TARGET_OBJECTS:engine-gfx>
-  $<TARGET_OBJECTS:engine-net>
   $<TARGET_OBJECTS:engine-shared>
   $<TARGET_OBJECTS:game-shared>
   $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3952,8 +3958,22 @@ add_library(rust_test STATIC EXCLUDE_FROM_ALL
 list(APPEND TARGETS_OWN rust_test)
 list(APPEND TARGETS_LINK rust_test)
 
-set(RUST_TEST_LIBS ${LIBS} $<TARGET_FILE:rust_test>)
-list(REMOVE_ITEM RUST_TEST_LIBS "rust_engine_shared")
+# Spelled out rather than taken from `LIBS`. That one says what a program built
+# out of `engine-shared` needs, and it is narrowed every time a target is split
+# off from another; this says what the Rust tests link `rust_test` with, which
+# is a different question with a different answer. The order is the order the
+# linker sees. `rust_engine_shared` is not here because cargo brings the Rust
+# side itself, and `-pthread` is a compiler flag rather than a library, which is
+# all the test build script knows how to pass on.
+set(RUST_TEST_LIBS
+  ${CRYPTO_LIBRARIES}
+  ${CURL_LIBRARIES}
+  ${WEBSOCKETS_LIBRARIES}
+  ${ZLIB_LIBRARIES}
+  ${PLATFORM_LIBS}
+  ${CMAKE_THREAD_LIBS_INIT}
+  $<TARGET_FILE:rust_test>
+)
 list(REMOVE_ITEM RUST_TEST_LIBS "-pthread")
 add_custom_target(run_rust_tests
   COMMAND ${CMAKE_COMMAND} -E env "DDNET_TEST_LIBRARIES=${RUST_TEST_LIBS}" ${CARGO_TEST}
@@ -4634,10 +4654,11 @@ foreach(target ${TARGETS_OWN})
     target_compile_definitions(${target} PRIVATE CONF_OPENSSL)
     target_include_directories(${target} SYSTEM PRIVATE ${CRYPTO_INCLUDE_DIRS})
   endif()
-  # These three reach into config_variables.h, so a target that sees them
-  # differently than the engine-shared objects it links gets a CConfig with
+  # Websockets and UPnP reach into config_variables.h, so a target that sees
+  # them differently than the engine-shared objects it links gets a CConfig with
   # different members and reads every later one at the wrong offset. They are
-  # therefore set for every target, whether or not it uses the feature.
+  # therefore set for every target, whether or not it uses the feature, and QUIC
+  # is set the same way rather than as the one exception.
   if(QUIC)
     target_compile_definitions(${target} PRIVATE CONF_QUIC)
   endif()

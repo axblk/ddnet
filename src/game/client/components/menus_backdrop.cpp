@@ -248,3 +248,24 @@ void CMenus::RenderBackdropRegion(CUIRect Rect)
 	if(!Drawn)
 		m_MenuBackdropReady = false;
 }
+
+#if defined(CONF_VIDEORECORDER)
+bool CMenus::VideoProgress(CVideoExportStatus &Status, float &Progress, float &Elapsed)
+{
+	int FirstTick;
+	int CurrentTick;
+	int LastTick;
+	if(!Client()->DemoPlayer_RenderInfo(&FirstTick, &CurrentTick, &LastTick) || IVideo::Current() == nullptr)
+		return false;
+	Status = IVideo::Current()->Status();
+	const int TotalTicks = LastTick - FirstTick;
+	const int CurrentTicks = std::clamp(CurrentTick - FirstTick, 0, std::max(TotalTicks, 0));
+	Progress = TotalTicks > 0 ? CurrentTicks / static_cast<float>(TotalTicks) : 0.0f;
+	const std::chrono::nanoseconds Now = time_get_nanoseconds();
+	if(m_DemoRenderStartTime == std::chrono::nanoseconds::zero() || Status.m_SubmittedFrames < m_DemoRenderLastSubmittedFrames)
+		m_DemoRenderStartTime = Now;
+	m_DemoRenderLastSubmittedFrames = Status.m_SubmittedFrames;
+	Elapsed = std::chrono::duration<float>(Now - m_DemoRenderStartTime).count();
+	return true;
+}
+#endif

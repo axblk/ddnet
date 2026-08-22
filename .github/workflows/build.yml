@@ -284,7 +284,11 @@ jobs:
         cd fancy
         ${{ matrix.cmake-path }}cmake -E env ${{ matrix.cmake-init-env }} ${{ matrix.cmake-path }}cmake ${{ matrix.cmake-args }} ${{ matrix.webgpu-cmake-arg }} -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDOWNLOAD_GTEST=ON -DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=. -DANTIBOT=ON -DWEBSOCKETS=ON ..
         ${{ matrix.workaround-issue10203-run-after-configure }}
-        ${{ matrix.cmake-path }}cmake --build . --config RelWithDebInfo --target everything
+        # The demo render tool is excluded from `everything` because it compiles
+        # a second copy of the client. This is the only build that has the
+        # backend it needs, so it is also the only chance to notice that its
+        # hand-written stand-in for the menus has fallen behind the real one.
+        ${{ matrix.cmake-path }}cmake --build . --config RelWithDebInfo --target everything demo-renderer
 
     - name: Test fancy
       if: contains(matrix.name, 'fancy')

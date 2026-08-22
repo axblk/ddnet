@@ -337,6 +337,20 @@ CGameView &CGameClient::LegacyGameView()
 	return *pView;
 }
 
+// The demo render tool registers none of these, and every place that consults
+// one copes with its absence. The game itself registers all of them, so there a
+// registration gone missing is an assert at startup rather than a null pointer
+// deep inside a component.
+template<class TInterface>
+static TInterface *ToolOptionalInterface(IKernel *pKernel)
+{
+#if defined(CONF_DEMO_RENDER_TOOL)
+	return pKernel->TryGetInterface<TInterface>();
+#else
+	return pKernel->RequestInterface<TInterface>();
+#endif
+}
+
 void CGameClient::OnConsoleInit()
 {
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
@@ -377,20 +391,16 @@ void CGameClient::OnConsoleInit()
 	m_pConsole = Kernel()->RequestInterface<IConsole>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 	m_pDemoPlayer = Kernel()->RequestInterface<IDemoPlayer>();
-	// A program that has no use for a thing registers none, so what only the
-	// game itself needs is asked for rather than demanded: the server browser,
-	// the updater, the favorites, the friends and everything over HTTP are the
-	// parts a demo render tool does without.
-	m_pServerBrowser = Kernel()->TryGetInterface<IServerBrowser>();
-	m_pEditor = Kernel()->TryGetInterface<IEditor>();
-	m_pFavorites = Kernel()->TryGetInterface<IFavorites>();
-	m_pFriends = Kernel()->TryGetInterface<IFriends>();
+	m_pFriends = Kernel()->RequestInterface<IFriends>();
 	m_pFoes = Client()->Foes();
-	m_pDiscord = Kernel()->TryGetInterface<IDiscord>();
+	m_pServerBrowser = ToolOptionalInterface<IServerBrowser>(Kernel());
+	m_pEditor = ToolOptionalInterface<IEditor>(Kernel());
+	m_pFavorites = ToolOptionalInterface<IFavorites>(Kernel());
+	m_pDiscord = ToolOptionalInterface<IDiscord>(Kernel());
 #if defined(CONF_AUTOUPDATE)
-	m_pUpdater = Kernel()->TryGetInterface<IUpdater>();
+	m_pUpdater = ToolOptionalInterface<IUpdater>(Kernel());
 #endif
-	m_pHttp = Kernel()->TryGetInterface<IHttp>();
+	m_pHttp = ToolOptionalInterface<IHttp>(Kernel());
 	for(const auto &pContext : m_SessionContexts.Contexts())
 		pContext->MapContext().Init();
 

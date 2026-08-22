@@ -169,6 +169,14 @@ void CMenus::RenderSettingsGeneral(CUIRect MainView)
 				Ui()->DoScrollbarOption(&g_Config.m_ClAutoScreenshotMax, &g_Config.m_ClAutoScreenshotMax, &Button, Localize("Max Screenshots"), 1, 1000, &CUi::ms_LinearScrollbarScale, CUi::SCROLLBAR_OPTION_INFINITE | CUi::SCROLLBAR_OPTION_MULTILINE);
 		}
 
+		// local competitive match history
+		{
+			Right.HSplitTop(10.0f, nullptr, &Right);
+			Right.HSplitTop(20.0f, &Button, &Right);
+			if(DoButton_CheckBox(&g_Config.m_ClSaveMatchStats, Localize("Save competitive match history locally (only on this device)"), g_Config.m_ClSaveMatchStats, &Button))
+				g_Config.m_ClSaveMatchStats ^= 1;
+		}
+
 		// auto statboard screenshot
 		{
 			Right.HSplitTop(10.0f, nullptr, &Right);

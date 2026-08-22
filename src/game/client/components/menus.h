@@ -27,11 +27,13 @@
 #include <game/client/components/menus_start.h>
 #include <game/client/components/skins7.h>
 #include <game/client/lineinput.h>
+#include <game/client/match_journal.h>
 #include <game/client/ui.h>
 #include <game/voting.h>
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -358,13 +360,35 @@ protected:
 	CLineInputBuffered<IO_MAX_PATH_LENGTH> m_DemoSearchInput;
 #if defined(CONF_VIDEORECORDER)
 	CLineInputBuffered<IO_MAX_PATH_LENGTH> m_DemoRenderInput;
+	CLineInputNumber m_DemoRenderWidthInput;
+	CLineInputNumber m_DemoRenderHeightInput;
+	// The resolution and the frame rate live in the configuration so that they
+	// survive a restart. These only remember that the user picked the custom
+	// entry, which the values alone cannot tell when they match a preset.
+	bool m_DemoRenderCustomResolution = false;
+	bool m_DemoRenderCustomFps = false;
+	bool m_DemoRenderAdvanced = false;
+	bool m_DemoRenderQueueOnly = false;
+	CButtonContainer m_DemoRenderCancelButton;
+	std::chrono::nanoseconds m_DemoRenderStartTime{0};
+	// Set while the menu bar has room to show the export progress itself, which
+	// keeps the floating box off the menu it would cover.
+	bool m_VideoProgressInMenubar = false;
+	uint64_t m_DemoRenderLastSubmittedFrames = 0;
+	class CRenderQueueRowIds
+	{
+	public:
+		CButtonContainer m_Up;
+		CButtonContainer m_Down;
+	};
+	// Deque so that the button ids of existing rows stay valid when the queue grows
+	std::deque<CRenderQueueRowIds> m_RenderQueueRowIds;
 #endif
 	int m_DemolistSelectedIndex;
 	bool m_DemolistSelectedReveal = false;
 	int m_DemolistStorageType;
 	bool m_DemolistMultipleStorages = false;
 	int m_Speed = 4;
-	bool m_StartPaused = false;
 
 	std::chrono::nanoseconds m_DemoPopulateStartTime{0};
 
@@ -478,6 +502,12 @@ protected:
 	void RenderPopupLoading(CUIRect Screen);
 #if defined(CONF_VIDEORECORDER)
 	void PopupConfirmDemoReplaceVideo();
+	// Opens the render popup for the demo that is currently selected and takes
+	// the settings that were kept from the last render over into it.
+	void OpenDemoRenderPopup(const char *pVideoName);
+	// The configured resolution, with the window size filled in where the
+	// configuration leaves it open.
+	void DemoRenderResolution(int *pWidth, int *pHeight) const;
 #endif
 	void RenderMenubar(CUIRect Box, IClient::EClientState ClientState);
 	void RenderNews(CUIRect MainView);
@@ -485,6 +515,91 @@ protected:
 	static void ConchainUpdateMusicState(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	void UpdateMusicState();
 
+	// found in menus_stats.cpp
+	enum class EStatsTab
+	{
+		MATCHES,
+		PROFILE,
+	};
+	enum class EStatsQualityFilter
+	{
+		ALL,
+		COMPLETE,
+		SERVER,
+	};
+	bool m_StatsInitialized = false;
+	EStatsTab m_StatsTab = EStatsTab::MATCHES;
+	// The selected match takes over the whole page instead of sitting in a tab
+	// of its own, so that a report is read the way it was opened.
+	bool m_StatsShowMatch = false;
+	EStatsQualityFilter m_StatsQualityFilter = EStatsQualityFilter::ALL;
+	// The profile shows the periods side by side instead of one at a time, so
+	// all of them are queried and kept.
+	enum class EStatsPeriod
+	{
+		DAY,
+		WEEK,
+		MONTH,
+		ALL_TIME,
+		COUNT,
+	};
+	// Whether profile numbers are shown as they are, or divided by the number
+	// of matches or the time played.
+	enum class EStatsScale
+	{
+		TOTAL,
+		PER_MATCH,
+		PER_MINUTE,
+	};
+	EStatsScale m_StatsScale = EStatsScale::TOTAL;
+	// The weapon numbers are a table of their own, so they show one period
+	// rather than all of them next to each other.
+	EStatsPeriod m_StatsWeaponPeriod = EStatsPeriod::ALL_TIME;
+	int m_StatsSelectedIndex = -1;
+	CLineInputBuffered<128> m_StatsHistorySearchInput;
+	// The gametypes the journal actually holds, so the filter offers what is
+	// there instead of asking the reader to type a mode id. Index 0 is every
+	// gametype at once.
+	std::vector<std::string> m_vStatsModes;
+	// The same gametypes without their vendor suffix, and as the array of
+	// pointers the drop down reads, so that drawing it builds nothing. Entry
+	// zero of the pointers names every gametype at once and is filled in when
+	// the drop down is drawn, because it follows the language.
+	std::vector<std::string> m_vStatsModeNames;
+	std::vector<const char *> m_vpStatsModeNames = {nullptr};
+	int m_StatsModeIndex = 0;
+	std::vector<CMatchHistoryEntry> m_vStatsHistory;
+	std::optional<CStoredMatch> m_StatsSelectedMatch;
+	CMatchProfile m_aStatsProfiles[(int)EStatsPeriod::COUNT];
+	CMatchJournalInfo m_StatsInfo;
+	std::string m_StatsError;
+	void RefreshStats();
+	void LoadSelectedStatsMatch();
+	void RenderStats(CUIRect MainView);
+	void RenderStatsMatchList(CUIRect View);
+	void RenderStatsMatchSummary(CUIRect View);
+	void RenderStatsProfile(CUIRect View);
+	void StatsPeriodHeader(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pLabel);
+	void StatsPeriodRow(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pLabel, const char *const *ppValues);
+	void StatsHeading(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pText);
+	void StatsTiles(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *const *ppLabels, const char *const *ppValues, int Count);
+	void StatsMetricLine(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pLabel, const char *pValue);
+	void StatsWeaponMatrix(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pHeading, const class CMatchCombatStats &Stats);
+	const char *StatsModeFilter() const;
+	bool StatsModeDropDown(CUIRect Rect);
+	static const char *StatsPeriodName(EStatsPeriod Period);
+	void ExportSelectedStats(bool Csv);
+	void PopupConfirmDeleteStatsMatch();
+	void PopupConfirmDeleteStatsPeriod();
+
+public:
+	/**
+	 * Makes the statistics page reload from the journal on its next frame,
+	 * for when something outside the page changed what is stored.
+	 */
+	void InvalidateStats() { m_StatsInitialized = false; }
+
+private:
 	// found in menus_demo.cpp
 	vec2 m_DemoControlsPositionOffset = vec2(0.0f, 0.0f);
 	bool m_PausedBeforeSeeking;
@@ -754,6 +869,10 @@ public:
 
 	void RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress, bool UpdateAndSwap = true);
 	void RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter, bool UpdateAndSwap = true);
+#if defined(CONF_VIDEORECORDER)
+	bool RenderVideoProgress(bool Overlay);
+	void RenderVideoProgressChip(CUIRect Gap);
+#endif
 	void FinishLoading();
 
 	bool IsInit() const { return m_IsInit; }
@@ -788,6 +907,7 @@ public:
 		PAGE_FAVORITE_COMMUNITY_4,
 		PAGE_FAVORITE_COMMUNITY_5,
 		PAGE_DEMOS,
+		PAGE_STATS,
 		PAGE_SETTINGS,
 		PAGE_NETWORK,
 		PAGE_GHOST,
@@ -835,6 +955,7 @@ public:
 		SMALL_TAB_SETTINGS,
 		SMALL_TAB_EDITOR,
 		SMALL_TAB_DEMOBUTTON,
+		SMALL_TAB_STATSBUTTON,
 		SMALL_TAB_SERVER,
 		SMALL_TAB_BROWSER_FILTER,
 		SMALL_TAB_BROWSER_INFO,
@@ -946,6 +1067,7 @@ public:
 		POPUP_LANGUAGE,
 		POPUP_RENAME_DEMO,
 		POPUP_RENDER_DEMO,
+		POPUP_RENDER_QUEUE,
 		POPUP_RENDER_DONE,
 		POPUP_PASSWORD,
 		POPUP_QUIT,
@@ -962,6 +1084,9 @@ public:
 	};
 
 	void SetMenuPage(int NewPage);
+	void OpenDemos();
+	void OpenStats();
+	void ExportMatchStats(const CStoredMatch &Stored, bool Csv);
 	void RefreshBrowserTab(bool Force);
 	void ForceRefreshLanPage();
 	void SetShowStart(bool ShowStart);

@@ -125,7 +125,9 @@ void CGraphics_Threaded::AddVertices(int Count, CCommandBuffer::SVertexTex3DStre
 		FlushVerticesTex3D();
 }
 
-CGraphics_Threaded::CGraphics_Threaded()
+CGraphics_Threaded::CGraphics_Threaded(EGraphicsBackendMode BackendMode, bool HiddenWindow) :
+	m_BackendMode(BackendMode),
+	m_HiddenWindow(HiddenWindow)
 {
 	m_State.m_ScreenTL.x = 0;
 	m_State.m_ScreenTL.y = 0;
@@ -547,21 +549,32 @@ bool CGraphics_Threaded::BeginOffscreenFrame(CTextureHandle Texture)
 	if(m_OffscreenFrameTarget.IsValid() || m_Drawing != EDrawing::NONE || !m_TextureHandles.IsAllocated(Texture) || static_cast<size_t>(Texture.Id()) >= m_vTextureInfos.size())
 		return false;
 	const STextureInfo &Info = m_vTextureInfos[Texture.Id()];
-	if(Info.m_Handle != Texture || !Info.m_Desc.HasUsage(TEXTURE_USAGE_COLOR_TARGET) || !Info.m_Desc.HasUsage(TEXTURE_USAGE_COPY_SOURCE))
+	if(Info.m_Handle != Texture || !Info.m_Desc.HasUsage(TEXTURE_USAGE_COLOR_TARGET) || !Info.m_Desc.HasUsage(TEXTURE_USAGE_COPY_SOURCE) || Info.m_Desc.m_Width > std::numeric_limits<int>::max() || Info.m_Desc.m_Height > std::numeric_limits<int>::max())
 		return false;
+	if(m_BackendMode == EGraphicsBackendMode::OFFSCREEN && !m_pCommandBuffer->IsEmpty())
+	{
+		// The surface-less client can accumulate an implicit loading frame before
+		// the export target exists. It has no presentation target and is obsolete.
+		m_pCommandBuffer->Reset();
+		m_DropCurrentFrame = false;
+	}
 
 	m_OffscreenFrameTarget = Texture;
+	m_RenderWidth = static_cast<int>(Info.m_Desc.m_Width);
+	m_RenderHeight = static_cast<int>(Info.m_Desc.m_Height);
 	CRenderPassDesc Pass;
 	Pass.m_ColorTarget = Texture;
 	if(!BeginRenderPass(Pass))
 	{
 		m_OffscreenFrameTarget.Invalidate();
+		m_RenderWidth = 0;
+		m_RenderHeight = 0;
 		return false;
 	}
 	return true;
 }
 
-std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFrame(CImageInfo &&Recycled)
+std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFrame(CImageInfo &&Recycled, CTextureHandle YuvTarget, EPlanarYuvFormat YuvFormat)
 {
 	if(!m_OffscreenFrameTarget.IsValid())
 		return nullptr;
@@ -569,8 +582,33 @@ std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFra
 	const bool CanFinish = m_Drawing == EDrawing::NONE && m_RenderPassActive && m_RenderPassTarget == Target;
 	const bool FrameEnded = CanFinish && EndRenderPass();
 	m_OffscreenFrameTarget.Invalidate();
+	m_RenderWidth = 0;
+	m_RenderHeight = 0;
 
-	auto pReadback = FrameEnded ? ReadTextureAsync(Target, std::move(Recycled)) : nullptr;
+	// The conversion is a second pass over the finished frame, so it runs
+	// after the frame's own pass closed and before anything is read back.
+	CTextureHandle ReadbackTarget = Target;
+	if(FrameEnded && YuvTarget.IsValid() && m_Capabilities.m_PlanarYuvConversion &&
+		m_TextureHandles.IsAllocated(YuvTarget) && static_cast<size_t>(YuvTarget.Id()) < m_vTextureInfos.size())
+	{
+		const STextureInfo &PackedInfo = m_vTextureInfos[YuvTarget.Id()];
+		CRenderPassDesc Pass;
+		Pass.m_ColorTarget = YuvTarget;
+		m_RenderWidth = static_cast<int>(PackedInfo.m_Desc.m_Width);
+		m_RenderHeight = static_cast<int>(PackedInfo.m_Desc.m_Height);
+		if(BeginRenderPass(Pass))
+		{
+			// The pass has to be closed whether the conversion worked or not,
+			// because the frame that is read back next expects no pass to be
+			// open and the packed frame is only usable if both parts did work.
+			const bool Converted = ConvertTextureToPlanarYuv(Target, YuvFormat);
+			if(EndRenderPass() && Converted)
+				ReadbackTarget = YuvTarget;
+		}
+		m_RenderWidth = 0;
+		m_RenderHeight = 0;
+	}
+	auto pReadback = FrameEnded ? ReadTextureAsync(ReadbackTarget, std::move(Recycled)) : nullptr;
 	if(!FrameEnded)
 		DropCurrentFrame();
 	if(pReadback != nullptr)
@@ -581,11 +619,15 @@ std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFra
 	// The offscreen pass is closed and the frame it belonged to is gone, so the
 	// screen needs a pass of its own again. Whoever draws next expects the one
 	// that a presented frame leaves behind, and without it everything drawn
-	// between two export frames would be dropped.
+	// between two export frames would be dropped. A backend without a surface
+	// has no screen to start one on.
 	m_RenderPassActive = false;
 	m_RenderPassTarget.Invalidate();
-	CRenderPassDesc PresentationPass;
-	BeginRenderPass(PresentationPass);
+	if(m_BackendMode != EGraphicsBackendMode::OFFSCREEN)
+	{
+		CRenderPassDesc PresentationPass;
+		BeginRenderPass(PresentationPass);
+	}
 	return pReadback;
 }
 
@@ -3061,7 +3103,11 @@ int CGraphics_Threaded::IssueInit()
 #endif
 
 	int Flags = 0;
-	if(IsExclusiveFullscreen)
+	if(m_HiddenWindow)
+	{
+		Flags |= IGraphicsBackend::INITFLAG_HIDDEN;
+	}
+	else if(IsExclusiveFullscreen)
 	{
 		Flags |= IGraphicsBackend::INITFLAG_FULLSCREEN;
 	}
@@ -3077,7 +3123,7 @@ int CGraphics_Threaded::IssueInit()
 			Flags |= IGraphicsBackend::INITFLAG_BORDERLESS;
 		}
 	}
-	if(g_Config.m_GfxVsync)
+	if(!m_HiddenWindow && g_Config.m_GfxVsync)
 	{
 		Flags |= IGraphicsBackend::INITFLAG_VSYNC;
 	}
@@ -3179,6 +3225,9 @@ int CGraphics_Threaded::InitWindow()
 		if(ErrorCode == 0)
 			return 0;
 	}
+
+	if(m_BackendMode == EGraphicsBackendMode::OFFSCREEN)
+		return ErrorCode;
 
 	size_t GLInitTryCount = 0;
 	while(ErrorCode == EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_CONTEXT_FAILED ||
@@ -3299,7 +3348,12 @@ int CGraphics_Threaded::Init()
 	m_BufferContainerHandles.Reset(0);
 	m_FirstFreeQuadContainer = -1;
 
-	m_pBackend = CreateGraphicsBackend(BackendOverrideFromEnvironment());
+	m_pBackend = CreateGraphicsBackend(BackendOverrideFromEnvironment(), m_BackendMode);
+	if(m_pBackend == nullptr)
+	{
+		log_error("gfx", "The requested graphics backend does not support offscreen rendering.");
+		return -1;
+	}
 	if(InitWindow() != 0)
 		return -1;
 
@@ -3366,13 +3420,26 @@ int CGraphics_Threaded::Init()
 	log_info_color(GPU_INFO_LOG_COLOR, "gfx", "GPU renderer: %s", GetRendererString());
 	log_info_color(GPU_INFO_LOG_COLOR, "gfx", "GPU version: %s", GetVersionString());
 
-	AdjustViewport(true);
+	AdjustViewport(m_BackendMode == EGraphicsBackendMode::PRESENTATION);
 
 	return 0;
 }
 
 void CGraphics_Threaded::Shutdown()
 {
+	// Init returns before the backend exists when the requested one cannot
+	// render offscreen, and it returns after the backend exists but before the
+	// command buffers do when the window fails. Neither state has anything to
+	// flush, and both used to reach the backend through a null pointer here.
+	if(m_pBackend == nullptr)
+		return;
+	if(m_pCommandBuffer == nullptr)
+	{
+		m_pBackend->Shutdown();
+		delete m_pBackend;
+		m_pBackend = nullptr;
+		return;
+	}
 	if(!DestroyPipelines())
 		log_error("graphics", "Failed to queue pipeline destruction during shutdown");
 	DeleteBufferObject(m_QuadIndexBuffer);
@@ -3971,7 +4038,7 @@ void CGraphics_Threaded::GetCurrentVideoMode(CVideoMode &CurMode, int Screen)
 	m_pBackend->GetCurrentVideoMode(CurMode, m_ScreenHiDPIScale, m_DesktopSize.x, m_DesktopSize.y, Screen);
 }
 
-extern IEngineGraphics *CreateEngineGraphicsThreaded()
+extern IEngineGraphics *CreateEngineGraphicsThreaded(EGraphicsBackendMode BackendMode, bool HiddenWindow)
 {
-	return new CGraphics_Threaded();
+	return new CGraphics_Threaded(BackendMode, HiddenWindow);
 }

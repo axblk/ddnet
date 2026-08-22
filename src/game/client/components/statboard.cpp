@@ -13,7 +13,14 @@
 #include <game/client/components/motd.h>
 #include <game/client/components/statboard.h>
 #include <game/client/gameclient.h>
+#include <game/client/match_report_view.h>
 #include <game/localization.h>
+
+#include <algorithm>
+#include <cinttypes>
+#include <limits>
+#include <optional>
+#include <vector>
 
 CStatboard::CStatboard()
 {
@@ -91,80 +98,6 @@ bool CStatboard::IsRenderable(const CRenderContext &Context) const
 	return NumPlayers <= 32;
 }
 
-void CStatboard::HandleMessage(CSessionStatsState &Stats, const CGameState &State, bool SuppressEvents, int MsgType, void *pRawMsg)
-{
-	if(SuppressEvents)
-		return;
-
-	if(MsgType == NETMSGTYPE_SV_KILLMSG)
-	{
-		CNetMsg_Sv_KillMsg *pMsg = (CNetMsg_Sv_KillMsg *)pRawMsg;
-		CSessionClientStats &VictimStats = Stats.Client(pMsg->m_Victim);
-		VictimStats.m_Deaths++;
-		VictimStats.m_CurrentSpree = 0;
-		if(pMsg->m_Weapon >= 0)
-			VictimStats.m_aDeathsFrom[pMsg->m_Weapon]++;
-		if(pMsg->m_Victim != pMsg->m_Killer)
-		{
-			CSessionClientStats &KillerStats = Stats.Client(pMsg->m_Killer);
-			KillerStats.m_Frags++;
-			KillerStats.m_CurrentSpree++;
-
-			if(KillerStats.m_CurrentSpree > KillerStats.m_BestSpree)
-				KillerStats.m_BestSpree = KillerStats.m_CurrentSpree;
-			if(pMsg->m_Weapon >= 0)
-				KillerStats.m_aFragsWith[pMsg->m_Weapon]++;
-		}
-		else
-			VictimStats.m_Suicides++;
-	}
-	else if(MsgType == NETMSGTYPE_SV_KILLMSGTEAM)
-	{
-		CNetMsg_Sv_KillMsgTeam *pMsg = (CNetMsg_Sv_KillMsgTeam *)pRawMsg;
-		for(int i = 0; i < MAX_CLIENTS; i++)
-		{
-			if(State.Teams().Team(i) == pMsg->m_Team)
-			{
-				Stats.Client(i).m_Deaths++;
-				Stats.Client(i).m_Suicides++;
-			}
-		}
-	}
-	else if(MsgType == NETMSGTYPE_SV_CHAT)
-	{
-		CNetMsg_Sv_Chat *pMsg = (CNetMsg_Sv_Chat *)pRawMsg;
-		if(pMsg->m_ClientId < 0)
-		{
-			const char *p, *t;
-			const char *pLookFor = "flag was captured by '";
-			if((p = str_find(pMsg->m_pMessage, pLookFor)))
-			{
-				char aName[MAX_NAME_LENGTH];
-				p += str_length(pLookFor);
-				t = str_rchr(p, '\'');
-
-				if(t <= p)
-					return;
-				str_truncate(aName, sizeof(aName), p, t - p);
-
-				for(int i = 0; i < MAX_CLIENTS; i++)
-				{
-					if(!Stats.Client(i).IsActive())
-						continue;
-
-					const CGameState::CClientIdentityState &Identity = State.ClientIdentity(i);
-					char aClientName[MAX_NAME_LENGTH];
-					if(Identity.m_Active && IntsToStr(Identity.m_ClientInfo.m_aName, std::size(Identity.m_ClientInfo.m_aName), aClientName, std::size(aClientName)) && str_comp(aClientName, aName) == 0)
-					{
-						Stats.Client(i).m_FlagCaptures++;
-						break;
-					}
-				}
-			}
-		}
-	}
-}
-
 void CStatboard::UpdateController()
 {
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
@@ -192,8 +125,32 @@ void CStatboard::OnRender(const CRenderContext &Context)
 	if(!Context.m_Time.m_IsGameActive)
 		return;
 
-	if(IsRenderable(Context))
+	if(!IsRenderable(Context))
+		return;
+
+	// Either or, not both: while a server reports the running match, its numbers
+	// are the authoritative version of everything the table below estimates, so
+	// the live panel takes the place of the table instead of sitting on top of
+	// it. This is where a live match belongs: in the game, not in a menu tab.
+	if(const CStoredMatch *pLive = GameClient()->LiveStats(Context.m_Session.Id()))
+		RenderLiveMatch(Context, *pLive);
+	else
 		RenderGlobalStats(Context);
+}
+
+void CStatboard::RenderLiveMatch(const CRenderContext &Context, const CStoredMatch &Live)
+{
+	const float StatboardWidth = 400 * 3.0f * Context.AspectRatio(Graphics()->ScreenAspect());
+	const float StatboardHeight = 400 * 3.0f;
+	Graphics()->MapScreenToSize(StatboardWidth, StatboardHeight);
+
+	const float PanelWidth = 760.0f;
+	const float PanelHeight = LiveMatchPanelHeight(Live);
+	const float X = StatboardWidth / 2.0f - PanelWidth / 2.0f;
+	const float Y = 200.0f;
+	GameClient()->m_Menus.RenderBackdropRegion({X, Y, PanelWidth, PanelHeight});
+	Graphics()->DrawRect(X, Y, PanelWidth, PanelHeight, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 17.0f);
+	RenderLiveMatchPanel(Live, X + 10.0f, Y + 10.0f, PanelWidth - 20.0f);
 }
 
 void CStatboard::RenderGlobalStats(const CRenderContext &Context)
@@ -459,6 +416,89 @@ void CStatboard::RenderGlobalStats(const CRenderContext &Context)
 			TextRender()->Text(x - TextWidth + px, y + (LineHeight * 0.95f - FontSize) / 2.f, FontSize, aBuf, -1.0f);
 		}
 		y += LineHeight;
+	}
+}
+
+float CStatboard::LiveMatchPanelHeight(const CStoredMatch &Live) const
+{
+	const int Rows = std::min<int>(Live.m_Report.m_vParticipants.size(), MAX_LIVE_ROWS);
+	return 34.0f + 26.0f + Rows * 24.0f + 10.0f;
+}
+
+void CStatboard::RenderLiveMatchPanel(const CStoredMatch &Live, float X, float Y, float Width)
+{
+	const CMatchReport &Report = Live.m_Report;
+
+	char aDuration[64];
+	FormatMatchDuration(Report.m_DurationTicks, Report.m_TickRate, aDuration, sizeof(aDuration));
+	char aTitle[320];
+	str_format(aTitle, sizeof(aTitle), "%s  ·  %s  ·  %s", Report.m_MapName.c_str(), Report.m_ModeId.c_str(), aDuration);
+	TextRender()->Text(X, Y, 22.0f, aTitle, Width);
+	// Says where these numbers come from: the server, not this client's count.
+	TextRender()->TextColor(ColorRGBA(0.30f, 0.62f, 1.0f, 1.0f));
+	const char *pSource = Localize("Live from server");
+	TextRender()->Text(X + Width - TextRender()->TextWidth(18.0f, pSource, -1, -1.0f), Y + 2.0f, 18.0f, pSource, -1.0f);
+	TextRender()->TextColor(TextRender()->DefaultTextColor());
+	Y += 34.0f;
+
+	// Rank, name and clan on the left, the numbers right-aligned in fixed
+	// columns so that they line up down the panel.
+	const float NameWidth = Width - 60.0f - 4 * 110.0f;
+	const auto Row = [&](float RowY, const char *pRank, const char *pName, const char *const *ppValues, float FontSize) {
+		TextRender()->Text(X + 4.0f, RowY, FontSize, pRank, 56.0f);
+		TextRender()->Text(X + 60.0f, RowY, FontSize, pName, NameWidth);
+		for(int Column = 0; Column < 4; ++Column)
+		{
+			const float Right = X + 60.0f + NameWidth + (Column + 1) * 110.0f;
+			TextRender()->Text(Right - TextRender()->TextWidth(FontSize, ppValues[Column], -1, -1.0f), RowY, FontSize, ppValues[Column], -1.0f);
+		}
+	};
+
+	const char *apHeaders[4] = {Localize("Score"), Localize("Frags"), Localize("Deaths"), Localize("Accuracy")};
+	TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.6f));
+	Row(Y, Localize("#"), Localize("Name"), apHeaders, 18.0f);
+	TextRender()->TextColor(TextRender()->DefaultTextColor());
+	Y += 26.0f;
+
+	// Kept between frames so that the rows and their values are looked up once
+	// per report instead of once per row and per sort comparison.
+	static CMatchReportRanking s_Ranking;
+	s_Ranking.Update(Report);
+	const std::vector<CMatchReportRow> &vRanked = s_Ranking.Rows();
+
+	const int Rows = std::min<int>(vRanked.size(), MAX_LIVE_ROWS);
+	for(int Index = 0; Index < Rows; ++Index)
+	{
+		const CMatchReportRow &Entry = vRanked[Index];
+		const CMatchParticipant &Participant = *Entry.m_pParticipant;
+		const bool Local = Live.m_LocalParticipantId.has_value() && *Live.m_LocalParticipantId == Participant.m_ParticipantId;
+		if(Local)
+			Graphics()->DrawRect(X - 4.0f, Y - 2.0f, Width + 8.0f, 24.0f, ColorRGBA(0.30f, 0.62f, 1.0f, 0.18f), IGraphics::CORNER_ALL, 3.0f);
+
+		char aRank[16] = "-";
+		if(Entry.m_pStanding != nullptr)
+			str_format(aRank, sizeof(aRank), "%d", Entry.m_pStanding->m_Rank);
+		char aaValues[4][32];
+		const char *apValues[4];
+		for(int Column = 0; Column < 4; ++Column)
+			apValues[Column] = aaValues[Column];
+		const std::optional<int64_t> aValues[3] = {Entry.m_Score, Entry.m_Kills, Entry.m_Deaths};
+		for(int Column = 0; Column < 3; ++Column)
+		{
+			if(aValues[Column].has_value())
+				str_format(aaValues[Column], sizeof(aaValues[Column]), "%" PRId64, *aValues[Column]);
+			else
+				str_copy(aaValues[Column], "-");
+		}
+		FormatMatchAccuracy(Entry.m_Combat.m_Hits, Entry.m_Combat.m_Shots, aaValues[3], sizeof(aaValues[3]));
+
+		char aName[MatchReportLimits::MAX_DISPLAY_NAME_LENGTH + MatchReportLimits::MAX_CLAN_LENGTH + 8];
+		if(Participant.m_Clan.empty())
+			str_copy(aName, Participant.m_DisplayName.c_str());
+		else
+			str_format(aName, sizeof(aName), "%s  %s", Participant.m_DisplayName.c_str(), Participant.m_Clan.c_str());
+		Row(Y, aRank, aName, apValues, 20.0f);
+		Y += 24.0f;
 	}
 }
 

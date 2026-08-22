@@ -13,6 +13,9 @@
 #include <engine/client/session.h>
 #include <engine/friends.h>
 #include <engine/shared/translation_context.h>
+#if defined(CONF_VIDEORECORDER)
+#include <engine/shared/video.h>
+#endif
 
 #include <generated/protocol.h>
 #include <generated/protocol7.h>
@@ -144,6 +147,10 @@ public:
 	virtual CStreamId StreamId(CSessionId SessionId, int LegacyConnection) const = 0;
 	virtual int StreamIndex(CSessionId SessionId, CStreamId StreamId) const = 0;
 	virtual ESessionState SessionState(CSessionId SessionId) const = 0;
+	virtual bool DemoPlaybackPaused(CSessionId SessionId) const = 0;
+	virtual float DemoPlaybackSpeed(CSessionId SessionId) const = 0;
+	virtual int64_t DemoPlaybackTime(CSessionId SessionId) const = 0;
+	virtual float DemoPlaybackLocalTime(CSessionId SessionId) const = 0;
 
 	enum
 	{
@@ -254,7 +261,46 @@ public:
 	virtual void Quit() = 0;
 	virtual const char *DemoPlayer_Play(const char *pFilename, int StorageType) = 0;
 #if defined(CONF_VIDEORECORDER)
-	virtual const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, int SpeedIndex, bool StartPaused = false) = 0;
+	virtual const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue) = 0;
+	virtual void DemoPlayer_StartRenderQueue() = 0;
+	virtual void DemoPlayer_ClearRenderQueue() = 0;
+	virtual size_t DemoPlayer_RenderQueueSize() const = 0;
+	/**
+	 * Number of queued exports that have not been started yet.
+	 */
+	virtual size_t DemoPlayer_RenderQueuePending() const = 0;
+	/**
+	 * Demo of the pending export at @p Index, which must be less than
+	 * `DemoPlayer_RenderQueuePending()`. That is what the queue was filled
+	 * with and what a name in it should say; the video name is derived from
+	 * it and says the same thing twice.
+	 */
+	virtual const char *DemoPlayer_RenderQueueName(size_t Index) const = 0;
+	/**
+	 * Demo of the export that is running, or an empty string when none is.
+	 */
+	virtual const char *DemoPlayer_ActiveRenderName() const = 0;
+	/**
+	 * Removes the pending export at @p Index, which must be less than
+	 * `DemoPlayer_RenderQueuePending()`. The active export is not affected.
+	 */
+	virtual void DemoPlayer_RenderQueueErase(size_t Index) = 0;
+	/**
+	 * Moves the pending export at @p Index one position towards the front or
+	 * back of the queue. Both @p Index and the resulting position must be less
+	 * than `DemoPlayer_RenderQueuePending()`.
+	 */
+	virtual void DemoPlayer_RenderQueueMove(size_t Index, bool Up) = 0;
+	/**
+	 * Aborts the export that is currently running. Pending exports are kept and
+	 * the next one is started afterwards.
+	 */
+	virtual void DemoPlayer_CancelActiveRender() = 0;
+	virtual bool DemoPlayer_RenderQueueActive() const = 0;
+	virtual const char *DemoPlayer_RenderQueueError() const = 0;
+	virtual bool DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const = 0;
+	virtual CSessionId VideoSessionId() const = 0;
+	virtual bool VideoUsesOfflineAudio() const = 0;
 #endif
 	virtual void DemoRecorder_Start(const char *pFilename, bool WithTimestamp, int Recorder) = 0;
 	virtual void DemoRecorder_HandleAutoStart() = 0;
@@ -436,8 +482,14 @@ public:
 	virtual void OnEnterGame(CSessionId SessionId) = 0;
 	virtual void OnShutdown() = 0;
 	virtual void OnRenderPrepare() = 0;
+#if defined(CONF_VIDEORECORDER)
+	virtual void OnRenderVideoPrepare(CSessionId SessionId, const CVideoExportSettings &Settings) = 0;
+#endif
 	virtual void OnRender() = 0;
 	virtual void OnRenderFinalize() = 0;
+#if defined(CONF_VIDEORECORDER)
+	virtual bool OnRenderVideoProgress(bool Overlay) = 0;
+#endif
 	virtual void OnUpdate() = 0;
 	virtual void OnStateChange(int NewState, int OldState) = 0;
 	virtual void OnConnected(CSessionId SessionId) = 0;
@@ -450,6 +502,7 @@ public:
 	virtual void OnPredict(CSessionId SessionId, CStreamId StreamId) = 0;
 	virtual void OnActivateEditor() = 0;
 	virtual void OnWindowResize() = 0;
+	virtual bool IsSoundReady() = 0;
 
 	virtual int OnSnapInput(CSessionId SessionId, int *pData, CStreamId StreamId, bool Force) = 0;
 	virtual void OnConnectionFocusChanged(CSessionId SessionId, CStreamId PreviousStreamId, CStreamId StreamId) = 0;

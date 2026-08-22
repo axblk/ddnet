@@ -119,6 +119,7 @@ bool CGameControllerVanillaPvP::OnCharacterTakeDamage(CCharacter *pVictim, vec2 
 	if(DamageTaken > 0)
 	{
 		Services().CreateDamageInd(pVictim->m_Pos, 0.0f, DamageTaken, pVictim->TeamMask());
+		AddCharacterDamageMatchMetrics(From != VictimId ? Services().Player(From) : nullptr, pVictim->GetPlayer(), Weapon, DamageTaken);
 	}
 
 	if(CPlayer *pAttackerPlayer = From != VictimId ? Services().Player(From) : nullptr)
@@ -293,6 +294,7 @@ void CGameControllerVanillaPvP::DetachProjectiles(int ClientId)
 
 void CGameControllerVanillaPvP::StartRound()
 {
+	FinalizeMatchReportForRestart();
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
 		CPlayer *pPlayer = Services().Player(ClientId);

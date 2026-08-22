@@ -176,6 +176,7 @@ private:
 #endif
 	class IHttp *m_pHttp;
 
+	CMatchJournal m_MatchJournal;
 	CGameSessionContextManager m_SessionContexts;
 	// Last state GameState() resolved, see there.
 	CSessionId m_StateCacheSessionId;
@@ -185,6 +186,9 @@ private:
 	CGameViewId m_LegacyGameViewId;
 	CGameViewId m_SecondaryGameViewId;
 	CGameViewId m_TertiaryGameViewId;
+#if defined(CONF_VIDEORECORDER)
+	CGameViewId m_VideoGameViewId;
+#endif
 	float m_ControllerLocalTime = 0.0f;
 	class CPreparedRenderEntry
 	{
@@ -193,6 +197,7 @@ private:
 		CGameState *m_pState = nullptr;
 		CGameView *m_pView = nullptr;
 		int m_Conn = IClient::CONN_MAIN;
+		bool m_Active = false;
 		bool m_Audible = false;
 		CGameTickInfo m_Time;
 		EPresentationPlayback m_Playback = EPresentationPlayback::PLAYING;
@@ -207,13 +212,26 @@ private:
 	CRaceHelper m_RaceHelper;
 
 	void ProcessEvents(CSessionId SessionId, int Conn);
+	void ProcessAirJumpEffects(CSessionId SessionId, int Conn, CGameState &State);
 	void ProcessSnapshot(CSessionId SessionId, int Conn);
+	void FinalizeObservedMatch(CSessionId SessionId, CGameSessionContext &Session, CGameState &State, int Tick, EMatchTermination Termination);
+	void PersistLiveStatsOnDisconnect(CSessionId SessionId, CGameSessionContext &Session);
+	bool HandleMatchReportMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId);
+	bool HandleLiveStatsMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId);
+	void RequestLiveStats(CSessionId SessionId, bool Force);
 	void ProcessPrediction();
 	void UpdatePositions(const CGameState &State, const CGameTickInfo &Time, float LocalTime);
+	void FillPreparedRenderEntry(CPreparedRenderEntry &Entry, int64_t PresentationTime, int64_t Now);
+	void PrepareScreenRender(bool VideoOutput);
 	CVisibleWorldRect VisibleWorldRectFor(const CGameView &View) const;
+	bool m_PreparedVideoOutput = false;
+	CVideoExportSettings m_PreparedVideoSettings;
+	bool m_PreparedIsolatedVideoOutput = false;
+	bool m_PreparedOfflineVideoAudio = false;
 	void UpdateNetworkPlayerInfo();
 	void AddChatLine(CSessionId SessionId, int Conn, int ClientId, int Team, const char *pText);
 	int64_t SessionMessageTime(CSessionId SessionId) const;
+	bool AudioForSession(CSessionId SessionId, bool &Offline) const;
 	const CLocalPlayerProfile &RefreshPlayerProfile(CSessionId SessionId, CStreamId StreamId);
 
 	int m_EditorMovementDelay = 5;
@@ -223,6 +241,7 @@ private:
 
 	static void ConTeam(IConsole::IResult *pResult, void *pUserData);
 	static void ConKill(IConsole::IResult *pResult, void *pUserData);
+	static void ConGenerateMatchStatsSamples(IConsole::IResult *pResult, void *pUserData);
 	static void ConReadyChange7(IConsole::IResult *pResult, void *pUserData);
 
 	static void ConchainLanguageUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
@@ -239,6 +258,7 @@ private:
 	static void ConchainMenuMap(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 
 public:
+	bool AudioForState(const CGameState &State, bool &Offline) const;
 	static std::function<bool(int, int, int, int)> GetScoreComparator(bool TimeScore, bool ReceivedMillisecondFinishTimes, bool Race7);
 
 	IKernel *Kernel() { return IInterface::Kernel(); }
@@ -255,6 +275,10 @@ public:
 	const CGameSessionContext &SessionContext() const;
 	CGameSessionContext *FindSessionContext(CSessionId SessionId) { return m_SessionContexts.Find(SessionId); }
 	const CGameSessionContext *FindSessionContext(CSessionId SessionId) const { return m_SessionContexts.Find(SessionId); }
+	CMatchJournal &MatchJournal() { return m_MatchJournal; }
+	const CMatchJournal &MatchJournal() const { return m_MatchJournal; }
+	const CStoredMatch *LiveStats(CSessionId SessionId) const;
+	void RequestLiveStatsNow();
 	CSessionPresentation &SessionPresentation(CSessionId SessionId);
 	const CSessionPresentation &SessionPresentation(CSessionId SessionId) const;
 	void ResetInfoMessages(CSessionId SessionId);
@@ -400,8 +424,14 @@ public:
 	void OnSessionDestroyed(CSessionId SessionId) override;
 	void OnSessionFocused(CSessionId SessionId) override;
 	void OnRenderPrepare() override;
+#if defined(CONF_VIDEORECORDER)
+	void OnRenderVideoPrepare(CSessionId SessionId, const CVideoExportSettings &Settings) override;
+#endif
 	void OnRender() override;
 	void OnRenderFinalize() override;
+#if defined(CONF_VIDEORECORDER)
+	bool OnRenderVideoProgress(bool Overlay) override;
+#endif
 	void OnUpdate() override;
 	void OnDummyDisconnect() override;
 	virtual void OnRelease();
@@ -429,6 +459,7 @@ public:
 	virtual void OnStartGame();
 	virtual void OnStartRound();
 	void OnWindowResize() override;
+	bool IsSoundReady() override { return m_Sounds.IsReady(); }
 
 	void InitializeLanguage() override;
 	bool m_LanguageChanged = false;

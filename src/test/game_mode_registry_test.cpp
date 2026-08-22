@@ -50,6 +50,56 @@ TEST(GameModeRegistry, FindStaysExact)
 	EXPECT_STREQ(Registry.Find("vanilla.ctf")->m_pId, "vanilla.ctf");
 }
 
+TEST(GameModeRegistry, RejectsInvalidReportMetadata)
+{
+	CGameModeRegistry Registry;
+	CGameModeInfo EmptyMode = {"empty_mode", "Test", "Test", "Test", EGameModeScoreKind::POINTS, 0};
+	EmptyMode.m_Report.m_SchemaVersion = 1;
+	EXPECT_FALSE(Registry.Register(EmptyMode, CreateNothing));
+
+	CGameModeInfo InvalidNamespace = {"invalid_namespace", "Test", "Test", "Test", EGameModeScoreKind::POINTS, 0};
+	InvalidNamespace.m_Report = CompetitiveGameModeReport("invalid", false);
+	EXPECT_FALSE(Registry.Register(InvalidNamespace, CreateNothing));
+
+	CGameModeInfo LongMode = {"long_mode", "Test", "Test", "Test", EGameModeScoreKind::POINTS, 0};
+	LongMode.m_Report = CompetitiveGameModeReport((std::string(MatchReportLimits::MAX_MODE_ID_LENGTH, 'm') + "@x").c_str(), false);
+	EXPECT_FALSE(Registry.Register(LongMode, CreateNothing));
+
+	CGameModeInfo DuplicateMetric = {"duplicate_metric", "Test", "Test", "Test", EGameModeScoreKind::POINTS, 0};
+	DuplicateMetric.m_Report = CompetitiveGameModeReport("test@ddnet.org", false);
+	DuplicateMetric.m_Report.m_vMetrics.push_back(DuplicateMetric.m_Report.m_vMetrics.front());
+	EXPECT_FALSE(Registry.Register(DuplicateMetric, CreateNothing));
+
+	CGameModeInfo LongMetric = {"long_metric", "Test", "Test", "Test", EGameModeScoreKind::POINTS, 0};
+	LongMetric.m_Report = CompetitiveGameModeReport("test@ddnet.org", false);
+	LongMetric.m_Report.m_vMetrics.front().m_Id = "test@ddnet.org/" + std::string(MatchReportLimits::MAX_METRIC_ID_LENGTH, 'm');
+	EXPECT_FALSE(Registry.Register(LongMetric, CreateNothing));
+
+	CGameModeInfo InvalidLive = {"invalid_live", "Test", "Test", "Test", EGameModeScoreKind::POINTS, 0};
+	InvalidLive.m_LiveStats = RaceLiveStatsReport("invalid");
+	EXPECT_FALSE(Registry.Register(InvalidLive, CreateNothing));
+
+	CGameModeInfo MismatchedLiveVersion = {"mismatched_live", "Test", "Test", "Test", EGameModeScoreKind::POINTS, 0};
+	MismatchedLiveVersion.m_Report = CompetitiveGameModeReport("test@ddnet.org", false);
+	MismatchedLiveVersion.m_LiveStats = MismatchedLiveVersion.m_Report;
+	MismatchedLiveVersion.m_LiveStats.m_SchemaVersion++;
+	EXPECT_FALSE(Registry.Register(MismatchedLiveVersion, CreateNothing));
+
+	for(const char *pModeId : {"test@@ddnet.org", "test@ddnet.org/extra", "test @ddnet.org", "test@\tddnet.org"})
+	{
+		CGameModeInfo InvalidMode = {"invalid_mode", "Test", "Test", "Test", EGameModeScoreKind::POINTS, 0};
+		InvalidMode.m_Report = CompetitiveGameModeReport(pModeId, false);
+		EXPECT_FALSE(Registry.Register(InvalidMode, CreateNothing)) << pModeId;
+	}
+	for(const char *pMetricId : {"test@ddnet.org/two/parts", "test@ddnet.org/white space", "test@ddnet.org/cätches", "other@ddnet.org/score"})
+	{
+		CGameModeInfo InvalidMetric = {"invalid_metric", "Test", "Test", "Test", EGameModeScoreKind::POINTS, 0};
+		InvalidMetric.m_Report = CompetitiveGameModeReport("test@ddnet.org", false);
+		InvalidMetric.m_Report.m_vMetrics.front().m_Id = pMetricId;
+		EXPECT_FALSE(Registry.Register(InvalidMetric, CreateNothing)) << pMetricId;
+	}
+}
+
 TEST(GameModeRegistry, BuiltInMetadata)
 {
 	CGameModeRegistry Registry;
@@ -61,12 +111,19 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	EXPECT_STREQ(GameModeScoreKindName(pDDNet->m_ScoreKind), "time");
 	EXPECT_TRUE(pDDNet->m_UseTuneZones);
 	EXPECT_TRUE(pDDNet->m_PhysicsRules.m_DDNetMovement);
+	EXPECT_TRUE(pDDNet->m_Report.m_ModeId.empty());
+	EXPECT_EQ(pDDNet->m_LiveStats.m_ModeId, "ddnet.race@ddnet.org");
+	EXPECT_EQ(pDDNet->m_LiveStats.m_SchemaVersion, 1);
+	ASSERT_EQ(pDDNet->m_LiveStats.m_vMetrics.size(), 8u);
+	EXPECT_EQ(pDDNet->m_LiveStats.m_vMetrics.front().m_Id, "ddnet.race@ddnet.org/personal_best_ticks");
+	EXPECT_EQ(pDDNet->m_LiveStats.m_vMetrics.back().m_Id, "ddnet.race@ddnet.org/current_checkpoint");
 
 	const CGameModeInfo *pMod = Registry.Find("mod");
 	ASSERT_NE(pMod, nullptr);
 	EXPECT_STREQ(pMod->m_pTestingGameType, "TestMod");
 	EXPECT_TRUE(pMod->m_UseTuneZones);
 	EXPECT_TRUE(pMod->m_PhysicsRules.m_DDNetMovement);
+	EXPECT_EQ(pMod->m_LiveStats.m_ModeId, "ddrace.mod@ddnet.org");
 
 	const CGameModeInfo *pVanillaDM = Registry.Find("vanilla.dm");
 	ASSERT_NE(pVanillaDM, nullptr);
@@ -75,6 +132,15 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	EXPECT_EQ(pVanillaDM->m_ActivePlayerLimit, 0);
 	EXPECT_FALSE(pVanillaDM->m_UseTuneZones);
 	EXPECT_FALSE(pVanillaDM->m_PhysicsRules.m_DDNetMovement);
+	EXPECT_EQ(pVanillaDM->m_Report.m_ModeId, "vanilla.dm@ddnet.org");
+	EXPECT_EQ(pVanillaDM->m_Report.m_SchemaVersion, 1);
+	// Ten metrics that stand on their own and six weapons with six each.
+	ASSERT_EQ(pVanillaDM->m_Report.m_vMetrics.size(), 46u);
+	EXPECT_EQ(pVanillaDM->m_Report.m_vMetrics[0].m_Aggregation, EMatchMetricAggregation::SUM);
+	EXPECT_EQ(pVanillaDM->m_Report.m_vMetrics[2].m_Aggregation, EMatchMetricAggregation::MATCH_ONLY);
+	EXPECT_EQ(pVanillaDM->m_Report.m_vMetrics[8].m_Unit, EGameModeMetricUnit::DAMAGE);
+	EXPECT_EQ(pVanillaDM->m_Report.m_vMetrics[10].m_Id, "vanilla.dm@ddnet.org/weapon_0_kills");
+	EXPECT_EQ(pVanillaDM->m_Report.m_vMetrics[45].m_Id, "vanilla.dm@ddnet.org/weapon_5_damage_taken");
 
 	const CGameModeInfo *pVanilla1on1 = Registry.Find("vanilla.1on1");
 	ASSERT_NE(pVanilla1on1, nullptr);
@@ -92,12 +158,16 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	ASSERT_NE(pVanillaCTF, nullptr);
 	EXPECT_STREQ(pVanillaCTF->m_pGameType, "CTF");
 	EXPECT_EQ(pVanillaCTF->m_GameFlags, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS);
+	ASSERT_EQ(pVanillaCTF->m_Report.m_vMetrics.size(), 49u);
+	EXPECT_EQ(pVanillaCTF->m_Report.m_vMetrics.back().m_Id, "vanilla.ctf@ddnet.org/flag_captures");
 
 	const CGameModeInfo *pInstagibDM = Registry.Find("insta.idm");
 	ASSERT_NE(pInstagibDM, nullptr);
 	EXPECT_STREQ(pInstagibDM->m_pGameType, "iDM");
 	EXPECT_EQ(pInstagibDM->m_ScoreKind, EGameModeScoreKind::POINTS);
 	EXPECT_EQ(pInstagibDM->m_GameFlags, 0);
+	EXPECT_EQ(pInstagibDM->m_Report.m_ModeId, "insta.idm@ddnet.org");
+	EXPECT_NE(pInstagibDM->m_Report.m_ModeId, pVanillaDM->m_Report.m_ModeId);
 
 	const CGameModeInfo *pInstagibTDM = Registry.Find("insta.itdm");
 	ASSERT_NE(pInstagibTDM, nullptr);
@@ -110,6 +180,7 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	EXPECT_STREQ(pInstagibCTF->m_pGameType, "iCTF");
 	EXPECT_EQ(pInstagibCTF->m_ScoreKind, EGameModeScoreKind::POINTS);
 	EXPECT_EQ(pInstagibCTF->m_GameFlags, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS);
+	EXPECT_EQ(pInstagibCTF->m_Report.m_vMetrics.back().m_Category, EGameModeMetricCategory::OBJECTIVES);
 
 	const CGameModeInfo *pGrenadeDM = Registry.Find("insta.gdm");
 	ASSERT_NE(pGrenadeDM, nullptr);
@@ -132,6 +203,9 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	EXPECT_STREQ(pZCatch->m_pGameType, "zCatch");
 	EXPECT_EQ(pZCatch->m_ScoreKind, EGameModeScoreKind::POINTS);
 	EXPECT_EQ(pZCatch->m_GameFlags, 0);
+	EXPECT_EQ(pZCatch->m_Report.m_ModeId, "zcatch.laser@ddnet.org");
+	ASSERT_EQ(pZCatch->m_Report.m_vMetrics.size(), 47u);
+	EXPECT_EQ(pZCatch->m_Report.m_vMetrics.back().m_Id, "zcatch.laser@ddnet.org/catches");
 }
 
 TEST(GameModeRegistry, VanillaDefaultTuning)

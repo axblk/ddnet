@@ -54,9 +54,9 @@ class CSounds : public CComponent
 		int m_Channel;
 		int m_SetId;
 	};
-	CQueueEntry m_aQueue[QUEUE_SIZE];
-	int m_QueuePos;
-	int64_t m_QueueWaitTime;
+	CQueueEntry m_aaQueue[2][QUEUE_SIZE] = {};
+	int m_aQueuePos[2] = {};
+	int64_t m_aQueueWaitTime[2] = {};
 	std::array<CTypedAssetResource<CSoundLoading>, 2> m_aSoundResources;
 	uint64_t m_LoadGeneration = 1;
 	bool m_WaitForSoundJob = false;
@@ -66,6 +66,8 @@ class CSounds : public CComponent
 	std::chrono::nanoseconds m_SoundLoadTime{};
 
 	void UpdateChannels();
+	void UpdateQueue(bool Offline, int64_t Now);
+	bool UpdateLoadingState();
 	int GetSampleId(int SetId);
 
 	float m_GuiSoundVolume = -1.0f;
@@ -90,11 +92,17 @@ public:
 	void OnReset() override;
 	void OnStateChange(int NewState, int OldState) override;
 	void Update(std::optional<vec2> ListenerPosition);
+	void UpdateOffline(vec2 ListenerPosition, int64_t Now);
+	bool IsReady() { return UpdateLoadingState(); }
 
 	void ClearQueue();
+	void ClearOffline();
 	void Enqueue(int Channel, int SetId);
+	void EnqueueForAudio(int Channel, int SetId, bool Offline);
 	void Play(int Channel, int SetId, float Volume);
 	void PlayAt(int Channel, int SetId, float Volume, vec2 Position);
+	void PlayForAudio(int Channel, int SetId, float Volume, bool Offline);
+	void PlayAtForAudio(int Channel, int SetId, float Volume, vec2 Position, bool Offline);
 	void PlayAndRecord(int Channel, int SetId, float Volume, vec2 Position);
 	void Stop(int SetId);
 	bool IsPlaying(int SetId);
@@ -102,6 +110,8 @@ public:
 
 	ISound::CVoiceHandle PlaySample(int Channel, int SampleId, int Flags, float Volume);
 	ISound::CVoiceHandle PlaySampleAt(int Channel, int SampleId, int Flags, float Volume, vec2 Position);
+	ISound::CVoiceHandle PlaySampleForAudio(int Channel, int SampleId, int Flags, float Volume, bool Offline);
+	ISound::CVoiceHandle PlaySampleAtForAudio(int Channel, int SampleId, int Flags, float Volume, vec2 Position, bool Offline);
 };
 
 #endif

@@ -708,17 +708,19 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 		// handle special messages
 		char aBuf[256];
 		const bool TeamPlay = pSourceState->HasGameInfo() && (pSourceState->GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
+		bool OfflineAudio = false;
+		const bool AudioActive = !AdditionalStream && AudioForSession(SessionId, OfflineAudio) && Conn == (OfflineAudio ? IClient::CONN_MAIN : ActiveConnection());
 		if(gs_GameMsgList7[GameMsgId].m_Action == DO_SPECIAL)
 		{
 			switch(GameMsgId)
 			{
 			case protocol7::GAMEMSG_CTF_DROP:
-				if(SessionId == Client()->FocusedSessionId() && Conn == ActiveConnection())
-					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_DROP);
+				if(AudioActive)
+					m_Sounds.EnqueueForAudio(CSounds::CHN_GLOBAL, SOUND_CTF_DROP, OfflineAudio);
 				break;
 			case protocol7::GAMEMSG_CTF_RETURN:
-				if(SessionId == Client()->FocusedSessionId() && Conn == ActiveConnection())
-					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_RETURN);
+				if(AudioActive)
+					m_Sounds.EnqueueForAudio(CSounds::CHN_GLOBAL, SOUND_CTF_RETURN, OfflineAudio);
 				break;
 			case protocol7::GAMEMSG_TEAM_ALL:
 			{
@@ -747,8 +749,8 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 			}
 			break;
 			case protocol7::GAMEMSG_CTF_GRAB:
-				if(SessionId == Client()->FocusedSessionId() && Conn == ActiveConnection())
-					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_GRAB_EN);
+				if(AudioActive)
+					m_Sounds.EnqueueForAudio(CSounds::CHN_GLOBAL, SOUND_CTF_GRAB_EN, OfflineAudio);
 				break;
 			case protocol7::GAMEMSG_GAME_PAUSED:
 			{
@@ -760,8 +762,8 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 			}
 			break;
 			case protocol7::GAMEMSG_CTF_CAPTURE:
-				if(SessionId == Client()->FocusedSessionId() && Conn == ActiveConnection())
-					m_Sounds.Enqueue(CSounds::CHN_GLOBAL, SOUND_CTF_CAPTURE);
+				if(AudioActive)
+					m_Sounds.EnqueueForAudio(CSounds::CHN_GLOBAL, SOUND_CTF_CAPTURE, OfflineAudio);
 				int ClientId = std::clamp(aParaI[1], 0, MAX_CLIENTS - 1);
 				if(!AdditionalStream)
 					pSourceSession->Stats().Client(ClientId).m_FlagCaptures++;

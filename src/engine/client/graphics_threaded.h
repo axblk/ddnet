@@ -22,6 +22,7 @@
 constexpr int CMD_BUFFER_DATA_BUFFER_SIZE = 1024 * 1024 * 2;
 constexpr int CMD_BUFFER_CMD_BUFFER_SIZE = 1024 * 256;
 constexpr size_t RELIABLE_QUEUE_MAX_EXTERNAL_DATA_SIZE = 64 * 1024 * 1024;
+constexpr size_t GPU_INFO_STRING_SIZE = 256;
 
 struct SGfxErrorContainer;
 struct SGfxWarningContainer;
@@ -1150,6 +1151,7 @@ public:
 		INITFLAG_RESIZABLE = 1 << 2,
 		INITFLAG_BORDERLESS = 1 << 3,
 		INITFLAG_DESKTOP_FULLSCREEN = 1 << 4,
+		INITFLAG_HIDDEN = 1 << 5,
 	};
 
 	virtual ~IGraphicsBackend() = default;
@@ -1450,9 +1452,11 @@ class CGraphics_Threaded : public IEngineGraphics
 
 	int IssueInit();
 	int InitWindow();
+	EGraphicsBackendMode m_BackendMode;
+	bool m_HiddenWindow;
 
 public:
-	CGraphics_Threaded();
+	CGraphics_Threaded(EGraphicsBackendMode BackendMode, bool HiddenWindow);
 
 	void ClipEnable(int x, int y, int w, int h) override;
 	void ClipDisable() override;
@@ -1494,7 +1498,7 @@ public:
 	IGraphics::CTextureHandle CreateTexture(const CTextureDesc &Desc, const void *pInitialData = nullptr) override;
 	std::unique_ptr<ITextureReadback> ReadTextureAsync(CTextureHandle Texture, CImageInfo &&Recycled = CImageInfo()) override;
 	bool BeginOffscreenFrame(CTextureHandle Texture) override;
-	std::unique_ptr<ITextureReadback> EndOffscreenFrame(CImageInfo &&Recycled = CImageInfo()) override;
+	std::unique_ptr<ITextureReadback> EndOffscreenFrame(CImageInfo &&Recycled = CImageInfo(), CTextureHandle YuvTarget = CTextureHandle(), EPlanarYuvFormat YuvFormat = EPlanarYuvFormat::NV12) override;
 	std::unique_ptr<ITextureReadback> PresentAndReadbackAsync(CImageInfo &&Recycled = CImageInfo()) override;
 	bool PlanarYuvConversionSupported() const override { return m_Capabilities.m_PlanarYuvConversion; }
 	bool ConvertTextureToPlanarYuv(CTextureHandle Source, EPlanarYuvFormat Format) override;
@@ -1840,6 +1844,6 @@ public:
 	const char *GetFatalError() const override;
 };
 
-extern IGraphicsBackend *CreateGraphicsBackend(EBackendType BackendOverride);
+extern IGraphicsBackend *CreateGraphicsBackend(EBackendType BackendOverride, EGraphicsBackendMode BackendMode);
 
 #endif // ENGINE_CLIENT_GRAPHICS_THREADED_H

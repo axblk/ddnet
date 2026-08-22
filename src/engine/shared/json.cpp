@@ -103,6 +103,11 @@ int json_int_get(const json_value *pInteger)
 	return pInteger->u.integer;
 }
 
+int64_t json_int64_get(const json_value *pInteger)
+{
+	return pInteger->u.integer;
+}
+
 int json_boolean_get(const json_value *pBoolean)
 {
 	return pBoolean->u.boolean != 0;

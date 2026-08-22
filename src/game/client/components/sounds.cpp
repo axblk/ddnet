@@ -105,7 +105,7 @@ void CSounds::UpdateChannels()
 
 int CSounds::GetSampleId(int SetId)
 {
-	if(!g_Config.m_SndEnable || !Sound()->IsSoundEnabled() || SetId < 0 || SetId >= g_pData->m_NumSounds)
+	if(!g_Config.m_SndEnable || !Sound()->IsSoundEnabled() || !UpdateLoadingState() || SetId < 0 || SetId >= g_pData->m_NumSounds)
 		return -1;
 
 	CDataSoundset *pSet = &g_pData->m_aSounds[SetId];
@@ -195,76 +195,109 @@ void CSounds::OnStateChange(int NewState, int OldState)
 
 void CSounds::Update(std::optional<vec2> ListenerPosition)
 {
-	// check for sound initialisation
-	if(m_WaitForSoundJob)
-	{
-		bool Waiting = false;
-		for(auto &Resource : m_aSoundResources)
-		{
-			if(!Resource)
-				continue;
-			if(Resource.IsReady(m_LoadGeneration))
-			{
-				CSoundLoading &SoundLoading = Resource.Result();
-				m_NumSoundSamplesLoaded += SoundLoading.NumLoaded();
-				m_SoundLoadTime += SoundLoading.LoadTime();
-				++m_NumSoundJobsFinished;
-				SoundLoading.Commit();
-				Resource.Reset();
-			}
-			else if(Resource.IsFinished())
-			{
-				Resource.Reset();
-			}
-			else
-			{
-				Waiting = true;
-			}
-		}
-		m_WaitForSoundJob = Waiting;
-		if(!m_WaitForSoundJob)
-		{
-			log_info("asset_loader", "Startup sound batch: jobs=%d loaded=%d wall=%.2fms load=%.2fms", m_NumSoundJobsFinished, m_NumSoundSamplesLoaded,
-				(time_get() - m_SoundBatchStart) * 1000.0 / time_freq(), m_SoundLoadTime.count() / 1000000.0);
-		}
-	}
+	if(!UpdateLoadingState())
+		return;
 
 	if(ListenerPosition.has_value())
 		Sound()->SetListenerPosition(*ListenerPosition);
 	UpdateChannels();
 
-	// play sound from queue
-	if(m_QueuePos > 0)
+	UpdateQueue(false, time());
+}
+
+bool CSounds::UpdateLoadingState()
+{
+	if(!m_WaitForSoundJob)
+		return true;
+
+	bool Waiting = false;
+	for(auto &Resource : m_aSoundResources)
 	{
-		int64_t Now = time();
-		if(m_QueueWaitTime <= Now)
+		if(!Resource)
+			continue;
+		if(Resource.IsReady(m_LoadGeneration))
 		{
-			Play(m_aQueue[0].m_Channel, m_aQueue[0].m_SetId, 1.0f);
-			m_QueueWaitTime = Now + time_freq() * 3 / 10; // wait 300ms before playing the next one
-			if(--m_QueuePos > 0)
-				mem_move(m_aQueue, m_aQueue + 1, m_QueuePos * sizeof(CQueueEntry));
+			CSoundLoading &SoundLoading = Resource.Result();
+			m_NumSoundSamplesLoaded += SoundLoading.NumLoaded();
+			m_SoundLoadTime += SoundLoading.LoadTime();
+			++m_NumSoundJobsFinished;
+			SoundLoading.Commit();
+			Resource.Reset();
+		}
+		else if(Resource.IsFinished())
+		{
+			Resource.Reset();
+		}
+		else
+		{
+			Waiting = true;
+		}
+	}
+	m_WaitForSoundJob = Waiting;
+	if(!m_WaitForSoundJob)
+	{
+		log_info("asset_loader", "Startup sound batch: jobs=%d loaded=%d wall=%.2fms load=%.2fms", m_NumSoundJobsFinished, m_NumSoundSamplesLoaded,
+			(time_get() - m_SoundBatchStart) * 1000.0 / time_freq(), m_SoundLoadTime.count() / 1000000.0);
+	}
+	return !m_WaitForSoundJob;
+}
+
+void CSounds::UpdateQueue(bool Offline, int64_t Now)
+{
+	const int QueueIndex = Offline ? 1 : 0;
+	if(m_aQueuePos[QueueIndex] > 0)
+	{
+		if(m_aQueueWaitTime[QueueIndex] <= Now)
+		{
+			PlayForAudio(m_aaQueue[QueueIndex][0].m_Channel, m_aaQueue[QueueIndex][0].m_SetId, 1.0f, Offline);
+			m_aQueueWaitTime[QueueIndex] = Now + time_freq() * 3 / 10; // wait 300ms before playing the next one
+			if(--m_aQueuePos[QueueIndex] > 0)
+				mem_move(m_aaQueue[QueueIndex], m_aaQueue[QueueIndex] + 1, m_aQueuePos[QueueIndex] * sizeof(CQueueEntry));
 		}
 	}
 }
 
+void CSounds::UpdateOffline(vec2 ListenerPosition, int64_t Now)
+{
+	if(!UpdateLoadingState())
+		return;
+	Sound()->SetOfflineListenerPosition(ListenerPosition);
+	UpdateChannels();
+	UpdateQueue(true, Now);
+}
+
 void CSounds::ClearQueue()
 {
-	mem_zero(m_aQueue, sizeof(m_aQueue));
-	m_QueuePos = 0;
-	m_QueueWaitTime = time();
+	mem_zero(m_aaQueue[0], sizeof(m_aaQueue[0]));
+	m_aQueuePos[0] = 0;
+	m_aQueueWaitTime[0] = time();
+}
+
+void CSounds::ClearOffline()
+{
+	Sound()->StopOffline();
+	mem_zero(m_aaQueue[1], sizeof(m_aaQueue[1]));
+	m_aQueuePos[1] = 0;
+	m_aQueueWaitTime[1] = 0;
 }
 
 void CSounds::Enqueue(int Channel, int SetId)
 {
+	EnqueueForAudio(Channel, SetId, false);
+}
+
+void CSounds::EnqueueForAudio(int Channel, int SetId, bool Offline)
+{
 	if(GameClient()->m_SuppressEvents)
 		return;
-	if(m_QueuePos >= QUEUE_SIZE)
+	const int QueueIndex = Offline ? 1 : 0;
+	if(m_aQueuePos[QueueIndex] >= QUEUE_SIZE)
 		return;
-	if(Channel != CHN_MUSIC && g_Config.m_ClEditor)
+	if(!Offline && Channel != CHN_MUSIC && g_Config.m_ClEditor)
 		return;
 
-	m_aQueue[m_QueuePos].m_Channel = Channel;
-	m_aQueue[m_QueuePos++].m_SetId = SetId;
+	m_aaQueue[QueueIndex][m_aQueuePos[QueueIndex]].m_Channel = Channel;
+	m_aaQueue[QueueIndex][m_aQueuePos[QueueIndex]++].m_SetId = SetId;
 }
 
 void CSounds::PlayAndRecord(int Channel, int SetId, float Volume, vec2 Position)
@@ -281,17 +314,27 @@ void CSounds::PlayAndRecord(int Channel, int SetId, float Volume, vec2 Position)
 
 void CSounds::Play(int Channel, int SetId, float Volume)
 {
-	PlaySample(Channel, GetSampleId(SetId), 0, Volume);
+	PlayForAudio(Channel, SetId, Volume, false);
 }
 
 void CSounds::PlayAt(int Channel, int SetId, float Volume, vec2 Position)
 {
-	PlaySampleAt(Channel, GetSampleId(SetId), 0, Volume, Position);
+	PlayAtForAudio(Channel, SetId, Volume, Position, false);
+}
+
+void CSounds::PlayForAudio(int Channel, int SetId, float Volume, bool Offline)
+{
+	PlaySampleForAudio(Channel, GetSampleId(SetId), 0, Volume, Offline);
+}
+
+void CSounds::PlayAtForAudio(int Channel, int SetId, float Volume, vec2 Position, bool Offline)
+{
+	PlaySampleAtForAudio(Channel, GetSampleId(SetId), 0, Volume, Position, Offline);
 }
 
 void CSounds::Stop(int SetId)
 {
-	if(SetId < 0 || SetId >= g_pData->m_NumSounds)
+	if(!UpdateLoadingState() || SetId < 0 || SetId >= g_pData->m_NumSounds)
 		return;
 
 	const CDataSoundset *pSet = &g_pData->m_aSounds[SetId];
@@ -302,7 +345,7 @@ void CSounds::Stop(int SetId)
 
 bool CSounds::IsPlaying(int SetId)
 {
-	if(SetId < 0 || SetId >= g_pData->m_NumSounds)
+	if(!UpdateLoadingState() || SetId < 0 || SetId >= g_pData->m_NumSounds)
 		return false;
 
 	const CDataSoundset *pSet = &g_pData->m_aSounds[SetId];
@@ -314,16 +357,10 @@ bool CSounds::IsPlaying(int SetId)
 
 ISound::CVoiceHandle CSounds::PlaySample(int Channel, int SampleId, int Flags, float Volume)
 {
-	if(GameClient()->m_SuppressEvents || (Channel == CHN_MUSIC && !g_Config.m_SndMusic) || SampleId == -1)
-		return ISound::CVoiceHandle();
-
-	if(Channel == CHN_MUSIC)
-		Flags |= ISound::FLAG_LOOP;
-
-	return Sound()->Play(Channel, SampleId, Flags, Volume);
+	return PlaySampleForAudio(Channel, SampleId, Flags, Volume, false);
 }
 
-ISound::CVoiceHandle CSounds::PlaySampleAt(int Channel, int SampleId, int Flags, float Volume, vec2 Position)
+ISound::CVoiceHandle CSounds::PlaySampleForAudio(int Channel, int SampleId, int Flags, float Volume, bool Offline)
 {
 	if(GameClient()->m_SuppressEvents || (Channel == CHN_MUSIC && !g_Config.m_SndMusic) || SampleId == -1)
 		return ISound::CVoiceHandle();
@@ -331,5 +368,21 @@ ISound::CVoiceHandle CSounds::PlaySampleAt(int Channel, int SampleId, int Flags,
 	if(Channel == CHN_MUSIC)
 		Flags |= ISound::FLAG_LOOP;
 
-	return Sound()->PlayAt(Channel, SampleId, Flags, Volume, Position);
+	return Offline ? Sound()->PlayOffline(Channel, SampleId, Flags, Volume) : Sound()->Play(Channel, SampleId, Flags, Volume);
+}
+
+ISound::CVoiceHandle CSounds::PlaySampleAt(int Channel, int SampleId, int Flags, float Volume, vec2 Position)
+{
+	return PlaySampleAtForAudio(Channel, SampleId, Flags, Volume, Position, false);
+}
+
+ISound::CVoiceHandle CSounds::PlaySampleAtForAudio(int Channel, int SampleId, int Flags, float Volume, vec2 Position, bool Offline)
+{
+	if(GameClient()->m_SuppressEvents || (Channel == CHN_MUSIC && !g_Config.m_SndMusic) || SampleId == -1)
+		return ISound::CVoiceHandle();
+
+	if(Channel == CHN_MUSIC)
+		Flags |= ISound::FLAG_LOOP;
+
+	return Offline ? Sound()->PlayAtOffline(Channel, SampleId, Flags, Volume, Position) : Sound()->PlayAt(Channel, SampleId, Flags, Volume, Position);
 }

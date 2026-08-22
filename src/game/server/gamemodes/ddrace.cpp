@@ -1446,6 +1446,63 @@ CGameControllerDDRace::CGameControllerDDRace(CGameServices &Services, const CGam
 
 CGameControllerDDRace::~CGameControllerDDRace() = default;
 
+bool CGameControllerDDRace::BuildLiveStatsReport(int ClientId, CMatchReport &Report, int &LocalParticipantId, std::string &Payload)
+{
+	if(ClientId < 0 || ClientId >= MAX_CLIENTS || !InitializeLiveStatsReport(Report))
+		return false;
+	CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+	if(!pPlayer)
+		return false;
+
+	CMatchReportBuilder Builder(std::move(Report));
+	CMatchParticipant Participant;
+	Participant.m_ParticipantId = 0;
+	Participant.m_DisplayName = Server()->ClientName(ClientId);
+	Participant.m_Clan = Server()->ClientClan(ClientId);
+	if(!Builder.AddParticipant(std::move(Participant)))
+		return false;
+	const std::string Prefix = LiveStatsInfo().m_ModeId + "/";
+	const auto AddMetric = [&](const char *pSuffix, int64_t Value) {
+		return Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, 0, Prefix + pSuffix, Value, EMatchMetricAggregation::MATCH_ONLY});
+	};
+	const CPlayerData *pData = RaceScore().PlayerData(ClientId);
+	if(pData->m_PlayerDataLoaded)
+	{
+		if(pData->m_BestTime.has_value() && !AddMetric("personal_best_ticks", round_to_int(*pData->m_BestTime * Server()->TickSpeed())))
+			return false;
+		if(!g_Config.m_SvHideScore && pData->m_MapRank > 0)
+		{
+			if(!AddMetric("map_rank", pData->m_MapRank) || !Builder.AddStanding({EMatchSubjectKind::PARTICIPANT, 0, pData->m_MapRank, EMatchOutcome::FINISHED}))
+				return false;
+		}
+		if(!AddMetric("map_finishes", pData->m_MapFinishes))
+			return false;
+	}
+	if(!g_Config.m_SvHideScore && RaceScore().CurrentRecord().has_value() && !AddMetric("map_best_ticks", round_to_int(*RaceScore().CurrentRecord() * Server()->TickSpeed())))
+		return false;
+	if(!AddMetric("session_finishes", pData->m_SessionFinishes))
+		return false;
+	if(pData->m_LastFinishTime.has_value() && !AddMetric("last_finish_ticks", round_to_int(*pData->m_LastFinishTime * Server()->TickSpeed())))
+		return false;
+	const CCharacterDDRace *pCharacter = static_cast<CCharacterDDRace *>(pPlayer->GetCharacter());
+	if(pCharacter && pCharacter->m_DDRaceState == ERaceState::STARTED)
+	{
+		if(!AddMetric("current_run_ticks", std::max(0, Server()->Tick() - pCharacter->m_StartTime)))
+			return false;
+		if(pCharacter->m_LastTimeCp >= 0 && !AddMetric("current_checkpoint", pCharacter->m_LastTimeCp + 1))
+			return false;
+	}
+	std::string Error;
+	if(!Builder.Finalize(&Error) || !MatchReportToPacked(Builder.Report(), Payload, &Error))
+	{
+		log_error("game", "failed to build race live stats: %s", Error.c_str());
+		return false;
+	}
+	Report = Builder.Report();
+	LocalParticipantId = 0;
+	return true;
+}
+
 void CGameControllerDDRace::Init(CDbConnectionPool *pDbPool)
 {
 	dbg_assert(pDbPool, "DDRace score service requires a database pool");

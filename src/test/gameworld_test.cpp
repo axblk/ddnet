@@ -6,6 +6,7 @@
 #include <engine/engine.h>
 #include <engine/http.h>
 #include <engine/kernel.h>
+#include <engine/message.h>
 #include <engine/server/databases/connection.h>
 #include <engine/server/databases/connection_pool.h>
 #include <engine/server/register.h>
@@ -46,6 +47,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <limits>
 #include <memory>
 #include <thread>
@@ -80,11 +82,36 @@ public:
 	int TestGameInfoFlags2() const { return GameInfoFlags2(SERVER_DEMO_CLIENT); }
 };
 
+class CTestServer final : public CServer
+{
+public:
+	struct CCapturedMatchReportMessage
+	{
+		int m_MsgId;
+		int m_Flags;
+		int m_ClientId;
+		std::vector<unsigned char> m_vData;
+	};
+
+	bool m_CaptureMatchReportMessages = false;
+	std::vector<CCapturedMatchReportMessage> m_vCapturedMatchReportMessages;
+
+	void AdvanceTick(int Ticks) { m_CurrentGameTick += Ticks; }
+
+	int SendMsg(CMsgPacker *pMsg, int Flags, int ClientId) override
+	{
+		if(!m_CaptureMatchReportMessages || (pMsg->m_MsgId != NETMSG_MATCH_REPORT_START && pMsg->m_MsgId != NETMSG_MATCH_REPORT_LOCAL_PARTICIPANT && pMsg->m_MsgId != NETMSG_MATCH_REPORT_CHUNK && pMsg->m_MsgId != NETMSG_MATCH_REPORT_END && pMsg->m_MsgId != NETMSG_LIVE_STATS_START && pMsg->m_MsgId != NETMSG_LIVE_STATS_CHUNK && pMsg->m_MsgId != NETMSG_LIVE_STATS_END))
+			return CServer::SendMsg(pMsg, Flags, ClientId);
+		m_vCapturedMatchReportMessages.push_back({pMsg->m_MsgId, Flags, ClientId, {pMsg->Data(), pMsg->Data() + pMsg->Size()}});
+		return 0;
+	}
+};
+
 class GameWorld : public ::testing::Test // NOLINT(readability-identifier-naming)
 {
 public:
 	IGameServer *m_pGameServer = nullptr;
-	CServer *m_pServer = nullptr;
+	CTestServer *m_pServer = nullptr;
 	std::unique_ptr<IKernel> m_pKernel;
 	CTestInfo m_TestInfo;
 	std::unique_ptr<IStorage> m_pStorage;
@@ -92,6 +119,23 @@ public:
 	CGameContext *GameServer() // NOLINT(readability-make-member-function-const)
 	{
 		return (CGameContext *)m_pGameServer;
+	}
+
+	/**
+	 * Runs the ticks a queued report needs to reach the client.
+	 *
+	 * Report chunks are spread over ticks so that they do not overrun the
+	 * resend buffer of a connection, so a test that wants the whole report has
+	 * to let the server run. The bound is well below the round restart delay.
+	 */
+	void DrainReportSends(int EndMsgId)
+	{
+		for(int Tick = 0; Tick < 200; ++Tick)
+		{
+			if(!m_pServer->m_vCapturedMatchReportMessages.empty() && m_pServer->m_vCapturedMatchReportMessages.back().m_MsgId == EndMsgId)
+				return;
+			GameController()->Tick();
+		}
 	}
 
 	CGameServices &GameServices() // NOLINT(readability-make-member-function-const)
@@ -144,7 +188,7 @@ public:
 
 	GameWorld()
 	{
-		CServer *pServer = CreateServer();
+		auto *pServer = new CTestServer();
 		m_pServer = pServer;
 
 		m_pKernel = std::unique_ptr<IKernel>(IKernel::Create());
@@ -227,6 +271,80 @@ public:
 
 namespace
 {
+	::testing::AssertionResult DecodeLiveStats(const std::vector<CTestServer::CCapturedMatchReportMessage> &vMessages, CMatchReport &Report, CUuid &MatchId, int &Revision, int &LocalParticipantId, bool &PersistOnDisconnect)
+	{
+		if(vMessages.size() < 3)
+			return ::testing::AssertionFailure() << "expected live start, chunk and end";
+		for(const auto &Message : vMessages)
+		{
+			if(Message.m_Flags != (MSGFLAG_VITAL | MSGFLAG_NORECORD) || Message.m_ClientId != 0)
+				return ::testing::AssertionFailure() << "live response is not private and vital";
+		}
+
+		CUnpacker Start;
+		Start.Reset(vMessages.front().m_vData.data(), vMessages.front().m_vData.size());
+		const unsigned char *pMatchId = Start.GetRaw(sizeof(MatchId));
+		if(vMessages.front().m_MsgId != NETMSG_LIVE_STATS_START || pMatchId == nullptr)
+			return ::testing::AssertionFailure() << "invalid live start";
+		mem_copy(&MatchId, pMatchId, sizeof(MatchId));
+		Revision = Start.GetInt();
+		const int ReportSchemaVersion = Start.GetInt();
+		LocalParticipantId = Start.GetInt();
+		const int Persist = Start.GetInt();
+		PersistOnDisconnect = Persist != 0;
+		const int PayloadSize = Start.GetInt();
+		const int NumChunks = Start.GetInt();
+		if(Start.Error() || Start.RemainingSize() != 0 || Revision < 0 || LocalParticipantId < 0 || (Persist != 0 && Persist != 1) || PayloadSize <= 0 || NumChunks <= 0 || vMessages.size() != static_cast<size_t>(NumChunks) + 2)
+			return ::testing::AssertionFailure() << "invalid live start fields";
+
+		std::string Payload;
+		for(int ChunkIndex = 0; ChunkIndex < NumChunks; ++ChunkIndex)
+		{
+			const auto &Message = vMessages[ChunkIndex + 1];
+			CUnpacker Chunk;
+			Chunk.Reset(Message.m_vData.data(), Message.m_vData.size());
+			const unsigned char *pChunkMatchId = Chunk.GetRaw(sizeof(MatchId));
+			CUuid ChunkMatchId;
+			if(pChunkMatchId == nullptr)
+				return ::testing::AssertionFailure() << "missing live chunk match id";
+			mem_copy(&ChunkMatchId, pChunkMatchId, sizeof(ChunkMatchId));
+			const int ChunkRevision = Chunk.GetInt();
+			const int ReceivedChunkIndex = Chunk.GetInt();
+			const int ChunkSize = Chunk.GetInt();
+			const unsigned char *pChunkData = ChunkSize >= 0 && ChunkSize == Chunk.RemainingSize() ? Chunk.GetRaw(ChunkSize) : nullptr;
+			if(Message.m_MsgId != NETMSG_LIVE_STATS_CHUNK || ChunkMatchId != MatchId || ChunkRevision != Revision || ReceivedChunkIndex != ChunkIndex || ChunkSize <= 0 || ChunkSize > MatchReportTransportLimits::MAX_CHUNK_SIZE || pChunkData == nullptr || Chunk.Error() || Chunk.RemainingSize() != 0)
+				return ::testing::AssertionFailure() << "invalid live chunk " << ChunkIndex;
+			Payload.append(reinterpret_cast<const char *>(pChunkData), ChunkSize);
+		}
+		if(Payload.size() != static_cast<size_t>(PayloadSize))
+			return ::testing::AssertionFailure() << "live payload size mismatch";
+
+		CUnpacker End;
+		End.Reset(vMessages.back().m_vData.data(), vMessages.back().m_vData.size());
+		const unsigned char *pEndMatchId = End.GetRaw(sizeof(MatchId));
+		CUuid EndMatchId;
+		if(pEndMatchId == nullptr)
+			return ::testing::AssertionFailure() << "missing live end match id";
+		mem_copy(&EndMatchId, pEndMatchId, sizeof(EndMatchId));
+		const int EndRevision = End.GetInt();
+		const unsigned char *pDigest = End.GetRaw(sizeof(SHA256_DIGEST));
+		if(vMessages.back().m_MsgId != NETMSG_LIVE_STATS_END || EndMatchId != MatchId || EndRevision != Revision || pDigest == nullptr || End.Error() || End.RemainingSize() != 0 || mem_comp(pDigest, sha256(Payload.data(), Payload.size()).data, sizeof(SHA256_DIGEST)) != 0)
+			return ::testing::AssertionFailure() << "invalid live end";
+
+		std::string Error;
+		if(!MatchReportFromPacked(Payload.data(), Payload.size(), Report, &Error) || Report.m_MatchId != MatchId || Report.m_ReportSchemaVersion != ReportSchemaVersion)
+			return ::testing::AssertionFailure() << Error;
+		return ::testing::AssertionSuccess();
+	}
+
+	const CMatchMetric *FindMatchMetric(const CMatchReport &Report, EMatchSubjectKind SubjectKind, std::optional<int> SubjectId, const char *pSuffix)
+	{
+		for(const CMatchMetric &Metric : Report.m_vMetrics)
+			if(Metric.m_SubjectKind == SubjectKind && Metric.m_SubjectId == SubjectId && Metric.m_MetricId.ends_with(pSuffix))
+				return &Metric;
+		return nullptr;
+	}
+
 	class CFactoryPlayer final : public CPlayerVanilla
 	{
 		int *m_pDestructions;
@@ -321,6 +439,7 @@ namespace
 	public:
 		using CGameControllerVanillaCTF::CGameControllerVanillaCTF;
 		using CGameControllerVanillaTeamplay::UpdateTeamBalance;
+		using IGameController::BuildLiveStatsReport;
 
 		void SetTeamScores(int Red, int Blue)
 		{
@@ -342,6 +461,31 @@ namespace
 		{
 			return Match().IsSuddenDeath();
 		}
+
+		bool AddPayloadMetrics(CPlayer *pPlayer, int Count)
+		{
+			for(int i = 0; i < Count; ++i)
+			{
+				const std::string Suffix = "metric_" + std::to_string(i) + "_" + std::string(70, 'x');
+				if(!AddParticipantMatchMetric(pPlayer, Suffix.c_str(), i))
+					return false;
+			}
+			return true;
+		}
+	};
+
+	std::optional<CMatchReport> *s_pShutdownReport = nullptr;
+
+	class CShutdownReportController final : public CGameControllerVanillaDM
+	{
+	public:
+		using CGameControllerVanillaDM::CGameControllerVanillaDM;
+
+		~CShutdownReportController() override
+		{
+			if(s_pShutdownReport != nullptr && LatestMatchReport() != nullptr)
+				*s_pShutdownReport = *LatestMatchReport();
+		}
 	};
 
 	std::unique_ptr<IGameController> CreateTestVanillaCTF(CGameServices &Services, const CGameModeInfo &GameModeInfo)
@@ -349,7 +493,27 @@ namespace
 		return std::make_unique<CTestVanillaCTF>(Services, GameModeInfo);
 	}
 
-	const CGameModeInfo TEST_VANILLA_CTF_INFO = {"test.vanilla.ctf", "Test Vanilla CTF", "CTF", "TestCTF", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS};
+	const CGameModeInfo TEST_VANILLA_CTF_INFO = [] {
+		CGameModeInfo Info = {"test.vanilla.ctf", "Test Vanilla CTF", "CTF", "TestCTF", EGameModeScoreKind::POINTS, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS};
+		Info.m_Report = CompetitiveGameModeReport("test.vanilla.ctf@ddnet.org", true);
+		for(int i = 0; i < 2000; ++i)
+		{
+			const std::string Suffix = "metric_" + std::to_string(i) + "_" + std::string(70, 'x');
+			Info.m_Report.m_vMetrics.push_back({Info.m_Report.m_ModeId + "/" + Suffix, "Payload metric", EGameModeMetricCategory::OVERVIEW, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM, static_cast<int>(Info.m_Report.m_vMetrics.size())});
+		}
+		return Info;
+	}();
+
+	std::unique_ptr<IGameController> CreateShutdownReportController(CGameServices &Services, const CGameModeInfo &GameModeInfo)
+	{
+		return std::make_unique<CShutdownReportController>(Services, GameModeInfo);
+	}
+
+	const CGameModeInfo TEST_SHUTDOWN_REPORT_INFO = [] {
+		CGameModeInfo Info = {"test.shutdown-report", "Test shutdown report", "DM", "TestDM", EGameModeScoreKind::POINTS, 0};
+		Info.m_Report = CompetitiveGameModeReport("test.shutdown-report@ddnet.org", false);
+		return Info;
+	}();
 
 	std::unique_ptr<IGameController> CreateServicesFactoryController(CGameServices &Services, const CGameModeInfo &GameModeInfo)
 	{
@@ -587,6 +751,7 @@ TEST(MatchLifecycle, PreservesRoundTransitions)
 	Match.BeginSuddenDeath();
 	EXPECT_TRUE(Match.IsSuddenDeath());
 	EXPECT_TRUE(Match.EndRound(30));
+	EXPECT_FALSE(Match.EndRound(31));
 	EXPECT_TRUE(Match.IsGameOver());
 	EXPECT_FALSE(Match.IsSuddenDeath());
 	EXPECT_FALSE(Match.ShouldRestartRound(40, 10));
@@ -595,6 +760,475 @@ TEST(MatchLifecycle, PreservesRoundTransitions)
 	Match.AdvanceRound();
 	EXPECT_EQ(Match.RoundStartTick(), 41);
 	EXPECT_EQ(Match.RoundCount(), 1);
+}
+
+TEST_F(GameWorld, MatchReportTracksLateJoinLeaverSlotReuseAndFinalTeam)
+{
+	SelectGameMode("vanilla.tdm");
+	const int RoundStartTick = m_pServer->Tick();
+	m_pServer->AdvanceTick(10);
+	CPlayer *pFirst = GameServer()->CreatePlayer(0, TEAM_RED, false, -1);
+	GameController()->OnPlayerConnect(pFirst);
+	const uint32_t FirstUniqueClientId = pFirst->GetUniqueCid();
+	GameController()->DoTeamChange(pFirst, TEAM_BLUE, false);
+	m_pServer->AdvanceTick(20);
+	GameController()->OnPlayerDisconnect(pFirst, "test");
+
+	m_pServer->AdvanceTick(5);
+	CPlayer *pSecond = GameServer()->CreatePlayer(0, TEAM_RED, false, -1);
+	ASSERT_NE(pSecond->GetUniqueCid(), FirstUniqueClientId);
+	GameController()->OnPlayerConnect(pSecond);
+	m_pServer->AdvanceTick(15);
+	GameController()->EndRound();
+
+	const CMatchReport *pReport = GameController()->LatestMatchReport();
+	ASSERT_NE(pReport, nullptr);
+	EXPECT_EQ(pReport->m_RoundStartTick, RoundStartTick);
+	ASSERT_EQ(pReport->m_vParticipants.size(), 2u);
+	EXPECT_EQ(pReport->m_vParticipants[0].m_JoinedTick, 10);
+	ASSERT_TRUE(pReport->m_vParticipants[0].m_LeftTick.has_value());
+	EXPECT_EQ(*pReport->m_vParticipants[0].m_LeftTick, 30);
+	EXPECT_EQ(pReport->m_vParticipants[0].m_TeamId, TEAM_BLUE);
+	EXPECT_EQ(pReport->m_vParticipants[1].m_JoinedTick, 35);
+	EXPECT_FALSE(pReport->m_vParticipants[1].m_LeftTick.has_value());
+	EXPECT_EQ(pReport->m_vParticipants[1].m_TeamId, TEAM_RED);
+	EXPECT_NE(pReport->m_vParticipants[0].m_ParticipantId, pReport->m_vParticipants[1].m_ParticipantId);
+	EXPECT_NE(FindMatchMetric(*pReport, EMatchSubjectKind::PARTICIPANT, pReport->m_vParticipants[0].m_ParticipantId, "/score"), nullptr);
+	EXPECT_NE(FindMatchMetric(*pReport, EMatchSubjectKind::PARTICIPANT, pReport->m_vParticipants[1].m_ParticipantId, "/score"), nullptr);
+	const CMatchMetric *pFirstPlaytime = FindMatchMetric(*pReport, EMatchSubjectKind::PARTICIPANT, pReport->m_vParticipants[0].m_ParticipantId, "/playtime_ticks");
+	const CMatchMetric *pSecondPlaytime = FindMatchMetric(*pReport, EMatchSubjectKind::PARTICIPANT, pReport->m_vParticipants[1].m_ParticipantId, "/playtime_ticks");
+	ASSERT_NE(pFirstPlaytime, nullptr);
+	ASSERT_NE(pSecondPlaytime, nullptr);
+	EXPECT_EQ(pFirstPlaytime->m_Value, 20);
+	EXPECT_EQ(pSecondPlaytime->m_Value, 15);
+	EXPECT_EQ(std::count_if(pReport->m_vStandings.begin(), pReport->m_vStandings.end(), [](const CMatchStanding &Standing) { return Standing.m_SubjectKind == EMatchSubjectKind::PARTICIPANT; }), 2);
+}
+
+TEST_F(GameWorld, MatchReportSkipsWarmup)
+{
+	const int PreviousWarmup = g_Config.m_SvWarmup;
+	g_Config.m_SvWarmup = 10;
+	SelectGameMode("vanilla.dm");
+	GameController()->EndRound();
+	EXPECT_EQ(GameController()->LatestMatchReport(), nullptr);
+
+	g_Config.m_SvWarmup = PreviousWarmup;
+	GameController()->DoWarmup(0);
+	GameController()->StartRound();
+	GameController()->EndRound();
+	ASSERT_NE(GameController()->LatestMatchReport(), nullptr);
+	EXPECT_EQ(GameController()->LatestMatchReport()->m_Termination, EMatchTermination::COMPLETED);
+}
+
+TEST_F(GameWorld, MatchReportTracksSuicideAndTeamDraw)
+{
+	SelectGameMode("vanilla.dm");
+	CPlayer *pPlayer = GameServer()->CreatePlayer(0, TEAM_GAME, false, -1);
+	GameController()->OnPlayerConnect(pPlayer);
+	CCharacter *pCharacter = pPlayer->ForceSpawn(vec2(64.0f, 96.0f));
+	ASSERT_NE(pCharacter, nullptr);
+	GameController()->OnCharacterDeath({pCharacter, pPlayer, 0, WEAPON_SELF, false});
+	GameController()->EndRound();
+
+	const CMatchReport *pDeathReport = GameController()->LatestMatchReport();
+	ASSERT_NE(pDeathReport, nullptr);
+	ASSERT_EQ(pDeathReport->m_vParticipants.size(), 1u);
+	const int ParticipantId = pDeathReport->m_vParticipants[0].m_ParticipantId;
+	const CMatchMetric *pDeaths = FindMatchMetric(*pDeathReport, EMatchSubjectKind::PARTICIPANT, ParticipantId, "/deaths");
+	const CMatchMetric *pSuicides = FindMatchMetric(*pDeathReport, EMatchSubjectKind::PARTICIPANT, ParticipantId, "/suicides");
+	ASSERT_NE(pDeaths, nullptr);
+	ASSERT_NE(pSuicides, nullptr);
+	EXPECT_EQ(pDeaths->m_Value, 1);
+	EXPECT_EQ(pSuicides->m_Value, 1);
+
+	DeletePlayers();
+	SelectGameMode("vanilla.tdm");
+	GameController()->EndRound();
+	const CMatchReport *pDrawReport = GameController()->LatestMatchReport();
+	ASSERT_NE(pDrawReport, nullptr);
+	ASSERT_EQ(pDrawReport->m_vStandings.size(), 2u);
+	EXPECT_EQ(pDrawReport->m_vStandings[0].m_Rank, 1);
+	EXPECT_EQ(pDrawReport->m_vStandings[0].m_Outcome, EMatchOutcome::DRAW);
+	EXPECT_EQ(pDrawReport->m_vStandings[1].m_Rank, 1);
+	EXPECT_EQ(pDrawReport->m_vStandings[1].m_Outcome, EMatchOutcome::DRAW);
+}
+
+TEST_F(GameWorld, MatchReportTracksKillAndDeath)
+{
+	SelectGameMode("vanilla.dm");
+	CPlayer *pKiller = GameServer()->CreatePlayer(0, TEAM_GAME, false, -1);
+	CPlayer *pVictim = GameServer()->CreatePlayer(1, TEAM_GAME, false, -1);
+	GameController()->OnPlayerConnect(pKiller);
+	GameController()->OnPlayerConnect(pVictim);
+	CCharacter *pVictimCharacter = pVictim->ForceSpawn(vec2(64.0f, 96.0f));
+	ASSERT_NE(pVictimCharacter, nullptr);
+	GameController()->OnCharacterDeath({pVictimCharacter, pKiller, pKiller->GetCid(), WEAPON_GUN, false});
+	GameController()->EndRound();
+
+	const CMatchReport *pReport = GameController()->LatestMatchReport();
+	ASSERT_NE(pReport, nullptr);
+	ASSERT_EQ(pReport->m_vParticipants.size(), 2u);
+	const CMatchMetric *pKills = FindMatchMetric(*pReport, EMatchSubjectKind::PARTICIPANT, pReport->m_vParticipants[0].m_ParticipantId, "/kills");
+	const CMatchMetric *pDeaths = FindMatchMetric(*pReport, EMatchSubjectKind::PARTICIPANT, pReport->m_vParticipants[1].m_ParticipantId, "/deaths");
+	ASSERT_NE(pKills, nullptr);
+	ASSERT_NE(pDeaths, nullptr);
+	EXPECT_EQ(pKills->m_Value, 1);
+	EXPECT_EQ(pDeaths->m_Value, 1);
+}
+
+TEST_F(GameWorld, MatchReportTracksWeaponCombatStats)
+{
+	SelectGameMode("vanilla.dm");
+	CPlayer *pAttacker = GameServer()->CreatePlayer(0, TEAM_GAME, false, -1);
+	CPlayer *pVictim = GameServer()->CreatePlayer(1, TEAM_GAME, false, -1);
+	GameController()->OnPlayerConnect(pAttacker);
+	GameController()->OnPlayerConnect(pVictim);
+	CCharacter *pAttackerCharacter = pAttacker->ForceSpawn(vec2(0.0f, 0.0f));
+	CCharacter *pVictimCharacter = pVictim->ForceSpawn(vec2(64.0f, 0.0f));
+	ASSERT_NE(pAttackerCharacter, nullptr);
+	ASSERT_NE(pVictimCharacter, nullptr);
+
+	pAttackerCharacter->SetActiveWeapon(WEAPON_GUN);
+	pAttackerCharacter->SetWeaponAmmo(WEAPON_GUN, 10);
+	CNetObj_PlayerInput Input = {};
+	Input.m_TargetX = 1;
+	pAttackerCharacter->OnDirectInput(&Input);
+	Input.m_Fire = 1;
+	pAttackerCharacter->OnDirectInput(&Input);
+	pVictimCharacter->SetHealth(10);
+	pVictimCharacter->SetArmor(2);
+	EXPECT_TRUE(pVictimCharacter->TakeDamage(vec2(0.0f, 0.0f), 3, pAttacker->GetCid(), WEAPON_GUN));
+	GameController()->EndRound();
+
+	const CMatchReport *pReport = GameController()->LatestMatchReport();
+	ASSERT_NE(pReport, nullptr);
+	ASSERT_EQ(pReport->m_vParticipants.size(), 2u);
+	const int AttackerId = pReport->m_vParticipants[0].m_ParticipantId;
+	const int VictimId = pReport->m_vParticipants[1].m_ParticipantId;
+	auto ExpectMetric = [&](int ParticipantId, const char *pSuffix, int64_t Value) {
+		const CMatchMetric *pMetric = FindMatchMetric(*pReport, EMatchSubjectKind::PARTICIPANT, ParticipantId, pSuffix);
+		ASSERT_NE(pMetric, nullptr) << pSuffix;
+		EXPECT_EQ(pMetric->m_Value, Value) << pSuffix;
+	};
+	ExpectMetric(AttackerId, "/shots", 1);
+	ExpectMetric(AttackerId, "/hits", 1);
+	ExpectMetric(AttackerId, "/damage_done", 3);
+	ExpectMetric(AttackerId, "/weapon_1_shots", 1);
+	ExpectMetric(AttackerId, "/weapon_1_hits", 1);
+	ExpectMetric(AttackerId, "/weapon_1_damage_done", 3);
+	ExpectMetric(VictimId, "/damage_taken", 3);
+	ExpectMetric(VictimId, "/weapon_1_damage_taken", 3);
+}
+
+TEST_F(GameWorld, MatchReportFinalizesRoundAndAdminEndExactlyOnce)
+{
+	SelectGameMode("vanilla.dm");
+	CPlayer *pPlayer = GameServer()->CreatePlayer(0, TEAM_GAME, false, -1);
+	GameController()->OnPlayerConnect(pPlayer);
+	GameController()->EndRound();
+	const CMatchReport *pCompleted = GameController()->LatestMatchReport();
+	ASSERT_NE(pCompleted, nullptr);
+	EXPECT_EQ(pCompleted->m_Termination, EMatchTermination::COMPLETED);
+	const CUuid CompletedId = pCompleted->m_MatchId;
+	GameController()->EndRound();
+	ASSERT_NE(GameController()->LatestMatchReport(), nullptr);
+	EXPECT_EQ(GameController()->LatestMatchReport()->m_MatchId, CompletedId);
+
+	GameController()->StartRound();
+	GameController()->StartRound();
+	const CMatchReport *pRestarted = GameController()->LatestMatchReport();
+	ASSERT_NE(pRestarted, nullptr);
+	EXPECT_EQ(pRestarted->m_Termination, EMatchTermination::ADMIN_ENDED);
+	ASSERT_EQ(pRestarted->m_vStandings.size(), 1u);
+	EXPECT_EQ(pRestarted->m_vStandings[0].m_Outcome, EMatchOutcome::DNF);
+	const CUuid RestartedId = pRestarted->m_MatchId;
+	GameController()->ChangeMap("coverage");
+	const CMatchReport *pMapChanged = GameController()->LatestMatchReport();
+	ASSERT_NE(pMapChanged, nullptr);
+	EXPECT_EQ(pMapChanged->m_Termination, EMatchTermination::ADMIN_ENDED);
+	EXPECT_NE(pMapChanged->m_MatchId, RestartedId);
+	const CUuid MapChangedId = pMapChanged->m_MatchId;
+	GameController()->ChangeMap("coverage");
+	EXPECT_EQ(GameController()->LatestMatchReport()->m_MatchId, MapChangedId);
+}
+
+TEST_F(GameWorld, MatchReportKeepsTheParticipantsThatFit)
+{
+	SelectGameMode("vanilla.dm");
+	for(size_t i = 0; i <= MatchReportLimits::MAX_PARTICIPANTS; ++i)
+	{
+		CPlayer *pPlayer = GameServer()->CreatePlayer(0, TEAM_GAME, false, -1);
+		GameController()->OnPlayerConnect(pPlayer);
+		GameController()->OnPlayerDisconnect(pPlayer, "test");
+		delete pPlayer;
+		GameServer()->m_apPlayers[0] = nullptr;
+	}
+	GameController()->EndRound();
+	const CMatchReport *pReport = GameController()->LatestMatchReport();
+	ASSERT_NE(pReport, nullptr);
+	EXPECT_EQ(pReport->m_vParticipants.size(), static_cast<size_t>(MatchReportLimits::MAX_PARTICIPANTS));
+}
+
+TEST_F(GameWorld, MatchReportRejectsSerializedPayloadOverflow)
+{
+	ASSERT_TRUE(GameServer()->GameHost().Modes().Register(TEST_VANILLA_CTF_INFO, CreateTestVanillaCTF));
+	SelectGameMode(TEST_VANILLA_CTF_INFO.m_pId);
+	auto &Controller = *dynamic_cast<CTestVanillaCTF *>(GameController());
+	CPlayer *pPlayer = GameServer()->CreatePlayer(0, TEAM_RED, false, -1);
+	GameController()->OnPlayerConnect(pPlayer);
+	ASSERT_TRUE(Controller.AddPayloadMetrics(pPlayer, MatchReportLimits::MAX_METRICS));
+	Controller.EndRound();
+	EXPECT_EQ(Controller.LatestMatchReport(), nullptr);
+}
+
+TEST_F(GameWorld, MatchReportWireOrderFlagsAndChunks)
+{
+	ASSERT_TRUE(GameServer()->GameHost().Modes().Register(TEST_VANILLA_CTF_INFO, CreateTestVanillaCTF));
+	SelectGameMode(TEST_VANILLA_CTF_INFO.m_pId);
+	auto &Controller = *dynamic_cast<CTestVanillaCTF *>(GameController());
+	constexpr int ClientId = 0;
+	m_pServer->m_aClients[ClientId].m_State = CServer::CClient::STATE_INGAME;
+	str_copy(m_pServer->m_aClients[ClientId].m_aName, "wire-test");
+	CPlayer *pPlayer = GameServer()->CreatePlayer(ClientId, TEAM_RED, false, -1);
+	GameController()->OnPlayerConnect(pPlayer);
+	ASSERT_TRUE(Controller.AddPayloadMetrics(pPlayer, 20));
+	m_pServer->m_CaptureMatchReportMessages = true;
+	Controller.EndRound();
+	// A report can be far larger than the resend buffer of a connection, so
+	// ending the round only announces it and the chunks follow over the ticks
+	// after it. Queueing them all here would drop everything that did not fit.
+	const size_t AnnouncedMessages = m_pServer->m_vCapturedMatchReportMessages.size();
+	EXPECT_EQ(AnnouncedMessages, 2u);
+	DrainReportSends(NETMSG_MATCH_REPORT_END);
+	m_pServer->m_CaptureMatchReportMessages = false;
+	ASSERT_NE(Controller.LatestMatchReport(), nullptr);
+
+	const auto &vMessages = m_pServer->m_vCapturedMatchReportMessages;
+	ASSERT_GE(vMessages.size(), 4u);
+	// Only a participant can store the report and no demo needs a copy, so every
+	// message goes to that one client and is not recorded.
+	for(const auto &Message : vMessages)
+	{
+		EXPECT_EQ(Message.m_Flags, MSGFLAG_VITAL | MSGFLAG_NORECORD);
+		EXPECT_EQ(Message.m_ClientId, ClientId);
+	}
+	EXPECT_EQ(vMessages.front().m_MsgId, NETMSG_MATCH_REPORT_START);
+	EXPECT_EQ(vMessages[1].m_MsgId, NETMSG_MATCH_REPORT_LOCAL_PARTICIPANT);
+	EXPECT_EQ(vMessages.back().m_MsgId, NETMSG_MATCH_REPORT_END);
+
+	CUnpacker Start;
+	Start.Reset(vMessages.front().m_vData.data(), vMessages.front().m_vData.size());
+	const unsigned char *pMatchId = Start.GetRaw(sizeof(CUuid));
+	ASSERT_NE(pMatchId, nullptr);
+	std::array<unsigned char, sizeof(CUuid)> aMatchId;
+	std::copy_n(pMatchId, aMatchId.size(), aMatchId.begin());
+	EXPECT_EQ(Start.GetInt(), Controller.LatestMatchReport()->m_ReportSchemaVersion);
+	const int PayloadSize = Start.GetInt();
+	const int NumChunks = Start.GetInt();
+	EXPECT_FALSE(Start.Error());
+	ASSERT_GT(NumChunks, 1);
+	ASSERT_EQ(vMessages.size(), static_cast<size_t>(NumChunks + 3));
+
+	CUnpacker LocalParticipant;
+	LocalParticipant.Reset(vMessages[1].m_vData.data(), vMessages[1].m_vData.size());
+	const unsigned char *pLocalMatchId = LocalParticipant.GetRaw(sizeof(CUuid));
+	ASSERT_NE(pLocalMatchId, nullptr);
+	EXPECT_TRUE(std::equal(aMatchId.begin(), aMatchId.end(), pLocalMatchId));
+	EXPECT_GE(LocalParticipant.GetInt(), 0);
+	EXPECT_FALSE(LocalParticipant.Error());
+
+	std::string Payload;
+	for(int ChunkIndex = 0; ChunkIndex < NumChunks; ++ChunkIndex)
+	{
+		const auto &Message = vMessages[ChunkIndex + 2];
+		EXPECT_EQ(Message.m_MsgId, NETMSG_MATCH_REPORT_CHUNK);
+		CUnpacker Chunk;
+		Chunk.Reset(Message.m_vData.data(), Message.m_vData.size());
+		const unsigned char *pChunkMatchId = Chunk.GetRaw(sizeof(CUuid));
+		ASSERT_NE(pChunkMatchId, nullptr);
+		EXPECT_TRUE(std::equal(aMatchId.begin(), aMatchId.end(), pChunkMatchId));
+		EXPECT_EQ(Chunk.GetInt(), ChunkIndex);
+		const int ChunkSize = Chunk.GetInt();
+		EXPECT_GT(ChunkSize, 0);
+		EXPECT_LE(ChunkSize, MatchReportTransportLimits::MAX_CHUNK_SIZE);
+		if(ChunkIndex + 1 < NumChunks)
+		{
+			EXPECT_EQ(ChunkSize, MatchReportTransportLimits::MAX_CHUNK_SIZE);
+		}
+		const unsigned char *pChunkData = Chunk.GetRaw(ChunkSize);
+		ASSERT_NE(pChunkData, nullptr);
+		Payload.append(reinterpret_cast<const char *>(pChunkData), ChunkSize);
+		EXPECT_FALSE(Chunk.Error());
+	}
+	EXPECT_EQ(Payload.size(), static_cast<size_t>(PayloadSize));
+
+	CUnpacker End;
+	End.Reset(vMessages.back().m_vData.data(), vMessages.back().m_vData.size());
+	const unsigned char *pEndMatchId = End.GetRaw(sizeof(CUuid));
+	ASSERT_NE(pEndMatchId, nullptr);
+	EXPECT_TRUE(std::equal(aMatchId.begin(), aMatchId.end(), pEndMatchId));
+	const unsigned char *pDigest = End.GetRaw(sizeof(SHA256_DIGEST));
+	ASSERT_NE(pDigest, nullptr);
+	const SHA256_DIGEST Digest = sha256(Payload.data(), Payload.size());
+	EXPECT_TRUE(std::equal(std::begin(Digest.data), std::end(Digest.data), pDigest));
+	EXPECT_FALSE(End.Error());
+}
+
+TEST_F(GameWorld, CompetitiveLiveStatsArePrivateRateLimitedAndUseMatchId)
+{
+	SelectGameMode("vanilla.dm");
+	constexpr int ClientId = 0;
+	m_pServer->m_aClients[ClientId].m_State = CServer::CClient::STATE_INGAME;
+	str_copy(m_pServer->m_aClients[ClientId].m_aName, "live-player");
+	CPlayer *pAttacker = GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	CPlayer *pVictim = GameServer()->CreatePlayer(1, TEAM_GAME, false, -1);
+	GameController()->OnPlayerConnect(pAttacker);
+	GameController()->OnPlayerConnect(pVictim);
+	CCharacter *pAttackerCharacter = pAttacker->ForceSpawn(vec2(0.0f, 0.0f));
+	CCharacter *pVictimCharacter = pVictim->ForceSpawn(vec2(64.0f, 0.0f));
+	ASSERT_NE(pAttackerCharacter, nullptr);
+	ASSERT_NE(pVictimCharacter, nullptr);
+	pAttackerCharacter->SetActiveWeapon(WEAPON_GUN);
+	pAttackerCharacter->SetWeaponAmmo(WEAPON_GUN, 10);
+	CNetObj_PlayerInput Input = {};
+	Input.m_TargetX = 1;
+	pAttackerCharacter->OnDirectInput(&Input);
+	Input.m_Fire = 1;
+	pAttackerCharacter->OnDirectInput(&Input);
+	pVictimCharacter->SetHealth(10);
+	ASSERT_TRUE(pVictimCharacter->TakeDamage(vec2(), 3, ClientId, WEAPON_GUN));
+
+	m_pServer->m_CaptureMatchReportMessages = true;
+	GameController()->SendLiveStats(ClientId);
+	DrainReportSends(NETMSG_LIVE_STATS_END);
+	const size_t FirstResponseSize = m_pServer->m_vCapturedMatchReportMessages.size();
+	GameController()->SendLiveStats(ClientId);
+	EXPECT_EQ(m_pServer->m_vCapturedMatchReportMessages.size(), FirstResponseSize);
+	m_pServer->m_CaptureMatchReportMessages = false;
+
+	CMatchReport Report;
+	CUuid MatchId;
+	int Revision;
+	int LocalParticipantId;
+	bool PersistOnDisconnect;
+	ASSERT_TRUE(DecodeLiveStats(m_pServer->m_vCapturedMatchReportMessages, Report, MatchId, Revision, LocalParticipantId, PersistOnDisconnect));
+	EXPECT_TRUE(PersistOnDisconnect);
+	EXPECT_EQ(Report.m_ModeId, "vanilla.dm@ddnet.org");
+	EXPECT_EQ(Report.m_Termination, EMatchTermination::ABORTED);
+	ASSERT_EQ(Report.m_vParticipants.size(), 1u);
+	EXPECT_EQ(Report.m_vParticipants[0].m_ParticipantId, LocalParticipantId);
+	const CMatchMetric *pShots = FindMatchMetric(Report, EMatchSubjectKind::PARTICIPANT, LocalParticipantId, "/weapon_1_shots");
+	const CMatchMetric *pHits = FindMatchMetric(Report, EMatchSubjectKind::PARTICIPANT, LocalParticipantId, "/weapon_1_hits");
+	ASSERT_NE(pShots, nullptr);
+	ASSERT_NE(pHits, nullptr);
+	EXPECT_EQ(pShots->m_Value, 1);
+	EXPECT_EQ(pHits->m_Value, 1);
+
+	m_pServer->AdvanceTick(m_pServer->TickSpeed() * 2);
+	m_pServer->m_CaptureMatchReportMessages = true;
+	GameController()->SendLiveStats(ClientId);
+	DrainReportSends(NETMSG_LIVE_STATS_END);
+	m_pServer->m_CaptureMatchReportMessages = false;
+	EXPECT_GT(m_pServer->m_vCapturedMatchReportMessages.size(), FirstResponseSize);
+	GameController()->EndRound();
+	ASSERT_NE(GameController()->LatestMatchReport(), nullptr);
+	EXPECT_EQ(GameController()->LatestMatchReport()->m_MatchId, MatchId);
+}
+
+TEST_F(GameWorld, RaceLiveStatsUseCachedProgressWithoutFinalReport)
+{
+	SelectGameMode("ddnet");
+	constexpr int ClientId = 0;
+	m_pServer->m_aClients[ClientId].m_State = CServer::CClient::STATE_INGAME;
+	str_copy(m_pServer->m_aClients[ClientId].m_aName, "race-player");
+	CPlayer *pPlayer = GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	ASSERT_NE(pPlayer, nullptr);
+	GameController()->OnPlayerConnect(pPlayer);
+	m_pServer->AdvanceTick(200);
+	CCharacter *pCharacter = pPlayer->ForceSpawn(vec2(64.0f, 96.0f));
+	ASSERT_NE(pCharacter, nullptr);
+	auto *pRaceCharacter = static_cast<CCharacterDDRace *>(pCharacter);
+	pRaceCharacter->m_DDRaceState = ERaceState::STARTED;
+	pRaceCharacter->m_StartTime = 100;
+	pRaceCharacter->m_LastTimeCp = 4;
+	CPlayerData *pData = RaceScore().PlayerData(ClientId);
+	pData->m_BestTime = 60.5f;
+	pData->m_MapRank = 7;
+	pData->m_MapFinishes = 12;
+	pData->m_SessionFinishes = 2;
+	pData->m_LastFinishTime = 61.25f;
+	RaceScore().SetCurrentRecord(50.0f);
+	m_pServer->m_CaptureMatchReportMessages = true;
+	GameController()->SendLiveStats(ClientId);
+	DrainReportSends(NETMSG_LIVE_STATS_END);
+	m_pServer->m_CaptureMatchReportMessages = false;
+	CMatchReport LoadingReport;
+	CUuid LoadingMatchId;
+	int LoadingRevision;
+	int LoadingParticipantId;
+	bool LoadingPersistOnDisconnect;
+	ASSERT_TRUE(DecodeLiveStats(m_pServer->m_vCapturedMatchReportMessages, LoadingReport, LoadingMatchId, LoadingRevision, LoadingParticipantId, LoadingPersistOnDisconnect));
+	EXPECT_EQ(FindMatchMetric(LoadingReport, EMatchSubjectKind::PARTICIPANT, 0, "/personal_best_ticks"), nullptr);
+	EXPECT_EQ(FindMatchMetric(LoadingReport, EMatchSubjectKind::PARTICIPANT, 0, "/map_rank"), nullptr);
+	EXPECT_EQ(FindMatchMetric(LoadingReport, EMatchSubjectKind::PARTICIPANT, 0, "/map_finishes"), nullptr);
+	EXPECT_NE(FindMatchMetric(LoadingReport, EMatchSubjectKind::PARTICIPANT, 0, "/session_finishes"), nullptr);
+	m_pServer->m_vCapturedMatchReportMessages.clear();
+	pData->m_PlayerDataLoaded = true;
+	m_pServer->AdvanceTick(m_pServer->TickSpeed() * 2);
+	pRaceCharacter->m_StartTime = m_pServer->Tick() - 100;
+
+	m_pServer->m_CaptureMatchReportMessages = true;
+	GameController()->SendLiveStats(ClientId);
+	DrainReportSends(NETMSG_LIVE_STATS_END);
+	m_pServer->m_CaptureMatchReportMessages = false;
+	CMatchReport Report;
+	CUuid MatchId;
+	int Revision;
+	int LocalParticipantId;
+	bool PersistOnDisconnect;
+	ASSERT_TRUE(DecodeLiveStats(m_pServer->m_vCapturedMatchReportMessages, Report, MatchId, Revision, LocalParticipantId, PersistOnDisconnect));
+	EXPECT_FALSE(PersistOnDisconnect);
+	EXPECT_EQ(Report.m_ModeId, "ddnet.race@ddnet.org");
+	EXPECT_EQ(LocalParticipantId, 0);
+	ASSERT_EQ(Report.m_vParticipants.size(), 1u);
+	ASSERT_EQ(Report.m_vStandings.size(), 1u);
+	EXPECT_EQ(Report.m_vStandings[0].m_Rank, 7);
+	const auto ExpectMetric = [&](const char *pSuffix, int64_t Value) {
+		const CMatchMetric *pMetric = FindMatchMetric(Report, EMatchSubjectKind::PARTICIPANT, 0, pSuffix);
+		ASSERT_NE(pMetric, nullptr) << pSuffix;
+		EXPECT_EQ(pMetric->m_Value, Value) << pSuffix;
+	};
+	ExpectMetric("/personal_best_ticks", 3025);
+	ExpectMetric("/map_best_ticks", 2500);
+	ExpectMetric("/map_rank", 7);
+	ExpectMetric("/map_finishes", 12);
+	ExpectMetric("/session_finishes", 2);
+	ExpectMetric("/last_finish_ticks", 3063);
+	ExpectMetric("/current_run_ticks", 100);
+	ExpectMetric("/current_checkpoint", 5);
+	EXPECT_EQ(GameController()->LatestMatchReport(), nullptr);
+}
+
+TEST_F(GameWorld, ShutdownFinalizesAdminReport)
+{
+	ASSERT_TRUE(GameServer()->GameHost().Modes().Register(TEST_SHUTDOWN_REPORT_INFO, CreateShutdownReportController));
+	SelectGameMode(TEST_SHUTDOWN_REPORT_INFO.m_pId);
+	CPlayer *pPlayer = GameServer()->CreatePlayer(0, TEAM_GAME, false, -1);
+	GameController()->OnPlayerConnect(pPlayer);
+	m_pServer->AdvanceTick(25);
+
+	std::optional<CMatchReport> ShutdownReport;
+	s_pShutdownReport = &ShutdownReport;
+	GameServer()->OnShutdown(m_pServer->m_pPersistentData);
+	s_pShutdownReport = nullptr;
+	m_pKernel->ReregisterInterface(m_pGameServer);
+	GameServer()->OnInit(m_pServer->m_pPersistentData);
+
+	ASSERT_TRUE(ShutdownReport.has_value());
+	EXPECT_EQ(ShutdownReport->m_Termination, EMatchTermination::ADMIN_ENDED);
+	EXPECT_EQ(ShutdownReport->m_DurationTicks, 25);
+	ASSERT_EQ(ShutdownReport->m_vStandings.size(), 1u);
+	EXPECT_EQ(ShutdownReport->m_vStandings[0].m_Outcome, EMatchOutcome::DNF);
 }
 
 TEST_F(GameWorld, MapEntitySetsAreExplicit)
@@ -2473,6 +3107,9 @@ TEST_F(GameWorld, VanillaCTFTiedTimeLimitStartsSuddenDeath)
 	ASSERT_TRUE(GameServer()->GameHost().Modes().Register(TEST_VANILLA_CTF_INFO, CreateTestVanillaCTF));
 	SelectGameMode(TEST_VANILLA_CTF_INFO.m_pId);
 	auto &Controller = *dynamic_cast<CTestVanillaCTF *>(GameController());
+	CPlayer *pPlayer = GameServer()->CreatePlayer(0, TEAM_RED, false, -1);
+	ASSERT_NE(pPlayer, nullptr);
+	Controller.OnPlayerConnect(pPlayer);
 	g_Config.m_SvScorelimit = 0;
 	g_Config.m_SvTimelimit = 1;
 
@@ -2482,6 +3119,13 @@ TEST_F(GameWorld, VanillaCTFTiedTimeLimitStartsSuddenDeath)
 
 	EXPECT_FALSE(Controller.IsGamePaused());
 	EXPECT_TRUE(Controller.IsSuddenDeath());
+	CMatchReport LiveReport;
+	std::string Payload;
+	int LocalParticipantId;
+	ASSERT_TRUE(Controller.BuildLiveStatsReport(0, LiveReport, LocalParticipantId, Payload));
+	const CMatchMetric *pSuddenDeath = FindMatchMetric(LiveReport, EMatchSubjectKind::MATCH, std::nullopt, "/sudden_death");
+	ASSERT_NE(pSuddenDeath, nullptr);
+	EXPECT_EQ(pSuddenDeath->m_Value, 1);
 	g_Config.m_SvScorelimit = PreviousScoreLimit;
 	g_Config.m_SvTimelimit = PreviousTimeLimit;
 }
@@ -2505,6 +3149,11 @@ TEST_F(GameWorld, VanillaCTFSuddenDeathUsesCaptureScore)
 	Controller.SetTeamScores(200, 100);
 	Controller.Tick();
 	EXPECT_TRUE(Controller.IsGamePaused());
+	const CMatchReport *pReport = Controller.LatestMatchReport();
+	ASSERT_NE(pReport, nullptr);
+	const CMatchMetric *pSuddenDeath = FindMatchMetric(*pReport, EMatchSubjectKind::MATCH, std::nullopt, "/sudden_death");
+	ASSERT_NE(pSuddenDeath, nullptr);
+	EXPECT_EQ(pSuddenDeath->m_Value, 1);
 	g_Config.m_SvScorelimit = PreviousScoreLimit;
 	g_Config.m_SvTimelimit = PreviousTimeLimit;
 }
@@ -2786,6 +3435,13 @@ TEST_F(GameWorld, ZCatchEndsRoundForLastPlayerStanding)
 	GameController()->Tick();
 	EXPECT_TRUE(GameController()->IsGamePaused());
 	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, pCatcher), 2);
+	const CMatchReport *pReport = GameController()->LatestMatchReport();
+	ASSERT_NE(pReport, nullptr);
+	EXPECT_EQ(pReport->m_ModeId, "zcatch.laser@ddnet.org");
+	ASSERT_EQ(pReport->m_vParticipants.size(), 3u);
+	const CMatchMetric *pCatches = FindMatchMetric(*pReport, EMatchSubjectKind::PARTICIPANT, pReport->m_vParticipants[0].m_ParticipantId, "/catches");
+	ASSERT_NE(pCatches, nullptr);
+	EXPECT_EQ(pCatches->m_Value, 2);
 	g_Config.m_SvScorelimit = PreviousScoreLimit;
 }
 
@@ -2993,6 +3649,21 @@ TEST_F(GameWorld, VanillaCTFFlagLifecycle)
 	Controller.Tick();
 	EXPECT_TRUE(Controller.Flag(TEAM_BLUE)->IsAtStand());
 	EXPECT_EQ(Controller.SnapPlayerScore(-1, pBlueReturner->GetPlayer()), 3);
+	Controller.EndRound();
+	const CMatchReport *pReport = Controller.LatestMatchReport();
+	ASSERT_NE(pReport, nullptr);
+	ASSERT_EQ(pReport->m_vParticipants.size(), 2u);
+	const int RedParticipantId = pReport->m_vParticipants[0].m_ParticipantId;
+	const int BlueParticipantId = pReport->m_vParticipants[1].m_ParticipantId;
+	const CMatchMetric *pGrabs = FindMatchMetric(*pReport, EMatchSubjectKind::PARTICIPANT, RedParticipantId, "/flag_grabs");
+	const CMatchMetric *pCaptures = FindMatchMetric(*pReport, EMatchSubjectKind::PARTICIPANT, RedParticipantId, "/flag_captures");
+	const CMatchMetric *pReturns = FindMatchMetric(*pReport, EMatchSubjectKind::PARTICIPANT, BlueParticipantId, "/flag_returns");
+	ASSERT_NE(pGrabs, nullptr);
+	ASSERT_NE(pCaptures, nullptr);
+	ASSERT_NE(pReturns, nullptr);
+	EXPECT_EQ(pGrabs->m_Value, 2);
+	EXPECT_EQ(pCaptures->m_Value, 1);
+	EXPECT_EQ(pReturns->m_Value, 1);
 	g_Config.m_SvScorelimit = PreviousScoreLimit;
 	g_Config.m_SvTimelimit = PreviousTimeLimit;
 }

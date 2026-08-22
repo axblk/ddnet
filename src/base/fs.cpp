@@ -621,6 +621,24 @@ int fs_rename(const char *oldname, const char *newname)
 #endif
 }
 
+int fs_rename_noreplace(const char *oldname, const char *newname)
+{
+#if defined(CONF_FAMILY_WINDOWS)
+	const std::wstring wide_oldname = windows_utf8_to_wide(oldname);
+	const std::wstring wide_newname = windows_utf8_to_wide(newname);
+	if(MoveFileExW(wide_oldname.c_str(), wide_newname.c_str(), MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH) != 0)
+		return 0;
+	return 1;
+#else
+	if(link(oldname, newname) != 0)
+		return 1;
+	if(unlink(oldname) == 0)
+		return 0;
+	(void)unlink(newname);
+	return 1;
+#endif
+}
+
 int fs_file_time(const char *name, time_t *created, time_t *modified)
 {
 #if defined(CONF_FAMILY_WINDOWS)

@@ -75,7 +75,7 @@ void CMapSounds::Play(int Channel, int SoundId)
 	if(!m_Audible || SoundId < 0 || SoundId >= m_Count || m_aSounds[SoundId] < 0)
 		return;
 
-	GameClient()->m_Sounds.PlaySample(Channel, m_aSounds[SoundId], 0, 1.0f);
+	PlayForAudio(Channel, SoundId, m_Offline);
 }
 
 void CMapSounds::PlayAt(int Channel, int SoundId, vec2 Position)
@@ -83,7 +83,21 @@ void CMapSounds::PlayAt(int Channel, int SoundId, vec2 Position)
 	if(!m_Audible || SoundId < 0 || SoundId >= m_Count || m_aSounds[SoundId] < 0)
 		return;
 
-	GameClient()->m_Sounds.PlaySampleAt(Channel, m_aSounds[SoundId], 0, 1.0f, Position);
+	PlayAtForAudio(Channel, SoundId, Position, m_Offline);
+}
+
+void CMapSounds::PlayForAudio(int Channel, int SoundId, bool Offline)
+{
+	if(SoundId < 0 || SoundId >= m_Count || m_aSounds[SoundId] < 0)
+		return;
+	GameClient()->m_Sounds.PlaySampleForAudio(Channel, m_aSounds[SoundId], 0, 1.0f, Offline);
+}
+
+void CMapSounds::PlayAtForAudio(int Channel, int SoundId, vec2 Position, bool Offline)
+{
+	if(SoundId < 0 || SoundId >= m_Count || m_aSounds[SoundId] < 0)
+		return;
+	GameClient()->m_Sounds.PlaySampleAtForAudio(Channel, m_aSounds[SoundId], 0, 1.0f, Position, Offline);
 }
 
 void CMapSounds::Load(IMap *pMap, CLayers *pLayers)
@@ -212,9 +226,10 @@ void CMapSounds::FinishSoundLoads()
 	}
 }
 
-void CMapSounds::Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator)
+void CMapSounds::Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator, bool Offline)
 {
 	FinishSoundLoads();
+	SetAudio(true, Offline);
 	if(!m_Audible)
 		return;
 
@@ -247,7 +262,7 @@ void CMapSounds::Update(const CGameState &State, const CGameTickInfo &Time, vec2
 				if(!Source.m_pSource->m_Pan)
 					Flags |= ISound::FLAG_NO_PANNING;
 
-				Source.m_Voice = GameClient()->m_Sounds.PlaySampleAt(CSounds::CHN_MAPSOUND, m_aSounds[Source.m_Sound], Flags, 1.0f, vec2(fx2f(Source.m_pSource->m_Position.x), fx2f(Source.m_pSource->m_Position.y)));
+				Source.m_Voice = GameClient()->m_Sounds.PlaySampleAtForAudio(CSounds::CHN_MAPSOUND, m_aSounds[Source.m_Sound], Flags, 1.0f, vec2(fx2f(Source.m_pSource->m_Position.x), fx2f(Source.m_pSource->m_Position.y)), m_Offline);
 				Sound()->SetVoiceTimeOffset(Source.m_Voice, Offset);
 				Sound()->SetVoiceFalloff(Source.m_Voice, Source.m_pSource->m_Falloff / 255.0f);
 				switch(Source.m_pSource->m_Shape.m_Type)
@@ -316,11 +331,17 @@ void CMapSounds::StopVoices()
 
 void CMapSounds::SetAudible(bool Audible)
 {
-	if(m_Audible == Audible)
+	SetAudio(Audible, false);
+}
+
+void CMapSounds::SetAudio(bool Audible, bool Offline)
+{
+	if(m_Audible == Audible && m_Offline == Offline)
 		return;
-	m_Audible = Audible;
-	if(!m_Audible)
+	if(m_Audible)
 		StopVoices();
+	m_Audible = Audible;
+	m_Offline = Offline;
 }
 
 void CMapSounds::Unload()

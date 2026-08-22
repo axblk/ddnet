@@ -1,5 +1,6 @@
 #include "test.h"
 
+#include <base/mem.h>
 #include <base/str.h>
 
 #include <engine/client/session_sources.h>
@@ -7,6 +8,8 @@
 #include <engine/shared/config.h>
 #include <engine/shared/demo.h>
 #include <engine/shared/network.h>
+#include <engine/shared/protocol_ex.h>
+#include <engine/shared/protocol_ex_msgs.h>
 #include <engine/shared/snapshot.h>
 #include <engine/storage.h>
 
@@ -23,6 +26,42 @@
 
 namespace
 {
+	CMatchReport SampleMatchReport(const char *pMatchName, CUuid &MatchId)
+	{
+		CMatchReport Report;
+		MatchId = CalculateUuid(pMatchName);
+		Report.m_MatchId = MatchId;
+		Report.m_ModeId = "vanilla.dm@ddnet.org";
+		Report.m_MapName = "dm1";
+		Report.m_MapSha256 = sha256("map", 3);
+		Report.m_StartTimeUtc = 100;
+		Report.m_EndTimeUtc = 110;
+		Report.m_DurationTicks = 500;
+		Report.m_TickRate = 50;
+		Report.m_vParticipants.push_back({7, std::nullopt, "Tee", "", 0, std::nullopt, false});
+		Report.m_vStandings.push_back({EMatchSubjectKind::PARTICIPANT, 7, 1, EMatchOutcome::WIN});
+		return Report;
+	}
+
+	// The wire carries the packed report, the journal keeps the JSON the client
+	// makes out of it again.
+	std::string MatchReportPayload(const char *pMatchName, CUuid &MatchId)
+	{
+		std::string Packed;
+		std::string Error;
+		EXPECT_TRUE(MatchReportToPacked(SampleMatchReport(pMatchName, MatchId), Packed, &Error)) << Error;
+		return Packed;
+	}
+
+	std::string MatchReportJournalJson(const char *pMatchName)
+	{
+		CUuid MatchId;
+		std::string Json;
+		std::string Error;
+		EXPECT_TRUE(MatchReportToJson(SampleMatchReport(pMatchName, MatchId), Json, &Error)) << Error;
+		return Json;
+	}
+
 	bool ApplySnapshot(CGameState &State, int Tick, const CSnapshot *pSnapshot, int Size)
 	{
 		if(!pSnapshot->IsValid(Size))
@@ -106,16 +145,66 @@ namespace
 		{
 		}
 
-		void OnDemoPlayerSnapshot(void *pData, int Size) override
+		void OnDemoPlayerSnapshot(CDemoPlayer &, void *pData, int Size) override
 		{
 			m_NumSnapshots++;
 			const auto *pSnapshot = static_cast<const CSnapshot *>(pData);
 			ApplySnapshot(m_State, m_Player.Info()->m_Info.m_CurrentTick, pSnapshot, Size);
 		}
 
-		void OnDemoPlayerMessage(void *pData, int Size) override {}
+		void OnDemoPlayerMessage(CDemoPlayer &, void *pData, int Size) override {}
 
 		int NumSnapshots() const { return m_NumSnapshots; }
+	};
+
+	class CDemoMatchReportListener : public CDemoPlayer::IListener
+	{
+		CMatchReportAssembler m_Assembler;
+		std::optional<CStoredMatch> m_Match;
+		std::string m_Error;
+
+	public:
+		void OnDemoPlayerSnapshot(CDemoPlayer &, void *pData, int Size) override {}
+
+		void OnDemoPlayerMessage(CDemoPlayer &, void *pData, int Size) override
+		{
+			CUnpacker Unpacker;
+			Unpacker.Reset(pData, Size);
+			CMsgPacker Packer(NETMSG_EX, true);
+			int MsgId;
+			bool System;
+			CUuid MessageUuid;
+			if(UnpackMessageId(&MsgId, &System, &MessageUuid, &Unpacker, &Packer) == UNPACKMESSAGE_ERROR || System)
+				return;
+			const void *pRawMatchId = Unpacker.GetRaw(sizeof(CUuid));
+			if(pRawMatchId == nullptr)
+				return;
+			CUuid MatchId;
+			mem_copy(&MatchId, pRawMatchId, sizeof(MatchId));
+			if(MsgId == NETMSG_MATCH_REPORT_START)
+				m_Assembler.Start(MatchId, Unpacker.GetInt(), Unpacker.GetInt(), Unpacker.GetInt(), &m_Error);
+			else if(MsgId == NETMSG_MATCH_REPORT_CHUNK)
+			{
+				const int ChunkIndex = Unpacker.GetInt();
+				const int ChunkSize = Unpacker.GetInt();
+				const void *pChunk = Unpacker.GetRaw(ChunkSize);
+				if(pChunk != nullptr)
+					m_Assembler.AddChunk(MatchId, ChunkIndex, pChunk, ChunkSize, &m_Error);
+			}
+			else if(MsgId == NETMSG_MATCH_REPORT_END)
+			{
+				const void *pRawDigest = Unpacker.GetRaw(sizeof(SHA256_DIGEST));
+				CStoredMatch Match;
+				SHA256_DIGEST Digest;
+				if(pRawDigest != nullptr)
+					mem_copy(&Digest, pRawDigest, sizeof(Digest));
+				if(pRawDigest != nullptr && m_Assembler.Finish(MatchId, Digest, Match, &m_Error))
+					m_Match = std::move(Match);
+			}
+		}
+
+		const std::optional<CStoredMatch> &Match() const { return m_Match; }
+		const std::string &Error() const { return m_Error; }
 	};
 }
 
@@ -1141,6 +1230,93 @@ TEST(GameState, SessionStatsFollowTheirSnapshotLifecycle)
 	EXPECT_EQ(Stats.m_Frags, 0);
 }
 
+TEST(GameState, SessionStatsFinalizePartialObservedMatchOnce)
+{
+	CGameSessionContext Session(CSessionId(1), "dm1", EGameProtocol::SIX, {CStreamId(1)});
+	CGameState &State = *Session.GameStates().FindByStream(CStreamId(1));
+	CNetObj_GameInfo GameInfo = {};
+	GameInfo.m_RoundStartTick = 100;
+	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aClients = {};
+	CGameState::CClientSnapshot &LocalClient = aClients[5];
+	LocalClient.m_Active = true;
+	LocalClient.m_HasPlayerInfo = true;
+	LocalClient.m_PlayerInfo.m_ClientId = 5;
+	LocalClient.m_PlayerInfo.m_Local = 1;
+	LocalClient.m_PlayerInfo.m_Team = TEAM_RED;
+	LocalClient.m_PlayerInfo.m_Score = 10;
+	LocalClient.m_HasClientInfo = true;
+	StrToInts(LocalClient.m_ClientInfo.m_aName, std::size(LocalClient.m_ClientInfo.m_aName), "local");
+	StrToInts(LocalClient.m_ClientInfo.m_aClan, std::size(LocalClient.m_ClientInfo.m_aClan), "clan");
+	State.ApplySnapshotData(150, 2, aClients, &GameInfo);
+	EXPECT_FALSE(Session.Stats().UpdateSnapshot(State, 150));
+	EXPECT_FLOAT_EQ(Session.Stats().Client(5).GetFPM(150, 50), 0.0f);
+	Session.Stats().Client(5).m_Frags = 3;
+	Session.Stats().Client(5).m_FlagCaptures = 7;
+
+	GameInfo.m_GameStateFlags = GAMESTATEFLAG_GAMEOVER;
+	State.ApplySnapshotData(200, 2, std::move(aClients), &GameInfo);
+	EXPECT_TRUE(Session.Stats().UpdateSnapshot(State, 200));
+	CObservedMatchMetadata Metadata;
+	Metadata.m_OriginId = "127.0.0.1:8303";
+	Metadata.m_ModeId = "vanilla.dm@ddnet.org";
+	Metadata.m_MapName = "dm1";
+	Metadata.m_MapSha256 = sha256("map", 3);
+	Metadata.m_EndTimeUtc = 2000000;
+	Metadata.m_TickRate = 50;
+	std::string Error;
+	ASSERT_TRUE(Session.Stats().FinalizeObservedMatch(Metadata, State, 200, &Error)) << Error;
+	EXPECT_FALSE(Session.Stats().FinalizeObservedMatch(Metadata, State, 200, &Error));
+	ASSERT_TRUE(Session.Stats().LatestMatch().has_value());
+	const CStoredMatch &Stored = *Session.Stats().LatestMatch();
+	EXPECT_EQ(Stored.m_Source, EMatchReportSource::CLIENT_OBSERVED);
+	EXPECT_EQ(Stored.m_Completeness, EMatchCompleteness::PARTIAL_SINCE_JOIN);
+	EXPECT_EQ(Stored.m_Report.m_vParticipants.size(), 1U);
+	EXPECT_EQ(Stored.m_RawReport.find(Metadata.m_OriginId), std::string::npos);
+	EXPECT_EQ(Stored.m_RawReport.find("flag_captures"), std::string::npos);
+
+	GameInfo.m_GameStateFlags = 0;
+	GameInfo.m_RoundStartTick = 300;
+	State.ApplySnapshotData(300, 2, {}, &GameInfo);
+	Session.Stats().UpdateSnapshot(State, 300);
+	EXPECT_FALSE(Session.Stats().LatestMatch().has_value());
+	EXPECT_TRUE(Session.Stats().ObservedMatchForReplacement().has_value());
+}
+
+TEST(GameState, SessionStatsFinalizeAbortedMatchWithoutGameOver)
+{
+	CGameSessionContext Session(CSessionId(1), "dm1", EGameProtocol::SIX, {CStreamId(1)});
+	CGameState &State = *Session.GameStates().FindByStream(CStreamId(1));
+	CNetObj_GameInfo GameInfo = {};
+	GameInfo.m_RoundStartTick = 100;
+	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aClients = {};
+	CGameState::CClientSnapshot &LocalClient = aClients[5];
+	LocalClient.m_Active = true;
+	LocalClient.m_HasPlayerInfo = true;
+	LocalClient.m_PlayerInfo.m_ClientId = 5;
+	LocalClient.m_PlayerInfo.m_Local = 1;
+	LocalClient.m_PlayerInfo.m_Team = TEAM_RED;
+	LocalClient.m_HasClientInfo = true;
+	StrToInts(LocalClient.m_ClientInfo.m_aName, std::size(LocalClient.m_ClientInfo.m_aName), "local");
+	State.ApplySnapshotData(150, 2, std::move(aClients), &GameInfo);
+	Session.Stats().UpdateSnapshot(State, 150);
+
+	CObservedMatchMetadata Metadata;
+	Metadata.m_OriginId = "127.0.0.1:8303";
+	Metadata.m_ModeId = "vanilla.dm@ddnet.org";
+	Metadata.m_MapName = "dm1";
+	Metadata.m_MapSha256 = sha256("map", 3);
+	Metadata.m_EndTimeUtc = 2000000;
+	Metadata.m_TickRate = 50;
+	Metadata.m_Termination = EMatchTermination::ABORTED;
+	std::string Error;
+	ASSERT_TRUE(Session.Stats().FinalizeObservedMatch(Metadata, State, 175, &Error)) << Error;
+	ASSERT_TRUE(Session.Stats().LatestMatch().has_value());
+	EXPECT_EQ(Session.Stats().LatestMatch()->m_Completeness, EMatchCompleteness::ABORTED);
+	EXPECT_EQ(Session.Stats().LatestMatch()->m_Report.m_Termination, EMatchTermination::ABORTED);
+	ASSERT_EQ(Session.Stats().LatestMatch()->m_Report.m_vStandings.size(), 1U);
+	EXPECT_EQ(Session.Stats().LatestMatch()->m_Report.m_vStandings[0].m_Outcome, EMatchOutcome::DNF);
+}
+
 TEST(GameState, SessionVotesAreIndependentAndPreserveOptionsAcrossVotes)
 {
 	CGameSessionContext Network(CSessionId(1), "Kobra 4", EGameProtocol::SIX, {CStreamId(1)});
@@ -2131,7 +2307,7 @@ TEST(GameState, GeneratedDemoPlaysToKnownDigestHeadlessly)
 
 	const auto pPlaybackDelta = std::make_unique<CSnapshotDelta>();
 	const auto pPlaybackDeltaSixup = std::make_unique<CSnapshotDelta>();
-	const auto pPlayer = std::make_unique<CDemoPlayer>(pPlaybackDelta.get(), pPlaybackDeltaSixup.get(), false, [] {});
+	const auto pPlayer = std::make_unique<CDemoPlayer>(pPlaybackDelta.get(), pPlaybackDeltaSixup.get(), false, [](CDemoPlayer &) {});
 	const auto pState = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
 	CGameState &State = *pState;
 	CDemoGameStateListener Listener(*pPlayer, State);
@@ -2159,4 +2335,251 @@ TEST(GameState, GeneratedDemoPlaysToKnownDigestHeadlessly)
 	EXPECT_EQ(State.SnapshotDigest(), Expected.SnapshotDigest());
 	pPlayer->Stop();
 	EXPECT_TRUE(pStorage->RemoveFile(pFilename, IStorage::TYPE_SAVE));
+}
+
+TEST(GameState, DemoPreservesCommonMatchReportWithoutImportingIt)
+{
+	static constexpr const char *pFilename = "client-match-report-headless.demo";
+	const std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	const std::unique_ptr<IConsole> pConsole = CreateConsole(CFGFLAG_CLIENT);
+	CNetBase::Init();
+	const auto pSnapshotDelta = std::make_unique<CSnapshotDelta>();
+	const auto pRecorder = std::make_unique<CDemoRecorder>(pSnapshotDelta.get(), true);
+	unsigned char DummyMapData = 0;
+	const SHA256_DIGEST MapSha256 = {};
+	ASSERT_EQ(pRecorder->Start(pStorage.get(), pConsole.get(), pFilename, "test", "headless", MapSha256, 0, "client", 0, &DummyMapData, nullptr, nullptr, nullptr), 0);
+
+	CSnapshotBuilder Builder;
+	Builder.Init();
+	CSnapshotBuffer SnapshotBuffer;
+	const int SnapshotSize = Builder.Finish(&SnapshotBuffer);
+	pRecorder->RecordSnapshot(10, SnapshotBuffer.AsSnapshot(), SnapshotSize);
+	auto RecordMessage = [&pRecorder](const CMsgPacker &Message) {
+		CPacker WireMessage;
+		WireMessage.Reset();
+		WireMessage.AddInt(Message.m_System ? 1 : 0);
+		g_UuidManager.PackUuid(Message.m_MsgId, &WireMessage);
+		WireMessage.AddRaw(Message.Data(), Message.Size());
+		ASSERT_FALSE(WireMessage.Error());
+		pRecorder->RecordMessage(WireMessage.Data(), WireMessage.Size());
+	};
+
+	CUuid MatchId;
+	const std::string Payload = MatchReportPayload("demo-report@ddnet.org", MatchId);
+	CMsgPacker Start(NETMSG_MATCH_REPORT_START, false);
+	Start.AddRaw(&MatchId, sizeof(MatchId));
+	Start.AddInt(1);
+	Start.AddInt(static_cast<int>(Payload.size()));
+	Start.AddInt(1);
+	RecordMessage(Start);
+	CMsgPacker Chunk(NETMSG_MATCH_REPORT_CHUNK, false);
+	Chunk.AddRaw(&MatchId, sizeof(MatchId));
+	Chunk.AddInt(0);
+	Chunk.AddInt(static_cast<int>(Payload.size()));
+	Chunk.AddRaw(Payload.data(), static_cast<int>(Payload.size()));
+	RecordMessage(Chunk);
+	const SHA256_DIGEST PayloadSha256 = sha256(Payload.data(), Payload.size());
+	CMsgPacker End(NETMSG_MATCH_REPORT_END, false);
+	End.AddRaw(&MatchId, sizeof(MatchId));
+	End.AddRaw(&PayloadSha256, sizeof(PayloadSha256));
+	RecordMessage(End);
+	pRecorder->RecordSnapshot(300, SnapshotBuffer.AsSnapshot(), SnapshotSize);
+	ASSERT_EQ(pRecorder->Stop(IDemoRecorder::EStopMode::KEEP_FILE), 0);
+
+	const auto pPlaybackDelta = std::make_unique<CSnapshotDelta>();
+	const auto pPlaybackDeltaSixup = std::make_unique<CSnapshotDelta>();
+	const auto pPlayer = std::make_unique<CDemoPlayer>(pPlaybackDelta.get(), pPlaybackDeltaSixup.get(), false, [](CDemoPlayer &) {});
+	CDemoMatchReportListener Listener;
+	pPlayer->SetListener(&Listener);
+	ASSERT_EQ(pPlayer->Load(pStorage.get(), pConsole.get(), pFilename, IStorage::TYPE_SAVE), 0);
+	pPlayer->Play();
+	ASSERT_TRUE(pPlayer->SetPos(300)) << pPlayer->ErrorMessage();
+	ASSERT_TRUE(Listener.Match().has_value()) << Listener.Error();
+	EXPECT_EQ(Listener.Match()->m_RawReport, MatchReportJournalJson("demo-report@ddnet.org"));
+	EXPECT_FALSE(Listener.Match()->m_LocalParticipantId.has_value());
+	EXPECT_FALSE(ShouldPersistMatchReport(ESessionSourceType::DEMO, true, true));
+	pPlayer->Stop();
+	EXPECT_TRUE(pStorage->RemoveFile(pFilename, IStorage::TYPE_SAVE));
+}
+
+TEST(MatchReportAssembler, AssemblesOutOfOrderAndMapsLocalParticipant)
+{
+	CUuid MatchId;
+	const std::string Payload = MatchReportPayload("assembler-out-of-order@ddnet.org", MatchId);
+	const int PayloadSize = static_cast<int>(Payload.size());
+	const int Split = PayloadSize / 2;
+	CMatchReportAssembler Assembler;
+	std::string Error;
+	ASSERT_TRUE(Assembler.SetLocalParticipant(MatchId, 7, &Error)) << Error;
+	ASSERT_TRUE(Assembler.Start(MatchId, 1, PayloadSize, 2, &Error)) << Error;
+	ASSERT_TRUE(Assembler.AddChunk(MatchId, 1, Payload.data() + Split, PayloadSize - Split, &Error)) << Error;
+	ASSERT_TRUE(Assembler.AddChunk(MatchId, 0, Payload.data(), Split, &Error)) << Error;
+	CStoredMatch Match;
+	ASSERT_TRUE(Assembler.Finish(MatchId, sha256(Payload.data(), Payload.size()), Match, &Error)) << Error;
+	EXPECT_FALSE(Assembler.IsReceiving());
+	EXPECT_EQ(Match.m_Source, EMatchReportSource::SERVER_REPORT);
+	EXPECT_EQ(Match.m_Completeness, EMatchCompleteness::COMPLETE);
+	ASSERT_TRUE(Match.m_LocalParticipantId.has_value());
+	EXPECT_EQ(*Match.m_LocalParticipantId, 7);
+	EXPECT_EQ(Match.m_RawReport, MatchReportJournalJson("assembler-out-of-order@ddnet.org"));
+}
+
+TEST(LiveStatsAssembler, RejectsStaleRevisionsAndKeepsSessionsIndependent)
+{
+	CGameSessionContext First(CSessionId(1), "dm1", EGameProtocol::SIX, {CStreamId(1)});
+	CGameSessionContext Second(CSessionId(2), "dm1", EGameProtocol::SIX, {CStreamId(2)});
+	CUuid FirstMatchId;
+	CUuid SecondMatchId;
+	const std::string FirstPayload = MatchReportPayload("live-first@ddnet.org", FirstMatchId);
+	const std::string SecondPayload = MatchReportPayload("live-second@ddnet.org", SecondMatchId);
+	const int FirstPayloadSize = static_cast<int>(FirstPayload.size());
+	const int SecondPayloadSize = static_cast<int>(SecondPayload.size());
+	std::string Error;
+
+	ASSERT_TRUE(First.LiveStatsAssembler().Start(FirstMatchId, 10, 1, 7, true, FirstPayloadSize, 1, &Error)) << Error;
+	ASSERT_TRUE(First.LiveStatsAssembler().AddChunk(FirstMatchId, 10, 0, FirstPayload.data(), FirstPayloadSize, &Error)) << Error;
+	ASSERT_TRUE(First.LiveStatsAssembler().Finish(FirstMatchId, 10, sha256(FirstPayload.data(), FirstPayload.size()), "first.example:8303", &Error)) << Error;
+	ASSERT_TRUE(First.LiveStatsAssembler().Latest().has_value());
+	EXPECT_EQ(First.LiveStatsAssembler().Latest()->m_Source, EMatchReportSource::SERVER_SNAPSHOT);
+	EXPECT_EQ(First.LiveStatsAssembler().Latest()->m_Completeness, EMatchCompleteness::ABORTED);
+	EXPECT_EQ(First.LiveStatsAssembler().Latest()->m_OriginId, "first.example:8303");
+	ASSERT_TRUE(First.LiveStatsAssembler().Latest()->m_LocalParticipantId.has_value());
+	EXPECT_EQ(*First.LiveStatsAssembler().Latest()->m_LocalParticipantId, 7);
+	EXPECT_TRUE(First.LiveStatsAssembler().LatestPersistOnDisconnect());
+	EXPECT_FALSE(First.LiveStatsAssembler().Start(FirstMatchId, 10, 1, 7, true, FirstPayloadSize, 1, &Error));
+	EXPECT_TRUE(First.LiveStatsAssembler().Latest().has_value());
+
+	ASSERT_TRUE(Second.LiveStatsAssembler().Start(SecondMatchId, 20, 1, 7, false, SecondPayloadSize, 1, &Error)) << Error;
+	ASSERT_TRUE(Second.LiveStatsAssembler().AddChunk(SecondMatchId, 20, 0, SecondPayload.data(), SecondPayloadSize, &Error)) << Error;
+	ASSERT_TRUE(Second.LiveStatsAssembler().Finish(SecondMatchId, 20, sha256(SecondPayload.data(), SecondPayload.size()), "second.example:8303", &Error)) << Error;
+	ASSERT_TRUE(Second.LiveStatsAssembler().Latest().has_value());
+	EXPECT_EQ(Second.LiveStatsAssembler().Latest()->m_Report.m_MatchId, SecondMatchId);
+	EXPECT_FALSE(Second.LiveStatsAssembler().LatestPersistOnDisconnect());
+	EXPECT_EQ(First.LiveStatsAssembler().Latest()->m_Report.m_MatchId, FirstMatchId);
+
+	ASSERT_TRUE(First.LiveStatsAssembler().Start(FirstMatchId, 11, 1, 7, true, FirstPayloadSize, 1, &Error)) << Error;
+	EXPECT_FALSE(First.LiveStatsAssembler().AddChunk(FirstMatchId, 12, 0, FirstPayload.data(), FirstPayloadSize, &Error));
+	ASSERT_TRUE(First.LiveStatsAssembler().Latest().has_value());
+	EXPECT_EQ(First.LiveStatsAssembler().Latest()->m_Report.m_MatchId, FirstMatchId);
+	First.LiveStatsAssembler().ClearMatch(FirstMatchId);
+	EXPECT_FALSE(First.LiveStatsAssembler().Latest().has_value());
+	EXPECT_TRUE(Second.LiveStatsAssembler().Latest().has_value());
+}
+
+TEST(MatchReportAssembler, RejectsInvalidTransportAndPayload)
+{
+	CUuid MatchId;
+	const std::string Payload = MatchReportPayload("assembler-rejection@ddnet.org", MatchId);
+	const int PayloadSize = static_cast<int>(Payload.size());
+	std::string Error;
+	CStoredMatch Match;
+	CMatchReportAssembler Assembler;
+
+	EXPECT_FALSE(Assembler.Start(MatchId, 1, MatchReportLimits::MAX_PAYLOAD_SIZE + 1, 1, &Error));
+	const std::string OversizedChunk(MatchReportTransportLimits::MAX_CHUNK_SIZE + 1, 'x');
+	ASSERT_TRUE(Assembler.Start(MatchId, 1, static_cast<int>(OversizedChunk.size()), 2, &Error)) << Error;
+	EXPECT_FALSE(Assembler.AddChunk(MatchId, 0, OversizedChunk.data(), static_cast<int>(OversizedChunk.size()), &Error));
+	ASSERT_TRUE(Assembler.Start(MatchId, 1, PayloadSize, 1, &Error)) << Error;
+	ASSERT_TRUE(Assembler.AddChunk(MatchId, 0, Payload.data(), PayloadSize, &Error)) << Error;
+	EXPECT_FALSE(Assembler.AddChunk(MatchId, 0, Payload.data(), PayloadSize, &Error));
+	EXPECT_FALSE(Assembler.IsReceiving());
+
+	ASSERT_TRUE(Assembler.Start(MatchId, 1, PayloadSize, 2, &Error)) << Error;
+	ASSERT_TRUE(Assembler.AddChunk(MatchId, 0, Payload.data(), PayloadSize / 2, &Error)) << Error;
+	EXPECT_FALSE(Assembler.Finish(MatchId, sha256(Payload.data(), Payload.size()), Match, &Error));
+
+	ASSERT_TRUE(Assembler.Start(MatchId, 1, PayloadSize, 1, &Error)) << Error;
+	ASSERT_TRUE(Assembler.AddChunk(MatchId, 0, Payload.data(), PayloadSize, &Error)) << Error;
+	EXPECT_FALSE(Assembler.Finish(MatchId, sha256("wrong", 5), Match, &Error));
+
+	const std::string InvalidJson = "{}";
+	ASSERT_TRUE(Assembler.Start(MatchId, 1, static_cast<int>(InvalidJson.size()), 1, &Error)) << Error;
+	ASSERT_TRUE(Assembler.AddChunk(MatchId, 0, InvalidJson.data(), static_cast<int>(InvalidJson.size()), &Error)) << Error;
+	EXPECT_FALSE(Assembler.Finish(MatchId, sha256(InvalidJson.data(), InvalidJson.size()), Match, &Error));
+}
+
+TEST(MatchReportAssembler, SessionsAssembleIndependently)
+{
+	CGameSessionContext First(CSessionId(1), "dm1", EGameProtocol::SIX, {CStreamId(1)});
+	CGameSessionContext Second(CSessionId(2), "dm1", EGameProtocol::SIX, {CStreamId(2)});
+	CNetObj_GameInfo GameInfo = {};
+	First.GameStates().FindByStream(CStreamId(1))->ApplySnapshotData(0, 2, {}, &GameInfo);
+	Second.GameStates().FindByStream(CStreamId(2))->ApplySnapshotData(0, 2, {}, &GameInfo);
+	First.Stats().UpdateSnapshot(*First.GameStates().FindByStream(CStreamId(1)), 0);
+	Second.Stats().UpdateSnapshot(*Second.GameStates().FindByStream(CStreamId(2)), 0);
+	CUuid FirstMatchId;
+	CUuid SecondMatchId;
+	const std::string FirstPayload = MatchReportPayload("assembler-session-one@ddnet.org", FirstMatchId);
+	const std::string SecondPayload = MatchReportPayload("assembler-session-two@ddnet.org", SecondMatchId);
+	const int FirstPayloadSize = static_cast<int>(FirstPayload.size());
+	const int SecondPayloadSize = static_cast<int>(SecondPayload.size());
+	std::string Error;
+	ASSERT_TRUE(First.MatchReportAssembler().SetLocalParticipant(FirstMatchId, 7, &Error)) << Error;
+	ASSERT_TRUE(First.MatchReportAssembler().Start(FirstMatchId, 1, FirstPayloadSize, 1, &Error)) << Error;
+	ASSERT_TRUE(Second.MatchReportAssembler().Start(SecondMatchId, 1, SecondPayloadSize, 1, &Error)) << Error;
+	ASSERT_TRUE(First.MatchReportAssembler().AddChunk(FirstMatchId, 0, FirstPayload.data(), FirstPayloadSize, &Error)) << Error;
+	CStoredMatch Match;
+	ASSERT_TRUE(First.MatchReportAssembler().Finish(FirstMatchId, sha256(FirstPayload.data(), FirstPayload.size()), Match, &Error)) << Error;
+	First.Stats().SetLatestServerMatch(std::move(Match));
+	EXPECT_FALSE(First.Stats().IsCurrentServerMatch(First.Stats().LatestMatch()->m_Report));
+	ASSERT_TRUE(First.Stats().LatestMatch()->m_LocalParticipantId.has_value());
+	EXPECT_EQ(*First.Stats().LatestMatch()->m_LocalParticipantId, 7);
+	GameInfo.m_RoundStartTick = 10;
+	First.GameStates().FindByStream(CStreamId(1))->ApplySnapshotData(10, 2, {}, &GameInfo);
+	First.Stats().UpdateSnapshot(*First.GameStates().FindByStream(CStreamId(1)), 10);
+	EXPECT_FALSE(First.Stats().LatestMatch().has_value());
+	CMatchReport CurrentRoundReport;
+	CurrentRoundReport.m_RoundStartTick = 10;
+	EXPECT_TRUE(First.Stats().IsCurrentServerMatch(CurrentRoundReport));
+	EXPECT_FALSE(First.MatchReportAssembler().IsReceiving());
+	EXPECT_FALSE(Second.Stats().LatestMatch().has_value());
+	EXPECT_TRUE(Second.MatchReportAssembler().IsReceiving());
+
+	ASSERT_TRUE(Second.MatchReportAssembler().AddChunk(SecondMatchId, 0, SecondPayload.data(), SecondPayloadSize, &Error)) << Error;
+	ASSERT_TRUE(Second.MatchReportAssembler().Finish(SecondMatchId, sha256(SecondPayload.data(), SecondPayload.size()), Match, &Error)) << Error;
+	Second.Stats().SetLatestServerMatch(std::move(Match));
+	ASSERT_TRUE(Second.Stats().LatestMatch().has_value());
+	EXPECT_FALSE(Second.Stats().LatestMatch()->m_LocalParticipantId.has_value());
+	EXPECT_EQ(Second.Stats().LatestMatch()->m_Report.m_MatchId, SecondMatchId);
+	EXPECT_FALSE(First.Stats().LatestMatch().has_value());
+}
+
+TEST(MatchReportAssembler, PersistsOnlyEnabledNetworkSessions)
+{
+	CUuid MatchId;
+	const std::string Payload = MatchReportPayload("assembler-incomplete@ddnet.org", MatchId);
+	CMatchReportAssembler Incomplete;
+	std::string Error;
+	ASSERT_TRUE(Incomplete.Start(MatchId, 1, static_cast<int>(Payload.size()), 1, &Error)) << Error;
+	EXPECT_TRUE(Incomplete.IsReceiving());
+	EXPECT_TRUE(ShouldPersistMatchReport(ESessionSourceType::NETWORK, true, true));
+	EXPECT_FALSE(ShouldPersistMatchReport(ESessionSourceType::NETWORK, true, false));
+	EXPECT_FALSE(ShouldPersistMatchReport(ESessionSourceType::NETWORK, false, true));
+	EXPECT_FALSE(ShouldPersistMatchReport(ESessionSourceType::DEMO, true, true));
+
+	CStoredMatch Observed;
+	Observed.m_Source = EMatchReportSource::CLIENT_OBSERVED;
+	Observed.m_OriginId = "127.0.0.1:8303";
+	Observed.m_Report.m_MapSha256 = sha256("map", 3);
+	Observed.m_Report.m_ModeId = "vanilla.dm@ddnet.org";
+	Observed.m_Report.m_DurationTicks = 500;
+	Observed.m_Report.m_TickRate = 50;
+	Observed.m_Report.m_RoundStartTick = 100;
+	Observed.m_LocalParticipantId = 0;
+	Observed.m_Report.m_vParticipants.push_back({0, std::nullopt, "Player", "Clan", 0, std::nullopt, false});
+	CStoredMatch Server = Observed;
+	Server.m_Source = EMatchReportSource::SERVER_REPORT;
+	EXPECT_TRUE(ShouldReplaceObservedMatch(Observed, Server));
+	Server.m_Report.m_ModeId = "zcatch.laser@ddnet.org";
+	EXPECT_TRUE(ShouldReplaceObservedMatch(Observed, Server));
+	Server.m_Report.m_EndTimeUtc = 1000000;
+	EXPECT_TRUE(ShouldReplaceObservedMatch(Observed, Server));
+	Server.m_Report.m_RoundStartTick = 101;
+	EXPECT_FALSE(ShouldReplaceObservedMatch(Observed, Server));
+	Server.m_Report.m_RoundStartTick = 100;
+	Server.m_OriginId = "127.0.0.1:8304";
+	EXPECT_FALSE(ShouldReplaceObservedMatch(Observed, Server));
+	EXPECT_FALSE(ShouldReplaceObservedMatch(std::nullopt, Server));
+	Incomplete.Reset();
+	EXPECT_FALSE(Incomplete.IsReceiving());
 }

@@ -7,7 +7,6 @@
 
 #include <engine/client/backend/backend_base.h>
 #include <engine/client/backend/vulkan/backend_vulkan.h>
-#include <engine/client/backend_sdl.h>
 #include <engine/client/graphics_threaded.h>
 #include <engine/gfx/image_manipulation.h>
 #include <engine/graphics.h>
@@ -15,8 +14,10 @@
 #include <engine/shared/localization.h>
 #include <engine/storage.h>
 
+#if !defined(CONF_DEMO_RENDER_TOOL)
 #include <SDL_video.h>
 #include <SDL_vulkan.h>
+#endif
 #include <vulkan/vk_platform.h>
 #include <vulkan/vulkan_core.h>
 
@@ -881,6 +882,7 @@ class CCommandProcessorFragment_Vulkan : public CCommandProcessorFragment_Render
 	bool m_RecreateSwapChain = false;
 	bool m_SwapchainCreated = false;
 	bool m_SwapchainRecreationDeferred = false;
+	bool m_OffscreenOnly = false;
 	bool m_RenderingPaused = false;
 	bool m_FrameCommandsRecording = false;
 	bool m_AcquireSemaphorePending = false;
@@ -955,7 +957,7 @@ private:
 	uint32_t m_VKGraphicsQueueIndex = std::numeric_limits<uint32_t>::max();
 	VkDevice m_VKDevice;
 	VkQueue m_VKGraphicsQueue, m_VKPresentQueue;
-	VkSurfaceKHR m_VKPresentSurface;
+	VkSurfaceKHR m_VKPresentSurface = VK_NULL_HANDLE;
 	SSwapImgViewportExtent m_VKSwapImgAndViewportExtent;
 
 #ifdef VK_EXT_debug_utils
@@ -1025,7 +1027,7 @@ private:
 	uint32_t m_CanvasWidth;
 	uint32_t m_CanvasHeight;
 
-	SDL_Window *m_pWindow;
+	void *m_pWindow = nullptr;
 
 	std::array<float, 4> m_aClearColor = {0, 0, 0, 0};
 
@@ -1236,7 +1238,7 @@ protected:
 
 	void ErroneousCleanup() override
 	{
-		CleanupVulkanSDL();
+		CleanupVulkanDevice();
 	}
 
 	/*****************************
@@ -1304,6 +1306,7 @@ protected:
 			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Waiting for pending readback commands failed.");
 			return false;
 		}
+		ClearFrameMemoryUsage();
 
 		return RestartReadbackCommandBuffer(CommandBuffer);
 	}
@@ -2497,6 +2500,26 @@ protected:
 		return true;
 	}
 
+	[[nodiscard]] bool PrepareOffscreenCommands()
+	{
+		auto &CommandBuffer = GetMainGraphicCommandBuffer();
+		if(vkResetCommandBuffer(CommandBuffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
+		{
+			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Resetting the offscreen command buffer failed.");
+			return false;
+		}
+		VkCommandBufferBeginInfo BeginInfo{};
+		BeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		BeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		if(vkBeginCommandBuffer(CommandBuffer, &BeginInfo) != VK_SUCCESS)
+		{
+			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Beginning the offscreen command buffer failed.");
+			return false;
+		}
+		m_FrameCommandsRecording = true;
+		return true;
+	}
+
 	void UploadStagingBuffers()
 	{
 		if(!m_vNonFlushedStagingBufferRange.empty())
@@ -3642,6 +3665,7 @@ public:
 	 * VULKAN SETUP CODE
 	 ************************/
 
+#if !defined(CONF_DEMO_RENDER_TOOL)
 	[[nodiscard]] bool GetVulkanExtensions(SDL_Window *pWindow, std::vector<std::string> &vVKExtensions)
 	{
 		unsigned int ExtCount = 0;
@@ -3666,6 +3690,7 @@ public:
 
 		return true;
 	}
+#endif
 
 	std::set<std::string> OurVKLayers()
 	{
@@ -3681,10 +3706,11 @@ public:
 		return OurLayers;
 	}
 
-	std::set<std::string> OurDeviceExtensions()
+	std::set<std::string> OurDeviceExtensions() const
 	{
 		std::set<std::string> OurExt;
-		OurExt.emplace(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+		if(!m_OffscreenOnly)
+			OurExt.emplace(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 #ifdef VK_EXT_device_fault
 		// Only used when actually supported by the device (see device creation);
 		// enables detailed diagnostics after a VK_ERROR_DEVICE_LOST.
@@ -4164,6 +4190,7 @@ public:
 		return true;
 	}
 
+#if !defined(CONF_DEMO_RENDER_TOOL)
 	[[nodiscard]] bool CreateSurface(SDL_Window *pWindow)
 	{
 		if(!SDL_Vulkan_CreateSurface(pWindow, m_VKInstance, &m_VKPresentSurface))
@@ -4183,10 +4210,15 @@ public:
 
 		return true;
 	}
+#endif
 
 	void DestroySurface()
 	{
-		vkDestroySurfaceKHR(m_VKInstance, m_VKPresentSurface, nullptr);
+		if(m_VKPresentSurface != VK_NULL_HANDLE)
+		{
+			vkDestroySurfaceKHR(m_VKInstance, m_VKPresentSurface, nullptr);
+			m_VKPresentSurface = VK_NULL_HANDLE;
+		}
 	}
 
 	[[nodiscard]] bool GetPresentationMode(VkPresentModeKHR &VKIOMode)
@@ -4421,7 +4453,7 @@ public:
 
 	void DestroySwapChain(bool ForceDestroy)
 	{
-		if(ForceDestroy)
+		if(ForceDestroy && m_VKSwapChain != VK_NULL_HANDLE)
 		{
 			vkDestroySwapchainKHR(m_VKDevice, m_VKSwapChain, nullptr);
 			m_VKSwapChain = VK_NULL_HANDLE;
@@ -4575,14 +4607,13 @@ public:
 
 	void DestroyMultiSamplerImageAttachments()
 	{
-		if(HasMultiSampling())
+		if(HasMultiSampling() && !m_vSwapChainMultiSamplingImages.empty())
 		{
-			m_vSwapChainMultiSamplingImages.resize(m_SwapChainImageCount);
-			for(size_t i = 0; i < m_SwapChainImageCount; ++i)
+			for(auto &Image : m_vSwapChainMultiSamplingImages)
 			{
-				vkDestroyImageView(m_VKDevice, m_vSwapChainMultiSamplingImages[i].m_ImgView, nullptr);
-				vkDestroyImage(m_VKDevice, m_vSwapChainMultiSamplingImages[i].m_Image, nullptr);
-				FreeImageMemBlock(m_vSwapChainMultiSamplingImages[i].m_ImgMem);
+				vkDestroyImageView(m_VKDevice, Image.m_ImgView, nullptr);
+				vkDestroyImage(m_VKDevice, Image.m_Image, nullptr);
+				FreeImageMemBlock(Image.m_ImgMem);
 			}
 		}
 		m_vSwapChainMultiSamplingImages.clear();
@@ -4988,7 +5019,7 @@ public:
 		PipelineInfo.pMultisampleState = &Multisampling;
 		PipelineInfo.pColorBlendState = &ColorBlending;
 		PipelineInfo.layout = PipeLayout;
-		PipelineInfo.renderPass = m_VKRenderPass;
+		PipelineInfo.renderPass = m_OffscreenOnly ? m_VKRenderTargetPass : m_VKRenderPass;
 		PipelineInfo.subpass = 0;
 		PipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 
@@ -5587,7 +5618,7 @@ public:
 	{
 		if(IsLastCleanup)
 		{
-			if(m_SwapchainCreated)
+			if(m_SwapchainCreated || m_OffscreenOnly)
 				CleanupVulkanSwapChain(true);
 
 			for(auto &Binding : m_vTextureBindings)
@@ -5659,7 +5690,7 @@ public:
 		}
 	}
 
-	void CleanupVulkanSDL()
+	void CleanupVulkanDevice()
 	{
 		if(m_VKInstance != VK_NULL_HANDLE)
 		{
@@ -5740,16 +5771,25 @@ public:
 		return Ret;
 	}
 
-	int InitVulkanSDL(SDL_Window *pWindow, uint32_t CanvasWidth, uint32_t CanvasHeight, char *pRendererString, char *pVendorString, char *pVersionString)
+	int InitVulkanDevice(void *pWindow, EGraphicsBackendMode BackendMode, uint32_t CanvasWidth, uint32_t CanvasHeight, char *pRendererString, char *pVendorString, char *pVersionString)
 	{
 		std::vector<std::string> vVKExtensions;
 		std::vector<std::string> vVKLayers;
 
+		m_OffscreenOnly = BackendMode == EGraphicsBackendMode::OFFSCREEN;
 		m_CanvasWidth = CanvasWidth;
 		m_CanvasHeight = CanvasHeight;
+		m_VKSwapImgAndViewportExtent.m_SwapImageViewport = {CanvasWidth, CanvasHeight};
 
-		if(!GetVulkanExtensions(pWindow, vVKExtensions))
+		if(!m_OffscreenOnly)
+		{
+#if !defined(CONF_DEMO_RENDER_TOOL)
+			if(!GetVulkanExtensions(static_cast<SDL_Window *>(pWindow), vVKExtensions))
+				return -1;
+#else
 			return -1;
+#endif
+		}
 
 		if(!GetVulkanLayers(vVKLayers))
 			return -1;
@@ -5774,10 +5814,21 @@ public:
 			return -1;
 
 		vkGetDeviceQueue(m_VKDevice, m_VKGraphicsQueueIndex, 0, &m_VKGraphicsQueue);
-		vkGetDeviceQueue(m_VKDevice, m_VKGraphicsQueueIndex, 0, &m_VKPresentQueue);
-
-		if(!CreateSurface(pWindow))
+		if(m_OffscreenOnly)
+		{
+			m_VKSurfFormat.format = VK_FORMAT_R8G8B8A8_UNORM;
+			m_VKSurfFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+		}
+		else
+		{
+#if !defined(CONF_DEMO_RENDER_TOOL)
+			vkGetDeviceQueue(m_VKDevice, m_VKGraphicsQueueIndex, 0, &m_VKPresentQueue);
+			if(!CreateSurface(static_cast<SDL_Window *>(pWindow)))
+				return -1;
+#else
 			return -1;
+#endif
+		}
 
 		return 0;
 	}
@@ -6140,6 +6191,71 @@ public:
 		return VK_SAMPLE_COUNT_1_BIT;
 	}
 
+	[[nodiscard]] bool CreateGraphicsPipelines()
+	{
+		if(!CreateStandardGraphicsPipeline("shader/vulkan/prim.vert.spv", "shader/vulkan/prim.frag.spv", false, false))
+			return false;
+
+		if(!CreateStandardGraphicsPipeline("shader/vulkan/prim_textured.vert.spv", "shader/vulkan/prim_textured.frag.spv", true, false))
+			return false;
+
+		if(!CreateBlurGraphicsPipeline("shader/vulkan/prim_textured.vert.spv", "shader/vulkan/blur.frag.spv"))
+			return false;
+
+		if(!CreatePlanarYuvGraphicsPipeline("shader/vulkan/prim_textured.vert.spv", "shader/vulkan/planar_yuv.frag.spv"))
+			return false;
+
+		if(!CreateStandardGraphicsPipeline("shader/vulkan/prim.vert.spv", "shader/vulkan/prim.frag.spv", false, true))
+			return false;
+
+		if(!CreateStandard3DGraphicsPipeline("shader/vulkan/prim3d.vert.spv", "shader/vulkan/prim3d.frag.spv", false))
+			return false;
+
+		if(!CreateStandard3DGraphicsPipeline("shader/vulkan/prim3d_textured.vert.spv", "shader/vulkan/prim3d_textured.frag.spv", true))
+			return false;
+
+		if(!CreateTextGraphicsPipeline("shader/vulkan/text.vert.spv", "shader/vulkan/text.frag.spv"))
+			return false;
+
+		if(!CreateTileGraphicsPipeline<false>("shader/vulkan/tile.vert.spv", "shader/vulkan/tile.frag.spv", false))
+			return false;
+
+		if(!CreateTileGraphicsPipeline<true>("shader/vulkan/tile_textured.vert.spv", "shader/vulkan/tile_textured.frag.spv", false))
+			return false;
+
+		if(!CreateTileGraphicsPipeline<false>("shader/vulkan/tile_border.vert.spv", "shader/vulkan/tile_border.frag.spv", true))
+			return false;
+
+		if(!CreateTileGraphicsPipeline<true>("shader/vulkan/tile_border_textured.vert.spv", "shader/vulkan/tile_border_textured.frag.spv", true))
+			return false;
+
+		if(!CreatePrimExGraphicsPipeline("shader/vulkan/primex.vert.spv", "shader/vulkan/primex.frag.spv", false))
+			return false;
+
+		if(!CreatePrimExGraphicsPipeline("shader/vulkan/primex_tex.vert.spv", "shader/vulkan/primex_tex.frag.spv", true))
+			return false;
+
+		if(!CreateSpriteMultiGraphicsPipeline("shader/vulkan/spritemulti.vert.spv", "shader/vulkan/spritemulti.frag.spv"))
+			return false;
+
+		if(!CreateSpriteMultiPushGraphicsPipeline("shader/vulkan/spritemulti_push.vert.spv", "shader/vulkan/spritemulti_push.frag.spv"))
+			return false;
+
+		if(!CreateQuadGraphicsPipeline<false>("shader/vulkan/quad.vert.spv", "shader/vulkan/quad.frag.spv"))
+			return false;
+
+		if(!CreateQuadGraphicsPipeline<true>("shader/vulkan/quad_textured.vert.spv", "shader/vulkan/quad_textured.frag.spv"))
+			return false;
+
+		if(!CreateQuadGroupedGraphicsPipeline<false>("shader/vulkan/quad_grouped.vert.spv", "shader/vulkan/quad_grouped.frag.spv"))
+			return false;
+
+		if(!CreateQuadGroupedGraphicsPipeline<true>("shader/vulkan/quad_grouped_textured.vert.spv", "shader/vulkan/quad_grouped_textured.frag.spv"))
+			return false;
+
+		return true;
+	}
+
 	int InitVulkanSwapChain(VkSwapchainKHR &OldSwapChain, const VkSurfaceCapabilitiesKHR *pSurfaceCapabilities = nullptr)
 	{
 		OldSwapChain = VK_NULL_HANDLE;
@@ -6153,9 +6269,7 @@ public:
 			return -1;
 
 		if(!CreateMultiSamplerImageAttachments())
-		{
 			return -1;
-		}
 
 		if(!CreateRenderPass(m_VKRenderPass, true, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) ||
 			!CreateRenderPass(m_VKRenderPassDiscard, false, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) ||
@@ -6163,70 +6277,21 @@ public:
 			!CreateRenderPass(m_VKRenderTargetPassDiscard, false, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
 			return -1;
 
-		if(!CreateFramebuffers())
-			return -1;
-
-		if(!CreateStandardGraphicsPipeline("shader/vulkan/prim.vert.spv", "shader/vulkan/prim.frag.spv", false, false))
-			return -1;
-
-		if(!CreateStandardGraphicsPipeline("shader/vulkan/prim_textured.vert.spv", "shader/vulkan/prim_textured.frag.spv", true, false))
-			return -1;
-
-		if(!CreateBlurGraphicsPipeline("shader/vulkan/prim_textured.vert.spv", "shader/vulkan/blur.frag.spv"))
-			return -1;
-
-		if(!CreatePlanarYuvGraphicsPipeline("shader/vulkan/prim_textured.vert.spv", "shader/vulkan/planar_yuv.frag.spv"))
-			return -1;
-
-		if(!CreateStandardGraphicsPipeline("shader/vulkan/prim.vert.spv", "shader/vulkan/prim.frag.spv", false, true))
-			return -1;
-
-		if(!CreateStandard3DGraphicsPipeline("shader/vulkan/prim3d.vert.spv", "shader/vulkan/prim3d.frag.spv", false))
-			return -1;
-
-		if(!CreateStandard3DGraphicsPipeline("shader/vulkan/prim3d_textured.vert.spv", "shader/vulkan/prim3d_textured.frag.spv", true))
-			return -1;
-
-		if(!CreateTextGraphicsPipeline("shader/vulkan/text.vert.spv", "shader/vulkan/text.frag.spv"))
-			return -1;
-
-		if(!CreateTileGraphicsPipeline<false>("shader/vulkan/tile.vert.spv", "shader/vulkan/tile.frag.spv", false))
-			return -1;
-
-		if(!CreateTileGraphicsPipeline<true>("shader/vulkan/tile_textured.vert.spv", "shader/vulkan/tile_textured.frag.spv", false))
-			return -1;
-
-		if(!CreateTileGraphicsPipeline<false>("shader/vulkan/tile_border.vert.spv", "shader/vulkan/tile_border.frag.spv", true))
-			return -1;
-
-		if(!CreateTileGraphicsPipeline<true>("shader/vulkan/tile_border_textured.vert.spv", "shader/vulkan/tile_border_textured.frag.spv", true))
-			return -1;
-
-		if(!CreatePrimExGraphicsPipeline("shader/vulkan/primex.vert.spv", "shader/vulkan/primex.frag.spv", false))
-			return -1;
-
-		if(!CreatePrimExGraphicsPipeline("shader/vulkan/primex_tex.vert.spv", "shader/vulkan/primex_tex.frag.spv", true))
-			return -1;
-
-		if(!CreateSpriteMultiGraphicsPipeline("shader/vulkan/spritemulti.vert.spv", "shader/vulkan/spritemulti.frag.spv"))
-			return -1;
-
-		if(!CreateSpriteMultiPushGraphicsPipeline("shader/vulkan/spritemulti_push.vert.spv", "shader/vulkan/spritemulti_push.frag.spv"))
-			return -1;
-
-		if(!CreateQuadGraphicsPipeline<false>("shader/vulkan/quad.vert.spv", "shader/vulkan/quad.frag.spv"))
-			return -1;
-
-		if(!CreateQuadGraphicsPipeline<true>("shader/vulkan/quad_textured.vert.spv", "shader/vulkan/quad_textured.frag.spv"))
-			return -1;
-
-		if(!CreateQuadGroupedGraphicsPipeline<false>("shader/vulkan/quad_grouped.vert.spv", "shader/vulkan/quad_grouped.frag.spv"))
-			return -1;
-
-		if(!CreateQuadGroupedGraphicsPipeline<true>("shader/vulkan/quad_grouped_textured.vert.spv", "shader/vulkan/quad_grouped_textured.frag.spv"))
+		if(!CreateFramebuffers() || !CreateGraphicsPipelines())
 			return -1;
 
 		m_SwapchainCreated = true;
+		return 0;
+	}
+
+	int InitVulkanOffscreenResources()
+	{
+		m_SwapChainImageCount = 1;
+		m_CurImageIndex = 0;
+		if(!CreateRenderPass(m_VKRenderTargetPass, true, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) ||
+			!CreateRenderPass(m_VKRenderTargetPassDiscard, false, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) ||
+			!CreateGraphicsPipelines())
+			return -1;
 		return 0;
 	}
 
@@ -6247,9 +6312,17 @@ public:
 			if(!CreateQuadUniformDescriptorSetLayout())
 				return -1;
 
-			VkSwapchainKHR OldSwapChain = VK_NULL_HANDLE;
-			if(InitVulkanSwapChain(OldSwapChain) != 0)
-				return -1;
+			if(m_OffscreenOnly)
+			{
+				if(InitVulkanOffscreenResources() != 0)
+					return -1;
+			}
+			else
+			{
+				VkSwapchainKHR OldSwapChain = VK_NULL_HANDLE;
+				if(InitVulkanSwapChain(OldSwapChain) != 0)
+					return -1;
+			}
 		}
 
 		if(IsFirstInitialization)
@@ -6619,6 +6692,21 @@ public:
 			return Handled ? ERunCommandReturnTypes::RUN_COMMAND_COMMAND_HANDLED : ERunCommandReturnTypes::RUN_COMMAND_COMMAND_UNHANDLED;
 		};
 
+		if(m_OffscreenOnly)
+		{
+			switch(pBaseCommand->m_Cmd)
+			{
+			case CCommandBuffer::CMD_SWAP:
+			case CCommandBuffer::CMD_MULTISAMPLING:
+			case CCommandBuffer::CMD_VSYNC:
+			case CCommandBuffer::CMD_PRESENTATION_TARGET_READBACK:
+			case CCommandBuffer::CMD_UPDATE_VIEWPORT:
+			case CCommandBuffer::CMD_WINDOW_CREATE_NTF:
+			case CCommandBuffer::CMD_WINDOW_DESTROY_NTF:
+				return ERunCommandReturnTypes::RUN_COMMAND_COMMAND_UNHANDLED;
+			}
+		}
+
 		switch(pBaseCommand->m_Cmd)
 		{
 		case CCommandBuffer::CMD_SIGNAL: return RUN_COMMAND_COMMAND_HANDLED;
@@ -6717,6 +6805,8 @@ public:
 
 	[[nodiscard]] bool Cmd_Init(const SCommand_Init *pCommand)
 	{
+		if(m_OffscreenOnly != (pCommand->m_BackendMode == EGraphicsBackendMode::OFFSCREEN))
+			return false;
 		m_TextureHandles.Clear();
 		m_TextureBindingHandles.Clear();
 		m_vTextureBindings.clear();
@@ -6756,7 +6846,7 @@ public:
 
 		m_MultiSamplingCount = (g_Config.m_GfxFsaaSamples & 0xFFFFFFFE); // ignore the uneven bit, only even multi sampling works
 
-		m_pWindow = pCommand->m_pWindow;
+		m_pWindow = m_OffscreenOnly ? nullptr : pCommand->m_pWindow;
 
 		*pCommand->m_pInitError = m_VKInstance != VK_NULL_HANDLE ? 0 : -1;
 
@@ -6773,7 +6863,7 @@ public:
 			return false;
 		}
 
-		if(!PrepareFrame())
+		if(!(m_OffscreenOnly ? PrepareOffscreenCommands() : PrepareFrame()))
 			return false;
 		if(m_HasError)
 		{
@@ -6917,6 +7007,8 @@ public:
 	[[nodiscard]] bool Cmd_BeginRenderPass(const CCommandBuffer::SCommand_BeginRenderPass *pCommand)
 	{
 		const auto Target = pCommand->m_Desc.m_ColorTarget;
+		if(m_OffscreenOnly && !Target.IsValid())
+			return false;
 		if(Target.IsValid())
 		{
 			if(!m_TextureHandles.IsActive(Target) || static_cast<size_t>(Target.Id()) >= m_vTextures.size())
@@ -7637,6 +7729,9 @@ public:
 
 	[[nodiscard]] bool Cmd_WindowCreateNtf(const CCommandBuffer::SCommand_WindowCreateNtf *pCommand)
 	{
+#if defined(CONF_DEMO_RENDER_TOOL)
+		return false;
+#else
 		if(IsVerbose())
 		{
 			log_debug("gfx/vulkan", "Creating new surface.");
@@ -7645,7 +7740,7 @@ public:
 		if(m_RenderingPaused)
 		{
 #ifdef CONF_PLATFORM_ANDROID
-			if(!CreateSurface(m_pWindow))
+			if(!CreateSurface(static_cast<SDL_Window *>(m_pWindow)))
 				return false;
 			m_RecreateSwapChain = true;
 #endif
@@ -7654,6 +7749,7 @@ public:
 		}
 
 		return true;
+#endif
 	}
 
 	[[nodiscard]] bool Cmd_WindowDestroyNtf(const CCommandBuffer::SCommand_WindowDestroyNtf *pCommand)
@@ -7690,7 +7786,7 @@ public:
 	[[nodiscard]] bool Cmd_PreInit(const CCommandProcessorFragment_Renderer::SCommand_PreInit *pCommand)
 	{
 		m_pGpuList = pCommand->m_pGpuList;
-		if(InitVulkanSDL(pCommand->m_pWindow, pCommand->m_Width, pCommand->m_Height, pCommand->m_pRendererString, pCommand->m_pVendorString, pCommand->m_pVersionString) != 0)
+		if(InitVulkanDevice(pCommand->m_pWindow, pCommand->m_BackendMode, pCommand->m_Width, pCommand->m_Height, pCommand->m_pRendererString, pCommand->m_pVendorString, pCommand->m_pVersionString) != 0)
 		{
 			m_VKInstance = VK_NULL_HANDLE;
 		}
@@ -7700,7 +7796,7 @@ public:
 
 	[[nodiscard]] bool Cmd_PostShutdown(const CCommandProcessorFragment_Renderer::SCommand_PostShutdown *pCommand)
 	{
-		CleanupVulkanSDL();
+		CleanupVulkanDevice();
 
 		return true;
 	}

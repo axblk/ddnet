@@ -11,13 +11,17 @@
 
 #include <generated/protocol.h>
 
+#include <game/match_report.h>
 #include <game/server/mode/entity_registry.h>
 #include <game/server/mode/game_mode_map_reload_state.h>
 #include <game/server/mode/game_mode_registry.h>
 #include <game/server/mode/match_lifecycle.h>
 #include <game/teamscore.h>
 
+#include <array>
 #include <memory>
+#include <string>
+#include <vector>
 
 class CCharacter;
 class CGameContext;
@@ -127,6 +131,65 @@ private:
 	CMatchLifecycle m_MatchLifecycle;
 	CGameContext *GameServer() const;
 
+	class CMatchParticipantState
+	{
+	public:
+		uint32_t m_UniqueClientId;
+		// A participant is stable across spectator gaps; the report stores their final team.
+		CMatchParticipant m_Participant;
+		int m_ActiveSinceTick;
+		int64_t m_PlaytimeTicks = 0;
+		int m_Score = 0;
+	};
+	std::unique_ptr<CMatchReportBuilder> m_pMatchReportBuilder;
+	std::unique_ptr<CMatchReport> m_pLatestMatchReport;
+	std::vector<CMatchParticipantState> m_vMatchParticipants;
+	int m_NextMatchParticipantId = 0;
+	int m_MatchReportStartTick = 0;
+	// Only so that the participant limit is reported once per round
+	bool m_MatchReportOverflow = false;
+	CUuid m_LiveStatsInstanceId = UUID_ZEROED;
+	int m_LiveStatsStartTick = 0;
+	int64_t m_LiveStatsStartTimeUtc = 0;
+	std::array<int, MAX_CLIENTS> m_aLastLiveStatsRequestTick;
+
+	/**
+	 * One report that is still being handed to one client.
+	 *
+	 * Reports are vital messages and can be far larger than the 32 KB resend
+	 * buffer of a connection, so their chunks are spread over ticks instead of
+	 * being queued in one go, which would overrun the buffer and lose the
+	 * chunks that no longer fit.
+	 */
+	class CPendingReportSend
+	{
+	public:
+		int m_ClientId = -1;
+		bool m_LiveStats = false;
+		int m_Revision = 0;
+		CUuid m_MatchId = UUID_ZEROED;
+		std::shared_ptr<const std::string> m_pPayload;
+		SHA256_DIGEST m_PayloadSha256 = {};
+		int m_NextChunk = 0;
+		int m_NumChunks = 0;
+	};
+	// At 8 chunks a tick a connection receives roughly 7 KB per tick, which
+	// leaves the resend buffer four ticks to drain before it could fill up.
+	static constexpr int REPORT_CHUNKS_PER_TICK = 8;
+	std::vector<CPendingReportSend> m_vPendingReportSends;
+
+	void QueueReportChunks(const CPendingReportSend &Send);
+	void TickReportSends();
+
+	CMatchParticipantState *MatchParticipant(const CPlayer *pPlayer);
+	CMatchParticipantState *EnsureMatchParticipant(CPlayer *pPlayer);
+	void UpdateMatchParticipant(CPlayer *pPlayer, bool Leaving);
+	void StartMatchReport();
+	void FinalizeMatchReport(EMatchTermination Termination);
+	void SendMatchReport(const CMatchReport &Report, const std::string &Payload);
+	void SendLiveStatsReport(int ClientId, int Revision, const CMatchReport &Report, int LocalParticipantId, bool PersistOnDisconnect, const std::string &Payload);
+	EMatchMetricAggregation MatchMetricAggregation(const char *pMetricId) const;
+
 protected:
 	void RegisterMapEntityFactory(CEntityRegistry::FMapEntityFactory pfnFactory) { m_EntityRegistry.RegisterMapEntityFactory(pfnFactory); }
 	void IgnoreMapEntityRange(int First, int Last) { m_EntityRegistry.IgnoreMapEntityRange(First, Last); }
@@ -147,6 +210,15 @@ protected:
 	int m_SixupTimeLimit = -1;
 	void DoActivityCheck();
 	void FinalizeCharacterDeath(const CGameCharacterDeathContext &Context, int ModeSpecial = 0);
+	bool AddParticipantMatchMetric(CPlayer *pPlayer, const char *pSuffix, int64_t Value);
+	void AddParticipantWeaponMatchMetric(CPlayer *pPlayer, int Weapon, const char *pSuffix, int64_t Value);
+	void AddCharacterDamageMatchMetrics(CPlayer *pAttacker, CPlayer *pVictim, int Weapon, int Damage);
+	virtual void AddMatchReportStandings();
+	void AddTeamMatchReportStandings(int RedScore, int BlueScore);
+	void FinalizeMatchReportForRestart();
+	const CGameModeReportInfo &LiveStatsInfo() const;
+	bool InitializeLiveStatsReport(CMatchReport &Report) const;
+	virtual bool BuildLiveStatsReport(int ClientId, CMatchReport &Report, int &LocalParticipantId, std::string &Payload);
 
 	struct CSpawnEval
 	{
@@ -181,6 +253,9 @@ public:
 	// the client will predict under.
 	virtual int GameInfoFlags(int SnappingClient) const { return 0; }
 	virtual int GameInfoFlags2(int SnappingClient) const { return 0; }
+	const CMatchReport *LatestMatchReport() const { return m_pLatestMatchReport.get(); }
+	void FinalizeMatchReportForShutdown();
+	void SendLiveStats(int ClientId);
 	int TuningZoneAt(vec2 Position) const;
 	virtual void ResetTuning();
 	virtual CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team);
@@ -199,6 +274,7 @@ public:
 	*/
 	virtual void OnCharacterDeath(const CGameCharacterDeathContext &Context);
 	virtual bool OnCharacterTakeDamage(class CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam = TEAM_SPECTATORS);
+	void OnCharacterFiredWeapon(CCharacter *pCharacter, int Weapon);
 	virtual bool CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const;
 	virtual bool CanSeeInteraction(const CInteractions &, int) const { return true; }
 	virtual bool CanHitInteraction(const CInteractions &, int) const { return true; }

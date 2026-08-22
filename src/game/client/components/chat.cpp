@@ -7,6 +7,7 @@
 #include <base/io.h>
 #include <base/log.h>
 #include <base/log_color.h>
+#include <base/mem.h>
 #include <base/time.h>
 
 #include <engine/editor.h>
@@ -14,6 +15,9 @@
 #include <engine/keys.h>
 #include <engine/shared/config.h>
 #include <engine/shared/csv.h>
+#if defined(CONF_VIDEORECORDER)
+#include <engine/shared/video.h>
+#endif
 #include <engine/textrender.h>
 
 #include <generated/protocol.h>
@@ -160,12 +164,17 @@ void CChat::Reset()
 	m_aCurrentInputText[0] = '\0';
 	DisableMode();
 
-	for(int64_t &LastSoundPlayed : m_aLastSoundPlayed)
-		LastSoundPlayed = 0;
+	for(auto &aLastSoundPlayed : m_aaLastSoundPlayed)
+		for(int64_t &LastSoundPlayed : aLastSoundPlayed)
+			LastSoundPlayed = 0;
 }
 
 void CChat::ResetSession(CSessionId SessionId)
 {
+#if defined(CONF_VIDEORECORDER)
+	if(Client()->VideoSessionId() == SessionId && Client()->VideoUsesOfflineAudio())
+		mem_zero(m_aaLastSoundPlayed[1], sizeof(m_aaLastSoundPlayed[1]));
+#endif
 	if(m_InputSessionId == SessionId)
 	{
 		DisableMode();
@@ -876,17 +885,19 @@ void CChat::AddLine(CGameSessionContext &Session, const CGameState &State, int64
 
 	FChatMsgCheckAndPrint(StoredLine);
 
-	// play sound
-	if(!ApplicationEffects)
+	bool OfflineAudio;
+	const bool AudioEffects = GameClient()->AudioForState(State, OfflineAudio);
+	if(!ApplicationEffects && !AudioEffects)
 		return;
+	int64_t *pLastSoundPlayed = m_aaLastSoundPlayed[OfflineAudio ? 1 : 0];
 	if(ClientId == SERVER_MSG)
 	{
-		if(Now - m_aLastSoundPlayed[CHAT_SERVER] >= time_freq() * 3 / 10)
+		if(AudioEffects && Now - pLastSoundPlayed[CHAT_SERVER] >= time_freq() * 3 / 10)
 		{
 			if(g_Config.m_SndServerMessage)
 			{
-				GameClient()->m_Sounds.Play(CSounds::CHN_GUI, SOUND_CHAT_SERVER, 1.0f);
-				m_aLastSoundPlayed[CHAT_SERVER] = Now;
+				GameClient()->m_Sounds.PlayForAudio(CSounds::CHN_GUI, SOUND_CHAT_SERVER, 1.0f, OfflineAudio);
+				pLastSoundPlayed[CHAT_SERVER] = Now;
 			}
 		}
 	}
@@ -896,38 +907,36 @@ void CChat::AddLine(CGameSessionContext &Session, const CGameState &State, int64
 	}
 	else if(Highlighted && !IsDemoPlayback)
 	{
-		if(Now - m_aLastSoundPlayed[CHAT_HIGHLIGHT] >= time_freq() * 3 / 10)
+		if(Now - pLastSoundPlayed[CHAT_HIGHLIGHT] >= time_freq() * 3 / 10)
 		{
-			char aBuf[1024];
-			str_format(aBuf, sizeof(aBuf), "%s: %s", StoredLine.m_aName, StoredLine.m_aText);
-			Client()->Notify("DDNet Chat", aBuf);
-			if(g_Config.m_SndHighlight)
+			if(ApplicationEffects)
 			{
-				GameClient()->m_Sounds.Play(CSounds::CHN_GUI, SOUND_CHAT_HIGHLIGHT, 1.0f);
-				m_aLastSoundPlayed[CHAT_HIGHLIGHT] = Now;
+				char aBuf[1024];
+				str_format(aBuf, sizeof(aBuf), "%s: %s", StoredLine.m_aName, StoredLine.m_aText);
+				Client()->Notify("DDNet Chat", aBuf);
+				if(g_Config.m_ClEditor)
+					GameClient()->Editor()->UpdateMentions();
 			}
-
-			if(g_Config.m_ClEditor)
+			if(AudioEffects && g_Config.m_SndHighlight)
 			{
-				GameClient()->Editor()->UpdateMentions();
+				GameClient()->m_Sounds.PlayForAudio(CSounds::CHN_GUI, SOUND_CHAT_HIGHLIGHT, 1.0f, OfflineAudio);
+				pLastSoundPlayed[CHAT_HIGHLIGHT] = Now;
 			}
 		}
 	}
 	else if(Team != TEAM_WHISPER_SEND)
 	{
-		if(Now - m_aLastSoundPlayed[CHAT_CLIENT] >= time_freq() * 3 / 10)
+		if(AudioEffects && Now - pLastSoundPlayed[CHAT_CLIENT] >= time_freq() * 3 / 10)
 		{
 			bool PlaySound = StoredLine.m_Team ? g_Config.m_SndTeamChat : g_Config.m_SndChat;
 #if defined(CONF_VIDEORECORDER)
-			if(IVideo::Current())
-			{
-				PlaySound &= (bool)g_Config.m_ClVideoShowChat;
-			}
+			if(Client()->VideoSessionId() == Session.Id() && IVideo::Current() != nullptr && IVideo::Current()->HasAudio())
+				PlaySound &= IVideo::Current()->Settings().m_ShowChat;
 #endif
 			if(PlaySound)
 			{
-				GameClient()->m_Sounds.Play(CSounds::CHN_GUI, SOUND_CHAT_CLIENT, 1.0f);
-				m_aLastSoundPlayed[CHAT_CLIENT] = Now;
+				GameClient()->m_Sounds.PlayForAudio(CSounds::CHN_GUI, SOUND_CHAT_CLIENT, 1.0f, OfflineAudio);
+				pLastSoundPlayed[CHAT_CLIENT] = Now;
 			}
 		}
 	}
@@ -1311,7 +1320,8 @@ void CChat::RenderLines(const CRenderContext &Context, float y)
 
 void CChat::OnRender(const CRenderContext &Context)
 {
-	if(!Context.m_Time.m_IsGameActive || !((g_Config.m_ClShowChat && !Context.m_IsVideoOutput) || (g_Config.m_ClVideoShowChat && Context.m_IsVideoOutput)))
+	const bool ShowChat = Context.m_IsVideoOutput ? Context.m_VideoSettings.m_ShowChat : g_Config.m_ClShowChat;
+	if(!Context.m_Time.m_IsGameActive || !ShowChat)
 		return;
 	const float Height = 300.0f;
 	const float Width = Height * Context.AspectRatio(Graphics()->ScreenAspect());

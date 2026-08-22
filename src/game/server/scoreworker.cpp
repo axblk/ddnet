@@ -44,6 +44,8 @@ void CScorePlayerResult::SetVariant(Variant v)
 		break;
 	case PLAYER_INFO:
 		m_Data.m_Info.m_Birthday = 0;
+		m_Data.m_Info.m_MapRank = 0;
+		m_Data.m_Info.m_MapFinishes = 0;
 		m_Data.m_Info.m_Time.reset();
 		for(float &TimeCp : m_Data.m_Info.m_aTimeCp)
 			TimeCp = 0;
@@ -252,6 +254,33 @@ bool CScoreWorker::LoadPlayerData(IDbConnection *pSqlServer, const ISqlData *pGa
 		int StampYear, StampMonth, StampDay;
 		if(sscanf(aCurrent, "%d-%d-%d", &CurrentYear, &CurrentMonth, &CurrentDay) == 3 && sscanf(aStamp, "%d-%d-%d", &StampYear, &StampMonth, &StampDay) == 3 && CurrentMonth == StampMonth && CurrentDay == StampDay)
 			pResult->m_Data.m_Info.m_Birthday = CurrentYear - StampYear;
+	}
+
+	str_format(aBuf, sizeof(aBuf),
+		"SELECT COUNT(*) FROM %s_race WHERE Map = ? AND Name = ?",
+		pSqlServer->GetPrefix());
+	if(!pSqlServer->PrepareStatement(aBuf, pError, ErrorSize))
+		return false;
+	pSqlServer->BindString(1, pData->m_aMap);
+	pSqlServer->BindString(2, pData->m_aRequestingPlayer);
+	if(!pSqlServer->Step(&End, pError, ErrorSize))
+		return false;
+	if(!End)
+		pResult->m_Data.m_Info.m_MapFinishes = pSqlServer->GetInt(1);
+
+	if(pResult->m_Data.m_Info.m_Time.has_value())
+	{
+		str_format(aBuf, sizeof(aBuf),
+			"SELECT COUNT(*) + 1 FROM (SELECT MIN(Time) AS Time FROM %s_race WHERE Map = ? GROUP BY Name) AS BestTimes WHERE Time < ?",
+			pSqlServer->GetPrefix());
+		if(!pSqlServer->PrepareStatement(aBuf, pError, ErrorSize))
+			return false;
+		pSqlServer->BindString(1, pData->m_aMap);
+		pSqlServer->BindFloat(2, *pResult->m_Data.m_Info.m_Time);
+		if(!pSqlServer->Step(&End, pError, ErrorSize))
+			return false;
+		if(!End)
+			pResult->m_Data.m_Info.m_MapRank = pSqlServer->GetInt(1);
 	}
 	return true;
 }

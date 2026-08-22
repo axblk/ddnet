@@ -972,6 +972,8 @@ void CGameTeams::OnFinish(CPlayer *pPlayer, int TimeTicks, const char *pTimestam
 	// TODO:DDRace:btd: this ugly
 	const int ClientId = pPlayer->GetCid();
 	CPlayerData *pData = Score().PlayerData(ClientId);
+	pData->m_SessionFinishes++;
+	pData->m_LastFinishTime = Time;
 
 	char aBuf[128];
 	SetLastTimeCp(pPlayer, -1);
@@ -1040,6 +1042,10 @@ void CGameTeams::OnFinish(CPlayer *pPlayer, int TimeTicks, const char *pTimestam
 		pData->Set(Time, GetCurrentTimeCp(pPlayer));
 		CallSaveScore = true;
 		NeedToSendNewPersonalRecord = true;
+		// The map rank can only have moved when the personal best did, and
+		// working it out means aggregating every run on this map, so it is
+		// asked for then and not after every finish.
+		Score().ScheduleReloadPlayerData(ClientId);
 	}
 
 	if(CallSaveScore)

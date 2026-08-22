@@ -70,7 +70,7 @@ public:
 	void Load(CGameSessionContext &Session);
 	void Unload();
 	void PrepareRender(const CRenderContext &Context, bool UsePredictedTime);
-	void UpdateMapSounds(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool UsePredictedTime);
+	void UpdateMapSounds(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool UsePredictedTime, bool Offline);
 	void UpdateClients(const CPresentationContext &Context);
 	void RemoveState(CGameStateId StateId);
 	std::shared_ptr<CManagedTeeRenderInfo> CreateClientTee(const CGameState &State, int ClientId) const;

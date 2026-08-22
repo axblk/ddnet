@@ -115,23 +115,17 @@ class IUpdater *CComponentInterfaces::Updater() const
 
 int64_t CComponentInterfaces::time() const
 {
-#if defined(CONF_VIDEORECORDER)
-	if(IVideo::Current())
-	{
-		return IVideo::Current()->Time();
-	}
-#endif
+	const CSessionId SessionId = Client()->FocusedSessionId();
+	if(Client()->SessionType(SessionId) == ESessionSourceType::DEMO)
+		return Client()->DemoPlaybackTime(SessionId);
 	return time_get();
 }
 
 float CComponentInterfaces::LocalTime() const
 {
-#if defined(CONF_VIDEORECORDER)
-	if(IVideo::Current())
-	{
-		return IVideo::Current()->LocalTime();
-	}
-#endif
+	const CSessionId SessionId = Client()->FocusedSessionId();
+	if(Client()->SessionType(SessionId) == ESessionSourceType::DEMO)
+		return Client()->DemoPlaybackLocalTime(SessionId);
 	return Client()->LocalTime();
 }
 

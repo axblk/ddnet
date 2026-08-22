@@ -7,7 +7,9 @@
 
 #include <engine/sound.h>
 
+#if !defined(CONF_DEMO_RENDER_TOOL)
 #include <SDL_audio.h>
+#endif
 
 #include <atomic>
 
@@ -66,12 +68,15 @@ class CSound : public IEngineSound
 	enum
 	{
 		NUM_SAMPLES = 512,
-		NUM_VOICES = 256,
+		NUM_VOICES_PER_CONTEXT = 256,
+		NUM_VOICES = NUM_VOICES_PER_CONTEXT * 2,
 		NUM_CHANNELS = 16,
 	};
 
 	bool m_SoundEnabled = false;
+#if !defined(CONF_DEMO_RENDER_TOOL)
 	SDL_AudioDeviceID m_Device = 0;
+#endif
 	CLock m_SoundLock;
 
 	CSample m_aSamples[NUM_SAMPLES] GUARDED_BY(m_SoundLock) = {{0}};
@@ -80,13 +85,17 @@ class CSound : public IEngineSound
 	CVoice m_aVoices[NUM_VOICES] GUARDED_BY(m_SoundLock) = {{nullptr}};
 	CChannel m_aChannels[NUM_CHANNELS] GUARDED_BY(m_SoundLock) = {{255, 0}};
 	int m_NextVoice GUARDED_BY(m_SoundLock) = 0;
+	int m_NextOfflineVoice GUARDED_BY(m_SoundLock) = 0;
 	uint32_t m_MaxFrames = 0;
 
 	// This is not an std::atomic<vec2> as this would require linking with
 	// libatomic with clang x86 as there is no native support for this.
 	std::atomic<float> m_ListenerPositionX = 0.0f;
 	std::atomic<float> m_ListenerPositionY = 0.0f;
+	std::atomic<float> m_OfflineListenerPositionX = 0.0f;
+	std::atomic<float> m_OfflineListenerPositionY = 0.0f;
 	std::atomic<int> m_SoundVolume = 100;
+	std::atomic<int> m_OfflineSoundVolume = 100;
 	int m_MixingRate = 48000;
 
 	class IEngineGraphics *m_pGraphics = nullptr;
@@ -102,6 +111,8 @@ class CSound : public IEngineSound
 	bool DecodeWV(CSample &Sample, const void *pData, unsigned DataSize, const char *pContextName) const NO_THREAD_SAFETY_ANALYSIS;
 
 	void UpdateVolume();
+	void MixVoices(short *pFinalOut, unsigned Frames, bool Offline) REQUIRES(!m_SoundLock);
+	CVoiceHandle StartVoice(int ChannelId, int SampleId, int Flags, float Volume, vec2 Position, bool Offline) REQUIRES(!m_SoundLock);
 
 public:
 	int Init() override REQUIRES(!m_SoundLock);
@@ -122,6 +133,7 @@ public:
 
 	void SetChannel(int ChannelId, float Vol, float Pan) override REQUIRES(!m_SoundLock);
 	void SetListenerPosition(vec2 Position) override;
+	void SetOfflineListenerPosition(vec2 Position) override;
 
 	void SetVoiceVolume(CVoiceHandle Voice, float Volume) override REQUIRES(!m_SoundLock);
 	void SetVoiceFalloff(CVoiceHandle Voice, float Falloff) override REQUIRES(!m_SoundLock);
@@ -131,17 +143,20 @@ public:
 	void SetVoiceCircle(CVoiceHandle Voice, float Radius) override REQUIRES(!m_SoundLock);
 	void SetVoiceRectangle(CVoiceHandle Voice, float Width, float Height) override REQUIRES(!m_SoundLock);
 
-	CVoiceHandle Play(int ChannelId, int SampleId, int Flags, float Volume, vec2 Position) REQUIRES(!m_SoundLock);
 	CVoiceHandle PlayAt(int ChannelId, int SampleId, int Flags, float Volume, vec2 Position) override REQUIRES(!m_SoundLock);
 	CVoiceHandle Play(int ChannelId, int SampleId, int Flags, float Volume) override REQUIRES(!m_SoundLock);
+	CVoiceHandle PlayAtOffline(int ChannelId, int SampleId, int Flags, float Volume, vec2 Position) override REQUIRES(!m_SoundLock);
+	CVoiceHandle PlayOffline(int ChannelId, int SampleId, int Flags, float Volume) override REQUIRES(!m_SoundLock);
 	void Pause(int SampleId) override REQUIRES(!m_SoundLock);
 	void Stop(int SampleId) override REQUIRES(!m_SoundLock);
 	void StopAll() override REQUIRES(!m_SoundLock);
+	void StopOffline() override REQUIRES(!m_SoundLock);
 	void StopVoice(CVoiceHandle Voice) override REQUIRES(!m_SoundLock);
 	bool IsPlaying(int SampleId) override REQUIRES(!m_SoundLock);
 
 	int MixingRate() const override { return m_MixingRate; }
 	void Mix(short *pFinalOut, unsigned Frames) override REQUIRES(!m_SoundLock);
+	void MixOffline(short *pFinalOut, unsigned Frames) override REQUIRES(!m_SoundLock);
 
 	void PauseAudioDevice() override;
 	void UnpauseAudioDevice() override;

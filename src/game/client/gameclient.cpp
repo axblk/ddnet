@@ -65,6 +65,7 @@
 #include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
 #include <engine/shared/csv.h>
+#include <engine/shared/protocol_ex.h>
 #include <engine/shared/video.h>
 #include <engine/sound.h>
 #include <engine/storage.h>
@@ -98,19 +99,55 @@ namespace
 		return std::all_of(std::begin(aTextures), std::end(aTextures), [](IGraphics::CTextureHandle Texture) { return Texture.IsValid(); });
 	}
 
+	bool UnpackUuid(CUnpacker *pUnpacker, CUuid &Uuid)
+	{
+		const unsigned char *pData = pUnpacker->GetRaw(sizeof(Uuid));
+		if(pData == nullptr)
+			return false;
+		mem_copy(&Uuid, pData, sizeof(Uuid));
+		return true;
+	}
+
+	bool UnpackSha256(CUnpacker *pUnpacker, SHA256_DIGEST &Digest)
+	{
+		const unsigned char *pData = pUnpacker->GetRaw(sizeof(Digest));
+		if(pData == nullptr)
+			return false;
+		mem_copy(&Digest, pData, sizeof(Digest));
+		return true;
+	}
+
 	int LegacyProfileIndex(int Conn)
 	{
 		dbg_assert(Conn == IClient::CONN_MAIN || Conn == IClient::CONN_DUMMY, "legacy profile stream must be main or dummy");
 		return Conn == IClient::CONN_DUMMY;
 	}
 
-	int64_t CurrentPresentationTime()
+	std::string ClientObservedModeId(const CGameInfo &GameInfo, const char *pGameType)
 	{
-#if defined(CONF_VIDEORECORDER)
-		if(IVideo::Current())
-			return IVideo::Current()->Time();
-#endif
-		return time_get();
+		if(GameInfo.m_Race)
+			return {};
+		if(str_comp_nocase(pGameType, "DM") == 0)
+			return "vanilla.dm@ddnet.org";
+		if(str_comp_nocase(pGameType, "TDM") == 0)
+			return "vanilla.tdm@ddnet.org";
+		if(str_comp_nocase(pGameType, "CTF") == 0)
+			return "vanilla.ctf@ddnet.org";
+
+		std::string Slug;
+		for(const unsigned char *pCharacter = reinterpret_cast<const unsigned char *>(pGameType); *pCharacter != '\0'; ++pCharacter)
+		{
+			const unsigned char Character = *pCharacter;
+			if((Character >= 'a' && Character <= 'z') || (Character >= '0' && Character <= '9'))
+				Slug.push_back(static_cast<char>(Character));
+			else if(Character >= 'A' && Character <= 'Z')
+				Slug.push_back(static_cast<char>(Character - 'A' + 'a'));
+			else if(!Slug.empty() && Slug.back() != '-')
+				Slug.push_back('-');
+		}
+		while(!Slug.empty() && Slug.back() == '-')
+			Slug.pop_back();
+		return Slug.empty() ? std::string() : "observed." + Slug + "@client.local";
 	}
 
 	bool UsePredictedEnvelopeTime(const CGameTickInfo &Time, const CGameView &View)
@@ -122,25 +159,29 @@ namespace
 	{
 		IGraphics &m_Graphics;
 		ColorRGBA m_ClearColor;
+		uint64_t m_CacheKey;
+		bool m_VideoOutput;
+		CVideoExportSettings m_VideoSettings;
 		bool m_Cleared = false;
 		bool m_CustomViewport = false;
 
 	public:
-		CScreenRenderOutput(IGraphics &Graphics, ColorRGBA ClearColor, bool Cleared) :
+		CScreenRenderOutput(IGraphics &Graphics, ColorRGBA ClearColor, bool Cleared, bool VideoOutput, CVideoExportSettings VideoSettings) :
 			m_Graphics(Graphics),
 			m_ClearColor(ClearColor),
+			m_CacheKey((static_cast<uint64_t>(VideoOutput) << 63) | (static_cast<uint64_t>(static_cast<uint32_t>(Graphics.ScreenWidth())) << 32) | static_cast<uint32_t>(Graphics.ScreenHeight())),
+			m_VideoOutput(VideoOutput),
+			m_VideoSettings(VideoSettings),
 			m_Cleared(Cleared)
 		{
 		}
 
+		uint64_t PresentationCacheKey() const override { return m_CacheKey; }
 		bool IsVideoOutput() const override
 		{
-#if defined(CONF_VIDEORECORDER)
-			return IVideo::Current() != nullptr;
-#else
-			return false;
-#endif
+			return m_VideoOutput;
 		}
+		CVideoExportSettings VideoSettings() const override { return m_VideoSettings; }
 
 		void BeginView(const CViewport &Viewport, vec2 CameraPosition, float Zoom) override
 		{
@@ -220,12 +261,42 @@ void CGameClient::AddChatLine(CSessionId SessionId, int Conn, int ClientId, int 
 	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
 	CGameState *pState = pSession != nullptr ? pSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn)) : nullptr;
 	if(pState != nullptr)
-		m_Chat.AddLine(*pSession, *pState, SessionMessageTime(SessionId), SessionId == Client()->DemoSessionId(), SessionId == Client()->FocusedSessionId(), ClientId, Team, pText);
+		m_Chat.AddLine(*pSession, *pState, SessionMessageTime(SessionId), Client()->SessionType(SessionId) == ESessionSourceType::DEMO, SessionId == Client()->FocusedSessionId(), ClientId, Team, pText);
 }
 
 int64_t CGameClient::SessionMessageTime(CSessionId SessionId) const
 {
-	return SessionId == Client()->DemoSessionId() ? CurrentPresentationTime() : time_get();
+	return Client()->SessionType(SessionId) == ESessionSourceType::DEMO ? Client()->DemoPlaybackTime(SessionId) : time_get();
+}
+
+bool CGameClient::AudioForSession(CSessionId SessionId, bool &Offline) const
+{
+	Offline = false;
+#if defined(CONF_VIDEORECORDER)
+	const IVideo *pVideo = IVideo::Current();
+	if(pVideo != nullptr && pVideo->HasAudio())
+	{
+		if(Client()->VideoSessionId() == SessionId)
+		{
+			Offline = Client()->VideoUsesOfflineAudio();
+			return true;
+		}
+		if(!Client()->VideoUsesOfflineAudio())
+			return false;
+	}
+#endif
+	return Client()->FocusedSessionId() == SessionId;
+}
+
+bool CGameClient::AudioForState(const CGameState &State, bool &Offline) const
+{
+	for(const auto &pSession : m_SessionContexts.Contexts())
+	{
+		if(pSession->GameStates().Find(State.Id()) == &State)
+			return AudioForSession(pSession->Id(), Offline);
+	}
+	Offline = false;
+	return false;
 }
 
 CGameState &CGameClient::GameState(int Conn)
@@ -270,9 +341,10 @@ void CGameClient::OnConsoleInit()
 	const size_t MaxConcurrentAssetJobs = std::clamp(m_pEngine->JobThreadCount() / 2, size_t{1}, size_t{8});
 	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs);
 	m_pClient = Kernel()->RequestInterface<IClient>();
-	CGameSessionContext *pNetworkContext = m_SessionContexts.Create(m_pClient->NetworkSessionId(), "", EGameProtocol::SIX, m_pClient->StreamIds(m_pClient->NetworkSessionId()));
-	CGameSessionContext *pDemoContext = m_SessionContexts.Create(m_pClient->DemoSessionId(), "", EGameProtocol::SIX, m_pClient->StreamIds(m_pClient->DemoSessionId()));
-	dbg_assert(pNetworkContext != nullptr && pDemoContext != nullptr, "failed to create game session contexts");
+	for(CSessionId SessionId : m_pClient->SessionIds())
+		dbg_assert(m_SessionContexts.Create(SessionId, "", EGameProtocol::SIX, m_pClient->StreamIds(SessionId)) != nullptr, "failed to create game session context");
+	CGameSessionContext *pNetworkContext = m_SessionContexts.Find(m_pClient->NetworkSessionId());
+	dbg_assert(pNetworkContext != nullptr, "failed to create game session contexts");
 	m_LegacyGameViewId = m_GameViews.Create(pNetworkContext->Id(), pNetworkContext->GameStates().States().front()->Id());
 	dbg_assert(m_LegacyGameViewId.IsValid(), "failed to create legacy game view");
 	const CGameState *pDummyState = pNetworkContext->GameStates().FindByStream(m_pClient->StreamId(pNetworkContext->Id(), IClient::CONN_DUMMY));
@@ -379,6 +451,7 @@ void CGameClient::OnConsoleInit()
 	Console()->Register("team", "i[team-id]", CFGFLAG_CLIENT, ConTeam, this, "Switch team");
 	Console()->Register("kill", "", CFGFLAG_CLIENT, ConKill, this, "Kill yourself to restart");
 	Console()->Register("ready_change", "", CFGFLAG_CLIENT, ConReadyChange7, this, "Change ready state (0.7 only)");
+	Console()->Register("dbg_match_stats_samples", "?i[count]", CFGFLAG_CLIENT, ConGenerateMatchStatsSamples, this, "Add generated matches to the local statistics for testing the statistics pages");
 
 	// register game commands to allow the client prediction to load settings from the map
 	Console()->Register("tune", "s[tuning] ?f[value]", CFGFLAG_GAME, ConTuneParam, this, "Tune variable to value");
@@ -550,6 +623,9 @@ void CGameClient::OnInit()
 {
 	m_StartupStart = time_get_nanoseconds().count();
 	m_StartupAssetsStart = m_StartupStart;
+	std::string MatchJournalError;
+	if(!m_MatchJournal.Open(Storage(), &MatchJournalError))
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-journal", MatchJournalError.c_str());
 
 	Client()->SetLoadingCallback([this](IClient::ELoadingCallbackDetail Detail) {
 		const char *pTitle;
@@ -694,6 +770,8 @@ void CGameClient::OnUpdate()
 	}
 	UpdateAssetPackLoads();
 	HandleLanguageChanged();
+	for(const auto &pSession : m_SessionContexts.Contexts())
+		RequestLiveStats(pSession->Id(), false);
 
 	CUIElementBase::Init(Ui()); // update static pointer because game and editor use separate UI
 
@@ -1024,10 +1102,51 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	}
 }
 
+void CGameClient::FinalizeObservedMatch(CSessionId SessionId, CGameSessionContext &Session, CGameState &State, int Tick, EMatchTermination Termination)
+{
+	const CServerInfo &ServerInfo = Client()->ServerInfo(SessionId);
+	const std::string ModeId = ClientObservedModeId(State.CoreGameInfo(), ServerInfo.m_aGameType);
+	const IMap *pMap = Map(SessionId);
+	if(ModeId.empty() || pMap == nullptr)
+		return;
+	CObservedMatchMetadata Metadata;
+	Metadata.m_OriginId = ServerInfo.m_aAddress;
+	Metadata.m_ModeId = ModeId;
+	Metadata.m_MapName = ServerInfo.m_aMap;
+	Metadata.m_MapSha256 = pMap->Sha256();
+	Metadata.m_EndTimeUtc = time_timestamp();
+	Metadata.m_TickRate = Client()->GameTickSpeed();
+	Metadata.m_Termination = Termination;
+	std::string Error;
+	if(!Session.Stats().FinalizeObservedMatch(Metadata, State, Tick, &Error))
+	{
+		if(!Error.empty())
+			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-collector", Error.c_str());
+		return;
+	}
+	if(ShouldPersistMatchReport(Client()->SessionType(SessionId), g_Config.m_ClSaveMatchStats != 0, Session.Stats().LatestMatch()->m_LocalParticipantId.has_value()) && m_MatchJournal.IsOpen())
+	{
+		const CMatchJournal::EInsertResult Result = m_MatchJournal.Insert(*Session.Stats().LatestMatch(), &Error);
+		if(Result == CMatchJournal::EInsertResult::ERROR)
+			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-journal", Error.c_str());
+	}
+}
+
 void CGameClient::OnSessionClosed(CSessionId SessionId)
 {
 	CGameSessionContext *pSession = FindSessionContext(SessionId);
 	dbg_assert(pSession != nullptr, "missing closed game session context");
+	if(Client()->SessionType(SessionId) == ESessionSourceType::NETWORK)
+	{
+		const CStreamId PrimaryStreamId = Client()->PrimaryStreamId(SessionId);
+		CGameState *pState = pSession->GameStates().FindByStream(PrimaryStreamId);
+		const int Conn = Client()->StreamIndex(SessionId, PrimaryStreamId);
+		if(pState != nullptr && Conn >= 0)
+		{
+			FinalizeObservedMatch(SessionId, *pSession, *pState, Client()->GameTick(SessionId, Conn), EMatchTermination::ABORTED);
+			PersistLiveStatsOnDisconnect(SessionId, *pSession);
+		}
+	}
 	for(const auto &pGameState : pSession->GameStates().States())
 		pGameState->Reset();
 	pSession->Broadcast().Reset();
@@ -1036,8 +1155,15 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 	ResetInfoMessages(SessionId);
 	ResetChat(SessionId);
 	pSession->Stats().Reset();
+	pSession->MatchReportAssembler().Reset();
+	pSession->LiveStatsAssembler().Reset();
+	pSession->SetLastLiveStatsRequest(0);
 	pSession->InputRouter().Reset();
 	m_SessionPresentations.Unload(SessionId);
+#if defined(CONF_VIDEORECORDER)
+	if(SessionId == Client()->VideoSessionId() && Client()->VideoUsesOfflineAudio())
+		m_Sounds.ClearOffline();
+#endif
 	pSession->MapContext().Unload();
 	pSession->MapContext().Map()->Unload();
 	if(SessionId == Client()->NetworkSessionId())
@@ -1101,6 +1227,186 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 
 	Editor()->ResetMentions();
 	Editor()->ResetIngameMoved();
+}
+
+void CGameClient::PersistLiveStatsOnDisconnect(CSessionId SessionId, CGameSessionContext &Session)
+{
+	const std::optional<CStoredMatch> &Live = Session.LiveStatsAssembler().Latest();
+	const bool IsCurrentMatch = Live.has_value() && Session.Stats().IsCurrentServerMatch(Live->m_Report);
+	const bool HasFinalServerReport = Live.has_value() && Session.Stats().LatestMatch().has_value() && Session.Stats().LatestMatch()->m_Source == EMatchReportSource::SERVER_REPORT && Session.Stats().LatestMatch()->m_Report.m_MatchId == Live->m_Report.m_MatchId;
+	std::string Error;
+	if(PersistLiveStatsSnapshotOnDisconnect(m_MatchJournal, Client()->SessionType(SessionId), g_Config.m_ClSaveMatchStats != 0, IsCurrentMatch, HasFinalServerReport, Session.Stats().ObservedMatchForReplacement(), Session.LiveStatsAssembler(), &Error))
+		return;
+	Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-journal", Error.c_str());
+}
+
+bool CGameClient::HandleMatchReportMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId)
+{
+	if(MsgId != NETMSG_MATCH_REPORT_START && MsgId != NETMSG_MATCH_REPORT_CHUNK && MsgId != NETMSG_MATCH_REPORT_END && MsgId != NETMSG_MATCH_REPORT_LOCAL_PARTICIPANT)
+		return false;
+
+	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
+	dbg_assert(pSession != nullptr, "missing message session context");
+	CMatchReportAssembler &Assembler = pSession->MatchReportAssembler();
+	if(StreamId != Client()->PrimaryStreamId(SessionId))
+		return true;
+
+	CUuid MatchId;
+	std::string Error;
+	bool Success = false;
+	if(!UnpackUuid(pUnpacker, MatchId))
+	{
+		Error = "invalid match report message";
+	}
+	else if(MsgId == NETMSG_MATCH_REPORT_START)
+	{
+		const int ReportSchemaVersion = pUnpacker->GetInt();
+		const int TotalSize = pUnpacker->GetInt();
+		const int NumChunks = pUnpacker->GetInt();
+		if(!pUnpacker->Error() && pUnpacker->RemainingSize() == 0)
+			Success = Assembler.Start(MatchId, ReportSchemaVersion, TotalSize, NumChunks, &Error);
+	}
+	else if(MsgId == NETMSG_MATCH_REPORT_CHUNK)
+	{
+		const int ChunkIndex = pUnpacker->GetInt();
+		const int ChunkSize = pUnpacker->GetInt();
+		const unsigned char *pChunk = nullptr;
+		if(!pUnpacker->Error() && ChunkSize >= 0 && ChunkSize == pUnpacker->RemainingSize())
+			pChunk = pUnpacker->GetRaw(ChunkSize);
+		if(pChunk != nullptr && !pUnpacker->Error() && pUnpacker->RemainingSize() == 0)
+			Success = Assembler.AddChunk(MatchId, ChunkIndex, pChunk, ChunkSize, &Error);
+	}
+	else if(MsgId == NETMSG_MATCH_REPORT_LOCAL_PARTICIPANT)
+	{
+		const int ParticipantId = pUnpacker->GetInt();
+		if(!pUnpacker->Error() && pUnpacker->RemainingSize() == 0)
+			Success = Assembler.SetLocalParticipant(MatchId, ParticipantId, &Error);
+	}
+	else
+	{
+		SHA256_DIGEST PayloadSha256;
+		if(UnpackSha256(pUnpacker, PayloadSha256) && !pUnpacker->Error() && pUnpacker->RemainingSize() == 0)
+		{
+			CStoredMatch Match;
+			Success = Assembler.Finish(MatchId, PayloadSha256, Match, &Error);
+			if(Success)
+			{
+				Match.m_OriginId = Client()->ServerInfo(SessionId).m_aAddress;
+				const bool CurrentMatch = pSession->Stats().IsCurrentServerMatch(Match.m_Report);
+				std::string ObservedOriginId;
+				CUuid ObservedMatchId = UUID_ZEROED;
+				if(ShouldReplaceObservedMatch(pSession->Stats().ObservedMatchForReplacement(), Match))
+				{
+					ObservedOriginId = pSession->Stats().ObservedMatchForReplacement()->m_OriginId;
+					ObservedMatchId = pSession->Stats().ObservedMatchForReplacement()->m_Report.m_MatchId;
+				}
+				if(!CurrentMatch && ObservedMatchId == UUID_ZEROED)
+					return true;
+				if(ShouldPersistMatchReport(Client()->SessionType(SessionId), g_Config.m_ClSaveMatchStats != 0, Match.m_LocalParticipantId.has_value()) && m_MatchJournal.IsOpen())
+				{
+					const CMatchJournal::EInsertResult Result = ObservedMatchId == UUID_ZEROED ? m_MatchJournal.Insert(Match, &Error) :
+														     m_MatchJournal.InsertReplacingObserved(Match, ObservedOriginId.c_str(), ObservedMatchId, &Error);
+					if(Result == CMatchJournal::EInsertResult::ERROR)
+						Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-journal", Error.c_str());
+				}
+				if(CurrentMatch)
+				{
+					pSession->LiveStatsAssembler().ClearMatch(Match.m_Report.m_MatchId);
+					pSession->Stats().SetLatestServerMatch(std::move(Match));
+				}
+				else
+					pSession->Stats().ClearPreviousObservedMatch();
+			}
+		}
+	}
+
+	if(!Success)
+	{
+		Assembler.Reset();
+		if(Error.empty())
+			Error = "invalid match report message";
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-report", Error.c_str());
+	}
+	return true;
+}
+
+bool CGameClient::HandleLiveStatsMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId)
+{
+	if(MsgId != NETMSG_LIVE_STATS_START && MsgId != NETMSG_LIVE_STATS_CHUNK && MsgId != NETMSG_LIVE_STATS_END)
+		return false;
+	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
+	dbg_assert(pSession != nullptr, "missing live stats session context");
+	if(StreamId != Client()->PrimaryStreamId(SessionId) || Client()->SessionType(SessionId) != ESessionSourceType::NETWORK)
+		return true;
+
+	CUuid MatchId;
+	std::string Error;
+	bool Success = false;
+	if(!UnpackUuid(pUnpacker, MatchId))
+		Error = "invalid live stats message";
+	else
+	{
+		const int Revision = pUnpacker->GetInt();
+		if(MsgId == NETMSG_LIVE_STATS_START)
+		{
+			const int ReportSchemaVersion = pUnpacker->GetInt();
+			const int LocalParticipantId = pUnpacker->GetInt();
+			const int PersistOnDisconnect = pUnpacker->GetInt();
+			const int TotalSize = pUnpacker->GetInt();
+			const int NumChunks = pUnpacker->GetInt();
+			if(!pUnpacker->Error() && pUnpacker->RemainingSize() == 0 && (PersistOnDisconnect == 0 || PersistOnDisconnect == 1))
+				Success = pSession->LiveStatsAssembler().Start(MatchId, Revision, ReportSchemaVersion, LocalParticipantId, PersistOnDisconnect != 0, TotalSize, NumChunks, &Error);
+		}
+		else if(MsgId == NETMSG_LIVE_STATS_CHUNK)
+		{
+			const int ChunkIndex = pUnpacker->GetInt();
+			const int ChunkSize = pUnpacker->GetInt();
+			const unsigned char *pChunk = nullptr;
+			if(!pUnpacker->Error() && ChunkSize >= 0 && ChunkSize == pUnpacker->RemainingSize())
+				pChunk = pUnpacker->GetRaw(ChunkSize);
+			if(pChunk != nullptr && !pUnpacker->Error() && pUnpacker->RemainingSize() == 0)
+				Success = pSession->LiveStatsAssembler().AddChunk(MatchId, Revision, ChunkIndex, pChunk, ChunkSize, &Error);
+		}
+		else
+		{
+			SHA256_DIGEST PayloadSha256;
+			if(UnpackSha256(pUnpacker, PayloadSha256) && !pUnpacker->Error() && pUnpacker->RemainingSize() == 0)
+				Success = pSession->LiveStatsAssembler().Finish(MatchId, Revision, PayloadSha256, Client()->ServerInfo(SessionId).m_aAddress, &Error);
+		}
+	}
+	if(!Success)
+	{
+		pSession->LiveStatsAssembler().Cancel();
+		if(Error.empty())
+			Error = "invalid live stats message";
+		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "live-stats", Error.c_str());
+	}
+	return true;
+}
+
+void CGameClient::RequestLiveStats(CSessionId SessionId, bool Force)
+{
+	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
+	if(pSession == nullptr || Client()->SessionType(SessionId) != ESessionSourceType::NETWORK || Client()->SessionState(SessionId) != ESessionState::READY)
+		return;
+	const int64_t Now = time_get();
+	if(!Force && pSession->LastLiveStatsRequest() != 0 && Now - pSession->LastLiveStatsRequest() < time_freq() * 10)
+		return;
+	CMsgPacker Request(NETMSG_LIVE_STATS_REQUEST, false);
+	if(Request.Error() || Client()->SendMsg(SessionId, Client()->PrimaryStreamId(SessionId), &Request, MSGFLAG_VITAL) < 0)
+		return;
+	pSession->SetLastLiveStatsRequest(Now);
+}
+
+const CStoredMatch *CGameClient::LiveStats(CSessionId SessionId) const
+{
+	const CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
+	return pSession != nullptr && pSession->LiveStatsAssembler().Latest().has_value() ? &*pSession->LiveStatsAssembler().Latest() : nullptr;
+}
+
+void CGameClient::RequestLiveStatsNow()
+{
+	RequestLiveStats(Client()->FocusedSessionId(), true);
 }
 
 void CGameClient::OnSessionFocused(CSessionId SessionId)
@@ -1180,7 +1486,7 @@ void CGameClient::OnRender()
 		return;
 	}
 	dbg_assert(!m_vPreparedRenderEntries.empty(), "render frame was not prepared");
-	const auto ActiveEntryIt = std::find_if(m_vPreparedRenderEntries.begin(), m_vPreparedRenderEntries.end(), [](const CPreparedRenderEntry &Entry) { return Entry.m_Audible; });
+	const auto ActiveEntryIt = std::find_if(m_vPreparedRenderEntries.begin(), m_vPreparedRenderEntries.end(), [](const CPreparedRenderEntry &Entry) { return Entry.m_Active; });
 	dbg_assert(ActiveEntryIt != m_vPreparedRenderEntries.end(), "missing active render entry");
 	CGameSessionContext &ActiveSession = *ActiveEntryIt->m_pSession;
 	CGameState &ActiveState = *ActiveEntryIt->m_pState;
@@ -1188,8 +1494,8 @@ void CGameClient::OnRender()
 	const CGameTickInfo &GameTickInfo = ActiveEntryIt->m_Time;
 	const CVisibleWorldRect &VisibleWorldRect = ActiveEntryIt->m_VisibleWorldRect;
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
-	const bool MenuBackdropActive = m_Menus.BeginMenuBackdrop(ClearColor);
-	CScreenRenderOutput ScreenOutput(*Graphics(), ClearColor, MenuBackdropActive);
+	const bool MenuBackdropActive = !m_PreparedIsolatedVideoOutput && m_Menus.BeginMenuBackdrop(ClearColor);
+	CScreenRenderOutput ScreenOutput(*Graphics(), ClearColor, MenuBackdropActive, m_PreparedVideoOutput, m_PreparedVideoSettings);
 	m_vRenderRequests.clear();
 	m_vRenderRequests.reserve(m_vPreparedRenderEntries.size());
 	for(const CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
@@ -1204,16 +1510,28 @@ void CGameClient::OnRender()
 			Entry.m_Audible ? EPresentationAudio::AUDIBLE : EPresentationAudio::MUTED,
 			ScreenOutput);
 	}
-	const CGameRenderRequest *pAudibleRequest = FindAudibleRenderRequest(m_vRenderRequests);
-	m_Sounds.Update(pAudibleRequest != nullptr ? std::optional(pAudibleRequest->m_View.CameraPosition()) : std::nullopt);
-	if(pAudibleRequest != nullptr)
+	if(!m_PreparedOfflineVideoAudio)
 	{
-		m_SessionPresentations.SetAudible(pAudibleRequest->m_Session.Id());
-		SessionPresentation(pAudibleRequest->m_Session.Id()).UpdateMapSounds(pAudibleRequest->m_State, pAudibleRequest->m_Time, pAudibleRequest->m_View.CameraPosition(), UsePredictedEnvelopeTime(pAudibleRequest->m_Time, pAudibleRequest->m_View));
+		const CGameRenderRequest *pAudibleRequest = FindAudibleRenderRequest(m_vRenderRequests);
+		m_Sounds.Update(pAudibleRequest != nullptr ? std::optional(pAudibleRequest->m_View.CameraPosition()) : std::nullopt);
+		if(pAudibleRequest != nullptr)
+		{
+			m_SessionPresentations.SetAudible(pAudibleRequest->m_Session.Id());
+			SessionPresentation(pAudibleRequest->m_Session.Id()).UpdateMapSounds(pAudibleRequest->m_State, pAudibleRequest->m_Time, pAudibleRequest->m_View.CameraPosition(), UsePredictedEnvelopeTime(pAudibleRequest->m_Time, pAudibleRequest->m_View), false);
+		}
+		else
+		{
+			m_SessionPresentations.SetAudible(CSessionId());
+		}
 	}
 	else
 	{
-		m_SessionPresentations.SetAudible(CSessionId());
+		const CGameRenderRequest *pAudibleRequest = FindAudibleRenderRequest(m_vRenderRequests);
+		if(pAudibleRequest != nullptr)
+		{
+			m_Sounds.UpdateOffline(pAudibleRequest->m_View.CameraPosition(), pAudibleRequest->m_Time.m_PresentationTime);
+			SessionPresentation(pAudibleRequest->m_Session.Id()).UpdateMapSounds(pAudibleRequest->m_State, pAudibleRequest->m_Time, pAudibleRequest->m_View.CameraPosition(), UsePredictedEnvelopeTime(pAudibleRequest->m_Time, pAudibleRequest->m_View), true);
+		}
 	}
 	m_RenderScheduler.Run(
 		m_vRenderRequests,
@@ -1300,11 +1618,14 @@ void CGameClient::OnRender()
 			});
 	};
 	RenderRequestComponents(apRequestOverlaysBeforeChat);
-	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
-	for(CComponent *pComponent : apCompatibilityOverlaysBeforeChat)
-		pComponent->OnRender(CompatibilityContext);
-	m_Chat.RenderApplicationOverlay(CompatibilityContext);
-	ScreenOutput.EndView();
+	if(!m_PreparedIsolatedVideoOutput)
+	{
+		ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
+		for(CComponent *pComponent : apCompatibilityOverlaysBeforeChat)
+			pComponent->OnRender(CompatibilityContext);
+		m_Chat.RenderApplicationOverlay(CompatibilityContext);
+		ScreenOutput.EndView();
+	}
 	m_RenderScheduler.Run(
 		m_vRenderRequests,
 		[](const CPresentationContext &) {},
@@ -1314,12 +1635,15 @@ void CGameClient::OnRender()
 			Output.EndView();
 		});
 	RenderRequestComponents(apRequestOverlaysAfterChat);
-	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
-	for(CComponent *pComponent : apCompatibilityOverlaysAfterChat)
-		pComponent->OnRender(CompatibilityContext);
-	m_TouchControls.RenderApplicationOverlay();
-	ScreenOutput.EndView();
-	m_Menus.FinishMenuBackdrop();
+	if(!m_PreparedIsolatedVideoOutput)
+	{
+		ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
+		for(CComponent *pComponent : apCompatibilityOverlaysAfterChat)
+			pComponent->OnRender(CompatibilityContext);
+		m_TouchControls.RenderApplicationOverlay();
+		ScreenOutput.EndView();
+		m_Menus.FinishMenuBackdrop();
+	}
 	m_Scoreboard.BeginRenderFrame();
 	m_RenderScheduler.Run(
 		m_vRenderRequests,
@@ -1329,37 +1653,78 @@ void CGameClient::OnRender()
 			m_Scoreboard.OnRender(Context);
 			Output.EndView();
 		});
-	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
-	m_Scoreboard.RenderApplicationOverlay(CompatibilityContext);
-	ScreenOutput.EndView();
+	if(!m_PreparedIsolatedVideoOutput)
+	{
+		ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
+		m_Scoreboard.RenderApplicationOverlay(CompatibilityContext);
+		ScreenOutput.EndView();
+	}
 	RenderRequestComponents(apRequestOverlaysAfterScoreboard);
-	// After the backdrop, so that opening the scoreboard does not smear the
-	// cursor along with the scene behind it, and after the boards that blur
-	// it, because a crosshair that is aimed through has to be on top of what
-	// it is aimed through. The menu and the console still cover it: they
-	// take the mouse over and bring their own pointer.
-	m_RenderScheduler.Run(
-		m_vRenderRequests,
-		[](const CPresentationContext &) {},
-		[this](const CRenderContext &Context, CRenderOutput &Output) {
-			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
-			m_Hud.RenderCursor(Context);
-			Output.EndView();
-		});
-	for(CComponent *pComponent : apApplicationOverlays)
-		pComponent->OnRenderApplicationOverlay();
-
-	// Nothing captured what was drawn over the scene, so it goes to the screen
-	// as it is.
-	m_Menus.PresentMenuBackdrop();
-
-	CLineInput::RenderCandidates();
+	if(!m_PreparedIsolatedVideoOutput)
+	{
+		// After the backdrop, so that opening the scoreboard does not smear the
+		// cursor along with the scene behind it, and after the boards that blur
+		// it, because a crosshair that is aimed through has to be on top of what
+		// it is aimed through. The menu and the console still cover it: they
+		// take the mouse over and bring their own pointer.
+		m_RenderScheduler.Run(
+			m_vRenderRequests,
+			[](const CPresentationContext &) {},
+			[this](const CRenderContext &Context, CRenderOutput &Output) {
+				Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
+				m_Hud.RenderCursor(Context);
+				Output.EndView();
+			});
+		for(CComponent *pComponent : apApplicationOverlays)
+			pComponent->OnRenderApplicationOverlay();
+		// Nothing captured what was drawn over the scene, so it goes to the
+		// screen as it is.
+		m_Menus.PresentMenuBackdrop();
+		CLineInput::RenderCandidates();
+	}
 
 	m_vRenderRequests.clear();
 }
 
-void CGameClient::OnRenderPrepare()
+void CGameClient::FillPreparedRenderEntry(CPreparedRenderEntry &Entry, int64_t PresentationTime, int64_t Now)
 {
+	const CSessionId SessionId = Entry.m_pSession->Id();
+	const bool DemoPlayback = Client()->SessionType(SessionId) == ESessionSourceType::DEMO;
+	const bool WorldPaused = Entry.m_pState->HasGameInfo() && (Entry.m_pState->GameInfo().m_GameStateFlags & (GAMESTATEFLAG_GAMEOVER | GAMESTATEFLAG_PAUSED)) != 0;
+	const bool DemoPaused = DemoPlayback && Client()->DemoPlaybackPaused(SessionId);
+	CGameTickInfo &Time = Entry.m_Time;
+	Time.m_PrevGameTick = Client()->PrevGameTick(SessionId, Entry.m_Conn);
+	Time.m_GameTick = Client()->GameTick(SessionId, Entry.m_Conn);
+	Time.m_PredGameTick = Client()->PredGameTick(SessionId, Entry.m_Conn);
+	Time.m_PredictionTick = Client()->GetPredictionTick(SessionId, Entry.m_Conn);
+	Time.m_IntraGameTick = Client()->IntraGameTick(SessionId, Entry.m_Conn);
+	Time.m_IntraGameTickSincePrev = Client()->IntraGameTickSincePrev(SessionId, Entry.m_Conn);
+	Time.m_PredIntraGameTick = Client()->PredIntraGameTick(SessionId, Entry.m_Conn);
+	Time.m_GameTickTime = Client()->GameTickTime(SessionId, Entry.m_Conn);
+	Time.m_FrameTimeAverage = Client()->FrameTimeAverage();
+	Time.m_GameTickSpeed = Client()->GameTickSpeed();
+	Time.m_PredictionTime = Client()->GetPredictionTime(SessionId, Entry.m_Conn);
+	Time.m_PresentationTime = PresentationTime;
+	Time.m_PresentationTimeFrequency = time_freq();
+	Time.m_AnimationPlaybackSpeed = WorldPaused || DemoPaused ? 0.0f : DemoPlayback ? Client()->DemoPlaybackSpeed(SessionId) :
+											  1.0f;
+	Time.m_IsGameActive = Client()->SessionState(SessionId) == ESessionState::READY;
+	Time.m_IsDemoPlayback = DemoPlayback;
+	Time.m_IsDemoPlaybackPaused = DemoPaused;
+	Time.m_ConnectionProblems = Client()->ConnectionProblems(SessionId, Entry.m_Conn);
+	Entry.m_Playback = Time.m_AnimationPlaybackSpeed > 0.0f ? EPresentationPlayback::PLAYING : EPresentationPlayback::PAUSED;
+	UpdateRenderedClients(*Entry.m_pSession, *Entry.m_pState, Entry.m_Conn, Now, Entry.m_Time, Entry.m_Playback);
+}
+
+void CGameClient::PrepareScreenRender(bool VideoOutput)
+{
+	m_PreparedVideoOutput = VideoOutput;
+	m_PreparedIsolatedVideoOutput = false;
+#if defined(CONF_VIDEORECORDER)
+	m_PreparedOfflineVideoAudio = VideoOutput && Client()->VideoUsesOfflineAudio();
+#else
+	m_PreparedOfflineVideoAudio = false;
+#endif
 	m_vPreparedRenderEntries.clear();
 	if(!m_vStartupImageLoads.empty())
 		return;
@@ -1383,6 +1748,7 @@ void CGameClient::OnRenderPrepare()
 		Entry.m_pState = &State;
 		Entry.m_pView = &RenderView;
 		Entry.m_Conn = Conn;
+		Entry.m_Active = Audible;
 		Entry.m_Audible = Audible;
 		m_vPreparedRenderEntries.push_back(Entry);
 	};
@@ -1398,7 +1764,7 @@ void CGameClient::OnRenderPrepare()
 		}
 	};
 
-	const bool MultiGameScreen = g_Config.m_ClDummySplitScreen != 0;
+	const bool MultiGameScreen = g_Config.m_ClDummySplitScreen != 0 && !VideoOutput;
 	if(MultiGameScreen && FocusedDemo && Client()->SessionState(Client()->NetworkSessionId()) == ESessionState::READY)
 	{
 		CGameSessionContext *pNetworkSession = FindSessionContext(Client()->NetworkSessionId());
@@ -1441,50 +1807,20 @@ void CGameClient::OnRenderPrepare()
 		View.SetViewport({});
 	}
 
-	const int64_t PresentationTime = CurrentPresentationTime();
+	const int64_t PresentationTime = VideoOutput ? Client()->DemoPlaybackTime(ActiveSession.Id()) : time_get();
 	const int64_t Now = time_get();
-	const int64_t PresentationTimeFrequency = time_freq();
 	for(CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
-	{
-		const CSessionId SessionId = Entry.m_pSession->Id();
-		const bool DemoPlayback = SessionId == Client()->DemoSessionId();
-		const bool WorldPaused = Entry.m_pState->HasGameInfo() && (Entry.m_pState->GameInfo().m_GameStateFlags & (GAMESTATEFLAG_GAMEOVER | GAMESTATEFLAG_PAUSED)) != 0;
-		const bool DemoPaused = DemoPlayback && DemoPlayer()->BaseInfo()->m_Paused;
-		CGameTickInfo &Time = Entry.m_Time;
-		Time.m_PrevGameTick = Client()->PrevGameTick(SessionId, Entry.m_Conn);
-		Time.m_GameTick = Client()->GameTick(SessionId, Entry.m_Conn);
-		Time.m_PredGameTick = Client()->PredGameTick(SessionId, Entry.m_Conn);
-		Time.m_PredictionTick = Client()->GetPredictionTick(SessionId, Entry.m_Conn);
-		Time.m_IntraGameTick = Client()->IntraGameTick(SessionId, Entry.m_Conn);
-		Time.m_IntraGameTickSincePrev = Client()->IntraGameTickSincePrev(SessionId, Entry.m_Conn);
-		Time.m_PredIntraGameTick = Client()->PredIntraGameTick(SessionId, Entry.m_Conn);
-		Time.m_GameTickTime = Client()->GameTickTime(SessionId, Entry.m_Conn);
-		Time.m_FrameTimeAverage = Client()->FrameTimeAverage();
-		Time.m_GameTickSpeed = Client()->GameTickSpeed();
-		Time.m_PredictionTime = Client()->GetPredictionTime(SessionId, Entry.m_Conn);
-		Time.m_PresentationTime = PresentationTime;
-		Time.m_PresentationTimeFrequency = PresentationTimeFrequency;
-		Time.m_AnimationPlaybackSpeed = WorldPaused || DemoPaused ? 0.0f : DemoPlayback ? DemoPlayer()->BaseInfo()->m_Speed :
-												  1.0f;
-		Time.m_IsGameActive = Client()->SessionState(SessionId) == ESessionState::READY;
-		Time.m_IsDemoPlayback = DemoPlayback;
-		Time.m_IsDemoPlaybackPaused = DemoPaused;
-		Time.m_ConnectionProblems = Client()->ConnectionProblems(SessionId, Entry.m_Conn);
-		Entry.m_Playback = Time.m_AnimationPlaybackSpeed > 0.0f ? EPresentationPlayback::PLAYING : EPresentationPlayback::PAUSED;
-	}
+		FillPreparedRenderEntry(Entry, PresentationTime, Now);
 
-	const auto ActiveEntryIt = std::find_if(m_vPreparedRenderEntries.begin(), m_vPreparedRenderEntries.end(), [](const CPreparedRenderEntry &Entry) { return Entry.m_Audible; });
+	const auto ActiveEntryIt = std::find_if(m_vPreparedRenderEntries.begin(), m_vPreparedRenderEntries.end(), [](const CPreparedRenderEntry &Entry) { return Entry.m_Active; });
 	dbg_assert(ActiveEntryIt != m_vPreparedRenderEntries.end(), "missing active render entry");
-	m_ControllerLocalTime = Client()->LocalTime();
+	m_ControllerLocalTime = VideoOutput ? Client()->DemoPlaybackLocalTime(ActiveSession.Id()) : Client()->LocalTime();
 	const CRenderContext ControllerContext(ActiveSession, ActiveState, View, ActiveEntryIt->m_Time, CVisibleWorldRect(vec2(), vec2()));
 	m_Spectator.UpdateController(View, ControllerContext, m_ControllerLocalTime);
 	m_Emoticon.UpdateController(View, ControllerContext);
 	m_Chat.UpdateController(ControllerContext);
 	m_Statboard.UpdateController();
 	m_Scoreboard.PrepareApplicationOverlay(ControllerContext);
-
-	for(CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
-		UpdateRenderedClients(*Entry.m_pSession, *Entry.m_pState, Entry.m_Conn, Now, Entry.m_Time, Entry.m_Playback);
 
 	CGameView::CMultiViewState &MultiViewState = MultiView();
 	if(!MultiViewState.m_IsInit && MultiViewState.m_Active)
@@ -1542,17 +1878,86 @@ void CGameClient::OnRenderPrepare()
 	}
 }
 
+void CGameClient::OnRenderPrepare()
+{
+	PrepareScreenRender(false);
+}
+
+#if defined(CONF_VIDEORECORDER)
+void CGameClient::OnRenderVideoPrepare(CSessionId SessionId, const CVideoExportSettings &Settings)
+{
+	m_PreparedVideoSettings = Settings;
+	if(SessionId == Client()->FocusedSessionId() && !Client()->VideoUsesOfflineAudio())
+	{
+		PrepareScreenRender(true);
+		return;
+	}
+	m_PreparedVideoOutput = true;
+	m_PreparedIsolatedVideoOutput = SessionId != Client()->FocusedSessionId();
+	m_PreparedOfflineVideoAudio = Client()->VideoUsesOfflineAudio();
+	m_vPreparedRenderEntries.clear();
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing video session context");
+	CGameState *pState = pSession->GameStates().FindByStream(Client()->PrimaryStreamId(SessionId));
+	dbg_assert(pState != nullptr, "missing video game state");
+	if(!m_VideoGameViewId.IsValid())
+		m_VideoGameViewId = m_GameViews.Create(SessionId, pState->Id());
+	CGameView *pView = m_GameViews.Find(m_VideoGameViewId);
+	dbg_assert(pView != nullptr, "missing video game view");
+	pView->SetTarget(SessionId, pState->Id());
+	pView->SetViewport({});
+
+	CPreparedRenderEntry Entry;
+	Entry.m_pSession = pSession;
+	Entry.m_pState = pState;
+	Entry.m_pView = pView;
+	Entry.m_Conn = IClient::CONN_MAIN;
+	Entry.m_Active = true;
+	bool OfflineAudio;
+	Entry.m_Audible = AudioForSession(SessionId, OfflineAudio);
+	dbg_assert(!Entry.m_Audible || OfflineAudio == Client()->VideoUsesOfflineAudio(), "video audio routed to wrong mixer");
+	FillPreparedRenderEntry(Entry, Client()->DemoPlaybackTime(SessionId), time_get());
+
+	const int LocalId = pState->LocalClientId();
+	const CGameState::CClientSnapshot *pLocalClient = in_range(LocalId, MAX_CLIENTS - 1) ? &pState->Client(LocalId) : nullptr;
+	const bool LocalPaused = pLocalClient != nullptr && pLocalClient->m_HasDDNetPlayer && (pLocalClient->m_DDNetPlayer.m_Flags & (EXPLAYERFLAG_PAUSED | EXPLAYERFLAG_SPEC)) != 0;
+	const bool HasSpectatorInfo = pState->HasSpectatorInfo();
+	const int SpectatorId = HasSpectatorInfo ? pState->SpectatorInfo().m_SpectatorId : LocalPaused ? LocalId :
+													 SPEC_FREEVIEW;
+	pView->SetSpectator(HasSpectatorInfo || LocalPaused, SpectatorId);
+	if(HasSpectatorInfo && SpectatorId == SPEC_FREEVIEW)
+		pView->SetCameraPosition(vec2(pState->SpectatorInfo().m_X, pState->SpectatorInfo().m_Y));
+	else if(pView->IsSpectating() && in_range(SpectatorId, MAX_CLIENTS - 1) && pState->RenderedClient(SpectatorId).m_Active)
+		pView->SetCameraPosition(pState->RenderedClient(SpectatorId).m_Position);
+	else if(in_range(LocalId, MAX_CLIENTS - 1) && pState->RenderedClient(LocalId).m_Active)
+		pView->SetCameraPosition(pState->RenderedClient(LocalId).m_Position);
+	Entry.m_VisibleWorldRect = VisibleWorldRectFor(*pView);
+	m_vPreparedRenderEntries.push_back(Entry);
+}
+#endif
+
 void CGameClient::OnRenderFinalize()
 {
-	const auto ActiveEntryIt = std::find_if(m_vPreparedRenderEntries.begin(), m_vPreparedRenderEntries.end(), [](const CPreparedRenderEntry &Entry) { return Entry.m_Audible; });
-	if(ActiveEntryIt != m_vPreparedRenderEntries.end())
+	const auto ActiveEntryIt = std::find_if(m_vPreparedRenderEntries.begin(), m_vPreparedRenderEntries.end(), [](const CPreparedRenderEntry &Entry) { return Entry.m_Active; });
+	if(!m_PreparedIsolatedVideoOutput && ActiveEntryIt != m_vPreparedRenderEntries.end())
 	{
 		CGameView &View = *ActiveEntryIt->m_pView;
 		m_Spectator.CommitController(View, View.SessionId(), View.StateId(), m_ControllerLocalTime);
 	}
 	m_vPreparedRenderEntries.clear();
-	Input()->Clear();
+	if(!m_PreparedIsolatedVideoOutput)
+		Input()->Clear();
+	m_PreparedVideoOutput = false;
+	m_PreparedIsolatedVideoOutput = false;
+	m_PreparedOfflineVideoAudio = false;
 }
+
+#if defined(CONF_VIDEORECORDER)
+bool CGameClient::OnRenderVideoProgress(bool Overlay)
+{
+	return m_Menus.RenderVideoProgress(Overlay);
+}
+#endif
 
 void CGameClient::OnDummyDisconnect()
 {
@@ -1717,6 +2122,10 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	const bool Focused = SessionId == Client()->FocusedSessionId();
 	const bool SuppressEvents = m_SuppressEvents && SessionId == Client()->DemoSessionId();
 	const int64_t MessageTime = SessionMessageTime(SessionId);
+	if(HandleMatchReportMessage(SessionId, MsgId, pUnpacker, StreamId))
+		return;
+	if(HandleLiveStatsMessage(SessionId, MsgId, pUnpacker, StreamId))
+		return;
 
 	// special messages
 	static_assert((int)NETMSGTYPE_SV_TUNEPARAMS == (int)protocol7::NETMSGTYPE_SV_TUNEPARAMS, "0.6 and 0.7 tune message id do not match");
@@ -1850,7 +2259,7 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	}
 	if(MsgId == NETMSGTYPE_SV_MOTD)
 	{
-		if(!AdditionalStream && SessionId != Client()->DemoSessionId())
+		if(!AdditionalStream && Client()->SessionType(SessionId) != ESessionSourceType::DEMO)
 		{
 			const CNetMsg_Sv_Motd *pMsg = static_cast<const CNetMsg_Sv_Motd *>(pRawMsg);
 			m_Motd.DoMotd(*pMessageSession, pMsg->m_pMessage, Focused);
@@ -1868,7 +2277,7 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	case NETMSGTYPE_SV_YOURVOTE:
 	case NETMSGTYPE_SV_VOTEOPTIONGROUPSTART:
 	case NETMSGTYPE_SV_VOTEOPTIONGROUPEND:
-		if(!AdditionalStream && SessionId != Client()->DemoSessionId())
+		if(!AdditionalStream && Client()->SessionType(SessionId) != ESessionSourceType::DEMO)
 			m_Voting.HandleMessage(pMessageSession->Vote(), MessageTime, time_freq(), Focused && Client()->RconAuthed(), MsgId, pRawMsg);
 		return;
 	}
@@ -1895,14 +2304,14 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 			const int DummyTeam = pDummyState->Client(DummyLocalId).m_HasPlayerInfo ? pDummyState->Client(DummyLocalId).m_PlayerInfo.m_Team : TEAM_SPECTATORS;
 			if((pMsg->m_Team == 1 && (MainTeam != DummyTeam || Teams.Team(MainLocalId) != Teams.Team(DummyLocalId))) || pMsg->m_Team > 1)
 			{
-				m_Chat.HandleMessage(*pMessageSession, *pMessageState, MessageTime, SuppressEvents, SessionId == Client()->DemoSessionId(), Focused, MsgId, pRawMsg);
+				m_Chat.HandleMessage(*pMessageSession, *pMessageState, MessageTime, SuppressEvents, Client()->SessionType(SessionId) == ESessionSourceType::DEMO, Focused, MsgId, pRawMsg);
 			}
 		}
 		return; // no need of all that stuff for the dummy
 	}
-	m_Chat.HandleMessage(*pMessageSession, *pMessageState, MessageTime, SuppressEvents, SessionId == Client()->DemoSessionId(), Focused, MsgId, pRawMsg);
+	m_Chat.HandleMessage(*pMessageSession, *pMessageState, MessageTime, SuppressEvents, Client()->SessionType(SessionId) == ESessionSourceType::DEMO, Focused, MsgId, pRawMsg);
 	m_InfoMessages.HandleMessage(pMessageSession->InfoMessages(), *pMessageSession, *pMessageState, Client()->GameTick(SessionId, Conn), SuppressEvents, MsgId, pRawMsg);
-	m_Statboard.HandleMessage(pMessageSession->Stats(), *pMessageState, SuppressEvents, MsgId, pRawMsg);
+	pMessageSession->Stats().HandleMessage(*pMessageState, SuppressEvents, MsgId, pRawMsg);
 	if(MsgId == NETMSGTYPE_SV_RECORD || MsgId == NETMSGTYPE_SV_RECORDLEGACY)
 	{
 		const CNetMsg_Sv_Record *pMsg = static_cast<const CNetMsg_Sv_Record *>(pRawMsg);
@@ -1920,11 +2329,27 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	}
 	else if(MsgId == NETMSGTYPE_SV_MAPSOUNDGLOBAL)
 	{
-		if(!SuppressEvents && g_Config.m_SndGame)
+		bool OfflineAudio;
+		if(!SuppressEvents && g_Config.m_SndGame && AudioForSession(SessionId, OfflineAudio))
 		{
 			const CNetMsg_Sv_MapSoundGlobal *pMsg = static_cast<const CNetMsg_Sv_MapSoundGlobal *>(pRawMsg);
-			SessionPresentation(SessionId).MapSounds().Play(CSounds::CHN_GLOBAL, pMsg->m_SoundId);
+			SessionPresentation(SessionId).MapSounds().PlayForAudio(CSounds::CHN_GLOBAL, pMsg->m_SoundId, OfflineAudio);
 		}
+		return;
+	}
+	else if(MsgId == NETMSGTYPE_SV_SOUNDGLOBAL)
+	{
+		bool OfflineAudio;
+		if(SuppressEvents || !g_Config.m_SndGame || !AudioForSession(SessionId, OfflineAudio))
+			return;
+
+		const CNetMsg_Sv_SoundGlobal *pMsg = static_cast<const CNetMsg_Sv_SoundGlobal *>(pRawMsg);
+		if(pMsg->m_SoundId == SOUND_CTF_DROP || pMsg->m_SoundId == SOUND_CTF_RETURN ||
+			pMsg->m_SoundId == SOUND_CTF_CAPTURE || pMsg->m_SoundId == SOUND_CTF_GRAB_EN ||
+			pMsg->m_SoundId == SOUND_CTF_GRAB_PL)
+			m_Sounds.EnqueueForAudio(CSounds::CHN_GLOBAL, pMsg->m_SoundId, OfflineAudio);
+		else
+			m_Sounds.PlayForAudio(CSounds::CHN_GLOBAL, pMsg->m_SoundId, 1.0f, OfflineAudio);
 		return;
 	}
 	else if(MsgId == NETMSGTYPE_SV_SAVECODE)
@@ -1941,27 +2366,7 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnMessage(MsgId, pRawMsg);
 
-	if(MsgId == NETMSGTYPE_SV_SOUNDGLOBAL)
-	{
-		if(SuppressEvents)
-			return;
-
-		// don't enqueue pseudo-global sounds from demos (created by PlayAndRecord)
-		CNetMsg_Sv_SoundGlobal *pMsg = (CNetMsg_Sv_SoundGlobal *)pRawMsg;
-		if(pMsg->m_SoundId == SOUND_CTF_DROP || pMsg->m_SoundId == SOUND_CTF_RETURN ||
-			pMsg->m_SoundId == SOUND_CTF_CAPTURE || pMsg->m_SoundId == SOUND_CTF_GRAB_EN ||
-			pMsg->m_SoundId == SOUND_CTF_GRAB_PL)
-		{
-			if(g_Config.m_SndGame)
-				m_Sounds.Enqueue(CSounds::CHN_GLOBAL, pMsg->m_SoundId);
-		}
-		else
-		{
-			if(g_Config.m_SndGame)
-				m_Sounds.Play(CSounds::CHN_GLOBAL, pMsg->m_SoundId, 1.0f);
-		}
-	}
-	else if(MsgId == NETMSGTYPE_SV_KILLMSG)
+	if(MsgId == NETMSGTYPE_SV_KILLMSG)
 	{
 		CNetMsg_Sv_KillMsg *pMsg = (CNetMsg_Sv_KillMsg *)pRawMsg;
 		const CGameState &State = GameState(ActiveConnection());
@@ -2167,6 +2572,8 @@ void CGameClient::ProcessEvents(CSessionId SessionId, int Conn)
 	CGameState *pState = pSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn));
 	dbg_assert(pState != nullptr, "missing event game state");
 	CGameState &State = *pState;
+	bool OfflineAudio;
+	const bool AudioActive = AudioForSession(SessionId, OfflineAudio);
 	const int Num = Client()->SnapNumItems(SessionId, Conn, SnapType);
 	for(int Index = 0; Index < Num; Index++)
 	{
@@ -2181,7 +2588,7 @@ void CGameClient::ProcessEvents(CSessionId SessionId, int Conn)
 			const CNetEvent_DamageInd *pEvent = (const CNetEvent_DamageInd *)Item.m_pData;
 
 			vec2 DamageIndPos = vec2(pEvent->m_X, pEvent->m_Y);
-			if(!PredictedWorld().CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, DamageIndPos, -1, Client()->GameTick(SessionId, Conn), pEvent->m_Angle)))
+			if(!State.PredictedWorld().CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, DamageIndPos, -1, Client()->GameTick(SessionId, Conn), pEvent->m_Angle)))
 			{
 				m_Effects.DamageIndicator(State, vec2(pEvent->m_X, pEvent->m_Y), direction(pEvent->m_Angle / 256.0f), -1, Alpha);
 			}
@@ -2191,7 +2598,7 @@ void CGameClient::ProcessEvents(CSessionId SessionId, int Conn)
 			const CNetEvent_Explosion *pEvent = (const CNetEvent_Explosion *)Item.m_pData;
 
 			vec2 ExplosionPos = vec2(pEvent->m_X, pEvent->m_Y);
-			if(!PredictedWorld().CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, ExplosionPos, -1, Client()->GameTick(SessionId, Conn))))
+			if(!State.PredictedWorld().CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, ExplosionPos, -1, Client()->GameTick(SessionId, Conn))))
 			{
 				m_Effects.Explosion(State, ExplosionPos, Alpha);
 			}
@@ -2201,7 +2608,7 @@ void CGameClient::ProcessEvents(CSessionId SessionId, int Conn)
 			const CNetEvent_HammerHit *pEvent = (const CNetEvent_HammerHit *)Item.m_pData;
 
 			vec2 HammerHitPos = vec2(pEvent->m_X, pEvent->m_Y);
-			if(!PredictedWorld().CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, HammerHitPos, -1, Client()->GameTick(SessionId, Conn))))
+			if(!State.PredictedWorld().CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, HammerHitPos, -1, Client()->GameTick(SessionId, Conn))))
 			{
 				m_Effects.HammerHit(State, HammerHitPos, Alpha, Volume);
 			}
@@ -2236,9 +2643,10 @@ void CGameClient::ProcessEvents(CSessionId SessionId, int Conn)
 				continue;
 
 			vec2 SoundPos = vec2(pEvent->m_X, pEvent->m_Y);
-			if(!PredictedWorld().CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, SoundPos, -1, Client()->GameTick(SessionId, Conn), pEvent->m_SoundId)))
+			if(!State.PredictedWorld().CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, SoundPos, -1, Client()->GameTick(SessionId, Conn), pEvent->m_SoundId)))
 			{
-				m_Sounds.PlayAt(CSounds::CHN_WORLD, pEvent->m_SoundId, 1.0f, SoundPos);
+				if(AudioActive)
+					m_Sounds.PlayAtForAudio(CSounds::CHN_WORLD, pEvent->m_SoundId, 1.0f, SoundPos, OfflineAudio);
 			}
 		}
 		else if(Item.m_Type == NETEVENTTYPE_MAPSOUNDWORLD)
@@ -2247,7 +2655,8 @@ void CGameClient::ProcessEvents(CSessionId SessionId, int Conn)
 			if(!Config()->m_SndGame)
 				continue;
 
-			SessionPresentation(SessionId).MapSounds().PlayAt(CSounds::CHN_WORLD, pEvent->m_SoundId, vec2(pEvent->m_X, pEvent->m_Y));
+			if(AudioActive)
+				SessionPresentation(SessionId).MapSounds().PlayAtForAudio(CSounds::CHN_WORLD, pEvent->m_SoundId, vec2(pEvent->m_X, pEvent->m_Y), OfflineAudio);
 		}
 	}
 }
@@ -2481,10 +2890,53 @@ void CGameClient::OnNewSnapshot(CSessionId SessionId, CStreamId StreamId)
 	State.SetFullyPredicted(SessionId == Client()->FocusedSessionId() && StreamId == Client()->ActiveStreamId(SessionId));
 	State.SetCoreGameInfo(GameInfo);
 	State.ApplySnapshot(*Client(), SessionId, StreamId);
+	bool EnteredGameOver = false;
 	if(StreamId == Client()->PrimaryStreamId(SessionId))
-		pSession->Stats().UpdateSnapshot(State, Client()->GameTick(SessionId, Conn));
+		EnteredGameOver = pSession->Stats().UpdateSnapshot(State, Client()->GameTick(SessionId, Conn));
+	bool ProcessedEvents = false;
 	if(SessionId == Client()->FocusedSessionId() && StreamId == Client()->ActiveStreamId(SessionId))
+	{
 		ProcessSnapshot(SessionId, Conn);
+		ProcessedEvents = true;
+	}
+#if defined(CONF_VIDEORECORDER)
+	else if(SessionId == Client()->VideoSessionId() && StreamId == Client()->PrimaryStreamId(SessionId))
+	{
+		ProcessEvents(SessionId, Conn);
+		ProcessedEvents = true;
+	}
+#endif
+	if(ProcessedEvents)
+		ProcessAirJumpEffects(SessionId, Conn, State);
+	if(!EnteredGameOver)
+		return;
+	FinalizeObservedMatch(SessionId, *pSession, State, Client()->GameTick(SessionId, Conn), EMatchTermination::COMPLETED);
+}
+
+void CGameClient::ProcessAirJumpEffects(CSessionId SessionId, int Conn, CGameState &State)
+{
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing air jump session context");
+	const bool NetworkSource = Client()->SessionType(SessionId) == ESessionSourceType::NETWORK;
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		const CGameState::CClientSnapshot &Character = State.Client(ClientId);
+		if(!Character.m_HasCharacter || !Character.m_HasPrevCharacter || !(Character.m_Character.m_Jumped & 2) || (Character.m_PrevCharacter.m_Jumped & 2))
+			continue;
+
+		const CGameState *pOtherState = NetworkSource ? pSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN)) : nullptr;
+		const bool IsDummy = pOtherState != nullptr && Client()->DummyConnected() && ClientId == pOtherState->LocalClientId();
+		const bool IsLocalPlayer = ClientId == State.LocalClientId();
+		if(Predict() && (IsLocalPlayer || AntiPingPlayers()) && (IsLocalPlayer || IsDummy))
+			continue;
+
+		const vec2 PreviousPosition(Character.m_PrevCharacter.m_X, Character.m_PrevCharacter.m_Y);
+		if(pSession->MapContext().Collision()->IsOnGround(PreviousPosition, CCharacterCore::PhysicalSize()))
+			continue;
+		const vec2 CurrentPosition(Character.m_Character.m_X, Character.m_Character.m_Y);
+		const vec2 Position = mix(PreviousPosition, CurrentPosition, Client()->IntraGameTick(SessionId, Conn));
+		m_Effects.AirJump(State, Position, ClientId, 1.0f, 1.0f); // TODO snd_game_volume_others
+	}
 }
 
 void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
@@ -3127,31 +3579,6 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 
 	// notify editor when local character moved
 	UpdateEditorIngameMoved();
-
-	// detect air jump for other players
-	for(int i = 0; i < MAX_CLIENTS; i++)
-	{
-		if(Snap.m_aCharacters[i].m_Active && (Snap.m_aCharacters[i].m_Cur.m_Jumped & 2) && !(Snap.m_aCharacters[i].m_Prev.m_Jumped & 2))
-		{
-			const CGameState *pOtherState = NetworkSource ? Session.GameStates().FindByStream(Client()->StreamId(Session.Id(), Conn == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN)) : nullptr;
-			bool IsDummy = pOtherState != nullptr && Client()->DummyConnected() && i == pOtherState->LocalClientId();
-			bool IsLocalPlayer = i == Snap.m_LocalClientId;
-
-			if(!Predict() || (!IsLocalPlayer && !AntiPingPlayers()) || (!IsLocalPlayer && !IsDummy))
-			{
-				vec2 Pos = mix(vec2(Snap.m_aCharacters[i].m_Prev.m_X, Snap.m_aCharacters[i].m_Prev.m_Y),
-					vec2(Snap.m_aCharacters[i].m_Cur.m_X, Snap.m_aCharacters[i].m_Cur.m_Y),
-					Client()->IntraGameTick(SessionId, Conn));
-				const float Volume = 1.0f; // TODO snd_game_volume_others
-
-				const bool Grounded = Session.MapContext().Collision()->IsOnGround(vec2(Snap.m_aCharacters[i].m_Prev.m_X, Snap.m_aCharacters[i].m_Prev.m_Y), CCharacterCore::PhysicalSize());
-				if(!Grounded)
-				{
-					m_Effects.AirJump(ActiveState, Pos, i, 1.0f, Volume);
-				}
-			}
-		}
-	}
 
 	if(g_Config.m_ClFreezeStars && !m_SuppressEvents)
 	{
@@ -3982,6 +4409,22 @@ void CGameClient::ConReadyChange7(IConsole::IResult *pResult, void *pUserData)
 	CGameClient *pClient = static_cast<CGameClient *>(pUserData);
 	if(pClient->Client()->IsOnline())
 		pClient->SendReadyChange7();
+}
+
+void CGameClient::ConGenerateMatchStatsSamples(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameClient *pClient = static_cast<CGameClient *>(pUserData);
+	const int Count = std::clamp(pResult->NumArguments() > 0 ? pResult->GetInteger(0) : 25, 1, 500);
+	std::string Error;
+	if(!GenerateSampleMatches(pClient->m_MatchJournal, Count, pClient->Client()->PlayerName(), &Error))
+	{
+		pClient->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-journal", Error.c_str());
+		return;
+	}
+	char aBuf[64];
+	str_format(aBuf, sizeof(aBuf), "Added %d generated matches", Count);
+	pClient->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-journal", aBuf);
+	pClient->m_Menus.InvalidateStats();
 }
 
 void CGameClient::ConchainLanguageUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
@@ -6224,7 +6667,7 @@ void CGameClient::OnSaveCodeNetMessage(CGameSessionContext &Session, const CGame
 {
 	char aBuf[512];
 	auto AddLine = [&](const char *pText) {
-		m_Chat.AddLine(Session, GameState, SessionMessageTime(Session.Id()), Session.Id() == Client()->DemoSessionId(), Session.Id() == Client()->FocusedSessionId(), -1, TEAM_ALL, pText);
+		m_Chat.AddLine(Session, GameState, SessionMessageTime(Session.Id()), Client()->SessionType(Session.Id()) == ESessionSourceType::DEMO, Session.Id() == Client()->FocusedSessionId(), -1, TEAM_ALL, pText);
 	};
 	if(pMsg->m_pError[0] != '\0')
 		AddLine(pMsg->m_pError);
@@ -6290,7 +6733,7 @@ void CGameClient::OnSaveCodeNetMessage(CGameSessionContext &Session, const CGame
 		AddLine(Localize("Save failed!"));
 	}
 
-	if(State != SAVESTATE_PENDING && State != SAVESTATE_ERROR && Session.Id() != Client()->DemoSessionId())
+	if(State != SAVESTATE_PENDING && State != SAVESTATE_ERROR && Client()->SessionType(Session.Id()) != ESessionSourceType::DEMO)
 	{
 		StoreSave(Session, pMsg->m_pTeamMembers, pMsg->m_pCode[0] ? pMsg->m_pCode : pMsg->m_pGeneratedCode);
 	}

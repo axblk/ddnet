@@ -115,6 +115,13 @@ class CEditor : public IEditor
 	class IEngine *m_pEngine = nullptr;
 	class IGraphics *m_pGraphics = nullptr;
 	class ITextRender *m_pTextRender = nullptr;
+	IGraphics::CGpuRenderZone m_GpuZoneWorld;
+	IGraphics::CGpuRenderZone m_GpuZoneInterface;
+	IGraphics::CGpuRenderZone m_GpuZoneMap;
+	IGraphics::CGpuRenderZone m_GpuZoneToolbar;
+	IGraphics::CGpuRenderZone m_GpuZoneToolbox;
+	IGraphics::CGpuRenderZone m_GpuZoneChrome;
+	IGraphics::CGpuRenderZone m_GpuZoneDialogs;
 	class ISound *m_pSound = nullptr;
 	class IStorage *m_pStorage = nullptr;
 	CRenderMap m_RenderMap;

@@ -30,7 +30,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 		Ui()->DoLabelStreamed(*m_vpSettingsGraphicsLabelUiElements[LabelIndex++]->Rect(0), &Rect, pText, Size, Align);
 	};
 	CUIRect Button;
-	char aBuf[128];
+	char aBuf[512];
 	bool CheckSettings = false;
 
 	static const int MAX_RESOLUTIONS = 256;
@@ -39,6 +39,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	static int s_GfxFsaaSamples = g_Config.m_GfxFsaaSamples;
 	static bool s_GfxBackendChanged = false;
 	static bool s_GfxGpuChanged = false;
+	static const std::string s_GfxWebGpuBackend = g_Config.m_GfxWebGpuBackend;
 
 	static int s_InitDisplayAllVideoModes = g_Config.m_GfxDisplayAllVideoModes;
 
@@ -358,6 +359,70 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 		}
 	}
 
+	CUIRect CurrentRenderer;
+	MainView.HSplitTop(4.0f, nullptr, &MainView);
+	MainView.HSplitTop(20.0f, &CurrentRenderer, &MainView);
+	str_format(aBuf, sizeof(aBuf), "%s: %s", Localize("Current renderer"), Graphics()->GetRendererString());
+	DoLabel(CurrentRenderer, aBuf, 12.0f, TEXTALIGN_MC);
+
+#if defined(CONF_BACKEND_WEBGPU) && !defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(str_comp_nocase(g_Config.m_GfxBackend, "WebGPU") == 0)
+	{
+		const char *apWebGpuBackendValues[5] = {"auto"};
+		const char *apWebGpuBackendNames[5] = {Localize("Auto")};
+		int WebGpuBackendCount = 1;
+#if defined(CONF_FAMILY_WINDOWS)
+		apWebGpuBackendValues[WebGpuBackendCount] = apWebGpuBackendNames[WebGpuBackendCount] = "D3D12";
+		++WebGpuBackendCount;
+#elif defined(CONF_PLATFORM_MACOS)
+		apWebGpuBackendValues[WebGpuBackendCount] = apWebGpuBackendNames[WebGpuBackendCount] = "Metal";
+		++WebGpuBackendCount;
+#endif
+#if !defined(CONF_PLATFORM_MACOS)
+		apWebGpuBackendValues[WebGpuBackendCount] = apWebGpuBackendNames[WebGpuBackendCount] = "Vulkan";
+		++WebGpuBackendCount;
+		// wgpu-native runs on OpenGL everywhere except macOS, where it only has
+		// Metal. Leaving it out of the list did not make it unreachable, only
+		// unkeepable: it could still be set from the console, and the next use
+		// of this dropdown overwrote it.
+		apWebGpuBackendValues[WebGpuBackendCount] = apWebGpuBackendNames[WebGpuBackendCount] = "OpenGL";
+		++WebGpuBackendCount;
+#endif
+
+		int OldSelectedWebGpuBackend = -1;
+		for(int i = 0; i < WebGpuBackendCount; ++i)
+		{
+			if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, apWebGpuBackendValues[i]) == 0)
+				OldSelectedWebGpuBackend = i;
+		}
+		char aCustomWebGpuBackend[64];
+		if(OldSelectedWebGpuBackend == -1)
+		{
+			str_format(aCustomWebGpuBackend, sizeof(aCustomWebGpuBackend), "%s (%s)", g_Config.m_GfxWebGpuBackend, Localize("unsupported"));
+			apWebGpuBackendValues[WebGpuBackendCount] = g_Config.m_GfxWebGpuBackend;
+			apWebGpuBackendNames[WebGpuBackendCount] = aCustomWebGpuBackend;
+			OldSelectedWebGpuBackend = WebGpuBackendCount++;
+		}
+
+		CUIRect Text, WebGpuBackendDropDown;
+		MainView.HSplitTop(4.0f, nullptr, &MainView);
+		MainView.HSplitTop(20.0f, &Text, &MainView);
+		MainView.HSplitTop(2.0f, nullptr, &MainView);
+		MainView.HSplitTop(20.0f, &WebGpuBackendDropDown, &MainView);
+		DoLabel(Text, Localize("WebGPU backend"), 16.0f, TEXTALIGN_MC);
+
+		static CUi::SDropDownState s_WebGpuBackendDropDownState;
+		static CScrollRegion s_WebGpuBackendDropDownScrollRegion;
+		s_WebGpuBackendDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_WebGpuBackendDropDownScrollRegion;
+		const int NewSelectedWebGpuBackend = Ui()->DoDropDown(&WebGpuBackendDropDown, OldSelectedWebGpuBackend, apWebGpuBackendNames, WebGpuBackendCount, s_WebGpuBackendDropDownState);
+		if(NewSelectedWebGpuBackend != OldSelectedWebGpuBackend)
+		{
+			str_copy(g_Config.m_GfxWebGpuBackend, apWebGpuBackendValues[NewSelectedWebGpuBackend]);
+			CheckSettings = true;
+		}
+	}
+#endif
+
 	// GPU list
 	const auto &GpuList = Graphics()->GetGpus();
 	if(GpuList.m_vGpus.size() > 1)
@@ -422,6 +487,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	{
 		m_NeedRestartGraphics = !(s_GfxFsaaSamples == g_Config.m_GfxFsaaSamples &&
 					  !s_GfxBackendChanged &&
-					  !s_GfxGpuChanged);
+					  !s_GfxGpuChanged &&
+					  str_comp_nocase(s_GfxWebGpuBackend.c_str(), g_Config.m_GfxWebGpuBackend) == 0);
 	}
 }

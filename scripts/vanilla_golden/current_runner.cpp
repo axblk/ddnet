@@ -36,6 +36,13 @@
 #undef protected
 #undef private
 
+#include "../parity/parity_trace.h"
+
+#define private public
+#define protected public
+#undef protected
+#undef private
+
 bool IsInterrupted()
 {
 	return false;
@@ -58,8 +65,8 @@ class CCollisionFixture
 public:
 	enum
 	{
-		WIDTH = 24,
-		HEIGHT = 14,
+		WIDTH = ParityMap::WIDTH,
+		HEIGHT = ParityMap::HEIGHT,
 	};
 
 	CCollisionFixture()
@@ -69,35 +76,29 @@ public:
 
 	static void Install(CCollision &Collision, std::array<CTile, WIDTH * HEIGHT> &aTiles)
 	{
-		Collision.Unload();
-		aTiles.fill({});
-		Collision.m_Width = WIDTH;
-		Collision.m_Height = HEIGHT;
-		Collision.m_pTiles = aTiles.data();
-		for(int x = 0; x < WIDTH; ++x)
-		{
-			Solid(Collision, x, 0);
-			Solid(Collision, x, 10);
-			Solid(Collision, x, HEIGHT - 1);
-		}
-		for(int y = 0; y < HEIGHT; ++y)
-		{
-			Solid(Collision, 0, y);
-			Solid(Collision, WIDTH - 1, y);
-			Solid(Collision, 16, y);
-		}
+		ParityMap::Install(Collision, aTiles);
 	}
 
 	std::array<CTile, WIDTH * HEIGHT> m_aTiles{};
 	CCollision m_Collision;
-
-private:
-	static void Solid(CCollision &Collision, int X, int Y) { Collision.m_pTiles[Y * WIDTH + X].m_Index = TILE_SOLID; }
 };
+
+// The whole bucket, the way the predicted side counts it. A radius query with a
+// cap would answer a different question on each side: an entity that flew past
+// the radius, or the sixty-fifth one, would leave one count and not the other.
+static int CountEntities(CGameWorld &World, int Type)
+{
+	int Count = 0;
+	for(CEntity *pEntity = World.FindFirst(Type); pEntity != nullptr; pEntity = pEntity->TypeNext())
+		++Count;
+	return Count;
+}
 
 static void PrintCore(const std::string &Name, int Tick, const CCharacterCore &Core)
 {
-	CNetObj_CharacterCore Net;
+	// Write covers fourteen of the fifteen fields and leaves m_Tick alone,
+	// so the struct has to start zeroed rather than as stack garbage.
+	CNetObj_CharacterCore Net = {};
 	Core.Write(&Net);
 	std::cout << "core " << Name << " tick=" << Tick
 		  << " pos=" << Net.m_X << ',' << Net.m_Y
@@ -436,6 +437,45 @@ static void RunMatch(const std::string &Name)
 		  << " respawn_before=" << RespawnBefore << " respawn_at=" << RespawnAt << '\n';
 }
 
+// The authoritative half of the parity harness. Same map, same spawns, same
+// tape as the predicted half in scripts/parity/client_runner.cpp; every line it
+// writes is one the other side has to write too.
+static void RunParity(const std::string &Name)
+{
+	CGameFixture Fixture;
+	CCharacter *pChar = Fixture.Character(0);
+	const int Weapon = WeaponFromName(Name.substr(0, 4) == "fire" ? Name.substr(5) : "gun");
+	if(Weapon != WEAPON_HAMMER)
+	{
+		pChar->GiveWeapon(Weapon);
+		pChar->SetWeaponAmmo(Weapon, 10);
+	}
+	pChar->SetWeapon(Weapon);
+	pChar->m_ReloadTimer = 0;
+
+	for(int Tick = 0; Tick <= ParityTicks(); ++Tick)
+	{
+		if(Tick > 0)
+		{
+			CNetObj_PlayerInput Input;
+			ParityInput(Name.c_str(), Tick, &Input);
+			pChar->OnDirectInput(&Input);
+			pChar->OnPredictedInput(&Input);
+			Fixture.SetTick(Tick);
+			Fixture.m_pGameServer->m_World.Tick();
+		}
+		if(!pChar->IsAlive())
+			break;
+		ParityPrintCharacter(std::cout, Name.c_str(), Tick, 0, *pChar->Core(),
+			pChar->GetActiveWeapon(), pChar->GetWeaponAmmo(pChar->GetActiveWeapon()),
+			pChar->GetHealth(), pChar->GetArmor(), pChar->m_ReloadTimer);
+		ParityPrintCounts(std::cout, Name.c_str(), Tick,
+			CountEntities(Fixture.m_pGameServer->m_World, CGameWorld::ENTTYPE_PROJECTILE),
+			CountEntities(Fixture.m_pGameServer->m_World, CGameWorld::ENTTYPE_LASER),
+			CountEntities(Fixture.m_pGameServer->m_World, CGameWorld::ENTTYPE_PICKUP));
+	}
+}
+
 static void Dispatch(const std::string &Line)
 {
 	std::istringstream Input(Line);
@@ -464,6 +504,8 @@ static void Dispatch(const std::string &Line)
 	}
 	else if(Kind == "match")
 		RunMatch(Name);
+	else if(Kind == "parity")
+		RunParity(Name);
 	else
 		Fail("unknown scenario: " + Line);
 	std::string Extra;

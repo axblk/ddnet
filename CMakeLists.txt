@@ -2438,6 +2438,8 @@ set_src(GAME_SHARED GLOB src/game
   layers.h
   localization.cpp
   localization.h
+  map_door_collision.cpp
+  map_door_collision.h
   mapbugs.cpp
   mapbugs.h
   mapbugs_list.h

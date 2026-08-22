@@ -2944,6 +2944,8 @@ if(CLIENT)
     render_layer.h
     render_map.cpp
     render_map.h
+    tile_chunk_cache.cpp
+    tile_chunk_cache.h
     # tidy-alphabetical-end
   )
   set(GAME_GENERATED_CLIENT
@@ -3651,6 +3653,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     test.cpp
     test.h
     thread_test.cpp
+    tile_chunk_cache_test.cpp
     time_test.cpp
     timestamp_test.cpp
     unix_test.cpp

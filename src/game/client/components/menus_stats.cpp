@@ -276,15 +276,45 @@ void CMenus::PopupConfirmDeleteStatsPeriod()
 	RefreshStats();
 }
 
+void CMenus::StatsLabel(const CUIRect *pRect, const char *pText, float Size, int Align, const SLabelProperties &LabelProps)
+{
+	// Labels are drawn from a pool of cached text containers, so that a page
+	// that is not changing does not lay its text out again on every frame. The
+	// pool only grows to the number of labels visible at the same time, and a
+	// label that only moved has its geometry shifted instead of rebuilt.
+	SkipStatsLabels(1);
+	Ui()->DoLabelStreamed(*m_vpStatsLabelUiElements[m_StatsLabelUiElementIndex - 1]->Rect(0), pRect, pText, Size, Align, LabelProps);
+}
+
+void CMenus::SkipStatsLabels(size_t Count)
+{
+	// A label that is scrolled out of view still consumes its slot. Without
+	// that the whole pool shifts by one for every row that leaves the view, and
+	// every cached text container behind the shift is laid out again on every
+	// frame of the scroll.
+	m_StatsLabelUiElementIndex += Count;
+	while(m_vpStatsLabelUiElements.size() < m_StatsLabelUiElementIndex)
+		m_vpStatsLabelUiElements.push_back(Ui()->GetNewUIElement(1));
+}
+
+void CMenus::SetStatsLabelSlot(size_t Slot)
+{
+	dbg_assert(Slot <= m_vpStatsLabelUiElements.size(), "statistics label slot was not reserved");
+	m_StatsLabelUiElementIndex = Slot;
+}
+
 void CMenus::StatsHeading(CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pText)
 {
 	CUIRect Line, Underline;
 	pContent->HSplitTop(8.0f, nullptr, pContent);
 	pContent->HSplitTop(22.0f, &Line, pContent);
 	if(!pScrollRegion->AddRect(Line))
+	{
+		SkipStatsLabels(1);
 		return;
+	}
 	Line.HSplitBottom(1.0f, &Line, &Underline);
-	Ui()->DoLabel(&Line, pText, 14.0f, TEXTALIGN_ML);
+	StatsLabel(&Line, pText, 14.0f, TEXTALIGN_ML, {});
 	Underline.Draw(ColorRGBA(1.0f, 1.0f, 1.0f, 0.15f), IGraphics::CORNER_NONE, 0.0f);
 }
 
@@ -294,7 +324,10 @@ void CMenus::StatsTiles(CScrollRegion *pScrollRegion, CUIRect *pContent, const c
 	pContent->HSplitTop(6.0f, nullptr, pContent);
 	pContent->HSplitTop(52.0f, &Row, pContent);
 	if(!pScrollRegion->AddRect(Row))
+	{
+		SkipStatsLabels(2 * (size_t)Count);
 		return;
+	}
 	for(int Tile = 0; Tile < Count; ++Tile)
 	{
 		CUIRect Box, Value, Label;
@@ -304,12 +337,12 @@ void CMenus::StatsTiles(CScrollRegion *pScrollRegion, CUIRect *pContent, const c
 		Box.Margin(5.0f, &Box);
 		// The number is what the eye should land on, the label only names it.
 		Box.HSplitTop(26.0f, &Value, &Label);
-		Ui()->DoLabel(&Value, ppValues[Tile], 21.0f, TEXTALIGN_MC, {.m_MaxWidth = Value.w, .m_EllipsisAtEnd = true});
+		StatsLabel(&Value, ppValues[Tile], 21.0f, TEXTALIGN_MC, {.m_MaxWidth = Value.w, .m_EllipsisAtEnd = true});
 		SLabelProperties LabelProperties;
 		LabelProperties.m_MaxWidth = Label.w;
 		LabelProperties.m_EllipsisAtEnd = true;
 		LabelProperties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.55f));
-		Ui()->DoLabel(&Label, ppLabels[Tile], 9.5f, TEXTALIGN_MC, LabelProperties);
+		StatsLabel(&Label, ppLabels[Tile], 9.5f, TEXTALIGN_MC, LabelProperties);
 	}
 }
 
@@ -318,14 +351,17 @@ void CMenus::StatsMetricLine(CScrollRegion *pScrollRegion, CUIRect *pContent, co
 	CUIRect Line, Label, Value;
 	pContent->HSplitTop(19.0f, &Line, pContent);
 	if(!pScrollRegion->AddRect(Line))
+	{
+		SkipStatsLabels(2);
 		return;
+	}
 	Line.VSplitLeft(220.0f, &Label, &Value);
 	SLabelProperties LabelProperties;
 	LabelProperties.m_MaxWidth = Label.w;
 	LabelProperties.m_EllipsisAtEnd = true;
 	LabelProperties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.6f));
-	Ui()->DoLabel(&Label, pLabel, 11.5f, TEXTALIGN_ML, LabelProperties);
-	Ui()->DoLabel(&Value, pValue, 11.5f, TEXTALIGN_ML, {.m_MaxWidth = Value.w, .m_EllipsisAtEnd = true});
+	StatsLabel(&Label, pLabel, 11.5f, TEXTALIGN_ML, LabelProperties);
+	StatsLabel(&Value, pValue, 11.5f, TEXTALIGN_ML, {.m_MaxWidth = Value.w, .m_EllipsisAtEnd = true});
 }
 
 void CMenus::StatsWeaponMatrix(CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pHeading, const CMatchCombatStats &Stats)
@@ -346,7 +382,11 @@ void CMenus::StatsWeaponMatrix(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 	CUIRect Header;
 	pContent->HSplitTop(24.0f, &Header, pContent);
 	const float ColumnWidth = (Header.w - STATS_LABEL_WIDTH) / NumColumns;
-	if(pScrollRegion->AddRect(Header))
+	if(!pScrollRegion->AddRect(Header))
+	{
+		SkipStatsLabels(1 + NumColumns);
+	}
+	else
 	{
 		Header.Draw(COLOR_TABLE_HEADER, IGraphics::CORNER_T, 4.0f);
 		CUIRect Cell;
@@ -356,7 +396,7 @@ void CMenus::StatsWeaponMatrix(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 		Properties.m_MaxWidth = Cell.w;
 		Properties.m_EllipsisAtEnd = true;
 		Properties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.6f));
-		Ui()->DoLabel(&Cell, Localize("Weapon"), 10.0f, TEXTALIGN_ML, Properties);
+		StatsLabel(&Cell, Localize("Weapon"), 10.0f, TEXTALIGN_ML, Properties);
 		for(int Column = 0; Column < NumColumns; ++Column)
 		{
 			Header.VSplitLeft(ColumnWidth, &Cell, &Header);
@@ -376,6 +416,9 @@ void CMenus::StatsWeaponMatrix(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 				Graphics()->QuadsBegin();
 				Graphics()->DrawSprite(Cell.x + Cell.w / 2.0f, Cell.y + Cell.h / 2.0f, Width * Scale, Height * Scale);
 				Graphics()->QuadsEnd();
+				// The column keeps its slot either way, so that the ones after
+				// it do not move when a weapon skin appears or disappears.
+				SkipStatsLabels(1);
 			}
 			else
 			{
@@ -385,7 +428,7 @@ void CMenus::StatsWeaponMatrix(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 				else
 					MatchWeaponDisplayName(Weapon, aName, sizeof(aName));
 				Properties.m_MaxWidth = Cell.w - 4.0f;
-				Ui()->DoLabel(&Cell, aName, 10.0f, TEXTALIGN_MC, Properties);
+				StatsLabel(&Cell, aName, 10.0f, TEXTALIGN_MC, Properties);
 			}
 		}
 	}
@@ -398,7 +441,10 @@ void CMenus::StatsWeaponMatrix(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 		CUIRect Row;
 		pContent->HSplitTop(20.0f, &Row, pContent);
 		if(!pScrollRegion->AddRect(Row))
+		{
+			SkipStatsLabels(1 + NumColumns);
 			return;
+		}
 		Row.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.14f), IGraphics::CORNER_NONE, 0.0f);
 		CUIRect Cell;
 		Row.VSplitLeft(STATS_LABEL_WIDTH, &Cell, &Row);
@@ -407,7 +453,7 @@ void CMenus::StatsWeaponMatrix(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 		LabelProperties.m_MaxWidth = Cell.w;
 		LabelProperties.m_EllipsisAtEnd = true;
 		LabelProperties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.65f));
-		Ui()->DoLabel(&Cell, pLabel, 11.5f, TEXTALIGN_ML, LabelProperties);
+		StatsLabel(&Cell, pLabel, 11.5f, TEXTALIGN_ML, LabelProperties);
 		for(int Column = 0; Column < NumColumns; ++Column)
 		{
 			const CMatchWeaponStats *pWeaponStats = apColumns[Column];
@@ -424,7 +470,7 @@ void CMenus::StatsWeaponMatrix(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 			char aValue[32];
 			Format(*pWeaponStats, aValue, sizeof(aValue));
 			Cell.VMargin(6.0f, &Cell);
-			Ui()->DoLabel(&Cell, aValue, 11.5f, TEXTALIGN_MC, {.m_MaxWidth = Cell.w, .m_EllipsisAtEnd = true});
+			StatsLabel(&Cell, aValue, 11.5f, TEXTALIGN_MC, {.m_MaxWidth = Cell.w, .m_EllipsisAtEnd = true});
 		}
 	};
 
@@ -455,6 +501,8 @@ void CMenus::StatsWeaponMatrix(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 
 void CMenus::RenderStatsMatchList(CUIRect View)
 {
+	static constexpr float ROW_HEIGHT = 34.0f;
+	static constexpr size_t LABELS_PER_ROW = 4;
 	CUIRect Filters, List;
 	View.HSplitTop(26.0f, &Filters, &View);
 	View.HSplitTop(4.0f, nullptr, &List);
@@ -464,7 +512,7 @@ void CMenus::RenderStatsMatchList(CUIRect View)
 	Search.VSplitRight(140.0f, &Search, &Mode);
 	Search.VSplitRight(6.0f, &Search, nullptr);
 	StatsModeDropDown(Mode);
-	if(Ui()->DoEditBox_Search(&m_StatsHistorySearchInput, &Search, 12.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive()))
+	if(Ui()->DoEditBox_SearchCached(&m_StatsHistorySearchInput, &Search, 12.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), m_aStatsSearchUiElements.data(), &m_aStatsSearchUiElements[1]))
 	{
 		m_StatsSelectedIndex = -1;
 		RefreshStats();
@@ -485,14 +533,22 @@ void CMenus::RenderStatsMatchList(CUIRect View)
 	}
 
 	List.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.15f), IGraphics::CORNER_ALL, 5.0f);
+	// A row owns four labels and takes its slots from its own index, so a row
+	// keeps its cached text while scrolling without the pool having to hold a
+	// slot for every match ever recorded. The window is one row larger than
+	// what fits, because the first and the last row are usually cut off.
+	const size_t SlotRows = (size_t)(List.h / ROW_HEIGHT) + 2;
+	const size_t FirstSlot = m_StatsLabelUiElementIndex;
+	SkipStatsLabels(SlotRows * LABELS_PER_ROW);
 	static CListBox s_ListBox;
-	s_ListBox.DoStart(34.0f, m_vStatsHistory.size(), 1, 3, m_StatsSelectedIndex, &List, false, IGraphics::CORNER_ALL, true);
+	s_ListBox.DoStart(ROW_HEIGHT, m_vStatsHistory.size(), 1, 3, m_StatsSelectedIndex, &List, false, IGraphics::CORNER_ALL, true);
 	for(int Index = 0; Index < static_cast<int>(m_vStatsHistory.size()); ++Index)
 	{
 		const CMatchHistoryEntry &Entry = m_vStatsHistory[Index];
 		const CListboxItem Item = s_ListBox.DoNextItem(&Entry, Index == m_StatsSelectedIndex);
 		if(!Item.m_Visible)
 			continue;
+		SetStatsLabelSlot(FirstSlot + ((size_t)Index % SlotRows) * LABELS_PER_ROW);
 
 		// An accent stripe carries the result, so the list can be scanned for
 		// wins and losses without reading a single word.
@@ -514,7 +570,7 @@ void CMenus::RenderStatsMatchList(CUIRect View)
 		ShortModeName(Entry.m_ModeId, aMode, sizeof(aMode));
 		char aTitle[192];
 		str_format(aTitle, sizeof(aTitle), "%s  ·  %s", Entry.m_MapName.c_str(), aMode);
-		Ui()->DoLabel(&Title, aTitle, 12.5f, TEXTALIGN_ML, {.m_MaxWidth = Title.w, .m_EllipsisAtEnd = true});
+		StatsLabel(&Title, aTitle, 12.5f, TEXTALIGN_ML, {.m_MaxWidth = Title.w, .m_EllipsisAtEnd = true});
 
 		char aDate[64];
 		FormatMatchTimestamp(Entry.m_EndTimeUtc, aDate, sizeof(aDate));
@@ -526,18 +582,19 @@ void CMenus::RenderStatsMatchList(CUIRect View)
 		DetailProperties.m_MaxWidth = Detail.w;
 		DetailProperties.m_EllipsisAtEnd = true;
 		DetailProperties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f));
-		Ui()->DoLabel(&Detail, aDetail, 9.5f, TEXTALIGN_ML, DetailProperties);
+		StatsLabel(&Detail, aDetail, 9.5f, TEXTALIGN_ML, DetailProperties);
 
 		char aScore[32] = "-";
 		if(Entry.m_LocalScore.has_value())
 			str_format(aScore, sizeof(aScore), "%" PRId64, *Entry.m_LocalScore);
-		Ui()->DoLabel(&Score, aScore, 16.0f, TEXTALIGN_MC);
+		StatsLabel(&Score, aScore, 16.0f, TEXTALIGN_MC, {});
 		SLabelProperties ResultProperties;
 		ResultProperties.m_MaxWidth = Result.w;
 		ResultProperties.m_EllipsisAtEnd = true;
 		ResultProperties.SetColor(OutcomeColor(Entry.m_LocalOutcome));
-		Ui()->DoLabel(&Result, OutcomeName(Entry.m_LocalOutcome), 12.0f, TEXTALIGN_MC, ResultProperties);
+		StatsLabel(&Result, OutcomeName(Entry.m_LocalOutcome), 12.0f, TEXTALIGN_MC, ResultProperties);
 	}
+	SetStatsLabelSlot(FirstSlot + SlotRows * LABELS_PER_ROW);
 	const int NewSelectedIndex = s_ListBox.DoEnd();
 	if(NewSelectedIndex != m_StatsSelectedIndex)
 	{
@@ -551,7 +608,7 @@ void CMenus::RenderStatsMatchList(CUIRect View)
 		CUIRect EmptyHint;
 		List.HMargin(List.h / 2.0f - 10.0f, &EmptyHint);
 		const bool Filtered = m_StatsHistorySearchInput.GetString()[0] != '\0' || m_StatsQualityFilter != EStatsQualityFilter::ALL;
-		Ui()->DoLabel(&EmptyHint, Filtered ? Localize("No match matches the current filter") : Localize("No matches have been recorded yet"), 14.0f, TEXTALIGN_MC);
+		StatsLabel(&EmptyHint, Filtered ? Localize("No match matches the current filter") : Localize("No matches have been recorded yet"), 14.0f, TEXTALIGN_MC, {});
 	}
 }
 
@@ -566,7 +623,7 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 		CUIRect Hint;
 		View.HSplitTop(40.0f, &Hint, &View);
 		if(s_ScrollRegion.AddRect(Hint))
-			Ui()->DoLabel(&Hint, Localize("Select a match in the list to see its report"), 14.0f, TEXTALIGN_MC);
+			StatsLabel(&Hint, Localize("Select a match in the list to see its report"), 14.0f, TEXTALIGN_MC, {});
 		s_ScrollRegion.End();
 		return;
 	}
@@ -593,7 +650,7 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 		Banner.HSplitTop(28.0f, &Outcome, &Subtitle);
 		SLabelProperties OutcomeProperties;
 		OutcomeProperties.SetColor(OutcomeColor(LocalOutcome));
-		Ui()->DoLabel(&Outcome, LocalOutcome.has_value() ? MatchOutcomeDisplayName(*LocalOutcome) : Localize("Match report"), 24.0f, TEXTALIGN_MC, OutcomeProperties);
+		StatsLabel(&Outcome, LocalOutcome.has_value() ? MatchOutcomeDisplayName(*LocalOutcome) : Localize("Match report"), 24.0f, TEXTALIGN_MC, OutcomeProperties);
 		char aDate[64];
 		FormatMatchTimestamp(Report.m_EndTimeUtc, aDate, sizeof(aDate));
 		char aDuration[64];
@@ -606,7 +663,7 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 		SubtitleProperties.m_MaxWidth = Subtitle.w;
 		SubtitleProperties.m_EllipsisAtEnd = true;
 		SubtitleProperties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.6f));
-		Ui()->DoLabel(&Subtitle, aSubtitle, 11.0f, TEXTALIGN_MC, SubtitleProperties);
+		StatsLabel(&Subtitle, aSubtitle, 11.0f, TEXTALIGN_MC, SubtitleProperties);
 	}
 
 	// Kept between frames, because this page is redrawn like any other and the
@@ -652,7 +709,10 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 		CUIRect Row;
 		View.HSplitTop(20.0f, &Row, &View);
 		if(!s_ScrollRegion.AddRect(Row))
+		{
+			SkipStatsLabels(5);
 			return;
+		}
 		if(Header)
 			Row.Draw(COLOR_TABLE_HEADER, IGraphics::CORNER_T, 4.0f);
 		else if(Local)
@@ -673,7 +733,7 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 			CellProperties.m_EllipsisAtEnd = true;
 			if(Header)
 				CellProperties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.6f));
-			Ui()->DoLabel(&Cell, apValues[Column], Header ? 10.0f : 12.0f, Column == 0 || Column >= 3 ? TEXTALIGN_MC : TEXTALIGN_ML, CellProperties);
+			StatsLabel(&Cell, apValues[Column], Header ? 10.0f : 12.0f, Column == 0 || Column >= 3 ? TEXTALIGN_MC : TEXTALIGN_ML, CellProperties);
 		}
 	};
 	// A row that names a team and carries the team's own rank, score and
@@ -866,7 +926,7 @@ void CMenus::RenderStatsMatchSummary(CUIRect View)
 		FooterProperties.m_MaxWidth = Footer.w;
 		FooterProperties.m_EllipsisAtEnd = true;
 		FooterProperties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.45f));
-		Ui()->DoLabel(&Footer, aFooter, 10.0f, TEXTALIGN_ML, FooterProperties);
+		StatsLabel(&Footer, aFooter, 10.0f, TEXTALIGN_ML, FooterProperties);
 	}
 	s_ScrollRegion.End();
 }
@@ -888,7 +948,10 @@ void CMenus::StatsPeriodHeader(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 	CUIRect Row;
 	pContent->HSplitTop(18.0f, &Row, pContent);
 	if(!pScrollRegion->AddRect(Row))
+	{
+		SkipStatsLabels(1 + (size_t)EStatsPeriod::COUNT);
 		return;
+	}
 	Row.Draw(COLOR_TABLE_HEADER, IGraphics::CORNER_T, 4.0f);
 	SLabelProperties Properties;
 	Properties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.6f));
@@ -897,14 +960,14 @@ void CMenus::StatsPeriodHeader(CScrollRegion *pScrollRegion, CUIRect *pContent, 
 	Cell.VMargin(6.0f, &Cell);
 	Properties.m_MaxWidth = Cell.w;
 	Properties.m_EllipsisAtEnd = true;
-	Ui()->DoLabel(&Cell, pLabel, 10.0f, TEXTALIGN_ML, Properties);
+	StatsLabel(&Cell, pLabel, 10.0f, TEXTALIGN_ML, Properties);
 	const float ColumnWidth = Row.w / (int)EStatsPeriod::COUNT;
 	for(int Period = 0; Period < (int)EStatsPeriod::COUNT; ++Period)
 	{
 		Row.VSplitLeft(ColumnWidth, &Cell, &Row);
 		Cell.VMargin(6.0f, &Cell);
 		Properties.m_MaxWidth = Cell.w;
-		Ui()->DoLabel(&Cell, StatsPeriodName((EStatsPeriod)Period), 10.0f, TEXTALIGN_MR, Properties);
+		StatsLabel(&Cell, StatsPeriodName((EStatsPeriod)Period), 10.0f, TEXTALIGN_MR, Properties);
 	}
 }
 
@@ -913,7 +976,10 @@ void CMenus::StatsPeriodRow(CScrollRegion *pScrollRegion, CUIRect *pContent, con
 	CUIRect Row;
 	pContent->HSplitTop(18.0f, &Row, pContent);
 	if(!pScrollRegion->AddRect(Row))
+	{
+		SkipStatsLabels(1 + (size_t)EStatsPeriod::COUNT);
 		return;
+	}
 	CUIRect Cell;
 	Row.VSplitLeft(STATS_LABEL_WIDTH, &Cell, &Row);
 	Cell.VMargin(6.0f, &Cell);
@@ -921,7 +987,7 @@ void CMenus::StatsPeriodRow(CScrollRegion *pScrollRegion, CUIRect *pContent, con
 	LabelProperties.m_MaxWidth = Cell.w;
 	LabelProperties.m_EllipsisAtEnd = true;
 	LabelProperties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.65f));
-	Ui()->DoLabel(&Cell, pLabel, 11.5f, TEXTALIGN_ML, LabelProperties);
+	StatsLabel(&Cell, pLabel, 11.5f, TEXTALIGN_ML, LabelProperties);
 	const float ColumnWidth = Row.w / (int)EStatsPeriod::COUNT;
 	for(int Period = 0; Period < (int)EStatsPeriod::COUNT; ++Period)
 	{
@@ -934,7 +1000,7 @@ void CMenus::StatsPeriodRow(CScrollRegion *pScrollRegion, CUIRect *pContent, con
 		ValueProperties.m_EllipsisAtEnd = true;
 		if(Period != (int)EStatsPeriod::ALL_TIME)
 			ValueProperties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.7f));
-		Ui()->DoLabel(&Cell, ppValues[Period], 11.5f, TEXTALIGN_MR, ValueProperties);
+		StatsLabel(&Cell, ppValues[Period], 11.5f, TEXTALIGN_MR, ValueProperties);
 	}
 }
 
@@ -946,6 +1012,7 @@ void CMenus::RenderStatsProfile(CUIRect View)
 	CUIRect ModeDropDown, ScaleButtons;
 	FilterLine.VSplitLeft(180.0f, &ModeDropDown, &ScaleButtons);
 	StatsModeDropDown(ModeDropDown);
+
 	// The same numbers read completely differently depending on how many matches
 	// went into them, so they can be divided by matches or by time played.
 	static CButtonContainer s_TotalButton;
@@ -1122,6 +1189,10 @@ void CMenus::RenderStats(CUIRect MainView)
 	GameClient()->m_MenuBackground.ChangePosition(CMenuBackground::POS_DEMOS);
 	if(!m_StatsInitialized)
 		RefreshStats();
+	// The page hands out its cached label slots in draw order, so the counter
+	// starts over here and every label of this frame keeps the slot it had in
+	// the last one.
+	m_StatsLabelUiElementIndex = 0;
 
 	MainView.Draw(ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.Margin(10.0f, &MainView);
@@ -1140,7 +1211,7 @@ void CMenus::RenderStats(CUIRect MainView)
 		if(DoButton_Menu(&s_BackButton, Localize("Back"), 0, &Tab) || Ui()->ConsumeHotkey(CUi::HOTKEY_ESCAPE))
 			m_StatsShowMatch = false;
 		if(m_StatsSelectedMatch.has_value())
-			Ui()->DoLabel(&Tabs, m_StatsSelectedMatch->m_Report.m_MapName.c_str(), 14.0f, TEXTALIGN_MR);
+			StatsLabel(&Tabs, m_StatsSelectedMatch->m_Report.m_MapName.c_str(), 14.0f, TEXTALIGN_MR, {});
 		RenderStatsMatchSummary(Content);
 	}
 	else
@@ -1155,7 +1226,7 @@ void CMenus::RenderStats(CUIRect MainView)
 			m_StatsTab = EStatsTab::PROFILE;
 		SLabelProperties HintProperties;
 		HintProperties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f));
-		Ui()->DoLabel(&Tabs, Localize("Stored only on this device"), 10.0f, TEXTALIGN_MR, HintProperties);
+		StatsLabel(&Tabs, Localize("Stored only on this device"), 10.0f, TEXTALIGN_MR, HintProperties);
 		if(m_StatsTab == EStatsTab::MATCHES)
 			RenderStatsMatchList(Content);
 		else
@@ -1216,5 +1287,5 @@ void CMenus::RenderStats(CUIRect MainView)
 	StatusProperties.m_MaxWidth = Status.w;
 	StatusProperties.m_EllipsisAtEnd = true;
 	StatusProperties.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f));
-	Ui()->DoLabel(&Status, aStatus, 10.0f, TEXTALIGN_ML, StatusProperties);
+	StatsLabel(&Status, aStatus, 10.0f, TEXTALIGN_ML, StatusProperties);
 }

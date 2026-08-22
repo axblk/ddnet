@@ -8,6 +8,7 @@
 
 #include <game/editor/editor_trackers.h>
 #include <game/editor/enums.h>
+#include <game/map/tile_chunk_cache.h>
 
 #include <map>
 #include <vector>
@@ -169,7 +170,6 @@ public:
 	void ModifyEnvelopeIndex(const FIndexModifyFunction &IndexModifyFunction) override;
 
 	void PrepareForSave();
-	void ExtractTiles(const CTile *pSavedTiles, size_t SavedTilesSize);
 
 	void GetSize(float *pWidth, float *pHeight) override
 	{
@@ -178,7 +178,8 @@ public:
 	}
 
 	void FlagModified(int x, int y, int w, int h);
-	void InvalidateTileRenderCache(int x = 0, int y = 0, int w = -1, int h = -1);
+	void InvalidateTileRenderCache() { m_TileChunkCache.Invalidate(); }
+	void InvalidateTileRenderArea(int x, int y, int w, int h) { m_TileChunkCache.InvalidateArea(x, y, w, h); }
 
 	bool m_HasGame;
 	int m_Image;
@@ -212,29 +213,8 @@ public:
 	static bool HasAutomapEffect(ETilesProp Prop);
 
 protected:
-	static constexpr int TILE_RENDER_CHUNK_SIZE = 64;
-	struct STileRenderChunk
-	{
-		IGraphics::CBufferHandle m_BufferObject;
-		IGraphics::CBufferContainerHandle m_BufferContainer;
-		unsigned int m_OpaqueTiles = 0;
-		unsigned int m_TransparentTiles = 0;
-		int m_Width = 0;
-		int m_Height = 0;
-		std::vector<unsigned int> m_vOpaqueTileOffsets;
-		std::vector<unsigned int> m_vTransparentTileOffsets;
-		bool m_Dirty = true;
-	};
-
-	void ClearTileRenderCache();
-	void EnsureTileRenderCache(bool Textured);
-	bool RebuildTileRenderChunk(int ChunkX, int ChunkY, bool Textured);
-	void RenderTileChunks(const ColorRGBA &Color, bool Textured, bool TransparentPass, bool ForceTransparent);
-
-	std::vector<STileRenderChunk> m_vTileRenderChunks;
-	int m_TileRenderChunkColumns = 0;
-	int m_TileRenderChunkRows = 0;
-	bool m_TileRenderChunksTextured = false;
+	// Shared with the ingame tile rendering, see src/game/map/tile_chunk_cache.h
+	CTileChunkCache m_TileChunkCache;
 
 	void RecordStateChange(int x, int y, CTile Previous, CTile Tile);
 

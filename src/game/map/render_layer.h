@@ -14,6 +14,7 @@ using offset_ptr32 = unsigned int;
 #include <game/map/envelope_manager.h>
 #include <game/map/render_component.h>
 #include <game/map/render_map.h>
+#include <game/map/tile_chunk_cache.h>
 #include <game/mapitems.h>
 #include <game/mapitems_ex.h>
 
@@ -153,6 +154,13 @@ protected:
 	IGraphics::CTextureHandle GetTexture() const override;
 	bool HasTexture() const override;
 	CTile *m_pTiles;
+	/**
+	 * One drawable tile set of a layer: the tiles themselves and, for the map
+	 * edges, the border tiles that repeat them outwards.
+	 *
+	 * The tiles are built lazily per chunk while rendering, the border tiles
+	 * are one row or column each and are uploaded up front.
+	 */
 	class CTileLayerVisuals : public CRenderComponent
 	{
 	public:
@@ -161,6 +169,8 @@ protected:
 			m_Width = 0;
 			m_Height = 0;
 			m_IsTextured = false;
+			m_CurOverlay = 0;
+			m_FillSpeedup = false;
 		}
 
 		bool Init(unsigned int Width, unsigned int Height);
@@ -202,8 +212,6 @@ protected:
 			}
 		};
 
-		std::vector<CTileVisual> m_vTilesOfLayer;
-
 		CTileVisual m_BorderTopLeft;
 		CTileVisual m_BorderTopRight;
 		CTileVisual m_BorderBottomRight;
@@ -218,9 +226,14 @@ protected:
 
 		unsigned int m_Width;
 		unsigned int m_Height;
+		// Border tiles only, the layer itself lives in the chunk cache
 		IGraphics::CBufferHandle m_BufferObjectIndex;
 		IGraphics::CBufferContainerHandle m_BufferContainerIndex;
+		CTileChunkCache m_ChunkCache;
 		bool m_IsTextured;
+		// Which set of tile data `GetTileData` hands out for this visual
+		int m_CurOverlay;
+		bool m_FillSpeedup;
 	};
 
 	void UploadTileData(std::optional<CTileLayerVisuals> &VisualsOptional, int CurOverlay, bool AddAsSpeedup, bool IsGameLayer = false);

@@ -288,6 +288,18 @@ public:
 		RELIABLE,
 	};
 
+	/**
+	 * Where a command buffer sits in the order of submissions.
+	 *
+	 * Only `m_SubmissionSerial` is read outside of tests, and only as "this
+	 * buffer has not been assigned yet". The frame and resource serials record
+	 * that a frame packet must not be executed before the uploads it depends on:
+	 * a reliable buffer carrying resource commands raises the resource serial,
+	 * and every frame packet remembers the serial it needs. The backend does not
+	 * consume that yet, it is the hook for dropping or reordering frames without
+	 * losing their uploads, and the unit tests pin the ordering down so it stays
+	 * correct until then.
+	 */
 	struct SSubmissionInfo
 	{
 		ECommandChannel m_Channel = ECommandChannel::RELIABLE;

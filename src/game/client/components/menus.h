@@ -579,6 +579,14 @@ protected:
 	CMatchProfile m_aStatsProfiles[(int)EStatsPeriod::COUNT];
 	CMatchJournalInfo m_StatsInfo;
 	std::string m_StatsError;
+	// Cached text geometry of the page: one pooled slot per label, handed out
+	// in draw order, plus the icon and text of the two search boxes
+	std::vector<CUIElement *> m_vpStatsLabelUiElements;
+	size_t m_StatsLabelUiElementIndex = 0;
+	std::array<CUIElement, 4> m_aStatsSearchUiElements;
+	void StatsLabel(const CUIRect *pRect, const char *pText, float Size, int Align, const SLabelProperties &LabelProps);
+	void SkipStatsLabels(size_t Count);
+	void SetStatsLabelSlot(size_t Slot);
 	void RefreshStats();
 	void LoadSelectedStatsMatch();
 	void RenderStats(CUIRect MainView);

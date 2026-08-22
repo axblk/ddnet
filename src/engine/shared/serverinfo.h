@@ -44,6 +44,18 @@ public:
 	char m_aMapName[MAX_MAP_LENGTH];
 	char m_aVersion[32];
 	bool m_RequiresLogin;
+	SHA256_DIGEST m_QuicCertificateSha256;
+	SHA256_DIGEST m_QuicNextCertificateSha256;
+	SHA256_DIGEST m_QuicIdentityFingerprint;
+	int m_QuicPort;
+	int m_QuicCapabilities;
+	bool m_QuicSharedPort;
+	bool m_HasQuicNextCertificateSha256;
+	bool m_HasQuicIdentityFingerprint;
+	bool m_WebTransport;
+	CServerInfo::EWebTransportCertificateMode m_WebTransportCertificateMode;
+	char m_aWebTransportPath[16];
+	char m_aWebTransportUrl[256];
 
 	bool operator==(const CServerInfo2 &Other) const;
 	bool operator!=(const CServerInfo2 &Other) const { return !(*this == Other); }
@@ -55,5 +67,11 @@ public:
 };
 
 bool ParseCrc(unsigned int *pResult, const char *pString);
+bool FormatWebTransportUrl(char *pBuffer, int BufferSize, const char *pHostname, int Port);
+bool ValidateWebTransportUrl(const char *pUrl, int Port);
+bool ParseQuicDirectLinkFingerprint(const char *pUrl, SHA256_DIGEST *pFingerprint);
+void FormatQuicServerInfoExtra(char *pBuffer, int BufferSize, SHA256_DIGEST IdentityFingerprint);
+bool ParseQuicServerInfoExtra(CServerInfo *pInfo, const char *pExtraInfo, int Port);
+void PreserveWebTransportMetadata(CServerInfo *pInfo, const CServerInfo &PreviousInfo);
 
 #endif // ENGINE_SHARED_SERVERINFO_H

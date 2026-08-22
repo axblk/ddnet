@@ -686,12 +686,18 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 		// TODO: empty the recvinfo
 		NETADDR Addr;
 		unsigned char *pData;
-		int Bytes = m_Endpoint.Recv(&Addr, &pData, NetBan());
+		bool Filtered;
+		int Bytes = m_Endpoint.Recv(&Addr, &pData, &Filtered, NetBan());
 
 		// no more packets for now
 		if(Bytes <= 0)
 			break;
 		m_NumRecvPackets++;
+
+		// Handled by the transport sharing this socket, but it arrived here and cost
+		// something to look at, so it spends budget like every other datagram.
+		if(Filtered)
+			continue;
 
 		// check if we just should drop the packet
 		char aBuf[128];

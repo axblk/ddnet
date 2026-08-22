@@ -2117,8 +2117,11 @@ void CClient::ProcessServerInfo(int RawType, NETADDR *pFrom, const void *pData, 
 			Info.m_QuicPort = 0;
 			Info.m_QuicCapabilities = 0;
 			Info.m_QuicSharedPort = false;
+			Info.m_RawQuic = false;
 			Info.m_HasQuicNextCertificateSha256 = false;
 			Info.m_HasQuicIdentityFingerprint = false;
+			Info.m_QuicTrust = EModernTransportTrust::INVALID;
+			Info.m_aModernHostname[0] = '\0';
 			Info.m_WebTransport = false;
 			Info.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::NONE;
 			Info.m_aWebTransportPath[0] = '\0';

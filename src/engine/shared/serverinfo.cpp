@@ -294,9 +294,13 @@ bool ParseQuicServerInfoExtra(CServerInfo *pInfo, const char *pExtraInfo, int Po
 		{
 			pInfo->m_QuicIdentityFingerprint = Fingerprint;
 			pInfo->m_HasQuicIdentityFingerprint = true;
+			pInfo->m_QuicTrust = EModernTransportTrust::IDENTITY;
 		}
 		else
+		{
 			pInfo->m_QuicCertificateSha256 = Fingerprint;
+			pInfo->m_QuicTrust = EModernTransportTrust::CERTIFICATE_HASH;
+		}
 	}
 	pInfo->m_RawQuic = RawQuic;
 	pInfo->m_QuicPort = Port;

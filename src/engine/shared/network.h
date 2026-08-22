@@ -42,7 +42,10 @@ public:
 		return net_udp_send(m_Socket, pAddr, pData, DataSize);
 	}
 
-	int Recv(NETADDR *pAddr, unsigned char **ppData, const CNetBan *pNetBan = nullptr) const;
+	// Receives one datagram. `*pFiltered` says that another transport sharing this
+	// socket has taken it, so the caller must not process it, but must still count
+	// it against whatever per-batch budget it keeps.
+	int Recv(NETADDR *pAddr, unsigned char **ppData, bool *pFiltered, const CNetBan *pNetBan = nullptr) const;
 
 	void SetLegacyPeer(const NETADDR *pAddr, bool Known) const
 	{
@@ -524,10 +527,14 @@ class CNetServer
 
 	int TryAcceptClient(NETADDR &Addr, SECURITY_TOKEN SecurityToken, bool VanillaAuth = false, bool Sixup = false, SECURITY_TOKEN Token = 0);
 	int NumClientsWithAddr(NETADDR Addr);
-	bool Connlimit(NETADDR Addr);
 	void SendMsgs(NETADDR &Addr, const CPacker **ppMsgs, int Num);
 
 public:
+	// Counts one connection attempt from this address and says whether it exceeds
+	// sv_connlimit. Transports that accept clients outside this class have to ask
+	// for themselves, so they are covered by the same limit.
+	bool Connlimit(NETADDR Addr);
+
 	int SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_DELCLIENT pfnDelClient, void *pUser);
 	int SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_NEWCLIENT_NOAUTH pfnNewClientNoAuth, NETFUNC_CLIENTREJOIN pfnClientRejoin, NETFUNC_DELCLIENT pfnDelClient, void *pUser);
 

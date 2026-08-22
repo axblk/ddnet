@@ -472,7 +472,7 @@ MACRO_CONFIG_STR(SvTlsCertNext, sv_tls_cert_next, IO_MAX_PATH_LENGTH, "", CFGFLA
 MACRO_CONFIG_STR(SvTlsKey, sv_tls_key, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, "PEM or PKCS#8 DER private key for sv_tls_cert (restart required)")
 MACRO_CONFIG_INT(SvPort, sv_port, 0, 0, 65535, CFGFLAG_SERVER, "Port to use for the server (Only ports 8303-8310 work in LAN server browser, 0 to automatically find a free port in 8303-8310). See sv_register_port for the external port if you're behind NAT")
 MACRO_CONFIG_INT(SvLegacyUdp, sv_legacy_udp, 1, 0, 1, CFGFLAG_SERVER, "Accept connected legacy UDP clients and advertise legacy UDP addresses (restart required)")
-MACRO_CONFIG_INT(SvQuic, sv_quic, 0, 0, 1, CFGFLAG_SERVER, "Enable native QUIC on the server UDP port (restart required)")
+MACRO_CONFIG_INT(SvQuic, sv_quic, 1, 0, 1, CFGFLAG_SERVER, "Enable native QUIC on the server UDP port (restart required)")
 MACRO_CONFIG_STR(SvQuicCert, sv_quic_cert, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER, "Legacy alias for the QUIC and WebTransport certificate (restart required)")
 MACRO_CONFIG_STR(SvQuicCertNext, sv_quic_cert_next, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER, "Legacy alias for the next QUIC and WebTransport certificate (restart required)")
 MACRO_CONFIG_STR(SvQuicKey, sv_quic_key, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, "Legacy alias for the QUIC and WebTransport private key (restart required)")

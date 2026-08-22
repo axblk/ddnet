@@ -3302,6 +3302,14 @@ void CServer::PumpQuicNetwork()
 				m_QuicTransport.Close(Event.m_Message.m_Session, "Invalid or expired resume token");
 				continue;
 			}
+			// Taking a fresh slot is what the legacy accept path rate limits, so it is
+			// rate limited here too. A resume reattaches a slot the address already
+			// holds and is left out for the same reason.
+			if(ResumeClientId < 0 && m_NetServer.Connlimit(Event.m_Message.m_PeerAddress))
+			{
+				m_QuicTransport.Close(Event.m_Message.m_Session, "Too many connections in a short time");
+				continue;
+			}
 			int SameIp = 0;
 			int ClientId = ResumeClientId;
 			for(int i = 0; i < MaxClients(); i++)
@@ -3784,19 +3792,19 @@ int CServer::Run()
 
 	int Port = Config()->m_SvPort;
 	BindAddr.port = Port != 0 ? Port : 8303;
-	// These settings exist in every build, but only a build with the transport
-	// compiled in can act on them. Saying so beats looking enabled and doing
-	// nothing.
+	// Both transports are on where the build can carry them. The settings exist
+	// in every build, so a build without them says once that it is going
+	// without, which is a fact about the build and not a misconfiguration.
 	bool QuicEnabled = Config()->m_SvQuic != 0;
 	bool WebTransportEnabled = Config()->m_SvWebtransport != 0;
 	if(QuicEnabled && !CQuicTransport::IsCompiled())
 	{
-		log_error("server", "sv_quic needs a build with QUIC=ON, continuing without QUIC");
+		log_info("server", "this build has no QUIC, continuing without it");
 		QuicEnabled = false;
 	}
 	if(WebTransportEnabled && !CQuicTransport::IsWebTransportServerCompiled())
 	{
-		log_error("server", "sv_webtransport needs a build with QUIC=ON, continuing without WebTransport");
+		log_info("server", "this build has no WebTransport, continuing without it");
 		WebTransportEnabled = false;
 	}
 	const bool ModernTransportEnabled = QuicEnabled || WebTransportEnabled;

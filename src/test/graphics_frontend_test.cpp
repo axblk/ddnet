@@ -43,7 +43,6 @@ protected:
 
 		m_pKernel = std::unique_ptr<IKernel>(IKernel::Create());
 		m_pKernel->RegisterInterface(CreateTestEngine("graphics-test"));
-		m_TestInfo.m_DeleteTestStorageFilesOnSuccess = true;
 		m_pStorage = m_TestInfo.CreateTestStorage();
 		ASSERT_NE(m_pStorage, nullptr);
 		m_pKernel->RegisterInterface(m_pStorage.get(), false);

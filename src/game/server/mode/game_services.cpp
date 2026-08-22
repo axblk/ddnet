@@ -67,6 +67,11 @@ void CGameServices::SendGameMessage7(int GameMessageId, std::initializer_list<in
 	m_pGameServer->SendGameMessage7(GameMessageId, Parameters, Target);
 }
 
+void CGameServices::SendLegacyChatGlobal(const char *pText) const
+{
+	m_pGameServer->SendChatTarget(-1, pText, CGameContext::FLAG_SIX);
+}
+
 void CGameServices::SendWeaponPickup(int ClientId, int Weapon) const
 {
 	m_pGameServer->SendWeaponPickup(ClientId, Weapon);

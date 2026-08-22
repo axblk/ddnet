@@ -43,6 +43,7 @@ public:
 	void CreateSound(vec2 Position, int Sound, CClientMask Mask = CClientMask().set());
 	void CreateLegacySoundGlobal(int Sound, int Target = -1) const;
 	void SendGameMessage7(int GameMessageId, std::initializer_list<int> Parameters = {}, int Target = -1) const;
+	void SendLegacyChatGlobal(const char *pText) const;
 	void SendWeaponPickup(int ClientId, int Weapon) const;
 };
 

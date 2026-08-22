@@ -587,7 +587,7 @@ void CGameWorld::NetObjAdd(int ObjId, int ObjType, const void *pObjData, const C
 			CDragger NetDragger = CDragger(this, ObjId, &Data);
 			if(NetDragger.GetStrength() > 0)
 			{
-				auto *pDragger = dynamic_cast<CDragger *>(GetEntity(ObjId, ENTTYPE_DRAGGER));
+				auto *pDragger = dynamic_cast<CDragger *>(GetEntity(ObjId, ENTTYPE_LASER));
 				if(pDragger && NetDragger.Match(pDragger))
 				{
 					pDragger->Keep();
@@ -601,7 +601,7 @@ void CGameWorld::NetObjAdd(int ObjId, int ObjType, const void *pObjData, const C
 		else if(Data.m_Type == LASERTYPE_DOOR)
 		{
 			CDoor NetDoor = CDoor(this, ObjId, &Data);
-			auto *pDoor = dynamic_cast<CDoor *>(GetEntity(ObjId, ENTTYPE_DOOR));
+			auto *pDoor = dynamic_cast<CDoor *>(GetEntity(ObjId, ENTTYPE_LASER));
 			if(pDoor && NetDoor.Match(pDoor))
 			{
 				pDoor->Keep();
@@ -614,7 +614,7 @@ void CGameWorld::NetObjAdd(int ObjId, int ObjType, const void *pObjData, const C
 		else if(Data.m_Type == LASERTYPE_PLASMA)
 		{
 			CPlasma NetPlasma = CPlasma(this, ObjId, &Data);
-			auto *pPlasma = dynamic_cast<CPlasma *>(GetEntity(ObjId, ENTTYPE_PLASMA));
+			auto *pPlasma = dynamic_cast<CPlasma *>(GetEntity(ObjId, ENTTYPE_LASER));
 			if(pPlasma && NetPlasma.Match(pPlasma))
 			{
 				pPlasma->Keep();
@@ -637,8 +637,10 @@ void CGameWorld::ResetDoorCollision()
 	// share a map index; the server creates the game/front-layer door before the switch-layer
 	// one, so the switch door (m_Number > 0) stamps the shared origin tile last and wins.
 	std::vector<CDoor *> vpDoors;
-	for(CEntity *pEnt = FindFirst(ENTTYPE_DOOR); pEnt; pEnt = pEnt->TypeNext())
-		vpDoors.push_back(static_cast<CDoor *>(pEnt));
+	// Doors share the laser bucket, so the class is what says which entity is one.
+	for(CEntity *pEnt = FindFirst(ENTTYPE_LASER); pEnt; pEnt = pEnt->TypeNext())
+		if(CDoor *pDoor = dynamic_cast<CDoor *>(pEnt))
+			vpDoors.push_back(pDoor);
 	std::stable_sort(vpDoors.begin(), vpDoors.end(), [this](const CDoor *pLeft, const CDoor *pRight) {
 		const int LeftIndex = Collision()->GetPureMapIndex(pLeft->m_Pos);
 		const int RightIndex = Collision()->GetPureMapIndex(pRight->m_Pos);
@@ -721,16 +723,29 @@ void CGameWorld::CopyWorld(CGameWorld *pFrom)
 			CEntity *pCopy = nullptr;
 			if(Type == ENTTYPE_PROJECTILE)
 				pCopy = new CProjectile(*((CProjectile *)pEnt));
-			else if(Type == ENTTYPE_LASER)
-				pCopy = new CLaser(*((CLaser *)pEnt));
-			else if(Type == ENTTYPE_DRAGGER)
-				pCopy = new CDragger(*((CDragger *)pEnt));
 			else if(Type == ENTTYPE_CHARACTER)
 				pCopy = new CCharacter(*((CCharacter *)pEnt));
 			else if(Type == ENTTYPE_PICKUP)
 				pCopy = new CPickup(*((CPickup *)pEnt));
-			else if(Type == ENTTYPE_PLASMA)
-				pCopy = new CPlasma(*((CPlasma *)pEnt));
+			else if(Type == ENTTYPE_LASER)
+			{
+				// One bucket, four classes: the class says which one to copy,
+				// the bucket no longer can.
+				//
+				// A door is deliberately not among them. Every world shares one
+				// CCollision, and a door writes its stop tiles into it and
+				// clears them again when it is destroyed, so a copy would clear
+				// what the original is still standing on. Doors were never
+				// copied before either - the bucket they sat in was simply left
+				// out of this loop - and settling who owns those tiles belongs
+				// with building doors from the map instead of from a snapshot.
+				if(auto *pLaser = dynamic_cast<CLaser *>(pEnt))
+					pCopy = new CLaser(*pLaser);
+				else if(auto *pDragger = dynamic_cast<CDragger *>(pEnt))
+					pCopy = new CDragger(*pDragger);
+				else if(auto *pPlasma = dynamic_cast<CPlasma *>(pEnt))
+					pCopy = new CPlasma(*pPlasma);
+			}
 			if(pCopy)
 			{
 				pCopy->m_pParent = pEnt;
@@ -775,7 +790,7 @@ const CEntity *CGameWorld::FindMatch(int ObjId, int ObjType, const void *pObjDat
 		CLaserData Data = ExtractLaserInfo(ObjType, pObjData, this, nullptr);
 		if(Data.m_Type == LASERTYPE_RIFLE || Data.m_Type == LASERTYPE_SHOTGUN)
 		{
-			const auto *pEnt = static_cast<const CLaser *>(GetEntity(ObjId, ENTTYPE_LASER));
+			const auto *pEnt = dynamic_cast<const CLaser *>(GetEntity(ObjId, ENTTYPE_LASER));
 			if(pEnt && CLaser(pMutableWorld, ObjId, &Data).Match(pEnt))
 			{
 				return pEnt;
@@ -783,7 +798,7 @@ const CEntity *CGameWorld::FindMatch(int ObjId, int ObjType, const void *pObjDat
 		}
 		else if(Data.m_Type == LASERTYPE_DRAGGER)
 		{
-			const auto *pEnt = static_cast<const CDragger *>(GetEntity(ObjId, ENTTYPE_DRAGGER));
+			const auto *pEnt = dynamic_cast<const CDragger *>(GetEntity(ObjId, ENTTYPE_LASER));
 			if(pEnt && CDragger(pMutableWorld, ObjId, &Data).Match(pEnt))
 			{
 				return pEnt;
@@ -791,7 +806,7 @@ const CEntity *CGameWorld::FindMatch(int ObjId, int ObjType, const void *pObjDat
 		}
 		else if(Data.m_Type == LASERTYPE_DOOR)
 		{
-			const auto *pEnt = static_cast<const CDoor *>(GetEntity(ObjId, ENTTYPE_DOOR));
+			const auto *pEnt = dynamic_cast<const CDoor *>(GetEntity(ObjId, ENTTYPE_LASER));
 			if(pEnt && CDoor(pMutableWorld, ObjId, &Data).Match(pEnt))
 			{
 				return pEnt;
@@ -799,7 +814,7 @@ const CEntity *CGameWorld::FindMatch(int ObjId, int ObjType, const void *pObjDat
 		}
 		else if(Data.m_Type == LASERTYPE_PLASMA)
 		{
-			const auto *pEnt = static_cast<const CPlasma *>(GetEntity(ObjId, ENTTYPE_PLASMA));
+			const auto *pEnt = dynamic_cast<const CPlasma *>(GetEntity(ObjId, ENTTYPE_LASER));
 			if(pEnt && CPlasma(pMutableWorld, ObjId, &Data).Match(pEnt))
 			{
 				return pEnt;

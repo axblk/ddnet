@@ -1754,6 +1754,8 @@ set(EXPECTED_DATA
   menuimages/local_server.png
   menuimages/play_game.png
   menuimages/settings.png
+  parity/known_divergences.txt
+  parity/scenarios.txt
   particles.png
   race_flag.png
   shader/blur.frag
@@ -3905,6 +3907,33 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   list(APPEND TARGETS_OWN ${TARGET_VANILLA_GOLDEN})
   list(APPEND TARGETS_LINK ${TARGET_VANILLA_GOLDEN})
 
+  # The predicted half of the parity harness. It links what
+  # client-game-state-tests links, because that is exactly the set of files the
+  # prediction needs and nothing more - no CGameClient anywhere in it.
+  # Everything the test target builds except its three test files, so the two
+  # cannot drift apart as the prediction grows files.
+  set(PARITY_CLIENT_SOURCES ${CLIENT_GAME_STATE_TEST_SOURCES})
+  list(REMOVE_ITEM PARITY_CLIENT_SOURCES
+    src/headless/client_game_state_test_main.cpp
+    src/test/game_state_test.cpp
+    src/test/match_collector_test.cpp
+  )
+  set(TARGET_PARITY_CLIENT parity-client)
+  add_executable(${TARGET_PARITY_CLIENT} EXCLUDE_FROM_ALL
+    scripts/parity/client_runner.cpp
+    ${PARITY_CLIENT_SOURCES}
+    # tidy-alphabetical-start
+    $<TARGET_OBJECTS:engine-net>
+    $<TARGET_OBJECTS:engine-shared>
+    $<TARGET_OBJECTS:game-shared>
+    $<TARGET_OBJECTS:rust-bridge-shared>
+    # tidy-alphabetical-end
+    ${DEPS}
+  )
+  target_link_libraries(${TARGET_PARITY_CLIENT} ${LIBS_SERVER})
+  list(APPEND TARGETS_OWN ${TARGET_PARITY_CLIENT})
+  list(APPEND TARGETS_LINK ${TARGET_PARITY_CLIENT})
+
   add_custom_target(check_client_state_architecture
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/check_client_state_architecture.py ${PROJECT_SOURCE_DIR}
     COMMENT Checking client multi-state architecture boundaries
@@ -3926,8 +3955,20 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     VERBATIM
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
   )
+  # The predicted world against the authoritative one. Nothing is regenerated
+  # and nothing is checked in but the tape and the ledger, because both sides are
+  # built from the same commit on the same machine - the comparison is between
+  # two programs, not against a recorded past.
+  add_custom_target(run_parity_tests
+    COMMAND ${Python3_EXECUTABLE} scripts/parity_check.py $<TARGET_FILE:${TARGET_VANILLA_GOLDEN}> $<TARGET_FILE:${TARGET_PARITY_CLIENT}>
+    COMMENT Running prediction parity tests
+    DEPENDS ${TARGET_VANILLA_GOLDEN} ${TARGET_PARITY_CLIENT}
+    USES_TERMINAL
+    VERBATIM
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  )
   add_custom_target(run_tests
-    DEPENDS run_cxx_tests run_vanilla_golden_tests
+    DEPENDS run_cxx_tests run_parity_tests run_vanilla_golden_tests
   )
   if(NOT MSVC OR CMAKE_BUILD_TYPE STREQUAL Release)
     # On MSVC, Rust tests only work in the release mode because we link our C++

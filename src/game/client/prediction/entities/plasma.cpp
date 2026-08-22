@@ -10,7 +10,7 @@
 const float PLASMA_ACCEL = 1.1f;
 
 CPlasma::CPlasma(CGameWorld *pGameWorld, int Id, const CLaserData *pData) :
-	CEntity(pGameWorld, CGameWorld::ENTTYPE_PLASMA)
+	CEntity(pGameWorld, CGameWorld::ENTTYPE_LASER)
 {
 	m_Id = Id;
 

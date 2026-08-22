@@ -11,6 +11,7 @@
 
 #include <engine/map.h>
 #include <engine/shared/protocol.h>
+#include <engine/shared/server_identity.h>
 
 #include <generated/protocol7.h>
 
@@ -56,6 +57,21 @@ public:
 		RANK_UNAVAILABLE,
 		RANK_RANKED,
 		RANK_UNRANKED,
+	};
+
+	enum EQuicCapability
+	{
+		QUIC_CAPABILITY_DATAGRAM = 1 << 0,
+		QUIC_CAPABILITY_MAP_STREAM = 1 << 1,
+		QUIC_CAPABILITY_RESUME = 1 << 2,
+		QUIC_CAPABILITY_GAME_PROTOCOL_7 = 1 << 3,
+	};
+
+	enum class EWebTransportCertificateMode
+	{
+		NONE,
+		WEBPKI,
+		HASH,
 	};
 
 	enum
@@ -124,6 +140,18 @@ public:
 	int m_MapSize;
 	char m_aVersion[32];
 	char m_aAddress[MAX_SERVER_ADDRESSES * NETADDR_MAXSTRSIZE];
+	SHA256_DIGEST m_QuicCertificateSha256;
+	SHA256_DIGEST m_QuicNextCertificateSha256;
+	SHA256_DIGEST m_QuicIdentityFingerprint;
+	int m_QuicPort;
+	int m_QuicCapabilities;
+	bool m_QuicSharedPort;
+	bool m_HasQuicNextCertificateSha256;
+	bool m_HasQuicIdentityFingerprint;
+	bool m_WebTransport;
+	EWebTransportCertificateMode m_WebTransportCertificateMode;
+	char m_aWebTransportPath[16];
+	char m_aWebTransportUrl[256];
 	std::vector<CClient> m_vClients;
 	int m_NumFilteredPlayers;
 	bool m_RequiresLogin;

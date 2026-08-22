@@ -147,18 +147,17 @@ void CGameTeams::SendSaveCode(int Team, int TeamSize, int State, const char *pEr
 
 void CGameTeams::Reset()
 {
-	m_Core.Reset();
+	m_Core.Reset(g_Config.m_SvTeam == SV_TEAM_FORCED_SOLO);
 	UpdateLegacyTeamMap();
 	for(int i = 0; i < MAX_CLIENTS; ++i)
 	{
-		const int ShowOthers = m_aPlayerState[i].m_ShowOthers;
-		const bool SpecTeam = m_aPlayerState[i].m_SpecTeam;
-		ResetPlayer(i);
-		if(GetPlayer(i))
-		{
-			m_aPlayerState[i].m_ShowOthers = ShowOthers;
-			m_aPlayerState[i].m_SpecTeam = SpecTeam;
-		}
+		// Only the run itself restarts here. Settings a player made, such as
+		// their rescue mode, and the tees saved for /back and /lastdeath belong
+		// to the player and survive a world reset; they are dropped when the
+		// player connects or disconnects instead.
+		m_aPlayerState[i].m_TeeStarted = false;
+		m_aPlayerState[i].m_TeeFinished = false;
+		m_aPlayerState[i].m_LastChat = 0;
 		SendTeamsState(i);
 	}
 
@@ -373,6 +372,24 @@ void CGameTeams::OnCharacterFinish(int ClientId)
 void CGameTeams::Tick()
 {
 	int Now = Server()->Tick();
+	for(auto &Switcher : GameServer()->Switchers())
+	{
+		for(int Team = 0; Team < NUM_DDRACE_TEAMS; ++Team)
+		{
+			if(Switcher.m_aEndTick[Team] <= Now && Switcher.m_aType[Team] == TILE_SWITCHTIMEDOPEN)
+			{
+				Switcher.m_aStatus[Team] = false;
+				Switcher.m_aEndTick[Team] = 0;
+				Switcher.m_aType[Team] = TILE_SWITCHCLOSE;
+			}
+			else if(Switcher.m_aEndTick[Team] <= Now && Switcher.m_aType[Team] == TILE_SWITCHTIMEDCLOSE)
+			{
+				Switcher.m_aStatus[Team] = true;
+				Switcher.m_aEndTick[Team] = 0;
+				Switcher.m_aType[Team] = TILE_SWITCHOPEN;
+			}
+		}
+	}
 
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{

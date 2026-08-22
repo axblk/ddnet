@@ -2929,6 +2929,7 @@ static CGameInfo GetGameInfo(const CNetObj_GameInfoEx *pInfoEx, int InfoExSize, 
 	Info.m_MaxTeamSize = 0;
 	Info.m_NumDDRaceTeams = 65; // `TEAM_SUPER + 1`, fallback for ddrace64 servers
 	Info.m_OldLaser = false;
+	Info.m_OldLaserKnown = false;
 
 	if(Version >= 0)
 	{
@@ -3002,6 +3003,7 @@ static CGameInfo GetGameInfo(const CNetObj_GameInfoEx *pInfoEx, int InfoExSize, 
 		Info.m_MaxTeamSize = pInfoEx->m_MaxTeamSize;
 		Info.m_NumDDRaceTeams = pInfoEx->m_NumDDRaceTeams;
 		Info.m_OldLaser = Flags2 & GAMEINFOFLAG2_OLD_LASER;
+		Info.m_OldLaserKnown = true;
 	}
 
 	return Info;
@@ -4767,26 +4769,18 @@ void CGameClient::UpdateLocalTuning(CSessionId SessionId, CGameSessionContext &S
 	}
 }
 
+bool CGameClient::PredictedOldLaser() const
+{
+	// The server announces this one, which the settings below it do not have,
+	// so what it says wins over what the map says.
+	if(FocusedGameInfo().m_OldLaserKnown)
+		return FocusedGameInfo().m_OldLaser;
+	return GameConfig()->m_SvOldLaser;
+}
+
 CPhysicsRules CGameClient::PredictedPhysicsRules() const
 {
-	if(!FocusedGameInfo().m_PredictDDRace)
-		return CPhysicsRules::Vanilla();
-	CPhysicsRules Rules = CPhysicsRules::DDNet();
-	Rules.m_WeakHook = !FocusedGameInfo().m_NoWeakHookAndBounce;
-	// The game info carries one bit of physics, the weak hook above. The rest
-	// of these settings reach the client only because they are game settings,
-	// which means both sides read the same value out of the map. A server that
-	// sets one from its own configuration or from rcon instead is predicted
-	// wrong, and so is one that changes it while the round runs. Putting them
-	// on the wire needs a protocol version, so the registry refuses a mode
-	// whose rules are not one of the two shapes this function can produce.
-	Rules.m_TeleportHookOld = g_Config.m_SvOldTeleportHook;
-	Rules.m_TeleportWeaponsOld = g_Config.m_SvOldTeleportWeapons;
-	Rules.m_WeaponsHitOthers = GameConfig()->m_SvHit;
-	Rules.m_OldLaser = GameConfig()->m_SvOldLaser;
-	Rules.m_Deepfly = GameConfig()->m_SvDeepfly;
-	Rules.m_DestroyLasersOnDeath = g_Config.m_SvDestroyLasersOnDeath;
-	return Rules;
+	return ::PredictedPhysicsRules(FocusedGameInfo().m_PredictDDRace, FocusedGameInfo().m_NoWeakHookAndBounce, PredictedOldLaser(), *GameConfig());
 }
 
 void CGameClient::UpdatePrediction()
@@ -4799,7 +4793,6 @@ void CGameClient::UpdatePrediction()
 	CGameState::CRuntimeState &Runtime = ActiveState.Runtime();
 	GameWorld().m_WorldConfig.m_IsVanilla = FocusedGameInfo().m_PredictVanilla;
 	GameWorld().m_WorldConfig.m_IsDDRace = FocusedGameInfo().m_PredictDDRace;
-	GameWorld().m_Core.m_PhysicsRules = PredictedPhysicsRules();
 	GameWorld().m_WorldConfig.m_IsFNG = FocusedGameInfo().m_PredictFNG;
 	GameWorld().m_WorldConfig.m_PredictDDRace = FocusedGameInfo().m_PredictDDRace;
 	GameWorld().m_WorldConfig.m_PredictTiles = FocusedGameInfo().m_PredictDDRace && FocusedGameInfo().m_PredictDDRaceTiles;
@@ -4808,7 +4801,8 @@ void CGameClient::UpdatePrediction()
 	GameWorld().m_WorldConfig.m_BugDDRaceInput = FocusedGameInfo().m_BugDDRaceInput;
 	GameWorld().m_WorldConfig.m_NoWeakHookAndBounce = FocusedGameInfo().m_NoWeakHookAndBounce;
 	GameWorld().m_WorldConfig.m_PredictEvents = FocusedGameInfo().m_PredictEvents;
-	GameWorld().m_WorldConfig.m_OldLaser = FocusedGameInfo().m_OldLaser;
+	GameWorld().m_WorldConfig.m_OldLaser = PredictedOldLaser();
+	GameWorld().UpdatePhysicsRules();
 
 	if(!Snap().m_pLocalCharacter)
 	{

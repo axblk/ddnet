@@ -1,0 +1,18 @@
+#ifndef GAME_SERVER_MODES_VANILLA_TDM_H
+#define GAME_SERVER_MODES_VANILLA_TDM_H
+
+#include "teamplay.h"
+
+class CGameControllerVanillaTDM : public CGameControllerVanillaTeamplay
+{
+public:
+	CGameControllerVanillaTDM(CGameServices &Services, const CGameModeInfo &GameModeInfo);
+
+	void OnCharacterDeath(const CGameCharacterDeathContext &Context) override;
+	void Tick() override;
+
+protected:
+	void SnapMode(int SnappingClient) override;
+};
+
+#endif // GAME_SERVER_MODES_VANILLA_TDM_H

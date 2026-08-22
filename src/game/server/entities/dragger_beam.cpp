@@ -11,7 +11,6 @@
 
 #include <game/mapitems.h>
 #include <game/server/gamecontext.h>
-#include <game/server/save.h>
 
 CDraggerBeam::CDraggerBeam(CGameWorld *pGameWorld, CDragger *pDragger, vec2 Pos, float Strength, bool IgnoreWalls,
 	int ForClientId, int Layer, int Number) :
@@ -142,9 +141,4 @@ void CDraggerBeam::Snap(int SnappingClient)
 void CDraggerBeam::SwapClients(int Client1, int Client2)
 {
 	m_ForClientId = m_ForClientId == Client1 ? Client2 : (m_ForClientId == Client2 ? Client1 : m_ForClientId);
-}
-
-ESaveResult CDraggerBeam::BlocksSave(int ClientId)
-{
-	return m_ForClientId == ClientId ? ESaveResult::DRAGGER_ACTIVE : ESaveResult::SUCCESS;
 }

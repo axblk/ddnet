@@ -58,6 +58,7 @@ private:
 	int m_aTeamSizes[NUM_DDRACE_TEAMS];
 	bool m_ReserveAnyTeamSlots;
 	char m_aSeeOthersName[MAX_NAME_LENGTH];
+	int InteractionTeam(int ClientId) const;
 
 	class CPlayerMap
 	{

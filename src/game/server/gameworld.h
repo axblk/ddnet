@@ -3,8 +3,6 @@
 #ifndef GAME_SERVER_GAMEWORLD_H
 #define GAME_SERVER_GAMEWORLD_H
 
-#include "save.h"
-
 #include <game/gamecore.h>
 
 #include <vector>
@@ -12,6 +10,7 @@
 class CCollision;
 class CEntity;
 class CCharacter;
+class CGameContext;
 
 /*
 	Class: Game World
@@ -32,8 +31,11 @@ public:
 	};
 
 private:
+	friend class CEntity;
+
 	void Reset();
 	void RemoveEntities();
+	CGameContext *GameServer() { return m_pGameServer; }
 
 	CEntity *m_pNextTraverseEntity = nullptr;
 	CEntity *m_apFirstEntityTypes[NUM_ENTTYPES];
@@ -42,15 +44,22 @@ private:
 	class CConfig *m_pConfig;
 	class IServer *m_pServer;
 	CTuningParams *m_pTuningList;
+	bool m_DDNetPhysics = false;
+
+	void UpdatePhysicsRules();
 
 public:
-	class CGameContext *GameServer() { return m_pGameServer; }
 	class CConfig *Config() { return m_pConfig; }
 	class IServer *Server() { return m_pServer; }
 
 	bool m_ResetRequested;
 	bool m_Paused;
+	bool ResetRequested() const { return m_ResetRequested; }
+	bool IsPaused() const { return m_Paused; }
 	CWorldCore m_Core;
+
+	// DDNet physics follow the server config, vanilla physics do not
+	void SetDDNetPhysics(bool DDNetPhysics);
 
 	CGameWorld();
 	~CGameWorld();
@@ -172,13 +181,6 @@ public:
 	*/
 	void SwapClients(int Client1, int Client2);
 
-	/*
-		Function: BlocksSave
-			Checks if any entity would block /save
-	*/
-	ESaveResult BlocksSave(int ClientId);
-
-	// DDRace
 	void ReleaseHooked(int ClientId);
 
 	/*

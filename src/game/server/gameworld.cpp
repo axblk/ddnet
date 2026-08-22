@@ -149,7 +149,7 @@ void CGameWorld::Reset()
 		}
 	RemoveEntities();
 
-	GameServer()->m_pController->OnReset();
+	GameServer()->GameHost().Controller()->OnReset();
 	RemoveEntities();
 
 	m_ResetRequested = false;
@@ -199,8 +199,21 @@ void CGameWorld::RemoveEntities()
 		}
 }
 
+void CGameWorld::SetDDNetPhysics(bool DDNetPhysics)
+{
+	m_DDNetPhysics = DDNetPhysics;
+	UpdatePhysicsRules();
+}
+
+void CGameWorld::UpdatePhysicsRules()
+{
+	m_Core.m_PhysicsRules = m_DDNetPhysics ? CPhysicsRules::DDNetFromConfig() : CPhysicsRules();
+}
+
 void CGameWorld::Tick()
 {
+	UpdatePhysicsRules();
+
 	if(m_ResetRequested)
 		Reset();
 
@@ -211,7 +224,7 @@ void CGameWorld::Tick()
 		{
 			// It's important to call PreTick() and Tick() after each other.
 			// If we call PreTick() before, and Tick() after other entities have been processed, it causes physics changes such as a stronger shotgun or grenade.
-			if(g_Config.m_SvNoWeakHook && i == ENTTYPE_CHARACTER)
+			if(!m_Core.m_PhysicsRules.m_WeakHook && i == ENTTYPE_CHARACTER)
 			{
 				auto *pEnt = m_apFirstEntityTypes[i];
 				for(; pEnt;)
@@ -260,21 +273,6 @@ void CGameWorld::Tick()
 		pChar->m_StrongWeakId = StrongWeakId;
 		StrongWeakId++;
 	}
-}
-
-ESaveResult CGameWorld::BlocksSave(int ClientId)
-{
-	// check all objects
-	for(auto *pEnt : m_apFirstEntityTypes)
-		for(; pEnt;)
-		{
-			m_pNextTraverseEntity = pEnt->m_pNextTypeEntity;
-			ESaveResult Result = pEnt->BlocksSave(ClientId);
-			if(Result != ESaveResult::SUCCESS)
-				return Result;
-			pEnt = m_pNextTraverseEntity;
-		}
-	return ESaveResult::SUCCESS;
 }
 
 void CGameWorld::SwapClients(int Client1, int Client2)

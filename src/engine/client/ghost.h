@@ -58,7 +58,7 @@ class CGhostRecorder : public IGhostRecorder
 public:
 	CGhostRecorder();
 
-	void Init();
+	void Init(IStorage *pStorage);
 
 	int Start(const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, const char *pName) override;
 	void Stop(int Ticks, int Time) override;
@@ -94,7 +94,7 @@ class CGhostLoader : public IGhostLoader
 public:
 	CGhostLoader();
 
-	void Init();
+	void Init(IStorage *pStorage);
 
 	bool Load(const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc) override;
 	void Close() override;

@@ -3,6 +3,7 @@
 #ifndef GAME_CLIENT_COMPONENTS_SCOREBOARD_H
 #define GAME_CLIENT_COMPONENTS_SCOREBOARD_H
 
+#include <engine/client/asset_loader.h>
 #include <engine/console.h>
 #include <engine/graphics.h>
 
@@ -39,6 +40,7 @@ class CScoreboard : public CComponent
 	bool m_Active;
 
 	IGraphics::CTextureHandle m_DeadTeeTexture;
+	CImageResource m_DeadTeeResource;
 
 	std::optional<vec2> m_LastMousePos;
 	bool m_MouseUnlocked = false;
@@ -103,6 +105,7 @@ public:
 	int Sizeof() const override { return sizeof(*this); }
 	void OnConsoleInit() override;
 	void OnInit() override;
+	void OnUpdate() override;
 	void OnReset() override;
 	void OnShutdown() override;
 	void OnWindowResize() override;
@@ -112,6 +115,7 @@ public:
 	bool OnInput(const IInput::CEvent &Event) override;
 
 	bool IsActive() const;
+	bool StartupAssetsLoaded() const { return !m_DeadTeeResource; }
 };
 
 #endif

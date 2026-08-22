@@ -101,15 +101,28 @@ void CMenuBackground::LoadThemeIcon(CTheme &Theme)
 {
 	char aIconPath[IO_MAX_PATH_LENGTH];
 	str_format(aIconPath, sizeof(aIconPath), "themes/%s.png", Theme.m_Name.empty() ? "none" : Theme.m_Name.c_str());
-	Theme.m_IconTexture = Graphics()->LoadTexture(aIconPath, IStorage::TYPE_ALL);
-	if(Theme.m_IconTexture.IsNullTexture())
+	Theme.m_IconResource = GameClient()->AssetLoader().LoadImageFile(Storage(), aIconPath, IStorage::TYPE_ALL);
+}
+
+void CMenuBackground::FinishThemeIconLoads()
+{
+	for(CTheme &Theme : m_vThemes)
+		Theme.m_IconResource.FinishTexture(Graphics(), Theme.m_IconTexture);
+}
+
+void CMenuBackground::OnUpdate()
+{
+	FinishThemeIconLoads();
+}
+
+void CMenuBackground::OnShutdown()
+{
+	for(CTheme &Theme : m_vThemes)
 	{
-		log_error("menuthemes", "failed to load theme icon '%s'", aIconPath);
+		Theme.m_IconResource.Reset();
+		Graphics()->UnloadTexture(&Theme.m_IconTexture);
 	}
-	else
-	{
-		log_trace("menuthemes", "loaded theme icon '%s'", aIconPath);
-	}
+	CBackground::OnShutdown();
 }
 
 int CMenuBackground::ThemeScan(const char *pName, int IsDir, int DirType, void *pUser)
@@ -340,6 +353,7 @@ bool CMenuBackground::Render()
 		m_ChangedPosition = false;
 	}
 
+	m_pBackgroundImages->Update();
 	CMapLayers::OnRender();
 
 	m_CurrentPosition = -1;

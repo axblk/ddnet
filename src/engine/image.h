@@ -81,6 +81,13 @@ public:
 	void Allocate();
 
 	/**
+	 * Creates the image data, does not zero it.
+	 *
+	 * @return `false` if the allocation failed.
+	 */
+	bool TryAllocate();
+
+	/**
 	 * Creates the image data and fills it with zero.
 	 */
 	void AllocateFillZero();

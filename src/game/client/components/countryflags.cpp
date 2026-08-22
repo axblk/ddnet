@@ -8,10 +8,26 @@
 #include <base/math.h>
 #include <base/str.h>
 
+#include <engine/client/asset_loader.h>
 #include <engine/graphics.h>
 #include <engine/shared/config.h>
 #include <engine/shared/linereader.h>
 #include <engine/storage.h>
+
+#include <game/client/gameclient.h>
+
+namespace
+{
+	constexpr size_t MAX_CONCURRENT_COUNTRY_FLAG_LOADS = 16;
+}
+
+bool CCountryFlags::CCountryFlag::RequestLoad() const
+{
+	if(m_State != EState::UNLOADED)
+		return false;
+	m_State = EState::PENDING;
+	return true;
+}
 
 bool CCountryFlags::CCountryFlag::operator<(const CCountryFlag &Other) const
 {
@@ -93,21 +109,7 @@ void CCountryFlags::LoadCountryflagsIndexfile()
 				continue;
 			}
 
-			char aFlagPath[IO_MAX_PATH_LENGTH];
-			CImageInfo ImageInfo;
-			str_format(aFlagPath, sizeof(aFlagPath), "countryflags/%s.png", CountryFlag.m_aCountryCodeString);
-			if(!Graphics()->LoadPng(ImageInfo, aFlagPath, IStorage::TYPE_ALL))
-			{
-				log_error("countryflags", "Failed to load country flag from '%s'", aFlagPath);
-				continue;
-			}
-
-			CountryFlag.m_Texture = Graphics()->LoadTextureRawMove(ImageInfo, 0, aFlagPath);
-			if(g_Config.m_Debug)
-			{
-				log_trace("countryflags", "Loaded country flag '%s'", CountryFlag.m_aCountryCodeString);
-			}
-			m_vCountryFlags.push_back(CountryFlag);
+			m_vCountryFlags.push_back(std::move(CountryFlag));
 		}
 	}
 	else
@@ -124,7 +126,8 @@ void CCountryFlags::LoadCountryflagsIndexfile()
 		CCountryFlag DefaultFlag;
 		DefaultFlag.m_CountryCode = CountryCode::DEFAULT;
 		str_copy(DefaultFlag.m_aCountryCodeString, "default");
-		m_vCountryFlags.push_back(DefaultFlag);
+		DefaultFlag.m_State = CCountryFlag::EState::PENDING;
+		m_vCountryFlags.push_back(std::move(DefaultFlag));
 	}
 
 	std::sort(m_vCountryFlags.begin(), m_vCountryFlags.end());
@@ -144,6 +147,8 @@ void CCountryFlags::LoadCountryflagsIndexfile()
 	{
 		m_aCountryCodeToIndexTable[m_vCountryFlags[i].m_CountryCode - CountryCode::MINIMUM] = i;
 	}
+	m_vCountryFlags[DefaultIndex].m_State = CCountryFlag::EState::PENDING;
+	m_LoadsPending = true;
 
 	log_debug("countryflags", "Loaded %" PRIzu " country flags", m_vCountryFlags.size());
 }
@@ -159,9 +164,89 @@ void CCountryFlags::OnInit()
 	Graphics()->QuadContainerUpload(m_FlagsQuadContainerIndex);
 }
 
+void CCountryFlags::OnUpdate()
+{
+	if(!m_LoadsPending)
+		return;
+	FinishLoads();
+	StartPendingLoads();
+}
+
+void CCountryFlags::OnShutdown()
+{
+	for(CCountryFlag &CountryFlag : m_vCountryFlags)
+	{
+		CountryFlag.m_LoadResource.Reset();
+		Graphics()->UnloadTexture(&CountryFlag.m_Texture);
+	}
+	m_vCountryFlags.clear();
+}
+
+void CCountryFlags::StartPendingLoads()
+{
+	size_t NumLoading = std::count_if(m_vCountryFlags.begin(), m_vCountryFlags.end(), [](const CCountryFlag &CountryFlag) {
+		return CountryFlag.m_State == CCountryFlag::EState::LOADING;
+	});
+	for(CCountryFlag &CountryFlag : m_vCountryFlags)
+	{
+		if(NumLoading >= MAX_CONCURRENT_COUNTRY_FLAG_LOADS)
+			return;
+		if(CountryFlag.m_State != CCountryFlag::EState::PENDING)
+			continue;
+		char aFlagPath[IO_MAX_PATH_LENGTH];
+		str_format(aFlagPath, sizeof(aFlagPath), "countryflags/%s.png", CountryFlag.m_aCountryCodeString);
+		CountryFlag.m_LoadResource = GameClient()->AssetLoader().LoadImageFile(Storage(), aFlagPath, IStorage::TYPE_ALL);
+		CountryFlag.m_State = CCountryFlag::EState::LOADING;
+		++NumLoading;
+	}
+	m_LoadsPending = NumLoading != 0;
+}
+
+void CCountryFlags::FinishLoads()
+{
+	for(CCountryFlag &CountryFlag : m_vCountryFlags)
+	{
+		if(CountryFlag.m_State != CCountryFlag::EState::LOADING || !CountryFlag.m_LoadResource.IsFinished())
+			continue;
+		if(CountryFlag.m_LoadResource.IsReady())
+		{
+			CImageInfo Image = CountryFlag.m_LoadResource.TakeImage();
+			IGraphics::CTextureHandle Texture = Graphics()->LoadTextureRawMove(Image, 0, CountryFlag.m_LoadResource.Path());
+			if(Texture.IsValid())
+			{
+				Graphics()->UnloadTexture(&CountryFlag.m_Texture);
+				CountryFlag.m_Texture = Texture;
+				CountryFlag.m_State = CCountryFlag::EState::LOADED;
+				if(g_Config.m_Debug)
+					log_trace("countryflags", "Loaded country flag '%s'", CountryFlag.m_aCountryCodeString);
+			}
+			else
+			{
+				CountryFlag.m_State = CCountryFlag::EState::ERROR;
+				log_error("countryflags", "Failed to upload country flag '%s'", CountryFlag.m_aCountryCodeString);
+			}
+		}
+		else
+		{
+			CountryFlag.m_State = CCountryFlag::EState::ERROR;
+			if(CountryFlag.m_LoadResource.IsFailed())
+				log_error("countryflags", "Failed to load country flag from '%s'", CountryFlag.m_LoadResource.Path());
+		}
+		CountryFlag.m_LoadResource.Reset();
+	}
+}
+
 size_t CCountryFlags::Num() const
 {
 	return m_vCountryFlags.size();
+}
+
+bool CCountryFlags::StartupAssetsLoaded() const
+{
+	if(m_vCountryFlags.empty())
+		return true;
+	const CCountryFlag &DefaultFlag = GetByCountryCode(CountryCode::DEFAULT);
+	return DefaultFlag.m_State != CCountryFlag::EState::PENDING && DefaultFlag.m_State != CCountryFlag::EState::LOADING;
 }
 
 const CCountryFlags::CCountryFlag &CCountryFlags::GetByCountryCode(int CountryCode) const
@@ -178,9 +263,12 @@ const CCountryFlags::CCountryFlag &CCountryFlags::GetByIndex(size_t Index) const
 
 void CCountryFlags::Render(const CCountryFlag &Flag, ColorRGBA Color, float x, float y, float w, float h)
 {
-	if(Flag.m_Texture.IsValid())
+	m_LoadsPending |= Flag.RequestLoad();
+	const CCountryFlag &RenderedFlag = Flag.m_Texture.IsValid() ? Flag : GetByCountryCode(CountryCode::DEFAULT);
+	m_LoadsPending |= RenderedFlag.RequestLoad();
+	if(RenderedFlag.m_Texture.IsValid())
 	{
-		Graphics()->TextureSet(Flag.m_Texture);
+		Graphics()->TextureSet(RenderedFlag.m_Texture);
 		Graphics()->SetColor(Color);
 		Graphics()->QuadsSetRotation(0.0f);
 		Graphics()->RenderQuadContainerEx(m_FlagsQuadContainerIndex, 0, -1, x, y, w, h);

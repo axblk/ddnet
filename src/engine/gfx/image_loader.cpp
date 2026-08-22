@@ -10,13 +10,16 @@
 
 #include <csetjmp>
 #include <cstdlib>
+#include <limits>
+#include <memory>
+#include <new>
 
 bool CByteBufferReader::Read(void *pData, size_t Size)
 {
 	if(m_Error)
 		return false;
 
-	if(m_ReadOffset + Size <= m_Size)
+	if(Size <= m_Size - m_ReadOffset)
 	{
 		mem_copy(pData, &m_pData[m_ReadOffset], Size);
 		m_ReadOffset += Size;
@@ -137,48 +140,63 @@ static int PngliteIncompatibility(png_structp pPngStruct, png_infop pPngInfo)
 
 bool CImageLoader::LoadPng(CByteBufferReader &Reader, const char *pContextName, CImageInfo &Image, int &PngliteIncompatible)
 {
+	class CPngReadState
+	{
+	public:
+		png_structp m_pPngStruct = nullptr;
+		png_infop m_pPngInfo = nullptr;
+		png_bytepp m_pRowPointers = nullptr;
+		CImageInfo m_DecodedImage;
+	};
+
+	PngliteIncompatible = 0;
+	if(Reader.Size() > MAX_PNG_FILE_SIZE)
+	{
+		log_error("png", "file is too large. filename='%s' size=%" PRIzu " maximum=%" PRIzu, pContextName, Reader.Size(), MAX_PNG_FILE_SIZE);
+		return false;
+	}
+
 	CUserErrorStruct UserErrorStruct = {pContextName, {}};
+	const auto pState = std::make_unique<CPngReadState>();
 
 	if(setjmp(UserErrorStruct.m_JmpBuf))
 	{
 		return false;
 	}
 
-	png_structp pPngStruct = png_create_read_struct(PNG_LIBPNG_VER_STRING, &UserErrorStruct, PngErrorCallback, PngWarningCallback);
-	if(pPngStruct == nullptr)
+	pState->m_pPngStruct = png_create_read_struct(PNG_LIBPNG_VER_STRING, &UserErrorStruct, PngErrorCallback, PngWarningCallback);
+	if(pState->m_pPngStruct == nullptr)
 	{
 		log_error("png", "libpng internal failure: png_create_read_struct failed.");
 		return false;
 	}
 
-	png_infop pPngInfo = png_create_info_struct(pPngStruct);
-	if(pPngInfo == nullptr)
-	{
-		png_destroy_read_struct(&pPngStruct, nullptr, nullptr);
-		log_error("png", "libpng internal failure: png_create_info_struct failed.");
-		return false;
-	}
-
-	// Written after setjmp and read by Cleanup after longjmp, which is only defined for volatile locals
-	volatile png_bytepp pRowPointers = nullptr;
-	volatile size_t Height = 0;
 	const auto &&Cleanup = [&]() {
-		if(pRowPointers != nullptr)
+		delete[] pState->m_pRowPointers;
+		pState->m_pRowPointers = nullptr;
+		if(pState->m_pPngInfo != nullptr)
 		{
-			for(size_t y = 0; y < Height; ++y)
-			{
-				delete[] pRowPointers[y];
-			}
+			png_destroy_info_struct(pState->m_pPngStruct, &pState->m_pPngInfo);
 		}
-		delete[] pRowPointers;
-		png_destroy_info_struct(pPngStruct, &pPngInfo);
-		png_destroy_read_struct(&pPngStruct, nullptr, nullptr);
+		png_destroy_read_struct(&pState->m_pPngStruct, nullptr, nullptr);
 	};
 	if(setjmp(UserErrorStruct.m_JmpBuf))
 	{
 		Cleanup();
 		return false;
 	}
+
+	pState->m_pPngInfo = png_create_info_struct(pState->m_pPngStruct);
+	if(pState->m_pPngInfo == nullptr)
+	{
+		Cleanup();
+		log_error("png", "libpng internal failure: png_create_info_struct failed.");
+		return false;
+	}
+
+#if defined(PNG_SET_USER_LIMITS_SUPPORTED)
+	png_set_user_limits(pState->m_pPngStruct, MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION);
+#endif
 
 	png_byte aSignature[8];
 	if(!Reader.Read(aSignature, sizeof(aSignature)) || png_sig_cmp(aSignature, 0, sizeof(aSignature)) != 0)
@@ -188,10 +206,10 @@ bool CImageLoader::LoadPng(CByteBufferReader &Reader, const char *pContextName, 
 		return false;
 	}
 
-	png_set_read_fn(pPngStruct, (png_bytep)&Reader, PngReadDataCallback);
-	png_set_sig_bytes(pPngStruct, sizeof(aSignature));
+	png_set_read_fn(pState->m_pPngStruct, (png_bytep)&Reader, PngReadDataCallback);
+	png_set_sig_bytes(pState->m_pPngStruct, sizeof(aSignature));
 
-	png_read_info(pPngStruct, pPngInfo);
+	png_read_info(pState->m_pPngStruct, pState->m_pPngInfo);
 
 	if(Reader.Error())
 	{
@@ -200,21 +218,29 @@ bool CImageLoader::LoadPng(CByteBufferReader &Reader, const char *pContextName, 
 		return false;
 	}
 
-	const size_t Width = png_get_image_width(pPngStruct, pPngInfo);
-	Height = png_get_image_height(pPngStruct, pPngInfo);
-	const png_byte BitDepth = png_get_bit_depth(pPngStruct, pPngInfo);
-	const int ColorType = png_get_color_type(pPngStruct, pPngInfo);
+	const png_uint_32 PngWidth = png_get_image_width(pState->m_pPngStruct, pState->m_pPngInfo);
+	const png_uint_32 PngHeight = png_get_image_height(pState->m_pPngStruct, pState->m_pPngInfo);
+	const png_byte BitDepth = png_get_bit_depth(pState->m_pPngStruct, pState->m_pPngInfo);
+	const int ColorType = png_get_color_type(pState->m_pPngStruct, pState->m_pPngInfo);
 
-	if(Width == 0 || Height == 0)
+	if(PngWidth == 0 || PngHeight == 0)
 	{
-		log_error("png", "image has width (%" PRIzu ") or height (%" PRIzu ") of 0.", Width, Height);
+		log_error("png", "image has width (%u) or height (%u) of 0.", PngWidth, PngHeight);
 		Cleanup();
 		return false;
 	}
+	if(PngWidth > MAX_IMAGE_DIMENSION || PngHeight > MAX_IMAGE_DIMENSION)
+	{
+		log_error("png", "image dimensions are too large. filename='%s' width=%u height=%u maximum=%" PRIzu, pContextName, PngWidth, PngHeight, MAX_IMAGE_DIMENSION);
+		Cleanup();
+		return false;
+	}
+	const size_t Width = PngWidth;
+	const size_t Height = PngHeight;
 
 	if(BitDepth == 16)
 	{
-		png_set_strip_16(pPngStruct);
+		png_set_strip_16(pState->m_pPngStruct);
 	}
 	else if(BitDepth > 8 || BitDepth == 0)
 	{
@@ -225,49 +251,97 @@ bool CImageLoader::LoadPng(CByteBufferReader &Reader, const char *pContextName, 
 
 	if(ColorType == PNG_COLOR_TYPE_PALETTE)
 	{
-		png_set_palette_to_rgb(pPngStruct);
+		png_set_palette_to_rgb(pState->m_pPngStruct);
 	}
 
 	if(ColorType == PNG_COLOR_TYPE_GRAY && BitDepth < 8)
 	{
-		png_set_expand_gray_1_2_4_to_8(pPngStruct);
+		png_set_expand_gray_1_2_4_to_8(pState->m_pPngStruct);
 	}
 
-	if(png_get_valid(pPngStruct, pPngInfo, PNG_INFO_tRNS))
+	if(png_get_valid(pState->m_pPngStruct, pState->m_pPngInfo, PNG_INFO_tRNS))
 	{
-		png_set_tRNS_to_alpha(pPngStruct);
+		png_set_tRNS_to_alpha(pState->m_pPngStruct);
 	}
 
-	png_read_update_info(pPngStruct, pPngInfo);
+	png_read_update_info(pState->m_pPngStruct, pState->m_pPngInfo);
 
-	const int ColorChannelCount = png_get_channels(pPngStruct, pPngInfo);
-	const size_t BytesInRow = png_get_rowbytes(pPngStruct, pPngInfo);
-	dbg_assert(BytesInRow == Width * ColorChannelCount, "bytes in row incorrect.");
+	const int ColorChannelCount = png_get_channels(pState->m_pPngStruct, pState->m_pPngInfo);
+	const png_size_t BytesInRow = png_get_rowbytes(pState->m_pPngStruct, pState->m_pPngInfo);
+	if(ColorChannelCount < 1 || ColorChannelCount > 4 || Width > std::numeric_limits<size_t>::max() / ColorChannelCount || BytesInRow != Width * ColorChannelCount)
+	{
+		log_error("png", "invalid row size. filename='%s' width=%" PRIzu " channels=%d row_bytes=%" PRIzu, pContextName, Width, ColorChannelCount, BytesInRow);
+		Cleanup();
+		return false;
+	}
+	constexpr size_t RgbaPixelSize = 4;
+	if(Width > MAX_IMAGE_DATA_SIZE / RgbaPixelSize || Height > MAX_IMAGE_DATA_SIZE / (Width * RgbaPixelSize))
+	{
+		log_error("png", "decoded image is too large. filename='%s' width=%" PRIzu " height=%" PRIzu " maximum=%" PRIzu, pContextName, Width, Height, MAX_IMAGE_DATA_SIZE);
+		Cleanup();
+		return false;
+	}
 
-	pRowPointers = new png_bytep[Height];
+	pState->m_DecodedImage.m_Width = Width;
+	pState->m_DecodedImage.m_Height = Height;
+	pState->m_DecodedImage.m_Format = ImageFormatFromChannelCount(ColorChannelCount);
+	if(!pState->m_DecodedImage.TryAllocate())
+	{
+		log_error("png", "failed to allocate image data. filename='%s' size=%" PRIzu, pContextName, pState->m_DecodedImage.DataSize());
+		Cleanup();
+		return false;
+	}
+	pState->m_pRowPointers = new(std::nothrow) png_bytep[Height];
+	if(pState->m_pRowPointers == nullptr)
+	{
+		log_error("png", "failed to allocate PNG row pointers. filename='%s' height=%" PRIzu, pContextName, Height);
+		Cleanup();
+		return false;
+	}
 	for(size_t y = 0; y < Height; ++y)
-	{
-		pRowPointers[y] = new png_byte[BytesInRow];
-	}
+		pState->m_pRowPointers[y] = &pState->m_DecodedImage.m_pData[y * BytesInRow];
 
-	png_read_image(pPngStruct, pRowPointers);
+	png_read_image(pState->m_pPngStruct, pState->m_pRowPointers);
 
 	if(!Reader.Error())
 	{
-		Image.m_Width = Width;
-		Image.m_Height = Height;
-		Image.m_Format = ImageFormatFromChannelCount(ColorChannelCount);
-		Image.Allocate();
-		for(size_t y = 0; y < Height; ++y)
-		{
-			mem_copy(&Image.m_pData[y * BytesInRow], pRowPointers[y], BytesInRow);
-		}
-		PngliteIncompatible = PngliteIncompatibility(pPngStruct, pPngInfo);
+		PngliteIncompatible = PngliteIncompatibility(pState->m_pPngStruct, pState->m_pPngInfo);
+		Image.Free();
+		Image = std::move(pState->m_DecodedImage);
 	}
 
 	Cleanup();
 
 	return !Reader.Error();
+}
+
+static bool ReadPngFile(IOHANDLE File, const char *pFilename, uint8_t *&pFileData, size_t &FileDataSize)
+{
+	pFileData = nullptr;
+	FileDataSize = 0;
+	const int64_t Length = io_length(File);
+	if(Length > static_cast<int64_t>(CImageLoader::MAX_PNG_FILE_SIZE))
+	{
+		log_error("png", "file is too large. filename='%s' size=%" PRId64 " maximum=%" PRIzu, pFilename, Length, CImageLoader::MAX_PNG_FILE_SIZE);
+		return false;
+	}
+
+	void *pData;
+	unsigned DataSize;
+	if(!io_read_all(File, &pData, &DataSize))
+	{
+		log_error("png", "failed to read file. filename='%s'", pFilename);
+		return false;
+	}
+	if(DataSize > CImageLoader::MAX_PNG_FILE_SIZE)
+	{
+		log_error("png", "file is too large. filename='%s' size=%u maximum=%" PRIzu, pFilename, DataSize, CImageLoader::MAX_PNG_FILE_SIZE);
+		free(pData);
+		return false;
+	}
+	pFileData = static_cast<uint8_t *>(pData);
+	FileDataSize = DataSize;
+	return true;
 }
 
 bool CImageLoader::LoadPng(IOHANDLE File, const char *pFilename, CImageInfo &Image, int &PngliteIncompatible)
@@ -278,18 +352,16 @@ bool CImageLoader::LoadPng(IOHANDLE File, const char *pFilename, CImageInfo &Ima
 		return false;
 	}
 
-	void *pFileData;
-	unsigned FileDataSize;
-	const bool ReadSuccess = io_read_all(File, &pFileData, &FileDataSize);
+	uint8_t *pFileData;
+	size_t FileDataSize;
+	const bool ReadSuccess = ReadPngFile(File, pFilename, pFileData, FileDataSize);
 	io_close(File);
 	if(!ReadSuccess)
 	{
-		log_error("png", "failed to read file. filename='%s'", pFilename);
 		return false;
 	}
 
-	CByteBufferReader ImageReader(static_cast<const uint8_t *>(pFileData), FileDataSize);
-
+	CByteBufferReader ImageReader(pFileData, FileDataSize);
 	const bool LoadResult = CImageLoader::LoadPng(ImageReader, pFilename, Image, PngliteIncompatible);
 	free(pFileData);
 	if(!LoadResult)

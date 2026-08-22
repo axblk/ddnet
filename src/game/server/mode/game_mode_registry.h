@@ -37,9 +37,6 @@ public:
 	// By id only, so that registering a mode is never refused because another
 	// one advertises the same name.
 	const CGameModeInfo *Find(const char *pId) const;
-	// By id or by the name the mode advertises, which is what `sv_gametype` has
-	// always been set to.
-	const CGameModeInfo *Resolve(const char *pId) const;
 	std::unique_ptr<IGameController> Create(const char *pId, CGameServices &Services) const;
 
 private:

@@ -7,7 +7,35 @@
 #include <base/log.h>
 #include <base/str.h>
 
+#include <csignal>
+
 IVideo *IVideo::ms_pCurrentVideo = nullptr;
+
+namespace
+{
+	volatile sig_atomic_t gs_InterruptSignaled = 0;
+
+	void HandleVideoExportInterrupt(int)
+	{
+		gs_InterruptSignaled = 1;
+		signal(SIGINT, SIG_DFL);
+		signal(SIGTERM, SIG_DFL);
+	}
+} // namespace
+
+void CatchVideoExportInterrupt()
+{
+	signal(SIGINT, HandleVideoExportInterrupt);
+	signal(SIGTERM, HandleVideoExportInterrupt);
+}
+
+bool VideoExportInterrupted()
+{
+	if(gs_InterruptSignaled == 0)
+		return false;
+	gs_InterruptSignaled = 0;
+	return true;
+}
 
 void PrintVideoExportUsage(const char *pUsageName)
 {

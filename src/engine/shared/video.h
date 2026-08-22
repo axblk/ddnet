@@ -84,6 +84,23 @@ public:
 };
 
 /**
+ * Takes over the interrupt and termination signals for the duration of an
+ * export.
+ *
+ * An export writes its file as it goes, so a process that is simply killed
+ * leaves the unfinished file behind. Whoever runs the export loop asks
+ * `VideoExportInterrupted()` and stops the encoder itself, which is what gets
+ * the partial file cleaned up. A second signal is not caught, so an export that
+ * does not react can still be killed the usual way.
+ */
+void CatchVideoExportInterrupt();
+
+/**
+ * Whether a signal arrived since the last call. Reading it clears it.
+ */
+bool VideoExportInterrupted();
+
+/**
  * The video export arguments of a command line. The client and the demo render
  * tool both take these off the command line before the rest of it goes to the
  * console, so that `--width 1280` is not mistaken for a console command.

@@ -1,24 +1,20 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
-#include "client.h"
+#include "demo_render_client.h"
 
 #include <base/log.h>
 #include <base/logger.h>
 #include <base/os.h>
 
+#include <engine/client.h>
 #include <engine/config.h>
 #include <engine/console.h>
-#include <engine/discord.h>
 #include <engine/engine.h>
-#include <engine/favorites.h>
-#include <engine/http.h>
 #include <engine/input.h>
-#include <engine/notifications.h>
 #include <engine/shared/assertion_logger.h>
 #include <engine/shared/config.h>
 #include <engine/shared/video.h>
 #include <engine/sound.h>
-#include <engine/steam.h>
 #include <engine/storage.h>
 #include <engine/textrender.h>
 
@@ -48,11 +44,11 @@ int main(int argc, const char **argv)
 	pFutureFileLogger->Set(log_logger_noop());
 	log_set_global_logger(log_logger_collection({pStdoutLogger, pFutureConsoleLogger, pFutureAssertionLogger, pFutureFileLogger}).release());
 
-	CClient *pClient = CreateClient();
+	CDemoRenderClient *pClient = new CDemoRenderClient;
 	pClient->SetLoggers(std::shared_ptr<ILogger>(pFutureFileLogger), std::move(pStdoutLogger));
 
 	IKernel *pKernel = IKernel::Create();
-	pKernel->RegisterInterface(pClient, false);
+	pKernel->RegisterInterface(static_cast<IClient *>(pClient), false);
 	pClient->RegisterInterfaces();
 
 	IEngine *pEngine = CreateEngine(GAME_NAME, pFutureConsoleLogger);
@@ -87,6 +83,8 @@ int main(int argc, const char **argv)
 	pKernel->RegisterInterface(pEngineSound); // IEngineSound
 	pKernel->RegisterInterface(static_cast<ISound *>(pEngineSound), false);
 
+	// There is nobody at the keyboard of a program that renders a file, but the
+	// interface elements the game draws still ask what the pointer is doing.
 	IEngineInput *pEngineInput = CreateEngineInput();
 	pKernel->RegisterInterface(pEngineInput); // IEngineInput
 	pKernel->RegisterInterface(static_cast<IInput *>(pEngineInput), false);
@@ -95,21 +93,11 @@ int main(int argc, const char **argv)
 	pKernel->RegisterInterface(pEngineTextRender); // IEngineTextRender
 	pKernel->RegisterInterface(static_cast<ITextRender *>(pEngineTextRender), false);
 
-	// The export never asks for anything over the network, but the client and
-	// the game client hold on to these from the moment they are initialized.
-	IEngineHttp *pEngineHttp = CreateEngineHttp();
-	pKernel->RegisterInterface(pEngineHttp); // IEngineHttp
-	pKernel->RegisterInterface(static_cast<IHttp *>(pEngineHttp), false);
-	pKernel->RegisterInterface(CreateDiscord());
-	pKernel->RegisterInterface(CreateSteam());
-	pKernel->RegisterInterface(CreateNotifications());
-	pKernel->RegisterInterface(CreateFavorites().release());
 	pKernel->RegisterInterface(CreateGameClient());
 
 	pEngine->Init();
 	pConsole->Init();
 	pConfigManager->Init();
-	pClient->RegisterCommands();
 	pKernel->RequestInterface<IGameClient>()->OnConsoleInit();
 	pClient->InitInterfaces();
 
@@ -157,7 +145,7 @@ int main(int argc, const char **argv)
 	// way it does in the client itself, so `gfx_backend` and the like work here.
 	pConsole->ParseArguments(argc - 1, &argv[1]);
 
-	if(!pClient->ConfigureCommandLineVideoExport(VideoExport))
+	if(!pClient->Configure(VideoExport))
 	{
 		Cleanup();
 		return -1;
@@ -165,10 +153,10 @@ int main(int argc, const char **argv)
 
 	pClient->Run();
 
-	const int ExitCode = pClient->CommandLineExitCode();
+	const int ExitCode = pClient->ExitCode();
 	for(const SWarning &Warning : pClient->QuittingWarnings())
 	{
-		log_warn("client", "%s: %s", Warning.m_aWarningTitle, Warning.m_aWarningMsg);
+		log_warn("videorecorder", "%s: %s", Warning.m_aWarningTitle, Warning.m_aWarningMsg);
 	}
 	Cleanup();
 	return ExitCode;

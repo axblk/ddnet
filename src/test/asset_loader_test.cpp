@@ -76,8 +76,8 @@ namespace
 	class CTestHttpRequest final : public IHttpRequest
 	{
 	public:
-		CTestHttpRequest() :
-			IHttpRequest("http://localhost/test.png")
+		explicit CTestHttpRequest(const char *pUrl = "http://localhost/test.png") :
+			IHttpRequest(pUrl)
 		{
 		}
 
@@ -100,6 +100,7 @@ namespace
 		std::vector<std::shared_ptr<IHttpRequest>> m_vpRequests;
 
 		void Run(std::shared_ptr<IHttpRequest> pRequest) override { m_vpRequests.push_back(std::move(pRequest)); }
+		std::unique_ptr<IHttpRequest> CreateRequest(const char *pUrl) override { return std::make_unique<CTestHttpRequest>(pUrl); }
 		bool HasIpresolveBug() const override { return false; }
 	};
 

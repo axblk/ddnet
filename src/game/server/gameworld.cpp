@@ -23,6 +23,7 @@ CGameWorld::CGameWorld()
 	m_pGameServer = nullptr;
 	m_pConfig = nullptr;
 	m_pServer = nullptr;
+	m_pCollision = nullptr;
 
 	m_Paused = false;
 	m_ResetRequested = false;
@@ -48,7 +49,30 @@ void CGameWorld::SetGameServer(CGameContext *pGameServer)
 void CGameWorld::Init(CCollision *pCollision, CTuningParams *pTuningList)
 {
 	m_Core.InitSwitchers(pCollision->m_HighestSwitchNumber);
+	m_pCollision = pCollision;
 	m_pTuningList = pTuningList;
+}
+
+int CGameWorld::GameTick() const
+{
+	return m_pServer->Tick();
+}
+
+int CGameWorld::GameTickSpeed() const
+{
+	return m_pServer->TickSpeed();
+}
+
+int CGameWorld::AllocSnapId()
+{
+	// -1 for "the server has no id left", which is what the predicted world
+	// says for every entity: an entity without an id is simply not snapped.
+	return m_pServer->SnapNewId().value_or(-1);
+}
+
+void CGameWorld::FreeSnapId(int Id)
+{
+	m_pServer->SnapFreeId(Id);
 }
 
 CEntity *CGameWorld::FindFirst(int Type)
@@ -242,7 +266,7 @@ void CGameWorld::Tick()
 				for(; pEnt;)
 				{
 					m_pNextTraverseEntity = pEnt->m_pNextTypeEntity;
-					((CCharacter *)pEnt)->PreTick();
+					pEnt->PreTick();
 					pEnt = m_pNextTraverseEntity;
 				}
 			}

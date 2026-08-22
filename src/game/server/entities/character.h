@@ -5,6 +5,8 @@
 
 #include <game/server/entity.h>
 
+#include <optional>
+
 class CPlayer;
 class CCharacterDDRace;
 class CSaveHotReloadTee;
@@ -40,7 +42,7 @@ public:
 
 	void Reset() override;
 	void Destroy() override;
-	virtual void PreTick();
+	void PreTick() override;
 	void Tick() override;
 	void TickDeferred() override;
 	void TickPaused() override;
@@ -159,7 +161,6 @@ private:
 
 	// the player core for the physics
 	CCharacterCore m_Core;
-	CTeamsCore *m_pTeamsCore = nullptr;
 	int m_TuningZone = 0;
 
 	// info for dead reckoning
@@ -183,8 +184,7 @@ protected:
 	void SetTuningZone(int Zone);
 
 public:
-	CTeamsCore *TeamsCore() { return m_pTeamsCore; }
-	void SetTeamsCore(CTeamsCore *pTeamsCore);
+	CTeamsCore *TeamsCore() { return GameWorld()->Teams(); }
 
 	void FillAntibot(CAntibotCharacterData *pData);
 	void Pause(bool Pause);

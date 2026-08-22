@@ -129,7 +129,7 @@ void CDragger::DraggerBeamTick()
 }
 
 CDragger::CDragger(CGameWorld *pGameWorld, int Id, const CLaserData *pData) :
-	CEntity(pGameWorld, CGameWorld::ENTTYPE_DRAGGER)
+	CEntity(pGameWorld, CGameWorld::ENTTYPE_LASER)
 {
 	m_Core = vec2(0.f, 0.f);
 	m_Id = Id;

@@ -10,7 +10,7 @@
 #include <cmath>
 
 CDoor::CDoor(CGameWorld *pGameWorld, int Id, const CLaserData *pData) :
-	CEntity(pGameWorld, CGameWorld::ENTTYPE_DOOR)
+	CEntity(pGameWorld, CGameWorld::ENTTYPE_LASER)
 {
 	m_Id = Id;
 	m_Active = false;

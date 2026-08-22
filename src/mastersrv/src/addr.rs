@@ -11,6 +11,7 @@ pub enum Protocol {
     V5,
     V6,
     V7,
+    Quic,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -41,7 +42,7 @@ pub struct UnknownProtocol;
 
 impl fmt::Display for UnknownProtocol {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        "protocol must be one of tw-0.5+udp, tw-0.6+udp or tw-0.7+udp".fmt(f)
+        "protocol must be one of tw-0.5+udp, tw-0.6+udp, tw-0.7+udp or ddnet+quic".fmt(f)
     }
 }
 
@@ -53,6 +54,7 @@ impl FromStr for Protocol {
             "tw-0.5+udp" => V5,
             "tw-0.6+udp" => V6,
             "tw-0.7+udp" => V7,
+            "ddnet+quic" => Quic,
             _ => return Err(UnknownProtocol),
         })
     }
@@ -73,7 +75,7 @@ impl<'de> serde::de::Visitor<'de> for ProtocolVisitor {
     type Value = Protocol;
 
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("one of \"tw-0.5+udp\", \"tw-0.6+udp\" and \"tw-0.7+udp\"")
+        f.write_str("one of \"tw-0.5+udp\", \"tw-0.6+udp\", \"tw-0.7+udp\" and \"ddnet+quic\"")
     }
     fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Protocol, E> {
         let invalid_value = || E::invalid_value(serde::de::Unexpected::Str(v), &self);
@@ -97,6 +99,7 @@ impl Protocol {
             V5 => "tw-0.5+udp",
             V6 => "tw-0.6+udp",
             V7 => "tw-0.7+udp",
+            Quic => "ddnet+quic",
         }
     }
 }
@@ -300,6 +303,14 @@ mod test {
                 ip: IpAddr::from_str("::1").unwrap(),
                 port: 8303,
                 protocol: Protocol::V6,
+            }
+        );
+        assert_eq!(
+            Addr::from_str("ddnet+quic://127.0.0.1:8303").unwrap(),
+            Addr {
+                ip: IpAddr::from_str("127.0.0.1").unwrap(),
+                port: 8303,
+                protocol: Protocol::Quic,
             }
         );
     }

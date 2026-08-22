@@ -46,6 +46,7 @@
 #include <engine/shared/fifo.h>
 #include <engine/shared/filecollection.h>
 #include <engine/shared/masterserver.h>
+#include <engine/shared/modern_wire.h>
 #include <engine/shared/network.h>
 #include <engine/shared/packer.h>
 #include <engine/shared/protocol.h>
@@ -53,6 +54,7 @@
 #include <engine/shared/protocol_ex.h>
 #include <engine/shared/protocolglue.h>
 #include <engine/shared/rust_version.h>
+#include <engine/shared/serverinfo.h>
 #include <engine/shared/snapshot.h>
 #include <engine/shared/uuid_manager.h>
 #include <engine/sound.h>
@@ -84,6 +86,7 @@
 #undef main
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <limits>
 #include <stack>
@@ -94,6 +97,39 @@ using namespace std::chrono_literals;
 
 static constexpr ColorRGBA CLIENT_NETWORK_PRINT_COLOR = ColorRGBA(0.7f, 1, 0.7f, 1.0f);
 static constexpr ColorRGBA CLIENT_NETWORK_PRINT_ERROR_COLOR = ColorRGBA(1.0f, 0.25f, 0.25f, 1.0f);
+static constexpr size_t MAX_QUIC_KNOWN_HOSTS = 256;
+
+static bool NormalizeQuicTrustHost(const char *pHost, char *pBuffer, int BufferSize)
+{
+	if(!pHost || pHost[0] == '\0' || str_length(pHost) >= BufferSize || !str_utf8_check(pHost))
+		return false;
+	NETADDR Address;
+	if(net_addr_from_str(&Address, pHost) == 0)
+	{
+		if(Address.port != 0)
+			return false;
+		net_addr_str(&Address, pBuffer, BufferSize, false);
+		if(Address.type == NETTYPE_IPV6)
+		{
+			const int Length = str_length(pBuffer);
+			mem_move(pBuffer, pBuffer + 1, Length - 2);
+			pBuffer[Length - 2] = '\0';
+		}
+		return true;
+	}
+	str_utf8_tolower(pHost, pBuffer, BufferSize);
+	int Length = str_length(pBuffer);
+	if(Length > 0 && pBuffer[Length - 1] == '.')
+		pBuffer[--Length] = '\0';
+	if(Length == 0)
+		return false;
+	for(const unsigned char *p = reinterpret_cast<const unsigned char *>(pBuffer); *p; ++p)
+	{
+		if(!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '.' || *p == '-' || *p == '_'))
+			return false;
+	}
+	return true;
+}
 
 CSnapshotDelta *CClient::SnapshotDelta()
 {
@@ -188,7 +224,7 @@ static inline bool RepackMsg(const CMsgPacker *pMsg, CPacker &Packer, bool Sixup
 
 int CClient::SendMsg(int Conn, CMsgPacker *pMsg, int Flags)
 {
-	CNetChunk Packet;
+	CNetChunk Packet = {};
 
 	if(State() == IClient::STATE_OFFLINE)
 		return 0;
@@ -198,11 +234,9 @@ int CClient::SendMsg(int Conn, CMsgPacker *pMsg, int Flags)
 	if(!RepackMsg(pMsg, Pack, IsSixup()))
 		return 0;
 
-	mem_zero(&Packet, sizeof(CNetChunk));
 	Packet.m_ClientId = 0;
 	Packet.m_pData = Pack.Data();
 	Packet.m_DataSize = Pack.Size();
-
 	if(Flags & MSGFLAG_VITAL)
 		Packet.m_Flags |= NETSENDFLAG_VITAL;
 	if(Flags & MSGFLAG_FLUSH)
@@ -214,14 +248,24 @@ int CClient::SendMsg(int Conn, CMsgPacker *pMsg, int Flags)
 		{
 			if(DemoRecorder.IsRecording())
 			{
-				DemoRecorder.RecordMessage(Packet.m_pData, Packet.m_DataSize);
+				DemoRecorder.RecordMessage(Pack.Data(), Pack.Size());
 			}
 		}
 	}
 
 	if(!(Flags & MSGFLAG_NOSEND))
 	{
-		m_aNetClient[Conn].Send(&Packet);
+		if(Conn == CONN_MAIN && m_UseQuic)
+		{
+			const bool Vital = (Flags & MSGFLAG_VITAL) != 0;
+			if(!m_QuicTransport.Send(m_QuicSession, Packet.m_pData, Packet.m_DataSize, Vital) && Vital)
+			{
+				DisconnectWithReason("QUIC reliable queue full");
+				return -1;
+			}
+		}
+		else
+			m_aNetClient[Conn].Send(&Packet);
 	}
 
 	return 0;
@@ -614,6 +658,71 @@ void CClient::GenerateTimeoutCodes(const NETADDR *pAddrs, int NumAddrs)
 	}
 }
 
+void CClient::StartLegacyConnection(const NETADDR *pAddrs, int NumAddrs, bool Sixup)
+{
+	if(m_QuicTransport.IsRunning())
+	{
+		for(int i = 0; i < NumAddrs; i++)
+			m_QuicTransport.SetLegacyPeer(&pAddrs[i], true);
+	}
+	m_Sixup = Sixup;
+	if(Sixup)
+		m_aNetClient[CONN_MAIN].Connect7(pAddrs, NumAddrs);
+	else
+		m_aNetClient[CONN_MAIN].Connect(pAddrs, NumAddrs);
+	m_aNetClient[CONN_MAIN].RefreshStun();
+	GenerateTimeoutCodes(pAddrs, NumAddrs);
+}
+
+void CClient::ClearQuicFallback()
+{
+	if(m_QuicTransport.IsRunning())
+	{
+		for(int i = 0; i < m_NumQuicFallbackAddrs; i++)
+			m_QuicTransport.SetLegacyPeer(&m_aQuicFallbackAddrs[i], false);
+	}
+	m_QuicFallbackStarted = false;
+	m_NumQuicFallbackAddrs = 0;
+	m_QuicFallbackStartTime = 0;
+	mem_zero(m_aQuicFallbackAddrs, sizeof(m_aQuicFallbackAddrs));
+}
+
+void CClient::ClearQuicTrust()
+{
+	m_aQuicTrustHost[0] = '\0';
+	m_QuicTrustPort = 0;
+	m_QuicExpectedIdentity = {};
+	m_QuicIdentityRequired = false;
+	m_QuicIdentityKnown = false;
+	m_QuicRememberIdentity = false;
+}
+
+const CClient::CQuicKnownHost *CClient::FindQuicKnownHost(const char *pHost, int Port) const
+{
+	for(const CQuicKnownHost &KnownHost : m_vQuicKnownHosts)
+	{
+		if(KnownHost.m_Port == Port && str_comp(KnownHost.m_aHost, pHost) == 0)
+			return &KnownHost;
+	}
+	return nullptr;
+}
+
+bool CClient::AddQuicKnownHost(const char *pHost, int Port, SHA256_DIGEST IdentityFingerprint)
+{
+	char aNormalizedHost[128];
+	if(!in_range(Port, 1, 65535) || !NormalizeQuicTrustHost(pHost, aNormalizedHost, sizeof(aNormalizedHost)))
+		return false;
+	if(const CQuicKnownHost *pKnownHost = FindQuicKnownHost(aNormalizedHost, Port))
+		return pKnownHost->m_IdentityFingerprint == IdentityFingerprint;
+	if(m_vQuicKnownHosts.size() >= MAX_QUIC_KNOWN_HOSTS)
+		return false;
+	CQuicKnownHost &KnownHost = m_vQuicKnownHosts.emplace_back();
+	str_copy(KnownHost.m_aHost, aNormalizedHost);
+	KnownHost.m_Port = Port;
+	KnownHost.m_IdentityFingerprint = IdentityFingerprint;
+	return true;
+}
+
 void CClient::Connect(const char *pAddress, const char *pPassword)
 {
 	// Disconnect will not change the state if we are already quitting/restarting
@@ -634,39 +743,105 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	int NumConnectAddrs = 0;
 	NETADDR aConnectAddrs[MAX_SERVER_ADDRESSES];
 	mem_zero(aConnectAddrs, sizeof(aConnectAddrs));
+	char aaConnectHosts[MAX_SERVER_ADDRESSES][128] = {};
+	char aQuicServerName[128] = {};
 	const char *pNextAddr = pAddress;
-	char aBuffer[128];
+	char aBuffer[256];
+	int NumConnectTokens = 0;
 	bool OnlySixup = true;
+	bool DirectQuic = false;
+	bool InvalidDirectQuicLink = false;
+	SHA256_DIGEST DirectQuicIdentityFingerprint = {};
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	int WebsocketSecure = -1;
+	bool MixedWebsocketSchemes = false;
+#endif
 	while((pNextAddr = str_next_token(pNextAddr, ",", aBuffer, sizeof(aBuffer))))
 	{
-		NETADDR NextAddr;
-		char aHost[128];
-		const int UrlParseResult = net_addr_from_url(&NextAddr, aBuffer, aHost, sizeof(aHost));
-		bool Sixup = NextAddr.type & NETTYPE_TW7;
-		if(UrlParseResult > 0)
-			str_copy(aHost, aBuffer);
-
-		if(net_host_lookup(aHost, &NextAddr, m_aNetClient[CONN_MAIN].NetType()) != 0)
+		NumConnectTokens++;
+		if(str_startswith(aBuffer, QUIC_CONNECTLINK_DOUBLE_SLASH))
 		{
-			log_error("client", "could not find address of %s", aHost);
+			if(DirectQuic || NumConnectTokens != 1 || !ParseQuicDirectLinkFingerprint(aBuffer, &DirectQuicIdentityFingerprint))
+			{
+				InvalidDirectQuicLink = true;
+				continue;
+			}
+			DirectQuic = true;
+		}
+		else if(DirectQuic)
+		{
+			InvalidDirectQuicLink = true;
 			continue;
 		}
+		NETADDR NextAddr;
+		char aHost[128];
+		NETADDR ParsedAddr;
+		const int UrlResult = net_addr_from_url(&ParsedAddr, aBuffer, aHost, sizeof(aHost));
+		if(UrlResult > 0)
+		{
+			if(net_addr_from_str(&ParsedAddr, aBuffer) == 0)
+				net_addr_str(&ParsedAddr, aHost, sizeof(aHost), false);
+			else
+			{
+				str_copy(aHost, aBuffer);
+				if(char *pPort = const_cast<char *>(str_rchr(aHost, ':')))
+					*pPort = '\0';
+			}
+		}
+		else if(UrlResult == 0)
+			net_addr_str(&ParsedAddr, aHost, sizeof(aHost), false);
+		else if(char *pPort = const_cast<char *>(str_rchr(aHost, ':')))
+			*pPort = '\0';
+		if(net_addr_from_url_lookup(&NextAddr, aBuffer, m_aNetClient[CONN_MAIN].NetType()) != 0)
+		{
+			log_error("client", "could not find address of %s", aBuffer);
+			continue;
+		}
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		// Emscripten tunnels all traffic through websockets, so websocket addresses are
+		// used like normal addresses and only their scheme is applied globally.
+		if((NextAddr.type & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) != 0)
+		{
+			const int NextWebsocketSecure = (NextAddr.type & NETTYPE_WEBSOCKET_TLS) != 0;
+			MixedWebsocketSchemes |= WebsocketSecure >= 0 && WebsocketSecure != NextWebsocketSecure;
+			WebsocketSecure = NextWebsocketSecure;
+			const bool Ipv4 = (NextAddr.type & NETTYPE_WEBSOCKET_IPV4) != 0;
+			NextAddr.type &= ~(NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6 | NETTYPE_WEBSOCKET_TLS);
+			NextAddr.type |= Ipv4 ? NETTYPE_IPV4 : NETTYPE_IPV6;
+		}
+#else
+		if((NextAddr.type & NETTYPE_WEBSOCKET_TLS) != 0)
+		{
+			log_error("client", "secure websockets (ddnet-20+wss://) are not supported by this client");
+			continue;
+		}
+		if((NextAddr.type & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) != 0 &&
+			(m_aNetClient[CONN_MAIN].NetType() & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) == 0)
+		{
+			log_error("client", "websockets (ddnet-20+ws://) are not supported by this client");
+			continue;
+		}
+#endif
+		const bool Sixup = (NextAddr.type & NETTYPE_TW7) != 0;
 		if(NumConnectAddrs == (int)std::size(aConnectAddrs))
 		{
-			log_warn("client", "too many connect addresses, ignoring %s", aHost);
+			log_warn("client", "too many connect addresses, ignoring %s", aBuffer);
 			continue;
 		}
 		if(NextAddr.port == 0)
 		{
 			NextAddr.port = 8303;
 		}
-		if(Sixup)
-			NextAddr.type |= NETTYPE_TW7;
-		else
+		if(!Sixup)
 			OnlySixup = false;
+		if(!NormalizeQuicTrustHost(aHost, aaConnectHosts[NumConnectAddrs], sizeof(aaConnectHosts[NumConnectAddrs])))
+		{
+			log_error("client", "invalid connect host '%s'", aHost);
+			continue;
+		}
 
-		char aNextAddr[NETADDR_MAXSTRSIZE];
-		net_addr_str(&NextAddr, aNextAddr, sizeof(aNextAddr), true);
+		char aNextAddr[NETADDR_URL_MAXSTRSIZE];
+		net_addr_url_str(&NextAddr, aNextAddr, sizeof(aNextAddr), true);
 		log_debug("client", "resolved connect address '%s' to %s", aBuffer, aNextAddr);
 
 		if(NextAddr == LastAddr)
@@ -675,8 +850,27 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		}
 
 		aConnectAddrs[NumConnectAddrs] = NextAddr;
+		if(aQuicServerName[0] == '\0')
+			str_copy(aQuicServerName, aaConnectHosts[NumConnectAddrs]);
 		NumConnectAddrs += 1;
 	}
+	if(InvalidDirectQuicLink)
+	{
+		log_error("client", "direct QUIC links must contain exactly one host and a 64-digit #sha256 identity fingerprint");
+		return;
+	}
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(MixedWebsocketSchemes)
+	{
+		log_error("client", "cannot mix ws and wss connect addresses");
+		return;
+	}
+	if(WebsocketSecure >= 0)
+		net_websocket_set_secure(WebsocketSecure != 0);
+	else
+		net_websocket_reset_secure();
+#endif
 
 	if(NumConnectAddrs == 0)
 	{
@@ -707,24 +901,229 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	}
 
 	m_CanReceiveServerCapabilities = true;
-
-	m_Sixup = OnlySixup;
-	if(m_Sixup)
-	{
-		m_aNetClient[CONN_MAIN].Connect7(aConnectAddrs, NumConnectAddrs);
-	}
-	else
-	{
-		m_aNetClient[CONN_MAIN].Connect(aConnectAddrs, NumConnectAddrs);
-	}
-
-	m_aNetClient[CONN_MAIN].RefreshStun();
-	SetState(IClient::STATE_CONNECTING);
+	ClearQuicTrust();
 
 	m_aInputtimeMarginGraphs[CONN_MAIN].Init(-150.0f, 150.0f);
 	m_aGametimeMarginGraphs[CONN_MAIN].Init(-150.0f, 150.0f);
 
-	GenerateTimeoutCodes(aConnectAddrs, NumConnectAddrs);
+	m_Sixup = OnlySixup;
+	auto SameCertificatePins = [](const CServerInfo &Left, const CServerInfo &Right) {
+		if(Left.m_HasQuicIdentityFingerprint != Right.m_HasQuicIdentityFingerprint ||
+			(Left.m_HasQuicIdentityFingerprint && Left.m_QuicIdentityFingerprint != Right.m_QuicIdentityFingerprint) ||
+			Left.m_HasQuicNextCertificateSha256 != Right.m_HasQuicNextCertificateSha256)
+			return false;
+		const bool SameOrder = Left.m_QuicCertificateSha256 == Right.m_QuicCertificateSha256 &&
+				       (!Left.m_HasQuicNextCertificateSha256 || Left.m_QuicNextCertificateSha256 == Right.m_QuicNextCertificateSha256);
+		const bool ReverseOrder = Left.m_HasQuicNextCertificateSha256 && Left.m_QuicCertificateSha256 == Right.m_QuicNextCertificateSha256 && Left.m_QuicNextCertificateSha256 == Right.m_QuicCertificateSha256;
+		return SameOrder || ReverseOrder;
+	};
+	auto FindTransportEntry = [&](NETADDR Address) {
+		if(CServerBrowser::CServerEntry *pEntry = m_ServerBrowser.Find(Address))
+			return pEntry;
+		Address.type &= ~NETTYPE_TW7;
+		return m_ServerBrowser.Find(Address);
+	};
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(g_Config.m_ClWebtransport && !DirectQuic)
+	{
+		const CServerInfo *pWebTransportInfo = nullptr;
+		NETADDR WebTransportAddress = {};
+		bool MetadataAmbiguous = false;
+		for(int i = 0; i < NumConnectAddrs; i++)
+		{
+			const CServerBrowser::CServerEntry *pEntry = FindTransportEntry(aConnectAddrs[i]);
+			if(!pEntry || !pEntry->m_Info.m_WebTransport || pEntry->m_Info.m_QuicPort != aConnectAddrs[i].port ||
+				(OnlySixup && !(pEntry->m_Info.m_QuicCapabilities & CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7)))
+				continue;
+			if(pWebTransportInfo &&
+				(str_comp(pWebTransportInfo->m_aWebTransportUrl, pEntry->m_Info.m_aWebTransportUrl) != 0 ||
+					pWebTransportInfo->m_WebTransportCertificateMode != pEntry->m_Info.m_WebTransportCertificateMode ||
+					!SameCertificatePins(*pWebTransportInfo, pEntry->m_Info)))
+			{
+				MetadataAmbiguous = true;
+				break;
+			}
+			pWebTransportInfo = &pEntry->m_Info;
+			WebTransportAddress = aConnectAddrs[i];
+			WebTransportAddress.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+		}
+		if(pWebTransportInfo && !MetadataAmbiguous)
+		{
+			const bool UseCertificateHashes = pWebTransportInfo->m_WebTransportCertificateMode == CServerInfo::EWebTransportCertificateMode::HASH;
+			char aWebTransportUrl[256];
+			const char *pWebTransportUrl = pWebTransportInfo->m_aWebTransportUrl;
+			if(pWebTransportUrl[0] == '\0')
+			{
+				char aWebTransportHost[NETADDR_MAXSTRSIZE];
+				net_addr_str(&WebTransportAddress, aWebTransportHost, sizeof(aWebTransportHost), false);
+				if(FormatWebTransportUrl(aWebTransportUrl, sizeof(aWebTransportUrl), aWebTransportHost, WebTransportAddress.port))
+					pWebTransportUrl = aWebTransportUrl;
+			}
+			if(pWebTransportUrl[0] != '\0' && m_QuicTransport.StartWebTransportClient(
+								  pWebTransportUrl,
+								  &WebTransportAddress,
+								  UseCertificateHashes,
+								  pWebTransportInfo->m_QuicCertificateSha256,
+								  UseCertificateHashes && pWebTransportInfo->m_HasQuicNextCertificateSha256 ? &pWebTransportInfo->m_QuicNextCertificateSha256 : nullptr,
+								  OnlySixup))
+			{
+				m_UseQuic = true;
+				m_UseWebTransport = true;
+				m_QuicConnected = false;
+				m_QuicAuto = true;
+				m_QuicServerAddress = WebTransportAddress;
+				mem_copy(m_aQuicFallbackAddrs, aConnectAddrs, NumConnectAddrs * sizeof(aConnectAddrs[0]));
+				m_NumQuicFallbackAddrs = NumConnectAddrs;
+				m_QuicFallbackStartTime = time_get() + g_Config.m_ClQuicFallbackDelayMs * time_freq() / 1000;
+				m_QuicFallbackStarted = false;
+				SetState(IClient::STATE_CONNECTING);
+				return;
+			}
+			m_QuicTransport.RecordFallback();
+			const auto &Metrics = m_QuicTransport.Metrics();
+			log_info("quic", "transport=webtransport attempts=%llu connections=%llu failures=%llu/%llu/%llu fallback=%llu handshake_ms=%llu",
+				static_cast<unsigned long long>(Metrics.m_ConnectAttempts), static_cast<unsigned long long>(Metrics.m_Connections),
+				static_cast<unsigned long long>(Metrics.m_ConnectFailuresNetwork), static_cast<unsigned long long>(Metrics.m_ConnectFailuresIdentity), static_cast<unsigned long long>(Metrics.m_ConnectFailuresProtocol),
+				static_cast<unsigned long long>(Metrics.m_Fallbacks), static_cast<unsigned long long>(Metrics.m_LastHandshakeMilliseconds));
+			log_info("client", "WebTransport unavailable, using the configured legacy transport: %s", m_QuicTransport.ErrorString());
+		}
+		else if(MetadataAmbiguous)
+			log_warn("client", "conflicting WebTransport identities for connect addresses, using the configured legacy transport");
+	}
+#endif
+	if(DirectQuic || g_Config.m_ClQuic)
+	{
+		NETADDR QuicAddress = aConnectAddrs[0];
+		QuicAddress.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+		char aServerAddress[NETADDR_MAXSTRSIZE];
+		net_addr_str(&QuicAddress, aServerAddress, sizeof(aServerAddress), true);
+		char aBindAddress[NETADDR_MAXSTRSIZE];
+		str_format(aBindAddress, sizeof(aBindAddress), QuicAddress.type == NETTYPE_IPV6 ? "[::]:%d" : "0.0.0.0:%d", g_Config.m_ClPort);
+		const char *pServerName = g_Config.m_ClQuicServerName[0] != '\0' ? g_Config.m_ClQuicServerName : aQuicServerName;
+		const CQuicKnownHost *pKnownHost = FindQuicKnownHost(aaConnectHosts[0], QuicAddress.port);
+		bool Started;
+		if(DirectQuic)
+		{
+			m_QuicExpectedIdentity = DirectQuicIdentityFingerprint;
+			m_QuicIdentityRequired = true;
+			Started = m_QuicTransport.StartClientIdentity(aBindAddress, aServerAddress, pServerName, DirectQuicIdentityFingerprint, OnlySixup);
+		}
+		else if(g_Config.m_ClQuicCert[0] != '\0')
+			Started = m_QuicTransport.StartClient(aBindAddress, aServerAddress, pServerName, g_Config.m_ClQuicCert, OnlySixup);
+		else if(pKnownHost)
+		{
+			str_copy(m_aQuicTrustHost, pKnownHost->m_aHost);
+			m_QuicTrustPort = pKnownHost->m_Port;
+			m_QuicExpectedIdentity = pKnownHost->m_IdentityFingerprint;
+			m_QuicIdentityRequired = true;
+			m_QuicIdentityKnown = true;
+			Started = m_QuicTransport.StartClientIdentity(aBindAddress, aServerAddress, pServerName, pKnownHost->m_IdentityFingerprint, OnlySixup);
+		}
+		else
+		{
+			str_copy(m_aQuicTrustHost, aaConnectHosts[0]);
+			m_QuicTrustPort = QuicAddress.port;
+			m_QuicIdentityRequired = true;
+			m_QuicRememberIdentity = true;
+			Started = m_QuicTransport.StartClientTofu(aBindAddress, aServerAddress, pServerName, OnlySixup);
+		}
+		if(!Started)
+		{
+			log_error("client", "could not start %sQUIC: %s", DirectQuic ? "direct " : "", m_QuicTransport.ErrorString());
+			return;
+		}
+		m_UseQuic = true;
+		m_aNetClient[CONN_MAIN].SetPacketFilter(
+			[](void *pUser, const NETADDR *pRemoteAddress, const void *pData, int DataSize) { return static_cast<CQuicTransport *>(pUser)->FeedUdp(pRemoteAddress, pData, DataSize); },
+			&m_QuicTransport);
+		m_QuicConnected = false;
+		m_QuicServerAddress = QuicAddress;
+		SetState(IClient::STATE_CONNECTING);
+		return;
+	}
+
+	const CServerInfo *pQuicInfo = nullptr;
+	NETADDR QuicAddress = {};
+	int QuicAddressIndex = -1;
+	bool QuicMetadataAmbiguous = false;
+	if(g_Config.m_ClQuicAuto)
+	{
+		const int RequiredCapabilities = CServerInfo::QUIC_CAPABILITY_DATAGRAM | CServerInfo::QUIC_CAPABILITY_MAP_STREAM | CServerInfo::QUIC_CAPABILITY_RESUME |
+						 (OnlySixup ? CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7 : 0);
+		for(int i = 0; i < NumConnectAddrs; i++)
+		{
+			const CServerBrowser::CServerEntry *pEntry = FindTransportEntry(aConnectAddrs[i]);
+			if(!pEntry || !pEntry->m_Info.m_QuicSharedPort || pEntry->m_Info.m_QuicPort != aConnectAddrs[i].port ||
+				(pEntry->m_Info.m_QuicCapabilities & RequiredCapabilities) != RequiredCapabilities)
+				continue;
+			if(pQuicInfo && (pQuicInfo->m_QuicPort != pEntry->m_Info.m_QuicPort || !SameCertificatePins(*pQuicInfo, pEntry->m_Info)))
+			{
+				QuicMetadataAmbiguous = true;
+				break;
+			}
+			pQuicInfo = &pEntry->m_Info;
+			QuicAddress = aConnectAddrs[i];
+			QuicAddress.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+			QuicAddressIndex = i;
+		}
+	}
+	if(pQuicInfo && !QuicMetadataAmbiguous)
+	{
+		char aServerAddress[NETADDR_MAXSTRSIZE];
+		net_addr_str(&QuicAddress, aServerAddress, sizeof(aServerAddress), true);
+		char aBindAddress[NETADDR_MAXSTRSIZE];
+		str_format(aBindAddress, sizeof(aBindAddress), QuicAddress.type == NETTYPE_IPV6 ? "[::]:%d" : "0.0.0.0:%d", g_Config.m_ClPort);
+		char aAutoQuicServerName[NETADDR_MAXSTRSIZE];
+		net_addr_str(&QuicAddress, aAutoQuicServerName, sizeof(aAutoQuicServerName), false);
+		if(QuicAddress.type == NETTYPE_IPV6)
+		{
+			const int Length = str_length(aAutoQuicServerName);
+			mem_move(aAutoQuicServerName, aAutoQuicServerName + 1, Length - 2);
+			aAutoQuicServerName[Length - 2] = '\0';
+		}
+		const char *pServerName = g_Config.m_ClQuicServerName[0] != '\0' ? g_Config.m_ClQuicServerName : aAutoQuicServerName;
+		const char *pTrustHost = QuicAddressIndex >= 0 ? aaConnectHosts[QuicAddressIndex] : aQuicServerName;
+		const CQuicKnownHost *pKnownHost = FindQuicKnownHost(pTrustHost, QuicAddress.port);
+		bool Started = false;
+		if(pQuicInfo->m_HasQuicIdentityFingerprint)
+		{
+			const SHA256_DIGEST IdentityFingerprint = pKnownHost ? pKnownHost->m_IdentityFingerprint : pQuicInfo->m_QuicIdentityFingerprint;
+			str_copy(m_aQuicTrustHost, pTrustHost);
+			m_QuicTrustPort = QuicAddress.port;
+			m_QuicExpectedIdentity = IdentityFingerprint;
+			m_QuicIdentityRequired = true;
+			m_QuicIdentityKnown = pKnownHost != nullptr;
+			m_QuicRememberIdentity = pKnownHost == nullptr;
+			Started = m_QuicTransport.StartClientIdentity(aBindAddress, aServerAddress, pServerName, IdentityFingerprint, OnlySixup);
+		}
+		else
+			Started = m_QuicTransport.StartClientSha256(aBindAddress, aServerAddress, pServerName, pQuicInfo->m_QuicCertificateSha256,
+				pQuicInfo->m_HasQuicNextCertificateSha256 ? &pQuicInfo->m_QuicNextCertificateSha256 : nullptr, OnlySixup);
+		if(Started)
+		{
+			m_UseQuic = true;
+			m_aNetClient[CONN_MAIN].SetPacketFilter(
+				[](void *pUser, const NETADDR *pRemoteAddress, const void *pData, int DataSize) { return static_cast<CQuicTransport *>(pUser)->FeedUdp(pRemoteAddress, pData, DataSize); },
+				&m_QuicTransport);
+			m_QuicConnected = false;
+			m_QuicAuto = true;
+			m_QuicServerAddress = QuicAddress;
+			mem_copy(m_aQuicFallbackAddrs, aConnectAddrs, NumConnectAddrs * sizeof(aConnectAddrs[0]));
+			m_NumQuicFallbackAddrs = NumConnectAddrs;
+			m_QuicFallbackStartTime = m_QuicIdentityRequired ? 0 : time_get() + g_Config.m_ClQuicFallbackDelayMs * time_freq() / 1000;
+			m_QuicFallbackStarted = false;
+			SetState(IClient::STATE_CONNECTING);
+			return;
+		}
+		log_error("client", "could not start automatic QUIC: %s", m_QuicTransport.ErrorString());
+		return;
+	}
+	else if(QuicMetadataAmbiguous)
+	{
+		log_warn("client", "conflicting QUIC identities for connect addresses, using legacy UDP");
+	}
+	SetState(IClient::STATE_CONNECTING);
+	StartLegacyConnection(aConnectAddrs, NumConnectAddrs, OnlySixup);
 }
 
 void CClient::DisconnectWithReason(const char *pReason)
@@ -759,6 +1158,60 @@ void CClient::DisconnectWithReason(const char *pReason)
 	m_ExpectedMaplistEntries = -1;
 	m_vMaplistEntries.clear();
 	GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
+	if(m_UseQuic && !m_UseWebTransport && m_QuicConnected && m_QuicSession.IsValid() &&
+		m_QuicTransport.Close(m_QuicSession, pReason ? pReason : "application disconnect"))
+	{
+		const CQuicSessionId ClosingSession = m_QuicSession;
+		const auto Deadline = std::chrono::steady_clock::now() + 300ms;
+		bool Closed = false;
+		while(!Closed && std::chrono::steady_clock::now() < Deadline)
+		{
+			m_aNetClient[CONN_MAIN].Update();
+			CNetChunk Packet;
+			SECURITY_TOKEN ResponseToken;
+			while(m_aNetClient[CONN_MAIN].Recv(&Packet, &ResponseToken, IsSixup()))
+			{
+			}
+			NETADDR Address;
+			unsigned char *pData;
+			int DataSize;
+			while((DataSize = m_QuicTransport.PollUdpSend(&Address, &pData)) > 0)
+				m_aNetClient[CONN_MAIN].SendRaw(&Address, pData, DataSize);
+			CQuicEvent Event;
+			while(m_QuicTransport.Poll(Event))
+			{
+				if(Event.m_Type == EQuicEventType::DISCONNECTED && Event.m_Message.m_Session == ClosingSession)
+					Closed = true;
+			}
+			if(!Closed)
+				std::this_thread::sleep_for(1ms);
+		}
+	}
+	if(m_UseQuic)
+	{
+		const auto &Metrics = m_QuicTransport.Metrics();
+		log_info("quic", "transport=%s attempts=%llu connections=%llu failures=%llu/%llu/%llu fallback=%llu handshake_ms=%llu sent=%llu/%llu recv=%llu/%llu bytes=%llu/%llu queue_drop=%llu/%llu queue_high_water=%llu resume_drop=%llu path_change=%llu",
+			m_UseWebTransport ? "webtransport" : "quic",
+			static_cast<unsigned long long>(Metrics.m_ConnectAttempts), static_cast<unsigned long long>(Metrics.m_Connections),
+			static_cast<unsigned long long>(Metrics.m_ConnectFailuresNetwork), static_cast<unsigned long long>(Metrics.m_ConnectFailuresIdentity), static_cast<unsigned long long>(Metrics.m_ConnectFailuresProtocol),
+			static_cast<unsigned long long>(Metrics.m_Fallbacks), static_cast<unsigned long long>(Metrics.m_LastHandshakeMilliseconds),
+			static_cast<unsigned long long>(Metrics.m_ReliableSent), static_cast<unsigned long long>(Metrics.m_DatagramsSent),
+			static_cast<unsigned long long>(Metrics.m_ReliableReceived), static_cast<unsigned long long>(Metrics.m_DatagramsReceived),
+			static_cast<unsigned long long>(Metrics.m_BytesSent), static_cast<unsigned long long>(Metrics.m_BytesReceived),
+			static_cast<unsigned long long>(Metrics.m_ReliableQueueFull), static_cast<unsigned long long>(Metrics.m_DatagramsDropped),
+			static_cast<unsigned long long>(Metrics.m_CommandQueueHighWater),
+			static_cast<unsigned long long>(Metrics.m_ResumeSendDrops),
+			static_cast<unsigned long long>(Metrics.m_PathChanges));
+	}
+	m_QuicTransport.Shutdown();
+	m_aNetClient[CONN_MAIN].SetPacketFilter(nullptr, nullptr);
+	m_QuicSession = CQuicSessionId();
+	m_UseQuic = false;
+	m_UseWebTransport = false;
+	m_QuicConnected = false;
+	m_QuicAuto = false;
+	ClearQuicFallback();
+	ClearQuicTrust();
 	m_aNetClient[CONN_MAIN].Disconnect(pReason);
 	SetState(IClient::STATE_OFFLINE);
 	GameClient()->Map()->Unload();
@@ -810,6 +1263,11 @@ bool CClient::DummyConnectingDelayed() const
 
 void CClient::DummyConnect()
 {
+	if(m_UseQuic)
+	{
+		log_info("client", "Dummy clients over QUIC are not supported yet.");
+		return;
+	}
 	if(m_aNetClient[CONN_MAIN].State() != NETSTATE_ONLINE)
 	{
 		log_info("client", "Not online.");
@@ -1122,6 +1580,13 @@ void CClient::ResetSocket()
 		char aError[256];
 		if(!InitNetworkClientImpl(BindAddr, Conn, aError, sizeof(aError)))
 			log_error("client", "%s", aError);
+	}
+	if(m_UseQuic && !m_UseWebTransport)
+	{
+		m_aNetClient[CONN_MAIN].SetPacketFilter(
+			[](void *pUser, const NETADDR *pAddress, const void *pData, int DataSize) { return static_cast<CQuicTransport *>(pUser)->FeedUdp(pAddress, pData, DataSize); },
+			&m_QuicTransport);
+		m_QuicTransport.LocalAddressChanged();
 	}
 }
 const char *CClient::PlayerName() const
@@ -1446,7 +1911,23 @@ void CClient::ProcessServerInfo(int RawType, NETADDR *pFrom, const void *pData, 
 	bool DuplicatedPacket = false;
 	if(SavedType == SERVERINFO_EXTENDED)
 	{
-		Up.GetString(); // extra info, reserved
+		const char *pExtraInfo = Up.GetString();
+		if(RawType == SERVERINFO_EXTENDED)
+		{
+			Info.m_QuicCertificateSha256 = {};
+			Info.m_QuicNextCertificateSha256 = {};
+			Info.m_QuicIdentityFingerprint = {};
+			Info.m_QuicPort = 0;
+			Info.m_QuicCapabilities = 0;
+			Info.m_QuicSharedPort = false;
+			Info.m_HasQuicNextCertificateSha256 = false;
+			Info.m_HasQuicIdentityFingerprint = false;
+			Info.m_WebTransport = false;
+			Info.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::NONE;
+			Info.m_aWebTransportPath[0] = '\0';
+			Info.m_aWebTransportUrl[0] = '\0';
+			ParseQuicServerInfoExtra(&Info, pExtraInfo, pFrom->port);
+		}
 
 		uint64_t Flag = (uint64_t)1 << PacketNo;
 		DuplicatedPacket = Info.m_ReceivedPackets & Flag;
@@ -1509,7 +1990,7 @@ void CClient::ProcessServerInfo(int RawType, NETADDR *pFrom, const void *pData, 
 		//
 		// SERVERINFO_EXTENDED_MORE doesn't carry any server
 		// information, so just skip it.
-		if(m_aNetClient[CONN_MAIN].State() == NETSTATE_ONLINE &&
+		if((m_QuicConnected || m_aNetClient[CONN_MAIN].State() == NETSTATE_ONLINE) &&
 			ServerAddress() == *pFrom &&
 			RawType != SERVERINFO_EXTENDED_MORE)
 		{
@@ -1594,6 +2075,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 	CUnpacker Unpacker;
 	Unpacker.Reset(pPacket->m_pData, pPacket->m_DataSize);
 	CMsgPacker Packer(NETMSG_EX, true);
+	const bool Vital = (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0;
 
 	// unpack msgid and system flag
 	int Msg;
@@ -1615,7 +2097,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 	if(IsSixup())
 	{
 		bool IsExMsg = false;
-		int Success = !TranslateSysMsg(&Msg, Sys, &Unpacker, &Packer6, pPacket, &IsExMsg);
+		int Success = !TranslateSysMsg(&Msg, Sys, &Unpacker, &Packer6, &pPacket->m_Address, &IsExMsg);
 		if(Msg < 0)
 			return;
 		if(Success && !IsExMsg)
@@ -1627,7 +2109,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 	if(Sys)
 	{
 		// system message
-		if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAP_DETAILS)
+		if(Conn == CONN_MAIN && Vital && Msg == NETMSG_MAP_DETAILS)
 		{
 			const char *pMap = Unpacker.GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES);
 			SHA256_DIGEST *pMapSha256 = (SHA256_DIGEST *)Unpacker.GetRaw(sizeof(*pMapSha256));
@@ -1652,7 +2134,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			MapDetails.m_Sha256 = *pMapSha256;
 			str_copy(MapDetails.m_aUrl, pMapUrl);
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_CAPABILITIES)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_CAPABILITIES)
 		{
 			if(!m_CanReceiveServerCapabilities)
 			{
@@ -1668,7 +2150,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			m_CanReceiveServerCapabilities = false;
 			m_ServerSentCapabilities = true;
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAP_CHANGE)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_MAP_CHANGE)
 		{
 			if(m_CanReceiveServerCapabilities)
 			{
@@ -1834,7 +2316,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				}
 			}
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAP_RELOAD)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_MAP_RELOAD)
 		{
 			if(m_DummyConnected)
 			{
@@ -1847,7 +2329,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				m_DummyDeactivateOnReconnect = false;
 			}
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_CON_READY)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_CON_READY)
 		{
 			if(!GameClient()->Map()->IsLoaded())
 			{
@@ -1872,8 +2354,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 		else if(Msg == NETMSG_PING)
 		{
 			CMsgPacker MsgP(NETMSG_PING_REPLY, true);
-			int Vital = (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 ? MSGFLAG_VITAL : 0;
-			SendMsg(Conn, &MsgP, MSGFLAG_FLUSH | Vital);
+			SendMsg(Conn, &MsgP, (Vital ? MSGFLAG_VITAL : 0) | MSGFLAG_FLUSH);
 		}
 		else if(Msg == NETMSG_PINGEX)
 		{
@@ -1884,8 +2365,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			}
 			CMsgPacker MsgP(NETMSG_PONGEX, true);
 			MsgP.AddRaw(pId, sizeof(*pId));
-			int Vital = (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 ? MSGFLAG_VITAL : 0;
-			SendMsg(Conn, &MsgP, MSGFLAG_FLUSH | Vital);
+			SendMsg(Conn, &MsgP, (Vital ? MSGFLAG_VITAL : 0) | MSGFLAG_FLUSH);
 		}
 		else if(Conn == CONN_MAIN && Msg == NETMSG_PONGEX)
 		{
@@ -1965,7 +2445,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				DummyConnect();
 			}
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_CMD_ADD)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_RCON_CMD_ADD)
 		{
 			const char *pName = Unpacker.GetString(CUnpacker::SANITIZE_CC);
 			const char *pHelp = Unpacker.GetString(CUnpacker::SANITIZE_CC);
@@ -1977,7 +2457,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			}
 			m_GotRconCommands++;
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_CMD_REM)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_RCON_CMD_REM)
 		{
 			const char *pName = Unpacker.GetString(CUnpacker::SANITIZE_CC);
 			if(!Unpacker.Error())
@@ -1986,7 +2466,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
 			}
 		}
-		else if((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_AUTH_STATUS)
+		else if(Vital && Msg == NETMSG_RCON_AUTH_STATUS)
 		{
 			int ResultInt = Unpacker.GetInt();
 			if(!Unpacker.Error())
@@ -2014,7 +2494,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				}
 			}
 		}
-		else if(!Dummy && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_LINE)
+		else if(!Dummy && Vital && Msg == NETMSG_RCON_LINE)
 		{
 			const char *pLine = Unpacker.GetString();
 			if(!Unpacker.Error())
@@ -2314,7 +2794,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				GameClient()->OnRconType(UsernameReq);
 			}
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_CMD_GROUP_START)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_RCON_CMD_GROUP_START)
 		{
 			const int ExpectedRconCommands = Unpacker.GetInt();
 			if(Unpacker.Error() || ExpectedRconCommands < 0)
@@ -2323,11 +2803,11 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			m_ExpectedRconCommands = ExpectedRconCommands;
 			m_GotRconCommands = 0;
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_CMD_GROUP_END)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_RCON_CMD_GROUP_END)
 		{
 			m_ExpectedRconCommands = -1;
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAPLIST_ADD)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_MAPLIST_ADD)
 		{
 			while(true)
 			{
@@ -2343,7 +2823,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				}
 			}
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAPLIST_GROUP_START)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_MAPLIST_GROUP_START)
 		{
 			const int ExpectedMaplistEntries = Unpacker.GetInt();
 			if(Unpacker.Error() || ExpectedMaplistEntries < 0)
@@ -2353,13 +2833,13 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
 			m_ExpectedMaplistEntries = ExpectedMaplistEntries;
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAPLIST_GROUP_END)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_MAPLIST_GROUP_END)
 		{
 			m_ExpectedMaplistEntries = -1;
 		}
 	}
 	// the client handles only vital messages https://github.com/ddnet/ddnet/issues/11178
-	else if((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 || Msg == NETMSGTYPE_SV_PREINPUT)
+	else if(Vital || Msg == NETMSGTYPE_SV_PREINPUT)
 	{
 		// game message
 		if(!Dummy)
@@ -2605,6 +3085,8 @@ void CClient::LoadDDNetInfo()
 
 int CClient::ConnectNetTypes() const
 {
+	if(m_UseQuic)
+		return m_QuicServerAddress.type;
 	const NETADDR *pConnectAddrs;
 	int NumConnectAddrs;
 	m_aNetClient[CONN_MAIN].ConnectAddresses(&pConnectAddrs, &NumConnectAddrs);
@@ -2622,13 +3104,177 @@ void CClient::PumpNetwork()
 	{
 		NetClient.Update();
 	}
+	NETADDR QuicAddress;
+	unsigned char *pQuicData;
+	int QuicDataSize;
+	while((QuicDataSize = m_QuicTransport.PollUdpSend(&QuicAddress, &pQuicData)) > 0)
+		m_aNetClient[CONN_MAIN].SendRaw(&QuicAddress, pQuicData, QuicDataSize);
+
+	CQuicEvent QuicEvent;
+	while(m_QuicTransport.Poll(QuicEvent))
+	{
+		if(QuicEvent.m_Type == EQuicEventType::CONNECTED && State() == IClient::STATE_CONNECTING)
+		{
+			if(m_QuicIdentityRequired)
+			{
+				if(QuicEvent.m_Message.m_DataSize != SHA256_DIGEST_LENGTH)
+				{
+					DisconnectWithReason("QUIC server identity proof did not return a fingerprint");
+					break;
+				}
+				SHA256_DIGEST IdentityFingerprint;
+				mem_copy(IdentityFingerprint.data, QuicEvent.m_Message.m_pData, sizeof(IdentityFingerprint.data));
+				if(m_QuicIdentityKnown && IdentityFingerprint != m_QuicExpectedIdentity)
+				{
+					DisconnectWithReason("QUIC server identity changed");
+					break;
+				}
+				if(m_QuicRememberIdentity)
+				{
+					if(!AddQuicKnownHost(m_aQuicTrustHost, m_QuicTrustPort, IdentityFingerprint))
+					{
+						DisconnectWithReason("could not store QUIC server identity");
+						break;
+					}
+					m_QuicExpectedIdentity = IdentityFingerprint;
+					m_QuicIdentityKnown = true;
+					m_QuicRememberIdentity = false;
+					if(!m_pConfigManager->Save())
+						log_warn("client", "could not persist trusted QUIC server identity");
+				}
+			}
+			if(m_QuicAuto)
+			{
+				if(m_QuicFallbackStarted)
+					m_aNetClient[CONN_MAIN].Disconnect(nullptr);
+				m_QuicAuto = false;
+				ClearQuicFallback();
+			}
+			m_QuicSession = QuicEvent.m_Message.m_Session;
+			m_QuicServerAddress = QuicEvent.m_Message.m_PeerAddress;
+			m_QuicConnected = true;
+			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", m_UseWebTransport ? "WebTransport connected, sending info" : "QUIC connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
+			SetState(IClient::STATE_LOADING);
+			SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_INITIAL);
+			SendInfo(CONN_MAIN);
+		}
+		else if(QuicEvent.m_Type == EQuicEventType::MESSAGE && QuicEvent.m_Message.m_Session == m_QuicSession)
+		{
+			CNetChunk Packet = {};
+			Packet.m_ClientId = 0;
+			Packet.m_Address = QuicEvent.m_Message.m_PeerAddress;
+			Packet.m_Flags = QuicEvent.m_Message.m_Vital ? NET_CHUNKFLAG_VITAL : 0;
+			Packet.m_pData = QuicEvent.m_Message.m_pData;
+			Packet.m_DataSize = QuicEvent.m_Message.m_DataSize;
+			ProcessServerPacket(&Packet, CONN_MAIN, false);
+		}
+		else if(QuicEvent.m_Type == EQuicEventType::MAP_HEADER && QuicEvent.m_Message.m_Session == m_QuicSession)
+		{
+			ModernWire::CMapHeaderView Header = {};
+			const auto Result = ModernWire::DecodeMapHeader(
+				{static_cast<const unsigned char *>(QuicEvent.m_Message.m_pData), static_cast<size_t>(QuicEvent.m_Message.m_DataSize)},
+				Header);
+			const size_t NameLength = str_length(m_aMapdownloadName);
+			if(Result != ModernWire::EDecodeResult::OK ||
+				!m_MapdownloadFileTemp ||
+				Header.m_Size != static_cast<uint64_t>(m_MapdownloadTotalsize) ||
+				Header.m_Crc != static_cast<uint32_t>(m_MapdownloadCrc) ||
+				Header.m_Name.m_Size != NameLength ||
+				mem_comp(Header.m_Name.m_pData, m_aMapdownloadName, NameLength) != 0 ||
+				(m_MapdownloadSha256.has_value() && mem_comp(Header.m_aSha256, m_MapdownloadSha256->data, sizeof(Header.m_aSha256)) != 0))
+			{
+				DisconnectWithReason("QUIC map header does not match MAP_CHANGE");
+				break;
+			}
+			if(!m_MapdownloadSha256.has_value())
+			{
+				SHA256_DIGEST Sha256;
+				mem_copy(Sha256.data, Header.m_aSha256, sizeof(Sha256.data));
+				m_MapdownloadSha256 = Sha256;
+			}
+		}
+		else if(QuicEvent.m_Type == EQuicEventType::MAP_DATA && QuicEvent.m_Message.m_Session == m_QuicSession)
+		{
+			const int Size = QuicEvent.m_Message.m_DataSize;
+			if(!m_MapdownloadFileTemp || Size <= 0 || m_MapdownloadAmount < 0 || m_MapdownloadAmount > m_MapdownloadTotalsize || Size > m_MapdownloadTotalsize - m_MapdownloadAmount ||
+				io_write(m_MapdownloadFileTemp, QuicEvent.m_Message.m_pData, Size) != static_cast<unsigned>(Size))
+			{
+				DisconnectWithReason("could not write QUIC map stream");
+				break;
+			}
+			m_MapdownloadAmount += Size;
+		}
+		else if(QuicEvent.m_Type == EQuicEventType::MAP_END && QuicEvent.m_Message.m_Session == m_QuicSession)
+		{
+			if(!m_MapdownloadFileTemp || m_MapdownloadAmount != m_MapdownloadTotalsize)
+			{
+				DisconnectWithReason("QUIC map stream ended at the wrong size");
+				break;
+			}
+			io_close(m_MapdownloadFileTemp);
+			m_MapdownloadFileTemp = nullptr;
+			FinishMapDownload();
+		}
+		else if(QuicEvent.m_Type == EQuicEventType::MAP_FAILED && QuicEvent.m_Message.m_Session == m_QuicSession)
+		{
+			char aReason[256];
+			str_format(aReason, sizeof(aReason), "QUIC map stream failed: %s", QuicEvent.m_pReason ? QuicEvent.m_pReason : "unknown error");
+			ResetMapDownload(false);
+			DisconnectWithReason(aReason);
+			break;
+		}
+		else if(QuicEvent.m_Type == EQuicEventType::DISCONNECTED && m_UseQuic)
+		{
+			m_QuicConnected = false;
+			char aReason[256];
+			str_copy(aReason, QuicEvent.m_pReason ? QuicEvent.m_pReason : "QUIC connection closed");
+			if(m_QuicAuto && !m_QuicConnected && m_QuicTransport.ConnectFailure() == EQuicConnectFailure::NETWORK)
+			{
+				m_QuicTransport.RecordFallback();
+				const auto &Metrics = m_QuicTransport.Metrics();
+				log_info("quic", "transport=%s attempts=%llu connections=%llu failures=%llu/%llu/%llu fallback=%llu handshake_ms=%llu",
+					m_UseWebTransport ? "webtransport" : "quic",
+					static_cast<unsigned long long>(Metrics.m_ConnectAttempts), static_cast<unsigned long long>(Metrics.m_Connections),
+					static_cast<unsigned long long>(Metrics.m_ConnectFailuresNetwork), static_cast<unsigned long long>(Metrics.m_ConnectFailuresIdentity), static_cast<unsigned long long>(Metrics.m_ConnectFailuresProtocol),
+					static_cast<unsigned long long>(Metrics.m_Fallbacks), static_cast<unsigned long long>(Metrics.m_LastHandshakeMilliseconds));
+				log_info("client", "%s unavailable, using legacy UDP: %s", m_UseWebTransport ? "WebTransport" : "automatic QUIC", aReason);
+				m_QuicTransport.Shutdown();
+				m_aNetClient[CONN_MAIN].SetPacketFilter(nullptr, nullptr);
+				m_UseQuic = false;
+				m_UseWebTransport = false;
+				m_QuicAuto = false;
+				if(!m_QuicFallbackStarted)
+					StartLegacyConnection(m_aQuicFallbackAddrs, m_NumQuicFallbackAddrs, m_Sixup);
+				ClearQuicFallback();
+				break;
+			}
+			if(m_QuicIdentityKnown && m_QuicTransport.ConnectFailure() == EQuicConnectFailure::IDENTITY)
+			{
+				char aExpected[SHA256_MAXSTRSIZE];
+				sha256_str(m_QuicExpectedIdentity, aExpected, sizeof(aExpected));
+				char aWarning[768];
+				str_format(aWarning, sizeof(aWarning), "The QUIC identity of %s:%d changed. Expected %s; %s. The connection was blocked. Verify the server before using quic_forget_host.", m_aQuicTrustHost, m_QuicTrustPort, aExpected, aReason);
+				SWarning Warning(Localize("Server identity changed"), aWarning);
+				Warning.m_AutoHide = false;
+				AddWarning(Warning);
+			}
+			DisconnectWithReason(aReason);
+			break;
+		}
+	}
+
+	if(m_QuicAuto && m_QuicFallbackStartTime != 0 && !m_QuicConnected && !m_QuicFallbackStarted && State() == IClient::STATE_CONNECTING && time_get() >= m_QuicFallbackStartTime)
+	{
+		StartLegacyConnection(m_aQuicFallbackAddrs, m_NumQuicFallbackAddrs, m_Sixup);
+		m_QuicFallbackStarted = true;
+	}
 
 	if(State() != IClient::STATE_DEMOPLAYBACK)
 	{
 		// check for errors of main and dummy
 		if(State() != IClient::STATE_OFFLINE && State() < IClient::STATE_QUITTING)
 		{
-			if(m_aNetClient[CONN_MAIN].State() == NETSTATE_OFFLINE)
+			if(!m_UseQuic && m_aNetClient[CONN_MAIN].State() == NETSTATE_OFFLINE)
 			{
 				// This will also disconnect the dummy, so the branch below is an `else if`
 				Disconnect();
@@ -2652,7 +3298,7 @@ void CClient::PumpNetwork()
 		}
 
 		// check if main was connected
-		if(State() == IClient::STATE_CONNECTING && m_aNetClient[CONN_MAIN].State() == NETSTATE_ONLINE)
+		if(!m_UseQuic && State() == IClient::STATE_CONNECTING && m_aNetClient[CONN_MAIN].State() == NETSTATE_ONLINE)
 		{
 			// we switched to online
 			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
@@ -2688,6 +3334,8 @@ void CClient::PumpNetwork()
 				ProcessConnlessPacket(&Packet);
 				continue;
 			}
+			if(Conn == CONN_MAIN && m_QuicAuto)
+				continue;
 			if(Conn == CONN_MAIN || Conn == CONN_DUMMY)
 			{
 				ProcessServerPacket(&Packet, Conn, g_Config.m_ClDummy ^ Conn);
@@ -3114,6 +3762,7 @@ void CClient::InitInterfaces()
 #endif
 
 	m_pConfigManager->RegisterCallback(IFavorites::ConfigSaveCallback, m_pFavorites);
+	m_pConfigManager->RegisterCallback(QuicKnownHostsConfigSaveCallback, this);
 	m_Friends.Init();
 	m_Foes.Init(true);
 
@@ -3248,6 +3897,10 @@ void CClient::Run()
 
 	// process pending commands
 	m_pConsole->StoreCommands(false);
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(g_Config.m_ClWebtransport && m_aCmdConnect[0])
+		m_ServerBrowser.Refresh(IServerBrowser::TYPE_INTERNET);
+#endif
 
 	InitChecksum();
 	m_pConsole->InitChecksum(ChecksumData());
@@ -3277,7 +3930,11 @@ void CClient::Run()
 		set_new_tick();
 
 		// handle pending connects
-		if(m_aCmdConnect[0])
+		if(m_aCmdConnect[0]
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+			&& (!g_Config.m_ClWebtransport || !m_ServerBrowser.IsGettingServerlist())
+#endif
+		)
 		{
 			str_copy(g_Config.m_UiServerAddress, m_aCmdConnect);
 			Connect(m_aCmdConnect);
@@ -3316,7 +3973,7 @@ void CClient::Run()
 		char aFile[IO_MAX_PATH_LENGTH];
 		if(Input()->GetDropFile(aFile, sizeof(aFile)))
 		{
-			if(str_startswith(aFile, CONNECTLINK_NO_SLASH))
+			if(str_startswith(aFile, CONNECTLINK_NO_SLASH) || str_startswith(aFile, QUIC_CONNECTLINK_DOUBLE_SLASH))
 				HandleConnectLink(aFile);
 			else if(str_endswith(aFile, ".demo"))
 				HandleDemoPath(aFile);
@@ -3651,6 +4308,57 @@ void CClient::ConNetReset(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
 	pSelf->ResetSocket();
+}
+
+void CClient::Con_QuicReconnect(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	if(!pSelf->m_UseQuic || !pSelf->m_QuicConnected || !pSelf->m_QuicTransport.Reconnect(pSelf->m_QuicSession))
+		log_error("client", "cannot reconnect inactive QUIC transport");
+}
+
+void CClient::Con_QuicKnownHost(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = static_cast<CClient *>(pUserData);
+	SHA256_DIGEST IdentityFingerprint;
+	if(!in_range(pResult->GetInteger(1), 1, 65535) || sha256_from_str(&IdentityFingerprint, pResult->GetString(2)) != 0 ||
+		!pSelf->AddQuicKnownHost(pResult->GetString(0), pResult->GetInteger(1), IdentityFingerprint))
+		log_error("client", "invalid or conflicting QUIC known host");
+}
+
+void CClient::Con_QuicForgetHost(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = static_cast<CClient *>(pUserData);
+	char aHost[128];
+	if(!NormalizeQuicTrustHost(pResult->GetString(0), aHost, sizeof(aHost)))
+	{
+		log_error("client", "invalid QUIC known host");
+		return;
+	}
+	const int Port = pResult->NumArguments() > 1 ? pResult->GetInteger(1) : 0;
+	const auto NewEnd = std::remove_if(pSelf->m_vQuicKnownHosts.begin(), pSelf->m_vQuicKnownHosts.end(), [&](const CQuicKnownHost &KnownHost) {
+		return str_comp(KnownHost.m_aHost, aHost) == 0 && (Port == 0 || KnownHost.m_Port == Port);
+	});
+	if(NewEnd == pSelf->m_vQuicKnownHosts.end())
+	{
+		log_info("client", "QUIC known host not found");
+		return;
+	}
+	pSelf->m_vQuicKnownHosts.erase(NewEnd, pSelf->m_vQuicKnownHosts.end());
+	pSelf->m_pConfigManager->Save();
+}
+
+void CClient::QuicKnownHostsConfigSaveCallback(IConfigManager *pConfigManager, void *pUserData)
+{
+	const CClient *pSelf = static_cast<const CClient *>(pUserData);
+	for(const CQuicKnownHost &KnownHost : pSelf->m_vQuicKnownHosts)
+	{
+		char aFingerprint[SHA256_MAXSTRSIZE];
+		sha256_str(KnownHost.m_IdentityFingerprint, aFingerprint, sizeof(aFingerprint));
+		char aLine[256];
+		str_format(aLine, sizeof(aLine), "quic_known_host \"%s\" %d %s", KnownHost.m_aHost, KnownHost.m_Port, aFingerprint);
+		pConfigManager->WriteLine(aLine);
+	}
 }
 
 void CClient::AutoScreenshot_Start()
@@ -4580,6 +5288,9 @@ void CClient::RegisterCommands()
 	m_pConsole->Register("ping", "", CFGFLAG_CLIENT, Con_Ping, this, "Ping the current server");
 	m_pConsole->Register("screenshot", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Screenshot, this, "Take a screenshot");
 	m_pConsole->Register("net_reset", "", CFGFLAG_CLIENT, ConNetReset, this, "Rebinds the client's listening address and port");
+	m_pConsole->Register("quic_reconnect", "", CFGFLAG_CLIENT, Con_QuicReconnect, this, "Reconnect the active QUIC transport using application resume");
+	m_pConsole->Register("quic_known_host", "s[host] i[port] s[sha256]", CFGFLAG_CLIENT, Con_QuicKnownHost, this, "Remember a verified QUIC server identity");
+	m_pConsole->Register("quic_forget_host", "s[host] ?i[port]", CFGFLAG_CLIENT, Con_QuicForgetHost, this, "Forget a trusted QUIC server identity");
 
 #if defined(CONF_VIDEORECORDER)
 	m_pConsole->Register("start_video", "?r[file]", CFGFLAG_CLIENT, Con_StartVideo, this, "Start recording a video");
@@ -4689,7 +5400,7 @@ void CClient::HandleMapPath(const char *pPath)
 static bool UnknownArgumentCallback(const char *pCommand, void *pUser)
 {
 	CClient *pClient = static_cast<CClient *>(pUser);
-	if(str_startswith(pCommand, CONNECTLINK_NO_SLASH))
+	if(str_startswith(pCommand, CONNECTLINK_NO_SLASH) || str_startswith(pCommand, QUIC_CONNECTLINK_DOUBLE_SLASH))
 	{
 		pClient->HandleConnectLink(pCommand);
 		return true;
@@ -5471,6 +6182,8 @@ void CClient::ShellRegister()
 	bool Updated = false;
 	if(!windows_shell_register_protocol("ddnet", aFullPath, &Updated))
 		log_error("client", "Failed to register ddnet protocol");
+	if(!windows_shell_register_protocol("ddnet+quic", aFullPath, &Updated))
+		log_error("client", "Failed to register ddnet+quic protocol");
 	if(!windows_shell_register_extension(".map", "Map File", GAME_NAME, aFullPath, &Updated))
 		log_error("client", "Failed to register .map file extension");
 	if(!windows_shell_register_extension(".demo", "Demo File", GAME_NAME, aFullPath, &Updated))
@@ -5494,6 +6207,8 @@ void CClient::ShellUnregister()
 	bool Updated = false;
 	if(!windows_shell_unregister_class("ddnet", &Updated))
 		log_error("client", "Failed to unregister ddnet protocol");
+	if(!windows_shell_unregister_class("ddnet+quic", &Updated))
+		log_error("client", "Failed to unregister ddnet+quic protocol");
 	if(!windows_shell_unregister_class(GAME_NAME ".map", &Updated))
 		log_error("client", "Failed to unregister .map file extension");
 	if(!windows_shell_unregister_class(GAME_NAME ".demo", &Updated))

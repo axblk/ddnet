@@ -335,8 +335,6 @@ private:
 	};
 
 	static bool Validate(json_value *pJson);
-	static bool Parse(json_value *pJson, std::vector<CServerInfo> *pvServers);
-
 	IHttp *m_pHttp;
 
 	int m_State = STATE_WANTREFRESH;
@@ -394,7 +392,7 @@ void CServerBrowserHttp::Update()
 		bool Success = true;
 		json_value *pJson = pGetServers->State() == EHttpState::DONE ? pGetServers->ResultJson() : nullptr;
 		Success = Success && pJson;
-		Success = Success && !Parse(pJson, &m_vServers);
+		Success = Success && !ServerBrowserHttpParse(pJson, &m_vServers);
 		json_value_free(pJson);
 		if(!Success)
 		{
@@ -437,9 +435,9 @@ static bool ServerbrowserParseUrl(NETADDR *pOut, const char *pUrl)
 bool CServerBrowserHttp::Validate(json_value *pJson)
 {
 	std::vector<CServerInfo> vServers;
-	return Parse(pJson, &vServers);
+	return ServerBrowserHttpParse(pJson, &vServers);
 }
-bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvServers)
+bool ServerBrowserHttpParse(json_value *pJson, std::vector<CServerInfo> *pvServers)
 {
 	std::vector<CServerInfo> vServers;
 
@@ -504,6 +502,12 @@ bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvSe
 			{
 				continue;
 			}
+			// QUIC addresses describe the modern transport endpoint and must not
+			// participate in legacy protocol selection or port validation.
+			if(str_startswith(Addresses[a], "ddnet+quic://"))
+			{
+				continue;
+			}
 			NETADDR ParsedAddr;
 			if(ServerbrowserParseUrl(&ParsedAddr, Addresses[a]))
 			{
@@ -518,6 +522,27 @@ bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvSe
 		}
 		if(SetInfo.m_NumAddresses > 0)
 		{
+			if(SetInfo.m_QuicSharedPort || SetInfo.m_WebTransport)
+			{
+				bool PortsMatch = true;
+				for(int AddressIndex = 0; AddressIndex < SetInfo.m_NumAddresses; AddressIndex++)
+					PortsMatch &= SetInfo.m_aAddresses[AddressIndex].port == SetInfo.m_QuicPort;
+				if(!PortsMatch)
+				{
+					SetInfo.m_QuicCertificateSha256 = {};
+					SetInfo.m_QuicNextCertificateSha256 = {};
+					SetInfo.m_QuicIdentityFingerprint = {};
+					SetInfo.m_QuicPort = 0;
+					SetInfo.m_QuicCapabilities = 0;
+					SetInfo.m_QuicSharedPort = false;
+					SetInfo.m_HasQuicNextCertificateSha256 = false;
+					SetInfo.m_HasQuicIdentityFingerprint = false;
+					SetInfo.m_WebTransport = false;
+					SetInfo.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::NONE;
+					SetInfo.m_aWebTransportPath[0] = '\0';
+					SetInfo.m_aWebTransportUrl[0] = '\0';
+				}
+			}
 			vServers.push_back(SetInfo);
 		}
 	}

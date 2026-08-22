@@ -420,7 +420,7 @@ private:
 	bool ValidateCountryName(const char *pCountryName) const;
 	bool ValidateTypeName(const char *pTypeName) const;
 
-	void SetInfo(CServerEntry *pEntry, const CServerInfo &Info) const;
+	void SetInfo(CServerEntry *pEntry, const CServerInfo &Info, bool PreserveTransportMetadata) const;
 	void SetLatency(NETADDR Addr, int Latency);
 
 	static bool ParseCommunityFinishes(CCommunity *pCommunity, const json_value &Finishes);

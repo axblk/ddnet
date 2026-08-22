@@ -2,15 +2,38 @@
 
 #include <base/net.h>
 
+#include <engine/client/serverbrowser_http.h>
 #include <engine/client/serverbrowser_ping_cache.h>
 #include <engine/console.h>
 #include <engine/engine.h>
+#include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
+#include <engine/shared/json.h>
 #include <engine/storage.h>
 
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <vector>
+
+TEST(ServerBrowser, HttpQuicAddressIsNotLegacyAddress)
+{
+	static constexpr const char *pJsonText = R"({"servers":[{"addresses":["tw-0.6+udp://[::1]:8303","tw-0.7+udp://[::1]:8303","ddnet+quic://[::1]:8304"],"info":{"max_clients":16,"max_players":16,"client_score_kind":"points","passworded":false,"game_type":"DDRace","name":"test","map":{"name":"Tutorial"},"version":"test","clients":[],"transport":{"udp_port":8303,"tls_certificate_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","quic":true}}}]})";
+	json_value *pJson = JsonParse(pJsonText, str_length(pJsonText));
+	ASSERT_NE(pJson, nullptr);
+
+	std::vector<CServerInfo> vServers;
+	EXPECT_FALSE(ServerBrowserHttpParse(pJson, &vServers));
+	json_value_free(pJson);
+	ASSERT_EQ(vServers.size(), 1u);
+
+	const CServerInfo &Info = vServers.front();
+	ASSERT_EQ(Info.m_NumAddresses, 1);
+	EXPECT_EQ(Info.m_aAddresses[0].type, NETTYPE_IPV6);
+	EXPECT_EQ(Info.m_aAddresses[0].port, 8303);
+	EXPECT_TRUE(Info.m_QuicSharedPort);
+	EXPECT_EQ(Info.m_QuicPort, 8303);
+}
 
 TEST(ServerBrowser, PingCache)
 {

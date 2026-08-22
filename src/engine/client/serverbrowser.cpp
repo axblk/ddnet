@@ -729,20 +729,50 @@ static void ServerBrowserFormatAddresses(char *pBuffer, int BufferSize, NETADDR 
 		{
 			str_append(pBuffer, ",", BufferSize);
 		}
-		if(pAddrs[i].type & NETTYPE_TW7)
-		{
-			str_append(pBuffer, "tw-0.7+udp://", BufferSize);
-		}
-		char aIpAddr[NETADDR_MAXSTRSIZE];
-		net_addr_str(&pAddrs[i], aIpAddr, sizeof(aIpAddr), true);
+		char aIpAddr[NETADDR_URL_MAXSTRSIZE];
+		net_addr_url_str(&pAddrs[i], aIpAddr, sizeof(aIpAddr), true);
 		str_append(pBuffer, aIpAddr, BufferSize);
 	}
 }
 
-void CServerBrowser::SetInfo(CServerEntry *pEntry, const CServerInfo &Info) const
+void CServerBrowser::SetInfo(CServerEntry *pEntry, const CServerInfo &Info, bool PreserveTransportMetadata) const
 {
 	const CServerInfo TmpInfo = pEntry->m_Info;
 	pEntry->m_Info = Info;
+	auto PreserveNextCertificatePin = [&]() {
+		if(!TmpInfo.m_HasQuicNextCertificateSha256 || pEntry->m_Info.m_HasQuicNextCertificateSha256)
+			return;
+		if(pEntry->m_Info.m_QuicCertificateSha256 == TmpInfo.m_QuicCertificateSha256)
+			pEntry->m_Info.m_QuicNextCertificateSha256 = TmpInfo.m_QuicNextCertificateSha256;
+		else if(pEntry->m_Info.m_QuicCertificateSha256 == TmpInfo.m_QuicNextCertificateSha256)
+			pEntry->m_Info.m_QuicNextCertificateSha256 = TmpInfo.m_QuicCertificateSha256;
+		else
+			return;
+		pEntry->m_Info.m_HasQuicNextCertificateSha256 = true;
+	};
+	if(PreserveTransportMetadata && TmpInfo.m_QuicSharedPort && !pEntry->m_Info.m_QuicSharedPort)
+	{
+		pEntry->m_Info.m_QuicCertificateSha256 = TmpInfo.m_QuicCertificateSha256;
+		pEntry->m_Info.m_QuicNextCertificateSha256 = TmpInfo.m_QuicNextCertificateSha256;
+		pEntry->m_Info.m_QuicIdentityFingerprint = TmpInfo.m_QuicIdentityFingerprint;
+		pEntry->m_Info.m_QuicPort = TmpInfo.m_QuicPort;
+		pEntry->m_Info.m_QuicCapabilities = TmpInfo.m_QuicCapabilities;
+		pEntry->m_Info.m_QuicSharedPort = true;
+		pEntry->m_Info.m_HasQuicNextCertificateSha256 = TmpInfo.m_HasQuicNextCertificateSha256;
+		pEntry->m_Info.m_HasQuicIdentityFingerprint = TmpInfo.m_HasQuicIdentityFingerprint;
+	}
+	else if(PreserveTransportMetadata && pEntry->m_Info.m_QuicSharedPort)
+		PreserveNextCertificatePin();
+	if(PreserveTransportMetadata && TmpInfo.m_WebTransport && !pEntry->m_Info.m_WebTransport)
+	{
+		PreserveWebTransportMetadata(&pEntry->m_Info, TmpInfo);
+		if(!pEntry->m_Info.m_QuicSharedPort)
+		{
+			pEntry->m_Info.m_QuicIdentityFingerprint = TmpInfo.m_QuicIdentityFingerprint;
+			pEntry->m_Info.m_QuicPort = TmpInfo.m_QuicPort;
+			pEntry->m_Info.m_HasQuicIdentityFingerprint = TmpInfo.m_HasQuicIdentityFingerprint;
+		}
+	}
 	pEntry->m_Info.m_Favorite = TmpInfo.m_Favorite;
 	pEntry->m_Info.m_FavoriteAllowPing = TmpInfo.m_FavoriteAllowPing;
 	pEntry->m_Info.m_ServerIndex = TmpInfo.m_ServerIndex;
@@ -982,14 +1012,14 @@ void CServerBrowser::OnServerInfoUpdate(const NETADDR &Addr, int Token, const CS
 
 	if(m_ServerlistType == IServerBrowser::TYPE_LAN)
 	{
-		SetInfo(pEntry, *pInfo);
+		SetInfo(pEntry, *pInfo, true);
 		pEntry->m_Info.m_Latency = std::min(static_cast<int>((time_get() - m_BroadcastTime) * 1000 / time_freq()), 999);
 	}
 	else if(pEntry->m_RequestTime > 0)
 	{
 		if(!pEntry->m_RequestIgnoreInfo)
 		{
-			SetInfo(pEntry, *pInfo);
+			SetInfo(pEntry, *pInfo, true);
 		}
 
 		int Latency = std::min(static_cast<int>((time_get() - pEntry->m_RequestTime) * 1000 / time_freq()), 999);
@@ -1216,7 +1246,7 @@ void CServerBrowser::UpdateFromHttp()
 		}
 		UpdateServerLatency(&Info, OwnLocation);
 		CServerEntry *pEntry = Add(Info.m_aAddresses, Info.m_NumAddresses);
-		SetInfo(pEntry, Info);
+		SetInfo(pEntry, Info, false);
 		pEntry->m_RequestIgnoreInfo = true;
 	}
 
@@ -1285,6 +1315,7 @@ void CServerBrowser::Update()
 		m_RefreshingHttp = false;
 		CleanUp();
 		UpdateFromHttp();
+		log_info("serverbrowser", "loaded %d servers from HTTP", NumServers());
 		// TODO: move this somewhere else
 		Sort();
 		return;
@@ -1771,7 +1802,7 @@ bool CServerBrowser::IsRefreshing() const
 
 bool CServerBrowser::IsGettingServerlist() const
 {
-	return m_pHttp->IsRefreshing();
+	return m_RefreshingHttp;
 }
 
 bool CServerBrowser::IsServerlistError() const

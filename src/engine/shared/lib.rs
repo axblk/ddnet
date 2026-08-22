@@ -15,7 +15,14 @@
 extern crate ddnet_test;
 
 mod config;
+mod modern_wire;
+#[cfg(feature = "quic")]
+mod quic;
 mod rust_version;
+#[cfg(feature = "quic")]
+mod udp_port_mux_classifier;
 
 pub use config::*;
+#[cfg(feature = "quic")]
+pub use quic::*;
 pub use rust_version::*;

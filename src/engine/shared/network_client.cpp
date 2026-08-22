@@ -102,11 +102,12 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 		// no more packets for now
 		if(Bytes <= 0)
 			break;
-
 		if(m_pStun->OnPacket(Addr, pData, Bytes))
 		{
 			continue;
 		}
+		if(m_pfnFilter && m_pfnFilter(m_pFilterUser, &Addr, pData, Bytes))
+			continue;
 
 		SECURITY_TOKEN Token;
 		if(CNetBase::UnpackPacket(pData, Bytes, &m_RecvBuffer, Sixup, true, &Token, pResponseToken) == 0)

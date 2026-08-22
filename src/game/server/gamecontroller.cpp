@@ -38,6 +38,16 @@ IGameController::IGameController(CGameServices &Services, const CGameModeInfo &G
 	m_pGameType = g_Config.m_SvTestingCommands ? m_aTestingGameType : m_GameModeInfo.m_pGameType;
 }
 
+CTeamsCore &IGameController::TeamsCore()
+{
+	return *GameServer()->m_World.Teams();
+}
+
+const CTeamsCore &IGameController::TeamsCore() const
+{
+	return *GameServer()->m_World.Teams();
+}
+
 IGameController::~IGameController()
 {
 	GameServer()->Console()->DeregisterOwner(this);
@@ -49,7 +59,7 @@ void IGameController::Init(CDbConnectionPool *)
 	RegisterCommands();
 	InitGameSettings();
 	DoWarmup(g_Config.m_SvWarmup);
-	m_TeamsCore.Reset();
+	TeamsCore().Reset();
 }
 
 int IGameController::TuningZoneAt(vec2 Position) const
@@ -737,8 +747,6 @@ void IGameController::OnExplosion(const CGameExplosionContext &Context)
 
 void IGameController::OnCharacterSpawn(class CCharacter *pChr)
 {
-	pChr->SetTeamsCore(&TeamsCore());
-
 	// default health
 	pChr->IncreaseHealth(10);
 

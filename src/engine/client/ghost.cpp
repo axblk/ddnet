@@ -9,7 +9,7 @@
 
 #include <engine/shared/compression.h>
 #include <engine/shared/config.h>
-#include <engine/shared/network.h>
+#include <engine/shared/huffman.h>
 #include <engine/storage.h>
 
 static const unsigned char gs_aHeaderMarker[8] = {'T', 'W', 'G', 'H', 'O', 'S', 'T', 0};
@@ -153,7 +153,7 @@ void CGhostRecorder::FlushChunk()
 		return;
 	}
 
-	Size = CNetBase::Compress(m_aBufferTemp, Size, m_aBuffer, sizeof(m_aBuffer));
+	Size = HuffmanCompress(m_aBufferTemp, Size, m_aBuffer, sizeof(m_aBuffer));
 	if(Size < 0)
 	{
 		log_info_color(LOG_COLOR_GHOST, "ghost_recorder", "Failed to write chunk to '%s': error during network compression", m_aFilename);
@@ -415,7 +415,7 @@ bool CGhostLoader::ReadChunk(int *pType)
 		return false;
 	}
 
-	Size = CNetBase::Decompress(m_aBuffer, Size, m_aBufferTemp, sizeof(m_aBufferTemp));
+	Size = HuffmanDecompress(m_aBuffer, Size, m_aBufferTemp, sizeof(m_aBufferTemp));
 	if(Size < 0)
 	{
 		log_error_color(LOG_COLOR_GHOST, "ghost_loader", "Failed to read ghost file '%s': error during network decompression", m_aFilename);

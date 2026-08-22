@@ -1,3 +1,4 @@
+#include <engine/shared/huffman.h>
 #include <engine/shared/network.h>
 
 #include <gtest/gtest.h>
@@ -14,14 +15,12 @@ static int UnpackUncompressedPacket(int Size, CNetPacketConstruct *pPacket, bool
 
 static int UnpackCompressedPacket(CNetPacketConstruct *pPacket, bool AllowDecompression, bool *pDecompressed = nullptr, int PayloadSize = 64)
 {
-	CNetBase::Init();
-
 	const unsigned char aPayload[4 * NET_MAX_PACKETSIZE] = {};
 	unsigned char aBuffer[NET_MAX_PACKETSIZE] = {};
 	aBuffer[0] = (NET_PACKETFLAG_COMPRESSION << 2) & 0xfc; // compression, ack 0
 	aBuffer[1] = 0; // ack 0
 	aBuffer[2] = 1; // one chunk
-	const int CompressedSize = CNetBase::Compress(aPayload, PayloadSize,
+	const int CompressedSize = HuffmanCompress(aPayload, PayloadSize,
 		&aBuffer[NET_PACKETHEADERSIZE], NET_MAX_PACKETSIZE - NET_PACKETHEADERSIZE);
 	bool Sixup = false;
 	return CNetBase::UnpackPacket(aBuffer, NET_PACKETHEADERSIZE + CompressedSize, pPacket, Sixup, AllowDecompression, nullptr, nullptr, pDecompressed);

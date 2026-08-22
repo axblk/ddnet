@@ -73,7 +73,6 @@ public:
 
 			// init the network
 			net_init();
-			CNetBase::Init();
 		}
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)

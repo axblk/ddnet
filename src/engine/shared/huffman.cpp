@@ -313,3 +313,26 @@ int CHuffman::Decompress(const void *pInput, int InputSize, void *pOutput, int O
 	// return the size of the decompressed buffer
 	return (int)(pDst - (const unsigned char *)pOutput);
 }
+
+class CSharedHuffman
+{
+public:
+	CHuffman m_Huffman;
+	CSharedHuffman() { m_Huffman.Init(); }
+};
+
+static const CHuffman &SharedHuffman()
+{
+	static const CSharedHuffman s_Shared;
+	return s_Shared.m_Huffman;
+}
+
+int HuffmanCompress(const void *pInput, int InputSize, void *pOutput, int OutputSize)
+{
+	return SharedHuffman().Compress(pInput, InputSize, pOutput, OutputSize);
+}
+
+int HuffmanDecompress(const void *pInput, int InputSize, void *pOutput, int OutputSize)
+{
+	return SharedHuffman().Decompress(pInput, InputSize, pOutput, OutputSize);
+}

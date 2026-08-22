@@ -12,6 +12,7 @@
 #include <base/vmath.h>
 
 #include <engine/client.h>
+#include <engine/client/asset_loader.h>
 #include <engine/client/updater.h>
 #include <engine/config.h>
 #include <engine/editor.h>
@@ -44,6 +45,12 @@
 #include <vector>
 
 using namespace std::chrono_literals;
+
+namespace
+{
+	constexpr int ASSET_OWNER_MENUS = 7;
+	constexpr int ASSET_OWNER_ASSET_PREVIEWS = 10;
+}
 
 ColorRGBA CMenus::ms_GuiColor;
 ColorRGBA CMenus::ms_ColorTabbarInactiveOutgame;
@@ -682,7 +689,7 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 	}
 }
 
-void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress)
+void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress, bool UpdateAndSwap)
 {
 	// TODO: not supported right now due to separate render thread
 
@@ -743,17 +750,18 @@ void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std
 
 	Graphics()->SetColor(1.0, 1.0, 1.0, 1.0);
 
-	Client()->UpdateAndSwap();
+	if(UpdateAndSwap)
+		Client()->UpdateAndSwap();
 }
 
-void CMenus::RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter)
+void CMenus::RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter, bool UpdateAndSwap)
 {
 	// does not support multithreading
 
 	const int CurLoadRenderCount = m_LoadingState.m_Current;
 	m_LoadingState.m_Current += IncreaseCounter;
 	dbg_assert(m_LoadingState.m_Current <= m_LoadingState.m_Total, "Invalid progress for RenderLoading");
-	RenderLoadingDirect(pCaption, pContent, m_LoadingState.m_Total > 0 ? std::make_optional(CurLoadRenderCount / (float)m_LoadingState.m_Total) : std::nullopt);
+	RenderLoadingDirect(pCaption, pContent, m_LoadingState.m_Total > 0 ? std::make_optional(CurLoadRenderCount / (float)m_LoadingState.m_Total) : std::nullopt, UpdateAndSwap);
 }
 
 void CMenus::FinishLoading()
@@ -855,7 +863,7 @@ void CMenus::OnInit()
 	Console()->Chain("demo_play", ConchainDemoPlay, this);
 	Console()->Chain("demo_speed", ConchainDemoSpeed, this);
 
-	m_TextureBlob = Graphics()->LoadTexture("blob.png", IStorage::TYPE_ALL);
+	m_BlobResource = GameClient()->AssetLoader().LoadImage(Storage(), "blob.png", IStorage::TYPE_ALL, ASSET_OWNER_MENUS, m_AssetGeneration);
 
 	// setup load amount
 	m_LoadingState.m_Current = 0;
@@ -875,6 +883,17 @@ void CMenus::OnInit()
 	m_DirectionQuadContainerIndex = Graphics()->CreateQuadContainer(false);
 	Graphics()->QuadContainerAddSprite(m_DirectionQuadContainerIndex, 0.f, 0.f, 22.f);
 	Graphics()->QuadContainerUpload(m_DirectionQuadContainerIndex);
+}
+
+void CMenus::OnUpdate()
+{
+	FinishImageLoads();
+	FinishAssetPreviewLoads();
+}
+
+bool CMenus::StartupAssetsLoaded() const
+{
+	return !m_BlobResource && std::none_of(m_vMenuImages.begin(), m_vMenuImages.end(), [](const CMenuImage &Image) { return static_cast<bool>(Image.m_Resource); });
 }
 
 void CMenus::ConchainBackgroundEntities(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
@@ -2318,6 +2337,20 @@ void CMenus::SetActive(bool Active)
 
 void CMenus::OnShutdown()
 {
+	++m_AssetPreviewGeneration;
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_ASSET_PREVIEWS, m_AssetPreviewGeneration);
+	++m_AssetGeneration;
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_MENUS, m_AssetGeneration);
+	m_BlobResource.Reset();
+	Graphics()->UnloadTexture(&m_TextureBlob);
+	for(CMenuImage &MenuImage : m_vMenuImages)
+	{
+		MenuImage.m_Resource.Reset();
+		MenuImage.m_pGreyImage.reset();
+		Graphics()->UnloadTexture(&MenuImage.m_OrgTexture);
+		Graphics()->UnloadTexture(&MenuImage.m_GreyTexture);
+	}
+	m_vMenuImages.clear();
 	DestroyMenuBackdropTextures();
 	m_CommunityIcons.Shutdown();
 }
@@ -2781,30 +2814,77 @@ int CMenus::MenuImageScan(const char *pName, int IsDir, int DirType, void *pUser
 	char aPath[IO_MAX_PATH_LENGTH];
 	str_format(aPath, sizeof(aPath), "menuimages/%s", pName);
 
-	CImageInfo Info;
-	if(!pSelf->Graphics()->LoadPng(Info, aPath, DirType))
-	{
-		log_error("menus", "Failed to load menu image from '%s'", aPath);
-		return 0;
-	}
-	if(Info.m_Format != CImageInfo::FORMAT_RGBA)
-	{
-		Info.Free();
-		log_error("menus", "Failed to load menu image from '%s': must be an RGBA image", aPath);
-		return 0;
-	}
-
-	MenuImage.m_OrgTexture = pSelf->Graphics()->LoadTextureRaw(Info, 0, aPath);
-
-	ConvertToGrayscale(Info);
-	MenuImage.m_GreyTexture = pSelf->Graphics()->LoadTextureRawMove(Info, 0, aPath);
-
 	str_truncate(MenuImage.m_aName, sizeof(MenuImage.m_aName), pName, str_length(pName) - str_length(pExtension));
+	MenuImage.m_pGreyImage = std::make_shared<CImageInfo>();
+	MenuImage.m_Resource = pSelf->GameClient()->AssetLoader().LoadImage(pSelf->Storage(), aPath, DirType, ASSET_OWNER_MENUS, pSelf->m_AssetGeneration, [pGreyImage = MenuImage.m_pGreyImage](CImageInfo &Info) {
+		if(Info.m_Format != CImageInfo::FORMAT_RGBA)
+			return false;
+		*pGreyImage = Info.DeepCopy();
+		ConvertToGrayscale(*pGreyImage);
+		return true;
+	});
 	pSelf->m_vMenuImages.push_back(MenuImage);
 
 	pSelf->RenderLoading(Localize("Loading DDNet Client"), Localize("Loading menu images"), 0);
 
 	return 0;
+}
+
+void CMenus::FinishImageLoads()
+{
+	if(m_BlobResource.IsFinished())
+	{
+		if(m_BlobResource.IsReady(m_AssetGeneration))
+		{
+			CImageInfo Image = m_BlobResource.TakeImage();
+			IGraphics::CTextureHandle Texture = Graphics()->LoadTextureRawMove(Image, 0, m_BlobResource.Path());
+			if(Texture.IsValid())
+			{
+				Graphics()->UnloadTexture(&m_TextureBlob);
+				m_TextureBlob = Texture;
+			}
+			else
+			{
+				log_error("menus", "Failed to upload blob texture");
+			}
+		}
+		else if(m_BlobResource.IsFailed(m_AssetGeneration))
+		{
+			log_error("menus", "Failed to load blob texture from '%s'", m_BlobResource.Path());
+		}
+		m_BlobResource.Reset();
+	}
+
+	for(CMenuImage &MenuImage : m_vMenuImages)
+	{
+		if(!MenuImage.m_Resource.IsFinished())
+			continue;
+		if(MenuImage.m_Resource.IsReady(m_AssetGeneration))
+		{
+			CImageInfo OriginalImage = MenuImage.m_Resource.TakeImage();
+			IGraphics::CTextureHandle OriginalTexture = Graphics()->LoadTextureRaw(OriginalImage, 0, MenuImage.m_Resource.Path());
+			IGraphics::CTextureHandle GreyTexture = Graphics()->LoadTextureRawMove(*MenuImage.m_pGreyImage, 0, MenuImage.m_Resource.Path());
+			if(OriginalTexture.IsValid() && GreyTexture.IsValid())
+			{
+				Graphics()->UnloadTexture(&MenuImage.m_OrgTexture);
+				Graphics()->UnloadTexture(&MenuImage.m_GreyTexture);
+				MenuImage.m_OrgTexture = OriginalTexture;
+				MenuImage.m_GreyTexture = GreyTexture;
+			}
+			else
+			{
+				Graphics()->UnloadTexture(&OriginalTexture);
+				Graphics()->UnloadTexture(&GreyTexture);
+				log_error("menus", "Failed to upload menu image '%s'", MenuImage.m_aName);
+			}
+		}
+		else if(MenuImage.m_Resource.IsFailed(m_AssetGeneration))
+		{
+			log_error("menus", "Failed to load menu image from '%s'", MenuImage.m_Resource.Path());
+		}
+		MenuImage.m_Resource.Reset();
+		MenuImage.m_pGreyImage.reset();
+	}
 }
 
 const CMenus::CMenuImage *CMenus::FindMenuImage(const char *pName)

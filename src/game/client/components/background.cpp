@@ -105,6 +105,7 @@ void CBackground::OnRender(const CRenderContext &Context)
 	if(g_Config.m_ClOverlayEntities != 100)
 		return;
 
+	m_pBackgroundImages->Update();
 	m_pBackgroundImages->SetGameInfo(Context.m_State.CoreGameInfo());
 	CMapLayers::OnRender(Context);
 }

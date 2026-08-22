@@ -426,24 +426,28 @@ bool CSound::DecodeOpus(CSample &Sample, const void *pData, unsigned DataSize, c
 	return true;
 }
 
-// TODO: Update WavPack to get rid of these global variables
-static const void *s_pWVBuffer = nullptr;
-static int s_WVBufferPosition = 0;
-static int s_WVBufferSize = 0;
-
-static int ReadDataOld(void *pBuffer, int Size)
+struct CWavpackMemoryReader
 {
-	int ChunkSize = std::min(Size, s_WVBufferSize - s_WVBufferPosition);
-	mem_copy(pBuffer, (const char *)s_pWVBuffer + s_WVBufferPosition, ChunkSize);
-	s_WVBufferPosition += ChunkSize;
+	const uint8_t *m_pData;
+	unsigned m_DataSize;
+	unsigned m_Position;
+};
+
+static int ReadWavpackData(CWavpackMemoryReader &Reader, void *pBuffer, int Size)
+{
+	if(Size <= 0 || Reader.m_Position >= Reader.m_DataSize)
+		return 0;
+
+	const unsigned ChunkSize = std::min<unsigned>(Size, Reader.m_DataSize - Reader.m_Position);
+	mem_copy(pBuffer, Reader.m_pData + Reader.m_Position, ChunkSize);
+	Reader.m_Position += ChunkSize;
 	return ChunkSize;
 }
 
 #if defined(CONF_WAVPACK_OPEN_FILE_INPUT_EX)
 static int ReadData(void *pId, void *pBuffer, int Size)
 {
-	(void)pId;
-	return ReadDataOld(pBuffer, Size);
+	return ReadWavpackData(*static_cast<CWavpackMemoryReader *>(pId), pBuffer, Size);
 }
 
 static int ReturnFalse(void *pId)
@@ -454,22 +458,42 @@ static int ReturnFalse(void *pId)
 
 static unsigned int GetPos(void *pId)
 {
-	(void)pId;
-	return s_WVBufferPosition;
+	return static_cast<CWavpackMemoryReader *>(pId)->m_Position;
 }
 
 static unsigned int GetLength(void *pId)
 {
-	(void)pId;
-	return s_WVBufferSize;
+	return static_cast<CWavpackMemoryReader *>(pId)->m_DataSize;
 }
 
 static int PushBackByte(void *pId, int Char)
 {
-	s_WVBufferPosition -= 1;
-	return 0;
+	CWavpackMemoryReader &Reader = *static_cast<CWavpackMemoryReader *>(pId);
+	if(Reader.m_Position == 0)
+		return -1;
+	--Reader.m_Position;
+	return Char;
+}
+#else
+// The bundled WavPack 4.40 decoder has neither a reader ID nor a reentrant context.
+// The lock in DecodeWV therefore covers the entire decode when using this fallback.
+static CLock s_WavpackLock;
+static CWavpackMemoryReader s_WavpackReader;
+
+static int ReadDataOld(void *pBuffer, int Size)
+{
+	return ReadWavpackData(s_WavpackReader, pBuffer, Size);
 }
 #endif
+
+static void CloseWavpackContext(WavpackContext *pContext)
+{
+#ifdef CONF_WAVPACK_CLOSE_FILE
+	WavpackCloseFile(pContext);
+#else
+	(void)pContext;
+#endif
+}
 
 bool CSound::DecodeWV(CSample &Sample, const void *pData, unsigned DataSize, const char *pContextName) const
 {
@@ -477,12 +501,8 @@ bool CSound::DecodeWV(CSample &Sample, const void *pData, unsigned DataSize, con
 	if(!m_SoundEnabled)
 		return false;
 
-	dbg_assert(s_pWVBuffer == nullptr, "DecodeWV already in use");
-	s_pWVBuffer = pData;
-	s_WVBufferSize = DataSize;
-	s_WVBufferPosition = 0;
-
-	char aError[100];
+	CWavpackMemoryReader Reader{static_cast<const uint8_t *>(pData), DataSize, 0};
+	char aError[100] = {};
 
 #if defined(CONF_WAVPACK_OPEN_FILE_INPUT_EX)
 	WavpackStreamReader Callback = {};
@@ -491,66 +511,81 @@ bool CSound::DecodeWV(CSample &Sample, const void *pData, unsigned DataSize, con
 	Callback.get_pos = GetPos;
 	Callback.push_back_byte = PushBackByte;
 	Callback.read_bytes = ReadData;
-	WavpackContext *pContext = WavpackOpenFileInputEx(&Callback, (void *)1, nullptr, aError, 0, 0);
+	WavpackContext *pContext = WavpackOpenFileInputEx(&Callback, &Reader, nullptr, aError, 0, 0);
 #else
+	const CLockScope LockScope(s_WavpackLock);
+	s_WavpackReader = Reader;
 	WavpackContext *pContext = WavpackOpenFileInput(ReadDataOld, aError);
 #endif
-	if(pContext)
-	{
-		const int NumSamples = WavpackGetNumSamples(pContext);
-		const int BitsPerSample = WavpackGetBitsPerSample(pContext);
-		const unsigned int SampleRate = WavpackGetSampleRate(pContext);
-		const int NumChannels = WavpackGetNumChannels(pContext);
-
-		if(NumChannels > 2)
-		{
-			log_error("sound/wv", "File is not mono or stereo. Filename='%s'", pContextName);
-			s_pWVBuffer = nullptr;
-			return false;
-		}
-
-		if(BitsPerSample != 16)
-		{
-			log_error("sound/wv", "Bits per sample is %d, not 16. Filename='%s'", BitsPerSample, pContextName);
-			s_pWVBuffer = nullptr;
-			return false;
-		}
-
-		int *pBuffer = (int *)calloc((size_t)NumSamples * NumChannels, sizeof(int));
-		if(!WavpackUnpackSamples(pContext, pBuffer, NumSamples))
-		{
-			free(pBuffer);
-			log_error("sound/wv", "WavpackUnpackSamples failed. NumSamples=%d NumChannels=%d Filename='%s'", NumSamples, NumChannels, pContextName);
-			s_pWVBuffer = nullptr;
-			return false;
-		}
-
-		Sample.m_pData = (short *)calloc((size_t)NumSamples * NumChannels, sizeof(short));
-
-		int *pSrc = pBuffer;
-		short *pDst = Sample.m_pData;
-		for(int i = 0; i < NumSamples * NumChannels; i++)
-			*pDst++ = (short)*pSrc++;
-
-		free(pBuffer);
-#ifdef CONF_WAVPACK_CLOSE_FILE
-		WavpackCloseFile(pContext);
-#endif
-
-		Sample.m_NumFrames = NumSamples;
-		Sample.m_Rate = SampleRate;
-		Sample.m_Channels = NumChannels;
-		Sample.m_LoopStart = 0;
-		Sample.m_PausedAt = 0;
-
-		s_pWVBuffer = nullptr;
-	}
-	else
+	if(!pContext)
 	{
 		log_error("sound/wv", "Failed to decode sample (%s). Filename='%s'", aError, pContextName);
-		s_pWVBuffer = nullptr;
 		return false;
 	}
+
+	const unsigned NumSamples = WavpackGetNumSamples(pContext);
+	const int BitsPerSample = WavpackGetBitsPerSample(pContext);
+	const unsigned SampleRate = WavpackGetSampleRate(pContext);
+	const int NumChannels = WavpackGetNumChannels(pContext);
+
+	if(NumChannels < 1 || NumChannels > 2)
+	{
+		CloseWavpackContext(pContext);
+		log_error("sound/wv", "File is not mono or stereo. Filename='%s'", pContextName);
+		return false;
+	}
+
+	if(BitsPerSample != 16)
+	{
+		CloseWavpackContext(pContext);
+		log_error("sound/wv", "Bits per sample is %d, not 16. Filename='%s'", BitsPerSample, pContextName);
+		return false;
+	}
+
+	if(NumSamples == 0 || NumSamples > std::numeric_limits<int>::max() || SampleRate == 0 || SampleRate > std::numeric_limits<int>::max() ||
+		NumSamples > std::numeric_limits<size_t>::max() / NumChannels / sizeof(int))
+	{
+		CloseWavpackContext(pContext);
+		log_error("sound/wv", "Invalid sample metadata. NumSamples=%u SampleRate=%u NumChannels=%d Filename='%s'", NumSamples, SampleRate, NumChannels, pContextName);
+		return false;
+	}
+
+	const size_t NumValues = static_cast<size_t>(NumSamples) * NumChannels;
+	int *pBuffer = static_cast<int *>(calloc(NumValues, sizeof(int)));
+	if(!pBuffer)
+	{
+		CloseWavpackContext(pContext);
+		log_error("sound/wv", "Failed to allocate decode buffer. NumSamples=%u NumChannels=%d Filename='%s'", NumSamples, NumChannels, pContextName);
+		return false;
+	}
+
+	const unsigned UnpackedSamples = WavpackUnpackSamples(pContext, pBuffer, NumSamples);
+	CloseWavpackContext(pContext);
+	if(UnpackedSamples != NumSamples)
+	{
+		free(pBuffer);
+		log_error("sound/wv", "WavpackUnpackSamples failed. NumSamples=%u UnpackedSamples=%u NumChannels=%d Filename='%s'", NumSamples, UnpackedSamples, NumChannels, pContextName);
+		return false;
+	}
+
+	short *pSampleData = static_cast<short *>(calloc(NumValues, sizeof(short)));
+	if(!pSampleData)
+	{
+		free(pBuffer);
+		log_error("sound/wv", "Failed to allocate sample buffer. NumSamples=%u NumChannels=%d Filename='%s'", NumSamples, NumChannels, pContextName);
+		return false;
+	}
+
+	for(size_t i = 0; i < NumValues; ++i)
+		pSampleData[i] = static_cast<short>(pBuffer[i]);
+	free(pBuffer);
+
+	Sample.m_pData = pSampleData;
+	Sample.m_NumFrames = NumSamples;
+	Sample.m_Rate = SampleRate;
+	Sample.m_Channels = NumChannels;
+	Sample.m_LoopStart = 0;
+	Sample.m_PausedAt = 0;
 
 	return true;
 }

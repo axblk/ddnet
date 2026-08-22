@@ -3,14 +3,18 @@
 
 #include <base/hash.h>
 
+#include <engine/client/asset_loader.h>
 #include <engine/graphics.h>
 #include <engine/serverbrowser.h>
-#include <engine/shared/jobs.h>
 
 #include <game/client/component.h>
 #include <game/client/ui_rect.h>
 
+#include <cstdint>
+#include <deque>
+#include <memory>
 #include <optional>
+#include <vector>
 
 class IHttpRequest;
 
@@ -35,56 +39,44 @@ public:
 	void Shutdown();
 
 private:
-	class CAbstractCommunityIconJob
+	class CCommunityIconLoadResult
 	{
-	protected:
-		CCommunityIcons *m_pCommunityIcons;
-		char m_aCommunityId[CServerInfo::MAX_COMMUNITY_ID_LENGTH];
-		char m_aPath[IO_MAX_PATH_LENGTH];
-		int m_StorageType;
-		bool m_Success = false;
+	public:
 		SHA256_DIGEST m_Sha256;
-
-		CAbstractCommunityIconJob(CCommunityIcons *pCommunityIcons, const char *pCommunityId, int StorageType);
-
-	public:
-		const char *CommunityId() const { return m_aCommunityId; }
-		bool Success() const { return m_Success; }
-		const SHA256_DIGEST &Sha256() const { return m_Sha256; }
-		virtual ~CAbstractCommunityIconJob() = default;
-	};
-
-	class CCommunityIconLoadJob : public IJob, public CAbstractCommunityIconJob
-	{
-		CImageInfo m_ImageInfo;
 		CImageInfo m_ImageInfoGrayscale;
-
-	protected:
-		void Run() override;
-
-	public:
-		CCommunityIconLoadJob(CCommunityIcons *pCommunityIcons, const char *pCommunityId, int StorageType);
-		~CCommunityIconLoadJob() override;
-
-		CImageInfo &ImageInfo() { return m_ImageInfo; }
-		CImageInfo &ImageInfoGrayscale() { return m_ImageInfoGrayscale; }
 	};
 
-	class CCommunityIconDownloadJob : public CAbstractCommunityIconJob
+	class CCommunityIconLoad
 	{
+	public:
+		char m_aCommunityId[CServerInfo::MAX_COMMUNITY_ID_LENGTH] = {};
+		uint64_t m_Generation = 0;
+		CImageResource m_Resource;
+		std::shared_ptr<CCommunityIconLoadResult> m_pResult;
+	};
+
+	class CCommunityIconDownloadJob
+	{
+		char m_aCommunityId[CServerInfo::MAX_COMMUNITY_ID_LENGTH] = {};
+		char m_aPath[IO_MAX_PATH_LENGTH] = {};
+		SHA256_DIGEST m_Sha256;
+		uint64_t m_Generation;
 		std::shared_ptr<IHttpRequest> m_pHttpRequest;
 
 	public:
-		CCommunityIconDownloadJob(CCommunityIcons *pCommunityIcons, const char *pCommunityId, const char *pUrl, const SHA256_DIGEST &Sha256);
+		CCommunityIconDownloadJob(CCommunityIcons *pCommunityIcons, const char *pCommunityId, const char *pUrl, const SHA256_DIGEST &Sha256, uint64_t Generation);
+		const char *CommunityId() const { return m_aCommunityId; }
+		uint64_t Generation() const { return m_Generation; }
 		std::shared_ptr<IHttpRequest> HttpRequest() { return m_pHttpRequest; }
 	};
 
 	std::vector<CCommunityIcon> m_vCommunityIcons;
-	std::deque<std::shared_ptr<CCommunityIconLoadJob>> m_CommunityIconLoadJobs;
+	std::deque<CCommunityIconLoad> m_CommunityIconLoadJobs;
 	std::deque<std::shared_ptr<CCommunityIconDownloadJob>> m_CommunityIconDownloadJobs;
 	std::optional<SHA256_DIGEST> m_CommunityIconsInfoSha256;
+	uint64_t m_Generation = 1;
 	static int FileScan(const char *pName, int IsDir, int DirType, void *pUser);
-	bool LoadFile(const char *pPath, int DirType, CImageInfo &Info, CImageInfo &InfoGrayscale, SHA256_DIGEST &Sha256);
+	void StartLoad(const char *pCommunityId, int StorageType);
 	void LoadFinish(const char *pCommunityId, CImageInfo &Info, CImageInfo &InfoGrayscale, const SHA256_DIGEST &Sha256);
 };
 

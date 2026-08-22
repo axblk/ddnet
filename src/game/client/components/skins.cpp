@@ -10,6 +10,7 @@
 #include <base/time.h>
 
 #include <engine/engine.h>
+#include <engine/gfx/image_loader.h>
 #include <engine/gfx/image_manipulation.h>
 #include <engine/graphics.h>
 #include <engine/http.h>
@@ -21,27 +22,25 @@
 #include <game/client/gameclient.h>
 #include <game/localization.h>
 
+#include <algorithm>
 #include <optional>
 
 using namespace std::chrono_literals;
 
-CSkins::CAbstractSkinLoadJob::CAbstractSkinLoadJob(CSkins *pSkins, const char *pName) :
-	m_pSkins(pSkins)
+namespace
 {
-	str_copy(m_aName, pName);
-	Abortable(true);
-}
+	constexpr int ASSET_OWNER_SKINS = 3;
 
-CSkins::CAbstractSkinLoadJob::~CAbstractSkinLoadJob()
-{
-	m_Data.m_Info.Free();
-	m_Data.m_InfoGrayscale.Free();
-}
-
-CSkins::CSkinLoadJob::CSkinLoadJob(CSkins *pSkins, const char *pName, int StorageType) :
-	CAbstractSkinLoadJob(pSkins, pName),
-	m_StorageType(StorageType)
-{
+	bool AllSkinTexturesValid(const CSkin::CSkinTextures &Textures)
+	{
+		if(!Textures.m_Body.IsValid() || !Textures.m_BodyOutline.IsValid() ||
+			!Textures.m_Feet.IsValid() || !Textures.m_FeetOutline.IsValid() ||
+			!Textures.m_Hands.IsValid() || !Textures.m_HandsOutline.IsValid())
+		{
+			return false;
+		}
+		return std::ranges::all_of(Textures.m_aEyes, [](const auto &Eye) { return Eye.IsValid(); });
+	}
 }
 
 CSkins::CSkinContainer::CSkinContainer(CSkins *pSkins, const char *pName, EType Type, int StorageType) :
@@ -57,9 +56,13 @@ CSkins::CSkinContainer::CSkinContainer(CSkins *pSkins, const char *pName, EType 
 
 CSkins::CSkinContainer::~CSkinContainer()
 {
-	if(m_pLoadJob)
+	if(m_LoadResource)
 	{
-		m_pLoadJob->Abort();
+		m_LoadResource.Abort();
+	}
+	if(m_pDownloadRequest)
+	{
+		m_pDownloadRequest->Abort();
 	}
 }
 
@@ -72,6 +75,7 @@ static constexpr std::chrono::nanoseconds MIN_REQUESTED_TIME_FOR_PENDING = 250ms
 static constexpr std::chrono::nanoseconds MAX_REQUESTED_TIME_FOR_PENDING = 500ms;
 static constexpr std::chrono::nanoseconds MIN_UNLOAD_TIME_PENDING = 1s;
 static constexpr std::chrono::nanoseconds MIN_UNLOAD_TIME_LOADED = 2s;
+static constexpr size_t MAX_CONCURRENT_SKIN_LOADS = 2;
 static_assert(MIN_REQUESTED_TIME_FOR_PENDING < MAX_REQUESTED_TIME_FOR_PENDING);
 static_assert(MIN_REQUESTED_TIME_FOR_PENDING < MIN_UNLOAD_TIME_PENDING, "Unloading pending skins must take longer than adding more pending skins");
 
@@ -289,52 +293,85 @@ static void CheckMetrics(CSkin::CSkinMetricVariable &Metrics, const uint8_t *pIm
 	Metrics.m_MaxHeight = CheckHeight;
 }
 
-bool CSkins::LoadSkinData(const char *pName, CSkinLoadData &Data) const
+bool CSkins::LoadSkinData(const char *pName, CImageInfo &Info, CSkinLoadData &Data, bool LogErrors)
 {
-	if(!Graphics()->CheckImageDivisibility(pName, Data.m_Info, g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridx, g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridy, true))
+	if(Info.m_Format != CImageInfo::FORMAT_RGBA)
 	{
-		log_error("skins", "Skin failed image divisibility: %s", pName);
-		Data.m_Info.Free();
+		if(LogErrors)
+			log_error("skins", "Skin format is not RGBA: %s", pName);
 		return false;
 	}
-	if(!Graphics()->IsImageFormatRgba(pName, Data.m_Info))
+	const int DivX = g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridx;
+	const int DivY = g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridy;
+	const bool WidthBroken = Info.m_Width == 0 || Info.m_Width % DivX != 0;
+	const bool HeightBroken = Info.m_Height == 0 || Info.m_Height % DivY != 0;
+	if(WidthBroken || HeightBroken)
 	{
-		log_error("skins", "Skin format is not RGBA: %s", pName);
-		Data.m_Info.Free();
-		return false;
+		if(Info.m_Width == 0 || Info.m_Height == 0)
+		{
+			if(LogErrors)
+				log_error("skins", "Skin has invalid size (w=%" PRIzu ", h=%" PRIzu "): %s", Info.m_Width, Info.m_Height, pName);
+			return false;
+		}
+		int NewWidth;
+		int NewHeight;
+		if(WidthBroken)
+		{
+			NewWidth = std::max(HighestBit(Info.m_Width), DivX);
+			NewHeight = (NewWidth / DivX) * DivY;
+		}
+		else
+		{
+			NewHeight = std::max(HighestBit(Info.m_Height), DivY);
+			NewWidth = (NewHeight / DivY) * DivX;
+		}
+		const size_t NewDataSize = static_cast<size_t>(NewWidth) * NewHeight * Info.PixelSize();
+		if(NewWidth > static_cast<int>(CImageLoader::MAX_IMAGE_DIMENSION) ||
+			NewHeight > static_cast<int>(CImageLoader::MAX_IMAGE_DIMENSION) ||
+			NewDataSize > CImageLoader::MAX_IMAGE_DATA_SIZE)
+		{
+			if(LogErrors)
+				log_error("skins", "Resized skin would be too large (w=%d, h=%d, size=%" PRIzu "): %s", NewWidth, NewHeight, NewDataSize, pName);
+			return false;
+		}
+		Data.m_OriginalWidth = Info.m_Width;
+		Data.m_OriginalHeight = Info.m_Height;
+		Data.m_ResizedWidth = NewWidth;
+		Data.m_ResizedHeight = NewHeight;
+		ResizeImage(Info, NewWidth, NewHeight);
 	}
-	const size_t BodyWidth = g_pData->m_aSprites[SPRITE_TEE_BODY].m_W * (Data.m_Info.m_Width / g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridx);
-	const size_t BodyHeight = g_pData->m_aSprites[SPRITE_TEE_BODY].m_H * (Data.m_Info.m_Height / g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridy);
-	if(BodyWidth > Data.m_Info.m_Width || BodyHeight > Data.m_Info.m_Height)
+	const size_t BodyWidth = g_pData->m_aSprites[SPRITE_TEE_BODY].m_W * (Info.m_Width / g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridx);
+	const size_t BodyHeight = g_pData->m_aSprites[SPRITE_TEE_BODY].m_H * (Info.m_Height / g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridy);
+	if(BodyWidth > Info.m_Width || BodyHeight > Info.m_Height)
 	{
-		log_error("skins", "Skin size unsupported (w=%" PRIzu ", h=%" PRIzu "): %s", Data.m_Info.m_Width, Data.m_Info.m_Height, pName);
-		Data.m_Info.Free();
+		if(LogErrors)
+			log_error("skins", "Skin size unsupported (w=%" PRIzu ", h=%" PRIzu "): %s", Info.m_Width, Info.m_Height, pName);
 		return false;
 	}
 
-	int FeetGridPixelsWidth = Data.m_Info.m_Width / g_pData->m_aSprites[SPRITE_TEE_FOOT].m_pSet->m_Gridx;
-	int FeetGridPixelsHeight = Data.m_Info.m_Height / g_pData->m_aSprites[SPRITE_TEE_FOOT].m_pSet->m_Gridy;
+	int FeetGridPixelsWidth = Info.m_Width / g_pData->m_aSprites[SPRITE_TEE_FOOT].m_pSet->m_Gridx;
+	int FeetGridPixelsHeight = Info.m_Height / g_pData->m_aSprites[SPRITE_TEE_FOOT].m_pSet->m_Gridy;
 	int FeetWidth = g_pData->m_aSprites[SPRITE_TEE_FOOT].m_W * FeetGridPixelsWidth;
 	int FeetHeight = g_pData->m_aSprites[SPRITE_TEE_FOOT].m_H * FeetGridPixelsHeight;
 	int FeetOffsetX = g_pData->m_aSprites[SPRITE_TEE_FOOT].m_X * FeetGridPixelsWidth;
 	int FeetOffsetY = g_pData->m_aSprites[SPRITE_TEE_FOOT].m_Y * FeetGridPixelsHeight;
 
-	int FeetOutlineGridPixelsWidth = Data.m_Info.m_Width / g_pData->m_aSprites[SPRITE_TEE_FOOT_OUTLINE].m_pSet->m_Gridx;
-	int FeetOutlineGridPixelsHeight = Data.m_Info.m_Height / g_pData->m_aSprites[SPRITE_TEE_FOOT_OUTLINE].m_pSet->m_Gridy;
+	int FeetOutlineGridPixelsWidth = Info.m_Width / g_pData->m_aSprites[SPRITE_TEE_FOOT_OUTLINE].m_pSet->m_Gridx;
+	int FeetOutlineGridPixelsHeight = Info.m_Height / g_pData->m_aSprites[SPRITE_TEE_FOOT_OUTLINE].m_pSet->m_Gridy;
 	int FeetOutlineWidth = g_pData->m_aSprites[SPRITE_TEE_FOOT_OUTLINE].m_W * FeetOutlineGridPixelsWidth;
 	int FeetOutlineHeight = g_pData->m_aSprites[SPRITE_TEE_FOOT_OUTLINE].m_H * FeetOutlineGridPixelsHeight;
 	int FeetOutlineOffsetX = g_pData->m_aSprites[SPRITE_TEE_FOOT_OUTLINE].m_X * FeetOutlineGridPixelsWidth;
 	int FeetOutlineOffsetY = g_pData->m_aSprites[SPRITE_TEE_FOOT_OUTLINE].m_Y * FeetOutlineGridPixelsHeight;
 
-	int BodyOutlineGridPixelsWidth = Data.m_Info.m_Width / g_pData->m_aSprites[SPRITE_TEE_BODY_OUTLINE].m_pSet->m_Gridx;
-	int BodyOutlineGridPixelsHeight = Data.m_Info.m_Height / g_pData->m_aSprites[SPRITE_TEE_BODY_OUTLINE].m_pSet->m_Gridy;
+	int BodyOutlineGridPixelsWidth = Info.m_Width / g_pData->m_aSprites[SPRITE_TEE_BODY_OUTLINE].m_pSet->m_Gridx;
+	int BodyOutlineGridPixelsHeight = Info.m_Height / g_pData->m_aSprites[SPRITE_TEE_BODY_OUTLINE].m_pSet->m_Gridy;
 	int BodyOutlineWidth = g_pData->m_aSprites[SPRITE_TEE_BODY_OUTLINE].m_W * BodyOutlineGridPixelsWidth;
 	int BodyOutlineHeight = g_pData->m_aSprites[SPRITE_TEE_BODY_OUTLINE].m_H * BodyOutlineGridPixelsHeight;
 	int BodyOutlineOffsetX = g_pData->m_aSprites[SPRITE_TEE_BODY_OUTLINE].m_X * BodyOutlineGridPixelsWidth;
 	int BodyOutlineOffsetY = g_pData->m_aSprites[SPRITE_TEE_BODY_OUTLINE].m_Y * BodyOutlineGridPixelsHeight;
 
-	const size_t PixelStep = Data.m_Info.PixelSize();
-	const size_t Pitch = Data.m_Info.m_Width * PixelStep;
+	const size_t PixelStep = Info.PixelSize();
+	const size_t Pitch = Info.m_Width * PixelStep;
 
 	// dig out blood color
 	{
@@ -344,11 +381,11 @@ bool CSkins::LoadSkinData(const char *pName, CSkinLoadData &Data) const
 			for(size_t x = 0; x < BodyWidth; x++)
 			{
 				const size_t Offset = y * Pitch + x * PixelStep;
-				if(Data.m_Info.m_pData[Offset + 3] > 128)
+				if(Info.m_pData[Offset + 3] > 128)
 				{
 					for(size_t c = 0; c < 3; c++)
 					{
-						aColors[c] += Data.m_Info.m_pData[Offset + c];
+						aColors[c] += Info.m_pData[Offset + c];
 					}
 				}
 			}
@@ -357,12 +394,12 @@ bool CSkins::LoadSkinData(const char *pName, CSkinLoadData &Data) const
 		Data.m_BloodColor = ColorRGBA(NormalizedColor.x, NormalizedColor.y, NormalizedColor.z);
 	}
 
-	CheckMetrics(Data.m_Metrics.m_Body, Data.m_Info.m_pData, Pitch, 0, 0, BodyWidth, BodyHeight);
-	CheckMetrics(Data.m_Metrics.m_Body, Data.m_Info.m_pData, Pitch, BodyOutlineOffsetX, BodyOutlineOffsetY, BodyOutlineWidth, BodyOutlineHeight);
-	CheckMetrics(Data.m_Metrics.m_Feet, Data.m_Info.m_pData, Pitch, FeetOffsetX, FeetOffsetY, FeetWidth, FeetHeight);
-	CheckMetrics(Data.m_Metrics.m_Feet, Data.m_Info.m_pData, Pitch, FeetOutlineOffsetX, FeetOutlineOffsetY, FeetOutlineWidth, FeetOutlineHeight);
+	CheckMetrics(Data.m_Metrics.m_Body, Info.m_pData, Pitch, 0, 0, BodyWidth, BodyHeight);
+	CheckMetrics(Data.m_Metrics.m_Body, Info.m_pData, Pitch, BodyOutlineOffsetX, BodyOutlineOffsetY, BodyOutlineWidth, BodyOutlineHeight);
+	CheckMetrics(Data.m_Metrics.m_Feet, Info.m_pData, Pitch, FeetOffsetX, FeetOffsetY, FeetWidth, FeetHeight);
+	CheckMetrics(Data.m_Metrics.m_Feet, Info.m_pData, Pitch, FeetOutlineOffsetX, FeetOutlineOffsetY, FeetOutlineWidth, FeetOutlineHeight);
 
-	Data.m_InfoGrayscale = Data.m_Info.DeepCopy();
+	Data.m_InfoGrayscale = Info.DeepCopy();
 	ConvertToGrayscale(Data.m_InfoGrayscale);
 
 	int aFreq[256] = {0};
@@ -414,7 +451,7 @@ bool CSkins::LoadSkinData(const char *pName, CSkinLoadData &Data) const
 	return true;
 }
 
-void CSkins::LoadSkinFinish(CSkinContainer *pSkinContainer, const CSkinLoadData &Data)
+bool CSkins::LoadSkinFinish(CSkinContainer *pSkinContainer, const CSkinLoadData &Data)
 {
 	CSkin Skin{pSkinContainer->Name()};
 
@@ -443,6 +480,13 @@ void CSkins::LoadSkinFinish(CSkinContainer *pSkinContainer, const CSkinLoadData 
 
 	Skin.m_Metrics = Data.m_Metrics;
 	Skin.m_BloodColor = Data.m_BloodColor;
+	if(!AllSkinTexturesValid(Skin.m_OriginalSkin) || !AllSkinTexturesValid(Skin.m_ColorableSkin))
+	{
+		log_error("skins", "Failed to upload required textures of skin '%s'", Skin.GetName());
+		Skin.m_OriginalSkin.Unload(Graphics());
+		Skin.m_ColorableSkin.Unload(Graphics());
+		return false;
+	}
 
 	if(g_Config.m_Debug)
 	{
@@ -451,8 +495,13 @@ void CSkins::LoadSkinFinish(CSkinContainer *pSkinContainer, const CSkinLoadData 
 
 	auto SkinIt = m_Skins.find(pSkinContainer->Name());
 	dbg_assert(SkinIt != m_Skins.end(), "LoadSkinFinish on skin '%s' which is not in m_Skins", pSkinContainer->Name());
+	if(SkinIt->second->m_pSkin)
+	{
+		SkinIt->second->m_pSkin->m_OriginalSkin.Unload(Graphics());
+		SkinIt->second->m_pSkin->m_ColorableSkin.Unload(Graphics());
+	}
 	SkinIt->second->m_pSkin = std::make_unique<CSkin>(std::move(Skin));
-	pSkinContainer->SetState(CSkinContainer::EState::LOADED);
+	return true;
 }
 
 void CSkins::LoadSkinDirect(const char *pName)
@@ -475,16 +524,90 @@ void CSkins::LoadSkinDirect(const char *pName)
 		log_error("skins", "Failed to load PNG of skin '%s' from '%s'", pName, aPath);
 		SkinIt->second->SetState(CSkinContainer::EState::ERROR);
 	}
-	else if(LoadSkinData(pName, DefaultSkinData))
-	{
-		LoadSkinFinish(SkinIt->second.get(), DefaultSkinData);
-	}
 	else
 	{
-		SkinIt->second->SetState(CSkinContainer::EState::ERROR);
+		const bool DataLoaded = LoadSkinData(pName, DefaultSkinData.m_Info, DefaultSkinData, true);
+		if(DefaultSkinData.m_ResizedWidth != 0)
+			log_warn("skins", "Resizing skin '%s' from %" PRIzu "x%" PRIzu " to %" PRIzu "x%" PRIzu " because its size is not divisible by %dx%d", pName, DefaultSkinData.m_OriginalWidth, DefaultSkinData.m_OriginalHeight, DefaultSkinData.m_ResizedWidth, DefaultSkinData.m_ResizedHeight, g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridx, g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridy);
+		if(DataLoaded && LoadSkinFinish(SkinIt->second.get(), DefaultSkinData))
+			SkinIt->second->SetState(CSkinContainer::EState::LOADED);
+		else
+			SkinIt->second->SetState(CSkinContainer::EState::ERROR);
 	}
 	DefaultSkinData.m_Info.Free();
 	DefaultSkinData.m_InfoGrayscale.Free();
+}
+
+void CSkins::StartSkinDecode(CSkinContainer *pSkinContainer, const char *pPath, int StorageType, ESkinDecodeSource Source)
+{
+	auto pData = std::make_shared<CSkinLoadData>();
+	const std::string Name = pSkinContainer->Name();
+	pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImage(Storage(), pPath, StorageType, ASSET_OWNER_SKINS, m_Generation, [pData, Name](CImageInfo &Info) {
+		return LoadSkinData(Name.c_str(), Info, *pData, false);
+	});
+	pSkinContainer->m_pLoadData = std::move(pData);
+	pSkinContainer->m_DecodeSource = Source;
+}
+
+void CSkins::StartSkinDecode(CSkinContainer *pSkinContainer, std::vector<uint8_t> vData, const char *pContextName, ESkinDecodeSource Source)
+{
+	auto pData = std::make_shared<CSkinLoadData>();
+	const std::string Name = pSkinContainer->Name();
+	pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImage(std::move(vData), pContextName, ASSET_OWNER_SKINS, m_Generation, [pData, Name](CImageInfo &Info) {
+		return LoadSkinData(Name.c_str(), Info, *pData, false);
+	});
+	pSkinContainer->m_pLoadData = std::move(pData);
+	pSkinContainer->m_DecodeSource = Source;
+}
+
+void CSkins::StartLocalSkinLoad(CSkinContainer *pSkinContainer)
+{
+	char aPath[IO_MAX_PATH_LENGTH];
+	str_format(aPath, sizeof(aPath), "skins/%s.png", pSkinContainer->Name());
+	StartSkinDecode(pSkinContainer, aPath, pSkinContainer->StorageType(), ESkinDecodeSource::LOCAL);
+}
+
+void CSkins::StartDownload(CSkinContainer *pSkinContainer, bool Force)
+{
+	const char *pBaseUrl = g_Config.m_ClDownloadCommunitySkins != 0 ? g_Config.m_ClSkinCommunityDownloadUrl : g_Config.m_ClSkinDownloadUrl;
+
+	char aEscapedName[256];
+	EscapeUrl(aEscapedName, pSkinContainer->Name());
+
+	char aUrl[IO_MAX_PATH_LENGTH];
+	str_format(aUrl, sizeof(aUrl), "%s%s.png", pBaseUrl, aEscapedName);
+
+	char aPath[IO_MAX_PATH_LENGTH];
+	str_format(aPath, sizeof(aPath), "downloadedskins/%s.png", pSkinContainer->Name());
+
+	const CTimeout Timeout{10000, 0, 8192, 10};
+	constexpr size_t MaxResponseSize = 10 * 1024 * 1024;
+
+	std::shared_ptr<IHttpRequest> pRequest = HttpGetBoth(aUrl, Storage(), aPath, IStorage::TYPE_SAVE);
+	pRequest->Timeout(Timeout);
+	pRequest->MaxResponseSize(MaxResponseSize);
+	pRequest->ValidateBeforeOverwrite(true);
+	pRequest->SkipByFileTime(!Force);
+	pRequest->LogProgress(HTTPLOG::NONE);
+	pRequest->FailOnErrorStatus(false);
+	pSkinContainer->m_pDownloadRequest = pRequest;
+	pSkinContainer->m_DecodeSource = ESkinDecodeSource::NONE;
+	Http()->Run(std::move(pRequest));
+}
+
+void CSkins::StartDownloadedSkinLoad(CSkinContainer *pSkinContainer)
+{
+	pSkinContainer->m_DownloadRetried = false;
+	pSkinContainer->m_DownloadNotFound = false;
+	StartDownload(pSkinContainer, false);
+}
+
+void CSkins::ResetSkinLoad(CSkinContainer *pSkinContainer)
+{
+	pSkinContainer->m_LoadResource.Reset();
+	pSkinContainer->m_pLoadData = nullptr;
+	pSkinContainer->m_pDownloadRequest = nullptr;
+	pSkinContainer->m_DecodeSource = ESkinDecodeSource::NONE;
 }
 
 void CSkins::OnConsoleInit()
@@ -505,15 +628,24 @@ void CSkins::OnInit()
 	Refresh([this]() {
 		GameClient()->m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Loading skin files"), 0);
 	});
+	GameClient()->CollectManagedTeeRenderInfos([this](const char *pSkinName) {
+		GameClient()->OnSkinUpdate(pSkinName);
+	});
 }
 
 void CSkins::OnShutdown()
 {
+	m_Generation++;
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_SKINS, m_Generation);
 	for(auto &[_, pSkinContainer] : m_Skins)
 	{
-		if(pSkinContainer->m_pLoadJob)
+		if(pSkinContainer->m_LoadResource)
 		{
-			pSkinContainer->m_pLoadJob->Abort();
+			pSkinContainer->m_LoadResource.Abort();
+		}
+		if(pSkinContainer->m_pDownloadRequest)
+		{
+			pSkinContainer->m_pDownloadRequest->Abort();
 		}
 	}
 	m_Skins.clear();
@@ -575,17 +707,16 @@ void CSkins::UpdateUnloadSkins(CSkinLoadingStats &Stats)
 			NumSkipped++;
 			continue;
 		}
-		if(pSkinContainer->m_State == CSkinContainer::EState::LOADED)
+		if(pSkinContainer->m_pSkin)
 		{
 			pSkinContainer->m_pSkin->m_OriginalSkin.Unload(Graphics());
 			pSkinContainer->m_pSkin->m_ColorableSkin.Unload(Graphics());
 			pSkinContainer->m_pSkin = nullptr;
+		}
+		if(pSkinContainer->m_State == CSkinContainer::EState::LOADED)
 			Stats.m_NumLoaded--;
-		}
 		else
-		{
 			Stats.m_NumPending--;
-		}
 		Stats.m_NumUnloaded++;
 		pSkinContainer->SetState(CSkinContainer::EState::UNLOADED);
 		NumToUnload--;
@@ -594,9 +725,12 @@ void CSkins::UpdateUnloadSkins(CSkinLoadingStats &Stats)
 
 void CSkins::UpdateStartLoading(CSkinLoadingStats &Stats)
 {
+	dbg_assert(Stats.m_NumLoading <= MAX_CONCURRENT_SKIN_LOADS, "Too many concurrent skin loads");
 	for(auto &[_, pSkinContainer] : m_Skins)
 	{
-		if(Stats.m_NumPending == 0 || Stats.m_NumLoading + Stats.m_NumLoaded >= (size_t)g_Config.m_ClSkinsLoadedMax)
+		if(Stats.m_NumPending == 0 ||
+			Stats.m_NumLoading >= MAX_CONCURRENT_SKIN_LOADS ||
+			Stats.m_NumLoading + Stats.m_NumLoaded >= (size_t)g_Config.m_ClSkinsLoadedMax)
 		{
 			break;
 		}
@@ -607,19 +741,19 @@ void CSkins::UpdateStartLoading(CSkinLoadingStats &Stats)
 		switch(pSkinContainer->Type())
 		{
 		case CSkinContainer::EType::LOCAL:
-			pSkinContainer->m_pLoadJob = std::make_shared<CSkinLoadJob>(this, pSkinContainer->Name(), pSkinContainer->StorageType());
+			StartLocalSkinLoad(pSkinContainer.get());
 			break;
 		case CSkinContainer::EType::DOWNLOAD:
-			pSkinContainer->m_pLoadJob = std::make_shared<CSkinDownloadJob>(this, pSkinContainer->Name());
+			StartDownloadedSkinLoad(pSkinContainer.get());
 			break;
 		default:
 			dbg_assert_failed("pSkinContainer->Type() invalid");
 		}
-		Engine()->AddJob(pSkinContainer->m_pLoadJob);
 		pSkinContainer->SetState(CSkinContainer::EState::LOADING);
 		Stats.m_NumPending--;
 		Stats.m_NumLoading++;
 	}
+	dbg_assert(Stats.m_NumLoading <= MAX_CONCURRENT_SKIN_LOADS, "Too many concurrent skin loads");
 }
 
 void CSkins::UpdateFinishLoading(CSkinLoadingStats &Stats, std::chrono::nanoseconds StartTime, std::chrono::nanoseconds MaxTime)
@@ -634,37 +768,130 @@ void CSkins::UpdateFinishLoading(CSkinLoadingStats &Stats, std::chrono::nanoseco
 		{
 			continue;
 		}
-		dbg_assert(pSkinContainer->m_pLoadJob != nullptr, "Skin container in loading state must have a load job");
-		if(!pSkinContainer->m_pLoadJob->Done())
+
+		if(!pSkinContainer->m_LoadResource && pSkinContainer->m_pDownloadRequest)
+		{
+			if(!pSkinContainer->m_pDownloadRequest->Done())
+			{
+				continue;
+			}
+
+			if(pSkinContainer->m_pDownloadRequest->State() == EHttpState::DONE && pSkinContainer->m_pDownloadRequest->StatusCode() < 400)
+			{
+				if(pSkinContainer->m_pDownloadRequest->StatusCode() == 304)
+				{
+					char aPath[IO_MAX_PATH_LENGTH];
+					str_format(aPath, sizeof(aPath), "downloadedskins/%s.png", pSkinContainer->Name());
+					StartSkinDecode(pSkinContainer.get(), aPath, IStorage::TYPE_SAVE, ESkinDecodeSource::DOWNLOAD_CACHE);
+				}
+				else
+				{
+					unsigned char *pResult;
+					size_t ResultSize;
+					pSkinContainer->m_pDownloadRequest->Result(&pResult, &ResultSize);
+					std::vector<uint8_t> vData;
+					if(ResultSize > 0)
+						vData.assign(pResult, pResult + ResultSize);
+					char aContextName[IO_MAX_PATH_LENGTH];
+					str_format(aContextName, sizeof(aContextName), "downloaded skin '%s'", pSkinContainer->Name());
+					StartSkinDecode(pSkinContainer.get(), std::move(vData), aContextName, ESkinDecodeSource::DOWNLOAD_RESPONSE);
+				}
+			}
+			else
+			{
+				pSkinContainer->m_DownloadNotFound = pSkinContainer->m_pDownloadRequest->State() == EHttpState::DONE && pSkinContainer->m_pDownloadRequest->StatusCode() == 404;
+				pSkinContainer->m_pDownloadRequest = nullptr;
+				char aPath[IO_MAX_PATH_LENGTH];
+				str_format(aPath, sizeof(aPath), "downloadedskins/%s.png", pSkinContainer->Name());
+				StartSkinDecode(pSkinContainer.get(), aPath, IStorage::TYPE_SAVE, ESkinDecodeSource::DOWNLOAD_CACHE);
+			}
+			continue;
+		}
+
+		dbg_assert(pSkinContainer->m_LoadResource, "Skin container in loading state must have a load resource or download request");
+		if(!pSkinContainer->m_LoadResource.IsFinished())
 		{
 			continue;
 		}
-		Stats.m_NumLoading--;
-		if(pSkinContainer->m_pLoadJob->State() == IJob::STATE_DONE && pSkinContainer->m_pLoadJob->m_Data.m_Info.m_pData)
+
+		if(pSkinContainer->m_pLoadData->m_ResizedWidth != 0)
+			log_warn("skins", "Resizing skin '%s' from %" PRIzu "x%" PRIzu " to %" PRIzu "x%" PRIzu " because its size is not divisible by %dx%d", pSkinContainer->Name(), pSkinContainer->m_pLoadData->m_OriginalWidth, pSkinContainer->m_pLoadData->m_OriginalHeight, pSkinContainer->m_pLoadData->m_ResizedWidth, pSkinContainer->m_pLoadData->m_ResizedHeight, g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridx, g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridy);
+
+		const bool Stale = pSkinContainer->m_LoadResource.IsStale(m_Generation);
+		if(!Stale && pSkinContainer->m_LoadResource.IsFailed(m_Generation))
+			log_error("skins", "Failed to load skin '%s' from '%s'", pSkinContainer->Name(), pSkinContainer->m_LoadResource.Path());
+		const bool DecodeSuccess = pSkinContainer->m_LoadResource.IsReady(m_Generation);
+		bool PublishSuccess = false;
+		if(DecodeSuccess)
 		{
-			LoadSkinFinish(pSkinContainer.get(), pSkinContainer->m_pLoadJob->m_Data);
+			pSkinContainer->m_pLoadData->m_Info = pSkinContainer->m_LoadResource.TakeImage();
+			PublishSuccess = LoadSkinFinish(pSkinContainer.get(), *pSkinContainer->m_pLoadData);
+		}
+		if(PublishSuccess)
+		{
+			pSkinContainer->SetState(CSkinContainer::EState::LOADED);
+			if(pSkinContainer->m_pDownloadRequest)
+			{
+				pSkinContainer->m_pDownloadRequest->OnValidation(true);
+			}
 			GameClient()->OnSkinUpdate(pSkinContainer->Name());
-			pSkinContainer->m_pLoadJob = nullptr;
+			ResetSkinLoad(pSkinContainer.get());
+			Stats.m_NumLoading--;
 			Stats.m_NumLoaded++;
 			if(time_get_nanoseconds() - StartTime >= MaxTime)
 			{
 				// Avoid using too much frame time for loading skins
 				break;
 			}
+			continue;
+		}
+
+		if(!Stale && pSkinContainer->m_DecodeSource == ESkinDecodeSource::DOWNLOAD_RESPONSE)
+		{
+			dbg_assert(pSkinContainer->m_pDownloadRequest != nullptr, "Downloaded skin response missing request");
+			pSkinContainer->m_pDownloadRequest->OnValidation(false);
+			pSkinContainer->m_pDownloadRequest = nullptr;
+			pSkinContainer->m_LoadResource.Reset();
+			pSkinContainer->m_pLoadData = nullptr;
+			char aPath[IO_MAX_PATH_LENGTH];
+			str_format(aPath, sizeof(aPath), "downloadedskins/%s.png", pSkinContainer->Name());
+			StartSkinDecode(pSkinContainer.get(), aPath, IStorage::TYPE_SAVE, ESkinDecodeSource::DOWNLOAD_CACHE);
+			continue;
+		}
+
+		if(!Stale && pSkinContainer->m_DecodeSource == ESkinDecodeSource::DOWNLOAD_CACHE &&
+			pSkinContainer->m_pDownloadRequest && pSkinContainer->m_pDownloadRequest->StatusCode() == 304 &&
+			!pSkinContainer->m_DownloadRetried)
+		{
+			pSkinContainer->m_pDownloadRequest->OnValidation(false);
+			pSkinContainer->m_pDownloadRequest = nullptr;
+			pSkinContainer->m_LoadResource.Reset();
+			pSkinContainer->m_pLoadData = nullptr;
+			pSkinContainer->m_DownloadRetried = true;
+			StartDownload(pSkinContainer.get(), true);
+			continue;
+		}
+
+		Stats.m_NumLoading--;
+		const bool NotFound = !Stale && pSkinContainer->m_DownloadNotFound;
+		ResetSkinLoad(pSkinContainer.get());
+		if(pSkinContainer->m_pSkin)
+		{
+			pSkinContainer->SetState(CSkinContainer::EState::LOADED);
+			Stats.m_NumLoaded++;
+		}
+		else if(NotFound)
+		{
+			pSkinContainer->SetState(CSkinContainer::EState::NOT_FOUND);
+			Stats.m_NumNotFound++;
 		}
 		else
 		{
-			if(pSkinContainer->m_pLoadJob->State() == IJob::STATE_DONE && pSkinContainer->m_pLoadJob->m_NotFound)
-			{
-				pSkinContainer->SetState(CSkinContainer::EState::NOT_FOUND);
-				Stats.m_NumNotFound++;
-			}
+			pSkinContainer->SetState(Stale ? CSkinContainer::EState::UNLOADED : CSkinContainer::EState::ERROR);
+			if(Stale)
+				Stats.m_NumUnloaded++;
 			else
-			{
-				pSkinContainer->SetState(CSkinContainer::EState::ERROR);
 				Stats.m_NumError++;
-			}
-			pSkinContainer->m_pLoadJob = nullptr;
 		}
 	}
 }
@@ -684,18 +911,20 @@ void CSkins::RefreshEventSkins()
 
 void CSkins::Refresh(TSkinLoadedCallback &&SkinLoadedCallback)
 {
+	m_Generation++;
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_SKINS, m_Generation);
 	for(auto &[_, pSkinContainer] : m_Skins)
 	{
-		if(pSkinContainer->m_pLoadJob)
+		if(pSkinContainer->m_LoadResource)
 		{
-			pSkinContainer->m_pLoadJob->Abort();
+			pSkinContainer->m_LoadResource.Abort();
 		}
-		if(pSkinContainer->m_pSkin)
+		if(pSkinContainer->m_pDownloadRequest)
 		{
-			pSkinContainer->m_pSkin->m_OriginalSkin.Unload(Graphics());
-			pSkinContainer->m_pSkin->m_ColorableSkin.Unload(Graphics());
+			pSkinContainer->m_pDownloadRequest->Abort();
 		}
 	}
+	auto OldSkins = std::move(m_Skins);
 	m_Skins.clear();
 	m_SkinsUsageList.clear();
 
@@ -706,6 +935,48 @@ void CSkins::Refresh(TSkinLoadedCallback &&SkinLoadedCallback)
 	SkinScanUser.m_pThis = this;
 	SkinScanUser.m_SkinLoadedCallback = SkinLoadedCallback;
 	Storage()->ListDirectory(IStorage::TYPE_ALL, "skins", SkinScan, &SkinScanUser);
+
+	for(auto &[_, pOldSkinContainer] : OldSkins)
+	{
+		if(pOldSkinContainer->Type() != CSkinContainer::EType::DOWNLOAD || !pOldSkinContainer->m_pSkin || m_Skins.contains(pOldSkinContainer->Name()))
+		{
+			continue;
+		}
+		CSkinContainer SkinContainer(this, pOldSkinContainer->Name(), CSkinContainer::EType::DOWNLOAD, IStorage::TYPE_SAVE);
+		auto pSkinContainer = std::make_unique<CSkinContainer>(std::move(SkinContainer));
+		pSkinContainer->SetState(pSkinContainer->DetermineInitialState());
+		m_Skins.insert({pSkinContainer->Name(), std::move(pSkinContainer)});
+		SkinLoadedCallback();
+	}
+
+	for(auto &[Name, pSkinContainer] : m_Skins)
+	{
+		auto OldSkinIt = OldSkins.find(Name);
+		if(OldSkinIt == OldSkins.end() || !OldSkinIt->second->m_pSkin)
+		{
+			continue;
+		}
+		if(pSkinContainer->m_pSkin || pSkinContainer->m_State == CSkinContainer::EState::NOT_FOUND)
+		{
+			OldSkinIt->second->m_pSkin->m_OriginalSkin.Unload(Graphics());
+			OldSkinIt->second->m_pSkin->m_ColorableSkin.Unload(Graphics());
+			OldSkinIt->second->m_pSkin = nullptr;
+			continue;
+		}
+
+		pSkinContainer->m_pSkin = std::move(OldSkinIt->second->m_pSkin);
+		pSkinContainer->SetState(pSkinContainer->m_State == CSkinContainer::EState::ERROR ? CSkinContainer::EState::LOADED : CSkinContainer::EState::PENDING);
+	}
+
+	for(auto &[_, pOldSkinContainer] : OldSkins)
+	{
+		if(!pOldSkinContainer->m_pSkin)
+		{
+			continue;
+		}
+		pOldSkinContainer->m_pSkin->m_OriginalSkin.Unload(Graphics());
+		pOldSkinContainer->m_pSkin->m_ColorableSkin.Unload(Graphics());
+	}
 }
 
 CSkins::CSkinLoadingStats CSkins::LoadingStats() const
@@ -736,6 +1007,14 @@ CSkins::CSkinLoadingStats CSkins::LoadingStats() const
 		}
 	}
 	return Stats;
+}
+
+bool CSkins::StartupAssetsLoaded() const
+{
+	return std::none_of(m_Skins.begin(), m_Skins.end(), [](const auto &Entry) {
+		const CSkinContainer &Container = *Entry.second;
+		return Container.m_AlwaysLoaded && (Container.m_State == CSkinContainer::EState::PENDING || Container.m_State == CSkinContainer::EState::LOADING);
+	});
 }
 
 CSkins::CSkinList &CSkins::SkinList()
@@ -820,7 +1099,7 @@ const CSkins::CSkinContainer *CSkins::FindContainerOrNullptr(const char *pName)
 		str_format(aNameWithPrefix, sizeof(aNameWithPrefix), "%s_%s", pSkinPrefix, pName);
 		// If we find something, use it, otherwise fall back to normal skins.
 		const CSkinContainer *pSkinContainer = FindContainerImpl(aNameWithPrefix);
-		if(pSkinContainer != nullptr && pSkinContainer->State() == CSkinContainer::EState::LOADED)
+		if(pSkinContainer != nullptr && pSkinContainer->Skin())
 		{
 			return pSkinContainer;
 		}
@@ -850,7 +1129,7 @@ const CSkins::CSkinContainer *CSkins::FindContainerImpl(const char *pName)
 const CSkin *CSkins::FindOrNullptr(const char *pName)
 {
 	const CSkinContainer *pSkinContainer = FindContainerOrNullptr(pName);
-	if(pSkinContainer == nullptr || pSkinContainer->m_State != CSkinContainer::EState::LOADED)
+	if(pSkinContainer == nullptr || !pSkinContainer->m_pSkin)
 	{
 		return nullptr;
 	}
@@ -952,157 +1231,6 @@ const char *CSkins::SkinPrefix() const
 		return m_aEventSkinPrefix;
 	}
 	return g_Config.m_ClSkinPrefix;
-}
-
-void CSkins::CSkinLoadJob::Run()
-{
-	char aPath[IO_MAX_PATH_LENGTH];
-	str_format(aPath, sizeof(aPath), "skins/%s.png", m_aName);
-	if(m_pSkins->Graphics()->LoadPng(m_Data.m_Info, aPath, m_StorageType))
-	{
-		if(State() == IJob::STATE_ABORTED)
-		{
-			return;
-		}
-		m_pSkins->LoadSkinData(m_aName, m_Data);
-	}
-	else
-	{
-		log_error("skins", "Failed to load PNG of skin '%s' from '%s'", m_aName, aPath);
-	}
-}
-
-CSkins::CSkinDownloadJob::CSkinDownloadJob(CSkins *pSkins, const char *pName) :
-	CAbstractSkinLoadJob(pSkins, pName)
-{
-}
-
-bool CSkins::CSkinDownloadJob::Abort()
-{
-	if(!CAbstractSkinLoadJob::Abort())
-	{
-		return false;
-	}
-
-	const CLockScope LockScope(m_Lock);
-	if(m_pGetRequest)
-	{
-		m_pGetRequest->Abort();
-		m_pGetRequest = nullptr;
-	}
-	return true;
-}
-
-void CSkins::CSkinDownloadJob::Run()
-{
-	const char *pBaseUrl = g_Config.m_ClDownloadCommunitySkins != 0 ? g_Config.m_ClSkinCommunityDownloadUrl : g_Config.m_ClSkinDownloadUrl;
-
-	char aEscapedName[256];
-	EscapeUrl(aEscapedName, m_aName);
-
-	char aUrl[IO_MAX_PATH_LENGTH];
-	str_format(aUrl, sizeof(aUrl), "%s%s.png", pBaseUrl, aEscapedName);
-
-	char aPathReal[IO_MAX_PATH_LENGTH];
-	str_format(aPathReal, sizeof(aPathReal), "downloadedskins/%s.png", m_aName);
-
-	const CTimeout Timeout{10000, 0, 8192, 10};
-	const size_t MaxResponseSize = 10 * 1024 * 1024; // 10 MiB
-
-	std::shared_ptr<IHttpRequest> pGet = HttpGetBoth(aUrl, m_pSkins->Storage(), aPathReal, IStorage::TYPE_SAVE);
-	pGet->Timeout(Timeout);
-	pGet->MaxResponseSize(MaxResponseSize);
-	pGet->ValidateBeforeOverwrite(true);
-	pGet->LogProgress(HTTPLOG::NONE);
-	pGet->FailOnErrorStatus(false);
-	{
-		const CLockScope LockScope(m_Lock);
-		m_pGetRequest = pGet;
-	}
-	m_pSkins->Http()->Run(pGet);
-
-	// Load existing file while waiting for the HTTP request
-	{
-		void *pPngData;
-		unsigned PngSize;
-		if(m_pSkins->Storage()->ReadFile(aPathReal, IStorage::TYPE_SAVE, &pPngData, &PngSize))
-		{
-			if(m_pSkins->Graphics()->LoadPng(m_Data.m_Info, static_cast<uint8_t *>(pPngData), PngSize, aPathReal))
-			{
-				if(State() == IJob::STATE_ABORTED)
-				{
-					return;
-				}
-				m_pSkins->LoadSkinData(m_aName, m_Data);
-			}
-			free(pPngData);
-		}
-	}
-
-	pGet->Wait();
-	{
-		const CLockScope LockScope(m_Lock);
-		m_pGetRequest = nullptr;
-	}
-	if(pGet->State() != EHttpState::DONE || State() == IJob::STATE_ABORTED || pGet->StatusCode() >= 400)
-	{
-		m_NotFound = pGet->State() == EHttpState::DONE && pGet->StatusCode() == 404; // 404 Not Found
-		return;
-	}
-	if(pGet->StatusCode() == 304) // 304 Not Modified
-	{
-		bool Success = m_Data.m_Info.m_pData != nullptr;
-		pGet->OnValidation(Success);
-		if(Success)
-		{
-			return; // Local skin is up-to-date and was loaded successfully
-		}
-
-		log_error("skins", "Failed to load PNG of existing downloaded skin '%s' from '%s', downloading it again", m_aName, aPathReal);
-		pGet = HttpGetBoth(aUrl, m_pSkins->Storage(), aPathReal, IStorage::TYPE_SAVE);
-		pGet->Timeout(Timeout);
-		pGet->MaxResponseSize(MaxResponseSize);
-		pGet->ValidateBeforeOverwrite(true);
-		pGet->SkipByFileTime(false);
-		pGet->LogProgress(HTTPLOG::NONE);
-		pGet->FailOnErrorStatus(false);
-		{
-			const CLockScope LockScope(m_Lock);
-			m_pGetRequest = pGet;
-		}
-		m_pSkins->Http()->Run(pGet);
-		pGet->Wait();
-		{
-			const CLockScope LockScope(m_Lock);
-			m_pGetRequest = nullptr;
-		}
-		if(pGet->State() != EHttpState::DONE || State() == IJob::STATE_ABORTED || pGet->StatusCode() >= 400)
-		{
-			m_NotFound = pGet->State() == EHttpState::DONE && pGet->StatusCode() == 404; // 404 Not Found
-			return;
-		}
-	}
-
-	unsigned char *pResult;
-	size_t ResultSize;
-	pGet->Result(&pResult, &ResultSize);
-
-	m_Data.m_Info.Free();
-	m_Data.m_InfoGrayscale.Free();
-	const bool Success = m_pSkins->Graphics()->LoadPng(m_Data.m_Info, pResult, ResultSize, aUrl);
-	if(Success)
-	{
-		if(State() == IJob::STATE_ABORTED)
-		{
-			return;
-		}
-		m_pSkins->LoadSkinData(m_aName, m_Data);
-	}
-	else
-	{
-		log_error("skins", "Failed to load PNG of skin '%s' downloaded from '%s' (size %" PRIzu ")", m_aName, aUrl, ResultSize);
-	}
-	pGet->OnValidation(Success);
 }
 
 void CSkins::ConAddFavoriteSkin(IConsole::IResult *pResult, void *pUserData)

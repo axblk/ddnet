@@ -22,6 +22,11 @@
 
 using namespace std::chrono_literals;
 
+namespace
+{
+	constexpr int ASSET_OWNER_MENU_THEMES = 8;
+}
+
 std::array<vec2, CMenuBackground::NUM_POS> GenerateMenuBackgroundPositions()
 {
 	std::array<vec2, CMenuBackground::NUM_POS> Positions;
@@ -79,6 +84,7 @@ void CMenuBackground::OnInterfacesInit(CGameClient *pClient)
 
 void CMenuBackground::OnInit()
 {
+	++m_AssetGeneration;
 	m_pBackgroundMap = CreateMap();
 	m_pMap = m_pBackgroundMap.get();
 
@@ -100,15 +106,53 @@ void CMenuBackground::LoadThemeIcon(CTheme &Theme)
 {
 	char aIconPath[IO_MAX_PATH_LENGTH];
 	str_format(aIconPath, sizeof(aIconPath), "themes/%s.png", Theme.m_Name.empty() ? "none" : Theme.m_Name.c_str());
-	Theme.m_IconTexture = Graphics()->LoadTexture(aIconPath, IStorage::TYPE_ALL);
-	if(Theme.m_IconTexture.IsNullTexture())
+	Theme.m_IconResource = GameClient()->AssetLoader().LoadImage(Storage(), aIconPath, IStorage::TYPE_ALL, ASSET_OWNER_MENU_THEMES, m_AssetGeneration);
+}
+
+void CMenuBackground::FinishThemeIconLoads()
+{
+	for(CTheme &Theme : m_vThemes)
 	{
-		log_error("menuthemes", "failed to load theme icon '%s'", aIconPath);
+		if(!Theme.m_IconResource.IsFinished())
+			continue;
+		if(Theme.m_IconResource.IsReady(m_AssetGeneration))
+		{
+			CImageInfo Image = Theme.m_IconResource.TakeImage();
+			IGraphics::CTextureHandle Texture = Graphics()->LoadTextureRawMove(Image, 0, Theme.m_IconResource.Path());
+			if(Texture.IsValid())
+			{
+				Graphics()->UnloadTexture(&Theme.m_IconTexture);
+				Theme.m_IconTexture = Texture;
+				log_trace("menuthemes", "loaded theme icon '%s'", Theme.m_IconResource.Path());
+			}
+			else
+			{
+				log_error("menuthemes", "failed to upload theme icon '%s'", Theme.m_IconResource.Path());
+			}
+		}
+		else if(Theme.m_IconResource.IsFailed(m_AssetGeneration))
+		{
+			log_error("menuthemes", "failed to load theme icon '%s'", Theme.m_IconResource.Path());
+		}
+		Theme.m_IconResource.Reset();
 	}
-	else
+}
+
+void CMenuBackground::OnUpdate()
+{
+	FinishThemeIconLoads();
+}
+
+void CMenuBackground::OnShutdown()
+{
+	++m_AssetGeneration;
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_MENU_THEMES, m_AssetGeneration);
+	for(CTheme &Theme : m_vThemes)
 	{
-		log_trace("menuthemes", "loaded theme icon '%s'", aIconPath);
+		Theme.m_IconResource.Reset();
+		Graphics()->UnloadTexture(&Theme.m_IconTexture);
 	}
+	CBackground::OnShutdown();
 }
 
 int CMenuBackground::ThemeScan(const char *pName, int IsDir, int DirType, void *pUser)
@@ -338,6 +382,7 @@ bool CMenuBackground::Render()
 		m_ChangedPosition = false;
 	}
 
+	m_pBackgroundImages->Update();
 	m_pBackgroundImages->SetGameInfo(GameClient()->FocusedGameInfo());
 	CMapLayers::Render(m_Camera.Center(), m_Camera.Zoom());
 

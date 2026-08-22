@@ -1,6 +1,8 @@
 #ifndef GAME_CLIENT_COMPONENTS_MENU_BACKGROUND_H
 #define GAME_CLIENT_COMPONENTS_MENU_BACKGROUND_H
 
+#include <engine/client/asset_loader.h>
+
 #include <game/client/components/background.h>
 #include <game/client/components/camera.h>
 
@@ -20,6 +22,7 @@ public:
 	bool m_HasDay;
 	bool m_HasNight;
 	IGraphics::CTextureHandle m_IconTexture;
+	CImageResource m_IconResource;
 	bool operator<(const CTheme &Other) const { return m_Name < Other.m_Name; }
 };
 
@@ -86,10 +89,12 @@ private:
 
 	bool m_IsInit;
 	bool m_Loading;
+	uint64_t m_AssetGeneration = 0;
 
 	void ResetPositions();
 
 	void LoadThemeIcon(CTheme &Theme);
+	void FinishThemeIconLoads();
 	static int ThemeScan(const char *pName, int IsDir, int DirType, void *pUser);
 
 	std::vector<CTheme> m_vThemes;
@@ -100,6 +105,8 @@ public:
 
 	void OnInterfacesInit(CGameClient *pClient) override;
 	void OnInit() override;
+	void OnUpdate() override;
+	void OnShutdown() override;
 	void OnMapLoad() override;
 
 	void LoadMenuBackground(bool HasDayHint = true, bool HasNightHint = true);

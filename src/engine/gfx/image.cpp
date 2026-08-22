@@ -5,6 +5,7 @@
 #include <engine/image.h>
 
 #include <cstdlib>
+#include <limits>
 
 CImageInfo::CImageInfo(CImageInfo &&Other)
 {
@@ -34,10 +35,24 @@ CImageInfo::~CImageInfo()
 
 void CImageInfo::Allocate()
 {
+	const bool Success = TryAllocate();
+	dbg_assert(Success, "Failed to allocate image data");
+}
+
+bool CImageInfo::TryAllocate()
+{
 	dbg_assert(m_pData == nullptr && !m_IsAllocated, "Image data already allocated");
-	// format is asserted in pixel size
-	m_pData = static_cast<uint8_t *>(malloc(DataSize()));
+	const size_t BytesPerPixel = PixelSize();
+	if(m_Width != 0 && (m_Height > std::numeric_limits<size_t>::max() / m_Width || m_Width * m_Height > std::numeric_limits<size_t>::max() / BytesPerPixel))
+		return false;
+	const size_t Size = m_Width * m_Height * BytesPerPixel;
+	if(Size == 0)
+		return false;
+	m_pData = static_cast<uint8_t *>(malloc(Size));
+	if(m_pData == nullptr)
+		return false;
 	m_IsAllocated = true;
+	return true;
 }
 
 void CImageInfo::AllocateFillZero()

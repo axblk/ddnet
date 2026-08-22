@@ -484,6 +484,7 @@ void CSessionPresentation::PrepareRender(const CRenderContext &Context, bool Use
 {
 	dbg_assert(Context.m_Session.Id() == m_SessionId, "render context does not match session presentation");
 	dbg_assert(m_Loaded, "session presentation must be loaded before rendering");
+	m_MapImages.Update();
 	m_MapImages.SetGameInfo(Context.m_State.CoreGameInfo());
 	m_MapLayersBackground.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
 	m_MapLayersForeground.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);

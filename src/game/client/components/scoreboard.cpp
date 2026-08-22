@@ -3,6 +3,7 @@
 #include "scoreboard.h"
 
 #include <base/dbg.h>
+#include <base/log.h>
 #include <base/time.h>
 
 #include <engine/console.h>
@@ -25,6 +26,7 @@
 
 // Horizontal spacing of the scoreboard contents, both to its edges and between columns
 static constexpr float MARGIN = 10.0f;
+static constexpr int ASSET_OWNER_SCOREBOARD = 9;
 
 void CScoreboard::CScoreboardPopupContext::Bind(CScoreboard *pScoreboard, const CRenderContext &Context, int ClientId, const char *pName, const char *pClan, bool IsLocal, bool IsSpectating)
 {
@@ -135,7 +137,31 @@ void CScoreboard::OnConsoleInit()
 
 void CScoreboard::OnInit()
 {
-	m_DeadTeeTexture = Graphics()->LoadTexture("deadtee.png", IStorage::TYPE_ALL);
+	++m_AssetGeneration;
+	m_DeadTeeResource = GameClient()->AssetLoader().LoadImage(Storage(), "deadtee.png", IStorage::TYPE_ALL, ASSET_OWNER_SCOREBOARD, m_AssetGeneration);
+}
+
+void CScoreboard::OnUpdate()
+{
+	if(!m_DeadTeeResource.IsFinished())
+		return;
+	if(m_DeadTeeResource.IsReady(m_AssetGeneration))
+	{
+		CImageInfo Image = m_DeadTeeResource.TakeImage();
+		IGraphics::CTextureHandle Texture = Graphics()->LoadTextureRawMove(Image, 0, m_DeadTeeResource.Path());
+		if(Texture.IsValid())
+		{
+			Graphics()->UnloadTexture(&m_DeadTeeTexture);
+			m_DeadTeeTexture = Texture;
+		}
+		else
+		{
+			log_error("scoreboard", "Failed to upload dead tee texture");
+		}
+	}
+	else if(m_DeadTeeResource.IsFailed(m_AssetGeneration))
+		log_error("scoreboard", "Failed to load dead tee texture from '%s'", m_DeadTeeResource.Path());
+	m_DeadTeeResource.Reset();
 }
 
 void CScoreboard::OnReset()
@@ -171,6 +197,10 @@ void CScoreboard::ResetTexts()
 
 void CScoreboard::OnShutdown()
 {
+	++m_AssetGeneration;
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_SCOREBOARD, m_AssetGeneration);
+	m_DeadTeeResource.Reset();
+	Graphics()->UnloadTexture(&m_DeadTeeTexture);
 	ResetTexts();
 }
 

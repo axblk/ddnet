@@ -85,7 +85,7 @@ void little_endian_to_native (void *data, char *format)
     while (*format) {
         switch (*format) {
             case 'L':
-                temp = cp [0] + ((int32_t) cp [1] << 8) + ((int32_t) cp [2] << 16) + ((int32_t) cp [3] << 24);
+                temp = (int32_t) ((uint32_t) cp [0] | ((uint32_t) cp [1] << 8) | ((uint32_t) cp [2] << 16) | ((uint32_t) cp [3] << 24));
                 * (int32_t *) cp = temp;
                 cp += 4;
                 break;

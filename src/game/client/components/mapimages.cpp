@@ -20,6 +20,17 @@
 #include <game/localization.h>
 #include <game/mapitems.h>
 
+#include <algorithm>
+#include <atomic>
+#include <string>
+#include <vector>
+
+namespace
+{
+	constexpr int ASSET_OWNER_MAP_IMAGES = 11;
+	std::atomic<int> gs_NextMapImageAssetOwner{1000};
+}
+
 CMapImages::CMapImages()
 {
 	std::fill(std::begin(m_aEntitiesIsLoaded), std::end(m_aEntitiesIsLoaded), false);
@@ -32,8 +43,15 @@ CMapImages::CMapImages()
 }
 
 CMapRenderImages::CMapRenderImages(CMapImages &Assets) :
-	m_Assets(Assets)
+	m_Assets(Assets),
+	m_AssetOwnerId(gs_NextMapImageAssetOwner.fetch_add(1, std::memory_order_relaxed))
 {
+}
+
+void CMapRenderImages::OnInterfacesInit(CGameClient *pClient)
+{
+	CComponentInterfaces::OnInterfacesInit(pClient);
+	m_pAssetLoader = &pClient->AssetLoader();
 }
 
 void CMapImages::OnInit()
@@ -51,8 +69,76 @@ void CMapImages::OnInit()
 	Console()->Chain("cl_text_entities_size", ConchainClTextEntitiesSize, this);
 }
 
+void CMapImages::OnUpdate()
+{
+	for(auto It = m_vEntitiesLoads.begin(); It != m_vEntitiesLoads.end();)
+	{
+		if(std::any_of(It->m_vResources.begin(), It->m_vResources.end(), [](const CImageResource &Resource) { return !Resource.IsFinished(); }))
+		{
+			++It;
+			continue;
+		}
+		bool Loaded = false;
+		for(CImageResource &Resource : It->m_vResources)
+		{
+			if(!Resource.IsReady(m_AssetGeneration))
+				continue;
+			CImageInfo Image = Resource.TakeImage();
+			if(FinishEntitiesLoad(*It, std::move(Image), Resource.Path()))
+			{
+				Loaded = true;
+				break;
+			}
+		}
+		if(!Loaded)
+			log_error("mapimages", "Failed to load entities image for '%s'.", gs_apModEntitiesNames[It->m_ModType]);
+		It = m_vEntitiesLoads.erase(It);
+	}
+
+	if(m_SpeedupArrowResource.IsFinished())
+	{
+		if(m_SpeedupArrowResource.IsReady(m_AssetGeneration))
+		{
+			CImageInfo Image = m_SpeedupArrowResource.TakeImage();
+			const int TextureLoadFlag = Graphics()->TextureLoadFlags() | IGraphics::TEXLOAD_NO_2D_TEXTURE;
+			IGraphics::CTextureHandle Texture = Graphics()->LoadTextureRawMove(Image, TextureLoadFlag, m_SpeedupArrowResource.Path());
+			if(Texture.IsValid())
+			{
+				Graphics()->UnloadTexture(&m_SpeedupArrowTexture);
+				m_SpeedupArrowTexture = Texture;
+			}
+			else
+			{
+				log_error("mapimages", "Failed to upload speedup arrow texture");
+			}
+		}
+		else if(m_SpeedupArrowResource.IsFailed(m_AssetGeneration))
+			log_error("mapimages", "Failed to load speedup arrow texture from '%s'", m_SpeedupArrowResource.Path());
+		m_SpeedupArrowResource.Reset();
+	}
+}
+
+void CMapImages::OnShutdown()
+{
+	++m_AssetGeneration;
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_MAP_IMAGES, m_AssetGeneration);
+	m_vEntitiesLoads.clear();
+	m_SpeedupArrowResource.Reset();
+	for(int EntityVariant = 0; EntityVariant < MAP_IMAGE_MOD_TYPE_COUNT * 2; ++EntityVariant)
+	{
+		for(auto &Texture : m_aaEntitiesTextures[EntityVariant])
+			Graphics()->UnloadTexture(&Texture);
+		Graphics()->UnloadTexture(&m_aTuneColorMapTextures[EntityVariant]);
+	}
+	Graphics()->UnloadTexture(&m_SpeedupArrowTexture);
+}
+
 void CMapRenderImages::Unload()
 {
+	++m_Generation;
+	if(m_pAssetLoader != nullptr)
+		m_pAssetLoader->AbortOwnerBeforeGeneration(m_AssetOwnerId, m_Generation);
+	m_vExternalImageLoads.clear();
 	// unload all textures
 	for(int i = 0; i < m_Count; i++)
 	{
@@ -152,7 +238,7 @@ void CMapRenderImages::Load(class CLayers *pLayers, IMap *pMap, bool Sixup)
 					!str_comp(pName, "easter");
 			}
 			str_format(aPath, sizeof(aPath), "mapres/%s%s.png", pName, Translated ? "_0.7" : "");
-			m_aTextures[i] = Graphics()->LoadTexture(aPath, IStorage::TYPE_ALL, LoadFlag);
+			m_vExternalImageLoads.push_back({i, LoadFlag, m_pAssetLoader->LoadImage(Storage(), aPath, IStorage::TYPE_ALL, m_AssetOwnerId, m_Generation)});
 		}
 		else
 		{
@@ -190,6 +276,33 @@ void CMapRenderImages::Load(class CLayers *pLayers, IMap *pMap, bool Sixup)
 	{
 		Client()->AddWarning(SWarning(Localize("Some map images could not be loaded. Check the local console for details.")));
 	}
+}
+
+void CMapRenderImages::Update()
+{
+	bool ShowWarning = false;
+	for(auto It = m_vExternalImageLoads.begin(); It != m_vExternalImageLoads.end();)
+	{
+		if(!It->m_Resource.IsFinished())
+		{
+			++It;
+			continue;
+		}
+		if(It->m_Resource.IsReady(m_Generation))
+		{
+			CImageInfo Image = It->m_Resource.TakeImage();
+			m_aTextures[It->m_Index] = Graphics()->LoadTextureRawMove(Image, It->m_LoadFlags, It->m_Resource.Path());
+			ShowWarning = ShowWarning || !m_aTextures[It->m_Index].IsValid() || m_aTextures[It->m_Index].IsNullTexture();
+		}
+		else if(It->m_Resource.IsFailed(m_Generation))
+		{
+			log_error("mapimages", "Failed to load map image '%s'.", It->m_Resource.Path());
+			ShowWarning = true;
+		}
+		It = m_vExternalImageLoads.erase(It);
+	}
+	if(ShowWarning)
+		Client()->AddWarning(SWarning(Localize("Some map images could not be loaded. Check the local console for details.")));
 }
 
 static EMapImageModType GetEntitiesModType(const CGameInfo &GameInfo)
@@ -283,110 +396,138 @@ IGraphics::CTextureHandle CMapImages::GetEntities(EMapImageEntityLayerType Entit
 	if(!m_aEntitiesIsLoaded[EntityVariant])
 	{
 		m_aEntitiesIsLoaded[EntityVariant] = true;
-
-		int TextureLoadFlag = 0;
-		if(Graphics()->HasTextureArraysSupport())
-			TextureLoadFlag = Graphics()->TextureLoadFlags() | IGraphics::TEXLOAD_NO_2D_TEXTURE;
-
-		CImageInfo ImgInfo;
+		CEntitiesLoad Load{EntityVariant, EntitiesModType, EntitiesAreMasked, {}};
+		// The candidates are loaded together and the first one that decodes
+		// wins. With the default entities path the last candidate repeats the
+		// first, so decoding the same file twice is skipped.
+		std::vector<std::string> vSubmittedPaths;
+		const auto Submit = [&](const char *pPath) {
+			if(std::any_of(vSubmittedPaths.begin(), vSubmittedPaths.end(), [pPath](const std::string &Submitted) { return Submitted == pPath; }))
+				return;
+			vSubmittedPaths.emplace_back(pPath);
+			Load.m_vResources.push_back(GameClient()->AssetLoader().LoadImage(Storage(), pPath, IStorage::TYPE_ALL, ASSET_OWNER_MAP_IMAGES, m_AssetGeneration));
+		};
 		char aPath[IO_MAX_PATH_LENGTH];
 		str_format(aPath, sizeof(aPath), "%s/%s.png", m_aEntitiesPath, gs_apModEntitiesNames[EntitiesModType]);
-		Graphics()->LoadPng(ImgInfo, aPath, IStorage::TYPE_ALL);
-
-		// try as single ddnet replacement
-		if(ImgInfo.m_pData == nullptr && EntitiesModType == MAP_IMAGE_MOD_TYPE_DDNET)
+		Submit(aPath);
+		if(EntitiesModType == MAP_IMAGE_MOD_TYPE_DDNET)
 		{
 			str_format(aPath, sizeof(aPath), "%s.png", m_aEntitiesPath);
-			Graphics()->LoadPng(ImgInfo, aPath, IStorage::TYPE_ALL);
+			Submit(aPath);
 		}
-
-		// try default
-		if(ImgInfo.m_pData == nullptr)
-		{
-			str_format(aPath, sizeof(aPath), "editor/entities_clear/%s.png", gs_apModEntitiesNames[EntitiesModType]);
-			Graphics()->LoadPng(ImgInfo, aPath, IStorage::TYPE_ALL);
-		}
-
-		if(ImgInfo.m_pData != nullptr)
-		{
-			CImageInfo BuildImageInfo;
-			BuildImageInfo.m_Width = ImgInfo.m_Width;
-			BuildImageInfo.m_Height = ImgInfo.m_Height;
-			BuildImageInfo.m_Format = ImgInfo.m_Format;
-			BuildImageInfo.Allocate(); // allocate already transparent image
-
-			// convert tune tile to gray
-			const size_t CopyWidth = ImgInfo.m_Width / 16;
-			const size_t CopyHeight = ImgInfo.m_Height / 16;
-			const size_t TuneTileX = static_cast<size_t>(TILE_TUNE % 16) * CopyWidth;
-			const size_t TuneTileY = static_cast<size_t>(TILE_TUNE / 16) * CopyHeight;
-
-			ConvertToGrayscaleRect(ImgInfo, TuneTileX, TuneTileY, CopyWidth, CopyHeight);
-
-			// build game layer
-			for(int LayerType = 0; LayerType < MAP_IMAGE_ENTITY_LAYER_TYPE_COUNT; ++LayerType)
-			{
-				dbg_assert(!m_aaEntitiesTextures[EntityVariant][LayerType].IsValid(), "entities texture already loaded when it should not be");
-
-				// set everything transparent
-				mem_zero(BuildImageInfo.m_pData, BuildImageInfo.DataSize());
-
-				for(int i = 0; i < 256; ++i)
-				{
-					int TileIndex = i;
-					if(IsValidTile(LayerType, EntitiesAreMasked, EntitiesModType, TileIndex))
-					{
-						if(LayerType == MAP_IMAGE_ENTITY_LAYER_TYPE_SWITCH && TileIndex == TILE_SWITCHTIMEDOPEN)
-						{
-							TileIndex = 8;
-						}
-
-						const size_t OffsetX = (size_t)(TileIndex % 16) * CopyWidth;
-						const size_t OffsetY = (size_t)(TileIndex / 16) * CopyHeight;
-						BuildImageInfo.CopyRectFrom(ImgInfo, OffsetX, OffsetY, CopyWidth, CopyHeight, OffsetX, OffsetY);
-					}
-				}
-
-				m_aaEntitiesTextures[EntityVariant][LayerType] = Graphics()->LoadTextureRaw(BuildImageInfo, TextureLoadFlag, aPath);
-			}
-
-			BuildImageInfo.Free();
-
-			// build tune map from the tune tile
-			if(Graphics()->HasTextureArraysSupport())
-			{
-				CImageInfo TuneMapInfo;
-				TuneMapInfo.m_Width = ImgInfo.m_Width;
-				TuneMapInfo.m_Height = ImgInfo.m_Height;
-				TuneMapInfo.m_Format = ImgInfo.m_Format;
-				TuneMapInfo.AllocateFillZero();
-
-				for(int TileIndex = 1; TileIndex < 256; ++TileIndex)
-				{
-					size_t StartX = CopyWidth * (TileIndex % 16);
-					size_t StartY = CopyHeight * (TileIndex / 16);
-					TuneMapInfo.CopyRectFrom(ImgInfo, TuneTileX, TuneTileY, CopyWidth, CopyHeight, StartX, StartY);
-					float Hue = std::fmod((TileIndex - 1) * normalized_golden_angle, 1.0f);
-					ColorizeWithHueRect(TuneMapInfo, Hue, 0.75f, StartX, StartY, CopyWidth, CopyHeight);
-				}
-				m_aTuneColorMapTextures[EntityVariant] = Graphics()->LoadTextureRawMove(TuneMapInfo, TextureLoadFlag);
-				m_aTuneColorsIsLoaded[EntityVariant] = true;
-			}
-
-			ImgInfo.Free();
-		}
+		str_format(aPath, sizeof(aPath), "editor/entities_clear/%s.png", gs_apModEntitiesNames[EntitiesModType]);
+		Submit(aPath);
+		m_vEntitiesLoads.push_back(std::move(Load));
 	}
 
 	return m_aaEntitiesTextures[EntityVariant][EntityLayerType];
+}
+
+bool CMapImages::FinishEntitiesLoad(CEntitiesLoad &Load, CImageInfo ImgInfo, const char *pPath)
+{
+	if(ImgInfo.m_Format != CImageInfo::FORMAT_RGBA || ImgInfo.m_Width < 16 || ImgInfo.m_Height < 16 || ImgInfo.m_Width % 16 != 0 || ImgInfo.m_Height % 16 != 0)
+	{
+		log_error("mapimages", "Invalid entities image '%s'.", pPath);
+		return false;
+	}
+
+	const int TextureLoadFlag = Graphics()->HasTextureArraysSupport() ? Graphics()->TextureLoadFlags() | IGraphics::TEXLOAD_NO_2D_TEXTURE : 0;
+	CImageInfo BuildImageInfo;
+	BuildImageInfo.m_Width = ImgInfo.m_Width;
+	BuildImageInfo.m_Height = ImgInfo.m_Height;
+	BuildImageInfo.m_Format = ImgInfo.m_Format;
+	if(!BuildImageInfo.TryAllocate())
+	{
+		log_error("mapimages", "Failed to allocate entities image '%s'.", pPath);
+		return false;
+	}
+	IGraphics::CTextureHandle aNewTextures[MAP_IMAGE_ENTITY_LAYER_TYPE_COUNT];
+	IGraphics::CTextureHandle NewTuneColorMapTexture;
+	const auto UnloadNewTextures = [&]() {
+		for(auto &Texture : aNewTextures)
+			Graphics()->UnloadTexture(&Texture);
+		Graphics()->UnloadTexture(&NewTuneColorMapTexture);
+	};
+
+	const size_t CopyWidth = ImgInfo.m_Width / 16;
+	const size_t CopyHeight = ImgInfo.m_Height / 16;
+	const size_t TuneTileX = static_cast<size_t>(TILE_TUNE % 16) * CopyWidth;
+	const size_t TuneTileY = static_cast<size_t>(TILE_TUNE / 16) * CopyHeight;
+	ConvertToGrayscaleRect(ImgInfo, TuneTileX, TuneTileY, CopyWidth, CopyHeight);
+
+	for(int LayerType = 0; LayerType < MAP_IMAGE_ENTITY_LAYER_TYPE_COUNT; ++LayerType)
+	{
+		mem_zero(BuildImageInfo.m_pData, BuildImageInfo.DataSize());
+		for(int TileIndex = 0; TileIndex < 256; ++TileIndex)
+		{
+			int SourceTileIndex = TileIndex;
+			if(!IsValidTile(LayerType, Load.m_Masked, Load.m_ModType, SourceTileIndex))
+				continue;
+			if(LayerType == MAP_IMAGE_ENTITY_LAYER_TYPE_SWITCH && SourceTileIndex == TILE_SWITCHTIMEDOPEN)
+				SourceTileIndex = 8;
+			const size_t OffsetX = static_cast<size_t>(SourceTileIndex % 16) * CopyWidth;
+			const size_t OffsetY = static_cast<size_t>(SourceTileIndex / 16) * CopyHeight;
+			BuildImageInfo.CopyRectFrom(ImgInfo, OffsetX, OffsetY, CopyWidth, CopyHeight, OffsetX, OffsetY);
+		}
+		aNewTextures[LayerType] = Graphics()->LoadTextureRaw(BuildImageInfo, TextureLoadFlag, pPath);
+		if(!aNewTextures[LayerType].IsValid())
+		{
+			UnloadNewTextures();
+			log_error("mapimages", "Failed to upload entities image '%s'.", pPath);
+			return false;
+		}
+	}
+
+	if(Graphics()->HasTextureArraysSupport())
+	{
+		CImageInfo TuneMapInfo;
+		TuneMapInfo.m_Width = ImgInfo.m_Width;
+		TuneMapInfo.m_Height = ImgInfo.m_Height;
+		TuneMapInfo.m_Format = ImgInfo.m_Format;
+		if(!TuneMapInfo.TryAllocate())
+		{
+			UnloadNewTextures();
+			log_error("mapimages", "Failed to allocate tune color image '%s'.", pPath);
+			return false;
+		}
+		mem_zero(TuneMapInfo.m_pData, TuneMapInfo.DataSize());
+		for(int TileIndex = 1; TileIndex < 256; ++TileIndex)
+		{
+			const size_t StartX = CopyWidth * (TileIndex % 16);
+			const size_t StartY = CopyHeight * (TileIndex / 16);
+			TuneMapInfo.CopyRectFrom(ImgInfo, TuneTileX, TuneTileY, CopyWidth, CopyHeight, StartX, StartY);
+			const float Hue = std::fmod((TileIndex - 1) * normalized_golden_angle, 1.0f);
+			ColorizeWithHueRect(TuneMapInfo, Hue, 0.75f, StartX, StartY, CopyWidth, CopyHeight);
+		}
+		NewTuneColorMapTexture = Graphics()->LoadTextureRawMove(TuneMapInfo, TextureLoadFlag);
+		if(!NewTuneColorMapTexture.IsValid())
+		{
+			UnloadNewTextures();
+			log_error("mapimages", "Failed to upload tune color image '%s'.", pPath);
+			return false;
+		}
+	}
+
+	for(int LayerType = 0; LayerType < MAP_IMAGE_ENTITY_LAYER_TYPE_COUNT; ++LayerType)
+	{
+		Graphics()->UnloadTexture(&m_aaEntitiesTextures[Load.m_EntityVariant][LayerType]);
+		m_aaEntitiesTextures[Load.m_EntityVariant][LayerType] = aNewTextures[LayerType];
+	}
+	if(Graphics()->HasTextureArraysSupport())
+	{
+		Graphics()->UnloadTexture(&m_aTuneColorMapTextures[Load.m_EntityVariant]);
+		m_aTuneColorMapTextures[Load.m_EntityVariant] = NewTuneColorMapTexture;
+		m_aTuneColorsIsLoaded[Load.m_EntityVariant] = true;
+	}
+	return true;
 }
 
 IGraphics::CTextureHandle CMapImages::GetSpeedupArrow()
 {
 	if(!m_SpeedupArrowIsLoaded)
 	{
-		int TextureLoadFlag = Graphics()->TextureLoadFlags() | IGraphics::TEXLOAD_NO_2D_TEXTURE;
-		m_SpeedupArrowTexture = Graphics()->LoadTexture("editor/speed_arrow_array.png", IStorage::TYPE_ALL, TextureLoadFlag);
 		m_SpeedupArrowIsLoaded = true;
+		m_SpeedupArrowResource = GameClient()->AssetLoader().LoadImage(Storage(), "editor/speed_arrow_array.png", IStorage::TYPE_ALL, ASSET_OWNER_MAP_IMAGES, m_AssetGeneration);
 	}
 	return m_SpeedupArrowTexture;
 }
@@ -406,7 +547,6 @@ IGraphics::CTextureHandle CMapImages::GetTuneColors(EMapImageModType EntitiesMod
 		{
 			// load entities, this also loads the tune map
 			GetEntities(EMapImageEntityLayerType::MAP_IMAGE_ENTITY_LAYER_TYPE_ALL_EXCEPT_SWITCH, EntitiesModType, EntitiesAreMasked);
-			dbg_assert(m_aTuneColorsIsLoaded[EntityVariant], "Entities did not load the tune color map");
 		}
 		return m_aTuneColorMapTextures[EntityVariant];
 	}
@@ -433,6 +573,14 @@ IGraphics::CTextureHandle CMapImages::GetOverlayCenter()
 
 void CMapImages::ChangeEntitiesPath(const char *pPath)
 {
+	++m_AssetGeneration;
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_MAP_IMAGES, m_AssetGeneration);
+	m_vEntitiesLoads.clear();
+	if(m_SpeedupArrowResource)
+	{
+		m_SpeedupArrowResource.Reset();
+		m_SpeedupArrowIsLoaded = false;
+	}
 	if(str_comp(pPath, "default") == 0)
 		str_copy(m_aEntitiesPath, "editor/entities_clear");
 	else
@@ -442,19 +590,8 @@ void CMapImages::ChangeEntitiesPath(const char *pPath)
 
 	for(int ModType = 0; ModType < MAP_IMAGE_MOD_TYPE_COUNT * 2; ++ModType)
 	{
-		if(m_aEntitiesIsLoaded[ModType])
-		{
-			for(int LayerType = 0; LayerType < MAP_IMAGE_ENTITY_LAYER_TYPE_COUNT; ++LayerType)
-			{
-				Graphics()->UnloadTexture(&m_aaEntitiesTextures[ModType][LayerType]);
-			}
-			m_aEntitiesIsLoaded[ModType] = false;
-		}
-		if(m_aTuneColorsIsLoaded[ModType])
-		{
-			Graphics()->UnloadTexture(&m_aTuneColorMapTextures[ModType]);
-			m_aTuneColorsIsLoaded[ModType] = false;
-		}
+		m_aEntitiesIsLoaded[ModType] = false;
+		m_aTuneColorsIsLoaded[ModType] = false;
 	}
 }
 

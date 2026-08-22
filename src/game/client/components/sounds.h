@@ -5,21 +5,41 @@
 
 #include <base/vmath.h>
 
-#include <engine/shared/jobs.h>
+#include <engine/client/asset_loader.h>
 #include <engine/sound.h>
 
 #include <game/client/component.h>
 
+#include <array>
+#include <chrono>
 #include <optional>
+#include <vector>
 
-class CSoundLoading : public IJob
+class CSoundLoading : public CAssetJob
 {
-	CGameClient *m_pGameClient;
-	bool m_Render;
+	class CResult
+	{
+	public:
+		int m_SetId;
+		int m_SoundId;
+		int m_SampleId;
+	};
+
+	ISound *m_pSound;
+	int m_Lane;
+	int m_NumLanes;
+	bool m_Completed = false;
+	int m_NumLoaded = 0;
+	std::chrono::nanoseconds m_LoadTime{};
+	std::vector<CResult> m_vResults;
 
 public:
-	CSoundLoading(CGameClient *pGameClient, bool Render);
+	CSoundLoading(ISound *pSound, int Lane, int NumLanes, int OwnerId, uint64_t Generation);
+	~CSoundLoading() override;
 	void Run() override;
+	void Commit();
+	int NumLoaded() const { return m_NumLoaded; }
+	std::chrono::nanoseconds LoadTime() const { return m_LoadTime; }
 };
 
 class CSounds : public CComponent
@@ -37,8 +57,13 @@ class CSounds : public CComponent
 	CQueueEntry m_aQueue[QUEUE_SIZE];
 	int m_QueuePos;
 	int64_t m_QueueWaitTime;
-	std::shared_ptr<CSoundLoading> m_pSoundJob;
-	bool m_WaitForSoundJob;
+	std::array<CTypedAssetResource<CSoundLoading>, 2> m_aSoundResources;
+	uint64_t m_LoadGeneration = 1;
+	bool m_WaitForSoundJob = false;
+	int64_t m_SoundBatchStart = 0;
+	int m_NumSoundSamplesLoaded = 0;
+	int m_NumSoundJobsFinished = 0;
+	std::chrono::nanoseconds m_SoundLoadTime{};
 
 	void UpdateChannels();
 	int GetSampleId(int SetId);
@@ -61,6 +86,7 @@ public:
 
 	int Sizeof() const override { return sizeof(*this); }
 	void OnInit() override;
+	void OnShutdown() override;
 	void OnReset() override;
 	void OnStateChange(int NewState, int OldState) override;
 	void Update(std::optional<vec2> ListenerPosition);
@@ -72,6 +98,7 @@ public:
 	void PlayAndRecord(int Channel, int SetId, float Volume, vec2 Position);
 	void Stop(int SetId);
 	bool IsPlaying(int SetId);
+	bool StartupAssetsLoaded() const { return !m_WaitForSoundJob; }
 
 	ISound::CVoiceHandle PlaySample(int Channel, int SampleId, int Flags, float Volume);
 	ISound::CVoiceHandle PlaySampleAt(int Channel, int SampleId, int Flags, float Volume, vec2 Position);

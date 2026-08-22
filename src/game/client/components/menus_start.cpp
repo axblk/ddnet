@@ -43,6 +43,18 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 	MainView.VSplitLeft(30.0f, nullptr, &ExtMenu);
 	ExtMenu.VSplitLeft(100.0f, &ExtMenu, nullptr);
 
+	// The link buttons read against the background map for the same reason the
+	// main column does, so each of them gets the backdrop and the gaps do not.
+	{
+		CUIRect Remaining = ExtMenu, Backdrop;
+		for(int i = 0; i < 5; ++i)
+		{
+			Remaining.HSplitBottom(20.0f, &Remaining, &Backdrop);
+			GameClient()->m_Menus.RenderBackdropRegion(Backdrop);
+			Remaining.HSplitBottom(5.0f, &Remaining, nullptr);
+		}
+	}
+
 	ExtMenu.HSplitBottom(20.0f, &ExtMenu, &Button);
 	static CButtonContainer s_DiscordButton;
 	if(GameClient()->m_Menus.DoButton_Menu(&s_DiscordButton, Localize("Discord"), 0, &Button, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_ALL, 5.0f, 0.0f, ColorRGBA(0.0f, 0.0f, 0.0f, 0.25f)))
@@ -88,15 +100,25 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 	constexpr float ButtonSpacing = 5.0f;
 	constexpr float ButtonBlockBottomMargin = 25.0f;
 	constexpr float QuitButtonGap = 100.0f;
-	constexpr float ButtonBlockHeight = ButtonHeight * 6 + ButtonSpacing * 4 + QuitButtonGap;
 
 	CUIRect Menu;
 	MainView.VMargin(VMargin, &Menu);
 	Menu.HSplitBottom(ButtonBlockBottomMargin, &Menu, nullptr);
 
-	CUIRect ButtonBlock;
-	Menu.HSplitBottom(ButtonBlockHeight, nullptr, &ButtonBlock);
-	GameClient()->m_Menus.RenderBackdropRegion(ButtonBlock);
+	// Each button gets the backdrop, the gaps between them do not: the map
+	// keeps showing through where there is nothing to read.
+	{
+		CUIRect Remaining = Menu, Backdrop;
+		Remaining.HSplitBottom(ButtonHeight, &Remaining, &Backdrop);
+		GameClient()->m_Menus.RenderBackdropRegion(Backdrop);
+		Remaining.HSplitBottom(QuitButtonGap, &Remaining, nullptr);
+		for(int i = 0; i < 5; ++i)
+		{
+			Remaining.HSplitBottom(ButtonHeight, &Remaining, &Backdrop);
+			GameClient()->m_Menus.RenderBackdropRegion(Backdrop);
+			Remaining.HSplitBottom(ButtonSpacing, &Remaining, nullptr);
+		}
+	}
 
 	Menu.HSplitBottom(ButtonHeight, &Menu, &Button);
 	static CButtonContainer s_QuitButton;
@@ -171,6 +193,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 	Ui()->DoLabel(&CurVersion, GAME_RELEASE_VERSION, 14.0f, TEXTALIGN_MR);
 
 	static CButtonContainer s_ConsoleButton;
+	GameClient()->m_Menus.RenderBackdropRegion(ConsoleButton);
 	TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
 	TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE);
 	if(GameClient()->m_Menus.DoButton_Menu(&s_ConsoleButton, FontIcon::TERMINAL, 0, &ConsoleButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_ALL, 5.0f, 0.0f, ColorRGBA(0.0f, 0.0f, 0.0f, 0.1f)))
@@ -191,6 +214,11 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 	char aBuf[128];
 	const IUpdater::EUpdaterState State = Updater()->GetCurrentState();
 	const bool NeedUpdate = str_comp(Client()->LatestVersion(), "0");
+
+	// Whatever the updater puts here -- a button or a progress bar -- sits on the
+	// background map like the buttons above it do.
+	if(State == IUpdater::CLEAN ? NeedUpdate : State >= IUpdater::GETTING_MANIFEST)
+		GameClient()->m_Menus.RenderBackdropRegion(UpdateButton);
 
 	if(State == IUpdater::CLEAN && NeedUpdate)
 	{

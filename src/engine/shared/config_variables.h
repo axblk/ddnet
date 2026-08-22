@@ -168,7 +168,6 @@ MACRO_CONFIG_INT(ClSmoothZoomTime, cl_smooth_zoom_time, 250, 0, 5000, CFGFLAG_CL
 MACRO_CONFIG_INT(ClLimitMaxZoomLevel, cl_limit_max_zoom_level, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Specifies, if zooming ingame should be limited or not (0 = no limit)")
 MACRO_CONFIG_INT(ClViewMaxAspect, cl_view_max_aspect, 178, 0, 1000, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Aspect ratio in 1/100 above which the view only grows sideways instead of trading height for width, so an ultrawide screen keeps the 16:9 view height (0 = off)")
 MACRO_CONFIG_INT(ClViewEdgeFade, cl_view_edge_fade, 60, 0, 100, CFGFLAG_CLIENT | CFGFLAG_SAVE, "How strongly to fade the sides of the view that a server without Cl_ShowDistance support does not fill with entities, in percent (0 = off)")
-MACRO_CONFIG_INT(ClMapBackgroundCover, cl_map_background_cover, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Scale map backgrounds up on a screen wider than cl_view_max_aspect so they still cover it, instead of showing past the sides a map was drawn for")
 
 MACRO_CONFIG_INT(ClPlayerUseCustomColor, player_use_custom_color, 0, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE | CFGFLAG_INSENSITIVE, "Toggles usage of custom colors")
 MACRO_CONFIG_COL(ClPlayerColorBody, player_color_body, 65408, CFGFLAG_CLIENT | CFGFLAG_SAVE | CFGFLAG_COLLIGHT | CFGFLAG_INSENSITIVE, "Player body color")
@@ -787,7 +786,7 @@ MACRO_CONFIG_STR(GfxWebGpuBackend, gfx_webgpu_backend, 32, "auto", CFGFLAG_SAVE 
 #if defined(CONF_PLATFORM_ANDROID)
 MACRO_CONFIG_STR(GfxBackend, gfx_backend, 256, "GLES", CFGFLAG_SAVE | CFGFLAG_CLIENT, "The backend to use (e.g. GLES or Vulkan)")
 #elif defined(CONF_PLATFORM_EMSCRIPTEN)
-MACRO_CONFIG_STR(GfxBackend, gfx_backend, 256, "GLES", CFGFLAG_SAVE | CFGFLAG_CLIENT, "The backend to use (e.g. GLES)")
+MACRO_CONFIG_STR(GfxBackend, gfx_backend, 256, "WebGPU", CFGFLAG_SAVE | CFGFLAG_CLIENT, "The backend to use (e.g. WebGPU or GLES)")
 #elif !defined(CONF_ARCH_IA32) && !defined(CONF_PLATFORM_MACOS)
 MACRO_CONFIG_STR(GfxBackend, gfx_backend, 256, "Vulkan", CFGFLAG_SAVE | CFGFLAG_CLIENT, "The backend to use (e.g. OpenGL, Vulkan or WebGPU)")
 #else

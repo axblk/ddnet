@@ -71,6 +71,7 @@ enum class EPipelineProgram : uint8_t
 	ARRAY_COLOR_TRANSFORM,
 	DUAL_ATLAS_COMPOSITE,
 	BLUR,
+	PLANAR_YUV,
 	COUNT,
 };
 
@@ -1109,6 +1110,10 @@ struct SBackendCapabilities
 	bool m_2DArrayTextures = false;
 	bool m_ShaderSupport = false;
 	bool m_RenderTargets = false;
+	// The backend can turn a rendered frame into the planar YUV layout an
+	// encoder takes, so that a frame crosses the bus at one and a half
+	// bytes per pixel instead of four, and already converted.
+	bool m_PlanarYuvConversion = false;
 
 	bool m_TrianglesAsQuads = false;
 
@@ -1128,6 +1133,7 @@ struct CRenderCapabilities
 	bool m_2DTextureArrays = false;
 	bool m_QuadToTriangleConversion = false;
 	bool m_RenderTargets = false;
+	bool m_PlanarYuvConversion = false;
 };
 
 // interface for the graphics backend
@@ -1435,7 +1441,7 @@ class CGraphics_Threaded : public IEngineGraphics
 
 	ivec2 m_ReadPixelPosition = ivec2(0, 0);
 	ColorRGBA *m_pReadPixelColor = nullptr;
-	std::unique_ptr<ITextureReadback> PresentFrame(bool Readback);
+	std::unique_ptr<ITextureReadback> PresentFrame(bool Readback, CImageInfo &&Recycled = CImageInfo());
 
 	int IssueInit();
 	int InitWindow();
@@ -1481,10 +1487,12 @@ public:
 	IGraphics::CTextureHandle LoadTextureRaw(const CImageInfo &Image, int Flags, const char *pTexName = nullptr) override;
 	IGraphics::CTextureHandle LoadTextureRawMove(CImageInfo &Image, int Flags, const char *pTexName = nullptr) override;
 	IGraphics::CTextureHandle CreateTexture(const CTextureDesc &Desc, const void *pInitialData = nullptr) override;
-	std::unique_ptr<ITextureReadback> ReadTextureAsync(CTextureHandle Texture) override;
+	std::unique_ptr<ITextureReadback> ReadTextureAsync(CTextureHandle Texture, CImageInfo &&Recycled = CImageInfo()) override;
 	bool BeginOffscreenFrame(CTextureHandle Texture) override;
-	std::unique_ptr<ITextureReadback> EndOffscreenFrame() override;
-	std::unique_ptr<ITextureReadback> PresentAndReadbackAsync() override;
+	std::unique_ptr<ITextureReadback> EndOffscreenFrame(CImageInfo &&Recycled = CImageInfo()) override;
+	std::unique_ptr<ITextureReadback> PresentAndReadbackAsync(CImageInfo &&Recycled = CImageInfo()) override;
+	bool PlanarYuvConversionSupported() const override { return m_Capabilities.m_PlanarYuvConversion; }
+	bool ConvertTextureToPlanarYuv(CTextureHandle Source, EPlanarYuvFormat Format) override;
 	bool UpdateTexture(CTextureHandle Texture, const CTextureRegion &Region, ETextureFormat Format, const void *pData) override;
 
 	bool LoadTextTextures(size_t Width, size_t Height, CTextureHandle &TextTexture, CTextureHandle &TextOutlineTexture, uint8_t *pTextData, uint8_t *pTextOutlineData) override;

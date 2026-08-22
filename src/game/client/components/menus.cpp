@@ -1061,7 +1061,10 @@ void CMenus::Render()
 		{
 			CUIRect TabBar, MainView;
 			Screen.HSplitTop(24.0f, &TabBar, &MainView);
-			RenderBackdropRegion(MainView);
+			// The tab bar belongs to the page below it and is painted in the same
+			// colour, so it needs the same backdrop. Leaving it out is what makes
+			// the active tab and the page body read as two different surfaces.
+			RenderBackdropRegion(Screen);
 
 			if(m_MenuPage == PAGE_NEWS)
 			{
@@ -1101,14 +1104,15 @@ void CMenus::Render()
 			{
 				// The game tab only covers its button bar and leaves the rest
 				// see-through, so blurring the whole page would blur the game
-				// the player is still looking at.
+				// the player is still looking at. The tab bar above it is opaque
+				// either way and belongs to the covered part.
 				CUIRect Covered;
-				MainView.HSplitTop(GameTabCoveredHeight(), &Covered, nullptr);
+				Screen.HSplitTop(TabBar.h + GameTabCoveredHeight(), &Covered, nullptr);
 				RenderBackdropRegion(Covered);
 			}
 			else
 			{
-				RenderBackdropRegion(MainView);
+				RenderBackdropRegion(Screen);
 			}
 
 			if(m_GamePage == PAGE_GAME)

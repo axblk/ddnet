@@ -7,6 +7,7 @@
 
 #include <engine/client/backend_sdl.h>
 #include <engine/gfx/image_manipulation.h>
+#include <engine/shared/config.h>
 
 #include <webgpu/webgpu.h>
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
@@ -48,6 +49,15 @@ EM_ASYNC_JS(void, WaitForAnimationFrame, (), {
 		}
 		document.addEventListener("visibilitychange", hidden);
 	});
+});
+
+// Yielding without waiting for a frame, for the case where the loop is meant
+// to run faster than the screen. The browser resumes this from a timer, so the
+// rate is the loop's own rather than the display's.
+EM_ASYNC_JS(void, YieldToBrowser, (), {
+	if(document.hidden)
+		return;
+	await new Promise(function(resolve) { setTimeout(resolve, 0); });
 });
 #endif
 
@@ -225,6 +235,7 @@ namespace
 			std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> m_aQuadShared{};
 			std::array<WGPURenderPipeline, BLEND_MODE_COUNT> m_aDualAtlas{};
 			WGPURenderPipeline m_Blur = nullptr;
+			WGPURenderPipeline m_PlanarYuv = nullptr;
 		};
 
 		SWebGpuNativeWindow m_NativeWindow;
@@ -858,6 +869,11 @@ namespace
 
 		bool CreatePipelineSet(SPipelineSet &Pipelines, WGPUTextureFormat Format, uint32_t SampleCount)
 		{
+			if(Pipelines.m_PlanarYuv != nullptr)
+			{
+				wgpuRenderPipelineRelease(Pipelines.m_PlanarYuv);
+				Pipelines.m_PlanarYuv = nullptr;
+			}
 			if(Pipelines.m_Blur != nullptr)
 			{
 				wgpuRenderPipelineRelease(Pipelines.m_Blur);
@@ -983,6 +999,11 @@ namespace
 			BlurDescriptor.fragment = &BlurFragment;
 			Pipelines.m_Blur = wgpuDeviceCreateRenderPipeline(m_Device, &BlurDescriptor);
 			if(Pipelines.m_Blur == nullptr)
+				return false;
+			BlurFragment.entryPoint = StringView("fs_planar_yuv");
+			BlurDescriptor.label = StringView("DDNet WebGPU planar YUV pipeline");
+			Pipelines.m_PlanarYuv = wgpuDeviceCreateRenderPipeline(m_Device, &BlurDescriptor);
+			if(Pipelines.m_PlanarYuv == nullptr)
 				return false;
 			return CreateBufferedPipelines(Pipelines.m_aUniformColor, Format, "vs_uniform_color", false, SampleCount) &&
 			       CreateBufferedPipelines(Pipelines.m_aInstanced, Format, "vs_instanced", true, SampleCount) &&
@@ -1174,6 +1195,52 @@ fn quad_vertex(position: vec4f, color: vec4f, uv: vec2f, quad: QuadTransform) ->
 	color += textureSample(image_texture, image_sampler, input.uv + texel_offset * 3.2307692308) * 0.0702702703;
 	color += textureSample(image_texture, image_sampler, input.uv - texel_offset * 3.2307692308) * 0.0702702703;
 	return color;
+}
+// Turns a rendered frame into the planar YUV layout an encoder wants. See
+// shader/vulkan/planar_yuv.frag for what the layout is; input.color.r picks
+// between interleaved NV12 and three separate planes, the way the blur above
+// takes its axis from the same place.
+fn yuv_luma(color: vec3f) -> f32 {
+	return (16.0 + 219.0 * dot(color, vec3f(0.2126, 0.7152, 0.0722))) / 255.0;
+}
+fn yuv_chroma_blue(color: vec3f) -> f32 {
+	return (128.0 + 224.0 * dot(color, vec3f(-0.1146, -0.3854, 0.5))) / 255.0;
+}
+fn yuv_chroma_red(color: vec3f) -> f32 {
+	return (128.0 + 224.0 * dot(color, vec3f(0.5, -0.4542, -0.0458))) / 255.0;
+}
+fn yuv_block(chroma: vec2i) -> vec3f {
+	let origin = chroma * 2;
+	return 0.25 * (textureLoad(image_texture, origin, 0).rgb +
+		textureLoad(image_texture, origin + vec2i(1, 0), 0).rgb +
+		textureLoad(image_texture, origin + vec2i(0, 1), 0).rgb +
+		textureLoad(image_texture, origin + vec2i(1, 1), 0).rgb);
+}
+@fragment fn fs_planar_yuv(input: VertexOutput) -> @location(0) vec4f {
+	let source_size = vec2i(textureDimensions(image_texture));
+	let texel = vec2i(input.position.xy);
+	let planar = input.color.r > 0.5;
+	let chroma_width = source_size.x / 2;
+	let second_plane_row = source_size.y + source_size.y / 4;
+	var result = vec4f(0.0);
+	for(var component = 0; component < 4; component++) {
+		let byte = texel.x * 4 + component;
+		if texel.y < source_size.y {
+			result[component] = yuv_luma(textureLoad(image_texture, vec2i(byte, texel.y), 0).rgb);
+			continue;
+		}
+		if !planar {
+			let block = yuv_block(vec2i(byte / 2, texel.y - source_size.y));
+			result[component] = select(yuv_chroma_red(block), yuv_chroma_blue(block), byte % 2 == 0);
+			continue;
+		}
+		let second = texel.y >= second_plane_row;
+		let plane_row = texel.y - select(source_size.y, second_plane_row, second);
+		let lower = byte >= chroma_width;
+		let block = yuv_block(vec2i(select(byte, byte - chroma_width, lower), plane_row * 2 + select(0, 1, lower)));
+		result[component] = select(yuv_chroma_blue(block), yuv_chroma_red(block), second);
+	}
+	return result;
 }
 @fragment fn fs_layered(input: LayeredVertexOutput) -> @location(0) vec4f {
 	let sample = textureSample(image_array_texture, image_sampler, input.uv.xy, i32(input.uv.z));
@@ -1402,6 +1469,8 @@ fn quad_vertex(position: vec4f, color: vec4f, uv: vec2f, quad: QuadTransform) ->
 						wgpuRenderPipelineRelease(Pipeline);
 				if(Pipelines.m_Blur != nullptr)
 					wgpuRenderPipelineRelease(Pipelines.m_Blur);
+				if(Pipelines.m_PlanarYuv != nullptr)
+					wgpuRenderPipelineRelease(Pipelines.m_PlanarYuv);
 				Pipelines = {};
 			}
 			if(m_QuadBindGroup != nullptr)
@@ -2055,10 +2124,11 @@ fn quad_vertex(position: vec4f, color: vec4f, uv: vec2f, quad: QuadTransform) ->
 		bool Draw(const CCommandBuffer::SCommand_Draw *pCommand)
 		{
 			EPipelineProgram Program;
-			if(!ResolvePipeline(pCommand->m_Pipeline, Program) || (Program != EPipelineProgram::PRIMITIVE && Program != EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY && Program != EPipelineProgram::BLUR) || pCommand->m_IndexBuffer.IsValid())
+			if(!ResolvePipeline(pCommand->m_Pipeline, Program) || (Program != EPipelineProgram::PRIMITIVE && Program != EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY && Program != EPipelineProgram::BLUR && Program != EPipelineProgram::PLANAR_YUV) || pCommand->m_IndexBuffer.IsValid())
 				return true;
 			const bool Layered = Program == EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY;
 			const bool Blur = Program == EPipelineProgram::BLUR;
+			const bool PlanarYuv = Program == EPipelineProgram::PLANAR_YUV;
 			const auto *pVertices = Layered ? nullptr : pCommand->m_VertexData.Get<CCommandBuffer::SVertex>(pCommand->m_VertexCount);
 			const auto *pLayeredVertices = Layered ? pCommand->m_VertexData.Get<CCommandBuffer::SVertexTex3DStream>(pCommand->m_VertexCount) : nullptr;
 			if((Layered ? pLayeredVertices == nullptr : pVertices == nullptr) || pCommand->m_VertexCount == 0)
@@ -2115,7 +2185,7 @@ fn quad_vertex(position: vec4f, color: vec4f, uv: vec2f, quad: QuadTransform) ->
 				return true;
 			const auto &Pipelines = m_aPipelineSets[m_RenderTarget.IsValid() ? 1 : 0];
 			const auto &aPipelines = Layered ? Pipelines.m_aLayeredPrimitive : Pipelines.m_aPrimitive;
-			const WGPURenderPipeline Pipeline = Blur ? Pipelines.m_Blur : aPipelines[PrimitivePipelineIndex(PrimitiveType, pCommand->m_State.m_BlendMode, Textured)];
+			const WGPURenderPipeline Pipeline = PlanarYuv ? Pipelines.m_PlanarYuv : (Blur ? Pipelines.m_Blur : aPipelines[PrimitivePipelineIndex(PrimitiveType, pCommand->m_State.m_BlendMode, Textured)]);
 			if(!ApplyState(pCommand->m_State, Pipeline, ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f), vec2(0.0f, 0.0f), 0.0f, Layered))
 				return m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE;
 			wgpuRenderPassEncoderSetVertexBuffer(m_RenderPass, 0, m_StreamBuffer, VertexOffset, VertexCount * VertexSize);
@@ -2733,7 +2803,16 @@ fn quad_vertex(position: vec4f, color: vec4f, uv: vec2f, quad: QuadTransform) ->
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 			const WGPUStatus Status = WGPUStatus_Success;
 			ReleaseFrame();
-			WaitForAnimationFrame();
+			// The canvas is composited once per refresh whatever this does, so
+			// waiting for a frame is the right default: it costs nothing and it
+			// keeps a hidden tab from spinning. Someone who asked for a rate of
+			// their own gets the plain yield instead and lets the client's own
+			// limiter do the pacing -- for a benchmark, or for the shortest path
+			// from an input to the frame that carries it.
+			if(g_Config.m_GfxRefreshRate > 0)
+				YieldToBrowser();
+			else
+				WaitForAnimationFrame();
 #else
 			const WGPUStatus Status = wgpuSurfacePresent(m_Surface);
 			ReleaseFrame();
@@ -2927,6 +3006,7 @@ fn quad_vertex(position: vec4f, color: vec4f, uv: vec2f, quad: QuadTransform) ->
 			pCommand->m_pCapabilities->m_QuadPipelines = true;
 			pCommand->m_pCapabilities->m_DualAtlasPipeline = true;
 			pCommand->m_pCapabilities->m_RenderTargets = true;
+			pCommand->m_pCapabilities->m_PlanarYuvConversion = true;
 			m_ViewportWidth = m_SurfaceWidth;
 			m_ViewportHeight = m_SurfaceHeight;
 			m_SurfaceDirty = true;

@@ -20,13 +20,30 @@
 #include <algorithm>
 #include <memory>
 
+// WebGL2 defines the type of a buffer at the first bind to a buffer target, and
+// keeps it for the life of the buffer. This is different to GLES 3 and desktop
+// GL (https://www.khronos.org/registry/webgl/specs/latest/2.0/#5.1), where a
+// buffer is what it is used as. A buffer that indices are read from therefore
+// has to be born as an index buffer and be uploaded to as one ever after.
+static GLenum BufferInitTarget([[maybe_unused]] IGraphics::EBufferUsage Usage)
+{
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-// WebGL2 defines the type of a buffer at the first bind to a buffer target
-// this is different to GLES 3 (https://www.khronos.org/registry/webgl/specs/latest/2.0/#5.1)
-static constexpr GLenum BUFFER_INIT_VERTEX_TARGET = GL_ARRAY_BUFFER;
+	return Usage == IGraphics::EBufferUsage::INDEX ? GL_ELEMENT_ARRAY_BUFFER : GL_ARRAY_BUFFER;
 #else
-static constexpr GLenum BUFFER_INIT_VERTEX_TARGET = GL_COPY_WRITE_BUFFER;
+	return GL_COPY_WRITE_BUFFER;
 #endif
+}
+
+// The element array binding belongs to the vertex array object, so uploading to
+// an index buffer through it would silently replace what the container that is
+// bound draws with. Nothing is drawn from a container here, and every draw binds
+// its own, so the upload goes through no container at all.
+static void BindBufferObject(GLenum Target, GLuint Buffer)
+{
+	if(Target == GL_ELEMENT_ARRAY_BUFFER)
+		glBindVertexArray(0);
+	glBindBuffer(Target, Buffer);
+}
 
 static GLenum VertexAttributeTypeToOpenGL(IGraphics::EVertexAttributeType Type)
 {
@@ -104,6 +121,7 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 	m_pPrimitiveProgram = new CGLSLPrimitiveProgram;
 	m_pPrimitiveProgramTextured = new CGLSLPrimitiveProgram;
 	m_pBlurProgram = new CGLSLPrimitiveProgram;
+	m_pPlanarYuvProgram = new CGLSLPrimitiveProgram;
 	m_pTileProgram = new CGLSLTileProgram;
 	m_pTileProgramTextured = new CGLSLTileProgram;
 	m_pPrimitive3DProgram = new CGLSLPrimitiveProgram;
@@ -176,6 +194,22 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 
 		m_pBlurProgram->m_LocPos = m_pBlurProgram->GetUniformLoc("gPos");
 		m_pBlurProgram->m_LocTextureSampler = m_pBlurProgram->GetUniformLoc("gTextureSampler");
+	}
+	{
+		CGLSL PrimitiveVertexShader;
+		CGLSL PlanarYuvFragmentShader;
+		PrimitiveVertexShader.LoadShader(&ShaderCompiler, pCommand->m_pStorage, "shader/prim.vert", GL_VERTEX_SHADER);
+		PlanarYuvFragmentShader.LoadShader(&ShaderCompiler, pCommand->m_pStorage, "shader/planar_yuv.frag", GL_FRAGMENT_SHADER);
+
+		m_pPlanarYuvProgram->CreateProgram();
+		m_pPlanarYuvProgram->AddShader(&PrimitiveVertexShader);
+		m_pPlanarYuvProgram->AddShader(&PlanarYuvFragmentShader);
+		m_pPlanarYuvProgram->LinkProgram();
+
+		UseProgram(m_pPlanarYuvProgram);
+
+		m_pPlanarYuvProgram->m_LocPos = m_pPlanarYuvProgram->GetUniformLoc("gPos");
+		m_pPlanarYuvProgram->m_LocTextureSampler = m_pPlanarYuvProgram->GetUniformLoc("gTextureSampler");
 	}
 
 	{
@@ -480,6 +514,7 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Shutdown(const SCommand_Shutdown *
 	delete m_pPrimitiveProgram;
 	delete m_pPrimitiveProgramTextured;
 	delete m_pBlurProgram;
+	delete m_pPlanarYuvProgram;
 	delete m_pBorderTileProgram;
 	delete m_pBorderTileProgramTextured;
 	delete m_pQuadProgram;
@@ -839,7 +874,8 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Draw(const CCommandBuffer::SComman
 	const EPipelineProgram Program = PipelineProgram(pCommand->m_Pipeline);
 	const bool TextureArray = Program == EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY;
 	const bool Blur = Program == EPipelineProgram::BLUR;
-	if(!TextureArray && Program != EPipelineProgram::PRIMITIVE && !Blur)
+	const bool PlanarYuv = Program == EPipelineProgram::PLANAR_YUV;
+	if(!TextureArray && Program != EPipelineProgram::PRIMITIVE && !Blur && !PlanarYuv)
 		return;
 	const uint32_t VerticesPerPrim = VerticesPerPrimitive(pCommand->m_PrimitiveType);
 	if(VerticesPerPrim == 0 || pCommand->m_VertexCount == 0 || pCommand->m_VertexCount % VerticesPerPrim != 0)
@@ -861,11 +897,19 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Draw(const CCommandBuffer::SComman
 		return;
 
 	const bool Textured = IsTexturedState(pCommand->m_State);
-	if(Blur && (!Textured || pCommand->m_State.m_BlendMode != EBlendMode::NONE))
+	// Both effects read the whole source themselves, so they take it as it is
+	// and want nothing blended over it.
+	if((Blur || PlanarYuv) && (!Textured || pCommand->m_State.m_BlendMode != EBlendMode::NONE))
 		return;
-	CGLSLTWProgram *pProgram = Blur ? static_cast<CGLSLTWProgram *>(m_pBlurProgram) : (TextureArray ? static_cast<CGLSLTWProgram *>(m_pPrimitive3DProgram) : m_pPrimitiveProgram);
-	if(Textured && !Blur)
+	CGLSLTWProgram *pProgram;
+	if(Blur)
+		pProgram = m_pBlurProgram;
+	else if(PlanarYuv)
+		pProgram = m_pPlanarYuvProgram;
+	else if(Textured)
 		pProgram = TextureArray ? static_cast<CGLSLTWProgram *>(m_pPrimitive3DProgramTextured) : m_pPrimitiveProgramTextured;
+	else
+		pProgram = TextureArray ? static_cast<CGLSLTWProgram *>(m_pPrimitive3DProgram) : m_pPrimitiveProgram;
 	UseProgram(pProgram);
 	SetState(pCommand->m_State, pProgram, TextureArray);
 	UploadStreamBufferData(pVertices, VertexSize * pCommand->m_VertexCount, TextureArray);
@@ -932,15 +976,18 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_CreateBufferObject(const CCommandB
 	if((size_t)Index >= m_vBufferObjectIndices.size())
 	{
 		m_vBufferObjectIndices.resize(Index + 1, 0);
+		m_vBufferObjectTargets.resize(Index + 1, 0);
 	}
 
 	GLuint VertBufferId = 0;
+	const GLenum Target = BufferInitTarget(pCommand->m_Desc.m_Usage);
 
 	glGenBuffers(1, &VertBufferId);
-	glBindBuffer(BUFFER_INIT_VERTEX_TARGET, VertBufferId);
-	glBufferData(BUFFER_INIT_VERTEX_TARGET, (GLsizeiptr)(pCommand->m_Desc.m_Size), pUploadData, GL_STATIC_DRAW);
+	BindBufferObject(Target, VertBufferId);
+	glBufferData(Target, (GLsizeiptr)(pCommand->m_Desc.m_Size), pUploadData, GL_STATIC_DRAW);
 
 	m_vBufferObjectIndices[Index] = VertBufferId;
+	m_vBufferObjectTargets[Index] = Target;
 }
 
 void CCommandProcessorFragment_OpenGL3_3::Cmd_RecreateBufferObject(const CCommandBuffer::SCommand_RecreateBufferObject *pCommand)
@@ -948,8 +995,9 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_RecreateBufferObject(const CComman
 	void *pUploadData = pCommand->m_pUploadData;
 	int Index = pCommand->m_Buffer.Id();
 
-	glBindBuffer(BUFFER_INIT_VERTEX_TARGET, m_vBufferObjectIndices[Index]);
-	glBufferData(BUFFER_INIT_VERTEX_TARGET, (GLsizeiptr)(pCommand->m_Desc.m_Size), pUploadData, GL_STATIC_DRAW);
+	const GLenum Target = m_vBufferObjectTargets[Index];
+	BindBufferObject(Target, m_vBufferObjectIndices[Index]);
+	glBufferData(Target, (GLsizeiptr)(pCommand->m_Desc.m_Size), pUploadData, GL_STATIC_DRAW);
 }
 
 void CCommandProcessorFragment_OpenGL3_3::Cmd_UpdateBufferObject(const CCommandBuffer::SCommand_UpdateBufferObject *pCommand)
@@ -957,8 +1005,9 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_UpdateBufferObject(const CCommandB
 	void *pUploadData = pCommand->m_pUploadData;
 	int Index = pCommand->m_Buffer.Id();
 
-	glBindBuffer(BUFFER_INIT_VERTEX_TARGET, m_vBufferObjectIndices[Index]);
-	glBufferSubData(BUFFER_INIT_VERTEX_TARGET, static_cast<GLintptr>(pCommand->m_Offset), (GLsizeiptr)(pCommand->m_DataSize), pUploadData);
+	const GLenum Target = m_vBufferObjectTargets[Index];
+	BindBufferObject(Target, m_vBufferObjectIndices[Index]);
+	glBufferSubData(Target, static_cast<GLintptr>(pCommand->m_Offset), (GLsizeiptr)(pCommand->m_DataSize), pUploadData);
 }
 
 void CCommandProcessorFragment_OpenGL3_3::Cmd_CopyBufferObject(const CCommandBuffer::SCommand_CopyBufferObject *pCommand)
@@ -976,6 +1025,7 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_DeleteBufferObject(const CCommandB
 	int Index = pCommand->m_Buffer.Id();
 
 	glDeleteBuffers(1, &m_vBufferObjectIndices[Index]);
+	m_vBufferObjectTargets[Index] = 0;
 	std::fill(std::begin(m_aLastIndexBufferBound), std::end(m_aLastIndexBufferBound), 0);
 	for(auto &BufferContainer : m_vBufferContainers)
 		BufferContainer.m_LastIndexBufferBound = 0;

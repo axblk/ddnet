@@ -1722,6 +1722,7 @@ set(EXPECTED_DATA
   shader/blur.frag
   shader/pipeline.frag
   shader/pipeline.vert
+  shader/planar_yuv.frag
   shader/prim.frag
   shader/prim.vert
   shader/primex.frag
@@ -1737,6 +1738,7 @@ set(EXPECTED_DATA
   shader/tile_border.frag
   shader/tile_border.vert
   shader/vulkan/blur.frag
+  shader/vulkan/planar_yuv.frag
   shader/vulkan/prim.frag
   shader/vulkan/prim.vert
   shader/vulkan/prim3d.frag

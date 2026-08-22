@@ -421,6 +421,7 @@ bool CCommandProcessorFragment_OpenGL::InitOpenGL(const SCommand_Init *pCommand)
 
 				pCommand->m_pCapabilities->m_TrianglesAsQuads = true;
 				pCommand->m_pCapabilities->m_RenderTargets = true;
+				pCommand->m_pCapabilities->m_PlanarYuvConversion = true;
 			}
 			else if(MajorV == 3)
 			{

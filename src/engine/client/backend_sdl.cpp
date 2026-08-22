@@ -1273,6 +1273,10 @@ int CGraphicsBackend_SDL::Init(const char *pName, int *pScreen, int *pWidth, int
 	if(OldBackendType == BACKEND_TYPE_WEBGPU && m_BackendType == BACKEND_TYPE_WEBGPU)
 	{
 		log_warn("gfx/webgpu", "initialization failed; retrying with OpenGL");
+		// Remembered, the way the Vulkan fallback below remembers: a browser
+		// without WebGPU would otherwise pay for a context it cannot have on
+		// every single start.
+		str_copy(g_Config.m_GfxBackend, "OpenGL");
 		m_BackendType = BACKEND_TYPE_OPENGL;
 		g_Config.m_GfxGLMajor = 3;
 		g_Config.m_GfxGLMinor = 0;

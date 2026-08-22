@@ -901,8 +901,6 @@ class CCommandProcessorFragment_Vulkan : public CCommandProcessorFragment_Render
 
 	uint32_t m_MinUniformAlign;
 
-	std::vector<uint8_t> m_vScreenshotHelper;
-
 	SDeviceMemoryBlock m_GetPresentedImgDataHelperMem;
 	VkImage m_GetPresentedImgDataHelperImage = VK_NULL_HANDLE;
 	uint8_t *m_pGetPresentedImgDataHelperMappedMemory = nullptr;
@@ -984,6 +982,7 @@ private:
 	SPipelineContainer m_StandardLinePipeline;
 	SPipelineContainer m_Standard3DPipeline;
 	SPipelineContainer m_BlurPipeline;
+	SPipelineContainer m_PlanarYuvPipeline;
 	SPipelineContainer m_DualAtlasPipeline;
 	SPipelineContainer m_ArrayColorPipeline;
 	SPipelineContainer m_ArrayColorTransformPipeline;
@@ -1450,12 +1449,18 @@ protected:
 		m_GetPresentedImgDataHelperHeight = 0;
 	}
 
-	[[nodiscard]] bool GetImageDataImpl(VkImage SourceImage, VkFormat SourceFormat, VkImageLayout SourceLayout, uint32_t SourceWidth, uint32_t SourceHeight, uint32_t &Width, uint32_t &Height, CImageInfo::EImageFormat &Format, std::vector<uint8_t> &vDstData, bool ResetAlpha, const std::optional<ivec2> &PixelOffset, bool SubmitPendingGraphics)
+	// Reads the image into Image directly. An Image that already has the size
+	// and format the read produces keeps its memory: at export resolutions a
+	// fresh eight megabyte allocation costs the system more than copying the
+	// pixels into it, and the caller reads a new frame sixty times a second.
+	[[nodiscard]] bool GetImageDataImpl(VkImage SourceImage, VkFormat SourceFormat, VkImageLayout SourceLayout, uint32_t SourceWidth, uint32_t SourceHeight, CImageInfo &Image, bool ResetAlpha, const std::optional<ivec2> &PixelOffset, bool SubmitPendingGraphics)
 	{
 		bool IsB8G8R8A8 = SourceFormat == VK_FORMAT_B8G8R8A8_UNORM;
 		const bool UsesRGBALikeFormat = SourceFormat == VK_FORMAT_R8G8B8A8_UNORM || IsB8G8R8A8;
 		if(UsesRGBALikeFormat)
 		{
+			uint32_t Width;
+			uint32_t Height;
 			VkOffset3D SrcOffset;
 			if(PixelOffset.has_value())
 			{
@@ -1472,9 +1477,7 @@ protected:
 				Height = SourceHeight;
 			}
 			SrcOffset.z = 0;
-			Format = CImageInfo::FORMAT_RGBA;
-
-			const size_t ImageTotalSize = (size_t)Width * Height * CImageInfo::PixelSize(Format);
+			const CImageInfo::EImageFormat Format = CImageInfo::FORMAT_RGBA;
 
 			uint8_t *pResImageData;
 			if(!PreparePresentedImageDataImage(pResImageData, Width, Height))
@@ -1582,23 +1585,31 @@ protected:
 				return false;
 			}
 
-			size_t RealFullImageSize = std::max(ImageTotalSize, (size_t)(Height * m_GetPresentedImgDataHelperMappedLayoutPitch));
-			size_t ExtraRowSize = Width * 4;
-			if(vDstData.size() < RealFullImageSize + ExtraRowSize)
-				vDstData.resize(RealFullImageSize + ExtraRowSize);
+			if(Image.m_pData == nullptr || Image.m_Width != Width || Image.m_Height != Height || Image.m_Format != Format)
+			{
+				Image.Free();
+				Image.m_Width = Width;
+				Image.m_Height = Height;
+				Image.m_Format = Format;
+				Image.Allocate();
+				if(Image.m_pData == nullptr)
+				{
+					SetError(EGfxErrorType::GFX_ERROR_TYPE_OUT_OF_MEMORY_IMAGE, "Allocating the image readback destination failed.");
+					return false;
+				}
+			}
 
-			mem_copy(vDstData.data(), pResImageData, RealFullImageSize);
-
-			// pack image data together without any offset that the driver might require
-			if(Width * 4 < m_GetPresentedImgDataHelperMappedLayoutPitch)
+			// The driver may lay the rows out wider than the image is.
+			const size_t RowSize = (size_t)Width * 4;
+			const size_t Pitch = m_GetPresentedImgDataHelperMappedLayoutPitch;
+			if(Pitch == RowSize)
+			{
+				mem_copy(Image.m_pData, pResImageData, RowSize * Height);
+			}
+			else
 			{
 				for(uint32_t Y = 0; Y < Height; ++Y)
-				{
-					size_t OffsetImagePacked = (Y * Width * 4);
-					size_t OffsetImageUnpacked = (Y * m_GetPresentedImgDataHelperMappedLayoutPitch);
-					mem_copy(vDstData.data() + RealFullImageSize, vDstData.data() + OffsetImageUnpacked, Width * 4);
-					mem_copy(vDstData.data() + OffsetImagePacked, vDstData.data() + RealFullImageSize, Width * 4);
-				}
+					mem_copy(Image.m_pData + Y * RowSize, pResImageData + (size_t)Y * Pitch, RowSize);
 			}
 
 			if(IsB8G8R8A8 || ResetAlpha)
@@ -1607,13 +1618,13 @@ protected:
 				{
 					for(uint32_t X = 0; X < Width; ++X)
 					{
-						size_t ImgOff = (Y * Width * 4) + (X * 4);
+						const size_t ImgOff = (Y * RowSize) + (X * 4);
 						if(IsB8G8R8A8)
 						{
-							std::swap(vDstData[ImgOff], vDstData[ImgOff + 2]);
+							std::swap(Image.m_pData[ImgOff], Image.m_pData[ImgOff + 2]);
 						}
 						if(ResetAlpha)
-							vDstData[ImgOff + 3] = 255;
+							Image.m_pData[ImgOff + 3] = 255;
 					}
 				}
 			}
@@ -5034,6 +5045,11 @@ public:
 		return CreateStandardGraphicsPipelineImpl(pVertName, pFragName, m_BlurPipeline, VULKAN_BACKEND_TEXTURE_MODE_TEXTURED, VULKAN_BACKEND_BLEND_MODE_NONE, false);
 	}
 
+	[[nodiscard]] bool CreatePlanarYuvGraphicsPipeline(const char *pVertName, const char *pFragName)
+	{
+		return CreateStandardGraphicsPipelineImpl(pVertName, pFragName, m_PlanarYuvPipeline, VULKAN_BACKEND_TEXTURE_MODE_TEXTURED, VULKAN_BACKEND_BLEND_MODE_NONE, false);
+	}
+
 	[[nodiscard]] bool CreateStandard3DGraphicsPipelineImpl(const char *pVertName, const char *pFragName, SPipelineContainer &PipeContainer, EVulkanBackendTextureModes TexMode, EVulkanBackendBlendModes BlendMode)
 	{
 		std::array<VkVertexInputAttributeDescription, 3> aAttributeDescriptions = {};
@@ -5536,6 +5552,7 @@ public:
 		m_StandardLinePipeline.Destroy(m_VKDevice);
 		m_Standard3DPipeline.Destroy(m_VKDevice);
 		m_BlurPipeline.Destroy(m_VKDevice);
+		m_PlanarYuvPipeline.Destroy(m_VKDevice);
 		m_DualAtlasPipeline.Destroy(m_VKDevice);
 		m_ArrayColorPipeline.Destroy(m_VKDevice);
 		m_ArrayColorTransformPipeline.Destroy(m_VKDevice);
@@ -6158,6 +6175,9 @@ public:
 		if(!CreateBlurGraphicsPipeline("shader/vulkan/prim_textured.vert.spv", "shader/vulkan/blur.frag.spv"))
 			return -1;
 
+		if(!CreatePlanarYuvGraphicsPipeline("shader/vulkan/prim_textured.vert.spv", "shader/vulkan/planar_yuv.frag.spv"))
+			return -1;
+
 		if(!CreateStandardGraphicsPipeline("shader/vulkan/prim.vert.spv", "shader/vulkan/prim.frag.spv", false, true))
 			return -1;
 
@@ -6711,6 +6731,7 @@ public:
 		pCommand->m_pCapabilities->m_BufferedPrimitivePipelines = true;
 		pCommand->m_pCapabilities->m_ShaderSupport = true;
 		pCommand->m_pCapabilities->m_RenderTargets = true;
+		pCommand->m_pCapabilities->m_PlanarYuvConversion = true;
 
 		pCommand->m_pCapabilities->m_MipMapping = true;
 		pCommand->m_pCapabilities->m_3DTextures = false;
@@ -6887,20 +6908,8 @@ public:
 		if((Texture.m_Usage & IGraphics::TEXTURE_USAGE_COLOR_TARGET) == 0 || (Texture.m_Usage & IGraphics::TEXTURE_USAGE_COPY_SOURCE) == 0 || Texture.m_Layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
 			return true;
 
-		uint32_t Width = 0;
-		uint32_t Height = 0;
-		CImageInfo::EImageFormat Format = CImageInfo::FORMAT_UNDEFINED;
-		if(!GetImageDataImpl(Texture.m_Img, Texture.m_ImageFormat, Texture.m_Layout, Texture.m_Width, Texture.m_Height, Width, Height, Format, m_vScreenshotHelper, false, {}, true))
+		if(!GetImageDataImpl(Texture.m_Img, Texture.m_ImageFormat, Texture.m_Layout, Texture.m_Width, Texture.m_Height, pCommand->m_pResult->m_Image, false, {}, true))
 			return false;
-
-		CImageInfo &Image = pCommand->m_pResult->m_Image;
-		Image.m_Width = Width;
-		Image.m_Height = Height;
-		Image.m_Format = Format;
-		Image.Allocate();
-		if(Image.m_pData == nullptr)
-			return true;
-		mem_copy(Image.m_pData, m_vScreenshotHelper.data(), Image.DataSize());
 		pCommand->m_pResult->m_Ok = true;
 		return true;
 	}
@@ -6995,6 +7004,8 @@ public:
 			return RenderStandard<CCommandBuffer::SVertexTex3DStream, true>(ExecBuffer, pCommand->m_State, pCommand->m_PrimitiveType, pCommand->m_VertexData.Get<CCommandBuffer::SVertexTex3DStream>(pCommand->m_VertexCount), pCommand->m_VertexCount);
 		if(Program == EPipelineProgram::BLUR && GetIsTextured(pCommand->m_State) && pCommand->m_State.m_BlendMode == EBlendMode::NONE)
 			return RenderStandard<CCommandBuffer::SVertex, false>(ExecBuffer, pCommand->m_State, pCommand->m_PrimitiveType, pCommand->m_VertexData.Get<CCommandBuffer::SVertex>(pCommand->m_VertexCount), pCommand->m_VertexCount, &m_BlurPipeline);
+		if(Program == EPipelineProgram::PLANAR_YUV && GetIsTextured(pCommand->m_State) && pCommand->m_State.m_BlendMode == EBlendMode::NONE)
+			return RenderStandard<CCommandBuffer::SVertex, false>(ExecBuffer, pCommand->m_State, pCommand->m_PrimitiveType, pCommand->m_VertexData.Get<CCommandBuffer::SVertex>(pCommand->m_VertexCount), pCommand->m_VertexCount, &m_PlanarYuvPipeline);
 		return true;
 	}
 
@@ -7003,23 +7014,12 @@ public:
 		pCommand->m_pResult->m_Ok = false;
 		if(m_RenderingPaused || m_RenderPassActive)
 			return true;
-		uint32_t Width;
-		uint32_t Height;
-		CImageInfo::EImageFormat Format;
 		const auto Viewport = m_VKSwapImgAndViewportExtent.GetPresentedImageViewport();
 		if(pCommand->m_ReadPixel && (pCommand->m_Position.x < 0 || pCommand->m_Position.x >= static_cast<int>(Viewport.width) || pCommand->m_Position.y < 0 || pCommand->m_Position.y >= static_cast<int>(Viewport.height)))
 			return true;
 		const std::optional<ivec2> PixelOffset = pCommand->m_ReadPixel ? std::optional<ivec2>(pCommand->m_Position) : std::nullopt;
-		if(!GetImageDataImpl(m_vSwapChainImages[m_CurImageIndex], m_VKSurfFormat.format, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, Viewport.width, Viewport.height, Width, Height, Format, m_vScreenshotHelper, true, PixelOffset, true))
+		if(!GetImageDataImpl(m_vSwapChainImages[m_CurImageIndex], m_VKSurfFormat.format, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, Viewport.width, Viewport.height, pCommand->m_pResult->m_Image, true, PixelOffset, true))
 			return true;
-
-		pCommand->m_pResult->m_Image.m_Width = Width;
-		pCommand->m_pResult->m_Image.m_Height = Height;
-		pCommand->m_pResult->m_Image.m_Format = Format;
-		pCommand->m_pResult->m_Image.Allocate();
-		if(pCommand->m_pResult->m_Image.m_pData == nullptr)
-			return true;
-		mem_copy(pCommand->m_pResult->m_Image.m_pData, m_vScreenshotHelper.data(), pCommand->m_pResult->m_Image.DataSize());
 		pCommand->m_pResult->m_Ok = true;
 
 		return true;

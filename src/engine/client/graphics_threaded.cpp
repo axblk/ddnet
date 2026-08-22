@@ -521,7 +521,7 @@ namespace
 	};
 }
 
-std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::ReadTextureAsync(CTextureHandle Texture)
+std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::ReadTextureAsync(CTextureHandle Texture, CImageInfo &&Recycled)
 {
 	if(m_Drawing != EDrawing::NONE || m_RenderPassActive || !m_TextureHandles.IsAllocated(Texture) || static_cast<size_t>(Texture.Id()) >= m_vTextureInfos.size())
 		return nullptr;
@@ -532,6 +532,7 @@ std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::ReadTextureAsyn
 		return nullptr;
 
 	auto pResult = std::make_unique<CCommandBuffer::SImageReadbackResult>();
+	pResult->m_Image = std::move(Recycled);
 	CCommandBuffer::SCommand_Texture_Readback Cmd;
 	Cmd.m_Texture = Texture;
 	Cmd.m_pResult = pResult.get();
@@ -560,7 +561,7 @@ bool CGraphics_Threaded::BeginOffscreenFrame(CTextureHandle Texture)
 	return true;
 }
 
-std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFrame()
+std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFrame(CImageInfo &&Recycled)
 {
 	if(!m_OffscreenFrameTarget.IsValid())
 		return nullptr;
@@ -569,7 +570,7 @@ std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFra
 	const bool FrameEnded = CanFinish && EndRenderPass();
 	m_OffscreenFrameTarget.Invalidate();
 
-	auto pReadback = FrameEnded ? ReadTextureAsync(Target) : nullptr;
+	auto pReadback = FrameEnded ? ReadTextureAsync(Target, std::move(Recycled)) : nullptr;
 	if(!FrameEnded)
 		DropCurrentFrame();
 	if(pReadback != nullptr)
@@ -577,8 +578,14 @@ std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFra
 	m_pCommandBuffer->Reset();
 	m_DropCurrentFrame = false;
 	m_SubmissionTracker.FinishFrame();
-	m_RenderPassActive = true;
+	// The offscreen pass is closed and the frame it belonged to is gone, so the
+	// screen needs a pass of its own again. Whoever draws next expects the one
+	// that a presented frame leaves behind, and without it everything drawn
+	// between two export frames would be dropped.
+	m_RenderPassActive = false;
 	m_RenderPassTarget.Invalidate();
+	CRenderPassDesc PresentationPass;
+	BeginRenderPass(PresentationPass);
 	return pReadback;
 }
 
@@ -1251,6 +1258,22 @@ bool CGraphics_Threaded::DrawFullscreenTexture(CTextureHandle Source, CCommandBu
 bool CGraphics_Threaded::BlitTexture(CTextureHandle Source, bool UseCurrentClip)
 {
 	return DrawFullscreenTexture(Source, Pipeline(EPipelineProgram::PRIMITIVE), {255, 255, 255, 255}, TEXTURE_USAGE_SAMPLED, UseCurrentClip);
+}
+
+bool CGraphics_Threaded::ConvertTextureToPlanarYuv(CTextureHandle Source, EPlanarYuvFormat Format)
+{
+	if(!m_Capabilities.m_PlanarYuvConversion)
+		return false;
+	// The layout rides along in the vertex color, the way the blur passes its
+	// axis, so that both formats share one pipeline.
+	SGraphicsColor Layout;
+	if(Format == EPlanarYuvFormat::NV12)
+		Layout = {0, 0, 0, 255};
+	else if(Format == EPlanarYuvFormat::I420)
+		Layout = {255, 255, 255, 255};
+	else
+		return false;
+	return DrawFullscreenTexture(Source, Pipeline(EPipelineProgram::PLANAR_YUV), Layout, TEXTURE_USAGE_SAMPLED | TEXTURE_USAGE_COLOR_TARGET);
 }
 
 bool CGraphics_Threaded::BlurTexture(CTextureHandle Source, EBlurDirection Direction)
@@ -3049,6 +3072,7 @@ int CGraphics_Threaded::IssueInit()
 		m_Capabilities.m_2DTextureArrays = BackendCapabilities.m_2DArrayTextures;
 		m_Capabilities.m_QuadToTriangleConversion = BackendCapabilities.m_TrianglesAsQuads;
 		m_Capabilities.m_RenderTargets = BackendCapabilities.m_RenderTargets;
+		m_Capabilities.m_PlanarYuvConversion = BackendCapabilities.m_RenderTargets && BackendCapabilities.m_PlanarYuvConversion;
 		m_ScreenHiDPIScale = m_ScreenWidth / (float)g_Config.m_GfxScreenWidth;
 		m_ScreenRefreshRate = g_Config.m_GfxScreenRefreshRate;
 	}
@@ -3649,7 +3673,7 @@ void CGraphics_Threaded::TakeCustomScreenshot(const char *pFilename)
 	m_DoScreenshot = true;
 }
 
-std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::PresentFrame(bool Readback)
+std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::PresentFrame(bool Readback, CImageInfo &&Recycled)
 {
 	if(m_RenderPassActive)
 		EndRenderPass();
@@ -3665,6 +3689,7 @@ std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::PresentFrame(bo
 	if(ResourcesReady && CaptureFrame)
 	{
 		pResult = std::make_unique<CCommandBuffer::SImageReadbackResult>();
+		pResult->m_Image = std::move(Recycled);
 		CCommandBuffer::SCommand_PresentationTarget_Readback ReadbackCmd;
 		ReadbackCmd.m_ReadPixel = !Readback && !Screenshot && ReadPixel;
 		ReadbackCmd.m_Position = m_ReadPixelPosition;
@@ -3734,9 +3759,9 @@ void CGraphics_Threaded::Swap()
 	PresentFrame(false);
 }
 
-std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::PresentAndReadbackAsync()
+std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::PresentAndReadbackAsync(CImageInfo &&Recycled)
 {
-	return PresentFrame(true);
+	return PresentFrame(true, std::move(Recycled));
 }
 
 bool CGraphics_Threaded::SetVSync(bool State)

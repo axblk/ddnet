@@ -29,6 +29,7 @@ protected:
 	CGLSLPrimitiveProgram *m_pPrimitiveProgram;
 	CGLSLPrimitiveProgram *m_pPrimitiveProgramTextured;
 	CGLSLPrimitiveProgram *m_pBlurProgram;
+	CGLSLPrimitiveProgram *m_pPlanarYuvProgram;
 	CGLSLQuadProgram *m_pQuadProgram;
 	CGLSLQuadProgram *m_pQuadProgramTextured;
 	CGLSLQuadProgram *m_pQuadProgramGrouped;
@@ -63,6 +64,9 @@ protected:
 	std::vector<SBufferContainer> m_vBufferContainers;
 
 	std::vector<TWGLuint> m_vBufferObjectIndices;
+	// The buffer target each of them was created with, because WebGL2 does not
+	// let a buffer be uploaded to through any other one.
+	std::vector<TWGLenum> m_vBufferObjectTargets;
 
 	CCommandBuffer::SColorf m_ClearColor;
 

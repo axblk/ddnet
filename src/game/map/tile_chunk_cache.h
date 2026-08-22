@@ -10,8 +10,6 @@
 #include <functional>
 #include <vector>
 
-class CTile;
-
 /**
  * Buffered tile rendering in fixed-size chunks.
  *
@@ -192,18 +190,5 @@ private:
 	int m_Height = 0;
 	bool m_Textured = false;
 };
-
-/**
- * Builds a source for a plain tile layer.
- *
- * @param pTiles Tiles of the layer, `Width * Height` entries, must outlive the
- * source.
- * @param Width Layer width in tiles.
- * @param Height Layer height in tiles.
- * @param Textured Whether the layer has a texture.
- *
- * @return The source, to be passed to `CTileChunkCache::Render`.
- */
-CTileChunkCache::CLayerSource TileLayerSource(const CTile *pTiles, int Width, int Height, bool Textured);
 
 #endif // GAME_MAP_TILE_CHUNK_CACHE_H

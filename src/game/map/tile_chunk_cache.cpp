@@ -71,20 +71,6 @@ void CTileChunkCache::InvalidateArea(int x, int y, int w, int h)
 			m_vChunks[ChunkY * m_Columns + ChunkX].m_Dirty = true;
 }
 
-CTileChunkCache::CLayerSource TileLayerSource(const CTile *pTiles, int Width, int Height, bool Textured)
-{
-	CTileChunkCache::CLayerSource Source;
-	Source.m_ReadTile = [pTiles, Width](int x, int y, unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate) {
-		const CTile &Tile = pTiles[(size_t)y * Width + x];
-		*pIndex = Tile.m_Index;
-		*pFlags = Tile.m_Flags;
-	};
-	Source.m_Width = Width;
-	Source.m_Height = Height;
-	Source.m_Textured = Textured;
-	return Source;
-}
-
 bool CTileChunkCache::Rebuild(const CLayerSource &Source, int ChunkX, int ChunkY)
 {
 	CChunk &Chunk = m_vChunks[ChunkY * m_Columns + ChunkX];

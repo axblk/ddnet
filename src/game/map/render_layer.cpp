@@ -398,15 +398,6 @@ void CRenderLayerTile::RenderTileLayer(const ColorRGBA &Color, const CRenderLaye
 
 	if(IsVisibleInClipRegion(m_LayerClip))
 	{
-		CTileChunkCache::CLayerSource Source;
-		Source.m_Width = (int)Visuals.m_Width;
-		Source.m_Height = (int)Visuals.m_Height;
-		Source.m_Textured = Visuals.m_IsTextured;
-		Source.m_FillSpeedup = Visuals.m_FillSpeedup;
-		const int CurOverlay = Visuals.m_CurOverlay;
-		Source.m_ReadTile = [this, CurOverlay](int x, int y, unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate) {
-			GetTileData(pIndex, pFlags, pAngleRotate, static_cast<unsigned int>(x), static_cast<unsigned int>(y), CurOverlay);
-		};
 		// Opaque tiles cover the largest area in the game, so they are worth
 		// taking out of the blended pass, the same way the unbuffered path and
 		// the editor do it. Tiles within a layer never overlap, so splitting the
@@ -415,10 +406,10 @@ void CRenderLayerTile::RenderTileLayer(const ColorRGBA &Color, const CRenderLaye
 		if(Opaque)
 		{
 			Graphics()->BlendNone();
-			Visuals.m_ChunkCache.Render(Source, Color, false, false);
+			Visuals.m_ChunkCache.Render(Visuals.m_ChunkSource, Color, false, false);
 			Graphics()->BlendNormal();
 		}
-		Visuals.m_ChunkCache.Render(Source, Color, true, !Opaque);
+		Visuals.m_ChunkCache.Render(Visuals.m_ChunkSource, Color, true, !Opaque);
 	}
 
 	if(Params.m_RenderTileBorder)
@@ -697,6 +688,14 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 	const int Height = m_pLayerTilemap->m_Height;
 	if(!Visuals.Init(Width, Height))
 		return;
+
+	Visuals.m_ChunkSource.m_Width = Width;
+	Visuals.m_ChunkSource.m_Height = Height;
+	Visuals.m_ChunkSource.m_Textured = DoTextureCoords;
+	Visuals.m_ChunkSource.m_FillSpeedup = AddAsSpeedup;
+	Visuals.m_ChunkSource.m_ReadTile = [this, CurOverlay](int x, int y, unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate) {
+		GetTileData(pIndex, pFlags, pAngleRotate, static_cast<unsigned int>(x), static_cast<unsigned int>(y), CurOverlay);
+	};
 
 	// The layer itself is built per chunk while rendering, only the tiles that
 	// repeat the map edges outwards are uploaded here. They are one row or one

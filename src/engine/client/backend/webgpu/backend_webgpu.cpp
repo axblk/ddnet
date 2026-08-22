@@ -2922,11 +2922,7 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			const auto *pMappedData = static_cast<const uint8_t *>(wgpuBufferGetConstMappedRange(Buffer, 0, BufferSize));
 			if(pMappedData != nullptr)
 			{
-				Result.m_Image.m_Width = Width;
-				Result.m_Image.m_Height = Height;
-				Result.m_Image.m_Format = CImageInfo::FORMAT_RGBA;
-				Result.m_Image.Allocate();
-				if(Result.m_Image.m_pData != nullptr)
+				if(Result.m_Image.TryReuse(Width, Height, CImageInfo::FORMAT_RGBA))
 				{
 					for(uint32_t Y = 0; Y < Height; ++Y)
 					{

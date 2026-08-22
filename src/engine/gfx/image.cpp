@@ -55,6 +55,17 @@ bool CImageInfo::TryAllocate()
 	return true;
 }
 
+bool CImageInfo::TryReuse(size_t Width, size_t Height, EImageFormat Format)
+{
+	if(m_pData != nullptr && m_Width == Width && m_Height == Height && m_Format == Format)
+		return true;
+	Free();
+	m_Width = Width;
+	m_Height = Height;
+	m_Format = Format;
+	return TryAllocate();
+}
+
 void CImageInfo::AllocateFillZero()
 {
 	dbg_assert(m_pData == nullptr && !m_IsAllocated, "Image data already allocated");

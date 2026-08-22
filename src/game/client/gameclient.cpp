@@ -1635,11 +1635,15 @@ void CGameClient::OnRender()
 		m_RenderScheduler.Run(
 			m_vRenderRequests,
 			[](const CPresentationContext &) {},
-			[this, pTrace, Components](const CRenderContext &Context, CRenderOutput &Output) {
+			// The callback is only called while `Run` is on the stack, so the
+			// span can be captured by reference. That keeps the closure at two
+			// pointers, which is what a `std::function` holds without reaching
+			// for the heap on every frame.
+			[this, &Components](const CRenderContext &Context, CRenderOutput &Output) {
 				Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
 				for(const auto &[pComponent, pName, GpuZone] : Components)
 				{
-					CRenderTraceScope TraceScope(pTrace, pName);
+					CRenderTraceScope TraceScope(m_pRenderTrace, pName);
 					if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
 						Graphics()->GpuRenderZoneBegin(GpuZone);
 					pComponent->OnRender(Context);

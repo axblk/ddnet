@@ -1067,13 +1067,9 @@ void CCommandProcessorFragment_OpenGL::Cmd_PresentationTargetReadback(const CCom
 	const int Width = pCommand->m_ReadPixel ? 1 : ViewportWidth;
 	const int Height = pCommand->m_ReadPixel ? 1 : ViewportHeight;
 
-	pCommand->m_pResult->m_Image.m_Width = Width;
-	pCommand->m_pResult->m_Image.m_Height = Height;
-	pCommand->m_pResult->m_Image.m_Format = CImageInfo::FORMAT_RGBA;
-	pCommand->m_pResult->m_Image.Allocate();
-	uint8_t *pPixelData = pCommand->m_pResult->m_Image.m_pData;
-	if(pPixelData == nullptr)
+	if(!pCommand->m_pResult->m_Image.TryReuse(Width, Height, CImageInfo::FORMAT_RGBA))
 		return;
+	uint8_t *pPixelData = pCommand->m_pResult->m_Image.m_pData;
 
 	GLint Alignment;
 	glGetIntegerv(GL_PACK_ALIGNMENT, &Alignment);

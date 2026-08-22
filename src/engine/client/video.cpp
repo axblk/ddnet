@@ -87,18 +87,28 @@ static LEVEL AvLevelToLogLevel(int Level)
  * option that the encoder accepts wins.
  *
  * @param pContext Encoding context whose encoder was not opened yet.
+ * @param pCodec Encoder that is going to be opened on that context.
  * @param Crf Constant rate factor, 0 for the highest quality and 51 for the lowest.
  *
- * @return `true` if the encoder accepted one of the options.
+ * @return `true` if the encoder took the quality, `false` if it needs a bit rate.
  */
-static bool SetEncoderQuality(AVCodecContext *pContext, int Crf)
+static bool SetEncoderQuality(AVCodecContext *pContext, const AVCodec *pCodec, int Crf)
 {
-	if(pContext->priv_data == nullptr)
-		return false;
 	static const char *const s_apQualityOptions[] = {"crf", "cq", "qp"};
-	return std::ranges::any_of(s_apQualityOptions, [pContext, Crf](const char *pOption) {
+	const auto TakesOption = [pContext, Crf](const char *pOption) {
 		return av_opt_set_int(pContext->priv_data, pOption, Crf, 0) >= 0;
-	});
+	};
+	if(pContext->priv_data != nullptr && std::ranges::any_of(s_apQualityOptions, TakesOption))
+		return true;
+	// Intel's encoders have no option of their own: they read the quality from
+	// the shared field, on the same scale as everyone else, and only encode at
+	// a constant quality while no bit rate competes with it.
+	if(pCodec != nullptr && str_endswith(pCodec->name, "_qsv") != nullptr)
+	{
+		pContext->global_quality = std::clamp(Crf, 1, 51);
+		return true;
+	}
+	return false;
 }
 
 /**
@@ -1749,11 +1759,13 @@ bool CVideo::AddStream(COutputStream *pStream, AVFormatContext *pFormatContext, 
 		pContext->color_primaries = AVCOL_PRI_BT709;
 		pContext->color_trc = AVCOL_TRC_BT709;
 		pContext->thread_count = m_EncodeThreads;
-		if(!SetEncoderQuality(pContext, m_Settings.m_Crf))
+		if(!SetEncoderQuality(pContext, pCodec, m_Settings.m_Crf))
 		{
-			/* The encoder understands no constant quality option, so it would
-			 * otherwise encode at the libavcodec default of 200 kbit/s. */
-			pContext->bit_rate = 400000;
+			/* Without a constant quality option the encoder would keep the
+			 * libavcodec default of 200 kbit/s, which at these sizes is not
+			 * watchable. Game footage needs roughly a twelfth of a bit per
+			 * pixel to look the way it did on screen. */
+			pContext->bit_rate = std::clamp<int64_t>((int64_t)m_Settings.m_Width * m_Settings.m_Height * m_Settings.m_FPS / 12, 400000, 100000000);
 		}
 		SetEncoderPreset(pContext, m_Settings.m_Preset);
 		if(pContext->codec_id == AV_CODEC_ID_MPEG2VIDEO)

@@ -211,16 +211,27 @@ void CLayerTiles::Render(const CEditorMap *pRenderMap)
 		const bool ForceTransparent = IsEntitiesLayer();
 		// Layers are created, copied and deserialized in too many places to hand
 		// the graphics over in each of them, and nothing before the first render
-		// needs it.
-		m_TileChunkCache.OnInit(Graphics());
-		const CTileChunkCache::CLayerSource Source = TileLayerSource(m_pTiles, m_Width, m_Height, Texture.IsValid());
+		// needs it. The reader goes through the layer, so it survives every
+		// resize and never has to be built again.
+		if(!m_ChunkSource.m_ReadTile)
+		{
+			m_TileChunkCache.OnInit(Graphics());
+			m_ChunkSource.m_ReadTile = [this](int x, int y, unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate) {
+				const CTile &Tile = m_pTiles[(size_t)y * m_Width + x];
+				*pIndex = Tile.m_Index;
+				*pFlags = Tile.m_Flags;
+			};
+		}
+		m_ChunkSource.m_Width = m_Width;
+		m_ChunkSource.m_Height = m_Height;
+		m_ChunkSource.m_Textured = Texture.IsValid();
 		if(!ForceTransparent)
 		{
 			Graphics()->BlendNone();
-			m_TileChunkCache.Render(Source, Color, false, false);
+			m_TileChunkCache.Render(m_ChunkSource, Color, false, false);
 		}
 		Graphics()->BlendNormal();
-		m_TileChunkCache.Render(Source, Color, true, ForceTransparent);
+		m_TileChunkCache.Render(m_ChunkSource, Color, true, ForceTransparent);
 	}
 
 	// Render DDRace Layers

@@ -215,6 +215,7 @@ public:
 protected:
 	// Shared with the ingame tile rendering, see src/game/map/tile_chunk_cache.h
 	CTileChunkCache m_TileChunkCache;
+	CTileChunkCache::CLayerSource m_ChunkSource;
 
 	void RecordStateChange(int x, int y, CTile Previous, CTile Tile);
 

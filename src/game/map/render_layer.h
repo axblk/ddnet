@@ -230,6 +230,9 @@ protected:
 		IGraphics::CBufferHandle m_BufferObjectIndex;
 		IGraphics::CBufferContainerHandle m_BufferContainerIndex;
 		CTileChunkCache m_ChunkCache;
+		// Immutable after the upload, so it is built there instead of on every
+		// frame; the cache only reads it while it rebuilds a chunk.
+		CTileChunkCache::CLayerSource m_ChunkSource;
 		bool m_IsTextured;
 		// Which set of tile data `GetTileData` hands out for this visual
 		int m_CurOverlay;

@@ -2423,6 +2423,10 @@ void CEditor::RenderLayers(CUIRect LayersBox)
 	const bool ScrollToSelection = LayerSelector()->SelectByTile() || State.m_ScrollToSelectionNext;
 	State.m_ScrollToSelectionNext = false;
 	size_t UiElementIndex = 0;
+	// A row that is scrolled out of view still takes its slot. Without that the
+	// whole pool shifts by one for every row that leaves the view, and every
+	// cached text container behind the shift is laid out again on every frame
+	// of the scroll.
 	const auto NextUiElement = [&]() {
 		if(UiElementIndex == m_vpLayerUiElements.size())
 			m_vpLayerUiElements.push_back(Ui()->GetNewUIElement(2));
@@ -2474,12 +2478,12 @@ void CEditor::RenderLayers(CUIRect LayersBox)
 			ScrollRegion.AddRect(TmpRect);
 		}
 
+		CUIElement *pGroupUiElement = NextUiElement();
 		if(ScrollRegion.AddRect(Slot))
 		{
-			CUIElement *pUiElement = NextUiElement();
 			Slot.VSplitLeft(15.0f, &VisibleToggle, &Slot);
 
-			const int MouseClick = DoButton_FontIcon(&Map()->m_vpGroups[g]->m_Visible, Map()->m_vpGroups[g]->m_Visible ? FontIcon::EYE : FontIcon::EYE_SLASH, Map()->m_vpGroups[g]->m_Collapse ? 1 : 0, &VisibleToggle, BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT, "Left click to toggle visibility. Right click to show this group only.", IGraphics::CORNER_L, 8.0f, pUiElement->Rect(0));
+			const int MouseClick = DoButton_FontIcon(&Map()->m_vpGroups[g]->m_Visible, Map()->m_vpGroups[g]->m_Visible ? FontIcon::EYE : FontIcon::EYE_SLASH, Map()->m_vpGroups[g]->m_Collapse ? 1 : 0, &VisibleToggle, BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT, "Left click to toggle visibility. Right click to show this group only.", IGraphics::CORNER_L, 8.0f, pGroupUiElement->Rect(0));
 			if(MouseClick == 1)
 			{
 				Map()->m_vpGroups[g]->m_Visible = !Map()->m_vpGroups[g]->m_Visible;
@@ -2521,7 +2525,7 @@ void CEditor::RenderLayers(CUIRect LayersBox)
 			bool Clicked;
 			bool Abrupted;
 			if(int Result = DoButton_DraggableEx(Map()->m_vpGroups[g].get(), aBuf, g == Map()->m_SelectedGroup, &Slot, &Clicked, &Abrupted,
-				   BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT, Map()->m_vpGroups[g]->m_Collapse ? "Select group. Shift+left click to select all layers. Double click to expand." : "Select group. Shift+left click to select all layers. Double click to collapse.", IGraphics::CORNER_R, 10.0f, pUiElement->Rect(1)))
+				   BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT, Map()->m_vpGroups[g]->m_Collapse ? "Select group. Shift+left click to select all layers. Double click to expand." : "Select group. Shift+left click to select all layers. Double click to collapse.", IGraphics::CORNER_R, 10.0f, pGroupUiElement->Rect(1)))
 			{
 				if(State.m_Operation == ELayerOperation::NONE)
 				{
@@ -2583,6 +2587,8 @@ void CEditor::RenderLayers(CUIRect LayersBox)
 			if(Map()->m_vpGroups[g]->m_Collapse)
 				continue;
 
+			CUIElement *pUiElement = NextUiElement();
+
 			bool IsLayerSelected = false;
 			if(Map()->m_SelectedGroup == g)
 			{
@@ -2630,7 +2636,6 @@ void CEditor::RenderLayers(CUIRect LayersBox)
 				if(!ScrollRegion.AddRect(Slot, ScrollToSelection && IsLayerSelected))
 					continue;
 			}
-			CUIElement *pUiElement = NextUiElement();
 
 			Slot.HSplitTop(RowHeight, &Slot, nullptr);
 

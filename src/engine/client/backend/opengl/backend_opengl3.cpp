@@ -767,11 +767,7 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Texture_Readback(const CCommandBuf
 		return;
 
 	CImageInfo &Image = pCommand->m_pResult->m_Image;
-	Image.m_Width = Texture.m_Width;
-	Image.m_Height = Texture.m_Height;
-	Image.m_Format = CImageInfo::FORMAT_RGBA;
-	Image.Allocate();
-	if(Image.m_pData == nullptr)
+	if(!Image.TryReuse(Texture.m_Width, Texture.m_Height, CImageInfo::FORMAT_RGBA))
 		return;
 
 	GLint PreviousFramebuffer;

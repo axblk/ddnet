@@ -88,6 +88,20 @@ public:
 	bool TryAllocate();
 
 	/**
+	 * Tries to make the image hold data of the given size, keeping the buffer
+	 * it already has when that one fits. A readback destination travels back
+	 * and forth between the graphics backend and whoever asked for it, so it
+	 * arrives with the last frame still in it.
+	 *
+	 * @param Width Width the image should have.
+	 * @param Height Height the image should have.
+	 * @param Format Format the image should have.
+	 *
+	 * @return `true` if the image holds data of that size afterwards.
+	 */
+	bool TryReuse(size_t Width, size_t Height, EImageFormat Format);
+
+	/**
 	 * Creates the image data and fills it with zero.
 	 */
 	void AllocateFillZero();

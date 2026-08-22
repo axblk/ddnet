@@ -1620,18 +1620,10 @@ protected:
 				return false;
 			}
 
-			if(Image.m_pData == nullptr || Image.m_Width != Width || Image.m_Height != Height || Image.m_Format != Format)
+			if(!Image.TryReuse(Width, Height, Format))
 			{
-				Image.Free();
-				Image.m_Width = Width;
-				Image.m_Height = Height;
-				Image.m_Format = Format;
-				Image.Allocate();
-				if(Image.m_pData == nullptr)
-				{
-					SetError(EGfxErrorType::GFX_ERROR_TYPE_OUT_OF_MEMORY_IMAGE, "Allocating the image readback destination failed.");
-					return false;
-				}
+				SetError(EGfxErrorType::GFX_ERROR_TYPE_OUT_OF_MEMORY_IMAGE, "Allocating the image readback destination failed.");
+				return false;
 			}
 
 			// The driver may lay the rows out wider than the image is.

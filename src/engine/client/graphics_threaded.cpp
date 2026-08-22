@@ -596,8 +596,15 @@ std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFra
 		Pass.m_ColorTarget = YuvTarget;
 		m_RenderWidth = static_cast<int>(PackedInfo.m_Desc.m_Width);
 		m_RenderHeight = static_cast<int>(PackedInfo.m_Desc.m_Height);
-		if(BeginRenderPass(Pass) && ConvertTextureToPlanarYuv(Target, YuvFormat) && EndRenderPass())
-			ReadbackTarget = YuvTarget;
+		if(BeginRenderPass(Pass))
+		{
+			// The pass has to be closed whether the conversion worked or not,
+			// because the frame that is read back next expects no pass to be
+			// open and the packed frame is only usable if both parts did work.
+			const bool Converted = ConvertTextureToPlanarYuv(Target, YuvFormat);
+			if(EndRenderPass() && Converted)
+				ReadbackTarget = YuvTarget;
+		}
 		m_RenderWidth = 0;
 		m_RenderHeight = 0;
 	}

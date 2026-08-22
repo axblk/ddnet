@@ -96,12 +96,9 @@ static bool SetEncoderQuality(AVCodecContext *pContext, int Crf)
 	if(pContext->priv_data == nullptr)
 		return false;
 	static const char *const s_apQualityOptions[] = {"crf", "cq", "qp"};
-	for(const char *pOption : s_apQualityOptions)
-	{
-		if(av_opt_set_int(pContext->priv_data, pOption, Crf, 0) >= 0)
-			return true;
-	}
-	return false;
+	return std::ranges::any_of(s_apQualityOptions, [pContext, Crf](const char *pOption) {
+		return av_opt_set_int(pContext->priv_data, pOption, Crf, 0) >= 0;
+	});
 }
 
 /**
@@ -139,10 +136,16 @@ static enum AVPixelFormat EncoderPixelFormat(const AVCodecContext *pContext, con
 	// says so instead of converting. Whatever it asks for, the scaler can
 	// produce, so take its first choice unless plain YUV is among them.
 	const enum AVPixelFormat *pSupported = nullptr;
-	int NumSupported = 0;
-	if(avcodec_get_supported_config(pContext, pCodec, AV_CODEC_CONFIG_PIX_FORMAT, 0, (const void **)&pSupported, &NumSupported) < 0 || pSupported == nullptr || NumSupported <= 0)
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
+	if(avcodec_get_supported_config(pContext, pCodec, AV_CODEC_CONFIG_PIX_FORMAT, 0, (const void **)&pSupported, nullptr) < 0)
 		return AV_PIX_FMT_YUV420P;
-	for(int i = 0; i < NumSupported; ++i)
+#else
+	(void)pContext;
+	pSupported = pCodec->pix_fmts;
+#endif
+	if(pSupported == nullptr || pSupported[0] == AV_PIX_FMT_NONE)
+		return AV_PIX_FMT_YUV420P;
+	for(int i = 0; pSupported[i] != AV_PIX_FMT_NONE; ++i)
 	{
 		if(pSupported[i] == AV_PIX_FMT_YUV420P)
 			return AV_PIX_FMT_YUV420P;
@@ -234,7 +237,12 @@ const std::vector<CVideoEncoder> &VideoEncoders()
 
 void ProbeVideoEncoders(IEngine *pEngine)
 {
-	if(VideoEncodersProbed())
+	// The flag above only turns over once the probe is done, and opening every
+	// encoder takes seconds, so it cannot decide whether one is already under
+	// way. Without a second flag the dialog would queue another job in every
+	// frame it is open, and all of them would then wait for the first one.
+	static std::atomic_bool s_ProbeStarted{false};
+	if(s_ProbeStarted.exchange(true, std::memory_order_relaxed))
 		return;
 	class CProbeJob : public IJob
 	{
@@ -316,30 +324,30 @@ CVideoExportStatus CVideo::Status() const NO_THREAD_SAFETY_ANALYSIS
 	CLockScope Lock(m_StatusMutex);
 	Status.m_HasError = m_HasError.load(std::memory_order_relaxed);
 	str_copy(Status.m_aError, m_aError);
+	Status.m_FramesPerSecond = m_FramesPerSecond;
+	return Status;
+}
 
+void CVideo::UpdateFrameRate() NO_THREAD_SAFETY_ANALYSIS
+{
+	const uint64_t EncodedFrames = m_EncodedFrames.load(std::memory_order_relaxed);
 	const std::chrono::nanoseconds Now = time_get_nanoseconds();
-	if(m_RateSampleTime == std::chrono::nanoseconds::zero())
-	{
-		m_RateSampleTime = Now;
-		m_RateSampleFrames = Status.m_EncodedFrames;
-	}
-	else if(Now - m_RateSampleTime >= RATE_SAMPLE_INTERVAL)
+	CLockScope Lock(m_StatusMutex);
+	if(Now - m_RateSampleTime >= RATE_SAMPLE_INTERVAL)
 	{
 		const double Seconds = std::chrono::duration<double>(Now - m_RateSampleTime).count();
-		m_FramesPerSecond = static_cast<float>((Status.m_EncodedFrames - m_RateSampleFrames) / Seconds);
+		m_FramesPerSecond = static_cast<float>((EncodedFrames - m_RateSampleFrames) / Seconds);
 		m_RateSampleTime = Now;
-		m_RateSampleFrames = Status.m_EncodedFrames;
+		m_RateSampleFrames = EncodedFrames;
 	}
-	if(m_FramesPerSecond == 0.0f && m_ExportStartTime != std::chrono::nanoseconds::zero())
+	if(m_FramesPerSecond == 0.0f)
 	{
 		// Until the first stretch is over there is nothing to compare against,
 		// so the export shows what it has averaged so far.
 		const double Seconds = std::chrono::duration<double>(Now - m_ExportStartTime).count();
 		if(Seconds > 0.0)
-			m_FramesPerSecond = static_cast<float>(Status.m_EncodedFrames / Seconds);
+			m_FramesPerSecond = static_cast<float>(EncodedFrames / Seconds);
 	}
-	Status.m_FramesPerSecond = m_FramesPerSecond;
-	return Status;
 }
 
 bool CVideo::Start()
@@ -436,7 +444,7 @@ bool CVideo::Start()
 	// These threads only convert frames before the shared encoder takes over,
 	// so a short pipeline is enough to hide the conversion. Every slot holds a
 	// full frame, which is 33 MiB at 4K, so the depth stays bounded.
-	m_VideoThreads = std::clamp<size_t>(m_EncodeThreads, 2, 8);
+	m_VideoThreads = std::clamp<size_t>(m_EncodeThreads, 2, MAX_VIDEO_THREADS);
 	// audio gets a bit less
 	m_AudioThreads = std::clamp<size_t>(m_EncodeThreads / 2, 2, 4);
 #endif
@@ -446,7 +454,7 @@ bool CVideo::Start()
 	m_NextVideoFrameToWrite = 0;
 	m_vFreeVideoThreads.clear();
 	m_vFreeVideoFrames.clear();
-	m_PendingVideoWrites.clear();
+	m_aPendingVideoWrites.fill(NO_PENDING_WRITE);
 
 	m_vVideoBuffers.resize(m_VideoThreads);
 
@@ -673,6 +681,14 @@ bool CVideo::CreateOffscreenTargets()
 		{
 			log_info("videorecorder", "No packed target at %dx%d, converting on the processor", (int)YuvDesc.m_Width, (int)YuvDesc.m_Height);
 			m_YuvReadback = false;
+			// A slot that got one earlier would still be converted into it, and
+			// the packed frame that comes back is then not the size the export
+			// is now expecting, which would end it instead of falling back.
+			for(auto &Earlier : m_aReadbackSlots)
+			{
+				if(Earlier.m_YuvTarget.IsValid())
+					m_pGraphics->UnloadTexture(&Earlier.m_YuvTarget);
+			}
 		}
 	}
 	m_CurrentReadbackSlot = 0;
@@ -727,6 +743,14 @@ void CVideo::Stop()
 			std::unique_lock<std::mutex> Lock(pVideoThread->m_Mutex);
 			pVideoThread->m_Finished = true;
 			pVideoThread->m_Cond.notify_all();
+		}
+		// It may be waiting for a frame instead of for work, and there is
+		// nobody left to hand one back. The lock it checks the end of the
+		// recording under has to be taken here too, or the notification can
+		// land while it is on its way into the wait and be lost.
+		{
+			const std::unique_lock<std::mutex> FrameLock(m_VideoFrameMutex);
+			m_VideoFrameCond.notify_all();
 		}
 
 		pVideoThread->m_Thread.join();
@@ -864,6 +888,7 @@ void CVideo::NextVideoFrame()
 	{
 		m_Time += m_TickTime;
 		m_LocalTime = (m_Time - m_LocalStartTime) / (float)time_freq();
+		UpdateFrameRate();
 	}
 }
 
@@ -1186,7 +1211,22 @@ void CVideo::RunVideoThread(size_t ThreadIndex)
 		size_t FrameIndex;
 		{
 			std::unique_lock<std::mutex> FrameLock(m_VideoFrameMutex);
-			m_VideoFrameCond.wait(FrameLock, [this]() -> bool { return !m_vFreeVideoFrames.empty(); });
+			m_VideoFrameCond.wait(FrameLock, [&]() -> bool { return !m_vFreeVideoFrames.empty() || pThreadData->m_Finished; });
+			// A recording that ends while this thread waits for the writer to
+			// hand a frame back leaves it nothing to do but stop. The place in
+			// the order was taken before the wait though, so the writer still
+			// has to be given something for it, or it never gets to the frames
+			// behind it and never counts this one as done.
+			if(m_vFreeVideoFrames.empty())
+			{
+				FrameLock.unlock();
+				{
+					const std::unique_lock<std::mutex> WriteLock(m_VideoWriteMutex);
+					m_aPendingVideoWrites[Sequence % m_aPendingVideoWrites.size()] = m_VideoStream.m_vpFrames.size();
+				}
+				m_VideoWriteCond.notify_one();
+				break;
+			}
 			FrameIndex = m_vFreeVideoFrames.back();
 			m_vFreeVideoFrames.pop_back();
 		}
@@ -1199,15 +1239,18 @@ void CVideo::RunVideoThread(size_t ThreadIndex)
 			std::unique_lock<std::mutex> WriteLock(m_VideoWriteMutex);
 			if(FrameReady)
 			{
-				m_PendingVideoWrites.emplace(Sequence, FrameIndex);
+				m_aPendingVideoWrites[Sequence % m_aPendingVideoWrites.size()] = FrameIndex;
 			}
 			else
 			{
 				// A frame that was never filled still has to take its place in
 				// the order, or everything behind it waits for it forever.
-				m_PendingVideoWrites.emplace(Sequence, m_VideoStream.m_vpFrames.size());
-				const std::unique_lock<std::mutex> FrameLock(m_VideoFrameMutex);
-				m_vFreeVideoFrames.push_back(FrameIndex);
+				m_aPendingVideoWrites[Sequence % m_aPendingVideoWrites.size()] = m_VideoStream.m_vpFrames.size();
+				{
+					const std::unique_lock<std::mutex> FrameLock(m_VideoFrameMutex);
+					m_vFreeVideoFrames.push_back(FrameIndex);
+				}
+				m_VideoFrameCond.notify_one();
 			}
 		}
 		m_VideoWriteCond.notify_one();
@@ -1228,18 +1271,20 @@ void CVideo::RunVideoWriterThread()
 	std::unique_lock<std::mutex> Lock(m_VideoWriteMutex);
 	while(true)
 	{
-		m_VideoWriteCond.wait(Lock, [this]() -> bool {
-			return m_VideoWriterFinished ||
-			       (!m_PendingVideoWrites.empty() && m_PendingVideoWrites.begin()->first == m_NextVideoFrameToWrite);
+		// Only this thread moves the write position on, so the slot the next
+		// frame has to arrive in stays the same for as long as it is waited for.
+		size_t &PendingFrame = m_aPendingVideoWrites[m_NextVideoFrameToWrite % m_aPendingVideoWrites.size()];
+		m_VideoWriteCond.wait(Lock, [this, &PendingFrame]() -> bool {
+			return m_VideoWriterFinished || PendingFrame != NO_PENDING_WRITE;
 		});
-		if(m_PendingVideoWrites.empty() || m_PendingVideoWrites.begin()->first != m_NextVideoFrameToWrite)
+		if(PendingFrame == NO_PENDING_WRITE)
 		{
 			if(m_VideoWriterFinished)
 				return;
 			continue;
 		}
-		const size_t FrameIndex = m_PendingVideoWrites.begin()->second;
-		m_PendingVideoWrites.erase(m_PendingVideoWrites.begin());
+		const size_t FrameIndex = PendingFrame;
+		PendingFrame = NO_PENDING_WRITE;
 		++m_NextVideoFrameToWrite;
 		Lock.unlock();
 

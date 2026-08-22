@@ -16,7 +16,6 @@ extern "C" {
 #include <array>
 #include <atomic>
 #include <condition_variable>
-#include <map>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -48,7 +47,7 @@ public:
 	CVideo(IGraphics *pGraphics, ISound *pSound, IStorage *pStorage, CVideoExportSettings Settings, int64_t LocalStartTime, const char *pName, int OutputStorageType, bool AllowOverwrite, bool PauseLiveAudio);
 	~CVideo() override;
 
-	bool Start() override REQUIRES(!m_WriteLock);
+	bool Start() override REQUIRES(!m_WriteLock, !m_StatusMutex);
 	void Stop() override;
 	void Cancel();
 	void Pause(bool Pause) override;
@@ -131,12 +130,13 @@ private:
 	std::atomic<uint64_t> m_EncodedFrames = 0;
 	mutable CLock m_StatusMutex;
 	char m_aError[256] GUARDED_BY(m_StatusMutex) = {};
-	// Sampled where the status is asked for, which both the export log and the
-	// progress display do often enough to keep the number current.
+	// Sampled once per exported frame, so that the number does not depend on how
+	// many places happen to be asking for the status.
+	void UpdateFrameRate() NO_THREAD_SAFETY_ANALYSIS;
 	static constexpr std::chrono::milliseconds RATE_SAMPLE_INTERVAL{500};
-	mutable std::chrono::nanoseconds m_RateSampleTime GUARDED_BY(m_StatusMutex){0};
-	mutable uint64_t m_RateSampleFrames GUARDED_BY(m_StatusMutex) = 0;
-	mutable float m_FramesPerSecond GUARDED_BY(m_StatusMutex) = 0.0f;
+	std::chrono::nanoseconds m_RateSampleTime GUARDED_BY(m_StatusMutex){0};
+	uint64_t m_RateSampleFrames GUARDED_BY(m_StatusMutex) = 0;
+	float m_FramesPerSecond GUARDED_BY(m_StatusMutex) = 0.0f;
 	// Roughly half a second of frames at 60 FPS, after which a dropped frame is
 	// no longer a hiccup but a broken readback path.
 	static constexpr int MAX_CONSECUTIVE_DROPPED_FRAMES = 30;
@@ -172,6 +172,7 @@ private:
 	// Upper bound for the configurable encoder thread budget
 	static constexpr int MAX_ENCODE_THREADS = 64;
 	int m_EncodeThreads = 1;
+	static constexpr size_t MAX_VIDEO_THREADS = 8;
 	size_t m_VideoThreads = 2;
 	// A frame goes to whichever encoder thread is free, not to the next one in
 	// turn: the frames cost different amounts of work, and handing them out in
@@ -188,7 +189,14 @@ private:
 	// is left here and its thread goes straight back to work.
 	std::mutex m_VideoWriteMutex;
 	std::condition_variable m_VideoWriteCond;
-	std::map<uint64_t, size_t> m_PendingVideoWrites;
+	// A sequence is outstanding from the moment a converting thread is handed it
+	// until the writer has taken it out again, and it then either belongs to a
+	// thread or holds a frame of the pool. One per thread plus one per pool
+	// frame is therefore all that can be waiting, and a ring that size is never
+	// overtaken, so the sequence can index it directly. Leaving a frame here
+	// costs nothing that way, which a tree node did not.
+	static constexpr size_t NO_PENDING_WRITE = (size_t)-1;
+	std::array<size_t, 2 * MAX_VIDEO_THREADS + 2> m_aPendingVideoWrites;
 	uint64_t m_NextVideoFrameToWrite = 0;
 	bool m_VideoWriterFinished = false;
 	std::thread m_VideoWriterThread;
@@ -210,7 +218,9 @@ private:
 		std::condition_variable m_Cond;
 
 		bool m_Started = false;
-		bool m_Finished = false;
+		// Also read while a thread waits for a free frame, which is a wait
+		// under a different lock than the one this is set under.
+		std::atomic<bool> m_Finished = false;
 		bool m_HasVideoFrame = false;
 		uint64_t m_VideoFrameToFill = 0;
 	};

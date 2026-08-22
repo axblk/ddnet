@@ -1800,10 +1800,14 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		ProbeVideoEncoders(Engine());
 
 		CUIRect Row, Queue, Render, Abort;
+		// Whether the encoder settings are shown is decided here and not read
+		// again, because the checkbox that turns them on is drawn below the
+		// point where the space for them has already been divided up.
+		const bool ShowAdvanced = m_DemoRenderAdvanced;
 		// The encoder settings go beside the picture settings rather than under
 		// them: the dialog is as tall as it can get, and stacking both columns
 		// pushed the last rows out of it.
-		Box.VMargin(m_DemoRenderAdvanced ? 20.0f : 60.0f, &Box);
+		Box.VMargin(ShowAdvanced ? 20.0f : 60.0f, &Box);
 		Box.HMargin(20.0f, &Box);
 		Box.HSplitBottom(24.0f, &Box, &Row);
 		Box.HSplitBottom(10.0f, &Box, nullptr);
@@ -1816,7 +1820,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		// matches the visible order; the button bar above stays at the bottom.
 		CUIRect Settings = Box;
 		CUIRect Advanced;
-		if(m_DemoRenderAdvanced)
+		if(ShowAdvanced)
 			Settings.VSplitMid(&Settings, &Advanced, 30.0f);
 		const auto NextRow = [&Settings](float Height) {
 			CUIRect Result;
@@ -1975,7 +1979,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		NextRow(20.0f).VSplitMid(&AdvancedCheckbox, nullptr, 20.0f);
 		if(DoButton_CheckBox(&m_DemoRenderAdvanced, Localize("Advanced"), m_DemoRenderAdvanced, &AdvancedCheckbox))
 			m_DemoRenderAdvanced = !m_DemoRenderAdvanced;
-		if(m_DemoRenderAdvanced)
+		if(ShowAdvanced)
 		{
 			CUIRect AdvancedHeading = NextAdvancedRow(20.0f);
 			Ui()->DoLabel(&AdvancedHeading, Localize("Encoder settings"), 14.0f, TEXTALIGN_ML);
@@ -2007,14 +2011,11 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			else
 			{
 				const std::vector<CVideoEncoder> &vEncoders = VideoEncoders();
-				std::vector<const char *> vpEncoderNames;
-				vpEncoderNames.reserve(vEncoders.size());
 				int CurrentEncoder = -1;
-				for(const CVideoEncoder &Encoder : vEncoders)
+				for(size_t i = 0; i < vEncoders.size(); ++i)
 				{
-					if(str_comp(Encoder.m_aName, g_Config.m_ClVideoCodec) == 0)
-						CurrentEncoder = (int)vpEncoderNames.size();
-					vpEncoderNames.push_back(Encoder.m_aDisplayName);
+					if(str_comp(vEncoders[i].m_aName, g_Config.m_ClVideoCodec) == 0)
+						CurrentEncoder = (int)i;
 				}
 				if(CurrentEncoder < 0)
 				{
@@ -2025,6 +2026,16 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 				// exactly that.
 				if(vEncoders.size() > 1)
 				{
+					// The dropdown wants the names as a plain array, and nothing
+					// finds another encoder after the probe, so it is put together
+					// the first time it is drawn rather than in every frame.
+					static std::vector<const char *> s_vpEncoderNames;
+					if(s_vpEncoderNames.empty())
+					{
+						s_vpEncoderNames.reserve(vEncoders.size());
+						for(const CVideoEncoder &Encoder : vEncoders)
+							s_vpEncoderNames.push_back(Encoder.m_aDisplayName);
+					}
 					CUIRect EncoderRow = NextAdvancedRow(24.0f);
 					EncoderRow.VSplitLeft(110.0f, &Label, &Value);
 					Value.VSplitLeft(10.0f, nullptr, &Value);
@@ -2032,7 +2043,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 					static CUi::SDropDownState s_EncoderDropDownState;
 					static CScrollRegion s_EncoderDropDownScrollRegion;
 					s_EncoderDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_EncoderDropDownScrollRegion;
-					const int NewEncoder = Ui()->DoDropDown(&Value, CurrentEncoder, vpEncoderNames.data(), (int)vpEncoderNames.size(), s_EncoderDropDownState);
+					const int NewEncoder = Ui()->DoDropDown(&Value, CurrentEncoder, s_vpEncoderNames.data(), (int)s_vpEncoderNames.size(), s_EncoderDropDownState);
 					if(NewEncoder != CurrentEncoder)
 						str_copy(g_Config.m_ClVideoCodec, vEncoders[NewEncoder].m_aName);
 				}

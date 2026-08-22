@@ -31,6 +31,10 @@
 #include <algorithm>
 #include <limits>
 
+// How long the scoreboard of a finished round stays up before the next one
+// starts. 0.7 clients are told the same number as a countdown.
+static constexpr int ROUND_RESTART_DELAY_SECONDS = 10;
+
 IGameController::IGameController(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
 	m_GameModeInfo(GameModeInfo),
 	m_MatchLifecycle(Services.Server()->Tick())
@@ -156,12 +160,62 @@ void IGameController::StartMatchReport()
 			EnsureMatchParticipant(pPlayer);
 }
 
+void CMatchRecentAttackers::Reset()
+{
+	m_aEntries = {};
+}
+
+void CMatchRecentAttackers::Record(int ParticipantId, int Tick)
+{
+	if(ParticipantId < 0)
+		return;
+
+	int Replace = 0;
+	for(int i = 0; i < MAX_ATTACKERS; ++i)
+	{
+		CEntry &Entry = m_aEntries[i];
+		if(Entry.m_ParticipantId == ParticipantId)
+		{
+			Entry.m_Tick = Tick;
+			return;
+		}
+		// A free slot is filled before anything is evicted, and among the taken
+		// ones the least recent hit is the one whose window runs out first.
+		if(m_aEntries[Replace].m_ParticipantId >= 0 && (Entry.m_ParticipantId < 0 || Entry.m_Tick < m_aEntries[Replace].m_Tick))
+			Replace = i;
+	}
+	m_aEntries[Replace] = {ParticipantId, Tick};
+}
+
+int CMatchRecentAttackers::CollectAssists(int Tick, int WindowTicks, int KillerParticipantId, int VictimParticipantId, int *paAssists) const
+{
+	int NumAssists = 0;
+	for(const CEntry &Entry : m_aEntries)
+	{
+		if(Entry.m_ParticipantId < 0 || Entry.m_ParticipantId == KillerParticipantId || Entry.m_ParticipantId == VictimParticipantId)
+			continue;
+		if(Tick - Entry.m_Tick > WindowTicks)
+			continue;
+		paAssists[NumAssists++] = Entry.m_ParticipantId;
+	}
+	return NumAssists;
+}
+
 EMatchMetricAggregation IGameController::MatchMetricAggregation(const char *pMetricId) const
 {
 	for(const CGameModeMetricInfo &Metric : Info().m_Report.m_vMetrics)
 		if(Metric.m_Id == pMetricId)
 			return Metric.m_Aggregation;
+	for(const CGameModeMetricInfo &Metric : ExtraReportMetrics())
+		if(Metric.m_Id == pMetricId)
+			return Metric.m_Aggregation;
 	return EMatchMetricAggregation::INVALID;
+}
+
+const std::vector<CGameModeMetricInfo> &IGameController::ExtraReportMetrics() const
+{
+	static const std::vector<CGameModeMetricInfo> s_vNoExtraMetrics;
+	return s_vNoExtraMetrics;
 }
 
 const CGameModeReportInfo &IGameController::LiveStatsInfo() const
@@ -247,16 +301,23 @@ bool IGameController::BuildLiveStatsReport(int ClientId, CMatchReport &Report, i
 	return true;
 }
 
-bool IGameController::AddParticipantMatchMetric(CPlayer *pPlayer, const char *pSuffix, int64_t Value)
+bool IGameController::AddParticipantIdMatchMetric(int ParticipantId, const char *pSuffix, int64_t Value)
 {
-	CMatchParticipantState *pState = EnsureMatchParticipant(pPlayer);
-	if(!pState)
+	if(!m_pMatchReportBuilder || ParticipantId < 0)
 		return false;
 	// Every shot, every hit and every death comes through here, so the id is
 	// spelled into a buffer on the stack rather than into a fresh string.
 	char aMetricId[MatchReportLimits::MAX_METRIC_ID_LENGTH + 1];
 	str_format(aMetricId, sizeof(aMetricId), "%s/%s", Info().m_Report.m_ModeId.c_str(), pSuffix);
-	return m_pMatchReportBuilder->AddMetricValue(EMatchSubjectKind::PARTICIPANT, pState->m_Participant.m_ParticipantId, aMetricId, Value, MatchMetricAggregation(aMetricId));
+	return m_pMatchReportBuilder->AddMetricValue(EMatchSubjectKind::PARTICIPANT, ParticipantId, aMetricId, Value, MatchMetricAggregation(aMetricId));
+}
+
+bool IGameController::AddParticipantMatchMetric(CPlayer *pPlayer, const char *pSuffix, int64_t Value)
+{
+	CMatchParticipantState *pState = EnsureMatchParticipant(pPlayer);
+	if(!pState)
+		return false;
+	return AddParticipantIdMatchMetric(pState->m_Participant.m_ParticipantId, pSuffix, Value);
 }
 
 void IGameController::AddParticipantWeaponMatchMetric(CPlayer *pPlayer, int Weapon, const char *pSuffix, int64_t Value)
@@ -284,6 +345,33 @@ void IGameController::AddCharacterDamageMatchMetrics(CPlayer *pAttacker, CPlayer
 	}
 	AddParticipantMatchMetric(pVictim, "damage_taken", Damage);
 	AddParticipantWeaponMatchMetric(pVictim, Weapon, "damage_taken", Damage);
+
+	if(pAttacker)
+	{
+		// Both participants exist by now, the metrics above created them, so
+		// this is a lookup that cannot move the ones already in the list.
+		const CMatchParticipantState *pAttackerState = MatchParticipant(pAttacker);
+		CMatchParticipantState *pVictimState = MatchParticipant(pVictim);
+		if(pAttackerState && pVictimState)
+			pVictimState->m_RecentAttackers.Record(pAttackerState->m_Participant.m_ParticipantId, Server()->Tick());
+	}
+}
+
+void IGameController::AddCharacterDeathAssistMatchMetrics(CPlayer *pVictim, const CPlayer *pKiller)
+{
+	const CMatchParticipantState *pVictimState = MatchParticipant(pVictim);
+	if(!pVictimState)
+		return;
+	const CMatchParticipantState *pKillerState = pKiller ? MatchParticipant(pKiller) : nullptr;
+	int aAssists[CMatchRecentAttackers::MAX_ATTACKERS];
+	const int NumAssists = pVictimState->m_RecentAttackers.CollectAssists(
+		Server()->Tick(),
+		ASSIST_WINDOW_SECONDS * Server()->TickSpeed(),
+		pKillerState ? pKillerState->m_Participant.m_ParticipantId : -1,
+		pVictimState->m_Participant.m_ParticipantId,
+		aAssists);
+	for(int i = 0; i < NumAssists; ++i)
+		AddParticipantIdMatchMetric(aAssists[i], "assists", 1);
 }
 
 void IGameController::AddMatchReportStandings()
@@ -819,8 +907,13 @@ void IGameController::EvaluateSpawnType(CSpawnEval *pEval, ESpawnType SpawnType,
 	if(!PlayerCollision && pEval->m_Got)
 		return;
 
-	// j == 0: Find an empty slot, j == 1: Take any slot if no empty one found
-	for(int j = 0; j < 2; j++)
+	// j == 0: Find an empty slot, j == 1: Take any slot if no empty one found.
+	// The second pass is a race concession: there a tee that spawns inside
+	// another one just falls through it, while in vanilla physics it would be
+	// stuck in a body block, so those modes rather let the player wait a tick
+	// until a spawn point clears.
+	const int NumPasses = Info().m_PhysicsRules.m_DDNetMovement ? 2 : 1;
+	for(int j = 0; j < NumPasses; j++)
 	{
 		// get spawn point
 		for(const vec2 &SpawnPoint : m_avSpawnPoints[SpawnType])
@@ -1096,19 +1189,33 @@ void IGameController::OnReset()
 
 void IGameController::FinalizeCharacterDeath(const CGameCharacterDeathContext &Context, int ModeSpecial)
 {
+	// Read before the character is torn down, so that the weapon the victim had
+	// selected is the one they were holding when they died.
+	const int HeldWeapon = Context.m_pVictim->GetActiveWeapon();
 	Context.m_pVictim->FinalizeDeath(Context.m_Killer, Context.m_Weapon, Context.m_SendKillMessage, ModeSpecial);
-	if(Context.m_Weapon == WEAPON_GAME)
-		return;
 	CPlayer *pVictim = Context.m_pVictim->GetPlayer();
-	AddParticipantMatchMetric(pVictim, "deaths", 1);
-	AddParticipantWeaponMatchMetric(pVictim, Context.m_Weapon, "deaths", 1);
-	if(Context.m_pKiller == pVictim)
-		AddParticipantMatchMetric(pVictim, "suicides", 1);
-	else if(Context.m_pKiller)
+	if(Context.m_Weapon != WEAPON_GAME)
 	{
-		AddParticipantMatchMetric(Context.m_pKiller, "kills", 1);
-		AddParticipantWeaponMatchMetric(Context.m_pKiller, Context.m_Weapon, "kills", 1);
+		AddParticipantMatchMetric(pVictim, "deaths", 1);
+		AddParticipantWeaponMatchMetric(pVictim, Context.m_Weapon, "deaths", 1);
+		// `weapon_N_deaths` counts the weapon that did the killing, this one
+		// counts the weapon the victim had out, which is what shows a player
+		// that they keep being caught with the wrong weapon selected.
+		AddParticipantWeaponMatchMetric(pVictim, HeldWeapon, "deaths_holding", 1);
+		if(Context.m_pKiller == pVictim)
+			AddParticipantMatchMetric(pVictim, "suicides", 1);
+		else if(Context.m_pKiller)
+		{
+			AddParticipantMatchMetric(Context.m_pKiller, "kills", 1);
+			AddParticipantWeaponMatchMetric(Context.m_pKiller, Context.m_Weapon, "kills", 1);
+		}
+		AddCharacterDeathAssistMatchMetrics(pVictim, Context.m_pKiller);
 	}
+	// A death closes the window: the damage that led up to it has been paid out
+	// and must not be counted towards the next death as well. A death the
+	// report ignores still starts the victim over with a clean slate.
+	if(CMatchParticipantState *pVictimState = MatchParticipant(pVictim))
+		pVictimState->m_RecentAttackers.Reset();
 }
 
 void IGameController::OnCharacterDeath(const CGameCharacterDeathContext &Context)
@@ -1301,7 +1408,7 @@ void IGameController::SendGameInfoSixup(int ClientId)
 {
 	protocol7::CNetMsg_Sv_GameInfo Msg;
 	Msg.m_GameFlags = Info().m_GameFlags;
-	Msg.m_MatchCurrent = 1;
+	Msg.m_MatchCurrent = Match().RoundCount() + 1;
 	Msg.m_MatchNum = 0;
 	Msg.m_ScoreLimit = ScoreLimit();
 	Msg.m_TimeLimit = TimeLimit();
@@ -1313,10 +1420,11 @@ void IGameController::Tick()
 	// The 0.6 protocol carries the limits in every snapshot, the 0.7 one only in
 	// a message. A server that switches modes or has its limits set from the
 	// console would leave those clients on whatever was true when they joined.
-	if(ScoreLimit() != m_SixupScoreLimit || TimeLimit() != m_SixupTimeLimit)
+	if(ScoreLimit() != m_SixupScoreLimit || TimeLimit() != m_SixupTimeLimit || Match().RoundCount() != m_SixupRoundCount)
 	{
 		m_SixupScoreLimit = ScoreLimit();
 		m_SixupTimeLimit = TimeLimit();
+		m_SixupRoundCount = Match().RoundCount();
 		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 		{
 			if(Server()->ClientIngame(ClientId) && Server()->IsSixup(ClientId))
@@ -1328,7 +1436,7 @@ void IGameController::Tick()
 	if(Match().TickWarmup())
 		StartRound();
 
-	if(Match().ShouldRestartRound(Server()->Tick(), Server()->TickSpeed() * 10))
+	if(Match().ShouldRestartRound(Server()->Tick(), ROUND_RESTART_DELAY_SECONDS * Server()->TickSpeed()))
 	{
 		StartRound();
 		Match().AdvanceRound();
@@ -1374,13 +1482,27 @@ void IGameController::Snap(int SnappingClient)
 		protocol7::CNetObj_GameData GameData = {};
 		GameData.m_GameStartTick = Match().RoundStartTick();
 		GameData.m_GameStateFlags = 0;
+		// A 0.7 client counts down to the end tick of whatever state it was told
+		// about and shows nothing for a state it was not, so warmup and the pause
+		// before the next round have to be named here or they are invisible.
 		if(Match().IsGameOver())
+		{
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_GAMEOVER;
+			GameData.m_GameStateEndTick = Match().GameOverTick() + ROUND_RESTART_DELAY_SECONDS * Server()->TickSpeed();
+		}
+		else if(Match().IsWarmup())
+		{
+			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_WARMUP;
+			GameData.m_GameStateEndTick = Server()->Tick() + Match().WarmupTicks();
+		}
+		else
+		{
+			GameData.m_GameStateEndTick = TimeLimit() > 0 ? Match().RoundStartTick() + TimeLimit() * Server()->TickSpeed() * 60 : 0;
+		}
 		if(Match().IsSuddenDeath())
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_SUDDENDEATH;
 		if(IsGamePaused())
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_PAUSED;
-		GameData.m_GameStateEndTick = TimeLimit() > 0 ? Match().RoundStartTick() + TimeLimit() * Server()->TickSpeed() * 60 : 0;
 		Server()->SnapNewItem(0, GameData);
 	}
 

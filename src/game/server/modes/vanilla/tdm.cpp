@@ -31,7 +31,10 @@ void CGameControllerVanillaTDM::OnCharacterDeath(const CGameCharacterDeathContex
 	const bool SelfKill = KillerId == VictimId;
 	const bool TeamKill = !SelfKill && KillerTeam == VictimTeam;
 
-	VanillaPlayer(VictimId)->m_EarliestRespawnTick = Server()->Tick() + Server()->TickSpeed() * g_Config.m_SvRespawnDelayTDM;
+	SetRespawnDelay(VictimId, Context.m_Weapon);
+	// Never shorten a delay another rule already imposed, the way stock 0.7 does
+	// it, so a lower sv_respawn_delay_tdm cannot undercut it.
+	VanillaPlayer(VictimId)->m_EarliestRespawnTick = std::max(VanillaPlayer(VictimId)->m_EarliestRespawnTick, Server()->Tick() + Server()->TickSpeed() * g_Config.m_SvRespawnDelayTDM);
 	if(CPlayerVanilla *pKillerPlayer = VanillaPlayer(KillerId))
 		pKillerPlayer->m_Score += DeathScoreDelta(VictimId, KillerId, Context.m_Weapon, TeamKill);
 	ApplyTeamDeathScore(m_aTeamScores, VictimTeam, KillerTeam, Context.m_Weapon, SelfKill);

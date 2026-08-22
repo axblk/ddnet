@@ -490,6 +490,16 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 	}
 
 	static CButtonContainer s_DirectoryButton;
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// In the browser there is no directory the user could put a skin into, so
+	// the files are handed in instead.
+	if(DoButton_Menu(&s_DirectoryButton, Localize("Add skin"), 0, &DirectoryButton))
+	{
+		if(Storage()->RequestFilesFromUser("skins", ".png") > 0)
+			ShouldRefresh = true;
+	}
+	GameClient()->m_Tooltips.DoToolTip(&s_DirectoryButton, &DirectoryButton, Localize("Add skin files from your device"));
+#else
 	if(DoButton_Menu(&s_DirectoryButton, Localize("Skins directory"), 0, &DirectoryButton))
 	{
 		Storage()->GetCompletePath(IStorage::TYPE_SAVE, "skins", aBuf, sizeof(aBuf));
@@ -497,6 +507,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 		Client()->ViewFile(aBuf);
 	}
 	GameClient()->m_Tooltips.DoToolTip(&s_DirectoryButton, &DirectoryButton, Localize("Open the directory to add custom skins"));
+#endif
 
 	TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
 	TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE);

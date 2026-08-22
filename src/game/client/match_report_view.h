@@ -32,13 +32,17 @@ class CMatchWeaponStats
 public:
 	int m_Weapon = -1;
 	int64_t m_Kills = 0;
+	// Deaths caused by this weapon, not deaths of someone carrying it
 	int64_t m_Deaths = 0;
+	// Deaths of someone who had this weapon selected at the time, which is what
+	// says whether a weapon is being carried into fights it cannot win
+	int64_t m_DeathsHolding = 0;
 	int64_t m_Shots = 0;
 	int64_t m_Hits = 0;
 	int64_t m_DamageDone = 0;
 	int64_t m_DamageTaken = 0;
 
-	bool HasData() const { return m_Kills != 0 || m_Deaths != 0 || m_Shots != 0 || m_Hits != 0 || m_DamageDone != 0 || m_DamageTaken != 0; }
+	bool HasData() const { return m_Kills != 0 || m_Deaths != 0 || m_DeathsHolding != 0 || m_Shots != 0 || m_Hits != 0 || m_DamageDone != 0 || m_DamageTaken != 0; }
 };
 
 /**
@@ -145,7 +149,7 @@ inline bool IsKnownMatchMetric(const std::string &MetricId, int ModeSchemaVersio
 	if(ModeSchemaVersion != 1 || MetricId.rfind('/') == std::string::npos)
 		return false;
 	const std::string_view Suffix = MatchMetricSuffix(MetricId);
-	if(Suffix == "score" || Suffix == "playtime_ticks" || Suffix == "sudden_death" || Suffix == "kills" || Suffix == "deaths" || Suffix == "suicides" || Suffix == "best_spree" || Suffix == "shots" || Suffix == "hits" || Suffix == "damage_done" || Suffix == "damage_taken" || Suffix == "catches" || Suffix == "personal_best_ticks" || Suffix == "map_best_ticks" || Suffix == "map_rank" || Suffix == "map_finishes" || Suffix == "session_finishes" || Suffix == "last_finish_ticks" || Suffix == "current_run_ticks" || Suffix == "current_checkpoint" || Suffix == "flag_grabs" || Suffix == "flag_returns" || Suffix == "flag_captures" || Suffix.starts_with("weapon_"))
+	if(Suffix == "score" || Suffix == "playtime_ticks" || Suffix == "sudden_death" || Suffix == "kills" || Suffix == "deaths" || Suffix == "assists" || Suffix == "suicides" || Suffix == "best_spree" || Suffix == "shots" || Suffix == "hits" || Suffix == "damage_done" || Suffix == "damage_taken" || Suffix == "health_picked_up" || Suffix == "armor_picked_up" || Suffix == "catches" || Suffix == "personal_best_ticks" || Suffix == "map_best_ticks" || Suffix == "map_rank" || Suffix == "map_finishes" || Suffix == "session_finishes" || Suffix == "last_finish_ticks" || Suffix == "current_run_ticks" || Suffix == "current_checkpoint" || Suffix == "flag_grabs" || Suffix == "flag_returns" || Suffix == "flag_captures" || Suffix.starts_with("weapon_"))
 		return true;
 	return false;
 }
@@ -159,9 +163,9 @@ inline EMatchMetricCategory MatchMetricCategory(const std::string &MetricId, int
 		return EMatchMetricCategory::OVERVIEW;
 	if(Suffix.starts_with("weapon_"))
 		return EMatchMetricCategory::WEAPONS;
-	if(Suffix == "flag_grabs" || Suffix == "flag_returns" || Suffix == "flag_captures" || Suffix == "catches")
+	if(Suffix == "flag_grabs" || Suffix == "flag_returns" || Suffix == "flag_captures" || Suffix == "catches" || Suffix == "health_picked_up" || Suffix == "armor_picked_up")
 		return EMatchMetricCategory::OBJECTIVES;
-	if(Suffix == "kills" || Suffix == "deaths" || Suffix == "suicides" || Suffix == "best_spree" || Suffix == "shots" || Suffix == "hits" || Suffix == "damage_done" || Suffix == "damage_taken")
+	if(Suffix == "kills" || Suffix == "deaths" || Suffix == "assists" || Suffix == "suicides" || Suffix == "best_spree" || Suffix == "shots" || Suffix == "hits" || Suffix == "damage_done" || Suffix == "damage_taken")
 		return EMatchMetricCategory::COMBAT;
 	return EMatchMetricCategory::OTHER;
 }
@@ -195,6 +199,12 @@ inline void MatchMetricDisplayName(const std::string &MetricId, int ModeSchemaVe
 			pName = Localize("Kills");
 		else if(Suffix == "deaths")
 			pName = Localize("Deaths");
+		else if(Suffix == "assists")
+			pName = Localize("Assists");
+		else if(Suffix == "health_picked_up")
+			pName = Localize("Health picked up");
+		else if(Suffix == "armor_picked_up")
+			pName = Localize("Armor picked up");
 		else if(Suffix == "suicides")
 			pName = Localize("Suicides");
 		else if(Suffix == "best_spree")
@@ -269,11 +279,40 @@ inline void AddMatchCombatValue(int64_t &Target, int64_t Value)
 }
 
 /**
+ * Splits the suffix of a metric that is measured per weapon.
+ *
+ * @param Suffix Metric id without its mode prefix, for example "weapon_2_kills".
+ * @param pWeapon Set to the weapon index when the suffix names one.
+ *
+ * @return What is measured, for example "kills", or nothing when the suffix
+ * does not name a weapon.
+ */
+inline std::string_view MatchWeaponMetricStat(std::string_view Suffix, int *pWeapon)
+{
+	if(!Suffix.starts_with("weapon_"))
+		return {};
+	const std::string_view WeaponMetric = Suffix.substr(7);
+	const size_t Separator = WeaponMetric.find('_');
+	if(Separator == std::string_view::npos || Separator == 0 || Separator > 2)
+		return {};
+	int Weapon = 0;
+	for(size_t Digit = 0; Digit < Separator; ++Digit)
+	{
+		if(WeaponMetric[Digit] < '0' || WeaponMetric[Digit] > '9')
+			return {};
+		Weapon = Weapon * 10 + (WeaponMetric[Digit] - '0');
+	}
+	*pWeapon = Weapon;
+	return WeaponMetric.substr(Separator + 1);
+}
+
+/**
  * Splits a combat metric id into the weapon it counts for and the counter it
  * names.
  *
- * @param MetricId Metric id from the report.
- * @param ModeSchemaVersion Schema version the report was written with.
+ * @param MetricId Metric id with its mode prefix, for example
+ * `ddnet@ddnet.org/weapon_2_kills`.
+ * @param ModeSchemaVersion Schema version of the mode the report was written by.
  * @param Weapon Set to the weapon index, or to -1 for a counter that is not
  * broken down by weapon.
  * @param StatName Set to the name of the counter, for example "hits".
@@ -289,20 +328,11 @@ inline bool MatchCombatMetricParts(const std::string &MetricId, int ModeSchemaVe
 	StatName = Suffix;
 	if(Suffix.starts_with("weapon_"))
 	{
-		const std::string_view WeaponMetric = Suffix.substr(7);
-		const size_t Separator = WeaponMetric.find('_');
-		if(Separator == std::string_view::npos || Separator == 0 || Separator > 2)
+		StatName = MatchWeaponMetricStat(Suffix, &Weapon);
+		if(StatName.empty())
 			return false;
-		Weapon = 0;
-		for(size_t Digit = 0; Digit < Separator; ++Digit)
-		{
-			if(WeaponMetric[Digit] < '0' || WeaponMetric[Digit] > '9')
-				return false;
-			Weapon = Weapon * 10 + (WeaponMetric[Digit] - '0');
-		}
-		StatName = WeaponMetric.substr(Separator + 1);
 	}
-	return StatName == "kills" || StatName == "deaths" || StatName == "shots" || StatName == "hits" || StatName == "damage_done" || StatName == "damage_taken";
+	return StatName == "kills" || StatName == "deaths" || StatName == "deaths_holding" || StatName == "shots" || StatName == "hits" || StatName == "damage_done" || StatName == "damage_taken";
 }
 
 inline void AddMatchCombatCounter(CMatchWeaponStats &Stats, std::string_view StatName, int64_t Value)
@@ -311,6 +341,8 @@ inline void AddMatchCombatCounter(CMatchWeaponStats &Stats, std::string_view Sta
 		AddMatchCombatValue(Stats.m_Kills, Value);
 	else if(StatName == "deaths")
 		AddMatchCombatValue(Stats.m_Deaths, Value);
+	else if(StatName == "deaths_holding")
+		AddMatchCombatValue(Stats.m_DeathsHolding, Value);
 	else if(StatName == "shots")
 		AddMatchCombatValue(Stats.m_Shots, Value);
 	else if(StatName == "hits")
@@ -336,8 +368,9 @@ inline bool AddMatchCombatMetric(CMatchCombatStats &Stats, const std::string &Me
 
 inline bool IsMatchCombatStatMetric(const std::string &MetricId, int ModeSchemaVersion)
 {
-	CMatchCombatStats Stats;
-	return AddMatchCombatMetric(Stats, MetricId, ModeSchemaVersion, 0);
+	int Weapon;
+	std::string_view StatName;
+	return MatchCombatMetricParts(MetricId, ModeSchemaVersion, Weapon, StatName);
 }
 
 // Fills a caller owned object rather than returning one, because the pages
@@ -473,11 +506,12 @@ inline void FormatMatchDuration(int64_t DurationTicks, int TickRate, char *pBuff
 inline void FormatMatchMetricValue(const CMatchMetric &Metric, int ModeSchemaVersion, int TickRate, char *pBuffer, int BufferSize)
 {
 	const std::string_view Suffix = MatchMetricSuffix(Metric.m_MetricId);
-	if(!IsKnownMatchMetric(Metric.m_MetricId, ModeSchemaVersion))
-		str_format(pBuffer, BufferSize, "%" PRId64, Metric.m_Value);
-	else if(Suffix == "playtime_ticks" || Suffix == "personal_best_ticks" || Suffix == "map_best_ticks" || Suffix == "last_finish_ticks" || Suffix == "current_run_ticks")
+	// A tick count is a duration whether or not this build knows the metric, so
+	// a mod that names its own number _ticks reads as a time without anyone
+	// having to teach this file about it first.
+	if(Suffix.ends_with("_ticks"))
 		FormatMatchDuration(Metric.m_Value, TickRate, pBuffer, BufferSize);
-	else if(Suffix == "map_rank" && Metric.m_Value > 0)
+	else if(IsKnownMatchMetric(Metric.m_MetricId, ModeSchemaVersion) && Suffix == "map_rank" && Metric.m_Value > 0)
 		str_format(pBuffer, BufferSize, "#%" PRId64, Metric.m_Value);
 	else
 		str_format(pBuffer, BufferSize, "%" PRId64, Metric.m_Value);

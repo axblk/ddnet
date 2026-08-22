@@ -15,6 +15,7 @@ public:
 	void OnCharacterDeath(const CGameCharacterDeathContext &Context) override;
 	void Tick() override;
 	CFlag *Flag(int Team) const;
+	bool FlagPosition(int Team, vec2 *pOutPos) const override;
 
 protected:
 	void SnapMode(int SnappingClient) override;

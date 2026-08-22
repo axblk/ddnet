@@ -87,6 +87,16 @@ public:
 	 * that shows empty space where entities should be.
 	 */
 	bool m_ClipsToShowDistance = false;
+
+	/**
+	 * Whether the flags above state the server's ruleset or were guessed from
+	 * the game type.
+	 *
+	 * Only from extended game info version 2 on does a server spell out the
+	 * physics, bugs and entities it runs. Below that the client sniffs the game
+	 * type, which any mod can name whatever it likes.
+	 */
+	bool m_DeclaresRuleset = false;
 };
 
 class CGameTickInfo

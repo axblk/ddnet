@@ -91,11 +91,17 @@ generated
 target
 
 /build*
+# Every build directory and every scratch directory in one place each
+/.build/
+/.tmp/
 /integration_test/*
 /source_date_epoch
 
 # Cache folder for scripts/parse_crashlog_drmingw.py
 /scripts/drmingw_symbols_cache
+
+# Reference material kept next to the tree
+/.diabotical-sceenshots
 
 # IDE project files
 .cache

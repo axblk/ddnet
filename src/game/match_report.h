@@ -18,10 +18,12 @@ namespace MatchReportLimits
 	inline constexpr int MAX_STANDINGS = MAX_PARTICIPANTS + MAX_TEAMS;
 	/**
 	 * Metrics one participant is expected to need: score, playtime, the combat
-	 * counters and four numbers for each of a handful of weapons, with room for
-	 * what a mode adds on top.
+	 * counters and seven numbers for each of a handful of weapons, with room for
+	 * what a mode adds on top. A vanilla capture the flag participant reaches
+	 * fifty-seven of them, so this is not a comfortable bound and every metric
+	 * added to a mode has to be weighed against it.
 	 */
-	inline constexpr int MAX_METRICS_PER_PARTICIPANT = 48;
+	inline constexpr int MAX_METRICS_PER_PARTICIPANT = 72;
 	// A full server has to fit, otherwise its report is built and then thrown
 	// away at the last moment for being too large.
 	inline constexpr int MAX_METRICS = MAX_PARTICIPANTS * MAX_METRICS_PER_PARTICIPANT + MAX_TEAMS * 16 + 256;

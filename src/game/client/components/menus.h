@@ -27,6 +27,7 @@
 #include <game/client/components/menus_start.h>
 #include <game/client/components/skins7.h>
 #include <game/client/lineinput.h>
+#include <game/client/match_detail_view.h>
 #include <game/client/match_journal.h>
 #include <game/client/ui.h>
 #include <game/voting.h>
@@ -524,8 +525,9 @@ protected:
 	// found in menus_stats.cpp
 	enum class EStatsTab
 	{
+		OVERVIEW,
 		MATCHES,
-		PROFILE,
+		AGGREGATE,
 	};
 	enum class EStatsQualityFilter
 	{
@@ -534,16 +536,16 @@ protected:
 		SERVER,
 	};
 	bool m_StatsInitialized = false;
-	EStatsTab m_StatsTab = EStatsTab::MATCHES;
+	EStatsTab m_StatsTab = EStatsTab::OVERVIEW;
 	// The selected match takes over the whole page instead of sitting in a tab
 	// of its own, so that a report is read the way it was opened.
 	bool m_StatsShowMatch = false;
 	EStatsQualityFilter m_StatsQualityFilter = EStatsQualityFilter::ALL;
-	// The profile shows the periods side by side instead of one at a time, so
-	// all of them are queried and kept.
+	// The aggregate page shows the periods side by side instead of one at a
+	// time, so all of them are queried and kept. A day of matches says nothing
+	// that a week does not say better, so the shortest period is a week.
 	enum class EStatsPeriod
 	{
-		DAY,
 		WEEK,
 		MONTH,
 		ALL_TIME,
@@ -558,9 +560,13 @@ protected:
 		PER_MINUTE,
 	};
 	EStatsScale m_StatsScale = EStatsScale::TOTAL;
-	// The weapon numbers are a table of their own, so they show one period
-	// rather than all of them next to each other.
+	// The weapon numbers are a table of weapons against numbers already, so a
+	// third dimension of periods does not fit into it and it shows one period.
 	EStatsPeriod m_StatsWeaponPeriod = EStatsPeriod::ALL_TIME;
+	// Which weapon the weapon detail block is about, as an index into the
+	// weapons the reports actually carried rather than a weapon id, so that a
+	// mod's own weapons can be picked the same way.
+	int m_StatsWeaponIndex = 0;
 	int m_StatsSelectedIndex = -1;
 	CLineInputBuffered<128> m_StatsHistorySearchInput;
 	// The gametypes the journal actually holds, so the filter offers what is
@@ -575,7 +581,22 @@ protected:
 	std::vector<const char *> m_vpStatsModeNames = {nullptr};
 	int m_StatsModeIndex = 0;
 	std::vector<CMatchHistoryEntry> m_vStatsHistory;
+	// What the gametype card needs, collected from the unfiltered history so
+	// that it says what was played most and not what the filter left over.
+	class CStatsModeSummary
+	{
+	public:
+		std::string m_ModeId;
+		int m_Matches = 0;
+		int m_Wins = 0;
+		int64_t m_PlaytimeSeconds = 0;
+	};
+	std::vector<CStatsModeSummary> m_vStatsModeSummaries;
+	std::optional<CMatchHistoryEntry> m_StatsLastMatch;
 	std::optional<CStoredMatch> m_StatsSelectedMatch;
+	// What the report page draws, prepared when a match is opened. It points
+	// into the selected match and is only valid while that one is loaded.
+	CMatchDetailView m_StatsMatchView;
 	CMatchProfile m_aStatsProfiles[(int)EStatsPeriod::COUNT];
 	CMatchJournalInfo m_StatsInfo;
 	std::string m_StatsError;
@@ -590,9 +611,14 @@ protected:
 	void RefreshStats();
 	void LoadSelectedStatsMatch();
 	void RenderStats(CUIRect MainView);
+	void RenderStatsOverview(CUIRect View);
 	void RenderStatsMatchList(CUIRect View);
 	void RenderStatsMatchSummary(CUIRect View);
-	void RenderStatsProfile(CUIRect View);
+	void RenderStatsAggregate(CUIRect View);
+	int StatsToggle(class CButtonContainer *pButtons, CUIRect Rect, const char *const *ppNames, int Count, int Current);
+	void StatsWeaponIcon(const CUIRect *pRect, int Weapon);
+	void StatsOutcomeBar(CUIRect Rect, int Wins, int Draws, int Losses);
+	void StatsHighlightCard(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pBadge, const char *pTitle, const char *pSubtitle, const char *const *ppLabels, const char *const *ppValues, int Count, const ColorRGBA *pLastValueColor);
 	void StatsPeriodHeader(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pLabel);
 	void StatsPeriodRow(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pLabel, const char *const *ppValues);
 	void StatsHeading(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pText);

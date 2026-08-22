@@ -197,7 +197,6 @@ public:
 		IEngine *pEngine = CreateTestEngine(GAME_NAME);
 		m_pKernel->RegisterInterface(pEngine);
 
-		m_TestInfo.m_DeleteTestStorageFilesOnSuccess = true;
 		m_pStorage = m_TestInfo.CreateTestStorage();
 		EXPECT_NE(m_pStorage, nullptr);
 		m_pKernel->RegisterInterface(m_pStorage.get(), false);
@@ -760,6 +759,27 @@ TEST(MatchLifecycle, PreservesRoundTransitions)
 	Match.AdvanceRound();
 	EXPECT_EQ(Match.RoundStartTick(), 41);
 	EXPECT_EQ(Match.RoundCount(), 1);
+}
+
+TEST_F(GameWorld, MatchSwapChangesSidesOnlyWhenAMatchEnded)
+{
+	SelectGameMode("vanilla.tdm");
+	CPlayer *pRed = GameServer()->CreatePlayer(0, TEAM_RED, false, -1);
+	GameController()->OnPlayerConnect(pRed);
+	CPlayer *pBlue = GameServer()->CreatePlayer(1, TEAM_BLUE, false, -1);
+	GameController()->OnPlayerConnect(pBlue);
+
+	GameController()->StartRound();
+	EXPECT_EQ(pRed->GetTeam(), TEAM_RED);
+	EXPECT_EQ(pBlue->GetTeam(), TEAM_BLUE);
+
+	GameController()->EndRound();
+	GameController()->StartRound();
+	EXPECT_EQ(pRed->GetTeam(), TEAM_BLUE);
+	EXPECT_EQ(pBlue->GetTeam(), TEAM_RED);
+
+	GameController()->OnPlayerDisconnect(pRed, "test");
+	GameController()->OnPlayerDisconnect(pBlue, "test");
 }
 
 TEST_F(GameWorld, MatchReportTracksLateJoinLeaverSlotReuseAndFinalTeam)

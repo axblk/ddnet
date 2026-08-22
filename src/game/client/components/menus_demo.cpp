@@ -1580,6 +1580,26 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 		}
 	}
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// add demo button: in the browser there is no directory the user could put
+	// a demo into, so the files are handed in instead
+	{
+		CUIRect AddDemoButton;
+		ButtonBarBottom.VSplitLeft(ButtonBarBottom.h * 10.0f, &AddDemoButton, &ButtonBarBottom);
+		ButtonBarBottom.VSplitLeft(ButtonBarBottom.h / 2.0f, nullptr, &ButtonBarBottom);
+		static CButtonContainer s_AddDemoButton;
+		if(DoButton_Menu(&s_AddDemoButton, Localize("Add demo"), 0, &AddDemoButton))
+		{
+			if(Storage()->RequestFilesFromUser(m_aCurrentDemoFolder[0] == '\0' ? "demos" : m_aCurrentDemoFolder, ".demo") > 0)
+			{
+				DemolistPopulate();
+				DemolistOnUpdate(false);
+			}
+			return;
+		}
+		GameClient()->m_Tooltips.DoToolTip(&s_AddDemoButton, &AddDemoButton, Localize("Add demo files from your device"));
+	}
+#else
 	// demos directory button
 	if(m_DemolistSelectedIndex >= 0 && m_vpFilteredDemos[m_DemolistSelectedIndex]->m_StorageType != IStorage::TYPE_ALL)
 	{
@@ -1595,6 +1615,7 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 		}
 		GameClient()->m_Tooltips.DoToolTip(&s_DemosDirectoryButton, &DemosDirectoryButton, Localize("Open the directory that contains the demo files"));
 	}
+#endif
 
 	// play/open button
 	if(m_DemolistSelectedIndex >= 0)
@@ -1727,6 +1748,29 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 				}
 				SetIconMode(false);
 				GameClient()->m_Tooltips.DoToolTip(&s_RenderButton, &RenderButton, Localize("Render demo"));
+			}
+#endif
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+			// download button: in the browser the demo folder is not reachable, so
+			// the file has to be handed over explicitly
+			if(!m_vpFilteredDemos[m_DemolistSelectedIndex]->m_IsDir)
+			{
+				CUIRect DownloadButton;
+				ButtonBarTop.VSplitRight(ButtonBarBottom.h * 3.0f, &ButtonBarTop, &DownloadButton);
+				ButtonBarTop.VSplitRight(ButtonBarBottom.h, &ButtonBarTop, nullptr);
+				SetIconMode(true);
+				static CButtonContainer s_DownloadButton;
+				const bool Download = DoButton_Menu(&s_DownloadButton, FontIcon::CIRCLE_CHEVRON_DOWN, 0, &DownloadButton);
+				SetIconMode(false);
+				GameClient()->m_Tooltips.DoToolTip(&s_DownloadButton, &DownloadButton, Localize("Download demo"));
+				if(Download)
+				{
+					char aPath[IO_MAX_PATH_LENGTH];
+					str_format(aPath, sizeof(aPath), "%s/%s", m_aCurrentDemoFolder, m_vpFilteredDemos[m_DemolistSelectedIndex]->m_aFilename);
+					Storage()->SendFileToUser(aPath, m_vpFilteredDemos[m_DemolistSelectedIndex]->m_StorageType);
+					return;
+				}
 			}
 #endif
 		}

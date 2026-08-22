@@ -138,6 +138,11 @@ bool CEditor::CallbackSaveMap(const char *pFilename, int StorageType, void *pUse
 		pEditor->Map()->m_ValidSaveFilename = true;
 		pEditor->Map()->m_Modified = false;
 		pEditor->UpdateMapDisplayNames();
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		// In the browser the save folder is not reachable, so the map is handed over
+		// as a download as well.
+		pEditor->Storage()->SendFileToUser(pFilename, StorageType);
+#endif
 	}
 	else
 	{
@@ -169,6 +174,11 @@ bool CEditor::CallbackSaveCopyMap(const char *pFilename, int StorageType, void *
 
 	if(pEditor->Save(pFilename))
 	{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		// In the browser the save folder is not reachable, so the map is handed over
+		// as a download as well.
+		pEditor->Storage()->SendFileToUser(pFilename, StorageType);
+#endif
 		pEditor->OnDialogClose();
 		return true;
 	}

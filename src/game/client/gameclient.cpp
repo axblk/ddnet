@@ -2832,6 +2832,7 @@ static CGameInfo GetGameInfo(const CNetObj_GameInfoEx *pInfoEx, int InfoExSize, 
 	// Anything that sends the extended game info also knows Cl_ShowDistance;
 	// both are DDNet extensions and no server has one without the other.
 	Info.m_ClipsToShowDistance = Version >= 0;
+	Info.m_DeclaresRuleset = Version >= 2;
 	Info.m_FlagStartsRace = FastCap;
 	Info.m_TimeScore = Race;
 	Info.m_UnlimitedAmmo = Race;
@@ -3498,9 +3499,13 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 		// Vanilla servers send laser_bounce_num 1, DDNet has laser_bounce_num 1000 since ~2014
 		CTuningParams VanillaTuning;
 		VanillaTuning.m_LaserBounceNum = 1;
+		const CGameInfo &GameInfo = ActiveState.CoreGameInfo();
 		if(str_comp(ServerInfo.m_aGameType, "DM") != 0 && str_comp(ServerInfo.m_aGameType, "TDM") != 0 && str_comp(ServerInfo.m_aGameType, "CTF") != 0)
 			Runtime.m_ServerMode = CGameState::SERVERMODE_MOD;
-		else if(mem_comp(&VanillaTuning, &Runtime.m_CurrentTuning, 33 * sizeof(CTuneParam)) == 0)
+		// A server that states its ruleset is taken at its word, tuning commands and
+		// all. Only the ones that state nothing are measured against the vanilla
+		// tuning, because a mod calling itself DM is what this check is here to spot.
+		else if(GameInfo.m_DeclaresRuleset ? GameInfo.m_PredictVanilla : mem_comp(&VanillaTuning, &Runtime.m_CurrentTuning, 33 * sizeof(CTuneParam)) == 0)
 			Runtime.m_ServerMode = CGameState::SERVERMODE_PURE;
 		else
 			Runtime.m_ServerMode = CGameState::SERVERMODE_PUREMOD;

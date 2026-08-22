@@ -135,6 +135,26 @@ bool CGameControllerVanillaTeamplay::CanBeMovedOnBalance(const CPlayer *pPlayer)
 void CGameControllerVanillaTeamplay::StartRound()
 {
 	FinalizeMatchReportForRestart();
+
+	// Maps are rarely symmetric, so a team that won the last match on the
+	// stronger side has to prove it from the other one. Only a match that
+	// actually ended swaps; a restart in the middle of one keeps the sides.
+	if(g_Config.m_SvMatchSwap && Match().IsGameOver())
+	{
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+		{
+			CPlayer *pPlayer = Services().Player(ClientId);
+			if(!pPlayer || pPlayer->GetTeam() < TEAM_RED || pPlayer->GetTeam() > TEAM_BLUE)
+				continue;
+			// Being swapped is not the player doing anything, so it must not
+			// postpone the idle kick.
+			const int LastActionTick = pPlayer->m_LastActionTick;
+			DoTeamChange(pPlayer, pPlayer->GetTeam() ^ 1, false);
+			pPlayer->m_LastActionTick = LastActionTick;
+		}
+		Services().SendGameMessage7(protocol7::GAMEMSG_TEAM_SWAP);
+	}
+
 	m_aTeamScores.fill(0);
 	CGameControllerVanillaPvP::StartRound();
 }

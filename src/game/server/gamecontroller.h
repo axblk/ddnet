@@ -99,6 +99,41 @@ struct CGameCharacterDeathContext
 	bool m_SendKillMessage;
 };
 
+/**
+ * The attackers that recently hurt one participant, kept so that a death can
+ * be credited to everyone who helped bring it about.
+ *
+ * A death pays out at most one assist per attacker, so a handful of slots is
+ * enough: once every attacker of a fight is listed, further hits only refresh
+ * an entry that is already there. The size is fixed because this is written on
+ * every single hit of every player, where an allocation would not be affordable.
+ */
+class CMatchRecentAttackers
+{
+public:
+	static constexpr int MAX_ATTACKERS = 4;
+
+	void Reset();
+	void Record(int ParticipantId, int Tick);
+	/**
+	 * Collects the participants that earned an assist for a death at Tick.
+	 *
+	 * The killer and the victim are left out, because what they did to the
+	 * victim is already counted as a kill or as a suicide. Writes at most
+	 * MAX_ATTACKERS ids to paAssists and returns how many.
+	 */
+	int CollectAssists(int Tick, int WindowTicks, int KillerParticipantId, int VictimParticipantId, int *paAssists) const;
+
+private:
+	class CEntry
+	{
+	public:
+		int m_ParticipantId = -1;
+		int m_Tick = 0;
+	};
+	std::array<CEntry, MAX_ATTACKERS> m_aEntries;
+};
+
 /*
 	Class: Game Controller
 		Controls the main game logic. Keeping track of team and player score,
@@ -140,7 +175,14 @@ private:
 		int m_ActiveSinceTick;
 		int64_t m_PlaytimeTicks = 0;
 		int m_Score = 0;
+		// Damage is remembered on the one who took it, so that whoever lands
+		// the last hit can look up who softened them up.
+		CMatchRecentAttackers m_RecentAttackers;
 	};
+	// Long enough that wearing a target down before a team mate finishes them
+	// still counts, short enough that a hit from an earlier, unrelated fight
+	// does not.
+	static constexpr int ASSIST_WINDOW_SECONDS = 5;
 	std::unique_ptr<CMatchReportBuilder> m_pMatchReportBuilder;
 	std::unique_ptr<CMatchReport> m_pLatestMatchReport;
 	std::vector<CMatchParticipantState> m_vMatchParticipants;
@@ -189,6 +231,8 @@ private:
 	void SendMatchReport(const CMatchReport &Report, const std::string &Payload);
 	void SendLiveStatsReport(int ClientId, int Revision, const CMatchReport &Report, int LocalParticipantId, bool PersistOnDisconnect, const std::string &Payload);
 	EMatchMetricAggregation MatchMetricAggregation(const char *pMetricId) const;
+	bool AddParticipantIdMatchMetric(int ParticipantId, const char *pSuffix, int64_t Value);
+	void AddCharacterDeathAssistMatchMetrics(CPlayer *pVictim, const CPlayer *pKiller);
 
 protected:
 	void RegisterMapEntityFactory(CEntityRegistry::FMapEntityFactory pfnFactory) { m_EntityRegistry.RegisterMapEntityFactory(pfnFactory); }
@@ -208,11 +252,21 @@ protected:
 	void SendGameInfoSixup(int ClientId);
 	int m_SixupScoreLimit = -1;
 	int m_SixupTimeLimit = -1;
+	int m_SixupRoundCount = -1;
 	void DoActivityCheck();
 	void FinalizeCharacterDeath(const CGameCharacterDeathContext &Context, int ModeSpecial = 0);
 	bool AddParticipantMatchMetric(CPlayer *pPlayer, const char *pSuffix, int64_t Value);
 	void AddParticipantWeaponMatchMetric(CPlayer *pPlayer, int Weapon, const char *pSuffix, int64_t Value);
 	void AddCharacterDamageMatchMetrics(CPlayer *pAttacker, CPlayer *pVictim, int Weapon, int Damage);
+	/**
+	 * Report metrics this mode books beyond the ones its registry entry declares.
+	 *
+	 * Modes share their report schema, so a counter that only one rule set can
+	 * ever produce would otherwise be declared for every mode built from the
+	 * same schema. It still has to be declared somewhere: a metric without a
+	 * declaration has no aggregation and invalidates the whole report.
+	 */
+	virtual const std::vector<CGameModeMetricInfo> &ExtraReportMetrics() const;
 	virtual void AddMatchReportStandings();
 	void AddTeamMatchReportStandings(int RedScore, int BlueScore);
 	void FinalizeMatchReportForRestart();
@@ -329,6 +383,8 @@ public:
 	virtual int PlayerTeamGroup(int ClientId) const;
 	virtual bool CanPlayerReceivePreInput(int SenderId, int ReceiverId) const;
 	virtual bool IsPlayerDeadSpectator(int ClientId) const { return false; }
+	// Spectators can follow the flags, modes without flags have none to offer
+	virtual bool FlagPosition(int Team, vec2 *pOutPos) const { return false; }
 	virtual void OnPlayerShowOthers(int ClientId, int Show) {}
 	virtual int PlayerAutoRespawnTick(const CPlayer *pPlayer) const;
 	virtual std::unique_ptr<IGameModeMapReloadState> SaveStateForMapReload() { return nullptr; }

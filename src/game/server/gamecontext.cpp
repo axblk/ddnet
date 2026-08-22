@@ -2001,6 +2001,10 @@ void *CGameContext::PreProcessMsg(int *pMsgId, CUnpacker *pUnpacker, int ClientI
 				pMsg->m_SpectatorId = SPEC_FREEVIEW;
 			else if(pMsg7->m_SpecMode == protocol7::SPEC_PLAYER)
 				pMsg->m_SpectatorId = pMsg7->m_SpectatorId;
+			else if(pMsg7->m_SpecMode == protocol7::SPEC_FLAGRED)
+				pMsg->m_SpectatorId = SPEC_FLAGRED;
+			else if(pMsg7->m_SpecMode == protocol7::SPEC_FLAGBLUE)
+				pMsg->m_SpectatorId = SPEC_FLAGBLUE;
 			else
 				pMsg->m_SpectatorId = SPEC_FREEVIEW; // Probably not needed
 		}
@@ -2522,7 +2526,7 @@ void CGameContext::OnSetSpectatorModeNetMessage(const CNetMsg_Cl_SetSpectatorMod
 		return;
 
 	pPlayer->m_LastSetSpectatorMode = Server()->Tick();
-	int SpectatorId = std::clamp(pMsg->m_SpectatorId, (int)SPEC_FOLLOW, MAX_CLIENTS - 1);
+	int SpectatorId = std::clamp(pMsg->m_SpectatorId, (int)SPEC_FLAGBLUE, MAX_CLIENTS - 1);
 
 	if(m_PlayerMapping.DoSeeOthers(ClientId, SpectatorId))
 		return;

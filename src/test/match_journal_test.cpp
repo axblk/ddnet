@@ -64,7 +64,6 @@ protected:
 
 	void SetUp() override
 	{
-		m_TestInfo.m_DeleteTestStorageFilesOnSuccess = true;
 		m_pStorage = m_TestInfo.CreateTestStorage();
 		ASSERT_NE(m_pStorage, nullptr);
 		std::string Error;
@@ -86,7 +85,6 @@ protected:
 TEST(MatchJournalOpen, ClosesUnsupportedSchema)
 {
 	CTestInfo TestInfo;
-	TestInfo.m_DeleteTestStorageFilesOnSuccess = true;
 	const std::unique_ptr<IStorage> pStorage = TestInfo.CreateTestStorage();
 	ASSERT_NE(pStorage, nullptr);
 	{
@@ -103,7 +101,6 @@ TEST(MatchJournalOpen, ClosesUnsupportedSchema)
 TEST(MatchJournalOpen, MigratesAggregationSchema)
 {
 	CTestInfo TestInfo;
-	TestInfo.m_DeleteTestStorageFilesOnSuccess = true;
 	const std::unique_ptr<IStorage> pStorage = TestInfo.CreateTestStorage();
 	ASSERT_NE(pStorage, nullptr);
 	{
@@ -215,13 +212,17 @@ TEST_F(MatchJournal, ProfileUsesRegisteredAggregationSemantics)
 TEST_F(MatchJournal, HistoryIncludesLocalModeScore)
 {
 	std::string Error;
-	const CStoredMatch Stored = StoredMatch("history-score@ddnet.org", 2000, EMatchCompleteness::COMPLETE, EMatchOutcome::WIN, 1, std::nullopt, 42);
+	CStoredMatch Stored = StoredMatch("history-score@ddnet.org", 2000, EMatchCompleteness::COMPLETE, EMatchOutcome::WIN, 7, std::nullopt, 42);
+	AddMetric(Stored, EMatchSubjectKind::PARTICIPANT, 0, "deaths", 3, EMatchMetricAggregation::SUM);
 	ASSERT_EQ(m_Journal.Insert(Stored, &Error), CMatchJournal::EInsertResult::INSERTED) << Error;
 
 	std::vector<CMatchHistoryEntry> vEntries;
 	ASSERT_TRUE(m_Journal.ListMatches({}, vEntries, &Error)) << Error;
 	ASSERT_EQ(vEntries.size(), 1U);
 	EXPECT_EQ(vEntries[0].m_LocalScore, 42);
+	// The list shows a kill/death column without loading a single full report
+	EXPECT_EQ(vEntries[0].m_LocalKills, 7);
+	EXPECT_EQ(vEntries[0].m_LocalDeaths, 3);
 }
 
 TEST_F(MatchJournal, ExportsPreserveEnvelopeAndMetricSubjects)
@@ -469,20 +470,29 @@ TEST_F(MatchJournal, TenThousandMatchesStayWithinUiQueryBudget)
 TEST_F(MatchJournal, GeneratedSampleMatchesAreStoredAndQueryable)
 {
 	std::string Error;
-	ASSERT_TRUE(GenerateSampleMatches(m_Journal, 12, "Local", &Error)) << Error;
+	ASSERT_TRUE(GenerateSampleMatches(m_Journal, 24, "Local", &Error)) << Error;
 
 	std::vector<CMatchHistoryEntry> vEntries;
 	ASSERT_TRUE(m_Journal.ListMatches(CMatchHistoryFilter(), vEntries, &Error)) << Error;
-	EXPECT_EQ(vEntries.size(), 12);
+	EXPECT_EQ(vEntries.size(), 24);
+	int RaceMatches = 0;
 	for(const CMatchHistoryEntry &Entry : vEntries)
 	{
 		EXPECT_TRUE(Entry.m_LocalOutcome.has_value());
-		EXPECT_TRUE(Entry.m_LocalScore.has_value());
+		// A race is measured in run times, it has neither a score nor frags
+		const bool Race = Entry.m_ModeId.starts_with("ddrace.");
+		RaceMatches += Race ? 1 : 0;
+		EXPECT_EQ(Entry.m_LocalScore.has_value(), !Race);
+		EXPECT_EQ(Entry.m_LocalKills.has_value(), !Race);
+		EXPECT_EQ(Entry.m_LocalDeaths.has_value(), !Race);
 		CStoredMatch Loaded;
 		ASSERT_TRUE(m_Journal.LoadMatch(Entry.m_OriginId.c_str(), Entry.m_MatchId, Loaded, &Error)) << Error;
 		EXPECT_EQ(Loaded.m_LocalParticipantId, 0);
 		EXPECT_EQ(Loaded.m_Report.m_vParticipants.front().m_DisplayName, "Local");
 	}
+	// The samples have to cover the race shape as well, otherwise the run page
+	// could never be looked at without playing a map first.
+	EXPECT_GT(RaceMatches, 0);
 
 	CMatchProfile Profile;
 	ASSERT_TRUE(m_Journal.QueryProfile(CMatchProfileFilter(), Profile, &Error)) << Error;

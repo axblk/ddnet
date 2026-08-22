@@ -21,6 +21,10 @@ public:
 	int m_Score = 0;
 	int m_EarliestRespawnTick = 0;
 	int m_LastNoAmmoSoundTick = 0;
+	// How many damage indicators the tee has collected in quick succession, so
+	// that repeated hits fan out instead of printing on top of each other
+	int m_DamageTaken = 0;
+	int m_DamageTakenTick = 0;
 };
 
 #endif // GAME_SERVER_MODES_VANILLA_PLAYER_H

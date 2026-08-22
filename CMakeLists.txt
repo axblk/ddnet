@@ -2817,6 +2817,8 @@ if(CLIENT)
     map_context.h
     match_collector.cpp
     match_collector.h
+    match_detail_view.cpp
+    match_detail_view.h
     match_journal.cpp
     match_journal.h
     match_report_assembler.cpp
@@ -3705,6 +3707,9 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     map_context_test.cpp
     mapbugs_test.cpp
     mapitems_test.cpp
+    match_assists_test.cpp
+    match_collector_test.cpp
+    match_detail_view_test.cpp
     match_journal_test.cpp
     match_report_test.cpp
     math_test.cpp
@@ -3780,6 +3785,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/game/client/local_player_profile.h
     src/game/client/map_context.cpp
     src/game/client/map_context.h
+    src/game/client/match_detail_view.cpp
+    src/game/client/match_detail_view.h
     src/game/client/match_journal.cpp
     src/game/client/match_journal.h
     src/game/client/match_report_assembler.cpp
@@ -3790,6 +3797,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   )
 
   list(REMOVE_ITEM TESTS ${PROJECT_SOURCE_DIR}/src/test/game_state_test.cpp)
+  list(REMOVE_ITEM TESTS ${PROJECT_SOURCE_DIR}/src/test/match_collector_test.cpp)
   set(CLIENT_GAME_STATE_TEST_SOURCES
     # tidy-alphabetical-start
     src/engine/client/graph.cpp
@@ -3820,6 +3828,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/generated/client_data.h
     src/headless/client_game_state_test_main.cpp
     src/test/game_state_test.cpp
+    src/test/match_collector_test.cpp
     # tidy-alphabetical-end
   )
   set(TARGET_CLIENT_GAME_STATE_TESTS client-game-state-tests)

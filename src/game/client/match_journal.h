@@ -66,6 +66,10 @@ public:
 	int m_TickRate = 0;
 	std::optional<EMatchOutcome> m_LocalOutcome;
 	std::optional<int64_t> m_LocalScore;
+	// Kept in the list so that a kill/death column costs one query instead of
+	// loading and parsing every report of the list
+	std::optional<int64_t> m_LocalKills;
+	std::optional<int64_t> m_LocalDeaths;
 };
 
 class CMatchMetricAggregate

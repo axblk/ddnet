@@ -149,7 +149,6 @@ TEST(ServerBrowser, HttpDomainQuicAddress)
 TEST(ServerBrowser, PingCache)
 {
 	CTestInfo Info;
-	Info.m_DeleteTestStorageFilesOnSuccess = true;
 
 	auto pConsole = CreateConsole(CFGFLAG_CLIENT);
 	std::unique_ptr<IStorage> pStorage = Info.CreateTestStorage();

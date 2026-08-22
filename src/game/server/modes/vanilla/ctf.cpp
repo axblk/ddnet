@@ -43,8 +43,7 @@ void CGameControllerVanillaCTF::OnCharacterDeath(const CGameCharacterDeathContex
 	const int VictimId = pVictim->GetPlayer()->GetCid();
 	const int KillerId = pKiller ? pKiller->GetCid() : -1;
 	const bool TeamKill = pKiller && pKiller != pVictim->GetPlayer() && pKiller->GetTeam() == pVictim->GetPlayer()->GetTeam();
-	const int RespawnDelay = Context.m_Weapon == WEAPON_SELF ? Server()->TickSpeed() * 3 : Server()->TickSpeed() / 2;
-	VanillaPlayer(VictimId)->m_EarliestRespawnTick = Server()->Tick() + RespawnDelay;
+	SetRespawnDelay(VictimId, Context.m_Weapon);
 	if(CPlayerVanilla *pKillerPlayer = VanillaPlayer(KillerId))
 		pKillerPlayer->m_Score += DeathScoreDelta(VictimId, KillerId, Context.m_Weapon, TeamKill);
 
@@ -173,9 +172,10 @@ void CGameControllerVanillaCTF::FlagCapture(CFlag *pFlag)
 	AddParticipantMatchMetric(pCarrier->GetPlayer(), "flag_captures", 1);
 	const int CarrierId = pCarrier->GetPlayer()->GetCid();
 	const int CaptureTicks = Server()->Tick() - pFlag->GrabTick();
+	const float CaptureTime = CaptureTicks / (float)Server()->TickSpeed();
 	m_aTeamScores[pCarrier->GetPlayer()->GetTeam()] += 100;
 	VanillaPlayer(CarrierId)->m_Score += 5;
-	log_info("game", "flag_capture player='%d:%s' team=%d time=%.2f", CarrierId, Server()->ClientName(CarrierId), pCarrier->GetPlayer()->GetTeam(), CaptureTicks / (float)Server()->TickSpeed());
+	log_info("game", "flag_capture player='%d:%s' team=%d time=%.2f", CarrierId, Server()->ClientName(CarrierId), pCarrier->GetPlayer()->GetTeam(), CaptureTime);
 	Services().CreateLegacySoundGlobal(SOUND_CTF_CAPTURE);
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
@@ -183,6 +183,14 @@ void CGameControllerVanillaCTF::FlagCapture(CFlag *pFlag)
 		if(Services().Player(ClientId) && Server()->IsSixup(ClientId) && Server()->Translate(TranslatedCarrierId, ClientId))
 			Services().SendGameMessage7(protocol7::GAMEMSG_CTF_CAPTURE, {pFlag->Team(), TranslatedCarrierId, CaptureTicks}, ClientId);
 	}
+	// the game message is 0.7 only, so 0.6 clients get the line their 0.7 counterpart would print
+	char aChat[128];
+	const char *pFlagColor = pFlag->Team() == TEAM_BLUE ? "blue" : "red";
+	if(CaptureTime <= 60.0f)
+		str_format(aChat, sizeof(aChat), "The %s flag was captured by '%s' (%.2f seconds)", pFlagColor, Server()->ClientName(CarrierId), CaptureTime);
+	else
+		str_format(aChat, sizeof(aChat), "The %s flag was captured by '%s'", pFlagColor, Server()->ClientName(CarrierId));
+	Services().SendLegacyChatGlobal(aChat);
 	for(CFlag *pResetFlag : m_apFlags)
 		if(pResetFlag)
 			pResetFlag->Return();
@@ -191,6 +199,16 @@ void CGameControllerVanillaCTF::FlagCapture(CFlag *pFlag)
 CFlag *CGameControllerVanillaCTF::Flag(int Team) const
 {
 	return Team >= TEAM_RED && Team <= TEAM_BLUE ? m_apFlags[Team] : nullptr;
+}
+
+bool CGameControllerVanillaCTF::FlagPosition(int Team, vec2 *pOutPos) const
+{
+	const CFlag *pFlag = Flag(Team);
+	if(!pFlag)
+		return false;
+	// the flag follows its carrier, so this also works while it is being carried around
+	*pOutPos = pFlag->m_Pos;
+	return true;
 }
 
 int CGameControllerVanillaCTF::FlagCarrierState(const CFlag *pFlag, int SnappingClient) const

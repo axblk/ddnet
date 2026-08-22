@@ -406,7 +406,8 @@ bool CMatchJournal::ListMatches(const CMatchHistoryFilter &Filter, std::vector<C
 		return false;
 	static const char *s_pSql = R"sql(
 SELECT o.endpoint, m.match_id, m.source, m.completeness, m.mode_id, m.mode_schema_version,
-       m.map_name, m.end_time_utc, m.duration_ticks, m.tick_rate, s.outcome, x.value
+       m.map_name, m.end_time_utc, m.duration_ticks, m.tick_rate, s.outcome, x.value,
+       k.value, d.value
 FROM matches m
 JOIN origins o ON o.origin_id = m.origin_id
 LEFT JOIN standings s ON s.origin_id = m.origin_id AND s.match_id = m.match_id
@@ -414,6 +415,12 @@ LEFT JOIN standings s ON s.origin_id = m.origin_id AND s.match_id = m.match_id
 LEFT JOIN metrics x ON x.origin_id = m.origin_id AND x.match_id = m.match_id
  AND x.subject_kind = ? AND x.subject_id = m.local_participant_id
  AND x.metric_id = m.mode_id || '/score'
+LEFT JOIN metrics k ON k.origin_id = m.origin_id AND k.match_id = m.match_id
+ AND k.subject_kind = ? AND k.subject_id = m.local_participant_id
+ AND k.metric_id = m.mode_id || '/kills'
+LEFT JOIN metrics d ON d.origin_id = m.origin_id AND d.match_id = m.match_id
+ AND d.subject_kind = ? AND d.subject_id = m.local_participant_id
+ AND d.metric_id = m.mode_id || '/deaths'
 WHERE (? = '' OR m.mode_id = ?) AND (? = '' OR m.map_name = ?) AND (? = '' OR o.endpoint = ?)
  AND (? OR m.completeness = ?)
 ORDER BY m.end_time_utc DESC
@@ -424,12 +431,14 @@ LIMIT ?
 		return false;
 	const bool Bound = SqlSuccess(sqlite3_bind_int(pStatement.get(), 1, static_cast<int>(EMatchSubjectKind::PARTICIPANT)), m_pSqlite.get(), pError, "bind participant kind") &&
 			   SqlSuccess(sqlite3_bind_int(pStatement.get(), 2, static_cast<int>(EMatchSubjectKind::PARTICIPANT)), m_pSqlite.get(), pError, "bind metric participant kind") &&
-			   BindText(m_pSqlite.get(), pStatement.get(), 3, Filter.m_ModeId, pError) && BindText(m_pSqlite.get(), pStatement.get(), 4, Filter.m_ModeId, pError) &&
-			   BindText(m_pSqlite.get(), pStatement.get(), 5, Filter.m_MapName, pError) && BindText(m_pSqlite.get(), pStatement.get(), 6, Filter.m_MapName, pError) &&
-			   BindText(m_pSqlite.get(), pStatement.get(), 7, Filter.m_OriginId, pError) && BindText(m_pSqlite.get(), pStatement.get(), 8, Filter.m_OriginId, pError) &&
-			   SqlSuccess(sqlite3_bind_int(pStatement.get(), 9, Filter.m_IncludeIncomplete ? 1 : 0), m_pSqlite.get(), pError, "bind incomplete filter") &&
-			   SqlSuccess(sqlite3_bind_int(pStatement.get(), 10, static_cast<int>(EMatchCompleteness::COMPLETE)), m_pSqlite.get(), pError, "bind completeness") &&
-			   SqlSuccess(sqlite3_bind_int(pStatement.get(), 11, std::clamp(Filter.m_Limit, 1, 10000)), m_pSqlite.get(), pError, "bind limit");
+			   SqlSuccess(sqlite3_bind_int(pStatement.get(), 3, static_cast<int>(EMatchSubjectKind::PARTICIPANT)), m_pSqlite.get(), pError, "bind kills participant kind") &&
+			   SqlSuccess(sqlite3_bind_int(pStatement.get(), 4, static_cast<int>(EMatchSubjectKind::PARTICIPANT)), m_pSqlite.get(), pError, "bind deaths participant kind") &&
+			   BindText(m_pSqlite.get(), pStatement.get(), 5, Filter.m_ModeId, pError) && BindText(m_pSqlite.get(), pStatement.get(), 6, Filter.m_ModeId, pError) &&
+			   BindText(m_pSqlite.get(), pStatement.get(), 7, Filter.m_MapName, pError) && BindText(m_pSqlite.get(), pStatement.get(), 8, Filter.m_MapName, pError) &&
+			   BindText(m_pSqlite.get(), pStatement.get(), 9, Filter.m_OriginId, pError) && BindText(m_pSqlite.get(), pStatement.get(), 10, Filter.m_OriginId, pError) &&
+			   SqlSuccess(sqlite3_bind_int(pStatement.get(), 11, Filter.m_IncludeIncomplete ? 1 : 0), m_pSqlite.get(), pError, "bind incomplete filter") &&
+			   SqlSuccess(sqlite3_bind_int(pStatement.get(), 12, static_cast<int>(EMatchCompleteness::COMPLETE)), m_pSqlite.get(), pError, "bind completeness") &&
+			   SqlSuccess(sqlite3_bind_int(pStatement.get(), 13, std::clamp(Filter.m_Limit, 1, 10000)), m_pSqlite.get(), pError, "bind limit");
 	if(!Bound)
 		return false;
 
@@ -456,6 +465,10 @@ LIMIT ?
 			Entry.m_LocalOutcome = static_cast<EMatchOutcome>(sqlite3_column_int(pStatement.get(), 10));
 		if(sqlite3_column_type(pStatement.get(), 11) != SQLITE_NULL)
 			Entry.m_LocalScore = sqlite3_column_int64(pStatement.get(), 11);
+		if(sqlite3_column_type(pStatement.get(), 12) != SQLITE_NULL)
+			Entry.m_LocalKills = sqlite3_column_int64(pStatement.get(), 12);
+		if(sqlite3_column_type(pStatement.get(), 13) != SQLITE_NULL)
+			Entry.m_LocalDeaths = sqlite3_column_int64(pStatement.get(), 13);
 		vEntries.push_back(std::move(Entry));
 	}
 	return Result == SQLITE_DONE || SetSqlError(m_pSqlite.get(), pError, "list matches");
@@ -672,6 +685,9 @@ namespace
 		const char *m_pModeId;
 		const char *m_pMapName;
 		bool m_Teams;
+		// A race is measured in run times instead of in frags, which is the one
+		// sample shape that has no weapon statistics at all
+		bool m_Race;
 	};
 }
 
@@ -685,12 +701,13 @@ bool GenerateSampleMatches(CMatchJournal &Journal, int Count, const char *pLocal
 	}
 
 	static const CSampleMode s_aModes[] = {
-		{"vanilla.ctf@ddnet.org", "ctf1", true},
-		{"vanilla.dm@ddnet.org", "dm1", false},
-		{"vanilla.tdm@ddnet.org", "dm2", true},
-		{"insta.ictf@ddnet.org", "ctf5", true},
-		{"insta.idm@ddnet.org", "dm6", false},
-		{"vanilla.1on1@ddnet.org", "dm1", false},
+		{"vanilla.ctf@ddnet.org", "ctf1", true, false},
+		{"vanilla.dm@ddnet.org", "dm1", false, false},
+		{"vanilla.tdm@ddnet.org", "dm2", true, false},
+		{"insta.ictf@ddnet.org", "ctf5", true, false},
+		{"insta.idm@ddnet.org", "dm6", false, false},
+		{"vanilla.1on1@ddnet.org", "dm1", false, false},
+		{"ddrace.race@ddnet.org", "Kobra4", false, true},
 	};
 	static const char *const s_apNames[] = {"nameless tee", "Chillerdragon", "deen", "Learath2", "Ryozuki", "heinrich5991", "Jupeyy", "fokkonaut", "Zwelf", "trml", "Patiga", "murpi"};
 	static const char *const s_apClans[] = {"", "DDNet", "Chillerbot", "", "iMebi", "", "GER", ""};
@@ -753,36 +770,93 @@ bool GenerateSampleMatches(CMatchJournal &Journal, int Count, const char *pLocal
 			const int Score = vScores[Participant];
 			if(Mode.m_Teams)
 				aTeamScores[Participant % 2] += Score;
+			const auto AddParticipantMetric = [&](const char *pSuffix, int64_t Value, EMatchMetricAggregation Aggregation = EMatchMetricAggregation::SUM) {
+				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId(pSuffix), Value, Aggregation});
+			};
+			if(Mode.m_Race)
+			{
+				// A higher sample score means a faster run, so the ranking above
+				// stays the ranking of the race.
+				const int64_t RunTicks = static_cast<int64_t>(700 - Score * 12) * TickRate;
+				const bool Finished = Score > 5;
+				Builder.AddStanding({EMatchSubjectKind::PARTICIPANT, Participant, Rank + 1, Finished ? EMatchOutcome::FINISHED : EMatchOutcome::DNF});
+				AddParticipantMetric("playtime_ticks", DurationTicks);
+				AddParticipantMetric("map_rank", Random.Next(1, 4000), EMatchMetricAggregation::MATCH_ONLY);
+				AddParticipantMetric("map_finishes", Random.Next(1, 400), EMatchMetricAggregation::MATCH_ONLY);
+				AddParticipantMetric("session_finishes", Random.Next(0, 4));
+				AddParticipantMetric("map_best_ticks", static_cast<int64_t>(Random.Next(180, 260)) * TickRate, EMatchMetricAggregation::MATCH_ONLY);
+				if(Finished)
+				{
+					AddParticipantMetric("personal_best_ticks", RunTicks, EMatchMetricAggregation::MATCH_ONLY);
+					AddParticipantMetric("last_finish_ticks", RunTicks, EMatchMetricAggregation::MATCH_ONLY);
+				}
+				else
+				{
+					AddParticipantMetric("current_run_ticks", RunTicks / 2, EMatchMetricAggregation::MATCH_ONLY);
+					AddParticipantMetric("current_checkpoint", Random.Next(0, 24), EMatchMetricAggregation::MATCH_ONLY);
+				}
+				continue;
+			}
 			const EMatchOutcome Outcome = Mode.m_Teams ? EMatchOutcome::FINISHED : Rank == 0 ? EMatchOutcome::WIN :
 													   EMatchOutcome::LOSS;
 			Builder.AddStanding({EMatchSubjectKind::PARTICIPANT, Participant, Rank + 1, Outcome});
 			const int Deaths = Random.Next(0, 30);
-			Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("score"), Score, EMatchMetricAggregation::SUM});
-			Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("kills"), Score, EMatchMetricAggregation::SUM});
-			Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("deaths"), Deaths, EMatchMetricAggregation::SUM});
-			Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("suicides"), Random.Next(0, 4), EMatchMetricAggregation::SUM});
-			Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("best_spree"), Random.Next(0, 12), EMatchMetricAggregation::MAXIMUM});
+			AddParticipantMetric("score", Score);
+			AddParticipantMetric("kills", Score);
+			AddParticipantMetric("deaths", Deaths);
+			AddParticipantMetric("assists", Random.Next(0, 8));
+			AddParticipantMetric("suicides", Random.Next(0, 4));
+			AddParticipantMetric("best_spree", Random.Next(0, 12), EMatchMetricAggregation::MAXIMUM);
+			AddParticipantMetric("health_picked_up", Random.Next(0, 40));
+			AddParticipantMetric("armor_picked_up", Random.Next(0, 30));
+			// The weapon breakdown has to add up to the totals above, otherwise
+			// the frag and death pages would contradict the score page.
+			int RemainingKills = Score;
+			int RemainingDeaths = Deaths;
+			int RemainingHeld = Deaths;
 			for(int Weapon = WEAPON_HAMMER; Weapon <= WEAPON_LASER; ++Weapon)
 			{
+				const bool Last = Weapon == WEAPON_LASER;
+				const int Kills = Last ? RemainingKills : Random.Next(0, RemainingKills);
+				const int WeaponDeaths = Last ? RemainingDeaths : Random.Next(0, RemainingDeaths);
+				const int Held = Last ? RemainingHeld : Random.Next(0, RemainingHeld);
+				RemainingKills -= Kills;
+				RemainingDeaths -= WeaponDeaths;
+				RemainingHeld -= Held;
+				char aSuffix[32];
+				if(Kills != 0)
+				{
+					str_format(aSuffix, sizeof(aSuffix), "weapon_%d_kills", Weapon);
+					AddParticipantMetric(aSuffix, Kills);
+				}
+				if(WeaponDeaths != 0)
+				{
+					str_format(aSuffix, sizeof(aSuffix), "weapon_%d_deaths", Weapon);
+					AddParticipantMetric(aSuffix, WeaponDeaths);
+				}
+				if(Held != 0)
+				{
+					str_format(aSuffix, sizeof(aSuffix), "weapon_%d_deaths_holding", Weapon);
+					AddParticipantMetric(aSuffix, Held);
+				}
 				const int Shots = Random.Next(0, 160);
 				if(Shots == 0)
 					continue;
 				const int Hits = Shots * Random.Next(10, 70) / 100;
-				char aSuffix[32];
 				str_format(aSuffix, sizeof(aSuffix), "weapon_%d_shots", Weapon);
-				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId(aSuffix), Shots, EMatchMetricAggregation::SUM});
+				AddParticipantMetric(aSuffix, Shots);
 				str_format(aSuffix, sizeof(aSuffix), "weapon_%d_hits", Weapon);
-				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId(aSuffix), Hits, EMatchMetricAggregation::SUM});
+				AddParticipantMetric(aSuffix, Hits);
 				str_format(aSuffix, sizeof(aSuffix), "weapon_%d_damage_done", Weapon);
-				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId(aSuffix), Hits * Random.Next(1, 6), EMatchMetricAggregation::SUM});
+				AddParticipantMetric(aSuffix, Hits * Random.Next(1, 6));
 				str_format(aSuffix, sizeof(aSuffix), "weapon_%d_damage_taken", Weapon);
-				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId(aSuffix), Random.Next(0, 90), EMatchMetricAggregation::SUM});
+				AddParticipantMetric(aSuffix, Random.Next(0, 90));
 			}
 			if(str_find(Mode.m_pModeId, "ctf") != nullptr)
 			{
-				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("flag_grabs"), Random.Next(0, 9), EMatchMetricAggregation::SUM});
-				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("flag_returns"), Random.Next(0, 6), EMatchMetricAggregation::SUM});
-				Builder.AddMetric({EMatchSubjectKind::PARTICIPANT, Participant, MetricId("flag_captures"), Random.Next(0, 4), EMatchMetricAggregation::SUM});
+				AddParticipantMetric("flag_grabs", Random.Next(0, 9));
+				AddParticipantMetric("flag_returns", Random.Next(0, 6));
+				AddParticipantMetric("flag_captures", Random.Next(0, 4));
 			}
 		}
 

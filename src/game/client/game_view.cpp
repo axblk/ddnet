@@ -110,14 +110,15 @@ bool CPresentationContext::IsOtherTeamFromLocalPlayer(int ClientId) const
 	return m_State.IsOtherTeamFromLocalPlayer(ClientId);
 }
 
-CRenderContext::CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, uint64_t OutputCacheKey, bool IsVideoOutput) :
+CRenderContext::CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, uint64_t OutputCacheKey, bool IsVideoOutput, CVideoExportSettings VideoSettings) :
 	m_Session(Session),
 	m_State(State),
 	m_View(View),
 	m_Time(Time),
 	m_VisibleWorldRect(VisibleWorldRect),
 	m_OutputCacheKey(OutputCacheKey),
-	m_IsVideoOutput(IsVideoOutput)
+	m_IsVideoOutput(IsVideoOutput),
+	m_VideoSettings(VideoSettings)
 {
 	dbg_assert(Session.Id() == View.SessionId(), "render context session does not match view");
 	dbg_assert(State.Id() == View.StateId(), "render context state does not match view");
@@ -257,7 +258,7 @@ void CGameRenderScheduler::Run(std::span<const CGameRenderRequest> vRequests, co
 	{
 		const CGameRenderRequest &Request = vRequests[i];
 		const CStateGroup &Group = m_vGroups[m_vRequestGroups[i]];
-		RenderView(CRenderContext(Request.m_Session, Request.m_State, Request.m_View, Group.m_Time, Request.m_VisibleWorldRect, Request.m_Output.PresentationCacheKey(), Request.m_Output.IsVideoOutput()), Request.m_Output);
+		RenderView(CRenderContext(Request.m_Session, Request.m_State, Request.m_View, Group.m_Time, Request.m_VisibleWorldRect, Request.m_Output.PresentationCacheKey(), Request.m_Output.IsVideoOutput(), Request.m_Output.VideoSettings()), Request.m_Output);
 	}
 }
 

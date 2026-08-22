@@ -10,6 +10,7 @@
 #include <engine/font_icons.h>
 #include <engine/graphics.h>
 #include <engine/shared/config.h>
+#include <engine/shared/localization.h>
 #include <engine/textrender.h>
 
 #include <generated/client_data7.h>
@@ -20,8 +21,31 @@
 #include <game/client/components/motd.h>
 #include <game/client/components/statboard.h>
 #include <game/client/gameclient.h>
+#include <game/client/match_report_view.h>
 #include <game/client/ui.h>
 #include <game/localization.h>
+
+#include <algorithm>
+#include <cinttypes>
+#include <limits>
+
+namespace
+{
+	class CReportAction
+	{
+	public:
+		const char *m_pLabel;
+		int m_Key;
+	};
+	// in the order of the actions
+	const CReportAction gs_aReportActions[] = {
+		{Localizable("History [H]"), KEY_H},
+		{Localizable("Demos [D]"), KEY_D},
+		{Localizable("Export CSV [C]"), KEY_C},
+		{Localizable("Screenshot [S]"), KEY_S},
+		{Localizable("Continue [Enter]"), KEY_RETURN},
+	};
+}
 
 // Horizontal spacing of the scoreboard contents, both to its edges and between columns
 static constexpr float MARGIN = 10.0f;
@@ -41,6 +65,49 @@ void CScoreboard::CScoreboardPopupContext::Bind(CScoreboard *pScoreboard, const 
 bool CScoreboard::CInteractionLayout::Matches(const CRenderContext &Context) const
 {
 	return m_Binding == Context.m_View.Binding() && m_Viewport == Context.m_View.Viewport();
+}
+
+bool CScoreboard::IsMatchReportDismissed(CSessionId SessionId, CUuid MatchId) const
+{
+	return std::any_of(m_vDismissedMatchReports.begin(), m_vDismissedMatchReports.end(), [SessionId, MatchId](const CDismissedMatchReport &Dismissed) {
+		return Dismissed.m_SessionId == SessionId && Dismissed.m_MatchId == MatchId;
+	});
+}
+
+void CScoreboard::DismissMatchReport(CSessionId SessionId, CUuid MatchId)
+{
+	const auto It = std::find_if(m_vDismissedMatchReports.begin(), m_vDismissedMatchReports.end(), [SessionId](const CDismissedMatchReport &Dismissed) { return Dismissed.m_SessionId == SessionId; });
+	if(It != m_vDismissedMatchReports.end())
+		It->m_MatchId = MatchId;
+	else
+		m_vDismissedMatchReports.push_back({SessionId, MatchId});
+
+	// the next round has a new match id and shows its report again
+	if(m_MouseUnlocked)
+		LockMouse();
+}
+
+void CScoreboard::RunReportAction(int Action, CSessionId SessionId, CUuid MatchId)
+{
+	switch(Action)
+	{
+	case REPORT_ACTION_HISTORY:
+		GameClient()->m_Menus.OpenStats();
+		break;
+	case REPORT_ACTION_DEMOS:
+		GameClient()->m_Menus.OpenDemos();
+		break;
+	case REPORT_ACTION_CSV:
+		if(const CGameSessionContext *pSession = GameClient()->FindSessionContext(SessionId); pSession && pSession->m_Stats.LatestMatch().has_value())
+			GameClient()->m_Menus.ExportMatchStats(*pSession->m_Stats.LatestMatch(), true);
+		break;
+	case REPORT_ACTION_SCREENSHOT:
+		Console()->ExecuteLine("screenshot", IConsole::CLIENT_ID_UNSPECIFIED);
+		break;
+	case REPORT_ACTION_CONTINUE:
+		DismissMatchReport(SessionId, MatchId);
+		break;
+	}
 }
 
 bool CScoreboard::IsHighlighted(const CRenderContext &Context, int ClientId) const
@@ -145,6 +212,7 @@ void CScoreboard::OnReset()
 	m_pCurrentInteractionLayout = nullptr;
 	m_HighlightClientId = -1;
 	m_HighlightMapTitle = false;
+	m_HighlightReportAction = -1;
 	m_ApplicationOverlayReady = false;
 }
 
@@ -202,6 +270,18 @@ bool CScoreboard::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 
 bool CScoreboard::OnInput(const IInput::CEvent &Event)
 {
+	if((Event.m_Flags & IInput::FLAG_PRESS) && m_InteractionLayout.m_Active && m_InteractionLayout.m_ReportMatchId != UUID_ZEROED)
+	{
+		const int Key = Event.m_Key == KEY_KP_ENTER ? KEY_RETURN : Event.m_Key;
+		const auto *const pAction = std::find_if(std::begin(gs_aReportActions), std::end(gs_aReportActions), [Key](const CReportAction &Action) { return Action.m_Key == Key; });
+		if(pAction != std::end(gs_aReportActions))
+		{
+			RunReportAction(pAction - std::begin(gs_aReportActions), m_InteractionLayout.m_Binding.m_SessionId, m_InteractionLayout.m_ReportMatchId);
+			// the menu page this opens reads the same letters from the frame's key state, a D would reach the delete shortcut of the demo list
+			Input()->ClearFrameKey(Event.m_Key);
+			return true;
+		}
+	}
 	if(m_MouseUnlocked && Event.m_Key == KEY_ESCAPE && (Event.m_Flags & IInput::FLAG_PRESS))
 	{
 		LockMouse();
@@ -987,6 +1067,167 @@ void CScoreboard::RenderRecordingNotification(float x)
 	Ui()->DoLabel(&Rect, aBuf, FontSize, TEXTALIGN_ML);
 }
 
+void CScoreboard::RenderMatchReport(const CStoredMatch &Stored, CUIRect Screen)
+{
+	const CMatchReport &Report = Stored.m_Report;
+	m_ReportRanking.Update(Report);
+	const int NumParticipants = m_ReportRanking.Rows().size();
+	const int NumColumns = NumParticipants <= 16 ? 1 : NumParticipants <= 32 ? 2 :
+						   NumParticipants <= 72         ? 3 :
+										   4;
+	const int RowsPerColumn = (NumParticipants + NumColumns - 1) / NumColumns;
+	const float Width = std::min(Screen.w - 20.0f, NumColumns * 360.0f);
+	const float RowHeight = RowsPerColumn <= 16 ? 20.0f : std::max(8.0f, 320.0f / RowsPerColumn);
+	const int ActionColumns = Width < 650.0f ? 3 : NUM_REPORT_ACTIONS;
+	const int ActionRows = (NUM_REPORT_ACTIONS + ActionColumns - 1) / ActionColumns;
+	const float ActionsHeight = ActionRows * 24.0f - 4.0f;
+	const float Height = 68.0f + (RowsPerColumn + 1) * RowHeight + 29.0f + ActionsHeight;
+	CUIRect Panel = {(Screen.w - Width) / 2.0f, 45.0f, Width, std::min(Height, 545.0f)};
+	GameClient()->m_Menus.DrawSurface(Panel, ColorRGBA(0.0f, 0.0f, 0.0f, 0.65f), IGraphics::CORNER_ALL, 7.5f);
+	Panel.Margin(10.0f, &Panel);
+
+	const CMatchStanding *pLocalStanding = nullptr;
+	if(const CMatchParticipant *pLocal = Stored.m_LocalParticipantId ? Report.Participant(*Stored.m_LocalParticipantId) : nullptr)
+	{
+		pLocalStanding = Report.Standing(EMatchSubjectKind::PARTICIPANT, pLocal->m_ParticipantId);
+		if(!pLocalStanding && pLocal->m_TeamId)
+			pLocalStanding = Report.Standing(EMatchSubjectKind::TEAM, *pLocal->m_TeamId);
+	}
+	CUIRect Title, Subtitle, Rows, Summary, Actions;
+	Panel.HSplitTop(30.0f, &Title, &Panel);
+	Panel.HSplitTop(22.0f, &Subtitle, &Panel);
+	Panel.HSplitBottom(ActionsHeight, &Panel, &Actions);
+	Panel.HSplitBottom(23.0f, &Rows, &Summary);
+	Ui()->DoLabel(&Title, pLocalStanding ? MatchOutcomeDisplayName(pLocalStanding->m_Outcome) : Localize("Game over"), 24.0f, TEXTALIGN_MC);
+
+	char aDuration[64];
+	FormatMatchDuration(Report.m_DurationTicks, Report.m_TickRate, aDuration, sizeof(aDuration));
+	char aSubtitle[512];
+	str_format(aSubtitle, sizeof(aSubtitle), "%s — %s — %s — %s / %s", Report.m_MapName.c_str(), Report.m_ModeId.c_str(), aDuration, MatchReportSourceDisplayName(Stored.m_Source), MatchCompletenessDisplayName(Stored.m_Completeness));
+	if(Report.m_vTeams.size() == 2)
+	{
+		const std::optional<int64_t> FirstScore = Report.Metric(EMatchSubjectKind::TEAM, Report.m_vTeams[0].m_TeamId, "score");
+		const std::optional<int64_t> SecondScore = Report.Metric(EMatchSubjectKind::TEAM, Report.m_vTeams[1].m_TeamId, "score");
+		if(FirstScore && SecondScore)
+		{
+			char aTeamScore[192];
+			str_format(aTeamScore, sizeof(aTeamScore), " — %s %" PRId64 " : %" PRId64 " %s", Report.m_vTeams[0].m_DisplayName.c_str(), *FirstScore, *SecondScore, Report.m_vTeams[1].m_DisplayName.c_str());
+			str_append(aSubtitle, aTeamScore);
+		}
+	}
+	Ui()->DoLabel(&Subtitle, aSubtitle, 11.0f, TEXTALIGN_MC);
+
+	for(int Column = 0; Column < NumColumns; ++Column)
+	{
+		CUIRect ColumnRect;
+		Rows.VSplitLeft(Rows.w / (NumColumns - Column), &ColumnRect, &Rows);
+		const int First = Column * RowsPerColumn;
+		const std::span<const CMatchReportRow> vRows(m_ReportRanking.Rows().data() + First, std::min(RowsPerColumn, NumParticipants - First));
+		RenderMatchReportColumn(Stored, vRows, ColumnRect, RowHeight);
+	}
+	RenderMatchReportSummary(Stored, Summary);
+
+	m_pCurrentInteractionLayout->m_ReportMatchId = Report.m_MatchId;
+	for(int Action = 0; Action < NUM_REPORT_ACTIONS; ++Action)
+	{
+		const int Row = Action / ActionColumns;
+		const int ActionsInRow = std::min(ActionColumns, NUM_REPORT_ACTIONS - Row * ActionColumns);
+		const float ButtonWidth = (Actions.w - (ActionsInRow - 1) * 4.0f) / ActionsInRow;
+		const CUIRect Button = {Actions.x + (Action % ActionColumns) * (ButtonWidth + 4.0f), Actions.y + Row * 24.0f, ButtonWidth, 20.0f};
+		m_pCurrentInteractionLayout->m_aReportActionRects[Action] = Button;
+		// continue is what the keyboard does by default, so it stands out
+		const float Alpha = Action == REPORT_ACTION_CONTINUE ? (m_HighlightReportAction == Action ? 0.45f : 0.3f) : (m_HighlightReportAction == Action ? 0.3f : 0.18f);
+		Button.Draw(ColorRGBA(1.0f, 1.0f, 1.0f, Alpha), IGraphics::CORNER_ALL, 4.0f);
+		Ui()->DoLabel(&Button, Localize(gs_aReportActions[Action].m_pLabel), 10.0f, TEXTALIGN_MC);
+	}
+}
+
+void CScoreboard::RenderMatchReportColumn(const CStoredMatch &Stored, std::span<const CMatchReportRow> vRows, CUIRect Column, float RowHeight)
+{
+	const float FontSize = std::clamp(RowHeight - 7.0f, 8.0f, 12.0f);
+	const auto SplitRow = [&](CUIRect Row, CUIRect &Rank, CUIRect &Score, CUIRect &Name, CUIRect &Clan) {
+		Row.VSplitLeft(38.0f, &Rank, &Row);
+		Row.VSplitLeft(55.0f, &Score, &Row);
+		Row.VSplitRight(Column.w * 0.3f, &Name, &Clan);
+	};
+	CUIRect Header, Rank, Score, Name, Clan;
+	Column.HSplitTop(RowHeight, &Header, &Column);
+	Header.Draw(ColorRGBA(1.0f, 1.0f, 1.0f, 0.2f), IGraphics::CORNER_NONE, 0.0f);
+	SplitRow(Header, Rank, Score, Name, Clan);
+	Ui()->DoLabel(&Rank, Localize("Rank"), FontSize, TEXTALIGN_MC);
+	Ui()->DoLabel(&Score, Localize("Score"), FontSize, TEXTALIGN_MC);
+	Ui()->DoLabel(&Name, Localize("Name"), FontSize, TEXTALIGN_ML);
+	Ui()->DoLabel(&Clan, Localize("Clan"), FontSize, TEXTALIGN_ML);
+
+	for(const CMatchReportRow &Entry : vRows)
+	{
+		const CMatchParticipant &Participant = *Entry.m_pParticipant;
+		CUIRect Row;
+		Column.HSplitTop(RowHeight, &Row, &Column);
+		if(Stored.m_LocalParticipantId == Participant.m_ParticipantId)
+			Row.Draw(ColorRGBA(1.0f, 1.0f, 1.0f, 0.22f), IGraphics::CORNER_ALL, 3.0f);
+		SplitRow(Row, Rank, Score, Name, Clan);
+		char aValue[64] = "-";
+		if(Entry.m_pStanding)
+			str_format(aValue, sizeof(aValue), "%d", Entry.m_pStanding->m_Rank);
+		Ui()->DoLabel(&Rank, aValue, FontSize, TEXTALIGN_MC);
+		str_copy(aValue, "-");
+		if(Entry.m_Score)
+			str_format(aValue, sizeof(aValue), "%" PRId64, *Entry.m_Score);
+		Ui()->DoLabel(&Score, aValue, FontSize, TEXTALIGN_MC);
+		char aName[MatchReportLimits::MAX_DISPLAY_NAME_LENGTH + 32];
+		if(Participant.m_LeftTick)
+			str_format(aName, sizeof(aName), "%s (%s)", Participant.m_DisplayName.c_str(), Localize("left"));
+		else
+			str_copy(aName, Participant.m_DisplayName.c_str());
+		SLabelProperties Properties;
+		Properties.m_MaxWidth = Name.w;
+		Properties.m_EllipsisAtEnd = true;
+		Ui()->DoLabel(&Name, aName, FontSize, TEXTALIGN_ML, Properties);
+		Properties.m_MaxWidth = Clan.w;
+		Ui()->DoLabel(&Clan, Participant.m_Clan.c_str(), FontSize, TEXTALIGN_ML, Properties);
+	}
+}
+
+void CScoreboard::RenderMatchReportSummary(const CStoredMatch &Stored, CUIRect Summary)
+{
+	const CMatchReportRow *pLocal = Stored.m_LocalParticipantId ? m_ReportRanking.Row(*Stored.m_LocalParticipantId) : nullptr;
+	if(!pLocal)
+		return;
+	char aSummary[256] = "";
+	if(pLocal->m_Combat.Value(MATCH_COMBAT_SHOTS) > 0)
+	{
+		char aAccuracy[32];
+		FormatMatchAccuracy(pLocal->m_Combat.Value(MATCH_COMBAT_HITS), pLocal->m_Combat.Value(MATCH_COMBAT_SHOTS), aAccuracy, sizeof(aAccuracy));
+		str_format(aSummary, sizeof(aSummary), "%s: %" PRId64 "  ·  %s: %" PRId64 "  ·  %s: %s  ·  %s: %" PRId64 "  ·  %s: %" PRId64,
+			Localize("Shots"), pLocal->m_Combat.Value(MATCH_COMBAT_SHOTS),
+			Localize("Hits"), pLocal->m_Combat.Value(MATCH_COMBAT_HITS),
+			Localize("Accuracy"), aAccuracy,
+			Localize("Damage done"), pLocal->m_Combat.Value(MATCH_COMBAT_DAMAGE_DONE),
+			Localize("Damage taken"), pLocal->m_Combat.Value(MATCH_COMBAT_DAMAGE_TAKEN));
+	}
+	else
+	{
+		// without the counters of a server, what the client counted itself
+		for(const CMatchMetric &Metric : Stored.m_Report.m_vMetrics)
+		{
+			if(Metric.m_SubjectKind != EMatchSubjectKind::PARTICIPANT || Metric.m_SubjectId != Stored.m_LocalParticipantId || Metric.m_MetricId == "score" || MatchMetricCategory(Metric.m_MetricId) == EMatchMetricCategory::OVERVIEW || !FindMatchMetric(Metric.m_MetricId) || Metric.m_MetricId.starts_with("weapon_"))
+				continue;
+			char aName[64];
+			MatchMetricDisplayName(Metric.m_MetricId, aName, sizeof(aName));
+			char aValue[64];
+			FormatMatchMetricValue(Metric, Stored.m_Report.m_TickRate, aValue, sizeof(aValue));
+			char aEntry[160];
+			str_format(aEntry, sizeof(aEntry), "%s%s: %s", aSummary[0] ? "  ·  " : "", aName, aValue);
+			str_append(aSummary, aEntry);
+		}
+	}
+	SLabelProperties Properties;
+	Properties.m_MaxWidth = Summary.w;
+	Properties.m_EllipsisAtEnd = true;
+	Ui()->DoLabel(&Summary, aSummary, 11.0f, TEXTALIGN_MC, Properties);
+}
+
 void CScoreboard::OnRender(const CRenderContext &Context)
 {
 	CInteractionLayout DiscardedLayout;
@@ -1019,6 +1260,14 @@ void CScoreboard::OnRender(const CRenderContext &Context)
 	const CGameState &GameState = Context.m_State;
 	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
 	const CNetObj_GameInfo *pGameInfoObj = GameState.HasGameInfo() ? &GameState.GameInfo() : nullptr;
+	const std::optional<CStoredMatch> &LatestMatch = Context.m_Session.m_Stats.LatestMatch();
+	if(pGameInfoObj != nullptr && (pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_GAMEOVER) != 0 && LatestMatch.has_value() && !LatestMatch->m_Report.m_vParticipants.empty() &&
+		!IsMatchReportDismissed(Context.m_Session.Id(), LatestMatch->m_Report.m_MatchId) && LatestMatch->m_Report.m_MapSha256 == Context.m_Session.m_MapContext.Map()->Sha256())
+	{
+		RenderMatchReport(*LatestMatch, Screen);
+		m_pCurrentInteractionLayout = nullptr;
+		return;
+	}
 	const bool Teams = pGameInfoObj != nullptr && (pGameInfoObj->m_GameFlags & GAMEFLAG_TEAMS) != 0;
 	const int NumPlayers = Teams ? std::max(Presentation.TeamSize(GameState.m_Conn, TEAM_RED), Presentation.TeamSize(GameState.m_Conn, TEAM_BLUE)) : Presentation.TeamSize(GameState.m_Conn, TEAM_RED);
 
@@ -1193,6 +1442,7 @@ bool CScoreboard::UpdateApplicationOverlay(const CRenderContext &Context)
 	m_HighlightBinding = Context.m_View.Binding();
 	m_HighlightClientId = -1;
 	m_HighlightMapTitle = false;
+	m_HighlightReportAction = -1;
 
 	if(m_MouseUnlocked && pLayout->m_HasMapTitleRect)
 	{
@@ -1212,6 +1462,13 @@ bool CScoreboard::UpdateApplicationOverlay(const CRenderContext &Context)
 			Ui()->DoPopupMenu(&m_MapTitlePopupContext, Ui()->MouseX(), Ui()->MouseY(), TextWidth + Margin * 2, TextHeight + Margin * 2, &m_MapTitlePopupContext, CMapTitlePopupContext::Render);
 		}
 		m_HighlightMapTitle = Ui()->HotItem() == &m_MapTitleButtonId;
+	}
+	for(int Action = 0; m_MouseUnlocked && pLayout->m_ReportMatchId != UUID_ZEROED && Action < NUM_REPORT_ACTIONS; ++Action)
+	{
+		if(Ui()->DoButtonLogic(&m_aReportActionButtonIds[Action], 0, &pLayout->m_aReportActionRects[Action], BUTTONFLAG_LEFT))
+			RunReportAction(Action, pLayout->m_Binding.m_SessionId, pLayout->m_ReportMatchId);
+		if(Ui()->HotItem() == &m_aReportActionButtonIds[Action])
+			m_HighlightReportAction = Action;
 	}
 
 	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
@@ -1253,6 +1510,7 @@ void CScoreboard::PrepareApplicationOverlay(const CRenderContext &Context)
 	m_ApplicationOverlayReady = false;
 	m_HighlightClientId = -1;
 	m_HighlightMapTitle = false;
+	m_HighlightReportAction = -1;
 	if(!Context.m_Time.m_IsGameActive || !IsActive(Context))
 	{
 		if(m_MouseUnlocked)
@@ -1312,7 +1570,10 @@ bool CScoreboard::IsActive(const CGameState &State, const CGameView &View) const
 			!(pGameInfoObj && (pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_PAUSED) != 0))
 			return true;
 	}
-	return pGameInfoObj != nullptr && (pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_GAMEOVER) != 0;
+	if(pGameInfoObj == nullptr || (pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_GAMEOVER) == 0)
+		return false;
+	const std::optional<CStoredMatch> &LatestMatch = GameClient()->SessionContext(View.SessionId()).m_Stats.LatestMatch();
+	return !LatestMatch.has_value() || !IsMatchReportDismissed(View.SessionId(), LatestMatch->m_Report.m_MatchId);
 }
 
 const char *CScoreboard::GetTeamName(const CRenderContext &Context, int Team) const

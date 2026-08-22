@@ -132,6 +132,7 @@ void CGameControllerVanillaCTF::ProcessFlags()
 
 void CGameControllerVanillaCTF::FlagGrab(CFlag *pFlag, CCharacter *pCarrier)
 {
+	AddMatchMetric(pCarrier->GetPlayer(), "flag_grabs");
 	if(pFlag->IsAtStand())
 		m_aTeamScores[pCarrier->GetPlayer()->GetTeam()]++;
 	pFlag->Grab(pCarrier);
@@ -151,6 +152,7 @@ void CGameControllerVanillaCTF::FlagGrab(CFlag *pFlag, CCharacter *pCarrier)
 
 void CGameControllerVanillaCTF::FlagReturn(CFlag *pFlag, CCharacter *pPlayer)
 {
+	AddMatchMetric(pPlayer->GetPlayer(), "flag_returns");
 	pFlag->Return();
 	VanillaPlayer(pPlayer->GetPlayer()->GetCid())->m_Score++;
 	log_info("game", "flag_return player='%d:%s' team=%d", pPlayer->GetPlayer()->GetCid(), Server()->ClientName(pPlayer->GetPlayer()->GetCid()), pPlayer->GetPlayer()->GetTeam());
@@ -163,6 +165,7 @@ void CGameControllerVanillaCTF::FlagCapture(CFlag *pFlag)
 	CCharacter *pCarrier = pFlag->Carrier();
 	if(!pCarrier)
 		return;
+	AddMatchMetric(pCarrier->GetPlayer(), "flag_captures");
 	const int CarrierId = pCarrier->GetPlayer()->GetCid();
 	const int CaptureTicks = Server()->Tick() - pFlag->GrabTick();
 	m_aTeamScores[pCarrier->GetPlayer()->GetTeam()] += 100;

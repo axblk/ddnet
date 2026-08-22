@@ -696,3 +696,274 @@ TEST(GameView, MotdVisibilityIsRevisionBound)
 	Motd.Dismiss();
 	EXPECT_FALSE(Motd.IsActive(CSessionId(1), 4, 99));
 }
+
+namespace
+{
+	// the local player, client 5, joins a round of deathmatch that started at tick 100
+	std::unique_ptr<CClients> LocalPlayerSnapshot()
+	{
+		auto pClients = std::make_unique<CClients>();
+		CGameState::CClientSnapshot &Local = (*pClients)[5];
+		Local.m_Active = true;
+		Local.m_HasPlayerInfo = true;
+		Local.m_PlayerInfo.m_ClientId = 5;
+		Local.m_PlayerInfo.m_Local = 1;
+		Local.m_PlayerInfo.m_Team = TEAM_RED;
+		Local.m_PlayerInfo.m_Score = 10;
+		Local.m_HasClientInfo = true;
+		StrToInts(Local.m_ClientInfo.m_aName, std::size(Local.m_ClientInfo.m_aName), "local");
+		StrToInts(Local.m_ClientInfo.m_aClan, std::size(Local.m_ClientInfo.m_aClan), "clan");
+		return pClients;
+	}
+
+	CObservedMatchMetadata ObservedMetadata(EMatchTermination Termination = EMatchTermination::COMPLETED)
+	{
+		CObservedMatchMetadata Metadata;
+		Metadata.m_OriginId = "127.0.0.1:8303";
+		Metadata.m_ModeId = "dm";
+		Metadata.m_MapName = "dm1";
+		Metadata.m_MapSha256 = sha256("map", 3);
+		Metadata.m_EndTimeUtc = 2000000;
+		Metadata.m_TickRate = 50;
+		Metadata.m_Termination = Termination;
+		return Metadata;
+	}
+
+	CMatchReport ServerReport(int RoundStartTick)
+	{
+		CMatchReport Report;
+		Report.m_MatchId = CalculateUuid("server-report");
+		Report.m_ModeId = "vanilla.dm";
+		Report.m_MapName = "dm1";
+		Report.m_MapSha256 = sha256("map", 3);
+		Report.m_StartTimeUtc = 100;
+		Report.m_EndTimeUtc = 110;
+		Report.m_DurationTicks = 500;
+		Report.m_TickRate = 50;
+		Report.m_RoundStartTick = RoundStartTick;
+		Report.m_vParticipants.push_back({7, std::nullopt, "Tee", "", 0, std::nullopt});
+		Report.m_vStandings.push_back({EMatchSubjectKind::PARTICIPANT, 7, 1, EMatchOutcome::WIN});
+		Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, 7, "kills", 3, EMatchMetricAggregation::SUM});
+		return Report;
+	}
+
+	std::string PackedReport(const CMatchReport &Report)
+	{
+		std::string Packed;
+		std::string Error;
+		EXPECT_TRUE(MatchReportToPacked(Report, Packed, &Error)) << Error;
+		return Packed;
+	}
+}
+
+TEST(SessionState, ObservedMatchIsFinalizedOnce)
+{
+	const auto pState = std::make_unique<CGameState>();
+	CGameState &State = *pState;
+	CSessionStatsState Stats;
+	CNetObj_GameInfo GameInfo = {};
+	GameInfo.m_RoundStartTick = 100;
+	auto pClients = LocalPlayerSnapshot();
+	State.ApplySnapshotData(150, *pClients, &GameInfo);
+	EXPECT_FALSE(Stats.UpdateSnapshot(State, 150));
+	Stats.Client(5).m_Frags = 3;
+	EXPECT_FALSE(Stats.FinalizeObservedMatch(ObservedMetadata(), State, 150));
+
+	GameInfo.m_GameStateFlags = GAMESTATEFLAG_GAMEOVER;
+	State.ApplySnapshotData(200, *pClients, &GameInfo);
+	EXPECT_TRUE(Stats.UpdateSnapshot(State, 200));
+	ASSERT_TRUE(Stats.FinalizeObservedMatch(ObservedMetadata(), State, 200));
+	EXPECT_FALSE(Stats.FinalizeObservedMatch(ObservedMetadata(), State, 200));
+	ASSERT_TRUE(Stats.LatestMatch().has_value());
+	const CStoredMatch &Stored = *Stats.LatestMatch();
+	EXPECT_EQ(Stored.m_Source, EMatchReportSource::CLIENT_OBSERVED);
+	EXPECT_EQ(Stored.m_Completeness, EMatchCompleteness::PARTIAL_SINCE_JOIN);
+	EXPECT_EQ(Stored.m_OriginId, "127.0.0.1:8303");
+	ASSERT_EQ(Stored.m_Report.m_vParticipants.size(), 1u);
+	EXPECT_EQ(Stored.m_Report.m_vParticipants[0].m_DisplayName, "local");
+	EXPECT_EQ(Stored.m_Report.m_vParticipants[0].m_JoinedTick, 50);
+	EXPECT_EQ(Stored.m_Report.Metric(EMatchSubjectKind::PARTICIPANT, 0, "kills"), 3);
+	EXPECT_EQ(Stored.m_Report.Metric(EMatchSubjectKind::PARTICIPANT, 0, "score"), 10);
+	// nothing happened with a flag, so there is no flag metric
+	EXPECT_FALSE(Stored.m_Report.Metric(EMatchSubjectKind::PARTICIPANT, 0, "flag_captures").has_value());
+	ASSERT_NE(Stored.m_Report.Standing(EMatchSubjectKind::PARTICIPANT, 0), nullptr);
+	EXPECT_EQ(Stored.m_Report.Standing(EMatchSubjectKind::PARTICIPANT, 0)->m_Outcome, EMatchOutcome::WIN);
+	std::string Error;
+	EXPECT_TRUE(MatchReportValidate(Stored.m_Report, &Error)) << Error;
+}
+
+TEST(SessionState, ObservedMatchAbortedWithoutGameOver)
+{
+	const auto pState = std::make_unique<CGameState>();
+	CGameState &State = *pState;
+	CSessionStatsState Stats;
+	CNetObj_GameInfo GameInfo = {};
+	GameInfo.m_RoundStartTick = 100;
+	auto pClients = LocalPlayerSnapshot();
+	State.ApplySnapshotData(150, *pClients, &GameInfo);
+	Stats.UpdateSnapshot(State, 150);
+
+	ASSERT_TRUE(Stats.FinalizeObservedMatch(ObservedMetadata(EMatchTermination::ABORTED), State, 175));
+	ASSERT_TRUE(Stats.LatestMatch().has_value());
+	EXPECT_EQ(Stats.LatestMatch()->m_Completeness, EMatchCompleteness::ABORTED);
+	EXPECT_EQ(Stats.LatestMatch()->m_Report.m_Termination, EMatchTermination::ABORTED);
+	ASSERT_EQ(Stats.LatestMatch()->m_Report.m_vStandings.size(), 1u);
+	EXPECT_EQ(Stats.LatestMatch()->m_Report.m_vStandings[0].m_Outcome, EMatchOutcome::DNF);
+}
+
+TEST(SessionState, ServerReportReplacesTheObservedRound)
+{
+	const auto pState = std::make_unique<CGameState>();
+	CGameState &State = *pState;
+	CSessionStatsState Stats;
+	CNetObj_GameInfo GameInfo = {};
+	GameInfo.m_RoundStartTick = 100;
+	auto pClients = LocalPlayerSnapshot();
+	State.ApplySnapshotData(150, *pClients, &GameInfo);
+	Stats.UpdateSnapshot(State, 150);
+	GameInfo.m_GameStateFlags = GAMESTATEFLAG_GAMEOVER;
+	State.ApplySnapshotData(200, *pClients, &GameInfo);
+	Stats.UpdateSnapshot(State, 200);
+	ASSERT_TRUE(Stats.FinalizeObservedMatch(ObservedMetadata(), State, 200));
+
+	// the report of the round arrives after the next one started
+	GameInfo.m_GameStateFlags = 0;
+	GameInfo.m_RoundStartTick = 300;
+	State.ApplySnapshotData(300, *pClients, &GameInfo);
+	Stats.UpdateSnapshot(State, 300);
+	EXPECT_FALSE(Stats.LatestMatch().has_value());
+
+	CStoredMatch Server;
+	Server.m_OriginId = "127.0.0.1:8303";
+	Server.m_Source = EMatchReportSource::SERVER_REPORT;
+	Server.m_Report = ServerReport(100);
+	const CStoredMatch *pObserved = Stats.ObservedMatchReplacedBy(Server);
+	ASSERT_NE(pObserved, nullptr);
+	EXPECT_EQ(pObserved->m_Source, EMatchReportSource::CLIENT_OBSERVED);
+	Server.m_Report.m_RoundStartTick = 101;
+	EXPECT_EQ(Stats.ObservedMatchReplacedBy(Server), nullptr);
+	Server.m_Report.m_RoundStartTick = 100;
+	Server.m_OriginId = "127.0.0.1:8304";
+	EXPECT_EQ(Stats.ObservedMatchReplacedBy(Server), nullptr);
+	Stats.ClearPreviousObservedMatch();
+	Server.m_OriginId = "127.0.0.1:8303";
+	EXPECT_EQ(Stats.ObservedMatchReplacedBy(Server), nullptr);
+}
+
+TEST(SessionState, LiveStatsArePersistedOnlyForTheRunningRound)
+{
+	const auto pState = std::make_unique<CGameState>();
+	CGameState &State = *pState;
+	CSessionStatsState Stats;
+	CNetObj_GameInfo GameInfo = {};
+	GameInfo.m_RoundStartTick = 100;
+	auto pClients = LocalPlayerSnapshot();
+	State.ApplySnapshotData(150, *pClients, &GameInfo);
+	Stats.UpdateSnapshot(State, 150);
+
+	CStoredMatch Live;
+	Live.m_Source = EMatchReportSource::SERVER_SNAPSHOT;
+	Live.m_Report = ServerReport(100);
+	Stats.SetLiveStats(Live, false);
+	EXPECT_TRUE(Stats.LiveStats().has_value());
+	EXPECT_EQ(Stats.LiveStatsToPersist(), nullptr);
+	Stats.SetLiveStats(Live, true);
+	EXPECT_NE(Stats.LiveStatsToPersist(), nullptr);
+
+	// the final report says everything the live statistics said
+	CStoredMatch Final = Live;
+	Final.m_Source = EMatchReportSource::SERVER_REPORT;
+	ASSERT_TRUE(Stats.IsCurrentServerMatch(Final.m_Report));
+	Stats.SetLatestServerMatch(Final);
+	EXPECT_FALSE(Stats.LiveStats().has_value());
+	EXPECT_EQ(Stats.LiveStatsToPersist(), nullptr);
+	EXPECT_FALSE(Stats.IsCurrentServerMatch(Final.m_Report));
+
+	Stats.SetLiveStats(Live, true);
+	GameInfo.m_RoundStartTick = 300;
+	State.ApplySnapshotData(300, *pClients, &GameInfo);
+	Stats.UpdateSnapshot(State, 300);
+	EXPECT_FALSE(Stats.LiveStats().has_value());
+}
+
+TEST(MatchReportAssembler, AssemblesChunksInOrder)
+{
+	const CMatchReport Report = ServerReport(100);
+	const std::string Payload = PackedReport(Report);
+	const int Split = Payload.size() / 2;
+	CMatchReportAssembler Assembler;
+	ASSERT_TRUE(Assembler.Start(Report.m_MatchId, false, true, 7, Payload.size()));
+	ASSERT_TRUE(Assembler.AddChunk(Report.m_MatchId, 0, Payload.data(), Split));
+	EXPECT_FALSE(Assembler.IsComplete());
+	ASSERT_TRUE(Assembler.AddChunk(Report.m_MatchId, 1, Payload.data() + Split, Payload.size() - Split));
+	EXPECT_TRUE(Assembler.IsComplete());
+	EXPECT_FALSE(Assembler.IsLive());
+	EXPECT_TRUE(Assembler.PersistOnDisconnect());
+	CStoredMatch Match;
+	std::string Error;
+	ASSERT_TRUE(Assembler.Finish(Match, &Error)) << Error;
+	EXPECT_FALSE(Assembler.IsComplete());
+	EXPECT_EQ(Match.m_Source, EMatchReportSource::SERVER_REPORT);
+	EXPECT_EQ(Match.m_Completeness, EMatchCompleteness::COMPLETE);
+	EXPECT_EQ(Match.m_LocalParticipantId, 7);
+	EXPECT_EQ(Match.m_Report.m_MatchId, Report.m_MatchId);
+	EXPECT_EQ(Match.m_Report.Metric(EMatchSubjectKind::PARTICIPANT, 7, "kills"), 3);
+
+	ASSERT_TRUE(Assembler.Start(Report.m_MatchId, true, false, 7, Payload.size()));
+	ASSERT_TRUE(Assembler.AddChunk(Report.m_MatchId, 0, Payload.data(), Payload.size()));
+	ASSERT_TRUE(Assembler.Finish(Match, &Error)) << Error;
+	EXPECT_EQ(Match.m_Source, EMatchReportSource::SERVER_SNAPSHOT);
+	EXPECT_EQ(Match.m_Completeness, EMatchCompleteness::ABORTED);
+
+	CMatchReport Restarted = Report;
+	Restarted.m_Termination = EMatchTermination::ADMIN_ENDED;
+	const std::string RestartedPayload = PackedReport(Restarted);
+	ASSERT_TRUE(Assembler.Start(Report.m_MatchId, false, false, 7, RestartedPayload.size()));
+	ASSERT_TRUE(Assembler.AddChunk(Report.m_MatchId, 0, RestartedPayload.data(), RestartedPayload.size()));
+	ASSERT_TRUE(Assembler.Finish(Match, &Error)) << Error;
+	EXPECT_EQ(Match.m_Source, EMatchReportSource::SERVER_REPORT);
+	EXPECT_EQ(Match.m_Completeness, EMatchCompleteness::ABORTED);
+}
+
+TEST(MatchReportAssembler, RejectsWhatDoesNotFitTheAnnouncement)
+{
+	const CMatchReport Report = ServerReport(100);
+	const std::string Payload = PackedReport(Report);
+	const int Size = Payload.size();
+	CMatchReportAssembler Assembler;
+	CStoredMatch Match;
+	std::string Error;
+
+	EXPECT_FALSE(Assembler.Start(Report.m_MatchId, false, false, 7, MatchReportLimits::MAX_PAYLOAD_SIZE + 1));
+	EXPECT_FALSE(Assembler.Start(Report.m_MatchId, false, false, 7, 0));
+	EXPECT_FALSE(Assembler.Start(UUID_ZEROED, false, false, 7, Size));
+	EXPECT_FALSE(Assembler.Start(Report.m_MatchId, false, false, -1, Size));
+	EXPECT_FALSE(Assembler.AddChunk(Report.m_MatchId, 0, Payload.data(), Size));
+
+	ASSERT_TRUE(Assembler.Start(Report.m_MatchId, false, false, 7, Size));
+	EXPECT_FALSE(Assembler.AddChunk(Report.m_MatchId, 1, Payload.data(), Size));
+	EXPECT_FALSE(Assembler.AddChunk(Report.m_MatchId, 0, Payload.data(), Size));
+
+	ASSERT_TRUE(Assembler.Start(Report.m_MatchId, false, false, 7, Size - 1));
+	EXPECT_FALSE(Assembler.AddChunk(Report.m_MatchId, 0, Payload.data(), Size));
+
+	ASSERT_TRUE(Assembler.Start(Report.m_MatchId, false, false, 7, Size));
+	EXPECT_FALSE(Assembler.AddChunk(CalculateUuid("other"), 0, Payload.data(), Size));
+
+	ASSERT_TRUE(Assembler.Start(Report.m_MatchId, false, false, 7, Size));
+	ASSERT_TRUE(Assembler.AddChunk(Report.m_MatchId, 0, Payload.data(), Size / 2));
+	EXPECT_FALSE(Assembler.Finish(Match, &Error));
+
+	// the report names somebody else, or another match
+	ASSERT_TRUE(Assembler.Start(Report.m_MatchId, false, false, 8, Size));
+	ASSERT_TRUE(Assembler.AddChunk(Report.m_MatchId, 0, Payload.data(), Size));
+	EXPECT_FALSE(Assembler.Finish(Match, &Error));
+	ASSERT_TRUE(Assembler.Start(CalculateUuid("other"), false, false, 7, Size));
+	ASSERT_TRUE(Assembler.AddChunk(CalculateUuid("other"), 0, Payload.data(), Size));
+	EXPECT_FALSE(Assembler.Finish(Match, &Error));
+
+	const std::string Garbage(Size, 'x');
+	ASSERT_TRUE(Assembler.Start(Report.m_MatchId, false, false, 7, Size));
+	ASSERT_TRUE(Assembler.AddChunk(Report.m_MatchId, 0, Garbage.data(), Size));
+	EXPECT_FALSE(Assembler.Finish(Match, &Error));
+}

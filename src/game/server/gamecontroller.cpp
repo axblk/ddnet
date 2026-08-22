@@ -15,6 +15,7 @@
 
 #include <engine/antibot.h>
 #include <engine/config.h>
+#include <engine/map.h>
 #include <engine/server.h>
 #include <engine/shared/config.h>
 #include <engine/shared/protocolglue.h>
@@ -63,6 +64,147 @@ void IGameController::Init(CDbConnectionPool *)
 	InitGameSettings();
 	DoWarmup(g_Config.m_SvWarmup);
 	TeamsCore().Reset();
+	StartMatchReport();
+}
+
+CMatchReport IGameController::MatchReportHeader(CUuid MatchId, int StartTick) const
+{
+	CMatchReport Header;
+	Header.m_MatchId = MatchId;
+	Header.m_GameUuid = Services().GameUuid();
+	Header.m_ModeId = Info().m_pName;
+	Header.m_MapName = Services().Map()->FullName();
+	Header.m_MapSha256 = Services().Map()->Sha256();
+	Header.m_StartTimeUtc = time_timestamp() - (Server()->Tick() - StartTick) / Server()->TickSpeed();
+	Header.m_TickRate = Server()->TickSpeed();
+	Header.m_RoundStartTick = StartTick;
+	if(IsTeamPlay())
+		Header.m_vTeams = {{TEAM_RED, "Red"}, {TEAM_BLUE, "Blue"}};
+	return Header;
+}
+
+void IGameController::StartMatchReport()
+{
+	// a race has no rounds to report, only live statistics
+	if(Info().m_DDRace || Match().IsWarmup())
+		return;
+	m_MatchRecorder.Start(MatchReportHeader(RandomUuid(), Match().RoundStartTick()));
+	UpdateMatchParticipants();
+}
+
+CMatchRecorder::CParticipant *IGameController::MatchParticipant(CPlayer *pPlayer)
+{
+	CMatchRecorder::CParticipant *pParticipant = m_MatchRecorder.Participant(pPlayer->GetUniqueCid());
+	if(!pParticipant && pPlayer->GetTeam() != TEAM_SPECTATORS)
+		pParticipant = m_MatchRecorder.Join(pPlayer->GetUniqueCid(), Server()->Tick());
+	if(!pParticipant)
+		return nullptr;
+	const int ClientId = pPlayer->GetCid();
+	pParticipant->m_Info.m_DisplayName = Server()->ClientName(ClientId);
+	pParticipant->m_Info.m_Clan = Server()->ClientClan(ClientId);
+	if(IsTeamPlay() && pPlayer->GetTeam() != TEAM_SPECTATORS)
+		pParticipant->m_Info.m_TeamId = pPlayer->GetTeam();
+	m_MatchRecorder.SetPlaying(*pParticipant, pPlayer->GetTeam() != TEAM_SPECTATORS, Server()->Tick());
+	return pParticipant;
+}
+
+void IGameController::UpdateMatchParticipants()
+{
+	if(!m_MatchRecorder.IsRunning())
+		return;
+	for(CPlayer *pPlayer : GameServer()->m_apPlayers)
+	{
+		if(!pPlayer)
+			continue;
+		if(CMatchRecorder::CParticipant *pParticipant = MatchParticipant(pPlayer))
+			pParticipant->m_Score = SnapPlayerScore(SERVER_DEMO_CLIENT, pPlayer);
+	}
+	if(IsTeamPlay())
+		m_MatchRecorder.SetTeamScores(TeamScore(TEAM_RED), TeamScore(TEAM_BLUE));
+}
+
+void IGameController::FinishMatchReport(EMatchTermination Termination, bool SuddenDeath)
+{
+	if(!m_MatchRecorder.IsRunning())
+		return;
+	const CMatchReport Report = m_MatchRecorder.Report(Server()->Tick(), Termination, SuddenDeath);
+	std::string Payload;
+	std::string Error;
+	if(MatchReportToPacked(Report, Payload, &Error))
+	{
+		const auto pPayload = std::make_shared<const std::string>(std::move(Payload));
+		for(CPlayer *pPlayer : GameServer()->m_apPlayers)
+		{
+			if(!pPlayer || !Server()->ClientIngame(pPlayer->GetCid()))
+				continue;
+			if(const CMatchRecorder::CParticipant *pParticipant = m_MatchRecorder.Participant(pPlayer->GetUniqueCid()))
+				m_MatchReportSender.Send(Server(), pPlayer->GetCid(), Report, pPayload, false, false, pParticipant->m_Info.m_ParticipantId);
+		}
+	}
+	else
+		log_error("game", "failed to build match report: %s", Error.c_str());
+	m_MatchRecorder.Stop();
+}
+
+void IGameController::AbortMatchReport()
+{
+	UpdateMatchParticipants();
+	FinishMatchReport(EMatchTermination::ADMIN_ENDED);
+}
+
+bool IGameController::BuildLiveStats(int ClientId, CMatchReport &Report, int &LocalParticipantId)
+{
+	UpdateMatchParticipants();
+	const CMatchRecorder::CParticipant *pParticipant = m_MatchRecorder.Participant(GameServer()->m_apPlayers[ClientId]->GetUniqueCid());
+	if(!pParticipant)
+		return false;
+	Report = m_MatchRecorder.Report(Server()->Tick(), EMatchTermination::ABORTED, Match().IsSuddenDeath());
+	LocalParticipantId = pParticipant->m_Info.m_ParticipantId;
+	return true;
+}
+
+void IGameController::SendLiveStats(int ClientId)
+{
+	if(!GameServer()->m_apPlayers[ClientId] || !m_MatchReportSender.AcceptLiveRequest(ClientId, Server()->Tick(), Server()->TickSpeed()))
+		return;
+	CMatchReport Report;
+	int LocalParticipantId;
+	if(!BuildLiveStats(ClientId, Report, LocalParticipantId))
+		return;
+	std::string Payload;
+	std::string Error;
+	if(!MatchReportToPacked(Report, Payload, &Error))
+	{
+		log_error("game", "failed to build live statistics: %s", Error.c_str());
+		return;
+	}
+	// what a race shows is not a match, so it is not kept when the connection breaks
+	m_MatchReportSender.Send(Server(), ClientId, Report, std::make_shared<const std::string>(std::move(Payload)), true, !Info().m_DDRace, LocalParticipantId);
+}
+
+void IGameController::AddMatchMetric(CPlayer *pPlayer, const char *pMetricId, int64_t Value)
+{
+	if(CMatchRecorder::CParticipant *pParticipant = MatchParticipant(pPlayer))
+		CMatchRecorder::AddExtra(*pParticipant, pMetricId, Value);
+}
+
+void IGameController::AddMatchDamage(CPlayer *pAttacker, CPlayer *pVictim, int Weapon, int Damage)
+{
+	if(pAttacker == pVictim || Weapon < 0 || Weapon >= NUM_WEAPONS || Damage <= 0)
+		return;
+	if(CMatchRecorder::CParticipant *pParticipant = pAttacker ? MatchParticipant(pAttacker) : nullptr)
+	{
+		CMatchRecorder::AddCombat(*pParticipant, MATCH_COMBAT_HITS, Weapon, 1);
+		CMatchRecorder::AddCombat(*pParticipant, MATCH_COMBAT_DAMAGE_DONE, Weapon, Damage);
+	}
+	if(CMatchRecorder::CParticipant *pParticipant = MatchParticipant(pVictim))
+		CMatchRecorder::AddCombat(*pParticipant, MATCH_COMBAT_DAMAGE_TAKEN, Weapon, Damage);
+}
+
+void IGameController::OnCharacterFiredWeapon(CCharacter *pCharacter, int Weapon)
+{
+	if(CMatchRecorder::CParticipant *pParticipant = MatchParticipant(pCharacter->GetPlayer()))
+		CMatchRecorder::AddCombat(*pParticipant, MATCH_COMBAT_SHOTS, Weapon, 1);
 }
 
 int IGameController::TuningZoneAt(vec2 Position) const
@@ -481,6 +623,11 @@ void IGameController::OnPlayerConnect(CPlayer *pPlayer)
 
 void IGameController::OnPlayerDisconnect(class CPlayer *pPlayer, const char *pReason)
 {
+	if(CMatchRecorder::CParticipant *pParticipant = MatchParticipant(pPlayer))
+	{
+		pParticipant->m_Score = SnapPlayerScore(SERVER_DEMO_CLIENT, pPlayer);
+		m_MatchRecorder.SetPlaying(*pParticipant, false, Server()->Tick());
+	}
 	pPlayer->OnDisconnect();
 	int ClientId = pPlayer->GetCid();
 	if(Server()->ClientIngame(ClientId))
@@ -519,8 +666,11 @@ void IGameController::RestoreCharacterAfterMapReload(CCharacter *pCharacter)
 
 void IGameController::EndRound()
 {
+	const bool SuddenDeath = Match().IsSuddenDeath();
 	if(!Match().EndRound(Server()->Tick()))
 		return;
+	UpdateMatchParticipants();
+	FinishMatchReport(EMatchTermination::COMPLETED, SuddenDeath);
 
 	SetGamePaused(true);
 	log_info("game", "end round type='%s'", m_pGameType);
@@ -566,9 +716,12 @@ bool IGameController::IsGamePaused() const
 
 void IGameController::StartRound()
 {
+	// only a round restarted in the middle is still running, its scores are those of the last tick because the mode reset them already
+	FinishMatchReport(EMatchTermination::ADMIN_ENDED);
 	ResetGame();
 
 	Match().StartRound(Server()->Tick());
+	StartMatchReport();
 	SetGamePaused(false);
 	Server()->DemoRecorder_HandleAutoStart();
 	log_info("game", "start round type='%s' teamplay='%d'", m_pGameType, Info().m_GameFlags & GAMEFLAG_TEAMS);
@@ -576,6 +729,7 @@ void IGameController::StartRound()
 
 void IGameController::ChangeMap(const char *pToMap)
 {
+	AbortMatchReport();
 	Server()->ChangeMap(pToMap);
 }
 
@@ -591,6 +745,18 @@ void IGameController::FinalizeCharacterDeath(const CGameCharacterDeathContext &C
 	Context.m_pVictim->FinalizeDeath(Context.m_Killer, Context.m_Weapon, Context.m_SendKillMessage, ModeSpecial);
 	if(Context.m_Weapon == WEAPON_GAME)
 		return;
+	CPlayer *pVictim = Context.m_pVictim->GetPlayer();
+	if(CMatchRecorder::CParticipant *pParticipant = MatchParticipant(pVictim))
+	{
+		CMatchRecorder::AddCombat(*pParticipant, MATCH_COMBAT_DEATHS, Context.m_Weapon, 1);
+		if(Context.m_pKiller == pVictim)
+			pParticipant->m_Suicides++;
+	}
+	if(Context.m_pKiller && Context.m_pKiller != pVictim)
+	{
+		if(CMatchRecorder::CParticipant *pParticipant = MatchParticipant(Context.m_pKiller))
+			CMatchRecorder::AddCombat(*pParticipant, MATCH_COMBAT_KILLS, Context.m_Weapon, 1);
+	}
 }
 
 void IGameController::OnCharacterDeath(const CGameCharacterDeathContext &Context)
@@ -784,6 +950,9 @@ void IGameController::SendGameInfoSixup(int ClientId)
 
 void IGameController::Tick()
 {
+	UpdateMatchParticipants();
+	m_MatchReportSender.Tick(Server());
+
 	// 0.7 clients only learn the limits and the round from the game info message
 	if(ScoreLimit() != m_SixupScoreLimit || TimeLimit() != m_SixupTimeLimit || Match().RoundCount() != m_SixupRoundCount)
 	{
@@ -927,6 +1096,7 @@ void IGameController::DoTeamChange(CPlayer *pPlayer, int Team, bool DoChatMsg)
 		return;
 
 	pPlayer->SetTeam(Team);
+	MatchParticipant(pPlayer);
 	int ClientId = pPlayer->GetCid();
 
 	char aBuf[128];

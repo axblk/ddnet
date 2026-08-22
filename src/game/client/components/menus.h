@@ -28,6 +28,8 @@
 #include <game/client/components/menus_start.h>
 #include <game/client/components/skins7.h>
 #include <game/client/lineinput.h>
+#include <game/client/match_journal.h>
+#include <game/client/match_report_view.h>
 #include <game/client/ui.h>
 #include <game/voting.h>
 
@@ -535,6 +537,84 @@ protected:
 	static void ConchainUpdateMusicState(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	void UpdateMusicState();
 
+	// found in menus_stats.cpp
+	enum class EStatsTab
+	{
+		MATCHES,
+		PROFILE,
+	};
+	enum class EStatsQualityFilter
+	{
+		ALL,
+		COMPLETE,
+		SERVER,
+	};
+	enum class EStatsPeriod
+	{
+		DAY,
+		WEEK,
+		MONTH,
+		ALL_TIME,
+		COUNT,
+	};
+	// how profile numbers are shown: as they are, or divided by matches or minutes played
+	enum class EStatsScale
+	{
+		TOTAL,
+		PER_MATCH,
+		PER_MINUTE,
+	};
+	bool m_StatsInitialized = false;
+	EStatsTab m_StatsTab = EStatsTab::MATCHES;
+	// the selected match replaces the list
+	bool m_StatsShowMatch = false;
+	EStatsQualityFilter m_StatsQualityFilter = EStatsQualityFilter::ALL;
+	EStatsScale m_StatsScale = EStatsScale::TOTAL;
+	// the weapon table shows one period
+	EStatsPeriod m_StatsWeaponPeriod = EStatsPeriod::ALL_TIME;
+	int m_StatsSelectedIndex = -1;
+	CLineInputBuffered<128> m_StatsHistorySearchInput;
+	std::array<CUIElement, 4> m_aStatsSearchUiElements;
+	// the gametypes the journal holds; the drop down entry 0 is all of them
+	std::vector<std::string> m_vStatsModes;
+	std::vector<const char *> m_vpStatsModeNames = {nullptr};
+	int m_StatsModeIndex = 0;
+	std::vector<CMatchHistoryEntry> m_vStatsHistory;
+	// cached text of the visible rows of the match list, which can be long
+	std::vector<CUIElement *> m_vpStatsListLabels;
+	std::optional<CStoredMatch> m_StatsSelectedMatch;
+	CMatchCombatStats m_StatsSelectedCombat;
+	CMatchReportRanking m_StatsSelectedRanking;
+	CMatchProfile m_aStatsProfiles[(int)EStatsPeriod::COUNT];
+	CMatchCombatStats m_aStatsProfileCombat[(int)EStatsPeriod::COUNT];
+	CMatchJournalInfo m_StatsInfo;
+	std::string m_StatsError;
+	void RefreshStats();
+	void LoadSelectedStatsMatch();
+	void RenderStats(CUIRect MainView);
+	void RenderStatsMatchList(CUIRect View);
+	void RenderStatsMatchSummary(CUIRect View);
+	void RenderStatsProfile(CUIRect View);
+	void StatsPeriodHeader(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pLabel);
+	void StatsPeriodRow(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pLabel, const char *const *ppValues);
+	void StatsHeading(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pText);
+	void StatsTiles(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *const *ppLabels, const char *const *ppValues, int Count);
+	void StatsMetricLine(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pLabel, const char *pValue);
+	void StatsWeaponMatrix(class CScrollRegion *pScrollRegion, CUIRect *pContent, const char *pHeading, const CMatchCombatStats &Stats);
+	const char *StatsModeFilter() const;
+	bool StatsModeDropDown(CUIRect Rect);
+	static const char *StatsPeriodName(EStatsPeriod Period);
+	void PopupConfirmDeleteStatsMatch();
+	void PopupConfirmDeleteStatsPeriod();
+
+public:
+	/**
+	 * Makes the statistics page reload from the journal on its next frame,
+	 * for when something outside the page changed what is stored.
+	 */
+	void InvalidateStats() { m_StatsInitialized = false; }
+
+private:
 	// found in menus_demo.cpp
 	vec2 m_DemoControlsPositionOffset = vec2(0.0f, 0.0f);
 	bool m_PausedBeforeSeeking;
@@ -872,6 +952,7 @@ public:
 		PAGE_FAVORITE_COMMUNITY_4,
 		PAGE_FAVORITE_COMMUNITY_5,
 		PAGE_DEMOS,
+		PAGE_STATS,
 		PAGE_SETTINGS,
 		PAGE_NETWORK,
 		PAGE_GHOST,
@@ -919,6 +1000,7 @@ public:
 		SMALL_TAB_SETTINGS,
 		SMALL_TAB_EDITOR,
 		SMALL_TAB_DEMOBUTTON,
+		SMALL_TAB_STATSBUTTON,
 		SMALL_TAB_SERVER,
 		SMALL_TAB_BROWSER_FILTER,
 		SMALL_TAB_BROWSER_INFO,
@@ -1041,6 +1123,9 @@ public:
 	};
 
 	void SetMenuPage(int NewPage);
+	void OpenDemos();
+	void OpenStats();
+	void ExportMatchStats(const CStoredMatch &Stored, bool Csv);
 	void RefreshBrowserTab(bool Force);
 	void ForceRefreshLanPage();
 	void SetShowStart(bool ShowStart);

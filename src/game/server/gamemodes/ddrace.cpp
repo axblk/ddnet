@@ -1424,12 +1424,53 @@ CGameControllerDDRace::CGameControllerDDRace(CGameServices &Services, const CGam
 
 CGameControllerDDRace::~CGameControllerDDRace() = default;
 
+bool CGameControllerDDRace::BuildLiveStats(int ClientId, CMatchReport &Report, int &LocalParticipantId)
+{
+	Report = MatchReportHeader(m_LiveStatsId, m_LiveStatsStartTick);
+	Report.m_EndTimeUtc = time_timestamp();
+	Report.m_DurationTicks = Server()->Tick() - m_LiveStatsStartTick;
+	Report.m_Termination = EMatchTermination::ABORTED;
+	Report.m_vParticipants.push_back({0, std::nullopt, Server()->ClientName(ClientId), Server()->ClientClan(ClientId)});
+	LocalParticipantId = 0;
+
+	const auto AddMetric = [&](const char *pMetricId, int64_t Value) {
+		Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, 0, pMetricId, Value, EMatchMetricAggregation::MATCH_ONLY});
+	};
+	const auto Ticks = [&](float Seconds) { return round_to_int(Seconds * Server()->TickSpeed()); };
+	const CPlayerData *pData = RaceScore().PlayerData(ClientId);
+	if(pData->m_PlayerDataLoaded)
+	{
+		if(pData->m_BestTime.has_value())
+			AddMetric("personal_best_ticks", Ticks(*pData->m_BestTime));
+		if(!g_Config.m_SvHideScore && pData->m_MapRank > 0)
+		{
+			AddMetric("map_rank", pData->m_MapRank);
+			Report.m_vStandings.push_back({EMatchSubjectKind::PARTICIPANT, 0, pData->m_MapRank, EMatchOutcome::FINISHED});
+		}
+		AddMetric("map_finishes", pData->m_MapFinishes);
+	}
+	if(!g_Config.m_SvHideScore && RaceScore().CurrentRecord().has_value())
+		AddMetric("map_best_ticks", Ticks(*RaceScore().CurrentRecord()));
+	AddMetric("session_finishes", pData->m_SessionFinishes);
+	if(pData->m_LastFinishTime.has_value())
+		AddMetric("last_finish_ticks", Ticks(*pData->m_LastFinishTime));
+	const CCharacterDDRace *pCharacter = static_cast<const CCharacterDDRace *>(Services().Character(ClientId));
+	if(pCharacter && pCharacter->m_DDRaceState == ERaceState::STARTED)
+	{
+		AddMetric("current_run_ticks", std::max(0, Server()->Tick() - pCharacter->m_StartTime));
+		if(pCharacter->m_LastTimeCp >= 0)
+			AddMetric("current_checkpoint", pCharacter->m_LastTimeCp + 1);
+	}
+	return true;
+}
+
 void CGameControllerDDRace::Init(CDbConnectionPool *pDbPool)
 {
 	dbg_assert(pDbPool, "DDRace score service requires a database pool");
 	m_pRaceScore = std::make_unique<CScore>(Services(), pDbPool, &RaceTeams());
 	RaceTeams().SetScore(&RaceScore());
 	IGameController::Init(pDbPool);
+	m_LiveStatsStartTick = Server()->Tick();
 	RaceScore().LoadMapInfo();
 	RaceTeams().Reset();
 }

@@ -67,6 +67,7 @@
 #include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
 #include <engine/shared/csv.h>
+#include <engine/shared/protocol_ex.h>
 #include <engine/shared/video.h>
 #include <engine/sound.h>
 #include <engine/storage.h>
@@ -93,6 +94,30 @@ using namespace std::chrono_literals;
 
 namespace
 {
+	bool UnpackUuid(CUnpacker *pUnpacker, CUuid &Uuid)
+	{
+		const unsigned char *pData = pUnpacker->GetRaw(sizeof(Uuid));
+		if(pData == nullptr)
+			return false;
+		mem_copy(&Uuid, pData, sizeof(Uuid));
+		return true;
+	}
+
+	// what the server's game type says, lowercase and without anything but letters and digits; empty for a race
+	std::string ClientObservedModeId(const CGameInfo &GameInfo, const char *pGameType)
+	{
+		if(GameInfo.m_Race)
+			return {};
+		std::string ModeId;
+		for(const char *pCharacter = pGameType; *pCharacter != '\0' && ModeId.size() < (size_t)MatchReportLimits::MAX_ID_LENGTH; ++pCharacter)
+		{
+			const char Character = *pCharacter >= 'A' && *pCharacter <= 'Z' ? *pCharacter - 'A' + 'a' : *pCharacter;
+			if((Character >= 'a' && Character <= 'z') || (Character >= '0' && Character <= '9'))
+				ModeId.push_back(Character);
+		}
+		return ModeId;
+	}
+
 	bool UsePredictedEnvelopeTime(const CGameTickInfo &Time, const CGameView &View)
 	{
 		return !Time.m_IsDemoPlayback && g_Config.m_ClPredict && (!View.IsSpectating() || View.SpectatorId() == SPEC_FREEVIEW);
@@ -414,6 +439,9 @@ void CGameClient::OnInit()
 	const int64_t OnInitStart = time_get();
 	m_StartupAssetsPending = true;
 	m_StartupAssetsStart = OnInitStart;
+	std::string MatchJournalError;
+	if(!m_MatchJournal.Open(Storage(), &MatchJournalError))
+		log_error("match-journal", "%s", MatchJournalError.c_str());
 
 	Client()->SetLoadingCallback([this](IClient::ELoadingCallbackDetail Detail) {
 		const char *pTitle;
@@ -579,6 +607,7 @@ void CGameClient::OnUpdate()
 	UpdateAssetPackLoads();
 	UpdateLanguageLoads();
 	HandleLanguageChanged();
+	RequestLiveStats();
 
 	CUIElementBase::Init(Ui()); // update static pointer because game and editor use separate UI
 
@@ -864,9 +893,42 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	}
 }
 
+void CGameClient::StoreMatch(CSessionId SessionId, const CStoredMatch &Match, const CStoredMatch *pReplacedObserved)
+{
+	if(Client()->SessionType(SessionId) != ESessionSourceType::NETWORK || !g_Config.m_ClSaveMatchStats || !m_MatchJournal.IsOpen())
+		return;
+	std::string Error;
+	if(m_MatchJournal.Insert(Match, pReplacedObserved, &Error) == CMatchJournal::EInsertResult::ERROR)
+		log_error("match-journal", "%s", Error.c_str());
+}
+
+void CGameClient::FinalizeObservedMatch(CSessionId SessionId, CGameSessionContext &Session, const CGameState &State, EMatchTermination Termination)
+{
+	const CServerInfo &ServerInfo = Client()->ServerInfo(SessionId);
+	const std::string ModeId = ClientObservedModeId(State.CoreGameInfo(), ServerInfo.m_aGameType);
+	const IMap *pMap = Map(SessionId);
+	if(ModeId.empty() || pMap == nullptr)
+		return;
+	CObservedMatchMetadata Metadata;
+	Metadata.m_OriginId = ServerInfo.m_aAddress;
+	Metadata.m_ModeId = ModeId;
+	Metadata.m_MapName = ServerInfo.m_aMap;
+	Metadata.m_MapSha256 = pMap->Sha256();
+	Metadata.m_EndTimeUtc = time_timestamp();
+	Metadata.m_TickRate = Client()->GameTickSpeed();
+	Metadata.m_Termination = Termination;
+	if(Session.m_Stats.FinalizeObservedMatch(Metadata, State, Client()->GameTick(SessionId, IClient::CONN_MAIN)))
+		StoreMatch(SessionId, *Session.m_Stats.LatestMatch(), nullptr);
+}
+
 void CGameClient::OnSessionClosed(CSessionId SessionId)
 {
 	CGameSessionContext &Session = SessionContext(SessionId);
+	if(Client()->SessionType(SessionId) == ESessionSourceType::NETWORK)
+	{
+		FinalizeObservedMatch(SessionId, Session, Session.GameState(IClient::CONN_MAIN), EMatchTermination::ABORTED);
+		PersistLiveStatsOnDisconnect(SessionId, Session);
+	}
 	for(CGameState &SessionState : Session.GameStates())
 		SessionState.Reset();
 	Session.m_Broadcast.Reset();
@@ -875,6 +937,8 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 	ResetInfoMessages(SessionId);
 	ResetChat(SessionId);
 	Session.m_Stats.Reset();
+	Session.m_MatchReportAssembler.Reset();
+	Session.m_LastLiveStatsRequest = 0;
 	for(CInputRoute &Route : Session.m_aInputRoutes)
 		Route.Reset();
 	m_SessionPresentations.Unload(SessionId);
@@ -943,6 +1007,86 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 
 	Editor()->ResetMentions();
 	Editor()->ResetIngameMoved();
+}
+
+void CGameClient::PersistLiveStatsOnDisconnect(CSessionId SessionId, CGameSessionContext &Session)
+{
+	if(const CStoredMatch *pLive = Session.m_Stats.LiveStatsToPersist())
+		StoreMatch(SessionId, *pLive, Session.m_Stats.ObservedMatchReplacedBy(*pLive));
+}
+
+void CGameClient::HandleMatchReportMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker)
+{
+	CGameSessionContext &Session = SessionContext(SessionId);
+	CMatchReportAssembler &Assembler = Session.m_MatchReportAssembler;
+	CUuid MatchId;
+	if(!UnpackUuid(pUnpacker, MatchId))
+		return;
+	if(MsgId == NETMSG_MATCH_REPORT_START)
+	{
+		const bool Live = pUnpacker->GetInt() != 0;
+		const bool PersistOnDisconnect = pUnpacker->GetInt() != 0;
+		const int LocalParticipantId = pUnpacker->GetInt();
+		const int Size = pUnpacker->GetInt();
+		if(pUnpacker->Error() || !Assembler.Start(MatchId, Live, PersistOnDisconnect, LocalParticipantId, Size))
+			log_error("match-report", "invalid match report announcement");
+		return;
+	}
+	const int ChunkIndex = pUnpacker->GetInt();
+	const int ChunkSize = pUnpacker->GetInt();
+	const unsigned char *pChunk = pUnpacker->Error() ? nullptr : pUnpacker->GetRaw(ChunkSize);
+	if(pChunk == nullptr || !Assembler.AddChunk(MatchId, ChunkIndex, pChunk, ChunkSize))
+	{
+		log_error("match-report", "invalid match report chunk");
+		return;
+	}
+	if(!Assembler.IsComplete())
+		return;
+
+	const bool Live = Assembler.IsLive();
+	const bool PersistOnDisconnect = Assembler.PersistOnDisconnect();
+	CStoredMatch Match;
+	std::string Error;
+	if(!Assembler.Finish(Match, &Error))
+	{
+		log_error("match-report", "%s", Error.c_str());
+		return;
+	}
+	Match.m_OriginId = Client()->ServerInfo(SessionId).m_aAddress;
+	CSessionStatsState &Stats = Session.m_Stats;
+	if(Live)
+	{
+		Stats.SetLiveStats(std::move(Match), PersistOnDisconnect);
+		return;
+	}
+	const bool CurrentMatch = Stats.IsCurrentServerMatch(Match.m_Report);
+	const CStoredMatch *pObserved = Stats.ObservedMatchReplacedBy(Match);
+	if(!CurrentMatch && !pObserved)
+		return;
+	StoreMatch(SessionId, Match, pObserved);
+	if(CurrentMatch)
+		Stats.SetLatestServerMatch(std::move(Match));
+	else
+		Stats.ClearPreviousObservedMatch();
+}
+
+void CGameClient::RequestLiveStats() const
+{
+	// the statboard shows them, and they are kept when the connection breaks
+	const CSessionId SessionId = Client()->NetworkSessionId();
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	const int64_t Now = time_get();
+	if(!pSession || Client()->SessionState(SessionId) != ESessionState::READY || (pSession->m_LastLiveStatsRequest != 0 && Now - pSession->m_LastLiveStatsRequest < time_freq() * 10))
+		return;
+	CMsgPacker Request(NETMSG_LIVE_STATS_REQUEST, false);
+	if(Client()->SendMsg(IClient::CONN_MAIN, &Request, MSGFLAG_VITAL) >= 0)
+		pSession->m_LastLiveStatsRequest = Now;
+}
+
+const CStoredMatch *CGameClient::LiveStats(CSessionId SessionId) const
+{
+	const CGameSessionContext *pSession = FindSessionContext(SessionId);
+	return pSession && pSession->m_Stats.LiveStats().has_value() ? &*pSession->m_Stats.LiveStats() : nullptr;
 }
 
 void CGameClient::OnSessionFocused(CSessionId SessionId)
@@ -1678,6 +1822,12 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	const bool Focused = SessionId == Client()->FocusedSessionId();
 	const bool SuppressEvents = m_SuppressEvents && SessionId == Client()->DemoSessionId();
 	const int64_t MessageTime = SessionMessageTime(SessionId);
+	if(MsgId == NETMSG_MATCH_REPORT_START || MsgId == NETMSG_MATCH_REPORT_CHUNK)
+	{
+		if(Conn == IClient::CONN_MAIN && Client()->SessionType(SessionId) == ESessionSourceType::NETWORK)
+			HandleMatchReportMessage(SessionId, MsgId, pUnpacker);
+		return;
+	}
 
 	// special messages
 	static_assert((int)NETMSGTYPE_SV_TUNEPARAMS == (int)protocol7::NETMSGTYPE_SV_TUNEPARAMS, "0.6 and 0.7 tune message id do not match");
@@ -1862,7 +2012,7 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	}
 	m_Chat.HandleMessage(MessageSession, MessageState, MessageTime, SuppressEvents, Client()->SessionType(SessionId) == ESessionSourceType::DEMO, Focused, MsgId, pRawMsg);
 	m_InfoMessages.HandleMessage(MessageSession.m_InfoMessages, MessageSession, MessageState, Client()->GameTick(SessionId, Conn), SuppressEvents, MsgId, pRawMsg);
-	m_Statboard.HandleMessage(MessageSession.m_Stats, MessageState, SuppressEvents, MsgId, pRawMsg);
+	MessageSession.m_Stats.HandleMessage(MessageState, SuppressEvents, MsgId, pRawMsg);
 	if(MsgId == NETMSGTYPE_SV_RECORD || MsgId == NETMSGTYPE_SV_RECORDLEGACY)
 	{
 		const CNetMsg_Sv_Record *pMsg = static_cast<const CNetMsg_Sv_Record *>(pRawMsg);
@@ -2435,8 +2585,9 @@ void CGameClient::OnNewSnapshot(CSessionId SessionId, int Conn)
 	State.SetCoreGameInfo(GameInfo);
 	State.ApplySnapshot(*Client(), SessionId, Conn);
 	BuildSnapState(SessionId, Conn);
+	bool EnteredGameOver = false;
 	if(Conn == IClient::CONN_MAIN)
-		Session.m_Stats.UpdateSnapshot(State, Client()->GameTick(SessionId, Conn));
+		EnteredGameOver = Session.m_Stats.UpdateSnapshot(State, Client()->GameTick(SessionId, Conn));
 	bool ProcessedEvents = false;
 	if(Active)
 	{
@@ -2454,6 +2605,8 @@ void CGameClient::OnNewSnapshot(CSessionId SessionId, int Conn)
 #endif
 	if(ProcessedEvents)
 		ProcessAirJumpEffects(SessionId, Conn);
+	if(EnteredGameOver)
+		FinalizeObservedMatch(SessionId, Session, State, EMatchTermination::COMPLETED);
 }
 
 void CGameClient::ProcessAirJumpEffects(CSessionId SessionId, int Conn)

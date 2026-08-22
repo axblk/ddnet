@@ -948,7 +948,7 @@ void CClient::StopNetworkSession(const char *pReason)
 	NetClient(CONN_MAIN).Disconnect(pReason);
 	if(Focused && m_State < IClient::STATE_QUITTING)
 		SetFocusedState(IClient::STATE_OFFLINE, true);
-	else if(m_State < IClient::STATE_QUITTING)
+	else
 		GameClient()->OnSessionClosed(m_NetworkSessionId);
 	ResetMapDownload(true);
 
@@ -2679,7 +2679,8 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 	else if(Vital || Msg == NETMSGTYPE_SV_PREINPUT)
 	{
 		// game message
-		if(!Dummy)
+		// a match report belongs to the player who received it, a demo does not keep it
+		if(!Dummy && Msg != NETMSG_MATCH_REPORT_START && Msg != NETMSG_MATCH_REPORT_CHUNK)
 		{
 			for(auto &DemoRecorder : DemoRecorders())
 			{

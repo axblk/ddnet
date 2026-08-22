@@ -192,6 +192,7 @@ private:
 #endif
 	class IHttp *m_pHttp;
 
+	CMatchJournal m_MatchJournal;
 	std::vector<std::unique_ptr<CGameSessionContext>> m_vpSessionContexts;
 	// The view that takes input, and two more for a split screen.
 	CGameView m_LegacyView;
@@ -224,6 +225,11 @@ private:
 	void ProcessAirJumpEffects(CSessionId SessionId, int Conn);
 	void BuildSnapState(CSessionId SessionId, int Conn);
 	void ProcessSnapshot(CSessionId SessionId, int Conn);
+	void StoreMatch(CSessionId SessionId, const CStoredMatch &Match, const CStoredMatch *pReplacedObserved);
+	void FinalizeObservedMatch(CSessionId SessionId, CGameSessionContext &Session, const CGameState &State, EMatchTermination Termination);
+	void PersistLiveStatsOnDisconnect(CSessionId SessionId, CGameSessionContext &Session);
+	void HandleMatchReportMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker);
+	void RequestLiveStats() const;
 	void ProcessPrediction();
 	void AimView(const CGameSessionContext &Session, const CGameState &State, CGameView &View) const;
 	void UpdatePositions(CGameState &State, CGameView &View, const CGameTickInfo &Time, float LocalTime, bool Interactive);
@@ -279,6 +285,8 @@ public:
 	CGameSessionContext &SessionContext(CSessionId SessionId) const;
 	CGameSessionContext &SessionContext() const { return SessionContext(Client()->FocusedSessionId()); }
 	CGameSessionContext *FindSessionContext(CSessionId SessionId) const { return FindSessionEntry(m_vpSessionContexts, SessionId); }
+	CMatchJournal &MatchJournal() { return m_MatchJournal; }
+	const CStoredMatch *LiveStats(CSessionId SessionId) const;
 	CSessionPresentation &SessionPresentation(CSessionId SessionId) const;
 	void StopMapSounds();
 	void ResetInfoMessages(CSessionId SessionId);

@@ -64,7 +64,6 @@ void CGameControllerVanillaCTF::OnCharacterDeath(const CGameCharacterDeathContex
 		Services().SendGameMessage7(protocol7::GAMEMSG_CTF_DROP);
 		if(pKiller && pKiller->GetTeam() != pVictim->GetPlayer()->GetTeam())
 			VanillaPlayer(pKiller->GetCid())->m_Score++;
-		PublishMatchEvent(CMatchEventFlagDrop{VictimId, pFlag->Team()});
 		Result |= 1;
 	}
 	FinalizeCharacterDeath(Context, Result);
@@ -73,20 +72,27 @@ void CGameControllerVanillaCTF::OnCharacterDeath(const CGameCharacterDeathContex
 void CGameControllerVanillaCTF::Tick()
 {
 	CGameControllerVanillaTeamplay::Tick();
-	if(Services().World().ResetRequested() || Services().World().IsPaused() || m_GameOverTick != -1 || m_Warmup)
+	if(Services().World().ResetRequested() || Services().World().IsPaused() || !Match().IsRunning())
 		return;
 
 	ProcessFlags();
 
-	const bool ScoresTied = m_aTeamScores[TEAM_RED] / 100 == m_aTeamScores[TEAM_BLUE] / 100;
+	const bool ScoresTied = Match().IsSuddenDeath() ? m_aTeamScores[TEAM_RED] / 100 == m_aTeamScores[TEAM_BLUE] / 100 : m_aTeamScores[TEAM_RED] == m_aTeamScores[TEAM_BLUE];
 	const int TopScore = std::max(m_aTeamScores[TEAM_RED], m_aTeamScores[TEAM_BLUE]);
 	const bool ScoreLimitReached = ScoreLimit() > 0 && TopScore >= ScoreLimit();
-	const bool TimeLimitReached = TimeLimit() > 0 && Server()->Tick() - m_RoundStartTick >= TimeLimit() * Server()->TickSpeed() * 60;
-	const EMatchResult MatchResult = EvaluateMatch(ScoresTied ? 2 : 1, ScoreLimitReached || TimeLimitReached, m_SuddenDeath != 0);
+	const bool TimeLimitReached = TimeLimit() > 0 && Server()->Tick() - Match().RoundStartTick() >= TimeLimit() * Server()->TickSpeed() * 60;
+	const EMatchResult MatchResult = EvaluateMatch(ScoresTied ? 2 : 1, ScoreLimitReached || TimeLimitReached, Match().IsSuddenDeath());
 	if(MatchResult == EMatchResult::END_ROUND)
 		EndRound();
 	else if(MatchResult == EMatchResult::SUDDEN_DEATH)
-		m_SuddenDeath = 1;
+		Match().BeginSuddenDeath();
+}
+
+bool CGameControllerVanillaCTF::CanBeMovedOnBalance(const CPlayer *pPlayer) const
+{
+	return std::ranges::all_of(m_apFlags, [pPlayer](const CFlag *pFlag) {
+		return !pFlag || pFlag->Carrier() != pPlayer->GetCharacter();
+	});
 }
 
 void CGameControllerVanillaCTF::ProcessFlags()
@@ -100,7 +106,6 @@ void CGameControllerVanillaCTF::ProcessFlags()
 			log_info("game", "flag_return");
 			Services().CreateLegacySoundGlobal(SOUND_CTF_RETURN);
 			Services().SendGameMessage7(protocol7::GAMEMSG_CTF_RETURN);
-			PublishMatchEvent(CMatchEventFlagReturn{-1, pFlag->Team()});
 			continue;
 		}
 
@@ -147,7 +152,6 @@ void CGameControllerVanillaCTF::FlagGrab(CFlag *pFlag, CCharacter *pCarrier)
 			Services().CreateLegacySoundGlobal(pPlayer->GetTeam() == pFlag->Team() ? SOUND_CTF_GRAB_EN : SOUND_CTF_GRAB_PL, ClientId);
 	}
 	Services().SendGameMessage7(protocol7::GAMEMSG_CTF_GRAB, {pFlag->Team()});
-	PublishMatchEvent(CMatchEventFlagGrab{pCarrier->GetPlayer()->GetCid(), pFlag->Team()});
 }
 
 void CGameControllerVanillaCTF::FlagReturn(CFlag *pFlag, CCharacter *pPlayer)
@@ -157,7 +161,6 @@ void CGameControllerVanillaCTF::FlagReturn(CFlag *pFlag, CCharacter *pPlayer)
 	log_info("game", "flag_return player='%d:%s' team=%d", pPlayer->GetPlayer()->GetCid(), Server()->ClientName(pPlayer->GetPlayer()->GetCid()), pPlayer->GetPlayer()->GetTeam());
 	Services().CreateLegacySoundGlobal(SOUND_CTF_RETURN);
 	Services().SendGameMessage7(protocol7::GAMEMSG_CTF_RETURN);
-	PublishMatchEvent(CMatchEventFlagReturn{pPlayer->GetPlayer()->GetCid(), pFlag->Team()});
 }
 
 void CGameControllerVanillaCTF::FlagCapture(CFlag *pFlag)
@@ -180,7 +183,6 @@ void CGameControllerVanillaCTF::FlagCapture(CFlag *pFlag)
 	for(CFlag *pResetFlag : m_apFlags)
 		if(pResetFlag)
 			pResetFlag->Return();
-	PublishMatchEvent(CMatchEventFlagCapture{CarrierId, pFlag->Team(), CaptureTicks});
 }
 
 CFlag *CGameControllerVanillaCTF::Flag(int Team) const

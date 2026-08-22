@@ -238,16 +238,16 @@ const CCharacter *CGameContext::GetPlayerChar(int ClientId) const
 	return m_apPlayers[ClientId]->GetCharacter();
 }
 
-void CGameContext::ConPositionPlayer(IConsole::IResult *pResult, void *pUserData)
+void CGameContext::ConDamagePlayer(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = static_cast<CGameContext *>(pUserData);
-	CCharacter *pCharacter = pSelf->GetPlayerChar(pResult->GetInteger(0));
-	const CCharacter *pTarget = pSelf->GetPlayerChar(pResult->GetInteger(1));
-	if(!pCharacter || !pTarget)
+	CCharacter *pVictim = pSelf->GetPlayerChar(pResult->GetInteger(0));
+	const CCharacter *pAttacker = pSelf->GetPlayerChar(pResult->GetInteger(1));
+	const int Weapon = pResult->GetInteger(3);
+	if(!pVictim || !pAttacker || Weapon < WEAPON_HAMMER || Weapon >= NUM_WEAPONS)
 		return;
 
-	pCharacter->SetPosition(pTarget->GetPos() + vec2(pResult->GetInteger(2), pResult->GetInteger(3)));
-	pCharacter->ResetVelocity();
+	pVictim->TakeDamage(vec2(0, 0), pResult->GetInteger(2), pAttacker->GetPlayer()->GetCid(), Weapon);
 }
 
 const CPlayer *CGameContext::FindPlayerByName(const char *pName) const
@@ -1394,25 +1394,6 @@ void CGameContext::OnTick()
 		const char *pLine = Server()->GetAnnouncementLine();
 		if(pLine)
 			SendChat(-1, TEAM_ALL, pLine);
-	}
-
-	for(auto &Switcher : Switchers())
-	{
-		for(int j = 0; j < NUM_DDRACE_TEAMS; ++j)
-		{
-			if(Switcher.m_aEndTick[j] <= Server()->Tick() && Switcher.m_aType[j] == TILE_SWITCHTIMEDOPEN)
-			{
-				Switcher.m_aStatus[j] = false;
-				Switcher.m_aEndTick[j] = 0;
-				Switcher.m_aType[j] = TILE_SWITCHCLOSE;
-			}
-			else if(Switcher.m_aEndTick[j] <= Server()->Tick() && Switcher.m_aType[j] == TILE_SWITCHTIMEDCLOSE)
-			{
-				Switcher.m_aStatus[j] = true;
-				Switcher.m_aEndTick[j] = 0;
-				Switcher.m_aType[j] = TILE_SWITCHOPEN;
-			}
-		}
 	}
 
 	// Record player position at the end of the tick
@@ -2798,92 +2779,6 @@ void CGameContext::ConTunes(IConsole::IResult *pResult, void *pUserData)
 	}
 }
 
-void CGameContext::ConTuneZone(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	int List = pResult->GetInteger(0);
-	const char *pParamName = pResult->GetString(1);
-	float NewValue = pResult->GetFloat(2);
-
-	if(List >= 0 && List < TuneZone::NUM)
-	{
-		if(pSelf->TuningList()[List].Set(pParamName, NewValue) && pSelf->TuningList()[List].Get(pParamName, &NewValue))
-		{
-			log_info("tuning", "%s in zone %d changed to %.2f", pParamName, List, NewValue);
-			pSelf->SendTuningParams(-1, List);
-		}
-		else
-		{
-			log_error("tuning", "No such tuning parameter: %s", pParamName);
-		}
-	}
-}
-
-void CGameContext::ConTuneDumpZone(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	int List = pResult->GetInteger(0);
-	if(List >= 0 && List < TuneZone::NUM)
-	{
-		for(int i = 0; i < CTuningParams::Num(); i++)
-		{
-			float Value;
-			pSelf->TuningList()[List].Get(i, &Value);
-			log_info("tuning", "zone %d: %s %.2f", List, CTuningParams::Name(i), Value);
-		}
-	}
-}
-
-void CGameContext::ConTuneResetZone(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	if(pResult->NumArguments())
-	{
-		int List = pResult->GetInteger(0);
-		if(List >= 0 && List < TuneZone::NUM)
-		{
-			pSelf->TuningList()[List] = CTuningParams::DEFAULT;
-			log_info("tuning", "Tunezone %d reset", List);
-			pSelf->SendTuningParams(-1, List);
-		}
-	}
-	else
-	{
-		for(int i = 0; i < TuneZone::NUM; i++)
-		{
-			*(pSelf->TuningList() + i) = CTuningParams::DEFAULT;
-			pSelf->SendTuningParams(-1, i);
-		}
-		log_info("tuning", "All Tunezones reset");
-	}
-}
-
-void CGameContext::ConTuneSetZoneMsgEnter(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	if(pResult->NumArguments())
-	{
-		int List = pResult->GetInteger(0);
-		if(List >= 0 && List < TuneZone::NUM)
-		{
-			str_copy(pSelf->m_aaZoneEnterMsg[List], pResult->GetString(1));
-		}
-	}
-}
-
-void CGameContext::ConTuneSetZoneMsgLeave(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	if(pResult->NumArguments())
-	{
-		int List = pResult->GetInteger(0);
-		if(List >= 0 && List < TuneZone::NUM)
-		{
-			str_copy(pSelf->m_aaZoneLeaveMsg[List], pResult->GetString(1));
-		}
-	}
-}
-
 void CGameContext::ConMapbug(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
@@ -2907,18 +2802,6 @@ void CGameContext::ConMapbug(IConsole::IResult *pResult, void *pUserData)
 		break;
 	default:
 		dbg_assert_failed("unreachable");
-	}
-}
-
-void CGameContext::ConSwitchOpen(IConsole::IResult *pResult, void *pUserData)
-{
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	int Switch = pResult->GetInteger(0);
-
-	if(in_range(Switch, (int)pSelf->Switchers().size() - 1))
-	{
-		pSelf->Switchers()[Switch].m_Initial = false;
-		log_info("server", "switch %d opened by default", Switch);
 	}
 }
 
@@ -3459,13 +3342,7 @@ void CGameContext::OnConsoleInit()
 	Console()->Register("toggle_tune", "s[tuning] f[value 1] f[value 2]", CFGFLAG_SERVER, ConToggleTuneParam, this, "Toggle tune variable");
 	Console()->Register("tune_reset", "?s[tuning]", CFGFLAG_SERVER, ConTuneReset, this, "Reset all or one tuning variable to default");
 	Console()->Register("tunes", "", CFGFLAG_SERVER, ConTunes, this, "List all tuning variables and their values");
-	Console()->Register("tune_zone", "i[zone] s[tuning] f[value]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneZone, this, "Tune in zone a variable to value");
-	Console()->Register("tune_zone_dump", "i[zone]", CFGFLAG_SERVER, ConTuneDumpZone, this, "Dump zone tuning in zone x");
-	Console()->Register("tune_zone_reset", "?i[zone]", CFGFLAG_SERVER, ConTuneResetZone, this, "Reset zone tuning in zone x or in all zones");
-	Console()->Register("tune_zone_enter", "i[zone] r[message]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneSetZoneMsgEnter, this, "Which message to display on zone enter; use 0 for normal area");
-	Console()->Register("tune_zone_leave", "i[zone] r[message]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneSetZoneMsgLeave, this, "Which message to display on zone leave; use 0 for normal area");
 	Console()->Register("mapbug", "s[mapbug]", CFGFLAG_SERVER | CFGFLAG_GAME, ConMapbug, this, "Enable map compatibility mode using the specified bug (example: grenade-doubleexplosion@ddnet.tw)");
-	Console()->Register("switch_open", "i[switch]", CFGFLAG_SERVER | CFGFLAG_GAME, ConSwitchOpen, this, "Whether a switch is deactivated by default (otherwise activated)");
 	Console()->Register("pause_game", "", CFGFLAG_SERVER, ConPause, this, "Pause/unpause game");
 	Console()->Register("change_map", "r[map]", CFGFLAG_SERVER | CFGFLAG_STORE, ConChangeMap, this, "Change map");
 	Console()->Register("restart", "?i[seconds]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRestart, this, "Restart in x seconds (0 = abort)");
@@ -3475,7 +3352,7 @@ void CGameContext::OnConsoleInit()
 	Console()->Register("say", "r[message]", CFGFLAG_SERVER, ConSay, this, "Say in chat");
 	Console()->Register("set_team", "v[id] i[team-id] ?i[delay in minutes]", CFGFLAG_SERVER, ConSetTeam, this, "Set team for a player (spectators = -1, game = 0)");
 	Console()->Register("hot_reload", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConHotReload, this, "Reload the map while preserving the state of tees and teams");
-	Console()->Register("position_player", "i[id] i[target-id] i[offset-x] i[offset-y]", CFGFLAG_SERVER | CMDFLAG_TEST, ConPositionPlayer, this, "Position a player relative to another player for testing");
+	Console()->Register("damage_player", "i[victim-id] i[attacker-id] i[damage] i[weapon]", CFGFLAG_SERVER | CMDFLAG_TEST, ConDamagePlayer, this, "Damage a player for testing");
 	Console()->Register("reload_censorlist", "", CFGFLAG_SERVER, ConReloadCensorlist, this, "Reload the censorlist");
 
 	Console()->Register("add_vote", "s[name] r[command]", CFGFLAG_SERVER, ConAddVote, this, "Add a voting option");
@@ -3532,7 +3409,6 @@ void CGameContext::RegisterChatCommands()
 	Console()->Register("emote", "?s[emote name] i[duration in seconds]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConEyeEmote, this, "Sets your tee's eye emote");
 	Console()->Register("eyeemote", "?s['on'|'off'|'toggle']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSetEyeEmote, this, "Toggles use of standard eye-emotes on/off, eyeemote s, where s = on for on, off for off, toggle for toggle and nothing to show current status");
 	Console()->Register("help", "?r[command]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConHelp, this, "Shows help to command r, general help if left blank");
-	Console()->Register("info", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConInfo, this, "Shows info about this server");
 	Console()->Register("list", "?s[filter]", CFGFLAG_CHAT, ConList, this, "List connected players with optional case-insensitive substring matching filter");
 	Console()->Register("w", "s[player name] r[message]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConWhisper, this, "Whisper something to someone (private message)");
 	Console()->Register("whisper", "s[player name] r[message]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConWhisper, this, "Whisper something to someone (private message)");
@@ -3540,9 +3416,7 @@ void CGameContext::RegisterChatCommands()
 	Console()->Register("converse", "r[message]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConConverse, this, "Converse with the last person you whispered to (private message)");
 	Console()->Register("dnd", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConDND, this, "Toggle Do Not Disturb (no chat and server messages)");
 	Console()->Register("whispers", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConWhispers, this, "Toggle receiving whispers");
-	Console()->Register("mapinfo", "?r[map]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConMapInfo, this, "Show info about the map with name r gives (current map by default)");
 	Console()->Register("timeout", "?s[code]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTimeout, this, "Set timeout protection code s");
-	Console()->Register("map", "?r[map]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConMap, this, "Vote a map by name");
 
 	Console()->Register("showall", "?i['0'|'1']", CFGFLAG_CHAT | CFGFLAG_SERVER, ConShowAll, this, "Whether to show players at any distance (off by default), optional i = 0 for off else for on");
 }
@@ -3593,11 +3467,11 @@ void CGameContext::OnInit(const void *pPersistentData)
 	dbg_assert(RegisterBuiltInGameModes(m_GameHost.Modes()), "failed to register built-in game modes");
 	if(!m_GameHost.Select(Config()->m_SvGametype))
 	{
-		log_error("server", "unknown game type '%s'", Config()->m_SvGametype);
-		dbg_assert(m_GameHost.Select("ddnet"), "failed to create fallback controller for shutdown");
-		dbg_assert(m_GameHost.Controller(), "failed to create fallback controller for shutdown");
-		Server()->SetErrorShutdown("unknown game type");
-		return;
+		// A typo in the configuration is not worth refusing to run a server
+		// over. Say so and play DDNet, which is what happened before the modes
+		// were registered by id.
+		log_warn("server", "unknown game type '%s', playing 'ddnet'", Config()->m_SvGametype);
+		dbg_assert(m_GameHost.Select("ddnet"), "failed to select the fallback game type");
 	}
 
 	m_GameHost.Init(((CServer *)Server())->DbPool());

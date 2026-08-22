@@ -20,7 +20,7 @@ namespace
 TEST(GameModeRegistry, RegisterAndFind)
 {
 	CGameModeRegistry Registry;
-	const CGameModeInfo Info = {"test", "Test", "Test", "Test", EGameModeScoreKind::POINTS, 0, GAME_MODE_PROTOCOL_SIX};
+	const CGameModeInfo Info = {"test", "Test", "Test", "Test", EGameModeScoreKind::POINTS, 0};
 
 	EXPECT_TRUE(Registry.Register(Info, CreateNothing));
 	ASSERT_NE(Registry.Find("test"), nullptr);
@@ -28,6 +28,34 @@ TEST(GameModeRegistry, RegisterAndFind)
 	EXPECT_EQ(Registry.Find("missing"), nullptr);
 	EXPECT_EQ(Registry.Find(nullptr), nullptr);
 	EXPECT_FALSE(Registry.Register(Info, CreateNothing));
+}
+
+TEST(GameModeRegistry, ResolvesGameTypeNames)
+{
+	CGameModeRegistry Registry;
+	ASSERT_TRUE(RegisterBuiltInGameModes(Registry));
+
+	// What `sv_gametype` has always been set to.
+	EXPECT_STREQ(Registry.Resolve("ctf")->m_pId, "vanilla.ctf");
+	EXPECT_STREQ(Registry.Resolve("CTF")->m_pId, "vanilla.ctf");
+	EXPECT_STREQ(Registry.Resolve("tdm")->m_pId, "vanilla.tdm");
+	EXPECT_STREQ(Registry.Resolve("iCTF")->m_pId, "insta.ictf");
+	EXPECT_STREQ(Registry.Resolve("DDraceNetwork")->m_pId, "ddnet");
+	// The id still wins and nothing else resolves.
+	EXPECT_STREQ(Registry.Resolve("vanilla.ctf")->m_pId, "vanilla.ctf");
+	EXPECT_EQ(Registry.Resolve("nonsense"), nullptr);
+	EXPECT_EQ(Registry.Resolve(nullptr), nullptr);
+	// Find stays exact, so registration is never confused by a name.
+	EXPECT_EQ(Registry.Find("ctf"), nullptr);
+}
+
+TEST(GameModeRegistry, ResolvesADuplicateNameToTheFirstMode)
+{
+	CGameModeRegistry Registry;
+	EXPECT_TRUE(Registry.Register({"one", "One", "Shared", "TestOne", EGameModeScoreKind::POINTS, 0}, CreateNothing));
+	EXPECT_TRUE(Registry.Register({"two", "Two", "shared", "TestTwo", EGameModeScoreKind::POINTS, 0}, CreateNothing));
+	EXPECT_STREQ(Registry.Resolve("shared")->m_pId, "one");
+	EXPECT_STREQ(Registry.Resolve("two")->m_pId, "two");
 }
 
 TEST(GameModeRegistry, BuiltInMetadata)
@@ -39,13 +67,14 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	ASSERT_NE(pDDNet, nullptr);
 	EXPECT_STREQ(pDDNet->m_pGameType, "DDraceNetwork");
 	EXPECT_STREQ(GameModeScoreKindName(pDDNet->m_ScoreKind), "time");
-	EXPECT_EQ(pDDNet->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
 	EXPECT_TRUE(pDDNet->m_UseTuneZones);
+	EXPECT_TRUE(pDDNet->m_PhysicsRules.m_DDNetMovement);
 
 	const CGameModeInfo *pMod = Registry.Find("mod");
 	ASSERT_NE(pMod, nullptr);
 	EXPECT_STREQ(pMod->m_pTestingGameType, "TestMod");
 	EXPECT_TRUE(pMod->m_UseTuneZones);
+	EXPECT_TRUE(pMod->m_PhysicsRules.m_DDNetMovement);
 
 	const CGameModeInfo *pVanillaDM = Registry.Find("vanilla.dm");
 	ASSERT_NE(pVanillaDM, nullptr);
@@ -53,73 +82,64 @@ TEST(GameModeRegistry, BuiltInMetadata)
 	EXPECT_EQ(pVanillaDM->m_ScoreKind, EGameModeScoreKind::POINTS);
 	EXPECT_EQ(pVanillaDM->m_ActivePlayerLimit, 0);
 	EXPECT_FALSE(pVanillaDM->m_UseTuneZones);
+	EXPECT_FALSE(pVanillaDM->m_PhysicsRules.m_DDNetMovement);
 
 	const CGameModeInfo *pVanilla1on1 = Registry.Find("vanilla.1on1");
 	ASSERT_NE(pVanilla1on1, nullptr);
 	EXPECT_STREQ(pVanilla1on1->m_pGameType, "1on1");
 	EXPECT_EQ(pVanilla1on1->m_ScoreKind, EGameModeScoreKind::POINTS);
 	EXPECT_EQ(pVanilla1on1->m_GameFlags, 0);
-	EXPECT_EQ(pVanilla1on1->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
 	EXPECT_EQ(pVanilla1on1->m_ActivePlayerLimit, 2);
 
 	const CGameModeInfo *pVanillaTDM = Registry.Find("vanilla.tdm");
 	ASSERT_NE(pVanillaTDM, nullptr);
 	EXPECT_STREQ(pVanillaTDM->m_pGameType, "TDM");
 	EXPECT_EQ(pVanillaTDM->m_GameFlags, protocol7::GAMEFLAG_TEAMS);
-	EXPECT_EQ(pVanillaTDM->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
 
 	const CGameModeInfo *pVanillaCTF = Registry.Find("vanilla.ctf");
 	ASSERT_NE(pVanillaCTF, nullptr);
 	EXPECT_STREQ(pVanillaCTF->m_pGameType, "CTF");
 	EXPECT_EQ(pVanillaCTF->m_GameFlags, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS);
-	EXPECT_EQ(pVanillaCTF->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
 
 	const CGameModeInfo *pInstagibDM = Registry.Find("insta.idm");
 	ASSERT_NE(pInstagibDM, nullptr);
 	EXPECT_STREQ(pInstagibDM->m_pGameType, "iDM");
 	EXPECT_EQ(pInstagibDM->m_ScoreKind, EGameModeScoreKind::POINTS);
 	EXPECT_EQ(pInstagibDM->m_GameFlags, 0);
-	EXPECT_EQ(pInstagibDM->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
 
 	const CGameModeInfo *pInstagibTDM = Registry.Find("insta.itdm");
 	ASSERT_NE(pInstagibTDM, nullptr);
 	EXPECT_STREQ(pInstagibTDM->m_pGameType, "iTDM");
 	EXPECT_EQ(pInstagibTDM->m_ScoreKind, EGameModeScoreKind::POINTS);
 	EXPECT_EQ(pInstagibTDM->m_GameFlags, protocol7::GAMEFLAG_TEAMS);
-	EXPECT_EQ(pInstagibTDM->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
 
 	const CGameModeInfo *pInstagibCTF = Registry.Find("insta.ictf");
 	ASSERT_NE(pInstagibCTF, nullptr);
 	EXPECT_STREQ(pInstagibCTF->m_pGameType, "iCTF");
 	EXPECT_EQ(pInstagibCTF->m_ScoreKind, EGameModeScoreKind::POINTS);
 	EXPECT_EQ(pInstagibCTF->m_GameFlags, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS);
-	EXPECT_EQ(pInstagibCTF->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
 
 	const CGameModeInfo *pGrenadeDM = Registry.Find("insta.gdm");
 	ASSERT_NE(pGrenadeDM, nullptr);
 	EXPECT_STREQ(pGrenadeDM->m_pGameType, "gDM");
 	EXPECT_EQ(pGrenadeDM->m_ScoreKind, EGameModeScoreKind::POINTS);
 	EXPECT_EQ(pGrenadeDM->m_GameFlags, 0);
-	EXPECT_EQ(pGrenadeDM->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
 
 	const CGameModeInfo *pGrenadeTDM = Registry.Find("insta.gtdm");
 	ASSERT_NE(pGrenadeTDM, nullptr);
 	EXPECT_STREQ(pGrenadeTDM->m_pGameType, "gTDM");
 	EXPECT_EQ(pGrenadeTDM->m_GameFlags, protocol7::GAMEFLAG_TEAMS);
-	EXPECT_EQ(pGrenadeTDM->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
 
 	const CGameModeInfo *pGrenadeCTF = Registry.Find("insta.gctf");
 	ASSERT_NE(pGrenadeCTF, nullptr);
 	EXPECT_STREQ(pGrenadeCTF->m_pGameType, "gCTF");
 	EXPECT_EQ(pGrenadeCTF->m_GameFlags, protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS);
-	EXPECT_EQ(pGrenadeCTF->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
 
 	const CGameModeInfo *pZCatch = Registry.Find("zcatch.laser");
 	ASSERT_NE(pZCatch, nullptr);
 	EXPECT_STREQ(pZCatch->m_pGameType, "zCatch");
 	EXPECT_EQ(pZCatch->m_ScoreKind, EGameModeScoreKind::POINTS);
 	EXPECT_EQ(pZCatch->m_GameFlags, 0);
-	EXPECT_EQ(pZCatch->m_Protocols, GAME_MODE_PROTOCOL_SIX | GAME_MODE_PROTOCOL_SEVEN);
 }
 
 TEST(GameModeRegistry, VanillaDefaultTuning)

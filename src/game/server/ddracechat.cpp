@@ -14,15 +14,7 @@
 
 #include <algorithm>
 
-namespace
-{
-	CScore &RaceScore(CGameContext *pGameServer)
-	{
-		return static_cast<CGameControllerDDRace *>(pGameServer->GameHost().Controller())->RaceScore();
-	}
-}
-
-void CGameContext::ConInfo(IConsole::IResult *pResult, void *pUserData)
+void CGameControllerDDRace::ConInfo(IConsole::IResult *pResult, void *pUserData)
 {
 	log_info("chatresp", "DDraceNetwork Mod. Version: " GAME_VERSION);
 	if(GIT_SHORTREV_HASH)
@@ -147,9 +139,10 @@ void CGameContext::ConWhispers(IConsole::IResult *pResult, void *pUserData)
 	log_info("chatresp", pPlayer->m_Whispers ? "You will receive whispers" : "You will not receive any further whispers");
 }
 
-void CGameContext::ConMap(IConsole::IResult *pResult, void *pUserData)
+void CGameControllerDDRace::ConMap(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
+	auto *pController = static_cast<CGameControllerDDRace *>(pSelf->GameHost().Controller());
 	if(!CheckClientId(pResult->m_ClientId))
 		return;
 
@@ -165,38 +158,39 @@ void CGameContext::ConMap(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 
-	CPlayer *pPlayer = pSelf->m_apPlayers[pResult->m_ClientId];
+	CPlayer *pPlayer = pController->Services().Player(pResult->m_ClientId);
 	if(!pPlayer)
 		return;
 
 	if(pSelf->RateLimitPlayerVote(pResult->m_ClientId) || pSelf->RateLimitPlayerMapVote(pResult->m_ClientId))
 		return;
 
-	RaceScore(pSelf).MapVote(pResult->m_ClientId, pResult->GetString(0));
+	pController->RaceScore().MapVote(pResult->m_ClientId, pResult->GetString(0));
 }
 
-void CGameContext::ConMapInfo(IConsole::IResult *pResult, void *pUserData)
+void CGameControllerDDRace::ConMapInfo(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
+	auto *pController = static_cast<CGameControllerDDRace *>(pSelf->GameHost().Controller());
 	if(!CheckClientId(pResult->m_ClientId))
 		return;
 
-	CPlayer *pPlayer = pSelf->m_apPlayers[pResult->m_ClientId];
+	CPlayer *pPlayer = pController->Services().Player(pResult->m_ClientId);
 	if(!pPlayer)
 		return;
 
 	// use cached map info for current map
 	const bool IsCurrentMap = pResult->NumArguments() == 0 || str_comp_nocase(pResult->GetString(0), pSelf->Map()->BaseName()) == 0;
-	if(IsCurrentMap && RaceScore(pSelf).MapInfoMessage()[0] != '\0')
+	if(IsCurrentMap && pController->RaceScore().MapInfoMessage()[0] != '\0')
 	{
-		pSelf->SendChatTarget(pResult->m_ClientId, RaceScore(pSelf).MapInfoMessage());
+		pSelf->SendChatTarget(pResult->m_ClientId, pController->RaceScore().MapInfoMessage());
 		return;
 	}
 
 	if(pResult->NumArguments() > 0)
-		RaceScore(pSelf).MapInfo(pResult->m_ClientId, pResult->GetString(0));
+		pController->RaceScore().MapInfo(pResult->m_ClientId, pResult->GetString(0));
 	else
-		RaceScore(pSelf).MapInfo(pResult->m_ClientId, pSelf->Map()->BaseName());
+		pController->RaceScore().MapInfo(pResult->m_ClientId, pSelf->Map()->BaseName());
 }
 
 void CGameContext::ConTimeout(IConsole::IResult *pResult, void *pUserData)

@@ -145,6 +145,65 @@ struct SSwitchers
 	int m_aLastUpdateTick[NUM_DDRACE_TEAMS];
 };
 
+/**
+ * The physics a world runs under.
+ *
+ * A game mode owns these rules and the client prediction has to run exactly the
+ * same values, so everything the physics reads lives here instead of being
+ * derived from a game type or read from a config variable where it is used.
+ * The defaults are vanilla physics.
+ */
+class CPhysicsRules
+{
+public:
+	/**
+	 * DDNet movement: teleporters, jetpack, freeze, solo, weapon hit toggles,
+	 * telekinesis weapons and super. Vanilla physics ignores all of them.
+	 */
+	bool m_DDNetMovement = false;
+	/**
+	 * Hook teleporters use the tile behaviour from before the tele rework.
+	 */
+	bool m_TeleportHookOld = false;
+	/**
+	 * Weapon teleporters use the tile behaviour from before the tele rework.
+	 */
+	bool m_TeleportWeaponsOld = false;
+	/**
+	 * Projectiles and lasers may hit characters other than their owner.
+	 */
+	bool m_WeaponsHitOthers = true;
+	/**
+	 * Lasers pass through their owner and do not bounce off characters.
+	 */
+	bool m_OldLaser = true;
+	/**
+	 * Hooks that connect in the same tick are resolved by client id, which
+	 * gives the lower id the stronger hook.
+	 */
+	bool m_WeakHook = true;
+	/**
+	 * Hammering a deep frozen character does not stop it from hammering back.
+	 */
+	bool m_Deepfly = true;
+	/**
+	 * Lasers are destroyed when the player who fired them dies.
+	 */
+	bool m_DestroyLasersOnDeath = false;
+
+	static CPhysicsRules Vanilla()
+	{
+		return CPhysicsRules();
+	}
+
+	static CPhysicsRules DDNet()
+	{
+		CPhysicsRules Rules;
+		Rules.m_DDNetMovement = true;
+		return Rules;
+	}
+};
+
 class CWorldCore
 {
 public:
@@ -171,6 +230,7 @@ public:
 
 	class CCharacterCore *m_apCharacters[MAX_CLIENTS];
 	CPrng *m_pPrng;
+	CPhysicsRules m_PhysicsRules;
 
 	void InitSwitchers(int HighestSwitchNumber);
 	std::vector<SSwitchers> m_vSwitchers;
@@ -240,6 +300,7 @@ public:
 	void Read(const CNetObj_CharacterCore *pObjCore);
 	void Write(CNetObj_CharacterCore *pObjCore) const;
 	void Quantize();
+	bool UsesDDNetPhysics() const { return m_pWorld && m_pWorld->m_PhysicsRules.m_DDNetMovement; }
 
 	// DDRace
 	int m_Id;

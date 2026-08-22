@@ -34,7 +34,6 @@ public:
 	void DiscardMapReloadState(int ClientId);
 
 private:
-	CGameContext *m_pGameServer;
 	CGameServices m_Services;
 	CGameModeRegistry m_Modes;
 	std::unique_ptr<IGameController> m_pController;

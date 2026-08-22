@@ -78,6 +78,11 @@ IGameController::CMatchParticipantState *IGameController::EnsureMatchParticipant
 		return pState;
 	if(m_vMatchParticipants.size() >= MatchReportLimits::MAX_PARTICIPANTS)
 	{
+		// The round outlived more players than a report can hold. Everyone who
+		// got in keeps their statistics; whoever comes after this is not
+		// counted, which is a far better answer than throwing the round away.
+		if(!m_MatchReportOverflow)
+			log_warn("game", "match report participant limit reached, later players are not counted");
 		m_MatchReportOverflow = true;
 		return nullptr;
 	}
@@ -189,7 +194,7 @@ bool IGameController::InitializeLiveStatsReport(CMatchReport &Report) const
 
 bool IGameController::BuildLiveStatsReport(int ClientId, CMatchReport &Report, int &LocalParticipantId, std::string &Payload)
 {
-	if(!m_pMatchReportBuilder || m_MatchReportOverflow || ClientId < 0 || ClientId >= MAX_CLIENTS)
+	if(!m_pMatchReportBuilder || ClientId < 0 || ClientId >= MAX_CLIENTS)
 		return false;
 	CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
 	if(!pPlayer)
@@ -247,8 +252,11 @@ bool IGameController::AddParticipantMatchMetric(CPlayer *pPlayer, const char *pS
 	CMatchParticipantState *pState = EnsureMatchParticipant(pPlayer);
 	if(!pState)
 		return false;
-	const std::string MetricId = Info().m_Report.m_ModeId + "/" + pSuffix;
-	return m_pMatchReportBuilder->AddMetricValue(EMatchSubjectKind::PARTICIPANT, pState->m_Participant.m_ParticipantId, MetricId.c_str(), Value, MatchMetricAggregation(MetricId.c_str()));
+	// Every shot, every hit and every death comes through here, so the id is
+	// spelled into a buffer on the stack rather than into a fresh string.
+	char aMetricId[MatchReportLimits::MAX_METRIC_ID_LENGTH + 1];
+	str_format(aMetricId, sizeof(aMetricId), "%s/%s", Info().m_Report.m_ModeId.c_str(), pSuffix);
+	return m_pMatchReportBuilder->AddMetricValue(EMatchSubjectKind::PARTICIPANT, pState->m_Participant.m_ParticipantId, aMetricId, Value, MatchMetricAggregation(aMetricId));
 }
 
 void IGameController::AddParticipantWeaponMatchMetric(CPlayer *pPlayer, int Weapon, const char *pSuffix, int64_t Value)
@@ -324,12 +332,6 @@ void IGameController::FinalizeMatchReport(EMatchTermination Termination)
 {
 	if(!m_pMatchReportBuilder)
 		return;
-	if(m_MatchReportOverflow)
-	{
-		log_error("game", "match report participant limit exceeded");
-		m_pMatchReportBuilder.reset();
-		return;
-	}
 
 	CMatchReport &Report = m_pMatchReportBuilder->Report();
 	Report.m_EndTimeUtc = time_timestamp();

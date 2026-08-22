@@ -516,6 +516,12 @@ protected:
 	// there instead of asking the reader to type a mode id. Index 0 is every
 	// gametype at once.
 	std::vector<std::string> m_vStatsModes;
+	// The same gametypes without their vendor suffix, and as the array of
+	// pointers the drop down reads, so that drawing it builds nothing. Entry
+	// zero of the pointers names every gametype at once and is filled in when
+	// the drop down is drawn, because it follows the language.
+	std::vector<std::string> m_vStatsModeNames;
+	std::vector<const char *> m_vpStatsModeNames = {nullptr};
 	int m_StatsModeIndex = 0;
 	std::vector<CMatchHistoryEntry> m_vStatsHistory;
 	std::optional<CStoredMatch> m_StatsSelectedMatch;

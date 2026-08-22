@@ -315,10 +315,13 @@ TEST(MatchReportView, CategorizesKnownAndUnknownMetrics)
 	// A mode this build has never heard of uses the same metric vocabulary, so
 	// its metrics are categorised and named like everyone else's.
 	EXPECT_EQ(MatchMetricCategory("custom@server.example/kills", 1), EMatchMetricCategory::COMBAT);
-	EXPECT_EQ(MatchMetricDisplayName("custom@server.example/kills", 1), "Kills");
+	char aDisplayName[64];
+	MatchMetricDisplayName("custom@server.example/kills", 1, aDisplayName, sizeof(aDisplayName));
+	EXPECT_STREQ(aDisplayName, "Kills");
 	EXPECT_EQ(MatchMetricCategory("vanilla.dm@ddnet.org/kills", 2), EMatchMetricCategory::OTHER);
 	// An unknown metric still gets a readable label instead of its raw id
-	EXPECT_EQ(MatchMetricDisplayName("custom@server.example/wall_runs", 1), "Wall runs");
+	MatchMetricDisplayName("custom@server.example/wall_runs", 1, aDisplayName, sizeof(aDisplayName));
+	EXPECT_STREQ(aDisplayName, "Wall runs");
 	EXPECT_EQ(MatchMetricSuffix("custom@server.example/frozen_teammates"), "frozen_teammates");
 	char aTime[64];
 	FormatMatchDuration(MatchReportLimits::MAX_DURATION_TICKS, 1, aTime, sizeof(aTime));
@@ -356,7 +359,8 @@ TEST(MatchReportView, BuildsWeaponCombatStatsAndAccuracy)
 		{EMatchSubjectKind::PARTICIPANT, 0, "vanilla.dm@ddnet.org/weapon_bad_shots", 100},
 	};
 
-	const CMatchCombatStats Stats = BuildMatchCombatStats(Report, 0);
+	CMatchCombatStats Stats;
+	BuildMatchCombatStats(Report, 0, Stats);
 	EXPECT_EQ(Stats.m_Total.m_Shots, 4);
 	EXPECT_EQ(Stats.m_Total.m_Hits, 3);
 	EXPECT_EQ(Stats.m_Total.m_DamageDone, 30);
@@ -380,7 +384,8 @@ TEST(MatchReportView, BuildsWeaponCombatStatsAndAccuracy)
 		{"vanilla.dm@ddnet.org", 1, "vanilla.dm@ddnet.org/weapon_4_shots", 8},
 		{"vanilla.dm@ddnet.org", 1, "vanilla.dm@ddnet.org/weapon_4_hits", 6},
 	};
-	const CMatchCombatStats ProfileStats = BuildMatchCombatStats(Profile);
+	CMatchCombatStats ProfileStats;
+	BuildMatchCombatStats(Profile, ProfileStats);
 	EXPECT_EQ(ProfileStats.m_vWeapons[WEAPON_LASER].m_Shots, 8);
 	EXPECT_EQ(ProfileStats.m_vWeapons[WEAPON_LASER].m_Hits, 6);
 }
@@ -394,13 +399,16 @@ TEST(MatchReportView, ModWeaponsBeyondTheKnownOnes)
 		{EMatchSubjectKind::PARTICIPANT, 0, "custom@server.example/weapon_11_hits", 9},
 		{EMatchSubjectKind::PARTICIPANT, 0, "custom@server.example/weapon_99_shots", 5},
 	};
-	const CMatchCombatStats Stats = BuildMatchCombatStats(Report, 0);
+	CMatchCombatStats Stats;
+	BuildMatchCombatStats(Report, 0, Stats);
 	ASSERT_GT(Stats.m_vWeapons.size(), 11u);
 	EXPECT_EQ(Stats.m_vWeapons[11].m_Shots, 20);
 	EXPECT_EQ(Stats.m_vWeapons[11].m_Hits, 9);
 	// Beyond the limit the metric is ignored instead of allocating a row per index
 	EXPECT_LE(Stats.m_vWeapons.size(), static_cast<size_t>(MAX_MATCH_WEAPONS));
-	EXPECT_EQ(MatchWeaponDisplayName(11), "Weapon 11");
+	char aWeaponName[64];
+	MatchWeaponDisplayName(11, aWeaponName, sizeof(aWeaponName));
+	EXPECT_STREQ(aWeaponName, "Weapon 11");
 }
 
 TEST(MatchReportLimitsFit, AFullServerOfParticipants)

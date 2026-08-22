@@ -460,51 +460,44 @@ void CStatboard::RenderLiveMatchPanel(const CStoredMatch &Live, float X, float Y
 	TextRender()->TextColor(TextRender()->DefaultTextColor());
 	Y += 26.0f;
 
-	std::vector<const CMatchParticipant *> vpRanked;
-	vpRanked.reserve(Report.m_vParticipants.size());
-	for(const CMatchParticipant &Participant : Report.m_vParticipants)
-		vpRanked.push_back(&Participant);
-	std::stable_sort(vpRanked.begin(), vpRanked.end(), [&](const CMatchParticipant *pLeft, const CMatchParticipant *pRight) {
-		const CMatchStanding *pLeftStanding = ReportStanding(Report, EMatchSubjectKind::PARTICIPANT, pLeft->m_ParticipantId);
-		const CMatchStanding *pRightStanding = ReportStanding(Report, EMatchSubjectKind::PARTICIPANT, pRight->m_ParticipantId);
-		const int LeftRank = pLeftStanding == nullptr ? std::numeric_limits<int>::max() : pLeftStanding->m_Rank;
-		const int RightRank = pRightStanding == nullptr ? std::numeric_limits<int>::max() : pRightStanding->m_Rank;
-		if(LeftRank != RightRank)
-			return LeftRank < RightRank;
-		return ReportMetric(Report, EMatchSubjectKind::PARTICIPANT, pLeft->m_ParticipantId, "score").value_or(0) > ReportMetric(Report, EMatchSubjectKind::PARTICIPANT, pRight->m_ParticipantId, "score").value_or(0);
-	});
+	// Kept between frames so that the rows and their values are looked up once
+	// per report instead of once per row and per sort comparison.
+	static CMatchReportRanking s_Ranking;
+	s_Ranking.Update(Report);
+	const std::vector<CMatchReportRow> &vRanked = s_Ranking.Rows();
 
-	const int Rows = std::min<int>(vpRanked.size(), MAX_LIVE_ROWS);
+	const int Rows = std::min<int>(vRanked.size(), MAX_LIVE_ROWS);
 	for(int Index = 0; Index < Rows; ++Index)
 	{
-		const CMatchParticipant &Participant = *vpRanked[Index];
+		const CMatchReportRow &Entry = vRanked[Index];
+		const CMatchParticipant &Participant = *Entry.m_pParticipant;
 		const bool Local = Live.m_LocalParticipantId.has_value() && *Live.m_LocalParticipantId == Participant.m_ParticipantId;
 		if(Local)
 			Graphics()->DrawRect(X - 4.0f, Y - 2.0f, Width + 8.0f, 24.0f, ColorRGBA(0.30f, 0.62f, 1.0f, 0.18f), IGraphics::CORNER_ALL, 3.0f);
 
 		char aRank[16] = "-";
-		if(const CMatchStanding *pStanding = ReportStanding(Report, EMatchSubjectKind::PARTICIPANT, Participant.m_ParticipantId))
-			str_format(aRank, sizeof(aRank), "%d", pStanding->m_Rank);
+		if(Entry.m_pStanding != nullptr)
+			str_format(aRank, sizeof(aRank), "%d", Entry.m_pStanding->m_Rank);
 		char aaValues[4][32];
 		const char *apValues[4];
 		for(int Column = 0; Column < 4; ++Column)
 			apValues[Column] = aaValues[Column];
-		static const char *s_apSuffixes[3] = {"score", "kills", "deaths"};
+		const std::optional<int64_t> aValues[3] = {Entry.m_Score, Entry.m_Kills, Entry.m_Deaths};
 		for(int Column = 0; Column < 3; ++Column)
 		{
-			const std::optional<int64_t> Value = ReportMetric(Report, EMatchSubjectKind::PARTICIPANT, Participant.m_ParticipantId, s_apSuffixes[Column]);
-			if(Value.has_value())
-				str_format(aaValues[Column], sizeof(aaValues[Column]), "%" PRId64, *Value);
+			if(aValues[Column].has_value())
+				str_format(aaValues[Column], sizeof(aaValues[Column]), "%" PRId64, *aValues[Column]);
 			else
 				str_copy(aaValues[Column], "-");
 		}
-		const CMatchCombatStats Combat = BuildMatchCombatStats(Report, Participant.m_ParticipantId);
-		FormatMatchAccuracy(Combat.m_Total.m_Hits, Combat.m_Total.m_Shots, aaValues[3], sizeof(aaValues[3]));
+		FormatMatchAccuracy(Entry.m_Combat.m_Hits, Entry.m_Combat.m_Shots, aaValues[3], sizeof(aaValues[3]));
 
-		std::string Name = Participant.m_DisplayName;
-		if(!Participant.m_Clan.empty())
-			Name += "  " + Participant.m_Clan;
-		Row(Y, aRank, Name.c_str(), apValues, 20.0f);
+		char aName[MatchReportLimits::MAX_DISPLAY_NAME_LENGTH + MatchReportLimits::MAX_CLAN_LENGTH + 8];
+		if(Participant.m_Clan.empty())
+			str_copy(aName, Participant.m_DisplayName.c_str());
+		else
+			str_format(aName, sizeof(aName), "%s  %s", Participant.m_DisplayName.c_str(), Participant.m_Clan.c_str());
+		Row(Y, aRank, aName, apValues, 20.0f);
 		Y += 24.0f;
 	}
 }

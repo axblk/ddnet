@@ -993,21 +993,13 @@ bool CScoreboard::RenderMatchReport(const CStoredMatch &Stored, CUIRect Screen)
 	if(Report.m_vParticipants.empty())
 		return false;
 
-	std::vector<const CMatchParticipant *> vpParticipants;
-	vpParticipants.reserve(Report.m_vParticipants.size());
-	for(const CMatchParticipant &Participant : Report.m_vParticipants)
-		vpParticipants.push_back(&Participant);
-	std::stable_sort(vpParticipants.begin(), vpParticipants.end(), [&](const CMatchParticipant *pLeft, const CMatchParticipant *pRight) {
-		const CMatchStanding *pLeftStanding = ReportStanding(Report, EMatchSubjectKind::PARTICIPANT, pLeft->m_ParticipantId);
-		const CMatchStanding *pRightStanding = ReportStanding(Report, EMatchSubjectKind::PARTICIPANT, pRight->m_ParticipantId);
-		const int LeftRank = pLeftStanding == nullptr ? std::numeric_limits<int>::max() : pLeftStanding->m_Rank;
-		const int RightRank = pRightStanding == nullptr ? std::numeric_limits<int>::max() : pRightStanding->m_Rank;
-		if(LeftRank != RightRank)
-			return LeftRank < RightRank;
-		return ReportMetric(Report, EMatchSubjectKind::PARTICIPANT, pLeft->m_ParticipantId, "score").value_or(0) > ReportMetric(Report, EMatchSubjectKind::PARTICIPANT, pRight->m_ParticipantId, "score").value_or(0);
-	});
+	// Kept between frames so that the rows and their values are looked up once
+	// per report instead of once per row and per sort comparison.
+	static CMatchReportRanking s_Ranking;
+	s_Ranking.Update(Report);
+	const std::vector<CMatchReportRow> &vRows = s_Ranking.Rows();
 
-	const int NumParticipants = static_cast<int>(vpParticipants.size());
+	const int NumParticipants = static_cast<int>(vRows.size());
 	const int NumColumns = NumParticipants <= 16 ? 1 : NumParticipants <= 32 ? 2 :
 						   NumParticipants <= 72         ? 3 :
 										   4;
@@ -1080,7 +1072,8 @@ bool CScoreboard::RenderMatchReport(const CStoredMatch &Stored, CUIRect Screen)
 			const int ParticipantIndex = ColumnIndex * RowsPerColumn + RowIndex;
 			if(ParticipantIndex >= NumParticipants)
 				break;
-			const CMatchParticipant &Participant = *vpParticipants[ParticipantIndex];
+			const CMatchReportRow &Entry = vRows[ParticipantIndex];
+			const CMatchParticipant &Participant = *Entry.m_pParticipant;
 			CUIRect Row;
 			Column.HSplitTop(RowHeight, &Row, &Column);
 			if(Stored.m_LocalParticipantId == Participant.m_ParticipantId)
@@ -1089,20 +1082,22 @@ bool CScoreboard::RenderMatchReport(const CStoredMatch &Stored, CUIRect Screen)
 			Row.VSplitLeft(55.0f, &Score, &Row);
 			Row.VSplitRight(ColumnWidth * 0.3f, &Name, &Clan);
 			char aValue[64] = "-";
-			if(const CMatchStanding *pStanding = ReportStanding(Report, EMatchSubjectKind::PARTICIPANT, Participant.m_ParticipantId))
-				str_format(aValue, sizeof(aValue), "%d", pStanding->m_Rank);
+			if(Entry.m_pStanding != nullptr)
+				str_format(aValue, sizeof(aValue), "%d", Entry.m_pStanding->m_Rank);
 			Ui()->DoLabel(&Rank, aValue, FontSize, TEXTALIGN_MC);
 			str_copy(aValue, "-");
-			if(const std::optional<int64_t> ScoreValue = ReportMetric(Report, EMatchSubjectKind::PARTICIPANT, Participant.m_ParticipantId, "score"))
-				str_format(aValue, sizeof(aValue), "%" PRId64, *ScoreValue);
+			if(Entry.m_Score.has_value())
+				str_format(aValue, sizeof(aValue), "%" PRId64, *Entry.m_Score);
 			Ui()->DoLabel(&Score, aValue, FontSize, TEXTALIGN_MC);
-			std::string DisplayName = Participant.m_DisplayName;
+			char aDisplayName[MatchReportLimits::MAX_DISPLAY_NAME_LENGTH + 32];
 			if(Participant.m_LeftTick.has_value())
-				DisplayName += " (" + std::string(Localize("left")) + ")";
+				str_format(aDisplayName, sizeof(aDisplayName), "%s (%s)", Participant.m_DisplayName.c_str(), Localize("left"));
+			else
+				str_copy(aDisplayName, Participant.m_DisplayName.c_str());
 			SLabelProperties Properties;
 			Properties.m_MaxWidth = Name.w;
 			Properties.m_EllipsisAtEnd = true;
-			Ui()->DoLabel(&Name, DisplayName.c_str(), FontSize, TEXTALIGN_ML, Properties);
+			Ui()->DoLabel(&Name, aDisplayName, FontSize, TEXTALIGN_ML, Properties);
 			Properties.m_MaxWidth = Clan.w;
 			Ui()->DoLabel(&Clan, Participant.m_Clan.c_str(), FontSize, TEXTALIGN_ML, Properties);
 		}
@@ -1110,20 +1105,18 @@ bool CScoreboard::RenderMatchReport(const CStoredMatch &Stored, CUIRect Screen)
 
 	if(pLocalParticipant != nullptr)
 	{
-		std::string Summary;
-		const CMatchCombatStats CombatStats = BuildMatchCombatStats(Report, pLocalParticipant->m_ParticipantId);
-		if(CombatStats.HasData())
+		char aSummary[256] = "";
+		const CMatchReportRow *pLocalRow = s_Ranking.Row(pLocalParticipant->m_ParticipantId);
+		if(pLocalRow != nullptr && pLocalRow->m_HasCombat)
 		{
 			char aAccuracy[32];
-			FormatMatchAccuracy(CombatStats.m_Total.m_Hits, CombatStats.m_Total.m_Shots, aAccuracy, sizeof(aAccuracy));
-			char aSummary[256];
+			FormatMatchAccuracy(pLocalRow->m_Combat.m_Hits, pLocalRow->m_Combat.m_Shots, aAccuracy, sizeof(aAccuracy));
 			str_format(aSummary, sizeof(aSummary), "%s: %" PRId64 "  ·  %s: %" PRId64 "  ·  %s: %s  ·  %s: %" PRId64 "  ·  %s: %" PRId64,
-				Localize("Shots"), CombatStats.m_Total.m_Shots,
-				Localize("Hits"), CombatStats.m_Total.m_Hits,
+				Localize("Shots"), pLocalRow->m_Combat.m_Shots,
+				Localize("Hits"), pLocalRow->m_Combat.m_Hits,
 				Localize("Accuracy"), aAccuracy,
-				Localize("Damage done"), CombatStats.m_Total.m_DamageDone,
-				Localize("Damage taken"), CombatStats.m_Total.m_DamageTaken);
-			Summary = aSummary;
+				Localize("Damage done"), pLocalRow->m_Combat.m_DamageDone,
+				Localize("Damage taken"), pLocalRow->m_Combat.m_DamageTaken);
 		}
 		else
 		{
@@ -1138,16 +1131,20 @@ bool CScoreboard::RenderMatchReport(const CStoredMatch &Stored, CUIRect Screen)
 				const EMatchMetricCategory Category = MatchMetricCategory(Metric.m_MetricId, Report.m_ModeSchemaVersion);
 				if(Category != LastCategory)
 				{
-					if(!Summary.empty())
-						Summary += "  ·  ";
-					Summary += MatchMetricCategoryDisplayName(Category);
-					Summary += ": ";
+					if(aSummary[0] != '\0')
+						str_append(aSummary, "  ·  ");
+					str_append(aSummary, MatchMetricCategoryDisplayName(Category));
+					str_append(aSummary, ": ");
 					LastCategory = Category;
 				}
-				else if(!Summary.empty())
-					Summary += ", ";
-				Summary += MatchMetricDisplayName(Metric.m_MetricId, Report.m_ModeSchemaVersion) + ": " + std::to_string(Metric.m_Value);
-				if(Summary.size() > 220)
+				else if(aSummary[0] != '\0')
+					str_append(aSummary, ", ");
+				char aName[64];
+				MatchMetricDisplayName(Metric.m_MetricId, Report.m_ModeSchemaVersion, aName, sizeof(aName));
+				char aEntry[96];
+				str_format(aEntry, sizeof(aEntry), "%s: %" PRId64, aName, Metric.m_Value);
+				str_append(aSummary, aEntry);
+				if(str_length(aSummary) > 220)
 					break;
 			}
 		}
@@ -1155,7 +1152,7 @@ bool CScoreboard::RenderMatchReport(const CStoredMatch &Stored, CUIRect Screen)
 		SLabelProperties Properties;
 		Properties.m_MaxWidth = SummaryRect.w;
 		Properties.m_EllipsisAtEnd = true;
-		Ui()->DoLabel(&SummaryRect, Summary.c_str(), 11.0f, TEXTALIGN_MC, Properties);
+		Ui()->DoLabel(&SummaryRect, aSummary, 11.0f, TEXTALIGN_MC, Properties);
 	}
 	const auto ActionRect = [&](int ActionIndex) {
 		const int Row = ActionIndex / ActionColumns;

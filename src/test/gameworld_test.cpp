@@ -952,7 +952,7 @@ TEST_F(GameWorld, MatchReportFinalizesRoundAndAdminEndExactlyOnce)
 	EXPECT_EQ(GameController()->LatestMatchReport()->m_MatchId, MapChangedId);
 }
 
-TEST_F(GameWorld, MatchReportRejectsParticipantOverflow)
+TEST_F(GameWorld, MatchReportKeepsTheParticipantsThatFit)
 {
 	SelectGameMode("vanilla.dm");
 	for(size_t i = 0; i <= MatchReportLimits::MAX_PARTICIPANTS; ++i)
@@ -964,7 +964,9 @@ TEST_F(GameWorld, MatchReportRejectsParticipantOverflow)
 		GameServer()->m_apPlayers[0] = nullptr;
 	}
 	GameController()->EndRound();
-	EXPECT_EQ(GameController()->LatestMatchReport(), nullptr);
+	const CMatchReport *pReport = GameController()->LatestMatchReport();
+	ASSERT_NE(pReport, nullptr);
+	EXPECT_EQ(pReport->m_vParticipants.size(), static_cast<size_t>(MatchReportLimits::MAX_PARTICIPANTS));
 }
 
 TEST_F(GameWorld, MatchReportRejectsSerializedPayloadOverflow)

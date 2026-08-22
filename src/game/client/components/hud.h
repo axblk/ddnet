@@ -9,6 +9,9 @@
 #include <generated/protocol.h>
 
 #include <game/client/component.h>
+#include <game/client/ui.h>
+
+#include <optional>
 
 struct SScoreInfo
 {
@@ -49,6 +52,7 @@ class CHud : public CComponent
 	int m_HudQuadContainerIndex;
 	SScoreInfo m_aScoreInfo[2];
 	STextContainerIndex m_FPSTextContainerIndex;
+	int m_LastFPS = -1;
 	STextContainerIndex m_DDRaceEffectsTextContainerIndex;
 	STextContainerIndex m_PlayerAngleTextContainerIndex;
 	float m_PlayerPrevAngle;
@@ -64,6 +68,10 @@ class CHud : public CComponent
 	ESpeedChange m_aLastPlayerSpeedChange[2];
 	STextContainerIndex m_aPlayerPositionContainers[2];
 	float m_aPlayerPrevPosition[2];
+	CCachedText m_GameTimerText;
+	std::optional<int> m_LastGameTimerTime;
+	CCachedText m_LocalTimeText;
+	CCachedText m_SpectatorHudText;
 
 	void RenderTextInfo();
 	void RenderConnectionWarning();

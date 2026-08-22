@@ -14,7 +14,7 @@
 #include <game/server/mode/entity_registry.h>
 #include <game/server/mode/game_mode_map_reload_state.h>
 #include <game/server/mode/game_mode_registry.h>
-#include <game/server/mode/match_stats.h>
+#include <game/server/mode/match_lifecycle.h>
 #include <game/teamscore.h>
 
 #include <memory>
@@ -125,7 +125,7 @@ private:
 
 	CTeamsCore m_TeamsCore;
 	const CGameModeInfo m_GameModeInfo;
-	CMatchStats m_MatchStats;
+	CMatchLifecycle m_MatchLifecycle;
 	CGameContext *GameServer() const;
 
 protected:
@@ -145,6 +145,8 @@ protected:
 	virtual void SnapMode(int SnappingClient) {}
 	virtual int ScoreLimit() const { return 0; }
 	virtual int TimeLimit() const { return 0; }
+	int m_SixupScoreLimit = -1;
+	int m_SixupTimeLimit = -1;
 	void DoActivityCheck();
 	void FinalizeCharacterDeath(const CGameCharacterDeathContext &Context, int ModeSpecial = 0);
 
@@ -167,15 +169,8 @@ protected:
 	void EvaluateSpawnType(CSpawnEval *pEval, ESpawnType SpawnType, int ClientId);
 
 	void ResetGame();
-
-	int m_RoundStartTick;
-	int m_GameOverTick;
-	int m_SuddenDeath;
-
-	int m_Warmup;
-	int m_RoundCount;
-
-	int m_GameFlags;
+	CMatchLifecycle &Match() { return m_MatchLifecycle; }
+	const CMatchLifecycle &Match() const { return m_MatchLifecycle; }
 
 public:
 	const char *m_pGameType;
@@ -188,8 +183,6 @@ public:
 	virtual void ResetTuning();
 	virtual CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team);
 	virtual CCharacter *CreateCharacter(CPlayer *pPlayer);
-	void PublishMatchEvent(CMatchEvent Event) { m_MatchStats.OnEvent(Event); }
-	const CMatchStats &MatchStats() const { return m_MatchStats; }
 
 	// event
 	/*
@@ -228,9 +221,6 @@ public:
 	virtual void TickCharacterPreCore(CCharacter *) {}
 	virtual void TickCharacterPostCore(CCharacter *pCharacter);
 
-	virtual void HandleCharacterTiles(class CCharacter *pChr, int MapIndex);
-	virtual void SetArmorProgress(CCharacter *pCharacter, int Progress) {}
-
 	/*
 		Function: OnEntity
 			Called when the map is loaded to process an entity
@@ -251,6 +241,7 @@ public:
 	virtual bool OnPlayerChatMessage(int, const char *, int) { return false; }
 	virtual void OnPlayerNameChanged(int ClientId) {}
 	virtual void OnPlayerDDNetVersionKnown(int ClientId) {}
+	virtual void OnPlayerMappingChanged(int ClientId) {}
 	virtual void OnPlayerSetTeam(int ClientId, int Team);
 	virtual void OnPlayerKill(int ClientId);
 	virtual void OnPlayerCallKickVote(int ClientId, int TargetId, const char *pReason);
@@ -355,10 +346,10 @@ public:
 
 	virtual CClientMask GetMaskForPlayerWorldEvent(int Asker, int ExceptID = -1);
 
-	bool IsTeamPlay() const { return m_GameFlags & GAMEFLAG_TEAMS; }
+	bool IsTeamPlay() const { return Info().m_GameFlags & GAMEFLAG_TEAMS; }
 	// The 0.7 game info message; the context sends it with the start messages.
 	void SendGameInfoSixup(int ClientId);
-	int GameFlags() const { return m_GameFlags; }
+	int GameFlags() const { return Info().m_GameFlags; }
 
 	CTeamsCore &TeamsCore() { return m_TeamsCore; }
 	const CTeamsCore &TeamsCore() const { return m_TeamsCore; }

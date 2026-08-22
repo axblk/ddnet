@@ -424,12 +424,12 @@ static void RunMatch(const std::string &Name)
 	}
 	else
 		Fail("unknown match scenario: " + Name);
-	const bool MatchEnded = pController->m_GameOverTick != -1;
-	const bool Warmup = pController->m_Warmup != 0;
+	const bool MatchEnded = pController->Match().IsGameOver();
+	const bool Warmup = pController->Match().IsWarmup();
 	const bool Paused = !MatchEnded && pController->IsGamePaused();
 	std::cout << "match " << Name
 		  << " score=" << pAlpha->m_Score << ',' << pBeta->m_Score
-		  << " sudden_death=" << pController->m_SuddenDeath
+		  << " sudden_death=" << pController->Match().IsSuddenDeath()
 		  << " running=" << (!MatchEnded && !Warmup && !Paused)
 		  << " warmup=" << Warmup << " paused=" << Paused << " match_ended=" << MatchEnded
 		  << " alive=" << (pAlpha->GetCharacter() && pAlpha->GetCharacter()->IsAlive())

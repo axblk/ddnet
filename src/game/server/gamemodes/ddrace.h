@@ -4,6 +4,8 @@
 
 #include "ddrace_character.h"
 
+#include <engine/console.h>
+
 #include <game/server/gamecontroller.h>
 
 class CDbConnectionPool;
@@ -30,6 +32,8 @@ public:
 	void OnCharacterSpawn(CCharacter *pCharacter) override;
 	void TickCharacterPreCore(CCharacter *pCharacter) override;
 	void TickCharacterPostCore(CCharacter *pCharacter) override;
+	virtual void HandleRaceTiles(CCharacterDDRace *pCharacter, int MapIndex) {}
+	virtual void SetArmorProgress(CCharacterDDRace *pCharacter, int Progress) {}
 	int PlayerAutoRespawnTick(const CPlayer *pPlayer) const override;
 	std::unique_ptr<IGameModeMapReloadState> SaveStateForMapReload() override;
 	void RestoreCharacterAfterMapReload(CCharacter *pCharacter) override;
@@ -39,6 +43,7 @@ public:
 	bool OnPlayerChatMessage(int ClientId, const char *pMessage, int Team) override;
 	void OnPlayerNameChanged(int ClientId) override;
 	void OnPlayerDDNetVersionKnown(int ClientId) override;
+	void OnPlayerMappingChanged(int ClientId) override;
 	void OnReset() override;
 	void OnPlayerSetTeam(int ClientId, int Team) override;
 	void OnPlayerKill(int ClientId) override;
@@ -63,12 +68,19 @@ protected:
 	CGameContext *GameServer() const { return IGameController::GameServer(); }
 	void ApplyMapSettings();
 	void InitGameSettings() override;
+	int GameInfoFlags(int SnappingClient) const override;
+	int GameInfoFlags2(int SnappingClient) const override;
+	void SnapMode(int SnappingClient) override;
 	void RegisterCommands() override;
 	void RegisterAdminCommands();
 	void RegisterPracticeCommands();
 
 private:
 	static bool CreateRaceMapEntity(IGameController &Controller, const CMapEntityContext &Context);
+	static void ConInfo(IConsole::IResult *pResult, void *pUserData);
+	static void ConMap(IConsole::IResult *pResult, void *pUserData);
+	static void ConMapInfo(IConsole::IResult *pResult, void *pUserData);
+	void SnapSwitchers(int SnappingClient);
 	std::unique_ptr<CGameTeams> m_pRaceTeams;
 	std::unique_ptr<CScore> m_pRaceScore;
 };

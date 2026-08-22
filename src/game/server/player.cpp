@@ -59,7 +59,12 @@ void CPlayer::Reset()
 	m_LastSetTeam = 0;
 	m_WeakHookSpawn = false;
 
-	// DDRace
+	int *pIdMap = Server()->GetIdMap(m_ClientId);
+	for(int i = 1; i < VANILLA_MAX_CLIENTS; i++)
+	{
+		pIdMap[i] = -1;
+	}
+	pIdMap[0] = m_ClientId;
 
 	m_LastCommandPos = 0;
 	m_LastPlaytime = 0;

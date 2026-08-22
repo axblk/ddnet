@@ -950,6 +950,7 @@ private:
 	void UpdateManagedTeeRenderInfos();
 
 	void UpdateLocalTuning();
+	CPhysicsRules PredictedPhysicsRules() const;
 	void UpdatePrediction();
 	void UpdateSpectatorCursor();
 	void UpdateRenderedCharacters();

@@ -161,32 +161,32 @@ bool CreateDDRaceMapEntity(CGameContext *pGameServer, int Index, int x, int y, i
 	if(Index >= ENTITY_DRAGGER_WEAK && Index <= ENTITY_DRAGGER_STRONG)
 	{
 		new CDragger(&pGameServer->m_World, Pos, Index - ENTITY_DRAGGER_WEAK + 1, false, Layer, Number);
-		return true;
+		return true; // NOLINT(clang-analyzer-unix.Malloc)
 	}
 	if(Index >= ENTITY_DRAGGER_WEAK_NW && Index <= ENTITY_DRAGGER_STRONG_NW)
 	{
 		new CDragger(&pGameServer->m_World, Pos, Index - ENTITY_DRAGGER_WEAK_NW + 1, true, Layer, Number);
-		return true;
+		return true; // NOLINT(clang-analyzer-unix.Malloc)
 	}
 	if(Index == ENTITY_PLASMAE)
 	{
 		new CGun(&pGameServer->m_World, Pos, false, true, Layer, Number);
-		return true;
+		return true; // NOLINT(clang-analyzer-unix.Malloc)
 	}
 	if(Index == ENTITY_PLASMAF)
 	{
 		new CGun(&pGameServer->m_World, Pos, true, false, Layer, Number);
-		return true;
+		return true; // NOLINT(clang-analyzer-unix.Malloc)
 	}
 	if(Index == ENTITY_PLASMA)
 	{
 		new CGun(&pGameServer->m_World, Pos, true, true, Layer, Number);
-		return true;
+		return true; // NOLINT(clang-analyzer-unix.Malloc)
 	}
 	if(Index == ENTITY_PLASMAU)
 	{
 		new CGun(&pGameServer->m_World, Pos, false, false, Layer, Number);
-		return true;
+		return true; // NOLINT(clang-analyzer-unix.Malloc)
 	}
 	return false;
 }

@@ -200,8 +200,32 @@ void CGameWorld::RemoveEntities()
 		}
 }
 
+void CGameWorld::SetModePhysicsRules(const CPhysicsRules &Rules)
+{
+	m_ModePhysicsRules = Rules;
+	UpdatePhysicsRules();
+}
+
+void CGameWorld::UpdatePhysicsRules()
+{
+	m_Core.m_PhysicsRules = m_ModePhysicsRules;
+	// These settings only ever described DDNet physics. A mode that runs its
+	// own physics keeps the rules it was registered with.
+	if(!m_ModePhysicsRules.m_DDNetMovement)
+		return;
+	m_Core.m_PhysicsRules.m_TeleportHookOld = Config()->m_SvOldTeleportHook;
+	m_Core.m_PhysicsRules.m_TeleportWeaponsOld = Config()->m_SvOldTeleportWeapons;
+	m_Core.m_PhysicsRules.m_WeaponsHitOthers = Config()->m_SvHit;
+	m_Core.m_PhysicsRules.m_OldLaser = Config()->m_SvOldLaser;
+	m_Core.m_PhysicsRules.m_WeakHook = !Config()->m_SvNoWeakHook;
+	m_Core.m_PhysicsRules.m_Deepfly = Config()->m_SvDeepfly;
+	m_Core.m_PhysicsRules.m_DestroyLasersOnDeath = Config()->m_SvDestroyLasersOnDeath;
+}
+
 void CGameWorld::Tick()
 {
+	UpdatePhysicsRules();
+
 	if(m_ResetRequested)
 		Reset();
 
@@ -212,7 +236,7 @@ void CGameWorld::Tick()
 		{
 			// It's important to call PreTick() and Tick() after each other.
 			// If we call PreTick() before, and Tick() after other entities have been processed, it causes physics changes such as a stronger shotgun or grenade.
-			if(g_Config.m_SvNoWeakHook && i == ENTTYPE_CHARACTER)
+			if(!m_Core.m_PhysicsRules.m_WeakHook && i == ENTTYPE_CHARACTER)
 			{
 				auto *pEnt = m_apFirstEntityTypes[i];
 				for(; pEnt;)

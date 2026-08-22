@@ -7,7 +7,7 @@
 
 struct CLaserInstagibRules
 {
-	static constexpr int Weapon = WEAPON_LASER;
+	static constexpr int WEAPON = WEAPON_LASER;
 
 	static void AdjustDamage(bool SelfDamage, int &Damage, bool &CanDamage)
 	{
@@ -20,12 +20,12 @@ struct CLaserInstagibRules
 
 struct CGrenadeInstagibRules
 {
-	static constexpr int Weapon = WEAPON_GRENADE;
-	static constexpr int MinimumKillDamage = 4;
+	static constexpr int WEAPON = WEAPON_GRENADE;
+	static constexpr int MINIMUM_KILL_DAMAGE = 4;
 
 	static void AdjustDamage(bool SelfDamage, int &Damage, bool &CanDamage)
 	{
-		if(SelfDamage || Damage < MinimumKillDamage)
+		if(SelfDamage || Damage < MINIMUM_KILL_DAMAGE)
 			CanDamage = false;
 		else if(CanDamage)
 			Damage = 20;
@@ -47,13 +47,13 @@ public:
 		TBase::OnCharacterSpawn(pCharacter);
 		pCharacter->GiveWeapon(WEAPON_HAMMER, true);
 		pCharacter->GiveWeapon(WEAPON_GUN, true);
-		pCharacter->GiveWeapon(TRules::Weapon);
-		pCharacter->SetWeapon(TRules::Weapon);
+		pCharacter->GiveWeapon(TRules::WEAPON);
+		pCharacter->SetWeapon(TRules::WEAPON);
 	}
 
 	bool OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam) override
 	{
-		if(Weapon == TRules::Weapon)
+		if(Weapon == TRules::WEAPON)
 			TRules::AdjustDamage(From == pVictim->GetPlayer()->GetCid(), Damage, CanDamage);
 		return TBase::OnCharacterTakeDamage(pVictim, Force, Damage, From, Weapon, CanDamage, AttackerTeam);
 	}

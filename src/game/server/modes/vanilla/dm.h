@@ -11,6 +11,9 @@ public:
 	void OnCharacterDeath(const CGameCharacterDeathContext &Context) override;
 	void Tick() override;
 	bool CanSpawn(int Team, vec2 *pOutPos, int ClientId) override;
+
+protected:
+	virtual void TickMatch();
 };
 
 #endif // GAME_SERVER_MODES_VANILLA_DM_H

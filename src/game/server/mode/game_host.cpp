@@ -7,10 +7,8 @@
 #include <game/server/mode/game_mode_map_reload_state.h>
 
 CGameHost::CGameHost(CGameContext *pGameServer) :
-	m_pGameServer(pGameServer),
 	m_Services(pGameServer)
 {
-	dbg_assert(m_pGameServer, "game host requires a game server");
 }
 
 CGameHost::~CGameHost() = default;

@@ -2,7 +2,7 @@
 from collections import namedtuple
 from queue import Queue
 from threading import Thread
-from time import sleep, time
+from time import time
 from urllib import request
 from urllib.request import Request, urlopen
 from uuid import UUID, uuid4
@@ -498,19 +498,7 @@ class Client(Runnable):
 		self.fifo.write(f"{command}\n")
 
 	def exit(self):
-		try:
-			self.command("quit")
-		except OSError:
-			# On Windows the client can close its named pipe while this write is completing.
-			# wait_for_exit still verifies that the process terminated cleanly.
-			pass
-		finally:
-			if self.fifo is not None:
-				try:
-					self.fifo.close()
-				except OSError:
-					pass
-				self.fifo = None
+		self.command("quit")
 
 	def wait_for_startup(self, timeout=15):
 		self.wait_for_log_prefix("client: version", timeout=timeout)
@@ -784,21 +772,19 @@ def vanilla_dm_rcon(server, client, client_id, command, observed_prefix=None):
 			return observed
 
 
-def vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, victim_name, position_commands):
-	kill_prefix = f"game: kill killer='{attacker_id}:attacker' victim='{victim_id}:{victim_name}' weapon=0"
-	for _ in range(4):
-		for client, client_id, command in position_commands:
-			kill = vanilla_dm_rcon(server, client, client_id, command, kill_prefix)
-			if kill is not None:
-				return kill
-		sleep(0.1)
-		attacker.command("+weapon1 1")
-		attacker.command("+weapon1 0")
-		attacker.command("+fire 1")
-		sleep(0.1)
-		attacker.command("+fire 0")
-		sleep(0.2)
-	return server.wait_for_log_prefix(kill_prefix, timeout=5)
+def vanilla_dm_end_round(server, attacker, attacker_id, victim_id, end_round):
+	command = f"damage_player {victim_id} {attacker_id} 100 0"
+	description = f"log line exactly matching `{end_round}`"
+	for _ in range(80):
+		if vanilla_dm_rcon(server, attacker, attacker_id, command, observed_prefix=end_round) is not None:
+			return
+		try:
+			server.wait_for_log_exact(end_round, timeout=0.25)
+			return
+		except TimeoutError as error:
+			if str(error) != f"timeout waiting for {description}":
+				raise
+	raise TimeoutError(f"timeout waiting for {description}")
 
 
 @test
@@ -815,14 +801,7 @@ def vanilla_dm_match_lifecycle(test_env):
 
 	attacker_id = vanilla_dm_authenticate(server, attacker)
 	victim_id = vanilla_dm_authenticate(server, victim)
-	position_commands = [
-		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
-	]
-
-	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
-	sleep(3.2)
-	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
-	server.wait_for_log_exact("game: end round type='TestDM'", timeout=5)
+	vanilla_dm_end_round(server, attacker, attacker_id, victim_id, "game: end round type='TestDM'")
 	server.wait_for_log_exact("game: start round type='TestDM' teamplay='0'", timeout=15)
 
 	attacker.exit()
@@ -847,11 +826,7 @@ def vanilla_tdm_match_lifecycle(test_env):
 
 	attacker_id = vanilla_dm_authenticate(server, attacker)
 	victim_id = vanilla_dm_authenticate(server, victim)
-	position_commands = [
-		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
-	]
-	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "victim", position_commands)
-	server.wait_for_log_exact("game: end round type='TestTDM'", timeout=5)
+	vanilla_dm_end_round(server, attacker, attacker_id, victim_id, "game: end round type='TestTDM'")
 	server.wait_for_log_exact("game: start round type='TestTDM' teamplay='1'", timeout=15)
 
 	attacker.exit()
@@ -897,13 +872,7 @@ def vanilla_dm_stock_07_match_lifecycle(test_env):
 	victim_id = int(victim_join.split("ClientId=", 1)[1].split(" ", 1)[0])
 
 	attacker_id = vanilla_dm_authenticate(server, attacker)
-	position_commands = [
-		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
-	]
-	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "stock-victim", position_commands)
-	sleep(3.2)
-	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "stock-victim", position_commands)
-	server.wait_for_log_exact("game: end round type='TestDM'", timeout=5)
+	vanilla_dm_end_round(server, attacker, attacker_id, victim_id, "game: end round type='TestDM'")
 	server.wait_for_log_exact("game: start round type='TestDM' teamplay='0'", timeout=15)
 
 	server.exit()
@@ -934,11 +903,7 @@ def vanilla_tdm_stock_07_match_lifecycle(test_env):
 	victim_id = int(victim_join.split("ClientId=", 1)[1].split(" ", 1)[0])
 
 	attacker_id = vanilla_dm_authenticate(server, attacker)
-	position_commands = [
-		(attacker, attacker_id, f"position_player {victim_id} {attacker_id} 20 0"),
-	]
-	vanilla_dm_hammer_kill(server, attacker, attacker_id, victim_id, "stock-victim", position_commands)
-	server.wait_for_log_exact("game: end round type='TestTDM'", timeout=5)
+	vanilla_dm_end_round(server, attacker, attacker_id, victim_id, "game: end round type='TestTDM'")
 	server.wait_for_log_exact("game: start round type='TestTDM' teamplay='1'", timeout=15)
 
 	server.exit()
@@ -1317,14 +1282,16 @@ if os.name == "nt":
 	EXE_SUFFIX = ".exe"
 
 
-def find_build_executable(builddir, name):
-	candidates = [
-		os.path.join(builddir, f"{name}{EXE_SUFFIX}"),
-		os.path.join(builddir, "Release", f"{name}{EXE_SUFFIX}"),
-		os.path.join(builddir, "Debug", f"{name}{EXE_SUFFIX}"),
-		os.path.join(builddir, "RelWithDebInfo", f"{name}{EXE_SUFFIX}"),
-	]
-	return next((candidate for candidate in candidates if os.path.exists(candidate)), candidates[0])
+def find_build_executable(builddir, name, build_config):
+	filename = f"{name}{EXE_SUFFIX}"
+	if build_config is not None:
+		return os.path.join(builddir, build_config, filename)
+	candidates = [os.path.join(builddir, filename)]
+	candidates.extend(os.path.join(builddir, config, filename) for config in ("Debug", "Release", "RelWithDebInfo", "MinSizeRel"))
+	existing = [candidate for candidate in candidates if os.path.exists(candidate)]
+	if len(existing) > 1:
+		raise RuntimeError(f"multiple {name!r} binaries found; pass --build-config")
+	return existing[0] if existing else candidates[0]
 
 
 def main():
@@ -1338,15 +1305,18 @@ def main():
 	parser.add_argument("--test-mastersrv", action="store_true", help="enforce testing of mastersrv")
 	parser.add_argument("--test-websockets", action="store_true", help="run tests that require compiling with websockets support")
 	parser.add_argument("--teeworlds-client", help="path to an optional stock Teeworlds 0.7 client")
+	parser.add_argument("--build-config", choices=("Debug", "Release", "RelWithDebInfo", "MinSizeRel"), help="configuration subdirectory of a multi-config build")
 	parser.add_argument("--timeout-multiplier", type=float, default=1, help="multiply all timeouts by this value")
 	parser.add_argument("--valgrind-memcheck", action="store_true", help="use valgrind's memcheck on client and server")
 	parser.add_argument("builddir", metavar="BUILDDIR", help="path to ddnet build directory")
 	parser.add_argument("test", metavar="TEST", nargs="?", help="name of test to run")
 	args = parser.parse_args()
 
-	ddnet = find_build_executable(args.builddir, "DDNet")
-	ddnet_server = find_build_executable(args.builddir, "DDNet-Server")
-	ddnet_mastersrv = find_build_executable(args.builddir, "mastersrv")
+	ddnet = find_build_executable(args.builddir, "DDNet", args.build_config)
+	ddnet_server = find_build_executable(args.builddir, "DDNet-Server", args.build_config)
+	ddnet_mastersrv = os.path.join(args.builddir, f"mastersrv{EXE_SUFFIX}")
+	if not os.path.exists(ddnet_mastersrv):
+		ddnet_mastersrv = find_build_executable(args.builddir, "mastersrv", args.build_config)
 	if not os.path.exists(ddnet):
 		raise RuntimeError(f"client binary {ddnet!r} not found")
 	if not os.path.exists(ddnet_server):

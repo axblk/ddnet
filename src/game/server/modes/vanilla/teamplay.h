@@ -13,6 +13,7 @@ protected:
 
 	std::array<int, NUM_TEAMS> TeamSizes(int ExceptClientId = -1) const;
 	void UpdateTeamBalance(int Tick);
+	virtual bool CanBeMovedOnBalance(const CPlayer *pPlayer) const;
 
 public:
 	CGameControllerVanillaTeamplay(CGameServices &Services, const CGameModeInfo &GameModeInfo);

@@ -62,17 +62,19 @@ class IStorage;
 struct CAntibotRoundData;
 struct CSnapContext
 {
-	CSnapContext(int Version, bool Sixup) :
-		m_ClientVersion(Version), m_Sixup(Sixup)
+	CSnapContext(int Version, bool Sixup, int ClientId) :
+		m_ClientVersion(Version), m_Sixup(Sixup), m_ClientId(ClientId)
 	{
 	}
 
 	int GetClientVersion() const { return m_ClientVersion; }
 	bool IsSixup() const { return m_Sixup; }
+	int ClientId() const { return m_ClientId; }
 
 private:
 	int m_ClientVersion;
 	bool m_Sixup;
+	int m_ClientId;
 };
 
 class CMute
@@ -139,13 +141,7 @@ class CGameContext : public IGameServer
 	static void ConToggleTuneParam(IConsole::IResult *pResult, void *pUserData);
 	static void ConTuneReset(IConsole::IResult *pResult, void *pUserData);
 	static void ConTunes(IConsole::IResult *pResult, void *pUserData);
-	static void ConTuneZone(IConsole::IResult *pResult, void *pUserData);
-	static void ConTuneDumpZone(IConsole::IResult *pResult, void *pUserData);
-	static void ConTuneResetZone(IConsole::IResult *pResult, void *pUserData);
-	static void ConTuneSetZoneMsgEnter(IConsole::IResult *pResult, void *pUserData);
-	static void ConTuneSetZoneMsgLeave(IConsole::IResult *pResult, void *pUserData);
 	static void ConMapbug(IConsole::IResult *pResult, void *pUserData);
-	static void ConSwitchOpen(IConsole::IResult *pResult, void *pUserData);
 	static void ConPause(IConsole::IResult *pResult, void *pUserData);
 	static void ConChangeMap(IConsole::IResult *pResult, void *pUserData);
 	static void ConRestart(IConsole::IResult *pResult, void *pUserData);
@@ -395,7 +391,6 @@ public:
 	const char *Version() const override;
 	const char *NetVersion() const override;
 
-	// DDRace
 	void OnPreTickTeehistorian() override;
 	bool OnClientDDNetVersionKnown(int ClientId);
 	void FillAntibot(CAntibotRoundData *pData) override;
@@ -421,20 +416,15 @@ private:
 	// starting 1 to make 0 the special value "no client id"
 	uint32_t m_NextUniqueClientId = 1;
 	bool m_VoteWillPass;
-	// DDRace Console Commands
-
 	static void ConKillPlayer(IConsole::IResult *pResult, void *pUserData);
-	static void ConPositionPlayer(IConsole::IResult *pResult, void *pUserData);
+	static void ConDamagePlayer(IConsole::IResult *pResult, void *pUserData);
 
-	static void ConInfo(IConsole::IResult *pResult, void *pUserData);
 	static void ConHelp(IConsole::IResult *pResult, void *pUserData);
 	static void ConRules(IConsole::IResult *pResult, void *pUserData);
 	static void ConKill(IConsole::IResult *pResult, void *pUserData);
 	static void ConDND(IConsole::IResult *pResult, void *pUserData);
 	static void ConWhispers(IConsole::IResult *pResult, void *pUserData);
-	static void ConMapInfo(IConsole::IResult *pResult, void *pUserData);
 	static void ConTimeout(IConsole::IResult *pResult, void *pUserData);
-	static void ConMap(IConsole::IResult *pResult, void *pUserData);
 	static void ConWhisper(IConsole::IResult *pResult, void *pUserData);
 	static void ConConverse(IConsole::IResult *pResult, void *pUserData);
 	static void ConSetEyeEmote(IConsole::IResult *pResult, void *pUserData);

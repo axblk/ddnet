@@ -51,21 +51,23 @@ private:
 	// the team to finish instantly.
 	CPlayerState m_aPlayerState[MAX_CLIENTS];
 
-	ETeamState m_aTeamState[NUM_DDRACE_TEAMS];
-	bool m_aTeamLocked[NUM_DDRACE_TEAMS];
-	bool m_aTeamFlock[NUM_DDRACE_TEAMS];
-	CClientMask m_aInvited[NUM_DDRACE_TEAMS];
-	bool m_aPractice[NUM_DDRACE_TEAMS];
-	std::shared_ptr<CScoreSaveResult> m_apSaveTeamResult[NUM_DDRACE_TEAMS];
-	bool m_aTeamSentStartWarning[NUM_DDRACE_TEAMS];
+	// The game mode resets these once it is far enough along to talk to
+	// clients, so until then they have to hold their own defaults.
+	ETeamState m_aTeamState[NUM_DDRACE_TEAMS] = {};
+	bool m_aTeamLocked[NUM_DDRACE_TEAMS] = {};
+	bool m_aTeamFlock[NUM_DDRACE_TEAMS] = {};
+	CClientMask m_aInvited[NUM_DDRACE_TEAMS] = {};
+	bool m_aPractice[NUM_DDRACE_TEAMS] = {};
+	std::shared_ptr<CScoreSaveResult> m_apSaveTeamResult[NUM_DDRACE_TEAMS] = {};
+	bool m_aTeamSentStartWarning[NUM_DDRACE_TEAMS] = {};
 	// `m_aTeamUnfinishableKillTick` is -1 by default and gets set when a
 	// team becomes unfinishable. If the team hasn't entered practice mode
 	// by that time, it'll get killed to prevent people not understanding
 	// the message from playing for a long time in an unfinishable team.
-	int m_aTeamUnfinishableKillTick[NUM_DDRACE_TEAMS];
+	int m_aTeamUnfinishableKillTick[NUM_DDRACE_TEAMS] = {};
 
 	// Team numbers as they are sent to clients before VERSION_DDNET_128_TEAMS, see UpdateLegacyTeamMap
-	int m_aLegacyTeamMap[NUM_DDRACE_TEAMS];
+	int m_aLegacyTeamMap[NUM_DDRACE_TEAMS] = {};
 	void UpdateLegacyTeamMap();
 
 	CGameContext *m_pGameContext;

@@ -41,18 +41,18 @@ void CGameControllerVanillaTDM::OnCharacterDeath(const CGameCharacterDeathContex
 void CGameControllerVanillaTDM::Tick()
 {
 	CGameControllerVanillaTeamplay::Tick();
-	if(m_GameOverTick != -1 || m_Warmup)
+	if(!Match().IsRunning())
 		return;
 
 	const bool ScoresTied = m_aTeamScores[TEAM_RED] == m_aTeamScores[TEAM_BLUE];
 	const int TopScore = std::max(m_aTeamScores[TEAM_RED], m_aTeamScores[TEAM_BLUE]);
 	const bool ScoreLimitReached = ScoreLimit() > 0 && TopScore >= ScoreLimit();
-	const bool TimeLimitReached = TimeLimit() > 0 && Server()->Tick() - m_RoundStartTick >= TimeLimit() * Server()->TickSpeed() * 60;
-	const EMatchResult MatchResult = EvaluateMatch(ScoresTied ? 2 : 1, ScoreLimitReached || TimeLimitReached, m_SuddenDeath != 0);
+	const bool TimeLimitReached = TimeLimit() > 0 && Server()->Tick() - Match().RoundStartTick() >= TimeLimit() * Server()->TickSpeed() * 60;
+	const EMatchResult MatchResult = EvaluateMatch(ScoresTied ? 2 : 1, ScoreLimitReached || TimeLimitReached, Match().IsSuddenDeath());
 	if(MatchResult == EMatchResult::END_ROUND)
 		EndRound();
 	else if(MatchResult == EMatchResult::SUDDEN_DEATH)
-		m_SuddenDeath = 1;
+		Match().BeginSuddenDeath();
 }
 
 void CGameControllerVanillaTDM::SnapMode(int SnappingClient)

@@ -19,8 +19,6 @@
 #include <game/team_state.h>
 #include <game/teamscore.h>
 
-MACRO_ALLOC_POOL_ID_IMPL(CCharacter, MAX_CLIENTS)
-
 // Character, "physical" player's part
 CCharacter::CCharacter(CGameWorld *pWorld, CNetObj_PlayerInput LastInput) :
 	CEntity(pWorld, CGameWorld::ENTTYPE_CHARACTER, false, vec2(0, 0), CCharacterCore::PhysicalSize())
@@ -670,7 +668,15 @@ void CCharacter::TickDeferred()
 {
 	// advance the dummy
 	{
+		// The tick this produces is the tick a client starts predicting this
+		// character from, so the reckoning has to run the physics the client
+		// will predict with rather than the physics the server simulates. All
+		// the client has to go on is the game info, and it settles on vanilla
+		// unless the mode there tells it to predict DDRace, so vanilla is what
+		// the reckoning stays on wherever the mode does not say otherwise.
 		CWorldCore TempWorld;
+		if(GameServer()->GameHost().Controller()->GameInfoFlags(m_pPlayer->GetCid()) & GAMEINFOFLAG_PREDICT_DDRACE)
+			TempWorld.m_PhysicsRules = GameWorld()->m_Core.m_PhysicsRules;
 		m_ReckoningCore.Init(&TempWorld, Collision(), TeamsCore());
 		m_ReckoningCore.m_Id = m_pPlayer->GetCid();
 		m_ReckoningCore.m_Tuning = CTuningParams();
@@ -1002,10 +1008,12 @@ bool CCharacter::IsSnappingCharacterInView(int SnappingClientId)
 	// A player may not be clipped away if their hook or a hook attached to them is in the field of view
 	bool PlayerAndHookNotInView = NetworkClippedLine(SnappingClientId, m_Pos, m_Core.m_HookPos);
 	bool AttachedHookInView = false;
-	if(PlayerAndHookNotInView)
+	if(PlayerAndHookNotInView && m_Core.m_AttachedPlayers.any())
 	{
-		for(const auto &AttachedPlayerId : m_Core.m_AttachedPlayers)
+		for(int AttachedPlayerId = 0; AttachedPlayerId < MAX_CLIENTS; AttachedPlayerId++)
 		{
+			if(!m_Core.m_AttachedPlayers[AttachedPlayerId])
+				continue;
 			const CCharacter *pOtherPlayer = GameServer()->GetPlayerChar(AttachedPlayerId);
 			if(pOtherPlayer && pOtherPlayer->m_Core.HookedPlayer() == m_pPlayer->GetCid())
 			{

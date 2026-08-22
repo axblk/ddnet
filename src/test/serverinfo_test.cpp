@@ -235,8 +235,11 @@ TEST(ServerInfo, QuicLanExtra)
 	static constexpr const char *FINGERPRINT = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 	SHA256_DIGEST Fingerprint;
 	ASSERT_EQ(sha256_from_str(&Fingerprint, FINGERPRINT), 0);
-	char aExtraInfo[192];
-	FormatQuicServerInfoExtra(aExtraInfo, sizeof(aExtraInfo), Fingerprint);
+	char aExtraInfo[QUIC_SERVERINFO_EXTRA_MAXSIZE];
+	CQuicServerInfoExtra Extra = {};
+	Extra.m_RawQuic = true;
+	Extra.m_IdentityFingerprint = Fingerprint;
+	FormatQuicServerInfoExtra(aExtraInfo, sizeof(aExtraInfo), Extra);
 
 	CServerInfo Info = {};
 	EXPECT_FALSE(ParseQuicServerInfoExtra(&Info, aExtraInfo, 8303));
@@ -258,6 +261,94 @@ TEST(ServerInfo, QuicLanExtra)
 	EXPECT_TRUE(ParseQuicServerInfoExtra(&Info, aExtraInfo, 8303));
 	str_format(aExtraInfo, sizeof(aExtraInfo), "ddnet-transport-v2|quic|identity-sha256=%s|capabilities=datagram,map-stream,resume-v1,game-protocol-7", FINGERPRINT);
 	EXPECT_TRUE(ParseQuicServerInfoExtra(&Info, aExtraInfo, 0));
+}
+
+TEST(ServerInfo, QuicLanExtraWebTransport)
+{
+	static constexpr const char *FINGERPRINT = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	static constexpr const char *CERTIFICATE = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+	static constexpr const char *NEXT_CERTIFICATE = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+	SHA256_DIGEST Fingerprint, Certificate, NextCertificate;
+	ASSERT_EQ(sha256_from_str(&Fingerprint, FINGERPRINT), 0);
+	ASSERT_EQ(sha256_from_str(&Certificate, CERTIFICATE), 0);
+	ASSERT_EQ(sha256_from_str(&NextCertificate, NEXT_CERTIFICATE), 0);
+
+	CQuicServerInfoExtra Extra = {};
+	Extra.m_RawQuic = true;
+	Extra.m_IdentityFingerprint = Fingerprint;
+	Extra.m_WebTransport = true;
+	Extra.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::HASH;
+	Extra.m_WebTransportCertificateSha256 = Certificate;
+	Extra.m_WebTransportNextCertificateSha256 = NextCertificate;
+	Extra.m_HasWebTransportNextCertificateSha256 = true;
+	char aExtraInfo[QUIC_SERVERINFO_EXTRA_MAXSIZE];
+	FormatQuicServerInfoExtra(aExtraInfo, sizeof(aExtraInfo), Extra);
+
+	CServerInfo Info = {};
+	EXPECT_FALSE(ParseQuicServerInfoExtra(&Info, aExtraInfo, 8303));
+	EXPECT_TRUE(Info.m_HasQuicIdentityFingerprint);
+	EXPECT_EQ(Info.m_QuicIdentityFingerprint, Fingerprint);
+	EXPECT_TRUE(Info.m_WebTransport);
+	EXPECT_EQ(Info.m_WebTransportCertificateMode, CServerInfo::EWebTransportCertificateMode::HASH);
+	EXPECT_EQ(Info.m_QuicCertificateSha256, Certificate);
+	EXPECT_TRUE(Info.m_HasQuicNextCertificateSha256);
+	EXPECT_EQ(Info.m_QuicNextCertificateSha256, NextCertificate);
+
+	Extra.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::WEBPKI;
+	Extra.m_pHostname = "server.example.com";
+	FormatQuicServerInfoExtra(aExtraInfo, sizeof(aExtraInfo), Extra);
+	Info = {};
+	EXPECT_FALSE(ParseQuicServerInfoExtra(&Info, aExtraInfo, 8303));
+	EXPECT_TRUE(Info.m_WebTransport);
+	EXPECT_EQ(Info.m_WebTransportCertificateMode, CServerInfo::EWebTransportCertificateMode::WEBPKI);
+	EXPECT_EQ(Info.m_QuicTrust, EModernTransportTrust::WEBPKI);
+	EXPECT_STREQ(Info.m_aModernHostname, "server.example.com");
+
+	// A server that only speaks QUIC must still produce the string an older
+	// client expects byte for byte.
+	Extra.m_WebTransport = false;
+	FormatQuicServerInfoExtra(aExtraInfo, sizeof(aExtraInfo), Extra);
+	char aExpected[QUIC_SERVERINFO_EXTRA_MAXSIZE];
+	str_format(aExpected, sizeof(aExpected), "ddnet-transport-v2|quic|identity-sha256=%s|capabilities=datagram,map-stream,resume-v1,game-protocol-7", FINGERPRINT);
+	EXPECT_STREQ(aExtraInfo, aExpected);
+
+	// Unknown segments are skipped instead of rejecting the whole string.
+	str_append(aExtraInfo, "|future=whatever|webtransport=hash", sizeof(aExtraInfo));
+	Info = {};
+	EXPECT_FALSE(ParseQuicServerInfoExtra(&Info, aExtraInfo, 8303));
+	EXPECT_TRUE(Info.m_WebTransport);
+	EXPECT_EQ(Info.m_WebTransportCertificateMode, CServerInfo::EWebTransportCertificateMode::HASH);
+}
+
+TEST(ServerInfo, QuicLanExtraWebTransportOnly)
+{
+	static constexpr const char *CERTIFICATE = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+	SHA256_DIGEST Certificate;
+	ASSERT_EQ(sha256_from_str(&Certificate, CERTIFICATE), 0);
+
+	// `sv_webtransport` is on by default and `sv_quic` is not, so this is what a
+	// LAN server answers unless it was told otherwise. It has no identity
+	// binding, and it must still advertise the transport it does serve.
+	CQuicServerInfoExtra Extra = {};
+	Extra.m_RawQuic = false;
+	Extra.m_WebTransport = true;
+	Extra.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::HASH;
+	Extra.m_WebTransportCertificateSha256 = Certificate;
+	char aExtraInfo[QUIC_SERVERINFO_EXTRA_MAXSIZE];
+	FormatQuicServerInfoExtra(aExtraInfo, sizeof(aExtraInfo), Extra);
+
+	CServerInfo Info = {};
+	EXPECT_FALSE(ParseQuicServerInfoExtra(&Info, aExtraInfo, 8303));
+	EXPECT_FALSE(Info.m_RawQuic);
+	EXPECT_FALSE(Info.m_HasQuicIdentityFingerprint);
+	EXPECT_TRUE(Info.m_WebTransport);
+	EXPECT_TRUE(Info.m_QuicSharedPort);
+	EXPECT_EQ(Info.m_QuicPort, 8303);
+	EXPECT_EQ(Info.m_QuicCertificateSha256, Certificate);
+
+	// A client that predates the prefix reads nothing from it rather than a
+	// server that is not there.
+	EXPECT_TRUE(str_startswith(aExtraInfo, "ddnet-transport-v2|webtransport|capabilities=") != nullptr);
 }
 
 TEST(ServerInfo, PreserveWebTransportMetadataWithLanIdentity)

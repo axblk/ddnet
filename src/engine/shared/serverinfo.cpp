@@ -210,41 +210,142 @@ bool ParseQuicDirectLinkFingerprint(const char *pUrl, SHA256_DIGEST *pFingerprin
 static constexpr char QUIC_SERVERINFO_EXTRA_V1_PREFIX[] = "ddnet-transport-v1|quic|tls-certificate-sha256=";
 static constexpr char QUIC_SERVERINFO_EXTRA_V2_PREFIX[] = "ddnet-transport-v2|quic|identity-sha256=";
 static constexpr char QUIC_SERVERINFO_EXTRA_SUFFIX[] = "|capabilities=datagram,map-stream,resume-v1,game-protocol-7";
+// A server that only serves WebTransport has no identity binding to send, so
+// it says so in its own prefix rather than inventing a fingerprint. A client
+// that does not know this prefix reads no modern transport at all, which is
+// what it would have done before the prefix existed.
+static constexpr char QUIC_SERVERINFO_EXTRA_WT_PREFIX[] = "ddnet-transport-v2|webtransport";
 
-void FormatQuicServerInfoExtra(char *pBuffer, int BufferSize, SHA256_DIGEST IdentityFingerprint)
+void FormatQuicServerInfoExtra(char *pBuffer, int BufferSize, const CQuicServerInfoExtra &Extra)
 {
-	char aIdentityFingerprint[SHA256_MAXSTRSIZE];
-	sha256_str(IdentityFingerprint, aIdentityFingerprint, sizeof(aIdentityFingerprint));
-	str_format(pBuffer, BufferSize, "%s%s%s", QUIC_SERVERINFO_EXTRA_V2_PREFIX, aIdentityFingerprint, QUIC_SERVERINFO_EXTRA_SUFFIX);
+	if(Extra.m_RawQuic)
+	{
+		char aIdentityFingerprint[SHA256_MAXSTRSIZE];
+		sha256_str(Extra.m_IdentityFingerprint, aIdentityFingerprint, sizeof(aIdentityFingerprint));
+		str_format(pBuffer, BufferSize, "%s%s%s", QUIC_SERVERINFO_EXTRA_V2_PREFIX, aIdentityFingerprint, QUIC_SERVERINFO_EXTRA_SUFFIX);
+	}
+	else
+	{
+		str_format(pBuffer, BufferSize, "%s%s", QUIC_SERVERINFO_EXTRA_WT_PREFIX, QUIC_SERVERINFO_EXTRA_SUFFIX);
+	}
+
+	// Everything past the capabilities is optional and keyed, so a client that
+	// does not know a segment skips it and an older client stops right here.
+	const bool CertificateHashes = Extra.m_WebTransportCertificateMode == CServerInfo::EWebTransportCertificateMode::HASH;
+	if(!Extra.m_WebTransport || Extra.m_WebTransportCertificateMode == CServerInfo::EWebTransportCertificateMode::NONE)
+		return;
+	str_append(pBuffer, CertificateHashes ? "|webtransport=hash" : "|webtransport=webpki", BufferSize);
+	if(CertificateHashes)
+	{
+		char aCertificate[SHA256_MAXSTRSIZE];
+		sha256_str(Extra.m_WebTransportCertificateSha256, aCertificate, sizeof(aCertificate));
+		str_append(pBuffer, "|wt-cert-sha256=", BufferSize);
+		str_append(pBuffer, aCertificate, BufferSize);
+		if(Extra.m_HasWebTransportNextCertificateSha256)
+		{
+			sha256_str(Extra.m_WebTransportNextCertificateSha256, aCertificate, sizeof(aCertificate));
+			str_append(pBuffer, ",", BufferSize);
+			str_append(pBuffer, aCertificate, BufferSize);
+		}
+	}
+	else if(Extra.m_pHostname != nullptr && Extra.m_pHostname[0] != '\0')
+	{
+		// Web PKI cannot validate a bare address, so without this the client has
+		// no name to build the WebTransport URL from.
+		str_append(pBuffer, "|hostname=", BufferSize);
+		str_append(pBuffer, Extra.m_pHostname, BufferSize);
+	}
 }
 
 bool ParseQuicServerInfoExtra(CServerInfo *pInfo, const char *pExtraInfo, int Port)
 {
-	static constexpr int SUFFIX_LENGTH = sizeof(QUIC_SERVERINFO_EXTRA_SUFFIX) - 1;
-	const char *pFingerprint = str_startswith(pExtraInfo, QUIC_SERVERINFO_EXTRA_V2_PREFIX);
-	const bool Identity = pFingerprint != nullptr;
-	if(!pFingerprint)
-		pFingerprint = str_startswith(pExtraInfo, QUIC_SERVERINFO_EXTRA_V1_PREFIX);
-	if(!pFingerprint || !in_range(Port, 1, 65535) || str_length(pFingerprint) != SHA256_DIGEST_LENGTH * 2 + SUFFIX_LENGTH ||
-		str_comp(pFingerprint + SHA256_DIGEST_LENGTH * 2, QUIC_SERVERINFO_EXTRA_SUFFIX) != 0)
+	if(!in_range(Port, 1, 65535))
 		return true;
 
-	char aFingerprint[SHA256_MAXSTRSIZE];
-	str_copy(aFingerprint, pFingerprint, sizeof(aFingerprint));
-	SHA256_DIGEST Fingerprint;
-	if(sha256_from_str(&Fingerprint, aFingerprint))
-		return true;
-
-	if(Identity)
+	const char *pSegments = nullptr;
+	bool RawQuic = true;
+	if(const char *pWebTransportOnly = str_startswith(pExtraInfo, QUIC_SERVERINFO_EXTRA_WT_PREFIX))
 	{
-		pInfo->m_QuicIdentityFingerprint = Fingerprint;
-		pInfo->m_HasQuicIdentityFingerprint = true;
+		pSegments = str_startswith(pWebTransportOnly, QUIC_SERVERINFO_EXTRA_SUFFIX);
+		if(pSegments == nullptr)
+			return true;
+		RawQuic = false;
 	}
 	else
-		pInfo->m_QuicCertificateSha256 = Fingerprint;
+	{
+		const char *pFingerprint = str_startswith(pExtraInfo, QUIC_SERVERINFO_EXTRA_V2_PREFIX);
+		const bool Identity = pFingerprint != nullptr;
+		if(!pFingerprint)
+			pFingerprint = str_startswith(pExtraInfo, QUIC_SERVERINFO_EXTRA_V1_PREFIX);
+		if(!pFingerprint || static_cast<size_t>(str_length(pFingerprint)) < SHA256_DIGEST_LENGTH * 2)
+			return true;
+
+		pSegments = str_startswith(pFingerprint + SHA256_DIGEST_LENGTH * 2, QUIC_SERVERINFO_EXTRA_SUFFIX);
+		if(pSegments == nullptr)
+			return true;
+
+		char aFingerprint[SHA256_MAXSTRSIZE];
+		str_truncate(aFingerprint, sizeof(aFingerprint), pFingerprint, SHA256_DIGEST_LENGTH * 2);
+		SHA256_DIGEST Fingerprint;
+		if(sha256_from_str(&Fingerprint, aFingerprint))
+			return true;
+
+		if(Identity)
+		{
+			pInfo->m_QuicIdentityFingerprint = Fingerprint;
+			pInfo->m_HasQuicIdentityFingerprint = true;
+		}
+		else
+			pInfo->m_QuicCertificateSha256 = Fingerprint;
+	}
+	pInfo->m_RawQuic = RawQuic;
 	pInfo->m_QuicPort = Port;
 	pInfo->m_QuicCapabilities = CServerInfo::QUIC_CAPABILITY_DATAGRAM | CServerInfo::QUIC_CAPABILITY_MAP_STREAM | CServerInfo::QUIC_CAPABILITY_RESUME | CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7;
 	pInfo->m_QuicSharedPort = true;
+
+	// Unknown segments are skipped, so a server can add one without shutting out
+	// the clients that do not know it yet.
+	while(pSegments != nullptr && *pSegments == '|')
+	{
+		char aSegment[2 * SHA256_MAXSTRSIZE + 32];
+		const char *pEnd = str_find(pSegments + 1, "|");
+		if(pEnd == nullptr)
+			str_copy(aSegment, pSegments + 1, sizeof(aSegment));
+		else
+			str_truncate(aSegment, sizeof(aSegment), pSegments + 1, pEnd - pSegments - 1);
+		pSegments = pEnd;
+
+		if(const char *pMode = str_startswith(aSegment, "webtransport="))
+		{
+			if(str_comp(pMode, "hash") == 0)
+			{
+				pInfo->m_WebTransport = true;
+				pInfo->m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::HASH;
+			}
+			else if(str_comp(pMode, "webpki") == 0)
+			{
+				pInfo->m_WebTransport = true;
+				pInfo->m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::WEBPKI;
+				pInfo->m_QuicTrust = EModernTransportTrust::WEBPKI;
+			}
+		}
+		else if(const char *pCertificates = str_startswith(aSegment, "wt-cert-sha256="))
+		{
+			char aCertificate[SHA256_MAXSTRSIZE];
+			const char *pNext = str_find(pCertificates, ",");
+			str_truncate(aCertificate, sizeof(aCertificate), pCertificates, pNext ? pNext - pCertificates : str_length(pCertificates));
+			if(!sha256_from_str(&pInfo->m_QuicCertificateSha256, aCertificate))
+			{
+				pInfo->m_QuicTrust = EModernTransportTrust::CERTIFICATE_HASH;
+				if(pNext != nullptr && !sha256_from_str(&pInfo->m_QuicNextCertificateSha256, pNext + 1))
+					pInfo->m_HasQuicNextCertificateSha256 = true;
+			}
+		}
+		else if(const char *pHostname = str_startswith(aSegment, "hostname="))
+		{
+			str_copy(pInfo->m_aModernHostname, pHostname);
+		}
+	}
 	return false;
 }
 

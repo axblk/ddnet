@@ -446,7 +446,16 @@ bool CQuicTransport::IsCompiled()
 #endif
 }
 
-bool CQuicTransport::IsWebTransportCompiled()
+bool CQuicTransport::IsWebTransportServerCompiled()
+{
+#if defined(CONF_QUIC)
+	return true;
+#else
+	return false;
+#endif
+}
+
+bool CQuicTransport::IsWebTransportClientCompiled()
 {
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 	return true;

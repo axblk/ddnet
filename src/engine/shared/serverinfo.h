@@ -73,7 +73,31 @@ bool FormatWebTransportUrl(char *pBuffer, int BufferSize, const char *pHostname,
 bool ValidateWebTransportUrl(const char *pUrl, int Port);
 bool ParseModernTransportUrl(const char *pUrl, bool *pWebTransport, EModernTransportTrust *pTrust, SHA256_DIGEST *pFingerprint, SHA256_DIGEST *pNextFingerprint, bool *pHasNextFingerprint);
 bool ParseQuicDirectLinkFingerprint(const char *pUrl, SHA256_DIGEST *pFingerprint);
-void FormatQuicServerInfoExtra(char *pBuffer, int BufferSize, SHA256_DIGEST IdentityFingerprint);
+/**
+ * What a server advertises about its modern transports in the reserved extra
+ * info field of an extended server info answer. This is the only way a LAN
+ * server can say anything about them, the master server is not involved there.
+ */
+struct CQuicServerInfoExtra
+{
+	SHA256_DIGEST m_IdentityFingerprint;
+	bool m_RawQuic;
+	bool m_WebTransport;
+	CServerInfo::EWebTransportCertificateMode m_WebTransportCertificateMode;
+	SHA256_DIGEST m_WebTransportCertificateSha256;
+	SHA256_DIGEST m_WebTransportNextCertificateSha256;
+	bool m_HasWebTransportNextCertificateSha256;
+	const char *m_pHostname;
+};
+
+enum
+{
+	// Two certificate hashes and a hostname on top of the base string. The
+	// packer takes this as an upper bound, only the actual text is sent.
+	QUIC_SERVERINFO_EXTRA_MAXSIZE = 640,
+};
+
+void FormatQuicServerInfoExtra(char *pBuffer, int BufferSize, const CQuicServerInfoExtra &Extra);
 bool ParseQuicServerInfoExtra(CServerInfo *pInfo, const char *pExtraInfo, int Port);
 void PreserveWebTransportMetadata(CServerInfo *pInfo, const CServerInfo &PreviousInfo);
 

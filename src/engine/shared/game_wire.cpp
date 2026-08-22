@@ -26,6 +26,11 @@ namespace GameWire
 				return 128;
 			case EFrameType::MAP_HEADER:
 				return MAX_MAP_HEADER_SIZE;
+			case EFrameType::SERVER_IDENTITY:
+			case EFrameType::CLIENT_IDENTITY_READY:
+				// Reserved for the native transport. They are skippable, so
+				// they get the limit every skippable frame gets below.
+				return MAX_CONTROL_MESSAGE_SIZE;
 			}
 			return Type >= SKIPPABLE_FRAME_START ? MAX_CONTROL_MESSAGE_SIZE : 0;
 		}

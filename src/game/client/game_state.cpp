@@ -10,6 +10,7 @@
 #include <generated/protocol.h>
 
 #include <game/client/prediction/entities/character.h>
+#include <game/map_door_collision.h>
 
 #include <algorithm>
 #include <type_traits>
@@ -334,6 +335,7 @@ void CGameState::InitPrediction(CMapContext &MapContext)
 	m_GameWorld.Init(MapContext.Collision(), m_aTuning.data(), MapContext.MapBugs(), &MapContext.GameConfig());
 	m_GameWorld.m_Core.InitSwitchers(MapContext.Collision()->m_HighestSwitchNumber);
 	m_PredictionInitialized = true;
+	m_MapDoorsBuilt = false;
 	UpdatePhysicsRules();
 	RebuildGameWorld();
 }
@@ -617,6 +619,15 @@ void CGameState::SetCoreGameInfo(const CGameInfo &GameInfo)
 	m_GameWorld.m_WorldConfig.m_NoWeakHookAndBounce = GameInfo.m_NoWeakHookAndBounce;
 	m_GameWorld.m_WorldConfig.m_PredictEvents = GameInfo.m_PredictEvents;
 	UpdatePhysicsRules();
+
+	// Doors are map geometry, stamped once like on the server. Whether the
+	// server runs the tile physics they belong to is only known from the game
+	// info, so this cannot happen at map load.
+	if(m_PredictionInitialized && !m_MapDoorsBuilt && m_GameWorld.m_WorldConfig.m_PredictTiles)
+	{
+		BuildMapDoorCollision(m_GameWorld.Collision());
+		m_MapDoorsBuilt = true;
+	}
 }
 
 void CGameState::UpdateWorldConfigFromSnapshot()

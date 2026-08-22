@@ -552,6 +552,7 @@ private:
 	CGameInfo m_CoreGameInfo;
 	CTeamsCore m_Teams;
 	bool m_PredictionInitialized = false;
+	bool m_MapDoorsBuilt = false;
 	bool m_FullyPredicted = false;
 
 	void RebuildGameWorld();

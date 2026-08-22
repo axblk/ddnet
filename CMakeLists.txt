@@ -2925,8 +2925,6 @@ if(CLIENT)
     pickup_data.h
     prediction/entities/character.cpp
     prediction/entities/character.h
-    prediction/entities/door.cpp
-    prediction/entities/door.h
     prediction/entities/dragger.cpp
     prediction/entities/dragger.h
     prediction/entities/laser.cpp
@@ -4223,7 +4221,6 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/game/client/match_report_assembler.cpp
     src/game/client/pickup_data.cpp
     src/game/client/prediction/entities/character.cpp
-    src/game/client/prediction/entities/door.cpp
     src/game/client/prediction/entities/dragger.cpp
     src/game/client/prediction/entities/laser.cpp
     src/game/client/prediction/entities/pickup.cpp

@@ -123,7 +123,7 @@ CUpdaterFetchTask::CUpdaterFetchTask(CUpdater *pUpdater, const char *pFile, cons
 {
 	char aDestination[IO_MAX_PATH_LENGTH];
 	FormatUpdaterDestPath(aDestination, sizeof(aDestination), pFile, pDestPath);
-	m_pHttpRequest = CreateHttpRequest(GetUpdaterUrl(m_aBuf, sizeof(m_aBuf), pFile));
+	m_pHttpRequest = pUpdater->m_pHttp->CreateRequest(GetUpdaterUrl(m_aBuf, sizeof(m_aBuf), pFile));
 	m_pHttpRequest->WriteToFile(pUpdater->m_pStorage, aDestination, -2);
 	m_pHttpRequest->SetProgressCallback(this);
 }

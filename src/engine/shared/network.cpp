@@ -525,7 +525,35 @@ bool CNetBase::IsSeqInBackroom(int Seq, int Ack)
 }
 
 IOHANDLE CNetBase::ms_DataLogSent = nullptr;
+bool CNetBase::ms_Logging = false;
 IOHANDLE CNetBase::ms_DataLogRecv = nullptr;
+
+void CNetBase::RegisterLogCommand(IConsole *pConsole, IStorage *pStorage)
+{
+	class CNetworkLogCommand
+	{
+	public:
+		static void Con_DbgLognetwork(IConsole::IResult *pResult, void *pUserData)
+		{
+			IStorage *pStorage = static_cast<IStorage *>(pUserData);
+			if(ms_Logging)
+			{
+				CNetBase::CloseLog();
+				ms_Logging = false;
+				return;
+			}
+			char aTimestamp[32];
+			str_timestamp(aTimestamp, sizeof(aTimestamp));
+			char aFilenameSent[IO_MAX_PATH_LENGTH], aFilenameRecv[IO_MAX_PATH_LENGTH];
+			str_format(aFilenameSent, sizeof(aFilenameSent), "dumps/network_sent_%s.txt", aTimestamp);
+			str_format(aFilenameRecv, sizeof(aFilenameRecv), "dumps/network_recv_%s.txt", aTimestamp);
+			CNetBase::OpenLog(pStorage->OpenFile(aFilenameSent, IOFLAG_WRITE, IStorage::TYPE_SAVE),
+				pStorage->OpenFile(aFilenameRecv, IOFLAG_WRITE, IStorage::TYPE_SAVE));
+			ms_Logging = true;
+		}
+	};
+	pConsole->Register("dbg_lognetwork", "", CFGFLAG_SERVER | CFGFLAG_CLIENT, CNetworkLogCommand::Con_DbgLognetwork, pStorage, "Log the network");
+}
 
 void CNetBase::OpenLog(IOHANDLE DataLogSent, IOHANDLE DataLogRecv)
 {

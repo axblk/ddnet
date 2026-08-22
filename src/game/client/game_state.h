@@ -74,6 +74,12 @@ public:
 	bool m_PredictEvents = false;
 
 	bool m_OldLaser = false;
+	/**
+	 * Whether `m_OldLaser` is what the server said. GameInfoEx carries it from
+	 * version 12 on; below that there is nothing on the wire and the map's own
+	 * setting, which both sides read, is the best there is.
+	 */
+	bool m_OldLaserKnown = false;
 
 	// zero if the server does not send them
 	int m_MinTeamSize = 0;

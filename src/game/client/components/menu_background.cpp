@@ -106,7 +106,7 @@ void CMenuBackground::LoadThemeIcon(CTheme &Theme)
 {
 	char aIconPath[IO_MAX_PATH_LENGTH];
 	str_format(aIconPath, sizeof(aIconPath), "themes/%s.png", Theme.m_Name.empty() ? "none" : Theme.m_Name.c_str());
-	Theme.m_IconResource = GameClient()->AssetLoader().LoadImage(Storage(), aIconPath, IStorage::TYPE_ALL, ASSET_OWNER_MENU_THEMES, m_AssetGeneration);
+	Theme.m_IconResource = GameClient()->AssetLoader().LoadImageFile(Storage(), aIconPath, IStorage::TYPE_ALL, ASSET_OWNER_MENU_THEMES, m_AssetGeneration);
 }
 
 void CMenuBackground::FinishThemeIconLoads()

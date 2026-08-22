@@ -7,6 +7,8 @@
 
 #include <base/types.h>
 
+#include <engine/client/asset_loader.h>
+
 #include <game/client/ui.h>
 #include <game/client/ui_listbox.h>
 
@@ -34,6 +36,7 @@ public:
 
 	void OnEditorClose();
 	void OnDialogClose();
+	void OnUpdate() override;
 
 private:
 	/**
@@ -132,10 +135,13 @@ private:
 	enum class EPreviewState
 	{
 		UNLOADED,
+		LOADING,
 		LOADED,
 		ERROR,
 	};
 	EPreviewState m_PreviewState = EPreviewState::UNLOADED;
+	CImageResource m_PreviewResource;
+	uint64_t m_PreviewGeneration = 1;
 	IGraphics::CTextureHandle m_PreviewImage;
 	int m_PreviewImageWidth = 0;
 	int m_PreviewImageHeight = 0;
@@ -157,6 +163,8 @@ private:
 
 	bool CanPreviewFile() const;
 	void UpdateFilePreview();
+	void FinishFilePreview();
+	void ResetFilePreview();
 	void RenderFilePreview(CUIRect Preview);
 	const char *DetermineFileFontIcon(const CFilelistItem *pItem) const;
 	void UpdateFilenameInput();

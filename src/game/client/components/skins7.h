@@ -141,6 +141,7 @@ private:
 	CImageResource m_XmasHatResource;
 	CImageResource m_BotResource;
 	uint64_t m_Generation = 0;
+	std::optional<std::chrono::nanoseconds> m_PartUpdateTime;
 
 	static int SkinPartScan(const char *pName, int IsDir, int DirType, void *pUser);
 	bool RegisterSkinPart(int PartType, const char *pName, int DirType);

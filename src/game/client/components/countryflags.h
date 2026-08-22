@@ -29,7 +29,10 @@ public:
 		mutable EState m_State = EState::UNLOADED;
 		CImageResource m_LoadResource;
 
-		void RequestLoad() const;
+		/**
+		 * @return `true` if the flag was not requested before.
+		 */
+		bool RequestLoad() const;
 
 		friend class CCountryFlags;
 
@@ -62,6 +65,7 @@ private:
 
 	int m_FlagsQuadContainerIndex = -1;
 	uint64_t m_Generation = 0;
+	bool m_LoadsPending = true;
 
 	static bool ValidateCountryCodeString(const char *pString);
 	void LoadCountryflagsIndexfile();

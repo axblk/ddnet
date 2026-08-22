@@ -75,7 +75,11 @@ static constexpr std::chrono::nanoseconds MIN_REQUESTED_TIME_FOR_PENDING = 250ms
 static constexpr std::chrono::nanoseconds MAX_REQUESTED_TIME_FOR_PENDING = 500ms;
 static constexpr std::chrono::nanoseconds MIN_UNLOAD_TIME_PENDING = 1s;
 static constexpr std::chrono::nanoseconds MIN_UNLOAD_TIME_LOADED = 2s;
-static constexpr size_t MAX_CONCURRENT_SKIN_LOADS = 2;
+// Reading and decoding runs on the job pool, so the number that may be in
+// flight is a question of how many decoded images we are willing to hold, not
+// of how much work the client can take. Uploading them is what touches the main
+// thread, and that is already limited by the time budget in UpdateFinishLoading.
+static constexpr size_t MAX_CONCURRENT_SKIN_LOADS = 16;
 static_assert(MIN_REQUESTED_TIME_FOR_PENDING < MAX_REQUESTED_TIME_FOR_PENDING);
 static_assert(MIN_REQUESTED_TIME_FOR_PENDING < MIN_UNLOAD_TIME_PENDING, "Unloading pending skins must take longer than adding more pending skins");
 
@@ -542,7 +546,7 @@ void CSkins::StartSkinDecode(CSkinContainer *pSkinContainer, const char *pPath, 
 {
 	auto pData = std::make_shared<CSkinLoadData>();
 	const std::string Name = pSkinContainer->Name();
-	pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImage(Storage(), pPath, StorageType, ASSET_OWNER_SKINS, m_Generation, [pData, Name](CImageInfo &Info) {
+	pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImageFile(Storage(), pPath, StorageType, ASSET_OWNER_SKINS, m_Generation, [pData, Name](CImageInfo &Info) {
 		return LoadSkinData(Name.c_str(), Info, *pData, false);
 	});
 	pSkinContainer->m_pLoadData = std::move(pData);
@@ -553,7 +557,7 @@ void CSkins::StartSkinDecode(CSkinContainer *pSkinContainer, std::vector<uint8_t
 {
 	auto pData = std::make_shared<CSkinLoadData>();
 	const std::string Name = pSkinContainer->Name();
-	pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImage(std::move(vData), pContextName, ASSET_OWNER_SKINS, m_Generation, [pData, Name](CImageInfo &Info) {
+	pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImageData(std::move(vData), pContextName, ASSET_OWNER_SKINS, m_Generation, [pData, Name](CImageInfo &Info) {
 		return LoadSkinData(Name.c_str(), Info, *pData, false);
 	});
 	pSkinContainer->m_pLoadData = std::move(pData);
@@ -656,7 +660,11 @@ void CSkins::OnUpdate()
 	// Only update skins periodically to reduce FPS impact
 	const std::chrono::nanoseconds StartTime = time_get_nanoseconds();
 	const std::chrono::nanoseconds MaxTime = std::chrono::milliseconds(std::clamp(round_to_int(Client()->RenderFrameTime() * 50000.0f), 25, 500));
-	if(m_ContainerUpdateTime.has_value() && StartTime - m_ContainerUpdateTime.value() < MaxTime)
+	// Startup is the exception: two skins per pass every half second is six
+	// seconds of cold start for the eighteen vanilla skins alone, and the frame
+	// rate this pacing protects is the one of a client that is not running yet.
+	if(m_ContainerUpdateTime.has_value() && StartTime - m_ContainerUpdateTime.value() < MaxTime &&
+		!GameClient()->StartupAssetsPending())
 	{
 		return;
 	}
@@ -803,6 +811,14 @@ void CSkins::UpdateFinishLoading(CSkinLoadingStats &Stats, std::chrono::nanoseco
 				pSkinContainer->m_pDownloadRequest = nullptr;
 				char aPath[IO_MAX_PATH_LENGTH];
 				str_format(aPath, sizeof(aPath), "downloadedskins/%s.png", pSkinContainer->Name());
+				// A skin the database does not have was never cached either, so
+				// decoding the missing file only costs a job and reports a load
+				// failure for a file that was never there.
+				if(!Storage()->FileExists(aPath, IStorage::TYPE_SAVE))
+				{
+					FinishSkinLoad(Stats, pSkinContainer.get(), false);
+					continue;
+				}
 				StartSkinDecode(pSkinContainer.get(), aPath, IStorage::TYPE_SAVE, ESkinDecodeSource::DOWNLOAD_CACHE);
 			}
 			continue;
@@ -872,27 +888,32 @@ void CSkins::UpdateFinishLoading(CSkinLoadingStats &Stats, std::chrono::nanoseco
 			continue;
 		}
 
-		Stats.m_NumLoading--;
-		const bool NotFound = !Stale && pSkinContainer->m_DownloadNotFound;
-		ResetSkinLoad(pSkinContainer.get());
-		if(pSkinContainer->m_pSkin)
-		{
-			pSkinContainer->SetState(CSkinContainer::EState::LOADED);
-			Stats.m_NumLoaded++;
-		}
-		else if(NotFound)
-		{
-			pSkinContainer->SetState(CSkinContainer::EState::NOT_FOUND);
-			Stats.m_NumNotFound++;
-		}
+		FinishSkinLoad(Stats, pSkinContainer.get(), Stale);
+	}
+}
+
+void CSkins::FinishSkinLoad(CSkinLoadingStats &Stats, CSkinContainer *pSkinContainer, bool Stale)
+{
+	Stats.m_NumLoading--;
+	const bool NotFound = !Stale && pSkinContainer->m_DownloadNotFound;
+	ResetSkinLoad(pSkinContainer);
+	if(pSkinContainer->m_pSkin)
+	{
+		pSkinContainer->SetState(CSkinContainer::EState::LOADED);
+		Stats.m_NumLoaded++;
+	}
+	else if(NotFound)
+	{
+		pSkinContainer->SetState(CSkinContainer::EState::NOT_FOUND);
+		Stats.m_NumNotFound++;
+	}
+	else
+	{
+		pSkinContainer->SetState(Stale ? CSkinContainer::EState::UNLOADED : CSkinContainer::EState::ERROR);
+		if(Stale)
+			Stats.m_NumUnloaded++;
 		else
-		{
-			pSkinContainer->SetState(Stale ? CSkinContainer::EState::UNLOADED : CSkinContainer::EState::ERROR);
-			if(Stale)
-				Stats.m_NumUnloaded++;
-			else
-				Stats.m_NumError++;
-		}
+			Stats.m_NumError++;
 	}
 }
 

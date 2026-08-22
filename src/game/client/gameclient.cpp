@@ -4677,7 +4677,7 @@ void CGameClient::StartLoadingCoreImages()
 	m_DecodedAssetImages.clear();
 
 	const auto SubmitImage = [this](int ImageId, bool IsAssetSheet, const char *pPath) {
-		m_vStartupImageLoads.push_back({ImageId, IsAssetSheet, m_AssetLoader.LoadImage(Storage(), pPath, IStorage::TYPE_ALL, ASSET_OWNER_STARTUP_IMAGES, m_AssetGeneration)});
+		m_vStartupImageLoads.push_back({ImageId, IsAssetSheet, m_AssetLoader.LoadImageFile(Storage(), pPath, IStorage::TYPE_ALL, ASSET_OWNER_STARTUP_IMAGES, m_AssetGeneration)});
 	};
 	const auto SubmitAssetSheet = [&](int ImageId, const char *pAssetName, const char *pDirectory) {
 		const char *pDefaultPath = g_pData->m_aImages[ImageId].m_pFilename;
@@ -4848,7 +4848,7 @@ void CGameClient::StartLoadingAssetPack(int ImageId, const char *pName, bool AsD
 	Load.m_Name = pName;
 	Load.m_AsDir = AsDir;
 	const auto Submit = [&](const char *pPath) {
-		Load.m_vResources.push_back(m_AssetLoader.LoadImage(Storage(), pPath, IStorage::TYPE_ALL, OwnerId, Generation));
+		Load.m_vResources.push_back(m_AssetLoader.LoadImageFile(Storage(), pPath, IStorage::TYPE_ALL, OwnerId, Generation));
 	};
 	if(str_comp(pName, "default") != 0)
 	{

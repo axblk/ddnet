@@ -137,7 +137,6 @@ TEST(AssetLoader, AbortsStaleGenerations)
 	auto OldResource = Loader.Load(pOldJob);
 	auto CurrentResource = Loader.Load(pCurrentJob);
 	WaitForRunningJobs(Loader, Running, 1);
-	EXPECT_FALSE(pRunningJob->Abort());
 	EXPECT_EQ(pRunningJob->State(), IJob::STATE_RUNNING);
 	Loader.AbortOwnerBeforeGeneration(3, 5);
 	EXPECT_FALSE(RunningResource.IsFinished());
@@ -145,6 +144,11 @@ TEST(AssetLoader, AbortsStaleGenerations)
 	EXPECT_FALSE(CurrentResource.IsFinished());
 	EXPECT_EQ(pOldJob->State(), IJob::STATE_ABORTED);
 	EXPECT_EQ(pCurrentJob->State(), IJob::STATE_QUEUED);
+
+	// A job a worker has already picked up is aborted as well, so a component
+	// that drops its stale work does not wait for a result nobody collects.
+	Loader.AbortOwnerBeforeGeneration(1, 2);
+	EXPECT_EQ(pRunningJob->State(), IJob::STATE_ABORTED);
 
 	Release = true;
 	for(int i = 0; i < 100000 && !Loader.Idle(); ++i)
@@ -190,7 +194,7 @@ TEST(AssetLoader, DecodesOwnedImageBytesAndPostprocesses)
 	CAssetLoader Loader;
 	Loader.Init(pEngine.get(), 1);
 	std::vector<uint8_t> vPng(Writer.Data(), Writer.Data() + Writer.Size());
-	CImageResource Resource = Loader.LoadImage(std::move(vPng), "memory.png", 4, 7, [](CImageInfo &Image) {
+	CImageResource Resource = Loader.LoadImageData(std::move(vPng), "memory.png", 4, 7, [](CImageInfo &Image) {
 		Image.m_pData[0] = 42;
 		return true;
 	});

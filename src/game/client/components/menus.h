@@ -9,12 +9,14 @@
 #include <base/vmath.h>
 
 #include <engine/client/asset_loader.h>
+#include <engine/client/ghost.h>
 #include <engine/client/session.h>
 #include <engine/console.h>
 #include <engine/demo.h>
 #include <engine/friends.h>
 #include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
+#include <engine/shared/jobs.h>
 #include <engine/textrender.h>
 
 #include <game/client/component.h>
@@ -869,7 +871,7 @@ public:
 		time_t m_Date;
 
 		CGhostItem() :
-			m_Slot(-1), m_Own(false) { m_aFilename[0] = 0; }
+			m_Failed(false), m_Slot(-1), m_Own(false) { m_aFilename[0] = 0; }
 
 		bool operator<(const CGhostItem &Other) const { return m_Time < Other.m_Time; }
 
@@ -885,13 +887,41 @@ public:
 		GHOST_SORT_DATE,
 	};
 
+	/**
+	 * Scans the ghost directory and reads the header of every ghost that
+	 * belongs to the current map.
+	 *
+	 * This runs on every map load, so it must not happen on the main thread.
+	 * The job owns everything it touches and is only read once it is done.
+	 */
+	class CGhostlistScanJob : public IJob
+	{
+		IStorage *m_pStorage;
+		std::unique_ptr<CGhostLoader> m_pGhostLoader;
+		char m_aGhostDir[IO_MAX_PATH_LENGTH];
+		char m_aMapName[MAX_MAP_LENGTH];
+		SHA256_DIGEST m_MapSha256;
+		unsigned m_MapCrc;
+		std::vector<CGhostItem> m_vGhosts;
+
+		static int FetchCallback(const CFsFileInfo *pInfo, int IsDir, int StorageType, void *pUser);
+		void Run() override;
+
+	public:
+		CGhostlistScanJob(IStorage *pStorage, std::unique_ptr<CGhostLoader> pGhostLoader, const char *pGhostDir, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc);
+
+		std::vector<CGhostItem> &Ghosts() { return m_vGhosts; }
+	};
+
 	std::vector<CGhostItem> m_vGhosts;
 
-	std::chrono::nanoseconds m_GhostPopulateStartTime{0};
+	std::shared_ptr<CGhostlistScanJob> m_pGhostlistScanJob;
 
 	void GhostlistPopulate();
+	void UpdateGhostlistScan();
 	CGhostItem *GetOwnGhost();
 	void UpdateOwnGhost(CGhostItem Item);
+	void OnGhostLoadFailed(int Slot);
 	void DeleteGhostItem(int Index);
 	void SortGhostlist();
 
@@ -945,8 +975,6 @@ private:
 	CMenusSettingsControls m_MenusSettingsControls;
 	friend CMenusSettingsControls;
 	CMenusStart m_MenusStart;
-
-	static int GhostlistFetchCallback(const CFsFileInfo *pInfo, int IsDir, int StorageType, void *pUser);
 
 	// found in menus_ingame.cpp
 	void RenderInGameNetwork(CUIRect MainView);

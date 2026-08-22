@@ -714,6 +714,13 @@ public:
 	int FindFirstMultiViewId();
 	void CleanMultiViewId(int ClientId);
 
+	/**
+	 * Whether the assets the client waits for before it is fully started are
+	 * still loading. Components that pace themselves to keep the frame rate
+	 * smooth have nothing to keep smooth yet while this holds.
+	 */
+	bool StartupAssetsPending() const { return m_StartupAssetsStart != 0; }
+
 private:
 	std::vector<CSnapEntities> m_vSnapEntities;
 	// Kept between snapshots so that collecting the entities does not allocate on

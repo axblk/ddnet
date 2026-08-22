@@ -51,7 +51,6 @@ protected:
 	CAssetJob(EAssetType Type, const char *pPath, int OwnerId, uint64_t Generation);
 
 public:
-	bool Abort() override;
 	virtual bool Success() const { return State() == STATE_DONE; }
 	EAssetType Type() const { return m_Type; }
 	const char *Path() const { return m_Path.c_str(); }
@@ -82,8 +81,8 @@ public:
 	void Init(IEngine *pEngine, size_t MaxConcurrentJobs);
 	template<typename TJob>
 	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob);
-	CImageResource LoadImage(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {});
-	CImageResource LoadImage(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {});
+	CImageResource LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {});
+	CImageResource LoadImageData(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {});
 	void Update();
 	void AbortOwnerBeforeGeneration(int OwnerId, uint64_t Generation);
 	void Shutdown();

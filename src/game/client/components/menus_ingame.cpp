@@ -13,6 +13,7 @@
 
 #include <engine/console.h>
 #include <engine/demo.h>
+#include <engine/engine.h>
 #include <engine/favorites.h>
 #include <engine/font_icons.h>
 #include <engine/friends.h>
@@ -1256,18 +1257,24 @@ void CMenus::RenderInGameNetwork(CUIRect MainView)
 }
 
 // ghost stuff
-int CMenus::GhostlistFetchCallback(const CFsFileInfo *pInfo, int IsDir, int StorageType, void *pUser)
+CMenus::CGhostlistScanJob::CGhostlistScanJob(IStorage *pStorage, std::unique_ptr<CGhostLoader> pGhostLoader, const char *pGhostDir, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc) :
+	m_pStorage(pStorage), m_pGhostLoader(std::move(pGhostLoader)), m_MapSha256(MapSha256), m_MapCrc(MapCrc)
 {
-	CMenus *pSelf = (CMenus *)pUser;
-	const char *pMap = pSelf->GameClient()->Map()->BaseName();
-	if(IsDir || !str_endswith(pInfo->m_pName, ".gho") || !str_startswith(pInfo->m_pName, pMap))
+	str_copy(m_aGhostDir, pGhostDir);
+	str_copy(m_aMapName, pMapName);
+}
+
+int CMenus::CGhostlistScanJob::FetchCallback(const CFsFileInfo *pInfo, int IsDir, int StorageType, void *pUser)
+{
+	CGhostlistScanJob *pSelf = static_cast<CGhostlistScanJob *>(pUser);
+	if(IsDir || !str_endswith(pInfo->m_pName, ".gho") || !str_startswith(pInfo->m_pName, pSelf->m_aMapName))
 		return 0;
 
 	char aFilename[IO_MAX_PATH_LENGTH];
-	str_format(aFilename, sizeof(aFilename), "%s/%s", pSelf->GameClient()->m_Ghost.GetGhostDir(), pInfo->m_pName);
+	str_format(aFilename, sizeof(aFilename), "%s/%s", pSelf->m_aGhostDir, pInfo->m_pName);
 
 	CGhostInfo Info;
-	if(!pSelf->GameClient()->m_Ghost.GhostLoader()->GetGhostInfo(aFilename, &Info, pMap, pSelf->GameClient()->Map()->Sha256(), pSelf->GameClient()->Map()->Crc()))
+	if(!pSelf->m_pGhostLoader->GetGhostInfo(aFilename, &Info, pSelf->m_aMapName, pSelf->m_MapSha256, pSelf->m_MapCrc))
 		return 0;
 
 	CGhostItem Item;
@@ -1278,19 +1285,39 @@ int CMenus::GhostlistFetchCallback(const CFsFileInfo *pInfo, int IsDir, int Stor
 	if(Item.m_Time > 0)
 		pSelf->m_vGhosts.push_back(Item);
 
-	if(time_get_nanoseconds() - pSelf->m_GhostPopulateStartTime > 500ms)
-	{
-		pSelf->RenderLoading(Localize("Loading ghost files"), "", 0);
-	}
-
 	return 0;
+}
+
+void CMenus::CGhostlistScanJob::Run()
+{
+	m_pStorage->ListDirectoryInfo(IStorage::TYPE_ALL, m_aGhostDir, FetchCallback, this);
 }
 
 void CMenus::GhostlistPopulate()
 {
+	if(m_pGhostlistScanJob)
+		m_pGhostlistScanJob->Abort();
 	m_vGhosts.clear();
-	m_GhostPopulateStartTime = time_get_nanoseconds();
-	Storage()->ListDirectoryInfo(IStorage::TYPE_ALL, GameClient()->m_Ghost.GetGhostDir(), GhostlistFetchCallback, this);
+
+	auto pGhostLoader = std::make_unique<CGhostLoader>();
+	pGhostLoader->Init(Storage());
+	m_pGhostlistScanJob = std::make_shared<CGhostlistScanJob>(Storage(), std::move(pGhostLoader),
+		GameClient()->m_Ghost.GetGhostDir(), GameClient()->Map()->BaseName(),
+		GameClient()->Map()->Sha256(), GameClient()->Map()->Crc());
+	Engine()->AddJob(m_pGhostlistScanJob);
+}
+
+void CMenus::UpdateGhostlistScan()
+{
+	if(!m_pGhostlistScanJob || !m_pGhostlistScanJob->Done())
+		return;
+
+	const bool Aborted = m_pGhostlistScanJob->State() != IJob::STATE_DONE;
+	std::shared_ptr<CGhostlistScanJob> pJob = std::move(m_pGhostlistScanJob);
+	if(Aborted)
+		return;
+
+	m_vGhosts = std::move(pJob->Ghosts());
 	SortGhostlist();
 
 	CGhostItem *pOwnGhost = nullptr;
@@ -1305,6 +1332,18 @@ void CMenus::GhostlistPopulate()
 	{
 		pOwnGhost->m_Own = true;
 		pOwnGhost->m_Slot = GameClient()->m_Ghost.Load(pOwnGhost->m_aFilename);
+	}
+}
+
+void CMenus::OnGhostLoadFailed(int Slot)
+{
+	for(CGhostItem &Ghost : m_vGhosts)
+	{
+		if(Ghost.m_Slot == Slot)
+		{
+			Ghost.m_Slot = -1;
+			Ghost.m_Failed = true;
+		}
 	}
 }
 
@@ -1449,6 +1488,11 @@ void CMenus::RenderGhost(CUIRect MainView)
 	}
 
 	View.Draw(ColorRGBA(0, 0, 0, 0.15f), 0, 0);
+
+	// The scan runs in the background, so the list is empty for a moment after
+	// the map was loaded.
+	if(m_pGhostlistScanJob)
+		Ui()->DoLabel(&View, Localize("Loading ghost files"), 16.0f, TEXTALIGN_MC);
 
 	const int NumGhosts = m_vGhosts.size();
 	int NumFailed = 0;

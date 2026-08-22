@@ -238,7 +238,7 @@ void CMapRenderImages::Load(class CLayers *pLayers, IMap *pMap, bool Sixup)
 					!str_comp(pName, "easter");
 			}
 			str_format(aPath, sizeof(aPath), "mapres/%s%s.png", pName, Translated ? "_0.7" : "");
-			m_vExternalImageLoads.push_back({i, LoadFlag, m_pAssetLoader->LoadImage(Storage(), aPath, IStorage::TYPE_ALL, m_AssetOwnerId, m_Generation)});
+			m_vExternalImageLoads.push_back({i, LoadFlag, m_pAssetLoader->LoadImageFile(Storage(), aPath, IStorage::TYPE_ALL, m_AssetOwnerId, m_Generation)});
 		}
 		else
 		{
@@ -405,7 +405,7 @@ IGraphics::CTextureHandle CMapImages::GetEntities(EMapImageEntityLayerType Entit
 			if(std::any_of(vSubmittedPaths.begin(), vSubmittedPaths.end(), [pPath](const std::string &Submitted) { return Submitted == pPath; }))
 				return;
 			vSubmittedPaths.emplace_back(pPath);
-			Load.m_vResources.push_back(GameClient()->AssetLoader().LoadImage(Storage(), pPath, IStorage::TYPE_ALL, ASSET_OWNER_MAP_IMAGES, m_AssetGeneration));
+			Load.m_vResources.push_back(GameClient()->AssetLoader().LoadImageFile(Storage(), pPath, IStorage::TYPE_ALL, ASSET_OWNER_MAP_IMAGES, m_AssetGeneration));
 		};
 		char aPath[IO_MAX_PATH_LENGTH];
 		str_format(aPath, sizeof(aPath), "%s/%s.png", m_aEntitiesPath, gs_apModEntitiesNames[EntitiesModType]);
@@ -527,7 +527,7 @@ IGraphics::CTextureHandle CMapImages::GetSpeedupArrow()
 	if(!m_SpeedupArrowIsLoaded)
 	{
 		m_SpeedupArrowIsLoaded = true;
-		m_SpeedupArrowResource = GameClient()->AssetLoader().LoadImage(Storage(), "editor/speed_arrow_array.png", IStorage::TYPE_ALL, ASSET_OWNER_MAP_IMAGES, m_AssetGeneration);
+		m_SpeedupArrowResource = GameClient()->AssetLoader().LoadImageFile(Storage(), "editor/speed_arrow_array.png", IStorage::TYPE_ALL, ASSET_OWNER_MAP_IMAGES, m_AssetGeneration);
 	}
 	return m_SpeedupArrowTexture;
 }

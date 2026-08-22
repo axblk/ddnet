@@ -359,7 +359,7 @@ void BuildMatchDetailView(const CStoredMatch &Stored, CMatchDetailView &View)
 		{
 			const std::string Suffix(MatchMetricSuffix(View.m_vMetricIds[Metric]));
 			if(const std::optional<int64_t> Value = ReportMetric(Report, EMatchSubjectKind::TEAM, *Block.m_TeamId, Suffix.c_str()))
-				Block.m_Summary.m_vMetrics[Metric] = *Value;
+				Block.m_Summary.m_vMetrics[Metric] = Value;
 		}
 		CacheNamedMetrics(Block.m_Summary, View.m_vMetricIds);
 	}
@@ -401,9 +401,9 @@ void UpdateMatchDetailBest(CMatchDetailView &View, EStatsMatchTab Tab)
 		for(const int Weapon : View.m_vWeapons)
 		{
 			CMatchDetailColumn Column;
-			char aWeaponName[64];
-			MatchWeaponDisplayName(Weapon, aWeaponName, sizeof(aWeaponName));
-			Column.m_Label = aWeaponName;
+			char aLabel[64];
+			MatchWeaponDisplayName(Weapon, aLabel, sizeof(aLabel));
+			Column.m_Label = aLabel;
 			Column.m_Value = Value;
 			Column.m_Format = Format;
 			Column.m_Weapon = Weapon;
@@ -518,7 +518,7 @@ void UpdateMatchDetailBest(CMatchDetailView &View, EStatsMatchTab Tab)
 			if(!Value.has_value() || (Column.m_LowerIsBetter && *Value <= 0))
 				continue;
 			if(!Column.m_Best.has_value() || (Column.m_LowerIsBetter ? *Value < *Column.m_Best : *Value > *Column.m_Best))
-				Column.m_Best = *Value;
+				Column.m_Best = Value;
 		}
 	}
 }

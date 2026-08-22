@@ -230,7 +230,7 @@ public:
 	void SendInput(CSessionId SessionId);
 	int SendMsg(CSessionId SessionId, CStreamId StreamId, CMsgPacker *pMsg, int Flags) override;
 
-	bool RconAuthed() const override { return Connection(ActiveConnection()).m_RconAuthed != 0; }
+	bool RconAuthed() const override;
 	bool UseTempRconCommands() const override { return m_pNetworkSessionSource->m_UseTempRconCommands != 0; }
 	void RconAuth(int Conn, const char *pName, const char *pPassword) override;
 	void Rcon(const char *pCmd) override;
@@ -284,7 +284,7 @@ public:
 	void ResetMapDownload(CSessionId SessionId, bool ResetActive);
 	void FinishMapDownload(CSessionId SessionId);
 
-	const NETADDR &ServerAddress() const override { return SessionServerAddress(m_NetworkSessionId); }
+	const NETADDR &ServerAddress() const override;
 	int ConnectNetTypes() const override;
 	const char *ConnectAddressString() const override { return m_pNetworkSessionSource->m_ConnectAddress.c_str(); }
 	const char *MapDownloadName() const override { return m_pNetworkSessionSource->m_aMapdownloadName; }

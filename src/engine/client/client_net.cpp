@@ -2603,6 +2603,16 @@ int CClientWithConnection::ConnectNetTypes() const
 	return NetType;
 }
 
+bool CClientWithConnection::RconAuthed() const
+{
+	return Connection(ActiveConnection()).m_RconAuthed != 0;
+}
+
+const NETADDR &CClientWithConnection::ServerAddress() const
+{
+	return SessionServerAddress(m_NetworkSessionId);
+}
+
 const NETADDR &CClientWithConnection::SessionServerAddress(CSessionId SessionId) const
 {
 	return SessionId == m_NetworkSessionId && m_UseQuic ? m_QuicServerAddress : *NetworkSource(SessionId).PrimaryNetClient().ServerAddress();

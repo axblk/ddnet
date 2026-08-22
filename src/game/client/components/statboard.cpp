@@ -76,6 +76,38 @@ const CStatboard::CRowMetric *CStatboard::CRow::Metric(std::string_view Suffix) 
 	return nullptr;
 }
 
+void CStatboard::CRow::Reset()
+{
+	m_pParticipant = nullptr;
+	m_TeamIndex = -1;
+	m_Rank = 0;
+	m_Local = false;
+	m_Members = 1;
+	m_vMetrics.clear();
+	m_Combat.m_Total = {};
+	m_Combat.m_vWeapons.clear();
+}
+
+void CStatboard::ResetTexts()
+{
+	m_NameHeader.Reset(TextRender());
+	m_Title.Reset(TextRender());
+	m_Source.Reset(TextRender());
+	m_Subject.Reset(TextRender());
+	for(CCachedText &Text : m_aAspectTexts)
+		Text.Reset(TextRender());
+	for(CCachedText &Text : m_aColumnTexts)
+		Text.Reset(TextRender());
+	for(CRowText &Row : m_aRowTexts)
+	{
+		Row.m_Rank.Reset(TextRender());
+		Row.m_Name.Reset(TextRender());
+		Row.m_Clan.Reset(TextRender());
+		for(CCachedText &Text : Row.m_aCells)
+			Text.Reset(TextRender());
+	}
+}
+
 CStatboard::CStatboard()
 {
 	m_Active = false;
@@ -97,6 +129,16 @@ void CStatboard::OnReset()
 void CStatboard::OnRelease()
 {
 	m_Active = false;
+}
+
+void CStatboard::OnShutdown()
+{
+	ResetTexts();
+}
+
+void CStatboard::OnWindowResize()
+{
+	ResetTexts();
 }
 
 void CStatboard::ConKeyStats(IConsole::IResult *pResult, void *pUserData)
@@ -167,9 +209,8 @@ void CStatboard::OnRender(const CRenderContext &Context)
 		RenderBoard(Context, *pLive);
 		return;
 	}
-	CStoredMatch Observed;
-	if(BuildObservedMatch(Context, Observed))
-		RenderBoard(Context, Observed);
+	if(BuildObservedMatch(Context, m_Observed))
+		RenderBoard(Context, m_Observed);
 }
 
 bool CStatboard::BuildObservedMatch(const CRenderContext &Context, CStoredMatch &Match) const
@@ -185,6 +226,44 @@ bool CStatboard::BuildObservedMatch(const CRenderContext &Context, CStoredMatch 
 	// ever reads one thing. Participant ids are client ids here, which is what
 	// lets a row carry the tee of the player it belongs to.
 	CMatchReport &Report = Match.m_Report;
+	// The vectors keep what they allocated and are refilled in place, because
+	// this runs for every drawn frame and a report thrown away and built again
+	// is a string for every metric of every player, every time.
+	size_t NumTeams = 0;
+	size_t NumParticipants = 0;
+	size_t NumStandings = 0;
+	size_t NumMetrics = 0;
+	const auto NextTeam = [&]() -> CMatchTeam & {
+		if(NumTeams == Report.m_vTeams.size())
+			Report.m_vTeams.emplace_back();
+		return Report.m_vTeams[NumTeams++];
+	};
+	const auto NextParticipant = [&]() -> CMatchParticipant & {
+		if(NumParticipants == Report.m_vParticipants.size())
+			Report.m_vParticipants.emplace_back();
+		CMatchParticipant &Participant = Report.m_vParticipants[NumParticipants++];
+		Participant.m_TeamId.reset();
+		Participant.m_LeftTick.reset();
+		Participant.m_JoinedTick = 0;
+		Participant.m_Bot = false;
+		return Participant;
+	};
+	const auto NextStanding = [&]() -> CMatchStanding & {
+		if(NumStandings == Report.m_vStandings.size())
+			Report.m_vStandings.emplace_back();
+		return Report.m_vStandings[NumStandings++];
+	};
+	const auto NextMetric = [&](EMatchSubjectKind SubjectKind, int SubjectId, const char *pMetricId, int64_t Value, EMatchMetricAggregation Aggregation) {
+		if(NumMetrics == Report.m_vMetrics.size())
+			Report.m_vMetrics.emplace_back();
+		CMatchMetric &Metric = Report.m_vMetrics[NumMetrics++];
+		Metric.m_SubjectKind = SubjectKind;
+		Metric.m_SubjectId = SubjectId;
+		// Assigning into the string the entry already has keeps its buffer.
+		Metric.m_MetricId = pMetricId;
+		Metric.m_Value = Value;
+		Metric.m_Aggregation = Aggregation;
+	};
 	const CServerInfo &ServerInfo = Client()->ServerInfo(Context.m_Session.Id());
 	Report.m_ModeId = ServerInfo.m_aGameType;
 	Report.m_MapName = ServerInfo.m_aMap;
@@ -194,21 +273,31 @@ bool CStatboard::BuildObservedMatch(const CRenderContext &Context, CStoredMatch 
 	const bool TeamPlay = State.HasGameInfo() && (State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
 	if(TeamPlay)
 	{
-		Report.m_vTeams.push_back({TEAM_RED, Localize("Red team")});
-		Report.m_vTeams.push_back({TEAM_BLUE, Localize("Blue team")});
+		CMatchTeam &Red = NextTeam();
+		Red.m_TeamId = TEAM_RED;
+		Red.m_DisplayName = Localize("Red team");
+		CMatchTeam &Blue = NextTeam();
+		Blue.m_TeamId = TEAM_BLUE;
+		Blue.m_DisplayName = Localize("Blue team");
 		if(const CNetObj_GameData *pGameData = State.GameData())
 		{
-			Report.m_vMetrics.push_back({EMatchSubjectKind::TEAM, TEAM_RED, "observed/score", pGameData->m_TeamscoreRed, EMatchMetricAggregation::MATCH_ONLY});
-			Report.m_vMetrics.push_back({EMatchSubjectKind::TEAM, TEAM_BLUE, "observed/score", pGameData->m_TeamscoreBlue, EMatchMetricAggregation::MATCH_ONLY});
+			NextMetric(EMatchSubjectKind::TEAM, TEAM_RED, "observed/score", pGameData->m_TeamscoreRed, EMatchMetricAggregation::MATCH_ONLY);
+			NextMetric(EMatchSubjectKind::TEAM, TEAM_BLUE, "observed/score", pGameData->m_TeamscoreBlue, EMatchMetricAggregation::MATCH_ONLY);
 		}
 	}
 	const int Spectated = Context.m_View.IsSpectating() ? Context.m_View.SpectatorId() : State.LocalClientId();
 	if(Spectated >= 0 && Spectated < MAX_CLIENTS)
 		Match.m_LocalParticipantId = Spectated;
 
-	const auto AddMetric = [&](int ClientId, const std::string &Suffix, int64_t Value, EMatchMetricAggregation Aggregation) {
-		if(Value != 0)
-			Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, "observed/" + Suffix, Value, Aggregation});
+	// The id is spelled into a buffer rather than concatenated, so that naming
+	// a metric does not cost a string of its own on top of the entry it ends
+	// up in.
+	const auto AddMetric = [&](int ClientId, const char *pSuffix, int64_t Value, EMatchMetricAggregation Aggregation) {
+		if(Value == 0)
+			return;
+		char aMetricId[MatchReportLimits::MAX_METRIC_ID_LENGTH + 1];
+		str_format(aMetricId, sizeof(aMetricId), "observed/%s", pSuffix);
+		NextMetric(EMatchSubjectKind::PARTICIPANT, ClientId, aMetricId, Value, Aggregation);
 	};
 	int Rank = 0;
 	for(const int ClientId : *pClientsByScore)
@@ -221,18 +310,19 @@ bool CStatboard::BuildObservedMatch(const CRenderContext &Context, CStoredMatch 
 		const CClientPresentation *pClient = Presentation.Client(State.Id(), ClientId);
 		const bool Playing = pClient != nullptr && ClientStats.IsActive() && (pClient->m_Team == TEAM_RED || (TeamPlay && pClient->m_Team == TEAM_BLUE));
 
-		CMatchParticipant Participant;
+		CMatchParticipant &Participant = NextParticipant();
 		Participant.m_ParticipantId = ClientId;
-		if(pClient != nullptr)
-		{
-			Participant.m_DisplayName = pClient->m_aName;
-			Participant.m_Clan = pClient->m_aClan;
-		}
+		Participant.m_DisplayName = pClient != nullptr ? pClient->m_aName : "";
+		Participant.m_Clan = pClient != nullptr ? pClient->m_aClan : "";
 		if(Playing)
 		{
 			if(TeamPlay)
 				Participant.m_TeamId = pClient->m_Team;
-			Report.m_vStandings.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, ++Rank, EMatchOutcome::FINISHED});
+			CMatchStanding &Standing = NextStanding();
+			Standing.m_SubjectKind = EMatchSubjectKind::PARTICIPANT;
+			Standing.m_SubjectId = ClientId;
+			Standing.m_Rank = ++Rank;
+			Standing.m_Outcome = EMatchOutcome::FINISHED;
 			if(State.Client(ClientId).m_HasPlayerInfo)
 				AddMetric(ClientId, "score", State.Client(ClientId).m_PlayerInfo.m_Score, EMatchMetricAggregation::MATCH_ONLY);
 		}
@@ -240,33 +330,51 @@ bool CStatboard::BuildObservedMatch(const CRenderContext &Context, CStoredMatch 
 		{
 			Participant.m_LeftTick = Context.m_Time.m_GameTick;
 		}
-		Report.m_vParticipants.push_back(std::move(Participant));
 
 		// Kills and deaths anchor the table and are reported even at zero; the
 		// rest only earns a column once it happened.
-		Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, "observed/kills", ClientStats.m_Frags, EMatchMetricAggregation::SUM});
-		Report.m_vMetrics.push_back({EMatchSubjectKind::PARTICIPANT, ClientId, "observed/deaths", ClientStats.m_Deaths, EMatchMetricAggregation::SUM});
+		NextMetric(EMatchSubjectKind::PARTICIPANT, ClientId, "observed/kills", ClientStats.m_Frags, EMatchMetricAggregation::SUM);
+		NextMetric(EMatchSubjectKind::PARTICIPANT, ClientId, "observed/deaths", ClientStats.m_Deaths, EMatchMetricAggregation::SUM);
 		AddMetric(ClientId, "best_spree", ClientStats.m_BestSpree, EMatchMetricAggregation::MAXIMUM);
 		AddMetric(ClientId, "flag_grabs", ClientStats.m_FlagGrabs, EMatchMetricAggregation::SUM);
 		AddMetric(ClientId, "flag_captures", ClientStats.m_FlagCaptures, EMatchMetricAggregation::SUM);
 		for(int Weapon = 0; Weapon < NUM_WEAPONS; ++Weapon)
 		{
-			const std::string Prefix = "weapon_" + std::to_string(Weapon) + "_";
-			AddMetric(ClientId, Prefix + "kills", ClientStats.m_aFragsWith[Weapon], EMatchMetricAggregation::SUM);
-			AddMetric(ClientId, Prefix + "deaths", ClientStats.m_aDeathsFrom[Weapon], EMatchMetricAggregation::SUM);
+			char aSuffix[32];
+			str_format(aSuffix, sizeof(aSuffix), "weapon_%d_kills", Weapon);
+			AddMetric(ClientId, aSuffix, ClientStats.m_aFragsWith[Weapon], EMatchMetricAggregation::SUM);
+			str_format(aSuffix, sizeof(aSuffix), "weapon_%d_deaths", Weapon);
+			AddMetric(ClientId, aSuffix, ClientStats.m_aDeathsFrom[Weapon], EMatchMetricAggregation::SUM);
 		}
 	}
+	// Only what is left over is given up, which is what a player leaving costs
+	// once instead of what every frame would cost.
+	if(Report.m_vTeams.size() > NumTeams)
+		Report.m_vTeams.resize(NumTeams);
+	if(Report.m_vParticipants.size() > NumParticipants)
+		Report.m_vParticipants.resize(NumParticipants);
+	if(Report.m_vStandings.size() > NumStandings)
+		Report.m_vStandings.resize(NumStandings);
+	if(Report.m_vMetrics.size() > NumMetrics)
+		Report.m_vMetrics.resize(NumMetrics);
 	return Rank > 0 && Rank <= MAX_ROWS;
 }
 
-std::vector<CStatboard::CRow> CStatboard::BuildRows(const CStoredMatch &Stored, int &Hidden)
+void CStatboard::BuildRows(const CStoredMatch &Stored)
 {
 	const CMatchReport &Report = Stored.m_Report;
-	std::vector<CRow> vRows;
+	m_NumRows = 0;
 	// Parallel to the rows, so that the single pass over the metrics below can
 	// find the row a metric belongs to without searching the report again. The
 	// folded row belongs to nobody and takes an id no subject can have.
-	std::vector<int> vIds;
+	m_vRowIds.clear();
+	const auto NextRow = [&]() -> CRow & {
+		if(m_NumRows == m_vRows.size())
+			m_vRows.emplace_back();
+		CRow &Row = m_vRows[m_NumRows++];
+		Row.Reset();
+		return Row;
+	};
 	int Folded = -1;
 	for(const CMatchParticipant &Participant : Report.m_vParticipants)
 	{
@@ -278,15 +386,15 @@ std::vector<CStatboard::CRow> CStatboard::BuildRows(const CStoredMatch &Stored, 
 		{
 			if(Folded < 0)
 			{
-				Folded = vRows.size();
-				vRows.emplace_back().m_Members = 0;
-				vIds.push_back(std::numeric_limits<int>::min());
+				Folded = static_cast<int>(m_NumRows);
+				NextRow().m_Members = 0;
+				m_vRowIds.push_back(std::numeric_limits<int>::min());
 			}
-			vRows[Folded].m_Members++;
+			m_vRows[Folded].m_Members++;
 			continue;
 		}
 
-		CRow Row;
+		CRow &Row = NextRow();
 		Row.m_pParticipant = &Participant;
 		Row.m_Local = Local;
 		for(size_t Team = 0; Team < Report.m_vTeams.size(); ++Team)
@@ -294,8 +402,7 @@ std::vector<CStatboard::CRow> CStatboard::BuildRows(const CStoredMatch &Stored, 
 				Row.m_TeamIndex = Team;
 		if(const CMatchStanding *pStanding = ReportStanding(Report, EMatchSubjectKind::PARTICIPANT, Participant.m_ParticipantId))
 			Row.m_Rank = pStanding->m_Rank;
-		vRows.push_back(std::move(Row));
-		vIds.push_back(Participant.m_ParticipantId);
+		m_vRowIds.push_back(Participant.m_ParticipantId);
 	}
 
 	for(const CMatchMetric &Metric : Report.m_vMetrics)
@@ -304,16 +411,18 @@ std::vector<CStatboard::CRow> CStatboard::BuildRows(const CStoredMatch &Stored, 
 			continue;
 		// A metric of somebody who left survives only in the folded row.
 		int Index = Folded;
-		for(size_t Row = 0; Row < vIds.size(); ++Row)
-			if(vIds[Row] == *Metric.m_SubjectId)
+		for(size_t Row = 0; Row < m_vRowIds.size(); ++Row)
+			if(m_vRowIds[Row] == *Metric.m_SubjectId)
 				Index = Row;
 		if(Index < 0)
 			continue;
-		MergeMetric(vRows[Index], Metric.m_MetricId, Metric.m_Value, Metric.m_Aggregation);
-		AddMatchCombatMetric(vRows[Index].m_Combat, Metric.m_MetricId, Report.m_ModeSchemaVersion, Metric.m_Value);
+		MergeMetric(m_vRows[Index], Metric.m_MetricId, Metric.m_Value, Metric.m_Aggregation);
+		AddMatchCombatMetric(m_vRows[Index].m_Combat, Metric.m_MetricId, Report.m_ModeSchemaVersion, Metric.m_Value);
 	}
 
-	std::stable_sort(vRows.begin(), vRows.end(), [](const CRow &Left, const CRow &Right) {
+	// A plain sort, because a stable one wants a buffer of its own for every
+	// frame; the participant id at the end makes the order total instead.
+	std::sort(m_vRows.begin(), m_vRows.begin() + m_NumRows, [](const CRow &Left, const CRow &Right) {
 		if((Left.m_pParticipant == nullptr) != (Right.m_pParticipant == nullptr))
 			return Right.m_pParticipant == nullptr;
 		if(Left.m_TeamIndex != Right.m_TeamIndex)
@@ -324,12 +433,17 @@ std::vector<CStatboard::CRow> CStatboard::BuildRows(const CStoredMatch &Stored, 
 			return LeftRank < RightRank;
 		const CRowMetric *pLeft = Left.Metric("score");
 		const CRowMetric *pRight = Right.Metric("score");
-		return (pLeft == nullptr ? 0 : pLeft->m_Value) > (pRight == nullptr ? 0 : pRight->m_Value);
+		const int64_t LeftScore = pLeft == nullptr ? 0 : pLeft->m_Value;
+		const int64_t RightScore = pRight == nullptr ? 0 : pRight->m_Value;
+		if(LeftScore != RightScore)
+			return LeftScore > RightScore;
+		const int LeftId = Left.m_pParticipant == nullptr ? std::numeric_limits<int>::max() : Left.m_pParticipant->m_ParticipantId;
+		const int RightId = Right.m_pParticipant == nullptr ? std::numeric_limits<int>::max() : Right.m_pParticipant->m_ParticipantId;
+		return LeftId < RightId;
 	});
-	Hidden = std::max<int>(0, vRows.size() - MAX_ROWS);
-	if(Hidden > 0)
-		vRows.resize(MAX_ROWS);
-	return vRows;
+	m_Hidden = std::max<int>(0, static_cast<int>(m_NumRows) - MAX_ROWS);
+	if(m_Hidden > 0)
+		m_NumRows = MAX_ROWS;
 }
 
 void CStatboard::MergeMetric(CRow &Row, std::string_view MetricId, int64_t Value, EMatchMetricAggregation Aggregation)
@@ -354,12 +468,16 @@ void CStatboard::MergeMetric(CRow &Row, std::string_view MetricId, int64_t Value
 	Row.m_vMetrics.push_back({MetricId, Value, Aggregation});
 }
 
-std::vector<CStatboard::CColumn> CStatboard::BuildColumns(const CMatchReport &Report, const std::vector<CRow> &vRows, EAspect Aspect)
+void CStatboard::BuildColumns(const CMatchReport &Report, EAspect Aspect)
 {
-	// Widest a table may get, so that a mode reporting a hundred metrics still
-	// leaves room for the game it is drawn over.
-	static constexpr size_t MAX_COLUMNS = 10;
-	std::vector<CColumn> vColumns;
+	m_NumColumns = 0;
+	const auto NextColumn = [&]() -> CColumn & {
+		if(m_NumColumns == m_vColumns.size())
+			m_vColumns.emplace_back();
+		CColumn &Column = m_vColumns[m_NumColumns++];
+		Column = CColumn();
+		return Column;
+	};
 
 	if(Aspect != EAspect::SCORE)
 	{
@@ -367,9 +485,9 @@ std::vector<CStatboard::CColumn> CStatboard::BuildColumns(const CMatchReport &Re
 																	  EColumnKind::ACCURACY;
 		// A weapon only gets a column once somebody used it, and the column
 		// that totals them all is always last.
-		for(int Weapon = 0; Weapon < MAX_MATCH_WEAPONS && vColumns.size() + 1 < MAX_COLUMNS; ++Weapon)
+		for(int Weapon = 0; Weapon < MAX_MATCH_WEAPONS && m_NumColumns + 1 < MAX_COLUMNS; ++Weapon)
 		{
-			if(std::none_of(vRows.begin(), vRows.end(), [&](const CRow &Row) {
+			if(std::none_of(Rows().begin(), Rows().end(), [&](const CRow &Row) {
 				   const auto Found = std::find_if(Row.m_Combat.m_vWeapons.begin(), Row.m_Combat.m_vWeapons.end(), [&](const CMatchWeaponStats &Stats) { return Stats.m_Weapon == Weapon; });
 				   return Found != Row.m_Combat.m_vWeapons.end() && (Kind == EColumnKind::WEAPON_KILLS ? Found->m_Kills : Kind == EColumnKind::WEAPON_DEATHS ? Found->m_Deaths :
 																					       Found->m_Shots) > 0;
@@ -377,13 +495,19 @@ std::vector<CStatboard::CColumn> CStatboard::BuildColumns(const CMatchReport &Re
 				continue;
 			// A mod may use a weapon this build has no sprite for, which then
 			// gets its name written out instead of an icon.
-			char aWeaponName[64] = "";
+			CColumn &Column = NextColumn();
+			Column.m_Kind = Kind;
 			if(Weapon >= NUM_WEAPONS)
-				MatchWeaponDisplayName(Weapon, aWeaponName, sizeof(aWeaponName));
-			vColumns.push_back({Kind, aWeaponName, {}, Weapon, Kind != EColumnKind::WEAPON_DEATHS, 96.0f});
+				MatchWeaponDisplayName(Weapon, Column.m_aLabel, sizeof(Column.m_aLabel));
+			Column.m_Weapon = Weapon;
+			Column.m_HighlightMax = Kind != EColumnKind::WEAPON_DEATHS;
+			Column.m_Width = 96.0f;
 		}
-		vColumns.push_back({Kind, Localize("Total"), {}, -1, Kind != EColumnKind::WEAPON_DEATHS, 118.0f});
-		return vColumns;
+		CColumn &Total = NextColumn();
+		Total.m_Kind = Kind;
+		str_copy(Total.m_aLabel, Localize("Total"));
+		Total.m_HighlightMax = Kind != EColumnKind::WEAPON_DEATHS;
+		return;
 	}
 
 	// The score aspect, in the order these columns are laid out. `m_Always`
@@ -406,62 +530,58 @@ std::vector<CStatboard::CColumn> CStatboard::BuildColumns(const CMatchReport &Re
 		{"best_spree", false, true},
 	};
 	const auto AddColumn = [&](std::string_view Suffix, bool HighlightMax) {
-		CColumn Column;
+		CColumn &Column = NextColumn();
 		Column.m_Suffix = Suffix;
 		Column.m_HighlightMax = HighlightMax;
-		for(const CRow &Row : vRows)
+		for(const CRow &Row : Rows())
 		{
 			if(const CRowMetric *pMetric = Row.Metric(Suffix))
 			{
-				char aLabel[64];
-				MatchMetricDisplayName(std::string(pMetric->m_MetricId), Report.m_ModeSchemaVersion, aLabel, sizeof(aLabel));
-				Column.m_Label = aLabel;
+				m_ScratchMetric.m_MetricId = pMetric->m_MetricId;
+				MatchMetricDisplayName(m_ScratchMetric.m_MetricId, Report.m_ModeSchemaVersion, Column.m_aLabel, sizeof(Column.m_aLabel));
 				break;
 			}
 		}
-		vColumns.push_back(std::move(Column));
 	};
 
 	for(const auto &Candidate : s_aScoreColumns)
 	{
 		bool Present = false;
-		for(const CRow &Row : vRows)
+		for(const CRow &Row : Rows())
 		{
 			const CRowMetric *pMetric = Row.Metric(Candidate.m_pSuffix);
 			Present = Present || (pMetric != nullptr && (Candidate.m_Always || pMetric->m_Value != 0));
 		}
-		if(Present && vColumns.size() < MAX_COLUMNS)
+		if(Present && m_NumColumns < MAX_COLUMNS)
 			AddColumn(Candidate.m_pSuffix, Candidate.m_HighlightMax);
 	}
-	if(vColumns.size() < MAX_COLUMNS && std::any_of(vRows.begin(), vRows.end(), [](const CRow &Row) { return Row.m_Combat.m_Total.m_Shots > 0; }))
+	if(m_NumColumns < MAX_COLUMNS && std::any_of(Rows().begin(), Rows().end(), [](const CRow &Row) { return Row.m_Combat.m_Total.m_Shots > 0; }))
 	{
-		CColumn Column;
+		CColumn &Column = NextColumn();
 		Column.m_Kind = EColumnKind::ACCURACY;
-		Column.m_Label = Localize("Accuracy");
-		vColumns.push_back(std::move(Column));
+		str_copy(Column.m_aLabel, Localize("Accuracy"));
 	}
 
 	// Whatever else the mode reported goes after the known columns. This is
 	// what puts a metric of a mod on the board without a change here: it only
 	// has to be reported.
-	for(const CRow &Row : vRows)
+	for(const CRow &Row : Rows())
 	{
 		for(const CRowMetric &Metric : Row.m_vMetrics)
 		{
-			if(vColumns.size() >= MAX_COLUMNS)
-				return vColumns;
+			if(m_NumColumns >= MAX_COLUMNS)
+				return;
 			const std::string_view Suffix = MetricIdSuffix(Metric.m_MetricId);
 			// Weapons have aspects of their own, shots and hits are what the
 			// accuracy column is made of, and a play time per row is noise.
 			if(Metric.m_Value == 0 || Suffix.starts_with("weapon_") || Suffix == "shots" || Suffix == "hits" || Suffix == "playtime_ticks" || Suffix == "suicides")
 				continue;
 			if(std::any_of(std::begin(s_aScoreColumns), std::end(s_aScoreColumns), [&](const auto &Column) { return Suffix == Column.m_pSuffix; }) ||
-				std::any_of(vColumns.begin(), vColumns.end(), [&](const CColumn &Column) { return Column.m_Suffix == Suffix; }))
+				std::any_of(Columns().begin(), Columns().end(), [&](const CColumn &Column) { return Column.m_Suffix == Suffix; }))
 				continue;
 			AddColumn(Suffix, false);
 		}
 	}
-	return vColumns;
 }
 
 CStatboard::CCell CStatboard::BuildCell(const CMatchReport &Report, const CRow &Row, const CColumn &Column)
@@ -472,10 +592,9 @@ CStatboard::CCell CStatboard::BuildCell(const CMatchReport &Report, const CRow &
 		const CRowMetric *pRowMetric = Row.Metric(Column.m_Suffix);
 		if(pRowMetric == nullptr)
 			return Cell;
-		CMatchMetric Metric;
-		Metric.m_MetricId = std::string(pRowMetric->m_MetricId);
-		Metric.m_Value = pRowMetric->m_Value;
-		FormatMatchMetricValue(Metric, Report.m_ModeSchemaVersion, Report.m_TickRate, Cell.m_aText, sizeof(Cell.m_aText));
+		m_ScratchMetric.m_MetricId = pRowMetric->m_MetricId;
+		m_ScratchMetric.m_Value = pRowMetric->m_Value;
+		FormatMatchMetricValue(m_ScratchMetric, Report.m_ModeSchemaVersion, Report.m_TickRate, Cell.m_aText, sizeof(Cell.m_aText));
 		if(Column.m_HighlightMax)
 			Cell.m_Comparable = static_cast<double>(pRowMetric->m_Value);
 		return Cell;
@@ -514,39 +633,43 @@ void CStatboard::RenderBoard(const CRenderContext &Context, const CStoredMatch &
 	// standing to tabulate: one row of columns would say less about what it
 	// measured than a plain list of it.
 	const bool Panel = Report.m_vTeams.empty() && Report.m_vParticipants.size() <= 1;
-	std::vector<const CMatchMetric *> vpEntries;
-	std::vector<CRow> vRows;
-	std::vector<CColumn> vColumns;
-	std::vector<EAspect> vAspects;
+	std::array<EAspect, 4> aAspects = {};
+	size_t NumAspects = 0;
 	EAspect Aspect = EAspect::SCORE;
-	int Hidden = 0;
 	float Width = 700.0f;
 	float Height = 54.0f;
 	if(Panel)
 	{
-		const std::optional<int> Subject = Report.m_vParticipants.empty() ? std::nullopt : std::optional<int>(Report.m_vParticipants.front().m_ParticipantId);
+		const int *pSubject = Report.m_vParticipants.empty() ? nullptr : &Report.m_vParticipants.front().m_ParticipantId;
+		m_vpEntries.clear();
 		for(const CMatchMetric &Metric : Report.m_vMetrics)
-			if(Metric.m_SubjectKind == EMatchSubjectKind::MATCH || (Metric.m_SubjectKind == EMatchSubjectKind::PARTICIPANT && Metric.m_SubjectId == Subject))
-				vpEntries.push_back(&Metric);
+			if(Metric.m_SubjectKind == EMatchSubjectKind::MATCH || (pSubject != nullptr && Metric.m_SubjectKind == EMatchSubjectKind::PARTICIPANT && Metric.m_SubjectId == *pSubject))
+				m_vpEntries.push_back(&Metric);
 		// Within a category the order the mode declared its metrics in is kept,
 		// which is the order it considers them worth reading in.
-		std::stable_sort(vpEntries.begin(), vpEntries.end(), [&](const CMatchMetric *pLeft, const CMatchMetric *pRight) {
+		std::stable_sort(m_vpEntries.begin(), m_vpEntries.end(), [&](const CMatchMetric *pLeft, const CMatchMetric *pRight) {
 			return MatchMetricCategory(pLeft->m_MetricId, Report.m_ModeSchemaVersion) < MatchMetricCategory(pRight->m_MetricId, Report.m_ModeSchemaVersion);
 		});
+		// A mode is free to report a hundred numbers about one player, which is
+		// a panel taller than the screen it is drawn on. The table is bounded
+		// for the same reason and says what it left out, so this does too.
+		m_Hidden = std::max<int>(0, static_cast<int>(m_vpEntries.size()) - MAX_ROWS);
+		if(m_Hidden > 0)
+			m_vpEntries.resize(MAX_ROWS);
 		// An empty list is still worth drawing: the title and the name say that
 		// the mode is reporting and simply has nothing to tell yet.
-		Height += 34.0f + vpEntries.size() * 30.0f;
+		Height += 34.0f + m_vpEntries.size() * 30.0f + (m_Hidden > 0 ? 24.0f : 0.0f);
 	}
 	else
 	{
-		vRows = BuildRows(Stored, Hidden);
-		if(vRows.empty())
+		BuildRows(Stored);
+		if(m_NumRows == 0)
 			return;
-		vAspects.push_back(EAspect::SCORE);
+		aAspects[NumAspects++] = EAspect::SCORE;
 		// A mode that reports no weapon numbers does not offer the aspects that
 		// would only show empty columns.
 		bool aUsed[3] = {};
-		for(const CRow &Row : vRows)
+		for(const CRow &Row : Rows())
 			for(const CMatchWeaponStats &Weapon : Row.m_Combat.m_vWeapons)
 			{
 				aUsed[0] = aUsed[0] || Weapon.m_Kills > 0;
@@ -554,20 +677,20 @@ void CStatboard::RenderBoard(const CRenderContext &Context, const CStoredMatch &
 				aUsed[2] = aUsed[2] || Weapon.m_Shots > 0;
 			}
 		if(aUsed[0])
-			vAspects.push_back(EAspect::WEAPON_KILLS);
+			aAspects[NumAspects++] = EAspect::WEAPON_KILLS;
 		if(aUsed[1])
-			vAspects.push_back(EAspect::WEAPON_DEATHS);
+			aAspects[NumAspects++] = EAspect::WEAPON_DEATHS;
 		if(aUsed[2])
-			vAspects.push_back(EAspect::WEAPON_ACCURACY);
-		Aspect = vAspects[m_Aspect % static_cast<int>(vAspects.size())];
-		vColumns = BuildColumns(Report, vRows, Aspect);
+			aAspects[NumAspects++] = EAspect::WEAPON_ACCURACY;
+		Aspect = aAspects[m_Aspect % static_cast<int>(NumAspects)];
+		BuildColumns(Report, Aspect);
 
 		Width = 366.0f;
-		for(const CColumn &Column : vColumns)
+		for(const CColumn &Column : Columns())
 			Width += Column.m_Width;
 		// Per team a band row and the bar that introduces its table, plus the
 		// column headers, the rows and the line that counts what did not fit.
-		Height += Report.m_vTeams.size() * 96.0f + (vAspects.size() > 1 ? 34.0f : 0.0f) + 28.0f + vRows.size() * RowHeight(vRows.size()) + (Hidden > 0 ? 24.0f : 0.0f);
+		Height += Report.m_vTeams.size() * 96.0f + (NumAspects > 1 ? 34.0f : 0.0f) + 28.0f + m_NumRows * RowHeight(m_NumRows) + (m_Hidden > 0 ? 24.0f : 0.0f);
 	}
 	Width = std::max(Width, 760.0f) + 20.0f;
 
@@ -584,38 +707,46 @@ void CStatboard::RenderBoard(const CRenderContext &Context, const CStoredMatch &
 	FormatMatchDuration(Report.m_DurationTicks, Report.m_TickRate, aDuration, sizeof(aDuration));
 	char aTitle[512];
 	str_format(aTitle, sizeof(aTitle), "%s  ·  %s  ·  %s", Report.m_MapName.c_str(), Report.m_ModeId.c_str(), aDuration);
-	TextRender()->Text(ContentX, ContentY, 20.0f, aTitle, ContentWidth - 200.0f);
+	m_Title.Update(TextRender(), aTitle, 20.0f, ContentWidth - 200.0f);
+	m_Title.Render(TextRender(), vec2(ContentX, ContentY), TextRender()->DefaultTextColor());
 	// Says where these numbers come from, in the words the statistics pages use
 	// for a stored match.
-	const char *pSource = MatchReportSourceDisplayName(Stored.m_Source);
-	TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f));
-	RightText(TextRender(), ContentX + ContentWidth, ContentY + 3.0f, 18.0f, pSource);
-	TextRender()->TextColor(TextRender()->DefaultTextColor());
+	m_Source.Update(TextRender(), MatchReportSourceDisplayName(Stored.m_Source), 18.0f);
+	m_Source.Render(TextRender(), vec2(ContentX + ContentWidth - m_Source.Width(), ContentY + 3.0f), ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f));
 	ContentY += 34.0f;
 
 	if(Panel)
 	{
 		if(!Report.m_vParticipants.empty())
 		{
-			TextRender()->TextColor(ColorRGBA(0.30f, 0.72f, 1.0f, 1.0f));
-			TextRender()->Text(ContentX, ContentY, 24.0f, Report.m_vParticipants.front().m_DisplayName.c_str(), ContentWidth - 160.0f);
-			TextRender()->TextColor(TextRender()->DefaultTextColor());
+			m_Subject.Update(TextRender(), Report.m_vParticipants.front().m_DisplayName.c_str(), 24.0f, ContentWidth - 160.0f);
+			m_Subject.Render(TextRender(), vec2(ContentX, ContentY), ColorRGBA(0.30f, 0.72f, 1.0f, 1.0f));
 		}
 		ContentY += 34.0f;
 		// Whatever the mode measured, named and formatted by the same helpers
 		// the statistics pages use, so that a metric this build has never heard
 		// of still reads as a sentence and a duration still reads as a time.
-		for(const CMatchMetric *pMetric : vpEntries)
+		for(size_t Index = 0; Index < m_vpEntries.size(); ++Index)
 		{
+			const CMatchMetric *pMetric = m_vpEntries[Index];
 			char aValue[64];
 			FormatMatchMetricValue(*pMetric, Report.m_ModeSchemaVersion, Report.m_TickRate, aValue, sizeof(aValue));
-			TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.6f));
-			char aMetricName[64];
-			MatchMetricDisplayName(pMetric->m_MetricId, Report.m_ModeSchemaVersion, aMetricName, sizeof(aMetricName));
-			TextRender()->Text(ContentX, ContentY + 4.0f, 20.0f, aMetricName, ContentWidth - 220.0f);
-			TextRender()->TextColor(TextRender()->DefaultTextColor());
-			RightText(TextRender(), ContentX + ContentWidth, ContentY + 3.0f, 22.0f, aValue);
+			char aName[64];
+			MatchMetricDisplayName(pMetric->m_MetricId, Report.m_ModeSchemaVersion, aName, sizeof(aName));
+			CRowText &Text = m_aRowTexts[Index];
+			Text.m_Name.Update(TextRender(), aName, 20.0f, ContentWidth - 220.0f);
+			Text.m_Name.Render(TextRender(), vec2(ContentX, ContentY + 4.0f), ColorRGBA(1.0f, 1.0f, 1.0f, 0.6f));
+			Text.m_aCells[0].Update(TextRender(), aValue, 22.0f);
+			Text.m_aCells[0].Render(TextRender(), vec2(ContentX + ContentWidth - Text.m_aCells[0].Width(), ContentY + 3.0f), TextRender()->DefaultTextColor());
 			ContentY += 30.0f;
+		}
+		if(m_Hidden > 0)
+		{
+			char aHidden[64];
+			str_format(aHidden, sizeof(aHidden), Localize("%d more not shown"), m_Hidden);
+			TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.45f));
+			TextRender()->Text(ContentX, ContentY + 2.0f, 17.0f, aHidden, 300.0f);
+			TextRender()->TextColor(TextRender()->DefaultTextColor());
 		}
 		return;
 	}
@@ -650,14 +781,14 @@ void CStatboard::RenderBoard(const CRenderContext &Context, const CStoredMatch &
 		// Whatever the players currently on the team reported, combined the way
 		// the mode said it may be combined, so that a rank or a best time is
 		// never added up.
-		CRow Totals;
-		for(const CRow &Row : vRows)
+		m_Totals.Reset();
+		for(const CRow &Row : Rows())
 		{
 			if(Row.m_TeamIndex != static_cast<int>(Team))
 				continue;
 			for(const CRowMetric &Metric : Row.m_vMetrics)
-				MergeMetric(Totals, Metric.m_MetricId, Metric.m_Value, Metric.m_Aggregation);
-			AddCombatStats(Totals.m_Combat, Row.m_Combat);
+				MergeMetric(m_Totals, Metric.m_MetricId, Metric.m_Value, Metric.m_Aggregation);
+			AddCombatStats(m_Totals.m_Combat, Row.m_Combat);
 		}
 
 		float Right = ContentX + ContentWidth - 12.0f;
@@ -668,49 +799,50 @@ void CStatboard::RenderBoard(const CRenderContext &Context, const CStoredMatch &
 			TextRender()->TextColor(TextRender()->DefaultTextColor());
 			TextRender()->Text(Right, ContentY + 28.0f, 22.0f, pValue, -1.0f);
 		};
-		if(Totals.m_Combat.m_Total.m_Shots > 0)
+		if(m_Totals.m_Combat.m_Total.m_Shots > 0)
 		{
 			char aAccuracy[32];
-			FormatMatchAccuracy(Totals.m_Combat.m_Total.m_Hits, Totals.m_Combat.m_Total.m_Shots, aAccuracy, sizeof(aAccuracy));
+			FormatMatchAccuracy(m_Totals.m_Combat.m_Total.m_Hits, m_Totals.m_Combat.m_Total.m_Shots, aAccuracy, sizeof(aAccuracy));
 			Summary(Localize("Accuracy"), aAccuracy);
 		}
 		for(size_t Index = std::size(s_apTotals); Index-- > 0;)
 		{
-			const CRowMetric *pMetric = Totals.Metric(s_apTotals[Index]);
+			const CRowMetric *pMetric = m_Totals.Metric(s_apTotals[Index]);
 			if(pMetric == nullptr)
 				continue;
 			char aValue[32];
 			str_format(aValue, sizeof(aValue), "%" PRId64, pMetric->m_Value);
-			char aMetricName[64];
-			MatchMetricDisplayName(std::string(pMetric->m_MetricId), Report.m_ModeSchemaVersion, aMetricName, sizeof(aMetricName));
-			Summary(aMetricName, aValue);
+			char aLabel[64];
+			m_ScratchMetric.m_MetricId = pMetric->m_MetricId;
+			MatchMetricDisplayName(m_ScratchMetric.m_MetricId, Report.m_ModeSchemaVersion, aLabel, sizeof(aLabel));
+			Summary(aLabel, aValue);
 		}
 		ContentY += 70.0f;
 	}
 
-	if(vAspects.size() > 1)
+	if(NumAspects > 1)
 	{
 		float TabX = ContentX;
-		for(const EAspect Candidate : vAspects)
+		for(size_t Index = 0; Index < NumAspects; ++Index)
 		{
+			const EAspect Candidate = aAspects[Index];
 			const char *pLabel = Candidate == EAspect::SCORE ? Localize("Score") : Candidate == EAspect::WEAPON_KILLS ? Localize("Kills") :
 										       Candidate == EAspect::WEAPON_DEATHS        ? Localize("Deaths") :
 																    Localize("Accuracy");
-			const float LabelWidth = TextRender()->TextWidth(19.0f, pLabel, -1, -1.0f);
+			CCachedText &Text = m_aAspectTexts[Index];
+			Text.Update(TextRender(), pLabel, 19.0f);
 			if(Candidate == Aspect)
-				Graphics()->DrawRect(TabX - 6.0f, ContentY - 2.0f, LabelWidth + 12.0f, 28.0f, ColorRGBA(0.30f, 0.62f, 1.0f, 0.35f), IGraphics::CORNER_ALL, 4.0f);
-			TextRender()->TextColor(Candidate == Aspect ? TextRender()->DefaultTextColor() : ColorRGBA(1.0f, 1.0f, 1.0f, 0.45f));
-			TextRender()->Text(TabX, ContentY + 2.0f, 19.0f, pLabel, -1.0f);
-			TextRender()->TextColor(TextRender()->DefaultTextColor());
-			TabX += LabelWidth + 30.0f;
+				Graphics()->DrawRect(TabX - 6.0f, ContentY - 2.0f, Text.Width() + 12.0f, 28.0f, ColorRGBA(0.30f, 0.62f, 1.0f, 0.35f), IGraphics::CORNER_ALL, 4.0f);
+			Text.Render(TextRender(), vec2(TabX, ContentY + 2.0f), Candidate == Aspect ? TextRender()->DefaultTextColor() : ColorRGBA(1.0f, 1.0f, 1.0f, 0.45f));
+			TabX += Text.Width() + 30.0f;
 		}
 		ContentY += 34.0f;
 	}
 
-	RenderTable(Context, Stored, vRows, vColumns, Hidden, ContentX, ContentY, ContentWidth);
+	RenderTable(Context, Stored, ContentX, ContentY, ContentWidth);
 }
 
-float CStatboard::RenderTable(const CRenderContext &Context, const CStoredMatch &Stored, const std::vector<CRow> &vRows, const std::vector<CColumn> &vColumns, int Hidden, float X, float Y, float Width)
+float CStatboard::RenderTable(const CRenderContext &Context, const CStoredMatch &Stored, float X, float Y, float Width)
 {
 	const CMatchReport &Report = Stored.m_Report;
 	// Participant ids only mean client ids on the board this client counted
@@ -718,18 +850,20 @@ float CStatboard::RenderTable(const CRenderContext &Context, const CStoredMatch 
 	const CSessionPresentation *pPresentation = Stored.m_Source == EMatchReportSource::CLIENT_OBSERVED ? &GameClient()->SessionPresentation(Context.m_Session.Id()) : nullptr;
 	const float NameX = X + 46.0f;
 	const float FirstColumnX = NameX + 320.0f;
-	const float RowH = RowHeight(vRows.size());
+	const float RowH = RowHeight(m_NumRows);
 	const float FontSize = RowH > 26.0f ? 20.0f : 17.0f;
 	const float TextOffset = (RowH - FontSize) / 2.0f;
 
 	// Column headers once for the whole body: repeating nine words in the
 	// middle of the table is what a second team header would cost.
-	TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.55f));
-	TextRender()->Text(NameX, Y + 4.0f, 17.0f, Localize("Name"), 300.0f);
+	const ColorRGBA HeaderColor = ColorRGBA(1.0f, 1.0f, 1.0f, 0.55f);
+	m_NameHeader.Update(TextRender(), Localize("Name"), 17.0f, 300.0f);
+	m_NameHeader.Render(TextRender(), vec2(NameX, Y + 4.0f), HeaderColor);
 	float ColumnX = FirstColumnX;
-	for(const CColumn &Column : vColumns)
+	for(size_t Index = 0; Index < m_NumColumns; ++Index)
 	{
-		if(Column.m_Label.empty() && Column.m_Weapon >= 0 && Column.m_Weapon < NUM_WEAPONS)
+		const CColumn &Column = m_vColumns[Index];
+		if(Column.m_aLabel[0] == '\0' && Column.m_Weapon >= 0 && Column.m_Weapon < NUM_WEAPONS)
 		{
 			const int Weapon = Column.m_Weapon;
 			float ScaleX, ScaleY;
@@ -741,30 +875,37 @@ float CStatboard::RenderTable(const CRenderContext &Context, const CStoredMatch 
 			Graphics()->QuadsEnd();
 		}
 		else
-			RightText(TextRender(), ColumnX + Column.m_Width - 8.0f, Y + 4.0f, 17.0f, Column.m_Label.c_str());
+		{
+			CCachedText &Text = m_aColumnTexts[Index];
+			Text.Update(TextRender(), Column.m_aLabel, 17.0f);
+			Text.Render(TextRender(), vec2(ColumnX + Column.m_Width - 8.0f - Text.Width(), Y + 4.0f), HeaderColor);
+		}
 		ColumnX += Column.m_Width;
 	}
-	TextRender()->TextColor(TextRender()->DefaultTextColor());
 	Y += 28.0f;
 
 	// The best value of every column, so that a row does not have to know
 	// about the others to emphasise it.
-	std::vector<std::optional<double>> vBest(vColumns.size());
-	for(const CRow &Row : vRows)
+	for(size_t Index = 0; Index < m_NumColumns; ++Index)
+		m_vColumns[Index].m_Best.reset();
+	for(const CRow &Row : Rows())
 	{
 		if(Row.m_pParticipant == nullptr)
 			continue;
-		for(size_t Index = 0; Index < vColumns.size(); ++Index)
+		for(size_t Index = 0; Index < m_NumColumns; ++Index)
 		{
-			const CCell Cell = BuildCell(Report, Row, vColumns[Index]);
-			if(Cell.m_Comparable.has_value() && *Cell.m_Comparable > 0.0 && (!vBest[Index].has_value() || *Cell.m_Comparable > *vBest[Index]))
-				vBest[Index] = Cell.m_Comparable;
+			CColumn &Column = m_vColumns[Index];
+			const CCell Cell = BuildCell(Report, Row, Column);
+			if(Cell.m_Comparable.has_value() && *Cell.m_Comparable > 0.0 && (!Column.m_Best.has_value() || *Cell.m_Comparable > *Column.m_Best))
+				Column.m_Best = Cell.m_Comparable;
 		}
 	}
 
 	int TeamIndex = -1;
-	for(const CRow &Row : vRows)
+	size_t RowIndex = 0;
+	for(const CRow &Row : Rows())
 	{
+		CRowText &Text = m_aRowTexts[RowIndex++];
 		// One table per team, introduced by a bar in the team's colour.
 		if(Row.m_pParticipant != nullptr && Row.m_TeamIndex != TeamIndex && Row.m_TeamIndex >= 0 && Row.m_TeamIndex < static_cast<int>(Report.m_vTeams.size()))
 		{
@@ -778,8 +919,8 @@ float CStatboard::RenderTable(const CRenderContext &Context, const CStoredMatch 
 		{
 			char aLabel[128];
 			str_format(aLabel, sizeof(aLabel), Localize("%d players who left"), Row.m_Members);
-			TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f));
-			TextRender()->Text(NameX, Y + TextOffset, FontSize, aLabel, 300.0f);
+			Text.m_Name.Update(TextRender(), aLabel, FontSize, 300.0f);
+			Text.m_Name.Render(TextRender(), vec2(NameX, Y + TextOffset), ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f));
 		}
 		else
 		{
@@ -787,8 +928,8 @@ float CStatboard::RenderTable(const CRenderContext &Context, const CStoredMatch 
 			{
 				char aRank[16];
 				str_format(aRank, sizeof(aRank), "%d", Row.m_Rank);
-				TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f));
-				TextRender()->Text(X + 4.0f, Y + TextOffset, FontSize, aRank, 40.0f);
+				Text.m_Rank.Update(TextRender(), aRank, FontSize, 40.0f);
+				Text.m_Rank.Render(TextRender(), vec2(X + 4.0f, Y + TextOffset), ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f));
 			}
 			float TextX = NameX;
 			const CClientPresentation *pClient = pPresentation == nullptr ? nullptr : pPresentation->Client(Context.m_State.Id(), Row.m_pParticipant->m_ParticipantId);
@@ -804,33 +945,35 @@ float CStatboard::RenderTable(const CRenderContext &Context, const CStoredMatch 
 			}
 			// The local player is marked by the colour of his name, not by a
 			// bar behind it, which would fight with the team colours.
-			TextRender()->TextColor(Row.m_Local ? ColorRGBA(0.30f, 0.72f, 1.0f, 1.0f) : TextRender()->DefaultTextColor());
-			TextRender()->Text(TextX, Y + TextOffset, FontSize, Row.m_pParticipant->m_DisplayName.c_str(), NameX + 236.0f - TextX);
+			Text.m_Name.Update(TextRender(), Row.m_pParticipant->m_DisplayName.c_str(), FontSize, NameX + 236.0f - TextX);
+			Text.m_Name.Render(TextRender(), vec2(TextX, Y + TextOffset), Row.m_Local ? ColorRGBA(0.30f, 0.72f, 1.0f, 1.0f) : TextRender()->DefaultTextColor());
 			if(!Row.m_pParticipant->m_Clan.empty())
 			{
-				TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.4f));
-				TextRender()->Text(NameX + 240.0f, Y + TextOffset + 2.0f, FontSize - 4.0f, Row.m_pParticipant->m_Clan.c_str(), 76.0f);
+				Text.m_Clan.Update(TextRender(), Row.m_pParticipant->m_Clan.c_str(), FontSize - 4.0f, 76.0f);
+				Text.m_Clan.Render(TextRender(), vec2(NameX + 240.0f, Y + TextOffset + 2.0f), ColorRGBA(1.0f, 1.0f, 1.0f, 0.4f));
 			}
 		}
 
 		ColumnX = FirstColumnX;
-		for(size_t Index = 0; Index < vColumns.size(); ++Index)
+		for(size_t Index = 0; Index < m_NumColumns; ++Index)
 		{
-			const CCell Cell = BuildCell(Report, Row, vColumns[Index]);
-			const bool Best = Row.m_pParticipant != nullptr && Cell.m_Comparable.has_value() && vBest[Index].has_value() && *Cell.m_Comparable >= *vBest[Index];
-			TextRender()->TextColor(Row.m_pParticipant == nullptr ? ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f) : Best ? ColorRGBA(1.0f, 0.86f, 0.4f, 1.0f) :
-															   ColorRGBA(1.0f, 1.0f, 1.0f, 0.85f));
-			RightText(TextRender(), ColumnX + vColumns[Index].m_Width - 8.0f, Y + TextOffset, FontSize, Cell.m_aText);
-			ColumnX += vColumns[Index].m_Width;
+			const CColumn &Column = m_vColumns[Index];
+			const CCell Cell = BuildCell(Report, Row, Column);
+			const bool Best = Row.m_pParticipant != nullptr && Cell.m_Comparable.has_value() && Column.m_Best.has_value() && *Cell.m_Comparable >= *Column.m_Best;
+			CCachedText &CellText = Text.m_aCells[Index];
+			CellText.Update(TextRender(), Cell.m_aText, FontSize);
+			CellText.Render(TextRender(), vec2(ColumnX + Column.m_Width - 8.0f - CellText.Width(), Y + TextOffset),
+				Row.m_pParticipant == nullptr ? ColorRGBA(1.0f, 1.0f, 1.0f, 0.5f) : Best ? ColorRGBA(1.0f, 0.86f, 0.4f, 1.0f) :
+													   ColorRGBA(1.0f, 1.0f, 1.0f, 0.85f));
+			ColumnX += Column.m_Width;
 		}
-		TextRender()->TextColor(TextRender()->DefaultTextColor());
 		Y += RowH;
 	}
 
-	if(Hidden > 0)
+	if(m_Hidden > 0)
 	{
 		char aHidden[64];
-		str_format(aHidden, sizeof(aHidden), Localize("%d more not shown"), Hidden);
+		str_format(aHidden, sizeof(aHidden), Localize("%d more not shown"), m_Hidden);
 		TextRender()->TextColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.45f));
 		TextRender()->Text(NameX, Y + 2.0f, 17.0f, aHidden, 300.0f);
 		TextRender()->TextColor(TextRender()->DefaultTextColor());

@@ -1393,10 +1393,10 @@ void CMenus::RenderStatsAggregate(CUIRect View)
 				CUIRect Button;
 				Selector.VSplitLeft(ButtonWidth, &Button, &Selector);
 				Button.Margin(2.0f, &Button);
-				Button.Draw(ColorRGBA(1.0f, 1.0f, 1.0f, (int)Index == m_StatsWeaponIndex ? 0.22f : 0.06f), IGraphics::CORNER_ALL, 3.0f);
+				Button.Draw(ColorRGBA(1.0f, 1.0f, 1.0f, Index == m_StatsWeaponIndex ? 0.22f : 0.06f), IGraphics::CORNER_ALL, 3.0f);
 				StatsWeaponIcon(&Button, aWeapons[Index]);
 				if(Ui()->DoButtonLogic(&s_aWeaponButtons[Index], 0, &Button, BUTTONFLAG_LEFT))
-					m_StatsWeaponIndex = (int)Index;
+					m_StatsWeaponIndex = Index;
 			}
 		}
 

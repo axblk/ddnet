@@ -35,9 +35,11 @@ enum class EModernTransportTrust
 
 /**
  * Which transport a connect attempt prefers, as chosen next to the address
- * field. This is an order of preference and not a demand: a transport the
+ * field. This is an order of preference and not a demand: a transport a listed
  * server does not announce is skipped and the connect falls back to the legacy
- * one, so picking QUIC is safe on a server that has never heard of it.
+ * one, so picking QUIC is safe on a server that has never heard of it. An
+ * address the browser does not list announces nothing to skip, so there the
+ * pick is taken at its word.
  *
  * The values are stored in `cl_connect_protocol`, so they must not be
  * reordered.

@@ -305,7 +305,7 @@ void CMenus::RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemAct
 		}
 		CUIElement *pUiElement = vpServerBrowserUiElements[i];
 
-		const CListboxItem ListItem = s_ListBox.DoNextItem(pItem, str_comp(pItem->m_aAddress, g_Config.m_UiServerAddress) == 0);
+		const CListboxItem ListItem = s_ListBox.DoNextItem(pItem, str_comp(pItem->m_aAddress, g_Config.m_UiServerAddress) == 0 || ServerHasAddress(pItem, g_Config.m_UiServerAddress));
 		if(ListItem.m_Selected)
 			m_SelectedIndex = i;
 
@@ -473,6 +473,7 @@ void CMenus::RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemAct
 			if(pItem)
 			{
 				str_copy(g_Config.m_UiServerAddress, pItem->m_aAddress);
+				UpdateConnectAddress(pItem);
 				m_ServerBrowserShouldRevealSelection = true;
 			}
 		}
@@ -481,14 +482,24 @@ void CMenus::RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemAct
 	WasListboxItemActivated = s_ListBox.WasItemActivated();
 }
 
-const char *CMenus::ConnectProtocolShortName(EConnectProtocol Protocol)
+// A field one field wide, for a choice that has only one answer. It reads the
+// same as the dropdown next to it without offering a menu that would be empty.
+void CMenus::RenderConnectChoiceLabel(CUIRect Field, const char *pLabel, int Corners)
+{
+	Field.Draw(ColorRGBA(1.0f, 1.0f, 1.0f, 0.1f), Corners, 3.0f);
+	Ui()->DoLabel(&Field, pLabel, 10.0f, TEXTALIGN_MC);
+}
+
+const char *CMenus::ConnectProtocolShortName(EConnectProtocol Protocol, const char *pAddress)
 {
 	// The row is narrow and the address has to stay readable, so these are the
 	// names as short as they can be without becoming a riddle.
 	switch(Protocol)
 	{
 	case EConnectProtocol::QUIC: return "QUIC";
-	case EConnectProtocol::WEBSOCKET: return "WS";
+	// The two websocket schemes are one protocol to the client but not to the
+	// server it reaches, so the address decides which of the two this is.
+	case EConnectProtocol::WEBSOCKET: return pAddress != nullptr && str_find_nocase(pAddress, "wss://") != nullptr ? "WSS" : "WS";
 	case EConnectProtocol::WEBTRANSPORT: return "WT";
 	default: return "UDP";
 	}
@@ -531,10 +542,11 @@ CMenus::CConnectChoices CMenus::ConnectChoicesFor(const CServerInfo *pServer, co
 	}
 	else
 	{
-		AddProtocol(EConnectProtocol::LEGACY);
-		if(CQuicTransport::IsCompiled() && pServer->m_NumQuicAddresses > 0)
+		// Best first: the dropdown reads as a preference order and the entry
+		// that is picked when nothing was chosen yet is the one at the top.
+		if(g_Config.m_ClQuic && CQuicTransport::IsCompiled() && pServer->m_NumQuicAddresses > 0)
 			AddProtocol(EConnectProtocol::QUIC);
-		if(CQuicTransport::IsWebTransportClientCompiled() && pServer->m_WebTransport && pServer->m_NumWebTransportAddresses > 0)
+		if(g_Config.m_ClQuic && CQuicTransport::IsWebTransportClientCompiled() && pServer->m_WebTransport && pServer->m_NumWebTransportAddresses > 0)
 			AddProtocol(EConnectProtocol::WEBTRANSPORT);
 #if defined(CONF_WEBSOCKETS) || defined(CONF_PLATFORM_EMSCRIPTEN)
 		for(int i = 0; i < pServer->m_NumAddresses; ++i)
@@ -546,19 +558,20 @@ CMenus::CConnectChoices CMenus::ConnectChoicesFor(const CServerInfo *pServer, co
 			}
 		}
 #endif
+		AddProtocol(EConnectProtocol::LEGACY);
 	}
 
-	// The family follows the addresses the server actually has. A literal
-	// address already is one family, so there is nothing to pick either.
+	// The family follows the addresses the server actually has, and the box
+	// holds one of them, so what is in there says nothing about the choice.
+	// Only an address that belongs to no known server is a family of its own.
 	NETADDR Literal;
-	if(pAddress != nullptr && net_addr_from_str(&Literal, pAddress) == 0)
+	if(pServer == nullptr)
 	{
-		AddFamily((Literal.type & (NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV6)) != 0 ? EConnectAddressFamily::IPV6 : EConnectAddressFamily::IPV4);
-	}
-	else if(pServer == nullptr)
-	{
-		// A hostname is left to the resolver, which prefers IPv6 and falls back.
-		AddFamily(EConnectAddressFamily::IPV6);
+		if(pAddress != nullptr && (net_addr_from_url(&Literal, pAddress, nullptr, 0) == 0 || net_addr_from_str(&Literal, pAddress) == 0))
+			AddFamily((Literal.type & (NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV6)) != 0 ? EConnectAddressFamily::IPV6 : EConnectAddressFamily::IPV4);
+		else
+			// A hostname is left to the resolver, which prefers IPv6 and falls back.
+			AddFamily(EConnectAddressFamily::IPV6);
 	}
 	else
 	{
@@ -571,6 +584,51 @@ CMenus::CConnectChoices CMenus::ConnectChoicesFor(const CServerInfo *pServer, co
 			std::swap(Choices.m_aFamilies[0], Choices.m_aFamilies[1]);
 	}
 	return Choices;
+}
+
+bool CMenus::ServerHasAddress(const CServerInfo *pServer, const char *pAddress)
+{
+	NETADDR Address;
+	// The browser writes its addresses with the scheme they belong to, and so
+	// does the box next to the list, so both forms have to be readable here.
+	if(pServer == nullptr || (net_addr_from_url(&Address, pAddress, nullptr, 0) != 0 && net_addr_from_str(&Address, pAddress) != 0))
+		return false;
+	for(int i = 0; i < pServer->m_NumAddresses; ++i)
+	{
+		if(net_addr_comp(&pServer->m_aAddresses[i], &Address) == 0)
+			return true;
+	}
+	return false;
+}
+
+// The box holds the one address that will be connected to, not the list of
+// everything the server announced: a server with four addresses is still one
+// server to read out, and the family next to the box says which of them it is.
+void CMenus::UpdateConnectAddress(const CServerInfo *pServer)
+{
+	if(pServer == nullptr || pServer->m_NumAddresses <= 0)
+		return;
+	const bool WantsIpv6 = (EConnectAddressFamily)g_Config.m_ClConnectAddressFamily != EConnectAddressFamily::IPV4;
+	int Chosen = 0;
+	int Best = -1;
+	for(int i = 0; i < pServer->m_NumAddresses; ++i)
+	{
+		const NETADDR &Address = pServer->m_aAddresses[i];
+		// The version weighs more than the family. A server that answers both
+		// is played on 0.6, and 0.7 is what is left when there is no other
+		// address; asking for it on purpose takes a link with a scheme.
+		const bool Matches = ((Address.type & (NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV6)) != 0) == WantsIpv6;
+		const int Score = ((Address.type & NETTYPE_TW7) != 0 ? 0 : 2) + (Matches ? 1 : 0);
+		if(Score > Best)
+		{
+			Best = Score;
+			Chosen = i;
+		}
+	}
+	// With the scheme it was announced under: a 0.7 address that loses its
+	// scheme is a 0.6 address, which is neither the server in the list nor the
+	// one that would answer.
+	net_addr_url_str(&pServer->m_aAddresses[Chosen], g_Config.m_UiServerAddress, sizeof(g_Config.m_UiServerAddress), true);
 }
 
 void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItemActivated)
@@ -604,9 +662,12 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 
 	CUIRect SearchInfoAndAddr, ServersAndConnect, ServersPlayersOnline, SearchAndInfo, ServerAddr, ConnectButtons;
 	StatusBox.VSplitRight(135.0f, &SearchInfoAndAddr, &ServersAndConnect);
-	if(SearchInfoAndAddr.w > 350.0f)
-		SearchInfoAndAddr.VSplitLeft(350.0f, &SearchInfoAndAddr, nullptr);
 	SearchInfoAndAddr.HSplitTop(40.0f, &SearchAndInfo, &ServerAddr);
+	// The search boxes read fine at the width they were given; the address is
+	// the one that has to hold a host name, a port and a certificate hash, and
+	// the space it was capped out of is drawn on by nothing else.
+	if(SearchAndInfo.w > 350.0f)
+		SearchAndInfo.VSplitLeft(350.0f, &SearchAndInfo, nullptr);
 	ServersAndConnect.HSplitTop(35.0f, &ServersPlayersOnline, &ConnectButtons);
 	ConnectButtons.HSplitTop(5.0f, nullptr, &ConnectButtons);
 
@@ -696,54 +757,74 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 	{
 		CUIRect ServerAddrLabel, ServerAddrEditBox, ProtocolDropDown, FamilyDropDown;
 		ServerAddr.Margin(2.0f, &ServerAddr);
-		ServerAddr.VSplitLeft(SearchExcludeAddrStrMax + 5.0f + ExcludeSearchIconMax + 5.0f, &ServerAddrLabel, &ServerAddrEditBox);
+		// The label used to reserve the width of the two search boxes above it,
+		// which left the address itself too narrow to read one out. It only
+		// needs the width of its own text.
+		ServerAddr.VSplitLeft(TextRender()->TextWidth(14.0f, Localize("Server address:")) + 8.0f, &ServerAddrLabel, &ServerAddrEditBox);
 
 		// Transport and address family sit with the address they apply to, but
 		// only where there is something to choose: the client offers what it
 		// was built with and the server announces the rest, and an address
 		// typed by hand says what it wants itself. Every dropdown that is left
 		// out gives its width back to the address, which has to stay readable.
-		const CServerInfo *pServer = ServerBrowser()->SortedGet(m_SelectedIndex);
-		if(pServer != nullptr && str_comp(pServer->m_aAddress, g_Config.m_UiServerAddress) != 0)
-			pServer = nullptr;
+		// What the address is connected with follows the address itself, not the
+		// row that happens to be highlighted: the box is what the connect button
+		// reads, and it keeps its answer when the selection moves away.
+		const CServerInfo *pServer = nullptr;
+		char aFirstAddress[NETADDR_MAXSTRSIZE];
+		str_copy(aFirstAddress, g_Config.m_UiServerAddress);
+		if(char *pSeparator = (char *)str_find(aFirstAddress, ","))
+			*pSeparator = '\0';
+		NETADDR LookupAddress;
+		if(net_addr_from_str(&LookupAddress, aFirstAddress) == 0)
+		{
+			if(const CServerBrowser::CServerEntry *pEntry = ServerBrowser()->Find(LookupAddress))
+				pServer = &pEntry->m_Info;
+		}
 		const CConnectChoices Choices = ConnectChoicesFor(pServer, g_Config.m_UiServerAddress);
-		if(Choices.m_NumFamilies > 1)
-		{
-			ServerAddrEditBox.VSplitRight(52.0f, &ServerAddrEditBox, &FamilyDropDown);
-			ServerAddrEditBox.VSplitRight(5.0f, &ServerAddrEditBox, nullptr);
-		}
-		if(Choices.m_NumProtocols > 1)
-		{
-			ServerAddrEditBox.VSplitRight(58.0f, &ServerAddrEditBox, &ProtocolDropDown);
-			ServerAddrEditBox.VSplitRight(5.0f, &ServerAddrEditBox, nullptr);
-		}
+		// Both fields stay where they are whether or not there is a choice, so
+		// the row does not jump and the address always reads under the same
+		// caret. Only a field with something to pick becomes a dropdown.
+		ServerAddrEditBox.VSplitRight(46.0f, &ServerAddrEditBox, &FamilyDropDown);
+		ServerAddrEditBox.VSplitRight(52.0f, &ServerAddrEditBox, &ProtocolDropDown);
 
 		Ui()->DoLabel(&ServerAddrLabel, Localize("Server address:"), 14.0f, TEXTALIGN_ML);
 		static CLineInput s_ServerAddressInput(g_Config.m_UiServerAddress, sizeof(g_Config.m_UiServerAddress));
-		if(Ui()->DoClearableEditBox(&s_ServerAddressInput, &ServerAddrEditBox, 12.0f))
+		if(Ui()->DoClearableEditBox(&s_ServerAddressInput, &ServerAddrEditBox, 12.0f, IGraphics::CORNER_L))
 			m_ServerBrowserShouldRevealSelection = true;
 
-		if(Choices.m_NumProtocols > 1)
 		{
 			const char *apLabels[(int)EConnectProtocol::COUNT];
 			for(int i = 0; i < Choices.m_NumProtocols; ++i)
-				apLabels[i] = ConnectProtocolShortName(Choices.m_aProtocols[i]);
+				apLabels[i] = ConnectProtocolShortName(Choices.m_aProtocols[i], g_Config.m_UiServerAddress);
 			static CUi::SDropDownState s_ProtocolDropDownState;
 			static CScrollRegion s_ProtocolDropDownScrollRegion;
 			s_ProtocolDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_ProtocolDropDownScrollRegion;
+			s_ProtocolDropDownState.m_Corners = IGraphics::CORNER_NONE;
+			s_ProtocolDropDownState.m_Rounding = 3.0f;
 			int Current = 0;
 			for(int i = 0; i < Choices.m_NumProtocols; ++i)
 				if((int)Choices.m_aProtocols[i] == g_Config.m_ClConnectProtocol)
 					Current = i;
-			const int Picked = Ui()->DoDropDown(&ProtocolDropDown, Current, apLabels, Choices.m_NumProtocols, s_ProtocolDropDownState);
-			g_Config.m_ClConnectProtocol = (int)Choices.m_aProtocols[std::clamp(Picked, 0, Choices.m_NumProtocols - 1)];
-		}
-		else
-		{
-			g_Config.m_ClConnectProtocol = (int)Choices.m_aProtocols[0];
+			if(Choices.m_NumProtocols > 1)
+			{
+				const int Picked = Ui()->DoDropDown(&ProtocolDropDown, Current, apLabels, Choices.m_NumProtocols, s_ProtocolDropDownState);
+				// Only a choice that was made is remembered. Writing what is
+				// merely on screen would turn looking at a server that speaks
+				// one transport into picking that transport for every server
+				// after it.
+				if(Picked != Current)
+				{
+					g_Config.m_ClConnectProtocol = (int)Choices.m_aProtocols[std::clamp(Picked, 0, Choices.m_NumProtocols - 1)];
+					UpdateConnectAddress(pServer);
+				}
+			}
+			else
+			{
+				RenderConnectChoiceLabel(ProtocolDropDown, apLabels[0], IGraphics::CORNER_NONE);
+			}
 		}
 
-		if(Choices.m_NumFamilies > 1)
 		{
 			const char *apLabels[(int)EConnectAddressFamily::COUNT];
 			for(int i = 0; i < Choices.m_NumFamilies; ++i)
@@ -751,16 +832,25 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 			static CUi::SDropDownState s_FamilyDropDownState;
 			static CScrollRegion s_FamilyDropDownScrollRegion;
 			s_FamilyDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_FamilyDropDownScrollRegion;
+			s_FamilyDropDownState.m_Corners = IGraphics::CORNER_R;
+			s_FamilyDropDownState.m_Rounding = 3.0f;
 			int Current = 0;
 			for(int i = 0; i < Choices.m_NumFamilies; ++i)
 				if((int)Choices.m_aFamilies[i] == g_Config.m_ClConnectAddressFamily)
 					Current = i;
-			const int Picked = Ui()->DoDropDown(&FamilyDropDown, Current, apLabels, Choices.m_NumFamilies, s_FamilyDropDownState);
-			g_Config.m_ClConnectAddressFamily = (int)Choices.m_aFamilies[std::clamp(Picked, 0, Choices.m_NumFamilies - 1)];
-		}
-		else
-		{
-			g_Config.m_ClConnectAddressFamily = (int)Choices.m_aFamilies[0];
+			if(Choices.m_NumFamilies > 1)
+			{
+				const int Picked = Ui()->DoDropDown(&FamilyDropDown, Current, apLabels, Choices.m_NumFamilies, s_FamilyDropDownState);
+				if(Picked != Current)
+				{
+					g_Config.m_ClConnectAddressFamily = (int)Choices.m_aFamilies[std::clamp(Picked, 0, Choices.m_NumFamilies - 1)];
+					UpdateConnectAddress(pServer);
+				}
+			}
+			else
+			{
+				RenderConnectChoiceLabel(FamilyDropDown, apLabels[0], IGraphics::CORNER_R);
+			}
 		}
 	}
 

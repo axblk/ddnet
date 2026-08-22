@@ -1,7 +1,8 @@
 #include "test.h"
 
 #include <engine/client/session.h>
-#include <engine/client/session_sources.h>
+#include <engine/client/session_source_demo.h>
+#include <engine/client/session_source_net.h>
 
 #include <gtest/gtest.h>
 

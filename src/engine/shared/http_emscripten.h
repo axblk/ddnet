@@ -66,6 +66,7 @@ public:
 	// User
 	void Run(std::shared_ptr<IHttpRequest> pRequest) override;
 	bool HasIpresolveBug() const override;
+	std::unique_ptr<IHttpRequest> CreateRequest(const char *pUrl) override;
 
 private:
 	void *m_pThread = nullptr;

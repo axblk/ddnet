@@ -22,7 +22,7 @@ CCommunityIcons::CCommunityIconDownloadJob::CCommunityIconDownloadJob(CCommunity
 {
 	str_copy(m_aCommunityId, pCommunityId);
 	str_format(m_aPath, sizeof(m_aPath), "communityicons/%s.png", pCommunityId);
-	m_pHttpRequest = CreateHttpRequest(pUrl);
+	m_pHttpRequest = pCommunityIcons->Http()->CreateRequest(pUrl);
 	m_pHttpRequest->WriteToFile(pCommunityIcons->Storage(), m_aPath, IStorage::TYPE_SAVE);
 	m_pHttpRequest->ExpectSha256(m_Sha256);
 	m_pHttpRequest->Timeout(CTimeout{0, 0, 0, 0});

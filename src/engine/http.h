@@ -198,60 +198,6 @@ protected:
 	void OnCompletionInternal(EHttpState State);
 };
 
-std::unique_ptr<IHttpRequest> CreateHttpRequest(const char *pUrl);
-
-inline std::unique_ptr<IHttpRequest> HttpHead(const char *pUrl)
-{
-	std::unique_ptr<IHttpRequest> pResult = CreateHttpRequest(pUrl);
-	pResult->Head();
-	return pResult;
-}
-
-inline std::unique_ptr<IHttpRequest> HttpGet(const char *pUrl)
-{
-	return CreateHttpRequest(pUrl);
-}
-
-inline std::unique_ptr<IHttpRequest> HttpGetFile(const char *pUrl, IStorage *pStorage, const char *pOutputFile, int StorageType)
-{
-	std::unique_ptr<IHttpRequest> pResult = HttpGet(pUrl);
-	pResult->WriteToFile(pStorage, pOutputFile, StorageType);
-	pResult->Timeout(CTimeout{4000, 0, 500, 5});
-	return pResult;
-}
-
-inline std::unique_ptr<IHttpRequest> HttpGetBoth(const char *pUrl, IStorage *pStorage, const char *pOutputFile, int StorageType)
-{
-	std::unique_ptr<IHttpRequest> pResult = HttpGet(pUrl);
-	pResult->WriteToFileAndMemory(pStorage, pOutputFile, StorageType);
-	pResult->Timeout(CTimeout{4000, 0, 500, 5});
-	return pResult;
-}
-
-inline std::unique_ptr<IHttpRequest> HttpPost(const char *pUrl, const unsigned char *pData, size_t DataLength)
-{
-	std::unique_ptr<IHttpRequest> pResult = CreateHttpRequest(pUrl);
-	pResult->Post(pData, DataLength);
-	pResult->Timeout(CTimeout{4000, 15000, 500, 5});
-	return pResult;
-}
-
-inline std::unique_ptr<IHttpRequest> HttpPostJson(const char *pUrl, const char *pJson)
-{
-	std::unique_ptr<IHttpRequest> pResult = CreateHttpRequest(pUrl);
-	pResult->PostJson(pJson);
-	pResult->Timeout(CTimeout{4000, 15000, 500, 5});
-	return pResult;
-}
-
-void EscapeUrl(char *pBuf, size_t Size, const char *pStr);
-
-template<size_t Size>
-void EscapeUrl(char (&aBuf)[Size], const char *pStr)
-{
-	EscapeUrl(aBuf, Size, pStr);
-}
-
 class IHttp : public IInterface
 {
 	MACRO_INTERFACE("http")
@@ -260,6 +206,54 @@ public:
 	virtual void Run(std::shared_ptr<IHttpRequest> pRequest) = 0;
 
 	virtual bool HasIpresolveBug() const = 0;
+
+	/**
+	 * Creates a request of the backend this is. Requests are made here and not
+	 * by a free function, so that a program which registers no HTTP does not
+	 * link a backend to find out that it has none.
+	 *
+	 * @param pUrl URL to request.
+	 */
+	virtual std::unique_ptr<IHttpRequest> CreateRequest(const char *pUrl) = 0;
+
+	std::unique_ptr<IHttpRequest> CreateHead(const char *pUrl)
+	{
+		std::unique_ptr<IHttpRequest> pResult = CreateRequest(pUrl);
+		pResult->Head();
+		return pResult;
+	}
+
+	std::unique_ptr<IHttpRequest> CreateGetFile(const char *pUrl, IStorage *pStorage, const char *pOutputFile, int StorageType)
+	{
+		std::unique_ptr<IHttpRequest> pResult = CreateRequest(pUrl);
+		pResult->WriteToFile(pStorage, pOutputFile, StorageType);
+		pResult->Timeout(CTimeout{4000, 0, 500, 5});
+		return pResult;
+	}
+
+	std::unique_ptr<IHttpRequest> CreateGetBoth(const char *pUrl, IStorage *pStorage, const char *pOutputFile, int StorageType)
+	{
+		std::unique_ptr<IHttpRequest> pResult = CreateRequest(pUrl);
+		pResult->WriteToFileAndMemory(pStorage, pOutputFile, StorageType);
+		pResult->Timeout(CTimeout{4000, 0, 500, 5});
+		return pResult;
+	}
+
+	std::unique_ptr<IHttpRequest> CreatePost(const char *pUrl, const unsigned char *pData, size_t DataLength)
+	{
+		std::unique_ptr<IHttpRequest> pResult = CreateRequest(pUrl);
+		pResult->Post(pData, DataLength);
+		pResult->Timeout(CTimeout{4000, 15000, 500, 5});
+		return pResult;
+	}
+
+	std::unique_ptr<IHttpRequest> CreatePostJson(const char *pUrl, const char *pJson)
+	{
+		std::unique_ptr<IHttpRequest> pResult = CreateRequest(pUrl);
+		pResult->PostJson(pJson);
+		pResult->Timeout(CTimeout{4000, 15000, 500, 5});
+		return pResult;
+	}
 };
 
 class IEngineHttp : public IHttp

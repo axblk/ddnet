@@ -424,11 +424,11 @@ void CRegister::CProtocol::SendRegister()
 	std::unique_ptr<IHttpRequest> pRegister;
 	if(SendInfo)
 	{
-		pRegister = HttpPostJson(m_pParent->m_pConfig->m_SvRegisterUrl, m_pParent->m_aServerInfo);
+		pRegister = m_pParent->m_pHttp->CreatePostJson(m_pParent->m_pConfig->m_SvRegisterUrl, m_pParent->m_aServerInfo);
 	}
 	else
 	{
-		pRegister = HttpPost(m_pParent->m_pConfig->m_SvRegisterUrl, (unsigned char *)"", 0);
+		pRegister = m_pParent->m_pHttp->CreatePost(m_pParent->m_pConfig->m_SvRegisterUrl, (unsigned char *)"", 0);
 	}
 	pRegister->HeaderString("Address", aAddress);
 	pRegister->HeaderString("Secret", aSecret);
@@ -487,7 +487,7 @@ void CRegister::CProtocol::SendDeleteIfRegistered(bool Shutdown)
 	char aSecret[UUID_MAXSTRSIZE];
 	FormatUuid(m_pParent->m_Secret, aSecret, sizeof(aSecret));
 
-	std::shared_ptr<IHttpRequest> pDelete = HttpPost(m_pParent->m_pConfig->m_SvRegisterUrl, (const unsigned char *)"", 0);
+	std::shared_ptr<IHttpRequest> pDelete = m_pParent->m_pHttp->CreatePost(m_pParent->m_pConfig->m_SvRegisterUrl, (const unsigned char *)"", 0);
 	pDelete->HeaderString("Action", "delete");
 	pDelete->HeaderString("Address", aAddress);
 	pDelete->HeaderString("Secret", aSecret);

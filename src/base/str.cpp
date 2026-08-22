@@ -1373,3 +1373,30 @@ int str_utf32_dist_buffer(const int *a, int a_len, const int *b, int b_len, int 
 	return B(a_len, b_len);
 #undef B
 }
+
+void str_url_encode(char *pBuffer, size_t BufferSize, const char *pStr)
+{
+	dbg_assert(BufferSize > 0, "buffer size must be larger than 0");
+	static const char s_aHex[] = "0123456789ABCDEF";
+	size_t Written = 0;
+	for(const unsigned char *pCurrent = (const unsigned char *)pStr; *pCurrent != 0; ++pCurrent)
+	{
+		const char Char = (char)*pCurrent;
+		const bool Unreserved = (Char >= 'A' && Char <= 'Z') || (Char >= 'a' && Char <= 'z') ||
+					(Char >= '0' && Char <= '9') || Char == '-' || Char == '.' || Char == '_' || Char == '~';
+		const size_t Needed = Unreserved ? 1 : 3;
+		if(Written + Needed >= BufferSize)
+			break;
+		if(Unreserved)
+		{
+			pBuffer[Written++] = Char;
+		}
+		else
+		{
+			pBuffer[Written++] = '%';
+			pBuffer[Written++] = s_aHex[*pCurrent >> 4];
+			pBuffer[Written++] = s_aHex[*pCurrent & 0x0f];
+		}
+	}
+	pBuffer[Written] = '\0';
+}

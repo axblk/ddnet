@@ -576,7 +576,7 @@ void CSkins::StartDownload(CSkinContainer *pSkinContainer, bool Force)
 	const char *pBaseUrl = g_Config.m_ClDownloadCommunitySkins != 0 ? g_Config.m_ClSkinCommunityDownloadUrl : g_Config.m_ClSkinDownloadUrl;
 
 	char aEscapedName[256];
-	EscapeUrl(aEscapedName, pSkinContainer->Name());
+	str_url_encode(aEscapedName, pSkinContainer->Name());
 
 	char aUrl[IO_MAX_PATH_LENGTH];
 	str_format(aUrl, sizeof(aUrl), "%s%s.png", pBaseUrl, aEscapedName);
@@ -587,7 +587,17 @@ void CSkins::StartDownload(CSkinContainer *pSkinContainer, bool Force)
 	const CTimeout Timeout{10000, 0, 8192, 10};
 	constexpr size_t MaxResponseSize = 10 * 1024 * 1024;
 
-	std::shared_ptr<IHttpRequest> pRequest = HttpGetBoth(aUrl, Storage(), aPath, IStorage::TYPE_SAVE);
+	if(Http() == nullptr)
+	{
+		// A program without HTTP has nowhere to download from, so a skin is
+		// whatever is on disk: what an earlier download cached, or nothing.
+		pSkinContainer->m_DownloadNotFound = !Storage()->FileExists(aPath, IStorage::TYPE_SAVE);
+		pSkinContainer->m_DecodeSource = ESkinDecodeSource::NONE;
+		if(!pSkinContainer->m_DownloadNotFound)
+			StartSkinDecode(pSkinContainer, aPath, IStorage::TYPE_SAVE, ESkinDecodeSource::DOWNLOAD_CACHE);
+		return;
+	}
+	std::shared_ptr<IHttpRequest> pRequest = Http()->CreateGetBoth(aUrl, Storage(), aPath, IStorage::TYPE_SAVE);
 	pRequest->Timeout(Timeout);
 	pRequest->MaxResponseSize(MaxResponseSize);
 	pRequest->ValidateBeforeOverwrite(true);
@@ -824,7 +834,13 @@ void CSkins::UpdateFinishLoading(CSkinLoadingStats &Stats, std::chrono::nanoseco
 			continue;
 		}
 
-		dbg_assert(pSkinContainer->m_LoadResource, "Skin container in loading state must have a load resource or download request");
+		if(!pSkinContainer->m_LoadResource)
+		{
+			// Neither a file being read nor a download to wait for: there is
+			// nothing left that could still make this skin appear.
+			FinishSkinLoad(Stats, pSkinContainer.get(), false);
+			continue;
+		}
 		if(!pSkinContainer->m_LoadResource.IsFinished())
 		{
 			continue;

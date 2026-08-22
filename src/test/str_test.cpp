@@ -1398,6 +1398,28 @@ TEST(Str, IntsToStr)
 	}
 }
 
+TEST(Str, UrlEncode)
+{
+	char aBuffer[64];
+	str_url_encode(aBuffer, "");
+	EXPECT_STREQ(aBuffer, "");
+	// The unreserved set of RFC 3986 is passed through
+	str_url_encode(aBuffer, "aZ09-._~");
+	EXPECT_STREQ(aBuffer, "aZ09-._~");
+	str_url_encode(aBuffer, "a b/c?d&e=f");
+	EXPECT_STREQ(aBuffer, "a%20b%2Fc%3Fd%26e%3Df");
+	// Every byte of a multi-byte character is encoded on its own
+	str_url_encode(aBuffer, "ä");
+	EXPECT_STREQ(aBuffer, "%C3%A4");
+	// What does not fit is left out rather than cut in half
+	char aSmall[4];
+	str_url_encode(aSmall, "a b");
+	EXPECT_STREQ(aSmall, "a");
+	char aExact[5];
+	str_url_encode(aExact, "a b");
+	EXPECT_STREQ(aExact, "a%20");
+}
+
 #if defined(CONF_FAMILY_WINDOWS)
 TEST(Str, WindowsUtf8WideConversion)
 {

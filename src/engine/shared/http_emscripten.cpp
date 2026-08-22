@@ -252,7 +252,7 @@ void CHttpRequestEmscripten::FetchCallbackProgress(emscripten_fetch_t *pFetch)
 	static_cast<CHttpRequestEmscripten *>(pFetch->userData)->OnProgress();
 }
 
-std::unique_ptr<IHttpRequest> CreateHttpRequest(const char *pUrl)
+std::unique_ptr<IHttpRequest> CHttpEmscripten::CreateRequest(const char *pUrl)
 {
 	return std::make_unique<CHttpRequestEmscripten>(pUrl);
 }
@@ -308,16 +308,6 @@ void CHttpEmscripten::Run(std::shared_ptr<IHttpRequest> pRequest)
 		m_PendingRequests.emplace_back(pRequestImpl);
 	}
 	m_ConditionVariableLoop.notify_all();
-}
-
-EM_JS(void, EscapeUrlJsImpl, (char *pBuf, size_t Size, const char *pStr), {
-	const escapedString = encodeURIComponent(UTF8ToString(pStr));
-	stringToUTF8(escapedString, pBuf, Size);
-});
-
-void EscapeUrl(char *pBuf, size_t Size, const char *pStr)
-{
-	EscapeUrlJsImpl(pBuf, Size, pStr);
 }
 
 bool CHttpEmscripten::HasIpresolveBug() const

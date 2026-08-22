@@ -217,7 +217,7 @@ void CChooseMaster::CJob::Run()
 		aTimeMs[i] = -1;
 		aAgeS[i] = SanitizeAge({});
 		const char *pUrl = m_pData->m_aaUrls[aRandomized[i]];
-		std::shared_ptr<IHttpRequest> pHead = HttpHead(pUrl);
+		std::shared_ptr<IHttpRequest> pHead = m_pParent->m_pHttp->CreateHead(pUrl);
 		pHead->Timeout(Timeout);
 		pHead->LogProgress(HTTPLOG::FAILURE);
 		{
@@ -238,7 +238,7 @@ void CChooseMaster::CJob::Run()
 		}
 
 		auto StartTime = time_get_nanoseconds();
-		std::shared_ptr<IHttpRequest> pGet = HttpGet(pUrl);
+		std::shared_ptr<IHttpRequest> pGet = m_pParent->m_pHttp->CreateRequest(pUrl);
 		pGet->Timeout(Timeout);
 		pGet->LogProgress(HTTPLOG::FAILURE);
 		{
@@ -373,7 +373,7 @@ void CServerBrowserHttp::Update()
 			}
 			return;
 		}
-		m_pGetServers = HttpGet(pBestUrl);
+		m_pGetServers = m_pHttp->CreateRequest(pBestUrl);
 		// 10 seconds connection timeout, lower than 8KB/s for 10 seconds to fail.
 		m_pGetServers->Timeout(CTimeout{10000, 0, 8000, 10});
 		m_pHttp->Run(m_pGetServers);

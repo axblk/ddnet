@@ -346,17 +346,25 @@ void CGameClient::OnConsoleInit()
 	m_pRenderTrace = m_pClient->RenderTrace();
 	for(CSessionId SessionId : m_pClient->SessionIds())
 		dbg_assert(m_SessionContexts.Create(SessionId, "", EGameProtocol::SIX, m_pClient->StreamIds(SessionId)) != nullptr, "failed to create game session context");
-	CGameSessionContext *pNetworkContext = m_SessionContexts.Find(m_pClient->NetworkSessionId());
-	dbg_assert(pNetworkContext != nullptr, "failed to create game session contexts");
-	m_LegacyGameViewId = m_GameViews.Create(pNetworkContext->Id(), pNetworkContext->GameStates().States().front()->Id());
+	// The three views the old single-connection code paths look through belong
+	// to the session that plays the game. A program without a connection, the
+	// demo render tool for instance, has the demo session play it instead.
+	CGameSessionContext *pPrimaryContext = m_SessionContexts.Find(m_pClient->NetworkSessionId());
+	if(pPrimaryContext == nullptr)
+		pPrimaryContext = m_SessionContexts.Find(m_pClient->FocusedSessionId());
+	dbg_assert(pPrimaryContext != nullptr, "failed to create game session contexts");
+	m_LegacyGameViewId = m_GameViews.Create(pPrimaryContext->Id(), pPrimaryContext->GameStates().States().front()->Id());
 	dbg_assert(m_LegacyGameViewId.IsValid(), "failed to create legacy game view");
-	const CGameState *pDummyState = pNetworkContext->GameStates().FindByStream(m_pClient->StreamId(pNetworkContext->Id(), IClient::CONN_DUMMY));
-	dbg_assert(pDummyState != nullptr, "missing dummy game state");
-	m_SecondaryGameViewId = m_GameViews.Create(pNetworkContext->Id(), pDummyState->Id());
-	dbg_assert(m_SecondaryGameViewId.IsValid(), "failed to create secondary game view");
-	const CGameState *pMainState = pNetworkContext->GameStates().FindByStream(m_pClient->PrimaryStreamId(pNetworkContext->Id()));
+	const CGameState *pMainState = pPrimaryContext->GameStates().FindByStream(m_pClient->PrimaryStreamId(pPrimaryContext->Id()));
 	dbg_assert(pMainState != nullptr, "missing main game state");
-	m_TertiaryGameViewId = m_GameViews.Create(pNetworkContext->Id(), pMainState->Id());
+	const CGameState *pDummyState = pPrimaryContext->GameStates().FindByStream(m_pClient->StreamId(pPrimaryContext->Id(), IClient::CONN_DUMMY));
+	// A session with a single stream has no second connection for the secondary
+	// view to look at, so it looks at the same game state as the main one.
+	if(pDummyState == nullptr)
+		pDummyState = pMainState;
+	m_SecondaryGameViewId = m_GameViews.Create(pPrimaryContext->Id(), pDummyState->Id());
+	dbg_assert(m_SecondaryGameViewId.IsValid(), "failed to create secondary game view");
+	m_TertiaryGameViewId = m_GameViews.Create(pPrimaryContext->Id(), pMainState->Id());
 	dbg_assert(m_TertiaryGameViewId.IsValid(), "failed to create tertiary game view");
 	CGameView *pLegacyView = m_GameViews.Find(m_LegacyGameViewId);
 	dbg_assert(pLegacyView != nullptr, "missing legacy game view");
@@ -369,16 +377,20 @@ void CGameClient::OnConsoleInit()
 	m_pConsole = Kernel()->RequestInterface<IConsole>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 	m_pDemoPlayer = Kernel()->RequestInterface<IDemoPlayer>();
-	m_pServerBrowser = Kernel()->RequestInterface<IServerBrowser>();
+	// A program that has no use for a thing registers none, so what only the
+	// game itself needs is asked for rather than demanded: the server browser,
+	// the updater, the favorites, the friends and everything over HTTP are the
+	// parts a demo render tool does without.
+	m_pServerBrowser = Kernel()->TryGetInterface<IServerBrowser>();
 	m_pEditor = Kernel()->TryGetInterface<IEditor>();
-	m_pFavorites = Kernel()->RequestInterface<IFavorites>();
-	m_pFriends = Kernel()->RequestInterface<IFriends>();
+	m_pFavorites = Kernel()->TryGetInterface<IFavorites>();
+	m_pFriends = Kernel()->TryGetInterface<IFriends>();
 	m_pFoes = Client()->Foes();
-	m_pDiscord = Kernel()->RequestInterface<IDiscord>();
+	m_pDiscord = Kernel()->TryGetInterface<IDiscord>();
 #if defined(CONF_AUTOUPDATE)
-	m_pUpdater = Kernel()->RequestInterface<IUpdater>();
+	m_pUpdater = Kernel()->TryGetInterface<IUpdater>();
 #endif
-	m_pHttp = Kernel()->RequestInterface<IHttp>();
+	m_pHttp = Kernel()->TryGetInterface<IHttp>();
 	for(const auto &pContext : m_SessionContexts.Contexts())
 		pContext->MapContext().Init();
 
@@ -3500,7 +3512,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 		std::bitset<RECORDER_MAX> CurrentRecordings;
 		for(int i = 0; i < RECORDER_MAX; i++)
 		{
-			if(DemoRecorder(i)->IsRecording())
+			if(DemoRecorder(i) != nullptr && DemoRecorder(i)->IsRecording())
 			{
 				CurrentRecordings.set(i);
 			}

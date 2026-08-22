@@ -1041,4 +1041,29 @@ int str_utf8_comp_confusable(const char *str1, const char *str2);
  */
 int str_utf8_tolower_codepoint(int code);
 
+/**
+ * Percent-encodes a string so that it can be part of a URL.
+ *
+ * Everything outside the unreserved set of RFC 3986 (`A-Z a-z 0-9 - . _ ~`) is
+ * written as `%XX`. Truncates when the buffer is too small.
+ *
+ * @ingroup Strings
+ *
+ * @param pBuffer Buffer to write the encoded string to.
+ * @param BufferSize Size of the buffer, including the null terminator.
+ * @param pStr String to encode.
+ */
+void str_url_encode(char *pBuffer, size_t BufferSize, const char *pStr);
+
+/**
+ * @ingroup Strings
+ *
+ * @see str_url_encode
+ */
+template<size_t BufferSize>
+void str_url_encode(char (&aBuffer)[BufferSize], const char *pStr)
+{
+	str_url_encode(aBuffer, BufferSize, pStr);
+}
+
 #endif

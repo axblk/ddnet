@@ -982,15 +982,15 @@ void CScoreboard::RenderRecordingNotification(float x)
 	char aBuf[512] = "";
 
 	const auto &&AppendRecorderInfo = [&](int Recorder, const char *pName) {
-		if(GameClient()->DemoRecorder(Recorder)->IsRecording())
-		{
-			char aTime[32];
-			str_time((int64_t)GameClient()->DemoRecorder(Recorder)->Length() * 100, ETimeFormat::HOURS, aTime, sizeof(aTime));
-			str_append(aBuf, pName);
-			str_append(aBuf, " ");
-			str_append(aBuf, aTime);
-			str_append(aBuf, "  ");
-		}
+		// A program that does not record has no recorder to ask.
+		if(GameClient()->DemoRecorder(Recorder) == nullptr || !GameClient()->DemoRecorder(Recorder)->IsRecording())
+			return;
+		char aTime[32];
+		str_time((int64_t)GameClient()->DemoRecorder(Recorder)->Length() * 100, ETimeFormat::HOURS, aTime, sizeof(aTime));
+		str_append(aBuf, pName);
+		str_append(aBuf, " ");
+		str_append(aBuf, aTime);
+		str_append(aBuf, "  ");
 	};
 
 	AppendRecorderInfo(RECORDER_MANUAL, Localize("Manual"));

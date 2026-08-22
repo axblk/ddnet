@@ -90,6 +90,19 @@ TEST(GraphicsThreaded, GenerationHandlesRejectReusedSlots)
 	EXPECT_EQ(pStoredVertices[2].m_Color, SGraphicsColor(0, 0, 255, 255));
 }
 
+TEST(GraphicsThreaded, FrameDataGrowsInStableChunks)
+{
+	CCommandBuffer Buffer(1024, 64);
+	void *pFirst = Buffer.AllocDataChunked(48);
+	void *pSecond = Buffer.AllocDataChunked(48);
+	ASSERT_NE(pFirst, nullptr);
+	ASSERT_NE(pSecond, nullptr);
+	EXPECT_NE(pFirst, pSecond);
+
+	Buffer.Reset();
+	EXPECT_NE(Buffer.AllocDataChunked(96), nullptr);
+}
+
 TEST(GraphicsThreaded, PipelineCommandsRetainGenerations)
 {
 	CGenerationHandlePool<CCommandBuffer::CPipelineHandle> Pool;
@@ -776,6 +789,41 @@ TEST(GraphicsThreaded, CommandBufferStorageTransfersWithoutCopyingPayload)
 	const auto *pStoredVertices = pStoredCommand->m_VertexData.Get<CCommandBuffer::SVertex>(3);
 	ASSERT_NE(pStoredVertices, nullptr);
 	EXPECT_EQ(pStoredVertices[2].m_Pos, vec2(5.0f, 6.0f));
+}
+
+TEST(GraphicsThreaded, CommandBufferReportsRenderWork)
+{
+	CCommandBuffer Buffer(2048, 2048);
+
+	auto *pVertices = static_cast<CCommandBuffer::SVertex *>(Buffer.AllocData(8 * sizeof(CCommandBuffer::SVertex)));
+	ASSERT_NE(pVertices, nullptr);
+	CCommandBuffer::SCommand_Draw Draw;
+	Draw.m_PrimitiveType = EPrimitiveType::QUADS;
+	Draw.m_VertexCount = 8;
+	Draw.m_VertexData = {pVertices, 8 * sizeof(*pVertices)};
+	ASSERT_TRUE(Buffer.AddCommandUnsafe(Draw));
+
+	CCommandBuffer::SCommand_DrawIndexed Indexed;
+	Indexed.m_IndexCount = 12;
+	Indexed.m_InstanceCount = 3;
+	ASSERT_TRUE(Buffer.AddCommandUnsafe(Indexed));
+
+	int UploadData[8];
+	CCommandBuffer::SCommand_UpdateBufferObject Update;
+	Update.m_pUploadData = UploadData;
+	Update.m_DataSize = sizeof(UploadData);
+	ASSERT_TRUE(Buffer.AddCommandUnsafe(Update));
+
+	const IGraphics::CFrameRenderStats Stats = Buffer.RenderStats();
+	EXPECT_EQ(Stats.m_Commands, 3u);
+	EXPECT_EQ(Stats.m_ResourceCommands, 1u);
+	EXPECT_EQ(Stats.m_DrawCommands, 2u);
+	EXPECT_EQ(Stats.m_DrawCalls, 2u);
+	EXPECT_EQ(Stats.m_Triangles, 16u);
+	EXPECT_EQ(Stats.m_Instances, 4u);
+	EXPECT_EQ(Stats.m_BufferUpdates, 1u);
+	EXPECT_EQ(Stats.m_UploadBytes, sizeof(UploadData));
+	EXPECT_EQ(Stats.m_StreamedBytes, 8 * sizeof(*pVertices));
 }
 
 TEST(GraphicsThreaded, ReliablePayloadBudgetRejectsWholeCommand)

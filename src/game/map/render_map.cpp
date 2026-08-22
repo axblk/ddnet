@@ -592,16 +592,17 @@ void CRenderMap::RenderTile(int x, int y, unsigned char Index, float Scale, Colo
 	Graphics()->MapScreen(ScreenRect);
 }
 
-void CRenderMap::RenderTilemap(CTile *pTiles, int w, int h, float Scale, ColorRGBA Color, int RenderFlags)
+void CRenderMap::RenderTilemap(CTile *pTiles, int w, int h, float Scale, ColorRGBA Color, bool TextureIsValid, int RenderFlags)
 {
 	CScreenRect ScreenRect = Graphics()->GetScreen();
+	const bool UseTextureArrays = TextureIsValid && Graphics()->HasTextureArraysSupport();
 
 	// calculate the final pixelsize for the tiles
 	float TilePixelSize = 1024 / 32.0f;
 	float FinalTileSize = Scale / ScreenRect.Width() * Graphics()->ScreenWidth();
 	float FinalTilesetScale = FinalTileSize / TilePixelSize;
 
-	if(Graphics()->HasTextureArraysSupport())
+	if(UseTextureArrays)
 		Graphics()->QuadsTex3DBegin();
 	else
 		Graphics()->QuadsBegin();
@@ -609,6 +610,7 @@ void CRenderMap::RenderTilemap(CTile *pTiles, int w, int h, float Scale, ColorRG
 	const bool ColorOpaque = Color.a > 254.0f / 255.0f;
 
 	const bool ExtendTiles = (RenderFlags & TILERENDERFLAG_EXTEND) != 0;
+	const bool ForceTransparent = (RenderFlags & TILERENDERFLAG_FORCE_TRANSPARENT) != 0;
 
 	int StartY = (int)(ScreenRect.m_TopLeft.y / Scale) - 1;
 	int StartX = (int)(ScreenRect.m_TopLeft.x / Scale) - 1;
@@ -654,7 +656,7 @@ void CRenderMap::RenderTilemap(CTile *pTiles, int w, int h, float Scale, ColorRG
 				unsigned char Flags = pTiles[c].m_Flags;
 
 				bool Render = false;
-				if(ColorOpaque && Flags & TILEFLAG_OPAQUE)
+				if(!ForceTransparent && ColorOpaque && Flags & TILEFLAG_OPAQUE)
 				{
 					if(RenderFlags & LAYERRENDERFLAG_OPAQUE)
 						Render = true;
@@ -683,7 +685,7 @@ void CRenderMap::RenderTilemap(CTile *pTiles, int w, int h, float Scale, ColorRG
 					float x3 = Nudge + Px0 / TexSize + Frac;
 					float y3 = Nudge + Py1 / TexSize - Frac;
 
-					if(Graphics()->HasTextureArraysSupport())
+					if(UseTextureArrays)
 					{
 						x0 = 0;
 						y0 = 0;
@@ -725,7 +727,7 @@ void CRenderMap::RenderTilemap(CTile *pTiles, int w, int h, float Scale, ColorRG
 						y1 = Tmp;
 					}
 
-					if(Graphics()->HasTextureArraysSupport())
+					if(UseTextureArrays)
 					{
 						Graphics()->QuadsSetSubsetFree(x0, y0, x1, y1, x2, y2, x3, y3, Index);
 						IGraphics::CQuadItem QuadItem(x * Scale, y * Scale, Scale, Scale);
@@ -743,7 +745,7 @@ void CRenderMap::RenderTilemap(CTile *pTiles, int w, int h, float Scale, ColorRG
 		}
 	}
 
-	if(Graphics()->HasTextureArraysSupport())
+	if(UseTextureArrays)
 		Graphics()->QuadsTex3DEnd();
 	else
 		Graphics()->QuadsEnd();

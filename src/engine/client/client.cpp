@@ -4776,19 +4776,6 @@ void CClient::Run()
 				m_RenderFrameTime = (Now - m_LastRenderTime) / (float)time_freq();
 				m_FpsGraph.Add(1.0f / m_RenderFrameTime);
 
-				if(m_BenchmarkFile)
-				{
-					char aBuf[64];
-					str_format(aBuf, sizeof(aBuf), "Frametime %d us\n", (int)(m_RenderFrameTime * 1000000));
-					io_write(m_BenchmarkFile, aBuf, str_length(aBuf));
-					if(time_get() > m_BenchmarkStopTime)
-					{
-						io_close(m_BenchmarkFile);
-						m_BenchmarkFile = nullptr;
-						Quit();
-					}
-				}
-
 				m_FrameTimeAverage = m_FrameTimeAverage * 0.9f + m_RenderFrameTime * 0.1f;
 
 				// keep the overflow time - it's used to make sure the gfx refreshrate is reached
@@ -4798,6 +4785,7 @@ void CClient::Run()
 					AdditionalTime = (time_freq() / 60);
 				LastRenderTime = Now - AdditionalTime;
 				m_LastRenderTime = Now;
+				const std::chrono::nanoseconds RenderWallStart = m_BenchmarkFile ? time_get_nanoseconds() : std::chrono::nanoseconds{};
 
 #if defined(CONF_VIDEORECORDER)
 				bool VideoFrameHandled = false;
@@ -4890,6 +4878,34 @@ void CClient::Run()
 #else
 				m_pGraphics->Swap();
 #endif
+				if(m_BenchmarkFile)
+				{
+					m_RenderWallTimeNanoseconds = (time_get_nanoseconds() - RenderWallStart).count();
+					const IGraphics::CFrameRenderStats RenderStats = Graphics()->FrameRenderStats();
+					const IGraphics::SFrameMailboxStats MailboxStats = Graphics()->FrameMailboxStats();
+					const ITextRender::CTextRenderStats TextStats = TextRender()->TextRenderStats();
+					const ITextRender::CTextRenderStats &PreviousTextStats = m_BenchmarkPreviousTextRenderStats;
+					char aBuf[2048];
+					str_format(aBuf, sizeof(aBuf),
+						"Frametime %d us RenderWall %" PRIu64 " us GpuTime %" PRIu64 " us GpuSample %" PRIu64 " GpuSupported %d Commands %" PRIu64 " ResourceCommands %" PRIu64 " DrawCommands %" PRIu64 " DrawCalls %" PRIu64 " Triangles %" PRIu64 " Instances %" PRIu64 " RenderPasses %" PRIu64 " BufferCreates %" PRIu64 " BufferRecreates %" PRIu64 " BufferUpdates %" PRIu64 " TextureCreates %" PRIu64 " TextureUpdates %" PRIu64 " UploadBytes %" PRIu64 " StreamedBytes %" PRIu64 " TextLayout %" PRIu64 " us TextLayoutCalls %" PRIu64 " Glyphs %" PRIu64 " TextCreates %" PRIu64 " TextSoftRecreates %" PRIu64 " TextDeletes %" PRIu64 " TextRenders %" PRIu64 " TextUploadBytes %" PRIu64 " FramesProduced %" PRIu64 " FramesRendered %" PRIu64 " FramesDropped %" PRIu64 " TextureMemory %" PRIu64 " BufferMemory %" PRIu64 " StreamedMemory %" PRIu64 " StagingMemory %" PRIu64 "\n",
+						(int)(m_RenderFrameTime * 1000000), m_RenderWallTimeNanoseconds / 1000,
+						RenderStats.m_GpuTimeNanoseconds / 1000, RenderStats.m_GpuSample, RenderStats.m_GpuTimingSupported,
+						RenderStats.m_Commands, RenderStats.m_ResourceCommands, RenderStats.m_DrawCommands, RenderStats.m_DrawCalls, RenderStats.m_Triangles, RenderStats.m_Instances, RenderStats.m_RenderPasses,
+						RenderStats.m_BufferCreates, RenderStats.m_BufferRecreates, RenderStats.m_BufferUpdates, RenderStats.m_TextureCreates, RenderStats.m_TextureUpdates, RenderStats.m_UploadBytes, RenderStats.m_StreamedBytes,
+						(TextStats.m_LayoutTimeNanoseconds - PreviousTextStats.m_LayoutTimeNanoseconds) / 1000, TextStats.m_LayoutCalls - PreviousTextStats.m_LayoutCalls, TextStats.m_GlyphsLaidOut - PreviousTextStats.m_GlyphsLaidOut,
+						TextStats.m_ContainerCreates - PreviousTextStats.m_ContainerCreates, TextStats.m_ContainerSoftRecreates - PreviousTextStats.m_ContainerSoftRecreates, TextStats.m_ContainerDeletes - PreviousTextStats.m_ContainerDeletes, TextStats.m_ContainerRenders - PreviousTextStats.m_ContainerRenders, TextStats.m_UploadBytes - PreviousTextStats.m_UploadBytes,
+						MailboxStats.m_Produced, MailboxStats.m_Rendered, MailboxStats.m_Dropped, Graphics()->TextureMemoryUsage(), Graphics()->BufferMemoryUsage(), Graphics()->StreamedMemoryUsage(), Graphics()->StagingMemoryUsage());
+					io_write(m_BenchmarkFile, aBuf, str_length(aBuf));
+					m_BenchmarkPreviousTextRenderStats = TextStats;
+					if(time_get() > m_BenchmarkStopTime)
+					{
+						io_close(m_BenchmarkFile);
+						m_BenchmarkFile = nullptr;
+						Graphics()->SetRenderStatsEnabled(false);
+						TextRender()->SetTextRenderStatsEnabled(false);
+						Quit();
+					}
+				}
 #if defined(CONF_VIDEORECORDER)
 				if(pVideo != nullptr && pVideo->HasError())
 				{
@@ -6122,6 +6138,9 @@ void CClient::BenchmarkQuit(int Seconds, const char *pFilename)
 {
 	m_BenchmarkFile = Storage()->OpenFile(pFilename, IOFLAG_WRITE, IStorage::TYPE_ABSOLUTE);
 	m_BenchmarkStopTime = time_get() + time_freq() * Seconds;
+	Graphics()->SetRenderStatsEnabled(m_BenchmarkFile != nullptr);
+	TextRender()->SetTextRenderStatsEnabled(m_BenchmarkFile != nullptr);
+	m_BenchmarkPreviousTextRenderStats = TextRender()->TextRenderStats();
 }
 
 void CClient::UpdateAndSwap()

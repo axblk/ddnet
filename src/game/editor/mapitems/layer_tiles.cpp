@@ -185,10 +185,18 @@ void CLayerTiles::Render(const CEditorMap *pRenderMap)
 	pRenderMap->m_EnvelopeEvaluator.EnvelopeEval(m_ColorEnvOffset, m_ColorEnv, ColorEnv, 4);
 	const ColorRGBA Color = ColorRGBA(m_Color.r / 255.0f, m_Color.g / 255.0f, m_Color.b / 255.0f, m_Color.a / 255.0f).Multiply(ColorEnv);
 
-	Graphics()->BlendNone();
-	Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, LAYERRENDERFLAG_OPAQUE);
-	Graphics()->BlendNormal();
-	Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, LAYERRENDERFLAG_TRANSPARENT);
+	if(IsEntitiesLayer())
+	{
+		Graphics()->BlendNormal();
+		Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, Texture.IsValid(), TILERENDERFLAG_FORCE_TRANSPARENT | LAYERRENDERFLAG_TRANSPARENT);
+	}
+	else
+	{
+		Graphics()->BlendNone();
+		Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, Texture.IsValid(), LAYERRENDERFLAG_OPAQUE);
+		Graphics()->BlendNormal();
+		Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, Texture.IsValid(), LAYERRENDERFLAG_TRANSPARENT);
+	}
 
 	// Render DDRace Layers
 	if(m_RenderOverlays)

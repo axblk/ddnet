@@ -324,6 +324,8 @@ class CClient : public IClient, public CDemoPlayer::IListener
 
 	IOHANDLE m_BenchmarkFile = nullptr;
 	int64_t m_BenchmarkStopTime = 0;
+	uint64_t m_RenderWallTimeNanoseconds = 0;
+	ITextRender::CTextRenderStats m_BenchmarkPreviousTextRenderStats;
 
 	CChecksum m_Checksum;
 	int64_t m_OwnExecutableSize = 0;

@@ -242,6 +242,27 @@ IGraphics::SFrameMailboxStats CGraphics_Threaded::FrameMailboxStats() const
 	return m_pBackend->GetFrameMailboxStats();
 }
 
+IGraphics::CFrameRenderStats CGraphics_Threaded::FrameRenderStats() const
+{
+	CFrameRenderStats Stats = m_LastFrameRenderStats;
+	const SGpuTiming GpuTiming = m_pBackend->GpuTiming();
+	Stats.m_GpuTimeNanoseconds = GpuTiming.m_TimeNanoseconds;
+	Stats.m_GpuSample = GpuTiming.m_Sample;
+	Stats.m_GpuTimingSupported = GpuTiming.m_Supported;
+	return Stats;
+}
+
+void CGraphics_Threaded::SetRenderStatsEnabled(bool Enabled)
+{
+	m_RenderStatsEnabled = Enabled;
+	m_pBackend->SetGpuTimingEnabled(Enabled);
+	if(Enabled)
+	{
+		m_CurrentFrameRenderStats = {};
+		m_LastFrameRenderStats = {};
+	}
+}
+
 const TTwGraphicsGpuList &CGraphics_Threaded::GetGpus() const
 {
 	return m_pBackend->GetGpus();
@@ -1059,6 +1080,7 @@ bool CGraphics_Threaded::SubmitReliableCommandBuffer(CCommandBuffer *pCommandBuf
 		pCommandBuffer->SetSubmissionInfo(m_SubmissionTracker.Prepare(CCommandBuffer::ECommandChannel::RELIABLE, RequiredByFrame, false));
 	}
 
+	const CFrameRenderStats RenderStats = m_RenderStatsEnabled ? pCommandBuffer->RenderStats() : CFrameRenderStats{};
 	if(!m_pBackend->RunBufferQueued(pCommandBuffer, true))
 	{
 		// Nothing will ever execute these commands anymore, so drop them instead of
@@ -1068,6 +1090,8 @@ bool CGraphics_Threaded::SubmitReliableCommandBuffer(CCommandBuffer *pCommandBuf
 		pCommandBuffer->Reset();
 		return false;
 	}
+	if(m_RenderStatsEnabled)
+		m_CurrentFrameRenderStats += RenderStats;
 	CollectBackendQueueWarnings();
 
 	if(pCommandBuffer == m_pReliableCommandBuffer)
@@ -1091,6 +1115,8 @@ bool CGraphics_Threaded::SubmitFramePacket()
 	if(m_pCommandBuffer->SubmissionInfo().m_SubmissionSerial == 0)
 		m_pCommandBuffer->SetSubmissionInfo(m_SubmissionTracker.Prepare(CCommandBuffer::ECommandChannel::FRAME, false, m_pCommandBuffer->ContainsCommand(CCommandBuffer::CMD_SWAP)));
 
+	const CFrameRenderStats RenderStats = m_RenderStatsEnabled ? m_pCommandBuffer->RenderStats() : CFrameRenderStats{};
+	const bool EndsFrame = m_pCommandBuffer->SubmissionInfo().m_EndsFrame;
 	if(!m_pBackend->RunFramePacket(m_pCommandBuffer))
 	{
 		// Capture packets carry synchronous work and are deliberately pinned. Normal
@@ -1102,6 +1128,15 @@ bool CGraphics_Threaded::SubmitFramePacket()
 		}
 		if(!m_pBackend->RunFramePacket(m_pCommandBuffer, true))
 			return false;
+	}
+	if(m_RenderStatsEnabled)
+	{
+		m_CurrentFrameRenderStats += RenderStats;
+		if(EndsFrame)
+		{
+			m_LastFrameRenderStats = m_CurrentFrameRenderStats;
+			m_CurrentFrameRenderStats = {};
+		}
 	}
 	CollectBackendQueueWarnings();
 	m_CurrentCommandBuffer ^= 1;
@@ -1296,7 +1331,7 @@ bool CGraphics_Threaded::DrawFullscreenTexture(CTextureHandle Source, CCommandBu
 	Cmd.m_VertexData.m_Size = sizeof(aVertices);
 	Cmd.m_VertexData.m_pData = AllocCommandBufferData(Cmd.m_VertexData.m_Size);
 	if(!AddCmd(Cmd, [&] {
-		   Cmd.m_VertexData.m_pData = m_pCommandBuffer->AllocData(Cmd.m_VertexData.m_Size);
+		   Cmd.m_VertexData.m_pData = AllocCommandBufferData(Cmd.m_VertexData.m_Size);
 		   return Cmd.m_VertexData.m_pData != nullptr;
 	   }))
 		return false;
@@ -1974,7 +2009,7 @@ void CGraphics_Threaded::RenderTileLayer(CBufferContainerHandle BufferContainer,
 		Cmd.m_IndexBuffer = m_QuadIndexBuffer;
 		Cmd.m_DrawData.m_Size = sizeof(CCommandBuffer::SDrawDataArrayColor);
 		auto AllocatePayload = [&] {
-			auto *pData = static_cast<CCommandBuffer::SDrawDataArrayColor *>(m_pCommandBuffer->AllocData(sizeof(CCommandBuffer::SDrawDataArrayColor)));
+			auto *pData = static_cast<CCommandBuffer::SDrawDataArrayColor *>(AllocCommandBufferData(sizeof(CCommandBuffer::SDrawDataArrayColor)));
 			if(pData == nullptr)
 				return false;
 			pData->m_Color = Color;
@@ -2011,7 +2046,7 @@ void CGraphics_Threaded::RenderBorderTiles(CBufferContainerHandle BufferContaine
 	Cmd.m_IndexBuffer = m_QuadIndexBuffer;
 	Cmd.m_DrawData.m_Size = sizeof(CCommandBuffer::SDrawDataArrayColorTransform);
 	auto AllocatePayload = [&] {
-		auto *pData = static_cast<CCommandBuffer::SDrawDataArrayColorTransform *>(m_pCommandBuffer->AllocData(sizeof(CCommandBuffer::SDrawDataArrayColorTransform)));
+		auto *pData = static_cast<CCommandBuffer::SDrawDataArrayColorTransform *>(AllocCommandBufferData(sizeof(CCommandBuffer::SDrawDataArrayColorTransform)));
 		if(pData == nullptr)
 			return false;
 		pData->m_Color = Color;
@@ -2057,7 +2092,7 @@ void CGraphics_Threaded::RenderQuadLayer(CBufferContainerHandle BufferContainer,
 		Cmd.m_ArrayData.m_Size = DataSize;
 
 	auto AllocatePayload = [&] {
-		auto *pData = static_cast<CCommandBuffer::SDrawDataQuadTransform *>(m_pCommandBuffer->AllocData(DataSize));
+		auto *pData = static_cast<CCommandBuffer::SDrawDataQuadTransform *>(AllocCommandBufferData(DataSize));
 		if(pData == nullptr)
 			return false;
 		for(size_t i = 0; i < DataCount; ++i)
@@ -2114,7 +2149,7 @@ void CGraphics_Threaded::RenderText(CBufferContainerHandle BufferContainer, int 
 	Cmd.m_IndexOffset = 0;
 	Cmd.m_DrawData.m_Size = sizeof(CCommandBuffer::SDrawDataDualAtlas);
 	auto AllocatePayload = [&] {
-		auto *pData = static_cast<CCommandBuffer::SDrawDataDualAtlas *>(m_pCommandBuffer->AllocData(sizeof(CCommandBuffer::SDrawDataDualAtlas)));
+		auto *pData = static_cast<CCommandBuffer::SDrawDataDualAtlas *>(AllocCommandBufferData(sizeof(CCommandBuffer::SDrawDataDualAtlas)));
 		if(pData == nullptr)
 			return false;
 		pData->m_TextureSize = TextureSize;
@@ -2192,9 +2227,6 @@ bool CGraphics_Threaded::RenderTransientIndexed(const SGraphicsVertex *pVertices
 	size_t TotalDataSize;
 	if(!CheckedAlign(VertexDataSize, alignof(uint32_t), IndexDataOffset) || !CheckedAdd(IndexDataOffset, IndexDataSize, RangeDataOffset) || !CheckedAlign(RangeDataOffset, alignof(CCommandBuffer::SCommand_DrawIndexed::SIndexedDrawRange), RangeDataOffset) || !CheckedAdd(RangeDataOffset, RangeDataSize, TotalDataSize))
 		return false;
-	if(TotalDataSize > CMD_BUFFER_DATA_BUFFER_SIZE)
-		return false;
-
 	for(uint32_t RangeIndex = 0; RangeIndex < RangeCount; ++RangeIndex)
 	{
 		const auto &Range = pRanges[RangeIndex];
@@ -2228,7 +2260,7 @@ bool CGraphics_Threaded::RenderTransientIndexed(const SGraphicsVertex *pVertices
 	Cmd.m_IndexCount = IndexCount;
 	Cmd.m_RangeCount = ValidRangeCount;
 	auto AllocatePayload = [&] {
-		auto *pData = static_cast<uint8_t *>(m_pCommandBuffer->AllocData(TotalDataSize));
+		auto *pData = static_cast<uint8_t *>(AllocCommandBufferData(TotalDataSize));
 		if(pData == nullptr)
 			return false;
 		Cmd.m_VertexData = {pData, VertexDataSize};
@@ -2589,7 +2621,7 @@ void CGraphics_Threaded::RenderQuadContainerEx(int ContainerIndex, int QuadOffse
 		Cmd.m_DrawData.m_Size = sizeof(DrawData);
 		mem_copy(pDrawData, &DrawData, sizeof(DrawData));
 		AddCmd(Cmd, [&] {
-			void *pRetryDrawData = m_pCommandBuffer->AllocData(sizeof(DrawData));
+			void *pRetryDrawData = AllocCommandBufferData(sizeof(DrawData));
 			if(pRetryDrawData == nullptr)
 				return false;
 			Cmd.m_DrawData.m_pData = pRetryDrawData;
@@ -2715,8 +2747,8 @@ void CGraphics_Threaded::RenderQuadContainerAsSpriteMultiple(int ContainerIndex,
 		Cmd.m_DrawData.m_Size = sizeof(DrawData);
 		Cmd.m_ArrayData.m_Size = sizeof(CCommandBuffer::SInstanceDataPositionScaleRotation) * static_cast<size_t>(DrawCount);
 		auto AllocatePayload = [&] {
-			void *pDrawData = m_pCommandBuffer->AllocData(sizeof(DrawData));
-			auto *pInstanceData = static_cast<CCommandBuffer::SInstanceDataPositionScaleRotation *>(m_pCommandBuffer->AllocData(Cmd.m_ArrayData.m_Size));
+			void *pDrawData = AllocCommandBufferData(sizeof(DrawData));
+			auto *pInstanceData = static_cast<CCommandBuffer::SInstanceDataPositionScaleRotation *>(AllocCommandBufferData(Cmd.m_ArrayData.m_Size));
 			if(pDrawData == nullptr || pInstanceData == nullptr)
 				return false;
 			mem_copy(pDrawData, &DrawData, sizeof(DrawData));
@@ -2763,19 +2795,7 @@ void CGraphics_Threaded::RenderQuadContainerAsSpriteMultiple(int ContainerIndex,
 void *CGraphics_Threaded::AllocCommandBufferData(size_t AllocSize)
 {
 	CCommandBuffer *pCommandBuffer = GetCommandBuffer(CCommandBuffer::CMD_DRAW);
-	void *pData = pCommandBuffer->AllocData(AllocSize);
-	if(pData == nullptr)
-	{
-		// A frame larger than the fixed arena is discarded. Chunked frame
-		// storage is only worth adding if real maps show this bound is too
-		// small.
-		DropCurrentFrame();
-		pCommandBuffer = GetCommandBuffer(CCommandBuffer::CMD_DRAW);
-
-		pData = pCommandBuffer->AllocData(AllocSize);
-		dbg_assert(pData, "graphics: failed to allocate data (size %" PRIzu ") for command buffer", AllocSize);
-	}
-	return pData;
+	return pCommandBuffer->AllocDataChunked(AllocSize);
 }
 
 void *CGraphics_Threaded::AllocReliableCommandBufferData(size_t AllocSize)

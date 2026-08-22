@@ -173,6 +173,16 @@ IGraphicsBackend::SFrameMailboxStats CGraphicsBackend_Threaded::GetFrameMailboxS
 	return m_CommandQueue.GetFrameMailboxStats();
 }
 
+SGpuTiming CGraphicsBackend_Threaded::GpuTiming() const
+{
+	return m_GpuTiming.Snapshot();
+}
+
+void CGraphicsBackend_Threaded::SetGpuTimingEnabled(bool Enabled)
+{
+	m_GpuTiming.m_Enabled.store(Enabled, std::memory_order_relaxed);
+}
+
 bool CGraphicsBackend_Threaded::RunBufferQueuedInternal(CCommandBuffer *pBuffer, bool WaitForCapacity)
 {
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
@@ -397,6 +407,7 @@ public:
 		CmdInit.m_pBufferMemoryUsage = &m_BufferMemoryUsage;
 		CmdInit.m_pStreamMemoryUsage = &m_StreamMemoryUsage;
 		CmdInit.m_pStagingMemoryUsage = &m_StagingMemoryUsage;
+		CmdInit.m_pGpuTiming = GpuTimingShared();
 		CmdInit.m_pGpuList = &m_GpuList;
 		CmdInit.m_pStorage = pStorage;
 		CmdInit.m_pCapabilities = &m_Capabilities;

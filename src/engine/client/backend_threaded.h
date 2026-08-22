@@ -17,6 +17,10 @@ private:
 	SGfxErrorContainer m_Error;
 	SGfxErrorContainer m_ProcessorError;
 	SGfxWarningContainer m_Warning;
+	SGpuTimingShared m_GpuTiming;
+
+protected:
+	SGpuTimingShared *GpuTimingShared() { return &m_GpuTiming; }
 
 public:
 	// Constructed on the main thread, the rest of the functions is run on the render thread.
@@ -36,6 +40,8 @@ public:
 	bool RunBufferQueued(CCommandBuffer *pBuffer, bool WaitForCapacity) override;
 	bool RunFramePacket(CCommandBuffer *pBuffer, bool WaitForCapacity) override;
 	SFrameMailboxStats GetFrameMailboxStats() const override;
+	SGpuTiming GpuTiming() const override;
+	void SetGpuTimingEnabled(bool Enabled) override;
 	void RunBufferSingleThreadedUnsafe(CCommandBuffer *pBuffer) override;
 	bool IsIdle() const override;
 	void WaitForIdle() override;

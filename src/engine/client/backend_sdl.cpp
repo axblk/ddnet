@@ -1310,6 +1310,7 @@ int CGraphicsBackend_SDL::Init(const char *pName, int *pScreen, int *pWidth, int
 		CmdGL.m_pBufferMemoryUsage = &m_BufferMemoryUsage;
 		CmdGL.m_pStreamMemoryUsage = &m_StreamMemoryUsage;
 		CmdGL.m_pStagingMemoryUsage = &m_StagingMemoryUsage;
+		CmdGL.m_pGpuTiming = GpuTimingShared();
 		CmdGL.m_pGpuList = &m_GpuList;
 		CmdGL.m_pStorage = pStorage;
 		CmdGL.m_pCapabilities = &m_Capabilities;

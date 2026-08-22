@@ -1035,6 +1035,8 @@ class CTextRender : public IEngineTextRender
 	SBufferContainerInfo m_DefaultTextContainerInfo;
 
 	std::chrono::nanoseconds m_CursorRenderTime;
+	bool m_TextRenderStatsEnabled = false;
+	CTextRenderStats m_TextRenderStats;
 
 	int GetFreeTextContainerIndex()
 	{
@@ -1494,6 +1496,18 @@ public:
 		return m_SelectionColor;
 	}
 
+	CTextRenderStats TextRenderStats() const override
+	{
+		return m_TextRenderStats;
+	}
+
+	void SetTextRenderStatsEnabled(bool Enabled) override
+	{
+		m_TextRenderStatsEnabled = Enabled;
+		if(Enabled)
+			m_TextRenderStats = {};
+	}
+
 	void TextEx(CTextCursor *pCursor, const char *pText, int Length = -1) override
 	{
 		const unsigned OldRenderFlags = m_RenderFlags;
@@ -1515,6 +1529,8 @@ public:
 
 	bool CreateTextContainer(STextContainerIndex &TextContainerIndex, CTextCursor *pCursor, const char *pText, int Length = -1) override
 	{
+		if(m_TextRenderStatsEnabled)
+			++m_TextRenderStats.m_ContainerCreates;
 		dbg_assert(!TextContainerIndex.Valid(), "Text container index was not cleared.");
 
 		TextContainerIndex.Reset();
@@ -1566,6 +1582,10 @@ public:
 
 	void AppendTextContainer(STextContainerIndex TextContainerIndex, CTextCursor *pCursor, const char *pText, int Length = -1) override
 	{
+		const std::chrono::nanoseconds LayoutStart = m_TextRenderStatsEnabled ? time_get_nanoseconds() : std::chrono::nanoseconds{};
+		const int PreviousGlyphCount = pCursor->m_GlyphCount;
+		if(m_TextRenderStatsEnabled)
+			++m_TextRenderStats.m_LayoutCalls;
 		STextContainer &TextContainer = GetTextContainer(TextContainerIndex);
 		str_append(TextContainer.m_aDebugText, pText);
 
@@ -2042,10 +2062,12 @@ public:
 
 				if(TextContainer.m_StringInfo.m_QuadBufferObjectIndex.IsValid() && (TextContainer.m_RenderFlags & TEXT_RENDER_FLAG_NO_AUTOMATIC_QUAD_UPLOAD) == 0)
 				{
-					if(Graphics()->RecreateBufferObject(TextContainer.m_StringInfo.m_QuadBufferObjectIndex, DataSize, pUploadData, TextContainer.m_SingleTimeUse ? IGraphics::EBufferObjectCreateFlags::BUFFER_OBJECT_CREATE_FLAGS_ONE_TIME_USE_BIT : 0) &&
-						Graphics()->IndicesNumRequiredNotify(TextContainer.m_StringInfo.m_vCharacterQuads.size() * 6))
+					if(Graphics()->RecreateBufferObject(TextContainer.m_StringInfo.m_QuadBufferObjectIndex, DataSize, pUploadData, TextContainer.m_SingleTimeUse ? IGraphics::EBufferObjectCreateFlags::BUFFER_OBJECT_CREATE_FLAGS_ONE_TIME_USE_BIT : 0))
 					{
-						TextContainer.m_StringInfo.m_UploadedQuadCount = TextContainer.m_StringInfo.m_vCharacterQuads.size();
+						if(m_TextRenderStatsEnabled)
+							m_TextRenderStats.m_UploadBytes += DataSize;
+						if(Graphics()->IndicesNumRequiredNotify(TextContainer.m_StringInfo.m_vCharacterQuads.size() * 6))
+							TextContainer.m_StringInfo.m_UploadedQuadCount = TextContainer.m_StringInfo.m_vCharacterQuads.size();
 					}
 				}
 			}
@@ -2128,6 +2150,11 @@ public:
 		pCursor->m_LineCount = LineCount;
 
 		TextContainer.m_BoundingBox = pCursor->BoundingBox();
+		if(m_TextRenderStatsEnabled)
+		{
+			m_TextRenderStats.m_GlyphsLaidOut += pCursor->m_GlyphCount - PreviousGlyphCount;
+			m_TextRenderStats.m_LayoutTimeNanoseconds += (time_get_nanoseconds() - LayoutStart).count();
+		}
 	}
 
 	bool CreateOrAppendTextContainer(STextContainerIndex &TextContainerIndex, CTextCursor *pCursor, const char *pText, int Length = -1) override
@@ -2153,6 +2180,8 @@ public:
 
 	void RecreateTextContainerSoft(STextContainerIndex &TextContainerIndex, CTextCursor *pCursor, const char *pText, int Length = -1) override
 	{
+		if(m_TextRenderStatsEnabled)
+			++m_TextRenderStats.m_ContainerSoftRecreates;
 		STextContainer &TextContainer = GetTextContainer(TextContainerIndex);
 		TextContainer.m_StringInfo.m_vCharacterQuads.clear();
 		TextContainer.m_aDebugText[0] = '\0';
@@ -2164,6 +2193,8 @@ public:
 	{
 		if(!TextContainerIndex.Valid())
 			return;
+		if(m_TextRenderStatsEnabled)
+			++m_TextRenderStats.m_ContainerDeletes;
 
 		STextContainer &TextContainer = GetTextContainer(TextContainerIndex);
 		if(Graphics()->IsTextBufferingEnabled())
@@ -2196,6 +2227,8 @@ public:
 			}
 			if(!BufferReady)
 				return;
+			if(m_TextRenderStatsEnabled)
+				m_TextRenderStats.m_UploadBytes += DataSize;
 			if(!Graphics()->IndicesNumRequiredNotify(TextContainer.m_StringInfo.m_vCharacterQuads.size() * 6))
 				return;
 
@@ -2213,6 +2246,8 @@ public:
 
 	void RenderTextContainer(STextContainerIndex TextContainerIndex, const ColorRGBA &TextColor, const ColorRGBA &TextOutlineColor) override
 	{
+		if(m_TextRenderStatsEnabled)
+			++m_TextRenderStats.m_ContainerRenders;
 		const STextContainer &TextContainer = GetTextContainer(TextContainerIndex);
 
 		if(!TextContainer.m_StringInfo.m_vCharacterQuads.empty())

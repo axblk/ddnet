@@ -119,6 +119,7 @@ public:
 		std::atomic<uint64_t> *m_pBufferMemoryUsage;
 		std::atomic<uint64_t> *m_pStreamMemoryUsage;
 		std::atomic<uint64_t> *m_pStagingMemoryUsage;
+		SGpuTimingShared *m_pGpuTiming = nullptr;
 
 		TTwGraphicsGpuList *m_pGpuList;
 

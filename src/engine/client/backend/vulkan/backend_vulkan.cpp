@@ -45,6 +45,14 @@
 
 namespace
 {
+	constexpr uint64_t TimestampTickDelta(uint64_t Start, uint64_t End, uint32_t ValidBits)
+	{
+		return ValidBits == 64 ? End - Start : (End - Start) & ((uint64_t{1} << ValidBits) - 1);
+	}
+
+	static_assert(TimestampTickDelta(100, 150, 64) == 50);
+	static_assert(TimestampTickDelta(250, 10, 8) == 16);
+
 	enum EVulkanBackendBlendModes
 	{
 		VULKAN_BACKEND_BLEND_MODE_ALPHA = 0,
@@ -871,6 +879,7 @@ class CCommandProcessorFragment_Vulkan : public CCommandProcessorFragment_Render
 	std::atomic<uint64_t> *m_pBufferMemoryUsage = nullptr;
 	std::atomic<uint64_t> *m_pStreamMemoryUsage = nullptr;
 	std::atomic<uint64_t> *m_pStagingMemoryUsage = nullptr;
+	SGpuTimingShared *m_pGpuTiming = nullptr;
 
 	TTwGraphicsGpuList *m_pGpuList;
 
@@ -944,6 +953,12 @@ private:
 	VkSemaphore m_AcquireImageSemaphore;
 
 	std::vector<VkFence> m_vQueueSubmitFences;
+	VkQueryPool m_GpuTimestampQueryPool = VK_NULL_HANDLE;
+	std::vector<bool> m_vGpuTimestampPending;
+	float m_GpuTimestampPeriod = 0.0f;
+	uint32_t m_GpuTimestampValidBits = 0;
+	bool m_GpuTimestampRecording = false;
+	bool m_GpuTimestampNotReadyWarningLogged = false;
 
 	uint64_t m_CurFrame = 0;
 	std::vector<uint64_t> m_vImageLastFrameCheck;
@@ -1257,6 +1272,7 @@ protected:
 		// the readback records into a buffer of its own.
 		if(!m_FrameCommandsRecording)
 			return RestartReadbackCommandBuffer(CommandBuffer);
+		const bool HasGpuTimestamp = EndGpuTimestamp(CommandBuffer);
 		if(vkEndCommandBuffer(CommandBuffer) != VK_SUCCESS)
 		{
 			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Ending the pending readback command buffer failed.");
@@ -1300,12 +1316,16 @@ protected:
 			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Submitting pending commands for readback failed.", CheckVulkanCriticalError(SubmitResult));
 			return false;
 		}
+		if(HasGpuTimestamp)
+			m_vGpuTimestampPending[m_CurImageIndex] = true;
 		m_AcquireSemaphorePending = false;
 		if(vkWaitForFences(m_VKDevice, 1, &Fence, VK_TRUE, std::numeric_limits<uint64_t>::max()) != VK_SUCCESS)
 		{
 			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Waiting for pending readback commands failed.");
 			return false;
 		}
+		if(!CollectGpuTimestamp(m_CurImageIndex))
+			return false;
 		ClearFrameMemoryUsage();
 
 		return RestartReadbackCommandBuffer(CommandBuffer);
@@ -2285,6 +2305,69 @@ protected:
 		return true;
 	}
 
+	[[nodiscard]] bool CollectGpuTimestamp(uint32_t ImageIndex)
+	{
+		if(m_GpuTimestampQueryPool == VK_NULL_HANDLE || !m_vGpuTimestampPending[ImageIndex])
+			return true;
+		m_vGpuTimestampPending[ImageIndex] = false;
+
+		std::array<uint64_t, 2> aTimestamps;
+		const VkResult Result = vkGetQueryPoolResults(
+			m_VKDevice,
+			m_GpuTimestampQueryPool,
+			ImageIndex * 2,
+			aTimestamps.size(),
+			sizeof(aTimestamps),
+			aTimestamps.data(),
+			sizeof(aTimestamps[0]),
+			VK_QUERY_RESULT_64_BIT);
+		if(Result == VK_NOT_READY)
+		{
+			if(!m_GpuTimestampNotReadyWarningLogged)
+			{
+				log_warn("gfx/vulkan", "GPU timestamp query was not ready after its frame fence completed.");
+				m_GpuTimestampNotReadyWarningLogged = true;
+			}
+			return true;
+		}
+		if(Result != VK_SUCCESS)
+		{
+			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Reading GPU timestamp queries failed.", CheckVulkanCriticalError(Result));
+			return false;
+		}
+
+		const uint64_t DeltaTicks = TimestampTickDelta(aTimestamps[0], aTimestamps[1], m_GpuTimestampValidBits);
+		const long double Nanoseconds = static_cast<long double>(DeltaTicks) * m_GpuTimestampPeriod;
+		const uint64_t TimeNanoseconds = Nanoseconds >= static_cast<long double>(std::numeric_limits<uint64_t>::max()) ? std::numeric_limits<uint64_t>::max() : static_cast<uint64_t>(Nanoseconds + 0.5L);
+		m_pGpuTiming->Publish(TimeNanoseconds);
+		return true;
+	}
+
+	[[nodiscard]] bool BeginGpuTimestamp()
+	{
+		m_GpuTimestampRecording = false;
+		if(m_GpuTimestampQueryPool == VK_NULL_HANDLE || !m_pGpuTiming->m_Enabled.load(std::memory_order_relaxed))
+			return true;
+
+		VkCommandBuffer *pMemoryCommandBuffer;
+		if(!GetMemoryCommandBuffer(pMemoryCommandBuffer))
+			return false;
+		const uint32_t FirstQuery = m_CurImageIndex * 2;
+		vkCmdResetQueryPool(*pMemoryCommandBuffer, m_GpuTimestampQueryPool, FirstQuery, 2);
+		vkCmdWriteTimestamp(*pMemoryCommandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_GpuTimestampQueryPool, FirstQuery);
+		m_GpuTimestampRecording = true;
+		return true;
+	}
+
+	bool EndGpuTimestamp(VkCommandBuffer CommandBuffer)
+	{
+		if(!m_GpuTimestampRecording)
+			return false;
+		vkCmdWriteTimestamp(CommandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_GpuTimestampQueryPool, m_CurImageIndex * 2 + 1);
+		m_GpuTimestampRecording = false;
+		return true;
+	}
+
 	/**
 	 * Ends the recorded command buffer and submits it. Everything that needs a
 	 * swapchain image lives in @link WaitFrame @endlink instead, so a frame that
@@ -2302,6 +2385,7 @@ protected:
 		// Stream allocations back every recorded pass segment and are reset only at submission.
 		UploadNonFlushedBuffers<true>();
 		auto &CommandBuffer = GetMainGraphicCommandBuffer();
+		const bool HasGpuTimestamp = EndGpuTimestamp(CommandBuffer);
 
 		if(vkEndCommandBuffer(CommandBuffer) != VK_SUCCESS)
 		{
@@ -2355,6 +2439,8 @@ protected:
 				return false;
 			}
 		}
+		if(QueueSubmitRes == VK_SUCCESS && HasGpuTimestamp)
+			m_vGpuTimestampPending[m_CurImageIndex] = true;
 		m_AcquireSemaphorePending = false;
 		m_FrameCommandsRecording = false;
 
@@ -2461,7 +2547,14 @@ protected:
 	 */
 	[[nodiscard]] bool BeginFrameCommands()
 	{
-		vkWaitForFences(m_VKDevice, 1, &m_vQueueSubmitFences[m_CurImageIndex], VK_TRUE, std::numeric_limits<uint64_t>::max());
+		const VkResult WaitResult = vkWaitForFences(m_VKDevice, 1, &m_vQueueSubmitFences[m_CurImageIndex], VK_TRUE, std::numeric_limits<uint64_t>::max());
+		if(WaitResult != VK_SUCCESS)
+		{
+			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Waiting for the previous frame failed.", CheckVulkanCriticalError(WaitResult));
+			return false;
+		}
+		if(!CollectGpuTimestamp(m_CurImageIndex))
+			return false;
 
 		// next frame
 		m_CurFrame++;
@@ -2496,6 +2589,8 @@ protected:
 			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Command buffer cannot be filled anymore.");
 			return false;
 		}
+		if(!BeginGpuTimestamp())
+			return false;
 		m_FrameCommandsRecording = true;
 		return true;
 	}
@@ -4034,6 +4129,7 @@ public:
 
 			m_MinUniformAlign = DeviceProp.limits.minUniformBufferOffsetAlignment;
 			m_MaxMultiSample = DeviceProp.limits.framebufferColorSampleCounts;
+			m_GpuTimestampPeriod = DeviceProp.limits.timestampPeriod;
 
 			if(IsVerbose())
 			{
@@ -4078,6 +4174,7 @@ public:
 
 		m_VKGPU = CurDevice;
 		m_VKGraphicsQueueIndex = QueueNodeIndex;
+		m_GpuTimestampValidBits = vQueuePropList[QueueNodeIndex].timestampValidBits;
 		return true;
 	}
 
@@ -5557,6 +5654,38 @@ public:
 		m_vQueueSubmitFences.clear();
 	}
 
+	void CreateGpuTimestampQueries()
+	{
+		m_vGpuTimestampPending.assign(m_SwapChainImageCount, false);
+		m_GpuTimestampRecording = false;
+		m_GpuTimestampNotReadyWarningLogged = false;
+		if(m_pGpuTiming == nullptr || m_OffscreenOnly || m_GpuTimestampValidBits == 0 || !(m_GpuTimestampPeriod > 0.0f))
+			return;
+
+		VkQueryPoolCreateInfo CreateInfo{};
+		CreateInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+		CreateInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+		CreateInfo.queryCount = m_SwapChainImageCount * 2;
+		const VkResult Result = vkCreateQueryPool(m_VKDevice, &CreateInfo, nullptr, &m_GpuTimestampQueryPool);
+		if(Result != VK_SUCCESS)
+		{
+			log_warn("gfx/vulkan", "Creating GPU timestamp query pool failed (%d).", static_cast<int>(Result));
+			return;
+		}
+		m_pGpuTiming->m_Supported.store(true, std::memory_order_relaxed);
+	}
+
+	void DestroyGpuTimestampQueries()
+	{
+		if(m_GpuTimestampQueryPool != VK_NULL_HANDLE)
+			vkDestroyQueryPool(m_VKDevice, m_GpuTimestampQueryPool, nullptr);
+		m_GpuTimestampQueryPool = VK_NULL_HANDLE;
+		m_vGpuTimestampPending.clear();
+		m_GpuTimestampRecording = false;
+		if(m_pGpuTiming != nullptr)
+			m_pGpuTiming->m_Supported.store(false, std::memory_order_relaxed);
+	}
+
 	void DestroyBufferOfFrame(size_t ImageIndex, SFrameBuffers &Buffer)
 	{
 		if(Buffer.m_BufferMem.m_Mem != VK_NULL_HANDLE)
@@ -5674,6 +5803,7 @@ public:
 			DeletePresentedImageDataImage();
 		}
 
+		DestroyGpuTimestampQueries();
 		DestroySyncObjects();
 		DestroyCommandBuffer();
 
@@ -6336,6 +6466,7 @@ public:
 
 		if(!CreateSyncObjects())
 			return -1;
+		CreateGpuTimestampQueries();
 
 		if(IsFirstInitialization)
 		{
@@ -6807,6 +6938,13 @@ public:
 	{
 		if(m_OffscreenOnly != (pCommand->m_BackendMode == EGraphicsBackendMode::OFFSCREEN))
 			return false;
+		m_pGpuTiming = pCommand->m_pGpuTiming;
+		if(m_pGpuTiming != nullptr)
+		{
+			m_pGpuTiming->m_Supported.store(false, std::memory_order_relaxed);
+			m_pGpuTiming->m_TimeNanoseconds.store(0, std::memory_order_relaxed);
+			m_pGpuTiming->m_Sample.store(0, std::memory_order_relaxed);
+		}
 		m_TextureHandles.Clear();
 		m_TextureBindingHandles.Clear();
 		m_vTextureBindings.clear();

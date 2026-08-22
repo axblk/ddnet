@@ -402,6 +402,49 @@ public:
 	};
 	virtual SFrameMailboxStats FrameMailboxStats() const = 0;
 
+	class CFrameRenderStats
+	{
+	public:
+		uint64_t m_Commands = 0;
+		uint64_t m_ResourceCommands = 0;
+		uint64_t m_DrawCommands = 0;
+		uint64_t m_DrawCalls = 0;
+		uint64_t m_Triangles = 0;
+		uint64_t m_Instances = 0;
+		uint64_t m_RenderPasses = 0;
+		uint64_t m_BufferCreates = 0;
+		uint64_t m_BufferRecreates = 0;
+		uint64_t m_BufferUpdates = 0;
+		uint64_t m_TextureCreates = 0;
+		uint64_t m_TextureUpdates = 0;
+		uint64_t m_UploadBytes = 0;
+		uint64_t m_StreamedBytes = 0;
+		uint64_t m_GpuTimeNanoseconds = 0;
+		uint64_t m_GpuSample = 0;
+		bool m_GpuTimingSupported = false;
+
+		CFrameRenderStats &operator+=(const CFrameRenderStats &Other)
+		{
+			m_Commands += Other.m_Commands;
+			m_ResourceCommands += Other.m_ResourceCommands;
+			m_DrawCommands += Other.m_DrawCommands;
+			m_DrawCalls += Other.m_DrawCalls;
+			m_Triangles += Other.m_Triangles;
+			m_Instances += Other.m_Instances;
+			m_RenderPasses += Other.m_RenderPasses;
+			m_BufferCreates += Other.m_BufferCreates;
+			m_BufferRecreates += Other.m_BufferRecreates;
+			m_BufferUpdates += Other.m_BufferUpdates;
+			m_TextureCreates += Other.m_TextureCreates;
+			m_TextureUpdates += Other.m_TextureUpdates;
+			m_UploadBytes += Other.m_UploadBytes;
+			m_StreamedBytes += Other.m_StreamedBytes;
+			return *this;
+		}
+	};
+	virtual CFrameRenderStats FrameRenderStats() const = 0;
+	virtual void SetRenderStatsEnabled(bool Enabled) = 0;
+
 	virtual const TTwGraphicsGpuList &GetGpus() const = 0;
 
 	virtual bool LoadPng(CImageInfo &Image, const char *pFilename, int StorageType) = 0;

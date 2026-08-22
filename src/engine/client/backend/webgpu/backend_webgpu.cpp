@@ -21,6 +21,7 @@
 #include <atomic>
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -95,6 +96,9 @@ namespace
 	constexpr uint64_t STREAM_BUFFER_SIZE = 4 * 1024 * 1024;
 	constexpr uint64_t UNIFORM_BUFFER_SIZE = 1024 * 1024;
 	constexpr size_t UPLOAD_BUFFER_SLOT_COUNT = 3;
+	constexpr size_t GPU_TIMESTAMP_SLOT_COUNT = 4;
+	constexpr uint64_t GPU_TIMESTAMP_SIZE = 2 * sizeof(uint64_t);
+	constexpr uint64_t GPU_TIMESTAMP_RESOLVE_STRIDE = 256;
 	constexpr size_t BLEND_MODE_COUNT = 3;
 	constexpr size_t PRIMITIVE_PIPELINE_COUNT = 2 * BLEND_MODE_COUNT * 2;
 	constexpr size_t BUFFERED_PIPELINE_COUNT = BLEND_MODE_COUNT * 2;
@@ -263,6 +267,13 @@ namespace
 			WGPURenderPipeline m_Blur = nullptr;
 			WGPURenderPipeline m_PlanarYuv = nullptr;
 		};
+		struct SGpuTimestampSlot
+		{
+			WGPUBuffer m_ReadbackBuffer = nullptr;
+			std::shared_ptr<SMapResult> m_pMapResult;
+			bool m_InFlight = false;
+			bool m_Publish = false;
+		};
 
 		SWebGpuNativeWindow m_NativeWindow;
 		EWebGpuBackendType m_BackendType;
@@ -279,6 +290,9 @@ namespace
 		size_t m_SurfaceMultisampleMemorySize = 0;
 		WGPUCommandEncoder m_CommandEncoder = nullptr;
 		WGPURenderPassEncoder m_RenderPass = nullptr;
+		WGPUQuerySet m_GpuTimestampQuerySet = nullptr;
+		WGPUBuffer m_GpuTimestampResolveBuffer = nullptr;
+		std::array<SGpuTimestampSlot, GPU_TIMESTAMP_SLOT_COUNT> m_aGpuTimestampSlots;
 		std::array<SQueueResult, UPLOAD_BUFFER_SLOT_COUNT> m_aUploadBufferResults;
 		WGPUShaderModule m_PrimitiveShader = nullptr;
 		WGPUBindGroupLayout m_UniformBindGroupLayout = nullptr;
@@ -324,6 +338,8 @@ namespace
 		uint64_t m_StreamOffset = 0;
 		uint64_t m_UniformOffset = 0;
 		size_t m_UploadBufferSlot = 0;
+		float m_GpuTimestampPeriod = 0.0f;
+		int m_GpuTimestampActiveSlot = -1;
 		IGraphics::CTextureHandle m_RenderTarget;
 		WGPULoadOp m_RenderPassLoadOp = WGPULoadOp_Load;
 		WGPUColor m_RenderPassClearColor = WGPU_COLOR_INIT;
@@ -337,6 +353,9 @@ namespace
 		bool m_SurfaceSuboptimal = false;
 		bool m_DeviceLost = false;
 		bool m_PresentedOnce = false;
+		bool m_GpuTimestampSupported = false;
+		bool m_GpuTimestampResourcesFailed = false;
+		bool m_GpuTimestampActiveSubmitted = false;
 		std::atomic<bool> m_UncapturedError = false;
 		std::string m_ErrorMessage;
 		SRequestAdapterResult m_AdapterResult;
@@ -359,6 +378,7 @@ namespace
 		std::atomic<uint64_t> *m_pTextureMemoryUsage = nullptr;
 		std::atomic<uint64_t> *m_pBufferMemoryUsage = nullptr;
 		std::atomic<uint64_t> *m_pStreamMemoryUsage = nullptr;
+		SGpuTimingShared *m_pGpuTiming = nullptr;
 
 		static void AdapterCallback(WGPURequestAdapterStatus Status, WGPUAdapter Adapter, WGPUStringView Message, void *pUserdata1, void *)
 		{
@@ -1883,6 +1903,125 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			return true;
 		}
 
+		void DestroyGpuTimestampResources()
+		{
+			for(auto &Slot : m_aGpuTimestampSlots)
+			{
+				if(Slot.m_ReadbackBuffer != nullptr)
+				{
+					wgpuBufferDestroy(Slot.m_ReadbackBuffer);
+					wgpuBufferRelease(Slot.m_ReadbackBuffer);
+				}
+				Slot = {};
+			}
+			if(m_GpuTimestampResolveBuffer != nullptr)
+			{
+				wgpuBufferDestroy(m_GpuTimestampResolveBuffer);
+				wgpuBufferRelease(m_GpuTimestampResolveBuffer);
+				m_GpuTimestampResolveBuffer = nullptr;
+			}
+			if(m_GpuTimestampQuerySet != nullptr)
+			{
+				wgpuQuerySetRelease(m_GpuTimestampQuerySet);
+				m_GpuTimestampQuerySet = nullptr;
+			}
+			m_GpuTimestampActiveSlot = -1;
+			m_GpuTimestampActiveSubmitted = false;
+		}
+
+		bool EnsureGpuTimestampResources()
+		{
+			if(m_GpuTimestampQuerySet != nullptr)
+				return true;
+			if(!m_GpuTimestampSupported || m_GpuTimestampResourcesFailed)
+				return false;
+
+			WGPUQuerySetDescriptor QuerySetDescriptor = WGPU_QUERY_SET_DESCRIPTOR_INIT;
+			QuerySetDescriptor.label = StringView("DDNet WebGPU frame timestamps");
+			QuerySetDescriptor.type = WGPUQueryType_Timestamp;
+			QuerySetDescriptor.count = GPU_TIMESTAMP_SLOT_COUNT * 2;
+			m_GpuTimestampQuerySet = wgpuDeviceCreateQuerySet(m_Device, &QuerySetDescriptor);
+
+			WGPUBufferDescriptor BufferDescriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+			BufferDescriptor.label = StringView("DDNet WebGPU timestamp resolve buffer");
+			BufferDescriptor.size = GPU_TIMESTAMP_SLOT_COUNT * GPU_TIMESTAMP_RESOLVE_STRIDE;
+			BufferDescriptor.usage = WGPUBufferUsage_QueryResolve | WGPUBufferUsage_CopySrc;
+			m_GpuTimestampResolveBuffer = wgpuDeviceCreateBuffer(m_Device, &BufferDescriptor);
+			for(auto &Slot : m_aGpuTimestampSlots)
+			{
+				BufferDescriptor.label = StringView("DDNet WebGPU timestamp readback buffer");
+				BufferDescriptor.size = GPU_TIMESTAMP_SIZE;
+				BufferDescriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+				Slot.m_ReadbackBuffer = wgpuDeviceCreateBuffer(m_Device, &BufferDescriptor);
+				if(Slot.m_ReadbackBuffer == nullptr)
+					break;
+			}
+			if(m_GpuTimestampQuerySet != nullptr && m_GpuTimestampResolveBuffer != nullptr && std::ranges::all_of(m_aGpuTimestampSlots, [](const SGpuTimestampSlot &Slot) { return Slot.m_ReadbackBuffer != nullptr; }))
+				return true;
+
+			DestroyGpuTimestampResources();
+			m_GpuTimestampResourcesFailed = true;
+			m_GpuTimestampSupported = false;
+			m_pGpuTiming->m_Supported.store(false, std::memory_order_relaxed);
+			log_warn("gfx/webgpu", "GPU timestamp resources are unavailable; continuing without GPU timing");
+			return false;
+		}
+
+		void CollectGpuTimestampResults()
+		{
+			for(auto &Slot : m_aGpuTimestampSlots)
+			{
+				if(!Slot.m_InFlight || Slot.m_pMapResult == nullptr || !Slot.m_pMapResult->m_Done)
+					continue;
+				if(Slot.m_pMapResult->m_Status == WGPUMapAsyncStatus_Success)
+				{
+					const auto *pMappedData = static_cast<const uint8_t *>(wgpuBufferGetConstMappedRange(Slot.m_ReadbackBuffer, 0, GPU_TIMESTAMP_SIZE));
+					if(pMappedData != nullptr && Slot.m_Publish)
+					{
+						uint64_t Start;
+						uint64_t End;
+						std::memcpy(&Start, pMappedData, sizeof(Start));
+						std::memcpy(&End, pMappedData + sizeof(Start), sizeof(End));
+						const double Duration = End >= Start ? static_cast<double>(End - Start) * m_GpuTimestampPeriod : -1.0;
+						if(Duration >= 0.0 && std::isfinite(Duration) && Duration <= std::numeric_limits<uint64_t>::max())
+							m_pGpuTiming->Publish(static_cast<uint64_t>(Duration + 0.5));
+					}
+					wgpuBufferUnmap(Slot.m_ReadbackBuffer);
+				}
+				Slot.m_pMapResult.reset();
+				Slot.m_InFlight = false;
+				Slot.m_Publish = false;
+			}
+		}
+
+		void BeginGpuTimestamp()
+		{
+			if(m_GpuTimestampActiveSlot >= 0 || !m_GpuTimestampSupported || m_pGpuTiming == nullptr || !m_pGpuTiming->m_Enabled.load(std::memory_order_relaxed) || !EnsureGpuTimestampResources())
+				return;
+			for(size_t i = 0; i < m_aGpuTimestampSlots.size(); ++i)
+			{
+				if(m_aGpuTimestampSlots[i].m_InFlight)
+					continue;
+				m_GpuTimestampActiveSlot = static_cast<int>(i);
+				m_GpuTimestampActiveSubmitted = false;
+				wgpuCommandEncoderWriteTimestamp(m_CommandEncoder, m_GpuTimestampQuerySet, static_cast<uint32_t>(i * 2));
+				return;
+			}
+		}
+
+		void MapGpuTimestampSlot(int SlotIndex, bool Publish)
+		{
+			auto &Slot = m_aGpuTimestampSlots[SlotIndex];
+			Slot.m_pMapResult = std::make_shared<SMapResult>();
+			Slot.m_InFlight = true;
+			Slot.m_Publish = Publish;
+			WGPUBufferMapCallbackInfo CallbackInfo = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+			CallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
+			CallbackInfo.callback = MapCallback;
+			CallbackInfo.userdata1 = new std::shared_ptr<SMapResult>(Slot.m_pMapResult);
+			wgpuBufferMapAsync(Slot.m_ReadbackBuffer, WGPUMapMode_Read, 0, GPU_TIMESTAMP_SIZE, CallbackInfo);
+		}
+
 		bool EnsureCommandEncoder()
 		{
 			if(m_CommandEncoder != nullptr)
@@ -1890,6 +2029,8 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			WGPUCommandEncoderDescriptor Descriptor = WGPU_COMMAND_ENCODER_DESCRIPTOR_INIT;
 			Descriptor.label = StringView("DDNet WebGPU frame encoder");
 			m_CommandEncoder = wgpuDeviceCreateCommandEncoder(m_Device, &Descriptor);
+			if(m_CommandEncoder != nullptr)
+				BeginGpuTimestamp();
 			return m_CommandEncoder != nullptr;
 		}
 
@@ -2554,11 +2695,22 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			m_RenderPass = nullptr;
 		}
 
-		bool SubmitCommands()
+		bool SubmitCommands(bool EndsFrame = false, bool PublishGpuTimestamp = true)
 		{
 			EndRenderPass();
+			const int GpuTimestampSlot = EndsFrame ? m_GpuTimestampActiveSlot : -1;
+			if(GpuTimestampSlot >= 0 && m_CommandEncoder == nullptr && !EnsureCommandEncoder())
+				return false;
 			if(m_CommandEncoder == nullptr)
 				return true;
+			if(GpuTimestampSlot >= 0)
+			{
+				const uint32_t FirstQuery = static_cast<uint32_t>(GpuTimestampSlot * 2);
+				const uint64_t ResolveOffset = GpuTimestampSlot * GPU_TIMESTAMP_RESOLVE_STRIDE;
+				wgpuCommandEncoderWriteTimestamp(m_CommandEncoder, m_GpuTimestampQuerySet, FirstQuery + 1);
+				wgpuCommandEncoderResolveQuerySet(m_CommandEncoder, m_GpuTimestampQuerySet, FirstQuery, 2, m_GpuTimestampResolveBuffer, ResolveOffset);
+				wgpuCommandEncoderCopyBufferToBuffer(m_CommandEncoder, m_GpuTimestampResolveBuffer, ResolveOffset, m_aGpuTimestampSlots[GpuTimestampSlot].m_ReadbackBuffer, 0, GPU_TIMESTAMP_SIZE);
+			}
 			WGPUCommandBuffer CommandBuffer = wgpuCommandEncoderFinish(m_CommandEncoder, nullptr);
 			wgpuCommandEncoderRelease(m_CommandEncoder);
 			m_CommandEncoder = nullptr;
@@ -2576,6 +2728,14 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			wgpuCommandBufferRelease(CommandBuffer);
 			if(UsesUploadBuffers && !AdvanceUploadBufferSlot())
 				return false;
+			if(m_GpuTimestampActiveSlot >= 0)
+				m_GpuTimestampActiveSubmitted = true;
+			if(GpuTimestampSlot >= 0)
+			{
+				MapGpuTimestampSlot(GpuTimestampSlot, PublishGpuTimestamp);
+				m_GpuTimestampActiveSlot = -1;
+				m_GpuTimestampActiveSubmitted = false;
+			}
 			m_StreamOffset = 0;
 			m_UniformOffset = 0;
 			return true;
@@ -2704,11 +2864,26 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 				wgpuCommandEncoderRelease(m_CommandEncoder);
 				m_CommandEncoder = nullptr;
 			}
+			m_StreamOffset = 0;
+			m_UniformOffset = 0;
+			if(m_GpuTimestampActiveSlot >= 0)
+			{
+				const int GpuTimestampSlot = m_GpuTimestampActiveSlot;
+				if(m_GpuTimestampActiveSubmitted)
+				{
+					if(!SubmitCommands(true, false))
+					{
+						m_aGpuTimestampSlots[GpuTimestampSlot].m_InFlight = true;
+						m_GpuTimestampActiveSlot = -1;
+						m_GpuTimestampActiveSubmitted = false;
+					}
+				}
+				else
+					m_GpuTimestampActiveSlot = -1;
+			}
 			ReleaseFrame();
 			ReleaseMultisampleTarget(m_SurfaceMultisampleTexture, m_SurfaceMultisampleView, m_SurfaceMultisampleMemorySize);
 			m_SurfaceSuboptimal = false;
-			m_StreamOffset = 0;
-			m_UniformOffset = 0;
 		}
 
 		bool RecreateSurface()
@@ -2821,7 +2996,7 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 		{
 			if(m_SurfaceTexture.texture == nullptr)
 			{
-				if(!SubmitCommands())
+				if(!SubmitCommands(true))
 					return false;
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 				emscripten_sleep(0);
@@ -2832,7 +3007,7 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 				m_RenderPassLoadOp = WGPULoadOp_Clear;
 				return ApplyMultiSampling();
 			}
-			if(!SubmitCommands())
+			if(!SubmitCommands(true))
 			{
 				ReleaseFrame();
 				return false;
@@ -2877,9 +3052,16 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			m_pTextureMemoryUsage = pCommand->m_pTextureMemoryUsage;
 			m_pBufferMemoryUsage = pCommand->m_pBufferMemoryUsage;
 			m_pStreamMemoryUsage = pCommand->m_pStreamMemoryUsage;
+			m_pGpuTiming = pCommand->m_pGpuTiming;
 			m_pTextureMemoryUsage->store(0, std::memory_order_relaxed);
 			m_pBufferMemoryUsage->store(0, std::memory_order_relaxed);
 			m_pStreamMemoryUsage->store(0, std::memory_order_relaxed);
+			if(m_pGpuTiming != nullptr)
+			{
+				m_pGpuTiming->m_Supported.store(false, std::memory_order_relaxed);
+				m_pGpuTiming->m_TimeNanoseconds.store(0, std::memory_order_relaxed);
+				m_pGpuTiming->m_Sample.store(0, std::memory_order_relaxed);
+			}
 			m_SurfaceWidth = pCommand->m_Width;
 			m_SurfaceHeight = pCommand->m_Height;
 			m_MultiSamplingCount = pCommand->m_RequestedMultiSamplingCount >= 2 ? 4 : 0;
@@ -2999,6 +3181,17 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			m_DeviceResult = {};
 			WGPUDeviceDescriptor DeviceDescriptor = WGPU_DEVICE_DESCRIPTOR_INIT;
 			DeviceDescriptor.label = StringView("DDNet experimental WebGPU device");
+#if !defined(CONF_PLATFORM_EMSCRIPTEN)
+			const std::array GpuTimestampFeatures{
+				WGPUFeatureName_TimestampQuery,
+				static_cast<WGPUFeatureName>(WGPUNativeFeature_TimestampQueryInsideEncoders)};
+			m_GpuTimestampSupported = m_pGpuTiming != nullptr && std::ranges::all_of(GpuTimestampFeatures, [&](WGPUFeatureName Feature) { return wgpuAdapterHasFeature(m_Adapter, Feature); });
+			if(m_GpuTimestampSupported)
+			{
+				DeviceDescriptor.requiredFeatureCount = GpuTimestampFeatures.size();
+				DeviceDescriptor.requiredFeatures = GpuTimestampFeatures.data();
+			}
+#endif
 			DeviceDescriptor.deviceLostCallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
 			DeviceDescriptor.deviceLostCallbackInfo.callback = DeviceLostCallback;
 			DeviceDescriptor.deviceLostCallbackInfo.userdata1 = this;
@@ -3019,6 +3212,15 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			}
 			m_Device = m_DeviceResult.m_Device;
 			m_Queue = wgpuDeviceGetQueue(m_Device);
+			if(m_GpuTimestampSupported && m_Queue != nullptr)
+			{
+#if !defined(CONF_PLATFORM_EMSCRIPTEN)
+				m_GpuTimestampPeriod = wgpuQueueGetTimestampPeriod(m_Queue);
+#endif
+				m_GpuTimestampSupported = m_GpuTimestampPeriod > 0.0f && std::isfinite(m_GpuTimestampPeriod);
+			}
+			if(m_pGpuTiming != nullptr)
+				m_pGpuTiming->m_Supported.store(m_GpuTimestampSupported, std::memory_order_relaxed);
 			if(m_Queue == nullptr || (m_BackendMode == EGraphicsBackendMode::PRESENTATION && !QuerySurfaceConfiguration()))
 				return false;
 			if(m_BackendMode == EGraphicsBackendMode::PRESENTATION && !pCommand->m_VSync)
@@ -3065,6 +3267,10 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 					ProcessUntilDone(Result, "wait for WebGPU upload buffers during cleanup");
 				Result.m_Pending = false;
 			}
+			CollectGpuTimestampResults();
+			DestroyGpuTimestampResources();
+			if(m_pGpuTiming != nullptr)
+				m_pGpuTiming->m_Supported.store(false, std::memory_order_relaxed);
 			DestroyDrawResources();
 			if(m_SurfaceConfigured && m_Surface != nullptr)
 				wgpuSurfaceUnconfigure(m_Surface);
@@ -3101,7 +3307,10 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 		ERunCommandReturnTypes RunCommand(const CCommandBuffer::SCommand *pBaseCommand) override
 		{
 			if(m_Instance != nullptr && pBaseCommand->m_Cmd == CCommandBuffer::CMD_SWAP)
+			{
 				wgpuInstanceProcessEvents(m_Instance);
+				CollectGpuTimestampResults();
+			}
 			if(m_UncapturedError.exchange(false, std::memory_order_acq_rel) && m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
 			{
 				log_error("gfx/webgpu", "uncaptured WebGPU validation or device error");

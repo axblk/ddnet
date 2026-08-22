@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <type_traits>
@@ -26,6 +27,33 @@ constexpr size_t GPU_INFO_STRING_SIZE = 256;
 
 struct SGfxErrorContainer;
 struct SGfxWarningContainer;
+
+struct SGpuTiming
+{
+	uint64_t m_TimeNanoseconds = 0;
+	uint64_t m_Sample = 0;
+	bool m_Supported = false;
+};
+
+struct SGpuTimingShared
+{
+	std::atomic<bool> m_Enabled{false};
+	std::atomic<bool> m_Supported{false};
+	std::atomic<uint64_t> m_TimeNanoseconds{0};
+	std::atomic<uint64_t> m_Sample{0};
+
+	void Publish(uint64_t TimeNanoseconds)
+	{
+		m_TimeNanoseconds.store(TimeNanoseconds, std::memory_order_relaxed);
+		m_Sample.fetch_add(1, std::memory_order_release);
+	}
+
+	SGpuTiming Snapshot() const
+	{
+		const uint64_t Sample = m_Sample.load(std::memory_order_acquire);
+		return {m_TimeNanoseconds.load(std::memory_order_relaxed), Sample, m_Supported.load(std::memory_order_relaxed)};
+	}
+};
 
 enum class EPrimitiveType
 {
@@ -122,6 +150,7 @@ class CCommandBuffer
 		}
 
 		unsigned char *DataPtr() { return m_pData; }
+		unsigned Size() const { return m_Size; }
 
 		void Swap(CBuffer &Other) noexcept
 		{
@@ -136,6 +165,8 @@ public:
 	size_t m_ExternalDataSize = 0;
 
 	CBuffer m_DataBuffer;
+	std::vector<std::unique_ptr<CBuffer>> m_vExtraDataBuffers;
+	size_t m_ExtraDataBufferIndex = 0;
 
 	enum
 	{
@@ -881,6 +912,20 @@ public:
 		return m_DataBuffer.Alloc(WantedSize);
 	}
 
+	void *AllocDataChunked(unsigned WantedSize)
+	{
+		if(void *pData = AllocData(WantedSize))
+			return pData;
+		while(m_ExtraDataBufferIndex < m_vExtraDataBuffers.size())
+		{
+			if(void *pData = m_vExtraDataBuffers[m_ExtraDataBufferIndex]->Alloc(WantedSize))
+				return pData;
+			m_ExtraDataBufferIndex++;
+		}
+		m_vExtraDataBuffers.emplace_back(std::make_unique<CBuffer>(std::max(m_DataBuffer.Size(), WantedSize)));
+		return m_vExtraDataBuffers.back()->Alloc(WantedSize);
+	}
+
 	template<class T>
 	bool AddCommandUnsafe(const T &Command)
 	{
@@ -912,6 +957,7 @@ public:
 	const SCommand *Head() const { return m_pCmdBufferHead; }
 	SCommand *Head() { return m_pCmdBufferHead; }
 	bool IsEmpty() const { return m_pCmdBufferHead == nullptr; }
+	IGraphics::CFrameRenderStats RenderStats() const;
 	bool ContainsCommand(unsigned Command) const
 	{
 		for(const SCommand *pCommand = Head(); pCommand != nullptr; pCommand = pCommand->m_pNext)
@@ -955,6 +1001,8 @@ public:
 	{
 		m_CmdBuffer.Swap(Other.m_CmdBuffer);
 		m_DataBuffer.Swap(Other.m_DataBuffer);
+		m_vExtraDataBuffers.swap(Other.m_vExtraDataBuffers);
+		std::swap(m_ExtraDataBufferIndex, Other.m_ExtraDataBufferIndex);
 		std::swap(m_ExternalDataSize, Other.m_ExternalDataSize);
 		std::swap(m_SubmissionInfo, Other.m_SubmissionInfo);
 		std::swap(m_pCmdBufferHead, Other.m_pCmdBufferHead);
@@ -968,6 +1016,9 @@ public:
 		m_pCmdBufferHead = m_pCmdBufferTail = nullptr;
 		m_CmdBuffer.Reset();
 		m_DataBuffer.Reset();
+		for(auto &pBuffer : m_vExtraDataBuffers)
+			pBuffer->Reset();
+		m_ExtraDataBufferIndex = 0;
 
 		m_ExternalDataSize = 0;
 		m_SubmissionInfo = {};
@@ -1084,6 +1135,98 @@ private:
 	SCommand *m_pCmdBufferTail;
 };
 
+inline IGraphics::CFrameRenderStats CCommandBuffer::RenderStats() const
+{
+	IGraphics::CFrameRenderStats Stats;
+	for(const SCommand *pCommand = Head(); pCommand != nullptr; pCommand = pCommand->m_pNext)
+	{
+		++Stats.m_Commands;
+		Stats.m_ResourceCommands += IsResourceCommand(pCommand->m_Cmd);
+		switch(pCommand->m_Cmd)
+		{
+		case CMD_BEGIN_RENDER_PASS:
+			++Stats.m_RenderPasses;
+			break;
+		case CMD_DRAW:
+		{
+			const auto *pDraw = static_cast<const SCommand_Draw *>(pCommand);
+			++Stats.m_DrawCommands;
+			++Stats.m_DrawCalls;
+			++Stats.m_Instances;
+			Stats.m_StreamedBytes += pDraw->m_VertexData.m_Size;
+			if(pDraw->m_PrimitiveType == EPrimitiveType::QUADS)
+				Stats.m_Triangles += pDraw->m_VertexCount / 4 * 2;
+			else if(pDraw->m_PrimitiveType == EPrimitiveType::TRIANGLES)
+				Stats.m_Triangles += pDraw->m_VertexCount / 3;
+			break;
+		}
+		case CMD_DRAW_INDEXED:
+		{
+			const auto *pDraw = static_cast<const SCommand_DrawIndexed *>(pCommand);
+			++Stats.m_DrawCommands;
+			Stats.m_DrawCalls += pDraw->IsTransient() ? pDraw->m_RangeCount : 1;
+			Stats.m_Instances += pDraw->m_InstanceCount;
+			Stats.m_StreamedBytes += pDraw->m_DrawData.m_Size + pDraw->m_ArrayData.m_Size + pDraw->m_VertexData.m_Size + pDraw->m_IndexData.m_Size + pDraw->m_RangeData.m_Size;
+			if(pDraw->IsTransient())
+			{
+				const auto *pRanges = pDraw->m_RangeData.Get<SCommand_DrawIndexed::SIndexedDrawRange>(pDraw->m_RangeCount);
+				if(pRanges != nullptr)
+				{
+					for(uint32_t RangeIndex = 0; RangeIndex < pDraw->m_RangeCount; ++RangeIndex)
+						Stats.m_Triangles += pRanges[RangeIndex].m_IndexCount / 3;
+				}
+			}
+			else
+				Stats.m_Triangles += static_cast<uint64_t>(pDraw->m_IndexCount / 3) * pDraw->m_InstanceCount;
+			break;
+		}
+		case CMD_CREATE_BUFFER_OBJECT:
+		{
+			const auto *pCreate = static_cast<const SCommand_CreateBufferObject *>(pCommand);
+			++Stats.m_BufferCreates;
+			if(pCreate->m_pUploadData != nullptr)
+				Stats.m_UploadBytes += pCreate->m_Desc.m_Size;
+			break;
+		}
+		case CMD_RECREATE_BUFFER_OBJECT:
+		{
+			const auto *pRecreate = static_cast<const SCommand_RecreateBufferObject *>(pCommand);
+			++Stats.m_BufferRecreates;
+			if(pRecreate->m_pUploadData != nullptr)
+				Stats.m_UploadBytes += pRecreate->m_Desc.m_Size;
+			break;
+		}
+		case CMD_UPDATE_BUFFER_OBJECT:
+		{
+			const auto *pUpdate = static_cast<const SCommand_UpdateBufferObject *>(pCommand);
+			++Stats.m_BufferUpdates;
+			if(pUpdate->m_pUploadData != nullptr)
+				Stats.m_UploadBytes += pUpdate->m_DataSize;
+			break;
+		}
+		case CMD_TEXTURE_CREATE:
+		{
+			const auto *pCreate = static_cast<const SCommand_Texture_Create *>(pCommand);
+			++Stats.m_TextureCreates;
+			if(pCreate->m_pData != nullptr)
+				Stats.m_UploadBytes += ImageDataSize(pCreate->m_Desc.m_Width, pCreate->m_Desc.m_Height, pCreate->m_Desc.m_Format == IGraphics::ETextureFormat::RGBA8_UNORM ? 4 : 1);
+			break;
+		}
+		case CMD_TEXTURE_UPDATE:
+		{
+			const auto *pUpdate = static_cast<const SCommand_Texture_Update *>(pCommand);
+			++Stats.m_TextureUpdates;
+			if(pUpdate->m_pData != nullptr)
+				Stats.m_UploadBytes += ImageDataSize(pUpdate->m_Region.m_Width, pUpdate->m_Region.m_Height, pUpdate->m_Format == IGraphics::ETextureFormat::RGBA8_UNORM ? 4 : 1);
+			break;
+		}
+		default:
+			break;
+		}
+	}
+	return Stats;
+}
+
 enum EGraphicsBackendErrorCodes
 {
 	GRAPHICS_BACKEND_ERROR_CODE_NONE = 0,
@@ -1195,6 +1338,8 @@ public:
 	// Publishes one complete immutable frame. The buffer is empty on success.
 	virtual bool RunFramePacket(CCommandBuffer *pBuffer, bool WaitForCapacity = false) = 0;
 	virtual SFrameMailboxStats GetFrameMailboxStats() const = 0;
+	virtual SGpuTiming GpuTiming() const = 0;
+	virtual void SetGpuTimingEnabled(bool Enabled) = 0;
 	virtual void RunBufferSingleThreadedUnsafe(CCommandBuffer *pBuffer) = 0;
 	virtual bool IsIdle() const = 0;
 	virtual void WaitForIdle() = 0;
@@ -1285,6 +1430,9 @@ class CGraphics_Threaded : public IEngineGraphics
 	EDrawing m_Drawing;
 	bool m_DoScreenshot;
 	char m_aScreenshotName[IO_MAX_PATH_LENGTH];
+	bool m_RenderStatsEnabled = false;
+	CFrameRenderStats m_CurrentFrameRenderStats;
+	CFrameRenderStats m_LastFrameRenderStats;
 
 	CTextureHandle m_NullTexture;
 
@@ -1473,6 +1621,8 @@ public:
 	uint64_t StreamedMemoryUsage() const override;
 	uint64_t StagingMemoryUsage() const override;
 	SFrameMailboxStats FrameMailboxStats() const override;
+	CFrameRenderStats FrameRenderStats() const override;
+	void SetRenderStatsEnabled(bool Enabled) override;
 
 	const TTwGraphicsGpuList &GetGpus() const override;
 
@@ -1740,7 +1890,7 @@ public:
 		Command.m_VertexData.m_Size = sizeof(TVertex) * VertexCount;
 		Command.m_VertexData.m_pData = AllocCommandBufferData(Command.m_VertexData.m_Size);
 		if(!AddCmd(Command, [&] {
-			   Command.m_VertexData.m_pData = m_pCommandBuffer->AllocData(Command.m_VertexData.m_Size);
+			   Command.m_VertexData.m_pData = AllocCommandBufferData(Command.m_VertexData.m_Size);
 			   return Command.m_VertexData.m_pData != nullptr;
 		   }))
 			return;

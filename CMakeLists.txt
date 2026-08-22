@@ -343,6 +343,17 @@ if(NOT MSVC AND NOT HAIKU)
     add_cxx_compiler_flag_if_supported(OUR_FLAGS -ffloat-store)
   endif()
 
+  # Never fold a multiply and an add into one instruction. FMA is base ISA on
+  # AArch64 and absent from baseline x86-64, so the same physics rounds
+  # differently on a macOS client and a Linux server. It is not only a
+  # cross-platform matter: the authoritative and the predicted entity trees are
+  # separate translation units over the same arithmetic, so on one machine one
+  # of them can be contracted and the other not. This has to reach every target,
+  # not just the shared one - vmath.h is inline templates instantiated wherever
+  # they are included. MSVC needs nothing: /fp:precise has not contracted since
+  # Visual Studio 2022.
+  add_cxx_compiler_flag_if_supported(OUR_FLAGS -ffp-contract=off)
+
   # We assume that char is signed in various places in the code. In particular,
   # the Str.StrToInts test will fail when char is not signed and names containing
   # special characters will be displayed incorrectly on servers.

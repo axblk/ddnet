@@ -4671,24 +4671,7 @@ void CGameClient::UpdateLocalTuning(CSessionId SessionId, CGameSessionContext &S
 
 CPhysicsRules CGameClient::PredictedPhysicsRules() const
 {
-	if(!FocusedGameInfo().m_PredictDDRace)
-		return CPhysicsRules::Vanilla();
-	CPhysicsRules Rules = CPhysicsRules::DDNet();
-	Rules.m_WeakHook = !FocusedGameInfo().m_NoWeakHookAndBounce;
-	// The game info carries one bit of physics, the weak hook above. The rest
-	// of these settings reach the client only because they are game settings,
-	// which means both sides read the same value out of the map. A server that
-	// sets one from its own configuration or from rcon instead is predicted
-	// wrong, and so is one that changes it while the round runs. Putting them
-	// on the wire needs a protocol version, so the registry refuses a mode
-	// whose rules are not one of the two shapes this function can produce.
-	Rules.m_TeleportHookOld = g_Config.m_SvOldTeleportHook;
-	Rules.m_TeleportWeaponsOld = g_Config.m_SvOldTeleportWeapons;
-	Rules.m_WeaponsHitOthers = GameConfig()->m_SvHit;
-	Rules.m_OldLaser = GameConfig()->m_SvOldLaser;
-	Rules.m_Deepfly = GameConfig()->m_SvDeepfly;
-	Rules.m_DestroyLasersOnDeath = g_Config.m_SvDestroyLasersOnDeath;
-	return Rules;
+	return ::PredictedPhysicsRules(FocusedGameInfo().m_PredictDDRace, FocusedGameInfo().m_NoWeakHookAndBounce, *GameConfig());
 }
 
 void CGameClient::UpdatePrediction()
@@ -4701,7 +4684,6 @@ void CGameClient::UpdatePrediction()
 	CGameState::CRuntimeState &Runtime = ActiveState.Runtime();
 	GameWorld().m_WorldConfig.m_IsVanilla = FocusedGameInfo().m_PredictVanilla;
 	GameWorld().m_WorldConfig.m_IsDDRace = FocusedGameInfo().m_PredictDDRace;
-	GameWorld().m_Core.m_PhysicsRules = PredictedPhysicsRules();
 	GameWorld().m_WorldConfig.m_IsFNG = FocusedGameInfo().m_PredictFNG;
 	GameWorld().m_WorldConfig.m_PredictDDRace = FocusedGameInfo().m_PredictDDRace;
 	GameWorld().m_WorldConfig.m_PredictTiles = FocusedGameInfo().m_PredictDDRace && FocusedGameInfo().m_PredictDDRaceTiles;
@@ -4710,6 +4692,7 @@ void CGameClient::UpdatePrediction()
 	GameWorld().m_WorldConfig.m_BugDDRaceInput = FocusedGameInfo().m_BugDDRaceInput;
 	GameWorld().m_WorldConfig.m_NoWeakHookAndBounce = FocusedGameInfo().m_NoWeakHookAndBounce;
 	GameWorld().m_WorldConfig.m_PredictEvents = FocusedGameInfo().m_PredictEvents;
+	GameWorld().UpdatePhysicsRules();
 
 	if(!Snap().m_pLocalCharacter)
 	{

@@ -88,8 +88,9 @@ jobs:
       run: |
         cd clang-sanitizer
         set +e
-        # Rust tests work locally, but still not in CI, even with the same directory
-        cmake --build . --config Debug --target run_cxx_tests
+        # Rust tests work locally, but still not in CI, even with the same directory,
+        # so run_tests' three C++ targets are named instead of run_tests itself
+        cmake --build . --config Debug --target run_cxx_tests run_vanilla_golden_tests run_parity_tests
         unit_test_result=$?
         set -e
         failed=false

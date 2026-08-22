@@ -405,6 +405,7 @@ void CGameState::InitPrediction(CMapContext &MapContext)
 	std::copy(MapContext.TuningList(), MapContext.TuningList() + TuneZone::NUM, m_aTuning.begin());
 	m_GameWorld.Init(MapContext.Collision(), m_aTuning.data(), MapContext.MapBugs(), &MapContext.GameConfig());
 	m_GameWorld.m_Core.InitSwitchers(MapContext.Collision()->m_HighestSwitchNumber);
+	m_GameWorld.UpdatePhysicsRules();
 	m_PredictionInitialized = true;
 	RebuildGameWorld();
 }
@@ -687,6 +688,7 @@ void CGameState::SetCoreGameInfo(const CGameInfo &GameInfo)
 	m_GameWorld.m_WorldConfig.m_BugDDRaceInput = GameInfo.m_BugDDRaceInput;
 	m_GameWorld.m_WorldConfig.m_NoWeakHookAndBounce = GameInfo.m_NoWeakHookAndBounce;
 	m_GameWorld.m_WorldConfig.m_PredictEvents = GameInfo.m_PredictEvents;
+	m_GameWorld.UpdatePhysicsRules();
 }
 
 void CGameState::UpdateWorldConfigFromSnapshot()

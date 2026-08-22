@@ -15,6 +15,11 @@ class CCharacter;
 class CEntity;
 class CMapBugs;
 
+// What the client can work out about the physics a server runs. One bit of it
+// arrives in the game info; the rest are game settings, which means both sides
+// read the same value out of the map.
+CPhysicsRules PredictedPhysicsRules(bool PredictDDRace, bool NoWeakHookAndBounce, const CSessionGameConfig &GameConfig);
+
 class CGameWorld
 {
 public:
@@ -112,6 +117,12 @@ public:
 	const CSessionGameConfig *GameConfig() const { return m_pGameConfig; }
 
 	bool EmulateBug(int Bug) const;
+
+	// The world runs on these, so it is the world that derives them. They used
+	// to be set from CGameClient only, which left every target without one -
+	// the parity client and the state tests - predicting default rules no
+	// matter what the game info said.
+	void UpdatePhysicsRules();
 
 	class CPredictedEvent
 	{

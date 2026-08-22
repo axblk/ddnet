@@ -27,6 +27,38 @@
 //////////////////////////////////////////////////
 // game world
 //////////////////////////////////////////////////
+CPhysicsRules PredictedPhysicsRules(bool PredictDDRace, bool NoWeakHookAndBounce, const CSessionGameConfig &GameConfig)
+{
+	if(!PredictDDRace)
+		return CPhysicsRules::Vanilla();
+	CPhysicsRules Rules = CPhysicsRules::DDNet();
+	Rules.m_WeakHook = !NoWeakHookAndBounce;
+	// The game info carries one bit of physics, the weak hook above. The rest
+	// of these settings reach the client only because they are game settings,
+	// which means both sides read the same value out of the map. A server that
+	// sets one from its own configuration or from rcon instead is predicted
+	// wrong, and so is one that changes it while the round runs. Putting them
+	// on the wire needs a protocol version, so the registry refuses a mode
+	// whose rules are not one of the two shapes this function can produce.
+	Rules.m_TeleportHookOld = g_Config.m_SvOldTeleportHook;
+	Rules.m_TeleportWeaponsOld = g_Config.m_SvOldTeleportWeapons;
+	Rules.m_WeaponsHitOthers = GameConfig.m_SvHit;
+	Rules.m_OldLaser = GameConfig.m_SvOldLaser;
+	Rules.m_Deepfly = GameConfig.m_SvDeepfly;
+	Rules.m_DestroyLasersOnDeath = g_Config.m_SvDestroyLasersOnDeath;
+	return Rules;
+}
+
+void CGameWorld::UpdatePhysicsRules()
+{
+	// The world can be told the game info before it is initialised - the test
+	// harnesses do exactly that - and the settings arrive with the map. Init
+	// asks again once they are there.
+	if(m_pGameConfig == nullptr)
+		return;
+	m_Core.m_PhysicsRules = ::PredictedPhysicsRules(m_WorldConfig.m_PredictDDRace, m_WorldConfig.m_NoWeakHookAndBounce, *m_pGameConfig);
+}
+
 CGameWorld::CGameWorld()
 {
 	for(auto &pFirstEntityType : m_apFirstEntityTypes)

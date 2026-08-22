@@ -74,6 +74,7 @@ namespace
 			{
 				m_aCatcherIds[VictimId] = KillerId;
 				pVictim->GetPlayer()->SetSpectatorId(KillerId);
+				AddParticipantMatchMetric(pKiller, "catches", 1);
 			}
 			CBase::OnCharacterDeath(Context);
 		}
@@ -159,7 +160,10 @@ namespace
 
 bool RegisterZCatchGameModes(CGameModeRegistry &Registry)
 {
+	CGameModeInfo Info = {"zcatch.laser", "Laser zCatch", "zCatch", "TestZCatch", EGameModeScoreKind::POINTS, 0};
+	Info.m_Report = CompetitiveGameModeReport("zcatch.laser@ddnet.org", false);
+	Info.m_Report.m_vMetrics.push_back({"zcatch.laser@ddnet.org/catches", "Catches", EGameModeMetricCategory::OBJECTIVES, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM, static_cast<int>(Info.m_Report.m_vMetrics.size())});
 	return Registry.Register(
-		{"zcatch.laser", "Laser zCatch", "zCatch", "TestZCatch", EGameModeScoreKind::POINTS, 0},
-		[](CGameServices &Services, const CGameModeInfo &Info) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerZCatch>(Services, Info); });
+		Info,
+		[](CGameServices &Services, const CGameModeInfo &GameModeInfo) -> std::unique_ptr<IGameController> { return std::make_unique<CGameControllerZCatch>(Services, GameModeInfo); });
 }

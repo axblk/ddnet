@@ -214,3 +214,15 @@ TYPED_TEST(JsonWriters, Small)
 	this->m_Impl.m_pJson->WriteIntValue(std::numeric_limits<int>::min());
 	this->m_Impl.Expect("-2147483648\n");
 }
+
+TYPED_TEST(JsonWriters, Int64Large)
+{
+	this->m_Impl.m_pJson->WriteInt64Value(std::numeric_limits<int64_t>::max());
+	this->m_Impl.Expect("9223372036854775807\n");
+}
+
+TYPED_TEST(JsonWriters, Int64Small)
+{
+	this->m_Impl.m_pJson->WriteInt64Value(std::numeric_limits<int64_t>::min());
+	this->m_Impl.Expect("-9223372036854775808\n");
+}

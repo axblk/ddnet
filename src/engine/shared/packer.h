@@ -75,6 +75,7 @@ public:
 	bool Error() const { return m_Error; }
 
 	int CompleteSize() const { return m_pEnd - m_pStart; }
+	int RemainingSize() const { return m_pEnd - m_pCurrent; }
 	const unsigned char *CompleteData() const { return m_pStart; }
 };
 

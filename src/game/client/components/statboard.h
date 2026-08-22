@@ -8,7 +8,6 @@
 #include <string>
 
 class CGameState;
-class CSessionStatsState;
 
 class CStatboard : public CComponent
 {
@@ -30,7 +29,6 @@ public:
 	void OnReset() override;
 	void OnConsoleInit() override;
 	void UpdateController();
-	void HandleMessage(CSessionStatsState &Stats, const CGameState &State, bool SuppressEvents, int MsgType, void *pRawMsg);
 	void OnRender(const CRenderContext &Context) override;
 	void OnRelease() override;
 	bool IsActive() const;

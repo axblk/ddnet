@@ -2705,6 +2705,7 @@ if(CLIENT)
     graphics_threaded.h
     input.cpp
     input.h
+    input_null.cpp
     keyboard.cpp
     keyboard.h
     keynames.cpp
@@ -3341,6 +3342,77 @@ if(CLIENT)
     ${PLATFORM_CLIENT_INCLUDE_DIRS}
   )
 
+  if(VIDEORECORDER AND (VULKAN OR WEBGPU_NATIVE_BACKEND) AND NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "emscripten"))
+    # The client without its window: the graphics come from the object
+    # library that is compiled without SDL (see ENGINE_CLIENT_GRAPHICS_FILES),
+    # the SDL window and the SDL input stay out, and the null input and the
+    # window-less surface take their place.
+    set(DEMO_RENDERER_SRC ${ENGINE_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/window_sdl\\.(cpp|h)$")
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/input\\.(cpp|h)$")
+    # A developer tool, not part of the game. It compiles a second copy of the
+    # client, so building it by default would roughly double the build time,
+    # and it is not shipped with the release either. Build it explicitly with
+    # `cmake --build . --target demo-renderer`.
+    add_executable(demo-renderer EXCLUDE_FROM_ALL
+      ${DEMO_RENDERER_SRC}
+      ${DEPS} ${GLEW_DEP}
+      ${WAVPACK_DEP}
+      # tidy-alphabetical-start
+      $<TARGET_OBJECTS:engine-client-graphics>
+      $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-quic>
+      $<TARGET_OBJECTS:engine-shared>
+      $<TARGET_OBJECTS:game-shared>
+      $<TARGET_OBJECTS:rust-bridge-shared>
+      # tidy-alphabetical-end
+    )
+    add_dependencies(demo-renderer generate_content_types)
+    if(VULKAN)
+      add_dependencies(demo-renderer build_vulkan_shaders)
+    endif()
+    set_property(TARGET demo-renderer PROPERTY OUTPUT_NAME ddnet-demo-render)
+    set_own_rpath(demo-renderer)
+    target_compile_definitions(demo-renderer PRIVATE CONF_DEMO_RENDER_TOOL)
+    if(VULKAN)
+      target_compile_definitions(demo-renderer PRIVATE CONF_BACKEND_VULKAN)
+    endif()
+    if(WEBGPU_NATIVE_BACKEND)
+      target_compile_definitions(demo-renderer PRIVATE CONF_BACKEND_WEBGPU)
+    endif()
+    target_link_libraries(demo-renderer
+      # tidy-alphabetical-start
+      ${FFMPEG_LIBRARIES}
+      ${FREETYPE_LIBRARIES}
+      ${GLEW_LIBRARIES}
+      ${PNG_LIBRARIES}
+      ${VULKAN_LIBRARIES}
+      ${WAVPACK_LIBRARIES}
+      # tidy-alphabetical-end
+      ${OPUSFILE_LIBRARIES}
+      ${OPUS_LIBRARIES}
+      ${OGG_LIBRARIES}
+      ${PLATFORM_CLIENT_LIBS}
+      rust_engine_shared
+      ${LIBS}
+    )
+    if(WEBGPU_NATIVE_BACKEND)
+      target_link_libraries(demo-renderer WGPU::Native)
+    endif()
+    target_include_directories(demo-renderer SYSTEM PRIVATE
+      # tidy-alphabetical-start
+      ${FFMPEG_INCLUDE_DIRS}
+      ${FREETYPE_INCLUDE_DIRS}
+      ${OGG_INCLUDE_DIRS}
+      ${OPUSFILE_INCLUDE_DIRS}
+      ${OPUS_INCLUDE_DIRS}
+      ${PNG_INCLUDE_DIRS}
+      ${WAVPACK_INCLUDE_DIRS}
+      # tidy-alphabetical-end
+      ${VULKAN_INCLUDE_DIRS}
+    )
+  endif()
+
   if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC OR WEBGPU_NATIVE_BACKEND)
     set_own_rpath(game-client)
   endif()
@@ -3373,6 +3445,10 @@ if(CLIENT)
 
   list(APPEND TARGETS_OWN game-client)
   list(APPEND TARGETS_LINK game-client)
+  if(TARGET demo-renderer)
+    list(APPEND TARGETS_OWN demo-renderer)
+    list(APPEND TARGETS_LINK demo-renderer)
+  endif()
 endif()
 
 
@@ -4758,14 +4834,14 @@ foreach(target ${TARGETS_OWN})
     target_compile_definitions(${target} PRIVATE CONF_OPENSSL)
     target_include_directories(${target} SYSTEM PRIVATE ${CRYPTO_INCLUDE_DIRS})
   endif()
-  if(QUIC)
+  if(QUIC AND NOT "${target}" STREQUAL "demo-renderer")
     target_compile_definitions(${target} PRIVATE CONF_QUIC)
   endif()
-  if(WEBSOCKETS)
+  if(WEBSOCKETS AND NOT "${target}" STREQUAL "demo-renderer")
     target_compile_definitions(${target} PRIVATE CONF_WEBSOCKETS)
     target_include_directories(${target} SYSTEM PRIVATE ${WEBSOCKETS_INCLUDE_DIRS})
   endif()
-  if(UPNP)
+  if(UPNP AND NOT "${target}" STREQUAL "demo-renderer")
     target_compile_definitions(${target} PRIVATE CONF_UPNP)
     target_include_directories(${target} SYSTEM PRIVATE ${MINIUPNPC_INCLUDE_DIRS})
   endif()
@@ -4788,16 +4864,16 @@ foreach(target ${TARGETS_OWN})
   if(TEST_MYSQL)
     target_compile_definitions(${target} PRIVATE CONF_TEST_MYSQL)
   endif()
-  if(AUTOUPDATE AND NOT STEAM)
+  if(AUTOUPDATE AND NOT STEAM AND NOT "${target}" STREQUAL "demo-renderer")
     target_compile_definitions(${target} PRIVATE CONF_AUTOUPDATE)
   endif()
-  if(INFORM_UPDATE AND NOT STEAM)
+  if(INFORM_UPDATE AND NOT STEAM AND NOT "${target}" STREQUAL "demo-renderer")
     target_compile_definitions(${target} PRIVATE CONF_INFORM_UPDATE)
   endif()
-  if(STEAM)
+  if(STEAM AND NOT "${target}" STREQUAL "demo-renderer")
     target_compile_definitions(${target} PRIVATE PLATFORM_SUFFIX=-steam)
   endif()
-  if(DISCORD)
+  if(DISCORD AND NOT "${target}" STREQUAL "demo-renderer")
     target_compile_definitions(${target} PRIVATE CONF_DISCORD)
     if(DISCORD_DYNAMIC)
       target_compile_definitions(${target} PRIVATE CONF_DISCORD_DYNAMIC)

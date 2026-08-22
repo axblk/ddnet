@@ -17,6 +17,7 @@
 #include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
 #include <engine/shared/jobs.h>
+#include <engine/shared/video.h>
 #include <engine/textrender.h>
 
 #include <game/client/component.h>
@@ -32,6 +33,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -365,13 +367,47 @@ protected:
 	CLineInputBuffered<IO_MAX_PATH_LENGTH> m_DemoSearchInput;
 #if defined(CONF_VIDEORECORDER)
 	CLineInputBuffered<IO_MAX_PATH_LENGTH> m_DemoRenderInput;
+	CLineInputNumber m_DemoRenderWidthInput;
+	CLineInputNumber m_DemoRenderHeightInput;
+	// The resolution and the frame rate live in the configuration so that they
+	// survive a restart. These only remember that the user picked the custom
+	// entry, which the values alone cannot tell when they match a preset.
+	bool m_DemoRenderCustomResolution = false;
+	bool m_DemoRenderCustomFps = false;
+	bool m_DemoRenderAdvanced = false;
+	bool m_DemoRenderQueueOnly = false;
+	CButtonContainer m_DemoRenderCancelButton;
+	std::chrono::nanoseconds m_DemoRenderStartTime{0};
+	uint64_t m_DemoRenderLastSubmittedFrames = 0;
+#if defined(CONF_VIDEORECORDER)
+	// How far the running export got, as every display of it says it.
+	class CVideoProgress
+	{
+	public:
+		float m_Progress = 0.0f;
+		float m_Elapsed = 0.0f;
+		size_t m_QueueSize = 0;
+		CVideoExportStatus m_Status;
+	};
+	bool VideoProgress(CVideoProgress &Progress);
+	void FormatVideoProgress(const CVideoProgress &Progress, char *pFrames, int FramesSize, char *pTime, int TimeSize) const;
+	void RenderVideoProgressBox(const CVideoProgress &Progress);
+	bool RenderVideoProgressScreen(const CVideoProgress &Progress);
+#endif
+	class CRenderQueueRowIds
+	{
+	public:
+		CButtonContainer m_Up;
+		CButtonContainer m_Down;
+	};
+	// Deque so that the button ids of existing rows stay valid when the queue grows
+	std::deque<CRenderQueueRowIds> m_RenderQueueRowIds;
 #endif
 	int m_DemolistSelectedIndex;
 	bool m_DemolistSelectedReveal = false;
 	int m_DemolistStorageType;
 	bool m_DemolistMultipleStorages = false;
 	int m_Speed = 4;
-	bool m_StartPaused = false;
 
 	std::chrono::nanoseconds m_DemoPopulateStartTime{0};
 
@@ -486,6 +522,12 @@ protected:
 	void RenderPopupLoading(CUIRect Screen);
 #if defined(CONF_VIDEORECORDER)
 	void PopupConfirmDemoReplaceVideo();
+	// Opens the render popup for the demo that is currently selected and takes
+	// the settings that were kept from the last render over into it.
+	void OpenDemoRenderPopup(const char *pVideoName);
+	// The configured resolution, with the window size filled in where the
+	// configuration leaves it open.
+	void DemoRenderResolution(int *pWidth, int *pHeight) const;
 #endif
 	void RenderMenubar(CUIRect Box, IClient::EClientState ClientState);
 	void RenderNews(CUIRect MainView);
@@ -793,6 +835,9 @@ public:
 
 	void RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress, bool UpdateAndSwap = true);
 	void RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter, bool UpdateAndSwap = true);
+#if defined(CONF_VIDEORECORDER)
+	bool RenderVideoProgress(bool Overlay);
+#endif
 	void FinishLoading();
 
 	bool IsInit() const { return m_IsInit; }
@@ -979,6 +1024,7 @@ public:
 		POPUP_LANGUAGE,
 		POPUP_RENAME_DEMO,
 		POPUP_RENDER_DEMO,
+		POPUP_RENDER_QUEUE,
 		POPUP_RENDER_DONE,
 		POPUP_PASSWORD,
 		POPUP_QUIT,

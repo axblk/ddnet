@@ -74,20 +74,20 @@ CMapSounds::CMapSounds()
 	m_Time = 0.0f;
 }
 
-void CMapSounds::Play(int Channel, int SoundId)
+void CMapSounds::Play(int Channel, int SoundId, bool Offline)
 {
 	if(!m_Audible || SoundId < 0 || SoundId >= m_Count || m_aSounds[SoundId] < 0)
 		return;
 
-	GameClient()->m_Sounds.PlaySample(Channel, m_aSounds[SoundId], 0, 1.0f);
+	GameClient()->m_Sounds.PlaySample(Channel, m_aSounds[SoundId], 0, 1.0f, Offline);
 }
 
-void CMapSounds::PlayAt(int Channel, int SoundId, vec2 Position)
+void CMapSounds::PlayAt(int Channel, int SoundId, vec2 Position, bool Offline)
 {
 	if(!m_Audible || SoundId < 0 || SoundId >= m_Count || m_aSounds[SoundId] < 0)
 		return;
 
-	GameClient()->m_Sounds.PlaySampleAt(Channel, m_aSounds[SoundId], 0, 1.0f, Position);
+	GameClient()->m_Sounds.PlaySampleAt(Channel, m_aSounds[SoundId], 0, 1.0f, Position, Offline);
 }
 
 void CMapSounds::Load(IMap *pMap, CLayers *pLayers)
@@ -206,9 +206,11 @@ void CMapSounds::FinishSoundLoads()
 	}
 }
 
-void CMapSounds::Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator)
+void CMapSounds::Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator, bool Offline)
 {
 	FinishSoundLoads();
+	if(Offline)
+		SetAudible(true);
 	if(!m_Audible)
 		return;
 
@@ -241,7 +243,7 @@ void CMapSounds::Update(const CGameState &State, const CGameTickInfo &Time, vec2
 				if(!Source.m_pSource->m_Pan)
 					Flags |= ISound::FLAG_NO_PANNING;
 
-				Source.m_Voice = GameClient()->m_Sounds.PlaySampleAt(CSounds::CHN_MAPSOUND, m_aSounds[Source.m_Sound], Flags, 1.0f, vec2(fx2f(Source.m_pSource->m_Position.x), fx2f(Source.m_pSource->m_Position.y)));
+				Source.m_Voice = GameClient()->m_Sounds.PlaySampleAt(CSounds::CHN_MAPSOUND, m_aSounds[Source.m_Sound], Flags, 1.0f, vec2(fx2f(Source.m_pSource->m_Position.x), fx2f(Source.m_pSource->m_Position.y)), Offline);
 				Sound()->SetVoiceTimeOffset(Source.m_Voice, Offset);
 				Sound()->SetVoiceFalloff(Source.m_Voice, Source.m_pSource->m_Falloff / 255.0f);
 				switch(Source.m_pSource->m_Shape.m_Type)

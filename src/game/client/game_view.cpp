@@ -78,13 +78,14 @@ bool CPresentationContext::IsOtherTeamFromLocalPlayer(int ClientId) const
 	return m_State.IsOtherTeamFromLocalPlayer(ClientId);
 }
 
-CRenderContext::CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, bool IsVideoOutput) :
+CRenderContext::CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, bool IsVideoOutput, CVideoExportSettings VideoSettings) :
 	m_Session(Session),
 	m_State(State),
 	m_View(View),
 	m_Time(Time),
 	m_VisibleWorldRect(VisibleWorldRect),
-	m_IsVideoOutput(IsVideoOutput)
+	m_IsVideoOutput(IsVideoOutput),
+	m_VideoSettings(VideoSettings)
 {
 	dbg_assert(Session.Id() == View.SessionId() && State.m_Conn == View.Conn(), "render context state does not match view");
 }

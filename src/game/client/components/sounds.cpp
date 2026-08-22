@@ -157,9 +157,13 @@ void CSounds::OnStateChange(int NewState, int OldState)
 		OnReset();
 }
 
-void CSounds::Update(std::optional<vec2> ListenerPosition)
+void CSounds::OnUpdate()
 {
-	// check for sound initialisation
+	FinishSoundLoads();
+}
+
+void CSounds::FinishSoundLoads()
+{
 	if(m_WaitForSoundJob)
 	{
 		m_WaitForSoundJob = false;
@@ -178,43 +182,46 @@ void CSounds::Update(std::optional<vec2> ListenerPosition)
 		if(!m_WaitForSoundJob)
 			m_vSoundLoads.clear();
 	}
+}
 
+void CSounds::Update(std::optional<vec2> ListenerPosition, int64_t Now, bool Offline)
+{
 	if(ListenerPosition.has_value())
-		Sound()->SetListenerPosition(*ListenerPosition);
+		Sound()->SetListenerPosition(*ListenerPosition, Offline);
 	UpdateChannels();
 
 	// play sound from queue
-	if(m_QueuePos > 0)
+	CQueue &Queue = m_aQueues[Offline];
+	if(Queue.m_Pos > 0 && Queue.m_WaitTime <= Now)
 	{
-		int64_t Now = time();
-		if(m_QueueWaitTime <= Now)
-		{
-			Play(m_aQueue[0].m_Channel, m_aQueue[0].m_SetId, 1.0f);
-			m_QueueWaitTime = Now + time_freq() * 3 / 10; // wait 300ms before playing the next one
-			if(--m_QueuePos > 0)
-				mem_move(m_aQueue, m_aQueue + 1, m_QueuePos * sizeof(CQueueEntry));
-		}
+		Play(Queue.m_aEntries[0].m_Channel, Queue.m_aEntries[0].m_SetId, 1.0f, Offline);
+		Queue.m_WaitTime = Now + time_freq() * 3 / 10; // wait 300ms before playing the next one
+		if(--Queue.m_Pos > 0)
+			mem_move(Queue.m_aEntries, Queue.m_aEntries + 1, Queue.m_Pos * sizeof(CQueueEntry));
 	}
 }
 
-void CSounds::ClearQueue()
+void CSounds::ClearQueue(bool Offline)
 {
-	mem_zero(m_aQueue, sizeof(m_aQueue));
-	m_QueuePos = 0;
-	m_QueueWaitTime = time();
+	CQueue &Queue = m_aQueues[Offline];
+	mem_zero(Queue.m_aEntries, sizeof(Queue.m_aEntries));
+	Queue.m_Pos = 0;
+	// an export's timeline starts at zero
+	Queue.m_WaitTime = Offline ? 0 : time();
 }
 
-void CSounds::Enqueue(int Channel, int SetId)
+void CSounds::Enqueue(int Channel, int SetId, bool Offline)
 {
 	if(GameClient()->m_SuppressEvents)
 		return;
-	if(m_QueuePos >= QUEUE_SIZE)
+	CQueue &Queue = m_aQueues[Offline];
+	if(Queue.m_Pos >= QUEUE_SIZE)
 		return;
-	if(Channel != CHN_MUSIC && g_Config.m_ClEditor)
+	if(!Offline && Channel != CHN_MUSIC && g_Config.m_ClEditor)
 		return;
 
-	m_aQueue[m_QueuePos].m_Channel = Channel;
-	m_aQueue[m_QueuePos++].m_SetId = SetId;
+	Queue.m_aEntries[Queue.m_Pos].m_Channel = Channel;
+	Queue.m_aEntries[Queue.m_Pos++].m_SetId = SetId;
 }
 
 void CSounds::PlayAndRecord(int Channel, int SetId, float Volume, vec2 Position)
@@ -229,14 +236,14 @@ void CSounds::PlayAndRecord(int Channel, int SetId, float Volume, vec2 Position)
 	PlayAt(Channel, SetId, Volume, Position);
 }
 
-void CSounds::Play(int Channel, int SetId, float Volume)
+void CSounds::Play(int Channel, int SetId, float Volume, bool Offline)
 {
-	PlaySample(Channel, GetSampleId(SetId), 0, Volume);
+	PlaySample(Channel, GetSampleId(SetId), 0, Volume, Offline);
 }
 
-void CSounds::PlayAt(int Channel, int SetId, float Volume, vec2 Position)
+void CSounds::PlayAt(int Channel, int SetId, float Volume, vec2 Position, bool Offline)
 {
-	PlaySampleAt(Channel, GetSampleId(SetId), 0, Volume, Position);
+	PlaySampleAt(Channel, GetSampleId(SetId), 0, Volume, Position, Offline);
 }
 
 void CSounds::Stop(int SetId)
@@ -262,7 +269,7 @@ bool CSounds::IsPlaying(int SetId)
 	return false;
 }
 
-ISound::CVoiceHandle CSounds::PlaySample(int Channel, int SampleId, int Flags, float Volume)
+ISound::CVoiceHandle CSounds::PlaySample(int Channel, int SampleId, int Flags, float Volume, bool Offline)
 {
 	if(GameClient()->m_SuppressEvents || (Channel == CHN_MUSIC && !g_Config.m_SndMusic) || SampleId == -1)
 		return ISound::CVoiceHandle();
@@ -270,10 +277,10 @@ ISound::CVoiceHandle CSounds::PlaySample(int Channel, int SampleId, int Flags, f
 	if(Channel == CHN_MUSIC)
 		Flags |= ISound::FLAG_LOOP;
 
-	return Sound()->Play(Channel, SampleId, Flags, Volume);
+	return Sound()->Play(Channel, SampleId, Flags, Volume, Offline);
 }
 
-ISound::CVoiceHandle CSounds::PlaySampleAt(int Channel, int SampleId, int Flags, float Volume, vec2 Position)
+ISound::CVoiceHandle CSounds::PlaySampleAt(int Channel, int SampleId, int Flags, float Volume, vec2 Position, bool Offline)
 {
 	if(GameClient()->m_SuppressEvents || (Channel == CHN_MUSIC && !g_Config.m_SndMusic) || SampleId == -1)
 		return ISound::CVoiceHandle();
@@ -281,5 +288,5 @@ ISound::CVoiceHandle CSounds::PlaySampleAt(int Channel, int SampleId, int Flags,
 	if(Channel == CHN_MUSIC)
 		Flags |= ISound::FLAG_LOOP;
 
-	return Sound()->PlayAt(Channel, SampleId, Flags, Volume, Position);
+	return Sound()->PlayAt(Channel, SampleId, Flags, Volume, Position, Offline);
 }

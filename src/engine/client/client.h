@@ -40,6 +40,9 @@ class CDemoEdit;
 class IDemoRecorder;
 class CMsgPacker;
 class CUnpacker;
+#if defined(CONF_VIDEORECORDER)
+class CVideo;
+#endif
 class IConfigManager;
 class IDiscord;
 class IEngine;
@@ -52,8 +55,23 @@ class INotifications;
 class IStorage;
 class IUpdater;
 
-class CClient : public IClient, public CDemoPlayer::IListener
+class CClient : public IClient
 {
+	// Hands what the demo player of one session reads to the client, together
+	// with the session it belongs to.
+	class CDemoListener : public CDemoPlayer::IListener
+	{
+		CClient *m_pClient = nullptr;
+		CSessionId m_SessionId;
+
+	public:
+		CDemoListener() = default;
+		CDemoListener(CClient *pClient, CSessionId SessionId) :
+			m_pClient(pClient), m_SessionId(SessionId) {}
+		void OnDemoPlayerSnapshot(void *pData, int Size) override { m_pClient->OnDemoSnapshot(m_SessionId, pData, Size); }
+		void OnDemoPlayerMessage(void *pData, int Size) override { m_pClient->OnDemoMessage(m_SessionId, pData, Size); }
+	};
+
 	// needed interfaces
 	IConfigManager *m_pConfigManager = nullptr;
 	CConfig *m_pConfig = nullptr;
@@ -79,6 +97,14 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	CSessionId m_DemoSessionId;
 	CNetworkSessionSource *m_pNetworkSessionSource = nullptr;
 	CDemoSessionSource *m_pDemoSessionSource = nullptr;
+	CDemoListener m_DemoListener;
+#if defined(CONF_VIDEORECORDER)
+	// A second demo session that renders queued exports in the background,
+	// so that watching a demo and exporting one do not share a player.
+	CSessionId m_VideoExportSessionId;
+	CDemoSessionSource *m_pVideoExportSessionSource = nullptr;
+	CDemoListener m_VideoExportDemoListener;
+#endif
 	CNetClient m_ContactNetClient;
 	CQuicTransport m_QuicTransport;
 	CQuicSessionId m_QuicSession;
@@ -150,6 +176,41 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	// graphs
 	CGraph m_FpsGraph;
 
+#if defined(CONF_VIDEORECORDER)
+	class CVideoExportJob
+	{
+	public:
+		char m_aDemoPath[IO_MAX_PATH_LENGTH] = {};
+		int m_StorageType = 0;
+		char m_aVideoName[IO_MAX_PATH_LENGTH] = {};
+		CVideoExportSettings m_Settings;
+		int m_SpeedIndex = 0;
+		bool m_ExactVideoPath = false;
+	};
+
+	std::unique_ptr<CVideo> m_pVideo;
+	CSessionId m_VideoSessionId;
+	bool m_VideoOfflineAudio = false;
+	std::deque<CVideoExportJob> m_VideoExportQueue;
+	std::optional<CVideoExportJob> m_ActiveVideoExport;
+	bool m_VideoExportQueueRunning = false;
+	bool m_LoadingQueuedVideoExport = false;
+	// When the queue started waiting for the sound assets, so that the wait has
+	// an end even if they never arrive.
+	int64_t m_VideoExportSoundWaitStart = 0;
+	char m_aVideoExportQueueError[256] = {};
+	bool m_CommandLineVideoExport = false;
+	char m_aCommandLineDemoPath[IO_MAX_PATH_LENGTH] = {};
+	char m_aCommandLineVideoPath[IO_MAX_PATH_LENGTH] = {};
+	CVideoExportSettings m_CommandLineVideoSettings;
+	int m_CommandLineExitCode = 0;
+	char m_aVideoError[256] = {};
+	std::chrono::nanoseconds m_LastVideoProgressRender{0};
+	void UpdateVideoExportQueue();
+	const char *QueueVideoExport(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue, bool ExactVideoPath);
+	CDemoPlayer *VideoDemoPlayer();
+#endif
+
 	CSnapshotDelta *SnapshotDelta();
 	CSessionSourceBase &SessionSource(CSessionId SessionId)
 	{
@@ -170,14 +231,24 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	{
 		return const_cast<CClient *>(this)->NetworkSource(SessionId);
 	}
+	CDemoSessionSource &DemoSource(CSessionId SessionId)
+	{
+		CSessionSourceBase &Source = SessionSource(SessionId);
+		dbg_assert(Source.Type() == ESessionSourceType::DEMO, "game session is not a demo");
+		return static_cast<CDemoSessionSource &>(Source);
+	}
+	const CDemoSessionSource &DemoSource(CSessionId SessionId) const
+	{
+		return const_cast<CClient *>(this)->DemoSource(SessionId);
+	}
 	CConnection &Connection(int Conn) { return m_pNetworkSessionSource->m_aConnections[Conn]; }
 	const CConnection &Connection(int Conn) const { return m_pNetworkSessionSource->m_aConnections[Conn]; }
 	CConnection &Connection(CSessionId SessionId, int Conn)
 	{
-		if(SessionId != m_DemoSessionId)
+		if(SessionSource(SessionId).Type() == ESessionSourceType::NETWORK)
 			return NetworkSource(SessionId).m_aConnections[Conn];
 		dbg_assert(Conn == CONN_MAIN, "a demo has only one connection");
-		return m_pDemoSessionSource->m_Connection;
+		return DemoSource(SessionId).m_Connection;
 	}
 	const CConnection &Connection(CSessionId SessionId, int Conn) const
 	{
@@ -231,15 +302,15 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	int m_FavoritesGroupNum = 0;
 	NETADDR m_aFavoritesGroupAddresses[MAX_SERVER_ADDRESSES];
 
-	void UpdateDemoIntraTimers();
+	void UpdateDemoIntraTimers(CSessionId SessionId);
 	// The session being updated. A stop requested from within its update is
 	// carried out once the update returns.
 	CSessionId m_UpdatingSessionId;
 	void UpdateSessions();
 	void FinishStopSession(CSessionId SessionId);
-	void UpdateDemoSession();
+	void UpdateDemoSession(CSessionId SessionId);
 	void UpdateNetworkSession();
-	void StopDemoSession(const char *pReason);
+	void StopDemoSession(CSessionId SessionId, const char *pReason);
 	void StopNetworkSession(const char *pReason);
 	int MaxLatencyTicks() const;
 	int PredictionMargin() const;
@@ -259,8 +330,15 @@ public:
 	CSessionId FocusedSessionId() const override { return m_SessionManager.FocusedId(); }
 	CSessionId NetworkSessionId() const override { return m_NetworkSessionId; }
 	CSessionId DemoSessionId() const override { return m_DemoSessionId; }
+#if defined(CONF_VIDEORECORDER)
+	CSessionId VideoExportSessionId() const override { return m_VideoExportSessionId; }
+#endif
 	ESessionSourceType SessionType(CSessionId SessionId) const override { return SessionSource(SessionId).Type(); }
 	ESessionState SessionState(CSessionId SessionId) const override { return SessionSource(SessionId).State(); }
+	bool DemoPlaybackPaused(CSessionId SessionId) const override { return DemoSource(SessionId).m_DemoPlayer.BaseInfo()->m_Paused; }
+	float DemoPlaybackSpeed(CSessionId SessionId) const override { return DemoSource(SessionId).m_DemoPlayer.BaseInfo()->m_Speed; }
+	int64_t DemoPlaybackTime(CSessionId SessionId) const override;
+	float DemoPlaybackLocalTime(CSessionId SessionId) const override;
 	int PrevGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PrevGameTick; }
 	int GameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_CurGameTick; }
 	int PredGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PredTick; }
@@ -287,6 +365,7 @@ public:
 	IHttp *Http() { return m_pHttp; }
 
 	CClient();
+	~CClient() override;
 
 	// ----- send functions -----
 	int SendMsg(int Conn, CMsgPacker *pMsg, int Flags) override;
@@ -362,6 +441,7 @@ public:
 	void SnapSetStaticsize7(int ItemType, int Size) override;
 
 	void Render();
+	void RenderScreen();
 	void RenderDebug();
 	void RenderGraphs();
 
@@ -411,8 +491,8 @@ public:
 
 	void PumpNetwork();
 
-	void OnDemoPlayerSnapshot(void *pData, int Size) override;
-	void OnDemoPlayerMessage(void *pData, int Size) override;
+	void OnDemoSnapshot(CSessionId SessionId, void *pData, int Size);
+	void OnDemoMessage(CSessionId SessionId, void *pData, int Size);
 
 	void Update();
 
@@ -448,18 +528,51 @@ public:
 	static void Con_Screenshot(IConsole::IResult *pResult, void *pUserData);
 
 #if defined(CONF_VIDEORECORDER)
-	/**
-	 * The video that is being recorded. It reaches the rest of the client
-	 * through `IVideo::Current()`, which does not own it, so this is what frees
-	 * it when the recording ends.
-	 */
-	std::unique_ptr<class IVideo> m_pVideo;
-
-	void StartVideo(const char *pFilename, bool WithTimestamp);
-	void StopVideo();
+	CVideoExportSettings DefaultVideoExportSettings() override;
+	const char *StartVideo(CSessionId SessionId, const char *pFilename, bool WithTimestamp, const CVideoExportSettings &Settings, bool ExactFilename);
 	static void Con_StartVideo(IConsole::IResult *pResult, void *pUserData);
+	static void Con_RenderDemo(IConsole::IResult *pResult, void *pUserData);
 	static void Con_StopVideo(IConsole::IResult *pResult, void *pUserData);
-	const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, int SpeedIndex, bool StartPaused = false) override;
+	const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue) override;
+	void DemoPlayer_StartRenderQueue() override { m_VideoExportQueueRunning = true; }
+	void DemoPlayer_ClearRenderQueue() override
+	{
+		m_VideoExportQueue.clear();
+		if(!m_ActiveVideoExport.has_value())
+			m_VideoExportQueueRunning = false;
+	}
+	size_t DemoPlayer_RenderQueueSize() const override { return m_VideoExportQueue.size() + (m_ActiveVideoExport.has_value() ? 1 : 0); }
+	size_t DemoPlayer_RenderQueuePending() const override { return m_VideoExportQueue.size(); }
+	const char *DemoPlayer_RenderQueueName(size_t Index) const override
+	{
+		dbg_assert(Index < m_VideoExportQueue.size(), "render queue index out of bounds");
+		return m_VideoExportQueue[Index].m_aDemoPath;
+	}
+	const char *DemoPlayer_ActiveRenderName() const override
+	{
+		return m_ActiveVideoExport.has_value() ? m_ActiveVideoExport->m_aDemoPath : "";
+	}
+	void DemoPlayer_RenderQueueErase(size_t Index) override
+	{
+		dbg_assert(Index < m_VideoExportQueue.size(), "render queue index out of bounds");
+		m_VideoExportQueue.erase(m_VideoExportQueue.begin() + Index);
+		if(m_VideoExportQueue.empty() && !m_ActiveVideoExport.has_value())
+			m_VideoExportQueueRunning = false;
+	}
+	void DemoPlayer_RenderQueueMove(size_t Index, bool Up) override
+	{
+		const size_t Target = Up ? Index - 1 : Index + 1;
+		dbg_assert(Index < m_VideoExportQueue.size() && Target < m_VideoExportQueue.size(), "render queue index out of bounds");
+		std::swap(m_VideoExportQueue[Index], m_VideoExportQueue[Target]);
+	}
+	void DemoPlayer_CancelActiveRender() override;
+	bool DemoPlayer_RenderQueueActive() const override { return m_ActiveVideoExport.has_value(); }
+	const char *DemoPlayer_RenderQueueError() const override { return m_aVideoExportQueueError; }
+	bool DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const override;
+	CSessionId VideoSessionId() const override { return m_VideoSessionId; }
+	bool VideoUsesOfflineAudio() const override { return m_VideoOfflineAudio; }
+	void ConfigureCommandLineVideoExport(const char *pDemoPath, const char *pVideoPath, const CVideoExportSettings &Settings);
+	int CommandLineExitCode() const { return m_CommandLineExitCode; }
 #endif
 
 	static void Con_Rcon(IConsole::IResult *pResult, void *pUserData);
@@ -498,6 +611,7 @@ public:
 	void RegisterCommands();
 
 	const char *DemoPlayer_Play(const char *pFilename, int StorageType) override;
+	const char *DemoPlayer_Play(CSessionId SessionId, const char *pFilename, int StorageType, bool Focus);
 	void DemoRecorder_Start(const char *pFilename, bool WithTimestamp, int Recorder) override;
 	void DemoRecorder_HandleAutoStart() override;
 	void DemoRecorder_UpdateReplayRecorder() override;

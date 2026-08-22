@@ -86,7 +86,7 @@ public:
 	void Unload();
 	bool UpdateMapImages() { return m_MapImages.Update(); }
 	void PrepareRender(const CRenderContext &Context, bool UsePredictedTime);
-	void UpdateMapSounds(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool UsePredictedTime);
+	void UpdateMapSounds(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool UsePredictedTime, bool Offline = false);
 	void UpdateClients(const CPresentationContext &Context);
 	std::shared_ptr<CManagedTeeRenderInfo> CreateClientTee(const CGameState &State, int ClientId) const;
 	const CClientPresentation *Client(int Conn, int ClientId) const;

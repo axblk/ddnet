@@ -7,6 +7,7 @@
 #include <base/vmath.h>
 
 #include <engine/client/session.h>
+#include <engine/shared/video.h>
 
 #include <span>
 
@@ -296,8 +297,9 @@ public:
 	CGameTickInfo m_Time;
 	CVisibleWorldRect m_VisibleWorldRect;
 	bool m_IsVideoOutput;
+	CVideoExportSettings m_VideoSettings;
 
-	CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, bool IsVideoOutput = false);
+	CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, bool IsVideoOutput = false, CVideoExportSettings VideoSettings = {});
 
 	float AspectRatio(float DefaultAspectRatio) const;
 	bool IsOtherTeam(int ClientId) const;

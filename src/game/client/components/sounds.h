@@ -39,9 +39,15 @@ class CSounds : public CComponent
 		int m_Channel;
 		int m_SetId;
 	};
-	CQueueEntry m_aQueue[QUEUE_SIZE];
-	int m_QueuePos;
-	int64_t m_QueueWaitTime;
+	class CQueue
+	{
+	public:
+		CQueueEntry m_aEntries[QUEUE_SIZE];
+		int m_Pos = 0;
+		int64_t m_WaitTime = 0;
+	};
+	// One for the device and one for the offline mix of a video export.
+	CQueue m_aQueues[2];
 	class CSoundLoad
 	{
 	public:
@@ -53,6 +59,7 @@ class CSounds : public CComponent
 	bool m_WaitForSoundJob = false;
 
 	void UpdateChannels();
+	void FinishSoundLoads();
 	int GetSampleId(int SetId);
 
 	float m_GuiSoundVolume = -1.0f;
@@ -76,19 +83,26 @@ public:
 	void OnShutdown() override;
 	void OnReset() override;
 	void OnStateChange(int NewState, int OldState) override;
-	void Update(std::optional<vec2> ListenerPosition);
+	void OnUpdate() override;
+	/**
+	 * @param ListenerPosition Where the sounds are heard from, or nothing to
+	 * leave the listener where it is.
+	 * @param Now Presentation time, which paces the queue.
+	 * @param Offline Whether this is the offline mix of a video export.
+	 */
+	void Update(std::optional<vec2> ListenerPosition, int64_t Now, bool Offline = false);
 
-	void ClearQueue();
-	void Enqueue(int Channel, int SetId);
-	void Play(int Channel, int SetId, float Volume);
-	void PlayAt(int Channel, int SetId, float Volume, vec2 Position);
+	void ClearQueue(bool Offline = false);
+	void Enqueue(int Channel, int SetId, bool Offline = false);
+	void Play(int Channel, int SetId, float Volume, bool Offline = false);
+	void PlayAt(int Channel, int SetId, float Volume, vec2 Position, bool Offline = false);
 	void PlayAndRecord(int Channel, int SetId, float Volume, vec2 Position);
 	void Stop(int SetId);
 	bool IsPlaying(int SetId);
 	bool StartupAssetsLoaded() const { return !m_WaitForSoundJob; }
 
-	ISound::CVoiceHandle PlaySample(int Channel, int SampleId, int Flags, float Volume);
-	ISound::CVoiceHandle PlaySampleAt(int Channel, int SampleId, int Flags, float Volume, vec2 Position);
+	ISound::CVoiceHandle PlaySample(int Channel, int SampleId, int Flags, float Volume, bool Offline = false);
+	ISound::CVoiceHandle PlaySampleAt(int Channel, int SampleId, int Flags, float Volume, vec2 Position, bool Offline = false);
 };
 
 #endif

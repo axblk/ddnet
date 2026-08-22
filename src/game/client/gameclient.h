@@ -197,6 +197,11 @@ private:
 	CGameView m_LegacyView;
 	CGameView m_SecondaryView;
 	CGameView m_TertiaryView;
+#if defined(CONF_VIDEORECORDER)
+	// The view a demo is rendered to video through when the export is not the
+	// session on the screen.
+	CGameView m_VideoView;
+#endif
 	float m_ControllerLocalTime = 0.0f;
 	class CPreparedRenderEntry
 	{
@@ -216,12 +221,19 @@ private:
 	CRaceHelper m_RaceHelper;
 
 	void ProcessEvents(CSessionId SessionId, int Conn);
+	void ProcessAirJumpEffects(CSessionId SessionId, int Conn);
 	void BuildSnapState(CSessionId SessionId, int Conn);
 	void ProcessSnapshot(CSessionId SessionId, int Conn);
 	void ProcessPrediction();
 	void AimView(const CGameSessionContext &Session, const CGameState &State, CGameView &View) const;
 	void UpdatePositions(CGameState &State, CGameView &View, const CGameTickInfo &Time, float LocalTime, bool Interactive);
+	void FillPreparedRenderEntry(CPreparedRenderEntry &Entry, int64_t PresentationTime) const;
+	void PrepareScreenRender(bool VideoOutput);
 	CVisibleWorldRect VisibleWorldRectFor(const CGameView &View) const;
+	bool m_PreparedVideoOutput = false;
+	CVideoExportSettings m_PreparedVideoSettings;
+	bool m_PreparedIsolatedVideoOutput = false;
+	bool m_PreparedOfflineVideoAudio = false;
 	void UpdateNetworkPlayerInfo();
 	void AddChatLine(CSessionId SessionId, int Conn, int ClientId, int Team, const char *pText);
 	int64_t SessionMessageTime(CSessionId SessionId) const;
@@ -250,6 +262,11 @@ private:
 	static void ConchainMenuMap(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 
 public:
+	/**
+	 * Whether the sounds of a session are heard, and in which mixer: the live
+	 * one, or the offline one a queued video export records.
+	 */
+	bool AudioForSession(CSessionId SessionId, bool &Offline) const;
 	static std::function<bool(int, int, int, int)> GetScoreComparator(bool TimeScore, bool ReceivedMillisecondFinishTimes, bool Race7);
 
 	IKernel *Kernel() { return IInterface::Kernel(); }
@@ -395,8 +412,14 @@ public:
 	void OnSessionClosed(CSessionId SessionId) override;
 	void OnSessionFocused(CSessionId SessionId) override;
 	void OnRenderPrepare() override;
+#if defined(CONF_VIDEORECORDER)
+	void OnRenderVideoPrepare(CSessionId SessionId, const CVideoExportSettings &Settings) override;
+#endif
 	void OnRender() override;
 	void OnRenderFinalize() override;
+#if defined(CONF_VIDEORECORDER)
+	bool OnRenderVideoProgress(bool Overlay) override;
+#endif
 	void OnUpdate() override;
 	void OnDummyDisconnect() override;
 	virtual void OnRelease();
@@ -424,6 +447,7 @@ public:
 	virtual void OnStartGame();
 	virtual void OnStartRound();
 	void OnWindowResize() override;
+	bool IsSoundReady() override { return m_Sounds.StartupAssetsLoaded(); }
 
 	void InitializeLanguage() override;
 	void UpdateLanguageLoads();

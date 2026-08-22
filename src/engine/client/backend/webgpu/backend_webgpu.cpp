@@ -97,8 +97,11 @@ namespace
 	constexpr uint64_t UNIFORM_BUFFER_SIZE = 1024 * 1024;
 	constexpr size_t UPLOAD_BUFFER_SLOT_COUNT = 3;
 	constexpr size_t GPU_TIMESTAMP_SLOT_COUNT = 4;
-	constexpr uint64_t GPU_TIMESTAMP_SIZE = 2 * sizeof(uint64_t);
-	constexpr uint64_t GPU_TIMESTAMP_RESOLVE_STRIDE = 256;
+	constexpr uint32_t GPU_TIMESTAMP_MAX_INTERVALS = 128;
+	constexpr uint32_t GPU_TIMESTAMP_QUERY_COUNT = 2 + GPU_TIMESTAMP_MAX_INTERVALS * 2;
+	constexpr uint64_t GPU_TIMESTAMP_SIZE = GPU_TIMESTAMP_QUERY_COUNT * sizeof(uint64_t);
+	constexpr uint64_t GPU_TIMESTAMP_RESOLVE_STRIDE = (GPU_TIMESTAMP_SIZE + 255) / 256 * 256;
+	using TGpuTimestampIntervalZones = std::array<IGraphics::EGpuRenderZone, GPU_TIMESTAMP_MAX_INTERVALS>;
 	constexpr size_t BLEND_MODE_COUNT = 3;
 	constexpr size_t PRIMITIVE_PIPELINE_COUNT = 2 * BLEND_MODE_COUNT * 2;
 	constexpr size_t BUFFERED_PIPELINE_COUNT = BLEND_MODE_COUNT * 2;
@@ -273,6 +276,10 @@ namespace
 			std::shared_ptr<SMapResult> m_pMapResult;
 			bool m_InFlight = false;
 			bool m_Publish = false;
+			uint32_t m_ZoneMask = 0;
+			uint32_t m_IntervalCount = 0;
+			TGpuTimestampIntervalZones m_aIntervalZones{};
+			uint64_t m_Generation = 0;
 		};
 
 		SWebGpuNativeWindow m_NativeWindow;
@@ -340,6 +347,11 @@ namespace
 		size_t m_UploadBufferSlot = 0;
 		float m_GpuTimestampPeriod = 0.0f;
 		int m_GpuTimestampActiveSlot = -1;
+		std::array<int32_t, IGraphics::GPU_RENDER_ZONE_COUNT> m_aGpuTimestampZoneActiveIntervals{};
+		TGpuTimestampIntervalZones m_aGpuTimestampIntervalZones{};
+		uint32_t m_GpuTimestampIntervalCount = 0;
+		uint32_t m_GpuTimestampInvalidZoneMask = 0;
+		uint64_t m_GpuTimestampGeneration = 0;
 		IGraphics::CTextureHandle m_RenderTarget;
 		WGPULoadOp m_RenderPassLoadOp = WGPULoadOp_Load;
 		WGPUColor m_RenderPassClearColor = WGPU_COLOR_INIT;
@@ -354,6 +366,7 @@ namespace
 		bool m_DeviceLost = false;
 		bool m_PresentedOnce = false;
 		bool m_GpuTimestampSupported = false;
+		bool m_GpuTimestampInsidePassesSupported = false;
 		bool m_GpuTimestampResourcesFailed = false;
 		bool m_GpuTimestampActiveSubmitted = false;
 		std::atomic<bool> m_UncapturedError = false;
@@ -1927,6 +1940,9 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			}
 			m_GpuTimestampActiveSlot = -1;
 			m_GpuTimestampActiveSubmitted = false;
+			m_aGpuTimestampZoneActiveIntervals.fill(-1);
+			m_GpuTimestampIntervalCount = 0;
+			m_GpuTimestampInvalidZoneMask = 0;
 		}
 
 		bool EnsureGpuTimestampResources()
@@ -1939,7 +1955,7 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			WGPUQuerySetDescriptor QuerySetDescriptor = WGPU_QUERY_SET_DESCRIPTOR_INIT;
 			QuerySetDescriptor.label = StringView("DDNet WebGPU frame timestamps");
 			QuerySetDescriptor.type = WGPUQueryType_Timestamp;
-			QuerySetDescriptor.count = GPU_TIMESTAMP_SLOT_COUNT * 2;
+			QuerySetDescriptor.count = GPU_TIMESTAMP_SLOT_COUNT * GPU_TIMESTAMP_QUERY_COUNT;
 			m_GpuTimestampQuerySet = wgpuDeviceCreateQuerySet(m_Device, &QuerySetDescriptor);
 
 			WGPUBufferDescriptor BufferDescriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
@@ -1976,15 +1992,31 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 				if(Slot.m_pMapResult->m_Status == WGPUMapAsyncStatus_Success)
 				{
 					const auto *pMappedData = static_cast<const uint8_t *>(wgpuBufferGetConstMappedRange(Slot.m_ReadbackBuffer, 0, GPU_TIMESTAMP_SIZE));
-					if(pMappedData != nullptr && Slot.m_Publish)
+					if(pMappedData != nullptr && Slot.m_Publish && m_pGpuTiming->CanPublish(Slot.m_Generation))
 					{
-						uint64_t Start;
-						uint64_t End;
-						std::memcpy(&Start, pMappedData, sizeof(Start));
-						std::memcpy(&End, pMappedData + sizeof(Start), sizeof(End));
+						std::array<uint64_t, GPU_TIMESTAMP_QUERY_COUNT> aTimestamps;
+						std::memcpy(aTimestamps.data(), pMappedData, GPU_TIMESTAMP_SIZE);
+						const uint64_t Start = aTimestamps[0];
+						const uint64_t End = aTimestamps[1];
 						const double Duration = End >= Start ? static_cast<double>(End - Start) * m_GpuTimestampPeriod : -1.0;
-						if(Duration >= 0.0 && std::isfinite(Duration) && Duration <= std::numeric_limits<uint64_t>::max())
-							m_pGpuTiming->Publish(static_cast<uint64_t>(Duration + 0.5));
+						if(Duration >= 0.0 && std::isfinite(Duration) && Duration <= static_cast<double>(std::numeric_limits<uint64_t>::max()))
+						{
+							std::array<uint64_t, IGraphics::GPU_RENDER_ZONE_COUNT> aZoneNanoseconds{};
+							for(uint32_t Interval = 0; Interval < Slot.m_IntervalCount; ++Interval)
+							{
+								const size_t Zone = static_cast<size_t>(Slot.m_aIntervalZones[Interval]);
+								if((Slot.m_ZoneMask & (1U << Zone)) == 0)
+									continue;
+								const size_t Query = 2 + Interval * 2;
+								const double ZoneDuration = aTimestamps[Query + 1] >= aTimestamps[Query] ? static_cast<double>(aTimestamps[Query + 1] - aTimestamps[Query]) * m_GpuTimestampPeriod : -1.0;
+								if(ZoneDuration >= 0.0 && std::isfinite(ZoneDuration) && ZoneDuration <= static_cast<double>(std::numeric_limits<uint64_t>::max()))
+								{
+									const uint64_t IntervalNanoseconds = static_cast<uint64_t>(ZoneDuration + 0.5);
+									aZoneNanoseconds[Zone] = std::numeric_limits<uint64_t>::max() - aZoneNanoseconds[Zone] < IntervalNanoseconds ? std::numeric_limits<uint64_t>::max() : aZoneNanoseconds[Zone] + IntervalNanoseconds;
+								}
+							}
+							m_pGpuTiming->Publish(static_cast<uint64_t>(Duration + 0.5), aZoneNanoseconds, Slot.m_ZoneMask);
+						}
 					}
 					wgpuBufferUnmap(Slot.m_ReadbackBuffer);
 				}
@@ -1992,6 +2024,30 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 				Slot.m_InFlight = false;
 				Slot.m_Publish = false;
 			}
+		}
+
+		/**
+		 * Gives the timestamp slot of the current frame back without publishing
+		 * a measurement.
+		 *
+		 * A frame that never reaches the queue has no timings, and its slot has
+		 * to become free again. There are only a handful of slots, so a slot
+		 * left claimed on an error path means GPU timing is off from then on
+		 * while still reporting itself as supported.
+		 */
+		void AbandonGpuTimestamp()
+		{
+			if(m_GpuTimestampActiveSlot < 0)
+				return;
+			SGpuTimestampSlot &Slot = m_aGpuTimestampSlots[m_GpuTimestampActiveSlot];
+			Slot.m_pMapResult.reset();
+			Slot.m_InFlight = false;
+			Slot.m_Publish = false;
+			m_GpuTimestampActiveSlot = -1;
+			m_GpuTimestampActiveSubmitted = false;
+			m_aGpuTimestampZoneActiveIntervals.fill(-1);
+			m_GpuTimestampIntervalCount = 0;
+			m_GpuTimestampInvalidZoneMask = 0;
 		}
 
 		void BeginGpuTimestamp()
@@ -2004,9 +2060,59 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 					continue;
 				m_GpuTimestampActiveSlot = static_cast<int>(i);
 				m_GpuTimestampActiveSubmitted = false;
-				wgpuCommandEncoderWriteTimestamp(m_CommandEncoder, m_GpuTimestampQuerySet, static_cast<uint32_t>(i * 2));
+				m_aGpuTimestampZoneActiveIntervals.fill(-1);
+				m_GpuTimestampIntervalCount = 0;
+				m_GpuTimestampInvalidZoneMask = 0;
+				m_GpuTimestampGeneration = m_pGpuTiming->Generation();
+				wgpuCommandEncoderWriteTimestamp(m_CommandEncoder, m_GpuTimestampQuerySet, static_cast<uint32_t>(i * GPU_TIMESTAMP_QUERY_COUNT));
 				return;
 			}
+		}
+
+		bool GpuRenderZone(const CCommandBuffer::SCommand_GpuRenderZone *pCommand)
+		{
+			if(!m_GpuTimestampInsidePassesSupported)
+				return true;
+			if(!EnsureCommandEncoder() || m_GpuTimestampActiveSlot < 0)
+				return m_CommandEncoder != nullptr;
+			const size_t Zone = static_cast<size_t>(pCommand->m_Zone);
+			if(Zone >= m_aGpuTimestampZoneActiveIntervals.size())
+				return true;
+			uint32_t Query;
+			if(pCommand->m_Begin)
+			{
+				if(m_aGpuTimestampZoneActiveIntervals[Zone] >= 0)
+					return true;
+				if(m_GpuTimestampIntervalCount >= GPU_TIMESTAMP_MAX_INTERVALS)
+				{
+					m_GpuTimestampInvalidZoneMask |= 1U << Zone;
+					return true;
+				}
+				const uint32_t Interval = m_GpuTimestampIntervalCount++;
+				m_aGpuTimestampIntervalZones[Interval] = pCommand->m_Zone;
+				m_aGpuTimestampZoneActiveIntervals[Zone] = static_cast<int32_t>(Interval);
+				Query = static_cast<uint32_t>(m_GpuTimestampActiveSlot * GPU_TIMESTAMP_QUERY_COUNT + 2 + Interval * 2);
+			}
+			else
+			{
+				const int32_t Interval = m_aGpuTimestampZoneActiveIntervals[Zone];
+				if(Interval < 0)
+					return true;
+				Query = static_cast<uint32_t>(m_GpuTimestampActiveSlot * GPU_TIMESTAMP_QUERY_COUNT + 3 + static_cast<uint32_t>(Interval) * 2);
+			}
+			if(m_RenderPass != nullptr)
+			{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+				return true;
+#else
+				wgpuRenderPassEncoderWriteTimestamp(m_RenderPass, m_GpuTimestampQuerySet, Query);
+#endif
+			}
+			else
+				wgpuCommandEncoderWriteTimestamp(m_CommandEncoder, m_GpuTimestampQuerySet, Query);
+			if(!pCommand->m_Begin)
+				m_aGpuTimestampZoneActiveIntervals[Zone] = -1;
+			return true;
 		}
 
 		void MapGpuTimestampSlot(int SlotIndex, bool Publish)
@@ -2015,6 +2121,13 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			Slot.m_pMapResult = std::make_shared<SMapResult>();
 			Slot.m_InFlight = true;
 			Slot.m_Publish = Publish;
+			uint32_t ZoneMask = 0;
+			for(uint32_t Interval = 0; Interval < m_GpuTimestampIntervalCount; ++Interval)
+				ZoneMask |= 1U << static_cast<size_t>(m_aGpuTimestampIntervalZones[Interval]);
+			Slot.m_ZoneMask = ZoneMask & ~m_GpuTimestampInvalidZoneMask;
+			Slot.m_IntervalCount = m_GpuTimestampIntervalCount;
+			Slot.m_aIntervalZones = m_aGpuTimestampIntervalZones;
+			Slot.m_Generation = m_GpuTimestampGeneration;
 			WGPUBufferMapCallbackInfo CallbackInfo = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
 			CallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
 			CallbackInfo.callback = MapCallback;
@@ -2700,22 +2813,37 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			EndRenderPass();
 			const int GpuTimestampSlot = EndsFrame ? m_GpuTimestampActiveSlot : -1;
 			if(GpuTimestampSlot >= 0 && m_CommandEncoder == nullptr && !EnsureCommandEncoder())
+			{
+				AbandonGpuTimestamp();
 				return false;
+			}
 			if(m_CommandEncoder == nullptr)
 				return true;
 			if(GpuTimestampSlot >= 0)
 			{
-				const uint32_t FirstQuery = static_cast<uint32_t>(GpuTimestampSlot * 2);
+				const uint32_t FirstQuery = static_cast<uint32_t>(GpuTimestampSlot * GPU_TIMESTAMP_QUERY_COUNT);
 				const uint64_t ResolveOffset = GpuTimestampSlot * GPU_TIMESTAMP_RESOLVE_STRIDE;
+				for(size_t Zone = 0; Zone < m_aGpuTimestampZoneActiveIntervals.size(); ++Zone)
+				{
+					const int32_t Interval = m_aGpuTimestampZoneActiveIntervals[Zone];
+					if(Interval < 0)
+						continue;
+					const uint32_t Query = FirstQuery + 2 + static_cast<uint32_t>(Interval) * 2;
+					wgpuCommandEncoderWriteTimestamp(m_CommandEncoder, m_GpuTimestampQuerySet, Query + 1);
+					m_GpuTimestampInvalidZoneMask |= 1U << Zone;
+				}
 				wgpuCommandEncoderWriteTimestamp(m_CommandEncoder, m_GpuTimestampQuerySet, FirstQuery + 1);
-				wgpuCommandEncoderResolveQuerySet(m_CommandEncoder, m_GpuTimestampQuerySet, FirstQuery, 2, m_GpuTimestampResolveBuffer, ResolveOffset);
-				wgpuCommandEncoderCopyBufferToBuffer(m_CommandEncoder, m_GpuTimestampResolveBuffer, ResolveOffset, m_aGpuTimestampSlots[GpuTimestampSlot].m_ReadbackBuffer, 0, GPU_TIMESTAMP_SIZE);
+				const uint32_t QueryCount = 2 + m_GpuTimestampIntervalCount * 2;
+				const uint64_t QuerySize = QueryCount * sizeof(uint64_t);
+				wgpuCommandEncoderResolveQuerySet(m_CommandEncoder, m_GpuTimestampQuerySet, FirstQuery, QueryCount, m_GpuTimestampResolveBuffer, ResolveOffset);
+				wgpuCommandEncoderCopyBufferToBuffer(m_CommandEncoder, m_GpuTimestampResolveBuffer, ResolveOffset, m_aGpuTimestampSlots[GpuTimestampSlot].m_ReadbackBuffer, 0, QuerySize);
 			}
 			WGPUCommandBuffer CommandBuffer = wgpuCommandEncoderFinish(m_CommandEncoder, nullptr);
 			wgpuCommandEncoderRelease(m_CommandEncoder);
 			m_CommandEncoder = nullptr;
 			if(CommandBuffer == nullptr)
 			{
+				AbandonGpuTimestamp();
 				SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to finish the frame command buffer");
 				return false;
 			}
@@ -2727,7 +2855,10 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			wgpuQueueSubmit(m_Queue, 1, &CommandBuffer);
 			wgpuCommandBufferRelease(CommandBuffer);
 			if(UsesUploadBuffers && !AdvanceUploadBufferSlot())
+			{
+				AbandonGpuTimestamp();
 				return false;
+			}
 			if(m_GpuTimestampActiveSlot >= 0)
 				m_GpuTimestampActiveSubmitted = true;
 			if(GpuTimestampSlot >= 0)
@@ -2735,6 +2866,9 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 				MapGpuTimestampSlot(GpuTimestampSlot, PublishGpuTimestamp);
 				m_GpuTimestampActiveSlot = -1;
 				m_GpuTimestampActiveSubmitted = false;
+				m_aGpuTimestampZoneActiveIntervals.fill(-1);
+				m_GpuTimestampIntervalCount = 0;
+				m_GpuTimestampInvalidZoneMask = 0;
 			}
 			m_StreamOffset = 0;
 			m_UniformOffset = 0;
@@ -3170,11 +3304,16 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			if(wgpuAdapterGetInfo(m_Adapter, &AdapterInfo) == WGPUStatus_Success)
 			{
 				const std::string Description = ToString(AdapterInfo.description);
+				const std::string Device = ToString(AdapterInfo.device);
 				const std::string Vendor = ToString(AdapterInfo.vendor);
 				str_copy(pCommand->m_pVendorString, Vendor.empty() ? WEBGPU_IMPLEMENTATION_NAME : Vendor.c_str(), 256);
 				str_copy(pCommand->m_pVersionString, WEBGPU_IMPLEMENTATION_VERSION, 256);
-				str_copy(pCommand->m_pRendererString, Description.empty() ? BackendName(AdapterInfo.backendType) : Description.c_str(), 256);
-				log_info("gfx/webgpu", "adapter=%s backend=%s", Description.c_str(), BackendName(AdapterInfo.backendType));
+				const std::string &Renderer = Device.empty() ? Description : Device;
+				if(Renderer.empty())
+					str_copy(pCommand->m_pRendererString, BackendName(AdapterInfo.backendType), 256);
+				else
+					str_format(pCommand->m_pRendererString, 256, "%s (%s)", Renderer.c_str(), BackendName(AdapterInfo.backendType));
+				log_info("gfx/webgpu", "adapter=%s backend=%s", Renderer.c_str(), BackendName(AdapterInfo.backendType));
 				wgpuAdapterInfoFreeMembers(AdapterInfo);
 			}
 
@@ -3184,11 +3323,13 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 #if !defined(CONF_PLATFORM_EMSCRIPTEN)
 			const std::array GpuTimestampFeatures{
 				WGPUFeatureName_TimestampQuery,
-				static_cast<WGPUFeatureName>(WGPUNativeFeature_TimestampQueryInsideEncoders)};
-			m_GpuTimestampSupported = m_pGpuTiming != nullptr && std::ranges::all_of(GpuTimestampFeatures, [&](WGPUFeatureName Feature) { return wgpuAdapterHasFeature(m_Adapter, Feature); });
+				static_cast<WGPUFeatureName>(WGPUNativeFeature_TimestampQueryInsideEncoders),
+				static_cast<WGPUFeatureName>(WGPUNativeFeature_TimestampQueryInsidePasses)};
+			m_GpuTimestampSupported = m_pGpuTiming != nullptr && std::ranges::all_of(GpuTimestampFeatures.begin(), GpuTimestampFeatures.begin() + 2, [&](WGPUFeatureName Feature) { return wgpuAdapterHasFeature(m_Adapter, Feature); });
+			m_GpuTimestampInsidePassesSupported = m_GpuTimestampSupported && wgpuAdapterHasFeature(m_Adapter, GpuTimestampFeatures[2]);
 			if(m_GpuTimestampSupported)
 			{
-				DeviceDescriptor.requiredFeatureCount = GpuTimestampFeatures.size();
+				DeviceDescriptor.requiredFeatureCount = m_GpuTimestampInsidePassesSupported ? GpuTimestampFeatures.size() : GpuTimestampFeatures.size() - 1;
 				DeviceDescriptor.requiredFeatures = GpuTimestampFeatures.data();
 			}
 #endif
@@ -3431,6 +3572,8 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 				return RUN_COMMAND_COMMAND_HANDLED;
 			case CCommandBuffer::CMD_DELETE_BUFFER_CONTAINER:
 				return DestroyBufferContainer(static_cast<const CCommandBuffer::SCommand_DeleteBufferContainer *>(pBaseCommand)) ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
+			case CCommandBuffer::CMD_GPU_RENDER_ZONE:
+				return GpuRenderZone(static_cast<const CCommandBuffer::SCommand_GpuRenderZone *>(pBaseCommand)) ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
 			case CCommandBuffer::CMD_BEGIN_RENDER_PASS:
 			{
 				const auto *pCommand = static_cast<const CCommandBuffer::SCommand_BeginRenderPass *>(pBaseCommand);

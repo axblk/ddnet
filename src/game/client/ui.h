@@ -663,6 +663,7 @@ public:
 	 * @param FontSize Size of the font (`10.0f`, `12.0f` and `14.0f` are commonly used here)
 	 * @param Corners Number of corners (default: `IGraphics::CORNER_ALL`)
 	 * @param vColorSplits Sets color splits of the `CTextCursor` to allow multicolored text
+	 * @param pUIElement Optional element used to cache unchanged text geometry while the input is inactive
 	 *
 	 * @return true if the value of the input field changed since the last call.
 	 */
@@ -681,6 +682,7 @@ public:
 	 * @param FontSize Size of the font (`10.0f`, `12.0f` and `14.0f` are commonly used here)
 	 * @param Corners Number of corners (default: `IGraphics::CORNER_ALL`)
 	 * @param vColorSplits Sets color splits of the `CTextCursor` to allow multicolored text
+	 * @param pUIElement Optional element used to cache unchanged text and clear button geometry
 	 *
 	 * @return true if the value of the input field changed since the last call.
 	 */

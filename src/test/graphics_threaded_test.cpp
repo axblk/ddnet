@@ -615,6 +615,7 @@ TEST(GraphicsThreaded, CommandChannelsCoverAllCoreCommands)
 		CCommandBuffer::CMD_BEGIN_RENDER_PASS,
 		CCommandBuffer::CMD_END_RENDER_PASS,
 		CCommandBuffer::CMD_FLUSH_RENDER_PASS,
+		CCommandBuffer::CMD_GPU_RENDER_ZONE,
 		CCommandBuffer::CMD_DRAW,
 		CCommandBuffer::CMD_DRAW_INDEXED,
 		CCommandBuffer::CMD_PRESENTATION_TARGET_READBACK,
@@ -813,6 +814,10 @@ TEST(GraphicsThreaded, CommandBufferReportsRenderWork)
 	Update.m_pUploadData = UploadData;
 	Update.m_DataSize = sizeof(UploadData);
 	ASSERT_TRUE(Buffer.AddCommandUnsafe(Update));
+	CCommandBuffer::SCommand_GpuRenderZone Zone;
+	Zone.m_Zone = IGraphics::EGpuRenderZone::WORLD;
+	Zone.m_Begin = true;
+	ASSERT_TRUE(Buffer.AddCommandUnsafe(Zone));
 
 	const IGraphics::CFrameRenderStats Stats = Buffer.RenderStats();
 	EXPECT_EQ(Stats.m_Commands, 3u);
@@ -824,6 +829,23 @@ TEST(GraphicsThreaded, CommandBufferReportsRenderWork)
 	EXPECT_EQ(Stats.m_BufferUpdates, 1u);
 	EXPECT_EQ(Stats.m_UploadBytes, sizeof(UploadData));
 	EXPECT_EQ(Stats.m_StreamedBytes, 8 * sizeof(*pVertices));
+}
+
+TEST(GraphicsThreaded, GpuTimingPublishesCoherentZones)
+{
+	SGpuTimingShared Shared;
+	Shared.SetEnabled(true);
+	const uint64_t Generation = Shared.Generation();
+	ASSERT_TRUE(Shared.CanPublish(Generation));
+	const std::array<uint64_t, IGraphics::GPU_RENDER_ZONE_COUNT> aZones{120, 30};
+	Shared.Publish(200, aZones, 3);
+	const SGpuTiming Timing = Shared.Snapshot();
+	EXPECT_EQ(Timing.m_TimeNanoseconds, 200u);
+	EXPECT_EQ(Timing.m_aRenderZoneNanoseconds, aZones);
+	EXPECT_EQ(Timing.m_RenderZoneMask, 3u);
+	EXPECT_EQ(Timing.m_Sample, 1u);
+	Shared.SetEnabled(false);
+	EXPECT_FALSE(Shared.CanPublish(Generation));
 }
 
 TEST(GraphicsThreaded, ReliablePayloadBudgetRejectsWholeCommand)

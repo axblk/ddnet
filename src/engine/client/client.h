@@ -4,6 +4,7 @@
 #define ENGINE_CLIENT_CLIENT_H
 
 #include "graph.h"
+#include "render_trace.h"
 #include "session_sources.h"
 #include "smooth_time.h"
 
@@ -326,6 +327,8 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	int64_t m_BenchmarkStopTime = 0;
 	uint64_t m_RenderWallTimeNanoseconds = 0;
 	ITextRender::CTextRenderStats m_BenchmarkPreviousTextRenderStats;
+	CRenderTrace m_RenderTrace;
+	ITextRender::CTextRenderStats m_RenderTracePreviousTextRenderStats;
 
 	CChecksum m_Checksum;
 	int64_t m_OwnExecutableSize = 0;
@@ -672,6 +675,8 @@ public:
 	static void Con_StopRecord(IConsole::IResult *pResult, void *pUserData);
 	static void Con_AddDemoMarker(IConsole::IResult *pResult, void *pUserData);
 	static void Con_BenchmarkQuit(IConsole::IResult *pResult, void *pUserData);
+	static void Con_RenderTraceStart(IConsole::IResult *pResult, void *pUserData);
+	static void Con_RenderTraceStop(IConsole::IResult *pResult, void *pUserData);
 	static void ConchainServerBrowserUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainFullscreen(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainWindowBordered(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
@@ -724,6 +729,8 @@ public:
 	void Notify(const char *pTitle, const char *pMessage) override;
 	void OnWindowResize() override;
 	void BenchmarkQuit(int Seconds, const char *pFilename);
+	CRenderTrace *RenderTrace() override { return &m_RenderTrace; }
+	void StopRenderTrace();
 
 	void UpdateAndSwap() override;
 

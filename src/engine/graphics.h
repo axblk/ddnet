@@ -11,6 +11,8 @@
 #include <base/color.h>
 #include <base/vmath.h>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -266,6 +268,49 @@ protected:
 	ivec2 m_DesktopSize;
 
 public:
+	enum class EGpuRenderZone : uint8_t
+	{
+		WORLD,
+		INTERFACE,
+		MAP_BACKGROUND,
+		PARTICLES,
+		ITEMS,
+		GHOST,
+		PLAYERS,
+		MAP_FOREGROUND,
+		NAMEPLATES,
+		HUD,
+		CHAT,
+		SCOREBOARD,
+		STATBOARD,
+		MENUS,
+		CONSOLE,
+		EDITOR_MAP,
+		EDITOR_TOOLBAR,
+		EDITOR_TOOLBOX,
+		EDITOR_CHROME,
+		EDITOR_DIALOGS,
+		FREEZEBARS,
+		DAMAGE_INDICATORS,
+		INFO_MESSAGES,
+		SPECTATOR,
+		EMOTICON,
+		BROADCAST,
+		DEBUG_HUD,
+		IMPORTANT_ALERT,
+		TOUCH_CONTROLS,
+		MOTD,
+		TOOLTIPS,
+		COUNT,
+	};
+	static constexpr size_t GPU_RENDER_ZONE_COUNT = static_cast<size_t>(EGpuRenderZone::COUNT);
+	static constexpr std::array<const char *, GPU_RENDER_ZONE_COUNT> GPU_RENDER_ZONE_NAMES = {
+		"world", "interface", "map_background", "particles", "items", "ghost", "players", "map_foreground", "nameplates", "hud", "chat", "scoreboard", "statboard", "menus", "console", "editor_map", "editor_toolbar", "editor_toolbox", "editor_chrome", "editor_dialogs", "freezebars", "damage_indicators", "info_messages", "spectator", "emoticon", "broadcast", "debug_hud", "important_alert", "touch_controls", "motd", "tooltips"};
+	static_assert(GPU_RENDER_ZONE_COUNT <= 32);
+	// The array is sized from the enum and not from its initializer, so a
+	// forgotten name would be a null pointer instead of a compile error.
+	static_assert(std::ranges::all_of(GPU_RENDER_ZONE_NAMES, [](const char *pName) { return pName != nullptr; }));
+
 	enum
 	{
 		TEXLOAD_TO_3D_TEXTURE = 1 << 0,
@@ -420,9 +465,13 @@ public:
 		uint64_t m_UploadBytes = 0;
 		uint64_t m_StreamedBytes = 0;
 		uint64_t m_GpuTimeNanoseconds = 0;
+		std::array<uint64_t, GPU_RENDER_ZONE_COUNT> m_aGpuRenderZoneNanoseconds{};
+		uint32_t m_GpuRenderZoneMask = 0;
 		uint64_t m_GpuSample = 0;
 		bool m_GpuTimingSupported = false;
 
+		// Only the counters the command buffers carry are summed. The GPU
+		// timings are measured by the backend and filled in by FrameRenderStats().
 		CFrameRenderStats &operator+=(const CFrameRenderStats &Other)
 		{
 			m_Commands += Other.m_Commands;
@@ -444,6 +493,8 @@ public:
 	};
 	virtual CFrameRenderStats FrameRenderStats() const = 0;
 	virtual void SetRenderStatsEnabled(bool Enabled) = 0;
+	virtual void GpuRenderZoneBegin(EGpuRenderZone Zone) = 0;
+	virtual void GpuRenderZoneEnd(EGpuRenderZone Zone) = 0;
 
 	virtual const TTwGraphicsGpuList &GetGpus() const = 0;
 

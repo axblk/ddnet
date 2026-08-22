@@ -113,6 +113,20 @@ static constexpr ColorRGBA CLIENT_NETWORK_PRINT_COLOR = ColorRGBA(0.7f, 1, 0.7f,
 static constexpr ColorRGBA CLIENT_NETWORK_PRINT_ERROR_COLOR = ColorRGBA(1.0f, 0.25f, 0.25f, 1.0f);
 static constexpr size_t MAX_QUIC_KNOWN_HOSTS = 256;
 
+static ITextRender::CTextRenderStats TextRenderStatsDelta(const ITextRender::CTextRenderStats &Current, const ITextRender::CTextRenderStats &Previous)
+{
+	ITextRender::CTextRenderStats Delta;
+	Delta.m_LayoutTimeNanoseconds = Current.m_LayoutTimeNanoseconds - Previous.m_LayoutTimeNanoseconds;
+	Delta.m_LayoutCalls = Current.m_LayoutCalls - Previous.m_LayoutCalls;
+	Delta.m_GlyphsLaidOut = Current.m_GlyphsLaidOut - Previous.m_GlyphsLaidOut;
+	Delta.m_ContainerCreates = Current.m_ContainerCreates - Previous.m_ContainerCreates;
+	Delta.m_ContainerSoftRecreates = Current.m_ContainerSoftRecreates - Previous.m_ContainerSoftRecreates;
+	Delta.m_ContainerDeletes = Current.m_ContainerDeletes - Previous.m_ContainerDeletes;
+	Delta.m_ContainerRenders = Current.m_ContainerRenders - Previous.m_ContainerRenders;
+	Delta.m_UploadBytes = Current.m_UploadBytes - Previous.m_UploadBytes;
+	return Delta;
+}
+
 static bool NormalizeQuicTrustHost(const char *pHost, char *pBuffer, int BufferSize)
 {
 	if(!pHost || pHost[0] == '\0' || str_length(pHost) >= BufferSize || !str_utf8_check(pHost))
@@ -1965,6 +1979,26 @@ void CClient::RenderDebug()
 	str_format(aBuffer, sizeof(aBuffer), "Frametime: %4d us", round_to_int(m_FrameTimeAverage * 1000000.0f));
 	Graphics()->QuadsText(20.0f * FontSize, 2 + FontSize, FontSize, aBuffer);
 
+	const IGraphics::CFrameRenderStats RenderStats = Graphics()->FrameRenderStats();
+	if(RenderStats.m_GpuTimingSupported)
+		str_format(aBuffer, sizeof(aBuffer), "Render/GPU: %.3f / %.3f ms", m_RenderWallTimeNanoseconds / 1000000.0, RenderStats.m_GpuTimeNanoseconds / 1000000.0);
+	else
+		str_format(aBuffer, sizeof(aBuffer), "Render/GPU: %.3f ms / unavailable", m_RenderWallTimeNanoseconds / 1000000.0);
+	Graphics()->QuadsText(20.0f * FontSize, 2 + 2 * FontSize, FontSize, aBuffer);
+	if(RenderStats.m_GpuRenderZoneMask != 0)
+	{
+		char aWorld[32] = "-";
+		char aInterface[32] = "-";
+		if((RenderStats.m_GpuRenderZoneMask & (1U << static_cast<uint32_t>(IGraphics::EGpuRenderZone::WORLD))) != 0)
+			str_format(aWorld, sizeof(aWorld), "%.3f", RenderStats.m_aGpuRenderZoneNanoseconds[static_cast<size_t>(IGraphics::EGpuRenderZone::WORLD)] / 1000000.0);
+		if((RenderStats.m_GpuRenderZoneMask & (1U << static_cast<uint32_t>(IGraphics::EGpuRenderZone::INTERFACE))) != 0)
+			str_format(aInterface, sizeof(aInterface), "%.3f", RenderStats.m_aGpuRenderZoneNanoseconds[static_cast<size_t>(IGraphics::EGpuRenderZone::INTERFACE)] / 1000000.0);
+		str_format(aBuffer, sizeof(aBuffer), "GPU world/UI: %s / %s ms", aWorld, aInterface);
+		Graphics()->QuadsText(20.0f * FontSize, 2 + 3 * FontSize, FontSize, aBuffer);
+	}
+	str_format(aBuffer, sizeof(aBuffer), "Cmd/draw/tri: %" PRIu64 " / %" PRIu64 " / %" PRIu64, RenderStats.m_Commands, RenderStats.m_DrawCalls, RenderStats.m_Triangles);
+	Graphics()->QuadsText(20.0f * FontSize, 2 + 4 * FontSize, FontSize, aBuffer);
+
 	str_format(aBuffer, sizeof(aBuffer), "%16s: %" PRIu64 " KiB", "Texture memory", Graphics()->TextureMemoryUsage() / 1024);
 	Graphics()->QuadsText(32.0f * FontSize, 2, FontSize, aBuffer);
 
@@ -2187,15 +2221,20 @@ void CClient::Render()
 {
 	if(m_EditorActive)
 	{
+		CRenderTraceScope TraceScope(&m_RenderTrace, "client/editor");
 		m_pEditor->OnRender();
 	}
 	else
 	{
+		CRenderTraceScope TraceScope(&m_RenderTrace, "client/game");
 		GameClient()->OnRender();
 	}
 
-	RenderDebug();
-	RenderGraphs();
+	{
+		CRenderTraceScope TraceScope(&m_RenderTrace, "client/debug");
+		RenderDebug();
+		RenderGraphs();
+	}
 }
 
 void CClient::RenderScreen()
@@ -4785,7 +4824,10 @@ void CClient::Run()
 					AdditionalTime = (time_freq() / 60);
 				LastRenderTime = Now - AdditionalTime;
 				m_LastRenderTime = Now;
-				const std::chrono::nanoseconds RenderWallStart = m_BenchmarkFile ? time_get_nanoseconds() : std::chrono::nanoseconds{};
+				Graphics()->SetRenderStatsEnabled(m_BenchmarkFile != nullptr || m_RenderTrace.Enabled() || g_Config.m_Debug);
+				m_RenderTrace.BeginFrame();
+				const bool MeasureRenderWall = m_BenchmarkFile != nullptr || m_RenderTrace.Enabled() || g_Config.m_Debug;
+				const std::chrono::nanoseconds RenderWallStart = MeasureRenderWall ? time_get_nanoseconds() : std::chrono::nanoseconds{};
 
 #if defined(CONF_VIDEORECORDER)
 				bool VideoFrameHandled = false;
@@ -4878,18 +4920,40 @@ void CClient::Run()
 #else
 				m_pGraphics->Swap();
 #endif
+				if(MeasureRenderWall)
+					m_RenderWallTimeNanoseconds = (time_get_nanoseconds() - RenderWallStart).count();
+				if(m_RenderTrace.Enabled())
+				{
+					const ITextRender::CTextRenderStats TextStats = TextRender()->TextRenderStats();
+					CRenderTrace::CFrame Frame;
+					Frame.m_FrametimeNanoseconds = static_cast<uint64_t>(m_RenderFrameTime * 1000000000.0f);
+					Frame.m_RenderWallNanoseconds = m_RenderWallTimeNanoseconds;
+					Frame.m_Render = Graphics()->FrameRenderStats();
+					Frame.m_Text = TextRenderStatsDelta(TextStats, m_RenderTracePreviousTextRenderStats);
+					Frame.m_Mailbox = Graphics()->FrameMailboxStats();
+					Frame.m_TextureMemory = Graphics()->TextureMemoryUsage();
+					Frame.m_BufferMemory = Graphics()->BufferMemoryUsage();
+					Frame.m_StreamedMemory = Graphics()->StreamedMemoryUsage();
+					Frame.m_StagingMemory = Graphics()->StagingMemoryUsage();
+					m_RenderTrace.RecordFrame(Frame);
+					m_RenderTracePreviousTextRenderStats = TextStats;
+					if(m_RenderTrace.ShouldStop())
+						StopRenderTrace();
+				}
 				if(m_BenchmarkFile)
 				{
-					m_RenderWallTimeNanoseconds = (time_get_nanoseconds() - RenderWallStart).count();
 					const IGraphics::CFrameRenderStats RenderStats = Graphics()->FrameRenderStats();
 					const IGraphics::SFrameMailboxStats MailboxStats = Graphics()->FrameMailboxStats();
 					const ITextRender::CTextRenderStats TextStats = TextRender()->TextRenderStats();
 					const ITextRender::CTextRenderStats &PreviousTextStats = m_BenchmarkPreviousTextRenderStats;
 					char aBuf[2048];
 					str_format(aBuf, sizeof(aBuf),
-						"Frametime %d us RenderWall %" PRIu64 " us GpuTime %" PRIu64 " us GpuSample %" PRIu64 " GpuSupported %d Commands %" PRIu64 " ResourceCommands %" PRIu64 " DrawCommands %" PRIu64 " DrawCalls %" PRIu64 " Triangles %" PRIu64 " Instances %" PRIu64 " RenderPasses %" PRIu64 " BufferCreates %" PRIu64 " BufferRecreates %" PRIu64 " BufferUpdates %" PRIu64 " TextureCreates %" PRIu64 " TextureUpdates %" PRIu64 " UploadBytes %" PRIu64 " StreamedBytes %" PRIu64 " TextLayout %" PRIu64 " us TextLayoutCalls %" PRIu64 " Glyphs %" PRIu64 " TextCreates %" PRIu64 " TextSoftRecreates %" PRIu64 " TextDeletes %" PRIu64 " TextRenders %" PRIu64 " TextUploadBytes %" PRIu64 " FramesProduced %" PRIu64 " FramesRendered %" PRIu64 " FramesDropped %" PRIu64 " TextureMemory %" PRIu64 " BufferMemory %" PRIu64 " StreamedMemory %" PRIu64 " StagingMemory %" PRIu64 "\n",
+						"Frametime %d us RenderWall %" PRIu64 " us GpuTime %" PRIu64 " us GpuWorld %" PRIu64 " us GpuInterface %" PRIu64 " us GpuZoneMask %u GpuSample %" PRIu64 " GpuSupported %d Commands %" PRIu64 " ResourceCommands %" PRIu64 " DrawCommands %" PRIu64 " DrawCalls %" PRIu64 " Triangles %" PRIu64 " Instances %" PRIu64 " RenderPasses %" PRIu64 " BufferCreates %" PRIu64 " BufferRecreates %" PRIu64 " BufferUpdates %" PRIu64 " TextureCreates %" PRIu64 " TextureUpdates %" PRIu64 " UploadBytes %" PRIu64 " StreamedBytes %" PRIu64 " TextLayout %" PRIu64 " us TextLayoutCalls %" PRIu64 " Glyphs %" PRIu64 " TextCreates %" PRIu64 " TextSoftRecreates %" PRIu64 " TextDeletes %" PRIu64 " TextRenders %" PRIu64 " TextUploadBytes %" PRIu64 " FramesProduced %" PRIu64 " FramesRendered %" PRIu64 " FramesDropped %" PRIu64 " TextureMemory %" PRIu64 " BufferMemory %" PRIu64 " StreamedMemory %" PRIu64 " StagingMemory %" PRIu64 "\n",
 						(int)(m_RenderFrameTime * 1000000), m_RenderWallTimeNanoseconds / 1000,
-						RenderStats.m_GpuTimeNanoseconds / 1000, RenderStats.m_GpuSample, RenderStats.m_GpuTimingSupported,
+						RenderStats.m_GpuTimeNanoseconds / 1000,
+						RenderStats.m_aGpuRenderZoneNanoseconds[static_cast<size_t>(IGraphics::EGpuRenderZone::WORLD)] / 1000,
+						RenderStats.m_aGpuRenderZoneNanoseconds[static_cast<size_t>(IGraphics::EGpuRenderZone::INTERFACE)] / 1000,
+						RenderStats.m_GpuRenderZoneMask, RenderStats.m_GpuSample, RenderStats.m_GpuTimingSupported,
 						RenderStats.m_Commands, RenderStats.m_ResourceCommands, RenderStats.m_DrawCommands, RenderStats.m_DrawCalls, RenderStats.m_Triangles, RenderStats.m_Instances, RenderStats.m_RenderPasses,
 						RenderStats.m_BufferCreates, RenderStats.m_BufferRecreates, RenderStats.m_BufferUpdates, RenderStats.m_TextureCreates, RenderStats.m_TextureUpdates, RenderStats.m_UploadBytes, RenderStats.m_StreamedBytes,
 						(TextStats.m_LayoutTimeNanoseconds - PreviousTextStats.m_LayoutTimeNanoseconds) / 1000, TextStats.m_LayoutCalls - PreviousTextStats.m_LayoutCalls, TextStats.m_GlyphsLaidOut - PreviousTextStats.m_GlyphsLaidOut,
@@ -4901,8 +4965,8 @@ void CClient::Run()
 					{
 						io_close(m_BenchmarkFile);
 						m_BenchmarkFile = nullptr;
-						Graphics()->SetRenderStatsEnabled(false);
-						TextRender()->SetTextRenderStatsEnabled(false);
+						Graphics()->SetRenderStatsEnabled(m_RenderTrace.Enabled() || g_Config.m_Debug);
+						TextRender()->SetTextRenderStatsEnabled(m_RenderTrace.Enabled());
 						Quit();
 					}
 				}
@@ -4997,6 +5061,9 @@ void CClient::Run()
 		m_LocalTime = (time_get() - m_LocalStartTime) / (float)time_freq();
 		m_GlobalTime = (time_get() - m_GlobalStartTime) / (float)time_freq();
 	}
+
+	if(m_RenderTrace.Enabled())
+		StopRenderTrace();
 
 	if(!NonInteractive)
 		GameClient()->RenderShutdownMessage();
@@ -6138,9 +6205,36 @@ void CClient::BenchmarkQuit(int Seconds, const char *pFilename)
 {
 	m_BenchmarkFile = Storage()->OpenFile(pFilename, IOFLAG_WRITE, IStorage::TYPE_ABSOLUTE);
 	m_BenchmarkStopTime = time_get() + time_freq() * Seconds;
-	Graphics()->SetRenderStatsEnabled(m_BenchmarkFile != nullptr);
-	TextRender()->SetTextRenderStatsEnabled(m_BenchmarkFile != nullptr);
+	Graphics()->SetRenderStatsEnabled(m_BenchmarkFile != nullptr || m_RenderTrace.Enabled() || g_Config.m_Debug);
+	TextRender()->SetTextRenderStatsEnabled(m_BenchmarkFile != nullptr || m_RenderTrace.Enabled());
 	m_BenchmarkPreviousTextRenderStats = TextRender()->TextRenderStats();
+}
+
+void CClient::Con_RenderTraceStart(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = static_cast<CClient *>(pUserData);
+	if(!pSelf->m_RenderTrace.Start(pSelf->Storage(), pResult->GetInteger(0), pResult->GetString(1)))
+	{
+		log_error("render_trace", "trace is already active or the arguments are invalid");
+		return;
+	}
+	pSelf->Graphics()->SetRenderStatsEnabled(true);
+	pSelf->TextRender()->SetTextRenderStatsEnabled(true);
+	pSelf->m_RenderTracePreviousTextRenderStats = pSelf->TextRender()->TextRenderStats();
+}
+
+void CClient::Con_RenderTraceStop(IConsole::IResult *pResult, void *pUserData)
+{
+	static_cast<CClient *>(pUserData)->StopRenderTrace();
+}
+
+void CClient::StopRenderTrace()
+{
+	if(!m_RenderTrace.Enabled())
+		return;
+	m_RenderTrace.Stop();
+	Graphics()->SetRenderStatsEnabled(m_BenchmarkFile != nullptr || g_Config.m_Debug);
+	TextRender()->SetTextRenderStatsEnabled(m_BenchmarkFile != nullptr);
 }
 
 void CClient::UpdateAndSwap()
@@ -6487,6 +6581,8 @@ void CClient::RegisterCommands()
 
 	m_pConsole->Register("save_replay", "?i[length] ?r[filename]", CFGFLAG_CLIENT, Con_SaveReplay, this, "Save a replay of the last defined amount of seconds");
 	m_pConsole->Register("benchmark_quit", "i[seconds] r[file]", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_BenchmarkQuit, this, "Benchmark frame times for number of seconds to file, then quit");
+	m_pConsole->Register("render_trace_start", "i[seconds] r[file]", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_RenderTraceStart, this, "Trace rendering to memory and save it to a JSON file");
+	m_pConsole->Register("render_trace_stop", "", CFGFLAG_CLIENT, Con_RenderTraceStop, this, "Stop and save the active rendering trace");
 
 	RustVersionRegister(*m_pConsole);
 

@@ -660,7 +660,7 @@ void CMenus::RenderSettingsAssets(CUIRect MainView)
 	MainView.HSplitBottom(ms_ButtonHeight, &MainView, &QuickSearch);
 	QuickSearch.VSplitLeft(220.0f, &QuickSearch, &DirectoryButton);
 	QuickSearch.HSplitTop(5.0f, nullptr, &QuickSearch);
-	if(Ui()->DoEditBox_SearchCached(&s_aFilterInputs[s_CurCustomTab], &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), &m_aSettingsAssetsSearchUiElements[0], &m_aSettingsAssetsSearchUiElements[1]))
+	if(Ui()->DoEditBox_SearchCached(&s_aFilterInputs[s_CurCustomTab], &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), m_aSettingsAssetsSearchUiElements.data(), m_aSettingsAssetsSearchUiElements.data() + 1))
 	{
 		gs_aInitCustomList[s_CurCustomTab] = true;
 	}

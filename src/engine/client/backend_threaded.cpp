@@ -180,7 +180,7 @@ SGpuTiming CGraphicsBackend_Threaded::GpuTiming() const
 
 void CGraphicsBackend_Threaded::SetGpuTimingEnabled(bool Enabled)
 {
-	m_GpuTiming.m_Enabled.store(Enabled, std::memory_order_relaxed);
+	m_GpuTiming.SetEnabled(Enabled);
 }
 
 bool CGraphicsBackend_Threaded::RunBufferQueuedInternal(CCommandBuffer *pBuffer, bool WaitForCapacity)

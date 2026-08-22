@@ -159,6 +159,7 @@ private:
 	class IGraphics *m_pGraphics;
 	class ITextRender *m_pTextRender;
 	class IClient *m_pClient;
+	class CRenderTrace *m_pRenderTrace;
 	class ISound *m_pSound;
 	class IConfigManager *m_pConfigManager;
 	class CConfig *m_pConfig;

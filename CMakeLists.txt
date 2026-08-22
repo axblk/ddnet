@@ -2587,12 +2587,20 @@ set(GAME_GENERATED_SHARED
 )
 set(DEPS ${DEP_JSON} ${DEP_MD5} ${ZLIB_DEP})
 
+# The network half of the shared engine. Most tools never open a socket, and an
+# object library is linked whole, so this is what decides whether a tool that
+# only reads a map carries curl, OpenSSL and libwebsockets with it.
+set(ENGINE_NET_PATTERN "src/engine/shared/(econ|host_lookup|http_curl|http_emscripten|masterserver|netban|network[a-z_]*|serverinfo|stun|websockets)\\.(cpp|h)$")
+set(ENGINE_NET ${ENGINE_SHARED})
+list(FILTER ENGINE_NET INCLUDE REGEX "${ENGINE_NET_PATTERN}")
+list(FILTER ENGINE_SHARED EXCLUDE REGEX "${ENGINE_NET_PATTERN}")
+
 # Libraries
+# SQLite is not in here: only the client and the server talk to a database.
 set(LIBS
   # tidy-alphabetical-start
   ${CRYPTO_LIBRARIES}
   ${CURL_LIBRARIES}
-  ${SQLite3_LIBRARIES}
   ${WEBSOCKETS_LIBRARIES}
   ${ZLIB_LIBRARIES}
   # tidy-alphabetical-end
@@ -2610,17 +2618,19 @@ target_include_directories(engine-gfx PRIVATE ${PNG_INCLUDE_DIRS})
 set(ENGINE_QUIC ${ENGINE_SHARED})
 list(FILTER ENGINE_QUIC INCLUDE REGEX "src/engine/shared/quic_transport")
 list(FILTER ENGINE_SHARED EXCLUDE REGEX "src/engine/shared/quic_transport")
+add_library(engine-net EXCLUDE_FROM_ALL OBJECT ${ENGINE_NET})
 add_library(engine-shared EXCLUDE_FROM_ALL OBJECT ${ENGINE_INTERFACE} ${ENGINE_SHARED} ${ENGINE_UUID_SHARED} ${BASE})
 add_library(engine-quic EXCLUDE_FROM_ALL OBJECT ${ENGINE_QUIC} ${RUST_BRIDGE_QUIC})
 add_library(game-shared EXCLUDE_FROM_ALL OBJECT ${GAME_SHARED} ${GAME_GENERATED_SHARED})
 # game-shared compiles src/generated/data_types.h, so the Xcode generator needs
 # generate_content_types to be a dependency of it, not just of its consumers.
 # tidy-alphabetical-start
+add_dependencies(engine-net generate_protocol)
 add_dependencies(engine-shared generate_protocol)
 add_dependencies(game-shared generate_content_types)
 add_dependencies(game-shared generate_protocol)
 # tidy-alphabetical-end
-list(APPEND TARGETS_OWN engine-gfx engine-quic engine-shared game-shared)
+list(APPEND TARGETS_OWN engine-gfx engine-net engine-quic engine-shared game-shared)
 
 if(DISCORD AND NOT DISCORD_DYNAMIC)
   add_library(discord-shared SHARED IMPORTED)
@@ -3167,6 +3177,7 @@ if(CLIENT)
     ${GLEW_LIBRARIES}
     ${PNG_LIBRARIES}
     ${SDL2_LIBRARIES}
+    ${SQLite3_LIBRARIES}
     ${VULKAN_LIBRARIES}
     ${WAVPACK_LIBRARIES}
     # tidy-alphabetical-end
@@ -3259,6 +3270,7 @@ if(CLIENT)
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-client-graphics>
       $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
@@ -3275,6 +3287,7 @@ if(CLIENT)
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-client-graphics>
       $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
@@ -3291,6 +3304,7 @@ if(CLIENT)
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-client-graphics>
       $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
@@ -3374,6 +3388,7 @@ if(CLIENT)
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-client-graphics-headless>
       $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
@@ -3398,6 +3413,7 @@ if(CLIENT)
       ${FFMPEG_LIBRARIES}
       ${FREETYPE_LIBRARIES}
       ${PNG_LIBRARIES}
+      ${SQLite3_LIBRARIES}
       ${VULKAN_LIBRARIES}
       ${WAVPACK_LIBRARIES}
       # tidy-alphabetical-end
@@ -3631,6 +3647,7 @@ if(SERVER)
   set(LIBS_SERVER
     ${MINIUPNPC_LIBRARIES}
     ${MYSQL_LIBRARIES}
+    ${SQLite3_LIBRARIES}
     ${TARGET_ANTIBOT}
 
     ${LIBS}
@@ -3660,6 +3677,7 @@ if(SERVER)
       ${SERVER_VERSIONINFO}
       $<TARGET_OBJECTS:game-server-without-main>
       # tidy-alphabetical-sort
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
@@ -3674,6 +3692,7 @@ if(SERVER)
       ${SERVER_VERSIONINFO}
       $<TARGET_OBJECTS:game-server-without-main>
       # tidy-alphabetical-sort
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
@@ -3760,8 +3779,18 @@ if(TOOLS)
     if(T MATCHES "\\.cpp$")
       string(REGEX REPLACE "\\.cpp$" "" TOOL "${T}")
       set(TOOL_DEPS ${DEPS})
-      set(TOOL_LIBS ${LIBS})
       unset(EXTRA_TOOL_SRC)
+      unset(TOOL_INCLUDE_DIRS)
+      # Only these tools open a socket. The rest read and write files and link
+      # neither the network half of the engine nor curl, libwebsockets and the
+      # Rust library.
+      if(TOOL MATCHES "^(crapnet|packetgen|quic_cli|stun|twping)$")
+        set(TOOL_LIBS ${LIBS})
+        list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-net>)
+      else()
+        # Hashing in `base` uses OpenSSL where it is available, so that stays.
+        set(TOOL_LIBS ${CRYPTO_LIBRARIES} ${ZLIB_LIBRARIES} ${PLATFORM_LIBS} ${CMAKE_THREAD_LIBS_INIT})
+      endif()
       if(TOOL MATCHES "^(dilate|map_convert_07|map_optimize|map_extract|map_replace_image)$")
         list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS})
         list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-gfx>)
@@ -4038,6 +4067,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   add_executable(${TARGET_CLIENT_GAME_STATE_TESTS} EXCLUDE_FROM_ALL
     ${CLIENT_GAME_STATE_TEST_SOURCES}
     # tidy-alphabetical-start
+    $<TARGET_OBJECTS:engine-net>
     $<TARGET_OBJECTS:engine-shared>
     $<TARGET_OBJECTS:game-shared>
     $<TARGET_OBJECTS:rust-bridge-shared>
@@ -4077,6 +4107,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     ${TESTS_GRAPHICS}
     # tidy-alphabetical-start
     $<TARGET_OBJECTS:engine-gfx>
+    $<TARGET_OBJECTS:engine-net>
     $<TARGET_OBJECTS:engine-quic>
     $<TARGET_OBJECTS:engine-shared>
     $<TARGET_OBJECTS:game-server-without-main>
@@ -4111,6 +4142,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   set(TARGET_VANILLA_GOLDEN vanilla-golden-current)
   add_executable(${TARGET_VANILLA_GOLDEN} EXCLUDE_FROM_ALL
     scripts/vanilla_golden/current_runner.cpp
+    $<TARGET_OBJECTS:engine-net>
     $<TARGET_OBJECTS:engine-quic>
     $<TARGET_OBJECTS:engine-shared>
     $<TARGET_OBJECTS:game-server-without-main>
@@ -4184,8 +4216,16 @@ add_library(rust_test STATIC EXCLUDE_FROM_ALL
 list(APPEND TARGETS_OWN rust_test)
 list(APPEND TARGETS_LINK rust_test)
 
-set(RUST_TEST_LIBS ${LIBS} $<TARGET_FILE:rust_test>)
-list(REMOVE_ITEM RUST_TEST_LIBS "rust_engine_shared")
+# Not taken from `LIBS`, which says what a program built out of engine-shared
+# needs: cargo brings the Rust side itself, and no Rust test calls into the
+# network half of the engine.
+set(RUST_TEST_LIBS
+  ${CRYPTO_LIBRARIES}
+  ${ZLIB_LIBRARIES}
+  ${PLATFORM_LIBS}
+  ${CMAKE_THREAD_LIBS_INIT}
+  $<TARGET_FILE:rust_test>
+)
 list(REMOVE_ITEM RUST_TEST_LIBS "-pthread")
 add_custom_target(run_rust_tests
   COMMAND ${CMAKE_COMMAND} -E env "DDNET_TEST_LIBRARIES=${RUST_TEST_LIBS}" ${CARGO_TEST}

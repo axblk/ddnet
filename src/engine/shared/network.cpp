@@ -11,6 +11,7 @@
 #include <base/mem.h>
 #include <base/net.h>
 #include <base/secure.h>
+#include <base/str.h>
 #include <base/time.h>
 #include <base/types.h>
 
@@ -226,7 +227,7 @@ void CNetBase::SendPacket(NETSOCKET Socket, NETADDR *pAddr, CNetPacketConstruct 
 	int CompressedSize = -1;
 	if((pPacket->m_Flags & NET_PACKETFLAG_CONTROL) == 0)
 	{
-		CompressedSize = ms_Huffman.Compress(pPacket->m_aChunkData, pPacket->m_DataSize, &aBuffer[HeaderSize], NET_MAX_PACKETSIZE - HeaderSize);
+		CompressedSize = HuffmanCompress(pPacket->m_aChunkData, pPacket->m_DataSize, &aBuffer[HeaderSize], NET_MAX_PACKETSIZE - HeaderSize);
 	}
 
 	// check if the compression was enabled, successful and good enough
@@ -373,7 +374,7 @@ int CNetBase::UnpackPacket(unsigned char *pBuffer, int Size, CNetPacketConstruct
 			{
 				*pDecompressed = true;
 			}
-			pPacket->m_DataSize = ms_Huffman.Decompress(&pBuffer[DataStart], pPacket->m_DataSize, pPacket->m_aChunkData, sizeof(pPacket->m_aChunkData));
+			pPacket->m_DataSize = HuffmanDecompress(&pBuffer[DataStart], pPacket->m_DataSize, pPacket->m_aChunkData, sizeof(pPacket->m_aChunkData));
 			if(pPacket->m_DataSize < 0)
 			{
 				return -1;
@@ -489,7 +490,32 @@ bool CNetBase::IsSeqInBackroom(int Seq, int Ack)
 
 IOHANDLE CNetBase::ms_DataLogSent = nullptr;
 IOHANDLE CNetBase::ms_DataLogRecv = nullptr;
-CHuffman CNetBase::ms_Huffman;
+
+static bool gs_NetworkLogging = false;
+
+static void ConDbgLognetwork(IConsole::IResult *pResult, void *pUserData)
+{
+	IStorage *pStorage = static_cast<IStorage *>(pUserData);
+	if(gs_NetworkLogging)
+	{
+		CNetBase::CloseLog();
+		gs_NetworkLogging = false;
+		return;
+	}
+	char aTimestamp[32];
+	str_timestamp(aTimestamp, sizeof(aTimestamp));
+	char aFilenameSent[IO_MAX_PATH_LENGTH], aFilenameRecv[IO_MAX_PATH_LENGTH];
+	str_format(aFilenameSent, sizeof(aFilenameSent), "dumps/network_sent_%s.txt", aTimestamp);
+	str_format(aFilenameRecv, sizeof(aFilenameRecv), "dumps/network_recv_%s.txt", aTimestamp);
+	CNetBase::OpenLog(pStorage->OpenFile(aFilenameSent, IOFLAG_WRITE, IStorage::TYPE_SAVE),
+		pStorage->OpenFile(aFilenameRecv, IOFLAG_WRITE, IStorage::TYPE_SAVE));
+	gs_NetworkLogging = true;
+}
+
+void CNetBase::RegisterLogCommand(IConsole *pConsole, IStorage *pStorage)
+{
+	pConsole->Register("dbg_lognetwork", "", CFGFLAG_SERVER | CFGFLAG_CLIENT, ConDbgLognetwork, pStorage, "Log the network");
+}
 
 void CNetBase::OpenLog(IOHANDLE DataLogSent, IOHANDLE DataLogRecv)
 {
@@ -529,21 +555,6 @@ void CNetBase::CloseLog()
 		io_close(ms_DataLogRecv);
 		ms_DataLogRecv = nullptr;
 	}
-}
-
-int CNetBase::Compress(const void *pData, int DataSize, void *pOutput, int OutputSize)
-{
-	return ms_Huffman.Compress(pData, DataSize, pOutput, OutputSize);
-}
-
-int CNetBase::Decompress(const void *pData, int DataSize, void *pOutput, int OutputSize)
-{
-	return ms_Huffman.Decompress(pData, DataSize, pOutput, OutputSize);
-}
-
-void CNetBase::Init()
-{
-	ms_Huffman.Init();
 }
 
 void CNetTokenCache::Init(NETSOCKET Socket)

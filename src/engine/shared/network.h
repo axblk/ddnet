@@ -699,14 +699,18 @@ class CNetBase
 {
 	static IOHANDLE ms_DataLogSent;
 	static IOHANDLE ms_DataLogRecv;
-	static CHuffman ms_Huffman;
 
 public:
 	static void OpenLog(IOHANDLE DataLogSent, IOHANDLE DataLogRecv);
 	static void CloseLog();
-	static void Init();
-	static int Compress(const void *pData, int DataSize, void *pOutput, int OutputSize);
-	static int Decompress(const void *pData, int DataSize, void *pOutput, int OutputSize);
+	/**
+	 * Registers `dbg_lognetwork`, which writes what goes over the wire into two
+	 * files.
+	 *
+	 * @param pConsole Console to register the command with.
+	 * @param pStorage Storage to write the two files to.
+	 */
+	static void RegisterLogCommand(class IConsole *pConsole, class IStorage *pStorage);
 
 	static bool IsValidConnectionOrientedPacket(const CNetPacketConstruct *pPacket);
 

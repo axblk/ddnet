@@ -35,7 +35,7 @@ public:
 	std::shared_ptr<IHttpRequest> HttpRequest() { return m_pHttpRequest; }
 };
 
-// addition of '/' to keep paths intact, because EscapeUrl() (using curl_easy_escape) doesn't do this
+// addition of '/' to keep paths intact, because str_url_encode() does not do this
 static inline bool IsUnreserved(unsigned char c)
 {
 	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
@@ -123,7 +123,7 @@ CUpdaterFetchTask::CUpdaterFetchTask(CUpdater *pUpdater, const char *pFile, cons
 {
 	char aDestination[IO_MAX_PATH_LENGTH];
 	FormatUpdaterDestPath(aDestination, sizeof(aDestination), pFile, pDestPath);
-	m_pHttpRequest = CreateHttpRequest(GetUpdaterUrl(m_aBuf, sizeof(m_aBuf), pFile));
+	m_pHttpRequest = pUpdater->m_pHttp->CreateRequest(GetUpdaterUrl(m_aBuf, sizeof(m_aBuf), pFile));
 	m_pHttpRequest->WriteToFile(pUpdater->m_pStorage, aDestination, -2);
 	m_pHttpRequest->SetProgressCallback(this);
 }

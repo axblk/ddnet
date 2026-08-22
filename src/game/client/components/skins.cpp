@@ -487,7 +487,7 @@ void CSkins::StartDownload(CSkinContainer *pSkinContainer, bool Force)
 	const char *pBaseUrl = g_Config.m_ClDownloadCommunitySkins != 0 ? g_Config.m_ClSkinCommunityDownloadUrl : g_Config.m_ClSkinDownloadUrl;
 
 	char aEscapedName[256];
-	EscapeUrl(aEscapedName, pSkinContainer->Name());
+	str_url_encode(aEscapedName, pSkinContainer->Name());
 
 	char aUrl[IO_MAX_PATH_LENGTH];
 	str_format(aUrl, sizeof(aUrl), "%s%s.png", pBaseUrl, aEscapedName);
@@ -498,7 +498,15 @@ void CSkins::StartDownload(CSkinContainer *pSkinContainer, bool Force)
 	const CTimeout Timeout{10000, 0, 8192, 10};
 	const size_t MaxResponseSize = 10 * 1024 * 1024; // 10 MiB
 
-	std::shared_ptr<IHttpRequest> pRequest = HttpGetBoth(aUrl, Storage(), aPath, IStorage::TYPE_SAVE);
+	if(Http() == nullptr)
+	{
+		// A program without HTTP has nowhere to download from, so a skin is
+		// whatever an earlier download left on disk, or nothing.
+		if(Storage()->FileExists(aPath, IStorage::TYPE_SAVE))
+			pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImageFile(Storage(), aPath, IStorage::TYPE_SAVE, SkinPostprocess(pSkinContainer));
+		return;
+	}
+	std::shared_ptr<IHttpRequest> pRequest = Http()->CreateGetBoth(aUrl, Storage(), aPath, IStorage::TYPE_SAVE);
 	pRequest->Timeout(Timeout);
 	pRequest->MaxResponseSize(MaxResponseSize);
 	pRequest->ValidateBeforeOverwrite(true);
@@ -661,7 +669,16 @@ void CSkins::UpdateFinishLoading(CSkinLoadingStats &Stats, std::chrono::nanoseco
 			continue;
 		}
 		CImageResource &Resource = pSkinContainer->m_LoadResource;
-		dbg_assert(static_cast<bool>(Resource), "Skin container in loading state must have a load resource");
+		if(!Resource)
+		{
+			// Neither a file being read nor a download to wait for: there is
+			// nothing that could still make this skin appear.
+			Stats.m_NumLoading--;
+			pSkinContainer->SetState(CSkinContainer::EState::NOT_FOUND);
+			Stats.m_NumNotFound++;
+			pSkinContainer->m_pLoadData = nullptr;
+			continue;
+		}
 		if(!Resource.IsFinished())
 		{
 			continue;

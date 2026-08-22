@@ -21,6 +21,7 @@
 #include <base/mem.h>
 #include <base/os.h>
 #include <base/process.h>
+#include <base/rust.h>
 #include <base/secure.h>
 #include <base/str.h>
 #include <base/thread.h>
@@ -2052,11 +2053,11 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				{
 					char aUrl[256];
 					char aEscaped[256];
-					EscapeUrl(aEscaped, str_startswith(Source.m_aMapdownloadFilename, "downloadedmaps/"));
+					str_url_encode(aEscaped, str_startswith(Source.m_aMapdownloadFilename, "downloadedmaps/"));
 					bool UseConfigUrl = str_comp(g_Config.m_ClMapDownloadUrl, "https://maps.ddnet.org") != 0 || m_aMapDownloadUrl[0] == '\0';
 					str_format(aUrl, sizeof(aUrl), "%s/%s", UseConfigUrl ? g_Config.m_ClMapDownloadUrl : m_aMapDownloadUrl, aEscaped);
 
-					Source.m_pMapdownloadTask = HttpGetFile(pMapUrl ? pMapUrl : aUrl, Storage(), Source.m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE);
+					Source.m_pMapdownloadTask = Http()->CreateGetFile(pMapUrl ? pMapUrl : aUrl, Storage(), Source.m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE);
 					Source.m_pMapdownloadTask->Timeout(CTimeout{g_Config.m_ClMapDownloadConnectTimeoutMs, 0, g_Config.m_ClMapDownloadLowSpeedLimit, g_Config.m_ClMapDownloadLowSpeedTime});
 					Source.m_pMapdownloadTask->MaxResponseSize(MapSize);
 					Source.m_pMapdownloadTask->ExpectSha256(MapSha256.value());
@@ -4246,6 +4247,7 @@ void CClient::Run()
 	// close sockets
 	for(int Conn = 0; Conn < NUM_CONNS; Conn++)
 		NetClient(Conn).Close();
+	CNetBase::CloseLog();
 
 	// shutdown text render while graphics are still available
 	m_pTextRender->Shutdown();
@@ -5662,6 +5664,8 @@ void CClient::RegisterCommands()
 {
 	m_pConsole = Kernel()->RequestInterface<IConsole>();
 
+	CNetBase::RegisterLogCommand(m_pConsole, Kernel()->RequestInterface<IStorage>());
+
 	m_pConsole->Register("dummy_connect", "", CFGFLAG_CLIENT, Con_DummyConnect, this, "Connect dummy");
 	m_pConsole->Register("dummy_disconnect", "", CFGFLAG_CLIENT, Con_DummyDisconnect, this, "Disconnect dummy");
 	m_pConsole->Register("dummy_reset", "", CFGFLAG_CLIENT, Con_DummyResetInput, this, "Reset dummy");
@@ -5871,6 +5875,8 @@ int main(int argc, const char **argv)
 	CWindowsComLifecycle WindowsComLifecycle(true);
 #endif
 	CCmdlineFix CmdlineFix(&argc, &argv);
+	// A panic in the Rust half should fail the same way an assertion does.
+	rust_panic_use_dbg_assert();
 	bool CommandLineVideoExportRequested = false;
 	for(int Argument = 1; Argument < argc; ++Argument)
 	{
@@ -6554,12 +6560,12 @@ void CClient::RequestDDNetInfo()
 	if(g_Config.m_BrIndicateFinished)
 	{
 		char aEscaped[128];
-		EscapeUrl(aEscaped, PlayerName());
+		str_url_encode(aEscaped, PlayerName());
 		str_append(aUrl, "?name=");
 		str_append(aUrl, aEscaped);
 	}
 
-	m_pDDNetInfoTask = HttpGetFile(aUrl, Storage(), DDNET_INFO_FILE, IStorage::TYPE_SAVE);
+	m_pDDNetInfoTask = Http()->CreateGetFile(aUrl, Storage(), DDNET_INFO_FILE, IStorage::TYPE_SAVE);
 	m_pDDNetInfoTask->Timeout(CTimeout{10000, 0, 500, 10});
 	m_pDDNetInfoTask->SkipByFileTime(false); // Always re-download.
 	// Use ipv4 so we can know the ingame ip addresses of players before they join game servers

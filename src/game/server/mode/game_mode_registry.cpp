@@ -78,6 +78,7 @@ CGameModeReportInfo CompetitiveGameModeReport(const char *pModeId, bool HasObjec
 	Add("hits", "Hits", EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM);
 	Add("damage_done", "Damage done", EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::DAMAGE, EMatchMetricAggregation::SUM);
 	Add("damage_taken", "Damage taken", EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::DAMAGE, EMatchMetricAggregation::SUM);
+	Add("assists", "Assists", EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM);
 	const char *apWeaponNames[NUM_WEAPONS] = {"Hammer", "Gun", "Shotgun", "Grenade", "Laser", "Ninja"};
 	for(int Weapon = 0; Weapon < NUM_WEAPONS; ++Weapon)
 	{
@@ -85,6 +86,7 @@ CGameModeReportInfo CompetitiveGameModeReport(const char *pModeId, bool HasObjec
 		const std::string DisplayPrefix = std::string(apWeaponNames[Weapon]) + " ";
 		Add((Prefix + "kills").c_str(), (DisplayPrefix + "kills").c_str(), EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM);
 		Add((Prefix + "deaths").c_str(), (DisplayPrefix + "deaths").c_str(), EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM);
+		Add((Prefix + "deaths_holding").c_str(), (DisplayPrefix + "deaths while held").c_str(), EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM);
 		Add((Prefix + "shots").c_str(), (DisplayPrefix + "shots").c_str(), EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM);
 		Add((Prefix + "hits").c_str(), (DisplayPrefix + "hits").c_str(), EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM);
 		Add((Prefix + "damage_done").c_str(), (DisplayPrefix + "damage done").c_str(), EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::DAMAGE, EMatchMetricAggregation::SUM);
@@ -97,6 +99,14 @@ CGameModeReportInfo CompetitiveGameModeReport(const char *pModeId, bool HasObjec
 		Add("flag_captures", "Flag captures", EGameModeMetricCategory::OBJECTIVES, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM);
 	}
 	return Report;
+}
+
+std::vector<CGameModeMetricInfo> VanillaPickupGameModeMetrics(const std::string &ModeId, int FirstDisplayOrder)
+{
+	return {
+		{ModeId + "/health_picked_up", "Health picked up", EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM, FirstDisplayOrder},
+		{ModeId + "/armor_picked_up", "Armor picked up", EGameModeMetricCategory::COMBAT, EGameModeMetricUnit::COUNT, EMatchMetricAggregation::SUM, FirstDisplayOrder + 1},
+	};
 }
 
 const CGameModeRegistry::CEntry *CGameModeRegistry::FindEntry(const char *pId) const

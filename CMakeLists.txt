@@ -3172,10 +3172,12 @@ if(CLIENT)
     src/game/client/components/menus_backdrop.cpp
     src/game/client/components/menus_null.cpp
   )
-  # The demo render tool brings its own entry point, so the client's stays out of
-  # the tool and the tool's out of the client.
+  # The demo render tool brings its own entry point and its own client, so the
+  # client's entry point stays out of the tool and both of the tool's files stay
+  # out of the client. The client never names them, and they are written for a
+  # program that has the video recorder, which the client can be built without.
   set(ENGINE_CLIENT_GAME ${ENGINE_CLIENT})
-  list(FILTER ENGINE_CLIENT_GAME EXCLUDE REGEX "src/engine/client/demo_render_main\.cpp$")
+  list(FILTER ENGINE_CLIENT_GAME EXCLUDE REGEX "src/engine/client/demo_render_(client|main)\.(cpp|h)$")
 
   set(CLIENT_SRC ${ENGINE_CLIENT_GAME} ${PLATFORM_CLIENT} ${GAME_CLIENT_MENUS_FULL} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
 
@@ -3410,7 +3412,6 @@ if(CLIENT)
       $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
-      $<TARGET_OBJECTS:rust-bridge-shared>
       # tidy-alphabetical-end
     )
     add_dependencies(demo-renderer generate_content_types)
@@ -3446,7 +3447,6 @@ if(CLIENT)
       ${OPUS_LIBRARIES}
       ${OGG_LIBRARIES}
       ${PLATFORM_CLIENT_LIBS}
-      rust_engine_shared
       ${PLATFORM_LIBS}
       ${CMAKE_THREAD_LIBS_INIT}
     )

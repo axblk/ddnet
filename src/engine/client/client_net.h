@@ -18,7 +18,6 @@
 #include <vector>
 
 class CMsgPacker;
-class CNetChunk;
 class CUnpacker;
 class IConfigManager;
 class IEngineHttp;

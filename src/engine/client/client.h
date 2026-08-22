@@ -40,7 +40,6 @@ class IDemoRecorder;
 class CMsgPacker;
 class CUnpacker;
 #if defined(CONF_VIDEORECORDER)
-class CVideo;
 #endif
 class IConfigManager;
 class IDiscord;
@@ -120,7 +119,7 @@ class CClient : public CClientWithConnection
 		bool m_ExactVideoPath = false;
 	};
 
-	std::unique_ptr<CVideo> m_pVideo;
+	std::unique_ptr<IVideo> m_pVideo;
 	CSessionId m_VideoSessionId;
 	bool m_VideoOfflineAudio = false;
 	std::deque<CVideoExportJob> m_VideoExportQueue;

@@ -1703,7 +1703,8 @@ void CHud::OnRender(const CRenderContext &Context)
 	// the fade belongs over the world rather than over the HUD.
 	RenderViewEdgeFade(Context);
 
-	if((Context.m_IsVideoOutput && g_Config.m_ClVideoShowhud) || (!Context.m_IsVideoOutput && g_Config.m_ClShowhud))
+	const bool ShowHud = Context.m_IsVideoOutput ? Context.m_VideoSettings.m_ShowHud : g_Config.m_ClShowhud;
+	if(ShowHud)
 	{
 		const CGameState &State = Context.m_State;
 		const int LocalClientId = State.LocalClientId();

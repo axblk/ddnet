@@ -3199,6 +3199,9 @@ int CGraphics_Threaded::InitWindow()
 			return 0;
 	}
 
+	if(m_BackendMode == EGraphicsBackendMode::OFFSCREEN)
+		return ErrorCode;
+
 	size_t GLInitTryCount = 0;
 	while(ErrorCode == EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_CONTEXT_FAILED ||
 		ErrorCode == EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_VERSION_FAILED)
@@ -3397,6 +3400,19 @@ int CGraphics_Threaded::Init()
 
 void CGraphics_Threaded::Shutdown()
 {
+	// Init returns before the backend exists when the requested one cannot
+	// render offscreen, and it returns after the backend exists but before the
+	// command buffers do when the window fails. Neither state has anything to
+	// flush, and both used to reach the backend through a null pointer here.
+	if(m_pBackend == nullptr)
+		return;
+	if(m_pCommandBuffer == nullptr)
+	{
+		m_pBackend->Shutdown();
+		delete m_pBackend;
+		m_pBackend = nullptr;
+		return;
+	}
 	if(!DestroyPipelines())
 		log_error("graphics", "Failed to queue pipeline destruction during shutdown");
 	DeleteBufferObject(m_QuadIndexBuffer);

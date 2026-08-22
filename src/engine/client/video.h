@@ -56,6 +56,7 @@ public:
 	bool HasError() const override { return m_HasError.load(std::memory_order_acquire); }
 	bool HasAudio() const override { return m_HasAudio; }
 	CVideoExportStatus Status() const override NO_THREAD_SAFETY_ANALYSIS;
+	const CVideoExportSettings &Settings() const override { return m_Settings; }
 
 	void NextVideoFrame() override;
 	bool BeginVideoFrameRender() override;
@@ -92,7 +93,7 @@ private:
 	void FinishFrames(COutputStream *pStream);
 	void CloseStream(COutputStream *pStream);
 
-	bool AddStream(COutputStream *pStream, AVFormatContext *pFormatContext, const AVCodec **ppCodec, enum AVCodecID CodecId);
+	bool AddStream(COutputStream *pStream, AVFormatContext *pFormatContext, const AVCodec **ppCodec, const AVCodec *pCodec);
 	[[gnu::format(printf, 2, 3)]] void SetError(const char *pFormat, ...) NO_THREAD_SAFETY_ANALYSIS;
 	void SetAvError(const char *pOperation, int Error);
 
@@ -141,6 +142,9 @@ private:
 	size_t m_CurrentReadbackSlot = 0;
 
 	CLock m_WriteLock;
+	// Upper bound for the configurable encoder thread budget
+	static constexpr int MAX_ENCODE_THREADS = 64;
+	int m_EncodeThreads = 1;
 	size_t m_VideoThreads = 2;
 	size_t m_CurVideoThreadIndex = 0;
 	size_t m_AudioThreads = 2;

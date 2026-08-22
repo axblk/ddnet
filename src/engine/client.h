@@ -261,10 +261,35 @@ public:
 	virtual void Quit() = 0;
 	virtual const char *DemoPlayer_Play(const char *pFilename, int StorageType) = 0;
 #if defined(CONF_VIDEORECORDER)
-	virtual const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartPaused, bool StartQueue) = 0;
+	virtual const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue) = 0;
 	virtual void DemoPlayer_StartRenderQueue() = 0;
 	virtual void DemoPlayer_ClearRenderQueue() = 0;
 	virtual size_t DemoPlayer_RenderQueueSize() const = 0;
+	/**
+	 * Number of queued exports that have not been started yet.
+	 */
+	virtual size_t DemoPlayer_RenderQueuePending() const = 0;
+	/**
+	 * Video name of the pending export at @p Index, which must be less than
+	 * `DemoPlayer_RenderQueuePending()`.
+	 */
+	virtual const char *DemoPlayer_RenderQueueName(size_t Index) const = 0;
+	/**
+	 * Removes the pending export at @p Index, which must be less than
+	 * `DemoPlayer_RenderQueuePending()`. The active export is not affected.
+	 */
+	virtual void DemoPlayer_RenderQueueErase(size_t Index) = 0;
+	/**
+	 * Moves the pending export at @p Index one position towards the front or
+	 * back of the queue. Both @p Index and the resulting position must be less
+	 * than `DemoPlayer_RenderQueuePending()`.
+	 */
+	virtual void DemoPlayer_RenderQueueMove(size_t Index, bool Up) = 0;
+	/**
+	 * Aborts the export that is currently running. Pending exports are kept and
+	 * the next one is started afterwards.
+	 */
+	virtual void DemoPlayer_CancelActiveRender() = 0;
 	virtual bool DemoPlayer_RenderQueueActive() const = 0;
 	virtual const char *DemoPlayer_RenderQueueError() const = 0;
 	virtual bool DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const = 0;
@@ -452,7 +477,7 @@ public:
 	virtual void OnShutdown() = 0;
 	virtual void OnRenderPrepare() = 0;
 #if defined(CONF_VIDEORECORDER)
-	virtual void OnRenderVideoPrepare(CSessionId SessionId) = 0;
+	virtual void OnRenderVideoPrepare(CSessionId SessionId, const CVideoExportSettings &Settings) = 0;
 #endif
 	virtual void OnRender() = 0;
 	virtual void OnRenderFinalize() = 0;

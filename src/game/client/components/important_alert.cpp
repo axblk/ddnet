@@ -45,12 +45,10 @@ void CImportantAlert::OnRender(const CRenderContext &Context)
 	{
 		return;
 	}
-#if defined(CONF_VIDEORECORDER)
-	if(Context.m_IsVideoOutput && !g_Config.m_ClVideoShowImportantAlerts)
+	if(Context.m_IsVideoOutput && !Context.m_VideoSettings.m_ShowImportantAlerts)
 	{
 		return;
 	}
-#endif
 	RenderImportantAlert(Context);
 }
 

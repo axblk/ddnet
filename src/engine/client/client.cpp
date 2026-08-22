@@ -4634,7 +4634,7 @@ void CClient::Run()
 			Settings.m_Width = Defaults.m_Width;
 		if(Settings.m_Height == 0)
 			Settings.m_Height = Defaults.m_Height;
-		const char *pError = QueueVideoExport(m_aCommandLineDemoPath, IStorage::TYPE_ALL_OR_ABSOLUTE, m_aCommandLineVideoPath, Settings, DEMO_SPEED_INDEX_DEFAULT, false, true, true);
+		const char *pError = QueueVideoExport(m_aCommandLineDemoPath, IStorage::TYPE_ALL_OR_ABSOLUTE, m_aCommandLineVideoPath, Settings, DEMO_SPEED_INDEX_DEFAULT, true, true);
 		if(pError)
 		{
 			log_error("videorecorder", "Could not queue command-line export: %s", pError);
@@ -4809,7 +4809,7 @@ void CClient::Run()
 				if(VideoFrameHandled)
 				{
 					dbg_assert(m_VideoSessionId.IsValid(), "missing video session");
-					GameClient()->OnRenderVideoPrepare(m_VideoSessionId);
+					GameClient()->OnRenderVideoPrepare(m_VideoSessionId, pVideo->Settings());
 					GameClient()->OnRender();
 					if(pVideo->HasAudio())
 					{
@@ -5386,6 +5386,13 @@ CVideoExportSettings CClient::DefaultVideoExportSettings()
 	Settings.m_Audio = g_Config.m_ClVideoSndEnable != 0;
 	Settings.m_Crf = g_Config.m_ClVideoX264Crf;
 	Settings.m_Preset = g_Config.m_ClVideoX264Preset;
+	str_copy(Settings.m_aVideoCodec, g_Config.m_ClVideoCodec);
+	Settings.m_EncodeThreads = g_Config.m_ClVideoEncodeThreads;
+	Settings.m_ShowHud = g_Config.m_ClVideoShowhud != 0;
+	Settings.m_ShowChat = g_Config.m_ClVideoShowChat != 0;
+	Settings.m_ShowHookCollOther = g_Config.m_ClVideoShowHookCollOther != 0;
+	Settings.m_ShowDirection = g_Config.m_ClVideoShowDirection;
+	Settings.m_ShowImportantAlerts = g_Config.m_ClVideoShowImportantAlerts != 0;
 	return Settings;
 }
 
@@ -5403,6 +5410,18 @@ bool CClient::DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLa
 	*pCurrentTick = pInfo->m_CurrentTick;
 	*pLastTick = pInfo->m_LastTick;
 	return true;
+}
+
+void CClient::DemoPlayer_CancelActiveRender()
+{
+	// Both being null passes an inequality check, which is exactly the state
+	// between taking a job off the queue and creating its recorder.
+	if(!m_ActiveVideoExport.has_value() || m_pVideo == nullptr || IVideo::Current() != m_pVideo.get())
+		return;
+	str_copy(m_aVideoExportQueueError, "Video rendering cancelled.");
+	m_pVideo->Cancel();
+	if(CDemoPlayer *pPlayer = VideoDemoPlayer())
+		pPlayer->Stop(m_aVideoExportQueueError);
 }
 
 const char *CClient::StartVideo(CSessionId SessionId, const char *pFilename, bool WithTimestamp, const CVideoExportSettings &Settings, bool ExactFilename)
@@ -5861,14 +5880,12 @@ void CClient::UpdateVideoExportQueue()
 	Player.SetSpeedIndex(Job.m_SpeedIndex);
 }
 
-const char *CClient::QueueVideoExport(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartPaused, bool StartQueue, bool ExactVideoPath)
+const char *CClient::QueueVideoExport(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue, bool ExactVideoPath)
 {
 	if(IVideo::Current() && !m_ActiveVideoExport.has_value())
 		return "Already recording.";
 	if(!pFilename[0] || !pVideoName[0])
 		return "Demo and video names must not be empty.";
-	if(StartPaused)
-		return "Starting video exports paused is not supported.";
 	if(Settings.m_Width < 2 || Settings.m_Height < 2 || Settings.m_Width > 8192 || Settings.m_Height > 8192 || static_cast<int64_t>(Settings.m_Width) * Settings.m_Height > 8192LL * 4320 || Settings.m_Width % 2 != 0 || Settings.m_Height % 2 != 0)
 		return "Invalid video resolution.";
 
@@ -5890,9 +5907,9 @@ const char *CClient::QueueVideoExport(const char *pFilename, int StorageType, co
 	return nullptr;
 }
 
-const char *CClient::DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartPaused, bool StartQueue)
+const char *CClient::DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue)
 {
-	return QueueVideoExport(pFilename, StorageType, pVideoName, Settings, SpeedIndex, StartPaused, StartQueue, false);
+	return QueueVideoExport(pFilename, StorageType, pVideoName, Settings, SpeedIndex, StartQueue, false);
 }
 
 void CClient::ConfigureCommandLineVideoExport(const char *pDemoPath, const char *pVideoPath, const CVideoExportSettings &Settings)
@@ -7072,6 +7089,11 @@ int main(int argc, const char **argv)
 		Settings.m_Audio = !CommandLineVideoNoAudio && g_Config.m_ClVideoSndEnable != 0;
 		Settings.m_Crf = CommandLineVideoCrf < 0 ? g_Config.m_ClVideoX264Crf : CommandLineVideoCrf;
 		Settings.m_Preset = CommandLineVideoPreset < 0 ? g_Config.m_ClVideoX264Preset : CommandLineVideoPreset;
+		Settings.m_ShowHud = g_Config.m_ClVideoShowhud != 0;
+		Settings.m_ShowChat = g_Config.m_ClVideoShowChat != 0;
+		Settings.m_ShowHookCollOther = g_Config.m_ClVideoShowHookCollOther != 0;
+		Settings.m_ShowDirection = g_Config.m_ClVideoShowDirection;
+		Settings.m_ShowImportantAlerts = g_Config.m_ClVideoShowImportantAlerts != 0;
 		pClient->ConfigureCommandLineVideoExport(aCommandLineDemoPath, aCommandLineVideoPath, Settings);
 		signal(SIGINT, HandleVideoExportInterrupt);
 		signal(SIGTERM, HandleVideoExportInterrupt);

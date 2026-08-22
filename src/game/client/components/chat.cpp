@@ -931,7 +931,7 @@ void CChat::AddLine(CGameSessionContext &Session, const CGameState &State, int64
 			bool PlaySound = StoredLine.m_Team ? g_Config.m_SndTeamChat : g_Config.m_SndChat;
 #if defined(CONF_VIDEORECORDER)
 			if(Client()->VideoSessionId() == Session.Id() && IVideo::Current() != nullptr && IVideo::Current()->HasAudio())
-				PlaySound &= (bool)g_Config.m_ClVideoShowChat;
+				PlaySound &= IVideo::Current()->Settings().m_ShowChat;
 #endif
 			if(PlaySound)
 			{
@@ -1320,7 +1320,8 @@ void CChat::RenderLines(const CRenderContext &Context, float y)
 
 void CChat::OnRender(const CRenderContext &Context)
 {
-	if(!Context.m_Time.m_IsGameActive || !((g_Config.m_ClShowChat && !Context.m_IsVideoOutput) || (g_Config.m_ClVideoShowChat && Context.m_IsVideoOutput)))
+	const bool ShowChat = Context.m_IsVideoOutput ? Context.m_VideoSettings.m_ShowChat : g_Config.m_ClShowChat;
+	if(!Context.m_Time.m_IsGameActive || !ShowChat)
 		return;
 	const float Height = 300.0f;
 	const float Width = Height * Context.AspectRatio(Graphics()->ScreenAspect());

@@ -7,6 +7,7 @@
 #include <base/vmath.h>
 
 #include <engine/client/session.h>
+#include <engine/shared/video.h>
 
 #include <cstdint>
 #include <functional>
@@ -337,8 +338,9 @@ public:
 	CVisibleWorldRect m_VisibleWorldRect;
 	uint64_t m_OutputCacheKey;
 	bool m_IsVideoOutput;
+	CVideoExportSettings m_VideoSettings;
 
-	CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, uint64_t OutputCacheKey = 0, bool IsVideoOutput = false);
+	CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, uint64_t OutputCacheKey = 0, bool IsVideoOutput = false, CVideoExportSettings VideoSettings = {});
 
 	float AspectRatio(float DefaultAspectRatio) const;
 	bool IsOtherTeam(int ClientId) const;
@@ -351,6 +353,7 @@ public:
 	virtual ~CRenderOutput() = default;
 	virtual uint64_t PresentationCacheKey() const { return reinterpret_cast<uintptr_t>(this); }
 	virtual bool IsVideoOutput() const { return false; }
+	virtual CVideoExportSettings VideoSettings() const { return {}; }
 	virtual void BeginView(const CViewport &Viewport, vec2 CameraPosition, float Zoom) = 0;
 	virtual void DrawCharacter(int ClientId, vec2 Position, bool Local) = 0;
 	virtual void DrawSpectatorCharacter(int ClientId, vec2 Position, bool OtherTeam) = 0;

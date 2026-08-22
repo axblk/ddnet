@@ -634,6 +634,7 @@ int fs_rename_noreplace(const char *oldname, const char *newname)
 		return 1;
 	if(unlink(oldname) == 0)
 		return 0;
+	(void)unlink(newname);
 	return 1;
 #endif
 }

@@ -3,8 +3,34 @@
 
 #include <cstdint>
 #include <functional>
+#include <vector>
 
 typedef std::function<void(short *pFinalOut, unsigned Frames)> ISoundMixFunc;
+
+/**
+ * A video encoder that the linked libavcodec provides.
+ */
+class CVideoEncoder
+{
+public:
+	/**
+	 * Encoder name as libavcodec knows it, empty for the container default.
+	 */
+	char m_aName[32] = {};
+	/**
+	 * Name shown to the user.
+	 */
+	char m_aDisplayName[64] = {};
+};
+
+/**
+ * Lists the video encoders that are both known to us and actually present in
+ * the linked libavcodec, in the order in which they should be offered. The
+ * first entry is always available and is used when no encoder was chosen.
+ *
+ * @return Reference to the list, which is built once and never changes.
+ */
+const std::vector<CVideoEncoder> &VideoEncoders();
 
 class CVideoExportSettings
 {
@@ -15,6 +41,19 @@ public:
 	bool m_Audio = true;
 	int m_Crf = 18;
 	int m_Preset = 5;
+	/**
+	 * Encoder name from @link VideoEncoders @endlink, empty for the default.
+	 */
+	char m_aVideoCodec[32] = {};
+	/**
+	 * Hardware threads the encoder may use, 0 to determine it automatically.
+	 */
+	int m_EncodeThreads = 0;
+	bool m_ShowHud = false;
+	bool m_ShowChat = true;
+	bool m_ShowHookCollOther = false;
+	int m_ShowDirection = 0;
+	bool m_ShowImportantAlerts = true;
 };
 
 class CVideoExportStatus
@@ -38,6 +77,7 @@ public:
 	virtual bool HasError() const = 0;
 	virtual bool HasAudio() const = 0;
 	virtual CVideoExportStatus Status() const = 0;
+	virtual const CVideoExportSettings &Settings() const = 0;
 
 	virtual void NextVideoFrame() = 0;
 	virtual bool BeginVideoFrameRender() = 0;

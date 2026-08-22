@@ -29,6 +29,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <vector>
 
@@ -344,19 +345,30 @@ protected:
 	CLineInputBuffered<IO_MAX_PATH_LENGTH> m_DemoRenderInput;
 	CLineInputNumber m_DemoRenderWidthInput;
 	CLineInputNumber m_DemoRenderHeightInput;
-	int m_DemoRenderFPS = 60;
-	int m_DemoRenderCrf = 18;
+	// The resolution and the frame rate live in the configuration so that they
+	// survive a restart. These only remember that the user picked the custom
+	// entry, which the values alone cannot tell when they match a preset.
+	bool m_DemoRenderCustomResolution = false;
+	bool m_DemoRenderCustomFps = false;
+	bool m_DemoRenderAdvanced = false;
 	bool m_DemoRenderQueueOnly = false;
 	CButtonContainer m_DemoRenderCancelButton;
 	std::chrono::nanoseconds m_DemoRenderStartTime{0};
 	uint64_t m_DemoRenderLastSubmittedFrames = 0;
+	class CRenderQueueRowIds
+	{
+	public:
+		CButtonContainer m_Up;
+		CButtonContainer m_Down;
+	};
+	// Deque so that the button ids of existing rows stay valid when the queue grows
+	std::deque<CRenderQueueRowIds> m_RenderQueueRowIds;
 #endif
 	int m_DemolistSelectedIndex;
 	bool m_DemolistSelectedReveal = false;
 	int m_DemolistStorageType;
 	bool m_DemolistMultipleStorages = false;
 	int m_Speed = 4;
-	bool m_StartPaused = false;
 
 	std::chrono::nanoseconds m_DemoPopulateStartTime{0};
 
@@ -470,6 +482,12 @@ protected:
 	void RenderPopupLoading(CUIRect Screen);
 #if defined(CONF_VIDEORECORDER)
 	void PopupConfirmDemoReplaceVideo();
+	// Opens the render popup for the demo that is currently selected and takes
+	// the settings that were kept from the last render over into it.
+	void OpenDemoRenderPopup(const char *pVideoName);
+	// The configured resolution, with the window size filled in where the
+	// configuration leaves it open.
+	void DemoRenderResolution(int *pWidth, int *pHeight) const;
 #endif
 	void RenderMenubar(CUIRect Box, IClient::EClientState ClientState);
 	void RenderNews(CUIRect MainView);
@@ -912,6 +930,7 @@ public:
 		POPUP_LANGUAGE,
 		POPUP_RENAME_DEMO,
 		POPUP_RENDER_DEMO,
+		POPUP_RENDER_QUEUE,
 		POPUP_RENDER_DONE,
 		POPUP_PASSWORD,
 		POPUP_QUIT,

@@ -20,6 +20,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 };
 
+#include <algorithm>
 #include <chrono>
 #include <cstdarg>
 #include <memory>
@@ -74,6 +75,93 @@ static LEVEL AvLevelToLogLevel(int Level)
 			log_log(LogLevel, "videorecorder/libav", "%s", aLog);
 		}
 	}
+}
+
+/**
+ * Requests constant quality encoding. Encoders name that option differently
+ * and hardware encoders often only offer a fixed quantiser, so the first
+ * option that the encoder accepts wins.
+ *
+ * @param pContext Encoding context whose encoder was not opened yet.
+ * @param Crf Constant rate factor, 0 for the highest quality and 51 for the lowest.
+ *
+ * @return `true` if the encoder accepted one of the options.
+ */
+static bool SetEncoderQuality(AVCodecContext *pContext, int Crf)
+{
+	if(pContext->priv_data == nullptr)
+		return false;
+	static const char *const s_apQualityOptions[] = {"crf", "cq", "qp"};
+	for(const char *pOption : s_apQualityOptions)
+	{
+		if(av_opt_set_int(pContext->priv_data, pOption, Crf, 0) >= 0)
+			return true;
+	}
+	return false;
+}
+
+/**
+ * Requests an encoding effort. Software encoders use named presets while
+ * hardware encoders usually number theirs from `p1` to `p7`. An encoder that
+ * understands neither keeps its own default, which is not an error.
+ *
+ * @param pContext Encoding context whose encoder was not opened yet.
+ * @param Preset Effort, 0 for the fastest and 9 for the smallest output.
+ */
+static void SetEncoderPreset(AVCodecContext *pContext, int Preset)
+{
+	if(pContext->priv_data == nullptr)
+		return;
+	static const char *const s_apNamedPresets[] = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo"};
+	const int NamedPreset = std::clamp(Preset, 0, (int)std::size(s_apNamedPresets) - 1);
+	if(av_opt_set(pContext->priv_data, "preset", s_apNamedPresets[NamedPreset], 0) >= 0)
+		return;
+	char aNumberedPreset[8];
+	str_format(aNumberedPreset, sizeof(aNumberedPreset), "p%d", 1 + NamedPreset * 6 / ((int)std::size(s_apNamedPresets) - 1));
+	av_opt_set(pContext->priv_data, "preset", aNumberedPreset, 0);
+}
+
+const std::vector<CVideoEncoder> &VideoEncoders()
+{
+	// Which encoders libavcodec offers depends on how it was built, so the
+	// known candidates are filtered by what is actually present. The bundled
+	// build only has libx264, a system FFmpeg usually adds hardware encoders,
+	// which encode without loading the processor the game runs on.
+	static const std::vector<CVideoEncoder> s_vEncoders = []() {
+		static const char *const s_apCandidates[][2] = {
+			{"libx264", "H.264 (x264)"},
+			{"h264_nvenc", "H.264 (NVIDIA)"},
+			{"h264_qsv", "H.264 (Intel)"},
+			{"h264_amf", "H.264 (AMD)"},
+			{"h264_videotoolbox", "H.264 (Apple)"},
+			{"libx265", "H.265 (x265)"},
+			{"hevc_nvenc", "H.265 (NVIDIA)"},
+			{"hevc_qsv", "H.265 (Intel)"},
+			{"hevc_amf", "H.265 (AMD)"},
+			{"hevc_videotoolbox", "H.265 (Apple)"},
+			{"libsvtav1", "AV1 (SVT)"},
+			{"av1_nvenc", "AV1 (NVIDIA)"},
+			{"av1_qsv", "AV1 (Intel)"},
+		};
+		std::vector<CVideoEncoder> vEncoders;
+		for(const char *const *pCandidate : s_apCandidates)
+		{
+			if(avcodec_find_encoder_by_name(pCandidate[0]) == nullptr)
+				continue;
+			CVideoEncoder &Encoder = vEncoders.emplace_back();
+			str_copy(Encoder.m_aName, pCandidate[0]);
+			str_copy(Encoder.m_aDisplayName, pCandidate[1]);
+		}
+		if(vEncoders.empty())
+		{
+			// Without any known encoder the container default is the only
+			// remaining option, so offer exactly that.
+			CVideoEncoder &Encoder = vEncoders.emplace_back();
+			str_copy(Encoder.m_aDisplayName, "Default");
+		}
+		return vEncoders;
+	}();
+	return s_vEncoders;
 }
 
 void CVideo::Init()
@@ -157,8 +245,10 @@ bool CVideo::Start()
 	dbg_assert(!m_Started, "Already started");
 	if(m_HasAudio && !m_pSound->IsSoundEnabled())
 	{
-		SetError("Audio export was requested but the sound mixer is unavailable");
-		return false;
+		// A missing mixer is not a reason to refuse the whole export. The user
+		// asked for a video of the demo, so produce one and say it is mute.
+		log_warn("videorecorder", "The sound mixer is unavailable, exporting without audio");
+		m_HasAudio = false;
 	}
 	if(m_Settings.m_Width <= 0 || m_Settings.m_Height <= 0 || m_Settings.m_Width > 8192 || m_Settings.m_Height > 8192 || static_cast<int64_t>(m_Settings.m_Width) * m_Settings.m_Height > 8192LL * 4320 || m_Settings.m_Width % 2 != 0 || m_Settings.m_Height % 2 != 0)
 	{
@@ -230,14 +320,23 @@ bool CVideo::Start()
 
 	m_pFormat = m_pFormatContext->oformat;
 
+	// The game stays interactive while an export runs, so the encoder only
+	// gets part of the hardware threads unless a budget was configured.
+	const unsigned HardwareThreads = std::max(1u, std::thread::hardware_concurrency());
+	m_EncodeThreads = m_Settings.m_EncodeThreads > 0 ? std::min<unsigned>(m_Settings.m_EncodeThreads, MAX_ENCODE_THREADS) : std::max(1u, HardwareThreads - HardwareThreads / 4);
+
 #if defined(CONF_ARCH_IA32) || defined(CONF_ARCH_ARM) || defined(CONF_ARCH_WASM)
 	// use only the minimum of 2 threads on 32-bit to save memory
+	m_EncodeThreads = 1;
 	m_VideoThreads = 2;
 	m_AudioThreads = 2;
 #else
-	m_VideoThreads = std::thread::hardware_concurrency() + 2;
+	// These threads only convert frames before the shared encoder takes over,
+	// so a short pipeline is enough to hide the conversion. Every slot holds a
+	// full frame, which is 33 MiB at 4K, so the depth stays bounded.
+	m_VideoThreads = std::clamp<size_t>(m_EncodeThreads, 2, 8);
 	// audio gets a bit less
-	m_AudioThreads = (std::thread::hardware_concurrency() / 2) + 2;
+	m_AudioThreads = std::clamp<size_t>(m_EncodeThreads / 2, 2, 4);
 #endif
 
 	m_CurVideoThreadIndex = 0;
@@ -247,11 +346,26 @@ bool CVideo::Start()
 
 	m_vAudioBuffers.resize(m_AudioThreads);
 
-	/* Add the audio and video streams using the default format codecs
+	/* Add the audio and video streams using the chosen or default codecs
 	 * and initialize the codecs. */
-	if(m_pFormat->video_codec != AV_CODEC_ID_NONE)
+	const AVCodec *pVideoEncoder = nullptr;
+	if(m_Settings.m_aVideoCodec[0] != '\0')
 	{
-		if(!AddStream(&m_VideoStream, m_pFormatContext, &m_pVideoCodec, m_pFormat->video_codec))
+		pVideoEncoder = avcodec_find_encoder_by_name(m_Settings.m_aVideoCodec);
+		if(pVideoEncoder == nullptr)
+		{
+			log_error("videorecorder", "Video encoder '%s' is not available", m_Settings.m_aVideoCodec);
+			SetError("Video encoder '%s' is not available", m_Settings.m_aVideoCodec);
+			return false;
+		}
+	}
+	else if(m_pFormat->video_codec != AV_CODEC_ID_NONE)
+	{
+		pVideoEncoder = avcodec_find_encoder(m_pFormat->video_codec);
+	}
+	if(pVideoEncoder != nullptr)
+	{
+		if(!AddStream(&m_VideoStream, m_pFormatContext, &m_pVideoCodec, pVideoEncoder))
 			return false;
 	}
 	else
@@ -265,7 +379,14 @@ bool CVideo::Start()
 	{
 		if(m_pFormat->audio_codec != AV_CODEC_ID_NONE)
 		{
-			if(!AddStream(&m_AudioStream, m_pFormatContext, &m_pAudioCodec, m_pFormat->audio_codec))
+			const AVCodec *pAudioEncoder = avcodec_find_encoder(m_pFormat->audio_codec);
+			if(pAudioEncoder == nullptr)
+			{
+				log_error("videorecorder", "Could not find encoder for codec '%s'", avcodec_get_name(m_pFormat->audio_codec));
+				SetError("Could not find encoder for codec '%s'", avcodec_get_name(m_pFormat->audio_codec));
+				return false;
+			}
+			if(!AddStream(&m_AudioStream, m_pFormatContext, &m_pAudioCodec, pAudioEncoder))
 				return false;
 		}
 		else
@@ -389,7 +510,7 @@ bool CVideo::Start()
 
 void CVideo::Pause(bool Pause)
 {
-	if(ms_pCurrentVideo)
+	if(ms_pCurrentVideo == this)
 		m_Recording = !Pause;
 }
 
@@ -547,6 +668,16 @@ void CVideo::Stop()
 			log_error("videorecorder", "Could not finalize video file '%s'", m_aName);
 			SetError("Could not finalize video file '%s'", m_aName);
 		}
+	}
+	else if(m_Started)
+	{
+		// A cancelled or failed export left a '.partial' file behind that
+		// nothing will ever pick up again, and that the next attempt with the
+		// same name would have to overwrite.
+		if(m_OutputStorageType == IStorage::TYPE_ABSOLUTE)
+			(void)fs_remove(m_aTemporaryName);
+		else
+			m_pStorage->RemoveFile(m_aTemporaryName, m_OutputStorageType);
 	}
 
 	if(ms_pCurrentVideo == this)
@@ -1208,16 +1339,10 @@ bool CVideo::OpenAudio()
 }
 
 /* Add an output stream. */
-bool CVideo::AddStream(COutputStream *pStream, AVFormatContext *pFormatContext, const AVCodec **ppCodec, enum AVCodecID CodecId)
+bool CVideo::AddStream(COutputStream *pStream, AVFormatContext *pFormatContext, const AVCodec **ppCodec, const AVCodec *pCodec)
 {
-	/* find the encoder */
-	*ppCodec = avcodec_find_encoder(CodecId);
-	if(!(*ppCodec))
-	{
-		log_error("videorecorder", "Could not find encoder for codec '%s'", avcodec_get_name(CodecId));
-		SetError("Could not find encoder for codec '%s'", avcodec_get_name(CodecId));
-		return false;
-	}
+	*ppCodec = pCodec;
+	const enum AVCodecID CodecId = pCodec->id;
 
 	pStream->m_pStream = avformat_new_stream(pFormatContext, nullptr);
 	if(!pStream->m_pStream)
@@ -1302,7 +1427,6 @@ bool CVideo::AddStream(COutputStream *pStream, AVFormatContext *pFormatContext, 
 	case AVMEDIA_TYPE_VIDEO:
 		pContext->codec_id = CodecId;
 
-		pContext->bit_rate = 400000;
 		pContext->width = m_Settings.m_Width;
 		pContext->height = m_Settings.m_Height;
 		/* timebase: This is the fundamental unit of time (in seconds) in terms
@@ -1313,9 +1437,25 @@ bool CVideo::AddStream(COutputStream *pStream, AVFormatContext *pFormatContext, 
 		pStream->m_pStream->time_base.den = m_Settings.m_FPS;
 		pContext->time_base = pStream->m_pStream->time_base;
 
-		pContext->gop_size = 12; /* emit one intra frame every twelve frames at most */
+		/* Two seconds between key frames. The previous fixed value of 12 frames
+		 * produced a key frame five times per second at 60 FPS, which inflates
+		 * the output size without any benefit for offline playback. */
+		pContext->gop_size = std::clamp(m_Settings.m_FPS * 2, 1, 600);
 		pContext->pix_fmt = AV_PIX_FMT_YUV420P;
+		/* The scaler converts to limited range BT.709, so tag the stream
+		 * accordingly instead of leaving it to the player to guess. */
 		pContext->colorspace = COLOR_SPACE;
+		pContext->color_range = AVCOL_RANGE_MPEG;
+		pContext->color_primaries = AVCOL_PRI_BT709;
+		pContext->color_trc = AVCOL_TRC_BT709;
+		pContext->thread_count = m_EncodeThreads;
+		if(!SetEncoderQuality(pContext, m_Settings.m_Crf))
+		{
+			/* The encoder understands no constant quality option, so it would
+			 * otherwise encode at the libavcodec default of 200 kbit/s. */
+			pContext->bit_rate = 400000;
+		}
+		SetEncoderPreset(pContext, m_Settings.m_Preset);
 		if(pContext->codec_id == AV_CODEC_ID_MPEG2VIDEO)
 		{
 			/* just for testing, we also add B-frames */
@@ -1327,23 +1467,6 @@ bool CVideo::AddStream(COutputStream *pStream, AVFormatContext *pFormatContext, 
 			 * This does not happen with normal video, it just happens here as
 			 * the motion of the chroma plane does not match the luma plane. */
 			pContext->mb_decision = 2;
-		}
-		if(CodecId == AV_CODEC_ID_H264)
-		{
-			static const char *s_apPresets[10] = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo"};
-			dbg_assert(m_Settings.m_Preset < (int)std::size(s_apPresets), "preset index invalid: %d", m_Settings.m_Preset);
-			const int PresetResult = av_opt_set(pContext->priv_data, "preset", s_apPresets[m_Settings.m_Preset], 0);
-			if(PresetResult < 0)
-			{
-				SetAvError("Could not set H.264 preset", PresetResult);
-				return false;
-			}
-			const int CrfResult = av_opt_set_int(pContext->priv_data, "crf", m_Settings.m_Crf, 0);
-			if(CrfResult < 0)
-			{
-				SetAvError("Could not set H.264 CRF", CrfResult);
-				return false;
-			}
 		}
 		break;
 
@@ -1360,6 +1483,9 @@ bool CVideo::AddStream(COutputStream *pStream, AVFormatContext *pFormatContext, 
 
 void CVideo::WriteFrame(COutputStream *pStream, size_t ThreadIndex)
 {
+	if(HasError())
+		return;
+
 	AVPacket *pPacket = av_packet_alloc();
 	if(pPacket == nullptr)
 	{
@@ -1385,6 +1511,8 @@ void CVideo::WriteFrame(COutputStream *pStream, size_t ThreadIndex)
 		RecvResult = avcodec_receive_packet(pStream->m_pCodecContext, pPacket);
 		if(!RecvResult)
 		{
+			if(pStream == &m_VideoStream && pPacket->duration <= 0)
+				pPacket->duration = 1;
 			/* rescale output packet timestamp values from codec to stream timebase */
 			av_packet_rescale_ts(pPacket, pStream->m_pCodecContext->time_base, pStream->m_pStream->time_base);
 			pPacket->stream_index = pStream->m_pStream->index;
@@ -1396,6 +1524,7 @@ void CVideo::WriteFrame(COutputStream *pStream, size_t ThreadIndex)
 				av_strerror(WriteFrameResult, aError, sizeof(aError));
 				log_error("videorecorder", "Could not write encoded frame: %s", aError);
 				SetAvError("Could not write encoded frame", WriteFrameResult);
+				break;
 			}
 			else if(pStream == &m_VideoStream)
 				m_EncodedFrames.fetch_add(1, std::memory_order_relaxed);
@@ -1447,6 +1576,8 @@ void CVideo::FinishFrames(COutputStream *pStream)
 		RecvResult = avcodec_receive_packet(pStream->m_pCodecContext, pPacket);
 		if(!RecvResult)
 		{
+			if(pStream == &m_VideoStream && pPacket->duration <= 0)
+				pPacket->duration = 1;
 			/* rescale output packet timestamp values from codec to stream timebase */
 			av_packet_rescale_ts(pPacket, pStream->m_pCodecContext->time_base, pStream->m_pStream->time_base);
 			pPacket->stream_index = pStream->m_pStream->index;

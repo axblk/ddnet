@@ -233,10 +233,8 @@ void CPlayers::RenderHookCollLine(
 
 	bool Local = GameState.LocalClientId() == ClientId;
 
-#if defined(CONF_VIDEORECORDER)
-	if(Context.m_IsVideoOutput && !g_Config.m_ClVideoShowHookCollOther && !Local)
+	if(Context.m_IsVideoOutput && !Context.m_VideoSettings.m_ShowHookCollOther && !Local)
 		return;
-#endif
 
 	bool Aim = (Player.m_PlayerFlags & PLAYERFLAG_AIM);
 	if(!Context.m_Session.ServerCapAnyPlayerFlag())

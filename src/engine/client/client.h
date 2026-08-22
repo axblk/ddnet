@@ -193,7 +193,7 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	char m_aVideoError[256] = {};
 	std::chrono::nanoseconds m_LastVideoProgressRender{0};
 	void UpdateVideoExportQueue();
-	const char *QueueVideoExport(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartPaused, bool StartQueue, bool ExactVideoPath);
+	const char *QueueVideoExport(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue, bool ExactVideoPath);
 	CDemoPlayer *VideoDemoPlayer();
 #endif
 	bool m_HiddenWindow = false;
@@ -615,7 +615,7 @@ public:
 	const char *StartVideo(CSessionId SessionId, const char *pFilename, bool WithTimestamp, const CVideoExportSettings &Settings, bool ExactFilename);
 	static void Con_StartVideo(IConsole::IResult *pResult, void *pUserData);
 	static void Con_StopVideo(IConsole::IResult *pResult, void *pUserData);
-	const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartPaused, bool StartQueue) override;
+	const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue) override;
 	void DemoPlayer_StartRenderQueue() override { m_VideoExportQueueRunning = true; }
 	void DemoPlayer_ClearRenderQueue() override
 	{
@@ -624,6 +624,26 @@ public:
 			m_VideoExportQueueRunning = false;
 	}
 	size_t DemoPlayer_RenderQueueSize() const override { return m_VideoExportQueue.size() + (m_ActiveVideoExport.has_value() ? 1 : 0); }
+	size_t DemoPlayer_RenderQueuePending() const override { return m_VideoExportQueue.size(); }
+	const char *DemoPlayer_RenderQueueName(size_t Index) const override
+	{
+		dbg_assert(Index < m_VideoExportQueue.size(), "render queue index out of bounds");
+		return m_VideoExportQueue[Index].m_aVideoName;
+	}
+	void DemoPlayer_RenderQueueErase(size_t Index) override
+	{
+		dbg_assert(Index < m_VideoExportQueue.size(), "render queue index out of bounds");
+		m_VideoExportQueue.erase(m_VideoExportQueue.begin() + Index);
+		if(m_VideoExportQueue.empty() && !m_ActiveVideoExport.has_value())
+			m_VideoExportQueueRunning = false;
+	}
+	void DemoPlayer_RenderQueueMove(size_t Index, bool Up) override
+	{
+		const size_t Target = Up ? Index - 1 : Index + 1;
+		dbg_assert(Index < m_VideoExportQueue.size() && Target < m_VideoExportQueue.size(), "render queue index out of bounds");
+		std::swap(m_VideoExportQueue[Index], m_VideoExportQueue[Target]);
+	}
+	void DemoPlayer_CancelActiveRender() override;
 	bool DemoPlayer_RenderQueueActive() const override { return m_ActiveVideoExport.has_value(); }
 	const char *DemoPlayer_RenderQueueError() const override { return m_aVideoExportQueueError; }
 	bool DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const override;

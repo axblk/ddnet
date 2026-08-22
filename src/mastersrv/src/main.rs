@@ -6,10 +6,20 @@ use clap::App;
 use clap::Arg;
 use headers::HeaderMapExt as _;
 use rand::random;
+use rustls::client::danger::HandshakeSignatureValid;
+use rustls::client::danger::ServerCertVerified;
+use rustls::client::danger::ServerCertVerifier;
+use rustls::pki_types::CertificateDer;
+use rustls::pki_types::ServerName;
+use rustls::pki_types::UnixTime;
+use rustls::CertificateError;
+use rustls::DigitallySignedStruct;
+use rustls::SignatureScheme;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json as json;
 use sha2::Digest;
+use sha2::Sha256;
 use sha2::Sha512_256 as SecureHash;
 use std::borrow::Cow;
 use std::collections::hash_map;
@@ -37,8 +47,8 @@ use tokio::fs;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::time;
-use warp::Filter;
 use warp::http::StatusCode;
+use warp::Filter;
 
 #[macro_use]
 extern crate log;
@@ -330,7 +340,128 @@ struct Shared<'a> {
     config: &'a Config,
     servers: &'a Mutex<Servers>,
     socket: &'a Arc<tokio::net::UdpSocket>,
+    quic_challenges: &'a Arc<Mutex<HashMap<Addr, QuicChallenge>>>,
     timekeeper: Timekeeper,
+}
+
+struct QuicChallenge {
+    secret: ShortString,
+    verified: bool,
+    updated: Instant,
+}
+
+#[derive(Debug)]
+struct QuicServerVerifier {
+    pins: Vec<[u8; 32]>,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl ServerCertVerifier for QuicServerVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        let actual: [u8; 32] = Sha256::digest(end_entity.as_ref()).into();
+        if !self.pins.contains(&actual) {
+            return Err(rustls::Error::InvalidCertificate(
+                CertificateError::ApplicationVerificationFailure,
+            ));
+        }
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+async fn probe_quic(target: SocketAddr, pins: Vec<[u8; 32]>) -> Result<(), String> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = Arc::new(QuicServerVerifier {
+        pins,
+        provider: provider.clone(),
+    });
+    let mut tls = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|error| error.to_string())?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    tls.alpn_protocols = vec![b"ddnet/1".to_vec()];
+    let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)
+        .map_err(|error| error.to_string())?;
+    let bind = if target.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    }
+    .parse()
+    .unwrap();
+    let mut endpoint = quinn::Endpoint::client(bind).map_err(|error| error.to_string())?;
+    endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(crypto)));
+    let connecting = endpoint
+        .connect(target, "localhost")
+        .map_err(|error| error.to_string())?;
+    let connection = time::timeout(Duration::from_secs(5), connecting)
+        .await
+        .map_err(|_| "QUIC challenge timed out".to_string())?
+        .map_err(|error| error.to_string())?;
+    connection.close(0u32.into(), b"master challenge complete");
+    endpoint.close(0u32.into(), b"master challenge complete");
+    Ok(())
+}
+
+fn parse_quic_pins(info: &json::Value) -> Option<Vec<[u8; 32]>> {
+    let transport = info.get("transport")?;
+    if transport.get("quic")?.as_bool()? != true {
+        return None;
+    }
+    let mut pins = Vec::with_capacity(2);
+    for name in ["tls_certificate_sha256", "tls_certificate_sha256_next"] {
+        let Some(value) = transport.get(name) else {
+            continue;
+        };
+        let mut pin = [0; 32];
+        hex::decode_to_slice(value.as_str()?, &mut pin).ok()?;
+        if !pins.contains(&pin) {
+            pins.push(pin);
+        }
+    }
+    (!pins.is_empty()).then_some(pins)
 }
 
 impl<'a> Shared<'a> {
@@ -344,6 +475,59 @@ impl<'a> Shared<'a> {
         self.servers
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn quic_challenge_verified(
+        &self,
+        addr: Addr,
+        secret: ShortString,
+        pins: Vec<[u8; 32]>,
+    ) -> bool {
+        let mut challenges = self
+            .quic_challenges
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        challenges.retain(|_, challenge| challenge.updated.elapsed() < Duration::from_secs(60));
+        if let Some(challenge) = challenges.get_mut(&addr) {
+            if challenge.secret == secret {
+                challenge.updated = Instant::now();
+                return challenge.verified;
+            }
+        }
+        challenges.insert(
+            addr,
+            QuicChallenge {
+                secret,
+                verified: false,
+                updated: Instant::now(),
+            },
+        );
+        let challenges = self.quic_challenges.clone();
+        tokio::spawn(async move {
+            let result = probe_quic(addr.to_socket_addr(), pins).await;
+            let mut challenges = challenges
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let Some(challenge) = challenges.get_mut(&addr) else {
+                return;
+            };
+            if challenge.secret != secret {
+                return;
+            }
+            if result.is_ok() {
+                challenge.verified = true;
+                challenge.updated = Instant::now();
+                debug!("successfully challenged {}", addr);
+            } else {
+                challenges.remove(&addr);
+                debug!(
+                    "QUIC challenge failed for {}: {}",
+                    addr,
+                    result.unwrap_err()
+                );
+            }
+        });
+        false
     }
 }
 
@@ -376,6 +560,11 @@ impl Servers {
             addresses: HashMap::new(),
             servers: HashMap::new(),
         }
+    }
+
+    fn quic_pins(&self, secret: &ShortString) -> Option<Vec<[u8; 32]>> {
+        let info: json::Value = json::from_str(self.servers.get(secret)?.info.get()).ok()?;
+        parse_quic_pins(&info)
     }
     fn add(
         &mut self,
@@ -769,6 +958,7 @@ fn handle_register(
     let connless_request_token_7 = match register.address.protocol {
         Protocol::V5 => None,
         Protocol::V6 => None,
+        Protocol::Quic => None,
         Protocol::V7 => {
             let token_hex = register
                 .connless_request_token
@@ -788,15 +978,32 @@ fn handle_register(
         return Err(RegisterError::banned(reason));
     }
 
+    let quic_pins = if addr.protocol == Protocol::Quic {
+        register
+            .info
+            .as_ref()
+            .and_then(parse_quic_pins)
+            .or_else(|| shared.lock_servers().quic_pins(&register.secret))
+    } else {
+        None
+    };
+    if addr.protocol == Protocol::Quic && quic_pins.is_none() {
+        return Ok(RegisterResponse::NeedInfo);
+    }
+    let quic_verified = addr.protocol == Protocol::Quic
+        && shared.quic_challenge_verified(addr, register.secret.clone(), quic_pins.unwrap());
     let is_exempt = shared.config.is_exempt_from_port_forward_check(addr);
     let challenge = shared.challenge_for_addr(&addr);
-    let correct_challenge = is_exempt
-        || register
-            .challenge_token
-            .as_ref()
-            .map(|ct| challenge.is_valid(ct))
-            .unwrap_or(false);
-    let should_send_challenge = !is_exempt
+    let correct_challenge = quic_verified
+        || (addr.protocol != Protocol::Quic
+            && (is_exempt
+                || register
+                    .challenge_token
+                    .as_ref()
+                    .map(|ct| challenge.is_valid(ct))
+                    .unwrap_or(false)));
+    let should_send_challenge = addr.protocol != Protocol::Quic
+        && !is_exempt
         && register
             .challenge_token
             .as_ref()
@@ -879,6 +1086,13 @@ fn handle_delete(
     delete: Delete,
 ) -> Result<RegisterResponse, RegisterError> {
     let addr = delete.address.with_ip(remote_addr);
+    if addr.protocol == Protocol::Quic {
+        shared
+            .quic_challenges
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&addr);
+    }
     match shared.lock_servers().remove(addr, delete.secret) {
         RemoveResult::Removed => {
             debug!("successfully removed {}", addr);
@@ -1109,6 +1323,7 @@ async fn main() {
         None => {}
     }
     let servers = Arc::new(Mutex::new(servers));
+    let quic_challenges = Arc::new(Mutex::new(HashMap::new()));
     let socket = Arc::new(tokio::net::UdpSocket::bind("[::]:0").await.unwrap());
     let socket = AssertUnwindSafe(socket);
 
@@ -1161,6 +1376,8 @@ async fn main() {
                 RegisterResponse::Error("unexpected panic".into()),
             ),
         };
+        let mut body = json::to_value(body).unwrap();
+        body["quic_challenge"] = json::Value::Bool(true);
         warp::http::Response::builder()
             .status(http_status)
             .header(warp::http::header::CONTENT_TYPE, "application/json")
@@ -1184,6 +1401,7 @@ async fn main() {
                         config: &config,
                         servers: &servers,
                         socket: &socket.0,
+                        quic_challenges: &quic_challenges,
                         timekeeper,
                     };
                     let addr = connecting_addr(addr, &headers)?;
@@ -1215,7 +1433,13 @@ async fn main() {
                 let read_dump_dir = read_dump_dir.clone();
                 async move {
                     if test_servers_route {
-                        Ok(handle_test_servers_json(config.load_full(), servers, read_dump_dir, timekeeper).await)
+                        Ok(handle_test_servers_json(
+                            config.load_full(),
+                            servers,
+                            read_dump_dir,
+                            timekeeper,
+                        )
+                        .await)
                     } else {
                         Err(warp::reject())
                     }

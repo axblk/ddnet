@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 from collections import namedtuple
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Queue
 from threading import Thread
-from time import time
+from time import sleep, time
 from urllib import request
 from urllib.request import Request, urlopen
 from uuid import UUID, uuid4
+import hashlib
 import io
 import json
 import os
 import queue
+import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -28,6 +32,44 @@ def urlopen_anystatus(url):
 			return response
 
 	return request.build_opener(NonRaisingHttpErrorProcessor).open(url)
+
+
+class StaticServerList:
+	def __init__(self, payload):
+		response = json.dumps(payload).encode()
+
+		class Handler(BaseHTTPRequestHandler):
+			def respond(self, include_body):
+				self.send_response(200)
+				self.send_header("Age", "0")
+				self.send_header("Last-Modified", self.date_time_string())
+				self.send_header("Content-Length", str(len(response)))
+				self.send_header("Content-Type", "application/json")
+				self.end_headers()
+				if include_body:
+					self.wfile.write(response)
+
+			def do_GET(self):
+				self.respond(True)
+
+			def do_HEAD(self):
+				self.respond(False)
+
+			def log_message(self, _format, *args):
+				pass
+
+		self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+		self.server.daemon_threads = True
+		self.thread = Thread(target=self.server.serve_forever, daemon=True)
+
+	def __enter__(self):
+		self.thread.start()
+		return f"http://127.0.0.1:{self.server.server_port}/servers.json"
+
+	def __exit__(self, _exc_type, _exc_value, _traceback):
+		self.server.shutdown()
+		self.server.server_close()
+		self.thread.join()
 
 
 # TODO: less strict default timeouts?
@@ -102,6 +144,11 @@ def popen(args, *, cwd, **kwargs):
 		# If relative and contains a path separator.
 		if not os.path.isabs(args[0]) and os.path.dirname(args[0]) != "":
 			args = [relpath(os.path.join(cwd, args[0]))] + args[1:]
+		if os.path.basename(args[0]).lower() == "ddnet.exe":
+			startupinfo = subprocess.STARTUPINFO()
+			startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+			startupinfo.wShowWindow = subprocess.SW_HIDE
+			kwargs["startupinfo"] = startupinfo
 	return subprocess.Popen(args, cwd=cwd, **kwargs)
 
 
@@ -112,16 +159,24 @@ YELLOW = "\x1b[33m"
 
 
 class TestRunner:
-	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, repo_dir, test_dir, show_full_output, test_websockets, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
+	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, repo_dir, test_dir, show_full_output, test_websockets, test_quic, test_baseline, quic_certificate, quic_private_key, quic_wrong_certificate, quic_wrong_private_key, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
 		self.ddnet = ddnet
 		self.ddnet_server = ddnet_server
 		self.ddnet_mastersrv = ddnet_mastersrv
 		self.repo_dir = repo_dir
 		self.data_dir = os.path.join(test_dir, "data")
+		if not os.path.isdir(self.data_dir) and os.path.isdir(os.path.join(os.path.dirname(test_dir), "data")):
+			self.data_dir = os.path.join(os.path.dirname(test_dir), "data")
 		self.test_dir = test_dir
 		self.extra_env_vars = {}
 		self.show_full_output = show_full_output
 		self.test_websockets = test_websockets
+		self.test_quic = test_quic
+		self.test_baseline = test_baseline
+		self.quic_certificate = quic_certificate
+		self.quic_private_key = quic_private_key
+		self.quic_wrong_certificate = quic_wrong_certificate
+		self.quic_wrong_private_key = quic_wrong_private_key
 		self.keep_tmpdirs = keep_tmpdirs
 		self.timeout_multiplier = timeout_multiplier
 		self.valgrind_memcheck = valgrind_memcheck
@@ -178,6 +233,14 @@ class TestRunner:
 				num_skipped += 1
 				continue
 			if test.requires_websockets and not self.test_websockets:
+				print(f"{test.name} ... {YELLOW}skipped{RESET}")
+				num_skipped += 1
+				continue
+			if test.requires_quic and not self.test_quic:
+				print(f"{test.name} ... {YELLOW}skipped{RESET}")
+				num_skipped += 1
+				continue
+			if test.requires_baseline and not self.test_baseline:
 				print(f"{test.name} ... {YELLOW}skipped{RESET}")
 				num_skipped += 1
 				continue
@@ -457,7 +520,7 @@ def open_fifo(name):
 
 
 class Client(Runnable):
-	def __init__(self, test_env, extra_args=[]):  # noqa: B006 mutable-default-arguments
+	def __init__(self, test_env, extra_args=[], *, extra_env_vars=None):  # noqa: B006 mutable-default-arguments
 		name = f"client{test_env.num_clients}"
 		self.fifo_name, self.fifo_path = fifo_name_path(test_env, name)
 		# Delay opening the FIFO until the client has started, because it will
@@ -470,10 +533,12 @@ class Client(Runnable):
 				test_env.ddnet,
 				f"cl_input_fifo {self.fifo_name}",
 				"gfx_fullscreen 0",
+				"snd_enable 0",
 				"cl_save_settings 0",
 				f"conn_timeout {test_env.runner.conn_timeout}",
 			]
 			+ extra_args,
+			extra_env_vars=extra_env_vars or {},
 		)
 		test_env.num_clients += 1
 
@@ -594,11 +659,13 @@ json = {communities_json_filename!r}
 ALL_TESTS = []
 
 
-def test(test=None, *, requires_mastersrv=False, requires_websockets=False, timeout=60):
+def test(test=None, *, requires_mastersrv=False, requires_websockets=False, requires_quic=False, requires_baseline=False, timeout=60):
 	def apply(test):
 		test.name = test.__name__
 		test.requires_mastersrv = requires_mastersrv
 		test.requires_websockets = requires_websockets
+		test.requires_quic = requires_quic
+		test.requires_baseline = requires_baseline
 		test.timeout = timeout
 		ALL_TESTS.append(test)
 		return test
@@ -675,6 +742,651 @@ def client_can_connect(test_env):
 	client.wait_for_exit()
 
 
+@test(requires_quic=True)
+def client_connects_quic_and_receives_shutdown(test_env):
+	server = test_env.server([
+		"sv_ipv4only 1",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+	])
+	client = test_env.client([
+		"cl_quic 1",
+		f"cl_quic_cert {test_env.runner.quic_certificate}",
+		"cl_quic_server_name localhost",
+	])
+	wait_for_startup([client, server])
+	client.command(f"connect 127.0.0.1:{server.port}")
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=0" not in join:
+		raise AssertionError(f"sixup=0 not found in {join!r}")
+	server.exit()
+	server.wait_for_exit()
+	client.wait_for_log_exact("client: disconnecting. reason='Server shutdown'", timeout=10)
+	client.exit()
+	client.wait_for_exit()
+
+
+@test(requires_quic=True)
+def client_connects_direct_quic_with_stable_identity(test_env):
+	def start_server(certificate, private_key):
+		server = test_env.server([
+			"sv_ipv4only 1",
+			"sv_quic 1",
+			f"sv_quic_cert {certificate}",
+			f"sv_quic_key {private_key}",
+		])
+		server.wait_for_startup()
+		line = next((line for line in server.full_stdout if "server: native QUIC listening on" in line), "")
+		match = re.search(r" identity-sha256=([0-9a-f]{64})$", line)
+		if not match:
+			raise AssertionError(f"missing server identity fingerprint: {line!r}")
+		return server, match.group(1)
+
+	server, fingerprint = start_server(test_env.runner.quic_wrong_certificate, test_env.runner.quic_wrong_private_key)
+	client = test_env.client()
+	client.wait_for_startup(timeout=30)
+	client.command(f'connect "ddnet+quic://127.0.0.1:{server.port}#sha256={fingerprint}"')
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client.command("say direct-identity-ok")
+	server.wait_for_log_exact("chat: 0:-2:nameless tee: direct-identity-ok", timeout=10)
+	server.exit()
+	server.wait_for_exit()
+	client.exit()
+	client.wait_for_exit()
+
+	rotated_server, rotated_fingerprint = start_server(test_env.runner.quic_certificate, test_env.runner.quic_private_key)
+	if rotated_fingerprint != fingerprint:
+		raise AssertionError("persistent server identity changed during TLS certificate rotation")
+	rotated_client = test_env.client()
+	rotated_client.wait_for_startup(timeout=30)
+	rotated_client.command(f'connect "ddnet+quic://127.0.0.1:{rotated_server.port}#sha256={fingerprint}"')
+	rotated_server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	rotated_client.command("say rotated-identity-ok")
+	rotated_server.wait_for_log_exact("chat: 0:-2:nameless tee: rotated-identity-ok", timeout=10)
+	rotated_server.exit()
+	rotated_server.wait_for_exit()
+	rotated_client.exit()
+	rotated_client.wait_for_exit()
+
+	wrong_server, wrong_server_fingerprint = start_server(test_env.runner.quic_certificate, test_env.runner.quic_private_key)
+	if wrong_server_fingerprint != fingerprint:
+		raise AssertionError("persistent server identity changed before mismatch test")
+	wrong_client = test_env.client()
+	wrong_client.wait_for_startup(timeout=30)
+	wrong_client.command(f'connect "ddnet+quic://127.0.0.1:{wrong_server.port}#sha256={"0" * 64}"')
+	wrong_client.wait_for_log_prefix("client: disconnecting. reason='server identity fingerprint mismatch (presented ", timeout=10)
+	if any("using legacy UDP" in line for line in wrong_client.full_stdout):
+		raise AssertionError("direct identity mismatch triggered legacy fallback")
+	wrong_client.exit()
+	wrong_server.exit()
+	wrong_client.wait_for_exit()
+	wrong_server.wait_for_exit()
+
+
+@test(requires_quic=True)
+def client_tofu_persists_identity_and_rejects_key_change(test_env):
+	def start_server(port, certificate, private_key, identity_key="quic_identity.pk8"):
+		args = [
+			"sv_ipv4only 1",
+			f"sv_port {port}",
+			"sv_quic 1",
+			f"sv_quic_cert {certificate}",
+			f"sv_quic_key {private_key}",
+			f"sv_quic_identity_key {identity_key}",
+		]
+		server = test_env.server(args)
+		server.wait_for_startup()
+		return server
+
+	server = start_server(0, test_env.runner.quic_wrong_certificate, test_env.runner.quic_wrong_private_key)
+	server_port = server.port
+	client = test_env.client(["cl_quic 1", "cl_save_settings 1", "cl_quic_server_name localhost"])
+	client.wait_for_startup(timeout=30)
+	client.command(f"connect 127.0.0.1:{server_port}")
+	client.wait_for_log_exact("client: QUIC connected, sending info", timeout=10)
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client.command("say tofu-first-use-ok")
+	server.wait_for_log_exact("chat: 0:-2:nameless tee: tofu-first-use-ok", timeout=10)
+	server.exit()
+	server.wait_for_exit()
+	client.exit()
+	client.wait_for_exit()
+
+	rotated_server = start_server(server_port, test_env.runner.quic_certificate, test_env.runner.quic_private_key)
+	rotated_client = test_env.client(["cl_quic 1", "cl_quic_server_name localhost"])
+	rotated_client.wait_for_startup(timeout=30)
+	rotated_client.command(f"connect 127.0.0.1:{server_port}")
+	rotated_client.wait_for_log_exact("client: QUIC connected, sending info", timeout=10)
+	rotated_server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	rotated_server.exit()
+	rotated_server.wait_for_exit()
+	rotated_client.exit()
+	rotated_client.wait_for_exit()
+
+	changed_server = start_server(server_port, test_env.runner.quic_certificate, test_env.runner.quic_private_key, "quic_identity_changed.pk8")
+	changed_client = test_env.client(["cl_quic 1", "cl_quic_server_name localhost"])
+	changed_client.wait_for_startup(timeout=30)
+	changed_client.command(f"connect 127.0.0.1:{server_port}")
+	changed_client.wait_for_log_prefix("client: disconnecting. reason='server identity fingerprint mismatch (presented ", timeout=10)
+	if any("using legacy UDP" in line for line in changed_client.full_stdout):
+		raise AssertionError("TOFU identity mismatch triggered legacy fallback")
+	if any("server: player has entered the game" in line for line in changed_server.full_stdout):
+		raise AssertionError("TOFU identity mismatch joined the server")
+	changed_client.exit()
+	changed_server.exit()
+	changed_client.wait_for_exit()
+	changed_server.wait_for_exit()
+
+
+@test(requires_quic=True)
+def client_uses_quic_control_stream(test_env):
+	server = test_env.server([
+		"sv_ipv4only 1",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+	])
+	client = test_env.client([
+		"player_name quic-control",
+		"cl_quic 1",
+		f"cl_quic_cert {test_env.runner.quic_certificate}",
+		"cl_quic_server_name localhost",
+	])
+	wait_for_startup([client, server])
+	client.command(f"connect 127.0.0.1:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client.command("say quic-chat-ok")
+	server.wait_for_log_exact("chat: 0:-2:quic-control: quic-chat-ok", timeout=10)
+	client.command(f"rcon_auth {server.rcon_password}")
+	server.wait_for_log_exact("server: ClientId=0 authed with key='default_admin' (admin)", timeout=10)
+	client.command("rcon say quic-rcon-ok")
+	client.wait_for_log_exact("chat/server: *** quic-rcon-ok", timeout=10)
+	client.exit()
+	client.wait_for_log_prefix("quic: transport=quic attempts=1 connections=1 failures=0/0/0 fallback=0 handshake_ms=", timeout=10)
+	client.wait_for_exit()
+	server.wait_for_log_suffix("has left the game (application disconnect)", timeout=10)
+	server.exit()
+	server.wait_for_exit()
+
+
+@test(requires_quic=True)
+def client_ban_blocks_quic_reconnect(test_env):
+	server = test_env.server([
+		"sv_ipv4only 1",
+		"bindaddr 192.0.2.1",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+	])
+	client_args = [
+		"bindaddr 192.0.2.2",
+		"cl_quic 1",
+		f"cl_quic_cert {test_env.runner.quic_certificate}",
+		"cl_quic_server_name localhost",
+	]
+	client = test_env.client(client_args)
+	wait_for_startup([client, server])
+	client.command(f"connect 192.0.2.1:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	reason = "You have been banned for 1 minute (quic-ban-test)"
+	server.command("ban 0 1 quic-ban-test")
+	client.wait_for_log_exact(f"client: disconnecting. reason='{reason}'", timeout=10)
+	server.wait_for_log_suffix(f"has left the game ({reason})", timeout=10)
+
+	client.command(f"connect 192.0.2.1:{server.port}")
+	client.wait_for_log_exact(f"client: disconnecting. reason='{reason}'", timeout=10)
+
+	client.exit()
+	server.exit()
+	client.wait_for_exit()
+	server.wait_for_exit()
+
+
+def linux_process_usage(process):
+	with open(f"/proc/{process.pid}/stat", encoding="utf-8") as stat_file:
+		stat_fields = stat_file.read().rsplit(")", 1)[1].split()
+	cpu_ticks = int(stat_fields[11]) + int(stat_fields[12])
+	peak_rss_kib = 0
+	with open(f"/proc/{process.pid}/status", encoding="utf-8") as status_file:
+		for line in status_file:
+			if line.startswith("VmHWM:"):
+				peak_rss_kib = int(line.split()[1])
+				break
+	return cpu_ticks, peak_rss_kib
+
+
+def parse_metric_line(line):
+	result = {}
+	for field in line.split(": ", 1)[1].split():
+		key, value = field.split("=", 1)
+		values = value.split("/")
+		try:
+			parsed = [int(item) for item in values]
+		except ValueError:
+			result[key] = value
+		else:
+			result[key] = parsed[0] if len(parsed) == 1 else parsed
+	return result
+
+
+def run_transport_baseline_case(test_env, transport):
+	server_args = ["sv_ipv4only 1", "sv_high_bandwidth 1", "sv_test_cmds 1"]
+	client_args = [
+		f"player_name baseline-{transport}",
+		"cl_auto_demo_record 0",
+		"cl_refresh_rate 50",
+		"cl_refresh_rate_inactive 50",
+		"gfx_refresh_rate 1",
+		"snd_enable 0",
+	]
+	if transport == "quic":
+		server_args += [
+			"sv_quic 1",
+			f"sv_quic_cert {test_env.runner.quic_certificate}",
+			f"sv_quic_key {test_env.runner.quic_private_key}",
+		]
+		client_args += [
+			"cl_quic 1",
+			f"cl_quic_cert {test_env.runner.quic_certificate}",
+			"cl_quic_server_name localhost",
+		]
+	server = test_env.server(server_args)
+	client = test_env.client(client_args)
+	wait_for_startup([client, server])
+	client.command(f"connect 127.0.0.1:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	start_time = time()
+	server_cpu_start, _ = linux_process_usage(server.process)
+	client_cpu_start, _ = linux_process_usage(client.process)
+	sleep(10)
+	elapsed = time() - start_time
+	server_cpu_end, server_peak_rss_kib = linux_process_usage(server.process)
+	client_cpu_end, client_peak_rss_kib = linux_process_usage(client.process)
+	clock_ticks = os.sysconf("SC_CLK_TCK")
+	server.command("dump_baseline_stats")
+	server_metrics = parse_metric_line(server.wait_for_log_prefix("baseline: ", timeout=5).line)
+	client.exit()
+	client_transport_metrics = None
+	if transport == "quic":
+		client_transport_metrics = parse_metric_line(client.wait_for_log_prefix("quic: transport=quic ", timeout=5).line)
+	client.wait_for_exit()
+	try:
+		server.exit()
+	except BrokenPipeError:
+		pass
+	server_transport_metrics = None
+	if transport == "quic":
+		server_transport_metrics = parse_metric_line(server.wait_for_log_prefix("quic: connections=", timeout=5).line)
+		assert 0 <= client_transport_metrics["queue_high_water"] <= 128
+		assert 0 <= server_transport_metrics["queue_high_water"] <= 128
+	server.wait_for_exit()
+	print(
+		"BASELINE "
+		+ json.dumps(
+			{
+				"scenario": os.getenv("DDNET_BASELINE_SCENARIO", "unspecified"),
+				"transport": transport,
+				"duration_seconds": round(elapsed, 3),
+				"rtt_ms": server_metrics["rtt_ms"],
+				"reconnects": 0 if client_transport_metrics is None else max(0, client_transport_metrics["connections"] - 1),
+				"server_cpu_percent": round((server_cpu_end - server_cpu_start) * 100 / clock_ticks / elapsed, 3),
+				"client_cpu_percent": round((client_cpu_end - client_cpu_start) * 100 / clock_ticks / elapsed, 3),
+				"server_peak_rss_kib": server_peak_rss_kib,
+				"client_peak_rss_kib": client_peak_rss_kib,
+				"server": server_metrics,
+				"client_transport": client_transport_metrics,
+				"server_transport": server_transport_metrics,
+			},
+			sort_keys=True,
+		)
+	)
+
+
+@test(requires_quic=True, requires_baseline=True, timeout=90)
+def transport_baseline(test_env):
+	if sys.platform != "linux":
+		raise RuntimeError("transport baseline requires Linux /proc")
+	for transport in ("legacy", "quic"):
+		run_transport_baseline_case(test_env, transport)
+
+
+@test(requires_mastersrv=True, requires_quic=True)
+def client_can_connect_quic_shared_port(test_env):
+	mastersrv = test_env.mastersrv()
+	wait_for_startup([mastersrv])
+	server = test_env.server([
+		"http_allow_insecure 1",
+		"sv_quic 1",
+		"sv_max_clients_per_ip 4",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+		"sv_register ipv6",
+		f"sv_register_url http://[::1]:{mastersrv.port}/ddnet/15/register",
+	])
+	server.wait_for_startup()
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	server.wait_for_log_exact("register/quic/ipv6: successfully registered", timeout=15)
+	identity_line = next((line for line in server.full_stdout if "server: native QUIC listening on" in line), "")
+	identity_match = re.search(r" identity-sha256=([0-9a-f]{64})$", identity_line)
+	if not identity_match:
+		raise AssertionError(f"missing server identity fingerprint: {identity_line!r}")
+	expected_lan_metadata = f"ddnet-transport-v2|quic|identity-sha256={identity_match.group(1)}|capabilities=datagram,map-stream,resume-v1,game-protocol-7".encode()
+	shared_port = server.port
+	quic_client_args = [
+		"cl_quic 1",
+		f"cl_quic_cert {test_env.runner.quic_certificate}",
+		"cl_quic_server_name localhost",
+	]
+	client = test_env.client(quic_client_args)
+	client.wait_for_startup(timeout=30)
+	client.command(f"connect 127.0.0.1:{shared_port}")
+	quic_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "ClientId=0 " not in quic_join:
+		raise AssertionError(f"QUIC did not reserve slot 0: {quic_join!r}")
+	sixup_quic_client = test_env.client(quic_client_args)
+	sixup_quic_client.wait_for_startup(timeout=30)
+	sixup_quic_client.command(f"connect tw-0.7+udp://127.0.0.1:{shared_port}")
+	sixup_quic_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "ClientId=1 " not in sixup_quic_join or "sixup=1" not in sixup_quic_join:
+		raise AssertionError(f"0.7 did not run over QUIC: {sixup_quic_join!r}")
+	legacy_client = test_env.client()
+	legacy_client.wait_for_startup(timeout=30)
+	legacy_client.command(f"connect 127.0.0.1:{shared_port}")
+	legacy_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "ClientId=2 " not in legacy_join or "sixup=0" not in legacy_join:
+		raise AssertionError(f"legacy did not skip reserved QUIC slots: {legacy_join!r}")
+	sixup_client = test_env.client()
+	sixup_client.wait_for_startup(timeout=30)
+	sixup_client.command(f"connect tw-0.7+udp://127.0.0.1:{shared_port}")
+	sixup_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "ClientId=3 " not in sixup_join or "sixup=1" not in sixup_join:
+		raise AssertionError(f"sixup did not share the QUIC port: {sixup_join!r}")
+	blocked_client = test_env.client(quic_client_args)
+	blocked_client.wait_for_startup(timeout=30)
+	blocked_client.command(f"connect 127.0.0.1:{shared_port}")
+	blocked_client.wait_for_log_exact("client: disconnecting. reason='Too many connections from this IP'", timeout=20)
+	with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connectionless:
+		connectionless.settimeout(1)
+		response = None
+		for _ in range(5):
+			request_data = b"xe" + b"\x00" * 4 + b"\xff" * 4 + b"gie3\x01"
+			connectionless.sendto(request_data, ("127.0.0.1", shared_port))
+			try:
+				response, _ = connectionless.recvfrom(1400)
+				break
+			except TimeoutError:
+				pass
+		if response is None:
+			raise AssertionError("timed out waiting for connectionless response")
+		if not response.startswith(b"\xff\xff\xff\xff\xff\xff"):
+			raise AssertionError(f"invalid connectionless response prefix: {response[:12]!r}")
+		payload = response[6:]
+		if not payload.startswith(b"\xff" * 4 + b"iext"):
+			raise AssertionError(f"invalid extended serverinfo prefix: {payload[:12]!r}")
+		fields = payload[8:].split(b"\0")
+		if len(fields) <= 12 or fields[12] != expected_lan_metadata:
+			raise AssertionError(f"unexpected extended serverinfo metadata: {fields!r}")
+	servers_json = mastersrv.servers_json()
+	if len(servers_json["servers"]) != 1 or servers_json["servers"][0]["info"].get("transport", {}).get("udp_port") != shared_port:
+		raise AssertionError(f"shared-port server is not registered at the master\n{servers_json}")
+	server.exit()
+	client.exit()
+	sixup_quic_client.exit()
+	legacy_client.exit()
+	sixup_client.exit()
+	blocked_client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+	sixup_quic_client.wait_for_exit()
+	legacy_client.wait_for_exit()
+	sixup_client.wait_for_exit()
+	blocked_client.wait_for_exit()
+	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	mastersrv.exit()
+	mastersrv.wait_for_exit()
+
+
+@test(requires_quic=True)
+def client_can_connect_quic_ipv6_shared_port(test_env):
+	server = test_env.server([
+		"bindaddr [::1]",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+	])
+	server.wait_for_startup()
+	client = test_env.client([
+		"cl_quic 1",
+		f"cl_quic_cert {test_env.runner.quic_certificate}",
+		"cl_quic_server_name localhost",
+	])
+	legacy_client = test_env.client()
+	wait_for_startup([client, legacy_client])
+	client.command(f"connect [::1]:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	legacy_client.command(f"connect [::1]:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as connectionless:
+		connectionless.settimeout(2)
+		request_data = b"xe" + b"\x00" * 4 + b"\xff" * 4 + b"gie3\x01"
+		connectionless.sendto(request_data, ("::1", server.port))
+		response, _ = connectionless.recvfrom(1400)
+		if not response.startswith(b"\xff\xff\xff\xff\xff\xff" + b"\xff" * 4 + b"iext"):
+			raise AssertionError(f"invalid IPv6 connectionless response prefix: {response[:16]!r}")
+	client.exit()
+	legacy_client.exit()
+	server.exit()
+	client.wait_for_exit()
+	legacy_client.wait_for_exit()
+	server.wait_for_exit()
+
+
+@test(requires_quic=True)
+def client_downloads_map_over_quic(test_env):
+	map_name = "quic_transfer"
+	maps_dir = os.path.join(test_env.tmp_dir, "maps")
+	os.makedirs(maps_dir)
+	server_map = os.path.join(maps_dir, f"{map_name}.map")
+	source_map = os.path.join(test_env.runner.data_dir, "maps", "Tutorial.map")
+	shutil.copyfile(source_map, server_map)
+	server = test_env.server([
+		"sv_ipv4only 1",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+		f"sv_map {map_name}",
+	])
+	server.wait_for_startup()
+	shared_port = server.port
+	# The server has the map in memory now. Removing its private temporary copy
+	# forces the client through the transport download path.
+	os.remove(server_map)
+	client = test_env.client([
+		"cl_quic 1",
+		f"cl_quic_cert {test_env.runner.quic_certificate}",
+		"cl_quic_server_name localhost",
+		"cl_map_download_url https://127.0.0.1:1",
+		"cl_map_download_connect_timeout_ms 1",
+	])
+	client.wait_for_startup()
+	client.command(f"connect 127.0.0.1:{shared_port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=20)
+	downloaded_maps = [os.path.join(test_env.tmp_dir, "downloadedmaps", filename) for filename in os.listdir(os.path.join(test_env.tmp_dir, "downloadedmaps")) if filename.startswith(f"{map_name}_") and filename.endswith(".map")]
+	if len(downloaded_maps) != 1 or os.path.getsize(downloaded_maps[0]) != os.path.getsize(source_map):
+		raise AssertionError(f"expected one complete downloaded map, got {downloaded_maps!r}")
+	server.exit()
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+@test(requires_quic=True)
+def client_resumes_quic_session(test_env):
+	server = test_env.server([
+		"sv_ipv4only 1",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+	])
+	server.wait_for_startup()
+	shared_port = server.port
+	client = test_env.client([
+		"cl_quic 1",
+		f"cl_quic_cert {test_env.runner.quic_certificate}",
+		"cl_quic_server_name localhost",
+	])
+	client.wait_for_startup()
+	client.command(f"connect 127.0.0.1:{shared_port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	server.command("say resume-armed")
+	client.wait_for_log_suffix("*** resume-armed", timeout=10)
+
+	client.command("quic_reconnect")
+	server.wait_for_log_prefix("server: resumed QUIC session. ClientId=", timeout=10)
+	server.command("say resume-rotated")
+	client.wait_for_log_suffix("*** resume-rotated", timeout=10)
+	client.command("say first-resume-ok")
+	server.wait_for_log_suffix(": first-resume-ok", timeout=10)
+
+	# A second successful reconnect proves that the first token was replaced and
+	# the newly issued single-use token reached the client.
+	client.command("quic_reconnect")
+	server.wait_for_log_prefix("server: resumed QUIC session. ClientId=", timeout=10)
+	server.command("say second-resume-rotated")
+	client.wait_for_log_suffix("*** second-resume-rotated", timeout=10)
+	client.exit()
+	client.wait_for_exit()
+	server.wait_for_log_suffix("has left the game (application disconnect)", timeout=10)
+	server.exit()
+	server.wait_for_exit()
+
+
+@test(requires_quic=True)
+def client_rebinds_quic_socket(test_env):
+	server = test_env.server([
+		"sv_ipv4only 1",
+		"sv_quic 1",
+		"sv_webtransport 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+	])
+	client = test_env.client([
+		"player_name quic-rebind",
+		"bindaddr 127.0.0.1",
+		"cl_quic 1",
+		f"cl_quic_cert {test_env.runner.quic_certificate}",
+		"cl_quic_server_name localhost",
+	])
+	wait_for_startup([client, server])
+	client.command(f"connect 127.0.0.1:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client.command("bindaddr 127.0.0.2")
+	client.command("say quic-rebind-ok")
+	server.wait_for_log_exact("chat: 0:-2:quic-rebind: quic-rebind-ok", timeout=10)
+	server.wait_for_log_prefix("server: migrated QUIC path. ClientId=0", timeout=10)
+	server.command("say quic-rebind-response")
+	client.wait_for_log_exact("chat/server: *** quic-rebind-response", timeout=10)
+	client.exit()
+	client.wait_for_exit()
+	server.exit()
+	server.wait_for_exit()
+
+
+@test(requires_quic=True)
+def client_rejects_quic_resume_expired(test_env):
+	server = test_env.server([
+		"sv_ipv4only 1",
+		"sv_quic 1",
+		"sv_quic_resume_grace_ms 1000",
+		"sv_test_cmds 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+	])
+	server.wait_for_startup()
+	client = test_env.client(
+		[
+			"cl_quic 1",
+			f"cl_quic_cert {test_env.runner.quic_certificate}",
+			"cl_quic_server_name localhost",
+		],
+		extra_env_vars={"DDNET_TEST_QUIC_RECONNECT_DELAY_MS": "1500"},
+	)
+	client.wait_for_startup()
+	client.command(f"connect 127.0.0.1:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	server.command("say expiring-resume-token-armed")
+	client.wait_for_log_suffix("*** expiring-resume-token-armed", timeout=20)
+	client.command("quic_reconnect")
+	server.wait_for_log_suffix("has left the game (QUIC resume timed out)", timeout=10)
+	server.wait_for_log_exact("server: rejected invalid or expired QUIC resume token", timeout=10)
+	client.exit()
+	client.wait_for_exit()
+	server.exit()
+	server.wait_for_exit()
+
+
+@test(requires_quic=True)
+def client_rejects_quic_resume_reused(test_env):
+	server = test_env.server([
+		"sv_ipv4only 1",
+		"sv_quic 1",
+		"sv_test_cmds 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+	])
+	server.wait_for_startup()
+	client = test_env.client(
+		[
+			"cl_quic 1",
+			f"cl_quic_cert {test_env.runner.quic_certificate}",
+			"cl_quic_server_name localhost",
+		],
+		extra_env_vars={"DDNET_TEST_QUIC_KEEP_RESUME_TOKEN": "1"},
+	)
+	client.wait_for_startup()
+	client.command(f"connect 127.0.0.1:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	server.command("say resume-token-armed")
+	client.wait_for_log_suffix("*** resume-token-armed", timeout=20)
+	client.command("quic_reconnect")
+	server.wait_for_log_prefix("server: resumed QUIC session. ClientId=", timeout=10)
+	server.command("say resume-token-rotated")
+	client.wait_for_log_suffix("*** resume-token-rotated", timeout=20)
+	client.command("quic_reconnect")
+	server.wait_for_log_exact("server: rejected invalid or expired QUIC resume token", timeout=10)
+	client.exit()
+	client.wait_for_exit()
+	server.exit()
+	server.wait_for_exit()
+
+
+@test(requires_quic=True)
+def client_rejects_wrong_quic_certificate(test_env):
+	server = test_env.server([
+		"sv_ipv4only 1",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+	])
+	client = test_env.client([
+		"cl_quic 1",
+		f"cl_quic_cert {test_env.runner.quic_wrong_certificate}",
+		"cl_quic_server_name localhost",
+	])
+	wait_for_startup([client, server])
+	client.command(f"connect 127.0.0.1:{server.port}")
+	client.wait_for_log_prefix("client: disconnecting. reason=", timeout=10)
+	client.exit()
+	server.exit()
+	client.wait_for_exit()
+	server.wait_for_exit()
+
+
 @test
 def client_can_connect_7(test_env):
 	client = test_env.client()
@@ -696,7 +1408,7 @@ def client_can_connect_websockets(test_env):
 	client = test_env.client(["dbg_websockets 1", "stdout_output_level 1"])
 	server = test_env.server(["dbg_websockets 1", "stdout_output_level 1"])
 	wait_for_startup([client, server])
-	client.command(f"connect ws://127.0.0.1:{server.port}")  # FIXME(#11693): Work around missing domain support.
+	client.command(f"connect ddnet-20+ws://127.0.0.1:{server.port}")  # FIXME(#11693): Work around missing domain support.
 	server.wait_for_log_prefix("websockets: I: lws_handshake_server", timeout=15)  # Connection established
 	client.wait_for_log_prefix("websockets: I: lws_http_client_socket_service", timeout=15)  # Connection established
 	join = server.wait_for_log_prefix("server: player has entered the game", timeout=5).line
@@ -868,7 +1580,7 @@ def server_can_register(test_env):
 	server.wait_for_log_suffix("successfully registered", timeout=5)
 	server.wait_for_log_suffix("successfully registered", timeout=5)
 	servers_json = mastersrv.servers_json()
-	if len(servers_json["servers"]) != 1 or servers_json["servers"][0]["info"]["map"]["name"] != "Tutorial" or len(servers_json["servers"][0]["addresses"]) != 2:
+	if len(servers_json["servers"]) != 1 or servers_json["servers"][0]["info"]["map"]["name"] != "Tutorial" or len(servers_json["servers"][0]["addresses"]) != 2 or "transport" in servers_json["servers"][0]["info"]:
 		raise AssertionError(f"unexpected servers.json\n{servers_json}")
 	server.exit()
 	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
@@ -877,6 +1589,259 @@ def server_can_register(test_env):
 	if len(servers_json["servers"]) != 0:
 		raise AssertionError(f"unexpected servers.json\n{servers_json}")
 	mastersrv.exit()
+	mastersrv.wait_for_exit()
+
+
+@test(requires_mastersrv=True, requires_quic=True)
+def server_registers_shared_quic_transport_metadata(test_env):
+	with open(test_env.runner.quic_certificate, "rb") as certificate_file:
+		certificate_sha256 = hashlib.sha256(certificate_file.read()).hexdigest()
+	with open(test_env.runner.quic_wrong_certificate, "rb") as certificate_file:
+		next_certificate_sha256 = hashlib.sha256(certificate_file.read()).hexdigest()
+	mastersrv = test_env.mastersrv()
+	wait_for_startup([mastersrv])
+	common_args = [
+		"http_allow_insecure 1",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_cert_next {test_env.runner.quic_wrong_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+		"sv_webtransport 1",
+		"sv_webtransport_origin https://localhost",
+		"sv_webtransport_hostname localhost",
+		"sv_register ipv6",
+		f"sv_register_url http://[::1]:{mastersrv.port}/ddnet/15/register",
+	]
+	server = test_env.server(common_args)
+	wait_for_startup([server])
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	server.wait_for_log_exact("register/quic/ipv6: successfully registered", timeout=15)
+	servers_json = mastersrv.servers_json()
+	if len(servers_json["servers"]) != 1:
+		raise AssertionError(f"unexpected servers.json\n{servers_json}")
+	server_info = servers_json["servers"][0]["info"]
+	expected_transport = {
+		"udp_port": server.port,
+		"tls_certificate_sha256": certificate_sha256,
+		"tls_certificate_sha256_next": next_certificate_sha256,
+		"quic": True,
+		"webtransport": {
+			"url": f"https://localhost:{server.port}/ddnet",
+			"certificate_mode": "hash",
+		},
+	}
+	if f"ddnet+quic://[::1]:{server.port}" not in servers_json["servers"][0]["addresses"]:
+		raise AssertionError(f"missing challenged QUIC address: {servers_json}")
+	if server_info.get("transport") != expected_transport:
+		raise AssertionError(f"unexpected shared-port transport metadata\n{servers_json}")
+	server.exit()
+	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	server.wait_for_exit()
+
+	server = test_env.server([arg for arg in common_args if arg != "sv_quic 1"])
+	wait_for_startup([server])
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	servers_json = mastersrv.servers_json()
+	server_info = servers_json["servers"][0]["info"] if len(servers_json["servers"]) == 1 else {}
+	expected_transport = {
+		"udp_port": server.port,
+		"tls_certificate_sha256": certificate_sha256,
+		"tls_certificate_sha256_next": next_certificate_sha256,
+		"webtransport": {
+			"url": f"https://localhost:{server.port}/ddnet",
+			"certificate_mode": "hash",
+		},
+	}
+	if len(servers_json["servers"]) != 1 or server_info.get("transport") != expected_transport:
+		raise AssertionError(f"unexpected WebTransport-only metadata\n{servers_json}")
+	server.exit()
+	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	server.wait_for_exit()
+
+	mastersrv.exit()
+	mastersrv.wait_for_exit()
+
+
+@test(requires_mastersrv=True, requires_quic=True)
+def client_auto_connects_quic_from_master(test_env):
+	mastersrv = test_env.mastersrv()
+	wait_for_startup([mastersrv])
+	server = test_env.server([
+		"http_allow_insecure 1",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+		"sv_register ipv6",
+		f"sv_register_url http://[::1]:{mastersrv.port}/ddnet/15/register",
+	])
+	wait_for_startup([server])
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	with StaticServerList(mastersrv.servers_json()) as serverlist_url:
+		with open(os.path.join(test_env.tmp_dir, "ddnet-serverlist-urls.cfg"), "w", encoding="utf-8") as urls_file:
+			urls_file.write(f"{serverlist_url}\n")
+		client = test_env.client([
+			"http_allow_insecure 1",
+			"cl_quic 0",
+			"cl_quic_auto 1",
+			f"br_cached_best_serverinfo_url {serverlist_url}",
+		])
+		client.wait_for_startup()
+		client.wait_for_log_exact("serverbrowser: loaded 1 servers from HTTP", timeout=10)
+		client.command(f"connect tw-0.7+udp://[::1]:{server.port}")
+		client.wait_for_log_exact("client: QUIC connected, sending info", timeout=10)
+		join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+		if "sixup=1" not in join:
+			raise AssertionError(f"automatic QUIC used unexpected game protocol: {join!r}")
+	server.exit()
+	client.exit()
+	mastersrv.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+	mastersrv.wait_for_exit()
+
+
+@test(requires_mastersrv=True, requires_quic=True)
+def client_auto_quic_accepts_next_certificate_pin(test_env):
+	mastersrv = test_env.mastersrv()
+	wait_for_startup([mastersrv])
+	server = test_env.server([
+		"http_allow_insecure 1",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_cert_next {test_env.runner.quic_wrong_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+		"sv_register ipv6",
+		f"sv_register_url http://[::1]:{mastersrv.port}/ddnet/15/register",
+	])
+	wait_for_startup([server])
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	servers_json = mastersrv.servers_json()
+	server_port = server.port
+	server.exit()
+	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
+	server.wait_for_exit()
+	server = test_env.server([
+		f"sv_port {server_port}",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_wrong_certificate}",
+		f"sv_quic_key {test_env.runner.quic_wrong_private_key}",
+	])
+	wait_for_startup([server])
+	with StaticServerList(servers_json) as serverlist_url:
+		with open(os.path.join(test_env.tmp_dir, "ddnet-serverlist-urls.cfg"), "w", encoding="utf-8") as urls_file:
+			urls_file.write(f"{serverlist_url}\n")
+		client = test_env.client([
+			"http_allow_insecure 1",
+			"cl_quic_auto 1",
+			f"br_cached_best_serverinfo_url {serverlist_url}",
+		])
+		client.wait_for_startup()
+		client.wait_for_log_exact("serverbrowser: loaded 1 servers from HTTP", timeout=10)
+		client.command(f"connect [::1]:{server_port}")
+		client.wait_for_log_exact("client: QUIC connected, sending info", timeout=10)
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	server.exit()
+	client.exit()
+	mastersrv.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+	mastersrv.wait_for_exit()
+
+
+@test(requires_mastersrv=True, requires_quic=True)
+def client_auto_quic_network_failure_falls_back(test_env):
+	mastersrv = test_env.mastersrv()
+	wait_for_startup([mastersrv])
+	server = test_env.server([
+		"http_allow_insecure 1",
+		"sv_register ipv6",
+		f"sv_register_url http://[::1]:{mastersrv.port}/ddnet/15/register",
+	])
+	wait_for_startup([server])
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	servers_json = mastersrv.servers_json()
+	servers_json["servers"][0]["info"]["transport"] = {
+		"udp_port": server.port,
+		"tls_certificate_sha256": "00" * 32,
+		"quic": True,
+	}
+	with StaticServerList(servers_json) as serverlist_url:
+		with open(os.path.join(test_env.tmp_dir, "ddnet-serverlist-urls.cfg"), "w", encoding="utf-8") as urls_file:
+			urls_file.write(f"{serverlist_url}\n")
+		client = test_env.client([
+			"http_allow_insecure 1",
+			"cl_quic_auto 1",
+			"cl_quic_fallback_delay_ms 0",
+			f"br_cached_best_serverinfo_url {serverlist_url}",
+		])
+		client.wait_for_startup()
+		client.wait_for_log_exact("serverbrowser: loaded 1 servers from HTTP", timeout=10)
+		client.command(f"connect [::1]:{server.port}")
+		client.wait_for_log_exact("quic: transport=quic attempts=1 connections=0 failures=1/0/0 fallback=1 handshake_ms=0", timeout=10)
+		client.wait_for_log_prefix("client: automatic QUIC unavailable, using legacy UDP:", timeout=10)
+		join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+		if "sixup=0" not in join:
+			raise AssertionError(f"legacy fallback used unexpected game protocol: {join!r}")
+	server.exit()
+	client.exit()
+	mastersrv.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+	mastersrv.wait_for_exit()
+
+
+@test(requires_mastersrv=True, requires_quic=True)
+def client_auto_quic_pin_mismatch_never_falls_back(test_env):
+	with open(test_env.runner.quic_wrong_certificate, "rb") as certificate_file:
+		wrong_sha256 = hashlib.sha256(certificate_file.read()).hexdigest()
+	mastersrv = test_env.mastersrv()
+	wait_for_startup([mastersrv])
+	server = test_env.server([
+		"http_allow_insecure 1",
+		"sv_quic 1",
+		f"sv_quic_cert {test_env.runner.quic_certificate}",
+		f"sv_quic_key {test_env.runner.quic_private_key}",
+		"sv_register ipv6",
+		f"sv_register_url http://[::1]:{mastersrv.port}/ddnet/15/register",
+	])
+	wait_for_startup([server])
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	server.wait_for_log_suffix("successfully registered", timeout=5)
+	server.wait_for_log_exact("register/quic/ipv6: successfully registered", timeout=15)
+	servers_json = mastersrv.servers_json()
+	servers_json["servers"][0]["info"]["transport"]["tls_certificate_sha256"] = wrong_sha256
+	with StaticServerList(servers_json) as serverlist_url:
+		with open(os.path.join(test_env.tmp_dir, "ddnet-serverlist-urls.cfg"), "w", encoding="utf-8") as urls_file:
+			urls_file.write(f"{serverlist_url}\n")
+		client = test_env.client([
+			"cl_quic_fallback_delay_ms 0",
+			"http_allow_insecure 1",
+			"cl_quic_auto 1",
+			f"br_cached_best_serverinfo_url {serverlist_url}",
+		])
+		client.wait_for_startup()
+		client.wait_for_log_exact("serverbrowser: loaded 1 servers from HTTP", timeout=10)
+		client.command(f"connect [::1]:{server.port}")
+		client.wait_for_log_prefix("client: disconnecting. reason=", timeout=10)
+		client.wait_for_log_prefix("quic: transport=quic attempts=1 connections=0 failures=0/1/0 fallback=0 handshake_ms=", timeout=10)
+		if any("automatic QUIC unavailable" in line for line in client.full_stdout):
+			raise AssertionError("certificate mismatch triggered legacy fallback")
+		if any("player has entered the game" in line for line in server.full_stdout):
+			raise AssertionError("certificate mismatch reached the server through legacy UDP")
+	server.exit()
+	client.exit()
+	mastersrv.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
 	mastersrv.wait_for_exit()
 
 
@@ -1012,15 +1977,35 @@ def main():
 	parser.add_argument("--show-full-output", action="store_true", help="print the full stdout and stderr on test failures")
 	parser.add_argument("--test-mastersrv", action="store_true", help="enforce testing of mastersrv")
 	parser.add_argument("--test-websockets", action="store_true", help="run tests that require compiling with websockets support")
+	parser.add_argument("--test-quic", action="store_true", help="run tests that require compiling with native QUIC support")
+	parser.add_argument("--test-baseline", action="store_true", help="run slow Linux transport baseline tests")
 	parser.add_argument("--timeout-multiplier", type=float, default=1, help="multiply all timeouts by this value")
 	parser.add_argument("--valgrind-memcheck", action="store_true", help="use valgrind's memcheck on client and server")
 	parser.add_argument("builddir", metavar="BUILDDIR", help="path to ddnet build directory")
 	parser.add_argument("test", metavar="TEST", nargs="?", help="name of test to run")
 	args = parser.parse_args()
+	if os.name == "nt" and not os.path.exists(os.path.join(args.builddir, "libcurl.dll")):
+		dependency_dir = os.path.dirname(os.path.abspath(args.builddir))
+		if os.path.exists(os.path.join(dependency_dir, "libcurl.dll")):
+			os.environ["PATH"] = dependency_dir + os.pathsep + os.environ["PATH"]
 
 	ddnet = os.path.join(args.builddir, f"DDNet{EXE_SUFFIX}")
 	ddnet_server = os.path.join(args.builddir, f"DDNet-Server{EXE_SUFFIX}")
 	ddnet_mastersrv = os.path.join(args.builddir, f"mastersrv{EXE_SUFFIX}")
+	quic_certificate = None
+	quic_private_key = None
+	quic_wrong_certificate = None
+	quic_wrong_private_key = None
+	if args.test_quic:
+		quic_cli = os.path.join(args.builddir, f"quic_cli{EXE_SUFFIX}")
+		if not os.path.exists(quic_cli):
+			raise RuntimeError(f"QUIC provisioning tool {quic_cli!r} not found")
+		quic_certificate = os.path.abspath(os.path.join(args.builddir, "quic-test-cert.der")).replace("\\", "/")
+		quic_private_key = os.path.abspath(os.path.join(args.builddir, "quic-test-key.der")).replace("\\", "/")
+		quic_wrong_certificate = os.path.abspath(os.path.join(args.builddir, "quic-test-wrong-cert.der")).replace("\\", "/")
+		quic_wrong_private_key = os.path.abspath(os.path.join(args.builddir, "quic-test-wrong-key.der")).replace("\\", "/")
+		subprocess.run([quic_cli, "generate", "localhost", quic_certificate, quic_private_key], check=True)
+		subprocess.run([quic_cli, "generate", "localhost", quic_wrong_certificate, quic_wrong_private_key], check=True)
 	if not os.path.exists(ddnet):
 		raise RuntimeError(f"client binary {ddnet!r} not found")
 	if not os.path.exists(ddnet_server):
@@ -1043,6 +2028,12 @@ def main():
 		test_dir=args.builddir,
 		show_full_output=args.show_full_output,
 		test_websockets=args.test_websockets,
+		test_quic=args.test_quic,
+		test_baseline=args.test_baseline,
+		quic_certificate=quic_certificate,
+		quic_private_key=quic_private_key,
+		quic_wrong_certificate=quic_wrong_certificate,
+		quic_wrong_private_key=quic_wrong_private_key,
 		valgrind_memcheck=args.valgrind_memcheck,
 		keep_tmpdirs=args.keep_tmpdirs,
 		timeout_multiplier=args.timeout_multiplier,

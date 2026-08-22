@@ -114,6 +114,7 @@ elseif(TARGET_OS STREQUAL "mac")
 endif()
 
 option(WEBSOCKETS "Enable websockets support" OFF)
+option(QUIC "Build the isolated native QUIC transport spike" OFF)
 option(MYSQL "Enable mysql support" OFF)
 option(TEST_MYSQL "Test mysql support in unit tests (also sets -DMYSQL=ON)" OFF)
 option(AUTOUPDATE "Enable the autoupdater" OFF)
@@ -1014,7 +1015,12 @@ set_glob(RUST_ENGINE_SHARED GLOB_RECURSE "rs;toml" src/engine/shared
   build.rs
   config.rs
   lib.rs
+  modern_wire.rs
+  quic.rs
+  quic/sans_io.rs
+  quic/webtransport.rs
   rust_version.rs
+  udp_port_mux_classifier.rs
   # tidy-alphabetical-end
 )
 
@@ -1022,10 +1028,15 @@ set_src(RUST_BRIDGE_SHARED GLOB_RECURSE src/rust-bridge
   # tidy-alphabetical-start
   cpp/console.cpp
   cpp/console.h
+  engine/shared/quic.cpp
+  engine/shared/quic.h
   engine/shared/rust_version.cpp
   engine/shared/rust_version.h
   # tidy-alphabetical-end
 )
+if(NOT QUIC)
+  list(FILTER RUST_BRIDGE_SHARED EXCLUDE REGEX "engine/shared/quic\\.(cpp|h)$")
+endif()
 
 set_glob(RUST_MASTERSRV GLOB "rs;toml" src/mastersrv/src
   # tidy-alphabetical-start
@@ -1039,6 +1050,22 @@ set_glob(RUST_MASTERSRV GLOB "rs;toml" src/mastersrv/src
 
 add_library(rust-bridge-shared EXCLUDE_FROM_ALL OBJECT ${RUST_BRIDGE_SHARED})
 list(APPEND TARGETS_OWN rust-bridge-shared)
+if(QUIC AND NOT MSVC)
+  # cxx maps Rust Result errors to C++ exceptions, which the adapter catches.
+  # A source option follows the global -fno-exceptions flag on the command line.
+  set_property(SOURCE
+    src/engine/shared/quic_transport.cpp
+    src/rust-bridge/engine/shared/quic.cpp
+    src/tools/quic_cli.cpp
+    APPEND PROPERTY COMPILE_OPTIONS -fexceptions)
+  # A precompiled header is built for the target, without exceptions, and cannot
+  # be used by a source that has them.
+  set_property(SOURCE
+    src/engine/shared/quic_transport.cpp
+    src/rust-bridge/engine/shared/quic.cpp
+    src/tools/quic_cli.cpp
+    PROPERTY SKIP_PRECOMPILE_HEADERS ON)
+endif()
 
 if(TARGET_OS STREQUAL "android")
   set(CARGO_BUILD_DIR "${CARGO_NDK_TARGET}/")
@@ -1048,6 +1075,13 @@ else()
   set(CARGO_BUILD_DIR "")
   set(CARGO_BUILD ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} DDNET_TEST_NO_LINK=1 ${RUST_CARGO} build --locked --manifest-path "${PROJECT_SOURCE_DIR}/Cargo.toml")
   set(CARGO_TEST ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} ${RUST_CARGO} test --locked)
+endif()
+if(QUIC)
+  if(TARGET_OS STREQUAL "emscripten")
+    message(FATAL_ERROR "QUIC is a native-only build target")
+  endif()
+  list(APPEND CARGO_BUILD --features ddnet-engine-shared/quic)
+  list(APPEND CARGO_TEST --features ddnet-engine-shared/quic-tests)
 endif()
 if(MSVC)
   list(INSERT CARGO_BUILD 0 ${CMAKE_COMMAND} -E env $<$<CONFIG:Debug>:CFLAGS=/MTd> $<$<CONFIG:Debug>:CXXFLAGS=/MTd>)
@@ -2373,6 +2407,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   masterserver.h
   memheap.cpp
   memheap.h
+  modern_wire.cpp
+  modern_wire.h
   netban.cpp
   netban.h
   network.cpp
@@ -2392,8 +2428,12 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   protocol_ex_msgs.h
   protocolglue.cpp
   protocolglue.h
+  quic_transport.cpp
+  quic_transport.h
   ringbuffer.cpp
   ringbuffer.h
+  server_identity.cpp
+  server_identity.h
   serverinfo.cpp
   serverinfo.h
   sixup_translate_snapshot.cpp
@@ -3313,12 +3353,16 @@ if(TOOLS)
     map_resave.cpp
     map_test.cpp
     packetgen.cpp
+    quic_cli.cpp
     stun.cpp
     twping.cpp
     unicode_confusables.cpp
     uuid.cpp
     # tidy-alphabetical-end
   )
+  if(NOT QUIC)
+    list(FILTER TOOLS_SRC EXCLUDE REGEX "quic_cli\\.cpp$")
+  endif()
   foreach(ABS_T ${TOOLS_SRC})
     file(RELATIVE_PATH T "${PROJECT_SOURCE_DIR}/src/tools/" ${ABS_T})
     if(T MATCHES "\\.cpp$")
@@ -3341,6 +3385,9 @@ if(TOOLS)
         list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS} ${FREETYPE_INCLUDE_DIRS} ${GLEW_INCLUDE_DIRS})
         list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-gfx> ${GLEW_DEP})
         list(APPEND TOOL_LIBS ${PNG_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLEW_LIBRARIES} ${CMAKE_DL_LIBS} ${EGL_LIBRARY} ${OPENGL_gl_LIBRARY})
+      endif()
+      if(TOOL STREQUAL "quic_cli")
+        list(APPEND EXTRA_TOOL_SRC $<TARGET_OBJECTS:rust-bridge-shared>)
       endif()
       set(EXCLUDE_FROM_ALL)
       if(DEV)
@@ -3391,6 +3438,14 @@ if(TOOLS)
   list(APPEND TARGETS_LINK ${TARGETS_TOOLS})
 
   add_custom_target(tools DEPENDS ${TARGETS_TOOLS})
+endif()
+if(QUIC)
+  add_custom_target(quic)
+  if(TOOLS)
+    add_dependencies(quic quic_cli)
+  else()
+    add_dependencies(quic rust_engine_shared_target rust-bridge-shared)
+  endif()
 endif()
 add_custom_target(everything DEPENDS ${TARGETS_OWN})
 
@@ -3458,6 +3513,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     mapitems_test.cpp
     math_test.cpp
     mem_test.cpp
+    modern_wire_test.cpp
     mutes_test.cpp
     name_ban_test.cpp
     net_test.cpp
@@ -3572,6 +3628,15 @@ add_custom_target(run_rust_tests
   DEPENDS rust_test
   VERBATIM
 )
+if(QUIC)
+  add_custom_target(run_quic_load_test
+    COMMAND ${CMAKE_COMMAND} -E env "DDNET_TEST_LIBRARIES=${RUST_TEST_LIBS}" ${CARGO_TEST} -p ddnet-engine-shared thousand_connections_with_active_subset -- --ignored --nocapture
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    USES_TERMINAL
+    DEPENDS rust_test
+    VERBATIM
+  )
+endif()
 
 ########################################################################
 # INSTALLATION
@@ -4230,6 +4295,9 @@ foreach(target ${TARGETS_OWN})
   if(CRYPTO_FOUND)
     target_compile_definitions(${target} PRIVATE CONF_OPENSSL)
     target_include_directories(${target} SYSTEM PRIVATE ${CRYPTO_INCLUDE_DIRS})
+  endif()
+  if(QUIC)
+    target_compile_definitions(${target} PRIVATE CONF_QUIC)
   endif()
   if(WEBSOCKETS)
     target_compile_definitions(${target} PRIVATE CONF_WEBSOCKETS)

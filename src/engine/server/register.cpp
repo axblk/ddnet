@@ -35,6 +35,8 @@ class CRegister : public IRegister
 		PROTOCOL_TW6_IPV4,
 		PROTOCOL_TW7_IPV6,
 		PROTOCOL_TW7_IPV4,
+		PROTOCOL_QUIC_IPV6,
+		PROTOCOL_QUIC_IPV4,
 		NUM_PROTOCOLS,
 	};
 
@@ -53,6 +55,7 @@ class CRegister : public IRegister
 		CLock m_Lock;
 		int m_InfoSerial GUARDED_BY(m_Lock) = -1;
 		int m_LatestSuccessfulInfoSerial GUARDED_BY(m_Lock) = -1;
+		bool m_QuicChallengeSupported GUARDED_BY(m_Lock) = false;
 	};
 
 	class CProtocol
@@ -130,7 +133,7 @@ class CRegister : public IRegister
 	char m_aConnlessTokenHex[16];
 
 	std::shared_ptr<CGlobal> m_pGlobal = std::make_shared<CGlobal>();
-	bool m_aProtocolEnabled[NUM_PROTOCOLS] = {true, true, true, true};
+	bool m_aProtocolEnabled[NUM_PROTOCOLS] = {true, true, true, true, false, false};
 	CProtocol m_aProtocols[NUM_PROTOCOLS];
 
 	bool m_GotCommunityToken = false;
@@ -188,6 +191,8 @@ const char *CRegister::ProtocolToScheme(int Protocol)
 	case PROTOCOL_TW6_IPV4: return "tw-0.6+udp://";
 	case PROTOCOL_TW7_IPV6: return "tw-0.7+udp://";
 	case PROTOCOL_TW7_IPV4: return "tw-0.7+udp://";
+	case PROTOCOL_QUIC_IPV6: return "ddnet+quic://";
+	case PROTOCOL_QUIC_IPV4: return "ddnet+quic://";
 	}
 	dbg_assert_failed("invalid protocol");
 }
@@ -200,6 +205,8 @@ const char *CRegister::ProtocolToString(int Protocol)
 	case PROTOCOL_TW6_IPV4: return "tw0.6/ipv4";
 	case PROTOCOL_TW7_IPV6: return "tw0.7/ipv6";
 	case PROTOCOL_TW7_IPV4: return "tw0.7/ipv4";
+	case PROTOCOL_QUIC_IPV6: return "quic/ipv6";
+	case PROTOCOL_QUIC_IPV4: return "quic/ipv4";
 	}
 	dbg_assert_failed("invalid protocol");
 }
@@ -238,6 +245,8 @@ const char *CRegister::ProtocolToSystem(int Protocol)
 	case PROTOCOL_TW6_IPV4: return "register/6/ipv4";
 	case PROTOCOL_TW7_IPV6: return "register/7/ipv6";
 	case PROTOCOL_TW7_IPV4: return "register/7/ipv4";
+	case PROTOCOL_QUIC_IPV6: return "register/quic/ipv6";
+	case PROTOCOL_QUIC_IPV4: return "register/quic/ipv4";
 	}
 	dbg_assert_failed("invalid protocol");
 }
@@ -250,6 +259,8 @@ IPRESOLVE CRegister::ProtocolToIpresolve(int Protocol)
 	case PROTOCOL_TW6_IPV4: return IPRESOLVE::V4;
 	case PROTOCOL_TW7_IPV6: return IPRESOLVE::V6;
 	case PROTOCOL_TW7_IPV4: return IPRESOLVE::V4;
+	case PROTOCOL_QUIC_IPV6: return IPRESOLVE::V6;
+	case PROTOCOL_QUIC_IPV4: return IPRESOLVE::V4;
 	}
 	dbg_assert_failed("invalid protocol");
 }
@@ -388,10 +399,10 @@ void CRegister::CProtocol::CheckChallengeStatus()
 		switch(m_pShared->m_LatestResponseStatus)
 		{
 		case STATUS_NEEDCHALLENGE:
-			if(m_NewChallengeToken)
+			if(m_NewChallengeToken || m_Protocol == PROTOCOL_QUIC_IPV6 || m_Protocol == PROTOCOL_QUIC_IPV4)
 			{
-				// Immediately resend if we got the token.
-				m_NextRegister = time_get();
+				// Retry asynchronous QUIC challenges without waiting for the normal refresh interval.
+				m_NextRegister = std::min(m_NextRegister, time_get() + (m_NewChallengeToken ? 0 : time_freq()));
 			}
 			break;
 		case STATUS_NEEDINFO:
@@ -455,6 +466,12 @@ void CRegister::CProtocol::CJob::Run()
 		json_value_free(pJson);
 		return;
 	}
+	const json_value &QuicChallenge = Json["quic_challenge"];
+	if(QuicChallenge.type == json_boolean && (bool)QuicChallenge)
+	{
+		const CLockScope LockScope(m_pShared->m_pGlobal->m_Lock);
+		m_pShared->m_pGlobal->m_QuicChallengeSupported = true;
+	}
 	if(Status == STATUS_ERROR)
 	{
 		const json_value &Message = Json["message"];
@@ -487,7 +504,7 @@ void CRegister::CProtocol::CJob::Run()
 				log_info(ProtocolToSystem(m_Protocol), "successfully registered");
 			}
 		}
-		if(Status == m_pShared->m_LatestResponseStatus && Status == STATUS_NEEDCHALLENGE)
+		if(Status == m_pShared->m_LatestResponseStatus && Status == STATUS_NEEDCHALLENGE && m_Protocol != PROTOCOL_QUIC_IPV6 && m_Protocol != PROTOCOL_QUIC_IPV4)
 		{
 			log_error(ProtocolToSystem(m_Protocol), "ERROR: the master server reports that clients can not connect to this server.");
 			log_error(ProtocolToSystem(m_Protocol), "ERROR: configure your firewall/nat to let through udp on port %d.", m_ServerPort);
@@ -529,6 +546,8 @@ CRegister::CRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHt
 		CProtocol(this, PROTOCOL_TW6_IPV4),
 		CProtocol(this, PROTOCOL_TW7_IPV6),
 		CProtocol(this, PROTOCOL_TW7_IPV4),
+		CProtocol(this, PROTOCOL_QUIC_IPV6),
+		CProtocol(this, PROTOCOL_QUIC_IPV4),
 	}
 {
 	static constexpr int HEADER_LEN = sizeof(SERVERBROWSE_CHALLENGE);
@@ -545,6 +564,7 @@ CRegister::CRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHt
 	m_pConsole->Chain("sv_register_community_token", ConchainOnConfigChange, this);
 	m_pConsole->Chain("sv_sixup", ConchainOnConfigChange, this);
 	m_pConsole->Chain("sv_ipv4only", ConchainOnConfigChange, this);
+	m_pConsole->Chain("sv_quic", ConchainOnConfigChange, this);
 }
 
 void CRegister::Update()
@@ -558,6 +578,14 @@ void CRegister::Update()
 			dbg_assert(!m_pHttp->HasIpresolveBug(), "curl version < 7.77.0 does not support registering via both IPv4 and IPv6, set `sv_register ipv6` or `sv_register ipv4`");
 		}
 		m_GotFirstUpdateCall = true;
+	}
+	{
+		const CLockScope LockScope(m_pGlobal->m_Lock);
+		if(m_pGlobal->m_QuicChallengeSupported && m_pConfig->m_SvQuic)
+		{
+			m_aProtocolEnabled[PROTOCOL_QUIC_IPV6] = m_aProtocolEnabled[PROTOCOL_TW6_IPV6] || m_aProtocolEnabled[PROTOCOL_TW7_IPV6];
+			m_aProtocolEnabled[PROTOCOL_QUIC_IPV4] = m_aProtocolEnabled[PROTOCOL_TW6_IPV4] || m_aProtocolEnabled[PROTOCOL_TW7_IPV4];
+		}
 	}
 	if(!m_GotServerInfo)
 	{
@@ -646,6 +674,13 @@ void CRegister::OnConfigChange()
 		m_aProtocolEnabled[PROTOCOL_TW6_IPV6] = false;
 		m_aProtocolEnabled[PROTOCOL_TW7_IPV6] = false;
 	}
+	bool QuicChallengeSupported;
+	{
+		const CLockScope LockScope(m_pGlobal->m_Lock);
+		QuicChallengeSupported = m_pGlobal->m_QuicChallengeSupported;
+	}
+	m_aProtocolEnabled[PROTOCOL_QUIC_IPV6] = QuicChallengeSupported && m_pConfig->m_SvQuic && (m_aProtocolEnabled[PROTOCOL_TW6_IPV6] || m_aProtocolEnabled[PROTOCOL_TW7_IPV6]);
+	m_aProtocolEnabled[PROTOCOL_QUIC_IPV4] = QuicChallengeSupported && m_pConfig->m_SvQuic && (m_aProtocolEnabled[PROTOCOL_TW6_IPV4] || m_aProtocolEnabled[PROTOCOL_TW7_IPV4]);
 	m_GotCommunityToken = (bool)m_pConfig->m_SvRegisterCommunityToken[0];
 	if(m_GotCommunityToken)
 	{

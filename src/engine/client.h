@@ -20,6 +20,7 @@
 
 #define CONNECTLINK_DOUBLE_SLASH "ddnet://"
 #define CONNECTLINK_NO_SLASH "ddnet:"
+#define QUIC_CONNECTLINK_DOUBLE_SLASH "ddnet+quic://"
 
 class CSnapshot;
 class CSnapshotBuffer;

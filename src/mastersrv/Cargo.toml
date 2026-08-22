@@ -27,6 +27,14 @@ libloc = "0.1.0"
 log = "0.4.17"
 mime = "0.3.16"
 rand = "0.8.4"
+quinn = { version = "0.11.9", default-features = false, features = [
+  "runtime-tokio",
+  "rustls-ring",
+] }
+rustls = { version = "=0.23.35", default-features = false, features = [
+  "ring",
+  "std",
+] }
 serde = { version = "1.0.126", features = ["derive"] }
 serde_json = { version = "1.0.64", features = [
   "float_roundtrip",

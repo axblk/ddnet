@@ -1,5 +1,8 @@
+#include <base/str.h>
+
 #include <engine/external/json-parser/json.h>
 #include <engine/serverbrowser.h>
+#include <engine/shared/json.h>
 #include <engine/shared/serverinfo.h>
 
 #include <gtest/gtest.h>
@@ -51,4 +54,165 @@ TEST(ServerInfo, Crc)
 	EXPECT_EQ(ParseCrcOrDeadbeef("0"), 0xdeadbeef);
 	EXPECT_EQ(ParseCrcOrDeadbeef("000000000"), 0xdeadbeef);
 	EXPECT_EQ(ParseCrcOrDeadbeef("00000000x"), 0xdeadbeef);
+}
+
+static CServerInfo2 ParseServerInfoWithTransport(const char *pTransport)
+{
+	char aJson[2048];
+	str_format(aJson, sizeof(aJson), R"({"max_clients":16,"max_players":16,"client_score_kind":"points","passworded":false,"game_type":"DDRace","name":"test","map":{"name":"Tutorial"},"version":"test","clients":[],"transport":%s})", pTransport);
+	json_value *pJson = JsonParse(aJson, str_length(aJson));
+	EXPECT_NE(pJson, nullptr);
+	CServerInfo2 Info = {};
+	if(pJson != nullptr)
+	{
+		EXPECT_FALSE(CServerInfo2::FromJson(&Info, pJson));
+		json_value_free(pJson);
+	}
+	return Info;
+}
+
+TEST(ServerInfo, QuicTransport)
+{
+	static constexpr const char *CERTIFICATE_SHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	static constexpr const char *NEXT_CERTIFICATE_SHA256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+	const CServerInfo2 ParsedInfo = ParseServerInfoWithTransport(R"({"udp_port":8303,"tls_certificate_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","tls_certificate_sha256_next":"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789","quic":true,"webtransport":{"url":"https://example.com:8303/ddnet","certificate_mode":"hash"}})");
+	EXPECT_TRUE(ParsedInfo.m_QuicSharedPort);
+	EXPECT_TRUE(ParsedInfo.m_WebTransport);
+	EXPECT_EQ(ParsedInfo.m_WebTransportCertificateMode, CServerInfo::EWebTransportCertificateMode::HASH);
+	EXPECT_STREQ(ParsedInfo.m_aWebTransportPath, "/ddnet");
+	EXPECT_STREQ(ParsedInfo.m_aWebTransportUrl, "https://example.com:8303/ddnet");
+	EXPECT_EQ(ParsedInfo.m_QuicPort, 8303);
+	EXPECT_EQ(ParsedInfo.m_QuicCapabilities, CServerInfo::QUIC_CAPABILITY_DATAGRAM | CServerInfo::QUIC_CAPABILITY_MAP_STREAM | CServerInfo::QUIC_CAPABILITY_RESUME | CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7);
+	SHA256_DIGEST CertificateSha256;
+	SHA256_DIGEST NextCertificateSha256;
+	ASSERT_EQ(sha256_from_str(&CertificateSha256, CERTIFICATE_SHA256), 0);
+	ASSERT_EQ(sha256_from_str(&NextCertificateSha256, NEXT_CERTIFICATE_SHA256), 0);
+	EXPECT_EQ(ParsedInfo.m_QuicCertificateSha256, CertificateSha256);
+	EXPECT_TRUE(ParsedInfo.m_HasQuicNextCertificateSha256);
+	EXPECT_EQ(ParsedInfo.m_QuicNextCertificateSha256, NextCertificateSha256);
+
+	const CServerInfo Info = ParsedInfo;
+	EXPECT_TRUE(Info.m_QuicSharedPort);
+	EXPECT_EQ(Info.m_QuicCertificateSha256, CertificateSha256);
+	EXPECT_EQ(Info.m_QuicNextCertificateSha256, NextCertificateSha256);
+	EXPECT_TRUE(Info.m_WebTransport);
+
+	const CServerInfo2 WebTransportOnly = ParseServerInfoWithTransport(R"({"udp_port":8303,"tls_certificate_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","webtransport":{"url":"https://[::1]:8303/ddnet","certificate_mode":"webpki"}})");
+	EXPECT_FALSE(WebTransportOnly.m_QuicSharedPort);
+	EXPECT_TRUE(WebTransportOnly.m_WebTransport);
+	EXPECT_EQ(WebTransportOnly.m_WebTransportCertificateMode, CServerInfo::EWebTransportCertificateMode::WEBPKI);
+	EXPECT_EQ(WebTransportOnly.m_QuicCertificateSha256, CertificateSha256);
+	EXPECT_EQ(WebTransportOnly.m_QuicCapabilities, CServerInfo::QUIC_CAPABILITY_DATAGRAM | CServerInfo::QUIC_CAPABILITY_MAP_STREAM | CServerInfo::QUIC_CAPABILITY_RESUME | CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7);
+
+	const CServerInfo2 InvalidInfo = ParseServerInfoWithTransport(R"({"udp_port":8303,"tls_certificate_sha256":"invalid","quic":true})");
+	EXPECT_FALSE(InvalidInfo.m_QuicSharedPort);
+	const CServerInfo2 InvalidPortInfo = ParseServerInfoWithTransport(R"({"udp_port":65536,"tls_certificate_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","quic":true})");
+	EXPECT_FALSE(InvalidPortInfo.m_QuicSharedPort);
+	const CServerInfo2 WrongWebTransportPort = ParseServerInfoWithTransport(R"({"udp_port":8303,"tls_certificate_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","webtransport":{"url":"https://example.com:8304/ddnet","certificate_mode":"webpki"}})");
+	EXPECT_FALSE(WrongWebTransportPort.m_WebTransport);
+	const CServerInfo2 MissingCertificateMode = ParseServerInfoWithTransport(R"({"udp_port":8303,"tls_certificate_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","webtransport":{"url":"https://example.com:8303/ddnet"}})");
+	EXPECT_FALSE(MissingCertificateMode.m_WebTransport);
+	const CServerInfo2 InvalidCertificateMode = ParseServerInfoWithTransport(R"({"udp_port":8303,"tls_certificate_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","webtransport":{"url":"https://example.com:8303/ddnet","certificate_mode":"unknown"}})");
+	EXPECT_FALSE(InvalidCertificateMode.m_WebTransport);
+	const CServerInfo2 DomainlessHash = ParseServerInfoWithTransport(R"({"udp_port":8303,"tls_certificate_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","webtransport":{"certificate_mode":"hash"}})");
+	EXPECT_TRUE(DomainlessHash.m_WebTransport);
+	EXPECT_STREQ(DomainlessHash.m_aWebTransportUrl, "");
+	const CServerInfo2 DomainlessWebPki = ParseServerInfoWithTransport(R"({"udp_port":8303,"tls_certificate_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","webtransport":{"certificate_mode":"webpki"}})");
+	EXPECT_FALSE(DomainlessWebPki.m_WebTransport);
+	const CServerInfo2 DuplicatePinInfo = ParseServerInfoWithTransport(R"({"udp_port":8303,"tls_certificate_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","tls_certificate_sha256_next":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","quic":true})");
+	EXPECT_FALSE(DuplicatePinInfo.m_QuicSharedPort);
+}
+
+TEST(ServerInfo, WebTransportUrl)
+{
+	char aUrl[256];
+	EXPECT_TRUE(FormatWebTransportUrl(aUrl, sizeof(aUrl), "example.com", 8303));
+	EXPECT_STREQ(aUrl, "https://example.com:8303/ddnet");
+	EXPECT_TRUE(FormatWebTransportUrl(aUrl, sizeof(aUrl), "[::1]", 8303));
+	EXPECT_STREQ(aUrl, "https://[::1]:8303/ddnet");
+	EXPECT_FALSE(FormatWebTransportUrl(aUrl, sizeof(aUrl), "::1", 8303));
+	EXPECT_FALSE(ValidateWebTransportUrl("http://example.com:8303/ddnet", 8303));
+	EXPECT_FALSE(ValidateWebTransportUrl("https://example.com:8304/ddnet", 8303));
+	EXPECT_FALSE(ValidateWebTransportUrl("https://user@example.com:8303/ddnet", 8303));
+	EXPECT_FALSE(ValidateWebTransportUrl("https://example.com:8303/other", 8303));
+	EXPECT_FALSE(ValidateWebTransportUrl("https://[not-an-ip]:8303/ddnet", 8303));
+	EXPECT_FALSE(ValidateWebTransportUrl("https://example\\.com:8303/ddnet", 8303));
+	EXPECT_FALSE(ValidateWebTransportUrl("https://-example.com:8303/ddnet", 8303));
+	EXPECT_FALSE(ValidateWebTransportUrl("https://example-.com:8303/ddnet", 8303));
+}
+
+TEST(ServerInfo, QuicDirectLinkFingerprint)
+{
+	static constexpr const char *FINGERPRINT = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	SHA256_DIGEST Fingerprint;
+	EXPECT_TRUE(ParseQuicDirectLinkFingerprint("ddnet+quic://example.com:8303#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &Fingerprint));
+	char aFingerprint[SHA256_MAXSTRSIZE];
+	sha256_str(Fingerprint, aFingerprint, sizeof(aFingerprint));
+	EXPECT_STREQ(aFingerprint, FINGERPRINT);
+	EXPECT_TRUE(ParseQuicDirectLinkFingerprint("ddnet+quic://[::1]:8303#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &Fingerprint));
+	EXPECT_FALSE(ParseQuicDirectLinkFingerprint("example.com:8303", &Fingerprint));
+	EXPECT_FALSE(ParseQuicDirectLinkFingerprint("ddnet+quic://example.com:8303", &Fingerprint));
+	EXPECT_FALSE(ParseQuicDirectLinkFingerprint("ddnet+quic://example.com:8303/path#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &Fingerprint));
+	EXPECT_FALSE(ParseQuicDirectLinkFingerprint("ddnet+quic://user@example.com:8303#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", &Fingerprint));
+	EXPECT_FALSE(ParseQuicDirectLinkFingerprint("ddnet+quic://example.com:8303#sha256=00", &Fingerprint));
+}
+
+TEST(ServerInfo, QuicLanExtra)
+{
+	static constexpr const char *FINGERPRINT = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	SHA256_DIGEST Fingerprint;
+	ASSERT_EQ(sha256_from_str(&Fingerprint, FINGERPRINT), 0);
+	char aExtraInfo[192];
+	FormatQuicServerInfoExtra(aExtraInfo, sizeof(aExtraInfo), Fingerprint);
+
+	CServerInfo Info = {};
+	EXPECT_FALSE(ParseQuicServerInfoExtra(&Info, aExtraInfo, 8303));
+	EXPECT_TRUE(Info.m_QuicSharedPort);
+	EXPECT_EQ(Info.m_QuicPort, 8303);
+	EXPECT_TRUE(Info.m_HasQuicIdentityFingerprint);
+	EXPECT_EQ(Info.m_QuicIdentityFingerprint, Fingerprint);
+	EXPECT_EQ(Info.m_QuicCapabilities, CServerInfo::QUIC_CAPABILITY_DATAGRAM | CServerInfo::QUIC_CAPABILITY_MAP_STREAM | CServerInfo::QUIC_CAPABILITY_RESUME | CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7);
+
+	str_format(aExtraInfo, sizeof(aExtraInfo), "ddnet-transport-v1|quic|tls-certificate-sha256=%s|capabilities=datagram,map-stream,resume-v1,game-protocol-7", FINGERPRINT);
+	Info = {};
+	EXPECT_FALSE(ParseQuicServerInfoExtra(&Info, aExtraInfo, 8303));
+	EXPECT_FALSE(Info.m_HasQuicIdentityFingerprint);
+	EXPECT_EQ(Info.m_QuicCertificateSha256, Fingerprint);
+
+	aExtraInfo[0] = 'x';
+	EXPECT_TRUE(ParseQuicServerInfoExtra(&Info, aExtraInfo, 8303));
+	str_format(aExtraInfo, sizeof(aExtraInfo), "ddnet-transport-v2|quic|identity-sha256=%s|capabilities=datagram,map-stream,resume-v2,game-protocol-7", FINGERPRINT);
+	EXPECT_TRUE(ParseQuicServerInfoExtra(&Info, aExtraInfo, 8303));
+	str_format(aExtraInfo, sizeof(aExtraInfo), "ddnet-transport-v2|quic|identity-sha256=%s|capabilities=datagram,map-stream,resume-v1,game-protocol-7", FINGERPRINT);
+	EXPECT_TRUE(ParseQuicServerInfoExtra(&Info, aExtraInfo, 0));
+}
+
+TEST(ServerInfo, PreserveWebTransportMetadataWithLanIdentity)
+{
+	CServerInfo PreviousInfo = {};
+	PreviousInfo.m_WebTransport = true;
+	PreviousInfo.m_WebTransportCertificateMode = CServerInfo::EWebTransportCertificateMode::HASH;
+	str_copy(PreviousInfo.m_aWebTransportPath, "/ddnet");
+	str_copy(PreviousInfo.m_aWebTransportUrl, "https://example.com:8303/ddnet");
+	PreviousInfo.m_QuicCertificateSha256.data[0] = 1;
+	PreviousInfo.m_QuicNextCertificateSha256.data[0] = 2;
+	PreviousInfo.m_HasQuicNextCertificateSha256 = true;
+	PreviousInfo.m_QuicCapabilities = CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7;
+
+	CServerInfo LanInfo = {};
+	LanInfo.m_QuicSharedPort = true;
+	LanInfo.m_QuicIdentityFingerprint.data[0] = 3;
+	LanInfo.m_HasQuicIdentityFingerprint = true;
+	PreserveWebTransportMetadata(&LanInfo, PreviousInfo);
+
+	EXPECT_TRUE(LanInfo.m_WebTransport);
+	EXPECT_EQ(LanInfo.m_WebTransportCertificateMode, CServerInfo::EWebTransportCertificateMode::HASH);
+	EXPECT_STREQ(LanInfo.m_aWebTransportPath, "/ddnet");
+	EXPECT_STREQ(LanInfo.m_aWebTransportUrl, "https://example.com:8303/ddnet");
+	EXPECT_EQ(LanInfo.m_QuicCertificateSha256, PreviousInfo.m_QuicCertificateSha256);
+	EXPECT_EQ(LanInfo.m_QuicNextCertificateSha256, PreviousInfo.m_QuicNextCertificateSha256);
+	EXPECT_TRUE(LanInfo.m_HasQuicNextCertificateSha256);
+	EXPECT_EQ(LanInfo.m_QuicIdentityFingerprint.data[0], 3);
+	EXPECT_TRUE(LanInfo.m_HasQuicIdentityFingerprint);
+	EXPECT_TRUE(LanInfo.m_QuicCapabilities & CServerInfo::QUIC_CAPABILITY_GAME_PROTOCOL_7);
 }

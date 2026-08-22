@@ -1,0 +1,28 @@
+[package]
+name = "ddnet-fuzz"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+
+[[bin]]
+name = "udp_port_mux"
+path = "fuzz_targets/udp_port_mux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "modern_wire"
+path = "fuzz_targets/modern_wire.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

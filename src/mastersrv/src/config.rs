@@ -96,7 +96,11 @@ impl Config {
     pub fn is_banned(&self, addr: Addr) -> Option<Option<&str>> {
         for ban in &self.bans {
             if ban.address.matches(addr) {
-                return Some(ban.reason.as_deref().or(self.default_ban_message.as_deref()));
+                return Some(
+                    ban.reason
+                        .as_deref()
+                        .or(self.default_ban_message.as_deref()),
+                );
             }
         }
         None

@@ -978,7 +978,7 @@ struct STextContainer
 
 		m_aDebugText[0] = '\0';
 
-		m_ContainerIndex = STextContainerIndex{};
+		m_ContainerIndex.Reset();
 	}
 };
 
@@ -1075,10 +1075,7 @@ class CTextRender : public IEngineTextRender
 				m_vpTextContainers.push_back(new STextContainer());
 		}
 
-		if(m_vpTextContainers[Index.m_Index]->m_ContainerIndex.m_UseCount.get() != Index.m_UseCount.get())
-		{
-			m_vpTextContainers[Index.m_Index]->m_ContainerIndex = Index;
-		}
+		m_vpTextContainers[Index.m_Index]->m_ContainerIndex = Index;
 		return *m_vpTextContainers[Index.m_Index];
 	}
 
@@ -2415,27 +2412,17 @@ public:
 		return WidthOfText;
 	}
 
-	void OnPreWindowResize() override
-	{
-		for(auto *pTextContainer : m_vpTextContainers)
-		{
-			if(pTextContainer->m_ContainerIndex.Valid() && pTextContainer->m_ContainerIndex.m_UseCount.use_count() <= 1)
-			{
-				log_error("textrender", "Found non empty text container with index %d with %" PRIzu " quads '%s'", pTextContainer->m_StringInfo.m_QuadBufferContainerIndex.Id(), pTextContainer->m_StringInfo.m_vCharacterQuads.size(), pTextContainer->m_aDebugText);
-				dbg_assert_failed("Text container was forgotten by the implementation (the index was overwritten).");
-			}
-		}
-	}
-
 	void OnWindowResize() override
 	{
+		// Every owner of a text container releases it while the window is resized, so a
+		// container that is still in use at this point was either forgotten or its index
+		// was overwritten, which leaks the container and its buffers for good.
 		bool HasNonEmptyTextContainer = false;
-		for(auto *pTextContainer : m_vpTextContainers)
+		for(const auto *pTextContainer : m_vpTextContainers)
 		{
-			if(pTextContainer->m_StringInfo.m_QuadBufferContainerIndex.IsValid())
+			if(pTextContainer->m_ContainerIndex.Valid())
 			{
-				log_error("textrender", "Found non empty text container with index %d with %" PRIzu " quads '%s'", pTextContainer->m_StringInfo.m_QuadBufferContainerIndex.Id(), pTextContainer->m_StringInfo.m_vCharacterQuads.size(), pTextContainer->m_aDebugText);
-				log_error("textrender", "The text container index was in use by %d ", (int)pTextContainer->m_ContainerIndex.m_UseCount.use_count());
+				log_error("textrender", "Found non empty text container with index %d with %" PRIzu " quads '%s'", pTextContainer->m_ContainerIndex.m_Index, pTextContainer->m_StringInfo.m_vCharacterQuads.size(), pTextContainer->m_aDebugText);
 				HasNonEmptyTextContainer = true;
 			}
 		}

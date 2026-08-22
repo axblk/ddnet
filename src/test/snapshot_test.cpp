@@ -6,6 +6,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 TEST(Snapshot, CrcOneInt)
 {
 	CSnapshotBuilder Builder;
@@ -95,4 +97,56 @@ TEST(Snapshot, StorageGet)
 	EXPECT_EQ(Storage.Get(50, nullptr, nullptr, nullptr), -1);
 	EXPECT_EQ(Storage.Get(5, nullptr, nullptr, nullptr), -1);
 	EXPECT_EQ(Storage.Get(25, nullptr, nullptr, nullptr), -1);
+}
+
+TEST(Snapshot, StoragePurgeAndReuse)
+{
+	// Holders removed by `PurgeUntil` are reused by later `Add` calls, while
+	// the holders that are still in the storage must neither move nor lose
+	// their data. Vary the sizes so that holders are reused as they are, grown
+	// and then reused again.
+	static const auto SnapSize = [](int Tick) { return (size_t)(8 + (Tick * 37) % 4088); };
+	static const auto AltSize = [](int Tick) { return Tick % 3 == 0 ? (size_t)0 : (size_t)(8 + (Tick * 53) % 4088); };
+
+	char aData[4096];
+	for(size_t i = 0; i < sizeof(aData); i++)
+		aData[i] = (char)i;
+
+	CSnapshotStorage Storage;
+	const void *apPrevSnaps[8] = {nullptr};
+
+	for(int Tick = 1; Tick < 500; Tick++)
+	{
+		Storage.Add(Tick, Tick * 10, SnapSize(Tick), aData, AltSize(Tick), aData);
+		Storage.PurgeUntil(Tick - 3);
+
+		// Every holder still in the storage keeps its data, and the ones that
+		// were there before are still at the same address.
+		int NumHolders = 0;
+		for(const CSnapshotStorage::CHolder *pHolder = Storage.m_pFirst; pHolder; pHolder = pHolder->m_pNext)
+		{
+			const int HolderTick = pHolder->m_Tick;
+			ASSERT_EQ(pHolder->m_Tagtime, HolderTick * 10);
+			ASSERT_EQ((size_t)pHolder->m_SnapSize, SnapSize(HolderTick));
+			ASSERT_EQ(mem_comp(pHolder->m_pSnap, aData, SnapSize(HolderTick)), 0);
+			ASSERT_EQ((size_t)pHolder->m_AltSnapSize, AltSize(HolderTick));
+			if(AltSize(HolderTick))
+			{
+				ASSERT_EQ(mem_comp(pHolder->m_pAltSnap, aData, AltSize(HolderTick)), 0);
+			}
+			else
+			{
+				ASSERT_EQ(pHolder->m_pAltSnap, nullptr);
+			}
+			if(HolderTick < Tick)
+			{
+				ASSERT_EQ(apPrevSnaps[HolderTick % 8], pHolder->m_pSnap);
+			}
+			ASSERT_EQ(Storage.Get(HolderTick, nullptr, nullptr, nullptr), pHolder->m_SnapSize);
+			NumHolders++;
+		}
+		ASSERT_EQ(NumHolders, std::min(Tick, 4));
+
+		apPrevSnaps[Tick % 8] = Storage.m_pLast->m_pSnap;
+	}
 }

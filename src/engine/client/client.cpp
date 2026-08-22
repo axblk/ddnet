@@ -4514,7 +4514,6 @@ void CClient::Notify(const char *pTitle, const char *pMessage)
 
 void CClient::OnWindowResize()
 {
-	TextRender()->OnPreWindowResize();
 	GameClient()->OnWindowResize();
 	m_pEditor->OnWindowResize();
 	TextRender()->OnWindowResize();

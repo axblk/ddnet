@@ -137,6 +137,10 @@ public:
 
 		CSnapshot *m_pSnap;
 		CSnapshot *m_pAltSnap;
+
+		// Number of bytes available for the snapshots behind this holder in
+		// the same allocation. Only used for holders owned by a storage.
+		size_t m_Capacity;
 	};
 
 	CHolder *m_pFirst;
@@ -149,6 +153,12 @@ public:
 	void PurgeUntil(int Tick);
 	void Add(int Tick, int64_t Tagtime, size_t DataSize, const void *pData, size_t AltDataSize, const void *pAltData);
 	int Get(int Tick, int64_t *pTagtime, const CSnapshot **ppData, const CSnapshot **ppAltData) const;
+
+private:
+	// Holders removed by `PurgeUntil` are kept here and handed out again by
+	// `Add`, which keeps the per-tick path free of allocations. The holders
+	// still in use must not move, so this is a free list and not a ring.
+	CHolder *m_pFirstFree;
 };
 
 class CSnapshotBuilder

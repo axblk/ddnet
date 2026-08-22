@@ -9,7 +9,6 @@
 #include <engine/graphics.h>
 
 #include <cstdint>
-#include <memory>
 
 enum
 {
@@ -166,16 +165,9 @@ public:
 	void SetPosition(vec2 Position);
 };
 
-struct STextContainerUsages
-{
-	int m_Dummy = 0;
-};
-
 struct STextContainerIndex
 {
 	int m_Index;
-	std::shared_ptr<STextContainerUsages> m_UseCount =
-		std::make_shared<STextContainerUsages>(STextContainerUsages());
 
 	STextContainerIndex() { Reset(); }
 	bool Valid() const { return m_Index >= 0; }
@@ -243,7 +235,6 @@ public:
 	virtual ColorRGBA GetTextOutlineColor() const = 0;
 	virtual ColorRGBA GetTextSelectionColor() const = 0;
 
-	virtual void OnPreWindowResize() = 0;
 	virtual void OnWindowResize() = 0;
 };
 

@@ -61,13 +61,13 @@ int main(int argc, const char **argv)
 	IEngine *pEngine = CreateEngine(GAME_NAME, pFutureConsoleLogger);
 	pKernel->RegisterInterface(pEngine, false);
 
-	// The engine has to be destroyed before the graphics, and both before the
-	// kernel that hands them out.
+	// The engine has to be destroyed before the graphics, and the client before
+	// the kernel, which owns the graphics the client keeps looking at.
 	const auto Cleanup = [&]() {
 		delete pEngine;
 		pKernel->Shutdown();
-		delete pKernel;
 		delete pClient;
+		delete pKernel;
 	};
 
 	IStorage *pStorage = CreateStorage(IStorage::EInitializationType::CLIENT, argc, argv);

@@ -3706,7 +3706,7 @@ int CServer::LoadMap(const char *pMapName)
 	{
 		char aEscaped[256];
 		str_format(aBuf, sizeof(aBuf), "%s_%s.map", pMapName, aSha256);
-		EscapeUrl(aEscaped, aBuf);
+		str_url_encode(aEscaped, aBuf);
 		str_format(m_aMapDownloadUrl, sizeof(m_aMapDownloadUrl), "%s%s", Config()->m_SvMapsBaseUrl, aEscaped);
 	}
 	else
@@ -4498,6 +4498,7 @@ int CServer::Run()
 	m_UPnP.Shutdown();
 #endif
 	m_NetServer.Close();
+	CNetBase::CloseLog();
 
 	return ErrorShutdown();
 }
@@ -5451,6 +5452,8 @@ void CServer::RegisterCommands()
 	m_pHttp = Kernel()->RequestInterface<IEngineHttp>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 	m_pAntibot = Kernel()->RequestInterface<IEngineAntibot>();
+
+	CNetBase::RegisterLogCommand(Console(), Storage());
 
 	// register console commands
 	Console()->Register("kick", "v[id] ?r[reason]", CFGFLAG_SERVER, ConKick, this, "Kick player with specified id for any reason");

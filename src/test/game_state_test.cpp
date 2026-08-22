@@ -3,7 +3,8 @@
 #include <base/mem.h>
 #include <base/str.h>
 
-#include <engine/client/session_sources.h>
+#include <engine/client/session_source_demo.h>
+#include <engine/client/session_source_net.h>
 #include <engine/console.h>
 #include <engine/shared/config.h>
 #include <engine/shared/demo.h>

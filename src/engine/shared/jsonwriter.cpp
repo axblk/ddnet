@@ -7,6 +7,8 @@
 #include <base/io.h>
 #include <base/str.h>
 
+#include <cinttypes>
+
 static char EscapeJsonChar(char c)
 {
 	switch(c)
@@ -84,6 +86,16 @@ void CJsonWriter::WriteIntValue(int Value)
 	WriteIndent(false);
 	char aBuf[32];
 	str_format(aBuf, sizeof(aBuf), "%d", Value);
+	WriteInternal(aBuf);
+	CompleteDataType();
+}
+
+void CJsonWriter::WriteInt64Value(int64_t Value)
+{
+	dbg_assert(CanWriteDatatype(), "Cannot write value here");
+	WriteIndent(false);
+	char aBuf[32];
+	str_format(aBuf, sizeof(aBuf), "%" PRId64, Value);
 	WriteInternal(aBuf);
 	CompleteDataType();
 }

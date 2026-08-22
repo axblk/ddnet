@@ -129,7 +129,7 @@ void CMenusSettingsControls::Render(CUIRect MainView)
 	MainView.HSplitBottom(MARGIN, &MainView, nullptr);
 
 	// Quick search
-	if(Ui()->DoEditBox_SearchCached(&m_FilterInput, &QuickSearch, FONT_SIZE, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive() && !GameClient()->m_KeyBinder.IsActive(), &m_aSearchUiElements[0], &m_aSearchUiElements[1]))
+	if(Ui()->DoEditBox_SearchCached(&m_FilterInput, &QuickSearch, FONT_SIZE, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive() && !GameClient()->m_KeyBinder.IsActive(), m_aSearchUiElements.data(), m_aSearchUiElements.data() + 1))
 	{
 		m_CurrentSearchMatch = 0;
 		UpdateSearchMatches();

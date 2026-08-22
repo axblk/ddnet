@@ -10,6 +10,7 @@
 
 #include <engine/client/backend/backend_base.h>
 #include <engine/client/backend/embedded_shaders.h>
+#include <engine/client/backend/gpu_timestamp.h>
 #include <engine/client/backend/vulkan/backend_vulkan.h>
 #include <engine/client/command_buffer.h>
 #include <engine/gfx/image_manipulation.h>
@@ -941,8 +942,15 @@ private:
 	VkSemaphore m_AcquireImageSemaphore;
 
 	std::vector<VkFence> m_vQueueSubmitFences;
+	// Two queries frame the whole frame, and each render zone interval adds
+	// a pair of its own behind them.
 	VkQueryPool m_GpuTimestampQueryPool = VK_NULL_HANDLE;
 	std::vector<bool> m_vGpuTimestampPending;
+	std::vector<uint32_t> m_vGpuTimestampZoneMasks;
+	std::vector<uint64_t> m_vGpuTimestampGenerations;
+	std::vector<uint32_t> m_vGpuTimestampIntervalCounts;
+	std::vector<TGpuTimestampIntervalZones> m_vGpuTimestampIntervalZones;
+	CGpuTimestampZones m_GpuTimestampZones;
 	float m_GpuTimestampPeriod = 0.0f;
 	uint32_t m_GpuTimestampValidBits = 0;
 	bool m_GpuTimestampRecording = false;
@@ -1461,6 +1469,8 @@ protected:
 	[[nodiscard]] bool BeginGpuTimestamp();
 
 	bool EndGpuTimestamp(VkCommandBuffer CommandBuffer);
+
+	[[nodiscard]] bool Cmd_GpuRenderZone(const CCommandBuffer::SCommand_GpuRenderZone *pCommand);
 
 	/**
 	 * Ends the recorded command buffer and submits it. Everything that needs a
@@ -2712,13 +2722,15 @@ bool CCommandProcessorFragment_Vulkan::CollectGpuTimestamp(uint32_t ImageIndex)
 		return true;
 	m_vGpuTimestampPending[ImageIndex] = false;
 
-	std::array<uint64_t, 2> aTimestamps;
+	const uint32_t IntervalCount = m_vGpuTimestampIntervalCounts[ImageIndex];
+	const uint32_t QueryCount = 2 + IntervalCount * 2;
+	std::array<uint64_t, GPU_TIMESTAMP_QUERY_COUNT> aTimestamps{};
 	const VkResult Result = vkGetQueryPoolResults(
 		m_VKDevice,
 		m_GpuTimestampQueryPool,
-		ImageIndex * 2,
-		aTimestamps.size(),
-		sizeof(aTimestamps),
+		ImageIndex * GPU_TIMESTAMP_QUERY_COUNT,
+		QueryCount,
+		QueryCount * sizeof(aTimestamps[0]),
 		aTimestamps.data(),
 		sizeof(aTimestamps[0]),
 		VK_QUERY_RESULT_64_BIT);
@@ -2740,21 +2752,38 @@ bool CCommandProcessorFragment_Vulkan::CollectGpuTimestamp(uint32_t ImageIndex)
 	const uint64_t DeltaTicks = TimestampTickDelta(aTimestamps[0], aTimestamps[1], m_GpuTimestampValidBits);
 	const long double Nanoseconds = static_cast<long double>(DeltaTicks) * m_GpuTimestampPeriod;
 	const uint64_t TimeNanoseconds = Nanoseconds >= static_cast<long double>(std::numeric_limits<uint64_t>::max()) ? std::numeric_limits<uint64_t>::max() : static_cast<uint64_t>(Nanoseconds + 0.5L);
-	m_pGpuTiming->Publish(TimeNanoseconds);
+	std::array<uint64_t, IGraphics::GPU_RENDER_ZONE_COUNT> aZoneNanoseconds{};
+	const uint32_t ZoneMask = m_vGpuTimestampZoneMasks[ImageIndex];
+	m_vGpuTimestampZoneMasks[ImageIndex] = 0;
+	for(uint32_t Interval = 0; Interval < IntervalCount; ++Interval)
+	{
+		const size_t Zone = static_cast<size_t>(m_vGpuTimestampIntervalZones[ImageIndex][Interval]);
+		if((ZoneMask & (1U << Zone)) == 0)
+			continue;
+		const size_t Query = 2 + Interval * 2;
+		const uint64_t ZoneDeltaTicks = TimestampTickDelta(aTimestamps[Query], aTimestamps[Query + 1], m_GpuTimestampValidBits);
+		const long double ZoneNanoseconds = static_cast<long double>(ZoneDeltaTicks) * m_GpuTimestampPeriod;
+		const uint64_t IntervalNanoseconds = ZoneNanoseconds >= static_cast<long double>(std::numeric_limits<uint64_t>::max()) ? std::numeric_limits<uint64_t>::max() : static_cast<uint64_t>(ZoneNanoseconds + 0.5L);
+		aZoneNanoseconds[Zone] = std::numeric_limits<uint64_t>::max() - aZoneNanoseconds[Zone] < IntervalNanoseconds ? std::numeric_limits<uint64_t>::max() : aZoneNanoseconds[Zone] + IntervalNanoseconds;
+	}
+	if(m_pGpuTiming->CanPublish(m_vGpuTimestampGenerations[ImageIndex]))
+		m_pGpuTiming->Publish(TimeNanoseconds, aZoneNanoseconds, ZoneMask);
 	return true;
 }
 
 bool CCommandProcessorFragment_Vulkan::BeginGpuTimestamp()
 {
 	m_GpuTimestampRecording = false;
+	m_GpuTimestampZones.Reset();
 	if(m_GpuTimestampQueryPool == VK_NULL_HANDLE || !m_pGpuTiming->m_Enabled.load(std::memory_order_relaxed))
 		return true;
 
 	VkCommandBuffer *pMemoryCommandBuffer;
 	if(!GetMemoryCommandBuffer(pMemoryCommandBuffer))
 		return false;
-	const uint32_t FirstQuery = m_CurImageIndex * 2;
-	vkCmdResetQueryPool(*pMemoryCommandBuffer, m_GpuTimestampQueryPool, FirstQuery, 2);
+	const uint32_t FirstQuery = m_CurImageIndex * GPU_TIMESTAMP_QUERY_COUNT;
+	m_vGpuTimestampGenerations[m_CurImageIndex] = m_pGpuTiming->Generation();
+	vkCmdResetQueryPool(*pMemoryCommandBuffer, m_GpuTimestampQueryPool, FirstQuery, GPU_TIMESTAMP_QUERY_COUNT);
 	vkCmdWriteTimestamp(*pMemoryCommandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_GpuTimestampQueryPool, FirstQuery);
 	m_GpuTimestampRecording = true;
 	return true;
@@ -2764,8 +2793,26 @@ bool CCommandProcessorFragment_Vulkan::EndGpuTimestamp(VkCommandBuffer CommandBu
 {
 	if(!m_GpuTimestampRecording)
 		return false;
-	vkCmdWriteTimestamp(CommandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_GpuTimestampQueryPool, m_CurImageIndex * 2 + 1);
+	const uint32_t FirstQuery = m_CurImageIndex * GPU_TIMESTAMP_QUERY_COUNT;
+	m_GpuTimestampZones.CloseOpenZones([&](uint32_t Query) {
+		vkCmdWriteTimestamp(CommandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_GpuTimestampQueryPool, FirstQuery + Query);
+	});
+	vkCmdWriteTimestamp(CommandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_GpuTimestampQueryPool, FirstQuery + 1);
+	m_vGpuTimestampZoneMasks[m_CurImageIndex] = m_GpuTimestampZones.ZoneMask();
+	m_vGpuTimestampIntervalCounts[m_CurImageIndex] = m_GpuTimestampZones.IntervalCount();
+	m_vGpuTimestampIntervalZones[m_CurImageIndex] = m_GpuTimestampZones.IntervalZones();
 	m_GpuTimestampRecording = false;
+	return true;
+}
+
+bool CCommandProcessorFragment_Vulkan::Cmd_GpuRenderZone(const CCommandBuffer::SCommand_GpuRenderZone *pCommand)
+{
+	if(!m_GpuTimestampRecording)
+		return true;
+	uint32_t Query;
+	if(!(pCommand->m_Begin ? m_GpuTimestampZones.Begin(pCommand->m_Zone, Query) : m_GpuTimestampZones.End(pCommand->m_Zone, Query)))
+		return true;
+	vkCmdWriteTimestamp(GetMainGraphicCommandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_GpuTimestampQueryPool, m_CurImageIndex * GPU_TIMESTAMP_QUERY_COUNT + Query);
 	return true;
 }
 
@@ -3266,6 +3313,11 @@ void CCommandProcessorFragment_Vulkan::DestroySyncObjects()
 void CCommandProcessorFragment_Vulkan::CreateGpuTimestampQueries()
 {
 	m_vGpuTimestampPending.assign(m_SwapChainImageCount, false);
+	m_vGpuTimestampZoneMasks.assign(m_SwapChainImageCount, 0);
+	m_vGpuTimestampGenerations.assign(m_SwapChainImageCount, 0);
+	m_vGpuTimestampIntervalCounts.assign(m_SwapChainImageCount, 0);
+	m_vGpuTimestampIntervalZones.resize(m_SwapChainImageCount);
+	m_GpuTimestampZones.Reset();
 	m_GpuTimestampRecording = false;
 	m_GpuTimestampNotReadyWarningLogged = false;
 	if(m_pGpuTiming == nullptr || !m_Presentation.IsPresentable() || m_GpuTimestampValidBits == 0 || !(m_GpuTimestampPeriod > 0.0f))
@@ -3274,7 +3326,7 @@ void CCommandProcessorFragment_Vulkan::CreateGpuTimestampQueries()
 	VkQueryPoolCreateInfo CreateInfo{};
 	CreateInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
 	CreateInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
-	CreateInfo.queryCount = m_SwapChainImageCount * 2;
+	CreateInfo.queryCount = m_SwapChainImageCount * GPU_TIMESTAMP_QUERY_COUNT;
 	const VkResult Result = vkCreateQueryPool(m_VKDevice, &CreateInfo, nullptr, &m_GpuTimestampQueryPool);
 	if(Result != VK_SUCCESS)
 	{
@@ -3290,6 +3342,11 @@ void CCommandProcessorFragment_Vulkan::DestroyGpuTimestampQueries()
 		vkDestroyQueryPool(m_VKDevice, m_GpuTimestampQueryPool, nullptr);
 	m_GpuTimestampQueryPool = VK_NULL_HANDLE;
 	m_vGpuTimestampPending.clear();
+	m_vGpuTimestampZoneMasks.clear();
+	m_vGpuTimestampGenerations.clear();
+	m_vGpuTimestampIntervalCounts.clear();
+	m_vGpuTimestampIntervalZones.clear();
+	m_GpuTimestampZones.Reset();
 	m_GpuTimestampRecording = false;
 	if(m_pGpuTiming != nullptr)
 		m_pGpuTiming->m_Supported.store(false, std::memory_order_relaxed);
@@ -3400,6 +3457,7 @@ ERunCommandReturnTypes CCommandProcessorFragment_Vulkan::RunCommand(const CComma
 	case CCommandBuffer::CMD_BEGIN_RENDER_PASS: return CommandResult(Cmd_BeginRenderPass(static_cast<const CCommandBuffer::SCommand_BeginRenderPass *>(pBaseCommand)));
 	case CCommandBuffer::CMD_END_RENDER_PASS: return CommandResult(Cmd_EndRenderPass(static_cast<const CCommandBuffer::SCommand_EndRenderPass *>(pBaseCommand)));
 	case CCommandBuffer::CMD_FLUSH_RENDER_PASS: return CommandResult(Cmd_FlushRenderPass(static_cast<const CCommandBuffer::SCommand_FlushRenderPass *>(pBaseCommand)));
+	case CCommandBuffer::CMD_GPU_RENDER_ZONE: return CommandResult(Cmd_GpuRenderZone(static_cast<const CCommandBuffer::SCommand_GpuRenderZone *>(pBaseCommand)));
 	case CCommandBuffer::CMD_CLEAR:
 	{
 		if(!m_RenderPassActive || !IsRenderCommandValid(pBaseCommand))

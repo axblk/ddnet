@@ -54,6 +54,7 @@
 
 #include <engine/client/checksum.h>
 #include <engine/client/enums.h>
+#include <engine/client/render_trace.h>
 #include <engine/demo.h>
 #include <engine/discord.h>
 #include <engine/editor.h>
@@ -85,6 +86,7 @@
 
 #include <chrono>
 #include <limits>
+#include <utility>
 
 using namespace std::chrono_literals;
 
@@ -100,6 +102,7 @@ void CGameClient::OnConsoleInit()
 {
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
 	m_pClient = Kernel()->RequestInterface<IClient>();
+	m_pRenderTrace = m_pClient->RenderTrace();
 	m_pTextRender = Kernel()->RequestInterface<ITextRender>();
 	m_pSound = Kernel()->RequestInterface<ISound>();
 	m_pConfigManager = Kernel()->RequestInterface<IConfigManager>();
@@ -167,6 +170,9 @@ void CGameClient::OnConsoleInit()
 					      &m_KeyBinder,
 					      &m_GameConsole,
 					      &m_MenuBackground});
+	m_vRenderComponentInfo.reserve(m_vpAll.size());
+	for(const CComponent *pComponent : m_vpAll)
+		m_vRenderComponentInfo.push_back(RenderComponentInfo(pComponent));
 
 	// build the input stack
 	m_vpInput.insert(m_vpInput.end(), {&m_KeyBinder, // this will take over all input when we want to bind a key
@@ -770,6 +776,70 @@ void CGameClient::UpdatePositions()
 	UpdateRenderedCharacters();
 }
 
+CGameClient::SRenderComponentInfo CGameClient::RenderComponentInfo(const CComponent *pComponent) const
+{
+	using EZone = IGraphics::EGpuRenderZone;
+	struct SEntry
+	{
+		const CComponent *m_pComponent;
+		SRenderComponentInfo m_Info;
+	};
+	const std::array<SEntry, 46> aEntries = {{
+		{&m_Skins, {"game/skins", EZone::COUNT}},
+		{&m_Skins7, {"game/skins7", EZone::COUNT}},
+		{&m_CountryFlags, {"game/country_flags", EZone::COUNT}},
+		{&m_MapImages, {"game/map_images", EZone::COUNT}},
+		{&m_Effects, {"game/effects", EZone::COUNT}},
+		{&m_Binds, {"game/binds", EZone::COUNT}},
+		{&m_Binds.m_SpecialBinds, {"game/special_binds", EZone::COUNT}},
+		{&m_Controls, {"game/controls", EZone::COUNT}},
+		{&m_Camera, {"game/camera", EZone::COUNT}},
+		{&m_Sounds, {"game/sounds", EZone::COUNT}},
+		{&m_Voting, {"game/voting", EZone::COUNT}},
+		{&m_Particles, {"game/particles_update", EZone::COUNT}},
+		{&m_RaceDemo, {"game/race_demo", EZone::COUNT}},
+		{&m_MapSounds, {"game/map_sounds", EZone::COUNT}},
+		{&m_Censor, {"game/censor", EZone::COUNT}},
+		{&m_Background, {"world/background", EZone::MAP_BACKGROUND}},
+		{&m_MapLayersBackground, {"world/map_background", EZone::MAP_BACKGROUND}},
+		{&m_Particles.m_RenderTrail, {"world/particles_trail", EZone::PARTICLES}},
+		{&m_Particles.m_RenderTrailExtra, {"world/particles_trail_extra", EZone::PARTICLES}},
+		{&m_Items, {"world/items", EZone::ITEMS}},
+		{&m_Ghost, {"world/ghost", EZone::GHOST}},
+		{&m_Players, {"world/players", EZone::PLAYERS}},
+		{&m_MapLayersForeground, {"world/map_foreground", EZone::MAP_FOREGROUND}},
+		{&m_Particles.m_RenderExplosions, {"world/particles_explosions", EZone::PARTICLES}},
+		{&m_NamePlates, {"world/nameplates", EZone::NAMEPLATES}},
+		{&m_Particles.m_RenderExtra, {"world/particles_extra", EZone::PARTICLES}},
+		{&m_Particles.m_RenderGeneral, {"world/particles_general", EZone::PARTICLES}},
+		{&m_FreezeBars, {"world/freezebars", EZone::FREEZEBARS}},
+		{&m_DamageInd, {"world/damage_indicators", EZone::DAMAGE_INDICATORS}},
+		{&m_Hud, {"ui/hud", EZone::HUD}},
+		{&m_Spectator, {"ui/spectator", EZone::SPECTATOR}},
+		{&m_Emoticon, {"ui/emoticon", EZone::EMOTICON}},
+		{&m_InfoMessages, {"ui/info_messages", EZone::INFO_MESSAGES}},
+		{&m_Chat, {"ui/chat", EZone::CHAT}},
+		{&m_Broadcast, {"ui/broadcast", EZone::BROADCAST}},
+		{&m_ImportantAlert, {"ui/important_alert", EZone::IMPORTANT_ALERT}},
+		{&m_DebugHud, {"ui/debug_hud", EZone::DEBUG_HUD}},
+		{&m_TouchControls, {"ui/touch_controls", EZone::TOUCH_CONTROLS}},
+		{&m_Scoreboard, {"ui/scoreboard", EZone::SCOREBOARD}},
+		{&m_Statboard, {"ui/statboard", EZone::STATBOARD}},
+		{&m_Motd, {"ui/motd", EZone::MOTD}},
+		{&m_Menus, {"ui/menus", EZone::MENUS}},
+		{&m_Tooltips, {"ui/tooltips", EZone::TOOLTIPS}},
+		{&m_KeyBinder, {"ui/key_binder", EZone::COUNT}},
+		{&m_GameConsole, {"ui/console", EZone::CONSOLE}},
+		{&m_MenuBackground, {"ui/menu_background", EZone::COUNT}},
+	}};
+	for(const SEntry &Entry : aEntries)
+	{
+		if(Entry.m_pComponent == pComponent)
+			return Entry.m_Info;
+	}
+	return {"game/component", EZone::COUNT};
+}
+
 void CGameClient::OnRender()
 {
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
@@ -816,8 +886,18 @@ void CGameClient::OnRender()
 	UpdateSpectatorCursor();
 
 	// render all systems
-	for(auto &pComponent : m_vpAll)
+	CRenderTrace *pTrace = m_pRenderTrace;
+	Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::WORLD);
+	for(size_t i = 0; i < m_vpAll.size(); ++i)
 	{
+		CComponent *pComponent = m_vpAll[i];
+		const SRenderComponentInfo &Info = m_vRenderComponentInfo[i];
+		// The HUD is the first thing drawn over the world.
+		if(pComponent == &m_Hud)
+		{
+			Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::WORLD);
+			Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::INTERFACE);
+		}
 		if(pComponent == &m_Scoreboard)
 			m_Menus.FinishMenuBackdrop();
 		// After the backdrop, so that opening the scoreboard does not smear the
@@ -827,7 +907,12 @@ void CGameClient::OnRender()
 		// take the mouse over and bring their own pointer.
 		if(pComponent == &m_Menus)
 			m_Hud.RenderCursor();
+		CRenderTraceScope TraceScope(pTrace, Info.m_pTraceName);
+		if(Info.m_GpuZone != IGraphics::EGpuRenderZone::COUNT)
+			Graphics()->GpuRenderZoneBegin(Info.m_GpuZone);
 		pComponent->OnRender();
+		if(Info.m_GpuZone != IGraphics::EGpuRenderZone::COUNT)
+			Graphics()->GpuRenderZoneEnd(Info.m_GpuZone);
 	}
 
 	// Nothing captured what was drawn over the scene, so it goes to the screen
@@ -837,7 +922,11 @@ void CGameClient::OnRender()
 	// clear all events/input for this frame
 	Input()->Clear();
 
-	CLineInput::RenderCandidates();
+	{
+		CRenderTraceScope TraceScope(pTrace, "ui/line_input");
+		CLineInput::RenderCandidates();
+	}
+	Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::INTERFACE);
 
 	const bool WasNewTick = m_NewTick;
 

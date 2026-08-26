@@ -57,7 +57,7 @@ jobs:
         # -G "Unix Makefiles" required due to https://gitlab.kitware.com/cmake/cmake/-/issues/16395
         # WebTransport is what a browser connects with; it needs no option of its
         # own, the client speaks it wherever it is compiled for the web.
-        emcmake cmake -H. -G "Unix Makefiles" -B build-web -DCMAKE_BUILD_TYPE=Release -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DPREFER_BUNDLED_LIBS=ON -DWEBGPU_BACKEND_PROTOTYPE=ON
+        emcmake cmake -H. -G "Unix Makefiles" -B build-web -DCMAKE_BUILD_TYPE=Release -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DPREFER_BUNDLED_LIBS=ON -DWEBGPU_BACKEND_PROTOTYPE=ON
         cmake --build build-web --target game-client -j$(nproc)
 
     - name: Assemble the site

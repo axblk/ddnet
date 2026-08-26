@@ -132,8 +132,11 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 
 	const flush = () => {
 		// Both tracks go into one fragment, each with its own run, and the
-		// payload of the runs follows in the same order in a single 'mdat'.
-		const pending = tracks().filter(track => track.samples.length);
+		// payload of the runs follows in the same order in a single 'mdat'. A
+		// track the encoder has not described yet waits, because it may still
+		// turn out not to be in the header at all, and a run in a fragment
+		// would then point at a track nothing declares.
+		const pending = tracks().filter(track => track.samples.length && track.description !== null);
 		if(!pending.length)
 			return;
 		let payloadSize = 0;
@@ -236,14 +239,20 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 		return new Uint8Array(box('ftyp', tag('isom'), u32(0x200), tag('isom'), tag('iso2'), tag(sampleEntryType), tag('mp41'), tag('iso5')).concat(moov));
 	};
 
+	// Says what kept the file from being written, and nothing when it was. A
+	// file the browser cannot describe its own tracks for does not play, so it
+	// is refused rather than handed over, and the reason travels back to the
+	// export instead of leaving it looking like it worked.
 	state.finish = () => {
 		// A browser that turned out not to encode audio still gets its video,
 		// so the track is only kept once the encoder has described it.
 		if(state.audio !== null && state.audio.description === null)
 			state.audio = null;
 		flush();
+		if(!state.encoded)
+			return 'the browser encoded no frames';
 		if(state.video.description === null || !state.video.sampleCount)
-			return;
+			return 'the browser did not describe the video track';
 		// The file is assembled in memory, which is a few hundred megabytes for
 		// a long export, and is what the browser wants for a download anyway.
 		const url = URL.createObjectURL(new Blob([header()].concat(state.fragments), {type: 'video/mp4'}));
@@ -254,6 +263,7 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 		link.click();
 		link.remove();
 		setTimeout(() => URL.revokeObjectURL(url), 60000);
+		return null;
 	};
 
 	try {
@@ -321,6 +331,9 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 	}
 	codec = configured;
 	stringToUTF8(codec, pCodec, CodecCapacity);
+	// Every candidate that was turned down left its reason behind; the one that
+	// was taken makes all of them stale.
+	Module.ddnetVideoStartError = null;
 
 	// The sample entry and the configuration box only differ by name between
 	// the families; what goes into the configuration box is whatever the
@@ -418,11 +431,15 @@ EM_ASYNC_JS(int, BrowserVideoSubmit, (const unsigned char *pData, int Format, do
 	return 0;
 });
 
-EM_ASYNC_JS(void, BrowserVideoStop, (int Cancel), {
+EM_ASYNC_JS(void, BrowserVideoStop, (int Cancel, char *pError, int ErrorCapacity), {
 	const state = Module.ddnetVideo;
 	if(!state)
 		return;
 	Module.ddnetVideo = null;
+	// The finish drops the sound track when the browser never described it, so
+	// the encoder to close is the one that was there before it ran.
+	const audio = state.audio;
+	let reason = null;
 	try {
 		if(!Cancel && !state.error) {
 			await state.encoder.flush();
@@ -431,13 +448,17 @@ EM_ASYNC_JS(void, BrowserVideoStop, (int Cancel), {
 			if(state.audio && !state.audio.stopped) {
 				try { await state.audio.encoder.flush(); } catch(error) { state.audio.stopped = true; }
 			}
-			state.finish();
+			reason = state.finish();
 		}
-	} catch(error) {}
-	try { state.encoder.close(); } catch(error) {}
-	if(state.audio) {
-		try { state.audio.encoder.close(); } catch(error) {}
+	} catch(error) {
+		reason = String((error && error.message) || error).slice(0, 200);
 	}
+	try { state.encoder.close(); } catch(error) {}
+	if(audio) {
+		try { audio.encoder.close(); } catch(error) {}
+	}
+	if(reason)
+		stringToUTF8(reason, pError, ErrorCapacity);
 });
 
 EM_JS(int, BrowserVideoEncoded, (), {
@@ -771,7 +792,17 @@ void CVideoWebCodecs::Stop()
 	{
 		DrainReadbackSlots();
 		DestroyOffscreenTargets();
-		BrowserVideoStop(m_Cancelled || HasError() ? 1 : 0);
+		// Whatever keeps the browser from writing the file is the last thing
+		// this export can still say, and it says it here rather than ending
+		// without a file and without a reason.
+		char aReason[192] = {};
+		BrowserVideoStop(m_Cancelled || HasError() ? 1 : 0, aReason, sizeof(aReason));
+		if(aReason[0] != '\0')
+		{
+			char aError[sizeof(m_aError)];
+			str_format(aError, sizeof(aError), "The browser could not write the video: %s", aReason);
+			SetError(aError);
+		}
 		if(m_PauseLiveAudio && m_HasAudio)
 			m_pSound->UnpauseAudioDevice();
 	}

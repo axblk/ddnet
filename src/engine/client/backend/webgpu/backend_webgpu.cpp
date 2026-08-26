@@ -480,7 +480,7 @@ namespace
 				// The browser has to run before it can resolve anything we are
 				// waiting for, but a timer would hold a frame that is already
 				// half rendered for a millisecond or more per poll.
-				YieldToBrowser(0);
+				YieldFrame();
 #else
 				std::this_thread::sleep_for(1ms);
 #endif
@@ -2798,6 +2798,28 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 				wgpuTextureRelease(m_SurfaceTexture.texture);
 			m_SurfaceTexture = WGPU_SURFACE_TEXTURE_INIT;
 		}
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		// A surface texture is ours only until the browser gets its turn back.
+		// It composites the canvas and destroys what getCurrentTexture handed
+		// out, so a wait that lets the browser run ends the frame the texture
+		// was acquired for. Keeping it would encode the next pass against a
+		// dead texture, which the queue rejects on the submit after that.
+		void YieldFrame()
+		{
+			if(m_SurfaceTexture.texture != nullptr)
+			{
+				// Whatever is still encoded against the texture has to reach the
+				// queue while it is alive.
+				(void)SubmitCommands();
+				ReleaseFrame();
+				// The canvas comes back empty, so the pass that draws on it next
+				// has nothing to load.
+				m_RenderPassLoadOp = WGPULoadOp_Clear;
+			}
+			YieldToBrowser(0);
+		}
+#endif
 
 		void EndRenderPass()
 		{

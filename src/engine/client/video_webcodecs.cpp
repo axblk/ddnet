@@ -259,10 +259,36 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 		const link = document.createElement('a');
 		link.href = url;
 		link.download = state.fileName;
-		document.body.appendChild(link);
+		link.textContent = 'Save ' + state.fileName;
+		link.style.cssText = 'background:#1b1b1b;color:#fff;border:1px solid #555;border-radius:4px;padding:6px 10px;text-decoration:none;white-space:nowrap';
+		// A page is allowed to start a download by itself once, and after that
+		// the browser drops the attempt without telling anyone: the second
+		// export renders in full, builds its file, and simply never arrives.
+		// So the file is also put on screen as something to click, which no
+		// policy refuses. The click below still fires and still works the first
+		// time; what it cannot do is report that it was ignored.
+		let shelf = document.getElementById('ddnet-video-shelf');
+		if(!shelf) {
+			shelf = document.createElement('div');
+			shelf.id = 'ddnet-video-shelf';
+			shelf.style.cssText = 'position:fixed;top:8px;right:8px;z-index:2147483647;display:flex;flex-direction:column;gap:4px;font:14px sans-serif';
+			document.body.appendChild(shelf);
+		}
+		shelf.appendChild(link);
+		// Only a real click means the file has been taken. The one below is not
+		// trusted and may have been dropped, so it must not clear the offer -
+		// and a video nobody has saved is never taken off the screen.
+		link.addEventListener('click', event => {
+			if(!event.isTrusted)
+				return;
+			setTimeout(() => {
+				link.remove();
+				if(!shelf.childElementCount)
+					shelf.remove();
+				URL.revokeObjectURL(url);
+			}, 1000);
+		});
 		link.click();
-		link.remove();
-		setTimeout(() => URL.revokeObjectURL(url), 60000);
 		return null;
 	};
 

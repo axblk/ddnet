@@ -298,7 +298,12 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 			if(candidate.startsWith('avc1') || candidate.startsWith('avc3'))
 				config.avc = {format: 'avc'};
 			else if(candidate.startsWith('hvc1') || candidate.startsWith('hev1'))
-				config.hevc = {format: 'hvc1'};
+				// 'hevc', not 'hvc1': the enum names the bitstream format and not
+				// the sample entry the file carries it in. A name it does not know
+				// makes configure() throw while reading the dictionary, before it
+				// has looked at the codec at all - which is why passing this for
+				// every codec broke H.264 as well.
+				config.hevc = {format: 'hevc'};
 			try {
 				state.encoder.configure(config);
 				configured = candidate;

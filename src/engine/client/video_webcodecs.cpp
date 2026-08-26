@@ -36,17 +36,20 @@ EM_JS(void, BrowserVideoProbe, (), {
 		return;
 	const probe = {done: false, codecs: []};
 	Module.ddnetVideoProbe = probe;
-	if(typeof VideoEncoder === 'undefined') {
-		probe.done = true;
-		return;
-	}
 	// One profile per family is enough to offer it, and the more capable
-	// profile is tried first because it is what a desktop encoder gives.
-	const families = [
+	// profile is tried first because it is what a desktop encoder gives. The
+	// start walks the same lists, because what the probe was told about a
+	// family is not what every encoder behind it accepts.
+	Module.ddnetVideoFamilies = [
 		['H.264', ['avc1.640028', 'avc1.4D0028', 'avc1.42E01E']],
 		['H.265', ['hvc1.1.6.L120.B0']],
 		['AV1', ['av01.0.08M.08']],
 	];
+	if(typeof VideoEncoder === 'undefined') {
+		probe.done = true;
+		return;
+	}
+	const families = Module.ddnetVideoFamilies;
 	const firstSupported = async candidates => {
 		for(const codec of candidates) {
 			try {
@@ -77,10 +80,13 @@ EM_JS(void, BrowserVideoProbeEntry, (int Index, char *pName, int NameCapacity, c
 	stringToUTF8(entry.display, pDisplay, DisplayCapacity);
 });
 
-EM_JS(int, BrowserVideoStart, (const char *pCodec, const char *pFileName, int Width, int Height, int Fps, int Bitrate, int SampleRate, int Channels), {
-	if(typeof VideoEncoder === 'undefined')
+EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFileName, int Width, int Height, int Fps, int Bitrate, int SampleRate, int Channels), {
+	Module.ddnetVideoStartError = null;
+	if(typeof VideoEncoder === 'undefined') {
+		Module.ddnetVideoStartError = 'This browser has no VideoEncoder';
 		return -1;
-	const codec = UTF8ToString(pCodec);
+	}
+	let codec = UTF8ToString(pCodec);
 	const fileName = UTF8ToString(pFileName);
 
 	const u16 = value => [(value >>> 8) & 255, value & 255];
@@ -113,13 +119,6 @@ EM_JS(int, BrowserVideoStart, (const char *pCodec, const char *pFileName, int Wi
 	const bytesOf = value => ArrayBuffer.isView(value)
 		? new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
 		: new Uint8Array(value);
-
-	// The sample entry and the configuration box only differ by name between
-	// the families; what goes into the configuration box is whatever the
-	// encoder handed over as its decoder description.
-	const family = codec.slice(0, 4);
-	const sampleEntryType = family === 'av01' ? 'av01' : (family === 'hvc1' || family === 'hev1') ? family : 'avc1';
-	const configType = family === 'av01' ? 'av1C' : (family === 'hvc1' || family === 'hev1') ? 'hvcC' : 'avcC';
 
 	const newTrack = (id, timescale) => ({id: id, timescale: timescale, samples: [], decodeTime: 0, sampleCount: 0, description: null});
 	const state = {
@@ -280,13 +279,51 @@ EM_JS(int, BrowserVideoStart, (const char *pCodec, const char *pFileName, int Wi
 			},
 			error: error => { state.error = String((error && error.message) || error).slice(0, 255); },
 		});
-		state.encoder.configure({
-			codec: codec, width: Width, height: Height, bitrate: Bitrate, framerate: Fps,
-			latencyMode: 'quality', avc: {format: 'avc'}, hevc: {format: 'hvc1'},
-		});
 	} catch(error) {
+		Module.ddnetVideoStartError = String((error && error.message) || error).slice(0, 255);
 		return -1;
 	}
+	// The probe only asks whether a family is supported somewhere, and the
+	// answer may well come from a hardware encoder that 'quality' then rules
+	// out: what is left of H.264 in Chrome is Constrained Baseline. So every
+	// profile of the family is offered, each of them once on the quality path
+	// and once with the browser left to pick the encoder.
+	const familyEntry = (Module.ddnetVideoFamilies || []).find(entry => entry[1].includes(codec));
+	let configured = null;
+	for(const candidate of familyEntry ? familyEntry[1] : [codec]) {
+		for(const quality of [true, false]) {
+			const config = {codec: candidate, width: Width, height: Height, bitrate: Bitrate, framerate: Fps};
+			if(quality)
+				config.latencyMode = 'quality';
+			if(candidate.startsWith('avc1') || candidate.startsWith('avc3'))
+				config.avc = {format: 'avc'};
+			else if(candidate.startsWith('hvc1') || candidate.startsWith('hev1'))
+				config.hevc = {format: 'hvc1'};
+			try {
+				state.encoder.configure(config);
+				configured = candidate;
+				break;
+			} catch(error) {
+				Module.ddnetVideoStartError = candidate + ': ' + String((error && error.message) || error).slice(0, 200);
+			}
+		}
+		if(configured)
+			break;
+	}
+	if(!configured) {
+		try { state.encoder.close(); } catch(error) {}
+		return -1;
+	}
+	codec = configured;
+	stringToUTF8(codec, pCodec, CodecCapacity);
+
+	// The sample entry and the configuration box only differ by name between
+	// the families; what goes into the configuration box is whatever the
+	// encoder handed over as its decoder description.
+	const family = codec.slice(0, 4);
+	const sampleEntryType = family === 'av01' ? 'av01' : (family === 'hvc1' || family === 'hev1') ? family : 'avc1';
+	const configType = family === 'av01' ? 'av1C' : (family === 'hvc1' || family === 'hev1') ? 'hvcC' : 'avcC';
+
 	if(SampleRate > 0) {
 		// Audio is AAC because that is what an MP4 carries everywhere. A
 		// browser that cannot encode it loses the sound, not the export.
@@ -403,10 +440,12 @@ EM_JS(int, BrowserVideoEncoded, (), {
 });
 
 EM_JS(int, BrowserVideoError, (char *pError, int ErrorCapacity), {
-	const state = Module.ddnetVideo;
-	if(!state || !state.error)
+	// Before there is an export there is no state to carry the reason, and the
+	// start is where the browser is most likely to have one.
+	const message = Module.ddnetVideo ? Module.ddnetVideo.error : Module.ddnetVideoStartError;
+	if(!message)
 		return 0;
-	stringToUTF8(state.error, pError, ErrorCapacity);
+	stringToUTF8(message, pError, ErrorCapacity);
 	return 1;
 });
 // clang-format on
@@ -669,8 +708,11 @@ bool CVideoWebCodecs::Start()
 	}
 
 	const std::vector<CVideoEncoder> &vEncoders = VideoEncoders();
-	const char *pCodec = m_Settings.m_aVideoCodec[0] == '\0' ? vEncoders.front().m_aName : m_Settings.m_aVideoCodec;
-	if(pCodec[0] == '\0')
+	// The browser is free to end up on another profile of the same family, and
+	// says which one it took by writing it back here.
+	char aCodec[sizeof(CVideoEncoder::m_aName)];
+	str_copy(aCodec, m_Settings.m_aVideoCodec[0] == '\0' ? vEncoders.front().m_aName : m_Settings.m_aVideoCodec);
+	if(aCodec[0] == '\0')
 	{
 		SetError("This browser has no video encoder");
 		return false;
@@ -684,10 +726,16 @@ bool CVideoWebCodecs::Start()
 		return false;
 	}
 	m_AudioSampleRate = m_HasAudio ? m_pSound->MixingRate() : 0;
-	if(BrowserVideoStart(pCodec, m_aFileName, m_Settings.m_Width, m_Settings.m_Height, m_Settings.m_FPS, BitRateForQuality(m_Settings), m_AudioSampleRate, AUDIO_CHANNELS) != 0)
+	if(BrowserVideoStart(aCodec, sizeof(aCodec), m_aFileName, m_Settings.m_Width, m_Settings.m_Height, m_Settings.m_FPS, BitRateForQuality(m_Settings), m_AudioSampleRate, AUDIO_CHANNELS) != 0)
 	{
 		DestroyOffscreenTargets();
-		SetError("Could not start the browser video encoder");
+		char aReason[192] = {};
+		if(!BrowserVideoError(aReason, sizeof(aReason)))
+			str_copy(aReason, "the browser gave no reason");
+		char aError[sizeof(m_aError)];
+		str_format(aError, sizeof(aError), "Could not start the browser video encoder at %dx%d for '%s': %s",
+			m_Settings.m_Width, m_Settings.m_Height, aCodec, aReason);
+		SetError(aError);
 		return false;
 	}
 	if(m_HasAudio && !BrowserAudioStarted())
@@ -696,7 +744,7 @@ bool CVideoWebCodecs::Start()
 		m_HasAudio = false;
 	}
 	log_info("videorecorder", "Encoding %dx%d with '%s' in the browser %s sound, converting on the %s",
-		m_Settings.m_Width, m_Settings.m_Height, pCodec, m_HasAudio ? "with" : "without", m_YuvReadback ? "graphics card" : "processor");
+		m_Settings.m_Width, m_Settings.m_Height, aCodec, m_HasAudio ? "with" : "without", m_YuvReadback ? "graphics card" : "processor");
 
 	if(m_PauseLiveAudio && m_HasAudio)
 		m_pSound->PauseAudioDevice();

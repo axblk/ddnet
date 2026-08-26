@@ -36,17 +36,20 @@ EM_JS(void, BrowserVideoProbe, (), {
 		return;
 	const probe = {done: false, codecs: []};
 	Module.ddnetVideoProbe = probe;
-	if(typeof VideoEncoder === 'undefined') {
-		probe.done = true;
-		return;
-	}
 	// One profile per family is enough to offer it, and the more capable
-	// profile is tried first because it is what a desktop encoder gives.
-	const families = [
+	// profile is tried first because it is what a desktop encoder gives. The
+	// start walks the same lists, because what the probe was told about a
+	// family is not what every encoder behind it accepts.
+	Module.ddnetVideoFamilies = [
 		['H.264', ['avc1.640028', 'avc1.4D0028', 'avc1.42E01E']],
 		['H.265', ['hvc1.1.6.L120.B0']],
 		['AV1', ['av01.0.08M.08']],
 	];
+	if(typeof VideoEncoder === 'undefined') {
+		probe.done = true;
+		return;
+	}
+	const families = Module.ddnetVideoFamilies;
 	const firstSupported = async candidates => {
 		for(const codec of candidates) {
 			try {
@@ -77,10 +80,13 @@ EM_JS(void, BrowserVideoProbeEntry, (int Index, char *pName, int NameCapacity, c
 	stringToUTF8(entry.display, pDisplay, DisplayCapacity);
 });
 
-EM_JS(int, BrowserVideoStart, (const char *pCodec, const char *pFileName, int Width, int Height, int Fps, int Bitrate, int SampleRate, int Channels), {
-	if(typeof VideoEncoder === 'undefined')
+EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFileName, int Width, int Height, int Fps, int Bitrate, int SampleRate, int Channels), {
+	Module.ddnetVideoStartError = null;
+	if(typeof VideoEncoder === 'undefined') {
+		Module.ddnetVideoStartError = 'This browser has no VideoEncoder';
 		return -1;
-	const codec = UTF8ToString(pCodec);
+	}
+	let codec = UTF8ToString(pCodec);
 	const fileName = UTF8ToString(pFileName);
 
 	const u16 = value => [(value >>> 8) & 255, value & 255];
@@ -114,12 +120,197 @@ EM_JS(int, BrowserVideoStart, (const char *pCodec, const char *pFileName, int Wi
 		? new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
 		: new Uint8Array(value);
 
-	// The sample entry and the configuration box only differ by name between
-	// the families; what goes into the configuration box is whatever the
-	// encoder handed over as its decoder description.
-	const family = codec.slice(0, 4);
-	const sampleEntryType = family === 'av01' ? 'av01' : (family === 'hvc1' || family === 'hev1') ? family : 'avc1';
-	const configType = family === 'av01' ? 'av1C' : (family === 'hvc1' || family === 'hev1') ? 'hvcC' : 'avcC';
+	// H.264 and HEVC hand their decoder configuration over as metadata, AV1
+	// does not: its sequence header is an OBU inside the bitstream and the
+	// 'av1C' has to be built from it. What follows reads that one OBU out of a
+	// keyframe and takes the nine fields the record is made of; anything it
+	// cannot read gives nothing back, because a guessed configuration plays
+	// worse than no file at all.
+	const av1SequenceFields = payload => {
+		let bit = 0;
+		const f = count => {
+			let value = 0;
+			for(let i = 0; i < count; i++) {
+				if((bit >> 3) >= payload.length)
+					throw new Error('short');
+				value = value * 2 + ((payload[bit >> 3] >> (7 - (bit & 7))) & 1);
+				bit++;
+			}
+			return value;
+		};
+		const uvlc = () => {
+			let zeros = 0;
+			while(zeros < 32 && !f(1))
+				zeros++;
+			if(zeros < 32)
+				f(zeros);
+		};
+		const profile = f(3);
+		f(1); // still_picture
+		const reduced = f(1);
+		let level = 0;
+		let tier = 0;
+		if(reduced) {
+			level = f(5);
+		} else {
+			let delayBits = 0;
+			let decoderModel = 0;
+			if(f(1)) { // timing_info_present_flag
+				f(32); // num_units_in_display_tick
+				f(32); // time_scale
+				if(f(1)) // equal_picture_interval
+					uvlc();
+				decoderModel = f(1);
+				if(decoderModel) {
+					delayBits = f(5) + 1;
+					f(32); // num_units_in_decoding_tick
+					f(5); // buffer_removal_time_length_minus_1
+					f(5); // frame_presentation_time_length_minus_1
+				}
+			}
+			const displayDelay = f(1);
+			const operatingPoints = f(5) + 1;
+			for(let i = 0; i < operatingPoints; i++) {
+				f(12); // operating_point_idc
+				const idx = f(5);
+				const idxTier = idx > 7 ? f(1) : 0;
+				// The record describes the first operating point.
+				if(i === 0) {
+					level = idx;
+					tier = idxTier;
+				}
+				if(decoderModel && f(1)) {
+					f(delayBits);
+					f(delayBits);
+					f(1); // low_delay_mode_flag
+				}
+				if(displayDelay && f(1))
+					f(4); // initial_display_delay_minus_1
+			}
+		}
+		const widthBits = f(4) + 1;
+		const heightBits = f(4) + 1;
+		f(widthBits); // max_frame_width_minus_1
+		f(heightBits); // max_frame_height_minus_1
+		if(!reduced && f(1)) { // frame_id_numbers_present_flag
+			f(4);
+			f(3);
+		}
+		f(3); // use_128x128_superblock, enable_filter_intra, enable_intra_edge_filter
+		if(!reduced) {
+			f(4); // interintra compound, masked compound, warped motion, dual filter
+			const orderHint = f(1);
+			if(orderHint)
+				f(2); // enable_jnt_comp, enable_ref_frame_mvs
+			let screenContent = 2;
+			if(!f(1)) // seq_choose_screen_content_tools
+				screenContent = f(1);
+			if(screenContent > 0 && !f(1)) // seq_choose_integer_mv
+				f(1);
+			if(orderHint)
+				f(3); // order_hint_bits_minus_1
+		}
+		f(3); // enable_superres, enable_cdef, enable_restoration
+		const highBitdepth = f(1);
+		const twelveBit = profile === 2 && highBitdepth ? f(1) : 0;
+		const bitDepth = profile === 2 && highBitdepth ? (twelveBit ? 12 : 10) : (highBitdepth ? 10 : 8);
+		const monochrome = profile === 1 ? 0 : f(1);
+		let primaries = 2; // CP_UNSPECIFIED
+		let transfer = 2; // TC_UNSPECIFIED
+		let matrix = 2; // MC_UNSPECIFIED
+		if(f(1)) { // color_description_present_flag
+			primaries = f(8);
+			transfer = f(8);
+			matrix = f(8);
+		}
+		let subsamplingX = 1;
+		let subsamplingY = 1;
+		let chromaPosition = 0; // CSP_UNKNOWN
+		if(monochrome) {
+			f(1); // color_range
+		} else if(primaries === 1 && transfer === 13 && matrix === 0) {
+			// CP_BT_709 with TC_SRGB and MC_IDENTITY is the one combination
+			// that says 4:4:4 without spending a bit on it.
+			subsamplingX = 0;
+			subsamplingY = 0;
+		} else {
+			f(1); // color_range
+			if(profile === 1) {
+				subsamplingX = 0;
+				subsamplingY = 0;
+			} else if(profile === 2) {
+				if(bitDepth === 12) {
+					subsamplingX = f(1);
+					subsamplingY = subsamplingX ? f(1) : 0;
+				} else {
+					subsamplingX = 1;
+					subsamplingY = 0;
+				}
+			}
+			if(subsamplingX && subsamplingY)
+				chromaPosition = f(2);
+		}
+		return [
+			0x81, // marker and version, both 1
+			(profile << 5) | level,
+			(tier << 7) | (highBitdepth << 6) | (twelveBit << 5) | (monochrome << 4) | (subsamplingX << 3) | (subsamplingY << 2) | chromaPosition,
+			0, // reserved, and no initial presentation delay
+		];
+	};
+
+	// Walks the OBUs of one keyframe for the sequence header and returns the
+	// whole 'av1C' payload: the record above and the header itself after it.
+	const av1Config = data => {
+		let at = 0;
+		while(at < data.length) {
+			const type = (data[at] >> 3) & 15;
+			const extension = (data[at] >> 2) & 1;
+			const hasSize = (data[at] >> 1) & 1;
+			const headerBytes = 1 + extension;
+			let start = at + headerBytes;
+			let size;
+			if(hasSize) {
+				size = 0;
+				for(let i = 0; ; i++) {
+					if(i === 8 || start >= data.length)
+						return null;
+					const byte = data[start++];
+					size += (byte & 0x7F) * Math.pow(128, i);
+					if(!(byte & 0x80))
+						break;
+				}
+			} else {
+				size = data.length - start;
+			}
+			if(start + size > data.length)
+				return null;
+			if(type === 1) { // OBU_SEQUENCE_HEADER
+				let record;
+				try {
+					record = av1SequenceFields(data.subarray(start, start + size));
+				} catch(error) {
+					return null;
+				}
+				// A stored OBU has to carry its own size, whether or not it did
+				// in the stream, so the header is written out again rather than
+				// copied.
+				const length = [];
+				let left = size;
+				do {
+					length.push((left & 0x7F) | (left > 127 ? 0x80 : 0));
+					left = Math.floor(left / 128);
+				} while(left);
+				const obu = [data[at] | 0x02].concat(extension ? [data[at + 1]] : [], length);
+				const config = new Uint8Array(record.length + obu.length + size);
+				config.set(record, 0);
+				config.set(obu, record.length);
+				config.set(data.subarray(start, start + size), record.length + obu.length);
+				return config;
+			}
+			at = start + size;
+		}
+		return null;
+	};
 
 	const newTrack = (id, timescale) => ({id: id, timescale: timescale, samples: [], decodeTime: 0, sampleCount: 0, description: null});
 	const state = {
@@ -133,8 +324,11 @@ EM_JS(int, BrowserVideoStart, (const char *pCodec, const char *pFileName, int Wi
 
 	const flush = () => {
 		// Both tracks go into one fragment, each with its own run, and the
-		// payload of the runs follows in the same order in a single 'mdat'.
-		const pending = tracks().filter(track => track.samples.length);
+		// payload of the runs follows in the same order in a single 'mdat'. A
+		// track the encoder has not described yet waits, because it may still
+		// turn out not to be in the header at all, and a run in a fragment
+		// would then point at a track nothing declares.
+		const pending = tracks().filter(track => track.samples.length && track.description !== null);
 		if(!pending.length)
 			return;
 		let payloadSize = 0;
@@ -242,31 +436,67 @@ EM_JS(int, BrowserVideoStart, (const char *pCodec, const char *pFileName, int Wi
 		return new Uint8Array(box('ftyp', tag('isom'), u32(0x200), tag('isom'), tag('iso2'), tag(sampleEntryType), tag('mp41'), tag('iso5')).concat(moov));
 	};
 
+	// Says what kept the file from being written, and nothing when it was. A
+	// file the browser cannot describe its own tracks for does not play, so it
+	// is refused rather than handed over, and the reason travels back to the
+	// export instead of leaving it looking like it worked.
 	state.finish = () => {
 		// A browser that turned out not to encode audio still gets its video,
 		// so the track is only kept once the encoder has described it.
 		if(state.audio !== null && state.audio.description === null)
 			state.audio = null;
 		flush();
-		if(state.video.description === null || !state.video.sampleCount)
-			return;
+		if(!state.encoded)
+			return 'the browser encoded no frames';
+		// The two ways a video track can fail to be a track are worth telling
+		// apart: one is a codec configuration nobody could produce, the other a
+		// configuration that arrived too late for anything to be written with.
+		if(state.video.description === null)
+			return 'the video codec configuration could not be read';
+		if(!state.video.sampleCount)
+			return 'no video frame was written to the file';
 		// The file is assembled in memory, which is a few hundred megabytes for
 		// a long export, and is what the browser wants for a download anyway.
 		const url = URL.createObjectURL(new Blob([header()].concat(state.fragments), {type: 'video/mp4'}));
 		const link = document.createElement('a');
 		link.href = url;
 		link.download = state.fileName;
-		document.body.appendChild(link);
+		link.textContent = 'Save ' + state.fileName;
+		link.style.cssText = 'background:#1b1b1b;color:#fff;border:1px solid #555;border-radius:4px;padding:6px 10px;text-decoration:none;white-space:nowrap';
+		// A page is allowed to start a download by itself once, and after that
+		// the browser drops the attempt without telling anyone: the second
+		// export renders in full, builds its file, and simply never arrives.
+		// So the file is also put on screen as something to click, which no
+		// policy refuses. The click below still fires and still works the first
+		// time; what it cannot do is report that it was ignored.
+		let shelf = document.getElementById('ddnet-video-shelf');
+		if(!shelf) {
+			shelf = document.createElement('div');
+			shelf.id = 'ddnet-video-shelf';
+			shelf.style.cssText = 'position:fixed;top:8px;right:8px;z-index:2147483647;display:flex;flex-direction:column;gap:4px;font:14px sans-serif';
+			document.body.appendChild(shelf);
+		}
+		shelf.appendChild(link);
+		// Only a real click means the file has been taken. The one below is not
+		// trusted and may have been dropped, so it must not clear the offer -
+		// and a video nobody has saved is never taken off the screen.
+		link.addEventListener('click', event => {
+			if(!event.isTrusted)
+				return;
+			setTimeout(() => {
+				link.remove();
+				if(!shelf.childElementCount)
+					shelf.remove();
+				URL.revokeObjectURL(url);
+			}, 1000);
+		});
 		link.click();
-		link.remove();
-		setTimeout(() => URL.revokeObjectURL(url), 60000);
+		return null;
 	};
 
 	try {
 		state.encoder = new VideoEncoder({
 			output: (chunk, metadata) => {
-				if(state.video.description === null && metadata && metadata.decoderConfig && metadata.decoderConfig.description)
-					state.video.description = bytesOf(metadata.decoderConfig.description);
 				// The frames are written in the order they arrive, which is the order
 				// they are decoded in. An encoder that reorders them (B-frames, as
 				// Firefox's H.264 encoder makes them) hands them over out of the
@@ -276,6 +506,12 @@ EM_JS(int, BrowserVideoStart, (const char *pCodec, const char *pFileName, int Wi
 				const offset = shown - state.encoded;
 				const data = new Uint8Array(chunk.byteLength);
 				chunk.copyTo(data);
+				if(state.video.description === null) {
+					if(metadata && metadata.decoderConfig && metadata.decoderConfig.description)
+						state.video.description = bytesOf(metadata.decoderConfig.description);
+					else if(configType === 'av1C' && chunk.type === 'key')
+						state.video.description = av1Config(data);
+				}
 				state.video.samples.push({data: data, key: chunk.type === 'key', duration: 1, offset: offset});
 				state.encoded++;
 				if(state.video.samples.length >= state.fps)
@@ -283,13 +519,59 @@ EM_JS(int, BrowserVideoStart, (const char *pCodec, const char *pFileName, int Wi
 			},
 			error: error => { state.error = String((error && error.message) || error).slice(0, 255); },
 		});
-		state.encoder.configure({
-			codec: codec, width: Width, height: Height, bitrate: Bitrate, framerate: Fps,
-			latencyMode: 'quality', avc: {format: 'avc'}, hevc: {format: 'hvc1'},
-		});
 	} catch(error) {
+		Module.ddnetVideoStartError = String((error && error.message) || error).slice(0, 255);
 		return -1;
 	}
+	// The probe only asks whether a family is supported somewhere, and the
+	// answer may well come from a hardware encoder that 'quality' then rules
+	// out: what is left of H.264 in Chrome is Constrained Baseline. So every
+	// profile of the family is offered, each of them once on the quality path
+	// and once with the browser left to pick the encoder.
+	const familyEntry = (Module.ddnetVideoFamilies || []).find(entry => entry[1].includes(codec));
+	let configured = null;
+	for(const candidate of familyEntry ? familyEntry[1] : [codec]) {
+		for(const quality of [true, false]) {
+			const config = {codec: candidate, width: Width, height: Height, bitrate: Bitrate, framerate: Fps};
+			if(quality)
+				config.latencyMode = 'quality';
+			if(candidate.startsWith('avc1') || candidate.startsWith('avc3'))
+				config.avc = {format: 'avc'};
+			else if(candidate.startsWith('hvc1') || candidate.startsWith('hev1'))
+				// 'hevc', not 'hvc1': the enum names the bitstream format and not
+				// the sample entry the file carries it in. A name it does not know
+				// makes configure() throw while reading the dictionary, before it
+				// has looked at the codec at all - which is why passing this for
+				// every codec broke H.264 as well.
+				config.hevc = {format: 'hevc'};
+			try {
+				state.encoder.configure(config);
+				configured = candidate;
+				break;
+			} catch(error) {
+				Module.ddnetVideoStartError = candidate + ': ' + String((error && error.message) || error).slice(0, 200);
+			}
+		}
+		if(configured)
+			break;
+	}
+	if(!configured) {
+		try { state.encoder.close(); } catch(error) {}
+		return -1;
+	}
+	codec = configured;
+	stringToUTF8(codec, pCodec, CodecCapacity);
+	// Every candidate that was turned down left its reason behind; the one that
+	// was taken makes all of them stale.
+	Module.ddnetVideoStartError = null;
+
+	// The sample entry and the configuration box only differ by name between
+	// the families; what goes into the configuration box is whatever the
+	// encoder handed over as its decoder description.
+	const family = codec.slice(0, 4);
+	const sampleEntryType = family === 'av01' ? 'av01' : (family === 'hvc1' || family === 'hev1') ? family : 'avc1';
+	const configType = family === 'av01' ? 'av1C' : (family === 'hvc1' || family === 'hev1') ? 'hvcC' : 'avcC';
+
 	if(SampleRate > 0) {
 		// Audio is AAC because that is what an MP4 carries everywhere. A
 		// browser that cannot encode it loses the sound, not the export.
@@ -381,11 +663,15 @@ EM_ASYNC_JS(int, BrowserVideoSubmit, (const unsigned char *pData, int Format, do
 	return 0;
 });
 
-EM_ASYNC_JS(void, BrowserVideoStop, (int Cancel), {
+EM_ASYNC_JS(void, BrowserVideoStop, (int Cancel, char *pError, int ErrorCapacity), {
 	const state = Module.ddnetVideo;
 	if(!state)
 		return;
 	Module.ddnetVideo = null;
+	// The finish drops the sound track when the browser never described it, so
+	// the encoder to close is the one that was there before it ran.
+	const audio = state.audio;
+	let reason = null;
 	try {
 		if(!Cancel && !state.error) {
 			await state.encoder.flush();
@@ -394,13 +680,17 @@ EM_ASYNC_JS(void, BrowserVideoStop, (int Cancel), {
 			if(state.audio && !state.audio.stopped) {
 				try { await state.audio.encoder.flush(); } catch(error) { state.audio.stopped = true; }
 			}
-			state.finish();
+			reason = state.finish();
 		}
-	} catch(error) {}
-	try { state.encoder.close(); } catch(error) {}
-	if(state.audio) {
-		try { state.audio.encoder.close(); } catch(error) {}
+	} catch(error) {
+		reason = String((error && error.message) || error).slice(0, 200);
 	}
+	try { state.encoder.close(); } catch(error) {}
+	if(audio) {
+		try { audio.encoder.close(); } catch(error) {}
+	}
+	if(reason)
+		stringToUTF8(reason, pError, ErrorCapacity);
 });
 
 EM_JS(int, BrowserVideoEncoded, (), {
@@ -408,10 +698,12 @@ EM_JS(int, BrowserVideoEncoded, (), {
 });
 
 EM_JS(int, BrowserVideoError, (char *pError, int ErrorCapacity), {
-	const state = Module.ddnetVideo;
-	if(!state || !state.error)
+	// Before there is an export there is no state to carry the reason, and the
+	// start is where the browser is most likely to have one.
+	const message = Module.ddnetVideo ? Module.ddnetVideo.error : Module.ddnetVideoStartError;
+	if(!message)
 		return 0;
-	stringToUTF8(state.error, pError, ErrorCapacity);
+	stringToUTF8(message, pError, ErrorCapacity);
 	return 1;
 });
 // clang-format on
@@ -674,8 +966,11 @@ bool CVideoWebCodecs::Start()
 	}
 
 	const std::vector<CVideoEncoder> &vEncoders = VideoEncoders();
-	const char *pCodec = m_Settings.m_aVideoCodec[0] == '\0' ? vEncoders.front().m_aName : m_Settings.m_aVideoCodec;
-	if(pCodec[0] == '\0')
+	// The browser is free to end up on another profile of the same family, and
+	// says which one it took by writing it back here.
+	char aCodec[sizeof(CVideoEncoder::m_aName)];
+	str_copy(aCodec, m_Settings.m_aVideoCodec[0] == '\0' ? vEncoders.front().m_aName : m_Settings.m_aVideoCodec);
+	if(aCodec[0] == '\0')
 	{
 		SetError("This browser has no video encoder");
 		return false;
@@ -689,10 +984,16 @@ bool CVideoWebCodecs::Start()
 		return false;
 	}
 	m_AudioSampleRate = m_HasAudio ? m_pSound->MixingRate() : 0;
-	if(BrowserVideoStart(pCodec, m_aFileName, m_Settings.m_Width, m_Settings.m_Height, m_Settings.m_FPS, BitRateForQuality(m_Settings), m_AudioSampleRate, AUDIO_CHANNELS) != 0)
+	if(BrowserVideoStart(aCodec, sizeof(aCodec), m_aFileName, m_Settings.m_Width, m_Settings.m_Height, m_Settings.m_FPS, BitRateForQuality(m_Settings), m_AudioSampleRate, AUDIO_CHANNELS) != 0)
 	{
 		DestroyOffscreenTargets();
-		SetError("Could not start the browser video encoder");
+		char aReason[192] = {};
+		if(!BrowserVideoError(aReason, sizeof(aReason)))
+			str_copy(aReason, "the browser gave no reason");
+		char aError[sizeof(m_aError)];
+		str_format(aError, sizeof(aError), "Could not start the browser video encoder at %dx%d for '%s': %s",
+			m_Settings.m_Width, m_Settings.m_Height, aCodec, aReason);
+		SetError(aError);
 		return false;
 	}
 	if(m_HasAudio && !BrowserAudioStarted())
@@ -701,7 +1002,7 @@ bool CVideoWebCodecs::Start()
 		m_HasAudio = false;
 	}
 	log_info("videorecorder", "Encoding %dx%d with '%s' in the browser %s sound, converting on the %s",
-		m_Settings.m_Width, m_Settings.m_Height, pCodec, m_HasAudio ? "with" : "without", m_YuvReadback ? "graphics card" : "processor");
+		m_Settings.m_Width, m_Settings.m_Height, aCodec, m_HasAudio ? "with" : "without", m_YuvReadback ? "graphics card" : "processor");
 
 	if(m_PauseLiveAudio && m_HasAudio)
 		m_pSound->PauseAudioDevice();
@@ -723,7 +1024,17 @@ void CVideoWebCodecs::Stop()
 	{
 		DrainReadbackSlots();
 		DestroyOffscreenTargets();
-		BrowserVideoStop(m_Cancelled || HasError() ? 1 : 0);
+		// Whatever keeps the browser from writing the file is the last thing
+		// this export can still say, and it says it here rather than ending
+		// without a file and without a reason.
+		char aReason[192] = {};
+		BrowserVideoStop(m_Cancelled || HasError() ? 1 : 0, aReason, sizeof(aReason));
+		if(aReason[0] != '\0')
+		{
+			char aError[sizeof(m_aError)];
+			str_format(aError, sizeof(aError), "The browser could not write the video: %s", aReason);
+			SetError(aError);
+		}
 		if(m_PauseLiveAudio && m_HasAudio)
 			m_pSound->UnpauseAudioDevice();
 	}

@@ -120,6 +120,198 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 		? new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
 		: new Uint8Array(value);
 
+	// H.264 and HEVC hand their decoder configuration over as metadata, AV1
+	// does not: its sequence header is an OBU inside the bitstream and the
+	// 'av1C' has to be built from it. What follows reads that one OBU out of a
+	// keyframe and takes the nine fields the record is made of; anything it
+	// cannot read gives nothing back, because a guessed configuration plays
+	// worse than no file at all.
+	const av1SequenceFields = payload => {
+		let bit = 0;
+		const f = count => {
+			let value = 0;
+			for(let i = 0; i < count; i++) {
+				if((bit >> 3) >= payload.length)
+					throw new Error('short');
+				value = value * 2 + ((payload[bit >> 3] >> (7 - (bit & 7))) & 1);
+				bit++;
+			}
+			return value;
+		};
+		const uvlc = () => {
+			let zeros = 0;
+			while(zeros < 32 && !f(1))
+				zeros++;
+			if(zeros < 32)
+				f(zeros);
+		};
+		const profile = f(3);
+		f(1); // still_picture
+		const reduced = f(1);
+		let level = 0;
+		let tier = 0;
+		if(reduced) {
+			level = f(5);
+		} else {
+			let delayBits = 0;
+			let decoderModel = 0;
+			if(f(1)) { // timing_info_present_flag
+				f(32); // num_units_in_display_tick
+				f(32); // time_scale
+				if(f(1)) // equal_picture_interval
+					uvlc();
+				decoderModel = f(1);
+				if(decoderModel) {
+					delayBits = f(5) + 1;
+					f(32); // num_units_in_decoding_tick
+					f(5); // buffer_removal_time_length_minus_1
+					f(5); // frame_presentation_time_length_minus_1
+				}
+			}
+			const displayDelay = f(1);
+			const operatingPoints = f(5) + 1;
+			for(let i = 0; i < operatingPoints; i++) {
+				f(12); // operating_point_idc
+				const idx = f(5);
+				const idxTier = idx > 7 ? f(1) : 0;
+				// The record describes the first operating point.
+				if(i === 0) {
+					level = idx;
+					tier = idxTier;
+				}
+				if(decoderModel && f(1)) {
+					f(delayBits);
+					f(delayBits);
+					f(1); // low_delay_mode_flag
+				}
+				if(displayDelay && f(1))
+					f(4); // initial_display_delay_minus_1
+			}
+		}
+		const widthBits = f(4) + 1;
+		const heightBits = f(4) + 1;
+		f(widthBits); // max_frame_width_minus_1
+		f(heightBits); // max_frame_height_minus_1
+		if(!reduced && f(1)) { // frame_id_numbers_present_flag
+			f(4);
+			f(3);
+		}
+		f(3); // use_128x128_superblock, enable_filter_intra, enable_intra_edge_filter
+		if(!reduced) {
+			f(4); // interintra compound, masked compound, warped motion, dual filter
+			const orderHint = f(1);
+			if(orderHint)
+				f(2); // enable_jnt_comp, enable_ref_frame_mvs
+			let screenContent = 2;
+			if(!f(1)) // seq_choose_screen_content_tools
+				screenContent = f(1);
+			if(screenContent > 0 && !f(1)) // seq_choose_integer_mv
+				f(1);
+			if(orderHint)
+				f(3); // order_hint_bits_minus_1
+		}
+		f(3); // enable_superres, enable_cdef, enable_restoration
+		const highBitdepth = f(1);
+		const twelveBit = profile === 2 && highBitdepth ? f(1) : 0;
+		const bitDepth = profile === 2 && highBitdepth ? (twelveBit ? 12 : 10) : (highBitdepth ? 10 : 8);
+		const monochrome = profile === 1 ? 0 : f(1);
+		let primaries = 2; // CP_UNSPECIFIED
+		let transfer = 2; // TC_UNSPECIFIED
+		let matrix = 2; // MC_UNSPECIFIED
+		if(f(1)) { // color_description_present_flag
+			primaries = f(8);
+			transfer = f(8);
+			matrix = f(8);
+		}
+		let subsamplingX = 1;
+		let subsamplingY = 1;
+		let chromaPosition = 0; // CSP_UNKNOWN
+		if(monochrome) {
+			f(1); // color_range
+		} else if(primaries === 1 && transfer === 13 && matrix === 0) {
+			// CP_BT_709 with TC_SRGB and MC_IDENTITY is the one combination
+			// that says 4:4:4 without spending a bit on it.
+			subsamplingX = 0;
+			subsamplingY = 0;
+		} else {
+			f(1); // color_range
+			if(profile === 1) {
+				subsamplingX = 0;
+				subsamplingY = 0;
+			} else if(profile === 2) {
+				if(bitDepth === 12) {
+					subsamplingX = f(1);
+					subsamplingY = subsamplingX ? f(1) : 0;
+				} else {
+					subsamplingX = 1;
+					subsamplingY = 0;
+				}
+			}
+			if(subsamplingX && subsamplingY)
+				chromaPosition = f(2);
+		}
+		return [
+			0x81, // marker and version, both 1
+			(profile << 5) | level,
+			(tier << 7) | (highBitdepth << 6) | (twelveBit << 5) | (monochrome << 4) | (subsamplingX << 3) | (subsamplingY << 2) | chromaPosition,
+			0, // reserved, and no initial presentation delay
+		];
+	};
+
+	// Walks the OBUs of one keyframe for the sequence header and returns the
+	// whole 'av1C' payload: the record above and the header itself after it.
+	const av1Config = data => {
+		let at = 0;
+		while(at < data.length) {
+			const type = (data[at] >> 3) & 15;
+			const extension = (data[at] >> 2) & 1;
+			const hasSize = (data[at] >> 1) & 1;
+			const headerBytes = 1 + extension;
+			let start = at + headerBytes;
+			let size;
+			if(hasSize) {
+				size = 0;
+				for(let i = 0; ; i++) {
+					if(i === 8 || start >= data.length)
+						return null;
+					const byte = data[start++];
+					size += (byte & 0x7F) * Math.pow(128, i);
+					if(!(byte & 0x80))
+						break;
+				}
+			} else {
+				size = data.length - start;
+			}
+			if(start + size > data.length)
+				return null;
+			if(type === 1) { // OBU_SEQUENCE_HEADER
+				let record;
+				try {
+					record = av1SequenceFields(data.subarray(start, start + size));
+				} catch(error) {
+					return null;
+				}
+				// A stored OBU has to carry its own size, whether or not it did
+				// in the stream, so the header is written out again rather than
+				// copied.
+				const length = [];
+				let left = size;
+				do {
+					length.push((left & 0x7F) | (left > 127 ? 0x80 : 0));
+					left = Math.floor(left / 128);
+				} while(left);
+				const obu = [data[at] | 0x02].concat(extension ? [data[at + 1]] : [], length);
+				const config = new Uint8Array(record.length + obu.length + size);
+				config.set(record, 0);
+				config.set(obu, record.length);
+				config.set(data.subarray(start, start + size), record.length + obu.length);
+				return config;
+			}
+			at = start + size;
+		}
+		return null;
+	};
+
 	const newTrack = (id, timescale) => ({id: id, timescale: timescale, samples: [], decodeTime: 0, sampleCount: 0, description: null});
 	const state = {
 		fps: Fps, width: Width, height: Height, fileName: fileName,
@@ -251,8 +443,13 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 		flush();
 		if(!state.encoded)
 			return 'the browser encoded no frames';
-		if(state.video.description === null || !state.video.sampleCount)
-			return 'the browser did not describe the video track';
+		// The two ways a video track can fail to be a track are worth telling
+		// apart: one is a codec configuration nobody could produce, the other a
+		// configuration that arrived too late for anything to be written with.
+		if(state.video.description === null)
+			return 'the video codec configuration could not be read';
+		if(!state.video.sampleCount)
+			return 'no video frame was written to the file';
 		// The file is assembled in memory, which is a few hundred megabytes for
 		// a long export, and is what the browser wants for a download anyway.
 		const url = URL.createObjectURL(new Blob([header()].concat(state.fragments), {type: 'video/mp4'}));
@@ -295,8 +492,6 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 	try {
 		state.encoder = new VideoEncoder({
 			output: (chunk, metadata) => {
-				if(state.video.description === null && metadata && metadata.decoderConfig && metadata.decoderConfig.description)
-					state.video.description = bytesOf(metadata.decoderConfig.description);
 				// The frames are written in the order they arrive, which is the order
 				// they are shown in as long as the encoder does not reorder them. None
 				// of the browser encoders does, and a file that claimed otherwise
@@ -308,6 +503,12 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 				state.lastTimestamp = chunk.timestamp;
 				const data = new Uint8Array(chunk.byteLength);
 				chunk.copyTo(data);
+				if(state.video.description === null) {
+					if(metadata && metadata.decoderConfig && metadata.decoderConfig.description)
+						state.video.description = bytesOf(metadata.decoderConfig.description);
+					else if(configType === 'av1C' && chunk.type === 'key')
+						state.video.description = av1Config(data);
+				}
 				state.video.samples.push({data: data, key: chunk.type === 'key', duration: 1});
 				state.encoded++;
 				if(state.video.samples.length >= state.fps)

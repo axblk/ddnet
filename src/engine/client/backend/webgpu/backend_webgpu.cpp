@@ -2262,8 +2262,17 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 			}
 			if(m_RenderTarget.IsValid() && pTarget == nullptr)
 				return false;
-			if(pTarget == nullptr && (m_Minimized || !AcquireFrame()))
-				return false;
+			if(pTarget == nullptr)
+			{
+				// A surface texture is handed out empty and carries nothing over
+				// from the frame before it, so a pass opening on a fresh one
+				// clears, whatever load operation the last target left behind.
+				const bool FreshSurface = m_SurfaceTexture.texture == nullptr;
+				if(m_Minimized || !AcquireFrame())
+					return false;
+				if(FreshSurface)
+					m_RenderPassLoadOp = WGPULoadOp_Clear;
+			}
 			if(!EnsureCommandEncoder())
 				return false;
 			WGPUTextureView ResolveView = pTarget != nullptr ? pTarget->m_View : m_SurfaceView;
@@ -2813,9 +2822,6 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 				// queue while it is alive.
 				(void)SubmitCommands();
 				ReleaseFrame();
-				// The canvas comes back empty, so the pass that draws on it next
-				// has nothing to load.
-				m_RenderPassLoadOp = WGPULoadOp_Clear;
 			}
 			YieldToBrowser(0);
 		}
@@ -3607,7 +3613,13 @@ fn yuv_block(chroma: vec2i) -> vec3f {
 				m_RenderPassLoadOp = WGPULoadOp_Clear;
 				const ColorRGBA ClearColor = pCommand->m_Desc.m_LoadOp == IGraphics::ERenderPassLoadOp::CLEAR ? pCommand->m_Desc.m_ClearColor : ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f);
 				m_RenderPassClearColor = {ClearColor.r, ClearColor.g, ClearColor.b, ClearColor.a};
-				if(!EnsureRenderPass() && m_Error.m_ErrorType != GFX_ERROR_TYPE_NONE)
+				// A pass on the presentation target opens with the first thing
+				// drawn on it, the same way the one a swap leaves behind does.
+				// An export frame is handed this pass and then renders offscreen:
+				// acquiring the canvas for it would hold the surface texture
+				// across the readback wait, and what the browser composites when
+				// that wait gives it its turn is the empty frame this pass cleared.
+				if(m_RenderTarget.IsValid() && !EnsureRenderPass() && m_Error.m_ErrorType != GFX_ERROR_TYPE_NONE)
 					SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to begin a render pass");
 				return m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
 			}

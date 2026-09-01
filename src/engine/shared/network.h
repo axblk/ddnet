@@ -511,8 +511,13 @@ class CNetServer
 	int m_NumRecvPackets = 0;
 	int64_t m_BudgetStart = 0;
 	int m_NumPreConnDecompress = 0;
+	int m_aNumConnDecompress[NET_MAX_CLIENTS] = {};
 	int m_NumBanReplies = 0;
 	int m_NumVanillaRefusals = 0;
+
+	// Does not depend on anything about a packet, so it is derived once instead of
+	// per connless packet.
+	SECURITY_TOKEN m_GlobalToken = NET_SECURITY_TOKEN_UNKNOWN;
 
 	CSpamConn m_aSpamConns[NET_CONNLIMIT_IPS] = {};
 
@@ -584,7 +589,7 @@ public:
 	const char *ErrorString(int ClientId);
 
 	// anti spoof
-	SECURITY_TOKEN GetGlobalToken();
+	SECURITY_TOKEN GetGlobalToken() const;
 	SECURITY_TOKEN GetToken(const NETADDR &Addr);
 	SECURITY_TOKEN GetVanillaToken(const NETADDR &Addr);
 };

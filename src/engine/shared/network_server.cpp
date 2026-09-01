@@ -80,6 +80,8 @@ bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int Ma
 	m_VConnFirst = 0;
 
 	secure_random_fill(m_aSecurityTokenSeed, sizeof(m_aSecurityTokenSeed));
+	static const NETADDR NULL_ADDR = {0};
+	m_GlobalToken = GetToken(NULL_ADDR);
 
 	for(auto &Slot : m_aSlots)
 		Slot.m_Connection.Init(m_Endpoint, true);
@@ -144,6 +146,7 @@ void CNetServer::Update()
 	{
 		m_BudgetStart = Now;
 		m_NumPreConnDecompress = 0;
+		mem_zero(m_aNumConnDecompress, sizeof(m_aNumConnDecompress));
 		m_NumBanReplies = 0;
 		m_NumVanillaRefusals = 0;
 	}
@@ -173,10 +176,9 @@ void CNetServer::EndFlushBatch()
 	}
 }
 
-SECURITY_TOKEN CNetServer::GetGlobalToken()
+SECURITY_TOKEN CNetServer::GetGlobalToken() const
 {
-	static const NETADDR NULL_ADDR = {0};
-	return GetToken(NULL_ADDR);
+	return m_GlobalToken;
 }
 SECURITY_TOKEN CNetServer::GetToken(const NETADDR &Addr)
 {
@@ -317,6 +319,7 @@ int CNetServer::TryAcceptClient(NETADDR &Addr, SECURITY_TOKEN SecurityToken, int
 	}
 
 	// init connection slot
+	m_aNumConnDecompress[Slot] = 0;
 	m_aSlots[Slot].m_Connection.DirectInit(Addr, SecurityToken, Token, Sixup);
 	m_Endpoint.SetLegacyPeer(&Addr, true);
 
@@ -765,14 +768,28 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 		}
 		else
 		{
-			AllowDecompression = true;
+			// 0.6 keeps the security token inside the compressed payload, so a packet
+			// claiming to come from this slot cannot be attributed before it has been
+			// decoded. Spoofing the address of a connected player would otherwise buy
+			// unbounded decompressions, the most expensive thing a single packet can
+			// cost, so every slot only gets a budget of them per second.
+			AllowDecompression =
+				g_Config.m_SvConnDecompressPerSecond == 0 ||
+				m_aNumConnDecompress[Slot] < g_Config.m_SvConnDecompressPerSecond;
 		}
 
 		bool Decompressed = false;
 		const int UnpackResult = CNetBase::UnpackPacket(pData, Bytes, &m_RecvBuffer, Sixup, AllowDecompression, &Token, pResponseToken, &Decompressed);
-		if(Slot == -1 && Decompressed)
+		if(Decompressed)
 		{
-			m_NumPreConnDecompress++;
+			if(Slot == -1)
+			{
+				m_NumPreConnDecompress++;
+			}
+			else if(!Sixup)
+			{
+				m_aNumConnDecompress[Slot]++;
+			}
 		}
 
 		if(UnpackResult != 0)

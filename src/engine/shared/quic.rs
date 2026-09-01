@@ -32,11 +32,18 @@ const UDP_SIDECHANNEL_CAPACITY: usize = 256;
 // does not have to be grown while a packet is being put into it.
 const MAX_UDP_DATAGRAM_SIZE: usize = 2048;
 const MAX_SESSIONS: usize = 1024;
-// One address may hold a few sessions at once - a player and their dummy, a
-// reconnect that overlaps the old session - but not the whole endpoint. Without
-// this a single source that answers one Retry takes every slot the server has,
-// and the sixteen times as many slots as play slots is what makes that cheap.
-const MAX_SESSIONS_PER_ADDRESS: usize = 8;
+/// Connections that have been accepted but have not finished their handshake. They
+/// hold a session slot like any other, so without a separate ceiling a flood of
+/// handshakes from addresses that answered a Retry would fill the endpoint and lock
+/// real players out at a rate the attacker can sustain cheaply.
+const MAX_HANDSHAKING: usize = 128;
+/// Per source address. The slot limits in `CNetServer` only apply once a session has
+/// completed its handshake and reached the `CONNECTED` event, which is far too late
+/// to keep one address from occupying the endpoint.
+const MAX_CONNECTIONS_PER_ADDRESS: u32 = 16;
+/// A handshake that has already proven its address needs about one round trip. This
+/// only has to be generous enough for a bad network, not for an idle connection.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAP_CHUNK_SIZE: usize = 32 * 1024;
 const CONTROL_STREAM_KIND: u64 = 0;

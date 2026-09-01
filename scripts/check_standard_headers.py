@@ -57,7 +57,7 @@ def check_standard_headers_directory(path: Path):
 	errors = 0
 	for file in Path.iterdir(path):
 		if file.is_dir():
-			if file.name in ["external", "masterping", "mastersrv"]:
+			if file.name in ["external", "masterping", "mastersrv", "xdp"]:
 				continue
 			errors += check_standard_headers_directory(file)
 		elif file.name.endswith((".cpp", ".h")):

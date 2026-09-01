@@ -125,6 +125,7 @@ endif()
 
 option(WEBSOCKETS "Enable websockets support" OFF)
 option(QUIC "Build the native QUIC and WebTransport transport" ${AUTO_QUIC})
+option(EBPF "Build the XDP flood filter and derive tokens the way it verifies them (Linux only)" OFF)
 option(MYSQL "Enable mysql support" OFF)
 option(TEST_MYSQL "Test mysql support in unit tests (also sets -DMYSQL=ON)" OFF)
 option(AUTOUPDATE "Enable the autoupdater" OFF)
@@ -5092,3 +5093,73 @@ foreach(target ${TARGETS_DEP})
     target_compile_options(${target} PRIVATE ${OUR_FLAGS_DEP})
   endif()
 endforeach()
+
+########################################################################
+# XDP FLOOD FILTER
+########################################################################
+
+# Only one XDP program can be attached to an interface, so the filter is a separate
+# host wide service rather than something a server process loads for itself. A host
+# running several DDNet servers would otherwise have the first one win.
+if(EBPF)
+  if(NOT TARGET_OS STREQUAL "linux")
+    message(SEND_ERROR "EBPF is Linux only")
+  endif()
+
+  find_program(CLANG_EXECUTABLE NAMES clang clang-21 clang-20 clang-19)
+  if(NOT CLANG_EXECUTABLE)
+    message(SEND_ERROR "EBPF needs clang to compile for the BPF target")
+  endif()
+
+  pkg_check_modules(LIBBPF libbpf)
+  if(NOT LIBBPF_FOUND)
+    message(SEND_ERROR "EBPF needs libbpf, install libbpf-dev")
+  endif()
+
+  # linux/bpf.h reaches for asm/types.h, which lives in the architecture directory.
+  execute_process(
+    COMMAND ${CMAKE_C_COMPILER} -print-multiarch
+    OUTPUT_VARIABLE MULTIARCH_TRIPLE
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+  set(BPF_INCLUDES -I${PROJECT_SOURCE_DIR}/src/xdp)
+  if(MULTIARCH_TRIPLE)
+    list(APPEND BPF_INCLUDES -I/usr/include/${MULTIARCH_TRIPLE})
+  endif()
+
+  # -ffreestanding keeps clang's own stdint.h in play. The hosted one reaches into
+  # glibc headers that assume a 32 bit variant is installed.
+  add_custom_command(
+    OUTPUT ${PROJECT_BINARY_DIR}/ddnet_xdp_kern.o
+    COMMAND ${CLANG_EXECUTABLE} -O2 -g -Wall -Werror -target bpf -ffreestanding
+      ${BPF_INCLUDES}
+      -c ${PROJECT_SOURCE_DIR}/src/xdp/ddnet_xdp_kern.c
+      -o ${PROJECT_BINARY_DIR}/ddnet_xdp_kern.o
+    DEPENDS
+      src/xdp/ddnet_xdp_kern.c
+      src/xdp/ddnet_xdp_classify.h
+      src/xdp/ddnet_xdp_shared.h
+      src/xdp/siphash.h
+    COMMENT "Building BPF object ddnet_xdp_kern.o"
+    VERBATIM
+  )
+  add_custom_target(ddnet-xdp-object ALL DEPENDS ${PROJECT_BINARY_DIR}/ddnet_xdp_kern.o)
+
+  add_executable(ddnet-xdp src/xdp/ddnet_xdp.c)
+  target_include_directories(ddnet-xdp PRIVATE src/xdp ${LIBBPF_INCLUDE_DIRS})
+  target_link_libraries(ddnet-xdp ${LIBBPF_LIBRARIES})
+  target_link_directories(ddnet-xdp PRIVATE ${LIBBPF_LIBRARY_DIRS})
+  add_dependencies(ddnet-xdp ddnet-xdp-object)
+
+  # Checks the classifier against the vectors of the Rust module it is a port of, and
+  # SipHash against the vectors from its specification. Neither needs a kernel, so
+  # this runs anywhere the project builds.
+  add_executable(ddnet-xdp-test EXCLUDE_FROM_ALL src/xdp/ddnet_xdp_test.c)
+  target_include_directories(ddnet-xdp-test PRIVATE src/xdp)
+  add_custom_target(run_xdp_tests
+    COMMAND $<TARGET_FILE:ddnet-xdp-test>
+    DEPENDS ddnet-xdp-test
+    USES_TERMINAL
+  )
+endif()

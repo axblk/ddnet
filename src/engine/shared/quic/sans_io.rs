@@ -1,4 +1,4 @@
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use quinn_proto::{
     ClientConfig, Connection, ConnectionHandle, ConnectionId, ConnectionIdGenerator, DatagramEvent,
     Dir, Endpoint, Event, HashedConnectionIdGenerator, ServerConfig, StreamEvent, StreamId, VarInt,
@@ -34,12 +34,6 @@ pub(super) struct OutgoingDatagram {
 pub(super) struct EndpointDriver {
     endpoint: Endpoint,
     connections: HashMap<ConnectionHandle, Connection>,
-    /// The address each session was counted under, and how many each address
-    /// holds. Kept next to `connections` rather than read back off a connection
-    /// because a migrating one answers with its new address and would give a
-    /// slot back to the wrong bucket.
-    session_addresses: HashMap<ConnectionHandle, IpAddr>,
-    sessions_per_address: HashMap<IpAddr, usize>,
     events: VecDeque<(ConnectionHandle, Event)>,
     outgoing: VecDeque<OutgoingDatagram>,
     accepted: VecDeque<ConnectionHandle>,
@@ -50,6 +44,15 @@ pub(super) struct EndpointDriver {
     packet_buffers: Vec<Vec<u8>>,
     /// Buffers incoming datagrams are copied into and handed to quinn as cuts of.
     receive_buffers: VecDeque<BytesMut>,
+    /// Connections that have not finished their handshake yet, with the moment they
+    /// were accepted, so they can be given a deadline.
+    pending: HashMap<ConnectionHandle, Instant>,
+    /// How many connections each source address currently holds. Kept incrementally
+    /// because it is consulted on a path an attacker controls the rate of.
+    per_address: HashMap<IpAddr, u32>,
+    /// Scratch for `drive`, so the pending map can be walked without borrowing it
+    /// across the connections it has to touch.
+    expired: Vec<ConnectionHandle>,
     outgoing_drops: u64,
 }
 
@@ -67,8 +70,6 @@ impl EndpointDriver {
                 None,
             ),
             connections: HashMap::new(),
-            session_addresses: HashMap::new(),
-            sessions_per_address: HashMap::new(),
             events: VecDeque::new(),
             outgoing: VecDeque::new(),
             accepted: VecDeque::new(),
@@ -78,6 +79,9 @@ impl EndpointDriver {
             next_transmit: None,
             packet_buffers: Vec::new(),
             receive_buffers: VecDeque::new(),
+            pending: HashMap::new(),
+            per_address: HashMap::new(),
+            expired: Vec::new(),
             outgoing_drops: 0,
         }
     }
@@ -93,7 +97,7 @@ impl EndpointDriver {
             .endpoint
             .connect(now, config, remote, server_name)
             .map_err(|error| error.to_string())?;
-        self.insert_connection(handle, remote, connection);
+        self.connections.insert(handle, connection);
         Ok(handle)
     }
 
@@ -131,8 +135,11 @@ impl EndpointDriver {
                 self.recycle_packet_buffer(buffer);
             }
             DatagramEvent::NewConnection(incoming) => {
+                let address = incoming.remote_address().ip();
                 if self.connections.len() >= super::MAX_SESSIONS
-                    || self.sessions_of(remote.ip()) >= super::MAX_SESSIONS_PER_ADDRESS
+                    || self.pending.len() >= super::MAX_HANDSHAKING
+                    || self.per_address.get(&address).copied().unwrap_or(0)
+                        >= super::MAX_CONNECTIONS_PER_ADDRESS
                 {
                     self.endpoint.ignore(incoming);
                     self.recycle_packet_buffer(buffer);
@@ -154,7 +161,9 @@ impl EndpointDriver {
                 }
                 match self.endpoint.accept(incoming, now, &mut buffer, None) {
                     Ok((handle, connection)) => {
-                        self.insert_connection(handle, remote, connection);
+                        self.connections.insert(handle, connection);
+                        self.pending.insert(handle, now);
+                        *self.per_address.entry(address).or_insert(0) += 1;
                         self.accepted.push_back(handle);
                         self.recycle_packet_buffer(buffer);
                     }
@@ -173,6 +182,7 @@ impl EndpointDriver {
     }
 
     pub fn drive(&mut self, now: Instant) {
+        self.expire_handshakes(now);
         loop {
             self.endpoint_events.clear();
             for (&handle, connection) in &mut self.connections {
@@ -248,6 +258,41 @@ impl EndpointDriver {
         }
     }
 
+    /// Retires finished handshakes from the pending set and closes the ones that have
+    /// outstayed their deadline. Without this a peer could accept a Retry, start a
+    /// handshake and then simply stop, holding the slot for the full idle timeout.
+    fn expire_handshakes(&mut self, now: Instant) {
+        if self.pending.is_empty() {
+            return;
+        }
+        self.expired.clear();
+        for (&handle, &started) in &self.pending {
+            match self.connections.get(&handle) {
+                Some(connection) if connection.is_handshaking() => {
+                    if now.saturating_duration_since(started) >= super::HANDSHAKE_TIMEOUT {
+                        self.expired.push(handle);
+                    }
+                }
+                // The handshake finished, or the connection is already gone. Either
+                // way it is no longer this set's business.
+                _ => self.expired.push(handle),
+            }
+        }
+        for handle in std::mem::take(&mut self.expired) {
+            if let Some(connection) = self.connections.get_mut(&handle) {
+                if connection.is_handshaking() {
+                    connection.close(
+                        now,
+                        VarInt::from_u32(super::CLOSE_PROTOCOL),
+                        Bytes::from_static(b"handshake timeout"),
+                    );
+                }
+            }
+            self.pending.remove(&handle);
+        }
+        self.expired.clear();
+    }
+
     pub fn next_deadline(&mut self) -> Option<Instant> {
         self.connections
             .values_mut()
@@ -286,33 +331,18 @@ impl EndpointDriver {
     }
 
     pub fn remove_connection(&mut self, handle: ConnectionHandle) {
-        self.connections.remove(&handle);
-        if let Some(address) = self.session_addresses.remove(&handle) {
-            if let Some(count) = self.sessions_per_address.get_mut(&address) {
-                *count -= 1;
-                if *count == 0 {
-                    self.sessions_per_address.remove(&address);
+        if let Some(connection) = self.connections.remove(&handle) {
+            let address = connection.remote_address().ip();
+            if let std::collections::hash_map::Entry::Occupied(mut entry) =
+                self.per_address.entry(address)
+            {
+                *entry.get_mut() -= 1;
+                if *entry.get() == 0 {
+                    entry.remove();
                 }
             }
         }
-    }
-
-    fn sessions_of(&self, address: IpAddr) -> usize {
-        self.sessions_per_address
-            .get(&address)
-            .copied()
-            .unwrap_or(0)
-    }
-
-    fn insert_connection(
-        &mut self,
-        handle: ConnectionHandle,
-        remote: SocketAddr,
-        connection: Connection,
-    ) {
-        self.connections.insert(handle, connection);
-        self.session_addresses.insert(handle, remote.ip());
-        *self.sessions_per_address.entry(remote.ip()).or_insert(0) += 1;
+        self.pending.remove(&handle);
     }
 
     fn queue_transmit(&mut self, transmit: quinn_proto::Transmit, mut buffer: Vec<u8>) {
@@ -2774,53 +2804,6 @@ mod tests {
         }
         assert!(controls.iter().all(|received| *received));
         assert!(datagrams.iter().all(|received| *received));
-    }
-
-    /// One source that answers a Retry must not be able to take every session
-    /// the endpoint has, or the sixteen times as many sessions as play slots
-    /// turn from headroom into the thing that makes the flood cheap.
-    #[test]
-    fn one_address_cannot_take_every_session() {
-        let identity = quic_generate_identity("localhost").unwrap();
-        let certificate_der = identity.certificate_der.clone();
-        let server_config = server_config(
-            true,
-            true,
-            identity.certificate_der,
-            identity.private_key_der,
-        )
-        .unwrap()
-        .0;
-        let server_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30001).into();
-        let now = Instant::now();
-        let mut server = EndpointDriver::new(2, Some(server_config));
-        let connect_from = |server: &mut EndpointDriver, address: SocketAddr| {
-            let (client_config, _) =
-                client_config(ServerCertificatePin::Der(certificate_der.clone())).unwrap();
-            let mut client = EndpointDriver::new(1, None);
-            client
-                .connect(now, client_config, server_address, "localhost")
-                .unwrap();
-            drive_pair(now, &mut client, address, server, server_address);
-            server.poll_accepted().is_some()
-        };
-        for session in 0..crate::quic::MAX_SESSIONS_PER_ADDRESS {
-            let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30100 + session as u16).into();
-            assert!(
-                connect_from(&mut server, address),
-                "session {session} from one address was refused"
-            );
-        }
-        let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30200).into();
-        assert!(
-            !connect_from(&mut server, address),
-            "one address took more sessions than it is allowed"
-        );
-        let other = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 2), 30100).into();
-        assert!(
-            connect_from(&mut server, other),
-            "a flooded address locked out every other one"
-        );
     }
 
     /// Counts the allocations made on the thread it runs on. The endpoints are

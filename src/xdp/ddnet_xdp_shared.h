@@ -87,6 +87,25 @@ struct ddnet_xdp_config
 	struct ddnet_xdp_budget m_aBudgets[DDNET_XDP_NUM_BUDGETS];
 	uint32_t m_PrefixV4;
 	uint32_t m_PrefixV6;
+	/* Budget of an established 0.6 connection that was learned from its handshake.
+	 * Zero switches the connection table off entirely. */
+	uint64_t m_ConnNsPerToken;
+	uint64_t m_ConnBurst;
+	/* An entry that has not been used for this long is treated as gone. The table is
+	 * an LRU, so this is about a stale 4-tuple being reused, not about memory. */
+	uint64_t m_ConnIdleNs;
+};
+
+/* Identifies one legacy connection. Written out with no implicit padding, because a
+ * hash map compares the key bytes and a hole in it would never match. */
+struct ddnet_xdp_conn_key
+{
+	uint8_t m_Family;
+	uint8_t m_aPad[1];
+	uint16_t m_SourcePort;
+	uint16_t m_DestinationPort;
+	uint16_t m_aPad2[1];
+	uint8_t m_aAddress[16];
 };
 
 struct ddnet_xdp_bucket
@@ -105,6 +124,8 @@ enum
 	DDNET_XDP_CLASS_QUIC_INITIAL,
 	DDNET_XDP_CLASS_QUIC_INITIAL_TOKEN,
 	DDNET_XDP_CLASS_QUIC_LONG,
+	DDNET_XDP_CLASS_LEGACY_VERIFIED,
+	DDNET_XDP_CLASS_LEGACY_TRACKED,
 	DDNET_XDP_CLASS_LEGACY,
 	DDNET_XDP_CLASS_CONNLESS,
 	DDNET_XDP_CLASS_MALFORMED,
@@ -132,7 +153,9 @@ static const char *const DDNET_XDP_CLASS_NAMES[DDNET_XDP_NUM_CLASSES] = {
 	"quic initial",
 	"quic initial+token",
 	"quic long",
-	"legacy 0.6",
+	"0.6 verified",
+	"0.6 tracked",
+	"0.6 unverified",
 	"connless 0.6",
 	"malformed",
 };

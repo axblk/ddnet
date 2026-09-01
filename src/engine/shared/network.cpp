@@ -212,12 +212,12 @@ void CNetBase::SendPacketConnlessWithToken7(const CNetUdpEndpoint &Endpoint, NET
 	Endpoint.Send(pAddr, aBuffer, DataSize + DATA_OFFSET);
 }
 
-void CNetBase::SendPacket(NETSOCKET Socket, NETADDR *pAddr, CNetPacketConstruct *pPacket, SECURITY_TOKEN SecurityToken, bool Sixup)
+void CNetBase::SendPacket(NETSOCKET Socket, NETADDR *pAddr, CNetPacketConstruct *pPacket, SECURITY_TOKEN SecurityToken, bool Sixup, bool Compress)
 {
-	SendPacket(CNetUdpEndpoint::FromSocket(Socket), pAddr, pPacket, SecurityToken, Sixup);
+	SendPacket(CNetUdpEndpoint::FromSocket(Socket), pAddr, pPacket, SecurityToken, Sixup, Compress);
 }
 
-void CNetBase::SendPacket(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, CNetPacketConstruct *pPacket, SECURITY_TOKEN SecurityToken, bool Sixup)
+void CNetBase::SendPacket(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, CNetPacketConstruct *pPacket, SECURITY_TOKEN SecurityToken, bool Sixup, bool Compress)
 {
 	dbg_assert(IsValidConnectionOrientedPacket(pPacket), "Invalid packet to send. Flags=%d Ack=%d NumChunks=%d Size=%d",
 		pPacket->m_Flags, pPacket->m_Ack, pPacket->m_NumChunks, pPacket->m_DataSize);
@@ -251,7 +251,7 @@ void CNetBase::SendPacket(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, CNetP
 
 	// only compress non-control packets
 	int CompressedSize = -1;
-	if((pPacket->m_Flags & NET_PACKETFLAG_CONTROL) == 0)
+	if(Compress && (pPacket->m_Flags & NET_PACKETFLAG_CONTROL) == 0)
 	{
 		CompressedSize = HuffmanCompress(pPacket->m_aChunkData, pPacket->m_DataSize, &aBuffer[HeaderSize], NET_MAX_PACKETSIZE - HeaderSize);
 	}

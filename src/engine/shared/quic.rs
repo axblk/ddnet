@@ -33,6 +33,14 @@ const MAX_SESSIONS: usize = 1024;
 // reconnect that overlaps the old session - but not the whole endpoint. Without
 // this a single source that answers one Retry takes every slot the server has.
 const MAX_SESSIONS_PER_ADDRESS: usize = 8;
+/// Connections that have been accepted but have not finished their handshake. They
+/// hold a session slot like any other, so without a separate ceiling a flood of
+/// handshakes from addresses that answered a Retry would fill the endpoint and lock
+/// real players out at a rate the attacker can sustain cheaply.
+const MAX_HANDSHAKING: usize = 128;
+/// A handshake that has already proven its address needs about one round trip. This
+/// only has to be generous enough for a bad network, not for an idle connection.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAP_CHUNK_SIZE: usize = 32 * 1024;
 const CLOSE_SHUTDOWN: u32 = 0;

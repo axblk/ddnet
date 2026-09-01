@@ -31,6 +31,12 @@ pub(super) struct EndpointDriver {
     /// The connection that transmits first on the next drive, so that no
     /// connection can keep the others from sending.
     next_transmit: Option<ConnectionHandle>,
+    /// Connections that have not finished their handshake yet, with the moment they
+    /// were accepted, so they can be given a deadline.
+    pending: HashMap<ConnectionHandle, Instant>,
+    /// Scratch for `drive`, so the pending map can be walked without borrowing it
+    /// across the connections it has to touch.
+    expired: Vec<ConnectionHandle>,
 }
 
 impl EndpointDriver {
@@ -53,6 +59,8 @@ impl EndpointDriver {
             outgoing: VecDeque::new(),
             accepted: VecDeque::new(),
             next_transmit: None,
+            pending: HashMap::new(),
+            expired: Vec::new(),
         }
     }
 
@@ -93,6 +101,7 @@ impl EndpointDriver {
             }
             DatagramEvent::NewConnection(incoming) => {
                 if self.connections.len() >= super::MAX_SESSIONS
+                    || self.pending.len() >= super::MAX_HANDSHAKING
                     || self.sessions_of(remote.ip()) >= super::MAX_SESSIONS_PER_ADDRESS
                 {
                     self.endpoint.ignore(incoming);
@@ -112,6 +121,7 @@ impl EndpointDriver {
                 match self.endpoint.accept(incoming, now, &mut buffer, None) {
                     Ok((handle, connection)) => {
                         self.insert_connection(handle, remote, connection);
+                        self.pending.insert(handle, now);
                         self.accepted.push_back(handle);
                     }
                     Err(error) => {
@@ -127,6 +137,7 @@ impl EndpointDriver {
     }
 
     pub fn drive(&mut self, now: Instant) {
+        self.expire_handshakes(now);
         loop {
             let mut endpoint_events = Vec::new();
             for (&handle, connection) in &mut self.connections {
@@ -189,6 +200,41 @@ impl EndpointDriver {
         }
     }
 
+    /// Retires finished handshakes from the pending set and closes the ones that have
+    /// outstayed their deadline. Without this a peer could accept a Retry, start a
+    /// handshake and then simply stop, holding the slot for the full idle timeout.
+    fn expire_handshakes(&mut self, now: Instant) {
+        if self.pending.is_empty() {
+            return;
+        }
+        self.expired.clear();
+        for (&handle, &started) in &self.pending {
+            match self.connections.get(&handle) {
+                Some(connection) if connection.is_handshaking() => {
+                    if now.saturating_duration_since(started) >= super::HANDSHAKE_TIMEOUT {
+                        self.expired.push(handle);
+                    }
+                }
+                // The handshake finished, or the connection is already gone. Either
+                // way it is no longer this set's business.
+                _ => self.expired.push(handle),
+            }
+        }
+        for handle in std::mem::take(&mut self.expired) {
+            if let Some(connection) = self.connections.get_mut(&handle) {
+                if connection.is_handshaking() {
+                    connection.close(
+                        now,
+                        VarInt::from_u32(super::CLOSE_PROTOCOL),
+                        b"handshake timeout".to_vec().into(),
+                    );
+                }
+            }
+            self.pending.remove(&handle);
+        }
+        self.expired.clear();
+    }
+
     pub fn next_deadline(&mut self) -> Option<Instant> {
         self.connections
             .values_mut()
@@ -238,6 +284,7 @@ impl EndpointDriver {
 
     pub fn remove_connection(&mut self, handle: ConnectionHandle) {
         self.connections.remove(&handle);
+        self.pending.remove(&handle);
         if let Some(address) = self.session_addresses.remove(&handle) {
             if let Some(count) = self.sessions_per_address.get_mut(&address) {
                 *count -= 1;

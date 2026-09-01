@@ -1142,6 +1142,7 @@ set_glob(RUST_ENGINE_SHARED GLOB_RECURSE "rs;toml" src/engine/shared
   game_wire_bridge.rs
   lib.rs
   quic.rs
+  quic/cid.rs
   quic/sans_io.rs
   quic/webtransport.rs
   rust_version.rs
@@ -2553,6 +2554,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   datafile.h
   demo.cpp
   demo.h
+  ebpf_key.cpp
+  ebpf_key.h
   econ.cpp
   econ.h
   engine.cpp
@@ -4413,6 +4416,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp
+    ebpf_key_test.cpp
     editor_test.cpp
     font_loading_test.cpp
     fs_test.cpp
@@ -5434,6 +5438,9 @@ foreach(target ${TARGETS_OWN})
   endif()
   if(QUIC)
     target_compile_definitions(${target} PRIVATE CONF_QUIC)
+  endif()
+  if(EBPF)
+    target_compile_definitions(${target} PRIVATE CONF_EBPF)
   endif()
   if(WEBSOCKETS)
     target_compile_definitions(${target} PRIVATE CONF_WEBSOCKETS)

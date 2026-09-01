@@ -109,8 +109,20 @@ public:
 	 * @param pNextCertificatePath The certificate announced ahead of a rotation, may be empty.
 	 * @param pPrivateKeyPath The key of the TLS certificate, empty for a managed one.
 	 * @param pIdentityPath Where the identity key and the managed certificate are kept.
+	 * @param pCidKey The material the XDP filter service publishes. With it, connection
+	 * IDs carry a tag the filter can check, which is what lets it tell an established
+	 * connection from a spoof.
+	 * @param CidKeySize The size of `pCidKey`, 0 when no filter is in play.
 	 */
-	bool StartServer(bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath);
+	bool StartServer(bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath, const unsigned char *pCidKey, int CidKeySize);
+	/**
+	 * Adopts a rotated connection ID key. Connections running under the previous one
+	 * keep their ids.
+	 *
+	 * @param pCidKey The material the XDP filter service publishes.
+	 * @param CidKeySize The size of `pCidKey`.
+	 */
+	bool UpdateCidKey(const unsigned char *pCidKey, int CidKeySize);
 	bool MaybeRotateManagedCertificate(bool *pRotated);
 	/**
 	 * Connects to a server, over raw QUIC natively and over WebTransport in the

@@ -1081,11 +1081,13 @@ private:
 
 ::rust::Vec<::std::uint8_t> quic_leaf_certificate_der(::rust::Slice<::std::uint8_t const> certificate_file);
 
-::rust::Box<::ModernQuic::QuicEndpoint> quic_server_start(bool raw_quic, bool webtransport, ::rust::Slice<::std::uint8_t const> certificate_file, ::rust::Slice<::std::uint8_t const> private_key_file, ::rust::Str identity_path);
+::rust::Box<::ModernQuic::QuicEndpoint> quic_server_start(bool raw_quic, bool webtransport, ::rust::Slice<::std::uint8_t const> certificate_file, ::rust::Slice<::std::uint8_t const> private_key_file, ::rust::Str identity_path, ::rust::Slice<::std::uint8_t const> cid_key);
 
 ::rust::Vec<::std::uint8_t> quic_server_identity_fingerprint(::ModernQuic::QuicEndpoint const &endpoint) noexcept;
 
 void quic_server_update_certificate(::ModernQuic::QuicEndpoint const &endpoint, ::rust::Slice<::std::uint8_t const> certificate_der, ::rust::Slice<::std::uint8_t const> private_key_der, ::rust::Slice<::std::uint8_t const> certificate_sha256);
+
+void quic_server_update_cid_key(::ModernQuic::QuicEndpoint const &endpoint, ::rust::Slice<::std::uint8_t const> cid_key);
 
 ::rust::Box<::ModernQuic::QuicEndpoint> quic_client_start(::rust::Str server_address, ::rust::Str server_name, ::ModernQuic::QuicPin pin, ::rust::Slice<::std::uint8_t const> fingerprints, bool sixup);
 

@@ -1,5 +1,6 @@
 //! Bounded Quinn transport for the native game wire session.
 
+mod cid;
 mod sans_io;
 mod webtransport;
 
@@ -135,6 +136,7 @@ pub mod ffi {
             certificate_file: &[u8],
             private_key_file: &[u8],
             identity_path: &str,
+            cid_key: &[u8],
         ) -> Result<Box<QuicEndpoint>>;
         fn quic_server_identity_fingerprint(endpoint: &QuicEndpoint) -> Vec<u8>;
         fn quic_server_update_certificate(
@@ -143,6 +145,7 @@ pub mod ffi {
             private_key_der: &[u8],
             certificate_sha256: &[u8],
         ) -> Result<()>;
+        fn quic_server_update_cid_key(endpoint: &QuicEndpoint, cid_key: &[u8]) -> Result<()>;
         fn quic_client_start(
             server_address: &str,
             server_name: &str,
@@ -388,6 +391,9 @@ impl ServerCertVerifier for PinnedServerVerifier {
 pub struct QuicEndpoint {
     inner: Mutex<sans_io::RawEndpoint>,
     certificate_resolver: Option<Arc<RotatingServerCert>>,
+    /// Kept so a rotated key can reach the generator without tearing the endpoint
+    /// down. `None` when no filter key was configured.
+    cid: Option<cid::CidSource>,
 }
 
 #[derive(Debug)]
@@ -707,6 +713,7 @@ pub fn quic_server_start(
     certificate_file: &[u8],
     private_key_file: &[u8],
     identity_path: &str,
+    cid_key: &[u8],
 ) -> Result<Box<QuicEndpoint>, String> {
     if !raw_quic && !webtransport {
         return Err("at least one modern transport must be enabled".into());
@@ -735,16 +742,28 @@ pub fn quic_server_start(
         certificate_file.to_vec(),
         private_key_file.to_vec(),
     )?;
+    let cid = cid::CidSource::from_material(cid_key, random_cid_key()?)?;
     Ok(Box::new(QuicEndpoint {
         inner: Mutex::new(sans_io::RawEndpoint::server(
-            random_cid_key()?,
+            cid.clone(),
             config,
             identity_proof,
             raw_quic,
             webtransport,
         )),
         certificate_resolver: Some(certificate_resolver),
+        cid: matches!(cid, cid::CidSource::Shared(_)).then_some(cid),
     }))
+}
+
+/// Adopts a rotated connection ID key. Ids already handed out stay recognised, so a
+/// rotation does not disturb the connections that are running under the old one.
+pub fn quic_server_update_cid_key(endpoint: &QuicEndpoint, cid_key: &[u8]) -> Result<(), String> {
+    endpoint
+        .cid
+        .as_ref()
+        .ok_or("this endpoint does not use a shared connection ID key")?
+        .update(cid_key)
 }
 
 /// Returns the fingerprint of the identity key of a server serving raw QUIC.
@@ -991,7 +1010,7 @@ pub fn quic_client_start(
     let server_address = parse_address(server_address)?;
     let (config, verification) = client_config(ServerCertificatePin::new(pin, fingerprints)?)?;
     let endpoint = sans_io::RawEndpoint::client(
-        random_cid_key()?,
+        cid::CidSource::from_material(&[], random_cid_key()?)?,
         config,
         verification,
         server_address,
@@ -1001,6 +1020,7 @@ pub fn quic_client_start(
     Ok(Box::new(QuicEndpoint {
         inner: Mutex::new(endpoint),
         certificate_resolver: None,
+        cid: None,
     }))
 }
 
@@ -1213,6 +1233,7 @@ mod tests {
             &identity.certificate_der,
             &identity.private_key_der,
             "",
+            &[],
         )
         .unwrap();
         assert!(quic_server_identity_fingerprint(&endpoint).is_empty());

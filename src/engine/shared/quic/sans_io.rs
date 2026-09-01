@@ -1,6 +1,7 @@
+use super::cid::{CidSource, CidValidator, CID_LEN};
 use quinn_proto::{
-    ClientConfig, Connection, ConnectionHandle, ConnectionId, ConnectionIdGenerator, DatagramEvent,
-    Dir, Endpoint, Event, HashedConnectionIdGenerator, ServerConfig, StreamEvent, StreamId, VarInt,
+    ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, Endpoint, Event, ServerConfig,
+    StreamEvent, StreamId, VarInt,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
@@ -40,11 +41,11 @@ pub(super) struct EndpointDriver {
 }
 
 impl EndpointDriver {
-    pub fn new(cid_key: u64, server_config: Option<ServerConfig>) -> Self {
+    pub fn new(cid: CidSource, server_config: Option<ServerConfig>) -> Self {
         let mut endpoint_config = quinn_proto::EndpointConfig::default();
         endpoint_config
             .grease_quic_bit(false)
-            .cid_generator(move || Box::new(HashedConnectionIdGenerator::from_key(cid_key)));
+            .cid_generator(move || cid.generator());
         Self {
             endpoint: Endpoint::new(
                 Arc::new(endpoint_config),
@@ -460,14 +461,14 @@ pub(super) struct RawEndpoint {
     map_events: VecDeque<super::ffi::QuicEvent>,
     maps: HashMap<u32, Arc<super::MapTransfer>>,
     known_legacy_peers: HashSet<SocketAddr>,
-    cid_validator: HashedConnectionIdGenerator,
+    cid_validator: CidValidator,
     next_session_id: u64,
 }
 
 impl RawEndpoint {
-    fn new(cid_key: u64, server_config: Option<ServerConfig>, mode: Mode) -> Self {
+    fn new(cid: CidSource, server_config: Option<ServerConfig>, mode: Mode) -> Self {
         Self {
-            driver: EndpointDriver::new(cid_key, server_config),
+            driver: EndpointDriver::new(cid.clone(), server_config),
             mode,
             sessions: HashMap::new(),
             handles: HashMap::new(),
@@ -475,20 +476,20 @@ impl RawEndpoint {
             map_events: VecDeque::new(),
             maps: HashMap::new(),
             known_legacy_peers: HashSet::new(),
-            cid_validator: HashedConnectionIdGenerator::from_key(cid_key),
+            cid_validator: cid.validator(),
             next_session_id: 1,
         }
     }
 
     pub fn server(
-        cid_key: u64,
+        cid: CidSource,
         config: ServerConfig,
         identity: Option<super::ServerIdentityProof>,
         raw_quic: bool,
         webtransport: bool,
     ) -> Self {
         Self::new(
-            cid_key,
+            cid,
             Some(config),
             Mode::Server {
                 identity,
@@ -499,7 +500,7 @@ impl RawEndpoint {
     }
 
     pub fn client(
-        cid_key: u64,
+        cid: CidSource,
         config: ClientConfig,
         verification: Option<super::ClientIdentityVerification>,
         remote: SocketAddr,
@@ -507,7 +508,7 @@ impl RawEndpoint {
         sixup: bool,
     ) -> Result<Self, String> {
         let mut endpoint = Self::new(
-            cid_key,
+            cid,
             None,
             Mode::Client {
                 config,
@@ -527,12 +528,12 @@ impl RawEndpoint {
     }
 
     pub fn feed(&mut self, remote: SocketAddr, payload: &[u8]) -> bool {
-        use crate::udp_port_mux_classifier::{classify, DatagramRoute, QUIC_CID_LEN};
+        use crate::udp_port_mux_classifier::{classify, DatagramRoute};
         match classify(
             payload,
             || self.known_legacy_peers.contains(&remote),
-            QUIC_CID_LEN,
-            |cid| self.cid_validator.validate(&ConnectionId::new(cid)).is_ok(),
+            CID_LEN,
+            |cid| self.cid_validator.validate(cid),
         ) {
             DatagramRoute::Connectionless | DatagramRoute::Legacy => false,
             DatagramRoute::Drop => true,
@@ -2122,7 +2123,7 @@ mod tests {
         let clients = (0..count)
             .map(|index| {
                 RawEndpoint::client(
-                    100 + index as u64,
+                    CidSource::Random(100 + index as u64),
                     client_config.clone(),
                     verification.clone(),
                     address(40_000),
@@ -2133,7 +2134,7 @@ mod tests {
             })
             .collect();
         let mut network = Network {
-            server: RawEndpoint::server(10, server_config, None, true, true),
+            server: RawEndpoint::server(CidSource::Random(10), server_config, None, true, true),
             server_address: address(40_000),
             clients,
             ports: (0..count).map(|index| CLIENT_PORT + index as u16).collect(),
@@ -2365,9 +2366,9 @@ mod tests {
         let (server_config, client_config, _) = certificate();
         let server_address = address(30_001);
         let now = Instant::now();
-        let mut server = EndpointDriver::new(2, Some(server_config));
+        let mut server = EndpointDriver::new(CidSource::Random(2), Some(server_config));
         let mut connect_from = |address: SocketAddr| {
-            let mut client = EndpointDriver::new(1, None);
+            let mut client = EndpointDriver::new(CidSource::Random(1), None);
             client
                 .connect(now, client_config.clone(), server_address, "localhost")
                 .unwrap();

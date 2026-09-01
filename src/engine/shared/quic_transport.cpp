@@ -152,7 +152,7 @@ bool CQuicTransport::IsWebTransportClientAvailable()
 	return false;
 }
 
-bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath)
+bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath, const unsigned char *pCidKey, int CidKeySize)
 {
 	Shutdown();
 	if((pCertificatePath[0] == '\0') != (pPrivateKeyPath[0] == '\0'))
@@ -182,7 +182,7 @@ bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const char *pC
 		m_CertificateSha256 = LeafCertificateSha256(Slice(vCertificate));
 		if(!vNextCertificate.empty())
 			m_NextCertificateSha256 = LeafCertificateSha256(Slice(vNextCertificate));
-		auto Endpoint = ModernQuic::quic_server_start(RawQuic, WebTransport, Slice(vCertificate), Slice(vPrivateKey), pIdentityPath);
+		auto Endpoint = ModernQuic::quic_server_start(RawQuic, WebTransport, Slice(vCertificate), Slice(vPrivateKey), pIdentityPath, {pCidKey, (size_t)CidKeySize});
 		if(RawQuic)
 		{
 			const rust::Vec<uint8_t> Fingerprint = ModernQuic::quic_server_identity_fingerprint(*Endpoint);
@@ -205,6 +205,22 @@ bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const char *pC
 	catch(const std::exception &Error)
 	{
 		str_copy(m_aError, Error.what());
+		return false;
+	}
+}
+
+bool CQuicTransport::UpdateCidKey(const unsigned char *pCidKey, int CidKeySize)
+{
+	if(!m_pImpl || CidKeySize == 0)
+		return false;
+	try
+	{
+		ModernQuic::quic_server_update_cid_key(*m_pImpl->m_Endpoint, {pCidKey, (size_t)CidKeySize});
+		return true;
+	}
+	catch(const std::exception &Exception)
+	{
+		str_copy(m_aError, Exception.what());
 		return false;
 	}
 }
@@ -402,7 +418,13 @@ CQuicTransport::~CQuicTransport() = default;
 bool CQuicTransport::IsCompiled() { return false; }
 bool CQuicTransport::IsWebTransportClientAvailable() { return false; }
 
-bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath)
+bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath, const unsigned char *pCidKey, int CidKeySize)
+{
+	str_copy(m_aError, "QUIC support is not compiled in");
+	return false;
+}
+
+bool CQuicTransport::UpdateCidKey(const unsigned char *pCidKey, int CidKeySize)
 {
 	str_copy(m_aError, "QUIC support is not compiled in");
 	return false;

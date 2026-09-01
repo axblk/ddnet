@@ -714,7 +714,13 @@ bool CQuicTransport::IsWebTransportClientAvailable()
 	return BrowserWebTransportAvailable() != 0;
 }
 
-bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath)
+bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath, const unsigned char *pCidKey, int CidKeySize)
+{
+	str_copy(m_aError, "a browser cannot serve QUIC");
+	return false;
+}
+
+bool CQuicTransport::UpdateCidKey(const unsigned char *pCidKey, int CidKeySize)
 {
 	str_copy(m_aError, "a browser cannot serve QUIC");
 	return false;

@@ -1148,11 +1148,13 @@ extern "C" {
 
 ::rust::repr::PtrLen ModernQuic$cxxbridge1$195$quic_leaf_certificate_der(::rust::Slice<::std::uint8_t const> certificate_file, ::rust::Vec<::std::uint8_t> *return$) noexcept;
 
-::rust::repr::PtrLen ModernQuic$cxxbridge1$195$quic_server_start(bool raw_quic, bool webtransport, ::rust::Slice<::std::uint8_t const> certificate_file, ::rust::Slice<::std::uint8_t const> private_key_file, ::rust::Str identity_path, ::rust::Box<::ModernQuic::QuicEndpoint> *return$) noexcept;
+::rust::repr::PtrLen ModernQuic$cxxbridge1$195$quic_server_start(bool raw_quic, bool webtransport, ::rust::Slice<::std::uint8_t const> certificate_file, ::rust::Slice<::std::uint8_t const> private_key_file, ::rust::Str identity_path, ::rust::Slice<::std::uint8_t const> cid_key, ::rust::Box<::ModernQuic::QuicEndpoint> *return$) noexcept;
 
 void ModernQuic$cxxbridge1$195$quic_server_identity_fingerprint(::ModernQuic::QuicEndpoint const &endpoint, ::rust::Vec<::std::uint8_t> *return$) noexcept;
 
 ::rust::repr::PtrLen ModernQuic$cxxbridge1$195$quic_server_update_certificate(::ModernQuic::QuicEndpoint const &endpoint, ::rust::Slice<::std::uint8_t const> certificate_der, ::rust::Slice<::std::uint8_t const> private_key_der, ::rust::Slice<::std::uint8_t const> certificate_sha256) noexcept;
+
+::rust::repr::PtrLen ModernQuic$cxxbridge1$195$quic_server_update_cid_key(::ModernQuic::QuicEndpoint const &endpoint, ::rust::Slice<::std::uint8_t const> cid_key) noexcept;
 
 ::rust::repr::PtrLen ModernQuic$cxxbridge1$195$quic_client_start(::rust::Str server_address, ::rust::Str server_name, ::ModernQuic::QuicPin pin, ::rust::Slice<::std::uint8_t const> fingerprints, bool sixup, ::rust::Box<::ModernQuic::QuicEndpoint> *return$) noexcept;
 
@@ -1222,9 +1224,9 @@ void ModernQuic$cxxbridge1$195$quic_shutdown(::ModernQuic::QuicEndpoint const &e
   return ::std::move(return$.value);
 }
 
-::rust::Box<::ModernQuic::QuicEndpoint> quic_server_start(bool raw_quic, bool webtransport, ::rust::Slice<::std::uint8_t const> certificate_file, ::rust::Slice<::std::uint8_t const> private_key_file, ::rust::Str identity_path) {
+::rust::Box<::ModernQuic::QuicEndpoint> quic_server_start(bool raw_quic, bool webtransport, ::rust::Slice<::std::uint8_t const> certificate_file, ::rust::Slice<::std::uint8_t const> private_key_file, ::rust::Str identity_path, ::rust::Slice<::std::uint8_t const> cid_key) {
   ::rust::MaybeUninit<::rust::Box<::ModernQuic::QuicEndpoint>> return$;
-  ::rust::repr::PtrLen error$ = ModernQuic$cxxbridge1$195$quic_server_start(raw_quic, webtransport, certificate_file, private_key_file, identity_path, &return$.value);
+  ::rust::repr::PtrLen error$ = ModernQuic$cxxbridge1$195$quic_server_start(raw_quic, webtransport, certificate_file, private_key_file, identity_path, cid_key, &return$.value);
   if (error$.ptr) {
     throw ::rust::impl<::rust::Error>::error(error$);
   }
@@ -1239,6 +1241,13 @@ void ModernQuic$cxxbridge1$195$quic_shutdown(::ModernQuic::QuicEndpoint const &e
 
 void quic_server_update_certificate(::ModernQuic::QuicEndpoint const &endpoint, ::rust::Slice<::std::uint8_t const> certificate_der, ::rust::Slice<::std::uint8_t const> private_key_der, ::rust::Slice<::std::uint8_t const> certificate_sha256) {
   ::rust::repr::PtrLen error$ = ModernQuic$cxxbridge1$195$quic_server_update_certificate(endpoint, certificate_der, private_key_der, certificate_sha256);
+  if (error$.ptr) {
+    throw ::rust::impl<::rust::Error>::error(error$);
+  }
+}
+
+void quic_server_update_cid_key(::ModernQuic::QuicEndpoint const &endpoint, ::rust::Slice<::std::uint8_t const> cid_key) {
+  ::rust::repr::PtrLen error$ = ModernQuic$cxxbridge1$195$quic_server_update_cid_key(endpoint, cid_key);
   if (error$.ptr) {
     throw ::rust::impl<::rust::Error>::error(error$);
   }

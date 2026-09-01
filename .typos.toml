@@ -1,5 +1,7 @@
 [files]
 extend-exclude = [
+	# Working notes on the XDP filter, written in German
+	"EBPF_REPORT.md",
 	"build-*/",
 	"build/",
 	"data/countryflags",

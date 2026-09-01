@@ -135,7 +135,7 @@ int CNetConnection::Flush()
 
 	// send of the packets
 	m_Construct.m_Ack = m_Ack;
-	CNetBase::SendPacket(m_Endpoint, &m_PeerAddr, &m_Construct, m_SecurityToken, m_Sixup);
+	CNetBase::SendPacket(m_Endpoint, &m_PeerAddr, &m_Construct, m_SecurityToken, m_Sixup, m_Compress);
 
 	// update send times
 	m_LastSendTime = time_get();

@@ -344,6 +344,12 @@ public:
 	bool m_TimeoutSituation;
 
 	void SetToken7(TOKEN Token);
+	/**
+	 * Stops compressing outgoing packets, which keeps the 0.6 security token
+	 * readable on the wire. Only a client sets this: the server sends snapshots,
+	 * which compress far too well to give that up.
+	 */
+	void SetCompression(bool Enabled) { m_Compress = Enabled; }
 
 	void Reset();
 	void Init(NETSOCKET Socket, bool BlockCloseMsg);
@@ -392,6 +398,7 @@ public:
 	void SetSequence(int Sequence) { m_Sequence = Sequence; }
 
 	bool m_Sixup;
+	bool m_Compress = true;
 	SECURITY_TOKEN m_Token;
 };
 
@@ -762,8 +769,14 @@ public:
 	static void SendPacketConnless(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, const void *pData, int DataSize, bool Extended, unsigned char aExtra[NET_CONNLESS_EXTRA_SIZE]);
 	static void SendPacketConnlessWithToken7(NETSOCKET Socket, NETADDR *pAddr, const void *pData, int DataSize, SECURITY_TOKEN Token, SECURITY_TOKEN ResponseToken);
 	static void SendPacketConnlessWithToken7(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, const void *pData, int DataSize, SECURITY_TOKEN Token, SECURITY_TOKEN ResponseToken);
-	static void SendPacket(NETSOCKET Socket, NETADDR *pAddr, CNetPacketConstruct *pPacket, SECURITY_TOKEN SecurityToken, bool Sixup = false);
-	static void SendPacket(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, CNetPacketConstruct *pPacket, SECURITY_TOKEN SecurityToken, bool Sixup = false);
+	/**
+	 * `Compress` off leaves the payload as it is. In 0.6 the security token is part
+	 * of that payload, so a compressed packet hides it from anything that looks at
+	 * the wire, including a filter in front of the server. Sending uncompressed puts
+	 * it back in the clear at the cost of some bandwidth.
+	 */
+	static void SendPacket(NETSOCKET Socket, NETADDR *pAddr, CNetPacketConstruct *pPacket, SECURITY_TOKEN SecurityToken, bool Sixup = false, bool Compress = true);
+	static void SendPacket(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, CNetPacketConstruct *pPacket, SECURITY_TOKEN SecurityToken, bool Sixup = false, bool Compress = true);
 
 	static std::optional<int> UnpackPacketFlags(unsigned char *pBuffer, int Size);
 	// `AllowDecompression` false rejects compressed packets instead of decompressing them,

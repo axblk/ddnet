@@ -129,6 +129,7 @@ enum
 	DDNET_XDP_CLASS_LEGACY,
 	DDNET_XDP_CLASS_CONNLESS,
 	DDNET_XDP_CLASS_MALFORMED,
+	DDNET_XDP_CLASS_HANDSHAKE,
 	DDNET_XDP_NUM_CLASSES,
 };
 
@@ -158,6 +159,7 @@ static const char *const DDNET_XDP_CLASS_NAMES[DDNET_XDP_NUM_CLASSES] = {
 	"0.6 unverified",
 	"connless 0.6",
 	"malformed",
+	"handshake answered",
 };
 
 static const char *const DDNET_XDP_VERDICT_NAMES[DDNET_XDP_NUM_VERDICTS] = {

@@ -323,6 +323,11 @@ static void build_cases(void)
 	static const uint8_t s_aChallenge[20] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 'c', 'h', 'a', 'l'};
 	static const uint8_t s_aServerInfo[20] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 'g', 'i', 'e', '3'};
 	static const uint8_t s_aLegacy[16] = {0x10, 0, 1};
+	// Uncompressed 0.6, the security token in the clear at the end of the payload.
+	static uint8_t s_aLegacyVerified[16] = {0x10, 0, 1};
+	// The same shape, but with the compression flag set, so the trailing bytes are
+	// coded data and mean nothing.
+	static uint8_t s_aLegacyCompressed[16] = {0x90, 0, 1};
 	static const uint8_t s_aResend[16] = {0x40, 0, 0};
 	static const uint8_t s_aGarbage[16] = {0x02, 0, 0, 0};
 	uint8_t aSixup[16] = {0x04, 0, 1};
@@ -398,7 +403,20 @@ static void build_cases(void)
 	build(add_case("0.6 server info", true, XDP_PASS, DDNET_XDP_CLASS_CONNLESS, DDNET_XDP_VERDICT_PASS),
 		false, STRANGER_V4, 40000, TEST_PORT, s_aServerInfo, sizeof(s_aServerInfo), false);
 
-	// 0.6 cannot be verified, only bounded.
+	// A 0.6 client that does not compress leaves its token readable, which makes this
+	// class exactly as trustworthy as 0.7.
+	write_be32(&s_aLegacyVerified[sizeof(s_aLegacyVerified) - 4], token_for(false, CLIENT_V4, CLIENT_PORT));
+	build(add_case("0.6 uncompressed, right token", true, XDP_PASS, DDNET_XDP_CLASS_LEGACY_VERIFIED, DDNET_XDP_VERDICT_PASS),
+		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aLegacyVerified, sizeof(s_aLegacyVerified), false);
+
+	// The same bytes with the compression flag set must not be trusted: what is at the
+	// end of a compressed payload is coded data, not a token.
+	memcpy(s_aLegacyCompressed, s_aLegacyVerified, sizeof(s_aLegacyCompressed));
+	s_aLegacyCompressed[0] = 0x90;
+	build(add_case("0.6 compressed, token is not readable", true, XDP_PASS, DDNET_XDP_CLASS_LEGACY, DDNET_XDP_VERDICT_PASS),
+		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aLegacyCompressed, sizeof(s_aLegacyCompressed), false);
+
+	// 0.6 that compresses and never proved itself can only be bounded.
 	build(add_case("0.6 data, cannot be verified", true, XDP_PASS, DDNET_XDP_CLASS_LEGACY, DDNET_XDP_VERDICT_PASS),
 		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aLegacy, sizeof(s_aLegacy), false);
 	// A resend sets the bit that also marks a QUIC short header. Without a connection
@@ -428,6 +446,24 @@ static void build_cases(void)
 	// Nothing this server speaks is ever fragmented.
 	build(add_case("ipv4 fragment", true, XDP_DROP, -1, 0),
 		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aLegacy, sizeof(s_aLegacy), true);
+}
+
+// Runs only with the connection table switched on. The first packet is the handshake
+// that teaches the filter about this 4-tuple, the second is the compressed traffic
+// that the filter can only place because of it.
+static void build_tracking_cases(void)
+{
+	static uint8_t s_aVerified[16] = {0x10, 0, 1};
+	static uint8_t s_aCompressed[16] = {0x90, 0, 1};
+
+	write_be32(&s_aVerified[sizeof(s_aVerified) - 4], token_for(false, CLIENT_V4, CLIENT_PORT + 5));
+	build(add_case("0.6 handshake teaches the connection", true, XDP_PASS, DDNET_XDP_CLASS_LEGACY_VERIFIED, DDNET_XDP_VERDICT_PASS),
+		false, CLIENT_V4, CLIENT_PORT + 5, TEST_PORT, s_aVerified, sizeof(s_aVerified), false);
+	build(add_case("0.6 compressed, now recognised", true, XDP_PASS, DDNET_XDP_CLASS_LEGACY_TRACKED, DDNET_XDP_VERDICT_PASS),
+		false, CLIENT_V4, CLIENT_PORT + 5, TEST_PORT, s_aCompressed, sizeof(s_aCompressed), false);
+	// A different source port is a different connection and was never taught.
+	build(add_case("0.6 compressed from elsewhere", true, XDP_PASS, DDNET_XDP_CLASS_LEGACY, DDNET_XDP_VERDICT_PASS),
+		false, CLIENT_V4, CLIENT_PORT + 6, TEST_PORT, s_aCompressed, sizeof(s_aCompressed), false);
 }
 
 // Passes everything libbpf has to say through, including the verifier log, which is
@@ -514,6 +550,26 @@ int main(int argc, char **argv)
 	printf("running %d cases against the loaded program\n", s_NumCases);
 	for(int Index = 0; Index < s_NumCases; Index++)
 		run(ProgramFd, PortMap, StatsMap, NumCpus, &s_aCases[Index]);
+
+	// The connection table, if it was switched on: a packet that proved itself makes
+	// the filter remember the 4-tuple, and a compressed one from the same place is
+	// then recognised instead of falling into the shared budget.
+	{
+		struct ddnet_xdp_config Tracked;
+		memset(&Tracked, 0, sizeof(Tracked));
+		Tracked.m_PrefixV4 = 24;
+		Tracked.m_PrefixV6 = 56;
+		Tracked.m_ConnNsPerToken = 1000000;
+		Tracked.m_ConnBurst = 64;
+		Tracked.m_ConnIdleNs = 60000000000ULL;
+		bpf_map_update_elem(ConfigMap, &Zero, &Tracked, BPF_ANY);
+
+		s_NumCases = 0;
+		build_tracking_cases();
+		printf("\nwith the connection table on\n");
+		for(int Index = 0; Index < s_NumCases; Index++)
+			run(ProgramFd, PortMap, StatsMap, NumCpus, &s_aCases[Index]);
+	}
 
 	printf("\n%d of %d passed\n", s_Checks - s_Failures, s_Checks);
 	bpf_object__close(pObject);

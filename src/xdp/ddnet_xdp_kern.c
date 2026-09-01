@@ -96,13 +96,35 @@ struct
 	__type(value, struct ddnet_xdp_bucket);
 } ddnet_budgets SEC(".maps");
 
+/* Established 0.6 connections, learned by the filter itself. A packet whose token
+ * checks out proves that its source received what the server sent back, so the entry
+ * cannot be created off path. It is soft state: losing one only drops that connection
+ * back to the shared budget, so an LRU that forgets under pressure is fine. */
+struct
+{
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, struct ddnet_xdp_conn_key);
+	__type(value, struct ddnet_xdp_bucket);
+} ddnet_conns SEC(".maps");
+
 struct ddnet_source
 {
 	__u8 m_Family;
 	__u8 m_aAddress[16];
 	__u16 m_Port;
+	__u16 m_DestinationPort;
 	__u32 m_PrefixHash;
 };
+
+static __always_inline void conn_key(const struct ddnet_source *pSource, struct ddnet_xdp_conn_key *pKey)
+{
+	__builtin_memset(pKey, 0, sizeof(*pKey));
+	pKey->m_Family = pSource->m_Family;
+	pKey->m_SourcePort = pSource->m_Port;
+	pKey->m_DestinationPort = pSource->m_DestinationPort;
+	__builtin_memcpy(pKey->m_aAddress, pSource->m_aAddress, sizeof(pKey->m_aAddress));
+}
 
 static __always_inline void count(__u32 Port, __u32 Class, __u32 Verdict)
 {
@@ -311,6 +333,7 @@ struct ddnet_decision
 	__u8 m_Pass;
 	__s8 m_Budget; /* one of DDNET_XDP_BUDGET_*, or -1 for none */
 	__u8 m_Verified; /* carried a token or connection ID this host issued */
+	__u8 m_Track; /* 1 remember this connection, 2 look it up */
 };
 
 static __always_inline int master_allowed(const struct ddnet_source *pSource)
@@ -351,8 +374,12 @@ static __always_inline __u32 prefix_hash(const struct ddnet_source *pSource, con
  * Inlined, every way out of the classifier is a state of its own, each carrying its
  * own constants, and the verifier follows all of them through everything that comes
  * after: the budgets, the counters. Called, the frame goes away at the return and
- * they are one state again. */
-__attribute__((noinline)) static void classify(const __u8 *pData, __u32 Size, const struct ddnet_source *pSource, struct ddnet_decision *pOut)
+ * they are one state again.
+ *
+ * `Trailer` is the last four payload bytes, read by the caller because they are not
+ * inside the window the rest of the classification works on. */
+__attribute__((noinline)) static void classify(const __u8 *pData, __u32 Size, __u32 Trailer,
+	const struct ddnet_source *pSource, struct ddnet_decision *pOut)
 {
 	struct ddnet_tokens Tokens = {};
 
@@ -439,13 +466,16 @@ __attribute__((noinline)) static void classify(const __u8 *pData, __u32 Size, co
 	if(is_legacy_packet(pData, Size))
 	{
 		const __u8 RawFlags = pData[0] >> 2;
+
+		/* Both protocols below ask after the token, and the answer is the same for
+		 * either: it is this packet's address every time. */
+		derive_tokens(pSource, &Tokens);
 		if(RawFlags & LEGACY_FLAG_UNUSED)
 		{
 			/* 0.7 carries its token at a fixed offset in every packet, outside the
 			 * compression, which is the whole reason this class can be trusted. */
 			if(Size >= SIXUP_PACKET_HEADER_SIZE)
 			{
-				derive_tokens(pSource, &Tokens);
 				pOut->m_Class = DDNET_XDP_CLASS_SIXUP;
 				pOut->m_Pass = token_is(&Tokens, read_be32(&pData[3]));
 				pOut->m_Verified = pOut->m_Pass;
@@ -455,11 +485,26 @@ __attribute__((noinline)) static void classify(const __u8 *pData, __u32 Size, co
 			pOut->m_Pass = 0;
 			return;
 		}
-		/* 0.6 keeps its token behind the huffman coding, so nothing here can tell a
-		 * real player from a spoof. Bounded rather than trusted. */
+		/* 0.6 appends its token to the payload and compresses the result, so it is
+		 * out of reach here whenever the sender chose to compress. When it did not,
+		 * and control packets never do, the token sits in the clear at the end and
+		 * this class is as trustworthy as 0.7. */
+		if((RawFlags & LEGACY_FLAG_COMPRESSION) == 0 &&
+			Size >= LEGACY_PACKET_HEADER_SIZE + sizeof(__u32) &&
+			token_is(&Tokens, Trailer))
+		{
+			pOut->m_Class = DDNET_XDP_CLASS_LEGACY_VERIFIED;
+			pOut->m_Pass = 1;
+			pOut->m_Verified = 1;
+			/* The handshake is never compressed, so this is where a connection whose
+			 * data packets are compressed gets remembered. */
+			pOut->m_Track = 1;
+			return;
+		}
 		pOut->m_Class = DDNET_XDP_CLASS_LEGACY;
 		pOut->m_Pass = 1;
 		pOut->m_Budget = DDNET_XDP_BUDGET_LEGACY;
+		pOut->m_Track = 2;
 		return;
 	}
 
@@ -595,6 +640,7 @@ int ddnet_xdp_filter(struct xdp_md *pCtx)
 			return XDP_PASS;
 		DestinationPort = bpf_ntohs(pUdp->dest);
 		Source.m_Port = bpf_ntohs(pUdp->source);
+		Source.m_DestinationPort = DestinationPort;
 		pPayload = (__u8 *)(pUdp + 1);
 		DatagramSize = bpf_ntohs(pUdp->len);
 	}
@@ -655,7 +701,49 @@ int ddnet_xdp_filter(struct xdp_md *pCtx)
 				break;
 			aHead[Index] = pPayload[Index];
 		}
-		classify(aHead, PayloadSize, &Source, &Decision);
+		__u32 Trailer = 0;
+		if(PayloadSize >= sizeof(Trailer))
+		{
+			/* The size came out of a pointer difference, and the verifier only keeps
+			 * track of its lower half; adding it to a packet pointer is rejected
+			 * because the upper half could be anything. Masking it says what the
+			 * check above already established, that it fits in eleven bits, and
+			 * changes no value because the payload is at most 1400 bytes. */
+			const __u32 Offset = (PayloadSize - (__u32)sizeof(Trailer)) & 0x7ff;
+			if((void *)(pPayload + Offset + sizeof(Trailer)) <= pDataEnd)
+				Trailer = read_be32(pPayload + Offset);
+		}
+		classify(aHead, PayloadSize, Trailer, &Source, &Decision);
+	}
+
+	if(Decision.m_Track != 0 && pConfig->m_ConnNsPerToken != 0)
+	{
+		struct ddnet_xdp_conn_key Key;
+		conn_key(&Source, &Key);
+		struct ddnet_xdp_bucket *pConn = bpf_map_lookup_elem(&ddnet_conns, &Key);
+		const __u64 Now = bpf_ktime_get_ns();
+		if(Decision.m_Track == 1)
+		{
+			/* Refreshed rather than replaced, so a connection that keeps proving
+			 * itself does not have its budget handed back on every packet. */
+			if(pConn)
+			{
+				pConn->m_LastNs = Now;
+			}
+			else
+			{
+				struct ddnet_xdp_bucket New = {Now, pConfig->m_ConnBurst};
+				bpf_map_update_elem(&ddnet_conns, &Key, &New, BPF_ANY);
+			}
+		}
+		/* An LRU entry can outlive the connection it was made for, and whoever holds
+		 * that 4-tuple next must not inherit it. */
+		else if(pConn && Now - pConn->m_LastNs <= pConfig->m_ConnIdleNs)
+		{
+			Decision.m_Class = DDNET_XDP_CLASS_LEGACY_TRACKED;
+			Decision.m_Budget = 0;
+			Decision.m_Pass = take_token(pConn, Now, pConfig->m_ConnNsPerToken, pConfig->m_ConnBurst);
+		}
 	}
 
 	if(Decision.m_Pass && Decision.m_Budget >= 0)

@@ -39,6 +39,12 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
  * maximum length connection IDs puts the token length field at offset 47. */
 #define DDNET_XDP_HEAD_SIZE 48
 
+/* The two handshake openers, the packets with which a client asks for a token.
+ * They are the only ones of their protocol that carry none yet. */
+#define SIXUP_CTRL_TOKEN 5
+#define SIXUP_TOKEN_REQUEST_SIZE (SIXUP_PACKET_HEADER_SIZE + 512)
+#define LEGACY_CTRL_CONNECT 1
+
 struct
 {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -369,6 +375,23 @@ static __always_inline __u32 prefix_hash(const struct ddnet_source *pSource, con
 	}
 }
 
+static __always_inline int is_sixup_token_request(const __u8 *pData, __u32 Size)
+{
+	return Size >= SIXUP_TOKEN_REQUEST_SIZE &&
+	       pData[0] == ((SIXUP_FLAG_CONTROL) << 2) &&
+	       pData[2] == 0 &&
+	       pData[SIXUP_PACKET_HEADER_SIZE] == SIXUP_CTRL_TOKEN;
+}
+
+static __always_inline int is_legacy_connect(const __u8 *pData, __u32 Size)
+{
+	return Size >= LEGACY_PACKET_HEADER_SIZE + 1 + 4 + 4 &&
+	       (pData[0] >> 2) == LEGACY_FLAG_CONTROL &&
+	       pData[2] == 0 &&
+	       pData[LEGACY_PACKET_HEADER_SIZE] == LEGACY_CTRL_CONNECT &&
+	       pData[4] == 'T' && pData[5] == 'K' && pData[6] == 'E' && pData[7] == 'N';
+}
+
 /* Called rather than inlined, and that is what keeps the program verifiable.
  *
  * Inlined, every way out of the classifier is a state of its own, each carrying its
@@ -463,44 +486,63 @@ __attribute__((noinline)) static void classify(const __u8 *pData, __u32 Size, __
 		return;
 	}
 
+	/* 0.7 keeps its token at a fixed offset in every packet, outside the compression.
+	 * Trying it settles the protocol far better than the flag bits do: 0.6 and 0.7
+	 * give the same bits different meanings, and with no table of established peers
+	 * there is nothing here to break the tie with. The token is the tie breaker. */
+	/* Both protocols below ask after the token, and the answer is the same for
+	 * either: it is this packet's address every time. */
+	derive_tokens(pSource, &Tokens);
+
+	if(Size >= SIXUP_PACKET_HEADER_SIZE && token_is(&Tokens, read_be32(&pData[3])))
+	{
+		pOut->m_Class = DDNET_XDP_CLASS_SIXUP;
+		pOut->m_Pass = 1;
+		pOut->m_Verified = 1;
+		return;
+	}
+
+	/* 0.6 appends its token to the payload and compresses the result, so it is out of
+	 * reach whenever the sender chose to compress. When it did not, and control
+	 * packets never do, the token sits in the clear at the end. */
+	if(((pData[0] >> 2) & LEGACY_FLAG_COMPRESSION) == 0 &&
+		Size >= LEGACY_PACKET_HEADER_SIZE + sizeof(__u32) &&
+		token_is(&Tokens, Trailer))
+	{
+		pOut->m_Class = DDNET_XDP_CLASS_LEGACY_VERIFIED;
+		pOut->m_Pass = 1;
+		pOut->m_Verified = 1;
+		/* The handshake is never compressed, so this is where a connection whose data
+		 * packets are compressed gets remembered. */
+		pOut->m_Track = 1;
+		return;
+	}
+
+	/* The two handshake openers carry no token yet, by definition: they are how a
+	 * client asks for one. They go to the server under a budget of their own, because
+	 * these are players trying to get in and must not lose to a flood of what cannot
+	 * be told apart. Recognised before the rule below, which would read the 0.7 one
+	 * as a forgery and lock every 0.7 client out. */
+	if(is_sixup_token_request(pData, Size) || is_legacy_connect(pData, Size))
+	{
+		pOut->m_Class = DDNET_XDP_CLASS_HANDSHAKE;
+		pOut->m_Pass = 1;
+		pOut->m_Budget = DDNET_XDP_BUDGET_HANDSHAKE;
+		return;
+	}
+
 	if(is_legacy_packet(pData, Size))
 	{
-		const __u8 RawFlags = pData[0] >> 2;
-
-		/* Both protocols below ask after the token, and the answer is the same for
-		 * either: it is this packet's address every time. */
-		derive_tokens(pSource, &Tokens);
-		if(RawFlags & LEGACY_FLAG_UNUSED)
+		if((pData[0] >> 2) & LEGACY_FLAG_UNUSED)
 		{
-			/* 0.7 carries its token at a fixed offset in every packet, outside the
-			 * compression, which is the whole reason this class can be trusted. */
-			if(Size >= SIXUP_PACKET_HEADER_SIZE)
-			{
-				pOut->m_Class = DDNET_XDP_CLASS_SIXUP;
-				pOut->m_Pass = token_is(&Tokens, read_be32(&pData[3]));
-				pOut->m_Verified = pOut->m_Pass;
-				return;
-			}
-			pOut->m_Class = DDNET_XDP_CLASS_MALFORMED;
+			/* This one says it is 0.7, and a 0.7 packet that is not the token request
+			 * always carries a token. The one it carries did not check out, so there
+			 * is nothing to weigh up. */
+			pOut->m_Class = DDNET_XDP_CLASS_SIXUP;
 			pOut->m_Pass = 0;
 			return;
 		}
-		/* 0.6 appends its token to the payload and compresses the result, so it is
-		 * out of reach here whenever the sender chose to compress. When it did not,
-		 * and control packets never do, the token sits in the clear at the end and
-		 * this class is as trustworthy as 0.7. */
-		if((RawFlags & LEGACY_FLAG_COMPRESSION) == 0 &&
-			Size >= LEGACY_PACKET_HEADER_SIZE + sizeof(__u32) &&
-			token_is(&Tokens, Trailer))
-		{
-			pOut->m_Class = DDNET_XDP_CLASS_LEGACY_VERIFIED;
-			pOut->m_Pass = 1;
-			pOut->m_Verified = 1;
-			/* The handshake is never compressed, so this is where a connection whose
-			 * data packets are compressed gets remembered. */
-			pOut->m_Track = 1;
-			return;
-		}
+		/* 0.6 that compresses and has not proved itself. Bounded, not trusted. */
 		pOut->m_Class = DDNET_XDP_CLASS_LEGACY;
 		pOut->m_Pass = 1;
 		pOut->m_Budget = DDNET_XDP_BUDGET_LEGACY;

@@ -484,7 +484,28 @@ bool CQuicTransport::IsWebTransportClientAvailable()
 #endif
 }
 
-bool CQuicTransport::StartServer(const char *pLocalAddress, bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath)
+bool CQuicTransport::UpdateCidKey(const unsigned char *pCidKey, int CidKeySize)
+{
+	if(!m_pImpl || CidKeySize == 0)
+		return false;
+#if defined(CONF_QUIC)
+	try
+	{
+		ModernQuic::quic_server_update_cid_key(*m_pImpl->m_Endpoint, {pCidKey, (size_t)CidKeySize});
+		return true;
+	}
+	catch(const std::exception &Exception)
+	{
+		str_copy(m_aError, Exception.what(), sizeof(m_aError));
+		return false;
+	}
+#else
+	str_copy(m_aError, "QUIC support is not compiled in");
+	return false;
+#endif
+}
+
+bool CQuicTransport::StartServer(const char *pLocalAddress, bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath, const unsigned char *pCidKey, int CidKeySize)
 {
 	Shutdown();
 	m_Metrics = {};
@@ -527,7 +548,8 @@ bool CQuicTransport::StartServer(const char *pLocalAddress, bool RawQuic, bool W
 	{
 		m_pImpl = std::make_unique<CImpl>(ModernQuic::quic_server_start_external(
 			pLocalAddress, RawQuic, WebTransport, Slice(vCertificate), Slice(vNextCertificate), Slice(vPrivateKey),
-			pIdentityPath, {Prepared.m_ServerIdentity.m_PublicKey.data(), RawQuic ? Prepared.m_ServerIdentity.m_PublicKey.size() : size_t{0}}));
+			pIdentityPath, {Prepared.m_ServerIdentity.m_PublicKey.data(), RawQuic ? Prepared.m_ServerIdentity.m_PublicKey.size() : size_t{0}},
+			{pCidKey, (size_t)CidKeySize}));
 		if(ManagedCertificateRotateAt != 0)
 		{
 			m_pImpl->m_ManagedIdentityPath = pIdentityPath;

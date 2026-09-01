@@ -42,6 +42,22 @@ const unsigned char g_aDummyMapData[] = {
 	0x60, 0x60, 0x60, 0x44, 0xC2, 0x00, 0x00, 0x38, 0x00, 0x05, 0x78, 0x9C,
 	0x63, 0x64, 0x60, 0x60, 0x60, 0x44, 0xC2, 0x00, 0x00, 0x38, 0x00, 0x05};
 
+namespace
+{
+	// The address the global token is derived over. A `NETADDR` left at zero has no
+	// family, and the derivation reads the family out of `type`: without this it
+	// hashes an IPv6 address over nineteen bytes, while the filter derives the same
+	// token over an IPv4 one over seven (`global_token_valid` in
+	// `src/xdp/ddnet_xdp_kern.c`). The two never agreed, so a client that answered
+	// with the global token was refused by the server that handed it out.
+	NETADDR GlobalTokenAddress()
+	{
+		NETADDR Addr = {};
+		Addr.type = NETTYPE_IPV4;
+		return Addr;
+	}
+} // namespace
+
 bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int MaxClientsPerIp, NETFUNC_UDP_FILTER pfnFilter, NETFUNC_UDP_PEER pfnPeer, void *pUser)
 {
 	// zero out the whole structure
@@ -80,8 +96,10 @@ bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int Ma
 	m_VConnFirst = 0;
 
 	secure_random_fill(m_aSecurityTokenSeed, sizeof(m_aSecurityTokenSeed));
-	static const NETADDR NULL_ADDR = {0};
-	m_GlobalToken = GetToken(NULL_ADDR);
+#if defined(CONF_EBPF)
+	m_EbpfKey.Load(g_Config.m_SvEbpfKey);
+#endif
+	m_GlobalToken = GetToken(GlobalTokenAddress());
 
 	for(auto &Slot : m_aSlots)
 		Slot.m_Connection.Init(m_Endpoint, true);
@@ -142,6 +160,18 @@ void CNetServer::Update()
 	m_NumRecvPackets = 0;
 
 	const int64_t Now = time_get();
+#if defined(CONF_EBPF)
+	// The filter service owns the key and rotates it. Two generations are valid at
+	// once there, so picking the new one up within a second is soon enough.
+	if(Now > m_LastEbpfKeyCheck + time_freq())
+	{
+		m_LastEbpfKeyCheck = Now;
+		if(m_EbpfKey.Reload(g_Config.m_SvEbpfKey))
+		{
+			m_GlobalToken = GetToken(GlobalTokenAddress());
+		}
+	}
+#endif
 	if(Now > m_BudgetStart + time_freq())
 	{
 		m_BudgetStart = Now;
@@ -182,6 +212,18 @@ SECURITY_TOKEN CNetServer::GetGlobalToken() const
 }
 SECURITY_TOKEN CNetServer::GetToken(const NETADDR &Addr)
 {
+	if(m_EbpfKey.IsLoaded())
+	{
+		// The filter has to arrive at the same number from the packet alone, so the
+		// derivation is the one it can compute: SipHash-2-4 over the address and the
+		// port. The token is opaque to a client, which is why this can change without
+		// touching the protocol.
+		SECURITY_TOKEN SecurityToken = (SECURITY_TOKEN)m_EbpfKey.Token(Addr);
+		if(SecurityToken == NET_SECURITY_TOKEN_UNKNOWN || SecurityToken == NET_SECURITY_TOKEN_UNSUPPORTED)
+			SecurityToken = 1;
+		return SecurityToken;
+	}
+
 	SHA256_CTX Sha256;
 	sha256_init(&Sha256);
 	sha256_update(&Sha256, (unsigned char *)m_aSecurityTokenSeed, sizeof(m_aSecurityTokenSeed));

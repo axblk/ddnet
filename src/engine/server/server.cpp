@@ -3539,12 +3539,34 @@ void CServer::PumpQuicNetwork()
 	ExpireQuicResumes();
 }
 
+void CServer::UpdateQuicCidKey()
+{
+	// The filter service owns the key and rotates it, and the connection IDs this
+	// server hands out are tagged with it. Without this the endpoint would keep
+	// stamping the epoch it was started with: after four rotations the filter has
+	// overwritten that one and every short header packet counts as unverified. It
+	// also covers the server that starts before the filter does, whose endpoint
+	// began with no key at all.
+	if(!m_QuicStarted && !m_WebTransportStarted)
+		return;
+	const CEbpfKey &Key = m_NetServer.EbpfKey();
+	if(!Key.IsLoaded() || Key.Generation() == m_QuicCidKeyGeneration)
+		return;
+	if(!m_QuicTransport.UpdateCidKey(Key.Material(), CEbpfKey::MATERIAL_SIZE))
+	{
+		log_error("server", "could not hand the rotated filter key to the modern transport: %s", m_QuicTransport.ErrorString());
+		return;
+	}
+	m_QuicCidKeyGeneration = Key.Generation();
+}
+
 void CServer::PumpNetwork()
 {
 	CNetChunk Packet;
 	SECURITY_TOKEN ResponseToken;
 
 	m_NetServer.Update();
+	UpdateQuicCidKey();
 	PumpQuicNetwork();
 
 	// Coalesce the flushes triggered while handling this burst of incoming
@@ -3969,11 +3991,15 @@ int CServer::Run()
 		char aIdentityPath[IO_MAX_PATH_LENGTH] = {};
 		if(Config()->m_SvQuicIdentityKey[0] != '\0')
 			Storage()->GetCompletePath(IStorage::TYPE_SAVE_OR_ABSOLUTE, Config()->m_SvQuicIdentityKey, aIdentityPath, sizeof(aIdentityPath));
-		if(!m_QuicTransport.StartServer(aModernAddress, QuicEnabled, WebTransportEnabled, pTlsCertificate, pNextTlsCertificate, pTlsPrivateKey, aIdentityPath))
+		// Connection IDs are tagged with the filter's key when there is one, so that
+		// the filter can recognise an established connection without keeping state.
+		if(!m_QuicTransport.StartServer(aModernAddress, QuicEnabled, WebTransportEnabled, pTlsCertificate, pNextTlsCertificate, pTlsPrivateKey, aIdentityPath,
+			   m_NetServer.EbpfKey().Material(), m_NetServer.EbpfKey().IsLoaded() ? (int)CEbpfKey::MATERIAL_SIZE : 0))
 		{
 			log_error("server", "could not start modern transport: %s", m_QuicTransport.ErrorString());
 			return false;
 		}
+		m_QuicCidKeyGeneration = m_NetServer.EbpfKey().Generation();
 		if(!UpdateQuicMaps())
 		{
 			log_error("server", "could not register the current map with QUIC");

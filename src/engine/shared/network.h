@@ -3,6 +3,7 @@
 #ifndef ENGINE_SHARED_NETWORK_H
 #define ENGINE_SHARED_NETWORK_H
 
+#include "ebpf_key.h"
 #include "ringbuffer.h"
 #include "stun.h"
 
@@ -501,6 +502,11 @@ class CNetServer
 	void *m_pUser;
 
 	unsigned char m_aSecurityTokenSeed[16];
+	// Only derives tokens once a key has been read, see CEbpfKey.
+	CEbpfKey m_EbpfKey;
+#if defined(CONF_EBPF)
+	int64_t m_LastEbpfKeyCheck = 0;
+#endif
 
 	// vanilla connect flood detection
 	int64_t m_VConnFirst;
@@ -564,6 +570,7 @@ public:
 	void Drop(int ClientId, const char *pReason);
 	void SetExternalSlot(int ClientId, const NETADDR *pAddress);
 	void SetLegacyConnections(bool Enabled) { m_LegacyConnections = Enabled; }
+	const CEbpfKey &EbpfKey() const { return m_EbpfKey; }
 
 	// status requests
 	const NETADDR *ClientAddr(int ClientId) const { return m_aSlots[ClientId].m_Connection.PeerAddress(); }

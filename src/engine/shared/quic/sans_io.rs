@@ -1,7 +1,8 @@
+use super::cid::{CidSource, CidValidator, CID_LEN};
 use bytes::{Bytes, BytesMut};
 use quinn_proto::{
-    ClientConfig, Connection, ConnectionHandle, ConnectionId, ConnectionIdGenerator, DatagramEvent,
-    Dir, Endpoint, Event, HashedConnectionIdGenerator, ServerConfig, StreamEvent, StreamId, VarInt,
+    ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, Endpoint, Event, ServerConfig,
+    StreamEvent, StreamId, VarInt,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
@@ -57,11 +58,11 @@ pub(super) struct EndpointDriver {
 }
 
 impl EndpointDriver {
-    pub fn new(cid_key: u64, server_config: Option<ServerConfig>) -> Self {
+    pub fn new(cid: CidSource, server_config: Option<ServerConfig>) -> Self {
         let mut endpoint_config = quinn_proto::EndpointConfig::default();
         endpoint_config
             .grease_quic_bit(false)
-            .cid_generator(move || Box::new(HashedConnectionIdGenerator::from_key(cid_key)));
+            .cid_generator(move || cid.generator());
         Self {
             endpoint: Endpoint::new(
                 Arc::new(endpoint_config),
@@ -517,7 +518,7 @@ pub(super) struct RawEndpoint {
     map_events: VecDeque<super::ffi::QuicEvent>,
     maps: HashMap<u32, Arc<super::MapTransfer>>,
     known_legacy_peers: HashSet<SocketAddr>,
-    cid_validator: HashedConnectionIdGenerator,
+    cid_validator: CidValidator,
     next_session_id: u64,
     drops: u64,
     session_ids: Vec<u64>,
@@ -532,14 +533,14 @@ pub(super) struct RawEndpoint {
 
 impl RawEndpoint {
     pub fn server(
-        cid_key: u64,
+        cid: CidSource,
         config: ServerConfig,
         identity: Option<super::ServerIdentityProof>,
         raw_quic: bool,
         webtransport: bool,
     ) -> Self {
         Self {
-            driver: EndpointDriver::new(cid_key, Some(config)),
+            driver: EndpointDriver::new(cid.clone(), Some(config)),
             mode: Mode::Server {
                 identity,
                 raw_quic,
@@ -551,7 +552,7 @@ impl RawEndpoint {
             map_events: VecDeque::new(),
             maps: HashMap::new(),
             known_legacy_peers: HashSet::new(),
-            cid_validator: HashedConnectionIdGenerator::from_key(cid_key),
+            cid_validator: cid.validator(),
             next_session_id: 1,
             drops: 0,
             session_ids: Vec::new(),
@@ -563,7 +564,7 @@ impl RawEndpoint {
     }
 
     pub fn client(
-        cid_key: u64,
+        cid: CidSource,
         config: ClientConfig,
         verification: Option<super::ClientIdentityVerification>,
         remote: SocketAddr,
@@ -571,7 +572,7 @@ impl RawEndpoint {
         sixup: bool,
     ) -> Result<Self, String> {
         let mut endpoint = Self {
-            driver: EndpointDriver::new(cid_key, None),
+            driver: EndpointDriver::new(cid.clone(), None),
             mode: Mode::Client {
                 config: config.clone(),
                 verification,
@@ -585,7 +586,7 @@ impl RawEndpoint {
             map_events: VecDeque::new(),
             maps: HashMap::new(),
             known_legacy_peers: HashSet::new(),
-            cid_validator: HashedConnectionIdGenerator::from_key(cid_key),
+            cid_validator: cid.validator(),
             next_session_id: 2,
             drops: 0,
             session_ids: Vec::new(),
@@ -606,12 +607,12 @@ impl RawEndpoint {
     }
 
     pub fn feed(&mut self, remote: SocketAddr, payload: &[u8]) -> bool {
-        use crate::udp_port_mux_classifier::{classify, DatagramRoute, QUIC_CID_LEN};
+        use crate::udp_port_mux_classifier::{classify, DatagramRoute};
         match classify(
             payload,
             || self.known_legacy_peers.contains(&remote),
-            QUIC_CID_LEN,
-            |cid| self.cid_validator.validate(&ConnectionId::new(cid)).is_ok(),
+            CID_LEN,
+            |cid| self.cid_validator.validate(cid),
         ) {
             DatagramRoute::Connectionless | DatagramRoute::Legacy => false,
             DatagramRoute::Drop => {
@@ -2236,8 +2237,8 @@ mod tests {
         let client_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30000).into();
         let server_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30001).into();
         let now = Instant::now();
-        let mut client = EndpointDriver::new(1, None);
-        let mut server = EndpointDriver::new(2, Some(server_config));
+        let mut client = EndpointDriver::new(CidSource::Random(1), None);
+        let mut server = EndpointDriver::new(CidSource::Random(2), Some(server_config));
         let client_handle = client
             .connect(now, client_config, server_address, "localhost")
             .unwrap();
@@ -2384,9 +2385,10 @@ mod tests {
             client_config(ServerCertificatePin::Der(identity.certificate_der)).unwrap();
         let client_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30000).into();
         let server_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30001).into();
-        let mut server = RawEndpoint::server(10, server_config, None, true, true);
+        let mut server =
+            RawEndpoint::server(CidSource::Random(10), server_config, None, true, true);
         let mut client = RawEndpoint::client(
-            11,
+            CidSource::Random(11),
             client_config,
             verification,
             server_address,
@@ -2552,9 +2554,10 @@ mod tests {
             client_config(ServerCertificatePin::Der(identity.certificate_der)).unwrap();
         let client_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30000).into();
         let server_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 30001).into();
-        let mut server = RawEndpoint::server(10, server_config, None, true, false);
+        let mut server =
+            RawEndpoint::server(CidSource::Random(10), server_config, None, true, false);
         let mut client = RawEndpoint::client(
-            11,
+            CidSource::Random(11),
             client_config,
             verification,
             server_address,
@@ -2619,11 +2622,12 @@ mod tests {
         let (client_config, verification) =
             client_config(ServerCertificatePin::Der(identity.certificate_der)).unwrap();
         let server_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40_000).into();
-        let mut server = RawEndpoint::server(10, server_config, None, true, false);
+        let mut server =
+            RawEndpoint::server(CidSource::Random(10), server_config, None, true, false);
         let mut clients: Vec<_> = (0..2)
             .map(|index| {
                 RawEndpoint::client(
-                    100 + index,
+                    CidSource::Random(100 + index),
                     client_config.clone(),
                     verification.clone(),
                     server_address,
@@ -2729,11 +2733,12 @@ mod tests {
         let (client_config, verification) =
             client_config(ServerCertificatePin::Der(identity.certificate_der)).unwrap();
         let server_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40_000).into();
-        let mut server = RawEndpoint::server(10, server_config, None, true, false);
+        let mut server =
+            RawEndpoint::server(CidSource::Random(10), server_config, None, true, false);
         let mut clients: Vec<_> = (0..CLIENTS)
             .map(|index| {
                 RawEndpoint::client(
-                    100 + index as u64,
+                    CidSource::Random(100 + index as u64),
                     client_config.clone(),
                     verification.clone(),
                     server_address,
@@ -2878,11 +2883,12 @@ mod tests {
         let (client_config, verification) =
             client_config(ServerCertificatePin::Der(identity.certificate_der)).unwrap();
         let server_address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40_000).into();
-        let mut server = RawEndpoint::server(10, server_config, None, true, false);
+        let mut server =
+            RawEndpoint::server(CidSource::Random(10), server_config, None, true, false);
         let mut clients: Vec<_> = (0..CLIENTS)
             .map(|index| {
                 RawEndpoint::client(
-                    100 + index as u64,
+                    CidSource::Random(100 + index as u64),
                     client_config.clone(),
                     verification.clone(),
                     server_address,

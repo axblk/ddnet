@@ -244,6 +244,11 @@ public:
 	CSnapIdPool m_IdPool;
 	CNetServer m_NetServer;
 	CQuicTransport m_QuicTransport;
+	/**
+	 * The key generation the modern endpoint was last given, so a rotation is
+	 * handed on once rather than every frame.
+	 */
+	unsigned long long m_QuicCidKeyGeneration = 0;
 	bool m_QuicStarted = false;
 	bool m_WebTransportStarted = false;
 	bool m_LegacyUdpStarted = true;
@@ -380,6 +385,7 @@ public:
 	void SendMap(int ClientId);
 	void SendMapData(int ClientId, int Chunk);
 	bool UpdateQuicMaps();
+	void UpdateQuicCidKey();
 	void SendMapReload(int ClientId);
 	void SendConnectionReady(int ClientId);
 	void SendRconLine(int ClientId, const char *pLine);

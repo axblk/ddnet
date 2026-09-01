@@ -8,6 +8,10 @@
 #ifndef XDP_SIPHASH_H
 #define XDP_SIPHASH_H
 
+// This is C, and it is also compiled for the BPF target, where the names follow
+// the kernel conventions rather than the ones the C++ of this repository uses.
+// NOLINTBEGIN(readability-identifier-naming)
+
 /* Clang ships a freestanding <stdint.h> that the BPF target can use too, so both
  * builds agree on the integer widths without dragging in kernel or libc headers. */
 #include <stdint.h>
@@ -93,5 +97,7 @@ static __always_inline uint64_t siphash24(const struct siphash_key *pKey, const 
 	SIPHASH_ROUND();
 	return V0 ^ V1 ^ V2 ^ V3;
 }
+
+// NOLINTEND(readability-identifier-naming)
 
 #endif

@@ -8,6 +8,7 @@
 #include <base/time.h>
 #include <base/types.h>
 
+#include <engine/shared/config.h>
 #include <engine/shared/protocol7.h>
 
 bool CNetClient::Open(NETADDR BindAddr)
@@ -70,11 +71,21 @@ void CNetClient::Update()
 
 void CNetClient::Connect(const NETADDR *pAddr, int NumAddrs)
 {
+	// In 0.6 the security token is appended to the payload and compressed along with
+	// it, which puts it out of reach of anything looking at the wire. Sending
+	// uncompressed leaves it readable, so a filter in front of the server can tell
+	// this connection from a spoof instead of lumping it in with everything it
+	// cannot check. Only affects what this client sends; the server keeps
+	// compressing, where it saves far more.
+	m_Connection.SetCompression(g_Config.m_ClCompressUpstream != 0);
 	m_Connection.Connect(pAddr, NumAddrs);
 }
 
 void CNetClient::Connect7(const NETADDR *pAddr, int NumAddrs)
 {
+	// 0.7 carries its token in the packet header, outside the compression, so there
+	// is nothing to be gained here and the bandwidth would be spent for nothing.
+	m_Connection.SetCompression(true);
 	m_Connection.Connect7(pAddr, NumAddrs);
 }
 

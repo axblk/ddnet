@@ -70,6 +70,8 @@ struct options
 	unsigned m_PrefixV6;
 	unsigned m_RotateSeconds;
 	unsigned m_ArmAfter;
+	unsigned m_ConnPps;
+	unsigned m_ConnIdleSeconds;
 	bool m_CountOnly;
 	bool m_StatsOnly;
 	bool m_SkbMode;
@@ -313,6 +315,9 @@ static void usage(const char *pName)
 		"      --prefix6 N        IPv6 aggregation prefix (default 56)\n"
 		"      --rotate N         key rotation interval in seconds (default 21600)\n"
 		"      --arm-after N      verified packets before a port starts dropping (default 100)\n"
+		"      --conntrack[=PPS]  remember 0.6 connections seen handshaking and give\n"
+		"                         each one its own budget (default 200 when given)\n"
+		"      --conn-idle N      forget a 0.6 connection after N idle seconds (default 60)\n"
 		"      --count-only       never drop, only count\n"
 		"      --pin-dir PATH     where to pin the maps (default: %s)\n"
 		"      --stats            print the counters of a running instance and exit\n"
@@ -337,6 +342,8 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 		{"prefix6", required_argument, NULL, 4},
 		{"rotate", required_argument, NULL, 5},
 		{"arm-after", required_argument, NULL, 6},
+		{"conntrack", optional_argument, NULL, 12},
+		{"conn-idle", required_argument, NULL, 13},
 		{"count-only", no_argument, NULL, 7},
 		{"key-group", required_argument, NULL, 11},
 		{"pin-dir", required_argument, NULL, 9},
@@ -361,6 +368,7 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 	pOptions->m_PrefixV6 = 56;
 	pOptions->m_RotateSeconds = 21600;
 	pOptions->m_ArmAfter = 100;
+	pOptions->m_ConnIdleSeconds = 60;
 
 	while((Option = getopt_long(argc, argv, "i:p:o:k:g:m:vh", s_aLong, NULL)) != -1)
 	{
@@ -395,6 +403,8 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 		case 5: pOptions->m_RotateSeconds = (unsigned)atoi(optarg); break;
 		case 6: pOptions->m_ArmAfter = (unsigned)atoi(optarg); break;
 		case 7: pOptions->m_CountOnly = true; break;
+		case 12: pOptions->m_ConnPps = optarg ? (unsigned)atoi(optarg) : 200; break;
+		case 13: pOptions->m_ConnIdleSeconds = (unsigned)atoi(optarg); break;
 		case 9: pOptions->m_pPinDir = optarg; break;
 		case 11: pOptions->m_pKeyGroup = optarg; break;
 		case 10: pOptions->m_StatsOnly = true; break;
@@ -622,6 +632,11 @@ int main(int argc, char **argv)
 	}
 	Config.m_PrefixV4 = Options.m_PrefixV4;
 	Config.m_PrefixV6 = Options.m_PrefixV6;
+	/* Not divided over prefixes or CPUs: this budget belongs to one connection, and
+	 * its packets all arrive on whichever queue its 4-tuple hashes to. */
+	Config.m_ConnNsPerToken = Options.m_ConnPps ? 1000000000ULL / Options.m_ConnPps : 0;
+	Config.m_ConnBurst = Options.m_ConnPps ? 64 : 0;
+	Config.m_ConnIdleNs = (uint64_t)Options.m_ConnIdleSeconds * 1000000000ULL;
 	if(bpf_map_update_elem(ConfigMap, &Zero, &Config, BPF_ANY) != 0)
 	{
 		log_error("cannot write the configuration: %s", strerror(errno));
@@ -686,6 +701,11 @@ int main(int argc, char **argv)
 	log_info("attached to %s in %s mode, %d ports, key in %s",
 		Options.m_pInterface, AttachFlags == XDP_FLAGS_DRV_MODE ? "driver" : "generic",
 		Options.m_NumPorts, Options.m_pKeyPath);
+	if(Options.m_ConnPps)
+		log_info("remembering 0.6 connections, %u packets per second each, forgotten after %u idle seconds",
+			Options.m_ConnPps, Options.m_ConnIdleSeconds);
+	else
+		log_info("not remembering 0.6 connections, they share the unverified budget");
 	if(Options.m_CountOnly)
 		log_info("counting only, nothing will be dropped");
 	else

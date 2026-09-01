@@ -82,7 +82,7 @@ struct
 struct
 {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, DDNET_XDP_NUM_COUNTERS);
+	__uint(max_entries, DDNET_XDP_STATS_ENTRIES);
 	__type(key, __u32);
 	__type(value, __u64);
 } ddnet_stats SEC(".maps");
@@ -104,9 +104,9 @@ struct ddnet_source
 	__u32 m_PrefixHash;
 };
 
-static __always_inline void count(__u32 Class, __u32 Verdict)
+static __always_inline void count(__u32 Port, __u32 Class, __u32 Verdict)
 {
-	const __u32 Index = Class * DDNET_XDP_NUM_VERDICTS + Verdict;
+	const __u32 Index = DDNET_XDP_STATS_INDEX(Port, Class, Verdict);
 	__u64 *pCounter = bpf_map_lookup_elem(&ddnet_stats, &Index);
 	if(pCounter)
 		(*pCounter)++;
@@ -609,7 +609,7 @@ int ddnet_xdp_filter(struct xdp_md *pCtx)
 
 	if(Fragment)
 	{
-		count(DDNET_XDP_CLASS_MALFORMED, pPort->m_Armed ? DDNET_XDP_VERDICT_DROP : DDNET_XDP_VERDICT_WOULD_DROP);
+		count(pPort->m_Index, DDNET_XDP_CLASS_MALFORMED, pPort->m_Armed ? DDNET_XDP_VERDICT_DROP : DDNET_XDP_VERDICT_WOULD_DROP);
 		return pPort->m_Armed ? XDP_DROP : XDP_PASS;
 	}
 
@@ -626,7 +626,7 @@ int ddnet_xdp_filter(struct xdp_md *pCtx)
 	 * bounds the verifier cannot follow. */
 	if(PayloadSize < 1 || PayloadSize > LEGACY_MAX_PACKET_SIZE)
 	{
-		count(DDNET_XDP_CLASS_MALFORMED, pPort->m_Armed ? DDNET_XDP_VERDICT_DROP : DDNET_XDP_VERDICT_WOULD_DROP);
+		count(pPort->m_Index, DDNET_XDP_CLASS_MALFORMED, pPort->m_Armed ? DDNET_XDP_VERDICT_DROP : DDNET_XDP_VERDICT_WOULD_DROP);
 		return pPort->m_Armed ? XDP_DROP : XDP_PASS;
 	}
 
@@ -636,7 +636,7 @@ int ddnet_xdp_filter(struct xdp_md *pCtx)
 	{
 		if(PayloadSize < LEGACY_PACKET_HEADER_SIZE)
 		{
-			count(DDNET_XDP_CLASS_MALFORMED, pPort->m_Armed ? DDNET_XDP_VERDICT_DROP : DDNET_XDP_VERDICT_WOULD_DROP);
+			count(pPort->m_Index, DDNET_XDP_CLASS_MALFORMED, pPort->m_Armed ? DDNET_XDP_VERDICT_DROP : DDNET_XDP_VERDICT_WOULD_DROP);
 			return pPort->m_Armed ? XDP_DROP : XDP_PASS;
 		}
 	}
@@ -669,9 +669,9 @@ int ddnet_xdp_filter(struct xdp_md *pCtx)
 
 	if(Decision.m_Pass)
 	{
-		count(Decision.m_Class, DDNET_XDP_VERDICT_PASS);
+		count(pPort->m_Index, Decision.m_Class, DDNET_XDP_VERDICT_PASS);
 		return XDP_PASS;
 	}
-	count(Decision.m_Class, pPort->m_Armed ? DDNET_XDP_VERDICT_DROP : DDNET_XDP_VERDICT_WOULD_DROP);
+	count(pPort->m_Index, Decision.m_Class, pPort->m_Armed ? DDNET_XDP_VERDICT_DROP : DDNET_XDP_VERDICT_WOULD_DROP);
 	return pPort->m_Armed ? XDP_DROP : XDP_PASS;
 }

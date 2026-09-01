@@ -12,6 +12,8 @@
 /* The part of a connection ID the tag is derived over: epoch and nonce. */
 #define DDNET_XDP_CID_TAG_INPUT 4
 #define DDNET_XDP_PREFIX_BUCKETS 256
+#define DDNET_XDP_MAX_PORTS 64
+#define DDNET_XDP_DEFAULT_PIN_DIR "/sys/fs/bpf/ddnet-xdp"
 #define DDNET_XDP_DEFAULT_KEY_PATH "/run/ddnet-xdp/key"
 
 /* Canonical input of the token derivation, built identically by the server and by
@@ -44,7 +46,10 @@ struct ddnet_xdp_key
 struct ddnet_xdp_port
 {
 	uint8_t m_Armed;
-	uint8_t m_aPad[7];
+	/* Counters are kept per port, so it is visible which server is being hit rather
+	 * than only that something is. */
+	uint8_t m_Index;
+	uint8_t m_aPad[6];
 	/* Packets that carried a value only this host could have issued. The loader
 	 * waits for these before it arms a port, so a server that does not use the key
 	 * yet is left alone rather than cut off. */
@@ -115,6 +120,9 @@ enum
 };
 
 #define DDNET_XDP_NUM_COUNTERS (DDNET_XDP_NUM_CLASSES * DDNET_XDP_NUM_VERDICTS)
+#define DDNET_XDP_STATS_ENTRIES (DDNET_XDP_MAX_PORTS * DDNET_XDP_NUM_COUNTERS)
+#define DDNET_XDP_STATS_INDEX(port, class, verdict) \
+	((uint32_t)(port) * DDNET_XDP_NUM_COUNTERS + (uint32_t)(class) * DDNET_XDP_NUM_VERDICTS + (uint32_t)(verdict))
 
 static const char *const DDNET_XDP_CLASS_NAMES[DDNET_XDP_NUM_CLASSES] = {
 	"master",

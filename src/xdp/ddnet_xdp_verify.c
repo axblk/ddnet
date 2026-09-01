@@ -301,7 +301,15 @@ static void run(int ProgramFd, int PortMap, int StatsMap, int NumCpus, const str
 		for(uint32_t Index = 0; Index < DDNET_XDP_NUM_COUNTERS; Index++)
 		{
 			const uint64_t Delta = s_aAfter[Index] - s_aBefore[Index];
-			if(Index == Wanted ? Delta != 1 : Delta != 0)
+			if(Index == Wanted && Delta != 1)
+			{
+				printf("  %-42s not counted as %s/%s\n", pCase->m_pName,
+					DDNET_XDP_CLASS_NAMES[pCase->m_Class],
+					DDNET_XDP_VERDICT_NAMES[pCase->m_Verdict]);
+				s_Failures++;
+				return;
+			}
+			if(Index != Wanted && Delta != 0)
 			{
 				printf("  %-42s counted as %s/%s, expected %s/%s\n", pCase->m_pName,
 					DDNET_XDP_CLASS_NAMES[Index / DDNET_XDP_NUM_VERDICTS],
@@ -322,18 +330,18 @@ static void build_cases(void)
 	static const uint8_t s_aNothing[16] = {0};
 	static const uint8_t s_aChallenge[20] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 'c', 'h', 'a', 'l'};
 	static const uint8_t s_aServerInfo[20] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 'g', 'i', 'e', '3'};
-	static const uint8_t s_aLegacy[16] = {0x10, 0, 1};
+	static const uint8_t s_aLegacy[16] = {0x00, 0, 1};
 	// Uncompressed 0.6, the security token in the clear at the end of the payload.
-	static uint8_t s_aLegacyVerified[16] = {0x10, 0, 1};
+	static uint8_t s_aLegacyVerified[16] = {0x00, 0, 1};
 	// The same shape, but with the compression flag set, so the trailing bytes are
 	// coded data and mean nothing.
-	static uint8_t s_aLegacyCompressed[16] = {0x90, 0, 1};
+	static uint8_t s_aLegacyCompressed[16] = {0x80, 0, 1};
 	static const uint8_t s_aResend[16] = {0x40, 0, 0};
 	static const uint8_t s_aGarbage[16] = {0x02, 0, 0, 0};
-	uint8_t aSixup[16] = {0x04, 0, 1};
-	uint8_t aWrong[16] = {0x04, 0, 1};
-	uint8_t aOtherPort[16] = {0x04, 0, 1};
-	uint8_t aSixupV6[16] = {0x04, 0, 1};
+	uint8_t aSixup[16] = {0x00, 0, 1};
+	uint8_t aWrong[16] = {0x04, 0, 0};
+	uint8_t aOtherPort[16] = {0x04, 0, 0};
+	uint8_t aSixupV6[16] = {0x00, 0, 1};
 	uint8_t aConnless[16] = {0x21};
 	uint8_t aConnlessBad[16] = {0x21, 1, 2, 3, 4};
 	uint8_t aShort[32] = {QUIC_FIXED_BIT};
@@ -375,7 +383,10 @@ static void build_cases(void)
 		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, aShort, sizeof(aShort), false);
 	make_cid(&aShortBad[1], 7);
 	aShortBad[5] ^= 0x40;
-	build(add_case("quic short header, forged id", true, XDP_DROP, DDNET_XDP_CLASS_MALFORMED, DDNET_XDP_VERDICT_DROP),
+	// The fixed bit it sets is the one 0.6 sets on a resend, so without a table of
+	// established peers this falls through to the legacy check, where it is bounded
+	// rather than trusted. That is the documented difference to the Rust classifier.
+	build(add_case("quic short header, forged id", true, XDP_PASS, DDNET_XDP_CLASS_LEGACY, DDNET_XDP_VERDICT_PASS),
 		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, aShortBad, sizeof(aShortBad), false);
 
 	// RFC 9000 14.1: an Initial below 1200 bytes is not a legal attempt, it is a cheap
@@ -412,7 +423,7 @@ static void build_cases(void)
 	// The same bytes with the compression flag set must not be trusted: what is at the
 	// end of a compressed payload is coded data, not a token.
 	memcpy(s_aLegacyCompressed, s_aLegacyVerified, sizeof(s_aLegacyCompressed));
-	s_aLegacyCompressed[0] = 0x90;
+	s_aLegacyCompressed[0] = 0x80;
 	build(add_case("0.6 compressed, token is not readable", true, XDP_PASS, DDNET_XDP_CLASS_LEGACY, DDNET_XDP_VERDICT_PASS),
 		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aLegacyCompressed, sizeof(s_aLegacyCompressed), false);
 
@@ -427,6 +438,26 @@ static void build_cases(void)
 
 	build(add_case("garbage", true, XDP_DROP, DDNET_XDP_CLASS_MALFORMED, DDNET_XDP_VERDICT_DROP),
 		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aGarbage, sizeof(s_aGarbage), false);
+
+	// The two handshake openers carry no token yet, by definition, and go to the
+	// server under a budget of their own rather than being read as forgeries.
+	{
+		static uint8_t s_aTokenRequest[520];
+		s_aTokenRequest[0] = 1 << 2; // 0.7 control
+		s_aTokenRequest[7] = 5; // NET_CTRLMSG_TOKEN
+		build(add_case("0.7 token request passed to the server", true, XDP_PASS, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_PASS),
+			false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aTokenRequest, sizeof(s_aTokenRequest), false);
+
+		static uint8_t s_aConnect[12];
+		s_aConnect[0] = 4 << 2; // 0.6 control
+		s_aConnect[3] = 1; // NET_CTRLMSG_CONNECT
+		s_aConnect[4] = 'T';
+		s_aConnect[5] = 'K';
+		s_aConnect[6] = 'E';
+		s_aConnect[7] = 'N';
+		build(add_case("0.6 connect passed to the server", true, XDP_PASS, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_PASS),
+			false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aConnect, sizeof(s_aConnect), false);
+	}
 
 	// Whatever a master sends is never budgeted, not only the challenge.
 	build(add_case("server info request from the master", true, XDP_PASS, DDNET_XDP_CLASS_MASTER, DDNET_XDP_VERDICT_PASS),
@@ -453,8 +484,8 @@ static void build_cases(void)
 // that the filter can only place because of it.
 static void build_tracking_cases(void)
 {
-	static uint8_t s_aVerified[16] = {0x10, 0, 1};
-	static uint8_t s_aCompressed[16] = {0x90, 0, 1};
+	static uint8_t s_aVerified[16] = {0x00, 0, 1};
+	static uint8_t s_aCompressed[16] = {0x80, 0, 1};
 
 	write_be32(&s_aVerified[sizeof(s_aVerified) - 4], token_for(false, CLIENT_V4, CLIENT_PORT + 5));
 	build(add_case("0.6 handshake teaches the connection", true, XDP_PASS, DDNET_XDP_CLASS_LEGACY_VERIFIED, DDNET_XDP_VERDICT_PASS),

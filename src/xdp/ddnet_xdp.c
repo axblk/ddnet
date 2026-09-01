@@ -33,7 +33,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MAX_PORTS 64
+#define MAX_PORTS DDNET_XDP_MAX_PORTS
 #define MAX_MASTERS 32
 
 struct key_file_epoch
@@ -59,6 +59,7 @@ struct options
 	const char *m_pInterface;
 	const char *m_pObject;
 	const char *m_pKeyPath;
+	const char *m_pPinDir;
 	const char *m_pKeyGroup;
 	uint16_t m_aPorts[MAX_PORTS];
 	int m_NumPorts;
@@ -70,6 +71,7 @@ struct options
 	unsigned m_RotateSeconds;
 	unsigned m_ArmAfter;
 	bool m_CountOnly;
+	bool m_StatsOnly;
 	bool m_SkbMode;
 	bool m_Verbose;
 };
@@ -312,9 +314,11 @@ static void usage(const char *pName)
 		"      --rotate N         key rotation interval in seconds (default 21600)\n"
 		"      --arm-after N      verified packets before a port starts dropping (default 100)\n"
 		"      --count-only       never drop, only count\n"
+		"      --pin-dir PATH     where to pin the maps (default: %s)\n"
+		"      --stats            print the counters of a running instance and exit\n"
 		"      --skb              attach in generic mode instead of driver mode\n"
 		"  -v, --verbose          print counters every second\n",
-		pName, DDNET_XDP_DEFAULT_KEY_PATH);
+		pName, DDNET_XDP_DEFAULT_KEY_PATH, DDNET_XDP_DEFAULT_PIN_DIR);
 }
 
 static int parse_options(int argc, char **argv, struct options *pOptions)
@@ -335,6 +339,8 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 		{"arm-after", required_argument, NULL, 6},
 		{"count-only", no_argument, NULL, 7},
 		{"key-group", required_argument, NULL, 11},
+		{"pin-dir", required_argument, NULL, 9},
+		{"stats", no_argument, NULL, 10},
 		{"skb", no_argument, NULL, 8},
 		{"verbose", no_argument, NULL, 'v'},
 		{"help", no_argument, NULL, 'h'},
@@ -343,6 +349,7 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 	int Option;
 
 	pOptions->m_pKeyPath = DDNET_XDP_DEFAULT_KEY_PATH;
+	pOptions->m_pPinDir = DDNET_XDP_DEFAULT_PIN_DIR;
 	/* Ordered by how much a loss hurts, see the enum. Legacy 0.6 is what a flood
 	 * looks like and gets the least; handshakes are players trying to get in and get
 	 * enough that they usually do. */
@@ -388,48 +395,131 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 		case 5: pOptions->m_RotateSeconds = (unsigned)atoi(optarg); break;
 		case 6: pOptions->m_ArmAfter = (unsigned)atoi(optarg); break;
 		case 7: pOptions->m_CountOnly = true; break;
+		case 9: pOptions->m_pPinDir = optarg; break;
 		case 11: pOptions->m_pKeyGroup = optarg; break;
+		case 10: pOptions->m_StatsOnly = true; break;
 		case 8: pOptions->m_SkbMode = true; break;
 		case 'v': pOptions->m_Verbose = true; break;
 		default: return -1;
 		}
 	}
+	if(pOptions->m_StatsOnly)
+		return 0;
 	if(!pOptions->m_pInterface || pOptions->m_NumPorts == 0)
 		return -1;
 	return 0;
 }
 
-static void print_stats(int StatsMap, int NumCpus)
+/* Reads one counter, summed over the CPUs it is kept on. */
+static uint64_t counter(int StatsMap, int NumCpus, uint64_t *pScratch, uint32_t Index)
 {
-	uint64_t *pValues = calloc(NumCpus, sizeof(uint64_t));
-	uint32_t Class, Verdict;
+	uint64_t Total = 0;
+	int Cpu;
+	if(bpf_map_lookup_elem(StatsMap, &Index, pScratch) != 0)
+		return 0;
+	for(Cpu = 0; Cpu < NumCpus; Cpu++)
+		Total += pScratch[Cpu];
+	return Total;
+}
 
-	if(!pValues)
+/* Prints what was classified how, per port. `pPrevious` holds the totals of the last
+ * call, if any, so the rate can be shown next to the total; the interesting number
+ * during an attack is what is arriving now, not what has arrived since boot. */
+static void print_stats(int StatsMap, int NumCpus, const struct options *pOptions,
+	const uint16_t *pPorts, int NumPorts, uint64_t *pPrevious, double Seconds)
+{
+	uint64_t *pScratch = calloc(NumCpus, sizeof(uint64_t));
+	int Index;
+
+	if(!pScratch)
 		return;
-	for(Class = 0; Class < DDNET_XDP_NUM_CLASSES; Class++)
+	for(Index = 0; Index < NumPorts; Index++)
 	{
-		uint64_t aTotals[DDNET_XDP_NUM_VERDICTS] = {};
+		uint32_t Class;
 		bool Any = false;
-		for(Verdict = 0; Verdict < DDNET_XDP_NUM_VERDICTS; Verdict++)
+		for(Class = 0; Class < DDNET_XDP_NUM_CLASSES; Class++)
 		{
-			const uint32_t Index = Class * DDNET_XDP_NUM_VERDICTS + Verdict;
-			int Cpu;
-			if(bpf_map_lookup_elem(StatsMap, &Index, pValues) != 0)
+			uint64_t aTotals[DDNET_XDP_NUM_VERDICTS];
+			uint32_t Verdict;
+			bool AnyClass = false;
+			for(Verdict = 0; Verdict < DDNET_XDP_NUM_VERDICTS; Verdict++)
+			{
+				aTotals[Verdict] = counter(StatsMap, NumCpus, pScratch,
+					DDNET_XDP_STATS_INDEX(Index, Class, Verdict));
+				AnyClass = AnyClass || aTotals[Verdict] != 0;
+			}
+			if(!AnyClass)
 				continue;
-			for(Cpu = 0; Cpu < NumCpus; Cpu++)
-				aTotals[Verdict] += pValues[Cpu];
-			Any = Any || aTotals[Verdict] != 0;
+			if(!Any)
+			{
+				printf("port %u\n", pPorts[Index]);
+				Any = true;
+			}
+			printf("  %-20s", DDNET_XDP_CLASS_NAMES[Class]);
+			for(Verdict = 0; Verdict < DDNET_XDP_NUM_VERDICTS; Verdict++)
+			{
+				printf("  %s %12llu", DDNET_XDP_VERDICT_NAMES[Verdict],
+					(unsigned long long)aTotals[Verdict]);
+				if(pPrevious && Seconds > 0)
+				{
+					const uint32_t Slot = DDNET_XDP_STATS_INDEX(Index, Class, Verdict);
+					printf(" (%9.0f/s)", (double)(aTotals[Verdict] - pPrevious[Slot]) / Seconds);
+					pPrevious[Slot] = aTotals[Verdict];
+				}
+			}
+			printf("\n");
 		}
-		if(!Any)
-			continue;
-		printf("  %-20s pass %12llu  would-drop %12llu  drop %12llu\n",
-			DDNET_XDP_CLASS_NAMES[Class],
-			(unsigned long long)aTotals[DDNET_XDP_VERDICT_PASS],
-			(unsigned long long)aTotals[DDNET_XDP_VERDICT_WOULD_DROP],
-			(unsigned long long)aTotals[DDNET_XDP_VERDICT_DROP]);
 	}
-	fflush(stdout);
-	free(pValues);
+	(void)pOptions;
+	free(pScratch);
+}
+
+/* Reads the counters of a running instance through the pinned maps, without loading
+ * or attaching anything. */
+static int show_pinned_stats(const struct options *pOptions)
+{
+	char aPath[512];
+	int StatsMap, PortMap;
+	uint16_t aPorts[MAX_PORTS];
+	int NumPorts = 0;
+	uint16_t Port = 0, Next;
+	int NumCpus = libbpf_num_possible_cpus();
+	uint16_t aByIndex[MAX_PORTS] = {};
+
+	snprintf(aPath, sizeof(aPath), "%s/ddnet_stats", pOptions->m_pPinDir);
+	StatsMap = bpf_obj_get(aPath);
+	if(StatsMap < 0)
+	{
+		log_error("cannot open %s: %s", aPath, strerror(errno));
+		log_error("is ddnet-xdp running, and did it pin its maps there?");
+		return 1;
+	}
+	snprintf(aPath, sizeof(aPath), "%s/ddnet_ports", pOptions->m_pPinDir);
+	PortMap = bpf_obj_get(aPath);
+	if(PortMap < 0)
+	{
+		log_error("cannot open %s: %s", aPath, strerror(errno));
+		close(StatsMap);
+		return 1;
+	}
+
+	/* The pinned map is the only place that knows which ports are guarded, so the
+	 * port list does not have to be repeated on the command line. */
+	while(bpf_map_get_next_key(PortMap, NumPorts == 0 ? NULL : &Port, &Next) == 0 && NumPorts < MAX_PORTS)
+	{
+		struct ddnet_xdp_port Entry;
+		Port = Next;
+		if(bpf_map_lookup_elem(PortMap, &Port, &Entry) == 0 && Entry.m_Index < MAX_PORTS)
+			aByIndex[Entry.m_Index] = Port;
+		NumPorts++;
+	}
+	for(int Index = 0; Index < MAX_PORTS; Index++)
+		aPorts[Index] = aByIndex[Index];
+
+	print_stats(StatsMap, NumCpus, pOptions, aPorts, MAX_PORTS, NULL, 0);
+	close(PortMap);
+	close(StatsMap);
+	return 0;
 }
 
 int main(int argc, char **argv)
@@ -448,6 +538,8 @@ int main(int argc, char **argv)
 	unsigned AttachFlags;
 	uint32_t Zero = 0;
 	struct ddnet_xdp_config Config = {};
+	static uint64_t s_aPrevious[DDNET_XDP_STATS_ENTRIES];
+	uint64_t *aPrevious = s_aPrevious;
 	time_t LastRotate;
 
 	if(parse_options(argc, argv, &Options) != 0)
@@ -455,6 +547,9 @@ int main(int argc, char **argv)
 		usage(argv[0]);
 		return 2;
 	}
+
+	if(Options.m_StatsOnly)
+		return show_pinned_stats(&Options);
 
 	InterfaceIndex = if_nametoindex(Options.m_pInterface);
 	if(InterfaceIndex == 0)
@@ -536,6 +631,7 @@ int main(int argc, char **argv)
 	for(Index = 0; Index < Options.m_NumPorts; Index++)
 	{
 		struct ddnet_xdp_port Port = {};
+		Port.m_Index = (uint8_t)Index;
 		if(bpf_map_update_elem(PortMap, &Options.m_aPorts[Index], &Port, BPF_ANY) != 0)
 		{
 			log_error("cannot add port %u: %s", Options.m_aPorts[Index], strerror(errno));
@@ -580,6 +676,12 @@ int main(int argc, char **argv)
 			goto out;
 		}
 	}
+
+	/* Pinning lets `--stats` and bpftool look at the counters at any time, and keeps
+	 * the maps alive if this process is replaced. */
+	if(bpf_object__pin_maps(pObject, Options.m_pPinDir) != 0)
+		log_info("could not pin the maps under %s (%s), --stats will not work",
+			Options.m_pPinDir, strerror(errno));
 
 	log_info("attached to %s in %s mode, %d ports, key in %s",
 		Options.m_pInterface, AttachFlags == XDP_FLAGS_DRV_MODE ? "driver" : "generic",
@@ -635,12 +737,13 @@ int main(int argc, char **argv)
 		}
 
 		if(Options.m_Verbose)
-			print_stats(StatsMap, NumCpus);
+			print_stats(StatsMap, NumCpus, &Options, Options.m_aPorts, Options.m_NumPorts, aPrevious, 1.0);
 	}
 
 	log_info("detaching");
 	bpf_xdp_detach(InterfaceIndex, AttachFlags, NULL);
-	print_stats(StatsMap, NumCpus);
+	bpf_object__unpin_maps(pObject, Options.m_pPinDir);
+	print_stats(StatsMap, NumCpus, &Options, Options.m_aPorts, Options.m_NumPorts, NULL, 0);
 	Result = 0;
 
 out:

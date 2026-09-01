@@ -5159,6 +5159,15 @@ if(EBPF)
   target_link_directories(ddnet-xdp PRIVATE ${LIBBPF_LIBRARY_DIRS})
   add_dependencies(ddnet-xdp ddnet-xdp-object)
 
+  # Loads the program and feeds synthetic packets through it with BPF_PROG_RUN. This
+  # is the only way to find out whether the verifier accepts it and whether the
+  # compiled program classifies the way it is supposed to. Needs root to run.
+  add_executable(ddnet-xdp-verify src/xdp/ddnet_xdp_verify.c)
+  target_include_directories(ddnet-xdp-verify PRIVATE src/xdp ${LIBBPF_INCLUDE_DIRS})
+  target_link_libraries(ddnet-xdp-verify ${LIBBPF_LIBRARIES})
+  target_link_directories(ddnet-xdp-verify PRIVATE ${LIBBPF_LIBRARY_DIRS})
+  add_dependencies(ddnet-xdp-verify ddnet-xdp-object)
+
   # Checks the classifier against the vectors of the Rust module it is a port of, and
   # SipHash against the vectors from its specification. Neither needs a kernel, so
   # this runs anywhere the project builds.

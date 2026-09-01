@@ -1080,9 +1080,11 @@ private:
 
 ::ModernQuic::QuicServerIdentityBinding quic_server_identity_binding(::rust::Str identity_path, ::rust::Slice<::std::uint8_t const> certificate_sha256, ::rust::Slice<::std::uint8_t const> next_certificate_sha256);
 
-::rust::Box<::ModernQuic::QuicEndpoint> quic_server_start_external(::rust::Str local_address, bool raw_quic, bool webtransport, ::rust::Slice<::std::uint8_t const> certificate_der, ::rust::Slice<::std::uint8_t const> next_certificate_der, ::rust::Slice<::std::uint8_t const> private_key_der, ::rust::Str identity_path, ::rust::Slice<::std::uint8_t const> server_identity_public_key);
+::rust::Box<::ModernQuic::QuicEndpoint> quic_server_start_external(::rust::Str local_address, bool raw_quic, bool webtransport, ::rust::Slice<::std::uint8_t const> certificate_der, ::rust::Slice<::std::uint8_t const> next_certificate_der, ::rust::Slice<::std::uint8_t const> private_key_der, ::rust::Str identity_path, ::rust::Slice<::std::uint8_t const> server_identity_public_key, ::rust::Slice<::std::uint8_t const> cid_key);
 
 void quic_server_update_certificate(::ModernQuic::QuicEndpoint const &endpoint, ::rust::Slice<::std::uint8_t const> certificate_der, ::rust::Slice<::std::uint8_t const> private_key_der, ::rust::Slice<::std::uint8_t const> certificate_sha256);
+
+void quic_server_update_cid_key(::ModernQuic::QuicEndpoint const &endpoint, ::rust::Slice<::std::uint8_t const> cid_key);
 
 ::rust::Box<::ModernQuic::QuicEndpoint> quic_client_start_external(::rust::Str local_address, ::rust::Str server_address, ::rust::Str server_name, ::rust::Slice<::std::uint8_t const> certificate_der, bool sixup);
 

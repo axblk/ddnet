@@ -120,7 +120,17 @@ public:
 	static bool IsWebTransportServerCompiled();
 	static bool IsWebTransportClientCompiled();
 	static bool IsWebTransportClientAvailable();
-	bool StartServer(const char *pLocalAddress, bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath);
+	/**
+	 * `pCidKey` is the material the XDP filter service publishes, or an empty slice
+	 * when no filter is in play. With it, connection IDs carry a tag the filter can
+	 * check, which is what lets it tell an established connection from a spoof.
+	 */
+	bool StartServer(const char *pLocalAddress, bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath, const unsigned char *pCidKey, int CidKeySize);
+	/**
+	 * Adopts a rotated connection ID key. Connections running under the previous one
+	 * keep their ids.
+	 */
+	bool UpdateCidKey(const unsigned char *pCidKey, int CidKeySize);
 	bool MaybeRotateManagedCertificate(bool *pRotated);
 	bool StartClient(const char *pBindAddress, const char *pServerAddress, const char *pServerName, const char *pCertificatePath, bool Sixup);
 	bool StartClientWebPki(const char *pBindAddress, const char *pServerAddress, const char *pServerName, bool Sixup);

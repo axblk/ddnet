@@ -74,6 +74,7 @@ struct options
 	unsigned m_ConnIdleSeconds;
 	bool m_CountOnly;
 	bool m_StatsOnly;
+	bool m_Offload;
 	bool m_SkbMode;
 	bool m_Verbose;
 };
@@ -208,7 +209,7 @@ static int write_key_file(const char *pPath, const struct key_file *pKeys, const
 
 /* Rotates to the next epoch. The previous one stays valid so that connections which
  * were handed a token under it keep working across the change. */
-static int rotate_keys(struct key_file *pKeys, int KeyMap, const char *pPath, const char *pGroup)
+static int rotate_keys(struct key_file *pKeys, int KeyMap, int ConfigMap, const char *pPath, const char *pGroup)
 {
 	const uint32_t Next = (pKeys->m_Current + 1) % DDNET_XDP_KEY_EPOCHS;
 	const uint32_t Retire = (Next + DDNET_XDP_KEY_EPOCHS - 2) % DDNET_XDP_KEY_EPOCHS;
@@ -225,6 +226,17 @@ static int rotate_keys(struct key_file *pKeys, int KeyMap, const char *pPath, co
 	if(Retire != Next)
 		pKeys->m_aEpochs[Retire].m_Valid = 0;
 
+	/* The program stamps what it issues with the current epoch, so it has to learn
+	 * about a rotation before the new key is in the file. */
+	{
+		struct ddnet_xdp_config Config;
+		uint32_t Zero = 0;
+		if(bpf_map_lookup_elem(ConfigMap, &Zero, &Config) == 0)
+		{
+			Config.m_CurrentEpoch = pKeys->m_Current;
+			bpf_map_update_elem(ConfigMap, &Zero, &Config, BPF_ANY);
+		}
+	}
 	for(Epoch = 0; Epoch < DDNET_XDP_KEY_EPOCHS; Epoch++)
 	{
 		struct ddnet_xdp_key Value = {};
@@ -321,6 +333,9 @@ static void usage(const char *pName)
 		"      --count-only       never drop, only count\n"
 		"      --pin-dir PATH     where to pin the maps (default: %s)\n"
 		"      --stats            print the counters of a running instance and exit\n"
+		"      --offload-handshakes\n"
+		"                         answer the 0.6 and 0.7 token handshakes from the\n"
+		"                         filter, so they never reach the server\n"
 		"      --skb              attach in generic mode instead of driver mode\n"
 		"  -v, --verbose          print counters every second\n",
 		pName, DDNET_XDP_DEFAULT_KEY_PATH, DDNET_XDP_DEFAULT_PIN_DIR);
@@ -348,6 +363,7 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 		{"key-group", required_argument, NULL, 11},
 		{"pin-dir", required_argument, NULL, 9},
 		{"stats", no_argument, NULL, 10},
+		{"offload-handshakes", no_argument, NULL, 14},
 		{"skb", no_argument, NULL, 8},
 		{"verbose", no_argument, NULL, 'v'},
 		{"help", no_argument, NULL, 'h'},
@@ -408,6 +424,7 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 		case 9: pOptions->m_pPinDir = optarg; break;
 		case 11: pOptions->m_pKeyGroup = optarg; break;
 		case 10: pOptions->m_StatsOnly = true; break;
+		case 14: pOptions->m_Offload = true; break;
 		case 8: pOptions->m_SkbMode = true; break;
 		case 'v': pOptions->m_Verbose = true; break;
 		default: return -1;
@@ -637,6 +654,7 @@ int main(int argc, char **argv)
 	Config.m_ConnNsPerToken = Options.m_ConnPps ? 1000000000ULL / Options.m_ConnPps : 0;
 	Config.m_ConnBurst = Options.m_ConnPps ? 64 : 0;
 	Config.m_ConnIdleNs = (uint64_t)Options.m_ConnIdleSeconds * 1000000000ULL;
+	Config.m_Offload = Options.m_Offload ? 1 : 0;
 	if(bpf_map_update_elem(ConfigMap, &Zero, &Config, BPF_ANY) != 0)
 	{
 		log_error("cannot write the configuration: %s", strerror(errno));
@@ -669,7 +687,7 @@ int main(int argc, char **argv)
 		Keys.m_Version = 1;
 		Keys.m_Current = DDNET_XDP_KEY_EPOCHS - 1;
 	}
-	if(rotate_keys(&Keys, KeyMap, Options.m_pKeyPath, Options.m_pKeyGroup) != 0)
+	if(rotate_keys(&Keys, KeyMap, ConfigMap, Options.m_pKeyPath, Options.m_pKeyGroup) != 0)
 		goto out;
 	LastRotate = time(NULL);
 
@@ -750,7 +768,7 @@ int main(int argc, char **argv)
 
 		if(Options.m_RotateSeconds && Now - LastRotate >= (time_t)Options.m_RotateSeconds)
 		{
-			if(rotate_keys(&Keys, KeyMap, Options.m_pKeyPath, Options.m_pKeyGroup) != 0)
+			if(rotate_keys(&Keys, KeyMap, ConfigMap, Options.m_pKeyPath, Options.m_pKeyGroup) != 0)
 				break;
 			LastRotate = Now;
 			log_info("rotated to key epoch %u", Keys.m_Current);

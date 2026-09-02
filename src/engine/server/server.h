@@ -213,6 +213,9 @@ public:
 
 		bool m_GotDDNetVersionPacket;
 		bool m_DDNetVersionSettled;
+		// Whether the session log already carried this client's version, so the two
+		// paths a version can arrive on do not produce two ident events.
+		bool m_SessionIdentLogged;
 		int m_DDNetVersion;
 		char m_aDDNetVersionStr[64];
 		CUuid m_ConnectionId;
@@ -423,6 +426,12 @@ public:
 	bool IssueQuicResume(int ClientId);
 	void ExpireQuicResumes();
 	void OnNetMsgClientVer(int ClientId, CUuid *pConnectionId, int DDNetVersion, const char *pDDNetVersionStr);
+
+	// Usage accounting for an external wrapper, one line per event on the `session`
+	// log system. A dedicated system so a reader filters on it instead of parsing
+	// prose that is free to change; INFO level so it appears without debug logging.
+	void LogSessionJoin(int ClientId);
+	void LogSessionIdent(int ClientId);
 	void OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPasswordOrNullptr);
 	void OnNetMsgReady(int ClientId);
 	void OnNetMsgEnterGame(int ClientId);

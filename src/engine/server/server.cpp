@@ -777,6 +777,7 @@ void CServer::SetClientDDNetVersion(int ClientId, int DDNetVersion)
 	{
 		m_aClients[ClientId].m_DDNetVersion = DDNetVersion;
 		m_aClients[ClientId].m_DDNetVersionSettled = true;
+		LogSessionIdent(ClientId);
 	}
 }
 
@@ -813,6 +814,37 @@ const char *CServer::ClientTransportName(int ClientId) const
 	if(!m_aClients[ClientId].m_Quic)
 		return "udp";
 	return m_aClients[ClientId].m_WebTransport ? "webtransport" : "quic";
+}
+
+void CServer::LogSessionJoin(int ClientId)
+{
+	m_aClients[ClientId].m_SessionIdentLogged = false;
+	log_info("session", "v=1 ev=join cid=%d proto=%s transport=%s secure=%d addr=%s",
+		ClientId,
+		m_aClients[ClientId].m_Sixup ? "0.7" : "0.6",
+		ClientTransportName(ClientId),
+		m_aClients[ClientId].m_Quic || m_NetServer.HasSecurityToken(ClientId) ? 1 : 0,
+		ClientAddrString(ClientId, false));
+}
+
+void CServer::LogSessionIdent(int ClientId)
+{
+	if(m_aClients[ClientId].m_SessionIdentLogged || !m_aClients[ClientId].m_DDNetVersionSettled)
+		return;
+	m_aClients[ClientId].m_SessionIdentLogged = true;
+	// The string is client controlled. It stays in the last field, quoted, and loses
+	// control characters and quotes, so no client can reshape the line into another
+	// event for whatever parses it.
+	char aVersion[64];
+	str_copy(aVersion, m_aClients[ClientId].m_aDDNetVersionStr);
+	str_sanitize_cc(aVersion);
+	for(char *pChar = aVersion; *pChar != '\0'; pChar++)
+	{
+		if(*pChar == '\'')
+			*pChar = ' ';
+	}
+	log_info("session", "v=1 ev=ident cid=%d version=%d vstr='%s'",
+		ClientId, m_aClients[ClientId].m_DDNetVersion, aVersion);
 }
 
 const char *CServer::ClientName(int ClientId) const
@@ -1320,6 +1352,7 @@ int CServer::NewClientNoAuthCallback(int ClientId, void *pUser)
 #if defined(CONF_FAMILY_UNIX)
 	pThis->SendConnLoggingCommand(OPEN_SESSION, pThis->ClientAddr(ClientId));
 #endif
+	pThis->LogSessionJoin(ClientId);
 	return 0;
 }
 
@@ -1353,6 +1386,7 @@ int CServer::NewClientCallback(int ClientId, void *pUser, bool Sixup)
 #if defined(CONF_FAMILY_UNIX)
 	pThis->SendConnLoggingCommand(OPEN_SESSION, pThis->ClientAddr(ClientId));
 #endif
+	pThis->LogSessionJoin(ClientId);
 	return 0;
 }
 
@@ -1409,6 +1443,22 @@ int CServer::DelClientCallback(int ClientId, const char *pReason, void *pUser)
 	char aBuf[256];
 	str_format(aBuf, sizeof(aBuf), "client dropped. cid=%d addr=<{%s}> transport=%s reason='%s'", ClientId, pThis->ClientAddrString(ClientId, true), pThis->ClientTransportName(ClientId), pReason);
 	pThis->Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "server", aBuf);
+
+	{
+		// Debug dummies join through the ordinary path before they are marked, so
+		// their join cannot be suppressed. Marking the leave lets a consumer discard
+		// the whole session instead.
+		char aReason[192];
+		str_copy(aReason, pReason);
+		str_sanitize_cc(aReason);
+		for(char *pChar = aReason; *pChar != '\0'; pChar++)
+		{
+			if(*pChar == '\'')
+				*pChar = ' ';
+		}
+		log_info("session", "v=1 ev=leave cid=%d dummy=%d reason='%s'",
+			ClientId, pThis->m_aClients[ClientId].m_DebugDummy ? 1 : 0, aReason);
+	}
 
 #if defined(CONF_FAMILY_UNIX)
 	// Make copy of address because the client slot will be empty at the end of the function
@@ -2208,6 +2258,7 @@ void CServer::OnNetMsgClientVer(int ClientId, CUuid *pConnectionId, int DDNetVer
 	{
 		m_aClients[ClientId].m_State = CClient::STATE_AUTH;
 	}
+	LogSessionIdent(ClientId);
 }
 
 void CServer::OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPasswordOrNullptr)

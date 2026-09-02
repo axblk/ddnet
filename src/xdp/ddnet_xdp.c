@@ -61,6 +61,7 @@ struct options
 	const char *m_pKeyPath;
 	const char *m_pPinDir;
 	const char *m_pKeyGroup;
+	const char *m_pBans;
 	uint16_t m_aPorts[MAX_PORTS];
 	int m_NumPorts;
 	const char *m_apMasters[MAX_MASTERS];
@@ -212,7 +213,6 @@ static int write_key_file(const char *pPath, const struct key_file *pKeys, const
 static int rotate_keys(struct key_file *pKeys, int KeyMap, int ConfigMap, const char *pPath, const char *pGroup)
 {
 	const uint32_t Next = (pKeys->m_Current + 1) % DDNET_XDP_KEY_EPOCHS;
-	const uint32_t Retire = (Next + DDNET_XDP_KEY_EPOCHS - 2) % DDNET_XDP_KEY_EPOCHS;
 	uint32_t Epoch;
 
 	if(read_random(&pKeys->m_aEpochs[Next].m_K0, sizeof(uint64_t)) != 0 ||
@@ -221,10 +221,12 @@ static int rotate_keys(struct key_file *pKeys, int KeyMap, int ConfigMap, const 
 		log_error("cannot read random bytes for the new key");
 		return -1;
 	}
+	/* Every epoch that still has a slot stays valid, and a key is only retired when
+	 * its slot is written again, four rotations later. A connection keeps the token
+	 * it was given for its whole life, so a key that is retired too early does not
+	 * end a handshake, it ends a session that was running fine. */
 	pKeys->m_aEpochs[Next].m_Valid = 1;
 	pKeys->m_Current = Next;
-	if(Retire != Next)
-		pKeys->m_aEpochs[Retire].m_Valid = 0;
 
 	/* The program stamps what it issues with the current epoch, so it has to learn
 	 * about a rotation before the new key is in the file. */
@@ -252,6 +254,96 @@ static int rotate_keys(struct key_file *pKeys, int KeyMap, int ConfigMap, const 
 	/* The map is updated before the file, so a server can never derive a token under
 	 * a key the filter does not know yet. */
 	return write_key_file(pPath, pKeys, pGroup);
+}
+
+struct ban_key_v4
+{
+	uint32_t m_PrefixLength;
+	uint8_t m_aAddress[4];
+};
+
+struct ban_key_v6
+{
+	uint32_t m_PrefixLength;
+	uint8_t m_aAddress[16];
+};
+
+/* Reads what `bans_save` writes: `ban <address> <minutes> <reason>` and
+ * `ban_range <from> <to> <minutes> <reason>`. A range is only taken when it is a
+ * whole prefix, because that is what a longest prefix match can hold; anything else
+ * is reported and left to the server, which checks the same list itself.
+ *
+ * The whole file is applied at once by emptying the maps first: a ban that was
+ * lifted has to disappear, and an entry that lingers would keep someone out who was
+ * let back in.
+ */
+static int load_bans(const char *pPath, int MapV4, int MapV6)
+{
+	char aLine[512];
+	FILE *pFile = fopen(pPath, "r");
+	int Loaded = 0, Skipped = 0;
+
+	if(!pFile)
+	{
+		log_error("cannot read %s: %s", pPath, strerror(errno));
+		return -1;
+	}
+	for(int Family = 0; Family < 2; Family++)
+	{
+		const int Map = Family == 0 ? MapV4 : MapV6;
+		uint8_t aKey[20], aNext[20];
+		void *pKey = NULL;
+		while(bpf_map_get_next_key(Map, pKey, aNext) == 0)
+		{
+			memcpy(aKey, aNext, sizeof(aKey));
+			bpf_map_delete_elem(Map, aKey);
+			pKey = NULL;
+		}
+	}
+	while(fgets(aLine, sizeof(aLine), pFile))
+	{
+		char aAddress[128];
+		const uint8_t One = 1;
+		if(sscanf(aLine, "ban %127s", aAddress) != 1)
+		{
+			if(strncmp(aLine, "ban_range", 9) == 0)
+				Skipped++;
+			continue;
+		}
+		{
+			struct in_addr Address4;
+			struct in6_addr Address6;
+			char *pSlash = strchr(aAddress, '/');
+			long Prefix = -1;
+			if(pSlash)
+			{
+				*pSlash = '\0';
+				Prefix = strtol(pSlash + 1, NULL, 10);
+			}
+			if(inet_pton(AF_INET, aAddress, &Address4) == 1)
+			{
+				struct ban_key_v4 Key = {(uint32_t)(Prefix < 0 || Prefix > 32 ? 32 : Prefix), {0}};
+				memcpy(Key.m_aAddress, &Address4.s_addr, 4);
+				if(bpf_map_update_elem(MapV4, &Key, &One, BPF_ANY) == 0)
+					Loaded++;
+			}
+			else if(inet_pton(AF_INET6, aAddress, &Address6) == 1)
+			{
+				struct ban_key_v6 Key = {(uint32_t)(Prefix < 0 || Prefix > 128 ? 128 : Prefix), {0}};
+				memcpy(Key.m_aAddress, &Address6, 16);
+				if(bpf_map_update_elem(MapV6, &Key, &One, BPF_ANY) == 0)
+					Loaded++;
+			}
+			else
+			{
+				Skipped++;
+			}
+		}
+	}
+	fclose(pFile);
+	log_info("bans: %d loaded from %s%s", Loaded, pPath,
+		Skipped ? ", some entries are not single prefixes and stay with the server" : "");
+	return 0;
 }
 
 /* A master is given by name as often as by address, and a name can point at
@@ -325,7 +417,10 @@ static void usage(const char *pName)
 		"  -m, --master NAME      master server, address or name, never budgeted; repeatable\n"
 		"      --prefix4 N        IPv4 aggregation prefix (default 24)\n"
 		"      --prefix6 N        IPv6 aggregation prefix (default 56)\n"
-		"      --rotate N         key rotation interval in seconds (default 21600)\n"
+		"      --rotate N         key rotation interval in seconds (default 86400); a\n"
+		"                         token stays verifiable for three of these\n"
+		"      --bans FILE        addresses to drop outright, reread when it changes;\n"
+		"                         reads the format `bans_save` writes\n"
 		"      --arm-after N      verified packets before a port starts dropping (default 100)\n"
 		"      --conntrack[=PPS]  remember 0.6 connections seen handshaking and give\n"
 		"                         each one its own budget (default 200 when given)\n"
@@ -360,6 +455,7 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 		{"conntrack", optional_argument, NULL, 12},
 		{"conn-idle", required_argument, NULL, 13},
 		{"count-only", no_argument, NULL, 7},
+		{"bans", required_argument, NULL, 15},
 		{"key-group", required_argument, NULL, 11},
 		{"pin-dir", required_argument, NULL, 9},
 		{"stats", no_argument, NULL, 10},
@@ -382,7 +478,9 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 	pOptions->m_aBudgetPps[DDNET_XDP_BUDGET_NEWCONN] = 2000;
 	pOptions->m_PrefixV4 = 24;
 	pOptions->m_PrefixV6 = 56;
-	pOptions->m_RotateSeconds = 21600;
+	/* A token lives as long as the connection it was issued for, and stays verifiable
+	 * for three rotations, so this is the shortest session the filter will not cut. */
+	pOptions->m_RotateSeconds = 86400;
 	pOptions->m_ArmAfter = 100;
 	pOptions->m_ConnIdleSeconds = 60;
 
@@ -423,6 +521,7 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 		case 13: pOptions->m_ConnIdleSeconds = (unsigned)atoi(optarg); break;
 		case 9: pOptions->m_pPinDir = optarg; break;
 		case 11: pOptions->m_pKeyGroup = optarg; break;
+		case 15: pOptions->m_pBans = optarg; break;
 		case 10: pOptions->m_StatsOnly = true; break;
 		case 14: pOptions->m_Offload = true; break;
 		case 8: pOptions->m_SkbMode = true; break;
@@ -557,7 +656,8 @@ int main(int argc, char **argv)
 	struct key_file Keys = {};
 	char aObjectPath[512];
 	int InterfaceIndex;
-	int ConfigMap, KeyMap, PortMap, MasterV4Map, MasterV6Map, StatsMap;
+	int ConfigMap, KeyMap, PortMap, MasterV4Map, MasterV6Map, StatsMap, BansV4Map, BansV6Map;
+	int64_t BansModified = 0;
 	int ProgramFd;
 	int NumCpus;
 	int Result = 1;
@@ -636,7 +736,10 @@ int main(int argc, char **argv)
 	MasterV4Map = bpf_object__find_map_fd_by_name(pObject, "ddnet_master_v4");
 	MasterV6Map = bpf_object__find_map_fd_by_name(pObject, "ddnet_master_v6");
 	StatsMap = bpf_object__find_map_fd_by_name(pObject, "ddnet_stats");
-	if(ConfigMap < 0 || KeyMap < 0 || PortMap < 0 || MasterV4Map < 0 || MasterV6Map < 0 || StatsMap < 0)
+	BansV4Map = bpf_object__find_map_fd_by_name(pObject, "ddnet_bans_v4");
+	BansV6Map = bpf_object__find_map_fd_by_name(pObject, "ddnet_bans_v6");
+	if(ConfigMap < 0 || KeyMap < 0 || PortMap < 0 || MasterV4Map < 0 || MasterV6Map < 0 ||
+		StatsMap < 0 || BansV4Map < 0 || BansV6Map < 0)
 	{
 		log_error("the object is missing a map");
 		goto out;
@@ -675,6 +778,13 @@ int main(int argc, char **argv)
 	{
 		if(add_master(MasterV4Map, MasterV6Map, Options.m_apMasters[Index]) != 0)
 			goto out;
+	}
+	if(Options.m_pBans)
+	{
+		struct stat Stat;
+		if(load_bans(Options.m_pBans, BansV4Map, BansV6Map) != 0)
+			goto out;
+		BansModified = stat(Options.m_pBans, &Stat) == 0 ? (int64_t)Stat.st_mtime : 0;
 	}
 
 	if(read_key_file(Options.m_pKeyPath, &Keys) == 0)
@@ -763,6 +873,18 @@ int main(int argc, char **argv)
 				if(bpf_map_update_elem(PortMap, &Options.m_aPorts[Index], &Port, BPF_ANY) == 0)
 					log_info("port %u armed after %llu verified packets",
 						Options.m_aPorts[Index], (unsigned long long)Port.m_Verified);
+			}
+		}
+
+		if(Options.m_pBans)
+		{
+			/* The operator bans somebody while this is running, so the file is
+			 * watched rather than read once. */
+			struct stat Stat;
+			if(stat(Options.m_pBans, &Stat) == 0 && (int64_t)Stat.st_mtime != BansModified)
+			{
+				BansModified = (int64_t)Stat.st_mtime;
+				load_bans(Options.m_pBans, BansV4Map, BansV6Map);
 			}
 		}
 

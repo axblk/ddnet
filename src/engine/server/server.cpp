@@ -847,6 +847,28 @@ void CServer::LogSessionIdent(int ClientId)
 		ClientId, m_aClients[ClientId].m_DDNetVersion, aVersion);
 }
 
+void CServer::LogSessionMap()
+{
+	// After OnInit the game knows its type, and the map in play is the one that was
+	// just loaded. Both are operator supplied, but they pass through the same
+	// laundering as everything else in this log, so one field can never spill into
+	// the next: the quote-space sequence is what ends a quoted value.
+	char aMap[128];
+	char aGameType[64];
+	str_copy(aMap, Config()->m_SvMap);
+	str_copy(aGameType, GameServer()->GameType());
+	for(char *pText : {aMap, aGameType})
+	{
+		str_sanitize_cc(pText);
+		for(char *pChar = pText; *pChar != '\0'; pChar++)
+		{
+			if(*pChar == '\'')
+				*pChar = ' ';
+		}
+	}
+	log_info("session", "v=1 ev=map gametype='%s' map='%s'", aGameType, aMap);
+}
+
 const char *CServer::ClientName(int ClientId) const
 {
 	if(ClientId < 0 || ClientId >= MAX_CLIENTS || m_aClients[ClientId].m_State == CServer::CClient::STATE_EMPTY)
@@ -4158,6 +4180,7 @@ int CServer::Run()
 
 	Antibot()->Init();
 	GameServer()->OnInit(nullptr);
+	LogSessionMap();
 	if(ErrorShutdown())
 	{
 		m_RunServer = STOPPING;
@@ -4241,6 +4264,7 @@ int CServer::Run()
 					Kernel()->ReregisterInterface(GameServer());
 					Console()->StoreCommands(true);
 					GameServer()->OnInit(m_pPersistentData);
+					LogSessionMap();
 					Console()->StoreCommands(false);
 
 					for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)

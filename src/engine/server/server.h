@@ -432,6 +432,7 @@ public:
 	// prose that is free to change; INFO level so it appears without debug logging.
 	void LogSessionJoin(int ClientId);
 	void LogSessionIdent(int ClientId);
+	void LogSessionMap();
 	void OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPasswordOrNullptr);
 	void OnNetMsgReady(int ClientId);
 	void OnNetMsgEnterGame(int ClientId);

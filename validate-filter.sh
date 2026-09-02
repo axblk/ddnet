@@ -10,7 +10,13 @@
 set -uo pipefail
 
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-BUILD=${1:-$HERE/build-ebpf}
+BUILD=${1:-}
+if [ -z "$BUILD" ]; then
+	for CANDIDATE in "$HERE"/build-td "$HERE"/build-ebpf "$HERE"/build; do
+		[ -f "$CANDIDATE/ddnet_xdp_kern.o" ] && BUILD=$CANDIDATE && break
+	done
+	BUILD=${BUILD:-$HERE/build-ebpf}
+fi
 # Next to the script rather than in /tmp: whoever can start this can also read the
 # directory it lives in, which is not true of /tmp when the two sides are in
 # different mount namespaces.

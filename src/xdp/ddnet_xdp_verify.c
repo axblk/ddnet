@@ -195,6 +195,12 @@ struct expectation
 	int m_Action;
 	int m_Class; // -1 when the packet never reaches the classifier
 	int m_Verdict;
+	// When set, the returned packet has to be a reply carrying these payload bytes
+	// with the addresses and ports turned around.
+	const uint8_t *m_pReply;
+	uint32_t m_ReplySize;
+	// Whether the filter is allowed to answer handshakes for this case.
+	bool m_Offload;
 };
 
 static int s_Failures;
@@ -223,12 +229,25 @@ static struct packet *add_case(const char *pName, bool Armed, int Action, int Cl
 		exit(2);
 	}
 	pCase = &s_aCases[s_NumCases++];
+	memset(pCase, 0, sizeof(*pCase));
 	pCase->m_pName = pName;
 	pCase->m_Armed = Armed;
 	pCase->m_Action = Action;
 	pCase->m_Class = Class;
 	pCase->m_Verdict = Verdict;
+	pCase->m_Offload = true;
 	return &pCase->m_Packet;
+}
+
+static void without_offload(void)
+{
+	s_aCases[s_NumCases - 1].m_Offload = false;
+}
+
+static void expect_reply(const uint8_t *pReply, uint32_t Size)
+{
+	s_aCases[s_NumCases - 1].m_pReply = pReply;
+	s_aCases[s_NumCases - 1].m_ReplySize = Size;
 }
 
 static void read_stats(int StatsMap, int NumCpus, uint64_t *pOut)
@@ -247,8 +266,19 @@ static void read_stats(int StatsMap, int NumCpus, uint64_t *pOut)
 	free(pValues);
 }
 
+static int s_ConfigMap;
+
 static void run(int ProgramFd, int PortMap, int StatsMap, int NumCpus, const struct expectation *pCase)
 {
+	{
+		struct ddnet_xdp_config Config;
+		uint32_t Zero = 0;
+		if(bpf_map_lookup_elem(s_ConfigMap, &Zero, &Config) == 0)
+		{
+			Config.m_Offload = pCase->m_Offload ? 1 : 0;
+			bpf_map_update_elem(s_ConfigMap, &Zero, &Config, BPF_ANY);
+		}
+	}
 	static uint64_t s_aBefore[DDNET_XDP_NUM_COUNTERS], s_aAfter[DDNET_XDP_NUM_COUNTERS];
 	static uint8_t s_aOut[4096];
 	uint16_t Port = TEST_PORT;
@@ -259,6 +289,7 @@ static void run(int ProgramFd, int PortMap, int StatsMap, int NumCpus, const str
 		.data_out = s_aOut,
 		.data_size_out = sizeof(s_aOut),
 		.repeat = 1);
+	const uint8_t *pSent = pCase->m_Packet.m_aData;
 
 	s_Checks++;
 
@@ -283,13 +314,50 @@ static void run(int ProgramFd, int PortMap, int StatsMap, int NumCpus, const str
 		return;
 	}
 
-	if((int)Options.retval == XDP_PASS && Options.data_size_out != pCase->m_Packet.m_Size)
+	if(!pCase->m_pReply && (int)Options.retval == XDP_PASS && Options.data_size_out != pCase->m_Packet.m_Size)
 	{
 		// A packet that is passed on must reach the server as it arrived.
 		printf("  %-42s passed, but changed size from %u to %u\n", pCase->m_pName,
 			pCase->m_Packet.m_Size, Options.data_size_out);
 		s_Failures++;
 		return;
+	}
+
+	if(pCase->m_pReply)
+	{
+		// A reply that went to the wrong place would be worse than no reply at all,
+		// so the turned around addresses are checked, not only the payload.
+		const uint32_t Offset = 14 + (pSent[12] == 0x86 ? 40 : 20) + 8;
+		if(Options.data_size_out != Offset + pCase->m_ReplySize)
+		{
+			printf("  %-42s reply is %u bytes, expected %u\n", pCase->m_pName,
+				Options.data_size_out, Offset + pCase->m_ReplySize);
+			s_Failures++;
+			return;
+		}
+		if(memcmp(s_aOut, pSent + 6, 6) != 0 || memcmp(s_aOut + 6, pSent, 6) != 0)
+		{
+			printf("  %-42s reply did not swap the hardware addresses\n", pCase->m_pName);
+			s_Failures++;
+			return;
+		}
+		if(memcmp(s_aOut + Offset, pCase->m_pReply, pCase->m_ReplySize) != 0)
+		{
+			printf("  %-42s reply payload differs\n", pCase->m_pName);
+			s_Failures++;
+			return;
+		}
+		{
+			// Ports swap; the source of the reply is the port that was asked.
+			const uint32_t UdpAt = 14 + (pSent[12] == 0x86 ? 40 : 20);
+			if(memcmp(s_aOut + UdpAt, pSent + UdpAt + 2, 2) != 0 ||
+				memcmp(s_aOut + UdpAt + 2, pSent + UdpAt, 2) != 0)
+			{
+				printf("  %-42s reply did not swap the ports\n", pCase->m_pName);
+				s_Failures++;
+				return;
+			}
+		}
 	}
 
 	if(pCase->m_Class >= 0)
@@ -439,25 +507,91 @@ static void build_cases(void)
 	build(add_case("garbage", true, XDP_DROP, DDNET_XDP_CLASS_MALFORMED, DDNET_XDP_VERDICT_DROP),
 		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aGarbage, sizeof(s_aGarbage), false);
 
-	// The two handshake openers carry no token yet, by definition, and go to the
-	// server under a budget of their own rather than being read as forgeries.
+	static uint8_t s_aTokenRequest[520];
+	static uint8_t s_aConnect[12];
+	// The two handshakes the filter can answer itself. Both hand back the number the
+	// server would have derived from the source address.
 	{
-		static uint8_t s_aTokenRequest[520];
+		static uint8_t s_aTokenReply[12];
 		s_aTokenRequest[0] = 1 << 2; // 0.7 control
 		s_aTokenRequest[7] = 5; // NET_CTRLMSG_TOKEN
-		build(add_case("0.7 token request passed to the server", true, XDP_PASS, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_PASS),
+		s_aTokenRequest[8] = 0xaa;
+		s_aTokenRequest[9] = 0xbb;
+		s_aTokenRequest[10] = 0xcc;
+		s_aTokenRequest[11] = 0xdd;
+		s_aTokenReply[0] = 1 << 2;
+		memcpy(&s_aTokenReply[3], &s_aTokenRequest[8], 4);
+		s_aTokenReply[7] = 5;
+		write_be32(&s_aTokenReply[8], token_for(false, CLIENT_V4, CLIENT_PORT));
+		build(add_case("0.7 token request answered here", true, XDP_TX, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_ANSWERED),
 			false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aTokenRequest, sizeof(s_aTokenRequest), false);
+		expect_reply(s_aTokenReply, sizeof(s_aTokenReply));
 
-		static uint8_t s_aConnect[12];
+		static uint8_t s_aTokenReplyV6[12];
+		memcpy(s_aTokenReplyV6, s_aTokenReply, sizeof(s_aTokenReplyV6));
+		write_be32(&s_aTokenReplyV6[8], token_for(true, CLIENT_V6, CLIENT_PORT));
+		build(add_case("0.7 token request over IPv6", true, XDP_TX, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_ANSWERED),
+			true, CLIENT_V6, CLIENT_PORT, TEST_PORT, s_aTokenRequest, sizeof(s_aTokenRequest), false);
+		expect_reply(s_aTokenReplyV6, sizeof(s_aTokenReplyV6));
+
+		static uint8_t s_aConnectReply[12];
 		s_aConnect[0] = 4 << 2; // 0.6 control
 		s_aConnect[3] = 1; // NET_CTRLMSG_CONNECT
 		s_aConnect[4] = 'T';
 		s_aConnect[5] = 'K';
 		s_aConnect[6] = 'E';
 		s_aConnect[7] = 'N';
-		build(add_case("0.6 connect passed to the server", true, XDP_PASS, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_PASS),
+		s_aConnectReply[0] = 4 << 2;
+		s_aConnectReply[3] = 2; // NET_CTRLMSG_CONNECTACCEPT
+		memcpy(&s_aConnectReply[4], "TKEN", 4);
+		write_be32(&s_aConnectReply[8], token_for(false, CLIENT_V4, CLIENT_PORT));
+		build(add_case("0.6 ddnet connect answered here", true, XDP_TX, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_ANSWERED),
 			false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aConnect, sizeof(s_aConnect), false);
+		expect_reply(s_aConnectReply, sizeof(s_aConnectReply));
+
+		// Vanilla 0.6 has no magic and no token, so there is nothing to answer.
+		static uint8_t s_aVanillaConnect[12];
+		memcpy(s_aVanillaConnect, s_aConnect, sizeof(s_aVanillaConnect));
+		s_aVanillaConnect[4] = 'X';
+		build(add_case("vanilla connect is not answered", true, XDP_PASS, DDNET_XDP_CLASS_LEGACY, DDNET_XDP_VERDICT_PASS),
+			false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aVanillaConnect, sizeof(s_aVanillaConnect), false);
 	}
+
+	// The accept is what makes the server hand out a slot, so a wrong token on one is
+	// refused rather than bounded.
+	{
+		static uint8_t s_aAccept[8];
+		s_aAccept[0] = 4 << 2;
+		s_aAccept[3] = 3; // NET_CTRLMSG_ACCEPT
+		write_be32(&s_aAccept[4], token_for(false, CLIENT_V4, CLIENT_PORT));
+		build(add_case("0.6 accept with the right token", true, XDP_PASS, DDNET_XDP_CLASS_LEGACY_VERIFIED, DDNET_XDP_VERDICT_PASS),
+			false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aAccept, sizeof(s_aAccept), false);
+
+		static uint8_t s_aAcceptBad[8];
+		memcpy(s_aAcceptBad, s_aAccept, sizeof(s_aAcceptBad));
+		s_aAcceptBad[7] ^= 1;
+		build(add_case("0.6 accept with a wrong token", true, XDP_DROP, DDNET_XDP_CLASS_LEGACY, DDNET_XDP_VERDICT_DROP),
+			false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aAcceptBad, sizeof(s_aAcceptBad), false);
+
+		// A vanilla client sends the same message without a token and must not be
+		// mistaken for a forgery.
+		static const uint8_t s_aVanillaAccept[4] = {4 << 2, 0, 0, 3};
+		build(add_case("vanilla accept is only bounded", true, XDP_PASS, DDNET_XDP_CLASS_LEGACY, DDNET_XDP_VERDICT_PASS),
+			false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aVanillaAccept, sizeof(s_aVanillaAccept), false);
+	}
+
+	// Without the offload both openers go to the server, under the handshake budget:
+	// they carry no token yet by definition, and must not be mistaken for a forgery.
+	build(add_case("0.7 token request passed to the server", true, XDP_PASS, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_PASS),
+		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aTokenRequest, sizeof(s_aTokenRequest), false);
+	without_offload();
+	build(add_case("0.6 connect passed to the server", true, XDP_PASS, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_PASS),
+		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aConnect, sizeof(s_aConnect), false);
+	without_offload();
+	// On a port that is not armed the server has not proven it uses the key, so an
+	// answer from here would hand out tokens it has never heard of.
+	build(add_case("no answer on a port not armed", false, XDP_PASS, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_PASS),
+		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aTokenRequest, sizeof(s_aTokenRequest), false);
 
 	// Whatever a master sends is never budgeted, not only the challenge.
 	build(add_case("server info request from the master", true, XDP_PASS, DDNET_XDP_CLASS_MASTER, DDNET_XDP_VERDICT_PASS),
@@ -554,6 +688,7 @@ int main(int argc, char **argv)
 	PortMap = bpf_object__find_map_fd_by_name(pObject, "ddnet_ports");
 	MasterV4Map = bpf_object__find_map_fd_by_name(pObject, "ddnet_master_v4");
 	StatsMap = bpf_object__find_map_fd_by_name(pObject, "ddnet_stats");
+	s_ConfigMap = ConfigMap;
 	if(ConfigMap < 0 || KeyMap < 0 || PortMap < 0 || MasterV4Map < 0 || StatsMap < 0)
 	{
 		fprintf(stderr, "the object is missing a map\n");
@@ -565,6 +700,8 @@ int main(int argc, char **argv)
 	memset(&Config, 0, sizeof(Config));
 	Config.m_PrefixV4 = 24;
 	Config.m_PrefixV6 = 56;
+	Config.m_Offload = 1;
+	Config.m_CurrentEpoch = TEST_EPOCH;
 	bpf_map_update_elem(ConfigMap, &Zero, &Config, BPF_ANY);
 
 	memset(&Key, 0, sizeof(Key));

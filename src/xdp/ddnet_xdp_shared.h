@@ -87,6 +87,12 @@ struct ddnet_xdp_config
 	struct ddnet_xdp_budget m_aBudgets[DDNET_XDP_NUM_BUDGETS];
 	uint32_t m_PrefixV4;
 	uint32_t m_PrefixV6;
+	/* Answer the token handshakes from here instead of letting them reach the
+	 * server. Off by default: it is the one thing in this program that sends. */
+	uint32_t m_Offload;
+	/* The epoch a token is issued under. Verification accepts any valid epoch, but
+	 * something being handed out has to be stamped with the current one. */
+	uint32_t m_CurrentEpoch;
 	/* Budget of an established 0.6 connection that was learned from its handshake.
 	 * Zero switches the connection table off entirely. */
 	uint64_t m_ConnNsPerToken;
@@ -138,6 +144,7 @@ enum
 	DDNET_XDP_VERDICT_PASS = 0,
 	DDNET_XDP_VERDICT_WOULD_DROP,
 	DDNET_XDP_VERDICT_DROP,
+	DDNET_XDP_VERDICT_ANSWERED,
 	DDNET_XDP_NUM_VERDICTS,
 };
 
@@ -166,6 +173,7 @@ static const char *const DDNET_XDP_VERDICT_NAMES[DDNET_XDP_NUM_VERDICTS] = {
 	"pass",
 	"would drop",
 	"drop",
+	"answered",
 };
 
 #endif

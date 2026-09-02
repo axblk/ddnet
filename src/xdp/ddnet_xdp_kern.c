@@ -39,11 +39,17 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
  * maximum length connection IDs puts the token length field at offset 47. */
 #define DDNET_XDP_HEAD_SIZE 48
 
-/* The two handshake openers, the packets with which a client asks for a token.
- * They are the only ones of their protocol that carry none yet. */
+/* The two handshake openers, the packets with which a client asks for a token. They
+ * are the only ones of their protocol that carry none yet, and both are answered
+ * with a twelve byte control packet. */
 #define SIXUP_CTRL_TOKEN 5
 #define SIXUP_TOKEN_REQUEST_SIZE (SIXUP_PACKET_HEADER_SIZE + 512)
 #define LEGACY_CTRL_CONNECT 1
+#define LEGACY_CTRL_CONNECTACCEPT 2
+#define LEGACY_CTRL_ACCEPT 3
+#define LEGACY_ACCEPT_SIZE (LEGACY_PACKET_HEADER_SIZE + 1 + 4)
+#define HANDSHAKE_REPLY_SIZE 12
+#define ETH_ALEN 6
 
 struct
 {
@@ -292,6 +298,25 @@ static __always_inline int token_is(const struct ddnet_tokens *pTokens, __u32 To
 	       (pTokens->m_aValid[3] && pTokens->m_aToken[3] == Token);
 }
 
+/* The number the server derives for this address, which is what both handshakes ask
+ * for. Stamped with the current epoch; the previous one stays valid, so a token
+ * handed out just before a rotation keeps working after it. */
+static __always_inline __u32 token_for(const struct ddnet_source *pSource, __u32 Epoch)
+{
+	__u8 aInput[DDNET_XDP_TOKEN_INPUT_MAX] = {};
+	const __u32 Size = token_input(pSource, aInput);
+	const struct ddnet_xdp_key *pKey;
+
+	if(Epoch >= DDNET_XDP_KEY_EPOCHS)
+		return 0;
+	pKey = bpf_map_lookup_elem(&ddnet_keys, &Epoch);
+	if(!pKey || !pKey->m_Valid)
+		return 0;
+	if(Size == DDNET_XDP_TOKEN_INPUT_V4)
+		return token_hash_v4(&pKey->m_Key, aInput);
+	return token_hash_full(&pKey->m_Key, aInput);
+}
+
 /* The global token is the derivation over an all-zero address, the same value
  * `CNetServer::GetGlobalToken()` produces. */
 static __always_inline int global_token_valid(__u32 Token)
@@ -328,6 +353,14 @@ static __always_inline int cid_valid(const __u8 *pCid)
 	       pCid[6] == (__u8)(Tag >> 8) && pCid[7] == (__u8)Tag;
 }
 
+static __always_inline void write_be32(__u8 *pOut, __u32 Value)
+{
+	pOut[0] = (__u8)(Value >> 24);
+	pOut[1] = (__u8)(Value >> 16);
+	pOut[2] = (__u8)(Value >> 8);
+	pOut[3] = (__u8)Value;
+}
+
 static __always_inline __u32 read_be32(const __u8 *pData)
 {
 	return ((__u32)pData[0] << 24) | ((__u32)pData[1] << 16) | ((__u32)pData[2] << 8) | pData[3];
@@ -355,6 +388,126 @@ static __always_inline int master_allowed(const struct ddnet_source *pSource)
 	return bpf_map_lookup_elem(&ddnet_master_v6, &Address) != NULL;
 }
 
+/* Ones complement sum, folded to sixteen bits. `Size` has to be an even constant:
+ * everything summed here is a header or the fixed reply, and a variable length would
+ * put a variable index on a packet pointer, which is the one thing the verifier will
+ * not follow. */
+static __always_inline __u32 checksum_add(const __u8 *pData, __u32 Size, __u32 Sum)
+{
+	__u32 Index;
+#pragma unroll
+	for(Index = 0; Index + 1 < Size; Index += 2)
+		Sum += ((__u32)pData[Index] << 8) | pData[Index + 1];
+	return Sum;
+}
+
+static __always_inline __u16 checksum_fold(__u32 Sum)
+{
+	Sum = (Sum & 0xffff) + (Sum >> 16);
+	Sum = (Sum & 0xffff) + (Sum >> 16);
+	return (__u16)~Sum;
+}
+
+/* Turns the packet around: the reply goes back out of the interface it arrived on,
+ * to the address it claims to come from. A spoofed source therefore never receives
+ * what it asked for, which is the entire point of a token handshake.
+ *
+ * Every bound below is a constant. After a tail adjustment the verifier knows
+ * nothing about the packet any more, and a length derived from a pointer difference
+ * does not give it back: it only tracks the lower half of one, so a check against it
+ * proves nothing. The two families are written out separately for that reason.
+ */
+#define REPLY_V4_SIZE (sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr) + HANDSHAKE_REPLY_SIZE)
+#define REPLY_V6_SIZE (sizeof(struct ethhdr) + sizeof(struct ipv6hdr) + sizeof(struct udphdr) + HANDSHAKE_REPLY_SIZE)
+
+static __always_inline void swap_mac(__u8 *pEth)
+{
+	__u8 aMac[ETH_ALEN];
+	__builtin_memcpy(aMac, pEth, ETH_ALEN);
+	__builtin_memcpy(pEth, pEth + ETH_ALEN, ETH_ALEN);
+	__builtin_memcpy(pEth + ETH_ALEN, aMac, ETH_ALEN);
+}
+
+static __always_inline int send_reply_v4(struct xdp_md *pCtx, const __u8 *pReply)
+{
+	__u8 *pData;
+	struct iphdr *pIp;
+	struct udphdr *pUdp;
+	__u32 Address, Sum;
+	__u16 Port;
+
+	if(bpf_xdp_adjust_tail(pCtx, (int)REPLY_V4_SIZE - (int)(pCtx->data_end - pCtx->data)) != 0)
+		return XDP_DROP;
+	pData = (__u8 *)(long)pCtx->data;
+	if((void *)(pData + REPLY_V4_SIZE) > (void *)(long)pCtx->data_end)
+		return XDP_DROP;
+
+	swap_mac(pData);
+	pIp = (struct iphdr *)(pData + sizeof(struct ethhdr));
+	Address = pIp->saddr;
+	pIp->saddr = pIp->daddr;
+	pIp->daddr = Address;
+	pIp->tot_len = bpf_htons((__u16)(sizeof(*pIp) + sizeof(*pUdp) + HANDSHAKE_REPLY_SIZE));
+	pIp->ttl = 64;
+	pIp->frag_off = 0;
+	pIp->check = 0;
+	Sum = checksum_add((const __u8 *)pIp, sizeof(*pIp), 0);
+	pIp->check = bpf_htons(checksum_fold(Sum));
+
+	pUdp = (struct udphdr *)(pIp + 1);
+	Port = pUdp->source;
+	pUdp->source = pUdp->dest;
+	pUdp->dest = Port;
+	pUdp->len = bpf_htons((__u16)(sizeof(*pUdp) + HANDSHAKE_REPLY_SIZE));
+	/* Optional over IPv4, and leaving it out keeps this path short. */
+	pUdp->check = 0;
+	__builtin_memcpy(pUdp + 1, pReply, HANDSHAKE_REPLY_SIZE);
+	return XDP_TX;
+}
+
+static __always_inline int send_reply_v6(struct xdp_md *pCtx, const __u8 *pReply)
+{
+	__u8 *pData;
+	struct ipv6hdr *pIp;
+	struct udphdr *pUdp;
+	struct in6_addr Address;
+	__u32 Sum;
+	__u16 Port;
+
+	if(bpf_xdp_adjust_tail(pCtx, (int)REPLY_V6_SIZE - (int)(pCtx->data_end - pCtx->data)) != 0)
+		return XDP_DROP;
+	pData = (__u8 *)(long)pCtx->data;
+	if((void *)(pData + REPLY_V6_SIZE) > (void *)(long)pCtx->data_end)
+		return XDP_DROP;
+
+	swap_mac(pData);
+	pIp = (struct ipv6hdr *)(pData + sizeof(struct ethhdr));
+	Address = pIp->saddr;
+	pIp->saddr = pIp->daddr;
+	pIp->daddr = Address;
+	pIp->payload_len = bpf_htons((__u16)(sizeof(*pUdp) + HANDSHAKE_REPLY_SIZE));
+	pIp->hop_limit = 64;
+
+	pUdp = (struct udphdr *)(pIp + 1);
+	Port = pUdp->source;
+	pUdp->source = pUdp->dest;
+	pUdp->dest = Port;
+	pUdp->len = bpf_htons((__u16)(sizeof(*pUdp) + HANDSHAKE_REPLY_SIZE));
+	pUdp->check = 0;
+	__builtin_memcpy(pUdp + 1, pReply, HANDSHAKE_REPLY_SIZE);
+	/* IPv6 has no header checksum but demands the UDP one, so it is built here from
+	 * the pseudo header, the UDP header and the reply. */
+	Sum = checksum_add((const __u8 *)&pIp->saddr, 32, 0);
+	Sum += (__u32)(sizeof(*pUdp) + HANDSHAKE_REPLY_SIZE);
+	Sum += IPPROTO_UDP;
+	Sum = checksum_add((const __u8 *)pUdp, sizeof(*pUdp), Sum);
+	Sum = checksum_add(pReply, HANDSHAKE_REPLY_SIZE, Sum);
+	pUdp->check = bpf_htons(checksum_fold(Sum));
+	if(pUdp->check == 0)
+		pUdp->check = 0xffff;
+	return XDP_TX;
+}
+
 /* Aggregates a source to its network prefix, so that neighbouring addresses share a
  * budget and an attacker gains nothing by walking through a range he controls. */
 static __always_inline __u32 prefix_hash(const struct ddnet_source *pSource, const struct ddnet_xdp_config *pConfig)
@@ -375,6 +528,8 @@ static __always_inline __u32 prefix_hash(const struct ddnet_source *pSource, con
 	}
 }
 
+/* The 0.7 token request: a control packet whose payload is padded to 512 bytes and
+ * carries the token the client wants its answer addressed with. */
 static __always_inline int is_sixup_token_request(const __u8 *pData, __u32 Size)
 {
 	return Size >= SIXUP_TOKEN_REQUEST_SIZE &&
@@ -383,6 +538,8 @@ static __always_inline int is_sixup_token_request(const __u8 *pData, __u32 Size)
 	       pData[SIXUP_PACKET_HEADER_SIZE] == SIXUP_CTRL_TOKEN;
 }
 
+/* The 0.6 DDNet connect: a control packet carrying the magic that says this client
+ * understands security tokens. Vanilla 0.6 has no magic and no token. */
 static __always_inline int is_legacy_connect(const __u8 *pData, __u32 Size)
 {
 	return Size >= LEGACY_PACKET_HEADER_SIZE + 1 + 4 + 4 &&
@@ -515,6 +672,22 @@ __attribute__((noinline)) static void classify(const __u8 *pData, __u32 Size, __
 		/* The handshake is never compressed, so this is where a connection whose data
 		 * packets are compressed gets remembered. */
 		pOut->m_Track = 1;
+		return;
+	}
+
+	/* The 0.6 accept is the packet that makes the server hand out a slot, and being a
+	 * control packet it is never compressed, so its token is in the clear and was
+	 * just checked above. One that did not check out is refused rather than merely
+	 * bounded: at this size and shape there is nothing else it could be. A vanilla
+	 * client sends the same message four bytes shorter, without a token, and is left
+	 * to the budget where it belongs. */
+	if(Size == LEGACY_ACCEPT_SIZE &&
+		(pData[0] >> 2) == LEGACY_FLAG_CONTROL &&
+		pData[2] == 0 &&
+		pData[LEGACY_PACKET_HEADER_SIZE] == LEGACY_CTRL_ACCEPT)
+	{
+		pOut->m_Class = DDNET_XDP_CLASS_LEGACY;
+		pOut->m_Pass = 0;
 		return;
 	}
 
@@ -726,6 +899,71 @@ int ddnet_xdp_filter(struct xdp_md *pCtx)
 		{
 			count(pPort->m_Index, DDNET_XDP_CLASS_MALFORMED, pPort->m_Armed ? DDNET_XDP_VERDICT_DROP : DDNET_XDP_VERDICT_WOULD_DROP);
 			return pPort->m_Armed ? XDP_DROP : XDP_PASS;
+		}
+	}
+
+	/* Answering a handshake here means the server never sees it, and a spoofed
+	 * source never sees the answer. Done before the classifier because the reply is
+	 * the whole handling of these two packets.
+	 *
+	 * Only on an armed port. Arming is the proof that the server behind it derives
+	 * tokens the way this program does; before that, an answer from here would hand
+	 * out tokens the server has never heard of and lock every new player out. */
+	if(pConfig->m_Offload && pPort->m_Armed)
+	{
+		/* Zeroed, because the copy below stops at the end of the packet and the
+		 * verifier counts anything it did not write as unreadable. */
+		__u8 aRequest[SIXUP_PACKET_HEADER_SIZE + 5] = {};
+		__u8 aReply[HANDSHAKE_REPLY_SIZE] = {};
+		int Index;
+#pragma unroll
+		for(Index = 0; Index < (int)sizeof(aRequest); Index++)
+		{
+			if((void *)(pPayload + Index + 1) > pDataEnd)
+				break;
+			aRequest[Index] = pPayload[Index];
+		}
+		const int SixupRequest = is_sixup_token_request(aRequest, PayloadSize);
+		const int LegacyConnect = is_legacy_connect(aRequest, PayloadSize);
+		/* An answer costs this host a packet on the wire, the same as letting the
+		 * handshake through costs the server one, so it is paid for out of the same
+		 * budget. Without this the offload answers every handshake it is sent, at
+		 * whatever rate they arrive, and the handshake limit the operator set
+		 * applies to everything except the path that sends the most. */
+		if((SixupRequest || LegacyConnect) &&
+			!take_budget(DDNET_XDP_BUDGET_HANDSHAKE, prefix_hash(&Source, pConfig), pConfig))
+		{
+			count(pPort->m_Index, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_DROP);
+			return XDP_DROP;
+		}
+		if(SixupRequest)
+		{
+			/* The answer is addressed with the token the client picked, and carries
+			 * the one this host would have issued for the address it came from. */
+			aReply[0] = (SIXUP_FLAG_CONTROL) << 2;
+			__builtin_memcpy(&aReply[3], &aRequest[SIXUP_PACKET_HEADER_SIZE + 1], 4);
+			aReply[7] = SIXUP_CTRL_TOKEN;
+			write_be32(&aReply[8], token_for(&Source, pConfig->m_CurrentEpoch));
+			count(pPort->m_Index, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_ANSWERED);
+			return Source.m_Family == DDNET_XDP_FAMILY_IPV6 ?
+				       send_reply_v6(pCtx, aReply) :
+				       send_reply_v4(pCtx, aReply);
+		}
+		if(LegacyConnect)
+		{
+			aReply[0] = LEGACY_FLAG_CONTROL << 2;
+			aReply[3] = LEGACY_CTRL_CONNECTACCEPT;
+			aReply[4] = 'T';
+			aReply[5] = 'K';
+			aReply[6] = 'E';
+			aReply[7] = 'N';
+			/* 0.6 appends the token to the payload rather than the header. Control
+			 * packets are never compressed, so it stays where it is put. */
+			write_be32(&aReply[8], token_for(&Source, pConfig->m_CurrentEpoch));
+			count(pPort->m_Index, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_ANSWERED);
+			return Source.m_Family == DDNET_XDP_FAMILY_IPV6 ?
+				       send_reply_v6(pCtx, aReply) :
+				       send_reply_v4(pCtx, aReply);
 		}
 	}
 

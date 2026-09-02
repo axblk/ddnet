@@ -71,6 +71,7 @@ struct options
 	unsigned m_PrefixV6;
 	unsigned m_RotateSeconds;
 	unsigned m_ArmAfter;
+	unsigned m_DisarmAfter;
 	unsigned m_ConnPps;
 	unsigned m_ConnIdleSeconds;
 	bool m_CountOnly;
@@ -422,6 +423,8 @@ static void usage(const char *pName)
 		"      --bans FILE        addresses to drop outright, reread when it changes;\n"
 		"                         reads the format `bans_save` writes\n"
 		"      --arm-after N      verified packets before a port starts dropping (default 100)\n"
+		"      --disarm-after N   stop dropping after N seconds without verified traffic\n"
+		"                         (default 300, 0 to never disarm)\n"
 		"      --conntrack[=PPS]  remember 0.6 connections seen handshaking and give\n"
 		"                         each one its own budget (default 200 when given)\n"
 		"      --conn-idle N      forget a 0.6 connection after N idle seconds (default 60)\n"
@@ -452,6 +455,7 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 		{"prefix6", required_argument, NULL, 4},
 		{"rotate", required_argument, NULL, 5},
 		{"arm-after", required_argument, NULL, 6},
+		{"disarm-after", required_argument, NULL, 18},
 		{"conntrack", optional_argument, NULL, 12},
 		{"conn-idle", required_argument, NULL, 13},
 		{"count-only", no_argument, NULL, 7},
@@ -482,6 +486,7 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 	 * for three rotations, so this is the shortest session the filter will not cut. */
 	pOptions->m_RotateSeconds = 86400;
 	pOptions->m_ArmAfter = 100;
+	pOptions->m_DisarmAfter = 300;
 	pOptions->m_ConnIdleSeconds = 60;
 
 	while((Option = getopt_long(argc, argv, "i:p:o:k:g:m:vh", s_aLong, NULL)) != -1)
@@ -516,6 +521,7 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 		case 4: pOptions->m_PrefixV6 = (unsigned)atoi(optarg); break;
 		case 5: pOptions->m_RotateSeconds = (unsigned)atoi(optarg); break;
 		case 6: pOptions->m_ArmAfter = (unsigned)atoi(optarg); break;
+		case 18: pOptions->m_DisarmAfter = (unsigned)atoi(optarg); break;
 		case 7: pOptions->m_CountOnly = true; break;
 		case 12: pOptions->m_ConnPps = optarg ? (unsigned)atoi(optarg) : 200; break;
 		case 13: pOptions->m_ConnIdleSeconds = (unsigned)atoi(optarg); break;
@@ -666,6 +672,8 @@ int main(int argc, char **argv)
 	uint32_t Zero = 0;
 	struct ddnet_xdp_config Config = {};
 	static uint64_t s_aPrevious[DDNET_XDP_STATS_ENTRIES];
+	static uint64_t s_aLastVerified[MAX_PORTS];
+	static time_t s_aLastVerifiedAt[MAX_PORTS];
 	uint64_t *aPrevious = s_aPrevious;
 	time_t LastRotate;
 
@@ -826,6 +834,9 @@ int main(int argc, char **argv)
 		log_info("could not pin the maps under %s (%s), --stats will not work",
 			Options.m_pPinDir, strerror(errno));
 
+	for(Index = 0; Index < Options.m_NumPorts; Index++)
+		s_aLastVerifiedAt[Index] = time(NULL);
+
 	log_info("attached to %s in %s mode, %d ports, key in %s",
 		Options.m_pInterface, AttachFlags == XDP_FLAGS_DRV_MODE ? "driver" : "generic",
 		Options.m_NumPorts, Options.m_pKeyPath);
@@ -836,8 +847,12 @@ int main(int argc, char **argv)
 		log_info("not remembering 0.6 connections, they share the unverified budget");
 	if(Options.m_CountOnly)
 		log_info("counting only, nothing will be dropped");
+	else if(Options.m_DisarmAfter)
+		log_info("a port starts dropping after %u verified packets, and stops after %u seconds without any",
+			Options.m_ArmAfter, Options.m_DisarmAfter);
 	else
-		log_info("a port starts dropping after %u verified packets", Options.m_ArmAfter);
+		log_info("a port starts dropping after %u verified packets and never stops",
+			Options.m_ArmAfter);
 
 	signal(SIGINT, on_signal);
 	signal(SIGTERM, on_signal);
@@ -864,15 +879,40 @@ int main(int argc, char **argv)
 				struct ddnet_xdp_port Port = {};
 				if(bpf_map_lookup_elem(PortMap, &Options.m_aPorts[Index], &Port) != 0)
 					continue;
-				if(Port.m_Armed || Port.m_Verified < Options.m_ArmAfter)
+				if(Port.m_Verified != s_aLastVerified[Index])
+				{
+					s_aLastVerified[Index] = Port.m_Verified;
+					s_aLastVerifiedAt[Index] = Now;
+				}
+				if(!Port.m_Armed)
+				{
+					if(Port.m_Verified < Options.m_ArmAfter)
+						continue;
+					/* The port has proven that the server on it derives tokens the
+					 * same way, so dropping is now safe for it. A port whose server
+					 * does not is left passing everything instead of being cut off. */
+					Port.m_Armed = 1;
+					if(bpf_map_update_elem(PortMap, &Options.m_aPorts[Index], &Port, BPF_ANY) == 0)
+						log_info("port %u armed after %llu verified packets",
+							Options.m_aPorts[Index], (unsigned long long)Port.m_Verified);
 					continue;
-				/* The port has proven that the server on it derives tokens the same
-				 * way, so dropping is now safe for it. A port whose server does not
-				 * is left passing everything instead of being cut off. */
-				Port.m_Armed = 1;
-				if(bpf_map_update_elem(PortMap, &Options.m_aPorts[Index], &Port, BPF_ANY) == 0)
-					log_info("port %u armed after %llu verified packets",
-						Options.m_aPorts[Index], (unsigned long long)Port.m_Verified);
+				}
+				/* The other direction, and the more important one. A server that was
+				 * restarted without the key, or built without it, would otherwise have
+				 * every packet dropped by a port that armed before it. Going quiet
+				 * costs nothing on an idle server: the next verified packet arms it
+				 * again. */
+				if(Options.m_DisarmAfter &&
+					Now - s_aLastVerifiedAt[Index] >= (time_t)Options.m_DisarmAfter)
+				{
+					Port.m_Armed = 0;
+					Port.m_Verified = 0;
+					s_aLastVerified[Index] = 0;
+					s_aLastVerifiedAt[Index] = Now;
+					if(bpf_map_update_elem(PortMap, &Options.m_aPorts[Index], &Port, BPF_ANY) == 0)
+						log_info("port %u disarmed after %u seconds without verified traffic",
+							Options.m_aPorts[Index], Options.m_DisarmAfter);
+				}
 			}
 		}
 

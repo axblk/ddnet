@@ -78,6 +78,7 @@ static const char *const CLIENT_V4 = "192.0.2.1";
 static const char *const CLIENT_V6 = "2001:db8::1";
 static const char *const MASTER_V4 = "198.51.100.9";
 static const char *const STRANGER_V4 = "203.0.113.7";
+static const char *const BANNED_V4 = "203.0.113.66";
 static const uint16_t CLIENT_PORT = 40000;
 
 struct packet
@@ -406,6 +407,7 @@ static void build_cases(void)
 	static uint8_t s_aLegacyCompressed[16] = {0x80, 0, 1};
 	static const uint8_t s_aResend[16] = {0x40, 0, 0};
 	static const uint8_t s_aGarbage[16] = {0x02, 0, 0, 0};
+	static uint8_t s_aBannedRequest[520];
 	uint8_t aSixup[16] = {0x00, 0, 1};
 	uint8_t aWrong[16] = {0x04, 0, 0};
 	uint8_t aOtherPort[16] = {0x04, 0, 0};
@@ -507,8 +509,11 @@ static void build_cases(void)
 	build(add_case("garbage", true, XDP_DROP, DDNET_XDP_CLASS_MALFORMED, DDNET_XDP_VERDICT_DROP),
 		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aGarbage, sizeof(s_aGarbage), false);
 
+	s_aBannedRequest[0] = 1 << 2;
+	s_aBannedRequest[7] = 5;
 	static uint8_t s_aTokenRequest[520];
 	static uint8_t s_aConnect[12];
+
 	// The two handshakes the filter can answer itself. Both hand back the number the
 	// server would have derived from the source address.
 	{
@@ -608,6 +613,12 @@ static void build_cases(void)
 	build(add_case("IPv6 fragment", true, XDP_DROP, -1, 0),
 		true, CLIENT_V6, CLIENT_PORT, TEST_PORT, s_aGarbage, sizeof(s_aGarbage), false);
 
+	// A banned address is answered by nothing, least of all a token it could then use.
+	build(add_case("banned address gets no handshake", true, XDP_DROP, DDNET_XDP_CLASS_BANNED, DDNET_XDP_VERDICT_DROP),
+		false, BANNED_V4, CLIENT_PORT, TEST_PORT, s_aBannedRequest, sizeof(s_aBannedRequest), false);
+	build(add_case("banned address gets nothing at all", true, XDP_DROP, DDNET_XDP_CLASS_BANNED, DDNET_XDP_VERDICT_DROP),
+		false, BANNED_V4, CLIENT_PORT, TEST_PORT, s_aServerInfo, sizeof(s_aServerInfo), false);
+
 	// Nothing this server speaks is ever fragmented.
 	build(add_case("ipv4 fragment", true, XDP_DROP, -1, 0),
 		false, CLIENT_V4, CLIENT_PORT, TEST_PORT, s_aLegacy, sizeof(s_aLegacy), true);
@@ -644,7 +655,7 @@ int main(int argc, char **argv)
 	const char *pObjectPath = argc > 1 ? argv[1] : "ddnet_xdp_kern.o";
 	struct bpf_object *pObject;
 	struct bpf_program *pProgram;
-	int ProgramFd, ConfigMap, KeyMap, PortMap, MasterV4Map, StatsMap;
+	int ProgramFd, ConfigMap, KeyMap, PortMap, MasterV4Map, StatsMap, BansV4Map;
 	int NumCpus = libbpf_num_possible_cpus();
 	uint32_t Zero = 0, Epoch = TEST_EPOCH;
 	struct ddnet_xdp_config Config;
@@ -689,6 +700,7 @@ int main(int argc, char **argv)
 	MasterV4Map = bpf_object__find_map_fd_by_name(pObject, "ddnet_master_v4");
 	StatsMap = bpf_object__find_map_fd_by_name(pObject, "ddnet_stats");
 	s_ConfigMap = ConfigMap;
+	BansV4Map = bpf_object__find_map_fd_by_name(pObject, "ddnet_bans_v4");
 	if(ConfigMap < 0 || KeyMap < 0 || PortMap < 0 || MasterV4Map < 0 || StatsMap < 0)
 	{
 		fprintf(stderr, "the object is missing a map\n");
@@ -713,6 +725,17 @@ int main(int argc, char **argv)
 	bpf_map_update_elem(PortMap, &PortNumber, &Port, BPF_ANY);
 	inet_pton(AF_INET, MASTER_V4, &MasterAddress);
 	bpf_map_update_elem(MasterV4Map, &MasterAddress.s_addr, &One, BPF_ANY);
+	{
+		struct
+		{
+			uint32_t m_PrefixLength;
+			uint8_t m_aAddress[4];
+		} BanKey = {32, {0}};
+		struct in_addr Banned;
+		inet_pton(AF_INET, BANNED_V4, &Banned);
+		memcpy(BanKey.m_aAddress, &Banned.s_addr, 4);
+		bpf_map_update_elem(BansV4Map, &BanKey, &One, BPF_ANY);
+	}
 
 	build_cases();
 	printf("running %d cases against the loaded program\n", s_NumCases);

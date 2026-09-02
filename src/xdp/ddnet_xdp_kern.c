@@ -75,6 +75,38 @@ struct
 	__type(value, struct ddnet_xdp_port);
 } ddnet_ports SEC(".maps");
 
+/* Addresses the operator has banned. A longest prefix match so a single entry can
+ * cover a range, which is what a ban on a netblock is. */
+struct ddnet_ban_key_v4
+{
+	__u32 m_PrefixLength;
+	__u8 m_aAddress[4];
+};
+
+struct ddnet_ban_key_v6
+{
+	__u32 m_PrefixLength;
+	__u8 m_aAddress[16];
+};
+
+struct
+{
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(max_entries, 4096);
+	__type(key, struct ddnet_ban_key_v4);
+	__type(value, __u8);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+} ddnet_bans_v4 SEC(".maps");
+
+struct
+{
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(max_entries, 4096);
+	__type(key, struct ddnet_ban_key_v6);
+	__type(value, __u8);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+} ddnet_bans_v6 SEC(".maps");
+
 struct
 {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -374,6 +406,21 @@ struct ddnet_decision
 	__u8 m_Verified; /* carried a token or connection ID this host issued */
 	__u8 m_Track; /* 1 remember this connection, 2 look it up */
 };
+
+static __always_inline int is_banned(const struct ddnet_source *pSource)
+{
+	if(pSource->m_Family == DDNET_XDP_FAMILY_IPV4)
+	{
+		struct ddnet_ban_key_v4 Key = {32, {}};
+		__builtin_memcpy(Key.m_aAddress, pSource->m_aAddress, 4);
+		return bpf_map_lookup_elem(&ddnet_bans_v4, &Key) != NULL;
+	}
+	{
+		struct ddnet_ban_key_v6 Key = {128, {}};
+		__builtin_memcpy(Key.m_aAddress, pSource->m_aAddress, 16);
+		return bpf_map_lookup_elem(&ddnet_bans_v6, &Key) != NULL;
+	}
+}
 
 static __always_inline int master_allowed(const struct ddnet_source *pSource)
 {
@@ -900,6 +947,16 @@ int ddnet_xdp_filter(struct xdp_md *pCtx)
 			count(pPort->m_Index, DDNET_XDP_CLASS_MALFORMED, pPort->m_Armed ? DDNET_XDP_VERDICT_DROP : DDNET_XDP_VERDICT_WOULD_DROP);
 			return pPort->m_Armed ? XDP_DROP : XDP_PASS;
 		}
+	}
+
+	/* Before anything else, and in particular before the offload: a banned address
+	 * must not be answered. Without this the filter would hand a token to someone the
+	 * operator has thrown out, and would spend egress doing it. */
+	if(is_banned(&Source))
+	{
+		count(pPort->m_Index, DDNET_XDP_CLASS_BANNED,
+			pPort->m_Armed ? DDNET_XDP_VERDICT_DROP : DDNET_XDP_VERDICT_WOULD_DROP);
+		return pPort->m_Armed ? XDP_DROP : XDP_PASS;
 	}
 
 	/* Answering a handshake here means the server never sees it, and a spoofed

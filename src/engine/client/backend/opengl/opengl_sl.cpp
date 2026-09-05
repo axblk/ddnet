@@ -1,17 +1,15 @@
 #include "opengl_sl.h"
 
 #include <base/detect.h>
-#include <base/io.h>
 #include <base/log.h>
 
 #if defined(BACKEND_AS_OPENGL_ES) || !defined(CONF_BACKEND_OPENGL_ES)
 
+#include <engine/client/backend/embedded_shaders.h>
 #include <engine/client/backend/glsl_shader_compiler.h>
 #include <engine/graphics.h>
-#include <engine/shared/linereader.h>
-#include <engine/storage.h>
 
-#include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -26,47 +24,24 @@
 #endif
 #endif
 
-bool CGLSL::LoadShader(CGLSLCompiler *pCompiler, IStorage *pStorage, const char *pFile, int Type)
+bool CGLSL::LoadShader(CGLSLCompiler *pCompiler, const char *pName, int Type)
 {
 	if(m_IsLoaded)
 		return true;
 
-	CLineReader LineReader;
-	std::vector<std::string> vLines;
-	if(!LineReader.OpenFile(pStorage->OpenFile(pFile, IOFLAG_READ, IStorage::TYPE_ALL)))
+	const SEmbeddedShader *pDialect = FindEmbeddedShader("dialect.glsl");
+	const SEmbeddedShader *pShader = FindEmbeddedShader(pName);
+	if(pDialect == nullptr || pShader == nullptr)
 	{
+		log_error("gfx/opengl/shader", "There is no embedded shader named '%s'.", pShader == nullptr ? pName : "dialect.glsl");
 		return false;
 	}
 
-	EBackendType BackendType = pCompiler->m_IsOpenGLES ? BACKEND_TYPE_OPENGL_ES : BACKEND_TYPE_OPENGL;
-	bool IsNewOpenGL = (BackendType == BACKEND_TYPE_OPENGL ? (pCompiler->m_OpenGLVersionMajor >= 4 || (pCompiler->m_OpenGLVersionMajor == 3 && pCompiler->m_OpenGLVersionMinor == 3)) : pCompiler->m_OpenGLVersionMajor >= 3);
-	std::string GLShaderStringPostfix = std::string(" core\r\n");
-	if(BackendType == BACKEND_TYPE_OPENGL_ES)
-		GLShaderStringPostfix = std::string(" es\r\n");
-	//add compiler specific values
-	if(IsNewOpenGL)
-	{
-		vLines.push_back(std::string("#version ") + std::string(std::to_string(pCompiler->m_OpenGLVersionMajor)) + std::string(std::to_string(pCompiler->m_OpenGLVersionMinor)) + std::string(std::to_string(pCompiler->m_OpenGLVersionPatch)) + GLShaderStringPostfix);
-	}
-	else
-	{
-		if(pCompiler->m_OpenGLVersionMajor == 3)
-		{
-			if(pCompiler->m_OpenGLVersionMinor == 0)
-				vLines.emplace_back("#version 130 \r\n");
-			if(pCompiler->m_OpenGLVersionMinor == 1)
-				vLines.emplace_back("#version 140 \r\n");
-			if(pCompiler->m_OpenGLVersionMinor == 2)
-				vLines.emplace_back("#version 150 \r\n");
-		}
-		else if(pCompiler->m_OpenGLVersionMajor == 2)
-		{
-			if(pCompiler->m_OpenGLVersionMinor == 0)
-				vLines.emplace_back("#version 110 \r\n");
-			if(pCompiler->m_OpenGLVersionMinor == 1)
-				vLines.emplace_back("#version 120 \r\n");
-		}
-	}
+	std::vector<std::string> vLines;
+	const EBackendType BackendType = pCompiler->m_IsOpenGLES ? BACKEND_TYPE_OPENGL_ES : BACKEND_TYPE_OPENGL;
+	// The backend that uses programs is written against OpenGL 3.3 core and
+	// OpenGL ES 3; the version line comes from the context that was made.
+	vLines.push_back(std::string("#version ") + std::to_string(pCompiler->m_OpenGLVersionMajor) + std::to_string(pCompiler->m_OpenGLVersionMinor) + std::to_string(pCompiler->m_OpenGLVersionPatch) + (BackendType == BACKEND_TYPE_OPENGL_ES ? " es\r\n" : " core\r\n"));
 
 	if(BackendType == BACKEND_TYPE_OPENGL_ES)
 	{
@@ -88,29 +63,36 @@ bool CGLSL::LoadShader(CGLSLCompiler *pCompiler, IStorage *pStorage, const char 
 		vLines.push_back(std::string("#define ") + Define.m_DefineName + std::string(" ") + Define.m_DefineValue + std::string("\r\n"));
 	}
 
-	if(Type == GL_FRAGMENT_SHADER && !IsNewOpenGL && pCompiler->m_OpenGLVersionMajor <= 3 && pCompiler->m_HasTextureArray)
+	// The source is embedded as text; the compiler still looks at it one
+	// line at a time, because that is what the ES rewriting works on. The
+	// dialect header goes first, the way the Vulkan build prepends it.
+	for(const SEmbeddedShader *pPart : {pDialect, pShader})
 	{
-		vLines.emplace_back("#extension GL_EXT_texture_array : enable\r\n");
+		const char *pSource = reinterpret_cast<const char *>(pPart->m_pData);
+		const char *pSourceEnd = pSource + pPart->m_Size;
+		while(pSource < pSourceEnd)
+		{
+			const char *pLineEnd = static_cast<const char *>(memchr(pSource, '\n', pSourceEnd - pSource));
+			if(pLineEnd == nullptr)
+				pLineEnd = pSourceEnd;
+			const std::string ReadLine(pSource, pLineEnd);
+			std::string Line;
+			pCompiler->ParseLine(Line, ReadLine.c_str(), Type == GL_FRAGMENT_SHADER ? GLSL_SHADER_COMPILER_TYPE_FRAGMENT : GLSL_SHADER_COMPILER_TYPE_VERTEX);
+			Line.append("\r\n");
+			vLines.push_back(Line);
+			pSource = pLineEnd + 1;
+		}
 	}
 
-	while(const char *pReadLine = LineReader.Get())
+	std::vector<const char *> vShaderCode(vLines.size());
+	for(size_t i = 0; i < vLines.size(); ++i)
 	{
-		std::string Line;
-		pCompiler->ParseLine(Line, pReadLine, Type == GL_FRAGMENT_SHADER ? GLSL_SHADER_COMPILER_TYPE_FRAGMENT : GLSL_SHADER_COMPILER_TYPE_VERTEX);
-		Line.append("\r\n");
-		vLines.push_back(Line);
-	}
-
-	std::vector<const char *> vpShaderCode;
-	vpShaderCode.reserve(vLines.size());
-	for(const auto &Line : vLines)
-	{
-		vpShaderCode.push_back(Line.c_str());
+		vShaderCode[i] = vLines[i].c_str();
 	}
 
 	const TWGLuint ShaderId = glCreateShader(Type);
 
-	glShaderSource(ShaderId, vpShaderCode.size(), vpShaderCode.data(), nullptr);
+	glShaderSource(ShaderId, static_cast<GLsizei>(vShaderCode.size()), vShaderCode.data(), nullptr);
 	glCompileShader(ShaderId);
 
 	TWGLint CompilationStatus;
@@ -128,28 +110,19 @@ bool CGLSL::LoadShader(CGLSLCompiler *pCompiler, IStorage *pStorage, const char 
 			{
 				Log[Log.size() - 2] = '\0';
 			}
-			log_error("gfx/opengl/shader", "Failed to compile shader file '%s'. The compiler returned:\n%s", pFile, Log.c_str());
+			log_error("gfx/opengl/shader", "Failed to compile shader '%s'. The compiler returned:\n%s", pName, Log.c_str());
 		}
 		else
 		{
-			log_error("gfx/opengl/shader", "Failed to compile shader file '%s'. The compiler did not return an error.", pFile);
+			log_error("gfx/opengl/shader", "Failed to compile shader '%s'. The compiler did not return an error.", pName);
 		}
 		glDeleteShader(ShaderId);
 		return false;
 	}
 
-	m_Type = Type;
 	m_IsLoaded = true;
 	m_ShaderId = ShaderId;
 	return true;
-}
-
-void CGLSL::DeleteShader()
-{
-	if(!IsLoaded())
-		return;
-	m_IsLoaded = false;
-	glDeleteShader(m_ShaderId);
 }
 
 bool CGLSL::IsLoaded() const
@@ -162,14 +135,10 @@ TWGLuint CGLSL::GetShaderId() const
 	return m_ShaderId;
 }
 
-CGLSL::CGLSL()
-{
-	m_IsLoaded = false;
-}
-
 CGLSL::~CGLSL()
 {
-	DeleteShader();
+	if(m_IsLoaded)
+		glDeleteShader(m_ShaderId);
 }
 
 #endif

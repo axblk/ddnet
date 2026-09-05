@@ -24,6 +24,7 @@
 #include <game/client/components/spectator.h>
 #include <game/client/components/voting.h>
 #include <game/client/gameclient.h>
+#include <game/client/render.h>
 #include <game/localization.h>
 
 #include <algorithm>
@@ -300,7 +301,7 @@ void CTouchControls::CTouchButton::Render(std::optional<bool> Selected, std::opt
 		m_pTouchControls->Graphics()->TextureClear();
 		m_pTouchControls->Graphics()->QuadsBegin();
 		m_pTouchControls->Graphics()->SetColor(ButtonColor);
-		m_pTouchControls->Graphics()->DrawCircle(Center.x, Center.y, Radius, std::max(round_truncate(Radius / 4.0f) & ~1, 32));
+		m_pTouchControls->RenderTools()->DrawCircle(Center.x, Center.y, Radius, std::max(round_truncate(Radius / 4.0f) & ~1, 32));
 		m_pTouchControls->Graphics()->QuadsEnd();
 		break;
 	}

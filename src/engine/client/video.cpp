@@ -5,6 +5,7 @@
 #include <base/dbg.h>
 #include <base/io.h>
 #include <base/log.h>
+#include <base/mem.h>
 #include <base/str.h>
 #include <base/time.h>
 
@@ -352,7 +353,12 @@ void CVideo::Stop()
 	pSound->UnpauseAudioDevice();
 }
 
-void CVideo::NextVideoFrameThread()
+bool CVideo::BeginVideoFrameRender()
+{
+	return m_Recording;
+}
+
+void CVideo::EndVideoFrameRender()
 {
 	if(m_Recording)
 	{
@@ -399,8 +405,10 @@ void CVideo::NextVideoFrameThread()
 			++m_CurVideoThreadIndex;
 			if(m_CurVideoThreadIndex == m_VideoThreads)
 				m_CurVideoThreadIndex = 0;
+			return;
 		}
 	}
+	m_pGraphics->Swap();
 }
 
 void CVideo::NextVideoFrame()
@@ -632,12 +640,22 @@ void CVideo::FillVideoFrame(size_t ThreadIndex)
 
 void CVideo::UpdateVideoBufferFromGraphics(size_t ThreadIndex)
 {
-	uint32_t Width;
-	uint32_t Height;
-	CImageInfo::EImageFormat Format;
-	m_pGraphics->GetReadPresentedImageDataFuncUnsafe()(Width, Height, Format, m_vVideoBuffers[ThreadIndex].m_vBuffer);
-	dbg_assert((int)Width == m_Width && (int)Height == m_Height, "Size mismatch between video (%d x %d) and graphics (%d x %d)", m_Width, m_Height, Width, Height);
-	dbg_assert(Format == CImageInfo::FORMAT_RGBA, "Unexpected image format %d", (int)Format);
+	// Presents the frame and reads it back. The readback is queued on the
+	// render thread and waited for here, so the encoder sees the frame the
+	// screen shows; a frame that could not be read leaves the buffer as it
+	// was, and the encoder repeats the previous picture for it.
+	std::unique_ptr<IGraphics::ITextureReadback> pReadback = m_pGraphics->PresentAndReadbackAsync();
+	CImageInfo Image;
+	if(pReadback == nullptr || !pReadback->Wait(Image))
+	{
+		log_error("videorecorder", "Could not read the presented video frame");
+		return;
+	}
+	dbg_assert((int)Image.m_Width == m_Width && (int)Image.m_Height == m_Height, "Size mismatch between video (%d x %d) and graphics (%" PRIzu " x %" PRIzu ")", m_Width, m_Height, Image.m_Width, Image.m_Height);
+	dbg_assert(Image.m_Format == CImageInfo::FORMAT_RGBA, "Unexpected image format %d", (int)Image.m_Format);
+	std::vector<uint8_t> &vBuffer = m_vVideoBuffers[ThreadIndex].m_vBuffer;
+	vBuffer.resize(Image.DataSize());
+	mem_copy(vBuffer.data(), Image.m_pData, Image.DataSize());
 }
 
 AVFrame *CVideo::AllocPicture(enum AVPixelFormat PixFmt, int Width, int Height)

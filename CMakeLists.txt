@@ -644,7 +644,7 @@ if(TARGET_OS AND TARGET_OS STREQUAL "mac")
   set(DMGBUILD_FOUND ${DMGBUILD})
 endif()
 
-set(VULKAN_SHADER_FILE_LIST "" CACHE STRING "Vulkan shader file list")
+set(VULKAN_SHADER_OUTPUT_PATHS "" CACHE STRING "Vulkan shader output list")
 if(CLIENT AND VULKAN)
   find_package(Vulkan)
   include(cmake/BuildVulkanShaders.cmake)
@@ -1774,38 +1774,6 @@ set(EXPECTED_DATA
   menuimages/settings.png
   particles.png
   race_flag.png
-  shader/pipeline.frag
-  shader/pipeline.vert
-  shader/prim.frag
-  shader/prim.vert
-  shader/primex.frag
-  shader/primex.vert
-  shader/quad.frag
-  shader/quad.vert
-  shader/spritemulti.frag
-  shader/spritemulti.vert
-  shader/text.frag
-  shader/text.vert
-  shader/tile.frag
-  shader/tile.vert
-  shader/tile_border.frag
-  shader/tile_border.vert
-  shader/vulkan/prim.frag
-  shader/vulkan/prim.vert
-  shader/vulkan/prim3d.frag
-  shader/vulkan/prim3d.vert
-  shader/vulkan/primex.frag
-  shader/vulkan/primex.vert
-  shader/vulkan/quad.frag
-  shader/vulkan/quad.vert
-  shader/vulkan/spritemulti.frag
-  shader/vulkan/spritemulti.vert
-  shader/vulkan/text.frag
-  shader/vulkan/text.vert
-  shader/vulkan/tile.frag
-  shader/vulkan/tile.vert
-  shader/vulkan/tile_border.frag
-  shader/vulkan/tile_border.vert
   skins/PaladiN.png
   skins/antiantey.png
   skins/beast.png
@@ -2061,12 +2029,25 @@ set_glob(DATA GLOB_RECURSE "cfg;frag;json;map;otf;png;rules;ttc;ttf;txt;vert;wv"
 # COPY DATA AND SHARED LIBS
 ########################################################################
 
+# The copy below runs while CMake configures. On its own that means a data file
+# edited afterwards never reaches the build directory - the trap being a shader
+# that keeps rendering with the version from the last configure, which is a
+# whole afternoon of debugging the wrong thing. The custom commands underneath
+# give every data file a build rule, so a changed one is copied by the build.
+set(DATA_COPY_OUTPUTS)
 foreach(datafile ${DATA})
   file(RELATIVE_PATH OUT ${PROJECT_SOURCE_DIR}/data ${datafile})
   get_filename_component(DESTINATION data/${OUT} PATH)
   file(MAKE_DIRECTORY ${DESTINATION})
   file(COPY ${datafile} DESTINATION ${DESTINATION})
+  add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/data/${OUT}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${datafile} ${PROJECT_BINARY_DIR}/data/${OUT}
+    DEPENDS ${datafile}
+    COMMENT ""
+    VERBATIM)
+  list(APPEND DATA_COPY_OUTPUTS ${PROJECT_BINARY_DIR}/data/${OUT})
 endforeach()
+add_custom_target(copy_data ALL DEPENDS ${DATA_COPY_OUTPUTS})
 set(COPY_FILES
   # tidy-alphabetical-start
   ${CRASHDUMP_COPY_FILES}
@@ -2299,6 +2280,7 @@ set_src(ENGINE_INTERFACE GLOB src/engine
   ghost.h
   graphics.cpp
   graphics.h
+  graphics_window.h
   http.cpp
   http.h
   image.h
@@ -2308,6 +2290,7 @@ set_src(ENGINE_INTERFACE GLOB src/engine
   map.h
   message.h
   notifications.h
+  render_handle.h
   rust.h
   server.h
   serverbrowser.h
@@ -2550,6 +2533,7 @@ if(CLIENT)
     # tidy-alphabetical-start
     backend/backend_base.cpp
     backend/backend_base.h
+    backend/embedded_shaders.h
     backend/glsl_shader_compiler.cpp
     backend/glsl_shader_compiler.h
     backend/null/backend_null.cpp
@@ -2558,25 +2542,29 @@ if(CLIENT)
     backend/opengl/backend_opengl.h
     backend/opengl/backend_opengl3.cpp
     backend/opengl/backend_opengl3.h
+    backend/opengl/backend_opengl_base.cpp
+    backend/opengl/backend_opengl_base.h
     backend/opengl/opengl_sl.cpp
     backend/opengl/opengl_sl.h
     backend/opengl/opengl_sl_program.cpp
     backend/opengl/opengl_sl_program.h
-    backend/opengles/backend_opengles.cpp
     backend/opengles/backend_opengles3.cpp
     backend/opengles/backend_opengles3.h
+    backend/opengles/backend_opengles_base.cpp
     backend/opengles/gles_class_defines.h
     backend/opengles/opengles_sl.cpp
     backend/opengles/opengles_sl_program.cpp
     backend/vulkan/backend_vulkan.cpp
     backend/vulkan/backend_vulkan.h
-    backend_sdl.cpp
-    backend_sdl.h
+    backend/vulkan/backend_vulkan_processor.h
+    backend_threaded.cpp
+    backend_threaded.h
     blocklist_driver.cpp
     blocklist_driver.h
     checksum.h
     client.cpp
     client.h
+    command_buffer.h
     demoedit.cpp
     demoedit.h
     discord.cpp
@@ -2588,16 +2576,19 @@ if(CLIENT)
     ghost.h
     graph.cpp
     graph.h
+    graphics_backend.h
     graphics_defines.h
     graphics_threaded.cpp
     graphics_threaded.h
-    graphics_threaded_sprites.cpp
     input.cpp
     input.h
     keynames.cpp
     keynames.h
     notifications.cpp
     notifications.h
+    presentation_surface.h
+    render_command_queue.cpp
+    render_command_queue.h
     serverbrowser.cpp
     serverbrowser.h
     serverbrowser_http.cpp
@@ -2617,6 +2608,9 @@ if(CLIENT)
     video.cpp
     video.h
     warning.cpp
+    window_offscreen.cpp
+    window_sdl.cpp
+    window_sdl.h
     # tidy-alphabetical-end
   )
   set_src(GAME_CLIENT GLOB_RECURSE src/game/client
@@ -2887,6 +2881,8 @@ if(CLIENT)
     render_layer.h
     render_map.cpp
     render_map.h
+    tile_chunk_cache.cpp
+    tile_chunk_cache.h
     # tidy-alphabetical-end
   )
   set(GAME_GENERATED_CLIENT
@@ -2898,6 +2894,109 @@ if(CLIENT)
     src/generated/client_data7.h
     # tidy-alphabetical-end
   )
+  # The graphics without the window: the frontend, the backend host, the
+  # renderers and the window-less surface. Nothing in here includes SDL, and
+  # the object library is compiled without the SDL include directories so it
+  # stays that way. The client links it next to the SDL window; the test
+  # runner links it alone.
+  set(ENGINE_CLIENT_GRAPHICS_FILES
+    # tidy-alphabetical-start
+    backend/backend_base.cpp
+    backend/backend_base.h
+    backend/embedded_shaders.h
+    backend/glsl_shader_compiler.cpp
+    backend/glsl_shader_compiler.h
+    backend/null/backend_null.cpp
+    backend/null/backend_null.h
+    backend/opengl/backend_opengl.cpp
+    backend/opengl/backend_opengl.h
+    backend/opengl/backend_opengl3.cpp
+    backend/opengl/backend_opengl3.h
+    backend/opengl/backend_opengl_base.cpp
+    backend/opengl/backend_opengl_base.h
+    backend/opengl/opengl_sl.cpp
+    backend/opengl/opengl_sl.h
+    backend/opengl/opengl_sl_program.cpp
+    backend/opengl/opengl_sl_program.h
+    backend/opengles/backend_opengles3.cpp
+    backend/opengles/backend_opengles3.h
+    backend/opengles/backend_opengles_base.cpp
+    backend/opengles/gles_class_defines.h
+    backend/opengles/opengles_sl.cpp
+    backend/opengles/opengles_sl_program.cpp
+    backend/vulkan/backend_vulkan.cpp
+    backend/vulkan/backend_vulkan.h
+    backend/vulkan/backend_vulkan_processor.h
+    backend_threaded.cpp
+    backend_threaded.h
+    blocklist_driver.cpp
+    blocklist_driver.h
+    command_buffer.h
+    graphics_backend.h
+    graphics_defines.h
+    graphics_threaded.cpp
+    graphics_threaded.h
+    presentation_surface.h
+    render_command_queue.cpp
+    render_command_queue.h
+    warning.cpp
+    window_offscreen.cpp
+    # tidy-alphabetical-end
+  )
+  set(ENGINE_CLIENT_GRAPHICS)
+  foreach(file ${ENGINE_CLIENT_GRAPHICS_FILES})
+    list(APPEND ENGINE_CLIENT_GRAPHICS "${PROJECT_SOURCE_DIR}/src/engine/client/${file}")
+  endforeach()
+  list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_GRAPHICS})
+
+  # The shaders travel inside the binary. One GLSL source serves OpenGL and
+  # Vulkan (dialect.glsl says what the two need to say differently): the
+  # OpenGL backends compile the text at run time, the Vulkan sources are
+  # compiled to SPIR-V first (cmake/BuildVulkanShaders.cmake) and go in as
+  # words. Both come out of one generated table, see scripts/embed_shaders.py.
+  set_glob(ENGINE_CLIENT_SHADERS GLOB "frag;glsl;vert" src/engine/client/backend/shaders
+    # tidy-alphabetical-start
+    dialect.glsl
+    prim.frag
+    prim.vert
+    prim3d.frag
+    prim3d.vert
+    primex.frag
+    primex.vert
+    quad.frag
+    quad.vert
+    spritemulti.frag
+    spritemulti.vert
+    text.frag
+    text.vert
+    tile.frag
+    tile.vert
+    tile_border.frag
+    tile_border.vert
+    # tidy-alphabetical-end
+  )
+  set(EMBED_SHADER_ARGS)
+  foreach(file ${ENGINE_CLIENT_SHADERS})
+    get_filename_component(SHADER_NAME "${file}" NAME)
+    list(APPEND EMBED_SHADER_ARGS "${SHADER_NAME}=${file}")
+  endforeach()
+  set(EMBED_SHADER_DEPENDS ${ENGINE_CLIENT_SHADERS})
+  if(VULKAN)
+    foreach(file ${VULKAN_SHADER_OUTPUT_PATHS})
+      get_filename_component(SHADER_NAME "${file}" NAME)
+      list(APPEND EMBED_SHADER_ARGS "vulkan/${SHADER_NAME}=${file}")
+    endforeach()
+    list(APPEND EMBED_SHADER_DEPENDS ${VULKAN_SHADER_OUTPUT_PATHS})
+  endif()
+  set(EMBEDDED_SHADERS_SRC "${PROJECT_BINARY_DIR}/src/generated/embedded_shaders.cpp")
+  add_custom_command(OUTPUT "${EMBEDDED_SHADERS_SRC}"
+    COMMAND ${Python3_EXECUTABLE} scripts/embed_shaders.py "${EMBEDDED_SHADERS_SRC}" ${EMBED_SHADER_ARGS}
+    DEPENDS scripts/embed_shaders.py ${EMBED_SHADER_DEPENDS}
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    COMMENT "Embedding shaders"
+    VERBATIM
+  )
+
   set(CLIENT_SRC ${ENGINE_CLIENT} ${PLATFORM_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
 
   set(DEPS_CLIENT ${DEPS} ${GLEW_DEP} ${WAVPACK_DEP})
@@ -2952,6 +3051,36 @@ if(CLIENT)
     set(CLIENT_MANIFEST)
   endif()
 
+  # Graphics object library, see ENGINE_CLIENT_GRAPHICS_FILES above. The
+  # generated headers are listed so that their generation belongs to this
+  # target and not to the client, which depends on this target.
+  add_library(engine-client-graphics EXCLUDE_FROM_ALL OBJECT
+    ${ENGINE_CLIENT_GRAPHICS}
+    ${EMBEDDED_SHADERS_SRC}
+    src/generated/data_types.h
+  )
+  add_dependencies(engine-client-graphics generate_content_types)
+  if(VULKAN)
+    add_dependencies(engine-client-graphics build_vulkan_shaders)
+  endif()
+  target_include_directories(engine-client-graphics SYSTEM PRIVATE
+    # tidy-alphabetical-start
+    ${GLEW_INCLUDE_DIRS}
+    ${PNG_INCLUDE_DIRS}
+    # tidy-alphabetical-end
+
+    ${VULKAN_INCLUDE_DIRS}
+
+    ${PLATFORM_CLIENT_INCLUDE_DIRS}
+  )
+  if(GLEW_BUNDLED)
+    target_compile_definitions(engine-client-graphics PRIVATE CONF_GLEW_HAS_CONTEXT_INIT)
+  endif()
+  if(VULKAN)
+    target_compile_definitions(engine-client-graphics PRIVATE CONF_BACKEND_VULKAN)
+  endif()
+  list(APPEND TARGETS_OWN engine-client-graphics)
+
   # Target
   if(TARGET_OS STREQUAL "android")
     add_library(game-client SHARED
@@ -2961,6 +3090,7 @@ if(CLIENT)
       ${CLIENT_MANIFEST}
       ${DEPS_CLIENT}
       # tidy-alphabetical-start
+      $<TARGET_OBJECTS:engine-client-graphics>
       $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
@@ -2989,6 +3119,7 @@ if(CLIENT)
       ${CLIENT_MANIFEST}
       ${DEPS_CLIENT}
       # tidy-alphabetical-start
+      $<TARGET_OBJECTS:engine-client-graphics>
       $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
@@ -3427,6 +3558,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     fs_test.cpp
     gameworld_test.cpp
     git_revision_test.cpp
+    graphics_frontend_test.cpp
+    graphics_threaded_test.cpp
     hash_test.cpp
     huffman_test.cpp
     io_test.cpp
@@ -3459,6 +3592,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     test.cpp
     test.h
     thread_test.cpp
+    tile_chunk_cache_test.cpp
     time_test.cpp
     timestamp_test.cpp
     unix_test.cpp
@@ -3469,8 +3603,6 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   )
   set(TESTS_EXTRA
     # tidy-alphabetical-start
-    src/engine/client/blocklist_driver.cpp
-    src/engine/client/blocklist_driver.h
     src/engine/client/serverbrowser.cpp
     src/engine/client/serverbrowser.h
     src/engine/client/serverbrowser_http.cpp
@@ -3483,10 +3615,31 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     # tidy-alphabetical-end
   )
 
+  # The graphics are tested without a window and therefore without SDL: the
+  # test runner links the graphics object library and the libraries the
+  # renderers need, but not SDL. Without the client there are no graphics to
+  # test, and the two files the other tests use come along on their own.
+  if(CLIENT)
+    set(TESTS_GRAPHICS
+      $<TARGET_OBJECTS:engine-client-graphics>
+    )
+    set(TESTS_GRAPHICS_LIBS ${GLEW_LIBRARIES} ${VULKAN_LIBRARIES} ${PLATFORM_CLIENT_LIBS})
+  else()
+    list(REMOVE_ITEM TESTS "${PROJECT_SOURCE_DIR}/src/test/graphics_frontend_test.cpp")
+    set(TESTS_GRAPHICS
+      src/engine/client/blocklist_driver.cpp
+      src/engine/client/blocklist_driver.h
+      src/engine/client/render_command_queue.cpp
+      src/engine/client/render_command_queue.h
+    )
+    set(TESTS_GRAPHICS_LIBS)
+  endif()
+
   set(TARGET_TESTRUNNER testrunner)
   add_executable(${TARGET_TESTRUNNER} EXCLUDE_FROM_ALL
     ${TESTS}
     ${TESTS_EXTRA}
+    ${TESTS_GRAPHICS}
     # tidy-alphabetical-start
     $<TARGET_OBJECTS:engine-gfx>
     $<TARGET_OBJECTS:engine-shared>
@@ -3494,9 +3647,9 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     $<TARGET_OBJECTS:game-shared>
     $<TARGET_OBJECTS:rust-bridge-shared>
     # tidy-alphabetical-end
-    ${DEPS}
+    ${DEPS} ${GLEW_DEP}
   )
-  target_link_libraries(${TARGET_TESTRUNNER} ${PNG_LIBRARIES} ${GTEST_LIBRARIES} ${LIBS_SERVER})
+  target_link_libraries(${TARGET_TESTRUNNER} ${PNG_LIBRARIES} ${GTEST_LIBRARIES} ${TESTS_GRAPHICS_LIBS} ${LIBS_SERVER})
   target_include_directories(${TARGET_TESTRUNNER} SYSTEM PRIVATE ${GTEST_INCLUDE_DIRS})
 
   list(APPEND TARGETS_OWN ${TARGET_TESTRUNNER})
@@ -3754,10 +3907,7 @@ set(CPACK_FILES
 if(NOT TARGET_OS STREQUAL "emscripten")
   list(APPEND CPACK_FILES storage.cfg)
 endif()
-
-set(CPACK_GEN_FILES
-  ${VULKAN_SHADER_FILE_LIST}
-)
+set(CPACK_GEN_FILES)
 
 if(TARGET_OS STREQUAL "windows")
   list(APPEND CPACK_FILES other/config_directory.bat)
@@ -3791,9 +3941,6 @@ if(NOT DEV)
     if(TARGET game-server)
       install(FILES other/icons/DDNet-Server_${SIZE}x${SIZE}x32.png DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/${SIZE}x${SIZE}/apps RENAME ddnet-server.png COMPONENT server)
     endif()
-  endforeach()
-  foreach(file ${VULKAN_SHADER_OUTPUT_PATHS})
-    install(FILES ${file} DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/ddnet/data/shader/vulkan COMPONENT client)
   endforeach()
 endif()
 
@@ -3855,6 +4002,7 @@ if(CLIENT AND DMGBUILD_FOUND)
   else()
     set(STEAM_API_DYLIB_FOR_PACKAGE "${PROJECT_BINARY_DIR}/libsteam_api.dylib")
   endif()
+
 
   if(MACOS_CODESIGN)
     set(CODESIGN_COMMANDS

@@ -18,6 +18,7 @@
 #include <engine/editor.h>
 #include <engine/graphics.h>
 
+#include <game/client/render.h>
 #include <game/client/ui.h>
 #include <game/client/ui_listbox.h>
 #include <game/editor/enums.h>
@@ -117,6 +118,7 @@ class CEditor : public IEditor
 	class IStorage *m_pStorage = nullptr;
 	CRenderMap m_RenderMap;
 	CUi m_UI;
+	CRenderTools m_RenderTools;
 
 	std::vector<std::reference_wrapper<CEditorComponent>> m_vComponents;
 	CMapView m_MapView;
@@ -156,6 +158,7 @@ public:
 	class ITextRender *TextRender() const { return m_pTextRender; }
 	class IStorage *Storage() const { return m_pStorage; }
 	CUi *Ui() { return &m_UI; }
+	CRenderTools *RenderTools() { return &m_RenderTools; }
 	CRenderMap *RenderMap() { return &m_RenderMap; }
 
 	CEditorMap *Map();

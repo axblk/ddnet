@@ -12,6 +12,7 @@
 
 #include <engine/console.h>
 #include <engine/graphics.h>
+#include <engine/graphics_window.h>
 #include <engine/input.h>
 #include <engine/keys.h>
 #include <engine/shared/config.h>
@@ -99,6 +100,7 @@ void CInput::Init()
 	StopTextInput();
 
 	m_pGraphics = Kernel()->RequestInterface<IEngineGraphics>();
+	m_pWindow = Kernel()->RequestInterface<IEngineGraphicsWindow>();
 	m_pConsole = Kernel()->RequestInterface<IConsole>();
 	m_pConfigManager = Kernel()->RequestInterface<IConfigManager>();
 
@@ -291,14 +293,14 @@ void CInput::MouseModeAbsolute()
 {
 	m_InputGrabbed = false;
 	SDL_SetRelativeMouseMode(SDL_FALSE);
-	Graphics()->SetWindowGrab(false);
+	Window()->SetWindowGrab(false);
 }
 
 void CInput::MouseModeRelative()
 {
 	m_InputGrabbed = true;
 	SDL_SetRelativeMouseMode(SDL_TRUE);
-	Graphics()->SetWindowGrab(true);
+	Window()->SetWindowGrab(true);
 	// Clear pending relative mouse motion
 	SDL_GetRelativeMouseState(nullptr, nullptr);
 }
@@ -362,7 +364,7 @@ void CInput::StopTextInput()
 void CInput::EnsureScreenKeyboardShown()
 {
 	if(!SDL_HasScreenKeyboardSupport() ||
-		Graphics()->IsScreenKeyboardShown())
+		Window()->IsScreenKeyboardShown())
 	{
 		return;
 	}
@@ -837,15 +839,15 @@ int CInput::Update()
 			{
 #if SDL_VERSION_ATLEAST(2, 0, 18)
 			case SDL_WINDOWEVENT_DISPLAY_CHANGED:
-				Graphics()->SwitchWindowScreen(Event.display.data1, false);
+				Window()->OnDisplayChanged(Event.display.data1);
 				break;
 #endif
 			case SDL_WINDOWEVENT_MOVED:
-				Graphics()->Move(Event.window.data1, Event.window.data2);
+				Window()->OnMoved(Event.window.data1, Event.window.data2);
 				break;
 			// listen to size changes, this includes our manual changes and the ones by the window manager
 			case SDL_WINDOWEVENT_SIZE_CHANGED:
-				Graphics()->GotResized(Event.window.data1, Event.window.data2, -1);
+				Window()->OnSizeChanged(Event.window.data1, Event.window.data2);
 				break;
 			case SDL_WINDOWEVENT_FOCUS_GAINED:
 				if(m_InputGrabbed)
@@ -875,7 +877,7 @@ int CInput::Update()
 #if defined(CONF_PLATFORM_ANDROID) // Save the config when minimized on Android.
 				m_pConfigManager->Save();
 #endif
-				Graphics()->WindowDestroyNtf(Event.window.windowID);
+				Window()->OnWindowDestroyed();
 				break;
 
 			case SDL_WINDOWEVENT_MAXIMIZED:
@@ -885,7 +887,7 @@ int CInput::Update()
 #endif
 				[[fallthrough]];
 			case SDL_WINDOWEVENT_RESTORED:
-				Graphics()->WindowCreateNtf(Event.window.windowID);
+				Window()->OnWindowCreated(Event.window.windowID);
 				break;
 			}
 			break;

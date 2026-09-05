@@ -2,6 +2,7 @@
 
 #include <generated/client_data.h>
 
+#include <game/client/render.h>
 #include <game/editor/editor.h>
 #include <game/editor/editor_actions.h>
 
@@ -42,10 +43,10 @@ void CLayerSounds::Render(const CEditorMap *pRenderMap)
 		{
 		case CSoundShape::SHAPE_CIRCLE:
 		{
-			Graphics()->DrawCircle(Position.x, Position.y, Source.m_Shape.m_Circle.m_Radius, 32);
+			RenderTools()->DrawCircle(Position.x, Position.y, Source.m_Shape.m_Circle.m_Radius, 32);
 			if(Falloff > 0.0f)
 			{
-				Graphics()->DrawCircle(Position.x, Position.y, Source.m_Shape.m_Circle.m_Radius * Falloff, 32);
+				RenderTools()->DrawCircle(Position.x, Position.y, Source.m_Shape.m_Circle.m_Radius * Falloff, 32);
 			}
 			break;
 		}
@@ -53,10 +54,10 @@ void CLayerSounds::Render(const CEditorMap *pRenderMap)
 		{
 			const float Width = fx2f(Source.m_Shape.m_Rectangle.m_Width);
 			const float Height = fx2f(Source.m_Shape.m_Rectangle.m_Height);
-			Graphics()->DrawRectExt(Position.x - Width / 2, Position.y - Height / 2, Width, Height, 0.0f, IGraphics::CORNER_NONE);
+			RenderTools()->DrawRectExt(Position.x - Width / 2, Position.y - Height / 2, Width, Height, 0.0f, IGraphics::CORNER_NONE);
 			if(Falloff > 0.0f)
 			{
-				Graphics()->DrawRectExt(Position.x - Falloff * Width / 2, Position.y - Falloff * Height / 2, Width * Falloff, Height * Falloff, 0.0f, IGraphics::CORNER_NONE);
+				RenderTools()->DrawRectExt(Position.x - Falloff * Width / 2, Position.y - Falloff * Height / 2, Width * Falloff, Height * Falloff, 0.0f, IGraphics::CORNER_NONE);
 			}
 			break;
 		}
@@ -70,13 +71,13 @@ void CLayerSounds::Render(const CEditorMap *pRenderMap)
 	Graphics()->QuadsBegin();
 
 	Graphics()->SetColor(1.0f, 1.0f, 1.0f, 1.0f);
-	Graphics()->SelectSprite(SPRITE_AUDIO_SOURCE);
+	RenderTools()->SelectSprite(SPRITE_AUDIO_SOURCE);
 	for(const auto &Source : m_vSources)
 	{
 		ColorRGBA Offset = ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f);
 		pRenderMap->m_EnvelopeEvaluator.EnvelopeEval(Source.m_PosEnvOffset, Source.m_PosEnv, Offset, 2);
 		const vec2 Position = vec2(fx2f(Source.m_Position.x) + Offset.r, fx2f(Source.m_Position.y) + Offset.g);
-		Graphics()->DrawSprite(Position.x, Position.y, Editor()->MapView()->ScaleLength(s_SourceVisualSize));
+		RenderTools()->DrawSprite(Position.x, Position.y, Editor()->MapView()->ScaleLength(s_SourceVisualSize));
 	}
 
 	Graphics()->QuadsEnd();

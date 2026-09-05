@@ -48,6 +48,11 @@ IGraphics *CMapObject::Graphics()
 	return m_pMap->Editor()->Graphics();
 }
 
+CRenderTools *CMapObject::RenderTools()
+{
+	return m_pMap->Editor()->RenderTools();
+}
+
 const ISound *CMapObject::Sound() const
 {
 	return m_pMap->Editor()->Sound();

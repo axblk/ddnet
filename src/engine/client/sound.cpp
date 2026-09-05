@@ -11,6 +11,7 @@
 #include <base/time.h>
 
 #include <engine/graphics.h>
+#include <engine/graphics_window.h>
 #include <engine/shared/config.h>
 #include <engine/storage.h>
 
@@ -198,7 +199,7 @@ static void SdlCallback(void *pUser, Uint8 *pStream, int Len)
 int CSound::Init()
 {
 	m_SoundEnabled = false;
-	m_pGraphics = Kernel()->RequestInterface<IEngineGraphics>();
+	m_pWindow = Kernel()->RequestInterface<IGraphicsWindow>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 
 	// Initialize sample indices. We always need them to load sounds in
@@ -376,7 +377,7 @@ void CSound::AdvancePlayback()
 void CSound::UpdateVolume()
 {
 	int WantedVolume = g_Config.m_SndVolume;
-	if(!m_pGraphics->WindowActive() && g_Config.m_SndNonactiveMute)
+	if(!m_pWindow->WindowActive() && g_Config.m_SndNonactiveMute)
 		WantedVolume = 0;
 	m_SoundVolume.store(WantedVolume, std::memory_order_relaxed);
 }

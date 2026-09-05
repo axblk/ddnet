@@ -12,6 +12,7 @@
 #include <generated/client_data.h>
 
 #include <game/client/gameclient.h>
+#include <game/client/render.h>
 
 CParticles::CParticles()
 {
@@ -159,7 +160,7 @@ void CParticles::OnInit()
 	for(int i = 0; i <= (SPRITE_PART9 - SPRITE_PART_SLICE); ++i)
 	{
 		Graphics()->QuadsSetSubset(0, 0, 1, 1);
-		Graphics()->QuadContainerAddSprite(m_ParticleQuadContainerIndex, 1.f);
+		RenderTools()->QuadContainerAddSprite(m_ParticleQuadContainerIndex, 1.f);
 	}
 	Graphics()->QuadContainerUpload(m_ParticleQuadContainerIndex);
 
@@ -168,7 +169,7 @@ void CParticles::OnInit()
 	for(int i = 0; i <= (SPRITE_PART_SPARKLE - SPRITE_PART_SNOWFLAKE); ++i)
 	{
 		Graphics()->QuadsSetSubset(0, 0, 1, 1);
-		Graphics()->QuadContainerAddSprite(m_ExtraParticleQuadContainerIndex, 1.f);
+		RenderTools()->QuadContainerAddSprite(m_ExtraParticleQuadContainerIndex, 1.f);
 	}
 
 	Graphics()->QuadContainerUpload(m_ExtraParticleQuadContainerIndex);
@@ -201,118 +202,60 @@ void CParticles::RenderGroup(int Group)
 		ParticleQuadContainerIndex = m_ExtraParticleQuadContainerIndex;
 	}
 
-	// don't use the buffer methods here, else the old renderer gets many draw calls
-	if(Graphics()->IsQuadContainerBufferingEnabled())
+	int i = m_aFirstPart[Group];
+
+	static IGraphics::SRenderSpriteInfo s_aParticleRenderInfo[MAX_PARTICLES];
+
+	int CurParticleRenderCount = 0;
+
+	// batching makes sense for stuff like ninja particles
+	ColorRGBA LastColor;
+	int LastQuadOffset = 0;
+
+	if(i != -1)
 	{
-		int i = m_aFirstPart[Group];
-
-		static IGraphics::SRenderSpriteInfo s_aParticleRenderInfo[MAX_PARTICLES];
-
-		int CurParticleRenderCount = 0;
-
-		// batching makes sense for stuff like ninja particles
-		ColorRGBA LastColor;
-		int LastQuadOffset = 0;
-
-		if(i != -1)
+		float Alpha = m_aParticles[i].m_Color.a;
+		if(m_aParticles[i].m_UseAlphaFading)
 		{
-			float Alpha = m_aParticles[i].m_Color.a;
-			if(m_aParticles[i].m_UseAlphaFading)
-			{
-				float a = m_aParticles[i].m_Life / m_aParticles[i].m_LifeSpan;
-				Alpha = mix(m_aParticles[i].m_StartAlpha, m_aParticles[i].m_EndAlpha, a);
-			}
-			LastColor.r = m_aParticles[i].m_Color.r;
-			LastColor.g = m_aParticles[i].m_Color.g;
-			LastColor.b = m_aParticles[i].m_Color.b;
-			LastColor.a = Alpha;
-
-			Graphics()->SetColor(
-				m_aParticles[i].m_Color.r,
-				m_aParticles[i].m_Color.g,
-				m_aParticles[i].m_Color.b,
-				Alpha);
-
-			LastQuadOffset = m_aParticles[i].m_Spr;
-		}
-
-		while(i != -1)
-		{
-			int QuadOffset = m_aParticles[i].m_Spr;
 			float a = m_aParticles[i].m_Life / m_aParticles[i].m_LifeSpan;
-			vec2 p = m_aParticles[i].m_Pos;
-			float Size = mix(m_aParticles[i].m_StartSize, m_aParticles[i].m_EndSize, a);
-			float Alpha = m_aParticles[i].m_Color.a;
-			if(m_aParticles[i].m_UseAlphaFading)
-			{
-				Alpha = mix(m_aParticles[i].m_StartAlpha, m_aParticles[i].m_EndAlpha, a);
-			}
-
-			// the current position, respecting the size, is inside the viewport, render it, else ignore
-			if(ParticleIsVisibleOnScreen(p, Size))
-			{
-				if((size_t)CurParticleRenderCount == GRAPHICS_MAX_PARTICLES_RENDER_COUNT || LastColor.r != m_aParticles[i].m_Color.r || LastColor.g != m_aParticles[i].m_Color.g || LastColor.b != m_aParticles[i].m_Color.b || LastColor.a != Alpha || LastQuadOffset != QuadOffset)
-				{
-					dbg_assert(LastQuadOffset >= FirstParticleOffset, "Invalid particle offsets: %d < %d", LastQuadOffset, FirstParticleOffset);
-					Graphics()->TextureSet(aParticles[LastQuadOffset - FirstParticleOffset]);
-					Graphics()->RenderQuadContainerAsSpriteMultiple(ParticleQuadContainerIndex, LastQuadOffset - FirstParticleOffset, CurParticleRenderCount, s_aParticleRenderInfo);
-					CurParticleRenderCount = 0;
-					LastQuadOffset = QuadOffset;
-
-					Graphics()->SetColor(
-						m_aParticles[i].m_Color.r,
-						m_aParticles[i].m_Color.g,
-						m_aParticles[i].m_Color.b,
-						Alpha);
-
-					LastColor.r = m_aParticles[i].m_Color.r;
-					LastColor.g = m_aParticles[i].m_Color.g;
-					LastColor.b = m_aParticles[i].m_Color.b;
-					LastColor.a = Alpha;
-				}
-
-				s_aParticleRenderInfo[CurParticleRenderCount].m_Pos[0] = p.x;
-				s_aParticleRenderInfo[CurParticleRenderCount].m_Pos[1] = p.y;
-				s_aParticleRenderInfo[CurParticleRenderCount].m_Scale = Size;
-				s_aParticleRenderInfo[CurParticleRenderCount].m_Rotation = m_aParticles[i].m_Rot;
-
-				++CurParticleRenderCount;
-			}
-
-			i = m_aParticles[i].m_NextPart;
+			Alpha = mix(m_aParticles[i].m_StartAlpha, m_aParticles[i].m_EndAlpha, a);
 		}
+		LastColor.r = m_aParticles[i].m_Color.r;
+		LastColor.g = m_aParticles[i].m_Color.g;
+		LastColor.b = m_aParticles[i].m_Color.b;
+		LastColor.a = Alpha;
 
-		if(CurParticleRenderCount > 0)
-		{
-			dbg_assert(LastQuadOffset >= FirstParticleOffset, "Invalid particle offsets: %d < %d", LastQuadOffset, FirstParticleOffset);
-			Graphics()->TextureSet(aParticles[LastQuadOffset - FirstParticleOffset]);
-			Graphics()->RenderQuadContainerAsSpriteMultiple(ParticleQuadContainerIndex, LastQuadOffset - FirstParticleOffset, CurParticleRenderCount, s_aParticleRenderInfo);
-		}
+		Graphics()->SetColor(
+			m_aParticles[i].m_Color.r,
+			m_aParticles[i].m_Color.g,
+			m_aParticles[i].m_Color.b,
+			Alpha);
+
+		LastQuadOffset = m_aParticles[i].m_Spr;
 	}
-	else
+
+	while(i != -1)
 	{
-		int i = m_aFirstPart[Group];
-
-		Graphics()->WrapClamp();
-
-		while(i != -1)
+		int QuadOffset = m_aParticles[i].m_Spr;
+		float a = m_aParticles[i].m_Life / m_aParticles[i].m_LifeSpan;
+		vec2 p = m_aParticles[i].m_Pos;
+		float Size = mix(m_aParticles[i].m_StartSize, m_aParticles[i].m_EndSize, a);
+		float Alpha = m_aParticles[i].m_Color.a;
+		if(m_aParticles[i].m_UseAlphaFading)
 		{
-			float a = m_aParticles[i].m_Life / m_aParticles[i].m_LifeSpan;
-			vec2 p = m_aParticles[i].m_Pos;
-			float Size = mix(m_aParticles[i].m_StartSize, m_aParticles[i].m_EndSize, a);
-			float Alpha = m_aParticles[i].m_Color.a;
-			if(m_aParticles[i].m_UseAlphaFading)
-			{
-				Alpha = mix(m_aParticles[i].m_StartAlpha, m_aParticles[i].m_EndAlpha, a);
-			}
+			Alpha = mix(m_aParticles[i].m_StartAlpha, m_aParticles[i].m_EndAlpha, a);
+		}
 
-			// the current position, respecting the size, is inside the viewport, render it, else ignore
-			if(ParticleIsVisibleOnScreen(p, Size))
+		// the current position, respecting the size, is inside the viewport, render it, else ignore
+		if(ParticleIsVisibleOnScreen(p, Size))
+		{
+			if((size_t)CurParticleRenderCount == GRAPHICS_MAX_PARTICLES_RENDER_COUNT || LastColor.r != m_aParticles[i].m_Color.r || LastColor.g != m_aParticles[i].m_Color.g || LastColor.b != m_aParticles[i].m_Color.b || LastColor.a != Alpha || LastQuadOffset != QuadOffset)
 			{
-				Graphics()->TextureSet(aParticles[m_aParticles[i].m_Spr - FirstParticleOffset]);
-				Graphics()->QuadsBegin();
-
-				Graphics()->QuadsSetRotation(m_aParticles[i].m_Rot);
+				dbg_assert(LastQuadOffset >= FirstParticleOffset, "Invalid particle offsets: %d < %d", LastQuadOffset, FirstParticleOffset);
+				Graphics()->TextureSet(aParticles[LastQuadOffset - FirstParticleOffset]);
+				Graphics()->RenderQuadContainerAsSpriteMultiple(ParticleQuadContainerIndex, LastQuadOffset - FirstParticleOffset, CurParticleRenderCount, s_aParticleRenderInfo);
+				CurParticleRenderCount = 0;
+				LastQuadOffset = QuadOffset;
 
 				Graphics()->SetColor(
 					m_aParticles[i].m_Color.r,
@@ -320,13 +263,27 @@ void CParticles::RenderGroup(int Group)
 					m_aParticles[i].m_Color.b,
 					Alpha);
 
-				IGraphics::CQuadItem QuadItem(p.x, p.y, Size, Size);
-				Graphics()->QuadsDraw(&QuadItem, 1);
-				Graphics()->QuadsEnd();
+				LastColor.r = m_aParticles[i].m_Color.r;
+				LastColor.g = m_aParticles[i].m_Color.g;
+				LastColor.b = m_aParticles[i].m_Color.b;
+				LastColor.a = Alpha;
 			}
 
-			i = m_aParticles[i].m_NextPart;
+			s_aParticleRenderInfo[CurParticleRenderCount].m_Pos[0] = p.x;
+			s_aParticleRenderInfo[CurParticleRenderCount].m_Pos[1] = p.y;
+			s_aParticleRenderInfo[CurParticleRenderCount].m_Scale = Size;
+			s_aParticleRenderInfo[CurParticleRenderCount].m_Rotation = m_aParticles[i].m_Rot;
+
+			++CurParticleRenderCount;
 		}
-		Graphics()->WrapNormal();
+
+		i = m_aParticles[i].m_NextPart;
+	}
+
+	if(CurParticleRenderCount > 0)
+	{
+		dbg_assert(LastQuadOffset >= FirstParticleOffset, "Invalid particle offsets: %d < %d", LastQuadOffset, FirstParticleOffset);
+		Graphics()->TextureSet(aParticles[LastQuadOffset - FirstParticleOffset]);
+		Graphics()->RenderQuadContainerAsSpriteMultiple(ParticleQuadContainerIndex, LastQuadOffset - FirstParticleOffset, CurParticleRenderCount, s_aParticleRenderInfo);
 	}
 }

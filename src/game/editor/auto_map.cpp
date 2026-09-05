@@ -453,6 +453,8 @@ void CAutomapper::ProceedLocalized(CLayerTiles *pLayer, CLayerTiles *pGameLayer,
 			pGameLayer->RecordStateChange(x, y, PreviousGame, *pOutGame);
 		}
 	}
+	pLayer->InvalidateTileRenderArea(CommitFromX, CommitFromY, CommitToX - CommitFromX, CommitToY - CommitFromY);
+	pGameLayer->InvalidateTileRenderArea(CommitFromX, CommitFromY, CommitToX - CommitFromX, CommitToY - CommitFromY);
 
 	delete pUpdateLayer;
 	delete pUpdateGame;
@@ -609,4 +611,9 @@ void CAutomapper::Proceed(CLayerTiles *pLayer, CLayerTiles *pGameLayer, int Refe
 		if(pRun->m_AutomapCopy && pReadLayer != pLayer)
 			delete pReadLayer;
 	}
+
+	// Automapping a whole layer rewrites tiles anywhere in it, and the cached
+	// geometry has to be told. Only the localized path did this, so a full
+	// automap left the view showing the tiles from before it ran.
+	pLayer->InvalidateTileRenderCache();
 }

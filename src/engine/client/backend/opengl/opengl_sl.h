@@ -17,19 +17,16 @@ class CGLSLCompiler;
 class CGLSL
 {
 public:
-	bool LoadShader(CGLSLCompiler *pCompiler, class IStorage *pStorage, const char *pFile, int Type);
-	void DeleteShader();
+	bool LoadShader(CGLSLCompiler *pCompiler, const char *pName, int Type);
 
 	bool IsLoaded() const;
 	TWGLuint GetShaderId() const;
 
-	CGLSL();
 	virtual ~CGLSL();
 
 private:
-	TWGLuint m_ShaderId;
-	int m_Type;
-	bool m_IsLoaded;
+	TWGLuint m_ShaderId = 0;
+	bool m_IsLoaded = false;
 };
 
 #endif

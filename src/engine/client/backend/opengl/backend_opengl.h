@@ -1,209 +1,119 @@
-// This file can be included several times.
-#if (!defined(BACKEND_AS_OPENGL_ES) && !defined(ENGINE_CLIENT_BACKEND_OPENGL_BACKEND_OPENGL_H)) || \
-	(defined(BACKEND_AS_OPENGL_ES) && !defined(ENGINE_CLIENT_BACKEND_OPENGL_BACKEND_OPENGL_H_AS_ES))
-
-#if !defined(BACKEND_AS_OPENGL_ES) && !defined(ENGINE_CLIENT_BACKEND_OPENGL_BACKEND_OPENGL_H)
+#ifndef ENGINE_CLIENT_BACKEND_OPENGL_BACKEND_OPENGL_H
 #define ENGINE_CLIENT_BACKEND_OPENGL_BACKEND_OPENGL_H
-#endif
 
-#if defined(BACKEND_AS_OPENGL_ES) && !defined(ENGINE_CLIENT_BACKEND_OPENGL_BACKEND_OPENGL_H_AS_ES)
-#define ENGINE_CLIENT_BACKEND_OPENGL_BACKEND_OPENGL_H_AS_ES
-#endif
+#include "backend_opengl_base.h"
 
-#include <base/dbg.h>
+#include <base/vmath.h>
 
-#include <engine/client/backend/backend_base.h>
-#include <engine/client/graphics_defines.h>
-
-class CGLSLTWProgram;
-class CGLSLPrimitiveProgram;
-class CGLSLTileProgram;
-
-#if defined(BACKEND_AS_OPENGL_ES) && defined(CONF_BACKEND_OPENGL_ES3)
-#define BACKEND_GL_MODERN_API 1
-#endif
-
-// takes care of opengl related rendering
-class CCommandProcessorFragment_OpenGL : public CCommandProcessorFragment_GLBase
+// Everything below OpenGL 3 has no programs at all, so a pipeline is emulated
+// here: a buffer is converted into a form fixed function can read, and a draw
+// becomes a transform, a colour and a triangle list. Never compiled for GLES,
+// which this client only ever asks for in version 3.
+class CCommandProcessorFragment_OpenGL : public CCommandProcessorFragment_OpenGLBase
 {
 protected:
-	struct CTexture
+	// Without shaders there is nowhere to put a buffer but memory, and nothing
+	// to read it with but the expansion below. The data still arrives through
+	// the same commands, so the frontend does not have to know.
+	struct SEmulatedBuffer
 	{
-		CTexture() :
-			m_Tex(0), m_Tex2DArray(0), m_Sampler(0), m_Sampler2DArray(0), m_LastWrapMode(EWrapMode::REPEAT), m_MemSize(0), m_Width(0), m_Height(0), m_RescaleCount(0), m_ResizeWidth(0), m_ResizeHeight(0)
-		{
-		}
-
-		TWGLuint m_Tex;
-		TWGLuint m_Tex2DArray; // or 3D texture as fallback
-		TWGLuint m_Sampler;
-		TWGLuint m_Sampler2DArray; // or 3D texture as fallback
-		EWrapMode m_LastWrapMode;
-
-		int m_MemSize;
-
-		int m_Width;
-		int m_Height;
-		int m_RescaleCount;
-		float m_ResizeWidth;
-		float m_ResizeHeight;
+		std::vector<uint8_t> m_vData;
 	};
-	std::vector<CTexture> m_vTextures;
-	std::atomic<uint64_t> *m_pTextureMemoryUsage;
+	std::vector<SEmulatedBuffer> m_vEmulatedBuffers;
 
-	// Position of the viewport within the drawable area, with the bottom left origin
-	// that OpenGL uses. The rendered image is aligned to the top left, so this is not
-	// the origin of the drawable area when the viewport is clamped.
-	int m_ViewportX = 0;
-	int m_ViewportY = 0;
-	uint32_t m_CanvasWidth = 0;
-	uint32_t m_CanvasHeight = 0;
-	bool m_HasDisplayCutout = false;
+	// What the fixed function path can read straight out of a vertex array.
+	// A container is converted into one of these once, when its layout and its
+	// data are both known, instead of once per draw.
+	enum class EVertexForm
+	{
+		NONE,
+		PRIMITIVE, // position, texture coordinate, colour
+		LAYERED, // position, colour, texture coordinate with a layer
+	};
 
-	TWGLint m_MaxTexSize;
+	// Fixed function cannot read the client's vertex layouts directly, so a
+	// buffer is converted once into a form it can, and kept that way until the
+	// buffer changes. Keyed by buffer, like the vertex arrays the shader path
+	// keeps for the same reason.
+	struct SConvertedBuffer
+	{
+		IGraphics::EVertexLayout m_Layout = IGraphics::EVertexLayout::COUNT;
+		IGraphics::CBufferHandle m_SourceBuffer;
+		std::vector<uint8_t> m_vConverted;
+		// The colours stay here even when the geometry has gone to the device,
+		// because a draw that tints them has to read them back.
+		std::vector<CCommandBuffer::SColor> m_vColors;
+		TWGLuint m_BufferId = 0;
+		size_t m_VertexCount = 0;
+		EVertexForm m_Form = EVertexForm::NONE;
+	};
+	std::vector<SConvertedBuffer> m_vConvertedBuffers;
 
-	bool m_Has2DArrayTextures;
-	bool m_Has2DArrayTexturesAsExtension;
-	TWGLenum m_2DArrayTarget;
-	bool m_Has3DTextures;
-	bool m_HasMipMaps;
-	bool m_HasNPOTTextures;
-
-	bool m_HasShaders;
-	EBlendMode m_LastBlendMode; // avoid all possible opengl state changes
-	bool m_LastClipEnable;
-
-	int m_OpenGLTextureLodBIAS;
-
-	bool m_IsOpenGLES;
-
-	bool IsTexturedState(const CCommandBuffer::SState &State);
-
-	bool InitOpenGL(const SCommand_Init *pCommand);
+	// Expansion writes here and the draw reads from here, once per draw, so
+	// the buffers stay warm instead of being allocated per frame.
+	std::vector<CCommandBuffer::SVertex> m_vExpandedVertices;
+	std::vector<CCommandBuffer::SVertexTex3DStream> m_vExpandedLayeredVertices;
 
 	void SetState(const CCommandBuffer::SState &State, bool Use2DArrayTexture = false);
-	virtual bool IsNewApi() { return false; }
-	void DestroyTexture(int Slot);
+	void CreateSplitChannelTexture(int Slot, const IGraphics::CTextureDesc &Desc, const uint8_t *pTexData);
+	void UpdateSplitChannelTexture(int Slot, int X, int Y, int Width, int Height, const uint8_t *pTexData);
 
-	bool GetPresentedImageData(uint32_t &Width, uint32_t &Height, CImageInfo::EImageFormat &Format, std::vector<uint8_t> &vDstData) override;
+	// The one place that turns an interface format into a legacy OpenGL one.
+	// How many bytes a pixel costs is IGraphics::PixelSize's answer.
+	static int ToGLFormat(IGraphics::ETextureFormat Format);
 
-	static size_t GLFormatToPixelSize(int GLFormat);
+	void TextureUpdate(int Slot, int X, int Y, int Width, int Height, IGraphics::ETextureFormat Format, uint8_t *pTexData);
+	void TextureCreate(int Slot, const IGraphics::CTextureDesc &Desc, uint8_t *pTexData);
 
-	void TextureUpdate(int Slot, int X, int Y, int Width, int Height, int GLFormat, uint8_t *pTexData);
-	void TextureCreate(int Slot, int Width, int Height, int GLFormat, int GLStoreFormat, int Flags, uint8_t *pTexData);
-
-	virtual bool Cmd_Init(const SCommand_Init *pCommand);
-	virtual void Cmd_Shutdown(const SCommand_Shutdown *pCommand) {}
-	virtual void Cmd_Texture_Destroy(const CCommandBuffer::SCommand_Texture_Destroy *pCommand);
-	virtual void Cmd_Texture_Create(const CCommandBuffer::SCommand_Texture_Create *pCommand);
-	virtual void Cmd_TextTexture_Update(const CCommandBuffer::SCommand_TextTexture_Update *pCommand);
-	virtual void Cmd_TextTextures_Destroy(const CCommandBuffer::SCommand_TextTextures_Destroy *pCommand);
-	virtual void Cmd_TextTextures_Create(const CCommandBuffer::SCommand_TextTextures_Create *pCommand);
-	virtual void Cmd_Clear(const CCommandBuffer::SCommand_Clear *pCommand);
-	virtual void Cmd_Render(const CCommandBuffer::SCommand_Render *pCommand);
-	virtual void Cmd_RenderTex3D(const CCommandBuffer::SCommand_RenderTex3D *pCommand) { dbg_assert_failed("Call of unsupported Cmd_RenderTex3D"); }
-	virtual void Cmd_ReadPixel(const CCommandBuffer::SCommand_TrySwapAndReadPixel *pCommand);
-	virtual void Cmd_Screenshot(const CCommandBuffer::SCommand_TrySwapAndScreenshot *pCommand);
-
-	virtual void Cmd_Update_Viewport(const CCommandBuffer::SCommand_Update_Viewport *pCommand);
-
-	virtual void Cmd_CreateBufferObject(const CCommandBuffer::SCommand_CreateBufferObject *pCommand) { dbg_assert_failed("Call of unsupported Cmd_CreateBufferObject"); }
-	virtual void Cmd_RecreateBufferObject(const CCommandBuffer::SCommand_RecreateBufferObject *pCommand) { dbg_assert_failed("Call of unsupported Cmd_RecreateBufferObject"); }
-	virtual void Cmd_UpdateBufferObject(const CCommandBuffer::SCommand_UpdateBufferObject *pCommand) { dbg_assert_failed("Call of unsupported Cmd_UpdateBufferObject"); }
-	virtual void Cmd_CopyBufferObject(const CCommandBuffer::SCommand_CopyBufferObject *pCommand) { dbg_assert_failed("Call of unsupported Cmd_CopyBufferObject"); }
-	virtual void Cmd_DeleteBufferObject(const CCommandBuffer::SCommand_DeleteBufferObject *pCommand) { dbg_assert_failed("Call of unsupported Cmd_DeleteBufferObject"); }
-
-	virtual void Cmd_CreateBufferContainer(const CCommandBuffer::SCommand_CreateBufferContainer *pCommand) { dbg_assert_failed("Call of unsupported Cmd_CreateBufferContainer"); }
-	virtual void Cmd_UpdateBufferContainer(const CCommandBuffer::SCommand_UpdateBufferContainer *pCommand) { dbg_assert_failed("Call of unsupported Cmd_UpdateBufferContainer"); }
-	virtual void Cmd_DeleteBufferContainer(const CCommandBuffer::SCommand_DeleteBufferContainer *pCommand) { dbg_assert_failed("Call of unsupported Cmd_DeleteBufferContainer"); }
-	virtual void Cmd_IndicesRequiredNumNotify(const CCommandBuffer::SCommand_IndicesRequiredNumNotify *pCommand) { dbg_assert_failed("Call of unsupported Cmd_IndicesRequiredNumNotify"); }
-
-	virtual void Cmd_RenderTileLayer(const CCommandBuffer::SCommand_RenderTileLayer *pCommand) { dbg_assert_failed("Call of unsupported Cmd_RenderTileLayer"); }
-	virtual void Cmd_RenderBorderTile(const CCommandBuffer::SCommand_RenderBorderTile *pCommand) { dbg_assert_failed("Call of unsupported Cmd_RenderBorderTile"); }
-	virtual void Cmd_RenderQuadLayer(const CCommandBuffer::SCommand_RenderQuadLayer *pCommand, bool Grouped) { dbg_assert_failed("Call of unsupported Cmd_RenderQuadLayer"); }
-	virtual void Cmd_RenderText(const CCommandBuffer::SCommand_RenderText *pCommand) { dbg_assert_failed("Call of unsupported Cmd_RenderText"); }
-	virtual void Cmd_RenderQuadContainer(const CCommandBuffer::SCommand_RenderQuadContainer *pCommand) { dbg_assert_failed("Call of unsupported Cmd_RenderQuadContainer"); }
-	virtual void Cmd_RenderQuadContainerEx(const CCommandBuffer::SCommand_RenderQuadContainerEx *pCommand) { dbg_assert_failed("Call of unsupported Cmd_RenderQuadContainerEx"); }
-	virtual void Cmd_RenderQuadContainerAsSpriteMultiple(const CCommandBuffer::SCommand_RenderQuadContainerAsSpriteMultiple *pCommand) { dbg_assert_failed("Call of unsupported Cmd_RenderQuadContainerAsSpriteMultiple"); }
-
-public:
-	CCommandProcessorFragment_OpenGL();
-
-	ERunCommandReturnTypes RunCommand(const CCommandBuffer::SCommand *pBaseCommand) override;
-};
-
-class CCommandProcessorFragment_OpenGL2 : public CCommandProcessorFragment_OpenGL
-{
-	struct SBufferContainer
-	{
-		SBufferContainerInfo m_ContainerInfo;
-	};
-	std::vector<SBufferContainer> m_vBufferContainers;
-
-#ifndef BACKEND_AS_OPENGL_ES
-	GL_SVertexTex3D m_aStreamVertices[1024 * 4];
-#endif
-
-	struct SBufferObject
-	{
-		SBufferObject(TWGLuint BufferObjectId) :
-			m_BufferObjectId(BufferObjectId)
-		{
-			m_pData = nullptr;
-			m_DataSize = 0;
-		}
-		TWGLuint m_BufferObjectId;
-		uint8_t *m_pData;
-		size_t m_DataSize;
-	};
-
-	std::vector<SBufferObject> m_vBufferObjectIndices;
-
-#ifndef BACKEND_GL_MODERN_API
-	bool DoAnalyzeStep(size_t CheckCount, size_t VerticesCount, uint8_t aFakeTexture[], size_t SingleImageSize);
-	bool IsTileMapAnalysisSucceeded();
-#endif
-
-	void UseProgram(CGLSLTWProgram *pProgram);
-
-protected:
-	void SetState(const CCommandBuffer::SState &State, CGLSLTWProgram *pProgram, bool Use2DArrayTextures = false);
-
-#ifndef BACKEND_GL_MODERN_API
 	bool Cmd_Init(const SCommand_Init *pCommand) override;
-	void Cmd_Shutdown(const SCommand_Shutdown *pCommand) override;
-
-	void Cmd_RenderTex3D(const CCommandBuffer::SCommand_RenderTex3D *pCommand) override;
+	void Cmd_Texture_Destroy(const CCommandBuffer::SCommand_Texture_Destroy *pCommand) override;
+	void Cmd_Texture_Create(const CCommandBuffer::SCommand_Texture_Create *pCommand) override;
+	void Cmd_Texture_Update(const CCommandBuffer::SCommand_Texture_Update *pCommand) override;
+	void Cmd_Texture_Readback(const CCommandBuffer::SCommand_Texture_Readback *pCommand) override;
+	void Cmd_Clear(const CCommandBuffer::SCommand_Clear *pCommand) override;
+	void Cmd_BeginRenderPass(const CCommandBuffer::SCommand_BeginRenderPass *pCommand) override;
+	void Cmd_EndRenderPass(const CCommandBuffer::SCommand_EndRenderPass *pCommand) override;
+	void Cmd_Draw(const CCommandBuffer::SCommand_Draw *pCommand) override;
 
 	void Cmd_CreateBufferObject(const CCommandBuffer::SCommand_CreateBufferObject *pCommand) override;
 	void Cmd_RecreateBufferObject(const CCommandBuffer::SCommand_RecreateBufferObject *pCommand) override;
-	void Cmd_UpdateBufferObject(const CCommandBuffer::SCommand_UpdateBufferObject *pCommand) override;
-	void Cmd_CopyBufferObject(const CCommandBuffer::SCommand_CopyBufferObject *pCommand) override;
 	void Cmd_DeleteBufferObject(const CCommandBuffer::SCommand_DeleteBufferObject *pCommand) override;
 
-	void Cmd_CreateBufferContainer(const CCommandBuffer::SCommand_CreateBufferContainer *pCommand) override;
-	void Cmd_UpdateBufferContainer(const CCommandBuffer::SCommand_UpdateBufferContainer *pCommand) override;
-	void Cmd_DeleteBufferContainer(const CCommandBuffer::SCommand_DeleteBufferContainer *pCommand) override;
-	void Cmd_IndicesRequiredNumNotify(const CCommandBuffer::SCommand_IndicesRequiredNumNotify *pCommand) override;
+	void Cmd_DrawIndexed(const CCommandBuffer::SCommand_DrawIndexed *pCommand) override;
 
-	void Cmd_RenderTileLayer(const CCommandBuffer::SCommand_RenderTileLayer *pCommand) override;
-	void Cmd_RenderBorderTile(const CCommandBuffer::SCommand_RenderBorderTile *pCommand) override;
-#endif
+	// Everything a pipeline does to a vertex before it is drawn, done here
+	// because there is no program to do it in. What comes out is what the
+	// fixed-function path can draw: a triangle list, coloured and textured.
+	static ColorRGBA ReadAttribute(const uint8_t *pVertex, const IGraphics::CVertexAttributeDesc &Attribute);
+	float LayerCoordinate(const CCommandBuffer::SState &State, float Layer) const;
+	[[nodiscard]] bool CollectIndexedDraw(const CCommandBuffer::SCommand_DrawIndexed *pCommand, const SConvertedBuffer *&pConverted, const uint8_t *&pIndices, size_t &IndexStride, uint32_t &IndexCount);
+	uint32_t ReadIndex(const uint8_t *pIndices, size_t IndexStride, uint32_t Position) const;
+	void DrawEmulatedArrayColor(const CCommandBuffer::SCommand_DrawIndexed *pCommand, const SConvertedBuffer &Converted, const uint8_t *pIndices, size_t IndexStride, uint32_t IndexCount);
+	void DrawEmulatedQuads(const CCommandBuffer::SCommand_DrawIndexed *pCommand, const SConvertedBuffer &Converted, const uint8_t *pIndices, size_t IndexStride, uint32_t IndexCount);
+	void DrawEmulatedPrimitives(const CCommandBuffer::SCommand_DrawIndexed *pCommand, const SConvertedBuffer &Converted, const uint8_t *pIndices, size_t IndexStride, uint32_t IndexCount, EPipelineProgram Program);
+	void DrawEmulatedDualAtlas(const CCommandBuffer::SCommand_DrawIndexed *pCommand, const SConvertedBuffer &Converted, const uint8_t *pIndices, size_t IndexStride, uint32_t IndexCount);
+	void DrawExpandedVertices(const CCommandBuffer::SState &State, bool Layered, TWGLuint OverrideTexture = 0);
+	SConvertedBuffer *ConvertedBufferFor(IGraphics::CBufferHandle Buffer, IGraphics::EVertexLayout Layout);
+	void ReleaseConvertedBuffer(SConvertedBuffer &Converted);
+	void InvalidateContainersOfBuffer(size_t BufferIndex);
+	// Binds the converted array, from the buffer object if there is one.
+	void BindConvertedContainer(const SConvertedBuffer &Converted, const CCommandBuffer::SColor *pColors = nullptr);
+	void UnbindConvertedContainer(const SConvertedBuffer &Converted);
+	// Vertex colours tinted by the draw, rebuilt per draw because that is the
+	// only part of a converted container a draw can change.
+	std::vector<CCommandBuffer::SColor> m_vTintedColors;
+	const CCommandBuffer::SColor *TintColors(const SConvertedBuffer &Converted, const ColorRGBA &Tint);
+	const CCommandBuffer::SColor *FlatColors(const SConvertedBuffer &Converted, const ColorRGBA &Color);
+	// The transform a draw applies to every vertex alike, which fixed function
+	// has had since OpenGL 1.0: a matrix for the geometry, one for the texture
+	// coordinates, and one colour.
+	void SetDrawTransform(const vec2 &Offset, const vec2 &Scale, const vec2 &RotationCenter, float Rotation);
+	void SetTextureTransform(const CCommandBuffer::SState &State, const vec2 &TexScale, bool LayerCoordinates);
+	void ResetTransforms();
+	void DrawPrimitives(EPrimitiveType PrimitiveType, uint32_t VertexCount, IGraphics::CBufferHandle IndexBuffer);
 
-	CGLSLTileProgram *m_pTileProgram;
-	CGLSLTileProgram *m_pTileProgramTextured;
-	CGLSLTileProgram *m_pBorderTileProgram;
-	CGLSLTileProgram *m_pBorderTileProgramTextured;
-	CGLSLPrimitiveProgram *m_pPrimitive3DProgram;
-	CGLSLPrimitiveProgram *m_pPrimitive3DProgramTextured;
+public:
+	CCommandProcessorFragment_OpenGL() = default;
 };
-
-class CCommandProcessorFragment_OpenGL3 : public CCommandProcessorFragment_OpenGL2
-{
-};
-
-#if defined(BACKEND_AS_OPENGL_ES) && defined(CONF_BACKEND_OPENGL_ES3)
-#undef BACKEND_GL_MODERN_API
-#endif
 
 #endif

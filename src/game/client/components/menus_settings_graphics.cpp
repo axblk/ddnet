@@ -5,6 +5,7 @@
 #include <base/str.h>
 
 #include <engine/graphics.h>
+#include <engine/graphics_window.h>
 #include <engine/shared/config.h>
 
 #include <game/client/components/tooltips.h>
@@ -28,7 +29,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 
 	static const int MAX_RESOLUTIONS = 256;
 	static CVideoMode s_aModes[MAX_RESOLUTIONS];
-	static int s_NumNodes = Graphics()->GetVideoModes(s_aModes, MAX_RESOLUTIONS, g_Config.m_GfxScreen);
+	static int s_NumNodes = Window()->GetVideoModes(s_aModes, MAX_RESOLUTIONS, g_Config.m_GfxScreen);
 	static int s_GfxFsaaSamples = g_Config.m_GfxFsaaSamples;
 	static bool s_GfxBackendChanged = false;
 	static bool s_GfxGpuChanged = false;
@@ -41,14 +42,14 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	{
 		s_WasInit = true;
 
-		Graphics()->AddWindowPropChangeListener([]() {
+		Window()->AddWindowPropChangeListener([]() {
 			s_ModesReload = true;
 		});
 	}
 
 	if(s_ModesReload || g_Config.m_GfxDisplayAllVideoModes != s_InitDisplayAllVideoModes)
 	{
-		s_NumNodes = Graphics()->GetVideoModes(s_aModes, MAX_RESOLUTIONS, g_Config.m_GfxScreen);
+		s_NumNodes = Window()->GetVideoModes(s_aModes, MAX_RESOLUTIONS, g_Config.m_GfxScreen);
 		s_ModesReload = false;
 		s_InitDisplayAllVideoModes = g_Config.m_GfxDisplayAllVideoModes;
 	}
@@ -104,7 +105,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 		g_Config.m_GfxScreenWidth = s_aModes[NewSelected].m_WindowWidth;
 		g_Config.m_GfxScreenHeight = s_aModes[NewSelected].m_WindowHeight;
 		g_Config.m_GfxScreenRefreshRate = s_aModes[NewSelected].m_RefreshRate;
-		Graphics()->ResizeToScreen();
+		Window()->ResizeToScreen();
 	}
 
 	// switches
@@ -123,24 +124,24 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	if(OldWindowMode != NewWindowMode)
 	{
 		if(NewWindowMode == 0)
-			Graphics()->SetWindowParams(0, false);
+			Window()->SetWindowParams(0, false);
 		else if(NewWindowMode == 1)
-			Graphics()->SetWindowParams(0, true);
+			Window()->SetWindowParams(0, true);
 		else if(NewWindowMode == 2)
-			Graphics()->SetWindowParams(3, false);
+			Window()->SetWindowParams(3, false);
 		else if(NewWindowMode == 3)
-			Graphics()->SetWindowParams(2, false);
+			Window()->SetWindowParams(2, false);
 		else if(NewWindowMode == 4)
-			Graphics()->SetWindowParams(1, false);
+			Window()->SetWindowParams(1, false);
 	}
 
-	if(Graphics()->GetNumScreens() > 1)
+	if(Window()->GetNumScreens() > 1)
 	{
 		CUIRect ScreenDropDown;
 		MainView.HSplitTop(2.0f, nullptr, &MainView);
 		MainView.HSplitTop(20.0f, &ScreenDropDown, &MainView);
 
-		const int NumScreens = Graphics()->GetNumScreens();
+		const int NumScreens = Window()->GetNumScreens();
 		static std::vector<std::string> s_vScreenNames;
 		static std::vector<const char *> s_vpScreenNames;
 		s_vScreenNames.resize(NumScreens);
@@ -148,7 +149,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 
 		for(int i = 0; i < NumScreens; ++i)
 		{
-			str_format(aBuf, sizeof(aBuf), "%s %d: %s", Localize("Screen"), i, Graphics()->GetScreenName(i));
+			str_format(aBuf, sizeof(aBuf), "%s %d: %s", Localize("Screen"), i, Window()->GetScreenName(i));
 			s_vScreenNames[i] = aBuf;
 			s_vpScreenNames[i] = s_vScreenNames[i].c_str();
 		}
@@ -158,7 +159,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 		s_ScreenDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_ScreenDropDownScrollRegion;
 		const int NewScreen = Ui()->DoDropDown(&ScreenDropDown, g_Config.m_GfxScreen, s_vpScreenNames.data(), s_vpScreenNames.size(), s_ScreenDropDownState);
 		if(NewScreen != g_Config.m_GfxScreen)
-			Graphics()->SwitchWindowScreen(NewScreen, true);
+			Window()->SwitchWindowScreen(NewScreen, true);
 	}
 
 	MainView.HSplitTop(2.0f, nullptr, &MainView);
@@ -166,7 +167,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	str_format(aBuf, sizeof(aBuf), "%s (%s)", Localize("V-Sync"), Localize("may cause delay"));
 	if(DoButton_CheckBox(&g_Config.m_GfxVsync, aBuf, g_Config.m_GfxVsync, &Button))
 	{
-		Graphics()->SetVSync(!g_Config.m_GfxVsync);
+		Window()->SetVSync(!g_Config.m_GfxVsync);
 	}
 
 	bool MultiSamplingChanged = false;
@@ -195,12 +196,12 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	uint32_t MultiSamplingCountBackend = 0;
 	if(MultiSamplingChanged)
 	{
-		if(Graphics()->SetMultiSampling(g_Config.m_GfxFsaaSamples, MultiSamplingCountBackend))
+		if(Window()->SetMultiSampling(g_Config.m_GfxFsaaSamples, MultiSamplingCountBackend))
 		{
 			// try again with 0 if mouse click was increasing multi sampling
 			// else just accept the current value as is
 			if((uint32_t)g_Config.m_GfxFsaaSamples > MultiSamplingCountBackend && GfxFsaaSamplesMouseButton == 1)
-				Graphics()->SetMultiSampling(0, MultiSamplingCountBackend);
+				Window()->SetMultiSampling(0, MultiSamplingCountBackend);
 			g_Config.m_GfxFsaaSamples = (int)MultiSamplingCountBackend;
 		}
 		else

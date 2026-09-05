@@ -10,17 +10,38 @@
 #define ENGINE_CLIENT_BACKEND_OPENGL_BACKEND_OPENGL3_H_AS_ES
 #endif
 
-#include "backend_opengl.h"
+#include "backend_opengl_base.h"
 
+class CGLSLTWProgram;
+class CGLSLPrimitiveProgram;
+class CGLSLTileProgram;
 class CGLSLPrimitiveExProgram;
 class CGLSLQuadProgram;
 class CGLSLSpriteMultipleProgram;
 class CGLSLTextProgram;
 
+// The programs the shader backends share. Everything below OpenGL 3 has no
+// programs at all and is served by CCommandProcessorFragment_OpenGL, so this is
+// a place to keep what a shader backend needs rather than a backend of its own.
+class CCommandProcessorFragment_OpenGLShared : public CCommandProcessorFragment_OpenGLBase
+{
+	void UseProgram(CGLSLTWProgram *pProgram);
+
+protected:
+	void SetState(const CCommandBuffer::SState &State, CGLSLTWProgram *pProgram, bool Use2DArrayTextures = false);
+
+	CGLSLTileProgram *m_pTileProgram = nullptr;
+	CGLSLTileProgram *m_pTileProgramTextured = nullptr;
+	CGLSLTileProgram *m_pBorderTileProgram = nullptr;
+	CGLSLTileProgram *m_pBorderTileProgramTextured = nullptr;
+	CGLSLPrimitiveProgram *m_pPrimitive3DProgram = nullptr;
+	CGLSLPrimitiveProgram *m_pPrimitive3DProgramTextured = nullptr;
+};
+
 #define MAX_STREAM_BUFFER_COUNT 10
 
 // takes care of opengl 3.3+ related rendering
-class CCommandProcessorFragment_OpenGL3_3 : public CCommandProcessorFragment_OpenGL3
+class CCommandProcessorFragment_OpenGL3_3 : public CCommandProcessorFragment_OpenGLShared
 {
 protected:
 	int m_MaxQuadsAtOnce;
@@ -35,8 +56,6 @@ protected:
 	CGLSLTextProgram *m_pTextProgram;
 	CGLSLPrimitiveExProgram *m_pPrimitiveExProgram;
 	CGLSLPrimitiveExProgram *m_pPrimitiveExProgramTextured;
-	CGLSLPrimitiveExProgram *m_pPrimitiveExProgramRotationless;
-	CGLSLPrimitiveExProgram *m_pPrimitiveExProgramTexturedRotationless;
 	CGLSLSpriteMultipleProgram *m_pSpriteProgramMultiple;
 
 	TWGLuint m_LastProgramId;
@@ -44,73 +63,82 @@ protected:
 	TWGLuint m_aPrimitiveDrawVertexId[MAX_STREAM_BUFFER_COUNT];
 	TWGLuint m_PrimitiveDrawVertexIdTex3D;
 	TWGLuint m_aPrimitiveDrawBufferId[MAX_STREAM_BUFFER_COUNT];
+	TWGLuint m_aPrimitiveDrawIndexBufferId[MAX_STREAM_BUFFER_COUNT];
 	TWGLuint m_PrimitiveDrawBufferIdTex3D;
 
 	TWGLuint m_aLastIndexBufferBound[MAX_STREAM_BUFFER_COUNT];
 
 	int m_LastStreamBuffer;
 
-	TWGLuint m_QuadDrawIndexBufferId;
-	unsigned int m_CurrentIndicesInBuffer;
-
-	void DestroyBufferContainer(int Index, bool DeleteBOs = true);
-
-	void AppendIndices(unsigned int NewIndicesCount);
-
-	struct SBufferContainer
+	// A vertex array is the one place the container idea still belongs: OpenGL
+	// wants the attribute layout recorded against the buffer, so it is built on
+	// first use for a (buffer, layout) pair and kept until the buffer goes away.
+	struct SVertexArray
 	{
-		SBufferContainer() :
-			m_VertArrayId(0), m_LastIndexBufferBound(0) {}
-		TWGLuint m_VertArrayId;
-		TWGLuint m_LastIndexBufferBound;
-		SBufferContainerInfo m_ContainerInfo;
+		TWGLuint m_VertArrayId = 0;
+		TWGLuint m_LastIndexBufferBound = 0;
+		IGraphics::EVertexLayout m_Layout = IGraphics::EVertexLayout::COUNT;
 	};
-	std::vector<SBufferContainer> m_vBufferContainers;
+	std::vector<SVertexArray> m_vVertexArrays;
+	SVertexArray *VertexArrayFor(IGraphics::CBufferHandle Buffer, IGraphics::EVertexLayout Layout);
+	void DestroyVertexArray(size_t Index);
 
 	std::vector<TWGLuint> m_vBufferObjectIndices;
+	// The buffer target each of them was created with, because WebGL2 does not
+	// let a buffer be uploaded to through any other one.
+	std::vector<TWGLenum> m_vBufferObjectTargets;
 
 	CCommandBuffer::SColorf m_ClearColor;
 
-	void InitPrimExProgram(CGLSLPrimitiveExProgram *pProgram, class CGLSLCompiler *pCompiler, class IStorage *pStorage, bool Textured, bool Rotationless);
+	void InitPrimExProgram(CGLSLPrimitiveExProgram *pProgram, class CGLSLCompiler *pCompiler, bool Textured);
 
 	bool IsNewApi() override { return true; }
 
 	void UseProgram(CGLSLTWProgram *pProgram);
-	void UploadStreamBufferData(EPrimitiveType PrimitiveType, const void *pVertices, size_t VertSize, unsigned int PrimitiveCount, bool AsTex3D = false);
-	void RenderText(const CCommandBuffer::SState &State, int DrawNum, int TextTextureIndex, int TextOutlineTextureIndex, int TextureSize, const ColorRGBA &TextColor, const ColorRGBA &TextOutlineColor);
+	void UploadStreamBufferData(const void *pVertices, size_t DataSize, bool TextureArray);
+	void RenderDualAtlasComposite(const CCommandBuffer::SState &State, uint32_t IndexCount, size_t IndexOffset, int AtlasTextureIndex, const CCommandBuffer::SDrawDataDualAtlas &DrawData);
 
-	void TextureUpdate(int Slot, int X, int Y, int Width, int Height, int GLFormat, uint8_t *pTexData);
-	void TextureCreate(int Slot, int Width, int Height, int GLFormat, int GLStoreFormat, int Flags, uint8_t *pTexData);
+	// The one place that turns an interface format into a modern OpenGL one.
+	static int ToGLFormat(IGraphics::ETextureFormat Format);
+	void TextureUpdate(int Slot, int X, int Y, int Width, int Height, IGraphics::ETextureFormat Format, uint8_t *pTexData);
+	void TextureCreate(int Slot, const IGraphics::CTextureDesc &Desc, uint8_t *pTexData);
 
 	bool Cmd_Init(const SCommand_Init *pCommand) override;
 	void Cmd_Shutdown(const SCommand_Shutdown *pCommand) override;
 	void Cmd_Texture_Destroy(const CCommandBuffer::SCommand_Texture_Destroy *pCommand) override;
 	void Cmd_Texture_Create(const CCommandBuffer::SCommand_Texture_Create *pCommand) override;
-	void Cmd_TextTexture_Update(const CCommandBuffer::SCommand_TextTexture_Update *pCommand) override;
-	void Cmd_TextTextures_Destroy(const CCommandBuffer::SCommand_TextTextures_Destroy *pCommand) override;
-	void Cmd_TextTextures_Create(const CCommandBuffer::SCommand_TextTextures_Create *pCommand) override;
+	void Cmd_Texture_Update(const CCommandBuffer::SCommand_Texture_Update *pCommand) override;
+	void Cmd_Texture_Readback(const CCommandBuffer::SCommand_Texture_Readback *pCommand) override;
+	// A render target readback does not wait for its picture. The pixels go
+	// into a pack buffer, a fence marks when they are there, and the result is
+	// handed over from CollectFinishedReadbacks once the fence has signalled -
+	// which is what lets the export keep its frames in flight on OpenGL, as it
+	// does on Vulkan. The export keeps three; one more here would
+	// only buy memory, so the oldest is waited out instead.
+	static constexpr size_t READBACK_SLOT_COUNT = 3;
+	struct SPendingReadback
+	{
+		TWGLuint m_PackBuffer = 0;
+		// A GLsync; the header keeps the GL types out.
+		void *m_pFence = nullptr;
+		uint32_t m_Width = 0;
+		uint32_t m_Height = 0;
+		CCommandBuffer::SImageReadbackResult *m_pResult = nullptr;
+	};
+	std::vector<SPendingReadback> m_vPendingReadbacks;
+	void FinishReadback(SPendingReadback &Pending, bool Wait);
+	void CollectFinishedReadbacks() override;
+	void FinishReadbacks() override;
 	void Cmd_Clear(const CCommandBuffer::SCommand_Clear *pCommand) override;
-	void Cmd_Render(const CCommandBuffer::SCommand_Render *pCommand) override;
-	void Cmd_RenderTex3D(const CCommandBuffer::SCommand_RenderTex3D *pCommand) override;
+	void Cmd_BeginRenderPass(const CCommandBuffer::SCommand_BeginRenderPass *pCommand) override;
+	void Cmd_EndRenderPass(const CCommandBuffer::SCommand_EndRenderPass *pCommand) override;
+	void Cmd_Draw(const CCommandBuffer::SCommand_Draw *pCommand) override;
 
 	void Cmd_CreateBufferObject(const CCommandBuffer::SCommand_CreateBufferObject *pCommand) override;
 	void Cmd_RecreateBufferObject(const CCommandBuffer::SCommand_RecreateBufferObject *pCommand) override;
-	void Cmd_UpdateBufferObject(const CCommandBuffer::SCommand_UpdateBufferObject *pCommand) override;
-	void Cmd_CopyBufferObject(const CCommandBuffer::SCommand_CopyBufferObject *pCommand) override;
 	void Cmd_DeleteBufferObject(const CCommandBuffer::SCommand_DeleteBufferObject *pCommand) override;
 
-	void Cmd_CreateBufferContainer(const CCommandBuffer::SCommand_CreateBufferContainer *pCommand) override;
-	void Cmd_UpdateBufferContainer(const CCommandBuffer::SCommand_UpdateBufferContainer *pCommand) override;
-	void Cmd_DeleteBufferContainer(const CCommandBuffer::SCommand_DeleteBufferContainer *pCommand) override;
-	void Cmd_IndicesRequiredNumNotify(const CCommandBuffer::SCommand_IndicesRequiredNumNotify *pCommand) override;
-
-	void Cmd_RenderTileLayer(const CCommandBuffer::SCommand_RenderTileLayer *pCommand) override;
-	void Cmd_RenderBorderTile(const CCommandBuffer::SCommand_RenderBorderTile *pCommand) override;
-	void Cmd_RenderQuadLayer(const CCommandBuffer::SCommand_RenderQuadLayer *pCommand, bool Grouped) override;
-	void Cmd_RenderText(const CCommandBuffer::SCommand_RenderText *pCommand) override;
-	void Cmd_RenderQuadContainer(const CCommandBuffer::SCommand_RenderQuadContainer *pCommand) override;
-	void Cmd_RenderQuadContainerEx(const CCommandBuffer::SCommand_RenderQuadContainerEx *pCommand) override;
-	void Cmd_RenderQuadContainerAsSpriteMultiple(const CCommandBuffer::SCommand_RenderQuadContainerAsSpriteMultiple *pCommand) override;
+	void Cmd_DrawIndexed(const CCommandBuffer::SCommand_DrawIndexed *pCommand) override;
 
 public:
 	CCommandProcessorFragment_OpenGL3_3() = default;

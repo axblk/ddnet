@@ -5,41 +5,22 @@
 
 #include "image.h"
 #include "kernel.h"
+#include "render_handle.h"
 #include "warning.h"
 
 #include <base/color.h>
+#include <base/dbg.h>
 #include <base/vmath.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
+#include <memory>
 #include <optional>
+#include <span>
 #include <vector>
-
-#define GRAPHICS_TYPE_UNSIGNED_BYTE 0x1401
-#define GRAPHICS_TYPE_UNSIGNED_SHORT 0x1403
-#define GRAPHICS_TYPE_INT 0x1404
-#define GRAPHICS_TYPE_UNSIGNED_INT 0x1405
-#define GRAPHICS_TYPE_FLOAT 0x1406
-
-struct SBufferContainerInfo
-{
-	int m_Stride;
-	int m_VertBufferBindingIndex;
-
-	// the attributes of the container
-	struct SAttribute
-	{
-		int m_DataTypeCount;
-		unsigned int m_Type;
-		bool m_Normalized;
-		void *m_pOffset;
-
-		//0: float, 1:integer
-		unsigned int m_FuncType;
-	};
-	std::vector<SAttribute> m_vAttributes;
-};
 
 struct SQuadRenderInfo
 {
@@ -79,19 +60,16 @@ public:
 	int m_RefreshRate;
 };
 
-typedef vec2 GL_SPoint;
-typedef vec2 GL_STexCoord;
-
-struct GL_STexCoord3D
+struct SGraphicsTexCoord3D
 {
-	GL_STexCoord3D &operator=(const GL_STexCoord &TexCoord)
+	SGraphicsTexCoord3D &operator=(const vec2 &TexCoord)
 	{
 		u = TexCoord.u;
 		v = TexCoord.v;
 		return *this;
 	}
 
-	GL_STexCoord3D &operator=(const vec3 &TexCoord)
+	SGraphicsTexCoord3D &operator=(const vec3 &TexCoord)
 	{
 		u = TexCoord.u;
 		v = TexCoord.v;
@@ -102,30 +80,39 @@ struct GL_STexCoord3D
 	float u, v, w;
 };
 
-typedef ColorRGBA GL_SColorf;
 //use normalized color values
-typedef vector4_base<unsigned char> GL_SColor;
+using SGraphicsColor = vector4_base<unsigned char>;
 
-struct GL_SVertex
+struct SGraphicsVertex
 {
-	GL_SPoint m_Pos;
-	GL_STexCoord m_Tex;
-	GL_SColor m_Color;
+	vec2 m_Pos;
+	vec2 m_Tex;
+	SGraphicsColor m_Color;
 };
+static_assert(sizeof(SGraphicsVertex) == 20);
+static_assert(offsetof(SGraphicsVertex, m_Pos) == 0);
+static_assert(offsetof(SGraphicsVertex, m_Tex) == 8);
+static_assert(offsetof(SGraphicsVertex, m_Color) == 16);
 
-struct GL_SVertexTex3D
+struct SGraphicsVertexTex3D
 {
-	GL_SPoint m_Pos;
-	GL_SColorf m_Color;
-	GL_STexCoord3D m_Tex;
+	vec2 m_Pos;
+	ColorRGBA m_Color;
+	SGraphicsTexCoord3D m_Tex;
 };
+static_assert(sizeof(SGraphicsVertexTex3D) == 36);
+static_assert(offsetof(SGraphicsVertexTex3D, m_Color) == 8);
+static_assert(offsetof(SGraphicsVertexTex3D, m_Tex) == 24);
 
-struct GL_SVertexTex3DStream
+struct SGraphicsVertexTex3DStream
 {
-	GL_SPoint m_Pos;
-	GL_SColor m_Color;
-	GL_STexCoord3D m_Tex;
+	vec2 m_Pos;
+	SGraphicsColor m_Color;
+	SGraphicsTexCoord3D m_Tex;
 };
+static_assert(sizeof(SGraphicsVertexTex3DStream) == 24);
+static_assert(offsetof(SGraphicsVertexTex3DStream, m_Color) == 8);
+static_assert(offsetof(SGraphicsVertexTex3DStream, m_Tex) == 12);
 
 static constexpr size_t GRAPHICS_MAX_QUADS_RENDER_COUNT = 256;
 static constexpr size_t GRAPHICS_MAX_PARTICLES_RENDER_COUNT = 512;
@@ -144,6 +131,9 @@ enum EBackendType
 	BACKEND_TYPE_OPENGL = 0,
 	BACKEND_TYPE_OPENGL_ES,
 	BACKEND_TYPE_VULKAN,
+	// Accepts everything and draws nothing: the headless client, and the
+	// tests that run the frontend without a device.
+	BACKEND_TYPE_NULL,
 
 	// special value to tell the backend to identify the current backend
 	BACKEND_TYPE_AUTO,
@@ -177,8 +167,6 @@ typedef STWGraphicGpu TTwGraphicsGpuList;
 
 typedef std::function<void()> WINDOW_RESIZE_FUNC;
 typedef std::function<void()> WINDOW_PROPS_CHANGED_FUNC;
-
-typedef std::function<bool(uint32_t &Width, uint32_t &Height, CImageInfo::EImageFormat &Format, std::vector<uint8_t> &vDstData)> TGLBackendReadPresentedImageData;
 
 struct CDataSprite;
 
@@ -236,47 +224,132 @@ public:
 	vec2 m_BottomRight;
 };
 
+// What the graphics are told about the surface they draw into: by the window
+// when it opens or changes size, or by the surface-less client for the
+// virtual screen it keeps instead.
+struct SGraphicsSurfaceInfo
+{
+	// Whether a frame can be presented at all. Without a surface the
+	// graphics draw into a virtual screen of their own.
+	bool m_Presentable = false;
+	// The size of the surface in pixels ...
+	int m_DrawableWidth = 0;
+	int m_DrawableHeight = 0;
+	// ... and the size of the window in screen coordinates, which differ on
+	// a HiDPI screen.
+	int m_WindowWidth = 0;
+	int m_WindowHeight = 0;
+	int m_RefreshRate = 0;
+	// Pixels at the left and right edge that the display's cutout covers
+	// (iOS). Nothing drawn there is visible, so the view excludes them.
+	int m_InsetLeft = 0;
+	int m_InsetRight = 0;
+};
+
 class IGraphics : public IInterface
 {
 	MACRO_INTERFACE("graphics")
 protected:
 	int m_ScreenWidth;
 	int m_ScreenHeight;
+	int m_RenderWidth = 0;
+	int m_RenderHeight = 0;
+	// The whole surface, of which the screen may only be a part: the view is
+	// clamped to an aspect ratio of at most 5:4 and excludes the display cutout.
 	int m_ViewportX = 0;
-	int m_DrawableWidth;
-	int m_DrawableHeight;
+	int m_DrawableWidth = 0;
+	int m_DrawableHeight = 0;
 	int m_ScreenRefreshRate;
 	float m_ScreenHiDPIScale;
-	ivec2 m_DesktopSize;
+
+public:
+	// How many vertices a Begin/End pair may hold before it flushes on its own.
+	static constexpr int MAX_VERTICES = 32 * 1024;
+
+	struct CQuadItem;
+
+protected:
+	// The vertex buffer that Begin/Draw/End fill. It lives here so that the
+	// calls that only write vertices - SetColor, QuadsSetSubset, QuadsDrawTL
+	// and the rest between a Begin and an End - are plain member functions
+	// on the interface; the backend only sees the flush, which is the one
+	// virtual call.
+	enum class EDrawing
+	{
+		NONE,
+		QUADS,
+		LINES,
+		TRIANGLES,
+	};
+	SGraphicsVertex m_aVertices[MAX_VERTICES];
+	SGraphicsVertexTex3DStream m_aVerticesTex3D[MAX_VERTICES];
+	int m_NumVertices = 0;
+	SGraphicsColor m_aColor[4];
+	vec2 m_aTexture[4];
+	float m_Rotation = 0.0f;
+	int m_CurIndex = -1;
+	EDrawing m_Drawing = EDrawing::NONE;
+
+	virtual void FlushVertices(bool KeepVertices = false) = 0;
+	virtual void FlushVerticesTex3D() = 0;
+
+	void AddVertices(int Count);
+	void AddVertices(int Count, SGraphicsVertex *pVertices);
+	void AddVertices(int Count, SGraphicsVertexTex3DStream *pVertices);
+
+	template<typename TName>
+	void SetColor(TName *pVertex, int ColorIndex)
+	{
+		pVertex->m_Color = m_aColor[ColorIndex];
+	}
+
+	template<typename TName>
+	void Rotate(const vec2 &Center, TName *pPoints, int NumPoints)
+	{
+		const float c = std::cos(m_Rotation);
+		const float s = std::sin(m_Rotation);
+		for(int i = 0; i < NumPoints; i++)
+		{
+			const float x = pPoints[i].m_Pos.x - Center.x;
+			const float y = pPoints[i].m_Pos.y - Center.y;
+			pPoints[i].m_Pos.x = x * c - y * s + Center.x;
+			pPoints[i].m_Pos.y = x * s + y * c + Center.y;
+		}
+	}
+
+	template<typename TName>
+	void QuadsDrawTLImpl(TName *pVertices, const CQuadItem *pArray, int Num);
 
 public:
 	enum
 	{
-		TEXLOAD_TO_3D_TEXTURE = 1 << 0,
-		TEXLOAD_TO_2D_ARRAY_TEXTURE = 1 << 1,
-		TEXLOAD_NO_2D_TEXTURE = 1 << 2,
+		// The texture is a grid of layers and will be sampled by layer index.
+		// Whether that becomes an array texture or a volume is the renderer's
+		// business; a layer is addressed the same way either way.
+		TEXLOAD_LAYERED = 1 << 0,
+		TEXLOAD_NO_2D_TEXTURE = 1 << 1,
 	};
 
-	class CTextureHandle
+	struct STextureHandleTag;
+	class CTextureHandle : public CGenerationHandle<STextureHandleTag>
 	{
-		friend class IGraphics;
-		int m_Id;
+		friend class CGenerationHandlePool<CTextureHandle>;
 
-	public:
-		CTextureHandle() :
-			m_Id(-1)
+		CTextureHandle(int Id, uint32_t Generation) :
+			CGenerationHandle(Id, Generation)
 		{
 		}
 
-		bool IsValid() const { return Id() >= 0; }
+	public:
+		CTextureHandle() = default;
 		bool IsNullTexture() const { return Id() == 0; }
-		int Id() const { return m_Id; }
-		void Invalidate() { m_Id = -1; }
 	};
+	struct SBufferHandleTag;
+	using CBufferHandle = CGenerationHandle<SBufferHandleTag>;
 
-	int ScreenWidth() const { return m_ScreenWidth; }
-	int ScreenHeight() const { return m_ScreenHeight; }
-	vec2 ScreenSize() const { return vec2(m_ScreenWidth, m_ScreenHeight); }
+	int ScreenWidth() const { return m_RenderWidth > 0 ? m_RenderWidth : m_ScreenWidth; }
+	int ScreenHeight() const { return m_RenderHeight > 0 ? m_RenderHeight : m_ScreenHeight; }
+	vec2 ScreenSize() const { return vec2(ScreenWidth(), ScreenHeight()); }
 	float ScreenAspect() const { return (float)ScreenWidth() / (float)ScreenHeight(); }
 	float ScreenHiDPIScale() const { return m_ScreenHiDPIScale; }
 	int WindowWidth() const { return m_ScreenWidth / m_ScreenHiDPIScale; }
@@ -293,35 +366,45 @@ public:
 	int ViewportX() const { return m_ViewportX; }
 
 	virtual void WarnPngliteIncompatibleImages(bool Warn) = 0;
-	virtual void SetWindowParams(int FullscreenMode, bool IsBorderless) = 0;
-	virtual bool SetWindowScreen(int Index, bool MoveToCenter) = 0;
-	virtual bool SwitchWindowScreen(int Index, bool MoveToCenter) = 0;
-	virtual bool SetVSync(bool State) = 0;
-	virtual bool SetMultiSampling(uint32_t ReqMultiSamplingCount, uint32_t &MultiSamplingCountBackend) = 0;
-	virtual int GetWindowScreen() = 0;
-	virtual void Move(int x, int y) = 0;
-	virtual bool Resize(int w, int h, int RefreshRate) = 0;
-	virtual void ResizeToScreen() = 0;
-	virtual void GotResized(int w, int h, int RefreshRate) = 0;
 	virtual void UpdateViewport(int X, int Y, int W, int H, bool ByResize) = 0;
-	virtual bool IsScreenKeyboardShown() = 0;
 
 	/**
 	 * Listens to a resize event of the canvas, which is usually caused by a window resize.
 	 * Will only be triggered if the actual size changed.
 	 */
 	virtual void AddWindowResizeListener(WINDOW_RESIZE_FUNC pFunc) = 0;
-	/**
-	 * Listens to various window property changes, such as minimize, maximize, move, fullscreen mode
-	 */
-	virtual void AddWindowPropChangeListener(WINDOW_PROPS_CHANGED_FUNC pFunc) = 0;
-
-	virtual void WindowDestroyNtf(uint32_t WindowId) = 0;
-	virtual void WindowCreateNtf(uint32_t WindowId) = 0;
 
 	// ForceClearNow forces the backend to trigger a clear, even at performance cost, else it might be delayed by one frame
 	virtual void Clear(float r, float g, float b, bool ForceClearNow = false) = 0;
 
+	enum class ERenderPassLoadOp : uint8_t
+	{
+		DISCARD,
+		CLEAR,
+	};
+
+	struct CRenderPassDesc
+	{
+		// An invalid handle selects the presentation target.
+		CTextureHandle m_ColorTarget;
+		ERenderPassLoadOp m_LoadOp = ERenderPassLoadOp::DISCARD;
+		ColorRGBA m_ClearColor = {0.0f, 0.0f, 0.0f, 0.0f};
+	};
+
+	// Drawing into something other than the screen. Fixed function has no
+	// render targets, and rather than answer a capability question everywhere,
+	// the contract is carried by the handle - CreateTexture with
+	// TEXTURE_USAGE_COLOR_TARGET returns an invalid one where targets are
+	// unavailable, and a caller that wants a target has to look at what it
+	// got. The surface-less client is the only user so far: it draws every
+	// frame into a target of screen size because there is no screen.
+	//
+	// Everything else in this interface draws the same on every backend.
+
+	// A presentation pass is active implicitly for backwards compatibility.
+	// Beginning another pass ends the current pass first.
+	virtual bool BeginRenderPass(const CRenderPassDesc &Desc) = 0;
+	virtual bool EndRenderPass() = 0;
 	virtual void ClipEnable(int x, int y, int w, int h) = 0;
 	virtual void ClipDisable() = 0;
 
@@ -348,6 +431,57 @@ public:
 	virtual uint64_t StreamedMemoryUsage() const = 0;
 	virtual uint64_t StagingMemoryUsage() const = 0;
 
+	struct SFrameMailboxStats
+	{
+		uint64_t m_Produced = 0;
+		uint64_t m_Rendered = 0;
+		uint64_t m_Dropped = 0;
+	};
+	virtual SFrameMailboxStats FrameMailboxStats() const = 0;
+
+	class CFrameRenderStats
+	{
+	public:
+		uint64_t m_Commands = 0;
+		uint64_t m_ResourceCommands = 0;
+		uint64_t m_DrawCommands = 0;
+		uint64_t m_DrawCalls = 0;
+		uint64_t m_Triangles = 0;
+		uint64_t m_Instances = 0;
+		uint64_t m_RenderPasses = 0;
+		uint64_t m_BufferCreates = 0;
+		uint64_t m_BufferRecreates = 0;
+		uint64_t m_BufferUpdates = 0;
+		uint64_t m_TextureCreates = 0;
+		uint64_t m_TextureUpdates = 0;
+		uint64_t m_UploadBytes = 0;
+		uint64_t m_StreamedBytes = 0;
+		uint64_t m_GpuTimeNanoseconds = 0;
+		uint64_t m_GpuSample = 0;
+		bool m_GpuTimingSupported = false;
+
+		CFrameRenderStats &operator+=(const CFrameRenderStats &Other)
+		{
+			m_Commands += Other.m_Commands;
+			m_ResourceCommands += Other.m_ResourceCommands;
+			m_DrawCommands += Other.m_DrawCommands;
+			m_DrawCalls += Other.m_DrawCalls;
+			m_Triangles += Other.m_Triangles;
+			m_Instances += Other.m_Instances;
+			m_RenderPasses += Other.m_RenderPasses;
+			m_BufferCreates += Other.m_BufferCreates;
+			m_BufferRecreates += Other.m_BufferRecreates;
+			m_BufferUpdates += Other.m_BufferUpdates;
+			m_TextureCreates += Other.m_TextureCreates;
+			m_TextureUpdates += Other.m_TextureUpdates;
+			m_UploadBytes += Other.m_UploadBytes;
+			m_StreamedBytes += Other.m_StreamedBytes;
+			return *this;
+		}
+	};
+	virtual CFrameRenderStats FrameRenderStats() const = 0;
+	virtual void SetRenderStatsEnabled(bool Enabled) = 0;
+
 	virtual const TTwGraphicsGpuList &GetGpus() const = 0;
 
 	virtual bool LoadPng(CImageInfo &Image, const char *pFilename, int StorageType) = 0;
@@ -358,58 +492,255 @@ public:
 
 	virtual void UnloadTexture(CTextureHandle *pIndex) = 0;
 	virtual CTextureHandle LoadTextureRaw(const CImageInfo &Image, int Flags, const char *pTexName = nullptr) = 0;
+	// Image data is consumed only when a valid texture handle is returned.
 	virtual CTextureHandle LoadTextureRawMove(CImageInfo &Image, int Flags, const char *pTexName = nullptr) = 0;
 	virtual CTextureHandle LoadTexture(const char *pFilename, int StorageType, int Flags = 0) = 0;
 	virtual void TextureSet(CTextureHandle Texture) = 0;
 	void TextureClear() { TextureSet(CTextureHandle()); }
-
-	// pTextData & pTextOutlineData are automatically free'd
-	virtual bool LoadTextTextures(size_t Width, size_t Height, CTextureHandle &TextTexture, CTextureHandle &TextOutlineTexture, uint8_t *pTextData, uint8_t *pTextOutlineData) = 0;
-	virtual bool UnloadTextTextures(CTextureHandle &TextTexture, CTextureHandle &TextOutlineTexture) = 0;
-	virtual bool UpdateTextTexture(CTextureHandle TextureId, int x, int y, size_t Width, size_t Height, uint8_t *pData, bool IsMovedPointer) = 0;
 
 	virtual CTextureHandle LoadSpriteTexture(const CImageInfo &FromImageInfo, const std::optional<CImageInfo> &FallbackImageInfo, const struct CDataSprite *pSprite) = 0;
 
 	virtual bool IsImageSubFullyTransparent(const CImageInfo &FromImageInfo, int x, int y, int w, int h) = 0;
 	virtual bool IsSpriteTextureFullyTransparent(const CImageInfo &FromImageInfo, const struct CDataSprite *pSprite) = 0;
 
-	virtual void FlushVertices(bool KeepVertices = false) = 0;
-	virtual void FlushVerticesTex3D() = 0;
-
 	// specific render functions
-	virtual void RenderTileLayer(int BufferContainerIndex, const ColorRGBA &Color, char **pOffsets, unsigned int *pIndicedVertexDrawNum, size_t NumIndicesOffset) = 0;
-	virtual void RenderBorderTiles(int BufferContainerIndex, const ColorRGBA &Color, char *pIndexBufferOffset, const vec2 &Offset, const vec2 &Scale, uint32_t DrawNum) = 0;
-	virtual void RenderQuadLayer(int BufferContainerIndex, SQuadRenderInfo *pQuadInfo, size_t QuadNum, int QuadOffset, bool Grouped = false) = 0;
-	virtual void RenderText(int BufferContainerIndex, int TextQuadNum, int TextureSize, int TextureTextIndex, int TextureTextOutlineIndex, const ColorRGBA &TextColor, const ColorRGBA &TextOutlineColor) = 0;
+	// Every buffer the client draws from has one of these shapes. Naming them
+	// means a draw says which one it is instead of describing it again, and a
+	// backend can decide what to do about it once instead of rediscovering it
+	// per buffer.
+	enum class EVertexLayout : uint8_t
+	{
+		// vec2 position - a tile layer that takes its colour from the draw
+		TILE,
+		// vec2 position, ubvec4 tile index read as integers
+		TILE_TEXTURED,
+		// vec4 position, ubvec4 colour
+		QUAD,
+		// vec4 position, ubvec4 colour, vec2 texture coordinate
+		QUAD_TEXTURED,
+		// vec2 position, vec2 texture coordinate, ubvec4 colour - what text
+		// and the quad containers both build
+		POSITION_TEXCOORD_COLOR,
+		COUNT,
+	};
+
+	virtual void RenderTileLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, const uint32_t *pFirstIndices, const uint32_t *pIndexCounts, size_t RangeCount) = 0;
+	virtual void RenderBorderTiles(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, uint32_t FirstIndex, const vec2 &Offset, const vec2 &Scale, uint32_t DrawNum) = 0;
+	virtual void RenderQuadLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, SQuadRenderInfo *pQuadInfo, size_t QuadNum, int QuadOffset, bool Grouped = false) = 0;
+	virtual void RenderText(CBufferHandle VertexBuffer, int TextQuadNum, int TextureSize, CTextureHandle Texture, const ColorRGBA &TextColor, const ColorRGBA &TextOutlineColor) = 0;
+
+	enum class EIndexType : uint8_t
+	{
+		UINT16,
+		UINT32,
+	};
 
 	// opengl 3.3 functions
 
-	enum EBufferObjectCreateFlags
+	enum class EBufferLifetime : uint8_t
 	{
-		// tell the backend that the buffer only needs to be valid for the span of one frame. Buffer size is not allowed to be bigger than GL_SVertex * MAX_VERTICES
-		BUFFER_OBJECT_CREATE_FLAGS_ONE_TIME_USE_BIT = 1 << 0,
+		PERSISTENT,
+		FRAME,
 	};
 
-	// if a pointer is passed as moved pointer, it requires to be allocated with malloc()
-	virtual int CreateBufferObject(size_t UploadDataSize, void *pUploadData, int CreateFlags, bool IsMovedPointer = false) = 0;
-	virtual void RecreateBufferObject(int BufferIndex, size_t UploadDataSize, void *pUploadData, int CreateFlags, bool IsMovedPointer = false) = 0;
-	virtual void DeleteBufferObject(int BufferIndex) = 0;
+	enum class EBufferUsage : uint8_t
+	{
+		VERTEX,
+		INDEX,
+	};
 
-	virtual int CreateBufferContainer(struct SBufferContainerInfo *pContainerInfo) = 0;
-	// destroying all buffer objects means, that all referenced VBOs are destroyed automatically, so the user does not need to save references to them
-	virtual void DeleteBufferContainer(int &ContainerIndex, bool DestroyAllBO = true) = 0;
-	virtual void IndicesNumRequiredNotify(unsigned int RequiredIndicesCount) = 0;
+	struct CBufferDesc
+	{
+		size_t m_Size = 0;
+		EBufferLifetime m_Lifetime = EBufferLifetime::PERSISTENT;
+		EBufferUsage m_Usage = EBufferUsage::VERTEX;
+	};
+
+	enum class ETextureFormat : uint8_t
+	{
+		RGBA8_UNORM,
+		// Rejected by CTextureDesc::IsValid: nothing creates a single channel
+		// texture since the glyph atlas became RG8, and the four backends never
+		// agreed on what one channel means. A backend may sample it as coverage
+		// (1,1,1,r), Vulkan and modern OpenGL as red (r,0,0,1), legacy OpenGL as
+		// alpha (0,0,0,r). Whoever needs it again decides which of the three it
+		// is and makes all four agree first.
+		R8_UNORM,
+		// Two single channel images in one, which is what a glyph and its
+		// outline are: the same coordinates, always drawn together.
+		RG8_UNORM,
+	};
+
+	// What one pixel of a format costs. Every place that copies texture data
+	// has to agree on this, so there is one of it.
+	static constexpr size_t PixelSize(ETextureFormat Format)
+	{
+		switch(Format)
+		{
+		case ETextureFormat::RGBA8_UNORM: return 4;
+		case ETextureFormat::RG8_UNORM: return 2;
+		case ETextureFormat::R8_UNORM: return 1;
+		}
+		return 0;
+	}
+
+	enum class ETextureMipmaps : uint8_t
+	{
+		NONE,
+		GENERATE,
+	};
+
+	// A layered texture is derived by splitting the uploaded 2D image into a grid.
+	// Whether the layers end up as an array or as a volume is the backend's own
+	// decision - the caller cannot make it, and every backend that has both picks
+	// the array.
+	enum class ETextureLayering : uint8_t
+	{
+		NONE,
+		LAYERED,
+	};
+	static constexpr size_t MAX_TEXTURE_LAYERS = 256;
+
+	enum ETextureUsage : uint8_t
+	{
+		TEXTURE_USAGE_SAMPLED = 1 << 0,
+		TEXTURE_USAGE_COLOR_TARGET = 1 << 1,
+		TEXTURE_USAGE_COPY_SOURCE = 1 << 2,
+	};
+
+	struct CTextureDesc
+	{
+		size_t m_Width = 0;
+		size_t m_Height = 0;
+		ETextureFormat m_Format = ETextureFormat::RGBA8_UNORM;
+		ETextureMipmaps m_Mipmaps = ETextureMipmaps::GENERATE;
+		ETextureLayering m_Layering = ETextureLayering::NONE;
+		int m_LayerColumns = 1;
+		int m_LayerRows = 1;
+		uint8_t m_Usage = TEXTURE_USAGE_SAMPLED;
+		bool m_Create2D = true;
+
+		bool HasUsage(ETextureUsage Usage) const { return (m_Usage & Usage) != 0; }
+		size_t LayerCount() const { return static_cast<size_t>(m_LayerColumns) * m_LayerRows; }
+		bool IsValid() const
+		{
+			constexpr uint8_t AllUsages = TEXTURE_USAGE_SAMPLED | TEXTURE_USAGE_COLOR_TARGET | TEXTURE_USAGE_COPY_SOURCE;
+			if(m_Width == 0 || m_Height == 0 || m_Usage == 0 || (m_Usage & ~AllUsages) != 0)
+				return false;
+			if(m_Format == ETextureFormat::R8_UNORM)
+				return false;
+			if(m_LayerColumns <= 0 || m_LayerRows <= 0 || m_LayerColumns > std::numeric_limits<int>::max() / m_LayerRows)
+				return false;
+			if(LayerCount() > MAX_TEXTURE_LAYERS)
+				return false;
+			if(m_Layering == ETextureLayering::NONE && (m_LayerColumns != 1 || m_LayerRows != 1))
+				return false;
+			if(HasUsage(TEXTURE_USAGE_COLOR_TARGET) && (m_Format != ETextureFormat::RGBA8_UNORM || !HasUsage(TEXTURE_USAGE_SAMPLED) || !m_Create2D || m_Layering != ETextureLayering::NONE || m_Mipmaps != ETextureMipmaps::NONE))
+				return false;
+			if(HasUsage(TEXTURE_USAGE_COPY_SOURCE) && (!m_Create2D || m_Layering != ETextureLayering::NONE))
+				return false;
+			return m_Create2D || m_Layering != ETextureLayering::NONE;
+		}
+	};
+
+	// Initial data is copied before this call returns. A null pointer creates an
+	// uninitialized color target and is rejected for ordinary sampled textures.
+	virtual CTextureHandle CreateTexture(const CTextureDesc &Desc, const void *pInitialData = nullptr) = 0;
+	class ITextureReadback
+	{
+	public:
+		virtual ~ITextureReadback() = default;
+		[[nodiscard]] virtual bool IsReady() const = 0;
+		// Waits for completion and moves the image on success. May only be called once.
+		virtual bool Wait(CImageInfo &Image) = 0;
+	};
+	// Presents the current frame and returns its queued top-left RGBA readback.
+	// Recycled is an image the caller is done with. When it already has the
+	// size and format the readback produces, it is filled instead of a fresh
+	// allocation; anything else about it is ignored.
+	[[nodiscard]] virtual std::unique_ptr<ITextureReadback> PresentAndReadbackAsync(CImageInfo &&Recycled = CImageInfo()) = 0;
+
+	struct CTextureRegion
+	{
+		size_t m_X = 0;
+		size_t m_Y = 0;
+		size_t m_Width = 0;
+		size_t m_Height = 0;
+	};
+	// Copies one tightly packed, non-empty region of an unmipmapped 2D texture
+	// created with CreateTexture before this call returns.
+	virtual bool UpdateTexture(CTextureHandle Texture, const CTextureRegion &Region, ETextureFormat Format, const void *pData) = 0;
+
+	// Only what the layout table actually uses. The wider set that used to be
+	// here had no producer, so its conversion branches in the OpenGL backends
+	// were never taken and never tested.
+	enum class EVertexAttributeType : uint8_t
+	{
+		FLOAT32,
+		UINT8,
+	};
+
+	enum class EVertexAttributeMode : uint8_t
+	{
+		FLOAT,
+		INTEGER,
+	};
+
+	struct CVertexAttributeDesc
+	{
+		uint32_t m_ComponentCount = 0;
+		EVertexAttributeType m_Type = EVertexAttributeType::FLOAT32;
+		bool m_Normalized = false;
+		size_t m_Offset = 0;
+		EVertexAttributeMode m_Mode = EVertexAttributeMode::FLOAT;
+	};
+
+	struct SVertexLayoutDesc
+	{
+		size_t m_Stride = 0;
+		uint32_t m_AttributeCount = 0;
+		std::array<CVertexAttributeDesc, 3> m_aAttributes = {};
+	};
+
+	// Defined here rather than in the backend so pipelines, the drawing
+	// interface and the tests all read the same table.
+	static const SVertexLayoutDesc &VertexLayout(EVertexLayout Layout)
+	{
+		using EType = EVertexAttributeType;
+		using EMode = EVertexAttributeMode;
+		static const std::array<SVertexLayoutDesc, (size_t)EVertexLayout::COUNT> s_aLayouts = {{
+			// TILE
+			{sizeof(float) * 2, 1, {{{2, EType::FLOAT32, false, 0, EMode::FLOAT}}}},
+			// TILE_TEXTURED
+			{sizeof(float) * 2 + 4, 2, {{{2, EType::FLOAT32, false, 0, EMode::FLOAT}, {4, EType::UINT8, false, sizeof(float) * 2, EMode::INTEGER}}}},
+			// QUAD
+			{sizeof(float) * 4 + 4, 2, {{{4, EType::FLOAT32, false, 0, EMode::FLOAT}, {4, EType::UINT8, true, sizeof(float) * 4, EMode::FLOAT}}}},
+			// QUAD_TEXTURED
+			{sizeof(float) * 6 + 4, 3, {{{4, EType::FLOAT32, false, 0, EMode::FLOAT}, {4, EType::UINT8, true, sizeof(float) * 4, EMode::FLOAT}, {2, EType::FLOAT32, false, sizeof(float) * 4 + 4, EMode::FLOAT}}}},
+			// POSITION_TEXCOORD_COLOR
+			{sizeof(float) * 4 + 4, 3, {{{2, EType::FLOAT32, false, 0, EMode::FLOAT}, {2, EType::FLOAT32, false, sizeof(float) * 2, EMode::FLOAT}, {4, EType::UINT8, true, sizeof(float) * 4, EMode::FLOAT}}}},
+		}};
+		dbg_assert(Layout < EVertexLayout::COUNT, "Unknown vertex layout");
+		return s_aLayouts[(size_t)Layout];
+	}
+
+	// Copies what it is given. Create returns an invalid handle on failure.
+	virtual CBufferHandle CreateBufferObject(std::span<const uint8_t> Data, EBufferLifetime Lifetime = EBufferLifetime::PERSISTENT) = 0;
+	virtual bool RecreateBufferObject(CBufferHandle Buffer, std::span<const uint8_t> Data, EBufferLifetime Lifetime = EBufferLifetime::PERSISTENT) = 0;
+	// Takes an allocation made with malloc() and frees it once the command is
+	// consumed, so on success the caller must not touch it afterwards. On
+	// failure - an invalid handle, or false - the allocation is still the
+	// caller's, and the caller frees it.
+	virtual CBufferHandle CreateBufferObjectMoved(void *pData, size_t Size, EBufferLifetime Lifetime = EBufferLifetime::PERSISTENT) = 0;
+	virtual bool RecreateBufferObjectMoved(CBufferHandle Buffer, void *pData, size_t Size, EBufferLifetime Lifetime = EBufferLifetime::PERSISTENT) = 0;
+	// Failed destroys leave the passed handle valid so they can be retried.
+	virtual void DeleteBufferObject(CBufferHandle &Buffer) = 0;
+
+	[[nodiscard]] virtual bool IndicesNumRequiredNotify(unsigned int RequiredIndicesCount) = 0;
 
 	// returns true if the driver age type is supported, passing BACKEND_TYPE_AUTO for BackendType will query the values for the currently used backend
 	virtual bool GetDriverVersion(EGraphicsDriverAgeType DriverAgeType, int &Major, int &Minor, int &Patch, const char *&pName, EBackendType BackendType) = 0;
 	virtual bool IsConfigModernAPI() = 0;
-	virtual bool IsTileBufferingEnabled() = 0;
-	virtual bool IsQuadBufferingEnabled() = 0;
-	virtual bool IsTextBufferingEnabled() = 0;
-	virtual bool IsQuadContainerBufferingEnabled() = 0;
-	virtual bool Uses2DTextureArrays() = 0;
-	virtual int TextureLoadFlags() = 0;
-	virtual bool HasTextureArraysSupport() = 0;
 
 	virtual const char *GetVendorString() = 0;
 	virtual const char *GetVersionString() = 0;
@@ -431,9 +762,9 @@ public:
 			m_Y1 = To.y;
 		}
 	};
-	virtual void LinesBegin() = 0;
-	virtual void LinesEnd() = 0;
-	virtual void LinesDraw(const CLineItem *pArray, size_t Num) = 0;
+	void LinesBegin();
+	void LinesEnd();
+	void LinesDraw(const CLineItem *pArray, size_t Num);
 
 	class CLineItemBatch
 	{
@@ -441,21 +772,21 @@ public:
 		IGraphics::CLineItem m_aItems[256];
 		size_t m_NumItems = 0;
 	};
-	virtual void LinesBatchBegin(CLineItemBatch *pBatch) = 0;
-	virtual void LinesBatchEnd(CLineItemBatch *pBatch) = 0;
-	virtual void LinesBatchDraw(CLineItemBatch *pBatch, const CLineItem *pArray, size_t Num) = 0;
+	void LinesBatchBegin(CLineItemBatch *pBatch);
+	void LinesBatchEnd(CLineItemBatch *pBatch);
+	void LinesBatchDraw(CLineItemBatch *pBatch, const CLineItem *pArray, size_t Num);
 
-	virtual void QuadsBegin() = 0;
-	virtual void QuadsEnd() = 0;
-	virtual void QuadsTex3DBegin() = 0;
-	virtual void QuadsTex3DEnd() = 0;
-	virtual void TrianglesBegin() = 0;
-	virtual void TrianglesEnd() = 0;
-	virtual void QuadsEndKeepVertices() = 0;
-	virtual void QuadsDrawCurrentVertices(bool KeepVertices = true) = 0;
-	virtual void QuadsSetRotation(float Angle) = 0;
-	virtual void QuadsSetSubset(float TopLeftU, float TopLeftV, float BottomRightU, float BottomRightV) = 0;
-	virtual void QuadsSetSubsetFree(float x0, float y0, float x1, float y1, float x2, float y2, float x3, float y3, int Index = -1) = 0;
+	void QuadsBegin();
+	void QuadsEnd();
+	void QuadsTex3DBegin();
+	void QuadsTex3DEnd();
+	void TrianglesBegin();
+	void TrianglesEnd();
+	void QuadsEndKeepVertices();
+	void QuadsDrawCurrentVertices(bool KeepVertices = true);
+	void QuadsSetRotation(float Angle);
+	void QuadsSetSubset(float TopLeftU, float TopLeftV, float BottomRightU, float BottomRightV);
+	void QuadsSetSubsetFree(float x0, float y0, float x1, float y1, float x2, float y2, float x3, float y3, int Index = -1);
 
 	struct CFreeformItem
 	{
@@ -476,8 +807,8 @@ public:
 		CQuadItem(vec2 Position, vec2 Size) :
 			m_X(Position.x), m_Y(Position.y), m_Width(Size.x), m_Height(Size.y) {}
 	};
-	virtual void QuadsDraw(CQuadItem *pArray, int Num) = 0;
-	virtual void QuadsDrawTL(const CQuadItem *pArray, int Num) = 0;
+	void QuadsDraw(CQuadItem *pArray, int Num);
+	void QuadsDrawTL(const CQuadItem *pArray, int Num);
 
 	virtual void QuadsTex3DDrawTL(const CQuadItem *pArray, int Num) = 0;
 
@@ -502,29 +833,15 @@ public:
 
 	virtual void RenderQuadContainerAsSpriteMultiple(int ContainerIndex, int QuadOffset, int DrawCount, SRenderSpriteInfo *pRenderInfo) = 0;
 
-	virtual void QuadsDrawFreeform(const CFreeformItem *pArray, int Num) = 0;
-	virtual void QuadsText(float x, float y, float Size, const char *pText) = 0;
+	void QuadsDrawFreeform(const CFreeformItem *pArray, int Num);
+	void QuadsText(float x, float y, float Size, const char *pText);
 
-	// sprites
+	// Sprite flags for the game's sprite helpers (CRenderTools).
 	enum
 	{
 		SPRITE_FLAG_FLIP_Y = 1,
 		SPRITE_FLAG_FLIP_X = 2,
 	};
-	virtual void SelectSprite(int Id, int Flags = 0) = 0;
-	virtual void SelectSprite7(int Id, int Flags = 0) = 0;
-
-	virtual void GetSpriteScale(const CDataSprite *pSprite, float &ScaleX, float &ScaleY) const = 0;
-	virtual void GetSpriteScale(int Id, float &ScaleX, float &ScaleY) const = 0;
-	virtual void GetSpriteScaleImpl(int Width, int Height, float &ScaleX, float &ScaleY) const = 0;
-
-	virtual void DrawSprite(float x, float y, float Size) = 0;
-	virtual void DrawSprite(float x, float y, float ScaledWidth, float ScaledHeight) = 0;
-
-	virtual int QuadContainerAddSprite(int QuadContainerIndex, float x, float y, float Size) = 0;
-	virtual int QuadContainerAddSprite(int QuadContainerIndex, float Size) = 0;
-	virtual int QuadContainerAddSprite(int QuadContainerIndex, float Width, float Height) = 0;
-	virtual int QuadContainerAddSprite(int QuadContainerIndex, float X, float Y, float Width, float Height) = 0;
 
 	enum
 	{
@@ -541,21 +858,14 @@ public:
 
 		CORNER_ALL = CORNER_T | CORNER_B,
 	};
-	virtual void DrawRectExt(float x, float y, float w, float h, float r, int Corners) = 0;
-	virtual void DrawRectExt4(float x, float y, float w, float h, ColorRGBA ColorTopLeft, ColorRGBA ColorTopRight, ColorRGBA ColorBottomLeft, ColorRGBA ColorBottomRight, float r, int Corners) = 0;
-	virtual int CreateRectQuadContainer(float x, float y, float w, float h, float r, int Corners) = 0;
-	virtual void DrawRect(float x, float y, float w, float h, ColorRGBA Color, int Corners, float Rounding) = 0;
-	virtual void DrawRect4(float x, float y, float w, float h, ColorRGBA ColorTopLeft, ColorRGBA ColorTopRight, ColorRGBA ColorBottomLeft, ColorRGBA ColorBottomRight, int Corners, float Rounding) = 0;
-	virtual void DrawCircle(float CenterX, float CenterY, float Radius, int Segments) = 0;
-
 	/**
 	 * @deprecated Use @link SetColor(ColorRGBA) @endlink instead of this function (avoid primitive obsession code smell).
 	 */
-	virtual void SetColor(float r, float g, float b, float a) = 0;
-	virtual void SetColor(ColorRGBA Color) = 0;
-	virtual void SetColor2(ColorRGBA First, ColorRGBA Second) = 0;
-	virtual void SetColor4(ColorRGBA TopLeft, ColorRGBA TopRight, ColorRGBA BottomLeft, ColorRGBA BottomRight) = 0;
-	virtual void ChangeColorOfQuadVertices(size_t QuadOffset, unsigned char r, unsigned char g, unsigned char b, unsigned char a) = 0;
+	void SetColor(float r, float g, float b, float a);
+	void SetColor(ColorRGBA Color);
+	void SetColor2(ColorRGBA First, ColorRGBA Second);
+	void SetColor4(ColorRGBA TopLeft, ColorRGBA TopRight, ColorRGBA BottomLeft, ColorRGBA BottomRight);
+	void ChangeColorOfQuadVertices(size_t QuadOffset, unsigned char r, unsigned char g, unsigned char b, unsigned char a);
 
 	/**
 	 * Reads the color at the specified position from the backbuffer once,
@@ -568,23 +878,12 @@ public:
 	virtual void ReadPixel(ivec2 Position, ColorRGBA *pColor) = 0;
 	virtual void TakeScreenshot(const char *pFilename) = 0;
 	virtual void TakeCustomScreenshot(const char *pFilename) = 0;
-	virtual int GetVideoModes(CVideoMode *pModes, int MaxModes, int Screen) = 0;
-	virtual void GetCurrentVideoMode(CVideoMode &CurMode, int Screen) = 0;
 	virtual void Swap() = 0;
-	virtual int GetNumScreens() const = 0;
-	virtual const char *GetScreenName(int Screen) const = 0;
 
 	// synchronization
 	virtual void InsertSignal(class CSemaphore *pSemaphore) = 0;
 	virtual bool IsIdle() const = 0;
 	virtual void WaitForIdle() = 0;
-
-	virtual void SetWindowGrab(bool Grab) = 0;
-	virtual void NotifyWindow() = 0;
-
-	// be aware that this function should only be called from the graphics thread, and even then you should really know what you are doing
-	// this function always returns the pixels in RGB
-	virtual TGLBackendReadPresentedImageData &GetReadPresentedImageDataFuncUnsafe() = 0;
 
 	virtual std::optional<SWarning> CurrentWarning() = 0;
 
@@ -650,50 +949,85 @@ public:
 		 */
 		std::vector<CMessageBoxButton> m_vButtons = {{.m_pLabel = "OK", .m_Confirm = true, .m_Cancel = true}};
 	};
-	/**
-	 * Shows a modal message box with configuration title, message and buttons.
-	 *
-	 * @param MessageBox Description of the message box.
-	 *
-	 * @return Optional containing the index of the pressed button if the popup was shown successfully.
-	 * @return Empty optional if the message box was not shown successfully.
-	 *
-	 * @remark Note that calling this function will destroy the current window,
-	 *         so it only makes sense for fatal errors at the moment.
-	 */
-	virtual std::optional<int> ShowMessageBox(const CMessageBox &MessageBox) = 0;
 
 	virtual bool IsBackendInitialized() = 0;
-
-protected:
-	CTextureHandle CreateTextureHandle(int Index)
-	{
-		CTextureHandle Tex;
-		Tex.m_Id = Index;
-		return Tex;
-	}
 };
 
+class IGraphicsBackend;
+
+// What the client and the window need from the graphics beyond drawing. The
+// window opens the surface and the backend that draws into it; from then on
+// it tells the graphics what happened to the surface, and asks them for the
+// two presentation settings that are carried out on the render thread.
 class IEngineGraphics : public IGraphics
 {
 	MACRO_INTERFACE("enginegraphics")
 public:
-	virtual int Init() = 0;
+	/**
+	 * Takes over the initialized backend and makes the graphics ready to
+	 * draw. The backend is owned from here on and shut down with the
+	 * graphics.
+	 */
+	virtual int Init(IGraphicsBackend *pBackend, const SGraphicsSurfaceInfo &Surface) = 0;
 	void Shutdown() override = 0;
 
-	virtual void Minimize() = 0;
+	// The surface changed size. Returns whether the canvas size changed,
+	// which is when the resize listeners have run.
+	virtual bool Resized(const SGraphicsSurfaceInfo &Surface) = 0;
+	// The surface went away and came back; the renderer rebuilds what it
+	// had on it. Both block until the render thread is done with it.
+	virtual void PresentationSurfaceLost() = 0;
+	virtual void PresentationSurfaceRestored() = 0;
 
-	virtual int WindowActive() = 0;
-	virtual int WindowOpen() = 0;
+	virtual bool SetVSync(bool State) = 0;
+	virtual bool SetMultiSampling(uint32_t ReqMultiSamplingCount, uint32_t &MultiSamplingCountBackend) = 0;
+
+	// Lets go of everything the renderer holds on the surface, for a window
+	// that is about to be destroyed under a message box.
+	virtual void ReleaseSurfaceForMessageBox() = 0;
+
+	// A warning for the user, shown by the menus. The window adds what a
+	// failed start had to say.
+	virtual void AddWarning(const SWarning &Warning) = 0;
 };
 
 extern IEngineGraphics *CreateEngineGraphicsThreaded();
 
-/**
- * This function should only be used when the graphics are not initialized or when @link IGraphics::ShowMessageBox @endlink failed.
- *
- * @see IGraphics::ShowMessageBox
- */
-extern std::optional<int> ShowMessageBoxWithoutGraphics(const IGraphics::CMessageBox &MessageBox);
+template<typename TName>
+void IGraphics::QuadsDrawTLImpl(TName *pVertices, const CQuadItem *pArray, int Num)
+{
+	dbg_assert(m_Drawing == EDrawing::QUADS, "called Graphics()->QuadsDrawTL without begin");
+
+	for(int i = 0; i < Num; ++i)
+	{
+		pVertices[m_NumVertices + 4 * i].m_Pos.x = pArray[i].m_X;
+		pVertices[m_NumVertices + 4 * i].m_Pos.y = pArray[i].m_Y;
+		pVertices[m_NumVertices + 4 * i].m_Tex = m_aTexture[0];
+		SetColor(&pVertices[m_NumVertices + 4 * i], 0);
+
+		pVertices[m_NumVertices + 4 * i + 1].m_Pos.x = pArray[i].m_X + pArray[i].m_Width;
+		pVertices[m_NumVertices + 4 * i + 1].m_Pos.y = pArray[i].m_Y;
+		pVertices[m_NumVertices + 4 * i + 1].m_Tex = m_aTexture[1];
+		SetColor(&pVertices[m_NumVertices + 4 * i + 1], 1);
+
+		pVertices[m_NumVertices + 4 * i + 2].m_Pos.x = pArray[i].m_X + pArray[i].m_Width;
+		pVertices[m_NumVertices + 4 * i + 2].m_Pos.y = pArray[i].m_Y + pArray[i].m_Height;
+		pVertices[m_NumVertices + 4 * i + 2].m_Tex = m_aTexture[2];
+		SetColor(&pVertices[m_NumVertices + 4 * i + 2], 2);
+
+		pVertices[m_NumVertices + 4 * i + 3].m_Pos.x = pArray[i].m_X;
+		pVertices[m_NumVertices + 4 * i + 3].m_Pos.y = pArray[i].m_Y + pArray[i].m_Height;
+		pVertices[m_NumVertices + 4 * i + 3].m_Tex = m_aTexture[3];
+		SetColor(&pVertices[m_NumVertices + 4 * i + 3], 3);
+
+		if(m_Rotation != 0)
+		{
+			const vec2 Center(pArray[i].m_X + pArray[i].m_Width / 2, pArray[i].m_Y + pArray[i].m_Height / 2);
+			Rotate(Center, &pVertices[m_NumVertices + 4 * i], 4);
+		}
+	}
+
+	AddVertices(4 * Num, pVertices);
+}
 
 #endif

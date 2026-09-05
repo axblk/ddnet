@@ -4,7 +4,7 @@
 #include <base/detect.h>
 
 #if defined(CONF_BACKEND_OPENGL_ES) || defined(CONF_BACKEND_OPENGL_ES3)
-#include <engine/client/backend_sdl.h>
+#include <engine/client/backend_threaded.h>
 
 #define GLES_CLASS_DEFINES_DO_DEFINE
 #include "gles_class_defines.h"

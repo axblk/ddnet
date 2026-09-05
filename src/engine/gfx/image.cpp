@@ -40,6 +40,26 @@ void CImageInfo::Allocate()
 	m_IsAllocated = true;
 }
 
+bool CImageInfo::TryAllocate()
+{
+	dbg_assert(m_pData == nullptr && !m_IsAllocated, "Image data already allocated");
+	// format is asserted in pixel size
+	m_pData = static_cast<uint8_t *>(malloc(DataSize()));
+	m_IsAllocated = m_pData != nullptr;
+	return m_IsAllocated;
+}
+
+bool CImageInfo::TryReuse(size_t Width, size_t Height, EImageFormat Format)
+{
+	if(m_pData != nullptr && m_Width == Width && m_Height == Height && m_Format == Format)
+		return true;
+	Free();
+	m_Width = Width;
+	m_Height = Height;
+	m_Format = Format;
+	return TryAllocate();
+}
+
 void CImageInfo::AllocateFillZero()
 {
 	dbg_assert(m_pData == nullptr && !m_IsAllocated, "Image data already allocated");

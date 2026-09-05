@@ -5,6 +5,8 @@
 #include <base/detect.h>
 #include <base/log.h>
 
+#include <engine/client/backend/glsl_shader_compiler.h>
+
 #include <string>
 
 #if defined(BACKEND_AS_OPENGL_ES) || !defined(CONF_BACKEND_OPENGL_ES)
@@ -41,19 +43,6 @@ bool CGLSLProgram::AddShader(CGLSL *pShader) const
 		return true;
 	}
 	return false;
-}
-
-void CGLSLProgram::DetachShader(CGLSL *pShader) const
-{
-	if(pShader->IsLoaded())
-	{
-		DetachShaderById(pShader->GetShaderId());
-	}
-}
-
-void CGLSLProgram::DetachShaderById(TWGLuint ShaderId) const
-{
-	glDetachShader(m_ProgramId, ShaderId);
 }
 
 bool CGLSLProgram::LinkProgram()
@@ -98,7 +87,7 @@ void CGLSLProgram::DetachAllShaders() const
 		{
 			for(GLsizei i = 0; i < ReturnedCount; ++i)
 			{
-				DetachShaderById(aShaders[i]);
+				glDetachShader(m_ProgramId, aShaders[i]);
 			}
 		}
 
@@ -153,11 +142,6 @@ void CGLSLProgram::UseProgram() const
 TWGLuint CGLSLProgram::GetProgramId() const
 {
 	return m_ProgramId;
-}
-
-CGLSLProgram::CGLSLProgram()
-{
-	m_IsLinked = false;
 }
 
 CGLSLProgram::~CGLSLProgram()

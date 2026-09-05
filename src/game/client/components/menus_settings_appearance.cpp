@@ -19,6 +19,7 @@
 #include <game/client/components/skins.h>
 #include <game/client/components/tooltips.h>
 #include <game/client/gameclient.h>
+#include <game/client/render.h>
 #include <game/client/skin.h>
 #include <game/client/ui.h>
 #include <game/client/ui_listbox.h>
@@ -437,7 +438,7 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 
 			auto &&RenderMessageBackground = [&](int LineIndex) {
 				auto Size = RenderPreview(LineIndex, 0, 0, false);
-				Graphics()->DrawRectExt(X - RealMsgPaddingX / 2.0f, TempY - RealMsgPaddingY / 2.0f, Size.x + RealMsgPaddingX * 1.5f, Size.y, RealBackgroundRounding, IGraphics::CORNER_ALL);
+				RenderTools()->DrawRectExt(X - RealMsgPaddingX / 2.0f, TempY - RealMsgPaddingY / 2.0f, Size.x + RealMsgPaddingX * 1.5f, Size.y, RealBackgroundRounding, IGraphics::CORNER_ALL);
 				return Size.y;
 			};
 
@@ -934,18 +935,18 @@ void CMenus::DoLaserPreview(const CUIRect *pRect, const ColorHSLA LaserOutlineCo
 	{
 	case LASERTYPE_RIFLE:
 		Graphics()->TextureSet(GameClient()->m_GameSkin.m_SpriteWeaponLaser);
-		Graphics()->SelectSprite(SPRITE_WEAPON_LASER_BODY);
+		RenderTools()->SelectSprite(SPRITE_WEAPON_LASER_BODY);
 		Graphics()->QuadsBegin();
 		Graphics()->QuadsSetSubset(0, 0, 1, 1);
-		Graphics()->DrawSprite(Section.x + 30.0f, Section.y + Section.h / 2.0f, 60.0f);
+		RenderTools()->DrawSprite(Section.x + 30.0f, Section.y + Section.h / 2.0f, 60.0f);
 		Graphics()->QuadsEnd();
 		break;
 	case LASERTYPE_SHOTGUN:
 		Graphics()->TextureSet(GameClient()->m_GameSkin.m_SpriteWeaponShotgun);
-		Graphics()->SelectSprite(SPRITE_WEAPON_SHOTGUN_BODY);
+		RenderTools()->SelectSprite(SPRITE_WEAPON_SHOTGUN_BODY);
 		Graphics()->QuadsBegin();
 		Graphics()->QuadsSetSubset(0, 0, 1, 1);
-		Graphics()->DrawSprite(Section.x + 30.0f, Section.y + Section.h / 2.0f, 60.0f);
+		RenderTools()->DrawSprite(Section.x + 30.0f, Section.y + Section.h / 2.0f, 60.0f);
 		Graphics()->QuadsEnd();
 		break;
 	case LASERTYPE_DRAGGER:

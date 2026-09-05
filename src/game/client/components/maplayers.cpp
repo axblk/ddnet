@@ -31,6 +31,11 @@ CCamera *CMapLayers::GetCurCamera()
 	return &GameClient()->m_Camera;
 }
 
+void CMapLayers::OnShutdown()
+{
+	m_MapRenderer.Clear();
+}
+
 void CMapLayers::OnMapLoad()
 {
 	char aCaption[64 + MAX_MAP_LENGTH];

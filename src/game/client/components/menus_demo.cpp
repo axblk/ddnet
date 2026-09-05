@@ -806,6 +806,7 @@ void CMenus::RenderDemoPlayerSliceSavePopup(CUIRect MainView)
 	MainView.Margin(150.0f, &Box);
 
 	// background
+	RenderBackdropRegion(Box);
 	Box.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 15.0f);
 	Box.Margin(24.0f, &Box);
 

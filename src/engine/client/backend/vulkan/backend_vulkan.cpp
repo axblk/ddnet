@@ -982,6 +982,7 @@ private:
 	SPipelineContainer m_PrimitivePipeline;
 	SPipelineContainer m_PrimitiveLinePipeline;
 	SPipelineContainer m_PrimitiveTextureArrayPipeline;
+	SPipelineContainer m_BlurPipeline;
 	SPipelineContainer m_PlanarYuvPipeline;
 	SPipelineContainer m_DualAtlasPipeline;
 	SPipelineContainer m_ArrayColorPipeline;
@@ -1887,6 +1888,8 @@ public:
 	[[nodiscard]] bool CreateStandardGraphicsPipelineImpl(const char *pVertName, const char *pFragName, SPipelineContainer &PipeContainer, EVulkanBackendTextureModes TexMode, EVulkanBackendBlendModes BlendMode, bool IsLinePrim);
 
 	[[nodiscard]] bool CreateStandardGraphicsPipeline(const char *pVertName, const char *pFragName, bool HasSampler, bool IsLinePipe);
+
+	[[nodiscard]] bool CreateBlurGraphicsPipeline(const char *pVertName, const char *pFragName);
 
 	[[nodiscard]] bool CreatePlanarYuvGraphicsPipeline(const char *pVertName, const char *pFragName);
 
@@ -4476,6 +4479,7 @@ void CCommandProcessorFragment_Vulkan::CleanupVulkanSwapChain(bool ForceSwapChai
 	m_PrimitivePipeline.Destroy(m_VKDevice);
 	m_PrimitiveLinePipeline.Destroy(m_VKDevice);
 	m_PrimitiveTextureArrayPipeline.Destroy(m_VKDevice);
+	m_BlurPipeline.Destroy(m_VKDevice);
 	m_PlanarYuvPipeline.Destroy(m_VKDevice);
 	m_DualAtlasPipeline.Destroy(m_VKDevice);
 	m_ArrayColorPipeline.Destroy(m_VKDevice);
@@ -6441,7 +6445,7 @@ bool CCommandProcessorFragment_Vulkan::CreateRenderPass(VkRenderPass &RenderPass
 	aDependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
 	aDependencies[0].dstSubpass = 0;
 	// The fragment shader stage belongs in here: a render target is sampled
-	// by the pass that comes after it - a post-process reads the frame it
+	// by the pass that comes after it - the menu blur reads the frame it
 	// was drawn into - and the next pass writing that same attachment has
 	// to wait for those reads. Ordering only against earlier colour writes
 	// leaves that write-after-read unsynchronised. No access bits are
@@ -6680,6 +6684,11 @@ bool CCommandProcessorFragment_Vulkan::CreateStandardGraphicsPipeline(const char
 		Ret &= CreateStandardGraphicsPipelineImpl(pVertName, pFragName, IsLinePipe ? m_PrimitiveLinePipeline : m_PrimitivePipeline, TexMode, EVulkanBackendBlendModes(i), IsLinePipe);
 
 	return Ret;
+}
+
+bool CCommandProcessorFragment_Vulkan::CreateBlurGraphicsPipeline(const char *pVertName, const char *pFragName)
+{
+	return CreateStandardGraphicsPipelineImpl(pVertName, pFragName, m_BlurPipeline, VULKAN_BACKEND_TEXTURE_MODE_TEXTURED, VULKAN_BACKEND_BLEND_MODE_NONE, false);
 }
 
 bool CCommandProcessorFragment_Vulkan::CreatePlanarYuvGraphicsPipeline(const char *pVertName, const char *pFragName)
@@ -6991,6 +7000,9 @@ bool CCommandProcessorFragment_Vulkan::CreateGraphicsPipelines()
 		return false;
 
 	if(!CreateStandardGraphicsPipeline("vulkan/prim_textured.vert.spv", "vulkan/prim_textured.frag.spv", true, false))
+		return false;
+
+	if(!CreateBlurGraphicsPipeline("vulkan/prim_textured.vert.spv", "vulkan/blur.frag.spv"))
 		return false;
 
 	if(!CreatePlanarYuvGraphicsPipeline("vulkan/prim_textured.vert.spv", "vulkan/planar_yuv.frag.spv"))
@@ -7450,6 +7462,8 @@ bool CCommandProcessorFragment_Vulkan::Cmd_Draw(const CCommandBuffer::SCommand_D
 		return RenderStandard<CCommandBuffer::SVertex, false>(ExecBuffer, pCommand->m_State, pCommand->m_PrimitiveType, pCommand->m_VertexData.Get<CCommandBuffer::SVertex>(pCommand->m_VertexCount), pCommand->m_VertexCount);
 	if(Program == EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY)
 		return RenderStandard<CCommandBuffer::SVertexTex3DStream, true>(ExecBuffer, pCommand->m_State, pCommand->m_PrimitiveType, pCommand->m_VertexData.Get<CCommandBuffer::SVertexTex3DStream>(pCommand->m_VertexCount), pCommand->m_VertexCount);
+	if(Program == EPipelineProgram::BLUR && GetIsTextured(pCommand->m_State) && pCommand->m_State.m_BlendMode == EBlendMode::NONE)
+		return RenderStandard<CCommandBuffer::SVertex, false>(ExecBuffer, pCommand->m_State, pCommand->m_PrimitiveType, pCommand->m_VertexData.Get<CCommandBuffer::SVertex>(pCommand->m_VertexCount), pCommand->m_VertexCount, &m_BlurPipeline);
 	if(Program == EPipelineProgram::PLANAR_YUV && GetIsTextured(pCommand->m_State) && pCommand->m_State.m_BlendMode == EBlendMode::NONE)
 		return RenderStandard<CCommandBuffer::SVertex, false>(ExecBuffer, pCommand->m_State, pCommand->m_PrimitiveType, pCommand->m_VertexData.Get<CCommandBuffer::SVertex>(pCommand->m_VertexCount), pCommand->m_VertexCount, &m_PlanarYuvPipeline);
 	return true;

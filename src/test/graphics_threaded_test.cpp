@@ -220,6 +220,40 @@ TEST(GraphicsThreaded, RenderPassCommandsRetainTargetGenerationAndDescriptor)
 	EXPECT_EQ(pStoredBegin->m_pNext->m_pNext->m_Cmd, CCommandBuffer::CMD_END_RENDER_PASS);
 }
 
+TEST(GraphicsThreaded, BlurDrawRetainsSourceGenerationAndDirection)
+{
+	CGenerationHandlePool<IGraphics::CTextureHandle> Pool;
+	Pool.Reset(1);
+	IGraphics::CTextureHandle Source = Pool.Allocate();
+	const IGraphics::CTextureHandle StoredSource = Source;
+
+	CCommandBuffer Buffer(1024, 1024);
+	auto *pVertices = static_cast<CCommandBuffer::SVertex *>(Buffer.AllocData(4 * sizeof(CCommandBuffer::SVertex)));
+	ASSERT_NE(pVertices, nullptr);
+	for(size_t i = 0; i < 4; ++i)
+		pVertices[i].m_Color = {255, 0, 0, 255};
+	CCommandBuffer::SCommand_Draw Blur;
+	Blur.m_State = {};
+	Blur.m_State.m_Texture = Source;
+	Blur.m_Program = EPipelineProgram::BLUR;
+	Blur.m_PrimitiveType = EPrimitiveType::QUADS;
+	Blur.m_VertexData = {pVertices, 4 * sizeof(CCommandBuffer::SVertex)};
+	Blur.m_VertexCount = 4;
+	ASSERT_TRUE(Buffer.AddCommandUnsafe(Blur));
+
+	ASSERT_TRUE(Pool.Release(&Source));
+	EXPECT_NE(Pool.Allocate().Generation(), StoredSource.Generation());
+
+	const auto *pStored = static_cast<const CCommandBuffer::SCommand_Draw *>(Buffer.Head());
+	ASSERT_NE(pStored, nullptr);
+	EXPECT_EQ(pStored->m_State.m_Texture, StoredSource);
+	EXPECT_EQ(pStored->m_PrimitiveType, EPrimitiveType::QUADS);
+	const auto *pStoredVertices = pStored->m_VertexData.Get<CCommandBuffer::SVertex>(4);
+	ASSERT_NE(pStoredVertices, nullptr);
+	EXPECT_EQ(pStoredVertices[0].m_Color, SGraphicsColor(255, 0, 0, 255));
+	EXPECT_EQ(pStoredVertices[3].m_Color, SGraphicsColor(255, 0, 0, 255));
+}
+
 TEST(GraphicsThreaded, TextureReadbackRetainsGenerationAndCompletion)
 {
 	CGenerationHandlePool<IGraphics::CTextureHandle> Pool;

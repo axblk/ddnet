@@ -103,6 +103,7 @@ enum class EPipelineProgram : uint8_t
 	ARRAY_COLOR,
 	ARRAY_COLOR_TRANSFORM,
 	DUAL_ATLAS_COMPOSITE,
+	BLUR,
 	PLANAR_YUV,
 	COUNT,
 };
@@ -139,6 +140,7 @@ inline const SPipelineProgramDesc &PipelineProgramDesc(EPipelineProgram Program)
 		{EL::TILE, EL::TILE_TEXTURED, true, false, true}, // ARRAY_COLOR
 		{EL::TILE, EL::TILE_TEXTURED, true, false, true}, // ARRAY_COLOR_TRANSFORM
 		{EL::POSITION_TEXCOORD_COLOR, EL::POSITION_TEXCOORD_COLOR, true, true, false}, // DUAL_ATLAS_COMPOSITE
+		{EL::POSITION_TEXCOORD_COLOR, EL::POSITION_TEXCOORD_COLOR, false, true, false}, // BLUR
 		{EL::POSITION_TEXCOORD_COLOR, EL::POSITION_TEXCOORD_COLOR, false, true, false}, // PLANAR_YUV
 	}};
 	dbg_assert(Program < EPipelineProgram::COUNT, "Unknown pipeline program");

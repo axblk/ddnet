@@ -1129,10 +1129,10 @@ inline IGraphics::CFrameRenderStats CCommandBuffer::RenderStats() const
 	// The layout has to be the one the program's pipeline was built for, in
 	// both directions. It is tempting to let an untextured draw read a buffer
 	// that carries texture coordinates - they would just go unused - but
-	// Vulkan bakes the vertex stride into the pipeline, and the untextured
-	// one reads eight bytes per vertex out of a twelve byte buffer. OpenGL
-	// happens to survive that because its vertex array carries the real
-	// stride; the rule is the strict one so that all of them behave the same.
+	// Vulkan and WebGPU bake the vertex stride into the pipeline, and the
+	// untextured one reads eight bytes per vertex out of a twelve byte buffer.
+	// OpenGL happens to survive that because its vertex array carries the real
+	// stride; the rule is the strict one so that all four behave the same.
 	if(Cmd.m_Layout != (Cmd.m_State.m_Texture.IsValid() ? Desc.m_TexturedLayout : Desc.m_Layout))
 		return "the vertex layout is not the one the program's pipeline was built for";
 	if(Desc.m_QuadIndices)

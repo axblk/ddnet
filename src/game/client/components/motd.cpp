@@ -16,6 +16,7 @@
 
 #include <game/client/components/important_alert.h>
 #include <game/client/gameclient.h>
+#include <game/client/render.h>
 
 #include <algorithm>
 #include <chrono>
@@ -81,7 +82,7 @@ void CMotd::OnRender()
 	if(m_RectQuadContainer == -1)
 	{
 		Graphics()->SetColor(0.0f, 0.0f, 0.0f, 0.5f);
-		m_RectQuadContainer = Graphics()->CreateRectQuadContainer(RectX, RectY, RectWidth, RectHeight, FontSize, IGraphics::CORNER_ALL);
+		m_RectQuadContainer = RenderTools()->CreateRectQuadContainer(RectX, RectY, RectWidth, RectHeight, FontSize, IGraphics::CORNER_ALL);
 		Graphics()->SetColor(1.0f, 1.0f, 1.0f, 1.0f);
 	}
 

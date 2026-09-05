@@ -1,5 +1,6 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
+#include "render.h"
 #include "ui.h"
 #include "ui_scrollregion.h"
 
@@ -595,9 +596,9 @@ CUi::EPopupMenuFunctionResult CUi::PopupColorPicker(void *pContext, CUIRect View
 	pUI->Graphics()->TextureClear();
 	pUI->Graphics()->QuadsBegin();
 	pUI->Graphics()->SetColor(MarkerOutline);
-	pUI->Graphics()->DrawCircle(MarkerX, MarkerY, 4.5f, 32);
+	pUI->RenderTools()->DrawCircle(MarkerX, MarkerY, 4.5f, 32);
 	pUI->Graphics()->SetColor(PickerColorRGB);
-	pUI->Graphics()->DrawCircle(MarkerX, MarkerY, 3.5f, 32);
+	pUI->RenderTools()->DrawCircle(MarkerX, MarkerY, 3.5f, 32);
 	pUI->Graphics()->QuadsEnd();
 
 	// Marker Hue Area

@@ -294,6 +294,7 @@ CUi::EPopupMenuFunctionResult CUi::PopupSelection(void *pContext, CUIRect View, 
 
 void CUi::ShowPopupSelection(float X, float Y, SSelectionPopupContext *pContext)
 {
+	dbg_assert(pContext->m_pScrollRegion != nullptr, "selection popup needs a scroll region");
 	const STextBoundingBox TextBoundingBox = TextRender()->TextBoundingBox(pContext->m_FontSize, pContext->m_aMessage, -1, pContext->m_Width);
 	const float PopupHeight = std::min((pContext->m_aMessage[0] == '\0' ? -pContext->m_EntrySpacing : TextBoundingBox.m_H) + pContext->m_vEntries.size() * (pContext->m_EntryHeight + pContext->m_EntrySpacing) + (SPopupMenu::POPUP_BORDER + SPopupMenu::POPUP_MARGIN) * 2, Screen()->h * 0.4f);
 	pContext->m_pUI = this;

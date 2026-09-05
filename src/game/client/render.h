@@ -207,12 +207,17 @@ enum
 	TEE_EFFECT_SPARKLE = 4,
 };
 
+struct CDataSprite;
+
 class CRenderTools
 {
 	class IGraphics *m_pGraphics;
 	class ITextRender *m_pTextRender;
 
 	int m_TeeQuadContainerIndex;
+	// Set by SelectSprite, read by DrawSprite; the helpers are const because
+	// the tee renderer that uses them is.
+	mutable vec2 m_SpriteScale = vec2(-1.0f, -1.0f);
 
 	static void GetRenderTeeBodyScale(float BaseSize, float &BodyScale);
 	static void GetRenderTeeFeetScale(float BaseSize, float &FeetScaleWidth, float &FeetScaleHeight);
@@ -228,6 +233,30 @@ public:
 
 	void RenderCursor(vec2 Center, float Size) const;
 	void RenderIcon(int ImageId, int SpriteId, const CUIRect *pRect, const ColorRGBA *pColor = nullptr) const;
+
+	// Rectangles with rounded corners and circles, drawn as quads; the
+	// corner flags are IGraphics::CORNER_*.
+	void DrawRectExt(float x, float y, float w, float h, float r, int Corners) const;
+	void DrawRectExt4(float x, float y, float w, float h, ColorRGBA ColorTopLeft, ColorRGBA ColorTopRight, ColorRGBA ColorBottomLeft, ColorRGBA ColorBottomRight, float r, int Corners) const;
+	int CreateRectQuadContainer(float x, float y, float w, float h, float r, int Corners) const;
+	void DrawRect(float x, float y, float w, float h, ColorRGBA Color, int Corners, float Rounding) const;
+	void DrawRect4(float x, float y, float w, float h, ColorRGBA ColorTopLeft, ColorRGBA ColorTopRight, ColorRGBA ColorBottomLeft, ColorRGBA ColorBottomRight, int Corners, float Rounding) const;
+	void DrawCircle(float CenterX, float CenterY, float Radius, int Segments) const;
+
+	// Sprites from the generated data tables: SelectSprite picks the
+	// texture subset and remembers the sprite's aspect for DrawSprite.
+	void SelectSprite(const CDataSprite *pSprite, int Flags = 0) const;
+	void SelectSprite(int Id, int Flags = 0) const;
+	void SelectSprite7(int Id, int Flags = 0) const;
+	void GetSpriteScale(const CDataSprite *pSprite, float &ScaleX, float &ScaleY) const;
+	void GetSpriteScale(int Id, float &ScaleX, float &ScaleY) const;
+	void GetSpriteScaleImpl(int Width, int Height, float &ScaleX, float &ScaleY) const;
+	void DrawSprite(float x, float y, float Size) const;
+	void DrawSprite(float x, float y, float ScaledWidth, float ScaledHeight) const;
+	int QuadContainerAddSprite(int QuadContainerIndex, float x, float y, float Size) const;
+	int QuadContainerAddSprite(int QuadContainerIndex, float Size) const;
+	int QuadContainerAddSprite(int QuadContainerIndex, float Width, float Height) const;
+	int QuadContainerAddSprite(int QuadContainerIndex, float X, float Y, float Width, float Height) const;
 
 	// larger rendering methods
 	static void GetRenderTeeBodySize(const CAnimState *pAnim, const CTeeRenderInfo *pInfo, vec2 &BodyOffset, float &Width, float &Height);

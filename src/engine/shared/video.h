@@ -17,7 +17,11 @@ public:
 	virtual bool IsRecording() const = 0;
 
 	virtual void NextVideoFrame() = 0;
-	virtual void NextVideoFrameThread() = 0;
+	// The client brackets the rendering of a frame with these. Begin says
+	// whether the recorder wants the frame; if it does, End presents it and
+	// reads it back for the encoder, and the client does not swap itself.
+	virtual bool BeginVideoFrameRender() = 0;
+	virtual void EndVideoFrameRender() = 0;
 
 	virtual void NextAudioFrame(ISoundMixFunc Mix) = 0;
 	virtual void NextAudioFrameTimeline(ISoundMixFunc Mix) = 0;

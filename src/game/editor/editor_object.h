@@ -48,6 +48,7 @@ public:
 	const IStorage *Storage() const;
 	CUi *Ui();
 	const CUi *Ui() const;
+	CRenderTools *RenderTools();
 	CRenderMap *RenderMap();
 	const CRenderMap *RenderMap() const;
 

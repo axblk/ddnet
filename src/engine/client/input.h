@@ -14,6 +14,7 @@
 #include <vector>
 
 class IEngineGraphics;
+class IEngineGraphicsWindow;
 class IConfigManager;
 
 class CInput : public IEngineInput
@@ -58,10 +59,12 @@ public:
 
 private:
 	IEngineGraphics *m_pGraphics;
+	IEngineGraphicsWindow *m_pWindow;
 	IConsole *m_pConsole;
 	IConfigManager *m_pConfigManager;
 
 	IEngineGraphics *Graphics() const { return m_pGraphics; }
+	IEngineGraphicsWindow *Window() const { return m_pWindow; }
 	IConsole *Console() const { return m_pConsole; }
 
 	// joystick

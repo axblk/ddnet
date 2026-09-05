@@ -29,6 +29,7 @@ public:
 	IStorage *Storage();
 	const ITextRender *TextRender() const;
 	ITextRender *TextRender();
+	class CRenderTools *RenderTools();
 
 private:
 	CEditorMap *m_pMap;

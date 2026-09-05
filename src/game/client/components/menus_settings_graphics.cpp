@@ -5,6 +5,7 @@
 #include <base/str.h>
 
 #include <engine/graphics.h>
+#include <engine/graphics_window.h>
 #include <engine/shared/config.h>
 
 #include <game/client/components/tooltips.h>
@@ -28,7 +29,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 
 	static const int MAX_RESOLUTIONS = 256;
 	static CVideoMode s_aModes[MAX_RESOLUTIONS];
-	static int s_NumNodes = Graphics()->GetVideoModes(s_aModes, MAX_RESOLUTIONS, g_Config.m_GfxScreen);
+	static int s_NumNodes = Window()->GetVideoModes(s_aModes, MAX_RESOLUTIONS, g_Config.m_GfxScreen);
 	static int s_GfxFsaaSamples = g_Config.m_GfxFsaaSamples;
 	static bool s_GfxBackendChanged = false;
 	static bool s_GfxGpuChanged = false;
@@ -41,14 +42,14 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	{
 		s_WasInit = true;
 
-		Graphics()->AddWindowPropChangeListener([]() {
+		Window()->AddWindowPropChangeListener([]() {
 			s_ModesReload = true;
 		});
 	}
 
 	if(s_ModesReload || g_Config.m_GfxDisplayAllVideoModes != s_InitDisplayAllVideoModes)
 	{
-		s_NumNodes = Graphics()->GetVideoModes(s_aModes, MAX_RESOLUTIONS, g_Config.m_GfxScreen);
+		s_NumNodes = Window()->GetVideoModes(s_aModes, MAX_RESOLUTIONS, g_Config.m_GfxScreen);
 		s_ModesReload = false;
 		s_InitDisplayAllVideoModes = g_Config.m_GfxDisplayAllVideoModes;
 	}
@@ -104,7 +105,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 		g_Config.m_GfxScreenWidth = s_aModes[NewSelected].m_WindowWidth;
 		g_Config.m_GfxScreenHeight = s_aModes[NewSelected].m_WindowHeight;
 		g_Config.m_GfxScreenRefreshRate = s_aModes[NewSelected].m_RefreshRate;
-		Graphics()->ResizeToScreen();
+		Window()->ResizeToScreen();
 	}
 
 	// switches
@@ -123,24 +124,24 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	if(OldWindowMode != NewWindowMode)
 	{
 		if(NewWindowMode == 0)
-			Graphics()->SetWindowParams(0, false);
+			Window()->SetWindowParams(0, false);
 		else if(NewWindowMode == 1)
-			Graphics()->SetWindowParams(0, true);
+			Window()->SetWindowParams(0, true);
 		else if(NewWindowMode == 2)
-			Graphics()->SetWindowParams(3, false);
+			Window()->SetWindowParams(3, false);
 		else if(NewWindowMode == 3)
-			Graphics()->SetWindowParams(2, false);
+			Window()->SetWindowParams(2, false);
 		else if(NewWindowMode == 4)
-			Graphics()->SetWindowParams(1, false);
+			Window()->SetWindowParams(1, false);
 	}
 
-	if(Graphics()->GetNumScreens() > 1)
+	if(Window()->GetNumScreens() > 1)
 	{
 		CUIRect ScreenDropDown;
 		MainView.HSplitTop(2.0f, nullptr, &MainView);
 		MainView.HSplitTop(20.0f, &ScreenDropDown, &MainView);
 
-		const int NumScreens = Graphics()->GetNumScreens();
+		const int NumScreens = Window()->GetNumScreens();
 		static std::vector<std::string> s_vScreenNames;
 		static std::vector<const char *> s_vpScreenNames;
 		s_vScreenNames.resize(NumScreens);
@@ -148,7 +149,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 
 		for(int i = 0; i < NumScreens; ++i)
 		{
-			str_format(aBuf, sizeof(aBuf), "%s %d: %s", Localize("Screen"), i, Graphics()->GetScreenName(i));
+			str_format(aBuf, sizeof(aBuf), "%s %d: %s", Localize("Screen"), i, Window()->GetScreenName(i));
 			s_vScreenNames[i] = aBuf;
 			s_vpScreenNames[i] = s_vScreenNames[i].c_str();
 		}
@@ -158,7 +159,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 		s_ScreenDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_ScreenDropDownScrollRegion;
 		const int NewScreen = Ui()->DoDropDown(&ScreenDropDown, g_Config.m_GfxScreen, s_vpScreenNames.data(), s_vpScreenNames.size(), s_ScreenDropDownState);
 		if(NewScreen != g_Config.m_GfxScreen)
-			Graphics()->SwitchWindowScreen(NewScreen, true);
+			Window()->SwitchWindowScreen(NewScreen, true);
 	}
 
 	MainView.HSplitTop(2.0f, nullptr, &MainView);
@@ -166,7 +167,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	str_format(aBuf, sizeof(aBuf), "%s (%s)", Localize("V-Sync"), Localize("may cause delay"));
 	if(DoButton_CheckBox(&g_Config.m_GfxVsync, aBuf, g_Config.m_GfxVsync, &Button))
 	{
-		Graphics()->SetVSync(!g_Config.m_GfxVsync);
+		Window()->SetVSync(!g_Config.m_GfxVsync);
 	}
 
 	bool MultiSamplingChanged = false;
@@ -195,12 +196,12 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	uint32_t MultiSamplingCountBackend = 0;
 	if(MultiSamplingChanged)
 	{
-		if(Graphics()->SetMultiSampling(g_Config.m_GfxFsaaSamples, MultiSamplingCountBackend))
+		if(Window()->SetMultiSampling(g_Config.m_GfxFsaaSamples, MultiSamplingCountBackend))
 		{
 			// try again with 0 if mouse click was increasing multi sampling
 			// else just accept the current value as is
 			if((uint32_t)g_Config.m_GfxFsaaSamples > MultiSamplingCountBackend && GfxFsaaSamplesMouseButton == 1)
-				Graphics()->SetMultiSampling(0, MultiSamplingCountBackend);
+				Window()->SetMultiSampling(0, MultiSamplingCountBackend);
 			g_Config.m_GfxFsaaSamples = (int)MultiSamplingCountBackend;
 		}
 		else
@@ -229,35 +230,8 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	DoLine_ColorPicker(&s_UiColorResetId, 25.0f, 13.0f, 2.0f, &MainView, Localize("UI Color"), &g_Config.m_UiColor, color_cast<ColorRGBA>(ColorHSLA(0xE4A046AFU, true)), false, nullptr, true);
 
 	// Backend list
-	struct SMenuBackendInfo
-	{
-		int m_Major = 0;
-		int m_Minor = 0;
-		int m_Patch = 0;
-		const char *m_pBackendName = "";
-		bool m_Found = false;
-	};
-	std::array<std::array<SMenuBackendInfo, EGraphicsDriverAgeType::GRAPHICS_DRIVER_AGE_TYPE_COUNT>, EBackendType::BACKEND_TYPE_COUNT> aaSupportedBackends{};
-	uint32_t FoundBackendCount = 0;
-	for(uint32_t i = 0; i < BACKEND_TYPE_COUNT; ++i)
-	{
-		if(EBackendType(i) == BACKEND_TYPE_AUTO)
-			continue;
-		for(uint32_t n = 0; n < GRAPHICS_DRIVER_AGE_TYPE_COUNT; ++n)
-		{
-			auto &Info = aaSupportedBackends[i][n];
-			if(Graphics()->GetDriverVersion(EGraphicsDriverAgeType(n), Info.m_Major, Info.m_Minor, Info.m_Patch, Info.m_pBackendName, EBackendType(i)))
-			{
-				// don't count blocked opengl drivers
-				if(EBackendType(i) != BACKEND_TYPE_OPENGL || EGraphicsDriverAgeType(n) == GRAPHICS_DRIVER_AGE_TYPE_LEGACY || g_Config.m_GfxDriverIsBlocked == 0)
-				{
-					Info.m_Found = true;
-					++FoundBackendCount;
-				}
-			}
-		}
-	}
-
+	const std::vector<IGraphics::SRendererChoice> vRendererChoices = Graphics()->RendererChoices();
+	const size_t FoundBackendCount = vRendererChoices.size();
 	if(FoundBackendCount > 1)
 	{
 		CUIRect Text, BackendDropDown;
@@ -269,7 +243,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 
 		static std::vector<std::string> s_vBackendIdNames;
 		static std::vector<const char *> s_vpBackendIdNamesCStr;
-		static std::vector<SMenuBackendInfo> s_vBackendInfos;
+		static std::vector<IGraphics::SRendererChoice> s_vBackendInfos;
 
 		size_t BackendCount = FoundBackendCount + 1;
 		s_vBackendIdNames.resize(BackendCount);
@@ -278,32 +252,25 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 
 		char aTmpBackendName[256];
 
-		auto IsInfoDefault = [](const SMenuBackendInfo &CheckInfo) {
-			return str_comp_nocase(CheckInfo.m_pBackendName, DefaultConfig::GfxBackend) == 0 && CheckInfo.m_Major == DefaultConfig::GfxGLMajor && CheckInfo.m_Minor == DefaultConfig::GfxGLMinor && CheckInfo.m_Patch == DefaultConfig::GfxGLPatch;
+		auto IsInfoDefault = [](const IGraphics::SRendererChoice &CheckInfo) {
+			return str_comp_nocase(CheckInfo.m_pBackend, DefaultConfig::GfxBackend) == 0 && CheckInfo.m_Major == DefaultConfig::GfxGLMajor && CheckInfo.m_Minor == DefaultConfig::GfxGLMinor && CheckInfo.m_Patch == DefaultConfig::GfxGLPatch;
 		};
 
 		int OldSelectedBackend = -1;
 		uint32_t CurCounter = 0;
-		for(uint32_t i = 0; i < BACKEND_TYPE_COUNT; ++i)
+		for(const IGraphics::SRendererChoice &Info : vRendererChoices)
 		{
-			for(uint32_t n = 0; n < GRAPHICS_DRIVER_AGE_TYPE_COUNT; ++n)
+			bool IsDefault = IsInfoDefault(Info);
+			str_format(aTmpBackendName, sizeof(aTmpBackendName), "%s (%d.%d.%d)%s%s", Info.m_pBackend, Info.m_Major, Info.m_Minor, Info.m_Patch, IsDefault ? " - " : "", IsDefault ? Localize("default") : "");
+			s_vBackendIdNames[CurCounter] = aTmpBackendName;
+			s_vpBackendIdNamesCStr[CurCounter] = s_vBackendIdNames[CurCounter].c_str();
+			if(str_comp_nocase(Info.m_pBackend, g_Config.m_GfxBackend) == 0 && g_Config.m_GfxGLMajor == Info.m_Major && g_Config.m_GfxGLMinor == Info.m_Minor && g_Config.m_GfxGLPatch == Info.m_Patch)
 			{
-				auto &Info = aaSupportedBackends[i][n];
-				if(Info.m_Found)
-				{
-					bool IsDefault = IsInfoDefault(Info);
-					str_format(aTmpBackendName, sizeof(aTmpBackendName), "%s (%d.%d.%d)%s%s", Info.m_pBackendName, Info.m_Major, Info.m_Minor, Info.m_Patch, IsDefault ? " - " : "", IsDefault ? Localize("default") : "");
-					s_vBackendIdNames[CurCounter] = aTmpBackendName;
-					s_vpBackendIdNamesCStr[CurCounter] = s_vBackendIdNames[CurCounter].c_str();
-					if(str_comp_nocase(Info.m_pBackendName, g_Config.m_GfxBackend) == 0 && g_Config.m_GfxGLMajor == Info.m_Major && g_Config.m_GfxGLMinor == Info.m_Minor && g_Config.m_GfxGLPatch == Info.m_Patch)
-					{
-						OldSelectedBackend = CurCounter;
-					}
-
-					s_vBackendInfos[CurCounter] = Info;
-					++CurCounter;
-				}
+				OldSelectedBackend = CurCounter;
 			}
+
+			s_vBackendInfos[CurCounter] = Info;
+			++CurCounter;
 		}
 
 		if(OldSelectedBackend != -1)
@@ -319,7 +286,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 			s_vpBackendIdNamesCStr[CurCounter] = s_vBackendIdNames[CurCounter].c_str();
 			OldSelectedBackend = CurCounter;
 
-			s_vBackendInfos[CurCounter].m_pBackendName = "custom";
+			s_vBackendInfos[CurCounter].m_pBackend = "custom";
 			s_vBackendInfos[CurCounter].m_Major = g_Config.m_GfxGLMajor;
 			s_vBackendInfos[CurCounter].m_Minor = g_Config.m_GfxGLMinor;
 			s_vBackendInfos[CurCounter].m_Patch = g_Config.m_GfxGLPatch;
@@ -335,7 +302,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 		const int NewBackend = Ui()->DoDropDown(&BackendDropDown, OldSelectedBackend, s_vpBackendIdNamesCStr.data(), BackendCount, s_BackendDropDownState);
 		if(OldSelectedBackend != NewBackend)
 		{
-			str_copy(g_Config.m_GfxBackend, s_vBackendInfos[NewBackend].m_pBackendName);
+			str_copy(g_Config.m_GfxBackend, s_vBackendInfos[NewBackend].m_pBackend);
 			g_Config.m_GfxGLMajor = s_vBackendInfos[NewBackend].m_Major;
 			g_Config.m_GfxGLMinor = s_vBackendInfos[NewBackend].m_Minor;
 			g_Config.m_GfxGLPatch = s_vBackendInfos[NewBackend].m_Patch;

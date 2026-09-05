@@ -404,6 +404,7 @@ public:
 	bool BeginRenderPass(const CRenderPassDesc &Desc) override;
 	bool EndRenderPass() override;
 	bool BlitTexture(CTextureHandle Source, bool UseCurrentClip = false) override;
+	bool BlurTexture(CTextureHandle Source, EBlurDirection Direction) override;
 
 	void QuadsTex3DDrawTL(const CQuadItem *pArray, int Num) override;
 

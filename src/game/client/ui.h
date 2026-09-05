@@ -459,6 +459,7 @@ private:
 
 	std::function<void(const IInput::CEvent &Event)> m_DispatchInputFunction;
 	std::function<void()> m_OnBackButtonPressedFunction;
+	std::function<void(CUIRect)> m_RenderPopupMenuBackdropFunction;
 
 	CUIRect m_Screen;
 
@@ -735,6 +736,7 @@ public:
 	// found in ui_popups.cpp
 	void DoPopupMenu(const SPopupMenuId *pId, float X, float Y, float Width, float Height, void *pContext, FPopupMenuFunction pfnFunc, const SPopupMenuProperties &Props = {});
 	void RenderPopupMenus();
+	void SetRenderPopupMenuBackdropCallback(std::function<void(CUIRect)> pfnCallback) { m_RenderPopupMenuBackdropFunction = std::move(pfnCallback); }
 	void ClosePopupMenu(const SPopupMenuId *pId, bool IncludeDescendants = false);
 	void ClosePopupMenus();
 	bool IsPopupOpen() const;

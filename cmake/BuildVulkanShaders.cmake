@@ -80,6 +80,9 @@ generate_shader_file("" "" "prim.vert" "prim.vert.spv")
 generate_shader_file("-DTW_TEXTURED" "" "prim.frag" "prim_textured.frag.spv")
 generate_shader_file("-DTW_TEXTURED" "" "prim.vert" "prim_textured.vert.spv")
 
+# Blur
+generate_shader_file("" "" "blur.frag" "blur.frag.spv")
+
 generate_shader_file("" "" "planar_yuv.frag" "planar_yuv.frag.spv")
 
 generate_shader_file("" "" "prim3d.frag" "prim3d.frag.spv")

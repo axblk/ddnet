@@ -390,14 +390,21 @@ public:
 	// Draws Source over the active render pass, covering the whole target or
 	// only the current clip.
 	virtual bool BlitTexture(CTextureHandle Source, bool UseCurrentClip = false) = 0;
-	// The two layouts video encoders ask for: hardware ones almost always want
-	// the interleaved chroma of NV12, software ones the three separate planes
-	// of I420. Both hold the same samples in the same number of bytes.
+	enum class EBlurDirection : uint8_t
+	{
+		HORIZONTAL,
+		VERTICAL,
+	};
+	// NV12 (interleaved chroma, what hardware encoders want) or I420 (three
+	// planes). Both are the same size.
 	enum class EPlanarYuvFormat : uint8_t
 	{
 		NV12,
 		I420,
 	};
+	// Applies one fixed separable blur pass over the complete active render pass.
+	virtual bool BlurTexture(CTextureHandle Source, EBlurDirection Direction) = 0;
+
 	virtual void ClipEnable(int x, int y, int w, int h) = 0;
 	virtual void ClipDisable() = 0;
 
@@ -633,7 +640,7 @@ public:
 		virtual bool Wait(CImageInfo &Image) = 0;
 	};
 	// Redirects the presentation target to Texture for one complete frame. This
-	// includes presentation passes opened by nested effects.
+	// includes presentation passes opened by nested effects such as menu blur.
 	virtual bool BeginOffscreenFrame(CTextureHandle Texture) = 0;
 	// Finishes the frame without presenting and returns its queued readback.
 	// Destroying the readback waits for it. Recycled is reused when it has the

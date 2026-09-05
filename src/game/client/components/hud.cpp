@@ -1745,7 +1745,6 @@ void CHud::OnRender()
 		if(g_Config.m_ClShowRecord)
 			RenderRecord();
 	}
-	RenderCursor();
 }
 
 void CHud::OnMessage(int MsgType, void *pRawMsg)

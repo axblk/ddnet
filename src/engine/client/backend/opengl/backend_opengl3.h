@@ -184,6 +184,7 @@ protected:
 
 	CGLSLPrimitiveProgram *m_pPrimitiveProgram;
 	CGLSLPrimitiveProgram *m_pPrimitiveProgramTextured;
+	CGLSLPrimitiveProgram *m_pBlurProgram;
 	CGLSLPrimitiveProgram *m_pPlanarYuvProgram;
 	CGLSLTileProgram *m_pTileProgram = nullptr;
 	CGLSLTileProgram *m_pTileProgramTextured = nullptr;

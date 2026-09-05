@@ -2833,6 +2833,13 @@ void CClient::Update()
 {
 	PumpNetwork();
 
+#if defined(CONF_VIDEORECORDER)
+	// The demo player stops the recording when the demo ends, and nothing else
+	// holds the video, so this is where a finished one is let go.
+	if(m_pVideo && m_pVideo->IsStopped())
+		m_pVideo.reset();
+#endif
+
 	// update editor/gameclient, before input snapping
 	if(m_EditorActive)
 		m_pEditor->OnUpdate();
@@ -3449,7 +3456,12 @@ void CClient::Run()
 
 			// Update at cl_refresh_rate, or at cl_refresh_rate_inactive while the window is inactive.
 			Inactive = g_Config.m_ClRefreshRateInactive && !m_pWindow->WindowActive();
-			const int RefreshRate = Inactive ? g_Config.m_ClRefreshRateInactive : g_Config.m_ClRefreshRate;
+			int RefreshRate = Inactive ? g_Config.m_ClRefreshRateInactive : g_Config.m_ClRefreshRate;
+#if defined(CONF_VIDEORECORDER)
+			// A recording takes every frame it can get; the rate is the encoder's.
+			if(IVideo::Current() && IVideo::Current()->IsRecording())
+				RefreshRate = 0;
+#endif
 			bool UpdateDue = true;
 			if(RefreshRate)
 			{
@@ -3531,6 +3543,10 @@ void CClient::Run()
 						Quit();
 					}
 				}
+#if defined(CONF_VIDEORECORDER)
+				if(pVideo != nullptr && pVideo->HasError())
+					pVideo->Stop();
+#endif
 			}
 
 			// Wake up for the next update or frame, whichever comes first. While playing, also wake up for
@@ -3882,12 +3898,20 @@ void CClient::StartVideo(const char *pFilename, bool WithTimestamp)
 	Graphics()->WaitForIdle();
 	// pause the sound device while creating the video instance
 	Sound()->PauseAudioDevice();
-	new CVideo(Graphics(), Sound(), Storage(), Graphics()->ScreenWidth(), Graphics()->ScreenHeight(), m_LocalStartTime, aFilename);
+	CVideoExportSettings Settings;
+	Settings.m_Width = Graphics()->ScreenWidth() & ~1;
+	Settings.m_Height = Graphics()->ScreenHeight() & ~1;
+	Settings.m_FPS = g_Config.m_ClVideoRecorderFPS;
+	Settings.m_Audio = g_Config.m_ClVideoSndEnable != 0;
+	Settings.m_Crf = g_Config.m_ClVideoX264Crf;
+	Settings.m_Preset = g_Config.m_ClVideoX264Preset;
+	m_pVideo = std::make_unique<CVideo>(Graphics(), Sound(), Storage(), Settings, m_LocalStartTime, aFilename, IStorage::TYPE_SAVE, true, false);
 	Sound()->UnpauseAudioDevice();
-	if(!IVideo::Current()->Start())
+	if(!m_pVideo->Start())
 	{
 		log_error("videorecorder", "Failed to start recording to '%s'", aFilename);
 		m_DemoPlayer.Stop("Failed to start video recording. See local console for details.");
+		StopVideo();
 		return;
 	}
 	if(m_DemoPlayer.Info()->m_Info.m_Paused)
@@ -3897,15 +3921,24 @@ void CClient::StartVideo(const char *pFilename, bool WithTimestamp)
 	log_info("videorecorder", "Recording to '%s'", aFilename);
 }
 
+void CClient::StopVideo()
+{
+	if(!m_pVideo)
+		return;
+	m_pVideo->Stop();
+	m_pVideo.reset();
+}
+
 void CClient::Con_StopVideo(IConsole::IResult *pResult, void *pUserData)
 {
-	if(!IVideo::Current())
+	CClient *pSelf = static_cast<CClient *>(pUserData);
+	if(!pSelf->m_pVideo)
 	{
 		log_error("videorecorder", "Not recording.");
 		return;
 	}
 
-	IVideo::Current()->Stop();
+	pSelf->StopVideo();
 	log_info("videorecorder", "Stopped recording.");
 }
 

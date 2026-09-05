@@ -61,6 +61,10 @@ public:
 			Init.m_RequestedMinor = BACKEND_VULKAN_VERSION_MINOR;
 			break;
 #endif
+		case BACKEND_TYPE_WEBGPU:
+			Init.m_RequestedMajor = 1;
+			Init.m_RequestedMinor = 0;
+			break;
 		default:
 			break;
 		}

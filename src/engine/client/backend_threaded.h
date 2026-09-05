@@ -72,7 +72,7 @@ public:
 // Runs the renderer's commands on the render thread, and the few that belong
 // to the surface rather than the renderer: binding an OpenGL context to the
 // thread, swapping its buffers, its swap interval. A renderer that presents
-// on its own (Vulkan) handles those commands itself and they never
+// on its own (Vulkan, WebGPU) handles those commands itself and they never
 // get here.
 class CCommandProcessor_Threaded : public CGraphicsBackend_Threaded::ICommandProcessor
 {
@@ -162,10 +162,10 @@ public:
 	const char *GetRendererString() override { return m_aRendererString; }
 };
 
-// The backend the surface-less client uses: Vulkan without a surface,
-// chosen by the override, else by the config. A configured backend that
-// needs a surface falls through to the first that does not, with a warning.
-// Null when Vulkan is not compiled in.
+// The backend the surface-less client uses: Vulkan or WebGPU without a
+// surface, chosen by the override, else by the config. A configured backend
+// that needs a surface falls through to the first that does not, with a
+// warning. Null when neither is compiled in.
 IGraphicsBackend *CreateOffscreenGraphicsBackend(EBackendType BackendOverride);
 
 #endif

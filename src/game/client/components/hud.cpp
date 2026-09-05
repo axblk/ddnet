@@ -589,6 +589,49 @@ void CHud::RenderTextInfo()
 	}
 }
 
+void CHud::RenderViewEdgeFade()
+{
+	// Cl_ShowDistance is a DDNet extension. A server that does not know it clips
+	// the snapshot to a fixed distance around the player instead, so a view that
+	// reaches further shows empty space where entities should be. That is what
+	// the wide view of an ultrawide screen runs into, and a zoomed out view on
+	// any screen has always run into it.
+	if(g_Config.m_ClViewEdgeFade == 0 || GameClient()->m_GameInfo.m_ClipsToShowDistance)
+		return;
+
+	// The distance a server without the extension keeps, see the vanilla
+	// NetworkClipped. It is a radius around the position the server holds for
+	// this player, which is the character while playing and the view while not.
+	const float ClipHalfWidth = 1000.0f;
+	const bool Spectating = GameClient()->m_Snap.m_SpecInfo.m_Active;
+	const vec2 ClipCenter = Spectating ? GameClient()->m_Camera.m_Center : GameClient()->m_LocalCharacterPos;
+
+	float ViewWidth, ViewHeight;
+	Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), GameClient()->m_Camera.m_Zoom, &ViewWidth, &ViewHeight);
+	const vec2 Uncovered = CalcUncoveredViewSides(ViewWidth, GameClient()->m_Camera.m_Center.x, ClipCenter.x, ClipHalfWidth);
+	if(Uncovered.x <= 0.0f && Uncovered.y <= 0.0f)
+		return;
+
+	const float Alpha = g_Config.m_ClViewEdgeFade / 100.0f;
+	Graphics()->TextureClear();
+	Graphics()->QuadsBegin();
+	if(Uncovered.x > 0.0f)
+	{
+		const float Width = m_Width * Uncovered.x / ViewWidth;
+		Graphics()->SetColor4(ColorRGBA(0.0f, 0.0f, 0.0f, Alpha), ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f), ColorRGBA(0.0f, 0.0f, 0.0f, Alpha), ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f));
+		IGraphics::CQuadItem QuadItem(0.0f, 0.0f, Width, m_Height);
+		Graphics()->QuadsDrawTL(&QuadItem, 1);
+	}
+	if(Uncovered.y > 0.0f)
+	{
+		const float Width = m_Width * Uncovered.y / ViewWidth;
+		Graphics()->SetColor4(ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f), ColorRGBA(0.0f, 0.0f, 0.0f, Alpha), ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f), ColorRGBA(0.0f, 0.0f, 0.0f, Alpha));
+		IGraphics::CQuadItem QuadItem(m_Width - Width, 0.0f, Width, m_Height);
+		Graphics()->QuadsDrawTL(&QuadItem, 1);
+	}
+	Graphics()->QuadsEnd();
+}
+
 void CHud::RenderConnectionWarning()
 {
 	if(Client()->ConnectionProblems())
@@ -1688,6 +1731,10 @@ void CHud::OnRender()
 	m_Width = 300.0f * Graphics()->ScreenAspect();
 	m_Height = 300.0f;
 	Graphics()->MapScreenToSize(m_Width, m_Height);
+
+	// Not part of the HUD, but this is the first thing drawn over the world and
+	// the fade belongs over the world rather than over the HUD.
+	RenderViewEdgeFade();
 
 #if defined(CONF_VIDEORECORDER)
 	if((IVideo::Current() && g_Config.m_ClVideoShowhud) || (!IVideo::Current() && g_Config.m_ClShowhud))

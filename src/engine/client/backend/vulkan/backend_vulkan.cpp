@@ -5089,9 +5089,9 @@ bool CCommandProcessorFragment_Vulkan::Cmd_DrawIndexed(const CCommandBuffer::SCo
 	// this would catch; the assert is here so a new producer notices at
 	// once instead of binding a pipeline the buffer does not fit.
 	dbg_assert(IsIndexedDrawConsistent(*pCommand), "Backend received an inconsistent indexed draw");
-	// The fixed function backend already refuses a draw that reaches past
-	// the end of its index buffer; this one used to hand it to the driver. A
-	// stale quad count on a shrunk buffer is enough.
+	// WebGPU and the fixed function backend already refuse a draw that
+	// reaches past the end of its index buffer; this one used to hand it to
+	// the driver. A stale quad count on a shrunk buffer is enough.
 	{
 		const auto &IndexBufferObject = m_vBufferObjects[pCommand->m_IndexBuffer.Id()];
 		const size_t IndexBufferSize = IndexBufferObject.m_BufferObject.m_Mem.m_UsedSize;

@@ -13,6 +13,7 @@
 
 #include <engine/client/backend/backend_base.h>
 #include <engine/client/backend/vulkan/backend_vulkan.h>
+#include <engine/client/backend/webgpu/backend_webgpu.h>
 #include <engine/client/graphics_backend.h>
 #include <engine/client/presentation_surface.h>
 #include <engine/graphics.h>
@@ -33,6 +34,15 @@
 #if defined(CONF_BACKEND_VULKAN)
 #include <SDL_vulkan.h>
 #include <vulkan/vulkan_core.h>
+#endif
+#if defined(CONF_BACKEND_WEBGPU)
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#include <emscripten/html5.h>
+#elif defined(CONF_PLATFORM_MACOS)
+#include <SDL_metal.h>
+#else
+#include <SDL_syswm.h>
+#endif
 #endif
 
 #include <algorithm>
@@ -62,6 +72,10 @@ class CGraphicsWindow_SDL : public IEngineGraphicsWindow, public IPresentationSu
 	EBackendType m_BackendType = BACKEND_TYPE_AUTO;
 	EBackendType m_BackendOverride;
 	int m_NumScreens = 0;
+	SWebGpuNativeWindow m_WebGpuNativeWindow;
+#if defined(CONF_BACKEND_WEBGPU) && defined(CONF_PLATFORM_MACOS)
+	void *m_pWebGpuMetalView = nullptr;
+#endif
 	bool m_Hidden = false;
 	SGraphicsSurfaceInfo m_Surface;
 	ivec2 m_DesktopSize = ivec2(0, 0);
@@ -132,6 +146,7 @@ public:
 	bool SetGlSwapInterval(bool VSync) override;
 	bool VulkanInstanceExtensions(std::vector<std::string> &vExtensions) override;
 	bool CreateVulkanSurface(const void *pInstance, void *pSurface) override;
+	const SWebGpuNativeWindow &WebGpuNativeWindow() const override { return m_WebGpuNativeWindow; }
 };
 
 #if !defined(CONF_HEADLESS_CLIENT)
@@ -407,9 +422,68 @@ static void GetDrawableSize(SDL_Window *pWindow, EBackendType BackendType, int *
 {
 	if(BackendType == BACKEND_TYPE_VULKAN)
 		SDL_Vulkan_GetDrawableSize(pWindow, pWidth, pHeight);
+	else if(BackendType == BACKEND_TYPE_WEBGPU)
+	{
+#if defined(CONF_BACKEND_WEBGPU) && defined(CONF_PLATFORM_EMSCRIPTEN)
+		if(emscripten_get_canvas_element_size("#canvas", pWidth, pHeight) != EMSCRIPTEN_RESULT_SUCCESS)
+			SDL_GetWindowSize(pWindow, pWidth, pHeight);
+#elif defined(CONF_BACKEND_WEBGPU) && defined(CONF_PLATFORM_MACOS)
+		SDL_Metal_GetDrawableSize(pWindow, pWidth, pHeight);
+#elif SDL_VERSION_ATLEAST(2, 26, 0)
+		SDL_GetWindowSizeInPixels(pWindow, pWidth, pHeight);
+#else
+		SDL_GetWindowSize(pWindow, pWidth, pHeight);
+#endif
+	}
 	else
 		SDL_GL_GetDrawableSize(pWindow, pWidth, pHeight);
 }
+
+#if defined(CONF_BACKEND_WEBGPU) && !defined(CONF_PLATFORM_MACOS) && !defined(CONF_PLATFORM_EMSCRIPTEN)
+static bool GetWebGpuNativeWindow(SDL_Window *pWindow, SWebGpuNativeWindow &NativeWindow)
+{
+	SDL_SysWMinfo Info{};
+	SDL_VERSION(&Info.version);
+	if(SDL_GetWindowWMInfo(pWindow, &Info) != SDL_TRUE)
+		return false;
+	switch(Info.subsystem)
+	{
+#if defined(SDL_VIDEO_DRIVER_WINDOWS)
+	case SDL_SYSWM_WINDOWS:
+		NativeWindow.m_Type = SWebGpuNativeWindow::EType::WINDOWS;
+		NativeWindow.m_pDisplay = Info.info.win.hinstance;
+		NativeWindow.m_pWindow = Info.info.win.window;
+		return true;
+#endif
+#if defined(SDL_VIDEO_DRIVER_X11)
+	case SDL_SYSWM_X11:
+		NativeWindow.m_Type = SWebGpuNativeWindow::EType::XLIB;
+		NativeWindow.m_pDisplay = Info.info.x11.display;
+		NativeWindow.m_WindowId = Info.info.x11.window;
+		return true;
+#endif
+#if defined(SDL_VIDEO_DRIVER_WAYLAND)
+	case SDL_SYSWM_WAYLAND:
+		NativeWindow.m_Type = SWebGpuNativeWindow::EType::WAYLAND;
+		NativeWindow.m_pDisplay = Info.info.wl.display;
+		NativeWindow.m_pWindow = Info.info.wl.surface;
+		return true;
+#endif
+#if defined(SDL_VIDEO_DRIVER_ANDROID)
+	case SDL_SYSWM_ANDROID:
+		// The window an Android activity hands out is an ANativeWindow, which
+		// is what wgpu takes directly. It does not survive the activity going
+		// away, but neither does the surface: both are given up in the window
+		// destroy notification.
+		NativeWindow.m_Type = SWebGpuNativeWindow::EType::ANDROID;
+		NativeWindow.m_pWindow = Info.info.android.window;
+		return true;
+#endif
+	default:
+		return false;
+	}
+}
+#endif
 
 static Uint32 MessageBoxTypeToSdlFlags(IGraphics::EMessageBoxType Type)
 {
@@ -481,6 +555,10 @@ EBackendType CGraphicsWindow_SDL::DetectBackend() const
 		else if(str_comp_nocase(pConfBackend, "Vulkan") == 0)
 			RetBackendType = BACKEND_TYPE_VULKAN;
 #endif
+#if defined(CONF_BACKEND_WEBGPU)
+		else if(str_comp_nocase(pConfBackend, "WebGPU") == 0)
+			RetBackendType = BACKEND_TYPE_WEBGPU;
+#endif
 		else if(str_comp_nocase(pConfBackend, "OpenGL") == 0)
 			RetBackendType = BACKEND_TYPE_OPENGL;
 	}
@@ -544,6 +622,12 @@ void CGraphicsWindow_SDL::ClampDriverVersion(EBackendType BackendType)
 		g_Config.m_GfxGLMinor = BACKEND_VULKAN_VERSION_MINOR;
 		g_Config.m_GfxGLPatch = 0;
 #endif
+	}
+	else if(BackendType == BACKEND_TYPE_WEBGPU)
+	{
+		g_Config.m_GfxGLMajor = 1;
+		g_Config.m_GfxGLMinor = 0;
+		g_Config.m_GfxGLPatch = 0;
 	}
 }
 
@@ -867,6 +951,14 @@ IEngineGraphics *CGraphicsWindow_SDL::Graphics()
 
 void CGraphicsWindow_SDL::DestroyWindow()
 {
+#if defined(CONF_BACKEND_WEBGPU) && defined(CONF_PLATFORM_MACOS)
+	if(m_pWebGpuMetalView != nullptr)
+	{
+		SDL_Metal_DestroyView(m_pWebGpuMetalView);
+		m_pWebGpuMetalView = nullptr;
+	}
+#endif
+	m_WebGpuNativeWindow = {};
 	if(m_pWindow != nullptr)
 		SDL_DestroyWindow(m_pWindow);
 	m_pWindow = nullptr;
@@ -946,6 +1038,18 @@ int CGraphicsWindow_SDL::OpenWindow(SGraphicsBackendInit &BackendInit)
 
 	EBackendType OldBackendType = m_BackendType;
 	m_BackendType = DetectBackend();
+	if(OldBackendType == BACKEND_TYPE_WEBGPU && m_BackendType == BACKEND_TYPE_WEBGPU)
+	{
+		log_warn("gfx/webgpu", "initialization failed; retrying with OpenGL");
+		// Remembered, the way the Vulkan fallback below remembers: a browser
+		// without WebGPU would otherwise pay for a context it cannot have on
+		// every single start.
+		str_copy(g_Config.m_GfxBackend, "OpenGL");
+		m_BackendType = BACKEND_TYPE_OPENGL;
+		g_Config.m_GfxGLMajor = 3;
+		g_Config.m_GfxGLMinor = 0;
+		g_Config.m_GfxGLPatch = 0;
+	}
 	// little fallback for Vulkan
 	if(OldBackendType != BACKEND_TYPE_AUTO &&
 		m_BackendType == BACKEND_TYPE_VULKAN)
@@ -984,10 +1088,16 @@ int CGraphicsWindow_SDL::OpenWindow(SGraphicsBackendInit &BackendInit)
 	case BACKEND_TYPE_VULKAN:
 		pBackendName = "Vulkan";
 		break;
+	case BACKEND_TYPE_WEBGPU:
+		pBackendName = "experimental WebGPU";
+		break;
 	default:
 		dbg_assert_failed("Invalid m_BackendType: %d", m_BackendType);
 	}
-	log_info("gfx", "Created %s %d.%d context", pBackendName, g_Config.m_GfxGLMajor, g_Config.m_GfxGLMinor);
+	if(m_BackendType == BACKEND_TYPE_WEBGPU)
+		log_info("gfx", "Created %s context", pBackendName);
+	else
+		log_info("gfx", "Created %s %d.%d context", pBackendName, g_Config.m_GfxGLMajor, g_Config.m_GfxGLMinor);
 
 	if(m_BackendType == BACKEND_TYPE_OPENGL)
 	{
@@ -1017,6 +1127,10 @@ int CGraphicsWindow_SDL::OpenWindow(SGraphicsBackendInit &BackendInit)
 	if(IsOpenGLFamilyBackend)
 	{
 		g_Config.m_GfxFsaaSamples = std::clamp(g_Config.m_GfxFsaaSamples, 0, 8);
+	}
+	else if(m_BackendType == BACKEND_TYPE_WEBGPU)
+	{
+		g_Config.m_GfxFsaaSamples = g_Config.m_GfxFsaaSamples >= 2 ? 4 : 0;
 	}
 
 	// set screen
@@ -1074,6 +1188,10 @@ int CGraphicsWindow_SDL::OpenWindow(SGraphicsBackendInit &BackendInit)
 		SdlFlags |= SDL_WINDOW_OPENGL;
 	else if(m_BackendType == BACKEND_TYPE_VULKAN)
 		SdlFlags |= SDL_WINDOW_VULKAN;
+#if defined(CONF_BACKEND_WEBGPU) && defined(CONF_PLATFORM_MACOS)
+	else if(m_BackendType == BACKEND_TYPE_WEBGPU)
+		SdlFlags |= SDL_WINDOW_METAL;
+#endif
 	if(Resizable)
 		SdlFlags |= SDL_WINDOW_RESIZABLE;
 	if(Borderless)
@@ -1138,6 +1256,30 @@ int CGraphicsWindow_SDL::OpenWindow(SGraphicsBackendInit &BackendInit)
 		else
 			return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_WINDOW_CREATE_FAILED;
 	}
+
+#if defined(CONF_BACKEND_WEBGPU)
+	if(m_BackendType == BACKEND_TYPE_WEBGPU)
+	{
+		bool HasNativeWindow;
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		m_WebGpuNativeWindow.m_Type = SWebGpuNativeWindow::EType::CANVAS;
+		HasNativeWindow = true;
+#elif defined(CONF_PLATFORM_MACOS)
+		m_pWebGpuMetalView = SDL_Metal_CreateView(m_pWindow);
+		m_WebGpuNativeWindow.m_Type = SWebGpuNativeWindow::EType::METAL;
+		m_WebGpuNativeWindow.m_pWindow = m_pWebGpuMetalView != nullptr ? SDL_Metal_GetLayer(m_pWebGpuMetalView) : nullptr;
+		HasNativeWindow = m_WebGpuNativeWindow.m_pWindow != nullptr;
+#else
+		HasNativeWindow = GetWebGpuNativeWindow(m_pWindow, m_WebGpuNativeWindow);
+#endif
+		if(!HasNativeWindow)
+		{
+			log_error("gfx/webgpu", "Unable to obtain the native SDL window: %s", SDL_GetError());
+			DestroyWindow();
+			return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_CONTEXT_FAILED;
+		}
+	}
+#endif
 
 	int GlewMajor = 0;
 	int GlewMinor = 0;
@@ -1586,6 +1728,8 @@ const char *CGraphicsWindow_SDL::GetScreenName(int ScreenIndex) const
 
 std::optional<int> CGraphicsWindow_SDL::ShowMessageBox(const IGraphics::CMessageBox &MessageBox)
 {
+	if(m_BackendType == BACKEND_TYPE_WEBGPU)
+		return ShowMessageBoxImpl(MessageBox, nullptr);
 	if(Graphics() != nullptr)
 		Graphics()->ReleaseSurfaceForMessageBox();
 	// TODO: Remove this workaround when https://github.com/libsdl-org/SDL/issues/3750 is
@@ -1622,6 +1766,13 @@ void CGraphicsWindow_SDL::OnWindowDestroyed()
 void CGraphicsWindow_SDL::OnWindowCreated(uint32_t WindowId)
 {
 	m_pWindow = SDL_GetWindowFromID(WindowId);
+#if defined(CONF_BACKEND_WEBGPU) && !defined(CONF_PLATFORM_MACOS) && !defined(CONF_PLATFORM_EMSCRIPTEN)
+	// Android hands out a new window every time the app comes back, and the
+	// surface has to be built on that one. The renderer reads it from here
+	// when the notification below reaches it, so it has to be current first.
+	if(m_BackendType == BACKEND_TYPE_WEBGPU && !GetWebGpuNativeWindow(m_pWindow, m_WebGpuNativeWindow))
+		log_error("gfx/webgpu", "Unable to obtain the native SDL window after it was created again: %s", SDL_GetError());
+#endif
 	Graphics()->PresentationSurfaceRestored();
 }
 

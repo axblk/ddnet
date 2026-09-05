@@ -130,6 +130,13 @@ if [ -z ${SOURCE_DATE_EPOCH+x} ]; then
 	fi
 fi
 
+# The WebGPU backend is off by default here. With DDNET_ANDROID_WEBGPU=1 the
+# pinned wgpu-native package for the ABI being built is fetched next to the
+# build and linked; its shared library then goes into the APK with the others.
+function wgpu_root_for_abi() {
+	echo "${PWD}/ddnet-libs/wgpu-android-$1"
+}
+
 function build_for_type() {
 	# Remove absolute build paths from binary
 	build_extra_cflags="-ffile-prefix-map=${ANDROID_TOOLCHAIN_ROOT}=ANDROID_TOOLCHAIN_ROOT"
@@ -137,6 +144,13 @@ function build_for_type() {
 	if [[ "${BUILD_TYPE}" == "Release" ]]; then
 		build_extra_cflags="${build_extra_cflags} ${ANDROID_EXTRA_RELEASE_CFLAGS}"
 		build_ipo=ON
+	fi
+
+	webgpu_cmake_args=()
+	if [[ "${DDNET_ANDROID_WEBGPU}" == "1" ]]; then
+		wgpu_root="$(wgpu_root_for_abi "${2}")"
+		python3 scripts/fetch_wgpu_native.py --target "android-${2}" --destination "${wgpu_root}"
+		webgpu_cmake_args=(-DWEBGPU_BACKEND_PROTOTYPE=ON "-DWGPU_NATIVE_ROOT=${wgpu_root}")
 	fi
 
 	cmake \
@@ -166,7 +180,8 @@ function build_for_type() {
 		-DSERVER=ON \
 		-DTOOLS=OFF \
 		-DVULKAN=ON \
-		-DVIDEORECORDER=OFF
+		-DVIDEORECORDER=OFF \
+		"${webgpu_cmake_args[@]}"
 	(
 		cd "${BUILD_FOLDER}/$ANDROID_SUB_BUILD_DIR/$1"
 		# We want word splitting
@@ -233,6 +248,9 @@ function copy_libs() {
 	mkdir -p "lib/$2"
 	cp "$ANDROID_SUB_BUILD_DIR/$1/libDDNet.so" "lib/$2"
 	cp "$ANDROID_SUB_BUILD_DIR/$1/libDDNet-Server.so" "lib/$2"
+	if [[ "${DDNET_ANDROID_WEBGPU}" == "1" ]]; then
+		cp "../ddnet-libs/wgpu-android-$2/lib/libwgpu_native.so" "lib/$2"
+	fi
 }
 
 if [[ "${ANDROID_BUILD}" == "arm" || "${ANDROID_BUILD}" == "all" ]]; then

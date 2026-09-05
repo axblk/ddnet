@@ -6,9 +6,9 @@ paused there, a screenshot is taken, and the pictures are compared pairwise
 against the first backend. No third-party modules: the PNGs are decoded and
 the difference images written with zlib alone.
 
-Vulkan runs without a surface (GFX_SURFACELESS=1), which is the only way it
-starts under SDL's offscreen video driver; the OpenGL backends run in the
-offscreen driver's window. A backend that does not start on this machine
+Vulkan and WebGPU run without a surface (GFX_SURFACELESS=1), which is the only
+way they start under SDL's offscreen video driver; the OpenGL backends run in
+the offscreen driver's window. A backend that does not start on this machine
 is skipped and said so.
 
 Example:
@@ -35,6 +35,7 @@ import zlib
 
 BACKENDS = {
 	"vulkan": {"backend": "Vulkan", "args": [], "surfaceless": True},
+	"webgpu": {"backend": "WebGPU", "args": [], "surfaceless": True},
 	"gl33": {"backend": "OpenGL", "args": ["gfx_gl_major 3", "gfx_gl_minor 3"], "surfaceless": False},
 	"gl20": {"backend": "OpenGL", "args": ["gfx_gl_major 2", "gfx_gl_minor 0"], "surfaceless": False},
 }

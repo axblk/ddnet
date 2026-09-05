@@ -18,6 +18,9 @@
 #if defined(CONF_BACKEND_VULKAN)
 #include <engine/client/backend/vulkan/backend_vulkan.h>
 #endif
+#if defined(CONF_BACKEND_WEBGPU)
+#include <engine/client/backend/webgpu/backend_webgpu.h>
+#endif
 
 #include <cstdlib>
 #include <string>
@@ -430,6 +433,12 @@ CCommandProcessorFragment_Renderer *CGraphicsBackend_Renderer::CreateRenderer() 
 #else
 		return nullptr;
 #endif
+	case BACKEND_TYPE_WEBGPU:
+#if defined(CONF_BACKEND_WEBGPU)
+		return CreateWebGpuCommandProcessorFragment(WebGpuBackendTypeFromConfig());
+#else
+		return nullptr;
+#endif
 	default:
 		return nullptr;
 	}
@@ -596,6 +605,7 @@ bool IsModernGraphicsApi(EBackendType BackendType)
 		return (g_Config.m_GfxGLMajor == 3 && g_Config.m_GfxGLMinor == 3) || g_Config.m_GfxGLMajor >= 4;
 	case BACKEND_TYPE_OPENGL_ES: // clamped to 3.0 and always the program backend, see the window
 	case BACKEND_TYPE_VULKAN:
+	case BACKEND_TYPE_WEBGPU:
 	case BACKEND_TYPE_NULL:
 		return true;
 	default:
@@ -615,6 +625,10 @@ EBackendType GraphicsBackendOverrideFromEnvironment()
 #if defined(CONF_BACKEND_VULKAN)
 	if(str_comp_nocase(pBackend, "Vulkan") == 0)
 		return BACKEND_TYPE_VULKAN;
+#endif
+#if defined(CONF_BACKEND_WEBGPU)
+	if(str_comp_nocase(pBackend, "WebGPU") == 0)
+		return BACKEND_TYPE_WEBGPU;
 #endif
 	if(str_comp_nocase(pBackend, "Null") == 0)
 		return BACKEND_TYPE_NULL;
@@ -695,6 +709,21 @@ bool GraphicsBackendDriverVersion(EBackendType BackendType, EGraphicsDriverAgeTy
 		return false;
 #endif
 	}
+	else if(BackendType == BACKEND_TYPE_WEBGPU)
+	{
+		pName = "WebGPU";
+#ifdef CONF_BACKEND_WEBGPU
+		if(DriverAgeType == GRAPHICS_DRIVER_AGE_TYPE_DEFAULT)
+		{
+			Major = 1;
+			Minor = 0;
+			Patch = 0;
+			return true;
+		}
+#else
+		return false;
+#endif
+	}
 	else if(BackendType == BACKEND_TYPE_NULL)
 	{
 		pName = "Null";
@@ -723,21 +752,29 @@ IGraphicsBackend *CreateOffscreenGraphicsBackend(EBackendType BackendOverride)
 		if(str_comp_nocase(pConfBackend, "Vulkan") == 0)
 			BackendType = BACKEND_TYPE_VULKAN;
 #endif
+#if defined(CONF_BACKEND_WEBGPU)
+		if(str_comp_nocase(pConfBackend, "WebGPU") == 0)
+			BackendType = BACKEND_TYPE_WEBGPU;
+#endif
 		if(str_comp_nocase(pConfBackend, "Null") == 0)
 			BackendType = BACKEND_TYPE_NULL;
 		if(BackendType == BACKEND_TYPE_AUTO)
 		{
 #if defined(CONF_BACKEND_VULKAN)
 			BackendType = BACKEND_TYPE_VULKAN;
+#elif defined(CONF_BACKEND_WEBGPU)
+			BackendType = BACKEND_TYPE_WEBGPU;
 #else
 			BackendType = BACKEND_TYPE_NULL;
 #endif
-			log_warn("gfx", "gfx_backend '%s' cannot draw without a surface, using %s", pConfBackend, BackendType == BACKEND_TYPE_VULKAN ? "Vulkan" : "Null");
+			log_warn("gfx", "gfx_backend '%s' cannot draw without a surface, using %s", pConfBackend, BackendType == BACKEND_TYPE_VULKAN ? "Vulkan" : BackendType == BACKEND_TYPE_WEBGPU ? "WebGPU" :
+																								       "Null");
 		}
 	}
 	switch(BackendType)
 	{
 	case BACKEND_TYPE_VULKAN:
+	case BACKEND_TYPE_WEBGPU:
 	case BACKEND_TYPE_NULL:
 		return new CGraphicsBackend_Renderer(BackendType, 0, 0);
 	default:

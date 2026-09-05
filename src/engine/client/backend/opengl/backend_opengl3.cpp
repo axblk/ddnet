@@ -779,8 +779,8 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Texture_Readback(const CCommandBuf
 	// hands back is therefore the top of the picture already, and flipping it
 	// again is what turned the in-client export upside down. The presentation
 	// readback does flip, and has to: the default framebuffer is not rendered
-	// inverted. Vulkan does not flip either, and its render targets are not
-	// inverted.
+	// inverted. Vulkan and WebGPU do not flip either, and their render
+	// targets are not inverted.
 
 	Pending.m_pFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 	// A fence only moves once the commands before it have left for the

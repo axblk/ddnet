@@ -3223,9 +3223,9 @@ void CClient::Run()
 	// init graphics
 	//
 	// GFX_SURFACELESS asks for the backend that draws without a window at all,
-	// the one the demo renderer wants. Vulkan can produce a device without a
-	// surface, so this is the only way to exercise it on a machine with no
-	// display.
+	// the one the demo renderer wants. Vulkan and WebGPU can both produce a
+	// device without a surface, so this is the only way to exercise either of
+	// them on a machine with no display.
 	//
 	// The window comes first and is registered first: the kernel shuts
 	// interfaces down in reverse order, and the window has to outlive the

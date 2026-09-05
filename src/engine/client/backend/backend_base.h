@@ -87,8 +87,8 @@ protected:
 	 * Turns the screen rectangle a draw is in into the scale and translation
 	 * that map it onto clip space.
 	 *
-	 * Vulkan's clip space has y pointing down, OpenGL's points up, which is
-	 * the only difference between the copies this replaces. Two
+	 * Vulkan's clip space has y pointing down, OpenGL's and WebGPU's point up,
+	 * which is the only difference between the three copies this replaces. Two
 	 * of them also divided by the rectangle's size without checking it first.
 	 *
 	 * @return false when the rectangle is empty, in which case nothing can be

@@ -1,6 +1,8 @@
 #ifndef ENGINE_CLIENT_PRESENTATION_SURFACE_H
 #define ENGINE_CLIENT_PRESENTATION_SURFACE_H
 
+#include <engine/client/backend/webgpu/backend_webgpu.h>
+
 #include <string>
 #include <vector>
 
@@ -32,6 +34,10 @@ public:
 	// to fill.
 	virtual bool VulkanInstanceExtensions(std::vector<std::string> &vExtensions) = 0;
 	virtual bool CreateVulkanSurface(const void *pInstance, void *pSurface) = 0;
+
+	// WebGPU builds its surface from the native window handle. Read again
+	// after the window came back, because it may be a different one.
+	virtual const SWebGpuNativeWindow &WebGpuNativeWindow() const = 0;
 };
 
 #endif

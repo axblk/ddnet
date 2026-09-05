@@ -114,7 +114,7 @@ protected:
 	// into a pack buffer, a fence marks when they are there, and the result is
 	// handed over from CollectFinishedReadbacks once the fence has signalled -
 	// which is what lets the export keep its frames in flight on OpenGL, as it
-	// does on Vulkan. The export keeps three; one more here would
+	// does on Vulkan and WebGPU. The export keeps three; one more here would
 	// only buy memory, so the oldest is waited out instead.
 	static constexpr size_t READBACK_SLOT_COUNT = 3;
 	struct SPendingReadback

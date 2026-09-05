@@ -79,12 +79,14 @@
 
 -	Create a new directory to build the client in.
 -	Then run `emcmake cmake .. -G "Unix Makefiles" -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DPREFER_BUNDLED_LIBS=ON` in your build directory to configure followed by `cmake --build . -j8` to build.
+-	To include the optional WebGPU backend, additionally pass `-DWEBGPU_BACKEND_PROTOTYPE=ON`. This uses the Emdawnwebgpu remote port pinned by the Emscripten SDK, which is downloaded and cached automatically on first use, so no separately installed `wgpu-native` package is required. WebGL remains available and is still the default; select WebGPU with `gfx_backend WebGPU`. The `gfx_webgpu_backend` setting is ignored in browsers because the browser chooses the native implementation.
 -	For testing it is highly recommended to build in debug mode by also passing the argument `-DCMAKE_BUILD_TYPE=Debug` when invoking `emcmake cmake`, as this speeds up the build process and adds debug information as well as additional checks.
 -	Note that using the Ninja build system with Emscripten is not currently possible due to [CMake issue 16395](https://gitlab.kitware.com/cmake/cmake/-/issues/16395).
 
 ### Running the client via Emscripten
 
 -	To test the compiled code locally, run `emrun --browser firefox index.html` in the build directory.
+-	WebGPU requires a browser with WebGPU support and a secure context. `localhost` served by `emrun` or `other/emscripten/server.py` is sufficient for local testing.
 -	To host the compiled Emscripten client, copy the `DDNet.data`, `DDNet.js`, `DDNet.wasm` and `index.html` files from the build directory to the web server.
 	The file `index.html` in the build folder is copied from `other/emscripten/index.html`.
 -	You can also run `other/emscripten/server.py` to host a minimal server for testing using Python without needing to install Emscripten.

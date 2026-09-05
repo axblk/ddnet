@@ -131,6 +131,7 @@ enum EBackendType
 	BACKEND_TYPE_OPENGL = 0,
 	BACKEND_TYPE_OPENGL_ES,
 	BACKEND_TYPE_VULKAN,
+	BACKEND_TYPE_WEBGPU,
 	// Accepts everything and draws nothing: the headless client, and the
 	// tests that run the frontend without a device.
 	BACKEND_TYPE_NULL,
@@ -576,7 +577,7 @@ public:
 		RGBA8_UNORM,
 		// Rejected by CTextureDesc::IsValid: nothing creates a single channel
 		// texture since the glyph atlas became RG8, and the four backends never
-		// agreed on what one channel means. A backend may sample it as coverage
+		// agreed on what one channel means. WebGPU samples it as coverage
 		// (1,1,1,r), Vulkan and modern OpenGL as red (r,0,0,1), legacy OpenGL as
 		// alpha (0,0,0,r). Whoever needs it again decides which of the three it
 		// is and makes all four agree first.

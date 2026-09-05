@@ -112,9 +112,9 @@ TEST(GraphicsThreaded, IndexedDrawMustMatchItsProgram)
 	};
 
 	// The layout has to match the pipeline the texture state selects, in both
-	// directions: Vulkan bakes the vertex stride into the pipeline, so an
-	// untextured draw over a buffer with texture coordinates reads it at the
-	// wrong stride.
+	// directions: Vulkan and WebGPU bake the vertex stride into the pipeline,
+	// so an untextured draw over a buffer with texture coordinates reads it at
+	// the wrong stride.
 	auto Cmd = Draw(EPipelineProgram::QUAD_SHARED, IGraphics::EVertexLayout::QUAD_TEXTURED, false);
 	EXPECT_FALSE(IsIndexedDrawConsistent(Cmd));
 	Cmd = Draw(EPipelineProgram::QUAD_SHARED, IGraphics::EVertexLayout::QUAD, false);
@@ -1074,8 +1074,8 @@ TEST(GraphicsThreaded, RenderCommandQueueStopWakesWaitingProducers)
 		Queue.Recycle(std::move(Entry), false);
 }
 
-// The strides in this table are baked into every Vulkan pipeline that is
-// built from it. A change here that nobody meant is a pipeline reading
+// The strides in this table are baked into every Vulkan and WebGPU pipeline
+// that is built from it. A change here that nobody meant is a pipeline reading
 // the wrong number of bytes per vertex, which is invisible until it is looked
 // at, so the values are pinned.
 TEST(GraphicsThreaded, VertexLayoutTableIsPinned)

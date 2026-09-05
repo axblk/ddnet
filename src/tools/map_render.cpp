@@ -493,7 +493,6 @@ int main(int argc, const char **argv)
 	RenderParams.m_Zoom = Zoom;
 	RenderParams.m_RenderText = false;
 	RenderParams.m_RenderInvalidTiles = false;
-	RenderParams.m_TileAndQuadBuffering = false;
 	RenderParams.m_RenderTileBorder = true;
 	RenderParams.m_DebugRenderGroupClips = false;
 	RenderParams.m_DebugRenderQuadClips = false;

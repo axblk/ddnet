@@ -14,6 +14,7 @@ using offset_ptr32 = unsigned int;
 #include <game/map/envelope_manager.h>
 #include <game/map/render_component.h>
 #include <game/map/render_map.h>
+#include <game/map/tile_chunk_cache.h>
 #include <game/mapitems.h>
 #include <game/mapitems_ex.h>
 
@@ -30,6 +31,12 @@ class CMapImages;
 typedef std::function<void(int GroupId, int LayerId)> FCallbackLayerInit;
 
 constexpr int BorderRenderDistance = 201;
+
+bool AddTileToBuffer(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicTileTextureCoords> &vTmpTileTexCoords, unsigned char Index, unsigned char Flags, int x, int y, bool DoTextureCoords, bool FillSpeedup = false, int AngleRotate = -1, const ivec2 &Offset = ivec2{0, 0}, int Scale = 32);
+bool UploadTileBuffer(IGraphics *pGraphics, const std::vector<CGraphicTile> &vTiles, const std::vector<CGraphicTileTextureCoords> &vTextureCoords, IGraphics::CBufferHandle &BufferObject);
+// Returns whether the buffer was given up. A buffer that could not be handed
+// back keeps its handle, so the caller can keep the object that owns it alive.
+bool DeleteTileBuffer(IGraphics *pGraphics, IGraphics::CBufferHandle &BufferObject);
 
 class CClipRegion
 {
@@ -53,7 +60,6 @@ public:
 	float m_Zoom;
 	bool m_RenderText;
 	bool m_RenderInvalidTiles;
-	bool m_TileAndQuadBuffering;
 	bool m_RenderTileBorder;
 	bool m_DebugRenderGroupClips;
 	bool m_DebugRenderQuadClips;
@@ -144,6 +150,13 @@ private:
 	IGraphics::CTextureHandle m_TextureHandle;
 
 protected:
+	/**
+	 * One drawable tile set of a layer: the tiles themselves and, for the map
+	 * edges, the border tiles that repeat them outwards.
+	 *
+	 * The tiles are built lazily per chunk while rendering, the border tiles
+	 * are one row or column each and are uploaded up front.
+	 */
 	class CTileLayerVisuals : public CRenderComponent
 	{
 	public:
@@ -151,12 +164,12 @@ protected:
 		{
 			m_Width = 0;
 			m_Height = 0;
-			m_BufferContainerIndex = -1;
-			m_IsTextured = false;
+			m_CurOverlay = 0;
+			m_FillSpeedup = false;
 		}
 
 		bool Init(unsigned int Width, unsigned int Height);
-		void Unload();
+		bool Unload();
 
 		class CTileVisual
 		{
@@ -178,9 +191,9 @@ protected:
 				m_IndexBufferByteOffset = (SetDraw ? 0x10000000 : (offset_ptr32)0) | (m_IndexBufferByteOffset & 0xEFFFFFFF);
 			}
 
-			offset_ptr IndexBufferByteOffset() const
+			uint32_t FirstIndex() const
 			{
-				return ((offset_ptr)(m_IndexBufferByteOffset & 0xEFFFFFFF) * 6 * sizeof(uint32_t));
+				return (m_IndexBufferByteOffset & 0xEFFFFFFF) * 6;
 			}
 
 			void SetIndexBufferByteOffset(offset_ptr32 IndexBufferByteOff)
@@ -193,8 +206,6 @@ protected:
 				m_IndexBufferByteOffset = ((m_IndexBufferByteOffset & 0xEFFFFFFF) + IndexBufferByteOff) | (m_IndexBufferByteOffset & 0x10000000);
 			}
 		};
-
-		std::vector<CTileVisual> m_vTilesOfLayer;
 
 		CTileVisual m_BorderTopLeft;
 		CTileVisual m_BorderTopRight;
@@ -210,14 +221,30 @@ protected:
 
 		unsigned int m_Width;
 		unsigned int m_Height;
-		int m_BufferContainerIndex;
-		bool m_IsTextured;
+		// Border tiles only, the layer itself lives in the chunk cache
+		IGraphics::CBufferHandle m_BufferObjectIndex;
+		IGraphics::EVertexLayout m_Layout = IGraphics::EVertexLayout::TILE_TEXTURED;
+		CTileChunkCache m_ChunkCache;
+		// Immutable after the upload, so it is built there instead of on every
+		// frame; the cache only reads it while it rebuilds a chunk.
+		CTileChunkCache::CLayerSource m_ChunkSource;
+		// Which set of tile data `GetTileData` hands out for this visual
+		int m_CurOverlay;
+		bool m_FillSpeedup;
 	};
 
 	void UploadTileData(std::optional<CTileLayerVisuals> &VisualsOptional, int CurOverlay, bool AddAsSpeedup, bool IsGameLayer = false);
 
-	virtual void RenderTileLayerWithTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params);
-	virtual void RenderTileLayerNoTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params);
+	virtual void RenderTiles(const ColorRGBA &Color, const CRenderLayerParams &Params);
+	/**
+	 * Whether the layer's tiles all belong in the blended pass.
+	 *
+	 * A design tile carries a flag that says its image covers the tile, and the
+	 * renderer takes those out of the blended pass. On an entity layer that flag
+	 * describes nothing - the picture comes from the entities texture - so a tile
+	 * that happens to carry it would be drawn as an opaque black square.
+	 */
+	virtual bool ForceTransparentTiles() const { return false; }
 
 	void RenderTileLayer(const ColorRGBA &Color, const CRenderLayerParams &Params, CTileLayerVisuals *pTileLayerVisuals = nullptr);
 	void RenderTileBorder(const ColorRGBA &Color, int BorderX0, int BorderY0, int BorderX1, int BorderY1, CTileLayerVisuals *pTileLayerVisuals);
@@ -246,12 +273,12 @@ protected:
 	{
 	public:
 		CQuadLayerVisuals() :
-			m_QuadNum(0), m_BufferContainerIndex(-1), m_IsTextured(false) {}
-		void Unload();
+			m_QuadNum(0) {}
+		bool Unload();
 
 		int m_QuadNum;
-		int m_BufferContainerIndex;
-		bool m_IsTextured;
+		IGraphics::CBufferHandle m_BufferObjectIndex;
+		IGraphics::EVertexLayout m_Layout = IGraphics::EVertexLayout::QUAD;
 	};
 	void RenderQuadLayer(float Alpha, const CRenderLayerParams &Params);
 
@@ -293,6 +320,7 @@ public:
 protected:
 	ColorRGBA GetRenderColor(const CRenderLayerParams &Params) const override { return ColorRGBA(1.0f, 1.0f, 1.0f, Params.m_EntityOverlayVal / 100.0f); }
 	IGraphics::CTextureHandle GetTexture() const override;
+	bool ForceTransparentTiles() const override { return true; }
 };
 
 class CRenderLayerEntityGame final : public CRenderLayerEntityBase
@@ -302,8 +330,7 @@ public:
 	void Init() override;
 
 protected:
-	void RenderTileLayerWithTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
-	void RenderTileLayerNoTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
+	void RenderTiles(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
 
 private:
 	ColorRGBA GetDeathBorderColor() const;
@@ -326,8 +353,7 @@ public:
 	void Unload() override;
 
 protected:
-	void RenderTileLayerWithTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
-	void RenderTileLayerNoTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
+	void RenderTiles(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
 	void GetTileData(unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate, unsigned int x, unsigned int y, int CurOverlay) const override;
 
 private:
@@ -345,8 +371,7 @@ public:
 	void Unload() override;
 
 protected:
-	void RenderTileLayerWithTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
-	void RenderTileLayerNoTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
+	void RenderTiles(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
 	void GetTileData(unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate, unsigned int x, unsigned int y, int CurOverlay) const override;
 	IGraphics::CTextureHandle GetTexture() const override;
 
@@ -366,8 +391,7 @@ public:
 	void Unload() override;
 
 protected:
-	void RenderTileLayerWithTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
-	void RenderTileLayerNoTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
+	void RenderTiles(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
 	void GetTileData(unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate, unsigned int x, unsigned int y, int CurOverlay) const override;
 	IGraphics::CTextureHandle GetTexture() const override;
 
@@ -386,7 +410,6 @@ public:
 	void InitTileData() override;
 
 protected:
-	void RenderTileLayerNoTileBuffer(const ColorRGBA &Color, const CRenderLayerParams &Params) override;
 	void GetTileData(unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate, unsigned int x, unsigned int y, int CurOverlay) const override;
 	IGraphics::CTextureHandle GetTexture() const override;
 

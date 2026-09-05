@@ -49,30 +49,24 @@ if(NOT SPIRV_OPTIMIZER_PROGRAM)
   endif()
 endif()
 
-# Settings
-set(TW_VULKAN_VERSION "vulkan100")
-
-set(VULKAN_SHADER_FILE_LIST "")
 set(VULKAN_SHADER_OUTPUT_PATHS "")
+file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/shaders/vulkan")
+
+set(TW_SHADER_DIR "${PROJECT_SOURCE_DIR}/src/engine/client/backend/shaders")
+set(TW_SHADER_COMPILER "${PROJECT_SOURCE_DIR}/scripts/compile_vulkan_shader.py")
 
 function(generate_shader_file FILE_ARGS1 FILE_ARGS2 FILE_NAME FILE_OUTPUT_NAME)
-  set(INPUT_PATH "${PROJECT_SOURCE_DIR}/data/shader/vulkan/${FILE_NAME}")
-  set(OUTPUT_PATH_RELATIVE "data/shader/vulkan/${FILE_OUTPUT_NAME}")
-  set(OUTPUT_PATH "${PROJECT_BINARY_DIR}/${OUTPUT_PATH_RELATIVE}")
-  set(TMP_OUTPUT_PATH "${OUTPUT_PATH}.tmp")
+  set(INPUT_PATH "${TW_SHADER_DIR}/${FILE_NAME}")
+  set(OUTPUT_PATH "${PROJECT_BINARY_DIR}/shaders/vulkan/${FILE_OUTPUT_NAME}")
 
   add_custom_command(
     OUTPUT "${OUTPUT_PATH}"
-    COMMAND ${GLSLANG_VALIDATOR_PROGRAM} --quiet --client ${TW_VULKAN_VERSION} ${FILE_ARGS1} ${FILE_ARGS2} "${INPUT_PATH}" -o "${TMP_OUTPUT_PATH}"
-    COMMAND ${SPIRV_OPTIMIZER_PROGRAM} -O "${TMP_OUTPUT_PATH}" -o "${OUTPUT_PATH}"
-    COMMAND ${CMAKE_COMMAND} -E remove "${TMP_OUTPUT_PATH}"
-    DEPENDS "${INPUT_PATH}"
+    COMMAND ${Python3_EXECUTABLE} "${TW_SHADER_COMPILER}" "${GLSLANG_VALIDATOR_PROGRAM}" "${SPIRV_OPTIMIZER_PROGRAM}" "${TW_SHADER_DIR}/dialect.glsl" "${INPUT_PATH}" "${OUTPUT_PATH}" ${FILE_ARGS1} ${FILE_ARGS2}
+    DEPENDS "${INPUT_PATH}" "${TW_SHADER_DIR}/dialect.glsl" "${TW_SHADER_COMPILER}"
     COMMENT "Compiling Vulkan shader ${FILE_OUTPUT_NAME}"
     VERBATIM
   )
 
-  list(APPEND VULKAN_SHADER_FILE_LIST "${OUTPUT_PATH_RELATIVE}")
-  set(VULKAN_SHADER_FILE_LIST ${VULKAN_SHADER_FILE_LIST} PARENT_SCOPE)
   list(APPEND VULKAN_SHADER_OUTPUT_PATHS "${OUTPUT_PATH}")
   set(VULKAN_SHADER_OUTPUT_PATHS ${VULKAN_SHADER_OUTPUT_PATHS} PARENT_SCOPE)
 endfunction()
@@ -100,14 +94,8 @@ generate_shader_file("" "" "text.vert" "text.vert.spv")
 generate_shader_file("" "" "primex.frag" "primex.frag.spv")
 generate_shader_file("" "" "primex.vert" "primex.vert.spv")
 
-generate_shader_file("" "" "primex.frag" "primex_rotationless.frag.spv")
-generate_shader_file("-DTW_ROTATIONLESS" "" "primex.vert" "primex_rotationless.vert.spv")
-
 generate_shader_file("-DTW_TEXTURED" "" "primex.frag" "primex_tex.frag.spv")
 generate_shader_file("" "" "primex.vert" "primex_tex.vert.spv")
-
-generate_shader_file("-DTW_TEXTURED" "" "primex.frag" "primex_tex_rotationless.frag.spv")
-generate_shader_file("-DTW_ROTATIONLESS" "" "primex.vert" "primex_tex_rotationless.vert.spv")
 
 generate_shader_file("" "" "spritemulti.frag" "spritemulti.frag.spv")
 generate_shader_file("" "" "spritemulti.vert" "spritemulti.vert.spv")
@@ -141,6 +129,5 @@ generate_shader_file("-DTW_QUAD_TEXTURED" "" "quad.vert" "quad_textured.vert.spv
 generate_shader_file("-DTW_QUAD_TEXTURED" "-DTW_QUAD_GROUPED" "quad.frag" "quad_grouped_textured.frag.spv")
 generate_shader_file("-DTW_QUAD_TEXTURED" "-DTW_QUAD_GROUPED" "quad.vert" "quad_grouped_textured.vert.spv")
 
-set(VULKAN_SHADER_FILE_LIST ${VULKAN_SHADER_FILE_LIST} CACHE STRING "Vulkan shader file list" FORCE)
 set(VULKAN_SHADER_OUTPUT_PATHS ${VULKAN_SHADER_OUTPUT_PATHS} CACHE STRING "Vulkan shader output list" FORCE)
 add_custom_target(build_vulkan_shaders DEPENDS ${VULKAN_SHADER_OUTPUT_PATHS})

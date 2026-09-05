@@ -67,6 +67,7 @@ class CHud : public CComponent
 
 	void RenderTextInfo();
 	void RenderConnectionWarning();
+	void RenderViewEdgeFade();
 	void RenderTeambalanceWarning();
 
 	void PrepareAmmoHealthAndArmorQuads();

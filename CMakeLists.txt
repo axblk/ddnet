@@ -2998,6 +2998,7 @@ if(CLIENT)
   # (cmake/BuildVulkanShaders.cmake), see scripts/embed_shaders.py.
   set_glob(ENGINE_CLIENT_SHADERS GLOB "frag;glsl;vert" src/engine/client/backend/shaders
     # tidy-alphabetical-start
+    blur.frag
     dialect.glsl
     planar_yuv.frag
     prim.frag

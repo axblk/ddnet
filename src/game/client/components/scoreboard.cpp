@@ -291,6 +291,7 @@ void CScoreboard::RenderTitleBar(CUIRect TitleBar, int Team, const char *pTitle)
 
 void CScoreboard::RenderGoals(CUIRect Goals)
 {
+	GameClient()->m_Menus.RenderBackdropRegion(Goals);
 	Goals.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 7.5f);
 	Goals.VMargin(5.0f, &Goals);
 
@@ -319,6 +320,7 @@ void CScoreboard::RenderGoals(CUIRect Goals)
 
 void CScoreboard::RenderSpectators(CUIRect Spectators)
 {
+	GameClient()->m_Menus.RenderBackdropRegion(Spectators);
 	Spectators.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 7.5f);
 	constexpr float SpectatorCut = 5.0f;
 	Spectators.Margin(SpectatorCut, &Spectators);
@@ -1063,6 +1065,8 @@ void CScoreboard::OnRender()
 
 		CUIRect RedScoreboard, BlueScoreboard, RedTitle, BlueTitle;
 		Scoreboard.VSplitMid(&RedScoreboard, &BlueScoreboard, 7.5f);
+		GameClient()->m_Menus.RenderBackdropRegion(RedScoreboard);
+		GameClient()->m_Menus.RenderBackdropRegion(BlueScoreboard);
 		RedScoreboard.HSplitTop(TitleHeight, &RedTitle, &RedScoreboard);
 		BlueScoreboard.HSplitTop(TitleHeight, &BlueTitle, &BlueScoreboard);
 
@@ -1095,6 +1099,7 @@ void CScoreboard::OnRender()
 	}
 	else
 	{
+		GameClient()->m_Menus.RenderBackdropRegion(Scoreboard);
 		Scoreboard.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 7.5f);
 
 		const char *pTitle;

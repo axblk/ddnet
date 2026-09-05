@@ -344,6 +344,7 @@ void CGameClient::OnInit()
 		}
 		OnInput(Event);
 	});
+	m_UI.SetRenderPopupMenuBackdropCallback([this](CUIRect Rect) { m_Menus.RenderBackdropRegion(Rect); });
 	m_RenderTools.Init(Graphics(), TextRender());
 	m_RenderMap.Init(Graphics(), TextRender(), &m_RenderTools);
 
@@ -772,7 +773,8 @@ void CGameClient::UpdatePositions()
 void CGameClient::OnRender()
 {
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
-	Graphics()->Clear(ClearColor.r, ClearColor.g, ClearColor.b);
+	if(!m_Menus.BeginMenuBackdrop(ClearColor))
+		Graphics()->Clear(ClearColor.r, ClearColor.g, ClearColor.b);
 
 	// check if multi view got activated
 	if(!m_MultiView.m_IsInit && m_MultiViewActivated)
@@ -815,7 +817,22 @@ void CGameClient::OnRender()
 
 	// render all systems
 	for(auto &pComponent : m_vpAll)
+	{
+		if(pComponent == &m_Scoreboard)
+			m_Menus.FinishMenuBackdrop();
+		// After the backdrop, so that opening the scoreboard does not smear the
+		// cursor along with the scene behind it, and after the boards that blur
+		// it, because a crosshair that is aimed through has to be on top of what
+		// it is aimed through. The menu and the console still cover it: they
+		// take the mouse over and bring their own pointer.
+		if(pComponent == &m_Menus)
+			m_Hud.RenderCursor();
 		pComponent->OnRender();
+	}
+
+	// Nothing captured what was drawn over the scene, so it goes to the screen
+	// as it is.
+	m_Menus.PresentMenuBackdrop();
 
 	// clear all events/input for this frame
 	Input()->Clear();

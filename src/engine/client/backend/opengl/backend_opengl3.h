@@ -198,6 +198,7 @@ protected:
 
 	CGLSLPrimitiveProgram *m_pPrimitiveProgram;
 	CGLSLPrimitiveProgram *m_pPrimitiveProgramTextured;
+	CGLSLPrimitiveProgram *m_pBlurProgram;
 	CGLSLPrimitiveProgram *m_pPlanarYuvProgram;
 	CGLSLQuadProgram *m_pQuadProgram;
 	CGLSLQuadProgram *m_pQuadProgramTextured;

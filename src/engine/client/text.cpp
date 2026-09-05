@@ -476,27 +476,35 @@ private:
 
 	void Grow(const unsigned char *pIn, unsigned char *pOut, int w, int h, int OutlineCount) const
 	{
-		for(int y = 0; y < h; y++)
+		// How much a neighbour contributes depends only on how far away it is,
+		// so the weights are the same for every pixel of the glyph - a disc of
+		// radius OutlineCount with a one pixel soft rim.
+		const int Diameter = OutlineCount * 2 + 1;
+		std::vector<float> vMask(Diameter * Diameter);
+		for(int sy = -OutlineCount; sy <= OutlineCount; ++sy)
 		{
-			for(int x = 0; x < w; x++)
+			for(int sx = -OutlineCount; sx <= OutlineCount; ++sx)
+				vMask[(sy + OutlineCount) * Diameter + (sx + OutlineCount)] = 1.f - std::clamp(length(vec2(sx, sy)) - OutlineCount, 0.f, 1.f);
+		}
+
+		for(int y = 0; y < h; ++y)
+		{
+			for(int x = 0; x < w; ++x)
 			{
 				int c = pIn[y * w + x];
-
-				for(int sy = -OutlineCount; sy <= OutlineCount; sy++)
+				// Clamping the ranges up front keeps the bounds check out of the
+				// inner loop, and no neighbour can push the result past 255.
+				const int MinSy = std::max(-OutlineCount, -y);
+				const int MaxSy = std::min(OutlineCount, h - 1 - y);
+				const int MinSx = std::max(-OutlineCount, -x);
+				const int MaxSx = std::min(OutlineCount, w - 1 - x);
+				for(int sy = MinSy; sy <= MaxSy && c < 255; ++sy)
 				{
-					for(int sx = -OutlineCount; sx <= OutlineCount; sx++)
-					{
-						int GetX = x + sx;
-						int GetY = y + sy;
-						if(GetX >= 0 && GetY >= 0 && GetX < w && GetY < h)
-						{
-							int Index = GetY * w + GetX;
-							float Mask = 1.f - std::clamp(length(vec2(sx, sy)) - OutlineCount, 0.f, 1.f);
-							c = std::max(c, (int)(pIn[Index] * Mask));
-						}
-					}
+					const float *pMaskRow = &vMask[(sy + OutlineCount) * Diameter + OutlineCount];
+					const unsigned char *pInRow = &pIn[(y + sy) * w + x];
+					for(int sx = MinSx; sx <= MaxSx; ++sx)
+						c = std::max(c, (int)(pInRow[sx] * pMaskRow[sx]));
 				}
-
 				pOut[y * w + x] = c;
 			}
 		}
@@ -956,7 +964,7 @@ struct STextContainer
 
 		m_aDebugText[0] = '\0';
 
-		m_ContainerIndex = STextContainerIndex{};
+		m_ContainerIndex.Reset();
 	}
 };
 
@@ -1011,6 +1019,8 @@ class CTextRender : public IEngineTextRender
 	int m_FirstFreeTextContainerIndex;
 
 	std::chrono::nanoseconds m_CursorRenderTime;
+	bool m_TextRenderStatsEnabled = false;
+	CTextRenderStats m_TextRenderStats;
 
 	int GetFreeTextContainerIndex()
 	{
@@ -1051,10 +1061,7 @@ class CTextRender : public IEngineTextRender
 				m_vpTextContainers.push_back(new STextContainer());
 		}
 
-		if(m_vpTextContainers[Index.m_Index]->m_ContainerIndex.m_UseCount.get() != Index.m_UseCount.get())
-		{
-			m_vpTextContainers[Index.m_Index]->m_ContainerIndex = Index;
-		}
+		m_vpTextContainers[Index.m_Index]->m_ContainerIndex = Index;
 		return *m_vpTextContainers[Index.m_Index];
 	}
 
@@ -1444,6 +1451,18 @@ public:
 		return m_SelectionColor;
 	}
 
+	CTextRenderStats TextRenderStats() const override
+	{
+		return m_TextRenderStats;
+	}
+
+	void SetTextRenderStatsEnabled(bool Enabled) override
+	{
+		m_TextRenderStatsEnabled = Enabled;
+		if(Enabled)
+			m_TextRenderStats = {};
+	}
+
 	void TextEx(CTextCursor *pCursor, const char *pText, int Length = -1) override
 	{
 		const unsigned OldRenderFlags = m_RenderFlags;
@@ -1465,6 +1484,8 @@ public:
 
 	bool CreateTextContainer(STextContainerIndex &TextContainerIndex, CTextCursor *pCursor, const char *pText, int Length = -1) override
 	{
+		if(m_TextRenderStatsEnabled)
+			++m_TextRenderStats.m_ContainerCreates;
 		dbg_assert(!TextContainerIndex.Valid(), "Text container index was not cleared.");
 
 		TextContainerIndex.Reset();
@@ -1516,6 +1537,10 @@ public:
 
 	void AppendTextContainer(STextContainerIndex TextContainerIndex, CTextCursor *pCursor, const char *pText, int Length = -1) override
 	{
+		const std::chrono::nanoseconds LayoutStart = m_TextRenderStatsEnabled ? time_get_nanoseconds() : std::chrono::nanoseconds{};
+		const int PreviousGlyphCount = pCursor->m_GlyphCount;
+		if(m_TextRenderStatsEnabled)
+			++m_TextRenderStats.m_LayoutCalls;
 		STextContainer &TextContainer = GetTextContainer(TextContainerIndex);
 		str_append(TextContainer.m_aDebugText, pText);
 
@@ -1996,6 +2021,8 @@ public:
 				if(Graphics()->IndicesNumRequiredNotify(TextContainer.m_StringInfo.m_vCharacterQuads.size() * 6) &&
 					Graphics()->RecreateBufferObject(TextContainer.m_StringInfo.m_QuadBufferObjectIndex, {static_cast<const uint8_t *>(pUploadData), DataSize}, TextContainer.m_SingleTimeUse ? IGraphics::EBufferLifetime::FRAME : IGraphics::EBufferLifetime::PERSISTENT))
 				{
+					if(m_TextRenderStatsEnabled)
+						m_TextRenderStats.m_UploadBytes += DataSize;
 					TextContainer.m_StringInfo.m_UploadedQuadCount = TextContainer.m_StringInfo.m_vCharacterQuads.size();
 				}
 			}
@@ -2078,6 +2105,11 @@ public:
 		pCursor->m_LineCount = LineCount;
 
 		TextContainer.m_BoundingBox = pCursor->BoundingBox();
+		if(m_TextRenderStatsEnabled)
+		{
+			m_TextRenderStats.m_GlyphsLaidOut += pCursor->m_GlyphCount - PreviousGlyphCount;
+			m_TextRenderStats.m_LayoutTimeNanoseconds += (time_get_nanoseconds() - LayoutStart).count();
+		}
 	}
 
 	bool CreateOrAppendTextContainer(STextContainerIndex &TextContainerIndex, CTextCursor *pCursor, const char *pText, int Length = -1) override
@@ -2110,6 +2142,8 @@ public:
 
 	void RecreateTextContainerSoft(STextContainerIndex &TextContainerIndex, CTextCursor *pCursor, const char *pText, int Length = -1) override
 	{
+		if(m_TextRenderStatsEnabled)
+			++m_TextRenderStats.m_ContainerSoftRecreates;
 		STextContainer &TextContainer = GetTextContainer(TextContainerIndex);
 		TextContainer.m_StringInfo.m_vCharacterQuads.clear();
 		TextContainer.m_aDebugText[0] = '\0';
@@ -2121,6 +2155,8 @@ public:
 	{
 		if(!TextContainerIndex.Valid())
 			return;
+		if(m_TextRenderStatsEnabled)
+			++m_TextRenderStats.m_ContainerDeletes;
 
 		STextContainer &TextContainer = GetTextContainer(TextContainerIndex);
 		Graphics()->DeleteBufferObject(TextContainer.m_StringInfo.m_QuadBufferObjectIndex);
@@ -2151,6 +2187,8 @@ public:
 		}
 		if(!BufferReady)
 			return;
+		if(m_TextRenderStatsEnabled)
+			m_TextRenderStats.m_UploadBytes += DataSize;
 
 		if(!TextContainer.m_StringInfo.m_QuadBufferObjectIndex.IsValid())
 			return;
@@ -2160,6 +2198,8 @@ public:
 
 	void RenderTextContainer(STextContainerIndex TextContainerIndex, const ColorRGBA &TextColor, const ColorRGBA &TextOutlineColor) override
 	{
+		if(m_TextRenderStatsEnabled)
+			++m_TextRenderStats.m_ContainerRenders;
 		const STextContainer &TextContainer = GetTextContainer(TextContainerIndex);
 
 		// An upload that did not come through leaves the glyphs off the screen for
@@ -2312,27 +2352,17 @@ public:
 		return WidthOfText;
 	}
 
-	void OnPreWindowResize() override
-	{
-		for(auto *pTextContainer : m_vpTextContainers)
-		{
-			if(pTextContainer->m_ContainerIndex.Valid() && pTextContainer->m_ContainerIndex.m_UseCount.use_count() <= 1)
-			{
-				log_error("textrender", "Found non empty text container with index %d with %" PRIzu " quads '%s'", pTextContainer->m_ContainerIndex.m_Index, pTextContainer->m_StringInfo.m_vCharacterQuads.size(), pTextContainer->m_aDebugText);
-				dbg_assert_failed("Text container was forgotten by the implementation (the index was overwritten).");
-			}
-		}
-	}
-
 	void OnWindowResize() override
 	{
+		// Every owner of a text container releases it while the window is resized, so a
+		// container that is still in use at this point was either forgotten or its index
+		// was overwritten, which leaks the container and its buffers for good.
 		bool HasNonEmptyTextContainer = false;
-		for(auto *pTextContainer : m_vpTextContainers)
+		for(const auto *pTextContainer : m_vpTextContainers)
 		{
 			if(pTextContainer->m_ContainerIndex.Valid())
 			{
 				log_error("textrender", "Found non empty text container with index %d with %" PRIzu " quads '%s'", pTextContainer->m_ContainerIndex.m_Index, pTextContainer->m_StringInfo.m_vCharacterQuads.size(), pTextContainer->m_aDebugText);
-				log_error("textrender", "The text container index was in use by %d ", (int)pTextContainer->m_ContainerIndex.m_UseCount.use_count());
 				HasNonEmptyTextContainer = true;
 			}
 		}

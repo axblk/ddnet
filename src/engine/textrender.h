@@ -9,7 +9,6 @@
 #include <engine/graphics.h>
 
 #include <cstdint>
-#include <memory>
 
 enum
 {
@@ -166,16 +165,9 @@ public:
 	void SetPosition(vec2 Position);
 };
 
-struct STextContainerUsages
-{
-	int m_Dummy = 0;
-};
-
 struct STextContainerIndex
 {
 	int m_Index;
-	std::shared_ptr<STextContainerUsages> m_UseCount =
-		std::make_shared<STextContainerUsages>(STextContainerUsages());
 
 	STextContainerIndex() { Reset(); }
 	bool Valid() const { return m_Index >= 0; }
@@ -194,6 +186,19 @@ class ITextRender : public IInterface
 {
 	MACRO_INTERFACE("textrender")
 public:
+	class CTextRenderStats
+	{
+	public:
+		uint64_t m_LayoutCalls = 0;
+		uint64_t m_LayoutTimeNanoseconds = 0;
+		uint64_t m_GlyphsLaidOut = 0;
+		uint64_t m_ContainerCreates = 0;
+		uint64_t m_ContainerSoftRecreates = 0;
+		uint64_t m_ContainerDeletes = 0;
+		uint64_t m_ContainerRenders = 0;
+		uint64_t m_UploadBytes = 0;
+	};
+
 	virtual bool LoadFonts() = 0;
 	virtual void SetFontPreset(EFontPreset FontPreset) = 0;
 	virtual void SetFontLanguageVariant(const char *pLanguageFile) = 0;
@@ -242,8 +247,9 @@ public:
 	virtual ColorRGBA GetTextColor() const = 0;
 	virtual ColorRGBA GetTextOutlineColor() const = 0;
 	virtual ColorRGBA GetTextSelectionColor() const = 0;
+	virtual CTextRenderStats TextRenderStats() const = 0;
+	virtual void SetTextRenderStatsEnabled(bool Enabled) = 0;
 
-	virtual void OnPreWindowResize() = 0;
 	virtual void OnWindowResize() = 0;
 };
 

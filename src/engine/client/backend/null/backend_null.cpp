@@ -18,6 +18,7 @@ ERunCommandReturnTypes CCommandProcessorFragment_Null::RunCommand(const CCommand
 		Capabilities = {};
 		Capabilities.m_2DArrayTextures = true;
 		Capabilities.m_RenderTargets = true;
+		Capabilities.m_PlanarYuvConversion = true;
 		break;
 	}
 	case CCommandBuffer::CMD_SWAP:

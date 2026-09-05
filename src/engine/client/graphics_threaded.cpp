@@ -424,6 +424,13 @@ std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::ReadTextureAsyn
 
 bool CGraphics_Threaded::BeginOffscreenFrame(CTextureHandle Texture)
 {
+	if(m_VirtualScreen.IsValid() && m_OffscreenFrameTarget == m_VirtualScreen && Texture != m_VirtualScreen)
+	{
+		// The surface-less client keeps a frame open at all times. A recorder
+		// that wants its own target gets it; the frame it replaces has nothing
+		// in it yet, because this runs before anything is drawn.
+		FinishOffscreenFrame(false, CImageInfo(), CTextureHandle(), EPlanarYuvFormat::NV12);
+	}
 	if(m_OffscreenFrameTarget.IsValid() || m_Drawing != EDrawing::NONE || !m_TextureHandles.IsAllocated(Texture) || static_cast<size_t>(Texture.Id()) >= m_vTextureInfos.size())
 		return false;
 	const STextureInfo &Info = m_vTextureInfos[Texture.Id()];
@@ -432,7 +439,7 @@ bool CGraphics_Threaded::BeginOffscreenFrame(CTextureHandle Texture)
 	if(!HasPresentationSurface() && !m_pCommandBuffer->IsEmpty())
 	{
 		// The surface-less client can accumulate an implicit loading frame before
-		// the virtual screen exists. It has no presentation target and is obsolete.
+		// the export target exists. It has no presentation target and is obsolete.
 		m_pCommandBuffer->Reset();
 		m_DropCurrentFrame = false;
 	}
@@ -452,7 +459,12 @@ bool CGraphics_Threaded::BeginOffscreenFrame(CTextureHandle Texture)
 	return true;
 }
 
-std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::FinishOffscreenFrame(bool WantImage, CImageInfo &&Recycled)
+std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::EndOffscreenFrame(CImageInfo &&Recycled, CTextureHandle YuvTarget, EPlanarYuvFormat YuvFormat)
+{
+	return FinishOffscreenFrame(true, std::move(Recycled), YuvTarget, YuvFormat);
+}
+
+std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::FinishOffscreenFrame(bool WantImage, CImageInfo &&Recycled, CTextureHandle YuvTarget, EPlanarYuvFormat YuvFormat)
 {
 	if(!m_OffscreenFrameTarget.IsValid())
 		return nullptr;
@@ -463,12 +475,35 @@ std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::FinishOffscreen
 	m_RenderWidth = 0;
 	m_RenderHeight = 0;
 
+	// The conversion is a second pass over the finished frame, so it runs
+	// after the frame's own pass closed and before anything is read back.
+	CTextureHandle ReadbackTarget = Target;
+	if(FrameEnded && YuvTarget.IsValid() && m_Capabilities.m_PlanarYuvConversion &&
+		m_TextureHandles.IsAllocated(YuvTarget) && static_cast<size_t>(YuvTarget.Id()) < m_vTextureInfos.size())
+	{
+		const STextureInfo &PackedInfo = m_vTextureInfos[YuvTarget.Id()];
+		CRenderPassDesc Pass;
+		Pass.m_ColorTarget = YuvTarget;
+		m_RenderWidth = static_cast<int>(PackedInfo.m_Desc.m_Width);
+		m_RenderHeight = static_cast<int>(PackedInfo.m_Desc.m_Height);
+		if(BeginRenderPass(Pass))
+		{
+			// The pass has to be closed whether the conversion worked or not,
+			// because the frame that is read back next expects no pass to be
+			// open and the packed frame is only usable if both parts did work.
+			const bool Converted = ConvertTextureToPlanarYuv(Target, YuvFormat);
+			if(EndRenderPass() && Converted)
+				ReadbackTarget = YuvTarget;
+		}
+		m_RenderWidth = 0;
+		m_RenderHeight = 0;
+	}
 	std::unique_ptr<ITextureReadback> pReadback;
 	bool FramePublished = false;
 	m_FramePacketEndsFrame = true;
 	if(FrameEnded && WantImage)
 	{
-		pReadback = ReadTextureAsync(Target, std::move(Recycled));
+		pReadback = ReadTextureAsync(ReadbackTarget, std::move(Recycled));
 		FramePublished = pReadback != nullptr;
 	}
 	else if(FrameEnded)
@@ -1028,6 +1063,70 @@ bool CGraphics_Threaded::EndRenderPass()
 	m_RenderPassActive = false;
 	m_RenderPassTarget.Invalidate();
 	return true;
+}
+
+bool CGraphics_Threaded::DrawFullscreenTexture(CTextureHandle Source, EPipelineProgram Program, SGraphicsColor Color, uint8_t RequiredUsage, bool UseCurrentClip)
+{
+	if(m_Drawing != EDrawing::NONE || !m_RenderPassActive || !m_TextureHandles.IsAllocated(Source) || Source == m_RenderPassTarget || static_cast<size_t>(Source.Id()) >= m_vTextureInfos.size())
+		return false;
+	const STextureInfo &Info = m_vTextureInfos[Source.Id()];
+	if(Info.m_Handle != Source || (Info.m_Desc.m_Usage & RequiredUsage) != RequiredUsage)
+		return false;
+	if(!ReportRejectedDraw(TextureKindMismatch(Program, Source), Program, NO_LAYOUT))
+		return false;
+
+	std::array<CCommandBuffer::SVertex, 4> aVertices;
+	const std::array<vec2, 4> aPositions = {vec2(0.0f, 0.0f), vec2(1.0f, 0.0f), vec2(1.0f, 1.0f), vec2(0.0f, 1.0f)};
+	for(size_t i = 0; i < aVertices.size(); ++i)
+	{
+		aVertices[i].m_Pos = aPositions[i];
+		aVertices[i].m_Tex = aPositions[i];
+		aVertices[i].m_Color = Color;
+	}
+
+	CCommandBuffer::SCommand_Draw Cmd;
+	Cmd.m_State = m_State;
+	Cmd.m_State.m_BlendMode = EBlendMode::NONE;
+	Cmd.m_State.m_WrapMode = EWrapMode::CLAMP;
+	Cmd.m_State.m_Texture = Source;
+	Cmd.m_State.m_ScreenTL = {0.0f, 0.0f};
+	Cmd.m_State.m_ScreenBR = {1.0f, 1.0f};
+	if(!UseCurrentClip)
+		Cmd.m_State.m_ClipEnable = false;
+	Cmd.m_Program = Program;
+	Cmd.m_PrimitiveType = EPrimitiveType::QUADS;
+	Cmd.m_IndexBuffer = m_QuadIndexBuffer;
+	Cmd.m_VertexCount = aVertices.size();
+	Cmd.m_VertexData.m_Size = sizeof(aVertices);
+	Cmd.m_VertexData.m_pData = AllocCommandBufferData(Cmd.m_VertexData.m_Size);
+	if(!AddCmd(Cmd, [&] {
+		   Cmd.m_VertexData.m_pData = AllocCommandBufferData(Cmd.m_VertexData.m_Size);
+		   return Cmd.m_VertexData.m_pData != nullptr;
+	   }))
+		return false;
+	mem_copy(const_cast<void *>(Cmd.m_VertexData.m_pData), aVertices.data(), sizeof(aVertices));
+	return true;
+}
+
+bool CGraphics_Threaded::BlitTexture(CTextureHandle Source, bool UseCurrentClip)
+{
+	return DrawFullscreenTexture(Source, EPipelineProgram::PRIMITIVE, {255, 255, 255, 255}, TEXTURE_USAGE_SAMPLED, UseCurrentClip);
+}
+
+bool CGraphics_Threaded::ConvertTextureToPlanarYuv(CTextureHandle Source, EPlanarYuvFormat Format)
+{
+	if(!m_Capabilities.m_PlanarYuvConversion)
+		return false;
+	// The layout rides along in the vertex color, the way the blur passes its
+	// axis, so that both formats share one pipeline.
+	SGraphicsColor Layout;
+	if(Format == EPlanarYuvFormat::NV12)
+		Layout = {0, 0, 0, 255};
+	else if(Format == EPlanarYuvFormat::I420)
+		Layout = {255, 255, 255, 255};
+	else
+		return false;
+	return DrawFullscreenTexture(Source, EPipelineProgram::PLANAR_YUV, Layout, TEXTURE_USAGE_SAMPLED | TEXTURE_USAGE_COLOR_TARGET);
 }
 
 void CGraphics_Threaded::QuadsTex3DDrawTL(const CQuadItem *pArray, int Num)
@@ -1796,6 +1895,7 @@ int CGraphics_Threaded::Init(IGraphicsBackend *pBackend, const SGraphicsSurfaceI
 	TakeSurfaceInfo(Surface);
 	AddBackEndWarningIfExists();
 	m_Capabilities = m_pBackend->GetCapabilities();
+	m_Capabilities.m_PlanarYuvConversion = m_Capabilities.m_RenderTargets && m_Capabilities.m_PlanarYuvConversion;
 
 	// create command buffers
 	for(auto &pCommandBuffer : m_apCommandBuffers)
@@ -1928,7 +2028,7 @@ bool CGraphics_Threaded::Resized(const SGraphicsSurfaceInfo &Surface)
 	// the next swap.
 	const bool VirtualFrameOpen = !HasPresentationSurface() && m_VirtualScreen.IsValid() && m_OffscreenFrameTarget == m_VirtualScreen;
 	if(VirtualFrameOpen)
-		FinishOffscreenFrame(false, CImageInfo());
+		FinishOffscreenFrame(false, CImageInfo(), CTextureHandle(), EPlanarYuvFormat::NV12);
 	// Commands recorded against the old drawable size must never become a partial
 	// frame followed by a viewport update for the new size.
 	if(!m_pCommandBuffer->IsEmpty())
@@ -2065,10 +2165,17 @@ void CGraphics_Threaded::MakeScreenshotOpaque(CImageInfo &Image)
 
 std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::PresentVirtualFrame(bool Readback, CImageInfo &&Recycled)
 {
+	// A recorder that opened the frame closes it itself; this is only the path
+	// for a frame that nobody else claimed. A recorder that has already closed
+	// its frame leaves none open at all, and then the screen needs its own
+	// again: the recording ends without a swap of its own, and everything the
+	// client draws after it would otherwise land in no frame until it quits.
+	if(m_OffscreenFrameTarget.IsValid() && m_OffscreenFrameTarget != m_VirtualScreen)
+		return nullptr;
 	const bool Screenshot = m_DoScreenshot;
 	m_DoScreenshot = false;
 	m_pReadPixelColor = nullptr;
-	auto pReadback = FinishOffscreenFrame(Readback || Screenshot, std::move(Recycled));
+	auto pReadback = FinishOffscreenFrame(Readback || Screenshot, std::move(Recycled), CTextureHandle(), EPlanarYuvFormat::NV12);
 	if(Screenshot)
 	{
 		CImageInfo Image;

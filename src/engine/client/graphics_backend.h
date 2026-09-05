@@ -40,6 +40,10 @@ struct SBackendCapabilities
 	// stands in for it.
 	bool m_2DArrayTextures = false;
 	bool m_RenderTargets = false;
+	// The backend can turn a rendered frame into the planar YUV layout an
+	// encoder takes, so that a frame crosses the bus at one and a half
+	// bytes per pixel instead of four, and already converted.
+	bool m_PlanarYuvConversion = false;
 
 	int m_ContextMajor = 0;
 	int m_ContextMinor = 0;

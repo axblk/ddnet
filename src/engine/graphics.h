@@ -391,20 +391,35 @@ public:
 		ColorRGBA m_ClearColor = {0.0f, 0.0f, 0.0f, 0.0f};
 	};
 
-	// Drawing into something other than the screen. Fixed function has no
-	// render targets, and rather than answer a capability question everywhere,
-	// the contract is carried by the handle - CreateTexture with
-	// TEXTURE_USAGE_COLOR_TARGET returns an invalid one where targets are
-	// unavailable, and a caller that wants a target has to look at what it
-	// got. The surface-less client is the only user so far: it draws every
-	// frame into a target of screen size because there is no screen.
+	// Everything from here to ConvertTextureToPlanarYuv is the one place where
+	// the backend is still visible to the game: drawing into something other
+	// than the screen. Fixed function has no render targets, and rather than
+	// answer a capability question everywhere, the contract is carried by the
+	// handle - CreateTexture with TEXTURE_USAGE_COLOR_TARGET returns an invalid
+	// one where targets are unavailable, and a caller that wants a target has
+	// to look at what it got. The menu backdrop is the only caller and does
+	// exactly that; without a target it draws the plain background instead.
 	//
-	// Everything else in this interface draws the same on every backend.
+	// Everything else in this interface draws the same on every backend. If a
+	// second caller ever appears here, that is the moment to ask whether the
+	// capability wants a name of its own rather than another handle check.
 
 	// A presentation pass is active implicitly for backwards compatibility.
 	// Beginning another pass ends the current pass first.
 	virtual bool BeginRenderPass(const CRenderPassDesc &Desc) = 0;
 	virtual bool EndRenderPass() = 0;
+	// Draws Source over the active render pass using the existing transient
+	// primitive path. By default the complete target is covered; optionally the
+	// current pixel clip limits the result. This also provides backend-neutral scaling.
+	virtual bool BlitTexture(CTextureHandle Source, bool UseCurrentClip = false) = 0;
+	// The two layouts video encoders ask for: hardware ones almost always want
+	// the interleaved chroma of NV12, software ones the three separate planes
+	// of I420. Both hold the same samples in the same number of bytes.
+	enum class EPlanarYuvFormat : uint8_t
+	{
+		NV12,
+		I420,
+	};
 	virtual void ClipEnable(int x, int y, int w, int h) = 0;
 	virtual void ClipDisable() = 0;
 
@@ -654,11 +669,38 @@ public:
 		// Waits for completion and moves the image on success. May only be called once.
 		virtual bool Wait(CImageInfo &Image) = 0;
 	};
+	// Queues a readback without waiting for the render thread. Destroying the
+	// returned handle waits for pending work, so its command storage stays valid.
+	// Recycled is an image the caller is done with. When it already has the size
+	// and format the readback produces, it is filled instead of a fresh
+	// allocation; anything else about it is ignored. A caller that reads every
+	// frame should hand back what it read last, because at export resolutions
+	// asking the system for the memory costs more than filling it.
+	[[nodiscard]] virtual std::unique_ptr<ITextureReadback> ReadTextureAsync(CTextureHandle Texture, CImageInfo &&Recycled = CImageInfo()) = 0;
+	// Redirects the presentation target to Texture for one complete frame. This
+	// includes presentation passes opened by nested effects.
+	virtual bool BeginOffscreenFrame(CTextureHandle Texture) = 0;
+	// Finishes the frame without presenting and returns its queued readback.
+	// A valid YuvTarget converts the finished frame into it first and reads
+	// that back instead, which is the same picture in a quarter less than half
+	// the bytes. See ConvertTextureToPlanarYuv for what the target has to be.
+	[[nodiscard]] virtual std::unique_ptr<ITextureReadback> EndOffscreenFrame(CImageInfo &&Recycled = CImageInfo(), CTextureHandle YuvTarget = CTextureHandle(), EPlanarYuvFormat YuvFormat = EPlanarYuvFormat::NV12) = 0;
 	// Presents the current frame and returns its queued top-left RGBA readback.
-	// Recycled is an image the caller is done with. When it already has the
-	// size and format the readback produces, it is filled instead of a fresh
-	// allocation; anything else about it is ignored.
 	[[nodiscard]] virtual std::unique_ptr<ITextureReadback> PresentAndReadbackAsync(CImageInfo &&Recycled = CImageInfo()) = 0;
+
+	// Whether ConvertTextureToPlanarYuv does anything on this backend.
+	[[nodiscard]] virtual bool PlanarYuvConversionSupported() const = 0;
+	// Draws Source into the current render target in the planar YUV layout an
+	// encoder takes: four of its bytes per target pixel, so the target is a
+	// quarter as wide as Source and half again as tall. The rows above Source's
+	// height carry the luma plane, the rows below it the chroma at half
+	// resolution, which read back in one piece is exactly a frame in that
+	// format. Source must be a color target whose size fits the format.
+	//
+	// The alternative is moving four bytes per pixel across the bus and
+	// converting them on the processor, which at export resolutions costs more
+	// than everything else in a video frame put together.
+	[[nodiscard]] virtual bool ConvertTextureToPlanarYuv(CTextureHandle Source, EPlanarYuvFormat Format) = 0;
 
 	struct CTextureRegion
 	{

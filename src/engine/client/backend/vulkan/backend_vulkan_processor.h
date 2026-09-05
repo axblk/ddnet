@@ -991,6 +991,7 @@ private:
 	SPipelineContainer m_PrimitivePipeline;
 	SPipelineContainer m_PrimitiveLinePipeline;
 	SPipelineContainer m_PrimitiveTextureArrayPipeline;
+	SPipelineContainer m_PlanarYuvPipeline;
 	SPipelineContainer m_DualAtlasPipeline;
 	SPipelineContainer m_ArrayColorPipeline;
 	SPipelineContainer m_ArrayColorTransformPipeline;
@@ -1895,6 +1896,8 @@ public:
 	[[nodiscard]] bool CreateStandardGraphicsPipelineImpl(const char *pVertName, const char *pFragName, SPipelineContainer &PipeContainer, EVulkanBackendTextureModes TexMode, EVulkanBackendBlendModes BlendMode, bool IsLinePrim);
 
 	[[nodiscard]] bool CreateStandardGraphicsPipeline(const char *pVertName, const char *pFragName, bool HasSampler, bool IsLinePipe);
+
+	[[nodiscard]] bool CreatePlanarYuvGraphicsPipeline(const char *pVertName, const char *pFragName);
 
 	[[nodiscard]] bool CreateStandard3DGraphicsPipelineImpl(const char *pVertName, const char *pFragName, SPipelineContainer &PipeContainer, EVulkanBackendTextureModes TexMode, EVulkanBackendBlendModes BlendMode);
 

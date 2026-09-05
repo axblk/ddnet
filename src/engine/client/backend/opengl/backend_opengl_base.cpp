@@ -320,6 +320,7 @@ bool CCommandProcessorFragment_OpenGLBase::InitOpenGL(const SCommand_Init *pComm
 				m_HasMipMaps = true;
 
 				pCommand->m_pCapabilities->m_RenderTargets = true;
+				pCommand->m_pCapabilities->m_PlanarYuvConversion = true;
 
 				// Both OpenGL 3.3 core and OpenGL ES 3 guarantee at least 256
 				// array layers, which is exactly what a layered texture needs,
@@ -388,6 +389,7 @@ bool CCommandProcessorFragment_OpenGLBase::InitOpenGL(const SCommand_Init *pComm
 			// Framebuffers are core in OpenGL ES 3, and the backend reaches
 			// them through the same code the desktop one does.
 			pCommand->m_pCapabilities->m_RenderTargets = true;
+			pCommand->m_pCapabilities->m_PlanarYuvConversion = true;
 		}
 	}
 

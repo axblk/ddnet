@@ -990,6 +990,7 @@ bool CCommandProcessorFragment_Vulkan::Cmd_Init(const SCommand_Init *pCommand)
 	m_BufferHandles.Clear();
 
 	pCommand->m_pCapabilities->m_RenderTargets = true;
+	pCommand->m_pCapabilities->m_PlanarYuvConversion = true;
 
 	pCommand->m_pCapabilities->m_2DArrayTextures = true;
 
@@ -1992,6 +1993,7 @@ void CCommandProcessorFragment_Vulkan::CleanupVulkanSwapChain(bool ForceSwapChai
 	m_PrimitivePipeline.Destroy(m_VKDevice);
 	m_PrimitiveLinePipeline.Destroy(m_VKDevice);
 	m_PrimitiveTextureArrayPipeline.Destroy(m_VKDevice);
+	m_PlanarYuvPipeline.Destroy(m_VKDevice);
 	m_DualAtlasPipeline.Destroy(m_VKDevice);
 	m_ArrayColorPipeline.Destroy(m_VKDevice);
 	m_ArrayColorTransformPipeline.Destroy(m_VKDevice);
@@ -4198,6 +4200,11 @@ bool CCommandProcessorFragment_Vulkan::CreateStandardGraphicsPipeline(const char
 	return Ret;
 }
 
+bool CCommandProcessorFragment_Vulkan::CreatePlanarYuvGraphicsPipeline(const char *pVertName, const char *pFragName)
+{
+	return CreateStandardGraphicsPipelineImpl(pVertName, pFragName, m_PlanarYuvPipeline, VULKAN_BACKEND_TEXTURE_MODE_TEXTURED, VULKAN_BACKEND_BLEND_MODE_NONE, false);
+}
+
 bool CCommandProcessorFragment_Vulkan::CreateStandard3DGraphicsPipelineImpl(const char *pVertName, const char *pFragName, SPipelineContainer &PipeContainer, EVulkanBackendTextureModes TexMode, EVulkanBackendBlendModes BlendMode)
 {
 	std::array<VkVertexInputAttributeDescription, 3> aAttributeDescriptions = {};
@@ -4576,6 +4583,9 @@ bool CCommandProcessorFragment_Vulkan::CreateGraphicsPipelines()
 		return false;
 
 	if(!CreateStandardGraphicsPipeline("vulkan/prim_textured.vert.spv", "vulkan/prim_textured.frag.spv", true, false))
+		return false;
+
+	if(!CreatePlanarYuvGraphicsPipeline("vulkan/prim_textured.vert.spv", "vulkan/planar_yuv.frag.spv"))
 		return false;
 
 	if(!CreateStandardGraphicsPipeline("vulkan/prim.vert.spv", "vulkan/prim.frag.spv", false, true))
@@ -5032,6 +5042,8 @@ bool CCommandProcessorFragment_Vulkan::Cmd_Draw(const CCommandBuffer::SCommand_D
 		return RenderStandard<CCommandBuffer::SVertex, false>(ExecBuffer, pCommand->m_State, pCommand->m_PrimitiveType, pCommand->m_VertexData.Get<CCommandBuffer::SVertex>(pCommand->m_VertexCount), pCommand->m_VertexCount);
 	if(Program == EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY)
 		return RenderStandard<CCommandBuffer::SVertexTex3DStream, true>(ExecBuffer, pCommand->m_State, pCommand->m_PrimitiveType, pCommand->m_VertexData.Get<CCommandBuffer::SVertexTex3DStream>(pCommand->m_VertexCount), pCommand->m_VertexCount);
+	if(Program == EPipelineProgram::PLANAR_YUV && GetIsTextured(pCommand->m_State) && pCommand->m_State.m_BlendMode == EBlendMode::NONE)
+		return RenderStandard<CCommandBuffer::SVertex, false>(ExecBuffer, pCommand->m_State, pCommand->m_PrimitiveType, pCommand->m_VertexData.Get<CCommandBuffer::SVertex>(pCommand->m_VertexCount), pCommand->m_VertexCount, &m_PlanarYuvPipeline);
 	return true;
 }
 

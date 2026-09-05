@@ -3449,7 +3449,12 @@ void CClient::Run()
 
 			// Update at cl_refresh_rate, or at cl_refresh_rate_inactive while the window is inactive.
 			Inactive = g_Config.m_ClRefreshRateInactive && !m_pWindow->WindowActive();
-			const int RefreshRate = Inactive ? g_Config.m_ClRefreshRateInactive : g_Config.m_ClRefreshRate;
+			int RefreshRate = Inactive ? g_Config.m_ClRefreshRateInactive : g_Config.m_ClRefreshRate;
+#if defined(CONF_VIDEORECORDER)
+			// A recording takes every frame it can get; the rate is the encoder's.
+			if(IVideo::Current() && IVideo::Current()->IsRecording())
+				RefreshRate = 0;
+#endif
 			bool UpdateDue = true;
 			if(RefreshRate)
 			{
@@ -3531,6 +3536,10 @@ void CClient::Run()
 						Quit();
 					}
 				}
+#if defined(CONF_VIDEORECORDER)
+				if(pVideo != nullptr && pVideo->HasError())
+					pVideo->Stop();
+#endif
 			}
 
 			// Wake up for the next update or frame, whichever comes first. While playing, also wake up for
@@ -3882,7 +3891,14 @@ void CClient::StartVideo(const char *pFilename, bool WithTimestamp)
 	Graphics()->WaitForIdle();
 	// pause the sound device while creating the video instance
 	Sound()->PauseAudioDevice();
-	new CVideo(Graphics(), Sound(), Storage(), Graphics()->ScreenWidth(), Graphics()->ScreenHeight(), m_LocalStartTime, aFilename);
+	CVideoExportSettings Settings;
+	Settings.m_Width = Graphics()->ScreenWidth() & ~1;
+	Settings.m_Height = Graphics()->ScreenHeight() & ~1;
+	Settings.m_FPS = g_Config.m_ClVideoRecorderFPS;
+	Settings.m_Audio = g_Config.m_ClVideoSndEnable != 0;
+	Settings.m_Crf = g_Config.m_ClVideoX264Crf;
+	Settings.m_Preset = g_Config.m_ClVideoX264Preset;
+	new CVideo(Graphics(), Sound(), Storage(), Settings, m_LocalStartTime, aFilename, IStorage::TYPE_SAVE, true, false);
 	Sound()->UnpauseAudioDevice();
 	if(!IVideo::Current()->Start())
 	{

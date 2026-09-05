@@ -198,9 +198,10 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	{
 		if(Window()->SetMultiSampling(g_Config.m_GfxFsaaSamples, MultiSamplingCountBackend))
 		{
-			// try again with 0 if mouse click was increasing multi sampling
-			// else just accept the current value as is
-			if((uint32_t)g_Config.m_GfxFsaaSamples > MultiSamplingCountBackend && GfxFsaaSamplesMouseButton == 1)
+			// Skip unsupported sample counts when moving in either direction.
+			const bool SkipIncreasing = (uint32_t)g_Config.m_GfxFsaaSamples > MultiSamplingCountBackend && GfxFsaaSamplesMouseButton == 1;
+			const bool SkipDecreasing = (uint32_t)g_Config.m_GfxFsaaSamples < MultiSamplingCountBackend && GfxFsaaSamplesMouseButton == 2;
+			if(SkipIncreasing || SkipDecreasing)
 				Window()->SetMultiSampling(0, MultiSamplingCountBackend);
 			g_Config.m_GfxFsaaSamples = (int)MultiSamplingCountBackend;
 		}

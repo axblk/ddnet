@@ -368,6 +368,7 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 	m_LastClipEnable = false;
 	m_pPrimitiveProgram = new CGLSLPrimitiveProgram;
 	m_pPrimitiveProgramTextured = new CGLSLPrimitiveProgram;
+	m_pPlanarYuvProgram = new CGLSLPrimitiveProgram;
 	m_pTileProgram = new CGLSLTileProgram;
 	m_pTileProgramTextured = new CGLSLTileProgram;
 	m_pPrimitive3DProgram = new CGLSLPrimitiveProgram;
@@ -394,6 +395,7 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 	const std::string MaxQuads = std::to_string(m_MaxQuadsAtOnce);
 	LinkProgram(m_pPrimitiveProgram, ShaderCompiler, "prim.vert", "prim.frag");
 	LinkProgram(m_pPrimitiveProgramTextured, ShaderCompiler, "prim.vert", "prim.frag", {{"TW_TEXTURED", ""}});
+	LinkProgram(m_pPlanarYuvProgram, ShaderCompiler, "prim.vert", "planar_yuv.frag");
 	LinkProgram(m_pPrimitive3DProgram, ShaderCompiler, "prim3d.vert", "prim3d.frag");
 	LinkProgram(m_pPrimitive3DProgramTextured, ShaderCompiler, "prim3d.vert", "prim3d.frag", {{"TW_TEXTURED", ""}});
 
@@ -498,6 +500,7 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Shutdown(const SCommand_Shutdown *
 	// clean up everything
 	delete m_pPrimitiveProgram;
 	delete m_pPrimitiveProgramTextured;
+	delete m_pPlanarYuvProgram;
 	delete m_pBorderTileProgram;
 	delete m_pBorderTileProgramTextured;
 	delete m_pQuadProgram;
@@ -979,7 +982,8 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Draw(const CCommandBuffer::SComman
 		return;
 	const EPipelineProgram Program = pCommand->m_Program;
 	const bool TextureArray = Program == EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY;
-	if(!TextureArray && Program != EPipelineProgram::PRIMITIVE)
+	const bool PlanarYuv = Program == EPipelineProgram::PLANAR_YUV;
+	if(!TextureArray && Program != EPipelineProgram::PRIMITIVE && !PlanarYuv)
 	{
 		DropCommand("a transient draw on a pipeline that only indexed draws reach");
 		return;
@@ -1007,8 +1011,14 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Draw(const CCommandBuffer::SComman
 		return;
 
 	const bool Textured = IsTexturedState(pCommand->m_State);
+	// The conversion reads the whole source itself, so it takes it as it is
+	// and wants nothing blended over it.
+	if(PlanarYuv && (!Textured || pCommand->m_State.m_BlendMode != EBlendMode::NONE))
+		return;
 	CGLSLTWProgram *pProgram;
-	if(Textured)
+	if(PlanarYuv)
+		pProgram = m_pPlanarYuvProgram;
+	else if(Textured)
 		pProgram = TextureArray ? static_cast<CGLSLTWProgram *>(m_pPrimitive3DProgramTextured) : m_pPrimitiveProgramTextured;
 	else
 		pProgram = TextureArray ? static_cast<CGLSLTWProgram *>(m_pPrimitive3DProgram) : m_pPrimitiveProgram;

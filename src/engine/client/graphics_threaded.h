@@ -29,7 +29,8 @@ class CGraphics_Threaded : public IEngineGraphics
 	CCommandBuffer::SState m_State;
 	// Null until Init; Shutdown after a failed start has nothing to reach.
 	IGraphicsBackend *m_pBackend = nullptr;
-	// What the backend reported.
+	// What the backend reported, with the one rule the frontend adds: a
+	// conversion to planar YUV needs a target to convert into.
 	SBackendCapabilities m_Capabilities;
 	mutable std::string m_FatalError;
 
@@ -128,6 +129,7 @@ class CGraphics_Threaded : public IEngineGraphics
 	CBufferHandle CreateBufferObjectInternal(size_t UploadDataSize, void *pUploadData, EBufferLifetime Lifetime, bool IsMovedPointer, EBufferUsage Usage);
 	bool RecreateBufferObjectInternal(CBufferHandle Buffer, size_t UploadDataSize, void *pUploadData, EBufferLifetime Lifetime, bool IsMovedPointer, EBufferUsage Usage);
 	bool UpdateTextureInternal(CTextureHandle Texture, const CTextureRegion &Region, ETextureFormat Format, uint8_t *pData, bool IsMovedPointer);
+	bool DrawFullscreenTexture(CTextureHandle Source, EPipelineProgram Program, SGraphicsColor Color, uint8_t RequiredUsage, bool UseCurrentClip = false);
 	void UpdateViewportInternal(int X, int Y, int W, int H, bool ByResize, int SurfaceW, int SurfaceH);
 
 	// The frame arena grows, so only a reliable command can be refused: its
@@ -275,17 +277,15 @@ class CGraphics_Threaded : public IEngineGraphics
 	bool m_FramePacketEndsFrame = false;
 	[[nodiscard]] bool EnsureVirtualScreen();
 	[[nodiscard]] bool BeginVirtualScreenFrame();
-	// Queues a readback of a color target without waiting for the render
-	// thread. Recycled is an image the caller is done with; when it already
-	// has the size and format the readback produces, it is filled instead of
-	// a fresh allocation.
-	[[nodiscard]] std::unique_ptr<ITextureReadback> ReadTextureAsync(CTextureHandle Texture, CImageInfo &&Recycled = CImageInfo());
-	// Redirects the presentation target to Texture for one complete frame,
-	// including presentation passes opened by nested effects.
-	[[nodiscard]] bool BeginOffscreenFrame(CTextureHandle Texture);
-	std::unique_ptr<ITextureReadback> FinishOffscreenFrame(bool WantImage, CImageInfo &&Recycled);
+	std::unique_ptr<ITextureReadback> FinishOffscreenFrame(bool WantImage, CImageInfo &&Recycled, CTextureHandle YuvTarget, EPlanarYuvFormat YuvFormat);
 	static void MakeScreenshotOpaque(CImageInfo &Image);
 	std::unique_ptr<ITextureReadback> PresentVirtualFrame(bool Readback, CImageInfo &&Recycled);
+	// Queues a readback of a color target. Destroying the returned handle waits
+	// for the result, so its command storage stays valid.
+	std::unique_ptr<ITextureReadback> ReadTextureAsync(CTextureHandle Texture, CImageInfo &&Recycled);
+	// Draws Source into the current render target in the planar YUV layout an
+	// encoder takes, see EndOffscreenFrame.
+	bool ConvertTextureToPlanarYuv(CTextureHandle Source, EPlanarYuvFormat Format);
 
 public:
 	// Tells the backend to finish every readback it still owes, so a wait for
@@ -333,7 +333,10 @@ public:
 	IGraphics::CTextureHandle LoadTextureRaw(const CImageInfo &Image, int Flags, const char *pTexName = nullptr) override;
 	IGraphics::CTextureHandle LoadTextureRawMove(CImageInfo &Image, int Flags, const char *pTexName = nullptr) override;
 	IGraphics::CTextureHandle CreateTexture(const CTextureDesc &Desc, const void *pInitialData = nullptr) override;
+	bool BeginOffscreenFrame(CTextureHandle Texture) override;
+	std::unique_ptr<ITextureReadback> EndOffscreenFrame(CImageInfo &&Recycled = CImageInfo(), CTextureHandle YuvTarget = CTextureHandle(), EPlanarYuvFormat YuvFormat = EPlanarYuvFormat::NV12) override;
 	std::unique_ptr<ITextureReadback> PresentAndReadbackAsync(CImageInfo &&Recycled = CImageInfo()) override;
+	bool PlanarYuvConversionSupported() const override { return m_Capabilities.m_PlanarYuvConversion; }
 	bool UpdateTexture(CTextureHandle Texture, const CTextureRegion &Region, ETextureFormat Format, const void *pData) override;
 
 	CTextureHandle LoadSpriteTexture(const CImageInfo &FromImageInfo, const std::optional<CImageInfo> &FallbackImageInfo, const struct CDataSprite *pSprite) override;
@@ -354,6 +357,7 @@ public:
 	void Clear(float r, float g, float b, bool ForceClearNow = false) override;
 	bool BeginRenderPass(const CRenderPassDesc &Desc) override;
 	bool EndRenderPass() override;
+	bool BlitTexture(CTextureHandle Source, bool UseCurrentClip = false) override;
 
 	void QuadsTex3DDrawTL(const CQuadItem *pArray, int Num) override;
 

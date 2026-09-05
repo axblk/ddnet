@@ -311,9 +311,9 @@ class CGraphics_Threaded : public IEngineGraphics
 	// The screen a surface-less client draws into. There is no swapchain to
 	// present to, so the frontend keeps one target of canvas size and treats it
 	// as the screen: every frame opens it and PresentFrame closes it, exactly
-	// as a presented frame is opened and closed. That gives a backend which
-	// can produce a device without a surface - Vulkan - a way to be run,
-	// screenshotted and recorded on a machine with no display.
+	// as a presented frame is opened and closed. That gives the two backends
+	// which can produce a device without a surface - Vulkan and WebGPU - a way
+	// to be run, screenshotted and recorded on a machine with no display.
 	CTextureHandle m_VirtualScreen;
 	// A presented frame ends with its swap. A frame that goes into a target -
 	// the video recorder's, or the virtual screen above - has no swap to end

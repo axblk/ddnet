@@ -7,7 +7,7 @@
 // the luma plane, the rows below it the chroma at half resolution. Read back in
 // one piece, that is exactly a frame in the encoder's format.
 //
-// vertColor.r picks the layout: dark for NV12,
+// vertColor.r picks the layout, the way the blur takes its axis: dark for NV12,
 // which interleaves the two chroma components, bright for planar YUV, which
 // puts them one after the other.
 //

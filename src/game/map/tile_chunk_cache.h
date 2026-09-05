@@ -70,7 +70,79 @@ public:
 	 */
 	static constexpr int CHUNK_SIZE = 64;
 
-	CTileChunkCache() = default;
+	/**
+	 * How much tile geometry all caches together keep on the graphics card.
+	 *
+	 * Without a limit a player who pans across a large map materializes every
+	 * chunk of it and never gives one back: the cache would grow to the whole
+	 * map, which is what building it per chunk exists to avoid. A chunk that
+	 * left the screen is rebuilt from the layer in well under a millisecond,
+	 * so holding one that far away is not worth the memory.
+	 *
+	 * The budget is shared because it stands for one graphics card, not for
+	 * one layer, and a map has as many caches as it has tile layers. When the
+	 * total is over, the least recently drawn chunks of the whole map go,
+	 * whichever layer holds them; chunks on screen never do, so the visible
+	 * set is kept even if it alone is over the budget.
+	 *
+	 * Eviction goes down to EVICTION_TARGET rather than to the budget itself:
+	 * stopping exactly at the line would put the next rebuilt chunk over it
+	 * again, and every render would walk every chunk of every layer.
+	 */
+	static constexpr uint64_t MEMORY_BUDGET = 128 * 1024 * 1024;
+	static constexpr uint64_t EVICTION_TARGET = MEMORY_BUDGET - MEMORY_BUDGET / 8;
+
+	/**
+	 * What one chunk costs and when it was last drawn.
+	 */
+	class CChunkUsage
+	{
+	public:
+		uint64_t m_Bytes = 0;
+		uint64_t m_LastUsedTick = 0;
+	};
+
+	/**
+	 * Which chunks to give up so that the shared total falls back below the
+	 * budget, least recently drawn first.
+	 *
+	 * Chunks drawn at `CurrentTick` are the ones on screen right now and are
+	 * never given up: rebuilding one in the same render that drew it would cost
+	 * the work twice and free nothing for longer than a frame. That is also
+	 * what ends the search once nothing older is left, so a cache whose chunks
+	 * are all visible keeps them even when the total stays over the budget.
+	 *
+	 * @param vUsage One entry per chunk of any cache; chunks without a buffer
+	 * may be included and are never named.
+	 * @param CachedBytes What all caches hold together.
+	 * @param CurrentTick The tick of the render this is called from.
+	 * @return Indices into `vUsage`, in the order they should be given up.
+	 */
+	static std::vector<size_t> ChunksToEvict(const std::vector<CChunkUsage> &vUsage, uint64_t CachedBytes, uint64_t CurrentTick)
+	{
+		std::vector<size_t> vEvict;
+		if(CachedBytes <= MEMORY_BUDGET)
+			return vEvict;
+		for(size_t Index = 0; Index < vUsage.size(); ++Index)
+		{
+			if(vUsage[Index].m_Bytes != 0 && vUsage[Index].m_LastUsedTick != CurrentTick)
+				vEvict.push_back(Index);
+		}
+		std::sort(vEvict.begin(), vEvict.end(), [&vUsage](size_t Left, size_t Right) {
+			return vUsage[Left].m_LastUsedTick < vUsage[Right].m_LastUsedTick;
+		});
+		uint64_t Remaining = CachedBytes;
+		size_t Count = 0;
+		while(Count < vEvict.size() && Remaining > EVICTION_TARGET)
+		{
+			Remaining -= vUsage[vEvict[Count]].m_Bytes;
+			++Count;
+		}
+		vEvict.resize(Count);
+		return vEvict;
+	}
+
+	CTileChunkCache();
 	// The chunks own GPU buffers, so a copy would free them twice
 	CTileChunkCache(const CTileChunkCache &Other) = delete;
 	CTileChunkCache &operator=(const CTileChunkCache &Other) = delete;
@@ -181,6 +253,10 @@ private:
 		// the two tables together cost no more than one 32 bit table per tile.
 		std::vector<uint16_t> m_vOpaqueTileOffsets;
 		std::vector<uint16_t> m_vTransparentTileOffsets;
+		// What the chunk's buffer costs on the graphics card, and when it was
+		// last drawn. Both are only meaningful while it holds a buffer.
+		uint64_t m_Bytes = 0;
+		uint64_t m_LastUsedTick = 0;
 		bool m_Dirty = true;
 		// What the chunk's tiles looked like when it was built. Only a debug
 		// build compares it; see VerifyOneChunk. It is carried either way so
@@ -190,6 +266,14 @@ private:
 
 	void Ensure(int Width, int Height, bool Textured);
 	bool Rebuild(const CLayerSource &Source, int ChunkX, int ChunkY);
+	/**
+	 * Gives a chunk's buffer back and marks it for rebuild.
+	 */
+	void ReleaseChunk(CChunk &Chunk);
+	/**
+	 * Gives up what ChunksToEvict names, across every cache there is.
+	 */
+	static void EvictOverBudget(uint64_t CurrentTick);
 	uint32_t SourceDigest(const CLayerSource &Source, int ChunkX, int ChunkY) const;
 	/**
 	 * Checks one chunk per frame against the layer it was built from.
@@ -215,6 +299,14 @@ private:
 	int m_Height = 0;
 	bool m_Textured = false;
 	size_t m_VerifyCursor = 0;
+
+	// Shared by every cache, see MEMORY_BUDGET. Rendering happens on one
+	// thread, which is the only one that reaches these. Every cache is in the
+	// list from construction to destruction, which is what lets eviction see
+	// the whole map; a cache never moves, its layer holds it by value.
+	static uint64_t s_CachedBytes;
+	static uint64_t s_Tick;
+	static std::vector<CTileChunkCache *> s_vpCaches;
 };
 
 #endif // GAME_MAP_TILE_CHUNK_CACHE_H

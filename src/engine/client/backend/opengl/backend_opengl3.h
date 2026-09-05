@@ -252,12 +252,9 @@ protected:
 	void Cmd_Texture_Create(const CCommandBuffer::SCommand_Texture_Create *pCommand) override;
 	void Cmd_Texture_Update(const CCommandBuffer::SCommand_Texture_Update *pCommand) override;
 	void Cmd_Texture_Readback(const CCommandBuffer::SCommand_Texture_Readback *pCommand) override;
-	// A render target readback does not wait for its picture. The pixels go
-	// into a pack buffer, a fence marks when they are there, and the result is
-	// handed over from CollectFinishedReadbacks once the fence has signalled -
-	// which is what lets the export keep its frames in flight on OpenGL, as it
-	// does on Vulkan. The export keeps three; one more here would
-	// only buy memory, so the oldest is waited out instead.
+	// A render target readback goes into a pack buffer with a fence and is
+	// handed over from CollectFinishedReadbacks, so the export can keep frames
+	// in flight. When all slots are busy the oldest is waited out.
 	static constexpr size_t READBACK_SLOT_COUNT = 3;
 	struct SPendingReadback
 	{

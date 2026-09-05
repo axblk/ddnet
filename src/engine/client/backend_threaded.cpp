@@ -18,6 +18,9 @@
 #if defined(CONF_BACKEND_VULKAN)
 #include <engine/client/backend/vulkan/backend_vulkan.h>
 #endif
+#if defined(CONF_BACKEND_WEBGPU)
+#include <engine/client/backend/webgpu/backend_webgpu.h>
+#endif
 
 #include <cstdlib>
 #include <string>
@@ -354,6 +357,12 @@ CCommandProcessorFragment_Renderer *CGraphicsBackend_Threaded::CreateRenderer() 
 #else
 		return nullptr;
 #endif
+	case BACKEND_TYPE_WEBGPU:
+#if defined(CONF_BACKEND_WEBGPU)
+		return CreateWebGpuCommandProcessorFragment(WebGpuBackendTypeFromConfig());
+#else
+		return nullptr;
+#endif
 	default:
 		return nullptr;
 	}
@@ -504,6 +513,7 @@ bool IsModernGraphicsApi(EBackendType BackendType)
 		return (g_Config.m_GfxGLMajor == 3 && g_Config.m_GfxGLMinor == 3) || g_Config.m_GfxGLMajor >= 4;
 	case BACKEND_TYPE_OPENGL_ES: // clamped to 3.0 and always the program backend, see the window
 	case BACKEND_TYPE_VULKAN:
+	case BACKEND_TYPE_WEBGPU:
 	case BACKEND_TYPE_NULL:
 		return true;
 	default:
@@ -521,6 +531,10 @@ EBackendType BackendTypeFromName(const char *pName)
 	if(str_comp_nocase(pName, "Vulkan") == 0)
 		return BACKEND_TYPE_VULKAN;
 #endif
+#if defined(CONF_BACKEND_WEBGPU)
+	if(str_comp_nocase(pName, "WebGPU") == 0)
+		return BACKEND_TYPE_WEBGPU;
+#endif
 	if(str_comp_nocase(pName, "Null") == 0)
 		return BACKEND_TYPE_NULL;
 	return BACKEND_TYPE_AUTO;
@@ -533,6 +547,7 @@ const char *BackendTypeName(EBackendType BackendType)
 	case BACKEND_TYPE_OPENGL: return "OpenGL";
 	case BACKEND_TYPE_OPENGL_ES: return "GLES";
 	case BACKEND_TYPE_VULKAN: return "Vulkan";
+	case BACKEND_TYPE_WEBGPU: return "WebGPU";
 	case BACKEND_TYPE_NULL: return "Null";
 	default: return "Auto";
 	}
@@ -567,6 +582,25 @@ std::vector<IGraphics::SRendererChoice> GraphicsBackendRendererChoices()
 #ifdef CONF_BACKEND_VULKAN
 	vChoices.push_back({"Vulkan", BACKEND_VULKAN_VERSION_MAJOR, BACKEND_VULKAN_VERSION_MINOR, 0});
 #endif
+#if defined(CONF_BACKEND_WEBGPU) && defined(CONF_PLATFORM_EMSCRIPTEN)
+	// The browser picks what WebGPU runs on.
+	vChoices.push_back({"WebGPU", 1, 0, 0});
+#elif defined(CONF_BACKEND_WEBGPU)
+	// What wgpu-native can run on here. It runs on OpenGL everywhere except
+	// macOS, where it only has Metal.
+	static constexpr const char *s_apWebGpuDeviceApis[] = {
+#if defined(CONF_FAMILY_WINDOWS)
+		"D3D12",
+#endif
+#if defined(CONF_PLATFORM_MACOS)
+		"Metal",
+#else
+		"Vulkan",
+		"OpenGL",
+#endif
+	};
+	vChoices.push_back({"WebGPU", 1, 0, 0, s_apWebGpuDeviceApis});
+#endif
 	return vChoices;
 }
 
@@ -583,10 +617,12 @@ IGraphicsBackend *CreateOffscreenGraphicsBackend(EBackendType BackendOverride)
 	if(BackendType == BACKEND_TYPE_AUTO)
 	{
 		BackendType = BackendTypeFromName(g_Config.m_GfxBackend);
-		if(BackendType != BACKEND_TYPE_VULKAN && BackendType != BACKEND_TYPE_NULL)
+		if(BackendType != BACKEND_TYPE_VULKAN && BackendType != BACKEND_TYPE_WEBGPU && BackendType != BACKEND_TYPE_NULL)
 		{
 #if defined(CONF_BACKEND_VULKAN)
 			BackendType = BACKEND_TYPE_VULKAN;
+#elif defined(CONF_BACKEND_WEBGPU)
+			BackendType = BACKEND_TYPE_WEBGPU;
 #else
 			BackendType = BACKEND_TYPE_NULL;
 #endif
@@ -596,6 +632,7 @@ IGraphicsBackend *CreateOffscreenGraphicsBackend(EBackendType BackendOverride)
 	switch(BackendType)
 	{
 	case BACKEND_TYPE_VULKAN:
+	case BACKEND_TYPE_WEBGPU:
 	case BACKEND_TYPE_NULL:
 		return new CGraphicsBackend_Threaded(BackendType, 0, 0);
 	default:

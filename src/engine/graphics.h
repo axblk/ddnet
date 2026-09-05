@@ -124,6 +124,7 @@ enum EBackendType
 	BACKEND_TYPE_OPENGL = 0,
 	BACKEND_TYPE_OPENGL_ES,
 	BACKEND_TYPE_VULKAN,
+	BACKEND_TYPE_WEBGPU,
 	// Accepts everything and draws nothing: the headless client, and the
 	// tests that run the frontend without a device.
 	BACKEND_TYPE_NULL,
@@ -726,16 +727,20 @@ public:
 	[[nodiscard]] virtual bool IndicesNumRequiredNotify(unsigned int RequiredIndicesCount) = 0;
 
 	// A renderer the settings can offer: the gfx_backend name and the
-	// gfx_gl_major/minor/patch version that select it.
+	// gfx_gl_major/minor/patch version that select it. A renderer that runs on
+	// top of another graphics API lists the ones gfx_webgpu_backend can pick,
+	// "auto" aside; empty if the choice is not the player's.
 	struct SRendererChoice
 	{
 		const char *m_pBackend;
 		int m_Major;
 		int m_Minor;
 		int m_Patch;
+		std::span<const char *const> m_vpDeviceApis;
 	};
 	// The renderers this build can run with the driver at hand, in the order
-	// to offer them, as the backends describe them. The names are static.
+	// to offer them, as the backends describe them. The names and device API
+	// lists are static.
 	virtual std::vector<SRendererChoice> RendererChoices() const = 0;
 
 	virtual const char *GetVendorString() = 0;

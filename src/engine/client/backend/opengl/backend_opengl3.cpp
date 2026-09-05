@@ -803,15 +803,8 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Texture_Readback(const CCommandBuf
 	glPixelStorei(GL_PACK_ALIGNMENT, PackAlignment);
 	glBindFramebuffer(GL_FRAMEBUFFER, PreviousFramebuffer);
 	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-	// No row flip, here or when the pixels are collected. Rendering into a
-	// texture already runs with the screen rectangle turned upside down
-	// (SetState, m_RenderingToTexture), because the result has to be sampled
-	// with top-down texture coordinates later. Row zero of what glReadPixels
-	// hands back is therefore the top of the picture already, and flipping it
-	// again is what turned the in-client export upside down. The presentation
-	// readback does flip, and has to: the default framebuffer is not rendered
-	// inverted. Vulkan does not flip either, and its render targets are not
-	// inverted.
+	// No row flip: rendering into a texture already runs upside down (see
+	// SetState), so row zero is the top. Only the presentation readback flips.
 
 	Pending.m_pFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 	// Flush so the fence can signal. Without a fence, finish now.

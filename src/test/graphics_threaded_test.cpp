@@ -108,9 +108,9 @@ TEST(GraphicsThreaded, IndexedDrawMustMatchItsProgram)
 	};
 
 	// The layout has to match the pipeline the texture state selects, in both
-	// directions: Vulkan bakes the vertex stride into the pipeline, so an
-	// untextured draw over a buffer with texture coordinates reads it at the
-	// wrong stride.
+	// directions: Vulkan and WebGPU bake the vertex stride into the pipeline,
+	// so an untextured draw over a buffer with texture coordinates reads it at
+	// the wrong stride.
 	auto Cmd = Draw(EPipelineProgram::QUAD_SHARED, IGraphics::EVertexLayout::QUAD_TEXTURED, false);
 	EXPECT_FALSE(IsIndexedDrawConsistent(Cmd));
 	Cmd = Draw(EPipelineProgram::QUAD_SHARED, IGraphics::EVertexLayout::QUAD, false);

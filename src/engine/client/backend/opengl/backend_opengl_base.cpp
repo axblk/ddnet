@@ -312,6 +312,7 @@ bool CCommandProcessorFragment_OpenGLBase::InitOpenGL(const SCommand_Init *pComm
 			{
 				// Everything the backend with programs uses is core in OpenGL 3.3.
 				pCommand->m_pCapabilities->m_RenderTargets = true;
+				pCommand->m_pCapabilities->m_PlanarYuvConversion = true;
 
 				// OpenGL 3.3 and ES 3 guarantee 256 array layers.
 				pCommand->m_pCapabilities->m_2DArrayTextures = true;
@@ -356,6 +357,7 @@ bool CCommandProcessorFragment_OpenGLBase::InitOpenGL(const SCommand_Init *pComm
 			// Framebuffers are core in OpenGL ES 3, and the backend reaches
 			// them through the same code the desktop one does.
 			pCommand->m_pCapabilities->m_RenderTargets = true;
+			pCommand->m_pCapabilities->m_PlanarYuvConversion = true;
 		}
 	}
 

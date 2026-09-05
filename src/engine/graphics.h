@@ -386,6 +386,17 @@ public:
 	// Beginning another pass ends the current pass first.
 	virtual bool BeginRenderPass(const CRenderPassDesc &Desc) = 0;
 	virtual bool EndRenderPass() = 0;
+	// Draws Source over the active render pass, covering the whole target or
+	// only the current clip.
+	virtual bool BlitTexture(CTextureHandle Source, bool UseCurrentClip = false) = 0;
+	// The two layouts video encoders ask for: hardware ones almost always want
+	// the interleaved chroma of NV12, software ones the three separate planes
+	// of I420. Both hold the same samples in the same number of bytes.
+	enum class EPlanarYuvFormat : uint8_t
+	{
+		NV12,
+		I420,
+	};
 	virtual void ClipEnable(int x, int y, int w, int h) = 0;
 	virtual void ClipDisable() = 0;
 
@@ -620,11 +631,22 @@ public:
 		// Waits for completion and moves the image on success. May only be called once.
 		virtual bool Wait(CImageInfo &Image) = 0;
 	};
+	// Redirects the presentation target to Texture for one complete frame. This
+	// includes presentation passes opened by nested effects.
+	virtual bool BeginOffscreenFrame(CTextureHandle Texture) = 0;
+	// Finishes the frame without presenting and returns its queued readback.
+	// Destroying the readback waits for it. Recycled is reused when it has the
+	// right size and format.
+	//
+	// A valid YuvTarget converts the frame into it and reads that back instead:
+	// four bytes per target pixel, so the target is a quarter as wide and half
+	// again as tall as the frame, luma rows first, then chroma at half resolution.
+	[[nodiscard]] virtual std::unique_ptr<ITextureReadback> EndOffscreenFrame(CImageInfo &&Recycled = CImageInfo(), CTextureHandle YuvTarget = CTextureHandle(), EPlanarYuvFormat YuvFormat = EPlanarYuvFormat::NV12) = 0;
 	// Presents the current frame and returns its queued top-left RGBA readback.
-	// Recycled is an image the caller is done with. When it already has the
-	// size and format the readback produces, it is filled instead of a fresh
-	// allocation; anything else about it is ignored.
 	[[nodiscard]] virtual std::unique_ptr<ITextureReadback> PresentAndReadbackAsync(CImageInfo &&Recycled = CImageInfo()) = 0;
+
+	// Whether EndOffscreenFrame can convert to planar YUV on this backend.
+	[[nodiscard]] virtual bool PlanarYuvConversionSupported() const = 0;
 
 	struct CTextureRegion
 	{

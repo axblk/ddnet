@@ -413,6 +413,11 @@ public:
 	// primitive path. By default the complete target is covered; optionally the
 	// current pixel clip limits the result. This also provides backend-neutral scaling.
 	virtual bool BlitTexture(CTextureHandle Source, bool UseCurrentClip = false) = 0;
+	enum class EBlurDirection : uint8_t
+	{
+		HORIZONTAL,
+		VERTICAL,
+	};
 	// The two layouts video encoders ask for: hardware ones almost always want
 	// the interleaved chroma of NV12, software ones the three separate planes
 	// of I420. Both hold the same samples in the same number of bytes.
@@ -421,6 +426,9 @@ public:
 		NV12,
 		I420,
 	};
+	// Applies one fixed separable blur pass over the complete active render pass.
+	virtual bool BlurTexture(CTextureHandle Source, EBlurDirection Direction) = 0;
+
 	virtual void ClipEnable(int x, int y, int w, int h) = 0;
 	virtual void ClipDisable() = 0;
 
@@ -679,7 +687,7 @@ public:
 	// asking the system for the memory costs more than filling it.
 	[[nodiscard]] virtual std::unique_ptr<ITextureReadback> ReadTextureAsync(CTextureHandle Texture, CImageInfo &&Recycled = CImageInfo()) = 0;
 	// Redirects the presentation target to Texture for one complete frame. This
-	// includes presentation passes opened by nested effects.
+	// includes presentation passes opened by nested effects such as menu blur.
 	virtual bool BeginOffscreenFrame(CTextureHandle Texture) = 0;
 	// Finishes the frame without presenting and returns its queued readback.
 	// A valid YuvTarget converts the finished frame into it first and reads

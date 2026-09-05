@@ -65,8 +65,6 @@ class CHud : public CComponent
 	STextContainerIndex m_aPlayerPositionContainers[2];
 	float m_aPlayerPrevPosition[2];
 
-	void RenderCursor();
-
 	void RenderTextInfo();
 	void RenderConnectionWarning();
 	void RenderTeambalanceWarning();
@@ -112,6 +110,10 @@ public:
 	int Sizeof() const override { return sizeof(*this); }
 
 	void ResetHudContainers();
+	// Drawn after the backdrop was taken rather than as part of the scene: it
+	// is the thing on screen that moves most, and a blurred cursor is the one
+	// thing nobody wants to look at.
+	void RenderCursor();
 	void OnWindowResize() override;
 	void OnReset() override;
 	void OnRender() override;

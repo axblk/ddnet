@@ -452,6 +452,9 @@ protected:
 
 	// found in menus.cpp
 	void Render();
+	void RenderMenuBackground();
+	void DestroyMenuBackdropTextures();
+	bool EnsureMenuBackdropTextures();
 	void RenderPopupFullscreen(CUIRect Screen);
 	void RenderPopupConnecting(CUIRect Screen);
 	void RenderPopupLoading(CUIRect Screen);
@@ -649,9 +652,65 @@ protected:
 	void UpdateColors();
 
 	IGraphics::CTextureHandle m_TextureBlob;
+	enum
+	{
+		// Halving steps from the screen down to the eighth the blur runs on.
+		NUM_MENU_BACKDROP_DOWNSAMPLES = 2,
+	};
+	IGraphics::CTextureHandle m_MenuBackdropSceneTexture;
+	IGraphics::CTextureHandle m_MenuBackdropOverlayTexture;
+	IGraphics::CTextureHandle m_aMenuBackdropDownsampleTextures[NUM_MENU_BACKDROP_DOWNSAMPLES];
+	IGraphics::CTextureHandle m_aMenuBackdropBlurTextures[2];
+	int m_MenuBackdropWidth = 0;
+	int m_MenuBackdropHeight = 0;
+	bool m_MenuBackdropActive = false;
+	bool m_MenuBackdropOverlayActive = false;
+	bool m_MenuBackdropReady = false;
+	bool m_MenuBackdropBackgroundRendered = false;
+	bool MenuBackdropTexturesValid() const;
+	bool RenderMenuBackdropTexture(IGraphics::CTextureHandle Target, IGraphics::CTextureHandle Source, std::optional<IGraphics::EBlurDirection> BlurDirection);
+	bool BlurIntoMenuBackdrop(IGraphics::CTextureHandle Source);
 
 public:
 	void RenderBackground();
+	bool BeginMenuBackdrop(ColorRGBA ClearColor);
+	void FinishMenuBackdrop();
+	/**
+	 * Blurs everything drawn over the scene so far and puts it on the screen.
+	 * Whoever is drawn after this gets a blurred picture of all of it, which is
+	 * what the console needs to sit over the game and over the menu alike.
+	 *
+	 * @return `true` if a blurred backdrop is available afterwards.
+	 */
+	bool CaptureMenuBackdrop();
+	/**
+	 * Puts what was drawn over the scene on the screen unblurred. Called once
+	 * at the end of the frame for the case where nothing captured it.
+	 */
+	void PresentMenuBackdrop();
+	void RenderBackdropRegion(CUIRect Rect);
+	/**
+	 * Whether anything is currently drawn on top of the scene that wants the
+	 * blurred backdrop. Deciding this in one place keeps the pass that fills
+	 * the backdrop and the pass that blurs it from drifting apart.
+	 *
+	 * @return `true` if the backdrop is needed this frame.
+	 */
+	bool BackdropConsumerActive() const;
+	/**
+	 * Whether anything wants the scene itself blurred. The console does not:
+	 * it blurs the menu and the boards along with it, later.
+	 *
+	 * @return `true` if the scene has to be blurred this frame.
+	 */
+	bool SceneBackdropConsumerActive() const;
+	/**
+	 * Height that the game tab covers with its button bar. The rest of the tab
+	 * stays see-through so the game is still visible behind it.
+	 *
+	 * @return Height in menu units.
+	 */
+	static float GameTabCoveredHeight();
 
 	CMenus();
 	int Sizeof() const override { return sizeof(*this); }

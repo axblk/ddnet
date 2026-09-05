@@ -252,6 +252,7 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 		std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> m_aQuadPerItem{};
 		std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> m_aQuadShared{};
 		std::array<WGPURenderPipeline, BLEND_MODE_COUNT> m_aDualAtlas{};
+		WGPURenderPipeline m_Blur = nullptr;
 		WGPURenderPipeline m_PlanarYuv = nullptr;
 	};
 	struct SGpuTimestampSlot

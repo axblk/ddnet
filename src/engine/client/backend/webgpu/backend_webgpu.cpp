@@ -1975,6 +1975,11 @@ bool CCommandProcessorFragment_WebGpu::CreatePipelineSet(SPipelineSet &Pipelines
 		wgpuRenderPipelineRelease(Pipelines.m_PlanarYuv);
 		Pipelines.m_PlanarYuv = nullptr;
 	}
+	if(Pipelines.m_Blur != nullptr)
+	{
+		wgpuRenderPipelineRelease(Pipelines.m_Blur);
+		Pipelines.m_Blur = nullptr;
+	}
 	for(auto &Pipeline : Pipelines.m_aPrimitive)
 	{
 		if(Pipeline != nullptr)
@@ -2073,29 +2078,35 @@ bool CCommandProcessorFragment_WebGpu::CreatePipelineSet(SPipelineSet &Pipelines
 			}
 		}
 	}
-	WGPUColorTargetState PlanarYuvTarget = WGPU_COLOR_TARGET_STATE_INIT;
-	PlanarYuvTarget.format = Format;
-	PlanarYuvTarget.writeMask = WGPUColorWriteMask_All;
-	WGPUFragmentState PlanarYuvFragment = WGPU_FRAGMENT_STATE_INIT;
-	PlanarYuvFragment.module = m_PrimitiveShader;
-	PlanarYuvFragment.entryPoint = StringView("fs_planar_yuv");
-	PlanarYuvFragment.targetCount = 1;
-	PlanarYuvFragment.targets = &PlanarYuvTarget;
-	WGPURenderPipelineDescriptor PlanarYuvDescriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-	PlanarYuvDescriptor.label = StringView("DDNet WebGPU planar YUV pipeline");
-	PlanarYuvDescriptor.layout = m_PrimitivePipelineLayout;
-	PlanarYuvDescriptor.vertex.module = m_PrimitiveShader;
-	PlanarYuvDescriptor.vertex.entryPoint = StringView("vs_main");
-	PlanarYuvDescriptor.vertex.bufferCount = 1;
-	PlanarYuvDescriptor.vertex.buffers = &VertexBufferLayout;
-	PlanarYuvDescriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-	PlanarYuvDescriptor.primitive.frontFace = WGPUFrontFace_CCW;
-	PlanarYuvDescriptor.primitive.cullMode = WGPUCullMode_None;
-	PlanarYuvDescriptor.multisample.count = SampleCount;
-	PlanarYuvDescriptor.multisample.mask = UINT32_MAX;
-	PlanarYuvDescriptor.fragment = &PlanarYuvFragment;
-	Pipelines.m_PlanarYuv = wgpuDeviceCreateRenderPipeline(m_Device, &PlanarYuvDescriptor);
-	RememberPipelineLayout(Pipelines.m_PlanarYuv, PlanarYuvDescriptor.layout);
+	WGPUColorTargetState BlurTarget = WGPU_COLOR_TARGET_STATE_INIT;
+	BlurTarget.format = Format;
+	BlurTarget.writeMask = WGPUColorWriteMask_All;
+	WGPUFragmentState BlurFragment = WGPU_FRAGMENT_STATE_INIT;
+	BlurFragment.module = m_PrimitiveShader;
+	BlurFragment.entryPoint = StringView("fs_blur");
+	BlurFragment.targetCount = 1;
+	BlurFragment.targets = &BlurTarget;
+	WGPURenderPipelineDescriptor BlurDescriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+	BlurDescriptor.label = StringView("DDNet WebGPU blur pipeline");
+	BlurDescriptor.layout = m_PrimitivePipelineLayout;
+	BlurDescriptor.vertex.module = m_PrimitiveShader;
+	BlurDescriptor.vertex.entryPoint = StringView("vs_main");
+	BlurDescriptor.vertex.bufferCount = 1;
+	BlurDescriptor.vertex.buffers = &VertexBufferLayout;
+	BlurDescriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+	BlurDescriptor.primitive.frontFace = WGPUFrontFace_CCW;
+	BlurDescriptor.primitive.cullMode = WGPUCullMode_None;
+	BlurDescriptor.multisample.count = SampleCount;
+	BlurDescriptor.multisample.mask = UINT32_MAX;
+	BlurDescriptor.fragment = &BlurFragment;
+	Pipelines.m_Blur = wgpuDeviceCreateRenderPipeline(m_Device, &BlurDescriptor);
+	RememberPipelineLayout(Pipelines.m_Blur, BlurDescriptor.layout);
+	if(Pipelines.m_Blur == nullptr)
+		return false;
+	BlurFragment.entryPoint = StringView("fs_planar_yuv");
+	BlurDescriptor.label = StringView("DDNet WebGPU planar YUV pipeline");
+	Pipelines.m_PlanarYuv = wgpuDeviceCreateRenderPipeline(m_Device, &BlurDescriptor);
+	RememberPipelineLayout(Pipelines.m_PlanarYuv, BlurDescriptor.layout);
 	if(Pipelines.m_PlanarYuv == nullptr)
 		return false;
 	return CreateBufferedPipelines(Pipelines.m_aUniformColor, Format, "vs_uniform_color", false, SampleCount) &&
@@ -2265,9 +2276,19 @@ final_position = rotate(final_position, position.zw, quad.rotation);
 	let texture_color = select(sample, vec4f(1.0, 1.0, 1.0, sample.r), transform.alpha_texture != 0u);
 	return texture_color * input.color;
 }
+@fragment fn fs_blur(input: VertexOutput) -> @location(0) vec4f {
+	let texel_offset = input.color.rg / vec2f(textureDimensions(image_texture));
+	var color = textureSample(image_texture, image_sampler, input.uv) * 0.2270270270;
+	color += textureSample(image_texture, image_sampler, input.uv + texel_offset * 1.3846153846) * 0.3162162162;
+	color += textureSample(image_texture, image_sampler, input.uv - texel_offset * 1.3846153846) * 0.3162162162;
+	color += textureSample(image_texture, image_sampler, input.uv + texel_offset * 3.2307692308) * 0.0702702703;
+	color += textureSample(image_texture, image_sampler, input.uv - texel_offset * 3.2307692308) * 0.0702702703;
+	return color;
+}
 // Turns a rendered frame into the planar YUV layout an encoder wants. See
 // shader/vulkan/planar_yuv.frag for what the layout is; input.color.r picks
-// between interleaved NV12 and three separate planes.
+// between interleaved NV12 and three separate planes, the way the blur above
+// takes its axis from the same place.
 fn yuv_luma(color: vec3f) -> f32 {
 	return (16.0 + 219.0 * dot(color, vec3f(0.2126, 0.7152, 0.0722))) / 255.0;
 }
@@ -2513,6 +2534,8 @@ void CCommandProcessorFragment_WebGpu::DestroyDrawResources()
 		for(auto &Pipeline : Pipelines.m_aDualAtlas)
 			if(Pipeline != nullptr)
 				wgpuRenderPipelineRelease(Pipeline);
+		if(Pipelines.m_Blur != nullptr)
+			wgpuRenderPipelineRelease(Pipelines.m_Blur);
 		if(Pipelines.m_PlanarYuv != nullptr)
 			wgpuRenderPipelineRelease(Pipelines.m_PlanarYuv);
 		Pipelines = {};
@@ -2799,12 +2822,13 @@ bool CCommandProcessorFragment_WebGpu::WriteQuadTransforms(const CCommandBuffer:
 bool CCommandProcessorFragment_WebGpu::Draw(const CCommandBuffer::SCommand_Draw *pCommand)
 {
 	EPipelineProgram Program;
-	if(Program = pCommand->m_Program; (Program != EPipelineProgram::PRIMITIVE && Program != EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY && Program != EPipelineProgram::PLANAR_YUV))
+	if(Program = pCommand->m_Program; (Program != EPipelineProgram::PRIMITIVE && Program != EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY && Program != EPipelineProgram::BLUR && Program != EPipelineProgram::PLANAR_YUV))
 	{
 		DropCommand("a transient draw on a pipeline that only indexed draws reach");
 		return true;
 	}
 	const bool Layered = Program == EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY;
+	const bool Blur = Program == EPipelineProgram::BLUR;
 	const bool PlanarYuv = Program == EPipelineProgram::PLANAR_YUV;
 	const auto *pVertices = Layered ? nullptr : pCommand->m_VertexData.Get<CCommandBuffer::SVertex>(pCommand->m_VertexCount);
 	const auto *pLayeredVertices = Layered ? pCommand->m_VertexData.Get<CCommandBuffer::SVertexTex3DStream>(pCommand->m_VertexCount) : nullptr;
@@ -2852,9 +2876,11 @@ bool CCommandProcessorFragment_WebGpu::Draw(const CCommandBuffer::SCommand_Draw 
 	if(!WriteStream(pUploadVertices, VertexCount * VertexSize, 4, VertexOffset))
 		return false;
 	const bool Textured = pCommand->m_State.m_Texture.IsValid();
+	if(Blur && (!Textured || pCommand->m_State.m_BlendMode != EBlendMode::NONE || PrimitiveType != EPrimitiveType::TRIANGLES))
+		return true;
 	const auto &Pipelines = m_aPipelineSets[m_RenderTarget.IsValid() ? 1 : 0];
 	const auto &aPipelines = Layered ? Pipelines.m_aLayeredPrimitive : Pipelines.m_aPrimitive;
-	const WGPURenderPipeline Pipeline = PlanarYuv ? Pipelines.m_PlanarYuv : aPipelines[PrimitivePipelineIndex(PrimitiveType, pCommand->m_State.m_BlendMode, Textured)];
+	const WGPURenderPipeline Pipeline = PlanarYuv ? Pipelines.m_PlanarYuv : (Blur ? Pipelines.m_Blur : aPipelines[PrimitivePipelineIndex(PrimitiveType, pCommand->m_State.m_BlendMode, Textured)]);
 	if(!ApplyState(pCommand->m_State, Pipeline, {}, Layered))
 		return m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE;
 	wgpuRenderPassEncoderSetVertexBuffer(m_RenderPass, 0, m_StreamBuffer, VertexOffset, VertexCount * VertexSize);

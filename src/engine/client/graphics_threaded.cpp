@@ -1129,6 +1129,18 @@ bool CGraphics_Threaded::ConvertTextureToPlanarYuv(CTextureHandle Source, EPlana
 	return DrawFullscreenTexture(Source, EPipelineProgram::PLANAR_YUV, Layout, TEXTURE_USAGE_SAMPLED | TEXTURE_USAGE_COLOR_TARGET);
 }
 
+bool CGraphics_Threaded::BlurTexture(CTextureHandle Source, EBlurDirection Direction)
+{
+	SGraphicsColor Axis;
+	if(Direction == EBlurDirection::HORIZONTAL)
+		Axis = {255, 0, 0, 255};
+	else if(Direction == EBlurDirection::VERTICAL)
+		Axis = {0, 255, 0, 255};
+	else
+		return false;
+	return DrawFullscreenTexture(Source, EPipelineProgram::BLUR, Axis, TEXTURE_USAGE_SAMPLED | TEXTURE_USAGE_COLOR_TARGET);
+}
+
 void CGraphics_Threaded::QuadsTex3DDrawTL(const CQuadItem *pArray, int Num)
 {
 	const int VertNum = 4;

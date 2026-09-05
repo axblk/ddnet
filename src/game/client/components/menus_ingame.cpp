@@ -41,11 +41,16 @@
 
 using namespace std::chrono_literals;
 
+float CMenus::GameTabCoveredHeight()
+{
+	return 45.0f + (g_Config.m_ClTouchControls ? 35.0f : 0.0f);
+}
+
 void CMenus::RenderGame(CUIRect MainView)
 {
 	CUIRect Button, ButtonBars, ButtonBar, ButtonBar2;
 	bool ShowDDRaceButtons = MainView.w > 855.0f;
-	MainView.HSplitTop(45.0f + (g_Config.m_ClTouchControls ? 35.0f : 0.0f), &ButtonBars, &MainView);
+	MainView.HSplitTop(GameTabCoveredHeight(), &ButtonBars, &MainView);
 	ButtonBars.Draw(ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	ButtonBars.Margin(10.0f, &ButtonBars);
 	ButtonBars.HSplitTop(25.0f, &ButtonBar, &ButtonBars);

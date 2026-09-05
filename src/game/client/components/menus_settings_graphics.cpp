@@ -216,6 +216,11 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	GameClient()->m_Tooltips.DoToolTip(&g_Config.m_GfxHighDetail, &Button, Localize("Allows maps to render with more detail"));
 
 	MainView.HSplitTop(20.0f, &Button, &MainView);
+	if(DoButton_CheckBox(&g_Config.m_ClMenuBackgroundBlur, Localize("Blur menu background"), g_Config.m_ClMenuBackgroundBlur, &Button))
+		g_Config.m_ClMenuBackgroundBlur ^= 1;
+	GameClient()->m_Tooltips.DoToolTip(&g_Config.m_ClMenuBackgroundBlur, &Button, Localize("Improves menu readability by blurring the game or menu map behind it"));
+
+	MainView.HSplitTop(20.0f, &Button, &MainView);
 	if(DoButton_CheckBox(&g_Config.m_ClShowfps, Localize("Show FPS"), g_Config.m_ClShowfps, &Button))
 		g_Config.m_ClShowfps ^= 1;
 	GameClient()->m_Tooltips.DoToolTip(&g_Config.m_ClShowfps, &Button, Localize("Renders your frame rate in the top right"));

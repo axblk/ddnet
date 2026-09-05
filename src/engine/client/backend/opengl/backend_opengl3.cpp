@@ -124,6 +124,7 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 	m_LastClipEnable = false;
 	m_pPrimitiveProgram = new CGLSLPrimitiveProgram;
 	m_pPrimitiveProgramTextured = new CGLSLPrimitiveProgram;
+	m_pBlurProgram = new CGLSLPrimitiveProgram;
 	m_pPlanarYuvProgram = new CGLSLPrimitiveProgram;
 	m_pTileProgram = new CGLSLTileProgram;
 	m_pTileProgramTextured = new CGLSLTileProgram;
@@ -181,6 +182,22 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 
 		m_pPrimitiveProgramTextured->m_LocPos = m_pPrimitiveProgramTextured->GetUniformLoc("gPos");
 		m_pPrimitiveProgramTextured->m_LocTextureSampler = m_pPrimitiveProgramTextured->GetUniformLoc("gTextureSampler");
+	}
+	{
+		CGLSL PrimitiveVertexShader;
+		CGLSL BlurFragmentShader;
+		PrimitiveVertexShader.LoadShader(&ShaderCompiler, "prim.vert", GL_VERTEX_SHADER);
+		BlurFragmentShader.LoadShader(&ShaderCompiler, "blur.frag", GL_FRAGMENT_SHADER);
+
+		m_pBlurProgram->CreateProgram();
+		m_pBlurProgram->AddShader(&PrimitiveVertexShader);
+		m_pBlurProgram->AddShader(&BlurFragmentShader);
+		m_pBlurProgram->LinkProgram();
+
+		UseProgram(m_pBlurProgram);
+
+		m_pBlurProgram->m_LocPos = m_pBlurProgram->GetUniformLoc("gPos");
+		m_pBlurProgram->m_LocTextureSampler = m_pBlurProgram->GetUniformLoc("gTextureSampler");
 	}
 	{
 		CGLSL PrimitiveVertexShader;
@@ -498,6 +515,7 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Shutdown(const SCommand_Shutdown *
 	// clean up everything
 	delete m_pPrimitiveProgram;
 	delete m_pPrimitiveProgramTextured;
+	delete m_pBlurProgram;
 	delete m_pPlanarYuvProgram;
 	delete m_pBorderTileProgram;
 	delete m_pBorderTileProgramTextured;
@@ -950,8 +968,9 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Draw(const CCommandBuffer::SComman
 {
 	const EPipelineProgram Program = pCommand->m_Program;
 	const bool TextureArray = Program == EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY;
+	const bool Blur = Program == EPipelineProgram::BLUR;
 	const bool PlanarYuv = Program == EPipelineProgram::PLANAR_YUV;
-	if(!TextureArray && Program != EPipelineProgram::PRIMITIVE && !PlanarYuv)
+	if(!TextureArray && Program != EPipelineProgram::PRIMITIVE && !Blur && !PlanarYuv)
 	{
 		DropCommand("a transient draw on a pipeline that only indexed draws reach");
 		return;
@@ -979,12 +998,14 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Draw(const CCommandBuffer::SComman
 		return;
 
 	const bool Textured = IsTexturedState(pCommand->m_State);
-	// The conversion reads the whole source itself, so it takes it as it is
-	// and wants nothing blended over it.
-	if(PlanarYuv && (!Textured || pCommand->m_State.m_BlendMode != EBlendMode::NONE))
+	// Both effects read the whole source themselves, so they take it as it is
+	// and want nothing blended over it.
+	if((Blur || PlanarYuv) && (!Textured || pCommand->m_State.m_BlendMode != EBlendMode::NONE))
 		return;
 	CGLSLTWProgram *pProgram;
-	if(PlanarYuv)
+	if(Blur)
+		pProgram = m_pBlurProgram;
+	else if(PlanarYuv)
 		pProgram = m_pPlanarYuvProgram;
 	else if(Textured)
 		pProgram = TextureArray ? static_cast<CGLSLTWProgram *>(m_pPrimitive3DProgramTextured) : m_pPrimitiveProgramTextured;

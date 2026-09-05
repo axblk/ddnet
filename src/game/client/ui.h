@@ -488,6 +488,7 @@ private:
 	IGraphics *m_pGraphics;
 	IInput *m_pInput;
 	ITextRender *m_pTextRender;
+	class CRenderTools *m_pRenderTools;
 
 	std::vector<CUIElement *> m_vpOwnUIElements; // ui elements maintained by CUi class
 	std::vector<CUIElement *> m_vpUIElements;
@@ -502,11 +503,12 @@ public:
 
 	static const float ms_FontmodHeight;
 
-	void Init(IKernel *pKernel);
+	void Init(IKernel *pKernel, class CRenderTools *pRenderTools);
 	IClient *Client() const { return m_pClient; }
 	IGraphics *Graphics() const { return m_pGraphics; }
 	IInput *Input() const { return m_pInput; }
 	ITextRender *TextRender() const { return m_pTextRender; }
+	class CRenderTools *RenderTools() const { return m_pRenderTools; }
 
 	CUi();
 	~CUi();

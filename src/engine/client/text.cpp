@@ -277,12 +277,12 @@ public:
 class CGlyphMap
 {
 public:
-	enum
-	{
-		FONT_TEXTURE_FILL = 0, // the main text body
-		FONT_TEXTURE_OUTLINE, // the text outline
-		NUM_FONT_TEXTURES,
-	};
+	// The glyph and its outline live in one two channel image: red is the body,
+	// green is the outline. They are always written together and always read
+	// together, so there was never a reason for them to be two.
+	static constexpr size_t ATLAS_CHANNELS = 2;
+	static constexpr size_t ATLAS_CHANNEL_FILL = 0;
+	static constexpr size_t ATLAS_CHANNEL_OUTLINE = 1;
 
 private:
 	/**
@@ -316,11 +316,12 @@ private:
 	IGraphics *Graphics() { return m_pGraphics; }
 
 	// Atlas textures and data
-	IGraphics::CTextureHandle m_aTextures[NUM_FONT_TEXTURES];
-	// Width and height are the same, all font textures have the same dimensions
+	IGraphics::CTextureHandle m_Texture;
+	// Width and height are the same
 	size_t m_TextureDimension = INITIAL_ATLAS_DIMENSION;
 	// Keep the full texture data, because OpenGL doesn't provide texture copying
-	uint8_t *m_apTextureData[NUM_FONT_TEXTURES];
+	uint8_t *m_pTextureData = nullptr;
+	std::vector<IGraphics::CTextureHandle> m_vPendingTextureDestroys;
 	CAtlas m_TextureAtlas;
 	std::unordered_map<std::tuple<FT_Face, int, int>, SGlyph, SGlyphKeyHash, SGlyphKeyEquals> m_Glyphs;
 
@@ -365,42 +366,67 @@ private:
 			return false;
 
 		const size_t NewTextureDimension = m_TextureDimension * 2;
-		log_debug("textrender", "Increasing atlas dimension to %" PRIzu " (%" PRIzu " MB used for textures)", NewTextureDimension, (NewTextureDimension / 1024) * (NewTextureDimension / 1024) * NUM_FONT_TEXTURES);
-		UnloadTextures();
+		log_debug("textrender", "Increasing atlas dimension to %" PRIzu " (%" PRIzu " MB used for the atlas)", NewTextureDimension, (NewTextureDimension / 1024) * (NewTextureDimension / 1024) * ATLAS_CHANNELS);
 
-		for(auto &pTextureData : m_apTextureData)
+		uint8_t *pNewTextureData = new uint8_t[NewTextureDimension * NewTextureDimension * ATLAS_CHANNELS];
+		mem_zero(pNewTextureData, NewTextureDimension * NewTextureDimension * ATLAS_CHANNELS);
+		for(size_t y = 0; y < m_TextureDimension; ++y)
 		{
-			uint8_t *pTmpTexBuffer = new uint8_t[NewTextureDimension * NewTextureDimension];
-			mem_zero(pTmpTexBuffer, NewTextureDimension * NewTextureDimension * sizeof(uint8_t));
-			for(size_t y = 0; y < m_TextureDimension; ++y)
-			{
-				mem_copy(&pTmpTexBuffer[y * NewTextureDimension], &pTextureData[y * m_TextureDimension], m_TextureDimension);
-			}
-			delete[] pTextureData;
-			pTextureData = pTmpTexBuffer;
+			mem_copy(&pNewTextureData[y * NewTextureDimension * ATLAS_CHANNELS], &m_pTextureData[y * m_TextureDimension * ATLAS_CHANNELS], m_TextureDimension * ATLAS_CHANNELS);
 		}
 
-		m_TextureAtlas.IncreaseDimension(NewTextureDimension);
+		IGraphics::CTextureHandle NewTexture;
+		if(!UploadTexture(NewTextureDimension, pNewTextureData, NewTexture))
+		{
+			delete[] pNewTextureData;
+			return false;
+		}
 
+		auto OldTexture = m_Texture;
+		delete[] m_pTextureData;
+		m_pTextureData = pNewTextureData;
+		m_Texture = NewTexture;
+		m_TextureAtlas.IncreaseDimension(NewTextureDimension);
 		m_TextureDimension = NewTextureDimension;
 
-		UploadTextures();
+		Graphics()->UnloadTexture(&OldTexture);
+		if(OldTexture.IsValid())
+			m_vPendingTextureDestroys.push_back(OldTexture);
 		return true;
 	}
 
-	void UploadTextures()
+	bool UploadTexture(size_t TextureDimension, const uint8_t *pTextureData, IGraphics::CTextureHandle &Texture)
 	{
-		const size_t NewTextureSize = m_TextureDimension * m_TextureDimension;
-		uint8_t *pTmpTextFillData = static_cast<uint8_t *>(malloc(NewTextureSize));
-		uint8_t *pTmpTextOutlineData = static_cast<uint8_t *>(malloc(NewTextureSize));
-		mem_copy(pTmpTextFillData, m_apTextureData[FONT_TEXTURE_FILL], NewTextureSize);
-		mem_copy(pTmpTextOutlineData, m_apTextureData[FONT_TEXTURE_OUTLINE], NewTextureSize);
-		Graphics()->LoadTextTextures(m_TextureDimension, m_TextureDimension, m_aTextures[FONT_TEXTURE_FILL], m_aTextures[FONT_TEXTURE_OUTLINE], pTmpTextFillData, pTmpTextOutlineData);
+		IGraphics::CTextureDesc Desc;
+		Desc.m_Width = TextureDimension;
+		Desc.m_Height = TextureDimension;
+		Desc.m_Format = IGraphics::ETextureFormat::RG8_UNORM;
+		Desc.m_Mipmaps = IGraphics::ETextureMipmaps::NONE;
+		Texture = Graphics()->CreateTexture(Desc, pTextureData);
+		return Texture.IsValid();
 	}
 
-	void UnloadTextures()
+	bool UploadTexture()
 	{
-		Graphics()->UnloadTextTextures(m_aTextures[FONT_TEXTURE_FILL], m_aTextures[FONT_TEXTURE_OUTLINE]);
+		return UploadTexture(m_TextureDimension, m_pTextureData, m_Texture);
+	}
+
+	void RetryPendingTextureDestroys()
+	{
+		for(auto It = m_vPendingTextureDestroys.begin(); It != m_vPendingTextureDestroys.end();)
+		{
+			Graphics()->UnloadTexture(&*It);
+			if(It->IsValid())
+				++It;
+			else
+				It = m_vPendingTextureDestroys.erase(It);
+		}
+	}
+
+	bool UnloadTextures()
+	{
+		Graphics()->UnloadTexture(&m_Texture);
+		return !m_Texture.IsValid();
 	}
 
 	FT_UInt GetCharGlyph(int Chr, FT_Face *pFace, bool AllowReplacementCharacter)
@@ -485,13 +511,20 @@ private:
 		return OutlineThickness;
 	}
 
-	void UploadGlyph(int TextureIndex, int PosX, int PosY, size_t Width, size_t Height, uint8_t *pData)
+	bool UploadGlyph(int PosX, int PosY, size_t Width, size_t Height, const uint8_t *pFill, const uint8_t *pOutline)
 	{
+		std::vector<uint8_t> vInterleaved(Width * Height * ATLAS_CHANNELS);
 		for(size_t y = 0; y < Height; ++y)
 		{
-			mem_copy(&m_apTextureData[TextureIndex][PosX + ((y + PosY) * m_TextureDimension)], &pData[y * Width], Width);
+			uint8_t *pRow = &vInterleaved[y * Width * ATLAS_CHANNELS];
+			for(size_t x = 0; x < Width; ++x)
+			{
+				pRow[x * ATLAS_CHANNELS + ATLAS_CHANNEL_FILL] = pFill[y * Width + x];
+				pRow[x * ATLAS_CHANNELS + ATLAS_CHANNEL_OUTLINE] = pOutline[y * Width + x];
+			}
+			mem_copy(&m_pTextureData[(PosX + (y + PosY) * m_TextureDimension) * ATLAS_CHANNELS], pRow, Width * ATLAS_CHANNELS);
 		}
-		Graphics()->UpdateTextTexture(m_aTextures[TextureIndex], PosX, PosY, Width, Height, pData, true);
+		return Graphics()->UpdateTexture(m_Texture, {(size_t)PosX, (size_t)PosY, Width, Height}, IGraphics::ETextureFormat::RG8_UNORM, vInterleaved.data());
 	}
 
 	bool FitGlyph(size_t Width, size_t Height, int &PosX, int &PosY)
@@ -501,6 +534,10 @@ private:
 
 	bool RenderGlyph(SGlyph &Glyph)
 	{
+		RetryPendingTextureDestroys();
+		if(!m_Texture.IsValid() && !UploadTexture())
+			return false;
+
 		FT_Set_Pixel_Sizes(Glyph.m_Face, 0, Glyph.m_FontSize);
 
 		if(FT_Load_Glyph(Glyph.m_Face, Glyph.m_GlyphIndex, FT_LOAD_RENDER | FT_LOAD_NO_BITMAP))
@@ -560,8 +597,11 @@ private:
 			Grow(pGlyphDataFill, pGlyphDataOutline, Width, Height, OutlineThickness);
 
 			// upload the glyph
-			UploadGlyph(FONT_TEXTURE_FILL, X, Y, Width, Height, pGlyphDataFill);
-			UploadGlyph(FONT_TEXTURE_OUTLINE, X, Y, Width, Height, pGlyphDataOutline);
+			const bool Uploaded = UploadGlyph(X, Y, Width, Height, pGlyphDataFill, pGlyphDataOutline);
+			free(pGlyphDataFill);
+			free(pGlyphDataOutline);
+			if(!Uploaded)
+				return false;
 		}
 
 		// set glyph info
@@ -588,23 +628,18 @@ public:
 	CGlyphMap(IGraphics *pGraphics)
 	{
 		m_pGraphics = pGraphics;
-		for(auto &pTextureData : m_apTextureData)
-		{
-			pTextureData = new uint8_t[m_TextureDimension * m_TextureDimension];
-			mem_zero(pTextureData, m_TextureDimension * m_TextureDimension * sizeof(uint8_t));
-		}
+		m_pTextureData = new uint8_t[m_TextureDimension * m_TextureDimension * ATLAS_CHANNELS];
+		mem_zero(m_pTextureData, m_TextureDimension * m_TextureDimension * ATLAS_CHANNELS);
 
 		m_TextureAtlas.Clear(m_TextureDimension);
-		UploadTextures();
+		UploadTexture();
 	}
 
 	~CGlyphMap()
 	{
 		UnloadTextures();
-		for(auto &pTextureData : m_apTextureData)
-		{
-			delete[] pTextureData;
-		}
+		RetryPendingTextureDestroys();
+		delete[] m_pTextureData;
 	}
 
 	FT_Face DefaultFace() const
@@ -696,11 +731,8 @@ public:
 
 	void Clear()
 	{
-		for(size_t TextureIndex = 0; TextureIndex < NUM_FONT_TEXTURES; ++TextureIndex)
-		{
-			mem_zero(m_apTextureData[TextureIndex], m_TextureDimension * m_TextureDimension * sizeof(uint8_t));
-			Graphics()->UpdateTextTexture(m_aTextures[TextureIndex], 0, 0, m_TextureDimension, m_TextureDimension, m_apTextureData[TextureIndex], false);
-		}
+		mem_zero(m_pTextureData, m_TextureDimension * m_TextureDimension * ATLAS_CHANNELS);
+		Graphics()->UpdateTexture(m_Texture, {0, 0, m_TextureDimension, m_TextureDimension}, IGraphics::ETextureFormat::RG8_UNORM, m_pTextureData);
 
 		m_TextureAtlas.Clear(m_TextureDimension);
 		m_Glyphs.clear();
@@ -829,9 +861,9 @@ public:
 		return m_TextureDimension;
 	}
 
-	IGraphics::CTextureHandle Texture(size_t TextureIndex) const
+	IGraphics::CTextureHandle Texture() const
 	{
-		return m_aTextures[TextureIndex];
+		return m_Texture;
 	}
 };
 
@@ -856,9 +888,9 @@ struct STextCharQuad
 
 struct SStringInfo
 {
-	int m_QuadBufferObjectIndex;
-	int m_QuadBufferContainerIndex;
+	IGraphics::CBufferHandle m_QuadBufferObjectIndex;
 	int m_SelectionQuadContainerIndex;
+	size_t m_UploadedQuadCount;
 
 	std::vector<STextCharQuad> m_vCharacterQuads;
 };
@@ -902,7 +934,9 @@ struct STextContainer
 
 	void Reset()
 	{
-		m_StringInfo.m_QuadBufferObjectIndex = m_StringInfo.m_QuadBufferContainerIndex = m_StringInfo.m_SelectionQuadContainerIndex = -1;
+		m_StringInfo.m_QuadBufferObjectIndex.Invalidate();
+		m_StringInfo.m_SelectionQuadContainerIndex = -1;
+		m_StringInfo.m_UploadedQuadCount = 0;
 		m_StringInfo.m_vCharacterQuads.clear();
 
 		m_AlignedStartX = m_AlignedStartY = m_X = m_Y = 0.0f;
@@ -975,8 +1009,6 @@ class CTextRender : public IEngineTextRender
 	std::vector<STextContainer *> m_vpTextContainers;
 	std::vector<int> m_vTextContainerIndices;
 	int m_FirstFreeTextContainerIndex;
-
-	SBufferContainerInfo m_DefaultTextContainerInfo;
 
 	std::chrono::nanoseconds m_CursorRenderTime;
 
@@ -1122,33 +1154,6 @@ public:
 		}
 
 		m_FirstFreeTextContainerIndex = -1;
-
-		m_DefaultTextContainerInfo.m_Stride = sizeof(STextCharQuadVertex);
-		m_DefaultTextContainerInfo.m_VertBufferBindingIndex = -1;
-
-		m_DefaultTextContainerInfo.m_vAttributes.emplace_back();
-		SBufferContainerInfo::SAttribute *pAttr = &m_DefaultTextContainerInfo.m_vAttributes.back();
-		pAttr->m_DataTypeCount = 2;
-		pAttr->m_FuncType = 0;
-		pAttr->m_Normalized = false;
-		pAttr->m_pOffset = nullptr;
-		pAttr->m_Type = GRAPHICS_TYPE_FLOAT;
-
-		m_DefaultTextContainerInfo.m_vAttributes.emplace_back();
-		pAttr = &m_DefaultTextContainerInfo.m_vAttributes.back();
-		pAttr->m_DataTypeCount = 2;
-		pAttr->m_FuncType = 0;
-		pAttr->m_Normalized = false;
-		pAttr->m_pOffset = (void *)(sizeof(float) * 2);
-		pAttr->m_Type = GRAPHICS_TYPE_FLOAT;
-
-		m_DefaultTextContainerInfo.m_vAttributes.emplace_back();
-		pAttr = &m_DefaultTextContainerInfo.m_vAttributes.back();
-		pAttr->m_DataTypeCount = 4;
-		pAttr->m_FuncType = 0;
-		pAttr->m_Normalized = true;
-		pAttr->m_pOffset = (void *)(sizeof(float) * 2 + sizeof(float) * 2);
-		pAttr->m_Type = GRAPHICS_TYPE_UNSIGNED_BYTE;
 	}
 
 	void Shutdown() override
@@ -1167,8 +1172,6 @@ public:
 		for(auto *pFontData : m_vpFontData)
 			free(pFontData);
 		m_vpFontData.clear();
-
-		m_DefaultTextContainerInfo.m_vAttributes.clear();
 
 		m_pConsole = nullptr;
 		m_pGraphics = nullptr;
@@ -1494,7 +1497,7 @@ public:
 		}
 		else
 		{
-			if(Graphics()->IsTextBufferingEnabled() && IsRendered && !TextContainer.m_StringInfo.m_vCharacterQuads.empty())
+			if(IsRendered && !TextContainer.m_StringInfo.m_vCharacterQuads.empty())
 			{
 				if((TextContainer.m_RenderFlags & TEXT_RENDER_FLAG_NO_AUTOMATIC_QUAD_UPLOAD) == 0)
 				{
@@ -1982,15 +1985,18 @@ public:
 		if(!TextContainer.m_StringInfo.m_vCharacterQuads.empty() && IsRendered)
 		{
 			// setup the buffers
-			if(Graphics()->IsTextBufferingEnabled())
-			{
-				const size_t DataSize = TextContainer.m_StringInfo.m_vCharacterQuads.size() * sizeof(STextCharQuad);
-				void *pUploadData = TextContainer.m_StringInfo.m_vCharacterQuads.data();
+			const size_t DataSize = TextContainer.m_StringInfo.m_vCharacterQuads.size() * sizeof(STextCharQuad);
+			void *pUploadData = TextContainer.m_StringInfo.m_vCharacterQuads.data();
 
-				if(TextContainer.m_StringInfo.m_QuadBufferObjectIndex != -1 && (TextContainer.m_RenderFlags & TEXT_RENDER_FLAG_NO_AUTOMATIC_QUAD_UPLOAD) == 0)
+			if(TextContainer.m_StringInfo.m_QuadBufferObjectIndex.IsValid() && (TextContainer.m_RenderFlags & TEXT_RENDER_FLAG_NO_AUTOMATIC_QUAD_UPLOAD) == 0)
+			{
+				// The index buffer has to cover the new quad count before the
+				// vertex buffer takes the new size, or a failed grow leaves the
+				// old count pointing past a smaller buffer.
+				if(Graphics()->IndicesNumRequiredNotify(TextContainer.m_StringInfo.m_vCharacterQuads.size() * 6) &&
+					Graphics()->RecreateBufferObject(TextContainer.m_StringInfo.m_QuadBufferObjectIndex, {static_cast<const uint8_t *>(pUploadData), DataSize}, TextContainer.m_SingleTimeUse ? IGraphics::EBufferLifetime::FRAME : IGraphics::EBufferLifetime::PERSISTENT))
 				{
-					Graphics()->RecreateBufferObject(TextContainer.m_StringInfo.m_QuadBufferObjectIndex, DataSize, pUploadData, TextContainer.m_SingleTimeUse ? IGraphics::EBufferObjectCreateFlags::BUFFER_OBJECT_CREATE_FLAGS_ONE_TIME_USE_BIT : 0);
-					Graphics()->IndicesNumRequiredNotify(TextContainer.m_StringInfo.m_vCharacterQuads.size() * 6);
+					TextContainer.m_StringInfo.m_UploadedQuadCount = TextContainer.m_StringInfo.m_vCharacterQuads.size();
 				}
 			}
 		}
@@ -2091,7 +2097,15 @@ public:
 	void RecreateTextContainer(STextContainerIndex &TextContainerIndex, CTextCursor *pCursor, const char *pText, int Length = -1) override
 	{
 		DeleteTextContainer(TextContainerIndex);
-		CreateTextContainer(TextContainerIndex, pCursor, pText, Length);
+		if(!TextContainerIndex.Valid())
+			CreateTextContainer(TextContainerIndex, pCursor, pText, Length);
+		else
+		{
+			// The container could not be given up because one of its buffers is
+			// still in use. It keeps them and is refilled in place, rather than
+			// leaving the text that was supposed to be replaced on the screen.
+			RecreateTextContainerSoft(TextContainerIndex, pCursor, pText, Length);
+		}
 	}
 
 	void RecreateTextContainerSoft(STextContainerIndex &TextContainerIndex, CTextCursor *pCursor, const char *pText, int Length = -1) override
@@ -2109,85 +2123,53 @@ public:
 			return;
 
 		STextContainer &TextContainer = GetTextContainer(TextContainerIndex);
-		if(Graphics()->IsTextBufferingEnabled())
-			Graphics()->DeleteBufferContainer(TextContainer.m_StringInfo.m_QuadBufferContainerIndex, true);
+		Graphics()->DeleteBufferObject(TextContainer.m_StringInfo.m_QuadBufferObjectIndex);
+		if(TextContainer.m_StringInfo.m_QuadBufferObjectIndex.IsValid())
+			return;
+
 		Graphics()->DeleteQuadContainer(TextContainer.m_StringInfo.m_SelectionQuadContainerIndex);
+		if(TextContainer.m_StringInfo.m_SelectionQuadContainerIndex != -1)
+			return;
 		FreeTextContainer(TextContainerIndex);
 	}
 
 	void UploadTextContainer(STextContainerIndex TextContainerIndex) override
 	{
-		if(Graphics()->IsTextBufferingEnabled())
+		STextContainer &TextContainer = GetTextContainer(TextContainerIndex);
+		size_t DataSize = TextContainer.m_StringInfo.m_vCharacterQuads.size() * sizeof(STextCharQuad);
+		void *pUploadData = TextContainer.m_StringInfo.m_vCharacterQuads.data();
+		const IGraphics::EBufferLifetime Lifetime = TextContainer.m_SingleTimeUse ? IGraphics::EBufferLifetime::FRAME : IGraphics::EBufferLifetime::PERSISTENT;
+		if(!Graphics()->IndicesNumRequiredNotify(TextContainer.m_StringInfo.m_vCharacterQuads.size() * 6))
+			return;
+		bool BufferReady;
+		if(TextContainer.m_StringInfo.m_QuadBufferObjectIndex.IsValid())
+			BufferReady = Graphics()->RecreateBufferObject(TextContainer.m_StringInfo.m_QuadBufferObjectIndex, {static_cast<const uint8_t *>(pUploadData), DataSize}, Lifetime);
+		else
 		{
-			STextContainer &TextContainer = GetTextContainer(TextContainerIndex);
-			size_t DataSize = TextContainer.m_StringInfo.m_vCharacterQuads.size() * sizeof(STextCharQuad);
-			void *pUploadData = TextContainer.m_StringInfo.m_vCharacterQuads.data();
-			TextContainer.m_StringInfo.m_QuadBufferObjectIndex = Graphics()->CreateBufferObject(DataSize, pUploadData, TextContainer.m_SingleTimeUse ? IGraphics::EBufferObjectCreateFlags::BUFFER_OBJECT_CREATE_FLAGS_ONE_TIME_USE_BIT : 0);
-
-			m_DefaultTextContainerInfo.m_VertBufferBindingIndex = TextContainer.m_StringInfo.m_QuadBufferObjectIndex;
-
-			TextContainer.m_StringInfo.m_QuadBufferContainerIndex = Graphics()->CreateBufferContainer(&m_DefaultTextContainerInfo);
-			Graphics()->IndicesNumRequiredNotify(TextContainer.m_StringInfo.m_vCharacterQuads.size() * 6);
+			TextContainer.m_StringInfo.m_QuadBufferObjectIndex = Graphics()->CreateBufferObject({static_cast<const uint8_t *>(pUploadData), DataSize}, Lifetime);
+			BufferReady = TextContainer.m_StringInfo.m_QuadBufferObjectIndex.IsValid();
 		}
+		if(!BufferReady)
+			return;
+
+		if(!TextContainer.m_StringInfo.m_QuadBufferObjectIndex.IsValid())
+			return;
+
+		TextContainer.m_StringInfo.m_UploadedQuadCount = TextContainer.m_StringInfo.m_vCharacterQuads.size();
 	}
 
 	void RenderTextContainer(STextContainerIndex TextContainerIndex, const ColorRGBA &TextColor, const ColorRGBA &TextOutlineColor) override
 	{
 		const STextContainer &TextContainer = GetTextContainer(TextContainerIndex);
 
-		if(!TextContainer.m_StringInfo.m_vCharacterQuads.empty())
+		// An upload that did not come through leaves the glyphs off the screen for
+		// this frame, but the selection and the cursor are quads of their own and
+		// still belong on it.
+		if(!TextContainer.m_StringInfo.m_vCharacterQuads.empty() && TextContainer.m_StringInfo.m_UploadedQuadCount != 0)
 		{
-			if(Graphics()->IsTextBufferingEnabled())
-			{
-				Graphics()->TextureClear();
-				// render buffered text
-				Graphics()->RenderText(TextContainer.m_StringInfo.m_QuadBufferContainerIndex, TextContainer.m_StringInfo.m_vCharacterQuads.size(), m_pGlyphMap->TextureDimension(), m_pGlyphMap->Texture(CGlyphMap::FONT_TEXTURE_FILL).Id(), m_pGlyphMap->Texture(CGlyphMap::FONT_TEXTURE_OUTLINE).Id(), TextColor, TextOutlineColor);
-			}
-			else
-			{
-				// render tiles
-				const float UVScale = 1.0f / m_pGlyphMap->TextureDimension();
-
-				Graphics()->FlushVertices();
-				Graphics()->TextureSet(m_pGlyphMap->Texture(CGlyphMap::FONT_TEXTURE_OUTLINE));
-
-				Graphics()->QuadsBegin();
-
-				for(const STextCharQuad &TextCharQuad : TextContainer.m_StringInfo.m_vCharacterQuads)
-				{
-					Graphics()->SetColor(TextCharQuad.m_aVertices[0].m_Color.r / 255.f * TextOutlineColor.r, TextCharQuad.m_aVertices[0].m_Color.g / 255.f * TextOutlineColor.g, TextCharQuad.m_aVertices[0].m_Color.b / 255.f * TextOutlineColor.b, TextCharQuad.m_aVertices[0].m_Color.a / 255.f * TextOutlineColor.a);
-					Graphics()->QuadsSetSubset(TextCharQuad.m_aVertices[0].m_U * UVScale, TextCharQuad.m_aVertices[0].m_V * UVScale, TextCharQuad.m_aVertices[2].m_U * UVScale, TextCharQuad.m_aVertices[2].m_V * UVScale);
-					IGraphics::CQuadItem QuadItem(TextCharQuad.m_aVertices[0].m_X, TextCharQuad.m_aVertices[0].m_Y, TextCharQuad.m_aVertices[1].m_X - TextCharQuad.m_aVertices[0].m_X, TextCharQuad.m_aVertices[2].m_Y - TextCharQuad.m_aVertices[0].m_Y);
-					Graphics()->QuadsDrawTL(&QuadItem, 1);
-				}
-
-				if(TextColor.a != 0)
-				{
-					Graphics()->QuadsEndKeepVertices();
-					Graphics()->TextureSet(m_pGlyphMap->Texture(CGlyphMap::FONT_TEXTURE_FILL));
-
-					int TextCharQuadIndex = 0;
-					for(const STextCharQuad &TextCharQuad : TextContainer.m_StringInfo.m_vCharacterQuads)
-					{
-						unsigned char CR = (unsigned char)((float)(TextCharQuad.m_aVertices[0].m_Color.r) * TextColor.r);
-						unsigned char CG = (unsigned char)((float)(TextCharQuad.m_aVertices[0].m_Color.g) * TextColor.g);
-						unsigned char CB = (unsigned char)((float)(TextCharQuad.m_aVertices[0].m_Color.b) * TextColor.b);
-						unsigned char CA = (unsigned char)((float)(TextCharQuad.m_aVertices[0].m_Color.a) * TextColor.a);
-						Graphics()->ChangeColorOfQuadVertices(TextCharQuadIndex, CR, CG, CB, CA);
-						++TextCharQuadIndex;
-					}
-
-					// render non outlined
-					Graphics()->QuadsDrawCurrentVertices(false);
-				}
-				else
-				{
-					Graphics()->QuadsEnd();
-				}
-
-				// reset
-				Graphics()->SetColor(1.f, 1.f, 1.f, 1.f);
-			}
+			Graphics()->TextureClear();
+			// render buffered text
+			Graphics()->RenderText(TextContainer.m_StringInfo.m_QuadBufferObjectIndex, TextContainer.m_StringInfo.m_UploadedQuadCount, m_pGlyphMap->TextureDimension(), m_pGlyphMap->Texture(), TextColor, TextOutlineColor);
 		}
 
 		if(TextContainer.m_StringInfo.m_SelectionQuadContainerIndex != -1)
@@ -2336,7 +2318,7 @@ public:
 		{
 			if(pTextContainer->m_ContainerIndex.Valid() && pTextContainer->m_ContainerIndex.m_UseCount.use_count() <= 1)
 			{
-				log_error("textrender", "Found non empty text container with index %d with %" PRIzu " quads '%s'", pTextContainer->m_StringInfo.m_QuadBufferContainerIndex, pTextContainer->m_StringInfo.m_vCharacterQuads.size(), pTextContainer->m_aDebugText);
+				log_error("textrender", "Found non empty text container with index %d with %" PRIzu " quads '%s'", pTextContainer->m_ContainerIndex.m_Index, pTextContainer->m_StringInfo.m_vCharacterQuads.size(), pTextContainer->m_aDebugText);
 				dbg_assert_failed("Text container was forgotten by the implementation (the index was overwritten).");
 			}
 		}
@@ -2347,9 +2329,9 @@ public:
 		bool HasNonEmptyTextContainer = false;
 		for(auto *pTextContainer : m_vpTextContainers)
 		{
-			if(pTextContainer->m_StringInfo.m_QuadBufferContainerIndex != -1)
+			if(pTextContainer->m_ContainerIndex.Valid())
 			{
-				log_error("textrender", "Found non empty text container with index %d with %" PRIzu " quads '%s'", pTextContainer->m_StringInfo.m_QuadBufferContainerIndex, pTextContainer->m_StringInfo.m_vCharacterQuads.size(), pTextContainer->m_aDebugText);
+				log_error("textrender", "Found non empty text container with index %d with %" PRIzu " quads '%s'", pTextContainer->m_ContainerIndex.m_Index, pTextContainer->m_StringInfo.m_vCharacterQuads.size(), pTextContainer->m_aDebugText);
 				log_error("textrender", "The text container index was in use by %d ", (int)pTextContainer->m_ContainerIndex.m_UseCount.use_count());
 				HasNonEmptyTextContainer = true;
 			}

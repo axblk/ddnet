@@ -17,6 +17,7 @@
 #include <engine/client/updater.h>
 #include <engine/editor.h>
 #include <engine/graphics.h>
+#include <engine/graphics_window.h>
 #include <engine/http.h>
 #include <engine/shared/config.h>
 #include <engine/shared/demo.h>
@@ -67,6 +68,7 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	IEngine *m_pEngine = nullptr;
 	IFavorites *m_pFavorites = nullptr;
 	IGameClient *m_pGameClient = nullptr;
+	IEngineGraphicsWindow *m_pWindow = nullptr;
 	IEngineGraphics *m_pGraphics = nullptr;
 	IEngineHttp *m_pHttp = nullptr;
 	IEngineInput *m_pInput = nullptr;
@@ -252,6 +254,7 @@ class CClient : public IClient, public CDemoPlayer::IListener
 
 	IOHANDLE m_BenchmarkFile = nullptr;
 	int64_t m_BenchmarkStopTime = 0;
+	uint64_t m_RenderWallTimeNanoseconds = 0;
 
 	CChecksum m_Checksum;
 	int64_t m_OwnExecutableSize = 0;
@@ -285,6 +288,7 @@ public:
 	IEngine *Engine() { return m_pEngine; }
 	IGameClient *GameClient() { return m_pGameClient; }
 	const IGameClient *GameClient() const { return m_pGameClient; }
+	IEngineGraphicsWindow *Window() { return m_pWindow; }
 	IEngineGraphics *Graphics() { return m_pGraphics; }
 	IEngineInput *Input() { return m_pInput; }
 	IEngineSound *Sound() { return m_pSound; }
@@ -436,6 +440,7 @@ public:
 	static void Con_Restart(IConsole::IResult *pResult, void *pUserData);
 	static void Con_DemoPlay(IConsole::IResult *pResult, void *pUserData);
 	static void Con_DemoSpeed(IConsole::IResult *pResult, void *pUserData);
+	static void Con_DemoSeek(IConsole::IResult *pResult, void *pUserData);
 	static void Con_Minimize(IConsole::IResult *pResult, void *pUserData);
 	static void Con_Ping(IConsole::IResult *pResult, void *pUserData);
 	static void ConNetReset(IConsole::IResult *pResult, void *pUserData);
@@ -489,6 +494,7 @@ public:
 	IDemoRecorder *DemoRecorder(int Recorder) override;
 	CDemoRecorder (&DemoRecorders())[RECORDER_MAX];
 
+	void TakeScreenshot(const char *pFilename);
 	void AutoScreenshot_Start() override;
 	void AutoStatScreenshot_Start() override;
 	void AutoScreenshot_Cleanup();

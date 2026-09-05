@@ -30,4 +30,5 @@ const IStorage *CEditorObject::Storage() const { return m_pEditor->Storage(); }
 CUi *CEditorObject::Ui() { return m_pEditor->Ui(); }
 const CUi *CEditorObject::Ui() const { return m_pEditor->Ui(); }
 CRenderMap *CEditorObject::RenderMap() { return m_pEditor->RenderMap(); }
+CRenderTools *CEditorObject::RenderTools() { return m_pEditor->RenderTools(); }
 const CRenderMap *CEditorObject::RenderMap() const { return m_pEditor->RenderMap(); }

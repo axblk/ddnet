@@ -8,6 +8,7 @@
 
 #include <game/editor/editor_trackers.h>
 #include <game/editor/enums.h>
+#include <game/map/tile_chunk_cache.h>
 
 #include <map>
 
@@ -176,6 +177,8 @@ public:
 	}
 
 	void FlagModified(int x, int y, int w, int h);
+	void InvalidateTileRenderCache() { m_TileChunkCache.Invalidate(); }
+	void InvalidateTileRenderArea(int x, int y, int w, int h) { m_TileChunkCache.InvalidateArea(x, y, w, h); }
 
 	bool m_HasGame;
 	int m_Image;
@@ -209,6 +212,10 @@ public:
 	static bool HasAutomapEffect(ETilesProp Prop);
 
 protected:
+	// Shared with the ingame tile rendering, see src/game/map/tile_chunk_cache.h
+	mutable CTileChunkCache m_TileChunkCache;
+	CTileChunkCache::CLayerSource m_ChunkSource;
+
 	void RecordStateChange(int x, int y, CTile Previous, CTile Tile);
 
 	void ShowPreventUnusedTilesWarning();

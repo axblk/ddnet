@@ -117,10 +117,10 @@ private:
 	bool RunPlatformCommand(const CCommandBuffer::SCommand *pCommand);
 };
 
-// The backend the surface-less client uses: Vulkan without a surface,
-// chosen by the override, else by the config. A configured backend that
-// needs a surface falls through to the first that does not, with a warning.
-// Null when Vulkan is not compiled in.
+// The backend the surface-less client uses: Vulkan or WebGPU without a
+// surface, chosen by the override, else by the config. A configured backend
+// that needs a surface falls through to the first that does not, with a
+// warning. Null when neither is compiled in.
 IGraphicsBackend *CreateOffscreenGraphicsBackend(EBackendType BackendOverride);
 
 #endif

@@ -265,12 +265,8 @@ class CGraphics_Threaded : public IEngineGraphics
 	ColorRGBA *m_pReadPixelColor = nullptr;
 	std::unique_ptr<ITextureReadback> PresentFrame(bool Readback, CImageInfo &&Recycled = CImageInfo());
 
-	// The screen a surface-less client draws into. There is no swapchain to
-	// present to, so the frontend keeps one target of canvas size and treats it
-	// as the screen: every frame opens it and PresentFrame closes it, exactly
-	// as a presented frame is opened and closed. That gives a backend which
-	// can produce a device without a surface - Vulkan - a way to be run,
-	// screenshotted and recorded on a machine with no display.
+	// The screen a surface-less client draws into: a canvas-sized target that
+	// every frame opens and PresentFrame closes.
 	CTextureHandle m_VirtualScreen;
 	// A frame drawn into a target has no swap to end it, so it says so here,
 	// or its render statistics never roll over.

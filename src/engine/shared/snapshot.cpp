@@ -632,50 +632,45 @@ int CSnapshotDelta::UnpackDelta(const CSnapshot *pFrom, CSnapshotBuffer *pTo, co
 
 // CSnapshotStorage
 
+// Frees a holder chain linked through `m_pNext`.
+static void FreeHolders(CSnapshotStorage::CHolder *pHolder)
+{
+	while(pHolder)
+	{
+		CSnapshotStorage::CHolder *pNext = pHolder->m_pNext;
+		free(pHolder);
+		pHolder = pNext;
+	}
+}
+
 void CSnapshotStorage::Init()
 {
 	m_pFirst = nullptr;
 	m_pLast = nullptr;
+	m_pFirstFree = nullptr;
 }
 
 void CSnapshotStorage::PurgeAll()
 {
-	while(m_pFirst)
-	{
-		CHolder *pNext = m_pFirst->m_pNext;
-		free(m_pFirst->m_pSnap);
-		free(m_pFirst->m_pAltSnap);
-		free(m_pFirst);
-		m_pFirst = pNext;
-	}
-	m_pLast = nullptr;
+	FreeHolders(m_pFirst);
+	FreeHolders(m_pFirstFree);
+	Init();
 }
 
 void CSnapshotStorage::PurgeUntil(int Tick)
 {
-	CHolder *pHolder = m_pFirst;
-
-	while(pHolder)
+	while(m_pFirst && m_pFirst->m_Tick < Tick)
 	{
-		CHolder *pNext = pHolder->m_pNext;
-		if(pHolder->m_Tick >= Tick)
-			return; // no more to remove
-		free(pHolder->m_pSnap);
-		free(pHolder->m_pAltSnap);
-		free(pHolder);
-
-		// did we come to the end of the list?
-		if(!pNext)
-			break;
-
+		CHolder *pNext = m_pFirst->m_pNext;
+		m_pFirst->m_pNext = m_pFirstFree;
+		m_pFirstFree = m_pFirst;
 		m_pFirst = pNext;
-		pNext->m_pPrev = nullptr;
-		pHolder = pNext;
 	}
 
-	// no more snapshots in storage
-	m_pFirst = nullptr;
-	m_pLast = nullptr;
+	if(m_pFirst)
+		m_pFirst->m_pPrev = nullptr;
+	else
+		m_pLast = nullptr; // no more snapshots in storage
 }
 
 void CSnapshotStorage::Add(int Tick, int64_t Tagtime, size_t DataSize, const void *pData, size_t AltDataSize, const void *pAltData)
@@ -683,17 +678,44 @@ void CSnapshotStorage::Add(int Tick, int64_t Tagtime, size_t DataSize, const voi
 	dbg_assert(DataSize <= (size_t)CSnapshot::MAX_SIZE, "Snapshot data size invalid");
 	dbg_assert(AltDataSize <= (size_t)CSnapshot::MAX_SIZE, "Alt snapshot data size invalid");
 
-	CHolder *pHolder = static_cast<CHolder *>(malloc(sizeof(CHolder)));
+	// Both snapshots are stored behind the holder in the same allocation. The
+	// alternative snapshot follows the snapshot, so its offset has to keep the
+	// alignment that `CSnapshot` requires.
+	const size_t AltOffset = (DataSize + alignof(CSnapshot) - 1) & ~(alignof(CSnapshot) - 1);
+	const size_t Needed = AltDataSize ? AltOffset + AltDataSize : DataSize;
+
+	CHolder *pHolder = m_pFirstFree;
+	if(pHolder)
+	{
+		m_pFirstFree = pHolder->m_pNext;
+		if(pHolder->m_Capacity < Needed)
+		{
+			free(pHolder); // does not fit, replaced by a bigger holder below
+			pHolder = nullptr;
+		}
+	}
+	if(!pHolder)
+	{
+		// Round the capacity up, so that the small size differences between
+		// consecutive snapshots do not cause a reallocation on every reuse.
+		// Capacities only ever grow, hence the reuse settles at zero
+		// allocations once the largest snapshot size has been seen.
+		const size_t Capacity = (Needed + 1023) & ~(size_t)1023;
+		pHolder = static_cast<CHolder *>(malloc(sizeof(CHolder) + Capacity));
+		pHolder->m_Capacity = Capacity;
+	}
+
 	pHolder->m_Tick = Tick;
 	pHolder->m_Tagtime = Tagtime;
 
-	pHolder->m_pSnap = static_cast<CSnapshot *>(malloc(DataSize));
+	char *pStorage = reinterpret_cast<char *>(pHolder + 1);
+	pHolder->m_pSnap = reinterpret_cast<CSnapshot *>(pStorage);
 	mem_copy(pHolder->m_pSnap, pData, DataSize);
 	pHolder->m_SnapSize = DataSize;
 
 	if(AltDataSize) // create alternative if wanted
 	{
-		pHolder->m_pAltSnap = static_cast<CSnapshot *>(malloc(AltDataSize));
+		pHolder->m_pAltSnap = reinterpret_cast<CSnapshot *>(pStorage + AltOffset);
 		mem_copy(pHolder->m_pAltSnap, pAltData, AltDataSize);
 		pHolder->m_AltSnapSize = AltDataSize;
 	}

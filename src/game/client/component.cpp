@@ -26,6 +26,11 @@ class IGraphics *CComponentInterfaces::Graphics() const
 	return m_pClient->Graphics();
 }
 
+class IGraphicsWindow *CComponentInterfaces::Window() const
+{
+	return m_pClient->Window();
+}
+
 class ITextRender *CComponentInterfaces::TextRender() const
 {
 	return m_pClient->TextRender();

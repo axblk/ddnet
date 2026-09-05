@@ -15,7 +15,6 @@ CMapLayers::CMapLayers(ERenderType Type, bool OnlineOnly)
 	// static parameters for ingame rendering
 	m_Params.m_RenderType = m_Type;
 	m_Params.m_RenderInvalidTiles = false;
-	m_Params.m_TileAndQuadBuffering = true;
 	m_Params.m_RenderTileBorder = true;
 }
 
@@ -29,6 +28,11 @@ void CMapLayers::OnInit()
 CCamera *CMapLayers::GetCurCamera()
 {
 	return &GameClient()->m_Camera;
+}
+
+void CMapLayers::OnShutdown()
+{
+	m_MapRenderer.Clear();
 }
 
 void CMapLayers::OnMapLoad()

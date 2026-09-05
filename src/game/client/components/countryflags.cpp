@@ -13,6 +13,8 @@
 #include <engine/shared/linereader.h>
 #include <engine/storage.h>
 
+#include <game/client/render.h>
+
 bool CCountryFlags::CCountryFlag::operator<(const CCountryFlag &Other) const
 {
 	return str_comp(m_aCountryCodeString, Other.m_aCountryCodeString) < 0;
@@ -155,7 +157,7 @@ void CCountryFlags::OnInit()
 	m_FlagsQuadContainerIndex = Graphics()->CreateQuadContainer(false);
 	Graphics()->SetColor(1.0f, 1.0f, 1.0f, 1.0f);
 	Graphics()->QuadsSetSubset(0.0f, 0.0f, 1.0f, 1.0f);
-	Graphics()->QuadContainerAddSprite(m_FlagsQuadContainerIndex, 0.0f, 0.0f, 1.0f, 1.0f);
+	RenderTools()->QuadContainerAddSprite(m_FlagsQuadContainerIndex, 0.0f, 0.0f, 1.0f, 1.0f);
 	Graphics()->QuadContainerUpload(m_FlagsQuadContainerIndex);
 }
 

@@ -5,6 +5,7 @@
 #include <engine/graphics.h>
 
 #include <game/client/components/menu_background.h>
+#include <game/client/render.h>
 
 void CProofMode::CState::Reset()
 {
@@ -172,7 +173,7 @@ void CProofMode::RenderScreenSizes()
 			Graphics()->TextureClear();
 			Graphics()->QuadsBegin();
 			Graphics()->SetColor(0, 0, 1, 0.3f);
-			Graphics()->DrawCircle(WorldOffset.x, WorldOffset.y - 3.0f, 20.0f, 32);
+			RenderTools()->DrawCircle(WorldOffset.x, WorldOffset.y - 3.0f, 20.0f, 32);
 
 			if(IsModeMenu())
 			{
@@ -196,7 +197,7 @@ void CProofMode::RenderScreenSizes()
 					if(Pos == WorldOffset)
 						continue;
 
-					Graphics()->DrawCircle(Pos.x, Pos.y - 3.0f, 20.0f, 32);
+					RenderTools()->DrawCircle(Pos.x, Pos.y - 3.0f, 20.0f, 32);
 				}
 			}
 

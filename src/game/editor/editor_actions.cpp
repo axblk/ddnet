@@ -178,6 +178,7 @@ void CEditorBrushDrawAction::Apply(bool Undo)
 			Map()->m_pSpeedupLayer->m_pSpeedupTile[Index].m_Angle = Data.m_Angle;
 			Map()->m_pSpeedupLayer->m_pSpeedupTile[Index].m_Type = Data.m_Type;
 			Map()->m_pSpeedupLayer->m_pTiles[Index].m_Index = Data.m_Index;
+			Map()->m_pSpeedupLayer->InvalidateTileRenderArea(x, y, 1, 1);
 		}
 	}
 
@@ -196,6 +197,7 @@ void CEditorBrushDrawAction::Apply(bool Undo)
 			Map()->m_pTeleLayer->m_pTeleTile[Index].m_Number = Data.m_Number;
 			Map()->m_pTeleLayer->m_pTeleTile[Index].m_Type = Data.m_Type;
 			Map()->m_pTeleLayer->m_pTiles[Index].m_Index = Data.m_Index;
+			Map()->m_pTeleLayer->InvalidateTileRenderArea(x, y, 1, 1);
 		}
 	}
 
@@ -216,6 +218,7 @@ void CEditorBrushDrawAction::Apply(bool Undo)
 			Map()->m_pSwitchLayer->m_pSwitchTile[Index].m_Flags = Data.m_Flags;
 			Map()->m_pSwitchLayer->m_pSwitchTile[Index].m_Delay = Data.m_Delay;
 			Map()->m_pSwitchLayer->m_pTiles[Index].m_Index = Data.m_Index;
+			Map()->m_pSwitchLayer->InvalidateTileRenderArea(x, y, 1, 1);
 		}
 	}
 
@@ -234,6 +237,7 @@ void CEditorBrushDrawAction::Apply(bool Undo)
 			Map()->m_pTuneLayer->m_pTuneTile[Index].m_Number = Data.m_Number;
 			Map()->m_pTuneLayer->m_pTuneTile[Index].m_Type = Data.m_Type;
 			Map()->m_pTuneLayer->m_pTiles[Index].m_Index = Data.m_Index;
+			Map()->m_pTuneLayer->InvalidateTileRenderArea(x, y, 1, 1);
 		}
 	}
 }

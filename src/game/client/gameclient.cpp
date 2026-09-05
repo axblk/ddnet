@@ -61,6 +61,7 @@
 #include <engine/favorites.h>
 #include <engine/friends.h>
 #include <engine/graphics.h>
+#include <engine/graphics_window.h>
 #include <engine/map.h>
 #include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
@@ -325,9 +326,10 @@ void CGameClient::OnInit()
 	});
 
 	m_pGraphics = Kernel()->RequestInterface<IGraphics>();
+	m_pWindow = Kernel()->RequestInterface<IGraphicsWindow>();
 
 	// propagate pointers
-	m_UI.Init(Kernel());
+	m_UI.Init(Kernel(), &m_RenderTools);
 	m_UI.SetOnBackButtonPressedCallback([this]() {
 		m_BackButtonHandledKeyBind = m_KeyBinder.HasPendingKeyReader();
 		if(m_BackButtonHandledKeyBind)
@@ -343,7 +345,7 @@ void CGameClient::OnInit()
 		OnInput(Event);
 	});
 	m_RenderTools.Init(Graphics(), TextRender());
-	m_RenderMap.Init(Graphics(), TextRender());
+	m_RenderMap.Init(Graphics(), TextRender(), &m_RenderTools);
 
 	if(GIT_SHORTREV_HASH)
 	{
@@ -433,7 +435,7 @@ void CGameClient::OnInit()
 
 	// Aggressively try to grab window again since some Windows users report
 	// window not being focused after starting client.
-	Graphics()->SetWindowGrab(true);
+	Window()->SetWindowGrab(true);
 
 	CChecksumData *pChecksum = Client()->ChecksumData();
 	pChecksum->m_SizeofGameClient = sizeof(*this);

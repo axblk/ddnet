@@ -2,6 +2,7 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "ui.h"
 
+#include "render.h"
 #include "ui_scrollregion.h"
 
 #include <base/dbg.h>
@@ -73,7 +74,7 @@ void CUIElement::SUIElementRect::Draw(const CUIRect *pRect, ColorRGBA Color, int
 		m_QuadColor = Color;
 
 		m_pParent->Ui()->Graphics()->SetColor(Color);
-		m_UIRectQuadContainer = m_pParent->Ui()->Graphics()->CreateRectQuadContainer(0, 0, pRect->w, pRect->h, Rounding, Corners);
+		m_UIRectQuadContainer = m_pParent->Ui()->RenderTools()->CreateRectQuadContainer(0, 0, pRect->w, pRect->h, Rounding, Corners);
 		m_pParent->Ui()->Graphics()->SetColor(1, 1, 1, 1);
 	}
 
@@ -106,13 +107,14 @@ IGraphics *CUIElementBase::Graphics() const { return ms_pUi->Graphics(); }
 IInput *CUIElementBase::Input() const { return ms_pUi->Input(); }
 ITextRender *CUIElementBase::TextRender() const { return ms_pUi->TextRender(); }
 
-void CUi::Init(IKernel *pKernel)
+void CUi::Init(IKernel *pKernel, CRenderTools *pRenderTools)
 {
 	m_pClient = pKernel->RequestInterface<IClient>();
 	m_pGraphics = pKernel->RequestInterface<IGraphics>();
 	m_pInput = pKernel->RequestInterface<IInput>();
 	m_pTextRender = pKernel->RequestInterface<ITextRender>();
-	CUIRect::Init(m_pGraphics);
+	m_pRenderTools = pRenderTools;
+	CUIRect::Init(m_pGraphics, m_pRenderTools);
 	CLineInput::Init(m_pClient, m_pGraphics, m_pInput, m_pTextRender);
 	CUIElementBase::Init(this);
 }
@@ -1119,7 +1121,7 @@ int CUi::DoButton_Menu(CUIElement &UIElement, const CButtonContainer *pId, const
 				Graphics()->SetColor(Color);
 
 				CUIElement::SUIElementRect &NewRect = *UIElement.Rect(i);
-				NewRect.m_UIRectQuadContainer = Graphics()->CreateRectQuadContainer(pRect->x, pRect->y, pRect->w, pRect->h, Props.m_Rounding, Props.m_Corners);
+				NewRect.m_UIRectQuadContainer = RenderTools()->CreateRectQuadContainer(pRect->x, pRect->y, pRect->w, pRect->h, Props.m_Rounding, Props.m_Corners);
 
 				NewRect.m_X = pRect->x;
 				NewRect.m_Y = pRect->y;

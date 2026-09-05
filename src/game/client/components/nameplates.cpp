@@ -11,6 +11,7 @@
 #include <game/client/animstate.h>
 #include <game/client/gameclient.h>
 #include <game/client/prediction/entities/character.h>
+#include <game/client/render.h>
 
 #include <memory>
 #include <vector>
@@ -188,8 +189,8 @@ public:
 		This.Graphics()->QuadsSetRotation(m_Rotation);
 		This.Graphics()->QuadsBegin();
 		This.Graphics()->SetColor(m_Color);
-		This.Graphics()->SelectSprite(m_Sprite, m_SpriteFlags);
-		This.Graphics()->DrawSprite(Pos.x, Pos.y, Size().x, Size().y);
+		This.RenderTools()->SelectSprite(m_Sprite, m_SpriteFlags);
+		This.RenderTools()->DrawSprite(Pos.x, Pos.y, Size().x, Size().y);
 		This.Graphics()->QuadsEnd();
 		This.Graphics()->QuadsSetRotation(0.0f);
 	}

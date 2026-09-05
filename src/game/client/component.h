@@ -42,6 +42,7 @@ protected:
 	 * Get the graphics interface.
 	 */
 	class IGraphics *Graphics() const;
+	class IGraphicsWindow *Window() const;
 
 	/**
 	 * Get the text rendering interface.

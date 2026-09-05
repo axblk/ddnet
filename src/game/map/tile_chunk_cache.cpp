@@ -1,6 +1,7 @@
 #include "tile_chunk_cache.h"
 
 #include <base/dbg.h>
+#include <base/log.h>
 
 #include <game/map/render_layer.h>
 #include <game/mapitems.h>
@@ -9,9 +10,20 @@
 #include <cmath>
 #include <cstdint>
 
+uint64_t CTileChunkCache::ms_CachedBytes = 0;
+uint64_t CTileChunkCache::ms_Tick = 0;
+bool CTileChunkCache::ms_ReportedUploadFailure = false;
+std::vector<CTileChunkCache *> CTileChunkCache::ms_vpCaches;
+
+CTileChunkCache::CTileChunkCache()
+{
+	ms_vpCaches.push_back(this);
+}
+
 CTileChunkCache::~CTileChunkCache()
 {
 	Clear();
+	std::erase(ms_vpCaches, this);
 }
 
 void CTileChunkCache::OnInit(IGraphics *pGraphics)
@@ -22,9 +34,12 @@ void CTileChunkCache::OnInit(IGraphics *pGraphics)
 bool CTileChunkCache::Clear()
 {
 	bool AllReleased = true;
-	if(m_pGraphics != nullptr)
+	for(CChunk &Chunk : m_vChunks)
 	{
-		for(CChunk &Chunk : m_vChunks)
+		dbg_assert(ms_CachedBytes >= Chunk.m_Bytes, "tile chunk cache memory accounting underflow");
+		ms_CachedBytes -= Chunk.m_Bytes;
+		Chunk.m_Bytes = 0;
+		if(m_pGraphics != nullptr)
 			AllReleased = DeleteTileBuffer(m_pGraphics, Chunk.m_BufferObject) && AllReleased;
 	}
 	m_vChunks.clear();
@@ -137,11 +152,65 @@ bool CTileChunkCache::Rebuild(const CLayerSource &Source, int ChunkX, int ChunkY
 			Chunk.m_OpaqueTiles = vTiles.size();
 	}
 	Chunk.m_TransparentTiles = vTiles.size() - Chunk.m_OpaqueTiles;
+	dbg_assert(ms_CachedBytes >= Chunk.m_Bytes, "tile chunk cache memory accounting underflow");
+	ms_CachedBytes -= Chunk.m_Bytes;
+	Chunk.m_Bytes = 0;
 	if(!UploadTileBuffer(m_pGraphics, vTiles, vTextureCoords, Chunk.m_BufferObject))
+	{
+		// The chunk stays dirty and is retried every frame, so this is said once
+		// rather than once per frame.
+		if(!ms_ReportedUploadFailure)
+		{
+			ms_ReportedUploadFailure = true;
+			log_error("tile_chunk_cache", "failed to upload chunk %d,%d with %d tiles", ChunkX, ChunkY, (int)vTiles.size());
+		}
 		return false;
+	}
+	Chunk.m_Bytes = vTiles.size() * sizeof(CGraphicTile) + vTextureCoords.size() * sizeof(CGraphicTileTextureCoords);
+	ms_CachedBytes += Chunk.m_Bytes;
 	Chunk.m_SourceDigest = SourceDigest(Source, ChunkX, ChunkY);
 	Chunk.m_Dirty = false;
 	return true;
+}
+
+void CTileChunkCache::ReleaseChunk(CChunk &Chunk)
+{
+	dbg_assert(ms_CachedBytes >= Chunk.m_Bytes, "tile chunk cache memory accounting underflow");
+	ms_CachedBytes -= Chunk.m_Bytes;
+	Chunk.m_Bytes = 0;
+	Chunk.m_LastUsedTick = 0;
+	// A buffer the backend refuses to give up stays allocated until it shuts
+	// down. The chunk is rebuilt into a new one either way, so the handle has
+	// to go regardless of what the destroy answered.
+	(void)DeleteTileBuffer(m_pGraphics, Chunk.m_BufferObject);
+	Chunk.m_Dirty = true;
+}
+
+void CTileChunkCache::EvictOverBudget(uint64_t CurrentTick)
+{
+	if(ms_CachedBytes <= MEMORY_BUDGET)
+		return;
+	// One list over every cache: the chunk that should go is the least
+	// recently drawn one of the whole map, whichever layer holds it. A layer
+	// that left the screen keeps nothing back that the visible ones need.
+	std::vector<CChunkUsage> vUsage;
+	std::vector<std::pair<CTileChunkCache *, size_t>> vOwners;
+	for(CTileChunkCache *pCache : ms_vpCaches)
+	{
+		for(size_t Index = 0; Index < pCache->m_vChunks.size(); ++Index)
+		{
+			const CChunk &Chunk = pCache->m_vChunks[Index];
+			if(Chunk.m_Bytes == 0)
+				continue;
+			vUsage.push_back({Chunk.m_Bytes, Chunk.m_LastUsedTick});
+			vOwners.emplace_back(pCache, Index);
+		}
+	}
+	for(const size_t Index : ChunksToEvict(vUsage, ms_CachedBytes, CurrentTick))
+	{
+		CTileChunkCache *pCache = vOwners[Index].first;
+		pCache->ReleaseChunk(pCache->m_vChunks[vOwners[Index].second]);
+	}
 }
 
 uint32_t CTileChunkCache::SourceDigest(const CLayerSource &Source, int ChunkX, int ChunkY) const
@@ -222,6 +291,7 @@ void CTileChunkCache::Render(const CLayerSource &Source, const ColorRGBA &Color,
 	const CChunkRange Visible = ChunkRange(X0, Y0, X1 - X0, Y1 - Y0, m_Width, m_Height);
 	if(!Visible.IsEmpty())
 		VerifyOneChunk(Source, Visible);
+	const uint64_t CurrentTick = ++ms_Tick;
 	for(int ChunkY = Visible.m_FirstY; ChunkY <= Visible.m_LastY; ++ChunkY)
 	{
 		for(int ChunkX = Visible.m_FirstX; ChunkX <= Visible.m_LastX; ++ChunkX)
@@ -229,6 +299,9 @@ void CTileChunkCache::Render(const CLayerSource &Source, const ColorRGBA &Color,
 			CChunk &Chunk = m_vChunks[ChunkY * m_Columns + ChunkX];
 			if(Chunk.m_Dirty && !Rebuild(Source, ChunkX, ChunkY))
 				continue;
+			// Marked before the ranges are worked out: a chunk that is on
+			// screen was wanted, whether or not this pass draws anything of it.
+			Chunk.m_LastUsedTick = CurrentTick;
 			if(!Chunk.m_BufferObject.IsValid())
 				continue;
 
@@ -262,4 +335,6 @@ void CTileChunkCache::Render(const CLayerSource &Source, const ColorRGBA &Color,
 			m_pGraphics->RenderTileLayer(Chunk.m_BufferObject, Layout, Color, aFirstIndices, aIndexCounts, RangeCount);
 		}
 	}
+
+	EvictOverBudget(CurrentTick);
 }

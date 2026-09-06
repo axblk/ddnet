@@ -137,7 +137,7 @@ void CSounds::OnStateChange(int NewState, int OldState)
 		OnReset();
 }
 
-void CSounds::OnRender()
+void CSounds::Update(std::optional<vec2> ListenerPosition)
 {
 	// check for sound initialisation
 	if(m_WaitForSoundJob)
@@ -148,7 +148,8 @@ void CSounds::OnRender()
 			return;
 	}
 
-	Sound()->SetListenerPosition(GameClient()->m_Camera.m_Center);
+	if(ListenerPosition.has_value())
+		Sound()->SetListenerPosition(*ListenerPosition);
 	UpdateChannels();
 
 	// play sound from queue
@@ -192,7 +193,7 @@ void CSounds::PlayAndRecord(int Channel, int SetId, float Volume, vec2 Position)
 	//       https://github.com/ddnet/ddnet/issues/1282
 	CNetMsg_Sv_SoundGlobal Msg;
 	Msg.m_SoundId = SetId;
-	Client()->SendPackMsgActive(&Msg, MSGFLAG_NOSEND | MSGFLAG_RECORD);
+	Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_NOSEND | MSGFLAG_RECORD);
 
 	PlayAt(Channel, SetId, Volume, Position);
 }

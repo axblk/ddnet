@@ -9,6 +9,7 @@
 #include <game/client/ui_rect.h>
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
 
 class CImportantAlert : public CComponent
@@ -25,17 +26,20 @@ class CImportantAlert : public CComponent
 	bool m_CloseHintShownForTouch = false; // whether the close hint text was created for touch controls
 	std::optional<CUIRect> m_DismissTouchRect; // in normalized screen coordinates like the touch finger positions
 	std::optional<IInput::CTouchFinger> m_DismissTouchFinger; // the finger that dismissed the alert, ignored until released
+	float m_TextContainerWidth = -1.0f;
+	uint64_t m_TextContainerOutputKey = 0;
 
 	void DeleteTextContainers();
-	void RenderImportantAlert();
+	void RenderImportantAlert(const CRenderContext &Context);
 	void DoImportantAlert(const char *pTitle, const char *pLogGroup, const char *pMessage);
 	float SecondsActive() const;
 
 public:
 	int Sizeof() const override { return sizeof(*this); }
 	void OnReset() override;
+	void OnUpdate() override;
 	void OnWindowResize() override;
-	void OnRender() override;
+	void OnRender(const CRenderContext &Context) override;
 	void OnMessage(int MsgType, void *pRawMsg) override;
 	bool OnInput(const IInput::CEvent &Event) override;
 	bool OnTouchState(std::vector<IInput::CTouchFingerState> &vTouchFingerStates) override;

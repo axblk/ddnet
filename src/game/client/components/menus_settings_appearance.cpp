@@ -596,10 +596,10 @@ void CMenus::RenderSettingsAppearance(CUIRect MainView)
 
 		// ***** Name Plate Dummy Preview ***** //
 		RightView.HSplitBottom(LineSize, &RightView, &Button);
-		if(DoButton_CheckBox(&m_DummyNamePlatePreview, g_Config.m_ClDummy ? Localize("Preview player's name plate") : Localize("Preview dummy's name plate"), m_DummyNamePlatePreview, &Button))
+		if(DoButton_CheckBox(&m_DummyNamePlatePreview, GameClient()->ActiveConnection() ? Localize("Preview player's name plate") : Localize("Preview dummy's name plate"), m_DummyNamePlatePreview, &Button))
 			m_DummyNamePlatePreview = !m_DummyNamePlatePreview;
 
-		int Dummy = g_Config.m_ClDummy != (m_DummyNamePlatePreview ? 1 : 0);
+		int Dummy = GameClient()->ActiveConnection() != (m_DummyNamePlatePreview ? 1 : 0);
 
 		const vec2 Position = RightView.Center();
 
@@ -969,7 +969,7 @@ void CMenus::DoLaserPreview(const CUIRect *pRect, const ColorHSLA LaserOutlineCo
 		TeeRenderInfo.m_ColorBody = ColorRGBA(1, 1, 1);
 		TeeRenderInfo.m_ColorFeet = ColorRGBA(1, 1, 1);
 		RenderTools()->RenderTee(CAnimState::GetIdle(), &TeeRenderInfo, EMOTE_PAIN, vec2(1, 0), From);
-		GameClient()->m_Effects.FreezingFlakes(From, vec2(32, 32), 1.0f);
+		GameClient()->m_Effects.FreezingFlakes(GameClient()->GameState(GameClient()->ActiveConnection()), From, vec2(32, 32), -1, 1.0f);
 		break;
 	}
 	default:

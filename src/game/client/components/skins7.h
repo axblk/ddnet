@@ -15,6 +15,7 @@
 #include <game/client/component.h>
 #include <game/client/render.h>
 
+#include <array>
 #include <chrono>
 #include <vector>
 
@@ -66,10 +67,10 @@ public:
 	static const char *const ms_apSkinPartNamesLocalized[protocol7::NUM_SKINPARTS];
 	static const char *const ms_apColorComponents[NUM_COLOR_COMPONENTS];
 
-	static char *ms_apSkinNameVariables[NUM_DUMMIES];
-	static char *ms_apSkinVariables[NUM_DUMMIES][protocol7::NUM_SKINPARTS];
-	static int *ms_apUCCVariables[NUM_DUMMIES][protocol7::NUM_SKINPARTS]; // use custom color
-	static unsigned *ms_apColorVariables[NUM_DUMMIES][protocol7::NUM_SKINPARTS];
+	static std::array<char *, 2> ms_apSkinNameVariables;
+	static std::array<std::array<char *, protocol7::NUM_SKINPARTS>, 2> ms_apSkinVariables;
+	static std::array<std::array<int *, protocol7::NUM_SKINPARTS>, 2> ms_apUCCVariables; // use custom color
+	static std::array<std::array<unsigned *, protocol7::NUM_SKINPARTS>, 2> ms_apColorVariables;
 
 	int Sizeof() const override { return sizeof(*this); }
 	void OnInit() override;

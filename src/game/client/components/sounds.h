@@ -10,6 +10,8 @@
 
 #include <game/client/component.h>
 
+#include <optional>
+
 class CSoundLoading : public IJob
 {
 	CGameClient *m_pGameClient;
@@ -61,7 +63,7 @@ public:
 	void OnInit() override;
 	void OnReset() override;
 	void OnStateChange(int NewState, int OldState) override;
-	void OnRender() override;
+	void Update(std::optional<vec2> ListenerPosition);
 
 	void ClearQueue();
 	void Enqueue(int Channel, int SetId);

@@ -30,10 +30,10 @@ const char *const CSkins7::ms_apSkinPartNames[protocol7::NUM_SKINPARTS] = {"body
 const char *const CSkins7::ms_apSkinPartNamesLocalized[protocol7::NUM_SKINPARTS] = {Localizable("Body", "skins"), Localizable("Marking", "skins"), Localizable("Decoration", "skins"), Localizable("Hands", "skins"), Localizable("Feet", "skins"), Localizable("Eyes", "skins")};
 const char *const CSkins7::ms_apColorComponents[NUM_COLOR_COMPONENTS] = {"hue", "sat", "lgt", "alp"};
 
-char *CSkins7::ms_apSkinNameVariables[NUM_DUMMIES] = {nullptr};
-char *CSkins7::ms_apSkinVariables[NUM_DUMMIES][protocol7::NUM_SKINPARTS] = {{nullptr}};
-int *CSkins7::ms_apUCCVariables[NUM_DUMMIES][protocol7::NUM_SKINPARTS] = {{nullptr}};
-int unsigned *CSkins7::ms_apColorVariables[NUM_DUMMIES][protocol7::NUM_SKINPARTS] = {{nullptr}};
+std::array<char *, 2> CSkins7::ms_apSkinNameVariables = {};
+std::array<std::array<char *, protocol7::NUM_SKINPARTS>, 2> CSkins7::ms_apSkinVariables = {};
+std::array<std::array<int *, protocol7::NUM_SKINPARTS>, 2> CSkins7::ms_apUCCVariables = {};
+std::array<std::array<unsigned *, protocol7::NUM_SKINPARTS>, 2> CSkins7::ms_apColorVariables = {};
 
 #define SKINS_DIR "skins7"
 

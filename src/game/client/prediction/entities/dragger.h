@@ -19,7 +19,7 @@ class CDragger : public CEntity
 
 public:
 	CDragger(CGameWorld *pGameWorld, int Id, const CLaserData *pData);
-	bool Match(CDragger *pDragger);
+	bool Match(const CDragger *pDragger) const;
 	void Read(const CLaserData *pData);
 	float GetStrength() const { return m_Strength; }
 

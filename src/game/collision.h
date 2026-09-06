@@ -142,7 +142,12 @@ public:
 	size_t TeleAllSize(int Number);
 
 	const std::vector<vec2> &TeleIns(int Number) { return m_TeleIns[Number]; }
-	const std::vector<vec2> &TeleOuts(int Number) { return m_TeleOuts[Number]; }
+	const std::vector<vec2> &TeleOuts(int Number) const
+	{
+		static const std::vector<vec2> s_Empty;
+		const auto It = m_TeleOuts.find(Number);
+		return It == m_TeleOuts.end() ? s_Empty : It->second;
+	}
 	const std::vector<vec2> &TeleCheckOuts(int Number) { return m_TeleCheckOuts[Number]; }
 	const std::vector<vec2> &TeleOthers(int Number) { return m_TeleOthers[Number]; }
 

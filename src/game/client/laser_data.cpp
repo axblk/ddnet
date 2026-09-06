@@ -10,7 +10,7 @@
 #include <game/client/prediction/gameworld.h>
 #include <game/collision.h>
 
-CLaserData ExtractLaserInfo(int NetObjType, const void *pData, CGameWorld *pGameWorld, const CNetObj_EntityEx *pEntEx)
+CLaserData ExtractLaserInfo(int NetObjType, const void *pData, const CGameWorld *pGameWorld, const CNetObj_EntityEx *pEntEx)
 {
 	CLaserData Result;
 
@@ -60,7 +60,7 @@ CLaserData ExtractLaserInfo(int NetObjType, const void *pData, CGameWorld *pGame
 	return Result;
 }
 
-CLaserData ExtractLaserInfoDDNet(const CNetObj_DDNetLaser *pLaser, CGameWorld *pGameWorld)
+CLaserData ExtractLaserInfoDDNet(const CNetObj_DDNetLaser *pLaser, const CGameWorld *pGameWorld)
 {
 	CLaserData Result;
 	Result.m_From.x = pLaser->m_FromX;

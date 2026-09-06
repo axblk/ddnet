@@ -20,7 +20,7 @@ class CRaceDemo : public CComponent
 
 	static const char *ms_pRaceDemoDir;
 
-	char m_aTmpFilename[128];
+	char m_aTmpFilename[128] = {};
 
 	int m_RaceState;
 	int m_RaceStartTick;
@@ -48,5 +48,6 @@ public:
 	void OnMapLoad() override;
 	void OnShutdown() override;
 	void OnNewSnapshot() override;
+	void OnNetworkSessionClosed();
 };
 #endif

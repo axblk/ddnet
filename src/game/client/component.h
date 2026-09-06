@@ -10,6 +10,7 @@
 #include <engine/input.h>
 
 class CGameClient;
+class CRenderContext;
 
 class CComponentInterfaces
 {
@@ -234,6 +235,10 @@ public:
 	 */
 	virtual void OnRender()
 	{
+	}
+	virtual void OnRender(const CRenderContext &)
+	{
+		OnRender();
 	}
 
 	/**

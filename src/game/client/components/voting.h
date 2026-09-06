@@ -4,66 +4,46 @@
 #define GAME_CLIENT_COMPONENTS_VOTING_H
 
 #include <engine/console.h>
-#include <engine/shared/memheap.h>
 
 #include <game/client/component.h>
 #include <game/client/ui_rect.h>
 #include <game/voting.h>
 
+#include <list>
+#include <string>
+
+class CSessionVoteState;
+
 class CVoting : public CComponent
 {
-	CHeap m_Heap;
-
 	static void ConCallvote(IConsole::IResult *pResult, void *pUserData);
 	static void ConVote(IConsole::IResult *pResult, void *pUserData);
 
-	int64_t m_Opentime;
-	int64_t m_Closetime;
-	char m_aDescription[VOTE_DESC_LENGTH];
-	char m_aReason[VOTE_REASON_LENGTH];
-	int m_Voted;
-	int m_Yes, m_No, m_Pass, m_Total;
-	bool m_ReceivingOptions;
-
-	int m_NumVoteOptions;
-	CVoteOptionClient *m_pFirst;
-	CVoteOptionClient *m_pLast;
-
-	CVoteOptionClient *m_pRecycleFirst;
-	CVoteOptionClient *m_pRecycleLast;
-
-	void RemoveOption(const char *pDescription);
-	void ClearOptions();
 	void Callvote(const char *pType, const char *pValue, const char *pReason);
 
-	void RenderBars(CUIRect Bars) const;
+	CSessionVoteState &VoteState();
+	const CSessionVoteState &VoteState() const;
+	void RenderBars(CUIRect Bars, const CSessionVoteState &State) const;
 
 public:
-	CVoting();
 	int Sizeof() const override { return sizeof(*this); }
-	void OnReset() override;
 	void OnConsoleInit() override;
-	void OnMessage(int MsgType, void *pRawMsg) override;
+	void HandleMessage(CSessionVoteState &State, int64_t Now, int64_t TimeFrequency, bool NotifyAdmin, int MsgType, void *pRawMsg);
 
-	void Render();
+	void Render(const CRenderContext &Context);
 
 	void CallvoteSpectate(int ClientId, const char *pReason, bool ForceVote = false);
 	void CallvoteKick(int ClientId, const char *pReason, bool ForceVote = false);
 	void CallvoteOption(int OptionId, const char *pReason, bool ForceVote = false);
 	void RemovevoteOption(int OptionId);
 	void AddvoteOption(const char *pDescription, const char *pCommand);
-	void AddOption(const char *pDescription);
 
 	void Vote(int v); // -1 = no, 1 = yes
 
-	int SecondsLeft() const;
-	bool IsVoting() const { return m_Closetime != 0; }
-	int TakenChoice() const { return m_Voted; }
-	const char *VoteDescription() const { return m_aDescription; }
-	const char *VoteReason() const { return m_aReason; }
-	bool IsReceivingOptions() const { return m_ReceivingOptions; }
-	int NumOptions() const { return m_NumVoteOptions; }
-	const CVoteOptionClient *FirstOption() const { return m_pFirst; }
+	bool IsVoting() const;
+	bool IsReceivingOptions() const;
+	int NumOptions() const;
+	const std::list<std::string> &Options() const;
 };
 
 #endif

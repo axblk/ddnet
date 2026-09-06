@@ -13,9 +13,14 @@
 #include <game/client/gameclient.h>
 #include <game/client/ui.h>
 
-CEmoticon::CEmoticon()
+CGameView::CEmoticonSelectorState &CEmoticon::Selector()
 {
-	CEmoticon::OnReset();
+	return GameClient()->LegacyGameView().EmoticonSelector();
+}
+
+const CGameView::CEmoticonSelectorState &CEmoticon::Selector() const
+{
+	return GameClient()->LegacyGameView().EmoticonSelector();
 }
 
 void CEmoticon::ConKeyEmoticon(IConsole::IResult *pResult, void *pUserData)
@@ -25,8 +30,25 @@ void CEmoticon::ConKeyEmoticon(IConsole::IResult *pResult, void *pUserData)
 	if(pSelf->GameClient()->m_Scoreboard.IsActive())
 		return;
 
-	if(!pSelf->GameClient()->m_Snap.m_SpecInfo.m_Active && pSelf->Client()->State() != IClient::STATE_DEMOPLAYBACK)
-		pSelf->m_Active = pResult->GetInteger(0) != 0;
+	CGameView &View = pSelf->GameClient()->LegacyGameView();
+	CGameView::CEmoticonSelectorState &Selector = View.EmoticonSelector();
+	if(pResult->GetInteger(0) == 0)
+	{
+		Selector.m_Active = false;
+		return;
+	}
+
+	CGameSessionContext &Session = pSelf->GameClient()->SessionContext();
+	CGameState *pState = Session.GameStates().Find(View.StateId());
+	if(Session.Id() != View.SessionId() || Session.Id() != pSelf->Client()->NetworkSessionId() || View.IsSpectating() || !pState)
+		return;
+
+	const int Conn = static_cast<int>(pState->StreamId().Value()) - 1;
+	if(Conn < IClient::CONN_MAIN || Conn >= IClient::NUM_CONNS)
+		return;
+	Selector.m_OriginSessionId = Session.Id();
+	Selector.m_OriginConnection = Conn;
+	Selector.m_Active = true;
 }
 
 void CEmoticon::ConEmote(IConsole::IResult *pResult, void *pUserData)
@@ -42,25 +64,22 @@ void CEmoticon::OnConsoleInit()
 
 void CEmoticon::OnReset()
 {
-	m_WasActive = false;
-	m_Active = false;
-	m_SelectedEmote = -1;
-	m_SelectedEyeEmote = -1;
-	m_TouchPressedOutside = false;
+	Selector().Reset();
+	m_TouchState = {};
 }
 
 void CEmoticon::OnRelease()
 {
-	m_Active = false;
+	Selector().m_Active = false;
 }
 
 bool CEmoticon::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 {
-	if(!m_Active)
+	if(!Selector().m_Active)
 		return false;
 
 	Ui()->ConvertMouseMove(&x, &y, CursorType);
-	m_SelectorMouse += vec2(x, y);
+	Selector().m_SelectorMouse += vec2(x, y);
 	return true;
 }
 
@@ -74,38 +93,46 @@ bool CEmoticon::OnInput(const IInput::CEvent &Event)
 	return false;
 }
 
-void CEmoticon::OnRender()
+bool CEmoticon::EyeWheelAvailable(const CRenderContext &Context) const
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	const int LocalClientId = Context.m_State.LocalClientId();
+	return Context.m_State.CoreGameInfo().m_AllowEyeWheel && g_Config.m_ClEyeWheel && LocalClientId >= 0 &&
+	       GameClient()->SessionPresentation(Context.m_Session.Id()).Client(Context.m_State.Id(), LocalClientId);
+}
+
+void CEmoticon::UpdateController(CGameView &View, const CRenderContext &Context)
+{
+	CGameView::CEmoticonSelectorState &State = View.EmoticonSelector();
+	if(!Context.m_Time.m_IsGameActive)
 		return;
 
-	if(!m_Active)
+	if(!State.m_Active)
 	{
-		if(m_TouchPressedOutside)
+		if(State.m_TouchPressedOutside)
 		{
-			m_SelectedEmote = -1;
-			m_SelectedEyeEmote = -1;
-			m_TouchPressedOutside = false;
+			State.m_SelectedEmote = -1;
+			State.m_SelectedEyeEmote = -1;
+			State.m_TouchPressedOutside = false;
 		}
 
-		if(m_WasActive && m_SelectedEmote != -1)
-			Emote(m_SelectedEmote);
-		if(m_WasActive && m_SelectedEyeEmote != -1)
-			EyeEmote(m_SelectedEyeEmote);
-		m_WasActive = false;
+		if(State.m_WasActive && State.m_SelectedEmote != -1)
+			Emote(State.m_SelectedEmote, State.m_OriginSessionId, State.m_OriginConnection);
+		if(State.m_WasActive && State.m_SelectedEyeEmote != -1)
+			EyeEmote(State.m_SelectedEyeEmote, State.m_OriginSessionId, State.m_OriginConnection);
+		State.m_WasActive = false;
 		return;
 	}
 
-	if(GameClient()->m_Snap.m_SpecInfo.m_Active || !GameClient()->m_Snap.m_pLocalCharacter)
+	const int LocalClientId = Context.m_State.LocalClientId();
+	if(View.IsSpectating() || LocalClientId < 0 || !Context.m_State.Client(LocalClientId).m_HasCharacter)
 	{
-		m_Active = false;
-		m_WasActive = false;
+		State.m_Active = false;
+		State.m_WasActive = false;
 		return;
 	}
 
-	m_WasActive = true;
-
-	const CUIRect Screen = *Ui()->Screen();
+	State.m_WasActive = true;
+	const CUIRect Screen = {0.0f, 0.0f, 600.0f * Context.AspectRatio(Graphics()->ScreenAspect()), 600.0f};
 
 	const bool WasTouchPressed = m_TouchState.m_AnyPressed;
 	Ui()->UpdateTouchState(m_TouchState);
@@ -115,33 +142,28 @@ void CEmoticon::OnRender()
 		const float TouchCenterDistance = length(TouchPos);
 		if(TouchCenterDistance <= 170.0f)
 		{
-			m_SelectorMouse = TouchPos;
+			State.m_SelectorMouse = TouchPos;
 		}
 		else if(TouchCenterDistance > 190.0f)
 		{
-			m_TouchPressedOutside = true;
+			State.m_TouchPressedOutside = true;
 		}
 	}
 	else if(WasTouchPressed)
 	{
-		m_Active = false;
+		State.m_Active = false;
 		return;
 	}
+	State.UpdateSelection(NUM_EMOTICONS, NUM_EMOTES, EyeWheelAvailable(Context));
+}
 
-	if(length(m_SelectorMouse) > 170.0f)
-		m_SelectorMouse = normalize(m_SelectorMouse) * 170.0f;
+void CEmoticon::OnRender(const CRenderContext &Context)
+{
+	const CGameView::CEmoticonSelectorState &State = Context.m_View.EmoticonSelector();
+	if(!Context.m_Time.m_IsGameActive || !State.m_Active)
+		return;
 
-	float SelectedAngle = angle(m_SelectorMouse) + 2 * pi / 24;
-	if(SelectedAngle < 0)
-		SelectedAngle += 2 * pi;
-
-	m_SelectedEmote = -1;
-	m_SelectedEyeEmote = -1;
-	if(length(m_SelectorMouse) > 110.0f)
-		m_SelectedEmote = (int)(SelectedAngle / (2 * pi) * (float)NUM_EMOTICONS);
-	else if(length(m_SelectorMouse) > 40.0f)
-		m_SelectedEyeEmote = (int)(SelectedAngle / (2 * pi) * (float)NUM_EMOTES);
-
+	const CUIRect Screen = {0.0f, 0.0f, 600.0f * Context.AspectRatio(Graphics()->ScreenAspect()), 600.0f};
 	const vec2 ScreenCenter = Screen.Center();
 
 	Ui()->MapScreen();
@@ -163,14 +185,16 @@ void CEmoticon::OnRender()
 		Graphics()->QuadsSetSubset(0, 0, 1, 1);
 		Graphics()->QuadsBegin();
 		const vec2 Nudge = direction(Angle) * 150.0f;
-		const float Size = m_SelectedEmote == Emote ? 80.0f : 50.0f;
+		const float Size = State.m_SelectedEmote == Emote ? 80.0f : 50.0f;
 		IGraphics::CQuadItem QuadItem(ScreenCenter.x + Nudge.x, ScreenCenter.y + Nudge.y, Size, Size);
 		Graphics()->QuadsDraw(&QuadItem, 1);
 		Graphics()->QuadsEnd();
 	}
 	Graphics()->WrapNormal();
 
-	if(GameClient()->m_GameInfo.m_AllowEyeWheel && g_Config.m_ClEyeWheel && GameClient()->m_aLocalIds[g_Config.m_ClDummy] >= 0)
+	const int LocalClientId = Context.m_State.LocalClientId();
+	const CClientPresentation *pClient = LocalClientId < 0 ? nullptr : GameClient()->SessionPresentation(Context.m_Session.Id()).Client(Context.m_State.Id(), LocalClientId);
+	if(EyeWheelAvailable(Context) && pClient)
 	{
 		Graphics()->TextureClear();
 		Graphics()->QuadsBegin();
@@ -178,7 +202,7 @@ void CEmoticon::OnRender()
 		Graphics()->DrawCircle(ScreenCenter.x, ScreenCenter.y, 100.0f, 64);
 		Graphics()->QuadsEnd();
 
-		CTeeRenderInfo TeeInfo = GameClient()->m_aClients[GameClient()->m_aLocalIds[g_Config.m_ClDummy]].m_RenderInfo;
+		CTeeRenderInfo TeeInfo = pClient->m_RenderInfo;
 
 		for(int Emote = 0; Emote < NUM_EMOTES; Emote++)
 		{
@@ -187,7 +211,7 @@ void CEmoticon::OnRender()
 				Angle -= 2 * pi;
 
 			const vec2 Nudge = direction(Angle) * 70.0f;
-			TeeInfo.m_Size = m_SelectedEyeEmote == Emote ? 64.0f : 48.0f;
+			TeeInfo.m_Size = State.m_SelectedEyeEmote == Emote ? 64.0f : 48.0f;
 			RenderTools()->RenderTee(CAnimState::GetIdle(), &TeeInfo, Emote, vec2(-1, 0), ScreenCenter + Nudge);
 		}
 
@@ -197,28 +221,46 @@ void CEmoticon::OnRender()
 		Graphics()->DrawCircle(ScreenCenter.x, ScreenCenter.y, 30.0f, 64);
 		Graphics()->QuadsEnd();
 	}
-	else
-		m_SelectedEyeEmote = -1;
+	RenderTools()->RenderCursor(ScreenCenter + State.m_SelectorMouse, 24.0f);
+}
 
-	RenderTools()->RenderCursor(ScreenCenter + m_SelectorMouse, 24.0f);
+bool CEmoticon::IsActive() const
+{
+	return Selector().m_Active;
 }
 
 void CEmoticon::Emote(int Emoticon)
 {
+	Emote(Emoticon, Client()->NetworkSessionId(), Client()->ActiveConnection());
+}
+
+void CEmoticon::Emote(int Emoticon, CSessionId SessionId, int Conn)
+{
+	if(SessionId != Client()->NetworkSessionId() || SessionId != Client()->FocusedSessionId() || Conn < IClient::CONN_MAIN || Conn >= IClient::NUM_CONNS)
+		return;
+
 	CNetMsg_Cl_Emoticon Msg;
 	Msg.m_Emoticon = Emoticon;
-	Client()->SendPackMsgActive(&Msg, MSGFLAG_VITAL);
+	Client()->SendPackMsg(Conn, &Msg, MSGFLAG_VITAL);
 
 	if(g_Config.m_ClDummyCopyMoves)
 	{
 		CMsgPacker MsgDummy(NETMSGTYPE_CL_EMOTICON, false);
 		MsgDummy.AddInt(Emoticon);
-		Client()->SendMsg(!g_Config.m_ClDummy, &MsgDummy, MSGFLAG_VITAL);
+		Client()->SendMsg(Conn == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN, &MsgDummy, MSGFLAG_VITAL);
 	}
 }
 
 void CEmoticon::EyeEmote(int Emote)
 {
+	EyeEmote(Emote, Client()->NetworkSessionId(), Client()->ActiveConnection());
+}
+
+void CEmoticon::EyeEmote(int Emote, CSessionId SessionId, int Conn)
+{
+	if(SessionId != Client()->NetworkSessionId() || SessionId != Client()->FocusedSessionId() || Conn < IClient::CONN_MAIN || Conn >= IClient::NUM_CONNS)
+		return;
+
 	char aBuf[32];
 	switch(Emote)
 	{
@@ -241,5 +283,5 @@ void CEmoticon::EyeEmote(int Emote)
 		str_format(aBuf, sizeof(aBuf), "/emote blink %d", g_Config.m_ClEyeDuration);
 		break;
 	}
-	GameClient()->m_Chat.SendChat(0, aBuf);
+	GameClient()->m_Chat.SendChat(0, aBuf, SessionId, Client()->StreamId(SessionId, Conn));
 }

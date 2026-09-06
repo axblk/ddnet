@@ -106,5 +106,5 @@ void CLocalServer::RconAuthIfPossible()
 	{
 		return;
 	}
-	Client()->RconAuth(DEFAULT_SAVED_RCON_USER, m_aRconPassword, g_Config.m_ClDummy);
+	Client()->RconAuth(Client()->ActiveConnection(), DEFAULT_SAVED_RCON_USER, m_aRconPassword);
 }

@@ -38,7 +38,7 @@ bool CLaser::HitCharacter(vec2 From, vec2 To)
 	CCharacter *pHit;
 	bool DontHitSelf = (GameWorld()->m_WorldConfig.m_OldLaser || !GameWorld()->m_WorldConfig.m_IsDDRace) || (m_Bounces == 0);
 
-	if(pOwnerChar ? (!pOwnerChar->LaserHitDisabled() && m_Type == WEAPON_LASER) || (!pOwnerChar->ShotgunHitDisabled() && m_Type == WEAPON_SHOTGUN) : g_Config.m_SvHit)
+	if(pOwnerChar ? (!pOwnerChar->LaserHitDisabled() && m_Type == WEAPON_LASER) || (!pOwnerChar->ShotgunHitDisabled() && m_Type == WEAPON_SHOTGUN) : GameWorld()->GameConfig()->m_SvHit)
 		pHit = GameWorld()->IntersectCharacter(m_Pos, To, 0.f, At, DontHitSelf ? pOwnerChar : nullptr, m_Owner);
 	else
 		pHit = GameWorld()->IntersectCharacter(m_Pos, To, 0.f, At, DontHitSelf ? pOwnerChar : nullptr, m_Owner, pOwnerChar);
@@ -208,7 +208,7 @@ CLaser::CLaser(CGameWorld *pGameWorld, int Id, const CLaserData *pLaser) :
 	m_Id = Id;
 }
 
-bool CLaser::Match(CLaser *pLaser)
+bool CLaser::Match(const CLaser *pLaser) const
 {
 	if(pLaser->m_EvalTick != m_EvalTick)
 		return false;

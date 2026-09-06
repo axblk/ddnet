@@ -2,62 +2,43 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "damageind.h"
 
-#include <base/color.h>
-
-#include <engine/demo.h>
 #include <engine/graphics.h>
 
 #include <generated/client_data.h>
 #include <generated/protocol.h>
 
+#include <game/client/game_state.h>
+#include <game/client/game_view.h>
 #include <game/client/gameclient.h>
 
-CDamageInd::CDamageInd()
+void CDamageInd::Create(CGameState &State, vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha)
 {
-	m_NumItems = 0;
+	State.DamageIndicators().Create(Pos, Dir, OwnerClientId, Alpha, -random_angle());
 }
 
-void CDamageInd::Create(vec2 Pos, vec2 Dir, float Alpha)
+void CDamageInd::Update(const CPresentationContext &Context)
 {
-	if(m_NumItems >= MAX_ITEMS)
+	if(!Context.m_Time.m_IsGameActive)
 		return;
-
-	CItem *pItem = &m_aItems[m_NumItems];
-	pItem->m_Pos = Pos;
-	pItem->m_Dir = -Dir;
-	pItem->m_RemainingLife = 0.75f;
-	pItem->m_StartAngle = -random_angle();
-	pItem->m_Color = ColorRGBA(1.0f, 1.0f, 1.0f, Alpha);
-	++m_NumItems;
+	Context.m_State.DamageIndicators().Advance(Context.m_Time.m_PresentationTime, Context.m_Time.m_PresentationTimeFrequency, Context.m_Time.m_AnimationPlaybackSpeed);
 }
 
-void CDamageInd::OnRender()
+void CDamageInd::OnRender(const CRenderContext &Context)
 {
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
+	if(!Context.m_Time.m_IsGameActive)
 		return;
 
-	static float s_LastLocalTime = LocalTime();
-	const float LifeAdjustment = (LocalTime() - s_LastLocalTime) * GameClient()->GetAnimationPlaybackSpeed();
-	s_LastLocalTime = LocalTime();
-
+	const CGameState::CDamageIndicatorState &State = Context.m_State.DamageIndicators();
 	Graphics()->TextureSet(GameClient()->m_GameSkin.m_aSpriteStars[0]);
-	for(int i = 0; i < m_NumItems;)
+	for(int i = 0; i < State.NumItems(); i++)
 	{
-		m_aItems[i].m_RemainingLife -= LifeAdjustment;
-		if(m_aItems[i].m_RemainingLife < 0.0f)
-		{
-			--m_NumItems;
-			m_aItems[i] = m_aItems[m_NumItems];
-		}
-		else
-		{
-			vec2 Pos = mix(m_aItems[i].m_Pos + m_aItems[i].m_Dir * 75.0f, m_aItems[i].m_Pos, std::clamp((m_aItems[i].m_RemainingLife - 0.60f) / 0.15f, 0.0f, 1.0f));
-			const float LifeAlpha = m_aItems[i].m_RemainingLife / 0.1f;
-			Graphics()->SetColor(m_aItems[i].m_Color.WithMultipliedAlpha(LifeAlpha));
-			Graphics()->QuadsSetRotation(m_aItems[i].m_StartAngle + m_aItems[i].m_RemainingLife * 2.0f);
-			Graphics()->RenderQuadContainerAsSprite(m_DmgIndQuadContainerIndex, 0, Pos.x, Pos.y);
-			i++;
-		}
+		const CGameState::CDamageIndicatorState::CItem &Item = State.Item(i);
+		vec2 Pos = mix(Item.m_Pos + Item.m_Dir * 75.0f, Item.m_Pos, std::clamp((Item.m_RemainingLife - 0.60f) / 0.15f, 0.0f, 1.0f));
+		const float ObserverAlpha = Context.AlphaForOwner(Item.m_OwnerClientId, g_Config.m_ClShowOthersAlpha / 100.0f);
+		const float LifeAlpha = Item.m_RemainingLife / 0.1f;
+		Graphics()->SetColor(Item.m_Color.WithMultipliedAlpha(LifeAlpha * ObserverAlpha));
+		Graphics()->QuadsSetRotation(Item.m_StartAngle + Item.m_RemainingLife * 2.0f);
+		Graphics()->RenderQuadContainerAsSprite(m_DmgIndQuadContainerIndex, 0, Pos.x, Pos.y);
 	}
 
 	Graphics()->QuadsSetRotation(0);
@@ -75,9 +56,4 @@ void CDamageInd::OnInit()
 	Graphics()->QuadsSetSubset(0, 0, 1, 1);
 	Graphics()->QuadContainerAddSprite(m_DmgIndQuadContainerIndex, 48.f * ScaleX, 48.f * ScaleY);
 	Graphics()->QuadContainerUpload(m_DmgIndQuadContainerIndex);
-}
-
-void CDamageInd::OnReset()
-{
-	m_NumItems = 0;
 }

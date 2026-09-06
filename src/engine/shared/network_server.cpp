@@ -145,6 +145,7 @@ void CNetServer::Update()
 		m_BudgetStart = Now;
 		m_NumPreConnDecompress = 0;
 		m_NumBanReplies = 0;
+		m_NumVanillaRefusals = 0;
 	}
 
 	for(int i = 0; i < MaxClients(); i++)
@@ -380,6 +381,22 @@ void CNetServer::OnPreConnMsg(NETADDR &Addr, CNetPacketConstruct &Packet, int Sl
 
 	if(IsCtrl && CtrlMsg == NET_CTRLMSG_CONNECT)
 	{
+		if(!g_Config.m_SvVanillaConnections)
+		{
+			// Refused before the anti-spoof handshake, which would answer an unverified
+			// address with a map. The close is several times the size of the connect
+			// that asks for it, so it spends the same budget the handshake does:
+			// answering every one of them turns the server into an amplifier for a
+			// forged sender address.
+			if(g_Config.m_SvVanConnRepliesPerSecond == 0 || m_NumVanillaRefusals < g_Config.m_SvVanConnRepliesPerSecond)
+			{
+				m_NumVanillaRefusals++;
+				const char aMsg[] = "0.6 connections without security tokens are not accepted at this time";
+				SendControl(Addr, NET_CTRLMSG_CLOSE, aMsg, sizeof(aMsg), NET_SECURITY_TOKEN_UNSUPPORTED);
+			}
+			return;
+		}
+
 		if(g_Config.m_SvVanillaAntiSpoof && g_Config.m_Password[0] == '\0')
 		{
 			const int64_t Now = time_get();
@@ -497,7 +514,7 @@ void CNetServer::OnPreConnMsg(NETADDR &Addr, CNetPacketConstruct &Packet, int Sl
 			TryAcceptClient(Addr, NET_SECURITY_TOKEN_UNSUPPORTED, Slot);
 		}
 	}
-	else if(!IsCtrl && g_Config.m_SvVanillaAntiSpoof && g_Config.m_Password[0] == '\0')
+	else if(!IsCtrl && g_Config.m_SvVanillaConnections && g_Config.m_SvVanillaAntiSpoof && g_Config.m_Password[0] == '\0')
 	{
 		// the chunk header is two bytes, three for vital chunks
 		if(Packet.m_DataSize < 2)
@@ -542,6 +559,13 @@ void CNetServer::OnPreConnMsg(NETADDR &Addr, CNetPacketConstruct &Packet, int Sl
 
 void CNetServer::OnTokenCtrlMsg(NETADDR &Addr, int ControlMsg, const CNetPacketConstruct &Packet, int Slot)
 {
+	if(!g_Config.m_SvDdnetConnections && (ControlMsg == NET_CTRLMSG_CONNECT || ControlMsg == NET_CTRLMSG_ACCEPT))
+	{
+		const char aMsg[] = "0.6 connections with security tokens are not accepted at this time";
+		SendControl(Addr, NET_CTRLMSG_CLOSE, aMsg, sizeof(aMsg), GetToken(Addr));
+		return;
+	}
+
 	if(ControlMsg == NET_CTRLMSG_CONNECT)
 	{
 		// response connection request with token

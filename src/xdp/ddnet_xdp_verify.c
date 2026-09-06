@@ -9,6 +9,7 @@
 // anything else the machine is doing.
 //
 // Needs root, or CAP_BPF and CAP_NET_ADMIN.
+#define _GNU_SOURCE
 #include "ddnet_xdp_classify.h"
 #include "ddnet_xdp_shared.h"
 
@@ -17,6 +18,7 @@
 #include <bpf/libbpf.h>
 #include <errno.h>
 #include <linux/bpf.h>
+#include <sched.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -642,6 +644,62 @@ static void build_tracking_cases(void)
 		false, CLIENT_V4, CLIENT_PORT + 6, TEST_PORT, s_aCompressed, sizeof(s_aCompressed), false);
 }
 
+// A server info flood from many prefixes. Each packet lands in a prefix bucket of its
+// own, so the prefix spread lets all of them through; the cap per port is what has to
+// refuse them once its burst is spent. The addresses are chosen so that 10.0.N.0/24
+// hashes to bucket N, so no two of them share one.
+#define PORT_CAP_BURST 6
+#define PREFIX_CAP_BURST 4
+static const uint8_t s_aFloodInfo[20] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 'g', 'i', 'e', '3'};
+static char s_aaFloodSources[PORT_CAP_BURST + 2][32];
+
+static const char *flood_source(int Index)
+{
+	snprintf(s_aaFloodSources[Index], sizeof(s_aaFloodSources[Index]), "10.0.%d.1", 16 + Index);
+	return s_aaFloodSources[Index];
+}
+
+static void build_port_cap_cases(void)
+{
+	for(int Index = 0; Index < PORT_CAP_BURST; Index++)
+		build(add_case("server info from a fresh prefix", true, XDP_PASS, DDNET_XDP_CLASS_CONNLESS, DDNET_XDP_VERDICT_PASS),
+			false, flood_source(Index), 40000, TEST_PORT, s_aFloodInfo, sizeof(s_aFloodInfo), false);
+	build(add_case("the port cap is spent", true, XDP_DROP, DDNET_XDP_CLASS_CONNLESS, DDNET_XDP_VERDICT_DROP),
+		false, flood_source(PORT_CAP_BURST), 40000, TEST_PORT, s_aFloodInfo, sizeof(s_aFloodInfo), false);
+	build(add_case("and stays spent for the next prefix", true, XDP_DROP, DDNET_XDP_CLASS_CONNLESS, DDNET_XDP_VERDICT_DROP),
+		false, flood_source(PORT_CAP_BURST + 1), 40000, TEST_PORT, s_aFloodInfo, sizeof(s_aFloodInfo), false);
+	// A master is never budgeted, by either row.
+	build(add_case("the master still gets through", true, XDP_PASS, DDNET_XDP_CLASS_MASTER, DDNET_XDP_VERDICT_PASS),
+		false, MASTER_V4, 8283, TEST_PORT, s_aFloodInfo, sizeof(s_aFloodInfo), false);
+}
+
+// With the port cap lifted again, the prefix that was refused by it has to have its
+// whole burst left: a refusal by one bucket must not have been charged to the other.
+static void build_port_cap_lifted_cases(void)
+{
+	for(int Index = 0; Index < PREFIX_CAP_BURST; Index++)
+		build(add_case("refused prefix was not charged", true, XDP_PASS, DDNET_XDP_CLASS_CONNLESS, DDNET_XDP_VERDICT_PASS),
+			false, flood_source(PORT_CAP_BURST + 1), 40000, TEST_PORT, s_aFloodInfo, sizeof(s_aFloodInfo), false);
+	build(add_case("its prefix bucket is spent now", true, XDP_DROP, DDNET_XDP_CLASS_CONNLESS, DDNET_XDP_VERDICT_DROP),
+		false, flood_source(PORT_CAP_BURST + 1), 40000, TEST_PORT, s_aFloodInfo, sizeof(s_aFloodInfo), false);
+	build(add_case("a prefix not seen yet passes", true, XDP_PASS, DDNET_XDP_CLASS_CONNLESS, DDNET_XDP_VERDICT_PASS),
+		false, "10.0.40.1", 40000, TEST_PORT, s_aFloodInfo, sizeof(s_aFloodInfo), false);
+}
+
+// The buckets are kept per CPU, and BPF_PROG_RUN runs the program on whichever CPU
+// this process is on. Staying on one of them is what makes the counts above exact.
+static void stay_on_one_cpu(void)
+{
+	cpu_set_t Set;
+	const int Cpu = sched_getcpu();
+	if(Cpu < 0)
+		return;
+	CPU_ZERO(&Set);
+	CPU_SET(Cpu, &Set);
+	if(sched_setaffinity(0, sizeof(Set), &Set) != 0)
+		printf("  could not stay on one CPU (%s), the bucket cases may be off\n", strerror(errno));
+}
+
 // Passes everything libbpf has to say through, including the verifier log, which is
 // the only useful thing to look at when a load fails.
 static int print_libbpf(enum libbpf_print_level Level, const char *pFormat, va_list Args)
@@ -758,6 +816,36 @@ int main(int argc, char **argv)
 		s_NumCases = 0;
 		build_tracking_cases();
 		printf("\nwith the connection table on\n");
+		for(int Index = 0; Index < s_NumCases; Index++)
+			run(ProgramFd, PortMap, StatsMap, NumCpus, &s_aCases[Index]);
+	}
+
+	// The cap per port, on top of the prefix spread. Nothing refills during the run:
+	// a token takes a thousand seconds, so the bursts are all there is.
+	{
+		struct ddnet_xdp_config Capped;
+		memset(&Capped, 0, sizeof(Capped));
+		Capped.m_PrefixV4 = 24;
+		Capped.m_PrefixV6 = 56;
+		Capped.m_aBudgets[DDNET_XDP_BUDGET_CONNLESS].m_NsPerToken = 1000000000000ULL;
+		Capped.m_aBudgets[DDNET_XDP_BUDGET_CONNLESS].m_Burst = PREFIX_CAP_BURST;
+		Capped.m_aPortBudgets[DDNET_XDP_BUDGET_CONNLESS].m_NsPerToken = 1000000000000ULL;
+		Capped.m_aPortBudgets[DDNET_XDP_BUDGET_CONNLESS].m_Burst = PORT_CAP_BURST;
+		bpf_map_update_elem(ConfigMap, &Zero, &Capped, BPF_ANY);
+		stay_on_one_cpu();
+
+		s_NumCases = 0;
+		build_port_cap_cases();
+		printf("\nwith a cap per port of %d\n", PORT_CAP_BURST);
+		for(int Index = 0; Index < s_NumCases; Index++)
+			run(ProgramFd, PortMap, StatsMap, NumCpus, &s_aCases[Index]);
+
+		Capped.m_aPortBudgets[DDNET_XDP_BUDGET_CONNLESS].m_NsPerToken = 0;
+		Capped.m_aPortBudgets[DDNET_XDP_BUDGET_CONNLESS].m_Burst = 0;
+		bpf_map_update_elem(ConfigMap, &Zero, &Capped, BPF_ANY);
+		s_NumCases = 0;
+		build_port_cap_lifted_cases();
+		printf("\nwith the cap per port lifted, prefix burst %d\n", PREFIX_CAP_BURST);
 		for(int Index = 0; Index < s_NumCases; Index++)
 			run(ProgramFd, PortMap, StatsMap, NumCpus, &s_aCases[Index]);
 	}

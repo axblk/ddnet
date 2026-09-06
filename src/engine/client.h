@@ -30,6 +30,7 @@
 
 class CSnapshot;
 class CSnapshotBuffer;
+class CRenderTrace;
 class IMap;
 struct SWarning;
 
@@ -237,6 +238,7 @@ public:
 	 * Exponentially weighted average of frame times.
 	 */
 	float FrameTimeAverage() const { return m_FrameTimeAverage; }
+	virtual CRenderTrace *RenderTrace() = 0;
 
 	// actions
 	virtual void Connect(const char *pAddress, const char *pPassword = nullptr) = 0;

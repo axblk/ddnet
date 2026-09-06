@@ -40,15 +40,15 @@ public:
 private:
 	float Progress(float CurrentTime) const;
 
-	bool m_Smoothing;
-	float m_Value;
+	bool m_Smoothing = false;
+	float m_Value = 0.0f;
 	CCubicBezier m_ValueSmoothing;
-	float m_ValueSmoothingTarget;
-	float m_ValueSmoothingStart;
-	float m_ValueSmoothingEnd;
+	float m_ValueSmoothingTarget = 0.0f;
+	float m_ValueSmoothingStart = 0.0f;
+	float m_ValueSmoothingEnd = 0.0f;
 
-	float m_MinValue;
-	float m_MaxValue;
+	float m_MinValue = 0.0f;
+	float m_MaxValue = 0.0f;
 };
 
 #endif

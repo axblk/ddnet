@@ -35,6 +35,8 @@ struct SGfxWarningContainer;
 struct SGpuTiming
 {
 	uint64_t m_TimeNanoseconds = 0;
+	std::array<uint64_t, IGraphics::GPU_RENDER_ZONE_COUNT> m_aRenderZoneNanoseconds{};
+	uint32_t m_RenderZoneMask = 0;
 	uint64_t m_Sample = 0;
 	bool m_Supported = false;
 };
@@ -44,18 +46,51 @@ struct SGpuTimingShared
 	std::atomic<bool> m_Enabled{false};
 	std::atomic<bool> m_Supported{false};
 	std::atomic<uint64_t> m_TimeNanoseconds{0};
+	std::array<std::atomic<uint64_t>, IGraphics::GPU_RENDER_ZONE_COUNT> m_aRenderZoneNanoseconds{};
+	std::atomic<uint32_t> m_RenderZoneMask{0};
+	// Sequence counter: odd while a publish is in progress, so a reader that
+	// sees the same even value before and after has a consistent sample.
 	std::atomic<uint64_t> m_Sample{0};
+	std::atomic<uint64_t> m_Generation{0};
 
-	void Publish(uint64_t TimeNanoseconds)
+	void SetEnabled(bool Enabled)
 	{
+		if(m_Enabled.exchange(Enabled, std::memory_order_acq_rel) != Enabled)
+			m_Generation.fetch_add(1, std::memory_order_release);
+	}
+
+	uint64_t Generation() const { return m_Generation.load(std::memory_order_acquire); }
+	bool CanPublish(uint64_t Generation) const { return m_Enabled.load(std::memory_order_relaxed) && m_Generation.load(std::memory_order_acquire) == Generation; }
+
+	void Publish(uint64_t TimeNanoseconds, const std::array<uint64_t, IGraphics::GPU_RENDER_ZONE_COUNT> &aRenderZoneNanoseconds = {}, uint32_t RenderZoneMask = 0)
+	{
+		m_Sample.fetch_add(1, std::memory_order_relaxed);
 		m_TimeNanoseconds.store(TimeNanoseconds, std::memory_order_relaxed);
+		for(size_t i = 0; i < aRenderZoneNanoseconds.size(); ++i)
+			m_aRenderZoneNanoseconds[i].store(aRenderZoneNanoseconds[i], std::memory_order_relaxed);
+		m_RenderZoneMask.store(RenderZoneMask, std::memory_order_relaxed);
 		m_Sample.fetch_add(1, std::memory_order_release);
 	}
 
 	SGpuTiming Snapshot() const
 	{
-		const uint64_t Sample = m_Sample.load(std::memory_order_acquire);
-		return {m_TimeNanoseconds.load(std::memory_order_relaxed), Sample, m_Supported.load(std::memory_order_relaxed)};
+		for(;;)
+		{
+			const uint64_t Sequence = m_Sample.load(std::memory_order_acquire);
+			if(Sequence % 2 != 0)
+				continue;
+			SGpuTiming Timing;
+			Timing.m_TimeNanoseconds = m_TimeNanoseconds.load(std::memory_order_relaxed);
+			for(size_t i = 0; i < Timing.m_aRenderZoneNanoseconds.size(); ++i)
+				Timing.m_aRenderZoneNanoseconds[i] = m_aRenderZoneNanoseconds[i].load(std::memory_order_relaxed);
+			Timing.m_RenderZoneMask = m_RenderZoneMask.load(std::memory_order_relaxed);
+			Timing.m_Supported = m_Supported.load(std::memory_order_relaxed);
+			if(m_Sample.load(std::memory_order_acquire) == Sequence)
+			{
+				Timing.m_Sample = Sequence / 2;
+				return Timing;
+			}
+		}
 	}
 };
 
@@ -250,6 +285,7 @@ public:
 		CMD_BEGIN_RENDER_PASS,
 		CMD_END_RENDER_PASS,
 		CMD_FLUSH_RENDER_PASS,
+		CMD_GPU_RENDER_ZONE,
 		CMD_DRAW, // generic draw with frame-owned transient vertex data
 
 		// opengl 2.0+ commands (some are just emulated and only exist in opengl 3.3+)
@@ -385,6 +421,7 @@ public:
 		case CMD_BEGIN_RENDER_PASS:
 		case CMD_END_RENDER_PASS:
 		case CMD_FLUSH_RENDER_PASS:
+		case CMD_GPU_RENDER_ZONE:
 		case CMD_DRAW:
 		case CMD_DRAW_INDEXED:
 		case CMD_PRESENTATION_TARGET_READBACK:
@@ -496,6 +533,14 @@ public:
 	{
 		SCommand_FlushRenderPass() :
 			SCommand(CMD_FLUSH_RENDER_PASS) {}
+	};
+
+	struct SCommand_GpuRenderZone : public SCommand
+	{
+		SCommand_GpuRenderZone() :
+			SCommand(CMD_GPU_RENDER_ZONE) {}
+		IGraphics::EGpuRenderZone m_Zone = IGraphics::EGpuRenderZone::COUNT;
+		bool m_Begin = false;
 	};
 
 	struct SCommand_Signal : public SCommand
@@ -1052,7 +1097,7 @@ inline IGraphics::CFrameRenderStats CCommandBuffer::RenderStats() const
 	IGraphics::CFrameRenderStats Stats;
 	for(const SCommand *pCommand = Head(); pCommand != nullptr; pCommand = pCommand->m_pNext)
 	{
-		++Stats.m_Commands;
+		Stats.m_Commands += pCommand->m_Cmd != CMD_GPU_RENDER_ZONE;
 		Stats.m_ResourceCommands += IsResourceCommand(pCommand->m_Cmd);
 		switch(pCommand->m_Cmd)
 		{

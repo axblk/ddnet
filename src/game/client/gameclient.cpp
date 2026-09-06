@@ -54,6 +54,7 @@
 
 #include <engine/client/checksum.h>
 #include <engine/client/enums.h>
+#include <engine/client/render_trace.h>
 #include <engine/demo.h>
 #include <engine/discord.h>
 #include <engine/editor.h>
@@ -86,6 +87,7 @@
 
 #include <chrono>
 #include <limits>
+#include <utility>
 
 using namespace std::chrono_literals;
 
@@ -276,6 +278,7 @@ void CGameClient::OnConsoleInit()
 	const size_t MaxConcurrentAssetJobs = std::clamp(m_pEngine->JobThreadCount() * 2, size_t{4}, size_t{16});
 	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs);
 	m_pClient = Kernel()->RequestInterface<IClient>();
+	m_pRenderTrace = m_pClient->RenderTrace();
 	CGameSessionContext *pNetworkContext = m_SessionContexts.Create(m_pClient->NetworkSessionId(), "", EGameProtocol::SIX, m_pClient->StreamIds(m_pClient->NetworkSessionId()));
 	CGameSessionContext *pDemoContext = m_SessionContexts.Create(m_pClient->DemoSessionId(), "", EGameProtocol::SIX, m_pClient->StreamIds(m_pClient->DemoSessionId()));
 	dbg_assert(pNetworkContext != nullptr && pDemoContext != nullptr, "failed to create game session contexts");
@@ -1211,6 +1214,7 @@ void CGameClient::OnRender()
 	CGameView &View = *ActiveEntryIt->m_pView;
 	const CGameTickInfo &GameTickInfo = ActiveEntryIt->m_Time;
 	const CVisibleWorldRect &VisibleWorldRect = ActiveEntryIt->m_VisibleWorldRect;
+	CRenderTrace *pTrace = m_pRenderTrace;
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
 	const bool MenuBackdropActive = m_Menus.BeginMenuBackdrop(ClearColor);
 	CScreenRenderOutput ScreenOutput(*Graphics(), ClearColor, MenuBackdropActive);
@@ -1239,9 +1243,17 @@ void CGameClient::OnRender()
 	{
 		m_SessionPresentations.SetAudible(CSessionId());
 	}
+	struct SRenderComponent
+	{
+		CComponent *m_pComponent;
+		const char *m_pTraceName;
+		IGraphics::EGpuRenderZone m_GpuZone = IGraphics::EGpuRenderZone::COUNT;
+	};
+	Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::WORLD);
 	m_RenderScheduler.Run(
 		m_vRenderRequests,
-		[this](const CPresentationContext &Context) {
+		[this, pTrace](const CPresentationContext &Context) {
+			CRenderTraceScope TraceScope(pTrace, "game/presentation_update");
 			SessionPresentation(Context.m_Session.Id()).UpdateClients(Context);
 			m_Effects.Update(Context);
 			m_Particles.Update(Context);
@@ -1250,111 +1262,170 @@ void CGameClient::OnRender()
 			m_Ghost.UpdatePresentation(Context);
 			m_Players.UpdatePresentation(Context);
 		},
-		[this](const CRenderContext &Context, CRenderOutput &Output) {
+		[this, pTrace](const CRenderContext &Context, CRenderOutput &Output) {
+			CRenderTraceScope TraceScope(pTrace, "game/world");
 			const bool UsePredictedTime = UsePredictedEnvelopeTime(Context.m_Time, Context.m_View);
 			CSessionPresentation &Presentation = SessionPresentation(Context.m_Session.Id());
 			if(Context.m_Time.m_IsGameActive)
 				Presentation.PrepareRender(Context, UsePredictedTime);
 			if(!m_Background.UsesCurrentMap())
 				m_Background.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
-			const std::array<CComponent *, 13> apWorldComponents = {
-				&Presentation.MapLayersBackground(),
-				&m_Particles.m_RenderTrail,
-				&m_Particles.m_RenderTrailExtra,
-				&m_Items,
-				&m_Ghost,
-				&m_Players,
-				&Presentation.MapLayersForeground(),
-				&m_Particles.m_RenderExplosions,
-				&m_NamePlates,
-				&m_Particles.m_RenderExtra,
-				&m_Particles.m_RenderGeneral,
-				&m_FreezeBars,
-				&m_DamageInd,
+			const std::array<SRenderComponent, 13> apWorldComponents = {
+				SRenderComponent{&Presentation.MapLayersBackground(), "world/map_background", IGraphics::EGpuRenderZone::MAP_BACKGROUND},
+				SRenderComponent{&m_Particles.m_RenderTrail, "world/particles_trail", IGraphics::EGpuRenderZone::PARTICLES},
+				SRenderComponent{&m_Particles.m_RenderTrailExtra, "world/particles_trail_extra", IGraphics::EGpuRenderZone::PARTICLES},
+				SRenderComponent{&m_Items, "world/items", IGraphics::EGpuRenderZone::ITEMS},
+				SRenderComponent{&m_Ghost, "world/ghost", IGraphics::EGpuRenderZone::GHOST},
+				SRenderComponent{&m_Players, "world/players", IGraphics::EGpuRenderZone::PLAYERS},
+				SRenderComponent{&Presentation.MapLayersForeground(), "world/map_foreground", IGraphics::EGpuRenderZone::MAP_FOREGROUND},
+				SRenderComponent{&m_Particles.m_RenderExplosions, "world/particles_explosions", IGraphics::EGpuRenderZone::PARTICLES},
+				SRenderComponent{&m_NamePlates, "world/nameplates", IGraphics::EGpuRenderZone::NAMEPLATES},
+				SRenderComponent{&m_Particles.m_RenderExtra, "world/particles_extra", IGraphics::EGpuRenderZone::PARTICLES},
+				SRenderComponent{&m_Particles.m_RenderGeneral, "world/particles_general", IGraphics::EGpuRenderZone::PARTICLES},
+				SRenderComponent{&m_FreezeBars, "world/freezebars", IGraphics::EGpuRenderZone::FREEZEBARS},
+				SRenderComponent{&m_DamageInd, "world/damage_indicators", IGraphics::EGpuRenderZone::DAMAGE_INDICATORS},
 			};
 			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
 			if(g_Config.m_ClOverlayEntities == 100)
 			{
+				CRenderTraceScope BackgroundTraceScope(pTrace, "world/background");
+				Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::MAP_BACKGROUND);
 				if(m_Background.UsesCurrentMap())
 					Presentation.MapLayersBackgroundForce().OnRender(Context);
 				else
 					m_Background.OnRender(Context);
+				Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::MAP_BACKGROUND);
 			}
-			for(CComponent *pComponent : apWorldComponents)
+			for(const auto &[pComponent, pName, GpuZone] : apWorldComponents)
+			{
+				CRenderTraceScope ComponentTraceScope(pTrace, pName);
+				if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
+					Graphics()->GpuRenderZoneBegin(GpuZone);
 				pComponent->OnRender(Context);
+				if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
+					Graphics()->GpuRenderZoneEnd(GpuZone);
+			}
 			Output.EndView();
 		});
+	Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::WORLD);
+	Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::INTERFACE);
 
 	const CRenderContext CompatibilityContext(ActiveSession, ActiveState, View, GameTickInfo, VisibleWorldRect, ScreenOutput.PresentationCacheKey(), ScreenOutput.IsVideoOutput());
 
-	const std::array<CComponent *, 2> apRequestOverlaysBeforeChat = {
-		&m_InfoMessages,
-		&m_Hud,
+	const std::array<SRenderComponent, 2> apRequestOverlaysBeforeChat = {
+		SRenderComponent{&m_InfoMessages, "ui/info_messages", IGraphics::EGpuRenderZone::INFO_MESSAGES},
+		SRenderComponent{&m_Hud, "ui/hud", IGraphics::EGpuRenderZone::HUD},
 	};
-	const std::array<CComponent *, 2> apCompatibilityOverlaysBeforeChat = {
-		&m_Spectator,
-		&m_Emoticon,
+	const std::array<SRenderComponent, 2> apCompatibilityOverlaysBeforeChat = {
+		SRenderComponent{&m_Spectator, "ui/spectator", IGraphics::EGpuRenderZone::SPECTATOR},
+		SRenderComponent{&m_Emoticon, "ui/emoticon", IGraphics::EGpuRenderZone::EMOTICON},
 	};
-	const std::array<CComponent *, 2> apRequestOverlaysAfterChat = {
-		&m_Broadcast,
-		&m_DebugHud,
+	const std::array<SRenderComponent, 2> apRequestOverlaysAfterChat = {
+		SRenderComponent{&m_Broadcast, "ui/broadcast", IGraphics::EGpuRenderZone::BROADCAST},
+		SRenderComponent{&m_DebugHud, "ui/debug_hud", IGraphics::EGpuRenderZone::DEBUG_HUD},
 	};
-	const std::array<CComponent *, 2> apCompatibilityOverlaysAfterChat = {
-		&m_ImportantAlert,
-		&m_TouchControls,
+	const std::array<SRenderComponent, 2> apCompatibilityOverlaysAfterChat = {
+		SRenderComponent{&m_ImportantAlert, "ui/important_alert", IGraphics::EGpuRenderZone::IMPORTANT_ALERT},
+		SRenderComponent{&m_TouchControls, "ui/touch_controls", IGraphics::EGpuRenderZone::TOUCH_CONTROLS},
 	};
-	const std::array<CComponent *, 2> apRequestOverlaysAfterScoreboard = {
-		&m_Statboard,
-		&m_Motd,
+	const std::array<SRenderComponent, 2> apRequestOverlaysAfterScoreboard = {
+		SRenderComponent{&m_Statboard, "ui/statboard", IGraphics::EGpuRenderZone::STATBOARD},
+		SRenderComponent{&m_Motd, "ui/motd", IGraphics::EGpuRenderZone::MOTD},
 	};
-	const std::array<CComponent *, 3> apApplicationOverlays = {
-		&m_Menus,
-		&m_Tooltips,
-		&m_GameConsole,
+	const std::array<SRenderComponent, 3> apApplicationOverlays = {
+		SRenderComponent{&m_Menus, "ui/menus", IGraphics::EGpuRenderZone::MENUS},
+		SRenderComponent{&m_Tooltips, "ui/tooltips", IGraphics::EGpuRenderZone::TOOLTIPS},
+		SRenderComponent{&m_GameConsole, "ui/console", IGraphics::EGpuRenderZone::CONSOLE},
 	};
-	auto RenderRequestComponents = [&](std::span<CComponent *const> vpComponents) {
+	auto RenderRequestComponents = [&](std::span<const SRenderComponent> Components) {
 		m_RenderScheduler.Run(
 			m_vRenderRequests,
 			[](const CPresentationContext &) {},
-			[vpComponents](const CRenderContext &Context, CRenderOutput &Output) {
+			// The callback is only called while `Run` is on the stack, so the
+			// span can be captured by reference. That keeps the closure at two
+			// pointers, which is what a `std::function` holds without reaching
+			// for the heap on every frame.
+			[this, &Components](const CRenderContext &Context, CRenderOutput &Output) {
 				Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
-				for(CComponent *pComponent : vpComponents)
+				for(const auto &[pComponent, pName, GpuZone] : Components)
+				{
+					CRenderTraceScope TraceScope(m_pRenderTrace, pName);
+					if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
+						Graphics()->GpuRenderZoneBegin(GpuZone);
 					pComponent->OnRender(Context);
+					if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
+						Graphics()->GpuRenderZoneEnd(GpuZone);
+				}
 				Output.EndView();
 			});
 	};
 	RenderRequestComponents(apRequestOverlaysBeforeChat);
 	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
-	for(CComponent *pComponent : apCompatibilityOverlaysBeforeChat)
+	for(const auto &[pComponent, pName, GpuZone] : apCompatibilityOverlaysBeforeChat)
+	{
+		CRenderTraceScope TraceScope(pTrace, pName);
+		if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
+			Graphics()->GpuRenderZoneBegin(GpuZone);
 		pComponent->OnRender(CompatibilityContext);
-	m_Chat.RenderApplicationOverlay(CompatibilityContext);
+		if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
+			Graphics()->GpuRenderZoneEnd(GpuZone);
+	}
+	{
+		CRenderTraceScope TraceScope(pTrace, "ui/chat_application");
+		Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::CHAT);
+		m_Chat.RenderApplicationOverlay(CompatibilityContext);
+		Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::CHAT);
+	}
 	ScreenOutput.EndView();
 	m_RenderScheduler.Run(
 		m_vRenderRequests,
 		[](const CPresentationContext &) {},
-		[this](const CRenderContext &Context, CRenderOutput &Output) {
+		[this, pTrace](const CRenderContext &Context, CRenderOutput &Output) {
 			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
+			CRenderTraceScope TraceScope(pTrace, "ui/chat");
+			Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::CHAT);
 			m_Chat.OnRender(Context);
+			Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::CHAT);
 			Output.EndView();
 		});
 	RenderRequestComponents(apRequestOverlaysAfterChat);
 	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
-	for(CComponent *pComponent : apCompatibilityOverlaysAfterChat)
+	for(const auto &[pComponent, pName, GpuZone] : apCompatibilityOverlaysAfterChat)
+	{
+		CRenderTraceScope TraceScope(pTrace, pName);
+		if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
+			Graphics()->GpuRenderZoneBegin(GpuZone);
 		pComponent->OnRender(CompatibilityContext);
-	m_TouchControls.RenderApplicationOverlay();
+		if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
+			Graphics()->GpuRenderZoneEnd(GpuZone);
+	}
+	{
+		CRenderTraceScope TraceScope(pTrace, "ui/touch_controls_application");
+		Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::TOUCH_CONTROLS);
+		m_TouchControls.RenderApplicationOverlay();
+		Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::TOUCH_CONTROLS);
+	}
 	ScreenOutput.EndView();
 	m_Menus.FinishMenuBackdrop();
 	m_Scoreboard.BeginRenderFrame();
 	m_RenderScheduler.Run(
 		m_vRenderRequests,
 		[](const CPresentationContext &) {},
-		[this](const CRenderContext &Context, CRenderOutput &Output) {
+		[this, pTrace](const CRenderContext &Context, CRenderOutput &Output) {
 			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
+			CRenderTraceScope TraceScope(pTrace, "ui/scoreboard");
+			Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::SCOREBOARD);
 			m_Scoreboard.OnRender(Context);
+			Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::SCOREBOARD);
 			Output.EndView();
 		});
 	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
-	m_Scoreboard.RenderApplicationOverlay(CompatibilityContext);
+	{
+		CRenderTraceScope TraceScope(pTrace, "ui/scoreboard_application");
+		Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::SCOREBOARD);
+		m_Scoreboard.RenderApplicationOverlay(CompatibilityContext);
+		Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::SCOREBOARD);
+	}
 	ScreenOutput.EndView();
 	RenderRequestComponents(apRequestOverlaysAfterScoreboard);
 	// After the backdrop, so that opening the scoreboard does not smear the
@@ -1365,14 +1436,23 @@ void CGameClient::OnRender()
 	ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
 	m_Hud.RenderCursor(CompatibilityContext);
 	ScreenOutput.EndView();
-	for(CComponent *pComponent : apApplicationOverlays)
+	for(const auto &[pComponent, pName, GpuZone] : apApplicationOverlays)
+	{
+		CRenderTraceScope TraceScope(pTrace, pName);
+		if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
+			Graphics()->GpuRenderZoneBegin(GpuZone);
 		pComponent->OnRenderApplicationOverlay();
-
+		if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
+			Graphics()->GpuRenderZoneEnd(GpuZone);
+	}
 	// Nothing captured what was drawn over the scene, so it goes to the screen
 	// as it is.
 	m_Menus.PresentMenuBackdrop();
-
-	CLineInput::RenderCandidates();
+	{
+		CRenderTraceScope TraceScope(pTrace, "ui/line_input");
+		CLineInput::RenderCandidates();
+	}
+	Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::INTERFACE);
 
 	m_vRenderRequests.clear();
 }

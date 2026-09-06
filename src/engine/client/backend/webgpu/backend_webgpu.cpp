@@ -9,6 +9,7 @@
 #include <base/str.h>
 
 #include <engine/client/backend/backend_base.h>
+#include <engine/client/backend/gpu_timestamp.h>
 #include <engine/gfx/image_manipulation.h>
 #include <engine/shared/config.h>
 
@@ -50,8 +51,8 @@ constexpr size_t UPLOAD_BUFFER_SLOT_COUNT = 3;
 // asked the device for.
 constexpr size_t READBACK_SLOT_COUNT = 3;
 constexpr size_t GPU_TIMESTAMP_SLOT_COUNT = 4;
-constexpr uint64_t GPU_TIMESTAMP_SIZE = 2 * sizeof(uint64_t);
-constexpr uint64_t GPU_TIMESTAMP_RESOLVE_STRIDE = 256;
+constexpr uint64_t GPU_TIMESTAMP_SIZE = GPU_TIMESTAMP_QUERY_COUNT * sizeof(uint64_t);
+constexpr uint64_t GPU_TIMESTAMP_RESOLVE_STRIDE = (GPU_TIMESTAMP_SIZE + 255) / 256 * 256;
 constexpr size_t BLEND_MODE_COUNT = 3;
 constexpr size_t PRIMITIVE_PIPELINE_COUNT = 2 * BLEND_MODE_COUNT * 2;
 constexpr size_t BUFFERED_PIPELINE_COUNT = BLEND_MODE_COUNT * 2;
@@ -258,6 +259,10 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 		std::shared_ptr<SMapResult> m_pMapResult;
 		bool m_InFlight = false;
 		bool m_Publish = false;
+		uint32_t m_ZoneMask = 0;
+		uint32_t m_IntervalCount = 0;
+		TGpuTimestampIntervalZones m_aIntervalZones{};
+		uint64_t m_Generation = 0;
 	};
 
 	EWebGpuBackendType m_BackendType;
@@ -372,6 +377,8 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	size_t m_UploadBufferSlot = 0;
 	float m_GpuTimestampPeriod = 0.0f;
 	int m_GpuTimestampActiveSlot = -1;
+	CGpuTimestampZones m_GpuTimestampZones;
+	uint64_t m_GpuTimestampGeneration = 0;
 	IGraphics::CTextureHandle m_RenderTarget;
 	WGPULoadOp m_RenderPassLoadOp = WGPULoadOp_Load;
 	WGPUColor m_RenderPassClearColor = WGPU_COLOR_INIT;
@@ -391,6 +398,7 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	bool m_DeviceLost = false;
 	bool m_PresentedOnce = false;
 	bool m_GpuTimestampSupported = false;
+	bool m_GpuTimestampInsidePassesSupported = false;
 	bool m_GpuTimestampResourcesFailed = false;
 	bool m_GpuTimestampActiveSubmitted = false;
 	std::atomic<bool> m_UncapturedError = false;
@@ -568,7 +576,11 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	void CollectGpuTimestampResults();
 
+	void AbandonGpuTimestamp();
+
 	void BeginGpuTimestamp();
+
+	bool GpuRenderZone(const CCommandBuffer::SCommand_GpuRenderZone *pCommand);
 
 	void MapGpuTimestampSlot(int SlotIndex, bool Publish);
 
@@ -850,6 +862,7 @@ void CCommandProcessorFragment_WebGpu::DestroyGpuTimestampResources()
 	}
 	m_GpuTimestampActiveSlot = -1;
 	m_GpuTimestampActiveSubmitted = false;
+	m_GpuTimestampZones.Reset();
 }
 
 bool CCommandProcessorFragment_WebGpu::EnsureGpuTimestampResources()
@@ -862,7 +875,7 @@ bool CCommandProcessorFragment_WebGpu::EnsureGpuTimestampResources()
 	WGPUQuerySetDescriptor QuerySetDescriptor = WGPU_QUERY_SET_DESCRIPTOR_INIT;
 	QuerySetDescriptor.label = StringView("DDNet WebGPU frame timestamps");
 	QuerySetDescriptor.type = WGPUQueryType_Timestamp;
-	QuerySetDescriptor.count = GPU_TIMESTAMP_SLOT_COUNT * 2;
+	QuerySetDescriptor.count = GPU_TIMESTAMP_SLOT_COUNT * GPU_TIMESTAMP_QUERY_COUNT;
 	m_GpuTimestampQuerySet = wgpuDeviceCreateQuerySet(m_Device, &QuerySetDescriptor);
 
 	WGPUBufferDescriptor BufferDescriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
@@ -899,15 +912,31 @@ void CCommandProcessorFragment_WebGpu::CollectGpuTimestampResults()
 		if(Slot.m_pMapResult->m_Status == WGPUMapAsyncStatus_Success)
 		{
 			const auto *pMappedData = static_cast<const uint8_t *>(wgpuBufferGetConstMappedRange(Slot.m_ReadbackBuffer, 0, GPU_TIMESTAMP_SIZE));
-			if(pMappedData != nullptr && Slot.m_Publish)
+			if(pMappedData != nullptr && Slot.m_Publish && m_pGpuTiming->CanPublish(Slot.m_Generation))
 			{
-				uint64_t Start;
-				uint64_t End;
-				std::memcpy(&Start, pMappedData, sizeof(Start));
-				std::memcpy(&End, pMappedData + sizeof(Start), sizeof(End));
+				std::array<uint64_t, GPU_TIMESTAMP_QUERY_COUNT> aTimestamps;
+				std::memcpy(aTimestamps.data(), pMappedData, GPU_TIMESTAMP_SIZE);
+				const uint64_t Start = aTimestamps[0];
+				const uint64_t End = aTimestamps[1];
 				const double Duration = End >= Start ? static_cast<double>(End - Start) * m_GpuTimestampPeriod : -1.0;
 				if(Duration >= 0.0 && std::isfinite(Duration) && Duration < static_cast<double>(std::numeric_limits<uint64_t>::max()))
-					m_pGpuTiming->Publish(static_cast<uint64_t>(Duration + 0.5));
+				{
+					std::array<uint64_t, IGraphics::GPU_RENDER_ZONE_COUNT> aZoneNanoseconds{};
+					for(uint32_t Interval = 0; Interval < Slot.m_IntervalCount; ++Interval)
+					{
+						const size_t Zone = static_cast<size_t>(Slot.m_aIntervalZones[Interval]);
+						if((Slot.m_ZoneMask & (1U << Zone)) == 0)
+							continue;
+						const size_t Query = 2 + Interval * 2;
+						const double ZoneDuration = aTimestamps[Query + 1] >= aTimestamps[Query] ? static_cast<double>(aTimestamps[Query + 1] - aTimestamps[Query]) * m_GpuTimestampPeriod : -1.0;
+						if(ZoneDuration >= 0.0 && std::isfinite(ZoneDuration) && ZoneDuration < static_cast<double>(std::numeric_limits<uint64_t>::max()))
+						{
+							const uint64_t IntervalNanoseconds = static_cast<uint64_t>(ZoneDuration + 0.5);
+							aZoneNanoseconds[Zone] = std::numeric_limits<uint64_t>::max() - aZoneNanoseconds[Zone] < IntervalNanoseconds ? std::numeric_limits<uint64_t>::max() : aZoneNanoseconds[Zone] + IntervalNanoseconds;
+						}
+					}
+					m_pGpuTiming->Publish(static_cast<uint64_t>(Duration + 0.5), aZoneNanoseconds, Slot.m_ZoneMask);
+				}
 			}
 			wgpuBufferUnmap(Slot.m_ReadbackBuffer);
 		}
@@ -915,6 +944,28 @@ void CCommandProcessorFragment_WebGpu::CollectGpuTimestampResults()
 		Slot.m_InFlight = false;
 		Slot.m_Publish = false;
 	}
+}
+
+/**
+ * Gives the timestamp slot of the current frame back without publishing a
+ * measurement.
+ *
+ * A frame that never reaches the queue has no timings, and its slot has to
+ * become free again. There are only a handful of slots, so a slot left claimed
+ * on an error path means GPU timing is off from then on while still reporting
+ * itself as supported.
+ */
+void CCommandProcessorFragment_WebGpu::AbandonGpuTimestamp()
+{
+	if(m_GpuTimestampActiveSlot < 0)
+		return;
+	SGpuTimestampSlot &Slot = m_aGpuTimestampSlots[m_GpuTimestampActiveSlot];
+	Slot.m_pMapResult.reset();
+	Slot.m_InFlight = false;
+	Slot.m_Publish = false;
+	m_GpuTimestampActiveSlot = -1;
+	m_GpuTimestampActiveSubmitted = false;
+	m_GpuTimestampZones.Reset();
 }
 
 void CCommandProcessorFragment_WebGpu::BeginGpuTimestamp()
@@ -927,9 +978,34 @@ void CCommandProcessorFragment_WebGpu::BeginGpuTimestamp()
 			continue;
 		m_GpuTimestampActiveSlot = static_cast<int>(i);
 		m_GpuTimestampActiveSubmitted = false;
-		wgpuCommandEncoderWriteTimestamp(m_CommandEncoder, m_GpuTimestampQuerySet, static_cast<uint32_t>(i * 2));
+		m_GpuTimestampZones.Reset();
+		m_GpuTimestampGeneration = m_pGpuTiming->Generation();
+		wgpuCommandEncoderWriteTimestamp(m_CommandEncoder, m_GpuTimestampQuerySet, static_cast<uint32_t>(i * GPU_TIMESTAMP_QUERY_COUNT));
 		return;
 	}
+}
+
+bool CCommandProcessorFragment_WebGpu::GpuRenderZone(const CCommandBuffer::SCommand_GpuRenderZone *pCommand)
+{
+	if(!m_GpuTimestampInsidePassesSupported)
+		return true;
+	if(!EnsureCommandEncoder() || m_GpuTimestampActiveSlot < 0)
+		return m_CommandEncoder != nullptr;
+	uint32_t Query;
+	if(!(pCommand->m_Begin ? m_GpuTimestampZones.Begin(pCommand->m_Zone, Query) : m_GpuTimestampZones.End(pCommand->m_Zone, Query)))
+		return true;
+	Query += static_cast<uint32_t>(m_GpuTimestampActiveSlot * GPU_TIMESTAMP_QUERY_COUNT);
+	if(m_RenderPass != nullptr)
+	{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		return true;
+#else
+		wgpuRenderPassEncoderWriteTimestamp(m_RenderPass, m_GpuTimestampQuerySet, Query);
+#endif
+	}
+	else
+		wgpuCommandEncoderWriteTimestamp(m_CommandEncoder, m_GpuTimestampQuerySet, Query);
+	return true;
 }
 
 void CCommandProcessorFragment_WebGpu::MapGpuTimestampSlot(int SlotIndex, bool Publish)
@@ -938,6 +1014,10 @@ void CCommandProcessorFragment_WebGpu::MapGpuTimestampSlot(int SlotIndex, bool P
 	Slot.m_pMapResult = std::make_shared<SMapResult>();
 	Slot.m_InFlight = true;
 	Slot.m_Publish = Publish;
+	Slot.m_ZoneMask = m_GpuTimestampZones.ZoneMask();
+	Slot.m_IntervalCount = m_GpuTimestampZones.IntervalCount();
+	Slot.m_aIntervalZones = m_GpuTimestampZones.IntervalZones();
+	Slot.m_Generation = m_GpuTimestampGeneration;
 	WGPUBufferMapCallbackInfo CallbackInfo = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
 	CallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
 	CallbackInfo.callback = MapCallback;
@@ -966,22 +1046,31 @@ bool CCommandProcessorFragment_WebGpu::SubmitCommands(bool EndsFrame, bool Publi
 	EndRenderPass();
 	const int GpuTimestampSlot = EndsFrame ? m_GpuTimestampActiveSlot : -1;
 	if(GpuTimestampSlot >= 0 && m_CommandEncoder == nullptr && !EnsureCommandEncoder())
+	{
+		AbandonGpuTimestamp();
 		return false;
+	}
 	if(m_CommandEncoder == nullptr)
 		return true;
 	if(GpuTimestampSlot >= 0)
 	{
-		const uint32_t FirstQuery = static_cast<uint32_t>(GpuTimestampSlot * 2);
+		const uint32_t FirstQuery = static_cast<uint32_t>(GpuTimestampSlot * GPU_TIMESTAMP_QUERY_COUNT);
 		const uint64_t ResolveOffset = GpuTimestampSlot * GPU_TIMESTAMP_RESOLVE_STRIDE;
+		m_GpuTimestampZones.CloseOpenZones([&](uint32_t Query) {
+			wgpuCommandEncoderWriteTimestamp(m_CommandEncoder, m_GpuTimestampQuerySet, FirstQuery + Query);
+		});
 		wgpuCommandEncoderWriteTimestamp(m_CommandEncoder, m_GpuTimestampQuerySet, FirstQuery + 1);
-		wgpuCommandEncoderResolveQuerySet(m_CommandEncoder, m_GpuTimestampQuerySet, FirstQuery, 2, m_GpuTimestampResolveBuffer, ResolveOffset);
-		wgpuCommandEncoderCopyBufferToBuffer(m_CommandEncoder, m_GpuTimestampResolveBuffer, ResolveOffset, m_aGpuTimestampSlots[GpuTimestampSlot].m_ReadbackBuffer, 0, GPU_TIMESTAMP_SIZE);
+		const uint32_t QueryCount = m_GpuTimestampZones.WrittenQueryCount();
+		const uint64_t QuerySize = QueryCount * sizeof(uint64_t);
+		wgpuCommandEncoderResolveQuerySet(m_CommandEncoder, m_GpuTimestampQuerySet, FirstQuery, QueryCount, m_GpuTimestampResolveBuffer, ResolveOffset);
+		wgpuCommandEncoderCopyBufferToBuffer(m_CommandEncoder, m_GpuTimestampResolveBuffer, ResolveOffset, m_aGpuTimestampSlots[GpuTimestampSlot].m_ReadbackBuffer, 0, QuerySize);
 	}
 	WGPUCommandBuffer CommandBuffer = wgpuCommandEncoderFinish(m_CommandEncoder, nullptr);
 	wgpuCommandEncoderRelease(m_CommandEncoder);
 	m_CommandEncoder = nullptr;
 	if(CommandBuffer == nullptr)
 	{
+		AbandonGpuTimestamp();
 		SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to finish the frame command buffer");
 		return false;
 	}
@@ -993,7 +1082,10 @@ bool CCommandProcessorFragment_WebGpu::SubmitCommands(bool EndsFrame, bool Publi
 	wgpuQueueSubmit(m_Queue, 1, &CommandBuffer);
 	wgpuCommandBufferRelease(CommandBuffer);
 	if(UsesUploadBuffers && !AdvanceUploadBufferSlot())
+	{
+		AbandonGpuTimestamp();
 		return false;
+	}
 	if(m_GpuTimestampActiveSlot >= 0)
 		m_GpuTimestampActiveSubmitted = true;
 	if(GpuTimestampSlot >= 0)
@@ -1001,6 +1093,7 @@ bool CCommandProcessorFragment_WebGpu::SubmitCommands(bool EndsFrame, bool Publi
 		MapGpuTimestampSlot(GpuTimestampSlot, PublishGpuTimestamp);
 		m_GpuTimestampActiveSlot = -1;
 		m_GpuTimestampActiveSubmitted = false;
+		m_GpuTimestampZones.Reset();
 	}
 	m_StreamOffset = 0;
 	m_UniformOffset = 0;
@@ -1140,11 +1233,16 @@ bool CCommandProcessorFragment_WebGpu::Initialize(const SCommand_Init *pCommand)
 	if(wgpuAdapterGetInfo(m_Adapter, &AdapterInfo) == WGPUStatus_Success)
 	{
 		const std::string Description = ToString(AdapterInfo.description);
+		const std::string Device = ToString(AdapterInfo.device);
 		const std::string Vendor = ToString(AdapterInfo.vendor);
 		str_copy(pCommand->m_pVendorString, Vendor.empty() ? WEBGPU_IMPLEMENTATION_NAME : Vendor.c_str(), 256);
 		str_copy(pCommand->m_pVersionString, WEBGPU_IMPLEMENTATION_VERSION, 256);
-		str_copy(pCommand->m_pRendererString, Description.empty() ? BackendName(AdapterInfo.backendType) : Description.c_str(), 256);
-		log_info("gfx/webgpu", "adapter=%s backend=%s", Description.c_str(), BackendName(AdapterInfo.backendType));
+		const std::string &Renderer = Device.empty() ? Description : Device;
+		if(Renderer.empty())
+			str_copy(pCommand->m_pRendererString, BackendName(AdapterInfo.backendType), 256);
+		else
+			str_format(pCommand->m_pRendererString, 256, "%s (%s)", Renderer.c_str(), BackendName(AdapterInfo.backendType));
+		log_info("gfx/webgpu", "adapter=%s backend=%s", Renderer.c_str(), BackendName(AdapterInfo.backendType));
 		wgpuAdapterInfoFreeMembers(AdapterInfo);
 	}
 
@@ -1152,13 +1250,17 @@ bool CCommandProcessorFragment_WebGpu::Initialize(const SCommand_Init *pCommand)
 	WGPUDeviceDescriptor DeviceDescriptor = WGPU_DEVICE_DESCRIPTOR_INIT;
 	DeviceDescriptor.label = StringView("DDNet experimental WebGPU device");
 #if !defined(CONF_PLATFORM_EMSCRIPTEN)
+	// The first two are what frame timing needs; the third only lets the
+	// render zones write their timestamps inside a pass.
 	const std::array GpuTimestampFeatures{
 		WGPUFeatureName_TimestampQuery,
-		static_cast<WGPUFeatureName>(WGPUNativeFeature_TimestampQueryInsideEncoders)};
-	m_GpuTimestampSupported = m_pGpuTiming != nullptr && std::ranges::all_of(GpuTimestampFeatures, [&](WGPUFeatureName Feature) { return wgpuAdapterHasFeature(m_Adapter, Feature); });
+		static_cast<WGPUFeatureName>(WGPUNativeFeature_TimestampQueryInsideEncoders),
+		static_cast<WGPUFeatureName>(WGPUNativeFeature_TimestampQueryInsidePasses)};
+	m_GpuTimestampSupported = m_pGpuTiming != nullptr && std::ranges::all_of(GpuTimestampFeatures.begin(), GpuTimestampFeatures.begin() + 2, [&](WGPUFeatureName Feature) { return wgpuAdapterHasFeature(m_Adapter, Feature); });
+	m_GpuTimestampInsidePassesSupported = m_GpuTimestampSupported && wgpuAdapterHasFeature(m_Adapter, GpuTimestampFeatures[2]);
 	if(m_GpuTimestampSupported)
 	{
-		DeviceDescriptor.requiredFeatureCount = GpuTimestampFeatures.size();
+		DeviceDescriptor.requiredFeatureCount = m_GpuTimestampInsidePassesSupported ? GpuTimestampFeatures.size() : GpuTimestampFeatures.size() - 1;
 		DeviceDescriptor.requiredFeatures = GpuTimestampFeatures.data();
 	}
 #endif
@@ -1366,6 +1468,8 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 		return RUN_COMMAND_COMMAND_HANDLED;
 	case CCommandBuffer::CMD_DELETE_BUFFER_OBJECT:
 		return DestroyBuffer(static_cast<const CCommandBuffer::SCommand_DeleteBufferObject *>(pBaseCommand)->m_Buffer) ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
+	case CCommandBuffer::CMD_GPU_RENDER_ZONE:
+		return GpuRenderZone(static_cast<const CCommandBuffer::SCommand_GpuRenderZone *>(pBaseCommand)) ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
 	case CCommandBuffer::CMD_BEGIN_RENDER_PASS:
 	{
 		const auto *pCommand = static_cast<const CCommandBuffer::SCommand_BeginRenderPass *>(pBaseCommand);

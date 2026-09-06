@@ -1113,6 +1113,7 @@ void CEditorActionEditLayerTilesProp::RestoreLayer(int Layer, const std::shared_
 			std::shared_ptr<CLayerTune> pSavedLayerTune = std::static_pointer_cast<CLayerTune>(pSavedLayerTiles);
 			mem_copy(pLayerTune->m_pTuneTile, pSavedLayerTune->m_pTuneTile, (size_t)pLayerTiles->m_Width * pLayerTiles->m_Height * sizeof(CTuneTile));
 		}
+		pLayerTiles->InvalidateTileRenderCache();
 	}
 }
 

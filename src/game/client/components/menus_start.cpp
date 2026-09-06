@@ -23,6 +23,9 @@
 
 void CMenusStart::RenderStartMenu(CUIRect MainView)
 {
+	if(m_pVersionUiElement == nullptr)
+		m_pVersionUiElement = Ui()->GetNewUIElement(2);
+
 	GameClient()->m_MenuBackground.ChangePosition(CMenuBackground::POS_START);
 
 	// render logo
@@ -190,7 +193,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 	CurVersion.HSplitTop(20.0f, &ConsoleButton, &CurVersion);
 	CurVersion.HSplitTop(5.0f, nullptr, &CurVersion);
 	ConsoleButton.VSplitRight(40.0f, nullptr, &ConsoleButton);
-	Ui()->DoLabel(&CurVersion, GAME_RELEASE_VERSION, 14.0f, TEXTALIGN_MR);
+	Ui()->DoLabelStreamed(*m_pVersionUiElement->Rect(0), &CurVersion, GAME_RELEASE_VERSION, 14.0f, TEXTALIGN_MR);
 
 	static CButtonContainer s_ConsoleButton;
 	GameClient()->m_Menus.RenderBackdropRegion(ConsoleButton);
@@ -266,7 +269,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 		str_copy(aBuf, Localize("DDNet Client updated!"));
 		TextRender()->TextColor(1.0f, 0.4f, 0.4f, 1.0f);
 	}
-	Ui()->DoLabel(&VersionUpdate, aBuf, 14.0f, TEXTALIGN_ML);
+	Ui()->DoLabelStreamed(*m_pVersionUiElement->Rect(1), &VersionUpdate, aBuf, 14.0f, TEXTALIGN_ML);
 	TextRender()->TextColor(TextRender()->DefaultTextColor());
 #elif defined(CONF_INFORM_UPDATE)
 	if(str_comp(Client()->LatestVersion(), "0") != 0)
@@ -285,7 +288,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 		str_format(aBuf, sizeof(aBuf), Localize("DDNet %s is out!"), Client()->LatestVersion());
 		SLabelProperties UpdateLabelProps;
 		UpdateLabelProps.SetColor(ColorRGBA(1.0f, 0.4f, 0.4f, 1.0f));
-		Ui()->DoLabel(&VersionUpdate, aBuf, 14.0f, TEXTALIGN_ML, UpdateLabelProps);
+		Ui()->DoLabelStreamed(*m_pVersionUiElement->Rect(1), &VersionUpdate, aBuf, 14.0f, TEXTALIGN_ML, UpdateLabelProps);
 	}
 #endif
 

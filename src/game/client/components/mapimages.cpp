@@ -10,6 +10,7 @@
 #include <engine/gfx/image_manipulation.h>
 #include <engine/graphics.h>
 #include <engine/map.h>
+#include <engine/shared/datafile.h>
 #include <engine/storage.h>
 #include <engine/textrender.h>
 
@@ -22,7 +23,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -82,14 +85,14 @@ void CMapImages::OnShutdown()
 
 void CMapImages::Update()
 {
-	FinishExternalImageLoads();
+	FinishImageLoads();
 	FinishEntitiesLoads();
 }
 
-void CMapImages::FinishExternalImageLoads()
+void CMapImages::FinishImageLoads()
 {
 	bool ShowWarning = false;
-	for(auto It = m_vExternalImageLoads.begin(); It != m_vExternalImageLoads.end();)
+	for(auto It = m_vImageLoads.begin(); It != m_vImageLoads.end();)
 	{
 		if(!It->m_Resource.IsFinished())
 		{
@@ -107,7 +110,7 @@ void CMapImages::FinishExternalImageLoads()
 			log_error("mapimages", "Failed to load map image '%s'.", It->m_Resource.Path());
 			ShowWarning = true;
 		}
-		It = m_vExternalImageLoads.erase(It);
+		It = m_vImageLoads.erase(It);
 	}
 	if(ShowWarning)
 		Client()->AddWarning(SWarning(Localize("Some map images could not be loaded. Check the local console for details.")));
@@ -166,7 +169,7 @@ void CMapImages::Unload()
 {
 	++m_Generation;
 	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(m_AssetOwnerId, m_Generation);
-	m_vExternalImageLoads.clear();
+	m_vImageLoads.clear();
 	// unload all textures
 	for(int i = 0; i < m_Count; i++)
 	{
@@ -265,7 +268,7 @@ void CMapImages::OnMapLoadImpl(class CLayers *pLayers, IMap *pMap)
 					!str_comp(pName, "easter");
 			}
 			str_format(aPath, sizeof(aPath), "mapres/%s%s.png", pName, Translated ? "_0.7" : "");
-			m_vExternalImageLoads.push_back({i, LoadFlag, GameClient()->AssetLoader().LoadImageFile(Storage(), aPath, IStorage::TYPE_ALL, m_AssetOwnerId, m_Generation)});
+			m_vImageLoads.push_back({i, LoadFlag, GameClient()->AssetLoader().LoadImageFile(Storage(), aPath, IStorage::TYPE_ALL, m_AssetOwnerId, m_Generation)});
 		}
 		else
 		{
@@ -276,28 +279,21 @@ void CMapImages::OnMapLoadImpl(class CLayers *pLayers, IMap *pMap)
 				continue;
 			}
 
-			CImageInfo ImageInfo;
-			ImageInfo.m_Width = pImg->m_Width;
-			ImageInfo.m_Height = pImg->m_Height;
-			ImageInfo.m_Format = CImageInfo::FORMAT_RGBA;
-			ImageInfo.m_pData = static_cast<uint8_t *>(pMap->GetData(pImg->m_ImageData));
-			if(ImageInfo.m_pData && (size_t)pMap->GetDataSize(pImg->m_ImageData) >= ImageInfo.DataSize())
+			// The data of embedded images is uncompressed and uploaded later,
+			// only the compressed bytes are copied from the map file here.
+			const size_t DataSize = (size_t)pImg->m_Width * pImg->m_Height * CImageInfo::PixelSize(CImageInfo::FORMAT_RGBA);
+			CDataFileRawData RawData;
+			if(!pMap->GetRawData(pImg->m_ImageData, RawData) || RawData.UncompressedSize() < DataSize)
 			{
-				char aTexName[IO_MAX_PATH_LENGTH];
-				str_format(aTexName, sizeof(aTexName), "embedded: %s", pName);
-				m_aTextures[i] = Graphics()->LoadTextureRaw(ImageInfo, LoadFlag, aTexName);
-				pMap->UnloadData(pImg->m_ImageData);
-			}
-			else
-			{
-				pMap->UnloadData(pImg->m_ImageData);
 				log_error("mapimages", "Failed to load map image %d: failed to load data.", i);
 				ShowWarning = true;
 				continue;
 			}
+			char aTexName[IO_MAX_PATH_LENGTH];
+			str_format(aTexName, sizeof(aTexName), "embedded: %s", pName);
+			m_vImageLoads.push_back({i, LoadFlag, GameClient()->AssetLoader().LoadImageRawData(std::move(RawData), pImg->m_Width, pImg->m_Height, CImageInfo::FORMAT_RGBA, aTexName, m_AssetOwnerId, m_Generation)});
 		}
 		pMap->UnloadData(pImg->m_ImageName);
-		ShowWarning = ShowWarning || m_aTextures[i].IsNullTexture();
 	}
 	if(ShowWarning)
 	{

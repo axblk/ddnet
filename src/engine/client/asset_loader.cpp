@@ -5,14 +5,17 @@
 #include <base/dbg.h>
 #include <base/io.h>
 #include <base/log.h>
+#include <base/mem.h>
 #include <base/time.h>
 
 #include <engine/engine.h>
 #include <engine/gfx/image_loader.h>
+#include <engine/shared/datafile.h>
 #include <engine/storage.h>
 
 #include <algorithm>
 #include <limits>
+#include <utility>
 
 namespace
 {
@@ -29,9 +32,18 @@ namespace
 
 class CImageAssetJob final : public CAssetJob
 {
+	enum class ESource
+	{
+		STORAGE,
+		PNG_DATA,
+		RAW_DATA,
+	};
+
+	ESource m_Source;
 	IStorage *m_pStorage = nullptr;
 	int m_StorageType = 0;
 	std::vector<uint8_t> m_vData;
+	CDataFileRawData m_RawData;
 	CImageInfo m_Image;
 	std::function<bool(CImageInfo &)> m_Postprocess;
 	EAssetLoadError m_Error = EAssetLoadError::NONE;
@@ -39,12 +51,17 @@ class CImageAssetJob final : public CAssetJob
 	std::chrono::nanoseconds m_ReadTime{};
 	std::chrono::nanoseconds m_DecodeTime{};
 
+	bool LoadStorage();
+	bool LoadPngData();
+	bool LoadRawData();
+
 protected:
 	void Run() override;
 
 public:
 	CImageAssetJob(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess);
 	CImageAssetJob(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess);
+	CImageAssetJob(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess);
 
 	bool Success() const override { return m_Error == EAssetLoadError::NONE; }
 	int PngliteIncompatible() const { return m_PngliteIncompatible; }
@@ -101,6 +118,13 @@ CImageResource CAssetLoader::LoadImageFile(IStorage *pStorage, const char *pPath
 CImageResource CAssetLoader::LoadImageData(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess)
 {
 	auto pJob = std::make_shared<CImageAssetJob>(std::move(vData), pContextName, OwnerId, Generation, std::move(Postprocess));
+	Submit(pJob);
+	return CImageResource(std::move(pJob));
+}
+
+CImageResource CAssetLoader::LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess)
+{
+	auto pJob = std::make_shared<CImageAssetJob>(std::move(RawData), Width, Height, Format, pContextName, OwnerId, Generation, std::move(Postprocess));
 	Submit(pJob);
 	return CImageResource(std::move(pJob));
 }
@@ -163,6 +187,7 @@ void CAssetLoader::Shutdown()
 
 CImageAssetJob::CImageAssetJob(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess) :
 	CAssetJob(EAssetType::IMAGE, pPath, OwnerId, Generation),
+	m_Source(ESource::STORAGE),
 	m_pStorage(pStorage),
 	m_StorageType(StorageType),
 	m_Postprocess(std::move(Postprocess))
@@ -172,9 +197,67 @@ CImageAssetJob::CImageAssetJob(IStorage *pStorage, const char *pPath, int Storag
 
 CImageAssetJob::CImageAssetJob(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess) :
 	CAssetJob(EAssetType::IMAGE, pContextName, OwnerId, Generation),
+	m_Source(ESource::PNG_DATA),
 	m_vData(std::move(vData)),
 	m_Postprocess(std::move(Postprocess))
 {
+}
+
+CImageAssetJob::CImageAssetJob(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess) :
+	CAssetJob(EAssetType::IMAGE, pContextName, OwnerId, Generation),
+	m_Source(ESource::RAW_DATA),
+	m_RawData(std::move(RawData)),
+	m_Postprocess(std::move(Postprocess))
+{
+	dbg_assert(Format != CImageInfo::FORMAT_UNDEFINED, "Raw image format must be defined");
+	m_Image.m_Width = Width;
+	m_Image.m_Height = Height;
+	m_Image.m_Format = Format;
+}
+
+bool CImageAssetJob::LoadStorage()
+{
+	IOHANDLE File = m_pStorage->OpenFile(Path(), IOFLAG_READ, m_StorageType);
+	if(!File)
+	{
+		m_Error = EAssetLoadError::NOT_FOUND;
+		return false;
+	}
+	if(!CImageLoader::LoadPngTimed(File, Path(), m_Image, m_PngliteIncompatible, m_ReadTime, m_DecodeTime, false))
+	{
+		m_Error = EAssetLoadError::DECODE;
+		return false;
+	}
+	return true;
+}
+
+bool CImageAssetJob::LoadPngData()
+{
+	CByteBufferReader Reader(m_vData.data(), m_vData.size());
+	const auto DecodeStart = time_get_nanoseconds();
+	const bool Success = CImageLoader::LoadPng(Reader, Path(), m_Image, m_PngliteIncompatible, false);
+	m_DecodeTime = time_get_nanoseconds() - DecodeStart;
+	if(!Success)
+	{
+		m_Error = EAssetLoadError::DECODE;
+		return false;
+	}
+	return true;
+}
+
+bool CImageAssetJob::LoadRawData()
+{
+	const auto DecodeStart = time_get_nanoseconds();
+	const std::unique_ptr<uint8_t[]> pData = m_RawData.Uncompress();
+	m_DecodeTime = time_get_nanoseconds() - DecodeStart;
+	if(pData == nullptr || m_RawData.UncompressedSize() < m_Image.DataSize() || !m_Image.TryAllocate())
+	{
+		m_Image.Free();
+		m_Error = EAssetLoadError::READ;
+		return false;
+	}
+	mem_copy(m_Image.m_pData, pData.get(), m_Image.DataSize());
+	return true;
 }
 
 void CImageAssetJob::Run()
@@ -184,31 +267,20 @@ void CImageAssetJob::Run()
 		m_Error = EAssetLoadError::ABORTED;
 		return;
 	}
-	if(m_pStorage != nullptr)
+	switch(m_Source)
 	{
-		IOHANDLE File = m_pStorage->OpenFile(Path(), IOFLAG_READ, m_StorageType);
-		if(!File)
-		{
-			m_Error = EAssetLoadError::NOT_FOUND;
+	case ESource::STORAGE:
+		if(!LoadStorage())
 			return;
-		}
-		if(!CImageLoader::LoadPngTimed(File, Path(), m_Image, m_PngliteIncompatible, m_ReadTime, m_DecodeTime, false))
-		{
-			m_Error = EAssetLoadError::DECODE;
+		break;
+	case ESource::PNG_DATA:
+		if(!LoadPngData())
 			return;
-		}
-	}
-	else
-	{
-		CByteBufferReader Reader(m_vData.data(), m_vData.size());
-		const auto DecodeStart = time_get_nanoseconds();
-		const bool Success = CImageLoader::LoadPng(Reader, Path(), m_Image, m_PngliteIncompatible, false);
-		m_DecodeTime = time_get_nanoseconds() - DecodeStart;
-		if(!Success)
-		{
-			m_Error = EAssetLoadError::DECODE;
+		break;
+	case ESource::RAW_DATA:
+		if(!LoadRawData())
 			return;
-		}
+		break;
 	}
 	if(m_Postprocess && !m_Postprocess(m_Image))
 	{

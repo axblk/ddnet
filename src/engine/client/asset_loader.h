@@ -18,6 +18,7 @@
 #include <type_traits>
 #include <vector>
 
+class CDataFileRawData;
 class IEngine;
 class IStorage;
 class CImageAssetJob;
@@ -83,6 +84,12 @@ public:
 	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob);
 	CImageResource LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {});
 	CImageResource LoadImageData(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {});
+	/**
+	 * Loads an image from the raw data of a datafile item, which contains the
+	 * uncompressed pixels of the image instead of an encoded image file. The
+	 * data is uncompressed on the job thread.
+	 */
+	CImageResource LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {});
 	void Update();
 	void AbortOwnerBeforeGeneration(int OwnerId, uint64_t Generation);
 	void Shutdown();

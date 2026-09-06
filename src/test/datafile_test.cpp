@@ -7,7 +7,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <memory>
+#include <vector>
 
 TEST(Datafile, ExtendedType)
 {
@@ -111,4 +114,51 @@ TEST(Datafile, StringData)
 	{
 		pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE);
 	}
+}
+
+static std::vector<uint8_t> WriteRawDataTestFile(IStorage *pStorage, const char *pFilename)
+{
+	std::vector<uint8_t> vData(1000);
+	for(size_t i = 0; i < vData.size(); i++)
+		vData[i] = i % 251;
+
+	CDataFileWriter Writer;
+	EXPECT_TRUE(Writer.Open(pStorage, pFilename));
+	EXPECT_EQ(Writer.AddData(vData.size(), vData.data()), 0);
+	EXPECT_EQ(Writer.AddDataString("Abc"), 1);
+	Writer.Finish();
+	return vData;
+}
+
+TEST(Datafile, RawData)
+{
+	std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	ASSERT_NE(pStorage, nullptr) << "Error creating local storage";
+	CTestInfo Info;
+	const std::vector<uint8_t> vData = WriteRawDataTestFile(pStorage.get(), Info.m_aFilename);
+
+	CDataFileReader Reader;
+	ASSERT_TRUE(Reader.Open(pStorage.get(), Info.m_aFilename, IStorage::TYPE_ALL));
+
+	CDataFileRawData RawData;
+	EXPECT_FALSE(Reader.GetRawData(-1, RawData));
+	EXPECT_FALSE(Reader.GetRawData(1000, RawData));
+
+	ASSERT_TRUE(Reader.GetRawData(0, RawData));
+	EXPECT_EQ(RawData.UncompressedSize(), vData.size());
+	const std::unique_ptr<uint8_t[]> pRawData = RawData.Uncompress();
+	ASSERT_NE(pRawData, nullptr);
+	EXPECT_TRUE(std::equal(vData.begin(), vData.end(), pRawData.get()));
+
+	// Data that is already loaded is returned uncompressed
+	EXPECT_STREQ(Reader.GetDataString(1), "Abc");
+	CDataFileRawData LoadedRawData;
+	ASSERT_TRUE(Reader.GetRawData(1, LoadedRawData));
+	EXPECT_EQ(LoadedRawData.UncompressedSize(), 4U);
+	const std::unique_ptr<uint8_t[]> pLoadedRawData = LoadedRawData.Uncompress();
+	ASSERT_NE(pLoadedRawData, nullptr);
+	EXPECT_STREQ(reinterpret_cast<const char *>(pLoadedRawData.get()), "Abc");
+
+	Reader.Close();
+	EXPECT_TRUE(pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE));
 }

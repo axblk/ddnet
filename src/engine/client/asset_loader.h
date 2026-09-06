@@ -18,6 +18,7 @@
 #include <type_traits>
 #include <vector>
 
+class CDataFileRawData;
 class IEngine;
 class IStorage;
 class CImageAssetJob;
@@ -85,6 +86,7 @@ public:
 	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob);
 	CImageResource LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess = {});
 	CImageResource LoadImageData(std::vector<uint8_t> vData, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess = {});
+	CImageResource LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess = {});
 	void Update();
 	void Shutdown();
 };

@@ -5,9 +5,11 @@
 #include <base/dbg.h>
 #include <base/io.h>
 #include <base/log.h>
+#include <base/mem.h>
 
 #include <engine/engine.h>
 #include <engine/gfx/image_loader.h>
+#include <engine/shared/datafile.h>
 #include <engine/storage.h>
 
 #include <algorithm>
@@ -16,8 +18,13 @@
 
 class CImageAssetJob final : public CAssetJob
 {
+	// Compressed pixels of a map image
+	CDataFileRawData m_RawData;
+	bool m_FromRawData = false;
 	CImageInfo m_Image;
 	std::function<bool(CImageInfo &)> m_Postprocess;
+
+	bool UncompressRawData();
 
 protected:
 	bool Process() override;
@@ -25,6 +32,7 @@ protected:
 public:
 	CImageAssetJob(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess);
 	CImageAssetJob(std::vector<uint8_t> vData, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess);
+	CImageAssetJob(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess);
 
 	CImageInfo TakeImage();
 };
@@ -106,6 +114,13 @@ CImageResource CAssetLoader::LoadImageData(std::vector<uint8_t> vData, const cha
 	return CImageResource(std::move(pJob));
 }
 
+CImageResource CAssetLoader::LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess)
+{
+	auto pJob = std::make_shared<CImageAssetJob>(std::move(RawData), Width, Height, Format, pContextName, std::move(Postprocess));
+	Submit(pJob);
+	return CImageResource(std::move(pJob));
+}
+
 void CAssetLoader::StartPendingJobs()
 {
 	while(m_vpRunningJobs.size() < m_MaxConcurrentJobs && !m_vpPendingJobs.empty())
@@ -153,12 +168,53 @@ CImageAssetJob::CImageAssetJob(std::vector<uint8_t> vData, const char *pContextN
 {
 }
 
+CImageAssetJob::CImageAssetJob(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess) :
+	CAssetJob(std::vector<uint8_t>(), pContextName),
+	m_RawData(std::move(RawData)),
+	m_FromRawData(true),
+	m_Postprocess(std::move(Postprocess))
+{
+	dbg_assert(Format != CImageInfo::FORMAT_UNDEFINED, "Raw image format must be defined");
+	m_Image.m_Width = Width;
+	m_Image.m_Height = Height;
+	m_Image.m_Format = Format;
+}
+
+bool CImageAssetJob::UncompressRawData()
+{
+	if(m_RawData.UncompressedSize() >= m_Image.DataSize() && m_Image.TryAllocate())
+	{
+		if(m_RawData.UncompressedSize() == m_Image.DataSize())
+		{
+			if(m_RawData.UncompressTo(m_Image.m_pData))
+				return true;
+		}
+		else if(const std::unique_ptr<uint8_t[]> pData = m_RawData.Uncompress())
+		{
+			// The data item is larger than the image, only its start is used
+			mem_copy(m_Image.m_pData, pData.get(), m_Image.DataSize());
+			return true;
+		}
+		m_Image.Free();
+	}
+	log_error("asset_loader", "Invalid image data in '%s'", Path());
+	return false;
+}
+
 bool CImageAssetJob::Process()
 {
-	CByteBufferReader Reader(Data().data(), Data().size());
-	int PngliteIncompatible;
-	if(!CImageLoader::LoadPng(Reader, Path(), m_Image, PngliteIncompatible))
-		return false;
+	if(m_FromRawData)
+	{
+		if(!UncompressRawData())
+			return false;
+	}
+	else
+	{
+		CByteBufferReader Reader(Data().data(), Data().size());
+		int PngliteIncompatible;
+		if(!CImageLoader::LoadPng(Reader, Path(), m_Image, PngliteIncompatible))
+			return false;
+	}
 	if(m_Postprocess && !m_Postprocess(m_Image))
 	{
 		m_Image.Free();

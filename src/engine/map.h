@@ -8,6 +8,7 @@
 
 #include <memory>
 
+class CDataFileRawData;
 class IStorage;
 struct CUuid;
 
@@ -25,6 +26,10 @@ public:
 	virtual void *GetData(int Index) = 0;
 	virtual void *GetDataSwapped(int Index) = 0;
 	virtual const char *GetDataString(int Index) = 0;
+	/**
+	 * @see CDataFileReader::GetRawData
+	 */
+	[[nodiscard]] virtual bool GetRawData(int Index, CDataFileRawData &RawData) = 0;
 	virtual void UnloadData(int Index) = 0;
 	virtual int NumData() const = 0;
 

@@ -10,6 +10,7 @@
 
 #include <engine/engine.h>
 #include <engine/gfx/image_loader.h>
+#include <engine/http.h>
 #include <engine/shared/datafile.h>
 #include <engine/storage.h>
 
@@ -30,10 +31,11 @@ namespace
 	};
 }
 
-class CImageAssetJob final : public CAssetJob
+class CImageAssetJob final : public CHttpAssetJob
 {
 	enum class ESource
 	{
+		NONE,
 		STORAGE,
 		PNG_DATA,
 		RAW_DATA,
@@ -57,11 +59,13 @@ class CImageAssetJob final : public CAssetJob
 
 protected:
 	void Run() override;
+	void OnRequestFinished(EHttpAssetSource Source, std::vector<uint8_t> vData) override;
 
 public:
 	CImageAssetJob(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess);
 	CImageAssetJob(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess);
 	CImageAssetJob(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess);
+	CImageAssetJob(std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess);
 
 	bool Success() const override { return m_Error == EAssetLoadError::NONE; }
 	int PngliteIncompatible() const { return m_PngliteIncompatible; }
@@ -78,6 +82,38 @@ CAssetJob::CAssetJob(EAssetType Type, const char *pPath, int OwnerId, uint64_t G
 {
 	dbg_assert(pPath != nullptr, "Asset path must not be null");
 	Abortable(true);
+}
+
+void CAssetJob::SetPath(const char *pPath)
+{
+	dbg_assert(pPath != nullptr, "Asset path must not be null");
+	dbg_assert(State() == IJob::STATE_QUEUED, "Asset path can only be set before the job is submitted");
+	m_Path = pPath;
+}
+
+CHttpAssetDestination::CHttpAssetDestination(IStorage *pStorage, const char *pPath, int StorageType, bool UseOnError) :
+	m_pStorage(pStorage),
+	m_Path(pPath),
+	m_StorageType(StorageType),
+	m_UseOnError(UseOnError)
+{
+	dbg_assert(pStorage != nullptr, "Asset destination storage must not be null");
+}
+
+CHttpAssetJob::CHttpAssetJob(EAssetType Type, std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, const char *pPath, int OwnerId, uint64_t Generation) :
+	CAssetJob(Type, pPath, OwnerId, Generation),
+	m_pRequest(std::move(pRequest)),
+	m_Destination(std::move(Destination))
+{
+}
+
+bool CHttpAssetJob::Abort()
+{
+	if(!CAssetJob::Abort())
+		return false;
+	if(m_pRequest != nullptr)
+		m_pRequest->Abort();
+	return true;
 }
 
 void CAssetLoader::Init(IEngine *pEngine, size_t MaxConcurrentJobs)
@@ -108,6 +144,68 @@ uint64_t CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob)
 	return RequestId;
 }
 
+uint64_t CAssetLoader::SubmitHttp(IHttp *pHttp, std::shared_ptr<CHttpAssetJob> pJob)
+{
+	dbg_assert(m_pEngine != nullptr, "Asset loader not initialized");
+	dbg_assert(pHttp != nullptr, "Asset HTTP interface must not be null");
+	dbg_assert(pJob != nullptr, "Asset job must not be null");
+	dbg_assert(pJob->m_pRequest != nullptr, "Downloaded asset job must have a request");
+	dbg_assert(pJob->RequestId() == 0, "Asset job was already submitted");
+	if(m_Shutdown)
+	{
+		pJob->Abort();
+		return 0;
+	}
+
+	dbg_assert(m_NextRequestId != 0, "Asset request ID overflow");
+	const uint64_t RequestId = m_NextRequestId++;
+	pJob->m_RequestId = RequestId;
+	std::shared_ptr<IHttpRequest> pRequest = pJob->m_pRequest;
+	m_vpWaitingJobs.push_back(std::move(pJob));
+	pHttp->Run(std::move(pRequest));
+	return RequestId;
+}
+
+void CAssetLoader::UpdateWaitingJobs()
+{
+	for(auto It = m_vpWaitingJobs.begin(); It != m_vpWaitingJobs.end();)
+	{
+		std::shared_ptr<CHttpAssetJob> pJob = *It;
+		if(!pJob->Done() && !pJob->m_pRequest->Done())
+		{
+			++It;
+			continue;
+		}
+		It = m_vpWaitingJobs.erase(It);
+		if(pJob->Done())
+		{
+			// The job was aborted while it was waiting for the request
+			continue;
+		}
+
+		const IHttpRequest &Request = *pJob->m_pRequest;
+		const bool Success = Request.State() == EHttpState::DONE && Request.StatusCode() < 400;
+		std::vector<uint8_t> vData;
+		if(Success && Request.StatusCode() != 304 && Request.WritesToMemory())
+		{
+			unsigned char *pResult;
+			size_t ResultSize;
+			Request.Result(&pResult, &ResultSize);
+			if(ResultSize > 0)
+				vData.assign(pResult, pResult + ResultSize);
+			pJob->m_HttpSource = EHttpAssetSource::RESPONSE;
+		}
+		else if((Success || pJob->m_Destination.m_UseOnError) &&
+			pJob->m_Destination.m_pStorage != nullptr &&
+			pJob->m_Destination.m_pStorage->FileExists(pJob->m_Destination.m_Path.c_str(), pJob->m_Destination.m_StorageType))
+		{
+			pJob->m_HttpSource = EHttpAssetSource::DESTINATION;
+		}
+		pJob->OnRequestFinished(pJob->m_HttpSource, std::move(vData));
+		m_vpPendingJobs.push_back(std::move(pJob));
+	}
+}
+
 CImageResource CAssetLoader::LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess)
 {
 	auto pJob = std::make_shared<CImageAssetJob>(pStorage, pPath, StorageType, OwnerId, Generation, std::move(Postprocess));
@@ -129,6 +227,13 @@ CImageResource CAssetLoader::LoadImageRawData(CDataFileRawData RawData, size_t W
 	return CImageResource(std::move(pJob));
 }
 
+CImageResource CAssetLoader::LoadImageHttp(IHttp *pHttp, std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess)
+{
+	auto pJob = std::make_shared<CImageAssetJob>(std::move(pRequest), std::move(Destination), pContextName, OwnerId, Generation, std::move(Postprocess));
+	SubmitHttp(pHttp, pJob);
+	return CImageResource(std::move(pJob));
+}
+
 void CAssetLoader::StartPendingJobs()
 {
 	while(m_vpRunningJobs.size() < m_MaxConcurrentJobs && !m_vpPendingJobs.empty())
@@ -145,6 +250,7 @@ void CAssetLoader::StartPendingJobs()
 void CAssetLoader::Update()
 {
 	dbg_assert(m_pEngine != nullptr, "Asset loader not initialized");
+	UpdateWaitingJobs();
 	for(const auto &pJob : m_vpRunningJobs)
 	{
 		if(pJob->State() != IJob::STATE_DONE || pJob->Type() != EAssetType::IMAGE)
@@ -165,6 +271,8 @@ void CAssetLoader::AbortOwnerBeforeGeneration(int OwnerId, uint64_t Generation)
 		if(pJob->OwnerId() == OwnerId && pJob->Generation() < Generation)
 			pJob->Abort();
 	};
+	for(const auto &pJob : m_vpWaitingJobs)
+		AbortStaleJob(pJob);
 	for(const auto &pJob : m_vpPendingJobs)
 		AbortStaleJob(pJob);
 	for(const auto &pJob : m_vpRunningJobs)
@@ -177,16 +285,19 @@ void CAssetLoader::Shutdown()
 	if(m_pEngine == nullptr || m_Shutdown)
 		return;
 	m_Shutdown = true;
+	for(const auto &pJob : m_vpWaitingJobs)
+		pJob->Abort();
 	for(const auto &pJob : m_vpPendingJobs)
 		pJob->Abort();
 	for(const auto &pJob : m_vpRunningJobs)
 		pJob->Abort();
+	m_vpWaitingJobs.clear();
 	m_vpPendingJobs.clear();
 	m_vpRunningJobs.clear();
 }
 
 CImageAssetJob::CImageAssetJob(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess) :
-	CAssetJob(EAssetType::IMAGE, pPath, OwnerId, Generation),
+	CHttpAssetJob(EAssetType::IMAGE, nullptr, CHttpAssetDestination(), pPath, OwnerId, Generation),
 	m_Source(ESource::STORAGE),
 	m_pStorage(pStorage),
 	m_StorageType(StorageType),
@@ -196,7 +307,7 @@ CImageAssetJob::CImageAssetJob(IStorage *pStorage, const char *pPath, int Storag
 }
 
 CImageAssetJob::CImageAssetJob(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess) :
-	CAssetJob(EAssetType::IMAGE, pContextName, OwnerId, Generation),
+	CHttpAssetJob(EAssetType::IMAGE, nullptr, CHttpAssetDestination(), pContextName, OwnerId, Generation),
 	m_Source(ESource::PNG_DATA),
 	m_vData(std::move(vData)),
 	m_Postprocess(std::move(Postprocess))
@@ -204,7 +315,7 @@ CImageAssetJob::CImageAssetJob(std::vector<uint8_t> vData, const char *pContextN
 }
 
 CImageAssetJob::CImageAssetJob(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess) :
-	CAssetJob(EAssetType::IMAGE, pContextName, OwnerId, Generation),
+	CHttpAssetJob(EAssetType::IMAGE, nullptr, CHttpAssetDestination(), pContextName, OwnerId, Generation),
 	m_Source(ESource::RAW_DATA),
 	m_RawData(std::move(RawData)),
 	m_Postprocess(std::move(Postprocess))
@@ -213,6 +324,33 @@ CImageAssetJob::CImageAssetJob(CDataFileRawData RawData, size_t Width, size_t He
 	m_Image.m_Width = Width;
 	m_Image.m_Height = Height;
 	m_Image.m_Format = Format;
+}
+
+CImageAssetJob::CImageAssetJob(std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess) :
+	CHttpAssetJob(EAssetType::IMAGE, std::move(pRequest), std::move(Destination), pContextName, OwnerId, Generation),
+	m_Source(ESource::NONE),
+	m_Postprocess(std::move(Postprocess))
+{
+}
+
+void CImageAssetJob::OnRequestFinished(EHttpAssetSource Source, std::vector<uint8_t> vData)
+{
+	switch(Source)
+	{
+	case EHttpAssetSource::NONE:
+		break;
+	case EHttpAssetSource::RESPONSE:
+		m_Source = ESource::PNG_DATA;
+		m_vData = std::move(vData);
+		break;
+	case EHttpAssetSource::DESTINATION:
+		m_Source = ESource::STORAGE;
+		m_pStorage = Destination().m_pStorage;
+		m_StorageType = Destination().m_StorageType;
+		// The path describes what was loaded, so failures name the file
+		SetPath(Destination().m_Path.c_str());
+		break;
+	}
 }
 
 bool CImageAssetJob::LoadStorage()
@@ -269,6 +407,9 @@ void CImageAssetJob::Run()
 	}
 	switch(m_Source)
 	{
+	case ESource::NONE:
+		m_Error = EAssetLoadError::NOT_FOUND;
+		return;
 	case ESource::STORAGE:
 		if(!LoadStorage())
 			return;
@@ -358,6 +499,12 @@ const char *CAssetResource::Path() const
 {
 	dbg_assert(m_pJob != nullptr, "Empty asset resource has no path");
 	return m_pJob->Path();
+}
+
+EHttpAssetSource CAssetResource::HttpSource() const
+{
+	dbg_assert(m_pJob != nullptr, "Empty asset resource has no source");
+	return m_pJob->HttpSource();
 }
 
 int CAssetResource::OwnerId() const

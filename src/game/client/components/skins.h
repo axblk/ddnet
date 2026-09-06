@@ -43,6 +43,11 @@ private:
 	{
 		NONE,
 		LOCAL,
+		/**
+		 * The skin is being downloaded, the source is decided when the
+		 * download finished.
+		 */
+		DOWNLOAD,
 		DOWNLOAD_CACHE,
 		DOWNLOAD_RESPONSE,
 	};
@@ -288,7 +293,6 @@ private:
 	void StartDownloadedSkinLoad(CSkinContainer *pSkinContainer);
 	void StartDownload(CSkinContainer *pSkinContainer, bool Force);
 	void StartSkinDecode(CSkinContainer *pSkinContainer, const char *pPath, int StorageType, ESkinDecodeSource Source);
-	void StartSkinDecode(CSkinContainer *pSkinContainer, std::vector<uint8_t> vData, const char *pContextName, ESkinDecodeSource Source);
 	void ResetSkinLoad(CSkinContainer *pSkinContainer);
 	void FinishSkinLoad(CSkinLoadingStats &Stats, CSkinContainer *pSkinContainer, bool Stale);
 	const CSkinContainer *FindContainerImpl(const char *pName);

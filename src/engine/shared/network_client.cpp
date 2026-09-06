@@ -18,8 +18,13 @@ bool CNetClient::Open(NETADDR BindAddr)
 	if(!Socket)
 		return false;
 	Close();
-	// clean it
-	*this = CNetClient{};
+	// clean it. Close() already released the socket and the STUN client, the
+	// remaining state is reset member by member because the client owns those
+	// two resources and must not be assignable as a whole.
+	m_Connection = CNetConnection{};
+	m_PacketChunkUnpacker = CPacketChunkUnpacker{};
+	m_RecvBuffer = CNetPacketConstruct{};
+	m_TokenCache = CNetTokenCache{};
 
 	// init
 	m_Socket = Socket;

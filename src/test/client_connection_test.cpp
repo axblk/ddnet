@@ -8,6 +8,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 TEST(ClientConnection, ResetGameplayIsLocal)
 {
 	CConnection ResetConnection;
@@ -76,10 +78,10 @@ TEST(ClientConnection, DynamicStreamsKeepStableIdsAndStorage)
 	const CStreamId RemovedId = Source.StreamIdAt(1);
 	EXPECT_EQ(Source.PrimaryStreamId(), PrimaryId);
 	EXPECT_EQ(Source.ActiveStreamId(), PrimaryId);
-	ASSERT_TRUE(Source.SetActiveStream(RemovedId));
-	EXPECT_EQ(Source.ActiveStreamId(), RemovedId);
 	const CStreamId ThirdId = Source.CreateStream();
 	ASSERT_TRUE(ThirdId.IsValid());
+	ASSERT_TRUE(Source.SetActiveStream(ThirdId));
+	EXPECT_EQ(Source.ActiveStreamId(), ThirdId);
 	ASSERT_NE(Source.Connection(PrimaryId), nullptr);
 	ASSERT_NE(Source.Connection(ThirdId), nullptr);
 
@@ -92,14 +94,97 @@ TEST(ClientConnection, DynamicStreamsKeepStableIdsAndStorage)
 	EXPECT_EQ(Source.Connection(PrimaryId)->m_CurGameTick, 100);
 	EXPECT_EQ(Source.Connection(ThirdId)->m_CurGameTick, 300);
 	EXPECT_EQ(Source.Connection(RemovedId), nullptr);
+	EXPECT_EQ(Source.StreamIds(), (std::vector<CStreamId>{PrimaryId, ThirdId}));
+	EXPECT_EQ(Source.StreamIndex(ThirdId), 1);
+	EXPECT_EQ(Source.StreamIdAt(1), ThirdId);
+	EXPECT_EQ(Source.ActiveStreamId(), ThirdId);
 	EXPECT_FALSE(Source.DestroyStream(PrimaryId));
 	EXPECT_EQ(Source.PrimaryStreamId(), PrimaryId);
-	EXPECT_EQ(Source.ActiveStreamId(), PrimaryId);
 	EXPECT_FALSE(Source.SetActiveStream(RemovedId));
+	EXPECT_TRUE(Source.DestroyStream(ThirdId));
+	EXPECT_EQ(Source.ActiveStreamId(), PrimaryId);
 
 	const CStreamId FourthId = Source.CreateStream();
 	EXPECT_GT(FourthId.Value(), ThirdId.Value());
-	EXPECT_EQ(Source.NumStreams(), 3U);
+	EXPECT_EQ(Source.NumStreams(), 2U);
+}
+
+TEST(ClientConnection, NetworkRuntimePolicyIsSourceLocalAndReset)
+{
+	CNetworkSessionSource First;
+	CNetworkSessionSource Second;
+	First.m_PingInfoType = 1;
+	First.m_PingBasicToken = 2;
+	First.m_PingToken = 3;
+	First.m_PingUuid.m_aData[0] = 4;
+	First.m_CurrentPingTime = 5;
+	First.m_NextPingTime = 6;
+	Second.m_PingInfoType = 11;
+	Second.m_PingBasicToken = 12;
+	Second.m_PingToken = 13;
+	Second.m_PingUuid.m_aData[0] = 14;
+	Second.m_CurrentPingTime = 15;
+	Second.m_NextPingTime = 16;
+	First.ScheduleReconnect("server is full", 3, 5, 100, 10);
+	Second.ScheduleReconnect("Timeout", 3, 5, 200, 10);
+	ASSERT_EQ(First.ReconnectTime(), 130);
+	ASSERT_EQ(Second.ReconnectTime(), 250);
+
+	First.ResetNetworkMetadata();
+	EXPECT_EQ(First.m_PingInfoType, -1);
+	EXPECT_EQ(First.m_PingBasicToken, -1);
+	EXPECT_EQ(First.m_PingToken, -1);
+	EXPECT_EQ(First.m_PingUuid, UUID_ZEROED);
+	EXPECT_EQ(First.m_CurrentPingTime, -1);
+	EXPECT_EQ(First.m_NextPingTime, -1);
+	EXPECT_EQ(First.ReconnectTime(), 0);
+	EXPECT_EQ(Second.m_PingInfoType, 11);
+	EXPECT_EQ(Second.m_PingBasicToken, 12);
+	EXPECT_EQ(Second.m_PingToken, 13);
+	EXPECT_EQ(Second.m_PingUuid.m_aData[0], 14);
+	EXPECT_EQ(Second.m_CurrentPingTime, 15);
+	EXPECT_EQ(Second.m_NextPingTime, 16);
+
+	Second.m_Password = "second-secret";
+	ASSERT_TRUE(Second.SetActiveStream(Second.StreamIdAt(1)));
+	Second.SetLastActiveStreamId(Second.StreamIdAt(1));
+	Second.ResetAfterDisconnect("Timeout", 3, 5, 200, 10);
+	EXPECT_EQ(Second.m_PingInfoType, -1);
+	EXPECT_EQ(Second.m_Password, "second-secret");
+	EXPECT_EQ(Second.ActiveStreamId(), Second.PrimaryStreamId());
+	EXPECT_EQ(Second.LastActiveStreamId(), Second.PrimaryStreamId());
+	EXPECT_FALSE(Second.ConsumeReconnect(250));
+	EXPECT_TRUE(Second.ConsumeReconnect(251));
+	EXPECT_EQ(Second.ReconnectTime(), 0);
+	Second.ScheduleReconnect("Timeout", 3, 5, 300, 10);
+	Second.CancelReconnect();
+	EXPECT_EQ(Second.ReconnectTime(), 0);
+	EXPECT_TRUE(Second.m_Password.empty());
+}
+
+TEST(ClientConnection, ServerRequestedConnectSurvivesTheSessionStop)
+{
+	CNetworkSessionSource Source;
+	std::string Address;
+	std::string Password;
+	EXPECT_FALSE(Source.ConsumePendingConnect(Address, Password));
+
+	// A redirect arrives while the session update is on the stack, so the
+	// connect has to survive the stop that follows it.
+	Source.m_Password = "secret";
+	Source.ScheduleServerConnect("127.0.0.1:8304", "secret");
+	Source.ResetAfterDisconnect("Timeout", 3, 5, 200, 10);
+	ASSERT_TRUE(Source.ConsumePendingConnect(Address, Password));
+	EXPECT_EQ(Address, "127.0.0.1:8304");
+	EXPECT_EQ(Password, "secret");
+	// The pending connect replaces a reconnect that was scheduled alongside it
+	EXPECT_EQ(Source.ReconnectTime(), 0);
+	EXPECT_FALSE(Source.ConsumePendingConnect(Address, Password));
+
+	// A connect the user started instead drops the pending one
+	Source.ScheduleServerConnect("127.0.0.1:8305", "other");
+	Source.CancelReconnect();
+	EXPECT_FALSE(Source.ConsumePendingConnect(Address, Password));
 }
 
 TEST(ClientConnection, SessionSourceRejectsInvalidTransitions)
@@ -115,6 +200,31 @@ TEST(ClientConnection, SessionSourceRejectsInvalidTransitions)
 	EXPECT_TRUE(Source.SetState(ESessionState::STOPPING));
 	EXPECT_FALSE(Source.SetState(ESessionState::CONNECTING));
 	EXPECT_TRUE(Source.SetState(ESessionState::OFFLINE));
+}
+
+TEST(ClientConnection, NetworkMetadataResetIsLocal)
+{
+	CNetworkSessionSource ResetSource;
+	CNetworkSessionSource UntouchedSource;
+	ResetSource.m_UseTempRconCommands = 1;
+	ResetSource.m_ExpectedRconCommands = 3;
+	ResetSource.m_GotRconCommands = 2;
+	ResetSource.m_ExpectedMaplistEntries = 1;
+	ResetSource.m_vMaplistEntries.emplace_back("dm1");
+	ResetSource.ConnectionAt(0).m_RconAuthed = 1;
+	UntouchedSource.m_ExpectedRconCommands = 7;
+	UntouchedSource.m_vMaplistEntries.emplace_back("ctf1");
+
+	ResetSource.ResetNetworkMetadata();
+
+	EXPECT_EQ(ResetSource.m_UseTempRconCommands, 0);
+	EXPECT_EQ(ResetSource.m_ExpectedRconCommands, -1);
+	EXPECT_EQ(ResetSource.m_GotRconCommands, 0);
+	EXPECT_EQ(ResetSource.m_ExpectedMaplistEntries, -1);
+	EXPECT_TRUE(ResetSource.m_vMaplistEntries.empty());
+	EXPECT_EQ(ResetSource.ConnectionAt(0).m_RconAuthed, 0);
+	EXPECT_EQ(UntouchedSource.m_ExpectedRconCommands, 7);
+	EXPECT_EQ(UntouchedSource.m_vMaplistEntries, (std::vector<std::string>{"ctf1"}));
 }
 
 TEST(ClientConnection, DemoStateDoesNotAliasNetworkMain)

@@ -67,7 +67,7 @@ void CGameClient::HandleMultiView(const CGameState &State, float LocalTime)
 			{
 				MultiViewState.m_aVanish[ClientId] = true;
 				// player we want to be vanished is our "main" tee, so lets switch the tee
-				if(ClientId == m_Snap.m_SpecInfo.m_SpectatorId)
+				if(ClientId == Snap().m_SpecInfo.m_SpectatorId)
 					m_Spectator.Spectate(FindFirstMultiViewId());
 			}
 		}
@@ -129,9 +129,9 @@ void CGameClient::HandleMultiView(const CGameState &State, float LocalTime)
 	else
 		m_Camera.SetZoom(CalculateMultiViewZoom(MinPos, MaxPos, AvgVel), 50, false);
 
-	m_Snap.m_SpecInfo.m_Position = MultiViewState.m_OldPos + ((TargetPos - MultiViewState.m_OldPos) * CalculateMultiViewMultiplier(TargetPos));
-	MultiViewState.m_OldPos = m_Snap.m_SpecInfo.m_Position;
-	m_Snap.m_SpecInfo.m_UsePosition = true;
+	Snap().m_SpecInfo.m_Position = MultiViewState.m_OldPos + ((TargetPos - MultiViewState.m_OldPos) * CalculateMultiViewMultiplier(TargetPos));
+	MultiViewState.m_OldPos = Snap().m_SpecInfo.m_Position;
+	Snap().m_SpecInfo.m_UsePosition = true;
 }
 
 bool CGameClient::InitMultiView(const CGameState &State, int Team)
@@ -205,7 +205,7 @@ bool CGameClient::InitMultiView(const CGameState &State, int Team)
 
 	if(IsMultiViewIdSet())
 	{
-		int SpectatorId = m_Snap.m_SpecInfo.m_SpectatorId;
+		int SpectatorId = Snap().m_SpecInfo.m_SpectatorId;
 		int NewSpectatorId = -1;
 
 		vec2 CurPosition(m_Camera.Center());

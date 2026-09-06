@@ -233,12 +233,16 @@ public:
 	 *
 	 * The render order depends on the component insertion order.
 	 */
-	virtual void OnRender()
-	{
-	}
 	virtual void OnRender(const CRenderContext &)
 	{
-		OnRender();
+	}
+
+	/**
+	 * Called when the component should get rendered on top of everything,
+	 * once per frame instead of once per view.
+	 */
+	virtual void OnRenderApplicationOverlay()
+	{
 	}
 
 	/**

@@ -93,7 +93,7 @@ const CGameView::CSpectatorSelectorState &CSpectator::Selector() const
 bool CSpectator::CanChangeSpectatorId()
 {
 	// don't change SpectatorId when not spectating
-	if(!GameClient()->m_Snap.m_SpecInfo.m_Active)
+	if(!GameClient()->Snap().m_SpecInfo.m_Active)
 		return false;
 
 	// stop follow mode from changing SpectatorId
@@ -106,14 +106,14 @@ bool CSpectator::CanChangeSpectatorId()
 void CSpectator::SpectateNext(bool Reverse)
 {
 	int CurIndex = -1;
-	const CNetObj_PlayerInfo **paPlayerInfos = GameClient()->m_Snap.m_apInfoByDDTeamName;
+	const CNetObj_PlayerInfo **paPlayerInfos = GameClient()->Snap().m_apInfoByDDTeamName;
 
 	// m_SpectatorId may be uninitialized if m_Active is false
-	if(GameClient()->m_Snap.m_SpecInfo.m_Active)
+	if(GameClient()->Snap().m_SpecInfo.m_Active)
 	{
 		for(int i = 0; i < MAX_CLIENTS; i++)
 		{
-			if(paPlayerInfos[i] && paPlayerInfos[i]->m_ClientId == GameClient()->m_Snap.m_SpecInfo.m_SpectatorId)
+			if(paPlayerInfos[i] && paPlayerInfos[i]->m_ClientId == GameClient()->Snap().m_SpecInfo.m_SpectatorId)
 			{
 				CurIndex = i;
 				break;
@@ -264,12 +264,12 @@ bool CSpectator::OnInput(const IInput::CEvent &Event)
 
 	if(g_Config.m_ClSpectatorMouseclicks)
 	{
-		if(GameClient()->m_Snap.m_SpecInfo.m_Active && !IsActive() && !GameClient()->MultiView().m_Active &&
+		if(GameClient()->Snap().m_SpecInfo.m_Active && !IsActive() && !GameClient()->MultiView().m_Active &&
 			!Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive() && !GameClient()->m_Menus.IsActive())
 		{
 			if(Event.m_Flags & IInput::FLAG_PRESS && Event.m_Key == KEY_MOUSE_1)
 			{
-				if(GameClient()->m_Snap.m_SpecInfo.m_SpectatorId != SPEC_FREEVIEW)
+				if(GameClient()->Snap().m_SpecInfo.m_SpectatorId != SPEC_FREEVIEW)
 					Spectate(SPEC_FREEVIEW);
 				else
 					SpectateClosest();
@@ -692,7 +692,7 @@ void CSpectator::SpectateClosest()
 	if(!CanChangeSpectatorId())
 		return;
 
-	const CGameClient::CSnapState &Snap = GameClient()->m_Snap;
+	const CGameState::CSnapState &Snap = GameClient()->Snap();
 	int SpectatorId = Snap.m_SpecInfo.m_SpectatorId;
 
 	int NewSpectatorId = -1;

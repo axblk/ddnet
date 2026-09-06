@@ -669,6 +669,15 @@ public:
 		return It == m_vpContexts.end() ? nullptr : It->get();
 	}
 
+	bool Destroy(CSessionId Id)
+	{
+		const auto It = std::find_if(m_vpContexts.begin(), m_vpContexts.end(), [Id](const auto &pContext) { return pContext->Id() == Id; });
+		if(It == m_vpContexts.end())
+			return false;
+		m_vpContexts.erase(It);
+		return true;
+	}
+
 	const std::vector<std::unique_ptr<CGameSessionContext>> &Contexts() const { return m_vpContexts; }
 };
 

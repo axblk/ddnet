@@ -173,7 +173,8 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 		return;
 	const CNetObj_GameData *pGameData = State.GameData();
 	const CViewport &Viewport = Context.m_View.Viewport();
-	// ponytail: only two score rows are rebuilt when requests alternate; use per-view caches if split-screen profiling shows this matters.
+	// A single cache is enough because only two score rows are rebuilt when
+	// requests alternate between views.
 	if(!m_ScoreHudCacheValid || m_ScoreHudSessionId != Context.m_Session.Id().Value() || m_ScoreHudStateId != State.Id().Value() || m_ScoreHudViewId != Context.m_View.Id().Value() || m_ScoreHudOutputKey != Context.m_OutputCacheKey || m_ScoreHudViewportX != Viewport.m_X || m_ScoreHudViewportY != Viewport.m_Y || m_ScoreHudViewportWidth != Viewport.m_Width || m_ScoreHudViewportHeight != Viewport.m_Height || m_ScoreHudGameFlags != GameInfo.m_GameFlags || m_ScoreHudHasGameData != (pGameData != nullptr))
 	{
 		ResetScoreHudContainers();

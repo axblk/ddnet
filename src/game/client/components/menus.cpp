@@ -637,7 +637,7 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 		if(DoButton_MenuTab(&s_NetworkButton, Localize("Browser"), ActivePage == PAGE_NETWORK, &Button, IGraphics::CORNER_NONE))
 			NewPage = PAGE_NETWORK;
 
-		if(GameClient()->m_GameInfo.m_Race)
+		if(GameClient()->FocusedGameInfo().m_Race)
 		{
 			Box.VSplitLeft(90.0f, &Button, &Box);
 			static CButtonContainer s_GhostButton;
@@ -905,7 +905,7 @@ void CMenus::UpdateMusicState()
 	else if(!ShouldPlay && GameClient()->m_Sounds.IsPlaying(SOUND_MENU))
 		GameClient()->m_Sounds.Stop(SOUND_MENU);
 	if(!ShouldPlay)
-		GameClient()->m_MapSounds.StopAll();
+		GameClient()->StopMapSounds();
 }
 
 void CMenus::PopupMessage(const char *pTitle, const char *pMessage, const char *pButtonLabel, int NextPopup, FPopupButtonCallback pfnButtonCallback)
@@ -2058,7 +2058,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		if(DoButton_Menu(&s_Button, pButtonText, 0, &Part) || Ui()->ConsumeHotkey(CUi::HOTKEY_ESCAPE) || Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER))
 		{
 			if(m_Popup == POPUP_DISCONNECTED && Client()->ReconnectTime() > 0)
-				Client()->SetReconnectTime(0);
+				Client()->CancelReconnect();
 			m_Popup = POPUP_NONE;
 		}
 	}
@@ -2376,12 +2376,12 @@ void CMenus::OnWindowResize()
 	TextRender()->DeleteTextContainer(m_MotdTextContainerIndex);
 }
 
-void CMenus::OnRender()
+void CMenus::OnRenderApplicationOverlay()
 {
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		SetActive(true);
 
-	if(Client()->State() == IClient::STATE_ONLINE && GameClient()->m_ServerMode == CGameClient::SERVERMODE_PUREMOD)
+	if(Client()->State() == IClient::STATE_ONLINE && GameClient()->GameState(GameClient()->ActiveConnection()).m_Runtime.m_ServerMode == CGameState::SERVERMODE_PUREMOD)
 	{
 		Client()->Disconnect();
 		SetActive(true);

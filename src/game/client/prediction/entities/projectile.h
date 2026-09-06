@@ -31,7 +31,9 @@ public:
 
 	void Tick() override;
 
-	bool Match(CProjectile *pProj);
+	bool Match(const CProjectile *pProj) const;
+	// Whether this is the projectile the snapshot data describes.
+	bool Match(const CProjectileData &Data) const;
 	void SetBouncing(int Value);
 
 	const vec2 &GetDirection() const { return m_Direction; }

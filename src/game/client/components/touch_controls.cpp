@@ -614,35 +614,38 @@ void CTouchControls::CJoystickTouchButtonBehavior::OnDeactivate(bool ByFinger)
 void CTouchControls::CJoystickTouchButtonBehavior::OnUpdate()
 {
 	CControls &Controls = m_pTouchControls->GameClient()->m_Controls;
-	const float Zoom = m_pTouchControls->GameClient()->m_Snap.m_SpecInfo.m_Active ? m_pTouchControls->GameClient()->m_Camera.m_Zoom : 1.0f;
-	if(m_pTouchControls->GameClient()->m_Snap.m_SpecInfo.m_Active)
+	dbg_assert(m_pTouchControls->m_pControllerState != nullptr && m_pTouchControls->m_pControllerView != nullptr, "touch controller is not bound");
+	CGameState::CInputState &Input = m_pTouchControls->m_pControllerState->Input();
+	const bool Spectating = m_pTouchControls->m_pControllerView->IsSpectating();
+	const float Zoom = Spectating ? m_pTouchControls->m_pControllerView->Zoom() : 1.0f;
+	if(Spectating)
 	{
 		vec2 WorldScreenSize;
-		m_pTouchControls->Graphics()->CalcScreenParams(m_pTouchControls->Graphics()->ScreenAspect(), Zoom, &WorldScreenSize.x, &WorldScreenSize.y);
-		Controls.m_aMousePos[g_Config.m_ClDummy] += -m_AccumulatedDelta * WorldScreenSize;
-		Controls.m_aMouseInputType[g_Config.m_ClDummy] = CControls::EMouseInputType::RELATIVE;
-		Controls.m_aMousePos[g_Config.m_ClDummy].x = std::clamp(Controls.m_aMousePos[g_Config.m_ClDummy].x, -201.0f * 32, (m_pTouchControls->Collision()->GetWidth() + 201.0f) * 32.0f);
-		Controls.m_aMousePos[g_Config.m_ClDummy].y = std::clamp(Controls.m_aMousePos[g_Config.m_ClDummy].y, -201.0f * 32, (m_pTouchControls->Collision()->GetHeight() + 201.0f) * 32.0f);
+		m_pTouchControls->Graphics()->CalcScreenParams(m_pTouchControls->AspectRatio(), Zoom, &WorldScreenSize.x, &WorldScreenSize.y);
+		Input.m_MousePos += -m_AccumulatedDelta * WorldScreenSize;
+		Input.m_MouseInputType = CGameState::EMouseInputType::RELATIVE;
+		Input.m_MousePos.x = std::clamp(Input.m_MousePos.x, -201.0f * 32, (m_pTouchControls->Collision()->GetWidth() + 201.0f) * 32.0f);
+		Input.m_MousePos.y = std::clamp(Input.m_MousePos.y, -201.0f * 32, (m_pTouchControls->Collision()->GetHeight() + 201.0f) * 32.0f);
 		m_AccumulatedDelta = vec2(0.0f, 0.0f);
 	}
 	else if(IsRelative())
 	{
 		vec2 WorldScreenSize;
-		m_pTouchControls->Graphics()->CalcScreenParams(m_pTouchControls->Graphics()->ScreenAspect(), Zoom, &WorldScreenSize.x, &WorldScreenSize.y);
-		Controls.m_aMousePos[g_Config.m_ClDummy] += m_AccumulatedDelta * WorldScreenSize;
-		Controls.m_aMouseInputType[g_Config.m_ClDummy] = CControls::EMouseInputType::RELATIVE;
-		Controls.ClampMousePos();
+		m_pTouchControls->Graphics()->CalcScreenParams(m_pTouchControls->AspectRatio(), Zoom, &WorldScreenSize.x, &WorldScreenSize.y);
+		Input.m_MousePos += m_AccumulatedDelta * WorldScreenSize;
+		Input.m_MouseInputType = CGameState::EMouseInputType::RELATIVE;
+		Controls.ClampMousePos(Input);
 		m_AccumulatedDelta = vec2(0.0f, 0.0f);
 	}
 	else
 	{
 		const vec2 AbsolutePosition = (m_ActivePosition - vec2(0.5f, 0.5f)) * 2.0f;
-		Controls.m_aMousePos[g_Config.m_ClDummy] = AbsolutePosition * (Controls.GetMaxMouseDistance() - Controls.GetMinMouseDistance()) + normalize(AbsolutePosition) * Controls.GetMinMouseDistance();
-		Controls.m_aMouseInputType[g_Config.m_ClDummy] = CControls::EMouseInputType::ABSOLUTE;
-		if(length(Controls.m_aMousePos[g_Config.m_ClDummy]) < 0.001f)
+		Input.m_MousePos = AbsolutePosition * (Controls.GetMaxMouseDistance() - Controls.GetMinMouseDistance()) + normalize(AbsolutePosition) * Controls.GetMinMouseDistance();
+		Input.m_MouseInputType = CGameState::EMouseInputType::ABSOLUTE;
+		if(length(Input.m_MousePos) < 0.001f)
 		{
-			Controls.m_aMousePos[g_Config.m_ClDummy].x = 0.001f;
-			Controls.m_aMousePos[g_Config.m_ClDummy].y = 0.0f;
+			Input.m_MousePos.x = 0.001f;
+			Input.m_MousePos.y = 0.0f;
 		}
 	}
 }
@@ -781,70 +784,177 @@ void CTouchControls::OnInit()
 
 void CTouchControls::OnReset()
 {
-	ResetButtons();
+	CancelController({});
+	m_RenderGameButtons = false;
+	m_RenderEditor = false;
 	m_EditingActive = false;
 }
 
 void CTouchControls::OnWindowResize()
 {
-	ResetButtons();
-	for(CTouchButton &TouchButton : m_vTouchButtons)
-	{
-		TouchButton.UpdateScreenFromUnitRect();
-	}
+	CancelController({});
+	m_RenderGameButtons = false;
+	m_RenderEditor = false;
 }
 
-bool CTouchControls::OnTouchState(std::vector<IInput::CTouchFingerState> &vTouchFingerStates)
+bool CTouchControls::MatchesController(const CGameSessionContext &Session, const CGameState &State, const CGameView &View) const
 {
-	if(!g_Config.m_ClTouchControls)
+	return m_pControllerSession == &Session && m_pControllerState == &State && m_pControllerView == &View;
+}
+
+float CTouchControls::AspectRatio() const
+{
+	if(m_pControllerView == nullptr)
+		return Graphics()->ScreenAspect();
+	const CViewport &Viewport = m_pControllerView->Viewport();
+	return Viewport.m_Width > 0 && Viewport.m_Height > 0 ? Viewport.m_Width / (float)Viewport.m_Height : Graphics()->ScreenAspect();
+}
+
+void CTouchControls::CancelController(std::span<const IInput::CTouchFingerState> vTouchFingerStates)
+{
+	const auto AddStaleFinger = [this](const IInput::CTouchFinger &Finger) {
+		if(std::find(m_vStaleFingers.begin(), m_vStaleFingers.end(), Finger) == m_vStaleFingers.end())
+			m_vStaleFingers.push_back(Finger);
+	};
+	for(CTouchButton &TouchButton : m_vTouchButtons)
+	{
+		if(TouchButton.m_pBehavior->IsActive())
+		{
+			AddStaleFinger(TouchButton.m_pBehavior->m_Finger);
+			TouchButton.m_pBehavior->SetInactive(false);
+		}
+	}
+	for(int Action = ACTION_AIM; Action < NUM_ACTIONS; ++Action)
+	{
+		CActionState &ActionState = m_aDirectTouchActionStates[Action];
+		if(ActionState.m_Active)
+		{
+			AddStaleFinger(ActionState.m_Finger);
+			if(Action != ACTION_AIM)
+				Console()->ExecuteLineStroked(0, ACTION_COMMANDS[Action], IConsole::CLIENT_ID_UNSPECIFIED);
+			ActionState.m_Active = false;
+		}
+	}
+	for(const IInput::CTouchFingerState &FingerState : vTouchFingerStates)
+		AddStaleFinger(FingerState.m_Finger);
+	m_JoystickPressCount = 0;
+}
+
+bool CTouchControls::UpdateController(CGameView &View, std::span<const IInput::CTouchFingerState> vTouchFingerStates, bool AcceptInput)
+{
+	CGameSessionContext &Session = GameClient()->SessionContext(View.SessionId());
+	CGameState &State = Session.GameState(View.Conn());
+	if(!MatchesController(Session, State, View))
+	{
+		CancelController(vTouchFingerStates);
+		m_pControllerSession = &Session;
+		m_pControllerState = &State;
+		m_pControllerView = &View;
+	}
+
+	const bool IsGameActive = Client()->State() == IClient::STATE_ONLINE || Client()->State() == IClient::STATE_DEMOPLAYBACK;
+	const bool GameEnabled = g_Config.m_ClTouchControls && IsGameActive;
+	const bool VisualBlocked = GameClient()->m_Chat.IsActive() || GameClient()->m_Emoticon.IsActive() || GameClient()->m_Spectator.IsActive();
+	m_RenderGameButtons = GameEnabled && !VisualBlocked && !m_EditingActive;
+	m_RenderEditor = GameEnabled && !VisualBlocked && m_EditingActive;
+	if(!GameEnabled)
+	{
+		CancelController(vTouchFingerStates);
 		return false;
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
-		return false;
-	if(GameClient()->m_Chat.IsActive() ||
+	}
+	std::vector<IInput::CTouchFingerState> vLocalTouchFingerStates(vTouchFingerStates.begin(), vTouchFingerStates.end());
+	const CViewport &Viewport = View.Viewport();
+	if(Viewport.m_Width > 0 && Viewport.m_Height > 0)
+	{
+		const vec2 ScreenSize(Graphics()->ScreenWidth(), Graphics()->ScreenHeight());
+		const vec2 ViewSize(Viewport.m_Width, Viewport.m_Height);
+		for(IInput::CTouchFingerState &FingerState : vLocalTouchFingerStates)
+		{
+			FingerState.m_Position = (FingerState.m_Position * ScreenSize - vec2(Viewport.m_X, Viewport.m_Y)) / ViewSize;
+			FingerState.m_Delta = FingerState.m_Delta * ScreenSize / ViewSize;
+		}
+		const auto IsTrackedFinger = [this](const IInput::CTouchFinger &Finger) {
+			const bool ActiveButton = std::any_of(m_vTouchButtons.begin(), m_vTouchButtons.end(), [&](const CTouchButton &Button) {
+				return Button.m_pBehavior->IsActive(Finger);
+			});
+			const bool ActiveAction = std::any_of(std::begin(m_aDirectTouchActionStates), std::end(m_aDirectTouchActionStates), [&](const CActionState &Action) {
+				return Action.m_Active && Action.m_Finger == Finger;
+			});
+			const bool ActiveEditorFinger =
+				(m_ActiveFingerState.has_value() && m_ActiveFingerState->m_Finger == Finger) ||
+				(m_ZoomFingerState.has_value() && m_ZoomFingerState->m_Finger == Finger) ||
+				(m_LongPressFingerState.has_value() && m_LongPressFingerState->m_Finger == Finger) ||
+				std::any_of(m_vDeletedFingerState.begin(), m_vDeletedFingerState.end(), [&](const IInput::CTouchFingerState &DeletedState) { return DeletedState.m_Finger == Finger; });
+			return ActiveButton || ActiveAction || ActiveEditorFinger || std::find(m_vStaleFingers.begin(), m_vStaleFingers.end(), Finger) != m_vStaleFingers.end();
+		};
+		vLocalTouchFingerStates.erase(
+			std::remove_if(vLocalTouchFingerStates.begin(), vLocalTouchFingerStates.end(), [&](const IInput::CTouchFingerState &FingerState) {
+				const bool Outside = FingerState.m_Position.x < 0.0f || FingerState.m_Position.x > 1.0f || FingerState.m_Position.y < 0.0f || FingerState.m_Position.y > 1.0f;
+				return Outside && !IsTrackedFinger(FingerState.m_Finger);
+			}),
+			vLocalTouchFingerStates.end());
+	}
+	if(m_EditingActive)
+	{
+		for(CTouchButton &TouchButton : m_vTouchButtons)
+		{
+			TouchButton.UpdateVisibilityEditor();
+			TouchButton.UpdateScreenFromUnitRect();
+		}
+	}
+	else
+	{
+		for(CTouchButton &TouchButton : m_vTouchButtons)
+		{
+			TouchButton.UpdateVisibilityGame();
+			TouchButton.UpdateScreenFromUnitRect();
+		}
+		for(CTouchButton &TouchButton : m_vTouchButtons)
+			TouchButton.UpdateBackgroundCorners();
+	}
+	if(!m_EditingActive && !VisualBlocked)
+	{
+		m_pSelectedButton = nullptr;
+		m_pSampleButton = nullptr;
+		m_UnsavedChanges = false;
+	}
+
+	if(!AcceptInput ||
+		GameClient()->m_Chat.IsActive() ||
 		GameClient()->m_GameConsole.IsActive() ||
 		GameClient()->m_Menus.IsActive() ||
 		GameClient()->m_Emoticon.IsActive() ||
 		GameClient()->m_Spectator.IsActive() ||
 		m_PreviewAllButtons)
 	{
-		ResetButtons();
+		CancelController(vTouchFingerStates);
 		return false;
 	}
 
 	if(m_EditingActive)
-		UpdateButtonsEditor(vTouchFingerStates);
+		UpdateButtonsEditor(vLocalTouchFingerStates);
 	else
-		UpdateButtonsGame(vTouchFingerStates);
-	vTouchFingerStates.clear();
+		UpdateButtonsGame(vLocalTouchFingerStates);
 	return true;
 }
 
-void CTouchControls::OnRender()
+void CTouchControls::OnRender(const CRenderContext &Context)
 {
-	if(!g_Config.m_ClTouchControls)
+	if(!m_RenderGameButtons || !MatchesController(Context.m_Session, Context.m_State, Context.m_View))
 		return;
-	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
-		return;
-	if(GameClient()->m_Chat.IsActive() ||
-		GameClient()->m_Emoticon.IsActive() ||
-		GameClient()->m_Spectator.IsActive())
-	{
-		return;
-	}
 
 	const vec2 ScreenSize = CalculateScreenSize();
 	Graphics()->MapScreenToSize(ScreenSize.x, ScreenSize.y);
-
-	if(m_EditingActive)
-	{
-		RenderButtonsEditor();
-		return;
-	}
-	// If not editing, deselect it.
-	m_pSelectedButton = nullptr;
-	m_pSampleButton = nullptr;
-	m_UnsavedChanges = false;
 	RenderButtonsGame();
+}
+
+void CTouchControls::RenderApplicationOverlay()
+{
+	if(!m_RenderEditor)
+		return;
+	const vec2 ScreenSize = CalculateScreenSize();
+	Graphics()->MapScreenToSize(ScreenSize.x, ScreenSize.y);
+	RenderButtonsEditor();
 }
 
 bool CTouchControls::LoadConfigurationFromFile(int StorageType)
@@ -894,15 +1004,16 @@ void CTouchControls::InitVisibilityFunctions()
 {
 	m_aVisibilityFunctions[(int)EButtonVisibility::INGAME].m_pId = "ingame";
 	m_aVisibilityFunctions[(int)EButtonVisibility::INGAME].m_Function = [&]() {
-		return !GameClient()->m_Snap.m_SpecInfo.m_Active;
+		return m_pControllerView != nullptr && !m_pControllerView->IsSpectating();
 	};
 	m_aVisibilityFunctions[(int)EButtonVisibility::ZOOM_ALLOWED].m_pId = "zoom-allowed";
 	m_aVisibilityFunctions[(int)EButtonVisibility::ZOOM_ALLOWED].m_Function = [&]() {
-		return GameClient()->m_Camera.ZoomAllowed();
+		return m_pControllerView != nullptr && m_pControllerState != nullptr &&
+		       (m_pControllerView->IsSpectating() || m_pControllerState->CoreGameInfo().m_AllowZoom || Client()->State() == IClient::STATE_DEMOPLAYBACK);
 	};
 	m_aVisibilityFunctions[(int)EButtonVisibility::VOTE_ACTIVE].m_pId = "vote-active";
 	m_aVisibilityFunctions[(int)EButtonVisibility::VOTE_ACTIVE].m_Function = [&]() {
-		return GameClient()->m_Voting.IsVoting();
+		return m_pControllerSession != nullptr && m_pControllerSession->m_Vote.IsVoting();
 	};
 	m_aVisibilityFunctions[(int)EButtonVisibility::DUMMY_ALLOWED].m_pId = "dummy-allowed";
 	m_aVisibilityFunctions[(int)EButtonVisibility::DUMMY_ALLOWED].m_Function = [&]() {
@@ -957,7 +1068,8 @@ int CTouchControls::NextActiveAction(int Action) const
 
 int CTouchControls::NextDirectTouchAction() const
 {
-	if(GameClient()->m_Snap.m_SpecInfo.m_Active)
+	dbg_assert(m_pControllerView != nullptr, "touch controller is not bound");
+	if(m_pControllerView->IsSpectating())
 	{
 		switch(m_DirectTouchSpectate)
 		{
@@ -999,12 +1111,6 @@ static auto MatchFingerStateFinger(const IInput::CTouchFinger &Finger)
 
 void CTouchControls::UpdateButtonsGame(const std::vector<IInput::CTouchFingerState> &vTouchFingerStates)
 {
-	// Update cached button visibilities and store time that buttons become visible.
-	for(CTouchButton &TouchButton : m_vTouchButtons)
-	{
-		TouchButton.UpdateVisibilityGame();
-	}
-
 	const int DirectTouchAction = NextDirectTouchAction();
 	const vec2 ScreenSize = CalculateScreenSize();
 
@@ -1044,9 +1150,7 @@ void CTouchControls::UpdateButtonsGame(const std::vector<IInput::CTouchFingerSta
 		{
 			m_aDirectTouchActionStates[Action].m_Active = false;
 			if(Action != ACTION_AIM)
-			{
 				Console()->ExecuteLineStroked(0, ACTION_COMMANDS[Action], IConsole::CLIENT_ID_UNSPECIFIED);
-			}
 		}
 		else
 		{
@@ -1165,63 +1269,44 @@ void CTouchControls::UpdateButtonsGame(const std::vector<IInput::CTouchFingerSta
 	// Update mouse position based on the finger responsible for the last active action.
 	if(GotDirectFingerState)
 	{
-		const float Zoom = GameClient()->m_Snap.m_SpecInfo.m_Active ? GameClient()->m_Camera.m_Zoom : 1.0f;
+		dbg_assert(m_pControllerState != nullptr && m_pControllerView != nullptr, "touch controller is not bound");
+		const bool Spectating = m_pControllerView->IsSpectating();
+		const float Zoom = Spectating ? m_pControllerView->Zoom() : 1.0f;
 		vec2 WorldScreenSize;
-		Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), Zoom, &WorldScreenSize.x, &WorldScreenSize.y);
+		Graphics()->CalcScreenParams(AspectRatio(), Zoom, &WorldScreenSize.x, &WorldScreenSize.y);
 		CControls &Controls = GameClient()->m_Controls;
-		if(GameClient()->m_Snap.m_SpecInfo.m_Active)
+		CGameState::CInputState &Input = m_pControllerState->Input();
+		if(Spectating)
 		{
-			Controls.m_aMousePos[g_Config.m_ClDummy] += -DirectFingerState.m_Delta * WorldScreenSize;
-			Controls.m_aMouseInputType[g_Config.m_ClDummy] = CControls::EMouseInputType::RELATIVE;
-			Controls.m_aMousePos[g_Config.m_ClDummy].x = std::clamp(Controls.m_aMousePos[g_Config.m_ClDummy].x, -201.0f * 32, (Collision()->GetWidth() + 201.0f) * 32.0f);
-			Controls.m_aMousePos[g_Config.m_ClDummy].y = std::clamp(Controls.m_aMousePos[g_Config.m_ClDummy].y, -201.0f * 32, (Collision()->GetHeight() + 201.0f) * 32.0f);
+			Input.m_MousePos += -DirectFingerState.m_Delta * WorldScreenSize;
+			Input.m_MouseInputType = CGameState::EMouseInputType::RELATIVE;
+			Input.m_MousePos.x = std::clamp(Input.m_MousePos.x, -201.0f * 32, (Collision()->GetWidth() + 201.0f) * 32.0f);
+			Input.m_MousePos.y = std::clamp(Input.m_MousePos.y, -201.0f * 32, (Collision()->GetHeight() + 201.0f) * 32.0f);
 		}
 		else if(m_DirectTouchIngame == EDirectTouchIngameMode::AIM_RELATIVE)
 		{
-			Controls.m_aMousePos[g_Config.m_ClDummy] += DirectFingerState.m_Delta * WorldScreenSize;
-			Controls.m_aMouseInputType[g_Config.m_ClDummy] = CControls::EMouseInputType::RELATIVE;
-			Controls.ClampMousePos();
+			Input.m_MousePos += DirectFingerState.m_Delta * WorldScreenSize;
+			Input.m_MouseInputType = CGameState::EMouseInputType::RELATIVE;
+			Controls.ClampMousePos(Input);
 		}
 		else
 		{
-			Controls.m_aMousePos[g_Config.m_ClDummy] = (DirectFingerState.m_Position - vec2(0.5f, 0.5f)) * WorldScreenSize;
-			Controls.m_aMouseInputType[g_Config.m_ClDummy] = CControls::EMouseInputType::ABSOLUTE;
+			Input.m_MousePos = (DirectFingerState.m_Position - vec2(0.5f, 0.5f)) * WorldScreenSize;
+			Input.m_MouseInputType = CGameState::EMouseInputType::ABSOLUTE;
 		}
 	}
 
 	// Activate action after the mouse position is set.
 	if(ActivateAction != ACTION_AIM && ActivateAction != NUM_ACTIONS)
-	{
 		Console()->ExecuteLineStroked(1, ACTION_COMMANDS[ActivateAction], IConsole::CLIENT_ID_UNSPECIFIED);
-	}
-}
-
-void CTouchControls::ResetButtons()
-{
-	for(CTouchButton &TouchButton : m_vTouchButtons)
-	{
-		TouchButton.m_pBehavior->Reset();
-	}
-	for(CActionState &ActionState : m_aDirectTouchActionStates)
-	{
-		ActionState.m_Active = false;
-	}
 }
 
 void CTouchControls::RenderButtonsGame()
 {
 	for(CTouchButton &TouchButton : m_vTouchButtons)
 	{
-		TouchButton.UpdateVisibilityGame();
-	}
-	for(CTouchButton &TouchButton : m_vTouchButtons)
-	{
 		if(!TouchButton.IsVisible())
-		{
 			continue;
-		}
-		TouchButton.UpdateBackgroundCorners();
-		TouchButton.UpdateScreenFromUnitRect();
 		TouchButton.Render();
 	}
 }
@@ -1229,7 +1314,7 @@ void CTouchControls::RenderButtonsGame()
 vec2 CTouchControls::CalculateScreenSize() const
 {
 	const float ScreenHeight = 400.0f * 3.0f;
-	const float ScreenWidth = ScreenHeight * Graphics()->ScreenAspect();
+	const float ScreenWidth = ScreenHeight * AspectRatio();
 	return vec2(ScreenWidth, ScreenHeight);
 }
 
@@ -1766,11 +1851,6 @@ void CTouchControls::UpdateButtonsEditor(const std::vector<IInput::CTouchFingerS
 	std::vector<CUnitRect> vVisibleButtonRects;
 	const vec2 ScreenSize = CalculateScreenSize();
 	bool LongPress = false;
-	for(CTouchButton &TouchButton : m_vTouchButtons)
-	{
-		TouchButton.UpdateVisibilityEditor();
-	}
-
 	if(vTouchFingerStates.empty())
 		m_PreventSaving = false;
 
@@ -2034,12 +2114,8 @@ void CTouchControls::RenderButtonsEditor()
 	{
 		if(&TouchButton == m_pSelectedButton)
 			continue;
-		TouchButton.UpdateVisibilityEditor();
 		if(TouchButton.m_VisibilityCached || m_PreviewAllButtons)
-		{
-			TouchButton.UpdateScreenFromUnitRect();
 			TouchButton.Render(false);
-		}
 	}
 
 	if(m_pSampleButton != nullptr && m_ShownRect.has_value())

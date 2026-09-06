@@ -73,6 +73,7 @@ public:
 	};
 
 private:
+	CGameView::CCameraState m_CameraState;
 	CCamera m_Camera;
 
 	vec2 m_RotationCenter;
@@ -100,14 +101,11 @@ public:
 	void OnInterfacesInit(CGameClient *pClient) override;
 	void OnInit() override;
 	void OnMapLoad() override;
-	void OnRender() override;
 
 	void LoadMenuBackground(bool HasDayHint = true, bool HasNightHint = true);
 
 	bool Render();
 	bool IsLoading() const { return m_Loading; }
-
-	class CCamera *GetCurCamera() override;
 
 	void ChangePosition(int PositionNumber);
 

@@ -15,8 +15,10 @@ public:
 	void Tick() override;
 
 	CPickup(CGameWorld *pGameWorld, int Id, const CPickupData *pPickup);
-	void FillInfo(CNetObj_Pickup *pPickup);
-	bool Match(CPickup *pPickup);
+	void FillInfo(CNetObj_Pickup *pPickup) const;
+	bool Match(const CPickup *pPickup) const;
+	// Whether this is the pickup the snapshot data describes.
+	bool Match(const CPickupData &Data) const;
 	bool InDDNetTile() const { return m_IsCoreActive; }
 
 	int Type() const { return m_Type; }

@@ -9,14 +9,16 @@
 
 #include <game/client/gameclient.h>
 
-int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn, bool Dummy)
+int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn)
 {
 	CSnapshotBuilder Builder;
 	Builder.Init();
 
 	float LocalTime = Client()->LocalTime();
-	int GameTick = Client()->GameTick(g_Config.m_ClDummy);
-	CTranslationContext &TranslationContext = Client()->m_TranslationContext;
+	int GameTick = Client()->GameTick(SessionId, Conn);
+	CTranslationContext &TranslationContext = Client()->TranslationContext(SessionId);
+	CGameSessionContext &SourceSession = SessionContext(SessionId);
+	CGameState &SourceState = SourceSession.GameState(Conn);
 
 	std::fill(std::begin(TranslationContext.m_apPlayerInfosRace), std::end(TranslationContext.m_apPlayerInfosRace), nullptr);
 
@@ -279,6 +281,7 @@ int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrc
 			{
 				Info6.m_Team = TranslationContext.m_aClients[pItem7->Id()].m_Team;
 				TranslationContext.m_aClients[pItem7->Id()].m_PlayerFlags7 = pInfo7->m_PlayerFlags;
+				SourceState.Protocol7Client(pItem7->Id()).m_PlayerFlags = pInfo7->m_PlayerFlags;
 			}
 			Info6.m_Score = pInfo7->m_Score;
 			Info6.m_Latency = pInfo7->m_Latency;
@@ -408,7 +411,7 @@ int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrc
 				Client.m_Country = CountryCode::DEFAULT;
 			}
 
-			ApplySkin7InfoFromSnapObj(pInfo, ClientId);
+			ApplySkin7InfoFromSnapObj(SessionId, pInfo, ClientId, Conn);
 		}
 		else if(ItemType == protocol7::NETOBJTYPE_DE_GAMEINFO)
 		{
@@ -436,24 +439,27 @@ int CGameClient::TranslateSnap(CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrc
 	return Builder.FinishIfNoDroppedItems(pSnapDstSix);
 }
 
-int CGameClient::OnDemoRecSnap7(CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn)
+int CGameClient::OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn)
 {
+	CTranslationContext &TranslationContext = Client()->TranslationContext(SessionId);
+	CGameSessionContext &NetworkSession = SessionContext(SessionId);
+	CGameState &State = NetworkSession.GameState(Conn);
 	CSnapshotBuilder Builder;
 	Builder.Init7(pFrom);
 
 	// add client info
 	for(int i = 0; i < MAX_CLIENTS; i++)
 	{
-		if(!m_aClients[i].m_Active)
+		CTranslationContext::CClientData &ClientData = TranslationContext.m_aClients[i];
+		if(!ClientData.m_Active)
 			continue;
-
-		CTranslationContext::CClientData &ClientData = Client()->m_TranslationContext.m_aClients[i];
+		const CGameState::CProtocol7ClientState &Protocol7Client = State.Protocol7Client(i);
 
 		protocol7::CNetObj_De_ClientInfo ClientInfoObj;
-		ClientInfoObj.m_Local = i == Client()->m_TranslationContext.m_aLocalClientId[Conn];
+		ClientInfoObj.m_Local = i == TranslationContext.m_aLocalClientId[Conn];
 		ClientInfoObj.m_Team = ClientData.m_Team;
-		StrToInts(ClientInfoObj.m_aName, std::size(ClientInfoObj.m_aName), m_aClients[i].m_aName);
-		StrToInts(ClientInfoObj.m_aClan, std::size(ClientInfoObj.m_aClan), m_aClients[i].m_aClan);
+		StrToInts(ClientInfoObj.m_aName, std::size(ClientInfoObj.m_aName), ClientData.m_aName);
+		StrToInts(ClientInfoObj.m_aClan, std::size(ClientInfoObj.m_aClan), ClientData.m_aClan);
 		ClientInfoObj.m_Country = ClientData.m_Country;
 
 		for(int Part = 0; Part < protocol7::NUM_SKINPARTS; Part++)
@@ -461,29 +467,30 @@ int CGameClient::OnDemoRecSnap7(CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn
 			StrToInts(
 				ClientInfoObj.m_aaSkinPartNames[Part],
 				std::size(ClientInfoObj.m_aaSkinPartNames[Part]),
-				m_aClients[i].m_aSixup[Conn].m_aaSkinPartNames[Part]);
-			ClientInfoObj.m_aUseCustomColors[Part] = m_aClients[i].m_aSixup[Conn].m_aUseCustomColors[Part];
-			ClientInfoObj.m_aSkinPartColors[Part] = m_aClients[i].m_aSixup[Conn].m_aSkinPartColors[Part];
+				Protocol7Client.m_aaSkinPartNames[Part]);
+			ClientInfoObj.m_aUseCustomColors[Part] = Protocol7Client.m_aUseCustomColors[Part];
+			ClientInfoObj.m_aSkinPartColors[Part] = Protocol7Client.m_aSkinPartColors[Part];
 		}
 
 		Builder.NewItem(protocol7::NETOBJTYPE_DE_CLIENTINFO, i, &ClientInfoObj, sizeof(ClientInfoObj));
 	}
 
 	// add tuning
-	if(mem_comp(&CTuningParams::DEFAULT, &m_aTuning[Conn], sizeof(CTuningParams)) != 0)
+	const CTuningParams &CurrentTuning = State.m_Runtime.m_CurrentTuning;
+	if(mem_comp(&CTuningParams::DEFAULT, &CurrentTuning, sizeof(CTuningParams)) != 0)
 	{
 		protocol7::CNetObj_De_TuneParams TuneParams;
-		mem_copy(&TuneParams.m_aTuneParams, &m_aTuning[Conn], sizeof(TuneParams.m_aTuneParams));
+		mem_copy(&TuneParams.m_aTuneParams, &CurrentTuning, sizeof(TuneParams.m_aTuneParams));
 		Builder.NewItem(protocol7::NETOBJTYPE_DE_TUNEPARAMS, 0, &TuneParams, sizeof(TuneParams));
 	}
 
 	// add game info
 	protocol7::CNetObj_De_GameInfo GameInfo;
-	GameInfo.m_GameFlags = Client()->m_TranslationContext.m_GameFlags;
-	GameInfo.m_ScoreLimit = Client()->m_TranslationContext.m_ScoreLimit;
-	GameInfo.m_TimeLimit = Client()->m_TranslationContext.m_TimeLimit;
-	GameInfo.m_MatchNum = Client()->m_TranslationContext.m_MatchNum;
-	GameInfo.m_MatchCurrent = Client()->m_TranslationContext.m_MatchCurrent;
+	GameInfo.m_GameFlags = TranslationContext.m_GameFlags;
+	GameInfo.m_ScoreLimit = TranslationContext.m_ScoreLimit;
+	GameInfo.m_TimeLimit = TranslationContext.m_TimeLimit;
+	GameInfo.m_MatchNum = TranslationContext.m_MatchNum;
+	GameInfo.m_MatchCurrent = TranslationContext.m_MatchCurrent;
 	Builder.NewItem(protocol7::NETOBJTYPE_DE_GAMEINFO, 0, &GameInfo, sizeof(GameInfo));
 
 	return Builder.FinishIfNoDroppedItems(pTo);

@@ -100,7 +100,7 @@ void CProjectile::Tick()
 		IsWeaponCollide = true;
 	}
 
-	if(((pTargetChr && (pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : g_Config.m_SvHit || m_Owner == -1 || pTargetChr == pOwnerChar)) || Collide || GameLayerClipped(CurPos)) && !IsWeaponCollide)
+	if(((pTargetChr && (pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : GameWorld()->GameConfig()->m_SvHit || m_Owner == -1 || pTargetChr == pOwnerChar)) || Collide || GameLayerClipped(CurPos)) && !IsWeaponCollide)
 	{
 		if(m_Explosive && (!pTargetChr || (!m_Freeze || (m_Type == WEAPON_SHOTGUN && Collide))))
 		{
@@ -229,7 +229,7 @@ CProjectileData CProjectile::GetData() const
 	return Result;
 }
 
-bool CProjectile::Match(CProjectile *pProj)
+bool CProjectile::Match(const CProjectile *pProj) const
 {
 	if(pProj->m_Type != m_Type)
 		return false;
@@ -238,6 +238,20 @@ bool CProjectile::Match(CProjectile *pProj)
 	if(distance(pProj->m_Pos, m_Pos) > 2.f)
 		return false;
 	if(distance(pProj->m_Direction, m_Direction) > 2.f)
+		return false;
+	return true;
+}
+
+bool CProjectile::Match(const CProjectileData &Data) const
+{
+	// Compares what the constructor takes from the data.
+	if(Data.m_Type != m_Type)
+		return false;
+	if(Data.m_StartTick != m_StartTick)
+		return false;
+	if(distance(Data.m_StartPos, m_Pos) > 2.f)
+		return false;
+	if(distance(Data.m_StartVel, m_Direction) > 2.f)
 		return false;
 	return true;
 }

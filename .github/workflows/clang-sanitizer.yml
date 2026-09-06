@@ -118,7 +118,8 @@ jobs:
       run: |
         cd clang-sanitizer
         set +e
-        python ../scripts/integration_test.py --show-full-output --test-mastersrv .
+        # Sanitized builds are too slow on the runner for the default timeouts
+        python ../scripts/integration_test.py --show-full-output --test-mastersrv --timeout-multiplier 10 .
         integration_test_result=$?
         set -e
         if [ $integration_test_result -ne 0 ]; then

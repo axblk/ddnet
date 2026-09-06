@@ -126,7 +126,7 @@ class TestRunner:
 		self.timeout_multiplier = timeout_multiplier
 		self.valgrind_memcheck = valgrind_memcheck
 		if self.valgrind_memcheck:
-			self.timeout_multiplier *= 25
+			self.timeout_multiplier *= 40
 		# `conn_timeout` is wall clock inside the engine, so it has to be scaled like
 		# the test timeouts, otherwise a slowed down client or server drops its own
 		# connection while the test is still waiting. 100 is the default of the config
@@ -485,7 +485,7 @@ class Client(Runnable):
 	def exit(self):
 		self.command("quit")
 
-	def wait_for_startup(self, timeout=15):
+	def wait_for_startup(self, timeout=30):
 		self.wait_for_log_prefix("client: version", timeout=timeout)
 
 
@@ -739,7 +739,7 @@ def smoke_test(test_env):
 	client1.command("record client1")
 
 	client2.command(f"connect localhost:{server.port}")
-	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	server.wait_for_log_prefix("server: player has entered the game", timeout=20)
 	for _ in range(5):
 		server.wait_for_log(
 			lambda l: l.line.startswith("chat: *** client1 finished in:") or l.line.startswith("chat: *** client2 finished in:"),
@@ -809,8 +809,13 @@ def smoke_test(test_env):
 	client1.command("play demos/server.demo")
 	client2.command("play demos/client1.demo")
 
-	client1.wait_for_log_prefix("chat/server: *** client1 finished in:", timeout=20)
-	client2.wait_for_log_prefix("chat/server: *** client1 finished in:", timeout=20)
+	# Replaying the server demo is the longest wait of the suite. The demo is as
+	# long as the session that was just played, so a slow machine both records a
+	# longer demo and replays it more slowly, and the wait grows with the square
+	# of how slow the machine is. Under Memcheck on a busy runner it has been
+	# seen to use up nine tenths of what a timeout of 20 allows.
+	client1.wait_for_log_prefix("chat/server: *** client1 finished in:", timeout=45)
+	client2.wait_for_log_prefix("chat/server: *** client1 finished in:", timeout=45)
 
 	client1.exit()
 	client2.exit()

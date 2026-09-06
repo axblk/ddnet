@@ -23,6 +23,8 @@ public:
 	CPlasma(CGameWorld *pGameWorld, int Id, const CLaserData *pData);
 
 	bool Match(const CPlasma *pPlasma) const;
+	// Whether this is the plasma bullet the snapshot data describes.
+	bool Match(const CLaserData &Data) const;
 	void Read(const CLaserData *pData);
 
 	void Reset();

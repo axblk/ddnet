@@ -19,7 +19,9 @@ class CDragger : public CEntity
 
 public:
 	CDragger(CGameWorld *pGameWorld, int Id, const CLaserData *pData);
-	bool Match(CDragger *pDragger);
+	bool Match(const CDragger *pDragger) const;
+	// Whether this is the dragger the snapshot data describes.
+	bool Match(const CLaserData &Data) const;
 	void Read(const CLaserData *pData);
 	float GetStrength() const { return m_Strength; }
 

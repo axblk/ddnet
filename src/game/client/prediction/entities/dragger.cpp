@@ -31,7 +31,7 @@ void CDragger::LookForPlayersToDrag()
 	std::fill(std::begin(apPlayersInRange), std::end(apPlayersInRange), nullptr);
 
 	int NumPlayersInRange = GameWorld()->FindEntities(m_Pos,
-		g_Config.m_SvDraggerRange - CCharacterCore::PhysicalSize(),
+		GameWorld()->GameConfig()->m_SvDraggerRange - CCharacterCore::PhysicalSize(),
 		apPlayersInRange, MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
 
 	// The closest player (within range) in a team is selected as the target
@@ -113,7 +113,7 @@ void CDragger::DraggerBeamTick()
 	}
 
 	// When the dragger can no longer reach the target player, the dragger beam dissolves
-	if(distance(pTarget->m_Pos, m_Pos) >= g_Config.m_SvDraggerRange ||
+	if(distance(pTarget->m_Pos, m_Pos) >= GameWorld()->GameConfig()->m_SvDraggerRange ||
 		(m_IgnoreWalls ?
 				Collision()->IntersectNoLaserNoWalls(m_Pos, pTarget->m_Pos, nullptr, nullptr) :
 				Collision()->IntersectNoLaser(m_Pos, pTarget->m_Pos, nullptr, nullptr)))
@@ -154,7 +154,16 @@ void CDragger::Read(const CLaserData *pData)
 	m_TargetId = pData->m_Owner;
 }
 
-bool CDragger::Match(CDragger *pDragger)
+bool CDragger::Match(const CDragger *pDragger) const
 {
 	return pDragger->m_Strength == m_Strength && pDragger->m_Number == m_Number && pDragger->m_IgnoreWalls == m_IgnoreWalls;
+}
+
+bool CDragger::Match(const CLaserData &Data) const
+{
+	// Compares what the constructor takes from the data.
+	const bool KnownType = 0 <= Data.m_Subtype && Data.m_Subtype < NUM_LASERDRAGGERTYPES;
+	const float Strength = KnownType ? (Data.m_Subtype >> 1) + 1 : 0;
+	const bool IgnoreWalls = KnownType && (Data.m_Subtype & 1);
+	return Strength == m_Strength && Data.m_SwitchNumber == m_Number && IgnoreWalls == m_IgnoreWalls;
 }

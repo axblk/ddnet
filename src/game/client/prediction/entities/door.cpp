@@ -139,3 +139,9 @@ bool CDoor::Match(const CDoor *pDoor) const
 {
 	return pDoor->m_Pos == m_Pos && pDoor->m_To == m_To && pDoor->m_Number == m_Number;
 }
+
+bool CDoor::Match(const CLaserData &Data) const
+{
+	// Flipped in the laser object, as in Read().
+	return Data.m_To == m_Pos && Data.m_From == m_To && Data.m_SwitchNumber == m_Number;
+}

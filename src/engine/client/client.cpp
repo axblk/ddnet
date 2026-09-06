@@ -92,6 +92,7 @@
 #include <iterator>
 #include <limits>
 #include <stack>
+#include <string>
 #include <thread>
 #include <tuple>
 
@@ -102,37 +103,26 @@ static constexpr ColorRGBA CLIENT_NETWORK_PRINT_ERROR_COLOR = ColorRGBA(1.0f, 0.
 
 CSnapshotDelta *CClient::SnapshotDelta()
 {
-	if(IsSixup())
-	{
-		return &m_SnapshotDeltaSixup;
-	}
-	return &m_SnapshotDelta;
+	return &m_pNetworkSessionSource->SnapshotDelta(m_pNetworkSessionSource->m_Sixup);
 }
 
 CClient::CClient() :
-	m_DemoPlayer(&m_SnapshotDelta, &m_SnapshotDeltaSixup, true, [&]() { UpdateDemoIntraTimers(); }),
-	m_aInputtimeMarginGraphs{{128, 2, true}, {128, 2, true}},
-	m_aGametimeMarginGraphs{{128, 2, true}, {128, 2, true}},
 	m_FpsGraph(4096, 0, true)
 {
+	auto pNetworkSource = std::make_unique<CNetworkSessionSource>();
+	m_pNetworkSessionSource = pNetworkSource.get();
+	m_NetworkSessionId = m_SessionManager.Create(std::move(pNetworkSource));
+	auto pDemoSource = std::make_unique<CDemoSessionSource>(true, [&]() { UpdateDemoIntraTimers(); });
+	m_pDemoSessionSource = pDemoSource.get();
+	m_DemoSessionId = m_SessionManager.Create(std::move(pDemoSource));
+
 	m_StateStartTime = time_get();
 	for(auto &DemoRecorder : m_aDemoRecorders)
-		DemoRecorder = CDemoRecorder(&m_SnapshotDelta);
+		DemoRecorder = CDemoRecorder(&m_pNetworkSessionSource->SnapshotDelta(false));
 	for(auto &DemoRecorder : m_aDemoRecordersSixup)
-		DemoRecorder = CDemoRecorder(&m_SnapshotDeltaSixup);
+		DemoRecorder = CDemoRecorder(&m_pNetworkSessionSource->SnapshotDelta(true));
 	m_LastRenderTime = time_get();
-	mem_zero(m_aInputs, sizeof(m_aInputs));
-	mem_zero(m_aapSnapshots, sizeof(m_aapSnapshots));
-	for(auto &SnapshotStorage : m_aSnapshotStorage)
-		SnapshotStorage.Init();
-	mem_zero(m_aDemorecSnapshotHolders, sizeof(m_aDemorecSnapshotHolders));
-	m_CurrentServerInfo = {};
 	mem_zero(&m_Checksum, sizeof(m_Checksum));
-	for(auto &GameTime : m_aGameTime)
-		GameTime.Init(0);
-	m_PredictedTime.Init(0);
-
-	m_Sixup = false;
 }
 
 // ----- send functions -----
@@ -195,12 +185,12 @@ int CClient::SendMsg(int Conn, CMsgPacker *pMsg, int Flags)
 {
 	CNetChunk Packet;
 
-	if(State() == IClient::STATE_OFFLINE)
+	if(m_pNetworkSessionSource->State() == ESessionState::OFFLINE)
 		return 0;
 
 	// repack message (inefficient)
 	CPacker Pack;
-	if(!RepackMsg(pMsg, Pack, IsSixup()))
+	if(!RepackMsg(pMsg, Pack, m_pNetworkSessionSource->m_Sixup))
 		return 0;
 
 	mem_zero(&Packet, sizeof(CNetChunk));
@@ -226,7 +216,7 @@ int CClient::SendMsg(int Conn, CMsgPacker *pMsg, int Flags)
 
 	if(!(Flags & MSGFLAG_NOSEND))
 	{
-		m_aNetClient[Conn].Send(&Packet);
+		NetClient(Conn).Send(&Packet);
 	}
 
 	return 0;
@@ -239,17 +229,18 @@ int CClient::SendMsgActive(CMsgPacker *pMsg, int Flags)
 
 void CClient::SendInfo(int Conn)
 {
+	const CNetworkSessionSource &Source = *m_pNetworkSessionSource;
 	CMsgPacker MsgVer(NETMSG_CLIENTVER, true);
-	MsgVer.AddRaw(&m_ConnectionId, sizeof(m_ConnectionId));
+	MsgVer.AddRaw(&Source.m_ConnectionId, sizeof(Source.m_ConnectionId));
 	MsgVer.AddInt(GameClient()->DDNetVersion());
 	MsgVer.AddString(GameClient()->DDNetVersionStr());
 	SendMsg(Conn, &MsgVer, MSGFLAG_VITAL);
 
-	if(IsSixup())
+	if(Source.m_Sixup)
 	{
 		CMsgPacker Msg(NETMSG_INFO, true);
 		Msg.AddString(GAME_NETVERSION7, 128);
-		Msg.AddString(Config()->m_Password);
+		Msg.AddString(Source.m_Password.c_str());
 		Msg.AddInt(GameClient()->ClientVersion7());
 		SendMsg(Conn, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 		return;
@@ -257,7 +248,7 @@ void CClient::SendInfo(int Conn)
 
 	CMsgPacker Msg(NETMSG_INFO, true);
 	Msg.AddString(GameClient()->NetVersion());
-	Msg.AddString(m_aPassword);
+	Msg.AddString(Source.m_Password.c_str());
 	SendMsg(Conn, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 }
 
@@ -275,9 +266,10 @@ void CClient::SendReady(int Conn)
 
 void CClient::SendMapRequest()
 {
-	dbg_assert(!m_MapdownloadFileTemp, "Map download already in progress");
-	m_MapdownloadFileTemp = Storage()->OpenFile(m_aMapdownloadFilenameTemp, IOFLAG_WRITE, IStorage::TYPE_SAVE);
-	if(IsSixup())
+	CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+	dbg_assert(!Source.m_MapdownloadFileTemp, "Map download already in progress");
+	Source.m_MapdownloadFileTemp = Storage()->OpenFile(Source.m_aMapdownloadFilenameTemp, IOFLAG_WRITE, IStorage::TYPE_SAVE);
+	if(Source.m_Sixup)
 	{
 		CMsgPacker MsgP(protocol7::NETMSG_REQUEST_MAP_DATA, true, true);
 		SendMsg(CONN_MAIN, &MsgP, MSGFLAG_VITAL | MSGFLAG_FLUSH);
@@ -285,14 +277,14 @@ void CClient::SendMapRequest()
 	else
 	{
 		CMsgPacker Msg(NETMSG_REQUEST_MAP_DATA, true);
-		Msg.AddInt(m_MapdownloadChunk);
+		Msg.AddInt(Source.m_MapdownloadChunk);
 		SendMsg(CONN_MAIN, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 	}
 }
 
 void CClient::RconAuth(const char *pName, const char *pPassword, bool Dummy)
 {
-	if(m_aRconAuthed[Dummy] != 0)
+	if(Connection(Dummy).m_RconAuthed != 0)
 		return;
 
 	if(pName != m_aRconUsername)
@@ -300,7 +292,7 @@ void CClient::RconAuth(const char *pName, const char *pPassword, bool Dummy)
 	if(pPassword != m_aRconPassword)
 		str_copy(m_aRconPassword, pPassword);
 
-	if(IsSixup())
+	if(IsSixup(m_NetworkSessionId))
 	{
 		CMsgPacker Msg7(protocol7::NETMSG_RCON_AUTH, true, true);
 		Msg7.AddString(pPassword);
@@ -324,85 +316,80 @@ void CClient::Rcon(const char *pCmd)
 
 float CClient::GotRconCommandsPercentage() const
 {
-	if(m_ExpectedRconCommands <= 0)
+	const CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+	if(Source.m_ExpectedRconCommands <= 0)
 		return -1.0f;
-	if(m_GotRconCommands > m_ExpectedRconCommands)
+	if(Source.m_GotRconCommands > Source.m_ExpectedRconCommands)
 		return -1.0f;
 
-	return (float)m_GotRconCommands / (float)m_ExpectedRconCommands;
+	return (float)Source.m_GotRconCommands / (float)Source.m_ExpectedRconCommands;
 }
 
 float CClient::GotMaplistPercentage() const
 {
-	if(m_ExpectedMaplistEntries <= 0)
+	const CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+	if(Source.m_ExpectedMaplistEntries <= 0)
 		return -1.0f;
-	if(m_vMaplistEntries.size() > (size_t)m_ExpectedMaplistEntries)
+	if(Source.m_vMaplistEntries.size() > (size_t)Source.m_ExpectedMaplistEntries)
 		return -1.0f;
 
-	return (float)m_vMaplistEntries.size() / (float)m_ExpectedMaplistEntries;
+	return (float)Source.m_vMaplistEntries.size() / (float)Source.m_ExpectedMaplistEntries;
 }
 
-bool CClient::ConnectionProblems() const
+bool CClient::ConnectionProblems(CSessionId SessionId, int Conn) const
 {
-	return m_aNetClient[g_Config.m_ClDummy].GotProblems(MaxLatencyTicks() * time_freq() / GameTickSpeed());
+	return SessionId == m_NetworkSessionId && Connection(Conn).m_NetClient.GotProblems(MaxLatencyTicks() * time_freq() / GameTickSpeed());
 }
 
 void CClient::SendInput()
 {
-	int64_t Now = time_get();
-
-	if(m_aPredTick[g_Config.m_ClDummy] <= 0)
-		return;
-
+	const int64_t Now = time_get();
 	bool Force = false;
-	// fetch input
 	for(int Dummy = 0; Dummy < NUM_DUMMIES; Dummy++)
 	{
-		if(!DummyConnected() && Dummy != 0)
+		const int Conn = ActiveConnection() ^ Dummy;
+		CConnection &GameConnection = Connection(Conn);
+		if(GameConnection.m_PredTick <= 0 || (Dummy != 0 && GameConnection.m_NetClient.State() != NETSTATE_ONLINE))
 		{
-			break;
+			if(Dummy == 0)
+				return;
+			continue;
 		}
-		int i = g_Config.m_ClDummy ^ Dummy;
-		int Size = GameClient()->OnSnapInput(m_aInputs[i][m_aCurrentInput[i]].m_aData, Dummy, Force);
+		CConnection::CInput &Input = GameConnection.m_aInputs[GameConnection.m_CurrentInput];
+		const int Size = GameClient()->OnSnapInput(Input.m_aData, Conn, Force);
+		if(!Size)
+			continue;
 
-		if(Size)
+		// pack input
+		CMsgPacker Msg(NETMSG_INPUT, true);
+		Msg.AddInt(GameConnection.m_AckGameTick);
+		Msg.AddInt(GameConnection.m_PredTick);
+		Msg.AddInt(Size);
+
+		Input.m_Tick = GameConnection.m_PredTick;
+		Input.m_PredictedTime = GameConnection.m_PredictedTime.Get(Now);
+		Input.m_PredictionMargin = PredictionMargin() * time_freq() / 1000;
+		Input.m_Time = Now;
+
+		// pack it
+		for(int k = 0; k < Size / 4; k++)
 		{
-			// pack input
-			CMsgPacker Msg(NETMSG_INPUT, true);
-			Msg.AddInt(m_aAckGameTick[i]);
-			Msg.AddInt(m_aPredTick[g_Config.m_ClDummy]);
-			Msg.AddInt(Size);
-
-			m_aInputs[i][m_aCurrentInput[i]].m_Tick = m_aPredTick[g_Config.m_ClDummy];
-			m_aInputs[i][m_aCurrentInput[i]].m_PredictedTime = m_PredictedTime.Get(Now);
-			m_aInputs[i][m_aCurrentInput[i]].m_PredictionMargin = PredictionMargin() * time_freq() / 1000;
-			m_aInputs[i][m_aCurrentInput[i]].m_Time = Now;
-
-			// pack it
-			for(int k = 0; k < Size / 4; k++)
-			{
-				static const int FlagsOffset = offsetof(CNetObj_PlayerInput, m_PlayerFlags) / sizeof(int);
-				if(k == FlagsOffset && IsSixup())
-				{
-					int PlayerFlags = m_aInputs[i][m_aCurrentInput[i]].m_aData[k];
-					Msg.AddInt(PlayerFlags_SixToSeven(PlayerFlags));
-				}
-				else
-				{
-					Msg.AddInt(m_aInputs[i][m_aCurrentInput[i]].m_aData[k]);
-				}
-			}
-
-			m_aCurrentInput[i]++;
-			m_aCurrentInput[i] %= 200;
-
-			SendMsg(i, &Msg, MSGFLAG_FLUSH);
-			// ugly workaround for dummy. we need to send input with dummy to prevent
-			// prediction time resets. but if we do it too often, then it's
-			// impossible to use grenade with frozen dummy that gets hammered...
-			if(g_Config.m_ClDummyCopyMoves || m_aCurrentInput[i] % 2)
-				Force = true;
+			static const int FlagsOffset = offsetof(CNetObj_PlayerInput, m_PlayerFlags) / sizeof(int);
+			if(k == FlagsOffset && m_pNetworkSessionSource->m_Sixup)
+				Msg.AddInt(PlayerFlags_SixToSeven(Input.m_aData[k]));
+			else
+				Msg.AddInt(Input.m_aData[k]);
 		}
+
+		GameConnection.m_CurrentInput++;
+		GameConnection.m_CurrentInput %= 200;
+
+		SendMsg(Conn, &Msg, MSGFLAG_FLUSH);
+		// ugly workaround for dummy. we need to send input with dummy to prevent
+		// prediction time resets. but if we do it too often, then it's
+		// impossible to use grenade with frozen dummy that gets hammered...
+		if(g_Config.m_ClDummyCopyMoves || GameConnection.m_CurrentInput % 2)
+			Force = true;
 	}
 }
 
@@ -412,30 +399,48 @@ const char *CClient::LatestVersion() const
 }
 
 // TODO: OPT: do this a lot smarter!
-int *CClient::GetInput(int Tick, int IsDummy) const
+int *CClient::GetInput(CSessionId SessionId, int Conn, int Tick) const
 {
 	int Best = -1;
-	const int d = IsDummy ^ g_Config.m_ClDummy;
+	const CConnection &GameConnection = Connection(SessionId, Conn);
 	for(int i = 0; i < 200; i++)
 	{
-		if(m_aInputs[d][i].m_Tick != -1 && m_aInputs[d][i].m_Tick <= Tick && (Best == -1 || m_aInputs[d][Best].m_Tick < m_aInputs[d][i].m_Tick))
+		if(GameConnection.m_aInputs[i].m_Tick != -1 && GameConnection.m_aInputs[i].m_Tick <= Tick && (Best == -1 || GameConnection.m_aInputs[Best].m_Tick < GameConnection.m_aInputs[i].m_Tick))
 			Best = i;
 	}
 
 	if(Best != -1)
-		return (int *)m_aInputs[d][Best].m_aData;
+		return (int *)GameConnection.m_aInputs[Best].m_aData;
 	return nullptr;
 }
 
 // ------ state handling -----
+bool CClient::IsOnline() const
+{
+	return FocusedSessionId() == m_NetworkSessionId && m_pNetworkSessionSource->State() == ESessionState::READY;
+}
+
+bool CClient::IsDemoPlayback() const
+{
+	return FocusedSessionId() == m_DemoSessionId && m_pDemoSessionSource->State() == ESessionState::READY;
+}
+
 void CClient::SetState(EClientState State)
 {
 	if(m_State == IClient::STATE_QUITTING || m_State == IClient::STATE_RESTARTING)
 		return;
-	if(m_State == State)
-		return;
+	if(State == IClient::STATE_CONNECTING || State == IClient::STATE_ONLINE)
+		m_SessionManager.SetFocused(m_NetworkSessionId);
+	else if(State == IClient::STATE_DEMOPLAYBACK)
+		m_SessionManager.SetFocused(m_DemoSessionId);
+	SetFocusedState(State, true);
+}
 
-	if(g_Config.m_Debug)
+void CClient::SetFocusedState(EClientState State, bool ResetSession)
+{
+	const bool StateChanged = m_State != State;
+
+	if(StateChanged && g_Config.m_Debug)
 	{
 		char aBuf[64];
 		str_format(aBuf, sizeof(aBuf), "state change. last=%d current=%d", m_State, State);
@@ -443,24 +448,41 @@ void CClient::SetState(EClientState State)
 	}
 
 	const EClientState OldState = m_State;
+	if(StateChanged && ResetSession && State < IClient::STATE_ONLINE)
+		GameClient()->OnSessionClosed(m_SessionManager.FocusedId());
+
+	CSessionSource &FocusedSession = *m_SessionManager.Focused();
+	switch(State)
+	{
+	case IClient::STATE_OFFLINE:
+		FocusedSession.SetState(ESessionState::OFFLINE);
+		break;
+	case IClient::STATE_CONNECTING:
+		FocusedSession.SetState(ESessionState::CONNECTING);
+		break;
+	case IClient::STATE_LOADING:
+		FocusedSession.SetState(ESessionState::LOADING_MAP);
+		break;
+	case IClient::STATE_ONLINE:
+	case IClient::STATE_DEMOPLAYBACK:
+		FocusedSession.SetState(ESessionState::READY);
+		break;
+	case IClient::STATE_QUITTING:
+	case IClient::STATE_RESTARTING:
+		break;
+	}
+	if(!StateChanged)
+		return;
 	m_State = State;
 
 	m_StateStartTime = time_get();
 	GameClient()->OnStateChange(m_State, OldState);
 
-	if(State == IClient::STATE_OFFLINE && m_ReconnectTime == 0)
-	{
-		if(g_Config.m_ClReconnectFull > 0 && (str_find_nocase(ErrorString(), "full") || str_find_nocase(ErrorString(), "reserved")))
-			m_ReconnectTime = time_get() + time_freq() * g_Config.m_ClReconnectFull;
-		else if(g_Config.m_ClReconnectTimeout > 0 && (str_find_nocase(ErrorString(), "Timeout") || str_find_nocase(ErrorString(), "Too weak connection")))
-			m_ReconnectTime = time_get() + time_freq() * g_Config.m_ClReconnectTimeout;
-	}
-
 	if(State == IClient::STATE_ONLINE)
 	{
 		const bool Registered = m_ServerBrowser.IsRegistered(ServerAddress());
-		Discord()->SetGameInfo(m_CurrentServerInfo, Registered);
-		Steam()->SetGameInfo(ServerAddress(), GameClient()->Map()->BaseName(), Registered);
+		Discord()->SetGameInfo(ServerInfo(m_NetworkSessionId), Registered);
+		Steam()->SetGameInfo(ServerAddress(), GameClient()->Map(m_NetworkSessionId)->BaseName(), Registered);
 	}
 	else if(OldState == IClient::STATE_ONLINE)
 	{
@@ -469,74 +491,73 @@ void CClient::SetState(EClientState State)
 	}
 }
 
-// called when the map is loaded and we should init for a new round
-void CClient::OnEnterGame(bool Dummy)
+void CClient::FocusSession(CSessionId SessionId)
 {
-	// reset input
-	for(int i = 0; i < 200; i++)
+	if(!m_SessionManager.SetFocused(SessionId))
+		return;
+	const CSessionSource &Session = SessionSource(SessionId);
+	EClientState State = IClient::STATE_OFFLINE;
+	switch(Session.State())
 	{
-		m_aInputs[Dummy][i].m_Tick = -1;
+	case ESessionState::CONNECTING:
+		State = IClient::STATE_CONNECTING;
+		break;
+	case ESessionState::LOADING_MAP:
+		State = IClient::STATE_LOADING;
+		break;
+	case ESessionState::READY:
+		State = Session.Type() == ESessionSourceType::DEMO ? IClient::STATE_DEMOPLAYBACK : IClient::STATE_ONLINE;
+		break;
+	case ESessionState::OFFLINE:
+	case ESessionState::STOPPING:
+	case ESessionState::ERROR:
+		break;
 	}
-	m_aCurrentInput[Dummy] = 0;
+	SetFocusedState(State, false);
+	GameClient()->OnSessionFocused(SessionId);
+}
 
-	// reset snapshots
-	m_aapSnapshots[Dummy][SNAP_CURRENT] = nullptr;
-	m_aapSnapshots[Dummy][SNAP_PREV] = nullptr;
-	m_aSnapshotStorage[Dummy].PurgeAll();
-	m_aReceivedSnapshots[Dummy] = 0;
-	m_aSnapshotParts[Dummy] = 0;
-	m_aSnapshotIncomingDataSize[Dummy] = 0;
-	m_SnapCrcErrors = 0;
+// called when the map is loaded and we should init for a new round
+void CClient::OnEnterGame(int Conn)
+{
+	CConnection &GameConnection = Connection(Conn);
+	GameConnection.ResetGameplay();
 	// Also make gameclient aware that snapshots have been purged
-	GameClient()->InvalidateSnapshot();
-
-	// reset times
-	m_aAckGameTick[Dummy] = -1;
-	m_aCurrentRecvTick[Dummy] = 0;
-	m_aPrevGameTick[Dummy] = 0;
-	m_aCurGameTick[Dummy] = 0;
-	m_aGameIntraTick[Dummy] = 0.0f;
-	m_aGameTickTime[Dummy] = 0.0f;
-	m_aGameIntraTickSincePrev[Dummy] = 0.0f;
-	m_aPredTick[Dummy] = 0;
-	m_aPredIntraTick[Dummy] = 0.0f;
-	m_aGameTime[Dummy].Init(0);
-	m_PredictedTime.Init(0);
-
-	if(!Dummy)
+	GameClient()->InvalidateSnapshot(m_NetworkSessionId);
+	if(Conn == CONN_MAIN)
 	{
 		m_LastDummyConnectTime = 0.0f;
 	}
 
-	GameClient()->OnEnterGame();
+	GameClient()->OnEnterGame(m_NetworkSessionId);
 }
 
 void CClient::EnterGame(int Conn)
 {
-	if(State() == IClient::STATE_DEMOPLAYBACK)
-		return;
-
-	m_aDidPostConnect[Conn] = false;
+	Connection(Conn).m_DidPostConnect = false;
 
 	// now we will wait for two snapshots
 	// to finish the connection
 	SendEnterGame(Conn);
 	OnEnterGame(Conn);
 
-	ServerInfoRequest(); // fresh one for timeout protection
-	m_CurrentServerNextPingTime = time_get() + time_freq() / 2;
+	if(Conn == CONN_MAIN)
+	{
+		m_pNetworkSessionSource->m_NextPingTime = time_get() + time_freq() / 2;
+		ServerInfoRequest(); // fresh one for timeout protection
+	}
 }
 
 void CClient::OnPostConnect(int Conn)
 {
-	if(!m_ServerCapabilities.m_ChatTimeoutCode)
+	if(!m_pNetworkSessionSource->m_ServerCapabilities.m_ChatTimeoutCode)
 		return;
 
 	char aBufMsg[256];
 	if(!g_Config.m_ClRunOnJoin[0] && !g_Config.m_ClDummyDefaultEyes && !g_Config.m_ClPlayerDefaultEyes)
-		str_format(aBufMsg, sizeof(aBufMsg), "/timeout %s", m_aTimeoutCodes[Conn]);
+		str_format(aBufMsg, sizeof(aBufMsg), "/timeout %s", Connection(Conn).m_aTimeoutCode);
 	else
-		str_format(aBufMsg, sizeof(aBufMsg), "/mc;timeout %s", m_aTimeoutCodes[Conn]);
+		str_format(aBufMsg, sizeof(aBufMsg), "/mc;timeout %s", Connection(Conn).m_aTimeoutCode);
 
 	if(g_Config.m_ClDummyDefaultEyes || g_Config.m_ClPlayerDefaultEyes)
 	{
@@ -564,7 +585,7 @@ void CClient::OnPostConnect(int Conn)
 		str_append(aBufMsg, ";");
 		str_append(aBufMsg, g_Config.m_ClRunOnJoin);
 	}
-	if(IsSixup())
+	if(IsSixup(m_NetworkSessionId))
 	{
 		protocol7::CNetMsg_Cl_Say Msg7;
 		Msg7.m_Mode = protocol7::CHAT_ALL;
@@ -583,16 +604,21 @@ void CClient::OnPostConnect(int Conn)
 	}
 }
 
-static void GenerateTimeoutCode(char *pBuffer, unsigned Size, char *pSeed, const NETADDR *pAddrs, int NumAddrs, bool Dummy)
+static void GenerateTimeoutCode(char *pBuffer, unsigned Size, char *pSeed, const NETADDR *pAddrs, int NumAddrs, bool UseDummyNamespace)
 {
 	MD5_CTX Md5;
 	md5_init(&Md5);
-	const char *pDummy = Dummy ? "dummy" : "normal";
+	const char *pDummy = UseDummyNamespace ? "dummy" : "normal";
 	md5_update(&Md5, (unsigned char *)pDummy, str_length(pDummy) + 1);
 	md5_update(&Md5, (unsigned char *)pSeed, str_length(pSeed) + 1);
 	for(int i = 0; i < NumAddrs; i++)
 	{
-		md5_update(&Md5, (unsigned char *)&pAddrs[i], sizeof(pAddrs[i]));
+		NETADDR Address;
+		mem_zero(&Address, sizeof(Address));
+		Address.type = pAddrs[i].type;
+		mem_copy(Address.ip, pAddrs[i].ip, sizeof(Address.ip));
+		Address.port = pAddrs[i].port;
+		md5_update(&Md5, (unsigned char *)&Address, sizeof(Address));
 	}
 	MD5_DIGEST Digest = md5_finish(&Md5);
 
@@ -614,8 +640,9 @@ void CClient::GenerateTimeoutCodes(const NETADDR *pAddrs, int NumAddrs)
 	}
 	for(int Dummy = 0; Dummy < NUM_DUMMIES; Dummy++)
 	{
-		GenerateTimeoutCode(m_aTimeoutCodes[Dummy], sizeof(m_aTimeoutCodes[Dummy]), g_Config.m_ClTimeoutSeed, pAddrs, NumAddrs, Dummy);
-		log_debug("client", "timeout code '%s' (%s)", m_aTimeoutCodes[Dummy], Dummy == 0 ? "normal" : "dummy");
+		char (&aTimeoutCode)[32] = Connection(Dummy).m_aTimeoutCode;
+		GenerateTimeoutCode(aTimeoutCode, sizeof(aTimeoutCode), g_Config.m_ClTimeoutSeed, pAddrs, NumAddrs, Dummy);
+		log_debug("client", "timeout code '%s' (%s)", aTimeoutCode, Dummy == 0 ? "normal" : "dummy");
 	}
 }
 
@@ -624,16 +651,26 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	// Disconnect will not change the state if we are already quitting/restarting
 	if(m_State == IClient::STATE_QUITTING || m_State == IClient::STATE_RESTARTING)
 		return;
-	Disconnect();
-	dbg_assert(m_State == IClient::STATE_OFFLINE, "Disconnect must ensure that client is offline");
+	CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+	if(m_UpdatingSessionId == m_NetworkSessionId)
+	{
+		// Servers ask for a reconnect or a redirect from within the session
+		// update, which the session has to leave before it can stop.
+		Source.ScheduleServerConnect(pAddress, pPassword);
+		StopSession(m_NetworkSessionId, nullptr);
+		return;
+	}
+	Source.CancelReconnect();
+	StopSession(m_NetworkSessionId, nullptr);
+	dbg_assert(Source.State() == ESessionState::OFFLINE, "network session must be offline before connecting");
 
 	const NETADDR LastAddr = ServerAddress();
 
-	if(pAddress != m_aConnectAddressStr)
-		str_copy(m_aConnectAddressStr, pAddress);
+	if(pAddress != Source.m_ConnectAddress)
+		Source.m_ConnectAddress = pAddress;
 
 	char aMsg[512];
-	str_format(aMsg, sizeof(aMsg), "connecting to '%s'", m_aConnectAddressStr);
+	str_format(aMsg, sizeof(aMsg), "connecting to '%s'", Source.m_ConnectAddress.c_str());
 	m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aMsg, CLIENT_NETWORK_PRINT_COLOR);
 
 	int NumConnectAddrs = 0;
@@ -651,7 +688,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		if(UrlParseResult > 0)
 			str_copy(aHost, aBuffer);
 
-		if(net_host_lookup(aHost, &NextAddr, m_aNetClient[CONN_MAIN].NetType()) != 0)
+		if(net_host_lookup(aHost, &NextAddr, NetClient(CONN_MAIN).NetType()) != 0)
 		{
 			log_error("client", "could not find address of %s", aHost);
 			continue;
@@ -676,7 +713,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 
 		if(NextAddr == LastAddr)
 		{
-			m_SendPassword = true;
+			Source.m_SendPassword = true;
 		}
 
 		aConnectAddrs[NumConnectAddrs] = NextAddr;
@@ -687,55 +724,96 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	{
 		log_error("client", "could not find any connect address");
 		char aWarning[256];
-		str_format(aWarning, sizeof(aWarning), Localize("Could not resolve connect address '%s'. See local console for details."), m_aConnectAddressStr);
+		str_format(aWarning, sizeof(aWarning), Localize("Could not resolve connect address '%s'. See local console for details."), Source.m_ConnectAddress.c_str());
 		SWarning Warning(Localize("Connect address error"), aWarning);
 		Warning.m_AutoHide = false;
 		AddWarning(Warning);
 		return;
 	}
 
-	m_ConnectionId = RandomUuid();
+	Source.m_ConnectionId = RandomUuid();
 	ServerInfoRequest();
 
-	if(m_SendPassword)
+	if(pPassword)
 	{
-		str_copy(m_aPassword, g_Config.m_Password);
-		m_SendPassword = false;
+		Source.m_Password = pPassword;
+		Source.m_SendPassword = false;
 	}
-	else if(!pPassword)
+	else if(Source.m_SendPassword)
 	{
-		m_aPassword[0] = 0;
-	}
-	else
-	{
-		str_copy(m_aPassword, pPassword);
-	}
-
-	m_CanReceiveServerCapabilities = true;
-
-	m_Sixup = OnlySixup;
-	if(m_Sixup)
-	{
-		m_aNetClient[CONN_MAIN].Connect7(aConnectAddrs, NumConnectAddrs);
+		Source.m_Password = g_Config.m_Password;
+		Source.m_SendPassword = false;
 	}
 	else
 	{
-		m_aNetClient[CONN_MAIN].Connect(aConnectAddrs, NumConnectAddrs);
+		Source.m_Password.clear();
 	}
 
-	m_aNetClient[CONN_MAIN].RefreshStun();
-	SetState(IClient::STATE_CONNECTING);
+	Source.m_CanReceiveServerCapabilities = true;
 
-	m_aInputtimeMarginGraphs[CONN_MAIN].Init(-150.0f, 150.0f);
-	m_aGametimeMarginGraphs[CONN_MAIN].Init(-150.0f, 150.0f);
+	Source.m_Sixup = OnlySixup;
+	if(Source.m_Sixup)
+	{
+		NetClient(CONN_MAIN).Connect7(aConnectAddrs, NumConnectAddrs);
+	}
+	else
+	{
+		NetClient(CONN_MAIN).Connect(aConnectAddrs, NumConnectAddrs);
+	}
+
+	NetClient(CONN_MAIN).RefreshStun();
+	if(FocusedSessionId() == m_NetworkSessionId)
+		SetFocusedState(IClient::STATE_CONNECTING, true);
+	else
+		Source.SetState(ESessionState::CONNECTING);
+
+	Connection(CONN_MAIN).m_InputtimeMarginGraph.Init(-150.0f, 150.0f);
+	Connection(CONN_MAIN).m_GametimeMarginGraph.Init(-150.0f, 150.0f);
 
 	GenerateTimeoutCodes(aConnectAddrs, NumConnectAddrs);
 }
 
-void CClient::DisconnectWithReason(const char *pReason)
+void CClient::StopSession(CSessionId SessionId, const char *pReason)
 {
-	if(pReason != nullptr && pReason[0] == '\0')
-		pReason = nullptr;
+	SessionSource(SessionId).RequestStop(pReason);
+	if(m_UpdatingSessionId != SessionId)
+		FinishStopSession(SessionId);
+}
+
+void CClient::FinishStopSession(CSessionId SessionId)
+{
+	CSessionSource &Source = SessionSource(SessionId);
+	if(Source.State() != ESessionState::STOPPING)
+		return;
+	const std::string Reason = Source.TakeStopReason();
+	const char *pReason = Reason.empty() ? nullptr : Reason.c_str();
+	if(Source.Type() == ESessionSourceType::NETWORK)
+		StopNetworkSession(pReason);
+	else
+		StopDemoSession(pReason);
+	Source.SetState(ESessionState::OFFLINE);
+}
+
+void CClient::UpdateSessions()
+{
+	for(const auto &pSource : m_SessionManager.Sessions())
+	{
+		const CSessionId SessionId = pSource->Id();
+		m_UpdatingSessionId = SessionId;
+		if(pSource->Type() == ESessionSourceType::NETWORK)
+			UpdateNetworkSession();
+		else
+			UpdateDemoSession();
+		m_UpdatingSessionId = CSessionId();
+		FinishStopSession(SessionId);
+	}
+}
+
+void CClient::StopNetworkSession(const char *pReason)
+{
+	char aReconnectError[256];
+	str_copy(aReconnectError, NetClient(CONN_MAIN).ErrorString());
+	const bool Focused = FocusedSessionId() == m_NetworkSessionId;
 
 	DummyDisconnect(pReason);
 
@@ -743,59 +821,53 @@ void CClient::DisconnectWithReason(const char *pReason)
 	str_format(aBuf, sizeof(aBuf), "disconnecting. reason='%s'", pReason ? pReason : "unknown");
 	m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_COLOR);
 
-	// stop demo playback and recorder
-	// make sure to remove replay tmp demo
-	m_DemoPlayer.Stop();
+	// Stop recorders and make sure to remove the replay temporary demo.
 	for(int Recorder = 0; Recorder < RECORDER_MAX; Recorder++)
 	{
 		DemoRecorder(Recorder)->Stop(Recorder == RECORDER_REPLAYS ? IDemoRecorder::EStopMode::REMOVE_FILE : IDemoRecorder::EStopMode::KEEP_FILE);
 	}
 
-	m_aRconAuthed[0] = 0;
 	// Make sure to clear credentials completely from memory
 	mem_zero(m_aRconUsername, sizeof(m_aRconUsername));
 	mem_zero(m_aRconPassword, sizeof(m_aRconPassword));
-	m_MapDetails = std::nullopt;
-	m_ServerSentCapabilities = false;
-	m_UseTempRconCommands = 0;
-	m_ExpectedRconCommands = -1;
-	m_GotRconCommands = 0;
 	m_pConsole->DeregisterTempAll();
-	m_ExpectedMaplistEntries = -1;
-	m_vMaplistEntries.clear();
 	GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
-	m_aNetClient[CONN_MAIN].Disconnect(pReason);
-	SetState(IClient::STATE_OFFLINE);
-	GameClient()->Map()->Unload();
-	m_CurrentServerPingInfoType = -1;
-	m_CurrentServerPingBasicToken = -1;
-	m_CurrentServerPingToken = -1;
-	mem_zero(&m_CurrentServerPingUuid, sizeof(m_CurrentServerPingUuid));
-	m_CurrentServerCurrentPingTime = -1;
-	m_CurrentServerNextPingTime = -1;
-
+	NetClient(CONN_MAIN).Disconnect(pReason);
+	if(Focused && m_State < IClient::STATE_QUITTING)
+		SetFocusedState(IClient::STATE_OFFLINE, true);
+	else if(m_State < IClient::STATE_QUITTING)
+		GameClient()->OnSessionClosed(m_NetworkSessionId);
 	ResetMapDownload(true);
 
 	// clear the current server info
-	m_CurrentServerInfo = {};
+	m_pNetworkSessionSource->ResetAfterDisconnect(aReconnectError, g_Config.m_ClReconnectFull, g_Config.m_ClReconnectTimeout, time_get(), time_freq());
 
 	// clear snapshots
-	m_aapSnapshots[0][SNAP_CURRENT] = nullptr;
-	m_aapSnapshots[0][SNAP_PREV] = nullptr;
-	m_aReceivedSnapshots[0] = 0;
-	m_LastDummy = false;
+	Connection(CONN_MAIN).ResetSnapshots();
+	SetActiveConnection(CONN_MAIN);
+}
 
-	// 0.7
-	m_TranslationContext.Reset();
-	m_Sixup = false;
+void CClient::StopDemoSession(const char *pReason)
+{
+	const bool Focused = FocusedSessionId() == m_DemoSessionId;
+	DemoPlayer().Stop(pReason ? pReason : "");
+	if(m_State < IClient::STATE_QUITTING)
+		GameClient()->OnSessionClosed(m_DemoSessionId);
+	m_pDemoSessionSource->SetState(ESessionState::OFFLINE);
+	m_pDemoSessionSource->m_Connection.ResetSnapshots();
+	m_pDemoSessionSource->ResetMetadata();
+	if(Focused && m_State < IClient::STATE_QUITTING)
+	{
+		FocusSession(m_NetworkSessionId);
+		const CConnection &NetworkConnection = Connection(ActiveConnection());
+		if(m_pNetworkSessionSource->State() == ESessionState::READY && NetworkConnection.m_apSnapshots[SNAP_PREV] && NetworkConnection.m_apSnapshots[SNAP_CURRENT])
+			GameClient()->OnNewSnapshot(m_NetworkSessionId, ActiveConnection());
+	}
 }
 
 void CClient::Disconnect()
 {
-	if(m_State != IClient::STATE_OFFLINE)
-	{
-		DisconnectWithReason(nullptr);
-	}
+	StopSession(FocusedSessionId(), nullptr);
 }
 
 bool CClient::DummyConnected() const
@@ -815,7 +887,7 @@ bool CClient::DummyConnectingDelayed() const
 
 void CClient::DummyConnect()
 {
-	if(m_aNetClient[CONN_MAIN].State() != NETSTATE_ONLINE)
+	if(NetClient(CONN_MAIN).State() != NETSTATE_ONLINE)
 	{
 		log_info("client", "Not online.");
 		return;
@@ -845,7 +917,7 @@ void CClient::DummyConnect()
 	}
 
 	m_LastDummyConnectTime = GlobalTime();
-	m_aRconAuthed[1] = 0;
+	Connection(CONN_DUMMY).m_RconAuthed = 0;
 	m_DummySendConnInfo = true;
 
 	g_Config.m_ClDummyCopyMoves = 0;
@@ -853,24 +925,23 @@ void CClient::DummyConnect()
 
 	m_DummyConnecting = true;
 	// connect to the server
-	if(IsSixup())
-		m_aNetClient[CONN_DUMMY].Connect7(m_aNetClient[CONN_MAIN].ServerAddress(), 1);
+	if(m_pNetworkSessionSource->m_Sixup)
+		NetClient(CONN_DUMMY).Connect7(NetClient(CONN_MAIN).ServerAddress(), 1);
 	else
-		m_aNetClient[CONN_DUMMY].Connect(m_aNetClient[CONN_MAIN].ServerAddress(), 1);
+		NetClient(CONN_DUMMY).Connect(NetClient(CONN_MAIN).ServerAddress(), 1);
 
-	m_aInputtimeMarginGraphs[CONN_DUMMY].Init(-150.0f, 150.0f);
-	m_aGametimeMarginGraphs[CONN_DUMMY].Init(-150.0f, 150.0f);
+	Connection(CONN_DUMMY).m_InputtimeMarginGraph.Init(-150.0f, 150.0f);
+	Connection(CONN_DUMMY).m_GametimeMarginGraph.Init(-150.0f, 150.0f);
 }
 
 void CClient::DummyDisconnect(const char *pReason)
 {
-	m_aNetClient[CONN_DUMMY].Disconnect(pReason);
+	NetClient(CONN_DUMMY).Disconnect(pReason);
 	g_Config.m_ClDummy = 0;
+	SetActiveConnection(CONN_MAIN);
 
-	m_aRconAuthed[1] = 0;
-	m_aapSnapshots[1][SNAP_CURRENT] = nullptr;
-	m_aapSnapshots[1][SNAP_PREV] = nullptr;
-	m_aReceivedSnapshots[1] = 0;
+	Connection(CONN_DUMMY).m_RconAuthed = 0;
+	Connection(CONN_DUMMY).ResetSnapshots();
 	m_DummyConnected = false;
 	m_DummyConnecting = false;
 	m_DummyReconnectOnReload = false;
@@ -883,27 +954,24 @@ void CClient::DummyDisconnect(const char *pReason)
 
 bool CClient::DummyAllowed() const
 {
-	return m_ServerCapabilities.m_AllowDummy;
-}
-
-const CServerInfo &CClient::ServerInfo() const
-{
-	return m_CurrentServerInfo;
+	return m_pNetworkSessionSource->m_ServerCapabilities.m_AllowDummy;
 }
 
 void CClient::ServerInfoRequest()
 {
-	m_CurrentServerInfo = {};
+	m_pNetworkSessionSource->m_ServerInfo = {};
 	m_CurrentServerInfoRequestTime = 0;
 }
 
 void CClient::SetCurrentServerInfo(const CServerInfo &ServerInfo)
 {
-	m_CurrentServerInfo = ServerInfo;
+	CServerInfo &CurrentServerInfo = m_pNetworkSessionSource->m_ServerInfo;
+	CurrentServerInfo = ServerInfo;
 	m_CurrentServerInfoRequestTime = -1;
-	str_copy(m_CurrentServerInfo.m_aMap, GameClient()->Map()->BaseName());
-	m_CurrentServerInfo.m_MapCrc = GameClient()->Map()->Crc();
-	m_CurrentServerInfo.m_MapSize = GameClient()->Map()->Size();
+	const IMap *pMap = GameClient()->Map(m_NetworkSessionId);
+	str_copy(CurrentServerInfo.m_aMap, pMap->BaseName());
+	CurrentServerInfo.m_MapCrc = pMap->Crc();
+	CurrentServerInfo.m_MapSize = pMap->Size();
 }
 
 void CClient::LoadDebugFont()
@@ -913,10 +981,10 @@ void CClient::LoadDebugFont()
 
 // ---
 
-IClient::CSnapItem CClient::SnapGetItem(int SnapId, int Index) const
+IClient::CSnapItem CClient::SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const
 {
 	dbg_assert(SnapId >= 0 && SnapId < NUM_SNAPSHOT_TYPES, "invalid SnapId");
-	const CSnapshot *pSnapshot = m_aapSnapshots[g_Config.m_ClDummy][SnapId]->m_pAltSnap;
+	const CSnapshot *pSnapshot = Connection(SessionId, Conn).m_apSnapshots[SnapId]->m_pAltSnap;
 	const CSnapshotItem *pSnapshotItem = pSnapshot->GetItem(Index);
 	CSnapItem Item;
 	Item.m_Type = pSnapshot->GetItemType(Index);
@@ -926,30 +994,32 @@ IClient::CSnapItem CClient::SnapGetItem(int SnapId, int Index) const
 	return Item;
 }
 
-const void *CClient::SnapFindItem(int SnapId, int Type, int Id) const
+const void *CClient::SnapFindItem(CSessionId SessionId, int Conn, int SnapId, int Type, int Id) const
 {
-	if(!m_aapSnapshots[g_Config.m_ClDummy][SnapId])
+	if(!Connection(SessionId, Conn).m_apSnapshots[SnapId])
 		return nullptr;
 
-	return m_aapSnapshots[g_Config.m_ClDummy][SnapId]->m_pAltSnap->FindItem(Type, Id);
+	return Connection(SessionId, Conn).m_apSnapshots[SnapId]->m_pAltSnap->FindItem(Type, Id);
 }
 
-int CClient::SnapNumItems(int SnapId) const
+int CClient::SnapNumItems(CSessionId SessionId, int Conn, int SnapId) const
 {
 	dbg_assert(SnapId >= 0 && SnapId < NUM_SNAPSHOT_TYPES, "invalid SnapId");
-	if(!m_aapSnapshots[g_Config.m_ClDummy][SnapId])
+	if(!Connection(SessionId, Conn).m_apSnapshots[SnapId])
 		return 0;
-	return m_aapSnapshots[g_Config.m_ClDummy][SnapId]->m_pAltSnap->NumItems();
+	return Connection(SessionId, Conn).m_apSnapshots[SnapId]->m_pAltSnap->NumItems();
 }
 
 void CClient::SnapSetStaticsize(int ItemType, int Size)
 {
-	m_SnapshotDelta.SetStaticsize(ItemType, Size);
+	m_pNetworkSessionSource->SnapshotDelta(false).SetStaticsize(ItemType, Size);
+	m_pDemoSessionSource->SnapshotDelta(false).SetStaticsize(ItemType, Size);
 }
 
 void CClient::SnapSetStaticsize7(int ItemType, int Size)
 {
-	m_SnapshotDeltaSixup.SetStaticsize(ItemType, Size);
+	m_pNetworkSessionSource->SnapshotDelta(true).SetStaticsize(ItemType, Size);
+	m_pDemoSessionSource->SnapshotDelta(true).SetStaticsize(ItemType, Size);
 }
 
 void CClient::RenderDebug()
@@ -974,10 +1044,12 @@ void CClient::RenderDebug()
 	Graphics()->MapScreenToSize(Graphics()->ScreenWidth(), Graphics()->ScreenHeight());
 	Graphics()->QuadsBegin();
 
-	str_format(aBuffer, sizeof(aBuffer), "Game/predicted tick: %d/%d", m_aCurGameTick[g_Config.m_ClDummy], m_aPredTick[g_Config.m_ClDummy]);
+	const CSessionId SessionId = FocusedSessionId();
+	const int Conn = ActiveConnection(SessionId);
+	str_format(aBuffer, sizeof(aBuffer), "Game/predicted tick: %d/%d", GameTick(SessionId, Conn), PredGameTick(SessionId, Conn));
 	Graphics()->QuadsText(2, 2, FontSize, aBuffer);
 
-	str_format(aBuffer, sizeof(aBuffer), "Prediction time: %d ms", GetPredictionTime());
+	str_format(aBuffer, sizeof(aBuffer), "Prediction time: %d ms", GetPredictionTime(SessionId, Conn));
 	Graphics()->QuadsText(2, 2 + FontSize, FontSize, aBuffer);
 
 	str_format(aBuffer, sizeof(aBuffer), "FPS: %3d", round_to_int(1.0f / m_FrameTimeAverage));
@@ -1041,9 +1113,9 @@ void CClient::RenderDebug()
 		}
 		for(int i = CSnapshot::MAX_TYPE; i > (CSnapshot::MAX_TYPE - 64); i--)
 		{
-			if(SnapshotDelta()->GetDataRate(i) && m_aapSnapshots[g_Config.m_ClDummy][IClient::SNAP_CURRENT])
+			if(SnapshotDelta()->GetDataRate(i) && Connection(ActiveConnection()).m_apSnapshots[IClient::SNAP_CURRENT])
 			{
-				const int Type = m_aapSnapshots[g_Config.m_ClDummy][IClient::SNAP_CURRENT]->m_pAltSnap->GetExternalItemType(i);
+				const int Type = Connection(ActiveConnection()).m_apSnapshots[IClient::SNAP_CURRENT]->m_pAltSnap->GetExternalItemType(i);
 				if(Type == UUID_INVALID)
 				{
 					str_format(
@@ -1096,10 +1168,10 @@ void CClient::RenderGraphs()
 
 	m_FpsGraph.Scale(time_freq());
 	m_FpsGraph.Render(Graphics(), TextRender(), GraphX, GraphSpacing * 5, GraphW, GraphH, "FPS");
-	m_aInputtimeMarginGraphs[g_Config.m_ClDummy].Scale(5 * time_freq());
-	m_aInputtimeMarginGraphs[g_Config.m_ClDummy].Render(Graphics(), TextRender(), GraphX, GraphSpacing * 6 + GraphH, GraphW, GraphH, "Prediction Margin");
-	m_aGametimeMarginGraphs[g_Config.m_ClDummy].Scale(5 * time_freq());
-	m_aGametimeMarginGraphs[g_Config.m_ClDummy].Render(Graphics(), TextRender(), GraphX, GraphSpacing * 7 + GraphH * 2, GraphW, GraphH, "Gametime Margin");
+	Connection(ActiveConnection()).m_InputtimeMarginGraph.Scale(5 * time_freq());
+	Connection(ActiveConnection()).m_InputtimeMarginGraph.Render(Graphics(), TextRender(), GraphX, GraphSpacing * 6 + GraphH, GraphW, GraphH, "Prediction Margin");
+	Connection(ActiveConnection()).m_GametimeMarginGraph.Scale(5 * time_freq());
+	Connection(ActiveConnection()).m_GametimeMarginGraph.Render(Graphics(), TextRender(), GraphX, GraphSpacing * 7 + GraphH * 2, GraphW, GraphH, "Gametime Margin");
 }
 
 void CClient::Restart()
@@ -1125,7 +1197,7 @@ void CClient::ResetSocket()
 		return;
 	}
 	BindAddr.type = NETTYPE_ALL;
-	for(size_t Conn = 0; Conn < std::size(m_aNetClient); Conn++)
+	for(int Conn = 0; Conn < NUM_CONNS; Conn++)
 	{
 		char aError[256];
 		if(!InitNetworkClientImpl(BindAddr, Conn, aError, sizeof(aError)))
@@ -1136,7 +1208,7 @@ void CClient::ResetSocket()
 #if defined(CONF_PLATFORM_IOS)
 void CClient::RecreateBrokenSockets()
 {
-	if(std::none_of(std::begin(m_aNetClient), std::end(m_aNetClient), [](const CNetClient &NetClient) { return NetClient.SocketIsBroken(); }))
+	if(!NetClient(CONN_MAIN).SocketIsBroken() && !NetClient(CONN_DUMMY).SocketIsBroken() && !NetClient(CONN_CONTACT).SocketIsBroken())
 	{
 		return;
 	}
@@ -1146,8 +1218,7 @@ void CClient::RecreateBrokenSockets()
 	log_info("client", "network sockets were closed by the system, recreating them");
 
 	// Reconnect afterwards, so the server can be rejoined with timeout protection.
-	char aConnectAddress[sizeof(m_aConnectAddressStr)];
-	str_copy(aConnectAddress, m_aConnectAddressStr);
+	const std::string ConnectAddress = ConnectAddressString();
 	const bool Reconnect = m_State != IClient::STATE_OFFLINE && m_State < IClient::STATE_QUITTING;
 	const bool ReconnectDummy = Reconnect && m_DummyConnected;
 	const bool DeactivateDummy = g_Config.m_ClDummy == 0;
@@ -1159,7 +1230,7 @@ void CClient::RecreateBrokenSockets()
 
 	if(Reconnect)
 	{
-		Connect(aConnectAddress);
+		Connect(ConnectAddress.c_str());
 		if(ReconnectDummy)
 		{
 			// The dummy is connected again when the main connection is ready.
@@ -1208,7 +1279,7 @@ const char *CClient::DummyName()
 
 const char *CClient::ErrorString() const
 {
-	return m_aNetClient[CONN_MAIN].ErrorString();
+	return NetClient(CONN_MAIN).ErrorString();
 }
 
 void CClient::Render()
@@ -1226,60 +1297,67 @@ void CClient::Render()
 	RenderGraphs();
 }
 
-const char *CClient::LoadMap(const char *pName, const char *pFilename, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc)
+const char *CClient::LoadMap(CSessionId SessionId, const char *pName, const char *pFilename, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc)
 {
 	static char s_aErrorMsg[128];
 
-	SetState(IClient::STATE_LOADING);
-	SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_LOADING_MAP);
-	if((bool)m_LoadingCallback)
-		m_LoadingCallback(IClient::LOADING_CALLBACK_DETAIL_MAP);
-
-	// Stop demo recording before loading a new map.
-	for(int Recorder = 0; Recorder < RECORDER_MAX; Recorder++)
+	if(SessionSource(SessionId).State() != ESessionState::LOADING_MAP || GameClient()->Map(SessionId)->IsLoaded())
+		GameClient()->OnSessionClosed(SessionId);
+	if(FocusedSessionId() == SessionId)
 	{
-		DemoRecorder(Recorder)->Stop(Recorder == RECORDER_REPLAYS ? IDemoRecorder::EStopMode::REMOVE_FILE : IDemoRecorder::EStopMode::KEEP_FILE);
+		SetFocusedState(IClient::STATE_LOADING, false);
+		SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_LOADING_MAP);
+		if((bool)m_LoadingCallback)
+			m_LoadingCallback(IClient::LOADING_CALLBACK_DETAIL_MAP);
+	}
+	else
+	{
+		SessionSource(SessionId).SetState(ESessionState::LOADING_MAP);
+	}
+
+	// Stop demo recording before loading a new network map.
+	if(SessionId == m_NetworkSessionId)
+	{
+		for(int Recorder = 0; Recorder < RECORDER_MAX; Recorder++)
+			DemoRecorder(Recorder)->Stop(Recorder == RECORDER_REPLAYS ? IDemoRecorder::EStopMode::REMOVE_FILE : IDemoRecorder::EStopMode::KEEP_FILE);
 	}
 
 	// Unload the current map and reset all snapshots before loading a new map,
 	// because the snapshots are only valid for the old map.
-	GameClient()->Map()->Unload();
-	for(int Dummy = 0; Dummy < NUM_DUMMIES; Dummy++)
+	IMap *pMap = GameClient()->Map(SessionId);
+	if(SessionId == m_NetworkSessionId)
 	{
-		m_aapSnapshots[Dummy][SNAP_CURRENT] = nullptr;
-		m_aapSnapshots[Dummy][SNAP_PREV] = nullptr;
-		m_aSnapshotStorage[Dummy].PurgeAll();
-		m_aReceivedSnapshots[Dummy] = 0;
-		m_aSnapshotParts[Dummy] = 0;
-		m_aSnapshotIncomingDataSize[Dummy] = 0;
+		for(CConnection &Connection : m_pNetworkSessionSource->m_aConnections)
+			Connection.ResetSnapshots();
 	}
-	m_SnapCrcErrors = 0;
-	GameClient()->InvalidateSnapshot();
+	else
+		m_pDemoSessionSource->m_Connection.ResetSnapshots();
+	GameClient()->InvalidateSnapshot(SessionId);
 
-	if(!GameClient()->Map()->Load(pName, Storage(), pFilename, IStorage::TYPE_ALL))
+	if(!pMap->Load(pName, Storage(), pFilename, IStorage::TYPE_ALL))
 	{
 		str_format(s_aErrorMsg, sizeof(s_aErrorMsg), "map '%s' not found", pFilename);
 		return s_aErrorMsg;
 	}
 
-	if(WantedSha256.has_value() && GameClient()->Map()->Sha256() != WantedSha256.value())
+	if(WantedSha256.has_value() && pMap->Sha256() != WantedSha256.value())
 	{
 		char aWanted[SHA256_MAXSTRSIZE];
 		char aGot[SHA256_MAXSTRSIZE];
 		sha256_str(WantedSha256.value(), aWanted, sizeof(aWanted));
-		sha256_str(GameClient()->Map()->Sha256(), aGot, sizeof(aWanted));
+		sha256_str(pMap->Sha256(), aGot, sizeof(aWanted));
 		str_format(s_aErrorMsg, sizeof(s_aErrorMsg), "map differs from the server. %s != %s", aGot, aWanted);
 		m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", s_aErrorMsg);
-		GameClient()->Map()->Unload();
+		pMap->Unload();
 		return s_aErrorMsg;
 	}
 
 	// Only check CRC if we don't have the secure SHA256.
-	if(!WantedSha256.has_value() && GameClient()->Map()->Crc() != WantedCrc)
+	if(!WantedSha256.has_value() && pMap->Crc() != WantedCrc)
 	{
-		str_format(s_aErrorMsg, sizeof(s_aErrorMsg), "map differs from the server. %08x != %08x", GameClient()->Map()->Crc(), WantedCrc);
+		str_format(s_aErrorMsg, sizeof(s_aErrorMsg), "map differs from the server. %08x != %08x", pMap->Crc(), WantedCrc);
 		m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", s_aErrorMsg);
-		GameClient()->Map()->Unload();
+		pMap->Unload();
 		return s_aErrorMsg;
 	}
 
@@ -1314,7 +1392,7 @@ static void FormatMapDownloadFilename(const char *pName, const std::optional<SHA
 	}
 }
 
-const char *CClient::LoadMapSearch(const char *pMapName, const std::optional<SHA256_DIGEST> &WantedSha256, int WantedCrc)
+const char *CClient::LoadMapSearch(CSessionId SessionId, const char *pMapName, const std::optional<SHA256_DIGEST> &WantedSha256, int WantedCrc)
 {
 	char aBuf[512];
 	char aWanted[SHA256_MAXSTRSIZE + 16];
@@ -1330,13 +1408,13 @@ const char *CClient::LoadMapSearch(const char *pMapName, const std::optional<SHA
 
 	// try the normal maps folder
 	str_format(aBuf, sizeof(aBuf), "maps/%s.map", pMapName);
-	const char *pError = LoadMap(pMapName, aBuf, WantedSha256, WantedCrc);
+	const char *pError = LoadMap(SessionId, pMapName, aBuf, WantedSha256, WantedCrc);
 	if(!pError)
 		return nullptr;
 
 	// try the downloaded maps
 	FormatMapDownloadFilename(pMapName, WantedSha256, WantedCrc, false, aBuf, sizeof(aBuf));
-	pError = LoadMap(pMapName, aBuf, WantedSha256, WantedCrc);
+	pError = LoadMap(SessionId, pMapName, aBuf, WantedSha256, WantedCrc);
 	if(!pError)
 		return nullptr;
 
@@ -1344,7 +1422,7 @@ const char *CClient::LoadMapSearch(const char *pMapName, const std::optional<SHA
 	if(WantedSha256.has_value())
 	{
 		FormatMapDownloadFilename(pMapName, std::nullopt, WantedCrc, false, aBuf, sizeof(aBuf));
-		pError = LoadMap(pMapName, aBuf, WantedSha256, WantedCrc);
+		pError = LoadMap(SessionId, pMapName, aBuf, WantedSha256, WantedCrc);
 		if(!pError)
 			return nullptr;
 	}
@@ -1354,7 +1432,7 @@ const char *CClient::LoadMapSearch(const char *pMapName, const std::optional<SHA
 	str_format(aFilename, sizeof(aFilename), "%s.map", pMapName);
 	if(Storage()->FindFile(aFilename, "maps", IStorage::TYPE_ALL, aBuf, sizeof(aBuf)))
 	{
-		pError = LoadMap(pMapName, aBuf, WantedSha256, WantedCrc);
+		pError = LoadMap(SessionId, pMapName, aBuf, WantedSha256, WantedCrc);
 		if(!pError)
 			return nullptr;
 	}
@@ -1555,38 +1633,39 @@ void CClient::ProcessServerInfo(int RawType, NETADDR *pFrom, const void *pData, 
 		//
 		// SERVERINFO_EXTENDED_MORE doesn't carry any server
 		// information, so just skip it.
-		if(m_aNetClient[CONN_MAIN].State() == NETSTATE_ONLINE &&
+		CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+		if(NetClient(CONN_MAIN).State() == NETSTATE_ONLINE &&
 			ServerAddress() == *pFrom &&
 			RawType != SERVERINFO_EXTENDED_MORE)
 		{
 			// Only accept server info that has a type that is
 			// newer or equal to something the server already sent
 			// us.
-			if(SavedType >= m_CurrentServerInfo.m_Type &&
-				GameClient()->Map()->IsLoaded())
+			if(SavedType >= Source.m_ServerInfo.m_Type &&
+				GameClient()->Map(m_NetworkSessionId)->IsLoaded())
 			{
 				SetCurrentServerInfo(Info);
-				Discord()->UpdateServerInfo(m_CurrentServerInfo);
+				Discord()->UpdateServerInfo(Source.m_ServerInfo);
 			}
 
 			bool ValidPong = false;
-			if(!m_ServerCapabilities.m_PingEx && m_CurrentServerCurrentPingTime >= 0 && SavedType >= m_CurrentServerPingInfoType)
+			if(!Source.m_ServerCapabilities.m_PingEx && Source.m_CurrentPingTime >= 0 && SavedType >= Source.m_PingInfoType)
 			{
 				if(RawType == SERVERINFO_VANILLA)
 				{
-					ValidPong = Token == m_CurrentServerPingBasicToken;
+					ValidPong = Token == Source.m_PingBasicToken;
 				}
 				else if(RawType == SERVERINFO_EXTENDED)
 				{
-					ValidPong = Token == m_CurrentServerPingToken;
+					ValidPong = Token == Source.m_PingToken;
 				}
 			}
 			if(ValidPong)
 			{
-				int LatencyMs = (time_get() - m_CurrentServerCurrentPingTime) * 1000 / time_freq();
+				int LatencyMs = (time_get() - Source.m_CurrentPingTime) * 1000 / time_freq();
 				m_ServerBrowser.SetCurrentServerPing(ServerAddress(), LatencyMs);
-				m_CurrentServerPingInfoType = SavedType;
-				m_CurrentServerCurrentPingTime = -1;
+				Source.m_PingInfoType = SavedType;
+				Source.m_CurrentPingTime = -1;
 
 				char aBuf[64];
 				str_format(aBuf, sizeof(aBuf), "got pong from current server, latency=%dms", LatencyMs);
@@ -1637,6 +1716,8 @@ static CServerCapabilities GetServerCapabilities(int Version, int Flags, bool Si
 
 void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 {
+	CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+	CConnection &GameConnection = Connection(Conn);
 	CUnpacker Unpacker;
 	Unpacker.Reset(pPacket->m_pData, pPacket->m_DataSize);
 	CMsgPacker Packer(NETMSG_EX, true);
@@ -1658,7 +1739,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 
 	// allocates the memory for the translated data
 	CPacker Packer6;
-	if(IsSixup())
+	if(Source.m_Sixup)
 	{
 		bool IsExMsg = false;
 		int Success = !TranslateSysMsg(&Msg, Sys, &Unpacker, &Packer6, pPacket, &IsExMsg);
@@ -1690,8 +1771,8 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				pMapUrl = "";
 			}
 
-			m_MapDetails = std::make_optional<CMapDetails>();
-			CMapDetails &MapDetails = m_MapDetails.value();
+			Source.m_MapDetails = CNetworkSessionSource::CMapDetails{};
+			CNetworkSessionSource::CMapDetails &MapDetails = Source.m_MapDetails.value();
 			str_copy(MapDetails.m_aName, pMap);
 			MapDetails.m_Size = MapSize;
 			MapDetails.m_Crc = MapCrc;
@@ -1700,7 +1781,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 		}
 		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_CAPABILITIES)
 		{
-			if(!m_CanReceiveServerCapabilities)
+			if(!Source.m_CanReceiveServerCapabilities)
 			{
 				return;
 			}
@@ -1710,19 +1791,19 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			{
 				return;
 			}
-			m_ServerCapabilities = GetServerCapabilities(Version, Flags, IsSixup());
-			m_CanReceiveServerCapabilities = false;
-			m_ServerSentCapabilities = true;
+			Source.m_ServerCapabilities = GetServerCapabilities(Version, Flags, Source.m_Sixup);
+			Source.m_CanReceiveServerCapabilities = false;
+			Source.m_ServerSentCapabilities = true;
 		}
 		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAP_CHANGE)
 		{
-			if(m_CanReceiveServerCapabilities)
+			if(Source.m_CanReceiveServerCapabilities)
 			{
-				m_ServerCapabilities = GetServerCapabilities(0, 0, IsSixup());
-				m_CanReceiveServerCapabilities = false;
+				Source.m_ServerCapabilities = GetServerCapabilities(0, 0, Source.m_Sixup);
+				Source.m_CanReceiveServerCapabilities = false;
 			}
-			std::optional<CMapDetails> MapDetails = std::nullopt;
-			std::swap(MapDetails, m_MapDetails);
+			std::optional<CNetworkSessionSource::CMapDetails> MapDetails = std::nullopt;
+			std::swap(MapDetails, Source.m_MapDetails);
 
 			const char *pMap = Unpacker.GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES);
 			int MapCrc = Unpacker.GetInt();
@@ -1761,40 +1842,41 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				pMapUrl = MapDetails->m_aUrl[0] ? MapDetails->m_aUrl : nullptr;
 			}
 
-			if(LoadMapSearch(pMap, MapSha256, MapCrc) == nullptr)
+			if(LoadMapSearch(m_NetworkSessionId, pMap, MapSha256, MapCrc) == nullptr)
 			{
 				m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", "loading done");
-				SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_SENDING_READY);
+				if(FocusedSessionId() == m_NetworkSessionId)
+					SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_SENDING_READY);
 				SendReady(CONN_MAIN);
 			}
 			else
 			{
 				// start map download
-				FormatMapDownloadFilename(pMap, MapSha256, MapCrc, false, m_aMapdownloadFilename, sizeof(m_aMapdownloadFilename));
-				FormatMapDownloadFilename(pMap, MapSha256, MapCrc, true, m_aMapdownloadFilenameTemp, sizeof(m_aMapdownloadFilenameTemp));
+				FormatMapDownloadFilename(pMap, MapSha256, MapCrc, false, Source.m_aMapdownloadFilename, sizeof(Source.m_aMapdownloadFilename));
+				FormatMapDownloadFilename(pMap, MapSha256, MapCrc, true, Source.m_aMapdownloadFilenameTemp, sizeof(Source.m_aMapdownloadFilenameTemp));
 
 				char aBuf[256];
-				str_format(aBuf, sizeof(aBuf), "starting to download map to '%s'", m_aMapdownloadFilenameTemp);
+				str_format(aBuf, sizeof(aBuf), "starting to download map to '%s'", Source.m_aMapdownloadFilenameTemp);
 				m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", aBuf);
 
-				str_copy(m_aMapdownloadName, pMap);
-				m_MapdownloadSha256 = MapSha256;
-				m_MapdownloadCrc = MapCrc;
-				m_MapdownloadTotalsize = MapSize;
+				str_copy(Source.m_aMapdownloadName, pMap);
+				Source.m_MapdownloadSha256 = MapSha256;
+				Source.m_MapdownloadCrc = MapCrc;
+				Source.m_MapdownloadTotalsize = MapSize;
 
 				if(MapSha256.has_value())
 				{
 					char aUrl[256];
 					char aEscaped[256];
-					EscapeUrl(aEscaped, str_startswith(m_aMapdownloadFilename, "downloadedmaps/"));
+					EscapeUrl(aEscaped, str_startswith(Source.m_aMapdownloadFilename, "downloadedmaps/"));
 					bool UseConfigUrl = str_comp(g_Config.m_ClMapDownloadUrl, "https://maps.ddnet.org") != 0 || m_aMapDownloadUrl[0] == '\0';
 					str_format(aUrl, sizeof(aUrl), "%s/%s", UseConfigUrl ? g_Config.m_ClMapDownloadUrl : m_aMapDownloadUrl, aEscaped);
 
-					m_pMapdownloadTask = HttpGetFile(pMapUrl ? pMapUrl : aUrl, Storage(), m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE);
-					m_pMapdownloadTask->Timeout(CTimeout{g_Config.m_ClMapDownloadConnectTimeoutMs, 0, g_Config.m_ClMapDownloadLowSpeedLimit, g_Config.m_ClMapDownloadLowSpeedTime});
-					m_pMapdownloadTask->MaxResponseSize(MapSize);
-					m_pMapdownloadTask->ExpectSha256(MapSha256.value());
-					Http()->Run(m_pMapdownloadTask);
+					Source.m_pMapdownloadTask = HttpGetFile(pMapUrl ? pMapUrl : aUrl, Storage(), Source.m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE);
+					Source.m_pMapdownloadTask->Timeout(CTimeout{g_Config.m_ClMapDownloadConnectTimeoutMs, 0, g_Config.m_ClMapDownloadLowSpeedLimit, g_Config.m_ClMapDownloadLowSpeedTime});
+					Source.m_pMapdownloadTask->MaxResponseSize(MapSize);
+					Source.m_pMapdownloadTask->ExpectSha256(MapSha256.value());
+					Http()->Run(Source.m_pMapdownloadTask);
 				}
 				else
 				{
@@ -1804,7 +1886,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 		}
 		else if(Conn == CONN_MAIN && Msg == NETMSG_MAP_DATA)
 		{
-			if(!m_MapdownloadFileTemp)
+			if(!Source.m_MapdownloadFileTemp)
 			{
 				return;
 			}
@@ -1812,18 +1894,19 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			int MapCRC = -1;
 			int Chunk = -1;
 			int Size = -1;
+			CTranslationContext &TranslationContext = Source.m_TranslationContext;
 
-			if(IsSixup())
+			if(Source.m_Sixup)
 			{
-				if(m_TranslationContext.m_MapdownloadTotalsize <= 0 ||
-					m_TranslationContext.m_MapDownloadChunkSize <= 0 ||
-					m_TranslationContext.m_MapDownloadChunksPerRequest <= 0)
+				if(TranslationContext.m_MapdownloadTotalsize <= 0 ||
+					TranslationContext.m_MapDownloadChunkSize <= 0 ||
+					TranslationContext.m_MapDownloadChunksPerRequest <= 0)
 				{
 					return;
 				}
-				MapCRC = m_MapdownloadCrc;
-				Chunk = m_MapdownloadChunk;
-				Size = std::min(m_TranslationContext.m_MapDownloadChunkSize, m_TranslationContext.m_MapdownloadTotalsize - m_MapdownloadAmount);
+				MapCRC = Source.m_MapdownloadCrc;
+				Chunk = Source.m_MapdownloadChunk;
+				Size = std::min(TranslationContext.m_MapDownloadChunkSize, TranslationContext.m_MapdownloadTotalsize - Source.m_MapdownloadAmount);
 			}
 			else
 			{
@@ -1834,33 +1917,33 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			}
 
 			const unsigned char *pData = Unpacker.GetRaw(Size);
-			if(Unpacker.Error() || Size <= 0 || MapCRC != m_MapdownloadCrc || Chunk != m_MapdownloadChunk)
+			if(Unpacker.Error() || Size <= 0 || MapCRC != Source.m_MapdownloadCrc || Chunk != Source.m_MapdownloadChunk)
 			{
 				return;
 			}
 
-			io_write(m_MapdownloadFileTemp, pData, Size);
+			io_write(Source.m_MapdownloadFileTemp, pData, Size);
 
-			m_MapdownloadAmount += Size;
+			Source.m_MapdownloadAmount += Size;
 
-			if(IsSixup())
-				Last = m_MapdownloadAmount == m_TranslationContext.m_MapdownloadTotalsize;
+			if(Source.m_Sixup)
+				Last = Source.m_MapdownloadAmount == TranslationContext.m_MapdownloadTotalsize;
 
 			if(Last)
 			{
-				if(m_MapdownloadFileTemp)
+				if(Source.m_MapdownloadFileTemp)
 				{
-					io_close(m_MapdownloadFileTemp);
-					m_MapdownloadFileTemp = nullptr;
+					io_close(Source.m_MapdownloadFileTemp);
+					Source.m_MapdownloadFileTemp = nullptr;
 				}
 				FinishMapDownload();
 			}
 			else
 			{
 				// request new chunk
-				m_MapdownloadChunk++;
+				Source.m_MapdownloadChunk++;
 
-				if(IsSixup() && (m_MapdownloadChunk % m_TranslationContext.m_MapDownloadChunksPerRequest == 0))
+				if(Source.m_Sixup && (Source.m_MapdownloadChunk % TranslationContext.m_MapDownloadChunksPerRequest == 0))
 				{
 					CMsgPacker MsgP(protocol7::NETMSG_REQUEST_MAP_DATA, true, true);
 					SendMsg(CONN_MAIN, &MsgP, MSGFLAG_VITAL | MSGFLAG_FLUSH);
@@ -1868,14 +1951,14 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				else
 				{
 					CMsgPacker MsgP(NETMSG_REQUEST_MAP_DATA, true);
-					MsgP.AddInt(m_MapdownloadChunk);
+					MsgP.AddInt(Source.m_MapdownloadChunk);
 					SendMsg(CONN_MAIN, &MsgP, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 				}
 
 				if(g_Config.m_Debug)
 				{
 					char aBuf[256];
-					str_format(aBuf, sizeof(aBuf), "requested chunk %d", m_MapdownloadChunk);
+					str_format(aBuf, sizeof(aBuf), "requested chunk %d", Source.m_MapdownloadChunk);
 					m_pConsole->Print(IConsole::OUTPUT_LEVEL_DEBUG, "client/network", aBuf);
 				}
 			}
@@ -1885,8 +1968,9 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			if(m_DummyConnected)
 			{
 				m_DummyReconnectOnReload = true;
-				m_DummyDeactivateOnReconnect = g_Config.m_ClDummy == 0;
+				m_DummyDeactivateOnReconnect = ActiveConnection() == CONN_MAIN;
 				g_Config.m_ClDummy = 0;
+				SetActiveConnection(CONN_MAIN);
 			}
 			else
 			{
@@ -1895,11 +1979,11 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 		}
 		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_CON_READY)
 		{
-			if(!GameClient()->Map()->IsLoaded())
+			if(!GameClient()->Map(m_NetworkSessionId)->IsLoaded())
 			{
 				return;
 			}
-			GameClient()->OnConnected();
+			GameClient()->OnConnected(m_NetworkSessionId);
 			if(m_DummyReconnectOnReload)
 			{
 				m_DummySendConnInfo = true;
@@ -1918,8 +2002,9 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			m_DummyConnected = true;
 			m_DummyConnecting = false;
 			g_Config.m_ClDummy = 1;
+			SetActiveConnection(CONN_DUMMY);
 			Rcon("crashmeplx");
-			if(m_aRconAuthed[0] && !m_aRconAuthed[1])
+			if(Connection(CONN_MAIN).m_RconAuthed && !Connection(CONN_DUMMY).m_RconAuthed)
 				RconAuth(m_aRconUsername, m_aRconPassword);
 		}
 		else if(Msg == NETMSG_PING)
@@ -1947,11 +2032,11 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			{
 				return;
 			}
-			if(m_ServerCapabilities.m_PingEx && m_CurrentServerCurrentPingTime >= 0 && *pId == m_CurrentServerPingUuid)
+			if(Source.m_ServerCapabilities.m_PingEx && Source.m_CurrentPingTime >= 0 && *pId == Source.m_PingUuid)
 			{
-				int LatencyMs = (time_get() - m_CurrentServerCurrentPingTime) * 1000 / time_freq();
+				int LatencyMs = (time_get() - Source.m_CurrentPingTime) * 1000 / time_freq();
 				m_ServerBrowser.SetCurrentServerPing(ServerAddress(), LatencyMs);
-				m_CurrentServerCurrentPingTime = -1;
+				Source.m_CurrentPingTime = -1;
 
 				char aBuf[64];
 				str_format(aBuf, sizeof(aBuf), "got pong from current server, latency=%dms", LatencyMs);
@@ -1978,7 +2063,9 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 		{
 			if(Conn == CONN_MAIN)
 			{
-				Connect(m_aConnectAddressStr);
+				const std::string ConnectAddress = Source.m_ConnectAddress;
+				const std::string Password = Source.m_SendPassword ? g_Config.m_Password : Source.m_Password;
+				Connect(ConnectAddress.c_str(), Password.c_str());
 			}
 			else
 			{
@@ -2001,7 +2088,8 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				ServerAddr.port = RedirectPort;
 				char aAddr[NETADDR_MAXSTRSIZE];
 				net_addr_str(&ServerAddr, aAddr, sizeof(aAddr), true);
-				Connect(aAddr);
+				const std::string Password = Source.m_SendPassword ? g_Config.m_Password : Source.m_Password;
+				Connect(aAddr, Password.c_str());
 			}
 			else
 			{
@@ -2028,7 +2116,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				m_pConsole->RegisterTemp(pName, pParams, CFGFLAG_SERVER, pHelp);
 				GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
 			}
-			m_GotRconCommands++;
+			Source.m_GotRconCommands++;
 		}
 		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_CMD_REM)
 		{
@@ -2044,26 +2132,26 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			int ResultInt = Unpacker.GetInt();
 			if(!Unpacker.Error())
 			{
-				m_aRconAuthed[Conn] = ResultInt;
+				GameConnection.m_RconAuthed = ResultInt;
 
-				if(m_aRconAuthed[Conn])
+				if(GameConnection.m_RconAuthed)
 					RconAuth(m_aRconUsername, m_aRconPassword, g_Config.m_ClDummy ^ 1);
 			}
 			if(Conn == CONN_MAIN)
 			{
-				int Old = m_UseTempRconCommands;
-				m_UseTempRconCommands = Unpacker.GetInt();
+				int Old = Source.m_UseTempRconCommands;
+				Source.m_UseTempRconCommands = Unpacker.GetInt();
 				if(Unpacker.Error())
 				{
-					m_UseTempRconCommands = 0;
+					Source.m_UseTempRconCommands = 0;
 				}
-				if(Old != 0 && m_UseTempRconCommands == 0)
+				if(Old != 0 && Source.m_UseTempRconCommands == 0)
 				{
 					m_pConsole->DeregisterTempAll();
-					m_ExpectedRconCommands = -1;
-					m_vMaplistEntries.clear();
+					Source.m_ExpectedRconCommands = -1;
+					Source.m_vMaplistEntries.clear();
 					GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
-					m_ExpectedMaplistEntries = -1;
+					Source.m_ExpectedMaplistEntries = -1;
 				}
 			}
 		}
@@ -2094,24 +2182,27 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 
 			// adjust our prediction time
 			int64_t Target = 0;
-			for(int k = 0; k < 200; k++)
+			for(const auto &Input : GameConnection.m_aInputs)
 			{
-				if(m_aInputs[Conn][k].m_Tick == InputPredTick)
+				if(Input.m_Tick == InputPredTick)
 				{
-					Target = m_aInputs[Conn][k].m_PredictedTime + (Now - m_aInputs[Conn][k].m_Time);
+					Target = Input.m_PredictedTime + (Now - Input.m_Time);
 					Target = Target - (int64_t)((TimeLeft / 1000.0f) * time_freq());
 					break;
 				}
 			}
 
 			if(Target)
-				m_PredictedTime.Update(&m_aInputtimeMarginGraphs[Conn], Target, TimeLeft, CSmoothTime::ADJUSTDIRECTION_UP);
+				GameConnection.m_PredictedTime.Update(&GameConnection.m_InputtimeMarginGraph, Target, TimeLeft, CSmoothTime::ADJUSTDIRECTION_UP);
 		}
 		else if(Msg == NETMSG_SNAP || Msg == NETMSG_SNAPSINGLE || Msg == NETMSG_SNAPEMPTY)
 		{
 			// We are not allowed to process snapshots yet.
-			if(State() < IClient::STATE_LOADING ||
-				!GameClient()->Map()->IsLoaded())
+			if(Source.State() != ESessionState::LOADING_MAP && Source.State() != ESessionState::READY)
+			{
+				return;
+			}
+			if(!GameClient()->Map(m_NetworkSessionId)->IsLoaded())
 			{
 				return;
 			}
@@ -2142,37 +2233,37 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			}
 
 			// Check m_aAckGameTick to see if we already got a snapshot for that tick
-			if(GameTick >= m_aCurrentRecvTick[Conn] && GameTick > m_aAckGameTick[Conn])
+			if(GameTick >= GameConnection.m_CurrentRecvTick && GameTick > GameConnection.m_AckGameTick)
 			{
-				if(GameTick != m_aCurrentRecvTick[Conn])
+				if(GameTick != GameConnection.m_CurrentRecvTick)
 				{
-					m_aSnapshotParts[Conn] = 0;
-					m_aCurrentRecvTick[Conn] = GameTick;
-					m_aSnapshotIncomingDataSize[Conn] = 0;
+					GameConnection.m_SnapshotParts = 0;
+					GameConnection.m_CurrentRecvTick = GameTick;
+					GameConnection.m_SnapshotIncomingDataSize = 0;
 				}
 
-				mem_copy((char *)m_aaSnapshotIncomingData[Conn] + Part * MAX_SNAPSHOT_PACKSIZE, pData, std::clamp(PartSize, 0, (int)sizeof(m_aaSnapshotIncomingData[Conn]) - Part * MAX_SNAPSHOT_PACKSIZE));
-				m_aSnapshotParts[Conn] |= (uint64_t)(1) << Part;
+				mem_copy(GameConnection.m_aSnapshotIncomingData + Part * MAX_SNAPSHOT_PACKSIZE, pData, std::clamp(PartSize, 0, (int)sizeof(GameConnection.m_aSnapshotIncomingData) - Part * MAX_SNAPSHOT_PACKSIZE));
+				GameConnection.m_SnapshotParts |= (uint64_t)(1) << Part;
 
 				if(Part == NumParts - 1)
 				{
-					m_aSnapshotIncomingDataSize[Conn] = (NumParts - 1) * MAX_SNAPSHOT_PACKSIZE + PartSize;
+					GameConnection.m_SnapshotIncomingDataSize = (NumParts - 1) * MAX_SNAPSHOT_PACKSIZE + PartSize;
 				}
 
-				if((NumParts < CSnapshot::MAX_PARTS && m_aSnapshotParts[Conn] == (((uint64_t)(1) << NumParts) - 1)) ||
-					(NumParts == CSnapshot::MAX_PARTS && m_aSnapshotParts[Conn] == std::numeric_limits<uint64_t>::max()))
+				if((NumParts < CSnapshot::MAX_PARTS && GameConnection.m_SnapshotParts == (((uint64_t)(1) << NumParts) - 1)) ||
+					(NumParts == CSnapshot::MAX_PARTS && GameConnection.m_SnapshotParts == std::numeric_limits<uint64_t>::max()))
 				{
 					CSnapshotDeltaBuffer TmpBuffer2;
 					CSnapshotBuffer TmpBuffer3;
 
 					// reset snapshotting
-					m_aSnapshotParts[Conn] = 0;
+					GameConnection.m_SnapshotParts = 0;
 
 					// find snapshot that we should use as delta
 					const CSnapshot *pDeltaShot = CSnapshot::EmptySnapshot();
 					if(DeltaTick >= 0)
 					{
-						int DeltashotSize = m_aSnapshotStorage[Conn].Get(DeltaTick, nullptr, &pDeltaShot, nullptr);
+						int DeltashotSize = GameConnection.m_SnapshotStorage.Get(DeltaTick, nullptr, &pDeltaShot, nullptr);
 
 						if(DeltashotSize < 0)
 						{
@@ -2184,7 +2275,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 							}
 
 							// ack snapshot
-							m_aAckGameTick[Conn] = -1;
+							GameConnection.m_AckGameTick = -1;
 							SendInput();
 							return;
 						}
@@ -2194,9 +2285,9 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 					const void *pDeltaData = SnapshotDelta()->EmptyDelta();
 					int DeltaSize = sizeof(int) * 3;
 
-					if(m_aSnapshotIncomingDataSize[Conn])
+					if(GameConnection.m_SnapshotIncomingDataSize)
 					{
-						int IntSize = CVariableInt::Decompress(m_aaSnapshotIncomingData[Conn], m_aSnapshotIncomingDataSize[Conn], TmpBuffer2.m_aData, sizeof(TmpBuffer2.m_aData));
+						int IntSize = CVariableInt::Decompress(GameConnection.m_aSnapshotIncomingData, GameConnection.m_SnapshotIncomingDataSize, TmpBuffer2.m_aData, sizeof(TmpBuffer2.m_aData));
 
 						if(IntSize < 0) // failure during decompression
 							return;
@@ -2221,41 +2312,41 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 					if(Msg != NETMSG_SNAPEMPTY && TmpBuffer3.AsSnapshot()->Crc() != Crc)
 					{
 						log_error("client", "snapshot crc error #%d - tick=%d wantedcrc=%d gotcrc=%d compressed_size=%d delta_tick=%d",
-							m_SnapCrcErrors, GameTick, Crc, TmpBuffer3.AsSnapshot()->Crc(), m_aSnapshotIncomingDataSize[Conn], DeltaTick);
+							GameConnection.m_SnapCrcErrors, GameTick, Crc, TmpBuffer3.AsSnapshot()->Crc(), GameConnection.m_SnapshotIncomingDataSize, DeltaTick);
 
-						m_SnapCrcErrors++;
-						if(m_SnapCrcErrors > 10)
+						GameConnection.m_SnapCrcErrors++;
+						if(GameConnection.m_SnapCrcErrors > 10)
 						{
 							// to many errors, send reset
-							m_aAckGameTick[Conn] = -1;
+							GameConnection.m_AckGameTick = -1;
 							SendInput();
-							m_SnapCrcErrors = 0;
+							GameConnection.m_SnapCrcErrors = 0;
 						}
 						return;
 					}
 					else
 					{
-						if(m_SnapCrcErrors)
-							m_SnapCrcErrors--;
+						if(GameConnection.m_SnapCrcErrors)
+							GameConnection.m_SnapCrcErrors--;
 					}
 
 					// purge old snapshots
 					int PurgeTick = DeltaTick;
-					if(m_aapSnapshots[Conn][SNAP_PREV] && m_aapSnapshots[Conn][SNAP_PREV]->m_Tick < PurgeTick)
-						PurgeTick = m_aapSnapshots[Conn][SNAP_PREV]->m_Tick;
-					if(m_aapSnapshots[Conn][SNAP_CURRENT] && m_aapSnapshots[Conn][SNAP_CURRENT]->m_Tick < PurgeTick)
-						PurgeTick = m_aapSnapshots[Conn][SNAP_CURRENT]->m_Tick;
-					m_aSnapshotStorage[Conn].PurgeUntil(PurgeTick);
+					if(GameConnection.m_apSnapshots[SNAP_PREV] && GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick < PurgeTick)
+						PurgeTick = GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
+					if(GameConnection.m_apSnapshots[SNAP_CURRENT] && GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick < PurgeTick)
+						PurgeTick = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
+					GameConnection.m_SnapshotStorage.PurgeUntil(PurgeTick);
 
 					// create a verified and unpacked snapshot
 					int AltSnapSize = -1;
 					CSnapshotBuffer AltSnapBuffer;
 
-					if(IsSixup())
+					if(Source.m_Sixup)
 					{
 						CSnapshotBuffer TmpTransSnapBuffer;
 						mem_copy(&TmpTransSnapBuffer, &TmpBuffer3, sizeof(TmpTransSnapBuffer));
-						AltSnapSize = GameClient()->TranslateSnap(&AltSnapBuffer, TmpTransSnapBuffer.AsSnapshot(), Conn, Dummy);
+						AltSnapSize = GameClient()->TranslateSnap(m_NetworkSessionId, &AltSnapBuffer, TmpTransSnapBuffer.AsSnapshot(), Conn);
 					}
 					else
 					{
@@ -2269,7 +2360,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 					}
 
 					// add new
-					m_aSnapshotStorage[Conn].Add(GameTick, time_get(), SnapSize, TmpBuffer3.AsSnapshot(), AltSnapSize, AltSnapBuffer.AsSnapshot());
+					GameConnection.m_SnapshotStorage.Add(GameTick, time_get(), SnapSize, TmpBuffer3.AsSnapshot(), AltSnapSize, AltSnapBuffer.AsSnapshot());
 
 					if(!Dummy)
 					{
@@ -2277,9 +2368,9 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 
 						CSnapshotBuffer SnapSeven;
 						int DemoSnapSize = SnapSize;
-						if(IsSixup())
+						if(Source.m_Sixup)
 						{
-							DemoSnapSize = GameClient()->OnDemoRecSnap7(TmpBuffer3.AsSnapshot(), &SnapSeven, Conn);
+							DemoSnapSize = GameClient()->OnDemoRecSnap7(m_NetworkSessionId, TmpBuffer3.AsSnapshot(), &SnapSeven, Conn);
 							if(DemoSnapSize < 0)
 							{
 								dbg_msg("sixup", "demo snapshot failed. error=%d", DemoSnapSize);
@@ -2294,30 +2385,27 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 								if(DemoRecorder.IsRecording())
 								{
 									// write snapshot
-									DemoRecorder.RecordSnapshot(GameTick, IsSixup() ? SnapSeven.AsSnapshot() : TmpBuffer3.AsSnapshot(), DemoSnapSize);
+									DemoRecorder.RecordSnapshot(GameTick, Source.m_Sixup ? SnapSeven.AsSnapshot() : TmpBuffer3.AsSnapshot(), DemoSnapSize);
 								}
 							}
 						}
 					}
 
 					// apply snapshot, cycle pointers
-					m_aReceivedSnapshots[Conn]++;
+					GameConnection.m_ReceivedSnapshots++;
 
 					// we got two snapshots until we see us self as connected
-					if(m_aReceivedSnapshots[Conn] == 2)
+					if(GameConnection.m_ReceivedSnapshots == 2)
 					{
 						// start at 200ms and work from there
-						if(!Dummy)
-						{
-							m_PredictedTime.Init(GameTick * time_freq() / GameTickSpeed());
-							m_PredictedTime.SetAdjustSpeed(CSmoothTime::ADJUSTDIRECTION_UP, 1000.0f);
-							m_PredictedTime.UpdateMargin(PredictionMargin() * time_freq() / 1000);
-						}
-						m_aGameTime[Conn].Init((GameTick - 1) * time_freq() / GameTickSpeed());
-						m_aapSnapshots[Conn][SNAP_PREV] = m_aSnapshotStorage[Conn].m_pFirst;
-						m_aapSnapshots[Conn][SNAP_CURRENT] = m_aSnapshotStorage[Conn].m_pLast;
-						m_aPrevGameTick[Conn] = m_aapSnapshots[Conn][SNAP_PREV]->m_Tick;
-						m_aCurGameTick[Conn] = m_aapSnapshots[Conn][SNAP_CURRENT]->m_Tick;
+						GameConnection.m_PredictedTime.Init(GameTick * time_freq() / GameTickSpeed());
+						GameConnection.m_PredictedTime.SetAdjustSpeed(CSmoothTime::ADJUSTDIRECTION_UP, 1000.0f);
+						GameConnection.m_PredictedTime.UpdateMargin(PredictionMargin() * time_freq() / 1000);
+						GameConnection.m_GameTime.Init((GameTick - 1) * time_freq() / GameTickSpeed());
+						GameConnection.m_apSnapshots[SNAP_PREV] = GameConnection.m_SnapshotStorage.m_pFirst;
+						GameConnection.m_apSnapshots[SNAP_CURRENT] = GameConnection.m_SnapshotStorage.m_pLast;
+						GameConnection.m_PrevGameTick = GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
+						GameConnection.m_CurGameTick = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
 						if(Conn == CONN_MAIN)
 						{
 							m_LocalStartTime = time_get();
@@ -2328,11 +2416,11 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 							}
 #endif
 						}
-						if(!Dummy)
-						{
-							GameClient()->OnNewSnapshot(false);
-						}
-						SetState(IClient::STATE_ONLINE);
+						GameClient()->OnNewSnapshot(m_NetworkSessionId, Conn);
+						if(FocusedSessionId() == m_NetworkSessionId)
+							SetFocusedState(IClient::STATE_ONLINE, false);
+						else
+							Source.SetState(ESessionState::READY);
 						if(Conn == CONN_MAIN)
 						{
 							DemoRecorder_HandleAutoStart();
@@ -2340,22 +2428,22 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 					}
 
 					// adjust game time
-					if(m_aReceivedSnapshots[Conn] > 2)
+					if(GameConnection.m_ReceivedSnapshots > 2)
 					{
-						int64_t Now = m_aGameTime[Conn].Get(time_get());
+						int64_t Now = GameConnection.m_GameTime.Get(time_get());
 						int64_t TickStart = GameTick * time_freq() / GameTickSpeed();
 						int64_t TimeLeft = (TickStart - Now) * 1000 / time_freq();
-						m_aGameTime[Conn].Update(&m_aGametimeMarginGraphs[Conn], (GameTick - 1) * time_freq() / GameTickSpeed(), TimeLeft, CSmoothTime::ADJUSTDIRECTION_DOWN);
+						GameConnection.m_GameTime.Update(&GameConnection.m_GametimeMarginGraph, (GameTick - 1) * time_freq() / GameTickSpeed(), TimeLeft, CSmoothTime::ADJUSTDIRECTION_DOWN);
 					}
 
-					if(m_aReceivedSnapshots[Conn] > GameTickSpeed() && !m_aDidPostConnect[Conn])
+					if(GameConnection.m_ReceivedSnapshots > GameTickSpeed() && !GameConnection.m_DidPostConnect)
 					{
 						OnPostConnect(Conn);
-						m_aDidPostConnect[Conn] = true;
+						GameConnection.m_DidPostConnect = true;
 					}
 
 					// ack snapshot
-					m_aAckGameTick[Conn] = GameTick;
+					GameConnection.m_AckGameTick = GameTick;
 				}
 			}
 		}
@@ -2373,12 +2461,12 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			if(Unpacker.Error() || ExpectedRconCommands < 0)
 				return;
 
-			m_ExpectedRconCommands = ExpectedRconCommands;
-			m_GotRconCommands = 0;
+			Source.m_ExpectedRconCommands = ExpectedRconCommands;
+			Source.m_GotRconCommands = 0;
 		}
 		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_CMD_GROUP_END)
 		{
-			m_ExpectedRconCommands = -1;
+			Source.m_ExpectedRconCommands = -1;
 		}
 		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAPLIST_ADD)
 		{
@@ -2391,7 +2479,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				}
 				if(pMapName[0] != '\0')
 				{
-					m_vMaplistEntries.emplace_back(pMapName);
+					Source.m_vMaplistEntries.emplace_back(pMapName);
 					GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
 				}
 			}
@@ -2402,13 +2490,13 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			if(Unpacker.Error() || ExpectedMaplistEntries < 0)
 				return;
 
-			m_vMaplistEntries.clear();
+			Source.m_vMaplistEntries.clear();
 			GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
-			m_ExpectedMaplistEntries = ExpectedMaplistEntries;
+			Source.m_ExpectedMaplistEntries = ExpectedMaplistEntries;
 		}
 		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAPLIST_GROUP_END)
 		{
-			m_ExpectedMaplistEntries = -1;
+			Source.m_ExpectedMaplistEntries = -1;
 		}
 	}
 	// the client handles only vital messages https://github.com/ddnet/ddnet/issues/11178
@@ -2426,7 +2514,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			}
 		}
 
-		GameClient()->OnMessage(Msg, &Unpacker, Conn, Dummy);
+		GameClient()->OnMessage(m_NetworkSessionId, Msg, &Unpacker, Conn);
 	}
 }
 
@@ -2479,56 +2567,58 @@ int CClient::UnpackAndValidateSnapshot(CSnapshot *pFrom, CSnapshotBuffer *pTo)
 
 void CClient::ResetMapDownload(bool ResetActive)
 {
-	if(m_pMapdownloadTask)
+	CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+	if(Source.m_pMapdownloadTask)
 	{
-		m_pMapdownloadTask->Abort();
-		m_pMapdownloadTask = nullptr;
+		Source.m_pMapdownloadTask->Abort();
+		Source.m_pMapdownloadTask = nullptr;
 	}
 
-	if(m_MapdownloadFileTemp)
+	if(Source.m_MapdownloadFileTemp)
 	{
-		io_close(m_MapdownloadFileTemp);
-		m_MapdownloadFileTemp = nullptr;
+		io_close(Source.m_MapdownloadFileTemp);
+		Source.m_MapdownloadFileTemp = nullptr;
 	}
 
-	if(Storage()->FileExists(m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE))
+	if(Storage()->FileExists(Source.m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE))
 	{
-		Storage()->RemoveFile(m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE);
+		Storage()->RemoveFile(Source.m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE);
 	}
 
 	if(ResetActive)
 	{
-		m_MapdownloadChunk = 0;
-		m_MapdownloadSha256 = std::nullopt;
-		m_MapdownloadCrc = 0;
-		m_MapdownloadTotalsize = -1;
-		m_MapdownloadAmount = 0;
-		m_aMapdownloadFilename[0] = '\0';
-		m_aMapdownloadFilenameTemp[0] = '\0';
-		m_aMapdownloadName[0] = '\0';
+		Source.m_MapdownloadChunk = 0;
+		Source.m_MapdownloadSha256 = std::nullopt;
+		Source.m_MapdownloadCrc = 0;
+		Source.m_MapdownloadTotalsize = -1;
+		Source.m_MapdownloadAmount = 0;
+		Source.m_aMapdownloadFilename[0] = '\0';
+		Source.m_aMapdownloadFilenameTemp[0] = '\0';
+		Source.m_aMapdownloadName[0] = '\0';
 	}
 }
 
 void CClient::FinishMapDownload()
 {
+	CNetworkSessionSource &Source = *m_pNetworkSessionSource;
 	m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", "download complete, loading map");
 
-	if(!Storage()->RenameFile(m_aMapdownloadFilenameTemp, m_aMapdownloadFilename, IStorage::TYPE_SAVE))
+	if(!Storage()->RenameFile(Source.m_aMapdownloadFilenameTemp, Source.m_aMapdownloadFilename, IStorage::TYPE_SAVE))
 	{
 		char aError[128 + IO_MAX_PATH_LENGTH];
-		str_format(aError, sizeof(aError), Localize("Could not save downloaded map. Try manually deleting this file: %s"), m_aMapdownloadFilename);
+		str_format(aError, sizeof(aError), Localize("Could not save downloaded map. Try manually deleting this file: %s"), Source.m_aMapdownloadFilename);
 		DisconnectWithReason(aError);
 		return;
 	}
 
-	const char *pError = LoadMap(m_aMapdownloadName, m_aMapdownloadFilename, m_MapdownloadSha256, m_MapdownloadCrc);
+	const char *pError = LoadMap(m_NetworkSessionId, Source.m_aMapdownloadName, Source.m_aMapdownloadFilename, Source.m_MapdownloadSha256, Source.m_MapdownloadCrc);
 	if(!pError)
 	{
 		ResetMapDownload(true);
 		m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", "loading done");
 		SendReady(CONN_MAIN);
 	}
-	else if(m_pMapdownloadTask) // fallback
+	else if(Source.m_pMapdownloadTask) // fallback
 	{
 		ResetMapDownload(false);
 		SendMapRequest();
@@ -2628,7 +2718,7 @@ void CClient::LoadDDNetInfo()
 		NETADDR Addr;
 		if(!net_addr_from_str(&Addr, StunServersIpv6[0]))
 		{
-			m_aNetClient[CONN_MAIN].FeedStunServer(Addr);
+			NetClient(CONN_MAIN).FeedStunServer(Addr);
 		}
 	}
 	const json_value &StunServersIpv4 = DDNetInfo["stun-servers-ipv4"];
@@ -2637,7 +2727,7 @@ void CClient::LoadDDNetInfo()
 		NETADDR Addr;
 		if(!net_addr_from_str(&Addr, StunServersIpv4[0]))
 		{
-			m_aNetClient[CONN_MAIN].FeedStunServer(Addr);
+			NetClient(CONN_MAIN).FeedStunServer(Addr);
 		}
 	}
 	const json_value &ConnectingIp = DDNetInfo["connecting-ip"];
@@ -2660,7 +2750,7 @@ int CClient::ConnectNetTypes() const
 {
 	const NETADDR *pConnectAddrs;
 	int NumConnectAddrs;
-	m_aNetClient[CONN_MAIN].ConnectAddresses(&pConnectAddrs, &NumConnectAddrs);
+	NetClient(CONN_MAIN).ConnectAddresses(&pConnectAddrs, &NumConnectAddrs);
 	int NetType = 0;
 	for(int i = 0; i < NumConnectAddrs; i++)
 	{
@@ -2675,59 +2765,65 @@ void CClient::PumpNetwork()
 	RecreateBrokenSockets();
 #endif
 
-	for(auto &NetClient : m_aNetClient)
+	for(int Conn = 0; Conn < NUM_CONNS; Conn++)
 	{
-		NetClient.Update();
+		NetClient(Conn).Update();
 	}
 
-	if(State() != IClient::STATE_DEMOPLAYBACK)
+	CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+	// check for errors of main and dummy
+	if(Source.State() != ESessionState::OFFLINE && m_State < IClient::STATE_QUITTING)
 	{
-		// check for errors of main and dummy
-		if(State() != IClient::STATE_OFFLINE && State() < IClient::STATE_QUITTING)
+		if(NetClient(CONN_MAIN).State() == NETSTATE_OFFLINE)
 		{
-			if(m_aNetClient[CONN_MAIN].State() == NETSTATE_OFFLINE)
+			// This will also disconnect the dummy, so the branch below is an `else if`
+			DisconnectWithReason(nullptr);
+			char aBuf[256];
+			str_format(aBuf, sizeof(aBuf), "offline error='%s'", NetClient(CONN_MAIN).ErrorString());
+			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_ERROR_COLOR);
+		}
+		else if((DummyConnecting() || DummyConnected()) && NetClient(CONN_DUMMY).State() == NETSTATE_OFFLINE)
+		{
+			const bool WasConnecting = DummyConnecting();
+			DummyDisconnect(nullptr);
+			char aBuf[256];
+			str_format(aBuf, sizeof(aBuf), "offline dummy error='%s'", NetClient(CONN_DUMMY).ErrorString());
+			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_ERROR_COLOR);
+			if(WasConnecting)
 			{
-				// This will also disconnect the dummy, so the branch below is an `else if`
-				Disconnect();
-				char aBuf[256];
-				str_format(aBuf, sizeof(aBuf), "offline error='%s'", m_aNetClient[CONN_MAIN].ErrorString());
-				m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_ERROR_COLOR);
-			}
-			else if((DummyConnecting() || DummyConnected()) && m_aNetClient[CONN_DUMMY].State() == NETSTATE_OFFLINE)
-			{
-				const bool WasConnecting = DummyConnecting();
-				DummyDisconnect(nullptr);
-				char aBuf[256];
-				str_format(aBuf, sizeof(aBuf), "offline dummy error='%s'", m_aNetClient[CONN_DUMMY].ErrorString());
-				m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_ERROR_COLOR);
-				if(WasConnecting)
-				{
-					str_format(aBuf, sizeof(aBuf), "%s: %s", Localize("Could not connect dummy"), m_aNetClient[CONN_DUMMY].ErrorString());
-					GameClient()->Echo(aBuf);
-				}
+				str_format(aBuf, sizeof(aBuf), "%s: %s", Localize("Could not connect dummy"), NetClient(CONN_DUMMY).ErrorString());
+				GameClient()->Echo(aBuf);
 			}
 		}
+	}
 
-		// check if main was connected
-		if(State() == IClient::STATE_CONNECTING && m_aNetClient[CONN_MAIN].State() == NETSTATE_ONLINE)
+	// check if main was connected
+	if(Source.State() == ESessionState::CONNECTING && NetClient(CONN_MAIN).State() == NETSTATE_ONLINE)
+	{
+		// we switched to online
+		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
+		if(FocusedSessionId() == m_NetworkSessionId)
 		{
-			// we switched to online
-			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
-			SetState(IClient::STATE_LOADING);
+			SetFocusedState(IClient::STATE_LOADING, true);
 			SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_INITIAL);
-			SendInfo(CONN_MAIN);
 		}
-
-		// progress on dummy connect when the connection is online
-		if(m_DummySendConnInfo && m_aNetClient[CONN_DUMMY].State() == NETSTATE_ONLINE)
+		else
 		{
-			m_DummySendConnInfo = false;
-			SendInfo(CONN_DUMMY);
-			m_aNetClient[CONN_DUMMY].Update();
-			SendReady(CONN_DUMMY);
-			GameClient()->SendDummyInfo(true);
-			SendEnterGame(CONN_DUMMY);
+			GameClient()->OnSessionClosed(m_NetworkSessionId);
+			Source.SetState(ESessionState::LOADING_MAP);
 		}
+		SendInfo(CONN_MAIN);
+	}
+
+	// progress on dummy connect when the connection is online
+	if(m_DummySendConnInfo && NetClient(CONN_DUMMY).State() == NETSTATE_ONLINE)
+	{
+		m_DummySendConnInfo = false;
+		SendInfo(CONN_DUMMY);
+		NetClient(CONN_DUMMY).Update();
+		SendReady(CONN_DUMMY);
+		GameClient()->SendDummyInfo(true);
+		SendEnterGame(CONN_DUMMY);
 	}
 
 	// process packets
@@ -2735,7 +2831,7 @@ void CClient::PumpNetwork()
 	SECURITY_TOKEN ResponseToken;
 	for(int Conn = 0; Conn < NUM_CONNS; Conn++)
 	{
-		while(m_aNetClient[Conn].Recv(&Packet, &ResponseToken, IsSixup()))
+		while(NetClient(Conn).Recv(&Packet, &ResponseToken, Source.m_Sixup))
 		{
 			if(Packet.m_ClientId == -1)
 			{
@@ -2747,7 +2843,7 @@ void CClient::PumpNetwork()
 			}
 			if(Conn == CONN_MAIN || Conn == CONN_DUMMY)
 			{
-				ProcessServerPacket(&Packet, Conn, g_Config.m_ClDummy ^ Conn);
+				ProcessServerPacket(&Packet, Conn, ActiveConnection() ^ Conn);
 			}
 		}
 	}
@@ -2756,17 +2852,18 @@ void CClient::PumpNetwork()
 void CClient::OnDemoPlayerSnapshot(void *pData, int Size)
 {
 	// update ticks, they could have changed
-	const CDemoPlayer::CPlaybackInfo *pInfo = m_DemoPlayer.Info();
-	m_aCurGameTick[0] = pInfo->m_Info.m_CurrentTick;
-	m_aPrevGameTick[0] = pInfo->m_PreviousTick;
+	const CDemoPlayer::CPlaybackInfo *pInfo = DemoPlayer().Info();
+	CConnection &DemoConnection = m_pDemoSessionSource->m_Connection;
+	DemoConnection.m_CurGameTick = pInfo->m_Info.m_CurrentTick;
+	DemoConnection.m_PrevGameTick = pInfo->m_PreviousTick;
 
 	// create a verified and unpacked snapshot
 	CSnapshotBuffer AltSnapBuffer;
 	int AltSnapSize;
 
-	if(IsSixup())
+	if(m_pDemoSessionSource->m_Sixup)
 	{
-		AltSnapSize = GameClient()->TranslateSnap(&AltSnapBuffer, (CSnapshot *)pData, CONN_MAIN, false);
+		AltSnapSize = GameClient()->TranslateSnap(m_DemoSessionId, &AltSnapBuffer, (CSnapshot *)pData, CONN_MAIN);
 		if(AltSnapSize < 0)
 		{
 			dbg_msg("sixup", "failed to translate snapshot. error=%d", AltSnapSize);
@@ -2784,11 +2881,11 @@ void CClient::OnDemoPlayerSnapshot(void *pData, int Size)
 	}
 
 	// handle snapshots after validation
-	std::swap(m_aapSnapshots[0][SNAP_PREV], m_aapSnapshots[0][SNAP_CURRENT]);
-	mem_copy(m_aapSnapshots[0][SNAP_CURRENT]->m_pSnap, pData, Size);
-	mem_copy(m_aapSnapshots[0][SNAP_CURRENT]->m_pAltSnap, &AltSnapBuffer, AltSnapSize);
+	std::swap(DemoConnection.m_apSnapshots[SNAP_PREV], DemoConnection.m_apSnapshots[SNAP_CURRENT]);
+	mem_copy(DemoConnection.m_apSnapshots[SNAP_CURRENT]->m_pSnap, pData, Size);
+	mem_copy(DemoConnection.m_apSnapshots[SNAP_CURRENT]->m_pAltSnap, &AltSnapBuffer, AltSnapSize);
 
-	GameClient()->OnNewSnapshot(false);
+	GameClient()->OnNewSnapshot(m_DemoSessionId, CONN_MAIN);
 }
 
 void CClient::OnDemoPlayerMessage(void *pData, int Size)
@@ -2809,36 +2906,29 @@ void CClient::OnDemoPlayerMessage(void *pData, int Size)
 	}
 
 	if(!Sys)
-		GameClient()->OnMessage(Msg, &Unpacker, CONN_MAIN, false);
+		GameClient()->OnMessage(m_DemoSessionId, Msg, &Unpacker, CONN_MAIN);
 }
 
 void CClient::UpdateDemoIntraTimers()
 {
 	// update timers
-	const CDemoPlayer::CPlaybackInfo *pInfo = m_DemoPlayer.Info();
-	m_aCurGameTick[0] = pInfo->m_Info.m_CurrentTick;
-	m_aPrevGameTick[0] = pInfo->m_PreviousTick;
-	m_aGameIntraTick[0] = pInfo->m_IntraTick;
-	m_aGameTickTime[0] = pInfo->m_TickTime;
-	m_aGameIntraTickSincePrev[0] = pInfo->m_IntraTickSincePrev;
+	const CDemoPlayer::CPlaybackInfo *pInfo = DemoPlayer().Info();
+	CConnection &DemoConnection = m_pDemoSessionSource->m_Connection;
+	DemoConnection.m_CurGameTick = pInfo->m_Info.m_CurrentTick;
+	DemoConnection.m_PrevGameTick = pInfo->m_PreviousTick;
+	DemoConnection.m_GameIntraTick = pInfo->m_IntraTick;
+	DemoConnection.m_GameTickTime = pInfo->m_TickTime;
+	DemoConnection.m_GameIntraTickSincePrev = pInfo->m_IntraTickSincePrev;
 }
 
-void CClient::Update()
+void CClient::UpdateDemoSession()
 {
-	PumpNetwork();
-
-	// update editor/gameclient, before input snapping
-	if(m_EditorActive)
-		m_pEditor->OnUpdate();
-	else
-		GameClient()->OnUpdate();
-
-	if(State() == IClient::STATE_DEMOPLAYBACK)
+	if(m_pDemoSessionSource->State() == ESessionState::READY)
 	{
-		if(m_DemoPlayer.IsPlaying())
+		if(DemoPlayer().IsPlaying())
 		{
 #if defined(CONF_VIDEORECORDER)
-			if(IVideo::Current())
+			if(FocusedSessionId() == m_DemoSessionId && IVideo::Current())
 			{
 				IVideo::Current()->NextVideoFrame();
 				IVideo::Current()->NextAudioFrameTimeline([this](short *pFinalOut, unsigned Frames) {
@@ -2847,176 +2937,168 @@ void CClient::Update()
 			}
 #endif
 
-			m_DemoPlayer.Update();
-
-			// update timers
-			const CDemoPlayer::CPlaybackInfo *pInfo = m_DemoPlayer.Info();
-			m_aCurGameTick[0] = pInfo->m_Info.m_CurrentTick;
-			m_aPrevGameTick[0] = pInfo->m_PreviousTick;
-			m_aGameIntraTick[0] = pInfo->m_IntraTick;
-			m_aGameTickTime[0] = pInfo->m_TickTime;
+			DemoPlayer().Update();
+			UpdateDemoIntraTimers();
 		}
 		else
 		{
 			// Disconnect when demo playback stopped, either due to playback error
 			// or because the end of the demo was reached when rendering it.
-			DisconnectWithReason(m_DemoPlayer.ErrorMessage());
-			if(m_DemoPlayer.ErrorMessage()[0] != '\0')
+			StopSession(m_DemoSessionId, DemoPlayer().ErrorMessage());
+			if(DemoPlayer().ErrorMessage()[0] != '\0')
 			{
-				SWarning Warning(Localize("Error playing demo"), m_DemoPlayer.ErrorMessage());
+				SWarning Warning(Localize("Error playing demo"), DemoPlayer().ErrorMessage());
 				Warning.m_AutoHide = false;
 				AddWarning(Warning);
 			}
 		}
 	}
-	else if(State() == IClient::STATE_ONLINE)
+}
+
+void CClient::UpdateNetworkSession()
+{
+	PumpNetwork();
+	CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+	if(Source.State() == ESessionState::READY)
 	{
-		if(m_LastDummy != (bool)g_Config.m_ClDummy)
+		const int ActiveConn = ActiveConnection();
+		const bool DummySwapped = Source.m_LastActiveConn != ActiveConn;
+		if(DummySwapped && FocusedSessionId() == m_NetworkSessionId)
 		{
-			// Invalidate references to !m_ClDummy snapshots
-			GameClient()->InvalidateSnapshot();
+			// Invalidate references to the snapshots of the other connection
+			GameClient()->InvalidateSnapshot(m_NetworkSessionId);
 			GameClient()->OnDummySwap();
 		}
 
-		if(m_aapSnapshots[!g_Config.m_ClDummy][SNAP_CURRENT])
+		const int64_t ClockNow = time_get();
+		bool aRepredict[NUM_DUMMIES] = {false, false};
+		bool SendNewInput = false;
+		for(const int Conn : {ActiveConn, ActiveConn ^ 1})
 		{
-			// switch dummy snapshot
-			int64_t Now = m_aGameTime[!g_Config.m_ClDummy].Get(time_get());
-			while(true)
+			CConnection &GameConnection = Connection(Conn);
+			if(!GameConnection.m_apSnapshots[SNAP_CURRENT])
+				continue;
+
+			// switch snapshot
+			const int64_t Now = GameConnection.m_GameTime.Get(ClockNow);
+			if(Conn == ActiveConn && DummySwapped && GameConnection.m_apSnapshots[SNAP_PREV])
 			{
-				if(!m_aapSnapshots[!g_Config.m_ClDummy][SNAP_CURRENT]->m_pNext)
-					break;
-				int64_t TickStart = m_aapSnapshots[!g_Config.m_ClDummy][SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
+				GameClient()->OnNewSnapshot(m_NetworkSessionId, Conn);
+				aRepredict[Conn] = true;
+			}
+
+			while(GameConnection.m_apSnapshots[SNAP_CURRENT]->m_pNext)
+			{
+				const int64_t TickStart = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
 				if(TickStart >= Now)
 					break;
+				GameConnection.m_apSnapshots[SNAP_PREV] = GameConnection.m_apSnapshots[SNAP_CURRENT];
+				GameConnection.m_apSnapshots[SNAP_CURRENT] = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_pNext;
+				GameConnection.m_CurGameTick = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
+				GameConnection.m_PrevGameTick = GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
+				GameClient()->OnNewSnapshot(m_NetworkSessionId, Conn);
+				aRepredict[Conn] = true;
+			}
 
-				m_aapSnapshots[!g_Config.m_ClDummy][SNAP_PREV] = m_aapSnapshots[!g_Config.m_ClDummy][SNAP_CURRENT];
-				m_aapSnapshots[!g_Config.m_ClDummy][SNAP_CURRENT] = m_aapSnapshots[!g_Config.m_ClDummy][SNAP_CURRENT]->m_pNext;
-
-				// set ticks
-				m_aCurGameTick[!g_Config.m_ClDummy] = m_aapSnapshots[!g_Config.m_ClDummy][SNAP_CURRENT]->m_Tick;
-				m_aPrevGameTick[!g_Config.m_ClDummy] = m_aapSnapshots[!g_Config.m_ClDummy][SNAP_PREV]->m_Tick;
+			if(GameConnection.m_apSnapshots[SNAP_PREV])
+			{
+				const int64_t CurTickStart = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
+				const int NewPredTick = GameConnection.UpdateTiming(Now, GameConnection.m_PredictedTime.Get(ClockNow), GameTickSpeed(), time_freq());
+				if(absolute(NewPredTick - GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick) > MaxLatencyTicks())
+				{
+					m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", "prediction time reset!");
+					GameConnection.m_PredictedTime.Init(CurTickStart + 2 * time_freq() / GameTickSpeed());
+				}
+				if(NewPredTick > GameConnection.m_PredTick)
+				{
+					GameConnection.m_PredTick = NewPredTick;
+					aRepredict[Conn] = true;
+					SendNewInput |= Conn == ActiveConn;
+				}
 			}
 		}
 
-		if(m_aapSnapshots[g_Config.m_ClDummy][SNAP_CURRENT])
+		if(SendNewInput)
+			SendInput();
+
+		// only do sane predictions
+		for(const int Conn : {ActiveConn, ActiveConn ^ 1})
 		{
-			// switch snapshot
-			bool Repredict = false;
-			int64_t Now = m_aGameTime[g_Config.m_ClDummy].Get(time_get());
-			int64_t PredNow = m_PredictedTime.Get(time_get());
+			const CConnection &GameConnection = Connection(Conn);
+			if(aRepredict[Conn] && GameConnection.m_PredTick > GameConnection.m_CurGameTick && GameConnection.m_PredTick < GameConnection.m_CurGameTick + MaxLatencyTicks())
+				GameClient()->OnPredict(m_NetworkSessionId, Conn);
+		}
 
-			if(m_LastDummy != (bool)g_Config.m_ClDummy && m_aapSnapshots[g_Config.m_ClDummy][SNAP_PREV])
-			{
-				// Load snapshot for m_ClDummy
-				GameClient()->OnNewSnapshot(true);
-				Repredict = true;
-			}
-
-			while(true)
-			{
-				if(!m_aapSnapshots[g_Config.m_ClDummy][SNAP_CURRENT]->m_pNext)
-					break;
-				int64_t TickStart = m_aapSnapshots[g_Config.m_ClDummy][SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
-				if(TickStart >= Now)
-					break;
-
-				m_aapSnapshots[g_Config.m_ClDummy][SNAP_PREV] = m_aapSnapshots[g_Config.m_ClDummy][SNAP_CURRENT];
-				m_aapSnapshots[g_Config.m_ClDummy][SNAP_CURRENT] = m_aapSnapshots[g_Config.m_ClDummy][SNAP_CURRENT]->m_pNext;
-
-				// set ticks
-				m_aCurGameTick[g_Config.m_ClDummy] = m_aapSnapshots[g_Config.m_ClDummy][SNAP_CURRENT]->m_Tick;
-				m_aPrevGameTick[g_Config.m_ClDummy] = m_aapSnapshots[g_Config.m_ClDummy][SNAP_PREV]->m_Tick;
-
-				GameClient()->OnNewSnapshot(false);
-				Repredict = true;
-			}
-
-			if(m_aapSnapshots[g_Config.m_ClDummy][SNAP_PREV])
-			{
-				int64_t CurTickStart = m_aapSnapshots[g_Config.m_ClDummy][SNAP_CURRENT]->m_Tick * time_freq() / GameTickSpeed();
-				int64_t PrevTickStart = m_aapSnapshots[g_Config.m_ClDummy][SNAP_PREV]->m_Tick * time_freq() / GameTickSpeed();
-				int PrevPredTick = (int)(PredNow * GameTickSpeed() / time_freq());
-				int NewPredTick = PrevPredTick + 1;
-
-				m_aGameIntraTick[g_Config.m_ClDummy] = (Now - PrevTickStart) / (float)(CurTickStart - PrevTickStart);
-				m_aGameTickTime[g_Config.m_ClDummy] = (Now - PrevTickStart) / (float)time_freq();
-				m_aGameIntraTickSincePrev[g_Config.m_ClDummy] = (Now - PrevTickStart) / (float)(time_freq() / GameTickSpeed());
-
-				int64_t CurPredTickStart = NewPredTick * time_freq() / GameTickSpeed();
-				int64_t PrevPredTickStart = PrevPredTick * time_freq() / GameTickSpeed();
-				m_aPredIntraTick[g_Config.m_ClDummy] = (PredNow - PrevPredTickStart) / (float)(CurPredTickStart - PrevPredTickStart);
-
-				if(absolute(NewPredTick - m_aapSnapshots[g_Config.m_ClDummy][SNAP_PREV]->m_Tick) > MaxLatencyTicks())
-				{
-					m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", "prediction time reset!");
-					m_PredictedTime.Init(CurTickStart + 2 * time_freq() / GameTickSpeed());
-				}
-
-				if(NewPredTick > m_aPredTick[g_Config.m_ClDummy])
-				{
-					m_aPredTick[g_Config.m_ClDummy] = NewPredTick;
-					Repredict = true;
-
-					// send input
-					SendInput();
-				}
-			}
-
-			// only do sane predictions
-			if(Repredict)
-			{
-				if(m_aPredTick[g_Config.m_ClDummy] > m_aCurGameTick[g_Config.m_ClDummy] && m_aPredTick[g_Config.m_ClDummy] < m_aCurGameTick[g_Config.m_ClDummy] + MaxLatencyTicks())
-					GameClient()->OnPredict();
-			}
-
+		if(Connection(ActiveConn).m_apSnapshots[SNAP_CURRENT])
+		{
 			// fetch server info if we don't have it
-			if(m_CurrentServerInfoRequestTime >= 0 &&
-				time_get() > m_CurrentServerInfoRequestTime)
+			if(m_CurrentServerInfoRequestTime >= 0 && ClockNow > m_CurrentServerInfoRequestTime)
 			{
 				m_ServerBrowser.RequestCurrentServer(ServerAddress());
-				m_CurrentServerInfoRequestTime = time_get() + time_freq() * 2;
+				m_CurrentServerInfoRequestTime = ClockNow + time_freq() * 2;
 			}
 
 			// periodically ping server
-			if(m_CurrentServerNextPingTime >= 0 &&
-				time_get() > m_CurrentServerNextPingTime)
+			if(Source.m_NextPingTime >= 0 && ClockNow > Source.m_NextPingTime)
 			{
-				int64_t NowPing = time_get();
-				int64_t Freq = time_freq();
-
 				char aBuf[64];
-				str_format(aBuf, sizeof(aBuf), "pinging current server%s", !m_ServerCapabilities.m_PingEx ? ", using fallback via server info" : "");
+				str_format(aBuf, sizeof(aBuf), "pinging current server%s", !Source.m_ServerCapabilities.m_PingEx ? ", using fallback via server info" : "");
 				m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", aBuf);
 
-				m_CurrentServerPingUuid = RandomUuid();
-				if(!m_ServerCapabilities.m_PingEx)
+				Source.m_PingUuid = RandomUuid();
+				if(!Source.m_ServerCapabilities.m_PingEx)
 				{
-					m_ServerBrowser.RequestCurrentServerWithRandomToken(ServerAddress(), &m_CurrentServerPingBasicToken, &m_CurrentServerPingToken);
+					m_ServerBrowser.RequestCurrentServerWithRandomToken(ServerAddress(), &Source.m_PingBasicToken, &Source.m_PingToken);
 				}
 				else
 				{
 					CMsgPacker Msg(NETMSG_PINGEX, true);
-					Msg.AddRaw(&m_CurrentServerPingUuid, sizeof(m_CurrentServerPingUuid));
+					Msg.AddRaw(&Source.m_PingUuid, sizeof(Source.m_PingUuid));
 					SendMsg(CONN_MAIN, &Msg, MSGFLAG_FLUSH);
 				}
-				m_CurrentServerCurrentPingTime = NowPing;
-				m_CurrentServerNextPingTime = NowPing + 600 * Freq; // ping every 10 minutes
+				Source.m_CurrentPingTime = ClockNow;
+				Source.m_NextPingTime = ClockNow + 600 * time_freq(); // ping every 10 minutes
 			}
 		}
 
-		if(m_DummyDeactivateOnReconnect && g_Config.m_ClDummy == 1)
+		if(m_DummyDeactivateOnReconnect && ActiveConn == CONN_DUMMY)
 		{
 			m_DummyDeactivateOnReconnect = false;
 			g_Config.m_ClDummy = 0;
+			SetActiveConnection(CONN_MAIN);
 		}
 		else if(!m_DummyConnected && !m_DummyConnecting && m_DummyDeactivateOnReconnect)
 		{
 			m_DummyDeactivateOnReconnect = false;
 		}
 
-		m_LastDummy = (bool)g_Config.m_ClDummy;
+		Source.m_LastActiveConn = ActiveConnection();
 	}
+
+	if(Source.m_pMapdownloadTask)
+	{
+		if(Source.m_pMapdownloadTask->State() == EHttpState::DONE)
+		{
+			FinishMapDownload();
+		}
+		else if(Source.m_pMapdownloadTask->State() == EHttpState::ERROR || Source.m_pMapdownloadTask->State() == EHttpState::ABORTED)
+		{
+			dbg_msg("webdl", "http failed, falling back to gameserver");
+			ResetMapDownload(false);
+			SendMapRequest();
+		}
+	}
+}
+
+void CClient::Update()
+{
+	// update editor/gameclient, before the sessions snap and send input
+	if(m_EditorActive)
+		m_pEditor->OnUpdate();
+	else
+		GameClient()->OnUpdate();
+
+	UpdateSessions();
 
 	// STRESS TEST: join the server again
 	if(g_Config.m_DbgStress)
@@ -3040,20 +3122,6 @@ void CClient::Update()
 				Disconnect();
 				s_ActionTaken = Now;
 			}
-		}
-	}
-
-	if(m_pMapdownloadTask)
-	{
-		if(m_pMapdownloadTask->State() == EHttpState::DONE)
-		{
-			FinishMapDownload();
-		}
-		else if(m_pMapdownloadTask->State() == EHttpState::ERROR || m_pMapdownloadTask->State() == EHttpState::ABORTED)
-		{
-			dbg_msg("webdl", "http failed, falling back to gameserver");
-			ResetMapDownload(false);
-			SendMapRequest();
 		}
 	}
 
@@ -3081,7 +3149,7 @@ void CClient::Update()
 		}
 	}
 
-	if(State() == IClient::STATE_ONLINE)
+	if(IsOnline())
 	{
 		if(!m_EditJobs.empty())
 		{
@@ -3119,19 +3187,27 @@ void CClient::Update()
 		Steam()->ClearConnectAddress();
 	}
 
-	if(m_ReconnectTime > 0 && time_get() > m_ReconnectTime)
+	CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+	std::string ConnectAddress;
+	std::string Password;
+	if(Source.ConsumePendingConnect(ConnectAddress, Password))
 	{
-		if(State() != STATE_ONLINE)
-			Connect(m_aConnectAddressStr);
-		m_ReconnectTime = 0;
+		Connect(ConnectAddress.c_str(), Password.c_str());
+	}
+	else if(Source.ConsumeReconnect(time_get()))
+	{
+		ConnectAddress = Source.m_ConnectAddress;
+		Password = Source.m_SendPassword ? g_Config.m_Password : Source.m_Password;
+		Connect(ConnectAddress.c_str(), Password.c_str());
 	}
 
-	m_PredictedTime.UpdateMargin(PredictionMargin() * time_freq() / 1000);
+	for(CConnection &GameConnection : Source.m_aConnections)
+		GameConnection.m_PredictedTime.UpdateMargin(PredictionMargin() * time_freq() / 1000);
 }
 
 void CClient::RegisterInterfaces()
 {
-	Kernel()->RegisterInterface(static_cast<IDemoPlayer *>(&m_DemoPlayer), false);
+	Kernel()->RegisterInterface(static_cast<IDemoPlayer *>(&DemoPlayer()), false);
 	Kernel()->RegisterInterface(static_cast<IGhostRecorder *>(&m_GhostRecorder), false);
 	Kernel()->RegisterInterface(static_cast<IGhostLoader *>(&m_GhostLoader), false);
 	Kernel()->RegisterInterface(static_cast<IServerBrowser *>(&m_ServerBrowser), false);
@@ -3162,9 +3238,9 @@ void CClient::InitInterfaces()
 	m_pNotifications = Kernel()->RequestInterface<INotifications>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 
-	m_DemoEditor.Init(&m_SnapshotDelta, &m_SnapshotDeltaSixup, m_pConsole, m_pStorage);
+	m_DemoEditor.Init(&m_pNetworkSessionSource->SnapshotDelta(false), &m_pNetworkSessionSource->SnapshotDelta(true), m_pConsole, m_pStorage);
 
-	m_ServerBrowser.SetBaseInfo(&m_aNetClient[CONN_CONTACT], m_pGameClient->NetVersion());
+	m_ServerBrowser.SetBaseInfo(&m_ContactNetClient, m_pGameClient->NetVersion());
 
 #if defined(CONF_AUTOUPDATE)
 	m_Updater.Init();
@@ -3181,8 +3257,8 @@ void CClient::InitInterfaces()
 void CClient::Run()
 {
 	m_LocalStartTime = m_GlobalStartTime = time_get();
-	m_aSnapshotParts[0] = 0;
-	m_aSnapshotParts[1] = 0;
+	Connection(CONN_MAIN).m_SnapshotParts = 0;
+	Connection(CONN_DUMMY).m_SnapshotParts = 0;
 
 	if(m_GenerateTimeoutSeed)
 	{
@@ -3484,7 +3560,11 @@ void CClient::Run()
 					NextRenderTime = std::max(NextRenderTime + time_freq() / GfxRefreshRate, Now);
 				m_LastRenderTime = Now;
 
+				if(!m_EditorActive)
+					GameClient()->OnRenderPrepare();
 				Render();
+				if(!m_EditorActive)
+					GameClient()->OnRenderFinalize();
 				m_pGraphics->Swap();
 			}
 
@@ -3496,8 +3576,12 @@ void CClient::Run()
 				WakeTime = NextUpdateTime;
 				if(IsRenderActive && GfxRefreshRate && NextRenderTime > Now)
 					WakeTime = std::min(WakeTime, NextRenderTime);
-				if(State() == IClient::STATE_ONLINE && m_aPredTick[g_Config.m_ClDummy] > 0 && !Inactive)
-					WakeTime = std::min(WakeTime, Now + (m_aPredTick[g_Config.m_ClDummy] * time_freq() / GameTickSpeed() - m_PredictedTime.Get(Now)));
+				if(State() == IClient::STATE_ONLINE && !Inactive)
+				{
+					const CConnection &PredictionConnection = Connection(ActiveConnection());
+					if(PredictionConnection.m_PredTick > 0)
+						WakeTime = std::min(WakeTime, Now + (PredictionConnection.m_PredTick * time_freq() / GameTickSpeed() - PredictionConnection.m_PredictedTime.Get(Now)));
+				}
 			}
 		}
 
@@ -3523,7 +3607,7 @@ void CClient::Run()
 			else
 			{
 				// Packets end the wait early. The wait can overshoot by a fraction of its duration, so approach the deadline in halving steps.
-				while(WaitTime > 0ns && net_socket_read_wait(m_aNetClient[CONN_MAIN].m_Socket, WaitTime > 1000us ? WaitTime / 2 : 0ns) == 0)
+				while(WaitTime > 0ns && net_socket_read_wait(NetClient(CONN_MAIN).m_Socket, WaitTime > 1000us ? WaitTime / 2 : 0ns) == 0)
 				{
 					WaitTime = Deadline - time_get_nanoseconds();
 				}
@@ -3536,7 +3620,8 @@ void CClient::Run()
 	}
 
 	GameClient()->RenderShutdownMessage();
-	Disconnect();
+	StopSession(m_DemoSessionId, nullptr);
+	StopSession(m_NetworkSessionId, nullptr);
 
 	if(!m_pConfigManager->Save())
 	{
@@ -3555,8 +3640,8 @@ void CClient::Run()
 	delete m_pEditor;
 
 	// close sockets
-	for(unsigned int i = 0; i < std::size(m_aNetClient); i++)
-		m_aNetClient[i].Close();
+	for(int Conn = 0; Conn < NUM_CONNS; Conn++)
+		NetClient(Conn).Close();
 
 	// shutdown text render while graphics are still available
 	m_pTextRender->Shutdown();
@@ -3575,7 +3660,7 @@ bool CClient::InitNetworkClient(char *pError, size_t ErrorSize)
 		return false;
 	}
 	BindAddr.type = NETTYPE_ALL;
-	for(size_t i = 0; i < std::size(m_aNetClient); i++)
+	for(int i = 0; i < NUM_CONNS; i++)
 	{
 		if(!InitNetworkClientImpl(BindAddr, i, pError, ErrorSize))
 		{
@@ -3606,7 +3691,7 @@ bool CClient::InitNetworkClientImpl(NETADDR BindAddr, int Conn, char *pError, si
 	default:
 		dbg_assert_failed("unreachable");
 	}
-	if(m_aNetClient[Conn].State() != NETSTATE_OFFLINE)
+	if(NetClient(Conn).State() != NETSTATE_OFFLINE)
 	{
 		str_format(pError, ErrorSize, "Could not open network client %s while already connected.", pName);
 		return false;
@@ -3616,7 +3701,7 @@ bool CClient::InitNetworkClientImpl(NETADDR BindAddr, int Conn, char *pError, si
 	BindAddr.port = *pPort;
 
 	unsigned RemainingAttempts = 25;
-	while(!m_aNetClient[Conn].Open(BindAddr))
+	while(!NetClient(Conn).Open(BindAddr))
 	{
 		--RemainingAttempts;
 		if(RemainingAttempts == 0)
@@ -3652,6 +3737,22 @@ void CClient::Con_Connect(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
 	pSelf->HandleConnectLink(pResult->GetString(0));
+}
+
+void CClient::Con_DbgDumpSessions(IConsole::IResult *, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	for(const auto &pSource : pSelf->m_SessionManager.Sessions())
+	{
+		const CSessionId SessionId = pSource->Id();
+		const int NumConns = pSource->Type() == ESessionSourceType::NETWORK ? NUM_DUMMIES : 1;
+		for(int Conn = 0; Conn < NumConns; Conn++)
+		{
+			char aBuf[192];
+			str_format(aBuf, sizeof(aBuf), "session=%" PRIu64 " type=%d state=%d conn=%d active=%d tick=%d map=%s", SessionId.Value(), static_cast<int>(pSource->Type()), static_cast<int>(pSource->State()), Conn, Conn == pSelf->ActiveConnection(SessionId), pSelf->GameTick(SessionId, Conn), pSelf->ServerInfo(SessionId).m_aMap);
+			pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client/session", aBuf);
+		}
+	}
 }
 
 void CClient::Con_Disconnect(IConsole::IResult *pResult, void *pUserData)
@@ -3801,7 +3902,7 @@ void CClient::Con_StartVideo(IConsole::IResult *pResult, void *pUserData)
 
 void CClient::StartVideo(const char *pFilename, bool WithTimestamp)
 {
-	if(State() != IClient::STATE_DEMOPLAYBACK)
+	if(!IsDemoPlayback())
 	{
 		log_error("videorecorder", "Video can only be recorded in demo player.");
 		return;
@@ -3834,10 +3935,10 @@ void CClient::StartVideo(const char *pFilename, bool WithTimestamp)
 	if(!IVideo::Current()->Start())
 	{
 		log_error("videorecorder", "Failed to start recording to '%s'", aFilename);
-		m_DemoPlayer.Stop("Failed to start video recording. See local console for details.");
+		DemoPlayer().Stop("Failed to start video recording. See local console for details.");
 		return;
 	}
-	if(m_DemoPlayer.Info()->m_Info.m_Paused)
+	if(DemoPlayer().Info()->m_Info.m_Paused)
 	{
 		IVideo::Current()->Pause(true);
 	}
@@ -3959,13 +4060,13 @@ void CClient::Con_RemoveFavorite(IConsole::IResult *pResult, void *pUserData)
 
 void CClient::DemoSliceBegin()
 {
-	const CDemoPlayer::CPlaybackInfo *pInfo = m_DemoPlayer.Info();
+	const CDemoPlayer::CPlaybackInfo *pInfo = DemoPlayer().Info();
 	g_Config.m_ClDemoSliceBegin = pInfo->m_Info.m_CurrentTick;
 }
 
 void CClient::DemoSliceEnd()
 {
-	const CDemoPlayer::CPlaybackInfo *pInfo = m_DemoPlayer.Info();
+	const CDemoPlayer::CPlaybackInfo *pInfo = DemoPlayer().Info();
 	g_Config.m_ClDemoSliceEnd = pInfo->m_Info.m_CurrentTick;
 }
 
@@ -4029,7 +4130,7 @@ void CClient::SaveReplay(const int Length, const char *pFilename)
 		{
 			char aTimestamp[20];
 			str_timestamp(aTimestamp, sizeof(aTimestamp));
-			str_format(aFilename, sizeof(aFilename), "demos/replays/%s_%s_(replay).demo", GameClient()->Map()->BaseName(), aTimestamp);
+			str_format(aFilename, sizeof(aFilename), "demos/replays/%s_%s_(replay).demo", GameClient()->Map(m_NetworkSessionId)->BaseName(), aTimestamp);
 		}
 		else
 		{
@@ -4049,13 +4150,13 @@ void CClient::SaveReplay(const int Length, const char *pFilename)
 
 		// Slice the demo to get only the last cl_replay_length seconds
 		const char *pSrc = DemoRecorder(RECORDER_REPLAYS)->CurrentFilename();
-		const int EndTick = GameTick(g_Config.m_ClDummy);
+		const int EndTick = GameTick(m_NetworkSessionId, ActiveConnection());
 		const int StartTick = EndTick - Length * GameTickSpeed();
 
 		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "replay", "Saving replay...");
 
 		// Create a job to do this slicing in background because it can be a bit long depending on the file size
-		std::shared_ptr<CDemoEdit> pDemoEditTask = std::make_shared<CDemoEdit>(GameClient()->NetVersion(), &m_SnapshotDelta, &m_SnapshotDeltaSixup, m_pStorage, pSrc, aFilename, StartTick, EndTick);
+		std::shared_ptr<CDemoEdit> pDemoEditTask = std::make_shared<CDemoEdit>(GameClient()->NetVersion(), &m_pNetworkSessionSource->SnapshotDelta(false), &m_pNetworkSessionSource->SnapshotDelta(true), m_pStorage, pSrc, aFilename, StartTick, EndTick);
 		Engine()->AddJob(pDemoEditTask);
 		m_EditJobs.push_back(pDemoEditTask);
 
@@ -4066,9 +4167,9 @@ void CClient::SaveReplay(const int Length, const char *pFilename)
 
 void CClient::DemoSlice(const char *pDstPath, CLIENTFUNC_FILTER pfnFilter, void *pUser)
 {
-	if(m_DemoPlayer.IsPlaying())
+	if(DemoPlayer().IsPlaying())
 	{
-		m_DemoEditor.Slice(m_DemoPlayer.Filename(), pDstPath, g_Config.m_ClDemoSliceBegin, g_Config.m_ClDemoSliceEnd, pfnFilter, pUser);
+		m_DemoEditor.Slice(DemoPlayer().Filename(), pDstPath, g_Config.m_ClDemoSliceBegin, g_Config.m_ClDemoSliceEnd, pfnFilter, pUser);
 	}
 }
 
@@ -4078,69 +4179,61 @@ const char *CClient::DemoPlayer_Play(const char *pFilename, int StorageType)
 	if(!Storage()->FileExists(pFilename, StorageType))
 		return Localize("No demo with this filename exists");
 
-	Disconnect();
-	m_aNetClient[CONN_MAIN].ResetErrorString();
+	StopSession(m_DemoSessionId, nullptr);
 
-	SetState(IClient::STATE_LOADING);
+	m_SessionManager.SetFocused(m_DemoSessionId);
+	SetFocusedState(IClient::STATE_LOADING, false);
+	GameClient()->OnSessionFocused(m_DemoSessionId);
 	SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_LOADING_DEMO);
 	if((bool)m_LoadingCallback)
 		m_LoadingCallback(IClient::LOADING_CALLBACK_DETAIL_DEMO);
 
 	// try to start playback
-	m_DemoPlayer.SetListener(this);
-	if(m_DemoPlayer.Load(Storage(), m_pConsole, pFilename, StorageType))
+	DemoPlayer().SetListener(this);
+	if(DemoPlayer().Load(Storage(), m_pConsole, pFilename, StorageType))
 	{
-		DisconnectWithReason(m_DemoPlayer.ErrorMessage());
-		return m_DemoPlayer.ErrorMessage();
+		StopSession(m_DemoSessionId, DemoPlayer().ErrorMessage());
+		return DemoPlayer().ErrorMessage();
 	}
 
-	m_Sixup = m_DemoPlayer.IsSixup();
+	m_pDemoSessionSource->m_Sixup = DemoPlayer().IsSixup();
 
 	// load map
-	const CMapInfo *pMapInfo = m_DemoPlayer.GetMapInfo();
-	const char *pError = LoadMapSearch(pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
+	const CMapInfo *pMapInfo = DemoPlayer().GetMapInfo();
+	const char *pError = LoadMapSearch(m_DemoSessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
 	if(pError)
 	{
-		if(!m_DemoPlayer.ExtractMap(Storage()))
+		if(!DemoPlayer().ExtractMap(Storage()))
 		{
-			DisconnectWithReason(pError);
+			StopSession(m_DemoSessionId, pError);
 			return pError;
 		}
 
-		pError = LoadMapSearch(pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
+		pError = LoadMapSearch(m_DemoSessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
 		if(pError)
 		{
-			DisconnectWithReason(pError);
+			StopSession(m_DemoSessionId, pError);
 			return pError;
 		}
 	}
 
 	// setup current server info
-	m_CurrentServerInfo = {};
-	str_copy(m_CurrentServerInfo.m_aMap, pMapInfo->m_aName);
-	m_CurrentServerInfo.m_MapCrc = pMapInfo->m_Crc;
-	m_CurrentServerInfo.m_MapSize = pMapInfo->m_Size;
+	CServerInfo &DemoServerInfo = m_pDemoSessionSource->m_ServerInfo;
+	DemoServerInfo = {};
+	str_copy(DemoServerInfo.m_aMap, pMapInfo->m_aName);
+	DemoServerInfo.m_MapCrc = pMapInfo->m_Crc;
+	DemoServerInfo.m_MapSize = pMapInfo->m_Size;
 
 	// enter demo playback state
 	SetState(IClient::STATE_DEMOPLAYBACK);
 
-	GameClient()->OnConnected();
+	GameClient()->OnConnected(m_DemoSessionId);
 
 	// setup buffers
-	mem_zero(m_aaDemorecSnapshotData, sizeof(m_aaDemorecSnapshotData));
+	m_pDemoSessionSource->PrepareSnapshots();
 
-	for(int SnapshotType = 0; SnapshotType < NUM_SNAPSHOT_TYPES; SnapshotType++)
-	{
-		m_aapSnapshots[0][SnapshotType] = &m_aDemorecSnapshotHolders[SnapshotType];
-		m_aapSnapshots[0][SnapshotType]->m_pSnap = m_aaDemorecSnapshotData[SnapshotType][0].AsSnapshot();
-		m_aapSnapshots[0][SnapshotType]->m_pAltSnap = m_aaDemorecSnapshotData[SnapshotType][1].AsSnapshot();
-		m_aapSnapshots[0][SnapshotType]->m_SnapSize = 0;
-		m_aapSnapshots[0][SnapshotType]->m_AltSnapSize = 0;
-		m_aapSnapshots[0][SnapshotType]->m_Tick = -1;
-	}
-
-	m_DemoPlayer.Play();
-	GameClient()->OnEnterGame();
+	DemoPlayer().Play();
+	GameClient()->OnEnterGame(m_DemoSessionId);
 
 	return nullptr;
 }
@@ -4153,10 +4246,10 @@ const char *CClient::DemoPlayer_Render(const char *pFilename, int StorageType, c
 		return pError;
 
 	StartVideo(pVideoName, false);
-	m_DemoPlayer.SetSpeedIndex(SpeedIndex);
+	DemoPlayer().SetSpeedIndex(SpeedIndex);
 	if(StartPaused)
 	{
-		m_DemoPlayer.Pause();
+		DemoPlayer().Pause();
 	}
 	return nullptr;
 }
@@ -4171,15 +4264,15 @@ void CClient::Con_Play(IConsole::IResult *pResult, void *pUserData)
 void CClient::Con_DemoPlay(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
-	if(pSelf->m_DemoPlayer.IsPlaying())
+	if(pSelf->DemoPlayer().IsPlaying())
 	{
-		if(pSelf->m_DemoPlayer.BaseInfo()->m_Paused)
+		if(pSelf->DemoPlayer().BaseInfo()->m_Paused)
 		{
-			pSelf->m_DemoPlayer.Unpause();
+			pSelf->DemoPlayer().Unpause();
 		}
 		else
 		{
-			pSelf->m_DemoPlayer.Pause();
+			pSelf->DemoPlayer().Pause();
 		}
 	}
 }
@@ -4187,12 +4280,12 @@ void CClient::Con_DemoPlay(IConsole::IResult *pResult, void *pUserData)
 void CClient::Con_DemoSpeed(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
-	pSelf->m_DemoPlayer.SetSpeed(pResult->GetFloat(0));
+	pSelf->DemoPlayer().SetSpeed(pResult->GetFloat(0));
 }
 
 void CClient::DemoRecorder_Start(const char *pFilename, bool WithTimestamp, int Recorder)
 {
-	dbg_assert(State() == IClient::STATE_ONLINE, "Client must be online to record demo");
+	dbg_assert(IsOnline(), "Client must be online to record demo");
 
 	char aFilename[IO_MAX_PATH_LENGTH];
 	if(WithTimestamp)
@@ -4210,14 +4303,14 @@ void CClient::DemoRecorder_Start(const char *pFilename, bool WithTimestamp, int 
 		Storage(),
 		m_pConsole,
 		aFilename,
-		IsSixup() ? GameClient()->NetVersion7() : GameClient()->NetVersion(),
-		GameClient()->Map()->BaseName(),
-		GameClient()->Map()->Sha256(),
-		GameClient()->Map()->Crc(),
+		IsSixup(m_NetworkSessionId) ? GameClient()->NetVersion7() : GameClient()->NetVersion(),
+		GameClient()->Map(m_NetworkSessionId)->BaseName(),
+		GameClient()->Map(m_NetworkSessionId)->Sha256(),
+		GameClient()->Map(m_NetworkSessionId)->Crc(),
 		"client",
-		GameClient()->Map()->Size(),
+		GameClient()->Map(m_NetworkSessionId)->Size(),
 		nullptr,
-		GameClient()->Map()->File(),
+		GameClient()->Map(m_NetworkSessionId)->File(),
 		nullptr,
 		nullptr);
 }
@@ -4234,7 +4327,7 @@ void CClient::DemoRecorder_HandleAutoStart()
 		DemoRecorder(RECORDER_AUTO)->Stop(IDemoRecorder::EStopMode::KEEP_FILE);
 
 		char aFilename[IO_MAX_PATH_LENGTH];
-		str_format(aFilename, sizeof(aFilename), "auto/%s", GameClient()->Map()->BaseName());
+		str_format(aFilename, sizeof(aFilename), "auto/%s", GameClient()->Map(m_NetworkSessionId)->BaseName());
 		DemoRecorder_Start(aFilename, true, RECORDER_AUTO);
 
 		if(g_Config.m_ClAutoDemoMax)
@@ -4258,7 +4351,7 @@ void CClient::DemoRecorder_UpdateReplayRecorder()
 	if(g_Config.m_ClReplays && !DemoRecorder(RECORDER_REPLAYS)->IsRecording())
 	{
 		char aFilename[IO_MAX_PATH_LENGTH];
-		str_format(aFilename, sizeof(aFilename), "replays/replay_tmp_%s", GameClient()->Map()->BaseName());
+		str_format(aFilename, sizeof(aFilename), "replays/replay_tmp_%s", GameClient()->Map(m_NetworkSessionId)->BaseName());
 		DemoRecorder_Start(aFilename, true, RECORDER_REPLAYS);
 	}
 }
@@ -4274,7 +4367,7 @@ void CClient::DemoRecorder_AddDemoMarker(int Recorder)
 
 CDemoRecorder (&CClient::DemoRecorders())[RECORDER_MAX]
 {
-	if(IsSixup())
+	if(IsSixup(m_NetworkSessionId))
 	{
 		return m_aDemoRecordersSixup;
 	}
@@ -4290,7 +4383,7 @@ void CClient::Con_Record(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
 
-	if(pSelf->State() != IClient::STATE_ONLINE)
+	if(!pSelf->IsOnline())
 	{
 		log_error("demo_recorder", "Client is not online.");
 		return;
@@ -4304,7 +4397,7 @@ void CClient::Con_Record(IConsole::IResult *pResult, void *pUserData)
 	if(pResult->NumArguments())
 		pSelf->DemoRecorder_Start(pResult->GetString(0), false, RECORDER_MANUAL);
 	else
-		pSelf->DemoRecorder_Start(pSelf->GameClient()->Map()->BaseName(), true, RECORDER_MANUAL);
+		pSelf->DemoRecorder_Start(pSelf->GameClient()->Map(pSelf->m_NetworkSessionId)->BaseName(), true, RECORDER_MANUAL);
 }
 
 void CClient::Con_StopRecord(IConsole::IResult *pResult, void *pUserData)
@@ -4572,15 +4665,15 @@ void CClient::ConchainPassword(IConsole::IResult *pResult, void *pUserData, ICon
 {
 	CClient *pSelf = (CClient *)pUserData;
 	pfnCallback(pResult, pCallbackUserData);
-	if(pResult->NumArguments() && pSelf->m_LocalStartTime) //won't set m_SendPassword before game has started
-		pSelf->m_SendPassword = true;
+	if(pResult->NumArguments() && pSelf->m_LocalStartTime) //won't set m_pNetworkSessionSource->m_SendPassword before game has started
+		pSelf->m_pNetworkSessionSource->m_SendPassword = true;
 }
 
 void CClient::ConchainReplays(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
 	pfnCallback(pResult, pCallbackUserData);
-	if(pResult->NumArguments() && pSelf->State() == IClient::STATE_ONLINE)
+	if(pResult->NumArguments() && pSelf->IsOnline())
 	{
 		pSelf->DemoRecorder_UpdateReplayRecorder();
 	}
@@ -4638,6 +4731,7 @@ void CClient::RegisterCommands()
 	m_pConsole->Register("restart", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Restart, this, "Restart the client");
 	m_pConsole->Register("minimize", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Minimize, this, "Minimize the client");
 	m_pConsole->Register("connect", "r[host|ip]", CFGFLAG_CLIENT, Con_Connect, this, "Connect to the specified host/ip");
+	m_pConsole->Register("dbg_dump_sessions", "", CFGFLAG_CLIENT, Con_DbgDumpSessions, this, "Print the ticks of every session and connection");
 	m_pConsole->Register("disconnect", "", CFGFLAG_CLIENT, Con_Disconnect, this, "Disconnect from the server");
 	m_pConsole->Register("ping", "", CFGFLAG_CLIENT, Con_Ping, this, "Ping the current server");
 	m_pConsole->Register("screenshot", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Screenshot, this, "Take a screenshot");
@@ -5304,20 +5398,20 @@ int main(int argc, const char **argv)
 
 void CClient::RaceRecord_Start(const char *pFilename)
 {
-	dbg_assert(State() == IClient::STATE_ONLINE, "Client must be online to record demo");
+	dbg_assert(IsOnline(), "Client must be online to record demo");
 
 	DemoRecorders()[RECORDER_RACE].Start(
 		Storage(),
 		m_pConsole,
 		pFilename,
-		IsSixup() ? GameClient()->NetVersion7() : GameClient()->NetVersion(),
-		GameClient()->Map()->BaseName(),
-		GameClient()->Map()->Sha256(),
-		GameClient()->Map()->Crc(),
+		IsSixup(m_NetworkSessionId) ? GameClient()->NetVersion7() : GameClient()->NetVersion(),
+		GameClient()->Map(m_NetworkSessionId)->BaseName(),
+		GameClient()->Map(m_NetworkSessionId)->Sha256(),
+		GameClient()->Map(m_NetworkSessionId)->Crc(),
 		"client",
-		GameClient()->Map()->Size(),
+		GameClient()->Map(m_NetworkSessionId)->Size(),
 		nullptr,
-		GameClient()->Map()->File(),
+		GameClient()->Map(m_NetworkSessionId)->File(),
 		nullptr,
 		nullptr);
 }
@@ -5360,15 +5454,15 @@ void CClient::RequestDDNetInfo()
 	m_InfoState = EInfoState::LOADING;
 }
 
-int CClient::GetPredictionTime()
+int CClient::GetPredictionTime(CSessionId SessionId, int Conn)
 {
 	int64_t Now = time_get();
-	return (int)((m_PredictedTime.Get(Now) - m_aGameTime[g_Config.m_ClDummy].Get(Now)) * 1000 / (float)time_freq());
+	return (int)((Connection(SessionId, Conn).m_PredictedTime.Get(Now) - Connection(SessionId, Conn).m_GameTime.Get(Now)) * 1000 / (float)time_freq());
 }
 
-int CClient::GetPredictionTick()
+int CClient::GetPredictionTick(CSessionId SessionId, int Conn)
 {
-	int PredictionTick = GetPredictionTime() * GameTickSpeed() / 1000.0f;
+	int PredictionTick = GetPredictionTime(SessionId, Conn) * GameTickSpeed() / 1000.0f;
 
 	int PredictionMin = g_Config.m_ClAntiPingLimit * GameTickSpeed() / 1000.0f;
 
@@ -5384,21 +5478,21 @@ int CClient::GetPredictionTick()
 	}
 
 	if(PredictionMin <= 0)
-		return PredGameTick(g_Config.m_ClDummy);
+		return PredGameTick(SessionId, Conn);
 
-	PredictionTick = PredGameTick(g_Config.m_ClDummy) - PredictionMin;
+	PredictionTick = PredGameTick(SessionId, Conn) - PredictionMin;
 
-	if(PredictionTick < GameTick(g_Config.m_ClDummy) + 1)
+	if(PredictionTick < GameTick(SessionId, Conn) + 1)
 	{
-		PredictionTick = GameTick(g_Config.m_ClDummy) + 1;
+		PredictionTick = GameTick(SessionId, Conn) + 1;
 	}
 	return PredictionTick;
 }
 
-void CClient::GetSmoothTick(int *pSmoothTick, float *pSmoothIntraTick, float MixAmount)
+void CClient::GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount)
 {
-	int64_t GameTime = m_aGameTime[g_Config.m_ClDummy].Get(time_get());
-	int64_t PredTime = m_PredictedTime.Get(time_get());
+	int64_t GameTime = Connection(SessionId, Conn).m_GameTime.Get(Now);
+	int64_t PredTime = Connection(SessionId, Conn).m_PredictedTime.Get(Now);
 	int64_t SmoothTime = std::clamp(GameTime + (int64_t)(MixAmount * (PredTime - GameTime)), GameTime, PredTime);
 
 	*pSmoothTick = (int)(SmoothTime * GameTickSpeed() / time_freq()) + 1;
@@ -5433,7 +5527,7 @@ int CClient::MaxLatencyTicks() const
 
 int CClient::PredictionMargin() const
 {
-	return m_ServerCapabilities.m_SyncWeaponInput ? g_Config.m_ClPredictionMargin : 10;
+	return m_pNetworkSessionSource->m_ServerCapabilities.m_SyncWeaponInput ? g_Config.m_ClPredictionMargin : 10;
 }
 
 int CClient::UdpConnectivity(int NetType)
@@ -5448,7 +5542,7 @@ int CClient::UdpConnectivity(int NetType)
 		}
 		NETADDR GlobalUdpAddr;
 		int NewConnectivity;
-		switch(m_aNetClient[CONN_MAIN].GetConnectivity(PossibleNetType, &GlobalUdpAddr))
+		switch(NetClient(CONN_MAIN).GetConnectivity(PossibleNetType, &GlobalUdpAddr))
 		{
 		case CONNECTIVITY::UNKNOWN:
 			NewConnectivity = CONNECTIVITY_UNKNOWN;

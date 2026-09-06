@@ -77,6 +77,12 @@ class CSessionManager
 	uint64_t m_NextId = 1;
 	std::vector<std::unique_ptr<CGameSession>> m_vpSessions;
 	CSessionId m_FocusedSessionId;
+	// Every accessor that reaches the focused session's state looks a session
+	// up first, tens of thousands of times per snapshot, and always the same
+	// one. Remembering the last hit turns that scan into a comparison. Only
+	// Create and Destroy touch the vector, so those two clear it.
+	mutable CSessionId m_LastFoundId;
+	mutable CGameSession *m_pLastFound = nullptr;
 
 public:
 	CSessionId Create(std::unique_ptr<IGameSessionSource> pSource);

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
 /* Runs the vectors of the Rust classifier and the SipHash reference vectors against
- * the C code the XDP program is built from.
+ * the C code the XDP program is built from, and the token bucket arithmetic the
+ * budgets rest on.
  *
  * The classifier has to agree with src/engine/shared/udp_port_mux_classifier.rs. If
  * it does not, a datagram is either handed to two consumers or to none, so the test
  * cases below are the ones from
  * `classifies_legacy_quic_collisions_without_dual_delivery`, kept in the same order.
  */
+#include "ddnet_xdp_bucket.h"
 #include "ddnet_xdp_classify.h"
 #include "siphash.h"
 
@@ -201,11 +203,84 @@ static void test_siphash(void)
 	}
 }
 
+static void check(const char *pName, int Condition)
+{
+	if(Condition)
+		return;
+	printf("  bucket: %s\n", pName);
+	s_Failures++;
+}
+
+/* The arithmetic every budget rests on. The same header the XDP program is built
+ * from, so what passes here is what the filter does, short of the map lookups. */
+static void test_buckets(void)
+{
+	struct ddnet_xdp_bucket Bucket = {0, 0};
+	const uint64_t NsPerToken = 1000;
+	const uint64_t Burst = 3;
+	uint64_t Now = 5000;
+
+	/* Unlimited means untouched: not even a refill. */
+	check("unlimited passes", take_token(&Bucket, Now, 0, 0));
+	check("unlimited leaves the bucket alone", Bucket.m_LastNs == 0 && Bucket.m_Tokens == 0);
+
+	/* A fresh bucket starts full and hands out exactly its burst. */
+	check("burst 1", take_token(&Bucket, Now, NsPerToken, Burst));
+	check("burst 2", take_token(&Bucket, Now, NsPerToken, Burst));
+	check("burst 3", take_token(&Bucket, Now, NsPerToken, Burst));
+	check("burst exhausted", !take_token(&Bucket, Now, NsPerToken, Burst));
+
+	/* One and a half tokens' worth of time gives one token, and the half is kept
+	 * rather than lost, so half a token later the next one is there. */
+	Now += 1500;
+	check("one token after 1.5", take_token(&Bucket, Now, NsPerToken, Burst));
+	check("not two", !take_token(&Bucket, Now, NsPerToken, Burst));
+	Now += 500;
+	check("the remainder was kept", take_token(&Bucket, Now, NsPerToken, Burst));
+	check("and nothing beyond it", !take_token(&Bucket, Now, NsPerToken, Burst));
+
+	/* A long pause refills to the burst and no further. */
+	Now += 1000 * 1000;
+	check("refilled to the burst", Bucket.m_Tokens == 0);
+	check("full again 1", take_token(&Bucket, Now, NsPerToken, Burst));
+	check("full again 2", take_token(&Bucket, Now, NsPerToken, Burst));
+	check("full again 3", take_token(&Bucket, Now, NsPerToken, Burst));
+	check("capped at the burst", !take_token(&Bucket, Now, NsPerToken, Burst));
+
+	/* A clock that went backwards starts the bucket over instead of stalling it. */
+	Now = 10;
+	check("clock went backwards", take_token(&Bucket, Now, NsPerToken, Burst));
+	check("and the bucket started over", Bucket.m_LastNs == Now && Bucket.m_Tokens == Burst - 1);
+
+	{
+		/* The pair: a prefix bucket and a port bucket, and a packet is charged to both
+		 * or to neither. */
+		struct ddnet_xdp_bucket Prefix = {0, 0}, Port = {0, 0};
+		const struct ddnet_xdp_budget PrefixBudget = {NsPerToken, 2};
+		const struct ddnet_xdp_budget PortBudget = {NsPerToken, 1};
+		const struct ddnet_xdp_budget Unlimited = {0, 0};
+		Now = 5000;
+		check("pair 1", take_token_pair(&Prefix, &PrefixBudget, &Port, &PortBudget, Now));
+		check("both charged", Prefix.m_Tokens == 1 && Port.m_Tokens == 0);
+		check("port cap refuses", !take_token_pair(&Prefix, &PrefixBudget, &Port, &PortBudget, Now));
+		check("the prefix was not charged for it", Prefix.m_Tokens == 1);
+		check("unlimited port, prefix decides", take_token_pair(&Prefix, &PrefixBudget, &Port, &Unlimited, Now));
+		check("port bucket left alone", Port.m_Tokens == 0);
+		check("prefix refuses", !take_token_pair(&Prefix, &PrefixBudget, &Port, &Unlimited, Now));
+		check("both unlimited", take_token_pair(&Prefix, &Unlimited, &Port, &Unlimited, Now));
+		check("neither touched", Prefix.m_Tokens == 0 && Port.m_Tokens == 0);
+		Now += NsPerToken;
+		check("both refilled", take_token_pair(&Prefix, &PrefixBudget, &Port, &PortBudget, Now));
+		check("and both charged again", Prefix.m_Tokens == 0 && Port.m_Tokens == 0);
+	}
+}
+
 int main(void)
 {
 	printf("ddnet-xdp self test\n");
 	test_siphash();
 	test_classifier();
+	test_buckets();
 	if(s_Failures == 0)
 		printf("  all checks passed\n");
 	else

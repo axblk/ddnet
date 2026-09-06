@@ -5607,6 +5607,7 @@ if(EBPF)
       -o ${PROJECT_BINARY_DIR}/ddnet_xdp_kern.o
     DEPENDS
       src/xdp/ddnet_xdp_kern.c
+      src/xdp/ddnet_xdp_bucket.h
       src/xdp/ddnet_xdp_classify.h
       src/xdp/ddnet_xdp_shared.h
       src/xdp/siphash.h

@@ -18,8 +18,6 @@
 #include <unordered_map>
 #include <utility>
 
-class IHttpRequest;
-
 class CSkins : public CComponent
 {
 private:
@@ -68,7 +66,7 @@ public:
 			 */
 			PENDING,
 			/**
-			 * Skin is currently loading, iff @link m_LoadResource @endlink or @link m_pDownloadRequest @endlink is set.
+			 * Skin is currently loading, iff @link m_LoadResource @endlink is set.
 			 */
 			LOADING,
 			/**
@@ -117,7 +115,6 @@ public:
 
 		EState m_State = EState::UNLOADED;
 		std::unique_ptr<CSkin> m_pSkin = nullptr;
-		std::shared_ptr<IHttpRequest> m_pDownloadRequest;
 		CImageResource m_LoadResource;
 		std::shared_ptr<CSkinLoadData> m_pLoadData = nullptr;
 
@@ -271,7 +268,6 @@ private:
 	std::function<bool(CImageInfo &)> SkinPostprocess(CSkinContainer *pSkinContainer);
 	void StartLocalSkinLoad(CSkinContainer *pSkinContainer);
 	void StartDownload(CSkinContainer *pSkinContainer, bool Force);
-	void StartDownloadedSkinLoad(CSkinContainer *pSkinContainer);
 	const CSkinContainer *FindContainerImpl(const char *pName);
 	static int SkinScan(const char *pName, int IsDir, int StorageType, void *pUser);
 

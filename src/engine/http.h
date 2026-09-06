@@ -84,6 +84,9 @@ public:
 	void HeaderInt(const char *pName, int Value);
 
 	const char *Dest() const;
+	bool WritesToMemory() const { return m_WriteToMemory; }
+	// Whether the response waits for `OnValidation`
+	bool ValidatesBeforeOverwrite() const { return m_ValidateBeforeOverwrite; }
 	double Current() const { return m_Current.load(std::memory_order_relaxed); }
 	double Size() const { return m_Size.load(std::memory_order_relaxed); }
 	int Progress() const { return m_Progress.load(std::memory_order_relaxed); }

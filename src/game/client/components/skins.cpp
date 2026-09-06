@@ -53,7 +53,7 @@ CSkins::CSkinContainer::CSkinContainer(CSkins *pSkins, const char *pName, EType 
 
 CSkins::CSkinContainer::~CSkinContainer()
 {
-	dbg_assert(!m_LoadResource && !m_pDownloadRequest, "Skin container load was not cleared");
+	dbg_assert(!m_LoadResource, "Skin container load resource was not cleared");
 }
 
 bool CSkins::CSkinContainer::operator<(const CSkinContainer &Other) const
@@ -525,33 +525,8 @@ void CSkins::StartDownload(CSkinContainer *pSkinContainer, bool Force)
 	pRequest->SkipByFileTime(!Force);
 	pRequest->LogProgress(HTTPLOG::NONE);
 	pRequest->FailOnErrorStatus(false);
-	pSkinContainer->m_pDownloadRequest = pRequest;
-	Http()->Run(std::move(pRequest));
-}
-
-static int DownloadStatus(const IHttpRequest &Request)
-{
-	return Request.State() == EHttpState::DONE ? Request.StatusCode() : 0;
-}
-
-void CSkins::StartDownloadedSkinLoad(CSkinContainer *pSkinContainer)
-{
-	char aPath[IO_MAX_PATH_LENGTH];
-	str_format(aPath, sizeof(aPath), "downloadedskins/%s.png", pSkinContainer->Name());
-	const IHttpRequest &Request = *pSkinContainer->m_pDownloadRequest;
-	const int Status = DownloadStatus(Request);
-	if(Status != 0 && Status < 400 && Status != 304)
-	{
-		unsigned char *pResult;
-		size_t ResultSize;
-		Request.Result(&pResult, &ResultSize);
-		pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImageData(std::vector<uint8_t>(pResult, pResult + ResultSize), aPath, SkinPostprocess(pSkinContainer));
-	}
-	else
-	{
-		// The previously downloaded skin is used if it is up to date or the download failed
-		pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImageFile(Storage(), aPath, IStorage::TYPE_SAVE, SkinPostprocess(pSkinContainer));
-	}
+	// The previously downloaded skin is used if it is up to date or the download fails
+	pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImageHttp(Http(), std::move(pRequest), Storage(), aPath, IStorage::TYPE_SAVE, true, SkinPostprocess(pSkinContainer));
 }
 
 void CSkins::OnConsoleInit()
@@ -581,9 +556,6 @@ void CSkins::OnShutdown()
 {
 	for(auto &[_, pSkinContainer] : m_Skins)
 	{
-		if(pSkinContainer->m_pDownloadRequest)
-			pSkinContainer->m_pDownloadRequest->Abort();
-		pSkinContainer->m_pDownloadRequest = nullptr;
 		pSkinContainer->m_LoadResource.Reset();
 	}
 	m_Skins.clear();
@@ -709,32 +681,15 @@ void CSkins::UpdateFinishLoading(CSkinLoadingStats &Stats, std::chrono::nanoseco
 			continue;
 		}
 		CImageResource &Resource = pSkinContainer->m_LoadResource;
-		if(!Resource && pSkinContainer->m_pDownloadRequest)
-		{
-			if(pSkinContainer->m_pDownloadRequest->Done())
-				StartDownloadedSkinLoad(pSkinContainer.get());
-			continue;
-		}
 		dbg_assert(static_cast<bool>(Resource), "Skin container in loading state must have a load resource");
 		if(!Resource.IsFinished())
 		{
 			continue;
 		}
 
-		const bool Aborted = !Resource.IsReady() && !Resource.IsFailed();
-		int HttpStatus = 0;
-		if(pSkinContainer->m_pDownloadRequest)
-		{
-			HttpStatus = DownloadStatus(*pSkinContainer->m_pDownloadRequest);
-			// The downloaded file only replaces the previous one if it could be loaded
-			if(!Aborted && HttpStatus != 0 && HttpStatus < 400)
-				pSkinContainer->m_pDownloadRequest->OnValidation(Resource.IsReady());
-			pSkinContainer->m_pDownloadRequest = nullptr;
-		}
-		if(!Aborted && HttpStatus == 304 && Resource.IsFailed())
+		if(Resource.HttpStatus() == 304 && Resource.IsFailed())
 		{
 			log_error("skins", "Failed to load PNG of existing downloaded skin '%s' from '%s', downloading it again", pSkinContainer->Name(), Resource.Path());
-			Resource.Reset();
 			StartDownload(pSkinContainer.get(), true);
 			continue;
 		}
@@ -769,7 +724,7 @@ void CSkins::UpdateFinishLoading(CSkinLoadingStats &Stats, std::chrono::nanoseco
 			pSkinContainer->SetState(CSkinContainer::EState::UNLOADED);
 			Stats.m_NumUnloaded++;
 		}
-		else if(HttpStatus == 404)
+		else if(Resource.HttpStatus() == 404)
 		{
 			pSkinContainer->SetState(CSkinContainer::EState::NOT_FOUND);
 			Stats.m_NumNotFound++;
@@ -802,9 +757,6 @@ void CSkins::Refresh(TSkinLoadedCallback &&SkinLoadedCallback)
 {
 	for(auto &[_, pSkinContainer] : m_Skins)
 	{
-		if(pSkinContainer->m_pDownloadRequest)
-			pSkinContainer->m_pDownloadRequest->Abort();
-		pSkinContainer->m_pDownloadRequest = nullptr;
 		pSkinContainer->m_LoadResource.Reset();
 		if(pSkinContainer->m_pSkin)
 		{

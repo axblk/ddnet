@@ -47,7 +47,7 @@ public:
 	}
 
 	CMapSoundLoading(ISound *pSound, CDataFileRawData RawData, const char *pContextName) :
-		CAssetJob(std::vector<uint8_t>(), pContextName),
+		CAssetJob(pContextName),
 		m_pSound(pSound),
 		m_RawData(std::move(RawData)),
 		m_FromRawData(true)

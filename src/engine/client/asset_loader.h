@@ -14,12 +14,15 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <type_traits>
 #include <vector>
 
 class CDataFileRawData;
 class IEngine;
+class IHttp;
+class IHttpRequest;
 class IStorage;
 class CImageAssetJob;
 class CImageResource;
@@ -27,8 +30,8 @@ template<typename TJob>
 class CTypedAssetResource;
 
 /**
- * Job that prepares an asset from its bytes. The bytes come from a file or
- * the caller, then `Process` runs on the job pool.
+ * Job that prepares an asset from its bytes. The bytes come from a file or a
+ * request, or the job brings them itself, then `Process` runs on the job pool.
  */
 class CAssetJob : public IJob
 {
@@ -38,6 +41,12 @@ class CAssetJob : public IJob
 
 	IStorage *m_pStorage = nullptr;
 	int m_StorageType = 0;
+	std::shared_ptr<IHttpRequest> m_pRequest;
+	// Read the file if the request failed
+	bool m_UseFileOnError = false;
+	int m_HttpStatus = 0;
+	// The bytes are the response, owned by the request
+	bool m_UseResponse = false;
 	std::vector<uint8_t> m_vData;
 	bool m_ReadFailed = false;
 	bool m_Success = false;
@@ -46,21 +55,30 @@ class CAssetJob : public IJob
 
 protected:
 	CAssetJob(IStorage *pStorage, const char *pPath, int StorageType);
-	CAssetJob(std::vector<uint8_t> vData, const char *pContextName);
+	// For jobs that hold their input themselves
+	explicit CAssetJob(const char *pContextName);
 
 	/**
 	 * Called on a job thread, not called if the file could not be read.
 	 */
 	virtual bool Process() = 0;
 
-	std::vector<uint8_t> &Data() { return m_vData; }
-	const std::vector<uint8_t> &Data() const { return m_vData; }
+	/**
+	 * The bytes to process. They live as long as the job.
+	 */
+	std::span<const uint8_t> Data() const;
+	/**
+	 * Takes over the bytes of a job that read a file.
+	 */
+	std::vector<uint8_t> TakeData();
 
 public:
 	void Run() final;
+	bool Abort() override;
 
 	bool Success() const { return m_Success; }
 	const char *Path() const { return m_Path.c_str(); }
+	int HttpStatus() const { return m_HttpStatus; }
 };
 
 /**
@@ -72,10 +90,13 @@ class CAssetLoader
 	IEngine *m_pEngine = nullptr;
 	size_t m_MaxConcurrentJobs = 0;
 	bool m_Shutdown = false;
+	std::vector<std::shared_ptr<CAssetJob>> m_vpFetchingJobs;
 	std::deque<std::shared_ptr<CAssetJob>> m_vpPendingJobs;
 	std::vector<std::shared_ptr<CAssetJob>> m_vpRunningJobs;
 
 	void Submit(std::shared_ptr<CAssetJob> pJob);
+	void Enqueue(std::shared_ptr<CAssetJob> pJob);
+	void UpdateFetchingJobs();
 	void StartPendingJobs();
 
 public:
@@ -85,8 +106,14 @@ public:
 	template<typename TJob>
 	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob);
 	CImageResource LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess = {});
-	CImageResource LoadImageData(std::vector<uint8_t> vData, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess = {});
 	CImageResource LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess = {});
+	/**
+	 * Runs the request and loads the image from the response. The image is
+	 * read from `pPath` instead if the response is not in memory, if the
+	 * status is 304 Not Modified, or if the request failed and
+	 * `UseFileOnError` is set.
+	 */
+	CImageResource LoadImageHttp(IHttp *pHttp, std::shared_ptr<IHttpRequest> pRequest, IStorage *pStorage, const char *pPath, int StorageType, bool UseFileOnError, std::function<bool(CImageInfo &)> Postprocess = {});
 	void Update();
 	void Shutdown();
 };
@@ -117,6 +144,10 @@ public:
 	bool Abort();
 	void Reset();
 	const char *Path() const;
+	/**
+	 * @return Status code of the request, `0` if there was none or it failed.
+	 */
+	int HttpStatus() const;
 };
 
 template<typename TJob>

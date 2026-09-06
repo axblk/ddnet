@@ -11,6 +11,7 @@
 
 #include <game/client/animstate.h>
 #include <game/client/gameclient.h>
+#include <game/client/render.h>
 #include <game/client/ui.h>
 
 CGameView::CEmoticonSelectorState &CEmoticon::Selector()
@@ -171,7 +172,7 @@ void CEmoticon::OnRender(const CRenderContext &Context)
 	Graphics()->TextureClear();
 	Graphics()->QuadsBegin();
 	Graphics()->SetColor(0, 0, 0, 0.3f);
-	Graphics()->DrawCircle(ScreenCenter.x, ScreenCenter.y, 190.0f, 64);
+	RenderTools()->DrawCircle(ScreenCenter.x, ScreenCenter.y, 190.0f, 64);
 	Graphics()->QuadsEnd();
 
 	Graphics()->WrapClamp();
@@ -199,7 +200,7 @@ void CEmoticon::OnRender(const CRenderContext &Context)
 		Graphics()->TextureClear();
 		Graphics()->QuadsBegin();
 		Graphics()->SetColor(1.0, 1.0, 1.0, 0.3f);
-		Graphics()->DrawCircle(ScreenCenter.x, ScreenCenter.y, 100.0f, 64);
+		RenderTools()->DrawCircle(ScreenCenter.x, ScreenCenter.y, 100.0f, 64);
 		Graphics()->QuadsEnd();
 
 		CTeeRenderInfo TeeInfo = pClient->m_RenderInfo;
@@ -218,7 +219,7 @@ void CEmoticon::OnRender(const CRenderContext &Context)
 		Graphics()->TextureClear();
 		Graphics()->QuadsBegin();
 		Graphics()->SetColor(0, 0, 0, 0.3f);
-		Graphics()->DrawCircle(ScreenCenter.x, ScreenCenter.y, 30.0f, 64);
+		RenderTools()->DrawCircle(ScreenCenter.x, ScreenCenter.y, 30.0f, 64);
 		Graphics()->QuadsEnd();
 	}
 	RenderTools()->RenderCursor(ScreenCenter + State.m_SelectorMouse, 24.0f);

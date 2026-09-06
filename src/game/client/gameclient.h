@@ -153,6 +153,7 @@ private:
 	class IEngine *m_pEngine;
 	class IInput *m_pInput;
 	class IGraphics *m_pGraphics;
+	class IGraphicsWindow *m_pWindow;
 	class ITextRender *m_pTextRender;
 	class IClient *m_pClient;
 	class ISound *m_pSound;
@@ -242,6 +243,7 @@ public:
 	IKernel *Kernel() { return IInterface::Kernel(); }
 	IEngine *Engine() const { return m_pEngine; }
 	class IGraphics *Graphics() const { return m_pGraphics; }
+	class IGraphicsWindow *Window() const { return m_pWindow; }
 	class IClient *Client() const { return m_pClient; }
 	int ActiveConnection() const
 	{
@@ -756,7 +758,7 @@ private:
 
 	float m_LastShowDistanceZoom;
 	float m_LastZoom;
-	float m_LastScreenAspect;
+	vec2 m_LastShowDistance;
 	float m_LastDeadzone;
 	float m_LastFollowFactor;
 	bool m_LastDummyConnected;

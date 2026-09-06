@@ -11,6 +11,7 @@
 
 #include <game/client/game_view.h>
 #include <game/client/gameclient.h>
+#include <game/client/render.h>
 #include <game/collision.h>
 
 CParticles::CParticles()
@@ -134,7 +135,7 @@ void CParticles::OnInit()
 	for(int i = 0; i <= (SPRITE_PART9 - SPRITE_PART_SLICE); ++i)
 	{
 		Graphics()->QuadsSetSubset(0, 0, 1, 1);
-		Graphics()->QuadContainerAddSprite(m_ParticleQuadContainerIndex, 1.f);
+		RenderTools()->QuadContainerAddSprite(m_ParticleQuadContainerIndex, 1.f);
 	}
 	Graphics()->QuadContainerUpload(m_ParticleQuadContainerIndex);
 
@@ -143,7 +144,7 @@ void CParticles::OnInit()
 	for(int i = 0; i <= (SPRITE_PART_SPARKLE - SPRITE_PART_SNOWFLAKE); ++i)
 	{
 		Graphics()->QuadsSetSubset(0, 0, 1, 1);
-		Graphics()->QuadContainerAddSprite(m_ExtraParticleQuadContainerIndex, 1.f);
+		RenderTools()->QuadContainerAddSprite(m_ExtraParticleQuadContainerIndex, 1.f);
 	}
 
 	Graphics()->QuadContainerUpload(m_ExtraParticleQuadContainerIndex);
@@ -181,109 +182,54 @@ void CParticles::RenderGroup(const CRenderContext &Context, int Group)
 		ParticleQuadContainerIndex = m_ExtraParticleQuadContainerIndex;
 	}
 
-	// don't use the buffer methods here, else the old renderer gets many draw calls
-	if(Graphics()->IsQuadContainerBufferingEnabled())
+	int i = State.m_aFirstPart[Group];
+
+	static IGraphics::SRenderSpriteInfo s_aParticleRenderInfo[CGameState::CParticleSystemState::MAX_PARTICLES];
+
+	int CurParticleRenderCount = 0;
+
+	// batching makes sense for stuff like ninja particles
+	ColorRGBA LastColor;
+	int LastQuadOffset = 0;
+
+	if(i != -1)
 	{
-		int i = State.m_aFirstPart[Group];
+		const CGameState::CParticle &Particle = State.m_vParticles[i];
+		const float LifeFraction = Particle.m_Life / Particle.m_LifeSpan;
+		const float Alpha = ParticleAlpha(Particle, LifeFraction);
+		LastColor.r = Particle.m_Color.r;
+		LastColor.g = Particle.m_Color.g;
+		LastColor.b = Particle.m_Color.b;
+		LastColor.a = Alpha;
 
-		static IGraphics::SRenderSpriteInfo s_aParticleRenderInfo[CGameState::CParticleSystemState::MAX_PARTICLES];
+		Graphics()->SetColor(
+			Particle.m_Color.r,
+			Particle.m_Color.g,
+			Particle.m_Color.b,
+			Alpha);
 
-		int CurParticleRenderCount = 0;
-
-		// batching makes sense for stuff like ninja particles
-		ColorRGBA LastColor;
-		int LastQuadOffset = 0;
-
-		if(i != -1)
-		{
-			const CGameState::CParticle &Particle = State.m_vParticles[i];
-			const float LifeFraction = Particle.m_Life / Particle.m_LifeSpan;
-			const float Alpha = ParticleAlpha(Particle, LifeFraction);
-			LastColor.r = Particle.m_Color.r;
-			LastColor.g = Particle.m_Color.g;
-			LastColor.b = Particle.m_Color.b;
-			LastColor.a = Alpha;
-
-			Graphics()->SetColor(
-				Particle.m_Color.r,
-				Particle.m_Color.g,
-				Particle.m_Color.b,
-				Alpha);
-
-			LastQuadOffset = Particle.m_Spr;
-		}
-
-		while(i != -1)
-		{
-			const CGameState::CParticle &Particle = State.m_vParticles[i];
-			int QuadOffset = Particle.m_Spr;
-			float a = Particle.m_Life / Particle.m_LifeSpan;
-			vec2 p = Particle.m_Pos;
-			float Size = mix(Particle.m_StartSize, Particle.m_EndSize, a);
-			const float Alpha = ParticleAlpha(Particle, a);
-
-			// the current position, respecting the size, is inside the viewport, render it, else ignore
-			if(ParticleIsVisibleOnScreen(Context, p, Size))
-			{
-				if((size_t)CurParticleRenderCount == GRAPHICS_MAX_PARTICLES_RENDER_COUNT || LastColor.r != Particle.m_Color.r || LastColor.g != Particle.m_Color.g || LastColor.b != Particle.m_Color.b || LastColor.a != Alpha || LastQuadOffset != QuadOffset)
-				{
-					dbg_assert(LastQuadOffset >= FirstParticleOffset, "Invalid particle offsets: %d < %d", LastQuadOffset, FirstParticleOffset);
-					Graphics()->TextureSet(aParticles[LastQuadOffset - FirstParticleOffset]);
-					Graphics()->RenderQuadContainerAsSpriteMultiple(ParticleQuadContainerIndex, LastQuadOffset - FirstParticleOffset, CurParticleRenderCount, s_aParticleRenderInfo);
-					CurParticleRenderCount = 0;
-					LastQuadOffset = QuadOffset;
-
-					Graphics()->SetColor(
-						Particle.m_Color.r,
-						Particle.m_Color.g,
-						Particle.m_Color.b,
-						Alpha);
-
-					LastColor.r = Particle.m_Color.r;
-					LastColor.g = Particle.m_Color.g;
-					LastColor.b = Particle.m_Color.b;
-					LastColor.a = Alpha;
-				}
-
-				s_aParticleRenderInfo[CurParticleRenderCount].m_Pos[0] = p.x;
-				s_aParticleRenderInfo[CurParticleRenderCount].m_Pos[1] = p.y;
-				s_aParticleRenderInfo[CurParticleRenderCount].m_Scale = Size;
-				s_aParticleRenderInfo[CurParticleRenderCount].m_Rotation = Particle.m_Rot;
-
-				++CurParticleRenderCount;
-			}
-
-			i = Particle.m_NextPart;
-		}
-
-		if(CurParticleRenderCount > 0)
-		{
-			dbg_assert(LastQuadOffset >= FirstParticleOffset, "Invalid particle offsets: %d < %d", LastQuadOffset, FirstParticleOffset);
-			Graphics()->TextureSet(aParticles[LastQuadOffset - FirstParticleOffset]);
-			Graphics()->RenderQuadContainerAsSpriteMultiple(ParticleQuadContainerIndex, LastQuadOffset - FirstParticleOffset, CurParticleRenderCount, s_aParticleRenderInfo);
-		}
+		LastQuadOffset = Particle.m_Spr;
 	}
-	else
+
+	while(i != -1)
 	{
-		int i = State.m_aFirstPart[Group];
+		const CGameState::CParticle &Particle = State.m_vParticles[i];
+		int QuadOffset = Particle.m_Spr;
+		float a = Particle.m_Life / Particle.m_LifeSpan;
+		vec2 p = Particle.m_Pos;
+		float Size = mix(Particle.m_StartSize, Particle.m_EndSize, a);
+		const float Alpha = ParticleAlpha(Particle, a);
 
-		Graphics()->WrapClamp();
-
-		while(i != -1)
+		// the current position, respecting the size, is inside the viewport, render it, else ignore
+		if(ParticleIsVisibleOnScreen(Context, p, Size))
 		{
-			const CGameState::CParticle &Particle = State.m_vParticles[i];
-			float a = Particle.m_Life / Particle.m_LifeSpan;
-			vec2 p = Particle.m_Pos;
-			float Size = mix(Particle.m_StartSize, Particle.m_EndSize, a);
-			const float Alpha = ParticleAlpha(Particle, a);
-
-			// the current position, respecting the size, is inside the viewport, render it, else ignore
-			if(ParticleIsVisibleOnScreen(Context, p, Size))
+			if((size_t)CurParticleRenderCount == GRAPHICS_MAX_PARTICLES_RENDER_COUNT || LastColor.r != Particle.m_Color.r || LastColor.g != Particle.m_Color.g || LastColor.b != Particle.m_Color.b || LastColor.a != Alpha || LastQuadOffset != QuadOffset)
 			{
-				Graphics()->TextureSet(aParticles[Particle.m_Spr - FirstParticleOffset]);
-				Graphics()->QuadsBegin();
-
-				Graphics()->QuadsSetRotation(Particle.m_Rot);
+				dbg_assert(LastQuadOffset >= FirstParticleOffset, "Invalid particle offsets: %d < %d", LastQuadOffset, FirstParticleOffset);
+				Graphics()->TextureSet(aParticles[LastQuadOffset - FirstParticleOffset]);
+				Graphics()->RenderQuadContainerAsSpriteMultiple(ParticleQuadContainerIndex, LastQuadOffset - FirstParticleOffset, CurParticleRenderCount, s_aParticleRenderInfo);
+				CurParticleRenderCount = 0;
+				LastQuadOffset = QuadOffset;
 
 				Graphics()->SetColor(
 					Particle.m_Color.r,
@@ -291,13 +237,27 @@ void CParticles::RenderGroup(const CRenderContext &Context, int Group)
 					Particle.m_Color.b,
 					Alpha);
 
-				IGraphics::CQuadItem QuadItem(p.x, p.y, Size, Size);
-				Graphics()->QuadsDraw(&QuadItem, 1);
-				Graphics()->QuadsEnd();
+				LastColor.r = Particle.m_Color.r;
+				LastColor.g = Particle.m_Color.g;
+				LastColor.b = Particle.m_Color.b;
+				LastColor.a = Alpha;
 			}
 
-			i = Particle.m_NextPart;
+			s_aParticleRenderInfo[CurParticleRenderCount].m_Pos[0] = p.x;
+			s_aParticleRenderInfo[CurParticleRenderCount].m_Pos[1] = p.y;
+			s_aParticleRenderInfo[CurParticleRenderCount].m_Scale = Size;
+			s_aParticleRenderInfo[CurParticleRenderCount].m_Rotation = Particle.m_Rot;
+
+			++CurParticleRenderCount;
 		}
-		Graphics()->WrapNormal();
+
+		i = Particle.m_NextPart;
+	}
+
+	if(CurParticleRenderCount > 0)
+	{
+		dbg_assert(LastQuadOffset >= FirstParticleOffset, "Invalid particle offsets: %d < %d", LastQuadOffset, FirstParticleOffset);
+		Graphics()->TextureSet(aParticles[LastQuadOffset - FirstParticleOffset]);
+		Graphics()->RenderQuadContainerAsSpriteMultiple(ParticleQuadContainerIndex, LastQuadOffset - FirstParticleOffset, CurParticleRenderCount, s_aParticleRenderInfo);
 	}
 }

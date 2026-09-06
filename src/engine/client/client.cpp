@@ -6,6 +6,7 @@
 #include "demoedit.h"
 #include "friends.h"
 #include "serverbrowser.h"
+#include "window_sdl.h"
 
 #include <base/bytes.h>
 #include <base/crashdump.h>
@@ -34,6 +35,7 @@
 #include <engine/external/json-parser/json.h>
 #include <engine/favorites.h>
 #include <engine/graphics.h>
+#include <engine/graphics_window.h>
 #include <engine/http.h>
 #include <engine/input.h>
 #include <engine/keys.h>
@@ -1967,6 +1969,10 @@ void CClient::RenderDebug()
 
 	str_format(aBuffer, sizeof(aBuffer), "%16s: %" PRIu64 " KiB", "Staging memory", Graphics()->StagingMemoryUsage() / 1024);
 	Graphics()->QuadsText(32.0f * FontSize, 2 + 3 * FontSize, FontSize, aBuffer);
+
+	const IGraphics::SFrameMailboxStats MailboxStats = Graphics()->FrameMailboxStats();
+	str_format(aBuffer, sizeof(aBuffer), "%16s: %" PRIu64 " / %" PRIu64 " / %" PRIu64, "Frames P/R/D", MailboxStats.m_Produced, MailboxStats.m_Rendered, MailboxStats.m_Dropped);
+	Graphics()->QuadsText(32.0f * FontSize, 2 + 4 * FontSize, FontSize, aBuffer);
 
 	// Network
 	{
@@ -4083,6 +4089,13 @@ void CClient::UpdateDemoIntraTimers()
 
 void CClient::UpdateDemoSession()
 {
+#if defined(CONF_VIDEORECORDER)
+	// The demo player stops the recording when the demo ends, and nothing else
+	// holds the video, so this is where a finished one is let go.
+	if(m_pVideo && m_pVideo->IsStopped())
+		m_pVideo.reset();
+#endif
+
 	if(m_pDemoSessionSource->State() == ESessionState::READY)
 	{
 		if(DemoPlayer().IsPlaying())
@@ -4429,6 +4442,20 @@ void CClient::InitInterfaces()
 	m_GhostLoader.Init();
 }
 
+static void SleepIdle(std::chrono::nanoseconds Duration)
+{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// Sleeping keeps the browser's main thread to itself, so the page neither
+	// paints nor delivers input for as long as it lasts. Emscripten's sleep is the
+	// one that hands control back, and it counts in whole milliseconds.
+	const int64_t Milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(Duration).count();
+	if(Milliseconds > 0)
+		emscripten_sleep(Milliseconds);
+#else
+	std::this_thread::sleep_for(Duration);
+#endif
+}
+
 void CClient::Run()
 {
 	m_LocalStartTime = m_GlobalStartTime = time_get();
@@ -4466,6 +4493,19 @@ void CClient::Run()
 	}
 
 	// init graphics
+	//
+	// GFX_SURFACELESS asks for the backend that draws without a window at all,
+	// the one the demo renderer wants. Vulkan and WebGPU can both produce a
+	// device without a surface, so this is the only way to exercise either of
+	// them on a machine with no display.
+	//
+	// The window comes first and is registered first: the kernel shuts
+	// interfaces down in reverse order, and the window has to outlive the
+	// graphics that draw into it.
+	const bool Surfaceless = std::getenv("GFX_SURFACELESS") != nullptr;
+	m_pWindow = Surfaceless ? CreateOffscreenGraphicsWindow() : CreateSdlGraphicsWindow();
+	Kernel()->RegisterInterface(m_pWindow); // IEngineGraphicsWindow
+	Kernel()->RegisterInterface(static_cast<IGraphicsWindow *>(m_pWindow), false);
 	m_pGraphics = CreateEngineGraphicsThreaded();
 	Kernel()->RegisterInterface(m_pGraphics); // IEngineGraphics
 	Kernel()->RegisterInterface(static_cast<IGraphics *>(m_pGraphics), false);
@@ -4475,7 +4515,8 @@ void CClient::Run()
 		bool Success;
 		{
 			CLogScope LogScope(&MemoryLogger);
-			Success = m_pGraphics->Init() == 0;
+			IGraphicsBackend *pBackend = m_pWindow->Open(false);
+			Success = pBackend != nullptr && m_pGraphics->Init(pBackend, m_pWindow->Surface()) == 0;
 		}
 		if(!Success)
 		{
@@ -4680,16 +4721,20 @@ void CClient::Run()
 				m_EditorActive = false;
 			}
 
+			m_pWindow->Update();
 			Update();
 			int64_t Now = time_get();
 
-			bool IsRenderActive = (g_Config.m_GfxBackgroundRender || m_pGraphics->WindowOpen());
-
-			bool AsyncRenderOld = g_Config.m_GfxAsyncRenderOld;
+			bool IsRenderActive = (g_Config.m_GfxBackgroundRender || m_pWindow->WindowOpen());
 
 			// Update at cl_refresh_rate, or at cl_refresh_rate_inactive while the window is inactive.
-			Inactive = g_Config.m_ClRefreshRateInactive && !m_pGraphics->WindowActive();
-			const int RefreshRate = Inactive ? g_Config.m_ClRefreshRateInactive : g_Config.m_ClRefreshRate;
+			Inactive = g_Config.m_ClRefreshRateInactive && !m_pWindow->WindowActive();
+			int RefreshRate = Inactive ? g_Config.m_ClRefreshRateInactive : g_Config.m_ClRefreshRate;
+#if defined(CONF_VIDEORECORDER)
+			// A recording takes every frame it can get; the rate is the encoder's.
+			if(IVideo::Current() && IVideo::Current()->IsRecording())
+				RefreshRate = 0;
+#endif
 			bool UpdateDue = true;
 			if(RefreshRate)
 			{
@@ -4709,46 +4754,76 @@ void CClient::Run()
 #if defined(CONF_VIDEORECORDER)
 			// keep rendering synced
 			if(IVideo::Current())
-			{
-				AsyncRenderOld = false;
 				GfxRefreshRate = 0;
-			}
 #endif
 
 			const bool RenderDue = GfxRefreshRate ? Now >= NextRenderTime : UpdateDue;
 			if(IsRenderActive &&
-				(!AsyncRenderOld || m_pGraphics->IsIdle()) &&
 				RenderDue)
 			{
 				// update frametime
 				m_RenderFrameTime = (Now - m_LastRenderTime) / (float)time_freq();
 				m_FpsGraph.Add(1.0f / m_RenderFrameTime);
 
-				if(m_BenchmarkFile)
-				{
-					char aBuf[64];
-					str_format(aBuf, sizeof(aBuf), "Frametime %d us\n", (int)(m_RenderFrameTime * 1000000));
-					io_write(m_BenchmarkFile, aBuf, str_length(aBuf));
-					if(time_get() > m_BenchmarkStopTime)
-					{
-						io_close(m_BenchmarkFile);
-						m_BenchmarkFile = nullptr;
-						Quit();
-					}
-				}
-
 				m_FrameTimeAverage = m_FrameTimeAverage * 0.9f + m_RenderFrameTime * 0.1f;
 
 				if(GfxRefreshRate)
 					NextRenderTime = std::max(NextRenderTime + time_freq() / GfxRefreshRate, Now);
 				m_LastRenderTime = Now;
+				const std::chrono::nanoseconds RenderWallStart = m_BenchmarkFile ? time_get_nanoseconds() : std::chrono::nanoseconds{};
 
+#if defined(CONF_VIDEORECORDER)
+				bool VideoFrameHandled = false;
+				if(IVideo::Current() != nullptr)
+					VideoFrameHandled = IVideo::Current()->BeginVideoFrameRender();
+#endif
 				if(!m_EditorActive)
 					GameClient()->OnRenderPrepare();
 				Render();
 				if(!m_EditorActive)
 					GameClient()->OnRenderFinalize();
-				m_pGraphics->Swap();
+#if defined(CONF_VIDEORECORDER)
+				// Rendering dispatches user input, which can stop the recording
+				// through the console. Stopping destroys the recorder, so the
+				// current one has to be looked up again instead of remembered.
+				IVideo *pVideo = IVideo::Current();
+				if(VideoFrameHandled && pVideo != nullptr)
+					pVideo->EndVideoFrameRender();
+				else
+#endif
+					m_pGraphics->Swap();
+				if(m_BenchmarkFile)
+				{
+					m_RenderWallTimeNanoseconds = (time_get_nanoseconds() - RenderWallStart).count();
+					const IGraphics::CFrameRenderStats RenderStats = Graphics()->FrameRenderStats();
+					const IGraphics::SFrameMailboxStats MailboxStats = Graphics()->FrameMailboxStats();
+					const ITextRender::CTextRenderStats TextStats = TextRender()->TextRenderStats();
+					const ITextRender::CTextRenderStats &PreviousTextStats = m_BenchmarkPreviousTextRenderStats;
+					char aBuf[2048];
+					str_format(aBuf, sizeof(aBuf),
+						"Frametime %d us RenderWall %" PRIu64 " us GpuTime %" PRIu64 " us GpuSample %" PRIu64 " GpuSupported %d Commands %" PRIu64 " ResourceCommands %" PRIu64 " DrawCommands %" PRIu64 " DrawCalls %" PRIu64 " Triangles %" PRIu64 " Instances %" PRIu64 " RenderPasses %" PRIu64 " BufferCreates %" PRIu64 " BufferRecreates %" PRIu64 " BufferUpdates %" PRIu64 " TextureCreates %" PRIu64 " TextureUpdates %" PRIu64 " UploadBytes %" PRIu64 " StreamedBytes %" PRIu64 " TextLayout %" PRIu64 " us TextLayoutCalls %" PRIu64 " Glyphs %" PRIu64 " TextCreates %" PRIu64 " TextSoftRecreates %" PRIu64 " TextDeletes %" PRIu64 " TextRenders %" PRIu64 " TextUploadBytes %" PRIu64 " FramesProduced %" PRIu64 " FramesRendered %" PRIu64 " FramesDropped %" PRIu64 " TextureMemory %" PRIu64 " BufferMemory %" PRIu64 " StreamedMemory %" PRIu64 " StagingMemory %" PRIu64 "\n",
+						(int)(m_RenderFrameTime * 1000000), m_RenderWallTimeNanoseconds / 1000,
+						RenderStats.m_GpuTimeNanoseconds / 1000, RenderStats.m_GpuSample, RenderStats.m_GpuTimingSupported,
+						RenderStats.m_Commands, RenderStats.m_ResourceCommands, RenderStats.m_DrawCommands, RenderStats.m_DrawCalls, RenderStats.m_Triangles, RenderStats.m_Instances, RenderStats.m_RenderPasses,
+						RenderStats.m_BufferCreates, RenderStats.m_BufferRecreates, RenderStats.m_BufferUpdates, RenderStats.m_TextureCreates, RenderStats.m_TextureUpdates, RenderStats.m_UploadBytes, RenderStats.m_StreamedBytes,
+						(TextStats.m_LayoutTimeNanoseconds - PreviousTextStats.m_LayoutTimeNanoseconds) / 1000, TextStats.m_LayoutCalls - PreviousTextStats.m_LayoutCalls, TextStats.m_GlyphsLaidOut - PreviousTextStats.m_GlyphsLaidOut,
+						TextStats.m_ContainerCreates - PreviousTextStats.m_ContainerCreates, TextStats.m_ContainerSoftRecreates - PreviousTextStats.m_ContainerSoftRecreates, TextStats.m_ContainerDeletes - PreviousTextStats.m_ContainerDeletes, TextStats.m_ContainerRenders - PreviousTextStats.m_ContainerRenders, TextStats.m_UploadBytes - PreviousTextStats.m_UploadBytes,
+						MailboxStats.m_Produced, MailboxStats.m_Rendered, MailboxStats.m_Dropped, Graphics()->TextureMemoryUsage(), Graphics()->BufferMemoryUsage(), Graphics()->StreamedMemoryUsage(), Graphics()->StagingMemoryUsage());
+					io_write(m_BenchmarkFile, aBuf, str_length(aBuf));
+					m_BenchmarkPreviousTextRenderStats = TextStats;
+					if(time_get() > m_BenchmarkStopTime)
+					{
+						io_close(m_BenchmarkFile);
+						m_BenchmarkFile = nullptr;
+						Graphics()->SetRenderStatsEnabled(false);
+						TextRender()->SetTextRenderStatsEnabled(false);
+						Quit();
+					}
+				}
+#if defined(CONF_VIDEORECORDER)
+				if(pVideo != nullptr && pVideo->HasError())
+					pVideo->Stop();
+#endif
 			}
 
 			// Wake up for the next update or frame, whichever comes first. While playing, also wake up for
@@ -4787,15 +4862,22 @@ void CClient::Run()
 			if(Inactive)
 			{
 				// Without focus, save power by not waking up for packets.
-				std::this_thread::sleep_for(WaitTime);
+				SleepIdle(WaitTime);
 			}
 			else
 			{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+				// Waiting on a socket cannot block in the browser: the wait reports what
+				// is ready and returns, so the loop below would spin the budget away
+				// instead of waiting it out, and hold the page for the whole of it.
+				SleepIdle(WaitTime);
+#else
 				// Packets end the wait early. The wait can overshoot by a fraction of its duration, so approach the deadline in halving steps.
 				while(WaitTime > 0ns && net_socket_read_wait(NetClient(CONN_MAIN).m_Socket, WaitTime > 1000us ? WaitTime / 2 : 0ns) == 0)
 				{
 					WaitTime = Deadline - time_get_nanoseconds();
 				}
+#endif
 			}
 		}
 
@@ -5045,7 +5127,7 @@ void CClient::Con_Restart(IConsole::IResult *pResult, void *pUserData)
 void CClient::Con_Minimize(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
-	pSelf->Graphics()->Minimize();
+	pSelf->Window()->Minimize();
 }
 
 void CClient::Con_Ping(IConsole::IResult *pResult, void *pUserData)
@@ -5114,11 +5196,21 @@ void CClient::QuicKnownHostsConfigSaveCallback(IConfigManager *pConfigManager, v
 	}
 }
 
+// A screenshot of an inactive window shows whatever the window system left
+// in its buffers, so one is only taken while the window is active. The
+// graphics do not know the window; the client does.
+void CClient::TakeScreenshot(const char *pFilename)
+{
+	if(!Window()->WindowActive())
+		return;
+	Graphics()->TakeScreenshot(pFilename);
+}
+
 void CClient::AutoScreenshot_Start()
 {
 	if(g_Config.m_ClAutoScreenshot)
 	{
-		Graphics()->TakeScreenshot("auto/autoscreen");
+		TakeScreenshot("auto/autoscreen");
 		m_AutoScreenshotRecycle = true;
 	}
 }
@@ -5127,7 +5219,7 @@ void CClient::AutoStatScreenshot_Start()
 {
 	if(g_Config.m_ClAutoStatboardScreenshot)
 	{
-		Graphics()->TakeScreenshot("auto/stats/autoscreen");
+		TakeScreenshot("auto/stats/autoscreen");
 		m_AutoStatScreenshotRecycle = true;
 	}
 }
@@ -5183,7 +5275,7 @@ void CClient::AutoCSV_Cleanup()
 void CClient::Con_Screenshot(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
-	pSelf->Graphics()->TakeScreenshot(nullptr);
+	pSelf->TakeScreenshot(pResult->NumArguments() > 0 ? pResult->GetString(0) : nullptr);
 }
 
 #if defined(CONF_VIDEORECORDER)
@@ -5232,12 +5324,20 @@ void CClient::StartVideo(const char *pFilename, bool WithTimestamp)
 	Graphics()->WaitForIdle();
 	// pause the sound device while creating the video instance
 	Sound()->PauseAudioDevice();
-	new CVideo(Graphics(), Sound(), Storage(), Graphics()->ScreenWidth(), Graphics()->ScreenHeight(), m_LocalStartTime, aFilename);
+	CVideoExportSettings Settings;
+	Settings.m_Width = Graphics()->ScreenWidth() & ~1;
+	Settings.m_Height = Graphics()->ScreenHeight() & ~1;
+	Settings.m_FPS = g_Config.m_ClVideoRecorderFPS;
+	Settings.m_Audio = g_Config.m_ClVideoSndEnable != 0;
+	Settings.m_Crf = g_Config.m_ClVideoX264Crf;
+	Settings.m_Preset = g_Config.m_ClVideoX264Preset;
+	m_pVideo = std::make_unique<CVideo>(Graphics(), Sound(), Storage(), Settings, m_LocalStartTime, aFilename, IStorage::TYPE_SAVE, true, false);
 	Sound()->UnpauseAudioDevice();
-	if(!IVideo::Current()->Start())
+	if(!m_pVideo->Start())
 	{
 		log_error("videorecorder", "Failed to start recording to '%s'", aFilename);
 		DemoPlayer().Stop("Failed to start video recording. See local console for details.");
+		StopVideo();
 		return;
 	}
 	if(DemoPlayer().Info()->m_Info.m_Paused)
@@ -5247,15 +5347,24 @@ void CClient::StartVideo(const char *pFilename, bool WithTimestamp)
 	log_info("videorecorder", "Recording to '%s'", aFilename);
 }
 
+void CClient::StopVideo()
+{
+	if(!m_pVideo)
+		return;
+	m_pVideo->Stop();
+	m_pVideo.reset();
+}
+
 void CClient::Con_StopVideo(IConsole::IResult *pResult, void *pUserData)
 {
-	if(!IVideo::Current())
+	CClient *pSelf = static_cast<CClient *>(pUserData);
+	if(!pSelf->m_pVideo)
 	{
 		log_error("videorecorder", "Not recording.");
 		return;
 	}
 
-	IVideo::Current()->Stop();
+	pSelf->StopVideo();
 	log_info("videorecorder", "Stopped recording.");
 }
 
@@ -5586,6 +5695,22 @@ void CClient::Con_DemoSpeed(IConsole::IResult *pResult, void *pUserData)
 	pSelf->DemoPlayer().SetSpeed(pResult->GetFloat(0));
 }
 
+void CClient::Con_DemoSeek(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	if(pSelf->State() != IClient::STATE_DEMOPLAYBACK)
+	{
+		log_error("client", "Not playing a demo.");
+		return;
+	}
+	// SeekTime moves relative to where playback is; the console wants a
+	// place in the demo, the same one every time.
+	const IDemoPlayer::CInfo *pInfo = pSelf->DemoPlayer().BaseInfo();
+	const float Current = (pInfo->m_CurrentTick - pInfo->m_FirstTick) / static_cast<float>(SERVER_TICK_SPEED);
+	if(!pSelf->DemoPlayer().SeekTime(pResult->GetFloat(0) - Current))
+		log_error("client", "Could not seek to %.2f seconds.", pResult->GetFloat(0));
+}
+
 void CClient::DemoRecorder_Start(const char *pFilename, bool WithTimestamp, int Recorder)
 {
 	dbg_assert(IsOnline(), "Client must be online to record demo");
@@ -5724,6 +5849,9 @@ void CClient::BenchmarkQuit(int Seconds, const char *pFilename)
 {
 	m_BenchmarkFile = Storage()->OpenFile(pFilename, IOFLAG_WRITE, IStorage::TYPE_ABSOLUTE);
 	m_BenchmarkStopTime = time_get() + time_freq() * Seconds;
+	Graphics()->SetRenderStatsEnabled(m_BenchmarkFile != nullptr);
+	TextRender()->SetTextRenderStatsEnabled(m_BenchmarkFile != nullptr);
+	m_BenchmarkPreviousTextRenderStats = TextRender()->TextRenderStats();
 }
 
 void CClient::UpdateAndSwap()
@@ -5875,7 +6003,7 @@ void CClient::ConchainWindowScreen(IConsole::IResult *pResult, void *pUserData, 
 	if(pSelf->Graphics() && pResult->NumArguments())
 	{
 		if(g_Config.m_GfxScreen != pResult->GetInteger(0))
-			pSelf->Graphics()->SwitchWindowScreen(pResult->GetInteger(0), true);
+			pSelf->Window()->SwitchWindowScreen(pResult->GetInteger(0), true);
 	}
 	else
 	{
@@ -5889,7 +6017,7 @@ void CClient::ConchainFullscreen(IConsole::IResult *pResult, void *pUserData, IC
 	if(pSelf->Graphics() && pResult->NumArguments())
 	{
 		if(g_Config.m_GfxFullscreen != pResult->GetInteger(0))
-			pSelf->Graphics()->SetWindowParams(pResult->GetInteger(0), g_Config.m_GfxBorderless);
+			pSelf->Window()->SetWindowParams(pResult->GetInteger(0), g_Config.m_GfxBorderless);
 	}
 	else
 	{
@@ -5903,7 +6031,7 @@ void CClient::ConchainWindowBordered(IConsole::IResult *pResult, void *pUserData
 	if(pSelf->Graphics() && pResult->NumArguments())
 	{
 		if(!g_Config.m_GfxFullscreen && (g_Config.m_GfxBorderless != pResult->GetInteger(0)))
-			pSelf->Graphics()->SetWindowParams(g_Config.m_GfxFullscreen, !g_Config.m_GfxBorderless);
+			pSelf->Window()->SetWindowParams(g_Config.m_GfxFullscreen, !g_Config.m_GfxBorderless);
 	}
 	else
 	{
@@ -5913,16 +6041,15 @@ void CClient::ConchainWindowBordered(IConsole::IResult *pResult, void *pUserData
 
 void CClient::Notify(const char *pTitle, const char *pMessage)
 {
-	if(m_pGraphics->WindowActive() || !g_Config.m_ClShowNotifications)
+	if(m_pWindow->WindowActive() || !g_Config.m_ClShowNotifications)
 		return;
 
 	Notifications()->Notify(pTitle, pMessage);
-	Graphics()->NotifyWindow();
+	Window()->NotifyWindow();
 }
 
 void CClient::OnWindowResize()
 {
-	TextRender()->OnPreWindowResize();
 	GameClient()->OnWindowResize();
 	m_pEditor->OnWindowResize();
 	TextRender()->OnWindowResize();
@@ -5934,7 +6061,7 @@ void CClient::ConchainWindowVSync(IConsole::IResult *pResult, void *pUserData, I
 	if(pSelf->Graphics() && pResult->NumArguments())
 	{
 		if(g_Config.m_GfxVsync != pResult->GetInteger(0))
-			pSelf->Graphics()->SetVSync(pResult->GetInteger(0));
+			pSelf->Window()->SetVSync(pResult->GetInteger(0));
 	}
 	else
 	{
@@ -5948,7 +6075,7 @@ void CClient::ConchainWindowResize(IConsole::IResult *pResult, void *pUserData, 
 	pfnCallback(pResult, pCallbackUserData);
 	if(pSelf->Graphics() && pResult->NumArguments())
 	{
-		pSelf->Graphics()->ResizeToScreen();
+		pSelf->Window()->ResizeToScreen();
 	}
 }
 
@@ -6037,7 +6164,7 @@ void CClient::RegisterCommands()
 	m_pConsole->Register("dbg_dump_sessions", "", CFGFLAG_CLIENT, Con_DbgDumpSessions, this, "Print game session and stream ticks");
 	m_pConsole->Register("disconnect", "", CFGFLAG_CLIENT, Con_Disconnect, this, "Disconnect from the server");
 	m_pConsole->Register("ping", "", CFGFLAG_CLIENT, Con_Ping, this, "Ping the current server");
-	m_pConsole->Register("screenshot", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Screenshot, this, "Take a screenshot");
+	m_pConsole->Register("screenshot", "?s[name]", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Screenshot, this, "Take a screenshot, optionally with a name in front of the timestamp");
 	m_pConsole->Register("net_reset", "", CFGFLAG_CLIENT, ConNetReset, this, "Rebinds the client's listening address and port");
 	m_pConsole->Register("quic_reconnect", "", CFGFLAG_CLIENT, Con_QuicReconnect, this, "Reconnect the active QUIC transport using application resume");
 	m_pConsole->Register("quic_known_host", "s[host] i[port] s[sha256]", CFGFLAG_CLIENT, Con_QuicKnownHost, this, "Remember a verified QUIC server identity");
@@ -6063,6 +6190,7 @@ void CClient::RegisterCommands()
 	m_pConsole->Register("demo_slice_end", "", CFGFLAG_CLIENT, Con_DemoSliceEnd, this, "Mark the end of a demo cut");
 	m_pConsole->Register("demo_play", "", CFGFLAG_CLIENT, Con_DemoPlay, this, "Play/pause the current demo");
 	m_pConsole->Register("demo_speed", "f[speed]", CFGFLAG_CLIENT, Con_DemoSpeed, this, "Set current demo speed");
+	m_pConsole->Register("demo_seek", "f[seconds]", CFGFLAG_CLIENT, Con_DemoSeek, this, "Seek the current demo to a time in seconds; with demo_speed 0 that is a fixed picture, which a comparison of renderers needs");
 
 	m_pConsole->Register("save_replay", "?i[length] ?r[filename]", CFGFLAG_CLIENT, Con_SaveReplay, this, "Save a replay of the last defined amount of seconds");
 	m_pConsole->Register("benchmark_quit", "i[seconds] r[file]", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_BenchmarkQuit, this, "Benchmark frame times for number of seconds to file, then quit");
@@ -6999,7 +7127,7 @@ void CClient::ShellUnregister()
 
 std::optional<int> CClient::ShowMessageBox(const IGraphics::CMessageBox &MessageBox)
 {
-	std::optional<int> Result = m_pGraphics == nullptr ? std::nullopt : m_pGraphics->ShowMessageBox(MessageBox);
+	std::optional<int> Result = m_pWindow == nullptr ? std::nullopt : m_pWindow->ShowMessageBox(MessageBox);
 	if(!Result)
 	{
 		Result = ShowMessageBoxWithoutGraphics(MessageBox);

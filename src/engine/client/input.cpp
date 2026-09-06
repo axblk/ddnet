@@ -12,6 +12,7 @@
 
 #include <engine/console.h>
 #include <engine/graphics.h>
+#include <engine/graphics_window.h>
 #include <engine/input.h>
 #include <engine/keys.h>
 #include <engine/shared/config.h>
@@ -28,6 +29,10 @@
 #define SDL_JOYSTICK_AXIS_MAX 32767
 #endif
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#include <emscripten/emscripten.h>
+#endif
+
 #if defined(CONF_FAMILY_WINDOWS)
 #include <windows.h>
 // windows.h must be included before imm.h, but clang-format requires includes to be sorted alphabetically, hence this comment.
@@ -38,6 +43,56 @@
 #include <SDL_syswm.h>
 #ifdef KeyPress
 #undef KeyPress // Undo pollution from X11/Xlib.h included by SDL_syswm.h on Linux
+#endif
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+// SDL keeps a clipboard of its own in the browser that the system clipboard
+// never sees. Reading the real one is asynchronous and only permitted from a
+// paste event, so the text the browser pastes is remembered until the game asks
+// for it, which it does one frame later at the earliest.
+// clang-format off
+EM_JS(void, BrowserClipboardInit, (), {
+	if(Module.ddnetClipboard)
+		return;
+	Module.ddnetClipboard = {text: ''};
+	window.addEventListener('paste', event => {
+		if(event.clipboardData)
+			Module.ddnetClipboard.text = event.clipboardData.getData('text/plain') || '';
+	});
+	// SDL swallows the key event before the browser can paste by itself, so the
+	// clipboard is read while the modifier is held: that is a user gesture, and
+	// the read is done long before the V arrives.
+	window.addEventListener('keydown', event => {
+		if(!event.ctrlKey && !event.metaKey)
+			return;
+		if(navigator.clipboard && navigator.clipboard.readText)
+			navigator.clipboard.readText().then(text => {
+				Module.ddnetClipboard.text = text;
+			}).catch(() => {});
+	}, true);
+});
+
+EM_JS(int, BrowserClipboardTextSize, (), {
+	return new TextEncoder().encode((Module.ddnetClipboard && Module.ddnetClipboard.text) || '').length + 1;
+});
+
+EM_JS(void, BrowserClipboardText, (char *pBuffer, int BufferSize), {
+	const bytes = new TextEncoder().encode((Module.ddnetClipboard && Module.ddnetClipboard.text) || '');
+	const Count = Math.min(bytes.length, BufferSize - 1);
+	HEAPU8.set(bytes.subarray(0, Count), pBuffer);
+	HEAPU8[pBuffer + Count] = 0;
+});
+
+EM_JS(void, BrowserClipboardSetText, (const char *pText), {
+	const text = UTF8ToString(pText);
+	if(Module.ddnetClipboard)
+		Module.ddnetClipboard.text = text;
+	// Writing is a permission the page may not have, and losing the copy to the
+	// system is no reason to lose it inside the client as well.
+	if(navigator.clipboard && navigator.clipboard.writeText)
+		navigator.clipboard.writeText(text).catch(() => {});
+});
+// clang-format on
 #endif
 
 void CInput::AddKeyEvent(int Key, int Flags)
@@ -99,10 +154,15 @@ void CInput::Init()
 	StopTextInput();
 
 	m_pGraphics = Kernel()->RequestInterface<IEngineGraphics>();
+	m_pWindow = Kernel()->RequestInterface<IEngineGraphicsWindow>();
 	m_pConsole = Kernel()->RequestInterface<IConsole>();
 	m_pConfigManager = Kernel()->RequestInterface<IConfigManager>();
 
 	MouseModeRelative();
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	BrowserClipboardInit();
+#endif
 
 	InitJoysticks();
 }
@@ -291,14 +351,14 @@ void CInput::MouseModeAbsolute()
 {
 	m_InputGrabbed = false;
 	SDL_SetRelativeMouseMode(SDL_FALSE);
-	Graphics()->SetWindowGrab(false);
+	Window()->SetWindowGrab(false);
 }
 
 void CInput::MouseModeRelative()
 {
 	m_InputGrabbed = true;
 	SDL_SetRelativeMouseMode(SDL_TRUE);
-	Graphics()->SetWindowGrab(true);
+	Window()->SetWindowGrab(true);
 	// Clear pending relative mouse motion
 	SDL_GetRelativeMouseState(nullptr, nullptr);
 }
@@ -331,15 +391,24 @@ void CInput::ClearTouchDeltas()
 
 std::string CInput::GetClipboardText()
 {
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	std::string ClipboardText(BrowserClipboardTextSize() - 1, '\0');
+	BrowserClipboardText(ClipboardText.data(), ClipboardText.size() + 1);
+	return ClipboardText;
+#else
 	char *pClipboardText = SDL_GetClipboardText();
 	std::string ClipboardText = pClipboardText;
 	SDL_free(pClipboardText);
 	return ClipboardText;
+#endif
 }
 
 void CInput::SetClipboardText(const char *pText)
 {
 	SDL_SetClipboardText(pText);
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	BrowserClipboardSetText(pText);
+#endif
 }
 
 void CInput::StartTextInput()
@@ -362,7 +431,7 @@ void CInput::StopTextInput()
 void CInput::EnsureScreenKeyboardShown()
 {
 	if(!SDL_HasScreenKeyboardSupport() ||
-		Graphics()->IsScreenKeyboardShown())
+		Window()->IsScreenKeyboardShown())
 	{
 		return;
 	}
@@ -837,15 +906,15 @@ int CInput::Update()
 			{
 #if SDL_VERSION_ATLEAST(2, 0, 18)
 			case SDL_WINDOWEVENT_DISPLAY_CHANGED:
-				Graphics()->SwitchWindowScreen(Event.display.data1, false);
+				Window()->OnDisplayChanged(Event.display.data1);
 				break;
 #endif
 			case SDL_WINDOWEVENT_MOVED:
-				Graphics()->Move(Event.window.data1, Event.window.data2);
+				Window()->OnMoved(Event.window.data1, Event.window.data2);
 				break;
 			// listen to size changes, this includes our manual changes and the ones by the window manager
 			case SDL_WINDOWEVENT_SIZE_CHANGED:
-				Graphics()->GotResized(Event.window.data1, Event.window.data2, -1);
+				Window()->OnSizeChanged(Event.window.data1, Event.window.data2);
 				break;
 			case SDL_WINDOWEVENT_FOCUS_GAINED:
 				if(m_InputGrabbed)
@@ -875,7 +944,7 @@ int CInput::Update()
 #if defined(CONF_PLATFORM_ANDROID) // Save the config when minimized on Android.
 				m_pConfigManager->Save();
 #endif
-				Graphics()->WindowDestroyNtf(Event.window.windowID);
+				Window()->OnWindowDestroyed();
 				break;
 
 			case SDL_WINDOWEVENT_MAXIMIZED:
@@ -885,7 +954,7 @@ int CInput::Update()
 #endif
 				[[fallthrough]];
 			case SDL_WINDOWEVENT_RESTORED:
-				Graphics()->WindowCreateNtf(Event.window.windowID);
+				Window()->OnWindowCreated(Event.window.windowID);
 				break;
 			}
 			break;

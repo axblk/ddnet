@@ -1,6 +1,10 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
+#include "asset_loader.h"
+#include "font_loading.h"
+
 #include <base/dbg.h>
+#include <base/lock.h>
 #include <base/log.h>
 #include <base/math.h>
 #include <base/mem.h>
@@ -8,8 +12,8 @@
 #include <base/time.h>
 
 #include <engine/console.h>
+#include <engine/engine.h>
 #include <engine/graphics.h>
-#include <engine/shared/json.h>
 #include <engine/storage.h>
 #include <engine/textrender.h>
 
@@ -17,9 +21,15 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <limits>
+#include <memory>
+#include <string>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -30,6 +40,15 @@ enum
 {
 	FONT_NAME_SIZE = 128,
 };
+
+/**
+ * The text render loads its fonts with its own asset loader, so the owner and
+ * generation of the font jobs are constant.
+ */
+// The font loader below belongs to the text render alone, so this is the only
+// owner it ever has.
+constexpr int ASSET_OWNER_FONTS = 0;
+constexpr uint64_t FONT_ASSET_GENERATION = 1;
 
 struct SGlyph
 {
@@ -986,25 +1005,135 @@ void CTextCursor::SetPosition(vec2 Position)
 	m_Y = Position.y;
 }
 
-struct SFontLanguageVariant
+/**
+ * Reads one font file and creates its font faces in a worker thread.
+ *
+ * FreeType does not copy the font data, so the buffer has to stay alive as long
+ * as the faces do. The job owns both until the text render takes them over and
+ * releases whatever it still owns when it is destroyed.
+ *
+ * A job that was aborted before it started does not touch FreeType at all. A job
+ * that already started is not interrupted, because the job pool joins its worker
+ * threads before the text render destroys the FreeType library.
+ */
+class CFontAssetJob final : public CAssetJob
 {
-	char m_aLanguageFile[IO_MAX_PATH_LENGTH];
-	char m_aFamilyName[FONT_NAME_SIZE];
+	FT_Library m_FtLibrary;
+	CLock *m_pFtLibraryLock;
+	std::vector<FT_Face> m_vFaces;
+	bool m_Success = false;
+
+	void OnReadFailed() override
+	{
+		log_error("textrender", "Failed to open/read font file '%s'", Path());
+	}
+
+	// The FreeType library lock is reached through a pointer, which the clang
+	// thread-safety analysis cannot track.
+	void Process() override NO_THREAD_SAFETY_ANALYSIS
+	{
+		// Creating a face registers it with the FreeType library, which all font
+		// jobs share, so only one job may create faces at a time. The main thread
+		// does not touch the library while font files are being loaded.
+		const CLockScope LockScope(*m_pFtLibraryLock);
+
+		const FT_Byte *pFontData = Data().data();
+		const FT_Long FontDataLength = (FT_Long)Data().size();
+		FT_Face FtFace;
+		const FT_Error CollectionLoadError = FT_New_Memory_Face(m_FtLibrary, pFontData, FontDataLength, -1, &FtFace);
+		if(CollectionLoadError)
+		{
+			log_error("textrender", "Failed to load font file '%s': %s", Path(), FT_Error_String(CollectionLoadError));
+			return;
+		}
+
+		const FT_Long NumFaces = FtFace->num_faces;
+		FT_Done_Face(FtFace);
+
+		for(FT_Long FaceIndex = 0; FaceIndex < NumFaces; ++FaceIndex)
+		{
+			const FT_Error FaceLoadError = FT_New_Memory_Face(m_FtLibrary, pFontData, FontDataLength, FaceIndex, &FtFace);
+			if(FaceLoadError)
+			{
+				log_error("textrender", "Failed to load font face %ld from font file '%s': %s", FaceIndex, Path(), FT_Error_String(FaceLoadError));
+				FT_Done_Face(FtFace);
+				continue;
+			}
+
+			m_vFaces.push_back(FtFace);
+			log_debug("textrender", "Loaded font face %ld '%s %s' from font file '%s'", FaceIndex, FtFace->family_name, FtFace->style_name, Path());
+		}
+
+		if(m_vFaces.empty())
+		{
+			log_error("textrender", "Failed to load font file '%s': no font faces could be loaded", Path());
+			return;
+		}
+		m_Success = true;
+	}
+
+public:
+	CFontAssetJob(IStorage *pStorage, const char *pPath, FT_Library FtLibrary, CLock *pFtLibraryLock) :
+		CAssetJob(EAssetType::FONT, pStorage, pPath, IStorage::TYPE_ALL, ASSET_OWNER_FONTS, FONT_ASSET_GENERATION),
+		m_FtLibrary(FtLibrary),
+		m_pFtLibraryLock(pFtLibraryLock)
+	{
+	}
+
+	~CFontAssetJob() override NO_THREAD_SAFETY_ANALYSIS
+	{
+		if(!m_vFaces.empty())
+		{
+			const CLockScope LockScope(*m_pFtLibraryLock);
+			for(FT_Face Face : m_vFaces)
+			{
+				FT_Done_Face(Face);
+			}
+			m_vFaces.clear();
+		}
+	}
+
+	bool Success() const override { return m_Success; }
+
+	const std::vector<FT_Face> &Faces() const { return m_vFaces; }
+
+	/**
+	 * Gives up the ownership of the font faces and of the font data buffer.
+	 *
+	 * @return The font data buffer, which the caller has to keep alive as long
+	 * as it uses the faces of this job.
+	 */
+	std::vector<uint8_t> TakeFontData()
+	{
+		dbg_assert(State() == IJob::STATE_DONE, "Cannot take the fonts from an unfinished job");
+		dbg_assert(Success(), "Cannot take the fonts from a failed job");
+		m_vFaces.clear();
+		return std::move(Data());
+	}
 };
 
 class CTextRender : public IEngineTextRender
 {
 	IConsole *m_pConsole;
+	IEngine *m_pEngine;
 	IGraphics *m_pGraphics;
 	IStorage *m_pStorage;
 	IConsole *Console() { return m_pConsole; }
+	IEngine *Engine() { return m_pEngine; }
 	IGraphics *Graphics() { return m_pGraphics; }
 	IStorage *Storage() { return m_pStorage; }
 
 	CGlyphMap *m_pGlyphMap;
-	std::vector<void *> m_vpFontData;
+	std::vector<std::vector<uint8_t>> m_vFontData;
 
-	std::vector<SFontLanguageVariant> m_vVariants;
+	// Font loading. The font files are read and turned into font faces by worker
+	// threads, the faces are handed over to the main thread once all files are done.
+	CAssetLoader m_FontLoader;
+	CLock m_FtLibraryLock;
+	CFontIndex m_FontIndex;
+	CFontLoadProgress m_FontLoadProgress;
+	std::vector<CTypedAssetResource<CFontAssetJob>> m_vFontFileResources;
+	size_t m_ReportedFontFileCount;
 
 	unsigned m_RenderFlags;
 
@@ -1078,43 +1207,112 @@ class CTextRender : public IEngineTextRender
 		}
 	}
 
-	bool LoadFontCollection(const char *pFontName, const FT_Byte *pFontData, FT_Long FontDataSize)
+	/**
+	 * Starts reading the font files listed in the font index.
+	 *
+	 * The index itself is a few hundred bytes and decides which font files to
+	 * read, so it is read here. The font files are tens of megabytes and are read
+	 * and turned into font faces by worker threads.
+	 */
+	void LoadFontsAsync()
 	{
-		FT_Face FtFace;
-		FT_Error CollectionLoadError = FT_New_Memory_Face(m_FTLibrary, pFontData, FontDataSize, -1, &FtFace);
-		if(CollectionLoadError)
+		dbg_assert(m_FontLoadProgress.State() == CFontLoadProgress::EState::IDLE, "Fonts were already loaded");
+
+		const char *pFilename = "fonts/index.json";
+		void *pFileData;
+		unsigned JsonFileSize;
+		bool IndexSuccess = false;
+		if(Storage()->ReadFile(pFilename, IStorage::TYPE_ALL, &pFileData, &JsonFileSize))
 		{
-			log_error("textrender", "Failed to load font file '%s': %s", pFontName, FT_Error_String(CollectionLoadError));
-			return false;
+			IndexSuccess = m_FontIndex.Parse(static_cast<const char *>(pFileData), JsonFileSize, pFilename);
+			free(pFileData);
+		}
+		else
+		{
+			log_error("textrender", "Failed to open/read font index file '%s'", pFilename);
 		}
 
-		const FT_Long NumFaces = FtFace->num_faces;
-		FT_Done_Face(FtFace);
-
-		bool LoadedAny = false;
-		for(FT_Long FaceIndex = 0; FaceIndex < NumFaces; ++FaceIndex)
+		m_FontLoadProgress.BeginLoading(m_FontIndex.m_vFontFilePaths.size(), IndexSuccess);
+		m_ReportedFontFileCount = 0;
+		m_vFontFileResources.reserve(m_FontIndex.m_vFontFilePaths.size());
+		for(const std::string &FontFilePath : m_FontIndex.m_vFontFilePaths)
 		{
-			FT_Error FaceLoadError = FT_New_Memory_Face(m_FTLibrary, pFontData, FontDataSize, FaceIndex, &FtFace);
-			if(FaceLoadError)
-			{
-				log_error("textrender", "Failed to load font face %ld from font file '%s': %s", FaceIndex, pFontName, FT_Error_String(FaceLoadError));
-				FT_Done_Face(FtFace);
+			m_vFontFileResources.push_back(m_FontLoader.Load(std::make_shared<CFontAssetJob>(Storage(), FontFilePath.c_str(), m_FTLibrary, &m_FtLibraryLock)));
+		}
+		PollFontLoading();
+	}
+
+	/**
+	 * Collects the font files that are finished and commits the font faces when
+	 * the last one is done. Does nothing when no fonts are being loaded.
+	 */
+	void PollFontLoading()
+	{
+		if(!m_FontLoadProgress.Loading())
+			return;
+
+		m_FontLoader.Update();
+		while(m_ReportedFontFileCount < m_vFontFileResources.size() && m_vFontFileResources[m_ReportedFontFileCount].IsFinished())
+		{
+			m_FontLoadProgress.ReportFile(m_vFontFileResources[m_ReportedFontFileCount].IsReady(FONT_ASSET_GENERATION));
+			++m_ReportedFontFileCount;
+		}
+		if(m_FontLoadProgress.AllFilesFinished())
+			CommitFonts();
+	}
+
+	/**
+	 * Takes the font faces of all font files over and selects the default, icon
+	 * and fallback faces.
+	 *
+	 * The faces are only usable from here on. Until then no face is registered
+	 * with the glyph map, so text that is drawn while the fonts are loading gets
+	 * no glyphs instead of glyphs of a face that a worker thread is still using.
+	 */
+	void CommitFonts()
+	{
+		for(auto &Resource : m_vFontFileResources)
+		{
+			if(!Resource.IsReady(FONT_ASSET_GENERATION))
 				continue;
+			CFontAssetJob &Job = Resource.Result();
+			for(FT_Face Face : Job.Faces())
+			{
+				m_pGlyphMap->AddFace(Face);
 			}
-
-			m_pGlyphMap->AddFace(FtFace);
-
-			log_debug("textrender", "Loaded font face %ld '%s %s' from font file '%s'", FaceIndex, FtFace->family_name, FtFace->style_name, pFontName);
-			LoadedAny = true;
+			m_vFontData.push_back(Job.TakeFontData());
 		}
+		m_vFontFileResources.clear();
 
-		if(!LoadedAny)
+		bool Success = true;
+		if(!m_FontIndex.m_DefaultFamilyName.empty() && !m_pGlyphMap->SetDefaultFaceByName(m_FontIndex.m_DefaultFamilyName.c_str()))
 		{
-			log_error("textrender", "Failed to load font file '%s': no font faces could be loaded", pFontName);
-			return false;
+			Success = false;
 		}
+		for(const std::string &FallbackFamilyName : m_FontIndex.m_vFallbackFamilyNames)
+		{
+			if(!m_pGlyphMap->AddFallbackFaceByName(FallbackFamilyName.c_str()))
+			{
+				Success = false;
+			}
+		}
+		if(!m_FontIndex.m_IconFamilyName.empty() && !m_pGlyphMap->SetIconFaceByName(m_FontIndex.m_IconFamilyName.c_str()))
+		{
+			Success = false;
+		}
+		m_FontLoadProgress.Commit(Success);
+	}
 
-		return true;
+	/**
+	 * Waits for the fonts if they are still being loaded, so no text is drawn
+	 * without glyphs by accident.
+	 */
+	void EnsureFontsLoaded()
+	{
+		if(m_FontLoadProgress.Loading())
+		{
+			WaitForFonts();
+		}
 	}
 
 	void SetRenderFlags(unsigned Flags) override
@@ -1131,9 +1329,11 @@ public:
 	CTextRender()
 	{
 		m_pConsole = nullptr;
+		m_pEngine = nullptr;
 		m_pGraphics = nullptr;
 		m_pStorage = nullptr;
 		m_pGlyphMap = nullptr;
+		m_ReportedFontFileCount = 0;
 
 		m_Color = DefaultTextColor();
 		m_OutlineColor = DefaultTextOutlineColor();
@@ -1148,6 +1348,7 @@ public:
 	void Init() override
 	{
 		m_pConsole = Kernel()->RequestInterface<IConsole>();
+		m_pEngine = Kernel()->RequestInterface<IEngine>();
 		m_pGraphics = Kernel()->RequestInterface<IGraphics>();
 		m_pStorage = Kernel()->RequestInterface<IStorage>();
 		FT_Init_FreeType(&m_FTLibrary);
@@ -1160,11 +1361,22 @@ public:
 			log_info("textrender", "Freetype version %d.%d.%d (compiled = %d.%d.%d)", LMajor, LMinor, LPatch, FREETYPE_MAJOR, FREETYPE_MINOR, FREETYPE_PATCH);
 		}
 
+		// Start reading the fonts right away so the rest of the client can start
+		// up while the font files are being read.
+		m_FontLoader.Init(Engine(), std::clamp<size_t>(Engine()->JobThreadCount(), 1, 8));
+		LoadFontsAsync();
+
 		m_FirstFreeTextContainerIndex = -1;
 	}
 
 	void Shutdown() override
 	{
+		// The font jobs use the FreeType library, so they have to be finished
+		// before it is destroyed. They are not abortable for that reason.
+		EnsureFontsLoaded();
+		m_FontLoader.Shutdown();
+		m_vFontFileResources.clear();
+
 		for(auto *pTextCont : m_vpTextContainers)
 			delete pTextCont;
 		m_vpTextContainers.clear();
@@ -1176,183 +1388,42 @@ public:
 			FT_Done_FreeType(m_FTLibrary);
 		m_FTLibrary = nullptr;
 
-		for(auto *pFontData : m_vpFontData)
-			free(pFontData);
-		m_vpFontData.clear();
+		m_vFontData.clear();
 
 		m_pConsole = nullptr;
+		m_pEngine = nullptr;
 		m_pGraphics = nullptr;
 		m_pStorage = nullptr;
 	}
 
-	bool LoadFonts() override
+	bool WaitForFonts() override
 	{
-		// read file data into buffer
-		const char *pFilename = "fonts/index.json";
-		void *pFileData;
-		unsigned JsonFileSize;
-		if(!Storage()->ReadFile(pFilename, IStorage::TYPE_ALL, &pFileData, &JsonFileSize))
-		{
-			log_error("textrender", "Failed to open/read font index file '%s'", pFilename);
+		if(m_FontLoadProgress.State() == CFontLoadProgress::EState::IDLE)
 			return false;
-		}
 
-		// parse json data
-		json_settings JsonSettings{};
-		char aError[256];
-		json_value *pJsonData = JsonParseEx(&JsonSettings, static_cast<const json_char *>(pFileData), JsonFileSize, aError);
-		free(pFileData);
-		if(pJsonData == nullptr)
+		while(m_FontLoadProgress.Loading())
 		{
-			log_error("textrender", "Failed to parse font index file '%s': %s", pFilename, aError);
-			return false;
+			PollFontLoading();
+			if(m_FontLoadProgress.Loading())
+				std::this_thread::sleep_for(1ms);
 		}
-		if(pJsonData->type != json_object)
-		{
-			log_error("textrender", "Font index malformed: root must be an object in file '%s'", pFilename);
-			return false;
-		}
-
-		bool Success = true;
-
-		// extract font file definitions
-		const json_value &FontFiles = (*pJsonData)["font files"];
-		if(FontFiles.type == json_array)
-		{
-			for(unsigned FontFileIndex = 0; FontFileIndex < FontFiles.u.array.length; ++FontFileIndex)
-			{
-				if(FontFiles[FontFileIndex].type != json_string)
-				{
-					log_error("textrender", "Font index malformed: 'font files' must be an array of strings (error at index %d)", FontFileIndex);
-					Success = false;
-					continue;
-				}
-
-				char aFontName[IO_MAX_PATH_LENGTH];
-				str_format(aFontName, sizeof(aFontName), "fonts/%s", FontFiles[FontFileIndex].u.string.ptr);
-				void *pFontData;
-				unsigned FontDataSize;
-				if(Storage()->ReadFile(aFontName, IStorage::TYPE_ALL, &pFontData, &FontDataSize))
-				{
-					if(LoadFontCollection(aFontName, static_cast<FT_Byte *>(pFontData), (FT_Long)FontDataSize))
-					{
-						m_vpFontData.push_back(pFontData);
-					}
-					else
-					{
-						free(pFontData);
-					}
-				}
-				else
-				{
-					log_error("textrender", "Failed to open/read font file '%s'", aFontName);
-					Success = false;
-				}
-			}
-		}
-		else
-		{
-			log_error("textrender", "Font index malformed: 'font files' must be an array");
-			Success = false;
-		}
-
-		// extract default family name
-		const json_value &DefaultFace = (*pJsonData)["default"];
-		if(DefaultFace.type == json_string)
-		{
-			if(!m_pGlyphMap->SetDefaultFaceByName(DefaultFace.u.string.ptr))
-			{
-				Success = false;
-			}
-		}
-		else
-		{
-			log_error("textrender", "Font index malformed: 'default' must be a string");
-			Success = false;
-		}
-
-		// extract language variant family names
-		const json_value &Variants = (*pJsonData)["language variants"];
-		if(Variants.type == json_object)
-		{
-			m_vVariants.reserve(Variants.u.object.length);
-			for(size_t i = 0; i < Variants.u.object.length; ++i)
-			{
-				const json_value *pFamilyName = Variants.u.object.values[i].value;
-				if(pFamilyName->type != json_string)
-				{
-					log_error("textrender", "Font index malformed: 'language variants' entries must have string values (error on entry '%s')", Variants.u.object.values[i].name);
-					Success = false;
-					continue;
-				}
-
-				SFontLanguageVariant Variant;
-				str_format(Variant.m_aLanguageFile, sizeof(Variant.m_aLanguageFile), "languages/%s.txt", Variants.u.object.values[i].name);
-				str_copy(Variant.m_aFamilyName, pFamilyName->u.string.ptr);
-				m_vVariants.emplace_back(Variant);
-			}
-		}
-		else
-		{
-			log_error("textrender", "Font index malformed: 'language variants' must be an array");
-			Success = false;
-		}
-
-		// extract fallback family names
-		const json_value &FallbackFaces = (*pJsonData)["fallbacks"];
-		if(FallbackFaces.type == json_array)
-		{
-			for(unsigned i = 0; i < FallbackFaces.u.array.length; ++i)
-			{
-				if(FallbackFaces[i].type != json_string)
-				{
-					log_error("textrender", "Font index malformed: 'fallbacks' must be an array of strings (error at index %d)", i);
-					Success = false;
-					continue;
-				}
-				if(!m_pGlyphMap->AddFallbackFaceByName(FallbackFaces[i].u.string.ptr))
-				{
-					Success = false;
-				}
-			}
-		}
-		else
-		{
-			log_error("textrender", "Font index malformed: 'fallbacks' must be an array");
-			Success = false;
-		}
-
-		// extract icon font family name
-		const json_value &IconFace = (*pJsonData)["icon"];
-		if(IconFace.type == json_string)
-		{
-			if(!m_pGlyphMap->SetIconFaceByName(IconFace.u.string.ptr))
-			{
-				Success = false;
-			}
-		}
-		else
-		{
-			log_error("textrender", "Font index malformed: 'icon' must be a string");
-			Success = false;
-		}
-
-		json_value_free(pJsonData);
-		return Success;
+		return m_FontLoadProgress.Success();
 	}
 
 	void SetFontPreset(EFontPreset FontPreset) override
 	{
+		EnsureFontsLoaded();
 		m_pGlyphMap->SetFontPreset(FontPreset);
 	}
 
 	void SetFontLanguageVariant(const char *pLanguageFile) override
 	{
-		for(const auto &Variant : m_vVariants)
+		EnsureFontsLoaded();
+		for(const auto &Variant : m_FontIndex.m_vLanguageVariants)
 		{
-			if(str_comp(pLanguageFile, Variant.m_aLanguageFile) == 0)
+			if(str_comp(pLanguageFile, Variant.m_LanguageFile.c_str()) == 0)
 			{
-				m_pGlyphMap->SetVariantFaceByName(Variant.m_aFamilyName);
+				m_pGlyphMap->SetVariantFaceByName(Variant.m_FamilyName.c_str());
 				return;
 			}
 		}
@@ -1537,6 +1608,8 @@ public:
 
 	void AppendTextContainer(STextContainerIndex TextContainerIndex, CTextCursor *pCursor, const char *pText, int Length = -1) override
 	{
+		EnsureFontsLoaded();
+
 		const std::chrono::nanoseconds LayoutStart = m_TextRenderStatsEnabled ? time_get_nanoseconds() : std::chrono::nanoseconds{};
 		const int PreviousGlyphCount = pCursor->m_GlyphCount;
 		if(m_TextRenderStatsEnabled)
@@ -2275,6 +2348,7 @@ public:
 
 	void UploadEntityLayerText(const CImageInfo &TextImage, int TexSubWidth, int TexSubHeight, const char *pText, int Length, float x, float y, int FontSize) override
 	{
+		EnsureFontsLoaded();
 		m_pGlyphMap->UploadEntityLayerText(TextImage, TexSubWidth, TexSubHeight, pText, Length, x, y, FontSize);
 	}
 

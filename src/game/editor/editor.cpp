@@ -4595,6 +4595,7 @@ void CEditor::Init()
 		OnInput(Event);
 	});
 	m_RenderMap.Init(m_pGraphics, m_pTextRender, &m_RenderTools);
+	m_AssetLoader.Init(m_pEngine, std::clamp(m_pEngine->JobThreadCount() / 2, size_t{1}, size_t{8}));
 
 	Reset();
 	AddDefaultMap();
@@ -4825,6 +4826,7 @@ void CEditor::UpdateMapDisplayNames()
 
 void CEditor::OnUpdate()
 {
+	m_AssetLoader.Update();
 	CUIElementBase::Init(Ui()); // update static pointer because game and editor use separate UI
 
 	m_pContainerPannedLast = m_pContainerPanned;

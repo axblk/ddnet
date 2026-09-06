@@ -84,6 +84,8 @@ public:
 	void HeaderInt(const char *pName, int Value);
 
 	const char *Dest() const;
+	// Whether the response is downloaded to memory, i.e. whether `Result` can be used.
+	bool WritesToMemory() const { return m_WriteToMemory; }
 	double Current() const { return m_Current.load(std::memory_order_relaxed); }
 	double Size() const { return m_Size.load(std::memory_order_relaxed); }
 	int Progress() const { return m_Progress.load(std::memory_order_relaxed); }

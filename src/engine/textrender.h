@@ -199,7 +199,17 @@ public:
 		uint64_t m_UploadBytes = 0;
 	};
 
-	virtual bool LoadFonts() = 0;
+	/**
+	 * Waits until the fonts, which `IEngineTextRender::Init` started loading in
+	 * the background, are usable.
+	 *
+	 * Drawing or measuring text before this waits for the fonts as well, so text
+	 * is never drawn without glyphs. Call this at the point where the startup is
+	 * supposed to wait for the fonts instead of an arbitrary later one.
+	 *
+	 * @return `true` if all fonts were loaded, `false` if any of them failed.
+	 */
+	virtual bool WaitForFonts() = 0;
 	virtual void SetFontPreset(EFontPreset FontPreset) = 0;
 	virtual void SetFontLanguageVariant(const char *pLanguageFile) = 0;
 

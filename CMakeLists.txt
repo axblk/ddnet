@@ -2631,6 +2631,8 @@ if(CLIENT)
 
   set_src(ENGINE_CLIENT GLOB_RECURSE src/engine/client
     # tidy-alphabetical-start
+    asset_loader.cpp
+    asset_loader.h
     backend/backend_base.cpp
     backend/backend_base.h
     backend/embedded_shaders.h
@@ -2666,6 +2668,8 @@ if(CLIENT)
     discord.cpp
     enums.h
     favorites.cpp
+    font_loading.cpp
+    font_loading.h
     friends.cpp
     friends.h
     ghost.cpp
@@ -3769,6 +3773,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   set_src(TESTS GLOB src/test
     # tidy-alphabetical-start
     aio_test.cpp
+    asset_loader_test.cpp
     bezier_test.cpp
     blocklist_driver_test.cpp
     bytes_be_test.cpp
@@ -3781,6 +3786,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     datafile_test.cpp
     dbg_test.cpp
     editor_test.cpp
+    font_loading_test.cpp
     fs_test.cpp
     game_mode_registry_test.cpp
     game_state_test.cpp
@@ -3791,6 +3797,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     graphics_threaded_test.cpp
     hash_test.cpp
     huffman_test.cpp
+    image_loader_test.cpp
     io_test.cpp
     jobs_test.cpp
     json_test.cpp
@@ -3817,6 +3824,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     serverinfo_test.cpp
     session_manager_test.cpp
     snapshot_test.cpp
+    sound_test.cpp
     str_test.cpp
     swap_endian_test.cpp
     teehistorian_test.cpp
@@ -3835,7 +3843,11 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   )
   set(TESTS_EXTRA
     # tidy-alphabetical-start
+    src/engine/client/asset_loader.cpp
+    src/engine/client/asset_loader.h
     src/engine/client/graph.cpp
+    src/engine/client/font_loading.cpp
+    src/engine/client/font_loading.h
     src/engine/client/serverbrowser.cpp
     src/engine/client/serverbrowser.h
     src/engine/client/serverbrowser_http.cpp
@@ -3846,6 +3858,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/engine/client/session_sources.cpp
     src/engine/client/session_sources.h
     src/engine/client/smooth_time.cpp
+    src/engine/client/sound.cpp
+    src/engine/client/sound.h
     src/engine/client/sqlite.cpp
     src/engine/client/stream.h
     src/game/client/components/censor.cpp
@@ -3940,11 +3954,28 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     $<TARGET_OBJECTS:game-shared>
     $<TARGET_OBJECTS:rust-bridge-shared>
     # tidy-alphabetical-end
+    ${WAVPACK_DEP}
     ${DEPS} ${GLEW_DEP}
   )
-  target_link_libraries(${TARGET_TESTRUNNER} ${PNG_LIBRARIES} ${GTEST_LIBRARIES} ${TESTS_GRAPHICS_LIBS} ${LIBS_SERVER})
-  target_include_directories(${TARGET_TESTRUNNER} SYSTEM PRIVATE ${GTEST_INCLUDE_DIRS})
-
+  target_link_libraries(${TARGET_TESTRUNNER}
+    ${PNG_LIBRARIES}
+    ${SDL2_LIBRARIES}
+    ${WAVPACK_LIBRARIES}
+    ${OPUSFILE_LIBRARIES}
+    ${OPUS_LIBRARIES}
+    ${OGG_LIBRARIES}
+    ${GTEST_LIBRARIES}
+    ${TESTS_GRAPHICS_LIBS}
+    ${LIBS_SERVER}
+  )
+  target_include_directories(${TARGET_TESTRUNNER} SYSTEM PRIVATE
+    ${GTEST_INCLUDE_DIRS}
+    ${OGG_INCLUDE_DIRS}
+    ${OPUSFILE_INCLUDE_DIRS}
+    ${OPUS_INCLUDE_DIRS}
+    ${SDL2_INCLUDE_DIRS}
+    ${WAVPACK_INCLUDE_DIRS}
+  )
   list(APPEND TARGETS_OWN ${TARGET_TESTRUNNER})
   list(APPEND TARGETS_LINK ${TARGET_TESTRUNNER})
 

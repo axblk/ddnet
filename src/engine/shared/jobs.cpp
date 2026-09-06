@@ -42,6 +42,15 @@ void IJob::Abortable(bool Abortable)
 	m_Abortable = Abortable;
 }
 
+bool IJob::AbortQueued()
+{
+	if(!IsAbortable())
+		return false;
+
+	EJobState ExpectedState = STATE_QUEUED;
+	return m_State.compare_exchange_strong(ExpectedState, STATE_ABORTED);
+}
+
 bool IJob::IsAbortable() const
 {
 	return m_Abortable;

@@ -17,6 +17,7 @@
 #include <base/vmath.h>
 
 #include <engine/client.h>
+#include <engine/client/asset_loader.h>
 #include <engine/client/enums.h>
 #include <engine/console.h>
 #include <engine/shared/config.h>
@@ -78,6 +79,8 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 class IMap;
@@ -99,6 +102,37 @@ enum class EClientIdFormat
 class CGameClient : public IGameClient
 {
 public:
+	/**
+	 * Owners of the asset jobs that the client starts. The loader aborts by
+	 * owner, so the only thing these numbers have to be is different from each
+	 * other - and one enum is what makes sure they are. The two other loaders
+	 * in the client, for fonts and for the editor's file preview, have a single
+	 * owner each and do not need a name.
+	 */
+	enum EAssetOwner
+	{
+		ASSET_OWNER_STARTUP_SOUNDS,
+		ASSET_OWNER_STARTUP_IMAGES,
+		ASSET_OWNER_SKINS,
+		ASSET_OWNER_SKINS7,
+		ASSET_OWNER_COMMUNITY_ICONS,
+		ASSET_OWNER_COUNTRY_FLAGS,
+		ASSET_OWNER_MENUS,
+		ASSET_OWNER_MENU_THEMES,
+		ASSET_OWNER_SCOREBOARD,
+		ASSET_OWNER_ASSET_PREVIEWS,
+		ASSET_OWNER_MAP_IMAGES,
+	};
+
+	/**
+	 * A skin pack gets an owner of its own, counted up from here, so that one
+	 * pack can be dropped without touching the others.
+	 *
+	 * Not an enumerator: it is where a range begins, not one more owner, and an
+	 * enum whose last value jumps is one clang-tidy rightly asks about.
+	 */
+	static constexpr int ASSET_OWNER_PACK_BASE = 100;
+
 	// all components
 	CInfoMessages m_InfoMessages;
 	CCamera m_Camera;
@@ -147,6 +181,7 @@ public:
 private:
 	std::vector<class CComponent *> m_vpAll;
 	std::vector<class CComponent *> m_vpInput;
+	CAssetLoader m_AssetLoader;
 	CNetObjHandler m_NetObjHandler;
 	protocol7::CNetObjHandler m_NetObjHandler7;
 
@@ -242,6 +277,7 @@ public:
 
 	IKernel *Kernel() { return IInterface::Kernel(); }
 	IEngine *Engine() const { return m_pEngine; }
+	CAssetLoader &AssetLoader() { return m_AssetLoader; }
 	class IGraphics *Graphics() const { return m_pGraphics; }
 	class IGraphicsWindow *Window() const { return m_pWindow; }
 	class IClient *Client() const { return m_pClient; }
@@ -715,6 +751,13 @@ public:
 	int FindFirstMultiViewId();
 	void CleanMultiViewId(int ClientId);
 
+	/**
+	 * Whether the assets the client waits for before it is fully started are
+	 * still loading. Components that pace themselves to keep the frame rate
+	 * smooth have nothing to keep smooth yet while this holds.
+	 */
+	bool StartupAssetsPending() const { return m_StartupAssetsStart != 0; }
+
 private:
 	std::vector<CSnapEntities> m_vSnapEntities;
 	// Kept between snapshots so that collecting the entities does not allocate on
@@ -728,13 +771,51 @@ private:
 	public:
 		bool IsLoaded() const { return m_ImageInfo.m_pData != nullptr; }
 
-		char m_aPath[IO_MAX_PATH_LENGTH];
-		bool m_IsDefault;
+		char m_aPath[IO_MAX_PATH_LENGTH] = {};
+		bool m_IsDefault = false;
 		CImageInfo m_ImageInfo;
 		std::optional<CImageInfo> m_FallbackImageInfo;
 	};
 
-	CImageAsset LoadAssetFromPath(const char *pPath, bool AsDir, int AssetId, const char *pDirectory) const;
+	class CStartupImageLoad
+	{
+	public:
+		int m_ImageId = -1;
+		bool m_IsAssetSheet = false;
+		CImageResource m_Resource;
+	};
+
+	class CAssetPackLoad
+	{
+	public:
+		int m_ImageId = -1;
+		uint64_t m_Generation = 0;
+		std::string m_Name;
+		bool m_AsDir = false;
+		std::vector<CImageResource> m_vResources;
+	};
+
+	uint64_t m_AssetGeneration = 1;
+	uint64_t m_AssetPackGeneration = 1;
+	int64_t m_StartupStart = 0;
+	int64_t m_StartupAssetsStart = 0;
+	int64_t m_StartupImageBatchStart = 0;
+	std::vector<CStartupImageLoad> m_vStartupImageLoads;
+	std::vector<CAssetPackLoad> m_vAssetPackLoads;
+	std::unordered_map<std::string, CImageInfo> m_DecodedAssetImages;
+
+	void StartLoadingCoreImages();
+	void TryFinishLoadingCoreImages();
+	void FinishClientStartup();
+	void TryFinishStartupAssets();
+	void StartLoadingAssetPack(int ImageId, const char *pName, bool AsDir);
+	void UpdateAssetPackLoads();
+	CImageAsset LoadAssetFromPath(const char *pPath, bool AsDir, int AssetId, const char *pDirectory);
+	void CommitGameSkin(const char *pPath, bool AsDir = false);
+	void CommitEmoticonsSkin(const char *pPath, bool AsDir = false);
+	void CommitParticlesSkin(const char *pPath, bool AsDir = false);
+	void CommitHudSkin(const char *pPath, bool AsDir = false);
+	void CommitExtrasSkin(const char *pPath, bool AsDir = false);
 
 	std::vector<std::shared_ptr<CManagedTeeRenderInfo>> m_vpManagedTeeRenderInfos;
 	void UpdateManagedTeeRenderInfos();

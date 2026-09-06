@@ -91,6 +91,14 @@ protected:
 	void UseTexture(IGraphics::CTextureHandle TextureHandle);
 	virtual IGraphics::CTextureHandle GetTexture() const = 0;
 	virtual void InitCallback() const;
+	/**
+	 * Whether this layer is rendered with a texture. Geometry is built before
+	 * the texture has finished loading, so this must not depend on the handle
+	 * being valid yet.
+	 *
+	 * @return `true` if the layer needs texture coordinates.
+	 */
+	virtual bool HasTexture() const = 0;
 
 	class IMap *m_pMap = nullptr;
 	IMapImages *m_pMapImages = nullptr;
@@ -117,6 +125,7 @@ protected:
 	{
 		return IGraphics::CTextureHandle();
 	}
+	bool HasTexture() const override { return false; }
 
 	CMapItemGroup *m_pGroup;
 };
@@ -143,13 +152,10 @@ protected:
 	virtual ColorRGBA GetRenderColor(const CRenderLayerParams &Params) const;
 	virtual void InitTileData();
 	virtual void GetTileData(unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate, unsigned int x, unsigned int y, int CurOverlay) const;
-	IGraphics::CTextureHandle GetTexture() const override { return m_TextureHandle; }
+	IGraphics::CTextureHandle GetTexture() const override;
+	bool HasTexture() const override;
 	CTile *m_pTiles;
 
-private:
-	IGraphics::CTextureHandle m_TextureHandle;
-
-protected:
 	/**
 	 * One drawable tile set of a layer: the tiles themselves and, for the map
 	 * edges, the border tiles that repeat them outwards.
@@ -267,7 +273,8 @@ public:
 	void Unload() override;
 
 protected:
-	IGraphics::CTextureHandle GetTexture() const override { return m_TextureHandle; }
+	IGraphics::CTextureHandle GetTexture() const override;
+	bool HasTexture() const override;
 
 	class CQuadLayerVisuals : public CRenderComponent
 	{
@@ -305,9 +312,6 @@ protected:
 
 	std::vector<CQuadCluster> m_vQuadClusters;
 	CQuad *m_pQuads;
-
-private:
-	IGraphics::CTextureHandle m_TextureHandle;
 };
 
 class CRenderLayerEntityBase : public CRenderLayerTile
@@ -321,6 +325,8 @@ protected:
 	ColorRGBA GetRenderColor(const CRenderLayerParams &Params) const override { return ColorRGBA(1.0f, 1.0f, 1.0f, Params.m_EntityOverlayVal / 100.0f); }
 	IGraphics::CTextureHandle GetTexture() const override;
 	bool ForceTransparentTiles() const override { return true; }
+	// Entity layers always draw from their own texture, never from a map image
+	bool HasTexture() const override { return true; }
 };
 
 class CRenderLayerEntityGame final : public CRenderLayerEntityBase

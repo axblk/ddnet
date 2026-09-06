@@ -4438,8 +4438,8 @@ void CClient::InitInterfaces()
 	m_Friends.Init();
 	m_Foes.Init(true);
 
-	m_GhostRecorder.Init();
-	m_GhostLoader.Init();
+	m_GhostRecorder.Init(m_pStorage);
+	m_GhostLoader.Init(m_pStorage);
 }
 
 static void SleepIdle(std::chrono::nanoseconds Duration)

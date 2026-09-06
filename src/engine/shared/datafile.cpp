@@ -21,6 +21,7 @@
 
 #include <cstdlib>
 #include <limits>
+#include <new>
 #include <unordered_set>
 
 static constexpr int MAX_ITEM_TYPE = 0xFFFF;
@@ -322,6 +323,61 @@ public:
 		return m_ppDataPtrs[Index];
 	}
 
+	bool GetRawData(int Index, CDataFileRawData &RawData) const
+	{
+		// Invalid data indices may appear in map items
+		if(Index < 0 || Index >= m_Header.m_NumRawData)
+		{
+			return false;
+		}
+
+		// Don't try to load the data again if it previously failed
+		if(m_pDataSizes[Index] < 0)
+		{
+			return false;
+		}
+
+		// Data that is already loaded is not read from the file again and
+		// intercepted data must be processed before it can be used, so both
+		// are returned as they would be returned by GetData.
+		if(m_ppDataPtrs[Index] != nullptr || m_ppDataProcessors[Index] != nullptr)
+		{
+			const auto *pData = static_cast<const uint8_t *>(GetData(Index, false));
+			if(pData == nullptr)
+			{
+				return false;
+			}
+			RawData = CDataFileRawData(std::vector<uint8_t>(pData, pData + m_pDataSizes[Index]), m_pDataSizes[Index], false);
+			return true;
+		}
+
+		const unsigned FileDataSize = GetFileDataSize(Index);
+		const bool Compressed = m_Info.m_pDataSizes != nullptr; // v4 has compressed data
+		const unsigned UncompressedSize = Compressed ? m_Info.m_pDataSizes[Index] : FileDataSize;
+		log_trace("datafile", "reading raw data. index=%d size=%d uncompressed=%d", Index, FileDataSize, UncompressedSize);
+		if(UncompressedSize == 0)
+		{
+			log_error("datafile", "data size invalid. data will be ignored. index=%d size=%d uncompressed=%d", Index, FileDataSize, UncompressedSize);
+			return false;
+		}
+
+		std::vector<uint8_t> vData;
+		vData.resize(FileDataSize);
+		unsigned ActualDataSize = 0;
+		if(io_seek(m_File, m_DataStartOffset + m_Info.m_pDataOffsets[Index], EIoSeekOrigin::START) == 0)
+		{
+			ActualDataSize = io_read(m_File, vData.data(), FileDataSize);
+		}
+		if(FileDataSize != ActualDataSize)
+		{
+			log_error("datafile", "truncation error. could not read all raw data. index=%d wanted=%d got=%d", Index, FileDataSize, ActualDataSize);
+			return false;
+		}
+
+		RawData = CDataFileRawData(std::move(vData), UncompressedSize, Compressed);
+		return true;
+	}
+
 	void AddDataProcessor(int Index, FDataProcessor DataProcessor) // NOLINT(readability-make-member-function-const)
 	{
 		dbg_assert(Index >= 0 && Index < m_Header.m_NumRawData, "Index invalid: %d", Index);
@@ -501,6 +557,44 @@ public:
 #undef Check
 	}
 };
+
+CDataFileRawData::CDataFileRawData(std::vector<uint8_t> vData, size_t UncompressedSize, bool Compressed) :
+	m_vData(std::move(vData)),
+	m_UncompressedSize(UncompressedSize),
+	m_Compressed(Compressed)
+{
+}
+
+std::unique_ptr<uint8_t[]> CDataFileRawData::Uncompress() const
+{
+	// The uncompressed size is not limited by the file size, so the allocation
+	// must be allowed to fail without throwing.
+	std::unique_ptr<uint8_t[]> pData(new(std::nothrow) uint8_t[m_UncompressedSize]);
+	if(pData == nullptr)
+	{
+		log_error("datafile", "out of memory. could not allocate memory for uncompressed data. size=%" PRIzu, m_UncompressedSize);
+		return nullptr;
+	}
+
+	if(!m_Compressed)
+	{
+		if(m_vData.size() != m_UncompressedSize)
+		{
+			return nullptr;
+		}
+		mem_copy(pData.get(), m_vData.data(), m_UncompressedSize);
+		return pData;
+	}
+
+	uLongf UncompressedSize = static_cast<uLongf>(m_UncompressedSize);
+	const int Result = uncompress(pData.get(), &UncompressedSize, m_vData.data(), static_cast<uLong>(m_vData.size()));
+	if(Result != Z_OK || UncompressedSize != m_UncompressedSize)
+	{
+		log_error("datafile", "failed to uncompress data. result=%d wanted=%" PRIzu " got=%lu", Result, m_UncompressedSize, (unsigned long)UncompressedSize);
+		return nullptr;
+	}
+	return pData;
+}
 
 CDataFileReader::~CDataFileReader()
 {
@@ -823,6 +917,13 @@ const char *CDataFileReader::GetDataString(int Index)
 		return nullptr;
 	}
 	return pData;
+}
+
+bool CDataFileReader::GetRawData(int Index, CDataFileRawData &RawData)
+{
+	dbg_assert(m_pDataFile != nullptr, "File not open");
+
+	return m_pDataFile->GetRawData(Index, RawData);
 }
 
 void CDataFileReader::AddDataProcessor(int Index, FDataProcessor DataProcessor)

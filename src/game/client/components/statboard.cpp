@@ -56,7 +56,7 @@ bool CStatboard::IsRenderable() const
 	const CSessionStatsState &Stats = GameClient()->SessionContext().Stats();
 
 	int NumPlayers = 0;
-	for(const auto *pInfo : GameClient()->m_Snap.m_apInfoByScore)
+	for(const auto *pInfo : GameClient()->Snap().m_apInfoByScore)
 	{
 		if(!pInfo || !Stats.Client(pInfo->m_ClientId).IsActive())
 			continue;
@@ -172,7 +172,7 @@ void CStatboard::UpdateController()
 
 	if((g_Config.m_ClAutoStatboardScreenshot || g_Config.m_ClAutoCSV) && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 	{
-		if(m_ScreenshotTime < 0 && GameClient()->m_Snap.m_pGameInfoObj && GameClient()->m_Snap.m_pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_GAMEOVER)
+		if(m_ScreenshotTime < 0 && GameClient()->Snap().m_pGameInfoObj && GameClient()->Snap().m_pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_GAMEOVER)
 			m_ScreenshotTime = time_get() + time_freq() * 3;
 		if(m_ScreenshotTime > -1 && m_ScreenshotTime < time_get())
 			m_Active = true;
@@ -525,7 +525,7 @@ void CStatboard::FormatStats(char *pDest, size_t DestSize)
 	int NumPlayers = 0;
 
 	// sort red or dm players by score
-	for(const auto *pInfo : GameClient()->m_Snap.m_apInfoByScore)
+	for(const auto *pInfo : GameClient()->Snap().m_apInfoByScore)
 	{
 		if(!pInfo || !Stats.Client(pInfo->m_ClientId).IsActive() || GameClient()->m_aClients[pInfo->m_ClientId].m_Team != TEAM_RED)
 			continue;
@@ -536,7 +536,7 @@ void CStatboard::FormatStats(char *pDest, size_t DestSize)
 	// sort blue players by score after
 	if(GameClient()->IsTeamPlay())
 	{
-		for(const auto *pInfo : GameClient()->m_Snap.m_apInfoByScore)
+		for(const auto *pInfo : GameClient()->Snap().m_apInfoByScore)
 		{
 			if(!pInfo || !Stats.Client(pInfo->m_ClientId).IsActive() || GameClient()->m_aClients[pInfo->m_ClientId].m_Team != TEAM_BLUE)
 				continue;
@@ -569,10 +569,10 @@ void CStatboard::FormatStats(char *pDest, size_t DestSize)
 			KillRatio = (float)(pStats->m_Frags) / pStats->m_Deaths;
 
 		// Local player
-		bool LocalPlayer = (GameClient()->m_Snap.m_LocalClientId == pInfo->m_ClientId || (GameClient()->m_Snap.m_SpecInfo.m_Active && pInfo->m_ClientId == GameClient()->m_Snap.m_SpecInfo.m_SpectatorId));
+		bool LocalPlayer = (GameClient()->Snap().m_LocalClientId == pInfo->m_ClientId || (GameClient()->Snap().m_SpecInfo.m_Active && pInfo->m_ClientId == GameClient()->Snap().m_SpecInfo.m_SpectatorId));
 
 		// Game with flags
-		bool GameWithFlags = (GameClient()->m_Snap.m_pGameInfoObj && GameClient()->m_Snap.m_pGameInfoObj->m_GameFlags & GAMEFLAG_FLAGS);
+		bool GameWithFlags = (GameClient()->Snap().m_pGameInfoObj && GameClient()->Snap().m_pGameInfoObj->m_GameFlags & GAMEFLAG_FLAGS);
 
 		char aBuf[1024];
 		str_format(aBuf, sizeof(aBuf), "%d,%d,%s,%s,%d,%d,%d,%d,%.2f,%i,%.1f,%d,%d,%s,%d,%d,%d\n",

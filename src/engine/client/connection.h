@@ -46,6 +46,7 @@ public:
 	int m_ReceivedSnapshots = 0;
 	char m_aSnapshotIncomingData[CSnapshot::MAX_SIZE] = {};
 	int m_SnapshotIncomingDataSize = 0;
+	int m_SnapCrcErrors = 0;
 
 	int m_PrevGameTick = 0;
 	int m_CurGameTick = 0;
@@ -79,6 +80,7 @@ public:
 		m_ReceivedSnapshots = 0;
 		m_SnapshotParts = 0;
 		m_SnapshotIncomingDataSize = 0;
+		m_SnapCrcErrors = 0;
 	}
 
 	void ResetTiming()

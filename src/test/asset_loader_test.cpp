@@ -1,16 +1,17 @@
 #include "test.h"
 
+#include <base/io.h>
 #include <base/thread.h>
 
 #include <engine/client/asset_loader.h>
 #include <engine/engine.h>
 #include <engine/gfx/image_loader.h>
+#include <engine/http.h>
 #include <engine/shared/datafile.h>
 #include <engine/storage.h>
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -41,7 +42,7 @@ namespace
 
 	public:
 		CBlockingAssetJob(std::atomic<int> &Running, std::atomic<int> &MaxRunning, std::atomic<bool> &Release) :
-			CAssetJob(std::vector<uint8_t>(), "test"),
+			CAssetJob("test"),
 			m_Running(Running),
 			m_MaxRunning(MaxRunning),
 			m_Release(Release)
@@ -71,6 +72,50 @@ namespace
 		}
 	}
 
+	class CTestHttpRequest final : public IHttpRequest
+	{
+	public:
+		CTestHttpRequest() :
+			IHttpRequest("http://localhost/test.png")
+		{
+		}
+
+		void Header(const char *pNameColonValue) override { (void)pNameColonValue; }
+
+		void Finish(EHttpState State, int StatusCode, const std::vector<uint8_t> &vData)
+		{
+			m_StatusCode = StatusCode;
+			if(!vData.empty())
+			{
+				EXPECT_EQ(OnData(reinterpret_cast<const char *>(vData.data()), vData.size()), vData.size());
+			}
+			OnCompletionInternal(State);
+		}
+	};
+
+	class CTestHttp final : public IHttp
+	{
+	public:
+		std::vector<std::shared_ptr<IHttpRequest>> m_vpRequests;
+
+		void Run(std::shared_ptr<IHttpRequest> pRequest) override { m_vpRequests.push_back(std::move(pRequest)); }
+		bool HasIpresolveBug() const override { return false; }
+	};
+
+	std::vector<uint8_t> TestPng(uint8_t Color)
+	{
+		CImageInfo Image;
+		Image.m_Width = 1;
+		Image.m_Height = 1;
+		Image.m_Format = CImageInfo::FORMAT_RGBA;
+		Image.AllocateFillZero();
+		Image.m_pData[0] = Color;
+		CByteBufferWriter Writer;
+		EXPECT_TRUE(CImageLoader::SavePng(Writer, Image));
+		Image.Free();
+		return std::vector<uint8_t>(Writer.Data(), Writer.Data() + Writer.Size());
+	}
+
 	void WaitForResource(CAssetLoader &Loader, const CAssetResource &Resource)
 	{
 		const auto Deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -88,6 +133,13 @@ namespace
 			WaitForResource(Loader, Resource);
 	}
 
+	void WriteTestFile(IStorage *pStorage, const char *pFilename, const void *pData, size_t Size)
+	{
+		IOHANDLE File = pStorage->OpenFile(pFilename, IOFLAG_WRITE, IStorage::TYPE_SAVE);
+		ASSERT_TRUE(File);
+		EXPECT_EQ(io_write(File, pData, Size), Size);
+		EXPECT_EQ(io_close(File), 0);
+	}
 }
 
 TEST(AssetLoader, LimitsConcurrency)
@@ -171,26 +223,22 @@ TEST(AssetLoader, ReleasesAbortedEngineQueuedJob)
 	Loader.Shutdown();
 }
 
-TEST(AssetLoader, DecodesOwnedImageBytesAndPostprocesses)
+TEST(AssetLoader, DecodesImageAndPostprocesses)
 {
-	CImageInfo Source;
-	Source.m_Width = 1;
-	Source.m_Height = 1;
-	Source.m_Format = CImageInfo::FORMAT_RGBA;
-	ASSERT_TRUE(Source.TryAllocate());
-	std::fill_n(Source.m_pData, Source.DataSize(), 0);
-	CByteBufferWriter Writer;
-	ASSERT_TRUE(CImageLoader::SavePng(Writer, Source));
+	std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	ASSERT_NE(pStorage, nullptr) << "Error creating local storage";
+	CTestInfo Info;
+	const std::vector<uint8_t> vPng = TestPng(0);
+	WriteTestFile(pStorage.get(), Info.m_aFilename, vPng.data(), vPng.size());
 
 	std::unique_ptr<IEngine> pEngine(CreateTestEngine("asset_loader_test"));
 	CAssetLoader Loader;
 	Loader.Init(pEngine.get(), 1);
-	std::vector<uint8_t> vPng(Writer.Data(), Writer.Data() + Writer.Size());
-	CImageResource Resource = Loader.LoadImageData(std::move(vPng), "memory.png", [](CImageInfo &Image) {
+	CImageResource Resource = Loader.LoadImageFile(pStorage.get(), Info.m_aFilename, IStorage::TYPE_SAVE, [](CImageInfo &Image) {
 		Image.m_pData[0] = 42;
 		return true;
 	});
-	EXPECT_STREQ(Resource.Path(), "memory.png");
+	EXPECT_STREQ(Resource.Path(), Info.m_aFilename);
 	WaitForResource(Loader, Resource);
 	ASSERT_TRUE(Resource.IsReady());
 	EXPECT_FALSE(Resource.IsFailed());
@@ -201,6 +249,7 @@ TEST(AssetLoader, DecodesOwnedImageBytesAndPostprocesses)
 
 	Loader.Shutdown();
 	pEngine->ShutdownJobs();
+	pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE);
 }
 
 TEST(AssetLoader, UncompressesRawMapImageData)
@@ -282,4 +331,95 @@ TEST(AssetLoader, UncompressesRawMapImageData)
 	{
 		pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE);
 	}
+}
+
+TEST(AssetLoader, DecodesHttpResponse)
+{
+	std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	ASSERT_NE(pStorage, nullptr) << "Error creating local storage";
+	std::unique_ptr<IEngine> pEngine(CreateTestEngine("asset_loader_test"));
+	CAssetLoader Loader;
+	Loader.Init(pEngine.get(), 1);
+	CTestHttp Http;
+	auto pRequest = std::make_shared<CTestHttpRequest>();
+	CImageResource Resource = Loader.LoadImageHttp(&Http, pRequest, pStorage.get(), "downloaded.png", IStorage::TYPE_SAVE, false);
+	ASSERT_EQ(Http.m_vpRequests.size(), 1U);
+	EXPECT_EQ(Http.m_vpRequests[0], pRequest);
+	Loader.Update();
+	EXPECT_FALSE(Resource.IsFinished());
+
+	pRequest->Finish(EHttpState::DONE, 200, TestPng(42));
+	WaitForResource(Loader, Resource);
+	ASSERT_TRUE(Resource.IsReady());
+	EXPECT_EQ(Resource.HttpStatus(), 200);
+	EXPECT_STREQ(Resource.Path(), "downloaded.png");
+	CImageInfo Image = Resource.TakeImage();
+	EXPECT_EQ(Image.m_pData[0], 42);
+	Image.Free();
+
+	Loader.Shutdown();
+	pEngine->ShutdownJobs();
+}
+
+TEST(AssetLoader, ReadsHttpFileWithoutResponse)
+{
+	std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	ASSERT_NE(pStorage, nullptr) << "Error creating local storage";
+	CTestInfo Info;
+	const std::vector<uint8_t> vPng = TestPng(11);
+	WriteTestFile(pStorage.get(), Info.m_aFilename, vPng.data(), vPng.size());
+
+	std::unique_ptr<IEngine> pEngine(CreateTestEngine("asset_loader_test"));
+	CAssetLoader Loader;
+	Loader.Init(pEngine.get(), 1);
+	CTestHttp Http;
+	const auto LoadAfter = [&](EHttpState State, int StatusCode, const char *pPath, bool UseFileOnError) {
+		auto pRequest = std::make_shared<CTestHttpRequest>();
+		pRequest->Finish(State, StatusCode, {});
+		CImageResource Resource = Loader.LoadImageHttp(&Http, pRequest, pStorage.get(), pPath, IStorage::TYPE_SAVE, UseFileOnError);
+		WaitForResource(Loader, Resource);
+		return Resource;
+	};
+
+	CImageResource NotModifiedResource = LoadAfter(EHttpState::DONE, 304, Info.m_aFilename, false);
+	ASSERT_TRUE(NotModifiedResource.IsReady());
+	EXPECT_EQ(NotModifiedResource.HttpStatus(), 304);
+	EXPECT_STREQ(NotModifiedResource.Path(), Info.m_aFilename);
+	CImageInfo Image = NotModifiedResource.TakeImage();
+	EXPECT_EQ(Image.m_pData[0], 11);
+	Image.Free();
+
+	CImageResource FailedResource = LoadAfter(EHttpState::ERROR, 0, Info.m_aFilename, false);
+	EXPECT_TRUE(FailedResource.IsFailed());
+	EXPECT_EQ(FailedResource.HttpStatus(), 0);
+
+	CImageResource FallbackResource = LoadAfter(EHttpState::ERROR, 0, Info.m_aFilename, true);
+	ASSERT_TRUE(FallbackResource.IsReady());
+	FallbackResource.TakeImage().Free();
+
+	CImageResource MissingResource = LoadAfter(EHttpState::DONE, 404, "asset_loader_test_missing.png", true);
+	EXPECT_TRUE(MissingResource.IsFailed());
+	EXPECT_EQ(MissingResource.HttpStatus(), 404);
+
+	Loader.Shutdown();
+	pEngine->ShutdownJobs();
+	pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE);
+}
+
+TEST(AssetLoader, AbortsUnfinishedHttpRequest)
+{
+	std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	ASSERT_NE(pStorage, nullptr) << "Error creating local storage";
+	std::unique_ptr<IEngine> pEngine(CreateTestEngine("asset_loader_test"));
+	CAssetLoader Loader;
+	Loader.Init(pEngine.get(), 1);
+	CTestHttp Http;
+	auto pRequest = std::make_shared<CTestHttpRequest>();
+	CImageResource Resource = Loader.LoadImageHttp(&Http, pRequest, pStorage.get(), "downloaded.png", IStorage::TYPE_SAVE, false);
+	EXPECT_FALSE(pRequest->IsAbortRequested());
+
+	Resource.Reset();
+	EXPECT_TRUE(pRequest->IsAbortRequested());
+	Loader.Shutdown();
+	pEngine->ShutdownJobs();
 }

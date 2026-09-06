@@ -9,6 +9,7 @@
 
 #include <engine/engine.h>
 #include <engine/gfx/image_loader.h>
+#include <engine/http.h>
 #include <engine/shared/datafile.h>
 #include <engine/storage.h>
 
@@ -31,7 +32,6 @@ protected:
 
 public:
 	CImageAssetJob(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess);
-	CImageAssetJob(std::vector<uint8_t> vData, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess);
 	CImageAssetJob(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess);
 
 	CImageInfo TakeImage();
@@ -46,11 +46,26 @@ CAssetJob::CAssetJob(IStorage *pStorage, const char *pPath, int StorageType) :
 	Abortable(true);
 }
 
-CAssetJob::CAssetJob(std::vector<uint8_t> vData, const char *pContextName) :
-	m_Path(pContextName),
-	m_vData(std::move(vData))
+CAssetJob::CAssetJob(const char *pContextName) :
+	m_Path(pContextName)
 {
 	Abortable(true);
+}
+
+std::span<const uint8_t> CAssetJob::Data() const
+{
+	if(!m_UseResponse)
+		return m_vData;
+	unsigned char *pResult;
+	size_t ResultSize;
+	m_pRequest->Result(&pResult, &ResultSize);
+	return {pResult, ResultSize};
+}
+
+std::vector<uint8_t> CAssetJob::TakeData()
+{
+	dbg_assert(!m_UseResponse, "Cannot take over the bytes of a response");
+	return std::move(m_vData);
 }
 
 bool CAssetJob::ReadFile(IStorage *pStorage, const char *pPath, int StorageType, std::vector<uint8_t> &vData)
@@ -78,6 +93,17 @@ void CAssetJob::Run()
 	if(m_pStorage != nullptr && !ReadFile(m_pStorage, Path(), m_StorageType, m_vData))
 		m_ReadFailed = true;
 	m_Success = !m_ReadFailed && Process();
+	if(m_pRequest != nullptr && m_HttpStatus != 0 && m_HttpStatus < 400 && m_pRequest->ValidatesBeforeOverwrite())
+		m_pRequest->OnValidation(m_Success);
+}
+
+bool CAssetJob::Abort()
+{
+	if(!IJob::Abort())
+		return false;
+	if(m_pRequest != nullptr)
+		m_pRequest->Abort();
+	return true;
 }
 
 void CAssetLoader::Init(IEngine *pEngine, size_t MaxConcurrentJobs)
@@ -96,8 +122,48 @@ void CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob)
 		pJob->Abort();
 		return;
 	}
+	if(pJob->m_pRequest != nullptr)
+		m_vpFetchingJobs.push_back(std::move(pJob));
+	else
+		Enqueue(std::move(pJob));
+}
+
+void CAssetLoader::Enqueue(std::shared_ptr<CAssetJob> pJob)
+{
 	m_vpPendingJobs.push_back(std::move(pJob));
 	StartPendingJobs();
+}
+
+void CAssetLoader::UpdateFetchingJobs()
+{
+	for(auto It = m_vpFetchingJobs.begin(); It != m_vpFetchingJobs.end();)
+	{
+		const std::shared_ptr<CAssetJob> pJob = *It;
+		const IHttpRequest &Request = *pJob->m_pRequest;
+		if(!pJob->Done() && !Request.Done())
+		{
+			++It;
+			continue;
+		}
+		It = m_vpFetchingJobs.erase(It);
+		if(pJob->Done())
+			continue;
+
+		if(Request.State() == EHttpState::DONE)
+			pJob->m_HttpStatus = Request.StatusCode();
+		const bool Success = pJob->m_HttpStatus != 0 && pJob->m_HttpStatus < 400;
+		if(Success && pJob->m_HttpStatus != 304 && Request.WritesToMemory())
+		{
+			pJob->m_UseResponse = true;
+			pJob->m_pStorage = nullptr;
+		}
+		else if(!Success && !pJob->m_UseFileOnError)
+		{
+			pJob->m_pStorage = nullptr;
+			pJob->m_ReadFailed = true;
+		}
+		Enqueue(pJob);
+	}
 }
 
 CImageResource CAssetLoader::LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess)
@@ -107,16 +173,19 @@ CImageResource CAssetLoader::LoadImageFile(IStorage *pStorage, const char *pPath
 	return CImageResource(std::move(pJob));
 }
 
-CImageResource CAssetLoader::LoadImageData(std::vector<uint8_t> vData, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess)
+CImageResource CAssetLoader::LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess)
 {
-	auto pJob = std::make_shared<CImageAssetJob>(std::move(vData), pContextName, std::move(Postprocess));
+	auto pJob = std::make_shared<CImageAssetJob>(std::move(RawData), Width, Height, Format, pContextName, std::move(Postprocess));
 	Submit(pJob);
 	return CImageResource(std::move(pJob));
 }
 
-CImageResource CAssetLoader::LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess)
+CImageResource CAssetLoader::LoadImageHttp(IHttp *pHttp, std::shared_ptr<IHttpRequest> pRequest, IStorage *pStorage, const char *pPath, int StorageType, bool UseFileOnError, std::function<bool(CImageInfo &)> Postprocess)
 {
-	auto pJob = std::make_shared<CImageAssetJob>(std::move(RawData), Width, Height, Format, pContextName, std::move(Postprocess));
+	auto pJob = std::make_shared<CImageAssetJob>(pStorage, pPath, StorageType, std::move(Postprocess));
+	pJob->m_pRequest = pRequest;
+	pJob->m_UseFileOnError = UseFileOnError;
+	pHttp->Run(std::move(pRequest));
 	Submit(pJob);
 	return CImageResource(std::move(pJob));
 }
@@ -137,6 +206,7 @@ void CAssetLoader::StartPendingJobs()
 void CAssetLoader::Update()
 {
 	dbg_assert(m_pEngine != nullptr, "Asset loader not initialized");
+	UpdateFetchingJobs();
 	m_vpRunningJobs.erase(
 		std::remove_if(m_vpRunningJobs.begin(), m_vpRunningJobs.end(), [](const auto &pJob) { return pJob->Done(); }),
 		m_vpRunningJobs.end());
@@ -148,10 +218,13 @@ void CAssetLoader::Shutdown()
 	if(m_pEngine == nullptr || m_Shutdown)
 		return;
 	m_Shutdown = true;
+	for(const auto &pJob : m_vpFetchingJobs)
+		pJob->Abort();
 	for(const auto &pJob : m_vpPendingJobs)
 		pJob->Abort();
 	for(const auto &pJob : m_vpRunningJobs)
 		pJob->Abort();
+	m_vpFetchingJobs.clear();
 	m_vpPendingJobs.clear();
 	m_vpRunningJobs.clear();
 }
@@ -162,14 +235,8 @@ CImageAssetJob::CImageAssetJob(IStorage *pStorage, const char *pPath, int Storag
 {
 }
 
-CImageAssetJob::CImageAssetJob(std::vector<uint8_t> vData, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess) :
-	CAssetJob(std::move(vData), pContextName),
-	m_Postprocess(std::move(Postprocess))
-{
-}
-
 CImageAssetJob::CImageAssetJob(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess) :
-	CAssetJob(std::vector<uint8_t>(), pContextName),
+	CAssetJob(pContextName),
 	m_RawData(std::move(RawData)),
 	m_FromRawData(true),
 	m_Postprocess(std::move(Postprocess))
@@ -275,6 +342,12 @@ const char *CAssetResource::Path() const
 {
 	dbg_assert(m_pJob != nullptr, "Empty asset resource has no path");
 	return m_pJob->Path();
+}
+
+int CAssetResource::HttpStatus() const
+{
+	dbg_assert(m_pJob != nullptr, "Empty asset resource has no request");
+	return m_pJob->HttpStatus();
 }
 
 CImageResource::CImageResource(std::shared_ptr<CImageAssetJob> pJob) :

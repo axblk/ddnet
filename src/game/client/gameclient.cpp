@@ -397,7 +397,7 @@ void CGameClient::OnInit()
 	for(int i = 0; i < OLD_NUM_NETOBJTYPES; i++)
 		Client()->SnapSetStaticsize7(i, m_NetObjHandler7.GetObjSize(i));
 
-	if(!TextRender()->LoadFonts())
+	if(!TextRender()->WaitForFonts([this]() { m_AssetLoader.Update(); }))
 	{
 		Client()->AddWarning(SWarning(Localize("Some fonts could not be loaded. Check the local console for details.")));
 	}
@@ -465,6 +465,11 @@ void CGameClient::OnInit()
 void CGameClient::OnUpdate()
 {
 	m_AssetLoader.Update();
+	if(TextRender()->Update())
+	{
+		// Text containers keep the glyphs they were built with
+		Client()->OnWindowResize();
+	}
 	if(m_CoreImagesPending)
 	{
 		FinishLoadingCoreImages();

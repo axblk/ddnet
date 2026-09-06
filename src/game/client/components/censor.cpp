@@ -77,7 +77,7 @@ void CCensor::Reset()
 	Engine()->AddJob(m_pCensorListDownloadJob);
 }
 
-void CCensor::OnRender()
+void CCensor::OnUpdate()
 {
 	if(m_pCensorListDownloadJob && m_pCensorListDownloadJob->Done())
 	{

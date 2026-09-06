@@ -1152,7 +1152,7 @@ bool CGameConsole::DoButton(const CUIRect &Rect, const char *pIcon, vec2 MousePo
 	return m_ConsoleState == CONSOLE_OPEN && Released && PressedInside && MouseInside;
 }
 
-void CGameConsole::OnRender()
+void CGameConsole::OnRenderApplicationOverlay()
 {
 	CUIRect Screen = *Ui()->Screen();
 	CInstance *pConsole = CurrentConsole();

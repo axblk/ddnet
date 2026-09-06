@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <string>
 
 namespace
@@ -120,8 +121,10 @@ namespace
 
 TEST(GameState, StreamMetadataAndTuningAreIndependent)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 	CTuningParams PrimaryTuning = CTuningParams::DEFAULT;
 	PrimaryTuning.Set("gravity", 0.25f);
 
@@ -144,8 +147,10 @@ TEST(GameState, StreamMetadataAndTuningAreIndependent)
 
 TEST(GameState, TeamsAreIndependentAndResetPerState)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 	Primary.SetTeam(5, 3);
 	Additional.SetTeam(5, 7);
 
@@ -174,8 +179,10 @@ TEST(GameState, TeamsAreIndependentAndResetPerState)
 
 TEST(GameState, RenderedClientsUseStateOwnedSnapshotHistory)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 	auto pPrimaryClients = std::make_unique<std::array<CGameState::CClientSnapshot, MAX_CLIENTS>>();
 	CGameState::CClientSnapshot &PrimaryClient = (*pPrimaryClients)[4];
 	PrimaryClient.m_Active = true;
@@ -242,8 +249,10 @@ TEST(GameState, RenderedClientsUseStateOwnedSnapshotHistory)
 
 TEST(GameState, ClientIdentityAndEmoticonsAreIndependentAndResetPerState)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 	auto pPrimaryClients = std::make_unique<std::array<CGameState::CClientSnapshot, MAX_CLIENTS>>();
 	auto pAdditionalClients = std::make_unique<std::array<CGameState::CClientSnapshot, MAX_CLIENTS>>();
 	CGameState::CClientSnapshot &PrimaryClient = (*pPrimaryClients)[4];
@@ -297,8 +306,10 @@ TEST(GameState, ClientIdentityAndEmoticonsAreIndependentAndResetPerState)
 
 TEST(GameState, CoreGameInfoIsIndependentAndResetPerState)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 	const uint64_t PrimaryDigestBefore = Primary.SnapshotDigest();
 	CGameInfo PrimaryInfo;
 	PrimaryInfo.m_Race = true;
@@ -357,8 +368,10 @@ TEST(GameState, CoreGameInfoIsIndependentAndResetPerState)
 
 TEST(GameState, ComponentRuntimeIsOwnedAndResetPerState)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 	Primary.Input().m_MousePos = vec2(10.0f, 20.0f);
 	Primary.Input().m_InputData.m_Fire = 3;
 	Primary.Input().m_aAmmoCount[WEAPON_LASER] = 7;
@@ -428,8 +441,10 @@ TEST(GameState, ComponentRuntimeIsOwnedAndResetPerState)
 
 TEST(GameState, Protocol7ClientsAreOwnedAndResetPerState)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 	CGameState::CProtocol7ClientState &PrimaryClient = Primary.Protocol7Client(5);
 	CGameState::CProtocol7ClientState &AdditionalClient = Additional.Protocol7Client(5);
 	PrimaryClient.m_Active = true;
@@ -458,8 +473,10 @@ TEST(GameState, Protocol7ClientsAreOwnedAndResetPerState)
 
 TEST(GameState, RaceMessagesAreOwnedAndResetPerState)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 	CGameState::CRaceMessageState &PrimaryMessages = Primary.RaceMessages();
 	CGameState::CRaceMessageState &AdditionalMessages = Additional.RaceMessages();
 	PrimaryMessages.ApplyDDRaceTime(10000, 75, false, 50);
@@ -488,8 +505,10 @@ TEST(GameState, RaceMessagesAreOwnedAndResetPerState)
 
 TEST(GameState, ExtendedCharactersAreIndependentAndResetPerState)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aPrimaryClients = {};
 	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aAdditionalClients = {};
 	CGameState::CClientSnapshot &PrimaryClient = aPrimaryClients[5];
@@ -581,8 +600,10 @@ TEST(GameState, ExtendedPlayersAndSpectatorCharactersAreIndependentAndResetPerSt
 
 TEST(GameState, DamageIndicatorsAdvanceIndependently)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 	Primary.DamageIndicators().Create(vec2(10.0f, 20.0f), vec2(1.0f, 0.0f), 4, 0.5f, 0.25f);
 	Additional.DamageIndicators().Create(vec2(30.0f, 40.0f), vec2(0.0f, 1.0f), 9, 0.75f, 0.5f);
 
@@ -608,8 +629,10 @@ TEST(GameState, DamageIndicatorsAdvanceIndependently)
 
 TEST(GameState, EffectClocksAdvanceAndResetIndependently)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 
 	Primary.EffectClock().Update(1000, 1000, 1.0f);
 	Additional.EffectClock().Update(5, 1000, 1.0f);
@@ -633,8 +656,10 @@ TEST(GameState, EffectClocksAdvanceAndResetIndependently)
 
 TEST(GameState, SceneClocksAdvancePauseAndResetIndependently)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 
 	Primary.SceneClock().Update(1000, 1000, 1.0f, 0.25f, 0.5f);
 	Primary.SceneClock().Update(1500, 1000, 1.0f, 0.5f, 0.75f);
@@ -660,7 +685,8 @@ TEST(GameState, SceneClocksAdvancePauseAndResetIndependently)
 
 TEST(GameState, EnvelopeTimeUsesFrozenStateTicks)
 {
-	CGameState State(CGameStateId(1), CStreamId(1));
+	const auto pState = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &State = *pState;
 	CNetObj_GameInfo GameInfo = {};
 	GameInfo.m_RoundStartTick = 50;
 	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aClients = {};
@@ -691,8 +717,10 @@ TEST(GameState, EnvelopeTimeUsesFrozenStateTicks)
 
 TEST(GameState, ParticlePoolsAreLazyBoundedAndResetIndependently)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 	CGameState::CParticle Particle;
 	Particle.SetDefault();
 	Particle.m_LifeSpan = 1.0f;
@@ -1190,8 +1218,10 @@ TEST(GameState, SnapshotWorldsAreIndependent)
 	ASSERT_TRUE(MapContext.Map()->Load(pStorage.get(), "data/maps/ctf1.map", IStorage::TYPE_ALL));
 	MapContext.Layers()->Init(MapContext.Map(), false, true);
 	MapContext.Collision()->Init(MapContext.Layers());
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 	Primary.InitPrediction(MapContext);
 	Additional.InitPrediction(MapContext);
 	CGameInfo PrimaryInfo;
@@ -1289,8 +1319,10 @@ TEST(GameState, SnapshotWorldsAreIndependent)
 
 TEST(GameState, EntitySnapshotsOwnCurrentAndPreviousData)
 {
-	CGameState Primary(CGameStateId(1), CStreamId(1));
-	CGameState Additional(CGameStateId(2), CStreamId(2));
+	const auto pPrimary = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &Primary = *pPrimary;
+	const auto pAdditional = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Additional = *pAdditional;
 	CNetObj_Pickup Current = {};
 	Current.m_X = 100;
 	Current.m_Y = 200;
@@ -1958,7 +1990,8 @@ TEST(GameView, MotdVisibilityIsViewLocalAndRevisionBound)
 
 TEST(GameState, HeadlessSpectatorSnapshotHasNoDesktopDependencies)
 {
-	CGameState State(CGameStateId(1), CStreamId(1));
+	const auto pState = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &State = *pState;
 	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aClients = {};
 	aClients[5].m_HasPlayerInfo = true;
 	aClients[5].m_PlayerInfo.m_Local = 1;
@@ -1993,8 +2026,10 @@ TEST(GameState, HeadlessSpectatorSnapshotHasNoDesktopDependencies)
 
 TEST(GameState, StrokedInputCommandsRemainStateLocal)
 {
-	CGameState First(CGameStateId(1), CStreamId(1));
-	CGameState Second(CGameStateId(2), CStreamId(2));
+	const auto pFirst = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &First = *pFirst;
+	const auto pSecond = std::make_unique<CGameState>(CGameStateId(2), CStreamId(2));
+	CGameState &Second = *pSecond;
 
 	EXPECT_TRUE(First.Input().ApplyStrokedCommand("+fire", 1, false));
 	EXPECT_EQ(First.Input().m_InputData.m_Fire & 1, 1);
@@ -2067,7 +2102,8 @@ TEST(GameState, GeneratedDemoPlaysToKnownDigestHeadlessly)
 	const auto pPlaybackDelta = std::make_unique<CSnapshotDelta>();
 	const auto pPlaybackDeltaSixup = std::make_unique<CSnapshotDelta>();
 	const auto pPlayer = std::make_unique<CDemoPlayer>(pPlaybackDelta.get(), pPlaybackDeltaSixup.get(), false, [] {});
-	CGameState State(CGameStateId(1), CStreamId(1));
+	const auto pState = std::make_unique<CGameState>(CGameStateId(1), CStreamId(1));
+	CGameState &State = *pState;
 	CDemoGameStateListener Listener(*pPlayer, State);
 	pPlayer->SetListener(&Listener);
 	ASSERT_EQ(pPlayer->Load(pStorage.get(), pConsole.get(), pFilename, IStorage::TYPE_SAVE), 0);
@@ -2079,7 +2115,8 @@ TEST(GameState, GeneratedDemoPlaysToKnownDigestHeadlessly)
 	EXPECT_EQ(State.SnapshotTick(), 300);
 	EXPECT_EQ(State.LocalClientId(), 2);
 	EXPECT_EQ(State.Client(2).m_Character.m_X, 200);
-	CGameState Expected(CGameStateId(2), CStreamId(1));
+	const auto pExpected = std::make_unique<CGameState>(CGameStateId(2), CStreamId(1));
+	CGameState &Expected = *pExpected;
 	std::array<CGameState::CClientSnapshot, MAX_CLIENTS> aExpectedClients = {};
 	aExpectedClients[2].m_Active = true;
 	aExpectedClients[2].m_HasPlayerInfo = true;

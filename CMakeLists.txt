@@ -2722,7 +2722,6 @@ if(CLIENT)
     components/particles.h
     components/players.cpp
     components/players.h
-    components/players_context.cpp
     components/race_demo.cpp
     components/race_demo.h
     components/scoreboard.cpp

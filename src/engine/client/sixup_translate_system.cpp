@@ -2,7 +2,7 @@
 
 #include <engine/client/client.h>
 
-int CClient::TranslateSysMsg(int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, CNetChunk *pPacket, bool *pIsExMsg)
+int CClient::TranslateSysMsg(CSessionId SessionId, int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, CNetChunk *pPacket, bool *pIsExMsg)
 {
 	*pIsExMsg = false;
 	if(!System)
@@ -19,7 +19,7 @@ int CClient::TranslateSysMsg(int *pMsgId, bool System, CUnpacker *pUnpacker, CPa
 
 	if(*pMsgId == protocol7::NETMSG_MAP_CHANGE)
 	{
-		CTranslationContext &TranslationContext = m_pNetworkSessionSource->TranslationContext();
+		CTranslationContext &TranslationContext = NetworkSource(SessionId).TranslationContext();
 		*pMsgId = NETMSG_MAP_CHANGE;
 		const char *pMapName = pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES);
 		int MapCrc = pUnpacker->GetInt();
@@ -39,7 +39,7 @@ int CClient::TranslateSysMsg(int *pMsgId, bool System, CUnpacker *pUnpacker, CPa
 		// side effect only
 		// this is a 0.7 only message and not handled in 0.6 code
 		*pMsgId = -1;
-		CServerInfo &ServerInfo = m_pNetworkSessionSource->ServerInfo();
+		CServerInfo &ServerInfo = NetworkSource(SessionId).ServerInfo();
 		net_addr_str(&pPacket->m_Address, ServerInfo.m_aAddress, sizeof(ServerInfo.m_aAddress), true);
 		str_copy(ServerInfo.m_aVersion, pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES));
 		str_copy(ServerInfo.m_aName, pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES));

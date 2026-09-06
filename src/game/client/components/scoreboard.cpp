@@ -41,7 +41,7 @@ void CScoreboard::CScoreboardPopupContext::Bind(CScoreboard *pScoreboard, const 
 
 bool CScoreboard::CInteractionLayout::Matches(const CRenderContext &Context) const
 {
-	return m_SessionId == Context.m_Session.Id() && m_StateId == Context.m_State.Id() && m_ViewId == Context.m_View.Id();
+	return m_SessionId == Context.m_Session.Id() && m_StateId == Context.m_State.Id() && m_ViewId == Context.m_View.Id() && m_Viewport == Context.m_View.Viewport();
 }
 
 CScoreboard::CInteractionLayout *CScoreboard::InteractionLayout(const CRenderContext &Context)
@@ -919,6 +919,7 @@ void CScoreboard::OnRender(const CRenderContext &Context)
 	Layout.m_SessionId = Context.m_Session.Id();
 	Layout.m_StateId = Context.m_State.Id();
 	Layout.m_ViewId = Context.m_View.Id();
+	Layout.m_Viewport = Context.m_View.Viewport();
 	m_pCurrentInteractionLayout = &Layout;
 
 	if(!Context.m_Time.m_IsGameActive)
@@ -1212,11 +1213,11 @@ bool CScoreboard::IsActive() const
 	if(m_Active)
 		return true;
 
-	const CNetObj_GameInfo *pGameInfoObj = GameClient()->m_Snap.m_pGameInfoObj;
-	if(GameClient()->m_Snap.m_pLocalInfo && !GameClient()->m_Snap.m_SpecInfo.m_Active)
+	const CNetObj_GameInfo *pGameInfoObj = GameClient()->Snap().m_pGameInfoObj;
+	if(GameClient()->Snap().m_pLocalInfo && !GameClient()->Snap().m_SpecInfo.m_Active)
 	{
 		// we are not a spectator, check if we are dead and the game isn't paused
-		if(!GameClient()->m_Snap.m_pLocalCharacter && g_Config.m_ClScoreboardOnDeath &&
+		if(!GameClient()->Snap().m_pLocalCharacter && g_Config.m_ClScoreboardOnDeath &&
 			!(pGameInfoObj && pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_PAUSED))
 			return true;
 	}

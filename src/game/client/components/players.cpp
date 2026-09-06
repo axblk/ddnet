@@ -1088,6 +1088,21 @@ void CPlayers::UpdatePresentation(const CPresentationContext &Context)
 	}
 }
 
+void CPlayers::RenderSpectatorCharacters(const CRenderContext &Context, const CScreenRect &ScreenRect) const
+{
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+	{
+		const CGameState::CClientSnapshot &Client = Context.m_State.Client(ClientId);
+		if(!Client.m_HasSpecChar)
+			continue;
+		const vec2 Position(Client.m_SpecChar.m_X, Client.m_SpecChar.m_Y);
+		if(!ScreenRect.Inside(Position))
+			continue;
+		const float Alpha = Context.IsOtherTeam(ClientId) ? g_Config.m_ClShowOthersAlpha / 100.0f : 1.0f;
+		RenderTools()->RenderTee(CAnimState::GetIdle(), &SpectatorTeeRenderInfo()->TeeRenderInfo(), EMOTE_BLINK, vec2(1.0f, 0.0f), Position, Alpha);
+	}
+}
+
 void CPlayers::OnRender(const CRenderContext &Context)
 {
 	if(!Context.m_Time.m_IsGameActive)

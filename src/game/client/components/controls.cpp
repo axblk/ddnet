@@ -67,8 +67,10 @@ void CControls::ResetInput(int Conn)
 
 void CControls::ResetInput(CStreamId StreamId)
 {
+	// There is nothing to reset if the stream went away, so the graceful path
+	// below is the right one. It used to sit behind an assertion that aborted
+	// the release build before it could ever run.
 	CGameState *pState = GameClient()->SessionContext().GameStates().FindByStream(StreamId);
-	dbg_assert(pState != nullptr, "missing game state for input reset");
 	if(!pState)
 		return;
 	pState->Input().ReleaseGameplay();
@@ -84,7 +86,7 @@ void CControls::ConKeyInputState(IConsole::IResult *pResult, void *pUserData)
 {
 	CInputState *pState = (CInputState *)pUserData;
 
-	if(pState->m_pControls->GameClient()->FocusedGameInfo().m_BugDDRaceInput && pState->m_pControls->GameClient()->m_Snap.m_SpecInfo.m_Active)
+	if(pState->m_pControls->GameClient()->FocusedGameInfo().m_BugDDRaceInput && pState->m_pControls->GameClient()->Snap().m_SpecInfo.m_Active)
 		return;
 
 	CGameState::CInputState &Input = pState->m_pControls->GameClient()->GameState(pState->m_pControls->GameClient()->ActiveConnection()).Input();
@@ -95,7 +97,7 @@ void CControls::ConKeyInputCounter(IConsole::IResult *pResult, void *pUserData)
 {
 	CInputState *pState = (CInputState *)pUserData;
 
-	if((pState->m_pControls->GameClient()->FocusedGameInfo().m_BugDDRaceInput && pState->m_pControls->GameClient()->m_Snap.m_SpecInfo.m_Active) || pState->m_pControls->GameClient()->m_Spectator.IsActive())
+	if((pState->m_pControls->GameClient()->FocusedGameInfo().m_BugDDRaceInput && pState->m_pControls->GameClient()->Snap().m_SpecInfo.m_Active) || pState->m_pControls->GameClient()->m_Spectator.IsActive())
 		return;
 
 	CGameState::CInputState &Input = pState->m_pControls->GameClient()->GameState(pState->m_pControls->GameClient()->ActiveConnection()).Input();
@@ -214,10 +216,10 @@ int CControls::SnapInput(int *pData)
 	if(GameClient()->m_Scoreboard.IsActive())
 		Input.m_InputData.m_PlayerFlags |= PLAYERFLAG_SCOREBOARD;
 
-	if(Client()->ServerCapAnyPlayerFlag() && Input.m_ShowHookColl)
+	if(GameClient()->SessionContext().ServerCapAnyPlayerFlag() && Input.m_ShowHookColl)
 		Input.m_InputData.m_PlayerFlags |= PLAYERFLAG_AIM;
 
-	if(Client()->ServerCapAnyPlayerFlag() && GameClient()->m_Camera.CamType() == CCamera::CAMTYPE_SPEC)
+	if(GameClient()->SessionContext().ServerCapAnyPlayerFlag() && GameClient()->m_Camera.CamType() == CCamera::CAMTYPE_SPEC)
 		Input.m_InputData.m_PlayerFlags |= PLAYERFLAG_SPEC_CAM;
 
 	switch(Input.m_MouseInputType)
@@ -291,7 +293,7 @@ int CControls::SnapInput(int *pData)
 			CNetObj_PlayerInput &TargetInput = pTargetState->Input().m_InputData;
 
 			// Don't copy any input to dummy when spectating others
-			if(!GameClient()->m_Snap.m_SpecInfo.m_Active || GameClient()->m_Snap.m_SpecInfo.m_SpectatorId < 0)
+			if(!GameClient()->Snap().m_SpecInfo.m_Active || GameClient()->Snap().m_SpecInfo.m_SpectatorId < 0)
 			{
 				TargetInput.m_Direction = Input.m_InputData.m_Direction;
 				TargetInput.m_Hook = Input.m_InputData.m_Hook;
@@ -351,7 +353,7 @@ int CControls::SnapInput(int *pData)
 		Send = Send || Input.m_InputData.m_NextWeapon != Input.m_LastData.m_NextWeapon;
 		Send = Send || Input.m_InputData.m_PrevWeapon != Input.m_LastData.m_PrevWeapon;
 		Send = Send || time_get() > Input.m_LastSendTime + time_freq() / 25; // send at least 25 Hz
-		Send = Send || (GameClient()->m_Snap.m_pLocalCharacter && GameClient()->m_Snap.m_pLocalCharacter->m_Weapon == WEAPON_NINJA && (Input.m_InputData.m_Direction || Input.m_InputData.m_Jump || Input.m_InputData.m_Hook));
+		Send = Send || (GameClient()->Snap().m_pLocalCharacter && GameClient()->Snap().m_pLocalCharacter->m_Weapon == WEAPON_NINJA && (Input.m_InputData.m_Direction || Input.m_InputData.m_Jump || Input.m_InputData.m_Hook));
 	}
 
 	// copy and return size
@@ -371,40 +373,40 @@ void CControls::Update()
 		return;
 	CGameState::CInputState &Input = GameClient()->GameState(GameClient()->ActiveConnection()).Input();
 
-	if(g_Config.m_ClAutoswitchWeaponsOutOfAmmo && !GameClient()->FocusedGameInfo().m_UnlimitedAmmo && GameClient()->m_Snap.m_pLocalCharacter)
+	if(g_Config.m_ClAutoswitchWeaponsOutOfAmmo && !GameClient()->FocusedGameInfo().m_UnlimitedAmmo && GameClient()->Snap().m_pLocalCharacter)
 	{
 		// Keep track of ammo count, we know weapon ammo only when we switch to that weapon, this is tracked on server and protocol does not track that
-		Input.m_aAmmoCount[std::max(0, GameClient()->m_Snap.m_pLocalCharacter->m_Weapon % NUM_WEAPONS)] = GameClient()->m_Snap.m_pLocalCharacter->m_AmmoCount;
+		Input.m_aAmmoCount[std::max(0, GameClient()->Snap().m_pLocalCharacter->m_Weapon % NUM_WEAPONS)] = GameClient()->Snap().m_pLocalCharacter->m_AmmoCount;
 		// Autoswitch weapon if we're out of ammo
 		if(Input.m_InputData.m_Fire % 2 != 0 &&
-			GameClient()->m_Snap.m_pLocalCharacter->m_AmmoCount == 0 &&
-			GameClient()->m_Snap.m_pLocalCharacter->m_Weapon != WEAPON_HAMMER &&
-			GameClient()->m_Snap.m_pLocalCharacter->m_Weapon != WEAPON_NINJA)
+			GameClient()->Snap().m_pLocalCharacter->m_AmmoCount == 0 &&
+			GameClient()->Snap().m_pLocalCharacter->m_Weapon != WEAPON_HAMMER &&
+			GameClient()->Snap().m_pLocalCharacter->m_Weapon != WEAPON_NINJA)
 		{
 			int Weapon;
 			for(Weapon = WEAPON_LASER; Weapon > WEAPON_GUN; Weapon--)
 			{
-				if(Weapon == GameClient()->m_Snap.m_pLocalCharacter->m_Weapon)
+				if(Weapon == GameClient()->Snap().m_pLocalCharacter->m_Weapon)
 					continue;
 				if(Input.m_aAmmoCount[Weapon] > 0)
 					break;
 			}
-			if(Weapon != GameClient()->m_Snap.m_pLocalCharacter->m_Weapon)
+			if(Weapon != GameClient()->Snap().m_pLocalCharacter->m_Weapon)
 				Input.m_InputData.m_WantedWeapon = Weapon + 1;
 		}
 	}
 
 	// update target pos
-	if(GameClient()->m_Snap.m_pGameInfoObj && !GameClient()->m_Snap.m_SpecInfo.m_Active)
+	if(GameClient()->Snap().m_pGameInfoObj && !GameClient()->Snap().m_SpecInfo.m_Active)
 	{
 		// make sure to compensate for smooth dyncam to ensure the cursor stays still in world space if zoomed
 		vec2 DyncamOffsetDelta = GameClient()->m_Camera.DynamicCameraTargetOffset() - GameClient()->m_Camera.DynamicCameraOffset();
 		float Zoom = GameClient()->m_Camera.Zoom();
 		Input.m_TargetPos = GameClient()->m_LocalCharacterPos + Input.m_MousePos - DyncamOffsetDelta + DyncamOffsetDelta / Zoom;
 	}
-	else if(GameClient()->m_Snap.m_SpecInfo.m_Active && GameClient()->m_Snap.m_SpecInfo.m_UsePosition)
+	else if(GameClient()->Snap().m_SpecInfo.m_Active && GameClient()->Snap().m_SpecInfo.m_UsePosition)
 	{
-		Input.m_TargetPos = GameClient()->m_Snap.m_SpecInfo.m_Position + Input.m_MousePos;
+		Input.m_TargetPos = GameClient()->Snap().m_SpecInfo.m_Position + Input.m_MousePos;
 	}
 	else
 	{
@@ -418,7 +420,7 @@ bool CControls::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 		return false;
 	CGameState::CInputState &Input = GameClient()->GameState(GameClient()->ActiveConnection()).Input();
 
-	if(CursorType == IInput::CURSOR_JOYSTICK && g_Config.m_InpControllerAbsolute && GameClient()->m_Snap.m_pGameInfoObj && !GameClient()->m_Snap.m_SpecInfo.m_Active)
+	if(CursorType == IInput::CURSOR_JOYSTICK && g_Config.m_InpControllerAbsolute && GameClient()->Snap().m_pGameInfoObj && !GameClient()->Snap().m_SpecInfo.m_Active)
 	{
 		vec2 AbsoluteDirection;
 		if(this->Input()->GetActiveJoystick()->Absolute(&AbsoluteDirection.x, &AbsoluteDirection.y))
@@ -449,7 +451,7 @@ bool CControls::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 		}
 	}
 
-	if(GameClient()->m_Snap.m_SpecInfo.m_Active && GameClient()->m_Snap.m_SpecInfo.m_SpectatorId < 0)
+	if(GameClient()->Snap().m_SpecInfo.m_Active && GameClient()->Snap().m_SpecInfo.m_SpectatorId < 0)
 		Factor *= GameClient()->m_Camera.Zoom();
 
 	Input.m_MousePos += vec2(x, y) * Factor;
@@ -461,7 +463,7 @@ bool CControls::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 void CControls::ClampMousePos()
 {
 	CGameState::CInputState &Input = GameClient()->GameState(GameClient()->ActiveConnection()).Input();
-	if(GameClient()->m_Snap.m_SpecInfo.m_Active && GameClient()->m_Snap.m_SpecInfo.m_SpectatorId < 0)
+	if(GameClient()->Snap().m_SpecInfo.m_Active && GameClient()->Snap().m_SpecInfo.m_SpectatorId < 0)
 	{
 		Input.m_MousePos.x = std::clamp(Input.m_MousePos.x, -201.0f * 32, (Collision()->GetWidth() + 201.0f) * 32.0f);
 		Input.m_MousePos.y = std::clamp(Input.m_MousePos.y, -201.0f * 32, (Collision()->GetHeight() + 201.0f) * 32.0f);

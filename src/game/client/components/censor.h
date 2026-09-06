@@ -54,7 +54,7 @@ public:
 	void Reset();
 	void OnInit() override;
 	void OnConsoleInit() override;
-	void OnRender() override;
+	void OnUpdate() override;
 	void OnShutdown() override;
 
 	std::optional<std::vector<std::string>> LoadCensorListFromFile(const char *pFilePath) const;

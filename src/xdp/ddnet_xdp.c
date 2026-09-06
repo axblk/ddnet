@@ -67,6 +67,7 @@ struct options
 	const char *m_apMasters[MAX_MASTERS];
 	int m_NumMasters;
 	unsigned m_aBudgetPps[DDNET_XDP_NUM_BUDGETS];
+	unsigned m_aPortBudgetPps[DDNET_XDP_NUM_BUDGETS];
 	unsigned m_PrefixV4;
 	unsigned m_PrefixV6;
 	unsigned m_RotateSeconds;
@@ -80,6 +81,13 @@ struct options
 	bool m_SkbMode;
 	bool m_Verbose;
 };
+
+/* The caps per destination port, in the order of the budget enum. Server info and
+ * handshakes take the rates and bursts of the hashlimit rules in ddnet-setup.sh, so
+ * a host that ran on those rules sees the same limits from this filter. Legacy 0.6
+ * and QUIC attempts have no counterpart there and are left to the prefix spread. */
+static const unsigned s_aDefaultPortPps[DDNET_XDP_NUM_BUDGETS] = {0, 100, 100, 0};
+static const unsigned s_aDefaultPortBurst[DDNET_XDP_NUM_BUDGETS] = {0, 250, 100, 0};
 
 static volatile sig_atomic_t s_Stop;
 
@@ -388,15 +396,26 @@ static int add_master(int MapV4, int MapV6, const char *pName)
 	return 0;
 }
 
-/* A rate is stored as the time one token takes, because splitting a rate over prefix
- * buckets and CPUs would otherwise round down to nothing. */
-static uint64_t ns_per_token(unsigned Pps, int NumCpus)
+/* A rate is stored as the time one token takes, because splitting a rate over `Ways`
+ * buckets, prefixes times CPUs or CPUs alone, would otherwise round down to nothing. */
+static uint64_t ns_per_token(unsigned Pps, uint64_t Ways)
 {
-	uint64_t Share;
 	if(Pps == 0)
 		return 0;
-	Share = (uint64_t)Pps;
-	return (1000000000ULL * DDNET_XDP_PREFIX_BUCKETS * (uint64_t)NumCpus) / Share;
+	return (1000000000ULL * Ways) / (uint64_t)Pps;
+}
+
+/* The burst of a cap per port: the one from ddnet-setup.sh while the rate is the one
+ * from there too, otherwise two and a half times the rate, rounded, at least one. */
+static uint64_t port_burst(int Budget, unsigned Pps)
+{
+	uint64_t Burst;
+	if(Pps == 0)
+		return 0;
+	if(Pps == s_aDefaultPortPps[Budget])
+		return s_aDefaultPortBurst[Budget];
+	Burst = ((uint64_t)Pps * 5 + 1) / 2;
+	return Burst < 1 ? 1 : Burst;
 }
 
 static void usage(const char *pName)
@@ -415,6 +434,12 @@ static void usage(const char *pName)
 		"      --handshake-pps N  budget for handshakes passed to the server (default 5000)\n"
 		"      --newconn-pps N    budget for QUIC connection attempts (default 2000)\n"
 		"                         every budget is spread over source prefixes; 0 is unlimited\n"
+		"      --legacy-port-pps N, --serverinfo-port-pps N (default 100),\n"
+		"      --handshake-port-pps N (default 100), --newconn-port-pps N\n"
+		"                         a second cap per destination port, on top of the\n"
+		"                         per-prefix spread; 0 is unlimited, and the default for\n"
+		"                         legacy and newconn. Bursts of 250 and 100 for the two\n"
+		"                         defaults, as in ddnet-setup.sh; 2.5 times N otherwise\n"
 		"  -m, --master NAME      master server, address or name, never budgeted; repeatable\n"
 		"      --prefix4 N        IPv4 aggregation prefix (default 24)\n"
 		"      --prefix6 N        IPv6 aggregation prefix (default 56)\n"
@@ -451,6 +476,10 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 		{"newconn-pps", required_argument, NULL, 2},
 		{"serverinfo-pps", required_argument, NULL, 16},
 		{"handshake-pps", required_argument, NULL, 17},
+		{"legacy-port-pps", required_argument, NULL, 19},
+		{"serverinfo-port-pps", required_argument, NULL, 20},
+		{"handshake-port-pps", required_argument, NULL, 21},
+		{"newconn-port-pps", required_argument, NULL, 22},
 		{"prefix4", required_argument, NULL, 3},
 		{"prefix6", required_argument, NULL, 4},
 		{"rotate", required_argument, NULL, 5},
@@ -480,6 +509,7 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 	pOptions->m_aBudgetPps[DDNET_XDP_BUDGET_CONNLESS] = 2000;
 	pOptions->m_aBudgetPps[DDNET_XDP_BUDGET_HANDSHAKE] = 5000;
 	pOptions->m_aBudgetPps[DDNET_XDP_BUDGET_NEWCONN] = 2000;
+	memcpy(pOptions->m_aPortBudgetPps, s_aDefaultPortPps, sizeof(pOptions->m_aPortBudgetPps));
 	pOptions->m_PrefixV4 = 24;
 	pOptions->m_PrefixV6 = 56;
 	/* A token lives as long as the connection it was issued for, and stays verifiable
@@ -517,6 +547,10 @@ static int parse_options(int argc, char **argv, struct options *pOptions)
 		case 2: pOptions->m_aBudgetPps[DDNET_XDP_BUDGET_NEWCONN] = (unsigned)atoi(optarg); break;
 		case 16: pOptions->m_aBudgetPps[DDNET_XDP_BUDGET_CONNLESS] = (unsigned)atoi(optarg); break;
 		case 17: pOptions->m_aBudgetPps[DDNET_XDP_BUDGET_HANDSHAKE] = (unsigned)atoi(optarg); break;
+		case 19: pOptions->m_aPortBudgetPps[DDNET_XDP_BUDGET_LEGACY] = (unsigned)atoi(optarg); break;
+		case 20: pOptions->m_aPortBudgetPps[DDNET_XDP_BUDGET_CONNLESS] = (unsigned)atoi(optarg); break;
+		case 21: pOptions->m_aPortBudgetPps[DDNET_XDP_BUDGET_HANDSHAKE] = (unsigned)atoi(optarg); break;
+		case 22: pOptions->m_aPortBudgetPps[DDNET_XDP_BUDGET_NEWCONN] = (unsigned)atoi(optarg); break;
 		case 3: pOptions->m_PrefixV4 = (unsigned)atoi(optarg); break;
 		case 4: pOptions->m_PrefixV6 = (unsigned)atoi(optarg); break;
 		case 5: pOptions->m_RotateSeconds = (unsigned)atoi(optarg); break;
@@ -755,8 +789,13 @@ int main(int argc, char **argv)
 
 	for(Index = 0; Index < DDNET_XDP_NUM_BUDGETS; Index++)
 	{
-		Config.m_aBudgets[Index].m_NsPerToken = ns_per_token(Options.m_aBudgetPps[Index], NumCpus);
+		Config.m_aBudgets[Index].m_NsPerToken = ns_per_token(Options.m_aBudgetPps[Index],
+			(uint64_t)DDNET_XDP_PREFIX_BUCKETS * (uint64_t)NumCpus);
 		Config.m_aBudgets[Index].m_Burst = Options.m_aBudgetPps[Index] ? 32 : 0;
+		/* Divided over the CPUs the bucket is kept on, but not over prefixes: this is
+		 * the cap on what one port is handed in total. */
+		Config.m_aPortBudgets[Index].m_NsPerToken = ns_per_token(Options.m_aPortBudgetPps[Index], (uint64_t)NumCpus);
+		Config.m_aPortBudgets[Index].m_Burst = port_burst(Index, Options.m_aPortBudgetPps[Index]);
 	}
 	Config.m_PrefixV4 = Options.m_PrefixV4;
 	Config.m_PrefixV6 = Options.m_PrefixV6;
@@ -840,6 +879,13 @@ int main(int argc, char **argv)
 	log_info("attached to %s in %s mode, %d ports, key in %s",
 		Options.m_pInterface, AttachFlags == XDP_FLAGS_DRV_MODE ? "driver" : "generic",
 		Options.m_NumPorts, Options.m_pKeyPath);
+	log_info("per port: server info %u/s burst %llu, handshakes %u/s burst %llu, 0.6 %u/s, QUIC attempts %u/s (0 is unlimited)",
+		Options.m_aPortBudgetPps[DDNET_XDP_BUDGET_CONNLESS],
+		(unsigned long long)Config.m_aPortBudgets[DDNET_XDP_BUDGET_CONNLESS].m_Burst,
+		Options.m_aPortBudgetPps[DDNET_XDP_BUDGET_HANDSHAKE],
+		(unsigned long long)Config.m_aPortBudgets[DDNET_XDP_BUDGET_HANDSHAKE].m_Burst,
+		Options.m_aPortBudgetPps[DDNET_XDP_BUDGET_LEGACY],
+		Options.m_aPortBudgetPps[DDNET_XDP_BUDGET_NEWCONN]);
 	if(Options.m_ConnPps)
 		log_info("remembering 0.6 connections, %u packets per second each, forgotten after %u idle seconds",
 			Options.m_ConnPps, Options.m_ConnIdleSeconds);

@@ -84,7 +84,13 @@ struct ddnet_xdp_budget
 
 struct ddnet_xdp_config
 {
+	/* Spread over source prefixes, so a player from an uninvolved prefix still gets
+	 * through during a flood. */
 	struct ddnet_xdp_budget m_aBudgets[DDNET_XDP_NUM_BUDGETS];
+	/* A second cap on the same kinds, per destination port, so a flood spread over
+	 * many prefixes still cannot hand one server more than it is willing to take.
+	 * Same encoding; zero is unlimited. */
+	struct ddnet_xdp_budget m_aPortBudgets[DDNET_XDP_NUM_BUDGETS];
 	uint32_t m_PrefixV4;
 	uint32_t m_PrefixV6;
 	/* Answer the token handshakes from here instead of letting them reach the
@@ -148,6 +154,11 @@ enum
 	DDNET_XDP_VERDICT_ANSWERED,
 	DDNET_XDP_NUM_VERDICTS,
 };
+
+/* One bucket per port and budget, indexed by the port's `m_Index`. */
+#define DDNET_XDP_PORT_BUCKETS (DDNET_XDP_MAX_PORTS * DDNET_XDP_NUM_BUDGETS)
+#define DDNET_XDP_PORT_BUCKET_INDEX(port, budget) \
+	((uint32_t)(port) * DDNET_XDP_NUM_BUDGETS + (uint32_t)(budget))
 
 #define DDNET_XDP_NUM_COUNTERS (DDNET_XDP_NUM_CLASSES * DDNET_XDP_NUM_VERDICTS)
 #define DDNET_XDP_STATS_ENTRIES (DDNET_XDP_MAX_PORTS * DDNET_XDP_NUM_COUNTERS)

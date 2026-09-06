@@ -29,6 +29,7 @@
 #include <bpf/bpf_helpers.h>
 // clang-format on
 
+#include "ddnet_xdp_bucket.h"
 #include "ddnet_xdp_classify.h"
 #include "ddnet_xdp_shared.h"
 
@@ -140,6 +141,19 @@ struct
 	__type(value, struct ddnet_xdp_bucket);
 } ddnet_budgets SEC(".maps");
 
+/* One bucket per port and budget, the cap a single server is given on top of the
+ * prefix spread. Per CPU like the prefix buckets, with the loader dividing the rate
+ * by the number of CPUs: a flood is spread over the receive queues by its source
+ * addresses, so every CPU sees about its share, and the same approximation is made
+ * for both rows on purpose so they can be reasoned about together. */
+struct
+{
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, DDNET_XDP_PORT_BUCKETS);
+	__type(key, __u32);
+	__type(value, struct ddnet_xdp_bucket);
+} ddnet_port_budgets SEC(".maps");
+
 /* Established 0.6 connections, learned by the filter itself. A packet whose token
  * checks out proves that its source received what the server sent back, so the entry
  * cannot be created off path. It is soft state: losing one only drops that connection
@@ -178,44 +192,25 @@ static __always_inline void count(__u32 Port, __u32 Class, __u32 Verdict)
 		(*pCounter)++;
 }
 
-/* Refills and takes one token. `NsPerToken` of zero means the class is unlimited. */
-static __always_inline int take_token(struct ddnet_xdp_bucket *pBucket, __u64 Now, __u64 NsPerToken, __u64 Burst)
-{
-	if(NsPerToken == 0)
-		return 1;
-	if(pBucket->m_LastNs == 0 || pBucket->m_LastNs > Now)
-	{
-		pBucket->m_LastNs = Now;
-		pBucket->m_Tokens = Burst;
-	}
-	const __u64 Elapsed = Now - pBucket->m_LastNs;
-	const __u64 Refill = Elapsed / NsPerToken;
-	if(Refill > 0)
-	{
-		/* Advancing by whole tokens instead of to `Now` keeps the remainder, so a
-		 * slow bucket does not lose time on every packet and stall forever. */
-		pBucket->m_LastNs += Refill * NsPerToken;
-		pBucket->m_Tokens = pBucket->m_Tokens + Refill > Burst ? Burst : pBucket->m_Tokens + Refill;
-	}
-	if(pBucket->m_Tokens == 0)
-		return 0;
-	pBucket->m_Tokens--;
-	return 1;
-}
-
-static __always_inline int take_budget(__u32 Budget, __u32 PrefixHash, const struct ddnet_xdp_config *pConfig)
+/* A packet passes only if both the prefix bucket and the port bucket hand out a
+ * token. Neither is charged when the other refuses, see `take_token_pair`. */
+static __always_inline int take_budget(__u32 Budget, __u32 PrefixHash, __u32 PortIndex, const struct ddnet_xdp_config *pConfig)
 {
 	/* Spreading sources over buckets means an attacker holding few prefixes can only
 	 * empty the buckets those prefixes land in, and a player from an uninvolved
 	 * prefix still finds a full one. */
-	const __u32 Index = (Budget % DDNET_XDP_NUM_BUDGETS) * DDNET_XDP_PREFIX_BUCKETS +
-			    PrefixHash % DDNET_XDP_PREFIX_BUCKETS;
-	struct ddnet_xdp_bucket *pBucket = bpf_map_lookup_elem(&ddnet_budgets, &Index);
-	if(!pBucket || Budget >= DDNET_XDP_NUM_BUDGETS)
+	const __u32 PrefixIndex = (Budget % DDNET_XDP_NUM_BUDGETS) * DDNET_XDP_PREFIX_BUCKETS +
+				  PrefixHash % DDNET_XDP_PREFIX_BUCKETS;
+	/* The cap per port is what stops a flood from many prefixes, each of them under
+	 * its own bucket, from adding up to more than one server should be handed. */
+	const __u32 PortBucketIndex = DDNET_XDP_PORT_BUCKET_INDEX(PortIndex % DDNET_XDP_MAX_PORTS, Budget % DDNET_XDP_NUM_BUDGETS);
+	struct ddnet_xdp_bucket *pPrefixBucket = bpf_map_lookup_elem(&ddnet_budgets, &PrefixIndex);
+	struct ddnet_xdp_bucket *pPortBucket = bpf_map_lookup_elem(&ddnet_port_budgets, &PortBucketIndex);
+	if(!pPrefixBucket || !pPortBucket || Budget >= DDNET_XDP_NUM_BUDGETS)
 		return 0;
-	return take_token(pBucket, bpf_ktime_get_ns(),
-		pConfig->m_aBudgets[Budget % DDNET_XDP_NUM_BUDGETS].m_NsPerToken,
-		pConfig->m_aBudgets[Budget % DDNET_XDP_NUM_BUDGETS].m_Burst);
+	return take_token_pair(pPrefixBucket, &pConfig->m_aBudgets[Budget % DDNET_XDP_NUM_BUDGETS],
+		pPortBucket, &pConfig->m_aPortBudgets[Budget % DDNET_XDP_NUM_BUDGETS],
+		bpf_ktime_get_ns());
 }
 
 /* Builds the canonical token input described in ddnet_xdp_shared.h. */
@@ -988,7 +983,7 @@ int ddnet_xdp_filter(struct xdp_md *pCtx)
 		 * whatever rate they arrive, and the handshake limit the operator set
 		 * applies to everything except the path that sends the most. */
 		if((SixupRequest || LegacyConnect) &&
-			!take_budget(DDNET_XDP_BUDGET_HANDSHAKE, prefix_hash(&Source, pConfig), pConfig))
+			!take_budget(DDNET_XDP_BUDGET_HANDSHAKE, prefix_hash(&Source, pConfig), pPort->m_Index, pConfig))
 		{
 			count(pPort->m_Index, DDNET_XDP_CLASS_HANDSHAKE, DDNET_XDP_VERDICT_DROP);
 			return XDP_DROP;
@@ -1086,7 +1081,7 @@ int ddnet_xdp_filter(struct xdp_md *pCtx)
 	if(Decision.m_Pass && Decision.m_Budget >= 0)
 	{
 		Source.m_PrefixHash = prefix_hash(&Source, pConfig);
-		Decision.m_Pass = take_budget((__u32)Decision.m_Budget, Source.m_PrefixHash, pConfig);
+		Decision.m_Pass = take_budget((__u32)Decision.m_Budget, Source.m_PrefixHash, pPort->m_Index, pConfig);
 	}
 
 	if(Decision.m_Verified)

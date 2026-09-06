@@ -21,7 +21,9 @@
 
 #include <cstdlib>
 #include <map>
+#include <memory>
 #include <string>
+#include <vector>
 
 // NOLINTBEGIN(readability-identifier-naming)
 struct websocket_chunk
@@ -56,14 +58,18 @@ struct context_data
 	TRecvBuffer recv_buffer;
 };
 
-// Client has main, dummy and contact connections with IPv4 and IPv6
-static context_data contexts[3 * 2];
+// One per socket and address family. The client used to have exactly three
+// connections - main, dummy and contact - but every network session it opens
+// brings its own socket now, so how many there will be is not known here. Held
+// by pointer because lws is handed the address of the context_data as its user
+// pointer, and growing a vector of them would move it.
+static std::vector<std::unique_ptr<context_data>> contexts;
 static std::map<lws_context *, context_data *> contexts_map;
 
 static lws_context *websocket_context(int socket)
 {
-	dbg_assert(socket >= 0 && socket < (int)std::size(contexts), "socket index invalid: %d", socket);
-	lws_context *context = contexts[socket].context;
+	dbg_assert(socket >= 0 && socket < (int)contexts.size(), "socket index invalid: %d", socket);
+	lws_context *context = contexts[socket]->context;
 	dbg_assert(context != nullptr, "socket context not initialized: %d", socket);
 	return context;
 }
@@ -257,9 +263,9 @@ int websocket_create(const NETADDR *bindaddr)
 {
 	// find free context
 	int first_free = -1;
-	for(int i = 0; i < (int)std::size(contexts); i++)
+	for(int i = 0; i < (int)contexts.size(); i++)
 	{
-		if(contexts[i].context == nullptr)
+		if(contexts[i]->context == nullptr)
 		{
 			first_free = i;
 			break;
@@ -267,11 +273,11 @@ int websocket_create(const NETADDR *bindaddr)
 	}
 	if(first_free == -1)
 	{
-		log_error("websockets", "Failed to create websocket: no free contexts available");
-		return -1;
+		contexts.push_back(std::make_unique<context_data>());
+		first_free = (int)contexts.size() - 1;
 	}
 
-	context_data *ctx_data = &contexts[first_free];
+	context_data *ctx_data = contexts[first_free].get();
 	mem_zero(&ctx_data->creation_info, sizeof(ctx_data->creation_info));
 	ctx_data->creation_info.options = LWS_SERVER_OPTION_FAIL_UPON_UNABLE_TO_BIND;
 	if(bindaddr->type == NETTYPE_WEBSOCKET_IPV6)
@@ -308,7 +314,7 @@ void websocket_destroy(int socket)
 	lws_context *context = websocket_context(socket);
 	lws_context_destroy(context);
 	contexts_map.erase(context);
-	contexts[socket].context = nullptr;
+	contexts[socket]->context = nullptr;
 }
 
 int websocket_recv(int socket, unsigned char *data, size_t maxsize, NETADDR *addr)

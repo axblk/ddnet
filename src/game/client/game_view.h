@@ -380,7 +380,24 @@ public:
 	using FUpdatePresentation = std::function<void(const CPresentationContext &Context)>;
 	using FRenderView = std::function<void(const CRenderContext &Context, CRenderOutput &Output)>;
 
-	void Run(std::span<const CGameRenderRequest> vRequests, const FUpdatePresentation &UpdatePresentation, const FRenderView &RenderView) const;
+	void Run(std::span<const CGameRenderRequest> vRequests, const FUpdatePresentation &UpdatePresentation, const FRenderView &RenderView);
+
+private:
+	class CStateGroup
+	{
+	public:
+		const CGameSessionContext *m_pSession = nullptr;
+		CGameState *m_pState = nullptr;
+		CGameTickInfo m_Time;
+		EPresentationPlayback m_Playback = EPresentationPlayback::PLAYING;
+		EPresentationAudio m_Audio = EPresentationAudio::MUTED;
+		std::vector<CVisibleWorldRect> m_vVisibleWorldRects;
+	};
+	// Kept between runs: a frame runs the scheduler several times over the same
+	// requests, so the groups it forms would otherwise be built from nothing every
+	// time. Entries beyond the ones a run uses are kept for their storage.
+	std::vector<CStateGroup> m_vGroups;
+	std::vector<size_t> m_vRequestGroups;
 };
 
 class CGameStateRenderer

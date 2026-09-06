@@ -56,13 +56,10 @@ CSkins::CSkinContainer::CSkinContainer(CSkins *pSkins, const char *pName, EType 
 
 CSkins::CSkinContainer::~CSkinContainer()
 {
+	// Aborting the load of a downloaded skin also aborts its request
 	if(m_LoadResource)
 	{
 		m_LoadResource.Abort();
-	}
-	if(m_pDownloadRequest)
-	{
-		m_pDownloadRequest->Abort();
 	}
 }
 
@@ -554,17 +551,6 @@ void CSkins::StartSkinDecode(CSkinContainer *pSkinContainer, const char *pPath, 
 	pSkinContainer->m_DecodeSource = Source;
 }
 
-void CSkins::StartSkinDecode(CSkinContainer *pSkinContainer, std::vector<uint8_t> vData, const char *pContextName, ESkinDecodeSource Source)
-{
-	auto pData = std::make_shared<CSkinLoadData>();
-	const std::string Name = pSkinContainer->Name();
-	pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImageData(std::move(vData), pContextName, ASSET_OWNER_SKINS, m_Generation, [pData, Name](CImageInfo &Info) {
-		return LoadSkinData(Name.c_str(), Info, *pData, false);
-	});
-	pSkinContainer->m_pLoadData = std::move(pData);
-	pSkinContainer->m_DecodeSource = Source;
-}
-
 void CSkins::StartLocalSkinLoad(CSkinContainer *pSkinContainer)
 {
 	char aPath[IO_MAX_PATH_LENGTH];
@@ -596,8 +582,18 @@ void CSkins::StartDownload(CSkinContainer *pSkinContainer, bool Force)
 	pRequest->LogProgress(HTTPLOG::NONE);
 	pRequest->FailOnErrorStatus(false);
 	pSkinContainer->m_pDownloadRequest = pRequest;
-	pSkinContainer->m_DecodeSource = ESkinDecodeSource::NONE;
-	Http()->Run(std::move(pRequest));
+
+	char aContextName[IO_MAX_PATH_LENGTH];
+	str_format(aContextName, sizeof(aContextName), "downloaded skin '%s'", pSkinContainer->Name());
+	auto pData = std::make_shared<CSkinLoadData>();
+	const std::string Name = pSkinContainer->Name();
+	// The cached skin is used when the download did not return one, for
+	// example because it is still up to date or because it failed.
+	pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImageHttp(Http(), std::move(pRequest), CHttpAssetDestination(Storage(), aPath, IStorage::TYPE_SAVE, true), aContextName, ASSET_OWNER_SKINS, m_Generation, [pData, Name](CImageInfo &Info) {
+		return LoadSkinData(Name.c_str(), Info, *pData, false);
+	});
+	pSkinContainer->m_pLoadData = std::move(pData);
+	pSkinContainer->m_DecodeSource = ESkinDecodeSource::DOWNLOAD;
 }
 
 void CSkins::StartDownloadedSkinLoad(CSkinContainer *pSkinContainer)
@@ -647,10 +643,6 @@ void CSkins::OnShutdown()
 		if(pSkinContainer->m_LoadResource)
 		{
 			pSkinContainer->m_LoadResource.Abort();
-		}
-		if(pSkinContainer->m_pDownloadRequest)
-		{
-			pSkinContainer->m_pDownloadRequest->Abort();
 		}
 	}
 	m_Skins.clear();
@@ -778,64 +770,43 @@ void CSkins::UpdateFinishLoading(CSkinLoadingStats &Stats, std::chrono::nanoseco
 			continue;
 		}
 
-		if(!pSkinContainer->m_LoadResource && pSkinContainer->m_pDownloadRequest)
-		{
-			if(!pSkinContainer->m_pDownloadRequest->Done())
-			{
-				continue;
-			}
-
-			if(pSkinContainer->m_pDownloadRequest->State() == EHttpState::DONE && pSkinContainer->m_pDownloadRequest->StatusCode() < 400)
-			{
-				if(pSkinContainer->m_pDownloadRequest->StatusCode() == 304)
-				{
-					char aPath[IO_MAX_PATH_LENGTH];
-					str_format(aPath, sizeof(aPath), "downloadedskins/%s.png", pSkinContainer->Name());
-					StartSkinDecode(pSkinContainer.get(), aPath, IStorage::TYPE_SAVE, ESkinDecodeSource::DOWNLOAD_CACHE);
-				}
-				else
-				{
-					unsigned char *pResult;
-					size_t ResultSize;
-					pSkinContainer->m_pDownloadRequest->Result(&pResult, &ResultSize);
-					std::vector<uint8_t> vData;
-					if(ResultSize > 0)
-						vData.assign(pResult, pResult + ResultSize);
-					char aContextName[IO_MAX_PATH_LENGTH];
-					str_format(aContextName, sizeof(aContextName), "downloaded skin '%s'", pSkinContainer->Name());
-					StartSkinDecode(pSkinContainer.get(), std::move(vData), aContextName, ESkinDecodeSource::DOWNLOAD_RESPONSE);
-				}
-			}
-			else
-			{
-				pSkinContainer->m_DownloadNotFound = pSkinContainer->m_pDownloadRequest->State() == EHttpState::DONE && pSkinContainer->m_pDownloadRequest->StatusCode() == 404;
-				pSkinContainer->m_pDownloadRequest = nullptr;
-				char aPath[IO_MAX_PATH_LENGTH];
-				str_format(aPath, sizeof(aPath), "downloadedskins/%s.png", pSkinContainer->Name());
-				// A skin the database does not have was never cached either, so
-				// decoding the missing file only costs a job and reports a load
-				// failure for a file that was never there.
-				if(!Storage()->FileExists(aPath, IStorage::TYPE_SAVE))
-				{
-					FinishSkinLoad(Stats, pSkinContainer.get(), false);
-					continue;
-				}
-				StartSkinDecode(pSkinContainer.get(), aPath, IStorage::TYPE_SAVE, ESkinDecodeSource::DOWNLOAD_CACHE);
-			}
-			continue;
-		}
-
-		dbg_assert(pSkinContainer->m_LoadResource, "Skin container in loading state must have a load resource or download request");
+		dbg_assert(pSkinContainer->m_LoadResource, "Skin container in loading state must have a load resource");
 		if(!pSkinContainer->m_LoadResource.IsFinished())
 		{
 			continue;
+		}
+
+		if(pSkinContainer->m_DecodeSource == ESkinDecodeSource::DOWNLOAD)
+		{
+			dbg_assert(pSkinContainer->m_pDownloadRequest != nullptr, "Downloaded skin missing request");
+			if(pSkinContainer->m_pDownloadRequest->State() != EHttpState::DONE || pSkinContainer->m_pDownloadRequest->StatusCode() >= 400)
+			{
+				pSkinContainer->m_DownloadNotFound = pSkinContainer->m_pDownloadRequest->State() == EHttpState::DONE && pSkinContainer->m_pDownloadRequest->StatusCode() == 404;
+				// The temporary file of a failed download is never validated,
+				// so the previously cached skin stays in place.
+				pSkinContainer->m_pDownloadRequest = nullptr;
+			}
+			switch(pSkinContainer->m_LoadResource.HttpSource())
+			{
+			case EHttpAssetSource::RESPONSE:
+				pSkinContainer->m_DecodeSource = ESkinDecodeSource::DOWNLOAD_RESPONSE;
+				break;
+			case EHttpAssetSource::DESTINATION:
+				pSkinContainer->m_DecodeSource = ESkinDecodeSource::DOWNLOAD_CACHE;
+				break;
+			case EHttpAssetSource::NONE:
+				// A skin the database does not have was never cached either,
+				// so there is nothing that could have been loaded.
+				pSkinContainer->m_DecodeSource = ESkinDecodeSource::NONE;
+				break;
+			}
 		}
 
 		if(pSkinContainer->m_pLoadData->m_ResizedWidth != 0)
 			log_warn("skins", "Resizing skin '%s' from %" PRIzu "x%" PRIzu " to %" PRIzu "x%" PRIzu " because its size is not divisible by %dx%d", pSkinContainer->Name(), pSkinContainer->m_pLoadData->m_OriginalWidth, pSkinContainer->m_pLoadData->m_OriginalHeight, pSkinContainer->m_pLoadData->m_ResizedWidth, pSkinContainer->m_pLoadData->m_ResizedHeight, g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridx, g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridy);
 
 		const bool Stale = pSkinContainer->m_LoadResource.IsStale(m_Generation);
-		if(!Stale && pSkinContainer->m_LoadResource.IsFailed(m_Generation))
+		if(!Stale && pSkinContainer->m_DecodeSource != ESkinDecodeSource::NONE && pSkinContainer->m_LoadResource.IsFailed(m_Generation))
 			log_error("skins", "Failed to load skin '%s' from '%s'", pSkinContainer->Name(), pSkinContainer->m_LoadResource.Path());
 		const bool DecodeSuccess = pSkinContainer->m_LoadResource.IsReady(m_Generation);
 		bool PublishSuccess = false;
@@ -877,7 +848,7 @@ void CSkins::UpdateFinishLoading(CSkinLoadingStats &Stats, std::chrono::nanoseco
 		}
 
 		if(!Stale && pSkinContainer->m_DecodeSource == ESkinDecodeSource::DOWNLOAD_CACHE &&
-			pSkinContainer->m_pDownloadRequest && pSkinContainer->m_pDownloadRequest->StatusCode() == 304 &&
+			pSkinContainer->m_pDownloadRequest != nullptr && pSkinContainer->m_pDownloadRequest->StatusCode() == 304 &&
 			!pSkinContainer->m_DownloadRetried)
 		{
 			pSkinContainer->m_pDownloadRequest->OnValidation(false);
@@ -940,10 +911,6 @@ void CSkins::Refresh(TSkinLoadedCallback &&SkinLoadedCallback)
 		if(pSkinContainer->m_LoadResource)
 		{
 			pSkinContainer->m_LoadResource.Abort();
-		}
-		if(pSkinContainer->m_pDownloadRequest)
-		{
-			pSkinContainer->m_pDownloadRequest->Abort();
 		}
 	}
 	auto OldSkins = std::move(m_Skins);

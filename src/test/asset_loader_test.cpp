@@ -6,6 +6,7 @@
 #include <engine/client/asset_loader.h>
 #include <engine/engine.h>
 #include <engine/gfx/image_loader.h>
+#include <engine/http.h>
 #include <engine/shared/datafile.h>
 #include <engine/storage.h>
 
@@ -69,6 +70,50 @@ namespace
 			Loader.Update();
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		}
+	}
+
+	class CTestHttpRequest final : public IHttpRequest
+	{
+	public:
+		CTestHttpRequest() :
+			IHttpRequest("http://localhost/test.png")
+		{
+		}
+
+		void Header(const char *pNameColonValue) override { (void)pNameColonValue; }
+
+		void Finish(EHttpState State, int StatusCode, const std::vector<uint8_t> &vData)
+		{
+			m_StatusCode = StatusCode;
+			if(!vData.empty())
+			{
+				EXPECT_EQ(OnData(reinterpret_cast<const char *>(vData.data()), vData.size()), vData.size());
+			}
+			OnCompletionInternal(State);
+		}
+	};
+
+	class CTestHttp final : public IHttp
+	{
+	public:
+		std::vector<std::shared_ptr<IHttpRequest>> m_vpRequests;
+
+		void Run(std::shared_ptr<IHttpRequest> pRequest) override { m_vpRequests.push_back(std::move(pRequest)); }
+		bool HasIpresolveBug() const override { return false; }
+	};
+
+	std::vector<uint8_t> TestPng(uint8_t Color)
+	{
+		CImageInfo Image;
+		Image.m_Width = 1;
+		Image.m_Height = 1;
+		Image.m_Format = CImageInfo::FORMAT_RGBA;
+		Image.AllocateFillZero();
+		Image.m_pData[0] = Color;
+		CByteBufferWriter Writer;
+		EXPECT_TRUE(CImageLoader::SavePng(Writer, Image));
+		Image.Free();
+		return std::vector<uint8_t>(Writer.Data(), Writer.Data() + Writer.Size());
 	}
 
 	void WaitForResource(CAssetLoader &Loader, const CAssetResource &Resource)
@@ -287,4 +332,125 @@ TEST(AssetLoader, UncompressesRawMapImageData)
 	{
 		pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE);
 	}
+}
+
+TEST(AssetLoader, DecodesHttpResponseWhenRequestFinished)
+{
+	std::unique_ptr<IEngine> pEngine(CreateTestEngine("asset_loader_test"));
+	CAssetLoader Loader;
+	Loader.Init(pEngine.get(), 1);
+	CTestHttp Http;
+	auto pRequest = std::make_shared<CTestHttpRequest>();
+	CImageResource Resource = Loader.LoadImageHttp(&Http, pRequest, CHttpAssetDestination(), "downloaded.png", 1, 2);
+
+	// The request is run immediately, but no job is submitted for it before
+	// the download finished, so no job thread waits for the network.
+	ASSERT_EQ(Http.m_vpRequests.size(), 1U);
+	EXPECT_EQ(Http.m_vpRequests[0], pRequest);
+	EXPECT_EQ(Loader.WaitingCount(), 1U);
+	Loader.Update();
+	EXPECT_EQ(Loader.WaitingCount(), 1U);
+	EXPECT_EQ(Loader.PendingCount(), 0U);
+	EXPECT_EQ(Loader.RunningCount(), 0U);
+	EXPECT_FALSE(Resource.IsFinished());
+
+	pRequest->Finish(EHttpState::DONE, 200, TestPng(42));
+	WaitForResource(Loader, Resource);
+	ASSERT_TRUE(Resource.IsReady(2));
+	EXPECT_EQ(Resource.HttpSource(), EHttpAssetSource::RESPONSE);
+	EXPECT_STREQ(Resource.Path(), "downloaded.png");
+	CImageInfo Image = Resource.TakeImage();
+	EXPECT_EQ(Image.m_pData[0], 42);
+	Image.Free();
+
+	Loader.Update();
+	EXPECT_TRUE(Loader.Idle());
+	Loader.Shutdown();
+	pEngine->ShutdownJobs();
+}
+
+TEST(AssetLoader, LoadsHttpDestinationFileWithoutResponse)
+{
+	std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	ASSERT_NE(pStorage, nullptr) << "Error creating local storage";
+	CTestInfo Info;
+	const std::vector<uint8_t> vPng = TestPng(11);
+	{
+		IOHANDLE File = pStorage->OpenFile(Info.m_aFilename, IOFLAG_WRITE, IStorage::TYPE_SAVE);
+		ASSERT_TRUE(File);
+		EXPECT_EQ(io_write(File, vPng.data(), vPng.size()), vPng.size());
+		EXPECT_EQ(io_close(File), 0);
+	}
+
+	std::unique_ptr<IEngine> pEngine(CreateTestEngine("asset_loader_test"));
+	CAssetLoader Loader;
+	Loader.Init(pEngine.get(), 1);
+	CTestHttp Http;
+
+	// A request that did not return the asset falls back to the file it
+	// downloads to, so a cached asset is used when it is still up to date.
+	auto pNotModifiedRequest = std::make_shared<CTestHttpRequest>();
+	pNotModifiedRequest->Finish(EHttpState::DONE, 304, {});
+	CImageResource NotModifiedResource = Loader.LoadImageHttp(&Http, pNotModifiedRequest, CHttpAssetDestination(pStorage.get(), Info.m_aFilename, IStorage::TYPE_SAVE, false), "downloaded.png", 1, 2);
+	WaitForResource(Loader, NotModifiedResource);
+	ASSERT_TRUE(NotModifiedResource.IsReady(2));
+	EXPECT_EQ(NotModifiedResource.HttpSource(), EHttpAssetSource::DESTINATION);
+	EXPECT_STREQ(NotModifiedResource.Path(), Info.m_aFilename);
+	CImageInfo Image = NotModifiedResource.TakeImage();
+	EXPECT_EQ(Image.m_pData[0], 11);
+	Image.Free();
+
+	// A failed request only uses the file when the asset allows it
+	auto pFailedRequest = std::make_shared<CTestHttpRequest>();
+	pFailedRequest->Finish(EHttpState::ERROR, 0, {});
+	CImageResource FailedResource = Loader.LoadImageHttp(&Http, pFailedRequest, CHttpAssetDestination(pStorage.get(), Info.m_aFilename, IStorage::TYPE_SAVE, false), "downloaded.png", 1, 2);
+	WaitForResource(Loader, FailedResource);
+	EXPECT_TRUE(FailedResource.IsFailed(2));
+	EXPECT_EQ(FailedResource.HttpSource(), EHttpAssetSource::NONE);
+
+	auto pFallbackRequest = std::make_shared<CTestHttpRequest>();
+	pFallbackRequest->Finish(EHttpState::ERROR, 0, {});
+	CImageResource FallbackResource = Loader.LoadImageHttp(&Http, pFallbackRequest, CHttpAssetDestination(pStorage.get(), Info.m_aFilename, IStorage::TYPE_SAVE, true), "downloaded.png", 1, 2);
+	WaitForResource(Loader, FallbackResource);
+	ASSERT_TRUE(FallbackResource.IsReady(2));
+	EXPECT_EQ(FallbackResource.HttpSource(), EHttpAssetSource::DESTINATION);
+	FallbackResource.TakeImage().Free();
+
+	// A missing file cannot be used either
+	auto pMissingRequest = std::make_shared<CTestHttpRequest>();
+	pMissingRequest->Finish(EHttpState::DONE, 404, {});
+	CImageResource MissingResource = Loader.LoadImageHttp(&Http, pMissingRequest, CHttpAssetDestination(pStorage.get(), "asset_loader_test_missing.png", IStorage::TYPE_SAVE, true), "downloaded.png", 1, 2);
+	WaitForResource(Loader, MissingResource);
+	EXPECT_TRUE(MissingResource.IsFailed(2));
+	EXPECT_EQ(MissingResource.HttpSource(), EHttpAssetSource::NONE);
+
+	Loader.Update();
+	EXPECT_TRUE(Loader.Idle());
+	Loader.Shutdown();
+	pEngine->ShutdownJobs();
+
+	if(!HasFailure())
+	{
+		pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE);
+	}
+}
+
+TEST(AssetLoader, AbortsUnfinishedHttpRequest)
+{
+	std::unique_ptr<IEngine> pEngine(CreateTestEngine("asset_loader_test"));
+	CAssetLoader Loader;
+	Loader.Init(pEngine.get(), 1);
+	CTestHttp Http;
+	auto pRequest = std::make_shared<CTestHttpRequest>();
+	CImageResource Resource = Loader.LoadImageHttp(&Http, pRequest, CHttpAssetDestination(), "downloaded.png", 1, 2);
+	EXPECT_FALSE(pRequest->IsAbortRequested());
+
+	// Dropping the asset also cancels the download it is waiting for
+	Loader.AbortOwnerBeforeGeneration(1, 3);
+	EXPECT_TRUE(pRequest->IsAbortRequested());
+	EXPECT_TRUE(Resource.IsFinished());
+	EXPECT_FALSE(Resource.IsReady(2));
+	EXPECT_TRUE(Loader.Idle());
+	Loader.Shutdown();
+	pEngine->ShutdownJobs();
 }

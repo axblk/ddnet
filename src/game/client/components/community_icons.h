@@ -12,11 +12,10 @@
 
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
-
-class IHttpRequest;
 
 class CCommunityIcon
 {
@@ -51,32 +50,23 @@ private:
 	public:
 		char m_aCommunityId[CServerInfo::MAX_COMMUNITY_ID_LENGTH] = {};
 		uint64_t m_Generation = 0;
+		/**
+		 * Whether the icon is being downloaded instead of being loaded from an
+		 * existing file, so the same icon is not downloaded twice.
+		 */
+		bool m_Download = false;
 		CImageResource m_Resource;
 		std::shared_ptr<CCommunityIconLoadResult> m_pResult;
 	};
 
-	class CCommunityIconDownloadJob
-	{
-		char m_aCommunityId[CServerInfo::MAX_COMMUNITY_ID_LENGTH] = {};
-		char m_aPath[IO_MAX_PATH_LENGTH] = {};
-		SHA256_DIGEST m_Sha256;
-		uint64_t m_Generation;
-		std::shared_ptr<IHttpRequest> m_pHttpRequest;
-
-	public:
-		CCommunityIconDownloadJob(CCommunityIcons *pCommunityIcons, const char *pCommunityId, const char *pUrl, const SHA256_DIGEST &Sha256, uint64_t Generation);
-		const char *CommunityId() const { return m_aCommunityId; }
-		uint64_t Generation() const { return m_Generation; }
-		std::shared_ptr<IHttpRequest> HttpRequest() { return m_pHttpRequest; }
-	};
-
 	std::vector<CCommunityIcon> m_vCommunityIcons;
-	std::deque<CCommunityIconLoad> m_CommunityIconLoadJobs;
-	std::deque<std::shared_ptr<CCommunityIconDownloadJob>> m_CommunityIconDownloadJobs;
+	std::deque<CCommunityIconLoad> m_CommunityIconLoads;
 	std::optional<SHA256_DIGEST> m_CommunityIconsInfoSha256;
 	uint64_t m_Generation = 1;
 	static int FileScan(const char *pName, int IsDir, int DirType, void *pUser);
+	std::function<bool(CImageInfo &)> IconPostprocess(const char *pPath, int StorageType, const std::shared_ptr<CCommunityIconLoadResult> &pResult);
 	void StartLoad(const char *pCommunityId, int StorageType);
+	void StartDownload(const char *pCommunityId, const char *pUrl, const SHA256_DIGEST &Sha256);
 	void LoadFinish(const char *pCommunityId, CImageInfo &Info, CImageInfo &InfoGrayscale, const SHA256_DIGEST &Sha256);
 };
 

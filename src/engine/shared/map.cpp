@@ -40,6 +40,11 @@ const char *CMap::GetDataString(int Index)
 	return m_DataFile.GetDataString(Index);
 }
 
+bool CMap::GetRawData(int Index, CDataFileRawData &RawData)
+{
+	return m_DataFile.GetRawData(Index, RawData);
+}
+
 void CMap::UnloadData(int Index)
 {
 	m_DataFile.UnloadData(Index);

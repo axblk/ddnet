@@ -13,11 +13,40 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <vector>
 
 enum
 {
 	ITEMTYPE_EX = 0xFFFF,
+};
+
+/**
+ * The contents of one data item as they are stored in the file.
+ */
+class CDataFileRawData
+{
+	std::vector<uint8_t> m_vData;
+	size_t m_UncompressedSize = 0;
+	bool m_Compressed = false;
+
+public:
+	CDataFileRawData() = default;
+	CDataFileRawData(std::vector<uint8_t> vData, size_t UncompressedSize, bool Compressed);
+
+	size_t UncompressedSize() const { return m_UncompressedSize; }
+
+	/**
+	 * @return Buffer of `UncompressedSize()` bytes, `nullptr` if the data is
+	 * corrupt or the memory could not be allocated.
+	 */
+	[[nodiscard]] std::unique_ptr<uint8_t[]> Uncompress() const;
+	/**
+	 * @param pDest Buffer of `UncompressedSize()` bytes.
+	 *
+	 * @return `false` if the data is corrupt.
+	 */
+	[[nodiscard]] bool UncompressTo(uint8_t *pDest) const;
 };
 
 /**
@@ -51,6 +80,12 @@ public:
 	void *GetData(int Index);
 	void *GetDataSwapped(int Index); // makes sure that the data is 32bit LE ints when saved
 	const char *GetDataString(int Index);
+	/**
+	 * Copies the stored bytes of a data item without uncompressing them, so
+	 * that they can be uncompressed on another thread. Data that is already
+	 * loaded or has a data processor is returned as `GetData` returns it.
+	 */
+	[[nodiscard]] bool GetRawData(int Index, CDataFileRawData &RawData);
 	void AddDataProcessor(int Index, FDataProcessor DataProcessor);
 	void UnloadData(int Index);
 	int NumData() const;

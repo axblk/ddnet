@@ -26,6 +26,7 @@ public:
 	void *GetData(int Index) override;
 	void *GetDataSwapped(int Index) override;
 	const char *GetDataString(int Index) override;
+	[[nodiscard]] bool GetRawData(int Index, CDataFileRawData &RawData) override;
 	void UnloadData(int Index) override;
 	int NumData() const override;
 

@@ -4,6 +4,7 @@
 
 #include <engine/demo.h>
 #include <engine/shared/config.h>
+#include <engine/shared/datafile.h>
 #include <engine/sound.h>
 
 #include <game/client/components/camera.h>
@@ -16,12 +17,25 @@
 class CMapSounds::CMapSoundLoading final : public CAssetJob
 {
 	ISound *m_pSound;
+	// Compressed bytes of an embedded sound
+	CDataFileRawData m_RawData;
+	bool m_FromRawData = false;
 	int m_SampleId = -1;
 
 protected:
 	bool Process() override
 	{
-		m_SampleId = m_pSound->LoadOpusFromMem(Data().data(), static_cast<unsigned>(Data().size()), false, Path());
+		if(m_FromRawData)
+		{
+			const std::unique_ptr<uint8_t[]> pData = m_RawData.Uncompress();
+			if(pData == nullptr)
+				return false;
+			m_SampleId = m_pSound->LoadOpusFromMem(pData.get(), static_cast<unsigned>(m_RawData.UncompressedSize()), false, Path());
+		}
+		else
+		{
+			m_SampleId = m_pSound->LoadOpusFromMem(Data().data(), static_cast<unsigned>(Data().size()), false, Path());
+		}
 		return m_SampleId >= 0;
 	}
 
@@ -32,9 +46,11 @@ public:
 	{
 	}
 
-	CMapSoundLoading(ISound *pSound, std::vector<uint8_t> vData, const char *pContextName) :
-		CAssetJob(std::move(vData), pContextName),
-		m_pSound(pSound)
+	CMapSoundLoading(ISound *pSound, CDataFileRawData RawData, const char *pContextName) :
+		CAssetJob(std::vector<uint8_t>(), pContextName),
+		m_pSound(pSound),
+		m_RawData(std::move(RawData)),
+		m_FromRawData(true)
 	{
 	}
 
@@ -128,25 +144,14 @@ void CMapSounds::OnMapLoad()
 		}
 		else
 		{
-			const void *pData = pMap->GetData(pSound->m_SoundData);
-			if(pData == nullptr)
+			CDataFileRawData RawData;
+			if(!pMap->GetRawData(pSound->m_SoundData, RawData))
 			{
 				log_error("mapsounds", "Failed to load map sound %d: failed to load data.", i);
 				m_LoadWarning = true;
 				continue;
 			}
-			const int SoundDataSize = pMap->GetDataSize(pSound->m_SoundData);
-			if(SoundDataSize <= 0)
-			{
-				log_error("mapsounds", "Failed to load map sound %d: invalid data size.", i);
-				m_LoadWarning = true;
-				pMap->UnloadData(pSound->m_SoundData);
-				continue;
-			}
-			const auto *pBytes = static_cast<const uint8_t *>(pData);
-			std::vector<uint8_t> vData(pBytes, pBytes + SoundDataSize);
-			m_vSoundLoads.push_back({i, GameClient()->AssetLoader().Load(std::make_shared<CMapSoundLoading>(Sound(), std::move(vData), pName))});
-			pMap->UnloadData(pSound->m_SoundData);
+			m_vSoundLoads.push_back({i, GameClient()->AssetLoader().Load(std::make_shared<CMapSoundLoading>(Sound(), std::move(RawData), pName))});
 		}
 	}
 

@@ -5,11 +5,13 @@
 #include <engine/client/asset_loader.h>
 #include <engine/engine.h>
 #include <engine/gfx/image_loader.h>
+#include <engine/shared/datafile.h>
 #include <engine/storage.h>
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -199,4 +201,85 @@ TEST(AssetLoader, DecodesOwnedImageBytesAndPostprocesses)
 
 	Loader.Shutdown();
 	pEngine->ShutdownJobs();
+}
+
+TEST(AssetLoader, UncompressesRawMapImageData)
+{
+	std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	ASSERT_NE(pStorage, nullptr) << "Error creating local storage";
+	CTestInfo Info;
+
+	constexpr size_t Width = 3;
+	constexpr size_t Height = 2;
+	std::array<uint8_t, Width * Height * 4> aPixels;
+	for(size_t i = 0; i < aPixels.size(); ++i)
+	{
+		aPixels[i] = static_cast<uint8_t>(i * 7);
+	}
+
+	{
+		CDataFileWriter Writer;
+		ASSERT_TRUE(Writer.Open(pStorage.get(), Info.m_aFilename));
+		EXPECT_EQ(Writer.AddData(aPixels.size(), aPixels.data()), 0);
+		EXPECT_EQ(Writer.AddData(3, "abc"), 1);
+		Writer.Finish();
+	}
+
+	CDataFileReader Reader;
+	ASSERT_TRUE(Reader.Open(pStorage.get(), Info.m_aFilename, IStorage::TYPE_ALL));
+
+	std::unique_ptr<IEngine> pEngine(CreateTestEngine("asset_loader_test"));
+	CAssetLoader Loader;
+	Loader.Init(pEngine.get(), 1);
+
+	CDataFileRawData RawData;
+	ASSERT_TRUE(Reader.GetRawData(0, RawData));
+	EXPECT_EQ(RawData.UncompressedSize(), aPixels.size());
+	CImageResource Resource = Loader.LoadImageRawData(std::move(RawData), Width, Height, CImageInfo::FORMAT_RGBA, "embedded: test", [](CImageInfo &Image) {
+		Image.m_pData[0] = 42;
+		return true;
+	});
+	EXPECT_STREQ(Resource.Path(), "embedded: test");
+	WaitForResource(Loader, Resource);
+	ASSERT_TRUE(Resource.IsReady());
+	CImageInfo Image = Resource.TakeImage();
+	EXPECT_EQ(Image.m_Width, Width);
+	EXPECT_EQ(Image.m_Height, Height);
+	EXPECT_EQ(Image.m_Format, CImageInfo::FORMAT_RGBA);
+	ASSERT_EQ(Image.DataSize(), aPixels.size());
+	EXPECT_EQ(Image.m_pData[0], 42);
+	EXPECT_TRUE(std::equal(aPixels.begin() + 1, aPixels.end(), Image.m_pData + 1));
+	Image.Free();
+
+	// Larger than the image, only its start is used
+	CDataFileRawData LargeRawData;
+	ASSERT_TRUE(Reader.GetRawData(0, LargeRawData));
+	CImageResource LargeResource = Loader.LoadImageRawData(std::move(LargeRawData), Width, Height - 1, CImageInfo::FORMAT_RGBA, "embedded: large");
+	WaitForResource(Loader, LargeResource);
+	ASSERT_TRUE(LargeResource.IsReady());
+	CImageInfo LargeImage = LargeResource.TakeImage();
+	ASSERT_EQ(LargeImage.DataSize(), Width * (Height - 1) * 4);
+	EXPECT_TRUE(std::equal(aPixels.begin(), aPixels.begin() + LargeImage.DataSize(), LargeImage.m_pData));
+	LargeImage.Free();
+
+	// Too small for the image
+	CDataFileRawData ShortRawData;
+	ASSERT_TRUE(Reader.GetRawData(1, ShortRawData));
+	EXPECT_EQ(ShortRawData.UncompressedSize(), 3U);
+	CImageResource ShortResource = Loader.LoadImageRawData(std::move(ShortRawData), Width, Height, CImageInfo::FORMAT_RGBA, "embedded: short");
+	WaitForResource(Loader, ShortResource);
+	EXPECT_TRUE(ShortResource.IsFailed());
+
+	CImageResource CorruptResource = Loader.LoadImageRawData(CDataFileRawData({0x12, 0x34, 0x56, 0x78}, Width * Height * 4, true), Width, Height, CImageInfo::FORMAT_RGBA, "embedded: corrupt");
+	WaitForResource(Loader, CorruptResource);
+	EXPECT_TRUE(CorruptResource.IsFailed());
+
+	Loader.Shutdown();
+	pEngine->ShutdownJobs();
+
+	Reader.Close();
+	if(!HasFailure())
+	{
+		pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE);
+	}
 }

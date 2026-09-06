@@ -52,14 +52,14 @@ class CMapImages : public CComponent, public IMapImages
 
 	char m_aEntitiesPath[IO_MAX_PATH_LENGTH];
 
-	class CExternalImageLoad
+	class CImageLoad
 	{
 	public:
 		int m_Index;
 		int m_LoadFlags;
 		CImageResource m_Resource;
 	};
-	std::vector<CExternalImageLoad> m_vExternalImageLoads;
+	std::vector<CImageLoad> m_vImageLoads;
 
 public:
 	CMapImages();
@@ -118,7 +118,7 @@ private:
 	CImageResource m_SpeedupArrowResource;
 
 	static void ConchainClTextEntitiesSize(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
-	void FinishExternalImageLoads();
+	void FinishImageLoads();
 	void FinishEntitiesLoads();
 	bool FinishEntitiesLoad(const CEntitiesLoad &Load, CImageInfo &ImgInfo, const char *pPath);
 	void InitOverlayTextures();

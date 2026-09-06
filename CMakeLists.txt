@@ -2598,6 +2598,8 @@ if(CLIENT)
     discord.cpp
     enums.h
     favorites.cpp
+    font_loading.cpp
+    font_loading.h
     friends.cpp
     friends.h
     ghost.cpp
@@ -3458,6 +3460,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     datafile_test.cpp
     dbg_test.cpp
     editor_test.cpp
+    font_loading_test.cpp
     fs_test.cpp
     gameworld_test.cpp
     ghost_test.cpp
@@ -3510,6 +3513,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/engine/client/asset_loader.h
     src/engine/client/blocklist_driver.cpp
     src/engine/client/blocklist_driver.h
+    src/engine/client/font_loading.cpp
+    src/engine/client/font_loading.h
     src/engine/client/ghost.cpp
     src/engine/client/ghost.h
     src/engine/client/serverbrowser.cpp

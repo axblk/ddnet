@@ -179,7 +179,7 @@ CPickup::CPickup(CGameWorld *pGameWorld, int Id, const CPickupData *pPickup) :
 	m_Flags = pPickup->m_Flags;
 }
 
-void CPickup::FillInfo(CNetObj_Pickup *pPickup)
+void CPickup::FillInfo(CNetObj_Pickup *pPickup) const
 {
 	pPickup->m_X = (int)m_Pos.x;
 	pPickup->m_Y = (int)m_Pos.y;
@@ -187,7 +187,7 @@ void CPickup::FillInfo(CNetObj_Pickup *pPickup)
 	pPickup->m_Subtype = m_Subtype;
 }
 
-bool CPickup::Match(CPickup *pPickup)
+bool CPickup::Match(const CPickup *pPickup) const
 {
 	if(pPickup->m_Type != m_Type || pPickup->m_Subtype != m_Subtype)
 		return false;

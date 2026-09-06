@@ -7,40 +7,30 @@
 
 #include <game/client/component.h>
 
+class CGameState;
+class CGameTickInfo;
+class CPresentationContext;
+class CSessionId;
+
 class CEffects : public CComponent
 {
-private:
-	bool m_Add5hz;
-	int64_t m_LastUpdate5hz = 0;
-
-	bool m_Add50hz;
-	int64_t m_LastUpdate50hz = 0;
-
-	bool m_Add100hz;
-	int64_t m_LastUpdate100hz = 0;
-
-	int64_t m_SkidSoundTimer = 0;
-
 public:
-	CEffects();
 	int Sizeof() const override { return sizeof(*this); }
 
-	void OnRender() override;
+	void Update(const CPresentationContext &Context);
 
-	void BulletTrail(vec2 Pos, float Alpha, float TimePassed);
-	void SmokeTrail(vec2 Pos, vec2 Vel, float Alpha, float TimePassed);
-	void SkidTrail(vec2 Pos, vec2 Vel, int Direction, float Alpha, float Volume);
-	void Explosion(vec2 Pos, float Alpha);
-	void HammerHit(vec2 Pos, float Alpha, float Volume);
-	void AirJump(vec2 Pos, float Alpha, float Volume);
-	void DamageIndicator(vec2 Pos, vec2 Dir, float Alpha);
-	void PlayerSpawn(vec2 Pos, float Alpha, float Volume);
-	void PlayerDeath(vec2 Pos, int ClientId, float Alpha);
-	void PowerupShine(vec2 Pos, vec2 Size, float Alpha);
-	void FreezingFlakes(vec2 Pos, vec2 Size, float Alpha);
-	void SparkleTrail(vec2 Pos, float Alpha);
-	void Confetti(vec2 Pos, float Alpha);
-
-	void Update();
+	void BulletTrail(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha, float TimePassed);
+	void SmokeTrail(CGameState &State, vec2 Pos, vec2 Vel, int OwnerClientId, float Alpha, float TimePassed);
+	void SkidTrail(CGameState &State, const CGameTickInfo &Time, vec2 Pos, vec2 Vel, int Direction, int OwnerClientId, float Alpha, float Volume, bool PlaySound);
+	void Explosion(CGameState &State, vec2 Pos, float Alpha);
+	void HammerHit(CGameState &State, vec2 Pos, float Alpha, float Volume);
+	void AirJump(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha, float Volume);
+	void DamageIndicator(CGameState &State, vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha);
+	void PlayerSpawn(CGameState &State, vec2 Pos, float Alpha, float Volume);
+	void PlayerDeath(CSessionId SessionId, CGameState &State, vec2 Pos, int ClientId, float Alpha);
+	void PowerupShine(CGameState &State, vec2 Pos, vec2 Size, int OwnerClientId, float Alpha);
+	void FreezingFlakes(CGameState &State, vec2 Pos, vec2 Size, int OwnerClientId, float Alpha);
+	void SparkleTrail(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha);
+	void Confetti(CGameState &State, vec2 Pos, float Alpha);
 };
 #endif

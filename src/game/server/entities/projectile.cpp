@@ -10,7 +10,9 @@
 
 #include <game/mapitems.h>
 #include <game/server/gamecontext.h>
-#include <game/server/gamemodes/ddnet.h>
+#include <game/server/gamecontroller.h>
+#include <game/server/player.h>
+#include <game/server/teams.h>
 
 CProjectile::CProjectile(
 	CGameWorld *pGameWorld,
@@ -32,8 +34,10 @@ CProjectile::CProjectile(
 	m_Direction = Dir;
 	m_LifeSpan = Span;
 	m_Owner = Owner;
+	m_OwnerTeam = Owner >= 0 && Owner < MAX_CLIENTS && GameServer()->m_apPlayers[Owner] ? GameServer()->m_apPlayers[Owner]->GetTeam() : TEAM_SPECTATORS;
+	m_OwnerDetached = false;
 	m_SoundImpact = SoundImpact;
-	m_StartTick = Server()->Tick();
+	m_StartTick = GameWorld()->GameTick();
 	m_Explosive = Explosive;
 
 	m_Layer = Layer;
@@ -42,13 +46,17 @@ CProjectile::CProjectile(
 	m_Freeze = Freeze;
 
 	m_InitDir = InitDir;
-	m_TuneZone = GameServer()->Collision()->IsTune(GameServer()->Collision()->GetMapIndex(m_Pos));
+	m_TuneZone = GameServer()->GameHost().Controller()->TuningZoneAt(m_Pos);
 	m_TeamMask = CClientMask().set();
 
+	CPlayer *pOwnerPlayer = m_Owner >= 0 && m_Owner < MAX_CLIENTS ? GameServer()->m_apPlayers[m_Owner] : nullptr;
 	CCharacter *pOwnerChar = GameServer()->GetPlayerChar(m_Owner);
-	m_BelongsToPracticeTeam = pOwnerChar && pOwnerChar->Teams()->IsPractice(pOwnerChar->Team());
-	m_DDRaceTeam = m_Owner == -1 ? 0 : GameServer()->GetDDRaceTeam(m_Owner);
-	m_IsSolo = pOwnerChar && pOwnerChar->GetCore().m_Solo;
+	const int OwnerTeamGroup = pOwnerPlayer ? GameServer()->GameHost().Controller()->PlayerTeamGroup(m_Owner) : TEAM_FLOCK;
+	m_BelongsToPracticeTeam = pOwnerChar && GameServer()->GameHost().Controller()->IsTeamPractice(OwnerTeamGroup);
+	m_InteractState.Init(m_Owner, pOwnerPlayer ? pOwnerPlayer->GetUniqueCid() : 0);
+	m_InteractState.FillOwnerConnected(OwnerTeamGroup, pOwnerChar && pOwnerChar->GetCore().m_Solo, false, false, true);
+	if(!pOwnerPlayer)
+		m_InteractState.FillOwnerDisconnected();
 
 	GameWorld()->InsertEntity(this);
 }
@@ -56,6 +64,16 @@ CProjectile::CProjectile(
 void CProjectile::Reset()
 {
 	m_MarkedForDestroy = true;
+}
+
+void CProjectile::LoseOwner()
+{
+	if(m_Owner >= 0)
+	{
+		m_Owner = -1;
+		m_OwnerDetached = true;
+		m_InteractState.FillOwnerDisconnected();
+	}
 }
 
 vec2 CProjectile::GetPos(float Time)
@@ -87,22 +105,24 @@ vec2 CProjectile::GetPos(float Time)
 
 void CProjectile::Tick()
 {
-	float Pt = (Server()->Tick() - m_StartTick - 1) / (float)Server()->TickSpeed();
-	float Ct = (Server()->Tick() - m_StartTick) / (float)Server()->TickSpeed();
+	float Pt = (GameWorld()->GameTick() - m_StartTick - 1) / (float)GameWorld()->GameTickSpeed();
+	float Ct = (GameWorld()->GameTick() - m_StartTick) / (float)GameWorld()->GameTickSpeed();
 	vec2 PrevPos = GetPos(Pt);
 	vec2 CurPos = GetPos(Ct);
 	vec2 ColPos;
 	vec2 NewPos;
-	int Collide = GameServer()->Collision()->IntersectLine(PrevPos, CurPos, &ColPos, &NewPos);
+	int Collide = Collision()->IntersectLine(PrevPos, CurPos, &ColPos, &NewPos);
 	CCharacter *pOwnerChar = nullptr;
 
 	if(m_Owner >= 0)
 		pOwnerChar = GameServer()->GetPlayerChar(m_Owner);
 
+	const bool OwnerConnected = m_Owner >= 0 && m_Owner < MAX_CLIENTS && GameServer()->m_apPlayers[m_Owner] != nullptr;
+	const CGameProjectileRules Rules = GameServer()->GameHost().Controller()->ProjectileRules({m_Type, pOwnerChar, OwnerConnected, m_BelongsToPracticeTeam});
 	CCharacter *pTargetChr = nullptr;
 
-	if(pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : g_Config.m_SvHit)
-		pTargetChr = GameServer()->m_World.IntersectCharacter(PrevPos, ColPos, m_Freeze ? 1.0f : 6.0f, ColPos, pOwnerChar, m_Owner);
+	if(Rules.m_HitCharacters)
+		pTargetChr = GameServer()->m_World.IntersectCharacter(PrevPos, ColPos, m_Freeze ? 1.0f : 6.0f, ColPos, pOwnerChar, Rules.m_RespectCharacterCollision ? m_Owner : -1);
 
 	if(m_LifeSpan > -1)
 		m_LifeSpan--;
@@ -110,6 +130,7 @@ void CProjectile::Tick()
 	m_TeamMask = CClientMask().set();
 	bool IsWeaponCollide = false;
 	if(
+		Rules.m_RespectCharacterCollision &&
 		pOwnerChar &&
 		pTargetChr &&
 		pOwnerChar->IsAlive() &&
@@ -122,13 +143,22 @@ void CProjectile::Tick()
 	{
 		m_TeamMask = pOwnerChar->TeamMask();
 	}
-	else if(m_Owner >= 0 && (m_Type != WEAPON_GRENADE || g_Config.m_SvDestroyBulletsOnDeath || m_BelongsToPracticeTeam))
+	else if(m_Owner >= 0)
 	{
-		m_MarkedForDestroy = true;
-		return;
+		switch(Rules.m_OwnerLossAction)
+		{
+		case EProjectileOwnerLossAction::KEEP:
+			break;
+		case EProjectileOwnerLossAction::DETACH:
+			LoseOwner();
+			break;
+		case EProjectileOwnerLossAction::DESTROY:
+			m_MarkedForDestroy = true;
+			return;
+		}
 	}
 
-	if(((pTargetChr && (pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : g_Config.m_SvHit || m_Owner == -1 || pTargetChr == pOwnerChar)) || Collide || GameLayerClipped(CurPos)) && !IsWeaponCollide)
+	if((pTargetChr || Collide || GameLayerClipped(CurPos)) && !IsWeaponCollide)
 	{
 		if(m_Explosive /*??*/ && (!pTargetChr || (pTargetChr && (!m_Freeze || (m_Type == WEAPON_SHOTGUN && Collide)))))
 		{
@@ -139,7 +169,14 @@ void CProjectile::Tick()
 			}
 			for(int i = 0; i < Number; i++)
 			{
-				GameServer()->CreateExplosion(ColPos, m_Owner, m_Type, m_Owner == -1, (!pTargetChr ? -1 : pTargetChr->Team()), m_TeamMask);
+				GameServer()->CreateExplosion(
+					ColPos,
+					m_Owner,
+					m_Type,
+					m_Owner == -1 && !m_OwnerDetached,
+					m_OwnerDetached || !pTargetChr ? -1 : pTargetChr->Team(),
+					m_TeamMask,
+					m_OwnerDetached ? m_OwnerTeam : TEAM_SPECTATORS);
 				GameServer()->CreateSound(ColPos, m_SoundImpact, m_TeamMask);
 			}
 		}
@@ -155,21 +192,21 @@ void CProjectile::Tick()
 			}
 		}
 		else if(pTargetChr)
-			pTargetChr->TakeDamage(vec2(0, 0), 0, m_Owner, m_Type);
+			pTargetChr->TakeDamage(m_Direction * Rules.m_DirectImpactForce, 0, m_Owner, m_Type, true, m_OwnerDetached ? m_OwnerTeam : TEAM_SPECTATORS);
 
 		if(pOwnerChar && !GameLayerClipped(ColPos) &&
 			((m_Type == WEAPON_GRENADE && pOwnerChar->HasTelegunGrenade()) || (m_Type == WEAPON_GUN && pOwnerChar->HasTelegunGun())))
 		{
-			int MapIndex = GameServer()->Collision()->GetPureMapIndex(pTargetChr ? pTargetChr->m_Pos : ColPos);
-			int TileFIndex = GameServer()->Collision()->GetFrontTileIndex(MapIndex);
-			bool IsSwitchTeleGun = GameServer()->Collision()->GetSwitchType(MapIndex) == TILE_ALLOW_TELE_GUN;
-			bool IsBlueSwitchTeleGun = GameServer()->Collision()->GetSwitchType(MapIndex) == TILE_ALLOW_BLUE_TELE_GUN;
+			int MapIndex = Collision()->GetPureMapIndex(pTargetChr ? pTargetChr->m_Pos : ColPos);
+			int TileFIndex = Collision()->GetFrontTileIndex(MapIndex);
+			bool IsSwitchTeleGun = Collision()->GetSwitchType(MapIndex) == TILE_ALLOW_TELE_GUN;
+			bool IsBlueSwitchTeleGun = Collision()->GetSwitchType(MapIndex) == TILE_ALLOW_BLUE_TELE_GUN;
 
 			if(IsSwitchTeleGun || IsBlueSwitchTeleGun)
 			{
 				// Delay specifies which weapon the tile should work for.
 				// Delay = 0 means all.
-				int Delay = GameServer()->Collision()->GetSwitchDelay(MapIndex);
+				int Delay = Collision()->GetSwitchDelay(MapIndex);
 
 				if(Delay == 1 && m_Type != WEAPON_GUN)
 					IsSwitchTeleGun = IsBlueSwitchTeleGun = false;
@@ -200,7 +237,7 @@ void CProjectile::Tick()
 
 		if(Collide && m_Bouncing != 0)
 		{
-			m_StartTick = Server()->Tick();
+			m_StartTick = GameWorld()->GameTick();
 			m_Pos = NewPos + (-(m_Direction * 4));
 			if(m_Bouncing == 1)
 				m_Direction.x = -m_Direction.x;
@@ -231,24 +268,30 @@ void CProjectile::Tick()
 	{
 		if(m_Explosive)
 		{
-			GameServer()->CreateExplosion(ColPos, m_Owner, m_Type, m_Owner == -1, (!pOwnerChar ? -1 : pOwnerChar->Team()), m_TeamMask);
+			GameServer()->CreateExplosion(
+				ColPos,
+				m_Owner,
+				m_Type,
+				m_Owner == -1 && !m_OwnerDetached,
+				m_OwnerDetached || !pOwnerChar ? -1 : pOwnerChar->Team(),
+				m_TeamMask,
+				m_OwnerDetached ? m_OwnerTeam : TEAM_SPECTATORS);
 			GameServer()->CreateSound(ColPos, m_SoundImpact, m_TeamMask);
 		}
 		m_MarkedForDestroy = true;
 		return;
 	}
 
-	int x = GameServer()->Collision()->GetIndex(PrevPos, CurPos);
-	int z;
-	if(g_Config.m_SvOldTeleportWeapons)
-		z = GameServer()->Collision()->IsTeleport(x);
-	else
-		z = GameServer()->Collision()->IsTeleportWeapon(x);
-	if(z && !GameServer()->Collision()->TeleOuts(z - 1).empty())
+	if(GameServer()->m_World.m_Core.m_PhysicsRules.m_DDNetMovement)
 	{
-		int TeleOut = GameServer()->m_World.m_Core.RandomOr0(GameServer()->Collision()->TeleOuts(z - 1).size());
-		m_Pos = GameServer()->Collision()->TeleOuts(z - 1)[TeleOut];
-		m_StartTick = Server()->Tick();
+		const int Index = Collision()->GetIndex(PrevPos, CurPos);
+		const int TeleNumber = GameServer()->m_World.m_Core.m_PhysicsRules.m_TeleportWeaponsOld ? Collision()->IsTeleport(Index) : Collision()->IsTeleportWeapon(Index);
+		if(TeleNumber && !Collision()->TeleOuts(TeleNumber - 1).empty())
+		{
+			const int TeleOut = GameServer()->m_World.m_Core.RandomOr0(Collision()->TeleOuts(TeleNumber - 1).size());
+			m_Pos = Collision()->TeleOuts(TeleNumber - 1)[TeleOut];
+			m_StartTick = GameWorld()->GameTick();
+		}
 	}
 }
 
@@ -365,16 +408,17 @@ CNetObj_DDNetProjectile CProjectile::NetInfo(int SnappingClient)
 
 void CProjectile::Snap(int SnappingClient)
 {
-	float Ct = (Server()->Tick() - m_StartTick) / (float)Server()->TickSpeed();
+	float Ct = (GameWorld()->GameTick() - m_StartTick) / (float)GameWorld()->GameTickSpeed();
 
-	if(NetworkClipped(SnappingClient, GetPos(Ct)) || !GetId().has_value())
+	if(NetworkClipped(SnappingClient, GetPos(Ct)) || GetId() < 0)
 		return;
 
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
-	if(SnappingClientVersion < VERSION_DDNET_ENTITY_NETOBJS)
+	const bool UseDDNetEntityNetObjs = GameServer()->GameHost().Controller()->UseDDNetEntityNetObjs();
+	if(UseDDNetEntityNetObjs && SnappingClientVersion < VERSION_DDNET_ENTITY_NETOBJS)
 	{
 		CCharacter *pSnapChar = GameServer()->GetPlayerChar(SnappingClient);
-		int Tick = (Server()->Tick() % Server()->TickSpeed()) % ((m_Explosive) ? 6 : 20);
+		int Tick = (GameWorld()->GameTick() % GameWorld()->GameTickSpeed()) % ((m_Explosive) ? 6 : 20);
 		if(pSnapChar && pSnapChar->IsAlive() && (m_Layer == LAYER_SWITCH && m_Number > 0 && !Switchers()[m_Number].m_aStatus[pSnapChar->Team()] && (!Tick)))
 			return;
 	}
@@ -382,15 +426,15 @@ void CProjectile::Snap(int SnappingClient)
 	if(SnappingClient != SERVER_DEMO_CLIENT && !m_TeamMask.test(SnappingClient))
 		return;
 
-	if(SnappingClientVersion >= VERSION_DDNET_ENTITY_NETOBJS)
+	if(UseDDNetEntityNetObjs && SnappingClientVersion >= VERSION_DDNET_ENTITY_NETOBJS)
 	{
-		Server()->SnapNewItem(GetId().value(), NetInfo(SnappingClient));
+		Server()->SnapNewItem(GetId(), NetInfo(SnappingClient));
 	}
-	else if(SnappingClientVersion >= VERSION_DDNET_ANTIPING_PROJECTILE && NetIsInfoLegacyCompatible())
+	else if(UseDDNetEntityNetObjs && SnappingClientVersion >= VERSION_DDNET_ANTIPING_PROJECTILE && NetIsInfoLegacyCompatible())
 	{
 		if(SnappingClientVersion >= VERSION_DDNET_MSG_LEGACY)
 		{
-			Server()->SnapNewItem(GetId().value(), NetInfoLegacy(SnappingClient));
+			Server()->SnapNewItem(GetId(), NetInfoLegacy(SnappingClient));
 		}
 		else
 		{
@@ -398,12 +442,12 @@ void CProjectile::Snap(int SnappingClient)
 			CNetObj_Projectile Projectile = {};
 			static_assert(sizeof(DDRaceProjectile) == sizeof(Projectile));
 			mem_copy(&Projectile, &DDRaceProjectile, sizeof(Projectile));
-			Server()->SnapNewItem(GetId().value(), Projectile);
+			Server()->SnapNewItem(GetId(), Projectile);
 		}
 	}
 	else
 	{
-		Server()->SnapNewItem(GetId().value(), NetInfoVanilla());
+		Server()->SnapNewItem(GetId(), NetInfoVanilla());
 	}
 }
 
@@ -416,11 +460,7 @@ void CProjectile::SwapClients(int Client1, int Client2)
 
 bool CProjectile::CanCollide(int ClientId)
 {
-	if(m_DDRaceTeam != GameServer()->GetDDRaceTeam(ClientId))
-		return false;
-	if(m_IsSolo)
-		return m_Owner == ClientId;
-	return true;
+	return m_InteractState.CanHit(GameServer(), ClientId);
 }
 
 void CProjectile::SetBouncing(int Value)

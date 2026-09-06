@@ -4,7 +4,6 @@
 #define GAME_SERVER_ENTITY_H
 
 #include "gameworld.h"
-#include "save.h"
 
 #include <base/vmath.h>
 
@@ -28,9 +27,8 @@ private:
 
 	/* Identity */
 	CGameWorld *m_pGameWorld;
-	CCollision *m_pCCollision;
 
-	std::optional<int> m_Id;
+	int m_Id = -1;
 	int m_ObjType;
 
 	/*
@@ -43,6 +41,9 @@ protected:
 	/* State */
 	bool m_MarkedForDestroy;
 
+	// Legacy access for existing entity implementations. Mode controllers use CGameServices.
+	CGameContext *GameServer() { return m_pGameWorld->GameServer(); }
+
 public: // TODO: Maybe make protected
 	/*
 		Variable: m_Pos
@@ -51,7 +52,7 @@ public: // TODO: Maybe make protected
 	vec2 m_Pos;
 
 	/* Getters */
-	std::optional<int> GetId() const { return m_Id; }
+	int GetId() const { return m_Id; }
 
 	/* Constructor */
 	CEntity(CGameWorld *pGameWorld, int Objtype, bool RequestSnapId, vec2 Pos = vec2(0, 0), int ProximityRadius = 0);
@@ -60,19 +61,17 @@ public: // TODO: Maybe make protected
 	virtual ~CEntity();
 
 	/* Objects */
-	std::vector<SSwitchers> &Switchers() { return m_pGameWorld->m_Core.m_vSwitchers; }
+	std::vector<SSwitchers> &Switchers() { return m_pGameWorld->Switchers(); }
 	CGameWorld *GameWorld() { return m_pGameWorld; }
 	CTuningParams *GlobalTuning() { return &GameWorld()->TuningList()[0]; }
 	CTuningParams *TuningList() { return GameWorld()->TuningList(); }
 	CTuningParams *GetTuning(int i) { return GameWorld()->GetTuning(i); }
 	class CConfig *Config() { return m_pGameWorld->Config(); }
-	class CGameContext *GameServer() { return m_pGameWorld->GameServer(); }
 	class IServer *Server() { return m_pGameWorld->Server(); }
-	CCollision *Collision() { return m_pCCollision; }
+	CCollision *Collision() { return m_pGameWorld->Collision(); }
 
 	/* Getters */
 	CEntity *TypeNext() { return m_pNextTypeEntity; }
-	CEntity *TypePrev() { return m_pPrevTypeEntity; }
 	const vec2 &GetPos() const { return m_Pos; }
 	float GetProximityRadius() const { return m_ProximityRadius; }
 
@@ -96,6 +95,13 @@ public: // TODO: Maybe make protected
 			Called to progress the entity to the next tick. Updates
 			and moves the entity to its new state and position.
 	*/
+	/*
+		Function: PreTick
+			Called before every entity's Tick(), for the entities that
+			need the whole world to have been read before they move.
+	*/
+	virtual void PreTick() {}
+
 	virtual void Tick() {}
 
 	/*
@@ -134,15 +140,6 @@ public: // TODO: Maybe make protected
 	virtual void SwapClients(int Client1, int Client2) {}
 
 	/*
-		Function: BlocksSave
-			Called to check if a team can be saved
-
-		Arguments:
-			ClientId - Client ID
-	*/
-	virtual ESaveResult BlocksSave(int ClientId) { return ESaveResult::SUCCESS; }
-
-	/*
 		Function GetOwnerId
 		Returns:
 			ClientId of the initiator from this entity. -1 created by map.
@@ -172,8 +169,6 @@ public: // TODO: Maybe make protected
 
 	bool GameLayerClipped(vec2 CheckPos);
 	virtual bool CanCollide(int ClientId) { return true; }
-
-	// DDRace
 
 	bool GetNearestAirPos(vec2 Pos, vec2 PrevPos, vec2 *pOutPos);
 	bool GetNearestAirPosPlayer(vec2 PlayerPos, vec2 *pOutPos);

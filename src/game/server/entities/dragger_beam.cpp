@@ -11,7 +11,6 @@
 
 #include <game/mapitems.h>
 #include <game/server/gamecontext.h>
-#include <game/server/save.h>
 
 CDraggerBeam::CDraggerBeam(CGameWorld *pGameWorld, CDragger *pDragger, vec2 Pos, float Strength, bool IgnoreWalls,
 	int ForClientId, int Layer, int Number) :
@@ -25,7 +24,7 @@ CDraggerBeam::CDraggerBeam(CGameWorld *pGameWorld, CDragger *pDragger, vec2 Pos,
 	m_Active = true;
 	m_Layer = Layer;
 	m_Number = Number;
-	m_EvalTick = Server()->Tick();
+	m_EvalTick = GameWorld()->GameTick();
 
 	GameWorld()->InsertEntity(this);
 }
@@ -49,7 +48,7 @@ void CDraggerBeam::Tick()
 	// after CDraggerBeam::Tick and only every 150ms
 	// When the dragger is disabled for the target player's team, the dragger beam dissolves. The check if a dragger
 	// is disabled is only executed every 150ms, so the beam can stay activated up to 6 extra ticks
-	if(Server()->Tick() % (int)(Server()->TickSpeed() * 0.15f) == 0)
+	if(GameWorld()->GameTick() % (int)(GameWorld()->GameTickSpeed() * 0.15f) == 0)
 	{
 		if(m_Layer == LAYER_SWITCH && m_Number > 0 &&
 			!Switchers()[m_Number].m_aStatus[pTarget->Team()])
@@ -62,8 +61,8 @@ void CDraggerBeam::Tick()
 	// When the dragger can no longer reach the target player, the dragger beam dissolves
 	if(distance(pTarget->m_Pos, m_Pos) >= g_Config.m_SvDraggerRange || !pTarget->IsAlive() ||
 		(m_IgnoreWalls ?
-				GameServer()->Collision()->IntersectNoLaserNoWalls(m_Pos, pTarget->m_Pos, nullptr, nullptr) :
-				GameServer()->Collision()->IntersectNoLaser(m_Pos, pTarget->m_Pos, nullptr, nullptr)))
+				Collision()->IntersectNoLaserNoWalls(m_Pos, pTarget->m_Pos, nullptr, nullptr) :
+				Collision()->IntersectNoLaser(m_Pos, pTarget->m_Pos, nullptr, nullptr)))
 	{
 		Reset();
 		return;
@@ -111,13 +110,13 @@ void CDraggerBeam::Snap(int SnappingClient)
 	int Subtype = (m_IgnoreWalls ? 1 : 0) | (std::clamp(round_to_int(m_Strength - 1.f), 0, 2) << 1);
 
 	int StartTick = m_EvalTick;
-	if(StartTick < Server()->Tick() - 4)
+	if(StartTick < GameWorld()->GameTick() - 4)
 	{
-		StartTick = Server()->Tick() - 4;
+		StartTick = GameWorld()->GameTick() - 4;
 	}
-	else if(StartTick > Server()->Tick())
+	else if(StartTick > GameWorld()->GameTick())
 	{
-		StartTick = Server()->Tick();
+		StartTick = GameWorld()->GameTick();
 	}
 
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
@@ -126,25 +125,20 @@ void CDraggerBeam::Snap(int SnappingClient)
 		StartTick = -1;
 	}
 
-	std::optional<int> SnapObjId = GetId();
-	if(m_pDragger->WillDraggerBeamUseDraggerId(m_ForClientId, SnappingClient) && m_pDragger->GetId().has_value())
+	int SnapObjId = GetId();
+	if(m_pDragger->WillDraggerBeamUseDraggerId(m_ForClientId, SnappingClient) && m_pDragger->GetId() >= 0)
 	{
 		SnapObjId = m_pDragger->GetId();
 	}
 
-	if(!SnapObjId.has_value())
+	if(SnapObjId < 0)
 		return;
 
-	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), SnapObjId.value(),
+	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), SnapObjId,
 		TargetPos, m_Pos, StartTick, m_ForClientId, LASERTYPE_DRAGGER, Subtype, m_Number);
 }
 
 void CDraggerBeam::SwapClients(int Client1, int Client2)
 {
 	m_ForClientId = m_ForClientId == Client1 ? Client2 : (m_ForClientId == Client2 ? Client1 : m_ForClientId);
-}
-
-ESaveResult CDraggerBeam::BlocksSave(int ClientId)
-{
-	return m_ForClientId == ClientId ? ESaveResult::DRAGGER_ACTIVE : ESaveResult::SUCCESS;
 }

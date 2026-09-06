@@ -595,7 +595,6 @@ endif()
 if(NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "ios"))
   find_package(GLEW)
 endif()
-find_package(EGL QUIET)
 find_package(GTest)
 if(UPNP)
   find_package(Miniupnpc)
@@ -902,7 +901,6 @@ else()
   endif()
 endif()
 if(TOOLS)
-  show_dependency_status("EGL" EGL) # egl also checks for OpenGL::EGL
 endif()
 
 ########################################################################
@@ -1768,6 +1766,7 @@ set(EXPECTED_DATA
   maps7/Sunny\ Side\ Up.map
   maps7/Tsunami.map
   maps7/Tutorial.map
+  maps7/ctf1.map
   maps7/readme.txt
   menuimages/demos.png
   menuimages/editor.png
@@ -2053,11 +2052,13 @@ set(EXPECTED_DATA
   themes/winter_day.map
   themes/winter_night.map
   touch_controls.json
+  vanilla_golden/scenarios.txt
+  vanilla_golden/stock-0.7.5.trace
   wordlist.txt
   # tidy-alphabetical-end
 )
 
-set_glob(DATA GLOB_RECURSE "cfg;frag;json;map;otf;png;rules;ttc;ttf;txt;vert;wv" data ${EXPECTED_DATA})
+set_glob(DATA GLOB_RECURSE "cfg;frag;json;map;otf;png;rules;trace;ttc;ttf;txt;vert;wv" data ${EXPECTED_DATA})
 
 ########################################################################
 # COPY DATA AND SHARED LIBS
@@ -2435,6 +2436,8 @@ set_src(GAME_SHARED GLOB src/game
   layers.h
   localization.cpp
   localization.h
+  map_door_collision.cpp
+  map_door_collision.h
   mapbugs.cpp
   mapbugs.h
   mapbugs_list.h
@@ -3171,12 +3174,48 @@ if(SERVER)
     gamecontroller.h
     gamemodes/ddnet.cpp
     gamemodes/ddnet.h
-    gamemodes/mod.cpp
-    gamemodes/mod.h
+    gamemodes/ddrace.cpp
+    gamemodes/ddrace.h
+    gamemodes/ddrace_character.cpp
+    gamemodes/ddrace_character.h
+    gamemodes/ddrace_map_entities.cpp
+    gamemodes/ddrace_map_entities.h
     gameworld.cpp
     gameworld.h
     interactions.cpp
     interactions.h
+    mode/builtin_game_modes.cpp
+    mode/builtin_game_modes.h
+    mode/entity_registry.cpp
+    mode/entity_registry.h
+    mode/game_host.cpp
+    mode/game_host.h
+    mode/game_mode_map_reload_state.h
+    mode/game_mode_registry.cpp
+    mode/game_mode_registry.h
+    mode/game_services.cpp
+    mode/game_services.h
+    mode/match_lifecycle.h
+    modes/insta/game_modes.cpp
+    modes/insta/game_modes.h
+    modes/insta/rules.h
+    modes/vanilla/ctf.cpp
+    modes/vanilla/ctf.h
+    modes/vanilla/dm.cpp
+    modes/vanilla/dm.h
+    modes/vanilla/flag.cpp
+    modes/vanilla/flag.h
+    modes/vanilla/game_modes.cpp
+    modes/vanilla/game_modes.h
+    modes/vanilla/player.h
+    modes/vanilla/tdm.cpp
+    modes/vanilla/tdm.h
+    modes/vanilla/teamplay.cpp
+    modes/vanilla/teamplay.h
+    modes/vanilla/vanilla_pvp.cpp
+    modes/vanilla/vanilla_pvp.h
+    modes/zcatch/game_modes.cpp
+    modes/zcatch/game_modes.h
     mutes.cpp
     player.cpp
     player.h
@@ -3338,13 +3377,15 @@ if(TOOLS)
     uuid.cpp
     # tidy-alphabetical-end
   )
+  if(NOT CLIENT)
+    # The map renderer draws through the client's graphics backend, so there is
+    # nothing for it to link against in a server-only build.
+    list(FILTER TOOLS_SRC EXCLUDE REGEX "map_render\\.cpp$")
+  endif()
   foreach(ABS_T ${TOOLS_SRC})
     file(RELATIVE_PATH T "${PROJECT_SOURCE_DIR}/src/tools/" ${ABS_T})
     if(T MATCHES "\\.cpp$")
       string(REGEX REPLACE "\\.cpp$" "" TOOL "${T}")
-      if(TOOL MATCHES "^map_render$" AND NOT EGL_FOUND)
-        continue()
-      endif()
       set(TOOL_DEPS ${DEPS})
       set(TOOL_LIBS ${LIBS})
       unset(EXTRA_TOOL_SRC)
@@ -3358,8 +3399,17 @@ if(TOOLS)
       endif()
       if(TOOL MATCHES "^map_render$")
         list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS} ${FREETYPE_INCLUDE_DIRS} ${GLEW_INCLUDE_DIRS})
-        list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-gfx> ${GLEW_DEP})
-        list(APPEND TOOL_LIBS ${PNG_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLEW_LIBRARIES} ${CMAKE_DL_LIBS} ${EGL_LIBRARY} ${OPENGL_gl_LIBRARY})
+        list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-client-graphics> $<TARGET_OBJECTS:engine-gfx> ${GLEW_DEP})
+        # The tool draws with the client's backends, so it needs what the client
+        # links for its window system - opengl32 on Windows, the Cocoa and
+        # OpenGL frameworks on macOS - not just the bare GL library.
+        list(APPEND TOOL_INCLUDE_DIRS ${PLATFORM_CLIENT_INCLUDE_DIRS})
+        list(APPEND TOOL_LIBS ${PNG_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLEW_LIBRARIES} ${CMAKE_DL_LIBS} ${PLATFORM_CLIENT_LIBS} ${VULKAN_LIBRARIES})
+        if(WEBGPU_NATIVE_BACKEND)
+          # engine-client-graphics links this, but the tool takes its objects
+          # rather than the target, and objects carry no link interface.
+          list(APPEND TOOL_LIBS WGPU::Native)
+        endif()
       endif()
       set(EXCLUDE_FROM_ALL)
       if(DEV)
@@ -3378,29 +3428,21 @@ if(TOOLS)
       target_link_libraries(${TOOL} ${TOOL_LIBS})
       if(TOOL MATCHES "^map_render$")
         target_sources(map_render PRIVATE
-          src/engine/client/graphics_threaded.cpp
-          src/engine/client/backend_egl.cpp
-          src/engine/client/backend/opengl/backend_opengl.cpp
-          src/engine/client/backend/opengl/backend_opengl3.cpp
-          src/engine/client/backend/opengl/opengl_sl.cpp
-          src/engine/client/backend/opengl/opengl_sl_program.cpp
-          src/engine/client/backend/glsl_shader_compiler.cpp
-          src/engine/client/backend/backend_base.cpp
-          src/engine/client/backend_threaded.cpp
-          src/engine/client/blocklist_driver.cpp
-          src/engine/client/warning.cpp
+          # tidy-alphabetical-start
+          src/game/client/render.cpp
+          src/game/client/skin.cpp
+          src/game/map/envelope_extrema.cpp
           src/game/map/map_renderer.cpp
+          src/game/map/render_component.cpp
           src/game/map/render_layer.cpp
           src/game/map/render_map.cpp
-          src/game/map/render_component.cpp
-          src/game/map/envelope_extrema.cpp
+          src/game/map/tile_chunk_cache.cpp
+          # tidy-alphabetical-end
           ${PROJECT_BINARY_DIR}/src/generated/client_data.h
+          ${PROJECT_BINARY_DIR}/src/generated/client_data7.cpp
+          ${PROJECT_BINARY_DIR}/src/generated/client_data7.h
         )
         target_include_directories(map_render PRIVATE ${PROJECT_BINARY_DIR})
-        target_compile_definitions(map_render PRIVATE BACKEND_NO_SDL)
-        if(GLEW_BUNDLED)
-          target_compile_definitions(map_render PRIVATE CONF_GLEW_HAS_CONTEXT_INIT)
-        endif()
       endif()
       list(APPEND TARGETS_TOOLS ${TOOL})
     endif()
@@ -3466,11 +3508,13 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     client_connection_test.cpp
     color_test.cpp
     compression_test.cpp
+    console_test.cpp
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp
     editor_test.cpp
     fs_test.cpp
+    game_mode_registry_test.cpp
     game_state_test.cpp
     gameworld_test.cpp
     git_revision_test.cpp
@@ -3615,6 +3659,19 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     VERBATIM
   )
 
+  set(TARGET_VANILLA_GOLDEN vanilla-golden-current)
+  add_executable(${TARGET_VANILLA_GOLDEN} EXCLUDE_FROM_ALL
+    scripts/vanilla_golden/current_runner.cpp
+    $<TARGET_OBJECTS:engine-shared>
+    $<TARGET_OBJECTS:game-server-without-main>
+    $<TARGET_OBJECTS:game-shared>
+    $<TARGET_OBJECTS:rust-bridge-shared>
+    ${DEPS}
+  )
+  target_link_libraries(${TARGET_VANILLA_GOLDEN} ${LIBS_SERVER})
+  list(APPEND TARGETS_OWN ${TARGET_VANILLA_GOLDEN})
+  list(APPEND TARGETS_LINK ${TARGET_VANILLA_GOLDEN})
+
   add_custom_target(run_cxx_tests
     COMMAND $<TARGET_FILE:${TARGET_TESTRUNNER}> ${TESTRUNNER_ARGS}
     COMMAND $<TARGET_FILE:${TARGET_CLIENT_GAME_STATE_TESTS}>
@@ -3622,8 +3679,16 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     DEPENDS ${TARGET_TESTRUNNER} ${TARGET_CLIENT_GAME_STATE_TESTS} check_client_state_architecture
     USES_TERMINAL
   )
+  add_custom_target(run_vanilla_golden_tests
+    COMMAND ${Python3_EXECUTABLE} scripts/vanilla_golden.py compare --runner $<TARGET_FILE:${TARGET_VANILLA_GOLDEN}>
+    COMMENT Running Vanilla golden tests
+    DEPENDS ${TARGET_VANILLA_GOLDEN}
+    USES_TERMINAL
+    VERBATIM
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  )
   add_custom_target(run_tests
-    DEPENDS run_cxx_tests
+    DEPENDS run_cxx_tests run_vanilla_golden_tests
   )
   if(NOT MSVC OR CMAKE_BUILD_TYPE STREQUAL Release OR CMAKE_BUILD_TYPE STREQUAL RelWithDebInfo OR CMAKE_BUILD_TYPE STREQUAL MinSizeRel)
     # On MSVC, Rust tests only work in the release mode because we link our C++
@@ -3839,7 +3904,7 @@ if(TOOLS)
     map_extract
     # tidy-alphabetical-end
   )
-  if(EGL_FOUND)
+  if(TARGET map_render)
     list(APPEND TARGET_TOOLS map_render)
   endif()
 else()

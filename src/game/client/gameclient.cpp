@@ -381,7 +381,7 @@ void CGameClient::OnInit()
 	for(int i = 0; i < OLD_NUM_NETOBJTYPES; i++)
 		Client()->SnapSetStaticsize7(i, m_NetObjHandler7.GetObjSize(i));
 
-	if(!TextRender()->LoadFonts())
+	if(!TextRender()->WaitForFonts())
 	{
 		Client()->AddWarning(SWarning(Localize("Some fonts could not be loaded. Check the local console for details.")));
 	}

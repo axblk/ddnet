@@ -512,6 +512,7 @@ class CNetServer
 	int64_t m_BudgetStart = 0;
 	int m_NumPreConnDecompress = 0;
 	int m_NumBanReplies = 0;
+	int m_NumVanillaRefusals = 0;
 
 	CSpamConn m_aSpamConns[NET_CONNLIMIT_IPS] = {};
 

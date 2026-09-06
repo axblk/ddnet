@@ -90,10 +90,15 @@ void CNetConnection::SetError(const char *pString)
 
 void CNetConnection::Init(NETSOCKET Socket, bool BlockCloseMsg)
 {
+	Init(CNetUdpEndpoint::FromSocket(Socket), BlockCloseMsg);
+}
+
+void CNetConnection::Init(const CNetUdpEndpoint &Endpoint, bool BlockCloseMsg)
+{
 	Reset();
 	ResetStats();
 
-	m_Socket = Socket;
+	m_Endpoint = Endpoint;
 	m_BlockCloseMsg = BlockCloseMsg;
 	m_aErrorString[0] = '\0';
 }
@@ -130,7 +135,7 @@ int CNetConnection::Flush()
 
 	// send of the packets
 	m_Construct.m_Ack = m_Ack;
-	CNetBase::SendPacket(m_Socket, &m_PeerAddr, &m_Construct, m_SecurityToken, m_Sixup);
+	CNetBase::SendPacket(m_Endpoint, &m_PeerAddr, &m_Construct, m_SecurityToken, m_Sixup);
 
 	// update send times
 	m_LastSendTime = time_get();
@@ -203,11 +208,23 @@ int CNetConnection::QueueChunk(int Flags, int DataSize, const void *pData)
 
 void CNetConnection::SendConnect()
 {
+	// 0.7 carries the token it wants its answer addressed with in the payload, and
+	// the server reads it from there. The 0.6 magic would be read as that token, so
+	// every resent connect would ask to be answered at 'TKEN' - a token this side
+	// never accepts. The first connect is sent by the token handshake and is right;
+	// only the resends came through here, which is why this only shows when one is
+	// needed.
+	if(m_Sixup)
+	{
+		SendControlWithToken7(NET_CTRLMSG_CONNECT, m_SecurityToken);
+		return;
+	}
+
 	// send the connect message
 	m_LastSendTime = time_get();
 	for(int i = 0; i < m_NumConnectAddrs; i++)
 	{
-		CNetBase::SendControlMsg(m_Socket, &m_aConnectAddrs[i], m_Ack, NET_CTRLMSG_CONNECT, SECURITY_TOKEN_MAGIC, sizeof(SECURITY_TOKEN_MAGIC), m_SecurityToken, m_Sixup);
+		CNetBase::SendControlMsg(m_Endpoint, &m_aConnectAddrs[i], m_Ack, NET_CTRLMSG_CONNECT, SECURITY_TOKEN_MAGIC, sizeof(SECURITY_TOKEN_MAGIC), m_SecurityToken, m_Sixup);
 	}
 }
 
@@ -215,7 +232,7 @@ void CNetConnection::SendControl(int ControlMsg, const void *pExtra, int ExtraSi
 {
 	// send the control message
 	m_LastSendTime = time_get();
-	CNetBase::SendControlMsg(m_Socket, &m_PeerAddr, m_Ack, ControlMsg, pExtra, ExtraSize, m_SecurityToken, m_Sixup);
+	CNetBase::SendControlMsg(m_Endpoint, &m_PeerAddr, m_Ack, ControlMsg, pExtra, ExtraSize, m_SecurityToken, m_Sixup);
 }
 
 void CNetConnection::ResendChunk(CNetChunkResend *pResend)
@@ -268,7 +285,7 @@ void CNetConnection::SendControlWithToken7(int ControlMsg, SECURITY_TOKEN Respon
 {
 	m_LastSendTime = time_get();
 
-	CNetBase::SendControlMsgWithToken7(m_Socket, &m_PeerAddr, ResponseToken, 0, ControlMsg, m_Token, true);
+	CNetBase::SendControlMsgWithToken7(m_Endpoint, &m_PeerAddr, ResponseToken, 0, ControlMsg, m_Token, true);
 }
 
 int CNetConnection::Connect7(const NETADDR *pAddr, int NumAddrs)

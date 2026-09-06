@@ -23,6 +23,7 @@
 #include <engine/shared/demo.h>
 #include <engine/shared/fifo.h>
 #include <engine/shared/network.h>
+#include <engine/shared/quic_transport.h>
 #include <engine/textrender.h>
 #include <engine/warning.h>
 
@@ -30,6 +31,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 class CDemoEdit;
 class IDemoRecorder;
@@ -49,6 +51,13 @@ class IUpdater;
 
 class CClient : public IClient, public CDemoPlayer::IListener
 {
+	struct CQuicKnownHost
+	{
+		char m_aHost[128];
+		int m_Port;
+		SHA256_DIGEST m_IdentityFingerprint;
+	};
+
 	// needed interfaces
 	IConfigManager *m_pConfigManager = nullptr;
 	CConfig *m_pConfig = nullptr;
@@ -77,6 +86,21 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	NETADDR m_NetworkBindAddr = NETADDR_ZEROED;
 	bool m_NetworkInitialized = false;
 	std::array<std::vector<std::pair<int, int>>, 2> m_avSnapshotStaticSizes;
+	CQuicTransport m_QuicTransport;
+	CQuicSessionId m_QuicSession;
+	NETADDR m_QuicServerAddress = {};
+	bool m_UseQuic = false;
+	bool m_UseWebTransport = false;
+	bool m_QuicConnected = false;
+	// When the last message arrived over QUIC, for the connection warning
+	int64_t m_QuicLastRecvTime = 0;
+	std::vector<CQuicKnownHost> m_vQuicKnownHosts;
+	char m_aQuicTrustHost[128] = {};
+	int m_QuicTrustPort = 0;
+	SHA256_DIGEST m_QuicExpectedIdentity = {};
+	bool m_QuicIdentityRequired = false;
+	bool m_QuicIdentityKnown = false;
+	bool m_QuicRememberIdentity = false;
 	CDemoRecorder m_aDemoRecorders[RECORDER_MAX];
 	CDemoRecorder m_aDemoRecordersSixup[RECORDER_MAX];
 	CDemoEditor m_DemoEditor;
@@ -456,12 +480,17 @@ public:
 	const char *LoadMap(CSessionId SessionId, const char *pName, const char *pFilename, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc);
 	const char *LoadMapSearch(CSessionId SessionId, const char *pMapName, const std::optional<SHA256_DIGEST> &WantedSha256, int WantedCrc);
 
-	int TranslateSysMsg(CSessionId SessionId, int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, CNetChunk *pPacket, bool *pIsExMsg);
+	int TranslateSysMsg(CSessionId SessionId, int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, const NETADDR *pPeerAddress, bool *pIsExMsg);
 
 	bool PreprocessConnlessPacket7(CNetChunk *pPacket);
 	void ProcessConnlessPacket(CNetChunk *pPacket);
 	void ProcessServerInfo(int Type, NETADDR *pFrom, const void *pData, int DataSize);
 	void ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNetChunk *pPacket);
+	void ClearQuicTrust();
+	const CQuicKnownHost *FindQuicKnownHost(const char *pHost, int Port) const;
+	bool AddQuicKnownHost(const char *pHost, int Port, SHA256_DIGEST IdentityFingerprint);
+	void StartLegacyConnection(CSessionId SessionId, const NETADDR *pAddrs, int NumAddrs, bool Sixup);
+	const NETADDR &SessionServerAddress(CSessionId SessionId) const;
 
 	int UnpackAndValidateSnapshot(CSnapshot *pFrom, CSnapshotBuffer *pTo);
 
@@ -477,7 +506,7 @@ public:
 	CTranslationContext &TranslationContext(CSessionId SessionId) override { return SessionSource(SessionId).TranslationContext(); }
 	const CTranslationContext &TranslationContext(CSessionId SessionId) const override { return SessionSource(SessionId).TranslationContext(); }
 
-	const NETADDR &ServerAddress() const override { return *NetClient(CONN_MAIN).ServerAddress(); }
+	const NETADDR &ServerAddress() const override { return SessionServerAddress(m_NetworkSessionId); }
 	int ConnectNetTypes() const override;
 	const char *ConnectAddressString() const override { return m_pNetworkSessionSource->m_ConnectAddress.c_str(); }
 	const char *MapDownloadName() const override { return m_pNetworkSessionSource->m_aMapdownloadName; }
@@ -521,6 +550,10 @@ public:
 	static void Con_Minimize(IConsole::IResult *pResult, void *pUserData);
 	static void Con_Ping(IConsole::IResult *pResult, void *pUserData);
 	static void ConNetReset(IConsole::IResult *pResult, void *pUserData);
+	static void Con_QuicReconnect(IConsole::IResult *pResult, void *pUserData);
+	static void Con_QuicKnownHost(IConsole::IResult *pResult, void *pUserData);
+	static void Con_QuicForgetHost(IConsole::IResult *pResult, void *pUserData);
+	static void QuicKnownHostsConfigSaveCallback(IConfigManager *pConfigManager, void *pUserData);
 	static void Con_Screenshot(IConsole::IResult *pResult, void *pUserData);
 
 #if defined(CONF_VIDEORECORDER)

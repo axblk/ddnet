@@ -34,3 +34,6 @@ extend-ignore-re = [
 	'I\*\*nteger',
 	's\*\*tring',
 ]
+
+[default.extend-identifiers]
+countr_zero = "countr_zero"

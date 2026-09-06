@@ -2,7 +2,7 @@
 
 #include <engine/client/client.h>
 
-int CClient::TranslateSysMsg(CSessionId SessionId, int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, CNetChunk *pPacket, bool *pIsExMsg)
+int CClient::TranslateSysMsg(CSessionId SessionId, int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, const NETADDR *pPeerAddress, bool *pIsExMsg)
 {
 	*pIsExMsg = false;
 	if(!System)
@@ -40,7 +40,7 @@ int CClient::TranslateSysMsg(CSessionId SessionId, int *pMsgId, bool System, CUn
 		// this is a 0.7 only message and not handled in 0.6 code
 		*pMsgId = -1;
 		CServerInfo &ServerInfo = NetworkSource(SessionId).ServerInfo();
-		net_addr_str(&pPacket->m_Address, ServerInfo.m_aAddress, sizeof(ServerInfo.m_aAddress), true);
+		net_addr_str(pPeerAddress, ServerInfo.m_aAddress, sizeof(ServerInfo.m_aAddress), true);
 		str_copy(ServerInfo.m_aVersion, pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES));
 		str_copy(ServerInfo.m_aName, pUnpacker->GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES));
 		str_clean_whitespaces(ServerInfo.m_aName);

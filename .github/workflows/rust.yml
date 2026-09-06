@@ -71,6 +71,27 @@ jobs:
       run:
         cargo fmt -- --check
 
+  fuzz:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_HTTP_MULTIPLEXING: false
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    - name: Cache Rust dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+          cache-bin: false # WORKAROUND(https://github.com/Swatinem/rust-cache/issues/341)
+          workspaces: |
+              fuzz
+    # The fuzz targets include the engine modules with #[path], and the crate
+    # declares its own workspace, so nothing else here would notice a rename on
+    # the engine side. Running the fuzzer needs nightly, type checking does not.
+    - name: Check fuzz targets
+      run: |
+        cargo check --bins --manifest-path fuzz/Cargo.toml
+        cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+
   cargo-deny:
     runs-on: ubuntu-latest
     env:

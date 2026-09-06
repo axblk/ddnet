@@ -52,7 +52,7 @@ public:
 		bool operator==(const CSixup &Other) const;
 		bool operator!=(const CSixup &Other) const { return !(*this == Other); }
 	};
-	CSixup m_aSixup[NUM_DUMMIES];
+	CSixup m_Sixup;
 
 	CSkinDescriptor();
 	void Reset();
@@ -83,8 +83,7 @@ public:
 		m_TeeRenderFlags = 0;
 		m_FeetFlipped = false;
 
-		for(auto &Sixup : m_aSixup)
-			Sixup.Reset();
+		m_Sixup.Reset();
 	}
 
 	void Apply(const CSkin *pSkin)
@@ -176,7 +175,7 @@ public:
 		}
 	};
 
-	CSixup m_aSixup[NUM_DUMMIES];
+	CSixup m_Sixup;
 };
 
 class CManagedTeeRenderInfo

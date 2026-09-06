@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <type_traits>
 
 /**
@@ -57,6 +58,25 @@ inline void mem_zero(T *block, size_t size)
 {
 	static_assert((std::is_trivially_constructible<T>::value && std::is_trivially_destructible<T>::value) || std::is_fundamental<T>::value);
 	memset(block, 0, size);
+}
+
+/**
+ * Resets an object to a value-initialized one, in its place.
+ *
+ * @ingroup Memory
+ *
+ * @param object The object to reset.
+ *
+ * @remark Unlike `object = {}`, this does not build the new value as a
+ * temporary on the stack first. Use it for large objects like arrays of
+ * per-client state: such a temporary takes as much stack as the object, and
+ * the main thread of a Windows program only has 1 MiB.
+ */
+template<typename T>
+inline void mem_reset(T &object)
+{
+	std::destroy_at(&object);
+	std::construct_at(&object);
 }
 
 /**

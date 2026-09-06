@@ -8,6 +8,7 @@
 #include <base/types.h>
 #include <base/vmath.h>
 
+#include <engine/client/session.h>
 #include <engine/console.h>
 #include <engine/demo.h>
 #include <engine/friends.h>
@@ -27,6 +28,7 @@
 #include <game/voting.h>
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -495,6 +497,9 @@ protected:
 
 	// found in menus_ingame.cpp
 	STextContainerIndex m_MotdTextContainerIndex;
+	float m_MotdTextHeight = 0.0f;
+	CSessionId m_MotdTextSessionId;
+	uint64_t m_MotdTextRevision = 0;
 	void RenderGame(CUIRect MainView);
 	void PopupConfirmDisconnect();
 	void PopupConfirmDisconnectDummy();
@@ -675,7 +680,7 @@ public:
 
 	void OnStateChange(int NewState, int OldState) override;
 	void OnWindowResize() override;
-	void OnRender() override;
+	void OnRenderApplicationOverlay() override;
 	bool OnInput(const IInput::CEvent &Event) override;
 	bool OnCursorMove(float x, float y, IInput::ECursorType CursorType) override;
 	void OnShutdown() override;

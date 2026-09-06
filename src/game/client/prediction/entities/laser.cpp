@@ -38,7 +38,7 @@ bool CLaser::HitCharacter(vec2 From, vec2 To)
 	CCharacter *pHit;
 	bool DontHitSelf = (GameWorld()->m_WorldConfig.m_OldLaser || !GameWorld()->m_WorldConfig.m_IsDDRace) || (m_Bounces == 0);
 
-	if(pOwnerChar ? (!pOwnerChar->LaserHitDisabled() && m_Type == WEAPON_LASER) || (!pOwnerChar->ShotgunHitDisabled() && m_Type == WEAPON_SHOTGUN) : g_Config.m_SvHit)
+	if(pOwnerChar ? (!pOwnerChar->LaserHitDisabled() && m_Type == WEAPON_LASER) || (!pOwnerChar->ShotgunHitDisabled() && m_Type == WEAPON_SHOTGUN) : GameWorld()->GameConfig()->m_SvHit)
 		pHit = GameWorld()->IntersectCharacter(m_Pos, To, 0.f, At, DontHitSelf ? pOwnerChar : nullptr, m_Owner);
 	else
 		pHit = GameWorld()->IntersectCharacter(m_Pos, To, 0.f, At, DontHitSelf ? pOwnerChar : nullptr, m_Owner, pOwnerChar);
@@ -208,7 +208,7 @@ CLaser::CLaser(CGameWorld *pGameWorld, int Id, const CLaserData *pLaser) :
 	m_Id = Id;
 }
 
-bool CLaser::Match(CLaser *pLaser)
+bool CLaser::Match(const CLaser *pLaser) const
 {
 	if(pLaser->m_EvalTick != m_EvalTick)
 		return false;
@@ -217,6 +217,20 @@ bool CLaser::Match(CLaser *pLaser)
 	const vec2 ThisDiff = m_Pos - m_From;
 	const vec2 OtherDiff = pLaser->m_Pos - pLaser->m_From;
 	const float DirError = distance(normalize(OtherDiff) * length(ThisDiff), ThisDiff);
+	return DirError <= 2.f;
+}
+
+bool CLaser::Match(const CLaserData &Data) const
+{
+	// Compares what the constructor takes from the data, measured from the
+	// data's direction as Match(const CLaser *) of a laser made from it does.
+	if(m_EvalTick != Data.m_StartTick)
+		return false;
+	if(distance(m_From, Data.m_From) > 2.f)
+		return false;
+	const vec2 DataDiff = Data.m_To - Data.m_From;
+	const vec2 Diff = m_Pos - m_From;
+	const float DirError = distance(normalize(Diff) * length(DataDiff), DataDiff);
 	return DirError <= 2.f;
 }
 

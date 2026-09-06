@@ -38,6 +38,16 @@ bool CPlasma::Match(const CPlasma *pPlasma) const
 	       pPlasma->m_Explosive == m_Explosive && pPlasma->m_Freeze == m_Freeze && pPlasma->m_ForClientId == m_ForClientId;
 }
 
+bool CPlasma::Match(const CLaserData &Data) const
+{
+	// Compares what the constructor and Read() take from the data.
+	const bool KnownType = 0 <= Data.m_Subtype && Data.m_Subtype < NUM_LASERGUNTYPES;
+	const bool Explosive = KnownType && (Data.m_Subtype & 1);
+	const bool Freeze = KnownType && (Data.m_Subtype & 2);
+	return Data.m_StartTick == m_EvalTick && Data.m_SwitchNumber == m_Number &&
+	       Explosive == m_Explosive && Freeze == m_Freeze && Data.m_Owner == m_ForClientId;
+}
+
 void CPlasma::Read(const CLaserData *pData)
 {
 	m_Pos = pData->m_From;

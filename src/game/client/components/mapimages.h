@@ -33,37 +33,36 @@ constexpr const char *const gs_apModEntitiesNames[] = {
 	"f-ddrace",
 };
 
-class CMapImages : public CComponent, public IMapImages
+constexpr int MapImageEntityVariant(EMapImageModType ModType, bool Masked)
 {
-	friend class CBackground;
-	friend class CMenuBackground;
+	return static_cast<int>(ModType) * 2 + static_cast<int>(Masked);
+}
 
-	IGraphics::CTextureHandle m_aTextures[MAX_MAPIMAGES];
-	int m_Count;
+static_assert(MapImageEntityVariant(MAP_IMAGE_MOD_TYPE_DDNET, false) != MapImageEntityVariant(MAP_IMAGE_MOD_TYPE_DDNET, true));
+static_assert(MapImageEntityVariant(MAP_IMAGE_MOD_TYPE_FDDRACE, true) == MAP_IMAGE_MOD_TYPE_COUNT * 2 - 1);
 
+class CGameInfo;
+
+class CMapImages : public CComponent
+{
 	char m_aEntitiesPath[IO_MAX_PATH_LENGTH];
 
 public:
 	CMapImages();
 	int Sizeof() const override { return sizeof(*this); }
 
-	IGraphics::CTextureHandle Get(int Index) const override { return m_aTextures[Index]; }
-	int Num() const override { return m_Count; }
-
-	void OnMapLoadImpl(class CLayers *pLayers, class IMap *pMap);
-	void OnMapLoad() override;
 	void OnInit() override;
-	void Unload();
-	void LoadBackground(class CLayers *pLayers, class IMap *pMap);
 
 	// DDRace
-	IGraphics::CTextureHandle GetEntities(EMapImageEntityLayerType EntityLayerType) override;
-	IGraphics::CTextureHandle GetSpeedupArrow() override;
-	IGraphics::CTextureHandle GetTuneColors() override;
+	IGraphics::CTextureHandle GetEntities(EMapImageEntityLayerType EntityLayerType);
+	IGraphics::CTextureHandle GetEntities(EMapImageEntityLayerType EntityLayerType, EMapImageModType EntitiesModType, bool EntitiesAreMasked);
+	IGraphics::CTextureHandle GetSpeedupArrow();
+	IGraphics::CTextureHandle GetTuneColors();
+	IGraphics::CTextureHandle GetTuneColors(EMapImageModType EntitiesModType, bool EntitiesAreMasked);
 
-	IGraphics::CTextureHandle GetOverlayBottom() override;
-	IGraphics::CTextureHandle GetOverlayTop() override;
-	IGraphics::CTextureHandle GetOverlayCenter() override;
+	IGraphics::CTextureHandle GetOverlayBottom();
+	IGraphics::CTextureHandle GetOverlayTop();
+	IGraphics::CTextureHandle GetOverlayCenter();
 
 	void SetTextureScale(int Scale);
 	int GetTextureScale() const;
@@ -73,10 +72,10 @@ public:
 private:
 	bool m_aEntitiesIsLoaded[MAP_IMAGE_MOD_TYPE_COUNT * 2];
 	bool m_SpeedupArrowIsLoaded;
-	bool m_TuneColorsIsLoaded;
+	bool m_aTuneColorsIsLoaded[MAP_IMAGE_MOD_TYPE_COUNT * 2];
 	IGraphics::CTextureHandle m_aaEntitiesTextures[MAP_IMAGE_MOD_TYPE_COUNT * 2][MAP_IMAGE_ENTITY_LAYER_TYPE_COUNT];
 	IGraphics::CTextureHandle m_SpeedupArrowTexture;
-	IGraphics::CTextureHandle m_TuneColorMapTexture;
+	IGraphics::CTextureHandle m_aTuneColorMapTextures[MAP_IMAGE_MOD_TYPE_COUNT * 2];
 	IGraphics::CTextureHandle m_OverlayBottomTexture;
 	IGraphics::CTextureHandle m_OverlayTopTexture;
 	IGraphics::CTextureHandle m_OverlayCenterTexture;
@@ -86,6 +85,31 @@ private:
 	void InitOverlayTextures();
 	IGraphics::CTextureHandle UploadEntityLayerText(int TextureSize, int MaxWidth, int YOffset);
 	void UpdateEntityLayerText(CImageInfo &TextImage, int TextureSize, int MaxWidth, int YOffset, int NumbersPower, int MaxNumber = -1);
+};
+
+class CMapRenderImages : public CComponentInterfaces, public IMapImages
+{
+	CMapImages &m_Assets;
+	IGraphics::CTextureHandle m_aTextures[MAX_MAPIMAGES];
+	int m_Count = 0;
+	EMapImageModType m_EntitiesModType = MAP_IMAGE_MOD_TYPE_DDNET;
+	bool m_EntitiesAreMasked = true;
+
+public:
+	explicit CMapRenderImages(CMapImages &Assets);
+
+	void Load(class CLayers *pLayers, class IMap *pMap, bool Sixup);
+	void Unload();
+	void SetGameInfo(const CGameInfo &GameInfo);
+
+	IGraphics::CTextureHandle Get(int Index) const override { return m_aTextures[Index]; }
+	int Num() const override { return m_Count; }
+	IGraphics::CTextureHandle GetEntities(EMapImageEntityLayerType EntityLayerType) override;
+	IGraphics::CTextureHandle GetSpeedupArrow() override { return m_Assets.GetSpeedupArrow(); }
+	IGraphics::CTextureHandle GetTuneColors() override;
+	IGraphics::CTextureHandle GetOverlayBottom() override { return m_Assets.GetOverlayBottom(); }
+	IGraphics::CTextureHandle GetOverlayTop() override { return m_Assets.GetOverlayTop(); }
+	IGraphics::CTextureHandle GetOverlayCenter() override { return m_Assets.GetOverlayCenter(); }
 };
 
 #endif

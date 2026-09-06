@@ -14,10 +14,15 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 class CJsonWriter;
+class CGameSessionContext;
+class CGameState;
+class CGameView;
+class CRenderContext;
 typedef struct _json_value json_value;
 
 class CTouchControls : public CComponent
@@ -47,8 +52,9 @@ public:
 	void OnInit() override;
 	void OnReset() override;
 	void OnWindowResize() override;
-	bool OnTouchState(std::vector<IInput::CTouchFingerState> &vTouchFingerStates) override;
-	void OnRender() override;
+	void OnRender(const CRenderContext &Context) override;
+	bool UpdateController(CGameView &View, std::span<const IInput::CTouchFingerState> vTouchFingerStates, bool AcceptInput);
+	void RenderApplicationOverlay();
 
 	bool LoadConfigurationFromFile(int StorageType);
 	bool LoadConfigurationFromClipboard();
@@ -224,7 +230,7 @@ public:
 		CTouchButton *m_pTouchButton;
 		CTouchControls *m_pTouchControls;
 
-		bool m_Active; // variables below must only be used when active
+		bool m_Active = false; // variables below must only be used when active
 		IInput::CTouchFinger m_Finger;
 		vec2 m_ActivePosition;
 		vec2 m_AccumulatedDelta;
@@ -589,7 +595,6 @@ private:
 	int NextActiveAction(int Action) const;
 	int NextDirectTouchAction() const;
 	void UpdateButtonsGame(const std::vector<IInput::CTouchFingerState> &vTouchFingerStates);
-	void ResetButtons();
 	void RenderButtonsGame();
 	vec2 CalculateScreenSize() const;
 
@@ -639,6 +644,16 @@ private:
 
 	bool m_UnsavedChanges = false;
 	bool m_PreviewAllButtons = false;
+
+	CGameSessionContext *m_pControllerSession = nullptr;
+	CGameState *m_pControllerState = nullptr;
+	CGameView *m_pControllerView = nullptr;
+	bool m_RenderGameButtons = false;
+	bool m_RenderEditor = false;
+
+	bool MatchesController(const CGameSessionContext &Session, const CGameState &State, const CGameView &View) const;
+	float AspectRatio() const;
+	void CancelController(std::span<const IInput::CTouchFingerState> vTouchFingerStates);
 
 public:
 	CTouchButton *NewButton();

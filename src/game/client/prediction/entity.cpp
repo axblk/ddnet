@@ -27,7 +27,7 @@ CEntity::CEntity(CGameWorld *pGameWorld, int ObjType, vec2 Pos, int ProximityRad
 	m_pParent = nullptr;
 	m_pChild = nullptr;
 	m_DestroyTick = -1;
-	m_LastRenderTick = -1;
+	m_LastPresentationTick = -1;
 }
 
 CEntity::~CEntity()

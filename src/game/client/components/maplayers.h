@@ -7,10 +7,9 @@
 #include <game/client/components/envelope_state.h>
 #include <game/map/map_renderer.h>
 
-class CCamera;
 class CLayers;
-class CMapImages;
 class ColorRGBA;
+class IMapImages;
 
 class CMapLayers : public CComponent
 {
@@ -18,7 +17,7 @@ class CMapLayers : public CComponent
 	friend class CMenuBackground;
 
 	CLayers *m_pLayers;
-	CMapImages *m_pImages;
+	IMapImages *m_pImages;
 	ERenderType m_Type;
 	bool m_OnlineOnly;
 
@@ -26,12 +25,15 @@ public:
 	CMapLayers(ERenderType Type, bool OnlineOnly = true);
 	int Sizeof() const override { return sizeof(*this); }
 	void OnInit() override;
-	void OnRender() override;
+	void OnRender(const CRenderContext &Context) override;
 	void OnMapLoad() override;
-
-	virtual CCamera *GetCurCamera();
+	void Load(CLayers *pLayers, IMapImages *pImages);
+	void Unload();
 
 	CEnvelopeState &EnvEvaluator() { return m_EnvEvaluator; }
+
+protected:
+	void Render(vec2 Center, float Zoom);
 
 private:
 	CRenderLayerParams m_Params;

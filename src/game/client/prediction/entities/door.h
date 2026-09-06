@@ -20,6 +20,8 @@ public:
 	CDoor(CGameWorld *pGameWorld, int Id, const CLaserData *pData);
 	void ResetCollision();
 	bool Match(const CDoor *pDoor) const;
+	// Whether this is the door the snapshot data describes.
+	bool Match(const CLaserData &Data) const;
 	void Read(const CLaserData *pData);
 
 	void Destroy() override;

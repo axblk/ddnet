@@ -10,6 +10,9 @@
 #include <game/client/render.h>
 
 struct CNetObj_Character;
+class CGameState;
+class CGameTickInfo;
+class CPresentationContext;
 
 enum
 {
@@ -77,6 +80,8 @@ private:
 
 		void Add(const CGhostCharacter &Char);
 		CGhostCharacter *Get(int Index);
+		const CGhostCharacter *Get(int Index) const;
+		int FindFirstAtOrAfterTick(int Tick) const;
 	};
 
 	class CGhostItem
@@ -87,7 +92,6 @@ private:
 		CGhostPath m_Path;
 		int m_StartTick;
 		char m_aPlayer[MAX_NAME_LENGTH];
-		int m_PlaybackPos;
 
 		CGhostItem() { Reset(); }
 
@@ -97,7 +101,6 @@ private:
 			m_pManagedTeeRenderInfo = nullptr;
 			m_Path.Reset();
 			m_StartTick = -1;
-			m_PlaybackPos = -1;
 		}
 	};
 
@@ -137,6 +140,8 @@ private:
 	void StopRender();
 
 	void UpdateTeeRenderInfo(CGhostItem &Ghost);
+	template<typename F>
+	void ForEachGhostFrame(const CGameState &State, const CGameTickInfo &Time, F &&Function) const;
 
 	static void ConGPlay(IConsole::IResult *pResult, void *pUserData);
 
@@ -145,7 +150,8 @@ public:
 
 	int Sizeof() const override { return sizeof(*this); }
 
-	void OnRender() override;
+	void UpdatePresentation(const CPresentationContext &Context);
+	void OnRender(const CRenderContext &Context) override;
 	void OnConsoleInit() override;
 	void OnReset() override;
 	void OnMessage(int MsgType, void *pRawMsg) override;

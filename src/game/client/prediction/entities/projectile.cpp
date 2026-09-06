@@ -100,7 +100,7 @@ void CProjectile::Tick()
 		IsWeaponCollide = true;
 	}
 
-	if(((pTargetChr && (pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : g_Config.m_SvHit || m_Owner == -1 || pTargetChr == pOwnerChar)) || Collide || GameLayerClipped(CurPos)) && !IsWeaponCollide)
+	if(((pTargetChr && (pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : GameWorld()->GameConfig()->m_SvHit || m_Owner == -1 || pTargetChr == pOwnerChar)) || Collide || GameLayerClipped(CurPos)) && !IsWeaponCollide)
 	{
 		if(m_Explosive && (!pTargetChr || (!m_Freeze || (m_Type == WEAPON_SHOTGUN && Collide))))
 		{
@@ -229,7 +229,7 @@ CProjectileData CProjectile::GetData() const
 	return Result;
 }
 
-bool CProjectile::Match(CProjectile *pProj)
+bool CProjectile::Match(const CProjectile *pProj) const
 {
 	if(pProj->m_Type != m_Type)
 		return false;

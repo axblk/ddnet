@@ -102,7 +102,6 @@ class CAssetJob : public IJob
 	int m_StorageType = 0;
 	std::vector<uint8_t> m_vData;
 	bool m_ReadFailed = false;
-	std::chrono::nanoseconds m_ReadTime{};
 
 protected:
 	/**
@@ -163,13 +162,12 @@ public:
 	 * reads from storage, so that every asset is read the same way. The read
 	 * time, if it is wanted, is added to whatever the caller already counted.
 	 */
-	static bool ReadFile(IStorage *pStorage, const char *pPath, int StorageType, std::vector<uint8_t> &vData, std::chrono::nanoseconds *pReadTime = nullptr);
+	static bool ReadFile(IStorage *pStorage, const char *pPath, int StorageType, std::vector<uint8_t> &vData);
 
 	virtual bool Success() const { return State() == STATE_DONE; }
 	/**
 	 * How long reading the file took. Zero for a job that brought its bytes.
 	 */
-	std::chrono::nanoseconds ReadTime() const { return m_ReadTime; }
 	EAssetType Type() const { return m_Type; }
 	const char *Path() const { return m_Path.c_str(); }
 	int OwnerId() const { return m_OwnerId; }
@@ -366,8 +364,6 @@ class CImageResource final : public CAssetResource
 public:
 	CImageResource() = default;
 
-	std::chrono::nanoseconds ReadTime() const;
-	std::chrono::nanoseconds DecodeTime() const;
 	CImageInfo TakeImage();
 };
 

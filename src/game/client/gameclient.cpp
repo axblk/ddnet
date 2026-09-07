@@ -4122,8 +4122,6 @@ void CGameClient::TryFinishLoadingCoreImages()
 			return;
 	}
 
-	std::chrono::nanoseconds TotalReadTime{};
-	std::chrono::nanoseconds TotalDecodeTime{};
 	const size_t NumJobs = m_vStartupImageLoads.size();
 	size_t NumErrors = 0;
 	for(CStartupImageLoad &Load : m_vStartupImageLoads)
@@ -4131,8 +4129,6 @@ void CGameClient::TryFinishLoadingCoreImages()
 		dbg_assert(Load.m_Resource.IsReady(m_AssetGeneration) || Load.m_Resource.IsFailed(m_AssetGeneration), "Startup image resource must not be aborted or stale");
 		if(Load.m_Resource.IsReady(m_AssetGeneration) || Load.m_Resource.IsFailed(m_AssetGeneration))
 		{
-			TotalReadTime += Load.m_Resource.ReadTime();
-			TotalDecodeTime += Load.m_Resource.DecodeTime();
 			NumErrors += Load.m_Resource.IsFailed(m_AssetGeneration);
 		}
 		else
@@ -4140,7 +4136,6 @@ void CGameClient::TryFinishLoadingCoreImages()
 			++NumErrors;
 		}
 	}
-	const std::chrono::nanoseconds CommitStart = time_get_nanoseconds();
 	for(int ImageId = 0; ImageId < g_pData->m_NumImages; ++ImageId)
 	{
 		bool IsAssetSheet = false;
@@ -4193,10 +4188,8 @@ void CGameClient::TryFinishLoadingCoreImages()
 	}
 	m_DecodedAssetImages.clear();
 	m_vStartupImageLoads.clear();
-	const std::chrono::nanoseconds CommitTime = time_get_nanoseconds() - CommitStart;
-	log_info("asset_loader", "Startup image batch: jobs=%" PRIzu " errors=%" PRIzu " wall=%.2fms read=%.2fms decode=%.2fms commit=%.2fms",
-		NumJobs, NumErrors, (time_get() - m_StartupImageBatchStart) * 1000.0 / time_freq(),
-		TotalReadTime.count() / 1000000.0, TotalDecodeTime.count() / 1000000.0, CommitTime.count() / 1000000.0);
+	log_info("asset_loader", "Startup image batch: jobs=%" PRIzu " errors=%" PRIzu " wall=%.2fms",
+		NumJobs, NumErrors, (time_get() - m_StartupImageBatchStart) * 1000.0 / time_freq());
 }
 
 void CGameClient::FinishClientStartup()

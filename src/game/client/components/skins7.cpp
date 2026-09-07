@@ -234,22 +234,58 @@ int CSkins7::SkinScan(const char *pName, int IsDir, int DirType, void *pUser)
 	}
 
 	CSkinScanData *pScanData = static_cast<CSkinScanData *>(pUser);
-	pScanData->m_pThis->LoadSkin(aSkinName, DirType);
+	pScanData->m_pThis->StartSkinLoad(aSkinName, DirType);
 	pScanData->m_SkinLoadedCallback();
 	return 0;
 }
 
-bool CSkins7::LoadSkin(const char *pName, int DirType)
+void CSkins7::StartSkinLoad(const char *pName, int DirType)
 {
 	char aFilename[IO_MAX_PATH_LENGTH];
 	str_format(aFilename, sizeof(aFilename), SKINS_DIR "/%s.json", pName);
-	void *pFileData;
-	unsigned JsonFileSize;
-	if(!Storage()->ReadFile(aFilename, DirType, &pFileData, &JsonFileSize))
+	CSkinLoad Load;
+	str_copy(Load.m_aName, pName);
+	Load.m_StorageType = DirType;
+	Load.m_Resource = GameClient()->AssetLoader().LoadTextFile(Storage(), aFilename, DirType, ASSET_OWNER_SKINS7, m_Generation);
+	m_vSkinLoads.push_back(std::move(Load));
+}
+
+void CSkins7::FinishSkinLoads()
+{
+	if(m_vSkinLoads.empty())
+		return;
+	for(auto It = m_vSkinLoads.begin(); It != m_vSkinLoads.end();)
 	{
-		log_error("skins7", "Failed to read skin json file '%s'", aFilename);
-		return false;
+		if(!It->m_Resource.IsFinished())
+		{
+			++It;
+			continue;
+		}
+		if(It->m_Resource.IsReady(m_Generation))
+		{
+			m_SkinReadTime += It->m_Resource.Result().ReadTime();
+			const std::chrono::nanoseconds ParseStart = time_get_nanoseconds();
+			ParseSkin(It->m_aName, It->m_StorageType, It->m_Resource.Result().Text());
+			m_SkinParseTime += time_get_nanoseconds() - ParseStart;
+		}
+		else if(It->m_Resource.IsFailed(m_Generation))
+		{
+			log_error("skins7", "Failed to read skin json file '%s'", It->m_Resource.Path());
+		}
+		It = m_vSkinLoads.erase(It);
 	}
+	if(m_vSkinLoads.empty())
+	{
+		log_info("skins7", "Skin descriptions: skins=%" PRIzu " wall=%.2fms read=%.2fms parse=%.2fms",
+			m_vSkins.size(), (time_get_nanoseconds() - m_LastRefreshTime).count() / 1000000.0,
+			m_SkinReadTime.count() / 1000000.0, m_SkinParseTime.count() / 1000000.0);
+	}
+}
+
+bool CSkins7::ParseSkin(const char *pName, int DirType, const std::string &Json)
+{
+	char aFilename[IO_MAX_PATH_LENGTH];
+	str_format(aFilename, sizeof(aFilename), SKINS_DIR "/%s.json", pName);
 
 	CSkin Skin;
 	str_copy(Skin.m_aName, pName);
@@ -266,8 +302,7 @@ bool CSkins7::LoadSkin(const char *pName, int DirType)
 
 	json_settings JsonSettings{};
 	char aError[256];
-	json_value *pJsonData = JsonParseEx(&JsonSettings, static_cast<const json_char *>(pFileData), JsonFileSize, aError);
-	free(pFileData);
+	json_value *pJsonData = JsonParseEx(&JsonSettings, Json.c_str(), Json.length(), aError);
 	if(pJsonData == nullptr)
 	{
 		log_error("skins7", "Failed to parse skin json file '%s': %s", aFilename, aError);
@@ -419,6 +454,7 @@ void CSkins7::OnUpdate()
 	}
 	m_PartUpdateTime = StartTime;
 
+	FinishSkinLoads();
 	UnloadUnusedParts();
 	StartPendingLoads();
 	FinishLoads();
@@ -432,6 +468,7 @@ void CSkins7::OnShutdown()
 	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_SKINS7, m_Generation);
 	m_XmasHatResource.Reset();
 	m_BotResource.Reset();
+	m_vSkinLoads.clear();
 	for(auto &vSkinParts : m_avSkinParts)
 	{
 		for(CSkinPart &SkinPart : vSkinParts)
@@ -444,7 +481,7 @@ void CSkins7::OnShutdown()
 
 bool CSkins7::StartupAssetsLoaded() const
 {
-	if(m_XmasHatResource || m_BotResource)
+	if(m_XmasHatResource || m_BotResource || !m_vSkinLoads.empty())
 		return false;
 	for(const auto &vSkinParts : m_avSkinParts)
 	{
@@ -476,7 +513,10 @@ void CSkins7::Refresh(TSkinLoadedCallback &&SkinLoadedCallback)
 	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_SKINS7, m_Generation);
 	m_XmasHatResource.Reset();
 	m_BotResource.Reset();
+	m_vSkinLoads.clear();
 	m_vSkins.clear();
+	m_SkinReadTime = std::chrono::nanoseconds::zero();
+	m_SkinParseTime = std::chrono::nanoseconds::zero();
 	std::array<std::vector<CSkinPart>, protocol7::NUM_SKINPARTS> avOldSkinParts;
 
 	for(int Part = 0; Part < protocol7::NUM_SKINPARTS; Part++)

@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -332,6 +333,41 @@ TEST(AssetLoader, UncompressesRawMapImageData)
 	{
 		pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE);
 	}
+}
+
+TEST(AssetLoader, ReadsTextFilesAndReportsMissingOnes)
+{
+	std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	ASSERT_NE(pStorage, nullptr) << "Error creating local storage";
+	CTestInfo Info;
+	const std::string Content = "{\"skin\": {\"body\": {\"filename\": \"standard\"}}}";
+	{
+		IOHANDLE File = pStorage->OpenFile(Info.m_aFilename, IOFLAG_WRITE, IStorage::TYPE_SAVE);
+		ASSERT_TRUE(File);
+		EXPECT_EQ(io_write(File, Content.data(), Content.size()), Content.size());
+		EXPECT_EQ(io_close(File), 0);
+	}
+
+	std::unique_ptr<IEngine> pEngine(CreateTestEngine("asset_loader_test"));
+	CAssetLoader Loader;
+	Loader.Init(pEngine.get(), 1);
+
+	CTypedAssetResource<CTextAssetJob> Resource = Loader.LoadTextFile(pStorage.get(), Info.m_aFilename, IStorage::TYPE_SAVE, 1, 2);
+	WaitForResource(Loader, Resource);
+	ASSERT_TRUE(Resource.IsReady(2));
+	EXPECT_EQ(Resource.Type(), EAssetType::TEXT);
+	EXPECT_STREQ(Resource.Path(), Info.m_aFilename);
+	EXPECT_EQ(Resource.Result().Text(), Content);
+
+	// A file that is not there fails the resource instead of the loader, the
+	// same way a missing image does.
+	CTypedAssetResource<CTextAssetJob> MissingResource = Loader.LoadTextFile(pStorage.get(), "asset_loader_test_missing.json", IStorage::TYPE_SAVE, 1, 2);
+	WaitForResource(Loader, MissingResource);
+	EXPECT_TRUE(MissingResource.IsFailed(2));
+
+	Loader.Shutdown();
+	pEngine->ShutdownJobs();
+	pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE);
 }
 
 TEST(AssetLoader, DecodesHttpResponseWhenRequestFinished)

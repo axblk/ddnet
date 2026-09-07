@@ -10,6 +10,7 @@
 #include <game/client/component.h>
 
 #include <cstddef>
+#include <string_view>
 #include <vector>
 
 class CCountryFlags : public CComponent
@@ -60,6 +61,7 @@ public:
 	bool StartupAssetsLoaded() const;
 
 private:
+	CTypedAssetResource<CFileAssetJob> m_IndexResource;
 	std::vector<CCountryFlag> m_vCountryFlags;
 	size_t m_aCountryCodeToIndexTable[CountryCode::MAXIMUM - CountryCode::MINIMUM + 1];
 
@@ -67,7 +69,9 @@ private:
 	bool m_LoadsPending = true;
 
 	static bool ValidateCountryCodeString(const char *pString);
-	void LoadCountryflagsIndexfile();
+	void StartLoadingIndexfile();
+	void ParseIndexfile(std::string_view Index);
+	void BuildCountryCodeTable();
 	void StartPendingLoads();
 	void FinishLoads();
 };

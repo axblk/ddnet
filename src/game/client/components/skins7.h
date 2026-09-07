@@ -19,6 +19,7 @@
 #include <chrono>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 class CSkins7 : public CComponent
@@ -91,7 +92,8 @@ public:
 	std::chrono::nanoseconds LastRefreshTime() const { return m_LastRefreshTime; }
 	bool StartupAssetsLoaded() const;
 
-	const std::vector<CSkin> &GetSkins() const;
+	// Loads the skin list on first use
+	const std::vector<CSkin> &GetSkins();
 	const std::vector<CSkinPart> &GetSkinParts(int Part) const;
 	const CSkinPart *FindSkinPartOrNullptr(int Part, const char *pName, bool AllowSpecialPart) const;
 	const CSkinPart *FindDefaultSkinPart(int Part) const;
@@ -126,10 +128,23 @@ private:
 	CImageResource m_BotResource;
 	std::optional<std::chrono::nanoseconds> m_PartUpdateTime;
 
+	class CSkinLoad
+	{
+	public:
+		char m_aName[24];
+		int m_StorageType;
+		CTypedAssetResource<CFileAssetJob> m_Resource;
+	};
+	std::vector<CSkinLoad> m_vSkinLoads;
+	bool m_SkinListRequested = false;
+
 	static int SkinPartScan(const char *pName, int IsDir, int DirType, void *pUser);
 	bool RegisterSkinPart(int PartType, const char *pName, int DirType);
 	static int SkinScan(const char *pName, int IsDir, int DirType, void *pUser);
-	bool LoadSkin(const char *pName, int DirType);
+	void StartLoadingSkinList(const TSkinLoadedCallback &SkinLoadedCallback);
+	void StartSkinLoad(const char *pName, int DirType);
+	void FinishSkinLoads();
+	bool ParseSkin(const char *pName, int DirType, std::string_view Json);
 	void StartPendingLoads();
 	void FinishLoads();
 

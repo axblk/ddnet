@@ -192,22 +192,55 @@ int CSkins7::SkinScan(const char *pName, int IsDir, int DirType, void *pUser)
 	}
 
 	CSkinScanData *pScanData = static_cast<CSkinScanData *>(pUser);
-	pScanData->m_pThis->LoadSkin(aSkinName, DirType);
+	pScanData->m_pThis->StartSkinLoad(aSkinName, DirType);
 	pScanData->m_SkinLoadedCallback();
 	return 0;
 }
 
-bool CSkins7::LoadSkin(const char *pName, int DirType)
+void CSkins7::StartLoadingSkinList(const TSkinLoadedCallback &SkinLoadedCallback)
+{
+	CSkinScanData SkinScanData;
+	SkinScanData.m_pThis = this;
+	SkinScanData.m_SkinLoadedCallback = SkinLoadedCallback;
+	Storage()->ListDirectory(IStorage::TYPE_ALL, SKINS_DIR, SkinScan, &SkinScanData);
+}
+
+void CSkins7::StartSkinLoad(const char *pName, int DirType)
 {
 	char aFilename[IO_MAX_PATH_LENGTH];
 	str_format(aFilename, sizeof(aFilename), SKINS_DIR "/%s.json", pName);
-	void *pFileData;
-	unsigned JsonFileSize;
-	if(!Storage()->ReadFile(aFilename, DirType, &pFileData, &JsonFileSize))
+	CSkinLoad Load;
+	str_copy(Load.m_aName, pName);
+	Load.m_StorageType = DirType;
+	Load.m_Resource = GameClient()->AssetLoader().LoadFile(Storage(), aFilename, DirType);
+	m_vSkinLoads.push_back(std::move(Load));
+}
+
+void CSkins7::FinishSkinLoads()
+{
+	for(auto It = m_vSkinLoads.begin(); It != m_vSkinLoads.end();)
 	{
-		log_error("skins7", "Failed to read skin json file '%s'", aFilename);
-		return false;
+		if(!It->m_Resource.IsFinished())
+		{
+			++It;
+			continue;
+		}
+		if(It->m_Resource.IsReady())
+		{
+			ParseSkin(It->m_aName, It->m_StorageType, It->m_Resource.Result().Text());
+		}
+		else if(It->m_Resource.IsFailed())
+		{
+			log_error("skins7", "Failed to read skin json file '%s'", It->m_Resource.Path());
+		}
+		It = m_vSkinLoads.erase(It);
 	}
+}
+
+bool CSkins7::ParseSkin(const char *pName, int DirType, std::string_view Json)
+{
+	char aFilename[IO_MAX_PATH_LENGTH];
+	str_format(aFilename, sizeof(aFilename), SKINS_DIR "/%s.json", pName);
 
 	CSkin Skin;
 	str_copy(Skin.m_aName, pName);
@@ -224,8 +257,7 @@ bool CSkins7::LoadSkin(const char *pName, int DirType)
 
 	json_settings JsonSettings{};
 	char aError[256];
-	json_value *pJsonData = JsonParseEx(&JsonSettings, static_cast<const json_char *>(pFileData), JsonFileSize, aError);
-	free(pFileData);
+	json_value *pJsonData = JsonParseEx(&JsonSettings, Json.data(), Json.length(), aError);
 	if(pJsonData == nullptr)
 	{
 		log_error("skins7", "Failed to parse skin json file '%s': %s", aFilename, aError);
@@ -307,6 +339,7 @@ bool CSkins7::LoadSkin(const char *pName, int DirType)
 		log_trace("skins7", "Loaded skin '%s'", Skin.m_aName);
 	}
 	m_vSkins.insert(std::lower_bound(m_vSkins.begin(), m_vSkins.end(), Skin), Skin);
+	m_LastRefreshTime = time_get_nanoseconds();
 	return true;
 }
 
@@ -373,6 +406,7 @@ void CSkins7::OnUpdate()
 	}
 	m_PartUpdateTime = StartTime;
 
+	FinishSkinLoads();
 	FinishLoads();
 	StartPendingLoads();
 	m_XmasHatResource.FinishTexture(Graphics(), m_XmasHatTexture);
@@ -383,6 +417,7 @@ void CSkins7::OnShutdown()
 {
 	m_XmasHatResource.Reset();
 	m_BotResource.Reset();
+	m_vSkinLoads.clear();
 	for(auto &vSkinParts : m_avSkinParts)
 	{
 		for(CSkinPart &SkinPart : vSkinParts)
@@ -398,7 +433,7 @@ void CSkins7::OnShutdown()
 
 bool CSkins7::StartupAssetsLoaded() const
 {
-	if(m_XmasHatResource || m_BotResource)
+	if(m_XmasHatResource || m_BotResource || !m_vSkinLoads.empty())
 		return false;
 	return std::all_of(std::begin(m_avSkinParts), std::end(m_avSkinParts), [](const std::vector<CSkinPart> &vSkinParts) {
 		return std::none_of(vSkinParts.begin(), vSkinParts.end(), [](const CSkinPart &Part) { return Part.m_LoadPending || Part.m_LoadResource; });
@@ -421,6 +456,7 @@ void CSkins7::InitPlaceholderSkinParts()
 
 void CSkins7::Refresh(TSkinLoadedCallback &&SkinLoadedCallback)
 {
+	m_vSkinLoads.clear();
 	m_vSkins.clear();
 
 	for(int Part = 0; Part < protocol7::NUM_SKINPARTS; Part++)
@@ -450,10 +486,10 @@ void CSkins7::Refresh(TSkinLoadedCallback &&SkinLoadedCallback)
 		Storage()->ListDirectory(IStorage::TYPE_ALL, aPartsDirectory, SkinPartScan, &SkinPartScanData);
 	}
 
-	CSkinScanData SkinScanData;
-	SkinScanData.m_pThis = this;
-	SkinScanData.m_SkinLoadedCallback = SkinLoadedCallback;
-	Storage()->ListDirectory(IStorage::TYPE_ALL, SKINS_DIR, SkinScan, &SkinScanData);
+	if(m_SkinListRequested)
+	{
+		StartLoadingSkinList(SkinLoadedCallback);
+	}
 
 	m_XmasHatResource = GameClient()->AssetLoader().LoadImageFile(Storage(), SKINS_DIR "/xmas_hat.png", IStorage::TYPE_ALL, [](CImageInfo &Info) {
 		return Info.m_Format == CImageInfo::FORMAT_RGBA && Info.m_Height % 4 == 0;
@@ -571,8 +607,13 @@ bool CSkins7::RemoveSkin(const CSkin *pSkin)
 	return true;
 }
 
-const std::vector<CSkins7::CSkin> &CSkins7::GetSkins() const
+const std::vector<CSkins7::CSkin> &CSkins7::GetSkins()
 {
+	if(!m_SkinListRequested)
+	{
+		m_SkinListRequested = true;
+		StartLoadingSkinList([]() {});
+	}
 	return m_vSkins;
 }
 

@@ -647,6 +647,9 @@ public:
 	void OnWindowResize() override;
 
 	void InitializeLanguage() override;
+	void UpdateLanguageLoads();
+	CTypedAssetResource<CFileAssetJob> m_LanguageIndexResource;
+	CTypedAssetResource<CFileAssetJob> m_LanguageResource;
 	bool m_LanguageChanged = false;
 	void OnLanguageChange();
 	void HandleLanguageChanged();

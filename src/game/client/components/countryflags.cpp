@@ -16,9 +16,13 @@
 
 #include <game/client/gameclient.h>
 
+#include <algorithm>
+#include <string_view>
+
 namespace
 {
 	constexpr size_t MAX_CONCURRENT_COUNTRY_FLAG_LOADS = 16;
+	constexpr const char *COUNTRY_FLAGS_INDEX_PATH = "countryflags/index.txt";
 }
 
 bool CCountryFlags::CCountryFlag::RequestLoad() const
@@ -57,79 +61,21 @@ bool CCountryFlags::ValidateCountryCodeString(const char *pString)
 	return true;
 }
 
-void CCountryFlags::LoadCountryflagsIndexfile()
+void CCountryFlags::StartLoadingIndexfile()
 {
+	// The default flag is used until the index is loaded
 	m_vCountryFlags.clear();
+	CCountryFlag DefaultFlag;
+	DefaultFlag.m_CountryCode = CountryCode::DEFAULT;
+	str_copy(DefaultFlag.m_aCountryCodeString, "default");
+	DefaultFlag.m_State = CCountryFlag::EState::PENDING;
+	m_vCountryFlags.push_back(std::move(DefaultFlag));
+	BuildCountryCodeTable();
+	m_IndexResource = GameClient()->AssetLoader().LoadFile(Storage(), COUNTRY_FLAGS_INDEX_PATH, IStorage::TYPE_ALL);
+}
 
-	const char *pFilename = "countryflags/index.txt";
-	CLineReader LineReader;
-	if(LineReader.OpenFile(Storage()->OpenFile(pFilename, IOFLAG_READ, IStorage::TYPE_ALL)))
-	{
-		while(const char *pLine = LineReader.Get())
-		{
-			if(pLine[0] == '\0' || pLine[0] == '#') // Skip empty lines and comments
-			{
-				continue;
-			}
-
-			if(!ValidateCountryCodeString(pLine))
-			{
-				continue;
-			}
-			CCountryFlag CountryFlag;
-			str_copy(CountryFlag.m_aCountryCodeString, pLine);
-
-			const char *pCountryCodeLine = LineReader.Get();
-			if(!pCountryCodeLine)
-			{
-				log_error("countryflags", "Unexpected end of index file after country '%s'", CountryFlag.m_aCountryCodeString);
-				break;
-			}
-
-			if(!str_startswith(pCountryCodeLine, "== "))
-			{
-				log_error("countryflags", "Malformed country code for country '%s'", CountryFlag.m_aCountryCodeString);
-				continue;
-			}
-			pCountryCodeLine += str_length("== ");
-
-			if(!str_toint(pCountryCodeLine, &CountryFlag.m_CountryCode))
-			{
-				log_error("countryflags", "Country code '%s' for country '%s' is not a number", pCountryCodeLine, CountryFlag.m_aCountryCodeString);
-				continue;
-			}
-			if(!in_range(CountryFlag.m_CountryCode, CountryCode::MINIMUM, CountryCode::MAXIMUM))
-			{
-				log_error("countryflags", "Country code '%d' for country '%s' is not within valid code range [%d..%d]", CountryFlag.m_CountryCode, CountryFlag.m_aCountryCodeString, CountryCode::MINIMUM, CountryCode::MAXIMUM);
-				continue;
-			}
-			if(CountryFlag.m_CountryCode == CountryCode::DEFAULT && str_comp(CountryFlag.m_aCountryCodeString, "default") != 0)
-			{
-				log_error("countryflags", "Country code '%d' for country '%s' is only allowed for the default country", CountryFlag.m_CountryCode, CountryFlag.m_aCountryCodeString);
-				continue;
-			}
-
-			m_vCountryFlags.push_back(std::move(CountryFlag));
-		}
-	}
-	else
-	{
-		log_error("countryflags", "Failed to open country flags index file '%s'", pFilename);
-	}
-
-	// Ensure a default flag exists
-	auto ExistingDefaultFlag = std::find_if(m_vCountryFlags.begin(), m_vCountryFlags.end(), [](const CCountryFlag &Flag) {
-		return Flag.m_CountryCode == CountryCode::DEFAULT;
-	});
-	if(ExistingDefaultFlag == m_vCountryFlags.end())
-	{
-		CCountryFlag DefaultFlag;
-		DefaultFlag.m_CountryCode = CountryCode::DEFAULT;
-		str_copy(DefaultFlag.m_aCountryCodeString, "default");
-		DefaultFlag.m_State = CCountryFlag::EState::PENDING;
-		m_vCountryFlags.push_back(std::move(DefaultFlag));
-	}
-
+void CCountryFlags::BuildCountryCodeTable()
+{
 	std::sort(m_vCountryFlags.begin(), m_vCountryFlags.end());
 
 	size_t DefaultIndex = 0;
@@ -147,15 +93,68 @@ void CCountryFlags::LoadCountryflagsIndexfile()
 	{
 		m_aCountryCodeToIndexTable[m_vCountryFlags[i].m_CountryCode - CountryCode::MINIMUM] = i;
 	}
-	m_vCountryFlags[DefaultIndex].m_State = CCountryFlag::EState::PENDING;
-	m_LoadsPending = true;
+}
 
+void CCountryFlags::ParseIndexfile(std::string_view Index)
+{
+	CLineReader LineReader;
+	LineReader.OpenCopy(Index);
+	while(const char *pLine = LineReader.Get())
+	{
+		if(pLine[0] == '\0' || pLine[0] == '#') // Skip empty lines and comments
+		{
+			continue;
+		}
+
+		if(!ValidateCountryCodeString(pLine))
+		{
+			continue;
+		}
+		CCountryFlag CountryFlag;
+		str_copy(CountryFlag.m_aCountryCodeString, pLine);
+
+		const char *pCountryCodeLine = LineReader.Get();
+		if(!pCountryCodeLine)
+		{
+			log_error("countryflags", "Unexpected end of index file after country '%s'", CountryFlag.m_aCountryCodeString);
+			break;
+		}
+
+		if(!str_startswith(pCountryCodeLine, "== "))
+		{
+			log_error("countryflags", "Malformed country code for country '%s'", CountryFlag.m_aCountryCodeString);
+			continue;
+		}
+		pCountryCodeLine += str_length("== ");
+
+		if(!str_toint(pCountryCodeLine, &CountryFlag.m_CountryCode))
+		{
+			log_error("countryflags", "Country code '%s' for country '%s' is not a number", pCountryCodeLine, CountryFlag.m_aCountryCodeString);
+			continue;
+		}
+		if(!in_range(CountryFlag.m_CountryCode, CountryCode::MINIMUM, CountryCode::MAXIMUM))
+		{
+			log_error("countryflags", "Country code '%d' for country '%s' is not within valid code range [%d..%d]", CountryFlag.m_CountryCode, CountryFlag.m_aCountryCodeString, CountryCode::MINIMUM, CountryCode::MAXIMUM);
+			continue;
+		}
+		if(CountryFlag.m_CountryCode == CountryCode::DEFAULT && str_comp(CountryFlag.m_aCountryCodeString, "default") != 0)
+		{
+			log_error("countryflags", "Country code '%d' for country '%s' is only allowed for the default country", CountryFlag.m_CountryCode, CountryFlag.m_aCountryCodeString);
+			continue;
+		}
+
+		if(CountryFlag.m_CountryCode == CountryCode::DEFAULT)
+			continue;
+		m_vCountryFlags.push_back(std::move(CountryFlag));
+	}
+
+	BuildCountryCodeTable();
 	log_debug("countryflags", "Loaded %" PRIzu " country flags", m_vCountryFlags.size());
 }
 
 void CCountryFlags::OnInit()
 {
-	LoadCountryflagsIndexfile();
+	StartLoadingIndexfile();
 
 	m_FlagsQuadContainerIndex = Graphics()->CreateQuadContainer(false);
 	Graphics()->SetColor(1.0f, 1.0f, 1.0f, 1.0f);
@@ -166,6 +165,19 @@ void CCountryFlags::OnInit()
 
 void CCountryFlags::OnUpdate()
 {
+	if(m_IndexResource && m_IndexResource.IsFinished())
+	{
+		if(m_IndexResource.IsReady())
+		{
+			ParseIndexfile(m_IndexResource.Result().Text());
+		}
+		else
+		{
+			log_error("countryflags", "Failed to open country flags index file '%s'", m_IndexResource.Path());
+		}
+		m_IndexResource.Reset();
+	}
+
 	if(!m_LoadsPending)
 		return;
 	FinishLoads();
@@ -180,6 +192,7 @@ void CCountryFlags::OnShutdown()
 		Graphics()->UnloadTexture(&CountryFlag.m_Texture);
 	}
 	m_vCountryFlags.clear();
+	m_IndexResource.Reset();
 }
 
 void CCountryFlags::StartPendingLoads()

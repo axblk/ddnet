@@ -19,6 +19,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -29,6 +30,7 @@ class IHttpRequest;
 class IStorage;
 class CImageAssetJob;
 class CImageResource;
+class CFileAssetJob;
 template<typename TJob>
 class CTypedAssetResource;
 
@@ -120,6 +122,7 @@ public:
 	void Init(IEngine *pEngine, size_t MaxConcurrentJobs);
 	template<typename TJob>
 	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob) REQUIRES(!m_ReaderLock);
+	CTypedAssetResource<CFileAssetJob> LoadFile(IStorage *pStorage, const char *pPath, int StorageType) REQUIRES(!m_ReaderLock);
 	CImageResource LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess = {}) REQUIRES(!m_ReaderLock);
 	CImageResource LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess = {}) REQUIRES(!m_ReaderLock);
 	/**
@@ -209,6 +212,18 @@ public:
 	 * @return `true` if the resource finished.
 	 */
 	bool FinishTexture(IGraphics *pGraphics, IGraphics::CTextureHandle &Texture, int Flags = 0);
+};
+
+class CFileAssetJob final : public CAssetJob
+{
+protected:
+	bool Process() override { return true; }
+
+public:
+	CFileAssetJob(IStorage *pStorage, const char *pPath, int StorageType);
+
+	std::vector<uint8_t> TakeBytes();
+	std::string_view Text() const;
 };
 
 template<typename TJob>

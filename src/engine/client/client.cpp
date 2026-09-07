@@ -906,9 +906,12 @@ void CClient::SetCurrentServerInfo(const CServerInfo &ServerInfo)
 	m_CurrentServerInfo.m_MapSize = GameClient()->Map()->Size();
 }
 
-void CClient::LoadDebugFont()
+IGraphics::CTextureHandle CClient::GetDebugFont()
 {
-	m_DebugFont = Graphics()->LoadTexture("debug_font.png", IStorage::TYPE_ALL);
+	// Rarely used, so loaded on demand
+	if(!m_DebugFont.IsValid())
+		m_DebugFont = Graphics()->LoadTexture("debug_font.png", IStorage::TYPE_ALL);
+	return m_DebugFont;
 }
 
 // ---
@@ -970,7 +973,7 @@ void CClient::RenderDebug()
 	char aBuffer[512];
 	const float FontSize = 16.0f;
 
-	Graphics()->TextureSet(m_DebugFont);
+	Graphics()->TextureSet(GetDebugFont());
 	Graphics()->MapScreenToSize(Graphics()->ScreenWidth(), Graphics()->ScreenHeight());
 	Graphics()->QuadsBegin();
 
@@ -3275,8 +3278,6 @@ void CClient::Run()
 	m_ServerBrowser.OnInit();
 	// loads the existing ddnet info file if it exists
 	LoadDDNetInfo();
-
-	LoadDebugFont();
 
 	if(Steam()->GetPlayerName())
 	{

@@ -284,11 +284,40 @@ void CGameClient::OnConsoleInit()
 
 void CGameClient::InitializeLanguage()
 {
-	// set the language
-	g_Localization.LoadIndexfile(Storage(), Console());
-	if(g_Config.m_ClShowWelcome)
-		g_Localization.SelectDefaultLanguage(Console(), g_Config.m_ClLanguagefile, sizeof(g_Config.m_ClLanguagefile));
-	g_Localization.Load(g_Config.m_ClLanguagefile, Storage(), Console());
+	m_LanguageIndexResource = m_AssetLoader.LoadFile(Storage(), "languages/index.txt", IStorage::TYPE_ALL);
+}
+
+void CGameClient::UpdateLanguageLoads()
+{
+	if(m_LanguageIndexResource && m_LanguageIndexResource.IsFinished())
+	{
+		if(m_LanguageIndexResource.IsReady())
+			g_Localization.ParseIndex(m_LanguageIndexResource.Result().Text());
+		else
+			log_error("localization", "Couldn't open index file '%s'", m_LanguageIndexResource.Path());
+		m_LanguageIndexResource.Reset();
+		if(g_Config.m_ClShowWelcome)
+		{
+			g_Localization.SelectDefaultLanguage(Console(), g_Config.m_ClLanguagefile, sizeof(g_Config.m_ClLanguagefile));
+			TextRender()->SetFontLanguageVariant(g_Config.m_ClLanguagefile);
+		}
+		if(g_Config.m_ClLanguagefile[0] != '\0')
+			m_LanguageResource = m_AssetLoader.LoadFile(Storage(), g_Config.m_ClLanguagefile, IStorage::TYPE_ALL);
+	}
+	if(m_LanguageResource && m_LanguageResource.IsFinished())
+	{
+		if(m_LanguageResource.IsReady())
+		{
+			g_Localization.ParseLanguage(m_LanguageResource.Result().Text(), m_LanguageResource.Path());
+			// Clear all text containers
+			Client()->OnWindowResize();
+		}
+		else
+		{
+			log_error("localization", "Couldn't load language file '%s'", m_LanguageResource.Path());
+		}
+		m_LanguageResource.Reset();
+	}
 }
 
 void CGameClient::ForceUpdateConsoleRemoteCompletionSuggestions()
@@ -443,6 +472,7 @@ void CGameClient::OnUpdate()
 			return;
 	}
 	UpdateAssetPackLoads();
+	UpdateLanguageLoads();
 	HandleLanguageChanged();
 
 	CUIElementBase::Init(Ui()); // update static pointer because game and editor use separate UI

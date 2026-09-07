@@ -685,6 +685,9 @@ public:
 	{
 		SCommand_Swap() :
 			SCommand(CMD_SWAP) {}
+
+		// Whether the present may wait for the display before it returns.
+		bool m_PaceWithDisplay = true;
 	};
 
 	struct SCommand_VSync : public SCommand

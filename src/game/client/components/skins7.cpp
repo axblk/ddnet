@@ -32,7 +32,6 @@ using namespace std::chrono_literals;
 
 namespace
 {
-	constexpr int ASSET_OWNER_SKINS7 = 5;
 	constexpr size_t MAX_CONCURRENT_SKIN_PART_LOADS = 16;
 	constexpr std::chrono::nanoseconds MIN_REQUESTED_TIME_FOR_PENDING = 250ms;
 	constexpr std::chrono::nanoseconds MAX_REQUESTED_TIME_FOR_PENDING = 500ms;
@@ -246,7 +245,7 @@ void CSkins7::StartSkinLoad(const char *pName, int DirType)
 	CSkinLoad Load;
 	str_copy(Load.m_aName, pName);
 	Load.m_StorageType = DirType;
-	Load.m_Resource = GameClient()->AssetLoader().LoadTextFile(Storage(), aFilename, DirType, ASSET_OWNER_SKINS7, m_Generation);
+	Load.m_Resource = GameClient()->AssetLoader().LoadTextFile(Storage(), aFilename, DirType, CGameClient::ASSET_OWNER_SKINS7, m_Generation);
 	m_vSkinLoads.push_back(std::move(Load));
 }
 
@@ -465,7 +464,7 @@ void CSkins7::OnUpdate()
 void CSkins7::OnShutdown()
 {
 	++m_Generation;
-	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_SKINS7, m_Generation);
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(CGameClient::ASSET_OWNER_SKINS7, m_Generation);
 	m_XmasHatResource.Reset();
 	m_BotResource.Reset();
 	m_vSkinLoads.clear();
@@ -510,7 +509,7 @@ void CSkins7::InitPlaceholderSkinParts()
 void CSkins7::Refresh(TSkinLoadedCallback &&SkinLoadedCallback)
 {
 	++m_Generation;
-	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_SKINS7, m_Generation);
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(CGameClient::ASSET_OWNER_SKINS7, m_Generation);
 	m_XmasHatResource.Reset();
 	m_BotResource.Reset();
 	m_vSkinLoads.clear();
@@ -608,7 +607,7 @@ void CSkins7::StartPendingLoads()
 			str_format(aFilename, sizeof(aFilename), SKINS_DIR "/%s/%s.png", ms_apSkinPartNames[SkinPart.m_Type], SkinPart.m_aName);
 			auto pLoadData = std::make_shared<CSkinPart::CLoadData>();
 			const int PartType = SkinPart.m_Type;
-			SkinPart.m_LoadResource = GameClient()->AssetLoader().LoadImageFile(Storage(), aFilename, SkinPart.m_StorageType, ASSET_OWNER_SKINS7, m_Generation, [pLoadData, PartType](CImageInfo &Info) {
+			SkinPart.m_LoadResource = GameClient()->AssetLoader().LoadImageFile(Storage(), aFilename, SkinPart.m_StorageType, CGameClient::ASSET_OWNER_SKINS7, m_Generation, [pLoadData, PartType](CImageInfo &Info) {
 				if(Info.m_Format != CImageInfo::FORMAT_RGBA)
 					return false;
 				pLoadData->m_BloodColor = DetermineBloodColor(PartType, Info);
@@ -704,10 +703,10 @@ void CSkins7::UnloadUnusedParts()
 
 void CSkins7::StartSpecialLoads()
 {
-	m_XmasHatResource = GameClient()->AssetLoader().LoadImageFile(Storage(), SKINS_DIR "/xmas_hat.png", IStorage::TYPE_ALL, ASSET_OWNER_SKINS7, m_Generation, [](CImageInfo &Info) {
+	m_XmasHatResource = GameClient()->AssetLoader().LoadImageFile(Storage(), SKINS_DIR "/xmas_hat.png", IStorage::TYPE_ALL, CGameClient::ASSET_OWNER_SKINS7, m_Generation, [](CImageInfo &Info) {
 		return Info.m_Format == CImageInfo::FORMAT_RGBA && Info.m_Height % 4 == 0;
 	});
-	m_BotResource = GameClient()->AssetLoader().LoadImageFile(Storage(), SKINS_DIR "/bot.png", IStorage::TYPE_ALL, ASSET_OWNER_SKINS7, m_Generation, [](CImageInfo &Info) {
+	m_BotResource = GameClient()->AssetLoader().LoadImageFile(Storage(), SKINS_DIR "/bot.png", IStorage::TYPE_ALL, CGameClient::ASSET_OWNER_SKINS7, m_Generation, [](CImageInfo &Info) {
 		return Info.m_Format == CImageInfo::FORMAT_RGBA && Info.m_Width % 12 == 0 && Info.m_Height % 5 == 0;
 	});
 }

@@ -45,6 +45,8 @@ enum
  * The text render loads its fonts with its own asset loader, so the owner and
  * generation of the font jobs are constant.
  */
+// The font loader below belongs to the text render alone, so this is the only
+// owner it ever has.
 constexpr int ASSET_OWNER_FONTS = 0;
 constexpr uint64_t FONT_ASSET_GENERATION = 1;
 

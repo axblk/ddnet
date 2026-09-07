@@ -26,7 +26,6 @@
 
 // Horizontal spacing of the scoreboard contents, both to its edges and between columns
 static constexpr float MARGIN = 10.0f;
-static constexpr int ASSET_OWNER_SCOREBOARD = 9;
 
 CScoreboard::CScoreboard()
 {
@@ -109,7 +108,7 @@ void CScoreboard::OnConsoleInit()
 void CScoreboard::OnInit()
 {
 	++m_AssetGeneration;
-	m_DeadTeeResource = GameClient()->AssetLoader().LoadImageFile(Storage(), "deadtee.png", IStorage::TYPE_ALL, ASSET_OWNER_SCOREBOARD, m_AssetGeneration);
+	m_DeadTeeResource = GameClient()->AssetLoader().LoadImageFile(Storage(), "deadtee.png", IStorage::TYPE_ALL, CGameClient::ASSET_OWNER_SCOREBOARD, m_AssetGeneration);
 }
 
 void CScoreboard::OnUpdate()
@@ -164,7 +163,7 @@ void CScoreboard::ResetTexts()
 void CScoreboard::OnShutdown()
 {
 	++m_AssetGeneration;
-	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_SCOREBOARD, m_AssetGeneration);
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(CGameClient::ASSET_OWNER_SCOREBOARD, m_AssetGeneration);
 	m_DeadTeeResource.Reset();
 	Graphics()->UnloadTexture(&m_DeadTeeTexture);
 	ResetTexts();

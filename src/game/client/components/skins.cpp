@@ -29,7 +29,6 @@ using namespace std::chrono_literals;
 
 namespace
 {
-	constexpr int ASSET_OWNER_SKINS = 3;
 
 	bool AllSkinTexturesValid(const CSkin::CSkinTextures &Textures)
 	{
@@ -544,7 +543,7 @@ void CSkins::StartSkinDecode(CSkinContainer *pSkinContainer, const char *pPath, 
 {
 	auto pData = std::make_shared<CSkinLoadData>();
 	const std::string Name = pSkinContainer->Name();
-	pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImageFile(Storage(), pPath, StorageType, ASSET_OWNER_SKINS, m_Generation, [pData, Name](CImageInfo &Info) {
+	pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImageFile(Storage(), pPath, StorageType, CGameClient::ASSET_OWNER_SKINS, m_Generation, [pData, Name](CImageInfo &Info) {
 		return LoadSkinData(Name.c_str(), Info, *pData, false);
 	});
 	pSkinContainer->m_pLoadData = std::move(pData);
@@ -589,7 +588,7 @@ void CSkins::StartDownload(CSkinContainer *pSkinContainer, bool Force)
 	const std::string Name = pSkinContainer->Name();
 	// The cached skin is used when the download did not return one, for
 	// example because it is still up to date or because it failed.
-	pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImageHttp(Http(), std::move(pRequest), CHttpAssetDestination(Storage(), aPath, IStorage::TYPE_SAVE, true), aContextName, ASSET_OWNER_SKINS, m_Generation, [pData, Name](CImageInfo &Info) {
+	pSkinContainer->m_LoadResource = GameClient()->AssetLoader().LoadImageHttp(Http(), std::move(pRequest), CHttpAssetDestination(Storage(), aPath, IStorage::TYPE_SAVE, true), aContextName, CGameClient::ASSET_OWNER_SKINS, m_Generation, [pData, Name](CImageInfo &Info) {
 		return LoadSkinData(Name.c_str(), Info, *pData, false);
 	});
 	pSkinContainer->m_pLoadData = std::move(pData);
@@ -637,7 +636,7 @@ void CSkins::OnInit()
 void CSkins::OnShutdown()
 {
 	m_Generation++;
-	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_SKINS, m_Generation);
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(CGameClient::ASSET_OWNER_SKINS, m_Generation);
 	for(auto &[_, pSkinContainer] : m_Skins)
 	{
 		if(pSkinContainer->m_LoadResource)
@@ -905,7 +904,7 @@ void CSkins::RefreshEventSkins()
 void CSkins::Refresh(TSkinLoadedCallback &&SkinLoadedCallback)
 {
 	m_Generation++;
-	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_SKINS, m_Generation);
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(CGameClient::ASSET_OWNER_SKINS, m_Generation);
 	for(auto &[_, pSkinContainer] : m_Skins)
 	{
 		if(pSkinContainer->m_LoadResource)

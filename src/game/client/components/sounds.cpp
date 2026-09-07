@@ -19,11 +19,6 @@
 #include <game/client/gameclient.h>
 #include <game/localization.h>
 
-namespace
-{
-	constexpr int ASSET_OWNER_STARTUP_SOUNDS = 1;
-}
-
 CSoundLoading::CSoundLoading(ISound *pSound, IStorage *pStorage, int Lane, int NumLanes, int OwnerId, uint64_t Generation) :
 	CAssetJob(EAssetType::SOUND, std::vector<uint8_t>(), "audio", OwnerId, Generation),
 	m_pSound(pSound),
@@ -160,7 +155,7 @@ void CSounds::OnInit()
 	{
 		for(size_t Lane = 0; Lane < m_aSoundResources.size(); ++Lane)
 		{
-			m_aSoundResources[Lane] = GameClient()->AssetLoader().Load(std::make_shared<CSoundLoading>(Sound(), Storage(), static_cast<int>(Lane), static_cast<int>(m_aSoundResources.size()), ASSET_OWNER_STARTUP_SOUNDS, m_LoadGeneration));
+			m_aSoundResources[Lane] = GameClient()->AssetLoader().Load(std::make_shared<CSoundLoading>(Sound(), Storage(), static_cast<int>(Lane), static_cast<int>(m_aSoundResources.size()), CGameClient::ASSET_OWNER_STARTUP_SOUNDS, m_LoadGeneration));
 		}
 		m_WaitForSoundJob = true;
 		GameClient()->m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Loading sound files"), 0);
@@ -169,7 +164,7 @@ void CSounds::OnInit()
 	{
 		for(int SetId = 0; SetId < g_pData->m_NumSounds; ++SetId)
 		{
-			CSoundLoading SoundLoading(Sound(), Storage(), SetId, g_pData->m_NumSounds, ASSET_OWNER_STARTUP_SOUNDS, m_LoadGeneration);
+			CSoundLoading SoundLoading(Sound(), Storage(), SetId, g_pData->m_NumSounds, CGameClient::ASSET_OWNER_STARTUP_SOUNDS, m_LoadGeneration);
 			SoundLoading.Run();
 			SoundLoading.Commit();
 			m_NumSoundSamplesLoaded += SoundLoading.NumLoaded();

@@ -153,6 +153,37 @@ enum class EClientIdFormat
 class CGameClient : public IGameClient
 {
 public:
+	/**
+	 * Owners of the asset jobs that the client starts. The loader aborts by
+	 * owner, so the only thing these numbers have to be is different from each
+	 * other - and one enum is what makes sure they are. The two other loaders
+	 * in the client, for fonts and for the editor's file preview, have a single
+	 * owner each and do not need a name.
+	 */
+	enum EAssetOwner
+	{
+		ASSET_OWNER_STARTUP_SOUNDS,
+		ASSET_OWNER_STARTUP_IMAGES,
+		ASSET_OWNER_SKINS,
+		ASSET_OWNER_SKINS7,
+		ASSET_OWNER_COMMUNITY_ICONS,
+		ASSET_OWNER_COUNTRY_FLAGS,
+		ASSET_OWNER_MENUS,
+		ASSET_OWNER_MENU_THEMES,
+		ASSET_OWNER_SCOREBOARD,
+		ASSET_OWNER_ASSET_PREVIEWS,
+		ASSET_OWNER_MAP_IMAGES,
+	};
+
+	/**
+	 * A skin pack gets an owner of its own, counted up from here, so that one
+	 * pack can be dropped without touching the others.
+	 *
+	 * Not an enumerator: it is where a range begins, not one more owner, and an
+	 * enum whose last value jumps is one clang-tidy rightly asks about.
+	 */
+	static constexpr int ASSET_OWNER_PACK_BASE = 100;
+
 	// all components
 	CInfoMessages m_InfoMessages;
 	CCamera m_Camera;

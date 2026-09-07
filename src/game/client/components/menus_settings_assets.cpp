@@ -29,8 +29,6 @@ struct SMenuAssetScanUser
 	TMenuAssetScanLoadedFunc m_LoadedFunc;
 };
 
-static constexpr int ASSET_OWNER_ASSET_PREVIEWS = 10;
-
 // IDs of the tabs in the Assets menu
 enum
 {
@@ -50,7 +48,7 @@ void CMenus::LoadEntities(SCustomEntities *pEntitiesItem, void *pUser)
 
 	char aPath[IO_MAX_PATH_LENGTH];
 	const auto Submit = [&](SCustomEntities::SEntitiesImage &Image, const char *pPath) {
-		Image.m_vLoadResources.push_back(pThis->GameClient()->AssetLoader().LoadImageFile(pThis->Storage(), pPath, IStorage::TYPE_ALL, ASSET_OWNER_ASSET_PREVIEWS, pThis->m_AssetPreviewGeneration));
+		Image.m_vLoadResources.push_back(pThis->GameClient()->AssetLoader().LoadImageFile(pThis->Storage(), pPath, IStorage::TYPE_ALL, CGameClient::ASSET_OWNER_ASSET_PREVIEWS, pThis->m_AssetPreviewGeneration));
 	};
 	if(str_comp(pEntitiesItem->m_aName, "default") == 0)
 	{
@@ -116,7 +114,7 @@ template<typename TName>
 static void LoadAsset(TName *pAssetItem, const char *pAssetName, SMenuAssetScanUser *pUser)
 {
 	const auto Submit = [&](const char *pPath) {
-		pAssetItem->m_vLoadResources.push_back(pUser->m_pAssetLoader->LoadImageFile(pUser->m_pStorage, pPath, IStorage::TYPE_ALL, ASSET_OWNER_ASSET_PREVIEWS, pUser->m_Generation));
+		pAssetItem->m_vLoadResources.push_back(pUser->m_pAssetLoader->LoadImageFile(pUser->m_pStorage, pPath, IStorage::TYPE_ALL, CGameClient::ASSET_OWNER_ASSET_PREVIEWS, pUser->m_Generation));
 	};
 	char aPath[IO_MAX_PATH_LENGTH];
 	if(str_comp(pAssetItem->m_aName, "default") == 0)

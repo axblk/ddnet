@@ -17,6 +17,8 @@
 namespace
 {
 	// The editor keeps its own loader, so its owner ids are its own too.
+	// The editor has an asset loader of its own and the file preview is its
+	// only owner.
 	constexpr int ASSET_OWNER_FILE_PREVIEW = 1;
 } // namespace
 

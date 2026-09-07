@@ -18,7 +18,6 @@
 
 namespace
 {
-	constexpr int ASSET_OWNER_COUNTRY_FLAGS = 6;
 	constexpr size_t MAX_CONCURRENT_COUNTRY_FLAG_LOADS = 16;
 }
 
@@ -178,7 +177,7 @@ void CCountryFlags::OnUpdate()
 void CCountryFlags::OnShutdown()
 {
 	++m_Generation;
-	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_COUNTRY_FLAGS, m_Generation);
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(CGameClient::ASSET_OWNER_COUNTRY_FLAGS, m_Generation);
 	for(CCountryFlag &CountryFlag : m_vCountryFlags)
 	{
 		CountryFlag.m_LoadResource.Reset();
@@ -200,7 +199,7 @@ void CCountryFlags::StartPendingLoads()
 			continue;
 		char aFlagPath[IO_MAX_PATH_LENGTH];
 		str_format(aFlagPath, sizeof(aFlagPath), "countryflags/%s.png", CountryFlag.m_aCountryCodeString);
-		CountryFlag.m_LoadResource = GameClient()->AssetLoader().LoadImageFile(Storage(), aFlagPath, IStorage::TYPE_ALL, ASSET_OWNER_COUNTRY_FLAGS, m_Generation);
+		CountryFlag.m_LoadResource = GameClient()->AssetLoader().LoadImageFile(Storage(), aFlagPath, IStorage::TYPE_ALL, CGameClient::ASSET_OWNER_COUNTRY_FLAGS, m_Generation);
 		CountryFlag.m_State = CCountryFlag::EState::LOADING;
 		++NumLoading;
 	}

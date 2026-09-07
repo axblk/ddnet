@@ -104,6 +104,28 @@ TEST_F(GraphicsFrontend, OpensDrawsAndShutsDownWithoutWindow)
 	m_pGraphics->WaitForIdle();
 }
 
+TEST_F(GraphicsFrontend, ReadsBackTheVirtualScreen)
+{
+	// What a tool that renders to a file does instead of presenting: draw a
+	// frame and take the picture out of the virtual screen. Nothing here has
+	// a surface, so the readback is the only way anything comes back at all.
+	IGraphicsBackend *pBackend = m_pWindow->Open(false);
+	ASSERT_NE(pBackend, nullptr);
+	ASSERT_EQ(m_pGraphics->Init(pBackend, m_pWindow->Surface()), 0);
+
+	m_pGraphics->Clear(0.0f, 0.0f, 0.0f);
+	// A frame nobody else claimed hands its readback to whoever asked for it.
+	// Getting nothing back here is the failure that leaves a tool with no
+	// picture to save.
+	std::unique_ptr<IGraphics::ITextureReadback> pReadback = m_pGraphics->PresentAndReadbackAsync();
+	ASSERT_NE(pReadback, nullptr);
+	CImageInfo Image;
+	// The null backend draws nothing, so there are no pixels to hand over.
+	// A backend that draws fills the image in the same call.
+	EXPECT_FALSE(pReadback->Wait(Image));
+	Image.Free();
+}
+
 TEST_F(GraphicsFrontend, ShutdownWithoutInitIsHarmless)
 {
 	// The client shuts the kernel down after a failed start; the graphics

@@ -29,7 +29,7 @@ namespace
 		std::atomic<int> &m_MaxRunning;
 		std::atomic<bool> &m_Release;
 
-		void Run() override
+		void Process() override
 		{
 			const int Running = m_Running.fetch_add(1) + 1;
 			int MaxRunning = m_MaxRunning.load();
@@ -43,7 +43,7 @@ namespace
 
 	public:
 		CBlockingAssetJob(int OwnerId, uint64_t Generation, std::atomic<int> &Running, std::atomic<int> &MaxRunning, std::atomic<bool> &Release) :
-			CAssetJob(EAssetType::SOUND, "test", OwnerId, Generation),
+			CAssetJob(EAssetType::SOUND, std::vector<uint8_t>(), "test", OwnerId, Generation),
 			m_Running(Running),
 			m_MaxRunning(MaxRunning),
 			m_Release(Release)

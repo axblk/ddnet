@@ -26,6 +26,7 @@ class CSoundLoading : public CAssetJob
 	};
 
 	ISound *m_pSound;
+	IStorage *m_pStorage;
 	int m_Lane;
 	int m_NumLanes;
 	bool m_Completed = false;
@@ -33,10 +34,14 @@ class CSoundLoading : public CAssetJob
 	std::chrono::nanoseconds m_LoadTime{};
 	std::vector<CResult> m_vResults;
 
+protected:
+	// The startup sounds are a batch, so this job has no single file of its
+	// own; it reads each of them the same way every other asset is read.
+	void Process() override;
+
 public:
-	CSoundLoading(ISound *pSound, int Lane, int NumLanes, int OwnerId, uint64_t Generation);
+	CSoundLoading(ISound *pSound, IStorage *pStorage, int Lane, int NumLanes, int OwnerId, uint64_t Generation);
 	~CSoundLoading() override;
-	void Run() override;
 	void Commit();
 	int NumLoaded() const { return m_NumLoaded; }
 	std::chrono::nanoseconds LoadTime() const { return m_LoadTime; }

@@ -2236,12 +2236,14 @@ std::unique_ptr<IGraphics::ITextureReadback> CGraphics_Threaded::PresentFrame(bo
 		ReadbackCmd.m_pResult = pResult.get();
 		ReadbackCmd.m_pCompletion = pResult.get();
 		CCommandBuffer::SCommand_Swap SwapCmd;
+		SwapCmd.m_PaceWithDisplay = m_PresentWaitsForDisplay;
 		if(AddCmd(ReadbackCmd) && AddCmd(SwapCmd))
 			FramePublished = SubmitFramePacket();
 	}
 	else if(ResourcesReady)
 	{
 		CCommandBuffer::SCommand_Swap Cmd;
+		Cmd.m_PaceWithDisplay = m_PresentWaitsForDisplay;
 		AddCmd(Cmd);
 		FramePublished = SubmitFramePacket();
 	}

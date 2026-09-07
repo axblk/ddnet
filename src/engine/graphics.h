@@ -289,6 +289,7 @@ protected:
 	int m_DrawableHeight = 0;
 	int m_ScreenRefreshRate;
 	float m_ScreenHiDPIScale;
+	bool m_PresentWaitsForDisplay = true;
 
 public:
 	// How many vertices a Begin/End pair may hold before it flushes on its own.
@@ -957,6 +958,16 @@ public:
 	virtual void TakeScreenshot(const char *pFilename) = 0;
 	virtual void TakeCustomScreenshot(const char *pFilename) = 0;
 	virtual void Swap() = 0;
+
+	/**
+	 * Whether a present may wait for the display before it returns.
+	 *
+	 * The main loop wants that wait: it is the frame limiter. A caller that
+	 * paces itself by the clock - the loading screen, which renders between
+	 * initialisation steps - does not, and on the browser the wait is a whole
+	 * display refresh charged to every step.
+	 */
+	void SetPresentWaitsForDisplay(bool State) { m_PresentWaitsForDisplay = State; }
 
 	// synchronization
 	virtual void InsertSignal(class CSemaphore *pSemaphore) = 0;

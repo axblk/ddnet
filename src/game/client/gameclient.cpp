@@ -647,14 +647,32 @@ void CGameClient::OnInit()
 	int SkippedComps = 1;
 	int CompCounter = 1;
 	const int NumComponents = ComponentCount();
+	// Startup runs entirely inside this loop, so the two things it can spend
+	// time on - the components themselves and the screen that reports them -
+	// are worth telling apart in the log.
+	const std::chrono::nanoseconds ComponentsStart = time_get_nanoseconds();
+	std::chrono::nanoseconds ComponentTime{};
+	std::chrono::nanoseconds ScreenTime{};
+	std::chrono::nanoseconds SlowestComponentTime{};
+	int SlowestComponent = -1;
 	for(int i = NumComponents - 1; i >= 0; --i)
 	{
+		const std::chrono::nanoseconds ComponentStart = time_get_nanoseconds();
 		m_vpAll[i]->OnInit();
+		const std::chrono::nanoseconds Elapsed = time_get_nanoseconds() - ComponentStart;
+		ComponentTime += Elapsed;
+		if(Elapsed > SlowestComponentTime)
+		{
+			SlowestComponentTime = Elapsed;
+			SlowestComponent = CompCounter;
+		}
 		// try to render a frame after each component, also flushes GPU uploads
 		if(m_Menus.IsInit())
 		{
 			str_format(aLoadingMessage, std::size(aLoadingMessage), "%s [%d/%d]", CompCounter == NumComponents ? pLoadingMessageComponentsSpecial : pLoadingMessageComponents, CompCounter, NumComponents);
+			const std::chrono::nanoseconds ScreenStart = time_get_nanoseconds();
 			m_Menus.RenderLoading(pLoadingDDNetCaption, aLoadingMessage, SkippedComps);
+			ScreenTime += time_get_nanoseconds() - ScreenStart;
 			SkippedComps = 1;
 		}
 		else
@@ -663,6 +681,10 @@ void CGameClient::OnInit()
 		}
 		++CompCounter;
 	}
+	log_info("asset_loader", "Component init: components=%d wall=%.2fms init=%.2fms screen=%.2fms frames=%d slowest=%d/%.2fms",
+		NumComponents, (time_get_nanoseconds() - ComponentsStart).count() / 1000000.0,
+		ComponentTime.count() / 1000000.0, ScreenTime.count() / 1000000.0,
+		m_Menus.LoadingFramesRendered(), SlowestComponent, SlowestComponentTime.count() / 1000000.0);
 
 	TryFinishLoadingCoreImages();
 

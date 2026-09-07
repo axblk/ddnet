@@ -216,6 +216,9 @@ protected:
 		std::chrono::nanoseconds m_LastRender{0};
 		int m_Current;
 		int m_Total;
+		// How many frames this screen has actually put on the display, for the
+		// startup timing report.
+		int m_RenderedFrames = 0;
 	};
 	CLoadingState m_LoadingState;
 
@@ -790,6 +793,7 @@ public:
 	void FinishLoading();
 
 	bool IsInit() const { return m_IsInit; }
+	int LoadingFramesRendered() const { return m_LoadingState.m_RenderedFrames; }
 
 	bool IsActive() const { return m_MenuActive; }
 	void SetActive(bool Active);

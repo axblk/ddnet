@@ -6,6 +6,7 @@
 #include <engine/shared/memheap.h>
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 class CLanguage
@@ -51,10 +52,18 @@ class CLocalizationDatabase
 	CHeap m_StringsHeap;
 
 public:
-	void LoadIndexfile(class IStorage *pStorage, class IConsole *pConsole);
+	/**
+	 * @param Index Contents of `languages/index.txt`.
+	 */
+	void ParseIndex(std::string_view Index);
 	const std::vector<CLanguage> &Languages() const { return m_vLanguages; }
 	void SelectDefaultLanguage(class IConsole *pConsole, char *pFilename, size_t Length) const;
 
+	/**
+	 * @param Text Contents of the language file, empty to unload.
+	 * @param pName Name of the language file.
+	 */
+	bool ParseLanguage(std::string_view Text, const char *pName);
 	bool Load(const char *pFilename, class IStorage *pStorage, class IConsole *pConsole);
 
 	void AddString(const char *pOrgStr, const char *pNewStr, const char *pContext);

@@ -348,7 +348,7 @@ void CEnvelopeEditor::Render(CUIRect View)
 		ColorBar.HMargin(2.0f, &ColorBar);
 	}
 
-	Editor()->RenderBackground(View, Editor()->m_CheckerTexture, 32.0f, 0.1f);
+	Editor()->RenderBackground(View, Editor()->GetCheckerTexture(), 32.0f, 0.1f);
 
 	if(pEnvelope)
 	{
@@ -1524,7 +1524,7 @@ void CEnvelopeEditor::RenderColorBar(CUIRect ColorBar, const std::shared_ptr<CEn
 
 	Ui()->ClipEnable(&ColorBar);
 	CUIRect ColorBarBackground = CUIRect{StartX, ColorBar.y, TotalWidth, ColorBar.h};
-	Editor()->RenderBackground(ColorBarBackground, Editor()->m_CheckerTexture, ColorBarBackground.h, 1.0f);
+	Editor()->RenderBackground(ColorBarBackground, Editor()->GetCheckerTexture(), ColorBarBackground.h, 1.0f);
 	Graphics()->TextureClear();
 	Graphics()->QuadsBegin();
 

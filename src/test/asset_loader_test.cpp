@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -331,6 +332,34 @@ TEST(AssetLoader, UncompressesRawMapImageData)
 	{
 		pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE);
 	}
+}
+
+TEST(AssetLoader, ReadsFiles)
+{
+	std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	ASSERT_NE(pStorage, nullptr) << "Error creating local storage";
+	CTestInfo Info;
+	const std::string Content = "{\"skin\": {\"body\": {\"filename\": \"standard\"}}}";
+	WriteTestFile(pStorage.get(), Info.m_aFilename, Content.data(), Content.size());
+
+	std::unique_ptr<IEngine> pEngine(CreateTestEngine("asset_loader_test"));
+	CAssetLoader Loader;
+	Loader.Init(pEngine.get(), 1);
+
+	CTypedAssetResource<CFileAssetJob> Resource = Loader.LoadFile(pStorage.get(), Info.m_aFilename, IStorage::TYPE_SAVE);
+	WaitForResource(Loader, Resource);
+	ASSERT_TRUE(Resource.IsReady());
+	EXPECT_STREQ(Resource.Path(), Info.m_aFilename);
+	EXPECT_EQ(Resource.Result().Text(), Content);
+	EXPECT_EQ(Resource.Result().TakeBytes().size(), Content.size());
+
+	CTypedAssetResource<CFileAssetJob> MissingResource = Loader.LoadFile(pStorage.get(), "asset_loader_test_missing.json", IStorage::TYPE_SAVE);
+	WaitForResource(Loader, MissingResource);
+	EXPECT_TRUE(MissingResource.IsFailed());
+
+	Loader.Shutdown();
+	pEngine->ShutdownJobs();
+	pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE);
 }
 
 TEST(AssetLoader, DecodesHttpResponse)

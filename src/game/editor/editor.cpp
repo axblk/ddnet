@@ -3743,7 +3743,7 @@ void CEditor::Render()
 	str_copy(m_aTooltip, "");
 
 	// render checker
-	RenderBackground(View, m_CheckerTexture, 32.0f, 1.0f);
+	RenderBackground(View, GetCheckerTexture(), 32.0f, 1.0f);
 
 	UpdateBrushPicker();
 
@@ -4210,7 +4210,7 @@ void CEditor::RenderMousePointer()
 
 	// Cursor
 	Graphics()->WrapClamp();
-	Graphics()->TextureSet(m_aCursorTextures[m_CursorType]);
+	Graphics()->TextureSet(GetCursorTexture(m_CursorType));
 	Graphics()->QuadsBegin();
 	if(m_CursorType == CURSOR_RESIZE_V)
 	{
@@ -4575,6 +4575,22 @@ IGraphics::CTextureHandle CEditor::GetEntitiesTexture()
 	return m_EntitiesTexture;
 }
 
+IGraphics::CTextureHandle CEditor::GetCheckerTexture()
+{
+	if(!m_CheckerTexture.IsValid())
+		m_CheckerTexture = Graphics()->LoadTexture("editor/checker.png", IStorage::TYPE_ALL);
+	return m_CheckerTexture;
+}
+
+IGraphics::CTextureHandle CEditor::GetCursorTexture(ECursorType Type)
+{
+	// The vertical resize cursor is the horizontal one rotated
+	const ECursorType FileType = Type == CURSOR_RESIZE_V ? CURSOR_RESIZE_H : Type;
+	if(!m_aCursorTextures[FileType].IsValid())
+		m_aCursorTextures[FileType] = Graphics()->LoadTexture(FileType == CURSOR_RESIZE_H ? "editor/cursor_resize.png" : "editor/cursor.png", IStorage::TYPE_ALL);
+	return m_aCursorTextures[FileType];
+}
+
 void CEditor::Init()
 {
 	m_pInput = Kernel()->RequestInterface<IInput>();
@@ -4609,11 +4625,6 @@ void CEditor::Init()
 	m_vComponents.emplace_back(m_QuadKnife);
 	for(CEditorComponent &Component : m_vComponents)
 		Component.OnInit(this);
-
-	m_CheckerTexture = Graphics()->LoadTexture("editor/checker.png", IStorage::TYPE_ALL);
-	m_aCursorTextures[CURSOR_NORMAL] = Graphics()->LoadTexture("editor/cursor.png", IStorage::TYPE_ALL);
-	m_aCursorTextures[CURSOR_RESIZE_H] = Graphics()->LoadTexture("editor/cursor_resize.png", IStorage::TYPE_ALL);
-	m_aCursorTextures[CURSOR_RESIZE_V] = m_aCursorTextures[CURSOR_RESIZE_H];
 
 	m_pToolsMap = std::make_unique<CEditorMap>(this);
 

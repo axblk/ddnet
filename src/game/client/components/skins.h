@@ -264,7 +264,7 @@ private:
 
 	bool LoadSkinData(const char *pName, CImageInfo &Info, CSkinLoadData &Data) const;
 	bool LoadSkinFinish(CSkinContainer *pSkinContainer, const CSkinLoadData &Data);
-	void LoadSkinDirect(const char *pName);
+	void AddSkinContainer(const char *pName);
 	std::function<bool(CImageInfo &)> SkinPostprocess(CSkinContainer *pSkinContainer);
 	void StartLocalSkinLoad(CSkinContainer *pSkinContainer);
 	void StartDownload(CSkinContainer *pSkinContainer, bool Force);

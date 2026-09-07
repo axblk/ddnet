@@ -4,6 +4,7 @@
 
 #include <base/dbg.h>
 #include <base/io.h>
+#include <base/mem.h>
 #include <base/str.h>
 
 #include <cstdlib>
@@ -67,6 +68,16 @@ void CLineReader::OpenBuffer(char *pBuffer)
 	{
 		m_BufferPos += 3;
 	}
+}
+
+void CLineReader::OpenCopy(std::string_view Text)
+{
+	char *pBuffer = static_cast<char *>(malloc(Text.size() + 1));
+	dbg_assert(pBuffer != nullptr, "Failed to allocate line reader buffer");
+	if(!Text.empty())
+		mem_copy(pBuffer, Text.data(), Text.size());
+	pBuffer[Text.size()] = '\0';
+	OpenBuffer(pBuffer);
 }
 
 const char *CLineReader::Get()

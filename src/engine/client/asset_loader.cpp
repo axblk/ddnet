@@ -214,6 +214,11 @@ void CAssetLoader::UpdateReadJobs()
 		m_vpPendingJobs.push_back(std::move(pJob));
 }
 
+CTypedAssetResource<CFileAssetJob> CAssetLoader::LoadFile(IStorage *pStorage, const char *pPath, int StorageType)
+{
+	return Load(std::make_shared<CFileAssetJob>(pStorage, pPath, StorageType));
+}
+
 CImageResource CAssetLoader::LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess)
 {
 	auto pJob = std::make_shared<CImageAssetJob>(pStorage, pPath, StorageType, std::move(Postprocess));
@@ -365,6 +370,24 @@ CImageInfo CImageAssetJob::TakeImage()
 {
 	dbg_assert(State() == IJob::STATE_DONE && Success(), "Cannot take image from unfinished or failed asset job");
 	return std::move(m_Image);
+}
+
+CFileAssetJob::CFileAssetJob(IStorage *pStorage, const char *pPath, int StorageType) :
+	CAssetJob(pStorage, pPath, StorageType)
+{
+}
+
+std::vector<uint8_t> CFileAssetJob::TakeBytes()
+{
+	dbg_assert(State() == IJob::STATE_DONE && Success(), "Cannot take bytes from unfinished or failed asset job");
+	return TakeData();
+}
+
+std::string_view CFileAssetJob::Text() const
+{
+	dbg_assert(State() == IJob::STATE_DONE && Success(), "Cannot read text of unfinished or failed asset job");
+	const std::span<const uint8_t> Bytes = Data();
+	return std::string_view(reinterpret_cast<const char *>(Bytes.data()), Bytes.size());
 }
 
 CAssetResource::CAssetResource(std::shared_ptr<CAssetJob> pJob) :

@@ -475,7 +475,14 @@ void CRegister::CProtocol::SendDeleteIfRegistered(bool Shutdown)
 {
 	{
 		const CLockScope LockScope(m_pShared->m_Lock);
-		const bool ShouldSendDelete = m_pShared->m_LatestResponseStatus == STATUS_OK;
+		// A register whose answer has not arrived yet may well have reached the
+		// master, and on shutdown there is no time to wait and find out: without
+		// this the server stays in the list until it times out there. It happens
+		// to the protocol that registers last, which is whichever one the master
+		// challenges last, so it is not one address that is at risk but any of
+		// them.
+		const bool Outstanding = Shutdown && m_pShared->m_NumTotalRequests > m_pShared->m_LatestResponseIndex + 1;
+		const bool ShouldSendDelete = m_pShared->m_LatestResponseStatus == STATUS_OK || Outstanding;
 		m_pShared->m_LatestResponseStatus = STATUS_NONE;
 		if(!ShouldSendDelete)
 			return;

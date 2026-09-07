@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -94,8 +95,52 @@ class CAssetJob : public IJob
 	uint64_t m_Generation;
 	uint64_t m_RequestId = 0;
 
+	// Reading a file is the same work whatever the bytes turn out to be, so it
+	// happens here for every asset and nowhere else. Only what is made of the
+	// bytes afterwards depends on the kind of asset, and that is Process.
+	IStorage *m_pStorage = nullptr;
+	int m_StorageType = 0;
+	std::vector<uint8_t> m_vData;
+	bool m_ReadFailed = false;
+	std::chrono::nanoseconds m_ReadTime{};
+
 protected:
-	CAssetJob(EAssetType Type, const char *pPath, int OwnerId, uint64_t Generation);
+	/**
+	 * A job whose bytes are read from a file.
+	 */
+	CAssetJob(EAssetType Type, IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation);
+	/**
+	 * A job whose bytes the caller already has, or that has no bytes of its
+	 * own because it reads several files itself. The context name takes the
+	 * place of the path, for logging and for the owner to recognize the job by.
+	 */
+	CAssetJob(EAssetType Type, std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation);
+
+	/**
+	 * Makes the asset out of the bytes in `Data`, on a job thread.
+	 *
+	 * Only called when there was something to read, or when the job brought
+	 * its own bytes.
+	 */
+	virtual void Process() = 0;
+
+	/**
+	 * Called instead of `Process` when the file could not be read, for jobs
+	 * that tell that apart from a file they could not make sense of.
+	 */
+	virtual void OnReadFailed() {}
+
+	std::vector<uint8_t> &Data() { return m_vData; }
+	const std::vector<uint8_t> &Data() const { return m_vData; }
+	void SetData(std::vector<uint8_t> vData);
+
+	/**
+	 * Points the job at a file instead of at bytes it was given, which the
+	 * HTTP path decides only once the request finished.
+	 *
+	 * @remark Must only be called before the job is submitted to the job pool.
+	 */
+	void SetSourceFile(IStorage *pStorage, const char *pPath, int StorageType);
 
 	/**
 	 * Sets the path of the asset when the source of the asset is only decided
@@ -106,7 +151,25 @@ protected:
 	void SetPath(const char *pPath);
 
 public:
+	/**
+	 * Reads the file, if there is one, and then makes the asset out of the
+	 * bytes. The caller that has no job threads to hand the job to runs it
+	 * itself.
+	 */
+	void Run() final;
+
+	/**
+	 * Reads a whole file into memory. The one place in the asset pipeline that
+	 * reads from storage, so that every asset is read the same way. The read
+	 * time, if it is wanted, is added to whatever the caller already counted.
+	 */
+	static bool ReadFile(IStorage *pStorage, const char *pPath, int StorageType, std::vector<uint8_t> &vData, std::chrono::nanoseconds *pReadTime = nullptr);
+
 	virtual bool Success() const { return State() == STATE_DONE; }
+	/**
+	 * How long reading the file took. Zero for a job that brought its bytes.
+	 */
+	std::chrono::nanoseconds ReadTime() const { return m_ReadTime; }
 	EAssetType Type() const { return m_Type; }
 	const char *Path() const { return m_Path.c_str(); }
 	int OwnerId() const { return m_OwnerId; }
@@ -133,16 +196,19 @@ class CHttpAssetJob : public CAssetJob
 protected:
 	/**
 	 * @param Type Kind of asset that the job prepares.
+	 * @param pStorage Storage that the file is read from.
+	 * @param pPath Name of the asset, for logging and for the owner to
+	 * recognize it by.
+	 * @param StorageType Storage type that the file is read from.
 	 * @param pRequest Request that downloads the asset. Jobs which are not
 	 * loaded with `CAssetLoader::LoadHttp` have no request.
 	 * @param Destination File that the asset is loaded from when the response
 	 * does not contain the data.
-	 * @param pPath Name of the asset, for logging and for the owner to
-	 * recognize it by.
 	 * @param OwnerId Owner that the job is aborted with.
 	 * @param Generation Generation of the owner that requested the asset.
 	 */
-	CHttpAssetJob(EAssetType Type, std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, const char *pPath, int OwnerId, uint64_t Generation);
+	CHttpAssetJob(EAssetType Type, IStorage *pStorage, const char *pPath, int StorageType, std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, int OwnerId, uint64_t Generation);
+	CHttpAssetJob(EAssetType Type, std::vector<uint8_t> vData, const char *pContextName, std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, int OwnerId, uint64_t Generation);
 
 	/**
 	 * Called on the main thread when the request finished and before the job
@@ -314,24 +380,21 @@ public:
  */
 class CTextAssetJob final : public CAssetJob
 {
-	IStorage *m_pStorage;
-	int m_StorageType;
-	std::string m_Text;
 	bool m_Ok = false;
-	std::chrono::nanoseconds m_ReadTime{};
 
 protected:
-	void Run() override;
+	// The bytes that were read are the text, so there is nothing left to make
+	// of them. What the text means is the caller's to decide.
+	void Process() override { m_Ok = true; }
 
 public:
 	CTextAssetJob(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation);
 
 	bool Success() const override { return m_Ok; }
-	std::chrono::nanoseconds ReadTime() const { return m_ReadTime; }
 	/**
 	 * The text that was read. Only valid once the job succeeded.
 	 */
-	const std::string &Text() const;
+	std::string_view Text() const;
 };
 
 template<typename TJob>

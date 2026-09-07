@@ -340,6 +340,8 @@ static bool ReadPngFile(IOHANDLE File, const char *pFilename, uint8_t *&pFileDat
 {
 	pFileData = nullptr;
 	FileDataSize = 0;
+	// The length is a hint that a pipe does not have to give, so the size is
+	// checked again once the bytes are here.
 	const int64_t Length = io_length(File);
 	if(Length > static_cast<int64_t>(CImageLoader::MAX_PNG_FILE_SIZE))
 	{
@@ -348,67 +350,28 @@ static bool ReadPngFile(IOHANDLE File, const char *pFilename, uint8_t *&pFileDat
 		return false;
 	}
 
-	size_t Capacity = Length > 0 ? static_cast<size_t>(Length) : 4096;
-	Capacity = std::min(Capacity, CImageLoader::MAX_PNG_FILE_SIZE);
-	pFileData = static_cast<uint8_t *>(malloc(Capacity));
-	if(pFileData == nullptr)
+	void *pData;
+	unsigned DataSize;
+	if(!io_read_all(File, &pData, &DataSize))
 	{
 		if(LogErrors)
-			log_error("png", "failed to allocate file buffer. filename='%s' size=%" PRIzu, pFilename, Capacity);
+			log_error("png", "failed to read file. filename='%s'", pFilename);
 		return false;
 	}
-
-	while(true)
+	if(DataSize > CImageLoader::MAX_PNG_FILE_SIZE)
 	{
-		if(FileDataSize == Capacity)
-		{
-			uint8_t ExtraByte;
-			if(io_read(File, &ExtraByte, 1) == 0)
-				return true;
-			if(Capacity == CImageLoader::MAX_PNG_FILE_SIZE)
-			{
-				if(LogErrors)
-					log_error("png", "file is too large. filename='%s' maximum=%" PRIzu, pFilename, CImageLoader::MAX_PNG_FILE_SIZE);
-				free(pFileData);
-				pFileData = nullptr;
-				FileDataSize = 0;
-				return false;
-			}
-
-			const size_t NewCapacity = std::min(Capacity * 2, CImageLoader::MAX_PNG_FILE_SIZE);
-			uint8_t *pNewFileData = static_cast<uint8_t *>(realloc(pFileData, NewCapacity));
-			if(pNewFileData == nullptr)
-			{
-				if(LogErrors)
-					log_error("png", "failed to grow file buffer. filename='%s' size=%" PRIzu, pFilename, NewCapacity);
-				free(pFileData);
-				pFileData = nullptr;
-				FileDataSize = 0;
-				return false;
-			}
-			pFileData = pNewFileData;
-			Capacity = NewCapacity;
-			pFileData[FileDataSize++] = ExtraByte;
-		}
-
-		const unsigned BytesRead = io_read(File, &pFileData[FileDataSize], static_cast<unsigned>(Capacity - FileDataSize));
-		if(BytesRead == 0)
-			return true;
-		FileDataSize += BytesRead;
+		if(LogErrors)
+			log_error("png", "file is too large. filename='%s' size=%u maximum=%" PRIzu, pFilename, DataSize, CImageLoader::MAX_PNG_FILE_SIZE);
+		free(pData);
+		return false;
 	}
+	pFileData = static_cast<uint8_t *>(pData);
+	FileDataSize = DataSize;
+	return true;
 }
 
 bool CImageLoader::LoadPng(IOHANDLE File, const char *pFilename, CImageInfo &Image, int &PngliteIncompatible, bool LogErrors)
 {
-	std::chrono::nanoseconds ReadTime;
-	std::chrono::nanoseconds DecodeTime;
-	return LoadPngTimed(File, pFilename, Image, PngliteIncompatible, ReadTime, DecodeTime, LogErrors);
-}
-
-bool CImageLoader::LoadPngTimed(IOHANDLE File, const char *pFilename, CImageInfo &Image, int &PngliteIncompatible, std::chrono::nanoseconds &ReadTime, std::chrono::nanoseconds &DecodeTime, bool LogErrors)
-{
-	ReadTime = std::chrono::nanoseconds::zero();
-	DecodeTime = std::chrono::nanoseconds::zero();
 	if(!File)
 	{
 		if(LogErrors)
@@ -418,20 +381,15 @@ bool CImageLoader::LoadPngTimed(IOHANDLE File, const char *pFilename, CImageInfo
 
 	uint8_t *pFileData;
 	size_t FileDataSize;
-	const std::chrono::nanoseconds ReadStart = time_get_nanoseconds();
 	const bool ReadSuccess = ReadPngFile(File, pFilename, pFileData, FileDataSize, LogErrors);
 	io_close(File);
-	ReadTime = time_get_nanoseconds() - ReadStart;
 	if(!ReadSuccess)
 	{
 		return false;
 	}
 
 	CByteBufferReader ImageReader(pFileData, FileDataSize);
-
-	const std::chrono::nanoseconds DecodeStart = time_get_nanoseconds();
 	const bool LoadResult = CImageLoader::LoadPng(ImageReader, pFilename, Image, PngliteIncompatible, LogErrors);
-	DecodeTime = time_get_nanoseconds() - DecodeStart;
 	free(pFileData);
 	if(!LoadResult)
 	{

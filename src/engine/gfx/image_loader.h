@@ -5,7 +5,6 @@
 
 #include <engine/image.h>
 
-#include <chrono>
 #include <vector>
 
 class CByteBufferReader
@@ -55,7 +54,6 @@ public:
 
 	static bool LoadPng(CByteBufferReader &Reader, const char *pContextName, CImageInfo &Image, int &PngliteIncompatible, bool LogErrors = true);
 	static bool LoadPng(IOHANDLE File, const char *pFilename, CImageInfo &Image, int &PngliteIncompatible, bool LogErrors = true);
-	static bool LoadPngTimed(IOHANDLE File, const char *pFilename, CImageInfo &Image, int &PngliteIncompatible, std::chrono::nanoseconds &ReadTime, std::chrono::nanoseconds &DecodeTime, bool LogErrors = true);
 
 	static bool SavePng(CByteBufferWriter &Writer, const CImageInfo &Image);
 	static bool SavePng(IOHANDLE File, const char *pFilename, const CImageInfo &Image);

@@ -282,7 +282,7 @@ void CSkins7::FinishSkinLoads()
 	}
 }
 
-bool CSkins7::ParseSkin(const char *pName, int DirType, const std::string &Json)
+bool CSkins7::ParseSkin(const char *pName, int DirType, std::string_view Json)
 {
 	char aFilename[IO_MAX_PATH_LENGTH];
 	str_format(aFilename, sizeof(aFilename), SKINS_DIR "/%s.json", pName);
@@ -302,7 +302,7 @@ bool CSkins7::ParseSkin(const char *pName, int DirType, const std::string &Json)
 
 	json_settings JsonSettings{};
 	char aError[256];
-	json_value *pJsonData = JsonParseEx(&JsonSettings, Json.c_str(), Json.length(), aError);
+	json_value *pJsonData = JsonParseEx(&JsonSettings, Json.data(), Json.length(), aError);
 	if(pJsonData == nullptr)
 	{
 		log_error("skins7", "Failed to parse skin json file '%s': %s", aFilename, aError);

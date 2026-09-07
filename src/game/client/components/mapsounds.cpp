@@ -23,29 +23,31 @@ namespace
 class CMapSounds::CMapSoundLoading final : public CAssetJob
 {
 	ISound *m_pSound;
-	std::vector<uint8_t> m_vData;
-	bool m_FromMemory;
 	int m_SampleId = -1;
 
 protected:
-	void Run() override
+	// Whether the sound came out of a file next to the map or out of the map
+	// itself, by here it is bytes either way.
+	void Process() override
 	{
-		m_SampleId = m_FromMemory ? m_pSound->LoadOpusFromMem(m_vData.data(), static_cast<unsigned>(m_vData.size()), false, Path()) : m_pSound->LoadOpus(Path());
+		m_SampleId = m_pSound->LoadOpusFromMem(Data().data(), static_cast<unsigned>(Data().size()), false, Path());
+	}
+
+	void OnReadFailed() override
+	{
+		log_error("mapsounds", "Failed to open/read sound file '%s'", Path());
 	}
 
 public:
-	CMapSoundLoading(ISound *pSound, const char *pPath, int OwnerId, uint64_t Generation) :
-		CAssetJob(EAssetType::SOUND, pPath, OwnerId, Generation),
-		m_pSound(pSound),
-		m_FromMemory(false)
+	CMapSoundLoading(ISound *pSound, IStorage *pStorage, const char *pPath, int OwnerId, uint64_t Generation) :
+		CAssetJob(EAssetType::SOUND, pStorage, pPath, IStorage::TYPE_ALL, OwnerId, Generation),
+		m_pSound(pSound)
 	{
 	}
 
 	CMapSoundLoading(ISound *pSound, std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation) :
-		CAssetJob(EAssetType::SOUND, pContextName, OwnerId, Generation),
-		m_pSound(pSound),
-		m_vData(std::move(vData)),
-		m_FromMemory(true)
+		CAssetJob(EAssetType::SOUND, std::move(vData), pContextName, OwnerId, Generation),
+		m_pSound(pSound)
 	{
 	}
 
@@ -135,7 +137,7 @@ void CMapSounds::OnMapLoad()
 		{
 			char aBuf[IO_MAX_PATH_LENGTH];
 			str_format(aBuf, sizeof(aBuf), "mapres/%s.opus", pName);
-			m_vSoundLoads.push_back({i, GameClient()->AssetLoader().Load(std::make_shared<CMapSoundLoading>(Sound(), aBuf, m_AssetOwnerId, m_LoadGeneration))});
+			m_vSoundLoads.push_back({i, GameClient()->AssetLoader().Load(std::make_shared<CMapSoundLoading>(Sound(), Storage(), aBuf, m_AssetOwnerId, m_LoadGeneration))});
 			pMap->UnloadData(pSound->m_SoundName);
 		}
 		else

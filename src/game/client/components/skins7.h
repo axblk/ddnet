@@ -20,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class CSkins7 : public CComponent
@@ -163,7 +164,7 @@ private:
 	static int SkinScan(const char *pName, int IsDir, int DirType, void *pUser);
 	void StartSkinLoad(const char *pName, int DirType);
 	void FinishSkinLoads();
-	bool ParseSkin(const char *pName, int DirType, const std::string &Json);
+	bool ParseSkin(const char *pName, int DirType, std::string_view Json);
 	const CSkinPart *FindSkinPartWithoutRequest(int Part, const char *pName, bool AllowSpecialPart) const;
 	const CSkinPart *FindDefaultSkinPartWithoutRequest(int Part) const;
 	void StartPendingLoads();

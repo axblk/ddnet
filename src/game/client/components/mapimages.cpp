@@ -102,7 +102,7 @@ void CMapImages::FinishEntitiesLoads()
 	m_SpeedupArrowResource.FinishTexture(Graphics(), m_SpeedupArrowTexture, IGraphics::TEXLOAD_LAYERED | IGraphics::TEXLOAD_NO_2D_TEXTURE);
 }
 
-void CMapRenderImages::Update()
+bool CMapRenderImages::Update()
 {
 	bool ShowWarning = false;
 	for(auto It = m_vImageLoads.begin(); It != m_vImageLoads.end();)
@@ -127,6 +127,7 @@ void CMapRenderImages::Update()
 	}
 	if(ShowWarning)
 		Client()->AddWarning(SWarning(Localize("Some map images could not be loaded. Check the local console for details.")));
+	return !m_vImageLoads.empty();
 }
 
 void CMapRenderImages::Unload()

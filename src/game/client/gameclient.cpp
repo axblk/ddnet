@@ -791,7 +791,20 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	MapContext.Load(*Config());
 	for(CGameState &SessionState : Session.GameStates())
 		SessionState.InitPrediction(MapContext);
-	SessionPresentation(SessionId).Load(Session);
+	CSessionPresentation &Presentation = SessionPresentation(SessionId);
+	Presentation.Load(Session);
+
+	// The map images are fetched asynchronously. Their layers were built with
+	// texture coordinates and would draw untextured until they arrive, so the
+	// world is only entered once they are all there - here, where the loading
+	// screen is still up. A session loading in the background has no loading
+	// screen to hold and picks its images up per frame instead.
+	while(Focused && Presentation.UpdateMapImages())
+	{
+		// the loader only starts the next jobs when it is updated
+		m_AssetLoader.Update();
+		m_Menus.RenderLoading(pConnectCaption, Localize("Loading map images"), 0);
+	}
 
 	if(SessionId == Client()->NetworkSessionId())
 	{

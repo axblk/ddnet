@@ -9,6 +9,7 @@
 #include <engine/engine.h>
 #include <engine/gfx/image_loader.h>
 #include <engine/graphics.h>
+#include <engine/graphics_window.h>
 #include <engine/image.h>
 #include <engine/kernel.h>
 #include <engine/map.h>
@@ -16,6 +17,7 @@
 #include <engine/shared/jobs.h>
 #include <engine/storage.h>
 
+#include <game/client/render.h>
 #include <game/layers.h>
 #include <game/localization.h>
 #include <game/map/envelope_manager.h>
@@ -95,24 +97,6 @@ namespace MapRenderer
 		IGraphics::CTextureHandle m_aTextures[MAX_MAPIMAGES];
 		int m_Count;
 
-		IGraphics::CTextureHandle MakeDummyTexture()
-		{
-			CImageInfo Info;
-			Info.m_Width = 1;
-			Info.m_Height = 1;
-			Info.m_Format = CImageInfo::FORMAT_RGBA;
-			uint8_t Data[4] = {0, 0, 0, 0};
-			Info.m_pData = Data;
-			return m_pGraphics->LoadTextureRaw(Info, 0, "dummy");
-		}
-
-		IGraphics::CTextureHandle m_DummyEntities;
-		IGraphics::CTextureHandle m_DummySpeedupArrow;
-		IGraphics::CTextureHandle m_DummyTuneColors;
-		IGraphics::CTextureHandle m_DummyOverlayBottom;
-		IGraphics::CTextureHandle m_DummyOverlayTop;
-		IGraphics::CTextureHandle m_DummyOverlayCenter;
-
 	public:
 		CToolMapImages(IGraphics *pGraphics, IMap *pMap) :
 			m_pGraphics(pGraphics),
@@ -120,19 +104,15 @@ namespace MapRenderer
 			m_Count(0)
 		{
 			std::fill(std::begin(m_aTextures), std::end(m_aTextures), IGraphics::CTextureHandle());
-
-			m_DummyEntities = MakeDummyTexture();
-			m_DummySpeedupArrow = MakeDummyTexture();
-			m_DummyTuneColors = MakeDummyTexture();
-			m_DummyOverlayBottom = MakeDummyTexture();
-			m_DummyOverlayTop = MakeDummyTexture();
-			m_DummyOverlayCenter = MakeDummyTexture();
-
 			LoadMapImages();
 		}
 
 		~CToolMapImages() override = default;
 
+		// The client works out per image whether a tile layer, a quad layer or
+		// both use it, and loads only what is sampled. The tool loads every
+		// image both ways: it renders one picture and never has to care what
+		// the extra copy costs.
 		void LoadMapImages()
 		{
 			int Start;
@@ -170,7 +150,7 @@ namespace MapRenderer
 				{
 					char aPath[IO_MAX_PATH_LENGTH];
 					str_format(aPath, sizeof(aPath), "mapres/%s.png", pName);
-					m_aTextures[i] = m_pGraphics->LoadTexture(aPath, IStorage::TYPE_ALL, m_pGraphics->TextureLoadFlags());
+					m_aTextures[i] = m_pGraphics->LoadTexture(aPath, IStorage::TYPE_ALL, IGraphics::TEXLOAD_LAYERED);
 				}
 				else
 				{
@@ -183,7 +163,7 @@ namespace MapRenderer
 					{
 						char aTexName[IO_MAX_PATH_LENGTH];
 						str_format(aTexName, sizeof(aTexName), "embedded: %s", pName);
-						m_aTextures[i] = m_pGraphics->LoadTextureRaw(ImageInfo, m_pGraphics->TextureLoadFlags(), aTexName);
+						m_aTextures[i] = m_pGraphics->LoadTextureRaw(ImageInfo, IGraphics::TEXLOAD_LAYERED, aTexName);
 						m_pMap->UnloadData(pImg->m_ImageData);
 					}
 					else
@@ -209,97 +189,21 @@ namespace MapRenderer
 
 		int Num() const override { return m_Count; }
 
+		// The tool draws the design, never the entity overlays. An invalid
+		// handle is what the renderer already expects from an image that is
+		// not there, and it skips the draw.
 		IGraphics::CTextureHandle GetEntities(EMapImageEntityLayerType EntityLayerType) override
 		{
 			(void)EntityLayerType;
-			return m_DummyEntities;
+			return IGraphics::CTextureHandle();
 		}
 
-		IGraphics::CTextureHandle GetSpeedupArrow() override { return m_DummySpeedupArrow; }
-		IGraphics::CTextureHandle GetTuneColors() override { return m_DummyTuneColors; }
-		IGraphics::CTextureHandle GetOverlayBottom() override { return m_DummyOverlayBottom; }
-		IGraphics::CTextureHandle GetOverlayTop() override { return m_DummyOverlayTop; }
-		IGraphics::CTextureHandle GetOverlayCenter() override { return m_DummyOverlayCenter; }
+		IGraphics::CTextureHandle GetSpeedupArrow() override { return IGraphics::CTextureHandle(); }
+		IGraphics::CTextureHandle GetTuneColors() override { return IGraphics::CTextureHandle(); }
+		IGraphics::CTextureHandle GetOverlayBottom() override { return IGraphics::CTextureHandle(); }
+		IGraphics::CTextureHandle GetOverlayTop() override { return IGraphics::CTextureHandle(); }
+		IGraphics::CTextureHandle GetOverlayCenter() override { return IGraphics::CTextureHandle(); }
 	};
-}
-
-// Stub implementations for sprite functions not needed by map rendering
-void CGraphics_Threaded::SelectSprite(const CDataSprite *pSprite, int Flags)
-{
-	(void)pSprite;
-	(void)Flags;
-}
-void CGraphics_Threaded::SelectSprite(int Id, int Flags)
-{
-	(void)Id;
-	(void)Flags;
-}
-void CGraphics_Threaded::SelectSprite7(int Id, int Flags)
-{
-	(void)Id;
-	(void)Flags;
-}
-void CGraphics_Threaded::DrawSprite(float x, float y, float Size)
-{
-	(void)x;
-	(void)y;
-	(void)Size;
-}
-void CGraphics_Threaded::DrawSprite(float x, float y, float ScaledWidth, float ScaledHeight)
-{
-	(void)x;
-	(void)y;
-	(void)ScaledWidth;
-	(void)ScaledHeight;
-}
-void CGraphics_Threaded::GetSpriteScale(const CDataSprite *pSprite, float &ScaleX, float &ScaleY) const
-{
-	(void)pSprite;
-	ScaleX = 1.0f;
-	ScaleY = 1.0f;
-}
-void CGraphics_Threaded::GetSpriteScale(int Id, float &ScaleX, float &ScaleY) const
-{
-	(void)Id;
-	ScaleX = 1.0f;
-	ScaleY = 1.0f;
-}
-void CGraphics_Threaded::GetSpriteScaleImpl(int Width, int Height, float &ScaleX, float &ScaleY) const
-{
-	(void)Width;
-	(void)Height;
-	ScaleX = 1.0f;
-	ScaleY = 1.0f;
-}
-int CGraphics_Threaded::QuadContainerAddSprite(int QuadContainerIndex, float x, float y, float Size)
-{
-	(void)QuadContainerIndex;
-	(void)x;
-	(void)y;
-	(void)Size;
-	return -1;
-}
-int CGraphics_Threaded::QuadContainerAddSprite(int QuadContainerIndex, float Size)
-{
-	(void)QuadContainerIndex;
-	(void)Size;
-	return -1;
-}
-int CGraphics_Threaded::QuadContainerAddSprite(int QuadContainerIndex, float Width, float Height)
-{
-	(void)QuadContainerIndex;
-	(void)Width;
-	(void)Height;
-	return -1;
-}
-int CGraphics_Threaded::QuadContainerAddSprite(int QuadContainerIndex, float X, float Y, float Width, float Height)
-{
-	(void)QuadContainerIndex;
-	(void)X;
-	(void)Y;
-	(void)Width;
-	(void)Height;
-	return -1;
 }
 
 static void PrintUsage(const char *pProgramName)
@@ -404,16 +308,12 @@ int main(int argc, const char **argv)
 		return 1;
 	}
 
-	// Set graphics config
+	// The tool draws into a virtual screen of its own, so the size of the
+	// picture is the size of the screen and there is no window to describe.
 	g_Config.m_GfxScreenWidth = OutputWidth;
 	g_Config.m_GfxScreenHeight = OutputHeight;
-	g_Config.m_GfxFullscreen = 0;
-	g_Config.m_GfxBorderless = 1;
 	g_Config.m_GfxVsync = 0;
 	g_Config.m_GfxFsaaSamples = 0;
-	g_Config.m_GfxGLMajor = 3;
-	g_Config.m_GfxGLMinor = 3;
-	g_Config.m_GfxGLPatch = 0;
 	g_Config.m_GfxNoclip = 1;
 
 	std::unique_ptr<IKernel> pKernel(IKernel::Create());
@@ -429,13 +329,19 @@ int main(int argc, const char **argv)
 
 	pKernel->RegisterInterface(pStorage.get(), false);
 
-	CGraphics_Threaded Graphics;
-	pKernel->RegisterInterface(&Graphics, false);
-	if(Graphics.Init() != 0)
+	IEngineGraphicsWindow *pWindow = CreateOffscreenGraphicsWindow();
+	pKernel->RegisterInterface(pWindow);
+	pKernel->RegisterInterface(static_cast<IGraphicsWindow *>(pWindow), false);
+	IEngineGraphics *pGraphics = CreateEngineGraphicsThreaded();
+	pKernel->RegisterInterface(pGraphics);
+	pKernel->RegisterInterface(static_cast<IGraphics *>(pGraphics), false);
+	IGraphicsBackend *pBackend = pWindow->Open(false);
+	if(pBackend == nullptr || pGraphics->Init(pBackend, pWindow->Surface()) != 0)
 	{
 		log_error_color(ErrorLogColor, TOOL_NAME, "Failed to initialize graphics");
 		return 1;
 	}
+	IGraphics &Graphics = *pGraphics;
 
 	std::unique_ptr<IMap> pMap(CreateMap());
 	if(!pMap)
@@ -456,17 +362,17 @@ int main(int argc, const char **argv)
 
 	CToolMapImages MapImages(&Graphics, pMap.get());
 
+	CRenderTools RenderTools;
+	RenderTools.Init(&Graphics, nullptr);
+
 	CRenderMap RenderMap;
-	RenderMap.Init(&Graphics, nullptr);
+	RenderMap.Init(&Graphics, nullptr, &RenderTools);
 
 	CMapRenderer MapRenderer;
 	MapRenderer.OnInit(&Graphics, nullptr, &RenderMap);
 
 	CMapRenderEnvelopeEval EnvelopeEval(pMap.get(), TimeOffsetMillis);
 	MapRenderer.Load(RENDERTYPE_FULL_DESIGN, &Layers, &MapImages, &EnvelopeEval, std::nullopt);
-
-	// Override the forced viewport from AdjustViewport (which clamps aspect ratio)
-	Graphics.SetScreenSize(OutputWidth, OutputHeight);
 
 	// Calculate center and zoom to fit the map
 	float MapWorldWidth = 0.0f, MapWorldHeight = 0.0f;
@@ -505,12 +411,11 @@ int main(int argc, const char **argv)
 
 	MapRenderer.Render(RenderParams);
 
-	// Read framebuffer pixels and save directly
+	// Finish the frame and read the virtual screen back.
 	CImageInfo Image;
-	Graphics.ReadFramebuffer(Image);
-
-	// Flush remaining commands
-	Graphics.Swap();
+	std::unique_ptr<IGraphics::ITextureReadback> pReadback = Graphics.PresentAndReadbackAsync();
+	if(pReadback != nullptr)
+		(void)pReadback->Wait(Image);
 
 	int ReturnCode = 1;
 	if(Image.m_pData)
@@ -543,6 +448,7 @@ int main(int argc, const char **argv)
 
 	Graphics.Shutdown();
 	pEngine->ShutdownJobs();
+	pKernel->Shutdown();
 
 	return ReturnCode;
 }

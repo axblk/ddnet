@@ -111,3 +111,18 @@ TEST_F(GraphicsFrontend, OpensDrawsAndShutsDownWithoutWindow)
 	m_pGraphics->Swap();
 	m_pGraphics->WaitForIdle();
 }
+
+TEST_F(GraphicsFrontend, ReadsBackTheVirtualScreen)
+{
+	IGraphicsBackend *pBackend = m_pWindow->Open(false);
+	ASSERT_NE(pBackend, nullptr);
+	ASSERT_EQ(m_pGraphics->Init(pBackend, m_pWindow->Surface()), 0);
+
+	m_pGraphics->Clear(0.0f, 0.0f, 0.0f);
+	std::unique_ptr<IGraphics::ITextureReadback> pReadback = m_pGraphics->PresentAndReadbackAsync();
+	ASSERT_NE(pReadback, nullptr);
+	CImageInfo Image;
+	// The null backend draws nothing.
+	EXPECT_FALSE(pReadback->Wait(Image));
+	Image.Free();
+}

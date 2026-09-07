@@ -34,32 +34,23 @@ namespace
 
 class CImageAssetJob final : public CHttpAssetJob
 {
-	enum class ESource
-	{
-		NONE,
-		STORAGE,
-		PNG_DATA,
-		RAW_DATA,
-	};
-
-	ESource m_Source;
-	IStorage *m_pStorage = nullptr;
-	int m_StorageType = 0;
-	std::vector<uint8_t> m_vData;
+	// The pixels of a map image come out of the map file, already read and
+	// still compressed, so they are the one thing here that is neither an
+	// encoded image nor a file to read.
 	CDataFileRawData m_RawData;
+	bool m_FromRawData = false;
 	CImageInfo m_Image;
 	std::function<bool(CImageInfo &)> m_Postprocess;
 	EAssetLoadError m_Error = EAssetLoadError::NONE;
 	int m_PngliteIncompatible = 0;
-	std::chrono::nanoseconds m_ReadTime{};
 	std::chrono::nanoseconds m_DecodeTime{};
 
-	bool LoadStorage();
-	bool LoadPngData();
-	bool LoadRawData();
+	bool DecodePng();
+	bool UncompressRawData();
 
 protected:
-	void Run() override;
+	void Process() override;
+	void OnReadFailed() override { m_Error = EAssetLoadError::NOT_FOUND; }
 	void OnRequestFinished(EHttpAssetSource Source, std::vector<uint8_t> vData) override;
 
 public:
@@ -70,19 +61,80 @@ public:
 
 	bool Success() const override { return m_Error == EAssetLoadError::NONE; }
 	int PngliteIncompatible() const { return m_PngliteIncompatible; }
-	std::chrono::nanoseconds ReadTime() const { return m_ReadTime; }
 	std::chrono::nanoseconds DecodeTime() const { return m_DecodeTime; }
 	CImageInfo TakeImage();
 };
 
-CAssetJob::CAssetJob(EAssetType Type, const char *pPath, int OwnerId, uint64_t Generation) :
+CAssetJob::CAssetJob(EAssetType Type, IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation) :
 	m_Type(Type),
 	m_Path(pPath != nullptr ? pPath : ""),
 	m_OwnerId(OwnerId),
-	m_Generation(Generation)
+	m_Generation(Generation),
+	m_pStorage(pStorage),
+	m_StorageType(StorageType)
 {
 	dbg_assert(pPath != nullptr, "Asset path must not be null");
+	dbg_assert(pStorage != nullptr, "Asset storage must not be null");
 	Abortable(true);
+}
+
+CAssetJob::CAssetJob(EAssetType Type, std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation) :
+	m_Type(Type),
+	m_Path(pContextName != nullptr ? pContextName : ""),
+	m_OwnerId(OwnerId),
+	m_Generation(Generation),
+	m_vData(std::move(vData))
+{
+	dbg_assert(pContextName != nullptr, "Asset path must not be null");
+	Abortable(true);
+}
+
+bool CAssetJob::ReadFile(IStorage *pStorage, const char *pPath, int StorageType, std::vector<uint8_t> &vData, std::chrono::nanoseconds *pReadTime)
+{
+	const auto ReadStart = time_get_nanoseconds();
+	void *pData;
+	unsigned DataSize;
+	const bool Ok = pStorage->ReadFile(pPath, StorageType, &pData, &DataSize);
+	if(pReadTime != nullptr)
+		*pReadTime += time_get_nanoseconds() - ReadStart;
+	if(!Ok)
+		return false;
+	vData.assign(static_cast<uint8_t *>(pData), static_cast<uint8_t *>(pData) + DataSize);
+	free(pData);
+	return true;
+}
+
+void CAssetJob::Run()
+{
+	if(State() == IJob::STATE_ABORTED)
+		return;
+	// Bytes that are already here - a response, a map that is open anyway -
+	// have nothing to read, so the job goes straight to making sense of them.
+	if(m_pStorage != nullptr && !ReadFile(m_pStorage, Path(), m_StorageType, m_vData, &m_ReadTime))
+	{
+		m_ReadFailed = true;
+		OnReadFailed();
+		return;
+	}
+	if(State() == IJob::STATE_ABORTED)
+		return;
+	Process();
+}
+
+void CAssetJob::SetData(std::vector<uint8_t> vData)
+{
+	dbg_assert(State() == IJob::STATE_QUEUED, "Asset data can only be set before the job is submitted");
+	m_pStorage = nullptr;
+	m_vData = std::move(vData);
+}
+
+void CAssetJob::SetSourceFile(IStorage *pStorage, const char *pPath, int StorageType)
+{
+	dbg_assert(State() == IJob::STATE_QUEUED, "Asset source can only be set before the job is submitted");
+	dbg_assert(pStorage != nullptr, "Asset storage must not be null");
+	m_pStorage = pStorage;
+	m_StorageType = StorageType;
+	SetPath(pPath);
 }
 
 void CAssetJob::SetPath(const char *pPath)
@@ -101,8 +153,15 @@ CHttpAssetDestination::CHttpAssetDestination(IStorage *pStorage, const char *pPa
 	dbg_assert(pStorage != nullptr, "Asset destination storage must not be null");
 }
 
-CHttpAssetJob::CHttpAssetJob(EAssetType Type, std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, const char *pPath, int OwnerId, uint64_t Generation) :
-	CAssetJob(Type, pPath, OwnerId, Generation),
+CHttpAssetJob::CHttpAssetJob(EAssetType Type, IStorage *pStorage, const char *pPath, int StorageType, std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, int OwnerId, uint64_t Generation) :
+	CAssetJob(Type, pStorage, pPath, StorageType, OwnerId, Generation),
+	m_pRequest(std::move(pRequest)),
+	m_Destination(std::move(Destination))
+{
+}
+
+CHttpAssetJob::CHttpAssetJob(EAssetType Type, std::vector<uint8_t> vData, const char *pContextName, std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, int OwnerId, uint64_t Generation) :
+	CAssetJob(Type, std::move(vData), pContextName, OwnerId, Generation),
 	m_pRequest(std::move(pRequest)),
 	m_Destination(std::move(Destination))
 {
@@ -303,27 +362,21 @@ void CAssetLoader::Shutdown()
 }
 
 CImageAssetJob::CImageAssetJob(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess) :
-	CHttpAssetJob(EAssetType::IMAGE, nullptr, CHttpAssetDestination(), pPath, OwnerId, Generation),
-	m_Source(ESource::STORAGE),
-	m_pStorage(pStorage),
-	m_StorageType(StorageType),
+	CHttpAssetJob(EAssetType::IMAGE, pStorage, pPath, StorageType, nullptr, CHttpAssetDestination(), OwnerId, Generation),
 	m_Postprocess(std::move(Postprocess))
 {
-	dbg_assert(pStorage != nullptr, "Image asset storage must not be null");
 }
 
 CImageAssetJob::CImageAssetJob(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess) :
-	CHttpAssetJob(EAssetType::IMAGE, nullptr, CHttpAssetDestination(), pContextName, OwnerId, Generation),
-	m_Source(ESource::PNG_DATA),
-	m_vData(std::move(vData)),
+	CHttpAssetJob(EAssetType::IMAGE, std::move(vData), pContextName, nullptr, CHttpAssetDestination(), OwnerId, Generation),
 	m_Postprocess(std::move(Postprocess))
 {
 }
 
 CImageAssetJob::CImageAssetJob(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess) :
-	CHttpAssetJob(EAssetType::IMAGE, nullptr, CHttpAssetDestination(), pContextName, OwnerId, Generation),
-	m_Source(ESource::RAW_DATA),
+	CHttpAssetJob(EAssetType::IMAGE, std::vector<uint8_t>(), pContextName, nullptr, CHttpAssetDestination(), OwnerId, Generation),
 	m_RawData(std::move(RawData)),
+	m_FromRawData(true),
 	m_Postprocess(std::move(Postprocess))
 {
 	dbg_assert(Format != CImageInfo::FORMAT_UNDEFINED, "Raw image format must be defined");
@@ -333,8 +386,7 @@ CImageAssetJob::CImageAssetJob(CDataFileRawData RawData, size_t Width, size_t He
 }
 
 CImageAssetJob::CImageAssetJob(std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess) :
-	CHttpAssetJob(EAssetType::IMAGE, std::move(pRequest), std::move(Destination), pContextName, OwnerId, Generation),
-	m_Source(ESource::NONE),
+	CHttpAssetJob(EAssetType::IMAGE, std::vector<uint8_t>(), pContextName, std::move(pRequest), std::move(Destination), OwnerId, Generation),
 	m_Postprocess(std::move(Postprocess))
 {
 }
@@ -346,38 +398,19 @@ void CImageAssetJob::OnRequestFinished(EHttpAssetSource Source, std::vector<uint
 	case EHttpAssetSource::NONE:
 		break;
 	case EHttpAssetSource::RESPONSE:
-		m_Source = ESource::PNG_DATA;
-		m_vData = std::move(vData);
+		// The response is already here, so there is nothing left to read.
+		SetData(std::move(vData));
 		break;
 	case EHttpAssetSource::DESTINATION:
-		m_Source = ESource::STORAGE;
-		m_pStorage = Destination().m_pStorage;
-		m_StorageType = Destination().m_StorageType;
 		// The path describes what was loaded, so failures name the file
-		SetPath(Destination().m_Path.c_str());
+		SetSourceFile(Destination().m_pStorage, Destination().m_Path.c_str(), Destination().m_StorageType);
 		break;
 	}
 }
 
-bool CImageAssetJob::LoadStorage()
+bool CImageAssetJob::DecodePng()
 {
-	IOHANDLE File = m_pStorage->OpenFile(Path(), IOFLAG_READ, m_StorageType);
-	if(!File)
-	{
-		m_Error = EAssetLoadError::NOT_FOUND;
-		return false;
-	}
-	if(!CImageLoader::LoadPngTimed(File, Path(), m_Image, m_PngliteIncompatible, m_ReadTime, m_DecodeTime, false))
-	{
-		m_Error = EAssetLoadError::DECODE;
-		return false;
-	}
-	return true;
-}
-
-bool CImageAssetJob::LoadPngData()
-{
-	CByteBufferReader Reader(m_vData.data(), m_vData.size());
+	CByteBufferReader Reader(Data().data(), Data().size());
 	const auto DecodeStart = time_get_nanoseconds();
 	const bool Success = CImageLoader::LoadPng(Reader, Path(), m_Image, m_PngliteIncompatible, false);
 	m_DecodeTime = time_get_nanoseconds() - DecodeStart;
@@ -389,7 +422,7 @@ bool CImageAssetJob::LoadPngData()
 	return true;
 }
 
-bool CImageAssetJob::LoadRawData()
+bool CImageAssetJob::UncompressRawData()
 {
 	const auto DecodeStart = time_get_nanoseconds();
 	const std::unique_ptr<uint8_t[]> pData = m_RawData.Uncompress();
@@ -404,31 +437,17 @@ bool CImageAssetJob::LoadRawData()
 	return true;
 }
 
-void CImageAssetJob::Run()
+void CImageAssetJob::Process()
 {
-	if(State() == IJob::STATE_ABORTED)
+	// A request that brought back neither a response nor a file to fall back
+	// on leaves nothing to make an image of.
+	if(!m_FromRawData && Data().empty())
 	{
-		m_Error = EAssetLoadError::ABORTED;
-		return;
-	}
-	switch(m_Source)
-	{
-	case ESource::NONE:
 		m_Error = EAssetLoadError::NOT_FOUND;
 		return;
-	case ESource::STORAGE:
-		if(!LoadStorage())
-			return;
-		break;
-	case ESource::PNG_DATA:
-		if(!LoadPngData())
-			return;
-		break;
-	case ESource::RAW_DATA:
-		if(!LoadRawData())
-			return;
-		break;
 	}
+	if(!(m_FromRawData ? UncompressRawData() : DecodePng()))
+		return;
 	if(m_Postprocess && !m_Postprocess(m_Image))
 	{
 		m_Image.Free();
@@ -450,36 +469,15 @@ CImageInfo CImageAssetJob::TakeImage()
 }
 
 CTextAssetJob::CTextAssetJob(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation) :
-	CAssetJob(EAssetType::TEXT, pPath, OwnerId, Generation),
-	m_pStorage(pStorage),
-	m_StorageType(StorageType)
+	CAssetJob(EAssetType::TEXT, pStorage, pPath, StorageType, OwnerId, Generation)
 {
-	dbg_assert(pStorage != nullptr, "Text asset storage must not be null");
 }
 
-void CTextAssetJob::Run()
-{
-	if(State() == IJob::STATE_ABORTED)
-		return;
-	const auto ReadStart = time_get_nanoseconds();
-	IOHANDLE File = m_pStorage->OpenFile(Path(), IOFLAG_READ, m_StorageType);
-	if(!File)
-		return;
-	char *pText = io_read_all_str(File);
-	io_close(File);
-	m_ReadTime = time_get_nanoseconds() - ReadStart;
-	if(pText == nullptr)
-		return;
-	m_Text = pText;
-	free(pText);
-	m_Ok = State() != IJob::STATE_ABORTED;
-}
-
-const std::string &CTextAssetJob::Text() const
+std::string_view CTextAssetJob::Text() const
 {
 	dbg_assert(State() == IJob::STATE_DONE, "Cannot take text from unfinished asset job");
 	dbg_assert(Success(), "Cannot take text from failed asset job");
-	return m_Text;
+	return std::string_view(reinterpret_cast<const char *>(Data().data()), Data().size());
 }
 
 CAssetResource::CAssetResource(std::shared_ptr<CAssetJob> pJob) :

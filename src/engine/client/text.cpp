@@ -974,34 +974,27 @@ void CTextCursor::SetPosition(vec2 Position)
  */
 class CFontAssetJob final : public CAssetJob
 {
-	IStorage *m_pStorage;
 	FT_Library m_FtLibrary;
 	CLock *m_pFtLibraryLock;
-	void *m_pFontData = nullptr;
 	std::vector<FT_Face> m_vFaces;
 	bool m_Success = false;
 
+	void OnReadFailed() override
+	{
+		log_error("textrender", "Failed to open/read font file '%s'", Path());
+	}
+
 	// The FreeType library lock is reached through a pointer, which the clang
 	// thread-safety analysis cannot track.
-	void Run() override NO_THREAD_SAFETY_ANALYSIS
+	void Process() override NO_THREAD_SAFETY_ANALYSIS
 	{
-		if(State() == IJob::STATE_ABORTED)
-			return;
-
-		unsigned FontDataSize;
-		if(!m_pStorage->ReadFile(Path(), IStorage::TYPE_ALL, &m_pFontData, &FontDataSize))
-		{
-			log_error("textrender", "Failed to open/read font file '%s'", Path());
-			return;
-		}
-
 		// Creating a face registers it with the FreeType library, which all font
 		// jobs share, so only one job may create faces at a time. The main thread
 		// does not touch the library while font files are being loaded.
 		const CLockScope LockScope(*m_pFtLibraryLock);
 
-		const FT_Byte *pFontData = static_cast<const FT_Byte *>(m_pFontData);
-		const FT_Long FontDataLength = (FT_Long)FontDataSize;
+		const FT_Byte *pFontData = Data().data();
+		const FT_Long FontDataLength = (FT_Long)Data().size();
 		FT_Face FtFace;
 		const FT_Error CollectionLoadError = FT_New_Memory_Face(m_FtLibrary, pFontData, FontDataLength, -1, &FtFace);
 		if(CollectionLoadError)
@@ -1037,8 +1030,7 @@ class CFontAssetJob final : public CAssetJob
 
 public:
 	CFontAssetJob(IStorage *pStorage, const char *pPath, FT_Library FtLibrary, CLock *pFtLibraryLock) :
-		CAssetJob(EAssetType::FONT, pPath, ASSET_OWNER_FONTS, FONT_ASSET_GENERATION),
-		m_pStorage(pStorage),
+		CAssetJob(EAssetType::FONT, pStorage, pPath, IStorage::TYPE_ALL, ASSET_OWNER_FONTS, FONT_ASSET_GENERATION),
 		m_FtLibrary(FtLibrary),
 		m_pFtLibraryLock(pFtLibraryLock)
 	{
@@ -1055,8 +1047,6 @@ public:
 			}
 			m_vFaces.clear();
 		}
-		free(m_pFontData);
-		m_pFontData = nullptr;
 	}
 
 	bool Success() const override { return m_Success; }
@@ -1066,17 +1056,15 @@ public:
 	/**
 	 * Gives up the ownership of the font faces and of the font data buffer.
 	 *
-	 * @return The font data buffer, which the caller has to keep alive as long as
-	 * it uses the faces of this job and free with `free` afterwards.
+	 * @return The font data buffer, which the caller has to keep alive as long
+	 * as it uses the faces of this job.
 	 */
-	void *TakeFontData()
+	std::vector<uint8_t> TakeFontData()
 	{
 		dbg_assert(State() == IJob::STATE_DONE, "Cannot take the fonts from an unfinished job");
 		dbg_assert(Success(), "Cannot take the fonts from a failed job");
 		m_vFaces.clear();
-		void *pFontData = m_pFontData;
-		m_pFontData = nullptr;
-		return pFontData;
+		return std::move(Data());
 	}
 };
 
@@ -1092,7 +1080,7 @@ class CTextRender : public IEngineTextRender
 	IStorage *Storage() { return m_pStorage; }
 
 	CGlyphMap *m_pGlyphMap;
-	std::vector<void *> m_vpFontData;
+	std::vector<std::vector<uint8_t>> m_vFontData;
 
 	// Font loading. The font files are read and turned into font faces by worker
 	// threads, the faces are handed over to the main thread once all files are done.
@@ -1251,7 +1239,7 @@ class CTextRender : public IEngineTextRender
 			{
 				m_pGlyphMap->AddFace(Face);
 			}
-			m_vpFontData.push_back(Job.TakeFontData());
+			m_vFontData.push_back(Job.TakeFontData());
 		}
 		m_vFontFileResources.clear();
 
@@ -1386,9 +1374,7 @@ public:
 			FT_Done_FreeType(m_FTLibrary);
 		m_FTLibrary = nullptr;
 
-		for(auto *pFontData : m_vpFontData)
-			free(pFontData);
-		m_vpFontData.clear();
+		m_vFontData.clear();
 
 		m_DefaultTextContainerInfo.m_vAttributes.clear();
 

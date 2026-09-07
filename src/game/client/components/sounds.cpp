@@ -24,13 +24,15 @@ namespace
 	constexpr int ASSET_OWNER_STARTUP_SOUNDS = 1;
 }
 
-CSoundLoading::CSoundLoading(ISound *pSound, int Lane, int NumLanes, int OwnerId, uint64_t Generation) :
-	CAssetJob(EAssetType::SOUND, "audio", OwnerId, Generation),
+CSoundLoading::CSoundLoading(ISound *pSound, IStorage *pStorage, int Lane, int NumLanes, int OwnerId, uint64_t Generation) :
+	CAssetJob(EAssetType::SOUND, std::vector<uint8_t>(), "audio", OwnerId, Generation),
 	m_pSound(pSound),
+	m_pStorage(pStorage),
 	m_Lane(Lane),
 	m_NumLanes(NumLanes)
 {
 	dbg_assert(pSound != nullptr, "Sound must not be null");
+	dbg_assert(pStorage != nullptr, "Storage must not be null");
 	dbg_assert(Lane >= 0 && Lane < NumLanes, "Invalid sound loading lane");
 }
 
@@ -43,16 +45,30 @@ CSoundLoading::~CSoundLoading()
 	}
 }
 
-void CSoundLoading::Run()
+void CSoundLoading::Process()
 {
+	// Reading a hundred files to hand them to a sound system that is switched
+	// off would be work for nothing.
+	if(!m_pSound->IsSoundEnabled())
+	{
+		m_Completed = true;
+		return;
+	}
+	std::vector<uint8_t> vData;
 	for(int SetId = m_Lane; SetId < g_pData->m_NumSounds; SetId += m_NumLanes)
 	{
 		for(int SoundId = 0; SoundId < g_pData->m_aSounds[SetId].m_NumSounds; SoundId++)
 		{
 			if(State() == IJob::STATE_ABORTED)
 				return;
+			const char *pFilename = g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_pFilename;
 			const std::chrono::nanoseconds LoadStart = time_get_nanoseconds();
-			const int SampleId = m_pSound->LoadWV(g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_pFilename);
+			vData.clear();
+			int SampleId = -1;
+			if(ReadFile(m_pStorage, pFilename, IStorage::TYPE_ALL, vData, nullptr))
+				SampleId = m_pSound->LoadWVFromMem(vData.data(), static_cast<unsigned>(vData.size()), false, pFilename);
+			else
+				log_error("sound", "Failed to open/read sound file '%s'", pFilename);
 			m_LoadTime += time_get_nanoseconds() - LoadStart;
 			m_NumLoaded += SampleId != -1;
 			m_vResults.push_back({SetId, SoundId, SampleId});
@@ -144,7 +160,7 @@ void CSounds::OnInit()
 	{
 		for(size_t Lane = 0; Lane < m_aSoundResources.size(); ++Lane)
 		{
-			m_aSoundResources[Lane] = GameClient()->AssetLoader().Load(std::make_shared<CSoundLoading>(Sound(), static_cast<int>(Lane), static_cast<int>(m_aSoundResources.size()), ASSET_OWNER_STARTUP_SOUNDS, m_LoadGeneration));
+			m_aSoundResources[Lane] = GameClient()->AssetLoader().Load(std::make_shared<CSoundLoading>(Sound(), Storage(), static_cast<int>(Lane), static_cast<int>(m_aSoundResources.size()), ASSET_OWNER_STARTUP_SOUNDS, m_LoadGeneration));
 		}
 		m_WaitForSoundJob = true;
 		GameClient()->m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Loading sound files"), 0);
@@ -153,7 +169,7 @@ void CSounds::OnInit()
 	{
 		for(int SetId = 0; SetId < g_pData->m_NumSounds; ++SetId)
 		{
-			CSoundLoading SoundLoading(Sound(), SetId, g_pData->m_NumSounds, ASSET_OWNER_STARTUP_SOUNDS, m_LoadGeneration);
+			CSoundLoading SoundLoading(Sound(), Storage(), SetId, g_pData->m_NumSounds, ASSET_OWNER_STARTUP_SOUNDS, m_LoadGeneration);
 			SoundLoading.Run();
 			SoundLoading.Commit();
 			m_NumSoundSamplesLoaded += SoundLoading.NumLoaded();

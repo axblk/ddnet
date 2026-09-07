@@ -140,7 +140,7 @@ void CAssetLoader::ReadLoop()
 	}
 }
 
-void CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob)
+void CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob, EAssetPriority Priority)
 {
 	dbg_assert(m_pEngine != nullptr, "Asset loader not initialized");
 	if(m_Shutdown)
@@ -148,6 +148,7 @@ void CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob)
 		pJob->Abort();
 		return;
 	}
+	pJob->m_Urgent = Priority == EAssetPriority::URGENT;
 	if(pJob->m_pRequest != nullptr)
 		m_vpFetchingJobs.push_back(std::move(pJob));
 	else
@@ -158,7 +159,7 @@ void CAssetLoader::Enqueue(std::shared_ptr<CAssetJob> pJob)
 {
 	if(pJob->m_pStorage == nullptr)
 	{
-		m_vpPendingJobs.push_back(std::move(pJob));
+		Queue(m_vpPendingJobs, std::move(pJob));
 		StartPendingJobs();
 		return;
 	}
@@ -166,9 +167,17 @@ void CAssetLoader::Enqueue(std::shared_ptr<CAssetJob> pJob)
 		m_pReaderThread = thread_init(ReaderThread, this, "asset reader");
 	{
 		const CLockScope LockScope(m_ReaderLock);
-		m_vpUnreadJobs.push_back(std::move(pJob));
+		Queue(m_vpUnreadJobs, std::move(pJob));
 	}
 	m_ReaderSemaphore.Signal();
+}
+
+void CAssetLoader::Queue(std::deque<std::shared_ptr<CAssetJob>> &vpJobs, std::shared_ptr<CAssetJob> pJob)
+{
+	auto It = vpJobs.end();
+	if(pJob->m_Urgent)
+		It = std::find_if(vpJobs.begin(), vpJobs.end(), [](const std::shared_ptr<CAssetJob> &pQueued) { return !pQueued->m_Urgent; });
+	vpJobs.insert(It, std::move(pJob));
 }
 
 void CAssetLoader::UpdateFetchingJobs()
@@ -211,7 +220,7 @@ void CAssetLoader::UpdateReadJobs()
 		vpRead.swap(m_vpReadJobs);
 	}
 	for(auto &pJob : vpRead)
-		m_vpPendingJobs.push_back(std::move(pJob));
+		Queue(m_vpPendingJobs, std::move(pJob));
 }
 
 CTypedAssetResource<CFileAssetJob> CAssetLoader::LoadFile(IStorage *pStorage, const char *pPath, int StorageType)
@@ -219,17 +228,17 @@ CTypedAssetResource<CFileAssetJob> CAssetLoader::LoadFile(IStorage *pStorage, co
 	return Load(std::make_shared<CFileAssetJob>(pStorage, pPath, StorageType));
 }
 
-CImageResource CAssetLoader::LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess)
+CImageResource CAssetLoader::LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess, EAssetPriority Priority)
 {
 	auto pJob = std::make_shared<CImageAssetJob>(pStorage, pPath, StorageType, std::move(Postprocess));
-	Submit(pJob);
+	Submit(pJob, Priority);
 	return CImageResource(std::move(pJob));
 }
 
-CImageResource CAssetLoader::LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess)
+CImageResource CAssetLoader::LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess, EAssetPriority Priority)
 {
 	auto pJob = std::make_shared<CImageAssetJob>(std::move(RawData), Width, Height, Format, pContextName, std::move(Postprocess));
-	Submit(pJob);
+	Submit(pJob, Priority);
 	return CImageResource(std::move(pJob));
 }
 

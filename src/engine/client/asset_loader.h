@@ -35,6 +35,22 @@ template<typename TJob>
 class CTypedAssetResource;
 
 /**
+ * How badly an asset is wanted.
+ */
+enum class EAssetPriority
+{
+	/**
+	 * Entering a map waits for it: it is read and made ahead of every queued
+	 * asset that is not urgent.
+	 */
+	URGENT,
+	/**
+	 * Somebody waits for it, but it takes its turn.
+	 */
+	NORMAL,
+};
+
+/**
  * Job that prepares an asset from its bytes. The loader gets the bytes from a
  * file or a request, or the job brings them itself, then `Process` runs on the
  * job pool.
@@ -56,6 +72,7 @@ class CAssetJob : public IJob
 	std::vector<uint8_t> m_vData;
 	bool m_ReadFailed = false;
 	bool m_Success = false;
+	bool m_Urgent = false;
 
 	static bool ReadFile(IStorage *pStorage, const char *pPath, int StorageType, std::vector<uint8_t> &vData);
 
@@ -109,8 +126,10 @@ class CAssetLoader
 	std::atomic<bool> m_ReaderShutdown{false};
 
 	static void ReaderThread(void *pUser);
+	// Puts an urgent job behind the urgent ones already queued, any other at the end
+	static void Queue(std::deque<std::shared_ptr<CAssetJob>> &vpJobs, std::shared_ptr<CAssetJob> pJob);
 	void ReadLoop() NO_THREAD_SAFETY_ANALYSIS;
-	void Submit(std::shared_ptr<CAssetJob> pJob) REQUIRES(!m_ReaderLock);
+	void Submit(std::shared_ptr<CAssetJob> pJob, EAssetPriority Priority = EAssetPriority::NORMAL) REQUIRES(!m_ReaderLock);
 	void Enqueue(std::shared_ptr<CAssetJob> pJob) REQUIRES(!m_ReaderLock);
 	void UpdateFetchingJobs() REQUIRES(!m_ReaderLock);
 	void UpdateReadJobs() REQUIRES(!m_ReaderLock);
@@ -121,10 +140,10 @@ public:
 
 	void Init(IEngine *pEngine, size_t MaxConcurrentJobs);
 	template<typename TJob>
-	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob) REQUIRES(!m_ReaderLock);
+	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob, EAssetPriority Priority = EAssetPriority::NORMAL) REQUIRES(!m_ReaderLock);
 	CTypedAssetResource<CFileAssetJob> LoadFile(IStorage *pStorage, const char *pPath, int StorageType) REQUIRES(!m_ReaderLock);
-	CImageResource LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess = {}) REQUIRES(!m_ReaderLock);
-	CImageResource LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess = {}) REQUIRES(!m_ReaderLock);
+	CImageResource LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess = {}, EAssetPriority Priority = EAssetPriority::NORMAL) REQUIRES(!m_ReaderLock);
+	CImageResource LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess = {}, EAssetPriority Priority = EAssetPriority::NORMAL) REQUIRES(!m_ReaderLock);
 	/**
 	 * Runs the request and loads the image from the response. The image is
 	 * read from `pPath` instead if the response is not in memory, if the
@@ -227,10 +246,10 @@ public:
 };
 
 template<typename TJob>
-CTypedAssetResource<TJob> CAssetLoader::Load(std::shared_ptr<TJob> pJob)
+CTypedAssetResource<TJob> CAssetLoader::Load(std::shared_ptr<TJob> pJob, EAssetPriority Priority)
 {
 	static_assert(std::is_base_of_v<CAssetJob, TJob>);
-	Submit(pJob);
+	Submit(pJob, Priority);
 	return CTypedAssetResource<TJob>(std::move(pJob));
 }
 

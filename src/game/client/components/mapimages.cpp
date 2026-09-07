@@ -103,7 +103,7 @@ void CMapImages::FinishEntitiesLoads()
 	m_SpeedupArrowResource.FinishTexture(Graphics(), m_SpeedupArrowTexture, IGraphics::TEXLOAD_LAYERED | IGraphics::TEXLOAD_NO_2D_TEXTURE);
 }
 
-void CMapRenderImages::Update()
+bool CMapRenderImages::Update()
 {
 	bool ShowWarning = false;
 	for(auto It = m_vImageLoads.begin(); It != m_vImageLoads.end();)
@@ -128,6 +128,7 @@ void CMapRenderImages::Update()
 	}
 	if(ShowWarning)
 		Client()->AddWarning(SWarning(Localize("Some map images could not be loaded. Check the local console for details.")));
+	return !m_vImageLoads.empty();
 }
 
 void CMapRenderImages::Unload()
@@ -227,7 +228,7 @@ void CMapRenderImages::Load(class CLayers *pLayers, IMap *pMap, bool Sixup)
 			char aPath[IO_MAX_PATH_LENGTH];
 			const bool Translated = Teeworlds07Pictures && IsMapImageRedrawnFor07(pName);
 			str_format(aPath, sizeof(aPath), "mapres/%s%s.png", pName, Translated ? "_0.7" : "");
-			m_vImageLoads.push_back({i, LoadFlag, GameClient()->AssetLoader().LoadImageFile(Storage(), aPath, IStorage::TYPE_ALL)});
+			m_vImageLoads.push_back({i, LoadFlag, GameClient()->AssetLoader().LoadImageFile(Storage(), aPath, IStorage::TYPE_ALL, {}, EAssetPriority::URGENT)});
 		}
 		else
 		{
@@ -256,7 +257,7 @@ void CMapRenderImages::Load(class CLayers *pLayers, IMap *pMap, bool Sixup)
 					ConvertToRgba(Image);
 					return true;
 				};
-			m_vImageLoads.push_back({i, LoadFlag, GameClient()->AssetLoader().LoadImageRawData(std::move(RawData), pImg->m_Width, pImg->m_Height, Format, aTexName, std::move(Postprocess))});
+			m_vImageLoads.push_back({i, LoadFlag, GameClient()->AssetLoader().LoadImageRawData(std::move(RawData), pImg->m_Width, pImg->m_Height, Format, aTexName, std::move(Postprocess), EAssetPriority::URGENT)});
 		}
 		pMap->UnloadData(pImg->m_ImageName);
 	}

@@ -86,6 +86,7 @@
 
 #include <chrono>
 #include <limits>
+#include <thread>
 
 using namespace std::chrono_literals;
 
@@ -790,7 +791,26 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	MapContext.Load(*Config());
 	for(CGameState &SessionState : Session.GameStates())
 		SessionState.InitPrediction(MapContext);
-	SessionPresentation(SessionId).Load(Session);
+	CSessionPresentation &Presentation = SessionPresentation(SessionId);
+	Presentation.Load(Session);
+
+	// The map images are fetched asynchronously. Their layers were built with
+	// texture coordinates and would draw untextured until they arrive, so the
+	// world is only entered once they are all there - here, where the loading
+	// screen is still up. A session loading in the background has no loading
+	// screen to hold and picks its images up per frame instead.
+	while(Focused && Presentation.UpdateMapImages())
+	{
+		// the loader only starts the next jobs when it is updated
+		m_AssetLoader.Update();
+		m_Menus.RenderLoading(pConnectCaption, Localize("Loading map images"), 0);
+		// The images are read and decoded on other threads, and the loading
+		// screen draws at most 60 times a second (not at all while an export
+		// runs in the background). Asking again right away would keep a
+		// processor from those threads - on one core, or under a scheduler
+		// that runs one thread at a time, for as long as it keeps asking.
+		std::this_thread::sleep_for(1ms);
+	}
 
 	if(SessionId == Client()->NetworkSessionId())
 	{

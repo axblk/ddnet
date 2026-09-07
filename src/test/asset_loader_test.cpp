@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -451,4 +452,38 @@ TEST(AssetLoader, AbortsUnfinishedHttpRequest)
 	EXPECT_TRUE(pRequest->IsAbortRequested());
 	Loader.Shutdown();
 	pEngine->ShutdownJobs();
+}
+
+TEST(AssetLoader, UrgentJobsGoFirst)
+{
+	CQueuedTestEngine Engine;
+	CAssetLoader Loader;
+	Loader.Init(&Engine, 1);
+	std::atomic<int> Running{0};
+	std::atomic<int> MaxRunning{0};
+	std::atomic<bool> Release{false};
+	const std::array aPriorities = {EAssetPriority::NORMAL, EAssetPriority::NORMAL, EAssetPriority::URGENT, EAssetPriority::NORMAL, EAssetPriority::URGENT};
+	std::vector<std::shared_ptr<CBlockingAssetJob>> vpJobs;
+	std::vector<CTypedAssetResource<CBlockingAssetJob>> vResources;
+	for(const EAssetPriority Priority : aPriorities)
+	{
+		vpJobs.push_back(std::make_shared<CBlockingAssetJob>(Running, MaxRunning, Release));
+		vResources.push_back(Loader.Load(vpJobs.back(), Priority));
+	}
+
+	// The first job starts at once, the urgent ones overtake the others that wait
+	std::vector<size_t> vStarted;
+	while(vStarted.size() < vpJobs.size())
+	{
+		ASSERT_EQ(Engine.m_vpJobs.size(), vStarted.size() + 1);
+		const auto It = std::find(vpJobs.begin(), vpJobs.end(), Engine.m_vpJobs.back());
+		ASSERT_NE(It, vpJobs.end());
+		const size_t Index = It - vpJobs.begin();
+		vStarted.push_back(Index);
+		// A job that is done makes room for the next one
+		vResources[Index].Reset();
+		Loader.Update();
+	}
+	EXPECT_EQ(vStarted, (std::vector<size_t>{0, 2, 4, 1, 3}));
+	Loader.Shutdown();
 }

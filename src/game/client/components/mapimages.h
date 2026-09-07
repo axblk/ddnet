@@ -126,8 +126,9 @@ public:
 
 	void Load(class CLayers *pLayers, class IMap *pMap, bool Sixup);
 	void Unload();
-	// Uploads the images that finished loading.
-	void Update();
+	// Collects the images the asset loader has finished. Returns whether any are
+	// still outstanding.
+	bool Update();
 	void SetGameInfo(const CGameInfo &GameInfo);
 
 	IGraphics::CTextureHandle Get(int Index) const override { return m_aTextures[Index]; }

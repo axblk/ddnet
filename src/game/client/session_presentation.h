@@ -69,6 +69,7 @@ public:
 	void OnInterfacesInit(CGameClient *pClient) override;
 	void Load(CGameSessionContext &Session);
 	void Unload();
+	bool UpdateMapImages() { return m_MapImages.Update(); }
 	void PrepareRender(const CRenderContext &Context, bool UsePredictedTime);
 	void UpdateMapSounds(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool UsePredictedTime);
 	void UpdateClients(const CPresentationContext &Context);

@@ -815,6 +815,13 @@ void CRenderLayerQuads::RenderQuadLayer(float Alpha, const CRenderLayerParams &P
 	if(!Visuals.m_BufferObjectIndex.IsValid())
 		return; // no visuals were created
 
+	// The vertex layout was decided when the buffer went up, and it says
+	// whether the quads carry texture coordinates. The image behind them
+	// arrives later, so until it is resident the layer would ask for a
+	// textured pipeline with no texture bound. Draw it once the image is there.
+	if(Visuals.m_Layout == IGraphics::EVertexLayout::QUAD_TEXTURED && !GetTexture().IsValid())
+		return;
+
 	for(auto &QuadCluster : m_vQuadClusters)
 	{
 		if(!IsVisibleInClipRegion(QuadCluster.m_ClipRegion))

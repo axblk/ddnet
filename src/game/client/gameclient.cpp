@@ -89,8 +89,6 @@ using namespace std::chrono_literals;
 
 namespace
 {
-	constexpr int ASSET_OWNER_STARTUP_IMAGES = 2;
-	constexpr int ASSET_OWNER_PACK_BASE = 100;
 	template<size_t N>
 	bool AllTexturesValid(const IGraphics::CTextureHandle (&aTextures)[N])
 	{

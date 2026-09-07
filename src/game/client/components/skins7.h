@@ -19,6 +19,7 @@
 #include <chrono>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 class CSkins7 : public CComponent
@@ -142,10 +143,27 @@ private:
 	uint64_t m_Generation = 0;
 	std::optional<std::chrono::nanoseconds> m_PartUpdateTime;
 
+	// A skin's description is a file of its own, and there is one per skin.
+	// Reading them is what a refresh mostly spends its time on, so the reads
+	// run on the job threads and the descriptions are taken apart here as
+	// they arrive.
+	class CSkinLoad
+	{
+	public:
+		char m_aName[24];
+		int m_StorageType;
+		CTypedAssetResource<CTextAssetJob> m_Resource;
+	};
+	std::vector<CSkinLoad> m_vSkinLoads;
+	std::chrono::nanoseconds m_SkinReadTime{};
+	std::chrono::nanoseconds m_SkinParseTime{};
+
 	static int SkinPartScan(const char *pName, int IsDir, int DirType, void *pUser);
 	bool RegisterSkinPart(int PartType, const char *pName, int DirType);
 	static int SkinScan(const char *pName, int IsDir, int DirType, void *pUser);
-	bool LoadSkin(const char *pName, int DirType);
+	void StartSkinLoad(const char *pName, int DirType);
+	void FinishSkinLoads();
+	bool ParseSkin(const char *pName, int DirType, const std::string &Json);
 	const CSkinPart *FindSkinPartWithoutRequest(int Part, const char *pName, bool AllowSpecialPart) const;
 	const CSkinPart *FindDefaultSkinPartWithoutRequest(int Part) const;
 	void StartPendingLoads();

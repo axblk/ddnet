@@ -22,11 +22,6 @@
 
 using namespace std::chrono_literals;
 
-namespace
-{
-	constexpr int ASSET_OWNER_MENU_THEMES = 8;
-}
-
 std::array<vec2, CMenuBackground::NUM_POS> GenerateMenuBackgroundPositions()
 {
 	std::array<vec2, CMenuBackground::NUM_POS> Positions;
@@ -107,7 +102,7 @@ void CMenuBackground::LoadThemeIcon(CTheme &Theme)
 {
 	char aIconPath[IO_MAX_PATH_LENGTH];
 	str_format(aIconPath, sizeof(aIconPath), "themes/%s.png", Theme.m_Name.empty() ? "none" : Theme.m_Name.c_str());
-	Theme.m_IconResource = GameClient()->AssetLoader().LoadImageFile(Storage(), aIconPath, IStorage::TYPE_ALL, ASSET_OWNER_MENU_THEMES, m_AssetGeneration);
+	Theme.m_IconResource = GameClient()->AssetLoader().LoadImageFile(Storage(), aIconPath, IStorage::TYPE_ALL, CGameClient::ASSET_OWNER_MENU_THEMES, m_AssetGeneration);
 }
 
 void CMenuBackground::FinishThemeIconLoads()
@@ -147,7 +142,7 @@ void CMenuBackground::OnUpdate()
 void CMenuBackground::OnShutdown()
 {
 	++m_AssetGeneration;
-	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_MENU_THEMES, m_AssetGeneration);
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(CGameClient::ASSET_OWNER_MENU_THEMES, m_AssetGeneration);
 	for(CTheme &Theme : m_vThemes)
 	{
 		Theme.m_IconResource.Reset();

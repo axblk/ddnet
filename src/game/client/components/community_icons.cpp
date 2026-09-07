@@ -13,11 +13,6 @@
 #include <memory>
 #include <string>
 
-namespace
-{
-	constexpr int ASSET_OWNER_COMMUNITY_ICONS = 4;
-}
-
 int CCommunityIcons::FileScan(const char *pName, int IsDir, int DirType, void *pUser)
 {
 	const char *pExtension = ".png";
@@ -60,7 +55,7 @@ void CCommunityIcons::StartLoad(const char *pCommunityId, int StorageType)
 	char aPath[IO_MAX_PATH_LENGTH];
 	str_format(aPath, sizeof(aPath), "communityicons/%s.png", pCommunityId);
 	auto pResult = std::make_shared<CCommunityIconLoadResult>();
-	CImageResource Resource = GameClient()->AssetLoader().LoadImageFile(Storage(), aPath, StorageType, ASSET_OWNER_COMMUNITY_ICONS, m_Generation, IconPostprocess(aPath, StorageType, pResult));
+	CImageResource Resource = GameClient()->AssetLoader().LoadImageFile(Storage(), aPath, StorageType, CGameClient::ASSET_OWNER_COMMUNITY_ICONS, m_Generation, IconPostprocess(aPath, StorageType, pResult));
 
 	CCommunityIconLoad Load;
 	str_copy(Load.m_aCommunityId, pCommunityId);
@@ -82,7 +77,7 @@ void CCommunityIcons::StartDownload(const char *pCommunityId, const char *pUrl, 
 
 	// The icon is only written to the file, so it is always loaded from there
 	auto pResult = std::make_shared<CCommunityIconLoadResult>();
-	CImageResource Resource = GameClient()->AssetLoader().LoadImageHttp(Http(), std::move(pRequest), CHttpAssetDestination(Storage(), aPath, IStorage::TYPE_SAVE, false), aPath, ASSET_OWNER_COMMUNITY_ICONS, m_Generation, IconPostprocess(aPath, IStorage::TYPE_SAVE, pResult));
+	CImageResource Resource = GameClient()->AssetLoader().LoadImageHttp(Http(), std::move(pRequest), CHttpAssetDestination(Storage(), aPath, IStorage::TYPE_SAVE, false), aPath, CGameClient::ASSET_OWNER_COMMUNITY_ICONS, m_Generation, IconPostprocess(aPath, IStorage::TYPE_SAVE, pResult));
 
 	CCommunityIconLoad Load;
 	str_copy(Load.m_aCommunityId, pCommunityId);
@@ -142,7 +137,7 @@ void CCommunityIcons::Render(const CCommunityIcon *pIcon, CUIRect Rect, bool Act
 void CCommunityIcons::Load()
 {
 	++m_Generation;
-	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_COMMUNITY_ICONS, m_Generation);
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(CGameClient::ASSET_OWNER_COMMUNITY_ICONS, m_Generation);
 	m_CommunityIconLoads.clear();
 	Storage()->ListDirectory(IStorage::TYPE_ALL, "communityicons", FileScan, this);
 }
@@ -150,7 +145,7 @@ void CCommunityIcons::Load()
 void CCommunityIcons::Shutdown()
 {
 	++m_Generation;
-	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(ASSET_OWNER_COMMUNITY_ICONS, m_Generation);
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(CGameClient::ASSET_OWNER_COMMUNITY_ICONS, m_Generation);
 	m_CommunityIconLoads.clear();
 }
 

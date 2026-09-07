@@ -686,7 +686,7 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	bool Clear(const CCommandBuffer::SCommand_Clear *pCommand);
 
-	bool Present();
+	bool Present(bool PaceWithDisplay);
 
 	bool Initialize(const SCommand_Init *pCommand);
 
@@ -1427,7 +1427,7 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 		PresentationTargetReadback(static_cast<const CCommandBuffer::SCommand_PresentationTarget_Readback *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
 	case CCommandBuffer::CMD_SWAP:
-		if(!Present())
+		if(!Present(static_cast<const CCommandBuffer::SCommand_Swap *>(pBaseCommand)->m_PaceWithDisplay))
 		{
 			Cleanup();
 			return RUN_COMMAND_COMMAND_ERROR;
@@ -1900,7 +1900,7 @@ bool CCommandProcessorFragment_WebGpu::AcquireFrame()
 	return false;
 }
 
-bool CCommandProcessorFragment_WebGpu::Present()
+bool CCommandProcessorFragment_WebGpu::Present(bool PaceWithDisplay)
 {
 	const bool DrewToScreen = m_ScreenTouched;
 	m_ScreenTouched = false;
@@ -1944,10 +1944,11 @@ bool CCommandProcessorFragment_WebGpu::Present()
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 	// The canvas is composited once per refresh whatever this does, so
 	// waiting for a frame is the right default: it costs nothing. Someone
-	// who asked for a rate of their own gets the short yield instead and
-	// lets the client's own limiter do the pacing -- for a benchmark, or
-	// for the shortest path from an input to the frame that carries it.
-	YieldToBrowser(g_Config.m_GfxRefreshRate == 0 ? 1 : 0);
+	// who asked for a rate of their own, and a caller that paces itself,
+	// get the short yield instead -- for a benchmark, for the shortest path
+	// from an input to the frame that carries it, and for the loading
+	// screen, which would otherwise spend a refresh on every step it takes.
+	YieldToBrowser(PaceWithDisplay && g_Config.m_GfxRefreshRate == 0 ? 1 : 0);
 #endif
 	if(m_SurfaceSuboptimal)
 	{

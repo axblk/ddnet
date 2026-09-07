@@ -770,7 +770,14 @@ void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std
 	Graphics()->SetColor(1.0, 1.0, 1.0, 1.0);
 
 	if(UpdateAndSwap)
+	{
+		// This screen paces itself by the clock above, so the present must not
+		// wait for the display on top of that. In the browser that wait is a
+		// whole refresh, and initialisation pays it once per step it reports.
+		Graphics()->SetPresentWaitsForDisplay(false);
 		Client()->UpdateAndSwap();
+		Graphics()->SetPresentWaitsForDisplay(true);
+	}
 }
 
 void CMenus::RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter, bool UpdateAndSwap)

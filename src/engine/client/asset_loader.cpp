@@ -43,7 +43,6 @@ class CImageAssetJob final : public CHttpAssetJob
 	std::function<bool(CImageInfo &)> m_Postprocess;
 	EAssetLoadError m_Error = EAssetLoadError::NONE;
 	int m_PngliteIncompatible = 0;
-	std::chrono::nanoseconds m_DecodeTime{};
 
 	bool DecodePng();
 	bool UncompressRawData();
@@ -61,7 +60,6 @@ public:
 
 	bool Success() const override { return m_Error == EAssetLoadError::NONE; }
 	int PngliteIncompatible() const { return m_PngliteIncompatible; }
-	std::chrono::nanoseconds DecodeTime() const { return m_DecodeTime; }
 	CImageInfo TakeImage();
 };
 
@@ -89,15 +87,11 @@ CAssetJob::CAssetJob(EAssetType Type, std::vector<uint8_t> vData, const char *pC
 	Abortable(true);
 }
 
-bool CAssetJob::ReadFile(IStorage *pStorage, const char *pPath, int StorageType, std::vector<uint8_t> &vData, std::chrono::nanoseconds *pReadTime)
+bool CAssetJob::ReadFile(IStorage *pStorage, const char *pPath, int StorageType, std::vector<uint8_t> &vData)
 {
-	const auto ReadStart = time_get_nanoseconds();
 	void *pData;
 	unsigned DataSize;
-	const bool Ok = pStorage->ReadFile(pPath, StorageType, &pData, &DataSize);
-	if(pReadTime != nullptr)
-		*pReadTime += time_get_nanoseconds() - ReadStart;
-	if(!Ok)
+	if(!pStorage->ReadFile(pPath, StorageType, &pData, &DataSize))
 		return false;
 	vData.assign(static_cast<uint8_t *>(pData), static_cast<uint8_t *>(pData) + DataSize);
 	free(pData);
@@ -110,7 +104,7 @@ void CAssetJob::Run()
 		return;
 	// Bytes that are already here - a response, a map that is open anyway -
 	// have nothing to read, so the job goes straight to making sense of them.
-	if(m_pStorage != nullptr && !ReadFile(m_pStorage, Path(), m_StorageType, m_vData, &m_ReadTime))
+	if(m_pStorage != nullptr && !ReadFile(m_pStorage, Path(), m_StorageType, m_vData))
 	{
 		m_ReadFailed = true;
 		OnReadFailed();
@@ -411,9 +405,7 @@ void CImageAssetJob::OnRequestFinished(EHttpAssetSource Source, std::vector<uint
 bool CImageAssetJob::DecodePng()
 {
 	CByteBufferReader Reader(Data().data(), Data().size());
-	const auto DecodeStart = time_get_nanoseconds();
 	const bool Success = CImageLoader::LoadPng(Reader, Path(), m_Image, m_PngliteIncompatible, false);
-	m_DecodeTime = time_get_nanoseconds() - DecodeStart;
 	if(!Success)
 	{
 		m_Error = EAssetLoadError::DECODE;
@@ -424,9 +416,7 @@ bool CImageAssetJob::DecodePng()
 
 bool CImageAssetJob::UncompressRawData()
 {
-	const auto DecodeStart = time_get_nanoseconds();
 	const std::unique_ptr<uint8_t[]> pData = m_RawData.Uncompress();
-	m_DecodeTime = time_get_nanoseconds() - DecodeStart;
 	if(pData == nullptr || m_RawData.UncompressedSize() < m_Image.DataSize() || !m_Image.TryAllocate())
 	{
 		m_Image.Free();
@@ -575,18 +565,6 @@ CImageAssetJob *CImageResource::ImageJob()
 const CImageAssetJob *CImageResource::ImageJob() const
 {
 	return static_cast<const CImageAssetJob *>(Job());
-}
-
-std::chrono::nanoseconds CImageResource::ReadTime() const
-{
-	dbg_assert(ImageJob() != nullptr, "Empty image resource has no read time");
-	return ImageJob()->ReadTime();
-}
-
-std::chrono::nanoseconds CImageResource::DecodeTime() const
-{
-	dbg_assert(ImageJob() != nullptr, "Empty image resource has no decode time");
-	return ImageJob()->DecodeTime();
 }
 
 CImageInfo CImageResource::TakeImage()

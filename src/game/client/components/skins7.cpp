@@ -262,10 +262,7 @@ void CSkins7::FinishSkinLoads()
 		}
 		if(It->m_Resource.IsReady(m_Generation))
 		{
-			m_SkinReadTime += It->m_Resource.Result().ReadTime();
-			const std::chrono::nanoseconds ParseStart = time_get_nanoseconds();
 			ParseSkin(It->m_aName, It->m_StorageType, It->m_Resource.Result().Text());
-			m_SkinParseTime += time_get_nanoseconds() - ParseStart;
 		}
 		else if(It->m_Resource.IsFailed(m_Generation))
 		{
@@ -275,9 +272,8 @@ void CSkins7::FinishSkinLoads()
 	}
 	if(m_vSkinLoads.empty())
 	{
-		log_info("skins7", "Skin descriptions: skins=%" PRIzu " wall=%.2fms read=%.2fms parse=%.2fms",
-			m_vSkins.size(), (time_get_nanoseconds() - m_LastRefreshTime).count() / 1000000.0,
-			m_SkinReadTime.count() / 1000000.0, m_SkinParseTime.count() / 1000000.0);
+		log_info("skins7", "Skin descriptions: skins=%" PRIzu " wall=%.2fms",
+			m_vSkins.size(), (time_get_nanoseconds() - m_LastRefreshTime).count() / 1000000.0);
 	}
 }
 
@@ -514,8 +510,6 @@ void CSkins7::Refresh(TSkinLoadedCallback &&SkinLoadedCallback)
 	m_BotResource.Reset();
 	m_vSkinLoads.clear();
 	m_vSkins.clear();
-	m_SkinReadTime = std::chrono::nanoseconds::zero();
-	m_SkinParseTime = std::chrono::nanoseconds::zero();
 	std::array<std::vector<CSkinPart>, protocol7::NUM_SKINPARTS> avOldSkinParts;
 
 	for(int Part = 0; Part < protocol7::NUM_SKINPARTS; Part++)

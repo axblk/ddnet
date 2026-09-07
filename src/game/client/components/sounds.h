@@ -31,7 +31,6 @@ class CSoundLoading : public CAssetJob
 	int m_NumLanes;
 	bool m_Completed = false;
 	int m_NumLoaded = 0;
-	std::chrono::nanoseconds m_LoadTime{};
 	std::vector<CResult> m_vResults;
 
 protected:
@@ -44,7 +43,6 @@ public:
 	~CSoundLoading() override;
 	void Commit();
 	int NumLoaded() const { return m_NumLoaded; }
-	std::chrono::nanoseconds LoadTime() const { return m_LoadTime; }
 };
 
 class CSounds : public CComponent
@@ -68,7 +66,6 @@ class CSounds : public CComponent
 	int64_t m_SoundBatchStart = 0;
 	int m_NumSoundSamplesLoaded = 0;
 	int m_NumSoundJobsFinished = 0;
-	std::chrono::nanoseconds m_SoundLoadTime{};
 
 	void UpdateChannels();
 	int GetSampleId(int SetId);

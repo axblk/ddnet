@@ -156,8 +156,6 @@ private:
 		CTypedAssetResource<CTextAssetJob> m_Resource;
 	};
 	std::vector<CSkinLoad> m_vSkinLoads;
-	std::chrono::nanoseconds m_SkinReadTime{};
-	std::chrono::nanoseconds m_SkinParseTime{};
 
 	static int SkinPartScan(const char *pName, int IsDir, int DirType, void *pUser);
 	bool RegisterSkinPart(int PartType, const char *pName, int DirType);

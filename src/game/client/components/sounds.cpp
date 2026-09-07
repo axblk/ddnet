@@ -57,14 +57,12 @@ void CSoundLoading::Process()
 			if(State() == IJob::STATE_ABORTED)
 				return;
 			const char *pFilename = g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_pFilename;
-			const std::chrono::nanoseconds LoadStart = time_get_nanoseconds();
 			vData.clear();
 			int SampleId = -1;
-			if(ReadFile(m_pStorage, pFilename, IStorage::TYPE_ALL, vData, nullptr))
+			if(ReadFile(m_pStorage, pFilename, IStorage::TYPE_ALL, vData))
 				SampleId = m_pSound->LoadWVFromMem(vData.data(), static_cast<unsigned>(vData.size()), false, pFilename);
 			else
 				log_error("sound", "Failed to open/read sound file '%s'", pFilename);
-			m_LoadTime += time_get_nanoseconds() - LoadStart;
 			m_NumLoaded += SampleId != -1;
 			m_vResults.push_back({SetId, SoundId, SampleId});
 		}
@@ -143,7 +141,6 @@ void CSounds::OnInit()
 	m_SoundBatchStart = time_get();
 	m_NumSoundSamplesLoaded = 0;
 	m_NumSoundJobsFinished = 0;
-	m_SoundLoadTime = std::chrono::nanoseconds::zero();
 	for(int SetId = 0; SetId < g_pData->m_NumSounds; ++SetId)
 	{
 		for(int SoundId = 0; SoundId < g_pData->m_aSounds[SetId].m_NumSounds; ++SoundId)
@@ -168,13 +165,12 @@ void CSounds::OnInit()
 			SoundLoading.Run();
 			SoundLoading.Commit();
 			m_NumSoundSamplesLoaded += SoundLoading.NumLoaded();
-			m_SoundLoadTime += SoundLoading.LoadTime();
 			++m_NumSoundJobsFinished;
 			GameClient()->m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Loading sound files"), 1);
 		}
 		m_WaitForSoundJob = false;
-		log_info("asset_loader", "Startup sound batch: jobs=%d loaded=%d wall=%.2fms load=%.2fms", m_NumSoundJobsFinished, m_NumSoundSamplesLoaded,
-			(time_get() - m_SoundBatchStart) * 1000.0 / time_freq(), m_SoundLoadTime.count() / 1000000.0);
+		log_info("asset_loader", "Startup sound batch: jobs=%d loaded=%d wall=%.2fms", m_NumSoundJobsFinished, m_NumSoundSamplesLoaded,
+			(time_get() - m_SoundBatchStart) * 1000.0 / time_freq());
 	}
 }
 
@@ -218,7 +214,6 @@ void CSounds::OnRender()
 			{
 				CSoundLoading &SoundLoading = Resource.Result();
 				m_NumSoundSamplesLoaded += SoundLoading.NumLoaded();
-				m_SoundLoadTime += SoundLoading.LoadTime();
 				++m_NumSoundJobsFinished;
 				SoundLoading.Commit();
 				Resource.Reset();
@@ -235,8 +230,8 @@ void CSounds::OnRender()
 		m_WaitForSoundJob = Waiting;
 		if(!m_WaitForSoundJob)
 		{
-			log_info("asset_loader", "Startup sound batch: jobs=%d loaded=%d wall=%.2fms load=%.2fms", m_NumSoundJobsFinished, m_NumSoundSamplesLoaded,
-				(time_get() - m_SoundBatchStart) * 1000.0 / time_freq(), m_SoundLoadTime.count() / 1000000.0);
+			log_info("asset_loader", "Startup sound batch: jobs=%d loaded=%d wall=%.2fms", m_NumSoundJobsFinished, m_NumSoundSamplesLoaded,
+				(time_get() - m_SoundBatchStart) * 1000.0 / time_freq());
 		}
 	}
 

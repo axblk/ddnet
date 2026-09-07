@@ -11,9 +11,6 @@
 #include <engine/shared/map.h>
 #include <engine/textrender.h>
 
-#include <generated/client_data.h>
-
-#include <game/client/render.h>
 #include <game/mapitems.h>
 #include <game/mapitems_ex.h>
 
@@ -241,11 +238,10 @@ static float SolveBezier(float x, float p0, float p1, float p2, float p3)
 	}
 }
 
-void CRenderMap::Init(IGraphics *pGraphics, ITextRender *pTextRender, CRenderTools *pRenderTools)
+void CRenderMap::Init(IGraphics *pGraphics, ITextRender *pTextRender)
 {
 	m_pGraphics = pGraphics;
 	m_pTextRender = pTextRender;
-	m_pRenderTools = pRenderTools;
 }
 
 void CRenderMap::RenderEvalEnvelope(const IEnvelopePointAccess *pPoints, std::chrono::nanoseconds TimeNanos, ColorRGBA &Result, size_t Channels)
@@ -614,7 +610,7 @@ void CRenderMap::RenderTeleOverlay(CTeleTile *pTele, int w, int h, float Scale, 
 	Graphics()->MapScreen(ScreenRect);
 }
 
-void CRenderMap::RenderSpeedupOverlay(CSpeedupTile *pSpeedup, int w, int h, float Scale, int OverlayRenderFlag, float Alpha)
+void CRenderMap::RenderSpeedupOverlay(CSpeedupTile *pSpeedup, int w, int h, float Scale, int OverlayRenderFlag, const FRenderSpeedupArrow &pfnRenderArrow, float Alpha)
 {
 	CScreenRect ScreenRect = Graphics()->GetScreen();
 
@@ -650,13 +646,7 @@ void CRenderMap::RenderSpeedupOverlay(CSpeedupTile *pSpeedup, int w, int h, floa
 				if(IsValidSpeedupTile(Type))
 				{
 					// draw arrow
-					Graphics()->TextureSet(g_pData->m_aImages[IMAGE_SPEEDUP_ARROW].m_Id);
-					Graphics()->QuadsBegin();
-					Graphics()->SetColor(1.0f, 1.0f, 1.0f, Alpha);
-					RenderTools()->SelectSprite(SPRITE_SPEEDUP_ARROW);
-					Graphics()->QuadsSetRotation(pSpeedup[c].m_Angle * (pi / 180.0f));
-					RenderTools()->DrawSprite(x * Scale + 16, y * Scale + 16, 35.0f);
-					Graphics()->QuadsEnd();
+					pfnRenderArrow(x * Scale + 16, y * Scale + 16, pSpeedup[c].m_Angle, Alpha);
 
 					// draw force and max speed
 					if(OverlayRenderFlag & OVERLAYRENDERFLAG_TEXT)

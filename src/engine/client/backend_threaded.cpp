@@ -8,12 +8,16 @@
 #include <engine/client/presentation_surface.h>
 #include <engine/shared/config.h>
 
+// CONF_BACKEND_NO_OPENGL leaves out the OpenGL backends, and with them GLEW
+// and the GL library, for the windowless programs.
+#if !defined(CONF_BACKEND_NO_OPENGL)
 #if !defined(CONF_BACKEND_OPENGL_ES)
 #include <engine/client/backend/opengl/backend_opengl.h>
 #include <engine/client/backend/opengl/backend_opengl3.h>
 #endif
 #if defined(CONF_BACKEND_OPENGL_ES3) || defined(CONF_BACKEND_OPENGL_ES)
 #include <engine/client/backend/opengles/backend_opengles3.h>
+#endif
 #endif
 #if defined(CONF_BACKEND_VULKAN)
 #include <engine/client/backend/vulkan/backend_vulkan.h>
@@ -327,21 +331,15 @@ CCommandProcessorFragment_Renderer *CGraphicsBackend_Threaded::CreateRenderer() 
 	case BACKEND_TYPE_NULL:
 		return new CCommandProcessorFragment_Null();
 	case BACKEND_TYPE_OPENGL_ES:
-#if defined(CONF_BACKEND_OPENGL_ES) || defined(CONF_BACKEND_OPENGL_ES3)
-		// GLES below 3.0 has no programs, and the window has already forced
-		// the version to 3.0 on every platform that offers ES at all - Android
-		// and Emscripten build both ES defines together, Linux only ever
-		// defines ES3. There is no live path below 3.0 to serve.
+#if (defined(CONF_BACKEND_OPENGL_ES) || defined(CONF_BACKEND_OPENGL_ES3)) && !defined(CONF_BACKEND_NO_OPENGL)
+		// The window forces GLES 3.0 wherever ES is offered.
 		return new CCommandProcessorFragment_OpenGLES3();
 #else
 		return nullptr;
 #endif
 	case BACKEND_TYPE_OPENGL:
-#if !defined(CONF_BACKEND_OPENGL_ES)
-		// The backend with programs is written against OpenGL 3.3 core and
-		// nothing else. Every context below that - including 3.0 to 3.2, which
-		// is missing four things it uses - goes to the one that stands in for
-		// programs altogether.
+#if !defined(CONF_BACKEND_OPENGL_ES) && !defined(CONF_BACKEND_NO_OPENGL)
+		// The backend with programs needs OpenGL 3.3 core.
 		if(m_GlMajor < 3 || (m_GlMajor == 3 && m_GlMinor < 3))
 			return new CCommandProcessorFragment_OpenGL();
 		return new CCommandProcessorFragment_OpenGL3_3();

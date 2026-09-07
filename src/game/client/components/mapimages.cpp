@@ -275,7 +275,7 @@ void CMapRenderImages::Load(class CLayers *pLayers, IMap *pMap, bool Sixup)
 	}
 }
 
-void CMapRenderImages::Update()
+bool CMapRenderImages::Update()
 {
 	bool ShowWarning = false;
 	for(auto It = m_vImageLoads.begin(); It != m_vImageLoads.end();)
@@ -300,6 +300,7 @@ void CMapRenderImages::Update()
 	}
 	if(ShowWarning)
 		Client()->AddWarning(SWarning(Localize("Some map images could not be loaded. Check the local console for details.")));
+	return !m_vImageLoads.empty();
 }
 
 static EMapImageModType GetEntitiesModType(const CGameInfo &GameInfo)

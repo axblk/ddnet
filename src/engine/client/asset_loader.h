@@ -25,6 +25,7 @@ class IHttpRequest;
 class IStorage;
 class CImageAssetJob;
 class CImageResource;
+class CTextAssetJob;
 template<typename TJob>
 class CTypedAssetResource;
 
@@ -33,6 +34,7 @@ enum class EAssetType
 	FONT,
 	IMAGE,
 	SOUND,
+	TEXT,
 };
 
 /**
@@ -205,6 +207,12 @@ public:
 	 * @see LoadHttp
 	 */
 	CImageResource LoadImageHttp(IHttp *pHttp, std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {});
+	/**
+	 * Reads a text file - a description, a piece of configuration, a piece of
+	 * JSON - off the main thread. What the text means stays with the caller,
+	 * which is the only place that knows it.
+	 */
+	CTypedAssetResource<CTextAssetJob> LoadTextFile(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation);
 	void Update();
 	void AbortOwnerBeforeGeneration(int OwnerId, uint64_t Generation);
 	void Shutdown();
@@ -295,6 +303,35 @@ public:
 	std::chrono::nanoseconds ReadTime() const;
 	std::chrono::nanoseconds DecodeTime() const;
 	CImageInfo TakeImage();
+};
+
+/**
+ * Job that reads a whole text file into memory.
+ *
+ * Reading a file is what costs, and it is the same work whatever the text
+ * turns out to mean, so the job stops at the text. Interpreting it - parsing
+ * JSON, resolving what it names - happens where the meaning is known.
+ */
+class CTextAssetJob final : public CAssetJob
+{
+	IStorage *m_pStorage;
+	int m_StorageType;
+	std::string m_Text;
+	bool m_Ok = false;
+	std::chrono::nanoseconds m_ReadTime{};
+
+protected:
+	void Run() override;
+
+public:
+	CTextAssetJob(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation);
+
+	bool Success() const override { return m_Ok; }
+	std::chrono::nanoseconds ReadTime() const { return m_ReadTime; }
+	/**
+	 * The text that was read. Only valid once the job succeeded.
+	 */
+	const std::string &Text() const;
 };
 
 template<typename TJob>

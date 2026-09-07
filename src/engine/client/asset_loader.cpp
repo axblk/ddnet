@@ -15,6 +15,7 @@
 #include <engine/storage.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <limits>
 #include <utility>
 
@@ -225,6 +226,11 @@ CImageResource CAssetLoader::LoadImageRawData(CDataFileRawData RawData, size_t W
 	auto pJob = std::make_shared<CImageAssetJob>(std::move(RawData), Width, Height, Format, pContextName, OwnerId, Generation, std::move(Postprocess));
 	Submit(pJob);
 	return CImageResource(std::move(pJob));
+}
+
+CTypedAssetResource<CTextAssetJob> CAssetLoader::LoadTextFile(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation)
+{
+	return Load(std::make_shared<CTextAssetJob>(pStorage, pPath, StorageType, OwnerId, Generation));
 }
 
 CImageResource CAssetLoader::LoadImageHttp(IHttp *pHttp, std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess)
@@ -441,6 +447,39 @@ CImageInfo CImageAssetJob::TakeImage()
 	dbg_assert(State() == IJob::STATE_DONE, "Cannot take image from unfinished asset job");
 	dbg_assert(Success(), "Cannot take image from failed asset job");
 	return std::move(m_Image);
+}
+
+CTextAssetJob::CTextAssetJob(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation) :
+	CAssetJob(EAssetType::TEXT, pPath, OwnerId, Generation),
+	m_pStorage(pStorage),
+	m_StorageType(StorageType)
+{
+	dbg_assert(pStorage != nullptr, "Text asset storage must not be null");
+}
+
+void CTextAssetJob::Run()
+{
+	if(State() == IJob::STATE_ABORTED)
+		return;
+	const auto ReadStart = time_get_nanoseconds();
+	IOHANDLE File = m_pStorage->OpenFile(Path(), IOFLAG_READ, m_StorageType);
+	if(!File)
+		return;
+	char *pText = io_read_all_str(File);
+	io_close(File);
+	m_ReadTime = time_get_nanoseconds() - ReadStart;
+	if(pText == nullptr)
+		return;
+	m_Text = pText;
+	free(pText);
+	m_Ok = State() != IJob::STATE_ABORTED;
+}
+
+const std::string &CTextAssetJob::Text() const
+{
+	dbg_assert(State() == IJob::STATE_DONE, "Cannot take text from unfinished asset job");
+	dbg_assert(Success(), "Cannot take text from failed asset job");
+	return m_Text;
 }
 
 CAssetResource::CAssetResource(std::shared_ptr<CAssetJob> pJob) :

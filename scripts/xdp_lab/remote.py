@@ -76,14 +76,17 @@ def server_info_request():
 # The shapes a flood comes in, one per budget the filter keeps. None of them
 # carry a token this server ever issued, which is the whole point: they are what
 # the filter has to decide about without being able to verify anything.
-# The scheme a `connect` URL carries picks the transport, so the one client can
-# be steered onto each path the filter classifies separately. Plain address is
-# whatever the server offers first, which is QUIC here.
+# How the one client is steered onto each path the filter classifies apart. The
+# connect scheme carries the game protocol (the sixup bit), but the transport -
+# QUIC or legacy UDP - is a separate choice: cl_connect_protocol -1 takes what
+# the server offers, which is QUIC, so the +udp schemes need it pinned to 0
+# (legacy) or the client upgrades to QUIC anyway. 1 is QUIC. Each entry is the
+# scheme to prepend and the cl_connect_protocol to set, or None to leave it.
 CONNECT_SCHEMES = {
-	"auto": "",
-	"0.6-udp": "tw-0.6+udp://",
-	"0.7-udp": "tw-0.7+udp://",
-	"0.7-quic": "tw-0.7+quic://",
+	"auto": ("", None),
+	"0.6-udp": ("tw-0.6+udp://", 0),
+	"0.7-udp": ("tw-0.7+udp://", 0),
+	"0.7-quic": ("tw-0.7+quic://", 1),
 }
 
 
@@ -357,9 +360,12 @@ def scenario_play(args, family, address, report):
 		report.add("a real client plays through the filter", False, f"{args.client} is not there")
 		return
 	host, port = address[0], address[1]
-	scheme = CONNECT_SCHEMES[getattr(args, "transport", "auto")]
+	scheme, protocol = CONNECT_SCHEMES[getattr(args, "transport", "auto")]
 	connect = f"[{host}]:{port}" if family == socket.AF_INET6 else f"{host}:{port}"
-	command = [args.client, "cl_download_skins 0", "connect " + scheme + connect]
+	command = [args.client, "cl_download_skins 0"]
+	if protocol is not None:
+		command.append(f"cl_connect_protocol {protocol}")
+	command.append("connect " + scheme + connect)
 	flood_pps = getattr(args, "play_flood_pps", 0)
 	shape = getattr(args, "play_flood_shape", "legacy")
 

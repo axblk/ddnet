@@ -122,13 +122,18 @@ def resolve(host, port, want_v6):
 	return infos[0][0], infos[0][4]
 
 
-def exchange(family, address, payload, timeout, expect=None):
+def exchange(family, address, payload, timeout, expect=None, sock=None):
 	"""Sends one packet and waits for the first answer that looks like one.
 
 	Returns the answer, or None. Anything that does not match `expect` is read
 	past rather than returned: a busy server sends more than answers.
+
+	Pass `sock` to keep asking from the same source port; it stays open, since
+	whoever owns it decides when it is done.
 	"""
-	sock = socket.socket(family, socket.SOCK_DGRAM)
+	own = sock is None
+	if own:
+		sock = socket.socket(family, socket.SOCK_DGRAM)
 	try:
 		sock.settimeout(timeout)
 		sock.sendto(payload, address)
@@ -147,17 +152,18 @@ def exchange(family, address, payload, timeout, expect=None):
 				return data
 		return None
 	finally:
-		sock.close()
+		if own:
+			sock.close()
 
 
-def ask_for_06_token(family, address, timeout):
+def ask_for_06_token(family, address, timeout, sock=None):
 	"""Runs the 0.6 handshake far enough to be handed a token."""
 	token = bytes(random.getrandbits(8) for _ in range(4))
 
 	def looks_like_accept(data):
 		return len(data) >= 12 and data[0] == LEGACY_FLAG_CONTROL << 2 and data[3] == LEGACY_CTRL_CONNECTACCEPT and data[4:8] == LEGACY_TOKEN_MAGIC
 
-	answer = exchange(family, address, legacy_connect(token), timeout, looks_like_accept)
+	answer = exchange(family, address, legacy_connect(token), timeout, looks_like_accept, sock)
 	return answer[8:12] if answer else None
 
 
@@ -271,13 +277,22 @@ def scenario_reachable(args, family, address, report):
 
 
 def scenario_handshakes(args, family, address, report):
-	first = ask_for_06_token(family, address, args.timeout)
-	report.add("0.6 handshake is answered", first is not None, first.hex() if first else "no CONNECTACCEPT")
-	second = ask_for_06_token(family, address, args.timeout) if first else None
+	# Both asks go out of one socket, because the token is a function of the
+	# whole peer and a second socket is a second port. A server behind the
+	# filter derives it over address and port, so that the filter can arrive at
+	# the same number from the packet alone; one without a key hashes the
+	# address and leaves the port out. Only the same port compares them both.
+	sock = socket.socket(family, socket.SOCK_DGRAM)
+	try:
+		first = ask_for_06_token(family, address, args.timeout, sock)
+		report.add("0.6 handshake is answered", first is not None, first.hex() if first else "no CONNECTACCEPT")
+		second = ask_for_06_token(family, address, args.timeout, sock) if first else None
+	finally:
+		sock.close()
 	if first and second:
-		# The token is derived from the address, so asking twice from here has
-		# to give the same answer. A different one means it is not derived at
-		# all, and the filter cannot verify what the server hands out.
+		# Asking twice from the same port has to give the same answer. A
+		# different one means it is not derived at all, and the filter cannot
+		# verify what the server hands out.
 		report.add("0.6 token is the same on a second ask", first == second, f"{first.hex()} then {second.hex()}")
 	elif first:
 		report.add("0.6 token is the same on a second ask", False, "no second answer")

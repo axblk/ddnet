@@ -353,30 +353,41 @@ def scenario_play(args, family, address, report):
 
 	def watch():
 		process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, errors="replace")
-		connected = joined = dropped = False
-		last = ""
-		deadline = time.time() + args.play_seconds
-		try:
-			while time.time() < deadline:
-				line = process.stdout.readline()
-				if not line:
-					break
-				last = line.rstrip()
+		# The reader runs on its own thread so that a connected, quiet client -
+		# which stops printing once it is in the game - cannot block the deadline.
+		# A blocking readline on the main thread waited past play_seconds for a
+		# line that never came, and left the flood running for as long as it did.
+		state = {"connected": False, "joined": False, "dropped": False, "last": ""}
+
+		def reader():
+			for line in process.stdout:
+				state["last"] = line.rstrip()
 				if "client: connected" in line:
-					connected = True
+					state["connected"] = True
 				# The server says this, through the client's chat, once the player
 				# is actually in the game rather than merely talking to a socket.
+				# Joining implies reaching: the connected line can scroll past
+				# behind demo-recorder chatter, so joining sets both.
 				if "entered and joined the game" in line:
-					joined = True
+					state["joined"] = True
+					state["connected"] = True
 				if "client: offline" in line or "disconnected" in line.lower():
-					dropped = True
+					state["dropped"] = True
+
+		pump = threading.Thread(target=reader, daemon=True)
+		pump.start()
+		deadline = time.time() + args.play_seconds
+		try:
+			while time.time() < deadline and process.poll() is None:
+				time.sleep(0.2)
 		finally:
 			process.terminate()
 			try:
 				process.wait(timeout=10)
 			except subprocess.TimeoutExpired:
 				process.kill()
-		return connected, joined, dropped, last
+			pump.join(timeout=2)
+		return state["connected"], state["joined"], state["dropped"], state["last"]
 
 	if flood_pps:
 		print(f"  running the client for {args.play_seconds}s under a {shape} flood of {flood_pps}/s", flush=True)

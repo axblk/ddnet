@@ -79,8 +79,11 @@ def server_info_request():
 FLOOD_SHAPES = {
 	# 0.6 that compresses, so its token is out of reach even when it has one.
 	"legacy": bytes([0x40, 0, 0]) + bytes(60),
-	# 0.7 from a peer that was never seen verified.
-	"sixup": bytes([0x08, 0, 0, 0, 0, 0, 0]) + bytes(60),
+	# 0.7 from a peer that was never seen verified. The first byte carries the
+	# flags shifted up by two, and the bit that says 0.7 is the lowest of them,
+	# so it is 1 << 2; without it the classifier reads the packet as neither
+	# protocol and counts it malformed instead of against the 0.7 budget.
+	"sixup": bytes([(1 << 0) << 2, 0, 0, 0, 0, 0, 0]) + bytes(60),
 	# Server info requests, the cheapest thing to ask a server for.
 	"connless": CONNLESS_PREFIX + b"\xff" * 4 + b"gie3" + bytes(1),
 	# A QUIC initial, the shape of a new connection attempt.

@@ -76,6 +76,17 @@ def server_info_request():
 # The shapes a flood comes in, one per budget the filter keeps. None of them
 # carry a token this server ever issued, which is the whole point: they are what
 # the filter has to decide about without being able to verify anything.
+# The scheme a `connect` URL carries picks the transport, so the one client can
+# be steered onto each path the filter classifies separately. Plain address is
+# whatever the server offers first, which is QUIC here.
+CONNECT_SCHEMES = {
+	"auto": "",
+	"0.6-udp": "tw-0.6+udp://",
+	"0.7-udp": "tw-0.7+udp://",
+	"0.7-quic": "tw-0.7+quic://",
+}
+
+
 FLOOD_SHAPES = {
 	# 0.6 that compresses, so its token is out of reach even when it has one.
 	"legacy": bytes([0x40, 0, 0]) + bytes(60),
@@ -346,8 +357,9 @@ def scenario_play(args, family, address, report):
 		report.add("a real client plays through the filter", False, f"{args.client} is not there")
 		return
 	host, port = address[0], address[1]
+	scheme = CONNECT_SCHEMES[getattr(args, "transport", "auto")]
 	connect = f"[{host}]:{port}" if family == socket.AF_INET6 else f"{host}:{port}"
-	command = [args.client, "cl_download_skins 0", "connect " + connect]
+	command = [args.client, "cl_download_skins 0", "connect " + scheme + connect]
 	flood_pps = getattr(args, "play_flood_pps", 0)
 	shape = getattr(args, "play_flood_shape", "legacy")
 
@@ -438,6 +450,7 @@ def build_parser():
 	play.add_argument("--play-seconds", type=int, default=30)
 	play.add_argument("--play-flood-pps", type=int, default=0, help="flood the server while the client plays, which is the question that matters")
 	play.add_argument("--play-flood-shape", choices=sorted(FLOOD_SHAPES), default="legacy")
+	play.add_argument("--transport", choices=sorted(CONNECT_SCHEMES), default="auto", help="which path the client connects over, to test the verified side of each")
 	play.add_argument("--threads", type=int, default=4)
 
 	every = subparsers.add_parser("all", help="probe, handshake, flood and play")
@@ -450,6 +463,7 @@ def build_parser():
 	every.add_argument("--play-seconds", type=int, default=20)
 	every.add_argument("--play-flood-pps", type=int, default=0)
 	every.add_argument("--play-flood-shape", choices=sorted(FLOOD_SHAPES), default="legacy")
+	every.add_argument("--transport", choices=sorted(CONNECT_SCHEMES), default="auto", help="which path the client connects over, to test the verified side of each")
 	return parser
 
 

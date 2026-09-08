@@ -208,6 +208,18 @@ int CNetConnection::QueueChunk(int Flags, int DataSize, const void *pData)
 
 void CNetConnection::SendConnect()
 {
+	// 0.7 carries the token it wants its answer addressed with in the payload, and
+	// the server reads it from there. The 0.6 magic would be read as that token, so
+	// every resent connect would ask to be answered at 'TKEN' - a token this side
+	// never accepts. The first connect is sent by the token handshake and is right;
+	// only the resends came through here, which is why this only shows when one is
+	// needed.
+	if(m_Sixup)
+	{
+		SendControlWithToken7(NET_CTRLMSG_CONNECT, m_SecurityToken);
+		return;
+	}
+
 	// send the connect message
 	m_LastSendTime = time_get();
 	for(int i = 0; i < m_NumConnectAddrs; i++)

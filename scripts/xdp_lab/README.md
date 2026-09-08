@@ -122,15 +122,54 @@ budget. They do not spoof: the budgets are spread over source prefixes and
 everything on the client side of the veth shares a single one, which is enough
 to reach them.
 
+## From another machine
+
+`remote.py` is the other half. It needs nothing but Python, runs on Windows,
+and speaks the two handshakes and the connless request itself, so it can drive
+a filter running in front of a real server on a real interface:
+
+```
+python3 scripts/xdp_lab/remote.py --server 203.0.113.5 all
+python3 scripts/xdp_lab/remote.py --server 203.0.113.5 flood --shape legacy --pps 50000
+python3 scripts/xdp_lab/remote.py --server 203.0.113.5 ramp
+python3 scripts/xdp_lab/remote.py --server 203.0.113.5 -6 handshake
+python3 scripts/xdp_lab/remote.py --server 203.0.113.5 play --client build/DDNet
+```
+
+| scenario | what it answers |
+| --- | --- |
+| `probe` | the server answers a browser request through the filter |
+| `handshake` | both handshakes are answered, and the 0.6 token is the same twice, so it is derived from the address rather than invented |
+| `flood` | one shape at a chosen rate for a chosen time, with a handshake attempted every second before, during and after |
+| `ramp` | the same at a series of rates, which is where the budget starts to bite |
+| `play` | a headless client connects and stays connected |
+
+The half this side cannot see is on the server: run `ddnet-xdp --stats` there
+while a scenario runs, and the counters say which class every packet was put in
+and whether it was dropped or would have been. This side only knows what came
+back.
+
+`--shape` picks which budget is under attack: `legacy`, `connless`, `sixup`,
+`quic`, `handshake` or `garbage`. `--protocol` picks whether the handshake being
+measured is 0.6 or 0.7, since they share a budget but are classified apart.
+
+What this reaches that the lab cannot: a real driver hook instead of a veth, a
+source address the filter did not hand out itself, IPv6, and a rate limited by a
+network rather than by loopback. What it still does not reach is aggregation
+over prefixes: one machine has one address, so everything it sends lands in the
+same bucket. That measures what a single source is allowed, which is the number
+the operator actually sets, and says nothing about a thousand sources each
+staying under it.
+
 ## What it does not cover
 
-* Driver mode. The lab attaches in generic mode, because a veth has no driver
-  hook. Anything about `XDP_TX` on real hardware has to be tried on real
-  hardware.
+* Driver mode, from the lab. `remote.py` against a real NIC does, and that is
+  the only way to watch `XDP_TX` leave a card.
 * Several source prefixes, and therefore the aggregation itself. That needs
-  either spoofed sources or more namespaces than one veth pair.
-* Load. The floods here are a few thousand packets from Python and say nothing
-  about the rate the filter sustains.
+  either spoofed sources or more machines than two.
+* Sustained load in the lab. The floods there are a few thousand packets from
+  Python over a veth; `remote.py --pps` is where a rate that means something
+  gets sent.
 
 ## Provenance
 

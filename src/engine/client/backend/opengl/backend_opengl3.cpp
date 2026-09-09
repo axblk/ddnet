@@ -393,10 +393,21 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 
 	CGLSLCompiler ShaderCompiler(g_Config.m_GfxGLMajor, g_Config.m_GfxGLMinor, g_Config.m_GfxGLPatch, m_IsOpenGLES, m_OpenGLTextureLodBIAS / 1000.0f);
 
-	GLint CapVal;
-	glGetIntegerv(GL_MAX_VERTEX_UNIFORM_COMPONENTS, &CapVal);
+	// The quad arrays live in both stages - offsets and rotations in the vertex
+	// shader, colors in the fragment shader - so the smaller of the two limits
+	// is the one that decides. Desktop GL guarantees the same 1024 components
+	// in both and asking only the vertex stage was safe there; GLES 3.0
+	// guarantees 896 in the fragment stage, and mobile drivers really do report
+	// the two far apart. Both are seeded, because a driver that does not know a
+	// pname leaves the value untouched and an uninitialized one would size a
+	// uniform array with garbage.
+	GLint VertexCapVal = 1024;
+	GLint FragmentCapVal = 1024;
+	glGetIntegerv(GL_MAX_VERTEX_UNIFORM_COMPONENTS, &VertexCapVal);
+	glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_COMPONENTS, &FragmentCapVal);
+	const int CapVal = std::min(VertexCapVal, FragmentCapVal);
 
-	m_MaxQuadsAtOnce = std::min(((int)CapVal - 20) / (3 * 4), (int)ms_MaxQuadsPossible);
+	m_MaxQuadsAtOnce = std::clamp((CapVal - 20) / (3 * 4), 1, (int)ms_MaxQuadsPossible);
 
 	{
 		CGLSL PrimitiveVertexShader;
@@ -938,8 +949,11 @@ void CCommandProcessorFragment_OpenGL3_3::TextureCreate(int Slot, const IGraphic
 			// prevent mipmap display bugs, when zooming out far
 			if(Width >= 1024 && Height >= 1024)
 			{
-				glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 5.f);
-				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LOD, 5);
+				// MAX_LEVEL is texture state and an integer; MAX_LOD is sampler
+				// state and a float, so the sampler bound to the unit decides it
+				// and setting it on the texture did nothing at all.
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 5);
+				glSamplerParameterf(m_vTextures[Slot].m_Sampler, GL_TEXTURE_MAX_LOD, 5.0f);
 			}
 			glTexImage2D(GL_TEXTURE_2D, 0, GLStoreFormat, Width, Height, 0, GLFormat, GL_UNSIGNED_BYTE, pTexData);
 			glGenerateMipmap(GL_TEXTURE_2D);

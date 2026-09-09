@@ -1208,6 +1208,7 @@ if(NETWORKING_QUIC)
     tw06.rs
     tw07.rs
     util.rs
+    wire.rs
   )
   list(APPEND RUST_NET_SRC
     "${PROJECT_SOURCE_DIR}/src/net/Cargo.lock"

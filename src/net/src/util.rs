@@ -1,5 +1,3 @@
-use octets::Octets;
-use octets::OctetsMut;
 use ring::digest;
 use ring::rand::SecureRandom as _;
 use ring::rand::SystemRandom;
@@ -29,18 +27,6 @@ pub fn normalize(mut addr: SocketAddr) -> SocketAddr {
         }
     }
     addr
-}
-
-/// Tries to peek a QUIC varint from the buffer and returns its value and
-/// encoded size.
-pub fn peek_quic_varint(buf: &[u8]) -> Option<(u64, usize)> {
-    let mut buf = Octets::with_slice(buf);
-    let int = buf.get_varint().ok()?;
-    Some((int, buf.off()))
-}
-
-pub fn write_quic_varint(buf: &mut [u8], val: u64) -> usize {
-    OctetsMut::with_slice(buf).put_varint(val).unwrap().len()
 }
 
 pub fn secure_hash(data: &[u8]) -> [u8; 32] {

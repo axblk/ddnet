@@ -1254,6 +1254,7 @@ impl Net {
         if let Err(error) = self.proto_quic.maintain_certificates() {
             warn!("browser certificate: {}", error);
         }
+        self.cb.challenger.reseed_if_due();
         if let Some((idx, error)) = self.connect_errors.pop_front() {
             let mut remaining = &mut buf[..];
             let _ = write!(remaining, "{}", error);

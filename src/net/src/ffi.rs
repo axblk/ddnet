@@ -16,6 +16,7 @@ use std::ffi::CStr;
 use std::ffi::CString;
 use std::mem;
 use std::panic;
+use std::process;
 use std::ptr;
 use std::result;
 use std::slice;
@@ -230,12 +231,30 @@ pub extern "C" fn ddnet_net_ev_kind(ev: &DdnetNetEvent) -> u64 {
         Some(Map(..)) => DDNET_NET_EV_MAP,
     }
 }
+/// An accessor was asked about a field its event does not have. That is a
+/// bug in the caller, and the process ends over it either way, a panic
+/// cannot unwind across the C boundary; this way the log says which call
+/// on which event, instead of "entered unreachable code".
+fn wrong_event(accessor: &str, ev: &DdnetNetEvent) -> ! {
+    use self::EventImpl::*;
+    let kind = match &ev.inner {
+        None => "no",
+        Some(Connect(..)) => "connect",
+        Some(Chunk(..)) => "chunk",
+        Some(Disconnect(..)) => "disconnect",
+        Some(ConnlessChunk(..)) => "connless chunk",
+        Some(Map(..)) => "map",
+    };
+    error!("{} called on a {} event", accessor, kind);
+    eprintln!("ddnet_net: {} called on a {} event", accessor, kind);
+    process::abort()
+}
 #[no_mangle]
 pub extern "C" fn ddnet_net_ev_map_peer_index(ev: &DdnetNetEvent) -> u64 {
     use self::EventImpl::*;
     match &ev.inner {
         Some(Map(idx, _, _)) => idx.0,
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_map_peer_index", ev),
     }
 }
 /// One of `DDNET_NET_MAP_*`.
@@ -249,7 +268,7 @@ pub extern "C" fn ddnet_net_ev_map_kind(ev: &DdnetNetEvent) -> u64 {
             MapEvent::End => DDNET_NET_MAP_END,
             MapEvent::Failed => DDNET_NET_MAP_FAILED,
         },
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_map_kind", ev),
     }
 }
 /// Bytes in the buffer: the header frame, a piece of the map, or the reason
@@ -259,7 +278,7 @@ pub extern "C" fn ddnet_net_ev_map_len(ev: &DdnetNetEvent) -> usize {
     use self::EventImpl::*;
     match &ev.inner {
         Some(Map(_, _, len)) => *len,
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_map_len", ev),
     }
 }
 /// Takes a map header as a `DDNET_NET_MAP_HEADER` event delivers it apart.
@@ -292,7 +311,7 @@ pub extern "C" fn ddnet_net_ev_connect_peer_index(
     use self::EventImpl::*;
     match &ev.inner {
         Some(Connect(idx, _)) => idx.0,
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_connect_peer_index", ev),
     }
 }
 #[no_mangle]
@@ -309,7 +328,7 @@ pub extern "C" fn ddnet_net_ev_connect_addr(
     }
     let addr = match &ev.inner {
         Some(Connect(_, addr)) => CString::new(addr.to_string()).unwrap(),
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_connect_addr", ev),
     };
     let addr = ev.addr.insert(addr);
     *addr_ptr = addr.as_ptr();
@@ -322,7 +341,7 @@ pub extern "C" fn ddnet_net_ev_chunk_peer_index(
     use self::EventImpl::*;
     match &ev.inner {
         Some(Chunk(idx, _, _)) => idx.0,
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_chunk_peer_index", ev),
     }
 }
 #[no_mangle]
@@ -330,7 +349,7 @@ pub extern "C" fn ddnet_net_ev_chunk_len(ev: &DdnetNetEvent) -> usize {
     use self::EventImpl::*;
     match ev.inner {
         Some(Chunk(_, len, _)) => len,
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_chunk_len", ev),
     }
 }
 #[no_mangle]
@@ -338,7 +357,7 @@ pub extern "C" fn ddnet_net_ev_chunk_is_unreliable(ev: &DdnetNetEvent) -> bool {
     use self::EventImpl::*;
     match ev.inner {
         Some(Chunk(_, _, unreliable)) => unreliable,
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_chunk_is_unreliable", ev),
     }
 }
 #[no_mangle]
@@ -348,7 +367,7 @@ pub extern "C" fn ddnet_net_ev_disconnect_peer_index(
     use self::EventImpl::*;
     match &ev.inner {
         Some(Disconnect(idx, _, _)) => idx.0,
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_disconnect_peer_index", ev),
     }
 }
 #[no_mangle]
@@ -358,7 +377,7 @@ pub extern "C" fn ddnet_net_ev_disconnect_reason_len(
     use self::EventImpl::*;
     match ev.inner {
         Some(Disconnect(_, reason_len, _)) => reason_len,
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_disconnect_reason_len", ev),
     }
 }
 #[no_mangle]
@@ -368,7 +387,7 @@ pub extern "C" fn ddnet_net_ev_disconnect_is_remote(
     use self::EventImpl::*;
     match ev.inner {
         Some(Disconnect(_, _, remote)) => remote,
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_disconnect_is_remote", ev),
     }
 }
 /// The four bytes of the 0.6 extended header, if the packet had one.
@@ -386,7 +405,7 @@ pub extern "C" fn ddnet_net_ev_connless_chunk_extra(
             }
             None => false,
         },
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_connless_chunk_extra", ev),
     }
 }
 /// The 0.7 sender's token for answering it, if the packet came over 0.7.
@@ -404,7 +423,7 @@ pub extern "C" fn ddnet_net_ev_connless_chunk_token7(
             }
             None => false,
         },
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_connless_chunk_token7", ev),
     }
 }
 #[no_mangle]
@@ -414,7 +433,7 @@ pub extern "C" fn ddnet_net_ev_connless_chunk_len(
     use self::EventImpl::*;
     match ev.inner {
         Some(ConnlessChunk(_, len, _)) => len,
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_connless_chunk_len", ev),
     }
 }
 #[no_mangle]
@@ -431,7 +450,7 @@ pub extern "C" fn ddnet_net_ev_connless_chunk_addr(
     }
     let addr = match &ev.inner {
         Some(ConnlessChunk(addr, _, _)) => CString::new(addr.to_string()).unwrap(),
-        _ => unreachable!(),
+        _ => wrong_event("ddnet_net_ev_connless_chunk_addr", ev),
     };
     let addr = ev.addr.insert(addr);
     *addr_ptr = addr.as_ptr();

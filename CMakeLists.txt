@@ -113,7 +113,6 @@ elseif(TARGET_OS STREQUAL "mac")
   set(AUTO_VULKAN_BACKEND OFF)
 endif()
 
-option(WEBSOCKETS "Enable websockets support" OFF)
 option(MYSQL "Enable mysql support" OFF)
 option(TEST_MYSQL "Test mysql support in unit tests (also sets -DMYSQL=ON)" OFF)
 option(AUTOUPDATE "Enable the autoupdater" OFF)
@@ -624,13 +623,6 @@ if(UNIX)
 endif()
 find_package(Threads)
 find_package(Wavpack)
-if(WEBSOCKETS)
-  find_package(Websockets)
-else()
-  set(WEBSOCKETS_LIBRARIES)
-  set(WEBSOCKETS_INCLUDE_DIRS)
-endif()
-
 if(EXCEPTION_HANDLING)
   find_package(Crashdump)
 endif()
@@ -711,9 +703,6 @@ show_dependency_status("Zlib" ZLIB)
 if(DISCORD)
   show_dependency_status("DiscordSdk" DiscordSdk)
 endif()
-if(WEBSOCKETS)
-  show_dependency_status("Websockets" WEBSOCKETS)
-endif()
 
 if(CLIENT AND VULKAN)
   show_dependency_status("Vulkan" VULKAN)
@@ -733,10 +722,6 @@ endif()
 
 if(MYSQL AND NOT(MYSQL_FOUND))
   message(SEND_ERROR "You must install MySQL to compile the ${CMAKE_PROJECT_NAME} server with MySQL support")
-endif()
-
-if(WEBSOCKETS AND NOT(WEBSOCKETS_FOUND))
-  message(SEND_ERROR "You must install libwebsockets to compile the ${CMAKE_PROJECT_NAME} server with websocket support")
 endif()
 
 if(UPNP AND NOT(MINIUPNPC_FOUND))
@@ -2151,7 +2136,6 @@ set(COPY_FILES
   ${SSP_COPY_FILES}
   ${VULKAN_COPY_FILES}
   ${WAVPACK_COPY_FILES}
-  ${WEBSOCKETS_COPY_FILES}
   # tidy-alphabetical-end
 )
 if(TARGET_OS STREQUAL "emscripten")
@@ -2479,8 +2463,6 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   uuid_manager.h
   video.cpp
   video.h
-  websockets.cpp
-  websockets.h
   # tidy-alphabetical-end
 )
 set_src(ENGINE_GFX GLOB src/engine/gfx
@@ -2562,7 +2544,6 @@ set(LIBS
   ${CRYPTO_LIBRARIES}
   ${CURL_LIBRARIES}
   ${SQLite3_LIBRARIES}
-  ${WEBSOCKETS_LIBRARIES}
   ${ZLIB_LIBRARIES}
   # tidy-alphabetical-end
   # Add Rust part of our code.
@@ -4314,10 +4295,6 @@ foreach(target ${TARGETS_OWN})
   if(CRYPTO_FOUND)
     target_compile_definitions(${target} PRIVATE CONF_OPENSSL)
     target_include_directories(${target} SYSTEM PRIVATE ${CRYPTO_INCLUDE_DIRS})
-  endif()
-  if(WEBSOCKETS)
-    target_compile_definitions(${target} PRIVATE CONF_WEBSOCKETS)
-    target_include_directories(${target} SYSTEM PRIVATE ${WEBSOCKETS_INCLUDE_DIRS})
   endif()
   if(UPNP)
     target_compile_definitions(${target} PRIVATE CONF_UPNP)

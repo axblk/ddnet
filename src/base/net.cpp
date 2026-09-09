@@ -13,10 +13,6 @@
 #include <iterator> // std::size
 #include <string_view>
 
-#if defined(CONF_WEBSOCKETS)
-#include <engine/shared/websockets.h>
-#endif
-
 #if defined(CONF_FAMILY_UNIX)
 #include <sys/time.h> // timeval
 #include <unistd.h> // close
@@ -95,31 +91,16 @@ static void net_buffer_reinit(NETSOCKET_BUFFER *buffer)
 }
 #endif
 
-#if defined(CONF_WEBSOCKETS)
-static void net_buffer_simple(NETSOCKET_BUFFER *buffer, char **buf, int *size)
-{
-#if defined(CONF_PLATFORM_LINUX)
-	*buf = buffer->bufs[0];
-	*size = sizeof(buffer->bufs[0]);
-#else
-	*buf = buffer->buf;
-	*size = sizeof(buffer->buf);
-#endif
-}
-#endif
-
 struct NETSOCKET_INTERNAL
 {
 	int type;
 	int ipv4sock;
 	int ipv6sock;
-	int web_ipv4sock;
-	int web_ipv6sock;
 	bool broken;
 
 	NETSOCKET_BUFFER buffer;
 };
-static NETSOCKET_INTERNAL invalid_socket = {NETTYPE_INVALID, -1, -1, -1, -1, false};
+static NETSOCKET_INTERNAL invalid_socket = {NETTYPE_INVALID, -1, -1, false};
 
 const NETADDR NETADDR_ZEROED = {NETTYPE_INVALID, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 0};
 
@@ -283,7 +264,7 @@ static void net_addr_str_v6(const unsigned short ip[8], int port, char *buffer, 
 
 void net_addr_str(const NETADDR *addr, char *string, int max_length, bool add_port)
 {
-	if((addr->type & (NETTYPE_IPV4 | NETTYPE_WEBSOCKET_IPV4)) != 0)
+	if((addr->type & NETTYPE_IPV4) != 0)
 	{
 		if(add_port)
 		{
@@ -294,7 +275,7 @@ void net_addr_str(const NETADDR *addr, char *string, int max_length, bool add_po
 			str_format(string, max_length, "%d.%d.%d.%d", addr->ip[0], addr->ip[1], addr->ip[2], addr->ip[3]);
 		}
 	}
-	else if((addr->type & (NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV6)) != 0)
+	else if((addr->type & NETTYPE_IPV6) != 0)
 	{
 		unsigned short ip[8];
 		for(int i = 0; i < 8; i++)
@@ -430,14 +411,14 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 
 bool net_addr_is_local(const NETADDR *addr)
 {
-	if((addr->type & (NETTYPE_IPV4 | NETTYPE_WEBSOCKET_IPV4)) != 0)
+	if((addr->type & NETTYPE_IPV4) != 0)
 	{
 		return addr->ip[0] == 127 ||
 		       addr->ip[0] == 10 ||
 		       (addr->ip[0] == 192 && addr->ip[1] == 168) ||
 		       (addr->ip[0] == 172 && (addr->ip[1] >= 16 && addr->ip[1] <= 31));
 	}
-	if((addr->type & (NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV6)) != 0)
+	if((addr->type & NETTYPE_IPV6) != 0)
 	{
 		return (addr->ip[0] == 0xfe && (addr->ip[1] >= 0x80 && addr->ip[1] <= 0xbf)) ||
 		       (addr->ip[0] >= 0xfc && addr->ip[0] <= 0xfd) ||
@@ -635,28 +616,7 @@ static int net_host_lookup_impl(const char *hostname, NETADDR *addr, int types)
 
 int net_host_lookup(const char *hostname, NETADDR *addr, int types)
 {
-	const char *ws_hostname = str_startswith(hostname, "ws://");
-	if(ws_hostname)
-	{
-		if((types & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) == 0)
-		{
-			return -1;
-		}
-		int result = net_host_lookup_impl(ws_hostname, addr, types & ~(NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6));
-		if(result == 0)
-		{
-			if(addr->type == NETTYPE_IPV4)
-			{
-				addr->type = NETTYPE_WEBSOCKET_IPV4;
-			}
-			else if(addr->type == NETTYPE_IPV6)
-			{
-				addr->type = NETTYPE_WEBSOCKET_IPV6;
-			}
-		}
-		return result;
-	}
-	return net_host_lookup_impl(hostname, addr, types & ~(NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6));
+	return net_host_lookup_impl(hostname, addr, types);
 }
 
 void net_init()
@@ -664,9 +624,6 @@ void net_init()
 #if defined(CONF_FAMILY_WINDOWS)
 	WSADATA wsa_data;
 	dbg_assert(WSAStartup(MAKEWORD(1, 1), &wsa_data) == 0, "WSAStartup failure");
-#endif
-#if defined(CONF_WEBSOCKETS)
-	websocket_init();
 #endif
 }
 
@@ -766,16 +723,6 @@ int net_socket_read_wait(NETSOCKET sock, std::chrono::nanoseconds nanoseconds)
 		FD_SET(sock->ipv6sock, &readfds);
 		maxfd = std::max(maxfd, sock->ipv6sock);
 	}
-#if defined(CONF_WEBSOCKETS)
-	if(sock->web_ipv4sock >= 0)
-	{
-		maxfd = std::max(maxfd, websocket_fd_set(sock->web_ipv4sock, &readfds));
-	}
-	if(sock->web_ipv6sock >= 0)
-	{
-		maxfd = std::max(maxfd, websocket_fd_set(sock->web_ipv6sock, &readfds));
-	}
-#endif
 	if(maxfd < 0)
 	{
 		return 0;
@@ -795,16 +742,6 @@ int net_socket_read_wait(NETSOCKET sock, std::chrono::nanoseconds nanoseconds)
 	{
 		return 1;
 	}
-#if defined(CONF_WEBSOCKETS)
-	if(sock->web_ipv4sock >= 0 && websocket_fd_get(sock->web_ipv4sock, &readfds))
-	{
-		return 1;
-	}
-	if(sock->web_ipv6sock >= 0 && websocket_fd_get(sock->web_ipv6sock, &readfds))
-	{
-		return 1;
-	}
-#endif
 	return 0;
 }
 
@@ -826,30 +763,12 @@ static void priv_net_close_all_sockets(NETSOCKET sock)
 		sock->type &= ~NETTYPE_IPV4;
 	}
 
-#if defined(CONF_WEBSOCKETS)
-	if(sock->web_ipv4sock >= 0)
-	{
-		websocket_destroy(sock->web_ipv4sock);
-		sock->web_ipv4sock = -1;
-		sock->type &= ~NETTYPE_WEBSOCKET_IPV4;
-	}
-#endif
-
 	if(sock->ipv6sock >= 0)
 	{
 		priv_net_close_socket(sock->ipv6sock);
 		sock->ipv6sock = -1;
 		sock->type &= ~NETTYPE_IPV6;
 	}
-
-#if defined(CONF_WEBSOCKETS)
-	if(sock->web_ipv6sock >= 0)
-	{
-		websocket_destroy(sock->web_ipv6sock);
-		sock->web_ipv6sock = -1;
-		sock->type &= ~NETTYPE_WEBSOCKET_IPV6;
-	}
-#endif
 
 	free(sock);
 }
@@ -959,20 +878,6 @@ NETSOCKET net_udp_create(NETADDR bindaddr)
 		}
 	}
 
-#if defined(CONF_WEBSOCKETS)
-	if(bindaddr.type & NETTYPE_WEBSOCKET_IPV4)
-	{
-		NETADDR bindaddr_websocket_ipv4 = bindaddr;
-		bindaddr_websocket_ipv4.type = NETTYPE_WEBSOCKET_IPV4;
-		const int socket = websocket_create(&bindaddr_websocket_ipv4);
-		if(socket >= 0)
-		{
-			sock->type |= NETTYPE_WEBSOCKET_IPV4;
-			sock->web_ipv4sock = socket;
-		}
-	}
-#endif
-
 	if(bindaddr.type & NETTYPE_IPV6)
 	{
 		NETADDR bindaddr_ipv6 = bindaddr;
@@ -1005,20 +910,6 @@ NETSOCKET net_udp_create(NETADDR bindaddr)
 #endif
 		}
 	}
-
-#if defined(CONF_WEBSOCKETS)
-	if(bindaddr.type & NETTYPE_WEBSOCKET_IPV6)
-	{
-		NETADDR bindaddr_websocket_ipv6 = bindaddr;
-		bindaddr_websocket_ipv6.type = NETTYPE_WEBSOCKET_IPV6;
-		const int socket = websocket_create(&bindaddr_websocket_ipv6);
-		if(socket >= 0)
-		{
-			sock->type |= NETTYPE_WEBSOCKET_IPV6;
-			sock->web_ipv6sock = socket;
-		}
-	}
-#endif
 
 	if(sock->type == NETTYPE_INVALID)
 	{
@@ -1081,27 +972,6 @@ int net_udp_send(NETSOCKET sock, const NETADDR *addr, const void *data, int size
 		}
 	}
 
-#if defined(CONF_WEBSOCKETS)
-	if(addr->type & NETTYPE_WEBSOCKET_IPV4)
-	{
-		if(sock->web_ipv4sock >= 0)
-		{
-			if(addr->type & NETTYPE_LINK_BROADCAST)
-			{
-				log_error("net", "Cannot send broadcasts to Websocket IPv4");
-			}
-			else
-			{
-				d = websocket_send(sock->web_ipv4sock, (const unsigned char *)data, size, addr);
-			}
-		}
-		else
-		{
-			log_error("net", "Cannot send Websocket IPv4 traffic to this socket");
-		}
-	}
-#endif
-
 	if(addr->type & NETTYPE_IPV6)
 	{
 		if(sock->ipv6sock >= 0)
@@ -1132,27 +1002,6 @@ int net_udp_send(NETSOCKET sock, const NETADDR *addr, const void *data, int size
 			log_error("net", "Cannot send IPv6 traffic to this socket");
 		}
 	}
-
-#if defined(CONF_WEBSOCKETS)
-	if(addr->type & NETTYPE_WEBSOCKET_IPV6)
-	{
-		if(sock->web_ipv6sock >= 0)
-		{
-			if(addr->type & NETTYPE_LINK_BROADCAST)
-			{
-				log_error("net", "Cannot send broadcasts to Websocket IPv6");
-			}
-			else
-			{
-				d = websocket_send(sock->web_ipv6sock, (const unsigned char *)data, size, addr);
-			}
-		}
-		else
-		{
-			log_error("net", "Cannot send Websocket IPv6 traffic to this socket");
-		}
-	}
-#endif
 
 	network_stats.sent_bytes += size;
 	network_stats.sent_packets++;
@@ -1234,36 +1083,6 @@ int net_udp_recv(NETSOCKET sock, NETADDR *addr, unsigned char **data)
 				return bytes;
 			}
 		} while(bytes == 0);
-	}
-#endif
-
-#if defined(CONF_WEBSOCKETS)
-	if(sock->web_ipv4sock >= 0)
-	{
-		char *buf;
-		int size;
-		net_buffer_simple(&sock->buffer, &buf, &size);
-		bytes = websocket_recv(sock->web_ipv4sock, (unsigned char *)buf, size, addr);
-		*data = (unsigned char *)buf;
-		if(bytes > 0)
-		{
-			update_stats(bytes);
-			return bytes;
-		}
-	}
-
-	if(sock->web_ipv6sock >= 0)
-	{
-		char *buf;
-		int size;
-		net_buffer_simple(&sock->buffer, &buf, &size);
-		bytes = websocket_recv(sock->web_ipv6sock, (unsigned char *)buf, size, addr);
-		*data = (unsigned char *)buf;
-		if(bytes > 0)
-		{
-			update_stats(bytes);
-			return bytes;
-		}
 	}
 #endif
 

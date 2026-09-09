@@ -33,6 +33,8 @@
 
 #define DDNET_NET_PROTOCOL_QUIC 2
 
+#define DDNET_NET_PROTOCOL_WEBTRANSPORT 3
+
 typedef struct DdnetNet DdnetNet;
 
 typedef struct DdnetNetEvent DdnetNetEvent;

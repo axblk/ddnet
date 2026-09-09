@@ -465,6 +465,7 @@ MACRO_CONFIG_INT(SvPort, sv_port, 0, 0, 65535, CFGFLAG_SERVER, "Port to use for 
 MACRO_CONFIG_STR(SvQuicIdentityKey, sv_quic_identity_key, IO_MAX_PATH_LENGTH, "quic_identity.pk8", CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, "Persistent Ed25519 server identity key, generated when missing; empty for a new identity every start (restart required)")
 MACRO_CONFIG_INT(SvLegacyUdp, sv_legacy_udp, 1, 0, 1, CFGFLAG_SERVER, "Accept 0.6 and 0.7 clients over plain UDP on the server port (restart required)")
 MACRO_CONFIG_INT(SvQuic, sv_quic, 1, 0, 1, CFGFLAG_SERVER, "Accept QUIC clients on the server port (restart required)")
+MACRO_CONFIG_INT(SvWebtransport, sv_webtransport, 1, 0, 1, CFGFLAG_SERVER, "Accept WebTransport clients on the server port, needs sv_quic (restart required)")
 MACRO_CONFIG_STR(SvHostname, sv_hostname, 128, "", CFGFLAG_SERVER, "Server hostname (0.7 only)")
 MACRO_CONFIG_STR(SvMap, sv_map, 128, "Sunny Side Up", CFGFLAG_SERVER, "Map to use on the server")
 MACRO_CONFIG_INT(SvMaxClients, sv_max_clients, SERVER_MAX_CLIENTS, 1, SERVER_MAX_CLIENTS, CFGFLAG_SERVER, "Maximum number of clients that are allowed on a server")

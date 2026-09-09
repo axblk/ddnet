@@ -155,6 +155,14 @@ inline constexpr auto NETTYPE_TW7 = 1 << 5;
 inline constexpr auto NETTYPE_QUIC = 1 << 6;
 
 /**
+ * WebTransport address, always together with `NETTYPE_QUIC`: the same QUIC
+ * server, reached through an HTTP/3 session as a browser would.
+ *
+ * @ingroup Network-General
+ */
+inline constexpr auto NETTYPE_WEBTRANSPORT = 1 << 7;
+
+/**
  * @ingroup Network-General
  */
 inline constexpr auto NETTYPE_ALL = NETTYPE_IPV4 | NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6;
@@ -162,7 +170,7 @@ inline constexpr auto NETTYPE_ALL = NETTYPE_IPV4 | NETTYPE_IPV6 | NETTYPE_WEBSOC
 /**
  * @ingroup Network-General
  */
-inline constexpr auto NETTYPE_MASK = NETTYPE_ALL | NETTYPE_LINK_BROADCAST | NETTYPE_TW7 | NETTYPE_QUIC;
+inline constexpr auto NETTYPE_MASK = NETTYPE_ALL | NETTYPE_LINK_BROADCAST | NETTYPE_TW7 | NETTYPE_QUIC | NETTYPE_WEBTRANSPORT;
 
 /**
  * @ingroup Network-Address

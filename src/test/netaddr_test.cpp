@@ -66,6 +66,15 @@ TEST(NetAddr, FromUrlStringQuic)
 	EXPECT_STREQ(aBuf, "[::1]:8303");
 }
 
+TEST(NetAddr, FromUrlStringWebTransport)
+{
+	NETADDR Addr;
+	EXPECT_EQ(net_addr_from_url(&Addr, "ddnet+wt://127.0.0.1:8303#0123456789abcdef", nullptr, 0), 0);
+	EXPECT_TRUE(Addr.type & NETTYPE_QUIC);
+	EXPECT_TRUE(Addr.type & NETTYPE_WEBTRANSPORT);
+	EXPECT_EQ(Addr.port, 8303);
+}
+
 TEST(NetAddr, FromStr)
 {
 	NETADDR Addr;

@@ -369,6 +369,7 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 {
 	bool sixup = false;
 	bool quic = false;
+	bool webtransport = false;
 	mem_zero(addr, sizeof(*addr));
 	const char *str = str_startswith(string, "tw-0.6+udp://");
 	if(!str && (str = str_startswith(string, "tw-0.7+udp://")))
@@ -378,6 +379,11 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 	if(!str && (str = str_startswith(string, "ddnet+quic://")))
 	{
 		quic = true;
+	}
+	if(!str && (str = str_startswith(string, "ddnet+wt://")))
+	{
+		quic = true;
+		webtransport = true;
 	}
 	if(!str)
 		return 1;
@@ -416,6 +422,8 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 		addr->type |= NETTYPE_TW7;
 	if(quic)
 		addr->type |= NETTYPE_QUIC;
+	if(webtransport)
+		addr->type |= NETTYPE_WEBTRANSPORT;
 
 	return failure;
 }

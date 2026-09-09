@@ -56,11 +56,13 @@ pub struct AcceptProtocols {
     pub tw06: bool,
     pub tw07: bool,
     pub quic: bool,
+    /// WebTransport rides on QUIC; without `quic` it is off as well.
+    pub webtransport: bool,
 }
 
 impl AcceptProtocols {
-    pub const NONE: AcceptProtocols = AcceptProtocols { tw06: false, tw07: false, quic: false };
-    pub const ALL: AcceptProtocols = AcceptProtocols { tw06: true, tw07: true, quic: true };
+    pub const NONE: AcceptProtocols = AcceptProtocols { tw06: false, tw07: false, quic: false, webtransport: false };
+    pub const ALL: AcceptProtocols = AcceptProtocols { tw06: true, tw07: true, quic: true, webtransport: true };
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +70,7 @@ pub enum Protocol {
     Tw06,
     Tw07,
     Quic,
+    WebTransport,
 }
 
 pub struct CallbackData {
@@ -351,7 +354,7 @@ impl Addr {
     fn socket_addr(&self) -> &SocketAddr {
         use self::Addr::*;
         match self {
-            Quic(QuicAddr(socket_addr, _)) => socket_addr,
+            Quic(QuicAddr { addr: socket_addr, .. }) => socket_addr,
             Tw06(Tw06Addr(socket_addr)) => socket_addr,
             Tw07(Tw07Addr(socket_addr)) => socket_addr,
             Raw(RawAddr(socket_addr)) => socket_addr,
@@ -360,7 +363,7 @@ impl Addr {
     pub fn identity(&self) -> Option<&Identity> {
         use self::Addr::*;
         match self {
-            Quic(QuicAddr(_, identity)) => identity.as_ref(),
+            Quic(QuicAddr { identity, .. }) => identity.as_ref(),
             Tw06(Tw06Addr(_)) => None,
             Tw07(Tw07Addr(_)) => None,
             Raw(RawAddr(_)) => None,
@@ -398,8 +401,13 @@ pub struct Tw06Addr(pub SocketAddr);
 pub struct Tw07Addr(pub SocketAddr);
 #[derive(Clone, Copy)]
 pub struct RawAddr(pub SocketAddr);
+/// A QUIC peer, over plain QUIC or over WebTransport on it.
 #[derive(Clone, Copy)]
-pub struct QuicAddr(pub SocketAddr, pub Option<Identity>);
+pub struct QuicAddr {
+    pub addr: SocketAddr,
+    pub identity: Option<Identity>,
+    pub webtransport: bool,
+}
 
 fn socket_addr_from_url(url: &Url) -> Result<SocketAddr> {
     let mut ip_port: ArrayString<[u8; 64]> = ArrayString::new();
@@ -426,7 +434,7 @@ impl FromStr for Addr {
             // The fragment pins the server's identity. Without one, whatever
             // identity the server shows is taken, and reported, so it can
             // be pinned the next time.
-            "ddnet+quic" => {
+            scheme @ ("ddnet+quic" | "ddnet+wt") => {
                 let identity = match addr.fragment() {
                     None | Some("") => None,
                     Some(fragment) => {
@@ -439,7 +447,11 @@ impl FromStr for Addr {
                         Some(fragment[..end].parse().context("addr: identity")?)
                     }
                 };
-                Addr::Quic(QuicAddr(sock_addr, identity))
+                Addr::Quic(QuicAddr {
+                    addr: sock_addr,
+                    identity,
+                    webtransport: scheme == "ddnet+wt",
+                })
             }
             "tw-0.6+udp" => Addr::Tw06(Tw06Addr(sock_addr)),
             "tw-0.7+udp" => Addr::Tw07(Tw07Addr(sock_addr)),
@@ -451,11 +463,12 @@ impl FromStr for Addr {
 
 impl fmt::Display for QuicAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let QuicAddr(addr, identity) = self;
+        let QuicAddr { addr, identity, webtransport } = self;
+        let scheme = if *webtransport { "ddnet+wt" } else { "ddnet+quic" };
         let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
         match identity {
-            Some(identity) => write!(&mut buf, "ddnet+quic://{}#{}", addr, identity).unwrap(),
-            None => write!(&mut buf, "ddnet+quic://{}", addr).unwrap(),
+            Some(identity) => write!(&mut buf, "{}://{}#{}", scheme, addr, identity).unwrap(),
+            None => write!(&mut buf, "{}://{}", scheme, addr).unwrap(),
         }
         buf.fmt(f)
     }
@@ -589,6 +602,7 @@ impl NetBuilder {
             Protocol::Tw06 => self.accept.tw06 = accept,
             Protocol::Tw07 => self.accept.tw07 = libtw2_patch::accept_tw07(accept),
             Protocol::Quic => self.accept.quic = accept,
+            Protocol::WebTransport => self.accept.webtransport = accept,
         }
     }
     pub fn open(self) -> Result<Net> {
@@ -653,7 +667,7 @@ impl NetBuilder {
             events,
             poll,
 
-            proto_quic: quic::Protocol::new(&identity, self.timeout)?,
+            proto_quic: quic::Protocol::new(&identity, self.timeout, self.accept.webtransport)?,
             proto_tw06: tw06::Protocol::new(&identity)?,
             proto_tw07: tw07::Protocol::new(&identity)?,
 

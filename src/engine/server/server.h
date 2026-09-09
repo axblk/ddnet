@@ -476,6 +476,7 @@ public:
 
 	static void ConReloadAnnouncement(IConsole::IResult *pResult, void *pUserData);
 	static void ConReloadMaplist(IConsole::IResult *pResult, void *pUserData);
+	static void ConReloadTlsCert(IConsole::IResult *pResult, void *pUserData);
 
 	static void ConchainSpecialInfoupdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainMaxclientsperipUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);

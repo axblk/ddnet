@@ -3496,6 +3496,12 @@ int CServer::Run()
 		}
 		m_NetServer.SetIdentity(aIdentity);
 	}
+	if((Config()->m_SvTlsCert[0] != '\0') != (Config()->m_SvTlsKey[0] != '\0'))
+	{
+		log_error("server", "sv_tls_cert and sv_tls_key go together");
+		return -1;
+	}
+	m_NetServer.SetTlsFiles(Config()->m_SvTlsCert, Config()->m_SvTlsKey);
 #endif
 	NETADDR BindAddr;
 	if(g_Config.m_Bindaddr[0] == '\0')
@@ -3521,6 +3527,23 @@ int CServer::Run()
 
 	if(Port == 0)
 		log_info("server", "using port %d", BindAddr.port);
+
+#ifdef CONF_NETWORKING_QUIC
+	{
+		SHA256_DIGEST Sha256;
+		if(m_NetServer.CertificateSha256(false, &Sha256))
+		{
+			char aSha256[SHA256_MAXSTRSIZE];
+			sha256_str(Sha256, aSha256, sizeof(aSha256));
+			log_info("server", "browsers accept the WebTransport certificate by sha256 %s", aSha256);
+			if(m_NetServer.CertificateSha256(true, &Sha256))
+			{
+				sha256_str(Sha256, aSha256, sizeof(aSha256));
+				log_info("server", "the next WebTransport certificate has sha256 %s", aSha256);
+			}
+		}
+	}
+#endif
 
 #if defined(CONF_UPNP)
 	m_UPnP.Open(BindAddr);
@@ -4531,6 +4554,35 @@ void CServer::ConReloadMaplist(IConsole::IResult *pResult, void *pUserData)
 	pThis->InitMaplist();
 }
 
+void CServer::ConReloadTlsCert(IConsole::IResult *pResult, void *pUserData)
+{
+#ifdef CONF_NETWORKING_QUIC
+	CServer *pThis = static_cast<CServer *>(pUserData);
+	const CConfig *pConfig = pThis->Config();
+	if(pConfig->m_SvTlsCert[0] == '\0' || pConfig->m_SvTlsKey[0] == '\0')
+	{
+		log_warn("server", "reload_tls_cert needs sv_tls_cert and sv_tls_key, turning them on or off needs a restart");
+		return;
+	}
+	char aError[256];
+	if(!pThis->m_NetServer.ReloadTlsFiles(pConfig->m_SvTlsCert, pConfig->m_SvTlsKey, aError, sizeof(aError)))
+	{
+		log_warn("server", "keeping the TLS certificate in use, reading the files again failed: %s", aError);
+		return;
+	}
+	// Links with the hash in them follow it as they follow a rotation.
+	SHA256_DIGEST Sha256;
+	if(pThis->m_NetServer.CertificateSha256(false, &Sha256))
+	{
+		char aSha256[SHA256_MAXSTRSIZE];
+		sha256_str(Sha256, aSha256, sizeof(aSha256));
+		log_info("server", "read the TLS files again, the certificate has sha256 %s", aSha256);
+	}
+#else
+	log_warn("server", "reload_tls_cert needs a build with QUIC");
+#endif
+}
+
 void CServer::ConchainSpecialInfoupdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
 {
 	pfnCallback(pResult, pCallbackUserData);
@@ -4859,6 +4911,7 @@ void CServer::RegisterCommands()
 
 	Console()->Register("reload_announcement", "", CFGFLAG_SERVER, ConReloadAnnouncement, this, "Reload the announcements");
 	Console()->Register("reload_maplist", "", CFGFLAG_SERVER, ConReloadMaplist, this, "Reload the maplist");
+	Console()->Register("reload_tls_cert", "", CFGFLAG_SERVER, ConReloadTlsCert, this, "Read sv_tls_cert and sv_tls_key again for new QUIC, WebTransport and wss connections, keeping the certificate on errors");
 
 	RustVersionRegister(*Console());
 

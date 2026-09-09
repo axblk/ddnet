@@ -61,7 +61,8 @@ void CFavorites::OnConfigSave(IConfigManager *pConfigManager)
 				str_format(
 					aAddr,
 					sizeof(aAddr),
-					"ddnet+quic://%s",
+					"%s://%s",
+					Entry.m_aAddrs[i].type & NETTYPE_WEBTRANSPORT ? "ddnet+wt" : "ddnet+quic",
 					aBuffer);
 			}
 			else

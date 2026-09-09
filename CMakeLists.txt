@@ -133,6 +133,7 @@ option(PREFER_BUNDLED_LIBS "Prefer bundled libraries over system libraries" ${AU
 option(DEV "Don't generate stuff necessary for packaging, don't strip absolute paths from debug info, enable additional assertions" OFF)
 option(VULKAN "Enable the vulkan backend" ${AUTO_VULKAN_BACKEND})
 option(NETWORKING_QUIC "Use the Rust networking backend with QUIC support" OFF)
+option(LIBTW2_PATCH "Build against a libtw2-net with src/net/libtw2-patches applied, which is what a 0.7 server needs" OFF)
 
 option(EXCEPTION_HANDLING "Enable crashdumps (only works with Windows)" OFF)
 option(IPO "Enable interprocedural optimizations" OFF)
@@ -1202,9 +1203,11 @@ if(NETWORKING_QUIC)
     ffi.rs
     key.rs
     lib.rs
+    libtw2_patch.rs
     net.rs
     quic.rs
     tw06.rs
+    tw07.rs
     util.rs
     # tidy-alphabetical-end
   )
@@ -1219,6 +1222,9 @@ if(NETWORKING_QUIC)
     "${PROJECT_SOURCE_DIR}/src/net/Cargo.toml"
     CARGO_BUILD_NET "${CARGO_BUILD}")
   list(APPEND CARGO_BUILD_NET --lib)
+  if(LIBTW2_PATCH)
+    list(APPEND CARGO_BUILD_NET --features libtw2-patch)
+  endif()
 
   set(NET_LIBRARY_NAME "${CMAKE_SHARED_LIBRARY_PREFIX}net${CMAKE_SHARED_LIBRARY_SUFFIX}")
   add_custom_command(

@@ -43,30 +43,24 @@ static bool AddrFromUrl(const char *pUrl, NETADDR *pAddr)
 	return net_addr_from_str(pAddr, aBuf) == 0;
 }
 
-static bool Tw06AddrFromUrl(const char *pUrl, NETADDR *pAddr)
+// The library listens on one socket. Bound to IPv6 it takes IPv4 as well, so
+// an address that is not pinned to one family becomes the IPv6 wildcard.
+void BindAddrStr(const NETADDR &BindAddr, char *pBuffer, size_t BufferSize)
 {
-	// TODO: maybe parse URL by ourselves
-	CURLU *pHandle = curl_url();
-	char *pScheme;
-	char *pHostname;
-	char *pPort;
-	bool Error = false ||
-		     curl_url_set(pHandle, CURLUPART_URL, pUrl, CURLU_NON_SUPPORT_SCHEME) ||
-		     curl_url_get(pHandle, CURLUPART_SCHEME, &pScheme, 0) ||
-		     curl_url_get(pHandle, CURLUPART_HOST, &pHostname, 0) ||
-		     curl_url_get(pHandle, CURLUPART_PORT, &pPort, 0);
-	curl_url_cleanup(pHandle);
-	if(Error)
+	if((BindAddr.type & NETTYPE_IPV4) && (BindAddr.type & NETTYPE_IPV6))
 	{
-		return false;
+		str_format(pBuffer, BufferSize, "[::]:%d", BindAddr.port);
+		return;
 	}
-	if(str_comp(pScheme, "tw-0.6+udp") != 0)
-	{
-		return false;
-	}
-	char aBuf[64];
-	str_format(aBuf, sizeof(aBuf), "%s:%s", pHostname, pPort);
-	return net_addr_from_str(pAddr, aBuf) == 0;
+	NETADDR Addr = BindAddr;
+	Addr.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+	net_addr_str(&Addr, pBuffer, BufferSize, true);
+}
+
+// The address of a connect event names the protocol in its scheme.
+static bool UrlIsSixup(const char *pUrl)
+{
+	return str_startswith(pUrl, "tw-0.7+udp://") != nullptr;
 }
 
 void CNetServer::CPeer::Reset()
@@ -115,9 +109,8 @@ bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int Ma
 
 bool CNetServer::OpenLibrary()
 {
-	// TODO: use the actual bind address, not just the port
 	char aBindAddr[NETADDR_MAXSTRSIZE];
-	str_format(aBindAddr, sizeof(aBindAddr), "0.0.0.0:%d", m_Address.port);
+	BindAddrStr(m_Address, aBindAddr, sizeof(aBindAddr));
 
 	ddnet_net_ev_new(&m_pNetEvent);
 	if(false ||
@@ -125,6 +118,9 @@ bool CNetServer::OpenLibrary()
 		ddnet_net_set_bindaddr(m_pNet, aBindAddr, str_length(aBindAddr)) ||
 		(m_HasIdentity && ddnet_net_set_identity(m_pNet, &m_aIdentity)) ||
 		ddnet_net_set_accept_connections(m_pNet, true) ||
+		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW06, g_Config.m_SvLegacyUdp != 0) ||
+		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW07, g_Config.m_SvLegacyUdp != 0) ||
+		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_QUIC, g_Config.m_SvQuic != 0) ||
 		ddnet_net_open(m_pNet))
 	{
 		log_error("net", "couldn't open net server: %s", ddnet_net_error(m_pNet));
@@ -308,6 +304,14 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 				continue;
 			}
 
+			const bool Sixup = UrlIsSixup(pAddr);
+			if(Sixup && !g_Config.m_SvSixup)
+			{
+				static const char NO_SIXUP[] = "0.7 connections are not accepted at this time";
+				NET_CALL(ddnet_net_close, m_pNet, PeerId, NO_SIXUP, sizeof(NO_SIXUP) - 1);
+				continue;
+			}
+
 			uint32_t NumConnected = 0;
 			NET_CALL(ddnet_net_num_peers_in_bucket, m_pNet, pAddr, AddrLen, &NumConnected);
 			if((int)NumConnected > m_MaxClientsPerIp)
@@ -342,7 +346,7 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			NET_CALL(ddnet_net_set_userdata, m_pNet, PeerId, (void *)(uintptr_t)ClientId);
 			if(m_pfnNewClient)
 			{
-				m_pfnNewClient(ClientId, m_pUser, false);
+				m_pfnNewClient(ClientId, m_pUser, Sixup);
 			}
 		}
 		break;
@@ -394,10 +398,12 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			size_t AddrLen;
 			ddnet_net_ev_connless_chunk_addr(m_pNetEvent, &pAddr, &AddrLen);
 			NETADDR Addr;
-			if(!Tw06AddrFromUrl(pAddr, &Addr))
+			const ENetConnless Kind = NetConnlessAddr(pAddr, &Addr);
+			if(Kind != ENetConnless::TW06 && Kind != ENetConnless::TW07)
 			{
 				continue;
 			}
+			const bool Sixup = Kind == ENetConnless::TW07;
 			char aBanReason[256];
 			if(NetBan() && NetBan()->IsBanned(&Addr, aBanReason, sizeof(aBanReason)))
 			{
@@ -409,6 +415,15 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			pChunk->m_Flags = NETSENDFLAG_CONNLESS;
 			pChunk->m_DataSize = ddnet_net_ev_connless_chunk_len(m_pNetEvent);
 			pChunk->m_pData = m_aBuffer;
+			if(ddnet_net_ev_connless_chunk_extra(m_pNetEvent, &pChunk->m_aExtraData))
+			{
+				pChunk->m_Flags |= NETSENDFLAG_EXTENDED;
+			}
+			uint32_t Token;
+			if(Sixup && ddnet_net_ev_connless_chunk_token7(m_pNetEvent, &Token))
+			{
+				*pResponseToken = Token;
+			}
 		}
 			return 1;
 		}
@@ -421,12 +436,7 @@ int CNetServer::Send(CNetChunk *pChunk)
 
 	if(pChunk->m_Flags & NETSENDFLAG_CONNLESS)
 	{
-		// TODO: the extended connless header is not supported by the network library
-		char aAddr[NETADDR_MAXSTRSIZE];
-		net_addr_str(&pChunk->m_Address, aAddr, sizeof(aAddr), true);
-		char aUrl[128];
-		str_format(aUrl, sizeof(aUrl), "tw-0.6+udp://%s", aAddr);
-		NET_CALL(ddnet_net_send_connless_chunk, m_pNet, aUrl, str_length(aUrl), (const unsigned char *)pChunk->m_pData, pChunk->m_DataSize);
+		NetSendConnless(m_pNet, pChunk);
 		return 0;
 	}
 
@@ -450,6 +460,20 @@ int CNetServer::Send(CNetChunk *pChunk)
 			Flush(pChunk->m_ClientId);
 	}
 	return 0;
+}
+
+void CNetServer::SendConnlessSixup(const NETADDR *pAddr, const void *pData, int DataSize, SECURITY_TOKEN ResponseToken)
+{
+	// The library remembered the token when the packet came in.
+	(void)ResponseToken;
+	CNetChunk Chunk;
+	Chunk.m_ClientId = -1;
+	Chunk.m_Address = *pAddr;
+	Chunk.m_Address.type |= NETTYPE_TW7;
+	Chunk.m_Flags = NETSENDFLAG_CONNLESS;
+	Chunk.m_DataSize = DataSize;
+	Chunk.m_pData = pData;
+	NetSendConnless(m_pNet, &Chunk);
 }
 
 void CNetServer::SetMaxClientsPerIp(int Max)
@@ -524,8 +548,37 @@ int CNetServer::NetType() const
 }
 SECURITY_TOKEN CNetServer::GetGlobalToken()
 {
-	// unimplemented
-	return 0xdeadbeef;
+	// The library hands out the 0.7 tokens, so the one the masterserver
+	// challenges with has to be the library's. It changes when the library is
+	// reopened after an error, until the next registration.
+	uint32_t Token;
+	if(NET_CALL(ddnet_net_global_token7, m_pNet, &Token))
+	{
+		return 1;
+	}
+	return Token;
+}
+
+SECURITY_TOKEN CNetServer::GetToken(const NETADDR &Addr)
+{
+	SHA256_CTX Sha256;
+	sha256_init(&Sha256);
+	sha256_update(&Sha256, (unsigned char *)m_aSecurityTokenSeed, sizeof(m_aSecurityTokenSeed));
+	sha256_update(&Sha256, (unsigned char *)&Addr, 20); // omit port, bad idea!
+
+	SECURITY_TOKEN SecurityToken = ToSecurityToken(sha256_finish(&Sha256).data);
+
+	if(SecurityToken == NET_SECURITY_TOKEN_UNKNOWN ||
+		SecurityToken == NET_SECURITY_TOKEN_UNSUPPORTED)
+		SecurityToken = 1;
+
+	return SecurityToken;
+}
+
+SECURITY_TOKEN CNetServer::GetVanillaToken(const NETADDR &Addr)
+{
+	// vanilla token/gametick shouldn't be negative
+	return absolute(GetToken(Addr));
 }
 
 #endif // CONF_NETWORKING_QUIC

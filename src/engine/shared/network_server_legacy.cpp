@@ -816,6 +816,12 @@ void CNetServer::SendTokenSixup(NETADDR &Addr, SECURITY_TOKEN Token)
 	CNetBase::SendControlMsg(m_Socket, &Addr, 0, protocol7::NET_CTRLMSG_TOKEN, aRequestTokenBuf, Size, Token, true);
 }
 
+void CNetServer::SendConnlessSixup(const NETADDR *pAddr, const void *pData, int DataSize, SECURITY_TOKEN ResponseToken)
+{
+	NETADDR Addr = *pAddr;
+	CNetBase::SendPacketConnlessWithToken7(m_Socket, &Addr, pData, DataSize, ResponseToken, GetToken(Addr));
+}
+
 void CNetServer::SetMaxClientsPerIp(int Max)
 {
 	m_MaxClientsPerIp = std::clamp<int>(Max, 1, NET_MAX_CLIENTS);

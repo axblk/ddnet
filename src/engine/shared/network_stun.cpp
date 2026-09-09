@@ -37,9 +37,10 @@ static int RetryWaitSeconds(int NumUnsuccessfulTries)
 	return (1 << std::clamp(NumUnsuccessfulTries, 0, 9));
 }
 
-CStun::CProtocol::CProtocol(int Index, NETSOCKET Socket) :
+CStun::CProtocol::CProtocol(int Index, FSendRaw pfnSend, void *pUser) :
 	m_Index(Index),
-	m_Socket(Socket)
+	m_pfnSend(pfnSend),
+	m_pUser(pUser)
 {
 	mem_zero(&m_StunServer, sizeof(NETADDR));
 	// Initialize `m_Stun` with random data.
@@ -75,7 +76,7 @@ void CStun::CProtocol::Update()
 	m_NumUnsuccessfulTries += 1;
 	unsigned char aBuf[32];
 	int Size = StunMessagePrepare(aBuf, sizeof(aBuf), &m_Stun);
-	if(net_udp_send(m_Socket, &m_StunServer, aBuf, Size) == -1)
+	if(!m_pfnSend(m_pUser, &m_StunServer, aBuf, Size))
 	{
 		log_debug(IndexToSystem(m_Index), "couldn't send stun request");
 		return;
@@ -140,8 +141,8 @@ CONNECTIVITY CStun::CProtocol::GetConnectivity(NETADDR *pGlobalAddr)
 	}
 }
 
-CStun::CStun(NETSOCKET Socket) :
-	m_aProtocols{CProtocol(0, Socket), CProtocol(1, Socket)}
+CStun::CStun(FSendRaw pfnSend, void *pUser) :
+	m_aProtocols{CProtocol(0, pfnSend, pUser), CProtocol(1, pfnSend, pUser)}
 {
 }
 

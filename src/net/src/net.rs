@@ -1,6 +1,8 @@
+use crate::libtw2_patch;
 use crate::normalize;
 use crate::quic;
 use crate::tw06;
+use crate::tw07;
 use crate::Challenger;
 use crate::Context as _;
 use crate::Error;
@@ -28,6 +30,7 @@ use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
+use std::net::SocketAddrV6;
 use std::path::Path;
 use std::str;
 use std::str::FromStr;
@@ -43,13 +46,80 @@ use url::Url;
 // Originally `NET_MAX_PAYLOAD`.
 pub const MAX_FRAME_SIZE: u64 = 1394;
 
+/// Which protocols' handshakes the socket answers. A protocol that is off
+/// gets no reply at all, as if the port were closed for it.
+#[derive(Clone, Copy, Debug)]
+pub struct AcceptProtocols {
+    pub tw06: bool,
+    pub tw07: bool,
+    pub quic: bool,
+}
+
+impl AcceptProtocols {
+    pub const NONE: AcceptProtocols = AcceptProtocols { tw06: false, tw07: false, quic: false };
+    pub const ALL: AcceptProtocols = AcceptProtocols { tw06: true, tw07: true, quic: true };
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Protocol {
+    Tw06,
+    Tw07,
+    Quic,
+}
+
 pub struct CallbackData {
-    pub accept_connections: bool,
+    pub accept: AcceptProtocols,
     pub sslkeylogfile: Option<ArcFile>,
     pub challenger: Challenger,
     pub local_addr: SocketAddr,
-    pub socket: UdpSocket,
+    pub socket: Socket,
     pub next_peer_index: PeerIndex,
+}
+
+/// The one UDP socket everything goes over. Bound to an IPv6 address, it
+/// takes IPv4 as well, and IPv4 peers then show up as IPv4-mapped IPv6
+/// addresses. The mapping stays inside: addresses coming out are plain
+/// IPv4, addresses going in may be.
+pub struct Socket {
+    inner: UdpSocket,
+    v6: bool,
+}
+
+impl Socket {
+    fn bind(bindaddr: SocketAddr) -> io::Result<Socket> {
+        let domain = if bindaddr.is_ipv6() { socket2::Domain::IPV6 } else { socket2::Domain::IPV4 };
+        let socket = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+        if bindaddr.is_ipv6() {
+            // Not every system does this by default, Windows does not.
+            if let Err(error) = socket.set_only_v6(false) {
+                warn!("IPv6 socket cannot take IPv4 as well: {}", error);
+            }
+        }
+        // LAN discovery.
+        socket.set_broadcast(true)?;
+        socket.set_nonblocking(true)?;
+        socket.bind(&bindaddr.into())?;
+        Ok(Socket {
+            inner: UdpSocket::from_std(socket.into()),
+            v6: bindaddr.is_ipv6(),
+        })
+    }
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.inner.local_addr()
+    }
+    pub fn send_to(&self, buf: &[u8], addr: SocketAddr) -> io::Result<usize> {
+        let addr = match addr {
+            SocketAddr::V4(v4) if self.v6 => {
+                SocketAddr::V6(SocketAddrV6::new(v4.ip().to_ipv6_mapped(), v4.port(), 0, 0))
+            }
+            addr => addr,
+        };
+        self.inner.send_to(buf, addr)
+    }
+    pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        let (len, from) = self.inner.recv_from(buf)?;
+        Ok((len, normalize(from)))
+    }
 }
 
 // TODO: replace with ordered set?
@@ -111,6 +181,7 @@ pub struct Net {
 
     proto_quic: quic::Protocol,
     proto_tw06: tw06::Protocol,
+    proto_tw07: tw07::Protocol,
 
     peer_addrs: HashMap<SocketAddr, PeerIndex>,
     peers: HashMap<PeerIndex, Peer>,
@@ -137,7 +208,7 @@ const MAX_SOCKET_READ_ERRORS: u32 = 64;
 pub struct NetBuilder {
     bindaddr: Option<SocketAddr>,
     identity: Option<PrivateIdentity>,
-    accept_connections: bool,
+    accept: AcceptProtocols,
 }
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -177,6 +248,15 @@ impl Peer {
 }
 
 #[non_exhaustive]
+/// What a connectionless packet carried besides its payload.
+#[derive(Clone, Copy, Default)]
+pub struct ConnlessMeta {
+    /// The four bytes of the 0.6 extended header, when the packet had one.
+    pub extra: Option<[u8; 4]>,
+    /// The 0.7 sender's token for answering it.
+    pub response_token7: Option<u32>,
+}
+
 #[derive(Clone, Copy)]
 pub enum Event {
     /// `Connect(pid, peer_addr)`
@@ -187,8 +267,8 @@ pub enum Event {
     // TODO: distinguish disconnect from error?
     /// `Disconnect(pid, reason_size, remote)`
     Disconnect(PeerIndex, usize, bool),
-    /// `ConnlessChunk(from, size)`
-    ConnlessChunk(Addr, usize),
+    /// `ConnlessChunk(from, size, meta)`
+    ConnlessChunk(Addr, usize, ConnlessMeta),
 }
 
 #[derive(Clone, Copy)]
@@ -198,8 +278,8 @@ pub enum ConnectionEvent {
     ///
     /// Must only be sent once a [`Connect`] has been sent.
     Chunk(usize, bool),
-    /// `ConnlessChunk(from, size)`
-    ConnlessChunk(Addr, usize),
+    /// `ConnlessChunk(from, size, meta)`
+    ConnlessChunk(Addr, usize, ConnlessMeta),
     // TODO: distinguish disconnect from error?
     /// `Disconnect(reason_size, remote)`
     ///
@@ -216,6 +296,10 @@ pub enum ConnectionEvent {
 pub enum Addr {
     Quic(QuicAddr),
     Tw06(Tw06Addr),
+    Tw07(Tw07Addr),
+    /// A datagram as it is, no protocol of ours: STUN goes over the same
+    /// socket so that the address it learns is the one peers see.
+    Raw(RawAddr),
 }
 
 impl Addr {
@@ -224,6 +308,8 @@ impl Addr {
         match self {
             Quic(QuicAddr(socket_addr, _)) => socket_addr,
             Tw06(Tw06Addr(socket_addr)) => socket_addr,
+            Tw07(Tw07Addr(socket_addr)) => socket_addr,
+            Raw(RawAddr(socket_addr)) => socket_addr,
         }
     }
     pub fn identity(&self) -> Option<&Identity> {
@@ -231,6 +317,8 @@ impl Addr {
         match self {
             Quic(QuicAddr(_, identity)) => Some(identity),
             Tw06(Tw06Addr(_)) => None,
+            Tw07(Tw07Addr(_)) => None,
+            Raw(RawAddr(_)) => None,
         }
     }
 }
@@ -247,8 +335,24 @@ impl From<Tw06Addr> for Addr {
     }
 }
 
+impl From<Tw07Addr> for Addr {
+    fn from(addr: Tw07Addr) -> Addr {
+        Addr::Tw07(addr)
+    }
+}
+
+impl From<RawAddr> for Addr {
+    fn from(addr: RawAddr) -> Addr {
+        Addr::Raw(addr)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Tw06Addr(pub SocketAddr);
+#[derive(Clone, Copy)]
+pub struct Tw07Addr(pub SocketAddr);
+#[derive(Clone, Copy)]
+pub struct RawAddr(pub SocketAddr);
 #[derive(Clone, Copy)]
 pub struct QuicAddr(pub SocketAddr, pub Identity);
 
@@ -287,6 +391,8 @@ impl FromStr for Addr {
                 Addr::Quic(QuicAddr(sock_addr, identity))
             }
             "tw-0.6+udp" => Addr::Tw06(Tw06Addr(sock_addr)),
+            "tw-0.7+udp" => Addr::Tw07(Tw07Addr(sock_addr)),
+            "udp" => Addr::Raw(RawAddr(sock_addr)),
             scheme => bail!("unsupported scheme {}", scheme),
         })
     }
@@ -310,12 +416,32 @@ impl fmt::Display for Tw06Addr {
     }
 }
 
+impl fmt::Display for Tw07Addr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let Tw07Addr(addr) = self;
+        let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
+        write!(&mut buf, "tw-0.7+udp://{}", addr).unwrap();
+        buf.fmt(f)
+    }
+}
+
+impl fmt::Display for RawAddr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let RawAddr(addr) = self;
+        let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
+        write!(&mut buf, "udp://{}", addr).unwrap();
+        buf.fmt(f)
+    }
+}
+
 impl fmt::Display for Addr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::Addr::*;
         match self {
             Quic(addr) => addr.fmt(f),
             Tw06(addr) => addr.fmt(f),
+            Tw07(addr) => addr.fmt(f),
+            Raw(addr) => addr.fmt(f),
         }
     }
 }
@@ -345,13 +471,13 @@ impl io::Write for ArcFile {
 pub enum ProtocolEvent {
     NewConnection(PeerIndex, Connection),
     ExistingConnection(PeerIndex),
-    ConnlessChunk(Addr, usize),
+    ConnlessChunk(Addr, usize, ConnlessMeta),
 }
 
 enum SocketReadEvent {
     None,
     ReadablePeer(PeerIndex),
-    ConnlessChunk(Addr, usize),
+    ConnlessChunk(Addr, usize, ConnlessMeta),
 }
 
 impl ReadablePeers {
@@ -398,7 +524,14 @@ impl NetBuilder {
         self.identity = Some(identity);
     }
     pub fn accept_connections(&mut self, accept: bool) {
-        self.accept_connections = accept;
+        self.accept = if accept { AcceptProtocols::ALL } else { AcceptProtocols::NONE };
+    }
+    pub fn accept_protocol(&mut self, protocol: Protocol, accept: bool) {
+        match protocol {
+            Protocol::Tw06 => self.accept.tw06 = accept,
+            Protocol::Tw07 => self.accept.tw07 = libtw2_patch::accept_tw07(accept),
+            Protocol::Quic => self.accept.quic = accept,
+        }
     }
     pub fn open(self) -> Result<Net> {
         let sslkeylogfile =
@@ -426,21 +559,30 @@ impl NetBuilder {
         ));
         let identity = self.identity.unwrap_or_else(PrivateIdentity::random);
 
-        let mut socket = UdpSocket::bind(bindaddr).context("bind")?;
+        let mut socket = match Socket::bind(bindaddr) {
+            Ok(socket) => socket,
+            // A system without IPv6 still gets a socket.
+            Err(error) if bindaddr.ip() == IpAddr::V6(Ipv6Addr::UNSPECIFIED) => {
+                warn!("cannot bind {}: {}, falling back to IPv4", bindaddr, error);
+                let bindaddr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), bindaddr.port());
+                Socket::bind(bindaddr).context("bind")?
+            }
+            Err(error) => return Err(Error::from_string(format!("bind {}: {}", bindaddr, error))),
+        };
         let local_addr = socket.local_addr().context("local_addr")?;
 
         let poll = Poll::new().context("mio::Poll::new")?;
         let events = Events::with_capacity(1);
         poll.registry()
-            .register(&mut socket, mio::Token(0), mio::Interest::READABLE)
+            .register(&mut socket.inner, mio::Token(0), mio::Interest::READABLE)
             .context("mio::Poll::register")?;
 
         info!("identity {}", identity.public());
-        info!("listening on {}", bindaddr);
+        info!("listening on {}", local_addr);
 
         Ok(Net {
             cb: CallbackData {
-                accept_connections: self.accept_connections,
+                accept: self.accept,
                 sslkeylogfile,
                 challenger: Challenger::new(),
                 local_addr,
@@ -455,6 +597,7 @@ impl NetBuilder {
 
             proto_quic: quic::Protocol::new(&identity)?,
             proto_tw06: tw06::Protocol::new(&identity)?,
+            proto_tw07: tw07::Protocol::new(&identity)?,
 
             peer_addrs: HashMap::new(),
             peers: HashMap::new(),
@@ -475,7 +618,7 @@ impl Net {
         NetBuilder {
             bindaddr: None,
             identity: None,
-            accept_connections: false,
+            accept: AcceptProtocols::NONE,
         }
     }
     pub fn set_userdata(&mut self, idx: PeerIndex, userdata: *mut ()) -> Result<()> {
@@ -523,6 +666,7 @@ impl Net {
         match conn {
             Quic(inner) => self.proto_quic.remove_peer(idx, inner),
             Tw06(inner) => self.proto_tw06.remove_peer(idx, inner),
+            Tw07(inner) => self.proto_tw07.remove_peer(idx, inner),
         }
         for addr in addrs {
             assert_eq!(self.peer_addrs.remove(&addr), Some(idx));
@@ -555,7 +699,6 @@ impl Net {
                 }
             };
             self.socket_read_errors = 0;
-            let from = normalize(from);
             let idx = if let Some(&idx) = self.peer_addrs.get(&from) {
                 idx
             } else {
@@ -564,7 +707,8 @@ impl Net {
                 //
                 // 00000000:          stun request
                 // 00000001:          stun response
-                // 00000100:          teeworlds 0.7 connect/token
+                // 000001xx:          teeworlds 0.7 control (the low bits are
+                //                    the ack, zero in a handshake)
                 // 00010000:          teeworlds 0.6 connect
                 // 00100001:          teeworlds 0.7 connless
                 // 01111000 01100101: ddnet 0.6 connless extended
@@ -575,6 +719,20 @@ impl Net {
 
                 let packet = &self.packet_buf[..read];
                 let event = match (packet.get(0).copied(), packet.get(1).copied()) {
+                    // STUN, handed over as it is.
+                    (Some(0b00000000 | 0b00000001), _) => {
+                        buf[..read].copy_from_slice(packet);
+                        Ok(Some(ProtocolEvent::ConnlessChunk(RawAddr(from).into(), read, ConnlessMeta::default())))
+                    }
+                    (Some(p0), _) if p0 & 0b11111100 == 0b00000100 || p0 == 0b00100001 => {
+                        self.proto_tw07.on_recv(
+                            &self.cb,
+                            &mut self.packet_buf,
+                            read,
+                            buf,
+                            &from,
+                        )
+                    }
                     (Some(0b00010000 | 0b11111111), _) => {
                         self.proto_tw06.on_recv(
                             &self.cb,
@@ -617,9 +775,9 @@ impl Net {
                             )
                     }
                     _ => {
-                        error!("unknown packet");
+                        debug!("unknown packet from {}", from);
                         for line in hexdump_iter(packet) {
-                            error!("{}", line);
+                            debug!("{}", line);
                         }
                         continue;
                     }
@@ -653,8 +811,8 @@ impl Net {
                         }
                         idx
                     }
-                    Some(ProtocolEvent::ConnlessChunk(addr, size)) => {
-                        return Ok(SocketReadEvent::ConnlessChunk(addr, size));
+                    Some(ProtocolEvent::ConnlessChunk(addr, size, meta)) => {
+                        return Ok(SocketReadEvent::ConnlessChunk(addr, size, meta));
                     }
                     None => continue,
                 }
@@ -814,7 +972,7 @@ impl Net {
                             }
                             return Ok(Some(Event::Chunk(idx, size, unreliable)))
                         }
-                        ConnectionEvent::ConnlessChunk(peer_addr, size) => return Ok(Some(Event::ConnlessChunk(peer_addr, size))),
+                        ConnectionEvent::ConnlessChunk(peer_addr, size, meta) => return Ok(Some(Event::ConnlessChunk(peer_addr, size, meta))),
                         ConnectionEvent::Disconnect(reason_size, remote) => {
                             // A connection that ends before it was ever
                             // reported is news only to whoever asked for it,
@@ -841,8 +999,8 @@ impl Net {
                         self.readable_peers.push_back(readable_peer);
                         continue;
                     }
-                    SocketReadEvent::ConnlessChunk(peer_addr, size) => {
-                        return Ok(Some(Event::ConnlessChunk(peer_addr, size)));
+                    SocketReadEvent::ConnlessChunk(peer_addr, size, meta) => {
+                        return Ok(Some(Event::ConnlessChunk(peer_addr, size, meta)));
                     }
                     SocketReadEvent::None => self.socket_readable = false,
                 }
@@ -900,6 +1058,8 @@ impl Net {
         let conn = match addr {
             Quic(addr) => self.proto_quic.connect(&self.cb, &mut self.packet_buf, addr, idx).map(Connection::from),
             Tw06(addr) => self.proto_tw06.connect(&self.cb, &mut self.packet_buf, addr, idx).map(Connection::from),
+            Tw07(addr) => self.proto_tw07.connect(&self.cb, &mut self.packet_buf, addr, idx).map(Connection::from),
+            Raw(_) => Err(Error::from_string("cannot connect to a raw address".to_owned())),
         };
         // A connection that cannot even be started is reported like one that
         // was refused, so the caller has one path for both.
@@ -928,7 +1088,7 @@ impl Net {
         self.readable_peers.push_back(idx);
         Ok(())
     }
-    pub fn send_connless_chunk(&mut self, addr: &str, payload: &[u8]) -> Result<()> {
+    pub fn send_connless_chunk(&mut self, addr: &str, payload: &[u8], extra: Option<[u8; 4]>) -> Result<()> {
         let addr: Addr = match addr.parse() {
             Err(e) => {
                 error!("invalid addr {:?}: {}", addr, e);
@@ -938,9 +1098,22 @@ impl Net {
         };
         use self::Addr::*;
         match addr {
-            Quic(addr) => self.proto_quic.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload),
-            Tw06(addr) => self.proto_tw06.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload),
+            Quic(addr) => self.proto_quic.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload, extra),
+            Tw06(addr) => self.proto_tw06.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload, extra),
+            Tw07(addr) => self.proto_tw07.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload, extra),
+            Raw(RawAddr(addr)) => {
+                if extra.is_some() {
+                    bail!("the extended connless header is 0.6 only");
+                }
+                self.cb.socket.send_to(payload, addr).context("UdpSocket::send_to")?;
+                Ok(())
+            }
         }
+    }
+    /// The 0.7 token that is accepted from any address, for the masterserver's
+    /// challenge. It changes when the socket is reopened.
+    pub fn global_token7(&self) -> u32 {
+        tw07::global_token(&self.cb)
     }
     // TODO: second function including all non-connected, or already-disconnected peers
     pub fn num_peers_in_bucket(&self, addr: &str) -> Result<u32> {
@@ -952,6 +1125,7 @@ impl Net {
 pub enum Connection {
     Quic(quic::Connection),
     Tw06(tw06::Connection),
+    Tw07(tw07::Connection),
 }
 
 impl Connection {
@@ -966,6 +1140,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.on_recv(cb, packet_buf, packet_len, from),
             Tw06(inner) => inner.on_recv(cb, packet_buf, packet_len, from),
+            Tw07(inner) => inner.on_recv(cb, packet_buf, packet_len, from),
         }
     }
     pub fn recv(
@@ -978,6 +1153,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.recv(cb, packet_buf, buf),
             Tw06(inner) => inner.recv(cb, packet_buf, buf),
+            Tw07(inner) => inner.recv(cb, packet_buf, buf),
         }
     }
     pub fn send_chunk(
@@ -991,6 +1167,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.send_chunk(cb, packet_buf, frame, unreliable),
             Tw06(inner) => inner.send_chunk(cb, packet_buf, frame, unreliable),
+            Tw07(inner) => inner.send_chunk(cb, packet_buf, frame, unreliable),
         }
     }
     pub fn close(
@@ -1003,6 +1180,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.close(cb, packet_buf, reason),
             Tw06(inner) => inner.close(cb, packet_buf, reason),
+            Tw07(inner) => inner.close(cb, packet_buf, reason),
         }
     }
     pub fn timeout(&self) -> Option<Instant> {
@@ -1010,6 +1188,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.timeout(),
             Tw06(inner) => inner.timeout(),
+            Tw07(inner) => inner.timeout(),
         }
     }
     pub fn on_timeout(
@@ -1021,6 +1200,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.on_timeout(cb, packet_buf),
             Tw06(inner) => inner.on_timeout(cb, packet_buf),
+            Tw07(inner) => inner.on_timeout(cb, packet_buf),
         }
     }
     pub fn flush(
@@ -1032,6 +1212,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.flush(cb, packet_buf),
             Tw06(inner) => inner.flush(cb, packet_buf),
+            Tw07(inner) => inner.flush(cb, packet_buf),
         }
     }
 }
@@ -1045,5 +1226,11 @@ impl From<quic::Connection> for Connection {
 impl From<tw06::Connection> for Connection {
     fn from(conn: tw06::Connection) -> Connection {
         Connection::Tw06(conn)
+    }
+}
+
+impl From<tw07::Connection> for Connection {
+    fn from(conn: tw07::Connection) -> Connection {
+        Connection::Tw07(conn)
     }
 }

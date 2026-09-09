@@ -34,7 +34,7 @@ jobs:
           cmake-args: -G Ninja -DNETWORKING_QUIC=ON -DWEBSOCKETS=ON
           cmake-args-release: -DIPO=ON
           cmake-init-env: CXXFLAGS=-Werror
-          integration-args: --test-websockets
+          integration-args: --test-websockets --test-quic
           package-file: "*-linux_x86_64.tar.xz"
         - name: ubuntu-22.04
           os: ubuntu-22.04

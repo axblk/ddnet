@@ -6,6 +6,7 @@
 #include "antibot.h"
 #include "authmanager.h"
 #include "name_ban.h"
+#include "register.h"
 #include "snap_id_pool.h"
 
 #include <base/hash.h>
@@ -70,6 +71,13 @@ class CServer : public IServer
 	class IEngineAntibot *m_pAntibot;
 	class IRegister *m_pRegister;
 	IEngine *m_pEngine;
+
+	// Which transports the register may advertise, and the fragments last
+	// handed to it, so a certificate rotation can be noticed.
+	CRegisterTransports m_RegisterTransports;
+	char m_aLastIdentityFragment[160] = {};
+	char m_aLastWebTransportFragment[160] = {};
+	void FormatModernTransportFragments(char *pIdentityFragment, int IdentityFragmentSize, char *pWebTransportFragment, int WebTransportFragmentSize);
 
 #if defined(CONF_UPNP)
 	CUPnP m_UPnP;

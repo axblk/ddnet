@@ -2554,6 +2554,16 @@ void CClient::ProcessMapStream(const CNetChunk *pPacket)
 	}
 	else if(pPacket->m_Flags & NET_CHUNKFLAG_MAP_FAILED)
 	{
+		// A stream can end early when the connection was resumed on a
+		// new one; the map is asked for once more before giving up.
+		if(!m_MapdownloadStreamRetried)
+		{
+			m_MapdownloadStreamRetried = true;
+			log_info("client/network", "QUIC map stream failed, asking again: %s", (const char *)pPacket->m_pData);
+			ResetMapDownload(false);
+			SendMapRequest();
+			return;
+		}
 		char aReason[256];
 		str_format(aReason, sizeof(aReason), "QUIC map stream failed: %s", (const char *)pPacket->m_pData);
 		DisconnectWithReason(aReason);
@@ -2582,6 +2592,7 @@ void CClient::ResetMapDownload(bool ResetActive)
 
 	if(ResetActive)
 	{
+		m_MapdownloadStreamRetried = false;
 		m_MapdownloadChunk = 0;
 		m_MapdownloadSha256 = std::nullopt;
 		m_MapdownloadCrc = 0;

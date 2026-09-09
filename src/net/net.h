@@ -115,6 +115,12 @@ bool ddnet_net_set_identity(struct DdnetNet *net, const uint8_t (*private_identi
 bool ddnet_net_set_accept_connections(struct DdnetNet *net, bool accept);
 
 /**
+ * How long a connection may go without a packet before it counts as
+ * lost. Before `ddnet_net_open`.
+ */
+bool ddnet_net_set_timeout(struct DdnetNet *net, uint64_t seconds);
+
+/**
  * Switches a single protocol on or off, after `ddnet_net_set_accept_connections`.
  */
 bool ddnet_net_set_accept_protocol(struct DdnetNet *net, uint64_t protocol, bool accept);

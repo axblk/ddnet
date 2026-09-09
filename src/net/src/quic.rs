@@ -21,7 +21,9 @@ use arrayvec::ArrayVec;
 use std::cmp;
 use std::collections::hash_map;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::fmt;
+use std::mem;
 use std::io::Write as _;
 use std::net::SocketAddr;
 use std::ops;
@@ -29,6 +31,7 @@ use std::result::Result as StdResult;
 use std::str;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use std::time::Instant;
 
 // TODO: coalesce ACKs with other packets
@@ -45,6 +48,18 @@ const MAX_INCOMING_MAP_STREAMS: u64 = 8;
 const MAX_MAP_PRELUDE: usize = 16 + 16 + wire::MAX_MAP_HEADER_SIZE;
 /// Stream priority of a map, behind the control stream at quiche's default.
 const MAP_STREAM_URGENCY: u8 = 200;
+/// How long a peer whose connection went away is kept for a resume, and
+/// how long a resume may take.
+const RESUME_GRACE: Duration = Duration::from_secs(10);
+/// A client that sent this long ago and heard nothing since gives its
+/// connection up for lost and resumes on a new one.
+const RESUME_SILENCE: Duration = Duration::from_secs(3);
+/// Reliable messages kept back for the peer while a resume is under way.
+const MAX_PENDING_RESUME_BYTES: usize = 64 * 1024;
+pub const RESUME_TOKEN_LEN: usize = 32;
+/// The reason a lost connection is reported with, the word the client
+/// reconnects on.
+const TIMEOUT_REASON: &str = "Timeout";
 
 pub struct Protocol {
     config: quiche::Config,
@@ -180,6 +195,7 @@ fn config(
     key: &boring::pkey::PKeyRef<boring::pkey::Private>,
     cert: &boring::x509::X509Ref,
     callback_peer_identity: Arc<Mutex<Option<PeerIdentity>>>,
+    idle_timeout: Duration,
 ) -> Result<quiche::Config> {
     let mut context =
         boring::ssl::SslContext::builder(boring::ssl::SslMethod::tls())
@@ -247,6 +263,9 @@ fn config(
     // back until the time quiche would pace them to. Sending a map would
     // otherwise be one warning per packet.
     config.enable_pacing(false);
+    // A connection nobody speaks on for this long is lost; the peers agree
+    // on the shorter of their two values.
+    config.set_max_idle_timeout(idle_timeout.as_millis() as u64);
     Ok(config)
 }
 
@@ -278,7 +297,7 @@ impl ConfigExt for quiche::Config {
 }
 
 impl Protocol {
-    pub fn new(identity: &PrivateIdentity) -> Result<Protocol> {
+    pub fn new(identity: &PrivateIdentity, idle_timeout: Duration) -> Result<Protocol> {
         let cert = identity.generate_certificate();
         let callback_peer_identity = Arc::new(Mutex::new(None));
 
@@ -287,6 +306,7 @@ impl Protocol {
                 identity.as_lib(),
                 &cert,
                 callback_peer_identity.clone(),
+                idle_timeout,
             )
             .context("config")?,
             callback_peer_identity,
@@ -297,6 +317,48 @@ impl Protocol {
         let _ = conn;
         // TODO: efficiency
         self.connection_ids.retain(|_, &mut i| i != idx);
+    }
+    /// Gives the peer a fresh QUIC connection to the same server that
+    /// continues the old one with its resume token.
+    pub fn reconnect(
+        &mut self,
+        cb: &CallbackData,
+        packet_buf: &mut [u8; 65536],
+        idx: PeerIndex,
+        conn: &mut Connection,
+    ) -> Result<()> {
+        let cid = self.new_conn_id();
+        let mut inner = quiche::connect(
+            None,
+            &cid.as_raw(),
+            cb.local_addr,
+            conn.peer_addr,
+            self.config.client(),
+        )
+        .context("quiche::connect")?;
+        if let Some(sslkeylogfile) = &cb.sslkeylogfile {
+            inner.set_keylog(Box::new(sslkeylogfile.clone()));
+        }
+        self.connection_ids.retain(|_, &mut i| i != idx);
+        assert!(self.connection_ids.insert(cid, idx).is_none());
+        conn.restart(inner);
+        conn.flush(cb, packet_buf)
+    }
+    /// The peer a packet is for, by its destination connection ID; `None`
+    /// for a packet of no known connection, such as a new one.
+    pub fn owner(&self, packet: &mut [u8]) -> Option<PeerIndex> {
+        let header = quiche::Header::from_slice(packet, ConnectionId::LEN).ok()?;
+        let cid = ConnectionId::from_raw(&header.dcid)?;
+        self.connection_ids.get(&cid).copied()
+    }
+    /// The connection ids of `from` now belong to `to`, whose own are gone.
+    pub fn reassign(&mut self, from: PeerIndex, to: PeerIndex) {
+        self.connection_ids.retain(|_, &mut i| i != to);
+        for idx in self.connection_ids.values_mut() {
+            if *idx == from {
+                *idx = to;
+            }
+        }
     }
     fn new_conn_id(&self) -> ConnectionId {
         loop {
@@ -466,6 +528,9 @@ enum State {
     /// Hellos are being exchanged on the control stream.
     Hello,
     Online,
+    /// The server lost the connection and waits for the client to resume
+    /// on a new one.
+    Detached,
     Disconnected,
 }
 
@@ -524,6 +589,30 @@ pub struct Connection {
     next_uni_stream: u64,
     /// The map coming in from the server, if any.
     incoming_map: Option<IncomingMap>,
+    /// The RESUME payload the server issued, sent in the hello of a
+    /// connection that continues this one.
+    resume_token: Option<Vec<u8>>,
+    /// Whether the server issued a resume token on this connection, so a
+    /// lost connection is worth waiting for.
+    resume_issued: bool,
+    /// This connection continues an earlier one that the outer protocol
+    /// already knows: its hello carries the token, and the peer is not
+    /// reported as connected again.
+    resuming: bool,
+    /// A resume request from the hello, waiting for the answer.
+    resume_request: Option<(u64, [u8; RESUME_TOKEN_LEN])>,
+    /// The resume went through; to be announced with the next event.
+    announce_resumed: bool,
+    /// When a resume must have gone through, or the peer is lost.
+    resume_deadline: Option<Instant>,
+    /// Reliable messages held back until the resume goes through.
+    pending: VecDeque<Vec<u8>>,
+    pending_bytes: usize,
+    /// A map was coming in when the connection was lost; the client hears
+    /// of it once it is back.
+    map_lost: bool,
+    /// When the client first sent something the server has not answered.
+    silence_since: Option<Instant>,
 }
 
 struct OutgoingMap {
@@ -585,7 +674,78 @@ impl Connection {
             // Server-initiated unidirectional streams are 3, 7, 11, ...
             next_uni_stream: 3,
             incoming_map: None,
+            resume_token: None,
+            resume_issued: false,
+            resuming: false,
+            resume_request: None,
+            announce_resumed: false,
+            resume_deadline: None,
+            pending: VecDeque::new(),
+            pending_bytes: 0,
+            map_lost: false,
+            silence_since: None,
         }
+    }
+    pub fn is_server(&self) -> bool {
+        !self.client
+    }
+    /// Continues on a fresh QUIC connection to the same server, with the
+    /// resume token in the hello. Whatever was under way on the old one is
+    /// gone: a map coming in is reported lost once the peer is back.
+    fn restart(&mut self, inner: quiche::Connection) {
+        let identity = *self.peer_identity.assert_known();
+        self.inner = inner;
+        self.peer_identity = PeerIdentity::Wanted(identity);
+        self.pinned = true;
+        self.state = State::Connecting;
+        self.buffer.clear();
+        self.control_finished = false;
+        self.outgoing_datagram = wire::DatagramBuilder::new();
+        self.datagram_sequence = 0;
+        self.incoming_datagram = None;
+        self.peer_capabilities = 0;
+        self.outgoing_map = None;
+        self.next_uni_stream = 3;
+        self.map_lost |= self.incoming_map.is_some();
+        self.incoming_map = None;
+        self.resuming = true;
+        self.resume_deadline = Some(Instant::now() + RESUME_GRACE);
+        self.silence_since = None;
+    }
+    /// Takes over what the old connection held back for the peer.
+    pub fn take_over(&mut self, old: &mut Connection) {
+        self.pending = mem::take(&mut old.pending);
+        self.pending_bytes = mem::replace(&mut old.pending_bytes, 0);
+    }
+    /// Answers the hello of a resuming client; the connection is online
+    /// from here and announces the resume with its next event.
+    pub fn accept_resume(&mut self) -> Result<()> {
+        self.resume_request = None;
+        self.send_hello()?;
+        self.state = State::Online;
+        self.announce_resumed = true;
+        Ok(())
+    }
+    /// Gives the client a token to resume with, replacing an earlier one.
+    pub fn send_resume(&mut self, session_id: u64, token: &[u8; RESUME_TOKEN_LEN]) -> Result<()> {
+        let payload = wire::encode_resume(&wire::Resume { session_id, token }).unwrap();
+        self.send_frame(wire::frame::RESUME, &payload)?;
+        self.resume_issued = true;
+        Ok(())
+    }
+    /// Sends what was held back during the resume.
+    fn flush_pending(&mut self) -> Result<()> {
+        while let Some(frame) = self.pending.pop_front() {
+            self.pending_bytes -= frame.len();
+            self.send_frame(wire::frame::MESSAGE, &frame)?;
+        }
+        Ok(())
+    }
+    fn disconnect_event(&mut self, buf: &mut [u8], reason: &str) -> Event {
+        self.state = State::Disconnected;
+        let len = reason.len().min(buf.len());
+        buf[..len].copy_from_slice(&reason.as_bytes()[..len]);
+        Event::Disconnect(len, false)
     }
     pub fn on_recv(
         &mut self,
@@ -606,6 +766,7 @@ impl Connection {
                 to: cb.local_addr,
             })
             .context("quiche::Conn::recv");
+        self.silence_since = None;
         self.peer_identity =
             self.callback_peer_identity.lock().unwrap().take().unwrap();
         // The TLS failure behind a wrong pin says nothing to the user.
@@ -660,21 +821,38 @@ impl Connection {
             capabilities: wire::capability::DATAGRAM | wire::capability::MAP_STREAM,
             max_datagram_size,
             nonce: secure_random(),
-            resume_token: &[],
+            resume_token: if self.resuming {
+                self.resume_token.as_deref().unwrap_or(&[])
+            } else {
+                &[]
+            },
         };
         let payload = wire::encode_hello(&hello).unwrap();
         let frame_type = if self.client { wire::frame::CLIENT_HELLO } else { wire::frame::SERVER_HELLO };
         self.send_frame(frame_type, &payload)
     }
-    /// Takes the peer's hello; the connection is online after it.
-    fn on_hello(&mut self, payload: &[u8]) -> Result<()> {
+    /// Takes the peer's hello; the connection is online after it, unless
+    /// the hello asks to resume an earlier connection, which is returned
+    /// for the outer layer to decide on.
+    fn on_hello(&mut self, payload: &[u8]) -> Result<Option<(u64, [u8; RESUME_TOKEN_LEN])>> {
         let hello = wire::decode_hello(payload)
             .map_err(|e| Error::from_string(format!("hello: {}", e)))?;
         if hello.protocol_version != GAME_PROTOCOL {
             bail!("game protocol {} instead of {}", hello.protocol_version, GAME_PROTOCOL);
         }
         self.peer_capabilities = hello.capabilities;
-        Ok(())
+        if hello.resume_token.is_empty() {
+            return Ok(None);
+        }
+        if self.client {
+            bail!("hello from the server carries a resume token");
+        }
+        let resume = wire::decode_resume(hello.resume_token)
+            .map_err(|e| Error::from_string(format!("resume token: {}", e)))?;
+        let Ok(token) = <[u8; RESUME_TOKEN_LEN]>::try_from(resume.token) else {
+            bail!("resume token of {} bytes, expected {}", resume.token.len(), RESUME_TOKEN_LEN);
+        };
+        Ok(Some((resume.session_id, token)))
     }
     /// Reads what the control stream has, up to the buffer's limit. Whether
     /// anything was read.
@@ -1078,34 +1256,65 @@ impl Connection {
     ) -> Result<Option<Event>> {
         assert!(buf.len() >= MAX_FRAME_SIZE as usize);
 
-        // A datagram never waits longer than a poll, and a map goes on as
-        // the peer makes room.
-        if self.state == State::Online {
-            self.flush_datagram()?;
-            self.pump_map()?;
-        }
-
         use self::State::*;
+        let now = Instant::now();
         match self.state {
-            Connecting => {
-                self.flush(cb, packet_buf)?;
-                if self.inner.is_established() {
-                    self.check_connection_params()?;
-                    if self.client {
-                        self.send_hello()?;
-                    }
-                    self.state = Hello;
-                    self.flush(cb, packet_buf)?;
+            Detached => {
+                if self.resume_deadline.is_some_and(|deadline| now >= deadline) {
+                    return Ok(Some(self.disconnect_event(buf, TIMEOUT_REASON)));
                 }
+                return Ok(None);
             }
-            Hello | Online => {}
             Disconnected => {
                 return Ok(if !self.inner.is_closed() {
                     None
                 } else {
                     Some(Event::Delete)
                 });
-            },
+            }
+            Connecting | Hello | Online => {}
+        }
+
+        // A connection nobody spoke on is lost. A server keeps the peer
+        // for a while if the client can resume; a client with a token
+        // resumes right away.
+        if self.inner.is_timed_out() {
+            if !self.client && self.resume_issued {
+                info!("{} lost, keeping it for a resume", self.peer_addr);
+                self.state = Detached;
+                self.resume_deadline = Some(now + RESUME_GRACE);
+                return Ok(None);
+            }
+            if self.client && self.resume_token.is_some() && !self.resuming {
+                return Ok(Some(Event::ResumeNeeded));
+            }
+            return Ok(Some(self.disconnect_event(buf, TIMEOUT_REASON)));
+        }
+        if self.client && self.state == Online && self.silence_expired(now) {
+            info!("{} silent for {:?}, resuming", self.peer_addr, RESUME_SILENCE);
+            return Ok(Some(Event::ResumeNeeded));
+        }
+        if self.resuming && self.resume_deadline.is_some_and(|deadline| now >= deadline) {
+            return Ok(Some(self.disconnect_event(buf, TIMEOUT_REASON)));
+        }
+
+        // A datagram never waits longer than a poll, and a map goes on as
+        // the peer makes room.
+        if self.state == Online {
+            self.flush_datagram()?;
+            self.pump_map()?;
+        }
+
+        if self.state == Connecting {
+            self.flush(cb, packet_buf)?;
+            if self.inner.is_established() {
+                self.check_connection_params()?;
+                if self.client {
+                    self.send_hello()?;
+                }
+                self.state = Hello;
+                self.flush(cb, packet_buf)?;
+            }
         }
 
         // Check if the QUIC connection was closed.
@@ -1117,6 +1326,16 @@ impl Connection {
 
         if self.state == Connecting {
             return Ok(None);
+        }
+
+        if self.announce_resumed {
+            self.announce_resumed = false;
+            self.flush_pending()?;
+            return Ok(Some(Event::Resumed(Addr(self.peer_addr, Some(*self.peer_identity.assert_known())).into())));
+        }
+        if self.map_lost && self.state == Online {
+            self.map_lost = false;
+            return Ok(Some(self.map_failed(buf, "connection resumed")));
         }
 
         // Frames on the control stream, which carry the hello.
@@ -1131,13 +1350,32 @@ impl Connection {
                 (Hello, wire::frame::SERVER_HELLO) if self.client => {
                     self.on_hello(&self.buffer[payload.clone()].to_vec())?;
                     self.state = Online;
-                    Some(self.connect_event())
+                    if self.resuming {
+                        self.resuming = false;
+                        self.resume_deadline = None;
+                        self.announce_resumed = true;
+                        None
+                    } else {
+                        Some(self.connect_event())
+                    }
                 }
                 (Hello, wire::frame::CLIENT_HELLO) if !self.client => {
-                    self.on_hello(&self.buffer[payload.clone()].to_vec())?;
-                    self.send_hello()?;
-                    self.state = Online;
-                    Some(self.connect_event())
+                    if self.resume_request.is_some() {
+                        bail!("second hello while resuming");
+                    }
+                    match self.on_hello(&self.buffer[payload.clone()].to_vec())? {
+                        Some((session_id, token)) => {
+                            // The outer layer answers with `accept_resume`,
+                            // or closes the connection.
+                            self.resume_request = Some((session_id, token));
+                            Some(Event::ResumeRequest(session_id, token))
+                        }
+                        None => {
+                            self.send_hello()?;
+                            self.state = Online;
+                            Some(self.connect_event())
+                        }
+                    }
                 }
                 (Online, wire::frame::MESSAGE) => {
                     if payload.len() > MAX_FRAME_SIZE as usize {
@@ -1158,7 +1396,14 @@ impl Connection {
                     Some(Event::Disconnect(len, true).into())
                 }
                 (_, frame_type) if frame_type >= wire::SKIPPABLE_FRAME_START => None,
-                (Online, wire::frame::RESUME | wire::frame::MAP_HEADER) => {
+                (Online, wire::frame::RESUME) if self.client => {
+                    let payload = &self.buffer[payload.clone()];
+                    wire::decode_resume(payload)
+                        .map_err(|e| Error::from_string(format!("resume: {}", e)))?;
+                    self.resume_token = Some(payload.to_vec());
+                    None
+                }
+                (Online, wire::frame::MAP_HEADER) => {
                     debug!("frame of type {} from {} not handled yet", frame_type, self.peer_addr);
                     None
                 }
@@ -1201,7 +1446,24 @@ impl Connection {
     ) -> Result<()> {
         assert!(frame.len() <= MAX_FRAME_SIZE as usize);
         if self.state != State::Online {
+            // Reliable messages wait for the resume; the game repeats the
+            // rest anyway.
+            if self.resuming || self.state == State::Detached {
+                if !unreliable {
+                    if self.pending_bytes + frame.len() > MAX_PENDING_RESUME_BYTES {
+                        bail!("too much to say while the connection is away");
+                    }
+                    self.pending_bytes += frame.len();
+                    self.pending.push_back(frame.to_vec());
+                }
+                return Ok(());
+            }
             bail!("not online");
+        }
+        // A message of ours gets acknowledged; from the first one the
+        // server leaves unanswered, the silence counts.
+        if self.silence_since.is_none() {
+            self.silence_since = Some(Instant::now());
         }
         // A message the peer cannot take unreliably, or that is too long
         // for a datagram, goes over the stream instead of not at all.
@@ -1270,19 +1532,40 @@ impl Connection {
         self.flush(cb, packet_buf)?;
         Ok(())
     }
-    pub fn timeout(&self) -> Option<Instant> {
-        // TODO: Use `Connection::timeout_instant` once quiche > 0.16.0 is
-        // released.
-        self.inner.timeout().map(|t| Instant::now() + t)
+    fn silence_expired(&self, now: Instant) -> bool {
+        self.resume_token.is_some()
+            && self.silence_since.is_some_and(|since| now >= since + RESUME_SILENCE)
     }
+    pub fn timeout(&self) -> Option<Instant> {
+        if self.state == State::Detached {
+            return self.resume_deadline;
+        }
+        // The instant itself: a timer that expired must compare as past
+        // against the caller's clock, or it never fires.
+        let quic = self.inner.timeout_instant();
+        let silence = if self.client && self.state == State::Online && self.resume_token.is_some() {
+            self.silence_since.map(|since| since + RESUME_SILENCE)
+        } else {
+            None
+        };
+        let deadline = if self.resuming { self.resume_deadline } else { None };
+        [quic, silence, deadline].into_iter().flatten().min()
+    }
+    /// Whether the connection has something to report after the timeout.
     pub fn on_timeout(
         &mut self,
         cb: &CallbackData,
         packet_buf: &mut [u8; 65536],
     ) -> Result<bool> {
+        let now = Instant::now();
+        if self.state == State::Detached {
+            return Ok(self.resume_deadline.is_some_and(|deadline| now >= deadline));
+        }
         self.inner.on_timeout();
         self.flush(cb, packet_buf)?;
-        Ok(false)
+        Ok(self.inner.is_closed()
+            || (self.client && self.state == State::Online && self.silence_expired(now))
+            || (self.resuming && self.resume_deadline.is_some_and(|deadline| now >= deadline)))
     }
     pub fn flush(
         &mut self,
@@ -1307,6 +1590,7 @@ impl Connection {
             num_packets += 1;
             num_bytes += written;
         }
+
         if num_packets != 0 {
             trace!("sent {} packet(s) with {} byte(s)", num_packets, num_bytes);
         } else {

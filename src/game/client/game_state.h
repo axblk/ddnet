@@ -511,6 +511,8 @@ private:
 	CNetObj_SpectatorInfo m_SpectatorInfo = {};
 	bool m_HasSpectatorCount = false;
 	CNetObj_SpectatorCount m_SpectatorCount = {};
+	bool m_HasDDNetSpectatorInfo = false;
+	CNetObj_DDNetSpectatorInfo m_DDNetSpectatorInfo = {};
 	CGameInfo m_CoreGameInfo;
 	CTeamsCore m_Teams;
 	bool m_PredictionInitialized = false;
@@ -586,6 +588,13 @@ public:
 	}
 	bool HasSpectatorCount() const { return m_HasSpectatorCount; }
 	const CNetObj_SpectatorCount &SpectatorCount() const { return m_SpectatorCount; }
+	void ApplyDDNetSpectatorInfo(const CNetObj_DDNetSpectatorInfo &DDNetSpectatorInfo)
+	{
+		m_HasDDNetSpectatorInfo = true;
+		m_DDNetSpectatorInfo = DDNetSpectatorInfo;
+	}
+	bool HasDDNetSpectatorInfo() const { return m_HasDDNetSpectatorInfo; }
+	const CNetObj_DDNetSpectatorInfo &DDNetSpectatorInfo() const { return m_DDNetSpectatorInfo; }
 };
 
 #endif // GAME_CLIENT_GAME_STATE_H

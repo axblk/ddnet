@@ -307,6 +307,8 @@ void CGameState::Reset()
 	m_SpectatorInfo = {};
 	m_HasSpectatorCount = false;
 	m_SpectatorCount = {};
+	m_HasDDNetSpectatorInfo = false;
+	m_DDNetSpectatorInfo = {};
 	m_CoreGameInfo = {};
 	m_Teams.Reset();
 	m_FullyPredicted = false;
@@ -362,6 +364,8 @@ void CGameState::ApplySnapshot(const IClient &Client, CSessionId SessionId, int 
 	CNetObj_SpectatorCount SpectatorCount = {};
 	bool HasSpectatorCount = false;
 	std::vector<CEntitySnapshot> vEntityEx;
+	CNetObj_DDNetSpectatorInfo DDNetSpectatorInfo = {};
+	bool HasDDNetSpectatorInfo = false;
 	for(int i = 0; i < NumItems; i++)
 	{
 		const IClient::CSnapItem Item = Client.SnapGetItem(SessionId, Conn, IClient::SNAP_CURRENT, i);
@@ -379,6 +383,11 @@ void CGameState::ApplySnapshot(const IClient &Client, CSessionId SessionId, int 
 		{
 			HasSpectatorCount = true;
 			SpectatorCount = *static_cast<const CNetObj_SpectatorCount *>(Item.m_pData);
+		}
+		else if(Item.m_Type == NETOBJTYPE_DDNETSPECTATORINFO)
+		{
+			HasDDNetSpectatorInfo = true;
+			DDNetSpectatorInfo = *static_cast<const CNetObj_DDNetSpectatorInfo *>(Item.m_pData);
 		}
 		else if(Item.m_Type == NETOBJTYPE_ENTITYEX)
 		{
@@ -483,6 +492,8 @@ void CGameState::ApplySnapshot(const IClient &Client, CSessionId SessionId, int 
 		ApplySpectatorInfo(SpectatorInfo);
 	if(HasSpectatorCount)
 		ApplySpectatorCount(SpectatorCount);
+	if(HasDDNetSpectatorInfo)
+		ApplyDDNetSpectatorInfo(DDNetSpectatorInfo);
 }
 
 void CGameState::ApplySnapshotData(int Tick, std::array<CClientSnapshot, MAX_CLIENTS> aClients, const CNetObj_GameInfo *pGameInfo, std::vector<CEntitySnapshot> vEntities)
@@ -509,6 +520,8 @@ void CGameState::ApplySnapshotData(int Tick, std::array<CClientSnapshot, MAX_CLI
 	m_SpectatorInfo = {};
 	m_HasSpectatorCount = false;
 	m_SpectatorCount = {};
+	m_HasDDNetSpectatorInfo = false;
+	m_DDNetSpectatorInfo = {};
 	int LocalClientId = -1;
 	bool HasUnsetDDNetFinishTimes = false;
 	bool HasTrueMillisecondFinishTimes = false;

@@ -39,7 +39,6 @@ jobs:
           libsqlite3-dev \
           libswresample-dev \
           libswscale-dev \
-          libwebsockets-dev \
           libx264-dev \
           ninja-build \
           pkg-config \
@@ -87,6 +86,5 @@ jobs:
           -DUPNP=ON \
           -DVIDEORECORDER=ON \
           -DVULKAN=ON \
-          -DWEBSOCKETS=ON \
           -Werror=dev ..
         cmake --build . --config Debug --target everything testrunner -- -k 0

@@ -5106,9 +5106,6 @@ int main(int argc, const char **argv)
 #if defined(CONF_VIDEORECORDER)
 			" + videorecorder"
 #endif
-#if defined(CONF_WEBSOCKETS)
-			" + websockets"
-#endif
 			"\n"
 			"Game version: %s %s %s\n"
 			"OS version: %s\n\n"

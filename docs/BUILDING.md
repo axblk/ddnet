@@ -8,9 +8,6 @@ The following is a non-exhaustive list of build arguments that can be passed to 
 * **-DPREFER_BUNDLED_LIBS=[ON|OFF]** <br>
 	Whether to prefer bundled libraries over system libraries. Setting to ON will make DDNet use third party libraries available in the `ddnet-libs` folder, which is the git-submodule target of the [ddnet-libs](https://github.com/ddnet/ddnet-libs) repository mentioned above -- Useful if you do not have those libraries installed and want to avoid building them. If set to OFF, will only use bundled libraries when system libraries are not found. Default value is OFF.
 
-* **-DWEBSOCKETS=[ON|OFF]** <br>
-	Whether to enable WebSocket support for server. Setting to ON requires the `libwebsockets-dev` library installed. Default value is OFF.
-
 * **-DMYSQL=[ON|OFF]** <br>
 	Whether to enable MySQL/MariaDB support for server. Requires at least MySQL 8.0 or MariaDB 10.2. Setting to ON requires the `libmariadb-dev-compat` library installed, which are also provided as bundled libraries for the common platforms. Default value is OFF.
 

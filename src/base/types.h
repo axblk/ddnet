@@ -126,16 +126,6 @@ inline constexpr auto NETTYPE_IPV6 = 1 << 1;
 /**
  * @ingroup Network-General
  */
-inline constexpr auto NETTYPE_WEBSOCKET_IPV4 = 1 << 2;
-
-/**
- * @ingroup Network-General
- */
-inline constexpr auto NETTYPE_WEBSOCKET_IPV6 = 1 << 3;
-
-/**
- * @ingroup Network-General
- */
 inline constexpr auto NETTYPE_LINK_BROADCAST = 1 << 4;
 
 /**
@@ -165,7 +155,7 @@ inline constexpr auto NETTYPE_WEBTRANSPORT = 1 << 7;
 /**
  * @ingroup Network-General
  */
-inline constexpr auto NETTYPE_ALL = NETTYPE_IPV4 | NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6;
+inline constexpr auto NETTYPE_ALL = NETTYPE_IPV4 | NETTYPE_IPV6;
 
 /**
  * @ingroup Network-General

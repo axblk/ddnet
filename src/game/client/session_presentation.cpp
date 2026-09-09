@@ -326,7 +326,10 @@ void CSessionPresentation::UpdateClients(const CPresentationContext &Context)
 		Client.m_BaseRenderInfo = Client.m_RenderInfo;
 
 		bool Frozen = false;
-		if(SessionLocal)
+		// Only the state that takes input is predicted, so the local player of any
+		// other state has to be read off the snapshot like everybody else. Without
+		// that, a demo or a split screen showed its own tee unfrozen.
+		if(SessionLocal && State.PredictedClient(ClientId).m_HasCurrent)
 		{
 			const CCharacterCore &Predicted = State.PredictedClient(ClientId).m_Current;
 			if(Predicted.m_FreezeEnd != 0)

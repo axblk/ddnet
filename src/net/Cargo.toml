@@ -23,7 +23,6 @@ getrandom = { version = "0.2.8", features = ["std"] }
 hexdump = "0.1.2"
 log = "0.4.17"
 mio = { version = "0.8.4", features = ["net", "os-poll"] }
-octets = "0.2.0"
 openssl-probe = "0.1.5"
 # Published snapshots of libtw2. Their lib targets are named `libtw2_net` and
 # `libtw2_warn`, which is how they are referred to from the code. What a

@@ -3,6 +3,7 @@ use crate::normalize;
 use crate::quic;
 use crate::tw06;
 use crate::tw07;
+use crate::wire;
 use crate::Challenger;
 use crate::Context as _;
 use crate::Error;
@@ -10,6 +11,7 @@ use crate::Identity;
 use crate::NoBlock as _;
 use crate::PrivateIdentity;
 use crate::Result;
+use crate::secure_random;
 use arrayvec::ArrayString;
 use hexdump::hexdump_iter;
 use mio::net::UdpSocket;
@@ -33,6 +35,7 @@ use std::net::SocketAddr;
 use std::net::SocketAddrV6;
 use std::path::Path;
 use std::str;
+use std::mem;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -139,6 +142,8 @@ struct Peer {
     /// from its `Connect` event.
     outgoing: bool,
     userdata: Option<*mut ()>,
+    /// The session ID of the resume token the server gave this peer.
+    resume_session: Option<u64>,
 }
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -186,6 +191,11 @@ pub struct Net {
     peer_addrs: HashMap<SocketAddr, PeerIndex>,
     peers: HashMap<PeerIndex, Peer>,
     peer_buckets: HashMap<Bucket, BucketCount>,
+    /// The maps a server can send, by the ID the outer protocol gave them.
+    maps: HashMap<u32, Arc<Map>>,
+    /// The resume tokens a server gave out, by session ID: the token and
+    /// the peer it continues.
+    resumes: HashMap<u64, ([u8; quic::RESUME_TOKEN_LEN], PeerIndex)>,
     connect_errors: VecDeque<(PeerIndex, Error)>,
     /// Peers whose connection failed on our side, to be torn down and
     /// reported from `recv`.
@@ -209,6 +219,7 @@ pub struct NetBuilder {
     bindaddr: Option<SocketAddr>,
     identity: Option<PrivateIdentity>,
     accept: AcceptProtocols,
+    timeout: Duration,
 }
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -243,6 +254,7 @@ impl Peer {
             high_level: false,
             outgoing,
             userdata: None,
+            resume_session: None,
         }
     }
 }
@@ -269,6 +281,28 @@ pub enum Event {
     Disconnect(PeerIndex, usize, bool),
     /// `ConnlessChunk(from, size, meta)`
     ConnlessChunk(Addr, usize, ConnlessMeta),
+    /// `Map(pid, what, size)`, a step of a map arriving on a stream of its
+    /// own; see [`MapEvent`].
+    Map(PeerIndex, MapEvent, usize),
+}
+
+/// A map the server hands out on a QUIC stream of its own.
+pub struct Map {
+    pub name: Vec<u8>,
+    pub crc: u32,
+    pub sha256: [u8; 32],
+    pub data: Vec<u8>,
+}
+
+/// What a map stream delivers, in this order: the header once, the data in
+/// pieces, then the end after the checksum matched. A failure ends the
+/// stream instead, with the reason as its data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MapEvent {
+    Header,
+    Data,
+    End,
+    Failed,
 }
 
 #[derive(Clone, Copy)]
@@ -285,6 +319,17 @@ pub enum ConnectionEvent {
     ///
     /// Must only be sent once a [`Connect`] has been sent.
     Disconnect(usize, bool),
+    /// `Map(what, size)`
+    ///
+    /// Must only be sent once a [`Connect`] has been sent.
+    Map(MapEvent, usize),
+    /// A hello asking to continue the connection of another peer:
+    /// `ResumeRequest(session_id, token)`. Answered by the net layer.
+    ResumeRequest(u64, [u8; quic::RESUME_TOKEN_LEN]),
+    /// The connection continues on a new QUIC connection at the address.
+    Resumed(Addr),
+    /// The client's connection is lost; a new one should continue it.
+    ResumeNeeded,
     /// Asks for the connection object to be destroyed.
     ///
     /// This event can only be sent after a `Disconnect` event.
@@ -315,7 +360,7 @@ impl Addr {
     pub fn identity(&self) -> Option<&Identity> {
         use self::Addr::*;
         match self {
-            Quic(QuicAddr(_, identity)) => Some(identity),
+            Quic(QuicAddr(_, identity)) => identity.as_ref(),
             Tw06(Tw06Addr(_)) => None,
             Tw07(Tw07Addr(_)) => None,
             Raw(RawAddr(_)) => None,
@@ -354,7 +399,7 @@ pub struct Tw07Addr(pub SocketAddr);
 #[derive(Clone, Copy)]
 pub struct RawAddr(pub SocketAddr);
 #[derive(Clone, Copy)]
-pub struct QuicAddr(pub SocketAddr, pub Identity);
+pub struct QuicAddr(pub SocketAddr, pub Option<Identity>);
 
 fn socket_addr_from_url(url: &Url) -> Result<SocketAddr> {
     let mut ip_port: ArrayString<[u8; 64]> = ArrayString::new();
@@ -378,16 +423,17 @@ impl FromStr for Addr {
         let addr = Url::parse(addr).context("addr: URL")?;
         let sock_addr = socket_addr_from_url(&addr)?;
         Ok(match addr.scheme() {
-            "ddnet-18+quic" => {
-                let fragment = addr.fragment().unwrap_or("");
-                // Take at most 64 characters.
-                let end = fragment
-                    .char_indices()
-                    .nth(64)
-                    .map(|(idx, _)| idx)
-                    .unwrap_or(fragment.len());
-                let identity: Identity =
-                    fragment[..end].parse().context("addr: identity")?;
+            // The fragment pins the server's identity. Without one, whatever
+            // identity the server shows is taken, and reported, so it can
+            // be pinned the next time.
+            "ddnet+quic" => {
+                let identity = match addr.fragment() {
+                    None | Some("") => None,
+                    Some(fragment) => match fragment.strip_prefix("identity-sha256=") {
+                        Some(hex) => Some(hex.parse().context("addr: identity")?),
+                        None => bail!("addr: fragment {} pins no identity", fragment),
+                    },
+                };
                 Addr::Quic(QuicAddr(sock_addr, identity))
             }
             "tw-0.6+udp" => Addr::Tw06(Tw06Addr(sock_addr)),
@@ -401,8 +447,11 @@ impl FromStr for Addr {
 impl fmt::Display for QuicAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let QuicAddr(addr, identity) = self;
-        let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
-        write!(&mut buf, "ddnet-18+quic://{}#{}", addr, identity).unwrap();
+        let mut buf: ArrayString<[u8; 256]> = ArrayString::new();
+        match identity {
+            Some(identity) => write!(&mut buf, "ddnet+quic://{}#identity-sha256={}", addr, identity).unwrap(),
+            None => write!(&mut buf, "ddnet+quic://{}", addr).unwrap(),
+        }
         buf.fmt(f)
     }
 }
@@ -523,6 +572,10 @@ impl NetBuilder {
     pub fn identity(&mut self, identity: PrivateIdentity) {
         self.identity = Some(identity);
     }
+    /// How long a connection may go without a packet before it is lost.
+    pub fn timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
+    }
     pub fn accept_connections(&mut self, accept: bool) {
         self.accept = if accept { AcceptProtocols::ALL } else { AcceptProtocols::NONE };
     }
@@ -595,13 +648,15 @@ impl NetBuilder {
             events,
             poll,
 
-            proto_quic: quic::Protocol::new(&identity)?,
+            proto_quic: quic::Protocol::new(&identity, self.timeout)?,
             proto_tw06: tw06::Protocol::new(&identity)?,
             proto_tw07: tw07::Protocol::new(&identity)?,
 
             peer_addrs: HashMap::new(),
             peers: HashMap::new(),
             peer_buckets: HashMap::new(),
+            maps: HashMap::new(),
+            resumes: HashMap::new(),
             connect_errors: VecDeque::with_capacity(1),
             failed_peers: VecDeque::with_capacity(1),
             dead_peers: VecDeque::with_capacity(1),
@@ -619,6 +674,7 @@ impl Net {
             bindaddr: None,
             identity: None,
             accept: AcceptProtocols::NONE,
+            timeout: Duration::from_secs(100),
         }
     }
     pub fn set_userdata(&mut self, idx: PeerIndex, userdata: *mut ()) -> Result<()> {
@@ -658,18 +714,95 @@ impl Net {
         self.readable_peers.remove(idx);
         self.failed_peers.push_back((idx, reason));
     }
+    /// A server gives a fresh resume token to a QUIC peer that just
+    /// connected or resumed, replacing an earlier one.
+    fn issue_resume(
+        resumes: &mut HashMap<u64, ([u8; quic::RESUME_TOKEN_LEN], PeerIndex)>,
+        idx: PeerIndex,
+        peer: &mut Peer,
+    ) -> Result<()> {
+        let Connection::Quic(conn) = &mut peer.conn else { return Ok(()) };
+        if !conn.is_server() {
+            return Ok(());
+        }
+        if let Some(old) = peer.resume_session.take() {
+            resumes.remove(&old);
+        }
+        let session_id = loop {
+            let bytes: [u8; 16] = secure_random();
+            let id = u64::from_le_bytes(bytes[..8].try_into().unwrap()) & wire::MAX_VARINT;
+            if id != 0 && !resumes.contains_key(&id) {
+                break id;
+            }
+        };
+        let token: [u8; quic::RESUME_TOKEN_LEN] = secure_random();
+        conn.send_resume(session_id, &token)?;
+        resumes.insert(session_id, (token, idx));
+        peer.resume_session = Some(session_id);
+        Ok(())
+    }
+    /// The QUIC connection of `new_idx`, whose hello carried the resume
+    /// token of `old_idx`, becomes that peer's connection. The old one is
+    /// closed, the new peer entry is gone, and the outer protocol keeps
+    /// its peer.
+    fn attach_resumed(&mut self, old_idx: PeerIndex, new_idx: PeerIndex) {
+        let new_peer = self.peers.remove(&new_idx).unwrap();
+        self.readable_peers.remove(new_idx);
+        let Connection::Quic(mut new_conn) = new_peer.conn else { unreachable!() };
+        let old_peer = self.peers.get_mut(&old_idx).unwrap();
+        // The old addresses go, the new ones are the peer's now.
+        for addr in old_peer.addrs.drain(..) {
+            if self.peer_addrs.get(&addr) == Some(&old_idx) {
+                self.peer_addrs.remove(&addr);
+            }
+            let bucket = Bucket::from(addr);
+            let count = self.peer_buckets.get_mut(&bucket).unwrap();
+            count.low_level -= 1;
+            if old_peer.high_level {
+                count.high_level -= 1;
+            }
+            if count.is_empty() {
+                self.peer_buckets.remove(&bucket);
+            }
+        }
+        for &addr in &new_peer.addrs {
+            self.peer_addrs.insert(addr, old_idx);
+            if old_peer.high_level {
+                self.peer_buckets.get_mut(&Bucket::from(addr)).unwrap().high_level += 1;
+            }
+        }
+        old_peer.addrs = new_peer.addrs;
+        let Connection::Quic(old_conn) = &mut old_peer.conn else { unreachable!() };
+        new_conn.take_over(old_conn);
+        if let Err(error) = old_conn.close(&self.cb, &mut self.packet_buf, Some("resumed on another connection")) {
+            debug!("peer {}: closing the old connection: {}", old_idx, error);
+        }
+        let _old = mem::replace(&mut old_peer.conn, Connection::Quic(new_conn));
+        self.proto_quic.reassign(new_idx, old_idx);
+        let Connection::Quic(conn) = &mut old_peer.conn else { unreachable!() };
+        if let Err(error) = conn.accept_resume() {
+            self.fail_peer(old_idx, error);
+            return;
+        }
+        self.readable_peers.push_back(old_idx);
+    }
     fn remove_peer(&mut self, idx: PeerIndex) {
         use self::Connection::*;
         self.set_low_level(idx);
-        let Peer { conn, addrs, high_level, outgoing: _, userdata: _ } = self.peers.remove(&idx).unwrap();
+        let Peer { conn, addrs, high_level, outgoing: _, userdata: _, resume_session } = self.peers.remove(&idx).unwrap();
         assert!(!high_level);
+        if let Some(session_id) = resume_session {
+            self.resumes.remove(&session_id);
+        }
         match conn {
             Quic(inner) => self.proto_quic.remove_peer(idx, inner),
             Tw06(inner) => self.proto_tw06.remove_peer(idx, inner),
             Tw07(inner) => self.proto_tw07.remove_peer(idx, inner),
         }
         for addr in addrs {
-            assert_eq!(self.peer_addrs.remove(&addr), Some(idx));
+            if self.peer_addrs.get(&addr) == Some(&idx) {
+                self.peer_addrs.remove(&addr);
+            }
             match self.peer_buckets.entry(Bucket::from(addr)) {
                 hash_map::Entry::Vacant(_) => unreachable!(),
                 hash_map::Entry::Occupied(mut o) => {
@@ -699,7 +832,18 @@ impl Net {
                 }
             };
             self.socket_read_errors = 0;
-            let idx = if let Some(&idx) = self.peer_addrs.get(&from) {
+            // The address says which peer a packet is for, except for QUIC,
+            // where a new connection can come from the address of an old
+            // one: a client resuming after a loss. There the connection ID
+            // decides.
+            let known = match self.peer_addrs.get(&from) {
+                Some(&idx) if matches!(self.peers[&idx].conn, Connection::Quic(_)) => {
+                    (self.proto_quic.owner(&mut self.packet_buf[..read]) == Some(idx)).then_some(idx)
+                }
+                Some(&idx) => Some(idx),
+                None => None,
+            };
+            let idx = if let Some(idx) = known {
                 idx
             } else {
                 // A packet whose type we do not know. Determine it by the
@@ -796,18 +940,21 @@ impl Net {
                     Some(ProtocolEvent::NewConnection(idx, conn)) => {
                         assert!(idx == self.cb.next_peer_index.get_and_increment());
                         assert!(self.peers.insert(idx, Peer::new(conn, from, false)).is_none());
-                        assert!(self.peer_addrs.insert(from, idx).is_none());
+                        // An address can hold an old QUIC connection as well.
+                        self.peer_addrs.insert(from, idx);
                         self.peer_buckets.entry(Bucket::from(from)).or_default().low_level += 1;
                         idx
                     }
                     Some(ProtocolEvent::ExistingConnection(idx)) => {
                         let peer = self.peers.get_mut(&idx).unwrap();
-                        peer.addrs.push(from);
-                        assert!(self.peer_addrs.insert(from, idx).is_none());
-                        let bucket = self.peer_buckets.entry(Bucket::from(from)).or_default();
-                        bucket.low_level += 1;
-                        if peer.high_level {
-                            bucket.high_level += 1;
+                        if !peer.addrs.contains(&from) {
+                            peer.addrs.push(from);
+                            self.peer_addrs.insert(from, idx);
+                            let bucket = self.peer_buckets.entry(Bucket::from(from)).or_default();
+                            bucket.low_level += 1;
+                            if peer.high_level {
+                                bucket.high_level += 1;
+                            }
                         }
                         idx
                     }
@@ -963,7 +1110,49 @@ impl Net {
                             for &addr in &peer.addrs {
                                 self.peer_buckets.get_mut(&Bucket::from(addr)).unwrap().high_level += 1;
                             }
+                            if let Err(error) = Self::issue_resume(&mut self.resumes, idx, peer) {
+                                self.fail_peer(idx, error);
+                                return self.recv(buf);
+                            }
                             return Ok(Some(Event::Connect(idx, peer_addr)));
+                        }
+                        ConnectionEvent::ResumeRequest(session_id, token) => {
+                            let target = self
+                                .resumes
+                                .get(&session_id)
+                                .filter(|(wanted, _)| constant_time_eq(wanted, &token))
+                                .map(|&(_, old_idx)| old_idx);
+                            match target {
+                                Some(old_idx)
+                                    if old_idx != idx
+                                        && self.peers.get(&old_idx).is_some_and(|old| matches!(old.conn, Connection::Quic(_))) =>
+                                {
+                                    self.attach_resumed(old_idx, idx);
+                                }
+                                _ => {
+                                    debug!("peer {}: resume token unknown or expired", idx);
+                                    self.fail_peer(idx, Error::from_string("invalid or expired resume token".to_owned()));
+                                    return self.recv(buf);
+                                }
+                            }
+                            continue;
+                        }
+                        ConnectionEvent::Resumed(peer_addr) => {
+                            info!("peer {}: resumed at {}", idx, peer_addr);
+                            if let Err(error) = Self::issue_resume(&mut self.resumes, idx, peer) {
+                                self.fail_peer(idx, error);
+                                return self.recv(buf);
+                            }
+                            continue;
+                        }
+                        ConnectionEvent::ResumeNeeded => {
+                            let Connection::Quic(conn) = &mut peer.conn else { unreachable!() };
+                            if let Err(error) = self.proto_quic.reconnect(&self.cb, &mut self.packet_buf, idx, conn) {
+                                self.fail_peer(idx, error);
+                                return self.recv(buf);
+                            }
+                            info!("peer {}: resuming on a new connection", idx);
+                            continue;
                         }
                         ConnectionEvent::Chunk(size, unreliable) => {
                             if !peer.high_level {
@@ -973,6 +1162,13 @@ impl Net {
                             return Ok(Some(Event::Chunk(idx, size, unreliable)))
                         }
                         ConnectionEvent::ConnlessChunk(peer_addr, size, meta) => return Ok(Some(Event::ConnlessChunk(peer_addr, size, meta))),
+                        ConnectionEvent::Map(what, size) => {
+                            if !peer.high_level {
+                                warn!("peer {}: map before connect, ignoring", idx);
+                                continue;
+                            }
+                            return Ok(Some(Event::Map(idx, what, size)))
+                        }
                         ConnectionEvent::Disconnect(reason_size, remote) => {
                             // A connection that ends before it was ever
                             // reported is news only to whoever asked for it,
@@ -1037,6 +1233,39 @@ impl Net {
         let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
         if let Err(error) = peer.conn.flush(&self.cb, &mut self.packet_buf) {
             self.fail_peer(idx, error);
+        }
+        Ok(())
+    }
+    /// Keeps a map for `send_map`, replacing one under the same ID. A map
+    /// already going out keeps going out as it was.
+    pub fn set_map(&mut self, id: u32, map: Map) -> Result<()> {
+        if map.data.is_empty() || map.data.len() as u64 > wire::MAX_MAP_SIZE {
+            bail!("map {} has {} bytes, need 1 to {}", id, map.data.len(), wire::MAX_MAP_SIZE);
+        }
+        if map.name.is_empty() || map.name.len() > wire::MAX_MAP_NAME_SIZE {
+            bail!("map {} has a name of {} bytes, need 1 to {}", id, map.name.len(), wire::MAX_MAP_NAME_SIZE);
+        }
+        self.maps.insert(id, Arc::new(map));
+        Ok(())
+    }
+    /// Starts sending a map to a QUIC peer on a stream of its own, dropping
+    /// one that is still going out to it.
+    pub fn send_map(&mut self, idx: PeerIndex, id: u32) -> Result<()> {
+        let Some(map) = self.maps.get(&id).cloned() else { bail!("no map {}", id) };
+        let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
+        let Connection::Quic(conn) = &mut peer.conn else {
+            bail!("peer {} is not connected over QUIC", idx);
+        };
+        if let Err(error) = conn.send_map(&self.cb, &mut self.packet_buf, map) {
+            self.fail_peer(idx, error);
+        }
+        Ok(())
+    }
+    /// Stops a map that is going out to the peer, if any.
+    pub fn cancel_map(&mut self, idx: PeerIndex) -> Result<()> {
+        let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
+        if let Connection::Quic(conn) = &mut peer.conn {
+            conn.cancel_map();
         }
         Ok(())
     }
@@ -1233,4 +1462,11 @@ impl From<tw07::Connection> for Connection {
     fn from(conn: tw07::Connection) -> Connection {
         Connection::Tw07(conn)
     }
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
 }

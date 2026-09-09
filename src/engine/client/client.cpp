@@ -642,12 +642,16 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	const char *pNextAddr = pAddress;
 	char aBuffer[128];
 	bool OnlySixup = true;
+	// The identity a QUIC address pins, from its fragment; nothing if none does.
+	char aConnectIdentity[65] = "";
 	while((pNextAddr = str_next_token(pNextAddr, ",", aBuffer, sizeof(aBuffer))))
 	{
 		NETADDR NextAddr;
 		char aHost[128];
 		const int UrlParseResult = net_addr_from_url(&NextAddr, aBuffer, aHost, sizeof(aHost));
+		// The lookup below starts the address over, so the flags are kept aside.
 		bool Sixup = NextAddr.type & NETTYPE_TW7;
+		const bool Quic = NextAddr.type & NETTYPE_QUIC;
 		if(UrlParseResult > 0)
 			str_copy(aHost, aBuffer);
 
@@ -669,6 +673,21 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 			NextAddr.type |= NETTYPE_TW7;
 		else
 			OnlySixup = false;
+		if(Quic)
+		{
+			NextAddr.type |= NETTYPE_QUIC;
+			const char *pFragment = str_find(aBuffer, "#");
+			if(pFragment != nullptr && pFragment[1] != '\0')
+			{
+				const char *pIdentity = str_startswith(pFragment + 1, "identity-sha256=");
+				if(pIdentity == nullptr)
+				{
+					log_error("client", "the fragment of %s pins no identity", aBuffer);
+					continue;
+				}
+				str_copy(aConnectIdentity, pIdentity);
+			}
+		}
 
 		char aNextAddr[NETADDR_MAXSTRSIZE];
 		net_addr_str(&NextAddr, aNextAddr, sizeof(aNextAddr), true);
@@ -714,6 +733,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	m_CanReceiveServerCapabilities = true;
 
 	m_Sixup = OnlySixup;
+	m_aNetClient[CONN_MAIN].SetConnectIdentity(aConnectIdentity);
 	if(m_Sixup)
 	{
 		m_aNetClient[CONN_MAIN].Connect7(aConnectAddrs, NumConnectAddrs);
@@ -852,7 +872,8 @@ void CClient::DummyConnect()
 	g_Config.m_ClDummyHammer = 0;
 
 	m_DummyConnecting = true;
-	// connect to the server
+	// connect to the server, the same way and with the same identity
+	m_aNetClient[CONN_DUMMY].SetConnectIdentity(m_aNetClient[CONN_MAIN].ServerIdentity());
 	if(IsSixup())
 		m_aNetClient[CONN_DUMMY].Connect7(m_aNetClient[CONN_MAIN].ServerAddress(), 1);
 	else
@@ -2477,6 +2498,84 @@ int CClient::UnpackAndValidateSnapshot(CSnapshot *pFrom, CSnapshotBuffer *pTo)
 	return Builder.Finish(pTo);
 }
 
+// A map the server sends over QUIC comes on a stream of its own, in the
+// steps CNetClient reports as NET_CHUNKFLAG_MAP chunks, after the client
+// asked for it like for the first NETMSG_MAP_DATA chunk. Steps of a map no
+// longer wanted, e.g. one the server withdrew for a map change, are dropped.
+void CClient::ProcessMapStream(const CNetChunk *pPacket)
+{
+	if(pPacket->m_Flags & NET_CHUNKFLAG_MAP_HEADER)
+	{
+		if(!m_MapdownloadFileTemp || m_MapdownloadStream)
+		{
+			return;
+		}
+		CNetMapHeader Header;
+		if(!NetDecodeMapHeader(pPacket->m_pData, pPacket->m_DataSize, &Header))
+		{
+			DisconnectWithReason("invalid map header on the QUIC map stream");
+			return;
+		}
+		if(str_comp(Header.m_aName, m_aMapdownloadName) != 0 ||
+			Header.m_Crc != (unsigned)m_MapdownloadCrc ||
+			Header.m_Size != (uint64_t)m_MapdownloadTotalsize ||
+			(m_MapdownloadSha256.has_value() && Header.m_Sha256 != m_MapdownloadSha256.value()))
+		{
+			DisconnectWithReason("QUIC map stream does not match the announced map");
+			return;
+		}
+		if(!m_MapdownloadSha256.has_value())
+		{
+			m_MapdownloadSha256 = Header.m_Sha256;
+		}
+		m_MapdownloadAmount = 0;
+		m_MapdownloadStream = true;
+	}
+	else if(!m_MapdownloadStream)
+	{
+		return;
+	}
+	else if(pPacket->m_Flags & NET_CHUNKFLAG_MAP_DATA)
+	{
+		if(pPacket->m_DataSize <= 0 ||
+			pPacket->m_DataSize > m_MapdownloadTotalsize - m_MapdownloadAmount ||
+			io_write(m_MapdownloadFileTemp, pPacket->m_pData, pPacket->m_DataSize) != (unsigned)pPacket->m_DataSize)
+		{
+			DisconnectWithReason("could not write the QUIC map stream");
+			return;
+		}
+		m_MapdownloadAmount += pPacket->m_DataSize;
+	}
+	else if(pPacket->m_Flags & NET_CHUNKFLAG_MAP_END)
+	{
+		if(m_MapdownloadAmount != m_MapdownloadTotalsize)
+		{
+			DisconnectWithReason("QUIC map stream ended at the wrong size");
+			return;
+		}
+		io_close(m_MapdownloadFileTemp);
+		m_MapdownloadFileTemp = nullptr;
+		m_MapdownloadStream = false;
+		FinishMapDownload();
+	}
+	else if(pPacket->m_Flags & NET_CHUNKFLAG_MAP_FAILED)
+	{
+		// A stream can end early when the connection was resumed on a
+		// new one; the map is asked for once more before giving up.
+		if(!m_MapdownloadStreamRetried)
+		{
+			m_MapdownloadStreamRetried = true;
+			log_info("client/network", "QUIC map stream failed, asking again: %s", (const char *)pPacket->m_pData);
+			ResetMapDownload(false);
+			SendMapRequest();
+			return;
+		}
+		char aReason[256];
+		str_format(aReason, sizeof(aReason), "QUIC map stream failed: %s", (const char *)pPacket->m_pData);
+		DisconnectWithReason(aReason);
+	}
+}
+
 void CClient::ResetMapDownload(bool ResetActive)
 {
 	if(m_pMapdownloadTask)
@@ -2490,6 +2589,7 @@ void CClient::ResetMapDownload(bool ResetActive)
 		io_close(m_MapdownloadFileTemp);
 		m_MapdownloadFileTemp = nullptr;
 	}
+	m_MapdownloadStream = false;
 
 	if(Storage()->FileExists(m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE))
 	{
@@ -2498,6 +2598,7 @@ void CClient::ResetMapDownload(bool ResetActive)
 
 	if(ResetActive)
 	{
+		m_MapdownloadStreamRetried = false;
 		m_MapdownloadChunk = 0;
 		m_MapdownloadSha256 = std::nullopt;
 		m_MapdownloadCrc = 0;
@@ -2743,6 +2844,14 @@ void CClient::PumpNetwork()
 					continue;
 
 				ProcessConnlessPacket(&Packet);
+				continue;
+			}
+			if(Packet.m_Flags & NET_CHUNKFLAG_MAP)
+			{
+				if(Conn == CONN_MAIN)
+				{
+					ProcessMapStream(&Packet);
+				}
 				continue;
 			}
 			if(Conn == CONN_MAIN || Conn == CONN_DUMMY)

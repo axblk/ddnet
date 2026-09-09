@@ -4,6 +4,8 @@
 
 #ifdef CONF_NETWORKING_QUIC
 
+#include "config.h"
+
 #include <base/dbg.h>
 #include <base/log.h>
 #include <base/mem.h>
@@ -71,6 +73,7 @@ bool CNetClient::OpenLibrary()
 	if(false ||
 		ddnet_net_new(&m_pNet) ||
 		ddnet_net_set_bindaddr(m_pNet, aBindAddr, str_length(aBindAddr)) ||
+		ddnet_net_set_timeout(m_pNet, g_Config.m_ConnTimeout) ||
 		ddnet_net_open(m_pNet))
 	{
 		log_error("net", "couldn't open net client: %s", ddnet_net_error(m_pNet));
@@ -153,6 +156,11 @@ void CNetClient::Connect7(const NETADDR *pAddr, int NumAddrs)
 	ConnectImpl(pAddr, NumAddrs, true);
 }
 
+void CNetClient::SetConnectIdentity(const char *pIdentity)
+{
+	str_copy(m_aConnectIdentity, pIdentity);
+}
+
 void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
 {
 	Disconnect(nullptr);
@@ -163,11 +171,26 @@ void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
 		m_aConnectAddrs[i] = pAddr[i];
 	}
 
+	NETADDR Addr = pAddr[0];
+	Addr.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
 	char aAddr[NETADDR_MAXSTRSIZE];
-	net_addr_str(&pAddr[0], aAddr, sizeof(aAddr), true);
-	char aUrl[128];
-	// TODO: connect via `ddnet-18+quic://` when the server advertises support for it
-	str_format(aUrl, sizeof(aUrl), "%s://%s", Sixup ? "tw-0.7+udp" : "tw-0.6+udp", aAddr);
+	net_addr_str(&Addr, aAddr, sizeof(aAddr), true);
+	char aUrl[192];
+	if(pAddr[0].type & NETTYPE_QUIC)
+	{
+		if(Sixup)
+		{
+			str_copy(m_aErrorString, "0.7 over QUIC is not supported yet");
+			return;
+		}
+		// The fragment pins the server's identity.
+		str_format(aUrl, sizeof(aUrl), "ddnet+quic://%s%s%s", aAddr, m_aConnectIdentity[0] != '\0' ? "#identity-sha256=" : "", m_aConnectIdentity);
+	}
+	else
+	{
+		str_format(aUrl, sizeof(aUrl), "%s://%s", Sixup ? "tw-0.7+udp" : "tw-0.6+udp", aAddr);
+	}
+	m_aServerIdentity[0] = '\0';
 	uint64_t PeerId;
 	if(NET_CALL(ddnet_net_connect, m_pNet, aUrl, str_length(aUrl), &PeerId))
 	{
@@ -258,6 +281,14 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 			{
 				Addr.type |= NETTYPE_TW7;
 			}
+			else if(str_startswith(pAddr, "ddnet+quic://"))
+			{
+				Addr.type |= NETTYPE_QUIC;
+				// The identity the server showed, to connect the dummy with.
+				const char *pFragment = str_find(pAddr, "#");
+				const char *pIdentity = pFragment != nullptr ? str_startswith(pFragment + 1, "identity-sha256=") : nullptr;
+				str_copy(m_aServerIdentity, pIdentity != nullptr ? pIdentity : "");
+			}
 			m_ServerAddress = Addr;
 			m_State = NETSTATE_ONLINE;
 		}
@@ -292,6 +323,38 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 				pChunk->m_Flags |= NET_CHUNKFLAG_VITAL;
 			}
 			pChunk->m_DataSize = ddnet_net_ev_chunk_len(m_pNetEvent);
+			pChunk->m_pData = m_aBuffer;
+		}
+			return 1;
+		case DDNET_NET_EV_MAP:
+		{
+			const uint64_t PeerId = ddnet_net_ev_map_peer_index(m_pNetEvent);
+			if((int64_t)PeerId != m_PeerId)
+			{
+				continue;
+			}
+			mem_zero(pChunk, sizeof(*pChunk));
+			pChunk->m_ClientId = 0;
+			pChunk->m_Address = m_ServerAddress;
+			switch(ddnet_net_ev_map_kind(m_pNetEvent))
+			{
+			case DDNET_NET_MAP_HEADER:
+				pChunk->m_Flags = NET_CHUNKFLAG_MAP_HEADER;
+				break;
+			case DDNET_NET_MAP_DATA:
+				pChunk->m_Flags = NET_CHUNKFLAG_MAP_DATA;
+				break;
+			case DDNET_NET_MAP_END:
+				pChunk->m_Flags = NET_CHUNKFLAG_MAP_END;
+				break;
+			case DDNET_NET_MAP_FAILED:
+				pChunk->m_Flags = NET_CHUNKFLAG_MAP_FAILED;
+				break;
+			default:
+				dbg_assert(false, "unknown map event kind");
+			}
+			pChunk->m_DataSize = ddnet_net_ev_map_len(m_pNetEvent);
+			m_aBuffer[pChunk->m_DataSize] = '\0';
 			pChunk->m_pData = m_aBuffer;
 		}
 			return 1;

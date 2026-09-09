@@ -57,7 +57,7 @@ static bool MatchesExactly(const char *a, const char *b)
 static NETADDR CommunityAddressKey(const NETADDR &Addr)
 {
 	NETADDR AddressKey = Addr;
-	AddressKey.type &= ~NETTYPE_TW7;
+	AddressKey.type &= ~(NETTYPE_TW7 | NETTYPE_QUIC);
 	return AddressKey;
 }
 
@@ -737,6 +737,10 @@ static void ServerBrowserFormatAddresses(char *pBuffer, int BufferSize, NETADDR 
 		if(pAddrs[i].type & NETTYPE_TW7)
 		{
 			str_append(pBuffer, "tw-0.7+udp://", BufferSize);
+		}
+		else if(pAddrs[i].type & NETTYPE_QUIC)
+		{
+			str_append(pBuffer, "ddnet+quic://", BufferSize);
 		}
 		char aIpAddr[NETADDR_MAXSTRSIZE];
 		net_addr_str(&pAddrs[i], aIpAddr, sizeof(aIpAddr), true);

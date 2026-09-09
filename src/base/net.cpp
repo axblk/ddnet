@@ -368,12 +368,16 @@ static int parse_uint16(unsigned short *out, const char **str)
 int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t host_buf_size)
 {
 	bool sixup = false;
+	bool quic = false;
 	mem_zero(addr, sizeof(*addr));
 	const char *str = str_startswith(string, "tw-0.6+udp://");
 	if(!str && (str = str_startswith(string, "tw-0.7+udp://")))
 	{
-		addr->type |= NETTYPE_TW7;
 		sixup = true;
+	}
+	if(!str && (str = str_startswith(string, "ddnet+quic://")))
+	{
+		quic = true;
 	}
 	if(!str)
 		return 1;
@@ -410,6 +414,8 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 
 	if(sixup)
 		addr->type |= NETTYPE_TW7;
+	if(quic)
+		addr->type |= NETTYPE_QUIC;
 
 	return failure;
 }

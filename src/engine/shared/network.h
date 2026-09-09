@@ -6,10 +6,12 @@
 #include "ringbuffer.h"
 #include "stun.h"
 
+#include <base/hash.h>
 #include <base/net.h>
 #include <base/types.h>
 
 #include <array>
+#include <map>
 #include <optional>
 #include <vector>
 
@@ -97,6 +99,14 @@ enum
 
 	NET_CHUNKFLAG_VITAL = 1,
 	NET_CHUNKFLAG_RESEND = 2,
+	// Not a game message but a step of a map arriving on a QUIC stream of
+	// its own: the header (see NetDecodeMapHeader), a piece of the map, its
+	// end after the checksum matched, or a failure with the reason as data.
+	NET_CHUNKFLAG_MAP_HEADER = 1 << 4,
+	NET_CHUNKFLAG_MAP_DATA = 1 << 5,
+	NET_CHUNKFLAG_MAP_END = 1 << 6,
+	NET_CHUNKFLAG_MAP_FAILED = 1 << 7,
+	NET_CHUNKFLAG_MAP = NET_CHUNKFLAG_MAP_HEADER | NET_CHUNKFLAG_MAP_DATA | NET_CHUNKFLAG_MAP_END | NET_CHUNKFLAG_MAP_FAILED,
 
 	NET_CTRLMSG_KEEPALIVE = 0,
 	NET_CTRLMSG_CONNECT = 1,
@@ -141,6 +151,18 @@ typedef int (*NETFUNC_NEWCLIENT_CON)(int ClientId, void *pUser);
 typedef int (*NETFUNC_NEWCLIENT)(int ClientId, void *pUser, bool Sixup);
 typedef int (*NETFUNC_NEWCLIENT_NOAUTH)(int ClientId, void *pUser);
 typedef int (*NETFUNC_CLIENTREJOIN)(int ClientId, void *pUser, bool Sixup, bool VanillaAuth);
+
+// What a map stream announces before the map itself.
+struct CNetMapHeader
+{
+	char m_aName[256];
+	unsigned m_Crc;
+	uint64_t m_Size;
+	SHA256_DIGEST m_Sha256;
+};
+// Takes the data of a NET_CHUNKFLAG_MAP_HEADER chunk apart. Always false
+// without QUIC.
+bool NetDecodeMapHeader(const void *pData, int Size, CNetMapHeader *pHeader);
 
 struct CNetChunk
 {
@@ -485,6 +507,8 @@ class CNetServer
 		// The opposite mapping is stored in the userdata of the library.
 		uint64_t m_Id = -1;
 		bool m_TimeoutProtected = false;
+		// Connected over QUIC rather than 0.6 or 0.7 over UDP.
+		bool m_Quic = false;
 		NETADDR m_Address = {0};
 		std::array<char, NETADDR_MAXSTRSIZE> m_aAddressStr = {};
 		std::array<char, NETADDR_MAXSTRSIZE> m_aAddressStrNoPort = {};
@@ -503,9 +527,21 @@ class CNetServer
 	unsigned char m_aIdentity[32] = {0};
 	bool m_HasIdentity = false;
 
+	// The maps SetMap() gave the library, kept to give them again after
+	// Reopen().
+	struct CMap
+	{
+		char m_aName[256];
+		unsigned m_Crc;
+		SHA256_DIGEST m_Sha256;
+		std::vector<unsigned char> m_vData;
+	};
+	std::map<int, CMap> m_Maps;
+
 	bool OpenLibrary();
 	void Reopen();
 	int PeerClientId(uint64_t PeerId);
+	bool SetMapImpl(int MapId, const CMap &Map);
 #else // CONF_NETWORKING_QUIC
 	struct CSlot
 	{
@@ -598,6 +634,16 @@ public:
 	int Send(CNetChunk *pChunk);
 	void Update();
 	void Wait(uint64_t Microseconds);
+
+	// Maps for QUIC clients, which get them whole on a stream of their own
+	// instead of in NETMSG_MAP_DATA chunks. SetMap() keeps a copy under the
+	// ID; SendMap() starts sending it to the client and is false for a
+	// client that is not connected over QUIC, which gets the chunks as
+	// before. CancelMap() stops a map still going out. Without QUIC these
+	// do nothing.
+	void SetMap(int MapId, const char *pName, unsigned Crc, const SHA256_DIGEST &Sha256, const void *pData, unsigned Size);
+	bool SendMap(int ClientId, int MapId);
+	void CancelMap(int ClientId);
 
 	// While a flush batch is open, sends requesting MSGFLAG_FLUSH only queue
 	// their chunk and mark the connection; EndFlushBatch() then flushes each
@@ -726,6 +772,10 @@ class CNetClient
 	NETADDR m_aConnectAddrs[16] = {{}};
 	int m_NumConnectAddrs = 0;
 	char m_aErrorString[256] = {0};
+	// The identity to expect from a QUIC server, hex; empty takes any.
+	char m_aConnectIdentity[65] = "";
+	// The identity the QUIC server showed, hex; empty for other transports.
+	char m_aServerIdentity[65] = "";
 
 	NETADDR m_BindAddr = {0};
 
@@ -759,6 +809,15 @@ public:
 	void Disconnect(const char *pReason);
 	void Connect(const NETADDR *pAddr, int NumAddrs);
 	void Connect7(const NETADDR *pAddr, int NumAddrs);
+	// The identity a following Connect() to a QUIC address expects, hex;
+	// empty takes whatever the server shows. Without QUIC there is nothing to
+	// expect.
+	void SetConnectIdentity(const char *pIdentity);
+#ifdef CONF_NETWORKING_QUIC
+	const char *ServerIdentity() const { return m_aServerIdentity; }
+#else
+	const char *ServerIdentity() const { return ""; }
+#endif
 
 	// communication
 	int Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Sixup);

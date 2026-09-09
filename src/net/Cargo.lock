@@ -453,7 +453,6 @@ dependencies = [
  "hexdump",
  "log 0.4.17",
  "mio",
- "octets",
  "openssl-probe",
  "pre-rfc3243-libtw2-net",
  "pre-rfc3243-libtw2-warn",

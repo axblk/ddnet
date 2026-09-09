@@ -459,6 +459,9 @@ class CNetServer
 	int m_NextClientId = 0;
 
 	CPeer m_aPeers[NET_MAX_CLIENTS];
+
+	bool OpenLibrary();
+	void Reopen();
 #else // CONF_NETWORKING_QUIC
 	struct CSlot
 	{
@@ -680,6 +683,12 @@ class CNetClient
 	NETADDR m_aConnectAddrs[16] = {{}};
 	int m_NumConnectAddrs = 0;
 	char m_aErrorString[256] = {0};
+
+	NETADDR m_BindAddr = {0};
+
+	bool OpenLibrary();
+	void CloseLibrary();
+	void Reopen();
 #else
 	CNetConnection m_Connection;
 	CPacketChunkUnpacker m_PacketChunkUnpacker;

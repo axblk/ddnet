@@ -3,16 +3,16 @@ extern crate log;
 
 use self::challenger::Challenger;
 use self::net::CallbackData;
-use self::net::MAX_FRAME_SIZE;
+use self::types::MAX_FRAME_SIZE;
 use self::net::ProtocolEvent;
-use self::net::QuicAddr;
-use self::net::ConnlessMeta;
-use self::net::Protocol;
+use self::addr::QuicAddr;
+use self::types::ConnlessMeta;
+use self::types::Protocol;
 use self::net::Socket;
-use self::net::Tw06Addr;
-use self::net::Tw07Addr;
+use self::addr::Tw06Addr;
+use self::addr::Tw07Addr;
 #[cfg(feature = "websocket")]
-use self::net::WsAddr;
+use self::addr::WsAddr;
 use self::util::normalize;
 use self::util::secure_hash;
 use self::util::secure_random;
@@ -25,6 +25,7 @@ macro_rules! bail {
     }
 }
 
+mod addr;
 mod challenger;
 mod error;
 mod ffi;
@@ -34,6 +35,7 @@ mod net;
 mod quic;
 mod tw06;
 mod tw07;
+mod types;
 mod mapstream;
 mod webtransport;
 #[cfg(feature = "websocket")]
@@ -45,11 +47,11 @@ pub use self::error::Error;
 pub use self::error::Result;
 pub use self::key::Identity;
 pub use self::key::PrivateIdentity;
-pub use self::net::Addr;
+pub use self::addr::Addr;
 pub use self::net::ConnectionEvent;
-pub use self::net::Event;
-pub use self::net::Map;
-pub use self::net::MapEvent;
+pub use self::types::Event;
+pub use self::types::Map;
+pub use self::types::MapEvent;
 pub use self::net::Net;
 pub use self::net::NetBuilder;
-pub use self::net::PeerIndex;
+pub use self::types::PeerIndex;

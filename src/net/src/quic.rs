@@ -2057,9 +2057,9 @@ impl Connection {
                 // which routes it to the register the same as over UDP.
                 return Ok(Some(
                     Event::ConnlessChunk(
-                        crate::net::Addr::Tw06(crate::net::Tw06Addr(self.peer_addr)),
+                        crate::Addr::Tw06(crate::Tw06Addr(self.peer_addr)),
                         len,
-                        crate::net::ConnlessMeta::default(),
+                        crate::ConnlessMeta::default(),
                     )
                     .into(),
                 ));

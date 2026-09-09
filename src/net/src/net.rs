@@ -1,3 +1,4 @@
+use crate::addr::RawAddr;
 use crate::libtw2_patch;
 use crate::normalize;
 use crate::quic;
@@ -6,7 +7,15 @@ use crate::tw07;
 #[cfg(feature = "websocket")]
 use crate::ws;
 use crate::wire;
+use crate::Addr;
 use crate::Challenger;
+use crate::ConnlessMeta;
+use crate::Event;
+use crate::Map;
+use crate::MapEvent;
+use crate::MAX_FRAME_SIZE;
+use crate::PeerIndex;
+use crate::Protocol;
 use crate::Context as _;
 use crate::Error;
 use crate::Identity;
@@ -14,7 +23,6 @@ use crate::NoBlock as _;
 use crate::PrivateIdentity;
 use crate::Result;
 use crate::secure_random;
-use arrayvec::ArrayString;
 use hexdump::hexdump_iter;
 use mio::net::UdpSocket;
 use mio::Events;
@@ -24,8 +32,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::env;
-use std::fmt;
-use std::fmt::Write as _;
 use std::fs;
 use std::fs::File;
 use std::io;
@@ -38,18 +44,13 @@ use std::net::SocketAddrV6;
 use std::path::Path;
 use std::str;
 use std::mem;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
-use url::Url;
 
 // TODO: remove double waits in the server (9999ms, then 0ms)
 // TODO: get rid of all the unwraps around connections
 // TODO: couldn't connect without wifi: libtw2_net::Conn::connect: UdpSocket::send_to: Network is unreachable (os error 101)
-
-// Originally `NET_MAX_PAYLOAD`.
-pub const MAX_FRAME_SIZE: u64 = 1394;
 
 /// Which protocols' handshakes the socket answers. A protocol that is off
 /// gets no reply at all, as if the port were closed for it.
@@ -68,15 +69,6 @@ pub struct AcceptProtocols {
 impl AcceptProtocols {
     pub const NONE: AcceptProtocols = AcceptProtocols { tw06: false, tw07: false, quic: false, webtransport: false, websocket: false };
     pub const ALL: AcceptProtocols = AcceptProtocols { tw06: true, tw07: true, quic: true, webtransport: true, websocket: cfg!(feature = "websocket") };
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum Protocol {
-    Tw06,
-    Tw07,
-    Quic,
-    WebTransport,
-    WebSocket,
 }
 
 /// The poll's tokens: the UDP socket, the WebSocket listener, then the
@@ -258,30 +250,6 @@ pub struct NetBuilder {
     key_log: bool,
 }
 
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PeerIndex(pub u64);
-
-impl fmt::Display for PeerIndex {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
-    }
-}
-
-impl fmt::Debug for PeerIndex {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl PeerIndex {
-    // TODO: get rid of pub(crate)
-    pub(crate) fn get_and_increment(&mut self) -> PeerIndex {
-        let result = *self;
-        self.0 += 1;
-        result
-    }
-}
-
 impl Peer {
     fn new(conn: Connection, addr: SocketAddr, outgoing: bool) -> Peer {
         Peer {
@@ -294,55 +262,6 @@ impl Peer {
             closing: false,
         }
     }
-}
-
-#[non_exhaustive]
-/// What a connectionless packet carried besides its payload.
-#[derive(Clone, Copy, Default)]
-pub struct ConnlessMeta {
-    /// The four bytes of the 0.6 extended header, when the packet had one.
-    pub extra: Option<[u8; 4]>,
-    /// The 0.7 sender's token for answering it.
-    pub response_token7: Option<u32>,
-}
-
-#[derive(Clone, Copy)]
-pub enum Event {
-    /// `Connect(pid, peer_addr)`
-    Connect(PeerIndex, Addr),
-    /// `Chunk(pid, size, unreliable)`
-    Chunk(PeerIndex, usize, bool),
-    // TODO: maybe say whether the disconnect happened without a prior `Connect` event?
-    // TODO: distinguish disconnect from error?
-    /// `Disconnect(pid, reason_size, remote)`
-    Disconnect(PeerIndex, usize, bool),
-    /// `ConnlessChunk(from, size, meta)`
-    ConnlessChunk(Addr, usize, ConnlessMeta),
-    /// `Map(pid, what, size)`, a step of a map arriving on a stream of its
-    /// own; see [`MapEvent`].
-    Map(PeerIndex, MapEvent, usize),
-    /// `Moved(pid, new_addr)`, the peer reaches us from another address
-    /// now, after a migration or a resume.
-    Moved(PeerIndex, Addr),
-}
-
-/// A map the server hands out on a QUIC stream of its own.
-pub struct Map {
-    pub name: Vec<u8>,
-    pub crc: u32,
-    pub sha256: [u8; 32],
-    pub data: Vec<u8>,
-}
-
-/// What a map stream delivers, in this order: the header once, the data in
-/// pieces, then the end after the checksum matched. A failure ends the
-/// stream instead, with the reason as its data.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MapEvent {
-    Header,
-    Data,
-    End,
-    Failed,
 }
 
 #[derive(Clone, Copy)]
@@ -379,221 +298,6 @@ pub enum ConnectionEvent {
     ///
     /// This event can only be sent after a `Disconnect` event.
     Delete,
-}
-
-// TODO: make inner content opaque
-#[derive(Clone, Copy)]
-pub enum Addr {
-    Quic(QuicAddr),
-    Tw06(Tw06Addr),
-    Tw07(Tw07Addr),
-    /// A datagram as it is, no protocol of ours: STUN goes over the same
-    /// socket so that the address it learns is the one peers see.
-    Raw(RawAddr),
-    /// A WebSocket peer, over TCP at the address.
-    Ws(WsAddr),
-}
-
-impl Addr {
-    fn socket_addr(&self) -> &SocketAddr {
-        use self::Addr::*;
-        match self {
-            Quic(QuicAddr { addr: socket_addr, .. }) => socket_addr,
-            Tw06(Tw06Addr(socket_addr)) => socket_addr,
-            Tw07(Tw07Addr(socket_addr)) => socket_addr,
-            Raw(RawAddr(socket_addr)) => socket_addr,
-            Ws(WsAddr { addr: socket_addr, .. }) => socket_addr,
-        }
-    }
-    pub fn identity(&self) -> Option<&Identity> {
-        use self::Addr::*;
-        match self {
-            Quic(QuicAddr { identity, .. }) => identity.as_ref(),
-            Tw06(Tw06Addr(_)) => None,
-            Tw07(Tw07Addr(_)) => None,
-            Raw(RawAddr(_)) => None,
-            Ws(WsAddr { identity, .. }) => identity.as_ref(),
-        }
-    }
-}
-
-impl From<WsAddr> for Addr {
-    fn from(addr: WsAddr) -> Addr {
-        Addr::Ws(addr)
-    }
-}
-
-impl From<QuicAddr> for Addr {
-    fn from(addr: QuicAddr) -> Addr {
-        Addr::Quic(addr)
-    }
-}
-
-impl From<Tw06Addr> for Addr {
-    fn from(addr: Tw06Addr) -> Addr {
-        Addr::Tw06(addr)
-    }
-}
-
-impl From<Tw07Addr> for Addr {
-    fn from(addr: Tw07Addr) -> Addr {
-        Addr::Tw07(addr)
-    }
-}
-
-impl From<RawAddr> for Addr {
-    fn from(addr: RawAddr) -> Addr {
-        Addr::Raw(addr)
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct Tw06Addr(pub SocketAddr);
-#[derive(Clone, Copy)]
-pub struct Tw07Addr(pub SocketAddr);
-#[derive(Clone, Copy)]
-pub struct RawAddr(pub SocketAddr);
-/// A QUIC peer, over plain QUIC or over WebTransport on it.
-#[derive(Clone, Copy)]
-pub struct QuicAddr {
-    pub addr: SocketAddr,
-    pub identity: Option<Identity>,
-    pub webtransport: bool,
-}
-/// A WebSocket peer, `ws://` or `wss://`; the fragment pins the identity
-/// as for QUIC.
-#[derive(Clone, Copy)]
-pub struct WsAddr {
-    pub addr: SocketAddr,
-    pub tls: bool,
-    pub identity: Option<Identity>,
-}
-
-impl fmt::Display for WsAddr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let WsAddr { addr, tls, identity } = self;
-        let scheme = if *tls { "ddnet+wss" } else { "ddnet+ws" };
-        let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
-        match identity {
-            Some(identity) => write!(&mut buf, "{}://{}#{}", scheme, addr, identity).unwrap(),
-            None => write!(&mut buf, "{}://{}", scheme, addr).unwrap(),
-        }
-        f.pad(&buf)
-    }
-}
-
-/// The identity pinned in a URL's fragment, if any: `identity-sha256=<hex>`
-/// as the masterserver lists it, or the bare hex. A fragment with other
-/// keys, like the certificate hashes a browser takes, or the bare `webpki`
-/// of a WebTransport address, pins nothing here; bare anything else has
-/// to be an identity, a typo must not quietly turn the pin off.
-fn identity_from_fragment(url: &Url) -> Result<Option<Identity>> {
-    let Some(fragment) = url.fragment().filter(|fragment| !fragment.is_empty()) else {
-        return Ok(None);
-    };
-    let hex = match fragment.strip_prefix("identity-sha256=") {
-        Some(hex) => hex,
-        None if fragment == "webpki" || fragment.contains('=') => return Ok(None),
-        None => fragment,
-    };
-    let hex = hex.split(',').next().unwrap_or("");
-    Ok(Some(hex.parse().context("addr: identity")?))
-}
-
-fn socket_addr_from_url(url: &Url) -> Result<SocketAddr> {
-    let mut ip_port: ArrayString<[u8; 64]> = ArrayString::new();
-    write!(
-        &mut ip_port,
-        "{}:{}",
-        url.host_str().ok_or_else(|| Error::from_string(
-            "addr: URL missing host".to_owned()
-        ))?,
-        url.port().ok_or_else(|| Error::from_string(
-            "addr: URL missing port".to_owned()
-        ))?,
-    )
-    .unwrap();
-    Ok(ip_port.parse().context("connect: IP addr")?)
-}
-
-impl FromStr for Addr {
-    type Err = Error;
-    fn from_str(addr: &str) -> Result<Addr> {
-        let addr = Url::parse(addr).context("addr: URL")?;
-        let sock_addr = socket_addr_from_url(&addr)?;
-        Ok(match addr.scheme() {
-            // The fragment pins the server's identity. Without one, whatever
-            // identity the server shows is taken, and reported, so it can
-            // be pinned the next time.
-            scheme @ ("ddnet+quic" | "ddnet+wt") => Addr::Quic(QuicAddr {
-                addr: sock_addr,
-                identity: identity_from_fragment(&addr)?,
-                webtransport: scheme == "ddnet+wt",
-            }),
-            scheme @ ("ddnet+ws" | "ddnet+wss") => Addr::Ws(WsAddr {
-                addr: sock_addr,
-                tls: scheme == "ddnet+wss",
-                identity: identity_from_fragment(&addr)?,
-            }),
-            "tw-0.6+udp" => Addr::Tw06(Tw06Addr(sock_addr)),
-            "tw-0.7+udp" => Addr::Tw07(Tw07Addr(sock_addr)),
-            "udp" => Addr::Raw(RawAddr(sock_addr)),
-            scheme => bail!("unsupported scheme {}", scheme),
-        })
-    }
-}
-
-impl fmt::Display for QuicAddr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let QuicAddr { addr, identity, webtransport } = self;
-        let scheme = if *webtransport { "ddnet+wt" } else { "ddnet+quic" };
-        let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
-        match identity {
-            Some(identity) => write!(&mut buf, "{}://{}#{}", scheme, addr, identity).unwrap(),
-            None => write!(&mut buf, "{}://{}", scheme, addr).unwrap(),
-        }
-        buf.fmt(f)
-    }
-}
-
-impl fmt::Display for Tw06Addr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let Tw06Addr(addr) = self;
-        let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
-        write!(&mut buf, "tw-0.6+udp://{}", addr).unwrap();
-        buf.fmt(f)
-    }
-}
-
-impl fmt::Display for Tw07Addr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let Tw07Addr(addr) = self;
-        let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
-        write!(&mut buf, "tw-0.7+udp://{}", addr).unwrap();
-        buf.fmt(f)
-    }
-}
-
-impl fmt::Display for RawAddr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let RawAddr(addr) = self;
-        let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
-        write!(&mut buf, "udp://{}", addr).unwrap();
-        buf.fmt(f)
-    }
-}
-
-impl fmt::Display for Addr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use self::Addr::*;
-        match self {
-            Quic(addr) => addr.fmt(f),
-            Tw06(addr) => addr.fmt(f),
-            Tw07(addr) => addr.fmt(f),
-            Raw(addr) => addr.fmt(f),
-            Ws(addr) => addr.fmt(f),
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -1761,26 +1465,4 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-#[cfg(test)]
-mod test {
-    use super::Addr;
-
-    #[test]
-    fn identity_fragment_forms() {
-        let hex = "89b84bbc4b430a74642a8d6ee9086048318b20090e5a5d0c807aba4ce2c0d22f";
-        let identity = |addr: &str| match addr.parse::<Addr>().unwrap() {
-            Addr::Quic(quic) => quic.identity.map(|identity| identity.to_string()),
-            _ => panic!("not quic"),
-        };
-        assert_eq!(identity("ddnet+quic://[::1]:8303"), None);
-        assert_eq!(identity(&format!("ddnet+quic://[::1]:8303#{}", hex)).as_deref(), Some(hex));
-        assert_eq!(identity(&format!("ddnet+quic://[::1]:8303#identity-sha256={}", hex)).as_deref(), Some(hex));
-        assert_eq!(identity(&format!("ddnet+wt://[::1]:8303#identity-sha256={},cert-sha256=00", hex)).as_deref(), Some(hex));
-        assert_eq!(identity("ddnet+wt://[::1]:8303#cert-sha256=00,11"), None);
-        assert_eq!(identity("ddnet+wt://[::1]:8303#webpki"), None);
-        assert!("ddnet+quic://[::1]:8303#identity-sha256=zz".parse::<Addr>().is_err());
-        assert!(format!("ddnet+quic://[::1]:8303#{}0", hex).parse::<Addr>().is_err());
-    }
 }

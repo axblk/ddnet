@@ -43,11 +43,13 @@ class CRegister : public IRegister
 		PROTOCOL_DDNET_WT_IPV4,
 		PROTOCOL_TW7_WT_IPV6,
 		PROTOCOL_TW7_WT_IPV4,
+		PROTOCOL_DDNET_WS_IPV6,
+		PROTOCOL_DDNET_WS_IPV4,
 		NUM_PROTOCOLS,
 	};
 
 	static bool StatusFromString(int *pResult, const char *pString);
-	static const char *ProtocolToScheme(int Protocol);
+	const char *ProtocolToScheme(int Protocol) const;
 	static const char *ProtocolToString(int Protocol);
 	static bool ProtocolFromString(int *pResult, const char *pString);
 	static const char *ProtocolToSystem(int Protocol);
@@ -55,6 +57,7 @@ class CRegister : public IRegister
 	static bool ProtocolIsLegacy(int Protocol);
 	static bool ProtocolIsQuic(int Protocol);
 	static bool ProtocolIsWebTransport(int Protocol);
+	static bool ProtocolIsWebsocket(int Protocol);
 	static bool ProtocolIsSixup(int Protocol);
 
 	static void ConchainOnConfigChange(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
@@ -67,6 +70,7 @@ class CRegister : public IRegister
 		int m_LatestSuccessfulInfoSerial GUARDED_BY(m_Lock) = -1;
 		bool m_QuicChallengeSupported GUARDED_BY(m_Lock) = false;
 		bool m_WebTransportChallengeSupported GUARDED_BY(m_Lock) = false;
+		bool m_WebsocketChallengeSupported GUARDED_BY(m_Lock) = false;
 		bool m_DomainRegistrationSupported GUARDED_BY(m_Lock) = false;
 		bool m_SchemeFragmentsSupported GUARDED_BY(m_Lock) = false;
 		bool m_ModernUnsupportedLogged GUARDED_BY(m_Lock) = false;
@@ -209,7 +213,7 @@ bool CRegister::StatusFromString(int *pResult, const char *pString)
 	return false;
 }
 
-const char *CRegister::ProtocolToScheme(int Protocol)
+const char *CRegister::ProtocolToScheme(int Protocol) const
 {
 	switch(Protocol)
 	{
@@ -225,6 +229,8 @@ const char *CRegister::ProtocolToScheme(int Protocol)
 	case PROTOCOL_DDNET_WT_IPV4: return "ddnet+wt://";
 	case PROTOCOL_TW7_WT_IPV6: return "tw-0.7+wt://";
 	case PROTOCOL_TW7_WT_IPV4: return "tw-0.7+wt://";
+	case PROTOCOL_DDNET_WS_IPV6:
+	case PROTOCOL_DDNET_WS_IPV4: return m_Transports.m_WebsocketTls ? "ddnet+wss://" : "ddnet+ws://";
 	}
 	dbg_assert_failed("invalid protocol");
 }
@@ -245,6 +251,8 @@ const char *CRegister::ProtocolToString(int Protocol)
 	case PROTOCOL_DDNET_WT_IPV4: return "ddnet+wt/ipv4";
 	case PROTOCOL_TW7_WT_IPV6: return "tw0.7+wt/ipv6";
 	case PROTOCOL_TW7_WT_IPV4: return "tw0.7+wt/ipv4";
+	case PROTOCOL_DDNET_WS_IPV6: return "ddnet+ws/ipv6";
+	case PROTOCOL_DDNET_WS_IPV4: return "ddnet+ws/ipv4";
 	}
 	dbg_assert_failed("invalid protocol");
 }
@@ -299,6 +307,14 @@ bool CRegister::ProtocolFromString(int *pResult, const char *pString)
 	{
 		*pResult = PROTOCOL_TW7_WT_IPV4;
 	}
+	else if(str_comp(pString, "ddnet+ws/ipv6") == 0)
+	{
+		*pResult = PROTOCOL_DDNET_WS_IPV6;
+	}
+	else if(str_comp(pString, "ddnet+ws/ipv4") == 0)
+	{
+		*pResult = PROTOCOL_DDNET_WS_IPV4;
+	}
 	else
 	{
 		*pResult = -1;
@@ -323,6 +339,8 @@ const char *CRegister::ProtocolToSystem(int Protocol)
 	case PROTOCOL_DDNET_WT_IPV4: return "register/wt/6/ipv4";
 	case PROTOCOL_TW7_WT_IPV6: return "register/wt/7/ipv6";
 	case PROTOCOL_TW7_WT_IPV4: return "register/wt/7/ipv4";
+	case PROTOCOL_DDNET_WS_IPV6: return "register/ws/6/ipv6";
+	case PROTOCOL_DDNET_WS_IPV4: return "register/ws/6/ipv4";
 	}
 	dbg_assert_failed("invalid protocol");
 }
@@ -343,6 +361,8 @@ IPRESOLVE CRegister::ProtocolToIpresolve(int Protocol)
 	case PROTOCOL_DDNET_WT_IPV4: return IPRESOLVE::V4;
 	case PROTOCOL_TW7_WT_IPV6: return IPRESOLVE::V6;
 	case PROTOCOL_TW7_WT_IPV4: return IPRESOLVE::V4;
+	case PROTOCOL_DDNET_WS_IPV6: return IPRESOLVE::V6;
+	case PROTOCOL_DDNET_WS_IPV4: return IPRESOLVE::V4;
 	}
 	dbg_assert_failed("invalid protocol");
 }
@@ -360,6 +380,11 @@ bool CRegister::ProtocolIsQuic(int Protocol)
 bool CRegister::ProtocolIsWebTransport(int Protocol)
 {
 	return Protocol >= PROTOCOL_DDNET_WT_IPV6 && Protocol <= PROTOCOL_TW7_WT_IPV4;
+}
+
+bool CRegister::ProtocolIsWebsocket(int Protocol)
+{
+	return Protocol == PROTOCOL_DDNET_WS_IPV6 || Protocol == PROTOCOL_DDNET_WS_IPV4;
 }
 
 bool CRegister::ProtocolIsSixup(int Protocol)
@@ -389,11 +414,11 @@ void CRegister::CProtocol::FormatAddress(char *pBuffer, int BufferSize) const
 	}
 	const char *pHostname = !ProtocolIsLegacy(m_Protocol) && DomainRegistrationSupported && m_pParent->m_aRegisterHostname[0] ? m_pParent->m_aRegisterHostname : "connecting-address.invalid";
 	const char *pFragment = "";
-	if(ProtocolIsQuic(m_Protocol))
+	if(ProtocolIsQuic(m_Protocol) || ProtocolIsWebsocket(m_Protocol))
 		pFragment = m_pParent->m_aIdentityFragment;
 	else if(ProtocolIsWebTransport(m_Protocol))
 		pFragment = m_pParent->m_aWebTransportFragment;
-	str_format(pBuffer, BufferSize, "%s%s:%d%s%s", ProtocolToScheme(m_Protocol), pHostname, m_pParent->m_ServerPort, SchemeFragmentsSupported && pFragment[0] ? "#" : "", SchemeFragmentsSupported ? pFragment : "");
+	str_format(pBuffer, BufferSize, "%s%s:%d%s%s", m_pParent->ProtocolToScheme(m_Protocol), pHostname, m_pParent->m_ServerPort, SchemeFragmentsSupported && pFragment[0] ? "#" : "", SchemeFragmentsSupported ? pFragment : "");
 }
 
 void CRegister::CProtocol::SendRegister()
@@ -619,6 +644,12 @@ void CRegister::CProtocol::CJob::Run()
 		const CLockScope LockScope(m_pShared->m_pGlobal->m_Lock);
 		m_pShared->m_pGlobal->m_WebTransportChallengeSupported = true;
 	}
+	const json_value &WebsocketChallenge = Json["websocket_challenge"];
+	if(WebsocketChallenge.type == json_boolean && (bool)WebsocketChallenge)
+	{
+		const CLockScope LockScope(m_pShared->m_pGlobal->m_Lock);
+		m_pShared->m_pGlobal->m_WebsocketChallengeSupported = true;
+	}
 	const json_value &DomainRegistration = Json["domain_registration"];
 	if(DomainRegistration.type == json_boolean && (bool)DomainRegistration)
 	{
@@ -640,7 +671,7 @@ void CRegister::CProtocol::CJob::Run()
 			log_error(ProtocolToSystem(m_Protocol), "invalid JSON error response from master");
 			return;
 		}
-		const bool UnsupportedResponse = (ProtocolIsQuic(m_Protocol) || ProtocolIsWebTransport(m_Protocol)) && (m_pRegister->StatusCode() == 400 || m_pRegister->StatusCode() == 501);
+		const bool UnsupportedResponse = !ProtocolIsLegacy(m_Protocol) && (m_pRegister->StatusCode() == 400 || m_pRegister->StatusCode() == 501);
 		bool NewlyUnsupported = false;
 		if(UnsupportedResponse)
 		{
@@ -731,6 +762,8 @@ CRegister::CRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHt
 		CProtocol(this, PROTOCOL_DDNET_WT_IPV4),
 		CProtocol(this, PROTOCOL_TW7_WT_IPV6),
 		CProtocol(this, PROTOCOL_TW7_WT_IPV4),
+		CProtocol(this, PROTOCOL_DDNET_WS_IPV6),
+		CProtocol(this, PROTOCOL_DDNET_WS_IPV4),
 	}
 {
 	str_copy(m_aRegisterHostname, pRegisterHostname);
@@ -756,10 +789,12 @@ void CRegister::UpdateProtocolEnabled()
 {
 	bool QuicChallengeSupported;
 	bool WebTransportChallengeSupported;
+	bool WebsocketChallengeSupported;
 	{
 		const CLockScope LockScope(m_pGlobal->m_Lock);
 		QuicChallengeSupported = m_pGlobal->m_QuicChallengeSupported;
 		WebTransportChallengeSupported = m_pGlobal->m_WebTransportChallengeSupported;
+		WebsocketChallengeSupported = m_pGlobal->m_WebsocketChallengeSupported;
 	}
 	const bool aLegacyRegistrationRequested[2] = {
 		m_Transports.m_LegacyUdp && (m_aProtocolRequested[PROTOCOL_TW6_IPV6] || (m_pConfig->m_SvSixup && m_aProtocolRequested[PROTOCOL_TW7_IPV6])),
@@ -774,6 +809,8 @@ void CRegister::UpdateProtocolEnabled()
 			Enabled &= m_Transports.m_Quic && (!aLegacyRegistrationRequested[Protocol % 2] || QuicChallengeSupported);
 		else if(ProtocolIsWebTransport(Protocol))
 			Enabled &= m_Transports.m_WebTransport && (!aLegacyRegistrationRequested[Protocol % 2] || WebTransportChallengeSupported);
+		else if(ProtocolIsWebsocket(Protocol))
+			Enabled &= m_Transports.m_Websocket && (!aLegacyRegistrationRequested[Protocol % 2] || WebsocketChallengeSupported);
 		if(!ProtocolIsLegacy(Protocol))
 			Enabled &= !m_aProtocols[Protocol].Unsupported();
 		if(ProtocolIsSixup(Protocol))
@@ -878,6 +915,8 @@ void CRegister::OnConfigChange()
 				m_aProtocolRequested[PROTOCOL_DDNET_QUIC_IPV4] = true;
 				m_aProtocolRequested[PROTOCOL_DDNET_WT_IPV6] = true;
 				m_aProtocolRequested[PROTOCOL_DDNET_WT_IPV4] = true;
+				m_aProtocolRequested[PROTOCOL_DDNET_WS_IPV6] = true;
+				m_aProtocolRequested[PROTOCOL_DDNET_WS_IPV4] = true;
 			}
 			else if(str_comp(aBuf, "tw0.7") == 0)
 			{
@@ -1031,7 +1070,7 @@ void CRegister::OnModernTrustChanged(const char *pIdentityFragment, const char *
 	str_copy(m_aWebTransportFragment, pWebTransportFragment);
 	for(int Protocol = 0; Protocol < NUM_PROTOCOLS; Protocol++)
 	{
-		if(m_aProtocolEnabled[Protocol] && ((IdentityChanged && ProtocolIsQuic(Protocol)) || (WebTransportChanged && ProtocolIsWebTransport(Protocol))))
+		if(m_aProtocolEnabled[Protocol] && ((IdentityChanged && (ProtocolIsQuic(Protocol) || ProtocolIsWebsocket(Protocol))) || (WebTransportChanged && ProtocolIsWebTransport(Protocol))))
 			m_aProtocols[Protocol].SendRegister();
 	}
 }

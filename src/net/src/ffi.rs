@@ -591,15 +591,30 @@ pub extern "C" fn ddnet_net_set_accept_protocol(
     accept: bool,
 ) -> bool {
     net.init(|builder| {
-        let protocol = match protocol {
-            DDNET_NET_PROTOCOL_TW06 => Protocol::Tw06,
-            DDNET_NET_PROTOCOL_TW07 => Protocol::Tw07,
-            DDNET_NET_PROTOCOL_QUIC => Protocol::Quic,
-            DDNET_NET_PROTOCOL_WEBTRANSPORT => Protocol::WebTransport,
-            DDNET_NET_PROTOCOL_WEBSOCKET => Protocol::WebSocket,
-            _ => bail!("unknown protocol {}", protocol),
-        };
-        builder.accept_protocol(protocol, accept);
+        builder.accept_protocol(protocol_from_ffi(protocol)?, accept);
+        Ok(())
+    })
+}
+fn protocol_from_ffi(protocol: u64) -> Result<Protocol> {
+    Ok(match protocol {
+        DDNET_NET_PROTOCOL_TW06 => Protocol::Tw06,
+        DDNET_NET_PROTOCOL_TW07 => Protocol::Tw07,
+        DDNET_NET_PROTOCOL_QUIC => Protocol::Quic,
+        DDNET_NET_PROTOCOL_WEBTRANSPORT => Protocol::WebTransport,
+        DDNET_NET_PROTOCOL_WEBSOCKET => Protocol::WebSocket,
+        _ => bail!("unknown protocol {}", protocol),
+    })
+}
+/// Whether the library takes connections over `protocol`: what was asked
+/// for, less what is not compiled in. After `ddnet_net_open`.
+#[no_mangle]
+pub extern "C" fn ddnet_net_accepts_protocol(
+    net: &mut DdnetNet,
+    protocol: u64,
+    accepts: &mut bool,
+) -> bool {
+    net.good(|impl_| {
+        *accepts = impl_.accepts_protocol(protocol_from_ffi(protocol)?);
         Ok(())
     })
 }

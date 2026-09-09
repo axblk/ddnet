@@ -1568,6 +1568,15 @@ impl Net {
     // TODO: second function including all non-connected, or already-disconnected peers
     /// The 0.7 token that is accepted from any address, for the masterserver's
     /// challenge. It changes when the socket is reopened.
+    pub fn accepts_protocol(&self, protocol: Protocol) -> bool {
+        match protocol {
+            Protocol::Tw06 => self.cb.accept.tw06,
+            Protocol::Tw07 => self.cb.accept.tw07,
+            Protocol::Quic => self.cb.accept.quic,
+            Protocol::WebTransport => self.cb.accept.webtransport,
+            Protocol::WebSocket => self.cb.accept.websocket,
+        }
+    }
     pub fn global_token7(&self) -> u32 {
         tw07::global_token(&self.cb)
     }

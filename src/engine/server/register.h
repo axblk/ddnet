@@ -35,6 +35,11 @@ public:
 	bool m_LegacyUdp = false;
 	bool m_Quic = false;
 	bool m_WebTransport = false;
+	bool m_Websocket = false;
+	// Whether the WebSocket listener shows a certificate browsers trust
+	// (`sv_tls_cert`), so the address is `ddnet+wss://`; the self-made
+	// certificate is only good for WebTransport, which takes its hash.
+	bool m_WebsocketTls = false;
 };
 
 IRegister *CreateRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHttp *pHttp, int ServerPort, unsigned SixupSecurityToken, const CRegisterTransports &Transports, const char *pRegisterHostname, const char *pIdentityFragment, const char *pWebTransportFragment);

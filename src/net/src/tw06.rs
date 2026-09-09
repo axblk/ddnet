@@ -11,7 +11,7 @@ use crate::Result;
 use crate::Tw06Addr as Addr;
 use getrandom::getrandom;
 use libtw2_warn;
-use mio::net::UdpSocket;
+use crate::Socket;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::str;
@@ -315,7 +315,7 @@ impl Connection {
 }
 
 struct Callback<'a> {
-    socket: &'a UdpSocket,
+    socket: &'a Socket,
     addr: &'a SocketAddr,
     epoch: Instant,
 }

@@ -427,6 +427,11 @@ private:
 };
 
 // server side
+#ifdef CONF_NETWORKING_QUIC
+// Formats the address the network library binds to.
+void BindAddrStr(const NETADDR &BindAddr, char *pBuffer, size_t BufferSize);
+#endif
+
 class CNetServer
 {
 #ifdef CONF_NETWORKING_QUIC

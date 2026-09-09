@@ -356,9 +356,8 @@ bool CNetClient::Open(NETADDR BindAddr)
 
 bool CNetClient::OpenLibrary()
 {
-	// TODO: use the actual bind address, not just the port
 	char aBindAddr[NETADDR_MAXSTRSIZE];
-	str_format(aBindAddr, sizeof(aBindAddr), "0.0.0.0:%d", m_BindAddr.port);
+	BindAddrStr(m_BindAddr, aBindAddr, sizeof(aBindAddr));
 
 	ddnet_net_ev_new(&m_pNetEvent);
 	if(false ||

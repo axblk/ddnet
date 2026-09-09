@@ -30,6 +30,7 @@ use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
+use std::net::SocketAddrV6;
 use std::path::Path;
 use std::str;
 use std::str::FromStr;
@@ -71,8 +72,54 @@ pub struct CallbackData {
     pub sslkeylogfile: Option<ArcFile>,
     pub challenger: Challenger,
     pub local_addr: SocketAddr,
-    pub socket: UdpSocket,
+    pub socket: Socket,
     pub next_peer_index: PeerIndex,
+}
+
+/// The one UDP socket everything goes over. Bound to an IPv6 address, it
+/// takes IPv4 as well, and IPv4 peers then show up as IPv4-mapped IPv6
+/// addresses. The mapping stays inside: addresses coming out are plain
+/// IPv4, addresses going in may be.
+pub struct Socket {
+    inner: UdpSocket,
+    v6: bool,
+}
+
+impl Socket {
+    fn bind(bindaddr: SocketAddr) -> io::Result<Socket> {
+        let domain = if bindaddr.is_ipv6() { socket2::Domain::IPV6 } else { socket2::Domain::IPV4 };
+        let socket = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+        if bindaddr.is_ipv6() {
+            // Not every system does this by default, Windows does not.
+            if let Err(error) = socket.set_only_v6(false) {
+                warn!("IPv6 socket cannot take IPv4 as well: {}", error);
+            }
+        }
+        // LAN discovery.
+        socket.set_broadcast(true)?;
+        socket.set_nonblocking(true)?;
+        socket.bind(&bindaddr.into())?;
+        Ok(Socket {
+            inner: UdpSocket::from_std(socket.into()),
+            v6: bindaddr.is_ipv6(),
+        })
+    }
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.inner.local_addr()
+    }
+    pub fn send_to(&self, buf: &[u8], addr: SocketAddr) -> io::Result<usize> {
+        let addr = match addr {
+            SocketAddr::V4(v4) if self.v6 => {
+                SocketAddr::V6(SocketAddrV6::new(v4.ip().to_ipv6_mapped(), v4.port(), 0, 0))
+            }
+            addr => addr,
+        };
+        self.inner.send_to(buf, addr)
+    }
+    pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        let (len, from) = self.inner.recv_from(buf)?;
+        Ok((len, normalize(from)))
+    }
 }
 
 // TODO: replace with ordered set?
@@ -479,17 +526,26 @@ impl NetBuilder {
         ));
         let identity = self.identity.unwrap_or_else(PrivateIdentity::random);
 
-        let mut socket = UdpSocket::bind(bindaddr).context("bind")?;
+        let mut socket = match Socket::bind(bindaddr) {
+            Ok(socket) => socket,
+            // A system without IPv6 still gets a socket.
+            Err(error) if bindaddr.ip() == IpAddr::V6(Ipv6Addr::UNSPECIFIED) => {
+                warn!("cannot bind {}: {}, falling back to IPv4", bindaddr, error);
+                let bindaddr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), bindaddr.port());
+                Socket::bind(bindaddr).context("bind")?
+            }
+            Err(error) => return Err(Error::from_string(format!("bind {}: {}", bindaddr, error))),
+        };
         let local_addr = socket.local_addr().context("local_addr")?;
 
         let poll = Poll::new().context("mio::Poll::new")?;
         let events = Events::with_capacity(1);
         poll.registry()
-            .register(&mut socket, mio::Token(0), mio::Interest::READABLE)
+            .register(&mut socket.inner, mio::Token(0), mio::Interest::READABLE)
             .context("mio::Poll::register")?;
 
         info!("identity {}", identity.public());
-        info!("listening on {}", bindaddr);
+        info!("listening on {}", local_addr);
 
         Ok(Net {
             cb: CallbackData {
@@ -610,7 +666,6 @@ impl Net {
                 }
             };
             self.socket_read_errors = 0;
-            let from = normalize(from);
             let idx = if let Some(&idx) = self.peer_addrs.get(&from) {
                 idx
             } else {

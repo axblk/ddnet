@@ -14,7 +14,7 @@ use getrandom::getrandom;
 use libtw2_net::connection7 as connection;
 use libtw2_net::protocol7 as protocol;
 use libtw2_warn;
-use mio::net::UdpSocket;
+use crate::Socket;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::str;
@@ -310,7 +310,7 @@ impl Connection {
 }
 
 struct Callback<'a> {
-    socket: &'a UdpSocket,
+    socket: &'a Socket,
     addr: &'a SocketAddr,
     epoch: Instant,
 }

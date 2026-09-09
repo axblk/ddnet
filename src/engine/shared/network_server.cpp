@@ -904,6 +904,20 @@ static bool AddrFromUrl(const char *pUrl, NETADDR *pAddr)
 	return net_addr_from_str(pAddr, aBuf) == 0;
 }
 
+// The library listens on one socket. Bound to IPv6 it takes IPv4 as well, so
+// an address that is not pinned to one family becomes the IPv6 wildcard.
+void BindAddrStr(const NETADDR &BindAddr, char *pBuffer, size_t BufferSize)
+{
+	if((BindAddr.type & NETTYPE_IPV4) && (BindAddr.type & NETTYPE_IPV6))
+	{
+		str_format(pBuffer, BufferSize, "[::]:%d", BindAddr.port);
+		return;
+	}
+	NETADDR Addr = BindAddr;
+	Addr.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+	net_addr_str(&Addr, pBuffer, BufferSize, true);
+}
+
 // The address of a connect event names the protocol in its scheme.
 static bool UrlIsSixup(const char *pUrl)
 {
@@ -982,9 +996,8 @@ bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int Ma
 
 bool CNetServer::OpenLibrary()
 {
-	// TODO: use the actual bind address, not just the port
 	char aBindAddr[NETADDR_MAXSTRSIZE];
-	str_format(aBindAddr, sizeof(aBindAddr), "0.0.0.0:%d", m_Address.port);
+	BindAddrStr(m_Address, aBindAddr, sizeof(aBindAddr));
 
 	ddnet_net_ev_new(&m_pNetEvent);
 	if(false ||

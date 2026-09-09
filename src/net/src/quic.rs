@@ -1071,6 +1071,9 @@ pub struct Connection {
     resume_request: Option<(u64, [u8; RESUME_TOKEN_LEN])>,
     /// The resume went through; to be announced with the next event.
     announce_resumed: bool,
+    /// The peer reaches us from another address than before, after a
+    /// migration or a resume; to be announced with the next event.
+    moved: bool,
     /// When a resume must have gone through, or the peer is lost.
     resume_deadline: Option<Instant>,
     /// Reliable messages held back until the resume goes through.
@@ -1156,6 +1159,7 @@ impl Connection {
             resuming: false,
             resume_request: None,
             announce_resumed: false,
+            moved: false,
             resume_deadline: None,
             pending: VecDeque::new(),
             pending_bytes: 0,
@@ -1199,6 +1203,7 @@ impl Connection {
     pub fn take_over(&mut self, old: &mut Connection) {
         self.pending = mem::take(&mut old.pending);
         self.pending_bytes = mem::replace(&mut old.pending_bytes, 0);
+        self.moved = self.peer_addr != old.peer_addr;
     }
     /// Answers the hello of a resuming client; the connection is online
     /// from here and announces the resume with its next event.
@@ -1996,6 +2001,21 @@ impl Connection {
             self.announce_resumed = false;
             self.flush_pending()?;
             return Ok(Some(Event::Resumed(self.addr().into()).into()));
+        }
+        // quiche follows a peer to a new address on its own (NAT
+        // rebinding, a changed uplink); the outer protocol hears of it.
+        while let Some(event) = self.inner.path_event_next() {
+            if let quiche::PathEvent::PeerMigrated(_, peer_addr) = event {
+                if peer_addr != self.peer_addr {
+                    info!("{} moved to {}", self.peer_addr, peer_addr);
+                    self.peer_addr = peer_addr;
+                    self.moved = true;
+                }
+            }
+        }
+        if self.moved {
+            self.moved = false;
+            return Ok(Some(Event::Moved(self.addr().into())));
         }
         if self.map_lost && self.state == Online {
             self.map_lost = false;

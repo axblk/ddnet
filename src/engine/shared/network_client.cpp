@@ -607,6 +607,9 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 			m_aErrorString[ReasonLen] = '\0';
 		}
 		break;
+		case DDNET_NET_EV_MOVED:
+			// The server stays where it is; a client only ever moves itself.
+			break;
 		case DDNET_NET_EV_CHUNK:
 		{
 			const uint64_t PeerId = ddnet_net_ev_chunk_peer_index(m_pNetEvent);

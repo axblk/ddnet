@@ -19,6 +19,8 @@
 
 #define DDNET_NET_EV_MAP 5
 
+#define DDNET_NET_EV_MOVED 6
+
 #define DDNET_NET_MAP_HEADER 0
 
 #define DDNET_NET_MAP_DATA 1
@@ -79,6 +81,13 @@ bool ddnet_net_decode_map_header(const uint8_t *payload,
 uint64_t ddnet_net_ev_connect_peer_index(const struct DdnetNetEvent *ev);
 
 void ddnet_net_ev_connect_addr(struct DdnetNetEvent *ev, const char **addr_ptr, size_t *addr_len);
+
+uint64_t ddnet_net_ev_moved_peer_index(const struct DdnetNetEvent *ev);
+
+/**
+ * The peer's new address, as a URL like the one of its connect event.
+ */
+void ddnet_net_ev_moved_addr(struct DdnetNetEvent *ev, const char **addr_ptr, size_t *addr_len);
 
 uint64_t ddnet_net_ev_chunk_peer_index(const struct DdnetNetEvent *ev);
 

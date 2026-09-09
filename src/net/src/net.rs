@@ -3,6 +3,7 @@ use crate::normalize;
 use crate::quic;
 use crate::tw06;
 use crate::tw07;
+use crate::wire;
 use crate::Challenger;
 use crate::Context as _;
 use crate::Error;
@@ -186,6 +187,8 @@ pub struct Net {
     peer_addrs: HashMap<SocketAddr, PeerIndex>,
     peers: HashMap<PeerIndex, Peer>,
     peer_buckets: HashMap<Bucket, BucketCount>,
+    /// The maps a server can send, by the ID the outer protocol gave them.
+    maps: HashMap<u32, Arc<Map>>,
     connect_errors: VecDeque<(PeerIndex, Error)>,
     /// Peers whose connection failed on our side, to be torn down and
     /// reported from `recv`.
@@ -269,6 +272,28 @@ pub enum Event {
     Disconnect(PeerIndex, usize, bool),
     /// `ConnlessChunk(from, size, meta)`
     ConnlessChunk(Addr, usize, ConnlessMeta),
+    /// `Map(pid, what, size)`, a step of a map arriving on a stream of its
+    /// own; see [`MapEvent`].
+    Map(PeerIndex, MapEvent, usize),
+}
+
+/// A map the server hands out on a QUIC stream of its own.
+pub struct Map {
+    pub name: Vec<u8>,
+    pub crc: u32,
+    pub sha256: [u8; 32],
+    pub data: Vec<u8>,
+}
+
+/// What a map stream delivers, in this order: the header once, the data in
+/// pieces, then the end after the checksum matched. A failure ends the
+/// stream instead, with the reason as its data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MapEvent {
+    Header,
+    Data,
+    End,
+    Failed,
 }
 
 #[derive(Clone, Copy)]
@@ -285,6 +310,10 @@ pub enum ConnectionEvent {
     ///
     /// Must only be sent once a [`Connect`] has been sent.
     Disconnect(usize, bool),
+    /// `Map(what, size)`
+    ///
+    /// Must only be sent once a [`Connect`] has been sent.
+    Map(MapEvent, usize),
     /// Asks for the connection object to be destroyed.
     ///
     /// This event can only be sent after a `Disconnect` event.
@@ -611,6 +640,7 @@ impl NetBuilder {
             peer_addrs: HashMap::new(),
             peers: HashMap::new(),
             peer_buckets: HashMap::new(),
+            maps: HashMap::new(),
             connect_errors: VecDeque::with_capacity(1),
             failed_peers: VecDeque::with_capacity(1),
             dead_peers: VecDeque::with_capacity(1),
@@ -982,6 +1012,13 @@ impl Net {
                             return Ok(Some(Event::Chunk(idx, size, unreliable)))
                         }
                         ConnectionEvent::ConnlessChunk(peer_addr, size, meta) => return Ok(Some(Event::ConnlessChunk(peer_addr, size, meta))),
+                        ConnectionEvent::Map(what, size) => {
+                            if !peer.high_level {
+                                warn!("peer {}: map before connect, ignoring", idx);
+                                continue;
+                            }
+                            return Ok(Some(Event::Map(idx, what, size)))
+                        }
                         ConnectionEvent::Disconnect(reason_size, remote) => {
                             // A connection that ends before it was ever
                             // reported is news only to whoever asked for it,
@@ -1046,6 +1083,39 @@ impl Net {
         let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
         if let Err(error) = peer.conn.flush(&self.cb, &mut self.packet_buf) {
             self.fail_peer(idx, error);
+        }
+        Ok(())
+    }
+    /// Keeps a map for `send_map`, replacing one under the same ID. A map
+    /// already going out keeps going out as it was.
+    pub fn set_map(&mut self, id: u32, map: Map) -> Result<()> {
+        if map.data.is_empty() || map.data.len() as u64 > wire::MAX_MAP_SIZE {
+            bail!("map {} has {} bytes, need 1 to {}", id, map.data.len(), wire::MAX_MAP_SIZE);
+        }
+        if map.name.is_empty() || map.name.len() > wire::MAX_MAP_NAME_SIZE {
+            bail!("map {} has a name of {} bytes, need 1 to {}", id, map.name.len(), wire::MAX_MAP_NAME_SIZE);
+        }
+        self.maps.insert(id, Arc::new(map));
+        Ok(())
+    }
+    /// Starts sending a map to a QUIC peer on a stream of its own, dropping
+    /// one that is still going out to it.
+    pub fn send_map(&mut self, idx: PeerIndex, id: u32) -> Result<()> {
+        let Some(map) = self.maps.get(&id).cloned() else { bail!("no map {}", id) };
+        let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
+        let Connection::Quic(conn) = &mut peer.conn else {
+            bail!("peer {} is not connected over QUIC", idx);
+        };
+        if let Err(error) = conn.send_map(&self.cb, &mut self.packet_buf, map) {
+            self.fail_peer(idx, error);
+        }
+        Ok(())
+    }
+    /// Stops a map that is going out to the peer, if any.
+    pub fn cancel_map(&mut self, idx: PeerIndex) -> Result<()> {
+        let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
+        if let Connection::Quic(conn) = &mut peer.conn {
+            conn.cancel_map();
         }
         Ok(())
     }

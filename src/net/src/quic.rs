@@ -12,8 +12,11 @@ use crate::Result;
 use crate::secure_random;
 use crate::wire;
 use crate::Error;
+use crate::Map;
+use crate::MapEvent;
 use log::debug;
 use log::info;
+use ring::digest;
 use arrayvec::ArrayVec;
 use std::cmp;
 use std::collections::hash_map;
@@ -34,6 +37,14 @@ use std::time::Instant;
 
 pub const QUIC_CLOSE_CODE: u64 = 0xdd40a0;
 pub const RETRY_TOKEN_LEN: usize = 20 + 4;
+/// Streams the server may have open towards a client at once; each map goes
+/// on a fresh one, and the count refills as streams end.
+const MAX_INCOMING_MAP_STREAMS: u64 = 8;
+/// A stream starts with its kind and the framing version, then the map
+/// header frame.
+const MAX_MAP_PRELUDE: usize = 16 + 16 + wire::MAX_MAP_HEADER_SIZE;
+/// Stream priority of a map, behind the control stream at quiche's default.
+const MAP_STREAM_URGENCY: u8 = 200;
 
 pub struct Protocol {
     config: quiche::Config,
@@ -232,6 +243,10 @@ fn config(
     // TODO: decide on a proper number. the current one ensures datagrams of size 1394
     config.set_max_send_udp_payload_size(1423);
     config.enable_dgram(true, 32, 32);
+    // Packets go out as soon as quiche produces them; nothing holds them
+    // back until the time quiche would pace them to. Sending a map would
+    // otherwise be one warning per packet.
+    config.enable_pacing(false);
     Ok(config)
 }
 
@@ -242,12 +257,13 @@ trait ConfigExt {
 
 impl ConfigExt for quiche::Config {
     fn client(&mut self) -> &mut quiche::Config {
-        self.set_initial_max_data(1024 * 1024);
+        self.set_initial_max_data(2 * 1024 * 1024);
         self.set_initial_max_stream_data_bidi_local(1024 * 1024);
         self.set_initial_max_stream_data_bidi_remote(0);
-        self.set_initial_max_stream_data_uni(0);
+        // The server opens a stream per map it sends.
+        self.set_initial_max_stream_data_uni(1024 * 1024);
         self.set_initial_max_streams_bidi(0);
-        self.set_initial_max_streams_uni(0);
+        self.set_initial_max_streams_uni(MAX_INCOMING_MAP_STREAMS);
         self
     }
     fn server(&mut self) -> &mut quiche::Config {
@@ -502,6 +518,45 @@ pub struct Connection {
     incoming_datagram: Option<IncomingDatagram>,
     /// What the peer announced in its hello.
     peer_capabilities: u64,
+    /// The map going out to the client, if any.
+    outgoing_map: Option<OutgoingMap>,
+    /// The next stream a server opens towards the client.
+    next_uni_stream: u64,
+    /// The map coming in from the server, if any.
+    incoming_map: Option<IncomingMap>,
+}
+
+struct OutgoingMap {
+    stream: u64,
+    /// Stream kind, version and the header frame.
+    prelude: Vec<u8>,
+    prelude_offset: usize,
+    map: Arc<Map>,
+    offset: usize,
+}
+
+struct IncomingMap {
+    stream: u64,
+    /// Bytes not yet parsed: the prelude at first, then data that came with
+    /// it and is handed out before more is read.
+    buffer: Vec<u8>,
+    /// The checksum the header promised, and the bytes still to come.
+    header: Option<([u8; wire::MAP_SHA256_SIZE], usize)>,
+    digest: digest::Context,
+    /// The server finished the stream.
+    finished: bool,
+}
+
+impl IncomingMap {
+    fn new(stream: u64) -> IncomingMap {
+        IncomingMap {
+            stream,
+            buffer: Vec::new(),
+            header: None,
+            digest: digest::Context::new(&digest::SHA256),
+            finished: false,
+        }
+    }
 }
 
 impl Connection {
@@ -526,6 +581,10 @@ impl Connection {
             datagram_sequence: 0,
             incoming_datagram: None,
             peer_capabilities: 0,
+            outgoing_map: None,
+            // Server-initiated unidirectional streams are 3, 7, 11, ...
+            next_uni_stream: 3,
+            incoming_map: None,
         }
     }
     pub fn on_recv(
@@ -598,7 +657,7 @@ impl Connection {
             major: wire::VERSION_MAJOR,
             minor: wire::VERSION_MINOR,
             protocol_version: GAME_PROTOCOL,
-            capabilities: wire::capability::DATAGRAM,
+            capabilities: wire::capability::DATAGRAM | wire::capability::MAP_STREAM,
             max_datagram_size,
             nonce: secure_random(),
             resume_token: &[],
@@ -715,7 +774,303 @@ impl Connection {
             .context("quiche::Conn::dgram_send_vec")?;
         Ok(())
     }
+    /// Opens a stream for the map and starts writing it; the rest goes out
+    /// as the peer makes room, from `pump_map`.
+    pub fn send_map(
+        &mut self,
+        cb: &CallbackData,
+        packet_buf: &mut [u8; 65536],
+        map: Arc<Map>,
+    ) -> Result<()> {
+        if self.state != State::Online {
+            bail!("not online");
+        }
+        if self.client {
+            bail!("only a server sends maps");
+        }
+        if self.peer_capabilities & wire::capability::MAP_STREAM == 0 {
+            bail!("peer takes no map stream");
+        }
+        self.cancel_map();
+        let header = wire::MapHeader {
+            size: map.data.len() as u64,
+            crc: map.crc,
+            sha256: map.sha256,
+            name: &map.name,
+        };
+        let Some(header) = wire::encode_map_header(&header) else {
+            bail!("map header does not encode");
+        };
+        let mut prelude = Vec::with_capacity(16 + header.len());
+        wire::encode_varint(wire::stream::MAP, &mut prelude);
+        wire::encode_varint(wire::VERSION_MAJOR, &mut prelude);
+        if !wire::encode_frame(wire::frame::MAP_HEADER, &header, &mut prelude) {
+            bail!("map header frame does not encode");
+        }
+        let stream = self.next_uni_stream;
+        // Creates the stream, and fails if the peer allows no more of them.
+        self.inner
+            .stream_priority(stream, MAP_STREAM_URGENCY, true)
+            .context("quiche::Conn::stream_priority")?;
+        self.next_uni_stream += 4;
+        self.outgoing_map = Some(OutgoingMap {
+            stream,
+            prelude,
+            prelude_offset: 0,
+            map,
+            offset: 0,
+        });
+        self.flush(cb, packet_buf)
+    }
+    /// Drops the map going out, if any; the peer sees the stream reset.
+    pub fn cancel_map(&mut self) {
+        if let Some(map) = self.outgoing_map.take() {
+            let _ = self
+                .inner
+                .stream_shutdown(map.stream, quiche::Shutdown::Write, QUIC_CLOSE_CODE);
+        }
+    }
+    /// Writes as much of the outgoing map as the stream takes. quiche
+    /// reports a stream without room as zero bytes written, not as `Done`.
+    fn pump_map(&mut self) -> Result<()> {
+        let Some(map) = &mut self.outgoing_map else {
+            return Ok(());
+        };
+        while map.prelude_offset < map.prelude.len() {
+            match self.inner.stream_send(map.stream, &map.prelude[map.prelude_offset..], false) {
+                Ok(0) | Err(quiche::Error::Done) => return Ok(()),
+                Ok(written) => map.prelude_offset += written,
+                Err(e) => return Err(e).context("quiche::Conn::stream_send"),
+            }
+        }
+        while map.offset < map.map.data.len() {
+            match self.inner.stream_send(map.stream, &map.map.data[map.offset..], false) {
+                Ok(0) | Err(quiche::Error::Done) => return Ok(()),
+                Ok(written) => map.offset += written,
+                Err(e) => return Err(e).context("quiche::Conn::stream_send"),
+            }
+        }
+        match self.inner.stream_send(map.stream, &[], true) {
+            Ok(_) => {}
+            Err(quiche::Error::Done) => return Ok(()),
+            Err(e) => return Err(e).context("quiche::Conn::stream_send"),
+        }
+        self.outgoing_map = None;
+        Ok(())
+    }
+    /// Ends the incoming map with a failure, the reason as the event's
+    /// data.
+    fn map_failed(&mut self, buf: &mut [u8], reason: &str) -> Event {
+        if let Some(map) = self.incoming_map.take() {
+            debug!("map stream {} from {}: {}", map.stream, self.peer_addr, reason);
+            let _ = self
+                .inner
+                .stream_shutdown(map.stream, quiche::Shutdown::Read, QUIC_CLOSE_CODE);
+        }
+        let len = reason.len().min(buf.len());
+        buf[..len].copy_from_slice(&reason.as_bytes()[..len]);
+        Event::Map(MapEvent::Failed, len)
+    }
+    /// Ends the incoming map once all its bytes are in.
+    fn map_finished(&mut self, buf: &mut [u8]) -> Event {
+        let map = self.incoming_map.take().unwrap();
+        let Some((sha256, remaining)) = map.header else {
+            self.incoming_map = Some(map);
+            return self.map_failed(buf, "map stream ended before its header");
+        };
+        if remaining != 0 {
+            self.incoming_map = Some(map);
+            return self.map_failed(buf, "map stream ended early");
+        }
+        if map.digest.clone().finish().as_ref() != sha256 {
+            self.incoming_map = Some(map);
+            return self.map_failed(buf, "map stream checksum mismatch");
+        }
+        Event::Map(MapEvent::End, 0)
+    }
+    /// The next step of the incoming map, if any is due: looks at the
+    /// streams the server opened and reads the newest one.
+    fn next_map_event(&mut self, buf: &mut [u8]) -> Result<Option<Event>> {
+        // A finished stream is not readable any more, but may still hold
+        // data that came with the header, and its end is still due.
+        if self.incoming_map.as_ref().is_some_and(|map| map.finished) {
+            return self.read_map_stream(buf);
+        }
+        let readable: Vec<u64> = self.inner.readable().filter(|&id| id != 0).collect();
+        for id in readable {
+            // Only a server opens streams, unidirectional ones for maps.
+            if !self.client || id & 0b11 != 0b11 {
+                debug!("stream {} from {} not expected, ignoring", id, self.peer_addr);
+                let _ = self.inner.stream_shutdown(id, quiche::Shutdown::Read, QUIC_CLOSE_CODE);
+                continue;
+            }
+            match &self.incoming_map {
+                Some(map) if map.stream == id => {}
+                Some(map) if map.stream < id => {
+                    // A newer map replaces the one still coming in.
+                    debug!("map stream {} from {} replaced by {}", map.stream, self.peer_addr, id);
+                    let _ = self.inner.stream_shutdown(map.stream, quiche::Shutdown::Read, QUIC_CLOSE_CODE);
+                    self.incoming_map = Some(IncomingMap::new(id));
+                }
+                Some(_) => {
+                    let _ = self.inner.stream_shutdown(id, quiche::Shutdown::Read, QUIC_CLOSE_CODE);
+                    continue;
+                }
+                None => self.incoming_map = Some(IncomingMap::new(id)),
+            }
+            if let Some(event) = self.read_map_stream(buf)? {
+                return Ok(Some(event));
+            }
+        }
+        Ok(None)
+    }
+    /// Reads the incoming map's stream for one event.
+    fn read_map_stream(&mut self, buf: &mut [u8]) -> Result<Option<Event>> {
+        let map = self.incoming_map.as_mut().unwrap();
+        let stream = map.stream;
+        if map.header.is_none() {
+            let mut tmp = [0; 4096];
+            let room = MAX_MAP_PRELUDE.saturating_sub(map.buffer.len()).min(tmp.len());
+            if room == 0 {
+                return Ok(Some(self.map_failed(buf, "map header too long")));
+            }
+            if !map.finished {
+                match self.inner.stream_recv(stream, &mut tmp[..room]) {
+                    Ok((read, fin)) => {
+                        map.buffer.extend_from_slice(&tmp[..read]);
+                        map.finished |= fin;
+                    }
+                    Err(quiche::Error::Done) => return Ok(None),
+                    Err(quiche::Error::StreamReset(_)) => {
+                        // The server withdrew the map; whatever replaces it
+                        // comes on a stream of its own.
+                        debug!("map stream {} from {} reset", stream, self.peer_addr);
+                        self.incoming_map = None;
+                        return Ok(None);
+                    }
+                    Err(e) => return Err(e).context("quiche::Conn::stream_recv"),
+                }
+            }
+            let parsed = (|| {
+                let (kind, first) = match wire::decode_varint(&map.buffer) {
+                    Ok(v) => v,
+                    Err(wire::DecodeError::NeedMore) => return Ok(None),
+                    Err(_) => return Err("invalid map stream"),
+                };
+                let (version, second) = match wire::decode_varint(&map.buffer[first..]) {
+                    Ok(v) => v,
+                    Err(wire::DecodeError::NeedMore) => return Ok(None),
+                    Err(_) => return Err("invalid map stream"),
+                };
+                if kind != wire::stream::MAP || version != wire::VERSION_MAJOR {
+                    return Err("unsupported map stream");
+                }
+                let frame = match wire::decode_frame(&map.buffer[first + second..]) {
+                    Ok(frame) => frame,
+                    Err(wire::DecodeError::NeedMore) => return Ok(None),
+                    Err(_) => return Err("invalid map header"),
+                };
+                if frame.frame_type != wire::frame::MAP_HEADER {
+                    return Err("expected map header");
+                }
+                let Ok(header) = wire::decode_map_header(frame.payload) else {
+                    return Err("invalid map metadata");
+                };
+                let Ok(size) = usize::try_from(header.size) else {
+                    return Err("map exceeds platform limit");
+                };
+                if frame.payload.len() > buf.len() {
+                    return Err("map header too long");
+                }
+                Ok(Some((first + second, frame.bytes_consumed, frame.payload.len(), header.sha256, size)))
+            })();
+            match parsed {
+                Err(reason) => return Ok(Some(self.map_failed(buf, reason))),
+                Ok(None) => {
+                    if map.finished {
+                        return Ok(Some(self.map_failed(buf, "map stream ended before its header")));
+                    }
+                    return Ok(None);
+                }
+                Ok(Some((prelude, consumed, len, sha256, size))) => {
+                    let end = prelude + consumed;
+                    buf[..len].copy_from_slice(&map.buffer[end - len..end]);
+                    map.buffer.drain(..end);
+                    map.header = Some((sha256, size));
+                    return Ok(Some(Event::Map(MapEvent::Header, len)));
+                }
+            }
+        }
+        let (_, remaining) = map.header.as_mut().unwrap();
+        // Data that came in with the header goes first.
+        if !map.buffer.is_empty() {
+            if *remaining == 0 {
+                return Ok(Some(self.map_failed(buf, "map stream exceeds declared size")));
+            }
+            let take = map.buffer.len().min(*remaining).min(buf.len());
+            buf[..take].copy_from_slice(&map.buffer[..take]);
+            map.digest.update(&buf[..take]);
+            map.buffer.drain(..take);
+            *remaining -= take;
+            return Ok(Some(Event::Map(MapEvent::Data, take)));
+        }
+        if map.finished {
+            return Ok(Some(self.map_finished(buf)));
+        }
+        if *remaining == 0 {
+            // Nothing but the end may follow.
+            let mut tmp = [0; 1];
+            return match self.inner.stream_recv(stream, &mut tmp) {
+                Ok((0, true)) => Ok(Some(self.map_finished(buf))),
+                Ok(_) => Ok(Some(self.map_failed(buf, "map stream exceeds declared size"))),
+                Err(quiche::Error::Done) => Ok(None),
+                Err(quiche::Error::StreamReset(_)) => {
+                    self.incoming_map = None;
+                    Ok(None)
+                }
+                Err(e) => Err(e).context("quiche::Conn::stream_recv"),
+            };
+        }
+        let room = buf.len().min(*remaining);
+        match self.inner.stream_recv(stream, &mut buf[..room]) {
+            Ok((read, fin)) => {
+                map.digest.update(&buf[..read]);
+                *remaining -= read;
+                map.finished |= fin;
+                if read != 0 {
+                    Ok(Some(Event::Map(MapEvent::Data, read)))
+                } else if fin {
+                    Ok(Some(self.map_finished(buf)))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(quiche::Error::Done) => Ok(None),
+            Err(quiche::Error::StreamReset(_)) => {
+                debug!("map stream {} from {} reset", stream, self.peer_addr);
+                self.incoming_map = None;
+                Ok(None)
+            }
+            Err(e) => Err(e).context("quiche::Conn::stream_recv"),
+        }
+    }
+    /// Hands out the next event. Once there is none, whatever the received
+    /// packets call for goes out: acknowledgements, flow control updates,
+    /// more of a map. Nothing else would send them while the game itself
+    /// has nothing to say, as during a map download.
     pub fn recv(
+        &mut self,
+        cb: &CallbackData,
+        packet_buf: &mut [u8; 65536],
+        buf: &mut [u8],
+    ) -> Result<Option<Event>> {
+        let event = self.next_event(cb, packet_buf, buf)?;
+        if event.is_none() && self.state != State::Disconnected {
+            self.flush(cb, packet_buf)?;
+        }
+        Ok(event)
+    }
+    fn next_event(
         &mut self,
         cb: &CallbackData,
         packet_buf: &mut [u8; 65536],
@@ -723,9 +1078,11 @@ impl Connection {
     ) -> Result<Option<Event>> {
         assert!(buf.len() >= MAX_FRAME_SIZE as usize);
 
-        // A datagram never waits longer than a poll.
+        // A datagram never waits longer than a poll, and a map goes on as
+        // the peer makes room.
         if self.state == State::Online {
             self.flush_datagram()?;
+            self.pump_map()?;
         }
 
         use self::State::*;
@@ -820,6 +1177,10 @@ impl Connection {
 
         if self.state != Online {
             return Ok(None);
+        }
+
+        if let Some(event) = self.next_map_event(buf)? {
+            return Ok(Some(event));
         }
 
         Ok(self.next_datagram_message(buf)?.map(|len| Event::Chunk(len, true).into()))
@@ -929,6 +1290,7 @@ impl Connection {
         packet_buf: &mut [u8; 65536],
     ) -> Result<()> {
         self.flush_datagram()?;
+        self.pump_map()?;
         let mut num_bytes = 0;
         let mut num_packets = 0;
         loop {

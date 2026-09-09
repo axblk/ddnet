@@ -17,6 +17,16 @@
 
 #define DDNET_NET_EV_CONNLESS_CHUNK 4
 
+#define DDNET_NET_EV_MAP 5
+
+#define DDNET_NET_MAP_HEADER 0
+
+#define DDNET_NET_MAP_DATA 1
+
+#define DDNET_NET_MAP_END 2
+
+#define DDNET_NET_MAP_FAILED 3
+
 #define DDNET_NET_PROTOCOL_TW06 0
 
 #define DDNET_NET_PROTOCOL_TW07 1
@@ -36,6 +46,31 @@ void ddnet_net_ev_new(struct DdnetNetEvent **ev);
 void ddnet_net_ev_free(struct DdnetNetEvent *ev);
 
 uint64_t ddnet_net_ev_kind(const struct DdnetNetEvent *ev);
+
+uint64_t ddnet_net_ev_map_peer_index(const struct DdnetNetEvent *ev);
+
+/**
+ * One of `DDNET_NET_MAP_*`.
+ */
+uint64_t ddnet_net_ev_map_kind(const struct DdnetNetEvent *ev);
+
+/**
+ * Bytes in the buffer: the header frame, a piece of the map, or the reason
+ * of the failure.
+ */
+size_t ddnet_net_ev_map_len(const struct DdnetNetEvent *ev);
+
+/**
+ * Takes a map header as a `DDNET_NET_MAP_HEADER` event delivers it apart.
+ * The name is not NUL-terminated and points into `payload`.
+ */
+bool ddnet_net_decode_map_header(const uint8_t *payload,
+                                 size_t payload_len,
+                                 uint64_t *size,
+                                 uint32_t *crc,
+                                 uint8_t (*sha256)[32],
+                                 const uint8_t **name,
+                                 size_t *name_len);
 
 uint64_t ddnet_net_ev_connect_peer_index(const struct DdnetNetEvent *ev);
 
@@ -112,6 +147,28 @@ bool ddnet_net_send_chunk(struct DdnetNet *net,
                           bool unreliable);
 
 bool ddnet_net_flush(struct DdnetNet *net, uint64_t peer_index);
+
+/**
+ * Keeps a copy of the map under `map_id` for `ddnet_net_send_map`.
+ */
+bool ddnet_net_set_map(struct DdnetNet *net,
+                       uint32_t map_id,
+                       const uint8_t *name,
+                       size_t name_len,
+                       uint32_t crc,
+                       const uint8_t (*sha256)[32],
+                       const uint8_t *data,
+                       size_t data_len);
+
+/**
+ * Sends the map to a QUIC peer on a stream of its own.
+ */
+bool ddnet_net_send_map(struct DdnetNet *net, uint64_t peer_index, uint32_t map_id);
+
+/**
+ * Stops a map still going out to the peer.
+ */
+bool ddnet_net_cancel_map(struct DdnetNet *net, uint64_t peer_index);
 
 bool ddnet_net_connect(struct DdnetNet *net,
                        const char *addr,

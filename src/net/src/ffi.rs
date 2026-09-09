@@ -2,6 +2,9 @@ use self::NetInner::*;
 use crate::Context;
 use crate::Error;
 use crate::Event as EventImpl;
+use crate::Map;
+use crate::MapEvent;
+use crate::wire;
 use crate::Net as NetImpl;
 use crate::NetBuilder as NetBuilderImpl;
 use crate::PeerIndex;
@@ -59,6 +62,12 @@ pub const DDNET_NET_EV_CONNECT: u64 = 1;
 pub const DDNET_NET_EV_CHUNK: u64 = 2;
 pub const DDNET_NET_EV_DISCONNECT: u64 = 3;
 pub const DDNET_NET_EV_CONNLESS_CHUNK: u64 = 4;
+pub const DDNET_NET_EV_MAP: u64 = 5;
+
+pub const DDNET_NET_MAP_HEADER: u64 = 0;
+pub const DDNET_NET_MAP_DATA: u64 = 1;
+pub const DDNET_NET_MAP_END: u64 = 2;
+pub const DDNET_NET_MAP_FAILED: u64 = 3;
 
 pub const DDNET_NET_PROTOCOL_TW06: u64 = 0;
 pub const DDNET_NET_PROTOCOL_TW07: u64 = 1;
@@ -216,7 +225,63 @@ pub extern "C" fn ddnet_net_ev_kind(ev: &DdnetNetEvent) -> u64 {
         Some(Chunk(..)) => DDNET_NET_EV_CHUNK,
         Some(Disconnect(..)) => DDNET_NET_EV_DISCONNECT,
         Some(ConnlessChunk(..)) => DDNET_NET_EV_CONNLESS_CHUNK,
+        Some(Map(..)) => DDNET_NET_EV_MAP,
     }
+}
+#[no_mangle]
+pub extern "C" fn ddnet_net_ev_map_peer_index(ev: &DdnetNetEvent) -> u64 {
+    use self::EventImpl::*;
+    match &ev.inner {
+        Some(Map(idx, _, _)) => idx.0,
+        _ => unreachable!(),
+    }
+}
+/// One of `DDNET_NET_MAP_*`.
+#[no_mangle]
+pub extern "C" fn ddnet_net_ev_map_kind(ev: &DdnetNetEvent) -> u64 {
+    use self::EventImpl::*;
+    match &ev.inner {
+        Some(Map(_, what, _)) => match what {
+            MapEvent::Header => DDNET_NET_MAP_HEADER,
+            MapEvent::Data => DDNET_NET_MAP_DATA,
+            MapEvent::End => DDNET_NET_MAP_END,
+            MapEvent::Failed => DDNET_NET_MAP_FAILED,
+        },
+        _ => unreachable!(),
+    }
+}
+/// Bytes in the buffer: the header frame, a piece of the map, or the reason
+/// of the failure.
+#[no_mangle]
+pub extern "C" fn ddnet_net_ev_map_len(ev: &DdnetNetEvent) -> usize {
+    use self::EventImpl::*;
+    match &ev.inner {
+        Some(Map(_, _, len)) => *len,
+        _ => unreachable!(),
+    }
+}
+/// Takes a map header as a `DDNET_NET_MAP_HEADER` event delivers it apart.
+/// The name is not NUL-terminated and points into `payload`.
+#[no_mangle]
+pub extern "C" fn ddnet_net_decode_map_header(
+    payload: *const u8,
+    payload_len: usize,
+    size: &mut u64,
+    crc: &mut u32,
+    sha256: &mut [u8; 32],
+    name: &mut *const u8,
+    name_len: &mut usize,
+) -> bool {
+    let payload = unsafe { slice::from_raw_parts(payload, payload_len) };
+    let Ok(header) = wire::decode_map_header(payload) else {
+        return false;
+    };
+    *size = header.size;
+    *crc = header.crc;
+    *sha256 = header.sha256;
+    *name = header.name.as_ptr();
+    *name_len = header.name.len();
+    true
 }
 #[no_mangle]
 pub extern "C" fn ddnet_net_ev_connect_peer_index(
@@ -540,6 +605,39 @@ pub extern "C" fn ddnet_net_send_chunk(
 #[no_mangle]
 pub extern "C" fn ddnet_net_flush(net: &mut DdnetNet, peer_index: u64) -> bool {
     net.good(|impl_| impl_.flush(PeerIndex(peer_index)))
+}
+/// Keeps a copy of the map under `map_id` for `ddnet_net_send_map`.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_map(
+    net: &mut DdnetNet,
+    map_id: u32,
+    name: *const u8,
+    name_len: usize,
+    crc: u32,
+    sha256: &[u8; 32],
+    data: *const u8,
+    data_len: usize,
+) -> bool {
+    net.good(|impl_| {
+        let name = unsafe { slice::from_raw_parts(name, name_len) };
+        let data = unsafe { slice::from_raw_parts(data, data_len) };
+        impl_.set_map(map_id, Map {
+            name: name.to_vec(),
+            crc,
+            sha256: *sha256,
+            data: data.to_vec(),
+        })
+    })
+}
+/// Sends the map to a QUIC peer on a stream of its own.
+#[no_mangle]
+pub extern "C" fn ddnet_net_send_map(net: &mut DdnetNet, peer_index: u64, map_id: u32) -> bool {
+    net.good(|impl_| impl_.send_map(PeerIndex(peer_index), map_id))
+}
+/// Stops a map still going out to the peer.
+#[no_mangle]
+pub extern "C" fn ddnet_net_cancel_map(net: &mut DdnetNet, peer_index: u64) -> bool {
+    net.good(|impl_| impl_.cancel_map(PeerIndex(peer_index)))
 }
 #[no_mangle]
 pub extern "C" fn ddnet_net_connect(

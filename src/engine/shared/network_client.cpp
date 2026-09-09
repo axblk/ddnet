@@ -609,6 +609,38 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 			pChunk->m_pData = m_aBuffer;
 		}
 			return 1;
+		case DDNET_NET_EV_MAP:
+		{
+			const uint64_t PeerId = ddnet_net_ev_map_peer_index(m_pNetEvent);
+			if((int64_t)PeerId != m_PeerId)
+			{
+				continue;
+			}
+			mem_zero(pChunk, sizeof(*pChunk));
+			pChunk->m_ClientId = 0;
+			pChunk->m_Address = m_ServerAddress;
+			switch(ddnet_net_ev_map_kind(m_pNetEvent))
+			{
+			case DDNET_NET_MAP_HEADER:
+				pChunk->m_Flags = NET_CHUNKFLAG_MAP_HEADER;
+				break;
+			case DDNET_NET_MAP_DATA:
+				pChunk->m_Flags = NET_CHUNKFLAG_MAP_DATA;
+				break;
+			case DDNET_NET_MAP_END:
+				pChunk->m_Flags = NET_CHUNKFLAG_MAP_END;
+				break;
+			case DDNET_NET_MAP_FAILED:
+				pChunk->m_Flags = NET_CHUNKFLAG_MAP_FAILED;
+				break;
+			default:
+				dbg_assert(false, "unknown map event kind");
+			}
+			pChunk->m_DataSize = ddnet_net_ev_map_len(m_pNetEvent);
+			m_aBuffer[pChunk->m_DataSize] = '\0';
+			pChunk->m_pData = m_aBuffer;
+		}
+			return 1;
 		case DDNET_NET_EV_CONNLESS_CHUNK:
 		{
 			const char *pAddr;

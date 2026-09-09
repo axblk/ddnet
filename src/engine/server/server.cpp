@@ -1388,9 +1388,23 @@ void CServer::SendCapabilities(int ClientId)
 	SendMsg(&Msg, MSGFLAG_VITAL, ClientId);
 }
 
+// Gives the network layer the maps it sends QUIC clients whole.
+void CServer::SetNetMaps()
+{
+	for(int MapType = MAP_TYPE_SIX; MapType < NUM_MAP_TYPES; MapType++)
+	{
+		if(m_apCurrentMapData[MapType] != nullptr)
+		{
+			m_NetServer.SetMap(MapType, GameServer()->Map()->BaseName(), m_aCurrentMapCrc[MapType], m_aCurrentMapSha256[MapType], m_apCurrentMapData[MapType], m_aCurrentMapSize[MapType]);
+		}
+	}
+}
+
 void CServer::SendMap(int ClientId)
 {
 	int MapType = IsSixup(ClientId) ? MAP_TYPE_SIXUP : MAP_TYPE_SIX;
+	// A map still going out over QUIC is the old one.
+	m_NetServer.CancelMap(ClientId);
 	{
 		CMsgPacker Msg(NETMSG_MAP_DETAILS, true);
 		Msg.AddString(GameServer()->Map()->BaseName(), 0);
@@ -1813,6 +1827,21 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 			if(m_aClients[ClientId].m_State < CClient::STATE_CONNECTING)
 				return;
 
+			int Chunk = 0;
+			if(!m_aClients[ClientId].m_Sixup)
+			{
+				Chunk = Unpacker.GetInt();
+				if(Unpacker.Error())
+				{
+					return;
+				}
+			}
+			// A QUIC client asks once and gets the whole map on a stream.
+			if(Chunk == 0 && m_NetServer.SendMap(ClientId, IsSixup(ClientId) ? MAP_TYPE_SIXUP : MAP_TYPE_SIX))
+			{
+				return;
+			}
+
 			if(m_aClients[ClientId].m_Sixup)
 			{
 				for(int i = 0; i < Config()->m_SvMapWindow; i++)
@@ -1822,11 +1851,6 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 				return;
 			}
 
-			int Chunk = Unpacker.GetInt();
-			if(Unpacker.Error())
-			{
-				return;
-			}
 			if(Chunk == 0)
 			{
 				m_aClients[ClientId].m_NextMapChunk = 0;
@@ -3232,6 +3256,7 @@ int CServer::LoadMap(const char *pMapName)
 		free(m_apCurrentMapData[MAP_TYPE_SIXUP]);
 		m_apCurrentMapData[MAP_TYPE_SIXUP] = nullptr;
 	}
+	SetNetMaps();
 
 	for(int i = 0; i < MAX_CLIENTS; i++)
 		m_aPrevStates[i] = m_aClients[i].m_State;

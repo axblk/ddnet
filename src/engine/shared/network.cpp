@@ -679,7 +679,31 @@ void CNetTokenCache::Update()
 		m_ConnlessPackets.end());
 }
 
-#ifdef CONF_NETWORKING_QUIC
+#ifndef CONF_NETWORKING_QUIC
+bool NetDecodeMapHeader(const void *pData, int Size, CNetMapHeader *pHeader)
+{
+	return false;
+}
+#else
+bool NetDecodeMapHeader(const void *pData, int Size, CNetMapHeader *pHeader)
+{
+	uint64_t MapSize;
+	uint32_t Crc;
+	const uint8_t *pName;
+	size_t NameLen;
+	if(Size < 0 ||
+		!ddnet_net_decode_map_header((const uint8_t *)pData, Size, &MapSize, &Crc, &pHeader->m_Sha256.data, &pName, &NameLen) ||
+		NameLen >= sizeof(pHeader->m_aName))
+	{
+		return false;
+	}
+	mem_copy(pHeader->m_aName, pName, NameLen);
+	pHeader->m_aName[NameLen] = '\0';
+	pHeader->m_Crc = Crc;
+	pHeader->m_Size = MapSize;
+	return true;
+}
+
 ENetConnless NetConnlessAddr(const char *pUrl, NETADDR *pAddr)
 {
 	// TODO: maybe parse URL by ourselves

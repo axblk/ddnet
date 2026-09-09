@@ -351,6 +351,7 @@ public:
 	void SendRconType(int ClientId, bool UsernameReq);
 	void SendCapabilities(int ClientId);
 	void SendMap(int ClientId);
+	void SetNetMaps();
 	void SendMapData(int ClientId, int Chunk);
 	void SendMapReload(int ClientId);
 	void SendConnectionReady(int ClientId);

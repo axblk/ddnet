@@ -151,6 +151,8 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	int m_MapdownloadAmount = -1;
 	int m_MapdownloadTotalsize = -1;
 	std::optional<SHA256_DIGEST> m_MapdownloadSha256;
+	// The map is arriving on a QUIC stream, header seen, end not yet.
+	bool m_MapdownloadStream = false;
 
 	class CMapDetails
 	{
@@ -389,6 +391,7 @@ public:
 	void ProcessConnlessPacket(CNetChunk *pPacket);
 	void ProcessServerInfo(int Type, NETADDR *pFrom, const void *pData, int DataSize);
 	void ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy);
+	void ProcessMapStream(const CNetChunk *pPacket);
 
 	int UnpackAndValidateSnapshot(CSnapshot *pFrom, CSnapshotBuffer *pTo);
 

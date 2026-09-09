@@ -4444,8 +4444,11 @@ void CGameClient::UpdateSpectatorCursor(const CGameState &State, const CGameTick
 			}
 			else if(SampleIndex >= Cursor.m_NumSamples)
 			{
-				aTime[i] = Cursor.m_aTargetSamplesTime[Cursor.m_NumSamples - 1] + CCursorState::REST_THRESHOLD * (Offset + 1);
-				aData[i] = Cursor.m_aTargetSamplesData[Cursor.m_NumSamples - 1];
+				// The seeded sample above is only counted once something is
+				// appended to it, so a cursor that has not moved yet has none.
+				const int LastSample = std::max(Cursor.m_NumSamples - 1, 0);
+				aTime[i] = Cursor.m_aTargetSamplesTime[LastSample] + CCursorState::REST_THRESHOLD * (Offset + 1);
+				aData[i] = Cursor.m_aTargetSamplesData[LastSample];
 			}
 			else
 			{

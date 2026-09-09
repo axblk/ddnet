@@ -57,7 +57,7 @@ static bool MatchesExactly(const char *a, const char *b)
 static NETADDR CommunityAddressKey(const NETADDR &Addr)
 {
 	NETADDR AddressKey = Addr;
-	AddressKey.type &= ~(NETTYPE_TW7 | NETTYPE_QUIC | NETTYPE_WEBTRANSPORT);
+	AddressKey.type &= ~NETTYPE_SCHEME;
 	return AddressKey;
 }
 
@@ -738,6 +738,14 @@ static void ServerBrowserFormatAddresses(char *pBuffer, int BufferSize, NETADDR 
 		{
 			str_append(pBuffer, "tw-0.7+udp://", BufferSize);
 		}
+		else if(pAddrs[i].type & NETTYPE_WEBSOCKET_TLS)
+		{
+			str_append(pBuffer, "ddnet+wss://", BufferSize);
+		}
+		else if(pAddrs[i].type & NETTYPE_WEBSOCKET)
+		{
+			str_append(pBuffer, "ddnet+ws://", BufferSize);
+		}
 		else if(pAddrs[i].type & NETTYPE_WEBTRANSPORT)
 		{
 			str_append(pBuffer, "ddnet+wt://", BufferSize);
@@ -964,7 +972,7 @@ void CServerBrowser::OnServerInfoUpdate(const NETADDR &Addr, int Token, const CS
 		}
 
 		NETADDR Broadcast = NETADDR_ZEROED;
-		Broadcast.type = (m_pNetClient->NetType() & ~(NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) | NETTYPE_LINK_BROADCAST;
+		Broadcast.type = m_pNetClient->NetType() | NETTYPE_LINK_BROADCAST;
 		int TokenBC = GenerateToken(Broadcast);
 		bool Drop = false;
 		Drop = Drop || BasicToken != GetBasicToken(TokenBC);
@@ -1040,7 +1048,7 @@ void CServerBrowser::Refresh(int Type, bool Force)
 
 		/* do the broadcast version */
 		mem_zero(&Packet, sizeof(Packet));
-		Packet.m_Address.type = (m_pNetClient->NetType() & ~(NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) | NETTYPE_LINK_BROADCAST;
+		Packet.m_Address.type = m_pNetClient->NetType() | NETTYPE_LINK_BROADCAST;
 		Packet.m_Flags = NETSENDFLAG_CONNLESS | NETSENDFLAG_EXTENDED;
 		Packet.m_DataSize = sizeof(aBuffer);
 		Packet.m_pData = aBuffer;
@@ -1061,7 +1069,7 @@ void CServerBrowser::Refresh(int Type, bool Force)
 
 		CNetChunk Packet7;
 		mem_zero(&Packet7, sizeof(Packet7));
-		Packet7.m_Address.type = (m_pNetClient->NetType() & ~(NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) | NETTYPE_TW7 | NETTYPE_LINK_BROADCAST;
+		Packet7.m_Address.type = m_pNetClient->NetType() | NETTYPE_TW7 | NETTYPE_LINK_BROADCAST;
 		Packet7.m_Flags = NETSENDFLAG_CONNLESS;
 		Packet7.m_DataSize = Packer.Size();
 		Packet7.m_pData = Packer.Data();

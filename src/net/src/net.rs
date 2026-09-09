@@ -3,6 +3,8 @@ use crate::normalize;
 use crate::quic;
 use crate::tw06;
 use crate::tw07;
+#[cfg(feature = "websocket")]
+use crate::ws;
 use crate::wire;
 use crate::Challenger;
 use crate::Context as _;
@@ -58,11 +60,14 @@ pub struct AcceptProtocols {
     pub quic: bool,
     /// WebTransport rides on QUIC; without `quic` it is off as well.
     pub webtransport: bool,
+    /// WebSockets listen on TCP at the same port; only with the
+    /// `websocket` feature.
+    pub websocket: bool,
 }
 
 impl AcceptProtocols {
-    pub const NONE: AcceptProtocols = AcceptProtocols { tw06: false, tw07: false, quic: false, webtransport: false };
-    pub const ALL: AcceptProtocols = AcceptProtocols { tw06: true, tw07: true, quic: true, webtransport: true };
+    pub const NONE: AcceptProtocols = AcceptProtocols { tw06: false, tw07: false, quic: false, webtransport: false, websocket: false };
+    pub const ALL: AcceptProtocols = AcceptProtocols { tw06: true, tw07: true, quic: true, webtransport: true, websocket: cfg!(feature = "websocket") };
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -71,6 +76,21 @@ pub enum Protocol {
     Tw07,
     Quic,
     WebTransport,
+    WebSocket,
+}
+
+/// The poll's tokens: the UDP socket, the WebSocket listener, then the
+/// TCP peers by index.
+const TOKEN_SOCKET: mio::Token = mio::Token(0);
+#[cfg(feature = "websocket")]
+const TOKEN_LISTENER: mio::Token = mio::Token(1);
+#[cfg(feature = "websocket")]
+fn peer_token(idx: PeerIndex) -> mio::Token {
+    mio::Token(idx.0 as usize + 2)
+}
+#[cfg(feature = "websocket")]
+fn token_peer(token: mio::Token) -> Option<PeerIndex> {
+    token.0.checked_sub(2).map(|idx| PeerIndex(idx as u64))
 }
 
 pub struct CallbackData {
@@ -190,6 +210,11 @@ pub struct Net {
     proto_quic: quic::Protocol,
     proto_tw06: tw06::Protocol,
     proto_tw07: tw07::Protocol,
+    #[cfg(feature = "websocket")]
+    proto_ws: ws::Protocol,
+    /// The WebSocket listener has connections waiting.
+    #[cfg(feature = "websocket")]
+    listener_readable: bool,
 
     peer_addrs: HashMap<SocketAddr, PeerIndex>,
     peers: HashMap<PeerIndex, Peer>,
@@ -351,6 +376,8 @@ pub enum Addr {
     /// A datagram as it is, no protocol of ours: STUN goes over the same
     /// socket so that the address it learns is the one peers see.
     Raw(RawAddr),
+    /// A WebSocket peer, over TCP at the address.
+    Ws(WsAddr),
 }
 
 impl Addr {
@@ -361,6 +388,7 @@ impl Addr {
             Tw06(Tw06Addr(socket_addr)) => socket_addr,
             Tw07(Tw07Addr(socket_addr)) => socket_addr,
             Raw(RawAddr(socket_addr)) => socket_addr,
+            Ws(WsAddr { addr: socket_addr, .. }) => socket_addr,
         }
     }
     pub fn identity(&self) -> Option<&Identity> {
@@ -370,7 +398,14 @@ impl Addr {
             Tw06(Tw06Addr(_)) => None,
             Tw07(Tw07Addr(_)) => None,
             Raw(RawAddr(_)) => None,
+            Ws(WsAddr { identity, .. }) => identity.as_ref(),
         }
+    }
+}
+
+impl From<WsAddr> for Addr {
+    fn from(addr: WsAddr) -> Addr {
+        Addr::Ws(addr)
     }
 }
 
@@ -411,6 +446,38 @@ pub struct QuicAddr {
     pub identity: Option<Identity>,
     pub webtransport: bool,
 }
+/// A WebSocket peer, `ws://` or `wss://`; the fragment pins the identity
+/// as for QUIC.
+#[derive(Clone, Copy)]
+pub struct WsAddr {
+    pub addr: SocketAddr,
+    pub tls: bool,
+    pub identity: Option<Identity>,
+}
+
+impl fmt::Display for WsAddr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let WsAddr { addr, tls, identity } = self;
+        let scheme = if *tls { "ddnet+wss" } else { "ddnet+ws" };
+        let mut buf: ArrayString<[u8; 256]> = ArrayString::new();
+        match identity {
+            Some(identity) => write!(&mut buf, "{}://{}#identity-sha256={}", scheme, addr, identity).unwrap(),
+            None => write!(&mut buf, "{}://{}", scheme, addr).unwrap(),
+        }
+        f.pad(&buf)
+    }
+}
+
+/// The identity pinned in a URL's fragment, `identity-sha256=<hex>`, if any.
+fn identity_from_fragment(url: &Url) -> Result<Option<Identity>> {
+    Ok(match url.fragment() {
+        None | Some("") => None,
+        Some(fragment) => match fragment.strip_prefix("identity-sha256=") {
+            Some(hex) => Some(hex.parse().context("addr: identity")?),
+            None => bail!("addr: fragment {} pins no identity", fragment),
+        },
+    })
+}
 
 fn socket_addr_from_url(url: &Url) -> Result<SocketAddr> {
     let mut ip_port: ArrayString<[u8; 64]> = ArrayString::new();
@@ -437,20 +504,16 @@ impl FromStr for Addr {
             // The fragment pins the server's identity. Without one, whatever
             // identity the server shows is taken, and reported, so it can
             // be pinned the next time.
-            scheme @ ("ddnet+quic" | "ddnet+wt") => {
-                let identity = match addr.fragment() {
-                    None | Some("") => None,
-                    Some(fragment) => match fragment.strip_prefix("identity-sha256=") {
-                        Some(hex) => Some(hex.parse().context("addr: identity")?),
-                        None => bail!("addr: fragment {} pins no identity", fragment),
-                    },
-                };
-                Addr::Quic(QuicAddr {
-                    addr: sock_addr,
-                    identity,
-                    webtransport: scheme == "ddnet+wt",
-                })
-            }
+            scheme @ ("ddnet+quic" | "ddnet+wt") => Addr::Quic(QuicAddr {
+                addr: sock_addr,
+                identity: identity_from_fragment(&addr)?,
+                webtransport: scheme == "ddnet+wt",
+            }),
+            scheme @ ("ddnet+ws" | "ddnet+wss") => Addr::Ws(WsAddr {
+                addr: sock_addr,
+                tls: scheme == "ddnet+wss",
+                identity: identity_from_fragment(&addr)?,
+            }),
             "tw-0.6+udp" => Addr::Tw06(Tw06Addr(sock_addr)),
             "tw-0.7+udp" => Addr::Tw07(Tw07Addr(sock_addr)),
             "udp" => Addr::Raw(RawAddr(sock_addr)),
@@ -507,6 +570,7 @@ impl fmt::Display for Addr {
             Tw06(addr) => addr.fmt(f),
             Tw07(addr) => addr.fmt(f),
             Raw(addr) => addr.fmt(f),
+            Ws(addr) => addr.fmt(f),
         }
     }
 }
@@ -606,6 +670,13 @@ impl NetBuilder {
             Protocol::Tw07 => self.accept.tw07 = libtw2_patch::accept_tw07(accept),
             Protocol::Quic => self.accept.quic = accept,
             Protocol::WebTransport => self.accept.webtransport = accept,
+            Protocol::WebSocket => {
+                if accept && !cfg!(feature = "websocket") {
+                    warn!("WebSockets are not compiled in");
+                } else {
+                    self.accept.websocket = accept;
+                }
+            }
         }
     }
     pub fn open(self) -> Result<Net> {
@@ -647,13 +718,36 @@ impl NetBuilder {
         let local_addr = socket.local_addr().context("local_addr")?;
 
         let poll = Poll::new().context("mio::Poll::new")?;
-        let events = Events::with_capacity(1);
+        let events = Events::with_capacity(64);
         poll.registry()
-            .register(&mut socket.inner, mio::Token(0), mio::Interest::READABLE)
+            .register(&mut socket.inner, TOKEN_SOCKET, mio::Interest::READABLE)
             .context("mio::Poll::register")?;
 
         info!("identity {}", identity.public());
         info!("listening on {}", local_addr);
+        let proto_tw06 = tw06::Protocol::new(&identity)?;
+        let proto_tw07 = tw07::Protocol::new(&identity)?;
+        let proto_quic = quic::Protocol::new(
+            identity,
+            self.timeout,
+            self.accept.webtransport,
+            self.tls_files.as_ref().map(|(cert, key)| (cert.as_str(), key.as_str())),
+        )?;
+        #[cfg(feature = "websocket")]
+        let proto_ws = {
+            let mut proto_ws = ws::Protocol::new(
+                proto_quic.shared(),
+                self.timeout,
+                self.accept.websocket.then_some(local_addr),
+            )?;
+            if let Some(listener) = proto_ws.listener_mut() {
+                poll.registry()
+                    .register(listener, TOKEN_LISTENER, mio::Interest::READABLE)
+                    .context("mio::Poll::register")?;
+                info!("websockets on tcp {}", local_addr);
+            }
+            proto_ws
+        };
 
         Ok(Net {
             cb: CallbackData {
@@ -670,14 +764,13 @@ impl NetBuilder {
             events,
             poll,
 
-            proto_tw06: tw06::Protocol::new(&identity)?,
-            proto_tw07: tw07::Protocol::new(&identity)?,
-            proto_quic: quic::Protocol::new(
-                identity,
-                self.timeout,
-                self.accept.webtransport,
-                self.tls_files.as_ref().map(|(cert, key)| (cert.as_str(), key.as_str())),
-            )?,
+            proto_tw06,
+            proto_tw07,
+            #[cfg(feature = "websocket")]
+            proto_ws,
+            #[cfg(feature = "websocket")]
+            listener_readable: false,
+            proto_quic,
 
             peer_addrs: HashMap::new(),
             peers: HashMap::new(),
@@ -831,6 +924,12 @@ impl Net {
             Quic(inner) => self.proto_quic.remove_peer(idx, inner),
             Tw06(inner) => self.proto_tw06.remove_peer(idx, inner),
             Tw07(inner) => self.proto_tw07.remove_peer(idx, inner),
+            #[cfg(feature = "websocket")]
+            Ws(mut inner) => {
+                if let Some(tcp) = inner.tcp_mut() {
+                    let _ = self.poll.registry().deregister(tcp);
+                }
+            }
         }
         for addr in addrs {
             if self.peer_addrs.get(&addr) == Some(&idx) {
@@ -1019,6 +1118,10 @@ impl Net {
         {
             return Ok(());
         }
+        #[cfg(feature = "websocket")]
+        if self.listener_readable {
+            return Ok(());
+        }
         let user_timeout = timeout;
         let timeout;
         let mut is_user_timeout;
@@ -1072,10 +1175,49 @@ impl Net {
                 }
             }
         }
-        if !self.events.is_empty() {
-            self.socket_readable = true;
+        for event in self.events.iter() {
+            match event.token() {
+                TOKEN_SOCKET => self.socket_readable = true,
+                #[cfg(feature = "websocket")]
+                TOKEN_LISTENER => self.listener_readable = true,
+                #[cfg(feature = "websocket")]
+                token => {
+                    if let Some(idx) = token_peer(token) {
+                        if self.peers.contains_key(&idx) {
+                            self.readable_peers.push_back(idx);
+                        }
+                    }
+                }
+                #[cfg(not(feature = "websocket"))]
+                _ => {}
+            }
         }
         Ok(())
+    }
+    /// Takes the connections waiting on the WebSocket listener.
+    #[cfg(feature = "websocket")]
+    fn accept_websockets(&mut self) -> Result<()> {
+        self.listener_readable = false;
+        loop {
+            let (mut conn, from) = match self.proto_ws.accept() {
+                Ok(Some(accepted)) => accepted,
+                Ok(None) => return Ok(()),
+                Err(error) => {
+                    warn!("websocket accept: {}", error);
+                    return Ok(());
+                }
+            };
+            let idx = self.cb.next_peer_index.get_and_increment();
+            if let Some(tcp) = conn.tcp_mut() {
+                self.poll
+                    .registry()
+                    .register(tcp, peer_token(idx), mio::Interest::READABLE | mio::Interest::WRITABLE)
+                    .context("mio::Poll::register")?;
+            }
+            assert!(self.peers.insert(idx, Peer::new(conn.into(), from, false)).is_none());
+            self.peer_buckets.entry(Bucket::from(from)).or_default().low_level += 1;
+            self.readable_peers.push_back(idx);
+        }
     }
     pub fn wait(&mut self) -> Result<()> {
         self.wait_impl(None)
@@ -1225,6 +1367,12 @@ impl Net {
                 }
                 assert!(self.readable_peers.pop_front() == Some(idx));
             }
+            #[cfg(feature = "websocket")]
+            if self.listener_readable {
+                self.accept_websockets()?;
+                did_nothing = false;
+                continue;
+            }
             if self.socket_readable {
                 match self.socket_read(buf)? {
                     SocketReadEvent::ReadablePeer(readable_peer) => {
@@ -1289,10 +1437,13 @@ impl Net {
     pub fn send_map(&mut self, idx: PeerIndex, id: u32) -> Result<()> {
         let Some(map) = self.maps.get(&id).cloned() else { bail!("no map {}", id) };
         let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
-        let Connection::Quic(conn) = &mut peer.conn else {
-            bail!("peer {} is not connected over QUIC", idx);
+        let result = match &mut peer.conn {
+            Connection::Quic(conn) => conn.send_map(&self.cb, &mut self.packet_buf, map),
+            #[cfg(feature = "websocket")]
+            Connection::Ws(conn) => conn.send_map(map),
+            _ => bail!("peer {} takes no map stream", idx),
         };
-        if let Err(error) = conn.send_map(&self.cb, &mut self.packet_buf, map) {
+        if let Err(error) = result {
             self.fail_peer(idx, error);
         }
         Ok(())
@@ -1300,8 +1451,11 @@ impl Net {
     /// Stops a map that is going out to the peer, if any.
     pub fn cancel_map(&mut self, idx: PeerIndex) -> Result<()> {
         let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
-        if let Connection::Quic(conn) = &mut peer.conn {
-            conn.cancel_map();
+        match &mut peer.conn {
+            Connection::Quic(conn) => conn.cancel_map(),
+            #[cfg(feature = "websocket")]
+            Connection::Ws(conn) => conn.cancel_map(),
+            _ => {}
         }
         Ok(())
     }
@@ -1315,7 +1469,9 @@ impl Net {
             Ok(addr) => addr,
         };
         let socket_addr = *addr.socket_addr();
-        if self.peer_addrs.contains_key(&socket_addr) {
+        // A TCP peer is not told apart by its address.
+        let over_udp = !matches!(addr, Addr::Ws(_));
+        if over_udp && self.peer_addrs.contains_key(&socket_addr) {
             self.connect_errors.push_back((idx, Error::from_string(format!("already connected to {}", socket_addr))));
             return Ok(idx);
         }
@@ -1325,6 +1481,18 @@ impl Net {
             Tw06(addr) => self.proto_tw06.connect(&self.cb, &mut self.packet_buf, addr, idx).map(Connection::from),
             Tw07(addr) => self.proto_tw07.connect(&self.cb, &mut self.packet_buf, addr, idx).map(Connection::from),
             Raw(_) => Err(Error::from_string("cannot connect to a raw address".to_owned())),
+            #[cfg(feature = "websocket")]
+            Ws(addr) => self.proto_ws.connect(addr).and_then(|mut conn| {
+                if let Some(tcp) = conn.tcp_mut() {
+                    self.poll
+                        .registry()
+                        .register(tcp, peer_token(idx), mio::Interest::READABLE | mio::Interest::WRITABLE)
+                        .context("mio::Poll::register")?;
+                }
+                Ok(Connection::from(conn))
+            }),
+            #[cfg(not(feature = "websocket"))]
+            Ws(_) => Err(Error::from_string("WebSockets are not compiled in".to_owned())),
         };
         // A connection that cannot even be started is reported like one that
         // was refused, so the caller has one path for both.
@@ -1336,7 +1504,9 @@ impl Net {
             }
         };
         assert!(self.peers.insert(idx, Peer::new(conn, socket_addr, true)).is_none());
-        assert!(self.peer_addrs.insert(socket_addr, idx).is_none());
+        if over_udp {
+            assert!(self.peer_addrs.insert(socket_addr, idx).is_none());
+        }
         self.peer_buckets.entry(Bucket::from(socket_addr)).or_default().low_level += 1;
         Ok(idx)
     }
@@ -1373,6 +1543,7 @@ impl Net {
                 self.cb.socket.send_to(payload, addr).context("UdpSocket::send_to")?;
                 Ok(())
             }
+            Ws(_) => bail!("no connectionless packets over websockets"),
         }
     }
     /// The 0.7 token that is accepted from any address, for the masterserver's
@@ -1391,6 +1562,15 @@ pub enum Connection {
     Quic(quic::Connection),
     Tw06(tw06::Connection),
     Tw07(tw07::Connection),
+    #[cfg(feature = "websocket")]
+    Ws(ws::Connection),
+}
+
+#[cfg(feature = "websocket")]
+impl From<ws::Connection> for Connection {
+    fn from(conn: ws::Connection) -> Connection {
+        Connection::Ws(conn)
+    }
 }
 
 impl Connection {
@@ -1406,6 +1586,8 @@ impl Connection {
             Quic(inner) => inner.on_recv(cb, packet_buf, packet_len, from),
             Tw06(inner) => inner.on_recv(cb, packet_buf, packet_len, from),
             Tw07(inner) => inner.on_recv(cb, packet_buf, packet_len, from),
+            #[cfg(feature = "websocket")]
+            Ws(_) => bail!("no datagrams for a websocket peer"),
         }
     }
     pub fn recv(
@@ -1419,6 +1601,8 @@ impl Connection {
             Quic(inner) => inner.recv(cb, packet_buf, buf),
             Tw06(inner) => inner.recv(cb, packet_buf, buf),
             Tw07(inner) => inner.recv(cb, packet_buf, buf),
+            #[cfg(feature = "websocket")]
+            Ws(inner) => inner.recv(cb, packet_buf, buf),
         }
     }
     pub fn send_chunk(
@@ -1433,6 +1617,8 @@ impl Connection {
             Quic(inner) => inner.send_chunk(cb, packet_buf, frame, unreliable),
             Tw06(inner) => inner.send_chunk(cb, packet_buf, frame, unreliable),
             Tw07(inner) => inner.send_chunk(cb, packet_buf, frame, unreliable),
+            #[cfg(feature = "websocket")]
+            Ws(inner) => inner.send_chunk(cb, packet_buf, frame, unreliable),
         }
     }
     pub fn close(
@@ -1446,6 +1632,8 @@ impl Connection {
             Quic(inner) => inner.close(cb, packet_buf, reason),
             Tw06(inner) => inner.close(cb, packet_buf, reason),
             Tw07(inner) => inner.close(cb, packet_buf, reason),
+            #[cfg(feature = "websocket")]
+            Ws(inner) => inner.close(cb, packet_buf, reason),
         }
     }
     pub fn timeout(&self) -> Option<Instant> {
@@ -1454,6 +1642,8 @@ impl Connection {
             Quic(inner) => inner.timeout(),
             Tw06(inner) => inner.timeout(),
             Tw07(inner) => inner.timeout(),
+            #[cfg(feature = "websocket")]
+            Ws(inner) => inner.timeout(),
         }
     }
     pub fn on_timeout(
@@ -1466,6 +1656,8 @@ impl Connection {
             Quic(inner) => inner.on_timeout(cb, packet_buf),
             Tw06(inner) => inner.on_timeout(cb, packet_buf),
             Tw07(inner) => inner.on_timeout(cb, packet_buf),
+            #[cfg(feature = "websocket")]
+            Ws(inner) => inner.on_timeout(cb, packet_buf),
         }
     }
     pub fn flush(
@@ -1478,6 +1670,8 @@ impl Connection {
             Quic(inner) => inner.flush(cb, packet_buf),
             Tw06(inner) => inner.flush(cb, packet_buf),
             Tw07(inner) => inner.flush(cb, packet_buf),
+            #[cfg(feature = "websocket")]
+            Ws(inner) => inner.flush(cb, packet_buf),
         }
     }
 }

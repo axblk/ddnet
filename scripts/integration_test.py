@@ -693,13 +693,11 @@ def client_can_connect_7(test_env):
 
 @test(requires_websockets=True)
 def client_can_connect_websockets(test_env):
-	client = test_env.client(["dbg_websockets 1", "stdout_output_level 1"])
-	server = test_env.server(["dbg_websockets 1", "stdout_output_level 1"])
+	client = test_env.client(["stdout_output_level 1"])
+	server = test_env.server(["stdout_output_level 1"])
 	wait_for_startup([client, server])
-	client.command(f"connect ws://127.0.0.1:{server.port}")  # FIXME(#11693): Work around missing domain support.
-	server.wait_for_log_prefix("websockets: I: lws_handshake_server", timeout=15)  # Connection established
-	client.wait_for_log_prefix("websockets: I: lws_http_client_socket_service", timeout=15)  # Connection established
-	join = server.wait_for_log_prefix("server: player has entered the game", timeout=5).line
+	client.command(f"connect ddnet+ws://127.0.0.1:{server.port}")
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
 	if "sixup=0" not in join:
 		raise AssertionError(f"sixup=0 not found in {join!r}")
 	server.exit()
@@ -1011,7 +1009,7 @@ def main():
 	parser.add_argument("--keep-tmpdirs", action="store_true", help="keep temporary directories used for the tests")
 	parser.add_argument("--show-full-output", action="store_true", help="print the full stdout and stderr on test failures")
 	parser.add_argument("--test-mastersrv", action="store_true", help="enforce testing of mastersrv")
-	parser.add_argument("--test-websockets", action="store_true", help="run tests that require compiling with websockets support")
+	parser.add_argument("--test-websockets", action="store_true", help="run tests that require compiling with websockets support (-DWEBSOCKETS=ON)")
 	parser.add_argument("--timeout-multiplier", type=float, default=1, help="multiply all timeouts by this value")
 	parser.add_argument("--valgrind-memcheck", action="store_true", help="use valgrind's memcheck on client and server")
 	parser.add_argument("builddir", metavar="BUILDDIR", help="path to ddnet build directory")

@@ -2650,14 +2650,6 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 					Snap.m_SpecInfo.m_Active = true;
 				Snap.m_SpecInfo.m_SpectatorId = Snap.m_pSpectatorInfo->m_SpectatorId;
 			}
-			else if(Item.m_Type == NETOBJTYPE_DDNETSPECTATORINFO)
-			{
-				const CNetObj_DDNetSpectatorInfo *pDDNetSpecInfo = (const CNetObj_DDNetSpectatorInfo *)Item.m_pData;
-				Snap.m_SpecInfo.m_HasCameraInfo = pDDNetSpecInfo->m_HasCameraInfo;
-				Snap.m_SpecInfo.m_Zoom = pDDNetSpecInfo->m_Zoom / 1000.0f;
-				Snap.m_SpecInfo.m_Deadzone = pDDNetSpecInfo->m_Deadzone;
-				Snap.m_SpecInfo.m_FollowFactor = pDDNetSpecInfo->m_FollowFactor;
-			}
 			else if(Item.m_Type == NETOBJTYPE_SPECTATORCOUNT)
 			{
 				Snap.m_pSpectatorCount = (const CNetObj_SpectatorCount *)Item.m_pData;
@@ -2771,6 +2763,16 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 				Session.MapMetadata().ApplyBestTime(pMapBestTimeData->m_MapBestTimeSeconds, pMapBestTimeData->m_MapBestTimeMillis);
 			}
 		}
+	}
+	// The camera the server asked for was already taken off the snapshot into the
+	// game state, which happens for every state rather than only this one.
+	if(ActiveState.HasDDNetSpectatorInfo())
+	{
+		const CNetObj_DDNetSpectatorInfo &DDNetSpectatorInfo = ActiveState.DDNetSpectatorInfo();
+		Snap.m_SpecInfo.m_HasCameraInfo = DDNetSpectatorInfo.m_HasCameraInfo;
+		Snap.m_SpecInfo.m_Zoom = DDNetSpectatorInfo.m_Zoom / 1000.0f;
+		Snap.m_SpecInfo.m_Deadzone = DDNetSpectatorInfo.m_Deadzone;
+		Snap.m_SpecInfo.m_FollowFactor = DDNetSpectatorInfo.m_FollowFactor;
 	}
 	if(Snap.m_LocalClientId >= 0)
 	{

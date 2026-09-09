@@ -443,6 +443,8 @@ void CGameState::Reset()
 	m_SpectatorInfo = {};
 	m_HasSpectatorCount = false;
 	m_SpectatorCount = {};
+	m_HasDDNetSpectatorInfo = false;
+	m_DDNetSpectatorInfo = {};
 	m_CoreGameInfo = {};
 	m_Teams.Reset();
 	m_FullyPredicted = false;
@@ -496,6 +498,8 @@ void CGameState::ApplySnapshot(const IClient &Client, CSessionId SessionId, CStr
 	bool HasSpectatorInfo = false;
 	CNetObj_SpectatorCount SpectatorCount = {};
 	bool HasSpectatorCount = false;
+	CNetObj_DDNetSpectatorInfo DDNetSpectatorInfo = {};
+	bool HasDDNetSpectatorInfo = false;
 	// The entities are written into buffers that outlive the snapshot, so the byte
 	// vectors of every entity keep the capacity they were given for the previous
 	// one instead of being allocated and freed again for each snapshot.
@@ -523,6 +527,11 @@ void CGameState::ApplySnapshot(const IClient &Client, CSessionId SessionId, CStr
 		{
 			HasSpectatorCount = true;
 			SpectatorCount = *static_cast<const CNetObj_SpectatorCount *>(Item.m_pData);
+		}
+		else if(Item.m_Type == NETOBJTYPE_DDNETSPECTATORINFO)
+		{
+			HasDDNetSpectatorInfo = true;
+			DDNetSpectatorInfo = *static_cast<const CNetObj_DDNetSpectatorInfo *>(Item.m_pData);
 		}
 		else if(Item.m_Type == NETOBJTYPE_ENTITYEX)
 		{
@@ -634,6 +643,8 @@ void CGameState::ApplySnapshot(const IClient &Client, CSessionId SessionId, CStr
 		ApplySpectatorInfo(SpectatorInfo);
 	if(HasSpectatorCount)
 		ApplySpectatorCount(SpectatorCount);
+	if(HasDDNetSpectatorInfo)
+		ApplyDDNetSpectatorInfo(DDNetSpectatorInfo);
 }
 
 void CGameState::ApplySnapshotData(int Tick, int NumItems, const std::array<CClientSnapshot, MAX_CLIENTS> &aClients, const CNetObj_GameInfo *pGameInfo, std::vector<CEntitySnapshot> *pEntities)
@@ -665,6 +676,8 @@ void CGameState::ApplySnapshotData(int Tick, int NumItems, const std::array<CCli
 	m_SpectatorInfo = {};
 	m_HasSpectatorCount = false;
 	m_SpectatorCount = {};
+	m_HasDDNetSpectatorInfo = false;
+	m_DDNetSpectatorInfo = {};
 	int LocalClientId = -1;
 	bool HasUnsetDDNetFinishTimes = false;
 	bool HasTrueMillisecondFinishTimes = false;
@@ -930,6 +943,9 @@ uint64_t CGameState::SnapshotDigest() const
 	DigestValue(Digest, m_HasSpectatorCount);
 	if(m_HasSpectatorCount)
 		DigestValue(Digest, m_SpectatorCount);
+	DigestValue(Digest, m_HasDDNetSpectatorInfo);
+	if(m_HasDDNetSpectatorInfo)
+		DigestValue(Digest, m_DDNetSpectatorInfo);
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
 		const CClientSnapshot &SnapshotClient = m_aClients[ClientId];

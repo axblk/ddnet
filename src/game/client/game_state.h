@@ -403,6 +403,19 @@ public:
 		void Reset() { *this = {}; }
 	};
 
+	// The result of evolving a snapped character forward, kept so a character
+	// that did not change between two snapshots is not evolved twice. It
+	// outlives the snapshot it was taken from, which is why it does not sit on
+	// CClientSnapshot.
+	class CEvolvedCharacter
+	{
+	public:
+		CNetObj_Character m_Snapped = {};
+		CNetObj_Character m_Evolved = {};
+
+		CEvolvedCharacter() { m_Evolved.m_Tick = -1; }
+	};
+
 	class CPredictedClient
 	{
 	public:
@@ -506,6 +519,7 @@ private:
 	std::array<CTuningParams, TuneZone::NUM> m_aTuning;
 	std::array<CClientSnapshot, MAX_CLIENTS> m_aClients;
 	std::vector<CClientIdentityState> m_vClientIdentities;
+	std::array<CEvolvedCharacter, MAX_CLIENTS> m_aEvolvedCharacters;
 	std::vector<CClientEmoticonState> m_vClientEmoticons;
 	std::vector<CRenderedClient> m_vRenderedClients;
 	std::vector<CClientPredictionHistory> m_vClientPredictionHistory;
@@ -586,6 +600,7 @@ public:
 	const CTuningParams &Tuning(int TuneZone = 0) const { return m_aTuning[TuneZone]; }
 	const CClientSnapshot &Client(int ClientId) const { return m_aClients[ClientId]; }
 	const CClientIdentityState &ClientIdentity(int ClientId) const { return m_vClientIdentities[ClientId]; }
+	CEvolvedCharacter &EvolvedCharacter(int ClientId) { return m_aEvolvedCharacters[ClientId]; }
 	void ApplyClientIdentity(int ClientId, const CNetObj_ClientInfo &ClientInfo)
 	{
 		m_vClientIdentities[ClientId].m_Active = true;

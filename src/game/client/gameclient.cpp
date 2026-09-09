@@ -2446,28 +2446,31 @@ void CGameClient::OnNewSnapshot(CSessionId SessionId, CStreamId StreamId)
 	State.SetFullyPredicted(SessionId == Client()->FocusedSessionId() && StreamId == Client()->ActiveStreamId(SessionId));
 	State.SetCoreGameInfo(GameInfo);
 	State.ApplySnapshot(*Client(), SessionId, StreamId);
+	// Every state that can end up on screen gets its snap state built, not only
+	// the one the player is looking through.
+	BuildSnapState(SessionId, Conn);
 	if(StreamId == Client()->PrimaryStreamId(SessionId))
 		pSession->Stats().UpdateSnapshot(State, Client()->GameTick(SessionId, Conn));
 	if(SessionId == Client()->FocusedSessionId() && StreamId == Client()->ActiveStreamId(SessionId))
 		ProcessSnapshot(SessionId, Conn);
 }
 
-void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
+// Everything a game state needs in order to be drawn: who is playing, where they
+// are, and which camera the server asked for. It runs for every state the client
+// keeps - the connection being played, the dummy, a demo, a demo being rendered
+// to video - because any of them can be on screen at the same time. What only
+// the focused session has, the legacy client data and the messages sent back to
+// the server, stays in ProcessSnapshot.
+void CGameClient::BuildSnapState(CSessionId SessionId, int Conn)
 {
-	dbg_assert(SessionId == Client()->FocusedSessionId(), "legacy snapshot must belong to focused session");
 	CGameSessionContext *pSession = FindSessionContext(SessionId);
-	dbg_assert(pSession != nullptr, "missing legacy snapshot session context");
+	dbg_assert(pSession != nullptr, "missing snapshot session context");
 	CGameState *pState = pSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn));
-	dbg_assert(pState != nullptr, "missing legacy snapshot game state");
+	dbg_assert(pState != nullptr, "missing snapshot game state");
 	CGameSessionContext &Session = *pSession;
 	CGameState &ActiveState = *pState;
 	CGameState::CRuntimeState &Runtime = ActiveState.Runtime();
-	// Every Snap() looks up the focused session, its active stream and that
-	// stream's game state, and this function asks for it more than a hundred
-	// times, some of them inside a loop over every client of every team. It is
-	// the state this function was handed.
 	CGameState::CSnapState &Snap = ActiveState.Snap();
-	const bool NetworkSource = Client()->SessionType(SessionId) == ESessionSourceType::NETWORK;
 	auto &&Evolve = [&Session](CNetObj_Character *pCharacter, int Tick) {
 		CWorldCore TempWorld;
 		CCharacterCore TempCore = CCharacterCore();
@@ -2487,25 +2490,10 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 		TempCore.Write(pCharacter);
 	};
 
-	InvalidateSnapshot(SessionId);
-
-	m_NewTick = true;
-
-	ProcessEvents(SessionId, Conn);
-
-	if(g_Config.m_DbgStress)
-	{
-		if(NetworkSource && (Client()->GameTick(SessionId, Conn) % 100) == 0)
-		{
-			char aMessage[64];
-			int MsgLen = rand() % (sizeof(aMessage) - 1);
-			for(int i = 0; i < MsgLen; i++)
-				aMessage[i] = (char)('a' + (rand() % ('z' - 'a')));
-			aMessage[MsgLen] = 0;
-
-			m_Chat.SendChat(rand() & 1, aMessage);
-		}
-	}
+	// clear all pointers
+	mem_zero(&Snap, sizeof(Snap));
+	Snap.m_SpecInfo.m_Zoom = 1.0f;
+	Snap.m_LocalClientId = -1;
 
 	const CServerInfo &ServerInfo = Client()->ServerInfo(SessionId);
 
@@ -2521,45 +2509,12 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 		{
 			const IClient::CSnapItem Item = Client()->SnapGetItem(SessionId, Conn, IClient::SNAP_CURRENT, i);
 
-			if(Item.m_Type == NETOBJTYPE_CLIENTINFO)
-			{
-				const CNetObj_ClientInfo *pInfo = (const CNetObj_ClientInfo *)Item.m_pData;
-				int ClientId = Item.m_Id;
-				if(ClientId < MAX_CLIENTS)
-				{
-					CClientData *pClient = &m_aClients[ClientId];
-
-					if(!IntsToStr(pInfo->m_aName, std::size(pInfo->m_aName), pClient->m_aName, std::size(pClient->m_aName)))
-					{
-						str_copy(pClient->m_aName, "nameless tee");
-					}
-					IntsToStr(pInfo->m_aClan, std::size(pInfo->m_aClan), pClient->m_aClan, std::size(pClient->m_aClan));
-					pClient->m_Country = pInfo->m_Country;
-					if(!in_range(pClient->m_Country, CountryCode::MINIMUM, CountryCode::MAXIMUM))
-					{
-						pClient->m_Country = CountryCode::DEFAULT;
-					}
-
-					IntsToStr(pInfo->m_aSkin, std::size(pInfo->m_aSkin), pClient->m_aSkinName, std::size(pClient->m_aSkinName));
-					if(!CSkin::IsValidName(pClient->m_aSkinName) ||
-						(!ActiveState.CoreGameInfo().m_AllowXSkins && CSkins::IsSpecialSkin(pClient->m_aSkinName)))
-					{
-						str_copy(pClient->m_aSkinName, "default");
-					}
-
-					pClient->m_UseCustomColor = pInfo->m_UseCustomColor;
-					pClient->m_ColorBody = pInfo->m_ColorBody;
-					pClient->m_ColorFeet = pInfo->m_ColorFeet;
-				}
-			}
-			else if(Item.m_Type == NETOBJTYPE_PLAYERINFO)
+			if(Item.m_Type == NETOBJTYPE_PLAYERINFO)
 			{
 				const CNetObj_PlayerInfo *pInfo = (const CNetObj_PlayerInfo *)Item.m_pData;
 
 				if(pInfo->m_ClientId < MAX_CLIENTS && pInfo->m_ClientId == Item.m_Id)
 				{
-					m_aClients[pInfo->m_ClientId].m_Team = pInfo->m_Team;
-					m_aClients[pInfo->m_ClientId].m_Active = true;
 					Snap.m_apPlayerInfos[pInfo->m_ClientId] = pInfo;
 					Snap.m_apPrevPlayerInfos[pInfo->m_ClientId] = static_cast<const CNetObj_PlayerInfo *>(Client()->SnapFindItem(SessionId, Conn, IClient::SNAP_PREV, Item.m_Type, pInfo->m_ClientId));
 					Snap.m_NumPlayers++;
@@ -2600,12 +2555,12 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 						bool EvolveCur = Client()->GameTick(SessionId, Conn) - Snap.m_aCharacters[Item.m_Id].m_Cur.m_Tick <= 3 * Client()->GameTickSpeed();
 
 						// reuse the result from the previous evolve if the snapped character didn't change since the previous snapshot
-						if(EvolveCur && m_aClients[Item.m_Id].m_Evolved.m_Tick == Client()->PrevGameTick(SessionId, Conn))
+						if(EvolveCur && ActiveState.EvolvedCharacter(Item.m_Id).m_Evolved.m_Tick == Client()->PrevGameTick(SessionId, Conn))
 						{
-							if(mem_comp(&Snap.m_aCharacters[Item.m_Id].m_Prev, &m_aClients[Item.m_Id].m_Snapped, sizeof(CNetObj_Character)) == 0)
-								Snap.m_aCharacters[Item.m_Id].m_Prev = m_aClients[Item.m_Id].m_Evolved;
-							if(mem_comp(&Snap.m_aCharacters[Item.m_Id].m_Cur, &m_aClients[Item.m_Id].m_Snapped, sizeof(CNetObj_Character)) == 0)
-								Snap.m_aCharacters[Item.m_Id].m_Cur = m_aClients[Item.m_Id].m_Evolved;
+							if(mem_comp(&Snap.m_aCharacters[Item.m_Id].m_Prev, &ActiveState.EvolvedCharacter(Item.m_Id).m_Snapped, sizeof(CNetObj_Character)) == 0)
+								Snap.m_aCharacters[Item.m_Id].m_Prev = ActiveState.EvolvedCharacter(Item.m_Id).m_Evolved;
+							if(mem_comp(&Snap.m_aCharacters[Item.m_Id].m_Cur, &ActiveState.EvolvedCharacter(Item.m_Id).m_Snapped, sizeof(CNetObj_Character)) == 0)
+								Snap.m_aCharacters[Item.m_Id].m_Cur = ActiveState.EvolvedCharacter(Item.m_Id).m_Evolved;
 						}
 
 						if(EvolvePrev && Snap.m_aCharacters[Item.m_Id].m_Prev.m_Tick)
@@ -2613,12 +2568,12 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 						if(EvolveCur && Snap.m_aCharacters[Item.m_Id].m_Cur.m_Tick)
 							Evolve(&Snap.m_aCharacters[Item.m_Id].m_Cur, Client()->GameTick(SessionId, Conn));
 
-						m_aClients[Item.m_Id].m_Snapped = *((const CNetObj_Character *)Item.m_pData);
-						m_aClients[Item.m_Id].m_Evolved = Snap.m_aCharacters[Item.m_Id].m_Cur;
+						ActiveState.EvolvedCharacter(Item.m_Id).m_Snapped = *((const CNetObj_Character *)Item.m_pData);
+						ActiveState.EvolvedCharacter(Item.m_Id).m_Evolved = Snap.m_aCharacters[Item.m_Id].m_Cur;
 					}
 					else
 					{
-						m_aClients[Item.m_Id].m_Evolved.m_Tick = -1;
+						ActiveState.EvolvedCharacter(Item.m_Id).m_Evolved.m_Tick = -1;
 					}
 				}
 			}
@@ -2636,7 +2591,6 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 					{
 						Snap.m_aCharacters[Item.m_Id].m_HasExtendedDisplayInfo = true;
 					}
-					m_aClients[Item.m_Id].m_Predicted.ReadDDNet(pCharacterData);
 				}
 			}
 			else if(Item.m_Type == NETOBJTYPE_SPECTATORINFO)
@@ -2781,11 +2735,6 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 			Snap.m_SpecInfo.m_Active = true;
 	}
 
-	for(CClientData &Client : m_aClients)
-	{
-		Client.UpdateSkinInfo(ActiveState);
-	}
-
 	// setup local pointers
 	if(Snap.m_LocalClientId >= 0)
 	{
@@ -2798,7 +2747,6 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 			{
 				Snap.m_pLocalCharacter = &pChr->m_Cur;
 				Snap.m_pLocalPrevCharacter = &pChr->m_Prev;
-				m_LocalCharacterPos = vec2(Snap.m_pLocalCharacter->m_X, Snap.m_pLocalCharacter->m_Y);
 			}
 		}
 		else if(Client()->SnapFindItem(SessionId, Conn, IClient::SNAP_PREV, NETOBJTYPE_CHARACTER, Snap.m_LocalClientId))
@@ -2824,42 +2772,24 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 				Snap.m_SpecInfo.m_SpectatorId = SPEC_FREEVIEW;
 		}
 	}
-	LegacyGameView().SetSpectator(Snap.m_SpecInfo.m_Active, Snap.m_SpecInfo.m_SpectatorId);
-	if(SessionId == Client()->DemoSessionId())
-		LegacyGameView().SetSpectatorMode(m_DemoSpecId);
-
-	// clear out unneeded client data
-	for(int i = 0; i < MAX_CLIENTS; ++i)
-	{
-		if(!Snap.m_apPlayerInfos[i] && m_aClients[i].m_Active)
-		{
-			m_aClients[i].Reset();
-		}
-	}
-
-	if(NetworkSource)
-	{
-		m_pDiscord->UpdatePlayerCount(Snap.m_NumPlayers);
-	}
-
-	for(int i = 0; i < MAX_CLIENTS; ++i)
-	{
-		// update friend state
-		m_aClients[i].m_Friend = !(i == Snap.m_LocalClientId || !Snap.m_apPlayerInfos[i] || !Friends()->IsFriend(m_aClients[i].m_aName, m_aClients[i].m_aClan, true));
-
-		// update foe state
-		m_aClients[i].m_Foe = !(i == Snap.m_LocalClientId || !Snap.m_apPlayerInfos[i] || !Foes()->IsFriend(m_aClients[i].m_aName, m_aClients[i].m_aClan, true));
-	}
-
 	// sort player infos by name
+	// The names are kept on the game state as the numbers the server sent, so
+	// they are decoded once here rather than inside the comparator.
+	std::array<std::array<char, MAX_NAME_LENGTH>, MAX_CLIENTS> aaNames = {};
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+	{
+		const CGameState::CClientIdentityState &Identity = ActiveState.ClientIdentity(ClientId);
+		if(!Identity.m_Active || !IntsToStr(Identity.m_ClientInfo.m_aName, std::size(Identity.m_ClientInfo.m_aName), aaNames[ClientId].data(), aaNames[ClientId].size()))
+			str_copy(aaNames[ClientId].data(), "nameless tee", aaNames[ClientId].size());
+	}
 	mem_copy(Snap.m_apInfoByName, Snap.m_apPlayerInfos, sizeof(Snap.m_apInfoByName));
 	std::stable_sort(Snap.m_apInfoByName, Snap.m_apInfoByName + MAX_CLIENTS,
-		[this](const CNetObj_PlayerInfo *pPlayer1, const CNetObj_PlayerInfo *pPlayer2) -> bool {
+		[&aaNames](const CNetObj_PlayerInfo *pPlayer1, const CNetObj_PlayerInfo *pPlayer2) -> bool {
 			if(!pPlayer2)
 				return static_cast<bool>(pPlayer1);
 			if(!pPlayer1)
 				return false;
-			return str_comp_nocase(m_aClients[pPlayer1->m_ClientId].m_aName, m_aClients[pPlayer2->m_ClientId].m_aName) < 0;
+			return str_comp_nocase(aaNames[pPlayer1->m_ClientId].data(), aaNames[pPlayer2->m_ClientId].data()) < 0;
 		});
 
 	bool TimeScore = ActiveState.CoreGameInfo().m_TimeScore;
@@ -2922,6 +2852,124 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 		else
 			Runtime.m_ServerMode = CGameState::SERVERMODE_PUREMOD;
 	}
+}
+
+void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
+{
+	dbg_assert(SessionId == Client()->FocusedSessionId(), "legacy snapshot must belong to focused session");
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing legacy snapshot session context");
+	CGameState *pState = pSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn));
+	dbg_assert(pState != nullptr, "missing legacy snapshot game state");
+	CGameSessionContext &Session = *pSession;
+	CGameState &ActiveState = *pState;
+	CGameState::CRuntimeState &Runtime = ActiveState.Runtime();
+	// Every Snap() looks up the focused session, its active stream and that
+	// stream's game state, and this function asks for it more than a hundred
+	// times, some of them inside a loop over every client of every team. It is
+	// the state this function was handed.
+	CGameState::CSnapState &Snap = ActiveState.Snap();
+	const bool NetworkSource = Client()->SessionType(SessionId) == ESessionSourceType::NETWORK;
+
+	m_vSnapEntities.clear();
+	m_NewTick = true;
+
+	ProcessEvents(SessionId, Conn);
+
+	if(g_Config.m_DbgStress)
+	{
+		if(NetworkSource && (Client()->GameTick(SessionId, Conn) % 100) == 0)
+		{
+			char aMessage[64];
+			int MsgLen = rand() % (sizeof(aMessage) - 1);
+			for(int i = 0; i < MsgLen; i++)
+				aMessage[i] = (char)('a' + (rand() % ('z' - 'a')));
+			aMessage[MsgLen] = 0;
+
+			m_Chat.SendChat(rand() & 1, aMessage);
+		}
+	}
+
+	// The snapshot was already taken apart into the game state, so the legacy
+	// client data is filled from there instead of walking the items a second
+	// time. Only the focused session keeps it, which is why it cannot be built
+	// where the snap state is.
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+	{
+		CClientData &Client = m_aClients[ClientId];
+		const CGameState::CClientSnapshot &SnapshotClient = ActiveState.Client(ClientId);
+		if(SnapshotClient.m_HasClientInfo)
+		{
+			const CNetObj_ClientInfo &Info = SnapshotClient.m_ClientInfo;
+			if(!IntsToStr(Info.m_aName, std::size(Info.m_aName), Client.m_aName, std::size(Client.m_aName)))
+			{
+				str_copy(Client.m_aName, "nameless tee");
+			}
+			IntsToStr(Info.m_aClan, std::size(Info.m_aClan), Client.m_aClan, std::size(Client.m_aClan));
+			Client.m_Country = Info.m_Country;
+			if(!in_range(Client.m_Country, CountryCode::MINIMUM, CountryCode::MAXIMUM))
+			{
+				Client.m_Country = CountryCode::DEFAULT;
+			}
+
+			IntsToStr(Info.m_aSkin, std::size(Info.m_aSkin), Client.m_aSkinName, std::size(Client.m_aSkinName));
+			if(!CSkin::IsValidName(Client.m_aSkinName) ||
+				(!ActiveState.CoreGameInfo().m_AllowXSkins && CSkins::IsSpecialSkin(Client.m_aSkinName)))
+			{
+				str_copy(Client.m_aSkinName, "default");
+			}
+
+			Client.m_UseCustomColor = Info.m_UseCustomColor;
+			Client.m_ColorBody = Info.m_ColorBody;
+			Client.m_ColorFeet = Info.m_ColorFeet;
+		}
+		if(SnapshotClient.m_HasPlayerInfo && SnapshotClient.m_PlayerInfo.m_ClientId == ClientId)
+		{
+			Client.m_Team = SnapshotClient.m_PlayerInfo.m_Team;
+			Client.m_Active = true;
+		}
+		if(SnapshotClient.m_HasExtendedCharacter)
+		{
+			Client.m_Predicted.ReadDDNet(&SnapshotClient.m_ExtendedCharacter);
+		}
+	}
+
+	for(CClientData &Client : m_aClients)
+	{
+		Client.UpdateSkinInfo(ActiveState);
+	}
+
+	// clear out unneeded client data
+	for(int i = 0; i < MAX_CLIENTS; ++i)
+	{
+		if(!Snap.m_apPlayerInfos[i] && m_aClients[i].m_Active)
+		{
+			m_aClients[i].Reset();
+		}
+	}
+
+	if(NetworkSource)
+	{
+		m_pDiscord->UpdatePlayerCount(Snap.m_NumPlayers);
+	}
+
+	for(int i = 0; i < MAX_CLIENTS; ++i)
+	{
+		// update friend state
+		m_aClients[i].m_Friend = !(i == Snap.m_LocalClientId || !Snap.m_apPlayerInfos[i] || !Friends()->IsFriend(m_aClients[i].m_aName, m_aClients[i].m_aClan, true));
+
+		// update foe state
+		m_aClients[i].m_Foe = !(i == Snap.m_LocalClientId || !Snap.m_apPlayerInfos[i] || !Foes()->IsFriend(m_aClients[i].m_aName, m_aClients[i].m_aClan, true));
+	}
+
+	if(Snap.m_pLocalCharacter != nullptr)
+	{
+		m_LocalCharacterPos = vec2(Snap.m_pLocalCharacter->m_X, Snap.m_pLocalCharacter->m_Y);
+	}
+
+	LegacyGameView().SetSpectator(Snap.m_SpecInfo.m_Active, Snap.m_SpecInfo.m_SpectatorId);
+	if(SessionId == Client()->DemoSessionId())
+		LegacyGameView().SetSpectatorMode(m_DemoSpecId);
 
 	if(SessionId == Client()->NetworkSessionId())
 	{

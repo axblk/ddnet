@@ -22,7 +22,6 @@
 
 #include <engine/console.h>
 
-#include <curl/curl.h>
 #include <net/net.h>
 
 #include <algorithm>
@@ -727,49 +726,22 @@ bool NetDecodeMapHeader(const void *pData, int Size, CNetMapHeader *pHeader)
 
 ENetConnless NetConnlessAddr(const char *pUrl, NETADDR *pAddr)
 {
-	// TODO: maybe parse URL by ourselves
-	CURLU *pHandle = curl_url();
-	char *pScheme;
-	char *pHostname;
-	char *pPort;
-	bool Error = false ||
-		     curl_url_set(pHandle, CURLUPART_URL, pUrl, CURLU_NON_SUPPORT_SCHEME) ||
-		     curl_url_get(pHandle, CURLUPART_SCHEME, &pScheme, 0) ||
-		     curl_url_get(pHandle, CURLUPART_HOST, &pHostname, 0) ||
-		     curl_url_get(pHandle, CURLUPART_PORT, &pPort, 0);
-	curl_url_cleanup(pHandle);
-	if(Error)
+	// A raw datagram and a 0.6 packet both come as a plain address; only
+	// the scheme tells them apart.
+	const bool Raw = str_startswith(pUrl, "udp://") != nullptr;
+	if(net_addr_from_url(pAddr, pUrl, nullptr, 0) != 0)
 	{
 		return ENetConnless::NONE;
 	}
-	ENetConnless Kind;
-	if(str_comp(pScheme, "tw-0.6+udp") == 0)
-	{
-		Kind = ENetConnless::TW06;
-	}
-	else if(str_comp(pScheme, "tw-0.7+udp") == 0)
-	{
-		Kind = ENetConnless::TW07;
-	}
-	else if(str_comp(pScheme, "udp") == 0)
-	{
-		Kind = ENetConnless::RAW;
-	}
-	else
+	if(pAddr->type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET))
 	{
 		return ENetConnless::NONE;
 	}
-	char aBuf[64];
-	str_format(aBuf, sizeof(aBuf), "%s:%s", pHostname, pPort);
-	if(net_addr_from_str(pAddr, aBuf) != 0)
+	if(Raw)
 	{
-		return ENetConnless::NONE;
+		return ENetConnless::RAW;
 	}
-	if(Kind == ENetConnless::TW07)
-	{
-		pAddr->type |= NETTYPE_TW7;
-	}
-	return Kind;
+	return pAddr->type & NETTYPE_TW7 ? ENetConnless::TW07 : ENetConnless::TW06;
 }
 
 static void NetSendConnlessTo(CNet *pNet, const char *pScheme, const char *pHost, const CNetChunk *pChunk)

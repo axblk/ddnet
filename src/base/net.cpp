@@ -355,6 +355,11 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 	bool websocket_tls = false;
 	mem_zero(addr, sizeof(*addr));
 	const char *str = str_startswith(string, "tw-0.6+udp://");
+	if(!str)
+	{
+		// A datagram of no protocol, as STUN sends them.
+		str = str_startswith(string, "udp://");
+	}
 	if(!str && (str = str_startswith(string, "tw-0.7+udp://")))
 	{
 		sixup = true;

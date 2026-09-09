@@ -37,6 +37,11 @@ TEST(NetAddr, FromUrlStringValid)
 	EXPECT_STREQ(aBuf1, "127.0.0.1:0");
 	EXPECT_STREQ(aBuf2, "127.0.0.1");
 
+	EXPECT_EQ(net_addr_from_url(&Addr, "udp://127.0.0.1:3478", nullptr, 0), 0);
+	net_addr_str(&Addr, aBuf1, sizeof(aBuf1), true);
+	EXPECT_STREQ(aBuf1, "127.0.0.1:3478");
+	EXPECT_EQ(Addr.type, NETTYPE_IPV4);
+
 	EXPECT_EQ(net_addr_from_url(&Addr, "tw-0.6+udp://[0123:4567:89ab:cdef:1:2:3:4]:5678", nullptr, 0), 0);
 	net_addr_str(&Addr, aBuf1, sizeof(aBuf1), true);
 	net_addr_str(&Addr, aBuf2, sizeof(aBuf2), false);

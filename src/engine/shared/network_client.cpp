@@ -283,7 +283,6 @@ CONNECTIVITY CNetClient::GetConnectivity(int NetType, NETADDR *pGlobalAddr)
 #include <base/net.h>
 #include <base/str.h>
 
-#include <curl/curl.h>
 #include <net/net.h>
 
 #include <algorithm>
@@ -305,26 +304,6 @@ static bool CheckNetCall(CNet *pNet, bool Failed, const char *pFunction)
 		log_error("net", "%s: %s", pFunction, ddnet_net_error(pNet));
 	}
 	return Failed;
-}
-
-static bool AddrFromUrl(const char *pUrl, NETADDR *pAddr)
-{
-	// TODO: maybe parse URL by ourselves
-	CURLU *pHandle = curl_url();
-	char *pHostname;
-	char *pPort;
-	bool Error = false ||
-		     curl_url_set(pHandle, CURLUPART_URL, pUrl, CURLU_NON_SUPPORT_SCHEME) ||
-		     curl_url_get(pHandle, CURLUPART_HOST, &pHostname, 0) ||
-		     curl_url_get(pHandle, CURLUPART_PORT, &pPort, 0);
-	curl_url_cleanup(pHandle);
-	if(Error)
-	{
-		return false;
-	}
-	char aBuf[64];
-	str_format(aBuf, sizeof(aBuf), "%s:%s", pHostname, pPort);
-	return net_addr_from_str(pAddr, aBuf) == 0;
 }
 
 CNetClient::~CNetClient()
@@ -564,27 +543,16 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 			const char *pAddr;
 			size_t AddrLen;
 			ddnet_net_ev_connect_addr(m_pNetEvent, &pAddr, &AddrLen);
+			// The scheme's flags come with the address.
 			NETADDR Addr;
-			if(!AddrFromUrl(pAddr, &Addr))
+			if(net_addr_from_url(&Addr, pAddr, nullptr, 0) != 0)
 			{
 				static const char UNRECOGNIZED_ADDR[] = "Unrecognized address";
 				NET_CALL(ddnet_net_close, m_pNet, PeerId, UNRECOGNIZED_ADDR, sizeof(UNRECOGNIZED_ADDR) - 1);
 				continue;
 			}
-			if(str_startswith(pAddr, "tw-0.7+udp://"))
+			if(Addr.type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET))
 			{
-				Addr.type |= NETTYPE_TW7;
-			}
-			else if(str_startswith(pAddr, "ddnet+"))
-			{
-				if(str_startswith(pAddr, "ddnet+quic://"))
-					Addr.type |= NETTYPE_QUIC;
-				else if(str_startswith(pAddr, "ddnet+wt://"))
-					Addr.type |= NETTYPE_QUIC | NETTYPE_WEBTRANSPORT;
-				else if(str_startswith(pAddr, "ddnet+ws://"))
-					Addr.type |= NETTYPE_WEBSOCKET;
-				else if(str_startswith(pAddr, "ddnet+wss://"))
-					Addr.type |= NETTYPE_WEBSOCKET | NETTYPE_WEBSOCKET_TLS;
 				// The identity the server showed, to connect the dummy with.
 				const char *pFragment = str_find(pAddr, "#");
 				str_copy(m_aServerIdentity, pFragment != nullptr ? pFragment + 1 : "");

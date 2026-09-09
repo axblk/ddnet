@@ -879,7 +879,6 @@ const char *CNetServer::ErrorString(int ClientId)
 #include <base/secure.h>
 #include <base/str.h>
 
-#include <curl/curl.h>
 #include <net/net.h>
 
 #include <algorithm>
@@ -903,24 +902,16 @@ static bool CheckNetCall(CNet *pNet, bool Failed, const char *pFunction)
 	return Failed;
 }
 
+// The plain address of a peer's URL, without the scheme's flags: bans and
+// the address shown for the client do not care about the protocol.
 static bool AddrFromUrl(const char *pUrl, NETADDR *pAddr)
 {
-	// TODO: maybe parse URL by ourselves
-	CURLU *pHandle = curl_url();
-	char *pHostname;
-	char *pPort;
-	bool Error = false ||
-		     curl_url_set(pHandle, CURLUPART_URL, pUrl, CURLU_NON_SUPPORT_SCHEME) ||
-		     curl_url_get(pHandle, CURLUPART_HOST, &pHostname, 0) ||
-		     curl_url_get(pHandle, CURLUPART_PORT, &pPort, 0);
-	curl_url_cleanup(pHandle);
-	if(Error)
+	if(net_addr_from_url(pAddr, pUrl, nullptr, 0) != 0)
 	{
 		return false;
 	}
-	char aBuf[64];
-	str_format(aBuf, sizeof(aBuf), "%s:%s", pHostname, pPort);
-	return net_addr_from_str(pAddr, aBuf) == 0;
+	pAddr->type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+	return true;
 }
 
 // The library listens on one socket. Bound to IPv6 it takes IPv4 as well, so

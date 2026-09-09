@@ -4,8 +4,8 @@ use foreign_types_shared::ForeignType as _;
 use foreign_types_shared::ForeignTypeRef as _;
 use std::fmt;
 use std::fs;
-use std::iter;
 use std::ptr;
+use std::str;
 use std::str::FromStr;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -19,6 +19,12 @@ const BROWSER_CERTIFICATE_BACKDATE: i64 = 60 * 60;
 /// the next one's hash is known a week in advance, so a server list a
 /// client fetched before the swap still works.
 pub const BROWSER_CERTIFICATE_ROTATION: i64 = 7 * 24 * 60 * 60;
+/// The certificate the identity itself sits in is only ever checked by
+/// our own verify callback, which reads the key and ignores the dates;
+/// it is still remade long before it runs out, for any other TLS stack
+/// that looks at them.
+pub const IDENTITY_CERTIFICATE_LIFETIME: i64 = 7 * 24 * 60 * 60;
+pub const IDENTITY_CERTIFICATE_RENEWAL: i64 = 3 * 24 * 60 * 60;
 /// What an identity signs to vouch for a certificate it does not sit in.
 const IDENTITY_PROOF_CONTEXT: &[u8] = b"ddnet server identity v1\0";
 pub const IDENTITY_PROOF_SIZE: usize = 32 + 64;
@@ -221,31 +227,16 @@ impl BrowserCertificate {
 }
 
 fn hex_to_32_bytes(v: &str) -> Result<[u8; 32], Error> {
-    let len = v.chars().count();
-    if len != 64 {
-        bail!("invalid length {}, must be 64", len);
+    if v.len() != 64 || !v.is_ascii() {
+        bail!("invalid length {}, must be 64 hex digits", v.chars().count());
     }
     let mut result = [0; 32];
-    // I just want to get string slices with two characters each. :(
-    // Sorry for this monstrosity.
-    let starts = v
-        .char_indices()
-        .map(|(i, _)| i)
-        .chain(iter::once(v.len()))
-        .step_by(2);
-    let ends = {
-        let mut e = starts.clone();
-        e.next();
-        e
-    };
-    for (i, (s, e)) in starts.zip(ends).enumerate() {
-        result[i] = u8::from_str_radix(&v[s..e], 16).map_err(|_| {
-            Error::from_string(format!(
-                "non-hex character {:?} at index {}",
-                &v[s..e],
-                s
-            ))
-        })?;
+    for (i, pair) in v.as_bytes().chunks(2).enumerate() {
+        // `from_str_radix` would also take a sign.
+        if !pair.iter().all(u8::is_ascii_hexdigit) {
+            bail!("non-hex character {:?} at index {}", str::from_utf8(pair).unwrap(), 2 * i);
+        }
+        result[i] = u8::from_str_radix(str::from_utf8(pair).unwrap(), 16).unwrap();
     }
     Ok(result)
 }
@@ -294,7 +285,9 @@ impl PrivateIdentity {
         proof[32..].copy_from_slice(&signature);
         proof
     }
-    pub fn generate_certificate(&self) -> boring::x509::X509 {
+    /// A self-signed certificate holding the identity, valid from an
+    /// hour before `now` for `IDENTITY_CERTIFICATE_LIFETIME`.
+    pub fn generate_certificate(&self, now: i64) -> boring::x509::X509 {
         let name = {
             let mut builder = boring::x509::X509Name::builder().unwrap();
             builder
@@ -309,11 +302,11 @@ impl PrivateIdentity {
                     &format!("{}", self.public()),
                 )
                 .unwrap();
-            builder
-                .append_entry_by_nid(boring::nid::Nid::COMMONNAME, "a")
-                .unwrap();
             builder.build()
         };
+        // Ed25519 signs the message itself, without a digest; boringssl
+        // wants that spelled as a null digest, which `MessageDigest` has
+        // no safe constructor for.
         let default_md =
             unsafe { boring::hash::MessageDigest::from_ptr(ptr::null()) };
 
@@ -325,10 +318,10 @@ impl PrivateIdentity {
             .unwrap();
         builder.set_issuer_name(&name).unwrap();
         builder
-            .set_not_before(&boring::asn1::Asn1Time::days_from_now(0).unwrap())
+            .set_not_before(&asn1_time(now - BROWSER_CERTIFICATE_BACKDATE))
             .unwrap();
         builder
-            .set_not_after(&boring::asn1::Asn1Time::days_from_now(7).unwrap())
+            .set_not_after(&asn1_time(now + IDENTITY_CERTIFICATE_LIFETIME))
             .unwrap();
         builder.set_subject_name(&name).unwrap();
         builder.set_pubkey(&self.lib).unwrap();
@@ -354,9 +347,11 @@ impl PrivateIdentity {
 #[cfg(test)]
 mod test {
     use super::BrowserCertificate;
+    use super::Identity;
     use super::PrivateIdentity;
     use super::BROWSER_CERTIFICATE_LIFETIME;
     use super::BROWSER_CERTIFICATE_BACKDATE;
+    use super::IDENTITY_CERTIFICATE_LIFETIME;
 
     #[test]
     fn browser_certificate_is_short_lived() {
@@ -385,12 +380,28 @@ mod test {
     }
 
     #[test]
+    fn identity_from_hex() {
+        let hex = "89b84bbc4b430a74642a8d6ee9086048318b20090e5a5d0c807aba4ce2c0d22f";
+        let identity: Identity = hex.parse().unwrap();
+        assert_eq!(identity.to_string(), hex);
+        assert!(hex[..63].parse::<Identity>().is_err());
+        assert!(format!("{}0", hex).parse::<Identity>().is_err());
+        assert!(format!("+{}", &hex[1..]).parse::<Identity>().is_err());
+        assert!(format!("{}g", &hex[..63]).parse::<Identity>().is_err());
+        assert!(format!("{}ö", &hex[..62]).parse::<Identity>().is_err());
+    }
+
+    #[test]
     fn generate_certificate() {
         let private_identity: PrivateIdentity =
             "89b84bbc4b430a74642a8d6ee9086048318b20090e5a5d0c807aba4ce2c0d22f"
                 .parse()
                 .unwrap();
-        let cert = private_identity.generate_certificate();
+        let cert = private_identity.generate_certificate(1_800_000_000);
         cert.to_pem().unwrap();
+        let lifetime = cert.not_before().diff(cert.not_after()).unwrap();
+        let seconds = i64::from(lifetime.days) * 24 * 60 * 60 + i64::from(lifetime.secs);
+        assert_eq!(seconds, IDENTITY_CERTIFICATE_LIFETIME + BROWSER_CERTIFICATE_BACKDATE);
+        assert!(cert.public_key().unwrap().public_eq(private_identity.as_lib()));
     }
 }

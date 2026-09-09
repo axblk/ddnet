@@ -321,6 +321,9 @@ pub enum Event {
     /// `Map(pid, what, size)`, a step of a map arriving on a stream of its
     /// own; see [`MapEvent`].
     Map(PeerIndex, MapEvent, usize),
+    /// `Moved(pid, new_addr)`, the peer reaches us from another address
+    /// now, after a migration or a resume.
+    Moved(PeerIndex, Addr),
 }
 
 /// A map the server hands out on a QUIC stream of its own.
@@ -365,6 +368,11 @@ pub enum ConnectionEvent {
     ResumeRequest(u64, [u8; quic::RESUME_TOKEN_LEN]),
     /// The connection continues on a new QUIC connection at the address.
     Resumed(Addr),
+    /// The peer reaches us from another address now, after a migration or
+    /// a resume: `Moved(new_addr)`.
+    ///
+    /// Must only be sent once a [`Connect`] has been sent.
+    Moved(Addr),
     /// The client's connection is lost; a new one should continue it.
     ResumeNeeded,
     /// Asks for the connection object to be destroyed.
@@ -1348,6 +1356,13 @@ impl Net {
                                 return self.recv(buf);
                             }
                             continue;
+                        }
+                        ConnectionEvent::Moved(peer_addr) => {
+                            if !peer.high_level {
+                                warn!("peer {}: moved before connect, ignoring", idx);
+                                continue;
+                            }
+                            return Ok(Some(Event::Moved(idx, peer_addr)));
                         }
                         ConnectionEvent::ResumeNeeded => {
                             let Connection::Quic(conn) = &mut peer.conn else { unreachable!() };

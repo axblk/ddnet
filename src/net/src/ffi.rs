@@ -64,6 +64,7 @@ pub const DDNET_NET_EV_CHUNK: u64 = 2;
 pub const DDNET_NET_EV_DISCONNECT: u64 = 3;
 pub const DDNET_NET_EV_CONNLESS_CHUNK: u64 = 4;
 pub const DDNET_NET_EV_MAP: u64 = 5;
+pub const DDNET_NET_EV_MOVED: u64 = 6;
 
 pub const DDNET_NET_MAP_HEADER: u64 = 0;
 pub const DDNET_NET_MAP_DATA: u64 = 1;
@@ -229,6 +230,7 @@ pub extern "C" fn ddnet_net_ev_kind(ev: &DdnetNetEvent) -> u64 {
         Some(Disconnect(..)) => DDNET_NET_EV_DISCONNECT,
         Some(ConnlessChunk(..)) => DDNET_NET_EV_CONNLESS_CHUNK,
         Some(Map(..)) => DDNET_NET_EV_MAP,
+        Some(Moved(..)) => DDNET_NET_EV_MOVED,
     }
 }
 /// An accessor was asked about a field its event does not have. That is a
@@ -244,6 +246,7 @@ fn wrong_event(accessor: &str, ev: &DdnetNetEvent) -> ! {
         Some(Disconnect(..)) => "disconnect",
         Some(ConnlessChunk(..)) => "connless chunk",
         Some(Map(..)) => "map",
+        Some(Moved(..)) => "moved",
     };
     error!("{} called on a {} event", accessor, kind);
     eprintln!("ddnet_net: {} called on a {} event", accessor, kind);
@@ -329,6 +332,37 @@ pub extern "C" fn ddnet_net_ev_connect_addr(
     let addr = match &ev.inner {
         Some(Connect(_, addr)) => CString::new(addr.to_string()).unwrap(),
         _ => wrong_event("ddnet_net_ev_connect_addr", ev),
+    };
+    let addr = ev.addr.insert(addr);
+    *addr_ptr = addr.as_ptr();
+    *addr_len = addr.as_bytes().len();
+}
+#[no_mangle]
+pub extern "C" fn ddnet_net_ev_moved_peer_index(
+    ev: &DdnetNetEvent,
+) -> u64 {
+    use self::EventImpl::*;
+    match &ev.inner {
+        Some(Moved(idx, _)) => idx.0,
+        _ => wrong_event("ddnet_net_ev_moved_peer_index", ev),
+    }
+}
+/// The peer's new address, as a URL like the one of its connect event.
+#[no_mangle]
+pub extern "C" fn ddnet_net_ev_moved_addr(
+    ev: &mut DdnetNetEvent,
+    addr_ptr: &mut *const c_char,
+    addr_len: &mut usize,
+) {
+    use self::EventImpl::*;
+    if let Some(addr) = &ev.addr {
+        *addr_ptr = addr.as_ptr();
+        *addr_len = addr.as_bytes().len();
+        return;
+    }
+    let addr = match &ev.inner {
+        Some(Moved(_, addr)) => CString::new(addr.to_string()).unwrap(),
+        _ => wrong_event("ddnet_net_ev_moved_addr", ev),
     };
     let addr = ev.addr.insert(addr);
     *addr_ptr = addr.as_ptr();

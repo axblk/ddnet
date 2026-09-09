@@ -427,6 +427,40 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			}
 		}
 		break;
+		case DDNET_NET_EV_MOVED:
+		{
+			const uint64_t PeerId = ddnet_net_ev_moved_peer_index(m_pNetEvent);
+			const int ClientId = PeerClientId(PeerId);
+			if(ClientId < 0)
+			{
+				continue;
+			}
+
+			const char *pAddr;
+			size_t AddrLen;
+			ddnet_net_ev_moved_addr(m_pNetEvent, &pAddr, &AddrLen);
+			NETADDR Addr;
+			if(!AddrFromUrl(pAddr, &Addr))
+			{
+				static const char UNRECOGNIZED_ADDR[] = "Unrecognized address";
+				NET_CALL(ddnet_net_close, m_pNet, PeerId, UNRECOGNIZED_ADDR, sizeof(UNRECOGNIZED_ADDR) - 1);
+				continue;
+			}
+
+			// The ban list is asked again, the new address may be on it.
+			char aBanReason[256];
+			if(NetBan() && NetBan()->IsBanned(&Addr, aBanReason, sizeof(aBanReason)))
+			{
+				NET_CALL(ddnet_net_close, m_pNet, PeerId, aBanReason, str_length(aBanReason));
+				continue;
+			}
+
+			char aOldAddr[NETADDR_MAXSTRSIZE];
+			str_copy(aOldAddr, m_aPeers[ClientId].m_aAddressStr.data());
+			m_aPeers[ClientId].SetAddress(Addr);
+			log_info("net", "client %d moved from %s to %s", ClientId, aOldAddr, m_aPeers[ClientId].m_aAddressStr.data());
+		}
+		break;
 		case DDNET_NET_EV_DISCONNECT:
 		{
 			const uint64_t PeerId = ddnet_net_ev_disconnect_peer_index(m_pNetEvent);

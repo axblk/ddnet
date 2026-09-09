@@ -20,8 +20,13 @@
 #include <base/log.h>
 #include <base/str.h>
 
+#include <engine/console.h>
+
 #include <curl/curl.h>
 #include <net/net.h>
+
+#include <algorithm>
+#include <climits>
 #endif
 
 const unsigned char SECURITY_TOKEN_MAGIC[4] = {'T', 'K', 'E', 'N'};
@@ -564,8 +569,24 @@ void CNetBase::Init()
 	ms_Huffman.Init();
 #ifdef CONF_NETWORKING_QUIC
 	ddnet_net_set_logger(NetLogger);
+	UpdateLogLevel();
 #endif
 }
+
+#ifdef CONF_NETWORKING_QUIC
+void CNetBase::UpdateLogLevel()
+{
+	static int s_Level = INT_MIN;
+	// The most any of the loggers wants; each still filters for itself.
+	const int Level = std::max({g_Config.m_Loglevel, g_Config.m_StdoutOutputLevel, g_Config.m_ConsoleOutputLevel, g_Config.m_EcOutputLevel});
+	if(Level == s_Level)
+	{
+		return;
+	}
+	s_Level = Level;
+	ddnet_net_set_log_level(IConsole::ToLogLevelFilter(Level));
+}
+#endif
 
 void CNetTokenCache::Init(NETSOCKET Socket)
 {

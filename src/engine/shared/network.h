@@ -890,6 +890,11 @@ public:
 	static void OpenLog(IOHANDLE DataLogSent, IOHANDLE DataLogRecv);
 	static void CloseLog();
 	static void Init();
+#ifdef CONF_NETWORKING_QUIC
+	// Tells the network library how much to log, so that it formats only
+	// what some logger would take; called from the update loops.
+	static void UpdateLogLevel();
+#endif
 	static int Compress(const void *pData, int DataSize, void *pOutput, int OutputSize);
 	static int Decompress(const void *pData, int DataSize, void *pOutput, int OutputSize);
 

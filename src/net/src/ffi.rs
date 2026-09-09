@@ -555,6 +555,15 @@ pub extern "C" fn ddnet_net_set_timeout(net: &mut DdnetNet, seconds: u64) -> boo
         Ok(())
     })
 }
+/// Writes the TLS session keys to the file `SSLKEYLOGFILE` names, so the
+/// traffic can be read in Wireshark. A debugging aid; off by default.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_key_log(net: &mut DdnetNet, key_log: bool) -> bool {
+    net.init(|builder| {
+        builder.key_log(key_log);
+        Ok(())
+    })
+}
 /// Switches a single protocol on or off, after `ddnet_net_set_accept_connections`.
 #[no_mangle]
 pub extern "C" fn ddnet_net_set_accept_protocol(
@@ -843,9 +852,24 @@ pub extern "C" fn ddnet_net_set_logger(
             eprintln!("ddnet_net: failed to set logger");
             return Err(From::from(Error::from_string(String::new())));
         }
-        log::set_max_level(log::LevelFilter::Trace);
+        log::set_max_level(log::LevelFilter::Info);
         info!("set logger");
         Ok(())
     })
     .is_err()
+}
+/// How much the crate logs, in the levels the logger is handed: 0 errors
+/// only, up to 4 everything, below 0 nothing. A line above the level costs
+/// nothing; it is not even formatted.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_log_level(level: i32) {
+    use log::LevelFilter::*;
+    log::set_max_level(match level {
+        i32::MIN..=-1 => Off,
+        0 => Error,
+        1 => Warn,
+        2 => Info,
+        3 => Debug,
+        4..=i32::MAX => Trace,
+    });
 }

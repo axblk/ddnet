@@ -33,5 +33,6 @@ pre-rfc3243-libtw2-net = "0.2.0"
 pre-rfc3243-libtw2-warn = "0.2.0"
 quiche = { version = "0.20.0", features = ["boringssl-boring-crate"] }
 ring = "0.16.20"
+socket2 = { version = "0.5", features = ["all"] }
 url = "2.3.1"
 uuid = "1.2.2"

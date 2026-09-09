@@ -7,6 +7,7 @@ use self::net::MAX_FRAME_SIZE;
 use self::net::ProtocolEvent;
 use self::net::QuicAddr;
 use self::net::Protocol;
+use self::net::Socket;
 use self::net::Tw06Addr;
 use self::net::Tw07Addr;
 use self::util::normalize;

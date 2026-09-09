@@ -443,6 +443,16 @@ void CNetClient::Disconnect(const char *pReason)
 
 void CNetClient::Connect(const NETADDR *pAddr, int NumAddrs)
 {
+	ConnectImpl(pAddr, NumAddrs, false);
+}
+
+void CNetClient::Connect7(const NETADDR *pAddr, int NumAddrs)
+{
+	ConnectImpl(pAddr, NumAddrs, true);
+}
+
+void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
+{
 	Disconnect(nullptr);
 
 	m_NumConnectAddrs = std::min(NumAddrs, (int)std::size(m_aConnectAddrs));
@@ -455,7 +465,7 @@ void CNetClient::Connect(const NETADDR *pAddr, int NumAddrs)
 	net_addr_str(&pAddr[0], aAddr, sizeof(aAddr), true);
 	char aUrl[128];
 	// TODO: connect via `ddnet-15+quic://` when the server advertises support for it
-	str_format(aUrl, sizeof(aUrl), "tw-0.6+udp://%s", aAddr);
+	str_format(aUrl, sizeof(aUrl), "%s://%s", Sixup ? "tw-0.7+udp" : "tw-0.6+udp", aAddr);
 	uint64_t PeerId;
 	if(NET_CALL(ddnet_net_connect, m_pNet, aUrl, str_length(aUrl), &PeerId))
 	{
@@ -465,13 +475,6 @@ void CNetClient::Connect(const NETADDR *pAddr, int NumAddrs)
 	m_PeerId = PeerId;
 	m_State = NETSTATE_CONNECTING;
 	m_aErrorString[0] = '\0';
-}
-
-void CNetClient::Connect7(const NETADDR *pAddr, int NumAddrs)
-{
-	// TODO: 0.7 is not supported by the network library yet.
-	Disconnect(nullptr);
-	str_copy(m_aErrorString, "0.7 servers are not supported by this client");
 }
 
 void CNetClient::Update()
@@ -563,6 +566,10 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 				NET_CALL(ddnet_net_close, m_pNet, PeerId, UNRECOGNIZED_ADDR, sizeof(UNRECOGNIZED_ADDR) - 1);
 				continue;
 			}
+			if(str_startswith(pAddr, "tw-0.7+udp://"))
+			{
+				Addr.type |= NETTYPE_TW7;
+			}
 			m_ServerAddress = Addr;
 			m_State = NETSTATE_ONLINE;
 		}
@@ -590,6 +597,7 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 			}
 			mem_zero(pChunk, sizeof(*pChunk));
 			pChunk->m_ClientId = 0;
+			pChunk->m_Address = m_ServerAddress;
 			pChunk->m_Flags = 0;
 			if(!ddnet_net_ev_chunk_is_unreliable(m_pNetEvent))
 			{

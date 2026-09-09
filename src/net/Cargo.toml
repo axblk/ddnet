@@ -8,6 +8,10 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Built against a `libtw2-net` with `libtw2-patches` applied.
+libtw2-patch = []
+
 [dependencies]
 arrayvec = "0.5.2"
 bstr = "1.0.1"
@@ -22,7 +26,9 @@ mio = { version = "0.8.4", features = ["net", "os-poll"] }
 octets = "0.2.0"
 openssl-probe = "0.1.5"
 # Published snapshots of libtw2. Their lib targets are named `libtw2_net` and
-# `libtw2_warn`, which is how they are referred to from the code.
+# `libtw2_warn`, which is how they are referred to from the code. What a
+# server needs on top is in `libtw2-patches`, behind the `libtw2-patch`
+# feature; see `src/libtw2_patch.rs`.
 pre-rfc3243-libtw2-net = "0.2.0"
 pre-rfc3243-libtw2-warn = "0.2.0"
 quiche = { version = "0.20.0", features = ["boringssl-boring-crate"] }

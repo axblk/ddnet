@@ -712,6 +712,7 @@ class CNetClient
 	bool OpenLibrary();
 	void CloseLibrary();
 	void Reopen();
+	void ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup);
 #else
 	CNetConnection m_Connection;
 	CPacketChunkUnpacker m_PacketChunkUnpacker;

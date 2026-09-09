@@ -6,6 +6,7 @@ use crate::Net as NetImpl;
 use crate::NetBuilder as NetBuilderImpl;
 use crate::PeerIndex;
 use crate::PrivateIdentity;
+use crate::Protocol;
 use crate::Result;
 use std::ffi::c_char;
 use std::ffi::CStr;
@@ -58,6 +59,10 @@ pub const DDNET_NET_EV_CONNECT: u64 = 1;
 pub const DDNET_NET_EV_CHUNK: u64 = 2;
 pub const DDNET_NET_EV_DISCONNECT: u64 = 3;
 pub const DDNET_NET_EV_CONNLESS_CHUNK: u64 = 4;
+
+pub const DDNET_NET_PROTOCOL_TW06: u64 = 0;
+pub const DDNET_NET_PROTOCOL_TW07: u64 = 1;
+pub const DDNET_NET_PROTOCOL_QUIC: u64 = 2;
 
 // TODO: Maybe expose `Addr` struct to C (in an opaque way).
 
@@ -384,6 +389,24 @@ pub extern "C" fn ddnet_net_set_accept_connections(
 ) -> bool {
     net.init(|builder| {
         builder.accept_connections(accept);
+        Ok(())
+    })
+}
+/// Switches a single protocol on or off, after `ddnet_net_set_accept_connections`.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_accept_protocol(
+    net: &mut DdnetNet,
+    protocol: u64,
+    accept: bool,
+) -> bool {
+    net.init(|builder| {
+        let protocol = match protocol {
+            DDNET_NET_PROTOCOL_TW06 => Protocol::Tw06,
+            DDNET_NET_PROTOCOL_TW07 => Protocol::Tw07,
+            DDNET_NET_PROTOCOL_QUIC => Protocol::Quic,
+            _ => bail!("unknown protocol {}", protocol),
+        };
+        builder.accept_protocol(protocol, accept);
         Ok(())
     })
 }

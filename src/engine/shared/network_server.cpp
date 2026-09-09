@@ -904,6 +904,12 @@ static bool AddrFromUrl(const char *pUrl, NETADDR *pAddr)
 	return net_addr_from_str(pAddr, aBuf) == 0;
 }
 
+// The address of a connect event names the protocol in its scheme.
+static bool UrlIsSixup(const char *pUrl)
+{
+	return str_startswith(pUrl, "tw-0.7+udp://") != nullptr;
+}
+
 static bool Tw06AddrFromUrl(const char *pUrl, NETADDR *pAddr)
 {
 	// TODO: maybe parse URL by ourselves
@@ -986,6 +992,9 @@ bool CNetServer::OpenLibrary()
 		ddnet_net_set_bindaddr(m_pNet, aBindAddr, str_length(aBindAddr)) ||
 		(m_HasIdentity && ddnet_net_set_identity(m_pNet, &m_aIdentity)) ||
 		ddnet_net_set_accept_connections(m_pNet, true) ||
+		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW06, g_Config.m_SvLegacyUdp != 0) ||
+		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW07, g_Config.m_SvLegacyUdp != 0) ||
+		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_QUIC, g_Config.m_SvQuic != 0) ||
 		ddnet_net_open(m_pNet))
 	{
 		log_error("net", "couldn't open net server: %s", ddnet_net_error(m_pNet));
@@ -1156,6 +1165,14 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 				continue;
 			}
 
+			const bool Sixup = UrlIsSixup(pAddr);
+			if(Sixup && !g_Config.m_SvSixup)
+			{
+				static const char NO_SIXUP[] = "0.7 connections are not accepted at this time";
+				NET_CALL(ddnet_net_close, m_pNet, PeerId, NO_SIXUP, sizeof(NO_SIXUP) - 1);
+				continue;
+			}
+
 			uint32_t NumConnected = 0;
 			NET_CALL(ddnet_net_num_peers_in_bucket, m_pNet, pAddr, AddrLen, &NumConnected);
 			if((int)NumConnected > m_MaxClientsPerIp)
@@ -1190,7 +1207,7 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			NET_CALL(ddnet_net_set_userdata, m_pNet, PeerId, (void *)(uintptr_t)ClientId);
 			if(m_pfnNewClient)
 			{
-				m_pfnNewClient(ClientId, m_pUser, false);
+				m_pfnNewClient(ClientId, m_pUser, Sixup);
 			}
 		}
 		break;

@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: redix <redix@hotmail.de>
+Date: Thu, 10 Sep 2026 14:51:52 +0200
+Subject: [PATCH] net: accept a 0.7 connection on the server
+
+The 0.7 connection only knows the client side of the handshake. A server
+answers the token request without keeping state, or has a packet filter
+in front of it answer, so the connection object is only made once the
+client's connect message arrives with a valid token. The 0.6 connection
+already has the equivalent constructor.
+---
+ net/src/connection7.rs | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/net/src/connection7.rs b/net/src/connection7.rs
+index 65f113c..c0157dd 100644
+--- a/net/src/connection7.rs
++++ b/net/src/connection7.rs
+@@ -539,6 +539,16 @@ impl Connection {
+             builder: PacketBuilder::new(),
+         }
+     }
++    /// A server-side connection whose token request was already answered
++    /// with `own_token`, without a connection object at the time. Feeding it
++    /// the client's connect message accepts the connection.
++    pub fn new_accept_token(own_token: Token) -> Connection {
++        Connection {
++            state: State::PendingConnect(PendingConnectState::new(own_token)),
++            send: Timeout::inactive(),
++            builder: PacketBuilder::new(),
++        }
++    }
+     pub fn reset(&mut self) {
+         assert!(matches!(self.state, State::Disconnected));
+         *self = Connection::new();

@@ -15,16 +15,13 @@ websocket = ["dep:tungstenite"]
 
 [dependencies]
 arrayvec = "0.5.2"
-bstr = "1.0.1"
 boring = "4"
 boring-sys = "4"
-env_logger = "0.10.0"
 foreign-types-shared = "0.3.1"
 getrandom = { version = "0.2.8", features = ["std"] }
 hexdump = "0.1.2"
 log = "0.4.17"
 mio = { version = "0.8.4", features = ["net", "os-poll"] }
-openssl-probe = "0.1.5"
 # Published snapshots of libtw2. Their lib targets are named `libtw2_net` and
 # `libtw2_warn`, which is how they are referred to from the code. What a
 # server needs on top is in `libtw2-patches`, behind the `libtw2-patch`
@@ -39,4 +36,3 @@ socket2 = { version = "0.5", features = ["all"] }
 tungstenite = { version = "0.26", optional = true, default-features = false, features = ["handshake"] }
 wtransport-proto = "=0.7.0"
 url = "2.3.1"
-uuid = "1.2.2"

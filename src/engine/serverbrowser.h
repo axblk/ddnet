@@ -23,6 +23,37 @@ static constexpr const char *DDNET_INFO_URL = "https://info.ddnet.org/info";
 
 class CUIElement;
 
+/**
+ * The transport a connect from the browser uses, as picked next to the
+ * address field. A pick, not a preference: the address box holds the one
+ * address of that transport, and the connect uses it and nothing else.
+ *
+ * The values are stored in `cl_connect_protocol`, so they must not be
+ * reordered.
+ */
+enum class EConnectProtocol
+{
+	LEGACY = 0,
+	QUIC,
+	WEBSOCKET,
+	WEBTRANSPORT,
+	COUNT,
+};
+
+/**
+ * The address family a connect from the browser uses, as picked next to
+ * the address field, where the server has an address of it.
+ *
+ * The values are stored in `cl_connect_address_family`, so they must not
+ * be reordered.
+ */
+enum class EConnectAddressFamily
+{
+	IPV4 = 0,
+	IPV6,
+	COUNT,
+};
+
 class CServerInfo
 {
 public:

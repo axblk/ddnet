@@ -230,6 +230,8 @@ MACRO_CONFIG_INT(UiPage, ui_page, 6, 6, 13, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Inte
 MACRO_CONFIG_INT(UiSettingsPage, ui_settings_page, 0, 0, 10, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Interface settings page")
 MACRO_CONFIG_INT(UiToolboxPage, ui_toolbox_page, 0, 0, 2, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Toolbox page")
 MACRO_CONFIG_STR(UiServerAddress, ui_server_address, 1024, "localhost:8303", CFGFLAG_CLIENT | CFGFLAG_SAVE | CFGFLAG_INSENSITIVE, "Interface server address")
+MACRO_CONFIG_INT(ClConnectProtocol, cl_connect_protocol, -1, -1, 3, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Transport to connect with, as last picked next to the address, where the server offers it: -1 = the first the server offers, 0 = UDP, 1 = QUIC, 2 = WebSocket, 3 = WebTransport")
+MACRO_CONFIG_INT(ClConnectAddressFamily, cl_connect_address_family, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Address family to connect with, as last picked next to the address: 0 = IPv4, 1 = IPv6, where the server has it")
 MACRO_CONFIG_INT(UiMousesens, ui_mousesens, 200, 1, 100000, CFGFLAG_SAVE | CFGFLAG_CLIENT, "Mouse sensitivity for menus/editor")
 MACRO_CONFIG_INT(UiControllerSens, ui_controller_sens, 100, 1, 100000, CFGFLAG_SAVE | CFGFLAG_CLIENT, "Controller sensitivity for menus/editor")
 MACRO_CONFIG_INT(UiSmoothScrollTime, ui_smooth_scroll_time, 500, 0, 5000, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Time of smooth scrolling animation in menus/editor in ms (0 for off)")

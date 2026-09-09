@@ -882,37 +882,48 @@ void CGameClient::OnSessionFocused(CSessionId SessionId)
 		pComponent->OnMapLoad();
 }
 
-void CGameClient::UpdatePositions(const CGameState &State, const CGameTickInfo &Time, float LocalTime)
+void CGameClient::AimView(const CGameSessionContext &Session, const CGameState &State, CGameView &View) const
 {
-	CGameView::CMultiViewState &MultiViewState = MultiView();
+	const CGameState::CSnapState &Snap = State.m_Snap;
+	View.SetSpectator(Snap.m_SpecInfo.m_Active, Snap.m_SpecInfo.m_SpectatorId);
+	if(Session.Id() == Client()->DemoSessionId())
+		View.SetSpectatorMode(m_DemoSpecId);
+}
+
+// Only the view that takes input owns the client-wide local character position.
+void CGameClient::UpdatePositions(CGameState &State, CGameView &View, const CGameTickInfo &Time, float LocalTime, bool Interactive)
+{
+	CGameView::CMultiViewState &MultiViewState = View.m_MultiView;
+	CGameState::CSnapState &Snap = State.m_Snap;
+	const int SpectatorMode = View.SpectatorMode();
 	// local character position
 	const int LocalClientId = State.LocalClientId();
-	if(in_range(LocalClientId, MAX_CLIENTS - 1) && State.RenderedClient(LocalClientId).m_Active)
+	if(Interactive && in_range(LocalClientId, MAX_CLIENTS - 1) && State.RenderedClient(LocalClientId).m_Active)
 		m_LocalCharacterPos = State.RenderedClient(LocalClientId).m_Position;
 
 	// spectator position
-	if(Snap().m_SpecInfo.m_Active)
+	if(Snap.m_SpecInfo.m_Active)
 	{
 		if(MultiViewState.m_Active)
 		{
 			HandleMultiView(State, LocalTime);
 		}
-		else if(Time.m_IsDemoPlayback && m_DemoSpecId != SPEC_FOLLOW && Snap().m_SpecInfo.m_SpectatorId != SPEC_FREEVIEW)
+		else if(Time.m_IsDemoPlayback && SpectatorMode != SPEC_FOLLOW && Snap.m_SpecInfo.m_SpectatorId != SPEC_FREEVIEW)
 		{
-			Snap().m_SpecInfo.m_Position = mix(
-				vec2(Snap().m_aCharacters[Snap().m_SpecInfo.m_SpectatorId].m_Prev.m_X, Snap().m_aCharacters[Snap().m_SpecInfo.m_SpectatorId].m_Prev.m_Y),
-				vec2(Snap().m_aCharacters[Snap().m_SpecInfo.m_SpectatorId].m_Cur.m_X, Snap().m_aCharacters[Snap().m_SpecInfo.m_SpectatorId].m_Cur.m_Y),
+			Snap.m_SpecInfo.m_Position = mix(
+				vec2(Snap.m_aCharacters[Snap.m_SpecInfo.m_SpectatorId].m_Prev.m_X, Snap.m_aCharacters[Snap.m_SpecInfo.m_SpectatorId].m_Prev.m_Y),
+				vec2(Snap.m_aCharacters[Snap.m_SpecInfo.m_SpectatorId].m_Cur.m_X, Snap.m_aCharacters[Snap.m_SpecInfo.m_SpectatorId].m_Cur.m_Y),
 				Time.m_IntraGameTick);
-			Snap().m_SpecInfo.m_UsePosition = true;
+			Snap.m_SpecInfo.m_UsePosition = true;
 		}
-		else if(Snap().m_pSpectatorInfo && ((Time.m_IsDemoPlayback && m_DemoSpecId == SPEC_FOLLOW) || (!Time.m_IsDemoPlayback && Snap().m_SpecInfo.m_SpectatorId != SPEC_FREEVIEW)))
+		else if(Snap.m_pSpectatorInfo && ((Time.m_IsDemoPlayback && SpectatorMode == SPEC_FOLLOW) || (!Time.m_IsDemoPlayback && Snap.m_SpecInfo.m_SpectatorId != SPEC_FREEVIEW)))
 		{
-			if(Snap().m_pPrevSpectatorInfo && Snap().m_pPrevSpectatorInfo->m_SpectatorId == Snap().m_pSpectatorInfo->m_SpectatorId)
-				Snap().m_SpecInfo.m_Position = mix(vec2(Snap().m_pPrevSpectatorInfo->m_X, Snap().m_pPrevSpectatorInfo->m_Y),
-					vec2(Snap().m_pSpectatorInfo->m_X, Snap().m_pSpectatorInfo->m_Y), Time.m_IntraGameTick);
+			if(Snap.m_pPrevSpectatorInfo && Snap.m_pPrevSpectatorInfo->m_SpectatorId == Snap.m_pSpectatorInfo->m_SpectatorId)
+				Snap.m_SpecInfo.m_Position = mix(vec2(Snap.m_pPrevSpectatorInfo->m_X, Snap.m_pPrevSpectatorInfo->m_Y),
+					vec2(Snap.m_pSpectatorInfo->m_X, Snap.m_pSpectatorInfo->m_Y), Time.m_IntraGameTick);
 			else
-				Snap().m_SpecInfo.m_Position = vec2(Snap().m_pSpectatorInfo->m_X, Snap().m_pSpectatorInfo->m_Y);
-			Snap().m_SpecInfo.m_UsePosition = true;
+				Snap.m_SpecInfo.m_Position = vec2(Snap.m_pSpectatorInfo->m_X, Snap.m_pSpectatorInfo->m_Y);
+			Snap.m_SpecInfo.m_UsePosition = true;
 		}
 	}
 
@@ -1145,6 +1156,10 @@ void CGameClient::OnRenderPrepare()
 		Entry.m_Playback = Time.m_AnimationPlaybackSpeed > 0.0f ? EPresentationPlayback::PLAYING : EPresentationPlayback::PAUSED;
 	}
 
+	// Views are aimed before the controllers run, they read where a view looks.
+	for(CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
+		AimView(*Entry.m_pSession, *Entry.m_pState, *Entry.m_pView);
+
 	const CGameTickInfo &ActiveTime = AudibleRenderEntry().m_Time;
 	m_ControllerLocalTime = Client()->LocalTime();
 	const CRenderContext ControllerContext(ActiveSession, ActiveState, View, ActiveTime, CVisibleWorldRect(vec2(), vec2()));
@@ -1169,33 +1184,18 @@ void CGameClient::OnRenderPrepare()
 			ResetMultiView();
 	}
 
-	UpdatePositions(ActiveState, ActiveTime, m_ControllerLocalTime);
-	m_Camera.UpdateCamera();
-	m_Controls.Update();
-	m_Camera.UpdatePosition();
-	UpdateSpectatorCursor(ActiveState, ActiveTime);
-
-	if(m_vPreparedRenderEntries.size() > 1)
+	// Only the view that takes input may move the mouse or run the controls.
+	for(CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
 	{
-		for(CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
-		{
-			if(Entry.m_pView == &View)
-				continue;
-			const int LocalId = Entry.m_pState->LocalClientId();
-			const CGameState::CClientSnapshot *pLocalClient = in_range(LocalId, MAX_CLIENTS - 1) ? &Entry.m_pState->Client(LocalId) : nullptr;
-			const bool LocalPaused = pLocalClient != nullptr && pLocalClient->m_HasDDNetPlayer && (pLocalClient->m_DDNetPlayer.m_Flags & (EXPLAYERFLAG_PAUSED | EXPLAYERFLAG_SPEC)) != 0;
-			const bool HasSpectatorInfo = Entry.m_pState->HasSpectatorInfo();
-			const int SpectatorId = HasSpectatorInfo ? Entry.m_pState->SpectatorInfo().m_SpectatorId : LocalPaused ? LocalId :
-																 SPEC_FREEVIEW;
-			Entry.m_pView->SetSpectator(HasSpectatorInfo || LocalPaused, SpectatorId);
-			if(HasSpectatorInfo && SpectatorId == SPEC_FREEVIEW)
-				Entry.m_pView->SetCameraPosition(vec2(Entry.m_pState->SpectatorInfo().m_X, Entry.m_pState->SpectatorInfo().m_Y));
-			else if(Entry.m_pView->IsSpectating() && in_range(SpectatorId, MAX_CLIENTS - 1) && Entry.m_pState->RenderedClient(SpectatorId).m_Active)
-				Entry.m_pView->SetCameraPosition(Entry.m_pState->RenderedClient(SpectatorId).m_Position);
-			else if(in_range(LocalId, MAX_CLIENTS - 1) && Entry.m_pState->RenderedClient(LocalId).m_Active)
-				Entry.m_pView->SetCameraPosition(Entry.m_pState->RenderedClient(LocalId).m_Position);
-		}
+		m_Camera.BindTarget(*Entry.m_pSession, *Entry.m_pState, *Entry.m_pView, Entry.m_Audible, m_ControllerLocalTime);
+		UpdatePositions(*Entry.m_pState, *Entry.m_pView, Entry.m_Time, m_ControllerLocalTime, Entry.m_Audible);
+		m_Camera.UpdateCamera();
+		if(Entry.m_Audible)
+			m_Controls.Update();
+		m_Camera.UpdatePosition();
 	}
+	m_Camera.BindTarget(ActiveSession, ActiveState, View, true, m_ControllerLocalTime);
+	UpdateSpectatorCursor(ActiveState, ActiveTime);
 
 	for(CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
 		Entry.m_VisibleWorldRect = VisibleWorldRectFor(*Entry.m_pView);
@@ -2625,10 +2625,6 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 	{
 		m_LocalCharacterPos = vec2(Snap.m_pLocalCharacter->m_X, Snap.m_pLocalCharacter->m_Y);
 	}
-
-	LegacyGameView().SetSpectator(Snap.m_SpecInfo.m_Active, Snap.m_SpecInfo.m_SpectatorId);
-	if(SessionId == Client()->DemoSessionId())
-		LegacyGameView().SetSpectatorMode(m_DemoSpecId);
 
 	if(SessionId == Client()->NetworkSessionId())
 	{

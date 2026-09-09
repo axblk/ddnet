@@ -206,7 +206,8 @@ private:
 	void BuildSnapState(CSessionId SessionId, int Conn);
 	void ProcessSnapshot(CSessionId SessionId, int Conn);
 	void ProcessPrediction();
-	void UpdatePositions(const CGameState &State, const CGameTickInfo &Time, float LocalTime);
+	void AimView(const CGameSessionContext &Session, const CGameState &State, CGameView &View) const;
+	void UpdatePositions(CGameState &State, CGameView &View, const CGameTickInfo &Time, float LocalTime, bool Interactive);
 	CVisibleWorldRect VisibleWorldRectFor(const CGameView &View) const;
 	void UpdateNetworkPlayerInfo();
 	void AddChatLine(CSessionId SessionId, int Conn, int ClientId, int Team, const char *pText);

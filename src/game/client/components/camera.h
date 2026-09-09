@@ -8,7 +8,10 @@
 #include <engine/console.h>
 
 #include <game/client/component.h>
+#include <game/client/game_state.h>
 #include <game/client/game_view.h>
+
+class CGameSessionContext;
 
 class CCamera : public CComponent
 {
@@ -22,8 +25,25 @@ public:
 
 private:
 	CGameView::CCameraState *m_pState = nullptr;
+	// The camera keeps no state of its own beyond a tooltip, so one instance can
+	// drive any view in turn: the one being played through, the dummy next to it,
+	// a demo being rendered to video. Only the view the player controls takes
+	// input, which is what m_Interactive says.
+	CGameSessionContext *m_pSession = nullptr;
+	CGameState *m_pGameState = nullptr;
+	CGameView *m_pView = nullptr;
+	bool m_Interactive = true;
+	float m_LocalTime = 0.0f;
 	CGameView::CCameraState &State();
 	const CGameView::CCameraState &State() const;
+	CGameSessionContext &Session() const;
+	CGameState &GameState() const;
+	CGameView &View() const;
+	CGameState::CSnapState &Snap() const;
+	CGameView::CMultiViewState &MultiView() const;
+	vec2 LocalCharacterPos() const;
+	bool IsDemoSession() const;
+	bool IsLocalClientId(int ClientId) const;
 
 	float CameraSmoothingProgress(float CurrentTime) const;
 
@@ -76,6 +96,7 @@ public:
 	vec2 DynamicCameraTargetOffset() const { return State().m_DyncamTargetCameraOffset; }
 	vec2 DynamicCameraOffset() const { return State().m_DynamicCameraOffset; }
 	void BindState(CGameView::CCameraState &State) { m_pState = &State; }
+	void BindTarget(CGameSessionContext &Session, CGameState &State, CGameView &View, bool Interactive, float LocalTime);
 
 	void UpdateCamera();
 	void UpdatePosition();

@@ -652,6 +652,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		// The lookup below starts the address over, so the flags are kept aside.
 		bool Sixup = NextAddr.type & NETTYPE_TW7;
 		const bool Quic = NextAddr.type & NETTYPE_QUIC;
+		const bool WebTransport = NextAddr.type & NETTYPE_WEBTRANSPORT;
 		if(UrlParseResult > 0)
 			str_copy(aHost, aBuffer);
 
@@ -675,7 +676,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 			OnlySixup = false;
 		if(Quic)
 		{
-			NextAddr.type |= NETTYPE_QUIC;
+			NextAddr.type |= NETTYPE_QUIC | (WebTransport ? NETTYPE_WEBTRANSPORT : 0);
 			const char *pFragment = str_find(aBuffer, "#");
 			if(pFragment != nullptr)
 			{

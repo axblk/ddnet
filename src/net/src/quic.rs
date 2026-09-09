@@ -10,6 +10,7 @@ use crate::ProtocolEvent;
 use crate::QuicAddr as Addr;
 use crate::Result;
 use crate::secure_random;
+use crate::webtransport;
 use crate::wire;
 use crate::Error;
 use crate::Map;
@@ -43,6 +44,19 @@ pub const RETRY_TOKEN_LEN: usize = 20 + 4;
 /// Streams the server may have open towards a client at once; each map goes
 /// on a fresh one, and the count refills as streams end.
 const MAX_INCOMING_MAP_STREAMS: u64 = 8;
+/// HTTP/3's own unidirectional streams: control and the two QPACK ones.
+const HTTP3_UNI_STREAMS: u64 = 3;
+/// The client's HTTP/3 control stream, and the server's; the QPACK streams
+/// take the next two IDs of each.
+const HTTP3_CLIENT_CONTROL_STREAM: u64 = 2;
+const HTTP3_SERVER_CONTROL_STREAM: u64 = 3;
+/// The session is opened on the client's first bidirectional stream and
+/// the game's control stream is its second.
+const WT_CONNECT_STREAM: u64 = 0;
+const WT_CONTROL_STREAM: u64 = 4;
+/// The first unidirectional stream a server sends a map on, past its
+/// HTTP/3 streams.
+const WT_FIRST_MAP_STREAM: u64 = HTTP3_SERVER_CONTROL_STREAM + 4 * HTTP3_UNI_STREAMS;
 /// A stream starts with its kind and the framing version, then the map
 /// header frame.
 const MAX_MAP_PRELUDE: usize = 16 + 16 + wire::MAX_MAP_HEADER_SIZE;
@@ -65,7 +79,12 @@ pub struct Protocol {
     config: quiche::Config,
     callback_peer_identity: Arc<Mutex<Option<PeerIdentity>>>,
     connection_ids: HashMap<ConnectionId, PeerIndex>,
+    /// What a server offers in ALPN: the game's own protocol, and HTTP/3
+    /// for WebTransport if it takes it.
+    server_protos: Vec<&'static [u8]>,
 }
+
+const GAME_ALPN: &[u8] = b"ddnet/1";
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct ConnectionId([u8; ConnectionId::LEN]);
@@ -254,7 +273,7 @@ fn config(
     .context("quiche::Config::new")?;
     config.log_keys();
     config
-        .set_application_protos(&[b"ddnet/1"])
+        .set_application_protos(&[GAME_ALPN, webtransport::ALPN])
         .context("quiche::Config::set_application_protos")?;
     // TODO: decide on a proper number. the current one ensures datagrams of size 1394
     config.set_max_send_udp_payload_size(1423);
@@ -297,7 +316,7 @@ impl ConfigExt for quiche::Config {
 }
 
 impl Protocol {
-    pub fn new(identity: &PrivateIdentity, idle_timeout: Duration) -> Result<Protocol> {
+    pub fn new(identity: &PrivateIdentity, idle_timeout: Duration, webtransport: bool) -> Result<Protocol> {
         let cert = identity.generate_certificate();
         let callback_peer_identity = Arc::new(Mutex::new(None));
 
@@ -311,6 +330,11 @@ impl Protocol {
             .context("config")?,
             callback_peer_identity,
             connection_ids: HashMap::new(),
+            server_protos: if webtransport {
+                vec![GAME_ALPN, webtransport::ALPN]
+            } else {
+                vec![GAME_ALPN]
+            },
         })
     }
     pub fn remove_peer(&mut self, idx: PeerIndex, conn: Connection) {
@@ -328,12 +352,19 @@ impl Protocol {
         conn: &mut Connection,
     ) -> Result<()> {
         let cid = self.new_conn_id();
+        let config = self.config.client();
+        config
+            .set_application_protos(&[if conn.webtransport { webtransport::ALPN } else { GAME_ALPN }])
+            .context("quiche::Config::set_application_protos")?;
+        if conn.webtransport {
+            config.set_initial_max_streams_uni(HTTP3_UNI_STREAMS + MAX_INCOMING_MAP_STREAMS);
+        }
         let mut inner = quiche::connect(
             None,
             &cid.as_raw(),
             cb.local_addr,
             conn.peer_addr,
-            self.config.client(),
+            config,
         )
         .context("quiche::connect")?;
         if let Some(sslkeylogfile) = &cb.sslkeylogfile {
@@ -441,12 +472,24 @@ impl Protocol {
                             }
                         };
                     debug!("accepting connection from {}", from);
+                    let config = self.config.server();
+                    config
+                        .set_application_protos(&self.server_protos)
+                        .context("quiche::Config::set_application_protos")?;
+                    if self.server_protos.contains(&webtransport::ALPN) {
+                        // The CONNECT stream and the session's control
+                        // stream; HTTP/3's control stream and the two
+                        // QPACK streams a browser opens.
+                        config.set_initial_max_streams_bidi(2);
+                        config.set_initial_max_streams_uni(3);
+                        config.set_initial_max_stream_data_uni(64 * 1024);
+                    }
                     let mut conn = quiche::accept(
                         &header.dcid,
                         Some(&quiche::ConnectionId::from_ref(&odcid)),
                         cb.local_addr,
                         *from,
-                        self.config.server(),
+                        config,
                     )
                     .context("quiche::accept")?; // TODO: unwrap instead?
                     if let Some(sslkeylogfile) = &cb.sslkeylogfile {
@@ -459,6 +502,7 @@ impl Protocol {
                         false,
                         *from,
                         PeerIdentity::AcceptAny,
+                        false,
                     );
                     let idx = cb.next_peer_index;
                     v.insert(idx);
@@ -478,14 +522,21 @@ impl Protocol {
         addr: Addr,
         idx: PeerIndex,
     ) -> Result<Connection> {
-        let Addr(sock_addr, peer_identity) = addr;
+        let Addr { addr: sock_addr, identity: peer_identity, webtransport } = addr;
         let cid = self.new_conn_id();
+        let config = self.config.client();
+        config
+            .set_application_protos(&[if webtransport { webtransport::ALPN } else { GAME_ALPN }])
+            .context("quiche::Config::set_application_protos")?;
+        if webtransport {
+            config.set_initial_max_streams_uni(HTTP3_UNI_STREAMS + MAX_INCOMING_MAP_STREAMS);
+        }
         let mut conn = quiche::connect(
             None,
             &cid.as_raw(),
             cb.local_addr,
             sock_addr,
-            self.config.client(),
+            config,
         )
         .context("quiche::connect")?;
         if let Some(sslkeylogfile) = &cb.sslkeylogfile {
@@ -500,6 +551,7 @@ impl Protocol {
                 Some(identity) => PeerIdentity::Wanted(identity),
                 None => PeerIdentity::AcceptAny,
             },
+            webtransport,
         );
         conn.flush(cb, packet_buf)?;
         assert!(self.connection_ids.insert(cid, idx).is_none());
@@ -564,8 +616,27 @@ impl IncomingDatagram {
     }
 }
 
+/// How the game's streams and datagrams sit on the QUIC connection.
+enum Transport {
+    /// Directly: the control stream is stream 0, datagrams are the
+    /// game's.
+    Raw,
+    /// Inside a WebTransport session: the control stream is the
+    /// session's first bidirectional stream, maps go on unidirectional
+    /// session streams, datagrams carry the session's prefix.
+    WebTransport(webtransport::Session),
+}
+
 pub struct Connection {
     inner: quiche::Connection,
+    transport: Transport,
+    /// A client asked for WebTransport.
+    webtransport: bool,
+    /// The stream the hellos and messages go over, once it is open.
+    control_stream: Option<u64>,
+    /// The server reads the stream kind and version in front of the
+    /// client's frames.
+    prelude_read: bool,
     callback_peer_identity: Arc<Mutex<Option<PeerIdentity>>>,
     client: bool,
     /// Whether the peer's identity was known before connecting.
@@ -655,9 +726,14 @@ impl Connection {
         client: bool,
         peer_addr: SocketAddr,
         peer_identity: PeerIdentity,
+        webtransport: bool,
     ) -> Connection {
         Connection {
             inner,
+            transport: Transport::Raw,
+            webtransport,
+            control_stream: None,
+            prelude_read: client,
             callback_peer_identity,
             client,
             pinned: matches!(peer_identity, PeerIdentity::Wanted(_)),
@@ -695,6 +771,9 @@ impl Connection {
     fn restart(&mut self, inner: quiche::Connection) {
         let identity = *self.peer_identity.assert_known();
         self.inner = inner;
+        self.transport = Transport::Raw;
+        self.control_stream = None;
+        self.prelude_read = self.client;
         self.peer_identity = PeerIdentity::Wanted(identity);
         self.pinned = true;
         self.state = State::Connecting;
@@ -792,27 +871,163 @@ impl Connection {
         if !wire::encode_frame(frame_type, payload, &mut frame) {
             bail!("frame of type {} with {} bytes does not encode", frame_type, payload.len());
         }
+        let Some(stream) = self.control_stream else {
+            bail!("control stream not open");
+        };
         // The stream does not exist before the first write to it, which
         // is the hello; then its capacity is unknown and the write decides.
-        if let Ok(capacity) = self.inner.stream_capacity(0) {
+        if let Ok(capacity) = self.inner.stream_capacity(stream) {
             if frame.len() > capacity {
                 bail!("cannot send data, capacity={} len={}", capacity, frame.len());
             }
         }
+        self.write_all(stream, &frame, false)
+    }
+    /// Writes to a stream what must go in one piece: a control stream
+    /// frame, an HTTP/3 message.
+    fn write_all(&mut self, stream: u64, data: &[u8], finish: bool) -> Result<()> {
         let written = self
             .inner
-            .stream_send(0, &frame, false)
+            .stream_send(stream, data, finish)
             .context("quiche::Conn::stream_send")?;
-        if written != frame.len() {
-            bail!("control stream full, {} of {} bytes written", written, frame.len());
+        if written != data.len() {
+            bail!("stream {} full, {} of {} bytes written", stream, written, data.len());
         }
         Ok(())
     }
+    /// Opens the control stream from the client's side: whatever the
+    /// transport wants in front, then the stream's kind and version.
+    fn open_control(&mut self, stream: u64, prefix: &[u8]) -> Result<()> {
+        let mut prelude = prefix.to_vec();
+        wire::encode_varint(wire::stream::CONTROL, &mut prelude);
+        wire::encode_varint(wire::VERSION_MAJOR, &mut prelude);
+        self.write_all(stream, &prelude, false)?;
+        self.control_stream = Some(stream);
+        Ok(())
+    }
+    /// Sets up what the negotiated protocol needs once the handshake is
+    /// through; the client's hello goes out right away over the game's own
+    /// protocol, after the session over WebTransport.
+    fn on_established(&mut self) -> Result<()> {
+        match self.inner.application_proto() {
+            GAME_ALPN => {
+                if self.webtransport {
+                    bail!("server did not take WebTransport");
+                }
+                if self.client {
+                    self.open_control(0, &[])?;
+                    self.send_hello()?;
+                } else {
+                    self.control_stream = Some(0);
+                }
+            }
+            webtransport::ALPN => {
+                self.webtransport = true;
+                if self.client {
+                    let authority = self.peer_addr.to_string();
+                    let mut session = webtransport::Session::client(&authority)
+                        .map_err(Error::from_string)?;
+                    let settings = session.settings();
+                    let request = session.connect_request().unwrap();
+                    self.write_all(HTTP3_CLIENT_CONTROL_STREAM, &settings, false)?;
+                    self.write_all(WT_CONNECT_STREAM, &request, false)?;
+                    self.transport = Transport::WebTransport(session);
+                } else {
+                    let session = webtransport::Session::server();
+                    let settings = session.settings();
+                    self.write_all(HTTP3_SERVER_CONTROL_STREAM, &settings, false)?;
+                    self.next_uni_stream = WT_FIRST_MAP_STREAM;
+                    self.transport = Transport::WebTransport(session);
+                }
+            }
+            proto => bail!("unknown application protocol {:?}", String::from_utf8_lossy(proto)),
+        }
+        Ok(())
+    }
+    /// Reads the streams HTTP/3 owns and does what the session asks for.
+    fn pump_webtransport(&mut self) -> Result<()> {
+        let Transport::WebTransport(session) = &mut self.transport else {
+            return Ok(());
+        };
+        let readable: Vec<u64> = self.inner.readable().filter(|&id| session.owns(id)).collect();
+        let mut actions = Vec::new();
+        for stream in readable {
+            let mut tmp = [0; 4096];
+            loop {
+                let (read, fin) = match self.inner.stream_recv(stream, &mut tmp) {
+                    Ok(v) => v,
+                    Err(quiche::Error::Done) => break,
+                    Err(quiche::Error::StreamReset(_)) => {
+                        debug!("HTTP/3 stream {} from {} reset", stream, self.peer_addr);
+                        break;
+                    }
+                    Err(e) => return Err(e).context("quiche::Conn::stream_recv"),
+                };
+                for action in session
+                    .feed(stream, &tmp[..read])
+                    .map_err(|e| Error::from_string(format!("HTTP/3 stream {}: {}", stream, e)))?
+                {
+                    actions.push((action, fin));
+                }
+                // Once the stream is handed over, the game reads the rest.
+                if fin || read == 0 || !session.owns(stream) {
+                    break;
+                }
+            }
+        }
+        for (action, fin) in actions {
+            self.apply_webtransport_action(action, fin)?;
+        }
+        Ok(())
+    }
+    fn apply_webtransport_action(&mut self, action: webtransport::Action, fin: bool) -> Result<()> {
+        use self::webtransport::Action::*;
+        match action {
+            Write { stream, payload, finish } => self.write_all(stream, &payload, finish),
+            ApplicationStream { stream, initial } => {
+                if stream & 0b10 == 0 {
+                    // The client's control stream.
+                    if self.client || self.control_stream.is_some() {
+                        bail!("second control stream {}", stream);
+                    }
+                    self.control_stream = Some(stream);
+                    self.buffer.extend_from_slice(&initial);
+                    self.control_finished = fin;
+                } else {
+                    if !self.client {
+                        bail!("client opened a unidirectional stream {}", stream);
+                    }
+                    self.begin_incoming_map(stream, initial, fin);
+                }
+                Ok(())
+            }
+            SessionReady => {
+                let Transport::WebTransport(session) = &self.transport else {
+                    unreachable!();
+                };
+                let frame = session.application_stream_frame().unwrap();
+                self.open_control(WT_CONTROL_STREAM, &frame)?;
+                self.send_hello()
+            }
+        }
+    }
+    /// Whether the transport reads the stream itself.
+    fn transport_owns(&self, stream: u64) -> bool {
+        match &self.transport {
+            Transport::Raw => false,
+            Transport::WebTransport(session) => session.owns(stream),
+        }
+    }
     fn send_hello(&mut self) -> Result<()> {
+        let datagram_header = match &self.transport {
+            Transport::Raw => 0,
+            Transport::WebTransport(session) => session.datagram_header_size(),
+        };
         let max_datagram_size = self
             .inner
             .dgram_max_writable_len()
             .unwrap_or(0)
+            .saturating_sub(datagram_header)
             .min(wire::MAX_DATAGRAM_SIZE) as u64;
         let hello = wire::Hello {
             major: wire::VERSION_MAJOR,
@@ -857,7 +1072,10 @@ impl Connection {
     /// Reads what the control stream has, up to the buffer's limit. Whether
     /// anything was read.
     fn fill_buffer(&mut self) -> Result<bool> {
-        if self.control_finished || !self.inner.stream_readable(0) {
+        let Some(stream) = self.control_stream else {
+            return Ok(false);
+        };
+        if self.control_finished || !self.inner.stream_readable(stream) {
             return Ok(false);
         }
         let mut tmp = [0; 4096];
@@ -867,13 +1085,36 @@ impl Connection {
         }
         let (read, fin) = self
             .inner
-            .stream_recv(0, &mut tmp[..room])
+            .stream_recv(stream, &mut tmp[..room])
             .context("quiche::Conn::stream_recv")?;
         self.buffer.extend_from_slice(&tmp[..read]);
         if fin {
             self.control_finished = true;
         }
         Ok(read != 0 || fin)
+    }
+    /// Takes the stream's kind and version from the front of the buffer;
+    /// whether they are in.
+    fn parse_prelude(&mut self) -> Result<bool> {
+        let (kind, first) = match wire::decode_varint(&self.buffer) {
+            Ok(v) => v,
+            Err(wire::DecodeError::NeedMore) => return Ok(false),
+            Err(e) => bail!("control stream: {}", e),
+        };
+        let (version, second) = match wire::decode_varint(&self.buffer[first..]) {
+            Ok(v) => v,
+            Err(wire::DecodeError::NeedMore) => return Ok(false),
+            Err(e) => bail!("control stream: {}", e),
+        };
+        if kind != wire::stream::CONTROL {
+            bail!("stream of kind {} instead of a control stream", kind);
+        }
+        if version != wire::VERSION_MAJOR {
+            bail!("control stream version {} instead of {}", version, wire::VERSION_MAJOR);
+        }
+        self.buffer.drain(..first + second);
+        self.prelude_read = true;
+        Ok(true)
     }
     /// The next complete frame in the buffer as `(type, payload range)`.
     fn parse_frame(&self) -> Result<Option<(u64, ops::Range<usize>, usize)>> {
@@ -906,7 +1147,17 @@ impl Connection {
             else {
                 return Ok(None);
             };
-            let datagram = match wire::decode_datagram(&dgram) {
+            let prefix = match &self.transport {
+                Transport::Raw => 0,
+                Transport::WebTransport(session) => match session.decode_datagram(&dgram) {
+                    Some(payload) => dgram.len() - payload.len(),
+                    None => {
+                        debug!("datagram from {} of another session", self.peer_addr);
+                        continue;
+                    }
+                },
+            };
+            let datagram = match wire::decode_datagram(&dgram[prefix..]) {
                 Ok(datagram) => datagram,
                 Err(e) => {
                     debug!("datagram from {}: {}", self.peer_addr, e);
@@ -916,7 +1167,7 @@ impl Connection {
             // The messages were checked; they are walked again from the
             // start when they are handed out.
             let messages_offset = {
-                let mut offset = 0;
+                let mut offset = prefix;
                 for _ in 0..4 {
                     offset += wire::decode_varint(&dgram[offset..]).unwrap().1;
                 }
@@ -942,8 +1193,14 @@ impl Connection {
         if self.outgoing_datagram.is_empty() {
             return Ok(());
         }
-        let datagram = self.outgoing_datagram.finish(self.datagram_sequence);
+        let mut datagram = self.outgoing_datagram.finish(self.datagram_sequence);
         self.datagram_sequence += 1;
+        if let Transport::WebTransport(session) = &self.transport {
+            let Some(framed) = session.encode_datagram(&datagram) else {
+                bail!("no session for the datagram");
+            };
+            datagram = framed;
+        }
         // `Error::Done` means that the datagram was immediately dropped
         // without being sent.
         self.inner
@@ -980,6 +1237,12 @@ impl Connection {
             bail!("map header does not encode");
         };
         let mut prelude = Vec::with_capacity(16 + header.len());
+        if let Transport::WebTransport(session) = &self.transport {
+            let Some(stream_header) = session.application_stream_header() else {
+                bail!("no session for the map stream");
+            };
+            prelude.extend_from_slice(&stream_header);
+        }
         wire::encode_varint(wire::stream::MAP, &mut prelude);
         wire::encode_varint(wire::VERSION_MAJOR, &mut prelude);
         if !wire::encode_frame(wire::frame::MAP_HEADER, &header, &mut prelude) {
@@ -1074,33 +1337,50 @@ impl Connection {
         if self.incoming_map.as_ref().is_some_and(|map| map.finished) {
             return self.read_map_stream(buf);
         }
-        let readable: Vec<u64> = self.inner.readable().filter(|&id| id != 0).collect();
+        let readable: Vec<u64> = self
+            .inner
+            .readable()
+            .filter(|&id| Some(id) != self.control_stream && !self.transport_owns(id))
+            .collect();
         for id in readable {
             // Only a server opens streams, unidirectional ones for maps.
-            if !self.client || id & 0b11 != 0b11 {
-                debug!("stream {} from {} not expected, ignoring", id, self.peer_addr);
-                let _ = self.inner.stream_shutdown(id, quiche::Shutdown::Read, QUIC_CLOSE_CODE);
-                continue;
-            }
-            match &self.incoming_map {
-                Some(map) if map.stream == id => {}
-                Some(map) if map.stream < id => {
-                    // A newer map replaces the one still coming in.
-                    debug!("map stream {} from {} replaced by {}", map.stream, self.peer_addr, id);
-                    let _ = self.inner.stream_shutdown(map.stream, quiche::Shutdown::Read, QUIC_CLOSE_CODE);
-                    self.incoming_map = Some(IncomingMap::new(id));
-                }
-                Some(_) => {
+            // Over WebTransport the session hands them over instead.
+            if !self.client || id & 0b11 != 0b11 || !matches!(self.transport, Transport::Raw) {
+                if self.incoming_map.as_ref().map_or(true, |map| map.stream != id) {
+                    debug!("stream {} from {} not expected, ignoring", id, self.peer_addr);
                     let _ = self.inner.stream_shutdown(id, quiche::Shutdown::Read, QUIC_CLOSE_CODE);
                     continue;
                 }
-                None => self.incoming_map = Some(IncomingMap::new(id)),
+            } else if !self.begin_incoming_map(id, Vec::new(), false) {
+                continue;
             }
             if let Some(event) = self.read_map_stream(buf)? {
                 return Ok(Some(event));
             }
         }
         Ok(None)
+    }
+    /// Takes a stream the server opened as the map coming in, with what
+    /// was already read from it. Whether it is the map to read now.
+    fn begin_incoming_map(&mut self, stream: u64, initial: Vec<u8>, finished: bool) -> bool {
+        match &self.incoming_map {
+            Some(map) if map.stream == stream => return true,
+            Some(map) if map.stream < stream => {
+                // A newer map replaces the one still coming in.
+                debug!("map stream {} from {} replaced by {}", map.stream, self.peer_addr, stream);
+                let _ = self.inner.stream_shutdown(map.stream, quiche::Shutdown::Read, QUIC_CLOSE_CODE);
+            }
+            Some(_) => {
+                let _ = self.inner.stream_shutdown(stream, quiche::Shutdown::Read, QUIC_CLOSE_CODE);
+                return false;
+            }
+            None => {}
+        }
+        let mut map = IncomingMap::new(stream);
+        map.buffer = initial;
+        map.finished = finished;
+        self.incoming_map = Some(map);
+        true
     }
     /// Reads the incoming map's stream for one event.
     fn read_map_stream(&mut self, buf: &mut [u8]) -> Result<Option<Event>> {
@@ -1309,9 +1589,7 @@ impl Connection {
             self.flush(cb, packet_buf)?;
             if self.inner.is_established() {
                 self.check_connection_params()?;
-                if self.client {
-                    self.send_hello()?;
-                }
+                self.on_established()?;
                 self.state = Hello;
                 self.flush(cb, packet_buf)?;
             }
@@ -1331,15 +1609,23 @@ impl Connection {
         if self.announce_resumed {
             self.announce_resumed = false;
             self.flush_pending()?;
-            return Ok(Some(Event::Resumed(Addr(self.peer_addr, Some(*self.peer_identity.assert_known())).into())));
+            return Ok(Some(Event::Resumed(self.addr().into()).into()));
         }
         if self.map_lost && self.state == Online {
             self.map_lost = false;
             return Ok(Some(self.map_failed(buf, "connection resumed")));
         }
 
+        self.pump_webtransport()?;
+
         // Frames on the control stream, which carry the hello.
         loop {
+            if !self.prelude_read && !self.parse_prelude()? {
+                if !self.fill_buffer()? {
+                    break;
+                }
+                continue;
+            }
             let Some((frame_type, payload, consumed)) = self.parse_frame()? else {
                 if !self.fill_buffer()? {
                     break;
@@ -1435,7 +1721,15 @@ impl Connection {
         if self.client && !self.pinned {
             info!("{} has identity {}, not pinned", self.peer_addr, identity);
         }
-        Event::Connect(Addr(self.peer_addr, Some(identity)).into()).into()
+        Event::Connect(self.addr().into()).into()
+    }
+    /// The peer's address, as the game's URL.
+    fn addr(&self) -> Addr {
+        Addr {
+            addr: self.peer_addr,
+            identity: Some(*self.peer_identity.assert_known()),
+            webtransport: self.webtransport,
+        }
     }
     pub fn send_chunk(
         &mut self,

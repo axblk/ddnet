@@ -104,7 +104,7 @@ void CNetClient::Connect(const NETADDR *pAddr, int NumAddrs)
 		if(aAddrs[i].type & NETTYPE_QUIC)
 		{
 			log_info("net", "QUIC is not compiled in, connecting over UDP");
-			aAddrs[i].type &= ~NETTYPE_QUIC;
+			aAddrs[i].type &= ~(NETTYPE_QUIC | NETTYPE_WEBTRANSPORT);
 		}
 	}
 	m_Connection.Connect(aAddrs, NumAddrs);

@@ -32,6 +32,7 @@ mod net;
 mod quic;
 mod tw06;
 mod tw07;
+mod webtransport;
 mod wire;
 mod util;
 

@@ -428,6 +428,16 @@ private:
 };
 #endif
 
+#ifdef CONF_NETWORKING_QUIC
+// The library reports errors instead of ending the process. A call that
+// failed is logged and skipped, and one made without a library counts as
+// failed; whether the library as a whole is broken and has to be reopened is
+// checked where receiving happens, which every frame does.
+#define NET_CALL(function, net, ...) \
+	((net) == nullptr || CheckNetCall((net), function((net), __VA_ARGS__), #function))
+bool CheckNetCall(CNet *pNet, bool Failed, const char *pFunction);
+#endif
+
 // server side
 class CNetServer
 {
@@ -459,6 +469,15 @@ class CNetServer
 	int m_NextClientId = 0;
 
 	CPeer m_aPeers[NET_MAX_CLIENTS];
+
+	// The Ed25519 seed the library identifies the server with, random per
+	// start unless one was set before Open.
+	unsigned char m_aIdentity[32] = {0};
+	bool m_HasIdentity = false;
+
+	bool OpenLibrary();
+	void Reopen();
+	int PeerClientId(uint64_t PeerId);
 #else // CONF_NETWORKING_QUIC
 	struct CSlot
 	{
@@ -498,11 +517,8 @@ class CNetServer
 	NETFUNC_CLIENTREJOIN m_pfnClientRejoin = nullptr;
 	void *m_pUser = nullptr;
 
-#ifdef CONF_NETWORKING_QUIC
-	// TODO: persistent key
-	uint8_t m_aIdentity[32];
-#else // CONF_NETWORKING_QUIC
-      // vanilla connect flood detection
+#ifndef CONF_NETWORKING_QUIC
+	// vanilla connect flood detection
 	int64_t m_VConnFirst;
 	int m_VConnNum;
 
@@ -538,8 +554,8 @@ class CNetServer
 
 public:
 #ifdef CONF_NETWORKING_QUIC
-	CNetServer();
 	~CNetServer();
+	void SetIdentity(const unsigned char (&aSeed)[32]);
 #endif
 
 	int SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_DELCLIENT pfnDelClient, void *pUser);
@@ -680,6 +696,12 @@ class CNetClient
 	NETADDR m_aConnectAddrs[16] = {{}};
 	int m_NumConnectAddrs = 0;
 	char m_aErrorString[256] = {0};
+
+	NETADDR m_BindAddr = {0};
+
+	bool OpenLibrary();
+	void CloseLibrary();
+	void Reopen();
 #else
 	CNetConnection m_Connection;
 	CPacketChunkUnpacker m_PacketChunkUnpacker;
@@ -718,7 +740,7 @@ public:
 	void ResetErrorString();
 
 	// error and state
-	int State();
+	int State() const;
 	bool GotProblems(int64_t MaxLatency) const;
 	const char *ErrorString() const;
 	int NetType();

@@ -65,6 +65,8 @@ bool ddnet_net_set_accept_connections(struct DdnetNet *net, bool accept);
 
 bool ddnet_net_open(struct DdnetNet *net);
 
+bool ddnet_net_is_broken(const struct DdnetNet *net);
+
 const char *ddnet_net_error(const struct DdnetNet *net);
 
 size_t ddnet_net_error_len(const struct DdnetNet *net);

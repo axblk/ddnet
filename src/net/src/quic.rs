@@ -607,8 +607,11 @@ fn config(
     config
         .set_application_protos(&[GAME_ALPN, webtransport::ALPN])
         .context("quiche::Config::set_application_protos")?;
-    // TODO: decide on a proper number. the current one ensures datagrams of size 1394
-    config.set_max_send_udp_payload_size(1423);
+    // The UDP payload the 0.6 and 0.7 protocols have always sent
+    // (`NET_MAX_PACKETSIZE`): a path that carries the game over plain UDP
+    // carries it over QUIC too. quiche 0.20 has no path MTU discovery to
+    // find out more.
+    config.set_max_send_udp_payload_size(1400);
     config.enable_dgram(true, 32, 32);
     // Packets go out as soon as quiche produces them; nothing holds them
     // back until the time quiche would pace them to. Sending a map would

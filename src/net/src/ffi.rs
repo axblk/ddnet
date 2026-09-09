@@ -304,13 +304,49 @@ pub extern "C" fn ddnet_net_ev_disconnect_is_remote(
         _ => unreachable!(),
     }
 }
+/// The four bytes of the 0.6 extended header, if the packet had one.
+#[no_mangle]
+pub extern "C" fn ddnet_net_ev_connless_chunk_extra(
+    ev: &mut DdnetNetEvent,
+    extra: &mut [u8; 4],
+) -> bool {
+    use self::EventImpl::*;
+    match ev.inner {
+        Some(ConnlessChunk(_, _, meta)) => match meta.extra {
+            Some(e) => {
+                *extra = e;
+                true
+            }
+            None => false,
+        },
+        _ => unreachable!(),
+    }
+}
+/// The 0.7 sender's token for answering it, if the packet came over 0.7.
+#[no_mangle]
+pub extern "C" fn ddnet_net_ev_connless_chunk_token7(
+    ev: &mut DdnetNetEvent,
+    token: &mut u32,
+) -> bool {
+    use self::EventImpl::*;
+    match ev.inner {
+        Some(ConnlessChunk(_, _, meta)) => match meta.response_token7 {
+            Some(t) => {
+                *token = t;
+                true
+            }
+            None => false,
+        },
+        _ => unreachable!(),
+    }
+}
 #[no_mangle]
 pub extern "C" fn ddnet_net_ev_connless_chunk_len(
     ev: &mut DdnetNetEvent,
 ) -> usize {
     use self::EventImpl::*;
     match ev.inner {
-        Some(ConnlessChunk(_, len)) => len,
+        Some(ConnlessChunk(_, len, _)) => len,
         _ => unreachable!(),
     }
 }
@@ -327,7 +363,7 @@ pub extern "C" fn ddnet_net_ev_connless_chunk_addr(
         return;
     }
     let addr = match &ev.inner {
-        Some(ConnlessChunk(addr, _)) => CString::new(addr.to_string()).unwrap(),
+        Some(ConnlessChunk(addr, _, _)) => CString::new(addr.to_string()).unwrap(),
         _ => unreachable!(),
     };
     let addr = ev.addr.insert(addr);
@@ -553,7 +589,38 @@ pub extern "C" fn ddnet_net_send_connless_chunk(
             unsafe { slice::from_raw_parts(addr as *const u8, addr_len) };
         let addr = str::from_utf8(addr).unwrap();
         let chunk = unsafe { slice::from_raw_parts(chunk, chunk_len) };
-        impl_.send_connless_chunk(addr, chunk)?;
+        impl_.send_connless_chunk(addr, chunk, None)?;
+        Ok(())
+    })
+}
+/// Sends a 0.6 connectionless packet with the extended header.
+#[no_mangle]
+pub extern "C" fn ddnet_net_send_connless_chunk_extended(
+    net: &mut DdnetNet,
+    addr: *const c_char,
+    addr_len: usize,
+    extra: &[u8; 4],
+    chunk: *const u8,
+    chunk_len: usize,
+) -> bool {
+    net.good(|impl_| {
+        let addr =
+            unsafe { slice::from_raw_parts(addr as *const u8, addr_len) };
+        let addr = str::from_utf8(addr).unwrap();
+        let chunk = unsafe { slice::from_raw_parts(chunk, chunk_len) };
+        impl_.send_connless_chunk(addr, chunk, Some(*extra))?;
+        Ok(())
+    })
+}
+/// The 0.7 token accepted from any address, which a server registers with
+/// so the masterserver can challenge it.
+#[no_mangle]
+pub extern "C" fn ddnet_net_global_token7(
+    net: &mut DdnetNet,
+    token: &mut u32,
+) -> bool {
+    net.good(|impl_| {
+        *token = impl_.global_token7();
         Ok(())
     })
 }

@@ -20,6 +20,7 @@
 #include <base/log.h>
 #include <base/str.h>
 
+#include <curl/curl.h>
 #include <net/net.h>
 #endif
 
@@ -677,3 +678,96 @@ void CNetTokenCache::Update()
 		}),
 		m_ConnlessPackets.end());
 }
+
+#ifdef CONF_NETWORKING_QUIC
+bool NetConnlessAddr(const char *pUrl, NETADDR *pAddr, bool *pSixup)
+{
+	// TODO: maybe parse URL by ourselves
+	CURLU *pHandle = curl_url();
+	char *pScheme;
+	char *pHostname;
+	char *pPort;
+	bool Error = false ||
+		     curl_url_set(pHandle, CURLUPART_URL, pUrl, CURLU_NON_SUPPORT_SCHEME) ||
+		     curl_url_get(pHandle, CURLUPART_SCHEME, &pScheme, 0) ||
+		     curl_url_get(pHandle, CURLUPART_HOST, &pHostname, 0) ||
+		     curl_url_get(pHandle, CURLUPART_PORT, &pPort, 0);
+	curl_url_cleanup(pHandle);
+	if(Error)
+	{
+		return false;
+	}
+	if(str_comp(pScheme, "tw-0.6+udp") == 0)
+	{
+		*pSixup = false;
+	}
+	else if(str_comp(pScheme, "tw-0.7+udp") == 0)
+	{
+		*pSixup = true;
+	}
+	else
+	{
+		return false;
+	}
+	char aBuf[64];
+	str_format(aBuf, sizeof(aBuf), "%s:%s", pHostname, pPort);
+	if(net_addr_from_str(pAddr, aBuf) != 0)
+	{
+		return false;
+	}
+	if(*pSixup)
+	{
+		pAddr->type |= NETTYPE_TW7;
+	}
+	return true;
+}
+
+static void NetSendConnlessTo(CNet *pNet, const char *pScheme, const char *pHost, const CNetChunk *pChunk)
+{
+	char aUrl[128];
+	str_format(aUrl, sizeof(aUrl), "%s://%s", pScheme, pHost);
+	bool Failed;
+	if(pChunk->m_Flags & NETSENDFLAG_EXTENDED)
+	{
+		Failed = ddnet_net_send_connless_chunk_extended(pNet, aUrl, str_length(aUrl), &pChunk->m_aExtraData, (const unsigned char *)pChunk->m_pData, pChunk->m_DataSize);
+	}
+	else
+	{
+		Failed = ddnet_net_send_connless_chunk(pNet, aUrl, str_length(aUrl), (const unsigned char *)pChunk->m_pData, pChunk->m_DataSize);
+	}
+	if(Failed)
+	{
+		log_error("net", "ddnet_net_send_connless_chunk: %s", ddnet_net_error(pNet));
+	}
+}
+
+void NetSendConnless(CNet *pNet, const CNetChunk *pChunk)
+{
+	if(pNet == nullptr)
+	{
+		return;
+	}
+	const char *pScheme = (pChunk->m_Address.type & NETTYPE_TW7) ? "tw-0.7+udp" : "tw-0.6+udp";
+	if(pChunk->m_Address.type & NETTYPE_LINK_BROADCAST)
+	{
+		// Everyone on the link, in each family the address asks for.
+		char aHost[64];
+		if(pChunk->m_Address.type & NETTYPE_IPV4)
+		{
+			str_format(aHost, sizeof(aHost), "255.255.255.255:%d", pChunk->m_Address.port);
+			NetSendConnlessTo(pNet, pScheme, aHost, pChunk);
+		}
+		if(pChunk->m_Address.type & NETTYPE_IPV6)
+		{
+			str_format(aHost, sizeof(aHost), "[ff02::1]:%d", pChunk->m_Address.port);
+			NetSendConnlessTo(pNet, pScheme, aHost, pChunk);
+		}
+		return;
+	}
+	NETADDR Addr = pChunk->m_Address;
+	Addr.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+	char aHost[NETADDR_MAXSTRSIZE];
+	net_addr_str(&Addr, aHost, sizeof(aHost), true);
+	NetSendConnlessTo(pNet, pScheme, aHost, pChunk);
+}
+#endif

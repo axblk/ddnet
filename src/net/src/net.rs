@@ -248,6 +248,15 @@ impl Peer {
 }
 
 #[non_exhaustive]
+/// What a connectionless packet carried besides its payload.
+#[derive(Clone, Copy, Default)]
+pub struct ConnlessMeta {
+    /// The four bytes of the 0.6 extended header, when the packet had one.
+    pub extra: Option<[u8; 4]>,
+    /// The 0.7 sender's token for answering it.
+    pub response_token7: Option<u32>,
+}
+
 #[derive(Clone, Copy)]
 pub enum Event {
     /// `Connect(pid, peer_addr)`
@@ -258,8 +267,8 @@ pub enum Event {
     // TODO: distinguish disconnect from error?
     /// `Disconnect(pid, reason_size, remote)`
     Disconnect(PeerIndex, usize, bool),
-    /// `ConnlessChunk(from, size)`
-    ConnlessChunk(Addr, usize),
+    /// `ConnlessChunk(from, size, meta)`
+    ConnlessChunk(Addr, usize, ConnlessMeta),
 }
 
 #[derive(Clone, Copy)]
@@ -269,8 +278,8 @@ pub enum ConnectionEvent {
     ///
     /// Must only be sent once a [`Connect`] has been sent.
     Chunk(usize, bool),
-    /// `ConnlessChunk(from, size)`
-    ConnlessChunk(Addr, usize),
+    /// `ConnlessChunk(from, size, meta)`
+    ConnlessChunk(Addr, usize, ConnlessMeta),
     // TODO: distinguish disconnect from error?
     /// `Disconnect(reason_size, remote)`
     ///
@@ -438,13 +447,13 @@ impl io::Write for ArcFile {
 pub enum ProtocolEvent {
     NewConnection(PeerIndex, Connection),
     ExistingConnection(PeerIndex),
-    ConnlessChunk(Addr, usize),
+    ConnlessChunk(Addr, usize, ConnlessMeta),
 }
 
 enum SocketReadEvent {
     None,
     ReadablePeer(PeerIndex),
-    ConnlessChunk(Addr, usize),
+    ConnlessChunk(Addr, usize, ConnlessMeta),
 }
 
 impl ReadablePeers {
@@ -773,8 +782,8 @@ impl Net {
                         }
                         idx
                     }
-                    Some(ProtocolEvent::ConnlessChunk(addr, size)) => {
-                        return Ok(SocketReadEvent::ConnlessChunk(addr, size));
+                    Some(ProtocolEvent::ConnlessChunk(addr, size, meta)) => {
+                        return Ok(SocketReadEvent::ConnlessChunk(addr, size, meta));
                     }
                     None => continue,
                 }
@@ -934,7 +943,7 @@ impl Net {
                             }
                             return Ok(Some(Event::Chunk(idx, size, unreliable)))
                         }
-                        ConnectionEvent::ConnlessChunk(peer_addr, size) => return Ok(Some(Event::ConnlessChunk(peer_addr, size))),
+                        ConnectionEvent::ConnlessChunk(peer_addr, size, meta) => return Ok(Some(Event::ConnlessChunk(peer_addr, size, meta))),
                         ConnectionEvent::Disconnect(reason_size, remote) => {
                             // A connection that ends before it was ever
                             // reported is news only to whoever asked for it,
@@ -961,8 +970,8 @@ impl Net {
                         self.readable_peers.push_back(readable_peer);
                         continue;
                     }
-                    SocketReadEvent::ConnlessChunk(peer_addr, size) => {
-                        return Ok(Some(Event::ConnlessChunk(peer_addr, size)));
+                    SocketReadEvent::ConnlessChunk(peer_addr, size, meta) => {
+                        return Ok(Some(Event::ConnlessChunk(peer_addr, size, meta)));
                     }
                     SocketReadEvent::None => self.socket_readable = false,
                 }
@@ -1049,7 +1058,7 @@ impl Net {
         self.readable_peers.push_back(idx);
         Ok(())
     }
-    pub fn send_connless_chunk(&mut self, addr: &str, payload: &[u8]) -> Result<()> {
+    pub fn send_connless_chunk(&mut self, addr: &str, payload: &[u8], extra: Option<[u8; 4]>) -> Result<()> {
         let addr: Addr = match addr.parse() {
             Err(e) => {
                 error!("invalid addr {:?}: {}", addr, e);
@@ -1059,12 +1068,17 @@ impl Net {
         };
         use self::Addr::*;
         match addr {
-            Quic(addr) => self.proto_quic.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload),
-            Tw06(addr) => self.proto_tw06.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload),
-            Tw07(addr) => self.proto_tw07.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload),
+            Quic(addr) => self.proto_quic.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload, extra),
+            Tw06(addr) => self.proto_tw06.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload, extra),
+            Tw07(addr) => self.proto_tw07.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload, extra),
         }
     }
     // TODO: second function including all non-connected, or already-disconnected peers
+    /// The 0.7 token that is accepted from any address, for the masterserver's
+    /// challenge. It changes when the socket is reopened.
+    pub fn global_token7(&self) -> u32 {
+        tw07::global_token(&self.cb)
+    }
     pub fn num_peers_in_bucket(&self, addr: &str) -> Result<u32> {
         let addr: Addr = addr.parse()?;
         Ok(self.peer_buckets.get(&Bucket::from(*addr.socket_addr())).map(|b| b.high_level).unwrap_or(0))

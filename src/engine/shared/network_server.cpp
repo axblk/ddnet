@@ -816,6 +816,12 @@ void CNetServer::SendTokenSixup(NETADDR &Addr, SECURITY_TOKEN Token)
 	CNetBase::SendControlMsg(m_Socket, &Addr, 0, protocol7::NET_CTRLMSG_TOKEN, aRequestTokenBuf, Size, Token, true);
 }
 
+void CNetServer::SendConnlessSixup(const NETADDR *pAddr, const void *pData, int DataSize, SECURITY_TOKEN ResponseToken)
+{
+	NETADDR Addr = *pAddr;
+	CNetBase::SendPacketConnlessWithToken7(m_Socket, &Addr, pData, DataSize, ResponseToken, GetToken(Addr));
+}
+
 void CNetServer::SetMaxClientsPerIp(int Max)
 {
 	m_MaxClientsPerIp = std::clamp<int>(Max, 1, NET_MAX_CLIENTS);
@@ -922,32 +928,6 @@ void BindAddrStr(const NETADDR &BindAddr, char *pBuffer, size_t BufferSize)
 static bool UrlIsSixup(const char *pUrl)
 {
 	return str_startswith(pUrl, "tw-0.7+udp://") != nullptr;
-}
-
-static bool Tw06AddrFromUrl(const char *pUrl, NETADDR *pAddr)
-{
-	// TODO: maybe parse URL by ourselves
-	CURLU *pHandle = curl_url();
-	char *pScheme;
-	char *pHostname;
-	char *pPort;
-	bool Error = false ||
-		     curl_url_set(pHandle, CURLUPART_URL, pUrl, CURLU_NON_SUPPORT_SCHEME) ||
-		     curl_url_get(pHandle, CURLUPART_SCHEME, &pScheme, 0) ||
-		     curl_url_get(pHandle, CURLUPART_HOST, &pHostname, 0) ||
-		     curl_url_get(pHandle, CURLUPART_PORT, &pPort, 0);
-	curl_url_cleanup(pHandle);
-	if(Error)
-	{
-		return false;
-	}
-	if(str_comp(pScheme, "tw-0.6+udp") != 0)
-	{
-		return false;
-	}
-	char aBuf[64];
-	str_format(aBuf, sizeof(aBuf), "%s:%s", pHostname, pPort);
-	return net_addr_from_str(pAddr, aBuf) == 0;
 }
 
 void CNetServer::CPeer::Reset()
@@ -1276,7 +1256,8 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			size_t AddrLen;
 			ddnet_net_ev_connless_chunk_addr(m_pNetEvent, &pAddr, &AddrLen);
 			NETADDR Addr;
-			if(!Tw06AddrFromUrl(pAddr, &Addr))
+			bool Sixup;
+			if(!NetConnlessAddr(pAddr, &Addr, &Sixup))
 			{
 				continue;
 			}
@@ -1291,6 +1272,15 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			pChunk->m_Flags = NETSENDFLAG_CONNLESS;
 			pChunk->m_DataSize = ddnet_net_ev_connless_chunk_len(m_pNetEvent);
 			pChunk->m_pData = m_aBuffer;
+			if(ddnet_net_ev_connless_chunk_extra(m_pNetEvent, &pChunk->m_aExtraData))
+			{
+				pChunk->m_Flags |= NETSENDFLAG_EXTENDED;
+			}
+			uint32_t Token;
+			if(Sixup && ddnet_net_ev_connless_chunk_token7(m_pNetEvent, &Token))
+			{
+				*pResponseToken = Token;
+			}
 		}
 			return 1;
 		}
@@ -1303,12 +1293,7 @@ int CNetServer::Send(CNetChunk *pChunk)
 
 	if(pChunk->m_Flags & NETSENDFLAG_CONNLESS)
 	{
-		// TODO: the extended connless header is not supported by the network library
-		char aAddr[NETADDR_MAXSTRSIZE];
-		net_addr_str(&pChunk->m_Address, aAddr, sizeof(aAddr), true);
-		char aUrl[128];
-		str_format(aUrl, sizeof(aUrl), "tw-0.6+udp://%s", aAddr);
-		NET_CALL(ddnet_net_send_connless_chunk, m_pNet, aUrl, str_length(aUrl), (const unsigned char *)pChunk->m_pData, pChunk->m_DataSize);
+		NetSendConnless(m_pNet, pChunk);
 		return 0;
 	}
 
@@ -1332,6 +1317,20 @@ int CNetServer::Send(CNetChunk *pChunk)
 			Flush(pChunk->m_ClientId);
 	}
 	return 0;
+}
+
+void CNetServer::SendConnlessSixup(const NETADDR *pAddr, const void *pData, int DataSize, SECURITY_TOKEN ResponseToken)
+{
+	// The library remembered the token when the packet came in.
+	(void)ResponseToken;
+	CNetChunk Chunk;
+	Chunk.m_ClientId = -1;
+	Chunk.m_Address = *pAddr;
+	Chunk.m_Address.type |= NETTYPE_TW7;
+	Chunk.m_Flags = NETSENDFLAG_CONNLESS;
+	Chunk.m_DataSize = DataSize;
+	Chunk.m_pData = pData;
+	NetSendConnless(m_pNet, &Chunk);
 }
 
 void CNetServer::SetMaxClientsPerIp(int Max)
@@ -1377,8 +1376,15 @@ const char *CNetServer::ErrorString(int ClientId)
 
 SECURITY_TOKEN CNetServer::GetGlobalToken()
 {
-	static const NETADDR NULL_ADDR = {0};
-	return GetToken(NULL_ADDR);
+	// The library hands out the 0.7 tokens, so the one the masterserver
+	// challenges with has to be the library's. It changes when the library is
+	// reopened after an error, until the next registration.
+	uint32_t Token;
+	if(NET_CALL(ddnet_net_global_token7, m_pNet, &Token))
+	{
+		return 1;
+	}
+	return Token;
 }
 
 SECURITY_TOKEN CNetServer::GetToken(const NETADDR &Addr)

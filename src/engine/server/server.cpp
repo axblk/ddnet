@@ -3079,7 +3079,7 @@ void CServer::PumpNetwork()
 						Packer.AddRaw(SERVERBROWSE_INFO, sizeof(SERVERBROWSE_INFO));
 						Packer.AddInt(SrvBrwsToken);
 						GetServerInfoSixup(&Packer, SendClients.value());
-						CNetBase::SendPacketConnlessWithToken7(m_NetServer.Socket(), &Packet.m_Address, Packer.Data(), Packer.Size(), ResponseToken, m_NetServer.GetToken(Packet.m_Address));
+						m_NetServer.SendConnlessSixup(&Packet.m_Address, Packer.Data(), Packer.Size(), ResponseToken);
 					}
 					else if(Type != -1)
 					{

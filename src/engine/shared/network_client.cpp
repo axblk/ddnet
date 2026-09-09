@@ -297,32 +297,6 @@ static bool AddrFromUrl(const char *pUrl, NETADDR *pAddr)
 	return net_addr_from_str(pAddr, aBuf) == 0;
 }
 
-static bool Tw06AddrFromUrl(const char *pUrl, NETADDR *pAddr)
-{
-	// TODO: maybe parse URL by ourselves
-	CURLU *pHandle = curl_url();
-	char *pScheme;
-	char *pHostname;
-	char *pPort;
-	bool Error = false ||
-		     curl_url_set(pHandle, CURLUPART_URL, pUrl, CURLU_NON_SUPPORT_SCHEME) ||
-		     curl_url_get(pHandle, CURLUPART_SCHEME, &pScheme, 0) ||
-		     curl_url_get(pHandle, CURLUPART_HOST, &pHostname, 0) ||
-		     curl_url_get(pHandle, CURLUPART_PORT, &pPort, 0);
-	curl_url_cleanup(pHandle);
-	if(Error)
-	{
-		return false;
-	}
-	if(str_comp(pScheme, "tw-0.6+udp") != 0)
-	{
-		return false;
-	}
-	char aBuf[64];
-	str_format(aBuf, sizeof(aBuf), "%s:%s", pHostname, pPort);
-	return net_addr_from_str(pAddr, aBuf) == 0;
-}
-
 CNetClient::~CNetClient()
 {
 	Close();
@@ -612,7 +586,8 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 			size_t AddrLen;
 			ddnet_net_ev_connless_chunk_addr(m_pNetEvent, &pAddr, &AddrLen);
 			NETADDR Addr;
-			if(!Tw06AddrFromUrl(pAddr, &Addr))
+			bool ConnlessSixup;
+			if(!NetConnlessAddr(pAddr, &Addr, &ConnlessSixup))
 			{
 				continue;
 			}
@@ -622,6 +597,15 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 			pChunk->m_Flags = NETSENDFLAG_CONNLESS;
 			pChunk->m_DataSize = ddnet_net_ev_connless_chunk_len(m_pNetEvent);
 			pChunk->m_pData = m_aBuffer;
+			if(ddnet_net_ev_connless_chunk_extra(m_pNetEvent, &pChunk->m_aExtraData))
+			{
+				pChunk->m_Flags |= NETSENDFLAG_EXTENDED;
+			}
+			uint32_t Token;
+			if(ConnlessSixup && ddnet_net_ev_connless_chunk_token7(m_pNetEvent, &Token))
+			{
+				*pResponseToken = Token;
+			}
 		}
 			return 1;
 		}
@@ -634,12 +618,7 @@ int CNetClient::Send(CNetChunk *pChunk)
 
 	if(pChunk->m_Flags & NETSENDFLAG_CONNLESS)
 	{
-		// TODO: the extended connless header is not supported by the network library
-		char aAddr[NETADDR_MAXSTRSIZE];
-		net_addr_str(&pChunk->m_Address, aAddr, sizeof(aAddr), true);
-		char aUrl[128];
-		str_format(aUrl, sizeof(aUrl), "tw-0.6+udp://%s", aAddr);
-		NET_CALL(ddnet_net_send_connless_chunk, m_pNet, aUrl, str_length(aUrl), (const unsigned char *)pChunk->m_pData, pChunk->m_DataSize);
+		NetSendConnless(m_pNet, pChunk);
 		return 0;
 	}
 

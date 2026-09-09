@@ -16,6 +16,13 @@
 
 #include <engine/shared/protocolglue.h>
 
+#ifdef CONF_NETWORKING_QUIC
+#include <base/log.h>
+#include <base/str.h>
+
+#include <net/net.h>
+#endif
+
 const unsigned char SECURITY_TOKEN_MAGIC[4] = {'T', 'K', 'E', 'N'};
 
 SECURITY_TOKEN ToSecurityToken(const unsigned char *pData)
@@ -541,9 +548,22 @@ int CNetBase::Decompress(const void *pData, int DataSize, void *pOutput, int Out
 	return ms_Huffman.Decompress(pData, DataSize, pOutput, OutputSize);
 }
 
+#ifdef CONF_NETWORKING_QUIC
+// Forwards the log output of the network library into our logging system.
+static void NetLogger(int Level, const char *pSystem, size_t SystemLen, const char *pMessage, size_t MessageLen)
+{
+	char aSystem[64];
+	str_truncate(aSystem, sizeof(aSystem), pSystem, SystemLen);
+	log_log((LEVEL)Level, aSystem, "%.*s", (int)MessageLen, pMessage);
+}
+#endif
+
 void CNetBase::Init()
 {
 	ms_Huffman.Init();
+#ifdef CONF_NETWORKING_QUIC
+	ddnet_net_set_logger(NetLogger);
+#endif
 }
 
 void CNetTokenCache::Init(NETSOCKET Socket)

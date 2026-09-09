@@ -8,6 +8,7 @@ use self::net::ProtocolEvent;
 use self::net::QuicAddr;
 use self::net::ConnlessMeta;
 use self::net::Protocol;
+use self::net::RawAddr;
 use self::net::Socket;
 use self::net::Tw06Addr;
 use self::net::Tw07Addr;

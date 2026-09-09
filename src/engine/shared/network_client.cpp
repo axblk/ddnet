@@ -69,10 +69,7 @@ bool CNetClient::Open(NETADDR BindAddr)
 		return false;
 	}
 
-	// TODO: use the same socket as the one of the network library
-	NETADDR Any = {0};
-	Any.type = NETTYPE_IPV4 | NETTYPE_IPV6;
-	m_pStun = new CStun(net_udp_create(Any));
+	m_pStun = new CStun(SendRaw, this);
 
 	m_State = NETSTATE_OFFLINE;
 	m_PeerId = -1;
@@ -320,11 +317,20 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 			size_t AddrLen;
 			ddnet_net_ev_connless_chunk_addr(m_pNetEvent, &pAddr, &AddrLen);
 			NETADDR Addr;
-			bool ConnlessSixup;
-			if(!NetConnlessAddr(pAddr, &Addr, &ConnlessSixup))
+			const ENetConnless Kind = NetConnlessAddr(pAddr, &Addr);
+			if(Kind == ENetConnless::RAW)
+			{
+				if(m_pStun)
+				{
+					m_pStun->OnPacket(Addr, m_aBuffer, ddnet_net_ev_connless_chunk_len(m_pNetEvent));
+				}
+				continue;
+			}
+			if(Kind == ENetConnless::NONE)
 			{
 				continue;
 			}
+			const bool ConnlessSixup = Kind == ENetConnless::TW07;
 			mem_zero(pChunk, sizeof(*pChunk));
 			pChunk->m_ClientId = -1;
 			pChunk->m_Address = Addr;
@@ -387,6 +393,22 @@ const char *CNetClient::ErrorString() const
 		return m_aErrorString;
 	}
 	return "";
+}
+
+bool CNetClient::SendRaw(void *pUser, const NETADDR *pAddr, const void *pData, int Size)
+{
+	CNetClient *pThis = (CNetClient *)pUser;
+	if(pThis->m_pNet == nullptr)
+	{
+		return false;
+	}
+	NETADDR Addr = *pAddr;
+	Addr.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+	char aHost[NETADDR_MAXSTRSIZE];
+	net_addr_str(&Addr, aHost, sizeof(aHost), true);
+	char aUrl[128];
+	str_format(aUrl, sizeof(aUrl), "udp://%s", aHost);
+	return !NET_CALL(ddnet_net_send_connless_chunk, pThis->m_pNet, aUrl, str_length(aUrl), (const unsigned char *)pData, Size);
 }
 
 void CNetClient::FeedStunServer(NETADDR StunServer)

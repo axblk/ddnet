@@ -297,6 +297,9 @@ pub enum Addr {
     Quic(QuicAddr),
     Tw06(Tw06Addr),
     Tw07(Tw07Addr),
+    /// A datagram as it is, no protocol of ours: STUN goes over the same
+    /// socket so that the address it learns is the one peers see.
+    Raw(RawAddr),
 }
 
 impl Addr {
@@ -306,6 +309,7 @@ impl Addr {
             Quic(QuicAddr(socket_addr, _)) => socket_addr,
             Tw06(Tw06Addr(socket_addr)) => socket_addr,
             Tw07(Tw07Addr(socket_addr)) => socket_addr,
+            Raw(RawAddr(socket_addr)) => socket_addr,
         }
     }
     pub fn identity(&self) -> Option<&Identity> {
@@ -314,6 +318,7 @@ impl Addr {
             Quic(QuicAddr(_, identity)) => Some(identity),
             Tw06(Tw06Addr(_)) => None,
             Tw07(Tw07Addr(_)) => None,
+            Raw(RawAddr(_)) => None,
         }
     }
 }
@@ -336,10 +341,18 @@ impl From<Tw07Addr> for Addr {
     }
 }
 
+impl From<RawAddr> for Addr {
+    fn from(addr: RawAddr) -> Addr {
+        Addr::Raw(addr)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Tw06Addr(pub SocketAddr);
 #[derive(Clone, Copy)]
 pub struct Tw07Addr(pub SocketAddr);
+#[derive(Clone, Copy)]
+pub struct RawAddr(pub SocketAddr);
 #[derive(Clone, Copy)]
 pub struct QuicAddr(pub SocketAddr, pub Identity);
 
@@ -379,6 +392,7 @@ impl FromStr for Addr {
             }
             "tw-0.6+udp" => Addr::Tw06(Tw06Addr(sock_addr)),
             "tw-0.7+udp" => Addr::Tw07(Tw07Addr(sock_addr)),
+            "udp" => Addr::Raw(RawAddr(sock_addr)),
             scheme => bail!("unsupported scheme {}", scheme),
         })
     }
@@ -411,6 +425,15 @@ impl fmt::Display for Tw07Addr {
     }
 }
 
+impl fmt::Display for RawAddr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let RawAddr(addr) = self;
+        let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
+        write!(&mut buf, "udp://{}", addr).unwrap();
+        buf.fmt(f)
+    }
+}
+
 impl fmt::Display for Addr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::Addr::*;
@@ -418,6 +441,7 @@ impl fmt::Display for Addr {
             Quic(addr) => addr.fmt(f),
             Tw06(addr) => addr.fmt(f),
             Tw07(addr) => addr.fmt(f),
+            Raw(addr) => addr.fmt(f),
         }
     }
 }
@@ -695,6 +719,11 @@ impl Net {
 
                 let packet = &self.packet_buf[..read];
                 let event = match (packet.get(0).copied(), packet.get(1).copied()) {
+                    // STUN, handed over as it is.
+                    (Some(0b00000000 | 0b00000001), _) => {
+                        buf[..read].copy_from_slice(packet);
+                        Ok(Some(ProtocolEvent::ConnlessChunk(RawAddr(from).into(), read, ConnlessMeta::default())))
+                    }
                     (Some(p0), _) if p0 & 0b11111100 == 0b00000100 || p0 == 0b00100001 => {
                         self.proto_tw07.on_recv(
                             &self.cb,
@@ -746,9 +775,9 @@ impl Net {
                             )
                     }
                     _ => {
-                        error!("unknown packet");
+                        debug!("unknown packet from {}", from);
                         for line in hexdump_iter(packet) {
-                            error!("{}", line);
+                            debug!("{}", line);
                         }
                         continue;
                     }
@@ -1030,6 +1059,7 @@ impl Net {
             Quic(addr) => self.proto_quic.connect(&self.cb, &mut self.packet_buf, addr, idx).map(Connection::from),
             Tw06(addr) => self.proto_tw06.connect(&self.cb, &mut self.packet_buf, addr, idx).map(Connection::from),
             Tw07(addr) => self.proto_tw07.connect(&self.cb, &mut self.packet_buf, addr, idx).map(Connection::from),
+            Raw(_) => Err(Error::from_string("cannot connect to a raw address".to_owned())),
         };
         // A connection that cannot even be started is reported like one that
         // was refused, so the caller has one path for both.
@@ -1071,6 +1101,13 @@ impl Net {
             Quic(addr) => self.proto_quic.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload, extra),
             Tw06(addr) => self.proto_tw06.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload, extra),
             Tw07(addr) => self.proto_tw07.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload, extra),
+            Raw(RawAddr(addr)) => {
+                if extra.is_some() {
+                    bail!("the extended connless header is 0.6 only");
+                }
+                self.cb.socket.send_to(payload, addr).context("UdpSocket::send_to")?;
+                Ok(())
+            }
         }
     }
     // TODO: second function including all non-connected, or already-disconnected peers

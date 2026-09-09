@@ -202,10 +202,17 @@ enum class CONNECTIVITY
 
 class CStun
 {
+public:
+	// Sends a datagram as it is; STUN goes over the socket everything else
+	// uses, whoever owns it.
+	typedef bool (*FSendRaw)(void *pUser, const NETADDR *pAddr, const void *pData, int Size);
+
+private:
 	class CProtocol
 	{
 		int m_Index;
-		NETSOCKET m_Socket;
+		FSendRaw m_pfnSend;
+		void *m_pUser;
 		CStunData m_Stun;
 		bool m_HaveStunServer = false;
 		NETADDR m_StunServer;
@@ -216,7 +223,7 @@ class CStun
 		int m_NumUnsuccessfulTries = -1;
 
 	public:
-		CProtocol(int Index, NETSOCKET Socket);
+		CProtocol(int Index, FSendRaw pfnSend, void *pUser);
 		void FeedStunServer(NETADDR StunServer);
 		void Refresh();
 		void Update();
@@ -226,7 +233,7 @@ class CStun
 	CProtocol m_aProtocols[2];
 
 public:
-	CStun(NETSOCKET Socket);
+	CStun(FSendRaw pfnSend, void *pUser);
 	void FeedStunServer(NETADDR StunServer);
 	void Refresh();
 	void Update();
@@ -432,9 +439,18 @@ private:
 #ifdef CONF_NETWORKING_QUIC
 // Formats the address the network library binds to.
 void BindAddrStr(const NETADDR &BindAddr, char *pBuffer, size_t BufferSize);
-// The address a connectionless packet came from, out of the library's URL;
-// the scheme says whether it came over 0.7. False for anything else.
-bool NetConnlessAddr(const char *pUrl, NETADDR *pAddr, bool *pSixup);
+// What a connectionless packet from the library came over, by the scheme
+// of its address.
+enum class ENetConnless
+{
+	NONE,
+	TW06,
+	TW07,
+	// A datagram as it is, which is how STUN answers arrive.
+	RAW,
+};
+// The address a connectionless packet came from, out of the library's URL.
+ENetConnless NetConnlessAddr(const char *pUrl, NETADDR *pAddr);
 // Sends a connectionless chunk through the library: 0.7 for an address
 // flagged NETTYPE_TW7, with the extended header when the chunk asks for it,
 // and to everyone on the link for a broadcast address.
@@ -706,7 +722,9 @@ class CNetClient
 	void CloseLibrary();
 	void Reopen();
 	void ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup);
+	static bool SendRaw(void *pUser, const NETADDR *pAddr, const void *pData, int Size);
 #else
+	static bool SendRaw(void *pUser, const NETADDR *pAddr, const void *pData, int Size);
 	CNetConnection m_Connection;
 	CPacketChunkUnpacker m_PacketChunkUnpacker;
 	CNetPacketConstruct m_RecvBuffer;

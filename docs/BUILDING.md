@@ -46,6 +46,9 @@ FLUSH PRIVILEGES;
 * **-DNETWORKING_QUIC=[ON|OFF]** <br>
     Whether to enable the new experimental quic networking backend. Do not use.
 
+* **-DLIBTW2_PATCH=[ON|OFF]** <br>
+    Whether the `libtw2-net` the networking crate builds against carries `src/net/libtw2-patches`. A server needs them to accept Teeworlds 0.7; see the README there. Default value is OFF.
+
 * **-DUPNP=[ON|OFF]** <br>
 	Whether to enable UPnP support for the server.
 	You need to install `libminiupnpc-dev` on Debian, `miniupnpc` on Arch Linux.

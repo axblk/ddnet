@@ -303,7 +303,7 @@ impl Protocol {
             let cid = ConnectionId::from_raw(&header.dcid);
             match (
                 cid.map(|cid| self.connection_ids.entry(cid)),
-                cb.accept_connections,
+                cb.accept.quic,
             ) {
                 (Some(hash_map::Entry::Occupied(o)), _) => {
                     return Ok(Some(ProtocolEvent::ExistingConnection(*o.get())))
@@ -427,7 +427,11 @@ impl Protocol {
         _packet_buf: &mut [u8; 65536],
         _addr: Addr,
         _payload: &[u8],
+        extra: Option<[u8; 4]>,
     ) -> Result<()> {
+        if extra.is_some() {
+            bail!("the extended connless header is 0.6 only");
+        }
         // Quic doesn't support connectionless data.
         Ok(())
     }

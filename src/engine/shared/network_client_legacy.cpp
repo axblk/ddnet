@@ -28,11 +28,17 @@ bool CNetClient::Open(NETADDR BindAddr)
 
 	// init
 	m_Socket = Socket;
-	m_pStun = new CStun(m_Socket);
+	m_pStun = new CStun(SendRaw, this);
 	m_Connection.Init(m_Socket, false);
 	m_TokenCache.Init(m_Socket);
 
 	return true;
+}
+
+bool CNetClient::SendRaw(void *pUser, const NETADDR *pAddr, const void *pData, int Size)
+{
+	CNetClient *pThis = (CNetClient *)pUser;
+	return net_udp_send(pThis->m_Socket, pAddr, pData, Size) != -1;
 }
 
 void CNetClient::Close()

@@ -17,6 +17,12 @@
 
 #define DDNET_NET_EV_CONNLESS_CHUNK 4
 
+#define DDNET_NET_PROTOCOL_TW06 0
+
+#define DDNET_NET_PROTOCOL_TW07 1
+
+#define DDNET_NET_PROTOCOL_QUIC 2
+
 typedef struct DdnetNet DdnetNet;
 
 typedef struct DdnetNetEvent DdnetNetEvent;
@@ -47,6 +53,16 @@ size_t ddnet_net_ev_disconnect_reason_len(const struct DdnetNetEvent *ev);
 
 bool ddnet_net_ev_disconnect_is_remote(const struct DdnetNetEvent *ev);
 
+/**
+ * The four bytes of the 0.6 extended header, if the packet had one.
+ */
+bool ddnet_net_ev_connless_chunk_extra(struct DdnetNetEvent *ev, uint8_t (*extra)[4]);
+
+/**
+ * The 0.7 sender's token for answering it, if the packet came over 0.7.
+ */
+bool ddnet_net_ev_connless_chunk_token7(struct DdnetNetEvent *ev, uint32_t *token);
+
 size_t ddnet_net_ev_connless_chunk_len(struct DdnetNetEvent *ev);
 
 void ddnet_net_ev_connless_chunk_addr(struct DdnetNetEvent *ev,
@@ -62,6 +78,11 @@ bool ddnet_net_set_bindaddr(struct DdnetNet *net, const char *addr, size_t addr_
 bool ddnet_net_set_identity(struct DdnetNet *net, const uint8_t (*private_identity)[32]);
 
 bool ddnet_net_set_accept_connections(struct DdnetNet *net, bool accept);
+
+/**
+ * Switches a single protocol on or off, after `ddnet_net_set_accept_connections`.
+ */
+bool ddnet_net_set_accept_protocol(struct DdnetNet *net, uint64_t protocol, bool accept);
 
 bool ddnet_net_open(struct DdnetNet *net);
 
@@ -107,6 +128,22 @@ bool ddnet_net_send_connless_chunk(struct DdnetNet *net,
                                    size_t addr_len,
                                    const uint8_t *chunk,
                                    size_t chunk_len);
+
+/**
+ * Sends a 0.6 connectionless packet with the extended header.
+ */
+bool ddnet_net_send_connless_chunk_extended(struct DdnetNet *net,
+                                            const char *addr,
+                                            size_t addr_len,
+                                            const uint8_t (*extra)[4],
+                                            const uint8_t *chunk,
+                                            size_t chunk_len);
+
+/**
+ * The 0.7 token accepted from any address, which a server registers with
+ * so the masterserver can challenge it.
+ */
+bool ddnet_net_global_token7(struct DdnetNet *net, uint32_t *token);
 
 bool ddnet_net_num_peers_in_bucket(struct DdnetNet *net,
                                    const char *addr,

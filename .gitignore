@@ -157,3 +157,6 @@ tags
 *.vcxproj
 *.zip
 # tidy-alphabetical-end
+
+# The patches this repository carries for a dependency, despite `*.patch`.
+!/src/net/libtw2-patches/*.patch

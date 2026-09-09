@@ -3394,7 +3394,7 @@ void CServer::FormatModernTransportFragments(char *pIdentityFragment, int Identi
 	pIdentityFragment[0] = '\0';
 	pWebTransportFragment[0] = '\0';
 #ifdef CONF_NETWORKING_QUIC
-	if(m_RegisterTransports.m_Quic)
+	if(m_RegisterTransports.m_Quic || m_RegisterTransports.m_Websocket)
 	{
 		unsigned char aIdentity[32];
 		if(m_NetServer.Identity(aIdentity))
@@ -3557,6 +3557,9 @@ int CServer::Run()
 #ifdef CONF_NETWORKING_QUIC
 	m_RegisterTransports.m_Quic = Config()->m_SvQuic != 0;
 	m_RegisterTransports.m_WebTransport = m_RegisterTransports.m_Quic && Config()->m_SvWebtransport != 0;
+	// Only the library knows whether WebSockets are compiled in.
+	m_RegisterTransports.m_Websocket = m_NetServer.AcceptsWebsockets();
+	m_RegisterTransports.m_WebsocketTls = m_RegisterTransports.m_Websocket && Config()->m_SvTlsCert[0] != '\0';
 #endif
 	FormatModernTransportFragments(m_aLastIdentityFragment, sizeof(m_aLastIdentityFragment), m_aLastWebTransportFragment, sizeof(m_aLastWebTransportFragment));
 	m_pRegister = CreateRegister(&g_Config, m_pConsole, m_pEngine, m_pHttp, g_Config.m_SvRegisterPort > 0 ? g_Config.m_SvRegisterPort : this->Port(), m_NetServer.GetGlobalToken(), m_RegisterTransports, Config()->m_SvRegisterHostname, m_aLastIdentityFragment, m_aLastWebTransportFragment);

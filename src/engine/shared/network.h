@@ -627,6 +627,9 @@ public:
 	// The server's own public identity, the 32 bytes clients pin it by;
 	// false before the library is open.
 	bool Identity(unsigned char (&aIdentity)[32]);
+	// Whether the library listens for WebSockets: `sv_websocket`, if they
+	// are compiled in. False before the library is open.
+	bool AcceptsWebsockets();
 #endif
 
 	int SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_DELCLIENT pfnDelClient, void *pUser);

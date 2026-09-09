@@ -159,6 +159,12 @@ bool ddnet_net_set_key_log(struct DdnetNet *net, bool key_log);
  */
 bool ddnet_net_set_accept_protocol(struct DdnetNet *net, uint64_t protocol, bool accept);
 
+/**
+ * Whether the library takes connections over `protocol`: what was asked
+ * for, less what is not compiled in. After `ddnet_net_open`.
+ */
+bool ddnet_net_accepts_protocol(struct DdnetNet *net, uint64_t protocol, bool *accepts);
+
 bool ddnet_net_open(struct DdnetNet *net);
 
 bool ddnet_net_is_broken(const struct DdnetNet *net);

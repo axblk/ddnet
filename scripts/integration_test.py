@@ -914,8 +914,8 @@ def server_can_register(test_env):
 	mastersrv.wait_for_exit()
 
 
-def server_can_register_protocol(test_env, protocol_config, protocol_log, protocol_scheme):
-	mastersrv = test_env.mastersrv()
+def server_can_register_protocol(test_env, protocol_config, protocol_log, protocol_scheme, mastersrv_args=()):
+	mastersrv = test_env.mastersrv(list(mastersrv_args))
 	wait_for_startup([mastersrv])
 	server = test_env.server([
 		"http_allow_insecure 1",
@@ -954,6 +954,12 @@ def server_can_register_quic(test_env):
 @test(requires_mastersrv=True, requires_quic=True)
 def server_can_register_webtransport(test_env):
 	server_can_register_protocol(test_env, "ddnet+wt/ipv6", "wt/6/ipv6", "ddnet+wt")
+
+
+@test(requires_mastersrv=True, requires_websockets=True)
+def server_can_register_websocket(test_env):
+	# The mastersrv challenges WebSocket addresses only when told to.
+	server_can_register_protocol(test_env, "ddnet+ws/ipv6", "ws/6/ipv6", "ddnet+ws", mastersrv_args=["--websockets"])
 
 
 @test(requires_mastersrv=True)

@@ -83,3 +83,25 @@
    fun:_ZSt11make_sharedI13CFutureLoggerJEESt10shared_ptrINSt9enable_ifIXntsrSt8is_arrayIT_E5valueES4_E4typeEEDpOT0_
    fun:main
 }
+
+# The mastersrv challenges servers over QUIC, and ring encrypts and decrypts
+# the packets with hand-written AES-GCM. Valgrind does not follow the
+# definedness of the bytes that code writes, so it takes the authentication
+# tag of every packet for uninitialised memory: on the way out it reports the
+# tail of the datagram handed to sendmsg, on the way back the comparison that
+# checks the tag. ring wrote both; there is nothing uninitialised about them.
+{
+   RingAeadSealTag
+   Memcheck:Param
+   sendmsg(msg.msg_iov[0])
+   ...
+   fun:*quinn_udp*
+   ...
+}
+
+{
+   RingAeadOpenTag
+   Memcheck:Cond
+   fun:*4ring2bb*verify_slices_are_equal*
+   ...
+}

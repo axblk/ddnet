@@ -22,6 +22,7 @@ use crate::key::IDENTITY_PROOF_SIZE;
 use crate::mapstream;
 use crate::quic::PeerIdentity;
 use crate::quic::Shared;
+use crate::webtransport;
 use crate::wire;
 use crate::CallbackData;
 use crate::ConnectionEvent as Event;
@@ -43,6 +44,8 @@ use std::io::Read;
 use std::io::Write;
 use std::mem;
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -126,27 +129,36 @@ impl Write for Stream {
     }
 }
 
-type ServerCallback = fn(&Request, Response) -> std::result::Result<Response, ErrorResponse>;
+/// Looks at the client's request: the masterserver on its path gets in
+/// without the game's subprotocol, anyone else has to offer it.
+struct OnRequest {
+    master: Arc<AtomicBool>,
+}
 
-/// Takes the client's subprotocol, or turns it away.
-fn on_request(request: &Request, mut response: Response) -> std::result::Result<Response, ErrorResponse> {
-    let offered = request
-        .headers()
-        .get_all("Sec-WebSocket-Protocol")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .any(|name| name.trim() == SUBPROTOCOL);
-    if !offered {
-        return Err(tungstenite::http::Response::builder()
-            .status(400)
-            .body(Some(format!("subprotocol {} required", SUBPROTOCOL)))
-            .unwrap());
+impl tungstenite::handshake::server::Callback for OnRequest {
+    fn on_request(self, request: &Request, mut response: Response) -> std::result::Result<Response, ErrorResponse> {
+        if request.uri().path() == webtransport::MASTER_PATH {
+            self.master.store(true, Ordering::Relaxed);
+            return Ok(response);
+        }
+        let offered = request
+            .headers()
+            .get_all("Sec-WebSocket-Protocol")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .any(|name| name.trim() == SUBPROTOCOL);
+        if !offered {
+            return Err(tungstenite::http::Response::builder()
+                .status(400)
+                .body(Some(format!("subprotocol {} required", SUBPROTOCOL)))
+                .unwrap());
+        }
+        response
+            .headers_mut()
+            .insert("Sec-WebSocket-Protocol", SUBPROTOCOL.parse().unwrap());
+        Ok(response)
     }
-    response
-        .headers_mut()
-        .insert("Sec-WebSocket-Protocol", SUBPROTOCOL.parse().unwrap());
-    Ok(response)
 }
 
 fn websocket_config() -> WebSocketConfig {
@@ -161,7 +173,7 @@ enum State {
     Tcp(TcpStream),
     TlsHandshake(boring::ssl::MidHandshakeSslStream<TcpStream>),
     ClientHandshake(MidHandshake<ClientHandshake<Stream>>),
-    ServerHandshake(MidHandshake<ServerHandshake<Stream, ServerCallback>>),
+    ServerHandshake(MidHandshake<ServerHandshake<Stream, OnRequest>>),
     Open(WebSocket<Stream>),
     /// Torn down; only the events about it are still due.
     Closed,
@@ -270,6 +282,9 @@ pub struct Connection {
     peer_identity: PeerIdentity,
     pinned: bool,
     game: Game,
+    /// The masterserver checking that the server is reachable: it sends
+    /// one connectionless packet and is done. Set by the handshake.
+    master: Arc<AtomicBool>,
     /// The certificate the server showed, or zeroes without TLS; the
     /// identity vouches for it either way.
     shown_certificate: [u8; 32],
@@ -313,6 +328,7 @@ impl Connection {
             pinned: matches!(peer_identity, PeerIdentity::Wanted(_)),
             peer_identity,
             game: Game::Hello,
+            master: Arc::new(AtomicBool::new(false)),
             shown_certificate: [0; 32],
             local_nonce: [0; wire::NONCE_SIZE],
             peer_nonce: [0; wire::NONCE_SIZE],
@@ -502,7 +518,7 @@ impl Connection {
                 .map_err(|e| Error::from_string(format!("websocket handshake: {}", e)))?;
             self.state = State::ClientHandshake(mid);
         } else {
-            let callback: ServerCallback = on_request;
+            let callback = OnRequest { master: self.master.clone() };
             self.state = State::ServerHandshake(ServerHandshake::start(stream, callback, Some(websocket_config())));
         }
         Ok(())
@@ -612,6 +628,21 @@ impl Connection {
     }
     /// A binary message from the peer.
     fn on_message(&mut self, data: &[u8], buf: &mut [u8]) -> Result<Option<Event>> {
+        if self.master.load(Ordering::Relaxed) {
+            // The masterserver's challenge, the packet it would send over
+            // UDP; handed on as one, and the socket ends, there is nothing
+            // more to say on it. The game never hears of the connection.
+            if data.len() > buf.len() {
+                bail!("master challenge of {} bytes is too large", data.len());
+            }
+            buf[..data.len()].copy_from_slice(data);
+            self.end_quietly();
+            return Ok(Some(Event::ConnlessChunk(
+                crate::net::Addr::Tw06(crate::net::Tw06Addr(self.peer_addr)),
+                data.len(),
+                crate::net::ConnlessMeta::default(),
+            )));
+        }
         let Some((&flags, payload)) = data.split_first() else {
             // Keepalive.
             return Ok(None);
@@ -697,6 +728,17 @@ impl Connection {
             (_, frame_type) if frame_type >= wire::SKIPPABLE_FRAME_START => Ok(None),
             (_, frame_type) => bail!("frame of type {} not expected now", frame_type),
         }
+    }
+    /// Ends a connection the game was never told about: no disconnect
+    /// event, the socket just goes.
+    fn end_quietly(&mut self) {
+        if let State::Open(ws) = &mut self.state {
+            let _ = ws.close(None);
+            let _ = ws.flush();
+        }
+        self.state = State::Closed;
+        self.game = Game::Disconnected;
+        self.pending.push_back(Pending::Delete);
     }
     /// The peer ended the connection; the socket goes with the next event.
     fn remote_closed(&mut self, buf: &mut [u8], reason: &str) -> Event {

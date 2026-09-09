@@ -42,6 +42,8 @@ pub use self::key::PrivateIdentity;
 pub use self::net::Addr;
 pub use self::net::ConnectionEvent;
 pub use self::net::Event;
+pub use self::net::Map;
+pub use self::net::MapEvent;
 pub use self::net::Net;
 pub use self::net::NetBuilder;
 pub use self::net::PeerIndex;

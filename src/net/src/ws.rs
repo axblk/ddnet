@@ -638,9 +638,9 @@ impl Connection {
             buf[..data.len()].copy_from_slice(data);
             self.end_quietly();
             return Ok(Some(Event::ConnlessChunk(
-                crate::net::Addr::Tw06(crate::net::Tw06Addr(self.peer_addr)),
+                crate::Addr::Tw06(crate::Tw06Addr(self.peer_addr)),
                 data.len(),
-                crate::net::ConnlessMeta::default(),
+                crate::ConnlessMeta::default(),
             )));
         }
         let Some((&flags, payload)) = data.split_first() else {

@@ -223,6 +223,9 @@ pub struct NetBuilder {
     identity: Option<PrivateIdentity>,
     accept: AcceptProtocols,
     timeout: Duration,
+    /// Certificate chain and key files for browsers, instead of a
+    /// self-made certificate.
+    tls_files: Option<(String, String)>,
 }
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -594,6 +597,11 @@ impl NetBuilder {
     pub fn timeout(&mut self, timeout: Duration) {
         self.timeout = timeout;
     }
+    /// PEM files with the certificate chain and the key a server shows
+    /// browsers; they are reloaded when they change.
+    pub fn tls_files(&mut self, cert: &str, key: &str) {
+        self.tls_files = Some((cert.to_owned(), key.to_owned()));
+    }
     pub fn accept_connections(&mut self, accept: bool) {
         self.accept = if accept { AcceptProtocols::ALL } else { AcceptProtocols::NONE };
     }
@@ -667,9 +675,14 @@ impl NetBuilder {
             events,
             poll,
 
-            proto_quic: quic::Protocol::new(&identity, self.timeout, self.accept.webtransport)?,
             proto_tw06: tw06::Protocol::new(&identity)?,
             proto_tw07: tw07::Protocol::new(&identity)?,
+            proto_quic: quic::Protocol::new(
+                identity,
+                self.timeout,
+                self.accept.webtransport,
+                self.tls_files.as_ref().map(|(cert, key)| (cert.as_str(), key.as_str())),
+            )?,
 
             peer_addrs: HashMap::new(),
             peers: HashMap::new(),
@@ -688,11 +701,17 @@ impl NetBuilder {
 }
 
 impl Net {
+    /// The hash browsers accept the server's certificate by, the current
+    /// one or the next; none without WebTransport.
+    pub fn certificate_sha256(&self, next: bool) -> Option<[u8; 32]> {
+        self.proto_quic.certificate_sha256(next)
+    }
     pub fn builder() -> NetBuilder {
         NetBuilder {
             bindaddr: None,
             identity: None,
             accept: AcceptProtocols::NONE,
+            tls_files: None,
             timeout: Duration::from_secs(100),
         }
     }
@@ -1077,6 +1096,9 @@ impl Net {
     ) -> Result<Option<Event>> {
         assert!(buf.len() >= MAX_FRAME_SIZE as usize);
 
+        if let Err(error) = self.proto_quic.maintain_certificates() {
+            warn!("browser certificate: {}", error);
+        }
         if let Some((idx, error)) = self.connect_errors.pop_front() {
             let mut remaining = &mut buf[..];
             let _ = write!(remaining, "{}", error);

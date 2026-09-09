@@ -96,7 +96,11 @@ impl Config {
     pub fn is_banned(&self, addr: Addr) -> Option<Option<&str>> {
         for ban in &self.bans {
             if ban.address.matches(addr) {
-                return Some(ban.reason.as_deref().or(self.default_ban_message.as_deref()));
+                return Some(
+                    ban.reason
+                        .as_deref()
+                        .or(self.default_ban_message.as_deref()),
+                );
             }
         }
         None
@@ -226,10 +230,13 @@ impl ParsedConfig {
 impl ConfigAddr {
     fn matches(&self, addr: Addr) -> bool {
         use self::ConfigAddr::*;
+        let Some(ip) = addr.ip() else {
+            return false;
+        };
         match *self {
-            WithPort(i) => addr.ip == i.ip() && addr.port == i.port(),
-            OnlyIp(i) => addr.ip == i,
-            Range(i) => i.contains(&addr.ip),
+            WithPort(i) => ip == i.ip() && addr.port == i.port(),
+            OnlyIp(i) => ip == i,
+            Range(i) => i.contains(&ip),
         }
     }
 }

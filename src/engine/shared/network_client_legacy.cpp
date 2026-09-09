@@ -207,7 +207,7 @@ int CNetClient::Send(CNetChunk *pChunk)
 	return 0;
 }
 
-int CNetClient::State()
+int CNetClient::State() const
 {
 	if(m_Connection.State() == CNetConnection::EState::ONLINE)
 		return NETSTATE_ONLINE;

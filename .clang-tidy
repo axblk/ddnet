@@ -22,7 +22,9 @@
 #   Exceptions may be disabled later, adding noexcept is just noise
 
 HeaderFilterRegex: '.*'
-ExcludeHeaderFilterRegex: '(external/|generated/|include/|steam/steam_api_flat\.h)'
+# `net/net.h` is the C interface of the networking library and follows C
+# naming, not ours.
+ExcludeHeaderFilterRegex: '(external/|generated/|include/|net/net\.h|steam/steam_api_flat\.h)'
 
 Checks: >
   -*,

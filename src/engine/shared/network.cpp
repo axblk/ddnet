@@ -560,6 +560,15 @@ static void NetLogger(int Level, const char *pSystem, size_t SystemLen, const ch
 	str_truncate(aSystem, sizeof(aSystem), pSystem, SystemLen);
 	log_log((LEVEL)Level, aSystem, "%.*s", (int)MessageLen, pMessage);
 }
+
+bool CheckNetCall(CNet *pNet, bool Failed, const char *pFunction)
+{
+	if(Failed)
+	{
+		log_error("net", "%s: %s", pFunction, ddnet_net_error(pNet));
+	}
+	return Failed;
+}
 #endif
 
 void CNetBase::Init()

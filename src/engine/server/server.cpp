@@ -3450,6 +3450,12 @@ int CServer::Run()
 		}
 		m_NetServer.SetIdentity(aIdentity);
 	}
+	if((Config()->m_SvTlsCert[0] != '\0') != (Config()->m_SvTlsKey[0] != '\0'))
+	{
+		log_error("server", "sv_tls_cert and sv_tls_key go together");
+		return -1;
+	}
+	m_NetServer.SetTlsFiles(Config()->m_SvTlsCert, Config()->m_SvTlsKey);
 #endif
 	NETADDR BindAddr;
 	if(g_Config.m_Bindaddr[0] == '\0')
@@ -3475,6 +3481,23 @@ int CServer::Run()
 
 	if(Port == 0)
 		log_info("server", "using port %d", BindAddr.port);
+
+#ifdef CONF_NETWORKING_QUIC
+	{
+		SHA256_DIGEST Sha256;
+		if(m_NetServer.CertificateSha256(false, &Sha256))
+		{
+			char aSha256[SHA256_MAXSTRSIZE];
+			sha256_str(Sha256, aSha256, sizeof(aSha256));
+			log_info("server", "browsers accept the WebTransport certificate by sha256 %s", aSha256);
+			if(m_NetServer.CertificateSha256(true, &Sha256))
+			{
+				sha256_str(Sha256, aSha256, sizeof(aSha256));
+				log_info("server", "the next WebTransport certificate has sha256 %s", aSha256);
+			}
+		}
+	}
+#endif
 
 #if defined(CONF_UPNP)
 	m_UPnP.Open(BindAddr);

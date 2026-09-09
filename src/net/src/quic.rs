@@ -2,6 +2,10 @@ use crate::CallbackData;
 use crate::Challenger;
 use crate::ConnectionEvent as Event;
 use crate::Context as _;
+use crate::key::BrowserCertificate;
+use crate::key::unix_now;
+use crate::key::BROWSER_CERTIFICATE_ROTATION;
+use crate::key::IDENTITY_PROOF_SIZE;
 use crate::Identity;
 use crate::MAX_FRAME_SIZE;
 use crate::PeerIndex;
@@ -32,6 +36,7 @@ use std::result::Result as StdResult;
 use std::str;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::SystemTime;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -75,9 +80,159 @@ pub const RESUME_TOKEN_LEN: usize = 32;
 /// reconnects on.
 const TIMEOUT_REASON: &str = "Timeout";
 
+/// What the TLS callbacks share with the connections. The callbacks run
+/// inside `quiche::Connection::recv`, one connection at a time, so the
+/// slots hold what the current handshake needs.
+pub struct Shared {
+    /// The identity the peer is expected to show, and what it showed.
+    peer_identity: Mutex<Option<PeerIdentity>>,
+    /// The browser certificate a server chose for the current handshake.
+    shown_certificate: Mutex<Option<[u8; 32]>>,
+    identity: PrivateIdentity,
+    certificates: Mutex<Option<Certificates>>,
+}
+
+/// How often a server looks whether its browser certificate is due for a
+/// swap or its files changed.
+const CERTIFICATE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
+
+/// The browser certificates of a server: the one in use and, when the
+/// server makes them itself, the one that takes over next.
+pub struct Certificates {
+    current: BrowserCertificate,
+    next: Option<BrowserCertificate>,
+    mode: CertificateMode,
+}
+
+enum CertificateMode {
+    /// Made by the server, swapped for the next one at `rotate_at`.
+    Managed { rotate_at: i64 },
+    /// From files the operator maintains, reloaded when they change.
+    Files { cert: String, key: String, modified: Option<SystemTime> },
+}
+
+impl Certificates {
+    fn managed(now: i64) -> Certificates {
+        Certificates {
+            current: BrowserCertificate::generate(now),
+            next: Some(BrowserCertificate::generate(now + BROWSER_CERTIFICATE_ROTATION)),
+            mode: CertificateMode::Managed { rotate_at: now + BROWSER_CERTIFICATE_ROTATION },
+        }
+    }
+    fn files(cert: &str, key: &str) -> Result<Certificates> {
+        Ok(Certificates {
+            current: BrowserCertificate::from_files(cert, key)?,
+            next: None,
+            mode: CertificateMode::Files {
+                cert: cert.to_owned(),
+                key: key.to_owned(),
+                modified: files_modified(cert, key),
+            },
+        })
+    }
+    /// Swaps or reloads what is due; whether anything changed.
+    fn maintain(&mut self, now: i64) -> Result<bool> {
+        match &mut self.mode {
+            CertificateMode::Managed { rotate_at } => {
+                if now < *rotate_at {
+                    return Ok(false);
+                }
+                let next = self.next.take().unwrap_or_else(|| BrowserCertificate::generate(now));
+                self.current = next;
+                *rotate_at += BROWSER_CERTIFICATE_ROTATION;
+                self.next = Some(BrowserCertificate::generate(*rotate_at));
+                Ok(true)
+            }
+            CertificateMode::Files { cert, key, modified } => {
+                let now_modified = files_modified(cert, key);
+                if now_modified == *modified {
+                    return Ok(false);
+                }
+                *modified = now_modified;
+                self.current = BrowserCertificate::from_files(cert, key)?;
+                Ok(true)
+            }
+        }
+    }
+    fn sha256(&self, next: bool) -> Option<[u8; 32]> {
+        if next {
+            self.next.as_ref().map(|cert| *cert.sha256())
+        } else {
+            Some(*self.current.sha256())
+        }
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wants_browser_certificate;
+
+    fn alpn(names: &[&[u8]]) -> Vec<u8> {
+        let mut list = Vec::new();
+        for name in names {
+            list.push(name.len() as u8);
+            list.extend_from_slice(name);
+        }
+        let mut ext = (list.len() as u16).to_be_bytes().to_vec();
+        ext.extend_from_slice(&list);
+        ext
+    }
+
+    #[test]
+    fn browser_certificate_only_for_h3_alone() {
+        assert!(wants_browser_certificate(&alpn(&[b"h3"])));
+        assert!(wants_browser_certificate(&alpn(&[b"h3-29", b"h3"])));
+        assert!(!wants_browser_certificate(&alpn(&[b"ddnet/1"])));
+        assert!(!wants_browser_certificate(&alpn(&[b"h3", b"ddnet/1"])));
+        assert!(!wants_browser_certificate(&alpn(&[b"http/1.1"])));
+        assert!(!wants_browser_certificate(&[]));
+        assert!(!wants_browser_certificate(&[0, 5, 2, b'h', b'3']));
+    }
+}
+
+fn files_modified(cert: &str, key: &str) -> Option<SystemTime> {
+    let modified = |path: &str| std::fs::metadata(path).ok()?.modified().ok();
+    match (modified(cert), modified(key)) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        _ => None,
+    }
+}
+
+/// Whether a client hello asks for HTTP/3 without offering the game's own
+/// protocol: the ALPN extension is a list of length-prefixed names behind
+/// a two-byte length.
+fn wants_browser_certificate(alpn: &[u8]) -> bool {
+    let Some((len, mut rest)) = alpn.split_first_chunk::<2>() else {
+        return false;
+    };
+    if u16::from_be_bytes(*len) as usize != rest.len() {
+        return false;
+    }
+    let mut h3 = false;
+    while let Some((&len, tail)) = rest.split_first() {
+        let len = len as usize;
+        if tail.len() < len {
+            return false;
+        }
+        let (name, tail) = tail.split_at(len);
+        if name == GAME_ALPN {
+            return false;
+        }
+        h3 |= name == webtransport::ALPN;
+        rest = tail;
+    }
+    h3
+}
+
 pub struct Protocol {
     config: quiche::Config,
-    callback_peer_identity: Arc<Mutex<Option<PeerIdentity>>>,
+    shared: Arc<Shared>,
+    /// When the browser certificates are next looked at.
+    next_certificate_check: Instant,
     connection_ids: HashMap<ConnectionId, PeerIndex>,
     /// What a server offers in ALPN: the game's own protocol, and HTTP/3
     /// for WebTransport if it takes it.
@@ -198,6 +353,9 @@ enum PeerIdentity {
     Known(Identity),
     /// The peer showed `shown` where `wanted` was pinned.
     Invalid { wanted: Identity, shown: Identity },
+    /// The peer showed a certificate that is no identity, a browser
+    /// certificate; the identity comes as a proof on the control stream.
+    Certificate { wanted: Option<Identity>, sha256: [u8; 32] },
 }
 
 impl PeerIdentity {
@@ -211,23 +369,51 @@ impl PeerIdentity {
 }
 
 fn config(
-    key: &boring::pkey::PKeyRef<boring::pkey::Private>,
     cert: &boring::x509::X509Ref,
-    callback_peer_identity: Arc<Mutex<Option<PeerIdentity>>>,
+    shared: Arc<Shared>,
     idle_timeout: Duration,
 ) -> Result<quiche::Config> {
     let mut context =
         boring::ssl::SslContext::builder(boring::ssl::SslMethod::tls())
             .context("boring::SslContext::builder")?;
     context
-        .set_sigalgs_list("ed25519")
+        .set_sigalgs_list("ed25519:ecdsa_secp256r1_sha256")
         .context("boring::SslContext::set_sigalgs_list")?;
     context
-        .set_private_key(key)
+        .set_private_key(shared.identity.as_lib())
         .context("boring::SslContext::set_private_key")?;
     context
         .set_certificate(cert)
         .context("boring::SslContext::set_certificate")?;
+    // A browser takes no Ed25519 certificate; a client that asks for
+    // HTTP/3 alone gets the browser certificate instead of the identity.
+    let select_shared = shared.clone();
+    context.set_select_certificate_callback(move |mut hello| {
+        let alpn = hello
+            .get_extension(boring::ssl::ExtensionType::APPLICATION_LAYER_PROTOCOL_NEGOTIATION)
+            .unwrap_or(&[]);
+        if !wants_browser_certificate(alpn) {
+            return Ok(());
+        }
+        let certificates = select_shared.certificates.lock().unwrap();
+        let Some(certificates) = certificates.as_ref() else {
+            return Ok(());
+        };
+        let cert = &certificates.current;
+        let ssl = hello.ssl_mut();
+        let result = (|| {
+            ssl.set_certificate(&cert.chain()[0])?;
+            for intermediate in &cert.chain()[1..] {
+                ssl.add_chain_cert(intermediate)?;
+            }
+            ssl.set_private_key(cert.key())
+        })();
+        if result.is_err() {
+            return Err(boring::ssl::SelectCertError::ERROR);
+        }
+        *select_shared.shown_certificate.lock().unwrap() = Some(*cert.sha256());
+        Ok(())
+    });
     context.set_verify_callback(
         boring::ssl::SslVerifyMode::PEER,
         move |pre, store| {
@@ -236,8 +422,24 @@ fn config(
                 peer_identity: &mut PeerIdentity,
             ) -> Option<()> {
                 use self::PeerIdentity::*;
-                let public = store.chain()?.get(0)?.public_key().ok()?;
-                let public = Identity::try_from_lib(&public)?;
+                let leaf = store.chain()?.get(0)?;
+                let public = leaf.public_key().ok()?;
+                let Some(public) = Identity::try_from_lib(&public) else {
+                    // No identity to check against; the peer has to prove
+                    // it holds one on the control stream.
+                    let sha256 = leaf.digest(boring::hash::MessageDigest::sha256()).ok()?;
+                    let wanted = match *peer_identity {
+                        AcceptAny => None,
+                        Wanted(identity) | Known(identity) => Some(identity),
+                        Certificate { wanted, .. } => wanted,
+                        Invalid { .. } => return None,
+                    };
+                    *peer_identity = Certificate {
+                        wanted,
+                        sha256: sha256.as_ref().try_into().ok()?,
+                    };
+                    return Some(());
+                };
                 match *peer_identity {
                     AcceptAny => {
                         *peer_identity = Known(public);
@@ -255,13 +457,21 @@ fn config(
                         Some(())
                     }
                     Invalid { .. } => None,
+                    Certificate { wanted, .. } => {
+                        if wanted.is_some_and(|wanted| wanted != public) {
+                            *peer_identity = Invalid { wanted: wanted.unwrap(), shown: public };
+                            return None;
+                        }
+                        *peer_identity = Known(public);
+                        Some(())
+                    }
                 }
             }
             // ignore boringssl's certificate verification
             let _ = pre;
             verify(
                 store,
-                callback_peer_identity.lock().unwrap().as_mut().unwrap(),
+                shared.peer_identity.lock().unwrap().as_mut().unwrap(),
             )
             .is_some()
         },
@@ -316,19 +526,31 @@ impl ConfigExt for quiche::Config {
 }
 
 impl Protocol {
-    pub fn new(identity: &PrivateIdentity, idle_timeout: Duration, webtransport: bool) -> Result<Protocol> {
+    /// `tls_files` are the operator's certificate and key for browsers;
+    /// without them a server accepting WebTransport makes its own.
+    pub fn new(
+        identity: PrivateIdentity,
+        idle_timeout: Duration,
+        webtransport: bool,
+        tls_files: Option<(&str, &str)>,
+    ) -> Result<Protocol> {
         let cert = identity.generate_certificate();
-        let callback_peer_identity = Arc::new(Mutex::new(None));
+        let certificates = match (webtransport, tls_files) {
+            (_, Some((cert, key))) => Some(Certificates::files(cert, key)?),
+            (true, None) => Some(Certificates::managed(unix_now())),
+            (false, None) => None,
+        };
+        let shared = Arc::new(Shared {
+            peer_identity: Mutex::new(None),
+            shown_certificate: Mutex::new(None),
+            identity,
+            certificates: Mutex::new(certificates),
+        });
 
         Ok(Protocol {
-            config: config(
-                identity.as_lib(),
-                &cert,
-                callback_peer_identity.clone(),
-                idle_timeout,
-            )
-            .context("config")?,
-            callback_peer_identity,
+            config: config(&cert, shared.clone(), idle_timeout).context("config")?,
+            shared,
+            next_certificate_check: Instant::now() + CERTIFICATE_CHECK_INTERVAL,
             connection_ids: HashMap::new(),
             server_protos: if webtransport {
                 vec![GAME_ALPN, webtransport::ALPN]
@@ -336,6 +558,28 @@ impl Protocol {
                 vec![GAME_ALPN]
             },
         })
+    }
+    /// The hash browsers accept the server's certificate by, the one in
+    /// use or the next one.
+    pub fn certificate_sha256(&self, next: bool) -> Option<[u8; 32]> {
+        self.shared.certificates.lock().unwrap().as_ref()?.sha256(next)
+    }
+    /// Swaps or reloads the browser certificates when they are due; called
+    /// from every poll, and cheap when nothing is.
+    pub fn maintain_certificates(&mut self) -> Result<()> {
+        let now = Instant::now();
+        if now < self.next_certificate_check {
+            return Ok(());
+        }
+        self.next_certificate_check = now + CERTIFICATE_CHECK_INTERVAL;
+        let mut certificates = self.shared.certificates.lock().unwrap();
+        let Some(certificates) = certificates.as_mut() else {
+            return Ok(());
+        };
+        if certificates.maintain(unix_now())? {
+            info!("browser certificate is now {}", hex(certificates.current.sha256()));
+        }
+        Ok(())
     }
     pub fn remove_peer(&mut self, idx: PeerIndex, conn: Connection) {
         let _ = conn;
@@ -495,10 +739,9 @@ impl Protocol {
                     if let Some(sslkeylogfile) = &cb.sslkeylogfile {
                         conn.set_keylog(Box::new(sslkeylogfile.clone()));
                     }
-                    let cpi = self.callback_peer_identity.clone();
                     let conn = Connection::new(
                         conn,
-                        cpi,
+                        self.shared.clone(),
                         false,
                         *from,
                         PeerIdentity::AcceptAny,
@@ -544,7 +787,7 @@ impl Protocol {
         }
         let mut conn = Connection::new(
             conn,
-            self.callback_peer_identity.clone(),
+            self.shared.clone(),
             true,
             sock_addr,
             match peer_identity {
@@ -637,7 +880,17 @@ pub struct Connection {
     /// The server reads the stream kind and version in front of the
     /// client's frames.
     prelude_read: bool,
-    callback_peer_identity: Arc<Mutex<Option<PeerIdentity>>>,
+    shared: Arc<Shared>,
+    /// The browser certificate a server showed on this connection, which
+    /// its identity then vouches for.
+    shown_certificate: Option<[u8; 32]>,
+    /// The nonces of the hellos, ours and the peer's, that the identity
+    /// proof answers.
+    local_nonce: [u8; wire::NONCE_SIZE],
+    peer_nonce: [u8; wire::NONCE_SIZE],
+    /// The client has the server's hello and waits for the identity proof
+    /// before it counts as online.
+    hello_received: bool,
     client: bool,
     /// Whether the peer's identity was known before connecting.
     pinned: bool,
@@ -722,7 +975,7 @@ impl IncomingMap {
 impl Connection {
     fn new(
         inner: quiche::Connection,
-        callback_peer_identity: Arc<Mutex<Option<PeerIdentity>>>,
+        shared: Arc<Shared>,
         client: bool,
         peer_addr: SocketAddr,
         peer_identity: PeerIdentity,
@@ -734,7 +987,11 @@ impl Connection {
             webtransport,
             control_stream: None,
             prelude_read: client,
-            callback_peer_identity,
+            shared,
+            shown_certificate: None,
+            local_nonce: [0; wire::NONCE_SIZE],
+            peer_nonce: [0; wire::NONCE_SIZE],
+            hello_received: false,
             client,
             pinned: matches!(peer_identity, PeerIdentity::Wanted(_)),
             peer_addr,
@@ -774,6 +1031,8 @@ impl Connection {
         self.transport = Transport::Raw;
         self.control_stream = None;
         self.prelude_read = self.client;
+        self.shown_certificate = None;
+        self.hello_received = false;
         self.peer_identity = PeerIdentity::Wanted(identity);
         self.pinned = true;
         self.state = State::Connecting;
@@ -801,6 +1060,7 @@ impl Connection {
     pub fn accept_resume(&mut self) -> Result<()> {
         self.resume_request = None;
         self.send_hello()?;
+        self.send_identity_proof()?;
         self.state = State::Online;
         self.announce_resumed = true;
         Ok(())
@@ -834,9 +1094,10 @@ impl Connection {
         from: &SocketAddr,
     ) -> Result<()> {
         {
-            let mut cpi = self.callback_peer_identity.lock().unwrap();
+            let mut cpi = self.shared.peer_identity.lock().unwrap();
             assert!(cpi.is_none());
             *cpi = Some(self.peer_identity);
+            *self.shared.shown_certificate.lock().unwrap() = None;
         }
         let result = self
             .inner
@@ -847,7 +1108,10 @@ impl Connection {
             .context("quiche::Conn::recv");
         self.silence_since = None;
         self.peer_identity =
-            self.callback_peer_identity.lock().unwrap().take().unwrap();
+            self.shared.peer_identity.lock().unwrap().take().unwrap();
+        if let Some(shown) = self.shared.shown_certificate.lock().unwrap().take() {
+            self.shown_certificate = Some(shown);
+        }
         // The TLS failure behind a wrong pin says nothing to the user.
         if let PeerIdentity::Invalid { wanted, shown } = self.peer_identity {
             bail!("server identity is {}, expected {}", shown, wanted);
@@ -1029,13 +1293,18 @@ impl Connection {
             .unwrap_or(0)
             .saturating_sub(datagram_header)
             .min(wire::MAX_DATAGRAM_SIZE) as u64;
+        let mut capabilities = wire::capability::DATAGRAM | wire::capability::MAP_STREAM;
+        if self.client || self.proves_identity() {
+            capabilities |= wire::capability::SERVER_IDENTITY;
+        }
+        self.local_nonce = secure_random();
         let hello = wire::Hello {
             major: wire::VERSION_MAJOR,
             minor: wire::VERSION_MINOR,
             protocol_version: GAME_PROTOCOL,
-            capabilities: wire::capability::DATAGRAM | wire::capability::MAP_STREAM,
+            capabilities,
             max_datagram_size,
-            nonce: secure_random(),
+            nonce: self.local_nonce,
             resume_token: if self.resuming {
                 self.resume_token.as_deref().unwrap_or(&[])
             } else {
@@ -1045,6 +1314,71 @@ impl Connection {
         let payload = wire::encode_hello(&hello).unwrap();
         let frame_type = if self.client { wire::frame::CLIENT_HELLO } else { wire::frame::SERVER_HELLO };
         self.send_frame(frame_type, &payload)
+    }
+    /// Whether the server's identity is not in its certificate and the
+    /// client asked for it: a browser certificate over WebTransport.
+    fn proves_identity(&self) -> bool {
+        !self.client
+            && self.shown_certificate.is_some()
+            && self.peer_capabilities & wire::capability::SERVER_IDENTITY != 0
+    }
+    /// Sends the identity's signature over the certificate the client saw
+    /// and the client's nonce, after the server's hello.
+    fn send_identity_proof(&mut self) -> Result<()> {
+        if !self.proves_identity() {
+            return Ok(());
+        }
+        let proof = self
+            .shared
+            .identity
+            .prove(self.shown_certificate.as_ref().unwrap(), &self.peer_nonce);
+        self.send_frame(wire::frame::SERVER_IDENTITY, &proof)
+    }
+    /// Takes the server's identity proof; the identity is known after it.
+    fn on_identity_proof(&mut self, payload: &[u8]) -> Result<()> {
+        let PeerIdentity::Certificate { wanted, sha256 } = self.peer_identity else {
+            bail!("identity proof not expected");
+        };
+        if payload.len() != IDENTITY_PROOF_SIZE {
+            bail!("identity proof of {} bytes, expected {}", payload.len(), IDENTITY_PROOF_SIZE);
+        }
+        let shown = Identity::from_bytes(payload[..32].try_into().unwrap());
+        if let Some(wanted) = wanted {
+            if shown != wanted {
+                bail!("server identity is {}, expected {}", shown, wanted);
+            }
+        }
+        if shown.verify_proof(payload, &sha256, &self.local_nonce).is_none() {
+            bail!("server identity proof does not check out");
+        }
+        self.peer_identity = PeerIdentity::Known(shown);
+        Ok(())
+    }
+    /// A client is online once it has the server's hello and knows the
+    /// server's identity, from the certificate or from the proof.
+    fn client_online(&mut self) -> Result<Option<Event>> {
+        if !self.hello_received {
+            return Ok(None);
+        }
+        match self.peer_identity {
+            PeerIdentity::Known(_) => {}
+            PeerIdentity::Certificate { .. } => {
+                if self.peer_capabilities & wire::capability::SERVER_IDENTITY == 0 {
+                    bail!("server shows no identity");
+                }
+                return Ok(None);
+            }
+            _ => bail!("server identity unknown after the handshake"),
+        }
+        self.state = State::Online;
+        if self.resuming {
+            self.resuming = false;
+            self.resume_deadline = None;
+            self.announce_resumed = true;
+            Ok(None)
+        } else {
+            Ok(Some(self.connect_event()))
+        }
     }
     /// Takes the peer's hello; the connection is online after it, unless
     /// the hello asks to resume an earlier connection, which is returned
@@ -1056,6 +1390,7 @@ impl Connection {
             bail!("game protocol {} instead of {}", hello.protocol_version, GAME_PROTOCOL);
         }
         self.peer_capabilities = hello.capabilities;
+        self.peer_nonce = hello.nonce;
         if hello.resume_token.is_empty() {
             return Ok(None);
         }
@@ -1635,15 +1970,12 @@ impl Connection {
             let event = match (self.state, frame_type) {
                 (Hello, wire::frame::SERVER_HELLO) if self.client => {
                     self.on_hello(&self.buffer[payload.clone()].to_vec())?;
-                    self.state = Online;
-                    if self.resuming {
-                        self.resuming = false;
-                        self.resume_deadline = None;
-                        self.announce_resumed = true;
-                        None
-                    } else {
-                        Some(self.connect_event())
-                    }
+                    self.hello_received = true;
+                    self.client_online()?
+                }
+                (Hello, wire::frame::SERVER_IDENTITY) if self.client => {
+                    self.on_identity_proof(&self.buffer[payload.clone()].to_vec())?;
+                    self.client_online()?
                 }
                 (Hello, wire::frame::CLIENT_HELLO) if !self.client => {
                     if self.resume_request.is_some() {
@@ -1658,6 +1990,7 @@ impl Connection {
                         }
                         None => {
                             self.send_hello()?;
+                            self.send_identity_proof()?;
                             self.state = Online;
                             Some(self.connect_event())
                         }
@@ -1717,17 +2050,20 @@ impl Connection {
         Ok(self.next_datagram_message(buf)?.map(|len| Event::Chunk(len, true).into()))
     }
     fn connect_event(&self) -> Event {
-        let identity = *self.peer_identity.assert_known();
-        if self.client && !self.pinned {
+        if let (true, false, PeerIdentity::Known(identity)) = (self.client, self.pinned, self.peer_identity) {
             info!("{} has identity {}, not pinned", self.peer_addr, identity);
         }
         Event::Connect(self.addr().into()).into()
     }
-    /// The peer's address, as the game's URL.
+    /// The peer's address, as the game's URL; a peer without an identity,
+    /// a browser, has no fragment.
     fn addr(&self) -> Addr {
         Addr {
             addr: self.peer_addr,
-            identity: Some(*self.peer_identity.assert_known()),
+            identity: match self.peer_identity {
+                PeerIdentity::Known(identity) => Some(identity),
+                _ => None,
+            },
             webtransport: self.webtransport,
         }
     }

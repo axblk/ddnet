@@ -531,6 +531,10 @@ class CNetServer
 	// start unless one was set before Open.
 	unsigned char m_aIdentity[32] = {0};
 	bool m_HasIdentity = false;
+	// PEM files with the certificate chain and key shown to browsers;
+	// empty for a certificate the library makes itself.
+	char m_aTlsCert[IO_MAX_PATH_LENGTH] = "";
+	char m_aTlsKey[IO_MAX_PATH_LENGTH] = "";
 
 	// The maps SetMap() gave the library, kept to give them again after
 	// Reopen().
@@ -616,6 +620,10 @@ public:
 #ifdef CONF_NETWORKING_QUIC
 	~CNetServer();
 	void SetIdentity(const unsigned char (&aSeed)[32]);
+	void SetTlsFiles(const char *pCert, const char *pKey);
+	// The hash browsers accept the certificate by, the current one or the
+	// next; false without WebTransport.
+	bool CertificateSha256(bool Next, SHA256_DIGEST *pSha256);
 #endif
 
 	int SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_DELCLIENT pfnDelClient, void *pUser);

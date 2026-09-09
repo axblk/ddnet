@@ -388,10 +388,16 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 
 	CGLSLCompiler ShaderCompiler(g_Config.m_GfxGLMajor, g_Config.m_GfxGLMinor, g_Config.m_GfxGLPatch, m_IsOpenGLES, m_OpenGLTextureLodBIAS / 1000.0f);
 
-	GLint CapVal;
-	glGetIntegerv(GL_MAX_VERTEX_UNIFORM_COMPONENTS, &CapVal);
+	// The quad arrays live in both stages, so the smaller limit decides. GLES
+	// 3.0 guarantees only 896 fragment components. Seeded because a driver that
+	// does not know a pname leaves the value untouched.
+	GLint VertexCapVal = 1024;
+	GLint FragmentCapVal = 1024;
+	glGetIntegerv(GL_MAX_VERTEX_UNIFORM_COMPONENTS, &VertexCapVal);
+	glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_COMPONENTS, &FragmentCapVal);
+	const int CapVal = std::min(VertexCapVal, FragmentCapVal);
 
-	m_MaxQuadsAtOnce = std::min(((int)CapVal - 20) / (3 * 4), (int)ms_MaxQuadsPossible);
+	m_MaxQuadsAtOnce = std::clamp((CapVal - 20) / (3 * 4), 1, (int)ms_MaxQuadsPossible);
 
 	const std::string MaxQuads = std::to_string(m_MaxQuadsAtOnce);
 	LinkProgram(m_pPrimitiveProgram, ShaderCompiler, "prim.vert", "prim.frag");
@@ -670,8 +676,9 @@ void CCommandProcessorFragment_OpenGL3_3::TextureCreate(int Slot, const IGraphic
 			// prevent mipmap display bugs, when zooming out far
 			if(Width >= 1024 && Height >= 1024)
 			{
-				glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 5.f);
-				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LOD, 5);
+				// MAX_LEVEL is texture state; MAX_LOD would be sampler state.
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 5);
+				glSamplerParameterf(m_vTextures[Slot].m_Sampler, GL_TEXTURE_MAX_LOD, 5.0f);
 			}
 			glTexImage2D(GL_TEXTURE_2D, 0, GLStoreFormat, Width, Height, 0, GLFormat, GL_UNSIGNED_BYTE, pTexData);
 			glGenerateMipmap(GL_TEXTURE_2D);

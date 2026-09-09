@@ -167,6 +167,9 @@ struct Peer {
     userdata: Option<*mut ()>,
     /// The session ID of the resume token the server gave this peer.
     resume_session: Option<u64>,
+    /// We ended the connection; the peer only stays to deliver what is
+    /// left of its events, and its address may be connected to again.
+    closing: bool,
 }
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -288,6 +291,7 @@ impl Peer {
             outgoing,
             userdata: None,
             resume_session: None,
+            closing: false,
         }
     }
 }
@@ -853,6 +857,7 @@ impl Net {
     fn fail_peer(&mut self, idx: PeerIndex, error: Error) {
         let Some(peer) = self.peers.get_mut(&idx) else { return };
         warn!("peer {}: {}", idx, error);
+        peer.closing = true;
         let reason = error.to_string();
         if let Err(close_error) = peer.conn.close(&self.cb, &mut self.packet_buf, Some(&reason)) {
             debug!("peer {}: closing after the error failed as well: {}", idx, close_error);
@@ -935,7 +940,7 @@ impl Net {
     fn remove_peer(&mut self, idx: PeerIndex) {
         use self::Connection::*;
         self.set_low_level(idx);
-        let Peer { conn, addrs, high_level, outgoing: _, userdata: _, resume_session } = self.peers.remove(&idx).unwrap();
+        let Peer { conn, addrs, high_level, outgoing: _, userdata: _, resume_session, closing: _ } = self.peers.remove(&idx).unwrap();
         assert!(!high_level);
         if let Some(session_id) = resume_session {
             self.resumes.remove(&session_id);
@@ -1492,9 +1497,20 @@ impl Net {
         let socket_addr = *addr.socket_addr();
         // A TCP peer is not told apart by its address.
         let over_udp = !matches!(addr, Addr::Ws(_));
-        if over_udp && self.peer_addrs.contains_key(&socket_addr) {
-            self.connect_errors.push_back((idx, Error::from_string(format!("already connected to {}", socket_addr))));
-            return Ok(idx);
+        if over_udp {
+            if let Some(&old_idx) = self.peer_addrs.get(&socket_addr) {
+                if !self.peers.get(&old_idx).is_some_and(|old| old.closing) {
+                    self.connect_errors.push_back((idx, Error::from_string(format!("already connected to {}", socket_addr))));
+                    return Ok(idx);
+                }
+                // A disconnect followed by a connect to the same server, as
+                // the game does it: the old peer finishes its close on the
+                // side and keeps its remaining events, the address is the
+                // new connection's. A QUIC packet finds its connection by
+                // ID first, and a stale 0.6/0.7 packet fails the new
+                // connection's token.
+                self.peer_addrs.remove(&socket_addr);
+            }
         }
         use self::Addr::*;
         let conn = match addr {
@@ -1537,6 +1553,7 @@ impl Net {
         reason: Option<&str>,
     ) -> Result<()> {
         let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
+        peer.closing = true;
         if let Err(error) = peer.conn.close(&self.cb, &mut self.packet_buf, reason) {
             self.fail_peer(idx, error);
             return Ok(());

@@ -639,7 +639,9 @@ FORBIDDEN_GAME_CLIENT = (
 	re.compile(r"GameState\(\s*!?Dummy\s*\)"),
 )
 FORBIDDEN_CAMERA = (
-	re.compile(r"^\s*(?:bool|int|float|vec2|ivec2|CCubicBezier)\s+m_[A-Za-z0-9_]+(?:\s*=[^;]+)?;\s*$"),
+	# The bind target is not state of the camera's own: it is re-set for every
+	# view the one camera drives, next to the session, state and view pointers.
+	re.compile(r"^\s*(?:bool|int|float|vec2|ivec2|CCubicBezier)\s+m_(?!Interactive\b|LocalTime\b)[A-Za-z0-9_]+(?:\s*=[^;]+)?;\s*$"),
 	re.compile(r"\bOnRender\s*\("),
 )
 FORBIDDEN_CONTROLS_OWNER = (re.compile(r"\bOnRender\s*\("),)

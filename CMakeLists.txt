@@ -1245,6 +1245,14 @@ else()
   set(NETWORKING_QUIC_LIBRARIES)
 endif()
 
+# Points a target at the Rust networking library where a package puts it:
+# next to the executable in the portable package, in lib/ddnet when installed.
+function(set_rust_net_rpath TARGET)
+  if(NETWORKING_QUIC AND NOT TARGET_OS STREQUAL "windows" AND NOT TARGET_OS STREQUAL "mac")
+    set_property(TARGET ${TARGET} APPEND PROPERTY INSTALL_RPATH "$ORIGIN" "$ORIGIN/../lib/ddnet")
+  endif()
+endfunction()
+
 ########################################################################
 # DATA
 ########################################################################
@@ -3111,6 +3119,7 @@ if(CLIENT)
   if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC)
     set_own_rpath(game-client)
   endif()
+  set_rust_net_rpath(game-client)
 
   if(GLEW_BUNDLED)
     target_compile_definitions(game-client PRIVATE CONF_GLEW_HAS_CONTEXT_INIT)
@@ -3856,6 +3865,14 @@ if(NOT DEV)
   if(ANTIBOT)
     install(TARGETS ${TARGET_ANTIBOT} DESTINATION ${CMAKE_INSTALL_LIBDIR}/ddnet COMPONENT server)
   endif()
+  if(NETWORKING_QUIC)
+    # The Rust networking library is a shared object the client and the
+    # server load at start, so it goes wherever they look for their own libraries.
+    install(FILES "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}" DESTINATION ${CMAKE_INSTALL_LIBDIR}/ddnet COMPONENT server)
+    if(TARGET game-client)
+      install(FILES "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}" DESTINATION ${CMAKE_INSTALL_LIBDIR}/ddnet COMPONENT client)
+    endif()
+  endif()
   install(TARGETS ${TARGETS_TOOLS} DESTINATION ${CMAKE_INSTALL_LIBDIR}/ddnet COMPONENT tools)
   if(TARGET game-client)
     install(FILES other/ddnet.desktop DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications COMPONENT client)
@@ -3877,6 +3894,9 @@ if(DEV)
   # Don't generate CPack targets.
 else()
   install(TARGETS ${CPACK_TARGETS} DESTINATION ${CPACK_PACKAGE_FILE_NAME} COMPONENT portable EXCLUDE_FROM_ALL)
+  if(NETWORKING_QUIC)
+    install(FILES "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}" DESTINATION ${CPACK_PACKAGE_FILE_NAME} COMPONENT portable EXCLUDE_FROM_ALL)
+  endif()
   install(DIRECTORY ${CPACK_DIRS} DESTINATION ${CPACK_PACKAGE_FILE_NAME} COMPONENT portable EXCLUDE_FROM_ALL)
   install(FILES ${CPACK_FILES} DESTINATION ${CPACK_PACKAGE_FILE_NAME} COMPONENT portable EXCLUDE_FROM_ALL)
   foreach(file ${CPACK_GEN_FILES})
@@ -4153,6 +4173,9 @@ if(ANTIBOT)
   # Allow the antibot library to use functions from the server binary.
   add_cxx_compiler_flag_if_supported(OUR_FLAGS_LINK -rdynamic)
   set_own_rpath(game-server)
+endif()
+if(TARGET game-server)
+  set_rust_net_rpath(game-server)
 endif()
 
 set(TARGETS ${TARGETS_OWN} ${TARGETS_DEP})

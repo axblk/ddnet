@@ -19,11 +19,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [ubuntu-latest-fancy, macOS-latest, windows-latest, ubuntu-22.04, windows-latest-mingw]
+        name: [ubuntu-latest-fancy, ubuntu-latest-net-rust, macOS-latest, windows-latest, ubuntu-22.04, windows-latest-mingw]
         include:
         - name: ubuntu-latest-fancy
           os: ubuntu-latest
           cmake-args: -G Ninja
+          cmake-args-release: -DIPO=ON
+          cmake-init-env: CXXFLAGS=-Werror
+          package-file: "*-linux_x86_64.tar.xz"
+        # The Rust networking backend replaces CNetClient/CNetServer at compile
+        # time, so it is built and tested next to the default in its own job.
+        - name: ubuntu-latest-net-rust
+          os: ubuntu-latest
+          cmake-args: -G Ninja -DNETWORKING_QUIC=ON
           cmake-args-release: -DIPO=ON
           cmake-init-env: CXXFLAGS=-Werror
           package-file: "*-linux_x86_64.tar.xz"

@@ -103,6 +103,17 @@ bool CNetServer::CertificateSha256(bool Next, SHA256_DIGEST *pSha256)
 	return m_pNet != nullptr && ddnet_net_certificate_sha256(m_pNet, Next, &pSha256->data);
 }
 
+bool CNetServer::Identity(unsigned char (&aIdentity)[32])
+{
+	return m_pNet != nullptr && ddnet_net_identity(m_pNet, &aIdentity);
+}
+
+bool CNetServer::AcceptsWebsockets()
+{
+	bool Accepts = false;
+	return m_pNet != nullptr && !ddnet_net_accepts_protocol(m_pNet, DDNET_NET_PROTOCOL_WEBSOCKET, &Accepts) && Accepts;
+}
+
 bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int MaxClientsPerIp)
 {
 	m_pNetBan = pNetBan;

@@ -803,6 +803,9 @@ impl Net {
     pub fn certificate_sha256(&self, next: bool) -> Option<[u8; 32]> {
         self.proto_quic.certificate_sha256(next)
     }
+    pub fn identity(&self) -> Identity {
+        self.proto_quic.identity()
+    }
     pub fn builder() -> NetBuilder {
         NetBuilder {
             bindaddr: None,
@@ -1555,6 +1558,15 @@ impl Net {
                 Ok(())
             }
             Ws(_) => bail!("no connectionless packets over websockets"),
+        }
+    }
+    pub fn accepts_protocol(&self, protocol: Protocol) -> bool {
+        match protocol {
+            Protocol::Tw06 => self.cb.accept.tw06,
+            Protocol::Tw07 => self.cb.accept.tw07,
+            Protocol::Quic => self.cb.accept.quic,
+            Protocol::WebTransport => self.cb.accept.webtransport,
+            Protocol::WebSocket => self.cb.accept.websocket,
         }
     }
     /// The 0.7 token that is accepted from any address, for the masterserver's

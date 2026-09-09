@@ -3387,7 +3387,57 @@ static bool LoadOrCreateNetIdentity(IStorage *pStorage, const char *pPath, unsig
 	log_info("server", "made a new server identity key in '%s'", pPath);
 	return true;
 }
+
+// A certificate of the server's own under the name it registers is one a
+// public CA signed; otherwise browsers take the certificate by its hash.
+static bool WebTransportWebPki(const CConfig *pConfig)
+{
+	return pConfig->m_SvRegisterHostname[0] != '\0' && pConfig->m_SvTlsCert[0] != '\0';
+}
 #endif
+
+void CServer::FormatModernTransportFragments(char *pIdentityFragment, int IdentityFragmentSize, char *pWebTransportFragment, int WebTransportFragmentSize)
+{
+	pIdentityFragment[0] = '\0';
+	pWebTransportFragment[0] = '\0';
+#ifdef CONF_NETWORKING_QUIC
+	if(m_RegisterTransports.m_Quic || m_RegisterTransports.m_Websocket)
+	{
+		unsigned char aIdentity[32];
+		if(m_NetServer.Identity(aIdentity))
+		{
+			char aHex[65];
+			for(int i = 0; i < 32; i++)
+				str_format(aHex + i * 2, sizeof(aHex) - i * 2, "%02x", aIdentity[i]);
+			str_format(pIdentityFragment, IdentityFragmentSize, "identity-sha256=%s", aHex);
+		}
+	}
+	if(m_RegisterTransports.m_WebTransport && !WebTransportWebPki(Config()))
+	{
+		SHA256_DIGEST Sha256;
+		if(m_NetServer.CertificateSha256(false, &Sha256))
+		{
+			char aCurrent[SHA256_MAXSTRSIZE];
+			sha256_str(Sha256, aCurrent, sizeof(aCurrent));
+			SHA256_DIGEST Next;
+			if(m_NetServer.CertificateSha256(true, &Next))
+			{
+				char aNext[SHA256_MAXSTRSIZE];
+				sha256_str(Next, aNext, sizeof(aNext));
+				str_format(pWebTransportFragment, WebTransportFragmentSize, "cert-sha256=%s,%s", aCurrent, aNext);
+			}
+			else
+			{
+				str_format(pWebTransportFragment, WebTransportFragmentSize, "cert-sha256=%s", aCurrent);
+			}
+		}
+	}
+	else if(m_RegisterTransports.m_WebTransport)
+	{
+		str_copy(pWebTransportFragment, "webpki", WebTransportFragmentSize);
+	}
+#endif
+}
 
 int CServer::Run()
 {
@@ -3510,7 +3560,16 @@ int CServer::Run()
 	}
 
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
-	m_pRegister = CreateRegister(&g_Config, m_pConsole, m_pEngine, m_pHttp, g_Config.m_SvRegisterPort > 0 ? g_Config.m_SvRegisterPort : this->Port(), m_NetServer.GetGlobalToken());
+	m_RegisterTransports.m_LegacyUdp = Config()->m_SvLegacyUdp != 0;
+#ifdef CONF_NETWORKING_QUIC
+	m_RegisterTransports.m_Quic = Config()->m_SvQuic != 0;
+	m_RegisterTransports.m_WebTransport = m_RegisterTransports.m_Quic && Config()->m_SvWebtransport != 0;
+	// Only the library knows whether WebSockets are compiled in.
+	m_RegisterTransports.m_Websocket = m_NetServer.AcceptsWebsockets();
+	m_RegisterTransports.m_WebsocketTls = m_RegisterTransports.m_Websocket && Config()->m_SvTlsCert[0] != '\0';
+#endif
+	FormatModernTransportFragments(m_aLastIdentityFragment, sizeof(m_aLastIdentityFragment), m_aLastWebTransportFragment, sizeof(m_aLastWebTransportFragment));
+	m_pRegister = CreateRegister(&g_Config, m_pConsole, m_pEngine, m_pHttp, g_Config.m_SvRegisterPort > 0 ? g_Config.m_SvRegisterPort : this->Port(), m_NetServer.GetGlobalToken(), m_RegisterTransports, Config()->m_SvRegisterHostname, m_aLastIdentityFragment, m_aLastWebTransportFragment);
 
 	m_NetServer.SetCallbacks(NewClientCallback, NewClientNoAuthCallback, ClientRejoinCallback, DelClientCallback, this);
 
@@ -3717,6 +3776,22 @@ int CServer::Run()
 #endif
 
 				// master server stuff
+#ifdef CONF_NETWORKING_QUIC
+				if(m_RegisterTransports.m_WebTransport && !WebTransportWebPki(Config()))
+				{
+					// The WebTransport certificate rotates; tell the register
+					// the new hashes so it re-registers with the fresh fragment.
+					char aIdentityFragment[160];
+					char aWebTransportFragment[160];
+					FormatModernTransportFragments(aIdentityFragment, sizeof(aIdentityFragment), aWebTransportFragment, sizeof(aWebTransportFragment));
+					if(str_comp(aIdentityFragment, m_aLastIdentityFragment) != 0 || str_comp(aWebTransportFragment, m_aLastWebTransportFragment) != 0)
+					{
+						str_copy(m_aLastIdentityFragment, aIdentityFragment);
+						str_copy(m_aLastWebTransportFragment, aWebTransportFragment);
+						m_pRegister->OnModernTrustChanged(aIdentityFragment, aWebTransportFragment);
+					}
+				}
+#endif
 				m_pRegister->Update();
 
 				if(m_ServerInfoNeedsUpdate)

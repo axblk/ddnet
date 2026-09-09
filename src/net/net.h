@@ -137,6 +137,12 @@ bool ddnet_net_set_tls_files(struct DdnetNet *net,
 bool ddnet_net_certificate_sha256(struct DdnetNet *net, bool next, uint8_t (*sha256)[32]);
 
 /**
+ * Writes the server's own public identity, the 32 bytes clients pin it by.
+ * Returns `false` and leaves `identity` alone before `ddnet_net_open`.
+ */
+bool ddnet_net_identity(struct DdnetNet *net, uint8_t (*identity)[32]);
+
+/**
  * How long a connection may go without a packet before it counts as
  * lost. Before `ddnet_net_open`.
  */
@@ -152,6 +158,12 @@ bool ddnet_net_set_key_log(struct DdnetNet *net, bool key_log);
  * Switches a single protocol on or off, after `ddnet_net_set_accept_connections`.
  */
 bool ddnet_net_set_accept_protocol(struct DdnetNet *net, uint64_t protocol, bool accept);
+
+/**
+ * Whether the library takes connections over `protocol`: what was asked
+ * for, less what is not compiled in. After `ddnet_net_open`.
+ */
+bool ddnet_net_accepts_protocol(struct DdnetNet *net, uint64_t protocol, bool *accepts);
 
 bool ddnet_net_open(struct DdnetNet *net);
 

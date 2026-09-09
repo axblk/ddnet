@@ -155,7 +155,6 @@ impl Drop for IdentitySlot<'_> {
 }
 
 impl Shared {
-    #[allow(dead_code)] // Used with the websocket feature.
     pub(crate) fn identity(&self) -> &PrivateIdentity {
         &self.identity
     }
@@ -694,6 +693,10 @@ impl Protocol {
     pub fn certificate_sha256(&self, next: bool) -> Option<[u8; 32]> {
         self.shared.certificate_sha256(next)
     }
+    /// The server's own public identity, what clients pin it by.
+    pub fn identity(&self) -> Identity {
+        self.shared.identity().public()
+    }
     /// What the TLS side shares with other transports.
     #[cfg_attr(not(feature = "websocket"), allow(dead_code))]
     pub fn shared(&self) -> Arc<Shared> {
@@ -1055,6 +1058,9 @@ pub struct Connection {
     map_lost: bool,
     /// When the client first sent something the server has not answered.
     silence_since: Option<Instant>,
+    /// This connection is a master server opening its challenge on stream
+    /// kind 64; its whole payload is delivered as a connectionless packet.
+    master_challenge: bool,
 }
 
 struct OutgoingMap {
@@ -1132,6 +1138,7 @@ impl Connection {
             pending_bytes: 0,
             map_lost: false,
             silence_since: None,
+            master_challenge: false,
         }
     }
     pub fn is_server(&self) -> bool {
@@ -1551,6 +1558,19 @@ impl Connection {
             Err(wire::DecodeError::NeedMore) => return Ok(false),
             Err(e) => bail!("control stream: {}", e),
         };
+        // A master server proves the game server listens here by opening a
+        // stream of kind 64 and writing its challenge packet on it. The rest
+        // of the stream is handed to the outer protocol as a connectionless
+        // packet.
+        if kind == wire::stream::MASTER_CHALLENGE && !self.client {
+            if version != wire::MASTER_CHALLENGE_VERSION {
+                bail!("master challenge version {} instead of {}", version, wire::MASTER_CHALLENGE_VERSION);
+            }
+            self.buffer.drain(..first + second);
+            self.prelude_read = true;
+            self.master_challenge = true;
+            return Ok(true);
+        }
         if kind != wire::stream::CONTROL {
             bail!("stream of kind {} instead of a control stream", kind);
         }
@@ -1945,6 +1965,38 @@ impl Connection {
                     break;
                 }
                 continue;
+            }
+            if self.master_challenge {
+                // Collect the whole stream, then deliver it as a connless
+                // packet and close; a master challenge is a one-shot.
+                if !self.control_finished {
+                    if !self.fill_buffer()? {
+                        break;
+                    }
+                    continue;
+                }
+                let len = self.buffer.len();
+                if len > buf.len() {
+                    bail!("master challenge of {} bytes is too large", len);
+                }
+                buf[..len].copy_from_slice(&self.buffer);
+                self.buffer.clear();
+                self.inner
+                    .close(true, QUIC_CLOSE_CODE, b"")
+                    .not_done()
+                    .context("quiche::Conn::close")?;
+                self.state = Disconnected;
+                // The challenge packet starts with the browser-info prefix, so
+                // it looks like a 0.6 connless packet to the outer protocol,
+                // which routes it to the register the same as over UDP.
+                return Ok(Some(
+                    Event::ConnlessChunk(
+                        crate::net::Addr::Tw06(crate::net::Tw06Addr(self.peer_addr)),
+                        len,
+                        crate::net::ConnlessMeta::default(),
+                    )
+                    .into(),
+                ));
             }
             let Some((frame_type, payload, consumed)) = self.parse_frame()? else {
                 if !self.fill_buffer()? {

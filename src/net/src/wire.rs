@@ -5,13 +5,12 @@
 //! datagrams that batch several messages under one sequence number. Maps go
 //! over streams of their own. Frame types from 64 on are skippable, so a
 //! peer that does not know them ignores them instead of failing.
-// The identity and master challenge parts come into use with WebTransport
-// and the register.
-#![allow(dead_code)]
 
 use std::fmt;
 
 pub const VERSION_MAJOR: u64 = 1;
+/// The version the master server writes after the challenge stream kind.
+pub const MASTER_CHALLENGE_VERSION: u64 = 1;
 pub const VERSION_MINOR: u64 = 0;
 pub const NONCE_SIZE: usize = 32;
 pub const MAX_RESUME_TOKEN_SIZE: usize = 64;

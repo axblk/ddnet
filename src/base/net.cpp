@@ -407,9 +407,8 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 		str_copy(host_buf, host, host_buf_size);
 
 	int failure = net_addr_from_str(addr, host);
-	if(failure)
-		return failure;
-
+	// The scheme's flags stay even when the host is a name still to be
+	// looked up, so the caller can put them back onto the resolved address.
 	if(sixup)
 		addr->type |= NETTYPE_TW7;
 	if(quic)

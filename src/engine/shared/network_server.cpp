@@ -102,14 +102,15 @@ void CNetServer::CPeer::SetAddress(const NETADDR &Addr)
 	net_addr_str(&m_Address, m_aAddressStrNoPort.data(), m_aAddressStrNoPort.size(), false);
 }
 
-CNetServer::CNetServer()
-{
-	secure_random_fill(m_aIdentity, sizeof(m_aIdentity));
-}
-
 CNetServer::~CNetServer()
 {
 	Close();
+}
+
+void CNetServer::SetIdentity(const unsigned char (&aSeed)[32])
+{
+	mem_copy(m_aIdentity, aSeed, sizeof(m_aIdentity));
+	m_HasIdentity = true;
 }
 
 bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int MaxClientsPerIp)
@@ -138,7 +139,7 @@ bool CNetServer::OpenLibrary()
 	if(false ||
 		ddnet_net_new(&m_pNet) ||
 		ddnet_net_set_bindaddr(m_pNet, aBindAddr, str_length(aBindAddr)) ||
-		ddnet_net_set_identity(m_pNet, &m_aIdentity) ||
+		(m_HasIdentity && ddnet_net_set_identity(m_pNet, &m_aIdentity)) ||
 		ddnet_net_set_accept_connections(m_pNet, true) ||
 		ddnet_net_open(m_pNet))
 	{

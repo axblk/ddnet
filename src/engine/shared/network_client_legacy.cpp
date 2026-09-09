@@ -95,16 +95,16 @@ void CNetClient::SetConnectIdentity(const char *pIdentity)
 
 void CNetClient::Connect(const NETADDR *pAddr, int NumAddrs)
 {
-	// A QUIC address is served over UDP on the same port as well.
+	// A QUIC or WebSocket address is served over UDP on the same port as well.
 	NETADDR aAddrs[16];
 	NumAddrs = std::min(NumAddrs, (int)std::size(aAddrs));
 	for(int i = 0; i < NumAddrs; i++)
 	{
 		aAddrs[i] = pAddr[i];
-		if(aAddrs[i].type & NETTYPE_QUIC)
+		if(aAddrs[i].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET))
 		{
-			log_info("net", "QUIC is not compiled in, connecting over UDP");
-			aAddrs[i].type &= ~(NETTYPE_QUIC | NETTYPE_WEBTRANSPORT);
+			log_info("net", "QUIC and WebSockets are not compiled in, connecting over UDP");
+			aAddrs[i].type &= ~(NETTYPE_QUIC | NETTYPE_WEBTRANSPORT | NETTYPE_WEBSOCKET | NETTYPE_WEBSOCKET_TLS);
 		}
 	}
 	m_Connection.Connect(aAddrs, NumAddrs);

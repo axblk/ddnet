@@ -123,7 +123,7 @@ int CServerBrowserPingCache::NumEntries() const
 void CServerBrowserPingCache::CachePing(const NETADDR &Addr, int Ping)
 {
 	NETADDR StoredAddr = Addr;
-	StoredAddr.type &= ~(NETTYPE_TW7 | NETTYPE_QUIC | NETTYPE_WEBTRANSPORT);
+	StoredAddr.type &= ~(NETTYPE_TW7 | NETTYPE_QUIC | NETTYPE_WEBTRANSPORT | NETTYPE_WEBSOCKET | NETTYPE_WEBSOCKET_TLS);
 	StoredAddr.port = 0;
 	m_Entries[StoredAddr] = Ping;
 	if(m_pDisk)
@@ -152,7 +152,7 @@ int CServerBrowserPingCache::GetPing(const NETADDR *pAddrs, int NumAddrs) const
 	for(int i = 0; i < NumAddrs; i++)
 	{
 		NETADDR LookupAddr = pAddrs[i];
-		LookupAddr.type &= ~(NETTYPE_TW7 | NETTYPE_QUIC | NETTYPE_WEBTRANSPORT);
+		LookupAddr.type &= ~(NETTYPE_TW7 | NETTYPE_QUIC | NETTYPE_WEBTRANSPORT | NETTYPE_WEBSOCKET | NETTYPE_WEBSOCKET_TLS);
 		LookupAddr.port = 0;
 		auto Entry = m_Entries.find(LookupAddr);
 		if(Entry == m_Entries.end())

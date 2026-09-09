@@ -31,9 +31,10 @@ jobs:
         # time, so it is built and tested next to the default in its own job.
         - name: ubuntu-latest-net-rust
           os: ubuntu-latest
-          cmake-args: -G Ninja -DNETWORKING_QUIC=ON
+          cmake-args: -G Ninja -DNETWORKING_QUIC=ON -DWEBSOCKETS=ON
           cmake-args-release: -DIPO=ON
           cmake-init-env: CXXFLAGS=-Werror
+          integration-args: --test-websockets
           package-file: "*-linux_x86_64.tar.xz"
         - name: ubuntu-22.04
           os: ubuntu-22.04
@@ -289,7 +290,7 @@ jobs:
         # Remove old coverage data:
         find headless -name '*.gcno' -o -name '*.gcda' -delete
         cp src/mastersrv/target/debug/mastersrv${{ matrix.executable-suffix }} headless
-        python scripts/integration_test.py --show-full-output --test-mastersrv --valgrind-memcheck headless
+        python scripts/integration_test.py --show-full-output --test-mastersrv ${{ matrix.integration-args }} --valgrind-memcheck headless
 
     - name: Upload integration test results
       id: integration_test_artifact_upload

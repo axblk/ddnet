@@ -56,13 +56,18 @@ void CFavorites::OnConfigSave(IConfigManager *pConfigManager)
 					"tw-0.7+udp://%s",
 					aBuffer);
 			}
-			else if(Entry.m_aAddrs[i].type & NETTYPE_QUIC)
+			else if(Entry.m_aAddrs[i].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET))
 			{
+				const char *pScheme;
+				if(Entry.m_aAddrs[i].type & NETTYPE_WEBSOCKET)
+					pScheme = Entry.m_aAddrs[i].type & NETTYPE_WEBSOCKET_TLS ? "ddnet+wss" : "ddnet+ws";
+				else
+					pScheme = Entry.m_aAddrs[i].type & NETTYPE_WEBTRANSPORT ? "ddnet+wt" : "ddnet+quic";
 				str_format(
 					aAddr,
 					sizeof(aAddr),
 					"%s://%s",
-					Entry.m_aAddrs[i].type & NETTYPE_WEBTRANSPORT ? "ddnet+wt" : "ddnet+quic",
+					pScheme,
 					aBuffer);
 			}
 			else

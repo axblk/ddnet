@@ -653,6 +653,8 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		bool Sixup = NextAddr.type & NETTYPE_TW7;
 		const bool Quic = NextAddr.type & NETTYPE_QUIC;
 		const bool WebTransport = NextAddr.type & NETTYPE_WEBTRANSPORT;
+		const bool WebSocket = NextAddr.type & NETTYPE_WEBSOCKET;
+		const bool WebSocketTls = NextAddr.type & NETTYPE_WEBSOCKET_TLS;
 		if(UrlParseResult > 0)
 			str_copy(aHost, aBuffer);
 
@@ -674,9 +676,12 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 			NextAddr.type |= NETTYPE_TW7;
 		else
 			OnlySixup = false;
-		if(Quic)
+		if(Quic || WebSocket)
 		{
-			NextAddr.type |= NETTYPE_QUIC | (WebTransport ? NETTYPE_WEBTRANSPORT : 0);
+			if(Quic)
+				NextAddr.type |= NETTYPE_QUIC | (WebTransport ? NETTYPE_WEBTRANSPORT : 0);
+			if(WebSocket)
+				NextAddr.type |= NETTYPE_WEBSOCKET | (WebSocketTls ? NETTYPE_WEBSOCKET_TLS : 0);
 			const char *pFragment = str_find(aBuffer, "#");
 			if(pFragment != nullptr)
 			{

@@ -1209,6 +1209,7 @@ if(NETWORKING_QUIC)
     tw06.rs
     tw07.rs
     util.rs
+    wire.rs
     # tidy-alphabetical-end
   )
   list(APPEND RUST_NET_SRC

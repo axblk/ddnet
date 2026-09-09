@@ -9,9 +9,10 @@ use crate::PrivateIdentity;
 use crate::ProtocolEvent;
 use crate::QuicAddr as Addr;
 use crate::Result;
-use crate::peek_quic_varint;
 use crate::secure_random;
-use crate::write_quic_varint;
+use crate::wire;
+use crate::Error;
+use log::debug;
 use log::info;
 use arrayvec::ArrayVec;
 use std::cmp;
@@ -442,11 +443,44 @@ impl Protocol {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 enum State {
+    /// The QUIC handshake.
     Connecting,
+    /// Hellos are being exchanged on the control stream.
+    Hello,
     Online,
     Disconnected,
+}
+
+/// The most of the control stream kept unparsed: a frame header and the
+/// longest frame that can follow it.
+const MAX_CONTROL_BUFFER: usize = 16 + wire::MAX_CONTROL_MESSAGE_SIZE;
+
+/// The game protocol announced in the hello; 0.7 gets its own scheme.
+const GAME_PROTOCOL: u64 = 6;
+
+/// A received datagram whose messages are handed out one at a time.
+struct IncomingDatagram {
+    data: Vec<u8>,
+    offset: usize,
+    remaining: u64,
+}
+
+impl IncomingDatagram {
+    /// The next message; the datagram was checked as a whole on arrival.
+    fn next(&mut self) -> Option<&[u8]> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let (size, length_size) = wire::decode_varint(&self.data[self.offset..]).ok()?;
+        self.offset += length_size;
+        let end = self.offset + size as usize;
+        let message = &self.data[self.offset..end];
+        self.offset = end;
+        self.remaining -= 1;
+        Some(message)
+    }
 }
 
 pub struct Connection {
@@ -458,8 +492,16 @@ pub struct Connection {
     peer_addr: SocketAddr,
     peer_identity: PeerIdentity,
     state: State,
-    buffer: [u8; 2048],
-    buffer_range: ops::Range<usize>,
+    /// Bytes of the control stream not yet parsed into frames.
+    buffer: Vec<u8>,
+    /// Whether the peer finished its side of the control stream.
+    control_finished: bool,
+    /// Messages collected for the next datagram.
+    outgoing_datagram: wire::DatagramBuilder,
+    datagram_sequence: u64,
+    incoming_datagram: Option<IncomingDatagram>,
+    /// What the peer announced in its hello.
+    peer_capabilities: u64,
 }
 
 impl Connection {
@@ -478,8 +520,12 @@ impl Connection {
             peer_addr,
             peer_identity,
             state: State::Connecting,
-            buffer: [0; 2048],
-            buffer_range: 0..0,
+            buffer: Vec::new(),
+            control_finished: false,
+            outgoing_datagram: wire::DatagramBuilder::new(),
+            datagram_sequence: 0,
+            incoming_datagram: None,
+            peer_capabilities: 0,
         }
     }
     pub fn on_recv(
@@ -512,52 +558,162 @@ impl Connection {
     }
     fn check_connection_params(&self) -> Result<()> {
         if let Some(max_dgram_len) = self.inner.dgram_max_writable_len() {
-            // TODO: think this through, wrt. protocol compatibility
-            if max_dgram_len < MAX_FRAME_SIZE as usize {
-                bail!("other peer advertised support for datagrams of at most {} bytes, need {} bytes", max_dgram_len, MAX_FRAME_SIZE);
+            if max_dgram_len < wire::MAX_DATAGRAM_SIZE {
+                bail!("other peer advertised support for datagrams of at most {} bytes, need {} bytes", max_dgram_len, wire::MAX_DATAGRAM_SIZE);
             }
         } else {
             bail!("other peer hasn't advertised support for datagrams");
         }
         Ok(())
     }
-    fn peek_chunk_range(&self) -> Result<Option<ops::Range<usize>>> {
-        Ok(
-            if let Some((len, len_encoded_len)) =
-                peek_quic_varint(&self.buffer[self.buffer_range.clone()])
-            {
-                if len > MAX_FRAME_SIZE {
-                    bail!(
-                        "frames must be shorter than {} bytes, got length field with {} bytes",
-                        MAX_FRAME_SIZE,
-                        len
-                    );
-                }
-                let len: usize = len.try_into().unwrap();
-                let start = self.buffer_range.start + len_encoded_len;
-                Some(start..start + len)
-            } else {
-                None
-            },
-        )
-    }
-    fn read_chunk_from_buffer(
-        &mut self,
-        buf: &mut [u8],
-    ) -> Result<Option<usize>> {
-        assert!(buf.len() >= MAX_FRAME_SIZE as usize);
-
-        let chunk_range = match self.peek_chunk_range()? {
-            Some(r) => r,
-            None => return Ok(None),
-        };
-        if self.buffer_range.end < chunk_range.end {
-            return Ok(None);
+    /// Writes a frame to the control stream.
+    fn send_frame(&mut self, frame_type: u64, payload: &[u8]) -> Result<()> {
+        let mut frame = Vec::with_capacity(16 + payload.len());
+        if !wire::encode_frame(frame_type, payload, &mut frame) {
+            bail!("frame of type {} with {} bytes does not encode", frame_type, payload.len());
         }
-        buf[..chunk_range.len()]
-            .copy_from_slice(&self.buffer[chunk_range.clone()]);
-        self.buffer_range.start = chunk_range.end;
-        Ok(Some(chunk_range.len()))
+        // The stream does not exist before the first write to it, which
+        // is the hello; then its capacity is unknown and the write decides.
+        if let Ok(capacity) = self.inner.stream_capacity(0) {
+            if frame.len() > capacity {
+                bail!("cannot send data, capacity={} len={}", capacity, frame.len());
+            }
+        }
+        let written = self
+            .inner
+            .stream_send(0, &frame, false)
+            .context("quiche::Conn::stream_send")?;
+        if written != frame.len() {
+            bail!("control stream full, {} of {} bytes written", written, frame.len());
+        }
+        Ok(())
+    }
+    fn send_hello(&mut self) -> Result<()> {
+        let max_datagram_size = self
+            .inner
+            .dgram_max_writable_len()
+            .unwrap_or(0)
+            .min(wire::MAX_DATAGRAM_SIZE) as u64;
+        let hello = wire::Hello {
+            major: wire::VERSION_MAJOR,
+            minor: wire::VERSION_MINOR,
+            protocol_version: GAME_PROTOCOL,
+            capabilities: wire::capability::DATAGRAM,
+            max_datagram_size,
+            nonce: secure_random(),
+            resume_token: &[],
+        };
+        let payload = wire::encode_hello(&hello).unwrap();
+        let frame_type = if self.client { wire::frame::CLIENT_HELLO } else { wire::frame::SERVER_HELLO };
+        self.send_frame(frame_type, &payload)
+    }
+    /// Takes the peer's hello; the connection is online after it.
+    fn on_hello(&mut self, payload: &[u8]) -> Result<()> {
+        let hello = wire::decode_hello(payload)
+            .map_err(|e| Error::from_string(format!("hello: {}", e)))?;
+        if hello.protocol_version != GAME_PROTOCOL {
+            bail!("game protocol {} instead of {}", hello.protocol_version, GAME_PROTOCOL);
+        }
+        self.peer_capabilities = hello.capabilities;
+        Ok(())
+    }
+    /// Reads what the control stream has, up to the buffer's limit. Whether
+    /// anything was read.
+    fn fill_buffer(&mut self) -> Result<bool> {
+        if self.control_finished || !self.inner.stream_readable(0) {
+            return Ok(false);
+        }
+        let mut tmp = [0; 4096];
+        let room = (MAX_CONTROL_BUFFER - self.buffer.len()).min(tmp.len());
+        if room == 0 {
+            bail!("control stream frame exceeds {} bytes", MAX_CONTROL_BUFFER);
+        }
+        let (read, fin) = self
+            .inner
+            .stream_recv(0, &mut tmp[..room])
+            .context("quiche::Conn::stream_recv")?;
+        self.buffer.extend_from_slice(&tmp[..read]);
+        if fin {
+            self.control_finished = true;
+        }
+        Ok(read != 0 || fin)
+    }
+    /// The next complete frame in the buffer as `(type, payload range)`.
+    fn parse_frame(&self) -> Result<Option<(u64, ops::Range<usize>, usize)>> {
+        match wire::decode_frame(&self.buffer) {
+            Ok(frame) => {
+                let end = frame.bytes_consumed;
+                let start = end - frame.payload.len();
+                Ok(Some((frame.frame_type, start..end, end)))
+            }
+            Err(wire::DecodeError::NeedMore) => Ok(None),
+            Err(e) => bail!("control stream: {}", e),
+        }
+    }
+    /// The message of a datagram that is due, if any.
+    fn next_datagram_message(&mut self, buf: &mut [u8]) -> Result<Option<usize>> {
+        loop {
+            if let Some(incoming) = &mut self.incoming_datagram {
+                if let Some(message) = incoming.next() {
+                    let len = message.len();
+                    buf[..len].copy_from_slice(message);
+                    return Ok(Some(len));
+                }
+                self.incoming_datagram = None;
+            }
+            let Some(dgram) = self
+                .inner
+                .dgram_recv_vec()
+                .not_done()
+                .context("quiche::Conn::dgram_recv_vec")?
+            else {
+                return Ok(None);
+            };
+            let datagram = match wire::decode_datagram(&dgram) {
+                Ok(datagram) => datagram,
+                Err(e) => {
+                    debug!("datagram from {}: {}", self.peer_addr, e);
+                    continue;
+                }
+            };
+            // The messages were checked; they are walked again from the
+            // start when they are handed out.
+            let messages_offset = {
+                let mut offset = 0;
+                for _ in 0..4 {
+                    offset += wire::decode_varint(&dgram[offset..]).unwrap().1;
+                }
+                offset
+            };
+            let remaining = {
+                let mut count = 0;
+                let mut datagram = datagram;
+                while datagram.next_message().is_some() {
+                    count += 1;
+                }
+                count
+            };
+            self.incoming_datagram = Some(IncomingDatagram {
+                data: dgram,
+                offset: messages_offset,
+                remaining,
+            });
+        }
+    }
+    /// Sends the datagram collected so far, if any.
+    fn flush_datagram(&mut self) -> Result<()> {
+        if self.outgoing_datagram.is_empty() {
+            return Ok(());
+        }
+        let datagram = self.outgoing_datagram.finish(self.datagram_sequence);
+        self.datagram_sequence += 1;
+        // `Error::Done` means that the datagram was immediately dropped
+        // without being sent.
+        self.inner
+            .dgram_send_vec(datagram)
+            .not_done()
+            .context("quiche::Conn::dgram_send_vec")?;
+        Ok(())
     }
     pub fn recv(
         &mut self,
@@ -567,39 +723,25 @@ impl Connection {
     ) -> Result<Option<Event>> {
         assert!(buf.len() >= MAX_FRAME_SIZE as usize);
 
+        // A datagram never waits longer than a poll.
+        if self.state == State::Online {
+            self.flush_datagram()?;
+        }
+
         use self::State::*;
         match self.state {
             Connecting => {
                 self.flush(cb, packet_buf)?;
-                if self.client {
-                    // Check if the QUIC handshake is complete.
-                    // TODO: send an identifier?
-                    if self.inner.is_established() {
-                        self.state = Online;
-                        // TODO: this doesn't actually open the stream
-                        self.inner
-                            .stream_send(0, b"", false)
-                            .context("quiche::Conn::stream_send")?;
-                    }
-                } else {
-                    // Check if the stream is already open.
-                    if self.inner.stream_capacity(0).is_ok() {
-                        self.state = Online;
-                    }
-                }
-                if self.state == Online {
+                if self.inner.is_established() {
                     self.check_connection_params()?;
-                    let identity = *self.peer_identity.assert_known();
-                    if self.client && !self.pinned {
-                        info!("{} has identity {}, not pinned", self.peer_addr, identity);
+                    if self.client {
+                        self.send_hello()?;
                     }
-                    return Ok(Some(Event::Connect(Addr(
-                        self.peer_addr,
-                        Some(identity),
-                    ).into()).into()));
+                    self.state = Hello;
+                    self.flush(cb, packet_buf)?;
                 }
             }
-            Online => {}
+            Hello | Online => {}
             Disconnected => {
                 return Ok(if !self.inner.is_closed() {
                     None
@@ -616,63 +758,78 @@ impl Connection {
             return Ok(Some(Event::Disconnect(len, remote).into()));
         }
 
-        // If we're not online, don't try to receive chunks.
+        if self.state == Connecting {
+            return Ok(None);
+        }
+
+        // Frames on the control stream, which carry the hello.
+        loop {
+            let Some((frame_type, payload, consumed)) = self.parse_frame()? else {
+                if !self.fill_buffer()? {
+                    break;
+                }
+                continue;
+            };
+            let event = match (self.state, frame_type) {
+                (Hello, wire::frame::SERVER_HELLO) if self.client => {
+                    self.on_hello(&self.buffer[payload.clone()].to_vec())?;
+                    self.state = Online;
+                    Some(self.connect_event())
+                }
+                (Hello, wire::frame::CLIENT_HELLO) if !self.client => {
+                    self.on_hello(&self.buffer[payload.clone()].to_vec())?;
+                    self.send_hello()?;
+                    self.state = Online;
+                    Some(self.connect_event())
+                }
+                (Online, wire::frame::MESSAGE) => {
+                    if payload.len() > MAX_FRAME_SIZE as usize {
+                        bail!("message of {} bytes exceeds the frame size of {}", payload.len(), MAX_FRAME_SIZE);
+                    }
+                    buf[..payload.len()].copy_from_slice(&self.buffer[payload.clone()]);
+                    Some(Event::Chunk(payload.len(), false).into())
+                }
+                (Online, wire::frame::DISCONNECT) => {
+                    let reason = &self.buffer[payload.clone()];
+                    let len = reason.len().min(buf.len());
+                    buf[..len].copy_from_slice(&reason[..len]);
+                    self.inner
+                        .close(true, QUIC_CLOSE_CODE, reason)
+                        .not_done()
+                        .context("quiche::Conn::close")?;
+                    self.state = Disconnected;
+                    Some(Event::Disconnect(len, true).into())
+                }
+                (_, frame_type) if frame_type >= wire::SKIPPABLE_FRAME_START => None,
+                (Online, wire::frame::RESUME | wire::frame::MAP_HEADER) => {
+                    debug!("frame of type {} from {} not handled yet", frame_type, self.peer_addr);
+                    None
+                }
+                (_, frame_type) => {
+                    bail!("frame of type {} not expected now", frame_type);
+                }
+            };
+            self.buffer.drain(..consumed);
+            if let Some(event) = event {
+                return Ok(Some(event));
+            }
+        }
+        if self.control_finished && !self.buffer.is_empty() {
+            bail!("stream data remaining that does not have a full frame");
+        }
+
         if self.state != Online {
             return Ok(None);
         }
 
-        // Check if we have any datagrams lying around.
-        if let Some(dgram) = self
-            .inner
-            .dgram_recv_vec()
-            .not_done()
-            .context("quiche::Conn::dgram_recv_vec")?
-        {
-            if dgram.first() != Some(&0) {
-                bail!(
-                    "invalid datagram received, first byte should be 0, is {:?}",
-                    dgram.first()
-                );
-            }
-            let len = dgram.len() - 1;
-            // Buffer was checked to be long enough above.
-            buf[..len].copy_from_slice(&dgram[1..]);
-            return Ok(Some(Event::Chunk(len, true).into()));
+        Ok(self.next_datagram_message(buf)?.map(|len| Event::Chunk(len, true).into()))
+    }
+    fn connect_event(&self) -> Event {
+        let identity = *self.peer_identity.assert_known();
+        if self.client && !self.pinned {
+            info!("{} has identity {}, not pinned", self.peer_addr, identity);
         }
-
-        // Check if we still have a chunk remaining.
-        if let Some(c) = self.read_chunk_from_buffer(buf)? {
-            return Ok(Some(Event::Chunk(c, false).into()));
-        }
-
-        // Check if there is more data (i.e. stream is actually open,
-        // outstanding data exists).
-        if !self.inner.stream_readable(0) {
-            return Ok(None);
-        }
-
-        // Move the remaining bytes to the front.
-        self.buffer.copy_within(self.buffer_range.clone(), 0);
-        self.buffer_range = 0..self.buffer_range.len();
-
-        // Read some more data from the stream.
-        let (read, fin) = self
-            .inner
-            .stream_recv(0, &mut self.buffer[self.buffer_range.end..])
-            .context("quiche::Conn::stream_recv")?;
-        self.buffer_range.end += read;
-
-        // Check for a chunk again.
-        if let Some(c) = self.read_chunk_from_buffer(buf)? {
-            return Ok(Some(Event::Chunk(c, false).into()));
-        }
-
-        // If the stream is finished and we still have data, return an error.
-        if fin && !self.buffer_range.is_empty() {
-            bail!("stream data remaining that does not have a full chunk");
-        }
-
-        Ok(None)
+        Event::Connect(Addr(self.peer_addr, Some(identity)).into()).into()
     }
     pub fn send_chunk(
         &mut self,
@@ -682,38 +839,23 @@ impl Connection {
         unreliable: bool,
     ) -> Result<()> {
         assert!(frame.len() <= MAX_FRAME_SIZE as usize);
-        if !unreliable {
-            // TODO: state checks?
-            let mut len_buf = [0; 8];
-            let len_encoded_len =
-                write_quic_varint(&mut len_buf, frame.len() as u64);
-            let capacity = self.inner.stream_capacity(0).ok();
-            let total_len = len_encoded_len + frame.len();
-            if capacity.map(|c| total_len > c).unwrap_or(true) {
-                bail!(
-                    "cannot send data, capacity={:?} len={}",
-                    capacity,
-                    total_len
-                );
-            }
-            self.inner
-                .stream_send(0, &len_buf[..len_encoded_len], false)
-                .unwrap();
-            self.inner.stream_send(0, frame, false).unwrap();
-            Ok(())
-        } else {
-            let mut buf = Vec::with_capacity(1 + frame.len());
-            buf.push(0);
-            buf.extend_from_slice(frame);
-            // `Error::Done` means that the datagram was immediately dropped
-            // without being sent.
-            self.inner
-                .dgram_send_vec(buf)
-                .not_done()
-                .context("quiche::Conn::dgram_send_vec")?
-                .unwrap();
-            Ok(())
+        if self.state != State::Online {
+            bail!("not online");
         }
+        // A message the peer cannot take unreliably, or that is too long
+        // for a datagram, goes over the stream instead of not at all.
+        let unreliable = unreliable
+            && self.peer_capabilities & wire::capability::DATAGRAM != 0
+            && frame.len() <= wire::MAX_DATAGRAM_MESSAGE_SIZE
+            && !frame.is_empty();
+        if !unreliable {
+            return self.send_frame(wire::frame::MESSAGE, frame);
+        }
+        if !self.outgoing_datagram.fits(frame) {
+            self.flush_datagram()?;
+        }
+        self.outgoing_datagram.push(frame);
+        Ok(())
     }
     fn extract_error(&self, buf: &mut [u8]) -> (usize, bool) {
         let (remote, err) = if let Some(err) = self.inner.peer_error() {
@@ -786,6 +928,7 @@ impl Connection {
         cb: &CallbackData,
         packet_buf: &mut [u8; 65536],
     ) -> Result<()> {
+        self.flush_datagram()?;
         let mut num_bytes = 0;
         let mut num_packets = 0;
         loop {

@@ -8,15 +8,12 @@ use self::net::ProtocolEvent;
 use self::net::QuicAddr;
 use self::net::ConnlessMeta;
 use self::net::Protocol;
-use self::net::RawAddr;
 use self::net::Socket;
 use self::net::Tw06Addr;
 use self::net::Tw07Addr;
 use self::util::normalize;
-use self::util::peek_quic_varint;
 use self::util::secure_hash;
 use self::util::secure_random;
-use self::util::write_quic_varint;
 use self::util::NoBlock;
 use error::Context;
 
@@ -35,6 +32,7 @@ mod net;
 mod quic;
 mod tw06;
 mod tw07;
+mod wire;
 mod util;
 
 pub use self::error::Error;

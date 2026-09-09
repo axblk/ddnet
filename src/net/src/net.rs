@@ -470,20 +470,22 @@ impl fmt::Display for WsAddr {
     }
 }
 
-/// The identity pinned in a URL's fragment, if any.
+/// The identity pinned in a URL's fragment, if any: `identity-sha256=<hex>`
+/// as the masterserver lists it, or the bare hex. A fragment with other
+/// keys, like the certificate hashes a browser takes, or the bare `webpki`
+/// of a WebTransport address, pins nothing here; bare anything else has
+/// to be an identity, a typo must not quietly turn the pin off.
 fn identity_from_fragment(url: &Url) -> Result<Option<Identity>> {
-    Ok(match url.fragment() {
-        None | Some("") => None,
-        Some(fragment) => {
-            // Take at most 64 characters.
-            let end = fragment
-                .char_indices()
-                .nth(64)
-                .map(|(idx, _)| idx)
-                .unwrap_or(fragment.len());
-            Some(fragment[..end].parse().context("addr: identity")?)
-        }
-    })
+    let Some(fragment) = url.fragment().filter(|fragment| !fragment.is_empty()) else {
+        return Ok(None);
+    };
+    let hex = match fragment.strip_prefix("identity-sha256=") {
+        Some(hex) => hex,
+        None if fragment == "webpki" || fragment.contains('=') => return Ok(None),
+        None => fragment,
+    };
+    let hex = hex.split(',').next().unwrap_or("");
+    Ok(Some(hex.parse().context("addr: identity")?))
 }
 
 fn socket_addr_from_url(url: &Url) -> Result<SocketAddr> {
@@ -1727,4 +1729,26 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+#[cfg(test)]
+mod test {
+    use super::Addr;
+
+    #[test]
+    fn identity_fragment_forms() {
+        let hex = "89b84bbc4b430a74642a8d6ee9086048318b20090e5a5d0c807aba4ce2c0d22f";
+        let identity = |addr: &str| match addr.parse::<Addr>().unwrap() {
+            Addr::Quic(quic) => quic.identity.map(|identity| identity.to_string()),
+            _ => panic!("not quic"),
+        };
+        assert_eq!(identity("ddnet+quic://[::1]:8303"), None);
+        assert_eq!(identity(&format!("ddnet+quic://[::1]:8303#{}", hex)).as_deref(), Some(hex));
+        assert_eq!(identity(&format!("ddnet+quic://[::1]:8303#identity-sha256={}", hex)).as_deref(), Some(hex));
+        assert_eq!(identity(&format!("ddnet+wt://[::1]:8303#identity-sha256={},cert-sha256=00", hex)).as_deref(), Some(hex));
+        assert_eq!(identity("ddnet+wt://[::1]:8303#cert-sha256=00,11"), None);
+        assert_eq!(identity("ddnet+wt://[::1]:8303#webpki"), None);
+        assert!("ddnet+quic://[::1]:8303#identity-sha256=zz".parse::<Addr>().is_err());
+        assert!(format!("ddnet+quic://[::1]:8303#{}0", hex).parse::<Addr>().is_err());
+    }
 }

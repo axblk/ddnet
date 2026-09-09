@@ -181,6 +181,13 @@ inline constexpr auto NETTYPE_MASK = NETTYPE_ALL | NETTYPE_LINK_BROADCAST | NETT
  * @ingroup Network-Address
  */
 inline constexpr auto NETADDR_MAXSTRSIZE = 1 + (8 * 4 + 7) + 1 + 1 + 5 + 1; // [XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX]:XXXXX
+/**
+ * Room for an address with the scheme its `NETTYPE_*` flags stand for, see
+ * `net_addr_url_str`.
+ *
+ * @ingroup Network-Address
+ */
+inline constexpr auto NETADDR_URL_MAXSTRSIZE = NETADDR_MAXSTRSIZE + 13; // "ddnet+quic://"
 
 /**
  * @ingroup Network-Address

@@ -211,3 +211,22 @@ TEST(NetAddr, IsLocal)
 	net_addr_from_str(&Addr, "[2001:db8::1]");
 	EXPECT_FALSE(net_addr_is_local(&Addr));
 }
+
+TEST(NetAddr, UrlStr)
+{
+	NETADDR Addr;
+	char aBuf[NETADDR_URL_MAXSTRSIZE];
+
+	for(const char *pUrl : {"tw-0.7+udp://[::1]:8303", "ddnet+quic://127.0.0.1:8303", "ddnet+wt://[::1]:8303", "ddnet+ws://127.0.0.1:8303", "ddnet+wss://[::1]:8303"})
+	{
+		EXPECT_EQ(net_addr_from_url(&Addr, pUrl, nullptr, 0), 0);
+		net_addr_url_str(&Addr, aBuf, sizeof(aBuf), true);
+		EXPECT_STREQ(aBuf, pUrl);
+	}
+	// Plain 0.6 over UDP has no scheme, as everything reads it.
+	EXPECT_EQ(net_addr_from_url(&Addr, "tw-0.6+udp://127.0.0.1:8303", nullptr, 0), 0);
+	net_addr_url_str(&Addr, aBuf, sizeof(aBuf), true);
+	EXPECT_STREQ(aBuf, "127.0.0.1:8303");
+	net_addr_url_str(&Addr, aBuf, sizeof(aBuf), false);
+	EXPECT_STREQ(aBuf, "127.0.0.1");
+}

@@ -493,6 +493,15 @@ pub extern "C" fn ddnet_net_set_accept_connections(
         Ok(())
     })
 }
+/// How long a connection may go without a packet before it counts as
+/// lost. Before `ddnet_net_open`.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_timeout(net: &mut DdnetNet, seconds: u64) -> bool {
+    net.init(|builder| {
+        builder.timeout(Duration::from_secs(seconds));
+        Ok(())
+    })
+}
 /// Switches a single protocol on or off, after `ddnet_net_set_accept_connections`.
 #[no_mangle]
 pub extern "C" fn ddnet_net_set_accept_protocol(

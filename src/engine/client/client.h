@@ -153,6 +153,8 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	std::optional<SHA256_DIGEST> m_MapdownloadSha256;
 	// The map is arriving on a QUIC stream, header seen, end not yet.
 	bool m_MapdownloadStream = false;
+	// A failed stream was asked for once more.
+	bool m_MapdownloadStreamRetried = false;
 
 	class CMapDetails
 	{

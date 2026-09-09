@@ -998,6 +998,7 @@ bool CNetServer::OpenLibrary()
 		ddnet_net_new(&m_pNet) ||
 		ddnet_net_set_bindaddr(m_pNet, aBindAddr, str_length(aBindAddr)) ||
 		(m_HasIdentity && ddnet_net_set_identity(m_pNet, &m_aIdentity)) ||
+		ddnet_net_set_timeout(m_pNet, g_Config.m_ConnTimeout) ||
 		ddnet_net_set_accept_connections(m_pNet, true) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW06, g_Config.m_SvLegacyUdp != 0) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW07, g_Config.m_SvLegacyUdp != 0) ||

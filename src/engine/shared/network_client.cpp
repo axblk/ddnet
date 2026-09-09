@@ -275,6 +275,8 @@ CONNECTIVITY CNetClient::GetConnectivity(int NetType, NETADDR *pGlobalAddr)
 
 #else // CONF_NETWORKING_QUIC
 
+#include "config.h"
+
 #include <base/dbg.h>
 #include <base/log.h>
 #include <base/mem.h>
@@ -358,6 +360,7 @@ bool CNetClient::OpenLibrary()
 	if(false ||
 		ddnet_net_new(&m_pNet) ||
 		ddnet_net_set_bindaddr(m_pNet, aBindAddr, str_length(aBindAddr)) ||
+		ddnet_net_set_timeout(m_pNet, g_Config.m_ConnTimeout) ||
 		ddnet_net_open(m_pNet))
 	{
 		log_error("net", "couldn't open net client: %s", ddnet_net_error(m_pNet));

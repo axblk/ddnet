@@ -48,6 +48,24 @@ TEST(NetAddr, FromUrlStringValid)
 	EXPECT_STREQ(aHost, "ger10.ddnet.org:5678");
 }
 
+TEST(NetAddr, FromUrlStringQuic)
+{
+	NETADDR Addr;
+	char aBuf[NETADDR_MAXSTRSIZE];
+
+	// The fragment pins the server's identity and is not part of the address.
+	EXPECT_EQ(net_addr_from_url(&Addr, "ddnet+quic://127.0.0.1:8303#0123456789abcdef", nullptr, 0), 0);
+	EXPECT_TRUE(Addr.type & NETTYPE_QUIC);
+	EXPECT_FALSE(Addr.type & NETTYPE_TW7);
+	net_addr_str(&Addr, aBuf, sizeof(aBuf), true);
+	EXPECT_STREQ(aBuf, "127.0.0.1:8303");
+
+	EXPECT_EQ(net_addr_from_url(&Addr, "ddnet+quic://[::1]:8303", nullptr, 0), 0);
+	EXPECT_TRUE(Addr.type & NETTYPE_QUIC);
+	net_addr_str(&Addr, aBuf, sizeof(aBuf), true);
+	EXPECT_STREQ(aBuf, "[::1]:8303");
+}
+
 TEST(NetAddr, FromStr)
 {
 	NETADDR Addr;

@@ -147,6 +147,14 @@ inline constexpr auto NETTYPE_LINK_BROADCAST = 1 << 4;
 inline constexpr auto NETTYPE_TW7 = 1 << 5;
 
 /**
+ * QUIC address, a flag like `NETTYPE_TW7`. The server speaks QUIC on the same
+ * port as UDP, so a client without QUIC connects to the address over UDP.
+ *
+ * @ingroup Network-General
+ */
+inline constexpr auto NETTYPE_QUIC = 1 << 6;
+
+/**
  * @ingroup Network-General
  */
 inline constexpr auto NETTYPE_ALL = NETTYPE_IPV4 | NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6;
@@ -154,7 +162,7 @@ inline constexpr auto NETTYPE_ALL = NETTYPE_IPV4 | NETTYPE_IPV6 | NETTYPE_WEBSOC
 /**
  * @ingroup Network-General
  */
-inline constexpr auto NETTYPE_MASK = NETTYPE_ALL | NETTYPE_LINK_BROADCAST | NETTYPE_TW7;
+inline constexpr auto NETTYPE_MASK = NETTYPE_ALL | NETTYPE_LINK_BROADCAST | NETTYPE_TW7 | NETTYPE_QUIC;
 
 /**
  * @ingroup Network-Address

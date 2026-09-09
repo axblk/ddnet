@@ -6,14 +6,18 @@
 #include "network.h"
 
 #include <base/dbg.h>
+#include <base/log.h>
 #include <base/mem.h>
 #include <base/net.h>
+#include <base/str.h>
 #include <base/time.h>
 #include <base/types.h>
 
 #include <engine/shared/protocol7.h>
 
+#include <algorithm>
 #include <chrono>
+#include <iterator>
 
 bool CNetClient::Open(NETADDR BindAddr)
 {
@@ -83,9 +87,27 @@ void CNetClient::Wait(uint64_t Microseconds)
 	}
 }
 
+void CNetClient::SetConnectIdentity(const char *pIdentity)
+{
+	// Without QUIC there is no identity to expect.
+	(void)pIdentity;
+}
+
 void CNetClient::Connect(const NETADDR *pAddr, int NumAddrs)
 {
-	m_Connection.Connect(pAddr, NumAddrs);
+	// A QUIC address is served over UDP on the same port as well.
+	NETADDR aAddrs[16];
+	NumAddrs = std::min(NumAddrs, (int)std::size(aAddrs));
+	for(int i = 0; i < NumAddrs; i++)
+	{
+		aAddrs[i] = pAddr[i];
+		if(aAddrs[i].type & NETTYPE_QUIC)
+		{
+			log_info("net", "QUIC is not compiled in, connecting over UDP");
+			aAddrs[i].type &= ~NETTYPE_QUIC;
+		}
+	}
+	m_Connection.Connect(aAddrs, NumAddrs);
 }
 
 void CNetClient::Connect7(const NETADDR *pAddr, int NumAddrs)

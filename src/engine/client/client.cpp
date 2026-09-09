@@ -642,12 +642,16 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	const char *pNextAddr = pAddress;
 	char aBuffer[128];
 	bool OnlySixup = true;
+	// The identity a QUIC address pins, from its fragment; nothing if none does.
+	char aConnectIdentity[65] = "";
 	while((pNextAddr = str_next_token(pNextAddr, ",", aBuffer, sizeof(aBuffer))))
 	{
 		NETADDR NextAddr;
 		char aHost[128];
 		const int UrlParseResult = net_addr_from_url(&NextAddr, aBuffer, aHost, sizeof(aHost));
+		// The lookup below starts the address over, so the flags are kept aside.
 		bool Sixup = NextAddr.type & NETTYPE_TW7;
+		const bool Quic = NextAddr.type & NETTYPE_QUIC;
 		if(UrlParseResult > 0)
 			str_copy(aHost, aBuffer);
 
@@ -669,6 +673,15 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 			NextAddr.type |= NETTYPE_TW7;
 		else
 			OnlySixup = false;
+		if(Quic)
+		{
+			NextAddr.type |= NETTYPE_QUIC;
+			const char *pFragment = str_find(aBuffer, "#");
+			if(pFragment != nullptr)
+			{
+				str_copy(aConnectIdentity, pFragment + 1);
+			}
+		}
 
 		char aNextAddr[NETADDR_MAXSTRSIZE];
 		net_addr_str(&NextAddr, aNextAddr, sizeof(aNextAddr), true);
@@ -714,6 +727,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	m_CanReceiveServerCapabilities = true;
 
 	m_Sixup = OnlySixup;
+	m_aNetClient[CONN_MAIN].SetConnectIdentity(aConnectIdentity);
 	if(m_Sixup)
 	{
 		m_aNetClient[CONN_MAIN].Connect7(aConnectAddrs, NumConnectAddrs);
@@ -852,7 +866,8 @@ void CClient::DummyConnect()
 	g_Config.m_ClDummyHammer = 0;
 
 	m_DummyConnecting = true;
-	// connect to the server
+	// connect to the server, the same way and with the same identity
+	m_aNetClient[CONN_DUMMY].SetConnectIdentity(m_aNetClient[CONN_MAIN].ServerIdentity());
 	if(IsSixup())
 		m_aNetClient[CONN_DUMMY].Connect7(m_aNetClient[CONN_MAIN].ServerAddress(), 1);
 	else

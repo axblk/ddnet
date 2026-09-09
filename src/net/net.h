@@ -149,6 +149,12 @@ bool ddnet_net_identity(struct DdnetNet *net, uint8_t (*identity)[32]);
 bool ddnet_net_set_timeout(struct DdnetNet *net, uint64_t seconds);
 
 /**
+ * Writes the TLS session keys to the file `SSLKEYLOGFILE` names, so the
+ * traffic can be read in Wireshark. A debugging aid; off by default.
+ */
+bool ddnet_net_set_key_log(struct DdnetNet *net, bool key_log);
+
+/**
  * Switches a single protocol on or off, after `ddnet_net_set_accept_connections`.
  */
 bool ddnet_net_set_accept_protocol(struct DdnetNet *net, uint64_t protocol, bool accept);
@@ -246,6 +252,13 @@ bool ddnet_net_set_logger(void (*log)(int32_t level,
                                       size_t system_len,
                                       const char *message,
                                       size_t message_len));
+
+/**
+ * How much the crate logs, in the levels the logger is handed: 0 errors
+ * only, up to 4 everything, below 0 nothing. A line above the level costs
+ * nothing; it is not even formatted.
+ */
+void ddnet_net_set_log_level(int32_t level);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -36,6 +36,7 @@ use std::result::Result as StdResult;
 use std::str;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
 use std::time::SystemTime;
 use std::time::Duration;
 use std::time::Instant;
@@ -79,7 +80,7 @@ const TIMEOUT_REASON: &str = "Timeout";
 
 /// What the TLS callbacks share with the connections. The callbacks run
 /// inside `quiche::Connection::recv`, one connection at a time, so the
-/// slots hold what the current handshake needs.
+/// slots hold what the current handshake needs; see `IdentitySlot`.
 pub struct Shared {
     /// The identity the peer is expected to show, and what it showed.
     peer_identity: Mutex<Option<PeerIdentity>>,
@@ -87,6 +88,42 @@ pub struct Shared {
     shown_certificate: Mutex<Option<[u8; 32]>>,
     identity: PrivateIdentity,
     certificates: Mutex<Option<Certificates>>,
+}
+
+/// Locks past a poisoning: a panic in a callback is caught at the FFI and
+/// must not make every later handshake panic too.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The slots of `Shared` lent to the TLS callbacks for one
+/// `quiche::Connection::recv`. Taken back afterwards, and cleared however
+/// the call ends, so a panic inside leaves nothing behind for the next
+/// connection to trip over.
+struct IdentitySlot<'a> {
+    shared: &'a Shared,
+}
+
+impl<'a> IdentitySlot<'a> {
+    fn lend(shared: &'a Shared, peer_identity: PeerIdentity) -> IdentitySlot<'a> {
+        *lock(&shared.peer_identity) = Some(peer_identity);
+        *lock(&shared.shown_certificate) = None;
+        IdentitySlot { shared }
+    }
+    /// What the callbacks made of the identity, and the certificate a
+    /// server showed, if it showed a browser one.
+    fn take_back(self, fallback: PeerIdentity) -> (PeerIdentity, Option<[u8; 32]>) {
+        let peer_identity = lock(&self.shared.peer_identity).take().unwrap_or(fallback);
+        let shown = lock(&self.shared.shown_certificate).take();
+        (peer_identity, shown)
+    }
+}
+
+impl Drop for IdentitySlot<'_> {
+    fn drop(&mut self) {
+        *lock(&self.shared.peer_identity) = None;
+        *lock(&self.shared.shown_certificate) = None;
+    }
 }
 
 impl Shared {
@@ -97,12 +134,12 @@ impl Shared {
     /// The hash browsers accept the server's certificate by, the one in
     /// use or the next one.
     pub(crate) fn certificate_sha256(&self, next: bool) -> Option<[u8; 32]> {
-        self.certificates.lock().unwrap().as_ref()?.sha256(next)
+        lock(&self.certificates).as_ref()?.sha256(next)
     }
     /// A TLS context with the browser certificate, for `wss://`.
     #[allow(dead_code)] // Used with the websocket feature.
     pub(crate) fn wss_context(&self) -> Result<Option<boring::ssl::SslContext>> {
-        let mut certificates = self.certificates.lock().unwrap();
+        let mut certificates = lock(&self.certificates);
         let Some(certificates) = certificates.as_mut() else {
             return Ok(None);
         };
@@ -420,6 +457,7 @@ fn config(
     cert: &boring::x509::X509Ref,
     shared: Arc<Shared>,
     idle_timeout: Duration,
+    log_keys: bool,
 ) -> Result<quiche::Config> {
     let mut context =
         boring::ssl::SslContext::builder(boring::ssl::SslMethod::tls())
@@ -443,7 +481,7 @@ fn config(
         if !wants_browser_certificate(alpn) {
             return Ok(());
         }
-        let certificates = select_shared.certificates.lock().unwrap();
+        let certificates = lock(&select_shared.certificates);
         let Some(certificates) = certificates.as_ref() else {
             return Ok(());
         };
@@ -459,7 +497,7 @@ fn config(
         if result.is_err() {
             return Err(boring::ssl::SelectCertError::ERROR);
         }
-        *select_shared.shown_certificate.lock().unwrap() = Some(*cert.sha256());
+        *lock(&select_shared.shown_certificate) = Some(*cert.sha256());
         Ok(())
     });
     context.set_verify_callback(
@@ -517,11 +555,13 @@ fn config(
             }
             // ignore boringssl's certificate verification
             let _ = pre;
-            verify(
-                store,
-                shared.peer_identity.lock().unwrap().as_mut().unwrap(),
-            )
-            .is_some()
+            let mut slot = lock(&shared.peer_identity);
+            // Nothing lent: no connection is in `recv`, so nothing to
+            // verify against.
+            let Some(peer_identity) = slot.as_mut() else {
+                return false;
+            };
+            verify(store, peer_identity).is_some()
         },
     );
     let mut config = quiche::Config::with_boring_ssl_ctx_builder(
@@ -529,7 +569,9 @@ fn config(
         context,
     )
     .context("quiche::Config::new")?;
-    config.log_keys();
+    if log_keys {
+        config.log_keys();
+    }
     config
         .set_application_protos(&[GAME_ALPN, webtransport::ALPN])
         .context("quiche::Config::set_application_protos")?;
@@ -576,11 +618,13 @@ impl ConfigExt for quiche::Config {
 impl Protocol {
     /// `tls_files` are the operator's certificate and key for browsers;
     /// without them a server accepting WebTransport makes its own.
+    /// `log_keys` hands the session keys to the connections' key log.
     pub fn new(
         identity: PrivateIdentity,
         idle_timeout: Duration,
         webtransport: bool,
         tls_files: Option<(&str, &str)>,
+        log_keys: bool,
     ) -> Result<Protocol> {
         let cert = identity.generate_certificate();
         let certificates = match (webtransport, tls_files) {
@@ -596,7 +640,7 @@ impl Protocol {
         });
 
         Ok(Protocol {
-            config: config(&cert, shared.clone(), idle_timeout).context("config")?,
+            config: config(&cert, shared.clone(), idle_timeout, log_keys).context("config")?,
             shared,
             next_certificate_check: Instant::now() + CERTIFICATE_CHECK_INTERVAL,
             connection_ids: HashMap::new(),
@@ -629,7 +673,7 @@ impl Protocol {
             return Ok(());
         }
         self.next_certificate_check = now + CERTIFICATE_CHECK_INTERVAL;
-        let mut certificates = self.shared.certificates.lock().unwrap();
+        let mut certificates = lock(&self.shared.certificates);
         let Some(certificates) = certificates.as_mut() else {
             return Ok(());
         };
@@ -1151,12 +1195,7 @@ impl Connection {
         packet_len: usize,
         from: &SocketAddr,
     ) -> Result<()> {
-        {
-            let mut cpi = self.shared.peer_identity.lock().unwrap();
-            assert!(cpi.is_none());
-            *cpi = Some(self.peer_identity);
-            *self.shared.shown_certificate.lock().unwrap() = None;
-        }
+        let slot = IdentitySlot::lend(&self.shared, self.peer_identity);
         let result = self
             .inner
             .recv(&mut packet_buf[..packet_len], quiche::RecvInfo {
@@ -1165,9 +1204,9 @@ impl Connection {
             })
             .context("quiche::Conn::recv");
         self.silence_since = None;
-        self.peer_identity =
-            self.shared.peer_identity.lock().unwrap().take().unwrap();
-        if let Some(shown) = self.shared.shown_certificate.lock().unwrap().take() {
+        let (peer_identity, shown) = slot.take_back(self.peer_identity);
+        self.peer_identity = peer_identity;
+        if let Some(shown) = shown {
             self.shown_certificate = Some(shown);
         }
         // The TLS failure behind a wrong pin says nothing to the user.

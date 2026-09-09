@@ -251,6 +251,8 @@ pub struct NetBuilder {
     /// Certificate chain and key files for browsers, instead of a
     /// self-made certificate.
     tls_files: Option<(String, String)>,
+    /// Whether to write the TLS session keys to `SSLKEYLOGFILE`.
+    key_log: bool,
 }
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -666,6 +668,12 @@ impl NetBuilder {
     pub fn tls_files(&mut self, cert: &str, key: &str) {
         self.tls_files = Some((cert.to_owned(), key.to_owned()));
     }
+    /// Writes the TLS session keys to the file `SSLKEYLOGFILE` names, for
+    /// reading the traffic in Wireshark. Off unless asked for: the keys
+    /// undo the transport's encryption, and the variable is the host's.
+    pub fn key_log(&mut self, key_log: bool) {
+        self.key_log = key_log;
+    }
     pub fn accept_connections(&mut self, accept: bool) {
         self.accept = if accept { AcceptProtocols::ALL } else { AcceptProtocols::NONE };
     }
@@ -686,7 +694,7 @@ impl NetBuilder {
     }
     pub fn open(self) -> Result<Net> {
         let sslkeylogfile =
-            if let Some(sslkeylogfile) = env::var_os("SSLKEYLOGFILE") {
+            if let Some(sslkeylogfile) = env::var_os("SSLKEYLOGFILE").filter(|_| self.key_log) {
                 fs::OpenOptions::new()
                     .create(true)
                     .append(true)
@@ -737,6 +745,7 @@ impl NetBuilder {
             self.timeout,
             self.accept.webtransport,
             self.tls_files.as_ref().map(|(cert, key)| (cert.as_str(), key.as_str())),
+            sslkeylogfile.is_some(),
         )?;
         #[cfg(feature = "websocket")]
         let proto_ws = {
@@ -809,6 +818,7 @@ impl Net {
             accept: AcceptProtocols::NONE,
             tls_files: None,
             timeout: Duration::from_secs(100),
+            key_log: false,
         }
     }
     pub fn set_userdata(&mut self, idx: PeerIndex, userdata: *mut ()) -> Result<()> {

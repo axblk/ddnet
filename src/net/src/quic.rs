@@ -303,7 +303,7 @@ impl Protocol {
             let cid = ConnectionId::from_raw(&header.dcid);
             match (
                 cid.map(|cid| self.connection_ids.entry(cid)),
-                cb.accept_connections,
+                cb.accept.quic,
             ) {
                 (Some(hash_map::Entry::Occupied(o)), _) => {
                     return Ok(Some(ProtocolEvent::ExistingConnection(*o.get())))

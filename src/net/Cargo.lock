@@ -371,60 +371,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "348108ab3fba42ec82ff6e9564fc4ca0247bdccdc68dd8af9764bbc79c3c8ffb"
 
 [[package]]
-name = "libtw2-buffer"
-version = "0.0.1"
-source = "git+https://github.com/heinrich5991/libtw2?rev=060e4b6450fba9f5baa59e430dc22714f2757162#060e4b6450fba9f5baa59e430dc22714f2757162"
-dependencies = [
- "arrayvec",
- "mac",
-]
-
-[[package]]
-name = "libtw2-common"
-version = "0.0.1"
-source = "git+https://github.com/heinrich5991/libtw2?rev=060e4b6450fba9f5baa59e430dc22714f2757162#060e4b6450fba9f5baa59e430dc22714f2757162"
-dependencies = [
- "arrayvec",
- "zerocopy",
-]
-
-[[package]]
-name = "libtw2-huffman"
-version = "0.0.1"
-source = "git+https://github.com/heinrich5991/libtw2?rev=060e4b6450fba9f5baa59e430dc22714f2757162#060e4b6450fba9f5baa59e430dc22714f2757162"
-dependencies = [
- "arrayvec",
- "itertools 0.4.19",
- "libtw2-buffer",
- "libtw2-common",
-]
-
-[[package]]
-name = "libtw2-net"
-version = "0.0.1"
-source = "git+https://github.com/heinrich5991/libtw2?rev=060e4b6450fba9f5baa59e430dc22714f2757162#060e4b6450fba9f5baa59e430dc22714f2757162"
-dependencies = [
- "arrayvec",
- "libtw2-buffer",
- "libtw2-common",
- "libtw2-huffman",
- "libtw2-warn",
- "linear-map",
- "optional",
- "void",
- "zerocopy",
- "zerocopy-derive",
-]
-
-[[package]]
-name = "libtw2-warn"
-version = "0.0.1"
-source = "git+https://github.com/heinrich5991/libtw2?rev=060e4b6450fba9f5baa59e430dc22714f2757162#060e4b6450fba9f5baa59e430dc22714f2757162"
-dependencies = [
- "log 0.3.9",
-]
-
-[[package]]
 name = "linear-map"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -505,12 +451,12 @@ dependencies = [
  "foreign-types-shared",
  "getrandom",
  "hexdump",
- "libtw2-net",
- "libtw2-warn",
  "log 0.4.17",
  "mio",
  "octets",
  "openssl-probe",
+ "pre-rfc3243-libtw2-net",
+ "pre-rfc3243-libtw2-warn",
  "quiche",
  "ring 0.16.20",
  "url",
@@ -567,6 +513,65 @@ name = "percent-encoding"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "478c572c3d73181ff3c2539045f6eb99e5491218eae919370993b890cdbdd98e"
+
+[[package]]
+name = "pre-rfc3243-libtw2-buffer"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6fda667b6e49bafdb17983aa42d94dc1f2da9a92152e8f4137cea4407dacd944"
+dependencies = [
+ "arrayvec",
+ "mac",
+]
+
+[[package]]
+name = "pre-rfc3243-libtw2-common"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "448ce3312bff7d1e4fdfc1d87ef1b1e86cde0cda0fe1e2d7ea99bad51bbe4f2e"
+dependencies = [
+ "arrayvec",
+ "zerocopy",
+]
+
+[[package]]
+name = "pre-rfc3243-libtw2-huffman"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68a93e09fa5710b00879cdbd3fae339a755f96042b4c0c502c8da7af74f5e1b3"
+dependencies = [
+ "arrayvec",
+ "itertools 0.4.19",
+ "pre-rfc3243-libtw2-buffer",
+ "pre-rfc3243-libtw2-common",
+]
+
+[[package]]
+name = "pre-rfc3243-libtw2-net"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd7492f6ad80d47a627fcaf0bb32516dc125e74b554490a3c00e885d96e39506"
+dependencies = [
+ "arrayvec",
+ "linear-map",
+ "optional",
+ "pre-rfc3243-libtw2-buffer",
+ "pre-rfc3243-libtw2-common",
+ "pre-rfc3243-libtw2-huffman",
+ "pre-rfc3243-libtw2-warn",
+ "void",
+ "zerocopy",
+ "zerocopy-derive",
+]
+
+[[package]]
+name = "pre-rfc3243-libtw2-warn"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31757edf7afbb5bbfc69fe65d831be4b93494ad2a8695b32c9b3a4ebfdcddb43"
+dependencies = [
+ "log 0.3.9",
+]
 
 [[package]]
 name = "proc-macro2"

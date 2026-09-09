@@ -1,6 +1,8 @@
+use crate::libtw2_patch;
 use crate::normalize;
 use crate::quic;
 use crate::tw06;
+use crate::tw07;
 use crate::Challenger;
 use crate::Context as _;
 use crate::Error;
@@ -43,8 +45,29 @@ use url::Url;
 // Originally `NET_MAX_PAYLOAD`.
 pub const MAX_FRAME_SIZE: u64 = 1394;
 
+/// Which protocols' handshakes the socket answers. A protocol that is off
+/// gets no reply at all, as if the port were closed for it.
+#[derive(Clone, Copy, Debug)]
+pub struct AcceptProtocols {
+    pub tw06: bool,
+    pub tw07: bool,
+    pub quic: bool,
+}
+
+impl AcceptProtocols {
+    pub const NONE: AcceptProtocols = AcceptProtocols { tw06: false, tw07: false, quic: false };
+    pub const ALL: AcceptProtocols = AcceptProtocols { tw06: true, tw07: true, quic: true };
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Protocol {
+    Tw06,
+    Tw07,
+    Quic,
+}
+
 pub struct CallbackData {
-    pub accept_connections: bool,
+    pub accept: AcceptProtocols,
     pub sslkeylogfile: Option<ArcFile>,
     pub challenger: Challenger,
     pub local_addr: SocketAddr,
@@ -111,6 +134,7 @@ pub struct Net {
 
     proto_quic: quic::Protocol,
     proto_tw06: tw06::Protocol,
+    proto_tw07: tw07::Protocol,
 
     peer_addrs: HashMap<SocketAddr, PeerIndex>,
     peers: HashMap<PeerIndex, Peer>,
@@ -137,7 +161,7 @@ const MAX_SOCKET_READ_ERRORS: u32 = 64;
 pub struct NetBuilder {
     bindaddr: Option<SocketAddr>,
     identity: Option<PrivateIdentity>,
-    accept_connections: bool,
+    accept: AcceptProtocols,
 }
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -216,6 +240,7 @@ pub enum ConnectionEvent {
 pub enum Addr {
     Quic(QuicAddr),
     Tw06(Tw06Addr),
+    Tw07(Tw07Addr),
 }
 
 impl Addr {
@@ -224,6 +249,7 @@ impl Addr {
         match self {
             Quic(QuicAddr(socket_addr, _)) => socket_addr,
             Tw06(Tw06Addr(socket_addr)) => socket_addr,
+            Tw07(Tw07Addr(socket_addr)) => socket_addr,
         }
     }
     pub fn identity(&self) -> Option<&Identity> {
@@ -231,6 +257,7 @@ impl Addr {
         match self {
             Quic(QuicAddr(_, identity)) => Some(identity),
             Tw06(Tw06Addr(_)) => None,
+            Tw07(Tw07Addr(_)) => None,
         }
     }
 }
@@ -247,8 +274,16 @@ impl From<Tw06Addr> for Addr {
     }
 }
 
+impl From<Tw07Addr> for Addr {
+    fn from(addr: Tw07Addr) -> Addr {
+        Addr::Tw07(addr)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Tw06Addr(pub SocketAddr);
+#[derive(Clone, Copy)]
+pub struct Tw07Addr(pub SocketAddr);
 #[derive(Clone, Copy)]
 pub struct QuicAddr(pub SocketAddr, pub Identity);
 
@@ -287,6 +322,7 @@ impl FromStr for Addr {
                 Addr::Quic(QuicAddr(sock_addr, identity))
             }
             "tw-0.6+udp" => Addr::Tw06(Tw06Addr(sock_addr)),
+            "tw-0.7+udp" => Addr::Tw07(Tw07Addr(sock_addr)),
             scheme => bail!("unsupported scheme {}", scheme),
         })
     }
@@ -310,12 +346,22 @@ impl fmt::Display for Tw06Addr {
     }
 }
 
+impl fmt::Display for Tw07Addr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let Tw07Addr(addr) = self;
+        let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
+        write!(&mut buf, "tw-0.7+udp://{}", addr).unwrap();
+        buf.fmt(f)
+    }
+}
+
 impl fmt::Display for Addr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::Addr::*;
         match self {
             Quic(addr) => addr.fmt(f),
             Tw06(addr) => addr.fmt(f),
+            Tw07(addr) => addr.fmt(f),
         }
     }
 }
@@ -398,7 +444,14 @@ impl NetBuilder {
         self.identity = Some(identity);
     }
     pub fn accept_connections(&mut self, accept: bool) {
-        self.accept_connections = accept;
+        self.accept = if accept { AcceptProtocols::ALL } else { AcceptProtocols::NONE };
+    }
+    pub fn accept_protocol(&mut self, protocol: Protocol, accept: bool) {
+        match protocol {
+            Protocol::Tw06 => self.accept.tw06 = accept,
+            Protocol::Tw07 => self.accept.tw07 = libtw2_patch::accept_tw07(accept),
+            Protocol::Quic => self.accept.quic = accept,
+        }
     }
     pub fn open(self) -> Result<Net> {
         let sslkeylogfile =
@@ -440,7 +493,7 @@ impl NetBuilder {
 
         Ok(Net {
             cb: CallbackData {
-                accept_connections: self.accept_connections,
+                accept: self.accept,
                 sslkeylogfile,
                 challenger: Challenger::new(),
                 local_addr,
@@ -455,6 +508,7 @@ impl NetBuilder {
 
             proto_quic: quic::Protocol::new(&identity)?,
             proto_tw06: tw06::Protocol::new(&identity)?,
+            proto_tw07: tw07::Protocol::new(&identity)?,
 
             peer_addrs: HashMap::new(),
             peers: HashMap::new(),
@@ -475,7 +529,7 @@ impl Net {
         NetBuilder {
             bindaddr: None,
             identity: None,
-            accept_connections: false,
+            accept: AcceptProtocols::NONE,
         }
     }
     pub fn set_userdata(&mut self, idx: PeerIndex, userdata: *mut ()) -> Result<()> {
@@ -523,6 +577,7 @@ impl Net {
         match conn {
             Quic(inner) => self.proto_quic.remove_peer(idx, inner),
             Tw06(inner) => self.proto_tw06.remove_peer(idx, inner),
+            Tw07(inner) => self.proto_tw07.remove_peer(idx, inner),
         }
         for addr in addrs {
             assert_eq!(self.peer_addrs.remove(&addr), Some(idx));
@@ -564,7 +619,8 @@ impl Net {
                 //
                 // 00000000:          stun request
                 // 00000001:          stun response
-                // 00000100:          teeworlds 0.7 connect/token
+                // 000001xx:          teeworlds 0.7 control (the low bits are
+                //                    the ack, zero in a handshake)
                 // 00010000:          teeworlds 0.6 connect
                 // 00100001:          teeworlds 0.7 connless
                 // 01111000 01100101: ddnet 0.6 connless extended
@@ -575,6 +631,15 @@ impl Net {
 
                 let packet = &self.packet_buf[..read];
                 let event = match (packet.get(0).copied(), packet.get(1).copied()) {
+                    (Some(p0), _) if p0 & 0b11111100 == 0b00000100 || p0 == 0b00100001 => {
+                        self.proto_tw07.on_recv(
+                            &self.cb,
+                            &mut self.packet_buf,
+                            read,
+                            buf,
+                            &from,
+                        )
+                    }
                     (Some(0b00010000 | 0b11111111), _) => {
                         self.proto_tw06.on_recv(
                             &self.cb,
@@ -900,6 +965,7 @@ impl Net {
         let conn = match addr {
             Quic(addr) => self.proto_quic.connect(&self.cb, &mut self.packet_buf, addr, idx).map(Connection::from),
             Tw06(addr) => self.proto_tw06.connect(&self.cb, &mut self.packet_buf, addr, idx).map(Connection::from),
+            Tw07(addr) => self.proto_tw07.connect(&self.cb, &mut self.packet_buf, addr, idx).map(Connection::from),
         };
         // A connection that cannot even be started is reported like one that
         // was refused, so the caller has one path for both.
@@ -940,6 +1006,7 @@ impl Net {
         match addr {
             Quic(addr) => self.proto_quic.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload),
             Tw06(addr) => self.proto_tw06.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload),
+            Tw07(addr) => self.proto_tw07.send_connless_chunk(&self.cb, &mut self.packet_buf, addr, payload),
         }
     }
     // TODO: second function including all non-connected, or already-disconnected peers
@@ -952,6 +1019,7 @@ impl Net {
 pub enum Connection {
     Quic(quic::Connection),
     Tw06(tw06::Connection),
+    Tw07(tw07::Connection),
 }
 
 impl Connection {
@@ -966,6 +1034,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.on_recv(cb, packet_buf, packet_len, from),
             Tw06(inner) => inner.on_recv(cb, packet_buf, packet_len, from),
+            Tw07(inner) => inner.on_recv(cb, packet_buf, packet_len, from),
         }
     }
     pub fn recv(
@@ -978,6 +1047,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.recv(cb, packet_buf, buf),
             Tw06(inner) => inner.recv(cb, packet_buf, buf),
+            Tw07(inner) => inner.recv(cb, packet_buf, buf),
         }
     }
     pub fn send_chunk(
@@ -991,6 +1061,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.send_chunk(cb, packet_buf, frame, unreliable),
             Tw06(inner) => inner.send_chunk(cb, packet_buf, frame, unreliable),
+            Tw07(inner) => inner.send_chunk(cb, packet_buf, frame, unreliable),
         }
     }
     pub fn close(
@@ -1003,6 +1074,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.close(cb, packet_buf, reason),
             Tw06(inner) => inner.close(cb, packet_buf, reason),
+            Tw07(inner) => inner.close(cb, packet_buf, reason),
         }
     }
     pub fn timeout(&self) -> Option<Instant> {
@@ -1010,6 +1082,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.timeout(),
             Tw06(inner) => inner.timeout(),
+            Tw07(inner) => inner.timeout(),
         }
     }
     pub fn on_timeout(
@@ -1021,6 +1094,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.on_timeout(cb, packet_buf),
             Tw06(inner) => inner.on_timeout(cb, packet_buf),
+            Tw07(inner) => inner.on_timeout(cb, packet_buf),
         }
     }
     pub fn flush(
@@ -1032,6 +1106,7 @@ impl Connection {
         match self {
             Quic(inner) => inner.flush(cb, packet_buf),
             Tw06(inner) => inner.flush(cb, packet_buf),
+            Tw07(inner) => inner.flush(cb, packet_buf),
         }
     }
 }
@@ -1045,5 +1120,11 @@ impl From<quic::Connection> for Connection {
 impl From<tw06::Connection> for Connection {
     fn from(conn: tw06::Connection) -> Connection {
         Connection::Tw06(conn)
+    }
+}
+
+impl From<tw07::Connection> for Connection {
+    fn from(conn: tw07::Connection) -> Connection {
+        Connection::Tw07(conn)
     }
 }

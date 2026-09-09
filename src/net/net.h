@@ -17,6 +17,12 @@
 
 #define DDNET_NET_EV_CONNLESS_CHUNK 4
 
+#define DDNET_NET_PROTOCOL_TW06 0
+
+#define DDNET_NET_PROTOCOL_TW07 1
+
+#define DDNET_NET_PROTOCOL_QUIC 2
+
 typedef struct DdnetNet DdnetNet;
 
 typedef struct DdnetNetEvent DdnetNetEvent;
@@ -62,6 +68,11 @@ bool ddnet_net_set_bindaddr(struct DdnetNet *net, const char *addr, size_t addr_
 bool ddnet_net_set_identity(struct DdnetNet *net, const uint8_t (*private_identity)[32]);
 
 bool ddnet_net_set_accept_connections(struct DdnetNet *net, bool accept);
+
+/**
+ * Switches a single protocol on or off, after `ddnet_net_set_accept_connections`.
+ */
+bool ddnet_net_set_accept_protocol(struct DdnetNet *net, uint64_t protocol, bool accept);
 
 bool ddnet_net_open(struct DdnetNet *net);
 

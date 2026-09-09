@@ -167,6 +167,9 @@ struct Peer {
     userdata: Option<*mut ()>,
     /// The session ID of the resume token the server gave this peer.
     resume_session: Option<u64>,
+    /// We ended the connection; the peer only stays to deliver what is
+    /// left of its events, and its address may be connected to again.
+    closing: bool,
 }
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -288,6 +291,7 @@ impl Peer {
             outgoing,
             userdata: None,
             resume_session: None,
+            closing: false,
         }
     }
 }
@@ -470,15 +474,22 @@ impl fmt::Display for WsAddr {
     }
 }
 
-/// The identity pinned in a URL's fragment, `identity-sha256=<hex>`, if any.
+/// The identity pinned in a URL's fragment, if any: `identity-sha256=<hex>`
+/// as the masterserver lists it. A fragment with other keys, like the
+/// certificate hashes a browser takes, or the bare `webpki` of a
+/// WebTransport address, pins nothing here; anything else is refused, a
+/// typo must not quietly turn the pin off.
 fn identity_from_fragment(url: &Url) -> Result<Option<Identity>> {
-    Ok(match url.fragment() {
-        None | Some("") => None,
-        Some(fragment) => match fragment.strip_prefix("identity-sha256=") {
-            Some(hex) => Some(hex.parse().context("addr: identity")?),
-            None => bail!("addr: fragment {} pins no identity", fragment),
-        },
-    })
+    let Some(fragment) = url.fragment().filter(|fragment| !fragment.is_empty()) else {
+        return Ok(None);
+    };
+    let hex = match fragment.strip_prefix("identity-sha256=") {
+        Some(hex) => hex,
+        None if fragment == "webpki" || fragment.contains('=') => return Ok(None),
+        None => bail!("addr: fragment {} pins no identity", fragment),
+    };
+    let hex = hex.split(',').next().unwrap_or("");
+    Ok(Some(hex.parse().context("addr: identity")?))
 }
 
 fn socket_addr_from_url(url: &Url) -> Result<SocketAddr> {
@@ -846,6 +857,7 @@ impl Net {
     fn fail_peer(&mut self, idx: PeerIndex, error: Error) {
         let Some(peer) = self.peers.get_mut(&idx) else { return };
         warn!("peer {}: {}", idx, error);
+        peer.closing = true;
         let reason = error.to_string();
         if let Err(close_error) = peer.conn.close(&self.cb, &mut self.packet_buf, Some(&reason)) {
             debug!("peer {}: closing after the error failed as well: {}", idx, close_error);
@@ -928,7 +940,7 @@ impl Net {
     fn remove_peer(&mut self, idx: PeerIndex) {
         use self::Connection::*;
         self.set_low_level(idx);
-        let Peer { conn, addrs, high_level, outgoing: _, userdata: _, resume_session } = self.peers.remove(&idx).unwrap();
+        let Peer { conn, addrs, high_level, outgoing: _, userdata: _, resume_session, closing: _ } = self.peers.remove(&idx).unwrap();
         assert!(!high_level);
         if let Some(session_id) = resume_session {
             self.resumes.remove(&session_id);
@@ -1485,9 +1497,20 @@ impl Net {
         let socket_addr = *addr.socket_addr();
         // A TCP peer is not told apart by its address.
         let over_udp = !matches!(addr, Addr::Ws(_));
-        if over_udp && self.peer_addrs.contains_key(&socket_addr) {
-            self.connect_errors.push_back((idx, Error::from_string(format!("already connected to {}", socket_addr))));
-            return Ok(idx);
+        if over_udp {
+            if let Some(&old_idx) = self.peer_addrs.get(&socket_addr) {
+                if !self.peers.get(&old_idx).is_some_and(|old| old.closing) {
+                    self.connect_errors.push_back((idx, Error::from_string(format!("already connected to {}", socket_addr))));
+                    return Ok(idx);
+                }
+                // A disconnect followed by a connect to the same server, as
+                // the game does it: the old peer finishes its close on the
+                // side and keeps its remaining events, the address is the
+                // new connection's. A QUIC packet finds its connection by
+                // ID first, and a stale 0.6/0.7 packet fails the new
+                // connection's token.
+                self.peer_addrs.remove(&socket_addr);
+            }
         }
         use self::Addr::*;
         let conn = match addr {
@@ -1530,6 +1553,7 @@ impl Net {
         reason: Option<&str>,
     ) -> Result<()> {
         let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
+        peer.closing = true;
         if let Err(error) = peer.conn.close(&self.cb, &mut self.packet_buf, reason) {
             self.fail_peer(idx, error);
             return Ok(());
@@ -1722,4 +1746,26 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+#[cfg(test)]
+mod test {
+    use super::Addr;
+
+    #[test]
+    fn identity_fragment_forms() {
+        let hex = "89b84bbc4b430a74642a8d6ee9086048318b20090e5a5d0c807aba4ce2c0d22f";
+        let identity = |addr: &str| match addr.parse::<Addr>().unwrap() {
+            Addr::Quic(quic) => quic.identity.map(|identity| identity.to_string()),
+            _ => panic!("not quic"),
+        };
+        assert_eq!(identity("ddnet+quic://[::1]:8303"), None);
+        assert!(format!("ddnet+quic://[::1]:8303#{}", hex).parse::<Addr>().is_err());
+        assert_eq!(identity(&format!("ddnet+quic://[::1]:8303#identity-sha256={}", hex)).as_deref(), Some(hex));
+        assert_eq!(identity(&format!("ddnet+wt://[::1]:8303#identity-sha256={},cert-sha256=00", hex)).as_deref(), Some(hex));
+        assert_eq!(identity("ddnet+wt://[::1]:8303#cert-sha256=00,11"), None);
+        assert_eq!(identity("ddnet+wt://[::1]:8303#webpki"), None);
+        assert!("ddnet+quic://[::1]:8303#identity-sha256=zz".parse::<Addr>().is_err());
+        assert!(format!("ddnet+quic://[::1]:8303#identity-sha256={}0", hex).parse::<Addr>().is_err());
+    }
 }

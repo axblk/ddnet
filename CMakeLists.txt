@@ -2397,6 +2397,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   config.cpp
   config.h
   config_variables.h
+  connect_choice.cpp
+  connect_choice.h
   console.cpp
   console.h
   csv.cpp
@@ -3505,6 +3507,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     chunk_header_test.cpp
     color_test.cpp
     compression_test.cpp
+    connect_choice_test.cpp
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp
@@ -4317,6 +4320,9 @@ foreach(target ${TARGETS_OWN})
   endif()
   if(NETWORKING_QUIC)
     target_compile_definitions(${target} PRIVATE CONF_NETWORKING_QUIC)
+  endif()
+  if(WEBSOCKETS)
+    target_compile_definitions(${target} PRIVATE CONF_WEBSOCKETS)
   endif()
   if(ANTIBOT)
     target_compile_definitions(${target} PRIVATE CONF_ANTIBOT)

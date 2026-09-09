@@ -682,16 +682,24 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 				NextAddr.type |= NETTYPE_QUIC | (WebTransport ? NETTYPE_WEBTRANSPORT : 0);
 			if(WebSocket)
 				NextAddr.type |= NETTYPE_WEBSOCKET | (WebSocketTls ? NETTYPE_WEBSOCKET_TLS : 0);
+			// As the masterserver lists it; a fragment with other keys, like a
+			// browser's certificate hashes, pins nothing.
 			const char *pFragment = str_find(aBuffer, "#");
 			if(pFragment != nullptr && pFragment[1] != '\0')
 			{
-				const char *pIdentity = str_startswith(pFragment + 1, "identity-sha256=");
-				if(pIdentity == nullptr)
+				pFragment += 1;
+				const char *pIdentity = str_startswith(pFragment, "identity-sha256=");
+				if(pIdentity == nullptr && str_find(pFragment, "=") == nullptr && str_comp(pFragment, "webpki") != 0)
 				{
 					log_error("client", "the fragment of %s pins no identity", aBuffer);
 					continue;
 				}
-				str_copy(aConnectIdentity, pIdentity);
+				if(pIdentity != nullptr)
+				{
+					str_copy(aConnectIdentity, pIdentity);
+					if(char *pComma = (char *)str_find(aConnectIdentity, ","))
+						*pComma = '\0';
+				}
 			}
 		}
 

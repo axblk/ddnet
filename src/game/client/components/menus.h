@@ -520,6 +520,8 @@ protected:
 	void RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemActivated);
 	void RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItemActivated);
 	void Connect(const char *pAddress);
+	int DoConnectChoice(CUIRect *pRect, int Current, const char **ppLabels, int Num, CUi::SDropDownState &State);
+	static void UpdateConnectAddress(const CServerInfo *pServer);
 	void PopupConfirmSwitchServer();
 	void RenderServerbrowserFilters(CUIRect View);
 	void ResetServerbrowserFilters();

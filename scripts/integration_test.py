@@ -501,6 +501,7 @@ class Server(Runnable):
 		# Delay opening the FIFO until the server has started, because it will
 		# block.
 		self.fifo = None
+		self.identity = None
 		super().__init__(
 			test_env,
 			name,
@@ -528,6 +529,9 @@ class Server(Runnable):
 				_, self.rcon_password, _ = event.line.split("'")
 			elif event.line.startswith("teehistorian: recording to '"):
 				_, self.teehistorian_filename, _ = event.line.split("'")
+			elif event.line.startswith("net::net: identity "):
+				# What clients pin the server by, over QUIC and its kin.
+				self.identity = event.line[len("net::net: identity ") :]
 		return event
 
 	def exit(self):
@@ -676,6 +680,31 @@ def client_can_connect(test_env):
 		raise AssertionError(f"sixup=0 not found in {join!r}")
 	server.exit()
 	client.wait_for_log_exact("client: offline error='Server shutdown'")
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+@test(requires_quic=True)
+def client_can_connect_quic_pinned(test_env):
+	client = test_env.client()
+	server = test_env.server()
+	wait_for_startup([client, server])
+	if server.identity is None:
+		raise AssertionError("server did not log its identity")
+	# The fragment as the masterserver lists it; quoted, as the console
+	# would otherwise read the `#` as the start of a comment.
+	client.command(f'connect "ddnet+quic://[::1]:{server.port}#identity-sha256={server.identity}"')
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client.command("disconnect")
+	server.wait_for_log_prefix("game: leave player=", timeout=10)
+	# A wrong pin is refused; the client does not take whatever answers.
+	wrong = server.identity[:-1] + ("0" if server.identity[-1] != "0" else "1")
+	client.command(f'connect "ddnet+quic://[::1]:{server.port}#identity-sha256={wrong}"')
+	refused = client.wait_for_log_prefix("client: offline error=", timeout=10).line
+	if "identity" not in refused:
+		raise AssertionError(f"expected an identity error, got {refused!r}")
+	server.exit()
 	client.exit()
 	server.wait_for_exit()
 	client.wait_for_exit()

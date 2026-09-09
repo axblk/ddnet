@@ -475,6 +475,11 @@ class CNetServer
 
 	CPeer m_aPeers[NET_MAX_CLIENTS];
 
+	// The Ed25519 seed the library identifies the server with, random per
+	// start unless one was set before Open.
+	unsigned char m_aIdentity[32] = {0};
+	bool m_HasIdentity = false;
+
 	bool OpenLibrary();
 	void Reopen();
 #else
@@ -546,6 +551,7 @@ class CNetServer
 public:
 #ifdef CONF_NETWORKING_QUIC
 	~CNetServer();
+	void SetIdentity(const unsigned char (&aSeed)[32]);
 #endif
 
 	int SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_DELCLIENT pfnDelClient, void *pUser);

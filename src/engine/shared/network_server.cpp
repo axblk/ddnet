@@ -884,12 +884,6 @@ static bool CheckNetCall(CNet *pNet, bool Failed, const char *pFunction)
 	return Failed;
 }
 
-// TODO: this is a placeholder identity, it needs to be persisted per server
-static unsigned char IDENTITY[] = {
-	0x5c, 0xf2, 0xa4, 0xf0, 0xed, 0x3d, 0xc8, 0x5b, 0x3f, 0x4b, 0xfa, 0x5c,
-	0xa9, 0x7b, 0x8a, 0xde, 0xaf, 0x0d, 0x5e, 0xc1, 0x65, 0x17, 0x9a, 0xf8,
-	0x05, 0xa3, 0xf7, 0x75, 0x1d, 0xd8, 0xac, 0x47};
-
 static bool AddrFromUrl(const char *pUrl, NETADDR *pAddr)
 {
 	// TODO: maybe parse URL by ourselves
@@ -958,6 +952,12 @@ CNetServer::~CNetServer()
 	Close();
 }
 
+void CNetServer::SetIdentity(const unsigned char (&aSeed)[32])
+{
+	mem_copy(m_aIdentity, aSeed, sizeof(m_aIdentity));
+	m_HasIdentity = true;
+}
+
 bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int MaxClientsPerIp)
 {
 	m_pNetBan = pNetBan;
@@ -984,7 +984,7 @@ bool CNetServer::OpenLibrary()
 	if(false ||
 		ddnet_net_new(&m_pNet) ||
 		ddnet_net_set_bindaddr(m_pNet, aBindAddr, str_length(aBindAddr)) ||
-		ddnet_net_set_identity(m_pNet, &IDENTITY) ||
+		(m_HasIdentity && ddnet_net_set_identity(m_pNet, &m_aIdentity)) ||
 		ddnet_net_set_accept_connections(m_pNet, true) ||
 		ddnet_net_open(m_pNet))
 	{

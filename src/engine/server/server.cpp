@@ -3303,6 +3303,67 @@ void CServer::UpdateDebugDummies(bool ForceDisconnect)
 	m_PreviousDebugDummies = ForceDisconnect ? 0 : g_Config.m_DbgDummies;
 }
 
+#ifdef CONF_NETWORKING_QUIC
+// PKCS#8 wraps an Ed25519 seed in a fixed header, version 0 on its own and
+// version 1 with the public key appended; the seed sits at the same place in
+// both, so a key another tool wrote is read just the same.
+static const unsigned char PKCS8_ED25519_ALGORITHM[] = {0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20};
+static constexpr unsigned PKCS8_ED25519_SEED_OFFSET = 16;
+static constexpr unsigned PKCS8_ED25519_V0_SIZE = PKCS8_ED25519_SEED_OFFSET + 32;
+
+static bool ParseEd25519Pkcs8(const unsigned char *pData, unsigned Size, unsigned char (&aSeed)[32])
+{
+	if(Size < PKCS8_ED25519_V0_SIZE || pData[0] != 0x30 || pData[2] != 0x02 || pData[3] != 0x01 || pData[4] > 0x01 ||
+		mem_comp(pData + 5, PKCS8_ED25519_ALGORITHM, sizeof(PKCS8_ED25519_ALGORITHM)) != 0)
+	{
+		return false;
+	}
+	mem_copy(aSeed, pData + PKCS8_ED25519_SEED_OFFSET, sizeof(aSeed));
+	return true;
+}
+
+static bool WriteEd25519Pkcs8(IStorage *pStorage, const char *pPath, const unsigned char (&aSeed)[32])
+{
+	unsigned char aFile[PKCS8_ED25519_V0_SIZE] = {0x30, 0x2e, 0x02, 0x01, 0x00};
+	mem_copy(aFile + 5, PKCS8_ED25519_ALGORITHM, sizeof(PKCS8_ED25519_ALGORITHM));
+	mem_copy(aFile + PKCS8_ED25519_SEED_OFFSET, aSeed, sizeof(aSeed));
+	IOHANDLE File = pStorage->OpenFile(pPath, IOFLAG_WRITE, IStorage::TYPE_SAVE_OR_ABSOLUTE);
+	if(!File)
+	{
+		return false;
+	}
+	const bool Written = io_write(File, aFile, sizeof(aFile)) == sizeof(aFile);
+	io_close(File);
+	return Written;
+}
+
+// The identity is what clients pin a server by, so it has to be the same
+// after a restart: it lives in a key file, made on the first start.
+static bool LoadOrCreateNetIdentity(IStorage *pStorage, const char *pPath, unsigned char (&aSeed)[32])
+{
+	void *pData;
+	unsigned Size;
+	if(pStorage->ReadFile(pPath, IStorage::TYPE_SAVE_OR_ABSOLUTE, &pData, &Size))
+	{
+		const bool Parsed = ParseEd25519Pkcs8((const unsigned char *)pData, Size, aSeed);
+		free(pData);
+		if(!Parsed)
+		{
+			log_error("server", "'%s' is not a PKCS#8 Ed25519 key; set sv_quic_identity_key to a key file or remove the file to have one made", pPath);
+		}
+		return Parsed;
+	}
+	secure_random_fill(aSeed, sizeof(aSeed));
+	if(!WriteEd25519Pkcs8(pStorage, pPath, aSeed))
+	{
+		log_error("server", "couldn't write the server identity key to '%s'", pPath);
+		return false;
+	}
+	log_info("server", "made a new server identity key in '%s'", pPath);
+	return true;
+}
+#endif
+
 int CServer::Run()
 {
 	if(m_RunServer == UNINITIALIZED)
@@ -3354,6 +3415,17 @@ int CServer::Run()
 	}
 
 	// start server
+#ifdef CONF_NETWORKING_QUIC
+	if(Config()->m_SvQuicIdentityKey[0] != '\0')
+	{
+		unsigned char aIdentity[32];
+		if(!LoadOrCreateNetIdentity(Storage(), Config()->m_SvQuicIdentityKey, aIdentity))
+		{
+			return -1;
+		}
+		m_NetServer.SetIdentity(aIdentity);
+	}
+#endif
 	NETADDR BindAddr;
 	if(g_Config.m_Bindaddr[0] == '\0')
 	{

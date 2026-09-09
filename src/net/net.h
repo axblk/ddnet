@@ -137,6 +137,12 @@ bool ddnet_net_set_tls_files(struct DdnetNet *net,
 bool ddnet_net_certificate_sha256(struct DdnetNet *net, bool next, uint8_t (*sha256)[32]);
 
 /**
+ * Writes the server's own public identity, the 32 bytes clients pin it by.
+ * Returns `false` and leaves `identity` alone before `ddnet_net_open`.
+ */
+bool ddnet_net_identity(struct DdnetNet *net, uint8_t (*identity)[32]);
+
+/**
  * How long a connection may go without a packet before it counts as
  * lost. Before `ddnet_net_open`.
  */

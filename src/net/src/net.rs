@@ -799,6 +799,9 @@ impl Net {
     pub fn certificate_sha256(&self, next: bool) -> Option<[u8; 32]> {
         self.proto_quic.certificate_sha256(next)
     }
+    pub fn identity(&self) -> Identity {
+        self.proto_quic.identity()
+    }
     pub fn builder() -> NetBuilder {
         NetBuilder {
             bindaddr: None,

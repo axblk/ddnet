@@ -736,6 +736,10 @@ class CNetClient
 	NETADDR m_aConnectAddrs[16] = {{}};
 	int m_NumConnectAddrs = 0;
 	char m_aErrorString[256] = {0};
+	// The identity to expect from a QUIC server, hex; empty takes any.
+	char m_aConnectIdentity[65] = "";
+	// The identity the QUIC server showed, hex; empty for other transports.
+	char m_aServerIdentity[65] = "";
 
 	NETADDR m_BindAddr = {0};
 
@@ -769,6 +773,15 @@ public:
 	void Disconnect(const char *pReason);
 	void Connect(const NETADDR *pAddr, int NumAddrs);
 	void Connect7(const NETADDR *pAddr, int NumAddrs);
+	// The identity a following Connect() to a QUIC address expects, hex;
+	// empty takes whatever the server shows. Without QUIC there is nothing to
+	// expect.
+	void SetConnectIdentity(const char *pIdentity);
+#ifdef CONF_NETWORKING_QUIC
+	const char *ServerIdentity() const { return m_aServerIdentity; }
+#else
+	const char *ServerIdentity() const { return ""; }
+#endif
 
 	// communication
 	int Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Sixup);

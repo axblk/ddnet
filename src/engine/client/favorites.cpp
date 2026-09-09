@@ -56,6 +56,14 @@ void CFavorites::OnConfigSave(IConfigManager *pConfigManager)
 					"tw-0.7+udp://%s",
 					aBuffer);
 			}
+			else if(Entry.m_aAddrs[i].type & NETTYPE_QUIC)
+			{
+				str_format(
+					aAddr,
+					sizeof(aAddr),
+					"ddnet+quic://%s",
+					aBuffer);
+			}
 			else
 			{
 				str_copy(aAddr, aBuffer);

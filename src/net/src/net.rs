@@ -315,7 +315,7 @@ impl Addr {
     pub fn identity(&self) -> Option<&Identity> {
         use self::Addr::*;
         match self {
-            Quic(QuicAddr(_, identity)) => Some(identity),
+            Quic(QuicAddr(_, identity)) => identity.as_ref(),
             Tw06(Tw06Addr(_)) => None,
             Tw07(Tw07Addr(_)) => None,
             Raw(RawAddr(_)) => None,
@@ -354,7 +354,7 @@ pub struct Tw07Addr(pub SocketAddr);
 #[derive(Clone, Copy)]
 pub struct RawAddr(pub SocketAddr);
 #[derive(Clone, Copy)]
-pub struct QuicAddr(pub SocketAddr, pub Identity);
+pub struct QuicAddr(pub SocketAddr, pub Option<Identity>);
 
 fn socket_addr_from_url(url: &Url) -> Result<SocketAddr> {
     let mut ip_port: ArrayString<[u8; 64]> = ArrayString::new();
@@ -378,16 +378,22 @@ impl FromStr for Addr {
         let addr = Url::parse(addr).context("addr: URL")?;
         let sock_addr = socket_addr_from_url(&addr)?;
         Ok(match addr.scheme() {
-            "ddnet-15+quic" => {
-                let fragment = addr.fragment().unwrap_or("");
-                // Take at most 64 characters.
-                let end = fragment
-                    .char_indices()
-                    .nth(64)
-                    .map(|(idx, _)| idx)
-                    .unwrap_or(fragment.len());
-                let identity: Identity =
-                    fragment[..end].parse().context("addr: identity")?;
+            // The fragment pins the server's identity. Without one, whatever
+            // identity the server shows is taken, and reported, so it can
+            // be pinned the next time.
+            "ddnet+quic" => {
+                let identity = match addr.fragment() {
+                    None | Some("") => None,
+                    Some(fragment) => {
+                        // Take at most 64 characters.
+                        let end = fragment
+                            .char_indices()
+                            .nth(64)
+                            .map(|(idx, _)| idx)
+                            .unwrap_or(fragment.len());
+                        Some(fragment[..end].parse().context("addr: identity")?)
+                    }
+                };
                 Addr::Quic(QuicAddr(sock_addr, identity))
             }
             "tw-0.6+udp" => Addr::Tw06(Tw06Addr(sock_addr)),
@@ -402,7 +408,10 @@ impl fmt::Display for QuicAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let QuicAddr(addr, identity) = self;
         let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
-        write!(&mut buf, "ddnet-15+quic://{}#{}", addr, identity).unwrap();
+        match identity {
+            Some(identity) => write!(&mut buf, "ddnet+quic://{}#{}", addr, identity).unwrap(),
+            None => write!(&mut buf, "ddnet+quic://{}", addr).unwrap(),
+        }
         buf.fmt(f)
     }
 }

@@ -12,6 +12,7 @@ use crate::Result;
 use crate::peek_quic_varint;
 use crate::secure_random;
 use crate::write_quic_varint;
+use log::info;
 use arrayvec::ArrayVec;
 use std::cmp;
 use std::collections::hash_map;
@@ -149,7 +150,8 @@ enum PeerIdentity {
     AcceptAny,
     Wanted(Identity),
     Known(Identity),
-    Invalid(Identity),
+    /// The peer showed `shown` where `wanted` was pinned.
+    Invalid { wanted: Identity, shown: Identity },
 }
 
 impl PeerIdentity {
@@ -199,13 +201,13 @@ fn config(
                         // longer certificate chains
                         // TODO: constant time?
                         if public != identity {
-                            *peer_identity = Invalid(identity);
+                            *peer_identity = Invalid { wanted: identity, shown: public };
                             return None;
                         }
                         *peer_identity = Known(identity);
                         Some(())
                     }
-                    Invalid(_) => None,
+                    Invalid { .. } => None,
                 }
             }
             // ignore boringssl's certificate verification
@@ -224,7 +226,7 @@ fn config(
     .context("quiche::Config::new")?;
     config.log_keys();
     config
-        .set_application_protos(&[b"ddnet-15"])
+        .set_application_protos(&[b"ddnet/1"])
         .context("quiche::Config::set_application_protos")?;
     // TODO: decide on a proper number. the current one ensures datagrams of size 1394
     config.set_max_send_udp_payload_size(1423);
@@ -415,7 +417,10 @@ impl Protocol {
             self.callback_peer_identity.clone(),
             true,
             sock_addr,
-            PeerIdentity::Wanted(peer_identity),
+            match peer_identity {
+                Some(identity) => PeerIdentity::Wanted(identity),
+                None => PeerIdentity::AcceptAny,
+            },
         );
         conn.flush(cb, packet_buf)?;
         assert!(self.connection_ids.insert(cid, idx).is_none());
@@ -448,6 +453,8 @@ pub struct Connection {
     inner: quiche::Connection,
     callback_peer_identity: Arc<Mutex<Option<PeerIdentity>>>,
     client: bool,
+    /// Whether the peer's identity was known before connecting.
+    pinned: bool,
     peer_addr: SocketAddr,
     peer_identity: PeerIdentity,
     state: State,
@@ -467,6 +474,7 @@ impl Connection {
             inner,
             callback_peer_identity,
             client,
+            pinned: matches!(peer_identity, PeerIdentity::Wanted(_)),
             peer_addr,
             peer_identity,
             state: State::Connecting,
@@ -495,6 +503,10 @@ impl Connection {
             .context("quiche::Conn::recv");
         self.peer_identity =
             self.callback_peer_identity.lock().unwrap().take().unwrap();
+        // The TLS failure behind a wrong pin says nothing to the user.
+        if let PeerIdentity::Invalid { wanted, shown } = self.peer_identity {
+            bail!("server identity is {}, expected {}", shown, wanted);
+        }
         result?;
         Ok(())
     }
@@ -577,9 +589,13 @@ impl Connection {
                 }
                 if self.state == Online {
                     self.check_connection_params()?;
+                    let identity = *self.peer_identity.assert_known();
+                    if self.client && !self.pinned {
+                        info!("{} has identity {}, not pinned", self.peer_addr, identity);
+                    }
                     return Ok(Some(Event::Connect(Addr(
                         self.peer_addr,
-                        *self.peer_identity.assert_known(),
+                        Some(identity),
                     ).into()).into()));
                 }
             }

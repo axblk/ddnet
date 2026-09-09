@@ -5,14 +5,18 @@
 #ifndef CONF_NETWORKING_QUIC
 
 #include <base/dbg.h>
+#include <base/log.h>
 #include <base/mem.h>
 #include <base/net.h>
+#include <base/str.h>
 #include <base/time.h>
 #include <base/types.h>
 
 #include <engine/shared/protocol7.h>
 
+#include <algorithm>
 #include <chrono>
+#include <iterator>
 
 bool CNetClient::Open(NETADDR BindAddr)
 {
@@ -82,9 +86,27 @@ void CNetClient::Wait(uint64_t Microseconds)
 	}
 }
 
+void CNetClient::SetConnectIdentity(const char *pIdentity)
+{
+	// Without QUIC there is no identity to expect.
+	(void)pIdentity;
+}
+
 void CNetClient::Connect(const NETADDR *pAddr, int NumAddrs)
 {
-	m_Connection.Connect(pAddr, NumAddrs);
+	// A QUIC address is served over UDP on the same port as well.
+	NETADDR aAddrs[16];
+	NumAddrs = std::min(NumAddrs, (int)std::size(aAddrs));
+	for(int i = 0; i < NumAddrs; i++)
+	{
+		aAddrs[i] = pAddr[i];
+		if(aAddrs[i].type & NETTYPE_QUIC)
+		{
+			log_info("net", "QUIC is not compiled in, connecting over UDP");
+			aAddrs[i].type &= ~NETTYPE_QUIC;
+		}
+	}
+	m_Connection.Connect(aAddrs, NumAddrs);
 }
 
 void CNetClient::Connect7(const NETADDR *pAddr, int NumAddrs)
@@ -418,6 +440,11 @@ void CNetClient::Connect7(const NETADDR *pAddr, int NumAddrs)
 	ConnectImpl(pAddr, NumAddrs, true);
 }
 
+void CNetClient::SetConnectIdentity(const char *pIdentity)
+{
+	str_copy(m_aConnectIdentity, pIdentity);
+}
+
 void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
 {
 	Disconnect(nullptr);
@@ -428,11 +455,26 @@ void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
 		m_aConnectAddrs[i] = pAddr[i];
 	}
 
+	NETADDR Addr = pAddr[0];
+	Addr.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
 	char aAddr[NETADDR_MAXSTRSIZE];
-	net_addr_str(&pAddr[0], aAddr, sizeof(aAddr), true);
-	char aUrl[128];
-	// TODO: connect via `ddnet-15+quic://` when the server advertises support for it
-	str_format(aUrl, sizeof(aUrl), "%s://%s", Sixup ? "tw-0.7+udp" : "tw-0.6+udp", aAddr);
+	net_addr_str(&Addr, aAddr, sizeof(aAddr), true);
+	char aUrl[192];
+	if(pAddr[0].type & NETTYPE_QUIC)
+	{
+		if(Sixup)
+		{
+			str_copy(m_aErrorString, "0.7 over QUIC is not supported yet");
+			return;
+		}
+		// The fragment pins the server's identity.
+		str_format(aUrl, sizeof(aUrl), "ddnet+quic://%s%s%s", aAddr, m_aConnectIdentity[0] != '\0' ? "#" : "", m_aConnectIdentity);
+	}
+	else
+	{
+		str_format(aUrl, sizeof(aUrl), "%s://%s", Sixup ? "tw-0.7+udp" : "tw-0.6+udp", aAddr);
+	}
+	m_aServerIdentity[0] = '\0';
 	uint64_t PeerId;
 	if(NET_CALL(ddnet_net_connect, m_pNet, aUrl, str_length(aUrl), &PeerId))
 	{
@@ -522,6 +564,13 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 			if(str_startswith(pAddr, "tw-0.7+udp://"))
 			{
 				Addr.type |= NETTYPE_TW7;
+			}
+			else if(str_startswith(pAddr, "ddnet+quic://"))
+			{
+				Addr.type |= NETTYPE_QUIC;
+				// The identity the server showed, to connect the dummy with.
+				const char *pFragment = str_find(pAddr, "#");
+				str_copy(m_aServerIdentity, pFragment != nullptr ? pFragment + 1 : "");
 			}
 			m_ServerAddress = Addr;
 			m_State = NETSTATE_ONLINE;

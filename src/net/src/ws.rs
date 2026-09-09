@@ -32,6 +32,7 @@ use crate::Identity;
 use crate::Map;
 use crate::MapEvent;
 use crate::Result;
+use crate::TIMEOUT_REASON;
 use crate::WsAddr as Addr;
 use crate::secure_random;
 use log::debug;
@@ -89,7 +90,6 @@ const MAX_MESSAGE: usize = 64 * 1024;
 /// Connections a listener holds before they are accepted.
 const LISTEN_BACKLOG: i32 = 64;
 const GAME_PROTOCOL: u64 = 6;
-const TIMEOUT_REASON: &str = "Timeout";
 
 enum Stream {
     Plain(TcpStream),
@@ -638,9 +638,9 @@ impl Connection {
             buf[..data.len()].copy_from_slice(data);
             self.end_quietly();
             return Ok(Some(Event::ConnlessChunk(
-                crate::net::Addr::Tw06(crate::net::Tw06Addr(self.peer_addr)),
+                crate::Addr::Tw06(crate::Tw06Addr(self.peer_addr)),
                 data.len(),
-                crate::net::ConnlessMeta::default(),
+                crate::ConnlessMeta::default(),
             )));
         }
         let Some((&flags, payload)) = data.split_first() else {

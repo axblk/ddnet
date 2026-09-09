@@ -1188,6 +1188,7 @@ endif()
 if(NETWORKING_QUIC)
   set_glob(RUST_NET_SRC GLOB_RECURSE "rs" src/net/src
     # tidy-alphabetical-start
+    addr.rs
     challenger.rs
     error.rs
     ffi.rs
@@ -1199,6 +1200,7 @@ if(NETWORKING_QUIC)
     quic.rs
     tw06.rs
     tw07.rs
+    types.rs
     util.rs
     webtransport.rs
     wire.rs

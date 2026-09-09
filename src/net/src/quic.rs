@@ -14,6 +14,7 @@ use crate::PrivateIdentity;
 use crate::ProtocolEvent;
 use crate::QuicAddr as Addr;
 use crate::Result;
+use crate::TIMEOUT_REASON;
 use crate::secure_random;
 use crate::webtransport;
 use crate::wire;
@@ -75,9 +76,6 @@ const RESUME_SILENCE: Duration = Duration::from_secs(3);
 /// Reliable messages kept back for the peer while a resume is under way.
 const MAX_PENDING_RESUME_BYTES: usize = 64 * 1024;
 pub const RESUME_TOKEN_LEN: usize = 32;
-/// The reason a lost connection is reported with, the word the client
-/// reconnects on.
-const TIMEOUT_REASON: &str = "Timeout";
 
 /// What the TLS callbacks share with the connections. The callbacks run
 /// inside `quiche::Connection::recv`, one connection at a time, so the
@@ -2011,9 +2009,9 @@ impl Connection {
                 // which routes it to the register the same as over UDP.
                 return Ok(Some(
                     Event::ConnlessChunk(
-                        crate::net::Addr::Tw06(crate::net::Tw06Addr(self.peer_addr)),
+                        crate::Addr::Tw06(crate::Tw06Addr(self.peer_addr)),
                         len,
-                        crate::net::ConnlessMeta::default(),
+                        crate::ConnlessMeta::default(),
                     )
                     .into(),
                 ));

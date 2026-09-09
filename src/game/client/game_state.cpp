@@ -424,6 +424,8 @@ void CGameState::Reset()
 	m_aTuning.fill(CTuningParams::DEFAULT);
 	m_aClients = {};
 	m_vClientIdentities.assign(MAX_CLIENTS, {});
+	for(CEvolvedCharacter &Evolved : m_aEvolvedCharacters)
+		Evolved = CEvolvedCharacter();
 	m_vClientEmoticons.assign(MAX_CLIENTS, {});
 	for(CClientEmoticonState &Emoticon : m_vClientEmoticons)
 		Emoticon.Reset();

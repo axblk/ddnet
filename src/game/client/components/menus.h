@@ -13,6 +13,7 @@
 #include <engine/friends.h>
 #include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
+#include <engine/shared/connect_choice.h>
 #include <engine/textrender.h>
 
 #include <game/client/component.h>
@@ -522,6 +523,9 @@ protected:
 	std::vector<CUIElement *> m_avpServerBrowserUiElements[IServerBrowser::NUM_TYPES];
 	void RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemActivated);
 	void RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItemActivated);
+	int DoConnectChoice(CUIRect *pRect, int Current, const char **ppLabels, int Num, CUi::SDropDownState &State);
+	static bool UpdateConnectAddress(const CServerInfo *pServer, EConnectPrecedence Precedence);
+	static void ConSelectServer(IConsole::IResult *pResult, void *pUserData);
 	void PopupConfirmSwitchServer();
 	void RenderServerbrowserFilters(CUIRect View);
 	void ResetServerbrowserFilters();
@@ -671,6 +675,7 @@ public:
 	void SetActive(bool Active);
 
 	void OnInterfacesInit(CGameClient *pClient) override;
+	void OnConsoleInit() override;
 	void OnInit() override;
 
 	void OnStateChange(int NewState, int OldState) override;

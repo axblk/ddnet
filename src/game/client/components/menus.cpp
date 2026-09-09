@@ -1413,14 +1413,17 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			m_Popup = POPUP_NONE;
 		}
 
-		char aAddr[NETADDR_MAXSTRSIZE];
-		net_addr_str(&Client()->ServerAddress(), aAddr, sizeof(aAddr), true);
+		// As a URL, so that the transport shows.
+		char aAddr[NETADDR_URL_MAXSTRSIZE];
+		net_addr_url_str(&Client()->ServerAddress(), aAddr, sizeof(aAddr), true);
 
 		static CButtonContainer s_ButtonTryAgain;
 		if(DoButton_Menu(&s_ButtonTryAgain, Localize("Try again"), 0, &TryAgain) ||
 			Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER))
 		{
-			Client()->Connect(aAddr, g_Config.m_Password);
+			// The address as it was connected to, so that the transport and
+			// the identity it pins stay.
+			Client()->Connect(Client()->ConnectAddressString(), g_Config.m_Password);
 		}
 
 		Box.VMargin(60.0f, &Box);

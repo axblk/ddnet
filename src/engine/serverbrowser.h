@@ -96,6 +96,10 @@ public:
 
 	int m_NumAddresses;
 	NETADDR m_aAddresses[MAX_SERVER_ADDRESSES];
+	// The identity the masterserver lists in the fragments of the QUIC,
+	// WebTransport and WebSocket addresses, as 64 hex digits; empty if the
+	// server has none there. A server has one, whatever the transport.
+	char m_aIdentity[65];
 
 	int m_QuickSearchHit;
 	int m_FriendState;
@@ -123,7 +127,9 @@ public:
 	int m_MapCrc;
 	int m_MapSize;
 	char m_aVersion[32];
-	char m_aAddress[MAX_SERVER_ADDRESSES * NETADDR_MAXSTRSIZE];
+	// The addresses with their schemes, comma-separated, each modern one
+	// with the identity as its fragment.
+	char m_aAddress[MAX_SERVER_ADDRESSES * (NETADDR_URL_MAXSTRSIZE + sizeof("#identity-sha256=") + 64)];
 	std::vector<CClient> m_vClients;
 	int m_NumFilteredPlayers;
 	bool m_RequiresLogin;

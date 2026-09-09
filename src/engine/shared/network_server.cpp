@@ -1256,11 +1256,12 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			size_t AddrLen;
 			ddnet_net_ev_connless_chunk_addr(m_pNetEvent, &pAddr, &AddrLen);
 			NETADDR Addr;
-			bool Sixup;
-			if(!NetConnlessAddr(pAddr, &Addr, &Sixup))
+			const ENetConnless Kind = NetConnlessAddr(pAddr, &Addr);
+			if(Kind != ENetConnless::TW06 && Kind != ENetConnless::TW07)
 			{
 				continue;
 			}
+			const bool Sixup = Kind == ENetConnless::TW07;
 			char aBanReason[256];
 			if(NetBan() && NetBan()->IsBanned(&Addr, aBanReason, sizeof(aBanReason)))
 			{

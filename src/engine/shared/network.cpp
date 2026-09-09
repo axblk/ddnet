@@ -680,7 +680,7 @@ void CNetTokenCache::Update()
 }
 
 #ifdef CONF_NETWORKING_QUIC
-bool NetConnlessAddr(const char *pUrl, NETADDR *pAddr, bool *pSixup)
+ENetConnless NetConnlessAddr(const char *pUrl, NETADDR *pAddr)
 {
 	// TODO: maybe parse URL by ourselves
 	CURLU *pHandle = curl_url();
@@ -695,31 +695,36 @@ bool NetConnlessAddr(const char *pUrl, NETADDR *pAddr, bool *pSixup)
 	curl_url_cleanup(pHandle);
 	if(Error)
 	{
-		return false;
+		return ENetConnless::NONE;
 	}
+	ENetConnless Kind;
 	if(str_comp(pScheme, "tw-0.6+udp") == 0)
 	{
-		*pSixup = false;
+		Kind = ENetConnless::TW06;
 	}
 	else if(str_comp(pScheme, "tw-0.7+udp") == 0)
 	{
-		*pSixup = true;
+		Kind = ENetConnless::TW07;
+	}
+	else if(str_comp(pScheme, "udp") == 0)
+	{
+		Kind = ENetConnless::RAW;
 	}
 	else
 	{
-		return false;
+		return ENetConnless::NONE;
 	}
 	char aBuf[64];
 	str_format(aBuf, sizeof(aBuf), "%s:%s", pHostname, pPort);
 	if(net_addr_from_str(pAddr, aBuf) != 0)
 	{
-		return false;
+		return ENetConnless::NONE;
 	}
-	if(*pSixup)
+	if(Kind == ENetConnless::TW07)
 	{
 		pAddr->type |= NETTYPE_TW7;
 	}
-	return true;
+	return Kind;
 }
 
 static void NetSendConnlessTo(CNet *pNet, const char *pScheme, const char *pHost, const CNetChunk *pChunk)

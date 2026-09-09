@@ -62,9 +62,18 @@ pub struct Protocol {
 }
 
 /// The token we hand to `addr`, stateless: the packet that carries it back
-/// proves the sender receives at its address.
+/// proves the sender receives at its address. The global one does not age
+/// out, see `GLOBAL_TOKEN_ADDR`.
+fn compute_own_token(cb: &CallbackData, addr: &SocketAddr) -> [u8; 4] {
+    if *addr == GLOBAL_TOKEN_ADDR {
+        cb.challenger.compute_fixed_token(addr)
+    } else {
+        cb.challenger.compute_token(addr)
+    }
+}
+
 fn own_token(cb: &CallbackData, addr: &SocketAddr) -> protocol::Token {
-    let token = protocol::Token(cb.challenger.compute_token(addr));
+    let token = protocol::Token(compute_own_token(cb, addr));
     if token == protocol::TOKEN_NONE {
         TOKEN_FALLBACK
     } else {
@@ -76,15 +85,21 @@ fn verify_own_token(cb: &CallbackData, addr: &SocketAddr, token: protocol::Token
     if token == protocol::TOKEN_NONE {
         return false;
     }
-    if token == TOKEN_FALLBACK && cb.challenger.compute_token(addr) == protocol::TOKEN_NONE.0 {
+    if token == TOKEN_FALLBACK && compute_own_token(cb, addr) == protocol::TOKEN_NONE.0 {
         return true;
     }
-    cb.challenger.verify_token(addr, token.0).is_ok()
+    if *addr == GLOBAL_TOKEN_ADDR {
+        cb.challenger.verify_fixed_token(addr, token.0).is_ok()
+    } else {
+        cb.challenger.verify_token(addr, token.0).is_ok()
+    }
 }
 
 /// The address the global token is derived for: the token a server hands
 /// the masterserver, which challenges it from an address it does not know
 /// in advance. The classic server derives it from an all-zero address too.
+/// The game hands it to the register code once, so unlike the other tokens
+/// it must not age out.
 const GLOBAL_TOKEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
 
 /// The token that is valid from any address, as a big-endian number.

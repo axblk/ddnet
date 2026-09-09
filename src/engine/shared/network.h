@@ -474,6 +474,9 @@ class CNetServer
 	int m_NextClientId = 0;
 
 	CPeer m_aPeers[NET_MAX_CLIENTS];
+
+	bool OpenLibrary();
+	void Reopen();
 #else
 	struct CSlot
 	{
@@ -698,6 +701,11 @@ class CNetClient
 
 	// The network library owns its own socket, so STUN needs a socket of its own.
 	NETSOCKET m_StunSocket = nullptr;
+	NETADDR m_BindAddr = {0};
+
+	bool OpenLibrary();
+	void CloseLibrary();
+	void Reopen();
 #else
 	CNetConnection m_Connection;
 	CPacketChunkUnpacker m_PacketChunkUnpacker;

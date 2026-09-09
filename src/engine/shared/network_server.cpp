@@ -864,21 +864,24 @@ const char *CNetServer::ErrorString(int ClientId)
 #include <net/net.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
+#include <thread>
 
-#define EE(function, net, ...) \
-	do \
-	{ \
-		if(function(net, __VA_ARGS__)) \
-		{ \
-			ExitWithError(net, #function); \
-		} \
-	} while(0)
+// The library reports errors instead of ending the process. A call that
+// failed is logged and skipped, and one made without a library counts as
+// failed; whether the library as a whole is broken and has to be reopened is
+// checked where receiving happens, which every frame does.
+#define NET_CALL(function, net, ...) \
+	((net) == nullptr || CheckNetCall((net), function((net), __VA_ARGS__), #function))
 
-static void ExitWithError(CNet *pNet, const char *pFunction)
+static bool CheckNetCall(CNet *pNet, bool Failed, const char *pFunction)
 {
-	log_error("net", "%s: %s", pFunction, ddnet_net_error(pNet));
-	exit(1);
+	if(Failed)
+	{
+		log_error("net", "%s: %s", pFunction, ddnet_net_error(pNet));
+	}
+	return Failed;
 }
 
 // TODO: this is a placeholder identity, it needs to be persisted per server
@@ -968,10 +971,14 @@ bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int Ma
 	{
 		Peer.Reset();
 	}
+	return OpenLibrary();
+}
 
+bool CNetServer::OpenLibrary()
+{
 	// TODO: use the actual bind address, not just the port
 	char aBindAddr[NETADDR_MAXSTRSIZE];
-	str_format(aBindAddr, sizeof(aBindAddr), "0.0.0.0:%d", BindAddr.port);
+	str_format(aBindAddr, sizeof(aBindAddr), "0.0.0.0:%d", m_Address.port);
 
 	ddnet_net_ev_new(&m_pNetEvent);
 	if(false ||
@@ -982,11 +989,39 @@ bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int Ma
 		ddnet_net_open(m_pNet))
 	{
 		log_error("net", "couldn't open net server: %s", ddnet_net_error(m_pNet));
-		ddnet_net_free(m_pNet);
-		m_pNet = nullptr;
+		Close();
 		return false;
 	}
 	return true;
+}
+
+void CNetServer::Reopen()
+{
+	// The library is gone for good, and so are its connections: the game
+	// hears of each of them the way it hears of a timeout, then the socket
+	// is opened anew on the same address.
+	if(m_pNet != nullptr)
+	{
+		log_error("net", "reopening the network library: %s", ddnet_net_error(m_pNet));
+	}
+	for(int ClientId = 0; ClientId < MaxClients(); ClientId++)
+	{
+		if(m_aPeers[ClientId].m_State == CPeer::STATE_NONE)
+		{
+			continue;
+		}
+		m_aPeers[ClientId].Reset();
+		m_aFlushPending[ClientId] = false;
+		if(m_pfnDelClient)
+		{
+			m_pfnDelClient(ClientId, "Network error, please reconnect", m_pUser);
+		}
+	}
+	Close();
+	if(!OpenLibrary())
+	{
+		log_error("net", "couldn't reopen the network library, trying again later");
+	}
 }
 
 int CNetServer::SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_DELCLIENT pfnDelClient, void *pUser)
@@ -1033,10 +1068,10 @@ void CNetServer::Drop(int ClientId, const char *pReason)
 
 	// Reset peer mapping.
 	m_aPeers[ClientId].Reset();
-	EE(ddnet_net_set_userdata, m_pNet, PeerId, (void *)(uintptr_t)-1);
+	NET_CALL(ddnet_net_set_userdata, m_pNet, PeerId, (void *)(uintptr_t)-1);
 
 	// Close the connection.
-	EE(ddnet_net_close, m_pNet, PeerId, pReason, str_length(pReason));
+	NET_CALL(ddnet_net_close, m_pNet, PeerId, pReason, str_length(pReason));
 }
 
 void CNetServer::Update()
@@ -1046,7 +1081,12 @@ void CNetServer::Update()
 
 void CNetServer::Wait(uint64_t Microseconds)
 {
-	EE(ddnet_net_wait_timeout, m_pNet, Microseconds * 1000);
+	// Without a library there is nothing to wake up for; sleeping keeps the
+	// loop from spinning until Recv has reopened it.
+	if(NET_CALL(ddnet_net_wait_timeout, m_pNet, Microseconds * 1000))
+	{
+		std::this_thread::sleep_for(std::chrono::microseconds(Microseconds));
+	}
 }
 
 void CNetServer::Flush(int ClientId)
@@ -1055,7 +1095,7 @@ void CNetServer::Flush(int ClientId)
 	{
 		return;
 	}
-	EE(ddnet_net_flush, m_pNet, m_aPeers[ClientId].m_Id);
+	NET_CALL(ddnet_net_flush, m_pNet, m_aPeers[ClientId].m_Id);
 }
 
 void CNetServer::EndFlushBatch()
@@ -1075,10 +1115,21 @@ void CNetServer::EndFlushBatch()
 int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 {
 	*pResponseToken = NET_SECURITY_TOKEN_UNKNOWN;
+	if(m_pNet == nullptr || ddnet_net_is_broken(m_pNet))
+	{
+		Reopen();
+		if(m_pNet == nullptr)
+		{
+			return 0;
+		}
+	}
 	while(true)
 	{
 		// Keep space for null termination.
-		EE(ddnet_net_recv, m_pNet, m_aBuffer, sizeof(m_aBuffer) - 1, m_pNetEvent);
+		if(NET_CALL(ddnet_net_recv, m_pNet, m_aBuffer, sizeof(m_aBuffer) - 1, m_pNetEvent))
+		{
+			return 0;
+		}
 		switch(ddnet_net_ev_kind(m_pNetEvent))
 		{
 		case DDNET_NET_EV_NONE:
@@ -1094,24 +1145,24 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			if(!AddrFromUrl(pAddr, &Addr))
 			{
 				static const char UNRECOGNIZED_ADDR[] = "Unrecognized address";
-				EE(ddnet_net_close, m_pNet, PeerId, UNRECOGNIZED_ADDR, sizeof(UNRECOGNIZED_ADDR) - 1);
+				NET_CALL(ddnet_net_close, m_pNet, PeerId, UNRECOGNIZED_ADDR, sizeof(UNRECOGNIZED_ADDR) - 1);
 				continue;
 			}
 
 			char aBanReason[256];
 			if(NetBan() && NetBan()->IsBanned(&Addr, aBanReason, sizeof(aBanReason)))
 			{
-				EE(ddnet_net_close, m_pNet, PeerId, aBanReason, str_length(aBanReason));
+				NET_CALL(ddnet_net_close, m_pNet, PeerId, aBanReason, str_length(aBanReason));
 				continue;
 			}
 
-			uint32_t NumConnected;
-			EE(ddnet_net_num_peers_in_bucket, m_pNet, pAddr, AddrLen, &NumConnected);
+			uint32_t NumConnected = 0;
+			NET_CALL(ddnet_net_num_peers_in_bucket, m_pNet, pAddr, AddrLen, &NumConnected);
 			if((int)NumConnected > m_MaxClientsPerIp)
 			{
 				char aBuf[128];
 				str_format(aBuf, sizeof(aBuf), "Only %d players with the same IP are allowed", m_MaxClientsPerIp);
-				EE(ddnet_net_close, m_pNet, PeerId, aBuf, str_length(aBuf));
+				NET_CALL(ddnet_net_close, m_pNet, PeerId, aBuf, str_length(aBuf));
 				continue;
 			}
 
@@ -1129,14 +1180,14 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			if(ClientId == -1)
 			{
 				static const char FULL[] = "This server is full";
-				EE(ddnet_net_close, m_pNet, PeerId, FULL, sizeof(FULL) - 1);
+				NET_CALL(ddnet_net_close, m_pNet, PeerId, FULL, sizeof(FULL) - 1);
 				continue;
 			}
 
 			m_aPeers[ClientId].m_State = CPeer::STATE_CONNECTED;
 			m_aPeers[ClientId].m_Id = PeerId;
 			m_aPeers[ClientId].SetAddress(Addr);
-			EE(ddnet_net_set_userdata, m_pNet, PeerId, (void *)(uintptr_t)ClientId);
+			NET_CALL(ddnet_net_set_userdata, m_pNet, PeerId, (void *)(uintptr_t)ClientId);
 			if(m_pfnNewClient)
 			{
 				m_pfnNewClient(ClientId, m_pUser, false);
@@ -1147,8 +1198,7 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 		{
 			const uint64_t PeerId = ddnet_net_ev_disconnect_peer_index(m_pNetEvent);
 			void *pUserdata;
-			EE(ddnet_net_userdata, m_pNet, PeerId, &pUserdata);
-			if((uintptr_t)pUserdata == (uintptr_t)-1)
+			if(NET_CALL(ddnet_net_userdata, m_pNet, PeerId, &pUserdata) || (uintptr_t)pUserdata == (uintptr_t)-1)
 			{
 				continue;
 			}
@@ -1173,8 +1223,7 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 		{
 			const uint64_t PeerId = ddnet_net_ev_chunk_peer_index(m_pNetEvent);
 			void *pUserdata;
-			EE(ddnet_net_userdata, m_pNet, PeerId, &pUserdata);
-			if((uintptr_t)pUserdata == (uintptr_t)-1)
+			if(NET_CALL(ddnet_net_userdata, m_pNet, PeerId, &pUserdata) || (uintptr_t)pUserdata == (uintptr_t)-1)
 			{
 				continue;
 			}
@@ -1229,7 +1278,7 @@ int CNetServer::Send(CNetChunk *pChunk)
 		net_addr_str(&pChunk->m_Address, aAddr, sizeof(aAddr), true);
 		char aUrl[128];
 		str_format(aUrl, sizeof(aUrl), "tw-0.6+udp://%s", aAddr);
-		EE(ddnet_net_send_connless_chunk, m_pNet, aUrl, str_length(aUrl), (const unsigned char *)pChunk->m_pData, pChunk->m_DataSize);
+		NET_CALL(ddnet_net_send_connless_chunk, m_pNet, aUrl, str_length(aUrl), (const unsigned char *)pChunk->m_pData, pChunk->m_DataSize);
 		return 0;
 	}
 
@@ -1244,7 +1293,7 @@ int CNetServer::Send(CNetChunk *pChunk)
 		// The client is not connected (anymore), drop the chunk.
 		return -1;
 	}
-	EE(ddnet_net_send_chunk, m_pNet, PeerId, (const unsigned char *)pChunk->m_pData, pChunk->m_DataSize, (pChunk->m_Flags & NETSENDFLAG_VITAL) == 0);
+	NET_CALL(ddnet_net_send_chunk, m_pNet, PeerId, (const unsigned char *)pChunk->m_pData, pChunk->m_DataSize, (pChunk->m_Flags & NETSENDFLAG_VITAL) == 0);
 	if((pChunk->m_Flags & NETSENDFLAG_FLUSH) != 0)
 	{
 		if(m_FlushBatch)
@@ -1272,7 +1321,7 @@ void CNetServer::ResumeOldConnection(int ClientId, int OrigId)
 	dbg_assert(m_aPeers[ClientId].m_Id == (uint64_t)-1, "invalid peer id");
 	m_aPeers[ClientId] = m_aPeers[OrigId];
 	m_aPeers[OrigId].Reset();
-	EE(ddnet_net_set_userdata, m_pNet, m_aPeers[ClientId].m_Id, (void *)(uintptr_t)ClientId);
+	NET_CALL(ddnet_net_set_userdata, m_pNet, m_aPeers[ClientId].m_Id, (void *)(uintptr_t)ClientId);
 }
 
 void CNetServer::IgnoreTimeouts(int ClientId)

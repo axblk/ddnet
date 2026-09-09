@@ -257,21 +257,24 @@ CONNECTIVITY CNetClient::GetConnectivity(int NetType, NETADDR *pGlobalAddr)
 #include <net/net.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
+#include <thread>
 
-#define EE(function, net, ...) \
-	do \
-	{ \
-		if(function(net, __VA_ARGS__)) \
-		{ \
-			ExitWithError(net, #function); \
-		} \
-	} while(0)
+// The library reports errors instead of ending the process. A call that
+// failed is logged and skipped, and one made without a library counts as
+// failed; whether the library as a whole is broken and has to be reopened is
+// checked where receiving happens, which every frame does.
+#define NET_CALL(function, net, ...) \
+	((net) == nullptr || CheckNetCall((net), function((net), __VA_ARGS__), #function))
 
-static void ExitWithError(CNet *pNet, const char *pFunction)
+static bool CheckNetCall(CNet *pNet, bool Failed, const char *pFunction)
 {
-	log_error("net", "%s: %s", pFunction, ddnet_net_error(pNet));
-	exit(1);
+	if(Failed)
+	{
+		log_error("net", "%s: %s", pFunction, ddnet_net_error(pNet));
+	}
+	return Failed;
 }
 
 static bool AddrFromUrl(const char *pUrl, NETADDR *pAddr)
@@ -329,21 +332,9 @@ bool CNetClient::Open(NETADDR BindAddr)
 {
 	Close();
 
-	// TODO: use the actual bind address, not just the port
-	char aBindAddr[NETADDR_MAXSTRSIZE];
-	str_format(aBindAddr, sizeof(aBindAddr), "0.0.0.0:%d", BindAddr.port);
-
-	ddnet_net_ev_new(&m_pNetEvent);
-	if(false ||
-		ddnet_net_new(&m_pNet) ||
-		ddnet_net_set_bindaddr(m_pNet, aBindAddr, str_length(aBindAddr)) ||
-		ddnet_net_open(m_pNet))
+	m_BindAddr = BindAddr;
+	if(!OpenLibrary())
 	{
-		log_error("net", "couldn't open net client: %s", ddnet_net_error(m_pNet));
-		ddnet_net_free(m_pNet);
-		m_pNet = nullptr;
-		ddnet_net_ev_free(m_pNetEvent);
-		m_pNetEvent = nullptr;
 		return false;
 	}
 
@@ -363,7 +354,26 @@ bool CNetClient::Open(NETADDR BindAddr)
 	return true;
 }
 
-void CNetClient::Close()
+bool CNetClient::OpenLibrary()
+{
+	// TODO: use the actual bind address, not just the port
+	char aBindAddr[NETADDR_MAXSTRSIZE];
+	str_format(aBindAddr, sizeof(aBindAddr), "0.0.0.0:%d", m_BindAddr.port);
+
+	ddnet_net_ev_new(&m_pNetEvent);
+	if(false ||
+		ddnet_net_new(&m_pNet) ||
+		ddnet_net_set_bindaddr(m_pNet, aBindAddr, str_length(aBindAddr)) ||
+		ddnet_net_open(m_pNet))
+	{
+		log_error("net", "couldn't open net client: %s", ddnet_net_error(m_pNet));
+		CloseLibrary();
+		return false;
+	}
+	return true;
+}
+
+void CNetClient::CloseLibrary()
 {
 	if(m_pNet)
 	{
@@ -375,6 +385,33 @@ void CNetClient::Close()
 		ddnet_net_ev_free(m_pNetEvent);
 		m_pNetEvent = nullptr;
 	}
+}
+
+void CNetClient::Reopen()
+{
+	// The library is gone for good, and with it the connection: that ends
+	// like any other disconnect, with the library's error as the reason, and
+	// the socket is opened anew for the next attempt.
+	if(m_pNet != nullptr)
+	{
+		log_error("net", "reopening the network library: %s", ddnet_net_error(m_pNet));
+		if(m_State != NETSTATE_OFFLINE)
+		{
+			str_format(m_aErrorString, sizeof(m_aErrorString), "Network error: %s", ddnet_net_error(m_pNet));
+		}
+	}
+	m_PeerId = -1;
+	m_State = NETSTATE_OFFLINE;
+	CloseLibrary();
+	if(!OpenLibrary())
+	{
+		log_error("net", "couldn't reopen the network library, trying again later");
+	}
+}
+
+void CNetClient::Close()
+{
+	CloseLibrary();
 	if(m_pStun)
 	{
 		delete m_pStun;
@@ -397,7 +434,7 @@ void CNetClient::Disconnect(const char *pReason)
 		{
 			pReason = "";
 		}
-		EE(ddnet_net_close, m_pNet, m_PeerId, pReason, str_length(pReason));
+		NET_CALL(ddnet_net_close, m_pNet, m_PeerId, pReason, str_length(pReason));
 		str_copy(m_aErrorString, pReason);
 		m_PeerId = -1;
 		m_State = NETSTATE_OFFLINE;
@@ -420,7 +457,11 @@ void CNetClient::Connect(const NETADDR *pAddr, int NumAddrs)
 	// TODO: connect via `ddnet-15+quic://` when the server advertises support for it
 	str_format(aUrl, sizeof(aUrl), "tw-0.6+udp://%s", aAddr);
 	uint64_t PeerId;
-	EE(ddnet_net_connect, m_pNet, aUrl, str_length(aUrl), &PeerId);
+	if(NET_CALL(ddnet_net_connect, m_pNet, aUrl, str_length(aUrl), &PeerId))
+	{
+		str_format(m_aErrorString, sizeof(m_aErrorString), "Network error: %s", m_pNet != nullptr ? ddnet_net_error(m_pNet) : "network library not open");
+		return;
+	}
 	m_PeerId = PeerId;
 	m_State = NETSTATE_CONNECTING;
 	m_aErrorString[0] = '\0';
@@ -444,7 +485,12 @@ void CNetClient::Update()
 
 void CNetClient::Wait(uint64_t Microseconds)
 {
-	EE(ddnet_net_wait_timeout, m_pNet, Microseconds * 1000);
+	// Without a library there is nothing to wake up for; sleeping keeps the
+	// loop from spinning until Recv has reopened it.
+	if(NET_CALL(ddnet_net_wait_timeout, m_pNet, Microseconds * 1000))
+	{
+		std::this_thread::sleep_for(std::chrono::microseconds(Microseconds));
+	}
 }
 
 int CNetClient::Flush()
@@ -453,7 +499,7 @@ int CNetClient::Flush()
 	{
 		return 0;
 	}
-	EE(ddnet_net_flush, m_pNet, m_PeerId);
+	NET_CALL(ddnet_net_flush, m_pNet, m_PeerId);
 	return 0;
 }
 
@@ -481,10 +527,21 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 		}
 	}
 
+	if(m_pNet == nullptr || ddnet_net_is_broken(m_pNet))
+	{
+		Reopen();
+		if(m_pNet == nullptr)
+		{
+			return 0;
+		}
+	}
 	while(true)
 	{
 		// Keep space for null termination.
-		EE(ddnet_net_recv, m_pNet, m_aBuffer, sizeof(m_aBuffer) - 1, m_pNetEvent);
+		if(NET_CALL(ddnet_net_recv, m_pNet, m_aBuffer, sizeof(m_aBuffer) - 1, m_pNetEvent))
+		{
+			return 0;
+		}
 		switch(ddnet_net_ev_kind(m_pNetEvent))
 		{
 		case DDNET_NET_EV_NONE:
@@ -503,7 +560,7 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 			if(!AddrFromUrl(pAddr, &Addr))
 			{
 				static const char UNRECOGNIZED_ADDR[] = "Unrecognized address";
-				EE(ddnet_net_close, m_pNet, PeerId, UNRECOGNIZED_ADDR, sizeof(UNRECOGNIZED_ADDR) - 1);
+				NET_CALL(ddnet_net_close, m_pNet, PeerId, UNRECOGNIZED_ADDR, sizeof(UNRECOGNIZED_ADDR) - 1);
 				continue;
 			}
 			m_ServerAddress = Addr;
@@ -575,7 +632,7 @@ int CNetClient::Send(CNetChunk *pChunk)
 		net_addr_str(&pChunk->m_Address, aAddr, sizeof(aAddr), true);
 		char aUrl[128];
 		str_format(aUrl, sizeof(aUrl), "tw-0.6+udp://%s", aAddr);
-		EE(ddnet_net_send_connless_chunk, m_pNet, aUrl, str_length(aUrl), (const unsigned char *)pChunk->m_pData, pChunk->m_DataSize);
+		NET_CALL(ddnet_net_send_connless_chunk, m_pNet, aUrl, str_length(aUrl), (const unsigned char *)pChunk->m_pData, pChunk->m_DataSize);
 		return 0;
 	}
 
@@ -584,10 +641,10 @@ int CNetClient::Send(CNetChunk *pChunk)
 		return -1;
 	}
 	dbg_assert(pChunk->m_ClientId == 0, "erroneous client id");
-	EE(ddnet_net_send_chunk, m_pNet, m_PeerId, (const unsigned char *)pChunk->m_pData, pChunk->m_DataSize, (pChunk->m_Flags & NETSENDFLAG_VITAL) == 0);
+	NET_CALL(ddnet_net_send_chunk, m_pNet, m_PeerId, (const unsigned char *)pChunk->m_pData, pChunk->m_DataSize, (pChunk->m_Flags & NETSENDFLAG_VITAL) == 0);
 	if((pChunk->m_Flags & NETSENDFLAG_FLUSH) != 0)
 	{
-		EE(ddnet_net_flush, m_pNet, m_PeerId);
+		NET_CALL(ddnet_net_flush, m_pNet, m_PeerId);
 	}
 	return 0;
 }

@@ -773,6 +773,19 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 	return 0;
 }
 
+void CNetServer::SetMap(int MapId, const char *pName, unsigned Crc, const SHA256_DIGEST &Sha256, const void *pData, unsigned Size)
+{
+}
+
+bool CNetServer::SendMap(int ClientId, int MapId)
+{
+	return false;
+}
+
+void CNetServer::CancelMap(int ClientId)
+{
+}
+
 int CNetServer::Send(CNetChunk *pChunk)
 {
 	pChunk->AssertSizeSanity();

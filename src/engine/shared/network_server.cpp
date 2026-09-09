@@ -68,6 +68,7 @@ void CNetServer::CPeer::Reset()
 	m_State = STATE_NONE;
 	m_Id = -1;
 	m_TimeoutProtected = false;
+	m_Quic = false;
 	mem_zero(&m_Address, sizeof(m_Address));
 	m_aAddressStr[0] = '\0';
 	m_aAddressStrNoPort[0] = '\0';
@@ -117,6 +118,7 @@ bool CNetServer::OpenLibrary()
 		ddnet_net_new(&m_pNet) ||
 		ddnet_net_set_bindaddr(m_pNet, aBindAddr, str_length(aBindAddr)) ||
 		(m_HasIdentity && ddnet_net_set_identity(m_pNet, &m_aIdentity)) ||
+		ddnet_net_set_timeout(m_pNet, g_Config.m_ConnTimeout) ||
 		ddnet_net_set_accept_connections(m_pNet, true) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW06, g_Config.m_SvLegacyUdp != 0) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW07, g_Config.m_SvLegacyUdp != 0) ||
@@ -124,6 +126,11 @@ bool CNetServer::OpenLibrary()
 		ddnet_net_open(m_pNet))
 	{
 		log_error("net", "couldn't open net server: %s", ddnet_net_error(m_pNet));
+		Close();
+		return false;
+	}
+	if(!std::ranges::all_of(m_Maps, [this](const auto &Entry) { return SetMapImpl(Entry.first, Entry.second); }))
+	{
 		Close();
 		return false;
 	}
@@ -141,6 +148,47 @@ int CNetServer::PeerClientId(uint64_t PeerId)
 	const int ClientId = (uintptr_t)pUserdata;
 	dbg_assert(m_aPeers[ClientId].m_Id == PeerId, "invalid peer mapping");
 	return ClientId;
+}
+
+bool CNetServer::SetMapImpl(int MapId, const CMap &Map)
+{
+	if(ddnet_net_set_map(m_pNet, MapId, (const uint8_t *)Map.m_aName, str_length(Map.m_aName), Map.m_Crc, &Map.m_Sha256.data, Map.m_vData.data(), Map.m_vData.size()))
+	{
+		log_error("net", "couldn't set map %d: %s", MapId, ddnet_net_error(m_pNet));
+		return false;
+	}
+	return true;
+}
+
+void CNetServer::SetMap(int MapId, const char *pName, unsigned Crc, const SHA256_DIGEST &Sha256, const void *pData, unsigned Size)
+{
+	CMap &Map = m_Maps[MapId];
+	str_copy(Map.m_aName, pName);
+	Map.m_Crc = Crc;
+	Map.m_Sha256 = Sha256;
+	Map.m_vData.assign((const unsigned char *)pData, (const unsigned char *)pData + Size);
+	if(m_pNet != nullptr)
+	{
+		SetMapImpl(MapId, Map);
+	}
+}
+
+bool CNetServer::SendMap(int ClientId, int MapId)
+{
+	if(m_pNet == nullptr || m_aPeers[ClientId].m_State == CPeer::STATE_NONE || !m_aPeers[ClientId].m_Quic)
+	{
+		return false;
+	}
+	return !NET_CALL(ddnet_net_send_map, m_pNet, m_aPeers[ClientId].m_Id, MapId);
+}
+
+void CNetServer::CancelMap(int ClientId)
+{
+	if(m_pNet == nullptr || m_aPeers[ClientId].m_State == CPeer::STATE_NONE || !m_aPeers[ClientId].m_Quic)
+	{
+		return;
+	}
+	NET_CALL(ddnet_net_cancel_map, m_pNet, m_aPeers[ClientId].m_Id);
 }
 
 void CNetServer::Reopen()
@@ -342,6 +390,7 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 
 			m_aPeers[ClientId].m_State = CPeer::STATE_CONNECTED;
 			m_aPeers[ClientId].m_Id = PeerId;
+			m_aPeers[ClientId].m_Quic = str_startswith(pAddr, "ddnet+quic://") != nullptr;
 			m_aPeers[ClientId].SetAddress(Addr);
 			NET_CALL(ddnet_net_set_userdata, m_pNet, PeerId, (void *)(uintptr_t)ClientId);
 			if(m_pfnNewClient)
@@ -392,6 +441,9 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			pChunk->m_pData = m_aBuffer;
 		}
 			return 1;
+		case DDNET_NET_EV_MAP:
+			// Only a server sends maps.
+			continue;
 		case DDNET_NET_EV_CONNLESS_CHUNK:
 		{
 			const char *pAddr;

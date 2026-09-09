@@ -70,7 +70,10 @@ void CGLSLCompiler::ParseLine(std::string &Line, const char *pReadLine, EGLSLSha
 					return;
 				}
 				// since GLES doesn't support texture LOD bias as global state, use the shader function instead(since GLES 3.0 uses shaders only anyway)
-				else if(str_comp(aTmpStr, "texture") == 0)
+				// Only in a fragment shader: GLSL ES 3.00 has the biased overload
+				// of texture() there and nowhere else, so doing this to a vertex
+				// shader would produce a shader that only the ES build rejects.
+				else if(Type == GLSL_SHADER_COMPILER_TYPE_FRAGMENT && str_comp(aTmpStr, "texture") == 0)
 				{
 					Line.append("texture");
 					// check opening and closing brackets to find the end

@@ -46,6 +46,12 @@ TEST(NetAddr, FromUrlStringValid)
 	char aHost[128];
 	EXPECT_EQ(net_addr_from_url(&Addr, "tw-0.6+udp://ger10.ddnet.org:5678", aHost, sizeof(aHost)), -1);
 	EXPECT_STREQ(aHost, "ger10.ddnet.org:5678");
+	EXPECT_EQ(Addr.type, 0);
+
+	// A name still to be looked up keeps the scheme's flags.
+	EXPECT_EQ(net_addr_from_url(&Addr, "ddnet+wt://ger10.ddnet.org:5678#webpki", aHost, sizeof(aHost)), -1);
+	EXPECT_STREQ(aHost, "ger10.ddnet.org:5678");
+	EXPECT_EQ(Addr.type, NETTYPE_QUIC | NETTYPE_WEBTRANSPORT);
 }
 
 TEST(NetAddr, FromUrlStringQuic)

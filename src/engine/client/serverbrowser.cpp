@@ -1233,6 +1233,7 @@ void CServerBrowser::UpdateFromHttp()
 		SetInfo(pEntry, Info);
 		pEntry->m_RequestIgnoreInfo = true;
 	}
+	log_info("serverbrowser", "loaded %d servers from the master's list", (int)m_vpServerlist.size());
 
 	if(m_ServerlistType == IServerBrowser::TYPE_FAVORITES)
 	{

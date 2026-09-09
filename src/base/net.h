@@ -112,7 +112,8 @@ void net_addr_str(const NETADDR *addr, char *string, int max_length, bool add_po
  *
  * @return `0` on success.
  * @return `> 0` if the input wasn't a valid DDNet URL,
- * @return `< 0` if the input is a valid DDNet URL but the host part was not a valid IPv4/IPv6 address
+ * @return `< 0` if the input is a valid DDNet URL but the host part was not a valid IPv4/IPv6 address;
+ *         `addr->type` then holds the scheme's flags alone, for the caller to add to the looked-up address.
  */
 int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t host_buf_size);
 

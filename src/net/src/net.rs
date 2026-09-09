@@ -64,6 +64,10 @@ struct Peer {
     addrs: Vec<SocketAddr>,
     /// Is the outer protocol aware of this connection?
     high_level: bool,
+    /// Was this connection opened by us? The outer protocol knows an outgoing
+    /// connection from the moment `connect` returns, an incoming one only
+    /// from its `Connect` event.
+    outgoing: bool,
     userdata: Option<*mut ()>,
 }
 
@@ -112,10 +116,23 @@ pub struct Net {
     peers: HashMap<PeerIndex, Peer>,
     peer_buckets: HashMap<Bucket, BucketCount>,
     connect_errors: VecDeque<(PeerIndex, Error)>,
+    /// Peers whose connection failed on our side, to be torn down and
+    /// reported from `recv`.
+    failed_peers: VecDeque<(PeerIndex, String)>,
+    /// Peers whose failure was reported; they go with the next `recv`, so
+    /// the outer protocol can still look them up while it takes the event.
+    dead_peers: VecDeque<PeerIndex>,
+    /// Consecutive failures of the socket read, which only mean anything
+    /// once they keep coming.
+    socket_read_errors: u32,
 
     socket_readable: bool,
     readable_peers: ReadablePeers,
 }
+
+/// Socket reads failing this often in a row, without a single success in
+/// between, no longer look like a stray ICMP error.
+const MAX_SOCKET_READ_ERRORS: u32 = 64;
 
 pub struct NetBuilder {
     bindaddr: Option<SocketAddr>,
@@ -148,11 +165,12 @@ impl PeerIndex {
 }
 
 impl Peer {
-    fn new(conn: Connection, addr: SocketAddr) -> Peer {
+    fn new(conn: Connection, addr: SocketAddr, outgoing: bool) -> Peer {
         Peer {
             conn,
             addrs: vec![addr],
             high_level: false,
+            outgoing,
             userdata: None,
         }
     }
@@ -365,6 +383,11 @@ impl ReadablePeers {
         }
         result
     }
+    pub fn remove(&mut self, idx: PeerIndex) {
+        if self.set.remove(&idx) {
+            self.deque.retain(|i| *i != idx);
+        }
+    }
 }
 
 impl NetBuilder {
@@ -437,6 +460,9 @@ impl NetBuilder {
             peers: HashMap::new(),
             peer_buckets: HashMap::new(),
             connect_errors: VecDeque::with_capacity(1),
+            failed_peers: VecDeque::with_capacity(1),
+            dead_peers: VecDeque::with_capacity(1),
+            socket_read_errors: 0,
 
             socket_readable: false,
             readable_peers: ReadablePeers::with_capacity(4),
@@ -452,15 +478,47 @@ impl Net {
             accept_connections: false,
         }
     }
-    pub fn set_userdata(&mut self, idx: PeerIndex, userdata: *mut ()) {
-        self.peers.get_mut(&idx).unwrap().userdata = Some(userdata);
+    pub fn set_userdata(&mut self, idx: PeerIndex, userdata: *mut ()) -> Result<()> {
+        let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
+        peer.userdata = Some(userdata);
+        Ok(())
     }
-    pub fn userdata(&self, idx: PeerIndex) -> *mut () {
-        self.peers[&idx].userdata.expect("userdata")
+    pub fn userdata(&self, idx: PeerIndex) -> Result<*mut ()> {
+        self.peers
+            .get(&idx)
+            .ok_or_else(|| Error::from_string(format!("no peer {}", idx)))?
+            .userdata
+            .ok_or_else(|| Error::from_string(format!("peer {} has no userdata", idx)))
+    }
+    /// Forgets that the outer protocol knows the peer, counting it out of
+    /// its buckets.
+    fn set_low_level(&mut self, idx: PeerIndex) {
+        let peer = self.peers.get_mut(&idx).unwrap();
+        if !peer.high_level {
+            return;
+        }
+        peer.high_level = false;
+        for &addr in &peer.addrs {
+            self.peer_buckets.get_mut(&Bucket::from(addr)).unwrap().high_level -= 1;
+        }
+    }
+    /// Gives up on a peer whose connection failed on our side. The remote is
+    /// told if it can still be told; the outer protocol learns of it from
+    /// `recv`, like of any other disconnect.
+    fn fail_peer(&mut self, idx: PeerIndex, error: Error) {
+        let Some(peer) = self.peers.get_mut(&idx) else { return };
+        warn!("peer {}: {}", idx, error);
+        let reason = error.to_string();
+        if let Err(close_error) = peer.conn.close(&self.cb, &mut self.packet_buf, Some(&reason)) {
+            debug!("peer {}: closing after the error failed as well: {}", idx, close_error);
+        }
+        self.readable_peers.remove(idx);
+        self.failed_peers.push_back((idx, reason));
     }
     fn remove_peer(&mut self, idx: PeerIndex) {
         use self::Connection::*;
-        let Peer { conn, addrs, high_level, userdata: _ } = self.peers.remove(&idx).unwrap();
+        self.set_low_level(idx);
+        let Peer { conn, addrs, high_level, outgoing: _, userdata: _ } = self.peers.remove(&idx).unwrap();
         assert!(!high_level);
         match conn {
             Quic(inner) => self.proto_quic.remove_peer(idx, inner),
@@ -481,7 +539,22 @@ impl Net {
     }
     fn socket_read(&mut self, buf: &mut [u8]) -> Result<SocketReadEvent> {
         loop {
-            let Some((read, from)) = self.cb.socket.recv_from(&mut self.packet_buf[..16384]).no_block().context("UdpSocket::recv_from")? else { break; };
+            // A read can fail for a reason that has nothing to do with the
+            // socket, such as an ICMP error a previous send provoked. Only a
+            // socket that keeps failing is given up on.
+            let (read, from) = match self.cb.socket.recv_from(&mut self.packet_buf[..16384]).no_block() {
+                Ok(Some(read_from)) => read_from,
+                Ok(None) => break,
+                Err(error) => {
+                    self.socket_read_errors += 1;
+                    if self.socket_read_errors >= MAX_SOCKET_READ_ERRORS {
+                        return Err(Error::from_string(format!("UdpSocket::recv_from: {}", error)).fatal());
+                    }
+                    warn!("UdpSocket::recv_from: {}", error);
+                    continue;
+                }
+            };
+            self.socket_read_errors = 0;
             let from = normalize(from);
             let idx = if let Some(&idx) = self.peer_addrs.get(&from) {
                 idx
@@ -509,7 +582,7 @@ impl Net {
                             read,
                             buf,
                             &from,
-                        )?
+                        )
                     }
                     (Some(0b01111000), Some(0b01100101)) => {
                         self.proto_tw06.on_recv(
@@ -518,7 +591,7 @@ impl Net {
                             read,
                             buf,
                             &from,
-                        )?
+                        )
                     }
                     (Some(p0), Some(p1))
                         if p0 & 0b11000000 == 0b01000000
@@ -531,7 +604,7 @@ impl Net {
                                 read,
                                 buf,
                                 &from,
-                            )?
+                            )
                     }
                     (Some(p0), _) if p0 & 0b11110000 == 0b11000000 => {
                         self.proto_quic
@@ -541,7 +614,7 @@ impl Net {
                                 read,
                                 buf,
                                 &from,
-                            )?
+                            )
                     }
                     _ => {
                         error!("unknown packet");
@@ -551,10 +624,20 @@ impl Net {
                         continue;
                     }
                 };
+                // A packet nobody asked for is dropped on error, the way an
+                // unknown one is; it says nothing about the socket, and
+                // anyone can send one, so it is not worth a log line each.
+                let event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        debug!("{}: {}", from, error);
+                        continue;
+                    }
+                };
                 match event {
                     Some(ProtocolEvent::NewConnection(idx, conn)) => {
                         assert!(idx == self.cb.next_peer_index.get_and_increment());
-                        assert!(self.peers.insert(idx, Peer::new(conn, from)).is_none());
+                        assert!(self.peers.insert(idx, Peer::new(conn, from, false)).is_none());
                         assert!(self.peer_addrs.insert(from, idx).is_none());
                         self.peer_buckets.entry(Bucket::from(from)).or_default().low_level += 1;
                         idx
@@ -577,22 +660,26 @@ impl Net {
                 }
             };
             let peer = self.peers.get_mut(&idx).unwrap();
-            let _ = peer.conn.on_recv(
+            if let Err(error) = peer.conn.on_recv(
                 &self.cb,
                 &mut self.packet_buf,
                 read,
                 &from,
-            );
+            ) {
+                self.fail_peer(idx, error);
+                continue;
+            }
             return Ok(SocketReadEvent::ReadablePeer(idx));
         }
         Ok(SocketReadEvent::None)
     }
-    fn wait_impl(&mut self, timeout: Option<Instant>) {
+    fn wait_impl(&mut self, timeout: Option<Instant>) -> Result<()> {
         if !self.connect_errors.is_empty()
+            || !self.failed_peers.is_empty()
             || !self.readable_peers.is_empty()
             || self.socket_readable
         {
-            return;
+            return Ok(());
         }
         let user_timeout = timeout;
         let timeout;
@@ -620,8 +707,8 @@ impl Net {
             */
             match self.poll.poll(&mut self.events, timeout) {
                 // Allow the caller to handle consequences of the interrupt.
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => return,
-                r => r.context("mio::Poll::poll").unwrap(),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => return Ok(()),
+                r => r.context("mio::Poll::poll").map_err(Error::fatal)?,
             }
             break;
         }
@@ -634,21 +721,28 @@ impl Net {
             }
             */
             if !is_user_timeout {
+                let mut failed = Vec::new();
                 for (idx, peer) in self.peers.iter_mut() {
-                    if peer.conn.on_timeout(&self.cb, &mut self.packet_buf).unwrap() {
-                        self.readable_peers.push_back(*idx);
+                    match peer.conn.on_timeout(&self.cb, &mut self.packet_buf) {
+                        Ok(true) => self.readable_peers.push_back(*idx),
+                        Ok(false) => {}
+                        Err(error) => failed.push((*idx, error)),
                     }
+                }
+                for (idx, error) in failed {
+                    self.fail_peer(idx, error);
                 }
             }
         }
         if !self.events.is_empty() {
             self.socket_readable = true;
         }
+        Ok(())
     }
-    pub fn wait(&mut self) {
+    pub fn wait(&mut self) -> Result<()> {
         self.wait_impl(None)
     }
-    pub fn wait_timeout(&mut self, timeout: Instant) {
+    pub fn wait_timeout(&mut self, timeout: Instant) -> Result<()> {
         self.wait_impl(Some(timeout))
     }
     // TODO: remove errors?
@@ -667,18 +761,46 @@ impl Net {
                 Event::Disconnect(idx, buf.len() - remaining_len, true)
             ));
         }
+        while let Some(idx) = self.dead_peers.pop_front() {
+            if self.peers.contains_key(&idx) {
+                self.remove_peer(idx);
+            }
+        }
+        // A peer that failed on our side is torn down here, and reported if
+        // the outer protocol knows it: from a `Connect` event, or from having
+        // asked for the connection itself.
+        while let Some((idx, reason)) = self.failed_peers.pop_front() {
+            let Some(peer) = self.peers.get(&idx) else { continue };
+            let known = peer.high_level || peer.outgoing;
+            if !known {
+                self.remove_peer(idx);
+                continue;
+            }
+            self.set_low_level(idx);
+            self.dead_peers.push_back(idx);
+            let len = reason.len().min(buf.len());
+            buf[..len].copy_from_slice(&reason.as_bytes()[..len]);
+            return Ok(Some(Event::Disconnect(idx, len, false)));
+        }
         let mut did_nothing = true;
         loop {
             while let Some(idx) = self.readable_peers.front() {
-                let peer = self.peers.get_mut(&idx).unwrap();
                 did_nothing = false;
-                // TODO: handle error. by dropping the peer?
-                if let Some(ev) =
-                    peer.conn.recv(&self.cb, &mut self.packet_buf, buf).unwrap()
-                {
+                let peer = self.peers.get_mut(&idx).unwrap();
+                let ev = match peer.conn.recv(&self.cb, &mut self.packet_buf, buf) {
+                    Ok(ev) => ev,
+                    Err(error) => {
+                        self.fail_peer(idx, error);
+                        return self.recv(buf);
+                    }
+                };
+                if let Some(ev) = ev {
                     match ev {
                         ConnectionEvent::Connect(peer_addr) => {
-                            assert!(!peer.high_level);
+                            if peer.high_level {
+                                warn!("peer {}: connected a second time, ignoring", idx);
+                                continue;
+                            }
                             peer.high_level = true;
                             for &addr in &peer.addrs {
                                 self.peer_buckets.get_mut(&Bucket::from(addr)).unwrap().high_level += 1;
@@ -686,15 +808,21 @@ impl Net {
                             return Ok(Some(Event::Connect(idx, peer_addr)));
                         }
                         ConnectionEvent::Chunk(size, unreliable) => {
-                            assert!(peer.high_level);
+                            if !peer.high_level {
+                                warn!("peer {}: chunk before connect, ignoring", idx);
+                                continue;
+                            }
                             return Ok(Some(Event::Chunk(idx, size, unreliable)))
                         }
                         ConnectionEvent::ConnlessChunk(peer_addr, size) => return Ok(Some(Event::ConnlessChunk(peer_addr, size))),
                         ConnectionEvent::Disconnect(reason_size, remote) => {
-                            assert!(peer.high_level); // TODO: make sure that `Disconnect` cannot be emitted before `Connect`. this currently isn't the case when manually disconnecting before a `Connect` event
-                            peer.high_level = false;
-                            for &addr in &peer.addrs {
-                                self.peer_buckets.get_mut(&Bucket::from(addr)).unwrap().high_level -= 1;
+                            // A connection that ends before it was ever
+                            // reported is news only to whoever asked for it,
+                            // e.g. a client whose handshake failed.
+                            let known = peer.high_level || peer.outgoing;
+                            self.set_low_level(idx);
+                            if !known {
+                                continue;
                             }
                             return Ok(Some(Event::Disconnect(idx, reason_size, remote)))
                         }
@@ -725,7 +853,7 @@ impl Net {
             // stuff we can do.
             if did_nothing {
                 did_nothing = false;
-                self.wait_timeout(Instant::now());
+                self.wait_timeout(Instant::now())?;
                 continue;
             }
             return Ok(None);
@@ -737,21 +865,22 @@ impl Net {
         frame: &[u8],
         unreliable: bool,
     ) -> Result<()> {
-        assert!(frame.len() <= MAX_FRAME_SIZE as usize);
+        if frame.len() > MAX_FRAME_SIZE as usize {
+            bail!("chunk of {} bytes exceeds the frame size of {}", frame.len(), MAX_FRAME_SIZE);
+        }
         trace!("sending chunk, unreliable={} len={}", unreliable, frame.len());
-        self.peers
-            .get_mut(&idx)
-            .unwrap()
-            .conn
-            .send_chunk(&self.cb, &mut self.packet_buf, frame, unreliable)
-            .unwrap();
+        let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
+        if let Err(error) = peer.conn.send_chunk(&self.cb, &mut self.packet_buf, frame, unreliable) {
+            self.fail_peer(idx, error);
+        }
         Ok(())
     }
     pub fn flush(&mut self, idx: PeerIndex) -> Result<()> {
-        self.peers.get_mut(&idx).unwrap().conn.flush(
-            &self.cb,
-            &mut self.packet_buf,
-        )
+        let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
+        if let Err(error) = peer.conn.flush(&self.cb, &mut self.packet_buf) {
+            self.fail_peer(idx, error);
+        }
+        Ok(())
     }
     pub fn connect(&mut self, addr: &str) -> Result<PeerIndex> {
         let idx = self.cb.next_peer_index.get_and_increment();
@@ -768,11 +897,20 @@ impl Net {
             return Ok(idx);
         }
         use self::Addr::*;
-        let conn: Connection = match addr {
-            Quic(addr) => self.proto_quic.connect(&self.cb, &mut self.packet_buf, addr, idx)?.into(),
-            Tw06(addr) => self.proto_tw06.connect(&self.cb, &mut self.packet_buf, addr, idx)?.into(),
+        let conn = match addr {
+            Quic(addr) => self.proto_quic.connect(&self.cb, &mut self.packet_buf, addr, idx).map(Connection::from),
+            Tw06(addr) => self.proto_tw06.connect(&self.cb, &mut self.packet_buf, addr, idx).map(Connection::from),
         };
-        assert!(self.peers.insert(idx, Peer::new(conn, socket_addr)).is_none());
+        // A connection that cannot even be started is reported like one that
+        // was refused, so the caller has one path for both.
+        let conn = match conn {
+            Ok(conn) => conn,
+            Err(error) => {
+                self.connect_errors.push_back((idx, error));
+                return Ok(idx);
+            }
+        };
+        assert!(self.peers.insert(idx, Peer::new(conn, socket_addr, true)).is_none());
         assert!(self.peer_addrs.insert(socket_addr, idx).is_none());
         self.peer_buckets.entry(Bucket::from(socket_addr)).or_default().low_level += 1;
         Ok(idx)
@@ -782,8 +920,11 @@ impl Net {
         idx: PeerIndex,
         reason: Option<&str>,
     ) -> Result<()> {
-        let peer = self.peers.get_mut(&idx).unwrap();
-        peer.conn.close(&self.cb, &mut self.packet_buf, reason)?;
+        let Some(peer) = self.peers.get_mut(&idx) else { bail!("no peer {}", idx) };
+        if let Err(error) = peer.conn.close(&self.cb, &mut self.packet_buf, reason) {
+            self.fail_peer(idx, error);
+            return Ok(());
+        }
         self.readable_peers.push_back(idx);
         Ok(())
     }
@@ -802,12 +943,9 @@ impl Net {
         }
     }
     // TODO: second function including all non-connected, or already-disconnected peers
-    pub fn num_peers_in_bucket(&self, addr: &str) -> u32 {
-        let addr: Addr = match addr.parse() {
-            Err(_) => todo!(),
-            Ok(addr) => addr,
-        };
-        self.peer_buckets.get(&Bucket::from(*addr.socket_addr())).map(|b| b.high_level).unwrap_or(0)
+    pub fn num_peers_in_bucket(&self, addr: &str) -> Result<u32> {
+        let addr: Addr = addr.parse()?;
+        Ok(self.peer_buckets.get(&Bucket::from(*addr.socket_addr())).map(|b| b.high_level).unwrap_or(0))
     }
 }
 

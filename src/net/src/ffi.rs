@@ -19,7 +19,11 @@ use std::str;
 use std::time::Duration;
 use std::time::Instant;
 
-pub struct DdnetNet(NetInner);
+pub struct DdnetNet {
+    inner: NetInner,
+    /// The error of the last call that failed without breaking the object.
+    last_error: Option<CString>,
+}
 
 /// This is a state machine that should only ever start from `Good` or
 /// `InitError`, and it may only transition from `Good` to `LaterError`.
@@ -67,14 +71,14 @@ impl DdnetNet {
         &mut self,
         f: F,
     ) -> bool {
-        let impl_ = match &mut self.0 {
+        let impl_ = match &mut self.inner {
             Init(impl_) => impl_,
             Good(_) => {
-                let impl_ = match mem::replace(&mut self.0, Temporary) {
+                let impl_ = match mem::replace(&mut self.inner, Temporary) {
                     Good(impl_) => impl_,
                     _ => unreachable!(),
                 };
-                self.0 = LaterError(
+                self.inner = LaterError(
                     impl_,
                     CString::new("initialization function called after call to `ddnet_net_open`")
                         .unwrap(),
@@ -83,28 +87,33 @@ impl DdnetNet {
             }
             _ => return true,
         };
-        if let Err(err) =
-            catch_unwind(panic::AssertUnwindSafe(move || f(impl_)))
-        {
-            let impl_ = match mem::replace(&mut self.0, Temporary) {
-                Good(impl_) => impl_,
-                _ => unreachable!(),
-            };
-            self.0 = LaterError(impl_, err);
-            true
-        } else {
-            false
+        match catch_unwind(panic::AssertUnwindSafe(move || f(impl_))) {
+            Ok(()) => {
+                self.last_error = None;
+                false
+            }
+            Err(Caught::Fatal(err)) => {
+                // Initialization is not open yet, nothing to preserve.
+                self.inner = InitError(err);
+                true
+            }
+            Err(Caught::Recoverable(err)) => {
+                self.last_error = Some(err);
+                true
+            }
         }
     }
     /// Calls the provided function if `NetInner` is `Good`, and adjusts the
     /// state machine accordingly. Otherwise, it does nothing.
     ///
     /// Returns `true` if an error has occurred during this call or in an
-    /// earlier method of `DdnetNet`.
+    /// earlier method of `DdnetNet`. Only a fatal error or a panic breaks the
+    /// object for good; any other error is kept for `ddnet_net_error` and the
+    /// next call proceeds as usual.
     fn good<F: FnOnce(&mut NetImpl) -> Result<()>>(&mut self, f: F) -> bool {
-        let mut impl_ = match &mut self.0 {
+        let mut impl_ = match &mut self.inner {
             Init(_) => {
-                self.0 = InitError(
+                self.inner = InitError(
                     CString::new("normal function called before call to `ddnet_net_open`").unwrap(),
                 );
                 return true;
@@ -112,26 +121,42 @@ impl DdnetNet {
             Good(impl_) => impl_,
             _ => return true,
         };
-        if let Err(err) =
-            catch_unwind(panic::AssertUnwindSafe(move || f(&mut impl_)))
-        {
-            let impl_ = match mem::replace(&mut self.0, Temporary) {
-                Good(impl_) => impl_,
-                _ => unreachable!(),
-            };
-            self.0 = LaterError(impl_, err);
-            true
-        } else {
-            false
+        match catch_unwind(panic::AssertUnwindSafe(move || f(&mut impl_))) {
+            Ok(()) => {
+                self.last_error = None;
+                false
+            }
+            Err(Caught::Fatal(err)) => {
+                let impl_ = match mem::replace(&mut self.inner, Temporary) {
+                    Good(impl_) => impl_,
+                    _ => unreachable!(),
+                };
+                self.inner = LaterError(impl_, err);
+                true
+            }
+            Err(Caught::Recoverable(err)) => {
+                self.last_error = Some(err);
+                true
+            }
         }
     }
     fn error(&self) -> Option<(&CStr, usize)> {
-        match &self.0 {
-            InitError(err) => Some((err, err.as_bytes().len())),
-            LaterError(_, err) => Some((err, err.as_bytes().len())),
-            _ => None,
-        }
+        let err = match &self.inner {
+            InitError(err) => err,
+            LaterError(_, err) => err,
+            _ => self.last_error.as_ref()?,
+        };
+        Some((err, err.as_bytes().len()))
     }
+    fn is_broken(&self) -> bool {
+        matches!(self.inner, InitError(_) | LaterError(..))
+    }
+}
+
+/// What a failed call leaves behind: a broken object, or just an error.
+enum Caught {
+    Fatal(CString),
+    Recoverable(CString),
 }
 
 fn error_to_cstring(err: Error) -> CString {
@@ -143,7 +168,8 @@ fn error_to_cstring(err: Error) -> CString {
 
 fn catch_unwind<T, F: FnOnce() -> Result<T> + panic::UnwindSafe>(
     f: F,
-) -> result::Result<T, CString> {
+) -> result::Result<T, Caught> {
+    // A panic is a bug whose state cannot be trusted, so it counts as fatal.
     panic::catch_unwind(f)
         .unwrap_or_else(|panic| {
             let msg = match panic.downcast_ref::<&'static str>() {
@@ -153,9 +179,15 @@ fn catch_unwind<T, F: FnOnce() -> Result<T> + panic::UnwindSafe>(
                     None => "Box<dyn Any>",
                 },
             };
-            Err(Error::from_string(format!("rust panic: {}", msg)))
+            Err(Error::from_string(format!("rust panic: {}", msg)).fatal())
         })
-        .map_err(error_to_cstring)
+        .map_err(|err| {
+            if err.is_fatal() {
+                Caught::Fatal(error_to_cstring(err))
+            } else {
+                Caught::Recoverable(error_to_cstring(err))
+            }
+        })
 }
 
 #[no_mangle]
@@ -302,10 +334,16 @@ pub extern "C" fn ddnet_net_ev_connless_chunk_addr(
 pub extern "C" fn ddnet_net_new(net: *mut *mut DdnetNet) -> bool {
     let result = match catch_unwind(|| Ok(NetImpl::builder())) {
         Ok(builder) => Init(builder),
-        Err(err) => InitError(err),
+        Err(Caught::Fatal(err)) | Err(Caught::Recoverable(err)) => InitError(err),
     };
     unsafe {
-        ptr::write(net, Box::leak(Box::new(DdnetNet(result))));
+        ptr::write(
+            net,
+            Box::leak(Box::new(DdnetNet {
+                inner: result,
+                last_error: None,
+            })),
+        );
         (**net).init(|_| Ok(()))
     }
 }
@@ -352,10 +390,10 @@ pub extern "C" fn ddnet_net_set_accept_connections(
 #[no_mangle]
 pub extern "C" fn ddnet_net_open(net: &mut DdnetNet) -> bool {
     match catch_unwind(panic::AssertUnwindSafe(|| {
-        let builder = match mem::replace(&mut net.0, Temporary) {
+        let builder = match mem::replace(&mut net.inner, Temporary) {
             Init(builder) => builder,
             Good(impl_) => {
-                net.0 = LaterError(
+                net.inner = LaterError(
                     impl_,
                     CString::new(
                         "`ddnet_net_open` called on already open instance",
@@ -366,13 +404,18 @@ pub extern "C" fn ddnet_net_open(net: &mut DdnetNet) -> bool {
             }
             _ => return Ok(()),
         };
-        net.0 = Good(builder.open()?);
+        net.inner = Good(builder.open()?);
         Ok(())
     })) {
         Ok(()) => {}
-        Err(err) => net.0 = InitError(err),
+        // Whatever went wrong, there is no open object to keep.
+        Err(Caught::Fatal(err)) | Err(Caught::Recoverable(err)) => net.inner = InitError(err),
     };
     net.good(|_| Ok(()))
+}
+#[no_mangle]
+pub extern "C" fn ddnet_net_is_broken(net: &DdnetNet) -> bool {
+    net.is_broken()
 }
 static NO_ERROR: &str = "no error\0";
 #[no_mangle]
@@ -391,32 +434,23 @@ pub extern "C" fn ddnet_net_error_len(net: &DdnetNet) -> usize {
 
 #[no_mangle]
 pub extern "C" fn ddnet_net_set_userdata(net: &mut DdnetNet, peer_index: u64, userdata: *mut ()) -> bool {
-    net.good(|impl_| {
-        impl_.set_userdata(PeerIndex(peer_index), userdata);
-        Ok(())
-    })
+    net.good(|impl_| impl_.set_userdata(PeerIndex(peer_index), userdata))
 }
 #[no_mangle]
 pub extern "C" fn ddnet_net_userdata(net: &mut DdnetNet, peer_index: u64, userdata: &mut *mut ()) -> bool {
     *userdata = 0xbadc0de as *mut ();
     net.good(|impl_| {
-        *userdata = impl_.userdata(PeerIndex(peer_index));
+        *userdata = impl_.userdata(PeerIndex(peer_index))?;
         Ok(())
     })
 }
 #[no_mangle]
 pub extern "C" fn ddnet_net_wait(net: &mut DdnetNet) -> bool {
-    net.good(|impl_| {
-        impl_.wait();
-        Ok(())
-    })
+    net.good(|impl_| impl_.wait())
 }
 #[no_mangle]
 pub extern "C" fn ddnet_net_wait_timeout(net: &mut DdnetNet, ns: u64) -> bool {
-    net.good(|impl_| {
-        impl_.wait_timeout(Instant::now() + Duration::from_nanos(ns));
-        Ok(())
-    })
+    net.good(|impl_| impl_.wait_timeout(Instant::now() + Duration::from_nanos(ns)))
 }
 #[no_mangle]
 pub extern "C" fn ddnet_net_recv(
@@ -511,7 +545,7 @@ pub extern "C" fn ddnet_net_num_peers_in_bucket(
         let addr =
             unsafe { slice::from_raw_parts(addr as *const u8, addr_len) };
         let addr = str::from_utf8(addr).unwrap();
-        *result = impl_.num_peers_in_bucket(addr);
+        *result = impl_.num_peers_in_bucket(addr)?;
         Ok(())
     })
 }

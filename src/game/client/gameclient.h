@@ -203,6 +203,7 @@ private:
 	CRaceHelper m_RaceHelper;
 
 	void ProcessEvents(CSessionId SessionId, int Conn);
+	void BuildSnapState(CSessionId SessionId, int Conn);
 	void ProcessSnapshot(CSessionId SessionId, int Conn);
 	void ProcessPrediction();
 	void UpdatePositions(const CGameState &State, const CGameTickInfo &Time, float LocalTime);

@@ -1,6 +1,7 @@
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use crate::CallbackData;
+use crate::ConnlessMeta;
 use crate::ConnectionEvent as Event;
 use crate::Context as _;
 use crate::Error;
@@ -19,6 +20,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 // TODO: use ddnet token impl from libtw2::net
+
+/// `NET_HEADER_EXTENDED`.
+const EXTENDED_HEADER: &[u8] = b"xe";
 
 pub struct Protocol;
 
@@ -95,7 +99,15 @@ impl Protocol {
             }
             Ok(Packet::Connless(payload)) => {
                 buf[..payload.len()].copy_from_slice(payload);
-                return Ok(Some(ProtocolEvent::ConnlessChunk(Addr(*from).into(), payload.len())));
+                // DDNet's extended header takes the place of the padding:
+                // "xe" and four bytes of extra data instead of six 0xff.
+                let extra = if packet.starts_with(EXTENDED_HEADER) {
+                    Some(packet[EXTENDED_HEADER.len()..EXTENDED_HEADER.len() + 4].try_into().unwrap())
+                } else {
+                    None
+                };
+                let meta = ConnlessMeta { extra, response_token7: None };
+                return Ok(Some(ProtocolEvent::ConnlessChunk(Addr(*from).into(), payload.len(), meta)));
             }
             _ => return Ok(None),
         };
@@ -126,11 +138,25 @@ impl Protocol {
         packet_buf: &mut [u8; 65536],
         addr: Addr,
         payload: &[u8],
+        extra: Option<[u8; 4]>,
     ) -> Result<()> {
         use libtw2_net::protocol::Packet;
+        use libtw2_net::protocol::MAX_PAYLOAD;
 
         let Addr(addr) = addr;
-        let written = Packet::Connless(payload).write(&mut packet_buf[..]).unwrap();
+        let written = match extra {
+            None => Packet::Connless(payload).write(&mut packet_buf[..]).unwrap(),
+            Some(extra) => {
+                if payload.len() > MAX_PAYLOAD {
+                    bail!("connless packet too long");
+                }
+                let header_len = EXTENDED_HEADER.len() + extra.len();
+                packet_buf[..EXTENDED_HEADER.len()].copy_from_slice(EXTENDED_HEADER);
+                packet_buf[EXTENDED_HEADER.len()..header_len].copy_from_slice(&extra);
+                packet_buf[header_len..header_len + payload.len()].copy_from_slice(payload);
+                &packet_buf[..header_len + payload.len()]
+            }
+        };
         cb.socket.send_to(written, addr).context("UdpSocket::send_to")?;
         Ok(())
     }
@@ -240,7 +266,7 @@ impl Connection {
             }
             ConnlessChunk(chunk) => {
                 buf[..chunk.len()].copy_from_slice(&chunk);
-                Event::ConnlessChunk(Addr(self.addr).into(), chunk.len()).into()
+                Event::ConnlessChunk(Addr(self.addr).into(), chunk.len(), ConnlessMeta::default()).into()
             }
             Disconnect(reason, remote) => {
                 buf[..reason.len()].copy_from_slice(reason.as_bytes());

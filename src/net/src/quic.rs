@@ -427,7 +427,11 @@ impl Protocol {
         _packet_buf: &mut [u8; 65536],
         _addr: Addr,
         _payload: &[u8],
+        extra: Option<[u8; 4]>,
     ) -> Result<()> {
+        if extra.is_some() {
+            bail!("the extended connless header is 0.6 only");
+        }
         // Quic doesn't support connectionless data.
         Ok(())
     }

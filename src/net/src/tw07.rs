@@ -2,6 +2,7 @@ use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use crate::libtw2_patch;
 use crate::CallbackData;
+use crate::ConnlessMeta;
 use crate::ConnectionEvent as Event;
 use crate::Context as _;
 use crate::Error;
@@ -14,8 +15,13 @@ use getrandom::getrandom;
 use libtw2_net::connection7 as connection;
 use libtw2_net::protocol7 as protocol;
 use libtw2_warn;
+use log::debug;
 use crate::Socket;
+use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::net::IpAddr;
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::str;
 use std::time::Duration;
@@ -26,69 +32,225 @@ use std::time::Instant;
 // client's address, and the client's connect message has to carry it. The
 // answer needs no state, so nothing is kept for a peer before it has proven
 // it can receive at its address.
+//
+// Connectionless packets carry tokens too: the receiver's own token for the
+// sender, and a token of the sender's for the answer. Whatever a peer hands
+// us is remembered for a while, and a packet to a peer whose token we do not
+// have waits for the answer to a token request.
 
-pub struct Protocol;
+/// How long a token a peer handed us is used, `NET_TOKENCACHE_ADDRESSEXPIRY`.
+const TOKEN_LIFETIME: Duration = Duration::from_secs(64);
+/// How long a packet waits for a token, `NET_TOKENCACHE_PACKETEXPIRY`.
+const QUEUE_LIFETIME: Duration = Duration::from_secs(5);
+/// How many packets wait for tokens at most, the oldest goes first.
+const MAX_QUEUED: usize = 64;
+
+/// Stands in for a token that hashed to the value reserved for "no token".
+const TOKEN_FALLBACK: protocol::Token = protocol::Token([0, 0, 0, 1]);
+
+struct Queued {
+    addr: SocketAddr,
+    payload: ArrayVec<[u8; 2048]>,
+    expires: Instant,
+}
+
+pub struct Protocol {
+    /// Tokens peers handed us, for sending them connectionless packets.
+    tokens: HashMap<SocketAddr, (protocol::Token, Instant)>,
+    /// Connectionless packets waiting for a token.
+    queued: VecDeque<Queued>,
+}
+
+/// The token we hand to `addr`, stateless: the packet that carries it back
+/// proves the sender receives at its address.
+fn own_token(cb: &CallbackData, addr: &SocketAddr) -> protocol::Token {
+    let token = protocol::Token(cb.challenger.compute_token(addr));
+    if token == protocol::TOKEN_NONE {
+        TOKEN_FALLBACK
+    } else {
+        token
+    }
+}
+
+fn verify_own_token(cb: &CallbackData, addr: &SocketAddr, token: protocol::Token) -> bool {
+    if token == protocol::TOKEN_NONE {
+        return false;
+    }
+    if token == TOKEN_FALLBACK && cb.challenger.compute_token(addr) == protocol::TOKEN_NONE.0 {
+        return true;
+    }
+    cb.challenger.verify_token(addr, token.0).is_ok()
+}
+
+/// The address the global token is derived for: the token a server hands
+/// the masterserver, which challenges it from an address it does not know
+/// in advance. The classic server derives it from an all-zero address too.
+const GLOBAL_TOKEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+
+/// The token that is valid from any address, as a big-endian number.
+pub fn global_token(cb: &CallbackData) -> u32 {
+    u32::from_be_bytes(own_token(cb, &GLOBAL_TOKEN_ADDR).0)
+}
+
+/// The address a broadcast to everyone at `port` in `from`'s family went to.
+fn broadcast_addr(from: &SocketAddr) -> SocketAddr {
+    match from {
+        SocketAddr::V4(_) => SocketAddr::new(Ipv4Addr::BROADCAST.into(), from.port()),
+        SocketAddr::V6(_) => SocketAddr::new(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1).into(), from.port()),
+    }
+}
 
 impl Protocol {
     pub fn new(_: &PrivateIdentity) -> Result<Protocol> {
-        Ok(Protocol)
+        Ok(Protocol {
+            tokens: HashMap::new(),
+            queued: VecDeque::new(),
+        })
     }
     pub fn remove_peer(&mut self, idx: PeerIndex, conn: Connection) {
         let _ = idx;
         let _ = conn;
         // Nothing to do.
     }
+    /// A token in a packet from `from` has to be the one we hand to `from`,
+    /// or the one we handed to everyone when we asked around by broadcast.
+    fn verify(&self, cb: &CallbackData, from: &SocketAddr, token: protocol::Token) -> bool {
+        verify_own_token(cb, from, token)
+            || verify_own_token(cb, &broadcast_addr(from), token)
+            || verify_own_token(cb, &GLOBAL_TOKEN_ADDR, token)
+    }
+    fn remember_token(&mut self, addr: SocketAddr, token: protocol::Token) {
+        if token == protocol::TOKEN_NONE {
+            return;
+        }
+        let now = Instant::now();
+        self.tokens.retain(|_, (_, expires)| *expires > now);
+        self.tokens.insert(addr, (token, now + TOKEN_LIFETIME));
+    }
+    fn token_for(&self, addr: &SocketAddr) -> Option<protocol::Token> {
+        let (token, expires) = self.tokens.get(addr)?;
+        if *expires <= Instant::now() {
+            return None;
+        }
+        Some(*token)
+    }
+    fn send_with_token(
+        cb: &CallbackData,
+        packet_buf: &mut [u8; 65536],
+        addr: SocketAddr,
+        token: protocol::Token,
+        payload: &[u8],
+    ) -> Result<()> {
+        let packet = protocol::Packet::Connless(protocol::ConnlessPacket {
+            payload,
+            token,
+            response_token: own_token(cb, &addr),
+        });
+        let written = packet.write(&mut packet_buf[..]).map_err(|e| Error::from_string(format!("{:?}", e)))?;
+        cb.socket.send_to(written, addr).context("UdpSocket::send_to")?;
+        Ok(())
+    }
+    /// Sends the packets that waited for `from`'s token, including those
+    /// addressed to everyone at its port.
+    fn flush_queued(
+        &mut self,
+        cb: &CallbackData,
+        packet_buf: &mut [u8; 65536],
+        from: &SocketAddr,
+        token: protocol::Token,
+    ) -> Result<()> {
+        let now = Instant::now();
+        let broadcast = broadcast_addr(from);
+        let mut i = 0;
+        while i < self.queued.len() {
+            let queued = &self.queued[i];
+            if queued.expires <= now {
+                self.queued.remove(i);
+                continue;
+            }
+            if queued.addr != *from && queued.addr != broadcast {
+                i += 1;
+                continue;
+            }
+            let queued = self.queued.remove(i).unwrap();
+            debug!("token from {} arrived, sending {} waiting byte(s)", from, queued.payload.len());
+            Protocol::send_with_token(cb, packet_buf, *from, token, &queued.payload)?;
+        }
+        Ok(())
+    }
     pub fn on_recv(
         &mut self,
         cb: &CallbackData,
         packet_buf: &mut [u8; 65536],
         packet_len: usize,
-        _buf: &mut [u8],
+        buf: &mut [u8],
         from: &SocketAddr,
     ) -> Result<Option<ProtocolEvent>> {
+        let full_buf = packet_buf;
         let (packet_buf, decomp_buf) = {
-            let len = packet_buf.len();
-            packet_buf.split_at_mut(len - 2048)
+            let len = full_buf.len();
+            full_buf.split_at_mut(len - 2048)
         };
         let packet = &packet_buf[..packet_len];
 
         use self::protocol::ConnectedPacket;
         use self::protocol::ConnectedPacketType;
+        use self::protocol::ConnlessPacket;
         use self::protocol::ControlPacket;
         use self::protocol::Packet;
-        use self::protocol::Token;
         use self::protocol::TOKEN_NONE;
 
         let (token, ctrl) = match Packet::read(&mut libtw2_warn::Ignore, packet, decomp_buf) {
+            Ok(Packet::Connless(ConnlessPacket { payload, token, response_token })) => {
+                if !self.verify(cb, from, token) {
+                    return Ok(None);
+                }
+                self.remember_token(*from, response_token);
+                debug!("0.7 connless from {}: {} byte(s)", from, payload.len());
+                buf[..payload.len()].copy_from_slice(payload);
+                let meta = ConnlessMeta {
+                    extra: None,
+                    response_token7: Some(u32::from_be_bytes(response_token.0)),
+                };
+                return Ok(Some(ProtocolEvent::ConnlessChunk(Addr(*from).into(), payload.len(), meta)));
+            }
             Ok(Packet::Connected(ConnectedPacket {
                 token,
                 ack: _,
                 type_: ConnectedPacketType::Control(ctrl),
             })) => (token, ctrl),
-            // TODO(P3): connectionless 0.7 packets carry tokens of their own.
             _ => return Ok(None),
         };
-        if !cb.accept.tw07 {
-            return Ok(None);
-        }
         let own_token = match ctrl {
             // A request for a token, not yet carrying one. The reader has
             // checked that it is padded, so answering it amplifies nothing.
             ControlPacket::Token(their_token) if token == TOKEN_NONE => {
-                let own_token = Token(cb.challenger.compute_token(from));
+                if !cb.accept.tw07 {
+                    return Ok(None);
+                }
                 let written = Packet::Connected(ConnectedPacket {
                     token: their_token,
                     ack: 0,
-                    type_: ConnectedPacketType::Control(ControlPacket::Token(own_token)),
+                    type_: ConnectedPacketType::Control(ControlPacket::Token(own_token(cb, from))),
                 })
                 .write(&mut packet_buf[..])
                 .unwrap();
                 cb.socket.send_to(written, *from).context("UdpSocket::send_to")?;
                 return Ok(None);
             }
+            // The answer to a request of ours, carrying the token we asked
+            // with. Packets that waited for it can go now.
+            ControlPacket::Token(their_token) => {
+                if !self.verify(cb, from, token) {
+                    return Ok(None);
+                }
+                self.remember_token(*from, their_token);
+                self.flush_queued(cb, full_buf, from, their_token)?;
+                return Ok(None);
+            }
             // The connect message has to carry the token handed out above.
             ControlPacket::Connect(_) => {
-                if cb.challenger.verify_token(from, token.0).is_err() {
+                if !cb.accept.tw07 || !verify_own_token(cb, from, token) {
                     return Ok(None);
                 }
                 token
@@ -121,13 +283,47 @@ impl Protocol {
     }
     pub fn send_connless_chunk(
         &mut self,
-        _cb: &CallbackData,
-        _packet_buf: &mut [u8; 65536],
-        _addr: Addr,
-        _payload: &[u8],
+        cb: &CallbackData,
+        packet_buf: &mut [u8; 65536],
+        addr: Addr,
+        payload: &[u8],
+        extra: Option<[u8; 4]>,
     ) -> Result<()> {
-        // TODO(P3): needs the peer's token, which a request carries.
-        bail!("connectionless 0.7 packets are not supported yet");
+        use self::protocol::ConnectedPacket;
+        use self::protocol::ConnectedPacketType;
+        use self::protocol::ControlPacket;
+        use self::protocol::Packet;
+        use self::protocol::TOKEN_NONE;
+
+        if extra.is_some() {
+            bail!("the extended connless header is 0.6 only");
+        }
+        let Addr(addr) = addr;
+        if let Some(token) = self.token_for(&addr) {
+            return Protocol::send_with_token(cb, packet_buf, addr, token, payload);
+        }
+        // No token yet: keep the packet and ask for one. The answer carries
+        // our own token, so nothing has to be remembered for the request.
+        let now = Instant::now();
+        self.queued.retain(|q| q.expires > now);
+        if self.queued.len() >= MAX_QUEUED {
+            self.queued.pop_front();
+        }
+        if payload.len() > protocol::MAX_PAYLOAD {
+            bail!("connless packet too long");
+        }
+        let payload = payload.iter().copied().collect();
+        self.queued.push_back(Queued { addr, payload, expires: now + QUEUE_LIFETIME });
+        debug!("asking {} for a token, {} packet(s) waiting", addr, self.queued.len());
+        let written = Packet::Connected(ConnectedPacket {
+            token: TOKEN_NONE,
+            ack: 0,
+            type_: ConnectedPacketType::Control(ControlPacket::Token(own_token(cb, &addr))),
+        })
+        .write(&mut packet_buf[..])
+        .unwrap();
+        cb.socket.send_to(written, addr).context("UdpSocket::send_to")?;
+        Ok(())
     }
 }
 
@@ -235,7 +431,7 @@ impl Connection {
             }
             ConnlessChunk(chunk) => {
                 buf[..chunk.len()].copy_from_slice(&chunk);
-                Event::ConnlessChunk(Addr(self.addr).into(), chunk.len()).into()
+                Event::ConnlessChunk(Addr(self.addr).into(), chunk.len(), ConnlessMeta::default()).into()
             }
             Disconnect(reason, remote) => {
                 buf[..reason.len()].copy_from_slice(reason.as_bytes());

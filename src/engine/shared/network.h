@@ -432,6 +432,13 @@ private:
 #ifdef CONF_NETWORKING_QUIC
 // Formats the address the network library binds to.
 void BindAddrStr(const NETADDR &BindAddr, char *pBuffer, size_t BufferSize);
+// The address a connectionless packet came from, out of the library's URL;
+// the scheme says whether it came over 0.7. False for anything else.
+bool NetConnlessAddr(const char *pUrl, NETADDR *pAddr, bool *pSixup);
+// Sends a connectionless chunk through the library: 0.7 for an address
+// flagged NETTYPE_TW7, with the extended header when the chunk asks for it,
+// and to everyone on the link for a broadcast address.
+void NetSendConnless(CNet *pNet, const CNetChunk *pChunk);
 #endif
 
 class CNetServer
@@ -597,12 +604,14 @@ public:
 	void ResetErrorString(int ClientId);
 	const char *ErrorString(int ClientId);
 
+	// Answers a 0.7 connectionless packet, with the token it asked to be
+	// answered with.
+	void SendConnlessSixup(const NETADDR *pAddr, const void *pData, int DataSize, SECURITY_TOKEN ResponseToken);
+
 	// anti spoof
 	SECURITY_TOKEN GetGlobalToken();
-#ifndef CONF_NETWORKING_QUIC
 	SECURITY_TOKEN GetToken(const NETADDR &Addr);
 	SECURITY_TOKEN GetVanillaToken(const NETADDR &Addr);
-#endif
 };
 
 class CNetConsole

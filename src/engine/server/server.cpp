@@ -3060,7 +3060,6 @@ void CServer::PumpNetwork()
 					}
 					if(Type == SERVERINFO_VANILLA && ResponseToken != NET_SECURITY_TOKEN_UNKNOWN && Config()->m_SvSixup)
 					{
-#ifndef CONF_NETWORKING_QUIC
 						CUnpacker Unpacker;
 						Unpacker.Reset((unsigned char *)Packet.m_pData + sizeof(SERVERBROWSE_GETINFO), Packet.m_DataSize - sizeof(SERVERBROWSE_GETINFO));
 						int SrvBrwsToken = Unpacker.GetInt();
@@ -3080,8 +3079,7 @@ void CServer::PumpNetwork()
 						Packer.AddRaw(SERVERBROWSE_INFO, sizeof(SERVERBROWSE_INFO));
 						Packer.AddInt(SrvBrwsToken);
 						GetServerInfoSixup(&Packer, SendClients.value());
-						CNetBase::SendPacketConnlessWithToken7(m_NetServer.Socket(), &Packet.m_Address, Packer.Data(), Packer.Size(), ResponseToken, m_NetServer.GetToken(Packet.m_Address));
-#endif // CONF_NETWORKING_QUIC
+						m_NetServer.SendConnlessSixup(&Packet.m_Address, Packer.Data(), Packer.Size(), ResponseToken);
 					}
 					else if(Type != -1)
 					{

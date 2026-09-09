@@ -53,6 +53,16 @@ size_t ddnet_net_ev_disconnect_reason_len(const struct DdnetNetEvent *ev);
 
 bool ddnet_net_ev_disconnect_is_remote(const struct DdnetNetEvent *ev);
 
+/**
+ * The four bytes of the 0.6 extended header, if the packet had one.
+ */
+bool ddnet_net_ev_connless_chunk_extra(struct DdnetNetEvent *ev, uint8_t (*extra)[4]);
+
+/**
+ * The 0.7 sender's token for answering it, if the packet came over 0.7.
+ */
+bool ddnet_net_ev_connless_chunk_token7(struct DdnetNetEvent *ev, uint32_t *token);
+
 size_t ddnet_net_ev_connless_chunk_len(struct DdnetNetEvent *ev);
 
 void ddnet_net_ev_connless_chunk_addr(struct DdnetNetEvent *ev,
@@ -118,6 +128,22 @@ bool ddnet_net_send_connless_chunk(struct DdnetNet *net,
                                    size_t addr_len,
                                    const uint8_t *chunk,
                                    size_t chunk_len);
+
+/**
+ * Sends a 0.6 connectionless packet with the extended header.
+ */
+bool ddnet_net_send_connless_chunk_extended(struct DdnetNet *net,
+                                            const char *addr,
+                                            size_t addr_len,
+                                            const uint8_t (*extra)[4],
+                                            const uint8_t *chunk,
+                                            size_t chunk_len);
+
+/**
+ * The 0.7 token accepted from any address, which a server registers with
+ * so the masterserver can challenge it.
+ */
+bool ddnet_net_global_token7(struct DdnetNet *net, uint32_t *token);
 
 bool ddnet_net_num_peers_in_bucket(struct DdnetNet *net,
                                    const char *addr,

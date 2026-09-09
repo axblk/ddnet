@@ -808,9 +808,11 @@ void CMapView::ZoomMouseTarget(float ZoomFactor)
 
 void CMapView::UpdateZoom()
 {
+	// The range first, so that this frame's smoothing step already runs inside
+	// it rather than one frame behind whatever the setting says now.
+	Zoom()->SetValueRange(10.0f, g_Config.m_EdLimitMaxZoomLevel ? 2000.0f : std::numeric_limits<float>::max());
 	float OldLevel = Zoom()->GetValue();
 	bool UpdatedZoom = Zoom()->UpdateValue();
-	Zoom()->SetValueRange(10.0f, g_Config.m_EdLimitMaxZoomLevel ? 2000.0f : std::numeric_limits<float>::max());
 	float NewLevel = Zoom()->GetValue();
 	if(UpdatedZoom && g_Config.m_EdZoomTarget)
 		ZoomMouseTarget(NewLevel / OldLevel);

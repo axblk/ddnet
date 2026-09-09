@@ -73,6 +73,7 @@ pub const DDNET_NET_PROTOCOL_TW06: u64 = 0;
 pub const DDNET_NET_PROTOCOL_TW07: u64 = 1;
 pub const DDNET_NET_PROTOCOL_QUIC: u64 = 2;
 pub const DDNET_NET_PROTOCOL_WEBTRANSPORT: u64 = 3;
+pub const DDNET_NET_PROTOCOL_WEBSOCKET: u64 = 4;
 
 // TODO: Maybe expose `Addr` struct to C (in an opaque way).
 
@@ -555,6 +556,7 @@ pub extern "C" fn ddnet_net_set_accept_protocol(
             DDNET_NET_PROTOCOL_TW07 => Protocol::Tw07,
             DDNET_NET_PROTOCOL_QUIC => Protocol::Quic,
             DDNET_NET_PROTOCOL_WEBTRANSPORT => Protocol::WebTransport,
+            DDNET_NET_PROTOCOL_WEBSOCKET => Protocol::WebSocket,
             _ => bail!("unknown protocol {}", protocol),
         };
         builder.accept_protocol(protocol, accept);

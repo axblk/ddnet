@@ -466,6 +466,7 @@ MACRO_CONFIG_STR(SvQuicIdentityKey, sv_quic_identity_key, IO_MAX_PATH_LENGTH, "q
 MACRO_CONFIG_INT(SvLegacyUdp, sv_legacy_udp, 1, 0, 1, CFGFLAG_SERVER, "Accept 0.6 and 0.7 clients over plain UDP on the server port (restart required)")
 MACRO_CONFIG_INT(SvQuic, sv_quic, 1, 0, 1, CFGFLAG_SERVER, "Accept QUIC clients on the server port (restart required)")
 MACRO_CONFIG_INT(SvWebtransport, sv_webtransport, 1, 0, 1, CFGFLAG_SERVER, "Accept WebTransport clients on the server port, needs sv_quic (restart required)")
+MACRO_CONFIG_INT(SvWebsocket, sv_websocket, 1, 0, 1, CFGFLAG_SERVER, "Accept WebSocket clients on TCP at the server port, if compiled in (restart required)")
 MACRO_CONFIG_STR(SvTlsCert, sv_tls_cert, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER, "PEM certificate chain shown to browsers, from a CA; empty for a short-lived self-made certificate that browsers accept by its hash (restart required)")
 MACRO_CONFIG_STR(SvTlsKey, sv_tls_key, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, "PEM private key for sv_tls_cert (restart required)")
 MACRO_CONFIG_STR(SvHostname, sv_hostname, 128, "", CFGFLAG_SERVER, "Server hostname (0.7 only)")

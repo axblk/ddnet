@@ -94,16 +94,16 @@ void CNetClient::SetConnectIdentity(const char *pIdentity)
 
 void CNetClient::Connect(const NETADDR *pAddr, int NumAddrs)
 {
-	// A QUIC address is served over UDP on the same port as well.
+	// A QUIC or WebSocket address is served over UDP on the same port as well.
 	NETADDR aAddrs[16];
 	NumAddrs = std::min(NumAddrs, (int)std::size(aAddrs));
 	for(int i = 0; i < NumAddrs; i++)
 	{
 		aAddrs[i] = pAddr[i];
-		if(aAddrs[i].type & NETTYPE_QUIC)
+		if(aAddrs[i].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET))
 		{
-			log_info("net", "QUIC is not compiled in, connecting over UDP");
-			aAddrs[i].type &= ~(NETTYPE_QUIC | NETTYPE_WEBTRANSPORT);
+			log_info("net", "QUIC and WebSockets are not compiled in, connecting over UDP");
+			aAddrs[i].type &= ~(NETTYPE_QUIC | NETTYPE_WEBTRANSPORT | NETTYPE_WEBSOCKET | NETTYPE_WEBSOCKET_TLS);
 		}
 	}
 	m_Connection.Connect(aAddrs, NumAddrs);
@@ -463,15 +463,19 @@ void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
 	char aAddr[NETADDR_MAXSTRSIZE];
 	net_addr_str(&Addr, aAddr, sizeof(aAddr), true);
 	char aUrl[192];
-	if(pAddr[0].type & NETTYPE_QUIC)
+	if(pAddr[0].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET))
 	{
 		if(Sixup)
 		{
-			str_copy(m_aErrorString, "0.7 over QUIC is not supported yet");
+			str_copy(m_aErrorString, "0.7 over QUIC or WebSockets is not supported yet");
 			return;
 		}
 		// The fragment pins the server's identity.
-		const char *pScheme = pAddr[0].type & NETTYPE_WEBTRANSPORT ? "ddnet+wt" : "ddnet+quic";
+		const char *pScheme;
+		if(pAddr[0].type & NETTYPE_WEBSOCKET)
+			pScheme = pAddr[0].type & NETTYPE_WEBSOCKET_TLS ? "ddnet+wss" : "ddnet+ws";
+		else
+			pScheme = pAddr[0].type & NETTYPE_WEBTRANSPORT ? "ddnet+wt" : "ddnet+quic";
 		str_format(aUrl, sizeof(aUrl), "%s://%s%s%s", pScheme, aAddr, m_aConnectIdentity[0] != '\0' ? "#" : "", m_aConnectIdentity);
 	}
 	else
@@ -569,13 +573,16 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 			{
 				Addr.type |= NETTYPE_TW7;
 			}
-			else if(str_startswith(pAddr, "ddnet+quic://") || str_startswith(pAddr, "ddnet+wt://"))
+			else if(str_startswith(pAddr, "ddnet+"))
 			{
-				Addr.type |= NETTYPE_QUIC;
-				if(str_startswith(pAddr, "ddnet+wt://"))
-				{
-					Addr.type |= NETTYPE_WEBTRANSPORT;
-				}
+				if(str_startswith(pAddr, "ddnet+quic://"))
+					Addr.type |= NETTYPE_QUIC;
+				else if(str_startswith(pAddr, "ddnet+wt://"))
+					Addr.type |= NETTYPE_QUIC | NETTYPE_WEBTRANSPORT;
+				else if(str_startswith(pAddr, "ddnet+ws://"))
+					Addr.type |= NETTYPE_WEBSOCKET;
+				else if(str_startswith(pAddr, "ddnet+wss://"))
+					Addr.type |= NETTYPE_WEBSOCKET | NETTYPE_WEBSOCKET_TLS;
 				// The identity the server showed, to connect the dummy with.
 				const char *pFragment = str_find(pAddr, "#");
 				str_copy(m_aServerIdentity, pFragment != nullptr ? pFragment + 1 : "");

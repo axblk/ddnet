@@ -19,9 +19,9 @@ use crate::wire;
 use crate::Error;
 use crate::Map;
 use crate::MapEvent;
+use crate::mapstream;
 use log::debug;
 use log::info;
-use ring::digest;
 use arrayvec::ArrayVec;
 use std::cmp;
 use std::collections::hash_map;
@@ -62,9 +62,6 @@ const WT_CONTROL_STREAM: u64 = 4;
 /// The first unidirectional stream a server sends a map on, past its
 /// HTTP/3 streams.
 const WT_FIRST_MAP_STREAM: u64 = HTTP3_SERVER_CONTROL_STREAM + 4 * HTTP3_UNI_STREAMS;
-/// A stream starts with its kind and the framing version, then the map
-/// header frame.
-const MAX_MAP_PRELUDE: usize = 16 + 16 + wire::MAX_MAP_HEADER_SIZE;
 /// Stream priority of a map, behind the control stream at quiche's default.
 const MAP_STREAM_URGENCY: u8 = 200;
 /// How long a peer whose connection went away is kept for a resume, and
@@ -92,6 +89,27 @@ pub struct Shared {
     certificates: Mutex<Option<Certificates>>,
 }
 
+impl Shared {
+    #[allow(dead_code)] // Used with the websocket feature.
+    pub(crate) fn identity(&self) -> &PrivateIdentity {
+        &self.identity
+    }
+    /// The hash browsers accept the server's certificate by, the one in
+    /// use or the next one.
+    pub(crate) fn certificate_sha256(&self, next: bool) -> Option<[u8; 32]> {
+        self.certificates.lock().unwrap().as_ref()?.sha256(next)
+    }
+    /// A TLS context with the browser certificate, for `wss://`.
+    #[allow(dead_code)] // Used with the websocket feature.
+    pub(crate) fn wss_context(&self) -> Result<Option<boring::ssl::SslContext>> {
+        let mut certificates = self.certificates.lock().unwrap();
+        let Some(certificates) = certificates.as_mut() else {
+            return Ok(None);
+        };
+        certificates.ssl_context().map(Some)
+    }
+}
+
 /// How often a server looks whether its browser certificate is due for a
 /// swap or its files changed.
 const CERTIFICATE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
@@ -102,6 +120,9 @@ pub struct Certificates {
     current: BrowserCertificate,
     next: Option<BrowserCertificate>,
     mode: CertificateMode,
+    /// A TLS context with the current certificate, made when first asked
+    /// for and dropped when the certificate changes.
+    context: Option<boring::ssl::SslContext>,
 }
 
 enum CertificateMode {
@@ -117,6 +138,7 @@ impl Certificates {
             current: BrowserCertificate::generate(now),
             next: Some(BrowserCertificate::generate(now + BROWSER_CERTIFICATE_ROTATION)),
             mode: CertificateMode::Managed { rotate_at: now + BROWSER_CERTIFICATE_ROTATION },
+            context: None,
         }
     }
     fn files(cert: &str, key: &str) -> Result<Certificates> {
@@ -128,7 +150,31 @@ impl Certificates {
                 key: key.to_owned(),
                 modified: files_modified(cert, key),
             },
+            context: None,
         })
+    }
+    /// A TLS context that shows the current certificate.
+    fn ssl_context(&mut self) -> Result<boring::ssl::SslContext> {
+        if let Some(context) = &self.context {
+            return Ok(context.clone());
+        }
+        let mut builder = boring::ssl::SslContext::builder(boring::ssl::SslMethod::tls())
+            .context("boring::SslContext::builder")?;
+        let chain = self.current.chain();
+        builder
+            .set_certificate(&chain[0])
+            .context("boring::SslContext::set_certificate")?;
+        for intermediate in &chain[1..] {
+            builder
+                .add_extra_chain_cert(intermediate.clone())
+                .context("boring::SslContext::add_extra_chain_cert")?;
+        }
+        builder
+            .set_private_key(self.current.key())
+            .context("boring::SslContext::set_private_key")?;
+        let context = builder.build();
+        self.context = Some(context.clone());
+        Ok(context)
     }
     /// Swaps or reloads what is due; whether anything changed.
     fn maintain(&mut self, now: i64) -> Result<bool> {
@@ -139,6 +185,7 @@ impl Certificates {
                 }
                 let next = self.next.take().unwrap_or_else(|| BrowserCertificate::generate(now));
                 self.current = next;
+                self.context = None;
                 *rotate_at += BROWSER_CERTIFICATE_ROTATION;
                 self.next = Some(BrowserCertificate::generate(*rotate_at));
                 Ok(true)
@@ -150,6 +197,7 @@ impl Certificates {
                 }
                 *modified = now_modified;
                 self.current = BrowserCertificate::from_files(cert, key)?;
+                self.context = None;
                 Ok(true)
             }
         }
@@ -347,7 +395,7 @@ impl ChallengerExt for Challenger {
 }
 
 #[derive(Clone, Copy)]
-enum PeerIdentity {
+pub(crate) enum PeerIdentity {
     AcceptAny,
     Wanted(Identity),
     Known(Identity),
@@ -562,7 +610,12 @@ impl Protocol {
     /// The hash browsers accept the server's certificate by, the one in
     /// use or the next one.
     pub fn certificate_sha256(&self, next: bool) -> Option<[u8; 32]> {
-        self.shared.certificates.lock().unwrap().as_ref()?.sha256(next)
+        self.shared.certificate_sha256(next)
+    }
+    /// What the TLS side shares with other transports.
+    #[allow(dead_code)] // Used with the websocket feature.
+    pub fn shared(&self) -> Arc<Shared> {
+        self.shared.clone()
     }
     /// Swaps or reloads the browser certificates when they are due; called
     /// from every poll, and cheap when nothing is.
@@ -950,25 +1003,22 @@ struct OutgoingMap {
 
 struct IncomingMap {
     stream: u64,
-    /// Bytes not yet parsed: the prelude at first, then data that came with
-    /// it and is handed out before more is read.
-    buffer: Vec<u8>,
-    /// The checksum the header promised, and the bytes still to come.
-    header: Option<([u8; wire::MAP_SHA256_SIZE], usize)>,
-    digest: digest::Context,
-    /// The server finished the stream.
-    finished: bool,
+    inner: mapstream::Incoming,
+    /// A failure found while taking bytes in, reported with the next read.
+    error: Option<&'static str>,
 }
 
 impl IncomingMap {
     fn new(stream: u64) -> IncomingMap {
         IncomingMap {
             stream,
-            buffer: Vec::new(),
-            header: None,
-            digest: digest::Context::new(&digest::SHA256),
-            finished: false,
+            inner: mapstream::Incoming::new(),
+            error: None,
         }
+    }
+    /// Whether there is something to hand out without reading the stream.
+    fn pending(&self) -> bool {
+        self.error.is_some() || self.inner.is_finished() || self.inner.buffered() != 0
     }
 }
 
@@ -1562,27 +1612,17 @@ impl Connection {
             bail!("peer takes no map stream");
         }
         self.cancel_map();
-        let header = wire::MapHeader {
-            size: map.data.len() as u64,
-            crc: map.crc,
-            sha256: map.sha256,
-            name: &map.name,
-        };
-        let Some(header) = wire::encode_map_header(&header) else {
+        let Some(stream_prelude) = mapstream::prelude(&map) else {
             bail!("map header does not encode");
         };
-        let mut prelude = Vec::with_capacity(16 + header.len());
+        let mut prelude = Vec::with_capacity(16 + stream_prelude.len());
         if let Transport::WebTransport(session) = &self.transport {
             let Some(stream_header) = session.application_stream_header() else {
                 bail!("no session for the map stream");
             };
             prelude.extend_from_slice(&stream_header);
         }
-        wire::encode_varint(wire::stream::MAP, &mut prelude);
-        wire::encode_varint(wire::VERSION_MAJOR, &mut prelude);
-        if !wire::encode_frame(wire::frame::MAP_HEADER, &header, &mut prelude) {
-            bail!("map header frame does not encode");
-        }
+        prelude.extend_from_slice(&stream_prelude);
         let stream = self.next_uni_stream;
         // Creates the stream, and fails if the peer allows no more of them.
         self.inner
@@ -1647,30 +1687,15 @@ impl Connection {
         buf[..len].copy_from_slice(&reason.as_bytes()[..len]);
         Event::Map(MapEvent::Failed, len)
     }
-    /// Ends the incoming map once all its bytes are in.
-    fn map_finished(&mut self, buf: &mut [u8]) -> Event {
-        let map = self.incoming_map.take().unwrap();
-        let Some((sha256, remaining)) = map.header else {
-            self.incoming_map = Some(map);
-            return self.map_failed(buf, "map stream ended before its header");
-        };
-        if remaining != 0 {
-            self.incoming_map = Some(map);
-            return self.map_failed(buf, "map stream ended early");
-        }
-        if map.digest.clone().finish().as_ref() != sha256 {
-            self.incoming_map = Some(map);
-            return self.map_failed(buf, "map stream checksum mismatch");
-        }
-        Event::Map(MapEvent::End, 0)
-    }
     /// The next step of the incoming map, if any is due: looks at the
     /// streams the server opened and reads the newest one.
     fn next_map_event(&mut self, buf: &mut [u8]) -> Result<Option<Event>> {
-        // A finished stream is not readable any more, but may still hold
-        // data that came with the header, and its end is still due.
-        if self.incoming_map.as_ref().is_some_and(|map| map.finished) {
-            return self.read_map_stream(buf);
+        // What was read but not handed out yet comes first; a finished
+        // stream is not readable any more, but its end is still due.
+        if self.incoming_map.as_ref().is_some_and(|map| map.pending()) {
+            if let Some(event) = self.read_map_stream(buf)? {
+                return Ok(Some(event));
+            }
         }
         let readable: Vec<u64> = self
             .inner
@@ -1712,139 +1737,62 @@ impl Connection {
             None => {}
         }
         let mut map = IncomingMap::new(stream);
-        map.buffer = initial;
-        map.finished = finished;
+        map.error = map.inner.push(&initial).err();
+        if finished {
+            map.inner.finish();
+        }
         self.incoming_map = Some(map);
         true
     }
     /// Reads the incoming map's stream for one event.
     fn read_map_stream(&mut self, buf: &mut [u8]) -> Result<Option<Event>> {
-        let map = self.incoming_map.as_mut().unwrap();
-        let stream = map.stream;
-        if map.header.is_none() {
-            let mut tmp = [0; 4096];
-            let room = MAX_MAP_PRELUDE.saturating_sub(map.buffer.len()).min(tmp.len());
+        loop {
+            let map = self.incoming_map.as_mut().unwrap();
+            let stream = map.stream;
+            if let Some(reason) = map.error.take() {
+                return Ok(Some(self.map_failed(buf, reason)));
+            }
+            match map.inner.next_step(buf) {
+                Some(mapstream::Step::Header(len)) => return Ok(Some(Event::Map(MapEvent::Header, len))),
+                Some(mapstream::Step::Data(len)) => return Ok(Some(Event::Map(MapEvent::Data, len))),
+                Some(mapstream::Step::End) => {
+                    self.incoming_map = None;
+                    return Ok(Some(Event::Map(MapEvent::End, 0)));
+                }
+                Some(mapstream::Step::Failed(reason)) => return Ok(Some(self.map_failed(buf, reason))),
+                None => {}
+            }
+            let mut tmp = [0; 16384];
+            let room = if map.inner.has_header() {
+                tmp.len()
+            } else {
+                mapstream::MAX_PRELUDE.saturating_sub(map.inner.buffered()).min(tmp.len())
+            };
             if room == 0 {
                 return Ok(Some(self.map_failed(buf, "map header too long")));
             }
-            if !map.finished {
-                match self.inner.stream_recv(stream, &mut tmp[..room]) {
-                    Ok((read, fin)) => {
-                        map.buffer.extend_from_slice(&tmp[..read]);
-                        map.finished |= fin;
+            match self.inner.stream_recv(stream, &mut tmp[..room]) {
+                Ok((read, fin)) => {
+                    let map = self.incoming_map.as_mut().unwrap();
+                    if let Err(reason) = map.inner.push(&tmp[..read]) {
+                        return Ok(Some(self.map_failed(buf, reason)));
                     }
-                    Err(quiche::Error::Done) => return Ok(None),
-                    Err(quiche::Error::StreamReset(_)) => {
-                        // The server withdrew the map; whatever replaces it
-                        // comes on a stream of its own.
-                        debug!("map stream {} from {} reset", stream, self.peer_addr);
-                        self.incoming_map = None;
+                    if fin {
+                        map.inner.finish();
+                    } else if read == 0 {
                         return Ok(None);
                     }
-                    Err(e) => return Err(e).context("quiche::Conn::stream_recv"),
                 }
-            }
-            let parsed = (|| {
-                let (kind, first) = match wire::decode_varint(&map.buffer) {
-                    Ok(v) => v,
-                    Err(wire::DecodeError::NeedMore) => return Ok(None),
-                    Err(_) => return Err("invalid map stream"),
-                };
-                let (version, second) = match wire::decode_varint(&map.buffer[first..]) {
-                    Ok(v) => v,
-                    Err(wire::DecodeError::NeedMore) => return Ok(None),
-                    Err(_) => return Err("invalid map stream"),
-                };
-                if kind != wire::stream::MAP || version != wire::VERSION_MAJOR {
-                    return Err("unsupported map stream");
-                }
-                let frame = match wire::decode_frame(&map.buffer[first + second..]) {
-                    Ok(frame) => frame,
-                    Err(wire::DecodeError::NeedMore) => return Ok(None),
-                    Err(_) => return Err("invalid map header"),
-                };
-                if frame.frame_type != wire::frame::MAP_HEADER {
-                    return Err("expected map header");
-                }
-                let Ok(header) = wire::decode_map_header(frame.payload) else {
-                    return Err("invalid map metadata");
-                };
-                let Ok(size) = usize::try_from(header.size) else {
-                    return Err("map exceeds platform limit");
-                };
-                if frame.payload.len() > buf.len() {
-                    return Err("map header too long");
-                }
-                Ok(Some((first + second, frame.bytes_consumed, frame.payload.len(), header.sha256, size)))
-            })();
-            match parsed {
-                Err(reason) => return Ok(Some(self.map_failed(buf, reason))),
-                Ok(None) => {
-                    if map.finished {
-                        return Ok(Some(self.map_failed(buf, "map stream ended before its header")));
-                    }
+                Err(quiche::Error::Done) => return Ok(None),
+                Err(quiche::Error::StreamReset(_)) => {
+                    // The server withdrew the map; whatever replaces it
+                    // comes on a stream of its own.
+                    debug!("map stream {} from {} reset", stream, self.peer_addr);
+                    self.incoming_map = None;
                     return Ok(None);
                 }
-                Ok(Some((prelude, consumed, len, sha256, size))) => {
-                    let end = prelude + consumed;
-                    buf[..len].copy_from_slice(&map.buffer[end - len..end]);
-                    map.buffer.drain(..end);
-                    map.header = Some((sha256, size));
-                    return Ok(Some(Event::Map(MapEvent::Header, len)));
-                }
+                Err(e) => return Err(e).context("quiche::Conn::stream_recv"),
             }
-        }
-        let (_, remaining) = map.header.as_mut().unwrap();
-        // Data that came in with the header goes first.
-        if !map.buffer.is_empty() {
-            if *remaining == 0 {
-                return Ok(Some(self.map_failed(buf, "map stream exceeds declared size")));
-            }
-            let take = map.buffer.len().min(*remaining).min(buf.len());
-            buf[..take].copy_from_slice(&map.buffer[..take]);
-            map.digest.update(&buf[..take]);
-            map.buffer.drain(..take);
-            *remaining -= take;
-            return Ok(Some(Event::Map(MapEvent::Data, take)));
-        }
-        if map.finished {
-            return Ok(Some(self.map_finished(buf)));
-        }
-        if *remaining == 0 {
-            // Nothing but the end may follow.
-            let mut tmp = [0; 1];
-            return match self.inner.stream_recv(stream, &mut tmp) {
-                Ok((0, true)) => Ok(Some(self.map_finished(buf))),
-                Ok(_) => Ok(Some(self.map_failed(buf, "map stream exceeds declared size"))),
-                Err(quiche::Error::Done) => Ok(None),
-                Err(quiche::Error::StreamReset(_)) => {
-                    self.incoming_map = None;
-                    Ok(None)
-                }
-                Err(e) => Err(e).context("quiche::Conn::stream_recv"),
-            };
-        }
-        let room = buf.len().min(*remaining);
-        match self.inner.stream_recv(stream, &mut buf[..room]) {
-            Ok((read, fin)) => {
-                map.digest.update(&buf[..read]);
-                *remaining -= read;
-                map.finished |= fin;
-                if read != 0 {
-                    Ok(Some(Event::Map(MapEvent::Data, read)))
-                } else if fin {
-                    Ok(Some(self.map_finished(buf)))
-                } else {
-                    Ok(None)
-                }
-            }
-            Err(quiche::Error::Done) => Ok(None),
-            Err(quiche::Error::StreamReset(_)) => {
-                debug!("map stream {} from {} reset", stream, self.peer_addr);
-                self.incoming_map = None;
-                Ok(None)
-            }
-            Err(e) => Err(e).context("quiche::Conn::stream_recv"),
         }
     }
     /// Hands out the next event. Once there is none, whatever the received

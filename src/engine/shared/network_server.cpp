@@ -1016,6 +1016,7 @@ bool CNetServer::OpenLibrary()
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW07, g_Config.m_SvLegacyUdp != 0) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_QUIC, g_Config.m_SvQuic != 0) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_WEBTRANSPORT, g_Config.m_SvWebtransport != 0) ||
+		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_WEBSOCKET, g_Config.m_SvWebsocket != 0) ||
 		ddnet_net_open(m_pNet))
 	{
 		log_error("net", "couldn't open net server: %s", ddnet_net_error(m_pNet));
@@ -1270,7 +1271,8 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 
 			m_aPeers[ClientId].m_State = CPeer::STATE_CONNECTED;
 			m_aPeers[ClientId].m_Id = PeerId;
-			m_aPeers[ClientId].m_Quic = str_startswith(pAddr, "ddnet+quic://") != nullptr || str_startswith(pAddr, "ddnet+wt://") != nullptr;
+			// Peers over the game's own wire protocol take the map on a stream.
+			m_aPeers[ClientId].m_Quic = str_startswith(pAddr, "ddnet+") != nullptr;
 			m_aPeers[ClientId].SetAddress(Addr);
 			NET_CALL(ddnet_net_set_userdata, m_pNet, PeerId, (void *)(uintptr_t)ClientId);
 			if(m_pfnNewClient)

@@ -11,6 +11,8 @@ use self::net::Protocol;
 use self::net::Socket;
 use self::net::Tw06Addr;
 use self::net::Tw07Addr;
+#[cfg(feature = "websocket")]
+use self::net::WsAddr;
 use self::util::normalize;
 use self::util::secure_hash;
 use self::util::secure_random;
@@ -32,7 +34,10 @@ mod net;
 mod quic;
 mod tw06;
 mod tw07;
+mod mapstream;
 mod webtransport;
+#[cfg(feature = "websocket")]
+mod ws;
 mod wire;
 mod util;
 

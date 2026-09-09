@@ -133,6 +133,7 @@ option(DEV "Don't generate stuff necessary for packaging, don't strip absolute p
 option(VULKAN "Enable the vulkan backend" ${AUTO_VULKAN_BACKEND})
 option(NETWORKING_QUIC "Use the Rust networking backend with QUIC support" OFF)
 option(LIBTW2_PATCH "Build against a libtw2-net with src/net/libtw2-patches applied, which is what a 0.7 server needs" OFF)
+option(WEBSOCKETS "Accept WebSocket clients from the Rust networking backend (needs NETWORKING_QUIC)" OFF)
 
 option(EXCEPTION_HANDLING "Enable crashdumps (only works with Windows)" OFF)
 option(IPO "Enable interprocedural optimizations" OFF)
@@ -724,6 +725,10 @@ if(MYSQL AND NOT(MYSQL_FOUND))
   message(SEND_ERROR "You must install MySQL to compile the ${CMAKE_PROJECT_NAME} server with MySQL support")
 endif()
 
+if(WEBSOCKETS AND NOT NETWORKING_QUIC)
+  message(SEND_ERROR "WEBSOCKETS needs NETWORKING_QUIC, the WebSocket transport is part of the Rust networking backend")
+endif()
+
 if(UPNP AND NOT(MINIUPNPC_FOUND))
   message(SEND_ERROR "You must install miniupnpc to compile the ${CMAKE_PROJECT_NAME} server with UPnP support")
 endif()
@@ -1188,6 +1193,7 @@ if(NETWORKING_QUIC)
     key.rs
     lib.rs
     libtw2_patch.rs
+    mapstream.rs
     net.rs
     quic.rs
     tw06.rs
@@ -1195,6 +1201,7 @@ if(NETWORKING_QUIC)
     util.rs
     webtransport.rs
     wire.rs
+    ws.rs
   )
   list(APPEND RUST_NET_SRC
     "${PROJECT_SOURCE_DIR}/src/net/Cargo.lock"
@@ -1209,6 +1216,9 @@ if(NETWORKING_QUIC)
   list(APPEND CARGO_BUILD_NET --lib)
   if(LIBTW2_PATCH)
     list(APPEND CARGO_BUILD_NET --features libtw2-patch)
+  endif()
+  if(WEBSOCKETS)
+    list(APPEND CARGO_BUILD_NET --features websocket)
   endif()
 
   set(NET_LIBRARY_NAME "${CMAKE_SHARED_LIBRARY_PREFIX}net${CMAKE_SHARED_LIBRARY_SUFFIX}")

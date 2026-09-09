@@ -351,6 +351,8 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 	bool sixup = false;
 	bool quic = false;
 	bool webtransport = false;
+	bool websocket = false;
+	bool websocket_tls = false;
 	mem_zero(addr, sizeof(*addr));
 	const char *str = str_startswith(string, "tw-0.6+udp://");
 	if(!str && (str = str_startswith(string, "tw-0.7+udp://")))
@@ -365,6 +367,15 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 	{
 		quic = true;
 		webtransport = true;
+	}
+	if(!str && (str = str_startswith(string, "ddnet+ws://")))
+	{
+		websocket = true;
+	}
+	if(!str && (str = str_startswith(string, "ddnet+wss://")))
+	{
+		websocket = true;
+		websocket_tls = true;
 	}
 	if(!str)
 		return 1;
@@ -405,6 +416,10 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 		addr->type |= NETTYPE_QUIC;
 	if(webtransport)
 		addr->type |= NETTYPE_WEBTRANSPORT;
+	if(websocket)
+		addr->type |= NETTYPE_WEBSOCKET;
+	if(websocket_tls)
+		addr->type |= NETTYPE_WEBSOCKET_TLS;
 
 	return failure;
 }

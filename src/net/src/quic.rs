@@ -5,6 +5,7 @@ use crate::Context as _;
 use crate::key::BrowserCertificate;
 use crate::key::unix_now;
 use crate::key::BROWSER_CERTIFICATE_ROTATION;
+use crate::key::IDENTITY_CERTIFICATE_RENEWAL;
 use crate::key::IDENTITY_PROOF_SIZE;
 use crate::Identity;
 use crate::MAX_FRAME_SIZE;
@@ -87,7 +88,34 @@ pub struct Shared {
     /// The browser certificate a server chose for the current handshake.
     shown_certificate: Mutex<Option<[u8; 32]>>,
     identity: PrivateIdentity,
+    identity_certificate: Mutex<IdentityCertificate>,
     certificates: Mutex<Option<Certificates>>,
+}
+
+/// The certificate the identity sits in. Our own verification reads the
+/// key out of it and ignores the dates, but it is remade well before it
+/// runs out for any other TLS stack that looks at them; the TLS context
+/// keeps the first one, a handshake takes the current one.
+struct IdentityCertificate {
+    cert: boring::x509::X509,
+    renew_at: i64,
+}
+
+impl IdentityCertificate {
+    fn new(identity: &PrivateIdentity, now: i64) -> IdentityCertificate {
+        IdentityCertificate {
+            cert: identity.generate_certificate(now),
+            renew_at: now + IDENTITY_CERTIFICATE_RENEWAL,
+        }
+    }
+    /// Remakes the certificate when it is due; whether it did.
+    fn maintain(&mut self, identity: &PrivateIdentity, now: i64) -> bool {
+        if now < self.renew_at {
+            return false;
+        }
+        *self = IdentityCertificate::new(identity, now);
+        true
+    }
 }
 
 /// Locks past a poisoning: a panic in a callback is caught at the FFI and
@@ -479,6 +507,10 @@ fn config(
             .get_extension(boring::ssl::ExtensionType::APPLICATION_LAYER_PROTOCOL_NEGOTIATION)
             .unwrap_or(&[]);
         if !wants_browser_certificate(alpn) {
+            let identity_certificate = lock(&select_shared.identity_certificate);
+            if hello.ssl_mut().set_certificate(&identity_certificate.cert).is_err() {
+                return Err(boring::ssl::SelectCertError::ERROR);
+            }
             return Ok(());
         }
         let certificates = lock(&select_shared.certificates);
@@ -626,16 +658,19 @@ impl Protocol {
         tls_files: Option<(&str, &str)>,
         log_keys: bool,
     ) -> Result<Protocol> {
-        let cert = identity.generate_certificate();
+        let now = unix_now();
+        let identity_certificate = IdentityCertificate::new(&identity, now);
+        let cert = identity_certificate.cert.clone();
         let certificates = match (webtransport, tls_files) {
             (_, Some((cert, key))) => Some(Certificates::files(cert, key)?),
-            (true, None) => Some(Certificates::managed(unix_now())),
+            (true, None) => Some(Certificates::managed(now)),
             (false, None) => None,
         };
         let shared = Arc::new(Shared {
             peer_identity: Mutex::new(None),
             shown_certificate: Mutex::new(None),
             identity,
+            identity_certificate: Mutex::new(identity_certificate),
             certificates: Mutex::new(certificates),
         });
 
@@ -665,19 +700,24 @@ impl Protocol {
     pub fn shared(&self) -> Arc<Shared> {
         self.shared.clone()
     }
-    /// Swaps or reloads the browser certificates when they are due; called
-    /// from every poll, and cheap when nothing is.
+    /// Remakes the identity certificate and swaps or reloads the browser
+    /// certificates when they are due; called from every poll, and cheap
+    /// when nothing is.
     pub fn maintain_certificates(&mut self) -> Result<()> {
         let now = Instant::now();
         if now < self.next_certificate_check {
             return Ok(());
         }
         self.next_certificate_check = now + CERTIFICATE_CHECK_INTERVAL;
+        let unix_now = unix_now();
+        if lock(&self.shared.identity_certificate).maintain(&self.shared.identity, unix_now) {
+            info!("identity certificate remade");
+        }
         let mut certificates = lock(&self.shared.certificates);
         let Some(certificates) = certificates.as_mut() else {
             return Ok(());
         };
-        if certificates.maintain(unix_now())? {
+        if certificates.maintain(unix_now)? {
             info!("browser certificate is now {}", hex(certificates.current.sha256()));
         }
         Ok(())

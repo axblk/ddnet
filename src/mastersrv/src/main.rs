@@ -502,6 +502,9 @@ impl ServerCertVerifier for HandshakeServerVerifier {
 
 const MODERN_CHALLENGE_STREAM_KIND: u64 = 64;
 const MODERN_CHALLENGE_STREAM_VERSION: u64 = 1;
+/// Where a WebTransport or WebSocket challenge knocks: a path the game
+/// server sets aside for the masterserver.
+const MASTER_PATH: &str = "/ddnet/master";
 const MAX_HTTP3_RESPONSE_SIZE: usize = 8 * 1024;
 
 fn modern_challenge_payload(packet: &[u8]) -> Vec<u8> {
@@ -641,7 +644,7 @@ async fn send_webtransport_challenge(
         WebTransportStreamId::new(VarInt::try_from_u64(u64::from(connect_send.id())).unwrap());
     let session_id =
         SessionId::try_from_session_stream(stream_id).map_err(|error| error.to_string())?;
-    let request = SessionRequest::new(format!("https://{authority}/ddnet/master"))
+    let request = SessionRequest::new(format!("https://{authority}{MASTER_PATH}"))
         .map_err(|error| error.to_string())?;
     let request_frame = request.headers().generate_frame();
     let mut request_payload = Vec::with_capacity(request_frame.write_size());
@@ -1283,7 +1286,7 @@ async fn send_challenge_websocket(
     use futures_util::SinkExt as _;
     use tokio_tungstenite::tungstenite::Error as WsError;
 
-    let url = format!("{}://{}/", if secure { "wss" } else { "ws" }, target);
+    let url = format!("{}://{}{}", if secure { "wss" } else { "ws" }, target, MASTER_PATH);
     // Connect separately from the handshake, so that the connect gets its own,
     // much shorter timeout.
     let stream = time::timeout(
@@ -1806,6 +1809,7 @@ async fn main() {
         let mut body = json::to_value(body).unwrap();
         body["quic_challenge"] = json::Value::Bool(true);
         body["webtransport_challenge"] = json::Value::Bool(true);
+        body["websocket_challenge"] = json::Value::Bool(true);
         body["domain_registration"] = json::Value::Bool(true);
         body["scheme_fragments"] = json::Value::Bool(true);
         warp::http::Response::builder()
@@ -2052,7 +2056,7 @@ mod test {
                         })
                 };
                 if let Some(path) = path {
-                    assert_eq!(path, "/ddnet/master");
+                    assert_eq!(path, MASTER_PATH);
                     break;
                 }
                 request_buffer.extend_from_slice(
@@ -2086,6 +2090,40 @@ mod test {
             .await
             .unwrap();
         assert_eq!(server.await.unwrap(), modern_challenge_payload(&packet));
+    }
+
+    #[tokio::test]
+    async fn websocket_sends_token_challenge_on_master_path() {
+        use futures_util::StreamExt as _;
+        use tokio_tungstenite::tungstenite::handshake::server::Request;
+        use tokio_tungstenite::tungstenite::handshake::server::Response;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let path = Arc::new(Mutex::new(String::new()));
+            let seen = path.clone();
+            let mut websocket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                move |request: &Request, response: Response| {
+                    *seen.lock().unwrap() = request.uri().path().to_string();
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            let message = websocket.next().await.unwrap().unwrap();
+            let path = path.lock().unwrap().clone();
+            (path, message.into_data().to_vec())
+        });
+        let packet = challenge_payload("challenge:ddnet+ws/ipv4", "token");
+        send_challenge_websocket(false, target, packet.clone())
+            .await
+            .unwrap();
+        let (path, received) = server.await.unwrap();
+        assert_eq!(path, MASTER_PATH);
+        assert_eq!(received, packet);
     }
 
     #[test]

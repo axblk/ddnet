@@ -718,7 +718,7 @@ public:
 	void ResetErrorString();
 
 	// error and state
-	int State();
+	int State() const;
 	bool GotProblems(int64_t MaxLatency) const;
 	const char *ErrorString() const;
 	int NetType();

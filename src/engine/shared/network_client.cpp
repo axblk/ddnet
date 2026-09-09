@@ -326,7 +326,7 @@ int CNetClient::Send(CNetChunk *pChunk)
 	return 0;
 }
 
-int CNetClient::State()
+int CNetClient::State() const
 {
 	return m_State;
 }

@@ -522,6 +522,8 @@ private:
 	CNetObj_SpectatorInfo m_SpectatorInfo = {};
 	bool m_HasSpectatorCount = false;
 	CNetObj_SpectatorCount m_SpectatorCount = {};
+	bool m_HasDDNetSpectatorInfo = false;
+	CNetObj_DDNetSpectatorInfo m_DDNetSpectatorInfo = {};
 	CGameInfo m_CoreGameInfo;
 	CTeamsCore m_Teams;
 	CSnapState m_Snap = {};
@@ -646,6 +648,17 @@ public:
 	}
 	bool HasSpectatorCount() const { return m_HasSpectatorCount; }
 	const CNetObj_SpectatorCount &SpectatorCount() const { return m_SpectatorCount; }
+	// The camera the server wants this state to look through. Every state keeps
+	// its own, so a state that is not the focused one - a demo being rendered to
+	// video, the dummy on the other half of a split screen - can still be shown
+	// with the zoom it was recorded with.
+	void ApplyDDNetSpectatorInfo(const CNetObj_DDNetSpectatorInfo &DDNetSpectatorInfo)
+	{
+		m_HasDDNetSpectatorInfo = true;
+		m_DDNetSpectatorInfo = DDNetSpectatorInfo;
+	}
+	bool HasDDNetSpectatorInfo() const { return m_HasDDNetSpectatorInfo; }
+	const CNetObj_DDNetSpectatorInfo &DDNetSpectatorInfo() const { return m_DDNetSpectatorInfo; }
 };
 
 class CGameStateManager

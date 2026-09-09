@@ -92,6 +92,17 @@ void CNetServer::SetIdentity(const unsigned char (&aSeed)[32])
 	m_HasIdentity = true;
 }
 
+void CNetServer::SetTlsFiles(const char *pCert, const char *pKey)
+{
+	str_copy(m_aTlsCert, pCert);
+	str_copy(m_aTlsKey, pKey);
+}
+
+bool CNetServer::CertificateSha256(bool Next, SHA256_DIGEST *pSha256)
+{
+	return m_pNet != nullptr && ddnet_net_certificate_sha256(m_pNet, Next, &pSha256->data);
+}
+
 bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int MaxClientsPerIp)
 {
 	m_pNetBan = pNetBan;
@@ -119,10 +130,12 @@ bool CNetServer::OpenLibrary()
 		ddnet_net_set_bindaddr(m_pNet, aBindAddr, str_length(aBindAddr)) ||
 		(m_HasIdentity && ddnet_net_set_identity(m_pNet, &m_aIdentity)) ||
 		ddnet_net_set_timeout(m_pNet, g_Config.m_ConnTimeout) ||
+		(m_aTlsCert[0] != '\0' && ddnet_net_set_tls_files(m_pNet, m_aTlsCert, str_length(m_aTlsCert), m_aTlsKey, str_length(m_aTlsKey))) ||
 		ddnet_net_set_accept_connections(m_pNet, true) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW06, g_Config.m_SvLegacyUdp != 0) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW07, g_Config.m_SvLegacyUdp != 0) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_QUIC, g_Config.m_SvQuic != 0) ||
+		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_WEBTRANSPORT, g_Config.m_SvWebtransport != 0) ||
 		ddnet_net_open(m_pNet))
 	{
 		log_error("net", "couldn't open net server: %s", ddnet_net_error(m_pNet));
@@ -390,7 +403,7 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 
 			m_aPeers[ClientId].m_State = CPeer::STATE_CONNECTED;
 			m_aPeers[ClientId].m_Id = PeerId;
-			m_aPeers[ClientId].m_Quic = str_startswith(pAddr, "ddnet+quic://") != nullptr;
+			m_aPeers[ClientId].m_Quic = str_startswith(pAddr, "ddnet+quic://") != nullptr || str_startswith(pAddr, "ddnet+wt://") != nullptr;
 			m_aPeers[ClientId].SetAddress(Addr);
 			NET_CALL(ddnet_net_set_userdata, m_pNet, PeerId, (void *)(uintptr_t)ClientId);
 			if(m_pfnNewClient)

@@ -72,6 +72,7 @@ pub const DDNET_NET_MAP_FAILED: u64 = 3;
 pub const DDNET_NET_PROTOCOL_TW06: u64 = 0;
 pub const DDNET_NET_PROTOCOL_TW07: u64 = 1;
 pub const DDNET_NET_PROTOCOL_QUIC: u64 = 2;
+pub const DDNET_NET_PROTOCOL_WEBTRANSPORT: u64 = 3;
 
 // TODO: Maybe expose `Addr` struct to C (in an opaque way).
 
@@ -493,6 +494,45 @@ pub extern "C" fn ddnet_net_set_accept_connections(
         Ok(())
     })
 }
+/// PEM files with the certificate chain and the private key a server
+/// shows browsers, from a CA; without them a server accepting WebTransport
+/// makes a short-lived certificate itself. Before `ddnet_net_open`.
+#[no_mangle]
+pub unsafe extern "C" fn ddnet_net_set_tls_files(
+    net: &mut DdnetNet,
+    cert_path: *const c_char,
+    cert_path_len: usize,
+    key_path: *const c_char,
+    key_path_len: usize,
+) -> bool {
+    let cert_path = slice::from_raw_parts(cert_path as *const u8, cert_path_len);
+    let key_path = slice::from_raw_parts(key_path as *const u8, key_path_len);
+    net.init(|builder| {
+        let cert_path = str::from_utf8(cert_path).context("ddnet_net_set_tls_files")?;
+        let key_path = str::from_utf8(key_path).context("ddnet_net_set_tls_files")?;
+        builder.tls_files(cert_path, key_path);
+        Ok(())
+    })
+}
+/// The SHA-256 a browser accepts the server's certificate by, the one in
+/// use or, with `next`, the one that takes over at the next rotation.
+/// Returns `false` and leaves `sha256` alone when there is none.
+#[no_mangle]
+pub extern "C" fn ddnet_net_certificate_sha256(
+    net: &mut DdnetNet,
+    next: bool,
+    sha256: &mut [u8; 32],
+) -> bool {
+    let mut found = false;
+    net.good(|impl_| {
+        if let Some(hash) = impl_.certificate_sha256(next) {
+            *sha256 = hash;
+            found = true;
+        }
+        Ok(())
+    });
+    found
+}
 /// How long a connection may go without a packet before it counts as
 /// lost. Before `ddnet_net_open`.
 #[no_mangle]
@@ -514,6 +554,7 @@ pub extern "C" fn ddnet_net_set_accept_protocol(
             DDNET_NET_PROTOCOL_TW06 => Protocol::Tw06,
             DDNET_NET_PROTOCOL_TW07 => Protocol::Tw07,
             DDNET_NET_PROTOCOL_QUIC => Protocol::Quic,
+            DDNET_NET_PROTOCOL_WEBTRANSPORT => Protocol::WebTransport,
             _ => bail!("unknown protocol {}", protocol),
         };
         builder.accept_protocol(protocol, accept);

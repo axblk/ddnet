@@ -56,11 +56,13 @@ pub struct AcceptProtocols {
     pub tw06: bool,
     pub tw07: bool,
     pub quic: bool,
+    /// WebTransport rides on QUIC; without `quic` it is off as well.
+    pub webtransport: bool,
 }
 
 impl AcceptProtocols {
-    pub const NONE: AcceptProtocols = AcceptProtocols { tw06: false, tw07: false, quic: false };
-    pub const ALL: AcceptProtocols = AcceptProtocols { tw06: true, tw07: true, quic: true };
+    pub const NONE: AcceptProtocols = AcceptProtocols { tw06: false, tw07: false, quic: false, webtransport: false };
+    pub const ALL: AcceptProtocols = AcceptProtocols { tw06: true, tw07: true, quic: true, webtransport: true };
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +70,7 @@ pub enum Protocol {
     Tw06,
     Tw07,
     Quic,
+    WebTransport,
 }
 
 pub struct CallbackData {
@@ -220,6 +223,9 @@ pub struct NetBuilder {
     identity: Option<PrivateIdentity>,
     accept: AcceptProtocols,
     timeout: Duration,
+    /// Certificate chain and key files for browsers, instead of a
+    /// self-made certificate.
+    tls_files: Option<(String, String)>,
 }
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -351,7 +357,7 @@ impl Addr {
     fn socket_addr(&self) -> &SocketAddr {
         use self::Addr::*;
         match self {
-            Quic(QuicAddr(socket_addr, _)) => socket_addr,
+            Quic(QuicAddr { addr: socket_addr, .. }) => socket_addr,
             Tw06(Tw06Addr(socket_addr)) => socket_addr,
             Tw07(Tw07Addr(socket_addr)) => socket_addr,
             Raw(RawAddr(socket_addr)) => socket_addr,
@@ -360,7 +366,7 @@ impl Addr {
     pub fn identity(&self) -> Option<&Identity> {
         use self::Addr::*;
         match self {
-            Quic(QuicAddr(_, identity)) => identity.as_ref(),
+            Quic(QuicAddr { identity, .. }) => identity.as_ref(),
             Tw06(Tw06Addr(_)) => None,
             Tw07(Tw07Addr(_)) => None,
             Raw(RawAddr(_)) => None,
@@ -398,8 +404,13 @@ pub struct Tw06Addr(pub SocketAddr);
 pub struct Tw07Addr(pub SocketAddr);
 #[derive(Clone, Copy)]
 pub struct RawAddr(pub SocketAddr);
+/// A QUIC peer, over plain QUIC or over WebTransport on it.
 #[derive(Clone, Copy)]
-pub struct QuicAddr(pub SocketAddr, pub Option<Identity>);
+pub struct QuicAddr {
+    pub addr: SocketAddr,
+    pub identity: Option<Identity>,
+    pub webtransport: bool,
+}
 
 fn socket_addr_from_url(url: &Url) -> Result<SocketAddr> {
     let mut ip_port: ArrayString<[u8; 64]> = ArrayString::new();
@@ -426,7 +437,7 @@ impl FromStr for Addr {
             // The fragment pins the server's identity. Without one, whatever
             // identity the server shows is taken, and reported, so it can
             // be pinned the next time.
-            "ddnet+quic" => {
+            scheme @ ("ddnet+quic" | "ddnet+wt") => {
                 let identity = match addr.fragment() {
                     None | Some("") => None,
                     Some(fragment) => match fragment.strip_prefix("identity-sha256=") {
@@ -434,7 +445,11 @@ impl FromStr for Addr {
                         None => bail!("addr: fragment {} pins no identity", fragment),
                     },
                 };
-                Addr::Quic(QuicAddr(sock_addr, identity))
+                Addr::Quic(QuicAddr {
+                    addr: sock_addr,
+                    identity,
+                    webtransport: scheme == "ddnet+wt",
+                })
             }
             "tw-0.6+udp" => Addr::Tw06(Tw06Addr(sock_addr)),
             "tw-0.7+udp" => Addr::Tw07(Tw07Addr(sock_addr)),
@@ -446,11 +461,12 @@ impl FromStr for Addr {
 
 impl fmt::Display for QuicAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let QuicAddr(addr, identity) = self;
+        let QuicAddr { addr, identity, webtransport } = self;
+        let scheme = if *webtransport { "ddnet+wt" } else { "ddnet+quic" };
         let mut buf: ArrayString<[u8; 256]> = ArrayString::new();
         match identity {
-            Some(identity) => write!(&mut buf, "ddnet+quic://{}#identity-sha256={}", addr, identity).unwrap(),
-            None => write!(&mut buf, "ddnet+quic://{}", addr).unwrap(),
+            Some(identity) => write!(&mut buf, "{}://{}#identity-sha256={}", scheme, addr, identity).unwrap(),
+            None => write!(&mut buf, "{}://{}", scheme, addr).unwrap(),
         }
         buf.fmt(f)
     }
@@ -576,6 +592,11 @@ impl NetBuilder {
     pub fn timeout(&mut self, timeout: Duration) {
         self.timeout = timeout;
     }
+    /// PEM files with the certificate chain and the key a server shows
+    /// browsers; they are reloaded when they change.
+    pub fn tls_files(&mut self, cert: &str, key: &str) {
+        self.tls_files = Some((cert.to_owned(), key.to_owned()));
+    }
     pub fn accept_connections(&mut self, accept: bool) {
         self.accept = if accept { AcceptProtocols::ALL } else { AcceptProtocols::NONE };
     }
@@ -584,6 +605,7 @@ impl NetBuilder {
             Protocol::Tw06 => self.accept.tw06 = accept,
             Protocol::Tw07 => self.accept.tw07 = libtw2_patch::accept_tw07(accept),
             Protocol::Quic => self.accept.quic = accept,
+            Protocol::WebTransport => self.accept.webtransport = accept,
         }
     }
     pub fn open(self) -> Result<Net> {
@@ -648,9 +670,14 @@ impl NetBuilder {
             events,
             poll,
 
-            proto_quic: quic::Protocol::new(&identity, self.timeout)?,
             proto_tw06: tw06::Protocol::new(&identity)?,
             proto_tw07: tw07::Protocol::new(&identity)?,
+            proto_quic: quic::Protocol::new(
+                identity,
+                self.timeout,
+                self.accept.webtransport,
+                self.tls_files.as_ref().map(|(cert, key)| (cert.as_str(), key.as_str())),
+            )?,
 
             peer_addrs: HashMap::new(),
             peers: HashMap::new(),
@@ -669,11 +696,17 @@ impl NetBuilder {
 }
 
 impl Net {
+    /// The hash browsers accept the server's certificate by, the current
+    /// one or the next; none without WebTransport.
+    pub fn certificate_sha256(&self, next: bool) -> Option<[u8; 32]> {
+        self.proto_quic.certificate_sha256(next)
+    }
     pub fn builder() -> NetBuilder {
         NetBuilder {
             bindaddr: None,
             identity: None,
             accept: AcceptProtocols::NONE,
+            tls_files: None,
             timeout: Duration::from_secs(100),
         }
     }
@@ -1058,6 +1091,9 @@ impl Net {
     ) -> Result<Option<Event>> {
         assert!(buf.len() >= MAX_FRAME_SIZE as usize);
 
+        if let Err(error) = self.proto_quic.maintain_certificates() {
+            warn!("browser certificate: {}", error);
+        }
         if let Some((idx, error)) = self.connect_errors.pop_front() {
             let mut remaining = &mut buf[..];
             let _ = write!(remaining, "{}", error);

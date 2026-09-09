@@ -33,6 +33,8 @@
 
 #define DDNET_NET_PROTOCOL_QUIC 2
 
+#define DDNET_NET_PROTOCOL_WEBTRANSPORT 3
+
 typedef struct DdnetNet DdnetNet;
 
 typedef struct DdnetNetEvent DdnetNetEvent;
@@ -113,6 +115,24 @@ bool ddnet_net_set_bindaddr(struct DdnetNet *net, const char *addr, size_t addr_
 bool ddnet_net_set_identity(struct DdnetNet *net, const uint8_t (*private_identity)[32]);
 
 bool ddnet_net_set_accept_connections(struct DdnetNet *net, bool accept);
+
+/**
+ * PEM files with the certificate chain and the private key a server
+ * shows browsers, from a CA; without them a server accepting WebTransport
+ * makes a short-lived certificate itself. Before `ddnet_net_open`.
+ */
+bool ddnet_net_set_tls_files(struct DdnetNet *net,
+                             const char *cert_path,
+                             size_t cert_path_len,
+                             const char *key_path,
+                             size_t key_path_len);
+
+/**
+ * The SHA-256 a browser accepts the server's certificate by, the one in
+ * use or, with `next`, the one that takes over at the next rotation.
+ * Returns `false` and leaves `sha256` alone when there is none.
+ */
+bool ddnet_net_certificate_sha256(struct DdnetNet *net, bool next, uint8_t (*sha256)[32]);
 
 /**
  * How long a connection may go without a packet before it counts as

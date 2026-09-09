@@ -112,7 +112,7 @@ YELLOW = "\x1b[33m"
 
 
 class TestRunner:
-	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, repo_dir, test_dir, show_full_output, test_websockets, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
+	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, repo_dir, test_dir, show_full_output, test_websockets, test_quic, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
 		self.ddnet = ddnet
 		self.ddnet_server = ddnet_server
 		self.ddnet_mastersrv = ddnet_mastersrv
@@ -122,6 +122,7 @@ class TestRunner:
 		self.extra_env_vars = {}
 		self.show_full_output = show_full_output
 		self.test_websockets = test_websockets
+		self.test_quic = test_quic
 		self.keep_tmpdirs = keep_tmpdirs
 		self.timeout_multiplier = timeout_multiplier
 		self.valgrind_memcheck = valgrind_memcheck
@@ -178,6 +179,10 @@ class TestRunner:
 				num_skipped += 1
 				continue
 			if test.requires_websockets and not self.test_websockets:
+				print(f"{test.name} ... {YELLOW}skipped{RESET}")
+				num_skipped += 1
+				continue
+			if test.requires_quic and not self.test_quic:
 				print(f"{test.name} ... {YELLOW}skipped{RESET}")
 				num_skipped += 1
 				continue
@@ -594,11 +599,12 @@ json = {communities_json_filename!r}
 ALL_TESTS = []
 
 
-def test(test=None, *, requires_mastersrv=False, requires_websockets=False, timeout=60):
+def test(test=None, *, requires_mastersrv=False, requires_websockets=False, requires_quic=False, timeout=60):
 	def apply(test):
 		test.name = test.__name__
 		test.requires_mastersrv = requires_mastersrv
 		test.requires_websockets = requires_websockets
+		test.requires_quic = requires_quic
 		test.timeout = timeout
 		ALL_TESTS.append(test)
 		return test
@@ -853,6 +859,34 @@ def start_mastersrv(test_env):
 	mastersrv.wait_for_exit()
 
 
+def wait_for_server_address_bases(mastersrv, expected_bases, timeout=15):
+	# Waits until exactly one server is registered whose address bases (the
+	# address without the `#fragment`) contain all of `expected_bases`. The
+	# modern transports register a moment after the legacy pair, and only in a
+	# QUIC build, so the list is waited on and checked as a subset instead of
+	# read once with an exact count.
+	deadline = time() + timeout
+	servers_json = mastersrv.servers_json()
+	while time() < deadline:
+		servers = servers_json["servers"]
+		if len(servers) == 1:
+			bases = {address.split("#", 1)[0] for address in servers[0]["addresses"]}
+			if expected_bases <= bases:
+				return servers_json
+		servers_json = mastersrv.servers_json()
+	raise AssertionError(f"server addresses were not registered within {timeout} seconds\n{servers_json}")
+
+
+def wait_for_no_servers(mastersrv, timeout=15):
+	deadline = time() + timeout
+	servers_json = mastersrv.servers_json()
+	while time() < deadline:
+		if len(servers_json["servers"]) == 0:
+			return
+		servers_json = mastersrv.servers_json()
+	raise AssertionError(f"servers were not removed within {timeout} seconds\n{servers_json}")
+
+
 @test(requires_mastersrv=True)
 def server_can_register(test_env):
 	mastersrv = test_env.mastersrv()
@@ -865,15 +899,17 @@ def server_can_register(test_env):
 	wait_for_startup([server])
 	server.wait_for_log_suffix("successfully registered", timeout=5)
 	server.wait_for_log_suffix("successfully registered", timeout=5)
-	servers_json = mastersrv.servers_json()
-	if len(servers_json["servers"]) != 1 or servers_json["servers"][0]["info"]["map"]["name"] != "Tutorial" or len(servers_json["servers"][0]["addresses"]) != 2:
+	# The legacy pair always registers; QUIC and WebTransport register too in a
+	# QUIC build, so only the legacy pair is required here.
+	expected_bases = {
+		f"tw-0.6+udp://[::1]:{server.port}",
+		f"tw-0.7+udp://[::1]:{server.port}",
+	}
+	servers_json = wait_for_server_address_bases(mastersrv, expected_bases)
+	if servers_json["servers"][0]["info"]["map"]["name"] != "Tutorial":
 		raise AssertionError(f"unexpected servers.json\n{servers_json}")
 	server.exit()
-	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
-	mastersrv.wait_for_log_prefix("mastersrv: successfully removed", timeout=5)
-	servers_json = mastersrv.servers_json()
-	if len(servers_json["servers"]) != 0:
-		raise AssertionError(f"unexpected servers.json\n{servers_json}")
+	wait_for_no_servers(mastersrv)
 	mastersrv.exit()
 	mastersrv.wait_for_exit()
 
@@ -908,6 +944,16 @@ def server_can_register_tw_0_6(test_env):
 @test(requires_mastersrv=True)
 def server_can_register_tw_0_7(test_env):
 	server_can_register_protocol(test_env, "tw0.7/ipv6", "7/ipv6", "tw-0.7+udp")
+
+
+@test(requires_mastersrv=True, requires_quic=True)
+def server_can_register_quic(test_env):
+	server_can_register_protocol(test_env, "ddnet+quic/ipv6", "quic/6/ipv6", "ddnet+quic")
+
+
+@test(requires_mastersrv=True, requires_quic=True)
+def server_can_register_webtransport(test_env):
+	server_can_register_protocol(test_env, "ddnet+wt/ipv6", "wt/6/ipv6", "ddnet+wt")
 
 
 @test(requires_mastersrv=True)
@@ -1010,6 +1056,7 @@ def main():
 	parser.add_argument("--show-full-output", action="store_true", help="print the full stdout and stderr on test failures")
 	parser.add_argument("--test-mastersrv", action="store_true", help="enforce testing of mastersrv")
 	parser.add_argument("--test-websockets", action="store_true", help="run tests that require compiling with websockets support (-DWEBSOCKETS=ON)")
+	parser.add_argument("--test-quic", action="store_true", help="run tests that require compiling with QUIC networking (-DNETWORKING_QUIC=ON)")
 	parser.add_argument("--timeout-multiplier", type=float, default=1, help="multiply all timeouts by this value")
 	parser.add_argument("--valgrind-memcheck", action="store_true", help="use valgrind's memcheck on client and server")
 	parser.add_argument("builddir", metavar="BUILDDIR", help="path to ddnet build directory")
@@ -1041,6 +1088,7 @@ def main():
 		test_dir=args.builddir,
 		show_full_output=args.show_full_output,
 		test_websockets=args.test_websockets,
+		test_quic=args.test_quic,
 		valgrind_memcheck=args.valgrind_memcheck,
 		keep_tmpdirs=args.keep_tmpdirs,
 		timeout_multiplier=args.timeout_multiplier,

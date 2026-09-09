@@ -534,6 +534,18 @@ pub extern "C" fn ddnet_net_certificate_sha256(
     });
     found
 }
+/// Writes the server's own public identity, the 32 bytes clients pin it by.
+/// Returns `false` and leaves `identity` alone before `ddnet_net_open`.
+#[no_mangle]
+pub extern "C" fn ddnet_net_identity(net: &mut DdnetNet, identity: &mut [u8; 32]) -> bool {
+    let mut found = false;
+    net.good(|impl_| {
+        *identity = *impl_.identity().as_bytes();
+        found = true;
+        Ok(())
+    });
+    found
+}
 /// How long a connection may go without a packet before it counts as
 /// lost. Before `ddnet_net_open`.
 #[no_mangle]

@@ -21,9 +21,22 @@ public:
 	virtual bool OnPacket(const CNetChunk *pPacket) = 0;
 	// `pInfo` must be an encoded JSON object.
 	virtual void OnNewInfo(const char *pInfo) = 0;
+	// The fragments clients trust the server by changed: `pIdentityFragment`
+	// for the transports pinned by identity, `pWebTransportFragment` for
+	// the certificate hashes browsers accept.
+	virtual void OnModernTrustChanged(const char *pIdentityFragment, const char *pWebTransportFragment) = 0;
 	virtual void OnShutdown() = 0;
 };
 
-IRegister *CreateRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHttp *pHttp, int ServerPort, unsigned SixupSecurityToken);
+// Which transports the server actually started; only those are registered.
+class CRegisterTransports
+{
+public:
+	bool m_LegacyUdp = false;
+	bool m_Quic = false;
+	bool m_WebTransport = false;
+};
+
+IRegister *CreateRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHttp *pHttp, int ServerPort, unsigned SixupSecurityToken, const CRegisterTransports &Transports, const char *pRegisterHostname, const char *pIdentityFragment, const char *pWebTransportFragment);
 
 #endif

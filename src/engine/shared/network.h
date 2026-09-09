@@ -624,6 +624,9 @@ public:
 	// The hash browsers accept the certificate by, the current one or the
 	// next; false without WebTransport.
 	bool CertificateSha256(bool Next, SHA256_DIGEST *pSha256);
+	// The server's own public identity, the 32 bytes clients pin it by;
+	// false before the library is open.
+	bool Identity(unsigned char (&aIdentity)[32]);
 #endif
 
 	int SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_DELCLIENT pfnDelClient, void *pUser);

@@ -75,6 +75,19 @@ TEST(NetAddr, FromUrlStringWebTransport)
 	EXPECT_EQ(Addr.port, 8303);
 }
 
+TEST(NetAddr, FromUrlStringWebSocket)
+{
+	NETADDR Addr;
+	EXPECT_EQ(net_addr_from_url(&Addr, "ddnet+ws://127.0.0.1:8303", nullptr, 0), 0);
+	EXPECT_TRUE(Addr.type & NETTYPE_WEBSOCKET);
+	EXPECT_FALSE(Addr.type & NETTYPE_WEBSOCKET_TLS);
+	EXPECT_FALSE(Addr.type & NETTYPE_QUIC);
+	EXPECT_EQ(net_addr_from_url(&Addr, "ddnet+wss://[::1]:8303#0123456789abcdef", nullptr, 0), 0);
+	EXPECT_TRUE(Addr.type & NETTYPE_WEBSOCKET);
+	EXPECT_TRUE(Addr.type & NETTYPE_WEBSOCKET_TLS);
+	EXPECT_EQ(Addr.port, 8303);
+}
+
 TEST(NetAddr, FromStr)
 {
 	NETADDR Addr;

@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 # Built against a `libtw2-net` with `libtw2-patches` applied.
 libtw2-patch = []
+websocket = ["dep:tungstenite"]
 
 [dependencies]
 arrayvec = "0.5.2"
@@ -33,6 +34,9 @@ pre-rfc3243-libtw2-warn = "0.2.0"
 quiche = { version = "0.20.0", features = ["boringssl-boring-crate"] }
 ring = "0.16.20"
 socket2 = { version = "0.5", features = ["all"] }
+# WebSockets are optional: handshake and framing from tungstenite, TLS from
+# the same boring the rest uses.
+tungstenite = { version = "0.26", optional = true, default-features = false, features = ["handshake"] }
 wtransport-proto = "=0.7.0"
 url = "2.3.1"
 uuid = "1.2.2"

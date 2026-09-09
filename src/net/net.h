@@ -35,6 +35,8 @@
 
 #define DDNET_NET_PROTOCOL_WEBTRANSPORT 3
 
+#define DDNET_NET_PROTOCOL_WEBSOCKET 4
+
 typedef struct DdnetNet DdnetNet;
 
 typedef struct DdnetNetEvent DdnetNetEvent;

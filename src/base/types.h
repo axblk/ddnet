@@ -126,16 +126,6 @@ inline constexpr auto NETTYPE_IPV6 = 1 << 1;
 /**
  * @ingroup Network-General
  */
-inline constexpr auto NETTYPE_WEBSOCKET_IPV4 = 1 << 2;
-
-/**
- * @ingroup Network-General
- */
-inline constexpr auto NETTYPE_WEBSOCKET_IPV6 = 1 << 3;
-
-/**
- * @ingroup Network-General
- */
 inline constexpr auto NETTYPE_LINK_BROADCAST = 1 << 4;
 
 /**
@@ -163,14 +153,36 @@ inline constexpr auto NETTYPE_QUIC = 1 << 6;
 inline constexpr auto NETTYPE_WEBTRANSPORT = 1 << 7;
 
 /**
+ * WebSocket address: the same server over TCP at the port, for browsers
+ * and networks that let nothing else through.
+ *
  * @ingroup Network-General
  */
-inline constexpr auto NETTYPE_ALL = NETTYPE_IPV4 | NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6;
+inline constexpr auto NETTYPE_WEBSOCKET = 1 << 8;
+
+/**
+ * WebSocket address over TLS, always together with `NETTYPE_WEBSOCKET`.
+ *
+ * @ingroup Network-General
+ */
+inline constexpr auto NETTYPE_WEBSOCKET_TLS = 1 << 9;
 
 /**
  * @ingroup Network-General
  */
-inline constexpr auto NETTYPE_MASK = NETTYPE_ALL | NETTYPE_LINK_BROADCAST | NETTYPE_TW7 | NETTYPE_QUIC | NETTYPE_WEBTRANSPORT;
+inline constexpr auto NETTYPE_ALL = NETTYPE_IPV4 | NETTYPE_IPV6;
+
+/**
+ * The flags that make the scheme of an address, as opposed to its family.
+ *
+ * @ingroup Network-General
+ */
+inline constexpr auto NETTYPE_SCHEME = NETTYPE_TW7 | NETTYPE_QUIC | NETTYPE_WEBTRANSPORT | NETTYPE_WEBSOCKET | NETTYPE_WEBSOCKET_TLS;
+
+/**
+ * @ingroup Network-General
+ */
+inline constexpr auto NETTYPE_MASK = NETTYPE_ALL | NETTYPE_LINK_BROADCAST | NETTYPE_SCHEME;
 
 /**
  * @ingroup Network-Address

@@ -117,6 +117,20 @@ void net_addr_str(const NETADDR *addr, char *string, int max_length, bool add_po
 int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t host_buf_size);
 
 /**
+ * Formats an address the way `net_addr_from_url` reads it: with the scheme
+ * of its `NETTYPE_TW7`, `NETTYPE_QUIC`, `NETTYPE_WEBTRANSPORT` and
+ * `NETTYPE_WEBSOCKET*` flags, and without one for plain 0.6 over UDP.
+ *
+ * @ingroup Network-Address
+ *
+ * @param addr Address to format.
+ * @param string Buffer of at least `NETADDR_URL_MAXSTRSIZE` bytes.
+ * @param max_length Size of the buffer.
+ * @param add_port Whether to include the port.
+ */
+void net_addr_url_str(const NETADDR *addr, char *string, int max_length, bool add_port);
+
+/**
  * Checks if an address is local.
  *
  * @ingroup Network-Address

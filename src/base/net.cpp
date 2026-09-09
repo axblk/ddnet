@@ -424,6 +424,24 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 	return failure;
 }
 
+void net_addr_url_str(const NETADDR *addr, char *string, int max_length, bool add_port)
+{
+	const char *scheme = "";
+	if(addr->type & NETTYPE_TW7)
+		scheme = "tw-0.7+udp://";
+	else if(addr->type & NETTYPE_WEBSOCKET_TLS)
+		scheme = "ddnet+wss://";
+	else if(addr->type & NETTYPE_WEBSOCKET)
+		scheme = "ddnet+ws://";
+	else if(addr->type & NETTYPE_WEBTRANSPORT)
+		scheme = "ddnet+wt://";
+	else if(addr->type & NETTYPE_QUIC)
+		scheme = "ddnet+quic://";
+	char host[NETADDR_MAXSTRSIZE];
+	net_addr_str(addr, host, sizeof(host), add_port);
+	str_format(string, max_length, "%s%s", scheme, host);
+}
+
 bool net_addr_is_local(const NETADDR *addr)
 {
 	if((addr->type & NETTYPE_IPV4) != 0)

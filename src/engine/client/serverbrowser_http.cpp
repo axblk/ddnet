@@ -449,6 +449,25 @@ static bool ServerbrowserParseUrl(NETADDR *pOut, const char *pUrl)
 		return true;
 	return false;
 }
+#ifdef CONF_NETWORKING_QUIC
+// Copies the 64 hex digits of an identity; `true` if there is something
+// else in front of the next fragment key.
+static bool ServerbrowserParseIdentity(const char *pHex, char *pIdentity, int IdentitySize)
+{
+	str_copy(pIdentity, pHex, IdentitySize);
+	if(char *pComma = (char *)str_find(pIdentity, ","))
+		*pComma = '\0';
+	if(str_length(pIdentity) != 64)
+		return true;
+	for(const char *p = pIdentity; *p != '\0'; p++)
+	{
+		if(!(('0' <= *p && *p <= '9') || ('a' <= *p && *p <= 'f') || ('A' <= *p && *p <= 'F')))
+			return true;
+	}
+	return false;
+}
+#endif
+
 bool CServerBrowserHttp::Validate(json_value *pJson)
 {
 	std::vector<CServerInfo> vServers;
@@ -524,6 +543,23 @@ bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvSe
 			{
 				// Skip unknown addresses.
 				continue;
+			}
+			if((ParsedAddr.type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0)
+			{
+#ifndef CONF_NETWORKING_QUIC
+				// A transport this build cannot speak is no address to offer.
+				continue;
+#else
+				// The fragment carries what the server is pinned by; the
+				// identity is the same for every transport, the certificate
+				// hashes of WebTransport are a browser's business.
+				const char *pFragment = str_find(Addresses[a], "#");
+				const char *pIdentity = pFragment != nullptr ? str_startswith(pFragment + 1, "identity-sha256=") : nullptr;
+				if(pIdentity != nullptr && SetInfo.m_aIdentity[0] == '\0' && ServerbrowserParseIdentity(pIdentity, SetInfo.m_aIdentity, sizeof(SetInfo.m_aIdentity)))
+				{
+					SetInfo.m_aIdentity[0] = '\0';
+				}
+#endif
 			}
 			if(SetInfo.m_NumAddresses < (int)std::size(SetInfo.m_aAddresses))
 			{

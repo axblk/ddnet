@@ -44,37 +44,9 @@ void CFavorites::OnConfigSave(IConfigManager *pConfigManager)
 		}
 		for(int i = 0; i < Entry.m_NumAddrs; i++)
 		{
-			char aAddr[NETADDR_MAXSTRSIZE];
+			char aAddr[NETADDR_URL_MAXSTRSIZE];
+			net_addr_url_str(&Entry.m_aAddrs[i], aAddr, sizeof(aAddr), true);
 			char aBuffer[128];
-			net_addr_str(&Entry.m_aAddrs[i], aBuffer, sizeof(aBuffer), true);
-
-			if(Entry.m_aAddrs[i].type & NETTYPE_TW7)
-			{
-				str_format(
-					aAddr,
-					sizeof(aAddr),
-					"tw-0.7+udp://%s",
-					aBuffer);
-			}
-			else if(Entry.m_aAddrs[i].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET))
-			{
-				const char *pScheme;
-				if(Entry.m_aAddrs[i].type & NETTYPE_WEBSOCKET)
-					pScheme = Entry.m_aAddrs[i].type & NETTYPE_WEBSOCKET_TLS ? "ddnet+wss" : "ddnet+ws";
-				else
-					pScheme = Entry.m_aAddrs[i].type & NETTYPE_WEBTRANSPORT ? "ddnet+wt" : "ddnet+quic";
-				str_format(
-					aAddr,
-					sizeof(aAddr),
-					"%s://%s",
-					pScheme,
-					aBuffer);
-			}
-			else
-			{
-				str_copy(aAddr, aBuffer);
-			}
-
 			if(!Entry.m_AllowPing)
 			{
 				str_format(aBuffer, sizeof(aBuffer), "add_favorite %s", aAddr);

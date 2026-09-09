@@ -725,7 +725,9 @@ void CServerBrowser::QueueRequest(CServerEntry *pEntry)
 	m_NumRequests++;
 }
 
-static void ServerBrowserFormatAddresses(char *pBuffer, int BufferSize, NETADDR *pAddrs, int NumAddrs)
+// The identity rides along as the fragment of every address whose
+// transport pins by it, so that connecting to what the box holds pins.
+static void ServerBrowserFormatAddresses(char *pBuffer, int BufferSize, const NETADDR *pAddrs, int NumAddrs, const char *pIdentity)
 {
 	pBuffer[0] = '\0';
 	for(int i = 0; i < NumAddrs; i++)
@@ -734,29 +736,14 @@ static void ServerBrowserFormatAddresses(char *pBuffer, int BufferSize, NETADDR 
 		{
 			str_append(pBuffer, ",", BufferSize);
 		}
-		if(pAddrs[i].type & NETTYPE_TW7)
+		char aAddr[NETADDR_URL_MAXSTRSIZE];
+		net_addr_url_str(&pAddrs[i], aAddr, sizeof(aAddr), true);
+		str_append(pBuffer, aAddr, BufferSize);
+		if(pIdentity[0] != '\0' && (pAddrs[i].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0)
 		{
-			str_append(pBuffer, "tw-0.7+udp://", BufferSize);
+			str_append(pBuffer, "#identity-sha256=", BufferSize);
+			str_append(pBuffer, pIdentity, BufferSize);
 		}
-		else if(pAddrs[i].type & NETTYPE_WEBSOCKET_TLS)
-		{
-			str_append(pBuffer, "ddnet+wss://", BufferSize);
-		}
-		else if(pAddrs[i].type & NETTYPE_WEBSOCKET)
-		{
-			str_append(pBuffer, "ddnet+ws://", BufferSize);
-		}
-		else if(pAddrs[i].type & NETTYPE_WEBTRANSPORT)
-		{
-			str_append(pBuffer, "ddnet+wt://", BufferSize);
-		}
-		else if(pAddrs[i].type & NETTYPE_QUIC)
-		{
-			str_append(pBuffer, "ddnet+quic://", BufferSize);
-		}
-		char aIpAddr[NETADDR_MAXSTRSIZE];
-		net_addr_str(&pAddrs[i], aIpAddr, sizeof(aIpAddr), true);
-		str_append(pBuffer, aIpAddr, BufferSize);
 	}
 }
 
@@ -769,7 +756,13 @@ void CServerBrowser::SetInfo(CServerEntry *pEntry, const CServerInfo &Info) cons
 	pEntry->m_Info.m_ServerIndex = TmpInfo.m_ServerIndex;
 	mem_copy(pEntry->m_Info.m_aAddresses, TmpInfo.m_aAddresses, sizeof(pEntry->m_Info.m_aAddresses));
 	pEntry->m_Info.m_NumAddresses = TmpInfo.m_NumAddresses;
-	ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info.m_aAddresses, pEntry->m_Info.m_NumAddresses);
+	// Only the masterserver's list knows the identity; an answer from the
+	// server itself must not take it away.
+	if(pEntry->m_Info.m_aIdentity[0] == '\0')
+	{
+		str_copy(pEntry->m_Info.m_aIdentity, TmpInfo.m_aIdentity);
+	}
+	ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info.m_aAddresses, pEntry->m_Info.m_NumAddresses, pEntry->m_Info.m_aIdentity);
 	str_copy(pEntry->m_Info.m_aCommunityId, TmpInfo.m_aCommunityId);
 	str_copy(pEntry->m_Info.m_aCommunityCountry, TmpInfo.m_aCommunityCountry);
 	str_copy(pEntry->m_Info.m_aCommunityType, TmpInfo.m_aCommunityType);
@@ -883,7 +876,7 @@ CServerBrowser::CServerEntry *CServerBrowser::Add(const NETADDR *pAddrs, int Num
 
 	pEntry->m_Info.m_Latency = 999;
 	pEntry->m_Info.m_HasRank = CServerInfo::RANK_UNAVAILABLE;
-	ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info.m_aAddresses, pEntry->m_Info.m_NumAddresses);
+	ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info.m_aAddresses, pEntry->m_Info.m_NumAddresses, pEntry->m_Info.m_aIdentity);
 	UpdateServerCommunity(&pEntry->m_Info);
 	str_copy(pEntry->m_Info.m_aName, pEntry->m_Info.m_aAddress);
 
@@ -921,7 +914,7 @@ CServerBrowser::CServerEntry *CServerBrowser::ReplaceEntry(CServerEntry *pEntry,
 
 	pEntry->m_Info.m_Latency = 999;
 	pEntry->m_Info.m_HasRank = CServerInfo::RANK_UNAVAILABLE;
-	ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info.m_aAddresses, pEntry->m_Info.m_NumAddresses);
+	ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info.m_aAddresses, pEntry->m_Info.m_NumAddresses, pEntry->m_Info.m_aIdentity);
 	UpdateServerCommunity(&pEntry->m_Info);
 	str_copy(pEntry->m_Info.m_aName, pEntry->m_Info.m_aAddress);
 

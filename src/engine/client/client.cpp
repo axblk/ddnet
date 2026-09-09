@@ -682,10 +682,21 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 				NextAddr.type |= NETTYPE_QUIC | (WebTransport ? NETTYPE_WEBTRANSPORT : 0);
 			if(WebSocket)
 				NextAddr.type |= NETTYPE_WEBSOCKET | (WebSocketTls ? NETTYPE_WEBSOCKET_TLS : 0);
+			// As the masterserver lists it, or the bare hex; a fragment with
+			// other keys, like a browser's certificate hashes, pins nothing.
 			const char *pFragment = str_find(aBuffer, "#");
 			if(pFragment != nullptr)
 			{
-				str_copy(aConnectIdentity, pFragment + 1);
+				pFragment += 1;
+				const char *pIdentity = str_startswith(pFragment, "identity-sha256=");
+				if(pIdentity == nullptr && str_find(pFragment, "=") == nullptr)
+					pIdentity = pFragment;
+				if(pIdentity != nullptr)
+				{
+					str_copy(aConnectIdentity, pIdentity);
+					if(char *pComma = (char *)str_find(aConnectIdentity, ","))
+						*pComma = '\0';
+				}
 			}
 		}
 

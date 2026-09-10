@@ -19,6 +19,7 @@
 
 #include <zlib.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <limits>
 #include <new>
@@ -621,6 +622,32 @@ bool CDataFileReader::Open(const char *pFullName, IStorage *pStorage, const char
 		return false;
 	}
 	unsigned char *pFileData = static_cast<unsigned char *>(pFileDataRaw);
+
+	return OpenBuffer(pFileData, FileDataSize, pFullName, pPath);
+}
+
+bool CDataFileReader::OpenFromMemory(const char *pFullName, const void *pData, unsigned Size, const char *pPath)
+{
+	dbg_assert(m_pDataFile == nullptr, "File already open");
+
+	log_trace("datafile", "loading '%s' from memory, %u bytes", pFullName, Size);
+
+	// The reader keeps the bytes for as long as it is open, because a data
+	// item is uncompressed out of them on demand, so it takes its own copy
+	// instead of holding the caller to that.
+	unsigned char *pFileData = static_cast<unsigned char *>(malloc(std::max<unsigned>(Size, 1)));
+	if(pFileData == nullptr)
+	{
+		log_error("datafile", "out of memory. could not allocate memory for file '%s'. size=%u", pFullName, Size);
+		return false;
+	}
+	mem_copy(pFileData, pData, Size);
+
+	return OpenBuffer(pFileData, Size, pFullName, pPath);
+}
+
+bool CDataFileReader::OpenBuffer(unsigned char *pFileData, unsigned FileDataSize, const char *pFullName, const char *pPath)
+{
 	const int64_t FileSize = FileDataSize;
 
 	// determine hashes of the file and store them

@@ -470,6 +470,18 @@ std::string_view CTextAssetJob::Text() const
 	return std::string_view(reinterpret_cast<const char *>(Data().data()), Data().size());
 }
 
+CDataAssetJob::CDataAssetJob(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation) :
+	CAssetJob(EAssetType::DATA, pStorage, pPath, StorageType, OwnerId, Generation)
+{
+}
+
+const std::vector<uint8_t> &CDataAssetJob::Bytes() const
+{
+	dbg_assert(State() == IJob::STATE_DONE, "Cannot take bytes from unfinished asset job");
+	dbg_assert(Success(), "Cannot take bytes from failed asset job");
+	return Data();
+}
+
 CAssetResource::CAssetResource(std::shared_ptr<CAssetJob> pJob) :
 	m_pJob(std::move(pJob))
 {

@@ -2,6 +2,8 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "client_core.h"
 
+#include "asset_loader.h"
+
 #include <base/dbg.h>
 #include <base/hash.h>
 #include <base/log.h>
@@ -24,7 +26,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <utility>
+
+// The map file is read while the caller waits for it, so there is never more
+// than one of these jobs and nothing to tell one generation from another.
+constexpr uint64_t MAP_ASSET_GENERATION = 1;
 
 void FormatMapDownloadFilename(const char *pName, const std::optional<SHA256_DIGEST> &Sha256, int Crc, bool Temp, char *pBuffer, int BufferSize)
 {
@@ -487,7 +494,22 @@ const char *CClientCore::LoadMap(CSessionId SessionId, const char *pName, const 
 		Connection(SessionId, StreamId).ResetSnapshots();
 	GameClient()->InvalidateSnapshot(SessionId);
 
-	if(!pMap->Load(pName, Storage(), pFilename, IStorage::TYPE_ALL))
+	// The map file is read on a job thread, through the loader that every
+	// other asset goes through: in the browser that is what fetches it, and
+	// the main thread must not be the one that waits for the network. Reading
+	// is all the job does, the map is made of the bytes here.
+	CTypedAssetResource<CDataAssetJob> MapFile = GameClient()->AssetLoader().Load(
+		std::make_shared<CDataAssetJob>(Storage(), pFilename, IStorage::TYPE_ALL, ASSET_OWNER_CLIENT_CORE, MAP_ASSET_GENERATION));
+	while(!MapFile.IsFinished())
+	{
+		// The loading screen is what usually runs the queue, but a client that
+		// has none still has to get its map, so the loop runs it itself.
+		GameClient()->AssetLoader().Update();
+		if((bool)m_LoadingCallback)
+			m_LoadingCallback(IClient::LOADING_CALLBACK_DETAIL_MAP);
+	}
+	if(!MapFile.IsReady(MAP_ASSET_GENERATION) ||
+		!pMap->LoadFromMemory(pName, MapFile.Result().Bytes().data(), MapFile.Result().Bytes().size(), pFilename))
 	{
 		str_format(s_aErrorMsg, sizeof(s_aErrorMsg), "map '%s' not found", pFilename);
 		return s_aErrorMsg;

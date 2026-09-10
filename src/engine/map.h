@@ -44,6 +44,18 @@ public:
 
 	[[nodiscard]] virtual bool Load(const char *pFullName, IStorage *pStorage, const char *pPath, int StorageType) = 0;
 	[[nodiscard]] virtual bool Load(IStorage *pStorage, const char *pPath, int StorageType) = 0;
+	/**
+	 * Loads a map from bytes that are already in memory, for a caller that got
+	 * them from somewhere other than the storage.
+	 *
+	 * @param pFullName Name of the map without its extension.
+	 * @param pData Contents of the map file. Only read, the map copies what it
+	 * keeps.
+	 * @param Size Number of bytes in `pData`.
+	 * @param pPath Where the bytes came from, for logging and for the callers
+	 * that ask the map about it afterwards.
+	 */
+	[[nodiscard]] virtual bool LoadFromMemory(const char *pFullName, const void *pData, unsigned Size, const char *pPath) = 0;
 	virtual void Unload() = 0;
 	virtual bool IsLoaded() const = 0;
 	/**

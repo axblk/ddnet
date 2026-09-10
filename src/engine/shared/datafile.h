@@ -69,6 +69,11 @@ class CDataFileReader
 
 	int GetExternalItemType(int InternalType, CUuid *pUuid);
 	int GetInternalItemType(int ExternalType);
+	/**
+	 * Makes the reader out of the bytes of a whole file, whether they were
+	 * read here or handed over. Takes ownership of `pFileData`.
+	 */
+	[[nodiscard]] bool OpenBuffer(unsigned char *pFileData, unsigned FileDataSize, const char *pFullName, const char *pPath);
 
 public:
 	~CDataFileReader();
@@ -76,6 +81,19 @@ public:
 
 	[[nodiscard]] bool Open(const char *pFullName, IStorage *pStorage, const char *pPath, int StorageType);
 	[[nodiscard]] bool Open(IStorage *pStorage, const char *pPath, int StorageType);
+	/**
+	 * Opens a datafile from bytes that are already in memory, for a caller
+	 * that got them from somewhere other than the storage.
+	 *
+	 * @param pFullName Name of the file without its extension, as `Open` takes
+	 * it from the path.
+	 * @param pData Contents of the file. Only read, the reader copies what it
+	 * keeps.
+	 * @param Size Number of bytes in `pData`.
+	 * @param pPath Where the bytes came from, for logging and for the callers
+	 * that ask the reader about it afterwards.
+	 */
+	[[nodiscard]] bool OpenFromMemory(const char *pFullName, const void *pData, unsigned Size, const char *pPath);
 	void Close();
 	bool IsOpen() const;
 	/**

@@ -39,6 +39,7 @@ public:
 
 	[[nodiscard]] bool Load(const char *pFullName, IStorage *pStorage, const char *pPath, int StorageType) override;
 	[[nodiscard]] bool Load(IStorage *pStorage, const char *pPath, int StorageType) override;
+	[[nodiscard]] bool LoadFromMemory(const char *pFullName, const void *pData, unsigned Size, const char *pPath) override;
 	void Unload() override;
 	bool IsLoaded() const override;
 	const unsigned char *MapData() const override;
@@ -51,6 +52,12 @@ public:
 	int Size() const override;
 
 private:
+	/**
+	 * Checks over a datafile that was just opened and, if it holds up, puts it
+	 * in the place of the map that is loaded now. The map is left alone when
+	 * anything is wrong with the new one.
+	 */
+	[[nodiscard]] bool ValidateAndTake(CDataFileReader &NewDataFile);
 	static bool ValidateMapVersion(CDataFileReader &NewDataFile);
 	static bool ExtractTiles(class CTile *pDest, size_t DestSize, const class CTile *pSrc, size_t SrcSize);
 	bool UpgradeAndValidateTilesLayerItem(CDataFileReader &NewDataFile, int GroupIndex, int LayerIndex,

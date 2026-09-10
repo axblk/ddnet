@@ -232,3 +232,55 @@ TEST(Datafile, ReadsAfterTheFileIsGone)
 
 	Reader.Close();
 }
+
+TEST(Datafile, OpensFromMemory)
+{
+	std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	ASSERT_NE(pStorage, nullptr) << "Error creating local storage";
+
+	CTestInfo Info;
+
+	std::vector<uint8_t> vData;
+	vData.reserve(1000);
+	for(int i = 0; i < 1000; i++)
+	{
+		vData.push_back(static_cast<uint8_t>(i % 251));
+	}
+
+	{
+		CDataFileWriter Writer;
+		ASSERT_TRUE(Writer.Open(pStorage.get(), Info.m_aFilename));
+		EXPECT_EQ(Writer.AddData(vData.size(), vData.data()), 0);
+		EXPECT_EQ(Writer.AddDataString("Abc"), 1);
+		Writer.Finish();
+	}
+
+	void *pFileData;
+	unsigned FileSize;
+	ASSERT_TRUE(pStorage->ReadFile(Info.m_aFilename, IStorage::TYPE_ALL, &pFileData, &FileSize));
+
+	CDataFileReader Reader;
+	ASSERT_TRUE(Reader.OpenFromMemory("memory_map", pFileData, FileSize, "memory"));
+
+	// The reader keeps a copy of its own, so the caller may let go right away.
+	free(pFileData);
+
+	EXPECT_STREQ(Reader.FullName(), "memory_map");
+	EXPECT_STREQ(Reader.Path(), "memory");
+	EXPECT_EQ(Reader.Size(), (int)FileSize);
+
+	const void *pLoadedData = Reader.GetData(0);
+	ASSERT_NE(pLoadedData, nullptr);
+	ASSERT_EQ(Reader.GetDataSize(0), (int)vData.size());
+	EXPECT_TRUE(std::equal(vData.begin(), vData.end(), static_cast<const uint8_t *>(pLoadedData)));
+
+	EXPECT_STREQ(Reader.GetDataString(1), "Abc");
+
+	// The same bytes cut short are not a datafile any more.
+	CDataFileReader TruncatedReader;
+	std::vector<uint8_t> vTruncated(FileSize / 2);
+	EXPECT_FALSE(TruncatedReader.OpenFromMemory("memory_map", vTruncated.data(), vTruncated.size(), "memory"));
+
+	Reader.Close();
+	EXPECT_TRUE(pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE));
+}

@@ -299,7 +299,7 @@ public:
 
 	IKernel *Kernel() { return IInterface::Kernel(); }
 	IEngine *Engine() const { return m_pEngine; }
-	CAssetLoader &AssetLoader() { return m_AssetLoader; }
+	CAssetLoader &AssetLoader() override { return m_AssetLoader; }
 	class IGraphics *Graphics() const { return m_pGraphics; }
 	class IGraphicsWindow *Window() const { return m_pWindow; }
 	class IClient *Client() const { return m_pClient; }

@@ -19,19 +19,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [ubuntu-latest-fancy, ubuntu-latest-net-rust, macOS-latest, windows-latest, ubuntu-22.04, windows-latest-mingw]
+        name: [ubuntu-latest-fancy, macOS-latest, windows-latest, ubuntu-22.04, windows-latest-mingw]
         include:
         - name: ubuntu-latest-fancy
           os: ubuntu-latest
-          cmake-args: -G Ninja
-          cmake-args-release: -DIPO=ON
-          cmake-init-env: CXXFLAGS=-Werror
-          package-file: "*-linux_x86_64.tar.xz"
-        # The Rust networking backend replaces CNetClient/CNetServer at compile
-        # time, so it is built and tested next to the default in its own job.
-        - name: ubuntu-latest-net-rust
-          os: ubuntu-latest
-          cmake-args: -G Ninja -DNETWORKING_QUIC=ON -DWEBSOCKETS=ON
+          cmake-args: -G Ninja -DWEBSOCKETS=ON
           cmake-args-release: -DIPO=ON
           cmake-init-env: CXXFLAGS=-Werror
           integration-args: --test-websockets --test-quic
@@ -83,6 +75,7 @@ jobs:
           libavcodec-dev
           libavformat-dev
           libavutil-dev
+          libclang-dev
           libfreetype6-dev
           libglew-dev
           libnotify-dev
@@ -280,7 +273,7 @@ jobs:
       continue-on-error: true
       run: |
         cp src/mastersrv/target/debug/mastersrv${{ matrix.executable-suffix }} headless
-        python scripts/integration_test.py --show-full-output --test-mastersrv headless
+        python scripts/integration_test.py --show-full-output --test-mastersrv --test-quic headless
 
     - name: Run integration tests with Valgrind's Memcheck and code coverage
       id: integration_test_valgrind
@@ -441,7 +434,7 @@ jobs:
       run: |
         export PATH=/home/runner/cmake/bin:$PATH
         source emsdk/emsdk_env.sh
-        emcmake cmake -H. -G "Unix Makefiles" -B build-emscripten-headless -DCMAKE_BUILD_TYPE=Debug -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DHEADLESS_CLIENT=ON -DPREFER_BUNDLED_LIBS=ON -DNETWORKING_QUIC=ON -DWEBSOCKETS=ON
+        emcmake cmake -H. -G "Unix Makefiles" -B build-emscripten-headless -DCMAKE_BUILD_TYPE=Debug -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DHEADLESS_CLIENT=ON -DPREFER_BUNDLED_LIBS=ON -DWEBSOCKETS=ON
         cmake --build build-emscripten-headless --target game-client -j$(nproc)
 
     - name: Test headless Emscripten client
@@ -462,7 +455,7 @@ jobs:
         sudo apt-get update -y
         sudo apt-get install -y libsqlite3-dev
         export PATH=/home/runner/cmake/bin:$PATH
-        cmake -H. -G "Unix Makefiles" -B build-native-server -DCMAKE_BUILD_TYPE=Debug -DCLIENT=OFF -DTOOLS=OFF -DNETWORKING_QUIC=ON -DWEBSOCKETS=ON
+        cmake -H. -G "Unix Makefiles" -B build-native-server -DCMAKE_BUILD_TYPE=Debug -DCLIENT=OFF -DTOOLS=OFF -DWEBSOCKETS=ON
         cmake --build build-native-server --target DDNet-Server -j$(nproc)
 
     - name: Test headless Emscripten client against the native server
@@ -508,7 +501,7 @@ jobs:
         export PATH=/home/runner/cmake/bin:$PATH
         source emsdk/emsdk_env.sh
         # -G "Unix Makefiles" required due to https://gitlab.kitware.com/cmake/cmake/-/issues/16395
-        emcmake cmake -H. -G "Unix Makefiles" -B build-emscripten-release -DCMAKE_BUILD_TYPE=Release -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DPREFER_BUNDLED_LIBS=ON -DNETWORKING_QUIC=ON -DWEBSOCKETS=ON
+        emcmake cmake -H. -G "Unix Makefiles" -B build-emscripten-release -DCMAKE_BUILD_TYPE=Release -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DPREFER_BUNDLED_LIBS=ON -DWEBSOCKETS=ON
         cmake --build build-emscripten-release --target game-client -j$(nproc)
         cmake --build build-emscripten-release --target package_default
         mkdir artifacts

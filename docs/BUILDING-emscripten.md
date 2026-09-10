@@ -4,12 +4,12 @@
 
 -	At least 5-10 GiB of free disk space.
 -	First follow the general instructions for setting up https://github.com/ddnet/ddnet for building on Linux.
--	Install and activate the latest 4.x version of the Emscripten SDK (emsdk). To that end, run the following commands within the folder where the emsdk should be installed:
+-	Install and activate the Emscripten SDK (emsdk) the CI uses. The networking library's browser backend is Rust that reaches the browser through `wasm-bindgen`, which `emcc` runs at link time (`-sWASM_BINDGEN`); that needs Emscripten 6.0.10, which is not released yet, so the CI pins the development build below. To that end, run the following commands within the folder where the emsdk should be installed:
 	```sh
 	git clone https://github.com/emscripten-core/emsdk.git
 	cd emsdk
-	./emsdk install 4.0.22
-	./emsdk activate 4.0.22
+	./emsdk install sdk-releases-20b311cf9232508d006e8f014ffc06719ee10f81-64bit
+	./emsdk activate sdk-releases-20b311cf9232508d006e8f014ffc06719ee10f81-64bit
 	```
 	Refer to the [Emscripten documentation](https://emscripten.org/docs/getting_started/downloads.html) for details about using and updating the Emscripten SDK.
 	Note: Installing Emscripten from the package manager (e.g. with `sudo apt install emscripten`) may not work, as building some libraries requires a different version of Emscripten than is available via package manager.
@@ -23,6 +23,11 @@
 	```sh
 	rustup target add wasm32-unknown-emscripten
 	```
+-	Install the `wasm-bindgen` CLI in the exact version that `src/net/Cargo.toml` pins for the `wasm-bindgen` crate, so that `emcc` finds it in the `PATH` when linking:
+	```sh
+	cargo install wasm-bindgen-cli --version 0.2.128 --locked
+	```
+	The CI takes the prebuilt binary from the [wasm-bindgen releases](https://github.com/wasm-bindgen/wasm-bindgen/releases) instead, see `.github/workflows/build.yml`.
 -	You need the `ddnet-libs` for Emscripten.
 	The easiest way is to use the precompiled libraries from https://github.com/ddnet/ddnet-libs/ by cloning the `ddnet-libs` submodule.
 	Alternatively, you can build the `ddnet-libs` for Emscripten yourself. See below for instructions on how to compile them locally.
@@ -78,7 +83,13 @@
 ### Building the DDNet client via Emscripten
 
 -	Create a new directory to build the client in.
--	Then run `emcmake cmake .. -G "Unix Makefiles" -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DPREFER_BUNDLED_LIBS=ON` in your build directory to configure followed by `cmake --build . -j8` to build.
+-	Then run `emcmake cmake .. -G "Unix Makefiles" -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DPREFER_BUNDLED_LIBS=ON -DNETWORKING_QUIC=ON -DWEBSOCKETS=ON` in your build directory to configure followed by `cmake --build . -j8` to build.
+	`NETWORKING_QUIC` brings the networking library along, whose browser backend speaks WebTransport and WebSockets (`src/net/src/web.rs` with `src/net/src/web/browser.rs` on top of `web-sys`); without it the client cannot connect to any server from a browser.
+-	With `NETWORKING_QUIC`, `emcc` runs the `wasm-bindgen` CLI on the linked module and mixes the JavaScript it generates into its own (`-sWASM_BINDGEN`, marked experimental by Emscripten). The build takes care of what that needs:
+	the Rust code is compiled without reference types and with panics aborting (see the `CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_RUSTFLAGS` in `CMakeLists.txt`),
+	the link exports the symbols listed in `net_exports.txt` next to `libnet.a` (made by `scripts/emscripten/wasm_bindgen_exports.py`),
+	and `emcc` finds the CLI through `scripts/emscripten/wasm-bindgen`, a wrapper that restores the module's start function and keeps `main` out of wasm-bindgen's sight.
+	A Debug build links with `-g2` (function names, no DWARF), as DWARF does not survive the CLI.
 -	For testing it is highly recommended to build in debug mode by also passing the argument `-DCMAKE_BUILD_TYPE=Debug` when invoking `emcmake cmake`, as this speeds up the build process and adds debug information as well as additional checks.
 -	Note that using the Ninja build system with Emscripten is not currently possible due to [CMake issue 16395](https://gitlab.kitware.com/cmake/cmake/-/issues/16395).
 

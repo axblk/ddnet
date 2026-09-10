@@ -524,9 +524,9 @@ class Server(Runnable):
 				_, self.rcon_password, _ = event.line.split("'")
 			elif event.line.startswith("teehistorian: recording to '"):
 				_, self.teehistorian_filename, _ = event.line.split("'")
-			elif event.line.startswith("net::net: identity "):
+			elif event.line.startswith("net::native::net: identity "):
 				# What clients pin the server by, over QUIC and its kin.
-				self.identity = event.line[len("net::net: identity ") :]
+				self.identity = event.line[len("net::native::net: identity ") :]
 		return event
 
 	def exit(self):

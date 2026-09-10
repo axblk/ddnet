@@ -1,0 +1,87 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: redix <redix@hotmail.de>
+Date: Thu, 10 Sep 2026 14:51:52 +0200
+Subject: [PATCH] net: tell the caller how long a chunk has waited for its ack
+
+A connection whose peer stops acking should time out, and only the
+resend queue knows when a chunk first went out. Remember that timestamp
+and hand the oldest one out, so a caller can set its own deadline.
+---
+ net/src/connection.rs  | 12 ++++++++++++
+ net/src/connection7.rs | 12 ++++++++++++
+ 2 files changed, 24 insertions(+)
+
+diff --git a/net/src/connection.rs b/net/src/connection.rs
+index 738f358..56d2149 100644
+--- a/net/src/connection.rs
++++ b/net/src/connection.rs
+@@ -117,6 +117,9 @@ impl State {
+ #[derive(Clone, Debug)]
+ struct ResendChunk {
+     next_send: Timeout,
++    /// When the chunk went out the first time; how long it has waited for
++    /// its ack.
++    first_send: Timestamp,
+     sequence: Sequence,
+     data: ArrayVec<[u8; 2048]>,
+ }
+@@ -125,6 +128,7 @@ impl ResendChunk {
+     fn new<CB: Callback>(cb: &mut CB, sequence: Sequence, data: &[u8]) -> ResendChunk {
+         let mut result = ResendChunk {
+             next_send: Timeout::inactive(),
++            first_send: cb.time(),
+             sequence: sequence,
+             data: data.iter().cloned().collect(),
+         };
+@@ -488,6 +492,14 @@ impl Connection {
+     pub fn is_unconnected(&self) -> bool {
+         matches!(self.state, State::Unconnected)
+     }
++    /// When the oldest chunk still waiting for its ack was first sent;
++    /// `None` while nothing waits.
++    pub fn oldest_unacked_first_send(&self) -> Option<Timestamp> {
++        match self.state {
++            State::Online(ref online) => online.resend_queue.back().map(|c| c.first_send),
++            _ => None,
++        }
++    }
+     pub fn needs_tick(&self) -> Timeout {
+         match self.state {
+             State::Unconnected | State::Disconnected => return Timeout::inactive(),
+diff --git a/net/src/connection7.rs b/net/src/connection7.rs
+index c0157dd..0996f3c 100644
+--- a/net/src/connection7.rs
++++ b/net/src/connection7.rs
+@@ -137,6 +137,9 @@ impl State {
+ #[derive(Clone, Debug)]
+ struct ResendChunk {
+     next_send: Timeout,
++    /// When the chunk went out the first time; how long it has waited for
++    /// its ack.
++    first_send: Timestamp,
+     sequence: Sequence,
+     data: ArrayVec<[u8; 2048]>,
+ }
+@@ -145,6 +148,7 @@ impl ResendChunk {
+     fn new<CB: Callback>(cb: &mut CB, sequence: Sequence, data: &[u8]) -> ResendChunk {
+         let mut result = ResendChunk {
+             next_send: Timeout::inactive(),
++            first_send: cb.time(),
+             sequence: sequence,
+             data: data.iter().cloned().collect(),
+         };
+@@ -556,6 +560,14 @@ impl Connection {
+     pub fn is_unconnected(&self) -> bool {
+         matches!(self.state, State::Unconnected)
+     }
++    /// When the oldest chunk still waiting for its ack was first sent;
++    /// `None` while nothing waits.
++    pub fn oldest_unacked_first_send(&self) -> Option<Timestamp> {
++        match self.state {
++            State::Online(ref online) => online.resend_queue.back().map(|c| c.first_send),
++            _ => None,
++        }
++    }
+     pub fn needs_tick(&self) -> Timeout {
+         match self.state {
+             State::Unconnected | State::Disconnected => return Timeout::inactive(),

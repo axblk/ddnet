@@ -232,7 +232,11 @@ class CNetServer
 		// Stores a mapping from client IDs to peer IDs of the network library.
 		// The opposite mapping is stored in the userdata of the library.
 		uint64_t m_Id = -1;
+		// The client sent its timeout code: after a timeout the slot waits
+		// for the code instead of going, see STATE_TIMEOUT.
 		bool m_TimeoutProtected = false;
+		// When the timeout happened, for the end of the protection.
+		int64_t m_TimeoutAt = 0;
 		// Connected over QUIC rather than 0.6 or 0.7 over UDP.
 		bool m_Quic = false;
 		NETADDR m_Address = {0};

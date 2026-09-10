@@ -87,6 +87,9 @@ fn token_peer(token: mio::Token) -> Option<PeerIndex> {
 
 pub struct CallbackData {
     pub accept: AcceptProtocols,
+    /// How long a UDP peer may stay silent, and how long a chunk may wait
+    /// for its ack, before the connection is lost.
+    pub timeout: Duration,
     pub sslkeylogfile: Option<ArcFile>,
     pub challenger: Challenger,
     pub local_addr: SocketAddr,
@@ -485,6 +488,7 @@ impl NetBuilder {
         Ok(Net {
             cb: CallbackData {
                 accept: self.accept,
+                timeout: self.timeout,
                 sslkeylogfile,
                 challenger: Challenger::new(),
                 local_addr,

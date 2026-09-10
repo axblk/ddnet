@@ -67,11 +67,19 @@ static bool UrlIsSixup(const char *pUrl)
 	return str_startswith(pUrl, "tw-0.7+udp://") != nullptr;
 }
 
+// Whether the library lost the peer to silence rather than to a close or
+// an error of its own; the reasons are the library's.
+static bool IsTimeoutReason(const char *pReason)
+{
+	return str_comp(pReason, "Timeout") == 0 || str_startswith(pReason, "Too weak connection") != nullptr;
+}
+
 void CNetServer::CPeer::Reset()
 {
 	m_State = STATE_NONE;
 	m_Id = -1;
 	m_TimeoutProtected = false;
+	m_TimeoutAt = 0;
 	m_Quic = false;
 	mem_zero(&m_Address, sizeof(m_Address));
 	m_aAddressStr[0] = '\0';
@@ -271,6 +279,15 @@ void CNetServer::Drop(int ClientId, const char *pReason)
 	const uint64_t PeerId = m_aPeers[ClientId].m_Id;
 	if(PeerId == (uint64_t)-1)
 	{
+		// A slot waiting for its timeout code has no peer in the library.
+		if(HasErrored(ClientId))
+		{
+			if(m_pfnDelClient)
+			{
+				m_pfnDelClient(ClientId, pReason, m_pUser);
+			}
+			m_aPeers[ClientId].Reset();
+		}
 		return;
 	}
 
@@ -289,8 +306,18 @@ void CNetServer::Drop(int ClientId, const char *pReason)
 
 void CNetServer::Update()
 {
-	// TODO: detect timeouts and honor timeout protection
 	CNetBase::UpdateLogLevel();
+	// A protected slot outlives its timeout by `conn_timeout_protection`
+	// after the last packet, which came `conn_timeout` before the timeout.
+	const int64_t Now = time_get();
+	const int64_t Protection = time_freq() * std::max(0, g_Config.m_ConnTimeoutProtection - g_Config.m_ConnTimeout);
+	for(int i = 0; i < MaxClients(); i++)
+	{
+		if(HasErrored(i) && Now - m_aPeers[i].m_TimeoutAt > Protection)
+		{
+			Drop(i, "Timeout Protection over");
+		}
+	}
 }
 
 void CNetServer::Wait(uint64_t Microseconds)
@@ -468,15 +495,26 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			// The peer mapping has to be cleared before the callback, sends from
 			// within the callback would otherwise go to a closed connection.
 			m_aPeers[ClientId].m_Id = -1;
-			m_aPeers[ClientId].m_State = CPeer::STATE_NONE;
 			m_aFlushPending[ClientId] = false;
+			m_aBuffer[ddnet_net_ev_disconnect_reason_len(m_pNetEvent)] = 0;
+			const char *pReason = ddnet_net_ev_disconnect_is_remote(m_pNetEvent) ? "" : (char *)m_aBuffer;
+
+			if(m_aPeers[ClientId].m_TimeoutProtected && IsTimeoutReason(pReason))
+			{
+				// The library is done with the peer; the slot waits for the
+				// client to come back with its timeout code, see SetTimedOut.
+				m_aPeers[ClientId].m_State = CPeer::STATE_TIMEOUT;
+				m_aPeers[ClientId].m_TimeoutAt = time_get();
+				log_info("net", "client %d timed out, keeping the slot for its timeout code", ClientId);
+				continue;
+			}
+			m_aPeers[ClientId].m_State = CPeer::STATE_NONE;
 
 			if(m_pfnDelClient)
 			{
-				m_aBuffer[ddnet_net_ev_disconnect_reason_len(m_pNetEvent)] = 0;
-				const char *pReason = ddnet_net_ev_disconnect_is_remote(m_pNetEvent) ? "" : (char *)m_aBuffer;
 				m_pfnDelClient(ClientId, pReason, m_pUser);
 			}
+			m_aPeers[ClientId].Reset();
 		}
 		break;
 		case DDNET_NET_EV_CHUNK:

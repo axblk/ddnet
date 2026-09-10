@@ -270,10 +270,10 @@ CServer::CServer()
 
 	m_aShutdownReason[0] = 0;
 
-	for(int i = 0; i < NUM_MAP_TYPES; i++)
+	m_pCurrentMapDataSixup = nullptr;
+	for(unsigned int &MapSize : m_aCurrentMapSize)
 	{
-		m_apCurrentMapData[i] = nullptr;
-		m_aCurrentMapSize[i] = 0;
+		MapSize = 0;
 	}
 
 	m_MapReload = false;
@@ -301,10 +301,7 @@ CServer::CServer()
 
 CServer::~CServer()
 {
-	for(auto &pCurrentMapData : m_apCurrentMapData)
-	{
-		free(pCurrentMapData);
-	}
+	free(m_pCurrentMapDataSixup);
 
 	if(m_RunServer != UNINITIALIZED)
 	{
@@ -1545,7 +1542,7 @@ void CServer::SendMapData(int ClientId, int Chunk)
 		Msg.AddInt(Chunk);
 		Msg.AddInt(ChunkSize);
 	}
-	Msg.AddRaw(&m_apCurrentMapData[MapType][Offset], ChunkSize);
+	Msg.AddRaw(CurrentMapData(MapType) + Offset, ChunkSize);
 	SendMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH, ClientId);
 
 	if(Config()->m_Debug)
@@ -1616,6 +1613,13 @@ bool CServer::StartQuic()
 	return true;
 }
 
+const unsigned char *CServer::CurrentMapData(int MapType)
+{
+	dbg_assert(MapType == MAP_TYPE_SIX || MapType == MAP_TYPE_SIXUP, "Map type invalid: %d", MapType);
+
+	return MapType == MAP_TYPE_SIX ? GameServer()->Map()->MapData() : m_pCurrentMapDataSixup;
+}
+
 bool CServer::UpdateQuicMaps()
 {
 	if(!m_QuicTransport.IsRunning())
@@ -1629,7 +1633,7 @@ bool CServer::UpdateQuicMaps()
 			   GameServer()->Map()->BaseName(),
 			   m_aCurrentMapCrc[MapType],
 			   m_aCurrentMapSha256[MapType],
-			   m_apCurrentMapData[MapType],
+			   CurrentMapData(MapType),
 			   m_aCurrentMapSize[MapType]))
 			return false;
 	}
@@ -3669,13 +3673,9 @@ int CServer::LoadMap(const char *pMapName)
 	str_format(aBufMsg, sizeof(aBufMsg), "%s sha256 is %s", aBuf, aSha256);
 	Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "server", aBufMsg);
 
-	// load complete map into memory for download
-	{
-		free(m_apCurrentMapData[MAP_TYPE_SIX]);
-		void *pData;
-		Storage()->ReadFile(aBuf, IStorage::TYPE_ALL, &pData, &m_aCurrentMapSize[MAP_TYPE_SIX]);
-		m_apCurrentMapData[MAP_TYPE_SIX] = (unsigned char *)pData;
-	}
+	// The map reader read the whole file to load the map, so a client
+	// downloads the bytes it is holding instead of a second copy.
+	m_aCurrentMapSize[MAP_TYPE_SIX] = GameServer()->Map()->Size();
 
 	if(Config()->m_SvMapsBaseUrl[0])
 	{
@@ -3706,11 +3706,11 @@ int CServer::LoadMap(const char *pMapName)
 		}
 		else
 		{
-			free(m_apCurrentMapData[MAP_TYPE_SIXUP]);
-			m_apCurrentMapData[MAP_TYPE_SIXUP] = (unsigned char *)pData;
+			free(m_pCurrentMapDataSixup);
+			m_pCurrentMapDataSixup = (unsigned char *)pData;
 
-			m_aCurrentMapSha256[MAP_TYPE_SIXUP] = sha256(m_apCurrentMapData[MAP_TYPE_SIXUP], m_aCurrentMapSize[MAP_TYPE_SIXUP]);
-			m_aCurrentMapCrc[MAP_TYPE_SIXUP] = crc32(0, m_apCurrentMapData[MAP_TYPE_SIXUP], m_aCurrentMapSize[MAP_TYPE_SIXUP]);
+			m_aCurrentMapSha256[MAP_TYPE_SIXUP] = sha256(m_pCurrentMapDataSixup, m_aCurrentMapSize[MAP_TYPE_SIXUP]);
+			m_aCurrentMapCrc[MAP_TYPE_SIXUP] = crc32(0, m_pCurrentMapDataSixup, m_aCurrentMapSize[MAP_TYPE_SIXUP]);
 			sha256_str(m_aCurrentMapSha256[MAP_TYPE_SIXUP], aSha256, sizeof(aSha256));
 			str_format(aBufMsg, sizeof(aBufMsg), "%s sha256 is %s", aBuf, aSha256);
 			Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "sixup", aBufMsg);
@@ -3718,8 +3718,8 @@ int CServer::LoadMap(const char *pMapName)
 	}
 	if(!Config()->m_SvSixup)
 	{
-		free(m_apCurrentMapData[MAP_TYPE_SIXUP]);
-		m_apCurrentMapData[MAP_TYPE_SIXUP] = nullptr;
+		free(m_pCurrentMapDataSixup);
+		m_pCurrentMapDataSixup = nullptr;
 	}
 
 	for(int i = 0; i < MAX_CLIENTS; i++)
@@ -4697,8 +4697,7 @@ void CServer::DemoRecorder_HandleAutoStart()
 			m_aCurrentMapCrc[MAP_TYPE_SIX],
 			"server",
 			m_aCurrentMapSize[MAP_TYPE_SIX],
-			m_apCurrentMapData[MAP_TYPE_SIX],
-			nullptr,
+			CurrentMapData(MAP_TYPE_SIX),
 			nullptr,
 			nullptr);
 
@@ -4740,8 +4739,7 @@ void CServer::StartRecord(int ClientId)
 			m_aCurrentMapCrc[MAP_TYPE_SIX],
 			"server",
 			m_aCurrentMapSize[MAP_TYPE_SIX],
-			m_apCurrentMapData[MAP_TYPE_SIX],
-			nullptr,
+			CurrentMapData(MAP_TYPE_SIX),
 			nullptr,
 			nullptr);
 	}
@@ -4802,8 +4800,7 @@ void CServer::ConRecord(IConsole::IResult *pResult, void *pUser)
 		pServer->m_aCurrentMapCrc[MAP_TYPE_SIX],
 		"server",
 		pServer->m_aCurrentMapSize[MAP_TYPE_SIX],
-		pServer->m_apCurrentMapData[MAP_TYPE_SIX],
-		nullptr,
+		pServer->CurrentMapData(MAP_TYPE_SIX),
 		nullptr,
 		nullptr);
 }
@@ -5155,7 +5152,7 @@ void CServer::ConchainSixupUpdate(IConsole::IResult *pResult, void *pUserData, I
 	CServer *pThis = static_cast<CServer *>(pUserData);
 	if(pResult->NumArguments() >= 1 && pThis->GameServer()->Map()->IsLoaded())
 	{
-		pThis->m_MapReload |= (pThis->m_apCurrentMapData[MAP_TYPE_SIXUP] != nullptr) != (pResult->GetInteger(0) != 0);
+		pThis->m_MapReload |= (pThis->m_pCurrentMapDataSixup != nullptr) != (pResult->GetInteger(0) != 0);
 	}
 }
 

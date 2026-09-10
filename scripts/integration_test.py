@@ -815,6 +815,28 @@ def timeout_protection_keeps_the_slot(test_env):
 	client2.wait_for_exit()
 
 
+@test(timeout=90)
+def server_limits_connections_per_address(test_env):
+	server = test_env.server(["sv_connlimit 2", f"sv_connlimit_time {test_env.runner.scaled_setting(20, 0, 1000)}"])
+	clients = [test_env.client() for _ in range(3)]
+	wait_for_startup([server] + clients)
+	for i, client in enumerate(clients):
+		client.command(f"connect localhost:{server.port}")
+		if i < 2:
+			server.wait_for_log_prefix(f"server: player has entered the game. ClientId={i}", timeout=10)
+	# The third connection from the same address within the window is turned away.
+	clients[2].wait_for_log_exact("client: offline error='Too many connections in a short time'", timeout=10)
+	server.wait_for_log_suffix("refused: Too many connections in a short time", timeout=10)
+	server.exit()
+	for client in clients[:2]:
+		client.wait_for_log_exact("client: offline error='Server shutdown'")
+	for client in clients:
+		client.exit()
+	server.wait_for_exit()
+	for client in clients:
+		client.wait_for_exit()
+
+
 @test
 def client_can_connect_7(test_env):
 	client = test_env.client()

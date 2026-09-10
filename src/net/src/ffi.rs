@@ -610,6 +610,60 @@ pub extern "C" fn ddnet_net_set_timeout(net: &mut DdnetNet, seconds: u64) -> boo
         Ok(())
     })
 }
+/// How many connections an address may make within `seconds` before
+/// further ones are refused with "Too many connections in a short time";
+/// `conns` of 0 for no limit. Before `ddnet_net_open` or after it.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_connlimit(net: &mut DdnetNet, conns: u32, seconds: u64) -> bool {
+    let window = Duration::from_secs(seconds);
+    if let Init(_) = &net.inner {
+        net.init(|builder| {
+            builder.connlimit(conns, window);
+            Ok(())
+        })
+    } else {
+        net.good(|impl_| {
+            impl_.set_connlimit(conns, window);
+            Ok(())
+        })
+    }
+}
+/// How many packets are read from the socket between two waits before
+/// `ddnet_net_recv` reports nothing further, whatever else is waiting
+/// stays in the socket for the system to drop; 0 reads everything.
+/// Before `ddnet_net_open` or after it.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_max_packets_per_recv(net: &mut DdnetNet, packets: u32) -> bool {
+    if let Init(_) = &net.inner {
+        net.init(|builder| {
+            builder.max_packets_per_recv(packets);
+            Ok(())
+        })
+    } else {
+        net.good(|impl_| {
+            impl_.set_max_packets_per_recv(packets);
+            Ok(())
+        })
+    }
+}
+/// How many of a peer's resend requests are answered per second, over
+/// the classic UDP protocols, where a request makes us send everything
+/// that is not acked yet; 0 answers all of them. Before `ddnet_net_open`
+/// or after it, for the connections there are as well.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_resend_requests_per_second(net: &mut DdnetNet, per_second: u32) -> bool {
+    if let Init(_) = &net.inner {
+        net.init(|builder| {
+            builder.resend_requests_per_second(per_second);
+            Ok(())
+        })
+    } else {
+        net.good(|impl_| {
+            impl_.set_resend_requests_per_second(per_second);
+            Ok(())
+        })
+    }
+}
 /// Writes the TLS session keys to the file `SSLKEYLOGFILE` names, so the
 /// traffic can be read in Wireshark. A debugging aid; off by default.
 #[no_mangle]

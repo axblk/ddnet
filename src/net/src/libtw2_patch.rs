@@ -7,6 +7,7 @@
 
 use libtw2_net::Timestamp;
 use log::warn;
+use std::time::Duration;
 
 /// Whether the crate was built against a patched `libtw2-net`. What the
 /// patches carry is turned away where it would otherwise be offered.
@@ -55,4 +56,20 @@ pub fn oldest_unacked_first_send7(conn: &libtw2_net::connection7::Connection) ->
         let _ = conn;
         None
     }
+}
+
+/// How often a resend request is answered at most, `libtw2-patches/0003`.
+pub fn set_resend_request_interval6(conn: &mut libtw2_net::Connection, interval: Duration) {
+    #[cfg(feature = "libtw2-patch")]
+    conn.set_resend_request_interval(interval);
+    #[cfg(not(feature = "libtw2-patch"))]
+    let _ = (conn, interval);
+}
+
+/// The same for 0.7.
+pub fn set_resend_request_interval7(conn: &mut libtw2_net::connection7::Connection, interval: Duration) {
+    #[cfg(feature = "libtw2-patch")]
+    conn.set_resend_request_interval(interval);
+    #[cfg(not(feature = "libtw2-patch"))]
+    let _ = (conn, interval);
 }

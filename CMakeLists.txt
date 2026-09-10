@@ -1246,6 +1246,7 @@ set_glob(RUST_NET_SRC GLOB_RECURSE "rs" src/net/src
   key.rs
   lib.rs
   libtw2_patch.rs
+  limits.rs
   mapstream.rs
   net.rs
   quic.rs

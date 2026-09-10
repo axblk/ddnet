@@ -264,6 +264,22 @@ class CNetServer
 
 	unsigned char m_aSecurityTokenSeed[16] = {0};
 
+	// The limits the library enforces, as last handed to it; the config
+	// can change while running.
+	struct CLimits
+	{
+		int m_Connlimit = -1;
+		int m_ConnlimitTime = -1;
+		int m_MaxPacketsPerRecv = -1;
+		int m_ResendRequestsPerSecond = -1;
+	};
+	CLimits m_Limits;
+	// Banned addresses are told about their ban at most this often;
+	// unlimited replies would make a banned flooder cost more to handle
+	// than an unbanned one.
+	int64_t m_BanRepliesStart = 0;
+	int m_NumBanReplies = 0;
+
 	// Next client ID to try.
 	int m_NextClientId = 0;
 
@@ -292,6 +308,8 @@ class CNetServer
 	bool OpenLibrary();
 	void Reopen();
 	bool SetMapImpl(int MapId, const CMap &Map);
+	bool ApplyLimits();
+	void CloseBanned(uint64_t PeerId, const char *pReason);
 
 	bool m_FlushBatch = false;
 	bool m_aFlushPending[NET_MAX_CLIENTS] = {};
@@ -441,6 +459,8 @@ class CNetClient
 	char m_aServerIdentity[65] = "";
 
 	NETADDR m_BindAddr = {0};
+	// As last handed to the library; the config can change while running.
+	int m_ResendRequestsPerSecond = -1;
 
 	bool OpenLibrary();
 	void CloseLibrary();

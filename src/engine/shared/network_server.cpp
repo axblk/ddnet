@@ -161,6 +161,7 @@ bool CNetServer::OpenLibrary()
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_QUIC, g_Config.m_SvQuic != 0) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_WEBTRANSPORT, g_Config.m_SvWebtransport != 0) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_WEBSOCKET, g_Config.m_SvWebsocket != 0) ||
+		ApplyLimits() ||
 		ddnet_net_open(m_pNet))
 	{
 		log_error("net", "couldn't open net server: %s", ddnet_net_error(m_pNet));
@@ -262,6 +263,7 @@ int CNetServer::SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_NEWCLIENT_N
 
 void CNetServer::Close()
 {
+	m_Limits = CLimits();
 	if(m_pNet)
 	{
 		ddnet_net_free(m_pNet);
@@ -304,12 +306,64 @@ void CNetServer::Drop(int ClientId, const char *pReason)
 	NET_CALL(ddnet_net_close, m_pNet, PeerId, pReason, str_length(pReason));
 }
 
+bool CNetServer::ApplyLimits()
+{
+	if(m_Limits.m_Connlimit != g_Config.m_SvConnlimit || m_Limits.m_ConnlimitTime != g_Config.m_SvConnlimitTime)
+	{
+		if(ddnet_net_set_connlimit(m_pNet, g_Config.m_SvConnlimit, g_Config.m_SvConnlimitTime))
+		{
+			return true;
+		}
+		m_Limits.m_Connlimit = g_Config.m_SvConnlimit;
+		m_Limits.m_ConnlimitTime = g_Config.m_SvConnlimitTime;
+	}
+	if(m_Limits.m_MaxPacketsPerRecv != g_Config.m_SvMaxPacketsPerRecv)
+	{
+		if(ddnet_net_set_max_packets_per_recv(m_pNet, g_Config.m_SvMaxPacketsPerRecv))
+		{
+			return true;
+		}
+		m_Limits.m_MaxPacketsPerRecv = g_Config.m_SvMaxPacketsPerRecv;
+	}
+	if(m_Limits.m_ResendRequestsPerSecond != g_Config.m_ConnResendRequestsPerSecond)
+	{
+		if(ddnet_net_set_resend_requests_per_second(m_pNet, g_Config.m_ConnResendRequestsPerSecond))
+		{
+			return true;
+		}
+		m_Limits.m_ResendRequestsPerSecond = g_Config.m_ConnResendRequestsPerSecond;
+	}
+	return false;
+}
+
+void CNetServer::CloseBanned(uint64_t PeerId, const char *pReason)
+{
+	if(g_Config.m_SvBanRepliesPerSecond != 0 && m_NumBanReplies >= g_Config.m_SvBanRepliesPerSecond)
+	{
+		pReason = "";
+	}
+	else
+	{
+		m_NumBanReplies++;
+	}
+	NET_CALL(ddnet_net_close, m_pNet, PeerId, pReason, str_length(pReason));
+}
+
 void CNetServer::Update()
 {
 	CNetBase::UpdateLogLevel();
+	if(m_pNet != nullptr && ApplyLimits())
+	{
+		log_error("net", "applying the limits: %s", ddnet_net_error(m_pNet));
+	}
+	const int64_t Now = time_get();
+	if(Now > m_BanRepliesStart + time_freq())
+	{
+		m_BanRepliesStart = Now;
+		m_NumBanReplies = 0;
+	}
 	// A protected slot outlives its timeout by `conn_timeout_protection`
 	// after the last packet, which came `conn_timeout` before the timeout.
-	const int64_t Now = time_get();
 	const int64_t Protection = time_freq() * std::max(0, g_Config.m_ConnTimeoutProtection - g_Config.m_ConnTimeout);
 	for(int i = 0; i < MaxClients(); i++)
 	{
@@ -393,7 +447,7 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			char aBanReason[256];
 			if(NetBan() && NetBan()->IsBanned(&Addr, aBanReason, sizeof(aBanReason)))
 			{
-				NET_CALL(ddnet_net_close, m_pNet, PeerId, aBanReason, str_length(aBanReason));
+				CloseBanned(PeerId, aBanReason);
 				continue;
 			}
 
@@ -471,7 +525,7 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			char aBanReason[256];
 			if(NetBan() && NetBan()->IsBanned(&Addr, aBanReason, sizeof(aBanReason)))
 			{
-				NET_CALL(ddnet_net_close, m_pNet, PeerId, aBanReason, str_length(aBanReason));
+				CloseBanned(PeerId, aBanReason);
 				continue;
 			}
 

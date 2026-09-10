@@ -565,6 +565,8 @@ class Server(Runnable):
 		# block.
 		self.fifo = None
 		self.identity = None
+		# The epoch of the packet filter's key the server read, if any.
+		self.ebpf_key_epoch = None
 		super().__init__(
 			test_env,
 			name,
@@ -595,6 +597,8 @@ class Server(Runnable):
 			elif event.line.startswith("net::net: identity "):
 				# What clients pin the server by, over QUIC and its kin.
 				self.identity = event.line[len("net::net: identity ") :]
+			elif event.line.startswith("ebpf: using key epoch "):
+				self.ebpf_key_epoch = int(event.line[len("ebpf: using key epoch ") :].split(" ", 1)[0])
 		return event
 
 	def exit(self):
@@ -982,6 +986,47 @@ def client_can_connect_websockets(test_env):
 		raise AssertionError(f"sixup=0 not found in {join!r}")
 	server.exit()
 	client.wait_for_log_exact("client: offline error='Server shutdown'")
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+# The key file the ddnet-xdp filter service writes, as the server reads it:
+# magic, version, the epoch in use, then four epochs of two SipHash key
+# halves and a validity byte.
+def write_filter_key(path, epoch, k0, k1):
+	import struct
+
+	epochs = b""
+	for i in range(4):
+		valid = i == epoch
+		epochs += struct.pack("<QQB7x", k0 if valid else 0, k1 if valid else 0, 1 if valid else 0)
+	with open(path, "wb") as f:
+		f.write(b"DDNXDPK1" + struct.pack("<II", 1, epoch) + epochs)
+
+
+# With a packet filter's key, the server derives its security tokens from
+# it, and the library its QUIC connection IDs as well; clients notice
+# nothing, since the tokens are opaque to them.
+@test
+def client_can_connect_with_filter_key(test_env):
+	key_path = os.path.join(test_env.tmp_dir, "filter.key")
+	write_filter_key(key_path, 2, 0x0123456789ABCDEF, 0xFEDCBA9876543210)
+	client = test_env.client()
+	server = test_env.server(["sv_ebpf_key filter.key"])
+	wait_for_startup([client, server])
+	# Read before the server announces itself, so it is not waited for.
+	if server.ebpf_key_epoch != 2:
+		raise AssertionError(f"server read key epoch {server.ebpf_key_epoch!r} instead of 2")
+	addresses = [f"localhost:{server.port}", f"ddnet+quic://[::1]:{server.port}"]
+	if test_env.runner.test_libtw2_patch:
+		addresses.insert(1, f"tw-0.7+udp://127.0.0.1:{server.port}")
+	for address in addresses:
+		client.command(f"connect {address}")
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+		client.command("disconnect")
+		server.wait_for_log_prefix("game: leave player=", timeout=10)
+	server.exit()
 	client.exit()
 	server.wait_for_exit()
 	client.wait_for_exit()

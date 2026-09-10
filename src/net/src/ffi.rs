@@ -742,6 +742,30 @@ pub extern "C" fn ddnet_net_set_key_log(net: &mut DdnetNet, key_log: bool) -> bo
         Ok(())
     })
 }
+/// The key a packet filter in front of the server shares with it, as read
+/// from the filter's key file: the epoch, then the two SipHash key halves
+/// little-endian, 17 bytes. The 0.6 and 0.7 security tokens and the QUIC
+/// connection IDs are derived from it so the filter can verify them
+/// without keeping state. Before `ddnet_net_open` or after it, for a
+/// rotation, where what was handed out under the previous key stays
+/// good; a length of 0 drops the key.
+#[no_mangle]
+pub unsafe extern "C" fn ddnet_net_set_filter_key(
+    net: &mut DdnetNet,
+    material: *const u8,
+    material_len: usize,
+) -> bool {
+    let material: &[u8] = if material_len == 0 {
+        &[]
+    } else {
+        slice::from_raw_parts(material, material_len)
+    };
+    if let Init(_) = &net.inner {
+        net.init(|builder| builder.filter_key(material))
+    } else {
+        net.good(|impl_| impl_.set_filter_key(material))
+    }
+}
 /// Switches a single protocol on or off, after `ddnet_net_set_accept_connections`.
 #[no_mangle]
 pub extern "C" fn ddnet_net_set_accept_protocol(

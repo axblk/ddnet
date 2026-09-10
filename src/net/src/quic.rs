@@ -371,13 +371,19 @@ impl fmt::Debug for ConnectionId {
 }
 
 impl ConnectionId {
-    // TODO: think about the proper length for a connection ID
-    const LEN: usize = 5;
-    fn random() -> ConnectionId {
+    /// Eight bytes: room for the epoch, a nonce and a tag when a packet
+    /// filter is to recognise them (see `filter_key`), and the length the
+    /// filter reads in any case.
+    const LEN: usize = crate::filter_key::CONNECTION_ID_LEN;
+    /// A random one, or under the filter key one the filter can verify.
+    fn random(cb: &CallbackData) -> ConnectionId {
         let mut result = ConnectionId([0; ConnectionId::LEN]);
         loop {
             // TODO: seeded userspace prng?
-            result.0 = secure_random();
+            result.0 = match cb.challenger.filter_keys() {
+                Some(keys) => keys.connection_id(secure_random()),
+                None => secure_random(),
+            };
             // In order to distinguish DDNet 0.6 extended connless packets from
             // QUIC packets with short header, make sure that connection IDs do
             // not start with ASCII 'e'. DDNet 0.6 extended connless packets
@@ -736,7 +742,7 @@ impl Protocol {
         idx: PeerIndex,
         conn: &mut Connection,
     ) -> Result<()> {
-        let cid = self.new_conn_id();
+        let cid = self.new_conn_id(cb);
         let config = self.config.client();
         config
             .set_application_protos(&[if conn.webtransport { webtransport::ALPN } else { GAME_ALPN }])
@@ -776,9 +782,9 @@ impl Protocol {
             }
         }
     }
-    fn new_conn_id(&self) -> ConnectionId {
+    fn new_conn_id(&self, cb: &CallbackData) -> ConnectionId {
         loop {
-            let result = ConnectionId::random();
+            let result = ConnectionId::random(cb);
             if !self.connection_ids.contains_key(&result) {
                 return result;
             }
@@ -826,7 +832,7 @@ impl Protocol {
                     if header.ty == quiche::Type::Initial
                         && header.token.as_ref().unwrap().is_empty() =>
                 {
-                    let new_scid = self.new_conn_id();
+                    let new_scid = self.new_conn_id(cb);
                     let token =
                         cb.challenger.compute_retry_token(from, &header.dcid);
                     let written = quiche::retry(
@@ -908,7 +914,7 @@ impl Protocol {
         idx: PeerIndex,
     ) -> Result<Connection> {
         let Addr { addr: sock_addr, identity: peer_identity, webtransport, sixup, .. } = addr;
-        let cid = self.new_conn_id();
+        let cid = self.new_conn_id(cb);
         let config = self.config.client();
         config
             .set_application_protos(&[if webtransport { webtransport::ALPN } else { GAME_ALPN }])

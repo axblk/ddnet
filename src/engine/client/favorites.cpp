@@ -19,7 +19,7 @@ protected:
 public:
 	TRISTATE IsFavorite(const NETADDR *pAddrs, int NumAddrs) const override;
 	TRISTATE IsPingAllowed(const NETADDR *pAddrs, int NumAddrs) const override;
-	void Add(const NETADDR *pAddrs, int NumAddrs) override;
+	void Add(const NETADDR *pAddrs, int NumAddrs, const char *pIdentity, const char *pWebTransportFragment) override;
 	void AllowPing(const NETADDR *pAddrs, int NumAddrs, bool AllowPing) override;
 	void Remove(const NETADDR *pAddrs, int NumAddrs) override;
 	void AllEntries(const CEntry **ppEntries, int *pNumEntries) override;
@@ -44,10 +44,22 @@ void CFavorites::OnConfigSave(IConfigManager *pConfigManager)
 		}
 		for(int i = 0; i < Entry.m_NumAddrs; i++)
 		{
-			char aAddr[NETADDR_URL_MAXSTRSIZE];
+			// Each modern address with its fragment, the way the master
+			// lists them, quoted, since `#` starts a comment otherwise.
+			char aAddr[NETADDR_URL_MAXSTRSIZE + 1 + sizeof(Entry.m_aWebTransportFragment)];
 			net_addr_url_str(&Entry.m_aAddrs[i], aAddr, sizeof(aAddr), true);
-			char aBuffer[128];
-			if(!Entry.m_AllowPing)
+			if((Entry.m_aAddrs[i].type & NETTYPE_WEBTRANSPORT) != 0 && Entry.m_aWebTransportFragment[0] != '\0')
+			{
+				str_append(aAddr, "#");
+				str_append(aAddr, Entry.m_aWebTransportFragment);
+			}
+			else if((Entry.m_aAddrs[i].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0 && Entry.m_aIdentity[0] != '\0')
+			{
+				str_append(aAddr, "#identity-sha256=");
+				str_append(aAddr, Entry.m_aIdentity);
+			}
+			char aBuffer[sizeof(aAddr) + 32];
+			if(!Entry.m_AllowPing && str_find(aAddr, "#") == nullptr)
 			{
 				str_format(aBuffer, sizeof(aBuffer), "add_favorite %s", aAddr);
 			}
@@ -56,7 +68,7 @@ void CFavorites::OnConfigSave(IConfigManager *pConfigManager)
 				// Add quotes to the first parameter for backward
 				// compatibility with versions that took a `r` console
 				// parameter.
-				str_format(aBuffer, sizeof(aBuffer), "add_favorite \"%s\" allow_ping", aAddr);
+				str_format(aBuffer, sizeof(aBuffer), "add_favorite \"%s\"%s", aAddr, Entry.m_AllowPing ? " allow_ping" : "");
 			}
 			pConfigManager->WriteLine(aBuffer);
 		}
@@ -133,7 +145,7 @@ TRISTATE CFavorites::IsPingAllowed(const NETADDR *pAddrs, int NumAddrs) const
 	}
 }
 
-void CFavorites::Add(const NETADDR *pAddrs, int NumAddrs)
+void CFavorites::Add(const NETADDR *pAddrs, int NumAddrs, const char *pIdentity, const char *pWebTransportFragment)
 {
 	if(NumAddrs == 0)
 	{
@@ -175,6 +187,8 @@ void CFavorites::Add(const NETADDR *pAddrs, int NumAddrs)
 		m_ByAddr[pAddrs[i]] = m_vEntries.size();
 	}
 	NewEntry.m_AllowPing = false;
+	str_copy(NewEntry.m_aIdentity, pIdentity);
+	str_copy(NewEntry.m_aWebTransportFragment, pWebTransportFragment);
 	m_vEntries.push_back(NewEntry);
 }
 

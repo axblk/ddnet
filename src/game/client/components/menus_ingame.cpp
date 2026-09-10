@@ -720,7 +720,7 @@ void CMenus::RenderServerInfo(CUIRect MainView)
 			if(IsFavorite != TRISTATE::NONE)
 				Favorites()->Remove(CurrentServerInfo.m_aAddresses, CurrentServerInfo.m_NumAddresses);
 			else
-				Favorites()->Add(CurrentServerInfo.m_aAddresses, CurrentServerInfo.m_NumAddresses);
+				Favorites()->Add(CurrentServerInfo.m_aAddresses, CurrentServerInfo.m_NumAddresses, CurrentServerInfo.m_aIdentity, CurrentServerInfo.m_aWebTransportFragment);
 		}
 	}
 

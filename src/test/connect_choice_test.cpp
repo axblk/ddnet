@@ -19,7 +19,9 @@ static void AddAddress(CServerInfo &Info, const char *pUrl)
 	ASSERT_EQ(net_addr_from_url(&Addr, aAddress, nullptr, 0), 0);
 	if(pFragment == nullptr)
 		return;
-	if(const char *pIdentity = str_startswith(pFragment + 1, "identity-sha256="))
+	if((Addr.type & NETTYPE_WEBTRANSPORT) != 0)
+		str_copy(Info.m_aWebTransportFragment, pFragment + 1);
+	else if(const char *pIdentity = str_startswith(pFragment + 1, "identity-sha256="))
 		str_copy(Info.m_aIdentity, pIdentity);
 }
 
@@ -36,6 +38,7 @@ protected:
 		AddAddress(m_Info, "tw-0.6+udp://[::1]:8303");
 		AddAddress(m_Info, aQuic);
 		AddAddress(m_Info, "ddnet+wt://127.0.0.1:8303#webpki");
+		str_copy(m_Info.m_aHostname, "ger10.ddnet.org");
 	}
 };
 
@@ -86,6 +89,10 @@ TEST_F(ConnectChoice, ConnectAddress)
 	char aExpected[256];
 	str_format(aExpected, sizeof(aExpected), "ddnet+quic://127.0.0.1:8303#identity-sha256=%s", IDENTITY);
 	EXPECT_STREQ(aAddress, aExpected);
+
+	// The certificate is signed for the name, so the name is connected by.
+	ASSERT_TRUE(ConnectAddressFor(m_Info, (int)EConnectProtocol::WEBTRANSPORT, (int)EConnectAddressFamily::IPV4, aAddress, sizeof(aAddress)));
+	EXPECT_STREQ(aAddress, "ddnet+wt://ger10.ddnet.org:8303#webpki");
 #endif
 
 	ASSERT_TRUE(ConnectAddressFor(m_Info, (int)EConnectProtocol::LEGACY, (int)EConnectAddressFamily::IPV6, aAddress, sizeof(aAddress)));
@@ -103,5 +110,8 @@ TEST_F(ConnectChoice, ServerHasAddress)
 {
 	EXPECT_TRUE(ServerHasAddress(m_Info, "127.0.0.1:8303"));
 	EXPECT_TRUE(ServerHasAddress(m_Info, "ddnet+wt://127.0.0.1:8303"));
+	EXPECT_TRUE(ServerHasAddress(m_Info, "ddnet+wt://ger10.ddnet.org:8303#webpki"));
+	EXPECT_FALSE(ServerHasAddress(m_Info, "ddnet+wt://ger10.ddnet.org:8304"));
+	EXPECT_FALSE(ServerHasAddress(m_Info, "ddnet+wt://ger11.ddnet.org:8303"));
 	EXPECT_FALSE(ServerHasAddress(m_Info, "127.0.0.2:8303"));
 }

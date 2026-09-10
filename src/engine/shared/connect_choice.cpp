@@ -147,7 +147,29 @@ const char *ConnectProtocolShortName(EConnectProtocol Protocol, const char *pAdd
 bool ServerHasAddress(const CServerInfo &Server, const char *pAddress)
 {
 	NETADDR Address;
-	if(net_addr_from_url(&Address, pAddress, nullptr, 0) != 0 && net_addr_from_str(&Address, pAddress) != 0)
+	// A host name is the server listed under it, with the port.
+	char aHost[128];
+	const int UrlParseResult = net_addr_from_url(&Address, pAddress, aHost, sizeof(aHost));
+	if(UrlParseResult < 0)
+	{
+		if(Server.m_aHostname[0] == '\0')
+			return false;
+		const char *pPort = str_rchr(aHost, ':');
+		if(pPort == nullptr)
+			return false;
+		const int Port = str_toint(pPort + 1);
+		char aName[sizeof(aHost)];
+		str_truncate(aName, sizeof(aName), aHost, pPort - aHost);
+		if(str_comp_nocase(aName, Server.m_aHostname) != 0)
+			return false;
+		for(int i = 0; i < Server.m_NumAddresses; ++i)
+		{
+			if(Server.m_aAddresses[i].port == Port)
+				return true;
+		}
+		return false;
+	}
+	if(UrlParseResult != 0 && net_addr_from_str(&Address, pAddress) != 0)
 		return false;
 	for(int i = 0; i < Server.m_NumAddresses; ++i)
 	{
@@ -164,10 +186,21 @@ const CServerInfo *FindListedServer(IServerBrowser &Browser, const char *pAddres
 	if(char *pSeparator = (char *)str_find(aFirstAddress, ","))
 		*pSeparator = '\0';
 	NETADDR Address;
-	if(net_addr_from_url(&Address, aFirstAddress, nullptr, 0) != 0 && net_addr_from_str(&Address, aFirstAddress) != 0)
-		return nullptr;
-	const IServerBrowser::CServerEntry *pEntry = Browser.Find(Address);
-	return pEntry != nullptr ? &pEntry->m_Info : nullptr;
+	const int UrlParseResult = net_addr_from_url(&Address, aFirstAddress, nullptr, 0);
+	if(UrlParseResult == 0 || net_addr_from_str(&Address, aFirstAddress) == 0)
+	{
+		const IServerBrowser::CServerEntry *pEntry = Browser.Find(Address);
+		return pEntry != nullptr ? &pEntry->m_Info : nullptr;
+	}
+	if(UrlParseResult < 0)
+	{
+		for(int i = 0; i < Browser.NumServers(); ++i)
+		{
+			if(ServerHasAddress(*Browser.Get(i), aFirstAddress))
+				return Browser.Get(i);
+		}
+	}
+	return nullptr;
 }
 
 bool ConnectAddressFor(const CServerInfo &Server, int PickedProtocol, int PickedFamily, char *pBuffer, int BufferSize)
@@ -191,11 +224,23 @@ bool ConnectAddressFor(const CServerInfo &Server, int PickedProtocol, int Picked
 		}
 	}
 	const NETADDR &Address = Server.m_aAddresses[Chosen];
-	net_addr_url_str(&Address, pBuffer, BufferSize, true);
-	if(Server.m_aIdentity[0] != '\0' && (Address.type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0)
+	char aFragment[sizeof(Server.m_aWebTransportFragment)];
+	CServerInfo::AddressFragment(aFragment, sizeof(aFragment), Server, Address);
+	const bool SignedForName = (Address.type & NETTYPE_WEBSOCKET_TLS) != 0 || ((Address.type & NETTYPE_WEBTRANSPORT) != 0 && str_comp(aFragment, "webpki") == 0);
+	if(SignedForName && Server.m_aHostname[0] != '\0')
 	{
-		str_append(pBuffer, "#identity-sha256=", BufferSize);
-		str_append(pBuffer, Server.m_aIdentity, BufferSize);
+		net_addr_url_str(&Address, pBuffer, BufferSize, false);
+		const int SchemeLength = str_find(pBuffer, "://") - pBuffer + 3;
+		str_format(pBuffer + SchemeLength, BufferSize - SchemeLength, "%s:%d", Server.m_aHostname, Address.port);
+	}
+	else
+	{
+		net_addr_url_str(&Address, pBuffer, BufferSize, true);
+	}
+	if(aFragment[0] != '\0')
+	{
+		str_append(pBuffer, "#", BufferSize);
+		str_append(pBuffer, aFragment, BufferSize);
 	}
 	return true;
 }

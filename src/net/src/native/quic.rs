@@ -906,7 +906,7 @@ impl Protocol {
         addr: Addr,
         idx: PeerIndex,
     ) -> Result<Connection> {
-        let Addr { addr: sock_addr, identity: peer_identity, webtransport } = addr;
+        let Addr { addr: sock_addr, identity: peer_identity, webtransport, .. } = addr;
         let cid = self.new_conn_id();
         let config = self.config.client();
         config
@@ -2111,6 +2111,7 @@ impl Connection {
     fn addr(&self) -> Addr {
         Addr {
             addr: self.peer_addr,
+            host: None,
             identity: match self.peer_identity {
                 PeerIdentity::Known(identity) => Some(identity),
                 _ => None,

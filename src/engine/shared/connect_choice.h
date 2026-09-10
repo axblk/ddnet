@@ -83,7 +83,9 @@ public:
 const char *ConnectProtocolShortName(EConnectProtocol Protocol, const char *pAddress);
 
 /**
- * Whether a connect address is one of the server's addresses.
+ * Whether a connect address is one of the server's: the same address, or
+ * the host name the server is listed under with the port of one of its
+ * addresses.
  *
  * @param Server The server.
  * @param pAddress The connect address.
@@ -104,7 +106,8 @@ const CServerInfo *FindListedServer(IServerBrowser &Browser, const char *pAddres
 /**
  * Writes the one address of a server that a connect with the stored picks
  * uses, with its scheme and the fragment the master listed for it. The
- * transport weighs most, then 0.6 over 0.7, then the family.
+ * transport weighs most, then 0.6 over 0.7, then the family. Where the
+ * certificate is signed for the host name, the name replaces the address.
  *
  * @param Server The server.
  * @param PickedProtocol The pick as stored in `cl_connect_protocol`.

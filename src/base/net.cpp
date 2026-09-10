@@ -348,39 +348,32 @@ static int parse_uint16(unsigned short *out, const char **str)
 
 int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t host_buf_size)
 {
-	bool sixup = false;
-	bool quic = false;
-	bool webtransport = false;
-	bool websocket = false;
-	bool websocket_tls = false;
-	mem_zero(addr, sizeof(*addr));
-	const char *str = str_startswith(string, "tw-0.6+udp://");
-	if(!str)
+	static const struct
 	{
+		const char *prefix;
+		int type;
+	} SCHEMES[] = {
+		{"tw-0.6+udp://", 0},
 		// A datagram of no protocol, as STUN sends them.
-		str = str_startswith(string, "udp://");
-	}
-	if(!str && (str = str_startswith(string, "tw-0.7+udp://")))
+		{"udp://", 0},
+		{"tw-0.7+udp://", NETTYPE_TW7},
+		{"ddnet+quic://", NETTYPE_QUIC},
+		{"ddnet+wt://", NETTYPE_QUIC | NETTYPE_WEBTRANSPORT},
+		{"tw-0.7+quic://", NETTYPE_TW7 | NETTYPE_QUIC},
+		{"tw-0.7+wt://", NETTYPE_TW7 | NETTYPE_QUIC | NETTYPE_WEBTRANSPORT},
+		{"ddnet+ws://", NETTYPE_WEBSOCKET},
+		{"ddnet+wss://", NETTYPE_WEBSOCKET | NETTYPE_WEBSOCKET_TLS},
+	};
+	mem_zero(addr, sizeof(*addr));
+	const char *str = nullptr;
+	int scheme_type = 0;
+	for(const auto &scheme : SCHEMES)
 	{
-		sixup = true;
-	}
-	if(!str && (str = str_startswith(string, "ddnet+quic://")))
-	{
-		quic = true;
-	}
-	if(!str && (str = str_startswith(string, "ddnet+wt://")))
-	{
-		quic = true;
-		webtransport = true;
-	}
-	if(!str && (str = str_startswith(string, "ddnet+ws://")))
-	{
-		websocket = true;
-	}
-	if(!str && (str = str_startswith(string, "ddnet+wss://")))
-	{
-		websocket = true;
-		websocket_tls = true;
+		if((str = str_startswith(string, scheme.prefix)))
+		{
+			scheme_type = scheme.type;
+			break;
+		}
 	}
 	if(!str)
 		return 1;
@@ -414,16 +407,7 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 	int failure = net_addr_from_str(addr, host);
 	// The scheme's flags stay even when the host is a name still to be
 	// looked up, so the caller can put them back onto the resolved address.
-	if(sixup)
-		addr->type |= NETTYPE_TW7;
-	if(quic)
-		addr->type |= NETTYPE_QUIC;
-	if(webtransport)
-		addr->type |= NETTYPE_WEBTRANSPORT;
-	if(websocket)
-		addr->type |= NETTYPE_WEBSOCKET;
-	if(websocket_tls)
-		addr->type |= NETTYPE_WEBSOCKET_TLS;
+	addr->type |= scheme_type;
 
 	return failure;
 }
@@ -431,16 +415,17 @@ int net_addr_from_url(NETADDR *addr, const char *string, char *host_buf, size_t 
 void net_addr_url_str(const NETADDR *addr, char *string, int max_length, bool add_port)
 {
 	const char *scheme = "";
-	if(addr->type & NETTYPE_TW7)
-		scheme = "tw-0.7+udp://";
-	else if(addr->type & NETTYPE_WEBSOCKET_TLS)
+	const bool sixup = (addr->type & NETTYPE_TW7) != 0;
+	if(addr->type & NETTYPE_WEBSOCKET_TLS)
 		scheme = "ddnet+wss://";
 	else if(addr->type & NETTYPE_WEBSOCKET)
 		scheme = "ddnet+ws://";
 	else if(addr->type & NETTYPE_WEBTRANSPORT)
-		scheme = "ddnet+wt://";
+		scheme = sixup ? "tw-0.7+wt://" : "ddnet+wt://";
 	else if(addr->type & NETTYPE_QUIC)
-		scheme = "ddnet+quic://";
+		scheme = sixup ? "tw-0.7+quic://" : "ddnet+quic://";
+	else if(sixup)
+		scheme = "tw-0.7+udp://";
 	char host[NETADDR_MAXSTRSIZE];
 	net_addr_str(addr, host, sizeof(host), add_port);
 	str_format(string, max_length, "%s%s", scheme, host);

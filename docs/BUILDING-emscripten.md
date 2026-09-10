@@ -96,6 +96,10 @@
 ### Running the client via Emscripten
 
 -	To test the compiled code locally, run `emrun --browser firefox index.html` in the build directory.
+-	Without a browser, Node from the emsdk runs the headless client (`-DHEADLESS_CLIENT=ON`) against a native server over WebSockets: in the build directory, `node -r <repo>/scripts/emscripten/node-xhr-stub.js DDNet.js "connect ddnet+ws://127.0.0.1:8303"`.
+	The stub stands in for `XMLHttpRequest`, which Node lacks, so the master's list and HTTP map downloads fail right away and the map comes from the server.
+	The integration test `browser_client_can_connect` does the same: `scripts/integration_test.py --test-websockets --test-quic --emscripten-client <build>/DDNet.js <native server build dir> browser_client_can_connect`, with a native server built with `-DNETWORKING_QUIC=ON -DWEBSOCKETS=ON`; the CI's Emscripten job runs it.
+	WebTransport is a browser's alone, Node has none.
 -	To host the compiled Emscripten client, copy the `DDNet.data`, `DDNet.js`, `DDNet.wasm` and `index.html` files from the build directory to the web server.
 	The file `index.html` in the build folder is copied from `other/emscripten/index.html`.
 -	You can also run `other/emscripten/server.py` to host a minimal server for testing using Python without needing to install Emscripten.

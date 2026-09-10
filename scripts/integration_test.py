@@ -18,6 +18,8 @@ import sys
 import tempfile
 import traceback
 
+import vanilla_client
+
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -117,7 +119,7 @@ YELLOW = "\x1b[33m"
 
 
 class TestRunner:
-	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, ddnet_js, repo_dir, test_dir, show_full_output, test_websockets, test_quic, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
+	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, ddnet_js, repo_dir, test_dir, show_full_output, test_websockets, test_libtw2_patch, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
 		self.ddnet = ddnet
 		self.ddnet_server = ddnet_server
 		self.ddnet_mastersrv = ddnet_mastersrv
@@ -129,7 +131,7 @@ class TestRunner:
 		self.extra_env_vars = {}
 		self.show_full_output = show_full_output
 		self.test_websockets = test_websockets
-		self.test_quic = test_quic
+		self.test_libtw2_patch = test_libtw2_patch
 		self.keep_tmpdirs = keep_tmpdirs
 		self.timeout_multiplier = timeout_multiplier
 		self.valgrind_memcheck = valgrind_memcheck
@@ -139,10 +141,19 @@ class TestRunner:
 		# the test timeouts, otherwise a slowed down client or server drops its own
 		# connection while the test is still waiting. 100 is the default of the config
 		# variable, 1000 its maximum.
-		self.conn_timeout = min(1000, round(100 * self.timeout_multiplier))
+		self.conn_timeout = self.scaled_setting(100, 5, 1000)
+
+	def scaled_setting(self, value, lowest, highest):
+		"""A config value the engine reads as wall clock, scaled like the timeouts.
+
+		A test that asks for a shorter one than the default, to wait for what it
+		measures, still has to leave a slowed down engine the room to get there,
+		so the value goes up with `timeout_multiplier` and stays in the range the
+		config variable takes."""
+		return min(highest, max(lowest, round(value * self.timeout_multiplier)))
 
 	def skipped(self, test):
-		return (test.requires_mastersrv and self.ddnet_mastersrv is None) or (test.requires_websockets and not self.test_websockets) or (test.requires_quic and not self.test_quic) or (test.requires_native_client and self.ddnet is None) or (test.requires_browser_client and self.ddnet_js is None)
+		return (test.requires_mastersrv and self.ddnet_mastersrv is None) or (test.requires_websockets and not self.test_websockets) or (test.requires_libtw2_patch and not self.test_libtw2_patch) or (test.requires_native_client and self.ddnet is None) or (test.requires_browser_client and self.ddnet_js is None)
 
 	def run_test(self, test):
 		tmp_dir = tempfile.mkdtemp(prefix=f"integration_{test.name}_", dir=self.test_dir)
@@ -468,7 +479,7 @@ def open_fifo(name):
 
 
 class Client(Runnable):
-	def __init__(self, test_env, extra_args=[]):  # noqa: B006 mutable-default-arguments
+	def __init__(self, test_env, extra_args=[], *, allow_unclean_exit=False):  # noqa: B006 mutable-default-arguments
 		name = f"client{test_env.num_clients}"
 		self.fifo_name, self.fifo_path = fifo_name_path(test_env, name)
 		# Delay opening the FIFO until the client has started, because it will
@@ -485,6 +496,7 @@ class Client(Runnable):
 				f"conn_timeout {test_env.runner.conn_timeout}",
 			]
 			+ extra_args,
+			allow_unclean_exit=allow_unclean_exit,
 		)
 		test_env.num_clients += 1
 
@@ -641,12 +653,12 @@ json = {communities_json_filename!r}
 ALL_TESTS = []
 
 
-def test(test=None, *, requires_mastersrv=False, requires_websockets=False, requires_quic=False, requires_native_client=True, requires_browser_client=False, timeout=60):
+def test(test=None, *, requires_mastersrv=False, requires_websockets=False, requires_libtw2_patch=False, requires_native_client=True, requires_browser_client=False, timeout=60):
 	def apply(test):
 		test.name = test.__name__
 		test.requires_mastersrv = requires_mastersrv
 		test.requires_websockets = requires_websockets
-		test.requires_quic = requires_quic
+		test.requires_libtw2_patch = requires_libtw2_patch
 		test.requires_native_client = requires_native_client
 		test.requires_browser_client = requires_browser_client
 		test.timeout = timeout
@@ -725,7 +737,7 @@ def client_can_connect(test_env):
 	client.wait_for_exit()
 
 
-@test(requires_quic=True)
+@test
 def client_can_connect_quic_pinned(test_env):
 	client = test_env.client()
 	server = test_env.server()
@@ -748,6 +760,160 @@ def client_can_connect_quic_pinned(test_env):
 	client.exit()
 	server.wait_for_exit()
 	client.wait_for_exit()
+
+
+@test(timeout=90)
+def client_times_out(test_env):
+	# A client that goes silent is dropped after `conn_timeout`. Killed, it
+	# leaves without a word, so the server has to notice on its own.
+	client = test_env.client(allow_unclean_exit=True)
+	server = test_env.server([f"conn_timeout {test_env.runner.scaled_setting(5, 5, 1000)}"])
+	wait_for_startup([client, server])
+	client.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client.process.kill()
+	server.wait_for_log_suffix("has left the game (Timeout)", timeout=20)
+	server.exit()
+	server.wait_for_exit()
+
+
+@test(timeout=120)
+def timeout_protection_keeps_the_slot(test_env):
+	# A client that told the server its timeout code keeps its slot through
+	# a timeout, and takes it back when it comes again with the same code.
+	# The clients send a code of their own a while after entering; the test
+	# gives one itself, as a chat message after it shows it has arrived.
+	client1 = test_env.client(allow_unclean_exit=True)
+	server = test_env.server([
+		f"conn_timeout {test_env.runner.scaled_setting(5, 5, 1000)}",
+		f"conn_timeout_protection {test_env.runner.scaled_setting(60, 5, 10000)}",
+	])
+	wait_for_startup([client1, server])
+	client1.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client1.command("say /timeout protection")
+	client1.command("say ready")
+	server.wait_for_log_prefix("chat: 0:", timeout=10)
+	client1.process.kill()
+	server.wait_for_log_prefix("net: client 0 timed out, keeping the slot", timeout=20)
+	client2 = test_env.client()
+	client2.wait_for_startup()
+	client2.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game. ClientId=1", timeout=10)
+	client2.command("say /timeout protection")
+	server.wait_for_log_suffix("has left the game (Timeout Protection used)", timeout=20)
+	client2.command("disconnect")
+	server.wait_for_log_prefix("game: leave player='0:", timeout=10)
+	server.exit()
+	client2.exit()
+	server.wait_for_exit()
+	client2.wait_for_exit()
+
+
+@test(timeout=90)
+def server_limits_connections_per_address(test_env):
+	server = test_env.server(["sv_connlimit 2", f"sv_connlimit_time {test_env.runner.scaled_setting(20, 0, 1000)}"])
+	clients = [test_env.client() for _ in range(3)]
+	wait_for_startup([server] + clients)
+	for i, client in enumerate(clients):
+		client.command(f"connect localhost:{server.port}")
+		if i < 2:
+			server.wait_for_log_prefix(f"server: player has entered the game. ClientId={i}", timeout=10)
+	# The third connection from the same address within the window is turned away.
+	clients[2].wait_for_log_exact("client: offline error='Too many connections in a short time'", timeout=10)
+	server.wait_for_log_suffix("refused: Too many connections in a short time", timeout=10)
+	server.exit()
+	for client in clients[:2]:
+		client.wait_for_log_exact("client: offline error='Server shutdown'")
+	for client in clients:
+		client.exit()
+	server.wait_for_exit()
+	for client in clients:
+		client.wait_for_exit()
+
+
+@test(requires_libtw2_patch=True)
+def vanilla_client_passes_the_antispoof_handshake(test_env):
+	server = test_env.server()
+	wait_for_startup([server])
+	client = vanilla_client.VanillaClient("127.0.0.1", server.port)
+	map_name = client.connect()
+	if client.handshake_token is None:
+		raise AssertionError("the server did not send the handshake")
+	if map_name == "dummy":
+		raise AssertionError("the server did not go on past the handshake's map")
+	server.wait_for_log_suffix("accepted by the vanilla handshake", timeout=5)
+	client.close("done")
+	server.exit()
+	server.wait_for_exit()
+
+
+@test
+def vanilla_client_is_accepted_without_antispoof(test_env):
+	server = test_env.server(["sv_vanilla_antispoof 0"])
+	wait_for_startup([server])
+	client = vanilla_client.VanillaClient("127.0.0.1", server.port)
+	map_name = client.connect()
+	if client.handshake_token is not None:
+		raise AssertionError("the server sent the handshake although it is off")
+	if not map_name:
+		raise AssertionError("no map from the server")
+	client.close("done")
+	server.exit()
+	server.wait_for_exit()
+
+
+def switch_is_live(test_env, setting, address, reason):
+	"""With `setting` off the client is turned away with `reason`; switched on
+	while running, the same client gets in."""
+	client = test_env.client()
+	server = test_env.server([f"{setting} 0"])
+	wait_for_startup([client, server])
+	client.command(f"connect {address.format(port=server.port)}")
+	client.wait_for_log_exact(f"client: offline error='{reason}'", timeout=10)
+	server.command(f"{setting} 1")
+	server.wait_for_log_exact("net: classic protocols: ddnet 0.6 on, vanilla 0.6 on, 0.7 on", timeout=5)
+	client.command(f"connect {address.format(port=server.port)}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	server.exit()
+	client.wait_for_log_exact("client: offline error='Server shutdown'")
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+@test
+def ddnet_connections_can_be_switched_off(test_env):
+	switch_is_live(test_env, "sv_ddnet_connections", "localhost:{port}", "DDNet 0.6 connections are not accepted at this time")
+
+
+@test(requires_libtw2_patch=True)
+def sixup_can_be_switched_off(test_env):
+	switch_is_live(test_env, "sv_sixup", "tw-0.7+udp://127.0.0.1:{port}", "0.7 connections are not accepted at this time")
+
+
+@test
+def vanilla_connections_can_be_switched_off(test_env):
+	server = test_env.server(["sv_vanilla_connections 0"])
+	wait_for_startup([server])
+	client = vanilla_client.VanillaClient("127.0.0.1", server.port)
+	try:
+		client.connect()
+	except AssertionError as error:
+		if "Old Teeworlds 0.6 versions are unsupported" not in str(error):
+			raise
+	else:
+		raise AssertionError("the vanilla client got in with the switch off")
+	client.close()
+	server.command("sv_vanilla_connections 1")
+	server.wait_for_log_exact("net: classic protocols: ddnet 0.6 on, vanilla 0.6 on, 0.7 on", timeout=5)
+	client = vanilla_client.VanillaClient("127.0.0.1", server.port)
+	client.connect()
+	if test_env.runner.test_libtw2_patch:
+		server.wait_for_log_suffix("accepted by the vanilla handshake", timeout=5)
+	client.close("done")
+	server.exit()
+	server.wait_for_exit()
 
 
 @test
@@ -786,7 +952,7 @@ def client_can_connect_websockets(test_env):
 # server over WebSockets: it starts with the connect on its command line
 # once the server's port and identity are known, joins the game, and sees
 # the server go.
-@test(requires_websockets=True, requires_quic=True, requires_native_client=False, requires_browser_client=True, timeout=180)
+@test(requires_websockets=True, requires_native_client=False, requires_browser_client=True, timeout=180)
 def browser_client_can_connect(test_env):
 	server = test_env.server()
 	wait_for_startup([server])
@@ -1036,12 +1202,12 @@ def server_can_register_tw_0_7(test_env):
 	server_can_register_protocol(test_env, "tw0.7/ipv6", "7/ipv6", "tw-0.7+udp")
 
 
-@test(requires_mastersrv=True, requires_quic=True)
+@test(requires_mastersrv=True)
 def server_can_register_quic(test_env):
 	server_can_register_protocol(test_env, "ddnet+quic/ipv6", "quic/6/ipv6", "ddnet+quic")
 
 
-@test(requires_mastersrv=True, requires_quic=True)
+@test(requires_mastersrv=True)
 def server_can_register_webtransport(test_env):
 	server_can_register_protocol(test_env, "ddnet+wt/ipv6", "wt/6/ipv6", "ddnet+wt")
 
@@ -1152,7 +1318,7 @@ def main():
 	parser.add_argument("--show-full-output", action="store_true", help="print the full stdout and stderr on test failures")
 	parser.add_argument("--test-mastersrv", action="store_true", help="enforce testing of mastersrv")
 	parser.add_argument("--test-websockets", action="store_true", help="run tests that require compiling with websockets support (-DWEBSOCKETS=ON)")
-	parser.add_argument("--test-quic", action="store_true", help="run tests that require compiling with QUIC networking (-DNETWORKING_QUIC=ON)")
+	parser.add_argument("--test-libtw2-patch", action="store_true", help="run tests that require compiling against a patched libtw2-net (-DLIBTW2_PATCH=ON), which is what the vanilla 0.6 handshake and a 0.7 server need")
 	parser.add_argument("--timeout-multiplier", type=float, default=1, help="multiply all timeouts by this value")
 	parser.add_argument("--valgrind-memcheck", action="store_true", help="use valgrind's memcheck on client and server")
 	parser.add_argument("--emscripten-client", metavar="DDNET_JS", help="path to the DDNet.js of an Emscripten client build, run under node for the browser tests; the native client binary may be missing then")
@@ -1191,7 +1357,7 @@ def main():
 		test_dir=args.builddir,
 		show_full_output=args.show_full_output,
 		test_websockets=args.test_websockets,
-		test_quic=args.test_quic,
+		test_libtw2_patch=args.test_libtw2_patch,
 		valgrind_memcheck=args.valgrind_memcheck,
 		keep_tmpdirs=args.keep_tmpdirs,
 		timeout_multiplier=args.timeout_multiplier,

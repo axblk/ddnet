@@ -1,18 +1,12 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
-#include "network.h"
-
-#ifdef CONF_NETWORKING_QUIC
-
 #include "config.h"
 #include "netban.h"
+#include "network.h"
 
 #include <base/dbg.h>
-#include <base/hash_ctxt.h>
 #include <base/log.h>
-#include <base/math.h>
 #include <base/net.h>
-#include <base/secure.h>
 #include <base/str.h>
 
 #include <net/net.h>
@@ -54,11 +48,19 @@ static bool UrlIsSixup(const char *pUrl)
 	return str_startswith(pUrl, "tw-0.7+udp://") != nullptr;
 }
 
+// Whether the library lost the peer to silence rather than to a close or
+// an error of its own; the reasons are the library's.
+static bool IsTimeoutReason(const char *pReason)
+{
+	return str_comp(pReason, "Timeout") == 0 || str_startswith(pReason, "Too weak connection") != nullptr;
+}
+
 void CNetServer::CPeer::Reset()
 {
 	m_State = STATE_NONE;
 	m_Id = -1;
 	m_TimeoutProtected = false;
+	m_TimeoutAt = 0;
 	m_Quic = false;
 	mem_zero(&m_Address, sizeof(m_Address));
 	m_aAddressStr[0] = '\0';
@@ -112,8 +114,6 @@ bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int Ma
 	m_MaxClients = std::clamp(MaxClients, 1, (int)NET_MAX_CLIENTS);
 	m_MaxClientsPerIp = std::clamp(MaxClientsPerIp, 1, (int)NET_MAX_CLIENTS);
 
-	secure_random_fill(m_aSecurityTokenSeed, sizeof(m_aSecurityTokenSeed));
-
 	for(auto &Peer : m_aPeers)
 	{
 		Peer.Reset();
@@ -140,6 +140,7 @@ bool CNetServer::OpenLibrary()
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_QUIC, g_Config.m_SvQuic != 0) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_WEBTRANSPORT, g_Config.m_SvWebtransport != 0) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_WEBSOCKET, g_Config.m_SvWebsocket != 0) ||
+		ApplyLimits() ||
 		ddnet_net_open(m_pNet))
 	{
 		log_error("net", "couldn't open net server: %s", ddnet_net_error(m_pNet));
@@ -254,6 +255,7 @@ int CNetServer::SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_NEWCLIENT_N
 
 void CNetServer::Close()
 {
+	m_Limits = CLimits();
 	if(m_pNet)
 	{
 		ddnet_net_free(m_pNet);
@@ -271,6 +273,15 @@ void CNetServer::Drop(int ClientId, const char *pReason)
 	const uint64_t PeerId = m_aPeers[ClientId].m_Id;
 	if(PeerId == (uint64_t)-1)
 	{
+		// A slot waiting for its timeout code has no peer in the library.
+		if(HasErrored(ClientId))
+		{
+			if(m_pfnDelClient)
+			{
+				m_pfnDelClient(ClientId, pReason, m_pUser);
+			}
+			m_aPeers[ClientId].Reset();
+		}
 		return;
 	}
 
@@ -287,10 +298,105 @@ void CNetServer::Drop(int ClientId, const char *pReason)
 	NET_CALL(ddnet_net_close, m_pNet, PeerId, pReason, str_length(pReason));
 }
 
+bool CNetServer::ApplyLimits()
+{
+	if(m_Limits.m_Connlimit != g_Config.m_SvConnlimit || m_Limits.m_ConnlimitTime != g_Config.m_SvConnlimitTime)
+	{
+		if(ddnet_net_set_connlimit(m_pNet, g_Config.m_SvConnlimit, g_Config.m_SvConnlimitTime))
+		{
+			return true;
+		}
+		m_Limits.m_Connlimit = g_Config.m_SvConnlimit;
+		m_Limits.m_ConnlimitTime = g_Config.m_SvConnlimitTime;
+	}
+	if(m_Limits.m_MaxPacketsPerRecv != g_Config.m_SvMaxPacketsPerRecv)
+	{
+		if(ddnet_net_set_max_packets_per_recv(m_pNet, g_Config.m_SvMaxPacketsPerRecv))
+		{
+			return true;
+		}
+		m_Limits.m_MaxPacketsPerRecv = g_Config.m_SvMaxPacketsPerRecv;
+	}
+	if(m_Limits.m_ResendRequestsPerSecond != g_Config.m_ConnResendRequestsPerSecond)
+	{
+		if(ddnet_net_set_resend_requests_per_second(m_pNet, g_Config.m_ConnResendRequestsPerSecond))
+		{
+			return true;
+		}
+		m_Limits.m_ResendRequestsPerSecond = g_Config.m_ConnResendRequestsPerSecond;
+	}
+	// The handshake stands in for the password, so it is only done
+	// without one.
+	const int VanillaAntispoof = g_Config.m_SvVanillaAntiSpoof != 0 && g_Config.m_Password[0] == '\0';
+	if(m_Limits.m_VanillaAntispoof != VanillaAntispoof ||
+		m_Limits.m_VanConnPerSecond != g_Config.m_SvVanConnPerSecond ||
+		m_Limits.m_VanConnRepliesPerSecond != g_Config.m_SvVanConnRepliesPerSecond ||
+		m_Limits.m_PreConnDecompressPerSecond != g_Config.m_SvPreConnDecompressPerSecond)
+	{
+		if(ddnet_net_set_vanilla_handshake(m_pNet, VanillaAntispoof != 0, g_Config.m_SvVanConnPerSecond, g_Config.m_SvVanConnRepliesPerSecond, g_Config.m_SvPreConnDecompressPerSecond))
+		{
+			return true;
+		}
+		m_Limits.m_VanillaAntispoof = VanillaAntispoof;
+		m_Limits.m_VanConnPerSecond = g_Config.m_SvVanConnPerSecond;
+		m_Limits.m_VanConnRepliesPerSecond = g_Config.m_SvVanConnRepliesPerSecond;
+		m_Limits.m_PreConnDecompressPerSecond = g_Config.m_SvPreConnDecompressPerSecond;
+	}
+	if(m_Limits.m_DdnetConnections != g_Config.m_SvDdnetConnections ||
+		m_Limits.m_VanillaConnections != g_Config.m_SvVanillaConnections ||
+		m_Limits.m_Sixup != g_Config.m_SvSixup)
+	{
+		if(ddnet_net_set_classic_switches(m_pNet, g_Config.m_SvDdnetConnections != 0, g_Config.m_SvVanillaConnections != 0, g_Config.m_SvSixup != 0))
+		{
+			return true;
+		}
+		m_Limits.m_DdnetConnections = g_Config.m_SvDdnetConnections;
+		m_Limits.m_VanillaConnections = g_Config.m_SvVanillaConnections;
+		m_Limits.m_Sixup = g_Config.m_SvSixup;
+		log_info("net", "classic protocols: ddnet 0.6 %s, vanilla 0.6 %s, 0.7 %s",
+			g_Config.m_SvDdnetConnections ? "on" : "off",
+			g_Config.m_SvVanillaConnections ? "on" : "off",
+			g_Config.m_SvSixup ? "on" : "off");
+	}
+	return false;
+}
+
+void CNetServer::CloseBanned(uint64_t PeerId, const char *pReason)
+{
+	if(g_Config.m_SvBanRepliesPerSecond != 0 && m_NumBanReplies >= g_Config.m_SvBanRepliesPerSecond)
+	{
+		pReason = "";
+	}
+	else
+	{
+		m_NumBanReplies++;
+	}
+	NET_CALL(ddnet_net_close, m_pNet, PeerId, pReason, str_length(pReason));
+}
+
 void CNetServer::Update()
 {
-	// TODO: detect timeouts and honor timeout protection
 	CNetBase::UpdateLogLevel();
+	if(m_pNet != nullptr && ApplyLimits())
+	{
+		log_error("net", "applying the limits: %s", ddnet_net_error(m_pNet));
+	}
+	const int64_t Now = time_get();
+	if(Now > m_BanRepliesStart + time_freq())
+	{
+		m_BanRepliesStart = Now;
+		m_NumBanReplies = 0;
+	}
+	// A protected slot outlives its timeout by `conn_timeout_protection`
+	// after the last packet, which came `conn_timeout` before the timeout.
+	const int64_t Protection = time_freq() * std::max(0, g_Config.m_ConnTimeoutProtection - g_Config.m_ConnTimeout);
+	for(int i = 0; i < MaxClients(); i++)
+	{
+		if(HasErrored(i) && Now - m_aPeers[i].m_TimeoutAt > Protection)
+		{
+			Drop(i, "Timeout Protection over");
+		}
+	}
 }
 
 void CNetServer::Wait(uint64_t Microseconds)
@@ -366,17 +472,11 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			char aBanReason[256];
 			if(NetBan() && NetBan()->IsBanned(&Addr, aBanReason, sizeof(aBanReason)))
 			{
-				NET_CALL(ddnet_net_close, m_pNet, PeerId, aBanReason, str_length(aBanReason));
+				CloseBanned(PeerId, aBanReason);
 				continue;
 			}
 
 			const bool Sixup = UrlIsSixup(pAddr);
-			if(Sixup && !g_Config.m_SvSixup)
-			{
-				static const char NO_SIXUP[] = "0.7 connections are not accepted at this time";
-				NET_CALL(ddnet_net_close, m_pNet, PeerId, NO_SIXUP, sizeof(NO_SIXUP) - 1);
-				continue;
-			}
 
 			uint32_t NumConnected = 0;
 			NET_CALL(ddnet_net_num_peers_in_bucket, m_pNet, pAddr, AddrLen, &NumConnected);
@@ -412,7 +512,15 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			m_aPeers[ClientId].m_Quic = str_startswith(pAddr, "ddnet+") != nullptr;
 			m_aPeers[ClientId].SetAddress(Addr);
 			NET_CALL(ddnet_net_set_userdata, m_pNet, PeerId, (void *)(uintptr_t)ClientId);
-			if(m_pfnNewClient)
+			// A 0.6 client that came in by the vanilla handshake is past
+			// the point where it would introduce itself.
+			bool Vanilla = false;
+			NET_CALL(ddnet_net_peer_vanilla, m_pNet, PeerId, &Vanilla);
+			if(Vanilla && m_pfnNewClientNoAuth)
+			{
+				m_pfnNewClientNoAuth(ClientId, m_pUser);
+			}
+			else if(m_pfnNewClient)
 			{
 				m_pfnNewClient(ClientId, m_pUser, Sixup);
 			}
@@ -442,7 +550,7 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			char aBanReason[256];
 			if(NetBan() && NetBan()->IsBanned(&Addr, aBanReason, sizeof(aBanReason)))
 			{
-				NET_CALL(ddnet_net_close, m_pNet, PeerId, aBanReason, str_length(aBanReason));
+				CloseBanned(PeerId, aBanReason);
 				continue;
 			}
 
@@ -464,15 +572,26 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			// The peer mapping has to be cleared before the callback, sends from
 			// within the callback would otherwise go to a closed connection.
 			m_aPeers[ClientId].m_Id = -1;
-			m_aPeers[ClientId].m_State = CPeer::STATE_NONE;
 			m_aFlushPending[ClientId] = false;
+			m_aBuffer[ddnet_net_ev_disconnect_reason_len(m_pNetEvent)] = 0;
+			const char *pReason = ddnet_net_ev_disconnect_is_remote(m_pNetEvent) ? "" : (char *)m_aBuffer;
+
+			if(m_aPeers[ClientId].m_TimeoutProtected && IsTimeoutReason(pReason))
+			{
+				// The library is done with the peer; the slot waits for the
+				// client to come back with its timeout code, see SetTimedOut.
+				m_aPeers[ClientId].m_State = CPeer::STATE_TIMEOUT;
+				m_aPeers[ClientId].m_TimeoutAt = time_get();
+				log_info("net", "client %d timed out, keeping the slot for its timeout code", ClientId);
+				continue;
+			}
+			m_aPeers[ClientId].m_State = CPeer::STATE_NONE;
 
 			if(m_pfnDelClient)
 			{
-				m_aBuffer[ddnet_net_ev_disconnect_reason_len(m_pNetEvent)] = 0;
-				const char *pReason = ddnet_net_ev_disconnect_is_remote(m_pNetEvent) ? "" : (char *)m_aBuffer;
 				m_pfnDelClient(ClientId, pReason, m_pUser);
 			}
+			m_aPeers[ClientId].Reset();
 		}
 		break;
 		case DDNET_NET_EV_CHUNK:
@@ -622,35 +741,6 @@ const char *CNetServer::ErrorString(int ClientId)
 	return "";
 }
 
-const NETADDR *CNetServer::ClientAddr(int ClientId) const
-{
-	dbg_assert(m_aPeers[ClientId].m_State != CPeer::STATE_NONE, "invalid client id");
-	return &m_aPeers[ClientId].m_Address;
-}
-
-const std::array<char, NETADDR_MAXSTRSIZE> &CNetServer::ClientAddrString(int ClientId, bool IncludePort) const
-{
-	dbg_assert(m_aPeers[ClientId].m_State != CPeer::STATE_NONE, "invalid client id");
-	return IncludePort ? m_aPeers[ClientId].m_aAddressStr : m_aPeers[ClientId].m_aAddressStrNoPort;
-}
-
-bool CNetServer::HasSecurityToken(int ClientId) const
-{
-	// unimplemented
-	return true;
-}
-
-NETSOCKET CNetServer::Socket() const
-{
-	// unimplemented
-	return nullptr;
-}
-
-int CNetServer::NetType() const
-{
-	// unimplemented
-	return NETTYPE_IPV4 | NETTYPE_IPV6;
-}
 SECURITY_TOKEN CNetServer::GetGlobalToken()
 {
 	// The library hands out the 0.7 tokens, so the one the masterserver
@@ -663,27 +753,3 @@ SECURITY_TOKEN CNetServer::GetGlobalToken()
 	}
 	return Token;
 }
-
-SECURITY_TOKEN CNetServer::GetToken(const NETADDR &Addr)
-{
-	SHA256_CTX Sha256;
-	sha256_init(&Sha256);
-	sha256_update(&Sha256, (unsigned char *)m_aSecurityTokenSeed, sizeof(m_aSecurityTokenSeed));
-	sha256_update(&Sha256, (unsigned char *)&Addr, 20); // omit port, bad idea!
-
-	SECURITY_TOKEN SecurityToken = ToSecurityToken(sha256_finish(&Sha256).data);
-
-	if(SecurityToken == NET_SECURITY_TOKEN_UNKNOWN ||
-		SecurityToken == NET_SECURITY_TOKEN_UNSUPPORTED)
-		SecurityToken = 1;
-
-	return SecurityToken;
-}
-
-SECURITY_TOKEN CNetServer::GetVanillaToken(const NETADDR &Addr)
-{
-	// vanilla token/gametick shouldn't be negative
-	return absolute(GetToken(Addr));
-}
-
-#endif // CONF_NETWORKING_QUIC

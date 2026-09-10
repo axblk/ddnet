@@ -8,6 +8,8 @@ use crate::wire;
 use crate::Net as NetImpl;
 use crate::NetBuilder as NetBuilderImpl;
 use crate::PeerIndex;
+use crate::types::ClassicSwitches;
+use crate::types::VanillaSettings;
 use crate::Protocol;
 use crate::Result;
 use std::ffi::c_char;
@@ -155,6 +157,19 @@ impl DdnetNet {
                 self.last_error = Some(err);
                 true
             }
+        }
+    }
+    /// A setting that can also change while running: `init` before
+    /// `ddnet_net_open`, `good` after it.
+    fn setting<I, G>(&mut self, init: I, good: G) -> bool
+    where
+        I: FnOnce(&mut NetBuilderImpl) -> Result<()>,
+        G: FnOnce(&mut NetImpl) -> Result<()>,
+    {
+        if let Init(_) = &self.inner {
+            self.init(init)
+        } else {
+            self.good(good)
         }
     }
     fn error(&self) -> Option<(&CStr, usize)> {
@@ -607,6 +622,122 @@ pub extern "C" fn ddnet_net_identity(net: &mut DdnetNet, identity: &mut [u8; 32]
 pub extern "C" fn ddnet_net_set_timeout(net: &mut DdnetNet, seconds: u64) -> bool {
     net.init(|builder| {
         builder.timeout(Duration::from_secs(seconds));
+        Ok(())
+    })
+}
+/// How many connections an address may make within `seconds` before
+/// further ones are refused with "Too many connections in a short time";
+/// `conns` of 0 for no limit. Before `ddnet_net_open` or after it.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_connlimit(net: &mut DdnetNet, conns: u32, seconds: u64) -> bool {
+    let window = Duration::from_secs(seconds);
+    net.setting(
+        |builder| {
+            builder.connlimit(conns, window);
+            Ok(())
+        },
+        |impl_| {
+            impl_.set_connlimit(conns, window);
+            Ok(())
+        },
+    )
+}
+/// How many packets are read from the socket between two waits before
+/// `ddnet_net_recv` reports nothing further, whatever else is waiting
+/// stays in the socket for the system to drop; 0 reads everything.
+/// Before `ddnet_net_open` or after it.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_max_packets_per_recv(net: &mut DdnetNet, packets: u32) -> bool {
+    net.setting(
+        |builder| {
+            builder.max_packets_per_recv(packets);
+            Ok(())
+        },
+        |impl_| {
+            impl_.set_max_packets_per_recv(packets);
+            Ok(())
+        },
+    )
+}
+/// How many of a peer's resend requests are answered per second, over
+/// the classic UDP protocols, where a request makes us send everything
+/// that is not acked yet; 0 answers all of them. Before `ddnet_net_open`
+/// or after it, for the connections there are as well.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_resend_requests_per_second(net: &mut DdnetNet, per_second: u32) -> bool {
+    net.setting(
+        |builder| {
+            builder.resend_requests_per_second(per_second);
+            Ok(())
+        },
+        |impl_| {
+            impl_.set_resend_requests_per_second(per_second);
+            Ok(())
+        },
+    )
+}
+/// How a server takes 0.6 clients that connect without asking for a
+/// token. With `antispoof` the address is proven by the vanilla
+/// handshake (a tiny map and empty snapshots carrying a token the
+/// client's first input returns) before the connection is reported,
+/// and `ddnet_net_peer_vanilla` then says so; without it the connect is
+/// accepted as it is. Beyond `conn_per_second` connects the handshake
+/// names a map every client has instead of carrying one; at most
+/// `replies_per_second` handshakes go out, to addresses not verified
+/// yet; at most `decompress_per_second` compressed packets of addresses
+/// without a connection are decompressed, which only the handshake's
+/// answer needs. Zero for no limit. Before `ddnet_net_open` or after it.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_vanilla_handshake(
+    net: &mut DdnetNet,
+    antispoof: bool,
+    conn_per_second: u32,
+    replies_per_second: u32,
+    decompress_per_second: u32,
+) -> bool {
+    let settings = VanillaSettings { antispoof, conn_per_second, replies_per_second, decompress_per_second };
+    net.setting(
+        |builder| {
+            builder.vanilla_handshake(settings);
+            Ok(())
+        },
+        |impl_| {
+            impl_.set_vanilla_handshake(settings);
+            Ok(())
+        },
+    )
+}
+/// Which of the classic UDP protocols take clients, of those the server
+/// listens for: 0.6 with tokens (the DDNet client), 0.6 without
+/// (vanilla), and 0.7. Unlike `ddnet_net_set_accept_protocol`, a
+/// client over one that is off is told so, once its address is
+/// verified; and this can change while running, the connections there
+/// are stay. Before `ddnet_net_open` or after it.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_classic_switches(
+    net: &mut DdnetNet,
+    ddnet06: bool,
+    vanilla06: bool,
+    tw07: bool,
+) -> bool {
+    let switches = ClassicSwitches { ddnet06, vanilla06, tw07 };
+    net.setting(
+        |builder| {
+            builder.classic_switches(switches);
+            Ok(())
+        },
+        |impl_| {
+            impl_.set_classic_switches(switches);
+            Ok(())
+        },
+    )
+}
+/// Whether the peer is a 0.6 client that came in by the vanilla
+/// handshake, which took it past the part where it says who it is.
+#[no_mangle]
+pub extern "C" fn ddnet_net_peer_vanilla(net: &mut DdnetNet, peer_index: u64, vanilla: &mut bool) -> bool {
+    net.good(|impl_| {
+        *vanilla = impl_.peer_vanilla(PeerIndex(peer_index))?;
         Ok(())
     })
 }

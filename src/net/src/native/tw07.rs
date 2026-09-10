@@ -10,6 +10,7 @@ use crate::PeerIndex;
 use crate::PrivateIdentity;
 use crate::ProtocolEvent;
 use crate::Result;
+use crate::TIMEOUT_REASON;
 use crate::Tw07Addr as Addr;
 use getrandom::getrandom;
 use libtw2_net::connection7 as connection;
@@ -19,6 +20,7 @@ use log::debug;
 use crate::Socket;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
@@ -264,8 +266,21 @@ impl Protocol {
                 return Ok(None);
             }
             // The connect message has to carry the token handed out above.
-            ControlPacket::Connect(_) => {
+            ControlPacket::Connect(their_token) => {
                 if !cb.accept.tw07 || !verify_own_token(cb, from, token) {
+                    return Ok(None);
+                }
+                // The token proves the address, so it can be told why it
+                // is turned away.
+                if !cb.classic.tw07 {
+                    let written = Packet::Connected(ConnectedPacket {
+                        token: their_token,
+                        ack: 0,
+                        type_: ConnectedPacketType::Control(ControlPacket::Close(TW07_OFF_REASON)),
+                    })
+                    .write(&mut packet_buf[..])
+                    .unwrap();
+                    cb.socket.send_to(written, *from).context("UdpSocket::send_to")?;
                     return Ok(None);
                 }
                 token
@@ -279,7 +294,7 @@ impl Protocol {
         let Some(conn) = libtw2_patch::accept_token7(own_token) else {
             return Ok(None);
         };
-        let conn = Connection::new(conn, epoch, false, *from);
+        let conn = Connection::new(conn, epoch, false, *from, cb.timeout, cb.resend_request_interval);
         Ok(Some(ProtocolEvent::NewConnection(cb.next_peer_index, conn.into())))
     }
     pub fn connect(
@@ -291,10 +306,12 @@ impl Protocol {
     ) -> Result<Connection> {
         let Addr(addr) = addr;
         let epoch = Instant::now();
+        let timeout = cb.timeout;
+        let resend_request_interval = cb.resend_request_interval;
         let mut conn = connection::Connection::new();
         let cb = &mut Callback { socket: &cb.socket, addr: &addr, epoch };
         conn.connect(cb).context("libtw2_net::connection7::Connection::connect")?;
-        Ok(Connection::new(conn, epoch, true, addr))
+        Ok(Connection::new(conn, epoch, true, addr, timeout, resend_request_interval))
     }
     pub fn send_connless_chunk(
         &mut self,
@@ -342,6 +359,9 @@ impl Protocol {
     }
 }
 
+/// What clients are told when 0.7 is switched off.
+const TW07_OFF_REASON: &[u8] = b"0.7 connections are not accepted at this time";
+
 enum State {
     SimulateConnectEvent,
     ExpectConnectEvent,
@@ -355,6 +375,24 @@ pub struct Connection {
     state: State,
     addr: SocketAddr,
     buffered_events: VecDeque<BufferedEvent>,
+    /// When the peer was last heard from, and how long it may stay silent.
+    last_recv: Instant,
+    timeout: Duration,
+}
+
+/// Whether a packet counts as hearing from the peer: one that could not
+/// be read, or carried the wrong token, could be anyone's.
+struct Heard {
+    counts: bool,
+}
+
+impl libtw2_warn::Warn<connection::Warning> for Heard {
+    fn warn(&mut self, warning: connection::Warning) {
+        use connection::Warning::*;
+        if matches!(warning, Read(_) | TokenMismatch | ConnlessTokenMismatch | ConnlessResponseTokenMismatch) {
+            self.counts = false;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -369,14 +407,48 @@ enum BufferedEvent {
 }
 
 impl Connection {
-    fn new(inner: connection::Connection, epoch: Instant, client: bool, addr: SocketAddr) -> Connection {
+    fn new(
+        mut inner: connection::Connection,
+        epoch: Instant,
+        client: bool,
+        addr: SocketAddr,
+        timeout: Duration,
+        resend_request_interval: Duration,
+    ) -> Connection {
+        libtw2_patch::set_resend_request_interval7(&mut inner, resend_request_interval);
         Connection {
             inner,
             epoch,
             state: if !client { State::SimulateConnectEvent } else { State::ExpectConnectEvent },
             addr,
             buffered_events: VecDeque::with_capacity(4),
+            last_recv: Instant::now(),
+            timeout,
         }
+    }
+    pub fn set_resend_request_interval(&mut self, interval: Duration) {
+        libtw2_patch::set_resend_request_interval7(&mut self.inner, interval);
+    }
+    /// Ends the connection on our side without a word to the peer, which
+    /// is not listening anyway.
+    fn time_out(&mut self, reason: &str) {
+        self.buffered_events.clear();
+        self.buffered_events.push_back(BufferedEvent::Disconnect(ArrayString::from(reason).unwrap(), false));
+        self.buffered_events.push_back(BufferedEvent::Delete);
+        self.state = State::Disconnected;
+    }
+    /// When the peer's silence becomes a timeout; never while our own
+    /// connect is unanswered, the outer layer gives up on that itself.
+    fn receive_deadline(&self) -> Option<Instant> {
+        match self.state {
+            State::ExpectConnectEvent | State::Disconnected => None,
+            _ => Some(self.last_recv + self.timeout),
+        }
+    }
+    /// When the oldest chunk still without an ack has waited too long.
+    fn ack_deadline(&self) -> Option<Instant> {
+        libtw2_patch::oldest_unacked_first_send7(&self.inner)
+            .map(|ts| self.epoch + Duration::from_micros(ts.as_usecs_since_epoch()) + self.timeout)
     }
     pub fn on_recv(
         &mut self,
@@ -394,7 +466,11 @@ impl Connection {
             packet_buf.split_at_mut(len - 2048)
         };
         let cb = &mut Callback { socket: &cb.socket, addr: &self.addr, epoch: self.epoch };
-        let (events, result) = self.inner.feed(cb, &mut libtw2_warn::Ignore, &packet_buf[..packet_len], buf);
+        let mut heard = Heard { counts: true };
+        let (events, result) = self.inner.feed(cb, &mut heard, &packet_buf[..packet_len], buf);
+        if heard.counts {
+            self.last_recv = Instant::now();
+        }
         // TODO: don't allow infinite backlog
         use self::connection::ReceiveChunk;
         use self::BufferedEvent::*;
@@ -410,15 +486,20 @@ impl Connection {
             };
             match (&event, &self.state) {
                 (ConnlessChunk(_), _) => {}
+                // Nothing follows the end; the peer is on its way out.
+                (_, State::Disconnected) => continue,
                 (Connect, State::ExpectConnectEvent) => self.state = State::Normal,
-                (Connect, _) => unreachable!(),
+                // libtw2 raises `Ready` once, on the connecting side only.
+                (Connect, _) => {
+                    debug!("{}: ready a second time, ignoring", self.addr);
+                    continue;
+                }
                 (_, State::SimulateConnectEvent) => {
                     self.state = State::Normal;
                     self.buffered_events.push_back(Connect);
                 }
-                (Disconnect(..), State::Normal) => {}
-                (Disconnect(..), _) => unreachable!(), // TODO: check that this is actually unreachable
-                (_, State::Disconnected) => unreachable!(), // TODO: check that this is actually unreachable
+                // A close in place of the accept is the server refusing the
+                // connection; the outer layer tells whoever asked for it.
                 (_, _) => {}
             }
             let is_disconnect = matches!(event, Disconnect(..));
@@ -490,9 +571,10 @@ impl Connection {
         Ok(())
     }
     pub fn timeout(&self) -> Option<Instant> {
-        self.inner.needs_tick()
+        let tick = self.inner.needs_tick()
             .to_opt()
-            .map(|ts| self.epoch + Duration::from_micros(ts.as_usecs_since_epoch()))
+            .map(|ts| self.epoch + Duration::from_micros(ts.as_usecs_since_epoch()));
+        [tick, self.receive_deadline(), self.ack_deadline()].into_iter().flatten().min()
     }
     pub fn on_timeout(
         &mut self,
@@ -501,6 +583,17 @@ impl Connection {
     ) -> Result<bool> {
         if let State::Disconnected = self.state {
             return Ok(false);
+        }
+        let now = Instant::now();
+        if self.receive_deadline().is_some_and(|deadline| now >= deadline) {
+            self.time_out(TIMEOUT_REASON);
+            return Ok(true);
+        }
+        if self.ack_deadline().is_some_and(|deadline| now >= deadline) {
+            let mut reason = ArrayString::<[u8; 2048]>::new();
+            let _ = write!(reason, "Too weak connection (not acked for {} seconds)", self.timeout.as_secs());
+            self.time_out(&reason);
+            return Ok(true);
         }
         let cb = &mut Callback { socket: &cb.socket, addr: &self.addr, epoch: self.epoch };
         self.inner.tick(cb).context("libtw2_net::connection7::Connection::tick")?;

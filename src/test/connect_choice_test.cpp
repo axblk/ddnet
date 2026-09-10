@@ -45,16 +45,11 @@ protected:
 TEST_F(ConnectChoice, ListedServer)
 {
 	const CConnectChoices Choices(&m_Info, nullptr);
-#if defined(CONF_NETWORKING_QUIC)
 	ASSERT_EQ(Choices.m_NumProtocols, 3);
 	EXPECT_EQ(Choices.m_aProtocols[0], EConnectProtocol::QUIC);
 	EXPECT_EQ(Choices.m_aProtocols[1], EConnectProtocol::WEBTRANSPORT);
 	EXPECT_EQ(Choices.m_aProtocols[2], EConnectProtocol::LEGACY);
 	EXPECT_EQ(Choices.ProtocolIndex((int)EConnectProtocol::LEGACY), 2);
-#else
-	ASSERT_EQ(Choices.m_NumProtocols, 1);
-	EXPECT_EQ(Choices.m_aProtocols[0], EConnectProtocol::LEGACY);
-#endif
 	// A pick the server has nothing for falls back to the best.
 	EXPECT_EQ(Choices.ProtocolIndex((int)EConnectProtocol::WEBSOCKET), 0);
 	ASSERT_EQ(Choices.m_NumFamilies, 2);
@@ -84,7 +79,6 @@ TEST_F(ConnectChoice, LinkAndTypedAddress)
 TEST_F(ConnectChoice, ConnectAddress)
 {
 	char aAddress[512];
-#if defined(CONF_NETWORKING_QUIC)
 	ASSERT_TRUE(ConnectAddressFor(m_Info, (int)EConnectProtocol::QUIC, (int)EConnectAddressFamily::IPV6, aAddress, sizeof(aAddress)));
 	char aExpected[256];
 	str_format(aExpected, sizeof(aExpected), "ddnet+quic://127.0.0.1:8303#identity-sha256=%s", IDENTITY);
@@ -93,7 +87,6 @@ TEST_F(ConnectChoice, ConnectAddress)
 	// The certificate is signed for the name, so the name is connected by.
 	ASSERT_TRUE(ConnectAddressFor(m_Info, (int)EConnectProtocol::WEBTRANSPORT, (int)EConnectAddressFamily::IPV4, aAddress, sizeof(aAddress)));
 	EXPECT_STREQ(aAddress, "ddnet+wt://ger10.ddnet.org:8303#webpki");
-#endif
 
 	ASSERT_TRUE(ConnectAddressFor(m_Info, (int)EConnectProtocol::LEGACY, (int)EConnectAddressFamily::IPV6, aAddress, sizeof(aAddress)));
 	EXPECT_STREQ(aAddress, "[::1]:8303");

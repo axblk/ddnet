@@ -3328,7 +3328,6 @@ void CServer::UpdateDebugDummies(bool ForceDisconnect)
 	m_PreviousDebugDummies = ForceDisconnect ? 0 : g_Config.m_DbgDummies;
 }
 
-#ifdef CONF_NETWORKING_QUIC
 // PKCS#8 wraps an Ed25519 seed in a fixed header, version 0 on its own and
 // version 1 with the public key appended; the seed sits at the same place in
 // both, so a key another tool wrote is read just the same.
@@ -3394,13 +3393,11 @@ static bool WebTransportWebPki(const CConfig *pConfig)
 {
 	return pConfig->m_SvRegisterHostname[0] != '\0' && pConfig->m_SvTlsCert[0] != '\0';
 }
-#endif
 
 void CServer::FormatModernTransportFragments(char *pIdentityFragment, int IdentityFragmentSize, char *pWebTransportFragment, int WebTransportFragmentSize)
 {
 	pIdentityFragment[0] = '\0';
 	pWebTransportFragment[0] = '\0';
-#ifdef CONF_NETWORKING_QUIC
 	if(m_RegisterTransports.m_Quic || m_RegisterTransports.m_Websocket)
 	{
 		unsigned char aIdentity[32];
@@ -3436,7 +3433,6 @@ void CServer::FormatModernTransportFragments(char *pIdentityFragment, int Identi
 	{
 		str_copy(pWebTransportFragment, "webpki", WebTransportFragmentSize);
 	}
-#endif
 }
 
 int CServer::Run()
@@ -3490,7 +3486,6 @@ int CServer::Run()
 	}
 
 	// start server
-#ifdef CONF_NETWORKING_QUIC
 	if(Config()->m_SvQuicIdentityKey[0] != '\0')
 	{
 		unsigned char aIdentity[32];
@@ -3506,7 +3501,6 @@ int CServer::Run()
 		return -1;
 	}
 	m_NetServer.SetTlsFiles(Config()->m_SvTlsCert, Config()->m_SvTlsKey);
-#endif
 	NETADDR BindAddr;
 	if(g_Config.m_Bindaddr[0] == '\0')
 	{
@@ -3532,7 +3526,6 @@ int CServer::Run()
 	if(Port == 0)
 		log_info("server", "using port %d", BindAddr.port);
 
-#ifdef CONF_NETWORKING_QUIC
 	{
 		SHA256_DIGEST Sha256;
 		if(m_NetServer.CertificateSha256(false, &Sha256))
@@ -3547,7 +3540,6 @@ int CServer::Run()
 			}
 		}
 	}
-#endif
 
 #if defined(CONF_UPNP)
 	m_UPnP.Open(BindAddr);
@@ -3561,13 +3553,11 @@ int CServer::Run()
 
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
 	m_RegisterTransports.m_LegacyUdp = Config()->m_SvLegacyUdp != 0;
-#ifdef CONF_NETWORKING_QUIC
 	m_RegisterTransports.m_Quic = Config()->m_SvQuic != 0;
 	m_RegisterTransports.m_WebTransport = m_RegisterTransports.m_Quic && Config()->m_SvWebtransport != 0;
 	// Only the library knows whether WebSockets are compiled in.
 	m_RegisterTransports.m_Websocket = m_NetServer.AcceptsWebsockets();
 	m_RegisterTransports.m_WebsocketTls = m_RegisterTransports.m_Websocket && Config()->m_SvTlsCert[0] != '\0';
-#endif
 	FormatModernTransportFragments(m_aLastIdentityFragment, sizeof(m_aLastIdentityFragment), m_aLastWebTransportFragment, sizeof(m_aLastWebTransportFragment));
 	m_pRegister = CreateRegister(&g_Config, m_pConsole, m_pEngine, m_pHttp, g_Config.m_SvRegisterPort > 0 ? g_Config.m_SvRegisterPort : this->Port(), m_NetServer.GetGlobalToken(), m_RegisterTransports, Config()->m_SvRegisterHostname, m_aLastIdentityFragment, m_aLastWebTransportFragment);
 
@@ -3776,7 +3766,6 @@ int CServer::Run()
 #endif
 
 				// master server stuff
-#ifdef CONF_NETWORKING_QUIC
 				if(m_RegisterTransports.m_WebTransport && !WebTransportWebPki(Config()))
 				{
 					// The WebTransport certificate rotates; tell the register
@@ -3791,7 +3780,6 @@ int CServer::Run()
 						m_pRegister->OnModernTrustChanged(aIdentityFragment, aWebTransportFragment);
 					}
 				}
-#endif
 				m_pRegister->Update();
 
 				if(m_ServerInfoNeedsUpdate)

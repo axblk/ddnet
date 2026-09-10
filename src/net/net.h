@@ -159,6 +159,64 @@ bool ddnet_net_identity(struct DdnetNet *net, uint8_t (*identity)[32]);
 bool ddnet_net_set_timeout(struct DdnetNet *net, uint64_t seconds);
 
 /**
+ * How many connections an address may make within `seconds` before
+ * further ones are refused with "Too many connections in a short time";
+ * `conns` of 0 for no limit. Before `ddnet_net_open` or after it.
+ */
+bool ddnet_net_set_connlimit(struct DdnetNet *net, uint32_t conns, uint64_t seconds);
+
+/**
+ * How many packets are read from the socket between two waits before
+ * `ddnet_net_recv` reports nothing further, whatever else is waiting
+ * stays in the socket for the system to drop; 0 reads everything.
+ * Before `ddnet_net_open` or after it.
+ */
+bool ddnet_net_set_max_packets_per_recv(struct DdnetNet *net, uint32_t packets);
+
+/**
+ * How many of a peer's resend requests are answered per second, over
+ * the classic UDP protocols, where a request makes us send everything
+ * that is not acked yet; 0 answers all of them. Before `ddnet_net_open`
+ * or after it, for the connections there are as well.
+ */
+bool ddnet_net_set_resend_requests_per_second(struct DdnetNet *net, uint32_t per_second);
+
+/**
+ * How a server takes 0.6 clients that connect without asking for a
+ * token. With `antispoof` the address is proven by the vanilla
+ * handshake (a tiny map and empty snapshots carrying a token the
+ * client's first input returns) before the connection is reported,
+ * and `ddnet_net_peer_vanilla` then says so; without it the connect is
+ * accepted as it is. Beyond `conn_per_second` connects the handshake
+ * names a map every client has instead of carrying one; at most
+ * `replies_per_second` handshakes go out, to addresses not verified
+ * yet; at most `decompress_per_second` compressed packets of addresses
+ * without a connection are decompressed, which only the handshake's
+ * answer needs. Zero for no limit. Before `ddnet_net_open` or after it.
+ */
+bool ddnet_net_set_vanilla_handshake(struct DdnetNet *net,
+                                     bool antispoof,
+                                     uint32_t conn_per_second,
+                                     uint32_t replies_per_second,
+                                     uint32_t decompress_per_second);
+
+/**
+ * Which of the classic UDP protocols take clients, of those the server
+ * listens for: 0.6 with tokens (the DDNet client), 0.6 without
+ * (vanilla), and 0.7. Unlike `ddnet_net_set_accept_protocol`, a
+ * client over one that is off is told so, once its address is
+ * verified; and this can change while running, the connections there
+ * are stay. Before `ddnet_net_open` or after it.
+ */
+bool ddnet_net_set_classic_switches(struct DdnetNet *net, bool ddnet06, bool vanilla06, bool tw07);
+
+/**
+ * Whether the peer is a 0.6 client that came in by the vanilla
+ * handshake, which took it past the part where it says who it is.
+ */
+bool ddnet_net_peer_vanilla(struct DdnetNet *net, uint64_t peer_index, bool *vanilla);
+
+/**
  * Writes the TLS session keys to the file `SSLKEYLOGFILE` names, so the
  * traffic can be read in Wireshark. A debugging aid; off by default.
  */

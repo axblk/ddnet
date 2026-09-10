@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: redix <redix@hotmail.de>
+Date: Thu, 10 Sep 2026 14:51:52 +0200
+Subject: [PATCH] net: accept a 0.6 client that speaks no tokens
+
+Such a client is let in by a handshake the caller does itself. Some
+vital chunks went out before the connection object exists, and what the
+client sent so far is unknown, so the first vital chunk to arrive sets
+the ack, whatever its sequence number is.
+---
+ net/src/connection.rs | 33 +++++++++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/net/src/connection.rs b/net/src/connection.rs
+index 9e33967..c540dd8 100644
+--- a/net/src/connection.rs
++++ b/net/src/connection.rs
+@@ -188,6 +188,17 @@ impl<'a> ReceivePacket<'a> {
+         W: Warn<Warning>,
+     {
+         let chunks_iter = ChunksIter::new(data, num_chunks);
++        if online.unknown_ack {
++            let mut iter = chunks_iter.clone();
++            while let Some(c) = iter.next_warn(&mut w(warn)) {
++                if let Some((sequence, _)) = c.vital {
++                    let before = (sequence + protocol::SEQUENCE_MODULUS - 1) % protocol::SEQUENCE_MODULUS;
++                    online.ack = Sequence::from_u16(before);
++                    online.unknown_ack = false;
++                    break;
++                }
++            }
++        }
+         let ack = online.ack.clone();
+         let mut iter = chunks_iter.clone();
+         while let Some(c) = iter.next_warn(&mut w(warn)) {
+@@ -301,6 +312,9 @@ struct OnlineState {
+     request_resend: bool,
+     // The peer asked for a resend that is not answered yet.
+     resend_requested: bool,
++    // The peer's sequence is not known yet; the first vital chunk to come
++    // sets it, whatever its number.
++    unknown_ack: bool,
+     // `packet` contains all the queued chunks, `packet_nonvital` only the
+     // non-vital ones. This is important for resending.
+     packet: PacketContents,
+@@ -318,6 +332,7 @@ impl OnlineState {
+             sequence: Sequence::new(),
+             request_resend: false,
+             resend_requested: false,
++            unknown_ack: false,
+             packet: PacketContents::new(),
+             packet_nonvital: PacketContents::new(),
+             resend_queue: VecDeque::new(),
+@@ -497,6 +512,24 @@ impl Connection {
+         result.send.set(cb, Duration::from_millis(500));
+         result
+     }
++    /// A server-side connection to a client without tokens, accepted by a
++    /// handshake done outside: `sent` vital chunks went to the client
++    /// already, and what it sent so far is unknown, so its first vital
++    /// chunk is taken whatever its sequence.
++    pub fn new_accept_vanilla<CB: Callback>(cb: &mut CB, sent: u16) -> Connection {
++        let mut online = OnlineState::new(None);
++        online.sequence = Sequence::from_u16(sent);
++        online.unknown_ack = true;
++        let mut result = Connection {
++            state: State::Online(online),
++            send: Timeout::inactive(),
++            builder: PacketBuilder::new(),
++            resend_request_interval: Duration::ZERO,
++            next_resend_answer: Timeout::inactive(),
++        };
++        result.send.set(cb, Duration::from_millis(500));
++        result
++    }
+     pub fn reset(&mut self) {
+         assert!(matches!(self.state, State::Disconnected));
+         let interval = self.resend_request_interval;

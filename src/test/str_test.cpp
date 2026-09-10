@@ -818,8 +818,7 @@ TEST(Str, Copy)
 TEST(Str, CopyUnterminatedSource)
 {
 	// The source only has to hold dst_size bytes, str_copy must not read
-	// further. CNetConnection relies on this for the disconnect reason
-	// received from the network. Detected by the address sanitizer.
+	// further. Detected by the address sanitizer.
 	const std::vector<char> vSrc(8, 'a');
 	char aBuf[4];
 	str_copy(aBuf, vSrc.data(), sizeof(aBuf));

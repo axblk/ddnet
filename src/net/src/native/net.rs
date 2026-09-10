@@ -8,6 +8,8 @@ use crate::tw07;
 use crate::ws;
 use crate::wire;
 use crate::Addr;
+use crate::limits;
+use crate::limits::Connlimit;
 use crate::Challenger;
 use crate::ConnlessMeta;
 use crate::Event;
@@ -23,6 +25,8 @@ use crate::NoBlock as _;
 use crate::PrivateIdentity;
 use crate::Result;
 use crate::secure_random;
+use crate::types::ClassicSwitches;
+use crate::types::VanillaSettings;
 use hexdump::hexdump_iter;
 use mio::net::UdpSocket;
 use mio::Events;
@@ -87,6 +91,16 @@ fn token_peer(token: mio::Token) -> Option<PeerIndex> {
 
 pub struct CallbackData {
     pub accept: AcceptProtocols,
+    /// How long a UDP peer may stay silent, and how long a chunk may wait
+    /// for its ack, before the connection is lost.
+    pub timeout: Duration,
+    /// How often a UDP peer's resend requests are answered, see
+    /// `limits::resend_request_interval`.
+    pub resend_request_interval: Duration,
+    /// How 0.6 clients without tokens are taken.
+    pub vanilla: VanillaSettings,
+    /// Which classic protocols take clients right now.
+    pub classic: ClassicSwitches,
     pub sslkeylogfile: Option<ArcFile>,
     pub challenger: Challenger,
     pub local_addr: SocketAddr,
@@ -229,6 +243,13 @@ pub struct Net {
     /// Consecutive failures of the socket read, which only mean anything
     /// once they keep coming.
     socket_read_errors: u32,
+    /// How often an address may connect.
+    connlimit: Connlimit,
+    /// How many packets one batch of reads takes before the caller gets
+    /// its turn again, the rest waiting in the socket; zero for all there
+    /// are. A batch lasts from one `wait` to the next.
+    max_packets_per_recv: u32,
+    packets_this_batch: u32,
 
     socket_readable: bool,
     readable_peers: ReadablePeers,
@@ -248,6 +269,12 @@ pub struct NetBuilder {
     tls_files: Option<(String, String)>,
     /// Whether to write the TLS session keys to `SSLKEYLOGFILE`.
     key_log: bool,
+    /// See the methods of the same names.
+    connlimit: (u32, Duration),
+    max_packets_per_recv: u32,
+    resend_requests_per_second: u32,
+    vanilla: VanillaSettings,
+    classic: ClassicSwitches,
 }
 
 impl Peer {
@@ -332,6 +359,9 @@ enum SocketReadEvent {
     None,
     ReadablePeer(PeerIndex),
     ConnlessChunk(Addr, usize, ConnlessMeta),
+    /// The batch has read as many packets as it may; the socket may still
+    /// hold more.
+    Capped,
 }
 
 impl ReadablePeers {
@@ -395,6 +425,34 @@ impl NetBuilder {
     }
     pub fn accept_connections(&mut self, accept: bool) {
         self.accept = if accept { AcceptProtocols::ALL } else { AcceptProtocols::NONE };
+    }
+    /// How many connections an address may make within `window` before
+    /// further ones are refused; zero for no limit.
+    pub fn connlimit(&mut self, conns: u32, window: Duration) {
+        self.connlimit = (conns, window);
+    }
+    /// How many packets are read from the socket between two waits before
+    /// the caller gets its turn again, whatever else is waiting stays in
+    /// the socket for the system to drop; zero reads everything.
+    pub fn max_packets_per_recv(&mut self, packets: u32) {
+        self.max_packets_per_recv = packets;
+    }
+    /// How many of a UDP peer's resend requests are answered per second;
+    /// zero answers all of them.
+    pub fn resend_requests_per_second(&mut self, per_second: u32) {
+        self.resend_requests_per_second = per_second;
+    }
+    /// How a server takes 0.6 clients without tokens, see
+    /// [`VanillaSettings`]; by default they are accepted as they are.
+    pub fn vanilla_handshake(&mut self, settings: VanillaSettings) {
+        self.vanilla = libtw2_patch::clamp_vanilla(settings);
+    }
+    /// Which of the classic protocols take clients, see
+    /// [`ClassicSwitches`]; all of them by default. Unlike
+    /// `accept_protocol`, a client over a protocol that is off is told
+    /// so.
+    pub fn classic_switches(&mut self, switches: ClassicSwitches) {
+        self.classic = switches;
     }
     pub fn accept_protocol(&mut self, protocol: Protocol, accept: bool) {
         match protocol {
@@ -485,6 +543,10 @@ impl NetBuilder {
         Ok(Net {
             cb: CallbackData {
                 accept: self.accept,
+                timeout: self.timeout,
+                resend_request_interval: limits::resend_request_interval(self.resend_requests_per_second),
+                vanilla: self.vanilla,
+                classic: self.classic,
                 sslkeylogfile,
                 challenger: Challenger::new(),
                 local_addr,
@@ -514,6 +576,9 @@ impl NetBuilder {
             failed_peers: VecDeque::with_capacity(1),
             dead_peers: VecDeque::with_capacity(1),
             socket_read_errors: 0,
+            connlimit: Connlimit::new(self.connlimit.0, self.connlimit.1),
+            max_packets_per_recv: self.max_packets_per_recv,
+            packets_this_batch: 0,
 
             socket_readable: false,
             readable_peers: ReadablePeers::with_capacity(4),
@@ -538,6 +603,11 @@ impl Net {
             tls_files: None,
             timeout: Duration::from_secs(100),
             key_log: false,
+            connlimit: (0, Duration::ZERO),
+            max_packets_per_recv: 0,
+            resend_requests_per_second: 0,
+            vanilla: VanillaSettings::default(),
+            classic: ClassicSwitches::default(),
         }
     }
     pub fn set_userdata(&mut self, idx: PeerIndex, userdata: *mut ()) -> Result<()> {
@@ -568,10 +638,24 @@ impl Net {
     /// told if it can still be told; the outer protocol learns of it from
     /// `recv`, like of any other disconnect.
     fn fail_peer(&mut self, idx: PeerIndex, error: Error) {
-        let Some(peer) = self.peers.get_mut(&idx) else { return };
+        if !self.peers.contains_key(&idx) {
+            return;
+        }
         warn!("peer {}: {}", idx, error);
+        self.end_peer(idx, error.to_string());
+    }
+    /// Turns away a peer that did nothing wrong but arrived at a bad
+    /// time. It goes the way of a failed one, except for the log level.
+    fn refuse_peer(&mut self, idx: PeerIndex, reason: &str) {
+        if !self.peers.contains_key(&idx) {
+            return;
+        }
+        info!("peer {}: refused: {}", idx, reason);
+        self.end_peer(idx, reason.to_owned());
+    }
+    fn end_peer(&mut self, idx: PeerIndex, reason: String) {
+        let peer = self.peers.get_mut(&idx).unwrap();
         peer.closing = true;
-        let reason = error.to_string();
         if let Err(close_error) = peer.conn.close(&self.cb, &mut self.packet_buf, Some(&reason)) {
             debug!("peer {}: closing after the error failed as well: {}", idx, close_error);
         }
@@ -685,13 +769,29 @@ impl Net {
         }
     }
     fn socket_read(&mut self, buf: &mut [u8]) -> Result<SocketReadEvent> {
+        let mut connection_resets = 0;
         loop {
+            if self.max_packets_per_recv != 0 && self.packets_this_batch >= self.max_packets_per_recv {
+                return Ok(SocketReadEvent::Capped);
+            }
             // A read can fail for a reason that has nothing to do with the
             // socket, such as an ICMP error a previous send provoked. Only a
             // socket that keeps failing is given up on.
             let (read, from) = match self.cb.socket.recv_from(&mut self.packet_buf[..16384]).no_block() {
-                Ok(Some(read_from)) => read_from,
+                Ok(Some(read_from)) => {
+                    self.packets_this_batch += 1;
+                    read_from
+                }
                 Ok(None) => break,
+                Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {
+                    // Windows reports the ICMP error of an earlier send this
+                    // way; it says nothing about the socket.
+                    connection_resets += 1;
+                    if connection_resets >= MAX_SOCKET_READ_ERRORS {
+                        break;
+                    }
+                    continue;
+                }
                 Err(error) => {
                     self.socket_read_errors += 1;
                     if self.socket_read_errors >= MAX_SOCKET_READ_ERRORS {
@@ -731,69 +831,75 @@ impl Net {
                 // 11111111:          source connless packets
                 // 11111111:          teeworlds 0.6 connless
 
-                let packet = &self.packet_buf[..read];
-                let event = match (packet.get(0).copied(), packet.get(1).copied()) {
-                    // STUN, handed over as it is.
-                    (Some(0b00000000 | 0b00000001), _) => {
-                        buf[..read].copy_from_slice(packet);
-                        Ok(Some(ProtocolEvent::ConnlessChunk(RawAddr(from).into(), read, ConnlessMeta::default())))
-                    }
-                    (Some(p0), _) if p0 & 0b11111100 == 0b00000100 || p0 == 0b00100001 => {
-                        self.proto_tw07.on_recv(
-                            &self.cb,
-                            &mut self.packet_buf,
-                            read,
-                            buf,
-                            &from,
-                        )
-                    }
-                    (Some(0b00010000 | 0b11111111), _) => {
-                        self.proto_tw06.on_recv(
-                            &self.cb,
-                            &mut self.packet_buf,
-                            read,
-                            buf,
-                            &from,
-                        )
-                    }
-                    (Some(0b01111000), Some(0b01100101)) => {
-                        self.proto_tw06.on_recv(
-                            &self.cb,
-                            &mut self.packet_buf,
-                            read,
-                            buf,
-                            &from,
-                        )
-                    }
-                    (Some(p0), Some(p1))
-                        if p0 & 0b11000000 == 0b01000000
-                            && p1 != 0b01100101 =>
-                    {
-                        self.proto_quic
-                            .on_recv(
-                                &self.cb,
-                                &mut self.packet_buf,
-                                read,
-                                buf,
-                                &from,
-                            )
-                    }
-                    (Some(p0), _) if p0 & 0b11110000 == 0b11000000 => {
-                        self.proto_quic
-                            .on_recv(
-                                &self.cb,
-                                &mut self.packet_buf,
-                                read,
-                                buf,
-                                &from,
-                            )
-                    }
-                    _ => {
-                        debug!("unknown packet from {}", from);
-                        for line in hexdump_iter(packet) {
-                            debug!("{}", line);
+                // An address in the vanilla handshake gets its answer
+                // through, whatever the packet looks like.
+                let event = if self.proto_tw06.is_vanilla_pending(&from) {
+                    self.proto_tw06.on_recv_vanilla(&self.cb, &mut self.packet_buf, read, &from)
+                } else {
+                    let packet = &self.packet_buf[..read];
+                    match (packet.get(0).copied(), packet.get(1).copied()) {
+                        // STUN, handed over as it is.
+                        (Some(0b00000000 | 0b00000001), _) => {
+                            buf[..read].copy_from_slice(packet);
+                            Ok(Some(ProtocolEvent::ConnlessChunk(RawAddr(from).into(), read, ConnlessMeta::default())))
                         }
-                        continue;
+                        (Some(p0), _) if p0 & 0b11111100 == 0b00000100 || p0 == 0b00100001 => {
+                            self.proto_tw07.on_recv(
+                                &self.cb,
+                                &mut self.packet_buf,
+                                read,
+                                buf,
+                                &from,
+                            )
+                        }
+                        (Some(0b00010000 | 0b11111111), _) => {
+                            self.proto_tw06.on_recv(
+                                &self.cb,
+                                &mut self.packet_buf,
+                                read,
+                                buf,
+                                &from,
+                            )
+                        }
+                        (Some(0b01111000), Some(0b01100101)) => {
+                            self.proto_tw06.on_recv(
+                                &self.cb,
+                                &mut self.packet_buf,
+                                read,
+                                buf,
+                                &from,
+                            )
+                        }
+                        (Some(p0), Some(p1))
+                            if p0 & 0b11000000 == 0b01000000
+                                && p1 != 0b01100101 =>
+                        {
+                            self.proto_quic
+                                .on_recv(
+                                    &self.cb,
+                                    &mut self.packet_buf,
+                                    read,
+                                    buf,
+                                    &from,
+                                )
+                        }
+                        (Some(p0), _) if p0 & 0b11110000 == 0b11000000 => {
+                            self.proto_quic
+                                .on_recv(
+                                    &self.cb,
+                                    &mut self.packet_buf,
+                                    read,
+                                    buf,
+                                    &from,
+                                )
+                        }
+                        _ => {
+                            debug!("unknown packet from {}", from);
+                            for line in hexdump_iter(packet) {
+                                debug!("{}", line);
+                            }
+                            continue;
+                        }
                     }
                 };
                 // A packet nobody asked for is dropped on error, the way an
@@ -849,6 +955,8 @@ impl Net {
         Ok(SocketReadEvent::None)
     }
     fn wait_impl(&mut self, timeout: Option<Instant>) -> Result<()> {
+        // The caller had its turn, the next batch of packets may come.
+        self.packets_this_batch = 0;
         if !self.connect_errors.is_empty()
             || !self.failed_peers.is_empty()
             || !self.readable_peers.is_empty()
@@ -1023,6 +1131,15 @@ impl Net {
                                 warn!("peer {}: connected a second time, ignoring", idx);
                                 continue;
                             }
+                            // Only now is the address known to be the
+                            // peer's, so only now does the connection count
+                            // against it.
+                            if !peer.outgoing
+                                && self.connlimit.exceeded(peer.addrs[0].ip(), Instant::now())
+                            {
+                                self.refuse_peer(idx, "Too many connections in a short time");
+                                return self.recv(buf);
+                            }
                             peer.high_level = true;
                             for &addr in &peer.addrs {
                                 self.peer_buckets.get_mut(&Bucket::from(addr)).unwrap().high_level += 1;
@@ -1129,6 +1246,9 @@ impl Net {
                         return Ok(Some(Event::ConnlessChunk(peer_addr, size, meta)));
                     }
                     SocketReadEvent::None => self.socket_readable = false,
+                    // The socket stays readable; the next wait starts the
+                    // next batch.
+                    SocketReadEvent::Capped => return Ok(None),
                 }
                 did_nothing = false;
             }
@@ -1318,6 +1438,42 @@ impl Net {
     pub fn global_token7(&self) -> u32 {
         tw07::global_token(&self.cb)
     }
+    /// Changes the limit on connections per address while running, see
+    /// `NetBuilder::connlimit`.
+    pub fn set_connlimit(&mut self, conns: u32, window: Duration) {
+        self.connlimit.configure(conns, window);
+    }
+    /// See `NetBuilder::max_packets_per_recv`.
+    pub fn set_max_packets_per_recv(&mut self, packets: u32) {
+        self.max_packets_per_recv = packets;
+    }
+    /// See `NetBuilder::vanilla_handshake`.
+    pub fn set_vanilla_handshake(&mut self, settings: VanillaSettings) {
+        self.cb.vanilla = libtw2_patch::clamp_vanilla(settings);
+    }
+    /// See `NetBuilder::classic_switches`; the connections there are
+    /// stay.
+    pub fn set_classic_switches(&mut self, switches: ClassicSwitches) {
+        self.cb.classic = switches;
+    }
+    /// Whether the peer is a 0.6 client that came in by the vanilla
+    /// handshake, which takes it past saying who it is.
+    pub fn peer_vanilla(&self, idx: PeerIndex) -> Result<bool> {
+        let Some(peer) = self.peers.get(&idx) else { bail!("no peer {}", idx) };
+        Ok(match &peer.conn {
+            Connection::Tw06(inner) => inner.is_vanilla(),
+            _ => false,
+        })
+    }
+    /// See `NetBuilder::resend_requests_per_second`; the connections
+    /// there are already take it over as well.
+    pub fn set_resend_requests_per_second(&mut self, per_second: u32) {
+        let interval = limits::resend_request_interval(per_second);
+        self.cb.resend_request_interval = interval;
+        for peer in self.peers.values_mut() {
+            peer.conn.set_resend_request_interval(interval);
+        }
+    }
     // TODO: second function including all non-connected, or already-disconnected peers
     pub fn num_peers_in_bucket(&self, addr: &str) -> Result<u32> {
         let addr: Addr = addr.parse()?;
@@ -1411,6 +1567,17 @@ impl Connection {
             Tw07(inner) => inner.timeout(),
             #[cfg(feature = "websocket")]
             Ws(inner) => inner.timeout(),
+        }
+    }
+    /// Only the classic protocols have resend requests.
+    pub fn set_resend_request_interval(&mut self, interval: Duration) {
+        use self::Connection::*;
+        match self {
+            Tw06(inner) => inner.set_resend_request_interval(interval),
+            Tw07(inner) => inner.set_resend_request_interval(interval),
+            Quic(_) => {}
+            #[cfg(feature = "websocket")]
+            Ws(_) => {}
         }
     }
     pub fn on_timeout(

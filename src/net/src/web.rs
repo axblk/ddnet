@@ -15,7 +15,7 @@ use crate::addr::QuicAddr;
 use crate::addr::WsAddr;
 use crate::key::IDENTITY_PROOF_SIZE;
 use crate::mapstream;
-use crate::secure_random;
+use crate::session;
 use crate::wire;
 use crate::wire::websocket as flag;
 use crate::Addr;
@@ -38,11 +38,6 @@ use std::time::Duration;
 use std::time::Instant;
 use url::Url;
 
-/// The game protocol announced in the hello.
-/// What the hello names as the game protocol inside, DDNet 0.6 or
-/// Teeworlds 0.7; the server answers with the one asked for.
-const GAME_PROTOCOL_06: u64 = 6;
-const GAME_PROTOCOL_07: u64 = 7;
 /// The most of the control stream kept unparsed: a frame header and the
 /// longest frame that can follow it.
 const MAX_CONTROL_BUFFER: usize = 16 + wire::MAX_CONTROL_MESSAGE_SIZE;
@@ -58,8 +53,6 @@ const RESUME_SILENCE: Duration = Duration::from_secs(3);
 const RESUME_GRACE: Duration = Duration::from_secs(10);
 /// A session that fails during a resume is opened again after this.
 const RESUME_RETRY: Duration = Duration::from_millis(500);
-/// Reliable messages kept back for the server while a resume is under way.
-const MAX_PENDING_RESUME_BYTES: usize = 64 * 1024;
 /// What ends a connection that took too long to resume.
 const TIMEOUT_REASON: &str = "Timeout";
 
@@ -200,8 +193,6 @@ struct Peer {
     addr: Addr,
     /// What the browser was told to open, to open it again for a resume.
     url: String,
-    /// The messages inside are 0.7's, not DDNet 0.6's.
-    sixup: bool,
     transport: Transport,
     state: State,
     identity: PeerIdentity,
@@ -209,10 +200,8 @@ struct Peer {
     /// proof is checked against each, the browser does not say which
     /// one it saw. Empty over WebPKI, where there is no telling.
     certificate_hashes: Vec<[u8; 32]>,
-    local_nonce: [u8; wire::NONCE_SIZE],
-    peer_nonce: [u8; wire::NONCE_SIZE],
-    peer_capabilities: u64,
-    hello_received: bool,
+    /// The hellos and what they settle.
+    handshake: session::Handshake,
     /// Messages of a datagram not handed out yet.
     unreliable: VecDeque<Vec<u8>>,
     /// The reason of a disconnect still to be reported.
@@ -236,8 +225,7 @@ struct Peer {
     /// server's last word.
     silence_since: Option<Instant>,
     /// Reliable messages held back until the resume goes through.
-    pending: VecDeque<Vec<u8>>,
-    pending_bytes: usize,
+    held: session::Held,
     /// A map was coming in when the session went; reported lost once the
     /// connection is back.
     map_lost: bool,
@@ -400,15 +388,11 @@ impl Net {
             handle,
             addr: parsed,
             url: browser_url,
-            sixup,
             transport,
             state: State::Opening,
             identity: PeerIdentity::Wanted(wanted),
             certificate_hashes,
-            local_nonce: [0; wire::NONCE_SIZE],
-            peer_nonce: [0; wire::NONCE_SIZE],
-            peer_capabilities: 0,
-            hello_received: false,
+            handshake: session::Handshake::new(sixup),
             unreliable: VecDeque::new(),
             disconnect: None,
             last_recv: now,
@@ -418,8 +402,7 @@ impl Net {
             resume_deadline: None,
             retry_at: None,
             silence_since: None,
-            pending: VecDeque::new(),
-            pending_bytes: 0,
+            held: session::Held::default(),
             map_lost: false,
             userdata: None,
         });
@@ -454,11 +437,7 @@ impl Net {
             // rest anyway.
             if peer.resuming {
                 if !unreliable {
-                    if peer.pending_bytes + frame.len() > MAX_PENDING_RESUME_BYTES {
-                        bail!("too much to say while the connection is away");
-                    }
-                    peer.pending_bytes += frame.len();
-                    peer.pending.push_back(frame.to_vec());
+                    peer.held.hold(frame)?;
                 }
                 return Ok(());
             }
@@ -473,7 +452,7 @@ impl Net {
         // long for a datagram, goes over the stream instead of not at all.
         // WebSockets carry everything the same way, VITAL is a mark.
         let datagram = unreliable
-            && peer.peer_capabilities & wire::capability::DATAGRAM != 0
+            && peer.handshake.peer_capabilities & wire::capability::DATAGRAM != 0
             && frame.len() <= wire::MAX_DATAGRAM_MESSAGE_SIZE
             && !frame.is_empty();
         match &mut peer.transport {
@@ -649,8 +628,8 @@ impl Peer {
             PeerIdentity::Wanted(None) => unreachable!(),
         };
         self.identity = PeerIdentity::Wanted(Some(identity));
-        self.hello_received = false;
-        self.peer_capabilities = 0;
+        self.handshake.received = false;
+        self.handshake.peer_capabilities = 0;
         self.retry_at = None;
         self.silence_since = None;
         self.last_recv = now;
@@ -658,8 +637,7 @@ impl Peer {
     }
     /// Sends what was held back during the resume.
     fn flush_pending(&mut self, bridge: &mut dyn Bridge) -> Result<()> {
-        while let Some(frame) = self.pending.pop_front() {
-            self.pending_bytes -= frame.len();
+        while let Some(frame) = self.held.pop() {
             let mut encoded = Vec::with_capacity(16 + frame.len());
             if !wire::encode_frame(wire::frame::MESSAGE, &frame, &mut encoded) {
                 bail!("message of {} bytes does not encode", frame.len());
@@ -708,21 +686,12 @@ impl Peer {
             ),
             Transport::WebSocket { .. } => (wire::capability::MAP_STREAM | wire::capability::SERVER_IDENTITY, 0),
         };
-        self.local_nonce = secure_random();
-        let hello = wire::Hello {
-            major: wire::VERSION_MAJOR,
-            minor: wire::VERSION_MINOR,
-            protocol_version: if self.sixup { GAME_PROTOCOL_07 } else { GAME_PROTOCOL_06 },
-            capabilities,
-            max_datagram_size,
-            nonce: self.local_nonce,
-            resume_token: if self.resuming {
-                self.resume_token.as_deref().unwrap_or(&[])
-            } else {
-                &[]
-            },
+        let resume_token = if self.resuming {
+            self.resume_token.clone().unwrap_or_default()
+        } else {
+            Vec::new()
         };
-        let payload = wire::encode_hello(&hello).unwrap();
+        let payload = self.handshake.hello(capabilities, max_datagram_size, &resume_token);
         let mut frame = Vec::with_capacity(16 + payload.len());
         if let Transport::WebTransport { .. } = self.transport {
             // The stream's kind and version go in front, the server
@@ -736,20 +705,14 @@ impl Peer {
         self.send_frame(bridge, &frame, true)
     }
     fn on_hello(&mut self, payload: &[u8]) -> Result<()> {
-        let hello = wire::decode_hello(payload).map_err(|e| Error::from_string(format!("hello: {}", e)))?;
-        let expected = if self.sixup { GAME_PROTOCOL_07 } else { GAME_PROTOCOL_06 };
-        if hello.protocol_version != expected {
-            bail!("game protocol {} instead of {}", hello.protocol_version, expected);
-        }
+        let hello = self.handshake.take_hello(payload, true)?;
         if !hello.resume_token.is_empty() {
             bail!("hello from the server carries a resume token");
         }
-        self.peer_capabilities = hello.capabilities;
-        self.peer_nonce = hello.nonce;
+        let announced = hello.max_datagram_size as usize;
         if let Transport::WebTransport { max_datagram, .. } = &mut self.transport {
-            *max_datagram = (*max_datagram).min(hello.max_datagram_size as usize);
+            *max_datagram = (*max_datagram).min(announced);
         }
-        self.hello_received = true;
         Ok(())
     }
     /// The server's identity, signed over the certificate it showed and
@@ -763,25 +726,15 @@ impl Peer {
         if payload.len() != IDENTITY_PROOF_SIZE {
             bail!("identity proof of {} bytes, expected {}", payload.len(), IDENTITY_PROOF_SIZE);
         }
-        let shown = Identity::from_bytes(payload[..32].try_into().unwrap());
-        if let Some(wanted) = wanted {
-            if shown != wanted {
-                bail!("server identity is {}, expected {}", shown, wanted);
-            }
-        }
-        let candidates: Vec<[u8; 32]> = match &self.transport {
+        let certificates: Vec<[u8; 32]> = match &self.transport {
             Transport::WebTransport { .. } => self.certificate_hashes.clone(),
             // Without TLS the proof is over a certificate of zeroes.
             Transport::WebSocket { tls: false, .. } => vec![[0; 32]],
             Transport::WebSocket { tls: true, .. } => Vec::new(),
         };
-        if candidates.is_empty() {
+        let shown = session::verify_identity_proof(payload, wanted, &certificates, &self.handshake.local_nonce)?;
+        if certificates.is_empty() {
             info!("{} claims identity {}, not checked over WebPKI", self.addr, shown);
-        } else if !candidates
-            .iter()
-            .any(|sha256| shown.verify_proof(payload, sha256, &self.local_nonce).is_some())
-        {
-            bail!("server identity proof does not check out");
         }
         self.identity = PeerIdentity::Known(shown);
         Ok(())
@@ -789,13 +742,13 @@ impl Peer {
     /// Online once the hello is in and the identity known. A resume ends
     /// here as well, with nothing to report: the game kept its peer.
     fn client_online(&mut self, bridge: &mut dyn Bridge) -> Result<Option<Event>> {
-        if !self.hello_received {
+        if !self.handshake.received {
             return Ok(None);
         }
         let identity = match self.identity {
             PeerIdentity::Known(identity) => identity,
             PeerIdentity::Wanted(_) => {
-                if self.peer_capabilities & wire::capability::SERVER_IDENTITY == 0 {
+                if !self.handshake.peer_proves_identity() {
                     bail!("server shows no identity");
                 }
                 return Ok(None);
@@ -1266,7 +1219,7 @@ mod test {
         let payload = wire::encode_hello(&wire::Hello {
             major: wire::VERSION_MAJOR,
             minor: wire::VERSION_MINOR,
-            protocol_version: super::GAME_PROTOCOL_06,
+            protocol_version: crate::session::GAME_PROTOCOL_06,
             capabilities,
             max_datagram_size,
             nonce: [9; 32],

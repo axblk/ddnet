@@ -50,6 +50,7 @@ mod limits;
 mod net;
 #[cfg(not(target_os = "emscripten"))]
 mod quic;
+mod session;
 #[cfg(not(target_os = "emscripten"))]
 mod tw06;
 #[cfg(not(target_os = "emscripten"))]

@@ -1250,6 +1250,7 @@ set_glob(RUST_NET_SRC GLOB_RECURSE "rs" src/net/src
   mapstream.rs
   net.rs
   quic.rs
+  session.rs
   tw06.rs
   tw07.rs
   types.rs

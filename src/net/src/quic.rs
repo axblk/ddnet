@@ -6,7 +6,6 @@ use crate::key::BrowserCertificate;
 use crate::key::unix_now;
 use crate::key::BROWSER_CERTIFICATE_ROTATION;
 use crate::key::IDENTITY_CERTIFICATE_RENEWAL;
-use crate::key::IDENTITY_PROOF_SIZE;
 use crate::Identity;
 use crate::MAX_FRAME_SIZE;
 use crate::PeerIndex;
@@ -21,15 +20,14 @@ use crate::Error;
 use crate::Map;
 use crate::MapEvent;
 use crate::mapstream;
+use crate::session;
 use log::debug;
 use log::info;
 use arrayvec::ArrayVec;
 use std::cmp;
 use std::collections::hash_map;
 use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::fmt;
-use std::mem;
 use std::io::Write as _;
 use std::net::SocketAddr;
 use std::ops;
@@ -72,8 +70,7 @@ const RESUME_GRACE: Duration = Duration::from_secs(10);
 /// A client that sent this long ago and heard nothing since gives its
 /// connection up for lost and resumes on a new one.
 const RESUME_SILENCE: Duration = Duration::from_secs(3);
-/// Reliable messages kept back for the peer while a resume is under way.
-const MAX_PENDING_RESUME_BYTES: usize = 64 * 1024;
+/// The token a server hands a client to continue the connection with.
 pub const RESUME_TOKEN_LEN: usize = 32;
 /// The reason a lost connection is reported with, the word the client
 /// reconnects on.
@@ -979,13 +976,6 @@ enum State {
 /// longest frame that can follow it.
 const MAX_CONTROL_BUFFER: usize = 16 + wire::MAX_CONTROL_MESSAGE_SIZE;
 
-/// The game protocol announced in the hello; 0.7 gets its own scheme.
-/// What the hello names as the game protocol inside: DDNet 0.6 or
-/// Teeworlds 0.7. The client asks for one, the server answers with the
-/// same.
-const GAME_PROTOCOL_06: u64 = 6;
-const GAME_PROTOCOL_07: u64 = 7;
-
 /// A received datagram whose messages are handed out one at a time.
 struct IncomingDatagram {
     data: Vec<u8>,
@@ -1025,9 +1015,8 @@ pub struct Connection {
     transport: Transport,
     /// A client asked for WebTransport.
     webtransport: bool,
-    /// The messages inside are 0.7's, not DDNet 0.6's: what the client
-    /// asked for, and on the server what its hello said.
-    sixup: bool,
+    /// The hellos and what they settle.
+    handshake: session::Handshake,
     /// The stream the hellos and messages go over, once it is open.
     control_stream: Option<u64>,
     /// The server reads the stream kind and version in front of the
@@ -1037,13 +1026,6 @@ pub struct Connection {
     /// The browser certificate a server showed on this connection, which
     /// its identity then vouches for.
     shown_certificate: Option<[u8; 32]>,
-    /// The nonces of the hellos, ours and the peer's, that the identity
-    /// proof answers.
-    local_nonce: [u8; wire::NONCE_SIZE],
-    peer_nonce: [u8; wire::NONCE_SIZE],
-    /// The client has the server's hello and waits for the identity proof
-    /// before it counts as online.
-    hello_received: bool,
     client: bool,
     /// Whether the peer's identity was known before connecting.
     pinned: bool,
@@ -1058,8 +1040,6 @@ pub struct Connection {
     outgoing_datagram: wire::DatagramBuilder,
     datagram_sequence: u64,
     incoming_datagram: Option<IncomingDatagram>,
-    /// What the peer announced in its hello.
-    peer_capabilities: u64,
     /// The map going out to the client, if any.
     outgoing_map: Option<OutgoingMap>,
     /// The next stream a server opens towards the client.
@@ -1086,8 +1066,7 @@ pub struct Connection {
     /// When a resume must have gone through, or the peer is lost.
     resume_deadline: Option<Instant>,
     /// Reliable messages held back until the resume goes through.
-    pending: VecDeque<Vec<u8>>,
-    pending_bytes: usize,
+    held: session::Held,
     /// A map was coming in when the connection was lost; the client hears
     /// of it once it is back.
     map_lost: bool,
@@ -1142,14 +1121,11 @@ impl Connection {
             inner,
             transport: Transport::Raw,
             webtransport,
-            sixup,
+            handshake: session::Handshake::new(sixup),
             control_stream: None,
             prelude_read: client,
             shared,
             shown_certificate: None,
-            local_nonce: [0; wire::NONCE_SIZE],
-            peer_nonce: [0; wire::NONCE_SIZE],
-            hello_received: false,
             client,
             pinned: matches!(peer_identity, PeerIdentity::Wanted(_)),
             peer_addr,
@@ -1160,7 +1136,6 @@ impl Connection {
             outgoing_datagram: wire::DatagramBuilder::new(),
             datagram_sequence: 0,
             incoming_datagram: None,
-            peer_capabilities: 0,
             outgoing_map: None,
             // Server-initiated unidirectional streams are 3, 7, 11, ...
             next_uni_stream: 3,
@@ -1172,8 +1147,7 @@ impl Connection {
             announce_resumed: false,
             moved: false,
             resume_deadline: None,
-            pending: VecDeque::new(),
-            pending_bytes: 0,
+            held: session::Held::default(),
             map_lost: false,
             silence_since: None,
             master_challenge: false,
@@ -1192,7 +1166,7 @@ impl Connection {
         self.control_stream = None;
         self.prelude_read = self.client;
         self.shown_certificate = None;
-        self.hello_received = false;
+        self.handshake.received = false;
         self.peer_identity = PeerIdentity::Wanted(identity);
         self.pinned = true;
         self.state = State::Connecting;
@@ -1201,7 +1175,7 @@ impl Connection {
         self.outgoing_datagram = wire::DatagramBuilder::new();
         self.datagram_sequence = 0;
         self.incoming_datagram = None;
-        self.peer_capabilities = 0;
+        self.handshake.peer_capabilities = 0;
         self.outgoing_map = None;
         self.next_uni_stream = 3;
         self.map_lost |= self.incoming_map.is_some();
@@ -1212,8 +1186,7 @@ impl Connection {
     }
     /// Takes over what the old connection held back for the peer.
     pub fn take_over(&mut self, old: &mut Connection) {
-        self.pending = mem::take(&mut old.pending);
-        self.pending_bytes = mem::replace(&mut old.pending_bytes, 0);
+        self.held.take_over(&mut old.held);
         self.moved = self.peer_addr != old.peer_addr;
     }
     /// Answers the hello of a resuming client; the connection is online
@@ -1235,8 +1208,7 @@ impl Connection {
     }
     /// Sends what was held back during the resume.
     fn flush_pending(&mut self) -> Result<()> {
-        while let Some(frame) = self.pending.pop_front() {
-            self.pending_bytes -= frame.len();
+        while let Some(frame) = self.held.pop() {
             self.send_frame(wire::frame::MESSAGE, &frame)?;
         }
         Ok(())
@@ -1453,21 +1425,12 @@ impl Connection {
         if self.client || self.proves_identity() {
             capabilities |= wire::capability::SERVER_IDENTITY;
         }
-        self.local_nonce = secure_random();
-        let hello = wire::Hello {
-            major: wire::VERSION_MAJOR,
-            minor: wire::VERSION_MINOR,
-            protocol_version: if self.sixup { GAME_PROTOCOL_07 } else { GAME_PROTOCOL_06 },
-            capabilities,
-            max_datagram_size,
-            nonce: self.local_nonce,
-            resume_token: if self.resuming {
-                self.resume_token.as_deref().unwrap_or(&[])
-            } else {
-                &[]
-            },
+        let resume_token = if self.resuming {
+            self.resume_token.clone().unwrap_or_default()
+        } else {
+            Vec::new()
         };
-        let payload = wire::encode_hello(&hello).unwrap();
+        let payload = self.handshake.hello(capabilities, max_datagram_size, &resume_token);
         let frame_type = if self.client { wire::frame::CLIENT_HELLO } else { wire::frame::SERVER_HELLO };
         self.send_frame(frame_type, &payload)
     }
@@ -1476,7 +1439,7 @@ impl Connection {
     fn proves_identity(&self) -> bool {
         !self.client
             && self.shown_certificate.is_some()
-            && self.peer_capabilities & wire::capability::SERVER_IDENTITY != 0
+            && self.handshake.peer_proves_identity()
     }
     /// Sends the identity's signature over the certificate the client saw
     /// and the client's nonce, after the server's hello.
@@ -1487,7 +1450,7 @@ impl Connection {
         let proof = self
             .shared
             .identity
-            .prove(self.shown_certificate.as_ref().unwrap(), &self.peer_nonce);
+            .prove(self.shown_certificate.as_ref().unwrap(), &self.handshake.peer_nonce);
         self.send_frame(wire::frame::SERVER_IDENTITY, &proof)
     }
     /// Takes the server's identity proof; the identity is known after it.
@@ -1495,31 +1458,20 @@ impl Connection {
         let PeerIdentity::Certificate { wanted, sha256 } = self.peer_identity else {
             bail!("identity proof not expected");
         };
-        if payload.len() != IDENTITY_PROOF_SIZE {
-            bail!("identity proof of {} bytes, expected {}", payload.len(), IDENTITY_PROOF_SIZE);
-        }
-        let shown = Identity::from_bytes(payload[..32].try_into().unwrap());
-        if let Some(wanted) = wanted {
-            if shown != wanted {
-                bail!("server identity is {}, expected {}", shown, wanted);
-            }
-        }
-        if shown.verify_proof(payload, &sha256, &self.local_nonce).is_none() {
-            bail!("server identity proof does not check out");
-        }
+        let shown = session::verify_identity_proof(payload, wanted, &[sha256], &self.handshake.local_nonce)?;
         self.peer_identity = PeerIdentity::Known(shown);
         Ok(())
     }
     /// A client is online once it has the server's hello and knows the
     /// server's identity, from the certificate or from the proof.
     fn client_online(&mut self) -> Result<Option<Event>> {
-        if !self.hello_received {
+        if !self.handshake.received {
             return Ok(None);
         }
         match self.peer_identity {
             PeerIdentity::Known(_) => {}
             PeerIdentity::Certificate { .. } => {
-                if self.peer_capabilities & wire::capability::SERVER_IDENTITY == 0 {
+                if !self.handshake.peer_proves_identity() {
                     bail!("server shows no identity");
                 }
                 return Ok(None);
@@ -1540,23 +1492,7 @@ impl Connection {
     /// the hello asks to resume an earlier connection, which is returned
     /// for the outer layer to decide on.
     fn on_hello(&mut self, payload: &[u8]) -> Result<Option<(u64, [u8; RESUME_TOKEN_LEN])>> {
-        let hello = wire::decode_hello(payload)
-            .map_err(|e| Error::from_string(format!("hello: {}", e)))?;
-        if self.client {
-            let expected = if self.sixup { GAME_PROTOCOL_07 } else { GAME_PROTOCOL_06 };
-            if hello.protocol_version != expected {
-                bail!("game protocol {} instead of {}", hello.protocol_version, expected);
-            }
-        } else {
-            // The server speaks whichever the client asked for.
-            self.sixup = match hello.protocol_version {
-                GAME_PROTOCOL_06 => false,
-                GAME_PROTOCOL_07 => true,
-                other => bail!("game protocol {} instead of {} or {}", other, GAME_PROTOCOL_06, GAME_PROTOCOL_07),
-            };
-        }
-        self.peer_capabilities = hello.capabilities;
-        self.peer_nonce = hello.nonce;
+        let hello = self.handshake.take_hello(payload, self.client)?;
         if hello.resume_token.is_empty() {
             return Ok(None);
         }
@@ -1737,7 +1673,7 @@ impl Connection {
         if self.client {
             bail!("only a server sends maps");
         }
-        if self.peer_capabilities & wire::capability::MAP_STREAM == 0 {
+        if self.handshake.peer_capabilities & wire::capability::MAP_STREAM == 0 {
             bail!("peer takes no map stream");
         }
         self.cancel_map();
@@ -2094,7 +2030,7 @@ impl Connection {
             let event = match (self.state, frame_type) {
                 (Hello, wire::frame::SERVER_HELLO) if self.client => {
                     self.on_hello(&self.buffer[payload.clone()].to_vec())?;
-                    self.hello_received = true;
+
                     self.client_online()?
                 }
                 (Hello, wire::frame::SERVER_IDENTITY) if self.client => {
@@ -2190,7 +2126,7 @@ impl Connection {
                 _ => None,
             },
             webtransport: self.webtransport,
-            sixup: self.sixup,
+            sixup: self.handshake.sixup,
         }
     }
     pub fn send_chunk(
@@ -2206,11 +2142,7 @@ impl Connection {
             // rest anyway.
             if self.resuming || self.state == State::Detached {
                 if !unreliable {
-                    if self.pending_bytes + frame.len() > MAX_PENDING_RESUME_BYTES {
-                        bail!("too much to say while the connection is away");
-                    }
-                    self.pending_bytes += frame.len();
-                    self.pending.push_back(frame.to_vec());
+                    self.held.hold(frame)?;
                 }
                 return Ok(());
             }
@@ -2224,7 +2156,7 @@ impl Connection {
         // A message the peer cannot take unreliably, or that is too long
         // for a datagram, goes over the stream instead of not at all.
         let unreliable = unreliable
-            && self.peer_capabilities & wire::capability::DATAGRAM != 0
+            && self.handshake.peer_capabilities & wire::capability::DATAGRAM != 0
             && frame.len() <= wire::MAX_DATAGRAM_MESSAGE_SIZE
             && !frame.is_empty();
         if !unreliable {

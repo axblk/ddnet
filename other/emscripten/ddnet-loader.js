@@ -56,6 +56,18 @@ const DDNetLoader = (() => {
 			this.installDropHandlers();
 			this.installLaunchButton();
 			this.readUrl();
+			this.sweepDataCache();
+		}
+
+		// The service worker keeps every file of the data directory it fetched,
+		// which is safe because a URL there names the contents it carries. What
+		// it must not keep is a file that this build no longer has, and the only
+		// thing that knows which those are is the index - so once per load it is
+		// told to go and compare.
+		sweepDataCache() {
+			if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+				navigator.serviceWorker.controller.postMessage({ type: "ddnet-data-sweep" });
+			}
 		}
 
 		appendOutput(message, bold, textColor, borderColor) {

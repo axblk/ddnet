@@ -4816,6 +4816,10 @@ void CEditor::HandleWriterFinishJobs()
 		return;
 	}
 
+	// The browser keeps what was written in memory until it is told to put it
+	// away, so a map that was just saved would be gone with the page.
+	Storage()->SyncPersistentStorage();
+
 	auto MapIt = std::find_if(m_vpMaps.begin(), m_vpMaps.end(), [&](const std::unique_ptr<CEditorMap> &pMap) {
 		return str_comp(pMap->m_aFilename, pJob->RealFilename()) == 0;
 	});

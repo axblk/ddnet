@@ -424,6 +424,10 @@ int CDemoRecorder::Stop(IDemoRecorder::EStopMode Mode, const char *pTargetFilena
 		}
 	}
 
+	// The browser keeps what was written in memory until it is told to put it
+	// away, so a demo that was just recorded would be gone with the page.
+	m_pStorage->SyncPersistentStorage();
+
 	if(m_pConsole)
 	{
 		char aBuf[64 + IO_MAX_PATH_LENGTH];

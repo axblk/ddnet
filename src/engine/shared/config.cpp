@@ -441,6 +441,10 @@ bool CConfigManager::Save()
 		return false;
 	}
 
+	// The browser keeps what was written in memory until it is told to put it
+	// away, so the settings would be gone with the page.
+	m_pStorage->SyncPersistentStorage();
+
 	log_info("config", "saved to " CONFIG_FILE);
 	return true;
 }

@@ -23,6 +23,7 @@
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 #include <emscripten/emscripten.h>
+#include <emscripten/threading.h>
 
 // clang-format off
 EM_ASYNC_JS(int, RequestFilesFromUserImpl, (const char *pFolder, const char *pAccept), {
@@ -966,7 +967,17 @@ public:
 	void SyncPersistentStorage() override
 	{
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-		SyncPersistentStorageImpl();
+		// The file system, the module and the timer that holds the
+		// synchronisation back all belong to the main thread, so a caller from
+		// a job thread only asks for it to happen over there.
+		if(emscripten_is_main_runtime_thread())
+		{
+			SyncPersistentStorageImpl();
+		}
+		else
+		{
+			emscripten_async_run_in_main_runtime_thread(EM_FUNC_SIG_V, (void *)SyncPersistentStorageImpl);
+		}
 #endif
 	}
 

@@ -621,10 +621,20 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 		if(char *pSeparator = (char *)str_find(aFirstAddress, ","))
 			*pSeparator = '\0';
 		NETADDR LookupAddress;
-		if(net_addr_from_url(&LookupAddress, aFirstAddress, nullptr, 0) == 0 || net_addr_from_str(&LookupAddress, aFirstAddress) == 0)
+		const int UrlParseResult = net_addr_from_url(&LookupAddress, aFirstAddress, nullptr, 0);
+		if(UrlParseResult == 0 || net_addr_from_str(&LookupAddress, aFirstAddress) == 0)
 		{
 			if(const CServerBrowser::CServerEntry *pEntry = ServerBrowser()->Find(LookupAddress))
 				pServer = &pEntry->m_Info;
+		}
+		else if(UrlParseResult < 0)
+		{
+			// A host name is the server listed under it.
+			for(int i = 0; i < ServerBrowser()->NumServers() && pServer == nullptr; ++i)
+			{
+				if(ServerHasAddress(ServerBrowser()->Get(i), aFirstAddress))
+					pServer = ServerBrowser()->Get(i);
+			}
 		}
 		const CConnectChoices Choices = ConnectChoicesFor(pServer, g_Config.m_UiServerAddress);
 		// Both fields stay where they are whether or not there is a choice, so
@@ -888,10 +898,35 @@ CMenus::CConnectChoices CMenus::ConnectChoicesFor(const CServerInfo *pServer, co
 
 bool CMenus::ServerHasAddress(const CServerInfo *pServer, const char *pAddress)
 {
+	if(pServer == nullptr)
+		return false;
 	NETADDR Address;
 	// The browser writes its addresses with the scheme they belong to, and so
 	// does the box next to the list, so both forms have to be readable here.
-	if(pServer == nullptr || (net_addr_from_url(&Address, pAddress, nullptr, 0) != 0 && net_addr_from_str(&Address, pAddress) != 0))
+	// The box holds the host name where the certificate is signed for it;
+	// that is the server listed under the name, with the port.
+	char aHost[128];
+	const int UrlParseResult = net_addr_from_url(&Address, pAddress, aHost, sizeof(aHost));
+	if(UrlParseResult < 0)
+	{
+		if(pServer->m_aHostname[0] == '\0')
+			return false;
+		const char *pPort = str_rchr(aHost, ':');
+		if(pPort == nullptr)
+			return false;
+		const int Port = str_toint(pPort + 1);
+		char aName[sizeof(aHost)];
+		str_truncate(aName, sizeof(aName), aHost, pPort - aHost);
+		if(str_comp_nocase(aName, pServer->m_aHostname) != 0)
+			return false;
+		for(int i = 0; i < pServer->m_NumAddresses; ++i)
+		{
+			if(pServer->m_aAddresses[i].port == Port)
+				return true;
+		}
+		return false;
+	}
+	if(UrlParseResult != 0 && net_addr_from_str(&Address, pAddress) != 0)
 		return false;
 	for(int i = 0; i < pServer->m_NumAddresses; ++i)
 	{
@@ -932,17 +967,32 @@ void CMenus::UpdateConnectAddress(const CServerInfo *pServer)
 			Chosen = i;
 		}
 	}
-	// With the scheme it was announced under, and the identity the master
+	// With the scheme it was announced under, and the fragment the master
 	// listed for it: a 0.7 address that loses its scheme is a 0.6 address,
 	// which is neither the server in the list nor the one that would answer,
-	// and a modern address without its fragment pins nothing.
-	char aAddress[NETADDR_URL_MAXSTRSIZE];
-	net_addr_url_str(&pServer->m_aAddresses[Chosen], aAddress, sizeof(aAddress), true);
-	str_copy(g_Config.m_UiServerAddress, aAddress);
-	if(pServer->m_aIdentity[0] != '\0' && (pServer->m_aAddresses[Chosen].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0)
+	// and a modern address without its fragment pins nothing. Where the
+	// certificate is signed for the host name, the name goes in place of
+	// the address, since a browser checks the one against the other.
+	const NETADDR &Address = pServer->m_aAddresses[Chosen];
+	char aFragment[sizeof(pServer->m_aWebTransportFragment)];
+	CServerInfo::AddressFragment(aFragment, sizeof(aFragment), *pServer, Address);
+	const bool SignedForName = (Address.type & NETTYPE_WEBSOCKET_TLS) != 0 || ((Address.type & NETTYPE_WEBTRANSPORT) != 0 && str_comp(aFragment, "webpki") == 0);
+	char aAddress[NETADDR_URL_MAXSTRSIZE + sizeof(pServer->m_aHostname)];
+	if(SignedForName && pServer->m_aHostname[0] != '\0')
 	{
-		str_append(g_Config.m_UiServerAddress, "#identity-sha256=");
-		str_append(g_Config.m_UiServerAddress, pServer->m_aIdentity);
+		net_addr_url_str(&Address, aAddress, sizeof(aAddress), false);
+		const int SchemeLength = str_find(aAddress, "://") - aAddress + 3;
+		str_format(aAddress + SchemeLength, (int)sizeof(aAddress) - SchemeLength, "%s:%d", pServer->m_aHostname, Address.port);
+	}
+	else
+	{
+		net_addr_url_str(&Address, aAddress, sizeof(aAddress), true);
+	}
+	str_copy(g_Config.m_UiServerAddress, aAddress);
+	if(aFragment[0] != '\0')
+	{
+		str_append(g_Config.m_UiServerAddress, "#");
+		str_append(g_Config.m_UiServerAddress, aFragment);
 	}
 }
 
@@ -1501,7 +1551,7 @@ void CMenus::RenderServerbrowserInfo(CUIRect View)
 				}
 				else
 				{
-					Favorites()->Add(pSelectedServer->m_aAddresses, pSelectedServer->m_NumAddresses);
+					Favorites()->Add(pSelectedServer->m_aAddresses, pSelectedServer->m_NumAddresses, pSelectedServer->m_aIdentity, pSelectedServer->m_aWebTransportFragment);
 					if(g_Config.m_UiPage == PAGE_LAN)
 					{
 						Favorites()->AllowPing(pSelectedServer->m_aAddresses, pSelectedServer->m_NumAddresses, true);

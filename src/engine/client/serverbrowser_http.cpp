@@ -500,9 +500,12 @@ void CServerBrowserHttp::Refresh()
 // Reads an address the master lists. A host name, which a server registers
 // with `sv_register_hostname`, is looked up here, which takes as long as the
 // resolver likes; that is why the list is parsed in a job.
-static bool ServerbrowserParseUrl(NETADDR *pOut, const char *pUrl)
+// The name, without its port, is kept for a browser, which has to connect
+// by it where the certificate is signed for it.
+static bool ServerbrowserParseUrl(NETADDR *pOut, const char *pUrl, char *pHostname, int HostnameSize)
 {
 	char aHost[128];
+	pHostname[0] = '\0';
 	const int Failure = net_addr_from_url(pOut, pUrl, aHost, sizeof(aHost));
 	if(Failure > 0)
 		return true;
@@ -512,6 +515,8 @@ static bool ServerbrowserParseUrl(NETADDR *pOut, const char *pUrl)
 		if(net_host_lookup(aHost, pOut, NETTYPE_ALL) != 0)
 			return true;
 		pOut->type |= SchemeFlags;
+		const char *pPort = str_rchr(aHost, ':');
+		str_truncate(pHostname, HostnameSize, aHost, pPort != nullptr ? pPort - aHost : str_length(aHost));
 	}
 	return pOut->port == 0;
 }
@@ -605,10 +610,15 @@ bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvSe
 				continue;
 			}
 			NETADDR ParsedAddr;
-			if(ServerbrowserParseUrl(&ParsedAddr, Addresses[a]))
+			char aHostname[sizeof(SetInfo.m_aHostname)];
+			if(ServerbrowserParseUrl(&ParsedAddr, Addresses[a], aHostname, sizeof(aHostname)))
 			{
 				// Skip unknown addresses.
 				continue;
+			}
+			if(SetInfo.m_aHostname[0] == '\0')
+			{
+				str_copy(SetInfo.m_aHostname, aHostname);
 			}
 			if((ParsedAddr.type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0)
 			{
@@ -616,14 +626,19 @@ bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvSe
 				// A transport this build cannot speak is no address to offer.
 				continue;
 #else
-				// The fragment carries what the server is pinned by; the
-				// identity is the same for every transport, the certificate
-				// hashes of WebTransport are a browser's business.
+				// The fragment carries what the server is pinned by: the
+				// identity, the same for every transport, on the QUIC and
+				// WebSocket addresses, the certificates a browser takes on
+				// the WebTransport address.
 				const char *pFragment = str_find(Addresses[a], "#");
 				const char *pIdentity = pFragment != nullptr ? str_startswith(pFragment + 1, "identity-sha256=") : nullptr;
 				if(pIdentity != nullptr && SetInfo.m_aIdentity[0] == '\0' && ServerbrowserParseIdentity(pIdentity, SetInfo.m_aIdentity, sizeof(SetInfo.m_aIdentity)))
 				{
 					SetInfo.m_aIdentity[0] = '\0';
+				}
+				if(pFragment != nullptr && (ParsedAddr.type & NETTYPE_WEBTRANSPORT) != 0 && SetInfo.m_aWebTransportFragment[0] == '\0' && (str_startswith(pFragment + 1, "cert-sha256=") != nullptr || str_comp(pFragment + 1, "webpki") == 0))
+				{
+					str_copy(SetInfo.m_aWebTransportFragment, pFragment + 1);
 				}
 #endif
 			}

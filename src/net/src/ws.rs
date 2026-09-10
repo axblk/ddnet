@@ -238,7 +238,7 @@ impl Protocol {
         Ok(Some((conn, from)))
     }
     pub fn connect(&self, addr: Addr) -> Result<Connection> {
-        let Addr { addr: sock_addr, tls, identity } = addr;
+        let Addr { addr: sock_addr, tls, identity, .. } = addr;
         let stream = TcpStream::connect(sock_addr).context("TcpStream::connect")?;
         let _ = stream.set_nodelay(true);
         let peer_identity = match identity {
@@ -350,6 +350,7 @@ impl Connection {
     fn addr(&self) -> Addr {
         Addr {
             addr: self.peer_addr,
+            host: None,
             tls: self.tls.unwrap_or(false),
             identity: match self.peer_identity {
                 PeerIdentity::Known(identity) => Some(identity),

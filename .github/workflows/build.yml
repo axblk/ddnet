@@ -26,7 +26,7 @@ jobs:
           cmake-args: -G Ninja -DWEBSOCKETS=ON
           cmake-args-release: -DIPO=ON
           cmake-init-env: CXXFLAGS=-Werror
-          integration-args: --test-websockets --test-quic
+          integration-args: --test-websockets
           package-file: "*-linux_x86_64.tar.xz"
         - name: ubuntu-22.04
           os: ubuntu-22.04
@@ -273,7 +273,7 @@ jobs:
       continue-on-error: true
       run: |
         cp src/mastersrv/target/debug/mastersrv${{ matrix.executable-suffix }} headless
-        python scripts/integration_test.py --show-full-output --test-mastersrv --test-quic headless
+        python scripts/integration_test.py --show-full-output --test-mastersrv headless
 
     - name: Run integration tests with Valgrind's Memcheck and code coverage
       id: integration_test_valgrind
@@ -465,7 +465,7 @@ jobs:
         # Node from the emsdk stands in for the browser; the client joins
         # the server over WebSockets.
         source emsdk/emsdk_env.sh
-        python3 scripts/integration_test.py --show-full-output --test-websockets --test-quic --emscripten-client build-emscripten-headless/DDNet.js build-native-server browser_client_can_connect
+        python3 scripts/integration_test.py --show-full-output --test-websockets --emscripten-client build-emscripten-headless/DDNet.js build-native-server browser_client_can_connect
 
     - name: Upload browser integration test results
       id: browser_integration_test_artifact_upload

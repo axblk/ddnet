@@ -117,7 +117,7 @@ YELLOW = "\x1b[33m"
 
 
 class TestRunner:
-	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, ddnet_js, repo_dir, test_dir, show_full_output, test_websockets, test_quic, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
+	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, ddnet_js, repo_dir, test_dir, show_full_output, test_websockets, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
 		self.ddnet = ddnet
 		self.ddnet_server = ddnet_server
 		self.ddnet_mastersrv = ddnet_mastersrv
@@ -129,7 +129,6 @@ class TestRunner:
 		self.extra_env_vars = {}
 		self.show_full_output = show_full_output
 		self.test_websockets = test_websockets
-		self.test_quic = test_quic
 		self.keep_tmpdirs = keep_tmpdirs
 		self.timeout_multiplier = timeout_multiplier
 		self.valgrind_memcheck = valgrind_memcheck
@@ -186,10 +185,6 @@ class TestRunner:
 				num_skipped += 1
 				continue
 			if test.requires_websockets and not self.test_websockets:
-				print(f"{test.name} ... {YELLOW}skipped{RESET}")
-				num_skipped += 1
-				continue
-			if test.requires_quic and not self.test_quic:
 				print(f"{test.name} ... {YELLOW}skipped{RESET}")
 				num_skipped += 1
 				continue
@@ -654,12 +649,11 @@ json = {communities_json_filename!r}
 ALL_TESTS = []
 
 
-def test(test=None, *, requires_mastersrv=False, requires_websockets=False, requires_quic=False, requires_native_client=True, requires_browser_client=False, timeout=60):
+def test(test=None, *, requires_mastersrv=False, requires_websockets=False, requires_native_client=True, requires_browser_client=False, timeout=60):
 	def apply(test):
 		test.name = test.__name__
 		test.requires_mastersrv = requires_mastersrv
 		test.requires_websockets = requires_websockets
-		test.requires_quic = requires_quic
 		test.requires_native_client = requires_native_client
 		test.requires_browser_client = requires_browser_client
 		test.timeout = timeout
@@ -738,7 +732,7 @@ def client_can_connect(test_env):
 	client.wait_for_exit()
 
 
-@test(requires_quic=True)
+@test
 def client_can_connect_quic_pinned(test_env):
 	client = test_env.client()
 	server = test_env.server()
@@ -799,7 +793,7 @@ def client_can_connect_websockets(test_env):
 # server over WebSockets: it starts with the connect on its command line
 # once the server's port and identity are known, joins the game, and sees
 # the server go.
-@test(requires_websockets=True, requires_quic=True, requires_native_client=False, requires_browser_client=True, timeout=180)
+@test(requires_websockets=True, requires_native_client=False, requires_browser_client=True, timeout=180)
 def browser_client_can_connect(test_env):
 	server = test_env.server()
 	wait_for_startup([server])
@@ -1049,12 +1043,12 @@ def server_can_register_tw_0_7(test_env):
 	server_can_register_protocol(test_env, "tw0.7/ipv6", "7/ipv6", "tw-0.7+udp")
 
 
-@test(requires_mastersrv=True, requires_quic=True)
+@test(requires_mastersrv=True)
 def server_can_register_quic(test_env):
 	server_can_register_protocol(test_env, "ddnet+quic/ipv6", "quic/6/ipv6", "ddnet+quic")
 
 
-@test(requires_mastersrv=True, requires_quic=True)
+@test(requires_mastersrv=True)
 def server_can_register_webtransport(test_env):
 	server_can_register_protocol(test_env, "ddnet+wt/ipv6", "wt/6/ipv6", "ddnet+wt")
 
@@ -1165,7 +1159,6 @@ def main():
 	parser.add_argument("--show-full-output", action="store_true", help="print the full stdout and stderr on test failures")
 	parser.add_argument("--test-mastersrv", action="store_true", help="enforce testing of mastersrv")
 	parser.add_argument("--test-websockets", action="store_true", help="run tests that require compiling with websockets support (-DWEBSOCKETS=ON)")
-	parser.add_argument("--test-quic", action="store_true", help="run tests that require compiling with QUIC networking (-DNETWORKING_QUIC=ON)")
 	parser.add_argument("--timeout-multiplier", type=float, default=1, help="multiply all timeouts by this value")
 	parser.add_argument("--valgrind-memcheck", action="store_true", help="use valgrind's memcheck on client and server")
 	parser.add_argument("--emscripten-client", metavar="DDNET_JS", help="path to the DDNet.js of an Emscripten client build, run under node for the browser tests; the native client binary may be missing then")
@@ -1204,7 +1197,6 @@ def main():
 		test_dir=args.builddir,
 		show_full_output=args.show_full_output,
 		test_websockets=args.test_websockets,
-		test_quic=args.test_quic,
 		valgrind_memcheck=args.valgrind_memcheck,
 		keep_tmpdirs=args.keep_tmpdirs,
 		timeout_multiplier=args.timeout_multiplier,

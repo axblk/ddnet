@@ -1,10 +1,7 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
-#include "network.h"
-
-#ifdef CONF_NETWORKING_QUIC
-
 #include "config.h"
+#include "network.h"
 
 #include <base/dbg.h>
 #include <base/log.h>
@@ -500,28 +497,3 @@ CONNECTIVITY CNetClient::GetConnectivity(int NetType, NETADDR *pGlobalAddr)
 	}
 	return m_pStun->GetConnectivity(NetType, pGlobalAddr);
 }
-
-int CNetClient::NetType()
-{
-	// unimplemented
-	return NETTYPE_IPV4 | NETTYPE_IPV6;
-}
-
-bool CNetClient::SocketIsBroken() const
-{
-	// the network library reports errors through ErrorString()
-	return false;
-}
-
-const NETADDR *CNetClient::ServerAddress() const
-{
-	return &m_ServerAddress;
-}
-
-void CNetClient::ConnectAddresses(const NETADDR **ppAddrs, int *pNumAddrs) const
-{
-	*ppAddrs = m_aConnectAddrs;
-	*pNumAddrs = m_NumConnectAddrs;
-}
-
-#endif // CONF_NETWORKING_QUIC

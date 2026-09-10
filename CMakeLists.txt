@@ -2610,12 +2610,9 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   network.cpp
   network.h
   network_client.cpp
-  network_client_legacy.cpp
-  network_conn.cpp
   network_console.cpp
   network_console_conn.cpp
   network_server.cpp
-  network_server_legacy.cpp
   network_stun.cpp
   packer.cpp
   packer.h
@@ -3668,7 +3665,6 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     bezier_test.cpp
     blocklist_driver_test.cpp
     bytes_be_test.cpp
-    chunk_header_test.cpp
     color_test.cpp
     compression_test.cpp
     csv_test.cpp
@@ -3693,7 +3689,6 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     name_ban_test.cpp
     net_test.cpp
     netaddr_test.cpp
-    network_test.cpp
     os_test.cpp
     packer_test.cpp
     prng_test.cpp
@@ -4504,7 +4499,6 @@ foreach(target ${TARGETS_OWN})
   if(VIDEORECORDER)
     target_compile_definitions(${target} PRIVATE CONF_VIDEORECORDER)
   endif()
-  target_compile_definitions(${target} PRIVATE CONF_NETWORKING_QUIC)
   if(WEBSOCKETS)
     target_compile_definitions(${target} PRIVATE CONF_WEBSOCKETS)
   endif()

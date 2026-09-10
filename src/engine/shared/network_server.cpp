@@ -1,11 +1,8 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
-#include "network.h"
-
-#ifdef CONF_NETWORKING_QUIC
-
 #include "config.h"
 #include "netban.h"
+#include "network.h"
 
 #include <base/dbg.h>
 #include <base/hash_ctxt.h>
@@ -631,35 +628,6 @@ const char *CNetServer::ErrorString(int ClientId)
 	return "";
 }
 
-const NETADDR *CNetServer::ClientAddr(int ClientId) const
-{
-	dbg_assert(m_aPeers[ClientId].m_State != CPeer::STATE_NONE, "invalid client id");
-	return &m_aPeers[ClientId].m_Address;
-}
-
-const std::array<char, NETADDR_MAXSTRSIZE> &CNetServer::ClientAddrString(int ClientId, bool IncludePort) const
-{
-	dbg_assert(m_aPeers[ClientId].m_State != CPeer::STATE_NONE, "invalid client id");
-	return IncludePort ? m_aPeers[ClientId].m_aAddressStr : m_aPeers[ClientId].m_aAddressStrNoPort;
-}
-
-bool CNetServer::HasSecurityToken(int ClientId) const
-{
-	// unimplemented
-	return true;
-}
-
-NETSOCKET CNetServer::Socket() const
-{
-	// unimplemented
-	return nullptr;
-}
-
-int CNetServer::NetType() const
-{
-	// unimplemented
-	return NETTYPE_IPV4 | NETTYPE_IPV6;
-}
 SECURITY_TOKEN CNetServer::GetGlobalToken()
 {
 	// The library hands out the 0.7 tokens, so the one the masterserver
@@ -694,5 +662,3 @@ SECURITY_TOKEN CNetServer::GetVanillaToken(const NETADDR &Addr)
 	// vanilla token/gametick shouldn't be negative
 	return absolute(GetToken(Addr));
 }
-
-#endif // CONF_NETWORKING_QUIC

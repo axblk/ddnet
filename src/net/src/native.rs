@@ -3,6 +3,7 @@
 //! of the crate names it as if it were there.
 
 pub(crate) mod challenger;
+pub(crate) mod filter_key;
 pub(crate) mod libtw2_patch;
 pub(crate) mod limits;
 pub(crate) mod net;

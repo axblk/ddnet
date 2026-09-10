@@ -705,7 +705,7 @@ void CGameClient::OnInit()
 	});
 	m_UI.SetRenderPopupMenuBackdropCallback([this](CUIRect Rect) { m_Menus.RenderBackdropRegion(Rect); });
 	m_RenderTools.Init(Graphics(), TextRender());
-	m_RenderMap.Init(Graphics(), TextRender(), &m_RenderTools);
+	m_RenderMap.Init(Graphics(), TextRender());
 
 	if(GIT_SHORTREV_HASH)
 	{

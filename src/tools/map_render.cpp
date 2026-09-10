@@ -17,7 +17,6 @@
 #include <engine/shared/jobs.h>
 #include <engine/storage.h>
 
-#include <game/client/render.h>
 #include <game/layers.h>
 #include <game/localization.h>
 #include <game/map/envelope_manager.h>
@@ -29,12 +28,6 @@
 
 #include <memory>
 #include <string>
-
-// Forward declaration for stub implementations
-struct CDataSprite;
-struct CDataContainer;
-
-CDataContainer *g_pData = nullptr; // NOLINT(misc-use-internal-linkage)
 
 static constexpr const char *TOOL_NAME = "map_render";
 
@@ -367,11 +360,8 @@ int main(int argc, const char **argv)
 
 	CToolMapImages MapImages(&Graphics, pMap.get());
 
-	CRenderTools RenderTools;
-	RenderTools.Init(&Graphics, nullptr);
-
 	CRenderMap RenderMap;
-	RenderMap.Init(&Graphics, nullptr, &RenderTools);
+	RenderMap.Init(&Graphics, nullptr);
 
 	CMapRenderer MapRenderer;
 	MapRenderer.OnInit(&Graphics, nullptr, &RenderMap);

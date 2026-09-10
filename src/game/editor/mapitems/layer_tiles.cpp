@@ -8,6 +8,8 @@
 #include <engine/keys.h>
 #include <engine/shared/config.h>
 
+#include <generated/client_data.h>
+
 #include <game/editor/editor.h>
 #include <game/editor/editor_actions.h>
 #include <game/editor/enums.h>
@@ -229,7 +231,19 @@ void CLayerTiles::Render(const CEditorMap *pRenderMap)
 		if(m_HasTele)
 			Editor()->RenderMap()->RenderTeleOverlay(static_cast<CLayerTele *>(this)->m_pTeleTile, m_Width, m_Height, 32.0f, OverlayRenderFlags);
 		if(m_HasSpeedup)
-			Editor()->RenderMap()->RenderSpeedupOverlay(static_cast<CLayerSpeedup *>(this)->m_pSpeedupTile, m_Width, m_Height, 32.0f, OverlayRenderFlags);
+		{
+			Editor()->RenderMap()->RenderSpeedupOverlay(
+				static_cast<CLayerSpeedup *>(this)->m_pSpeedupTile, m_Width, m_Height, 32.0f, OverlayRenderFlags,
+				[this](float X, float Y, float AngleDegrees, float Alpha) {
+					Editor()->Graphics()->TextureSet(g_pData->m_aImages[IMAGE_SPEEDUP_ARROW].m_Id);
+					Editor()->Graphics()->QuadsBegin();
+					Editor()->Graphics()->SetColor(1.0f, 1.0f, 1.0f, Alpha);
+					Editor()->RenderTools()->SelectSprite(SPRITE_SPEEDUP_ARROW);
+					Editor()->Graphics()->QuadsSetRotation(AngleDegrees * (pi / 180.0f));
+					Editor()->RenderTools()->DrawSprite(X, Y, 35.0f);
+					Editor()->Graphics()->QuadsEnd();
+				});
+		}
 		if(m_HasSwitch)
 			Editor()->RenderMap()->RenderSwitchOverlay(static_cast<CLayerSwitch *>(this)->m_pSwitchTile, m_Width, m_Height, 32.0f, OverlayRenderFlags);
 		if(m_HasTune)

@@ -4670,7 +4670,7 @@ void CEditor::Init()
 	m_UI.SetDispatchInputCallback([this](const IInput::CEvent &Event) {
 		OnInput(Event);
 	});
-	m_RenderMap.Init(m_pGraphics, m_pTextRender, &m_RenderTools);
+	m_RenderMap.Init(m_pGraphics, m_pTextRender);
 	m_AssetLoader.Init(m_pEngine, std::clamp(m_pEngine->JobThreadCount() / 2, size_t{1}, size_t{8}));
 
 	Reset();

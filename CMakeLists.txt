@@ -3848,13 +3848,13 @@ if(TOOLS)
         list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")
       endif()
       if(TOOL MATCHES "^map_render$")
-        list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS} ${FREETYPE_INCLUDE_DIRS} ${GLEW_INCLUDE_DIRS})
+        list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS} ${GLEW_INCLUDE_DIRS})
         list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-client-graphics> $<TARGET_OBJECTS:engine-gfx> ${GLEW_DEP})
         # The tool draws with the client's backends, so it needs what the client
         # links for its window system - opengl32 on Windows, the Cocoa and
         # OpenGL frameworks on macOS - not just the bare GL library.
         list(APPEND TOOL_INCLUDE_DIRS ${PLATFORM_CLIENT_INCLUDE_DIRS})
-        list(APPEND TOOL_LIBS ${PNG_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLEW_LIBRARIES} ${CMAKE_DL_LIBS} ${PLATFORM_CLIENT_LIBS} ${VULKAN_LIBRARIES})
+        list(APPEND TOOL_LIBS ${PNG_LIBRARIES} ${GLEW_LIBRARIES} ${CMAKE_DL_LIBS} ${PLATFORM_CLIENT_LIBS} ${VULKAN_LIBRARIES})
         if(WEBGPU_NATIVE_BACKEND)
           # engine-client-graphics links this, but the tool takes its objects
           # rather than the target, and objects carry no link interface.
@@ -3879,8 +3879,6 @@ if(TOOLS)
       if(TOOL MATCHES "^map_render$")
         target_sources(map_render PRIVATE
           # tidy-alphabetical-start
-          src/game/client/render.cpp
-          src/game/client/skin.cpp
           src/game/map/envelope_extrema.cpp
           src/game/map/map_renderer.cpp
           src/game/map/render_component.cpp
@@ -3888,11 +3886,7 @@ if(TOOLS)
           src/game/map/render_map.cpp
           src/game/map/tile_chunk_cache.cpp
           # tidy-alphabetical-end
-          ${PROJECT_BINARY_DIR}/src/generated/client_data.h
-          ${PROJECT_BINARY_DIR}/src/generated/client_data7.cpp
-          ${PROJECT_BINARY_DIR}/src/generated/client_data7.h
         )
-        target_include_directories(map_render PRIVATE ${PROJECT_BINARY_DIR})
       endif()
       list(APPEND TARGETS_TOOLS ${TOOL})
     endif()

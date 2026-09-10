@@ -27,7 +27,12 @@ public:
 
 private:
 	const CButtonContainer *m_pKeyReaderId = nullptr;
+	// Reading a key press belongs to the controls page, which a render tool
+	// does not have and stands in for - see `key_binder_null.cpp`. A private
+	// field nobody reads is an error where warnings are.
+#if !defined(CONF_DEMO_RENDER_TOOL)
 	bool m_TakeKey = false;
+#endif
 	std::optional<CBindSlot> m_Key;
 };
 

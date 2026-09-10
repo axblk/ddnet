@@ -259,7 +259,6 @@ void CDemoRenderClient::Run()
 
 	m_pTextRender = Kernel()->RequestInterface<IEngineTextRender>();
 	m_pTextRender->Init();
-	m_DebugFont = Graphics()->LoadTexture("debug_font.png", IStorage::TYPE_ALL);
 	Graphics()->AddWindowResizeListener([this] { OnWindowResize(); });
 	GameClient()->OnInit();
 

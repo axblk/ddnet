@@ -2214,6 +2214,8 @@ if(TARGET_OS STREQUAL "emscripten")
   list(APPEND COPY_FILES other/emscripten/coi-serviceworker.js)
   list(APPEND COPY_FILES other/emscripten/ddnet-loader.js)
   list(APPEND COPY_FILES other/emscripten/ddnet-page.css)
+  list(APPEND COPY_FILES other/emscripten/ddnet-viewer.css)
+  list(APPEND COPY_FILES other/emscripten/demo.html)
   list(APPEND COPY_FILES other/emscripten/index.html)
   list(APPEND COPY_FILES other/icons/DDNet.ico)
 endif()
@@ -4826,6 +4828,17 @@ set(CPACK_FILES
 )
 if(NOT TARGET_OS STREQUAL "emscripten")
   list(APPEND CPACK_FILES storage.cfg)
+else()
+  # A package holds one program and the page that starts it. The other pages
+  # belong to the site, which is a different thing and is put together by the
+  # `web-site` target - packing them here would mean a page whose program is
+  # not next to it.
+  list(REMOVE_ITEM CPACK_FILES
+    # tidy-alphabetical-start
+    other/emscripten/ddnet-viewer.css
+    other/emscripten/demo.html
+    # tidy-alphabetical-end
+  )
 endif()
 set(CPACK_GEN_FILES)
 

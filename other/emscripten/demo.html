@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<meta name="description" content="Watch a DDNet demo in a web browser.">
+		<title>DDNet Demo Viewer</title>
+		<link rel="icon" type="image/x-icon" href="DDNet.ico">
+		<script src="coi-serviceworker.js"></script>
+		<link rel="stylesheet" href="ddnet-page.css">
+		<link rel="stylesheet" href="ddnet-viewer.css">
+	</head>
+	<body>
+		<div id="controls">
+			<h1>DDNet Demo Viewer</h1>
+			<p>This watches a <a href="https://ddnet.org/">DDNet</a> demo, and nothing else: there is no server browser, there are no settings and there is no menu, only what it takes to draw a demo. That is also why it starts quickly.</p>
+			<div id="drop-target">
+				<p>You can drop a <code>.demo</code> file here, or click to select one.
+				A demo can also be named in the address, as <code>demo.html#demo=&lt;url&gt;</code>, and is then played right away.</p>
+				<p id="drop-target-status">No demo selected</p>
+				<input id="drop-target-file-input" type="file" accept=".demo" hidden>
+			</div>
+			<button id="launch-button" disabled>
+				<span id="launch-button-progress"></span>
+				<span id="launch-button-label">Loading…</span>
+			</button>
+			<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
+		</div>
+		<div id="output" style="display: none">
+			<h2>Console log</h2>
+			<div id="outputcontent"></div>
+		</div>
+		<canvas id="canvas" style="display: none">Canvas not supported.</canvas>
+		<div id="player-controls" style="display: none">
+			<button id="play-button" title="Space">Pause</button>
+			<input id="seek" type="range" min="0" max="1000" value="0" step="1" title="Seek">
+			<span id="time">0:00 / 0:00</span>
+			<button id="slower" title="Down arrow">&minus;</button>
+			<span id="speed">1.00&times;</span>
+			<button id="faster" title="Up arrow">+</button>
+			<button id="restart" title="Home">Restart</button>
+			<button id="export-button">Export video</button>
+		</div>
+		<script src="ddnet-loader.js"></script>
+		<script>
+			DDNetLoader.create({
+				programName: "Demo viewer",
+				launchLabel: "Watch demo",
+				accept: [".demo"],
+				urlParams: ["demo"],
+				autoLaunch: true,
+				elements: {
+					canvas: document.getElementById('canvas'),
+					controls: document.getElementById('controls'),
+					output: document.getElementById('output'),
+					outputContent: document.getElementById('outputcontent'),
+					launchButton: document.getElementById('launch-button'),
+					launchButtonProgress: document.getElementById('launch-button-progress'),
+					launchButtonLabel: document.getElementById('launch-button-label'),
+					dropTarget: document.getElementById('drop-target'),
+					dropTargetStatus: document.getElementById('drop-target-status'),
+					dropTargetFileInput: document.getElementById('drop-target-file-input'),
+				},
+			});
+		</script>
+		<script>
+			// The bar under the canvas. The viewer answers to the keyboard as well,
+			// but a page shows no key bindings and nobody would go looking for them,
+			// so everything it can do has a button here. The other end of these is
+			// the `DemoViewer*` block in `src/engine/client/demo_viewer_client.cpp`.
+			(function() {
+				const playerControls = document.getElementById('player-controls');
+				const playButton = document.getElementById('play-button');
+				const seek = document.getElementById('seek');
+				const time = document.getElementById('time');
+				const speed = document.getElementById('speed');
+				const exportButton = document.getElementById('export-button');
+				var seeking = false;
+				var exportStarted = false;
+
+				// The viewer is only there between the start of the demo and the end
+				// of the program, and the page outlives both, so every call has to
+				// survive being made outside of that.
+				function call(name, returnType, argTypes, args) {
+					if (typeof Module === "undefined" || typeof Module.ccall !== "function") {
+						return null;
+					}
+					try {
+						return Module.ccall(name, returnType, argTypes || [], args || []);
+					} catch (error) {
+						return null;
+					}
+				}
+
+				function formatTime(seconds) {
+					const total = Math.max(0, Math.round(seconds));
+					return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+				}
+
+				playButton.addEventListener('click', () => {
+					call('DemoViewerSetPaused', null, ['number'], [call('DemoViewerPaused', 'number') ? 0 : 1]);
+				});
+				seek.addEventListener('input', () => {
+					seeking = true;
+				});
+				seek.addEventListener('change', () => {
+					call('DemoViewerSeekPercent', null, ['number'], [seek.value / seek.max]);
+					seeking = false;
+				});
+				document.getElementById('slower').addEventListener('click', () => {
+					call('DemoViewerSetSpeed', null, ['number'], [call('DemoViewerSpeed', 'number') / 1.25]);
+				});
+				document.getElementById('faster').addEventListener('click', () => {
+					call('DemoViewerSetSpeed', null, ['number'], [call('DemoViewerSpeed', 'number') * 1.25]);
+				});
+				document.getElementById('restart').addEventListener('click', () => {
+					call('DemoViewerSeekStart');
+				});
+				exportButton.addEventListener('click', () => {
+					// The browser only hands over a download that came out of a click,
+					// so the export has to start from this handler and not from a
+					// question the page asks itself later.
+					const canvas = document.getElementById('canvas');
+					const started = call('DemoViewerStartExport', 'number', ['number', 'number', 'number', 'number'],
+						[canvas.width, canvas.height, 60, 0]);
+					exportStarted = started === 1;
+					exportButton.disabled = true;
+					exportButton.textContent = exportStarted ? "Exporting…" : "Export failed";
+				});
+
+				// The page follows the demo rather than the demo telling the page:
+				// the viewer holds the main thread for as long as it draws and only
+				// lets go between frames, so asking is both simpler and cheaper than
+				// being called back.
+				setInterval(() => {
+					const length = call('DemoViewerLength', 'number');
+					if (length === null || length <= 0.0) {
+						playerControls.style.display = "none";
+						return;
+					}
+					playerControls.style.display = "flex";
+					const progress = call('DemoViewerProgress', 'number');
+					if (!seeking) {
+						seek.value = Math.round(progress * seek.max);
+					}
+					time.textContent = `${formatTime(progress * length)} / ${formatTime(length)}`;
+					speed.textContent = `${call('DemoViewerSpeed', 'number').toFixed(2)}×`;
+					playButton.textContent = call('DemoViewerPaused', 'number') ? "Play" : "Pause";
+					if (exportStarted && !call('DemoViewerExporting', 'number')) {
+						exportStarted = false;
+						exportButton.textContent = "Export finished";
+					}
+				}, 200);
+			})();
+		</script>
+		<script async src="ddnet-demo-viewer.js"></script>
+	</body>
+</html>

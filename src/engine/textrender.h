@@ -210,6 +210,11 @@ public:
 	 * @return `true` if all fonts were loaded, `false` if any of them failed.
 	 */
 	virtual bool WaitForFonts() = 0;
+	/**
+	 * Takes the font files that the client did not wait for, once they have
+	 * been read. Called once per frame.
+	 */
+	virtual void Update() = 0;
 	virtual void SetFontPreset(EFontPreset FontPreset) = 0;
 	virtual void SetFontLanguageVariant(const char *pLanguageFile) = 0;
 

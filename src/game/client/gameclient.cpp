@@ -815,6 +815,7 @@ void CGameClient::OnInit()
 void CGameClient::OnUpdate()
 {
 	m_AssetLoader.Update();
+	TextRender()->Update();
 	if(!m_vStartupImageLoads.empty())
 	{
 		TryFinishLoadingCoreImages();

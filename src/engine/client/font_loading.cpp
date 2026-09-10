@@ -12,6 +12,7 @@
 void CFontIndex::Reset()
 {
 	m_vFontFilePaths.clear();
+	m_vDeferredFontFilePaths.clear();
 	m_DefaultFamilyName.clear();
 	m_IconFamilyName.clear();
 	m_vFallbackFamilyNames.clear();
@@ -40,28 +41,35 @@ bool CFontIndex::Parse(const char *pJson, unsigned Length, const char *pContextN
 	bool Success = true;
 
 	// extract font file definitions
-	const json_value &FontFiles = (*pJsonData)["font files"];
-	if(FontFiles.type == json_array)
-	{
+	const auto &&ExtractFontFiles = [&](const char *pKey, std::vector<std::string> &vPaths, bool Required) {
+		const json_value &FontFiles = (*pJsonData)[pKey];
+		if(FontFiles.type == json_none && !Required)
+		{
+			return;
+		}
+		if(FontFiles.type != json_array)
+		{
+			log_error("textrender", "Font index malformed: '%s' must be an array", pKey);
+			Success = false;
+			return;
+		}
 		for(unsigned FontFileIndex = 0; FontFileIndex < FontFiles.u.array.length; ++FontFileIndex)
 		{
 			if(FontFiles[FontFileIndex].type != json_string)
 			{
-				log_error("textrender", "Font index malformed: 'font files' must be an array of strings (error at index %d)", FontFileIndex);
+				log_error("textrender", "Font index malformed: '%s' must be an array of strings (error at index %d)", pKey, FontFileIndex);
 				Success = false;
 				continue;
 			}
 
 			char aFontPath[IO_MAX_PATH_LENGTH];
 			str_format(aFontPath, sizeof(aFontPath), "fonts/%s", FontFiles[FontFileIndex].u.string.ptr);
-			m_vFontFilePaths.emplace_back(aFontPath);
+			vPaths.emplace_back(aFontPath);
 		}
-	}
-	else
-	{
-		log_error("textrender", "Font index malformed: 'font files' must be an array");
-		Success = false;
-	}
+	};
+	ExtractFontFiles("font files", m_vFontFilePaths, true);
+	// The client starts without these, so an index that names none is fine.
+	ExtractFontFiles("deferred font files", m_vDeferredFontFilePaths, false);
 
 	// extract default family name
 	const json_value &DefaultFace = (*pJsonData)["default"];

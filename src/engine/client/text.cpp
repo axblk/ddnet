@@ -709,6 +709,16 @@ public:
 		return true;
 	}
 
+	bool HasFaceByName(const char *pFamilyName)
+	{
+		return GetFaceByName(pFamilyName) != nullptr;
+	}
+
+	void ClearFallbackFaces()
+	{
+		m_vFallbackFaces.clear();
+	}
+
 	bool AddFallbackFaceByName(const char *pFamilyName)
 	{
 		FT_Face Face = GetFaceByName(pFamilyName);
@@ -1071,7 +1081,11 @@ class CTextRender : public IEngineTextRender
 	CFontIndex m_FontIndex;
 	CFontLoadProgress m_FontLoadProgress;
 	std::vector<CTypedAssetResource<CFontAssetJob>> m_vFontFileResources;
+	std::vector<CTypedAssetResource<CFontAssetJob>> m_vDeferredFontFileResources;
 	size_t m_ReportedFontFileCount;
+	// Which language the variant face was last picked for, so that a variant
+	// whose font only arrives later is still put in place.
+	char m_aLanguageFile[IO_MAX_PATH_LENGTH] = "";
 
 	unsigned m_RenderFlags;
 
@@ -1177,6 +1191,13 @@ class CTextRender : public IEngineTextRender
 		{
 			m_vFontFileResources.push_back(m_FontLoader.Load(std::make_shared<CFontAssetJob>(Storage(), FontFilePath.c_str())));
 		}
+		// The deferred files are asked for at the same time. Only the waiting
+		// is different: these are taken whenever they turn up, in `Update`.
+		m_vDeferredFontFileResources.reserve(m_FontIndex.m_vDeferredFontFilePaths.size());
+		for(const std::string &FontFilePath : m_FontIndex.m_vDeferredFontFilePaths)
+		{
+			m_vDeferredFontFileResources.push_back(m_FontLoader.Load(std::make_shared<CFontAssetJob>(Storage(), FontFilePath.c_str())));
+		}
 		PollFontLoading();
 	}
 
@@ -1269,23 +1290,65 @@ class CTextRender : public IEngineTextRender
 			}
 		}
 		m_vFontFileResources.clear();
+		m_FontLoadProgress.Commit(SelectFaces() && Success);
+	}
 
+	void SelectLanguageVariant()
+	{
+		for(const auto &Variant : m_FontIndex.m_vLanguageVariants)
+		{
+			if(str_comp(m_aLanguageFile, Variant.m_LanguageFile.c_str()) == 0)
+			{
+				// A variant whose font file is still on its way is put in
+				// place by `Update` once it is there.
+				if(m_vDeferredFontFileResources.empty() || m_pGlyphMap->HasFaceByName(Variant.m_FamilyName.c_str()))
+				{
+					m_pGlyphMap->SetVariantFaceByName(Variant.m_FamilyName.c_str());
+				}
+				return;
+			}
+		}
+		m_pGlyphMap->SetVariantFaceByName(nullptr);
+	}
+
+	/**
+	 * Picks the default, fallback and icon faces out of what the glyph map has
+	 * by now, and puts the language variant back where it was. Run again after
+	 * every font that arrived late, so that a face the index names is taken as
+	 * soon as it is there.
+	 *
+	 * @return `true` if every face the index names was found, or is still on
+	 * its way.
+	 */
+	bool SelectFaces()
+	{
+		// A face whose font file has not arrived yet is not missing, it is
+		// late: it is picked once it is there, and only what is missing when
+		// nothing more is coming is an error.
+		const bool AllFontsHere = m_vDeferredFontFileResources.empty();
+		bool Success = true;
 		if(!m_FontIndex.m_DefaultFamilyName.empty() && !m_pGlyphMap->SetDefaultFaceByName(m_FontIndex.m_DefaultFamilyName.c_str()))
 		{
 			Success = false;
 		}
+		m_pGlyphMap->ClearFallbackFaces();
 		for(const std::string &FallbackFamilyName : m_FontIndex.m_vFallbackFamilyNames)
 		{
+			if(!AllFontsHere && !m_pGlyphMap->HasFaceByName(FallbackFamilyName.c_str()))
+				continue;
 			if(!m_pGlyphMap->AddFallbackFaceByName(FallbackFamilyName.c_str()))
 			{
 				Success = false;
 			}
 		}
-		if(!m_FontIndex.m_IconFamilyName.empty() && !m_pGlyphMap->SetIconFaceByName(m_FontIndex.m_IconFamilyName.c_str()))
+		if(!m_FontIndex.m_IconFamilyName.empty() &&
+			(AllFontsHere || m_pGlyphMap->HasFaceByName(m_FontIndex.m_IconFamilyName.c_str())) &&
+			!m_pGlyphMap->SetIconFaceByName(m_FontIndex.m_IconFamilyName.c_str()))
 		{
 			Success = false;
 		}
-		m_FontLoadProgress.Commit(Success);
+		SelectLanguageVariant();
+		return Success;
 	}
 
 	/**
@@ -1354,13 +1417,42 @@ public:
 		m_FirstFreeTextContainerIndex = -1;
 	}
 
+	/**
+	 * Takes the font files that nothing waited for, once they are all there.
+	 *
+	 * They arrive together so that the faces the index names are picked once
+	 * rather than after every file.
+	 */
+	void Update() override
+	{
+		if(m_vDeferredFontFileResources.empty())
+			return;
+
+		m_FontLoader.Update();
+		for(const auto &Resource : m_vDeferredFontFileResources)
+		{
+			if(!Resource.IsFinished())
+				return;
+		}
+		for(auto &Resource : m_vDeferredFontFileResources)
+		{
+			if(!Resource.IsReady(FONT_ASSET_GENERATION))
+				continue;
+			m_vFontData.push_back(Resource.Result().TakeFontData());
+			AddFontFaces(m_vFontData.back(), Resource.Path());
+		}
+		m_vDeferredFontFileResources.clear();
+		SelectFaces();
+	}
+
 	void Shutdown() override
 	{
-		// The font jobs use the FreeType library, so they have to be finished
-		// before it is destroyed. They are not abortable for that reason.
+		// Whatever is still being read is dropped: a font file is only read
+		// here, and nothing else waits for one.
 		EnsureFontsLoaded();
 		m_FontLoader.Shutdown();
 		m_vFontFileResources.clear();
+		m_vDeferredFontFileResources.clear();
 
 		for(auto *pTextCont : m_vpTextContainers)
 			delete pTextCont;
@@ -1404,15 +1496,8 @@ public:
 	void SetFontLanguageVariant(const char *pLanguageFile) override
 	{
 		EnsureFontsLoaded();
-		for(const auto &Variant : m_FontIndex.m_vLanguageVariants)
-		{
-			if(str_comp(pLanguageFile, Variant.m_LanguageFile.c_str()) == 0)
-			{
-				m_pGlyphMap->SetVariantFaceByName(Variant.m_FamilyName.c_str());
-				return;
-			}
-		}
-		m_pGlyphMap->SetVariantFaceByName(nullptr);
+		str_copy(m_aLanguageFile, pLanguageFile);
+		SelectLanguageVariant();
 	}
 
 	void Text(float x, float y, float FontSize, const char *pText, float LineWidth = -1.0f) override

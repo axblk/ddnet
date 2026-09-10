@@ -8,6 +8,7 @@ namespace
 {
 	const char *const FULL_INDEX = R"({
 		"font files": ["DejaVuSans.ttf", "Icons.otf"],
+		"deferred font files": ["Huge.ttc"],
 		"default": "DejaVu Sans",
 		"language variants": {
 			"japanese": "Glow Sans J",
@@ -33,6 +34,10 @@ TEST(FontIndex, ParsesCompleteIndex)
 	ASSERT_EQ(Index.m_vFontFilePaths.size(), 2U);
 	EXPECT_EQ(Index.m_vFontFilePaths[0], "fonts/DejaVuSans.ttf");
 	EXPECT_EQ(Index.m_vFontFilePaths[1], "fonts/Icons.otf");
+
+	// The files nobody waits for are kept apart, but named the same way.
+	ASSERT_EQ(Index.m_vDeferredFontFilePaths.size(), 1U);
+	EXPECT_EQ(Index.m_vDeferredFontFilePaths[0], "fonts/Huge.ttc");
 
 	EXPECT_EQ(Index.m_DefaultFamilyName, "DejaVu Sans");
 	EXPECT_EQ(Index.m_IconFamilyName, "Font Awesome 6 Free");
@@ -95,6 +100,7 @@ TEST(FontIndex, ResetsBetweenParses)
 	ASSERT_TRUE(Parse(Index, FULL_INDEX));
 	EXPECT_FALSE(Parse(Index, R"({"font files": []})"));
 	EXPECT_TRUE(Index.m_vFontFilePaths.empty());
+	EXPECT_TRUE(Index.m_vDeferredFontFilePaths.empty());
 	EXPECT_TRUE(Index.m_DefaultFamilyName.empty());
 	EXPECT_TRUE(Index.m_vFallbackFamilyNames.empty());
 	EXPECT_TRUE(Index.m_vLanguageVariants.empty());
@@ -181,4 +187,34 @@ TEST(FontLoadProgress, ResetsToIdle)
 	EXPECT_EQ(Progress.FinishedFileCount(), 0U);
 	EXPECT_EQ(Progress.FailedFileCount(), 0U);
 	EXPECT_TRUE(Progress.Success());
+}
+
+TEST(FontIndex, TakesAnIndexWithoutDeferredFonts)
+{
+	CFontIndex Index;
+	// Every font is waited for when the index names none to defer, which is
+	// what an index that predates them looks like.
+	EXPECT_TRUE(Parse(Index, R"({
+		"font files": ["DejaVuSans.ttf"],
+		"default": "DejaVu Sans",
+		"language variants": {},
+		"fallbacks": [],
+		"icon": "Font Awesome 6 Free"
+	})"));
+	EXPECT_EQ(Index.m_vFontFilePaths.size(), 1U);
+	EXPECT_TRUE(Index.m_vDeferredFontFilePaths.empty());
+}
+
+TEST(FontIndex, RejectsDeferredFontsThatAreNotAList)
+{
+	CFontIndex Index;
+	EXPECT_FALSE(Parse(Index, R"({
+		"font files": ["DejaVuSans.ttf"],
+		"deferred font files": "Huge.ttc",
+		"default": "DejaVu Sans",
+		"language variants": {},
+		"fallbacks": [],
+		"icon": "Font Awesome 6 Free"
+	})"));
+	EXPECT_TRUE(Index.m_vDeferredFontFilePaths.empty());
 }

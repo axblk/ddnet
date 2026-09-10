@@ -120,8 +120,14 @@ public:
 class CGraphicsBackend_Renderer : public CGraphicsBackend_Threaded
 {
 	EBackendType m_BackendType;
+	// What the window reports about the context it made. The renderer for
+	// desktop OpenGL is the only one that asks, so where that one is not
+	// compiled in - see `CreateRenderer`, which carries the same condition -
+	// these are not kept either: a private field nobody reads is a warning.
+#if !defined(CONF_BACKEND_OPENGL_ES) && !defined(CONF_BACKEND_NO_OPENGL)
 	int m_GlMajor;
 	int m_GlMinor;
+#endif
 	CCommandProcessor_Threaded *m_pProcessor = nullptr;
 	std::atomic<uint64_t> m_TextureMemoryUsage{0};
 	std::atomic<uint64_t> m_BufferMemoryUsage{0};

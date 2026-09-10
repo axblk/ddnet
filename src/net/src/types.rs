@@ -33,6 +33,7 @@ impl fmt::Debug for PeerIndex {
 
 impl PeerIndex {
     // TODO: get rid of pub(crate)
+    #[cfg(not(target_os = "emscripten"))]
     pub(crate) fn get_and_increment(&mut self) -> PeerIndex {
         let result = *self;
         self.0 += 1;

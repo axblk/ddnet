@@ -87,10 +87,10 @@ void CNetClient::Wait(uint64_t Microseconds)
 	}
 }
 
-void CNetClient::SetConnectIdentity(const char *pIdentity)
+void CNetClient::SetConnectFragment(const char *pFragment)
 {
 	// Without QUIC there is no identity to expect.
-	(void)pIdentity;
+	(void)pFragment;
 }
 
 void CNetClient::Connect(const NETADDR *pAddr, int NumAddrs)

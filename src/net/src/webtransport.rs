@@ -7,6 +7,7 @@
 //! Stream IDs are QUIC's: bit 0 says who opened the stream (1 = server),
 //! bit 1 whether it is unidirectional.
 
+use crate::wire;
 use std::collections::HashMap;
 use wtransport_proto::bytes::BufferReader;
 use wtransport_proto::datagram::Datagram;
@@ -20,7 +21,7 @@ use wtransport_proto::varint::VarInt;
 
 pub const ALPN: &[u8] = wtransport_proto::WEBTRANSPORT_ALPN;
 /// The path a game session is opened on.
-pub const PATH: &str = "/ddnet";
+pub const PATH: &str = wire::WEBTRANSPORT_PATH;
 /// The path the master server's challenge is opened on.
 pub const MASTER_PATH: &str = "/ddnet/master";
 const MAX_HTTP3_BUFFER: usize = 64 * 1024;

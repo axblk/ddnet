@@ -374,8 +374,9 @@ impl NetBuilder {
     pub fn bindaddr(&mut self, bindaddr: SocketAddr) {
         self.bindaddr = Some(bindaddr);
     }
-    pub fn identity(&mut self, identity: PrivateIdentity) {
-        self.identity = Some(identity);
+    /// The private key of the identity, 32 bytes.
+    pub fn identity(&mut self, identity: [u8; 32]) {
+        self.identity = Some(PrivateIdentity::from_bytes(identity));
     }
     /// How long a connection may go without a packet before it is lost.
     pub fn timeout(&mut self, timeout: Duration) {
@@ -526,8 +527,8 @@ impl Net {
     pub fn certificate_sha256(&self, next: bool) -> Option<[u8; 32]> {
         self.proto_quic.certificate_sha256(next)
     }
-    pub fn identity(&self) -> Identity {
-        self.proto_quic.identity()
+    pub fn identity(&self) -> Option<Identity> {
+        Some(self.proto_quic.identity())
     }
     pub fn builder() -> NetBuilder {
         NetBuilder {

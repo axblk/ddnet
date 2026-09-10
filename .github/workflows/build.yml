@@ -420,10 +420,13 @@ jobs:
         tar --strip-components 1 -C /home/runner/cmake -xf cmake-3.22.1-Linux-x86_64.tar.gz
         rustup default 1.89.0
         rustup target add wasm32-unknown-emscripten
+        # The wasm-bindgen CLI emcc runs at link time; its version is pinned in src/net/Cargo.toml
+        curl -L https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.128/wasm-bindgen-0.2.128-x86_64-unknown-linux-musl.tar.gz | tar xz --strip-components 1 -C /home/runner/.cargo/bin
         git clone https://github.com/emscripten-core/emsdk emsdk
         cd emsdk
-        ./emsdk install 4.0.22
-        ./emsdk activate 4.0.22
+        # Emscripten 6.0.10 development build, the first with EXPORTED_FUNCTIONS honoured under -sWASM_BINDGEN; pin the release once it is out
+        ./emsdk install sdk-releases-20b311cf9232508d006e8f014ffc06719ee10f81-64bit
+        ./emsdk activate sdk-releases-20b311cf9232508d006e8f014ffc06719ee10f81-64bit
 
     - name: Cache Rust dependencies
       uses: Swatinem/rust-cache@v2.9.2
@@ -438,7 +441,7 @@ jobs:
       run: |
         export PATH=/home/runner/cmake/bin:$PATH
         source emsdk/emsdk_env.sh
-        emcmake cmake -H. -G "Unix Makefiles" -B build-emscripten-headless -DCMAKE_BUILD_TYPE=Debug -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DHEADLESS_CLIENT=ON -DPREFER_BUNDLED_LIBS=ON
+        emcmake cmake -H. -G "Unix Makefiles" -B build-emscripten-headless -DCMAKE_BUILD_TYPE=Debug -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DHEADLESS_CLIENT=ON -DPREFER_BUNDLED_LIBS=ON -DNETWORKING_QUIC=ON -DWEBSOCKETS=ON
         cmake --build build-emscripten-headless --target game-client -j$(nproc)
 
     - name: Test headless Emscripten client
@@ -459,7 +462,7 @@ jobs:
         export PATH=/home/runner/cmake/bin:$PATH
         source emsdk/emsdk_env.sh
         # -G "Unix Makefiles" required due to https://gitlab.kitware.com/cmake/cmake/-/issues/16395
-        emcmake cmake -H. -G "Unix Makefiles" -B build-emscripten-release -DCMAKE_BUILD_TYPE=Release -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DPREFER_BUNDLED_LIBS=ON
+        emcmake cmake -H. -G "Unix Makefiles" -B build-emscripten-release -DCMAKE_BUILD_TYPE=Release -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DPREFER_BUNDLED_LIBS=ON -DNETWORKING_QUIC=ON -DWEBSOCKETS=ON
         cmake --build build-emscripten-release --target game-client -j$(nproc)
         cmake --build build-emscripten-release --target package_default
         mkdir artifacts

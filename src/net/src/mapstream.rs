@@ -3,8 +3,8 @@
 //! frame, then the raw bytes, checked against the header's SHA-256 at the
 //! end.
 
+use crate::util::Sha256;
 use crate::wire;
-use ring::digest;
 
 /// A stream starts with its kind and the framing version, then the map
 /// header frame.
@@ -27,7 +27,7 @@ pub struct Incoming {
     buffer: Vec<u8>,
     /// The checksum the header promised, and the bytes still to come.
     header: Option<([u8; wire::MAP_SHA256_SIZE], usize)>,
-    digest: digest::Context,
+    digest: Sha256,
     /// The peer ended the stream.
     finished: bool,
 }
@@ -37,10 +37,11 @@ impl Incoming {
         Incoming {
             buffer: Vec::new(),
             header: None,
-            digest: digest::Context::new(&digest::SHA256),
+            digest: Sha256::new(),
             finished: false,
         }
     }
+    #[cfg(not(target_os = "emscripten"))]
     pub fn is_finished(&self) -> bool {
         self.finished
     }
@@ -91,7 +92,7 @@ impl Incoming {
         if remaining != 0 {
             return Some(Step::Failed("map stream ended early"));
         }
-        if self.digest.clone().finish().as_ref() != sha256 {
+        if self.digest.finish() != sha256 {
             return Some(Step::Failed("map stream checksum mismatch"));
         }
         Some(Step::End)
@@ -151,6 +152,7 @@ impl Incoming {
 }
 
 /// The bytes a map stream starts with: kind, version and the header frame.
+#[cfg(not(target_os = "emscripten"))]
 pub fn prelude(map: &crate::Map) -> Option<Vec<u8>> {
     let header = wire::MapHeader {
         size: map.data.len() as u64,
@@ -172,14 +174,14 @@ pub fn prelude(map: &crate::Map) -> Option<Vec<u8>> {
 mod tests {
     use super::Incoming;
     use super::Step;
+    use crate::util::Sha256;
     use crate::Map;
-    use ring::digest;
 
     fn map(data: &[u8]) -> Map {
         Map {
             name: b"test".to_vec(),
             crc: 7,
-            sha256: digest::digest(&digest::SHA256, data).as_ref().try_into().unwrap(),
+            sha256: Sha256::digest(data),
             data: data.to_vec(),
         }
     }

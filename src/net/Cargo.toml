@@ -15,12 +15,16 @@ websocket = ["dep:tungstenite"]
 
 [dependencies]
 arrayvec = "0.5.2"
+getrandom = { version = "0.2.8", features = ["std"] }
+log = "0.4.17"
+url = "2.3.1"
+
+# The native backend: sockets, QUIC and TLS from boringssl.
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
 boring = "4"
 boring-sys = "4"
 foreign-types-shared = "0.3.1"
-getrandom = { version = "0.2.8", features = ["std"] }
 hexdump = "0.1.2"
-log = "0.4.17"
 mio = { version = "0.8.4", features = ["net", "os-poll"] }
 # Published snapshots of libtw2. Their lib targets are named `libtw2_net` and
 # `libtw2_warn`, which is how they are referred to from the code. What a
@@ -35,4 +39,35 @@ socket2 = { version = "0.5", features = ["all"] }
 # the same boring the rest uses.
 tungstenite = { version = "0.26", optional = true, default-features = false, features = ["handshake"] }
 wtransport-proto = "=0.7.0"
-url = "2.3.1"
+
+# The browser backend: the browser does the transport and the TLS, what
+# is left of the crypto is a hash and a signature check, in plain Rust.
+[target.'cfg(target_os = "emscripten")'.dependencies]
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+js-sys = "0.3.105"
+sha2 = "0.10"
+# Pinned: the wasm-bindgen CLI that emcc runs at link time must be this
+# exact version, see docs/BUILDING-emscripten.md.
+wasm-bindgen = "=0.2.128"
+wasm-bindgen-futures = "0.4.78"
+# WebTransport is behind `--cfg=web_sys_unstable_apis`, which the build
+# passes for this target.
+web-sys = { version = "0.3.105", features = [
+    "BinaryType",
+    "CloseEvent",
+    "MessageEvent",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "ReadableStreamReadResult",
+    "WebSocket",
+    "WebTransport",
+    "WebTransportBidirectionalStream",
+    "WebTransportCloseInfo",
+    "WebTransportDatagramDuplexStream",
+    "WebTransportHash",
+    "WebTransportOptions",
+    "WebTransportReceiveStream",
+    "WebTransportSendStream",
+    "WritableStream",
+    "WritableStreamDefaultWriter",
+] }

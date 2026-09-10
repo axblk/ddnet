@@ -642,8 +642,9 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	const char *pNextAddr = pAddress;
 	char aBuffer[128];
 	bool OnlySixup = true;
-	// The identity a QUIC address pins, from its fragment; nothing if none does.
-	char aConnectIdentity[65] = "";
+	// The fragment of a QUIC or WebSocket address: the identity it pins, the
+	// certificates a browser takes; nothing if none has one.
+	char aConnectFragment[256] = "";
 	while((pNextAddr = str_next_token(pNextAddr, ",", aBuffer, sizeof(aBuffer))))
 	{
 		NETADDR NextAddr;
@@ -682,21 +683,12 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 				NextAddr.type |= NETTYPE_QUIC | (WebTransport ? NETTYPE_WEBTRANSPORT : 0);
 			if(WebSocket)
 				NextAddr.type |= NETTYPE_WEBSOCKET | (WebSocketTls ? NETTYPE_WEBSOCKET_TLS : 0);
-			// As the masterserver lists it, or the bare hex; a fragment with
-			// other keys, like a browser's certificate hashes, pins nothing.
+			// The library reads the fragment: the identity as the masterserver
+			// lists it or the bare hex, the certificate hashes for a browser.
 			const char *pFragment = str_find(aBuffer, "#");
 			if(pFragment != nullptr)
 			{
-				pFragment += 1;
-				const char *pIdentity = str_startswith(pFragment, "identity-sha256=");
-				if(pIdentity == nullptr && str_find(pFragment, "=") == nullptr)
-					pIdentity = pFragment;
-				if(pIdentity != nullptr)
-				{
-					str_copy(aConnectIdentity, pIdentity);
-					if(char *pComma = (char *)str_find(aConnectIdentity, ","))
-						*pComma = '\0';
-				}
+				str_copy(aConnectFragment, pFragment + 1);
 			}
 		}
 
@@ -744,7 +736,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	m_CanReceiveServerCapabilities = true;
 
 	m_Sixup = OnlySixup;
-	m_aNetClient[CONN_MAIN].SetConnectIdentity(aConnectIdentity);
+	m_aNetClient[CONN_MAIN].SetConnectFragment(aConnectFragment);
 	if(m_Sixup)
 	{
 		m_aNetClient[CONN_MAIN].Connect7(aConnectAddrs, NumConnectAddrs);
@@ -884,7 +876,7 @@ void CClient::DummyConnect()
 
 	m_DummyConnecting = true;
 	// connect to the server, the same way and with the same identity
-	m_aNetClient[CONN_DUMMY].SetConnectIdentity(m_aNetClient[CONN_MAIN].ServerIdentity());
+	m_aNetClient[CONN_DUMMY].SetConnectFragment(m_aNetClient[CONN_MAIN].ServerIdentity());
 	if(IsSixup())
 		m_aNetClient[CONN_DUMMY].Connect7(m_aNetClient[CONN_MAIN].ServerAddress(), 1);
 	else

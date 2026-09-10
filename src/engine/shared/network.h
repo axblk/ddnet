@@ -276,6 +276,9 @@ class CNetServer
 		int m_VanConnPerSecond = -1;
 		int m_VanConnRepliesPerSecond = -1;
 		int m_PreConnDecompressPerSecond = -1;
+		int m_DdnetConnections = -1;
+		int m_VanillaConnections = -1;
+		int m_Sixup = -1;
 	};
 	CLimits m_Limits;
 	// Banned addresses are told about their ban at most this often;

@@ -350,6 +350,22 @@ bool CNetServer::ApplyLimits()
 		m_Limits.m_VanConnRepliesPerSecond = g_Config.m_SvVanConnRepliesPerSecond;
 		m_Limits.m_PreConnDecompressPerSecond = g_Config.m_SvPreConnDecompressPerSecond;
 	}
+	if(m_Limits.m_DdnetConnections != g_Config.m_SvDdnetConnections ||
+		m_Limits.m_VanillaConnections != g_Config.m_SvVanillaConnections ||
+		m_Limits.m_Sixup != g_Config.m_SvSixup)
+	{
+		if(ddnet_net_set_classic_switches(m_pNet, g_Config.m_SvDdnetConnections != 0, g_Config.m_SvVanillaConnections != 0, g_Config.m_SvSixup != 0))
+		{
+			return true;
+		}
+		m_Limits.m_DdnetConnections = g_Config.m_SvDdnetConnections;
+		m_Limits.m_VanillaConnections = g_Config.m_SvVanillaConnections;
+		m_Limits.m_Sixup = g_Config.m_SvSixup;
+		log_info("net", "classic protocols: ddnet 0.6 %s, vanilla 0.6 %s, 0.7 %s",
+			g_Config.m_SvDdnetConnections ? "on" : "off",
+			g_Config.m_SvVanillaConnections ? "on" : "off",
+			g_Config.m_SvSixup ? "on" : "off");
+	}
 	return false;
 }
 
@@ -469,12 +485,6 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			}
 
 			const bool Sixup = UrlIsSixup(pAddr);
-			if(Sixup && !g_Config.m_SvSixup)
-			{
-				static const char NO_SIXUP[] = "0.7 connections are not accepted at this time";
-				NET_CALL(ddnet_net_close, m_pNet, PeerId, NO_SIXUP, sizeof(NO_SIXUP) - 1);
-				continue;
-			}
 
 			uint32_t NumConnected = 0;
 			NET_CALL(ddnet_net_num_peers_in_bucket, m_pNet, pAddr, AddrLen, &NumConnected);

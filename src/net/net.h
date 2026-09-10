@@ -201,6 +201,16 @@ bool ddnet_net_set_vanilla_handshake(struct DdnetNet *net,
                                      uint32_t decompress_per_second);
 
 /**
+ * Which of the classic UDP protocols take clients, of those the server
+ * listens for: 0.6 with tokens (the DDNet client), 0.6 without
+ * (vanilla), and 0.7. Unlike `ddnet_net_set_accept_protocol`, a
+ * client over one that is off is told so, once its address is
+ * verified; and this can change while running, the connections there
+ * are stay. Before `ddnet_net_open` or after it.
+ */
+bool ddnet_net_set_classic_switches(struct DdnetNet *net, bool ddnet06, bool vanilla06, bool tw07);
+
+/**
  * Whether the peer is a 0.6 client that came in by the vanilla
  * handshake, which took it past the part where it says who it is.
  */

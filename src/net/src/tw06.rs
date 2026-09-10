@@ -32,6 +32,10 @@ const EXTENDED_HEADER: &[u8] = b"xe";
 /// transport.
 const TIMEOUT_REASON: &str = "Timeout";
 
+/// What clients are told when their protocol is switched off.
+const DDNET06_OFF_REASON: &[u8] = b"DDNet 0.6 connections are not accepted at this time";
+const VANILLA06_OFF_REASON: &[u8] = b"Old Teeworlds 0.6 versions are unsupported. Use DDNet client or Teeworlds 0.7";
+
 /// A pending vanilla handshake is forgotten after this.
 const VANILLA_PENDING_EXPIRY: Duration = Duration::from_secs(10);
 /// Past this many pending handshakes the expired ones are cleared out,
@@ -77,6 +81,27 @@ impl Protocol {
             vanilla_connects: PerSecond::new(),
             preconn_decompressed: PerSecond::new(),
         })
+    }
+    /// Turns a client away with a reason, outside of any connection.
+    fn send_close(
+        cb: &CallbackData,
+        packet_buf: &mut [u8],
+        from: &SocketAddr,
+        token: Option<libtw2_net::protocol::Token>,
+        reason: &[u8],
+    ) -> Result<()> {
+        use libtw2_net::protocol::ConnectedPacket;
+        use libtw2_net::protocol::ConnectedPacketType;
+        use libtw2_net::protocol::ControlPacket;
+        use libtw2_net::protocol::Packet;
+
+        let written = Packet::Connected(ConnectedPacket {
+            token,
+            ack: 0,
+            type_: ConnectedPacketType::Control(ControlPacket::Close(reason)),
+        }).write(&mut packet_buf[..]).unwrap();
+        cb.socket.send_to(written, *from).context("UdpSocket::send_to")?;
+        Ok(())
     }
     /// Whether `from` was sent the vanilla handshake and may answer it.
     pub fn is_vanilla_pending(&self, from: &SocketAddr) -> bool {
@@ -258,6 +283,16 @@ impl Protocol {
                         // right after this returns; without the handshake
                         // that is what accepts it.
                         None => {
+                            if !cb.classic.vanilla06 {
+                                // The address is not verified, so the
+                                // answer is rationed like the handshake.
+                                let num = self.vanilla_connects.bump(Instant::now());
+                                let limit = cb.vanilla.replies_per_second;
+                                if limit == 0 || num <= limit {
+                                    Protocol::send_close(cb, packet_buf, from, None, VANILLA06_OFF_REASON)?;
+                                }
+                                return Ok(None);
+                            }
                             if cb.vanilla.antispoof {
                                 self.send_vanilla_handshake(cb, packet_buf, from)?;
                                 return Ok(None);
@@ -272,11 +307,16 @@ impl Protocol {
                 ControlPacket::Accept if cb.accept.tw06 => {
                     match token {
                         Some(token) => {
-                            if cb.challenger.verify_token(from, token.0).is_ok() {
-                                token
-                            } else {
+                            if cb.challenger.verify_token(from, token.0).is_err() {
                                 return Ok(None);
                             }
+                            // The token proves the address, so it can be
+                            // told why it is turned away.
+                            if !cb.classic.ddnet06 {
+                                Protocol::send_close(cb, packet_buf, from, Some(token), DDNET06_OFF_REASON)?;
+                                return Ok(None);
+                            }
+                            token
                         }
                         None => return Ok(None),
                     }

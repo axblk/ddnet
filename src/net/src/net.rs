@@ -25,6 +25,7 @@ use crate::NoBlock as _;
 use crate::PrivateIdentity;
 use crate::Result;
 use crate::secure_random;
+use crate::types::ClassicSwitches;
 use crate::types::VanillaSettings;
 use hexdump::hexdump_iter;
 use mio::net::UdpSocket;
@@ -98,6 +99,8 @@ pub struct CallbackData {
     pub resend_request_interval: Duration,
     /// How 0.6 clients without tokens are taken.
     pub vanilla: VanillaSettings,
+    /// Which classic protocols take clients right now.
+    pub classic: ClassicSwitches,
     pub sslkeylogfile: Option<ArcFile>,
     pub challenger: Challenger,
     pub local_addr: SocketAddr,
@@ -271,6 +274,7 @@ pub struct NetBuilder {
     max_packets_per_recv: u32,
     resend_requests_per_second: u32,
     vanilla: VanillaSettings,
+    classic: ClassicSwitches,
 }
 
 impl Peer {
@@ -443,6 +447,13 @@ impl NetBuilder {
     pub fn vanilla_handshake(&mut self, settings: VanillaSettings) {
         self.vanilla = libtw2_patch::clamp_vanilla(settings);
     }
+    /// Which of the classic protocols take clients, see
+    /// [`ClassicSwitches`]; all of them by default. Unlike
+    /// `accept_protocol`, a client over a protocol that is off is told
+    /// so.
+    pub fn classic_switches(&mut self, switches: ClassicSwitches) {
+        self.classic = switches;
+    }
     pub fn accept_protocol(&mut self, protocol: Protocol, accept: bool) {
         match protocol {
             Protocol::Tw06 => self.accept.tw06 = accept,
@@ -535,6 +546,7 @@ impl NetBuilder {
                 timeout: self.timeout,
                 resend_request_interval: limits::resend_request_interval(self.resend_requests_per_second),
                 vanilla: self.vanilla,
+                classic: self.classic,
                 sslkeylogfile,
                 challenger: Challenger::new(),
                 local_addr,
@@ -595,6 +607,7 @@ impl Net {
             max_packets_per_recv: 0,
             resend_requests_per_second: 0,
             vanilla: VanillaSettings::default(),
+            classic: ClassicSwitches::default(),
         }
     }
     pub fn set_userdata(&mut self, idx: PeerIndex, userdata: *mut ()) -> Result<()> {
@@ -1447,6 +1460,11 @@ impl Net {
     /// See `NetBuilder::vanilla_handshake`.
     pub fn set_vanilla_handshake(&mut self, settings: VanillaSettings) {
         self.cb.vanilla = libtw2_patch::clamp_vanilla(settings);
+    }
+    /// See `NetBuilder::classic_switches`; the connections there are
+    /// stay.
+    pub fn set_classic_switches(&mut self, switches: ClassicSwitches) {
+        self.cb.classic = switches;
     }
     /// Whether the peer is a 0.6 client that came in by the vanilla
     /// handshake, which takes it past saying who it is.

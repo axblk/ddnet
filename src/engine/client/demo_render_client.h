@@ -41,7 +41,6 @@ class CDemoRenderClient : public CClientWithoutConnection
 	// asked of anyone, so a demo names them the way the game does.
 	CFriends m_Friends;
 	CFriends m_Foes;
-	IGraphics::CTextureHandle m_DebugFont;
 
 	std::unique_ptr<IVideo> m_pVideo;
 	CVideoExportSettings m_Settings;
@@ -85,7 +84,8 @@ public:
 
 	// ----- what a program that draws answers -----
 	CRenderTrace *RenderTrace() override { return &m_RenderTrace; }
-	IGraphics::CTextureHandle GetDebugFont() const override { return m_DebugFont; }
+	// Only the editor draws with it, and a render tool has no editor.
+	IGraphics::CTextureHandle GetDebugFont() const override { return IGraphics::CTextureHandle(); }
 	void UpdateAndSwap() override {}
 	void OnWindowResize() override;
 	void Notify(const char *pTitle, const char *pMessage) override {}

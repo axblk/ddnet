@@ -3469,6 +3469,17 @@ if(CLIENT)
     # editing and the network behind all of them. Friends and ghost recording
     # stay: the tool registers its own, see `demo_render_client.cpp`.
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/(client|client_net|session_source_net|sixup_translate_system|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|updater|favorites|demoedit|blocklist_driver|discord|steam|notifications)\\.(cpp|h)$")
+    # The match journal is the only user of SQLite, and a tool that renders one
+    # demo has no matches of its own to record. Stand-ins keep the calls into it
+    # compiling without touching a single one of them, and the database goes.
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/sqlite\\.(cpp|h)$")
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/game/client/match_journal\\.cpp$")
+    list(APPEND DEMO_RENDERER_SRC
+      # tidy-alphabetical-start
+      ${PROJECT_SOURCE_DIR}/src/engine/client/sqlite_null.cpp
+      ${PROJECT_SOURCE_DIR}/src/game/client/match_journal_null.cpp
+      # tidy-alphabetical-end
+    )
     # A developer tool, not part of the game. It compiles a second copy of the
     # client, so building it by default would roughly double the build time,
     # and it is not shipped with the release either. Build it explicitly with
@@ -3507,7 +3518,6 @@ if(CLIENT)
       ${FFMPEG_LIBRARIES}
       ${FREETYPE_LIBRARIES}
       ${PNG_LIBRARIES}
-      ${SQLite3_LIBRARIES}
       ${VULKAN_LIBRARIES}
       ${WAVPACK_LIBRARIES}
       ${ZLIB_LIBRARIES}

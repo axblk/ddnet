@@ -187,7 +187,7 @@ inline constexpr auto NETADDR_MAXSTRSIZE = 1 + (8 * 4 + 7) + 1 + 1 + 5 + 1; // [
  *
  * @ingroup Network-Address
  */
-inline constexpr auto NETADDR_URL_MAXSTRSIZE = NETADDR_MAXSTRSIZE + 13; // "ddnet+quic://"
+inline constexpr auto NETADDR_URL_MAXSTRSIZE = NETADDR_MAXSTRSIZE + 14; // "tw-0.7+quic://"
 
 /**
  * @ingroup Network-Address

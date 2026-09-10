@@ -61,10 +61,17 @@ void BindAddrStr(const NETADDR &BindAddr, char *pBuffer, size_t BufferSize)
 	net_addr_str(&Addr, pBuffer, BufferSize, true);
 }
 
-// The address of a connect event names the protocol in its scheme.
+// The address of a connect event names the game protocol and the
+// transport in its scheme: `tw-0.7+` for 0.7 messages over any of them,
+// and everything but `+udp` rides on the game's own wire protocol.
 static bool UrlIsSixup(const char *pUrl)
 {
-	return str_startswith(pUrl, "tw-0.7+udp://") != nullptr;
+	return str_startswith(pUrl, "tw-0.7+") != nullptr;
+}
+
+static bool UrlIsWire(const char *pUrl)
+{
+	return str_startswith(pUrl, "ddnet+") != nullptr || str_startswith(pUrl, "tw-0.7+quic://") != nullptr || str_startswith(pUrl, "tw-0.7+wt://") != nullptr;
 }
 
 // Whether the library lost the peer to silence rather than to a close or
@@ -124,6 +131,12 @@ bool CNetServer::AcceptsWebsockets()
 {
 	bool Accepts = false;
 	return m_pNet != nullptr && !ddnet_net_accepts_protocol(m_pNet, DDNET_NET_PROTOCOL_WEBSOCKET, &Accepts) && Accepts;
+}
+
+bool CNetServer::AcceptsSixupUdp()
+{
+	bool Accepts = false;
+	return m_pNet != nullptr && !ddnet_net_accepts_protocol(m_pNet, DDNET_NET_PROTOCOL_TW07, &Accepts) && Accepts;
 }
 
 bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int MaxClientsPerIp)
@@ -517,7 +530,7 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			m_aPeers[ClientId].m_State = CPeer::STATE_CONNECTED;
 			m_aPeers[ClientId].m_Id = PeerId;
 			// Peers over the game's own wire protocol take the map on a stream.
-			m_aPeers[ClientId].m_Quic = str_startswith(pAddr, "ddnet+") != nullptr;
+			m_aPeers[ClientId].m_Quic = UrlIsWire(pAddr);
 			m_aPeers[ClientId].SetAddress(Addr);
 			NET_CALL(ddnet_net_set_userdata, m_pNet, PeerId, (void *)(uintptr_t)ClientId);
 			// A 0.6 client that came in by the vanilla handshake is past

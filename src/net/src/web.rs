@@ -39,7 +39,10 @@ use std::time::Instant;
 use url::Url;
 
 /// The game protocol announced in the hello.
-const GAME_PROTOCOL: u64 = 6;
+/// What the hello names as the game protocol inside, DDNet 0.6 or
+/// Teeworlds 0.7; the server answers with the one asked for.
+const GAME_PROTOCOL_06: u64 = 6;
+const GAME_PROTOCOL_07: u64 = 7;
 /// The most of the control stream kept unparsed: a frame header and the
 /// longest frame that can follow it.
 const MAX_CONTROL_BUFFER: usize = 16 + wire::MAX_CONTROL_MESSAGE_SIZE;
@@ -197,6 +200,8 @@ struct Peer {
     addr: Addr,
     /// What the browser was told to open, to open it again for a resume.
     url: String,
+    /// The messages inside are 0.7's, not DDNet 0.6's.
+    sixup: bool,
     transport: Transport,
     state: State,
     identity: PeerIdentity,
@@ -345,9 +350,9 @@ impl Net {
     pub fn connect(&mut self, addr: &str) -> Result<PeerIndex> {
         let url = Url::parse(addr).context("addr: URL")?;
         let parsed: Addr = addr.parse()?;
-        let (webtransport, tls, sock_addr, host, wanted) = match parsed {
-            Addr::Quic(QuicAddr { addr, host, identity, webtransport: true }) => (true, true, addr, host, identity),
-            Addr::Ws(WsAddr { addr, host, tls, identity }) => (false, tls, addr, host, identity),
+        let (webtransport, tls, sock_addr, host, wanted, sixup) = match parsed {
+            Addr::Quic(QuicAddr { addr, host, identity, webtransport: true, sixup }) => (true, true, addr, host, identity, sixup),
+            Addr::Ws(WsAddr { addr, host, tls, identity }) => (false, tls, addr, host, identity, false),
             _ => bail!("a browser speaks WebTransport or WebSockets only"),
         };
         if !self.bridge.available(webtransport) {
@@ -395,6 +400,7 @@ impl Net {
             handle,
             addr: parsed,
             url: browser_url,
+            sixup,
             transport,
             state: State::Opening,
             identity: PeerIdentity::Wanted(wanted),
@@ -706,7 +712,7 @@ impl Peer {
         let hello = wire::Hello {
             major: wire::VERSION_MAJOR,
             minor: wire::VERSION_MINOR,
-            protocol_version: GAME_PROTOCOL,
+            protocol_version: if self.sixup { GAME_PROTOCOL_07 } else { GAME_PROTOCOL_06 },
             capabilities,
             max_datagram_size,
             nonce: self.local_nonce,
@@ -731,8 +737,9 @@ impl Peer {
     }
     fn on_hello(&mut self, payload: &[u8]) -> Result<()> {
         let hello = wire::decode_hello(payload).map_err(|e| Error::from_string(format!("hello: {}", e)))?;
-        if hello.protocol_version != GAME_PROTOCOL {
-            bail!("game protocol {} instead of {}", hello.protocol_version, GAME_PROTOCOL);
+        let expected = if self.sixup { GAME_PROTOCOL_07 } else { GAME_PROTOCOL_06 };
+        if hello.protocol_version != expected {
+            bail!("game protocol {} instead of {}", hello.protocol_version, expected);
         }
         if !hello.resume_token.is_empty() {
             bail!("hello from the server carries a resume token");
@@ -1259,7 +1266,7 @@ mod test {
         let payload = wire::encode_hello(&wire::Hello {
             major: wire::VERSION_MAJOR,
             minor: wire::VERSION_MINOR,
-            protocol_version: super::GAME_PROTOCOL,
+            protocol_version: super::GAME_PROTOCOL_06,
             capabilities,
             max_datagram_size,
             nonce: [9; 32],

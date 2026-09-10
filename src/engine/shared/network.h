@@ -336,6 +336,7 @@ public:
 	// Whether the library listens for WebSockets: `sv_websocket`, if they
 	// are compiled in. False before the library is open.
 	bool AcceptsWebsockets();
+	bool AcceptsSixupUdp();
 
 	int SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_DELCLIENT pfnDelClient, void *pUser);
 	int SetCallbacks(NETFUNC_NEWCLIENT pfnNewClient, NETFUNC_NEWCLIENT_NOAUTH pfnNewClientNoAuth, NETFUNC_CLIENTREJOIN pfnClientRejoin, NETFUNC_DELCLIENT pfnDelClient, void *pUser);

@@ -764,6 +764,8 @@ void CRegister::UpdateProtocolEnabled()
 			Enabled &= !m_aProtocols[Protocol].Unsupported();
 		if(ProtocolIsSixup(Protocol))
 			Enabled &= m_pConfig->m_SvSixup != 0;
+		if(ProtocolIsLegacy(Protocol) && ProtocolIsSixup(Protocol))
+			Enabled &= m_Transports.m_LegacySixupUdp;
 		if(ProtocolToIpresolve(Protocol) == IPRESOLVE::V6)
 			Enabled &= m_pConfig->m_SvIpv4Only == 0;
 		if(Enabled == m_aProtocolEnabled[Protocol])

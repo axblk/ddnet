@@ -3546,6 +3546,7 @@ int CServer::Run()
 
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
 	m_RegisterTransports.m_LegacyUdp = Config()->m_SvLegacyUdp != 0;
+	m_RegisterTransports.m_LegacySixupUdp = m_NetServer.AcceptsSixupUdp();
 	m_RegisterTransports.m_Quic = Config()->m_SvQuic != 0;
 	m_RegisterTransports.m_WebTransport = m_RegisterTransports.m_Quic && Config()->m_SvWebtransport != 0;
 	// Only the library knows whether WebSockets are compiled in.

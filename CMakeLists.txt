@@ -2766,6 +2766,7 @@ if(CLIENT)
     sound.cpp
     sound.h
     sqlite.cpp
+    sqlite_null.cpp
     steam.cpp
     stream.h
     text.cpp
@@ -2802,6 +2803,7 @@ if(CLIENT)
     components/community_icons.h
     components/console.cpp
     components/console.h
+    components/console_null.cpp
     components/controls.cpp
     components/controls.h
     components/countryflags.cpp
@@ -2814,6 +2816,7 @@ if(CLIENT)
     components/effects.h
     components/emoticon.cpp
     components/emoticon.h
+    components/emoticon_null.cpp
     components/envelope_state.cpp
     components/envelope_state.h
     components/freezebars.cpp
@@ -2830,8 +2833,10 @@ if(CLIENT)
     components/items.h
     components/key_binder.cpp
     components/key_binder.h
+    components/key_binder_null.cpp
     components/local_server.cpp
     components/local_server.h
+    components/local_server_null.cpp
     components/mapimages.cpp
     components/mapimages.h
     components/maplayers.cpp
@@ -2840,6 +2845,7 @@ if(CLIENT)
     components/mapsounds.h
     components/menu_background.cpp
     components/menu_background.h
+    components/menu_background_null.cpp
     components/menus.cpp
     components/menus.h
     components/menus_backdrop.cpp
@@ -2886,12 +2892,14 @@ if(CLIENT)
     components/sounds.h
     components/spectator.cpp
     components/spectator.h
+    components/spectator_null.cpp
     components/statboard.cpp
     components/statboard.h
     components/tooltips.cpp
     components/tooltips.h
     components/touch_controls.cpp
     components/touch_controls.h
+    components/touch_controls_null.cpp
     components/voting.cpp
     components/voting.h
     game_state.cpp
@@ -2916,6 +2924,7 @@ if(CLIENT)
     match_detail_view.h
     match_journal.cpp
     match_journal.h
+    match_journal_null.cpp
     match_report_assembler.cpp
     match_report_assembler.h
     match_report_view.h
@@ -3469,6 +3478,15 @@ if(CLIENT)
     # editing and the network behind all of them. Friends and ghost recording
     # stay: the tool registers its own, see `demo_render_client.cpp`.
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/(client|client_net|session_source_net|sixup_translate_system|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|updater|favorites|demoedit|blocklist_driver|discord|steam|notifications)\\.(cpp|h)$")
+    # The match journal is the only user of SQLite, and a tool that renders one
+    # demo has no matches of its own to record. Stand-ins keep the calls into it
+    # compiling without touching a single one of them, and the database goes.
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/sqlite\\.(cpp|h)$")
+    # Components that answer to a keyboard, a finger or a menu page draw nothing
+    # in a demo, so they are stood in for as well. Their headers stay, so none of
+    # the places that talk to them has to know.
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/game/client/components/(console|emoticon|key_binder|local_server|menu_background|spectator|touch_controls)\\.cpp$")
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/game/client/match_journal\\.cpp$")
     # A developer tool, not part of the game. It compiles a second copy of the
     # client, so building it by default would roughly double the build time,
     # and it is not shipped with the release either. Build it explicitly with
@@ -3507,7 +3525,6 @@ if(CLIENT)
       ${FFMPEG_LIBRARIES}
       ${FREETYPE_LIBRARIES}
       ${PNG_LIBRARIES}
-      ${SQLite3_LIBRARIES}
       ${VULKAN_LIBRARIES}
       ${WAVPACK_LIBRARIES}
       ${ZLIB_LIBRARIES}

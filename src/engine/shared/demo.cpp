@@ -60,7 +60,7 @@ CDemoRecorder::~CDemoRecorder()
 }
 
 // Record
-int CDemoRecorder::Start(IStorage *pStorage, const char *pFilename, const char *pNetVersion, const char *pMap, const SHA256_DIGEST &Sha256, unsigned Crc, const char *pType, unsigned MapSize, const unsigned char *pMapData, IOHANDLE MapFile, DEMOFUNC_FILTER pfnFilter, void *pUser)
+int CDemoRecorder::Start(IStorage *pStorage, const char *pFilename, const char *pNetVersion, const char *pMap, const SHA256_DIGEST &Sha256, unsigned Crc, const char *pType, unsigned MapSize, const unsigned char *pMapData, DEMOFUNC_FILTER pfnFilter, void *pUser)
 {
 	dbg_assert(m_File == nullptr, "Demo recorder already recording");
 
@@ -79,15 +79,13 @@ int CDemoRecorder::Start(IStorage *pStorage, const char *pFilename, const char *
 		return -1;
 	}
 
-	bool CloseMapFile = false;
-
-	if(MapFile)
-		io_seek(MapFile, 0, EIoSeekOrigin::START);
-
 	char aSha256[SHA256_MAXSTRSIZE];
 	sha256_str(Sha256, aSha256, sizeof(aSha256));
 
-	if(!pMapData && !MapFile)
+	// Everyone that records a demo of a map it has loaded hands over its
+	// bytes, so the file is only opened here for a map nobody holds.
+	IOHANDLE MapFile = nullptr;
+	if(!pMapData)
 	{
 		// open mapfile
 		char aMapFilename[IO_MAX_PATH_LENGTH];
@@ -113,8 +111,6 @@ int CDemoRecorder::Start(IStorage *pStorage, const char *pFilename, const char *
 			log_error_color(DEMO_PRINT_COLOR, "demo_recorder", "Unable to open mapfile '%s'", pMap);
 			return -1;
 		}
-
-		CloseMapFile = true;
 	}
 
 	if(m_NoMapData)
@@ -126,10 +122,8 @@ int CDemoRecorder::Start(IStorage *pStorage, const char *pFilename, const char *
 		const int64_t MapFileSize = io_length(MapFile);
 		if(MapFileSize > (int64_t)std::numeric_limits<unsigned>::max())
 		{
-			if(CloseMapFile)
-			{
-				io_close(MapFile);
-			}
+			io_close(MapFile);
+			MapFile = nullptr;
 			MapSize = 0;
 			log_error_color(DEMO_PRINT_COLOR, "demo_recorder", "Mapfile '%s' too large for demo, recording without it", pMap);
 		}
@@ -179,10 +173,7 @@ int CDemoRecorder::Start(IStorage *pStorage, const char *pFilename, const char *
 				break;
 			io_write(DemoFile, &aChunk, Bytes);
 		}
-		if(CloseMapFile)
-			io_close(MapFile);
-		else
-			io_seek(MapFile, 0, EIoSeekOrigin::START);
+		io_close(MapFile);
 	}
 
 	m_LastKeyFrame = -1;
@@ -1427,7 +1418,7 @@ bool CDemoEditor::Slice(const char *pDemo, const char *pDst, int StartTick, int 
 
 	CDemoRecorder DemoRecorder(m_pSnapshotDelta);
 	unsigned char *pMapData = DemoPlayer.GetMapData(m_pStorage);
-	const int Result = DemoRecorder.Start(m_pStorage, pDst, pInfo->m_Header.m_aNetversion, pMapInfo->m_aName, Sha256.value(), pMapInfo->m_Crc, pInfo->m_Header.m_aType, pMapInfo->m_Size, pMapData, nullptr, pfnFilter, pUser) == -1;
+	const int Result = DemoRecorder.Start(m_pStorage, pDst, pInfo->m_Header.m_aNetversion, pMapInfo->m_aName, Sha256.value(), pMapInfo->m_Crc, pInfo->m_Header.m_aType, pMapInfo->m_Size, pMapData, pfnFilter, pUser) == -1;
 	free(pMapData);
 	if(Result != 0)
 	{

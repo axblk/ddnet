@@ -929,7 +929,7 @@ def vanilla_connections_can_be_switched_off(test_env):
 	server.wait_for_exit()
 
 
-@test
+@test(requires_libtw2_patch=True)
 def client_can_connect_7(test_env):
 	client = test_env.client()
 	server = test_env.server()
@@ -943,6 +943,32 @@ def client_can_connect_7(test_env):
 	client.exit()
 	server.wait_for_exit()
 	client.wait_for_exit()
+
+
+def client_can_connect_7_over(test_env, scheme):
+	"""0.7 messages over the game's own wire protocol."""
+	client = test_env.client()
+	server = test_env.server()
+	wait_for_startup([client, server])
+	client.command(f"connect {scheme}://127.0.0.1:{server.port}")
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in join:
+		raise AssertionError(f"sixup=1 not found in {join!r}")
+	server.exit()
+	client.wait_for_log_exact("client: offline error='Server shutdown'")
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+@test
+def client_can_connect_7_quic(test_env):
+	client_can_connect_7_over(test_env, "tw-0.7+quic")
+
+
+@test
+def client_can_connect_7_webtransport(test_env):
+	client_can_connect_7_over(test_env, "tw-0.7+wt")
 
 
 @test(requires_websockets=True)
@@ -1168,12 +1194,11 @@ def server_can_register(test_env):
 	wait_for_startup([server])
 	server.wait_for_log_suffix("successfully registered", timeout=5)
 	server.wait_for_log_suffix("successfully registered", timeout=5)
-	# The legacy pair always registers; QUIC and WebTransport register too in a
-	# QUIC build, so only the legacy pair is required here.
-	expected_bases = {
-		f"tw-0.6+udp://[::1]:{server.port}",
-		f"tw-0.7+udp://[::1]:{server.port}",
-	}
+	# 0.6 over UDP always registers; QUIC, WebTransport and 0.7 depend on how
+	# the build was made, so only 0.6 is required here.
+	expected_bases = {f"tw-0.6+udp://[::1]:{server.port}"}
+	if test_env.runner.test_libtw2_patch:
+		expected_bases.add(f"tw-0.7+udp://[::1]:{server.port}")
 	servers_json = wait_for_server_address_bases(mastersrv, expected_bases)
 	if servers_json["servers"][0]["info"]["map"]["name"] != "Tutorial":
 		raise AssertionError(f"unexpected servers.json\n{servers_json}")
@@ -1210,9 +1235,14 @@ def server_can_register_tw_0_6(test_env):
 	server_can_register_protocol(test_env, "tw0.6/ipv6", "6/ipv6", "tw-0.6+udp")
 
 
-@test(requires_mastersrv=True)
+@test(requires_mastersrv=True, requires_libtw2_patch=True)
 def server_can_register_tw_0_7(test_env):
 	server_can_register_protocol(test_env, "tw0.7/ipv6", "7/ipv6", "tw-0.7+udp")
+
+
+@test(requires_mastersrv=True)
+def server_can_register_tw_0_7_quic(test_env):
+	server_can_register_protocol(test_env, "tw0.7+quic/ipv6", "quic/7/ipv6", "tw-0.7+quic")
 
 
 @test(requires_mastersrv=True)

@@ -90,13 +90,16 @@ pub struct RawAddr(pub SocketAddr);
 /// it; natively the library takes IP addresses only, and the name stays
 /// `None`.
 pub type HostName = ArrayString<[u8; 128]>;
-/// A QUIC peer, over plain QUIC or over WebTransport on it.
+/// A QUIC peer, over plain QUIC or over WebTransport on it, speaking the
+/// DDNet 0.6 game protocol or Teeworlds 0.7 inside.
 #[derive(Clone, Copy)]
 pub struct QuicAddr {
     pub addr: SocketAddr,
     pub host: Option<HostName>,
     pub identity: Option<Identity>,
     pub webtransport: bool,
+    /// `tw-0.7+quic`/`tw-0.7+wt`: the messages inside are 0.7's.
+    pub sixup: bool,
 }
 /// A WebSocket peer, `ws://` or `wss://`; the fragment pins the identity
 /// as for QUIC.
@@ -185,13 +188,14 @@ impl FromStr for Addr {
             // The fragment pins the server's identity. Without one, whatever
             // identity the server shows is taken, and reported, so it can
             // be pinned the next time.
-            scheme @ ("ddnet+quic" | "ddnet+wt") => {
+            scheme @ ("ddnet+quic" | "ddnet+wt" | "tw-0.7+quic" | "tw-0.7+wt") => {
                 let (sock_addr, host) = host_from_url(&addr)?;
                 Addr::Quic(QuicAddr {
                     addr: sock_addr,
                     host,
                     identity: identity_from_fragment(&addr)?,
-                    webtransport: scheme == "ddnet+wt",
+                    webtransport: scheme.ends_with("+wt"),
+                    sixup: scheme.starts_with("tw-0.7"),
                 })
             }
             scheme @ ("ddnet+ws" | "ddnet+wss") => {
@@ -222,8 +226,13 @@ fn write_host(buf: &mut dyn fmt::Write, addr: &SocketAddr, host: &Option<HostNam
 
 impl fmt::Display for QuicAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let QuicAddr { addr, host, identity, webtransport } = self;
-        let scheme = if *webtransport { "ddnet+wt" } else { "ddnet+quic" };
+        let QuicAddr { addr, host, identity, webtransport, sixup } = self;
+        let scheme = match (*sixup, *webtransport) {
+            (false, false) => "ddnet+quic",
+            (false, true) => "ddnet+wt",
+            (true, false) => "tw-0.7+quic",
+            (true, true) => "tw-0.7+wt",
+        };
         let mut buf: ArrayString<[u8; 256]> = ArrayString::new();
         write!(&mut buf, "{}://", scheme).unwrap();
         write_host(&mut buf, addr, host).unwrap();
@@ -311,5 +320,20 @@ mod test {
         assert!("ddnet+wss://ger10.ddnet.org".parse::<Addr>().is_err());
         assert!("ddnet+wss://ger_10:8303".parse::<Addr>().is_err());
         assert!("tw-0.6+udp://ger10.ddnet.org:8303".parse::<Addr>().is_err());
+    }
+
+    #[test]
+    fn sixup_schemes() {
+        let flags = |addr: &str| match addr.parse::<Addr>().unwrap() {
+            Addr::Quic(quic) => (quic.sixup, quic.webtransport),
+            _ => panic!("not quic"),
+        };
+        assert_eq!(flags("ddnet+quic://[::1]:8303"), (false, false));
+        assert_eq!(flags("ddnet+wt://[::1]:8303"), (false, true));
+        assert_eq!(flags("tw-0.7+quic://[::1]:8303"), (true, false));
+        assert_eq!(flags("tw-0.7+wt://[::1]:8303"), (true, true));
+        for addr in ["tw-0.7+quic://[::1]:8303", "tw-0.7+wt://127.0.0.1:8303"] {
+            assert_eq!(addr.parse::<Addr>().unwrap().to_string(), addr);
+        }
     }
 }

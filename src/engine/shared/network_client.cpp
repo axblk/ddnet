@@ -175,18 +175,23 @@ void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
 	char aUrl[NETADDR_URL_MAXSTRSIZE + sizeof(m_aConnectHost) + sizeof(m_aConnectFragment)];
 	if(pAddr[0].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET))
 	{
-		if(Sixup)
-		{
-			str_copy(m_aErrorString, "0.7 over QUIC or WebSockets is not supported yet");
-			return;
-		}
-		// The fragment pins the server's identity, and names the
+		// The scheme names the transport and the game protocol inside;
+		// the fragment pins the server's identity, and names the
 		// certificates for a browser.
 		const char *pScheme;
 		if(pAddr[0].type & NETTYPE_WEBSOCKET)
+		{
+			if(Sixup)
+			{
+				str_copy(m_aErrorString, "0.7 over WebSockets is not supported");
+				return;
+			}
 			pScheme = pAddr[0].type & NETTYPE_WEBSOCKET_TLS ? "ddnet+wss" : "ddnet+ws";
+		}
+		else if(pAddr[0].type & NETTYPE_WEBTRANSPORT)
+			pScheme = Sixup ? "tw-0.7+wt" : "ddnet+wt";
 		else
-			pScheme = pAddr[0].type & NETTYPE_WEBTRANSPORT ? "ddnet+wt" : "ddnet+quic";
+			pScheme = Sixup ? "tw-0.7+quic" : "ddnet+quic";
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 		// The browser looks the name up itself and checks the certificate
 		// against it, so it gets the name where there is one.

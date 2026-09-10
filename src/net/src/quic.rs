@@ -890,6 +890,7 @@ impl Protocol {
                         *from,
                         PeerIdentity::AcceptAny,
                         false,
+                        false,
                     );
                     let idx = cb.next_peer_index;
                     v.insert(idx);
@@ -909,7 +910,7 @@ impl Protocol {
         addr: Addr,
         idx: PeerIndex,
     ) -> Result<Connection> {
-        let Addr { addr: sock_addr, identity: peer_identity, webtransport, .. } = addr;
+        let Addr { addr: sock_addr, identity: peer_identity, webtransport, sixup, .. } = addr;
         let cid = self.new_conn_id();
         let config = self.config.client();
         config
@@ -939,6 +940,7 @@ impl Protocol {
                 None => PeerIdentity::AcceptAny,
             },
             webtransport,
+            sixup,
         );
         conn.flush(cb, packet_buf)?;
         assert!(self.connection_ids.insert(cid, idx).is_none());
@@ -978,7 +980,11 @@ enum State {
 const MAX_CONTROL_BUFFER: usize = 16 + wire::MAX_CONTROL_MESSAGE_SIZE;
 
 /// The game protocol announced in the hello; 0.7 gets its own scheme.
-const GAME_PROTOCOL: u64 = 6;
+/// What the hello names as the game protocol inside: DDNet 0.6 or
+/// Teeworlds 0.7. The client asks for one, the server answers with the
+/// same.
+const GAME_PROTOCOL_06: u64 = 6;
+const GAME_PROTOCOL_07: u64 = 7;
 
 /// A received datagram whose messages are handed out one at a time.
 struct IncomingDatagram {
@@ -1019,6 +1025,9 @@ pub struct Connection {
     transport: Transport,
     /// A client asked for WebTransport.
     webtransport: bool,
+    /// The messages inside are 0.7's, not DDNet 0.6's: what the client
+    /// asked for, and on the server what its hello said.
+    sixup: bool,
     /// The stream the hellos and messages go over, once it is open.
     control_stream: Option<u64>,
     /// The server reads the stream kind and version in front of the
@@ -1127,11 +1136,13 @@ impl Connection {
         peer_addr: SocketAddr,
         peer_identity: PeerIdentity,
         webtransport: bool,
+        sixup: bool,
     ) -> Connection {
         Connection {
             inner,
             transport: Transport::Raw,
             webtransport,
+            sixup,
             control_stream: None,
             prelude_read: client,
             shared,
@@ -1446,7 +1457,7 @@ impl Connection {
         let hello = wire::Hello {
             major: wire::VERSION_MAJOR,
             minor: wire::VERSION_MINOR,
-            protocol_version: GAME_PROTOCOL,
+            protocol_version: if self.sixup { GAME_PROTOCOL_07 } else { GAME_PROTOCOL_06 },
             capabilities,
             max_datagram_size,
             nonce: self.local_nonce,
@@ -1531,8 +1542,18 @@ impl Connection {
     fn on_hello(&mut self, payload: &[u8]) -> Result<Option<(u64, [u8; RESUME_TOKEN_LEN])>> {
         let hello = wire::decode_hello(payload)
             .map_err(|e| Error::from_string(format!("hello: {}", e)))?;
-        if hello.protocol_version != GAME_PROTOCOL {
-            bail!("game protocol {} instead of {}", hello.protocol_version, GAME_PROTOCOL);
+        if self.client {
+            let expected = if self.sixup { GAME_PROTOCOL_07 } else { GAME_PROTOCOL_06 };
+            if hello.protocol_version != expected {
+                bail!("game protocol {} instead of {}", hello.protocol_version, expected);
+            }
+        } else {
+            // The server speaks whichever the client asked for.
+            self.sixup = match hello.protocol_version {
+                GAME_PROTOCOL_06 => false,
+                GAME_PROTOCOL_07 => true,
+                other => bail!("game protocol {} instead of {} or {}", other, GAME_PROTOCOL_06, GAME_PROTOCOL_07),
+            };
         }
         self.peer_capabilities = hello.capabilities;
         self.peer_nonce = hello.nonce;
@@ -2169,6 +2190,7 @@ impl Connection {
                 _ => None,
             },
             webtransport: self.webtransport,
+            sixup: self.sixup,
         }
     }
     pub fn send_chunk(

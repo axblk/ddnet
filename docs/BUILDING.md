@@ -9,7 +9,7 @@ The following is a non-exhaustive list of build arguments that can be passed to 
 	Whether to prefer bundled libraries over system libraries. Setting to ON will make DDNet use third party libraries available in the `ddnet-libs` folder, which is the git-submodule target of the [ddnet-libs](https://github.com/ddnet/ddnet-libs) repository mentioned above -- Useful if you do not have those libraries installed and want to avoid building them. If set to OFF, will only use bundled libraries when system libraries are not found. Default value is OFF.
 
 * **-DWEBSOCKETS=[ON|OFF]** <br>
-	Whether the server accepts WebSocket clients, for browsers. Part of the Rust networking backend, so it needs `-DNETWORKING_QUIC=ON`. Default value is OFF.
+	Whether the server accepts WebSocket clients, for browsers. Default value is OFF.
 
 * **-DMYSQL=[ON|OFF]** <br>
 	Whether to enable MySQL/MariaDB support for server. Requires at least MySQL 8.0 or MariaDB 10.2. Setting to ON requires the `libmariadb-dev-compat` library installed, which are also provided as bundled libraries for the common platforms. Default value is OFF.
@@ -42,9 +42,6 @@ FLUSH PRIVILEGES;
 
 * **-DDEV=[ON|OFF]** <br>
 	Whether to optimize for development, speeding up the compilation process a little. If enabled, don't generate stuff necessary for packaging. Setting to ON will set CMAKE\_BUILD\_TYPE to Debug by default. Default value is OFF.
-
-* **-DNETWORKING_QUIC=[ON|OFF]** <br>
-    Whether to enable the new experimental quic networking backend. Do not use.
 
 * **-DLIBTW2_PATCH=[ON|OFF]** <br>
     Whether the `libtw2-net` the networking crate builds against carries `src/net/libtw2-patches`. A server needs them to accept Teeworlds 0.7; see the README there. Default value is OFF.

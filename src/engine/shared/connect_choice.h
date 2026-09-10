@@ -45,6 +45,31 @@ enum class EConnectAddressFamily
 EConnectProtocol AddressConnectProtocol(const NETADDR &Address);
 
 /**
+ * Whether this client connects to a listed server over the transport:
+ * natively over UDP and QUIC, in a browser, which has no UDP and no QUIC
+ * of its own, over WebTransport and WebSockets.
+ *
+ * @param Protocol The transport.
+ */
+bool ConnectProtocolAvailable(EConnectProtocol Protocol);
+
+/**
+ * The one filter over the endpoints of a server, those the master lists and
+ * those its info describes alike: whether this client uses the address. It
+ * decides whether the server is listed, which transports and families are
+ * offered for it and so which address goes into the address box and is
+ * connected to.
+ *
+ * First the platform, see `ConnectProtocolAvailable`. Then DDNet before
+ * 0.7: where an endpoint for DDNet is left, those for 0.7 are not used.
+ *
+ * @param Server The server.
+ * @param Address One of the server's addresses, its scheme's flags tell
+ * the transport and the game protocol.
+ */
+bool ConnectEndpointUsable(const CServerInfo &Server, const NETADDR &Address);
+
+/**
  * The transports and address families a connect address can go over, best
  * first: those of the endpoints the listed server has for this client, and
  * the one the address itself connects with, which is the current one. An
@@ -115,6 +140,14 @@ const char *ConnectProtocolShortName(EConnectProtocol Protocol, const char *pAdd
 bool ServerHasAddress(const CServerInfo &Server, const char *pAddress);
 
 /**
+ * Whether the server has an endpoint this client uses, see
+ * `ConnectEndpointUsable`.
+ *
+ * @param Server The server.
+ */
+bool ServerReachable(const CServerInfo &Server);
+
+/**
  * The listed server the first address of a connect string is one of.
  *
  * @param Browser The server browser to look in.
@@ -137,14 +170,16 @@ enum class EConnectPrecedence
 
 /**
  * Writes the one address of a server that a connect with the stored picks
- * uses, with its scheme and the fragment the master listed for it; it goes
- * into the address box, which is what is connected to.
+ * uses, of the endpoints this client uses (see `ConnectEndpointUsable`), with
+ * its scheme and the fragment the master listed for it; it goes into the
+ * address box, which is what is connected to.
  *
  * Transport and family are picked independently: each is the pick where the
- * server has it, otherwise the best it has of those this client speaks, then
- * IPv6. Where the server has no endpoint for both picks, the one with
- * precedence stays and the other falls back to what there is with it. Where
- * the certificate is signed for the host name, the name replaces the address.
+ * server has it, otherwise the best it has, QUIC natively and WebTransport in
+ * a browser, then IPv6. Where the server has no endpoint for both picks, the
+ * one with precedence stays and the other falls back to what there is with
+ * it. Where the certificate is signed for the host name, the name replaces
+ * the address.
  *
  * @param Server The server.
  * @param PickedProtocol The pick as stored in `cl_connect_protocol`.

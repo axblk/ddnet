@@ -4,10 +4,12 @@
 
 pub(crate) mod challenger;
 pub(crate) mod libtw2_patch;
+pub(crate) mod limits;
 pub(crate) mod net;
 pub(crate) mod quic;
 pub(crate) mod tw06;
 pub(crate) mod tw07;
+pub(crate) mod vanilla;
 pub(crate) mod webtransport;
 #[cfg(feature = "websocket")]
 pub(crate) mod ws;

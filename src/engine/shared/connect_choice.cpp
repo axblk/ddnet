@@ -18,26 +18,37 @@ EConnectProtocol AddressConnectProtocol(const NETADDR &Address)
 	return EConnectProtocol::LEGACY;
 }
 
-// Whether this client can speak the transport at all.
-static bool ProtocolCompiledIn(EConnectProtocol Protocol)
+bool ConnectProtocolAvailable(EConnectProtocol Protocol)
 {
-	switch(Protocol)
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// A browser has WebTransport and WebSockets, but no UDP.
+	return Protocol == EConnectProtocol::WEBTRANSPORT || Protocol == EConnectProtocol::WEBSOCKET;
+#else
+	return Protocol == EConnectProtocol::LEGACY || Protocol == EConnectProtocol::QUIC;
+#endif
+}
+
+bool ConnectEndpointUsable(const CServerInfo &Server, const NETADDR &Address)
+{
+	if(!ConnectProtocolAvailable(AddressConnectProtocol(Address)))
+		return false;
+	if((Address.type & NETTYPE_TW7) == 0)
+		return true;
+	// 0.7 only where the server has no DDNet endpoint for this client.
+	for(int i = 0; i < Server.m_NumAddresses; ++i)
 	{
-	case EConnectProtocol::QUIC:
-	case EConnectProtocol::WEBTRANSPORT:
-#if defined(CONF_NETWORKING_QUIC)
-		return true;
-#else
-		return false;
-#endif
-	case EConnectProtocol::WEBSOCKET:
-#if defined(CONF_WEBSOCKETS)
-		return true;
-#else
-		return false;
-#endif
-	default: return true;
+		const NETADDR &Other = Server.m_aAddresses[i];
+		if((Other.type & NETTYPE_TW7) == 0 && ConnectProtocolAvailable(AddressConnectProtocol(Other)))
+			return false;
 	}
+	return true;
+}
+
+// What an address without a scheme connects with: UDP, as it always could,
+// and WebTransport where there is no UDP.
+static EConnectProtocol PlainAddressProtocol()
+{
+	return ConnectProtocolAvailable(EConnectProtocol::LEGACY) ? EConnectProtocol::LEGACY : EConnectProtocol::WEBTRANSPORT;
 }
 
 static EConnectAddressFamily AddressFamily(const NETADDR &Address)
@@ -68,11 +79,9 @@ CConnectChoices::CConnectChoices(const CServerInfo *pServer, const char *pAddres
 		// is taken when nothing was picked yet.
 		for(const EConnectProtocol Protocol : {EConnectProtocol::QUIC, EConnectProtocol::WEBTRANSPORT, EConnectProtocol::WEBSOCKET, EConnectProtocol::LEGACY})
 		{
-			if(!ProtocolCompiledIn(Protocol))
-				continue;
 			for(int i = 0; i < pServer->m_NumAddresses; ++i)
 			{
-				if(AddressConnectProtocol(pServer->m_aAddresses[i]) == Protocol)
+				if(ConnectEndpointUsable(*pServer, pServer->m_aAddresses[i]) && AddressConnectProtocol(pServer->m_aAddresses[i]) == Protocol)
 				{
 					AddProtocol(Protocol);
 					break;
@@ -80,7 +89,8 @@ CConnectChoices::CConnectChoices(const CServerInfo *pServer, const char *pAddres
 			}
 		}
 		for(int i = 0; i < pServer->m_NumAddresses; ++i)
-			AddFamily(AddressFamily(pServer->m_aAddresses[i]));
+			if(ConnectEndpointUsable(*pServer, pServer->m_aAddresses[i]))
+				AddFamily(AddressFamily(pServer->m_aAddresses[i]));
 		// Preference order, not discovery order.
 		if(m_NumFamilies == 2 && m_aFamilies[0] == EConnectAddressFamily::IPV4)
 			std::swap(m_aFamilies[0], m_aFamilies[1]);
@@ -93,12 +103,12 @@ CConnectChoices::CConnectChoices(const CServerInfo *pServer, const char *pAddres
 	{
 		NETADDR Address;
 		const int UrlParseResult = net_addr_from_url(&Address, pAddress, nullptr, 0);
-		m_CurrentProtocol = AddProtocol(UrlParseResult <= 0 ? AddressConnectProtocol(Address) : EConnectProtocol::LEGACY);
+		m_CurrentProtocol = AddProtocol(UrlParseResult <= 0 ? AddressConnectProtocol(Address) : PlainAddressProtocol());
 		if(UrlParseResult == 0 || (UrlParseResult > 0 && net_addr_from_str(&Address, pAddress) == 0))
 			m_CurrentFamily = AddFamily(AddressFamily(Address));
 	}
 	if(m_NumProtocols == 0)
-		AddProtocol(EConnectProtocol::LEGACY);
+		AddProtocol(PlainAddressProtocol());
 	// A host name is left to the resolver, which prefers IPv6 and falls back.
 	if(m_NumFamilies == 0)
 		AddFamily(EConnectAddressFamily::IPV6);
@@ -170,6 +180,16 @@ bool ServerHasAddress(const CServerInfo &Server, const char *pAddress)
 	return false;
 }
 
+bool ServerReachable(const CServerInfo &Server)
+{
+	for(int i = 0; i < Server.m_NumAddresses; ++i)
+	{
+		if(ConnectEndpointUsable(Server, Server.m_aAddresses[i]))
+			return true;
+	}
+	return false;
+}
+
 const CServerInfo *FindListedServer(IServerBrowser &Browser, const char *pAddresses)
 {
 	char aFirstAddress[NETADDR_URL_MAXSTRSIZE + 128];
@@ -198,23 +218,17 @@ bool ConnectAddressFor(const CServerInfo &Server, int PickedProtocol, int Picked
 {
 	const CConnectChoices Choices(&Server, nullptr);
 	// The first endpoint of the transport and the family, -1 standing for
-	// any, DDNet before 0.7.
+	// any.
 	const auto Find = [&](int Protocol, int Family) {
-		int Found = -1;
 		for(int i = 0; i < Server.m_NumAddresses; ++i)
 		{
 			const NETADDR &Address = Server.m_aAddresses[i];
-			if(ProtocolCompiledIn(AddressConnectProtocol(Address)) &&
+			if(ConnectEndpointUsable(Server, Address) &&
 				(Protocol < 0 || (int)AddressConnectProtocol(Address) == Protocol) &&
 				(Family < 0 || (int)AddressFamily(Address) == Family))
-			{
-				if((Address.type & NETTYPE_TW7) == 0)
-					return i;
-				if(Found < 0)
-					Found = i;
-			}
+				return i;
 		}
-		return Found;
+		return -1;
 	};
 	// The pick where the server has it, the best it has otherwise.
 	const auto ProtocolIn = [&](int Family) {

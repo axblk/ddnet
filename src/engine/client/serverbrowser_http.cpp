@@ -520,7 +520,6 @@ static bool ServerbrowserParseUrl(NETADDR *pOut, const char *pUrl, char *pHostna
 	}
 	return pOut->port == 0;
 }
-#ifdef CONF_NETWORKING_QUIC
 // Copies the 64 hex digits of an identity; `true` if there is something
 // else in front of the next fragment key.
 static bool ServerbrowserParseIdentity(const char *pHex, char *pIdentity, int IdentitySize)
@@ -530,7 +529,6 @@ static bool ServerbrowserParseIdentity(const char *pHex, char *pIdentity, int Id
 		*pComma = '\0';
 	return str_length(pIdentity) != 64 || !str_isallnum_hex(pIdentity);
 }
-#endif
 
 bool CServerBrowserHttp::Validate(json_value *pJson)
 {
@@ -615,10 +613,6 @@ bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvSe
 			}
 			if((ParsedAddr.type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0)
 			{
-#ifndef CONF_NETWORKING_QUIC
-				// A transport this build cannot speak is no address to offer.
-				continue;
-#else
 				// The fragment carries what the server is pinned by: the
 				// identity, the same for every transport, on the QUIC and
 				// WebSocket addresses, the certificates a browser takes on
@@ -633,7 +627,6 @@ bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvSe
 				{
 					str_copy(SetInfo.m_aWebTransportFragment, pFragment + 1);
 				}
-#endif
 			}
 			if(SetInfo.m_NumAddresses < (int)std::size(SetInfo.m_aAddresses))
 			{

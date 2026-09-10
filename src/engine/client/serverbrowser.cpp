@@ -19,6 +19,7 @@
 #include <engine/friends.h>
 #include <engine/http.h>
 #include <engine/shared/config.h>
+#include <engine/shared/connect_choice.h>
 #include <engine/shared/json.h>
 #include <engine/shared/masterserver.h>
 #include <engine/shared/network.h>
@@ -453,6 +454,10 @@ void CServerBrowser::Filter()
 	for(int ServerIndex = 0; ServerIndex < (int)m_vpServerlist.size(); ServerIndex++)
 	{
 		CServerInfo &Info = m_vpServerlist[ServerIndex]->m_Info;
+		// A browser lists the servers it can reach, those with WebTransport
+		// or WebSockets.
+		if(!ServerReachable(Info))
+			continue;
 		bool Filtered = false;
 
 		if(g_Config.m_BrFilterEmpty && Info.m_NumFilteredPlayers == 0)
@@ -725,16 +730,20 @@ void CServerBrowser::QueueRequest(CServerEntry *pEntry)
 	m_NumRequests++;
 }
 
-// Every address carries its fragment again, the way the master listed
-// them: the identity on the QUIC and WebSocket addresses, the certificates
-// on the WebTransport address, so that connecting to what the box holds
-// pins.
+// The endpoints this client uses, see `ConnectEndpointUsable`. Every
+// address carries its fragment again, the way the master listed them: the
+// identity on the QUIC and WebSocket addresses, the certificates on the
+// WebTransport address, so that connecting to what the box holds pins.
 static void ServerBrowserFormatAddresses(char *pBuffer, int BufferSize, const CServerInfo &Info)
 {
 	pBuffer[0] = '\0';
 	for(int i = 0; i < Info.m_NumAddresses; i++)
 	{
-		if(i != 0)
+		if(!ConnectEndpointUsable(Info, Info.m_aAddresses[i]))
+		{
+			continue;
+		}
+		if(pBuffer[0] != '\0')
 		{
 			str_append(pBuffer, ",", BufferSize);
 		}
@@ -1775,7 +1784,7 @@ const char *CServerBrowser::GetTutorialServer()
 	if(pCommunity == nullptr)
 		return nullptr;
 
-	const char *pBestAddr = nullptr;
+	const CServerInfo *pBest = nullptr;
 	int BestLatency = std::numeric_limits<int>::max();
 	for(const auto &Country : pCommunity->Countries())
 	{
@@ -1784,17 +1793,20 @@ const char *CServerBrowser::GetTutorialServer()
 			if(str_comp(Server.TypeName(), "Tutorial") != 0)
 				continue;
 			const CServerEntry *pEntry = Find(Server.Address());
-			if(!pEntry)
+			if(!pEntry || !ServerReachable(pEntry->m_Info))
 				continue;
 			if(pEntry->m_Info.m_NumPlayers > pEntry->m_Info.m_MaxPlayers - 10)
 				continue;
 			if(pEntry->m_Info.m_Latency >= BestLatency)
 				continue;
 			BestLatency = pEntry->m_Info.m_Latency;
-			pBestAddr = pEntry->m_Info.m_aAddress;
+			pBest = &pEntry->m_Info;
 		}
 	}
-	return pBestAddr;
+	// The one address a click on the server would connect to.
+	if(pBest == nullptr || !ConnectAddressFor(*pBest, g_Config.m_ClConnectProtocol, g_Config.m_ClConnectAddressFamily, EConnectPrecedence::PROTOCOL, m_aTutorialServerAddress, sizeof(m_aTutorialServerAddress)))
+		return nullptr;
+	return m_aTutorialServerAddress;
 }
 
 bool CServerBrowser::IsRefreshing() const

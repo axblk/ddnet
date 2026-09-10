@@ -233,6 +233,8 @@ function copy_libs() {
 	mkdir -p "lib/$2"
 	cp "$ANDROID_SUB_BUILD_DIR/$1/libDDNet.so" "lib/$2"
 	cp "$ANDROID_SUB_BUILD_DIR/$1/libDDNet-Server.so" "lib/$2"
+	# The networking library, which both load.
+	cp "$ANDROID_SUB_BUILD_DIR/$1/libnet.so" "lib/$2"
 }
 
 if [[ "${ANDROID_BUILD}" == "arm" || "${ANDROID_BUILD}" == "all" ]]; then

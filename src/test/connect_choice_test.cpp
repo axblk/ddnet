@@ -46,17 +46,12 @@ protected:
 
 TEST_F(ConnectChoice, ListedServer)
 {
+	// A native client uses UDP and QUIC, not the WebTransport address.
 	const CConnectChoices Choices(&m_Info, nullptr);
-#if defined(CONF_NETWORKING_QUIC)
-	ASSERT_EQ(Choices.m_NumProtocols, 3);
+	ASSERT_EQ(Choices.m_NumProtocols, 2);
 	EXPECT_EQ(Choices.m_aProtocols[0], EConnectProtocol::QUIC);
-	EXPECT_EQ(Choices.m_aProtocols[1], EConnectProtocol::WEBTRANSPORT);
-	EXPECT_EQ(Choices.m_aProtocols[2], EConnectProtocol::LEGACY);
-	EXPECT_EQ(Choices.ProtocolIndex((int)EConnectProtocol::LEGACY), 2);
-#else
-	ASSERT_EQ(Choices.m_NumProtocols, 1);
-	EXPECT_EQ(Choices.m_aProtocols[0], EConnectProtocol::LEGACY);
-#endif
+	EXPECT_EQ(Choices.m_aProtocols[1], EConnectProtocol::LEGACY);
+	EXPECT_EQ(Choices.ProtocolIndex((int)EConnectProtocol::LEGACY), 1);
 	// No pick, or one the server has nothing for, is the best.
 	EXPECT_EQ(Choices.ProtocolIndex(-1), 0);
 	EXPECT_EQ(Choices.ProtocolIndex((int)EConnectProtocol::WEBSOCKET), 0);
@@ -69,13 +64,17 @@ TEST_F(ConnectChoice, ListedServer)
 TEST_F(ConnectChoice, LinkAndTypedAddress)
 {
 	// The box shows what the address connects with, among the server's
-	// own choices.
+	// own choices, even where this client would not offer it.
 	const CConnectChoices Link(&m_Info, "ddnet+wt://127.0.0.1:8303#webpki");
-	EXPECT_EQ(Link.m_aProtocols[Link.ProtocolIndex((int)EConnectProtocol::QUIC)], EConnectProtocol::WEBTRANSPORT);
+	ASSERT_EQ(Link.m_NumProtocols, 3);
+	EXPECT_EQ(Link.m_aProtocols[0], EConnectProtocol::QUIC);
+	EXPECT_EQ(Link.m_aProtocols[1], EConnectProtocol::LEGACY);
+	EXPECT_EQ(Link.m_aProtocols[2], EConnectProtocol::WEBTRANSPORT);
+	EXPECT_EQ(Link.ProtocolIndex((int)EConnectProtocol::QUIC), 2);
 	EXPECT_EQ(Link.FamilyIndex((int)EConnectAddressFamily::IPV6), 1);
 
 	const CConnectChoices Plain(&m_Info, "[::1]:8303");
-	EXPECT_EQ(Plain.m_aProtocols[Plain.ProtocolIndex(-1)], EConnectProtocol::LEGACY);
+	EXPECT_EQ(Plain.ProtocolIndex(-1), 1);
 	EXPECT_EQ(Plain.FamilyIndex((int)EConnectAddressFamily::IPV4), 0);
 
 	const CConnectChoices UnknownLink(nullptr, "ddnet+wt://127.0.0.1:8303#webpki");
@@ -110,17 +109,15 @@ static constexpr int IPV6 = (int)EConnectAddressFamily::IPV6;
 
 TEST_F(ConnectChoice, ConnectAddress)
 {
-#if defined(CONF_NETWORKING_QUIC)
 	char aQuic[256];
 	str_format(aQuic, sizeof(aQuic), "ddnet+quic://127.0.0.1:8303#identity-sha256=%s", IDENTITY);
 	// Transport, then family; QUIC is the best.
 	EXPECT_EQ(Address(m_Info, -1, IPV6), aQuic);
 	EXPECT_EQ(Address(m_Info, QUIC, IPV4), aQuic);
-	// The certificate is signed for the name, so the name is connected by.
-	EXPECT_EQ(Address(m_Info, (int)EConnectProtocol::WEBTRANSPORT, IPV4), "ddnet+wt://ger10.ddnet.org:8303#webpki");
-#endif
 	EXPECT_EQ(Address(m_Info, LEGACY, IPV6), "[::1]:8303");
 	EXPECT_EQ(Address(m_Info, LEGACY, IPV4), "127.0.0.1:8303");
+	// WebTransport is not for a native client, the best is taken.
+	EXPECT_EQ(Address(m_Info, (int)EConnectProtocol::WEBTRANSPORT, IPV4), aQuic);
 
 	CServerInfo Empty{};
 	char aAddress[64];
@@ -129,7 +126,6 @@ TEST_F(ConnectChoice, ConnectAddress)
 	EXPECT_STREQ(aAddress, "unchanged");
 }
 
-#if defined(CONF_NETWORKING_QUIC)
 // Transport and family are picked independently; where the server lacks the
 // combination, the pick just made wins and the other falls back.
 TEST_F(ConnectChoice, IndependentPicks)
@@ -164,7 +160,34 @@ TEST_F(ConnectChoice, IndependentPicks)
 		EXPECT_EQ(Address(Full, -1, IPV6, Precedence), "ddnet+quic://[::1]:8303");
 	}
 }
-#endif
+
+// Where a DDNet endpoint is left, the 0.7 ones are not used at all.
+TEST_F(ConnectChoice, DdnetBeforeSixup)
+{
+	CServerInfo Mixed{};
+	AddAddress(Mixed, "tw-0.7+udp://[::1]:8303");
+	AddAddress(Mixed, "tw-0.6+udp://127.0.0.1:8303");
+	EXPECT_FALSE(ConnectEndpointUsable(Mixed, Mixed.m_aAddresses[0]));
+	EXPECT_TRUE(ConnectEndpointUsable(Mixed, Mixed.m_aAddresses[1]));
+	const CConnectChoices Choices(&Mixed, nullptr);
+	ASSERT_EQ(Choices.m_NumProtocols, 1);
+	EXPECT_EQ(Choices.m_aProtocols[0], EConnectProtocol::LEGACY);
+	ASSERT_EQ(Choices.m_NumFamilies, 1);
+	EXPECT_EQ(Choices.m_aFamilies[0], EConnectAddressFamily::IPV4);
+	EXPECT_EQ(Address(Mixed, QUIC, IPV6), "127.0.0.1:8303");
+	EXPECT_EQ(Address(Mixed, QUIC, IPV6, EConnectPrecedence::ADDRESS_FAMILY), "127.0.0.1:8303");
+
+	// DDNet over QUIC is DDNet as well.
+	CServerInfo QuicOnly{};
+	AddAddress(QuicOnly, "tw-0.7+udp://127.0.0.1:8303");
+	AddAddress(QuicOnly, "ddnet+quic://127.0.0.1:8303");
+	EXPECT_EQ(Address(QuicOnly, LEGACY, IPV4), "ddnet+quic://127.0.0.1:8303");
+
+	// Without DDNet, 0.7 it is.
+	CServerInfo Sixup{};
+	AddAddress(Sixup, "tw-0.7+udp://127.0.0.1:8303");
+	EXPECT_EQ(Address(Sixup, -1, IPV6), "tw-0.7+udp://127.0.0.1:8303");
+}
 
 TEST_F(ConnectChoice, ServerHasAddress)
 {
@@ -174,4 +197,21 @@ TEST_F(ConnectChoice, ServerHasAddress)
 	EXPECT_FALSE(ServerHasAddress(m_Info, "ddnet+wt://ger10.ddnet.org:8304"));
 	EXPECT_FALSE(ServerHasAddress(m_Info, "ddnet+wt://ger11.ddnet.org:8303"));
 	EXPECT_FALSE(ServerHasAddress(m_Info, "127.0.0.2:8303"));
+}
+
+TEST_F(ConnectChoice, Reachable)
+{
+	EXPECT_TRUE(ServerReachable(m_Info));
+	CServerInfo Empty{};
+	EXPECT_FALSE(ServerReachable(Empty));
+	// A native client has UDP and QUIC, a browser WebTransport and
+	// WebSockets.
+	EXPECT_TRUE(ConnectProtocolAvailable(EConnectProtocol::LEGACY));
+	EXPECT_TRUE(ConnectProtocolAvailable(EConnectProtocol::QUIC));
+	EXPECT_FALSE(ConnectProtocolAvailable(EConnectProtocol::WEBTRANSPORT));
+	EXPECT_FALSE(ConnectProtocolAvailable(EConnectProtocol::WEBSOCKET));
+	CServerInfo Browser{};
+	AddAddress(Browser, "ddnet+wt://127.0.0.1:8303#webpki");
+	AddAddress(Browser, "ddnet+ws://127.0.0.1:8303");
+	EXPECT_FALSE(ServerReachable(Browser));
 }

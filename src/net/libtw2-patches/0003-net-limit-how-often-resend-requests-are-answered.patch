@@ -1,0 +1,291 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: redix <redix@hotmail.de>
+Date: Thu, 10 Sep 2026 14:51:52 +0200
+Subject: [PATCH] net: limit how often resend requests are answered
+
+A resend request costs the peer nothing and makes us send everything
+that is not acked yet, so a peer can ask for it as fast as it likes.
+The interval answers at most one request per period; requests that fall
+inside a period are answered together by the tick after it. Zero, the
+default, keeps the behaviour of before.
+---
+ net/src/connection.rs  | 55 ++++++++++++++++++++++++++++++++++++------
+ net/src/connection7.rs | 55 ++++++++++++++++++++++++++++++++++++------
+ 2 files changed, 96 insertions(+), 14 deletions(-)
+
+diff --git a/net/src/connection.rs b/net/src/connection.rs
+index 56d2149..9e33967 100644
+--- a/net/src/connection.rs
++++ b/net/src/connection.rs
+@@ -85,6 +85,11 @@ pub struct Connection {
+     state: State,
+     send: Timeout,
+     builder: PacketBuilder,
++    /// How long after answering a resend request the next one is
++    /// answered; zero answers every one.
++    resend_request_interval: Duration,
++    /// When the next resend request may be answered.
++    next_resend_answer: Timeout,
+ }
+ 
+ #[derive(Clone, Debug)]
+@@ -294,6 +299,8 @@ struct OnlineState {
+     // `sequence` is the vital chunk from us that the peer acknowledged.
+     sequence: Sequence,
+     request_resend: bool,
++    // The peer asked for a resend that is not answered yet.
++    resend_requested: bool,
+     // `packet` contains all the queued chunks, `packet_nonvital` only the
+     // non-vital ones. This is important for resending.
+     packet: PacketContents,
+@@ -310,6 +317,7 @@ impl OnlineState {
+             ack: Sequence::new(),
+             sequence: Sequence::new(),
+             request_resend: false,
++            resend_requested: false,
+             packet: PacketContents::new(),
+             packet_nonvital: PacketContents::new(),
+             resend_queue: VecDeque::new(),
+@@ -474,6 +482,8 @@ impl Connection {
+             state: State::Unconnected,
+             send: Timeout::inactive(),
+             builder: PacketBuilder::new(),
++            resend_request_interval: Duration::ZERO,
++            next_resend_answer: Timeout::inactive(),
+         }
+     }
+     pub fn new_accept_token<CB: Callback>(cb: &mut CB, token: Token) -> Connection {
+@@ -481,13 +491,34 @@ impl Connection {
+             state: State::Online(OnlineState::new(Some(token))),
+             send: Timeout::inactive(),
+             builder: PacketBuilder::new(),
++            resend_request_interval: Duration::ZERO,
++            next_resend_answer: Timeout::inactive(),
+         };
+         result.send.set(cb, Duration::from_millis(500));
+         result
+     }
+     pub fn reset(&mut self) {
+         assert!(matches!(self.state, State::Disconnected));
++        let interval = self.resend_request_interval;
+         *self = Connection::new();
++        self.resend_request_interval = interval;
++    }
++    /// Answers at most one resend request per `interval`; requests within
++    /// the interval are answered together, by the next tick after it. A
++    /// resend request costs a peer nothing and makes us send everything
++    /// that is not acked yet, so the answers are worth limiting. Zero
++    /// answers every request.
++    pub fn set_resend_request_interval(&mut self, interval: Duration) {
++        self.resend_request_interval = interval;
++    }
++    /// Whether a pending resend request may be answered now.
++    fn resend_answer_due<CB: Callback>(&self, cb: &mut CB) -> bool {
++        self.resend_request_interval.is_zero()
++            || self
++                .next_resend_answer
++                .to_opt()
++                .map(|t| t <= cb.time())
++                .unwrap_or(true)
+     }
+     pub fn is_unconnected(&self) -> bool {
+         matches!(self.state, State::Unconnected)
+@@ -513,7 +544,11 @@ impl Connection {
+                 .unwrap_or_default(),
+             _ => Timeout::inactive(),
+         };
+-        cmp::min(self.send, resends)
++        let answer = match self.state {
++            State::Online(ref online) if online.resend_requested => self.next_resend_answer,
++            _ => Timeout::inactive(),
++        };
++        cmp::min(cmp::min(self.send, resends), answer)
+     }
+     pub fn connect<CB: Callback>(&mut self, cb: &mut CB) -> Result<(), CB::Error> {
+         assert!(matches!(self.state, State::Unconnected));
+@@ -542,6 +577,11 @@ impl Connection {
+     }
+     fn resend<CB: Callback>(&mut self, cb: &mut CB) -> Result<(), CB::Error> {
+         let online = self.state.assert_online();
++        // Any resend answers a request.
++        online.resend_requested = false;
++        if !self.resend_request_interval.is_zero() {
++            self.next_resend_answer = Timeout::active(cb.time() + self.resend_request_interval);
++        }
+         if online.resend_queue.is_empty() {
+             return Ok(());
+         }
+@@ -647,6 +687,7 @@ impl Connection {
+             .map_err(|e| e.unwrap_callback())
+     }
+     pub fn tick<CB: Callback>(&mut self, cb: &mut CB) -> Result<(), CB::Error> {
++        let answer_due = self.resend_answer_due(cb);
+         let do_resend = match self.state {
+             State::Online(ref online) => {
+                 // WARN?
+@@ -655,6 +696,7 @@ impl Connection {
+                     .back()
+                     .map(|c| c.next_send.has_triggered_level(cb))
+                     .unwrap_or(false)
++                    || (online.resend_requested && answer_due)
+             }
+             _ => false,
+         };
+@@ -752,15 +794,14 @@ impl Connection {
+                     if let State::Pending(ref pending) = self.state {
+                         self.state = State::Online(OnlineState::new(pending.token));
+                     }
+-                    let result;
++                    let mut result = Ok(());
+                     if request_resend {
+-                        if let State::Online(_) = self.state {
++                        if let State::Online(ref mut online) = self.state {
++                            online.resend_requested = true;
++                        }
++                        if matches!(self.state, State::Online(_)) && self.resend_answer_due(cb) {
+                             result = self.resend(cb);
+-                        } else {
+-                            result = Ok(());
+                         }
+-                    } else {
+-                        result = Ok(())
+                     }
+                     match self.state {
+                         State::Online(ref mut online) => {
+diff --git a/net/src/connection7.rs b/net/src/connection7.rs
+index 0996f3c..f840001 100644
+--- a/net/src/connection7.rs
++++ b/net/src/connection7.rs
+@@ -88,6 +88,11 @@ pub struct Connection {
+     state: State,
+     send: Timeout,
+     builder: PacketBuilder,
++    /// How long after answering a resend request the next one is
++    /// answered; zero answers every one.
++    resend_request_interval: Duration,
++    /// When the next resend request may be answered.
++    next_resend_answer: Timeout,
+ }
+ 
+ #[derive(Clone, Debug)]
+@@ -360,6 +365,8 @@ struct OnlineState {
+     // `sequence` is the vital chunk from us that the peer acknowledged.
+     sequence: Sequence,
+     request_resend: bool,
++    // The peer asked for a resend that is not answered yet.
++    resend_requested: bool,
+     // `packet` contains all the queued chunks, `packet_nonvital` only the
+     // non-vital ones. This is important for resending.
+     packet: PacketContents,
+@@ -377,6 +384,7 @@ impl OnlineState {
+             ack: Sequence::new(),
+             sequence: Sequence::new(),
+             request_resend: false,
++            resend_requested: false,
+             packet: PacketContents::new(),
+             packet_nonvital: PacketContents::new(),
+             resend_queue: VecDeque::new(),
+@@ -541,6 +549,8 @@ impl Connection {
+             state: State::Unconnected,
+             send: Timeout::inactive(),
+             builder: PacketBuilder::new(),
++            resend_request_interval: Duration::ZERO,
++            next_resend_answer: Timeout::inactive(),
+         }
+     }
+     /// A server-side connection whose token request was already answered
+@@ -551,11 +561,32 @@ impl Connection {
+             state: State::PendingConnect(PendingConnectState::new(own_token)),
+             send: Timeout::inactive(),
+             builder: PacketBuilder::new(),
++            resend_request_interval: Duration::ZERO,
++            next_resend_answer: Timeout::inactive(),
+         }
+     }
+     pub fn reset(&mut self) {
+         assert!(matches!(self.state, State::Disconnected));
++        let interval = self.resend_request_interval;
+         *self = Connection::new();
++        self.resend_request_interval = interval;
++    }
++    /// Answers at most one resend request per `interval`; requests within
++    /// the interval are answered together, by the next tick after it. A
++    /// resend request costs a peer nothing and makes us send everything
++    /// that is not acked yet, so the answers are worth limiting. Zero
++    /// answers every request.
++    pub fn set_resend_request_interval(&mut self, interval: Duration) {
++        self.resend_request_interval = interval;
++    }
++    /// Whether a pending resend request may be answered now.
++    fn resend_answer_due<CB: Callback>(&self, cb: &mut CB) -> bool {
++        self.resend_request_interval.is_zero()
++            || self
++                .next_resend_answer
++                .to_opt()
++                .map(|t| t <= cb.time())
++                .unwrap_or(true)
+     }
+     pub fn is_unconnected(&self) -> bool {
+         matches!(self.state, State::Unconnected)
+@@ -581,7 +612,11 @@ impl Connection {
+                 .unwrap_or_default(),
+             _ => Timeout::inactive(),
+         };
+-        cmp::min(self.send, resends)
++        let answer = match self.state {
++            State::Online(ref online) if online.resend_requested => self.next_resend_answer,
++            _ => Timeout::inactive(),
++        };
++        cmp::min(cmp::min(self.send, resends), answer)
+     }
+     pub fn connect<CB: Callback>(&mut self, cb: &mut CB) -> Result<(), CB::Error> {
+         assert!(matches!(self.state, State::Unconnected));
+@@ -610,6 +645,11 @@ impl Connection {
+     }
+     fn resend<CB: Callback>(&mut self, cb: &mut CB) -> Result<(), CB::Error> {
+         let online = self.state.assert_online();
++        // Any resend answers a request.
++        online.resend_requested = false;
++        if !self.resend_request_interval.is_zero() {
++            self.next_resend_answer = Timeout::active(cb.time() + self.resend_request_interval);
++        }
+         if online.resend_queue.is_empty() {
+             return Ok(());
+         }
+@@ -722,6 +762,7 @@ impl Connection {
+             .map_err(|e| e.unwrap_callback())
+     }
+     pub fn tick<CB: Callback>(&mut self, cb: &mut CB) -> Result<(), CB::Error> {
++        let answer_due = self.resend_answer_due(cb);
+         let do_resend = match self.state {
+             State::Online(ref online) => {
+                 // WARN?
+@@ -730,6 +771,7 @@ impl Connection {
+                     .back()
+                     .map(|c| c.next_send.has_triggered_level(cb))
+                     .unwrap_or(false)
++                    || (online.resend_requested && answer_due)
+             }
+             _ => false,
+         };
+@@ -850,15 +892,14 @@ impl Connection {
+                         self.state =
+                             State::Online(OnlineState::new(pending.own_token, pending.their_token));
+                     }
+-                    let result;
++                    let mut result = Ok(());
+                     if request_resend {
+-                        if let State::Online(_) = self.state {
++                        if let State::Online(ref mut online) = self.state {
++                            online.resend_requested = true;
++                        }
++                        if matches!(self.state, State::Online(_)) && self.resend_answer_due(cb) {
+                             result = self.resend(cb);
+-                        } else {
+-                            result = Ok(());
+                         }
+-                    } else {
+-                        result = Ok(())
+                     }
+                     match self.state {
+                         State::Online(ref mut online) => {

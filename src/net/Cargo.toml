@@ -6,7 +6,28 @@ edition = "2021"
 [workspace]
 
 [lib]
+# A shared library where the executables load it, a static one where the
+# build asks for it (`cargo rustc --crate-type staticlib`), see the
+# CMakeLists.txt at the root.
 crate-type = ["cdylib", "rlib"]
+
+# The profiles of the workspace at the root, so that the static library
+# links next to the workspace's: two Rust archives in one executable
+# agree on their standard library only when built the same way.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+lto = "thin"
+panic = "abort"
+
+[profile.relwithdebinfo]
+inherits = "release"
+debug = true
+
+[profile.minsizerel]
+inherits = "release"
+opt-level = "z"
 
 [features]
 # Built against a `libtw2-net` with `libtw2-patches` applied.

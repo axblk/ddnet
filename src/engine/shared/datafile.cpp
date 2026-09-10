@@ -140,7 +140,7 @@ public:
 class CDatafile
 {
 public:
-	IOHANDLE m_File;
+	unsigned char *m_pFileData;
 	char m_aFullName[IO_MAX_PATH_LENGTH];
 	const char *m_pBaseName;
 	char m_aPath[IO_MAX_PATH_LENGTH];
@@ -156,6 +156,26 @@ public:
 	CDatafileItem **m_ppOverriddenItems;
 	int *m_pDataSizes;
 	char *m_pData;
+
+	/**
+	 * Where the stored bytes of a data item are, within the file this reader
+	 * read at open time.
+	 *
+	 * The header checks and `Validate` together guarantee that every item
+	 * lies inside the file: the data offsets rise, each one is smaller than
+	 * the data section, and the data section ends with the file.
+	 *
+	 * @param Index Index of the data item.
+	 *
+	 * @return Pointer to the first of the item's `GetFileDataSize` bytes.
+	 */
+	const unsigned char *FileData(int Index) const
+	{
+		const int64_t Offset = (int64_t)m_DataStartOffset + m_Info.m_pDataOffsets[Index];
+		dbg_assert(Offset >= 0 && Offset + GetFileDataSize(Index) <= (int64_t)m_FileSize,
+			"Data item outside the file: %d", Index);
+		return m_pFileData + Offset;
+	}
 
 	int GetFileDataSize(int Index) const
 	{
@@ -240,19 +260,7 @@ public:
 				m_pDataSizes[Index] = -1;
 				return nullptr;
 			}
-			unsigned ActualDataSize = 0;
-			if(io_seek(m_File, m_DataStartOffset + m_Info.m_pDataOffsets[Index], EIoSeekOrigin::START) == 0)
-			{
-				ActualDataSize = io_read(m_File, pCompressedData, DataSize);
-			}
-			if(DataSize != ActualDataSize)
-			{
-				log_error("datafile", "truncation error. could not read all compressed data. index=%d wanted=%d got=%d", Index, DataSize, ActualDataSize);
-				free(pCompressedData);
-				m_ppDataPtrs[Index] = nullptr;
-				m_pDataSizes[Index] = -1;
-				return nullptr;
-			}
+			mem_copy(pCompressedData, FileData(Index), DataSize);
 
 			// decompress the data
 			m_ppDataPtrs[Index] = static_cast<char *>(malloc(OriginalUncompressedSize));
@@ -286,19 +294,7 @@ public:
 				m_pDataSizes[Index] = -1;
 				return nullptr;
 			}
-			unsigned ActualDataSize = 0;
-			if(io_seek(m_File, m_DataStartOffset + m_Info.m_pDataOffsets[Index], EIoSeekOrigin::START) == 0)
-			{
-				ActualDataSize = io_read(m_File, m_ppDataPtrs[Index], DataSize);
-			}
-			if(DataSize != ActualDataSize)
-			{
-				log_error("datafile", "truncation error. could not read all uncompressed data. index=%d wanted=%d got=%d", Index, DataSize, ActualDataSize);
-				free(m_ppDataPtrs[Index]);
-				m_ppDataPtrs[Index] = nullptr;
-				m_pDataSizes[Index] = -1;
-				return nullptr;
-			}
+			mem_copy(m_ppDataPtrs[Index], FileData(Index), DataSize);
 			m_pDataSizes[Index] = DataSize;
 		}
 
@@ -363,16 +359,7 @@ public:
 
 		std::vector<uint8_t> vData;
 		vData.resize(FileDataSize);
-		unsigned ActualDataSize = 0;
-		if(io_seek(m_File, m_DataStartOffset + m_Info.m_pDataOffsets[Index], EIoSeekOrigin::START) == 0)
-		{
-			ActualDataSize = io_read(m_File, vData.data(), FileDataSize);
-		}
-		if(FileDataSize != ActualDataSize)
-		{
-			log_error("datafile", "truncation error. could not read all raw data. index=%d wanted=%d got=%d", Index, FileDataSize, ActualDataSize);
-			return false;
-		}
+		mem_copy(vData.data(), FileData(Index), FileDataSize);
 
 		RawData = CDataFileRawData(std::move(vData), UncompressedSize, Compressed);
 		return true;
@@ -621,46 +608,40 @@ bool CDataFileReader::Open(const char *pFullName, IStorage *pStorage, const char
 		return false;
 	}
 
-	// determine size and hashes of the file and store them
-	int64_t FileSize = 0;
-	unsigned Crc = 0;
-	SHA256_DIGEST Sha256;
+	// Read the whole file and let go of it right away: the item data is
+	// copied out of the buffer below and a data item is uncompressed out of
+	// it on demand, so nothing needs the file after this.
+	void *pFileDataRaw;
+	unsigned FileDataSize;
+	const bool ReadSuccess = io_read_all(File, &pFileDataRaw, &FileDataSize);
+	io_close(File);
+	if(!ReadSuccess)
 	{
-		SHA256_CTX Sha256Ctxt;
-		sha256_init(&Sha256Ctxt);
-		unsigned char aBuffer[64 * 1024];
-		while(true)
-		{
-			const unsigned Bytes = io_read(File, aBuffer, sizeof(aBuffer));
-			if(Bytes == 0)
-				break;
-			FileSize += Bytes;
-			Crc = crc32(Crc, aBuffer, Bytes);
-			sha256_update(&Sha256Ctxt, aBuffer, Bytes);
-		}
-		Sha256 = sha256_finish(&Sha256Ctxt);
-		if(io_seek(File, 0, EIoSeekOrigin::START) != 0)
-		{
-			io_close(File);
-			log_error("datafile", "could not seek to start after calculating hashes");
-			return false;
-		}
+		log_error("datafile", "could not read file '%s'. file too large or out of memory.", pPath);
+		return false;
 	}
+	unsigned char *pFileData = static_cast<unsigned char *>(pFileDataRaw);
+	const int64_t FileSize = FileDataSize;
+
+	// determine hashes of the file and store them
+	const SHA256_DIGEST Sha256 = sha256(pFileData, FileDataSize);
+	const unsigned Crc = crc32(0, pFileData, FileDataSize);
 
 	// read header
 	CDatafileHeader Header;
-	if(io_read(File, &Header, sizeof(Header)) != sizeof(Header))
+	if(FileDataSize < sizeof(Header))
 	{
-		io_close(File);
+		free(pFileData);
 		log_error("datafile", "could not read file header. file truncated or not a datafile.");
 		return false;
 	}
+	mem_copy(&Header, pFileData, sizeof(Header));
 
 	// check header magic
 	if((Header.m_aId[0] != 'A' || Header.m_aId[1] != 'T' || Header.m_aId[2] != 'A' || Header.m_aId[3] != 'D') &&
 		(Header.m_aId[0] != 'D' || Header.m_aId[1] != 'A' || Header.m_aId[2] != 'T' || Header.m_aId[3] != 'A'))
 	{
-		io_close(File);
+		free(pFileData);
 		log_error("datafile", "wrong header magic. magic=%x%x%x%x", Header.m_aId[0], Header.m_aId[1], Header.m_aId[2], Header.m_aId[3]);
 		return false;
 	}
@@ -670,7 +651,7 @@ bool CDataFileReader::Open(const char *pFullName, IStorage *pStorage, const char
 	// check header version
 	if(Header.m_Version != 3 && Header.m_Version != 4)
 	{
-		io_close(File);
+		free(pFileData);
 		log_error("datafile", "unsupported header version. version=%d", Header.m_Version);
 		return false;
 	}
@@ -684,7 +665,7 @@ bool CDataFileReader::Open(const char *pFullName, IStorage *pStorage, const char
 		Header.m_ItemSize % sizeof(int) != 0 ||
 		Header.m_DataSize < 0)
 	{
-		io_close(File);
+		free(pFileData);
 		log_error("datafile", "invalid header information. num_types=%d num_items=%d num_data=%d item_size=%d data_size=%d",
 			Header.m_NumItemTypes, Header.m_NumItems, Header.m_NumRawData, Header.m_ItemSize, Header.m_DataSize);
 		return false;
@@ -710,7 +691,7 @@ bool CDataFileReader::Open(const char *pFullName, IStorage *pStorage, const char
 
 	if((int64_t)sizeof(Header) + Size + (int64_t)Header.m_DataSize != FileSize)
 	{
-		io_close(File);
+		free(pFileData);
 		log_error("datafile", "invalid header data size or truncated file. data_size=%d file_size=%" PRId64, Header.m_DataSize, FileSize);
 		return false;
 	}
@@ -725,7 +706,7 @@ bool CDataFileReader::Open(const char *pFullName, IStorage *pStorage, const char
 		}
 		else
 		{
-			io_close(File);
+			free(pFileData);
 			log_error("datafile", "invalid header size or truncated file. size=%" PRId64 " actual=%" PRId64, HeaderFileSize, FileSize);
 			return false;
 		}
@@ -742,7 +723,7 @@ bool CDataFileReader::Open(const char *pFullName, IStorage *pStorage, const char
 		}
 		else
 		{
-			io_close(File);
+			free(pFileData);
 			log_error("datafile", "invalid header swaplen or truncated file. swaplen=%" PRId64 " actual=%" PRId64, HeaderSwaplen, FileSizeSwaplen);
 			return false;
 		}
@@ -757,7 +738,7 @@ bool CDataFileReader::Open(const char *pFullName, IStorage *pStorage, const char
 	AllocSize += (int64_t)Header.m_NumRawData * sizeof(int); // add space for data sizes
 	if(AllocSize > MaxAllocSize)
 	{
-		io_close(File);
+		free(pFileData);
 		log_error("datafile", "file too large. alloc_size=%" PRId64 " max=%" PRId64, AllocSize, MaxAllocSize);
 		return false;
 	}
@@ -765,7 +746,7 @@ bool CDataFileReader::Open(const char *pFullName, IStorage *pStorage, const char
 	CDatafile *pTmpDataFile = static_cast<CDatafile *>(malloc(AllocSize));
 	if(pTmpDataFile == nullptr)
 	{
-		io_close(File);
+		free(pFileData);
 		log_error("datafile", "out of memory. could not allocate memory for datafile. alloc_size=%" PRId64, AllocSize);
 		return false;
 	}
@@ -776,7 +757,7 @@ bool CDataFileReader::Open(const char *pFullName, IStorage *pStorage, const char
 	pTmpDataFile->m_ppOverriddenItems = (CDatafileItem **)(pTmpDataFile->m_ppDataProcessors + Header.m_NumRawData);
 	pTmpDataFile->m_pDataSizes = (int *)(pTmpDataFile->m_ppOverriddenItems + Header.m_NumItems);
 	pTmpDataFile->m_pData = (char *)(pTmpDataFile->m_pDataSizes + Header.m_NumRawData);
-	pTmpDataFile->m_File = File;
+	pTmpDataFile->m_pFileData = pFileData;
 	str_copy(pTmpDataFile->m_aFullName, pFullName);
 	pTmpDataFile->m_pBaseName = fs_filename(pTmpDataFile->m_aFullName);
 	str_copy(pTmpDataFile->m_aPath, pPath);
@@ -790,15 +771,10 @@ bool CDataFileReader::Open(const char *pFullName, IStorage *pStorage, const char
 	mem_zero(pTmpDataFile->m_ppOverriddenItems, Header.m_NumItems * sizeof(CDatafileItem *));
 	mem_zero(pTmpDataFile->m_pDataSizes, Header.m_NumRawData * sizeof(int));
 
-	// read types, offsets, sizes and item data
-	const unsigned ReadSize = io_read(pTmpDataFile->m_File, pTmpDataFile->m_pData, Size);
-	if((int64_t)ReadSize != Size)
-	{
-		io_close(pTmpDataFile->m_File);
-		free(pTmpDataFile);
-		log_error("datafile", "truncation error. could not read all item data. wanted=%" PRId64 " got=%d", Size, ReadSize);
-		return false;
-	}
+	// copy types, offsets, sizes and item data
+	// Only this copy is swapped in place below, the bytes the file was read
+	// into stay as they are.
+	mem_copy(pTmpDataFile->m_pData, pFileData + sizeof(Header), Size);
 
 	// The swap len also includes the size of the header (without the size offset), but the header was already swapped above.
 	const int64_t DataSwapLen = pTmpDataFile->m_Header.m_Swaplen - (int)(sizeof(Header) - Header.SizeOffset());
@@ -822,7 +798,7 @@ bool CDataFileReader::Open(const char *pFullName, IStorage *pStorage, const char
 
 	if(!pTmpDataFile->Validate())
 	{
-		io_close(pTmpDataFile->m_File);
+		free(pFileData);
 		free(pTmpDataFile);
 		return false;
 	}
@@ -858,7 +834,7 @@ void CDataFileReader::Close()
 		free(m_pDataFile->m_ppOverriddenItems[i]);
 	}
 
-	io_close(m_pDataFile->m_File);
+	free(m_pDataFile->m_pFileData);
 	free(m_pDataFile);
 	m_pDataFile = nullptr;
 }
@@ -868,11 +844,11 @@ bool CDataFileReader::IsOpen() const
 	return m_pDataFile != nullptr;
 }
 
-IOHANDLE CDataFileReader::File() const
+const unsigned char *CDataFileReader::FileData() const
 {
 	dbg_assert(m_pDataFile != nullptr, "File not open");
 
-	return m_pDataFile->m_File;
+	return m_pDataFile->m_pFileData;
 }
 
 int CDataFileReader::GetDataSize(int Index) const

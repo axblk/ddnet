@@ -222,9 +222,9 @@ bool CMap::IsLoaded() const
 	return m_DataFile.IsOpen();
 }
 
-IOHANDLE CMap::File() const
+const unsigned char *CMap::MapData() const
 {
-	return m_DataFile.File();
+	return m_DataFile.FileData();
 }
 
 const char *CMap::FullName() const

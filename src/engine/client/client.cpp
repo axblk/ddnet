@@ -2454,8 +2454,8 @@ void CClient::DemoRecorder_Start(const char *pFilename, bool WithTimestamp, int 
 		GameClient()->Map(m_NetworkSessionId)->Crc(),
 		"client",
 		GameClient()->Map(m_NetworkSessionId)->Size(),
+		GameClient()->Map(m_NetworkSessionId)->MapData(),
 		nullptr,
-		GameClient()->Map(m_NetworkSessionId)->File(),
 		nullptr,
 		nullptr);
 }
@@ -3677,8 +3677,8 @@ void CClient::RaceRecord_Start(const char *pFilename)
 		GameClient()->Map(m_NetworkSessionId)->Crc(),
 		"client",
 		GameClient()->Map(m_NetworkSessionId)->Size(),
+		GameClient()->Map(m_NetworkSessionId)->MapData(),
 		nullptr,
-		GameClient()->Map(m_NetworkSessionId)->File(),
 		nullptr,
 		nullptr);
 }

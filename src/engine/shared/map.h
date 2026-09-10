@@ -41,7 +41,7 @@ public:
 	[[nodiscard]] bool Load(IStorage *pStorage, const char *pPath, int StorageType) override;
 	void Unload() override;
 	bool IsLoaded() const override;
-	IOHANDLE File() const override;
+	const unsigned char *MapData() const override;
 
 	const char *FullName() const override;
 	const char *BaseName() const override;

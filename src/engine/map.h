@@ -46,7 +46,12 @@ public:
 	[[nodiscard]] virtual bool Load(IStorage *pStorage, const char *pPath, int StorageType) = 0;
 	virtual void Unload() = 0;
 	virtual bool IsLoaded() const = 0;
-	virtual IOHANDLE File() const = 0;
+	/**
+	 * The bytes of the map file as they were read when it was loaded.
+	 *
+	 * @return Buffer of `Size()` bytes, valid until the map is unloaded.
+	 */
+	virtual const unsigned char *MapData() const = 0;
 
 	/**
 	 * Returns the full name of the currently loaded map.

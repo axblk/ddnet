@@ -24,9 +24,8 @@ enum
 /**
  * The contents of one data item as they are stored in the file.
  *
- * Reading the bytes must happen on the thread that owns the file handle,
- * whereas uncompressing them does not touch the file and can be done on any
- * thread, for example on a job thread while the main thread continues.
+ * Uncompressing them can be done on any thread, for example on a job thread
+ * while the main thread continues.
  */
 class CDataFileRawData
 {
@@ -79,7 +78,12 @@ public:
 	[[nodiscard]] bool Open(IStorage *pStorage, const char *pPath, int StorageType);
 	void Close();
 	bool IsOpen() const;
-	IOHANDLE File() const;
+	/**
+	 * The bytes of the file as they were read when it was opened.
+	 *
+	 * @return Buffer of `Size()` bytes, valid until the reader is closed.
+	 */
+	const unsigned char *FileData() const;
 
 	int GetDataSize(int Index) const;
 	void *GetData(int Index);

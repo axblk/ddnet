@@ -2164,6 +2164,31 @@ foreach(datafile ${DATA})
   list(APPEND DATA_COPY_OUTPUTS ${PROJECT_BINARY_DIR}/data/${OUT})
 endforeach()
 add_custom_target(copy_data ALL DEPENDS ${DATA_COPY_OUTPUTS})
+
+if(TARGET_OS STREQUAL "emscripten")
+  # A browser has no directory it can walk, so the build writes down what is in
+  # `data`: what exists, how big it is and the hash its URL is named after. The
+  # client reads that instead of looking around, see `src/base/webfs.h`. The
+  # list of files is the one this file already keeps, written out for the
+  # script so that it does not have to be passed on a command line.
+  set(WEB_DATA_INDEX ${PROJECT_BINARY_DIR}/data/index.txt)
+  set(WEB_DATA_FILE_LIST ${PROJECT_BINARY_DIR}/web_data_files.txt)
+  string(REPLACE ";" "\n" WEB_DATA_FILE_LIST_CONTENT "${DATA}")
+  file(GENERATE OUTPUT ${WEB_DATA_FILE_LIST} CONTENT "${WEB_DATA_FILE_LIST_CONTENT}\n")
+  add_custom_command(OUTPUT ${WEB_DATA_INDEX}
+    COMMAND ${Python3_EXECUTABLE}
+      ${PROJECT_SOURCE_DIR}/scripts/generate_web_data.py
+      --root ${PROJECT_SOURCE_DIR}/data
+      --files ${WEB_DATA_FILE_LIST}
+      --output ${WEB_DATA_INDEX}
+    DEPENDS
+      ${PROJECT_SOURCE_DIR}/scripts/generate_web_data.py
+      ${WEB_DATA_FILE_LIST}
+      ${DATA}
+    COMMENT "Writing the data index for the browser"
+    VERBATIM)
+  add_custom_target(web_data_index ALL DEPENDS ${WEB_DATA_INDEX})
+endif()
 set(COPY_FILES
   # tidy-alphabetical-start
   ${CRASHDUMP_COPY_FILES}
@@ -2381,6 +2406,8 @@ set_src(BASE GLOB_RECURSE src/base
   unicode/tolower_data.cpp
   unicode/tolower_data.h
   vmath.h
+  webfs.cpp
+  webfs.h
   windows.cpp
   windows.h
   # tidy-alphabetical-end
@@ -4097,6 +4124,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     uuid_test.cpp
     view_size_test.cpp
     vmath_test.cpp
+    webfs_test.cpp
     windows_test.cpp
     # tidy-alphabetical-end
   )

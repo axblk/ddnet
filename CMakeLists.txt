@@ -2745,6 +2745,8 @@ if(CLIENT)
     client_offline.h
     command_buffer.h
     connection.h
+    demo_client_base.cpp
+    demo_client_base.h
     demo_render_client.cpp
     demo_render_client.h
     demo_render_main.cpp
@@ -3247,7 +3249,7 @@ if(CLIENT)
   # out of the client. The client never names them, and they are written for a
   # program that has the video recorder, which the client can be built without.
   set(ENGINE_CLIENT_GAME ${ENGINE_CLIENT})
-  list(FILTER ENGINE_CLIENT_GAME EXCLUDE REGEX "src/engine/client/demo_render_(client|main)\\.(cpp|h)$")
+  list(FILTER ENGINE_CLIENT_GAME EXCLUDE REGEX "src/engine/client/(demo_client_base|demo_render_client|demo_render_main)\\.(cpp|h)$")
 
   set(CLIENT_SRC ${ENGINE_CLIENT_GAME} ${PLATFORM_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
 

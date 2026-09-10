@@ -8,6 +8,7 @@ use crate::wire;
 use crate::Net as NetImpl;
 use crate::NetBuilder as NetBuilderImpl;
 use crate::PeerIndex;
+use crate::types::VanillaSettings;
 use crate::Protocol;
 use crate::Result;
 use std::ffi::c_char;
@@ -663,6 +664,47 @@ pub extern "C" fn ddnet_net_set_resend_requests_per_second(net: &mut DdnetNet, p
             Ok(())
         })
     }
+}
+/// How a server takes 0.6 clients that connect without asking for a
+/// token. With `antispoof` the address is proven by the vanilla
+/// handshake (a tiny map and empty snapshots carrying a token the
+/// client's first input returns) before the connection is reported,
+/// and `ddnet_net_peer_vanilla` then says so; without it the connect is
+/// accepted as it is. Beyond `conn_per_second` connects the handshake
+/// names a map every client has instead of carrying one; at most
+/// `replies_per_second` handshakes go out, to addresses not verified
+/// yet; at most `decompress_per_second` compressed packets of addresses
+/// without a connection are decompressed, which only the handshake's
+/// answer needs. Zero for no limit. Before `ddnet_net_open` or after it.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_vanilla_handshake(
+    net: &mut DdnetNet,
+    antispoof: bool,
+    conn_per_second: u32,
+    replies_per_second: u32,
+    decompress_per_second: u32,
+) -> bool {
+    let settings = VanillaSettings { antispoof, conn_per_second, replies_per_second, decompress_per_second };
+    if let Init(_) = &net.inner {
+        net.init(|builder| {
+            builder.vanilla_handshake(settings);
+            Ok(())
+        })
+    } else {
+        net.good(|impl_| {
+            impl_.set_vanilla_handshake(settings);
+            Ok(())
+        })
+    }
+}
+/// Whether the peer is a 0.6 client that came in by the vanilla
+/// handshake, which took it past the part where it says who it is.
+#[no_mangle]
+pub extern "C" fn ddnet_net_peer_vanilla(net: &mut DdnetNet, peer_index: u64, vanilla: &mut bool) -> bool {
+    net.good(|impl_| {
+        *vanilla = impl_.peer_vanilla(PeerIndex(peer_index))?;
+        Ok(())
+    })
 }
 /// Writes the TLS session keys to the file `SSLKEYLOGFILE` names, so the
 /// traffic can be read in Wireshark. A debugging aid; off by default.

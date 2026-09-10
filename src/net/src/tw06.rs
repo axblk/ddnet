@@ -11,9 +11,11 @@ use crate::PrivateIdentity;
 use crate::ProtocolEvent;
 use crate::Result;
 use crate::Tw06Addr as Addr;
+use crate::vanilla;
 use getrandom::getrandom;
 use libtw2_warn;
 use crate::Socket;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::net::SocketAddr;
@@ -30,11 +32,176 @@ const EXTENDED_HEADER: &[u8] = b"xe";
 /// transport.
 const TIMEOUT_REASON: &str = "Timeout";
 
-pub struct Protocol;
+/// A pending vanilla handshake is forgotten after this.
+const VANILLA_PENDING_EXPIRY: Duration = Duration::from_secs(10);
+/// Past this many pending handshakes the expired ones are cleared out,
+/// and past this many further connects are not answered.
+const VANILLA_PENDING_CLEANUP: usize = 1024;
+const VANILLA_PENDING_MAX: usize = 4096;
+
+/// Counts what happened this second.
+struct PerSecond {
+    start: Instant,
+    count: u32,
+}
+
+impl PerSecond {
+    fn new() -> PerSecond {
+        PerSecond { start: Instant::now(), count: 0 }
+    }
+    /// Counts one more and says how many that makes this second.
+    fn bump(&mut self, now: Instant) -> u32 {
+        if now.saturating_duration_since(self.start) >= Duration::from_secs(1) {
+            self.start = now;
+            self.count = 0;
+        }
+        self.count += 1;
+        self.count
+    }
+}
+
+pub struct Protocol {
+    /// Addresses the vanilla handshake went to, and when.
+    vanilla_pending: HashMap<SocketAddr, Instant>,
+    /// Connects without tokens this second.
+    vanilla_connects: PerSecond,
+    /// Compressed packets from addresses without a connection that were
+    /// decompressed this second.
+    preconn_decompressed: PerSecond,
+}
 
 impl Protocol {
     pub fn new(_: &PrivateIdentity) -> Result<Protocol> {
-        Ok(Protocol)
+        Ok(Protocol {
+            vanilla_pending: HashMap::new(),
+            vanilla_connects: PerSecond::new(),
+            preconn_decompressed: PerSecond::new(),
+        })
+    }
+    /// Whether `from` was sent the vanilla handshake and may answer it.
+    pub fn is_vanilla_pending(&self, from: &SocketAddr) -> bool {
+        self.vanilla_pending
+            .get(from)
+            .is_some_and(|sent| sent.elapsed() < VANILLA_PENDING_EXPIRY)
+    }
+    /// Answers a connect without token with the connect-accept and the
+    /// vanilla handshake, see `vanilla`.
+    fn send_vanilla_handshake(
+        &mut self,
+        cb: &CallbackData,
+        packet_buf: &mut [u8],
+        from: &SocketAddr,
+    ) -> Result<()> {
+        use libtw2_net::protocol::ConnectedPacket;
+        use libtw2_net::protocol::ConnectedPacketType;
+        use libtw2_net::protocol::ControlPacket;
+        use libtw2_net::protocol::Packet;
+
+        let now = Instant::now();
+        let num = self.vanilla_connects.bump(now);
+        let settings = &cb.vanilla;
+        // The handshake goes to an address that is not verified yet and
+        // is larger than the connect asking for it.
+        if settings.replies_per_second != 0 && num > settings.replies_per_second {
+            return Ok(());
+        }
+        if self.vanilla_pending.len() >= VANILLA_PENDING_CLEANUP {
+            self.vanilla_pending.retain(|_, sent| now.saturating_duration_since(*sent) < VANILLA_PENDING_EXPIRY);
+        }
+        if self.vanilla_pending.len() >= VANILLA_PENDING_MAX {
+            return Ok(());
+        }
+        let flooding = settings.conn_per_second != 0 && num > settings.conn_per_second;
+        if flooding {
+            debug!("{}: vanilla connect flooding, handshake with the fallback map", from);
+        }
+
+        let written = Packet::Connected(ConnectedPacket {
+            token: None,
+            ack: 0,
+            type_: ConnectedPacketType::Control(ControlPacket::ConnectAccept),
+        }).write(&mut packet_buf[..]).unwrap();
+        cb.socket.send_to(written, *from).context("UdpSocket::send_to")?;
+
+        let token = vanilla::token(cb.challenger.compute_token(from));
+        let payload = vanilla::handshake_payload(token, flooding);
+        let written = Packet::Connected(ConnectedPacket {
+            token: None,
+            ack: 0,
+            type_: ConnectedPacketType::Chunks(false, vanilla::HANDSHAKE_CHUNKS as u8, &payload),
+        }).write(&mut packet_buf[..]).unwrap();
+        cb.socket.send_to(written, *from).context("UdpSocket::send_to")?;
+        self.vanilla_pending.insert(*from, now);
+        Ok(())
+    }
+    /// A packet from an address the vanilla handshake went to: the
+    /// connection is accepted once an input in it carries the token.
+    pub fn on_recv_vanilla(
+        &mut self,
+        cb: &CallbackData,
+        packet_buf: &mut [u8; 65536],
+        packet_len: usize,
+        from: &SocketAddr,
+    ) -> Result<Option<ProtocolEvent>> {
+        use libtw2_net::protocol::ChunksIter;
+        use libtw2_net::protocol::ConnectedPacket;
+        use libtw2_net::protocol::ConnectedPacketType;
+        use libtw2_net::protocol::Packet;
+        use libtw2_net::protocol::PACKETFLAG_COMPRESSION;
+        use libtw2_net::protocol::PACKETFLAG_CONNLESS;
+        use libtw2_net::protocol::PACKETFLAG_CONTROL;
+
+        let (packet_buf, decomp_buf) = {
+            let len = packet_buf.len();
+            packet_buf.split_at_mut(len - 2048)
+        };
+        let packet = &packet_buf[..packet_len];
+        let Some(&first) = packet.first() else { return Ok(None) };
+        let flags = first >> 4;
+        if flags & (PACKETFLAG_CONTROL | PACKETFLAG_CONNLESS) != 0 {
+            return Ok(None);
+        }
+        if flags & PACKETFLAG_COMPRESSION != 0 {
+            // Decompressing costs more than anything else done per packet
+            // for an address without a connection.
+            let num = self.preconn_decompressed.bump(Instant::now());
+            let limit = cb.vanilla.decompress_per_second;
+            if limit != 0 && num > limit {
+                return Ok(None);
+            }
+        }
+        let payload = match Packet::read(&mut libtw2_warn::Ignore, packet, Some(false), decomp_buf) {
+            Ok(Packet::Connected(ConnectedPacket {
+                type_: ConnectedPacketType::Chunks(_, num_chunks, payload),
+                ..
+            })) => ChunksIter::new(payload, num_chunks),
+            _ => return Ok(None),
+        };
+        let expected = vanilla::token(cb.challenger.compute_token(from));
+        let mut has_token = false;
+        for chunk in payload {
+            if vanilla::input_tick(&chunk) == Some(expected) {
+                has_token = true;
+                break;
+            }
+        }
+        if !has_token {
+            debug!("{}: no vanilla token in the packet", from);
+            return Ok(None);
+        }
+        self.vanilla_pending.remove(from);
+        info!("{}: accepted by the vanilla handshake", from);
+
+        // The connection continues after the handshake's chunks; the
+        // packet with the token is fed to it right after this returns.
+        let epoch = Instant::now();
+        let libtw2_cb = &mut Callback { socket: &cb.socket, addr: from, epoch };
+        let Some(conn) = libtw2_patch::accept_vanilla(libtw2_cb, vanilla::HANDSHAKE_CHUNKS) else {
+            return Ok(None);
+        };
+        let mut conn = Connection::new(conn, epoch, false, *from, cb.timeout, cb.resend_request_interval);
+        conn.vanilla = true;
+        Ok(Some(ProtocolEvent::NewConnection(cb.next_peer_index, conn.into())))
     }
     pub fn remove_peer(&mut self, idx: PeerIndex, conn: Connection) {
         let _ = idx;
@@ -85,8 +252,21 @@ impl Protocol {
                         }
                         // ignore invalid tokens
                         Some(_) => return Ok(None),
-                        // TODO: backcompat with clients not supporting tokens…
-                        None => return Ok(None),
+                        // A client without tokens: the address is proven by
+                        // the vanilla handshake, or taken as it is. Either
+                        // way the connect is fed to the new connection
+                        // right after this returns; without the handshake
+                        // that is what accepts it.
+                        None => {
+                            if cb.vanilla.antispoof {
+                                self.send_vanilla_handshake(cb, packet_buf, from)?;
+                                return Ok(None);
+                            }
+                            let epoch = Instant::now();
+                            let conn = libtw2_net::Connection::new();
+                            let conn = Connection::new(conn, epoch, false, *from, cb.timeout, cb.resend_request_interval);
+                            return Ok(Some(ProtocolEvent::NewConnection(cb.next_peer_index, conn.into())));
+                        }
                     }
                 }
                 ControlPacket::Accept if cb.accept.tw06 => {
@@ -186,6 +366,10 @@ pub struct Connection {
     /// When the peer was last heard from, and how long it may stay silent.
     last_recv: Instant,
     timeout: Duration,
+    /// The client proved its address by the vanilla handshake, which
+    /// took it past the part of the protocol where it would say who it
+    /// is.
+    vanilla: bool,
 }
 
 /// Whether a packet counts as hearing from the peer: one that could not
@@ -232,7 +416,11 @@ impl Connection {
             buffered_events: VecDeque::with_capacity(4),
             last_recv: Instant::now(),
             timeout,
+            vanilla: false,
         }
+    }
+    pub fn is_vanilla(&self) -> bool {
+        self.vanilla
     }
     pub fn set_resend_request_interval(&mut self, interval: Duration) {
         libtw2_patch::set_resend_request_interval6(&mut self.inner, interval);

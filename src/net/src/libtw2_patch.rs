@@ -5,6 +5,7 @@
 //! nothing, so such a build still speaks 0.6 over UDP and connects to 0.7
 //! servers as a client.
 
+use crate::types::VanillaSettings;
 use libtw2_net::Timestamp;
 use log::warn;
 use std::time::Duration;
@@ -72,4 +73,26 @@ pub fn set_resend_request_interval7(conn: &mut libtw2_net::connection7::Connecti
     conn.set_resend_request_interval(interval);
     #[cfg(not(feature = "libtw2-patch"))]
     let _ = (conn, interval);
+}
+
+/// The vanilla 0.6 handshake needs the patches too; without them a client
+/// that speaks no tokens is taken as it is, as with the handshake off.
+pub fn clamp_vanilla(mut settings: VanillaSettings) -> VanillaSettings {
+    if settings.antispoof && !PATCHED {
+        warn!("the vanilla 0.6 handshake stays off: it needs libtw2-patches, see src/net/libtw2-patches");
+        settings.antispoof = false;
+    }
+    settings
+}
+
+/// A 0.6 connection to a client without tokens that such a handshake let
+/// in, `libtw2-patches/0004`.
+pub fn accept_vanilla<CB: libtw2_net::connection::Callback>(cb: &mut CB, sent: u16) -> Option<libtw2_net::Connection> {
+    #[cfg(feature = "libtw2-patch")]
+    return Some(libtw2_net::Connection::new_accept_vanilla(cb, sent));
+    #[cfg(not(feature = "libtw2-patch"))]
+    {
+        let _ = (cb, sent);
+        None
+    }
 }

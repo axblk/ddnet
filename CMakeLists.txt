@@ -1255,6 +1255,7 @@ set_glob(RUST_NET_SRC GLOB_RECURSE "rs" src/net/src
   tw07.rs
   types.rs
   util.rs
+  vanilla.rs
   web.rs
   web/browser.rs
   webtransport.rs

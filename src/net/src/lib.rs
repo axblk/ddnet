@@ -55,6 +55,8 @@ mod tw06;
 #[cfg(not(target_os = "emscripten"))]
 mod tw07;
 mod types;
+#[cfg(not(target_os = "emscripten"))]
+mod vanilla;
 mod mapstream;
 #[cfg(not(target_os = "emscripten"))]
 mod webtransport;

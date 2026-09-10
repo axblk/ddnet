@@ -132,18 +132,11 @@ impl Identity {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
-    /// Checks an identity proof: that this identity vouched for the
-    /// certificate a client saw, in answer to the client's nonce.
-    pub fn verify_proof(&self, proof: &[u8], certificate_sha256: &[u8; 32], nonce: &[u8; 32]) -> Option<Identity> {
-        if proof.len() != IDENTITY_PROOF_SIZE {
-            return None;
-        }
-        let identity = Identity::from_bytes(proof[..32].try_into().unwrap());
-        if identity != *self {
-            return None;
-        }
-        let message = identity_proof_message(certificate_sha256, nonce);
-        identity.verify(&message, &proof[32..]).then_some(identity)
+    /// Checks the signature of an identity proof: that this identity
+    /// vouched for the certificate a client saw, in answer to the client's
+    /// nonce.
+    pub fn verify_proof(&self, signature: &[u8], certificate_sha256: &[u8; 32], nonce: &[u8; 32]) -> bool {
+        self.verify(&identity_proof_message(certificate_sha256, nonce), signature)
     }
     #[cfg(not(target_os = "emscripten"))]
     fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
@@ -412,11 +405,13 @@ mod test {
         let sha256 = [7; 32];
         let nonce = [9; 32];
         let proof = identity.prove(&sha256, &nonce);
-        assert!(identity.public().verify_proof(&proof, &sha256, &nonce).is_some());
-        assert!(identity.public().verify_proof(&proof, &[8; 32], &nonce).is_none());
-        assert!(identity.public().verify_proof(&proof, &sha256, &[0; 32]).is_none());
-        assert!(other.public().verify_proof(&proof, &sha256, &nonce).is_none());
-        assert!(identity.public().verify_proof(&proof[..95], &sha256, &nonce).is_none());
+        assert_eq!(proof[..32], identity.public().as_bytes()[..]);
+        let signature = &proof[32..];
+        assert!(identity.public().verify_proof(signature, &sha256, &nonce));
+        assert!(!identity.public().verify_proof(signature, &[8; 32], &nonce));
+        assert!(!identity.public().verify_proof(signature, &sha256, &[0; 32]));
+        assert!(!other.public().verify_proof(signature, &sha256, &nonce));
+        assert!(!identity.public().verify_proof(&signature[..63], &sha256, &nonce));
     }
 
     #[test]

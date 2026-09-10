@@ -1238,6 +1238,7 @@ set_glob(RUST_NET_SRC GLOB_RECURSE "rs" src/net/src
   native/vanilla.rs
   native/webtransport.rs
   native/ws.rs
+  session.rs
   types.rs
   util.rs
   web.rs

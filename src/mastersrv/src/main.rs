@@ -1806,12 +1806,7 @@ async fn main() {
                 RegisterResponse::Error("unexpected panic".into()),
             ),
         };
-        let mut body = json::to_value(body).unwrap();
-        body["quic_challenge"] = json::Value::Bool(true);
-        body["webtransport_challenge"] = json::Value::Bool(true);
-        body["websocket_challenge"] = json::Value::Bool(true);
-        body["domain_registration"] = json::Value::Bool(true);
-        body["scheme_fragments"] = json::Value::Bool(true);
+        let body = json::to_value(body).unwrap();
         warp::http::Response::builder()
             .status(http_status)
             .header(warp::http::header::CONTENT_TYPE, "application/json")

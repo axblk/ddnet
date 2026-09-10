@@ -63,7 +63,7 @@ void CDemoClientBase::InitInterfaces()
 	m_GhostLoader.Init(m_pStorage);
 }
 
-bool CDemoClientBase::InitGame(IEngineGraphicsWindow *pWindow)
+bool CDemoClientBase::InitGame(IEngineGraphicsWindow *pWindow, IEngineInput *pInput)
 {
 	m_LocalStartTime = m_GlobalStartTime = time_get();
 
@@ -93,6 +93,8 @@ bool CDemoClientBase::InitGame(IEngineGraphicsWindow *pWindow)
 #endif
 	m_pTextRender = Kernel()->RequestInterface<IEngineTextRender>();
 	m_pTextRender->Init();
+	if(pInput != nullptr)
+		pInput->Init();
 	Graphics()->AddWindowResizeListener([this] { OnWindowResize(); });
 	GameClient()->OnInit();
 	return true;

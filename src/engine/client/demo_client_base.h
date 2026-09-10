@@ -18,6 +18,7 @@ class IConfigManager;
 class IEngine;
 class IEngineGraphics;
 class IEngineGraphicsWindow;
+class IEngineInput;
 class IEngineSound;
 class IEngineTextRender;
 
@@ -57,15 +58,16 @@ protected:
 	IEngineTextRender *TextRender() { return m_pTextRender; }
 
 	/**
-	 * Opens the graphics in the given window, then the sound, the text render
-	 * and the game.
+	 * Opens the graphics in the given window, then the sound, the text render,
+	 * the input and the game.
 	 *
 	 * @param pWindow The window to draw into, taken over by the kernel.
+	 * @param pInput The input to open, `nullptr` when nobody is at the keyboard.
 	 *
 	 * @return `false` when the graphics could not be opened, which has been
 	 * logged.
 	 */
-	bool InitGame(IEngineGraphicsWindow *pWindow);
+	bool InitGame(IEngineGraphicsWindow *pWindow, IEngineInput *pInput);
 	/**
 	 * Ends a running export, closes the demo and shuts down what `InitGame`
 	 * opened.

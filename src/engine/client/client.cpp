@@ -3133,20 +3133,6 @@ void CClient::InitInterfaces()
 	m_GhostLoader.Init(m_pStorage);
 }
 
-static void SleepIdle(std::chrono::nanoseconds Duration)
-{
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
-	// Sleeping keeps the browser's main thread to itself, so the page neither
-	// paints nor delivers input for as long as it lasts. Emscripten's sleep is the
-	// one that hands control back, and it counts in whole milliseconds.
-	const int64_t Milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(Duration).count();
-	if(Milliseconds > 0)
-		emscripten_sleep(Milliseconds);
-#else
-	std::this_thread::sleep_for(Duration);
-#endif
-}
-
 void CClient::Run()
 {
 	bool NonInteractive = false;
@@ -3724,7 +3710,7 @@ void CClient::Run()
 			if(Inactive)
 			{
 				// Without focus, save power by not waking up for packets.
-				SleepIdle(WaitTime);
+				thread_sleep_idle(WaitTime);
 			}
 			else
 			{
@@ -3732,7 +3718,7 @@ void CClient::Run()
 				// Waiting on a socket cannot block in the browser: the wait reports what
 				// is ready and returns, so the loop below would spin the budget away
 				// instead of waiting it out, and hold the page for the whole of it.
-				SleepIdle(WaitTime);
+				thread_sleep_idle(WaitTime);
 #else
 				// Packets end the wait early. The wait can overshoot by a fraction of its duration, so approach the deadline in halving steps.
 				while(WaitTime > 0ns && net_socket_read_wait(m_aNetClient[CONN_MAIN].m_Socket, WaitTime > 1000us ? WaitTime / 2 : 0ns) == 0)

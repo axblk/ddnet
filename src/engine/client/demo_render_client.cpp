@@ -68,7 +68,7 @@ void CDemoRenderClient::OnExportFrame()
 int CDemoRenderClient::Run()
 {
 	int ExitCode = 1;
-	if(InitGame(CreateOffscreenGraphicsWindow()))
+	if(InitGame(CreateOffscreenGraphicsWindow(), nullptr))
 	{
 		const char *pError = PlayDemo();
 		if(pError == nullptr)

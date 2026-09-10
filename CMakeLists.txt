@@ -2705,6 +2705,8 @@ if(CLIENT)
     demo_client_base.h
     demo_render_client.cpp
     demo_render_client.h
+    demo_viewer_client.cpp
+    demo_viewer_client.h
     demoedit.cpp
     demoedit.h
     discord.cpp
@@ -3124,7 +3126,7 @@ if(CLIENT)
   list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_GRAPHICS})
   # The programs that only show a demo are built on these instead of client.cpp.
   set(ENGINE_CLIENT_DEMO ${ENGINE_CLIENT})
-  list(FILTER ENGINE_CLIENT_DEMO INCLUDE REGEX "src/engine/client/demo_(client_base|render_client)\\.(cpp|h)$")
+  list(FILTER ENGINE_CLIENT_DEMO INCLUDE REGEX "src/engine/client/demo_(client_base|render_client|viewer_client)\\.(cpp|h)$")
   list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_DEMO})
 
   # Shaders are embedded in the binary: GLSL for OpenGL, SPIR-V for Vulkan
@@ -3381,16 +3383,22 @@ if(CLIENT)
     ${PLATFORM_CLIENT_INCLUDE_DIRS}
   )
 
+  # What the programs that only show a demo are built from: the game on
+  # CDemoClientBase instead of CClient, with the menus as a stand-in (see
+  # menus_null.cpp), and none of the network, the server browser, the editor or
+  # the platform integrations.
+  set(DEMO_CLIENT_SRC ${ENGINE_CLIENT} ${ENGINE_CLIENT_DEMO} ${GAME_CLIENT} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
+  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/engine/client/(blocklist_driver|client|connect_target|demo_render_client|demo_viewer_client|demoedit|discord|favorites|notifications|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|sixup_translate_system|steam|updater)\\.(cpp|h)$")
+  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
+  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/game/client/components/(community_icons|menus(_[a-z0-9_]*)?)\\.cpp$")
+  list(APPEND DEMO_CLIENT_SRC src/game/client/components/menus_null.cpp)
+  # They leave the updater and the platform integrations out.
+  set(DEMO_CLIENT_TARGETS demo-renderer demo-viewer)
+
   if(VIDEORECORDER AND (VULKAN OR WEBGPU_NATIVE_BACKEND) AND NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "emscripten"))
-    # The game without the connection: CDemoRenderClient instead of CClient,
-    # the graphics without SDL and the null input, and none of the network,
-    # the server browser, the editor or the platform integrations.
-    set(DEMO_RENDERER_SRC ${ENGINE_CLIENT} ${ENGINE_CLIENT_DEMO} ${GAME_CLIENT} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
-    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/(blocklist_driver|client|connect_target|demoedit|discord|favorites|input|notifications|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|sixup_translate_system|steam|updater|window_sdl)\\.(cpp|h)$")
-    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
-    # The menus are the stand-in, see menus_null.cpp.
-    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/game/client/components/(community_icons|menus(_[a-z0-9_]*)?)\\.cpp$")
-    list(APPEND DEMO_RENDERER_SRC src/game/client/components/menus_null.cpp)
+    # Draws into a surface without a window, so no SDL and the null input.
+    set(DEMO_RENDERER_SRC ${DEMO_CLIENT_SRC} src/engine/client/demo_render_client.cpp src/engine/client/demo_render_client.h)
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/(input|window_sdl)\\.(cpp|h)$")
     # A developer tool, not part of the game, and not shipped with the release.
     # Build it explicitly with `cmake --build . --target demo-renderer`.
     add_executable(demo-renderer EXCLUDE_FROM_ALL
@@ -3452,6 +3460,84 @@ if(CLIENT)
     )
   endif()
 
+  # Shows one demo in a window. Not shipped either:
+  # `cmake --build . --target demo-viewer`. Not on Android and iOS, where the
+  # client is an app of its own (and Xcode builds the generated client sources
+  # for one target only).
+  if(NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "ios"))
+    add_executable(demo-viewer EXCLUDE_FROM_ALL
+      ${DEMO_CLIENT_SRC}
+      src/engine/client/demo_viewer_client.cpp
+      src/engine/client/demo_viewer_client.h
+      ${DEPS_CLIENT}
+      ${WAVPACK_DEP}
+      # tidy-alphabetical-start
+      $<TARGET_OBJECTS:engine-client-graphics>
+      $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-shared>
+      $<TARGET_OBJECTS:game-shared>
+      # tidy-alphabetical-end
+    )
+    add_dependencies(demo-viewer generate_content_types)
+    if(VULKAN)
+      add_dependencies(demo-viewer build_vulkan_shaders)
+    endif()
+    set_property(TARGET demo-viewer PROPERTY OUTPUT_NAME ddnet-demo-viewer)
+    set_own_rpath(demo-viewer)
+    target_compile_definitions(demo-viewer PRIVATE CONF_DEMO_VIEWER_TOOL)
+    if(GLEW_BUNDLED)
+      target_compile_definitions(demo-viewer PRIVATE CONF_GLEW_HAS_CONTEXT_INIT)
+    endif()
+    if(VULKAN)
+      target_compile_definitions(demo-viewer PRIVATE CONF_BACKEND_VULKAN)
+    endif()
+    if(WEBGPU_BACKEND_PROTOTYPE)
+      target_compile_definitions(demo-viewer PRIVATE CONF_BACKEND_WEBGPU)
+    endif()
+    target_link_libraries(demo-viewer
+      # tidy-alphabetical-start
+      ${FFMPEG_LIBRARIES}
+      ${FREETYPE_LIBRARIES}
+      ${GLEW_LIBRARIES}
+      ${PNG_LIBRARIES}
+      ${SDL2_LIBRARIES}
+      ${SQLite3_LIBRARIES}
+      ${VULKAN_LIBRARIES}
+      ${WAVPACK_LIBRARIES}
+      # tidy-alphabetical-end
+      ${OPUSFILE_LIBRARIES}
+      ${OPUS_LIBRARIES}
+      ${OGG_LIBRARIES}
+      ${PLATFORM_CLIENT_LIBS}
+      ${CRYPTO_LIBRARIES}
+      ${ZLIB_LIBRARIES}
+      ${PLATFORM_LIBS}
+      ${CMAKE_THREAD_LIBS_INIT}
+    )
+    if(WEBGPU_NATIVE_BACKEND)
+      target_link_libraries(demo-viewer WGPU::Native)
+    endif()
+    if(WEBGPU_BACKEND_PROTOTYPE AND TARGET_OS STREQUAL "emscripten")
+      target_compile_options(demo-viewer PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+      target_link_options(demo-viewer PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+    endif()
+    target_include_directories(demo-viewer SYSTEM PRIVATE
+      # tidy-alphabetical-start
+      ${FFMPEG_INCLUDE_DIRS}
+      ${FREETYPE_INCLUDE_DIRS}
+      ${GLEW_INCLUDE_DIRS}
+      ${OGG_INCLUDE_DIRS}
+      ${OPUSFILE_INCLUDE_DIRS}
+      ${OPUS_INCLUDE_DIRS}
+      ${PNG_INCLUDE_DIRS}
+      ${SDL2_INCLUDE_DIRS}
+      ${WAVPACK_INCLUDE_DIRS}
+      # tidy-alphabetical-end
+      ${VULKAN_INCLUDE_DIRS}
+      ${PLATFORM_CLIENT_INCLUDE_DIRS}
+    )
+  endif()
+
   if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC OR WEBGPU_NATIVE_BACKEND)
     set_own_rpath(game-client)
   endif()
@@ -3487,6 +3573,10 @@ if(CLIENT)
   if(TARGET demo-renderer)
     list(APPEND TARGETS_OWN demo-renderer)
     list(APPEND TARGETS_LINK demo-renderer)
+  endif()
+  if(TARGET demo-viewer)
+    list(APPEND TARGETS_OWN demo-viewer)
+    list(APPEND TARGETS_LINK demo-viewer)
   endif()
 endif()
 
@@ -4948,16 +5038,16 @@ foreach(target ${TARGETS_OWN})
   if(TEST_MYSQL)
     target_compile_definitions(${target} PRIVATE CONF_TEST_MYSQL)
   endif()
-  if(AUTOUPDATE AND NOT STEAM AND NOT "${target}" STREQUAL "demo-renderer")
+  if(AUTOUPDATE AND NOT STEAM AND NOT "${target}" IN_LIST DEMO_CLIENT_TARGETS)
     target_compile_definitions(${target} PRIVATE CONF_AUTOUPDATE)
   endif()
-  if(INFORM_UPDATE AND NOT STEAM AND NOT "${target}" STREQUAL "demo-renderer")
+  if(INFORM_UPDATE AND NOT STEAM AND NOT "${target}" IN_LIST DEMO_CLIENT_TARGETS)
     target_compile_definitions(${target} PRIVATE CONF_INFORM_UPDATE)
   endif()
-  if(STEAM AND NOT "${target}" STREQUAL "demo-renderer")
+  if(STEAM AND NOT "${target}" IN_LIST DEMO_CLIENT_TARGETS)
     target_compile_definitions(${target} PRIVATE PLATFORM_SUFFIX=-steam)
   endif()
-  if(DISCORD AND NOT "${target}" STREQUAL "demo-renderer")
+  if(DISCORD AND NOT "${target}" IN_LIST DEMO_CLIENT_TARGETS)
     target_compile_definitions(${target} PRIVATE CONF_DISCORD)
     if(DISCORD_DYNAMIC)
       target_compile_definitions(${target} PRIVATE CONF_DISCORD_DYNAMIC)

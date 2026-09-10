@@ -4,6 +4,8 @@
 #ifndef BASE_THREAD_H
 #define BASE_THREAD_H
 
+#include <chrono>
+
 /**
  * Threading related functions.
  *
@@ -41,6 +43,29 @@ void thread_wait(void *thread);
  * @ingroup Threads
  */
 void thread_yield();
+
+/**
+ * Sleeps for the given duration.
+ *
+ * @ingroup Threads
+ *
+ * @param duration How long to sleep.
+ *
+ * @remark In the browser this is what hands the page its turn back, which no
+ * other way of sleeping does.
+ */
+void thread_sleep_idle(std::chrono::nanoseconds duration);
+
+/**
+ * Waits out the rest of a frame.
+ *
+ * @ingroup Threads
+ *
+ * @param next_frame_time When the next frame is due, carried from one call to
+ * the next. Zero starts the pacing now.
+ * @param refresh_rate Frames per second, or zero for no limit.
+ */
+void thread_sleep_until_next_frame(std::chrono::nanoseconds &next_frame_time, int refresh_rate);
 
 /**
  * Requests the most precise timer wakeups that the system offers for the calling thread.

@@ -10,12 +10,15 @@ import io
 import json
 import os
 import queue
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import traceback
+
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def urlopen_anystatus(url):
@@ -40,6 +43,8 @@ def urlopen_anystatus(url):
 class Log(namedtuple("Log", "timestamp level line")):
 	@classmethod
 	def parse(cls, line):
+		# The Emscripten client colors its lines even on a pipe.
+		line = ANSI_ESCAPE.sub("", line)
 		if line.startswith("=="):
 			pid, line = line[2:].split("== ", 1)
 			return cls(None, "valgrind", f"{pid}: {line}")
@@ -112,10 +117,12 @@ YELLOW = "\x1b[33m"
 
 
 class TestRunner:
-	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, repo_dir, test_dir, show_full_output, test_websockets, test_quic, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
+	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, ddnet_js, repo_dir, test_dir, show_full_output, test_websockets, test_quic, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
 		self.ddnet = ddnet
 		self.ddnet_server = ddnet_server
 		self.ddnet_mastersrv = ddnet_mastersrv
+		# The Emscripten client, run under Node; `None` without one.
+		self.ddnet_js = ddnet_js
 		self.repo_dir = repo_dir
 		self.data_dir = os.path.join(test_dir, "data")
 		self.test_dir = test_dir
@@ -186,6 +193,14 @@ class TestRunner:
 				print(f"{test.name} ... {YELLOW}skipped{RESET}")
 				num_skipped += 1
 				continue
+			if test.requires_native_client and self.ddnet is None:
+				print(f"{test.name} ... {YELLOW}skipped{RESET}")
+				num_skipped += 1
+				continue
+			if test.requires_browser_client and self.ddnet_js is None:
+				print(f"{test.name} ... {YELLOW}skipped{RESET}")
+				num_skipped += 1
+				continue
 			print(f"{test.name} ... ", end="", flush=True)
 			tmp_dir, error = self.run_test(test)
 			tmp_dir_formatted = f" ({tmp_dir})" if tmp_dir is not None else ""
@@ -225,8 +240,9 @@ class TestEnvironment:
 add_path .
 add_path {relpath(self.runner.data_dir, tmp_dir)}
 """)
-		self.ddnet = os.path.relpath(runner.ddnet, self.tmp_dir)
+		self.ddnet = os.path.relpath(runner.ddnet, self.tmp_dir) if runner.ddnet is not None else None
 		self.ddnet_server = os.path.relpath(runner.ddnet_server, self.tmp_dir)
+		self.ddnet_js = os.path.abspath(runner.ddnet_js) if runner.ddnet_js is not None else None
 		self.ddnet_mastersrv = os.path.relpath(runner.ddnet_mastersrv, self.tmp_dir) if runner.ddnet_mastersrv is not None else None
 		self.run_prefix_args = []
 		if self.runner.valgrind_memcheck:
@@ -262,6 +278,9 @@ add_path {relpath(self.runner.data_dir, tmp_dir)}
 
 	def client(self, *args, **kwargs):
 		return Client(self, *args, **kwargs)
+
+	def browser_client(self, *args, **kwargs):
+		return BrowserClient(self, *args, **kwargs)
 
 	def mastersrv(self, *args, **kwargs):
 		return Mastersrv(self, *args, **kwargs)
@@ -365,7 +384,7 @@ def run_test_timeout_thread(name, test_env, input_queue, param):
 
 
 class Runnable:
-	def __init__(self, test_env, name, args, *, extra_env_vars={}, log_is_stderr=False, allow_unclean_exit=False):  # noqa: B006 mutable-default-arguments
+	def __init__(self, test_env, name, args, *, extra_env_vars={}, log_is_stderr=False, allow_unclean_exit=False, cwd=None):  # noqa: B006 mutable-default-arguments
 		self.name = name
 		cur_env_vars = dict(os.environ)
 		intersection = set(cur_env_vars) & (set(test_env.runner.extra_env_vars) | set(extra_env_vars))
@@ -374,7 +393,7 @@ class Runnable:
 		new_env_vars = {**cur_env_vars, **test_env.runner.extra_env_vars, **extra_env_vars}
 		self.process = popen(
 			test_env.run_prefix_args + args,
-			cwd=test_env.tmp_dir,
+			cwd=cwd if cwd is not None else test_env.tmp_dir,
 			env=new_env_vars,
 			stdin=subprocess.DEVNULL,
 			stdout=subprocess.PIPE,
@@ -494,6 +513,38 @@ class Client(Runnable):
 		self.wait_for_log_prefix("client: version", timeout=timeout)
 
 
+class BrowserClient(Runnable):
+	"""The Emscripten client under Node, in place of a browser.
+
+	It runs in the directory of `DDNet.js`, where its data file is, and
+	reads no FIFO: everything it is to do goes on its command line, and it
+	is killed at the end of the test. What it gets to see of the network is
+	what a browser would: WebSockets, and no map download over HTTP."""
+
+	def __init__(self, test_env, extra_args=[]):  # noqa: B006 mutable-default-arguments
+		name = f"browser{test_env.num_clients}"
+		super().__init__(
+			test_env,
+			name,
+			[
+				"node",
+				"-r",
+				os.path.abspath(os.path.join(test_env.runner.repo_dir, "scripts", "emscripten", "node-xhr-stub.js")),
+				test_env.ddnet_js,
+				"cl_save_settings 0",
+				"cl_map_download_url http://127.0.0.1:1",
+				f"conn_timeout {test_env.runner.conn_timeout}",
+			]
+			+ extra_args,
+			allow_unclean_exit=True,
+			cwd=os.path.dirname(test_env.ddnet_js),
+		)
+		test_env.num_clients += 1
+
+	def wait_for_startup(self, timeout=60):
+		self.wait_for_log_prefix("client: version", timeout=timeout)
+
+
 class Server(Runnable):
 	def __init__(self, test_env, extra_args=[]):  # noqa: B006 mutable-default-arguments
 		name = f"server{test_env.num_servers}"
@@ -603,12 +654,14 @@ json = {communities_json_filename!r}
 ALL_TESTS = []
 
 
-def test(test=None, *, requires_mastersrv=False, requires_websockets=False, requires_quic=False, timeout=60):
+def test(test=None, *, requires_mastersrv=False, requires_websockets=False, requires_quic=False, requires_native_client=True, requires_browser_client=False, timeout=60):
 	def apply(test):
 		test.name = test.__name__
 		test.requires_mastersrv = requires_mastersrv
 		test.requires_websockets = requires_websockets
 		test.requires_quic = requires_quic
+		test.requires_native_client = requires_native_client
+		test.requires_browser_client = requires_browser_client
 		test.timeout = timeout
 		ALL_TESTS.append(test)
 		return test
@@ -740,6 +793,27 @@ def client_can_connect_websockets(test_env):
 	client.exit()
 	server.wait_for_exit()
 	client.wait_for_exit()
+
+
+# The Emscripten client, as a browser would run it, against the native
+# server over WebSockets: it starts with the connect on its command line
+# once the server's port and identity are known, joins the game, and sees
+# the server go.
+@test(requires_websockets=True, requires_quic=True, requires_native_client=False, requires_browser_client=True, timeout=180)
+def browser_client_can_connect(test_env):
+	server = test_env.server()
+	wait_for_startup([server])
+	if server.identity is None:
+		raise AssertionError("server did not log its identity")
+	client = test_env.browser_client([f'connect "ddnet+ws://127.0.0.1:{server.port}#identity-sha256={server.identity}"'])
+	wait_for_startup([client])
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=60).line
+	if "sixup=0" not in join:
+		raise AssertionError(f"sixup=0 not found in {join!r}")
+	client.wait_for_log_prefix("client: connected, sending info", timeout=10)
+	server.exit()
+	client.wait_for_log_exact("client: offline error='Server shutdown'", timeout=10)
+	server.wait_for_exit()
 
 
 @test
@@ -1094,6 +1168,7 @@ def main():
 	parser.add_argument("--test-quic", action="store_true", help="run tests that require compiling with QUIC networking (-DNETWORKING_QUIC=ON)")
 	parser.add_argument("--timeout-multiplier", type=float, default=1, help="multiply all timeouts by this value")
 	parser.add_argument("--valgrind-memcheck", action="store_true", help="use valgrind's memcheck on client and server")
+	parser.add_argument("--emscripten-client", metavar="DDNET_JS", help="path to the DDNet.js of an Emscripten client build, run under node for the browser tests; the native client binary may be missing then")
 	parser.add_argument("builddir", metavar="BUILDDIR", help="path to ddnet build directory")
 	parser.add_argument("test", metavar="TEST", nargs="?", help="name of test to run")
 	args = parser.parse_args()
@@ -1101,8 +1176,13 @@ def main():
 	ddnet = os.path.join(args.builddir, f"DDNet{EXE_SUFFIX}")
 	ddnet_server = os.path.join(args.builddir, f"DDNet-Server{EXE_SUFFIX}")
 	ddnet_mastersrv = os.path.join(args.builddir, f"mastersrv{EXE_SUFFIX}")
+	ddnet_js = args.emscripten_client
 	if not os.path.exists(ddnet):
-		raise RuntimeError(f"client binary {ddnet!r} not found")
+		if ddnet_js is None:
+			raise RuntimeError(f"client binary {ddnet!r} not found")
+		ddnet = None
+	if ddnet_js is not None and not os.path.exists(ddnet_js):
+		raise RuntimeError(f"Emscripten client {ddnet_js!r} not found")
 	if not os.path.exists(ddnet_server):
 		raise RuntimeError(f"server binary {ddnet_server!r} not found")
 	if not os.path.exists(ddnet_mastersrv):
@@ -1119,6 +1199,7 @@ def main():
 		ddnet=ddnet,
 		ddnet_server=ddnet_server,
 		ddnet_mastersrv=ddnet_mastersrv,
+		ddnet_js=ddnet_js,
 		repo_dir=repo_dir,
 		test_dir=args.builddir,
 		show_full_output=args.show_full_output,

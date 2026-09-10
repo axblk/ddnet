@@ -3,7 +3,10 @@
 //! what arrives; the game polls from here, the way it polls the native
 //! backend, so there is no second event loop. What goes over
 //! the wire is the same as natively: the frames of `wire.rs`, maps as
-//! `mapstream.rs` reads them.
+//! `mapstream.rs` reads them. A WebTransport session that goes, or a
+//! server that falls silent, is picked up by a new session with the
+//! resume token the server issued, the way the native client resumes on
+//! a new QUIC connection; the game keeps its peer and notices nothing.
 
 // The FFI and the browser bridge use what the tests alone do not.
 #![cfg_attr(test, allow(dead_code))]
@@ -43,6 +46,17 @@ const MAX_CONTROL_BUFFER: usize = 16 + wire::MAX_CONTROL_MESSAGE_SIZE;
 const KEEPALIVE: Duration = Duration::from_secs(1);
 /// The most a single event from the browser carries.
 const MAX_PAYLOAD: usize = 64 * 1024;
+/// A server that leaves a message of ours unanswered this long is taken
+/// for lost and resumed on a new session, given a token for it.
+const RESUME_SILENCE: Duration = Duration::from_secs(3);
+/// How long a resume may take; then the connection is lost after all.
+const RESUME_GRACE: Duration = Duration::from_secs(10);
+/// A session that fails during a resume is opened again after this.
+const RESUME_RETRY: Duration = Duration::from_millis(500);
+/// Reliable messages kept back for the server while a resume is under way.
+const MAX_PENDING_RESUME_BYTES: usize = 64 * 1024;
+/// What ends a connection that took too long to resume.
+const TIMEOUT_REASON: &str = "Timeout";
 
 /// What the browser hands over, one call of `poll` at a time.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,6 +168,9 @@ enum State {
     /// The hellos are being exchanged.
     Hello,
     Online,
+    /// The session is gone and a resume is due: a new session opens at
+    /// `retry_at`, or the connection is lost at `resume_deadline`.
+    Detached,
     /// Torn down; the disconnect is still to be reported.
     Closed,
 }
@@ -169,6 +186,8 @@ enum PeerIdentity {
 struct Peer {
     handle: Handle,
     addr: Addr,
+    /// What the browser was told to open, to open it again for a resume.
+    url: String,
     transport: Transport,
     state: State,
     identity: PeerIdentity,
@@ -188,6 +207,26 @@ struct Peer {
     last_recv: Instant,
     /// The last step took an event from the browser.
     polled: bool,
+    /// The RESUME payload the server issued over WebTransport, sent in
+    /// the hello of a new session to continue with. Over WebSockets there
+    /// is none.
+    resume_token: Option<Vec<u8>>,
+    /// A new session is being opened, or is up to its hellos, to continue
+    /// the connection.
+    resuming: bool,
+    /// When a resume must have gone through, or the connection is lost.
+    resume_deadline: Option<Instant>,
+    /// When the next session opens while detached.
+    retry_at: Option<Instant>,
+    /// Since when a message of ours waits for an answer; nothing since the
+    /// server's last word.
+    silence_since: Option<Instant>,
+    /// Reliable messages held back until the resume goes through.
+    pending: VecDeque<Vec<u8>>,
+    pending_bytes: usize,
+    /// A map was coming in when the session went; reported lost once the
+    /// connection is back.
+    map_lost: bool,
     userdata: Option<*mut ()>,
 }
 
@@ -336,6 +375,7 @@ impl Net {
         self.peers.insert(idx, Peer {
             handle,
             addr: parsed,
+            url: browser_url,
             transport,
             state: State::Opening,
             identity: PeerIdentity::Wanted(wanted),
@@ -348,6 +388,14 @@ impl Net {
             disconnect: None,
             last_recv: now,
             polled: false,
+            resume_token: None,
+            resuming: false,
+            resume_deadline: None,
+            retry_at: None,
+            silence_since: None,
+            pending: VecDeque::new(),
+            pending_bytes: 0,
+            map_lost: false,
             userdata: None,
         });
         Ok(idx)
@@ -365,7 +413,7 @@ impl Net {
                 let _ = peer.send_frame(&mut *self.bridge, &frame, true);
             }
         }
-        if peer.state != State::Closed {
+        if peer.state != State::Closed && peer.state != State::Detached {
             self.bridge.close(peer.handle, 0, reason);
         }
         Ok(())
@@ -377,7 +425,24 @@ impl Net {
             bail!("peer {} does not exist", idx);
         };
         if peer.state != State::Online {
+            // Reliable messages wait for the resume; the game repeats the
+            // rest anyway.
+            if peer.resuming {
+                if !unreliable {
+                    if peer.pending_bytes + frame.len() > MAX_PENDING_RESUME_BYTES {
+                        bail!("too much to say while the connection is away");
+                    }
+                    peer.pending_bytes += frame.len();
+                    peer.pending.push_back(frame.to_vec());
+                }
+                return Ok(());
+            }
             bail!("not online");
+        }
+        // A message of ours gets answered; from the first one the server
+        // leaves unanswered, the silence counts.
+        if peer.silence_since.is_none() {
+            peer.silence_since = Some(Instant::now());
         }
         // A message the server cannot take unreliably, or that is too
         // long for a datagram, goes over the stream instead of not at all.
@@ -436,8 +501,11 @@ impl Net {
         }
     }
     pub fn recv(&mut self, buf: &mut [u8]) -> Result<Option<Event>> {
+        self.recv_at(buf, Instant::now())
+    }
+    /// `recv` as of `now`; the tests move the clock.
+    fn recv_at(&mut self, buf: &mut [u8], now: Instant) -> Result<Option<Event>> {
         assert!(buf.len() >= MAX_FRAME_SIZE as usize);
-        let now = Instant::now();
         let mut indices: Vec<PeerIndex> = self.peers.keys().copied().collect();
         indices.sort();
         for idx in indices {
@@ -499,9 +567,81 @@ impl Peer {
             return;
         }
         info!("{}: {}", self.addr, reason);
-        bridge.close(self.handle, 2, reason);
+        if self.state != State::Detached {
+            bridge.close(self.handle, 2, reason);
+        }
         self.state = State::Closed;
         self.disconnect = Some((reason.to_owned(), remote));
+    }
+    /// Whether a session that goes now can be picked up by a new one:
+    /// over WebTransport with a token, once the connection was up.
+    fn can_resume(&self, now: Instant) -> bool {
+        match self.state {
+            State::Online => self.resume_token.is_some() && matches!(self.transport, Transport::WebTransport { .. }),
+            State::Opening | State::Hello | State::Detached => {
+                self.resuming && self.resume_deadline.is_some_and(|deadline| now < deadline)
+            }
+            State::Closed => false,
+        }
+    }
+    /// The session is gone, or as good as; a new one opens at `retry_at`
+    /// to continue the connection with the resume token.
+    fn detach(&mut self, bridge: &mut dyn Bridge, now: Instant, delay: Duration, session_open: bool) {
+        if session_open {
+            bridge.close(self.handle, 0, "resuming");
+        }
+        if !self.resuming {
+            self.resuming = true;
+            self.resume_deadline = Some(now + RESUME_GRACE);
+        }
+        self.state = State::Detached;
+        self.retry_at = Some(now + delay);
+    }
+    /// Opens a new session towards the same server, with the resume token
+    /// in its hello. Whatever was under way on the old one is gone: a map
+    /// coming in is reported lost once the connection is back.
+    fn restart(&mut self, bridge: &mut dyn Bridge, now: Instant) -> Result<()> {
+        let Transport::WebTransport { control, outgoing, sequence, max_datagram, map } = &mut self.transport else {
+            unreachable!()
+        };
+        self.map_lost |= map.is_some();
+        control.clear();
+        *outgoing = wire::DatagramBuilder::new();
+        *sequence = 0;
+        *max_datagram = 0;
+        *map = None;
+        self.unreliable.clear();
+        let Some(handle) = bridge.start(&self.url, true, &self.certificate_hashes) else {
+            bail!("the browser refused to open {}", self.url);
+        };
+        info!("{}: resuming on a new session", self.addr);
+        self.handle = handle;
+        self.state = State::Opening;
+        // The identity is pinned from here, whether this is the first
+        // new session or one after a failed attempt.
+        let identity = match self.identity {
+            PeerIdentity::Known(identity) | PeerIdentity::Wanted(Some(identity)) => identity,
+            PeerIdentity::Wanted(None) => unreachable!(),
+        };
+        self.identity = PeerIdentity::Wanted(Some(identity));
+        self.hello_received = false;
+        self.peer_capabilities = 0;
+        self.retry_at = None;
+        self.silence_since = None;
+        self.last_recv = now;
+        Ok(())
+    }
+    /// Sends what was held back during the resume.
+    fn flush_pending(&mut self, bridge: &mut dyn Bridge) -> Result<()> {
+        while let Some(frame) = self.pending.pop_front() {
+            self.pending_bytes -= frame.len();
+            let mut encoded = Vec::with_capacity(16 + frame.len());
+            if !wire::encode_frame(wire::frame::MESSAGE, &frame, &mut encoded) {
+                bail!("message of {} bytes does not encode", frame.len());
+            }
+            self.send_frame(bridge, &encoded, true)?;
+        }
+        Ok(())
     }
     fn send_frame(&mut self, bridge: &mut dyn Bridge, frame: &[u8], vital: bool) -> Result<()> {
         match &mut self.transport {
@@ -551,7 +691,11 @@ impl Peer {
             capabilities,
             max_datagram_size,
             nonce: self.local_nonce,
-            resume_token: &[],
+            resume_token: if self.resuming {
+                self.resume_token.as_deref().unwrap_or(&[])
+            } else {
+                &[]
+            },
         };
         let payload = wire::encode_hello(&hello).unwrap();
         let mut frame = Vec::with_capacity(16 + payload.len());
@@ -616,8 +760,9 @@ impl Peer {
         self.identity = PeerIdentity::Known(shown);
         Ok(())
     }
-    /// Online once the hello is in and the identity known.
-    fn client_online(&mut self) -> Result<Option<Event>> {
+    /// Online once the hello is in and the identity known. A resume ends
+    /// here as well, with nothing to report: the game kept its peer.
+    fn client_online(&mut self, bridge: &mut dyn Bridge) -> Result<Option<Event>> {
         if !self.hello_received {
             return Ok(None);
         }
@@ -637,6 +782,13 @@ impl Peer {
             _ => unreachable!(),
         }
         self.state = State::Online;
+        if self.resuming {
+            info!("{}: resumed", self.addr);
+            self.resuming = false;
+            self.resume_deadline = None;
+            self.flush_pending(bridge)?;
+            return Ok(None);
+        }
         Ok(Some(Event::Connect(PeerIndex(0), self.addr)))
     }
     /// A frame of the control stream, or of a WebSocket message.
@@ -644,11 +796,11 @@ impl Peer {
         match (self.state, frame_type) {
             (State::Hello, wire::frame::SERVER_HELLO) => {
                 self.on_hello(payload)?;
-                self.client_online()
+                self.client_online(bridge)
             }
             (State::Hello, wire::frame::SERVER_IDENTITY) => {
                 self.on_identity_proof(payload)?;
-                self.client_online()
+                self.client_online(bridge)
             }
             (State::Online, wire::frame::MESSAGE) => {
                 if payload.len() > buf.len() {
@@ -665,7 +817,8 @@ impl Peer {
                 Ok(None)
             }
             (State::Online, wire::frame::RESUME) => {
-                // A browser resumes nothing yet; the token is not kept.
+                wire::decode_resume(payload).map_err(|e| Error::from_string(format!("resume: {}", e)))?;
+                self.resume_token = Some(payload.to_vec());
                 Ok(None)
             }
             (_, frame_type) if frame_type >= wire::SKIPPABLE_FRAME_START => Ok(None),
@@ -867,6 +1020,20 @@ impl Peer {
         if self.state == State::Closed {
             return Ok(Some(PeerEvent::Delete));
         }
+        if self.state == State::Detached {
+            if self.resume_deadline.is_some_and(|deadline| now >= deadline) {
+                self.fail(bridge, TIMEOUT_REASON, false);
+                self.polled = true;
+            } else if self.retry_at.is_some_and(|retry_at| now >= retry_at) {
+                self.restart(bridge, now)?;
+                self.polled = true;
+            }
+            return Ok(None);
+        }
+        if self.map_lost && self.state == State::Online {
+            self.map_lost = false;
+            return Ok(Some(PeerEvent::Event(self.map_failed(buf, "connection resumed"))));
+        }
         // What was taken in but not handed out yet comes first.
         if let Some(message) = self.unreliable.pop_front() {
             buf[..message.len()].copy_from_slice(&message);
@@ -886,15 +1053,30 @@ impl Peer {
                 bridge.send(self.handle, false, &[]);
             }
         }
-        if self.state == State::Online && now.duration_since(self.last_recv) >= timeout {
-            self.fail(bridge, "Timeout", false);
-            // The report follows in the next step.
+        // Silence counts once the browser has nothing queued either.
+        if self.state == State::Online && !bridge.pending(self.handle) {
+            if now.duration_since(self.last_recv) >= timeout {
+                self.fail(bridge, TIMEOUT_REASON, false);
+                // The report follows in the next step.
+                self.polled = true;
+                return Ok(None);
+            }
+            if self.can_resume(now) && self.silence_since.is_some_and(|since| now >= since + RESUME_SILENCE) {
+                info!("{} silent for {:?}, resuming", self.addr, RESUME_SILENCE);
+                self.detach(bridge, now, Duration::ZERO, true);
+                self.polled = true;
+                return Ok(None);
+            }
+        }
+        if self.resuming && self.resume_deadline.is_some_and(|deadline| now >= deadline) {
+            self.fail(bridge, TIMEOUT_REASON, false);
             self.polled = true;
             return Ok(None);
         }
         let event = bridge.poll(self.handle, payload, reason);
         if event != JsEvent::None {
             self.last_recv = now;
+            self.silence_since = None;
             self.polled = true;
         }
         match event {
@@ -953,7 +1135,14 @@ impl Peer {
                 } else {
                     reason.as_str()
                 };
-                // The session is gone already; only the report is left.
+                // The session is gone already. With a token, a new one
+                // picks the connection up; otherwise only the report is left.
+                if self.can_resume(now) {
+                    info!("{}: {}, resuming", self.addr, reason);
+                    let delay = if self.resuming { RESUME_RETRY } else { Duration::ZERO };
+                    self.detach(bridge, now, delay, false);
+                    return Ok(None);
+                }
                 info!("{}: {}", self.addr, reason);
                 self.state = State::Closed;
                 self.disconnect = Some((reason.to_owned(), true));
@@ -1194,6 +1383,120 @@ mod test {
         match recv(&mut net, &mut buf) {
             Some(Event::Disconnect(PeerIndex(0), 3, true)) => assert_eq!(&buf[..3], b"bye"),
             _ => panic!("expected a disconnect"),
+        }
+        assert!(recv(&mut net, &mut buf).is_none());
+        assert!(net.send_chunk(idx, b"late", false).is_err());
+    }
+
+    /// A WebTransport session up to online over WebPKI, with a resume token.
+    fn webtransport_online(net: &mut Net, mock: &Rc<RefCell<Mock>>, buf: &mut [u8]) -> PeerIndex {
+        let idx = net.connect("ddnet+wt://127.0.0.1:8303#webpki").unwrap();
+        push(mock, JsEvent::Ready, 1200u32.to_le_bytes().to_vec());
+        let mut control = server_hello(wire::capability::DATAGRAM | wire::capability::MAP_STREAM | wire::capability::SERVER_IDENTITY, 800);
+        control.extend_from_slice(&identity_proof());
+        control.extend_from_slice(&frame(wire::frame::RESUME, &resume_token()));
+        push(mock, JsEvent::Control, control);
+        assert!(matches!(recv(net, buf), Some(Event::Connect(PeerIndex(0), Addr::Quic(_)))));
+        assert!(recv(net, buf).is_none());
+        idx
+    }
+
+    fn resume_token() -> Vec<u8> {
+        wire::encode_resume(&wire::Resume { session_id: 42, token: &[5; 32] }).unwrap()
+    }
+
+    /// The hello the last opened session sent, with the stream's prelude
+    /// stripped.
+    fn last_hello(mock: &Rc<RefCell<Mock>>) -> (u64, Vec<u8>) {
+        let mock = mock.borrow();
+        let (datagram, data) = mock.sent.last().unwrap();
+        assert!(!datagram);
+        let frame = wire::decode_frame(&data[2..]).unwrap();
+        assert_eq!(frame.frame_type, wire::frame::CLIENT_HELLO);
+        let hello = wire::decode_hello(frame.payload).unwrap();
+        (hello.capabilities, hello.resume_token.to_vec())
+    }
+
+    #[test]
+    fn webtransport_resumes_when_the_session_goes() {
+        let (mut net, mock) = net();
+        let mut buf = [0; 2048];
+        let idx = webtransport_online(&mut net, &mock, &mut buf);
+        let now = Instant::now();
+        // The session goes; a new one opens right away, with nothing to
+        // report to the game.
+        mock.borrow_mut().events.push_back((JsEvent::Closed, Vec::new(), "gone".to_owned()));
+        assert!(net.recv_at(&mut buf, now).unwrap().is_none());
+        assert_eq!(mock.borrow().started.len(), 2);
+        assert_eq!(mock.borrow().started[1].0, "https://127.0.0.1:8303/ddnet");
+        // What the game says meanwhile waits, unless it does not matter.
+        let sent_before = mock.borrow().sent.len();
+        net.send_chunk(idx, b"held", false).unwrap();
+        net.send_chunk(idx, b"dropped", true).unwrap();
+        net.flush(idx).unwrap();
+        assert_eq!(mock.borrow().sent.len(), sent_before);
+        // The new session's hello carries the token.
+        push(&mock, JsEvent::Ready, 1200u32.to_le_bytes().to_vec());
+        assert!(net.recv_at(&mut buf, now).unwrap().is_none());
+        assert_eq!(last_hello(&mock).1, resume_token());
+        // The server takes it: no connect event, the held message goes out.
+        let mut control = server_hello(wire::capability::DATAGRAM | wire::capability::MAP_STREAM | wire::capability::SERVER_IDENTITY, 800);
+        control.extend_from_slice(&identity_proof());
+        push(&mock, JsEvent::Control, control);
+        assert!(net.recv_at(&mut buf, now).unwrap().is_none());
+        {
+            let mock = mock.borrow();
+            let (datagram, data) = mock.sent.last().unwrap();
+            assert!(!datagram);
+            assert_eq!(wire::decode_frame(data).unwrap().payload, b"held");
+        }
+        push(&mock, JsEvent::Control, frame(wire::frame::MESSAGE, b"back"));
+        match net.recv_at(&mut buf, now).unwrap() {
+            Some(Event::Chunk(PeerIndex(0), 4, false)) => assert_eq!(&buf[..4], b"back"),
+            _ => panic!("expected a chunk"),
+        }
+    }
+
+    #[test]
+    fn webtransport_without_a_token_is_lost_with_the_session() {
+        let (mut net, mock) = net();
+        let mut buf = [0; 2048];
+        net.connect("ddnet+wt://127.0.0.1:8303#webpki").unwrap();
+        push(&mock, JsEvent::Ready, 1200u32.to_le_bytes().to_vec());
+        let mut control = server_hello(wire::capability::DATAGRAM | wire::capability::MAP_STREAM | wire::capability::SERVER_IDENTITY, 800);
+        control.extend_from_slice(&identity_proof());
+        push(&mock, JsEvent::Control, control);
+        assert!(matches!(recv(&mut net, &mut buf), Some(Event::Connect(..))));
+        mock.borrow_mut().events.push_back((JsEvent::Closed, Vec::new(), "gone".to_owned()));
+        assert!(matches!(recv(&mut net, &mut buf), Some(Event::Disconnect(PeerIndex(0), 4, true))));
+        assert_eq!(mock.borrow().started.len(), 1);
+    }
+
+    #[test]
+    fn webtransport_resumes_on_silence_and_gives_up_at_the_deadline() {
+        let (mut net, mock) = net();
+        let mut buf = [0; 2048];
+        let idx = webtransport_online(&mut net, &mock, &mut buf);
+        let now = Instant::now();
+        // A message of ours the server does not answer starts the silence.
+        assert!(net.recv_at(&mut buf, now + Duration::from_secs(4)).unwrap().is_none());
+        assert_eq!(mock.borrow().started.len(), 1);
+        net.send_chunk(idx, b"input", true).unwrap();
+        assert!(net.recv_at(&mut buf, now + Duration::from_secs(2)).unwrap().is_none());
+        assert_eq!(mock.borrow().started.len(), 1);
+        assert!(net.recv_at(&mut buf, now + Duration::from_secs(4)).unwrap().is_none());
+        assert_eq!(mock.borrow().started.len(), 2);
+        assert_eq!(mock.borrow().closed.last().unwrap().1, "resuming");
+        // The new session fails; another one follows after a moment.
+        mock.borrow_mut().events.push_back((JsEvent::Failed, Vec::new(), "refused".to_owned()));
+        assert!(net.recv_at(&mut buf, now + Duration::from_secs(5)).unwrap().is_none());
+        assert_eq!(mock.borrow().started.len(), 2);
+        assert!(net.recv_at(&mut buf, now + Duration::from_secs(6)).unwrap().is_none());
+        assert_eq!(mock.borrow().started.len(), 3);
+        // Ten seconds after the first attempt the connection is lost.
+        match net.recv_at(&mut buf, now + Duration::from_secs(15)).unwrap() {
+            Some(Event::Disconnect(PeerIndex(0), len, false)) => assert_eq!(&buf[..len], b"Timeout"),
+            _ => panic!("expected a timeout"),
         }
         assert!(recv(&mut net, &mut buf).is_none());
         assert!(net.send_chunk(idx, b"late", false).is_err());

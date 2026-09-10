@@ -89,6 +89,19 @@ class CServer : public IServer
 
 public:
 	class IGameServer *GameServer() { return m_pGameServer; }
+
+	/**
+	 * The bytes of the map a client of the given protocol downloads.
+	 *
+	 * The 0.6 map is the one the game loaded, so its reader is already
+	 * holding the file; only the 0.7 map has no reader and is read by the
+	 * server itself.
+	 *
+	 * @param MapType Protocol the map is for.
+	 *
+	 * @return Buffer of `m_aCurrentMapSize[MapType]` bytes.
+	 */
+	const unsigned char *CurrentMapData(int MapType);
 	class CConfig *Config() { return m_pConfig; }
 	const CConfig *Config() const { return m_pConfig; }
 	class IConsole *Console() { return m_pConsole; }
@@ -293,7 +306,7 @@ public:
 
 	SHA256_DIGEST m_aCurrentMapSha256[NUM_MAP_TYPES];
 	unsigned m_aCurrentMapCrc[NUM_MAP_TYPES];
-	unsigned char *m_apCurrentMapData[NUM_MAP_TYPES];
+	unsigned char *m_pCurrentMapDataSixup;
 	unsigned int m_aCurrentMapSize[NUM_MAP_TYPES];
 	char m_aMapDownloadUrl[256];
 

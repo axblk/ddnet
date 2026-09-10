@@ -2278,7 +2278,7 @@ TEST(GameState, GeneratedDemoPlaysToKnownDigestHeadlessly)
 	const auto pRecorder = std::make_unique<CDemoRecorder>(pSnapshotDelta.get(), true);
 	unsigned char DummyMapData = 0;
 	const SHA256_DIGEST MapSha256 = {};
-	ASSERT_EQ(pRecorder->Start(pStorage.get(), pConsole.get(), pFilename, "test", "headless", MapSha256, 0, "client", 0, &DummyMapData, nullptr, nullptr, nullptr), 0);
+	ASSERT_EQ(pRecorder->Start(pStorage.get(), pConsole.get(), pFilename, "test", "headless", MapSha256, 0, "client", 0, &DummyMapData, nullptr, nullptr), 0);
 
 	auto RecordSnapshot = [&pRecorder](int Tick, int X) {
 		CSnapshotBuilder Builder;
@@ -2342,7 +2342,7 @@ TEST(GameState, DemoPreservesCommonMatchReportWithoutImportingIt)
 	const auto pRecorder = std::make_unique<CDemoRecorder>(pSnapshotDelta.get(), true);
 	unsigned char DummyMapData = 0;
 	const SHA256_DIGEST MapSha256 = {};
-	ASSERT_EQ(pRecorder->Start(pStorage.get(), pConsole.get(), pFilename, "test", "headless", MapSha256, 0, "client", 0, &DummyMapData, nullptr, nullptr, nullptr), 0);
+	ASSERT_EQ(pRecorder->Start(pStorage.get(), pConsole.get(), pFilename, "test", "headless", MapSha256, 0, "client", 0, &DummyMapData, nullptr, nullptr), 0);
 
 	CSnapshotBuilder Builder;
 	Builder.Init();

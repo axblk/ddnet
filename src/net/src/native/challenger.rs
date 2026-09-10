@@ -1,7 +1,7 @@
 use crate::secure_hash;
 use crate::secure_random;
 use arrayvec::ArrayVec;
-use ring::constant_time;
+use constant_time_eq::constant_time_eq;
 use std::io::Write as _;
 use std::mem;
 use std::net::SocketAddr;
@@ -61,9 +61,6 @@ impl Challenger {
         result.copy_from_slice(&secure_hash(&buf)[..Challenger::TOKEN_LEN]);
         result
     }
-    fn matches(expected: &[u8; Challenger::TOKEN_LEN], token: &[u8; Challenger::TOKEN_LEN]) -> bool {
-        constant_time::verify_slices_are_equal(expected, token).is_ok()
-    }
     pub fn compute_token(
         &self,
         addr: &SocketAddr,
@@ -76,8 +73,8 @@ impl Challenger {
         token: [u8; Challenger::TOKEN_LEN],
     ) -> Result<(), ()> {
         // Both compared, whatever the first says.
-        let current = Challenger::matches(&Challenger::token_from_secret(&self.seed, addr), &token);
-        let previous = Challenger::matches(&Challenger::token_from_secret(&self.prev_seed, addr), &token);
+        let current = constant_time_eq(&Challenger::token_from_secret(&self.seed, addr), &token);
+        let previous = constant_time_eq(&Challenger::token_from_secret(&self.prev_seed, addr), &token);
         if current | previous {
             Ok(())
         } else {
@@ -96,7 +93,7 @@ impl Challenger {
         addr: &SocketAddr,
         token: [u8; Challenger::TOKEN_LEN],
     ) -> Result<(), ()> {
-        if Challenger::matches(&self.compute_fixed_token(addr), &token) {
+        if constant_time_eq(&self.compute_fixed_token(addr), &token) {
             Ok(())
         } else {
             Err(())

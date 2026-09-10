@@ -68,11 +68,6 @@ class CRegister : public IRegister
 		CLock m_Lock;
 		int m_InfoSerial GUARDED_BY(m_Lock) = -1;
 		int m_LatestSuccessfulInfoSerial GUARDED_BY(m_Lock) = -1;
-		bool m_QuicChallengeSupported GUARDED_BY(m_Lock) = false;
-		bool m_WebTransportChallengeSupported GUARDED_BY(m_Lock) = false;
-		bool m_WebsocketChallengeSupported GUARDED_BY(m_Lock) = false;
-		bool m_DomainRegistrationSupported GUARDED_BY(m_Lock) = false;
-		bool m_SchemeFragmentsSupported GUARDED_BY(m_Lock) = false;
 		bool m_ModernUnsupportedLogged GUARDED_BY(m_Lock) = false;
 	};
 
@@ -403,22 +398,19 @@ void CRegister::ConchainOnConfigChange(IConsole::IResult *pResult, void *pUserDa
 	}
 }
 
+// The modern transports register under the host name, where the server
+// has one, and with what a client pins the server by as the fragment. A
+// master that knows none of this answers the whole address with an error
+// and the transport is left out until the next configuration change.
 void CRegister::CProtocol::FormatAddress(char *pBuffer, int BufferSize) const
 {
-	bool DomainRegistrationSupported;
-	bool SchemeFragmentsSupported;
-	{
-		const CLockScope LockScope(m_pShared->m_pGlobal->m_Lock);
-		DomainRegistrationSupported = m_pShared->m_pGlobal->m_DomainRegistrationSupported;
-		SchemeFragmentsSupported = m_pShared->m_pGlobal->m_SchemeFragmentsSupported;
-	}
-	const char *pHostname = !ProtocolIsLegacy(m_Protocol) && DomainRegistrationSupported && m_pParent->m_aRegisterHostname[0] ? m_pParent->m_aRegisterHostname : "connecting-address.invalid";
+	const char *pHostname = !ProtocolIsLegacy(m_Protocol) && m_pParent->m_aRegisterHostname[0] ? m_pParent->m_aRegisterHostname : "connecting-address.invalid";
 	const char *pFragment = "";
 	if(ProtocolIsQuic(m_Protocol) || ProtocolIsWebsocket(m_Protocol))
 		pFragment = m_pParent->m_aIdentityFragment;
 	else if(ProtocolIsWebTransport(m_Protocol))
 		pFragment = m_pParent->m_aWebTransportFragment;
-	str_format(pBuffer, BufferSize, "%s%s:%d%s%s", m_pParent->ProtocolToScheme(m_Protocol), pHostname, m_pParent->m_ServerPort, SchemeFragmentsSupported && pFragment[0] ? "#" : "", SchemeFragmentsSupported ? pFragment : "");
+	str_format(pBuffer, BufferSize, "%s%s:%d%s%s", m_pParent->ProtocolToScheme(m_Protocol), pHostname, m_pParent->m_ServerPort, pFragment[0] ? "#" : "", pFragment);
 }
 
 void CRegister::CProtocol::SendRegister()
@@ -632,36 +624,6 @@ void CRegister::CProtocol::CJob::Run()
 		json_value_free(pJson);
 		return;
 	}
-	const json_value &QuicChallenge = Json["quic_challenge"];
-	if(QuicChallenge.type == json_boolean && (bool)QuicChallenge)
-	{
-		const CLockScope LockScope(m_pShared->m_pGlobal->m_Lock);
-		m_pShared->m_pGlobal->m_QuicChallengeSupported = true;
-	}
-	const json_value &WebTransportChallenge = Json["webtransport_challenge"];
-	if(WebTransportChallenge.type == json_boolean && (bool)WebTransportChallenge)
-	{
-		const CLockScope LockScope(m_pShared->m_pGlobal->m_Lock);
-		m_pShared->m_pGlobal->m_WebTransportChallengeSupported = true;
-	}
-	const json_value &WebsocketChallenge = Json["websocket_challenge"];
-	if(WebsocketChallenge.type == json_boolean && (bool)WebsocketChallenge)
-	{
-		const CLockScope LockScope(m_pShared->m_pGlobal->m_Lock);
-		m_pShared->m_pGlobal->m_WebsocketChallengeSupported = true;
-	}
-	const json_value &DomainRegistration = Json["domain_registration"];
-	if(DomainRegistration.type == json_boolean && (bool)DomainRegistration)
-	{
-		const CLockScope LockScope(m_pShared->m_pGlobal->m_Lock);
-		m_pShared->m_pGlobal->m_DomainRegistrationSupported = true;
-	}
-	const json_value &SchemeFragments = Json["scheme_fragments"];
-	if(SchemeFragments.type == json_boolean && (bool)SchemeFragments)
-	{
-		const CLockScope LockScope(m_pShared->m_pGlobal->m_Lock);
-		m_pShared->m_pGlobal->m_SchemeFragmentsSupported = true;
-	}
 	if(Status == STATUS_ERROR)
 	{
 		const json_value &Message = Json["message"];
@@ -787,30 +749,17 @@ CRegister::CRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHt
 
 void CRegister::UpdateProtocolEnabled()
 {
-	bool QuicChallengeSupported;
-	bool WebTransportChallengeSupported;
-	bool WebsocketChallengeSupported;
-	{
-		const CLockScope LockScope(m_pGlobal->m_Lock);
-		QuicChallengeSupported = m_pGlobal->m_QuicChallengeSupported;
-		WebTransportChallengeSupported = m_pGlobal->m_WebTransportChallengeSupported;
-		WebsocketChallengeSupported = m_pGlobal->m_WebsocketChallengeSupported;
-	}
-	const bool aLegacyRegistrationRequested[2] = {
-		m_Transports.m_LegacyUdp && (m_aProtocolRequested[PROTOCOL_TW6_IPV6] || (m_pConfig->m_SvSixup && m_aProtocolRequested[PROTOCOL_TW7_IPV6])),
-		m_Transports.m_LegacyUdp && (m_aProtocolRequested[PROTOCOL_TW6_IPV4] || (m_pConfig->m_SvSixup && m_aProtocolRequested[PROTOCOL_TW7_IPV4])),
-	};
 	for(int Protocol = 0; Protocol < NUM_PROTOCOLS; Protocol++)
 	{
 		bool Enabled = m_aProtocolRequested[Protocol];
 		if(ProtocolIsLegacy(Protocol))
 			Enabled &= m_Transports.m_LegacyUdp;
 		else if(ProtocolIsQuic(Protocol))
-			Enabled &= m_Transports.m_Quic && (!aLegacyRegistrationRequested[Protocol % 2] || QuicChallengeSupported);
+			Enabled &= m_Transports.m_Quic;
 		else if(ProtocolIsWebTransport(Protocol))
-			Enabled &= m_Transports.m_WebTransport && (!aLegacyRegistrationRequested[Protocol % 2] || WebTransportChallengeSupported);
+			Enabled &= m_Transports.m_WebTransport;
 		else if(ProtocolIsWebsocket(Protocol))
-			Enabled &= m_Transports.m_Websocket && (!aLegacyRegistrationRequested[Protocol % 2] || WebsocketChallengeSupported);
+			Enabled &= m_Transports.m_Websocket;
 		if(!ProtocolIsLegacy(Protocol))
 			Enabled &= !m_aProtocols[Protocol].Unsupported();
 		if(ProtocolIsSixup(Protocol))

@@ -3117,10 +3117,20 @@ if(CLIENT)
     render_layer.h
     render_map.cpp
     render_map.h
+    standalone/map_view.cpp
+    standalone/map_view.h
+    standalone/map_view_support.h
+    standalone/map_viewer_main.cpp
     tile_chunk_cache.cpp
     tile_chunk_cache.h
     # tidy-alphabetical-end
   )
+  # The map renderer without a client around it, and the program that is only
+  # that: what the client links is the renderer, so neither belongs in it.
+  set(GAME_MAP_STANDALONE ${GAME_MAP})
+  list(FILTER GAME_MAP_STANDALONE INCLUDE REGEX "/standalone/")
+  list(FILTER GAME_MAP_STANDALONE EXCLUDE REGEX "_main\\.cpp$")
+  list(FILTER GAME_MAP EXCLUDE REGEX "/standalone/")
   set(GAME_GENERATED_CLIENT
     # tidy-alphabetical-start
     src/generated/checksum.cpp
@@ -3677,6 +3687,82 @@ if(CLIENT)
     )
   endif()
 
+  # A program that shows one map in a window. Where the demo viewer brings a
+  # whole client, this brings none at all: a map, the renderer that draws it, a
+  # window and a pointer. It is the same view the map render tool draws with,
+  # with somebody looking at it instead of a file to write.
+  if(CLIENT AND SDL2_FOUND)
+    add_executable(map-viewer EXCLUDE_FROM_ALL
+      ${DEPS_CLIENT}
+      ${GAME_MAP}
+      ${GAME_MAP_STANDALONE}
+      # The window and the keyboard, and nothing else out of the client.
+      # tidy-alphabetical-start
+      src/engine/client/input.cpp
+      src/engine/client/input.h
+      src/engine/client/keynames.cpp
+      src/engine/client/keynames.h
+      src/engine/client/window_sdl.cpp
+      src/engine/client/window_sdl.h
+      src/game/map/standalone/map_viewer_main.cpp
+      # tidy-alphabetical-end
+      # tidy-alphabetical-start
+      $<TARGET_OBJECTS:engine-client-graphics>
+      $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-shared>
+      $<TARGET_OBJECTS:game-shared>
+      # tidy-alphabetical-end
+    )
+    add_dependencies(map-viewer generate_content_types)
+    if(VULKAN)
+      add_dependencies(map-viewer build_vulkan_shaders)
+    endif()
+    set_property(TARGET map-viewer PROPERTY OUTPUT_NAME ddnet-map-viewer)
+    set_own_rpath(map-viewer)
+    set_property(TARGET map-viewer PROPERTY DDNET_NO_CLIENT_INTEGRATIONS TRUE)
+    if(VULKAN)
+      target_compile_definitions(map-viewer PRIVATE CONF_BACKEND_VULKAN)
+    endif()
+    if(WEBGPU_NATIVE_BACKEND)
+      target_compile_definitions(map-viewer PRIVATE CONF_BACKEND_WEBGPU)
+    endif()
+    if(GLEW_BUNDLED)
+      target_compile_definitions(map-viewer PRIVATE CONF_GLEW_HAS_CONTEXT_INIT)
+    endif()
+    # No `${LIBS}` and no FreeType: nothing here talks to the network, and
+    # nothing here draws a letter.
+    target_link_libraries(map-viewer
+      # tidy-alphabetical-start
+      ${CRYPTO_LIBRARIES}
+      ${GLEW_LIBRARIES}
+      ${PNG_LIBRARIES}
+      ${SDL2_LIBRARIES}
+      ${VULKAN_LIBRARIES}
+      ${ZLIB_LIBRARIES}
+      # tidy-alphabetical-end
+      ${PLATFORM_CLIENT_LIBS}
+      ${PLATFORM_LIBS}
+      ${CMAKE_DL_LIBS}
+      ${CMAKE_THREAD_LIBS_INIT}
+    )
+    if(WEBGPU_NATIVE_BACKEND)
+      target_link_libraries(map-viewer WGPU::Native)
+    endif()
+    if(WEBGPU_BACKEND_PROTOTYPE AND TARGET_OS STREQUAL "emscripten")
+      target_compile_options(map-viewer PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+      target_link_options(map-viewer PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+    endif()
+    target_include_directories(map-viewer SYSTEM PRIVATE
+      # tidy-alphabetical-start
+      ${GLEW_INCLUDE_DIRS}
+      ${PNG_INCLUDE_DIRS}
+      ${SDL2_INCLUDE_DIRS}
+      # tidy-alphabetical-end
+      ${PLATFORM_CLIENT_INCLUDE_DIRS}
+      ${VULKAN_INCLUDE_DIRS}
+    )
+  endif()
+
   if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC OR WEBGPU_NATIVE_BACKEND)
     set_own_rpath(game-client)
   endif()
@@ -3716,6 +3802,10 @@ if(CLIENT)
   if(TARGET demo-viewer)
     list(APPEND TARGETS_OWN demo-viewer)
     list(APPEND TARGETS_LINK demo-viewer)
+  endif()
+  if(TARGET map-viewer)
+    list(APPEND TARGETS_OWN map-viewer)
+    list(APPEND TARGETS_LINK map-viewer)
   endif()
 endif()
 
@@ -4078,6 +4168,7 @@ if(TOOLS)
       target_link_libraries(${TOOL} ${TOOL_LIBS})
       if(TOOL MATCHES "^map_render$")
         target_sources(map_render PRIVATE
+          ${GAME_MAP_STANDALONE}
           # tidy-alphabetical-start
           src/game/map/envelope_extrema.cpp
           src/game/map/map_renderer.cpp

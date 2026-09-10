@@ -1,0 +1,245 @@
+#include <base/fs.h>
+#include <base/log.h>
+#include <base/logger.h>
+#include <base/math.h>
+#include <base/os.h>
+#include <base/str.h>
+#include <base/time.h>
+
+#include <engine/client/window_sdl.h>
+#include <engine/config.h>
+#include <engine/console.h>
+#include <engine/graphics.h>
+#include <engine/graphics_window.h>
+#include <engine/input.h>
+#include <engine/keys.h>
+#include <engine/shared/config.h>
+#include <engine/storage.h>
+
+#include <game/map/standalone/map_view.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <string>
+
+static constexpr const char *TOOL_NAME = "map_viewer";
+
+namespace
+{
+	constexpr int DEFAULT_WIDTH = 1280;
+	constexpr int DEFAULT_HEIGHT = 720;
+	// What one notch of the wheel does, and how fast the keys move the view: a
+	// screen width every second and a half, whatever the zoom.
+	constexpr float ZOOM_STEP = 1.1f;
+	constexpr float PAN_SCREENS_PER_SECOND = 0.66f;
+
+	void PrintUsage(const char *pProgramName)
+	{
+		log_info(TOOL_NAME, "Usage: %s [-w <width>] [-h <height>] [-o <output>] [<input.map>]", pProgramName);
+		log_info(TOOL_NAME, "  -w <width>   Window width (default: %d)", DEFAULT_WIDTH);
+		log_info(TOOL_NAME, "  -h <height>  Window height (default: %d)", DEFAULT_HEIGHT);
+		log_info(TOOL_NAME, "  -o <output>  Where F2 writes the picture (default: output.png)");
+		log_info(TOOL_NAME, "Drag to move, the wheel zooms, the arrow keys move, Home fits the whole");
+		log_info(TOOL_NAME, "map on the screen, F2 saves what is on it and Escape closes the window.");
+		log_info(TOOL_NAME, "A map dropped on the window replaces the one that is shown.");
+	}
+} // namespace
+
+int main(int argc, const char **argv)
+{
+	CCmdlineFix CmdlineFix(&argc, &argv);
+	log_set_global_logger_default();
+
+	int Width = DEFAULT_WIDTH;
+	int Height = DEFAULT_HEIGHT;
+	std::string OutputFile = "output.png";
+	std::string InputMap;
+	bool InvalidUsage = false;
+
+	for(int i = 1; i < argc; i++)
+	{
+		if(str_comp(argv[i], "-w") == 0 && i + 1 < argc)
+		{
+			Width = std::max(1, atoi(argv[++i]));
+		}
+		else if(str_comp(argv[i], "-h") == 0 && i + 1 < argc)
+		{
+			Height = std::max(1, atoi(argv[++i]));
+		}
+		else if(str_comp(argv[i], "-o") == 0 && i + 1 < argc)
+		{
+			OutputFile = argv[++i];
+		}
+		else if(argv[i][0] != '-' && InputMap.empty())
+		{
+			InputMap = argv[i];
+		}
+		else
+		{
+			InvalidUsage = true;
+			break;
+		}
+	}
+
+	if(InvalidUsage)
+	{
+		PrintUsage(argv[0]);
+		return 1;
+	}
+
+	CStandaloneMapView View(TOOL_NAME);
+	if(!View.Init(argc, argv))
+		return 1;
+
+	// The input reads the settings and talks to the console, so both of them
+	// are in the kernel before the window opens - registering the settings is
+	// what puts their defaults in place.
+	IConsole *pConsole = CreateConsole(CFGFLAG_CLIENT).release();
+	View.Kernel()->RegisterInterface(pConsole);
+	IConfigManager *pConfigManager = CreateConfigManager();
+	View.Kernel()->RegisterInterface(pConfigManager);
+	pConsole->Init();
+	pConfigManager->Init();
+
+	// The same way out the client has where there is no display: it draws into
+	// a surface on no screen. Nobody can look around in one, so all that is
+	// left of the program there is the one picture it can write.
+	const bool Surfaceless = std::getenv("GFX_SURFACELESS") != nullptr;
+	if(!View.OpenWindow(Width, Height, Surfaceless ? CreateOffscreenGraphicsWindow() : CreateSdlGraphicsWindow(), !Surfaceless))
+		return 1;
+
+	IEngineInput *pInput = nullptr;
+	if(!Surfaceless)
+	{
+		pInput = CreateEngineInput();
+		View.Kernel()->RegisterInterface(pInput);
+		View.Kernel()->RegisterInterface(static_cast<IInput *>(pInput), false);
+		pInput->Init();
+		// There is a pointer on the screen here and it is what moves the map,
+		// so it stays where the window system put it.
+		pInput->MouseModeAbsolute();
+	}
+
+	IGraphics *pGraphics = View.Graphics();
+	pGraphics->AddWindowResizeListener([&] { View.OnResize(pGraphics->ScreenWidth(), pGraphics->ScreenHeight()); });
+
+	// A path that names a file where it stands is opened as it stands; the
+	// rest is looked for in the data directories, like any other map.
+	const auto &&LoadMapPath = [&](const char *pPath) {
+		return View.LoadMap(pPath, fs_is_file(pPath) ? IStorage::TYPE_ABSOLUTE : IStorage::TYPE_ALL);
+	};
+	if(!InputMap.empty() && !LoadMapPath(InputMap.c_str()))
+		return 1;
+
+	CStandaloneMapView::SRenderParams RenderParams;
+	const auto &&FitView = [&]() {
+		RenderParams.m_Center = View.MapWorldSize() / 2.0f;
+		RenderParams.m_Zoom = View.FitZoom();
+	};
+	FitView();
+
+	const std::chrono::nanoseconds StartTime = time_get_nanoseconds();
+	std::chrono::nanoseconds LastFrameTime = StartTime;
+	vec2 LastMousePos = vec2(0.0f, 0.0f);
+	bool Dragging = false;
+	while(true)
+	{
+		if(pInput != nullptr && pInput->Update())
+			break;
+
+		const std::chrono::nanoseconds Now = time_get_nanoseconds();
+		const float FrameTime = std::chrono::duration_cast<std::chrono::duration<float>>(Now - LastFrameTime).count();
+		LastFrameTime = Now;
+		// The envelopes of a map move, so the view runs the same clock the
+		// client runs and shows the map as it would look in it.
+		RenderParams.m_TimeOffsetMillis = std::chrono::duration_cast<std::chrono::milliseconds>(Now - StartTime).count();
+
+		if(pInput != nullptr)
+		{
+			char aDroppedFile[IO_MAX_PATH_LENGTH];
+			if(pInput->GetDropFile(aDroppedFile, sizeof(aDroppedFile)) && LoadMapPath(aDroppedFile))
+			{
+				FitView();
+			}
+
+			if(pInput->KeyIsPressed(KEY_ESCAPE))
+				break;
+		}
+
+		// How far the map moves under one pixel of the pointer, which is also
+		// what the keys move by, so both stay the same speed at any zoom.
+		float ViewWidth, ViewHeight;
+		pGraphics->CalcScreenParams(pGraphics->ScreenAspect(), 1.0f, &ViewWidth, &ViewHeight);
+		const float WorldPerPixel = pGraphics->ScreenWidth() == 0 ? 0.0f : ViewWidth * RenderParams.m_Zoom / pGraphics->ScreenWidth();
+
+		bool SaveNow = false;
+		if(pInput != nullptr)
+		{
+			vec2 Move(0.0f, 0.0f);
+			if(pInput->KeyIsPressed(KEY_LEFT) || pInput->KeyIsPressed(KEY_A))
+				Move.x -= 1.0f;
+			if(pInput->KeyIsPressed(KEY_RIGHT) || pInput->KeyIsPressed(KEY_D))
+				Move.x += 1.0f;
+			if(pInput->KeyIsPressed(KEY_UP) || pInput->KeyIsPressed(KEY_W))
+				Move.y -= 1.0f;
+			if(pInput->KeyIsPressed(KEY_DOWN) || pInput->KeyIsPressed(KEY_S))
+				Move.y += 1.0f;
+			if(Move.x != 0.0f || Move.y != 0.0f)
+				RenderParams.m_Center += normalize(Move) * (ViewWidth * RenderParams.m_Zoom * PAN_SCREENS_PER_SECOND * FrameTime);
+
+			const vec2 MousePos = pInput->NativeMousePos();
+			if(pInput->NativeMousePressed(1))
+			{
+				if(Dragging)
+					RenderParams.m_Center -= (MousePos - LastMousePos) * WorldPerPixel;
+				Dragging = true;
+			}
+			else
+			{
+				Dragging = false;
+			}
+			LastMousePos = MousePos;
+
+			if(pInput->KeyPress(KEY_MOUSE_WHEEL_UP))
+				RenderParams.m_Zoom /= ZOOM_STEP;
+			if(pInput->KeyPress(KEY_MOUSE_WHEEL_DOWN))
+				RenderParams.m_Zoom *= ZOOM_STEP;
+			RenderParams.m_Zoom = std::clamp(RenderParams.m_Zoom, 0.01f, 1000.0f);
+			if(pInput->KeyPress(KEY_HOME))
+				FitView();
+			SaveNow = pInput->KeyPress(KEY_F2);
+		}
+		else
+		{
+			// Nothing can move the view here, so the first frame is the only
+			// one there is a point in drawing.
+			RenderParams.m_TimeOffsetMillis = 0;
+			SaveNow = true;
+		}
+
+		View.Render(RenderParams);
+
+		// Reading the frame back puts it on the screen as well, so what is
+		// written is the frame that was shown.
+		if(SaveNow)
+		{
+			if(View.SaveImage(OutputFile.c_str()))
+			{
+				constexpr LOG_COLOR SuccessLogColor = LOG_COLOR{0, 255, 128};
+				log_info_color(SuccessLogColor, TOOL_NAME, "Saved screenshot to '%s'", OutputFile.c_str());
+			}
+			if(pInput == nullptr)
+				break;
+		}
+		else
+		{
+			pGraphics->Swap();
+		}
+	}
+
+	if(pInput != nullptr)
+		pInput->Shutdown();
+	View.Shutdown();
+	return 0;
+}

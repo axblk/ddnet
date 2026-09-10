@@ -96,8 +96,9 @@ void net_addr_str(const NETADDR *addr, char *string, int max_length, bool add_po
  * port: is a optional internet protocol port
  *
  * The scheme names the protocol and ends up in the address flags:
- * `tw-0.7+udp`, `ddnet+quic`, `ddnet+wt`, `ddnet+ws` and `ddnet+wss` as the
- * networking library speaks them, `udp` for a datagram of no protocol.
+ * `tw-0.7+udp`, `ddnet+quic`, `ddnet+wt`, `tw-0.7+quic`, `tw-0.7+wt`,
+ * `ddnet+ws` and `ddnet+wss` as the networking library speaks them, `udp`
+ * for a datagram of no protocol.
  *
  * This format is used for parsing the master server, be careful before changing it.
  *

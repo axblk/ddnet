@@ -196,6 +196,8 @@ struct Peer {
     addr: Addr,
     /// What the browser was told to open, to open it again for a resume.
     url: String,
+    /// The messages inside are 0.7's, not DDNet 0.6's.
+    sixup: bool,
     transport: Transport,
     state: State,
     identity: PeerIdentity,
@@ -348,9 +350,9 @@ impl Net {
     pub fn connect(&mut self, addr: &str) -> Result<PeerIndex> {
         let url = Url::parse(addr).context("addr: URL")?;
         let parsed: Addr = addr.parse()?;
-        let (webtransport, tls, sock_addr, host, wanted) = match parsed {
-            Addr::Quic(QuicAddr { addr, host, identity, webtransport: true }) => (true, true, addr, host, identity),
-            Addr::Ws(WsAddr { addr, host, tls, identity }) => (false, tls, addr, host, identity),
+        let (webtransport, tls, sock_addr, host, wanted, sixup) = match parsed {
+            Addr::Quic(QuicAddr { addr, host, identity, webtransport: true, sixup }) => (true, true, addr, host, identity, sixup),
+            Addr::Ws(WsAddr { addr, host, tls, identity }) => (false, tls, addr, host, identity, false),
             _ => bail!("a browser speaks WebTransport or WebSockets only"),
         };
         if !self.bridge.available(webtransport) {
@@ -399,6 +401,7 @@ impl Net {
             handle,
             addr: parsed,
             url: browser_url,
+            sixup,
             transport,
             state: State::Opening,
             identity: PeerIdentity::Wanted(wanted),
@@ -712,7 +715,7 @@ impl Peer {
             major: wire::VERSION_MAJOR,
             minor: wire::VERSION_MINOR,
             protocol_version: wire::PROTOCOL_VERSION,
-            capabilities,
+            capabilities: capabilities | if self.sixup { wire::capability::GAME_PROTOCOL_7 } else { 0 },
             max_datagram_size,
             nonce: self.local_nonce,
             resume_token: if self.resuming {
@@ -747,6 +750,11 @@ impl Peer {
             if hello.max_datagram_size == 0 {
                 bail!("hello with datagrams of no size");
             }
+        }
+        let sixup = hello.capabilities & wire::capability::GAME_PROTOCOL_7 != 0;
+        if sixup != self.sixup {
+            let name = |sixup| if sixup { "0.7" } else { "0.6" };
+            bail!("game protocol {} instead of {}", name(sixup), name(self.sixup));
         }
         if !hello.resume_token.is_empty() {
             bail!("hello from the server carries a resume token");

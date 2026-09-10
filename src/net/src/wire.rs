@@ -83,6 +83,8 @@ pub mod capability {
     /// What a peer over QUIC or WebTransport has to announce.
     pub const REQUIRED_QUIC: u64 = DATAGRAM | MAP_STREAM | RESUME;
     pub const SERVER_IDENTITY: u64 = 1 << 3;
+    /// The messages inside are Teeworlds 0.7's, not DDNet 0.6's.
+    pub const GAME_PROTOCOL_7: u64 = 1 << 4;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

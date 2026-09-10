@@ -959,6 +959,7 @@ impl Protocol {
                         *from,
                         PeerIdentity::AcceptAny,
                         false,
+                        false,
                     );
                     let idx = cb.next_peer_index;
                     v.insert(idx);
@@ -978,7 +979,7 @@ impl Protocol {
         addr: Addr,
         idx: PeerIndex,
     ) -> Result<Connection> {
-        let Addr { addr: sock_addr, identity: peer_identity, webtransport, .. } = addr;
+        let Addr { addr: sock_addr, identity: peer_identity, webtransport, sixup, .. } = addr;
         let cid = self.new_conn_id();
         let config = self.config.client();
         config
@@ -1008,6 +1009,7 @@ impl Protocol {
                 None => PeerIdentity::AcceptAny,
             },
             webtransport,
+            sixup,
         );
         conn.flush(cb, packet_buf)?;
         assert!(self.connection_ids.insert(cid, idx).is_none());
@@ -1062,6 +1064,9 @@ pub struct Connection {
     transport: Transport,
     /// A client asked for WebTransport.
     webtransport: bool,
+    /// The messages inside are 0.7's, not DDNet 0.6's: what the client
+    /// asked for, and on the server what its hello said.
+    sixup: bool,
     /// The stream the hellos and messages go over, once it is open.
     control_stream: Option<u64>,
     /// The server reads the stream kind and version in front of the
@@ -1173,11 +1178,13 @@ impl Connection {
         peer_addr: SocketAddr,
         peer_identity: PeerIdentity,
         webtransport: bool,
+        sixup: bool,
     ) -> Connection {
         Connection {
             inner,
             transport: Transport::Raw,
             webtransport,
+            sixup,
             control_stream: None,
             prelude_read: client,
             shared,
@@ -1491,6 +1498,9 @@ impl Connection {
         if self.client || self.proves_identity() {
             capabilities |= wire::capability::SERVER_IDENTITY;
         }
+        if self.sixup {
+            capabilities |= wire::capability::GAME_PROTOCOL_7;
+        }
         self.local_nonce = secure_random();
         let hello = wire::Hello {
             major: wire::VERSION_MAJOR,
@@ -1590,6 +1600,13 @@ impl Connection {
         if hello.max_datagram_size == 0 {
             bail!("hello with datagrams of no size");
         }
+        let sixup = hello.capabilities & wire::capability::GAME_PROTOCOL_7 != 0;
+        if self.client && sixup != self.sixup {
+            let name = |sixup| if sixup { "0.7" } else { "0.6" };
+            bail!("game protocol {} instead of {}", name(sixup), name(self.sixup));
+        }
+        // The server speaks whichever the client asked for.
+        self.sixup = sixup;
         self.peer_capabilities = hello.capabilities;
         self.peer_nonce = hello.nonce;
         if hello.resume_token.is_empty() {
@@ -2220,6 +2237,7 @@ impl Connection {
                 _ => None,
             },
             webtransport: self.webtransport,
+            sixup: self.sixup,
         }
     }
     pub fn send_chunk(

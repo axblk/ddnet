@@ -33,6 +33,9 @@ class CRegisterTransports
 {
 public:
 	bool m_LegacyUdp = false;
+	// 0.7 over UDP on top of `m_LegacyUdp`; the library only accepts it
+	// when it was built with `src/net/libtw2-patches`.
+	bool m_LegacySixupUdp = false;
 	bool m_Quic = false;
 	bool m_WebTransport = false;
 	bool m_Websocket = false;

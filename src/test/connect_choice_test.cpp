@@ -164,11 +164,16 @@ TEST_F(ConnectChoice, IndependentPicks)
 // Where a DDNet endpoint is left, the 0.7 ones are not used at all.
 TEST_F(ConnectChoice, DdnetBeforeSixup)
 {
+	char aQuic7[256];
+	str_format(aQuic7, sizeof(aQuic7), "tw-0.7+quic://127.0.0.1:8303#identity-sha256=%s", IDENTITY);
+
 	CServerInfo Mixed{};
 	AddAddress(Mixed, "tw-0.7+udp://[::1]:8303");
+	AddAddress(Mixed, aQuic7);
 	AddAddress(Mixed, "tw-0.6+udp://127.0.0.1:8303");
 	EXPECT_FALSE(ConnectEndpointUsable(Mixed, Mixed.m_aAddresses[0]));
-	EXPECT_TRUE(ConnectEndpointUsable(Mixed, Mixed.m_aAddresses[1]));
+	EXPECT_FALSE(ConnectEndpointUsable(Mixed, Mixed.m_aAddresses[1]));
+	EXPECT_TRUE(ConnectEndpointUsable(Mixed, Mixed.m_aAddresses[2]));
 	const CConnectChoices Choices(&Mixed, nullptr);
 	ASSERT_EQ(Choices.m_NumProtocols, 1);
 	EXPECT_EQ(Choices.m_aProtocols[0], EConnectProtocol::LEGACY);
@@ -186,9 +191,10 @@ TEST_F(ConnectChoice, DdnetBeforeSixup)
 	// Without DDNet, 0.7 it is.
 	CServerInfo Sixup{};
 	AddAddress(Sixup, "tw-0.7+udp://127.0.0.1:8303");
-	EXPECT_EQ(Address(Sixup, -1, IPV6), "tw-0.7+udp://127.0.0.1:8303");
+	AddAddress(Sixup, aQuic7);
+	EXPECT_EQ(Address(Sixup, -1, IPV6), aQuic7);
+	EXPECT_EQ(Address(Sixup, LEGACY, IPV6), "tw-0.7+udp://127.0.0.1:8303");
 }
-
 TEST_F(ConnectChoice, ServerHasAddress)
 {
 	EXPECT_TRUE(ServerHasAddress(m_Info, "127.0.0.1:8303"));

@@ -645,7 +645,7 @@ void CRegister::UpdateProtocolEnabled()
 		bool Enabled = m_aProtocolRequested[Protocol];
 		switch(Info.m_Transport)
 		{
-		case ETransport::UDP: Enabled &= m_Transports.m_LegacyUdp; break;
+		case ETransport::UDP: Enabled &= m_Transports.m_LegacyUdp && (!Info.m_Sixup || m_Transports.m_LegacySixupUdp); break;
 		case ETransport::QUIC: Enabled &= m_Transports.m_Quic; break;
 		case ETransport::WEBTRANSPORT: Enabled &= m_Transports.m_WebTransport; break;
 		case ETransport::WEBSOCKET: Enabled &= m_Transports.m_Websocket; break;

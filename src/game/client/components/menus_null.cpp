@@ -55,8 +55,19 @@ bool CMenus::OnCursorMove(float x, float y, IInput::ECursorType CursorType)
 void CMenus::SetActive(bool Active) {}
 void CMenus::RenderMenuBackground() {}
 
-void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress, bool UpdateAndSwap) {}
-void CMenus::RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter, bool UpdateAndSwap) {}
+// Nothing is drawn here, but the asset queue still has to be run: until the
+// main loop takes over, the loading screen is the only thing that starts and
+// reaps asset jobs, and both component initialisation and entering a demo wait
+// in a loop on jobs that would otherwise never be handed out.
+void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress, bool UpdateAndSwap)
+{
+	GameClient()->AssetLoader().Update();
+}
+
+void CMenus::RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter, bool UpdateAndSwap)
+{
+	RenderLoadingDirect(pCaption, pContent, std::nullopt, UpdateAndSwap);
+}
 
 void CMenus::FinishLoading()
 {

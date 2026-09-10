@@ -87,9 +87,11 @@ void CNetClient::Wait(uint64_t Microseconds)
 	}
 }
 
-void CNetClient::SetConnectFragment(const char *pFragment)
+void CNetClient::SetConnectTarget(const char *pHost, const char *pFragment)
 {
-	// Without QUIC there is no identity to expect.
+	// Without QUIC there is no identity to expect, and no name to check
+	// a certificate against.
+	(void)pHost;
 	(void)pFragment;
 }
 

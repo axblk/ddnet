@@ -266,6 +266,9 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	bool m_FavoritesGroupAllowPing = false;
 	int m_FavoritesGroupNum = 0;
 	NETADDR m_aFavoritesGroupAddresses[MAX_SERVER_ADDRESSES];
+	// The fragments of the group's addresses, the first of each kind.
+	char m_aFavoritesGroupIdentity[65] = "";
+	char m_aFavoritesGroupWebTransportFragment[160] = "";
 
 	void UpdateDemoIntraTimers();
 	int MaxLatencyTicks() const;

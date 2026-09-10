@@ -105,7 +105,9 @@ public:
 const char *ConnectProtocolShortName(EConnectProtocol Protocol, const char *pAddress);
 
 /**
- * Whether a connect address is one of the server's addresses.
+ * Whether a connect address is one of the server's: the same address, or
+ * the host name the server is listed under with the port of one of its
+ * addresses.
  *
  * @param Server The server.
  * @param pAddress The connect address.
@@ -141,7 +143,8 @@ enum class EConnectPrecedence
  * Transport and family are picked independently: each is the pick where the
  * server has it, otherwise the best it has of those this client speaks, then
  * IPv6. Where the server has no endpoint for both picks, the one with
- * precedence stays and the other falls back to what there is with it.
+ * precedence stays and the other falls back to what there is with it. Where
+ * the certificate is signed for the host name, the name replaces the address.
  *
  * @param Server The server.
  * @param PickedProtocol The pick as stored in `cl_connect_protocol`.

@@ -25,12 +25,21 @@ public:
 		int m_NumAddrs;
 		NETADDR m_aAddrs[MAX_SERVER_ADDRESSES];
 		bool m_AllowPing;
+		// What the server was pinned by when it was added, so that a
+		// connect from the favorites pins it still when the master's list
+		// has nothing for it: the identity, as 64 hex digits, for its
+		// QUIC and WebSocket addresses, the certificates fragment for its
+		// WebTransport address. Empty where there was none.
+		char m_aIdentity[65];
+		char m_aWebTransportFragment[160];
 	};
 
 	virtual TRISTATE IsFavorite(const NETADDR *pAddrs, int NumAddrs) const = 0;
 	// Only considers the addresses that are actually favorites.
 	virtual TRISTATE IsPingAllowed(const NETADDR *pAddrs, int NumAddrs) const = 0;
-	virtual void Add(const NETADDR *pAddrs, int NumAddrs) = 0;
+	// The identity and WebTransport fragment are kept with the entry, see
+	// `CEntry`.
+	virtual void Add(const NETADDR *pAddrs, int NumAddrs, const char *pIdentity = "", const char *pWebTransportFragment = "") = 0;
 	// Only considers the addresses that are actually favorites.
 	virtual void AllowPing(const NETADDR *pAddrs, int NumAddrs, bool AllowPing) = 0;
 	virtual void Remove(const NETADDR *pAddrs, int NumAddrs) = 0;

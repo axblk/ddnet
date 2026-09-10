@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<meta name="description" content="Look at a DDNet map in a web browser.">
+		<title>DDNet Map Viewer</title>
+		<link rel="icon" type="image/x-icon" href="DDNet.ico">
+		<script src="coi-serviceworker.js"></script>
+		<link rel="stylesheet" href="ddnet-page.css">
+		<link rel="stylesheet" href="ddnet-viewer.css">
+	</head>
+	<body>
+		<div id="controls">
+			<h1>DDNet Map Viewer</h1>
+			<p>This draws a <a href="https://ddnet.org/">DDNet</a> map the way the game draws it, and nothing else. It needs no fonts, no skins and no game images, only the map and the pictures the map names, so it is the quickest of these pages to start.</p>
+			<div id="drop-target">
+				<p>You can drop a <code>.map</code> file here, or click to select one.
+				A map can also be named in the address, as <code>map.html#map=&lt;url&gt;</code>, and is then shown right away.</p>
+				<p id="drop-target-status">No map selected</p>
+				<input id="drop-target-file-input" type="file" accept=".map" hidden>
+			</div>
+			<button id="launch-button" disabled>
+				<span id="launch-button-progress"></span>
+				<span id="launch-button-label">Loading…</span>
+			</button>
+			<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
+		</div>
+		<div id="output" style="display: none">
+			<h2>Console log</h2>
+			<div id="outputcontent"></div>
+		</div>
+		<canvas id="canvas" style="display: none">Canvas not supported.</canvas>
+		<div id="player-controls" style="display: none">
+			<span id="hint">Drag to move, the wheel zooms</span>
+			<button id="fit-button" title="Home">Fit on screen</button>
+			<button id="export-view-button">Save this view</button>
+			<button id="export-full-button" title="The whole map at 32 pixels per tile">Save the whole map</button>
+		</div>
+		<script src="ddnet-loader.js"></script>
+		<script>
+			DDNetLoader.create({
+				programName: "Map viewer",
+				launchLabel: "Show map",
+				accept: [".map"],
+				urlParams: ["map"],
+				autoLaunch: true,
+				elements: {
+					canvas: document.getElementById('canvas'),
+					controls: document.getElementById('controls'),
+					output: document.getElementById('output'),
+					outputContent: document.getElementById('outputcontent'),
+					launchButton: document.getElementById('launch-button'),
+					launchButtonProgress: document.getElementById('launch-button-progress'),
+					launchButtonLabel: document.getElementById('launch-button-label'),
+					dropTarget: document.getElementById('drop-target'),
+					dropTargetStatus: document.getElementById('drop-target-status'),
+					dropTargetFileInput: document.getElementById('drop-target-file-input'),
+				},
+			});
+		</script>
+		<script>
+			// The bar under the canvas. Moving and zooming stay on the pointer,
+			// where they belong; what has a button here is what a key would do and
+			// nobody would find. The other end of these is the `MapViewer*` block
+			// in `src/game/map/standalone/map_viewer_main.cpp`.
+			(function() {
+				const playerControls = document.getElementById('player-controls');
+				const hint = document.getElementById('hint');
+				const exportViewButton = document.getElementById('export-view-button');
+				const exportFullButton = document.getElementById('export-full-button');
+				const exportButtons = [exportViewButton, exportFullButton];
+				const HINT_TEXT = hint.textContent;
+				// The states `MapViewerExportState` answers with.
+				const EXPORT_IDLE = 0, EXPORT_PENDING = 1, EXPORT_SUCCEEDED = 2, EXPORT_FAILED = 3;
+				var lastExportState = EXPORT_IDLE;
+
+				// The viewer is only there between the start of the program and its
+				// end, and the page outlives both, so every call has to survive
+				// being made outside of that.
+				function call(name, returnType, argTypes, args) {
+					if (typeof Module === "undefined" || typeof Module.ccall !== "function") {
+						return null;
+					}
+					try {
+						return Module.ccall(name, returnType, argTypes || [], args || []);
+					} catch (error) {
+						return null;
+					}
+				}
+
+				document.getElementById('fit-button').addEventListener('click', () => {
+					call('MapViewerFit');
+				});
+				exportViewButton.addEventListener('click', () => {
+					// The browser only hands over a download that came out of a click.
+					call('MapViewerExportView');
+				});
+				exportFullButton.addEventListener('click', () => {
+					call('MapViewerExportFullMap');
+				});
+
+				// The page asks rather than being told: the viewer holds the main
+				// thread for as long as it draws and only lets go between frames.
+				setInterval(() => {
+					const loaded = call('MapViewerMapLoaded', 'number');
+					if (loaded === null || loaded !== 1) {
+						playerControls.style.display = "none";
+						return;
+					}
+					playerControls.style.display = "flex";
+					const state = call('MapViewerExportState', 'number');
+					if (state === lastExportState) {
+						return;
+					}
+					lastExportState = state;
+					for (const button of exportButtons) {
+						button.disabled = state === EXPORT_PENDING;
+					}
+					if (state === EXPORT_PENDING) {
+						hint.textContent = "Drawing the picture…";
+					} else if (state === EXPORT_FAILED) {
+						hint.textContent = "The picture could not be saved, see the log";
+					} else {
+						hint.textContent = HINT_TEXT;
+					}
+				}, 200);
+			})();
+		</script>
+		<script async src="ddnet-map-viewer.js"></script>
+	</body>
+</html>

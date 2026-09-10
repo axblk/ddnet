@@ -2217,6 +2217,7 @@ if(TARGET_OS STREQUAL "emscripten")
   list(APPEND COPY_FILES other/emscripten/ddnet-viewer.css)
   list(APPEND COPY_FILES other/emscripten/demo.html)
   list(APPEND COPY_FILES other/emscripten/index.html)
+  list(APPEND COPY_FILES other/emscripten/map.html)
   list(APPEND COPY_FILES other/icons/DDNet.ico)
 endif()
 file(COPY ${COPY_FILES} DESTINATION .)
@@ -3767,6 +3768,29 @@ if(CLIENT)
     )
   endif()
 
+  if(TARGET_OS STREQUAL "emscripten")
+    # Three programs, three pages, one data directory between them. What a
+    # server has to be given is a small part of what the build directory holds,
+    # so the build says which part instead of a deploy job listing it again.
+    add_custom_target(web-site
+      COMMAND ${CMAKE_COMMAND}
+        -DBUILD_DIR=${PROJECT_BINARY_DIR}
+        -DSITE_DIR=${PROJECT_BINARY_DIR}/site
+        "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-viewer$<SEMICOLON>ddnet-map-viewer"
+        "-DPAGE_FILES=background.png$<SEMICOLON>coi-serviceworker.js$<SEMICOLON>DDNet.ico$<SEMICOLON>ddnet-loader.js$<SEMICOLON>ddnet-page.css$<SEMICOLON>ddnet-viewer.css$<SEMICOLON>demo.html$<SEMICOLON>index.html$<SEMICOLON>map.html"
+        -P ${PROJECT_SOURCE_DIR}/cmake/assemble_web_site.cmake
+      DEPENDS
+        # tidy-alphabetical-start
+        copy_data
+        demo-viewer
+        game-client
+        map-viewer
+        web_data_index
+        # tidy-alphabetical-end
+      COMMENT "Assembling the site in ${PROJECT_BINARY_DIR}/site"
+      VERBATIM)
+  endif()
+
   if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC OR WEBGPU_NATIVE_BACKEND)
     set_own_rpath(game-client)
   endif()
@@ -4837,6 +4861,7 @@ else()
     # tidy-alphabetical-start
     other/emscripten/ddnet-viewer.css
     other/emscripten/demo.html
+    other/emscripten/map.html
     # tidy-alphabetical-end
   )
 endif()

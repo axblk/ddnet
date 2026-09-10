@@ -109,6 +109,13 @@ public:
 	 */
 	float FitZoom();
 
+	/**
+	 * The size of the surface that is actually drawn into, which is not always
+	 * the size that was asked for.
+	 */
+	int Width() const { return m_Width; }
+	int Height() const { return m_Height; }
+
 	IStorage *Storage() { return m_pStorage.get(); }
 	IGraphics *Graphics();
 	IEngineGraphicsWindow *Window() { return m_pWindow; }

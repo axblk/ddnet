@@ -385,6 +385,7 @@ public:
 	std::unique_ptr<ITextureReadback> EndOffscreenFrame(CImageInfo &&Recycled = CImageInfo(), CTextureHandle YuvTarget = CTextureHandle(), EPlanarYuvFormat YuvFormat = EPlanarYuvFormat::NV12) override;
 	std::unique_ptr<ITextureReadback> PresentAndReadbackAsync(CImageInfo &&Recycled = CImageInfo()) override;
 	bool PlanarYuvConversionSupported() const override { return m_Capabilities.m_PlanarYuvConversion; }
+	uint32_t MaxTextureDimension() const override { return m_Capabilities.m_MaxTextureDimension; }
 	bool ConvertTextureToPlanarYuv(CTextureHandle Source, EPlanarYuvFormat Format) override;
 	bool UpdateTexture(CTextureHandle Texture, const CTextureRegion &Region, ETextureFormat Format, const void *pData) override;
 

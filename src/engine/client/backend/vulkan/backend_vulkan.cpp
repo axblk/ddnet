@@ -3543,6 +3543,9 @@ bool CCommandProcessorFragment_Vulkan::Cmd_Init(const SCommand_Init *pCommand)
 
 	pCommand->m_pCapabilities->m_2DArrayTextures = true;
 
+	// The device was picked before this, so its limits are known.
+	pCommand->m_pCapabilities->m_MaxTextureDimension = m_MaxTextureSize;
+
 	pCommand->m_pCapabilities->m_ContextMajor = 1;
 	pCommand->m_pCapabilities->m_ContextMinor = 1;
 	pCommand->m_pCapabilities->m_ContextPatch = 0;

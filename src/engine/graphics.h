@@ -702,6 +702,10 @@ public:
 		LAYERED,
 	};
 	static constexpr size_t MAX_TEXTURE_LAYERS = 256;
+	// What a backend that allocates nothing reports as its texture limit. It
+	// is not a promise about any device: it is only large enough that nothing
+	// plans around it where there is nothing to plan around.
+	static constexpr uint32_t MAX_TEXTURE_DIMENSION_FALLBACK = 16384;
 
 	enum ETextureUsage : uint8_t
 	{
@@ -777,6 +781,11 @@ public:
 
 	// Whether ConvertTextureToPlanarYuv does anything on this backend.
 	[[nodiscard]] virtual bool PlanarYuvConversionSupported() const = 0;
+	// The largest picture that fits in one texture, in either direction, and
+	// with it the largest frame that can be drawn in one piece where there is
+	// no window. Whoever wants a bigger picture than this has to draw it in
+	// parts. Zero before the backend has been asked.
+	[[nodiscard]] virtual uint32_t MaxTextureDimension() const = 0;
 	// Draws Source into the current render target in the planar YUV layout an
 	// encoder takes: four of its bytes per target pixel, so the target is a
 	// quarter as wide as Source and half again as tall. The rows above Source's

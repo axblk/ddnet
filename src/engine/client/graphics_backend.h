@@ -44,6 +44,11 @@ struct SBackendCapabilities
 	// encoder takes, so that a frame crosses the bus at one and a half
 	// bytes per pixel instead of four, and already converted.
 	bool m_PlanarYuvConversion = false;
+	// The largest picture the backend will put in one texture, in either
+	// direction. A frame is drawn into a texture as well where there is no
+	// window to draw into, so this is also the largest picture that can be
+	// drawn in one piece. Zero until a backend has said.
+	uint32_t m_MaxTextureDimension = 0;
 
 	int m_ContextMajor = 0;
 	int m_ContextMinor = 0;

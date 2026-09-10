@@ -111,6 +111,11 @@ int main(int argc, const char **argv)
 	if(!View.Init(argc, argv) || !View.OpenWindow(OutputWidth, OutputHeight, CreateOffscreenGraphicsWindow(), false))
 		return 1;
 
+	if(View.Width() != OutputWidth || View.Height() != OutputHeight)
+	{
+		log_warn_color(WarningLogColor, TOOL_NAME, "Image was scaled down to %dx%d", View.Width(), View.Height());
+	}
+
 	// Load map from absolute path
 	if(!View.LoadMap(InputMap.c_str(), IStorage::TYPE_ABSOLUTE))
 		return 1;

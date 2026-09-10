@@ -1861,6 +1861,17 @@ void CGraphics_Threaded::AdjustViewport(bool SendViewportChangeToBackend)
 	m_ScreenWidth = m_DrawableWidth - m_InsetLeft - m_InsetRight;
 	m_ScreenHeight = m_DrawableHeight;
 
+	// A frame without a window is drawn into a texture, so it can be no bigger
+	// than one. A surface of the window system is never bigger than a display
+	// and needs no such limit. Before a backend has said, there is nothing to
+	// go by and the frame is left as it was asked for.
+	const uint32_t MaxDimension = m_Capabilities.m_MaxTextureDimension;
+	if(!HasPresentationSurface() && MaxDimension > 0)
+	{
+		m_ScreenWidth = std::min<int>(m_ScreenWidth, MaxDimension);
+		m_ScreenHeight = std::min<int>(m_ScreenHeight, MaxDimension);
+	}
+
 	// adjust the viewport to only allow certain aspect ratios
 	// keep this in sync with backend_vulkan GetSwapImageSize's check
 	if(m_ScreenHeight > 4 * m_ScreenWidth / 5)

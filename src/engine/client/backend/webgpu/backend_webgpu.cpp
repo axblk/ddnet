@@ -370,6 +370,7 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	uint32_t m_ViewportWidth = 0;
 	uint32_t m_ViewportHeight = 0;
 	uint32_t m_UniformAlignment = 256;
+	uint32_t m_MaxTextureDimension = 0;
 	uint32_t m_MultiSamplingCount = 0;
 	uint32_t m_NextMultiSamplingCount = 0;
 	uint64_t m_StreamOffset = 0;
@@ -1311,6 +1312,8 @@ bool CCommandProcessorFragment_WebGpu::Initialize(const SCommand_Init *pCommand)
 	pCommand->m_pCapabilities->m_2DArrayTextures = true;
 	pCommand->m_pCapabilities->m_RenderTargets = true;
 	pCommand->m_pCapabilities->m_PlanarYuvConversion = true;
+	// The device was made before this, so its limits are known.
+	pCommand->m_pCapabilities->m_MaxTextureDimension = m_MaxTextureDimension;
 	m_ViewportWidth = m_SurfaceWidth;
 	m_ViewportHeight = m_SurfaceHeight;
 	m_SurfaceDirty = true;
@@ -3229,8 +3232,13 @@ return vec4f((outline.rgb + primary.rgb * primary.a) / alpha, alpha);
 		return false;
 
 	WGPULimits Limits = WGPU_LIMITS_INIT;
-	if(wgpuDeviceGetLimits(m_Device, &Limits) == WGPUStatus_Success && Limits.minUniformBufferOffsetAlignment != WGPU_LIMIT_U32_UNDEFINED && Limits.minUniformBufferOffsetAlignment != 0)
-		m_UniformAlignment = Limits.minUniformBufferOffsetAlignment;
+	if(wgpuDeviceGetLimits(m_Device, &Limits) == WGPUStatus_Success)
+	{
+		if(Limits.minUniformBufferOffsetAlignment != WGPU_LIMIT_U32_UNDEFINED && Limits.minUniformBufferOffsetAlignment != 0)
+			m_UniformAlignment = Limits.minUniformBufferOffsetAlignment;
+		if(Limits.maxTextureDimension2D != WGPU_LIMIT_U32_UNDEFINED)
+			m_MaxTextureDimension = Limits.maxTextureDimension2D;
+	}
 	return CreatePrimitivePipelines();
 }
 

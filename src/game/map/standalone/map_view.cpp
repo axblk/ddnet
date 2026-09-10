@@ -98,6 +98,13 @@ bool CStandaloneMapView::OpenWindow(int Width, int Height, IEngineGraphicsWindow
 		return false;
 	}
 
+	// What was asked for is not always what there is: a frame without a window
+	// is a texture, and a picture bigger than the graphics card's largest one
+	// is drawn smaller. The view goes by what it got, so that what it draws is
+	// not stretched on top of being smaller.
+	m_Width = m_pGraphics->ScreenWidth();
+	m_Height = m_pGraphics->ScreenHeight();
+
 	m_RenderMap.Init(m_pGraphics, nullptr);
 	m_MapRenderer.OnInit(m_pGraphics, nullptr, &m_RenderMap);
 	return true;
@@ -214,8 +221,6 @@ bool CStandaloneMapView::SaveImage(const char *pPath)
 	{
 		if(CImageLoader::SavePng(File, pPath, Image))
 		{
-			if((int)Image.m_Width != m_Width || (int)Image.m_Height != m_Height)
-				log_warn_color(WARNING_LOG_COLOR, m_pLogContext, "Image was scaled down to %dx%d", (int)Image.m_Width, (int)Image.m_Height);
 			Success = true;
 		}
 		else

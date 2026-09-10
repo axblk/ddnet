@@ -1161,7 +1161,7 @@ impl Net {
                             let target = self
                                 .resumes
                                 .get(&session_id)
-                                .filter(|(wanted, _)| constant_time_eq(wanted, &token))
+                                .filter(|(wanted, _)| constant_time_eq::constant_time_eq(wanted, &token))
                                 .map(|&(_, old_idx)| old_idx);
                             match target {
                                 Some(old_idx)
@@ -1633,13 +1633,6 @@ impl From<tw07::Connection> for Connection {
     fn from(conn: tw07::Connection) -> Connection {
         Connection::Tw07(conn)
     }
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 #[cfg(test)]

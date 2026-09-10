@@ -457,6 +457,52 @@ jobs:
           --kill_exit \
           build-emscripten-headless/index.html -- "quit" "#__emrun_autostart__"
 
+    - name: Build native server for the browser client to connect to
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y libsqlite3-dev
+        export PATH=/home/runner/cmake/bin:$PATH
+        cmake -H. -G "Unix Makefiles" -B build-native-server -DCMAKE_BUILD_TYPE=Debug -DCLIENT=OFF -DTOOLS=OFF -DNETWORKING_QUIC=ON -DWEBSOCKETS=ON
+        cmake --build build-native-server --target DDNet-Server -j$(nproc)
+
+    - name: Test headless Emscripten client against the native server
+      id: browser_integration_test
+      continue-on-error: true
+      run: |
+        # Node from the emsdk stands in for the browser; the client joins
+        # the server over WebSockets.
+        source emsdk/emsdk_env.sh
+        python3 scripts/integration_test.py --show-full-output --test-websockets --test-quic --emscripten-client build-emscripten-headless/DDNet.js build-native-server browser_client_can_connect
+
+    - name: Upload browser integration test results
+      id: browser_integration_test_artifact_upload
+      if: steps.browser_integration_test.outcome == 'failure'
+      uses: actions/upload-artifact@v6
+      with:
+        name: ddnet-emscripten-integration-test-results
+        path: build-native-server/integration_*
+        if-no-files-found: error
+
+    - name: Summarize browser integration test results
+      if: steps.browser_integration_test.outcome == 'failure'
+      shell: bash
+      run: |
+        echo -e "\033[31mFAILED: Browser integration test failed. Refer to the workflow logs and uploaded artifacts in the steps above for details.\033[m"
+        echo "### Browser integration test failed" >> $GITHUB_STEP_SUMMARY
+        echo >> $GITHUB_STEP_SUMMARY
+        echo "Artifact URL: ${{ steps.browser_integration_test_artifact_upload.outputs.artifact-url }}" >> $GITHUB_STEP_SUMMARY
+        for integration_dir in build-native-server/integration_*; do
+          echo >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>Test $(basename "$integration_dir")</summary>" >> $GITHUB_STEP_SUMMARY
+          echo >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat "$integration_dir/test_failure.log" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+        done
+        exit 1
+
     - name: Build Emscripten client in release mode
       run: |
         export PATH=/home/runner/cmake/bin:$PATH

@@ -83,9 +83,9 @@
 ### Building the DDNet client via Emscripten
 
 -	Create a new directory to build the client in.
--	Then run `emcmake cmake .. -G "Unix Makefiles" -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DPREFER_BUNDLED_LIBS=ON -DNETWORKING_QUIC=ON -DWEBSOCKETS=ON` in your build directory to configure followed by `cmake --build . -j8` to build.
-	`NETWORKING_QUIC` brings the networking library along, whose browser backend speaks WebTransport and WebSockets (`src/net/src/web.rs` with `src/net/src/web/browser.rs` on top of `web-sys`); without it the client cannot connect to any server from a browser.
--	With `NETWORKING_QUIC`, `emcc` runs the `wasm-bindgen` CLI on the linked module and mixes the JavaScript it generates into its own (`-sWASM_BINDGEN`, marked experimental by Emscripten). The build takes care of what that needs:
+-	Then run `emcmake cmake .. -G "Unix Makefiles" -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DPREFER_BUNDLED_LIBS=ON -DWEBSOCKETS=ON` in your build directory to configure followed by `cmake --build . -j8` to build.
+	The networking library's browser backend speaks WebTransport and WebSockets (`src/net/src/web.rs` with `src/net/src/web/browser.rs` on top of `web-sys`).
+-	`emcc` runs the `wasm-bindgen` CLI on the linked module and mixes the JavaScript it generates into its own (`-sWASM_BINDGEN`, marked experimental by Emscripten). The build takes care of what that needs:
 	the Rust code is compiled without reference types and with panics aborting (see the `CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_RUSTFLAGS` in `CMakeLists.txt`),
 	the link exports the symbols listed in `net_exports.txt` next to `libnet.a` (made by `scripts/emscripten/wasm_bindgen_exports.py`),
 	and `emcc` finds the CLI through `scripts/emscripten/wasm-bindgen`, a wrapper that restores the module's start function and keeps `main` out of wasm-bindgen's sight.
@@ -98,7 +98,7 @@
 -	To test the compiled code locally, run `emrun --browser firefox index.html` in the build directory.
 -	Without a browser, Node from the emsdk runs the headless client (`-DHEADLESS_CLIENT=ON`) against a native server over WebSockets: in the build directory, `node -r <repo>/scripts/emscripten/node-xhr-stub.js DDNet.js "connect ddnet+ws://127.0.0.1:8303"`.
 	The stub stands in for `XMLHttpRequest`, which Node lacks, so the master's list and HTTP map downloads fail right away and the map comes from the server.
-	The integration test `browser_client_can_connect` does the same: `scripts/integration_test.py --test-websockets --test-quic --emscripten-client <build>/DDNet.js <native server build dir> browser_client_can_connect`, with a native server built with `-DNETWORKING_QUIC=ON -DWEBSOCKETS=ON`; the CI's Emscripten job runs it.
+	The integration test `browser_client_can_connect` does the same: `scripts/integration_test.py --test-websockets --test-quic --emscripten-client <build>/DDNet.js <native server build dir> browser_client_can_connect`, with a native server built with `-DWEBSOCKETS=ON`; the CI's Emscripten job runs it.
 	WebTransport is a browser's alone, Node has none.
 -	To host the compiled Emscripten client, copy the `DDNet.data`, `DDNet.js`, `DDNet.wasm` and `index.html` files from the build directory to the web server.
 	The file `index.html` in the build folder is copied from `other/emscripten/index.html`.

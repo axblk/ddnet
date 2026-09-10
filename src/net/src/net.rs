@@ -685,6 +685,7 @@ impl Net {
         }
     }
     fn socket_read(&mut self, buf: &mut [u8]) -> Result<SocketReadEvent> {
+        let mut connection_resets = 0;
         loop {
             // A read can fail for a reason that has nothing to do with the
             // socket, such as an ICMP error a previous send provoked. Only a
@@ -692,6 +693,24 @@ impl Net {
             let (read, from) = match self.cb.socket.recv_from(&mut self.packet_buf[..16384]).no_block() {
                 Ok(Some(read_from)) => read_from,
                 Ok(None) => break,
+                Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {
+                    // Windows answers the ICMP error an earlier send provoked
+                    // by failing the next read with a connection reset, even
+                    // though a datagram socket has no connection to reset. A
+                    // peer that goes away leaves one behind for every packet
+                    // that was still on its way to it, so this says nothing
+                    // about the socket and is not held against it, the same
+                    // way the C sockets this replaced dropped such a read.
+                    connection_resets += 1;
+                    if connection_resets >= MAX_SOCKET_READ_ERRORS {
+                        // Reading has to go on until the socket says it has
+                        // nothing left, or a poll that only reports a change
+                        // never wakes for what is still in the queue. Only a
+                        // socket that reports nothing else is given up on.
+                        break;
+                    }
+                    continue;
+                }
                 Err(error) => {
                     self.socket_read_errors += 1;
                     if self.socket_read_errors >= MAX_SOCKET_READ_ERRORS {

@@ -131,9 +131,9 @@ option(DISCORD_DYNAMIC "Enable discovering Discord rich presence libraries at ru
 option(PREFER_BUNDLED_LIBS "Prefer bundled libraries over system libraries" ${AUTO_DEPENDENCIES_DEFAULT})
 option(DEV "Don't generate stuff necessary for packaging, don't strip absolute paths from debug info, enable additional assertions" OFF)
 option(VULKAN "Enable the vulkan backend" ${AUTO_VULKAN_BACKEND})
-option(NETWORKING_QUIC "Use the Rust networking backend with QUIC support" OFF)
+option(WEBSOCKETS "Accept WebSocket clients, for browsers" OFF)
 option(LIBTW2_PATCH "Build against a libtw2-net with src/net/libtw2-patches applied, which is what a 0.7 server needs" OFF)
-option(WEBSOCKETS "Accept WebSocket clients from the Rust networking backend (needs NETWORKING_QUIC)" OFF)
+
 
 option(EXCEPTION_HANDLING "Enable crashdumps (only works with Windows)" OFF)
 option(IPO "Enable interprocedural optimizations" OFF)
@@ -725,10 +725,6 @@ if(MYSQL AND NOT(MYSQL_FOUND))
   message(SEND_ERROR "You must install MySQL to compile the ${CMAKE_PROJECT_NAME} server with MySQL support")
 endif()
 
-if(WEBSOCKETS AND NOT NETWORKING_QUIC)
-  message(SEND_ERROR "WEBSOCKETS needs NETWORKING_QUIC, the WebSocket transport is part of the Rust networking backend")
-endif()
-
 if(UPNP AND NOT(MINIUPNPC_FOUND))
   message(SEND_ERROR "You must install miniupnpc to compile the ${CMAKE_PROJECT_NAME} server with UPnP support")
 endif()
@@ -789,11 +785,24 @@ if(TARGET_OS STREQUAL "windows")
   list(APPEND PLATFORM_LIBS version.lib) # GetFileVersionInfoSizeW
   list(APPEND PLATFORM_LIBS ws2_32.lib) # Windows sockets
   list(APPEND PLATFORM_LIBS advapi32.lib) # Reg* and Crypt* functions
+  list(APPEND PLATFORM_LIBS crypt32.lib) # Cert* functions, for the networking library's CA store
   list(APPEND PLATFORM_LIBS bcrypt.lib userenv.lib) # for Rust (https://github.com/rust-lang/rust/issues/91974)
   list(APPEND PLATFORM_LIBS ole32.lib) # CoInitialize(Ex)
   list(APPEND PLATFORM_LIBS shell32.lib)
   list(APPEND PLATFORM_LIBS ntdll.lib) # https://github.com/ddnet/ddnet/issues/6725
   list(APPEND PLATFORM_LIBS uuid.lib) # FOLDERID_RoamingAppData
+  # Two Rust static libraries go into each executable, the workspace's and the
+  # networking crate's, and each carries its own copy of the parts of the
+  # standard library it uses. Bundled as they come, those copies are the same
+  # archive members in both libraries, and the linker takes each of them from
+  # whichever it reads first; see CARGO_PROFILE_*_LTO below for what keeps
+  # them that way. What is left over the linkers of Windows and Emscripten
+  # still call a conflict, and each wants to be told so in its own words.
+  if(MINGW)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--allow-multiple-definition")
+  elseif(MSVC)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /FORCE:MULTIPLE /IGNORE:4006 /IGNORE:4088")
+  endif()
 elseif(TARGET_OS STREQUAL "mac")
   if(NOT CMAKE_VERSION VERSION_LESS 3.16)
     if(NOT CMAKE_OBJCXX_COMPILER)
@@ -944,7 +953,7 @@ if(NOT(GTEST_FOUND) AND DOWNLOAD_GTEST)
           target_compile_definitions(${target} PRIVATE _LIBCPP_DEBUG=0)
         endif()
         if(MSVC)
-          set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY MultiThreaded$<$<CONFIG:Debug>:Debug>)
+          set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY MultiThreaded)
           # `/w` disables all warnings. This is needed because `gtest` enables
           # `/WX` (equivalent of `-Werror`) for some reason, breaking builds
           # when MSVS adds new warnings.
@@ -1041,7 +1050,7 @@ else()
   set(CARGO_BUILD ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} DDNET_TEST_NO_LINK=1 ${RUST_CARGO} build --locked --manifest-path "${PROJECT_SOURCE_DIR}/Cargo.toml")
   set(CARGO_TEST ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} ${RUST_CARGO} test --locked)
 endif()
-if(TARGET_OS STREQUAL "emscripten" AND NETWORKING_QUIC)
+if(TARGET_OS STREQUAL "emscripten")
   # What rustc needs for the browser backend of src/net, applied to every
   # crate so the shared target directory is built one way: WebTransport in
   # web-sys sits behind `web_sys_unstable_apis`; without reference types the
@@ -1052,8 +1061,39 @@ if(TARGET_OS STREQUAL "emscripten" AND NETWORKING_QUIC)
   list(INSERT CARGO_BUILD 3 "CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_RUSTFLAGS=--cfg=web_sys_unstable_apis -Ctarget-feature=-reference-types -Cllvm-args=-enable-emscripten-cxx-exceptions=0 -Cpanic=abort")
 endif()
 if(MSVC)
-  list(INSERT CARGO_BUILD 0 ${CMAKE_COMMAND} -E env $<$<CONFIG:Debug>:CFLAGS=/MTd> $<$<CONFIG:Debug>:CXXFLAGS=/MTd>)
+  # rustc links the release runtime in every configuration, so the C and C++
+  # a crate builds takes it as well; see MSVC_RUNTIME_LIBRARY below.
+  list(INSERT CARGO_BUILD 0 ${CMAKE_COMMAND} -E env $<$<CONFIG:Debug>:CFLAGS=/MT> $<$<CONFIG:Debug>:CXXFLAGS=/MT>)
   list(INSERT CARGO_TEST 0 ${CMAKE_COMMAND} -E env RUSTFLAGS=-Ctarget-feature=+crt-static)
+endif()
+if(MINGW)
+  # The test binaries Cargo links carry the networking library, and with it a
+  # second copy of the standard library, the same way the executables do; the
+  # doc tests are linked by rustdoc, which reads a variable of its own.
+  list(INSERT CARGO_TEST 0 ${CMAKE_COMMAND} -E env
+    "RUSTFLAGS=-Clink-arg=-Wl,--allow-multiple-definition"
+    "RUSTDOCFLAGS=-Clink-arg=-Wl,--allow-multiple-definition")
+endif()
+if(TARGET_OS STREQUAL "windows")
+  # Where the networking crate is linked statically, its archive and the
+  # workspace's stand next to each other in every executable, each with the
+  # copy of the standard library rustc bundles into a static library. Bundled
+  # as they come, those are the same archive members in both, so the linker
+  # takes each of them once. Cross-crate LTO would first re-emit them, split
+  # over the crate's own code units and named after it, and the two libraries
+  # would then offer the linker overlapping halves of the same standard
+  # library, which it cannot take apart again. Windows is the one place where
+  # that turns into an error, so the release profiles lose the LTO there.
+  list(INSERT CARGO_BUILD 0 ${CMAKE_COMMAND} -E env
+    CARGO_PROFILE_RELEASE_LTO=off
+    CARGO_PROFILE_RELWITHDEBINFO_LTO=off
+    CARGO_PROFILE_MINSIZEREL_LTO=off)
+endif()
+if(TARGET_OS STREQUAL "mac")
+  # The networking library says it is found by the run path, which CMake gives
+  # to the targets it builds itself but not to the test binaries Cargo links.
+  # The doc tests are linked by rustdoc, which reads a variable of its own.
+  list(INSERT CARGO_TEST 0 ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Clink-arg=-Wl,-rpath,${PROJECT_BINARY_DIR}" "RUSTDOCFLAGS=-Clink-arg=-Wl,-rpath,${PROJECT_BINARY_DIR}")
 endif()
 if(RUST_NIGHTLY)
   list(APPEND CARGO_BUILD -Z build-std=std,panic_abort)
@@ -1195,74 +1235,92 @@ else()
   endforeach()
 endif()
 
-if(NETWORKING_QUIC)
-  set_glob(RUST_NET_SRC GLOB_RECURSE "rs" src/net/src
-    addr.rs
-    challenger.rs
-    error.rs
-    ffi.rs
-    key.rs
-    lib.rs
-    libtw2_patch.rs
-    mapstream.rs
-    net.rs
-    quic.rs
-    tw06.rs
-    tw07.rs
-    types.rs
-    util.rs
-    web.rs
-    web/browser.rs
-    webtransport.rs
-    wire.rs
-    ws.rs
-  )
-  list(APPEND RUST_NET_SRC
-    "${PROJECT_SOURCE_DIR}/src/net/Cargo.lock"
-    "${PROJECT_SOURCE_DIR}/src/net/Cargo.toml"
-  )
+# The networking library, src/net: the transports of the client and the
+# server, from 0.6 and 0.7 over UDP to QUIC, WebTransport and WebSockets,
+# behind the C API of src/net/net.h.
+set_glob(RUST_NET_SRC GLOB_RECURSE "rs" src/net/src
+  addr.rs
+  challenger.rs
+  error.rs
+  ffi.rs
+  key.rs
+  lib.rs
+  libtw2_patch.rs
+  mapstream.rs
+  net.rs
+  quic.rs
+  tw06.rs
+  tw07.rs
+  types.rs
+  util.rs
+  web.rs
+  web/browser.rs
+  webtransport.rs
+  wire.rs
+  ws.rs
+)
+list(APPEND RUST_NET_SRC
+  "${PROJECT_SOURCE_DIR}/src/net/Cargo.lock"
+  "${PROJECT_SOURCE_DIR}/src/net/Cargo.toml"
+)
 
-  # Run `cargo build` on the src/net crate
-  string(REPLACE
-    "${PROJECT_SOURCE_DIR}/Cargo.toml"
-    "${PROJECT_SOURCE_DIR}/src/net/Cargo.toml"
-    CARGO_BUILD_NET "${CARGO_BUILD}")
-  if(TARGET_OS STREQUAL "emscripten")
-    # The browser backend goes into the one .wasm with everything else,
-    # as a static library.
-    string(REPLACE ";build;" ";rustc;" CARGO_BUILD_NET "${CARGO_BUILD_NET}")
-    list(APPEND CARGO_BUILD_NET --lib --crate-type staticlib)
-  else()
-    list(APPEND CARGO_BUILD_NET --lib)
-  endif()
-  if(LIBTW2_PATCH)
-    list(APPEND CARGO_BUILD_NET --features libtw2-patch)
-  endif()
-  if(WEBSOCKETS)
-    list(APPEND CARGO_BUILD_NET --features websocket)
-  endif()
+# How the library joins the executables. A shared library wherever the
+# process has another crypto library that the crate's BoringSSL must keep
+# out of, because a cdylib exports its C interface and nothing else: on
+# Linux and macOS curl brings the system OpenSSL, and a static library
+# would leave BoringSSL calling into it, since the linker takes the
+# definition the earlier shared library already gave it; on Android the
+# BoringSSL of ddnet-libs is linked statically for hash_openssl and curl.
+# Elsewhere a static library, which the app bundle of iOS and the one wasm
+# module of the browser take without any packaging, and which Windows
+# resolves per module rather than process-wide; it links next to the
+# workspace's Rust library because the crate builds with the same
+# profiles, see src/net/Cargo.toml.
+if(TARGET_OS STREQUAL "windows" OR TARGET_OS STREQUAL "ios" OR TARGET_OS STREQUAL "emscripten")
+  set(NET_SHARED OFF)
+else()
+  set(NET_SHARED ON)
+endif()
 
-  if(TARGET_OS STREQUAL "emscripten")
-    set(NET_LIBRARY_NAME "${CMAKE_STATIC_LIBRARY_PREFIX}net${CMAKE_STATIC_LIBRARY_SUFFIX}")
-    set(NET_LIBRARY_PATH "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}")
-    # What the link exports for wasm-bindgen, see scripts/emscripten/wasm_bindgen_exports.py.
-    set(NET_EXPORTS_PATH "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/net_exports.txt")
+# Run `cargo build` on the src/net crate
+string(REPLACE
+  "${PROJECT_SOURCE_DIR}/Cargo.toml"
+  "${PROJECT_SOURCE_DIR}/src/net/Cargo.toml"
+  CARGO_BUILD_NET "${CARGO_BUILD}")
+if(NET_SHARED)
+  list(APPEND CARGO_BUILD_NET --lib)
+else()
+  string(REPLACE ";build;" ";rustc;" CARGO_BUILD_NET "${CARGO_BUILD_NET}")
+  list(APPEND CARGO_BUILD_NET --lib --crate-type staticlib)
+endif()
+if(LIBTW2_PATCH)
+  list(APPEND CARGO_BUILD_NET --features libtw2-patch)
+endif()
+if(WEBSOCKETS)
+  list(APPEND CARGO_BUILD_NET --features websocket)
+endif()
+if(NET_SHARED)
+  set(NET_LIBRARY_NAME "${CMAKE_SHARED_LIBRARY_PREFIX}net${CMAKE_SHARED_LIBRARY_SUFFIX}")
+  if(RUST_OSX_ARCHITECTURES)
+    # One library per architecture, joined the way the workspace's is.
+    set(NET_ARCH_LIBRARIES)
+    foreach(arch ${RUST_OSX_ARCHITECTURES})
+      set(NET_ARCH_LIBRARY "${PROJECT_BINARY_DIR}/${arch}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}")
+      add_custom_command(
+        OUTPUT "${NET_ARCH_LIBRARY}"
+        COMMAND ${CARGO_BUILD_NET} --target=${arch}
+        WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+        USES_TERMINAL
+        DEPENDS ${RUST_NET_SRC}
+      )
+      list(APPEND NET_ARCH_LIBRARIES "${NET_ARCH_LIBRARY}")
+    endforeach()
     add_custom_command(
-      OUTPUT "${NET_LIBRARY_PATH}" "${NET_EXPORTS_PATH}"
-      COMMAND ${CARGO_BUILD_NET}
-      COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/scripts/emscripten/wasm_bindgen_exports.py" "$ENV{EMSDK}/upstream/bin/llvm-nm" "${NET_LIBRARY_PATH}" "${NET_EXPORTS_PATH}" "${EMSCRIPTEN_EXPORTED_FUNCTIONS}"
-      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
-      USES_TERMINAL
-      DEPENDS ${RUST_NET_SRC} "${PROJECT_SOURCE_DIR}/scripts/emscripten/wasm_bindgen_exports.py"
-    )
-    add_custom_target(rust_net_target DEPENDS "${NET_LIBRARY_PATH}" "${NET_EXPORTS_PATH}")
-    add_library(rust_net STATIC IMPORTED GLOBAL)
-    add_dependencies(rust_net rust_net_target)
-    set_target_properties(rust_net PROPERTIES
-      IMPORTED_LOCATION "${NET_LIBRARY_PATH}"
+      OUTPUT "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}"
+      COMMAND lipo ${NET_ARCH_LIBRARIES} -create -output "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}"
+      DEPENDS ${NET_ARCH_LIBRARIES}
     )
   else()
-    set(NET_LIBRARY_NAME "${CMAKE_SHARED_LIBRARY_PREFIX}net${CMAKE_SHARED_LIBRARY_SUFFIX}")
     add_custom_command(
       OUTPUT "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}"
       COMMAND ${CARGO_BUILD_NET}
@@ -1270,31 +1328,99 @@ if(NETWORKING_QUIC)
       USES_TERMINAL
       DEPENDS ${RUST_NET_SRC}
     )
-    # Copy the output library to other runtime dependencies
+  endif()
+  # Copy the output library to other runtime dependencies
+  if(TARGET_OS STREQUAL "mac")
+    # The name an executable records for the library, so that the rpath
+    # below decides where it is looked for.
+    set(NET_INSTALL_NAME COMMAND install_name_tool -id "@rpath/${NET_LIBRARY_NAME}" "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}")
+  else()
+    set(NET_INSTALL_NAME)
+  endif()
+  add_custom_command(
+    OUTPUT "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}"
+      "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}"
+    ${NET_INSTALL_NAME}
+    DEPENDS "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}"
+  )
+  add_custom_target(rust_net_target DEPENDS "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}")
+  add_library(rust_net SHARED IMPORTED GLOBAL)
+  add_dependencies(rust_net rust_net_target)
+  set_target_properties(rust_net PROPERTIES
+    IMPORTED_LOCATION "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}"
+  )
+else()
+  set(NET_LIBRARY_NAME "${CMAKE_STATIC_LIBRARY_PREFIX}net${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  set(NET_LIBRARY_PATH "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}")
+  set(NET_OUTPUTS "${NET_LIBRARY_PATH}")
+  if(RUST_OSX_ARCHITECTURES)
+    # One library per architecture, joined the way the workspace's is.
+    set(NET_ARCH_LIBRARIES)
+    foreach(arch ${RUST_OSX_ARCHITECTURES})
+      set(NET_ARCH_LIBRARY "${PROJECT_BINARY_DIR}/${arch}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}")
+      add_custom_command(
+        OUTPUT "${NET_ARCH_LIBRARY}"
+        COMMAND ${CARGO_BUILD_NET} --target=${arch}
+        WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+        USES_TERMINAL
+        DEPENDS ${RUST_NET_SRC}
+      )
+      list(APPEND NET_ARCH_LIBRARIES "${NET_ARCH_LIBRARY}")
+    endforeach()
     add_custom_command(
-      OUTPUT "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}"
-        "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}"
-      DEPENDS "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}"
+      OUTPUT "${NET_LIBRARY_PATH}"
+      COMMAND lipo ${NET_ARCH_LIBRARIES} -create -output "${NET_LIBRARY_PATH}"
+      DEPENDS ${NET_ARCH_LIBRARIES}
     )
-    add_custom_target(rust_net_target DEPENDS "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}")
-    add_library(rust_net SHARED IMPORTED GLOBAL)
-    add_dependencies(rust_net rust_net_target)
-    set_target_properties(rust_net PROPERTIES
-      IMPORTED_LOCATION "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}"
+  elseif(TARGET_OS STREQUAL "emscripten")
+    # What the link exports for wasm-bindgen, see scripts/emscripten/wasm_bindgen_exports.py.
+    set(NET_EXPORTS_PATH "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/net_exports.txt")
+    list(APPEND NET_OUTPUTS "${NET_EXPORTS_PATH}")
+    add_custom_command(
+      OUTPUT ${NET_OUTPUTS}
+      COMMAND ${CARGO_BUILD_NET}
+      COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/scripts/emscripten/wasm_bindgen_exports.py" "$ENV{EMSDK}/upstream/bin/llvm-nm" "${NET_LIBRARY_PATH}" "${NET_EXPORTS_PATH}" "${EMSCRIPTEN_EXPORTED_FUNCTIONS}"
+      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+      USES_TERMINAL
+      DEPENDS ${RUST_NET_SRC} "${PROJECT_SOURCE_DIR}/scripts/emscripten/wasm_bindgen_exports.py"
+    )
+  else()
+    add_custom_command(
+      OUTPUT "${NET_LIBRARY_PATH}"
+      COMMAND ${CARGO_BUILD_NET}
+      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+      USES_TERMINAL
+      DEPENDS ${RUST_NET_SRC}
     )
   endif()
-  set(NETWORKING_QUIC_LIBRARIES rust_net)
-else()
-  set(NETWORKING_QUIC_LIBRARIES)
+  add_custom_target(rust_net_target DEPENDS ${NET_OUTPUTS})
+  add_library(rust_net STATIC IMPORTED GLOBAL)
+  add_dependencies(rust_net rust_net_target)
+  set_target_properties(rust_net PROPERTIES
+    IMPORTED_LOCATION "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR_RELEASE}/${NET_LIBRARY_NAME}"
+    IMPORTED_LOCATION_DEBUG "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR_DEBUG}/${NET_LIBRARY_NAME}"
+    IMPORTED_LOCATION_RELWITHDEBINFO "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR_RELWITHDEBINFO}/${NET_LIBRARY_NAME}"
+    IMPORTED_LOCATION_MINSIZEREL "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR_MINSIZEREL}/${NET_LIBRARY_NAME}"
+  )
 endif()
 
-# Points a target at the Rust networking library where a package puts it:
-# next to the executable in the portable package, in lib/ddnet when installed.
+if(NET_SHARED)
+  # Where the build tree keeps the networking library, for everything that
+  # runs from there: the test runner and the tools, not only the game.
+  list(APPEND CMAKE_BUILD_RPATH "${PROJECT_BINARY_DIR}")
+endif()
+
+# Points a target at the networking library where a package puts it: next
+# to the executable in the portable package, in lib/ddnet when installed.
 function(set_rust_net_rpath TARGET)
-  if(NETWORKING_QUIC AND NOT TARGET_OS STREQUAL "windows" AND NOT TARGET_OS STREQUAL "mac")
-    set_property(TARGET ${TARGET} APPEND PROPERTY INSTALL_RPATH "$ORIGIN" "$ORIGIN/../lib/ddnet")
+  if(NET_SHARED)
+    if(TARGET_OS STREQUAL "mac")
+      set_property(TARGET ${TARGET} APPEND PROPERTY INSTALL_RPATH "@executable_path" "@executable_path/../lib/ddnet")
+    else()
+      set_property(TARGET ${TARGET} APPEND PROPERTY INSTALL_RPATH "$ORIGIN" "$ORIGIN/../lib/ddnet")
+    endif()
   endif()
 endfunction()
 
@@ -2600,8 +2726,8 @@ set(LIBS
   # tidy-alphabetical-end
   # Add Rust part of our code.
   rust_engine_shared
+  rust_net
   ${PLATFORM_LIBS}
-  ${NETWORKING_QUIC_LIBRARIES}
   # Add pthreads (on non-Windows) at the end, so that other libraries can depend
   # on it.
   ${CMAKE_THREAD_LIBS_INIT}
@@ -3160,8 +3286,6 @@ if(CLIENT)
   if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC)
     set_own_rpath(game-client)
   endif()
-  set_rust_net_rpath(game-client)
-
   if(GLEW_BUNDLED)
     target_compile_definitions(game-client PRIVATE CONF_GLEW_HAS_CONTEXT_INIT)
   endif()
@@ -3634,14 +3758,9 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   add_custom_target(run_tests
     DEPENDS run_cxx_tests
   )
-  if(NOT MSVC OR CMAKE_BUILD_TYPE STREQUAL Release OR CMAKE_BUILD_TYPE STREQUAL RelWithDebInfo OR CMAKE_BUILD_TYPE STREQUAL MinSizeRel)
-    # On MSVC, Rust tests only work in the release mode because we link our C++
-    # code with the debug C standard library (/MTd) but Rust only supports
-    # linking to the release C standard library (/MT).
-    #
-    # See also https://github.com/rust-lang/rust/issues/39016.
-    add_dependencies(run_tests run_rust_tests)
-  endif()
+  # Every configuration links the same C standard library now, the release
+  # one that Rust supports; see https://github.com/rust-lang/rust/issues/39016.
+  add_dependencies(run_tests run_rust_tests)
 endif()
 
 if(ENABLE_IPO AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -3668,11 +3787,15 @@ list(APPEND TARGETS_LINK rust_test)
 set(RUST_TEST_LIBS ${LIBS} $<TARGET_FILE:rust_test>)
 list(REMOVE_ITEM RUST_TEST_LIBS "rust_engine_shared")
 list(REMOVE_ITEM RUST_TEST_LIBS "-pthread")
+# The Rust test build takes file names, so the name of the imported target
+# means nothing to it.
+list(REMOVE_ITEM RUST_TEST_LIBS "rust_net")
+list(APPEND RUST_TEST_LIBS "$<TARGET_FILE:rust_net>")
 add_custom_target(run_rust_tests
   COMMAND ${CMAKE_COMMAND} -E env "DDNET_TEST_LIBRARIES=${RUST_TEST_LIBS}" ${CARGO_TEST}
   WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
   USES_TERMINAL
-  DEPENDS rust_test
+  DEPENDS rust_test rust_net_target
   VERBATIM
 )
 
@@ -3906,9 +4029,9 @@ if(NOT DEV)
   if(ANTIBOT)
     install(TARGETS ${TARGET_ANTIBOT} DESTINATION ${CMAKE_INSTALL_LIBDIR}/ddnet COMPONENT server)
   endif()
-  if(NETWORKING_QUIC)
-    # The Rust networking library is a shared object the client and the
-    # server load at start, so it goes wherever they look for their own libraries.
+  if(NET_SHARED)
+    # The networking library is a shared object the client and the server
+    # load at start, so it goes wherever they look for their own libraries.
     install(FILES "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}" DESTINATION ${CMAKE_INSTALL_LIBDIR}/ddnet COMPONENT server)
     if(TARGET game-client)
       install(FILES "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}" DESTINATION ${CMAKE_INSTALL_LIBDIR}/ddnet COMPONENT client)
@@ -3935,7 +4058,7 @@ if(DEV)
   # Don't generate CPack targets.
 else()
   install(TARGETS ${CPACK_TARGETS} DESTINATION ${CPACK_PACKAGE_FILE_NAME} COMPONENT portable EXCLUDE_FROM_ALL)
-  if(NETWORKING_QUIC)
+  if(NET_SHARED)
     install(FILES "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}" DESTINATION ${CPACK_PACKAGE_FILE_NAME} COMPONENT portable EXCLUDE_FROM_ALL)
   endif()
   install(DIRECTORY ${CPACK_DIRS} DESTINATION ${CPACK_PACKAGE_FILE_NAME} COMPONENT portable EXCLUDE_FROM_ALL)
@@ -4215,15 +4338,12 @@ if(ANTIBOT)
   add_cxx_compiler_flag_if_supported(OUR_FLAGS_LINK -rdynamic)
   set_own_rpath(game-server)
 endif()
-if(TARGET game-server)
-  set_rust_net_rpath(game-server)
-endif()
-
 set(TARGETS ${TARGETS_OWN} ${TARGETS_DEP})
 
 foreach(target ${TARGETS})
+  set_rust_net_rpath(${target})
   if(MSVC)
-    set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY MultiThreaded$<$<CONFIG:Debug>:Debug>) # Use static CRT
+    set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY MultiThreaded) # Use static CRT
     # tidy-alphabetical-start
     target_compile_options(${target} PRIVATE /EHsc) # Only catch C++ exceptions with catch.
     target_compile_options(${target} PRIVATE /GS) # Protect the stack pointer.
@@ -4233,10 +4353,15 @@ foreach(target ${TARGETS})
     target_compile_options(${target} PRIVATE /utf-8) # Use UTF-8 for source files.
     target_compile_options(${target} PRIVATE /wd4996) # Use of non-_s functions.
     # tidy-alphabetical-end
-    # Enable Edit & Continue (Hot Reload) support
+    # Linking two copies of the Rust standard library needs /FORCE:MULTIPLE,
+    # which rules out an incremental link, and Edit & Continue is built on one.
+    # The linker warns when it drops the /INCREMENTAL that CMake's own debug
+    # flags ask for, and warnings are errors here, so the refusal goes where a
+    # target states its own link options: the Visual Studio generator maps both
+    # spellings onto one setting and keeps whichever it reads last.
+    target_link_options(${target} PRIVATE /INCREMENTAL:NO)
     if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.25)
-      set_property(TARGET ${target} PROPERTY MSVC_DEBUG_INFORMATION_FORMAT $<IF:$<CONFIG:Debug>,EditAndContinue,Embedded>)
-      target_link_options(${target} PRIVATE $<$<CONFIG:Debug>:/INCREMENTAL>)
+      set_property(TARGET ${target} PROPERTY MSVC_DEBUG_INFORMATION_FORMAT Embedded)
     endif()
   endif()
   if(OUR_FLAGS_LINK)
@@ -4266,7 +4391,7 @@ foreach(target ${TARGETS})
   endif()
 endforeach()
 
-if(TARGET_OS STREQUAL "emscripten" AND NETWORKING_QUIC AND TARGET game-client)
+if(TARGET_OS STREQUAL "emscripten" AND TARGET game-client)
   # The browser backend of src/net reaches the browser through wasm-bindgen:
   # emcc runs the wasm-bindgen CLI on the linked module and mixes the
   # JavaScript it writes into its own. It finds the CLI through
@@ -4377,9 +4502,7 @@ foreach(target ${TARGETS_OWN})
   if(VIDEORECORDER)
     target_compile_definitions(${target} PRIVATE CONF_VIDEORECORDER)
   endif()
-  if(NETWORKING_QUIC)
-    target_compile_definitions(${target} PRIVATE CONF_NETWORKING_QUIC)
-  endif()
+  target_compile_definitions(${target} PRIVATE CONF_NETWORKING_QUIC)
   if(WEBSOCKETS)
     target_compile_definitions(${target} PRIVATE CONF_WEBSOCKETS)
   endif()

@@ -8,6 +8,7 @@
 #include <base/math.h>
 #include <base/process.h>
 #include <base/str.h>
+#include <base/webfs.h>
 
 #include <engine/client/updater.h>
 #include <engine/shared/linereader.h>
@@ -122,6 +123,17 @@ public:
 	{
 		dbg_assert(NumArgs > 0, "Expected at least one argument");
 		const char *pExecutablePath = ppArguments[0];
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		// The data directory of a page is fetched, not unpacked, so it has to
+		// be there before anything looks for it - and looking for it is the
+		// next thing that happens.
+		if(!webfs_init())
+		{
+			log_error("storage", "The data directory of this page could not be read.");
+			return false;
+		}
+#endif
 
 		FindUserDirectory();
 		FindDataDirectory(pExecutablePath);

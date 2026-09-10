@@ -1,6 +1,9 @@
 #ifndef BASE_WEBFS_H
 #define BASE_WEBFS_H
 
+#include <base/detect.h>
+#include <base/types.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -75,5 +78,50 @@ public:
 private:
 	std::map<std::string, CEntry> m_Entries;
 };
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+
+/**
+ * Brings the data directory up: reads the index the build wrote next to the
+ * page and remembers where the page is, so that every file below `data` can be
+ * fetched from there afterwards.
+ *
+ * Has to run before anything looks for the data directory, so before the
+ * storage is initialised.
+ *
+ * @return `true` when the index is there. Where it is not, nothing below
+ * `data` can be opened and the caller has a broken installation on its hands,
+ * which is what it is told.
+ */
+bool webfs_init();
+
+/**
+ * Whether a path names something in the data directory, which is the only
+ * thing that comes over the network. Everything the user writes is somewhere
+ * else and is left to the file system.
+ */
+bool webfs_owns(const char *pPath);
+
+/**
+ * Opens a file of the data directory for reading, fetching it the first time
+ * and reading it out of memory every time after that.
+ *
+ * @return A handle to read from, or `nullptr`, which is what a caller already
+ * expects from a file that is not there.
+ */
+IOHANDLE webfs_open(const char *pPath);
+
+bool webfs_is_file(const char *pPath);
+bool webfs_is_dir(const char *pPath);
+/**
+ * The time of a file of the data directory. Everything in it was written when
+ * the page was built, and nothing in it changes afterwards, so this is the one
+ * time the whole directory has.
+ */
+bool webfs_file_time(const char *pPath, int64_t *pCreated, int64_t *pModified);
+void webfs_listdir(const char *pPath, FS_LISTDIR_CALLBACK pfnCallback, int Type, void *pUser);
+void webfs_listdir_fileinfo(const char *pPath, FS_LISTDIR_CALLBACK_FILEINFO pfnCallback, int Type, void *pUser);
+
+#endif
 
 #endif

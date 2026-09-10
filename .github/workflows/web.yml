@@ -58,16 +58,19 @@ jobs:
         # WebTransport is what a browser connects with; it needs no option of its
         # own, the client speaks it wherever it is compiled for the web.
         emcmake cmake -H. -G "Unix Makefiles" -B build-web -DCMAKE_BUILD_TYPE=Release -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DPREFER_BUNDLED_LIBS=ON -DWEBGPU_BACKEND_PROTOTYPE=ON
-        cmake --build build-web --target game-client -j$(nproc)
+        cmake --build build-web --target game-client web_data_index copy_data -j$(nproc)
 
     - name: Assemble the site
       run: |
         mkdir site
         # Everything emscripten emitted for the client, next to the page that
-        # starts it. The names are not all fixed: the loader, the module, the
-        # preloaded data and, depending on the emscripten version, a worker.
+        # starts it. The names are not all fixed: the loader, the module and,
+        # depending on the emscripten version, a worker.
         cp build-web/DDNet.* site/
         cp build-web/index.html build-web/background.png build-web/coi-serviceworker.js site/
+        # The data directory itself, which the client fetches a file at a time
+        # instead of being handed all of it before it starts.
+        cp -r build-web/data site/
         ls -l site
 
     - name: Upload the site

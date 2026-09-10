@@ -8,6 +8,7 @@
 #include <base/log.h>
 #include <base/net.h>
 #include <base/str.h>
+#include <base/time.h>
 
 #include <net/net.h>
 
@@ -127,6 +128,8 @@ bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int Ma
 	m_MaxClients = std::clamp(MaxClients, 1, (int)NET_MAX_CLIENTS);
 	m_MaxClientsPerIp = std::clamp(MaxClientsPerIp, 1, (int)NET_MAX_CLIENTS);
 
+	m_EbpfKey.Load(g_Config.m_SvEbpfKey);
+
 	for(auto &Peer : m_aPeers)
 	{
 		Peer.Reset();
@@ -147,6 +150,7 @@ bool CNetServer::OpenLibrary()
 		ddnet_net_set_timeout(m_pNet, g_Config.m_ConnTimeout) ||
 		ddnet_net_set_key_log(m_pNet, g_Config.m_DbgTlsKeyLog != 0) ||
 		(m_aTlsCert[0] != '\0' && ddnet_net_set_tls_files(m_pNet, m_aTlsCert, str_length(m_aTlsCert), m_aTlsKey, str_length(m_aTlsKey))) ||
+		(m_EbpfKey.IsLoaded() && ddnet_net_set_filter_key(m_pNet, m_EbpfKey.Material(), CEbpfKey::MATERIAL_SIZE)) ||
 		ddnet_net_set_accept_connections(m_pNet, true) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW06, g_Config.m_SvLegacyUdp != 0) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW07, g_Config.m_SvLegacyUdp != 0) ||
@@ -400,6 +404,17 @@ void CNetServer::Update()
 		m_BanRepliesStart = Now;
 		m_NumBanReplies = 0;
 	}
+	// Two epochs of the key are valid at once, so picking up a rotation
+	// within a second is soon enough.
+	if(Now > m_LastEbpfKeyCheck + time_freq())
+	{
+		m_LastEbpfKeyCheck = Now;
+		if(m_EbpfKey.Reload(g_Config.m_SvEbpfKey) && m_pNet != nullptr)
+		{
+			NET_CALL(ddnet_net_set_filter_key, m_pNet, m_EbpfKey.Material(), CEbpfKey::MATERIAL_SIZE);
+		}
+	}
+
 	// A protected slot outlives its timeout by `conn_timeout_protection`
 	// after the last packet, which came `conn_timeout` before the timeout.
 	const int64_t Protection = time_freq() * std::max(0, g_Config.m_ConnTimeoutProtection - g_Config.m_ConnTimeout);

@@ -472,6 +472,7 @@ MACRO_CONFIG_INT(SvWebsocket, sv_websocket, 1, 0, 1, CFGFLAG_SERVER, "Accept Web
 MACRO_CONFIG_STR(SvTlsCert, sv_tls_cert, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER, "PEM certificate chain shown to browsers, from a CA; empty for a short-lived self-made certificate that browsers accept by its hash (restart required)")
 MACRO_CONFIG_STR(SvTlsKey, sv_tls_key, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, "PEM private key for sv_tls_cert (restart required)")
 MACRO_CONFIG_STR(SvRegisterHostname, sv_register_hostname, 256, "", CFGFLAG_SERVER, "Public DNS hostname registered for QUIC and WebTransport; supported masters keep it instead of the observed IP. With sv_tls_cert, browsers check the WebTransport certificate against it instead of by hash (restart required)")
+MACRO_CONFIG_STR(SvEbpfKey, sv_ebpf_key, IO_MAX_PATH_LENGTH, "/run/ddnet-xdp/key", CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, "Key file written by the ddnet-xdp filter service, derives security tokens and QUIC connection IDs the filter can verify (empty to disable)")
 MACRO_CONFIG_STR(SvHostname, sv_hostname, 128, "", CFGFLAG_SERVER, "Server hostname (0.7 only)")
 MACRO_CONFIG_STR(SvMap, sv_map, 128, "Sunny Side Up", CFGFLAG_SERVER, "Map to use on the server")
 MACRO_CONFIG_INT(SvMaxClients, sv_max_clients, SERVER_MAX_CLIENTS, 1, SERVER_MAX_CLIENTS, CFGFLAG_SERVER, "Maximum number of clients that are allowed on a server")

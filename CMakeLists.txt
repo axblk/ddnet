@@ -1229,6 +1229,7 @@ set_glob(RUST_NET_SRC GLOB_RECURSE "rs" src/net/src
   mapstream.rs
   native.rs
   native/challenger.rs
+  native/filter_key.rs
   native/libtw2_patch.rs
   native/limits.rs
   native/net.rs
@@ -2525,6 +2526,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   datafile.h
   demo.cpp
   demo.h
+  ebpf_key.cpp
+  ebpf_key.h
   econ.cpp
   econ.h
   engine.cpp
@@ -3623,6 +3626,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp
+    ebpf_key_test.cpp
     editor_test.cpp
     fs_test.cpp
     gameworld_test.cpp

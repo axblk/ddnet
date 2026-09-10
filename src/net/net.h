@@ -223,6 +223,17 @@ bool ddnet_net_peer_vanilla(struct DdnetNet *net, uint64_t peer_index, bool *van
 bool ddnet_net_set_key_log(struct DdnetNet *net, bool key_log);
 
 /**
+ * The key a packet filter in front of the server shares with it, as read
+ * from the filter's key file: the epoch, then the two SipHash key halves
+ * little-endian, 17 bytes. The 0.6 and 0.7 security tokens and the QUIC
+ * connection IDs are derived from it so the filter can verify them
+ * without keeping state. Before `ddnet_net_open` or after it, for a
+ * rotation, where what was handed out under the previous key stays
+ * good; a length of 0 drops the key.
+ */
+bool ddnet_net_set_filter_key(struct DdnetNet *net, const uint8_t *material, size_t material_len);
+
+/**
  * Switches a single protocol on or off, after `ddnet_net_set_accept_connections`.
  */
 bool ddnet_net_set_accept_protocol(struct DdnetNet *net, uint64_t protocol, bool accept);

@@ -119,6 +119,10 @@ impl NetBuilder {
     }
     pub fn tls_files(&mut self, _cert: &str, _key: &str) {}
     pub fn key_log(&mut self, _key_log: bool) {}
+    /// A browser has no packet filter in front of it.
+    pub fn filter_key(&mut self, _material: &[u8]) -> Result<()> {
+        Ok(())
+    }
     pub fn accept_connections(&mut self, _accept: bool) {}
     pub fn accept_protocol(&mut self, _protocol: Protocol, _accept: bool) {}
     /// A browser accepts no connections and speaks no classic protocol,
@@ -308,6 +312,9 @@ impl Net {
     }
     pub fn num_peers_in_bucket(&self, _addr: &str) -> Result<u32> {
         bail!("a browser accepts no connections")
+    }
+    pub fn set_filter_key(&mut self, _material: &[u8]) -> Result<()> {
+        bail!("a browser has no packet filter in front of it")
     }
     pub fn set_connlimit(&mut self, _conns: u32, _window: Duration) {}
     pub fn set_max_packets_per_recv(&mut self, _packets: u32) {}

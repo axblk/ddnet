@@ -1243,6 +1243,7 @@ set_glob(RUST_NET_SRC GLOB_RECURSE "rs" src/net/src
   challenger.rs
   error.rs
   ffi.rs
+  filter_key.rs
   key.rs
   lib.rs
   libtw2_patch.rs
@@ -2574,6 +2575,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   datafile.h
   demo.cpp
   demo.h
+  ebpf_key.cpp
+  ebpf_key.h
   econ.cpp
   econ.h
   engine.cpp
@@ -2628,6 +2631,7 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   ringbuffer.h
   serverinfo.cpp
   serverinfo.h
+  siphash.h
   sixup_translate_snapshot.cpp
   snapshot.cpp
   snapshot.h
@@ -3671,6 +3675,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp
+    ebpf_key_test.cpp
     editor_test.cpp
     fs_test.cpp
     gameworld_test.cpp

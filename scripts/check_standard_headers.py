@@ -36,6 +36,8 @@ C_HEADER_INCLUDE_PATTERN = re.compile(rf"#include\s+<({'|'.join(C_HEADER_SET)})\
 IGNORE_FILES = [
 	# The C API of the networking library, which its C callers include.
 	"src/net/net.h",
+	# Also compiled for the BPF target, where only the C headers exist.
+	"src/engine/shared/siphash.h",
 ]
 IGNORE_DIRS = [
 	"src/engine/external",

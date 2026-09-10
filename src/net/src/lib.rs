@@ -41,6 +41,8 @@ mod addr;
 mod challenger;
 mod error;
 mod ffi;
+#[cfg(not(target_os = "emscripten"))]
+mod filter_key;
 mod key;
 #[cfg(not(target_os = "emscripten"))]
 mod libtw2_patch;

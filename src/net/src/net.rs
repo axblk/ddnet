@@ -8,6 +8,7 @@ use crate::tw07;
 use crate::ws;
 use crate::wire;
 use crate::Addr;
+use crate::filter_key::FilterKey;
 use crate::limits;
 use crate::limits::Connlimit;
 use crate::Challenger;
@@ -269,6 +270,8 @@ pub struct NetBuilder {
     tls_files: Option<(String, String)>,
     /// Whether to write the TLS session keys to `SSLKEYLOGFILE`.
     key_log: bool,
+    /// The key a packet filter shares with the server, see `filter_key`.
+    filter_key: Option<FilterKey>,
     /// See the methods of the same names.
     connlimit: (u32, Duration),
     max_packets_per_recv: u32,
@@ -423,6 +426,12 @@ impl NetBuilder {
     pub fn key_log(&mut self, key_log: bool) {
         self.key_log = key_log;
     }
+    /// The key a packet filter in front of the server derives tokens and
+    /// connection IDs with, as read from its key file; empty for none.
+    pub fn filter_key(&mut self, material: &[u8]) -> Result<()> {
+        self.filter_key = if material.is_empty() { None } else { Some(FilterKey::from_material(material)?) };
+        Ok(())
+    }
     pub fn accept_connections(&mut self, accept: bool) {
         self.accept = if accept { AcceptProtocols::ALL } else { AcceptProtocols::NONE };
     }
@@ -548,7 +557,11 @@ impl NetBuilder {
                 vanilla: self.vanilla,
                 classic: self.classic,
                 sslkeylogfile,
-                challenger: Challenger::new(),
+                challenger: {
+                    let mut challenger = Challenger::new();
+                    challenger.set_filter_key(self.filter_key);
+                    challenger
+                },
                 local_addr,
                 socket,
                 next_peer_index: PeerIndex(0),
@@ -603,6 +616,7 @@ impl Net {
             tls_files: None,
             timeout: Duration::from_secs(100),
             key_log: false,
+            filter_key: None,
             connlimit: (0, Duration::ZERO),
             max_packets_per_recv: 0,
             resend_requests_per_second: 0,
@@ -1447,6 +1461,13 @@ impl Net {
     }
     pub fn global_token7(&self) -> u32 {
         tw07::global_token(&self.cb)
+    }
+    /// Takes a filter key into use while running, on a rotation: what was
+    /// handed out under the key before stays good. Empty drops the key.
+    pub fn set_filter_key(&mut self, material: &[u8]) -> Result<()> {
+        let key = if material.is_empty() { None } else { Some(FilterKey::from_material(material)?) };
+        self.cb.challenger.set_filter_key(key);
+        Ok(())
     }
     /// Changes the limit on connections per address while running, see
     /// `NetBuilder::connlimit`.

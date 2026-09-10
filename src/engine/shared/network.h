@@ -3,6 +3,7 @@
 #ifndef ENGINE_SHARED_NETWORK_H
 #define ENGINE_SHARED_NETWORK_H
 
+#include "ebpf_key.h"
 #include "stun.h"
 
 #include <base/hash.h>
@@ -263,6 +264,10 @@ class CNetServer
 	void *m_pUser = nullptr;
 
 	unsigned char m_aSecurityTokenSeed[16] = {0};
+	// The key a packet filter in front of the server shares with it; the
+	// library derives the tokens and connection IDs from it, see CEbpfKey.
+	CEbpfKey m_EbpfKey;
+	int64_t m_LastEbpfKeyCheck = 0;
 
 	// The limits the library enforces, as last handed to it; the config
 	// can change while running.

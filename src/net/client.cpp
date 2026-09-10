@@ -1,6 +1,10 @@
+// A client of the networking library alone: connects to the URL given,
+// says three things and waits for the server to hang up. Compiles against
+// `net.h` with `g++ -Isrc/net src/net/client.cpp -Ltarget/debug -lnet`.
 #include "net.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 void print_error_and_quit(DdnetNet *net)
@@ -34,26 +38,29 @@ int main(int argc, const char **argv)
 	H(ddnet_net_connect(net, argv[1], strlen(argv[1]), &conn_idx));
 
 	uint8_t buffer[4096];
-	uint64_t idx;
-	DdnetNetEvent ev;
+	DdnetNetEvent *ev = nullptr;
+	ddnet_net_ev_new(&ev);
 
 	while(1)
 	{
-		H(ddnet_net_recv(net, buffer, sizeof(buffer), &idx, &ev));
-		uint64_t ev_kind = ddnet_net_ev_kind(&ev);
+		H(ddnet_net_recv(net, buffer, sizeof(buffer), ev));
+		uint64_t ev_kind = ddnet_net_ev_kind(ev);
 		switch(ev_kind)
 		{
 		case DDNET_NET_EV_NONE:
 			H(ddnet_net_wait(net));
 			continue;
 		case DDNET_NET_EV_CONNECT:
+		{
+			uint64_t idx = ddnet_net_ev_connect_peer_index(ev);
 			H(ddnet_net_send_chunk(net, idx, (uint8_t *)"blab", 4, true));
 			H(ddnet_net_send_chunk(net, idx, (uint8_t *)"blob", 4, false));
 			H(ddnet_net_send_chunk(net, idx, (uint8_t *)"blub", 4, false));
-			break;
+		}
+		break;
 		case DDNET_NET_EV_DISCONNECT:
 		{
-			size_t len = ddnet_net_ev_disconnect_reason_len(&ev);
+			size_t len = ddnet_net_ev_disconnect_reason_len(ev);
 			if(len > 0)
 			{
 				if(len == sizeof(buffer))
@@ -63,6 +70,8 @@ int main(int argc, const char **argv)
 				buffer[len] = 0;
 				printf("disconnect: %s\n", buffer);
 			}
+			ddnet_net_ev_free(ev);
+			ddnet_net_free(net);
 		}
 			return 0;
 		}

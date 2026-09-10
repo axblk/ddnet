@@ -1,6 +1,11 @@
+// A server of the networking library alone: listens on 4433 with a fixed
+// identity, takes every connection and hangs up on the first unreliable
+// message. Compiles against `net.h` with `g++ -Isrc/net src/net/server.cpp
+// -Ltarget/debug -lnet`.
 #include "net.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 void print_error_and_quit(DdnetNet *net)
@@ -30,17 +35,17 @@ int main(int argc, const char **argv)
 	H(ddnet_net_new(&net));
 	H(ddnet_net_set_bindaddr(net, "0.0.0.0:4433", 12));
 	H(ddnet_net_set_identity(net, &IDENTITY));
-	H(ddnet_net_set_accept_incoming_connections(net, true));
+	H(ddnet_net_set_accept_connections(net, true));
 	H(ddnet_net_open(net));
 
 	uint8_t buffer[4096];
-	uint64_t idx;
-	DdnetNetEvent ev;
+	DdnetNetEvent *ev = nullptr;
+	ddnet_net_ev_new(&ev);
 
 	while(1)
 	{
-		H(ddnet_net_recv(net, buffer, sizeof(buffer), &idx, &ev));
-		uint64_t ev_kind = ddnet_net_ev_kind(&ev);
+		H(ddnet_net_recv(net, buffer, sizeof(buffer), ev));
+		uint64_t ev_kind = ddnet_net_ev_kind(ev);
 		switch(ev_kind)
 		{
 		case DDNET_NET_EV_NONE:
@@ -50,9 +55,10 @@ int main(int argc, const char **argv)
 			break;
 		case DDNET_NET_EV_CHUNK:
 		{
-			bool nonvital = ddnet_net_ev_chunk_is_unreliable(&ev);
+			bool nonvital = ddnet_net_ev_chunk_is_unreliable(ev);
 			if(nonvital)
 			{
+				uint64_t idx = ddnet_net_ev_chunk_peer_index(ev);
 				H(ddnet_net_close(net, idx, "blib?", 5));
 			}
 		}

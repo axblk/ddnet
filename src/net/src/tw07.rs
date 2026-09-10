@@ -410,15 +410,20 @@ impl Connection {
             };
             match (&event, &self.state) {
                 (ConnlessChunk(_), _) => {}
+                // Nothing follows the end; the peer is on its way out.
+                (_, State::Disconnected) => continue,
                 (Connect, State::ExpectConnectEvent) => self.state = State::Normal,
-                (Connect, _) => unreachable!(),
+                // libtw2 raises `Ready` once, on the connecting side only.
+                (Connect, _) => {
+                    debug!("{}: ready a second time, ignoring", self.addr);
+                    continue;
+                }
                 (_, State::SimulateConnectEvent) => {
                     self.state = State::Normal;
                     self.buffered_events.push_back(Connect);
                 }
-                (Disconnect(..), State::Normal) => {}
-                (Disconnect(..), _) => unreachable!(), // TODO: check that this is actually unreachable
-                (_, State::Disconnected) => unreachable!(), // TODO: check that this is actually unreachable
+                // A close in place of the accept is the server refusing the
+                // connection; the outer layer tells whoever asked for it.
                 (_, _) => {}
             }
             let is_disconnect = matches!(event, Disconnect(..));

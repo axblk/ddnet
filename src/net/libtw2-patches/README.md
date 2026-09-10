@@ -19,5 +19,5 @@ with a `[patch.crates-io]` entry for `pre-rfc3243-libtw2-net` pointing at
 that checkout.
 
 Without the feature the crate still speaks 0.6 over UDP and connects to
-0.7 servers as a client. `src/libtw2_patch.rs` says what it gives up and
+0.7 servers as a client. `src/native/libtw2_patch.rs` says what it gives up and
 is where the switch sits.

@@ -374,8 +374,9 @@ impl NetBuilder {
     pub fn bindaddr(&mut self, bindaddr: SocketAddr) {
         self.bindaddr = Some(bindaddr);
     }
-    pub fn identity(&mut self, identity: PrivateIdentity) {
-        self.identity = Some(identity);
+    /// The private key of the identity, 32 bytes.
+    pub fn identity(&mut self, identity: [u8; 32]) {
+        self.identity = Some(PrivateIdentity::from_bytes(identity));
     }
     /// How long a connection may go without a packet before it is lost.
     pub fn timeout(&mut self, timeout: Duration) {
@@ -533,8 +534,8 @@ impl Net {
     pub fn reload_tls_files(&mut self, cert: &str, key: &str) -> Result<()> {
         self.proto_quic.reload_tls_files(cert, key)
     }
-    pub fn identity(&self) -> Identity {
-        self.proto_quic.identity()
+    pub fn identity(&self) -> Option<Identity> {
+        Some(self.proto_quic.identity())
     }
     pub fn builder() -> NetBuilder {
         NetBuilder {

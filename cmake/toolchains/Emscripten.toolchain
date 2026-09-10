@@ -37,7 +37,8 @@ set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s FULL_ES3=1")
 
 # Make sure C callback functions are available to JS.
 set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s DEFAULT_LIBRARY_FUNCS_TO_INCLUDE=[\\$autoResumeAudioContext,\\$dynCall]")
-set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s EXPORTED_FUNCTIONS=_main,_EmscriptenCallbackDropFile,_EmscriptenCallbackQuit,_EmscriptenCallbackQuitForce")
+set(EMSCRIPTEN_EXPORTED_FUNCTIONS "_main,_EmscriptenCallbackDropFile,_EmscriptenCallbackQuit,_EmscriptenCallbackQuitForce")
+set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s EXPORTED_FUNCTIONS=${EMSCRIPTEN_EXPORTED_FUNCTIONS}")
 set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s EXPORTED_RUNTIME_METHODS=callMain,ccall")
 
 # Very important: use same stack size that other platforms have, as the default of 64 KiB that Emscripten uses is too small for our code and causes stack overflows.
@@ -48,6 +49,13 @@ set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s ALLOW_MEMORY_GROWTH=1")
 set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s MAXIMUM_MEMORY=2000MB")
 # TODO: Without `--no-check-features` compilation fails with `--shared-memory is disallowed by "cxx.o" because it was not compiled with 'atomics' or 'bulk-memory' features.`
 set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s SHARED_MEMORY=1 -Wl,--no-check-features")
+
+# Two Rust static libraries are linked into the client, the workspace's and
+# the networking crate's, and each carries its own copy of the parts of the
+# standard library it uses. The copies are the same code compiled the same
+# way, so either will do; wasm-ld is the only linker of ours that treats
+# them as a conflict.
+set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -Wl,--allow-multiple-definition")
 
 # Very important: allow SDL2 and our code to call Emscripten functions to yield control to the browser main thread.
 set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s ASYNCIFY=1")

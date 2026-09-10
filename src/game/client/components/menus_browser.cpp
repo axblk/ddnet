@@ -797,13 +797,6 @@ static bool ProtocolCompiledIn(EConnectProtocol Protocol)
 {
 	switch(Protocol)
 	{
-	case EConnectProtocol::QUIC:
-	case EConnectProtocol::WEBTRANSPORT:
-#if defined(CONF_NETWORKING_QUIC)
-		return true;
-#else
-		return false;
-#endif
 	case EConnectProtocol::WEBSOCKET:
 #if defined(CONF_WEBSOCKETS)
 		return true;

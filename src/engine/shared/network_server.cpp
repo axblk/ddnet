@@ -333,6 +333,23 @@ bool CNetServer::ApplyLimits()
 		}
 		m_Limits.m_ResendRequestsPerSecond = g_Config.m_ConnResendRequestsPerSecond;
 	}
+	// The handshake stands in for the password, so it is only done
+	// without one.
+	const int VanillaAntispoof = g_Config.m_SvVanillaAntiSpoof != 0 && g_Config.m_Password[0] == '\0';
+	if(m_Limits.m_VanillaAntispoof != VanillaAntispoof ||
+		m_Limits.m_VanConnPerSecond != g_Config.m_SvVanConnPerSecond ||
+		m_Limits.m_VanConnRepliesPerSecond != g_Config.m_SvVanConnRepliesPerSecond ||
+		m_Limits.m_PreConnDecompressPerSecond != g_Config.m_SvPreConnDecompressPerSecond)
+	{
+		if(ddnet_net_set_vanilla_handshake(m_pNet, VanillaAntispoof != 0, g_Config.m_SvVanConnPerSecond, g_Config.m_SvVanConnRepliesPerSecond, g_Config.m_SvPreConnDecompressPerSecond))
+		{
+			return true;
+		}
+		m_Limits.m_VanillaAntispoof = VanillaAntispoof;
+		m_Limits.m_VanConnPerSecond = g_Config.m_SvVanConnPerSecond;
+		m_Limits.m_VanConnRepliesPerSecond = g_Config.m_SvVanConnRepliesPerSecond;
+		m_Limits.m_PreConnDecompressPerSecond = g_Config.m_SvPreConnDecompressPerSecond;
+	}
 	return false;
 }
 
@@ -493,7 +510,15 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			m_aPeers[ClientId].m_Quic = str_startswith(pAddr, "ddnet+") != nullptr;
 			m_aPeers[ClientId].SetAddress(Addr);
 			NET_CALL(ddnet_net_set_userdata, m_pNet, PeerId, (void *)(uintptr_t)ClientId);
-			if(m_pfnNewClient)
+			// A 0.6 client that came in by the vanilla handshake is past
+			// the point where it would introduce itself.
+			bool Vanilla = false;
+			NET_CALL(ddnet_net_peer_vanilla, m_pNet, PeerId, &Vanilla);
+			if(Vanilla && m_pfnNewClientNoAuth)
+			{
+				m_pfnNewClientNoAuth(ClientId, m_pUser);
+			}
+			else if(m_pfnNewClient)
 			{
 				m_pfnNewClient(ClientId, m_pUser, Sixup);
 			}

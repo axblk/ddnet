@@ -25,6 +25,7 @@ use crate::NoBlock as _;
 use crate::PrivateIdentity;
 use crate::Result;
 use crate::secure_random;
+use crate::types::VanillaSettings;
 use hexdump::hexdump_iter;
 use mio::net::UdpSocket;
 use mio::Events;
@@ -95,6 +96,8 @@ pub struct CallbackData {
     /// How often a UDP peer's resend requests are answered, see
     /// `limits::resend_request_interval`.
     pub resend_request_interval: Duration,
+    /// How 0.6 clients without tokens are taken.
+    pub vanilla: VanillaSettings,
     pub sslkeylogfile: Option<ArcFile>,
     pub challenger: Challenger,
     pub local_addr: SocketAddr,
@@ -267,6 +270,7 @@ pub struct NetBuilder {
     connlimit: (u32, Duration),
     max_packets_per_recv: u32,
     resend_requests_per_second: u32,
+    vanilla: VanillaSettings,
 }
 
 impl Peer {
@@ -434,6 +438,11 @@ impl NetBuilder {
     pub fn resend_requests_per_second(&mut self, per_second: u32) {
         self.resend_requests_per_second = per_second;
     }
+    /// How a server takes 0.6 clients without tokens, see
+    /// [`VanillaSettings`]; by default they are accepted as they are.
+    pub fn vanilla_handshake(&mut self, settings: VanillaSettings) {
+        self.vanilla = libtw2_patch::clamp_vanilla(settings);
+    }
     pub fn accept_protocol(&mut self, protocol: Protocol, accept: bool) {
         match protocol {
             Protocol::Tw06 => self.accept.tw06 = accept,
@@ -525,6 +534,7 @@ impl NetBuilder {
                 accept: self.accept,
                 timeout: self.timeout,
                 resend_request_interval: limits::resend_request_interval(self.resend_requests_per_second),
+                vanilla: self.vanilla,
                 sslkeylogfile,
                 challenger: Challenger::new(),
                 local_addr,
@@ -584,6 +594,7 @@ impl Net {
             connlimit: (0, Duration::ZERO),
             max_packets_per_recv: 0,
             resend_requests_per_second: 0,
+            vanilla: VanillaSettings::default(),
         }
     }
     pub fn set_userdata(&mut self, idx: PeerIndex, userdata: *mut ()) -> Result<()> {
@@ -816,69 +827,75 @@ impl Net {
                 // 11111111:          source connless packets
                 // 11111111:          teeworlds 0.6 connless
 
-                let packet = &self.packet_buf[..read];
-                let event = match (packet.get(0).copied(), packet.get(1).copied()) {
-                    // STUN, handed over as it is.
-                    (Some(0b00000000 | 0b00000001), _) => {
-                        buf[..read].copy_from_slice(packet);
-                        Ok(Some(ProtocolEvent::ConnlessChunk(RawAddr(from).into(), read, ConnlessMeta::default())))
-                    }
-                    (Some(p0), _) if p0 & 0b11111100 == 0b00000100 || p0 == 0b00100001 => {
-                        self.proto_tw07.on_recv(
-                            &self.cb,
-                            &mut self.packet_buf,
-                            read,
-                            buf,
-                            &from,
-                        )
-                    }
-                    (Some(0b00010000 | 0b11111111), _) => {
-                        self.proto_tw06.on_recv(
-                            &self.cb,
-                            &mut self.packet_buf,
-                            read,
-                            buf,
-                            &from,
-                        )
-                    }
-                    (Some(0b01111000), Some(0b01100101)) => {
-                        self.proto_tw06.on_recv(
-                            &self.cb,
-                            &mut self.packet_buf,
-                            read,
-                            buf,
-                            &from,
-                        )
-                    }
-                    (Some(p0), Some(p1))
-                        if p0 & 0b11000000 == 0b01000000
-                            && p1 != 0b01100101 =>
-                    {
-                        self.proto_quic
-                            .on_recv(
-                                &self.cb,
-                                &mut self.packet_buf,
-                                read,
-                                buf,
-                                &from,
-                            )
-                    }
-                    (Some(p0), _) if p0 & 0b11110000 == 0b11000000 => {
-                        self.proto_quic
-                            .on_recv(
-                                &self.cb,
-                                &mut self.packet_buf,
-                                read,
-                                buf,
-                                &from,
-                            )
-                    }
-                    _ => {
-                        debug!("unknown packet from {}", from);
-                        for line in hexdump_iter(packet) {
-                            debug!("{}", line);
+                // An address in the vanilla handshake gets its answer
+                // through, whatever the packet looks like.
+                let event = if self.proto_tw06.is_vanilla_pending(&from) {
+                    self.proto_tw06.on_recv_vanilla(&self.cb, &mut self.packet_buf, read, &from)
+                } else {
+                    let packet = &self.packet_buf[..read];
+                    match (packet.get(0).copied(), packet.get(1).copied()) {
+                        // STUN, handed over as it is.
+                        (Some(0b00000000 | 0b00000001), _) => {
+                            buf[..read].copy_from_slice(packet);
+                            Ok(Some(ProtocolEvent::ConnlessChunk(RawAddr(from).into(), read, ConnlessMeta::default())))
                         }
-                        continue;
+                        (Some(p0), _) if p0 & 0b11111100 == 0b00000100 || p0 == 0b00100001 => {
+                            self.proto_tw07.on_recv(
+                                &self.cb,
+                                &mut self.packet_buf,
+                                read,
+                                buf,
+                                &from,
+                            )
+                        }
+                        (Some(0b00010000 | 0b11111111), _) => {
+                            self.proto_tw06.on_recv(
+                                &self.cb,
+                                &mut self.packet_buf,
+                                read,
+                                buf,
+                                &from,
+                            )
+                        }
+                        (Some(0b01111000), Some(0b01100101)) => {
+                            self.proto_tw06.on_recv(
+                                &self.cb,
+                                &mut self.packet_buf,
+                                read,
+                                buf,
+                                &from,
+                            )
+                        }
+                        (Some(p0), Some(p1))
+                            if p0 & 0b11000000 == 0b01000000
+                                && p1 != 0b01100101 =>
+                        {
+                            self.proto_quic
+                                .on_recv(
+                                    &self.cb,
+                                    &mut self.packet_buf,
+                                    read,
+                                    buf,
+                                    &from,
+                                )
+                        }
+                        (Some(p0), _) if p0 & 0b11110000 == 0b11000000 => {
+                            self.proto_quic
+                                .on_recv(
+                                    &self.cb,
+                                    &mut self.packet_buf,
+                                    read,
+                                    buf,
+                                    &from,
+                                )
+                        }
+                        _ => {
+                            debug!("unknown packet from {}", from);
+                            for line in hexdump_iter(packet) {
+                                debug!("{}", line);
+                            }
+                            continue;
+                        }
                     }
                 };
                 // A packet nobody asked for is dropped on error, the way an
@@ -1426,6 +1443,19 @@ impl Net {
     /// See `NetBuilder::max_packets_per_recv`.
     pub fn set_max_packets_per_recv(&mut self, packets: u32) {
         self.max_packets_per_recv = packets;
+    }
+    /// See `NetBuilder::vanilla_handshake`.
+    pub fn set_vanilla_handshake(&mut self, settings: VanillaSettings) {
+        self.cb.vanilla = libtw2_patch::clamp_vanilla(settings);
+    }
+    /// Whether the peer is a 0.6 client that came in by the vanilla
+    /// handshake, which takes it past saying who it is.
+    pub fn peer_vanilla(&self, idx: PeerIndex) -> Result<bool> {
+        let Some(peer) = self.peers.get(&idx) else { bail!("no peer {}", idx) };
+        Ok(match &peer.conn {
+            Connection::Tw06(inner) => inner.is_vanilla(),
+            _ => false,
+        })
     }
     /// See `NetBuilder::resend_requests_per_second`; the connections
     /// there are already take it over as well.

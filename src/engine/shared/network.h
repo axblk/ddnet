@@ -272,6 +272,10 @@ class CNetServer
 		int m_ConnlimitTime = -1;
 		int m_MaxPacketsPerRecv = -1;
 		int m_ResendRequestsPerSecond = -1;
+		int m_VanillaAntispoof = -1;
+		int m_VanConnPerSecond = -1;
+		int m_VanConnRepliesPerSecond = -1;
+		int m_PreConnDecompressPerSecond = -1;
 	};
 	CLimits m_Limits;
 	// Banned addresses are told about their ban at most this often;

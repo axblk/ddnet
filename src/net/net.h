@@ -182,6 +182,31 @@ bool ddnet_net_set_max_packets_per_recv(struct DdnetNet *net, uint32_t packets);
 bool ddnet_net_set_resend_requests_per_second(struct DdnetNet *net, uint32_t per_second);
 
 /**
+ * How a server takes 0.6 clients that connect without asking for a
+ * token. With `antispoof` the address is proven by the vanilla
+ * handshake (a tiny map and empty snapshots carrying a token the
+ * client's first input returns) before the connection is reported,
+ * and `ddnet_net_peer_vanilla` then says so; without it the connect is
+ * accepted as it is. Beyond `conn_per_second` connects the handshake
+ * names a map every client has instead of carrying one; at most
+ * `replies_per_second` handshakes go out, to addresses not verified
+ * yet; at most `decompress_per_second` compressed packets of addresses
+ * without a connection are decompressed, which only the handshake's
+ * answer needs. Zero for no limit. Before `ddnet_net_open` or after it.
+ */
+bool ddnet_net_set_vanilla_handshake(struct DdnetNet *net,
+                                     bool antispoof,
+                                     uint32_t conn_per_second,
+                                     uint32_t replies_per_second,
+                                     uint32_t decompress_per_second);
+
+/**
+ * Whether the peer is a 0.6 client that came in by the vanilla
+ * handshake, which took it past the part where it says who it is.
+ */
+bool ddnet_net_peer_vanilla(struct DdnetNet *net, uint64_t peer_index, bool *vanilla);
+
+/**
  * Writes the TLS session keys to the file `SSLKEYLOGFILE` names, so the
  * traffic can be read in Wireshark. A debugging aid; off by default.
  */

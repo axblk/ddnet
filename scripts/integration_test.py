@@ -18,6 +18,8 @@ import sys
 import tempfile
 import traceback
 
+import vanilla_client
+
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -117,7 +119,7 @@ YELLOW = "\x1b[33m"
 
 
 class TestRunner:
-	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, ddnet_js, repo_dir, test_dir, show_full_output, test_websockets, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
+	def __init__(self, ddnet, ddnet_server, ddnet_mastersrv, ddnet_js, repo_dir, test_dir, show_full_output, test_websockets, test_libtw2_patch, valgrind_memcheck, keep_tmpdirs, timeout_multiplier):
 		self.ddnet = ddnet
 		self.ddnet_server = ddnet_server
 		self.ddnet_mastersrv = ddnet_mastersrv
@@ -129,6 +131,7 @@ class TestRunner:
 		self.extra_env_vars = {}
 		self.show_full_output = show_full_output
 		self.test_websockets = test_websockets
+		self.test_libtw2_patch = test_libtw2_patch
 		self.keep_tmpdirs = keep_tmpdirs
 		self.timeout_multiplier = timeout_multiplier
 		self.valgrind_memcheck = valgrind_memcheck
@@ -194,6 +197,10 @@ class TestRunner:
 				num_skipped += 1
 				continue
 			if test.requires_websockets and not self.test_websockets:
+				print(f"{test.name} ... {YELLOW}skipped{RESET}")
+				num_skipped += 1
+				continue
+			if test.requires_libtw2_patch and not self.test_libtw2_patch:
 				print(f"{test.name} ... {YELLOW}skipped{RESET}")
 				num_skipped += 1
 				continue
@@ -659,11 +666,12 @@ json = {communities_json_filename!r}
 ALL_TESTS = []
 
 
-def test(test=None, *, requires_mastersrv=False, requires_websockets=False, requires_native_client=True, requires_browser_client=False, timeout=60):
+def test(test=None, *, requires_mastersrv=False, requires_websockets=False, requires_libtw2_patch=False, requires_native_client=True, requires_browser_client=False, timeout=60):
 	def apply(test):
 		test.name = test.__name__
 		test.requires_mastersrv = requires_mastersrv
 		test.requires_websockets = requires_websockets
+		test.requires_libtw2_patch = requires_libtw2_patch
 		test.requires_native_client = requires_native_client
 		test.requires_browser_client = requires_browser_client
 		test.timeout = timeout
@@ -835,6 +843,37 @@ def server_limits_connections_per_address(test_env):
 	server.wait_for_exit()
 	for client in clients:
 		client.wait_for_exit()
+
+
+@test(requires_libtw2_patch=True)
+def vanilla_client_passes_the_antispoof_handshake(test_env):
+	server = test_env.server()
+	wait_for_startup([server])
+	client = vanilla_client.VanillaClient("127.0.0.1", server.port)
+	map_name = client.connect()
+	if client.handshake_token is None:
+		raise AssertionError("the server did not send the handshake")
+	if map_name == "dummy":
+		raise AssertionError("the server did not go on past the handshake's map")
+	server.wait_for_log_suffix("accepted by the vanilla handshake", timeout=5)
+	client.close("done")
+	server.exit()
+	server.wait_for_exit()
+
+
+@test
+def vanilla_client_is_accepted_without_antispoof(test_env):
+	server = test_env.server(["sv_vanilla_antispoof 0"])
+	wait_for_startup([server])
+	client = vanilla_client.VanillaClient("127.0.0.1", server.port)
+	map_name = client.connect()
+	if client.handshake_token is not None:
+		raise AssertionError("the server sent the handshake although it is off")
+	if not map_name:
+		raise AssertionError("no map from the server")
+	client.close("done")
+	server.exit()
+	server.wait_for_exit()
 
 
 @test
@@ -1239,6 +1278,7 @@ def main():
 	parser.add_argument("--show-full-output", action="store_true", help="print the full stdout and stderr on test failures")
 	parser.add_argument("--test-mastersrv", action="store_true", help="enforce testing of mastersrv")
 	parser.add_argument("--test-websockets", action="store_true", help="run tests that require compiling with websockets support (-DWEBSOCKETS=ON)")
+	parser.add_argument("--test-libtw2-patch", action="store_true", help="run tests that require compiling against a patched libtw2-net (-DLIBTW2_PATCH=ON), which is what the vanilla 0.6 handshake and a 0.7 server need")
 	parser.add_argument("--timeout-multiplier", type=float, default=1, help="multiply all timeouts by this value")
 	parser.add_argument("--valgrind-memcheck", action="store_true", help="use valgrind's memcheck on client and server")
 	parser.add_argument("--emscripten-client", metavar="DDNET_JS", help="path to the DDNet.js of an Emscripten client build, run under node for the browser tests; the native client binary may be missing then")
@@ -1277,6 +1317,7 @@ def main():
 		test_dir=args.builddir,
 		show_full_output=args.show_full_output,
 		test_websockets=args.test_websockets,
+		test_libtw2_patch=args.test_libtw2_patch,
 		valgrind_memcheck=args.valgrind_memcheck,
 		keep_tmpdirs=args.keep_tmpdirs,
 		timeout_multiplier=args.timeout_multiplier,

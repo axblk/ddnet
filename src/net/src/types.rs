@@ -19,6 +19,25 @@ pub enum Protocol {
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PeerIndex(pub u64);
 
+/// How a server treats 0.6 clients that connect without asking for a
+/// token, see `vanilla`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VanillaSettings {
+    /// Prove the address with the handshake before the connection is
+    /// reported; off accepts the connect as it is.
+    pub antispoof: bool,
+    /// Connects per second beyond which the handshake names the fallback
+    /// map instead of carrying one; zero for never.
+    pub conn_per_second: u32,
+    /// Handshakes sent per second, to addresses not verified yet; zero
+    /// for no limit.
+    pub replies_per_second: u32,
+    /// Compressed packets of addresses without a connection that are
+    /// decompressed per second, which only the handshake's answer needs;
+    /// zero for no limit.
+    pub decompress_per_second: u32,
+}
+
 impl fmt::Display for PeerIndex {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Debug::fmt(self, f)

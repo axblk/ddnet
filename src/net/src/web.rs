@@ -27,6 +27,7 @@ use crate::Map;
 use crate::MapEvent;
 use crate::PeerIndex;
 use crate::Protocol;
+use crate::types::VanillaSettings;
 use crate::Result;
 use crate::MAX_FRAME_SIZE;
 use std::collections::HashMap;
@@ -128,6 +129,7 @@ impl NetBuilder {
     pub fn connlimit(&mut self, _conns: u32, _window: Duration) {}
     pub fn max_packets_per_recv(&mut self, _packets: u32) {}
     pub fn resend_requests_per_second(&mut self, _per_second: u32) {}
+    pub fn vanilla_handshake(&mut self, _settings: VanillaSettings) {}
     #[cfg(target_os = "emscripten")]
     pub fn open(self) -> Result<Net> {
         Ok(self.open_with(Box::new(self::browser::Browser::new())))
@@ -314,6 +316,11 @@ impl Net {
     }
     pub fn set_connlimit(&mut self, _conns: u32, _window: Duration) {}
     pub fn set_max_packets_per_recv(&mut self, _packets: u32) {}
+    pub fn set_vanilla_handshake(&mut self, _settings: VanillaSettings) {}
+    /// A browser speaks no 0.6.
+    pub fn peer_vanilla(&self, _idx: PeerIndex) -> Result<bool> {
+        Ok(false)
+    }
     /// A browser speaks no protocol with resend requests.
     pub fn set_resend_requests_per_second(&mut self, _per_second: u32) {}
     pub fn set_map(&mut self, _id: u32, _map: Map) -> Result<()> {

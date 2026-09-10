@@ -4,7 +4,6 @@
 #include "font_loading.h"
 
 #include <base/dbg.h>
-#include <base/lock.h>
 #include <base/log.h>
 #include <base/math.h>
 #include <base/mem.h>
@@ -1018,96 +1017,36 @@ void CTextCursor::SetPosition(vec2 Position)
  */
 class CFontAssetJob final : public CAssetJob
 {
-	FT_Library m_FtLibrary;
-	CLock *m_pFtLibraryLock;
-	std::vector<FT_Face> m_vFaces;
-	bool m_Success = false;
+	bool m_Ok = false;
 
+protected:
 	void OnReadFailed() override
 	{
 		log_error("textrender", "Failed to open/read font file '%s'", Path());
 	}
 
-	// The FreeType library lock is reached through a pointer, which the clang
-	// thread-safety analysis cannot track.
-	void Process() override NO_THREAD_SAFETY_ANALYSIS
-	{
-		// Creating a face registers it with the FreeType library, which all font
-		// jobs share, so only one job may create faces at a time. The main thread
-		// does not touch the library while font files are being loaded.
-		const CLockScope LockScope(*m_pFtLibraryLock);
-
-		const FT_Byte *pFontData = Data().data();
-		const FT_Long FontDataLength = (FT_Long)Data().size();
-		FT_Face FtFace;
-		const FT_Error CollectionLoadError = FT_New_Memory_Face(m_FtLibrary, pFontData, FontDataLength, -1, &FtFace);
-		if(CollectionLoadError)
-		{
-			log_error("textrender", "Failed to load font file '%s': %s", Path(), FT_Error_String(CollectionLoadError));
-			return;
-		}
-
-		const FT_Long NumFaces = FtFace->num_faces;
-		FT_Done_Face(FtFace);
-
-		for(FT_Long FaceIndex = 0; FaceIndex < NumFaces; ++FaceIndex)
-		{
-			const FT_Error FaceLoadError = FT_New_Memory_Face(m_FtLibrary, pFontData, FontDataLength, FaceIndex, &FtFace);
-			if(FaceLoadError)
-			{
-				log_error("textrender", "Failed to load font face %ld from font file '%s': %s", FaceIndex, Path(), FT_Error_String(FaceLoadError));
-				FT_Done_Face(FtFace);
-				continue;
-			}
-
-			m_vFaces.push_back(FtFace);
-			log_debug("textrender", "Loaded font face %ld '%s %s' from font file '%s'", FaceIndex, FtFace->family_name, FtFace->style_name, Path());
-		}
-
-		if(m_vFaces.empty())
-		{
-			log_error("textrender", "Failed to load font file '%s': no font faces could be loaded", Path());
-			return;
-		}
-		m_Success = true;
-	}
+	// The bytes that were read are the font file. Making the faces out of them
+	// is the main thread's, see `CTextRender::AddFontFaces`.
+	void Process() override { m_Ok = true; }
 
 public:
-	CFontAssetJob(IStorage *pStorage, const char *pPath, FT_Library FtLibrary, CLock *pFtLibraryLock) :
-		CAssetJob(EAssetType::FONT, pStorage, pPath, IStorage::TYPE_ALL, ASSET_OWNER_FONTS, FONT_ASSET_GENERATION),
-		m_FtLibrary(FtLibrary),
-		m_pFtLibraryLock(pFtLibraryLock)
+	CFontAssetJob(IStorage *pStorage, const char *pPath) :
+		CAssetJob(EAssetType::FONT, pStorage, pPath, IStorage::TYPE_ALL, ASSET_OWNER_FONTS, FONT_ASSET_GENERATION)
 	{
 	}
 
-	~CFontAssetJob() override NO_THREAD_SAFETY_ANALYSIS
-	{
-		if(!m_vFaces.empty())
-		{
-			const CLockScope LockScope(*m_pFtLibraryLock);
-			for(FT_Face Face : m_vFaces)
-			{
-				FT_Done_Face(Face);
-			}
-			m_vFaces.clear();
-		}
-	}
-
-	bool Success() const override { return m_Success; }
-
-	const std::vector<FT_Face> &Faces() const { return m_vFaces; }
+	bool Success() const override { return m_Ok; }
 
 	/**
-	 * Gives up the ownership of the font faces and of the font data buffer.
+	 * Gives up the ownership of the font data buffer.
 	 *
-	 * @return The font data buffer, which the caller has to keep alive as long
-	 * as it uses the faces of this job.
+	 * @return The font data buffer, which the caller has to keep where it is
+	 * for as long as it uses the faces made from it.
 	 */
 	std::vector<uint8_t> TakeFontData()
 	{
-		dbg_assert(State() == IJob::STATE_DONE, "Cannot take the fonts from an unfinished job");
-		dbg_assert(Success(), "Cannot take the fonts from a failed job");
-		m_vFaces.clear();
+		dbg_assert(State() == IJob::STATE_DONE, "Cannot take the font from an unfinished job");
+		dbg_assert(Success(), "Cannot take the font from a failed job");
 		return std::move(Data());
 	}
 };
@@ -1126,10 +1065,9 @@ class CTextRender : public IEngineTextRender
 	CGlyphMap *m_pGlyphMap;
 	std::vector<std::vector<uint8_t>> m_vFontData;
 
-	// Font loading. The font files are read and turned into font faces by worker
-	// threads, the faces are handed over to the main thread once all files are done.
+	// Font loading. The font files are read by worker threads; the faces are
+	// made out of the bytes here, because FreeType is only used by one thread.
 	CAssetLoader m_FontLoader;
-	CLock m_FtLibraryLock;
 	CFontIndex m_FontIndex;
 	CFontLoadProgress m_FontLoadProgress;
 	std::vector<CTypedAssetResource<CFontAssetJob>> m_vFontFileResources;
@@ -1237,7 +1175,7 @@ class CTextRender : public IEngineTextRender
 		m_vFontFileResources.reserve(m_FontIndex.m_vFontFilePaths.size());
 		for(const std::string &FontFilePath : m_FontIndex.m_vFontFilePaths)
 		{
-			m_vFontFileResources.push_back(m_FontLoader.Load(std::make_shared<CFontAssetJob>(Storage(), FontFilePath.c_str(), m_FTLibrary, &m_FtLibraryLock)));
+			m_vFontFileResources.push_back(m_FontLoader.Load(std::make_shared<CFontAssetJob>(Storage(), FontFilePath.c_str())));
 		}
 		PollFontLoading();
 	}
@@ -1262,29 +1200,76 @@ class CTextRender : public IEngineTextRender
 	}
 
 	/**
-	 * Takes the font faces of all font files over and selects the default, icon
-	 * and fallback faces.
+	 * Makes the font faces of one font file and hands them to the glyph map.
 	 *
-	 * The faces are only usable from here on. Until then no face is registered
-	 * with the glyph map, so text that is drawn while the fonts are loading gets
-	 * no glyphs instead of glyphs of a face that a worker thread is still using.
+	 * FreeType is only ever used from the main thread, so a font that arrives
+	 * after the first text was drawn is no different from one that was there
+	 * from the start.
+	 *
+	 * @param vFontData The bytes of the font file, which have to stay where
+	 * they are for as long as the faces are used.
+	 * @param pPath The name of the font file, for error messages.
+	 *
+	 * @return `true` if at least one face could be made.
+	 */
+	bool AddFontFaces(const std::vector<uint8_t> &vFontData, const char *pPath)
+	{
+		const FT_Byte *pFontData = vFontData.data();
+		const FT_Long FontDataLength = (FT_Long)vFontData.size();
+
+		// Asking for face -1 is how many faces a collection holds.
+		FT_Face FtFace;
+		const FT_Error CollectionLoadError = FT_New_Memory_Face(m_FTLibrary, pFontData, FontDataLength, -1, &FtFace);
+		if(CollectionLoadError)
+		{
+			log_error("textrender", "Failed to load font file '%s': %s", pPath, FT_Error_String(CollectionLoadError));
+			return false;
+		}
+		const FT_Long NumFaces = FtFace->num_faces;
+		FT_Done_Face(FtFace);
+
+		bool Any = false;
+		for(FT_Long FaceIndex = 0; FaceIndex < NumFaces; ++FaceIndex)
+		{
+			const FT_Error FaceLoadError = FT_New_Memory_Face(m_FTLibrary, pFontData, FontDataLength, FaceIndex, &FtFace);
+			if(FaceLoadError)
+			{
+				log_error("textrender", "Failed to load font face %ld from font file '%s': %s", FaceIndex, pPath, FT_Error_String(FaceLoadError));
+				FT_Done_Face(FtFace);
+				continue;
+			}
+			m_pGlyphMap->AddFace(FtFace);
+			Any = true;
+			log_debug("textrender", "Loaded font face %ld '%s %s' from font file '%s'", FaceIndex, FtFace->family_name, FtFace->style_name, pPath);
+		}
+		if(!Any)
+		{
+			log_error("textrender", "Failed to load font file '%s': no font faces could be loaded", pPath);
+		}
+		return Any;
+	}
+
+	/**
+	 * Makes the faces of every font file that was read and selects the default,
+	 * icon and fallback faces. Text drawn before this gets no glyphs.
 	 */
 	void CommitFonts()
 	{
+		bool Success = true;
 		for(auto &Resource : m_vFontFileResources)
 		{
 			if(!Resource.IsReady(FONT_ASSET_GENERATION))
 				continue;
-			CFontAssetJob &Job = Resource.Result();
-			for(FT_Face Face : Job.Faces())
+			// The faces point into the bytes, so the bytes are kept first and
+			// the faces are made out of where they came to rest.
+			m_vFontData.push_back(Resource.Result().TakeFontData());
+			if(!AddFontFaces(m_vFontData.back(), Resource.Path()))
 			{
-				m_pGlyphMap->AddFace(Face);
+				Success = false;
 			}
-			m_vFontData.push_back(Job.TakeFontData());
 		}
 		m_vFontFileResources.clear();
 
-		bool Success = true;
 		if(!m_FontIndex.m_DefaultFamilyName.empty() && !m_pGlyphMap->SetDefaultFaceByName(m_FontIndex.m_DefaultFamilyName.c_str()))
 		{
 			Success = false;

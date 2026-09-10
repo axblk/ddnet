@@ -399,6 +399,8 @@ pub fn decode_resume(payload: &[u8]) -> Result<Resume<'_>, DecodeError> {
 pub struct DatagramBuilder {
     messages: Vec<u8>,
     count: u64,
+    /// The largest datagram the peer takes, as its hello announced it.
+    limit: usize,
 }
 
 /// The most the header of a datagram takes: two one-byte varints, an
@@ -410,7 +412,13 @@ impl DatagramBuilder {
         DatagramBuilder {
             messages: Vec::with_capacity(MAX_DATAGRAM_SIZE),
             count: 0,
+            limit: MAX_DATAGRAM_SIZE,
         }
+    }
+    /// Keeps the datagrams to what the peer announced in its hello, as the
+    /// C++ QUIC transport does.
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = limit.min(MAX_DATAGRAM_SIZE);
     }
     pub fn is_empty(&self) -> bool {
         self.count == 0
@@ -420,7 +428,7 @@ impl DatagramBuilder {
     pub fn fits(&self, message: &[u8]) -> bool {
         message.len() <= MAX_DATAGRAM_MESSAGE_SIZE
             && self.count < MAX_DATAGRAM_MESSAGES
-            && DATAGRAM_HEADER_MAX + self.messages.len() + 2 + message.len() <= MAX_DATAGRAM_SIZE
+            && DATAGRAM_HEADER_MAX + self.messages.len() + 2 + message.len() <= self.limit
     }
     pub fn push(&mut self, message: &[u8]) {
         debug_assert!(self.fits(message));
@@ -619,6 +627,14 @@ mod tests {
         }
         assert!(!DatagramBuilder::new().fits(&[0; MAX_DATAGRAM_MESSAGE_SIZE + 1]));
         assert!(DatagramBuilder::new().fits(&[0; MAX_DATAGRAM_MESSAGE_SIZE]));
+        // A peer that takes less gets less.
+        let mut small = DatagramBuilder::new();
+        small.set_limit(100);
+        assert!(small.fits(&[0; 80]));
+        assert!(!small.fits(&[0; 90]));
+        small.set_limit(5000);
+        assert!(!small.fits(&[0; MAX_DATAGRAM_MESSAGE_SIZE + 1]));
+        assert!(small.fits(&[0; MAX_DATAGRAM_MESSAGE_SIZE]));
     }
 
     #[test]

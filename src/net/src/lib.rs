@@ -17,6 +17,7 @@ mod addr;
 mod error;
 mod ffi;
 mod key;
+mod session;
 mod types;
 mod mapstream;
 #[cfg(any(target_os = "emscripten", test))]

@@ -19,8 +19,8 @@
 //!
 //! An empty message is a keepalive.
 
-use crate::key::IDENTITY_PROOF_SIZE;
 use crate::mapstream;
+use crate::session;
 use crate::quic::PeerIdentity;
 use crate::quic::Shared;
 use crate::webtransport;
@@ -29,13 +29,11 @@ use crate::CallbackData;
 use crate::ConnectionEvent as Event;
 use crate::Context as _;
 use crate::Error;
-use crate::Identity;
 use crate::Map;
 use crate::MapEvent;
 use crate::Result;
 use crate::TIMEOUT_REASON;
 use crate::WsAddr as Addr;
-use crate::secure_random;
 use log::debug;
 use log::info;
 use mio::net::TcpListener;
@@ -281,10 +279,7 @@ pub struct Connection {
     /// The certificate the server showed, or zeroes without TLS; the
     /// identity vouches for it either way.
     shown_certificate: [u8; 32],
-    local_nonce: [u8; wire::NONCE_SIZE],
-    peer_nonce: [u8; wire::NONCE_SIZE],
-    peer_capabilities: u64,
-    hello_received: bool,
+    handshake: session::Handshake,
     pending: VecDeque<Pending>,
     incoming_map: Option<mapstream::Incoming>,
     outgoing_map: Option<OutgoingMap>,
@@ -323,10 +318,7 @@ impl Connection {
             game: Game::Hello,
             master: Arc::new(AtomicBool::new(false)),
             shown_certificate: [0; 32],
-            local_nonce: [0; wire::NONCE_SIZE],
-            peer_nonce: [0; wire::NONCE_SIZE],
-            peer_capabilities: 0,
-            hello_received: false,
+            handshake: session::Handshake::new(false),
             pending: VecDeque::new(),
             incoming_map: None,
             outgoing_map: None,
@@ -547,70 +539,46 @@ impl Connection {
     }
     fn send_hello(&mut self) -> Result<()> {
         let mut capabilities = wire::capability::MAP_STREAM;
-        if self.client || self.peer_capabilities & wire::capability::SERVER_IDENTITY != 0 {
+        if self.client || self.handshake.peer_proves_identity() {
             capabilities |= wire::capability::SERVER_IDENTITY;
         }
-        self.local_nonce = secure_random();
-        let hello = wire::Hello {
-            major: wire::VERSION_MAJOR,
-            minor: wire::VERSION_MINOR,
-            protocol_version: wire::PROTOCOL_VERSION,
-            capabilities,
-            max_datagram_size: 0,
-            nonce: self.local_nonce,
-            resume_token: &[],
-        };
-        let payload = wire::encode_hello(&hello).unwrap();
+        let payload = self.handshake.hello(capabilities, 0, &[]);
         let frame_type = if self.client { wire::frame::CLIENT_HELLO } else { wire::frame::SERVER_HELLO };
         self.send_frame(frame_type, &payload)
     }
     fn on_hello(&mut self, payload: &[u8]) -> Result<()> {
-        let hello = wire::decode_hello(payload)
-            .map_err(|e| Error::from_string(format!("hello: {}", e)))?;
-        if hello.protocol_version != wire::PROTOCOL_VERSION {
-            bail!("protocol version {} instead of {}", hello.protocol_version, wire::PROTOCOL_VERSION);
-        }
-        if !hello.resume_token.is_empty() {
+        // WebSockets carry 0.6 only, and there is no resume over them.
+        if !self.handshake.take_hello(payload, self.client, 0)?.resume_token.is_empty() {
             bail!("no resume over websockets");
         }
-        self.peer_capabilities = hello.capabilities;
-        self.peer_nonce = hello.nonce;
         Ok(())
     }
     fn send_identity_proof(&mut self) -> Result<()> {
-        if self.peer_capabilities & wire::capability::SERVER_IDENTITY == 0 {
+        if !self.handshake.peer_proves_identity() {
             return Ok(());
         }
-        let proof = self.shared.identity().prove(&self.shown_certificate, &self.peer_nonce);
+        let proof = self
+            .shared
+            .identity()
+            .prove(&self.shown_certificate, &self.handshake.peer_nonce);
         self.send_frame(wire::frame::SERVER_IDENTITY, &proof)
     }
     fn on_identity_proof(&mut self, payload: &[u8]) -> Result<()> {
         let PeerIdentity::Certificate { wanted, sha256 } = self.peer_identity else {
             bail!("identity proof not expected");
         };
-        if payload.len() != IDENTITY_PROOF_SIZE {
-            bail!("identity proof of {} bytes, expected {}", payload.len(), IDENTITY_PROOF_SIZE);
-        }
-        let shown = Identity::from_bytes(payload[..32].try_into().unwrap());
-        if let Some(wanted) = wanted {
-            if shown != wanted {
-                bail!("server identity is {}, expected {}", shown, wanted);
-            }
-        }
-        if shown.verify_proof(payload, &sha256, &self.local_nonce).is_none() {
-            bail!("server identity proof does not check out");
-        }
+        let shown = session::verify_identity_proof(payload, wanted, &[sha256], &self.handshake.local_nonce)?;
         self.peer_identity = PeerIdentity::Known(shown);
         Ok(())
     }
     fn client_online(&mut self) -> Result<Option<Event>> {
-        if !self.hello_received {
+        if !self.handshake.received {
             return Ok(None);
         }
         match self.peer_identity {
             PeerIdentity::Known(_) => {}
             PeerIdentity::Certificate { .. } => {
-                if self.peer_capabilities & wire::capability::SERVER_IDENTITY == 0 {
+                if !self.handshake.peer_proves_identity() {
                     bail!("server shows no identity");
                 }
                 return Ok(None);
@@ -699,7 +667,6 @@ impl Connection {
             }
             (Game::Hello, wire::frame::SERVER_HELLO) if self.client => {
                 self.on_hello(payload)?;
-                self.hello_received = true;
                 self.client_online()
             }
             (Game::Hello, wire::frame::SERVER_IDENTITY) if self.client => {
@@ -806,7 +773,7 @@ impl Connection {
         if self.client {
             bail!("only a server sends maps");
         }
-        if self.peer_capabilities & wire::capability::MAP_STREAM == 0 {
+        if self.handshake.peer_capabilities & wire::capability::MAP_STREAM == 0 {
             bail!("peer takes no map stream");
         }
         self.cancel_map();

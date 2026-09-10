@@ -8,6 +8,7 @@ use crate::wire;
 use crate::Net as NetImpl;
 use crate::NetBuilder as NetBuilderImpl;
 use crate::PeerIndex;
+use crate::types::ClassicSwitches;
 use crate::types::VanillaSettings;
 use crate::Protocol;
 use crate::Result;
@@ -693,6 +694,32 @@ pub extern "C" fn ddnet_net_set_vanilla_handshake(
     } else {
         net.good(|impl_| {
             impl_.set_vanilla_handshake(settings);
+            Ok(())
+        })
+    }
+}
+/// Which of the classic UDP protocols take clients, of those the server
+/// listens for: 0.6 with tokens (the DDNet client), 0.6 without
+/// (vanilla), and 0.7. Unlike `ddnet_net_set_accept_protocol`, a
+/// client over one that is off is told so, once its address is
+/// verified; and this can change while running, the connections there
+/// are stay. Before `ddnet_net_open` or after it.
+#[no_mangle]
+pub extern "C" fn ddnet_net_set_classic_switches(
+    net: &mut DdnetNet,
+    ddnet06: bool,
+    vanilla06: bool,
+    tw07: bool,
+) -> bool {
+    let switches = ClassicSwitches { ddnet06, vanilla06, tw07 };
+    if let Init(_) = &net.inner {
+        net.init(|builder| {
+            builder.classic_switches(switches);
+            Ok(())
+        })
+    } else {
+        net.good(|impl_| {
+            impl_.set_classic_switches(switches);
             Ok(())
         })
     }

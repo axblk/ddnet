@@ -19,6 +19,24 @@ pub enum Protocol {
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PeerIndex(pub u64);
 
+/// Which of the classic UDP protocols a server takes clients over, of
+/// those it listens for at all; a client over one that is off is told
+/// so, once its address is verified. Changeable while running.
+#[derive(Clone, Copy, Debug)]
+pub struct ClassicSwitches {
+    /// 0.6 with tokens, the DDNet client.
+    pub ddnet06: bool,
+    /// 0.6 without tokens, see `vanilla`.
+    pub vanilla06: bool,
+    pub tw07: bool,
+}
+
+impl Default for ClassicSwitches {
+    fn default() -> ClassicSwitches {
+        ClassicSwitches { ddnet06: true, vanilla06: true, tw07: true }
+    }
+}
+
 /// How a server treats 0.6 clients that connect without asking for a
 /// token, see `vanilla`.
 #[derive(Clone, Copy, Debug, Default)]

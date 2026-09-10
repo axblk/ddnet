@@ -265,8 +265,21 @@ impl Protocol {
                 return Ok(None);
             }
             // The connect message has to carry the token handed out above.
-            ControlPacket::Connect(_) => {
+            ControlPacket::Connect(their_token) => {
                 if !cb.accept.tw07 || !verify_own_token(cb, from, token) {
+                    return Ok(None);
+                }
+                // The token proves the address, so it can be told why it
+                // is turned away.
+                if !cb.classic.tw07 {
+                    let written = Packet::Connected(ConnectedPacket {
+                        token: their_token,
+                        ack: 0,
+                        type_: ConnectedPacketType::Control(ControlPacket::Close(TW07_OFF_REASON)),
+                    })
+                    .write(&mut packet_buf[..])
+                    .unwrap();
+                    cb.socket.send_to(written, *from).context("UdpSocket::send_to")?;
                     return Ok(None);
                 }
                 token
@@ -348,6 +361,9 @@ impl Protocol {
 /// The reason a peer that went silent is lost with; the same for every
 /// transport.
 const TIMEOUT_REASON: &str = "Timeout";
+
+/// What clients are told when 0.7 is switched off.
+const TW07_OFF_REASON: &[u8] = b"0.7 connections are not accepted at this time";
 
 enum State {
     SimulateConnectEvent,

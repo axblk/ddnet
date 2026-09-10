@@ -269,6 +269,7 @@ class VanillaClient:
 	def connect(self, password=""):
 		self.send(control_packet(CTRLMSG_CONNECT))
 		packet = self.recv()
+		self.raise_if_closed(packet)
 		if packet.control != CTRLMSG_CONNECTACCEPT:
 			raise AssertionError(f"expected connect-accept, got {packet.control!r}")
 		# With the handshake the map change and the snapshots follow at
@@ -290,14 +291,18 @@ class VanillaClient:
 			self.send(data_packet(self.ack, [chunk(self.system_message(NETMSG_INFO, NET_VERSION, password), self.next_sequence())]))
 		for _ in range(10):
 			packet = self.recv()
-			if packet.control == CTRLMSG_CLOSE:
-				reason = packet.control_data.split(b"\0", 1)[0].decode("utf-8", "replace")
-				raise AssertionError(f"closed by the server: {reason!r}")
+			self.raise_if_closed(packet)
 			for _, data in packet.chunks:
 				if self.message_id(data) == NETMSG_MAP_CHANGE:
 					name, _ = unpack_string(data, unpack_int(data, 0)[1])
 					return name
 		raise AssertionError("no map change from the server")
+
+	@staticmethod
+	def raise_if_closed(packet):
+		if packet.control == CTRLMSG_CLOSE:
+			reason = packet.control_data.split(b"\0", 1)[0].decode("utf-8", "replace")
+			raise AssertionError(f"closed by the server: {reason!r}")
 
 	@staticmethod
 	def message_id(data):

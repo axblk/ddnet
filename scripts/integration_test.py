@@ -876,6 +876,59 @@ def vanilla_client_is_accepted_without_antispoof(test_env):
 	server.wait_for_exit()
 
 
+def switch_is_live(test_env, setting, address, reason):
+	"""With `setting` off the client is turned away with `reason`; switched on
+	while running, the same client gets in."""
+	client = test_env.client()
+	server = test_env.server([f"{setting} 0"])
+	wait_for_startup([client, server])
+	client.command(f"connect {address.format(port=server.port)}")
+	client.wait_for_log_exact(f"client: offline error='{reason}'", timeout=10)
+	server.command(f"{setting} 1")
+	server.wait_for_log_exact("net: classic protocols: ddnet 0.6 on, vanilla 0.6 on, 0.7 on", timeout=5)
+	client.command(f"connect {address.format(port=server.port)}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	server.exit()
+	client.wait_for_log_exact("client: offline error='Server shutdown'")
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+@test
+def ddnet_connections_can_be_switched_off(test_env):
+	switch_is_live(test_env, "sv_ddnet_connections", "localhost:{port}", "DDNet 0.6 connections are not accepted at this time")
+
+
+@test(requires_libtw2_patch=True)
+def sixup_can_be_switched_off(test_env):
+	switch_is_live(test_env, "sv_sixup", "tw-0.7+udp://127.0.0.1:{port}", "0.7 connections are not accepted at this time")
+
+
+@test
+def vanilla_connections_can_be_switched_off(test_env):
+	server = test_env.server(["sv_vanilla_connections 0"])
+	wait_for_startup([server])
+	client = vanilla_client.VanillaClient("127.0.0.1", server.port)
+	try:
+		client.connect()
+	except AssertionError as error:
+		if "Old Teeworlds 0.6 versions are unsupported" not in str(error):
+			raise
+	else:
+		raise AssertionError("the vanilla client got in with the switch off")
+	client.close()
+	server.command("sv_vanilla_connections 1")
+	server.wait_for_log_exact("net: classic protocols: ddnet 0.6 on, vanilla 0.6 on, 0.7 on", timeout=5)
+	client = vanilla_client.VanillaClient("127.0.0.1", server.port)
+	client.connect()
+	if test_env.runner.test_libtw2_patch:
+		server.wait_for_log_suffix("accepted by the vanilla handshake", timeout=5)
+	client.close("done")
+	server.exit()
+	server.wait_for_exit()
+
+
 @test
 def client_can_connect_7(test_env):
 	client = test_env.client()

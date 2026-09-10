@@ -4,7 +4,16 @@
 #include "thread.h"
 
 #include "dbg.h"
+#include "detect.h"
+#include "time.h"
 #include "windows.h"
+
+#include <algorithm>
+#include <thread>
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#include <emscripten/emscripten.h>
+#endif
 
 #if defined(CONF_FAMILY_UNIX)
 #include <pthread.h>
@@ -136,6 +145,38 @@ void thread_wait(void *thread)
 #else
 #error not implemented
 #endif
+}
+
+void thread_sleep_idle(std::chrono::nanoseconds duration)
+{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// Sleeping keeps the browser's main thread to itself, so the page neither
+	// paints nor delivers input for as long as it lasts. Emscripten's sleep is
+	// the one that hands control back, and it counts in whole milliseconds; a
+	// duration of none still hands it back once.
+	const int64_t milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+	emscripten_sleep(milliseconds > 0 ? milliseconds : 0);
+#else
+	if(duration > std::chrono::nanoseconds::zero())
+		std::this_thread::sleep_for(duration);
+	else
+		thread_yield();
+#endif
+}
+
+void thread_sleep_until_next_frame(std::chrono::nanoseconds &next_frame_time, int refresh_rate)
+{
+	const std::chrono::nanoseconds now = time_get_nanoseconds();
+	if(refresh_rate > 0 && next_frame_time > std::chrono::nanoseconds::zero())
+	{
+		const std::chrono::nanoseconds frame_time = std::chrono::nanoseconds(std::chrono::seconds(1)) / refresh_rate;
+		next_frame_time = std::max(next_frame_time + frame_time, now);
+	}
+	else
+	{
+		next_frame_time = now;
+	}
+	thread_sleep_idle(next_frame_time - now);
 }
 
 void thread_yield()

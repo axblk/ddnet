@@ -340,14 +340,14 @@ CGameView &CGameClient::LegacyGameView()
 	return *pView;
 }
 
-// The demo render tool registers none of these, and every place that consults
-// one copes with its absence. The game itself registers all of them, so there a
-// registration gone missing is an assert at startup rather than a null pointer
-// deep inside a component.
+// The programs that only show a demo register none of these, and every place
+// that consults one copes with its absence. The game itself registers all of
+// them, so there a registration gone missing is an assert at startup rather
+// than a null pointer deep inside a component.
 template<class TInterface>
 static TInterface *ToolOptionalInterface(IKernel *pKernel)
 {
-#if defined(CONF_DEMO_RENDER_TOOL)
+#if defined(CONF_DEMO_RENDER_TOOL) || defined(CONF_DEMO_VIEWER_TOOL)
 	return pKernel->TryGetInterface<TInterface>();
 #else
 	return pKernel->RequestInterface<TInterface>();

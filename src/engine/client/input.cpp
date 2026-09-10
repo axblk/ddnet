@@ -791,6 +791,14 @@ void EmscriptenCallbackQuit()
 {
 	EmscriptenQuit = true;
 }
+
+// The page asks for all three of these by name, whatever program is behind the
+// canvas, so they live with the rest of what answers to a browser rather than
+// in the game client that only one of those programs is.
+void EmscriptenCallbackQuitForce()
+{
+	emscripten_force_exit(-1);
+}
 }
 #endif
 

@@ -2750,6 +2750,9 @@ if(CLIENT)
     demo_render_client.cpp
     demo_render_client.h
     demo_render_main.cpp
+    demo_viewer_client.cpp
+    demo_viewer_client.h
+    demo_viewer_main.cpp
     demoedit.cpp
     demoedit.h
     discord.cpp
@@ -3249,7 +3252,7 @@ if(CLIENT)
   # out of the client. The client never names them, and they are written for a
   # program that has the video recorder, which the client can be built without.
   set(ENGINE_CLIENT_GAME ${ENGINE_CLIENT})
-  list(FILTER ENGINE_CLIENT_GAME EXCLUDE REGEX "src/engine/client/(demo_client_base|demo_render_client|demo_render_main)\\.(cpp|h)$")
+  list(FILTER ENGINE_CLIENT_GAME EXCLUDE REGEX "src/engine/client/(demo_client_base|demo_render_client|demo_render_main|demo_viewer_client|demo_viewer_main)\\.(cpp|h)$")
 
   set(CLIENT_SRC ${ENGINE_CLIENT_GAME} ${PLATFORM_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
 
@@ -3498,6 +3501,8 @@ if(CLIENT)
     # video file never opens the editor either, and compiling it is 265 of the
     # 908 seconds this target used to take.
     set(DEMO_RENDERER_SRC ${ENGINE_CLIENT} ${GAME_CLIENT_MENUS_NULL} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
+    # The other program built on this client is a window with a demo in it.
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/demo_viewer_(client|main)\\.(cpp|h)$")
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/window_sdl\\.(cpp|h)$")
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/input\\.(cpp|h)$")
     # Translating a 0.7 connless packet needs a program that receives one.
@@ -3582,6 +3587,96 @@ if(CLIENT)
     )
   endif()
 
+  # A program that shows one demo in a window. It is the same client as the one
+  # the render tool brings, with a window instead of a surface and a keyboard
+  # instead of a command line, so it leaves out the same things - with one
+  # difference: somebody is watching, so the parts that answer to a keyboard
+  # and to a pointer stay in.
+  if(CLIENT AND SDL2_FOUND AND VIDEORECORDER)
+    set(DEMO_VIEWER_SRC ${ENGINE_CLIENT} ${GAME_CLIENT_MENUS_NULL} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
+    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/engine/client/demo_render_(client|main)\\.(cpp|h)$")
+    # Translating a 0.7 connless packet needs a program that receives one.
+    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
+    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/engine/client/(client|client_net|session_source_net|sixup_translate_system|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|updater|favorites|demoedit|blocklist_driver|discord|steam|notifications)\\.(cpp|h)$")
+    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/engine/client/sqlite\\.(cpp|h)$")
+    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/game/client/components/(local_server|menu_background)\\.cpp$")
+    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/game/client/match_journal\\.cpp$")
+    # Not part of the game either, and it compiles its own copy of the client:
+    # `cmake --build . --target demo-viewer`.
+    add_executable(demo-viewer EXCLUDE_FROM_ALL
+      ${DEMO_VIEWER_SRC}
+      ${DEPS_CLIENT}
+      ${WAVPACK_DEP}
+      # tidy-alphabetical-start
+      $<TARGET_OBJECTS:engine-client-graphics>
+      $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-shared>
+      $<TARGET_OBJECTS:game-shared>
+      # tidy-alphabetical-end
+    )
+    add_dependencies(demo-viewer generate_content_types)
+    if(VULKAN)
+      add_dependencies(demo-viewer build_vulkan_shaders)
+    endif()
+    set_property(TARGET demo-viewer PROPERTY OUTPUT_NAME ddnet-demo-viewer)
+    set_own_rpath(demo-viewer)
+    target_compile_definitions(demo-viewer PRIVATE CONF_DEMO_VIEWER_TOOL)
+    set_property(TARGET demo-viewer PROPERTY DDNET_NO_CLIENT_INTEGRATIONS TRUE)
+    if(VULKAN)
+      target_compile_definitions(demo-viewer PRIVATE CONF_BACKEND_VULKAN)
+    endif()
+    if(WEBGPU_NATIVE_BACKEND)
+      target_compile_definitions(demo-viewer PRIVATE CONF_BACKEND_WEBGPU)
+    endif()
+    # The window is this program's own file, so what it says about GLEW is this
+    # program's business as well, the same as in the client.
+    if(GLEW_BUNDLED)
+      target_compile_definitions(demo-viewer PRIVATE CONF_GLEW_HAS_CONTEXT_INIT)
+    endif()
+    # No `${LIBS}`, for the same reason the render tool has none: nothing here
+    # talks to the network.
+    target_link_libraries(demo-viewer
+      # tidy-alphabetical-start
+      ${CRYPTO_LIBRARIES}
+      ${FFMPEG_LIBRARIES}
+      ${FREETYPE_LIBRARIES}
+      ${GLEW_LIBRARIES}
+      ${PNG_LIBRARIES}
+      ${SDL2_LIBRARIES}
+      ${VULKAN_LIBRARIES}
+      ${WAVPACK_LIBRARIES}
+      ${ZLIB_LIBRARIES}
+      # tidy-alphabetical-end
+      ${OPUSFILE_LIBRARIES}
+      ${OPUS_LIBRARIES}
+      ${OGG_LIBRARIES}
+      ${PLATFORM_CLIENT_LIBS}
+      ${PLATFORM_LIBS}
+      ${CMAKE_THREAD_LIBS_INIT}
+    )
+    if(WEBGPU_NATIVE_BACKEND)
+      target_link_libraries(demo-viewer WGPU::Native)
+    endif()
+    if(WEBGPU_BACKEND_PROTOTYPE AND TARGET_OS STREQUAL "emscripten")
+      target_compile_options(demo-viewer PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+      target_link_options(demo-viewer PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+    endif()
+    target_include_directories(demo-viewer SYSTEM PRIVATE
+      # tidy-alphabetical-start
+      ${FFMPEG_INCLUDE_DIRS}
+      ${FREETYPE_INCLUDE_DIRS}
+      ${GLEW_INCLUDE_DIRS}
+      ${OGG_INCLUDE_DIRS}
+      ${OPUSFILE_INCLUDE_DIRS}
+      ${OPUS_INCLUDE_DIRS}
+      ${PNG_INCLUDE_DIRS}
+      ${SDL2_INCLUDE_DIRS}
+      ${WAVPACK_INCLUDE_DIRS}
+      # tidy-alphabetical-end
+      ${VULKAN_INCLUDE_DIRS}
+    )
+  endif()
+
   if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC OR WEBGPU_NATIVE_BACKEND)
     set_own_rpath(game-client)
   endif()
@@ -3617,6 +3712,10 @@ if(CLIENT)
   if(TARGET demo-renderer)
     list(APPEND TARGETS_OWN demo-renderer)
     list(APPEND TARGETS_LINK demo-renderer)
+  endif()
+  if(TARGET demo-viewer)
+    list(APPEND TARGETS_OWN demo-viewer)
+    list(APPEND TARGETS_LINK demo-viewer)
   endif()
 endif()
 

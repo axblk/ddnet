@@ -4,6 +4,7 @@
 #include <base/math.h>
 #include <base/os.h>
 #include <base/str.h>
+#include <base/thread.h>
 #include <base/time.h>
 
 #include <engine/client/window_sdl.h>
@@ -23,6 +24,10 @@
 #include <cstdlib>
 #include <string>
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#include <emscripten/emscripten.h>
+#endif
+
 static constexpr const char *TOOL_NAME = "map_viewer";
 
 namespace
@@ -33,6 +38,35 @@ namespace
 	// screen width every second and a half, whatever the zoom.
 	constexpr float ZOOM_STEP = 1.1f;
 	constexpr float PAN_SCREENS_PER_SECOND = 0.66f;
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// Where a picture the page asked for is written before it is handed to the
+	// browser, which needs a file it can read back.
+	constexpr const char *EXPORT_DIRECTORY = "screenshots";
+
+	enum class EExportState
+	{
+		IDLE,
+		PENDING,
+		SUCCEEDED,
+		FAILED,
+	};
+
+	// What the page around the canvas asks of the view, and what came of it.
+	// The asking and the doing are apart on purpose: a request arrives while
+	// the loop is between two frames, and a page that drew from there would
+	// cut into a frame that is already half drawn.
+	struct SPageRequests
+	{
+		bool m_Fit = false;
+		bool m_ExportView = false;
+		bool m_ExportFullMap = false;
+		EExportState m_ExportState = EExportState::IDLE;
+	};
+
+	CStandaloneMapView *g_pView = nullptr;
+	SPageRequests *g_pRequests = nullptr;
+#endif
 
 	void PrintUsage(const char *pProgramName)
 	{
@@ -45,6 +79,49 @@ namespace
 		log_info(TOOL_NAME, "A map dropped on the window replaces the one that is shown.");
 	}
 } // namespace
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+// What the controls beside the canvas call. A page shows no key bindings, so
+// everything the window does with a key has a button there as well.
+extern "C" {
+
+EMSCRIPTEN_KEEPALIVE void MapViewerFit()
+{
+	if(g_pRequests != nullptr)
+		g_pRequests->m_Fit = true;
+}
+
+EMSCRIPTEN_KEEPALIVE void MapViewerExportView()
+{
+	if(g_pRequests != nullptr && g_pRequests->m_ExportState != EExportState::PENDING)
+	{
+		g_pRequests->m_ExportView = true;
+		g_pRequests->m_ExportState = EExportState::PENDING;
+	}
+}
+
+EMSCRIPTEN_KEEPALIVE void MapViewerExportFullMap()
+{
+	if(g_pRequests != nullptr && g_pRequests->m_ExportState != EExportState::PENDING)
+	{
+		g_pRequests->m_ExportFullMap = true;
+		g_pRequests->m_ExportState = EExportState::PENDING;
+	}
+}
+
+EMSCRIPTEN_KEEPALIVE int MapViewerMapLoaded()
+{
+	return g_pView != nullptr && g_pView->MapLoaded() ? 1 : 0;
+}
+
+// 0 while nothing was ever asked for, 1 while a picture is being made, 2 when
+// the last one was handed over and 3 when it failed.
+EMSCRIPTEN_KEEPALIVE int MapViewerExportState()
+{
+	return g_pRequests == nullptr ? 0 : (int)g_pRequests->m_ExportState;
+}
+}
+#endif
 
 int main(int argc, const char **argv)
 {
@@ -126,8 +203,14 @@ int main(int argc, const char **argv)
 
 	// A path that names a file where it stands is opened as it stands; the
 	// rest is looked for in the data directories, like any other map.
+	std::string MapName;
 	const auto &&LoadMapPath = [&](const char *pPath) {
-		return View.LoadMap(pPath, fs_is_file(pPath) ? IStorage::TYPE_ABSOLUTE : IStorage::TYPE_ALL);
+		if(!View.LoadMap(pPath, fs_is_file(pPath) ? IStorage::TYPE_ABSOLUTE : IStorage::TYPE_ALL))
+			return false;
+		char aName[IO_MAX_PATH_LENGTH];
+		fs_split_file_extension(fs_filename(pPath), aName, sizeof(aName));
+		MapName = aName;
+		return true;
 	};
 	if(!InputMap.empty() && !LoadMapPath(InputMap.c_str()))
 		return 1;
@@ -139,8 +222,30 @@ int main(int argc, const char **argv)
 	};
 	FitView();
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	SPageRequests Requests;
+	g_pView = &View;
+	g_pRequests = &Requests;
+	// A picture the page asked for goes to where the user's own files live and
+	// is handed to the browser from there, which is how everything else this
+	// build writes leaves it.
+	const auto &&ExportForPage = [&](bool FullMap) {
+		char aFilename[IO_MAX_PATH_LENGTH];
+		str_format(aFilename, sizeof(aFilename), "%s/%s%s.png", EXPORT_DIRECTORY,
+			MapName.empty() ? "map" : MapName.c_str(), FullMap ? "-full" : "");
+		View.Storage()->CreateFolder(EXPORT_DIRECTORY, IStorage::TYPE_SAVE);
+		char aPath[IO_MAX_PATH_LENGTH];
+		View.Storage()->GetCompletePath(IStorage::TYPE_SAVE, aFilename, aPath, sizeof(aPath));
+		const bool Success = FullMap ? View.SaveFullImage(aPath, RenderParams.m_TimeOffsetMillis) : View.SaveImage(aPath);
+		if(Success)
+			View.Storage()->SendFileToUser(aFilename, IStorage::TYPE_SAVE);
+		Requests.m_ExportState = Success ? EExportState::SUCCEEDED : EExportState::FAILED;
+	};
+#endif
+
 	const std::chrono::nanoseconds StartTime = time_get_nanoseconds();
 	std::chrono::nanoseconds LastFrameTime = StartTime;
+	std::chrono::nanoseconds NextFrameTime{};
 	vec2 LastMousePos = vec2(0.0f, 0.0f);
 	bool Dragging = false;
 	while(true)
@@ -209,6 +314,13 @@ int main(int argc, const char **argv)
 			if(pInput->KeyPress(KEY_HOME))
 				FitView();
 			SaveNow = pInput->KeyPress(KEY_F2);
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+			if(Requests.m_Fit)
+			{
+				Requests.m_Fit = false;
+				FitView();
+			}
+#endif
 		}
 		else
 		{
@@ -219,6 +331,21 @@ int main(int argc, const char **argv)
 		}
 
 		View.Render(RenderParams);
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		// The page asks between two frames and is answered here, after one was
+		// drawn: reading a frame back needs a frame to read.
+		if(Requests.m_ExportView || Requests.m_ExportFullMap)
+		{
+			const bool FullMap = Requests.m_ExportFullMap;
+			Requests.m_ExportView = false;
+			Requests.m_ExportFullMap = false;
+			ExportForPage(FullMap);
+			// The full export drew the map in pieces, so what is on the screen
+			// is the last of them and not what the view was showing.
+			continue;
+		}
+#endif
 
 		// Reading the frame back puts it on the screen as well, so what is
 		// written is the frame that was shown.
@@ -236,10 +363,20 @@ int main(int argc, const char **argv)
 		{
 			pGraphics->Swap();
 		}
+
+		// Nothing here is worth drawing faster than a screen shows, and with
+		// `gfx_vsync` off nothing else holds the loop back. In a browser this
+		// is also the only moment the page has to paint and to answer, since a
+		// thread that runs there without letting go stops both.
+		thread_sleep_until_next_frame(NextFrameTime, g_Config.m_ClRefreshRate);
 	}
 
 	if(pInput != nullptr)
 		pInput->Shutdown();
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	g_pRequests = nullptr;
+	g_pView = nullptr;
+#endif
 	View.Shutdown();
 	return 0;
 }

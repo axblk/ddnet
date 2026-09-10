@@ -26,6 +26,7 @@ pub enum Addr {
 }
 
 impl Addr {
+    #[cfg(not(target_os = "emscripten"))]
     pub(crate) fn socket_addr(&self) -> &SocketAddr {
         use self::Addr::*;
         match self {

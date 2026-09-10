@@ -86,10 +86,10 @@ void CNetClient::Wait(uint64_t Microseconds)
 	}
 }
 
-void CNetClient::SetConnectIdentity(const char *pIdentity)
+void CNetClient::SetConnectFragment(const char *pFragment)
 {
 	// Without QUIC there is no identity to expect.
-	(void)pIdentity;
+	(void)pFragment;
 }
 
 void CNetClient::Connect(const NETADDR *pAddr, int NumAddrs)
@@ -423,9 +423,9 @@ void CNetClient::Connect7(const NETADDR *pAddr, int NumAddrs)
 	ConnectImpl(pAddr, NumAddrs, true);
 }
 
-void CNetClient::SetConnectIdentity(const char *pIdentity)
+void CNetClient::SetConnectFragment(const char *pFragment)
 {
-	str_copy(m_aConnectIdentity, pIdentity);
+	str_copy(m_aConnectFragment, pFragment);
 }
 
 void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
@@ -442,7 +442,7 @@ void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
 	Addr.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
 	char aAddr[NETADDR_MAXSTRSIZE];
 	net_addr_str(&Addr, aAddr, sizeof(aAddr), true);
-	char aUrl[192];
+	char aUrl[NETADDR_URL_MAXSTRSIZE + sizeof(m_aConnectFragment)];
 	if(pAddr[0].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET))
 	{
 		if(Sixup)
@@ -450,13 +450,14 @@ void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
 			str_copy(m_aErrorString, "0.7 over QUIC or WebSockets is not supported yet");
 			return;
 		}
-		// The fragment pins the server's identity.
+		// The fragment pins the server's identity, and names the
+		// certificates for a browser.
 		const char *pScheme;
 		if(pAddr[0].type & NETTYPE_WEBSOCKET)
 			pScheme = pAddr[0].type & NETTYPE_WEBSOCKET_TLS ? "ddnet+wss" : "ddnet+ws";
 		else
 			pScheme = pAddr[0].type & NETTYPE_WEBTRANSPORT ? "ddnet+wt" : "ddnet+quic";
-		str_format(aUrl, sizeof(aUrl), "%s://%s%s%s", pScheme, aAddr, m_aConnectIdentity[0] != '\0' ? "#" : "", m_aConnectIdentity);
+		str_format(aUrl, sizeof(aUrl), "%s://%s%s%s", pScheme, aAddr, m_aConnectFragment[0] != '\0' ? "#" : "", m_aConnectFragment);
 	}
 	else
 	{

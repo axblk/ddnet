@@ -57,6 +57,26 @@ pub mod datagram {
     pub const MESSAGES: u64 = 0;
 }
 
+/// The path a game session over WebTransport is opened on.
+pub const WEBTRANSPORT_PATH: &str = "/ddnet";
+
+/// How the frames ride on WebSockets: each binary message starts with a
+/// flags byte, then a frame, a raw chunk, or a piece of the map.
+pub mod websocket {
+    /// The subprotocol the handshake asks for.
+    pub const SUBPROTOCOL: &str = "ddnet-20";
+    /// A message that has to arrive; without it, a chunk the game repeats.
+    pub const VITAL: u8 = 1 << 0;
+    /// The payload is a frame of the wire protocol, not a bare chunk.
+    pub const WIRE: u8 = 1 << 1;
+    /// A piece of the map.
+    pub const MAP: u8 = 1 << 2;
+    /// The last piece of the map.
+    pub const END: u8 = 1 << 3;
+    /// The map coming in is withdrawn.
+    pub const RESET: u8 = 1 << 4;
+}
+
 /// What a peer announces in its hello.
 pub mod capability {
     pub const DATAGRAM: u64 = 1 << 0;

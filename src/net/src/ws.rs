@@ -63,17 +63,10 @@ use tungstenite::protocol::Message;
 use tungstenite::protocol::WebSocket;
 use tungstenite::protocol::WebSocketConfig;
 
-/// The subprotocol of ddnet/ddnet#12543.
-pub const SUBPROTOCOL: &str = "ddnet-20";
-
-/// The flag byte in front of every message.
-pub mod flag {
-    pub const VITAL: u8 = 1 << 0;
-    pub const WIRE: u8 = 1 << 1;
-    pub const MAP: u8 = 1 << 2;
-    pub const END: u8 = 1 << 3;
-    pub const RESET: u8 = 1 << 4;
-}
+/// The subprotocol of ddnet/ddnet#12543 and the flag byte in front of
+/// every message; the browser backend speaks the same.
+use crate::wire::websocket as flag;
+use crate::wire::websocket::SUBPROTOCOL;
 
 /// An empty message goes out after this much silence.
 const KEEPALIVE: Duration = Duration::from_secs(1);

@@ -1041,6 +1041,16 @@ else()
   set(CARGO_BUILD ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} DDNET_TEST_NO_LINK=1 ${RUST_CARGO} build --locked --manifest-path "${PROJECT_SOURCE_DIR}/Cargo.toml")
   set(CARGO_TEST ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} ${RUST_CARGO} test --locked)
 endif()
+if(TARGET_OS STREQUAL "emscripten" AND NETWORKING_QUIC)
+  # What rustc needs for the browser backend of src/net, applied to every
+  # crate so the shared target directory is built one way: WebTransport in
+  # web-sys sits behind `web_sys_unstable_apis`; without reference types the
+  # wasm-bindgen CLI keeps JS values in a table of its own, its externref
+  # path breaks Emscripten's Asyncify; panics abort and Emscripten's
+  # exception lowering stays off, the invoke_ trampolines it wraps calls in
+  # would hide wasm-bindgen's descriptors from the CLI.
+  list(INSERT CARGO_BUILD 3 "CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_RUSTFLAGS=--cfg=web_sys_unstable_apis -Ctarget-feature=-reference-types -Cllvm-args=-enable-emscripten-cxx-exceptions=0 -Cpanic=abort")
+endif()
 if(MSVC)
   list(INSERT CARGO_BUILD 0 ${CMAKE_COMMAND} -E env $<$<CONFIG:Debug>:CFLAGS=/MTd> $<$<CONFIG:Debug>:CXXFLAGS=/MTd>)
   list(INSERT CARGO_TEST 0 ${CMAKE_COMMAND} -E env RUSTFLAGS=-Ctarget-feature=+crt-static)
@@ -1201,6 +1211,8 @@ if(NETWORKING_QUIC)
     tw07.rs
     types.rs
     util.rs
+    web.rs
+    web/browser.rs
     webtransport.rs
     wire.rs
     ws.rs
@@ -1215,7 +1227,14 @@ if(NETWORKING_QUIC)
     "${PROJECT_SOURCE_DIR}/Cargo.toml"
     "${PROJECT_SOURCE_DIR}/src/net/Cargo.toml"
     CARGO_BUILD_NET "${CARGO_BUILD}")
-  list(APPEND CARGO_BUILD_NET --lib)
+  if(TARGET_OS STREQUAL "emscripten")
+    # The browser backend goes into the one .wasm with everything else,
+    # as a static library.
+    string(REPLACE ";build;" ";rustc;" CARGO_BUILD_NET "${CARGO_BUILD_NET}")
+    list(APPEND CARGO_BUILD_NET --lib --crate-type staticlib)
+  else()
+    list(APPEND CARGO_BUILD_NET --lib)
+  endif()
   if(LIBTW2_PATCH)
     list(APPEND CARGO_BUILD_NET --features libtw2-patch)
   endif()
@@ -1223,28 +1242,49 @@ if(NETWORKING_QUIC)
     list(APPEND CARGO_BUILD_NET --features websocket)
   endif()
 
-  set(NET_LIBRARY_NAME "${CMAKE_SHARED_LIBRARY_PREFIX}net${CMAKE_SHARED_LIBRARY_SUFFIX}")
-  add_custom_command(
-    OUTPUT "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}"
-    COMMAND ${CARGO_BUILD_NET}
-    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
-    USES_TERMINAL
-    DEPENDS ${RUST_NET_SRC}
-  )
-  # Copy the output library to other runtime dependencies
-  add_custom_command(
-    OUTPUT "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}"
-      "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}"
-    DEPENDS "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}"
-  )
-  add_custom_target(rust_net_target DEPENDS "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}")
-  add_library(rust_net SHARED IMPORTED GLOBAL)
-  add_dependencies(rust_net rust_net_target)
-  set_target_properties(rust_net PROPERTIES
-    IMPORTED_LOCATION "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}"
-  )
+  if(TARGET_OS STREQUAL "emscripten")
+    set(NET_LIBRARY_NAME "${CMAKE_STATIC_LIBRARY_PREFIX}net${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    set(NET_LIBRARY_PATH "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}")
+    # What the link exports for wasm-bindgen, see scripts/emscripten/wasm_bindgen_exports.py.
+    set(NET_EXPORTS_PATH "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/net_exports.txt")
+    add_custom_command(
+      OUTPUT "${NET_LIBRARY_PATH}" "${NET_EXPORTS_PATH}"
+      COMMAND ${CARGO_BUILD_NET}
+      COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/scripts/emscripten/wasm_bindgen_exports.py" "$ENV{EMSDK}/upstream/bin/llvm-nm" "${NET_LIBRARY_PATH}" "${NET_EXPORTS_PATH}" "${EMSCRIPTEN_EXPORTED_FUNCTIONS}"
+      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+      USES_TERMINAL
+      DEPENDS ${RUST_NET_SRC} "${PROJECT_SOURCE_DIR}/scripts/emscripten/wasm_bindgen_exports.py"
+    )
+    add_custom_target(rust_net_target DEPENDS "${NET_LIBRARY_PATH}" "${NET_EXPORTS_PATH}")
+    add_library(rust_net STATIC IMPORTED GLOBAL)
+    add_dependencies(rust_net rust_net_target)
+    set_target_properties(rust_net PROPERTIES
+      IMPORTED_LOCATION "${NET_LIBRARY_PATH}"
+    )
+  else()
+    set(NET_LIBRARY_NAME "${CMAKE_SHARED_LIBRARY_PREFIX}net${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    add_custom_command(
+      OUTPUT "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}"
+      COMMAND ${CARGO_BUILD_NET}
+      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+      USES_TERMINAL
+      DEPENDS ${RUST_NET_SRC}
+    )
+    # Copy the output library to other runtime dependencies
+    add_custom_command(
+      OUTPUT "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}"
+        "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}"
+      DEPENDS "${PROJECT_BINARY_DIR}/${CARGO_BUILD_DIR}/${NET_LIBRARY_NAME}"
+    )
+    add_custom_target(rust_net_target DEPENDS "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}")
+    add_library(rust_net SHARED IMPORTED GLOBAL)
+    add_dependencies(rust_net rust_net_target)
+    set_target_properties(rust_net PROPERTIES
+      IMPORTED_LOCATION "${PROJECT_BINARY_DIR}/${NET_LIBRARY_NAME}"
+    )
+  endif()
   set(NETWORKING_QUIC_LIBRARIES rust_net)
 else()
   set(NETWORKING_QUIC_LIBRARIES)
@@ -4225,6 +4265,28 @@ foreach(target ${TARGETS})
     target_link_options(${target} PRIVATE --preload-file data)
   endif()
 endforeach()
+
+if(TARGET_OS STREQUAL "emscripten" AND NETWORKING_QUIC AND TARGET game-client)
+  # The browser backend of src/net reaches the browser through wasm-bindgen:
+  # emcc runs the wasm-bindgen CLI on the linked module and mixes the
+  # JavaScript it writes into its own. It finds the CLI through
+  # scripts/emscripten/wasm-bindgen, which mends two things the CLI does to
+  # an Emscripten module, see there. The exports are the list made next to
+  # the static library; without one emcc would export every unmangled symbol
+  # of the whole link. The feature list keeps reference types out of the
+  # module's declared features, so the CLI stays with its own table of JS
+  # values (the externref path breaks Asyncify's dynCalls); it is what emcc
+  # 6.0 and rustc 1.89 enable, minus reference-types. DWARF does not survive
+  # the CLI, a Debug link keeps the names only.
+  target_link_options(game-client PRIVATE
+    -sWASM_BINDGEN=1
+    -Wno-experimental
+    "-sEXPORTED_FUNCTIONS=@${NET_EXPORTS_PATH}"
+    "SHELL:-Xlinker --features=bulk-memory,bulk-memory-opt,call-indirect-overlong,multivalue,mutable-globals,nontrapping-fptoint,sign-ext,atomics"
+    $<$<CONFIG:Debug>:-g2>
+  )
+  set_property(TARGET game-client PROPERTY RULE_LAUNCH_LINK "${CMAKE_COMMAND} -E env PATH=${PROJECT_SOURCE_DIR}/scripts/emscripten:$ENV{PATH}")
+endif()
 
 foreach(target ${TARGETS_LINK})
   if(MSVC)

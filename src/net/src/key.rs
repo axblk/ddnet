@@ -1,34 +1,47 @@
+#[cfg(not(target_os = "emscripten"))]
 use crate::secure_random;
 use crate::Error;
+#[cfg(not(target_os = "emscripten"))]
 use foreign_types_shared::ForeignType as _;
+#[cfg(not(target_os = "emscripten"))]
 use foreign_types_shared::ForeignTypeRef as _;
 use std::fmt;
+#[cfg(not(target_os = "emscripten"))]
 use std::fs;
+#[cfg(not(target_os = "emscripten"))]
 use std::ptr;
 use std::str;
 use std::str::FromStr;
+#[cfg(not(target_os = "emscripten"))]
 use std::time::SystemTime;
+#[cfg(not(target_os = "emscripten"))]
 use std::time::UNIX_EPOCH;
 
 /// A browser takes a certificate by its hash only if it is valid for at
 /// most two weeks; this one is valid for thirteen days and an hour, from
 /// an hour ago.
+#[cfg(not(target_os = "emscripten"))]
 const BROWSER_CERTIFICATE_LIFETIME: i64 = 13 * 24 * 60 * 60;
+#[cfg(not(target_os = "emscripten"))]
 const BROWSER_CERTIFICATE_BACKDATE: i64 = 60 * 60;
 /// A server swaps its browser certificate for the next one after a week;
 /// the next one's hash is known a week in advance, so a server list a
 /// client fetched before the swap still works.
+#[cfg(not(target_os = "emscripten"))]
 pub const BROWSER_CERTIFICATE_ROTATION: i64 = 7 * 24 * 60 * 60;
 /// The certificate the identity itself sits in is only ever checked by
 /// our own verify callback, which reads the key and ignores the dates;
 /// it is still remade long before it runs out, for any other TLS stack
 /// that looks at them.
+#[cfg(not(target_os = "emscripten"))]
 pub const IDENTITY_CERTIFICATE_LIFETIME: i64 = 7 * 24 * 60 * 60;
+#[cfg(not(target_os = "emscripten"))]
 pub const IDENTITY_CERTIFICATE_RENEWAL: i64 = 3 * 24 * 60 * 60;
 /// What an identity signs to vouch for a certificate it does not sit in.
 const IDENTITY_PROOF_CONTEXT: &[u8] = b"ddnet server identity v1\0";
 pub const IDENTITY_PROOF_SIZE: usize = 32 + 64;
 
+#[cfg(not(target_os = "emscripten"))]
 pub fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -60,10 +73,12 @@ impl FromStr for Identity {
     }
 }
 
+#[cfg(not(target_os = "emscripten"))]
 pub struct PrivateIdentity {
     lib: boring::pkey::PKey<boring::pkey::Private>,
 }
 
+#[cfg(not(target_os = "emscripten"))]
 impl FromStr for PrivateIdentity {
     type Err = Error;
     fn from_str(v: &str) -> Result<PrivateIdentity, Error> {
@@ -75,6 +90,7 @@ impl Identity {
     pub fn from_bytes(bytes: [u8; 32]) -> Identity {
         Identity(bytes)
     }
+#[cfg(not(target_os = "emscripten"))]
     pub fn try_from_lib<T: boring::pkey::HasPublic>(
         key: &boring::pkey::PKeyRef<T>,
     ) -> Option<Identity> {
@@ -99,6 +115,7 @@ impl Identity {
             Some(Identity::from_bytes(buf))
         }
     }
+#[cfg(not(target_os = "emscripten"))]
     pub fn to_lib(&self) -> boring::pkey::PKey<boring::pkey::Public> {
         unsafe {
             // TODO: expose this from the `boring` crate
@@ -126,9 +143,27 @@ impl Identity {
             return None;
         }
         let message = identity_proof_message(certificate_sha256, nonce);
-        let key = identity.to_lib();
-        let mut verifier = boring::sign::Verifier::new_without_digest(&key).ok()?;
-        verifier.verify_oneshot(&proof[32..], &message).ok()?.then_some(identity)
+        identity.verify(&message, &proof[32..]).then_some(identity)
+    }
+    #[cfg(not(target_os = "emscripten"))]
+    fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
+        let key = self.to_lib();
+        let Ok(mut verifier) = boring::sign::Verifier::new_without_digest(&key) else {
+            return false;
+        };
+        verifier.verify_oneshot(signature, message).unwrap_or(false)
+    }
+    /// The browser build has no boringssl; the signature check is the
+    /// one thing it needs of it.
+    #[cfg(target_os = "emscripten")]
+    fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
+        let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(&self.0) else {
+            return false;
+        };
+        let Ok(signature) = ed25519_dalek::Signature::from_slice(signature) else {
+            return false;
+        };
+        key.verify_strict(message, &signature).is_ok()
     }
 }
 
@@ -142,6 +177,7 @@ fn identity_proof_message(certificate_sha256: &[u8; 32], nonce: &[u8; 32]) -> Ve
 
 /// A certificate for browsers, which take no Ed25519: ECDSA P-256, self-
 /// signed and short-lived, or whatever the operator got from a CA.
+#[cfg(not(target_os = "emscripten"))]
 pub struct BrowserCertificate {
     key: boring::pkey::PKey<boring::pkey::Private>,
     chain: Vec<boring::x509::X509>,
@@ -151,11 +187,13 @@ pub struct BrowserCertificate {
 /// The `time_t` `boring` takes is 32 bit on some targets, Android among
 /// them. Our certificates live days, not decades, so a time that does not
 /// fit there is a bug rather than a case to handle.
+#[cfg(not(target_os = "emscripten"))]
 fn asn1_time(unix: i64) -> boring::asn1::Asn1Time {
     let unix = unix.try_into().expect("certificate time outside the platform's range");
     boring::asn1::Asn1Time::from_unix(unix).unwrap()
 }
 
+#[cfg(not(target_os = "emscripten"))]
 impl BrowserCertificate {
     /// A fresh self-signed certificate, valid from `not_before`.
     pub fn generate(not_before: i64) -> BrowserCertificate {
@@ -241,6 +279,7 @@ fn hex_to_32_bytes(v: &str) -> Result<[u8; 32], Error> {
     Ok(result)
 }
 
+#[cfg(not(target_os = "emscripten"))]
 fn random_bignum(bits: i32) -> boring::bn::BigNum {
     let mut result = boring::bn::BigNum::new().unwrap();
     result
@@ -249,6 +288,7 @@ fn random_bignum(bits: i32) -> boring::bn::BigNum {
     result
 }
 
+#[cfg(not(target_os = "emscripten"))]
 impl PrivateIdentity {
     pub fn random() -> PrivateIdentity {
         PrivateIdentity::from_bytes(secure_random())
@@ -344,7 +384,7 @@ impl PrivateIdentity {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "emscripten")))]
 mod test {
     use super::BrowserCertificate;
     use super::Identity;

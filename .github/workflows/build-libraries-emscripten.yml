@@ -16,8 +16,9 @@ jobs:
         sudo apt-get install autoconf automake cmake libtool m4 ninja-build
         git clone https://github.com/emscripten-core/emsdk emsdk
         cd emsdk
-        ./emsdk install 4.0.22
-        ./emsdk activate 4.0.22
+        # Emscripten 6.0.10 development build, the first with EXPORTED_FUNCTIONS honoured under -sWASM_BINDGEN; pin the release once it is out
+        ./emsdk install sdk-releases-20b311cf9232508d006e8f014ffc06719ee10f81-64bit
+        ./emsdk activate sdk-releases-20b311cf9232508d006e8f014ffc06719ee10f81-64bit
 
     - name: Build Emscripten (WebAssembly) libraries
       run: |

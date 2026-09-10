@@ -796,8 +796,10 @@ class CNetClient
 	NETADDR m_aConnectAddrs[16] = {{}};
 	int m_NumConnectAddrs = 0;
 	char m_aErrorString[256] = {0};
-	// The identity to expect from a QUIC server, hex; empty takes any.
-	char m_aConnectIdentity[65] = "";
+	// The fragment of the connect address: the identity to expect from the
+	// server and, for a browser, the certificate hashes to take; empty takes
+	// any identity.
+	char m_aConnectFragment[256] = "";
 	// The identity the QUIC server showed, hex; empty for other transports.
 	char m_aServerIdentity[65] = "";
 
@@ -833,10 +835,12 @@ public:
 	void Disconnect(const char *pReason);
 	void Connect(const NETADDR *pAddr, int NumAddrs);
 	void Connect7(const NETADDR *pAddr, int NumAddrs);
-	// The identity a following Connect() to a QUIC address expects, hex;
-	// empty takes whatever the server shows. Without QUIC there is nothing to
-	// expect.
-	void SetConnectIdentity(const char *pIdentity);
+	// The fragment a following Connect() to a QUIC or WebSocket address
+	// carries: `identity-sha256=<hex>` or the bare hex pins the server's
+	// identity, `cert-sha256=<hex>[,<hex>]` names the certificates a browser
+	// takes; empty takes whatever the server shows. Without QUIC there is
+	// nothing to expect.
+	void SetConnectFragment(const char *pFragment);
 #ifdef CONF_NETWORKING_QUIC
 	const char *ServerIdentity() const { return m_aServerIdentity; }
 #else

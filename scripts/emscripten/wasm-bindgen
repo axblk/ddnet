@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""wasm-bindgen as emcc's link step needs it, around the real wasm-bindgen.
+
+emcc runs `wasm-bindgen` on the linked module when `-sWASM_BINDGEN` is set.
+Two things it does there break an Emscripten pthread build:
+
+- It sees an export called `main` and makes the module's start function
+  call it, so `main` would run once at instantiation and once more when
+  Emscripten calls it. The export is hidden under another name while
+  wasm-bindgen runs.
+- It turns the start function into an export named `__wbindgen_start`
+  that its JavaScript calls after instantiation. The pthread build keeps
+  its data in passive segments the start function (`__wasm_init_memory`)
+  copies into place, and emcc reads that function to find where the
+  EM_ASM/EM_JS strings live; without a start function the link dies in
+  `extract_metadata`. The start section goes back in and the export stays:
+  the function is safe to run twice, the second call finds the memory
+  initialized and returns.
+"""
+
+import os
+import subprocess
+import sys
+
+HIDDEN_MAIN = b"__wasm_bindgen_hidden_main"
+
+
+def uleb(value):
+	out = bytearray()
+	while True:
+		byte = value & 0x7F
+		value >>= 7
+		if value:
+			out.append(byte | 0x80)
+		else:
+			out.append(byte)
+			return bytes(out)
+
+
+def read_uleb(data, pos):
+	result = 0
+	shift = 0
+	while True:
+		byte = data[pos]
+		pos += 1
+		result |= (byte & 0x7F) << shift
+		shift += 7
+		if byte < 0x80:
+			return result, pos
+
+
+def sections(data):
+	"""Yields (id, section start, body start, body end) for every section."""
+	pos = 8
+	while pos < len(data):
+		start = pos
+		kind = data[pos]
+		pos += 1
+		size, pos = read_uleb(data, pos)
+		yield kind, start, pos, pos + size
+		pos += size
+
+
+def exports(data, body, end):
+	count, pos = read_uleb(data, body)
+	for _ in range(count):
+		name_len, pos = read_uleb(data, pos)
+		name = data[pos : pos + name_len]
+		pos += name_len
+		kind = data[pos]
+		pos += 1
+		index, pos = read_uleb(data, pos)
+		yield name, kind, index
+
+
+def encode_exports(entries):
+	body = uleb(len(entries))
+	for name, kind, index in entries:
+		body += uleb(len(name)) + name + bytes([kind]) + uleb(index)
+	return bytes([7]) + uleb(len(body)) + body
+
+
+def rename_export(data, old, new):
+	for kind, start, body, end in sections(data):
+		if kind == 7:
+			entries = [(new if name == old else name, k, i) for name, k, i in exports(data, body, end)]
+			return data[:start] + encode_exports(entries) + data[end:]
+	return data
+
+
+def restore_start(data):
+	insert_at = None
+	index = None
+	for kind, start, body, end in sections(data):
+		if kind == 8:
+			return data
+		if kind == 7:
+			for name, k, i in exports(data, body, end):
+				if k == 0 and name == b"__wbindgen_start":
+					index = i
+			insert_at = end
+	if index is None:
+		return data
+	body = uleb(index)
+	return data[:insert_at] + bytes([8]) + uleb(len(body)) + body + data[insert_at:]
+
+
+def real_wasm_bindgen():
+	me = os.path.realpath(__file__)
+	for directory in os.environ.get("PATH", "").split(os.pathsep):
+		candidate = os.path.join(directory, "wasm-bindgen")
+		if os.path.isfile(candidate) and os.access(candidate, os.X_OK) and os.path.realpath(candidate) != me:
+			return candidate
+	sys.exit("wasm-bindgen: the real wasm-bindgen is not in PATH")
+
+
+def main():
+	args = sys.argv[1:]
+	inputs = [a for a in args if a.endswith(".wasm") and os.path.isfile(a)]
+	if len(inputs) != 1 or "--out-dir" not in args:
+		os.execv(real_wasm_bindgen(), ["wasm-bindgen"] + args)
+	source = inputs[0]
+	with open(source, "rb") as f:
+		data = f.read()
+	with open(source, "wb") as f:
+		f.write(rename_export(data, b"main", HIDDEN_MAIN))
+	subprocess.check_call([real_wasm_bindgen()] + args)
+	out_dir = args[args.index("--out-dir") + 1]
+	for name in os.listdir(out_dir):
+		if name.endswith(".wasm"):
+			path = os.path.join(out_dir, name)
+			with open(path, "rb") as f:
+				data = f.read()
+			data = rename_export(data, HIDDEN_MAIN, b"main")
+			data = restore_start(data)
+			with open(path, "wb") as f:
+				f.write(data)
+
+
+if __name__ == "__main__":
+	main()

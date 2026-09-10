@@ -85,10 +85,16 @@ pub struct Tw06Addr(pub SocketAddr);
 pub struct Tw07Addr(pub SocketAddr);
 #[derive(Clone, Copy)]
 pub struct RawAddr(pub SocketAddr);
+/// A host name a browser connects by. The browser does the lookup and
+/// checks the certificate against the name, so the name has to reach
+/// it; natively the library takes IP addresses only, and the name stays
+/// `None`.
+pub type HostName = ArrayString<[u8; 128]>;
 /// A QUIC peer, over plain QUIC or over WebTransport on it.
 #[derive(Clone, Copy)]
 pub struct QuicAddr {
     pub addr: SocketAddr,
+    pub host: Option<HostName>,
     pub identity: Option<Identity>,
     pub webtransport: bool,
 }
@@ -97,18 +103,20 @@ pub struct QuicAddr {
 #[derive(Clone, Copy)]
 pub struct WsAddr {
     pub addr: SocketAddr,
+    pub host: Option<HostName>,
     pub tls: bool,
     pub identity: Option<Identity>,
 }
 
 impl fmt::Display for WsAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let WsAddr { addr, tls, identity } = self;
+        let WsAddr { addr, host, tls, identity } = self;
         let scheme = if *tls { "ddnet+wss" } else { "ddnet+ws" };
-        let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
-        match identity {
-            Some(identity) => write!(&mut buf, "{}://{}#{}", scheme, addr, identity).unwrap(),
-            None => write!(&mut buf, "{}://{}", scheme, addr).unwrap(),
+        let mut buf: ArrayString<[u8; 256]> = ArrayString::new();
+        write!(&mut buf, "{}://", scheme).unwrap();
+        write_host(&mut buf, addr, host).unwrap();
+        if let Some(identity) = identity {
+            write!(&mut buf, "#{}", identity).unwrap();
         }
         f.pad(&buf)
     }
@@ -148,41 +156,79 @@ fn socket_addr_from_url(url: &Url) -> Result<SocketAddr> {
     Ok(ip_port.parse().context("connect: IP addr")?)
 }
 
+/// The host of a browser's address: an IP address, or a name the browser
+/// will look up, with an unspecified address standing in for it.
+#[cfg(any(target_os = "emscripten", test))]
+fn host_from_url(url: &Url) -> Result<(SocketAddr, Option<HostName>)> {
+    if let Ok(sock_addr) = socket_addr_from_url(url) {
+        return Ok((sock_addr, None));
+    }
+    let name = url.host_str().ok_or_else(|| Error::from_string("addr: URL missing host".to_owned()))?;
+    let port = url.port().ok_or_else(|| Error::from_string("addr: URL missing port".to_owned()))?;
+    if name.is_empty() || name.starts_with('[') || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.') {
+        bail!("addr: {:?} is neither an IP address nor a host name", name);
+    }
+    let host = HostName::from(name).map_err(|_| Error::from_string(format!("addr: host name {:?} too long", name)))?;
+    Ok((SocketAddr::new(std::net::Ipv6Addr::UNSPECIFIED.into(), port), Some(host)))
+}
+
+#[cfg(not(any(target_os = "emscripten", test)))]
+fn host_from_url(url: &Url) -> Result<(SocketAddr, Option<HostName>)> {
+    Ok((socket_addr_from_url(url)?, None))
+}
+
 impl FromStr for Addr {
     type Err = Error;
     fn from_str(addr: &str) -> Result<Addr> {
         let addr = Url::parse(addr).context("addr: URL")?;
-        let sock_addr = socket_addr_from_url(&addr)?;
         Ok(match addr.scheme() {
             // The fragment pins the server's identity. Without one, whatever
             // identity the server shows is taken, and reported, so it can
             // be pinned the next time.
-            scheme @ ("ddnet+quic" | "ddnet+wt") => Addr::Quic(QuicAddr {
-                addr: sock_addr,
-                identity: identity_from_fragment(&addr)?,
-                webtransport: scheme == "ddnet+wt",
-            }),
-            scheme @ ("ddnet+ws" | "ddnet+wss") => Addr::Ws(WsAddr {
-                addr: sock_addr,
-                tls: scheme == "ddnet+wss",
-                identity: identity_from_fragment(&addr)?,
-            }),
-            "tw-0.6+udp" => Addr::Tw06(Tw06Addr(sock_addr)),
-            "tw-0.7+udp" => Addr::Tw07(Tw07Addr(sock_addr)),
-            "udp" => Addr::Raw(RawAddr(sock_addr)),
+            scheme @ ("ddnet+quic" | "ddnet+wt") => {
+                let (sock_addr, host) = host_from_url(&addr)?;
+                Addr::Quic(QuicAddr {
+                    addr: sock_addr,
+                    host,
+                    identity: identity_from_fragment(&addr)?,
+                    webtransport: scheme == "ddnet+wt",
+                })
+            }
+            scheme @ ("ddnet+ws" | "ddnet+wss") => {
+                let (sock_addr, host) = host_from_url(&addr)?;
+                Addr::Ws(WsAddr {
+                    addr: sock_addr,
+                    host,
+                    tls: scheme == "ddnet+wss",
+                    identity: identity_from_fragment(&addr)?,
+                })
+            }
+            "tw-0.6+udp" => Addr::Tw06(Tw06Addr(socket_addr_from_url(&addr)?)),
+            "tw-0.7+udp" => Addr::Tw07(Tw07Addr(socket_addr_from_url(&addr)?)),
+            "udp" => Addr::Raw(RawAddr(socket_addr_from_url(&addr)?)),
             scheme => bail!("unsupported scheme {}", scheme),
         })
     }
 }
 
+/// The host part as the address was given: the name where there is one,
+/// with its port, else the IP address.
+fn write_host(buf: &mut dyn fmt::Write, addr: &SocketAddr, host: &Option<HostName>) -> fmt::Result {
+    match host {
+        Some(host) => write!(buf, "{}:{}", host, addr.port()),
+        None => write!(buf, "{}", addr),
+    }
+}
+
 impl fmt::Display for QuicAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let QuicAddr { addr, identity, webtransport } = self;
+        let QuicAddr { addr, host, identity, webtransport } = self;
         let scheme = if *webtransport { "ddnet+wt" } else { "ddnet+quic" };
-        let mut buf: ArrayString<[u8; 128]> = ArrayString::new();
-        match identity {
-            Some(identity) => write!(&mut buf, "{}://{}#{}", scheme, addr, identity).unwrap(),
-            None => write!(&mut buf, "{}://{}", scheme, addr).unwrap(),
+        let mut buf: ArrayString<[u8; 256]> = ArrayString::new();
+        write!(&mut buf, "{}://", scheme).unwrap();
+        write_host(&mut buf, addr, host).unwrap();
+        if let Some(identity) = identity {
+            write!(&mut buf, "#{}", identity).unwrap();
         }
         buf.fmt(f)
     }
@@ -247,5 +293,23 @@ mod test {
         assert_eq!(identity("ddnet+wt://[::1]:8303#webpki"), None);
         assert!("ddnet+quic://[::1]:8303#identity-sha256=zz".parse::<Addr>().is_err());
         assert!(format!("ddnet+quic://[::1]:8303#{}0", hex).parse::<Addr>().is_err());
+    }
+
+    #[test]
+    fn host_names() {
+        let host = |addr: &str| match addr.parse::<Addr>().unwrap() {
+            Addr::Quic(quic) => (quic.addr, quic.host.map(|host| host.to_string())),
+            Addr::Ws(ws) => (ws.addr, ws.host.map(|host| host.to_string())),
+            _ => panic!("not quic or ws"),
+        };
+        assert_eq!(host("ddnet+wt://[::1]:8303#webpki"), ("[::1]:8303".parse().unwrap(), None));
+        assert_eq!(host("ddnet+wt://ger10.ddnet.org:8303#webpki"), ("[::]:8303".parse().unwrap(), Some("ger10.ddnet.org".to_owned())));
+        assert_eq!(host("ddnet+wss://ger10.ddnet.org:8303"), ("[::]:8303".parse().unwrap(), Some("ger10.ddnet.org".to_owned())));
+        assert_eq!(host("ddnet+wss://ger10.ddnet.org:8303").0.port(), 8303);
+        assert_eq!("ddnet+wss://ger10.ddnet.org:8303".parse::<Addr>().unwrap().to_string(), "ddnet+wss://ger10.ddnet.org:8303");
+        assert_eq!("ddnet+wt://ger10.ddnet.org:8303#webpki".parse::<Addr>().unwrap().to_string(), "ddnet+wt://ger10.ddnet.org:8303");
+        assert!("ddnet+wss://ger10.ddnet.org".parse::<Addr>().is_err());
+        assert!("ddnet+wss://ger_10:8303".parse::<Addr>().is_err());
+        assert!("tw-0.6+udp://ger10.ddnet.org:8303".parse::<Addr>().is_err());
     }
 }

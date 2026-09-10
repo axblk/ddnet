@@ -131,6 +131,15 @@ public:
 	// WebTransport and WebSocket addresses, as 64 hex digits; empty if the
 	// server has none there. A server has one, whatever the transport.
 	char m_aIdentity[65];
+	// The fragment the masterserver lists on the WebTransport address, which
+	// a browser connects by: `cert-sha256=<hex>[,<hex>]` names the
+	// certificates it takes, `webpki` says they are signed for the host
+	// name. Empty if there is no WebTransport address or nothing on it.
+	char m_aWebTransportFragment[160];
+	// The host name the masterserver lists the addresses under; empty when
+	// it lists them by IP address. A browser connects by the name where
+	// the certificate is signed for it.
+	char m_aHostname[128];
 
 	int m_QuickSearchHit;
 	int m_FriendState;
@@ -159,14 +168,19 @@ public:
 	int m_MapSize;
 	char m_aVersion[32];
 	// The addresses with their schemes, comma-separated, each modern one
-	// with the identity as its fragment.
-	char m_aAddress[MAX_SERVER_ADDRESSES * (NETADDR_URL_MAXSTRSIZE + sizeof("#identity-sha256=") + 64)];
+	// with its fragment again: the identity, or the certificates of the
+	// WebTransport address.
+	char m_aAddress[MAX_SERVER_ADDRESSES * (NETADDR_URL_MAXSTRSIZE + 1 + sizeof(m_aWebTransportFragment))];
 	std::vector<CClient> m_vClients;
 	int m_NumFilteredPlayers;
 	bool m_RequiresLogin;
 
 	static int EstimateLatency(int Loc1, int Loc2);
 	static bool ParseLocation(int *pResult, const char *pString);
+	// The fragment one of the server's addresses connects with: the
+	// certificates for the WebTransport address, the identity for the other
+	// modern ones, nothing for the legacy ones.
+	static void AddressFragment(char *pBuffer, int BufferSize, const CServerInfo &Info, const NETADDR &Addr);
 	static ColorRGBA GametypeColor(const char *pGametype);
 };
 

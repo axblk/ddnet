@@ -287,9 +287,9 @@ impl Net {
     pub fn connect(&mut self, addr: &str) -> Result<PeerIndex> {
         let url = Url::parse(addr).context("addr: URL")?;
         let parsed: Addr = addr.parse()?;
-        let (webtransport, tls, sock_addr, wanted) = match parsed {
-            Addr::Quic(QuicAddr { addr, identity, webtransport: true }) => (true, true, addr, identity),
-            Addr::Ws(WsAddr { addr, tls, identity }) => (false, tls, addr, identity),
+        let (webtransport, tls, sock_addr, host, wanted) = match parsed {
+            Addr::Quic(QuicAddr { addr, host, identity, webtransport: true }) => (true, true, addr, host, identity),
+            Addr::Ws(WsAddr { addr, host, tls, identity }) => (false, tls, addr, host, identity),
             _ => bail!("a browser speaks WebTransport or WebSockets only"),
         };
         if !self.bridge.available(webtransport) {
@@ -300,10 +300,16 @@ impl Net {
         } else {
             Vec::new()
         };
+        // By name where the address came as one: the browser looks it up
+        // and checks the certificate against it.
+        let host_port = match host {
+            Some(host) => format!("{}:{}", host, sock_addr.port()),
+            None => sock_addr.to_string(),
+        };
         let browser_url = if webtransport {
-            format!("https://{}{}", sock_addr, wire::WEBTRANSPORT_PATH)
+            format!("https://{}{}", host_port, wire::WEBTRANSPORT_PATH)
         } else {
-            format!("{}://{}/", if tls { "wss" } else { "ws" }, sock_addr)
+            format!("{}://{}/", if tls { "wss" } else { "ws" }, host_port)
         };
         let Some(handle) = self.bridge.start(&browser_url, webtransport, &certificate_hashes) else {
             bail!("the browser refused to open {}", browser_url);

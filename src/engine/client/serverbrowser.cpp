@@ -725,24 +725,28 @@ void CServerBrowser::QueueRequest(CServerEntry *pEntry)
 	m_NumRequests++;
 }
 
-// The identity rides along as the fragment of every address whose
-// transport pins by it, so that connecting to what the box holds pins.
-static void ServerBrowserFormatAddresses(char *pBuffer, int BufferSize, const NETADDR *pAddrs, int NumAddrs, const char *pIdentity)
+// Every address carries its fragment again, the way the master listed
+// them: the identity on the QUIC and WebSocket addresses, the certificates
+// on the WebTransport address, so that connecting to what the box holds
+// pins.
+static void ServerBrowserFormatAddresses(char *pBuffer, int BufferSize, const CServerInfo &Info)
 {
 	pBuffer[0] = '\0';
-	for(int i = 0; i < NumAddrs; i++)
+	for(int i = 0; i < Info.m_NumAddresses; i++)
 	{
 		if(i != 0)
 		{
 			str_append(pBuffer, ",", BufferSize);
 		}
 		char aAddr[NETADDR_URL_MAXSTRSIZE];
-		net_addr_url_str(&pAddrs[i], aAddr, sizeof(aAddr), true);
+		net_addr_url_str(&Info.m_aAddresses[i], aAddr, sizeof(aAddr), true);
 		str_append(pBuffer, aAddr, BufferSize);
-		if(pIdentity[0] != '\0' && (pAddrs[i].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0)
+		char aFragment[sizeof(Info.m_aWebTransportFragment)];
+		CServerInfo::AddressFragment(aFragment, sizeof(aFragment), Info, Info.m_aAddresses[i]);
+		if(aFragment[0] != '\0')
 		{
-			str_append(pBuffer, "#identity-sha256=", BufferSize);
-			str_append(pBuffer, pIdentity, BufferSize);
+			str_append(pBuffer, "#", BufferSize);
+			str_append(pBuffer, aFragment, BufferSize);
 		}
 	}
 }
@@ -756,13 +760,22 @@ void CServerBrowser::SetInfo(CServerEntry *pEntry, const CServerInfo &Info) cons
 	pEntry->m_Info.m_ServerIndex = TmpInfo.m_ServerIndex;
 	mem_copy(pEntry->m_Info.m_aAddresses, TmpInfo.m_aAddresses, sizeof(pEntry->m_Info.m_aAddresses));
 	pEntry->m_Info.m_NumAddresses = TmpInfo.m_NumAddresses;
-	// Only the masterserver's list knows the identity; an answer from the
-	// server itself must not take it away.
+	// Only the masterserver's list knows the identity, the certificates and
+	// the host name; an answer from the server itself must not take them
+	// away.
 	if(pEntry->m_Info.m_aIdentity[0] == '\0')
 	{
 		str_copy(pEntry->m_Info.m_aIdentity, TmpInfo.m_aIdentity);
 	}
-	ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info.m_aAddresses, pEntry->m_Info.m_NumAddresses, pEntry->m_Info.m_aIdentity);
+	if(pEntry->m_Info.m_aWebTransportFragment[0] == '\0')
+	{
+		str_copy(pEntry->m_Info.m_aWebTransportFragment, TmpInfo.m_aWebTransportFragment);
+	}
+	if(pEntry->m_Info.m_aHostname[0] == '\0')
+	{
+		str_copy(pEntry->m_Info.m_aHostname, TmpInfo.m_aHostname);
+	}
+	ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info);
 	str_copy(pEntry->m_Info.m_aCommunityId, TmpInfo.m_aCommunityId);
 	str_copy(pEntry->m_Info.m_aCommunityCountry, TmpInfo.m_aCommunityCountry);
 	str_copy(pEntry->m_Info.m_aCommunityType, TmpInfo.m_aCommunityType);
@@ -876,7 +889,7 @@ CServerBrowser::CServerEntry *CServerBrowser::Add(const NETADDR *pAddrs, int Num
 
 	pEntry->m_Info.m_Latency = 999;
 	pEntry->m_Info.m_HasRank = CServerInfo::RANK_UNAVAILABLE;
-	ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info.m_aAddresses, pEntry->m_Info.m_NumAddresses, pEntry->m_Info.m_aIdentity);
+	ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info);
 	UpdateServerCommunity(&pEntry->m_Info);
 	str_copy(pEntry->m_Info.m_aName, pEntry->m_Info.m_aAddress);
 
@@ -914,7 +927,7 @@ CServerBrowser::CServerEntry *CServerBrowser::ReplaceEntry(CServerEntry *pEntry,
 
 	pEntry->m_Info.m_Latency = 999;
 	pEntry->m_Info.m_HasRank = CServerInfo::RANK_UNAVAILABLE;
-	ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info.m_aAddresses, pEntry->m_Info.m_NumAddresses, pEntry->m_Info.m_aIdentity);
+	ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info);
 	UpdateServerCommunity(&pEntry->m_Info);
 	str_copy(pEntry->m_Info.m_aName, pEntry->m_Info.m_aAddress);
 
@@ -1257,6 +1270,12 @@ void CServerBrowser::UpdateFromHttp()
 			}
 			// (Also add favorites we're not allowed to ping.)
 			CServerEntry *pEntry = Add(pFavorites[i].m_aAddrs, pFavorites[i].m_NumAddrs);
+			// What the favorite was saved with pins the server, now that
+			// the master's list has nothing for it.
+			str_copy(pEntry->m_Info.m_aIdentity, pFavorites[i].m_aIdentity);
+			str_copy(pEntry->m_Info.m_aWebTransportFragment, pFavorites[i].m_aWebTransportFragment);
+			ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info);
+			str_copy(pEntry->m_Info.m_aName, pEntry->m_Info.m_aAddress);
 			if(pFavorites[i].m_AllowPing)
 			{
 				QueueRequest(pEntry);
@@ -2496,6 +2515,19 @@ ColorRGBA CServerInfo::GametypeColor(const char *pGametype)
 	else
 		HslaColor = ColorHSLA(1.0f, 1.0f, 1.0f);
 	return color_cast<ColorRGBA>(HslaColor);
+}
+
+void CServerInfo::AddressFragment(char *pBuffer, int BufferSize, const CServerInfo &Info, const NETADDR &Addr)
+{
+	pBuffer[0] = '\0';
+	if((Addr.type & NETTYPE_WEBTRANSPORT) != 0)
+	{
+		str_copy(pBuffer, Info.m_aWebTransportFragment, BufferSize);
+	}
+	else if((Addr.type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0 && Info.m_aIdentity[0] != '\0')
+	{
+		str_format(pBuffer, BufferSize, "identity-sha256=%s", Info.m_aIdentity);
+	}
 }
 
 bool CServerInfo::ParseLocation(int *pResult, const char *pString)

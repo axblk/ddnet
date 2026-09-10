@@ -619,6 +619,46 @@ void CClient::GenerateTimeoutCodes(const NETADDR *pAddrs, int NumAddrs)
 	}
 }
 
+// Splits the next address off a comma-separated list. A comma inside a
+// fragment, between the certificate hashes a browser takes, does not end the
+// address: what follows it there is a hash or another fragment key, never an
+// address.
+static const char *NextConnectAddress(const char *pList, char *pBuffer, int BufferSize)
+{
+	if(pList == nullptr || pList[0] == '\0')
+	{
+		return nullptr;
+	}
+	const char *pEnd = pList;
+	bool InFragment = false;
+	for(; *pEnd != '\0'; pEnd++)
+	{
+		if(*pEnd == '#')
+		{
+			InFragment = true;
+		}
+		else if(*pEnd == ',')
+		{
+			if(!InFragment)
+			{
+				break;
+			}
+			const char *pNext = pEnd + 1;
+			int HexDigits = 0;
+			while(('0' <= pNext[HexDigits] && pNext[HexDigits] <= '9') || ('a' <= pNext[HexDigits] && pNext[HexDigits] <= 'f') || ('A' <= pNext[HexDigits] && pNext[HexDigits] <= 'F'))
+			{
+				HexDigits++;
+			}
+			if(HexDigits != 64 && str_startswith(pNext, "cert-sha256=") == nullptr && str_startswith(pNext, "identity-sha256=") == nullptr && str_startswith(pNext, "webpki") == nullptr)
+			{
+				break;
+			}
+		}
+	}
+	str_truncate(pBuffer, BufferSize, pList, pEnd - pList);
+	return *pEnd == ',' ? pEnd + 1 : pEnd;
+}
+
 void CClient::Connect(const char *pAddress, const char *pPassword)
 {
 	// Disconnect will not change the state if we are already quitting/restarting
@@ -640,13 +680,20 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	NETADDR aConnectAddrs[MAX_SERVER_ADDRESSES];
 	mem_zero(aConnectAddrs, sizeof(aConnectAddrs));
 	const char *pNextAddr = pAddress;
-	char aBuffer[128];
+	// One address with its host name and fragment.
+	char aBuffer[NETADDR_URL_MAXSTRSIZE + 128 + 1 + 160];
 	bool OnlySixup = true;
 	// The fragment of a QUIC or WebSocket address: the identity it pins, the
-	// certificates a browser takes; nothing if none has one.
+	// certificates a browser takes; nothing if none has one. The host name
+	// such an address came as, for a browser to connect by.
 	char aConnectFragment[256] = "";
-	while((pNextAddr = str_next_token(pNextAddr, ",", aBuffer, sizeof(aBuffer))))
+	char aConnectHost[128] = "";
+	while((pNextAddr = NextConnectAddress(pNextAddr, aBuffer, sizeof(aBuffer))) != nullptr)
 	{
+		if(aBuffer[0] == '\0')
+		{
+			continue;
+		}
 		NETADDR NextAddr;
 		char aHost[128];
 		const int UrlParseResult = net_addr_from_url(&NextAddr, aBuffer, aHost, sizeof(aHost));
@@ -689,6 +736,13 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 			if(pFragment != nullptr)
 			{
 				str_copy(aConnectFragment, pFragment + 1);
+			}
+			if(UrlParseResult < 0 && NumConnectAddrs == 0)
+			{
+				// A name, with its port still on it; an IP address
+				// would have parsed above.
+				const char *pPort = str_rchr(aHost, ':');
+				str_truncate(aConnectHost, sizeof(aConnectHost), aHost, pPort != nullptr ? pPort - aHost : str_length(aHost));
 			}
 		}
 
@@ -736,7 +790,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	m_CanReceiveServerCapabilities = true;
 
 	m_Sixup = OnlySixup;
-	m_aNetClient[CONN_MAIN].SetConnectFragment(aConnectFragment);
+	m_aNetClient[CONN_MAIN].SetConnectTarget(aConnectHost, aConnectFragment);
 	if(m_Sixup)
 	{
 		m_aNetClient[CONN_MAIN].Connect7(aConnectAddrs, NumConnectAddrs);
@@ -876,7 +930,7 @@ void CClient::DummyConnect()
 
 	m_DummyConnecting = true;
 	// connect to the server, the same way and with the same identity
-	m_aNetClient[CONN_DUMMY].SetConnectFragment(m_aNetClient[CONN_MAIN].ServerIdentity());
+	m_aNetClient[CONN_DUMMY].SetConnectTarget(m_aNetClient[CONN_MAIN].ConnectHost(), m_aNetClient[CONN_MAIN].ServerIdentity());
 	if(IsSixup())
 		m_aNetClient[CONN_DUMMY].Connect7(m_aNetClient[CONN_MAIN].ServerAddress(), 1);
 	else
@@ -925,6 +979,12 @@ void CClient::SetCurrentServerInfo(const CServerInfo &ServerInfo)
 {
 	m_CurrentServerInfo = ServerInfo;
 	m_CurrentServerInfoRequestTime = -1;
+	// The server's own answer has no identity; the one it showed on
+	// connecting is it.
+	if(m_CurrentServerInfo.m_aIdentity[0] == '\0')
+	{
+		str_copy(m_CurrentServerInfo.m_aIdentity, m_aNetClient[CONN_MAIN].ServerIdentity());
+	}
 	str_copy(m_CurrentServerInfo.m_aMap, GameClient()->Map()->BaseName());
 	m_CurrentServerInfo.m_MapCrc = GameClient()->Map()->Crc();
 	m_CurrentServerInfo.m_MapSize = GameClient()->Map()->Size();
@@ -3999,6 +4059,8 @@ void CClient::Con_BeginFavoriteGroup(IConsole::IResult *pResult, void *pUserData
 	pSelf->m_FavoritesGroup = true;
 	pSelf->m_FavoritesGroupAllowPing = false;
 	pSelf->m_FavoritesGroupNum = 0;
+	pSelf->m_aFavoritesGroupIdentity[0] = '\0';
+	pSelf->m_aFavoritesGroupWebTransportFragment[0] = '\0';
 }
 
 void CClient::Con_EndFavoriteGroup(IConsole::IResult *pResult, void *pUserData)
@@ -4010,7 +4072,7 @@ void CClient::Con_EndFavoriteGroup(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 	log_info("client", "adding group of %d favorites", pSelf->m_FavoritesGroupNum);
-	pSelf->m_pFavorites->Add(pSelf->m_aFavoritesGroupAddresses, pSelf->m_FavoritesGroupNum);
+	pSelf->m_pFavorites->Add(pSelf->m_aFavoritesGroupAddresses, pSelf->m_FavoritesGroupNum, pSelf->m_aFavoritesGroupIdentity, pSelf->m_aFavoritesGroupWebTransportFragment);
 	if(pSelf->m_FavoritesGroupAllowPing)
 	{
 		pSelf->m_pFavorites->AllowPing(pSelf->m_aFavoritesGroupAddresses, pSelf->m_FavoritesGroupNum, true);
@@ -4031,6 +4093,22 @@ void CClient::Con_AddFavorite(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 	bool AllowPing = pResult->NumArguments() > 1 && str_find(pResult->GetString(1), "allow_ping");
+	// The fragment a modern address was saved with: the identity, or the
+	// certificates of a WebTransport address.
+	char aIdentity[65] = "";
+	char aWebTransportFragment[160] = "";
+	const char *pFragment = str_find(pResult->GetString(0), "#");
+	if(pFragment != nullptr && (Addr.type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0)
+	{
+		if((Addr.type & NETTYPE_WEBTRANSPORT) != 0)
+		{
+			str_copy(aWebTransportFragment, pFragment + 1);
+		}
+		else if(const char *pIdentity = str_startswith(pFragment + 1, "identity-sha256="))
+		{
+			str_copy(aIdentity, pIdentity);
+		}
+	}
 	char aAddr[NETADDR_MAXSTRSIZE];
 	net_addr_str(&Addr, aAddr, sizeof(aAddr), true);
 	if(pSelf->m_FavoritesGroup)
@@ -4044,11 +4122,19 @@ void CClient::Con_AddFavorite(IConsole::IResult *pResult, void *pUserData)
 		pSelf->m_aFavoritesGroupAddresses[pSelf->m_FavoritesGroupNum] = Addr;
 		pSelf->m_FavoritesGroupAllowPing = pSelf->m_FavoritesGroupAllowPing || AllowPing;
 		pSelf->m_FavoritesGroupNum += 1;
+		if(pSelf->m_aFavoritesGroupIdentity[0] == '\0')
+		{
+			str_copy(pSelf->m_aFavoritesGroupIdentity, aIdentity);
+		}
+		if(pSelf->m_aFavoritesGroupWebTransportFragment[0] == '\0')
+		{
+			str_copy(pSelf->m_aFavoritesGroupWebTransportFragment, aWebTransportFragment);
+		}
 	}
 	else
 	{
 		log_info("client", "adding %s to favorites", aAddr);
-		pSelf->m_pFavorites->Add(&Addr, 1);
+		pSelf->m_pFavorites->Add(&Addr, 1, aIdentity, aWebTransportFragment);
 		if(AllowPing)
 		{
 			pSelf->m_pFavorites->AllowPing(&Addr, 1, true);

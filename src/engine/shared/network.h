@@ -800,6 +800,10 @@ class CNetClient
 	// server and, for a browser, the certificate hashes to take; empty takes
 	// any identity.
 	char m_aConnectFragment[256] = "";
+	// The host name the connect address came as, without its port; empty
+	// for an IP address. A browser connects by the name, since it has to
+	// check the certificate against it.
+	char m_aConnectHost[128] = "";
 	// The identity the QUIC server showed, hex; empty for other transports.
 	char m_aServerIdentity[65] = "";
 
@@ -835,16 +839,20 @@ public:
 	void Disconnect(const char *pReason);
 	void Connect(const NETADDR *pAddr, int NumAddrs);
 	void Connect7(const NETADDR *pAddr, int NumAddrs);
-	// The fragment a following Connect() to a QUIC or WebSocket address
-	// carries: `identity-sha256=<hex>` or the bare hex pins the server's
-	// identity, `cert-sha256=<hex>[,<hex>]` names the certificates a browser
-	// takes; empty takes whatever the server shows. Without QUIC there is
-	// nothing to expect.
-	void SetConnectFragment(const char *pFragment);
+	// What a following Connect() to a QUIC or WebSocket address carries
+	// besides the address: the host name it came as (empty for an IP
+	// address; a browser connects by the name, since it checks the
+	// certificate against it) and the fragment. `identity-sha256=<hex>` or
+	// the bare hex pins the server's identity, `cert-sha256=<hex>[,<hex>]`
+	// names the certificates a browser takes; empty takes whatever the
+	// server shows. Without QUIC there is nothing to expect.
+	void SetConnectTarget(const char *pHost, const char *pFragment);
 #ifdef CONF_NETWORKING_QUIC
 	const char *ServerIdentity() const { return m_aServerIdentity; }
+	const char *ConnectHost() const { return m_aConnectHost; }
 #else
 	const char *ServerIdentity() const { return ""; }
+	const char *ConnectHost() const { return ""; }
 #endif
 
 	// communication

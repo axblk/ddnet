@@ -86,9 +86,11 @@ void CNetClient::Wait(uint64_t Microseconds)
 	}
 }
 
-void CNetClient::SetConnectFragment(const char *pFragment)
+void CNetClient::SetConnectTarget(const char *pHost, const char *pFragment)
 {
-	// Without QUIC there is no identity to expect.
+	// Without QUIC there is no identity to expect, and no name to check
+	// a certificate against.
+	(void)pHost;
 	(void)pFragment;
 }
 
@@ -423,8 +425,9 @@ void CNetClient::Connect7(const NETADDR *pAddr, int NumAddrs)
 	ConnectImpl(pAddr, NumAddrs, true);
 }
 
-void CNetClient::SetConnectFragment(const char *pFragment)
+void CNetClient::SetConnectTarget(const char *pHost, const char *pFragment)
 {
+	str_copy(m_aConnectHost, pHost);
 	str_copy(m_aConnectFragment, pFragment);
 }
 
@@ -440,9 +443,10 @@ void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
 
 	NETADDR Addr = pAddr[0];
 	Addr.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
-	char aAddr[NETADDR_MAXSTRSIZE];
+	// Room for the host name in place of the address.
+	char aAddr[NETADDR_MAXSTRSIZE + sizeof(m_aConnectHost)];
 	net_addr_str(&Addr, aAddr, sizeof(aAddr), true);
-	char aUrl[NETADDR_URL_MAXSTRSIZE + sizeof(m_aConnectFragment)];
+	char aUrl[NETADDR_URL_MAXSTRSIZE + sizeof(m_aConnectHost) + sizeof(m_aConnectFragment)];
 	if(pAddr[0].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET))
 	{
 		if(Sixup)
@@ -457,6 +461,14 @@ void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
 			pScheme = pAddr[0].type & NETTYPE_WEBSOCKET_TLS ? "ddnet+wss" : "ddnet+ws";
 		else
 			pScheme = pAddr[0].type & NETTYPE_WEBTRANSPORT ? "ddnet+wt" : "ddnet+quic";
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		// The browser looks the name up itself and checks the certificate
+		// against it, so it gets the name where there is one.
+		if(m_aConnectHost[0] != '\0')
+		{
+			str_format(aAddr, sizeof(aAddr), "%s:%d", m_aConnectHost, pAddr[0].port);
+		}
+#endif
 		str_format(aUrl, sizeof(aUrl), "%s://%s%s%s", pScheme, aAddr, m_aConnectFragment[0] != '\0' ? "#" : "", m_aConnectFragment);
 	}
 	else
@@ -544,9 +556,16 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 			const char *pAddr;
 			size_t AddrLen;
 			ddnet_net_ev_connect_addr(m_pNetEvent, &pAddr, &AddrLen);
-			// The scheme's flags come with the address.
+			// The scheme's flags come with the address. A browser that
+			// connected by name gets the name back; the address behind it
+			// is the one it was asked to connect to.
 			NETADDR Addr;
-			if(net_addr_from_url(&Addr, pAddr, nullptr, 0) != 0)
+			const int UrlParseResult = net_addr_from_url(&Addr, pAddr, nullptr, 0);
+			if(UrlParseResult < 0 && m_aConnectHost[0] != '\0' && m_NumConnectAddrs > 0)
+			{
+				Addr = m_aConnectAddrs[0];
+			}
+			else if(UrlParseResult != 0)
 			{
 				static const char UNRECOGNIZED_ADDR[] = "Unrecognized address";
 				NET_CALL(ddnet_net_close, m_pNet, PeerId, UNRECOGNIZED_ADDR, sizeof(UNRECOGNIZED_ADDR) - 1);

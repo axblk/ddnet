@@ -8,12 +8,17 @@
 #include <engine/client/presentation_surface.h>
 #include <engine/shared/config.h>
 
+// CONF_BACKEND_NO_OPENGL leaves the OpenGL backends out altogether, for
+// everything that draws without a window: nothing offscreen asks for one, and
+// they are what needs GLEW and the window system's GL library.
+#if !defined(CONF_BACKEND_NO_OPENGL)
 #if !defined(CONF_BACKEND_OPENGL_ES)
 #include <engine/client/backend/opengl/backend_opengl.h>
 #include <engine/client/backend/opengl/backend_opengl3.h>
 #endif
 #if defined(CONF_BACKEND_OPENGL_ES3) || defined(CONF_BACKEND_OPENGL_ES)
 #include <engine/client/backend/opengles/backend_opengles3.h>
+#endif
 #endif
 #if defined(CONF_BACKEND_VULKAN)
 #include <engine/client/backend/vulkan/backend_vulkan.h>
@@ -393,9 +398,12 @@ const SGfxWarningContainer &CCommandProcessor_Threaded::GetWarning() const
 // ------------ CGraphicsBackend_Renderer
 
 CGraphicsBackend_Renderer::CGraphicsBackend_Renderer(EBackendType BackendType, int GlMajor, int GlMinor) :
-	m_BackendType(BackendType),
+	m_BackendType(BackendType)
+#if !defined(CONF_BACKEND_OPENGL_ES) && !defined(CONF_BACKEND_NO_OPENGL)
+	,
 	m_GlMajor(GlMajor),
 	m_GlMinor(GlMinor)
+#endif
 {
 }
 
@@ -406,7 +414,7 @@ CCommandProcessorFragment_Renderer *CGraphicsBackend_Renderer::CreateRenderer() 
 	case BACKEND_TYPE_NULL:
 		return new CCommandProcessorFragment_Null();
 	case BACKEND_TYPE_OPENGL_ES:
-#if defined(CONF_BACKEND_OPENGL_ES) || defined(CONF_BACKEND_OPENGL_ES3)
+#if (defined(CONF_BACKEND_OPENGL_ES) || defined(CONF_BACKEND_OPENGL_ES3)) && !defined(CONF_BACKEND_NO_OPENGL)
 		// GLES below 3.0 has no programs, and the window has already forced
 		// the version to 3.0 on every platform that offers ES at all - Android
 		// and Emscripten build both ES defines together, Linux only ever
@@ -416,7 +424,7 @@ CCommandProcessorFragment_Renderer *CGraphicsBackend_Renderer::CreateRenderer() 
 		return nullptr;
 #endif
 	case BACKEND_TYPE_OPENGL:
-#if !defined(CONF_BACKEND_OPENGL_ES)
+#if !defined(CONF_BACKEND_OPENGL_ES) && !defined(CONF_BACKEND_NO_OPENGL)
 		// The backend with programs is written against OpenGL 3.3 core and
 		// nothing else. Every context below that - including 3.0 to 3.2, which
 		// is missing four things it uses - goes to the one that stands in for

@@ -851,6 +851,12 @@ if(CLIENT AND VULKAN AND NOT(VULKAN_FOUND))
   message(SEND_ERROR "You must install Vulkan libraries to compile the ${CMAKE_PROJECT_NAME} client")
 endif()
 
+# Set below, after the platform has said what a client links: the same, without
+# the window system's OpenGL and without the desktop notifications. What draws
+# offscreen draws with Vulkan, WebGPU or nothing, and what renders in batch
+# tells the user nothing.
+set(PLATFORM_HEADLESS_CLIENT_LIBS)
+
 if(TARGET_OS STREQUAL "windows")
   set(PLATFORM_CLIENT)
   set(PLATFORM_CLIENT_LIBS opengl32.lib winmm.lib imm32.lib)
@@ -963,6 +969,15 @@ else()
     set(PLATFORM_LIBS)
   endif()
 endif()
+
+set(PLATFORM_HEADLESS_CLIENT_LIBS ${PLATFORM_CLIENT_LIBS})
+list(REMOVE_ITEM PLATFORM_HEADLESS_CLIENT_LIBS
+  opengl32.lib
+  ${NOTIFY_LIBRARIES}
+  ${OPENGL}
+  ${OPENGL_gl_LIBRARY}
+)
+
 if(TOOLS)
 endif()
 
@@ -3174,6 +3189,12 @@ if(CLIENT)
     COMMENT "Embedding shaders"
     VERBATIM
   )
+  # Two graphics libraries are built from this one generated file, one with the
+  # OpenGL backends and one without. A generated file that hangs off both of
+  # them and off neither's dependency is what the Xcode generator refuses, so
+  # the writing of it is a target of its own that both wait for.
+  add_custom_target(generate_embedded_shaders DEPENDS "${EMBEDDED_SHADERS_SRC}")
+  set_source_files_properties("${EMBEDDED_SHADERS_SRC}" PROPERTIES GENERATED TRUE)
 
   # The client gets the menu pages, a program without them gets the stand-in,
   # which compiles to nothing unless it is that program. The backdrop is not a
@@ -3258,7 +3279,7 @@ if(CLIENT)
     ${EMBEDDED_SHADERS_SRC}
     src/generated/data_types.h
   )
-  add_dependencies(engine-client-graphics generate_content_types)
+  add_dependencies(engine-client-graphics generate_content_types generate_embedded_shaders)
   if(VULKAN)
     add_dependencies(engine-client-graphics build_vulkan_shaders)
   endif()
@@ -3288,6 +3309,41 @@ if(CLIENT)
     target_compile_definitions(engine-client-graphics PRIVATE CONF_BACKEND_WEBGPU)
   endif()
   list(APPEND TARGETS_OWN engine-client-graphics)
+
+  # The same graphics without the OpenGL backends, for what draws offscreen.
+  # CreateOffscreenGraphicsBackend only ever answers Vulkan, WebGPU or the null
+  # backend, so the OpenGL ones are unreachable there - and they are the only
+  # reason such a target would need GLEW and the window system's GL library.
+  set(ENGINE_CLIENT_GRAPHICS_HEADLESS ${ENGINE_CLIENT_GRAPHICS})
+  list(FILTER ENGINE_CLIENT_GRAPHICS_HEADLESS EXCLUDE REGEX "/backend/opengl(es)?/")
+  add_library(engine-client-graphics-headless EXCLUDE_FROM_ALL OBJECT
+    ${ENGINE_CLIENT_GRAPHICS_HEADLESS}
+    ${EMBEDDED_SHADERS_SRC}
+    src/generated/data_types.h
+  )
+  add_dependencies(engine-client-graphics-headless generate_content_types generate_embedded_shaders)
+  if(VULKAN)
+    add_dependencies(engine-client-graphics-headless build_vulkan_shaders)
+  endif()
+  target_include_directories(engine-client-graphics-headless SYSTEM PRIVATE
+    ${PNG_INCLUDE_DIRS}
+    ${VULKAN_INCLUDE_DIRS}
+    ${PLATFORM_CLIENT_INCLUDE_DIRS}
+  )
+  if(WEBGPU_NATIVE_BACKEND)
+    target_link_libraries(engine-client-graphics-headless WGPU::Native)
+  endif()
+  if(WEBGPU_BACKEND_PROTOTYPE AND TARGET_OS STREQUAL "emscripten")
+    target_compile_options(engine-client-graphics-headless PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+  endif()
+  target_compile_definitions(engine-client-graphics-headless PRIVATE CONF_BACKEND_NO_OPENGL)
+  if(VULKAN)
+    target_compile_definitions(engine-client-graphics-headless PRIVATE CONF_BACKEND_VULKAN)
+  endif()
+  if(WEBGPU_BACKEND_PROTOTYPE)
+    target_compile_definitions(engine-client-graphics-headless PRIVATE CONF_BACKEND_WEBGPU)
+  endif()
+  list(APPEND TARGETS_OWN engine-client-graphics-headless)
 
   # Target
   if(TARGET_OS STREQUAL "android")
@@ -3419,10 +3475,10 @@ if(CLIENT)
     # `cmake --build . --target demo-renderer`.
     add_executable(demo-renderer EXCLUDE_FROM_ALL
       ${DEMO_RENDERER_SRC}
-      ${DEPS} ${GLEW_DEP}
+      ${DEPS}
       ${WAVPACK_DEP}
       # tidy-alphabetical-start
-      $<TARGET_OBJECTS:engine-client-graphics>
+      $<TARGET_OBJECTS:engine-client-graphics-headless>
       $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
@@ -3450,7 +3506,6 @@ if(CLIENT)
       ${CRYPTO_LIBRARIES}
       ${FFMPEG_LIBRARIES}
       ${FREETYPE_LIBRARIES}
-      ${GLEW_LIBRARIES}
       ${PNG_LIBRARIES}
       ${SQLite3_LIBRARIES}
       ${VULKAN_LIBRARIES}
@@ -3460,7 +3515,7 @@ if(CLIENT)
       ${OPUSFILE_LIBRARIES}
       ${OPUS_LIBRARIES}
       ${OGG_LIBRARIES}
-      ${PLATFORM_CLIENT_LIBS}
+      ${PLATFORM_HEADLESS_CLIENT_LIBS}
       ${PLATFORM_LIBS}
       ${CMAKE_THREAD_LIBS_INIT}
     )
@@ -3848,13 +3903,13 @@ if(TOOLS)
         list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")
       endif()
       if(TOOL MATCHES "^map_render$")
-        list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS} ${GLEW_INCLUDE_DIRS})
-        list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-client-graphics> $<TARGET_OBJECTS:engine-gfx> ${GLEW_DEP})
+        list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS})
+        list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-client-graphics-headless> $<TARGET_OBJECTS:engine-gfx>)
         # The tool draws with the client's backends, so it needs what the client
         # links for its window system - opengl32 on Windows, the Cocoa and
         # OpenGL frameworks on macOS - not just the bare GL library.
         list(APPEND TOOL_INCLUDE_DIRS ${PLATFORM_CLIENT_INCLUDE_DIRS})
-        list(APPEND TOOL_LIBS ${PNG_LIBRARIES} ${GLEW_LIBRARIES} ${CMAKE_DL_LIBS} ${PLATFORM_CLIENT_LIBS} ${VULKAN_LIBRARIES})
+        list(APPEND TOOL_LIBS ${PNG_LIBRARIES} ${CMAKE_DL_LIBS} ${PLATFORM_HEADLESS_CLIENT_LIBS} ${VULKAN_LIBRARIES})
         if(WEBGPU_NATIVE_BACKEND)
           # engine-client-graphics links this, but the tool takes its objects
           # rather than the target, and objects carry no link interface.

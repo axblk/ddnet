@@ -67,7 +67,8 @@ jobs:
         # starts it. The names are not all fixed: the loader, the module and,
         # depending on the emscripten version, a worker.
         cp build-web/DDNet.* site/
-        cp build-web/index.html build-web/background.png build-web/coi-serviceworker.js site/
+        cp build-web/index.html build-web/ddnet-loader.js build-web/ddnet-page.css site/
+        cp build-web/background.png build-web/coi-serviceworker.js site/
         # The data directory itself, which the client fetches a file at a time
         # instead of being handed all of it before it starts.
         cp -r build-web/data site/

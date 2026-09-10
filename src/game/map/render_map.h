@@ -8,6 +8,7 @@
 
 #include <array>
 #include <chrono>
+#include <functional>
 #include <memory>
 
 enum
@@ -71,13 +72,11 @@ class CRenderMap
 {
 	IGraphics *m_pGraphics;
 	ITextRender *m_pTextRender;
-	class CRenderTools *m_pRenderTools;
 
 public:
-	void Init(IGraphics *pGraphics, ITextRender *pTextRender, class CRenderTools *pRenderTools);
+	void Init(IGraphics *pGraphics, ITextRender *pTextRender);
 	IGraphics *Graphics() { return m_pGraphics; }
 	ITextRender *TextRender() { return m_pTextRender; }
-	class CRenderTools *RenderTools() { return m_pRenderTools; }
 
 	// map render methods (render_map.cpp)
 	static void RenderEvalEnvelope(const IEnvelopePointAccess *pPoints, std::chrono::nanoseconds TimeNanos, ColorRGBA &Result, size_t Channels);
@@ -87,7 +86,16 @@ public:
 
 	// DDRace
 	void RenderTeleOverlay(CTeleTile *pTele, int w, int h, float Scale, int OverlayRenderFlags, float Alpha = 1.0f);
-	void RenderSpeedupOverlay(CSpeedupTile *pSpeedup, int w, int h, float Scale, int OverlayRenderFlags, float Alpha = 1.0f);
+	/**
+	 * Draws the arrow of a single speedup tile, turned by the given angle in
+	 * degrees.
+	 *
+	 * The arrow is a sprite of the client's own sheet, which map rendering
+	 * knows nothing about, so whoever draws the overlay draws the arrow.
+	 */
+	using FRenderSpeedupArrow = std::function<void(float X, float Y, float AngleDegrees, float Alpha)>;
+
+	void RenderSpeedupOverlay(CSpeedupTile *pSpeedup, int w, int h, float Scale, int OverlayRenderFlags, const FRenderSpeedupArrow &pfnRenderArrow, float Alpha = 1.0f);
 	void RenderSwitchOverlay(CSwitchTile *pSwitch, int w, int h, float Scale, int OverlayRenderFlags, float Alpha = 1.0f);
 	void RenderTuneOverlay(CTuneTile *pTune, int w, int h, float Scale, int OverlayRenderFlags, float Alpha = 1.0f);
 

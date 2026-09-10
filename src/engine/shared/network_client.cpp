@@ -67,12 +67,14 @@ bool CNetClient::OpenLibrary()
 		ddnet_net_set_bindaddr(m_pNet, aBindAddr, str_length(aBindAddr)) ||
 		ddnet_net_set_timeout(m_pNet, g_Config.m_ConnTimeout) ||
 		ddnet_net_set_key_log(m_pNet, g_Config.m_DbgTlsKeyLog != 0) ||
+		ddnet_net_set_resend_requests_per_second(m_pNet, g_Config.m_ConnResendRequestsPerSecond) ||
 		ddnet_net_open(m_pNet))
 	{
 		log_error("net", "couldn't open net client: %s", ddnet_net_error(m_pNet));
 		CloseLibrary();
 		return false;
 	}
+	m_ResendRequestsPerSecond = g_Config.m_ConnResendRequestsPerSecond;
 	return true;
 }
 
@@ -213,8 +215,12 @@ void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
 
 void CNetClient::Update()
 {
-	// TODO: call timeout stuff
 	CNetBase::UpdateLogLevel();
+	if(m_pNet != nullptr && m_ResendRequestsPerSecond != g_Config.m_ConnResendRequestsPerSecond)
+	{
+		m_ResendRequestsPerSecond = g_Config.m_ConnResendRequestsPerSecond;
+		NET_CALL(ddnet_net_set_resend_requests_per_second, m_pNet, m_ResendRequestsPerSecond);
+	}
 	if(m_pStun)
 	{
 		m_pStun->Update();

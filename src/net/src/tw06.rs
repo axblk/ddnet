@@ -121,7 +121,7 @@ impl Protocol {
         let epoch = Instant::now();
         let libtw2_cb = &mut Callback { socket: &cb.socket, addr: from, epoch };
         let conn = libtw2_net::Connection::new_accept_token(libtw2_cb, token);
-        let conn = Connection::new(conn, epoch, false, *from, cb.timeout);
+        let conn = Connection::new(conn, epoch, false, *from, cb.timeout, cb.resend_request_interval);
         Ok(Some(ProtocolEvent::NewConnection(cb.next_peer_index, conn.into())))
     }
     pub fn connect(
@@ -134,10 +134,11 @@ impl Protocol {
         let Addr(addr) = addr;
         let epoch = Instant::now();
         let timeout = cb.timeout;
+        let resend_request_interval = cb.resend_request_interval;
         let mut conn = libtw2_net::Connection::new();
         let cb = &mut Callback { socket: &cb.socket, addr: &addr, epoch };
         conn.connect(cb).context("libtw2_net::Conn::connect")?;
-        Ok(Connection::new(conn, epoch, true, addr, timeout))
+        Ok(Connection::new(conn, epoch, true, addr, timeout, resend_request_interval))
     }
     pub fn send_connless_chunk(
         &mut self,
@@ -214,7 +215,15 @@ enum BufferedEvent {
 }
 
 impl Connection {
-    fn new(inner: libtw2_net::Connection, epoch: Instant, client: bool, addr: SocketAddr, timeout: Duration) -> Connection {
+    fn new(
+        mut inner: libtw2_net::Connection,
+        epoch: Instant,
+        client: bool,
+        addr: SocketAddr,
+        timeout: Duration,
+        resend_request_interval: Duration,
+    ) -> Connection {
+        libtw2_patch::set_resend_request_interval6(&mut inner, resend_request_interval);
         Connection {
             inner,
             epoch,
@@ -224,6 +233,9 @@ impl Connection {
             last_recv: Instant::now(),
             timeout,
         }
+    }
+    pub fn set_resend_request_interval(&mut self, interval: Duration) {
+        libtw2_patch::set_resend_request_interval6(&mut self.inner, interval);
     }
     /// Ends the connection on our side without a word to the peer, which
     /// is not listening anyway.

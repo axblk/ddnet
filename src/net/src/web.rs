@@ -123,6 +123,11 @@ impl NetBuilder {
     pub fn key_log(&mut self, _key_log: bool) {}
     pub fn accept_connections(&mut self, _accept: bool) {}
     pub fn accept_protocol(&mut self, _protocol: Protocol, _accept: bool) {}
+    /// A browser accepts no connections and speaks no classic protocol,
+    /// so there is nothing for the limits to limit.
+    pub fn connlimit(&mut self, _conns: u32, _window: Duration) {}
+    pub fn max_packets_per_recv(&mut self, _packets: u32) {}
+    pub fn resend_requests_per_second(&mut self, _per_second: u32) {}
     #[cfg(target_os = "emscripten")]
     pub fn open(self) -> Result<Net> {
         Ok(self.open_with(Box::new(self::browser::Browser::new())))
@@ -307,6 +312,10 @@ impl Net {
     pub fn num_peers_in_bucket(&self, _addr: &str) -> Result<u32> {
         bail!("a browser accepts no connections")
     }
+    pub fn set_connlimit(&mut self, _conns: u32, _window: Duration) {}
+    pub fn set_max_packets_per_recv(&mut self, _packets: u32) {}
+    /// A browser speaks no protocol with resend requests.
+    pub fn set_resend_requests_per_second(&mut self, _per_second: u32) {}
     pub fn set_map(&mut self, _id: u32, _map: Map) -> Result<()> {
         bail!("a browser hands out no maps")
     }

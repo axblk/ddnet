@@ -8,6 +8,8 @@ use crate::tw07;
 use crate::ws;
 use crate::wire;
 use crate::Addr;
+use crate::limits;
+use crate::limits::Connlimit;
 use crate::Challenger;
 use crate::ConnlessMeta;
 use crate::Event;
@@ -90,6 +92,9 @@ pub struct CallbackData {
     /// How long a UDP peer may stay silent, and how long a chunk may wait
     /// for its ack, before the connection is lost.
     pub timeout: Duration,
+    /// How often a UDP peer's resend requests are answered, see
+    /// `limits::resend_request_interval`.
+    pub resend_request_interval: Duration,
     pub sslkeylogfile: Option<ArcFile>,
     pub challenger: Challenger,
     pub local_addr: SocketAddr,
@@ -232,6 +237,13 @@ pub struct Net {
     /// Consecutive failures of the socket read, which only mean anything
     /// once they keep coming.
     socket_read_errors: u32,
+    /// How often an address may connect.
+    connlimit: Connlimit,
+    /// How many packets one batch of reads takes before the caller gets
+    /// its turn again, the rest waiting in the socket; zero for all there
+    /// are. A batch lasts from one `wait` to the next.
+    max_packets_per_recv: u32,
+    packets_this_batch: u32,
 
     socket_readable: bool,
     readable_peers: ReadablePeers,
@@ -251,6 +263,10 @@ pub struct NetBuilder {
     tls_files: Option<(String, String)>,
     /// Whether to write the TLS session keys to `SSLKEYLOGFILE`.
     key_log: bool,
+    /// See the methods of the same names.
+    connlimit: (u32, Duration),
+    max_packets_per_recv: u32,
+    resend_requests_per_second: u32,
 }
 
 impl Peer {
@@ -335,6 +351,9 @@ enum SocketReadEvent {
     None,
     ReadablePeer(PeerIndex),
     ConnlessChunk(Addr, usize, ConnlessMeta),
+    /// The batch has read as many packets as it may; the socket may still
+    /// hold more.
+    Capped,
 }
 
 impl ReadablePeers {
@@ -398,6 +417,22 @@ impl NetBuilder {
     }
     pub fn accept_connections(&mut self, accept: bool) {
         self.accept = if accept { AcceptProtocols::ALL } else { AcceptProtocols::NONE };
+    }
+    /// How many connections an address may make within `window` before
+    /// further ones are refused; zero for no limit.
+    pub fn connlimit(&mut self, conns: u32, window: Duration) {
+        self.connlimit = (conns, window);
+    }
+    /// How many packets are read from the socket between two waits before
+    /// the caller gets its turn again, whatever else is waiting stays in
+    /// the socket for the system to drop; zero reads everything.
+    pub fn max_packets_per_recv(&mut self, packets: u32) {
+        self.max_packets_per_recv = packets;
+    }
+    /// How many of a UDP peer's resend requests are answered per second;
+    /// zero answers all of them.
+    pub fn resend_requests_per_second(&mut self, per_second: u32) {
+        self.resend_requests_per_second = per_second;
     }
     pub fn accept_protocol(&mut self, protocol: Protocol, accept: bool) {
         match protocol {
@@ -489,6 +524,7 @@ impl NetBuilder {
             cb: CallbackData {
                 accept: self.accept,
                 timeout: self.timeout,
+                resend_request_interval: limits::resend_request_interval(self.resend_requests_per_second),
                 sslkeylogfile,
                 challenger: Challenger::new(),
                 local_addr,
@@ -518,6 +554,9 @@ impl NetBuilder {
             failed_peers: VecDeque::with_capacity(1),
             dead_peers: VecDeque::with_capacity(1),
             socket_read_errors: 0,
+            connlimit: Connlimit::new(self.connlimit.0, self.connlimit.1),
+            max_packets_per_recv: self.max_packets_per_recv,
+            packets_this_batch: 0,
 
             socket_readable: false,
             readable_peers: ReadablePeers::with_capacity(4),
@@ -542,6 +581,9 @@ impl Net {
             tls_files: None,
             timeout: Duration::from_secs(100),
             key_log: false,
+            connlimit: (0, Duration::ZERO),
+            max_packets_per_recv: 0,
+            resend_requests_per_second: 0,
         }
     }
     pub fn set_userdata(&mut self, idx: PeerIndex, userdata: *mut ()) -> Result<()> {
@@ -572,10 +614,24 @@ impl Net {
     /// told if it can still be told; the outer protocol learns of it from
     /// `recv`, like of any other disconnect.
     fn fail_peer(&mut self, idx: PeerIndex, error: Error) {
-        let Some(peer) = self.peers.get_mut(&idx) else { return };
+        if !self.peers.contains_key(&idx) {
+            return;
+        }
         warn!("peer {}: {}", idx, error);
+        self.end_peer(idx, error.to_string());
+    }
+    /// Turns away a peer that did nothing wrong but arrived at a bad
+    /// time. It goes the way of a failed one, except for the log level.
+    fn refuse_peer(&mut self, idx: PeerIndex, reason: &str) {
+        if !self.peers.contains_key(&idx) {
+            return;
+        }
+        info!("peer {}: refused: {}", idx, reason);
+        self.end_peer(idx, reason.to_owned());
+    }
+    fn end_peer(&mut self, idx: PeerIndex, reason: String) {
+        let peer = self.peers.get_mut(&idx).unwrap();
         peer.closing = true;
-        let reason = error.to_string();
         if let Err(close_error) = peer.conn.close(&self.cb, &mut self.packet_buf, Some(&reason)) {
             debug!("peer {}: closing after the error failed as well: {}", idx, close_error);
         }
@@ -691,11 +747,17 @@ impl Net {
     fn socket_read(&mut self, buf: &mut [u8]) -> Result<SocketReadEvent> {
         let mut connection_resets = 0;
         loop {
+            if self.max_packets_per_recv != 0 && self.packets_this_batch >= self.max_packets_per_recv {
+                return Ok(SocketReadEvent::Capped);
+            }
             // A read can fail for a reason that has nothing to do with the
             // socket, such as an ICMP error a previous send provoked. Only a
             // socket that keeps failing is given up on.
             let (read, from) = match self.cb.socket.recv_from(&mut self.packet_buf[..16384]).no_block() {
-                Ok(Some(read_from)) => read_from,
+                Ok(Some(read_from)) => {
+                    self.packets_this_batch += 1;
+                    read_from
+                }
                 Ok(None) => break,
                 Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {
                     // Windows answers the ICMP error an earlier send provoked
@@ -872,6 +934,8 @@ impl Net {
         Ok(SocketReadEvent::None)
     }
     fn wait_impl(&mut self, timeout: Option<Instant>) -> Result<()> {
+        // The caller had its turn, the next batch of packets may come.
+        self.packets_this_batch = 0;
         if !self.connect_errors.is_empty()
             || !self.failed_peers.is_empty()
             || !self.readable_peers.is_empty()
@@ -1046,6 +1110,15 @@ impl Net {
                                 warn!("peer {}: connected a second time, ignoring", idx);
                                 continue;
                             }
+                            // Only now is the address known to be the
+                            // peer's, so only now does the connection count
+                            // against it.
+                            if !peer.outgoing
+                                && self.connlimit.exceeded(peer.addrs[0].ip(), Instant::now())
+                            {
+                                self.refuse_peer(idx, "Too many connections in a short time");
+                                return self.recv(buf);
+                            }
                             peer.high_level = true;
                             for &addr in &peer.addrs {
                                 self.peer_buckets.get_mut(&Bucket::from(addr)).unwrap().high_level += 1;
@@ -1152,6 +1225,9 @@ impl Net {
                         return Ok(Some(Event::ConnlessChunk(peer_addr, size, meta)));
                     }
                     SocketReadEvent::None => self.socket_readable = false,
+                    // The socket stays readable; the next wait starts the
+                    // next batch.
+                    SocketReadEvent::Capped => return Ok(None),
                 }
                 did_nothing = false;
             }
@@ -1342,6 +1418,24 @@ impl Net {
     pub fn global_token7(&self) -> u32 {
         tw07::global_token(&self.cb)
     }
+    /// Changes the limit on connections per address while running, see
+    /// `NetBuilder::connlimit`.
+    pub fn set_connlimit(&mut self, conns: u32, window: Duration) {
+        self.connlimit.configure(conns, window);
+    }
+    /// See `NetBuilder::max_packets_per_recv`.
+    pub fn set_max_packets_per_recv(&mut self, packets: u32) {
+        self.max_packets_per_recv = packets;
+    }
+    /// See `NetBuilder::resend_requests_per_second`; the connections
+    /// there are already take it over as well.
+    pub fn set_resend_requests_per_second(&mut self, per_second: u32) {
+        let interval = limits::resend_request_interval(per_second);
+        self.cb.resend_request_interval = interval;
+        for peer in self.peers.values_mut() {
+            peer.conn.set_resend_request_interval(interval);
+        }
+    }
     pub fn num_peers_in_bucket(&self, addr: &str) -> Result<u32> {
         let addr: Addr = addr.parse()?;
         Ok(self.peer_buckets.get(&Bucket::from(*addr.socket_addr())).map(|b| b.high_level).unwrap_or(0))
@@ -1434,6 +1528,17 @@ impl Connection {
             Tw07(inner) => inner.timeout(),
             #[cfg(feature = "websocket")]
             Ws(inner) => inner.timeout(),
+        }
+    }
+    /// Only the classic protocols have resend requests.
+    pub fn set_resend_request_interval(&mut self, interval: Duration) {
+        use self::Connection::*;
+        match self {
+            Tw06(inner) => inner.set_resend_request_interval(interval),
+            Tw07(inner) => inner.set_resend_request_interval(interval),
+            Quic(_) => {}
+            #[cfg(feature = "websocket")]
+            Ws(_) => {}
         }
     }
     pub fn on_timeout(

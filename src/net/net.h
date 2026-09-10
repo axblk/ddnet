@@ -159,6 +159,29 @@ bool ddnet_net_identity(struct DdnetNet *net, uint8_t (*identity)[32]);
 bool ddnet_net_set_timeout(struct DdnetNet *net, uint64_t seconds);
 
 /**
+ * How many connections an address may make within `seconds` before
+ * further ones are refused with "Too many connections in a short time";
+ * `conns` of 0 for no limit. Before `ddnet_net_open` or after it.
+ */
+bool ddnet_net_set_connlimit(struct DdnetNet *net, uint32_t conns, uint64_t seconds);
+
+/**
+ * How many packets are read from the socket between two waits before
+ * `ddnet_net_recv` reports nothing further, whatever else is waiting
+ * stays in the socket for the system to drop; 0 reads everything.
+ * Before `ddnet_net_open` or after it.
+ */
+bool ddnet_net_set_max_packets_per_recv(struct DdnetNet *net, uint32_t packets);
+
+/**
+ * How many of a peer's resend requests are answered per second, over
+ * the classic UDP protocols, where a request makes us send everything
+ * that is not acked yet; 0 answers all of them. Before `ddnet_net_open`
+ * or after it, for the connections there are as well.
+ */
+bool ddnet_net_set_resend_requests_per_second(struct DdnetNet *net, uint32_t per_second);
+
+/**
  * Writes the TLS session keys to the file `SSLKEYLOGFILE` names, so the
  * traffic can be read in Wireshark. A debugging aid; off by default.
  */

@@ -45,6 +45,8 @@ mod key;
 #[cfg(not(target_os = "emscripten"))]
 mod libtw2_patch;
 #[cfg(not(target_os = "emscripten"))]
+mod limits;
+#[cfg(not(target_os = "emscripten"))]
 mod net;
 #[cfg(not(target_os = "emscripten"))]
 mod quic;

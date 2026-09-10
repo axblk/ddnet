@@ -27,6 +27,15 @@ public:
 	 * The order determines the order of the font faces and must be preserved.
 	 */
 	std::vector<std::string> m_vFontFilePaths;
+	/**
+	 * Paths of the font files that the client does not wait for, in the order
+	 * in which they are listed in the index. They are read like the others but
+	 * their faces only arrive once they are there, which for a client that
+	 * fetches them over the network is a good deal later. Until then their
+	 * glyphs are missing, so a font that the first screen needs does not belong
+	 * in here.
+	 */
+	std::vector<std::string> m_vDeferredFontFilePaths;
 	std::string m_DefaultFamilyName;
 	std::string m_IconFamilyName;
 	std::vector<std::string> m_vFallbackFamilyNames;

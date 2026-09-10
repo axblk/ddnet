@@ -10,6 +10,7 @@
 
 #include <memory>
 
+class CImageInfo;
 class IEngineGraphics;
 class IEngineGraphicsWindow;
 class IKernel;
@@ -36,6 +37,7 @@ public:
 		vec2 m_Center = vec2(0.0f, 0.0f);
 		float m_Zoom = 1.0f;
 		int m_TimeOffsetMillis = 0;
+		bool m_IgnoreParallax = false;
 	};
 
 	explicit CStandaloneMapView(const char *pLogContext);
@@ -81,6 +83,36 @@ public:
 	 * a window swaps it, a picture is read back with `SaveImage`.
 	 */
 	void Render(const SRenderParams &Params);
+
+	/**
+	 * The parameters that put the given rectangle of the world exactly on the
+	 * surface. The rectangle has to have the shape of the surface, or what is
+	 * drawn comes out stretched.
+	 */
+	SRenderParams ParamsForWorldRect(vec2 TopLeft, vec2 Size) const;
+
+	/**
+	 * Finishes the frame that was drawn and reads it back off the graphics
+	 * card.
+	 *
+	 * @return `true` on success, `false` after reporting what went wrong.
+	 */
+	bool ReadFrame(CImageInfo &Image);
+
+	/**
+	 * Draws the whole map at one pixel per world unit - 32 pixels per tile -
+	 * and writes it as a PNG, in as many pieces as it takes: the surface is
+	 * moved over the map, and the rows of the picture go out as they are
+	 * drawn. That is what makes a picture possible that neither fits in one
+	 * texture nor in memory.
+	 *
+	 * @param pPath The file to write, as a path of the operating system.
+	 * @param TimeOffsetMillis The moment of the envelopes to draw, so that every
+	 * piece of the picture shows the map at the same moment.
+	 *
+	 * @return `true` on success, `false` after reporting what went wrong.
+	 */
+	bool SaveFullImage(const char *pPath, int TimeOffsetMillis);
 
 	/**
 	 * Finishes the frame that was drawn, reads it back off the graphics card

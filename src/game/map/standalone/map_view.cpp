@@ -3,6 +3,7 @@
 #include <base/io.h>
 #include <base/log.h>
 #include <base/math.h>
+#include <base/mem.h>
 
 #include <engine/client/graphics_threaded.h>
 #include <engine/engine.h>
@@ -17,11 +18,15 @@
 #include <game/map/render_layer.h>
 
 #include <algorithm>
+#include <cmath>
+#include <utility>
+#include <vector>
 
 namespace
 {
 	constexpr LOG_COLOR ERROR_LOG_COLOR = LOG_COLOR{255, 0, 0};
-	constexpr LOG_COLOR WARNING_LOG_COLOR = LOG_COLOR{255, 255, 0};
+	// How much of the picture is held in memory at once while it is written.
+	constexpr size_t MAX_FULL_IMAGE_BAND_BYTES = 512 * 1024 * 1024;
 } // namespace
 
 CStandaloneMapView::CStandaloneMapView(const char *pLogContext) :
@@ -193,6 +198,7 @@ void CStandaloneMapView::Render(const SRenderParams &Params)
 	RenderParams.m_DebugRenderQuadClips = false;
 	RenderParams.m_DebugRenderClusterClips = false;
 	RenderParams.m_DebugRenderTileClips = false;
+	RenderParams.m_IgnoreParallax = Params.m_IgnoreParallax;
 
 	// Set up initial screen mapping
 	m_pGraphics->MapScreen(CScreenRect(0, 0, m_Width, m_Height));
@@ -201,11 +207,23 @@ void CStandaloneMapView::Render(const SRenderParams &Params)
 	m_MapRenderer.Render(RenderParams);
 }
 
-bool CStandaloneMapView::SaveImage(const char *pPath)
+CStandaloneMapView::SRenderParams CStandaloneMapView::ParamsForWorldRect(vec2 TopLeft, vec2 Size) const
 {
-	// Finish the frame and read the virtual screen back.
-	CImageInfo Image;
-	std::unique_ptr<IGraphics::ITextureReadback> pReadback = m_pGraphics->PresentAndReadbackAsync();
+	SRenderParams Params;
+	Params.m_Center = TopLeft + Size / 2.0f;
+	float ViewWidth, ViewHeight;
+	m_pGraphics->CalcScreenParams(m_pGraphics->ScreenAspect(), 1.0f, &ViewWidth, &ViewHeight);
+	Params.m_Zoom = ViewWidth <= 0.0f ? 1.0f : Size.x / ViewWidth;
+	return Params;
+}
+
+bool CStandaloneMapView::ReadFrame(CImageInfo &Image)
+{
+	// Finish the frame and read the virtual screen back. What is handed over is
+	// the picture of the frame before, so that its memory is used again instead
+	// of another being allocated for every frame; what is left behind is an
+	// empty one, which is what the readback fills.
+	std::unique_ptr<IGraphics::ITextureReadback> pReadback = m_pGraphics->PresentAndReadbackAsync(std::exchange(Image, CImageInfo()));
 	if(pReadback != nullptr)
 		(void)pReadback->Wait(Image);
 
@@ -214,6 +232,87 @@ bool CStandaloneMapView::SaveImage(const char *pPath)
 		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "The backend returned no image data");
 		return false;
 	}
+	return true;
+}
+
+bool CStandaloneMapView::SaveFullImage(const char *pPath, int TimeOffsetMillis)
+{
+	if(m_pMap == nullptr)
+	{
+		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "No map is loaded");
+		return false;
+	}
+
+	const vec2 WorldSize = MapWorldSize();
+	const size_t FullWidth = static_cast<size_t>(std::max(1.0f, std::round(WorldSize.x)));
+	const size_t FullHeight = static_cast<size_t>(std::max(1.0f, std::round(WorldSize.y)));
+	const size_t TileWidth = static_cast<size_t>(std::max(m_Width, 1));
+	const size_t TileHeight = static_cast<size_t>(std::max(m_Height, 1));
+
+	// One band of the picture is as tall as the surface and as wide as the
+	// whole map, and it is the only thing here that is held in memory at once.
+	// Whoever wants a smaller one asks for a smaller surface.
+	const size_t BandBytes = FullWidth * TileHeight * 4;
+	if(BandBytes > MAX_FULL_IMAGE_BAND_BYTES)
+	{
+		log_error_color(ERROR_LOG_COLOR, m_pLogContext,
+			"A %" PRIzu " by %" PRIzu " picture needs %" PRIzu " MiB per band at this surface height; ask for a surface no taller than %" PRIzu " pixels",
+			FullWidth, FullHeight, BandBytes / (1024 * 1024), MAX_FULL_IMAGE_BAND_BYTES / (FullWidth * 4));
+		return false;
+	}
+
+	IOHANDLE File = io_open(pPath, IOFLAG_WRITE);
+	CPngRowWriter Writer;
+	if(!Writer.Begin(File, pPath, FullWidth, FullHeight, CImageInfo::FORMAT_RGBA))
+		return false;
+
+	std::vector<uint8_t> vBand(BandBytes);
+	CImageInfo Image;
+	for(size_t Top = 0; Top < FullHeight; Top += TileHeight)
+	{
+		const size_t Rows = std::min(TileHeight, FullHeight - Top);
+		for(size_t Left = 0; Left < FullWidth; Left += TileWidth)
+		{
+			const size_t Columns = std::min(TileWidth, FullWidth - Left);
+			// The piece that is drawn always has the shape of the surface,
+			// even where the map ends inside it; what sticks out is drawn and
+			// then left behind.
+			SRenderParams Params = ParamsForWorldRect(vec2(Left, Top), vec2(TileWidth, TileHeight));
+			Params.m_TimeOffsetMillis = TimeOffsetMillis;
+			Params.m_IgnoreParallax = true;
+			Render(Params);
+			if(!ReadFrame(Image))
+			{
+				Image.Free();
+				return false;
+			}
+			if(Image.m_Format != CImageInfo::FORMAT_RGBA || Image.m_Width < Columns || Image.m_Height < Rows)
+			{
+				log_error_color(ERROR_LOG_COLOR, m_pLogContext, "The backend returned a %" PRIzu " by %" PRIzu " frame where %" PRIzu " by %" PRIzu " was drawn",
+					Image.m_Width, Image.m_Height, Columns, Rows);
+				Image.Free();
+				return false;
+			}
+			for(size_t Row = 0; Row < Rows; ++Row)
+			{
+				mem_copy(&vBand[(Row * FullWidth + Left) * 4], Image.m_pData + Row * Image.m_Width * 4, Columns * 4);
+			}
+		}
+		if(!Writer.WriteRows(vBand.data(), Rows))
+		{
+			Image.Free();
+			return false;
+		}
+	}
+	Image.Free();
+	return Writer.End();
+}
+
+bool CStandaloneMapView::SaveImage(const char *pPath)
+{
+	CImageInfo Image;
+	if(!ReadFrame(Image))
+		return false;
 
 	bool Success = false;
 	IOHANDLE File = io_open(pPath, IOFLAG_WRITE);

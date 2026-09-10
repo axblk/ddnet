@@ -65,6 +65,11 @@ public:
 	bool m_DebugRenderQuadClips;
 	bool m_DebugRenderClusterClips;
 	bool m_DebugRenderTileClips;
+	// Draw every group where the map itself is, whatever speed it moves at.
+	// A picture of a whole map is taken from no one place, so a layer that
+	// moves at its own speed has no one right offset either, and only this
+	// joins up between the pieces such a picture is drawn in.
+	bool m_IgnoreParallax = false;
 };
 
 class CRenderLayer : public CRenderComponent

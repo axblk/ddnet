@@ -15,10 +15,13 @@ static constexpr const char *TOOL_NAME = "map_render";
 
 static void PrintUsage(const char *pProgramName)
 {
-	log_error(TOOL_NAME, "Usage: %s [-o <output>] [-w <width>] [-h <height>] [-z <zoom>] [-x <x-position>] [-y <y-position>] [-t <time>] <input.map>", pProgramName);
+	log_error(TOOL_NAME, "Usage: %s [-o <output>] [-w <width>] [-h <height>] [-z <zoom>] [-x <x-position>] [-y <y-position>] [-t <time>] [-f] <input.map>", pProgramName);
 	log_error(TOOL_NAME, "  -o <output>      Output PNG file (default: output.png)");
 	log_error(TOOL_NAME, "  -w <width>       Output image width (default: 1920)");
 	log_error(TOOL_NAME, "  -h <height>      Output image height (default: 1080)");
+	log_error(TOOL_NAME, "  -f               Render the whole map at 32 pixels per tile, in as many");
+	log_error(TOOL_NAME, "                   pieces as it takes. -w and -h are then the size of one");
+	log_error(TOOL_NAME, "                   piece, and -z, -x and -y do not apply.");
 	log_error(TOOL_NAME, "  -z <zoom>        Map zoom (default: auto, expects: 1.0f)");
 	log_error(TOOL_NAME, "  -x <x-position>  X-Position (default: auto, expects ingame X coordinate i.e. 20.32)");
 	log_error(TOOL_NAME, "  -y <y-position>  Y-Position (default: auto, expects ingame Y coordinate i.e. 20.32)");
@@ -40,6 +43,7 @@ int main(int argc, const char **argv)
 	float Zoom = 1.0f;
 	int TimeOffsetMillis = 0;
 
+	bool Full = false;
 	bool InvalidUsage = false;
 
 	for(int i = 1; i < argc; i++)
@@ -75,6 +79,10 @@ int main(int argc, const char **argv)
 		{
 			TimeOffsetMillis = std::max(0, atoi(argv[++i]));
 		}
+		else if(str_comp(argv[i], "-f") == 0)
+		{
+			Full = true;
+		}
 		else if(argv[i][0] != '-')
 		{
 			if(!InputMap.empty())
@@ -91,7 +99,7 @@ int main(int argc, const char **argv)
 		}
 	}
 
-	if(InputMap.empty() || InvalidUsage)
+	if(InputMap.empty() || InvalidUsage || (Full && (!AutoZoom || !AutoPosition)))
 	{
 		PrintUsage(argv[0]);
 		return 1;
@@ -113,26 +121,36 @@ int main(int argc, const char **argv)
 
 	if(View.Width() != OutputWidth || View.Height() != OutputHeight)
 	{
-		log_warn_color(WarningLogColor, TOOL_NAME, "Image was scaled down to %dx%d", View.Width(), View.Height());
+		log_warn_color(WarningLogColor, TOOL_NAME, "%s was scaled down to %dx%d",
+			Full ? "Each piece" : "Image", View.Width(), View.Height());
 	}
 
 	// Load map from absolute path
 	if(!View.LoadMap(InputMap.c_str(), IStorage::TYPE_ABSOLUTE))
 		return 1;
 
-	// Calculate center and zoom to fit the map
-	const vec2 MapWorldSize = View.MapWorldSize();
-	if(AutoZoom)
-		Zoom = View.FitZoom();
+	bool Saved;
+	if(Full)
+	{
+		Saved = View.SaveFullImage(OutputFile.c_str(), TimeOffsetMillis);
+	}
+	else
+	{
+		// Calculate center and zoom to fit the map
+		const vec2 MapWorldSize = View.MapWorldSize();
+		if(AutoZoom)
+			Zoom = View.FitZoom();
 
-	CStandaloneMapView::SRenderParams RenderParams;
-	RenderParams.m_Center = AutoPosition ? MapWorldSize / 2.0f : Position * 32.0f;
-	RenderParams.m_Zoom = Zoom;
-	RenderParams.m_TimeOffsetMillis = TimeOffsetMillis;
-	View.Render(RenderParams);
+		CStandaloneMapView::SRenderParams RenderParams;
+		RenderParams.m_Center = AutoPosition ? MapWorldSize / 2.0f : Position * 32.0f;
+		RenderParams.m_Zoom = Zoom;
+		RenderParams.m_TimeOffsetMillis = TimeOffsetMillis;
+		View.Render(RenderParams);
+		Saved = View.SaveImage(OutputFile.c_str());
+	}
 
 	int ReturnCode = 1;
-	if(View.SaveImage(OutputFile.c_str()))
+	if(Saved)
 	{
 		log_info_color(SuccessLogColor, TOOL_NAME, "Saved screenshot to '%s'", OutputFile.c_str());
 		ReturnCode = 0;

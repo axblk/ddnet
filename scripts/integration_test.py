@@ -138,7 +138,16 @@ class TestRunner:
 		# the test timeouts, otherwise a slowed down client or server drops its own
 		# connection while the test is still waiting. 100 is the default of the config
 		# variable, 1000 its maximum.
-		self.conn_timeout = min(1000, round(100 * self.timeout_multiplier))
+		self.conn_timeout = self.scaled_setting(100, 5, 1000)
+
+	def scaled_setting(self, value, lowest, highest):
+		"""A config value the engine reads as wall clock, scaled like the timeouts.
+
+		A test that asks for a shorter one than the default, to wait for what it
+		measures, still has to leave a slowed down engine the room to get there,
+		so the value goes up with `timeout_multiplier` and stays in the range the
+		config variable takes."""
+		return min(highest, max(lowest, round(value * self.timeout_multiplier)))
 
 	def run_test(self, test):
 		tmp_dir = tempfile.mkdtemp(prefix=f"integration_{test.name}_", dir=self.test_dir)
@@ -476,7 +485,7 @@ def open_fifo(name):
 
 
 class Client(Runnable):
-	def __init__(self, test_env, extra_args=[]):  # noqa: B006 mutable-default-arguments
+	def __init__(self, test_env, extra_args=[], *, allow_unclean_exit=False):  # noqa: B006 mutable-default-arguments
 		name = f"client{test_env.num_clients}"
 		self.fifo_name, self.fifo_path = fifo_name_path(test_env, name)
 		# Delay opening the FIFO until the client has started, because it will
@@ -493,6 +502,7 @@ class Client(Runnable):
 				f"conn_timeout {test_env.runner.conn_timeout}",
 			]
 			+ extra_args,
+			allow_unclean_exit=allow_unclean_exit,
 		)
 		test_env.num_clients += 1
 
@@ -755,6 +765,54 @@ def client_can_connect_quic_pinned(test_env):
 	client.exit()
 	server.wait_for_exit()
 	client.wait_for_exit()
+
+
+@test(timeout=90)
+def client_times_out(test_env):
+	# A client that goes silent is dropped after `conn_timeout`. Killed, it
+	# leaves without a word, so the server has to notice on its own.
+	client = test_env.client(allow_unclean_exit=True)
+	server = test_env.server([f"conn_timeout {test_env.runner.scaled_setting(5, 5, 1000)}"])
+	wait_for_startup([client, server])
+	client.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client.process.kill()
+	server.wait_for_log_suffix("has left the game (Timeout)", timeout=20)
+	server.exit()
+	server.wait_for_exit()
+
+
+@test(timeout=120)
+def timeout_protection_keeps_the_slot(test_env):
+	# A client that told the server its timeout code keeps its slot through
+	# a timeout, and takes it back when it comes again with the same code.
+	# The clients send a code of their own a while after entering; the test
+	# gives one itself, as a chat message after it shows it has arrived.
+	client1 = test_env.client(allow_unclean_exit=True)
+	server = test_env.server([
+		f"conn_timeout {test_env.runner.scaled_setting(5, 5, 1000)}",
+		f"conn_timeout_protection {test_env.runner.scaled_setting(60, 5, 10000)}",
+	])
+	wait_for_startup([client1, server])
+	client1.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client1.command("say /timeout protection")
+	client1.command("say ready")
+	server.wait_for_log_prefix("chat: 0:", timeout=10)
+	client1.process.kill()
+	server.wait_for_log_prefix("net: client 0 timed out, keeping the slot", timeout=20)
+	client2 = test_env.client()
+	client2.wait_for_startup()
+	client2.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game. ClientId=1", timeout=10)
+	client2.command("say /timeout protection")
+	server.wait_for_log_suffix("has left the game (Timeout Protection used)", timeout=20)
+	client2.command("disconnect")
+	server.wait_for_log_prefix("game: leave player='0:", timeout=10)
+	server.exit()
+	client2.exit()
+	server.wait_for_exit()
+	client2.wait_for_exit()
 
 
 @test

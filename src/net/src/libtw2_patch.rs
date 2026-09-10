@@ -5,6 +5,7 @@
 //! nothing, so such a build still speaks 0.6 over UDP and connects to 0.7
 //! servers as a client.
 
+use libtw2_net::Timestamp;
 use log::warn;
 
 /// Whether the crate was built against a patched `libtw2-net`. What the
@@ -30,6 +31,28 @@ pub fn accept_token7(own_token: libtw2_net::protocol7::Token) -> Option<libtw2_n
     #[cfg(not(feature = "libtw2-patch"))]
     {
         let _ = own_token;
+        None
+    }
+}
+
+/// How long the oldest chunk without an ack has waited, `libtw2-patches/0002`.
+pub fn oldest_unacked_first_send6(conn: &libtw2_net::Connection) -> Option<Timestamp> {
+    #[cfg(feature = "libtw2-patch")]
+    return conn.oldest_unacked_first_send();
+    #[cfg(not(feature = "libtw2-patch"))]
+    {
+        let _ = conn;
+        None
+    }
+}
+
+/// The same for 0.7.
+pub fn oldest_unacked_first_send7(conn: &libtw2_net::connection7::Connection) -> Option<Timestamp> {
+    #[cfg(feature = "libtw2-patch")]
+    return conn.oldest_unacked_first_send();
+    #[cfg(not(feature = "libtw2-patch"))]
+    {
+        let _ = conn;
         None
     }
 }

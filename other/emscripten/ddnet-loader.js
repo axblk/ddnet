@@ -73,14 +73,24 @@ const DDNetLoader = (() => {
 	// hands out the memory they share to a page that is cross-origin isolated.
 	// Drawing without a window needs WebGPU, because that is the only backend
 	// left once the window is gone.
-	function supportProblem(needsWebGpu) {
+	async function supportProblem(needsWebGpu) {
 		if (typeof SharedArrayBuffer === "undefined" || self.crossOriginIsolated === false) {
 			return "This page is not cross-origin isolated, so the browser withholds the shared memory this needs. " +
 				"The page has to send Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp, " +
 				"or load coi-serviceworker.js before anything else.";
 		}
-		if (needsWebGpu && !navigator.gpu) {
-			return "This browser has no WebGPU, which is what a render without a window draws with. A current Chrome or Firefox has it.";
+		if (needsWebGpu) {
+			if (!navigator.gpu) {
+				return "This browser has no WebGPU, which is what a render without a window draws with. A current Chrome or Firefox has it.";
+			}
+			// Having WebGPU and having something to draw with are two
+			// different things: a browser started without a graphics device,
+			// or one that blocklisted the one it found, answers with nothing
+			// and only says so when it is asked.
+			const adapter = await navigator.gpu.requestAdapter().catch(() => null);
+			if (!adapter) {
+				return "This browser has WebGPU but no graphics adapter it is willing to use, so there is nothing to draw with.";
+			}
 		}
 		return null;
 	}
@@ -469,7 +479,7 @@ const DDNetLoader = (() => {
 			}
 			// Said once, and said here: what follows would say it a hundred
 			// times, in the words of whatever failed first.
-			const problem = supportProblem(options.needsWebGpu === true);
+			const problem = await supportProblem(options.needsWebGpu === true);
 			if (problem !== null) {
 				this.output(problem, { error: true, bold: true });
 				throw new Error(problem);
@@ -786,7 +796,7 @@ self.onmessage = async event => {
 		// A worker inherits the page's isolation, so what the page cannot do
 		// the worker cannot either - and it is said here, where the page is
 		// listening, rather than from inside the worker.
-		const problem = supportProblem(true);
+		const problem = await supportProblem(true);
 		if (problem !== null) {
 			throw new Error(problem);
 		}
@@ -814,10 +824,15 @@ self.onmessage = async event => {
 		const bootstrap = URL.createObjectURL(new Blob([WORKER_BOOTSTRAP], { type: "text/javascript" }));
 		const worker = new Worker(bootstrap);
 		URL.revokeObjectURL(bootstrap);
-		if (options.onStart) {
-			options.onStart({ quit: () => worker.terminate() });
-		}
-		return await new Promise((resolve, reject) => {
+		// A worker that is stopped says nothing more, so whoever stopped it has
+		// to be the one to answer for it: without this the render would be over
+		// and the promise still waiting.
+		var stopRender = () => worker.terminate();
+		const finished = new Promise((resolve, reject) => {
+			stopRender = () => {
+				worker.terminate();
+				reject(new Error("The render was stopped."));
+			};
 			worker.onmessage = event => {
 				const message = event.data;
 				if (message.type === "output") {
@@ -845,6 +860,10 @@ self.onmessage = async event => {
 			};
 			worker.postMessage(request, transfer);
 		});
+		if (options.onStart) {
+			options.onStart({ quit: () => stopRender() });
+		}
+		return await finished;
 	}
 
 	// The viewers' own controls, as calls rather than as names to spell out:
@@ -1032,6 +1051,19 @@ self.onmessage = async event => {
 		 */
 		mapControls(instance) {
 			return mapControls(instance);
+		},
+
+		/**
+		 * What this browser cannot do, in one sentence, or `null` when it can
+		 * do all of it. A page can say so itself before it offers something
+		 * that will not work. Answers with a promise, because asking a browser
+		 * for a graphics adapter is a question it takes a moment over.
+		 *
+		 * @param needsWebGpu Whether what is offered draws without a window,
+		 * which is the one thing that needs WebGPU.
+		 */
+		supportProblem(needsWebGpu) {
+			return supportProblem(needsWebGpu === true);
 		},
 
 		/**

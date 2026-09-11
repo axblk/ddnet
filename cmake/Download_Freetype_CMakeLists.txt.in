@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.12...3.27.4)
+
+project(freetype-download NONE)
+
+include(ExternalProject)
+ExternalProject_Add(freetype
+  GIT_REPOSITORY    https://gitlab.freedesktop.org/freetype/freetype.git
+  GIT_TAG           "${DDNET_FREETYPE_VERSION}"
+  GIT_SHALLOW       ON
+  SOURCE_DIR        "${CMAKE_BINARY_DIR}/freetype-src"
+  BINARY_DIR        "${CMAKE_BINARY_DIR}/freetype-build"
+  CONFIGURE_COMMAND ""
+  BUILD_COMMAND     ""
+  INSTALL_COMMAND   ""
+  TEST_COMMAND      ""
+  TLS_VERIFY        ON
+)

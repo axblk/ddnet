@@ -137,6 +137,7 @@ option(CLIENT "Compile client" ON)
 option(SERVER "Compile server" ON)
 option(TOOLS "Compile tools" ON)
 option(WEBGPU_BACKEND_PROTOTYPE "Build the optional WebGPU client backend" OFF)
+option(BUILD_FREETYPE "Download and compile FreeType with only the font formats this game opens" OFF)
 option(DOWNLOAD_GTEST "Download and compile GTest" ${AUTO_DEPENDENCIES_DEFAULT})
 option(STEAM "Build the Steam release version" OFF)
 option(DISCORD "Enable Discord rich presence support" OFF)
@@ -621,7 +622,7 @@ if(CLIENT AND VIDEORECORDER AND NOT TARGET_OS STREQUAL "emscripten")
   find_package(FFMPEG)
 endif()
 find_package(Freetype)
-if(DOWNLOAD_GTEST)
+if(DOWNLOAD_GTEST OR BUILD_FREETYPE)
   find_package(Git)
 endif()
 if(NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "ios"))
@@ -697,6 +698,83 @@ else()
   set(WEBSOCKETS_INCLUDE_DIRS)
 endif()
 
+########################################################################
+# BUILD FREETYPE
+########################################################################
+
+# The library that turns a font file into pixels, built here instead of
+# taken from the system or from `ddnet-libs`, so that it can be built with
+# only the font formats this game opens registered in it - see
+# `cmake/freetype/ftmodule.h`. What that leaves out is worth about 140 KB
+# of WebAssembly, which is why the web build asks for it.
+if(BUILD_FREETYPE)
+  set(DDNET_FREETYPE_VERSION VER-2-14-3)
+  configure_file(cmake/Download_Freetype_CMakeLists.txt.in freetype-download/CMakeLists.txt)
+  execute_process(COMMAND ${CMAKE_COMMAND} -G "${CMAKE_GENERATOR}" .
+    RESULT_VARIABLE FREETYPE_DOWNLOAD_RESULT
+    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}/freetype-download
+  )
+  if(FREETYPE_DOWNLOAD_RESULT)
+    message(FATAL_ERROR "CMake step for FreeType failed: ${FREETYPE_DOWNLOAD_RESULT}")
+  endif()
+  execute_process(COMMAND ${CMAKE_COMMAND} --build .
+    RESULT_VARIABLE FREETYPE_DOWNLOAD_RESULT
+    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}/freetype-download
+  )
+  if(FREETYPE_DOWNLOAD_RESULT)
+    message(FATAL_ERROR "Download step for FreeType failed: ${FREETYPE_DOWNLOAD_RESULT}")
+  endif()
+  # The same dependencies the prebuilt libraries are built with, see
+  # `scripts/compile_libs/cmake_lib_compile.sh`: no text shaping and no
+  # exotic compression, but PNG and zlib, because that is what a font with
+  # colour glyphs in it is made of. Both are already linked here, so
+  # FreeType is pointed at those rather than left to find its own.
+  # This library is linked into the game and goes nowhere else, so it
+  # brings none of its own headers or packaging rules into ours.
+  set(SKIP_INSTALL_ALL ON)
+  set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
+  set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
+  set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
+  set(FT_REQUIRE_PNG ON CACHE BOOL "" FORCE)
+  set(FT_REQUIRE_ZLIB ON CACHE BOOL "" FORCE)
+  # FreeType asks for those two with `find_package`, which lands on this
+  # project's own modules: they say where the headers are and what to link,
+  # but they define no imported target to link it as, and one of them is
+  # built from source here rather than being a library at all. So the
+  # targets are made here and carry the headers only - this FreeType is a
+  # static library inside an executable that links zlib and libpng itself.
+  if(NOT TARGET ZLIB::ZLIB)
+    add_library(ZLIB::ZLIB INTERFACE IMPORTED)
+    target_include_directories(ZLIB::ZLIB INTERFACE ${ZLIB_INCLUDE_DIRS})
+  endif()
+  if(NOT TARGET PNG::PNG)
+    add_library(PNG::PNG INTERFACE IMPORTED)
+    target_include_directories(PNG::PNG INTERFACE ${PNG_INCLUDE_DIRS})
+  endif()
+  # FreeType decides whether it may use `unistd.h` and `fcntl.h` by
+  # compiling *and linking* a small program. This project's link flags name
+  # exports that such a program does not have, so the link fails, FreeType
+  # concludes the headers are missing, and its POSIX file reader then does
+  # not compile. Checking against a static library instead skips the link;
+  # `scripts/compile_libs/cmake_lib_compile.sh` does the same where it hits
+  # the same wall.
+  set(FREETYPE_OUTER_TRY_COMPILE_TARGET_TYPE "${CMAKE_TRY_COMPILE_TARGET_TYPE}")
+  set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+  add_subdirectory(
+    ${PROJECT_BINARY_DIR}/freetype-src
+    ${PROJECT_BINARY_DIR}/freetype-build
+    EXCLUDE_FROM_ALL
+  )
+  set(CMAKE_TRY_COMPILE_TARGET_TYPE "${FREETYPE_OUTER_TRY_COMPILE_TARGET_TYPE}")
+  target_compile_definitions(freetype PRIVATE FT_CONFIG_MODULES_H=<ftmodule.h>)
+  target_include_directories(freetype PRIVATE ${PROJECT_SOURCE_DIR}/cmake/freetype)
+  set(FREETYPE_FOUND ON)
+  set(FREETYPE_LIBRARIES freetype)
+  set(FREETYPE_INCLUDE_DIRS ${PROJECT_BINARY_DIR}/freetype-src/include)
+  # Nothing to put next to the executable: this one is linked into it.
+  set(FREETYPE_COPY_FILES)
+endif()
+
 if(EXCEPTION_HANDLING)
   find_package(Crashdump)
 endif()
@@ -749,8 +827,12 @@ endif()
 if(CLIENT AND VIDEORECORDER AND NOT TARGET_OS STREQUAL "emscripten")
   show_dependency_status("FFmpeg" FFMPEG)
 endif()
-show_dependency_status("Freetype" FREETYPE)
-if(DOWNLOAD_GTEST)
+if(BUILD_FREETYPE)
+  message(STATUS " * Freetype built from ${DDNET_FREETYPE_VERSION}")
+else()
+  show_dependency_status("Freetype" FREETYPE)
+endif()
+if(DOWNLOAD_GTEST OR BUILD_FREETYPE)
   show_dependency_status("Git" GIT)
 endif()
 show_dependency_status("Glew" GLEW)

@@ -2531,6 +2531,7 @@ set_src(GAME_SHARED GLOB src/game
   collision.h
   gamecore.cpp
   gamecore.h
+  ghost_data.h
   layers.cpp
   layers.h
   localization.cpp
@@ -3400,10 +3401,10 @@ if(CLIENT)
     # `cmake --build . --target demo-renderer`.
     add_executable(demo-renderer EXCLUDE_FROM_ALL
       ${DEMO_RENDERER_SRC}
-      ${DEPS} ${GLEW_DEP}
+      ${DEPS}
       ${WAVPACK_DEP}
       # tidy-alphabetical-start
-      $<TARGET_OBJECTS:engine-client-graphics>
+      $<TARGET_OBJECTS:engine-client-graphics-headless>
       $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
@@ -3427,7 +3428,6 @@ if(CLIENT)
       # tidy-alphabetical-start
       ${FFMPEG_LIBRARIES}
       ${FREETYPE_LIBRARIES}
-      ${GLEW_LIBRARIES}
       ${PNG_LIBRARIES}
       ${VULKAN_LIBRARIES}
       ${WAVPACK_LIBRARIES}
@@ -3435,7 +3435,7 @@ if(CLIENT)
       ${OPUSFILE_LIBRARIES}
       ${OPUS_LIBRARIES}
       ${OGG_LIBRARIES}
-      ${PLATFORM_CLIENT_LIBS}
+      ${PLATFORM_HEADLESS_CLIENT_LIBS}
       rust_engine_shared
       ${LIBS}
     )
@@ -3761,6 +3761,7 @@ if(TOOLS)
     demo_extract_chat.cpp
     dilate.cpp
     dummy_map.cpp
+    ghost_to_demo.cpp
     map_convert_07.cpp
     map_diff.cpp
     map_extract.cpp
@@ -3798,6 +3799,16 @@ if(TOOLS)
         list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS})
         list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-gfx>)
         list(APPEND TOOL_LIBS ${PNG_LIBRARIES})
+      endif()
+      if(TOOL MATCHES "^ghost_to_demo$")
+        # Reading a ghost is the client's, and that one file of it carries
+        # nothing else of the client with it.
+        list(APPEND EXTRA_TOOL_SRC
+          # tidy-alphabetical-start
+          src/engine/client/ghost.cpp
+          src/engine/client/ghost.h
+          # tidy-alphabetical-end
+        )
       endif()
       if(TOOL MATCHES "^config_")
         list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")

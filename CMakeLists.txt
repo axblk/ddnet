@@ -500,6 +500,15 @@ function(set_own_rpath TARGET)
   endif()
 endfunction()
 
+# The name a browser build hands its factory out under. One per program, so a
+# page can have more than one of them and neither takes a name the page around
+# it might want.
+function(set_web_export_name target name)
+  if(TARGET_OS STREQUAL "emscripten")
+    target_link_options(${target} PRIVATE "-sEXPORT_NAME=${name}")
+  endif()
+endfunction()
+
 ########################################################################
 # INITIALIZE TARGET LISTS
 ########################################################################
@@ -950,7 +959,10 @@ elseif(TARGET_OS STREQUAL "emscripten")
   find_package(OpenGL)
   set(PLATFORM_CLIENT_LIBS GL)
   set(PLATFORM_CLIENT_INCLUDE_DIRS "")
-  set(CMAKE_EXECUTABLE_SUFFIX ".html")
+  # A program is a script that a page loads, not a page of its own: every one
+  # of them here has a page written for it, and emscripten's shell was never
+  # used. It also cannot be used together with a factory of our own naming.
+  set(CMAKE_EXECUTABLE_SUFFIX ".js")
   set(PLATFORM_CLIENT)
   set(PLATFORM_LIBS)
   list(APPEND PLATFORM_LIBS rt) # clock_gettime for glibc < 2.17
@@ -3458,6 +3470,7 @@ if(CLIENT)
   set_property(TARGET game-client
       PROPERTY OUTPUT_NAME ${CLIENT_EXECUTABLE}
   )
+  set_web_export_name(game-client DDNetClient)
   target_link_libraries(game-client ${LIBS_CLIENT})
 
   if(WEBGPU_BACKEND_PROTOTYPE AND TARGET_OS STREQUAL "emscripten")
@@ -3634,6 +3647,7 @@ if(CLIENT)
       add_dependencies(demo-viewer build_vulkan_shaders)
     endif()
     set_property(TARGET demo-viewer PROPERTY OUTPUT_NAME ddnet-demo-viewer)
+    set_web_export_name(demo-viewer DDNetDemoViewer)
     set_own_rpath(demo-viewer)
     target_compile_definitions(demo-viewer PRIVATE CONF_DEMO_VIEWER_TOOL)
     set_property(TARGET demo-viewer PROPERTY DDNET_NO_CLIENT_INTEGRATIONS TRUE)
@@ -3723,6 +3737,7 @@ if(CLIENT)
       add_dependencies(map-viewer build_vulkan_shaders)
     endif()
     set_property(TARGET map-viewer PROPERTY OUTPUT_NAME ddnet-map-viewer)
+    set_web_export_name(map-viewer DDNetMapViewer)
     set_own_rpath(map-viewer)
     set_property(TARGET map-viewer PROPERTY DDNET_NO_CLIENT_INTEGRATIONS TRUE)
     if(VULKAN)

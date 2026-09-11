@@ -28,10 +28,12 @@
 			<button id="restart" title="Home">Restart</button>
 			<button id="export-button">Export video</button>
 		</div>
+		<script src="ddnet-demo-viewer.js"></script>
 		<script src="ddnet-loader.js"></script>
 		<script>
 			// A demo is dropped onto the window, or named as `demo.html#demo=<url>`.
-			DDNetLoader.create({
+			const started = DDNetLoader.page({
+				module: DDNetDemoViewer,
 				programName: "Demo viewer",
 				accept: [".demo"],
 				urlParams: ["demo"],
@@ -58,18 +60,12 @@
 				var seeking = false;
 				var exportStarted = false;
 
-				// The viewer is only there between the start of the demo and the end
-				// of the program, and the page outlives both, so every call has to
-				// survive being made outside of that.
+				// The page is there before the viewer is and outlives it, so every
+				// call has to survive being made outside of that.
+				var viewer = null;
+				started.then(instance => { viewer = instance; });
 				function call(name, returnType, argTypes, args) {
-					if (typeof Module === "undefined" || typeof Module.ccall !== "function") {
-						return null;
-					}
-					try {
-						return Module.ccall(name, returnType, argTypes || [], args || []);
-					} catch (error) {
-						return null;
-					}
+					return viewer == null ? null : viewer.call(name, returnType, argTypes, args);
 				}
 
 				function formatTime(seconds) {
@@ -133,6 +129,5 @@
 				}, 200);
 			})();
 		</script>
-		<script async src="ddnet-demo-viewer.js"></script>
 	</body>
 </html>

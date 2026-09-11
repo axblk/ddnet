@@ -194,11 +194,14 @@ void CWebDataIndex::List(const char *pPath, const std::function<void(const CEntr
 
 namespace
 {
-	// Where the page is, so that a worker builds the same URL as the page does
-	// rather than resolving one against the script it was started from.
+	// Where the data directory is. A page that embeds one of these programs may
+	// well keep it somewhere other than next to itself, so it can say where; the
+	// page it is on is only the guess for when nobody said. It is read here and
+	// not on each thread, so that a worker builds the same URL as the page.
 	// clang-format off
 EM_JS(char *, WebFsPageBase, (), {
-	return stringToNewUTF8(new URL(".", location.href).href);
+	const base = Module["ddnetDataBase"];
+	return stringToNewUTF8(new URL(base === undefined ? "." : base, location.href).href);
 });
 
 EM_JS(double, WebFsNow, (), {

@@ -15,9 +15,7 @@ file(MAKE_DIRECTORY "${SITE_DIR}")
 
 # What emscripten emits for one program. Not all of it exists: there is a
 # `.data` only for a program that preloads files, and whether there is a
-# separate worker script depends on the emscripten version. The `.html` shell
-# emscripten writes is deliberately left behind - every program here has a page
-# of its own.
+# separate worker script depends on the emscripten version.
 foreach(program IN LISTS PROGRAMS)
   set(found FALSE)
   foreach(suffix ".js" ".wasm" ".data" ".worker.js")

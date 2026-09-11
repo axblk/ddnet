@@ -24,10 +24,12 @@
 			<button id="export-view-button">Save this view</button>
 			<button id="export-full-button" title="The whole map at 32 pixels per tile">Save the whole map</button>
 		</div>
+		<script src="ddnet-map-viewer.js"></script>
 		<script src="ddnet-loader.js"></script>
 		<script>
 			// A map is dropped onto the window, or named as `map.html#map=<url>`.
-			DDNetLoader.create({
+			const started = DDNetLoader.page({
+				module: DDNetMapViewer,
 				programName: "Map viewer",
 				accept: [".map"],
 				urlParams: ["map"],
@@ -55,18 +57,12 @@
 				const EXPORT_IDLE = 0, EXPORT_PENDING = 1, EXPORT_SUCCEEDED = 2, EXPORT_FAILED = 3;
 				var lastExportState = EXPORT_IDLE;
 
-				// The viewer is only there between the start of the program and its
-				// end, and the page outlives both, so every call has to survive
-				// being made outside of that.
+				// The page is there before the viewer is and outlives it, so every
+				// call has to survive being made outside of that.
+				var viewer = null;
+				started.then(instance => { viewer = instance; });
 				function call(name, returnType, argTypes, args) {
-					if (typeof Module === "undefined" || typeof Module.ccall !== "function") {
-						return null;
-					}
-					try {
-						return Module.ccall(name, returnType, argTypes || [], args || []);
-					} catch (error) {
-						return null;
-					}
+					return viewer == null ? null : viewer.call(name, returnType, argTypes, args);
 				}
 
 				document.getElementById('fit-button').addEventListener('click', () => {
@@ -107,6 +103,5 @@
 				}, 200);
 			})();
 		</script>
-		<script async src="ddnet-map-viewer.js"></script>
 	</body>
 </html>

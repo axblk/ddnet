@@ -17,10 +17,12 @@
 			<div id="outputcontent"></div>
 		</div>
 		<canvas id="canvas" style="display: none">Canvas not supported.</canvas>
+		<script src="DDNet.js"></script>
 		<script src="ddnet-loader.js"></script>
 		<script>
 			// A demo, a map or a `ddnet://` link is dropped onto the window.
-			DDNetLoader.create({
+			DDNetLoader.page({
+				module: DDNetClient,
 				programName: "Client",
 				accept: [".demo", ".map"],
 				acceptLinks: true,
@@ -32,6 +34,5 @@
 				},
 			});
 		</script>
-		<script async src="DDNet.js"></script>
 	</body>
 </html>

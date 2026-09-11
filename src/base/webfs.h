@@ -82,9 +82,13 @@ private:
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 
 /**
- * Brings the data directory up: reads the index the build wrote next to the
- * page and remembers where the page is, so that every file below `data` can be
- * fetched from there afterwards.
+ * Brings the data directory up: reads the index the build wrote and remembers
+ * where it is, so that every file below `data` can be fetched from there
+ * afterwards.
+ *
+ * Where it is, is `Module.ddnetDataBase` resolved against the page, or the page
+ * itself where that is unset. A page that embeds this program and keeps `data`
+ * somewhere else says so there.
  *
  * Has to run before anything looks for the data directory, so before the
  * storage is initialised.

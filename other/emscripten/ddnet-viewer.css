@@ -20,6 +20,7 @@
 	border-radius: 15px;
 	box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
 	background-color: rgba(255, 255, 255, 0.85);
+	color: #000;
 	/* One line, however many buttons there are: a label that breaks in two
 	   makes the bar taller than its buttons and pushes the text out of them. */
 	white-space: nowrap;
@@ -61,6 +62,7 @@
 	border-radius: 15px;
 	box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
 	background-color: rgba(255, 255, 255, 0.85);
+	color: #000;
 	font-family: 'Arial', 'Helvetica', sans-serif;
 }
 #export-settings label {

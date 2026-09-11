@@ -1,7 +1,9 @@
 body {
-	background: url('background.png') #ccc;
-	background-size: cover;
-	background-position: center center;
+	/* Plain and dark: what these pages show is a game, a map or a list of
+	   videos being made, and a picture behind all of that is something else to
+	   look at rather than something to look at it on. */
+	background-color: #222;
+	color: #eee;
 	font-family: 'Arial', 'Helvetica', sans-serif;
 }
 body, html, #canvas {
@@ -36,6 +38,7 @@ button[disabled] {
 	border-radius: 15px;
 	box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
 	background-color: rgba(255, 255, 255, 0.85);
+	color: #000;
 }
 /* A page starts by itself and shows nothing while it does. This is for when
    that does not work: one line, in the middle, instead of a canvas that stays

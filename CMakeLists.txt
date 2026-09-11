@@ -2224,7 +2224,6 @@ endif()
 if(TARGET_OS STREQUAL "emscripten")
   set(WEB_PAGE_FILES
     # tidy-alphabetical-start
-    other/emscripten/background.png
     other/emscripten/coi-serviceworker.js
     other/emscripten/ddnet-loader.js
     other/emscripten/ddnet-page.css
@@ -3836,7 +3835,7 @@ if(CLIENT)
         -DBUILD_DIR=${PROJECT_BINARY_DIR}
         -DSITE_DIR=${PROJECT_BINARY_DIR}/site
         "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-render$<SEMICOLON>ddnet-demo-viewer$<SEMICOLON>ddnet-map-viewer"
-        "-DPAGE_FILES=background.png$<SEMICOLON>coi-serviceworker.js$<SEMICOLON>DDNet.ico$<SEMICOLON>ddnet-loader.js$<SEMICOLON>ddnet-page.css$<SEMICOLON>ddnet-render.css$<SEMICOLON>ddnet-viewer.css$<SEMICOLON>demo.html$<SEMICOLON>index.html$<SEMICOLON>map.html$<SEMICOLON>render.html"
+        "-DPAGE_FILES=coi-serviceworker.js$<SEMICOLON>DDNet.ico$<SEMICOLON>ddnet-loader.js$<SEMICOLON>ddnet-page.css$<SEMICOLON>ddnet-render.css$<SEMICOLON>ddnet-viewer.css$<SEMICOLON>demo.html$<SEMICOLON>index.html$<SEMICOLON>map.html$<SEMICOLON>render.html"
         -P ${PROJECT_SOURCE_DIR}/cmake/assemble_web_site.cmake
       DEPENDS
         # tidy-alphabetical-start

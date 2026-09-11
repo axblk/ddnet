@@ -140,8 +140,13 @@
 						demo.pause();
 					}
 				});
+				// The demo follows the slider while it is dragged, not once it is
+				// let go of: what somebody is looking for is what they can see,
+				// and a bar that only jumps at the end is one they have to guess
+				// with.
 				seek.addEventListener('input', () => {
 					seeking = true;
+					demo.seek(seek.value / seek.max);
 				});
 				seek.addEventListener('change', () => {
 					demo.seek(seek.value / seek.max);

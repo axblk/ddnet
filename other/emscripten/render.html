@@ -29,6 +29,7 @@
 			<div id="actions">
 				<button id="start" disabled>Render</button>
 				<button id="stop" style="display: none">Stop</button>
+				<button id="save-all" style="display: none">Save all as zip</button>
 				<span id="summary"></span>
 			</div>
 			<ul id="queue"></ul>
@@ -52,6 +53,7 @@
 				const followChoice = document.getElementById('follow-choice');
 				const followInput = document.getElementById('follow');
 				const folderCheckbox = document.getElementById('folder');
+				const saveAllButton = document.getElementById('save-all');
 				// The folder choice belongs to this page rather than to the
 				// export, so it stays where it is and the rest goes in front
 				// of it.
@@ -133,6 +135,12 @@
 				function updateSummary() {
 					const waiting = jobs.filter(job => !job.done).length;
 					startButton.disabled = running || waiting === 0 || problem !== null;
+					// One file to save instead of one prompt per video, once
+					// there is more than one to save. Videos written straight
+					// into a folder are already where they belong.
+					const finished = jobs.filter(job => job.video != null);
+					saveAllButton.style.display = finished.length > 1 ? "inline-block" : "none";
+					saveAllButton.textContent = `Save all ${finished.length} as zip`;
 					summary.textContent = jobs.length === 0 ? "" :
 						`${jobs.length} ${jobs.length === 1 ? "demo" : "demos"}, ${waiting} to go`;
 				}
@@ -193,6 +201,8 @@
 					// Without a folder to write into there is only the download
 					// the browser offers, and it is offered rather than taken:
 					// a browser refuses a handful of downloads nobody asked for.
+					job.video = video;
+					job.name = name;
 					const link = document.createElement('a');
 					link.href = URL.createObjectURL(video);
 					link.download = name;
@@ -246,6 +256,27 @@
 					updateSummary();
 				}
 
+				saveAllButton.addEventListener('click', async () => {
+					const finished = jobs.filter(job => job.video != null);
+					saveAllButton.disabled = true;
+					saveAllButton.textContent = "Packing…";
+					try {
+						// The names are what each video is already offered
+						// under, so a zip holds what the list says it holds.
+						const archive = await DDNetLoader.zip(
+							finished.map(job => ({ name: job.name, blob: job.video })));
+						const link = document.createElement('a');
+						link.href = URL.createObjectURL(archive);
+						link.download = "videos.zip";
+						link.click();
+						setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+					} catch (error) {
+						// Too much for one zip, so they stay one download each.
+						summary.textContent = (error && error.message) || String(error);
+					}
+					saveAllButton.disabled = false;
+					updateSummary();
+				});
 				startButton.addEventListener('click', () => {
 					if (!running) {
 						runQueue();

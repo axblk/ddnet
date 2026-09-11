@@ -1292,6 +1292,88 @@ self.onmessage = async event => {
 		};
 	}
 
+	// A zip of files that are already in memory, so that a batch of them is one
+	// thing to save rather than one prompt each. Written by hand because it is
+	// short: stored, never deflated - a video is compressed already and
+	// squeezing it again would only cost time - and that leaves headers, a
+	// central directory and a checksum per file.
+	const CRC_TABLE = (() => {
+		const table = new Uint32Array(256);
+		for (let i = 0; i < 256; ++i) {
+			let value = i;
+			for (let bit = 0; bit < 8; ++bit) {
+				value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+			}
+			table[i] = value >>> 0;
+		}
+		return table;
+	})();
+
+	function crc32(bytes) {
+		let crc = 0xffffffff;
+		for (let i = 0; i < bytes.length; ++i) {
+			crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+		}
+		return (crc ^ 0xffffffff) >>> 0;
+	}
+
+	async function zip(entries) {
+		// A zip says its sizes and offsets in 32 bits. Past that it takes the
+		// ZIP64 records, which is a second format to write and to get wrong for
+		// something nobody should be downloading in one piece anyway.
+		const total = entries.reduce((sum, entry) => sum + entry.blob.size, 0);
+		if (total >= 0xffffffff || entries.some(entry => entry.blob.size >= 0xffffffff)) {
+			throw new Error("Too much to put into one zip file");
+		}
+		const encoder = new TextEncoder();
+		const now = new Date();
+		const time = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xffff;
+		const date = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xffff;
+		const parts = [];
+		const central = [];
+		var offset = 0;
+		for (const entry of entries) {
+			const name = encoder.encode(entry.name);
+			const bytes = new Uint8Array(await entry.blob.arrayBuffer());
+			const crc = crc32(bytes);
+			const local = new DataView(new ArrayBuffer(30));
+			local.setUint32(0, 0x04034b50, true);
+			local.setUint16(4, 20, true);
+			local.setUint16(6, 0x0800, true); // The names are UTF-8.
+			local.setUint16(8, 0, true); // Stored.
+			local.setUint16(10, time, true);
+			local.setUint16(12, date, true);
+			local.setUint32(14, crc, true);
+			local.setUint32(18, bytes.length, true);
+			local.setUint32(22, bytes.length, true);
+			local.setUint16(26, name.length, true);
+			parts.push(local.buffer, name, bytes);
+			const directory = new DataView(new ArrayBuffer(46));
+			directory.setUint32(0, 0x02014b50, true);
+			directory.setUint16(4, 20, true);
+			directory.setUint16(6, 20, true);
+			directory.setUint16(8, 0x0800, true);
+			directory.setUint16(10, 0, true);
+			directory.setUint16(12, time, true);
+			directory.setUint16(14, date, true);
+			directory.setUint32(16, crc, true);
+			directory.setUint32(20, bytes.length, true);
+			directory.setUint32(24, bytes.length, true);
+			directory.setUint16(28, name.length, true);
+			directory.setUint32(42, offset, true);
+			central.push(directory.buffer, name);
+			offset += 30 + name.length + bytes.length;
+		}
+		const directorySize = central.reduce((sum, part) => sum + part.byteLength, 0);
+		const end = new DataView(new ArrayBuffer(22));
+		end.setUint32(0, 0x06054b50, true);
+		end.setUint16(8, entries.length, true);
+		end.setUint16(10, entries.length, true);
+		end.setUint32(12, directorySize, true);
+		end.setUint32(16, offset, true);
+		return new Blob(parts.concat(central, [end.buffer]), { type: "application/zip" });
+	}
+
 	// What the render tool is asked on a command line, from what the page
 	// asked for here. It is the same program with the same arguments as the one
 	// a terminal starts, so `ddnet-demo-render --help` documents these too.
@@ -1486,6 +1568,20 @@ self.onmessage = async event => {
 		 */
 		setUrlParameters(values) {
 			setUrlParameters(values);
+		},
+
+		/**
+		 * Puts files that are in memory into one zip file, so that a batch of
+		 * them is one thing to save. Nothing is compressed - what this is for
+		 * is videos, which are compressed already.
+		 *
+		 * @param entries `{name, blob}` objects, in the order they should be in.
+		 *
+		 * @return A promise of the zip as a `Blob`. It rejects when the whole
+		 * of it would not fit in the 32 bits a plain zip counts in.
+		 */
+		zip(entries) {
+			return zip(entries);
 		},
 
 		/** `start` with the furniture our own pages share around it. */

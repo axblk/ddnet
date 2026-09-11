@@ -151,6 +151,42 @@
 					return Object.assign(settingsForm.values(), { follow: followInput.value.trim() });
 				}
 
+				// What the page's own address says about how to render, so that
+				// a link can carry a set of settings somebody worked out once.
+				// Only what is not the default is written, so the address stays
+				// as short as what it actually says.
+				const defaults = settings();
+				function applyLink() {
+					const number = name => {
+						const value = parseFloat(DDNetLoader.urlParameter(name));
+						return isFinite(value) ? value : undefined;
+					};
+					const flag = name => {
+						const value = DDNetLoader.urlParameter(name);
+						return value === null ? undefined : value === "1";
+					};
+					settingsForm.setValues({
+						width: number("width"), height: number("height"), fps: number("fps"),
+						crf: number("crf"), codec: DDNetLoader.urlParameter("codec") || undefined,
+						audio: flag("audio"), hud: flag("hud"), chat: flag("chat"),
+					});
+					const follow = DDNetLoader.urlParameter("follow");
+					if (follow !== null) {
+						followInput.value = follow;
+					}
+				}
+
+				function updateLink() {
+					const chosen = settings();
+					const values = {};
+					for (const name of ["width", "height", "fps", "crf", "codec", "audio", "hud", "chat", "follow"]) {
+						const value = chosen[name];
+						const same = value === defaults[name] || (value == null && defaults[name] == null);
+						values[name] = same ? null : (typeof value === "boolean" ? (value ? 1 : 0) : value);
+					}
+					DDNetLoader.setUrlParameters(values);
+				}
+
 				function videoName(demoName) {
 					return `${demoName.replace(/\.demo$/, "")}.mp4`;
 				}
@@ -323,6 +359,10 @@
 				for (const name of ["dragover", "drop"]) {
 					document.addEventListener(name, event => event.preventDefault());
 				}
+
+				applyLink();
+				settingsForm.onChange(updateLink);
+				followInput.addEventListener('change', updateLink);
 			})();
 		</script>
 	</body>

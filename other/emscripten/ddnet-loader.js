@@ -292,7 +292,19 @@ const DDNetLoader = (() => {
 			for (const entry of codecs) {
 				codec.appendChild(option(entry.name, entry.display));
 			}
+			applyCodec();
 		});
+
+		// The codec menu is filled in from what the browser answers, which is
+		// after this returns. A codec asked for before then is remembered and
+		// chosen once it is there - and left alone if it never turns up.
+		var wantedCodec = null;
+		const applyCodec = () => {
+			if (wantedCodec !== null && [...codec.options].some(entry => entry.value === wantedCodec)) {
+				codec.value = wantedCodec;
+				wantedCodec = null;
+			}
+		};
 
 		const audio = element("input", { type: "checkbox", checked: settings.audio === true });
 		const hud = element("input", { type: "checkbox" });
@@ -311,6 +323,17 @@ const DDNetLoader = (() => {
 		size.addEventListener("change", updateCustom);
 		fps.addEventListener("change", updateCustom);
 		updateCustom();
+
+		// Whoever wants to remember what was chosen - in a link, or for the
+		// next visit - is told when it changes rather than having to ask.
+		const changed = [];
+		for (const control of [size, width, height, fps, customFpsValue, crf, codec, audio, hud, chat]) {
+			control.addEventListener("change", () => {
+				for (const listener of changed) {
+					listener();
+				}
+			});
+		}
 
 		return {
 			/** What was chosen, as `render` and `startExport` take it. */
@@ -337,6 +360,44 @@ const DDNetLoader = (() => {
 					hud: hud.checked,
 					chat: chat.checked,
 				};
+			},
+
+			/**
+			 * Puts settings into the form, in the shape `values` answers. What
+			 * is left out is left as it was, so a link that names only a frame
+			 * rate changes only that.
+			 */
+			setValues(values) {
+				const chosen = values || {};
+				if (chosen.width > 0 && chosen.height > 0) {
+					const preset = `${chosen.width}x${chosen.height}`;
+					width.value = chosen.width;
+					height.value = chosen.height;
+					size.value = [...size.options].some(entry => entry.value === preset) ? preset : "custom";
+				}
+				if (chosen.fps > 0) {
+					const preset = String(chosen.fps);
+					customFpsValue.value = chosen.fps;
+					fps.value = [...fps.options].some(entry => entry.value === preset) ? preset : "custom";
+				}
+				if (chosen.crf !== undefined && chosen.crf !== null) {
+					crf.value = chosen.crf;
+				}
+				if (chosen.codec !== undefined && chosen.codec !== null) {
+					wantedCodec = chosen.codec;
+					applyCodec();
+				}
+				for (const [name, control] of [["audio", audio], ["hud", hud], ["chat", chat]]) {
+					if (chosen[name] !== undefined && chosen[name] !== null) {
+						control.checked = chosen[name] === true;
+					}
+				}
+				updateCustom();
+			},
+
+			/** Called whenever any of it is changed. */
+			onChange(listener) {
+				changed.push(listener);
 			},
 		};
 	}
@@ -1541,7 +1602,8 @@ self.onmessage = async event => {
 		 * Fills an element with the settings a video export takes - size,
 		 * frame rate, quality, encoder, sound, interface and chat - and
 		 * answers with `values()`, which reads them back in the form `render`
-		 * and `startExport` take.
+		 * and `startExport` take, `setValues()`, which puts them there, and
+		 * `onChange()`, which says when any of them was changed.
 		 *
 		 * The sizes and frame rates on offer are the ones the client offers,
 		 * with `Custom` for anything else.

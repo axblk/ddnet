@@ -1,6 +1,10 @@
-// Everything three pages have in common when they start a program compiled for
-// the browser: the module, the console, the persistent storage, the launch
-// button, and the ways a file gets in - dropped, picked or named in the URL.
+// Everything the three pages have in common when they start a program compiled
+// for the browser: the module, the console, the persistent storage, and the two
+// ways a file gets in - named in the URL, or dropped on the canvas.
+//
+// The three differ in the program they start and in what they take, not in how
+// any of it works. Every program here opens with nothing and is given its file
+// afterwards, so no page asks anything before starting.
 //
 // A plain script rather than a module, because the loader emscripten emits is
 // `<script async>` and has to find `Module` on the global object.
@@ -49,12 +53,12 @@ const DDNetLoader = (() => {
 			this.urlParams = options.urlParams || [];
 			this.elements = options.elements;
 			this.loadOnLaunch = { file: null, path: null, link: null, url: null };
+			this.launched = false;
 			this.totalDependencies = 0;
 			this.createModule();
 			this.installErrorHandler();
 			this.installCanvasHandlers();
 			this.installDropHandlers();
-			this.installLaunchButton();
 			this.readUrl();
 			this.sweepDataCache();
 		}
@@ -89,12 +93,6 @@ const DDNetLoader = (() => {
 			outputContent.scrollTop = outputContent.scrollHeight;
 		}
 
-		setStatus(text) {
-			if (this.elements.dropTargetStatus) {
-				this.elements.dropTargetStatus.textContent = text;
-			}
-		}
-
 		createModule() {
 			const loader = this;
 			const elements = this.elements;
@@ -113,23 +111,7 @@ const DDNetLoader = (() => {
 					console.error(text);
 					loader.appendOutput(text, false, "red");
 				},
-				onRuntimeInitialized: function() {
-					const launchButton = elements.launchButton;
-					const oldTransition = launchButton.style.transition;
-					launchButton.style.transition = "none";
-					launchButton.disabled = false;
-					elements.launchButtonLabel.textContent = loader.options.launchLabel || "Start";
-					elements.launchButtonProgress.style.display = "none";
-					launchButton.offsetHeight; // Force reflow to avoid transition
-					launchButton.style.transition = oldTransition;
-					// For testing when compiled with emrun support, allow launching automatically by specifying URL parameter.
-					if (typeof emrun_register_handlers === "function" && document.location.hash === "#__emrun_autostart__") {
-						launchButton.click();
-					}
-					if (loader.options.autoLaunch && loader.loadOnLaunch.url != null) {
-						launchButton.click();
-					}
-				},
+				onRuntimeInitialized: () => loader.launch(),
 				onExit: function() {
 					if (Module['ddnetSyncPersistentStorage'] !== undefined) {
 						Module['ddnetSyncPersistentStorage'](true);
@@ -160,8 +142,7 @@ const DDNetLoader = (() => {
 				monitorRunDependencies(left) {
 					this.totalDependencies = Math.max(this.totalDependencies, left);
 					const value = this.totalDependencies - left;
-					elements.launchButtonLabel.textContent = this.totalDependencies == 1 ? "Loading…" : `Loading… (${value}/${this.totalDependencies})`;
-					elements.launchButtonProgress.style.width = `${value * 100.0 / this.totalDependencies}%`;
+					elements.loading.textContent = this.totalDependencies == 1 ? "Loading…" : `Loading… (${value}/${this.totalDependencies})`;
 				},
 				canvas: elements.canvas
 			};
@@ -287,69 +268,18 @@ const DDNetLoader = (() => {
 		installDropHandlers() {
 			const loader = this;
 			const canvas = this.elements.canvas;
-			const dropTarget = this.elements.dropTarget;
-			if (dropTarget) {
-				document.addEventListener('dragover', e => {
-					if (e.target != dropTarget && e.target != canvas) {
-						// Prevent items from being dropped outside of the designated drop target and canvas.
-						e.preventDefault();
-						e.dataTransfer.dropEffect = "none";
-					}
-				}, true);
-				document.addEventListener('drop', e => {
-					if (e.target != dropTarget && e.target != canvas) {
-						e.preventDefault();
-					}
-				}, true);
-				dropTarget.addEventListener('dragover', e => {
+			document.addEventListener('dragover', e => {
+				if (e.target != canvas) {
+					// Prevent items from being dropped outside of the canvas.
 					e.preventDefault();
 					e.dataTransfer.dropEffect = "none";
-					if (!e.dataTransfer.items) {
-						return;
-					}
-					for (const item of e.dataTransfer.items) {
-						if (item.kind == 'file' || item.kind == 'string') {
-							e.dataTransfer.dropEffect = "copy";
-							dropTarget.setAttribute("drop-active", true);
-							return;
-						}
-					}
-				});
-				dropTarget.addEventListener('dragleave', e => {
-					dropTarget.removeAttribute("drop-active");
-				});
-				dropTarget.addEventListener('drop', async e => {
-					e.preventDefault();
-					const droppedItem = loader.droppedItemFromDataTransfer(e.dataTransfer);
-					if (droppedItem.file != null) {
-						loader.loadOnLaunch = { file: droppedItem.file, path: droppedItem.path, link: null, url: null };
-						loader.setStatus(`Selected file: ${droppedItem.file.name}`);
-					} else if (droppedItem.link != null) {
-						loader.loadOnLaunch = { file: null, path: null, link: droppedItem.link, url: null };
-						loader.setStatus(`Selected link: ${droppedItem.link}`);
-					} else {
-						alert(loader.unsupportedDropMessage());
-					}
-					dropTarget.removeAttribute("drop-active");
-				});
-
-				const fileInput = this.elements.dropTargetFileInput;
-				if (fileInput) {
-					dropTarget.addEventListener('click', e => fileInput.click());
-					fileInput.addEventListener('change', e => {
-						if (e.target.files.length == 0) {
-							return;
-						}
-						const path = loader.dropFilePath(e.target.files[0]);
-						if (path == null) {
-							alert(`The file you selected is not supported. You can select ${loader.accept.join(" and ")} files.`);
-							return;
-						}
-						loader.loadOnLaunch = { file: e.target.files[0], path: path, link: null, url: null };
-						loader.setStatus(`Selected file: ${loader.loadOnLaunch.file.name}`);
-					});
 				}
-			}
+			}, true);
+			document.addEventListener('drop', e => {
+				if (e.target != canvas) {
+					e.preventDefault();
+				}
+			}, true);
 
 			canvas.addEventListener('dragover', e => {
 				e.preventDefault();
@@ -397,11 +327,10 @@ const DDNetLoader = (() => {
 				}
 				const url = new URL(value, location.href);
 				if (url.protocol !== "http:" && url.protocol !== "https:") {
-					this.setStatus(`Refused to load ${url.protocol} URL`);
+					console.error(`Refused to load ${url.protocol} URL`);
 					continue;
 				}
 				this.loadOnLaunch = { file: null, path: null, link: null, url: url.href };
-				this.setStatus(`Selected link: ${url.href}`);
 				return;
 			}
 		}
@@ -420,42 +349,43 @@ const DDNetLoader = (() => {
 			return await this.writeFile(path, name, new Uint8Array(buffer));
 		}
 
-		installLaunchButton() {
+		launch() {
 			const loader = this;
-			this.elements.launchButton.addEventListener('click', async e => {
-				if (loader.elements.controls) {
-					loader.elements.controls.style.display = "none";
+			if (loader.launched) {
+				return;
+			}
+			loader.launched = true;
+			loader.elements.loading.style.display = "none";
+			loader.elements.output.style.display = "flex";
+			loader.appendOutput("Synchronizing filesystem with IndexedDB…");
+			FS.mkdirTree(loader.homePath);
+			FS.mount(IDBFS, {}, loader.homePath);
+			FS.syncfs(true, async error => {
+				if (error) {
+					loader.appendOutput(`Failed to synchronize filesystem with IndexedDB: ${error}`, true, "red");
+					return;
 				}
-				loader.elements.output.style.display = "flex";
-				loader.appendOutput("Synchronizing filesystem with IndexedDB…");
-				FS.mkdirTree(loader.homePath);
-				FS.mount(IDBFS, {}, loader.homePath);
-				FS.syncfs(true, async error => {
-					if (error) {
-						loader.appendOutput(`Failed to synchronize filesystem with IndexedDB: ${error}`, true, "red");
+				Module['canvas'].style.display = "block";
+				var args = Module.arguments;
+				if (loader.loadOnLaunch.file != null) {
+					const data = new Uint8Array(await loader.loadOnLaunch.file.arrayBuffer());
+					args.push(await loader.writeFile(loader.loadOnLaunch.path, loader.loadOnLaunch.file.name, data));
+				} else if (loader.loadOnLaunch.link != null) {
+					args.push(loader.loadOnLaunch.link);
+				} else if (loader.loadOnLaunch.url != null) {
+					loader.appendOutput(`Downloading ${loader.loadOnLaunch.url}…`);
+					try {
+						args.push(await loader.fetchUrlFile(loader.loadOnLaunch.url));
+					} catch (downloadError) {
+						loader.appendOutput(`Failed to download ${loader.loadOnLaunch.url}: ${downloadError.message}`, true, "red");
+						loader.appendOutput("A server has to allow this page to read its files. You can drop the file into this page instead.", false);
 						return;
 					}
-					Module['canvas'].style.display = "block";
-					var args = Module.arguments;
-					if (loader.loadOnLaunch.file != null) {
-						const data = new Uint8Array(await loader.loadOnLaunch.file.arrayBuffer());
-						args.push(await loader.writeFile(loader.loadOnLaunch.path, loader.loadOnLaunch.file.name, data));
-					} else if (loader.loadOnLaunch.link != null) {
-						args.push(loader.loadOnLaunch.link);
-					} else if (loader.loadOnLaunch.url != null) {
-						loader.appendOutput(`Downloading ${loader.loadOnLaunch.url}…`);
-						try {
-							args.push(await loader.fetchUrlFile(loader.loadOnLaunch.url));
-						} catch (downloadError) {
-							loader.appendOutput(`Failed to download ${loader.loadOnLaunch.url}: ${downloadError.message}`, true, "red");
-							loader.appendOutput("A server has to allow this page to read its files. You can drop the file into this page instead.", false);
-							return;
-						}
-					}
-					Module.callMain(args);
-				});
+				}
+				Module.callMain(args);
 			});
 		}
+
 	}
 
 	return {

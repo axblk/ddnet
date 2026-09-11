@@ -199,6 +199,24 @@ bool CDemoViewerClient::HandleInput()
 		return false;
 	}
 
+	char aDroppedFile[IO_MAX_PATH_LENGTH];
+	if(Input()->GetDropFile(aDroppedFile, sizeof(aDroppedFile)))
+	{
+		// Whatever is playing gives way to what was just dropped, and a viewer
+		// that was waiting for a demo has one now.
+		if(SessionState(m_DemoSessionId) == ESessionState::READY)
+		{
+			StopDemoSession(nullptr);
+		}
+		m_aError[0] = '\0';
+		const char *pLoadError = DemoPlayer_Play(aDroppedFile, IStorage::TYPE_ALL_OR_ABSOLUTE);
+		if(pLoadError != nullptr)
+		{
+			log_error("client", "%s", pLoadError);
+			m_aError[0] = '\0';
+		}
+	}
+
 	CDemoPlayer &Player = DemoSource(m_DemoSessionId).DemoPlayer();
 	if(KeyPressed(CONTROL_KEY_QUIT, false))
 	{
@@ -283,10 +301,22 @@ void CDemoViewerClient::Run()
 	Graphics()->AddWindowResizeListener([this] { OnWindowResize(); });
 	GameClient()->OnInit();
 
-	const char *pError = PlayDemo();
-	if(pError == nullptr && m_aVideoPath[0] != '\0')
+	// A viewer opens with whatever it was given, which may be nothing: there it
+	// waits for a demo to be dropped on it, the way the map viewer waits for a
+	// map. A surface without a window has nobody to drop one, so there a demo is
+	// the only reason to be running at all.
+	const char *pError = nullptr;
+	if(m_aDemoPath[0] != '\0')
 	{
-		pError = StartVideo();
+		pError = PlayDemo();
+		if(pError == nullptr && m_aVideoPath[0] != '\0')
+		{
+			pError = StartVideo();
+		}
+	}
+	else if(m_Surfaceless)
+	{
+		pError = "No demo was given, and a surface without a window has nowhere to drop one.";
 	}
 	if(pError != nullptr)
 	{
@@ -295,7 +325,7 @@ void CDemoViewerClient::Run()
 	}
 	else
 	{
-		while(m_State != IClient::STATE_QUITTING && SessionState(m_DemoSessionId) == ESessionState::READY)
+		while(m_State != IClient::STATE_QUITTING)
 		{
 			if(!HandleInput())
 			{

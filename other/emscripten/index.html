@@ -10,22 +10,8 @@
 		<link rel="stylesheet" href="ddnet-page.css">
 	</head>
 	<body>
-		<div id="controls">
-			<h1>DDNet Web</h1>
-			<p>This is an experimental version of the <a href="https://ddnet.org/downloads/">DDNet client</a> running in a web browser.</p>
-			<p>Connecting works over WebTransport, which a server announces next to its address. Servers that only speak the classic protocol cannot be reached from a browser.</p>
-			<div id="drop-target">
-				<p>You can drop a <code>.demo</code> file, <code>.map</code> file or a <code>ddnet://</code> link here, or click to select a file.
-				You can also drop files and links directly into the window after starting the client.</p>
-				<p id="drop-target-status">No file or link selected</p>
-				<input id="drop-target-file-input" type="file" accept=".demo,.map" hidden>
-			</div>
-			<button id="launch-button" disabled>
-				<span id="launch-button-progress"></span>
-				<span id="launch-button-label">Loading…</span>
-			</button>
-			<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
-		</div>
+		<div id="loading">Loading…</div>
+		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="output" style="display: none">
 			<h2>Console log</h2>
 			<div id="outputcontent"></div>
@@ -33,25 +19,19 @@
 		<canvas id="canvas" style="display: none">Canvas not supported.</canvas>
 		<script src="ddnet-loader.js"></script>
 		<script>
+			// A demo, a map or a `ddnet://` link is dropped onto the window.
 			DDNetLoader.create({
 				programName: "Client",
-				launchLabel: "Start DDNet client",
 				accept: [".demo", ".map"],
 				acceptLinks: true,
 				elements: {
 					canvas: document.getElementById('canvas'),
-					controls: document.getElementById('controls'),
+					loading: document.getElementById('loading'),
 					output: document.getElementById('output'),
 					outputContent: document.getElementById('outputcontent'),
-					launchButton: document.getElementById('launch-button'),
-					launchButtonProgress: document.getElementById('launch-button-progress'),
-					launchButtonLabel: document.getElementById('launch-button-label'),
-					dropTarget: document.getElementById('drop-target'),
-					dropTargetStatus: document.getElementById('drop-target-status'),
-					dropTargetFileInput: document.getElementById('drop-target-file-input'),
 				},
 			});
 		</script>
 		<script async src="DDNet.js"></script>
 	</body>
-</html> 
+</html>

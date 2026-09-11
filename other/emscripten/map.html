@@ -11,21 +11,8 @@
 		<link rel="stylesheet" href="ddnet-viewer.css">
 	</head>
 	<body>
-		<div id="controls">
-			<h1>DDNet Map Viewer</h1>
-			<p>This draws a <a href="https://ddnet.org/">DDNet</a> map the way the game draws it, and nothing else. It needs no fonts, no skins and no game images, only the map and the pictures the map names, so it is the quickest of these pages to start.</p>
-			<div id="drop-target">
-				<p>You can drop a <code>.map</code> file here, or click to select one.
-				A map can also be named in the address, as <code>map.html#map=&lt;url&gt;</code>, and is then shown right away.</p>
-				<p id="drop-target-status">No map selected</p>
-				<input id="drop-target-file-input" type="file" accept=".map" hidden>
-			</div>
-			<button id="launch-button" disabled>
-				<span id="launch-button-progress"></span>
-				<span id="launch-button-label">Loading…</span>
-			</button>
-			<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
-		</div>
+		<div id="loading">Loading…</div>
+		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="output" style="display: none">
 			<h2>Console log</h2>
 			<div id="outputcontent"></div>
@@ -39,23 +26,16 @@
 		</div>
 		<script src="ddnet-loader.js"></script>
 		<script>
+			// A map is dropped onto the window, or named as `map.html#map=<url>`.
 			DDNetLoader.create({
 				programName: "Map viewer",
-				launchLabel: "Show map",
 				accept: [".map"],
 				urlParams: ["map"],
-				autoLaunch: true,
 				elements: {
 					canvas: document.getElementById('canvas'),
-					controls: document.getElementById('controls'),
+					loading: document.getElementById('loading'),
 					output: document.getElementById('output'),
 					outputContent: document.getElementById('outputcontent'),
-					launchButton: document.getElementById('launch-button'),
-					launchButtonProgress: document.getElementById('launch-button-progress'),
-					launchButtonLabel: document.getElementById('launch-button-label'),
-					dropTarget: document.getElementById('drop-target'),
-					dropTargetStatus: document.getElementById('drop-target-status'),
-					dropTargetFileInput: document.getElementById('drop-target-file-input'),
 				},
 			});
 		</script>

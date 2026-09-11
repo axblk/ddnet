@@ -11,21 +11,8 @@
 		<link rel="stylesheet" href="ddnet-viewer.css">
 	</head>
 	<body>
-		<div id="controls">
-			<h1>DDNet Demo Viewer</h1>
-			<p>This watches a <a href="https://ddnet.org/">DDNet</a> demo, and nothing else: there is no server browser, there are no settings and there is no menu, only what it takes to draw a demo. That is also why it starts quickly.</p>
-			<div id="drop-target">
-				<p>You can drop a <code>.demo</code> file here, or click to select one.
-				A demo can also be named in the address, as <code>demo.html#demo=&lt;url&gt;</code>, and is then played right away.</p>
-				<p id="drop-target-status">No demo selected</p>
-				<input id="drop-target-file-input" type="file" accept=".demo" hidden>
-			</div>
-			<button id="launch-button" disabled>
-				<span id="launch-button-progress"></span>
-				<span id="launch-button-label">Loading…</span>
-			</button>
-			<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
-		</div>
+		<div id="loading">Loading…</div>
+		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="output" style="display: none">
 			<h2>Console log</h2>
 			<div id="outputcontent"></div>
@@ -43,23 +30,16 @@
 		</div>
 		<script src="ddnet-loader.js"></script>
 		<script>
+			// A demo is dropped onto the window, or named as `demo.html#demo=<url>`.
 			DDNetLoader.create({
 				programName: "Demo viewer",
-				launchLabel: "Watch demo",
 				accept: [".demo"],
 				urlParams: ["demo"],
-				autoLaunch: true,
 				elements: {
 					canvas: document.getElementById('canvas'),
-					controls: document.getElementById('controls'),
+					loading: document.getElementById('loading'),
 					output: document.getElementById('output'),
 					outputContent: document.getElementById('outputcontent'),
-					launchButton: document.getElementById('launch-button'),
-					launchButtonProgress: document.getElementById('launch-button-progress'),
-					launchButtonLabel: document.getElementById('launch-button-label'),
-					dropTarget: document.getElementById('drop-target'),
-					dropTargetStatus: document.getElementById('drop-target-status'),
-					dropTargetFileInput: document.getElementById('drop-target-file-input'),
 				},
 			});
 		</script>

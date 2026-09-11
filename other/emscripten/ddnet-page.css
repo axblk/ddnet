@@ -9,7 +9,7 @@ body, html, #canvas {
 	height: 100%;
 	margin: 0;
 }
-h1, h2 {
+h2 {
 	margin: 5px 0 15px 0;
 	color: #ffa500;
 }
@@ -31,56 +31,18 @@ button[disabled] {
 	background-color: #965518;
 	cursor: not-allowed;
 }
-#controls, #output {
+#output, #loading {
 	padding: 15px;
 	border-radius: 15px;
 	box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
 	background-color: rgba(255, 255, 255, 0.85);
 }
-#controls {
-	position: sticky;
-	width: 850px;
-	height: fit-content;
-	box-sizing: border-box;
+/* All a page shows that starts by itself: it is gone by the time the first
+   frame is drawn, and it is only ever seen on a slow connection. */
+#loading {
+	width: fit-content;
 	margin: 0 auto;
-	transform: translate(0, 10vh);
-}
-#controls h1 {
-	text-align: center;
-}
-#drop-target {
-	width: 500px;
-	margin: 15px auto;
-	padding: 0 15px;
-	border: 2px dashed #ffa500;
-	border-radius: 6px;
-	background: #ffa50020;
-	cursor: pointer;
-}
-#drop-target-status {
-	font-style: italic;
-	text-align: center;
-}
-#drop-target:hover, #drop-target[drop-active=true] {
-	background: #ffa50035;
-}
-#launch-button {
-	position: relative;
-	display: block;
-	width: 250px;
-	margin: 0 auto;
-	z-index: 1;
-}
-#launch-button-progress {
-	position: absolute;
-	left: 0;
-	top: 0;
-	width: 0%;
-	height: 100%;
-	border-radius: 6px;
-	transition: width 0.3s linear;
-	background: #ffa500;
-	z-index: -1;
+	transform: translate(0, 40vh);
 }
 #canvas {
 	position: absolute;

@@ -324,6 +324,88 @@ bool CDemoViewerClient::HandleInput()
 	return true;
 }
 
+void CDemoViewerClient::RenderControls()
+{
+	// Nothing to steer, and nobody to steer it: a window that was never opened
+	// has no pointer over it, and a demo that is being written to a file is
+	// not being watched.
+	if(!m_ShowControls || m_pInput == nullptr || Exporting() || SessionState(m_DemoSessionId) != ESessionState::READY)
+	{
+		return;
+	}
+	const float Total = Length();
+	if(Total <= 0.0f)
+	{
+		return;
+	}
+
+	const auto &&FormatTime = [](char *pBuffer, size_t Size, float Seconds) {
+		const int Whole = std::max((int)(Seconds + 0.5f), 0);
+		str_format(pBuffer, Size, "%d:%02d", Whole / 60, Whole % 60);
+	};
+	char aElapsed[16];
+	char aLength[16];
+	FormatTime(aElapsed, sizeof(aElapsed), Progress() * Total);
+	FormatTime(aLength, sizeof(aLength), Total);
+	char aTime[40];
+	str_format(aTime, sizeof(aTime), "%s / %s", aElapsed, aLength);
+	char aSpeed[16];
+	str_format(aSpeed, sizeof(aSpeed), "%.2fx", Speed());
+
+	enum
+	{
+		ITEM_PLAY,
+		ITEM_SEEK,
+		ITEM_TIME,
+		ITEM_SLOWER,
+		ITEM_SPEED,
+		ITEM_FASTER,
+		ITEM_RESTART,
+		NUM_ITEMS,
+	};
+	CViewerControls::SItem aItems[NUM_ITEMS];
+	aItems[ITEM_PLAY].m_Icon = Paused() ? CViewerControls::EIcon::PLAY : CViewerControls::EIcon::PAUSE;
+	aItems[ITEM_SEEK].m_Type = CViewerControls::EItem::SLIDER;
+	aItems[ITEM_SEEK].m_Value = Progress();
+	aItems[ITEM_SEEK].m_Width = std::clamp(Graphics()->ScreenWidth() * 0.35f, 120.0f, 420.0f);
+	aItems[ITEM_TIME].m_Type = CViewerControls::EItem::TEXT;
+	aItems[ITEM_TIME].m_pText = aTime;
+	aItems[ITEM_SLOWER].m_Icon = CViewerControls::EIcon::MINUS;
+	aItems[ITEM_SPEED].m_Type = CViewerControls::EItem::TEXT;
+	aItems[ITEM_SPEED].m_pText = aSpeed;
+	aItems[ITEM_SPEED].m_Width = 56.0f;
+	aItems[ITEM_FASTER].m_Icon = CViewerControls::EIcon::PLUS;
+	aItems[ITEM_RESTART].m_Icon = CViewerControls::EIcon::RESTART;
+
+	CViewerControls::SInput Input;
+	Input.m_MousePos = m_pInput->NativeMousePos();
+	Input.m_MousePressed = m_pInput->NativeMousePressed(1);
+	Input.m_KeyPressed = std::any_of(m_aKeyWasPressed.begin(), m_aKeyWasPressed.end(), [](bool Pressed) { return Pressed; });
+
+	float SeekTo = 0.0f;
+	CDemoPlayer &Player = DemoSource(m_DemoSessionId).DemoPlayer();
+	switch(m_Controls.Render(aItems, NUM_ITEMS, Input, &SeekTo))
+	{
+	case ITEM_PLAY:
+		SetPaused(!Paused());
+		break;
+	case ITEM_SEEK:
+		Player.SeekPercent(SeekTo);
+		break;
+	case ITEM_SLOWER:
+		Player.AdjustSpeedIndex(-1);
+		break;
+	case ITEM_FASTER:
+		Player.AdjustSpeedIndex(1);
+		break;
+	case ITEM_RESTART:
+		SeekStart();
+		break;
+	default:
+		break;
+	}
+}
+
 void CDemoViewerClient::RenderWindowFrame()
 {
 	const int64_t Now = time_get();
@@ -334,6 +416,9 @@ void CDemoViewerClient::RenderWindowFrame()
 	GameClient()->OnRenderPrepare();
 	GameClient()->OnRender();
 	GameClient()->OnRenderFinalize();
+	// Over everything else, because it is what is in front of the demo, and
+	// before the frame goes out.
+	RenderControls();
 	Graphics()->Swap();
 	m_GlobalTime = (time_get() - m_GlobalStartTime) / (float)time_freq();
 }
@@ -374,6 +459,7 @@ void CDemoViewerClient::Run()
 	InitVideoBackend();
 
 	InitTextRender();
+	m_Controls.Init(Graphics(), TextRender());
 	Graphics()->AddWindowResizeListener([this] { OnWindowResize(); });
 	GameClient()->OnInit();
 
@@ -544,6 +630,19 @@ EMSCRIPTEN_KEEPALIVE int DemoViewerStartExport(int Width, int Height, int Fps, i
 	Settings.m_ShowHud = Hud != 0;
 	Settings.m_ShowChat = Chat != 0;
 	return g_pDemoViewer->RequestExport(Settings) ? 1 : 0;
+}
+
+// Whether the viewer draws its own controls. A page with a bar of its own
+// beside the canvas says so and gets a bare picture.
+EMSCRIPTEN_KEEPALIVE void DemoViewerSetControls(int Show)
+{
+	if(g_pDemoViewer != nullptr)
+		g_pDemoViewer->SetShowControls(Show != 0);
+}
+
+EMSCRIPTEN_KEEPALIVE int DemoViewerControls()
+{
+	return g_pDemoViewer != nullptr && g_pDemoViewer->ShowControls() ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoViewerCancelExport()

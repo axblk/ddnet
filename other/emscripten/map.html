@@ -32,6 +32,9 @@
 				module: DDNetMapViewer,
 				programName: "Map viewer",
 				accept: [".map"],
+				// The page has a bar of its own under the canvas, so the
+				// viewer leaves its own off.
+				controls: false,
 				urlParams: ["map"],
 				elements: {
 					canvas: document.getElementById('canvas'),

@@ -4,6 +4,7 @@
 #define ENGINE_CLIENT_DEMO_VIEWER_CLIENT_H
 
 #include "demo_client_base.h"
+#include "viewer_controls.h"
 
 #include <array>
 #include <chrono>
@@ -62,6 +63,8 @@ private:
 	std::chrono::nanoseconds m_NextFrameTime{};
 	int m_ExitCode = 0;
 	EExportState m_ExportState = EExportState::IDLE;
+	CViewerControls m_Controls;
+	bool m_ShowControls = true;
 	// What a page asked for, to be done between two frames rather than in the
 	// call that asked. Starting or ending an export waits for the browser, and
 	// waiting unwinds the stack it is waiting on - which, in a call that came
@@ -86,6 +89,11 @@ private:
 	 */
 	bool KeyPressed(EControlKey ControlKey, bool Repeats);
 	void RenderWindowFrame();
+	/**
+	 * Draws the viewer's own controls over the demo and does what was pressed
+	 * in them.
+	 */
+	void RenderControls();
 	/**
 	 * Starts writing a video of the demo from here on.
 	 *
@@ -115,6 +123,14 @@ public:
 	 * @param Settings How to encode that video.
 	 */
 	void Configure(const char *pDemoPath, const char *pVideoPath, const CVideoExportSettings &Settings);
+	/**
+	 * Whether the viewer draws its own bar of controls over the demo. It does
+	 * unless it is told otherwise, because a viewer that shows no way to use
+	 * it has none. A page that puts its own controls beside the canvas turns
+	 * this off.
+	 */
+	void SetShowControls(bool Show) { m_ShowControls = Show; }
+	bool ShowControls() const { return m_ShowControls; }
 	void Run();
 	int ExitCode() const { return m_ExitCode; }
 

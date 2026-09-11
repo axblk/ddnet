@@ -750,7 +750,10 @@ const DDNetLoader = (() => {
 				// so that is where to look unless the page says otherwise. Read
 				// by `webfs`, see `src/base/webfs.h`.
 				ddnetDataBase: options.dataBase || (program === null ? undefined : new URL(".", program.base).href),
-				arguments: (options.arguments || []).slice(),
+				// A viewer draws its own controls unless the page says it has
+				// its own. Said here rather than switched off once it runs, so
+				// that a bar the page does not want is never drawn at all.
+				arguments: (options.controls === false ? ["--no-controls"] : []).concat(options.arguments || []),
 				print: text => {
 					const parsedLine = parseAnsiColorRgb(text);
 					console.log(parsedLine.message);
@@ -1163,6 +1166,15 @@ self.onmessage = async event => {
 			/** Throws away the export that is running, and its file with it. */
 			cancelExport: () => instance.call("DemoViewerCancelExport"),
 			/**
+			 * Whether the viewer draws its own bar of controls over the demo,
+			 * or switches it on and off. A page with controls of its own turns
+			 * it off - better with `controls: false`, which leaves it off from
+			 * the first frame rather than after it.
+			 */
+			controls: Show => Show === undefined
+				? number("DemoViewerControls") === 1
+				: instance.call("DemoViewerSetControls", null, ["number"], [Show ? 1 : 0]),
+			/**
 			 * Starts a video export, and says whether it started. The options
 			 * are named as in `render`, because they are the same settings the
 			 * render tool takes: `width`, `height`, `fps`, `crf`, `codec`,
@@ -1240,6 +1252,13 @@ self.onmessage = async event => {
 				}
 			},
 			/** Writes what is on screen, or the whole map, to a picture. */
+			/**
+			 * Whether the viewer draws its own bar of controls over the map,
+			 * or switches it on and off, as in `demoControls`.
+			 */
+			controls: Show => Show === undefined
+				? instance.call("MapViewerControls", "number") === 1
+				: instance.call("MapViewerSetControls", null, ["number"], [Show ? 1 : 0]),
 			exportView: () => instance.call("MapViewerExportView"),
 			exportFullMap: () => instance.call("MapViewerExportFullMap"),
 			/** 0 while nothing is being written, 1 while it is, 2 when it failed. */
@@ -1311,6 +1330,9 @@ self.onmessage = async event => {
 		 * one.
 		 * @param options.urlParams Parameters of the page's URL that may name a
 		 * file to open.
+		 * @param options.controls `false` leaves off the bar of controls a
+		 * viewer otherwise draws over what it shows, for a page that puts its
+		 * own beside the canvas.
 		 * @param options.onOutput Called for every line the program writes.
 		 * @param options.onProgress Called while the program is being fetched.
 		 * @param options.onExit Called once the program has stopped.

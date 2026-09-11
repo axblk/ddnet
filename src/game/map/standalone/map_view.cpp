@@ -363,10 +363,10 @@ bool CStandaloneMapView::SaveFullImage(const char *pPath, int TimeOffsetMillis)
 	return Writer.End();
 }
 
-bool CStandaloneMapView::SaveImage(const char *pPath)
+bool CStandaloneMapView::SaveImage(const SRenderParams &Params, const char *pPath)
 {
 	CImageInfo Image;
-	if(!ReadFrame(Image))
+	if(!RenderAsideAndRead(Params, Image))
 		return false;
 
 	bool Success = false;

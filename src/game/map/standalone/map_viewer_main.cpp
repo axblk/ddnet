@@ -7,6 +7,7 @@
 #include <base/thread.h>
 #include <base/time.h>
 
+#include <engine/client/viewer_controls.h>
 #include <engine/client/window_sdl.h>
 #include <engine/config.h>
 #include <engine/console.h>
@@ -37,6 +38,9 @@ namespace
 	// What one notch of the wheel does, and how fast the keys move the view: a
 	// screen width every second and a half, whatever the zoom.
 	constexpr float ZOOM_STEP = 1.1f;
+	// A button is pressed once where a wheel is turned several notches, so it
+	// takes a bigger step.
+	constexpr float BUTTON_ZOOM_STEP = 1.4f;
 	constexpr float PAN_SCREENS_PER_SECOND = 0.66f;
 	// How far the view can be taken either way, so that neither a wheel that
 	// keeps turning nor a page that asks for anything can put the map where it
@@ -48,6 +52,7 @@ namespace
 	// Where a picture the page asked for is written before it is handed to the
 	// browser, which needs a file it can read back.
 	constexpr const char *EXPORT_DIRECTORY = "screenshots";
+#endif
 
 	enum class EExportState
 	{
@@ -57,11 +62,12 @@ namespace
 		FAILED,
 	};
 
-	// What the page around the canvas asks of the view, and what came of it.
-	// The asking and the doing are apart on purpose: a request arrives while
-	// the loop is between two frames, and a page that drew from there would
-	// cut into a frame that is already half drawn.
-	struct SPageRequests
+	// What is asked of the view from outside the loop - by the page around the
+	// canvas, or by the bar of controls the viewer draws itself - and what came
+	// of it. The asking and the doing are apart on purpose: a picture is drawn
+	// in pieces and read back, and doing that from the middle of a frame would
+	// cut into one that is already half drawn.
+	struct SRequests
 	{
 		bool m_Fit = false;
 		bool m_ExportView = false;
@@ -69,17 +75,20 @@ namespace
 		EExportState m_ExportState = EExportState::IDLE;
 	};
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
 	CStandaloneMapView *g_pView = nullptr;
-	SPageRequests *g_pRequests = nullptr;
+	SRequests *g_pRequests = nullptr;
 	CStandaloneMapView::SRenderParams *g_pRenderParams = nullptr;
+	bool *g_pShowControls = nullptr;
 #endif
 
 	void PrintUsage(const char *pProgramName)
 	{
-		log_info(TOOL_NAME, "Usage: %s [-w <width>] [-h <height>] [-o <output>] [<input.map>]", pProgramName);
+		log_info(TOOL_NAME, "Usage: %s [-w <width>] [-h <height>] [-o <output>] [--no-controls] [<input.map>]", pProgramName);
 		log_info(TOOL_NAME, "  -w <width>   Window width (default: %d)", DEFAULT_WIDTH);
 		log_info(TOOL_NAME, "  -h <height>  Window height (default: %d)", DEFAULT_HEIGHT);
 		log_info(TOOL_NAME, "  -o <output>  Where F2 writes the picture (default: output.png)");
+		log_info(TOOL_NAME, "  --no-controls  Leave off the bar of controls, for whoever brings their own");
 		log_info(TOOL_NAME, "Drag to move, the wheel zooms, the arrow keys move, Home fits the whole");
 		log_info(TOOL_NAME, "map on the screen, F2 saves what is on it and Escape closes the window.");
 		log_info(TOOL_NAME, "A map dropped on the window replaces the one that is shown.");
@@ -113,6 +122,19 @@ EMSCRIPTEN_KEEPALIVE void MapViewerExportFullMap()
 		g_pRequests->m_ExportFullMap = true;
 		g_pRequests->m_ExportState = EExportState::PENDING;
 	}
+}
+
+// Whether the viewer draws its own bar of controls over the map. A page with
+// a bar of its own beside the canvas says so and gets a bare picture.
+EMSCRIPTEN_KEEPALIVE void MapViewerSetControls(int Show)
+{
+	if(g_pShowControls != nullptr)
+		*g_pShowControls = Show != 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapViewerControls()
+{
+	return g_pShowControls != nullptr && *g_pShowControls ? 1 : 0;
 }
 
 // Where the view looks and how close, in the world units of the map - 32 of
@@ -198,6 +220,7 @@ int main(int argc, const char **argv)
 	std::string OutputFile = "output.png";
 	std::string InputMap;
 	bool InvalidUsage = false;
+	bool HideControls = false;
 
 	for(int i = 1; i < argc; i++)
 	{
@@ -212,6 +235,10 @@ int main(int argc, const char **argv)
 		else if(str_comp(argv[i], "-o") == 0 && i + 1 < argc)
 		{
 			OutputFile = argv[++i];
+		}
+		else if(str_comp(argv[i], "--no-controls") == 0)
+		{
+			HideControls = true;
 		}
 		else if(argv[i][0] != '-' && InputMap.empty())
 		{
@@ -264,6 +291,11 @@ int main(int argc, const char **argv)
 	}
 
 	IGraphics *pGraphics = View.Graphics();
+	// The viewer's own bar of controls. There are no letters on it: this
+	// program needs nothing out of `data/`, and a font is the one thing that
+	// would change that, so everything it offers it offers as a shape.
+	CViewerControls Controls;
+	Controls.Init(pGraphics, nullptr);
 	pGraphics->AddWindowResizeListener([&] { View.OnResize(pGraphics->ScreenWidth(), pGraphics->ScreenHeight()); });
 
 	// A path that names a file where it stands is opened as it stands; the
@@ -287,27 +319,96 @@ int main(int argc, const char **argv)
 	};
 	FitView();
 
+	SRequests Requests;
+	bool ShowControls = !HideControls;
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	SPageRequests Requests;
 	g_pView = &View;
 	g_pRequests = &Requests;
 	g_pRenderParams = &RenderParams;
-	// A picture the page asked for goes to where the user's own files live and
-	// is handed to the browser from there, which is how everything else this
-	// build writes leaves it.
-	const auto &&ExportForPage = [&](bool FullMap) {
+	g_pShowControls = &ShowControls;
+#endif
+	// Where a picture goes: in a browser to where the user's own files live
+	// and from there to the downloads, which is how everything else this build
+	// writes leaves it; everywhere else the file that was named on the command
+	// line, with the whole map beside it under its own name.
+	const auto &&SaveImage = [&](bool FullMap) {
+		bool Success;
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
 		char aFilename[IO_MAX_PATH_LENGTH];
 		str_format(aFilename, sizeof(aFilename), "%s/%s%s.png", EXPORT_DIRECTORY,
 			MapName.empty() ? "map" : MapName.c_str(), FullMap ? "-full" : "");
 		View.Storage()->CreateFolder(EXPORT_DIRECTORY, IStorage::TYPE_SAVE);
 		char aPath[IO_MAX_PATH_LENGTH];
 		View.Storage()->GetCompletePath(IStorage::TYPE_SAVE, aFilename, aPath, sizeof(aPath));
-		const bool Success = FullMap ? View.SaveFullImage(aPath, RenderParams.m_TimeOffsetMillis) : View.SaveImage(aPath);
+		Success = FullMap ? View.SaveFullImage(aPath, RenderParams.m_TimeOffsetMillis) : View.SaveImage(RenderParams, aPath);
 		if(Success)
 			View.Storage()->SendFileToUser(aFilename, IStorage::TYPE_SAVE);
+#else
+		std::string Path = OutputFile;
+		if(FullMap)
+		{
+			const size_t Dot = Path.find_last_of('.');
+			Path.insert(Dot == std::string::npos ? Path.size() : Dot, "-full");
+		}
+		Success = FullMap ? View.SaveFullImage(Path.c_str(), RenderParams.m_TimeOffsetMillis) : View.SaveImage(RenderParams, Path.c_str());
+		if(Success)
+		{
+			constexpr LOG_COLOR SuccessLogColor = LOG_COLOR{0, 255, 128};
+			log_info_color(SuccessLogColor, TOOL_NAME, "Saved screenshot to '%s'", Path.c_str());
+		}
+#endif
 		Requests.m_ExportState = Success ? EExportState::SUCCEEDED : EExportState::FAILED;
 	};
-#endif
+
+	// What is on the bar, and what pressing it does. Written here rather than
+	// in the loop because it is the same every frame and reads as one thing:
+	// what a map viewer offers.
+	const auto &&RenderControls = [&]() {
+		enum
+		{
+			ITEM_ZOOM_OUT,
+			ITEM_ZOOM_IN,
+			ITEM_FIT,
+			ITEM_SAVE_VIEW,
+			ITEM_SAVE_MAP,
+			NUM_ITEMS,
+		};
+		CViewerControls::SItem aItems[NUM_ITEMS];
+		aItems[ITEM_ZOOM_OUT].m_Icon = CViewerControls::EIcon::MINUS;
+		aItems[ITEM_ZOOM_IN].m_Icon = CViewerControls::EIcon::PLUS;
+		aItems[ITEM_FIT].m_Icon = CViewerControls::EIcon::FIT;
+		aItems[ITEM_SAVE_VIEW].m_Icon = CViewerControls::EIcon::SAVE;
+		aItems[ITEM_SAVE_MAP].m_Icon = CViewerControls::EIcon::SAVE_ALL;
+		const bool Busy = Requests.m_ExportView || Requests.m_ExportFullMap;
+		aItems[ITEM_SAVE_VIEW].m_Disabled = Busy;
+		aItems[ITEM_SAVE_MAP].m_Disabled = Busy;
+
+		CViewerControls::SInput ControlsInput;
+		ControlsInput.m_MousePos = pInput->NativeMousePos();
+		ControlsInput.m_MousePressed = pInput->NativeMousePressed(1);
+		switch(Controls.Render(aItems, NUM_ITEMS, ControlsInput, nullptr))
+		{
+		case ITEM_ZOOM_OUT:
+			RenderParams.m_Zoom = std::clamp(RenderParams.m_Zoom * BUTTON_ZOOM_STEP, MIN_ZOOM, MAX_ZOOM);
+			break;
+		case ITEM_ZOOM_IN:
+			RenderParams.m_Zoom = std::clamp(RenderParams.m_Zoom / BUTTON_ZOOM_STEP, MIN_ZOOM, MAX_ZOOM);
+			break;
+		case ITEM_FIT:
+			FitView();
+			break;
+		case ITEM_SAVE_VIEW:
+			Requests.m_ExportView = true;
+			Requests.m_ExportState = EExportState::PENDING;
+			break;
+		case ITEM_SAVE_MAP:
+			Requests.m_ExportFullMap = true;
+			Requests.m_ExportState = EExportState::PENDING;
+			break;
+		default:
+			break;
+		}
+	};
 
 	const std::chrono::nanoseconds StartTime = time_get_nanoseconds();
 	std::chrono::nanoseconds LastFrameTime = StartTime;
@@ -344,7 +445,6 @@ int main(int argc, const char **argv)
 		pGraphics->CalcScreenParams(pGraphics->ScreenAspect(), 1.0f, &ViewWidth, &ViewHeight);
 		const float WorldPerPixel = pGraphics->ScreenWidth() == 0 ? 0.0f : ViewWidth * RenderParams.m_Zoom / pGraphics->ScreenWidth();
 
-		bool SaveNow = false;
 		if(pInput != nullptr)
 		{
 			vec2 Move(0.0f, 0.0f);
@@ -359,8 +459,13 @@ int main(int argc, const char **argv)
 			if(Move.x != 0.0f || Move.y != 0.0f)
 				RenderParams.m_Center += normalize(Move) * (ViewWidth * RenderParams.m_Zoom * PAN_SCREENS_PER_SECOND * FrameTime);
 
-			const vec2 MousePos = pInput->NativeMousePos();
-			if(pInput->NativeMousePressed(1))
+			// In the pixels that are drawn, not the ones the window is
+			// measured in: on a screen with more of the former the map would
+			// otherwise move at half the speed of the pointer.
+			const vec2 MousePos = pInput->NativeMousePos() * pGraphics->ScreenHiDPIScale();
+			// A press that landed on the bar belongs to the bar. Without this
+			// every button would drag the map out from under the pointer.
+			if(pInput->NativeMousePressed(1) && !Controls.Hovered())
 			{
 				if(Dragging)
 					RenderParams.m_Center -= (MousePos - LastMousePos) * WorldPerPixel;
@@ -379,14 +484,13 @@ int main(int argc, const char **argv)
 			RenderParams.m_Zoom = std::clamp(RenderParams.m_Zoom, MIN_ZOOM, MAX_ZOOM);
 			if(pInput->KeyPress(KEY_HOME))
 				FitView();
-			SaveNow = pInput->KeyPress(KEY_F2);
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
+			if(pInput->KeyPress(KEY_F2))
+				Requests.m_ExportView = true;
 			if(Requests.m_Fit)
 			{
 				Requests.m_Fit = false;
 				FitView();
 			}
-#endif
 			// What was pressed in this frame has been read, and until this is
 			// said it stays pressed: a wheel is only ever a press and a release
 			// in the same breath, so one notch of it would otherwise go on
@@ -396,49 +500,31 @@ int main(int argc, const char **argv)
 		else
 		{
 			// Nothing can move the view here, so the first frame is the only
-			// one there is a point in drawing.
+			// one there is a point in drawing, and writing it is all this
+			// program is here for.
 			RenderParams.m_TimeOffsetMillis = 0;
-			SaveNow = true;
+			Requests.m_ExportView = true;
 		}
 
 		View.Render(RenderParams);
+		if(pInput != nullptr && ShowControls && View.MapLoaded())
+		{
+			RenderControls();
+		}
+		pGraphics->Swap();
 
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
-		// The page asks between two frames and is answered here, after one was
-		// drawn: reading a frame back needs a frame to read.
+		// Asked for while the loop was between two frames, and done here where
+		// no frame is half drawn: a picture is drawn for itself, in pieces for
+		// the whole map, and none of that may cut into the frame that is being
+		// shown.
 		if(Requests.m_ExportView || Requests.m_ExportFullMap)
 		{
 			const bool FullMap = Requests.m_ExportFullMap;
 			Requests.m_ExportView = false;
 			Requests.m_ExportFullMap = false;
-			if(FullMap)
-			{
-				// The frame that was just drawn goes on the screen first. What
-				// follows draws the map in pieces into a target of its own, so
-				// the window goes on showing the view all the while, and this
-				// is the frame it shows.
-				pGraphics->Swap();
-			}
-			ExportForPage(FullMap);
-			continue;
-		}
-#endif
-
-		// Reading the frame back puts it on the screen as well, so what is
-		// written is the frame that was shown.
-		if(SaveNow)
-		{
-			if(View.SaveImage(OutputFile.c_str()))
-			{
-				constexpr LOG_COLOR SuccessLogColor = LOG_COLOR{0, 255, 128};
-				log_info_color(SuccessLogColor, TOOL_NAME, "Saved screenshot to '%s'", OutputFile.c_str());
-			}
+			SaveImage(FullMap);
 			if(pInput == nullptr)
 				break;
-		}
-		else
-		{
-			pGraphics->Swap();
 		}
 
 		// Nothing here is worth drawing faster than a screen shows, and with

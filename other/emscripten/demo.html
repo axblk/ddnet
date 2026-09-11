@@ -36,6 +36,9 @@
 				module: DDNetDemoViewer,
 				programName: "Demo viewer",
 				accept: [".demo"],
+				// The page has a bar of its own under the canvas, so the
+				// viewer leaves its own off.
+				controls: false,
 				urlParams: ["demo"],
 				elements: {
 					canvas: document.getElementById('canvas'),

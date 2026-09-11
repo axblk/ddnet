@@ -120,14 +120,20 @@ public:
 	bool SaveFullImage(const char *pPath, int TimeOffsetMillis);
 
 	/**
-	 * Finishes the frame that was drawn, reads it back off the graphics card
-	 * and writes it as a PNG.
+	 * Draws one frame of the view, reads it back off the graphics card and
+	 * writes it as a PNG.
 	 *
+	 * The frame is drawn for this alone, beside the window rather than in it,
+	 * so that what is written is the view and only the view - a viewer draws
+	 * its own controls over the window, and nobody wants those in their
+	 * picture.
+	 *
+	 * @param Params Where the view looks.
 	 * @param pPath The file to write, as a path of the operating system.
 	 *
 	 * @return `true` on success, `false` after reporting what went wrong.
 	 */
-	bool SaveImage(const char *pPath);
+	bool SaveImage(const SRenderParams &Params, const char *pPath);
 
 	void Shutdown();
 

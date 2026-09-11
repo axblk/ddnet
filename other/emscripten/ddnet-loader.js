@@ -52,6 +52,29 @@ const DDNetLoader = (() => {
 		return query.has(name) ? query.get(name) : null;
 	}
 
+	// The other direction: what the page's URL says about where it is, so that
+	// whoever copies it out of the address bar copies what they are looking at.
+	// Only the named parameters are touched and the rest of the fragment stays
+	// as it was written - `URLSearchParams` would escape every slash and colon
+	// of a demo's URL and turn a link somebody can read into one they cannot. A
+	// parameter set to `null` is taken out.
+	//
+	// The entry is replaced rather than added: a viewer that moves would
+	// otherwise fill the history with every second it played.
+	function setUrlParameters(values) {
+		const parts = location.hash.replace(/^#/, "").split("&")
+			.filter(part => part !== "" && !(part.split("=")[0] in values));
+		for (const [name, value] of Object.entries(values)) {
+			if (value !== null && value !== undefined) {
+				parts.push(`${name}=${value}`);
+			}
+		}
+		const link = parts.length === 0 ? location.pathname + location.search : `#${parts.join("&")}`;
+		if (link !== location.hash && !(location.hash === "" && parts.length === 0)) {
+			history.replaceState(null, "", link);
+		}
+	}
+
 	// The service worker keeps every file of the data directory it fetched,
 	// which is safe because a URL there names the contents it carries. What it
 	// must not keep is a file that the build no longer has, and the only thing

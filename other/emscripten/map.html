@@ -109,26 +109,13 @@
 				}
 
 				// The address bar follows the view, so that what somebody copies
-				// out of it is what they are looking at. Replacing the entry
-				// rather than adding one keeps the back button on the page
-				// before this one instead of on every pixel moved, and changing
-				// only the fragment this way loads nothing.
-				var lastLink = null;
+				// out of it is what they are looking at.
 				function updateLink(center, tiles) {
-					const view = { x: center.x.toFixed(1), y: center.y.toFixed(1), tiles: tiles.toFixed(1) };
-					// Written out by hand rather than with `URLSearchParams`,
-					// which escapes every slash and colon of the map's URL and
-					// would turn a link somebody can read into one they cannot.
-					const parts = location.hash.replace(/^#/, "").split("&")
-						.filter(part => part !== "" && !(part.split("=")[0] in view));
-					for (const [name, value] of Object.entries(view)) {
-						parts.push(`${name}=${value}`);
-					}
-					const link = `#${parts.join("&")}`;
-					if (link !== lastLink) {
-						lastLink = link;
-						history.replaceState(null, "", link);
-					}
+					DDNetLoader.setUrlParameters({
+						x: center.x.toFixed(1),
+						y: center.y.toFixed(1),
+						tiles: tiles.toFixed(1),
+					});
 				}
 
 				// The page asks rather than being told: the viewer holds the main

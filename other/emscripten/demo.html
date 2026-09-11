@@ -96,6 +96,18 @@
 					}
 				}
 
+				// The address bar follows the demo, so that what somebody copies
+				// out of it is what they are watching: where they are, how fast,
+				// and whether it stands still. What is at its default is left
+				// out, so a link stays as short as what it says.
+				function updateLink(seconds, speed, paused) {
+					DDNetLoader.setUrlParameters({
+						t: Math.round(seconds),
+						speed: Math.abs(speed - 1) < 0.005 ? null : speed.toFixed(2),
+						paused: paused ? 1 : null,
+					});
+				}
+
 				function formatTime(seconds) {
 					const total = Math.max(0, Math.round(seconds));
 					return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
@@ -170,6 +182,7 @@
 					time.textContent = `${formatTime(progress * length)} / ${formatTime(length)}`;
 					speed.textContent = `${demo.speed().toFixed(2)}×`;
 					playButton.textContent = demo.paused() ? "Play" : "Pause";
+					updateLink(progress * length, demo.speed(), demo.paused());
 					if (exportStarted && !demo.exporting()) {
 						exportStarted = false;
 						exportButton.textContent = "Export finished";

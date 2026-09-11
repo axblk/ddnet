@@ -113,7 +113,7 @@ class CGhostLoader : public IGhostLoader
 	 * @param pHeaderSize Where the ghost's items begin, which depends on the
 	 * version: the map's hash was only written from version 6 on.
 	 * @param pFilename What the ghost is called, for the log.
-	 * @param pMap The map the ghost has to belong to.
+	 * @param pMap The map the ghost has to belong to, or `nullptr` for any.
 	 * @param MapSha256 The hash that map has.
 	 * @param MapCrc The checksum that map has, for ghosts written before the
 	 * hash was.
@@ -141,7 +141,8 @@ public:
 	 *
 	 * @param vData The whole ghost.
 	 * @param pFilename What the ghost is called, for the log.
-	 * @param pMap The map the ghost has to belong to.
+	 * @param pMap The map the ghost has to belong to, or `nullptr` for a
+	 * ghost of whatever map it says.
 	 * @param MapSha256 The hash that map has.
 	 * @param MapCrc The checksum that map has, for ghosts written before the
 	 * hash was.
@@ -149,6 +150,20 @@ public:
 	 * @return `true` on success, `false` after reporting what went wrong.
 	 */
 	bool LoadFromMemory(std::vector<uint8_t> vData, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc);
+	/**
+	 * Reads a ghost of whatever map it belongs to, from wherever the path
+	 * points. What map that is is then what `GetInfo` says.
+	 *
+	 * For whoever has no map to check it against: a program that turns a ghost
+	 * into something else has none loaded, and the ghost itself is the only
+	 * one who knows which map it was run on.
+	 *
+	 * @param pFilename The ghost to read.
+	 * @param StorageType Where to look for it.
+	 *
+	 * @return `true` on success, `false` after reporting what went wrong.
+	 */
+	bool LoadAnyMap(const char *pFilename, int StorageType);
 	void Close() override;
 	const CGhostInfo *GetInfo() const override { return &m_Info; }
 

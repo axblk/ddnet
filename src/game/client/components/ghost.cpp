@@ -485,16 +485,20 @@ void CGhost::StopRender()
 	m_NewRenderTick = -1;
 }
 
-CGhost::CGhostLoadJob::CGhostLoadJob(std::unique_ptr<CGhostLoader> pGhostLoader, const char *pFilename, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc) :
-	m_pGhostLoader(std::move(pGhostLoader)), m_MapSha256(MapSha256), m_MapCrc(MapCrc)
+CGhost::CGhostLoadJob::CGhostLoadJob(std::unique_ptr<CGhostLoader> pGhostLoader, IStorage *pStorage, const char *pFilename, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc, uint64_t Generation) :
+	CAssetJob(EAssetType::DATA, pStorage, pFilename, IStorage::TYPE_SAVE, CGameClient::ASSET_OWNER_GHOSTS, Generation),
+	m_pGhostLoader(std::move(pGhostLoader)),
+	m_MapSha256(MapSha256),
+	m_MapCrc(MapCrc)
 {
-	str_copy(m_aFilename, pFilename);
 	str_copy(m_aMapName, pMapName);
 }
 
-void CGhost::CGhostLoadJob::Run()
+void CGhost::CGhostLoadJob::Process()
 {
-	if(!m_pGhostLoader->Load(m_aFilename, m_aMapName, m_MapSha256, m_MapCrc))
+	// The bytes are here already - the loader read them, wherever they came
+	// from - so all that is left is to make a ghost of them.
+	if(!m_pGhostLoader->LoadFromMemory(std::move(Data()), CAssetJob::Path(), m_aMapName, m_MapSha256, m_MapCrc))
 		return;
 
 	const CGhostInfo *pInfo = m_pGhostLoader->GetInfo();
@@ -615,9 +619,9 @@ int CGhost::Load(const char *pFilename)
 
 	CGhostItem *pGhost = &m_aActiveGhosts[Slot];
 	pGhost->Reset();
-	pGhost->m_pLoadJob = std::make_shared<CGhostLoadJob>(std::move(pGhostLoader), pFilename,
-		GameClient()->Map()->BaseName(), GameClient()->Map()->Sha256(), GameClient()->Map()->Crc());
-	Engine()->AddJob(pGhost->m_pLoadJob);
+	pGhost->m_LoadResource = GameClient()->AssetLoader().Load(std::make_shared<CGhostLoadJob>(
+		std::move(pGhostLoader), Storage(), pFilename, GameClient()->Map()->BaseName(),
+		GameClient()->Map()->Sha256(), GameClient()->Map()->Crc(), m_LoadGeneration));
 
 	return Slot;
 }
@@ -627,12 +631,13 @@ void CGhost::OnUpdate()
 	for(int Slot = 0; Slot < MAX_ACTIVE_GHOSTS; Slot++)
 	{
 		CGhostItem &Ghost = m_aActiveGhosts[Slot];
-		if(!Ghost.m_pLoadJob || !Ghost.m_pLoadJob->Done())
+		if(!Ghost.m_LoadResource || !Ghost.m_LoadResource.IsFinished())
 			continue;
 
-		std::shared_ptr<CGhostLoadJob> pJob = std::move(Ghost.m_pLoadJob);
-		Ghost.m_pLoadJob = nullptr;
-		if(pJob->State() != IJob::STATE_DONE || !pJob->Success())
+		// Taken out of the slot: what comes of it is decided here and now, and
+		// the slot is free either way.
+		CTypedAssetResource<CGhostLoadJob> Resource = std::move(Ghost.m_LoadResource);
+		if(!Resource.IsReady(m_LoadGeneration))
 		{
 			// The slot is handed out before the file has been read, so the list
 			// entry holding it has to learn that nothing will be rendered from it.
@@ -640,10 +645,11 @@ void CGhost::OnUpdate()
 			continue;
 		}
 
-		Ghost.m_Skin = pJob->Skin();
-		Ghost.m_Path = std::move(pJob->Path());
-		Ghost.m_StartTick = pJob->StartTick();
-		str_copy(Ghost.m_aPlayer, pJob->Player());
+		CGhostLoadJob &Job = Resource.Result();
+		Ghost.m_Skin = Job.Skin();
+		Ghost.m_Path = std::move(Job.GhostPath());
+		Ghost.m_StartTick = Job.StartTick();
+		str_copy(Ghost.m_aPlayer, Job.Player());
 		UpdateTeeRenderInfo(Ghost);
 	}
 }
@@ -764,6 +770,10 @@ void CGhost::OnShutdown()
 void CGhost::OnMapLoad()
 {
 	OnReset();
+	// Whatever is still being read belongs to the map before this one, and a
+	// ghost of that map has no business on this one.
+	++m_LoadGeneration;
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(CGameClient::ASSET_OWNER_GHOSTS, m_LoadGeneration);
 	UnloadAll();
 	GameClient()->m_Menus.GhostlistPopulate();
 	m_AllowRestart = false;

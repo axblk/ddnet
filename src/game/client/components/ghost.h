@@ -3,8 +3,8 @@
 #ifndef GAME_CLIENT_COMPONENTS_GHOST_H
 #define GAME_CLIENT_COMPONENTS_GHOST_H
 
+#include <engine/client/asset_loader.h>
 #include <engine/client/ghost.h>
-#include <engine/shared/jobs.h>
 
 #include <generated/protocol.h>
 
@@ -90,14 +90,15 @@ private:
 	/**
 	 * Reads a whole ghost file and decompresses it chunk by chunk.
 	 *
-	 * The decompression is the expensive part, so the job parses the file
-	 * instead of only reading it. It owns its own ghost loader and touches
-	 * nothing else.
+	 * An asset job like every other: the reading is the loader's, which is what
+	 * makes a ghost arrive over HTTP in a browser without this knowing. What
+	 * the job itself does is the expensive half - the decompression - so it
+	 * parses the ghost rather than only handing on its bytes. It owns its own
+	 * ghost loader and touches nothing else.
 	 */
-	class CGhostLoadJob : public IJob
+	class CGhostLoadJob : public CAssetJob
 	{
 		std::unique_ptr<CGhostLoader> m_pGhostLoader;
-		char m_aFilename[IO_MAX_PATH_LENGTH];
 		char m_aMapName[MAX_MAP_LENGTH];
 		SHA256_DIGEST m_MapSha256;
 		unsigned m_MapCrc;
@@ -108,14 +109,16 @@ private:
 		char m_aPlayer[MAX_NAME_LENGTH] = {};
 		bool m_Success = false;
 
-		void Run() override;
+		void Process() override;
 
 	public:
-		CGhostLoadJob(std::unique_ptr<CGhostLoader> pGhostLoader, const char *pFilename, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc);
+		CGhostLoadJob(std::unique_ptr<CGhostLoader> pGhostLoader, class IStorage *pStorage, const char *pFilename, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc, uint64_t Generation);
 
-		bool Success() const { return m_Success; }
+		bool Success() const override { return m_Success; }
 		const CGhostSkin &Skin() const { return m_Skin; }
-		CGhostPath &Path() { return m_Path; }
+		// Where the ghost went, not where it was read from - `Path` is already
+		// taken by the asset job for that.
+		CGhostPath &GhostPath() { return m_Path; }
 		int StartTick() const { return m_StartTick; }
 		const char *Player() const { return m_aPlayer; }
 	};
@@ -124,7 +127,7 @@ private:
 	{
 	public:
 		std::shared_ptr<CManagedTeeRenderInfo> m_pManagedTeeRenderInfo;
-		std::shared_ptr<CGhostLoadJob> m_pLoadJob;
+		CTypedAssetResource<CGhostLoadJob> m_LoadResource;
 		CGhostSkin m_Skin;
 		CGhostPath m_Path;
 		int m_StartTick;
@@ -133,15 +136,12 @@ private:
 		CGhostItem() { Reset(); }
 
 		// A slot that is still loading is taken, but has nothing to render yet.
-		bool Empty() const { return m_Path.Size() == 0 && m_pLoadJob == nullptr; }
+		bool Empty() const { return m_Path.Size() == 0 && !m_LoadResource; }
 		bool Ready() const { return m_Path.Size() != 0; }
 		void Reset()
 		{
-			if(m_pLoadJob)
-			{
-				m_pLoadJob->Abort();
-				m_pLoadJob = nullptr;
-			}
+			m_LoadResource.Abort();
+			m_LoadResource.Reset();
 			m_pManagedTeeRenderInfo = nullptr;
 			m_Path.Reset();
 			m_StartTick = -1;
@@ -157,6 +157,10 @@ private:
 	CGhostItem m_CurGhost;
 
 	char m_aTmpFilename[IO_MAX_PATH_LENGTH];
+
+	// Bumped whenever the ghosts are dropped, so that a ghost still being read
+	// for the map before this one is not put on this one.
+	uint64_t m_LoadGeneration = 0;
 
 	int m_NewRenderTick = -1;
 	int m_StartRenderTick = -1;

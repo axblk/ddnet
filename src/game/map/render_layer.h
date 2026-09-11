@@ -65,6 +65,13 @@ public:
 	bool m_DebugRenderQuadClips;
 	bool m_DebugRenderClusterClips;
 	bool m_DebugRenderTileClips;
+	/**
+	 * How much of the world the view shows, in world units and without the
+	 * zoom, or zero to work it out from the screen the way the game does. A
+	 * map viewer decides it itself: nothing there has to look the way it would
+	 * look to a player, so the view is simply the window it was given.
+	 */
+	vec2 m_ViewSize = vec2(0.0f, 0.0f);
 	// Draw every group where the map itself is, whatever speed it moves at.
 	// A picture of a whole map is taken from no one place, so a layer that
 	// moves at its own speed has no one right offset either, and only this

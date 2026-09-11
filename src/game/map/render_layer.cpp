@@ -370,8 +370,11 @@ void CRenderLayerGroup::Render(const CRenderLayerParams &Params)
 	const int ParallaxX = Params.m_IgnoreParallax ? 100 : m_pGroup->m_ParallaxX;
 	const int ParallaxY = Params.m_IgnoreParallax ? 100 : m_pGroup->m_ParallaxY;
 	int ParallaxZoom = std::clamp(std::max(ParallaxX, ParallaxY), 0, 100);
-	CScreenRect ScreenRect = Graphics()->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y, ParallaxX, ParallaxY, (float)ParallaxZoom,
-		m_pGroup->m_OffsetX, m_pGroup->m_OffsetY, Graphics()->ScreenAspect(), Params.m_Zoom);
+	CScreenRect ScreenRect = Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f ?
+					 Graphics()->MapViewToWorld(Params.m_ViewSize * Params.m_Zoom, Params.m_Center.x, Params.m_Center.y, ParallaxX, ParallaxY, (float)ParallaxZoom,
+						 m_pGroup->m_OffsetX, m_pGroup->m_OffsetY, Params.m_Zoom) :
+					 Graphics()->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y, ParallaxX, ParallaxY, (float)ParallaxZoom,
+						 m_pGroup->m_OffsetX, m_pGroup->m_OffsetY, Graphics()->ScreenAspect(), Params.m_Zoom);
 	// A screen wider than the view is drawn for shows the world further to the
 	// sides, and a group that does not follow the world is made bigger to cover
 	// it instead - see CalcGroupViewScale. Without this, a wide screen shows

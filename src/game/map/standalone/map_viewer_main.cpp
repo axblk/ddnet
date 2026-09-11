@@ -177,10 +177,7 @@ EMSCRIPTEN_KEEPALIVE float MapViewerVisibleWidth()
 {
 	if(g_pView == nullptr || g_pRenderParams == nullptr)
 		return 0.0f;
-	IGraphics *pGraphics = g_pView->Graphics();
-	float ViewWidth, ViewHeight;
-	pGraphics->CalcScreenParams(pGraphics->ScreenAspect(), 1.0f, &ViewWidth, &ViewHeight);
-	return ViewWidth * g_pRenderParams->m_Zoom;
+	return g_pView->ViewSize().x * g_pRenderParams->m_Zoom;
 }
 
 // How big the map is, which is what tells a page whether where it is looking
@@ -446,8 +443,7 @@ int main(int argc, const char **argv)
 
 		// How far the map moves under one pixel of the pointer, which is also
 		// what the keys move by, so both stay the same speed at any zoom.
-		float ViewWidth, ViewHeight;
-		pGraphics->CalcScreenParams(pGraphics->ScreenAspect(), 1.0f, &ViewWidth, &ViewHeight);
+		const float ViewWidth = View.ViewSize().x;
 		const float WorldPerPixel = pGraphics->ScreenWidth() == 0 ? 0.0f : ViewWidth * RenderParams.m_Zoom / pGraphics->ScreenWidth();
 
 		if(pInput != nullptr)

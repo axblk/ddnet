@@ -531,6 +531,18 @@ public:
 	void CalcScreenParams(float Aspect, float Zoom, float *pWidth, float *pHeight) const;
 	CScreenRect MapScreenToWorld(float CenterX, float CenterY, float ParallaxX, float ParallaxY,
 		float ParallaxZoom, float OffsetX, float OffsetY, float Aspect, float Zoom) const;
+
+	/**
+	 * The same as @link MapScreenToWorld @endlink for a view whose size was
+	 * decided elsewhere rather than worked out from the screen. A map viewer
+	 * decides it itself: nobody there has to see what a player would see, so
+	 * the view is simply the window.
+	 *
+	 * `ViewSize` is how much world the view shows, zoom included; everything
+	 * else is what it is there.
+	 */
+	CScreenRect MapViewToWorld(vec2 ViewSize, float CenterX, float CenterY, float ParallaxX, float ParallaxY,
+		float ParallaxZoom, float OffsetX, float OffsetY, float Zoom) const;
 	void MapScreenToInterface(float CenterX, float CenterY, float Zoom = 1.0f);
 	void MapScreenToSize(float Width, float Height);
 

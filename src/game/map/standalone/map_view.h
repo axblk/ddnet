@@ -94,6 +94,18 @@ public:
 	SRenderParams ParamsForWorldRect(vec2 TopLeft, vec2 Size) const;
 
 	/**
+	 * How much of the world the view shows at zoom 1, in world units.
+	 *
+	 * This is not what the game would show. A game keeps the area of its view
+	 * the same whatever shape the window has, so that nobody sees further by
+	 * making their window wider; a map viewer has nobody to be fair to, and a
+	 * window that is wider than it is tall is simply asked to show more map.
+	 * The height is the one the game's view has on a 16:9 screen, so that a
+	 * zoom of one still means here what it has always meant.
+	 */
+	vec2 ViewSize() const;
+
+	/**
 	 * Finishes the frame that was drawn and reads it back off the graphics
 	 * card. Where there is a window, this is also what puts the frame on it.
 	 *

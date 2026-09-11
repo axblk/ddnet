@@ -65,6 +65,26 @@ const DDNetLoader = (() => {
 		}
 	}
 
+	// What the browser has to be able to do before any of this is worth
+	// starting, said in one sentence rather than found out over a page of the
+	// program's own complaints.
+	//
+	// Threads are the one thing every program here needs, and a browser only
+	// hands out the memory they share to a page that is cross-origin isolated.
+	// Drawing without a window needs WebGPU, because that is the only backend
+	// left once the window is gone.
+	function supportProblem(needsWebGpu) {
+		if (typeof SharedArrayBuffer === "undefined" || self.crossOriginIsolated === false) {
+			return "This page is not cross-origin isolated, so the browser withholds the shared memory this needs. " +
+				"The page has to send Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp, " +
+				"or load coi-serviceworker.js before anything else.";
+		}
+		if (needsWebGpu && !navigator.gpu) {
+			return "This browser has no WebGPU, which is what a render without a window draws with. A current Chrome or Firefox has it.";
+		}
+		return null;
+	}
+
 	// A script from another origin, as a blob. Fetched rather than linked
 	// because a blob belongs to this page: a worker may be made from it, and
 	// `importScripts` takes it without asking the server for permission it
@@ -447,6 +467,13 @@ const DDNetLoader = (() => {
 			if (typeof options.module !== "function") {
 				throw new Error("DDNetLoader needs the program's factory, for example `module: DDNetDemoViewer`");
 			}
+			// Said once, and said here: what follows would say it a hundred
+			// times, in the words of whatever failed first.
+			const problem = supportProblem(options.needsWebGpu === true);
+			if (problem !== null) {
+				this.output(problem, { error: true, bold: true });
+				throw new Error(problem);
+			}
 			sweepDataCache();
 			sweepVideoScratch();
 			this.installErrorHandler();
@@ -728,6 +755,13 @@ self.onmessage = async event => {
 	];
 
 	async function renderInWorker(options, loaderUrl) {
+		// A worker inherits the page's isolation, so what the page cannot do
+		// the worker cannot either - and it is said here, where the page is
+		// listening, rather than from inside the worker.
+		const problem = supportProblem(true);
+		if (problem !== null) {
+			throw new Error(problem);
+		}
 		const program = new URL(options.scriptUrl, location.href);
 		// Both scripts go in as blobs where they are not this page's own:
 		// `importScripts` asks for a foreign script without CORS, which a page
@@ -865,6 +899,7 @@ self.onmessage = async event => {
 		return Object.assign({}, options, {
 			canvas: null,
 			persist: false,
+			needsWebGpu: true,
 			accept: [".demo"],
 			file: options.demo,
 			fileName: options.name || "render.demo",
@@ -888,6 +923,8 @@ self.onmessage = async event => {
 		 * @param options.videoSink Where an exported video is written, see
 		 * `setVideoSink`. Without it the video goes to a scratch file and is
 		 * handed over when it is done.
+		 * @param options.needsWebGpu Whether the program draws without a
+		 * window, which only WebGPU does. Checked before it starts.
 		 * @param options.accept The file suffixes this program takes.
 		 * @param options.file A file to start on: bytes, a `File`, or the URL of
 		 * one.

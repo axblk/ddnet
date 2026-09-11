@@ -32,7 +32,9 @@
 					output: document.getElementById('output'),
 					outputContent: document.getElementById('outputcontent'),
 				},
-			});
+			// A browser that cannot run this has been told why in the log, which
+			// is where everything else that goes wrong is said as well.
+			}).catch(() => {});
 		</script>
 	</body>
 </html>

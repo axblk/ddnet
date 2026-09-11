@@ -59,6 +59,13 @@
 				const exportButton = document.getElementById('export-button');
 				var seeking = false;
 				var exportStarted = false;
+				// Encoding a video is the browser's to do, and not every browser
+				// does it. Better said here than by an export that starts and
+				// then cannot finish.
+				if (typeof VideoEncoder === "undefined") {
+					exportButton.disabled = true;
+					exportButton.title = "This browser has no video encoder";
+				}
 
 				// The page is there before the viewer is and outlives it, so every
 				// call has to survive being made outside of that: until there is
@@ -68,7 +75,9 @@
 					call: (name, returnType, argTypes, args) =>
 						viewer == null ? null : viewer.call(name, returnType, argTypes, args),
 				});
-				started.then(instance => { viewer = instance; });
+				// A page that cannot run this at all has been told why once
+				// already, which is enough: there is nothing here to steer.
+				started.then(instance => { viewer = instance; }, () => {});
 
 				// Where a link says to start, and how. Once, as soon as there is a
 				// demo to say it to - `#t=90&speed=0.5&paused=1`, in the fragment

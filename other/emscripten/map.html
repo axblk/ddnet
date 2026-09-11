@@ -65,7 +65,9 @@
 					call: (name, returnType, argTypes, args) =>
 						viewer == null ? null : viewer.call(name, returnType, argTypes, args),
 				});
-				started.then(instance => { viewer = instance; });
+				// A page that cannot run this at all has been told why once
+				// already, which is enough: there is nothing here to steer.
+				started.then(instance => { viewer = instance; }, () => {});
 
 				document.getElementById('fit-button').addEventListener('click', () => {
 					map.fit();

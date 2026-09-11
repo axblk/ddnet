@@ -12,6 +12,12 @@
 #include <engine/shared/huffman.h>
 #include <engine/storage.h>
 
+#include <algorithm>
+#include <cstdlib>
+#include <limits>
+#include <utility>
+#include <vector>
+
 static const unsigned char gs_aHeaderMarker[8] = {'T', 'W', 'G', 'H', 'O', 'S', 'T', 0};
 static const unsigned char gs_CurVersion = 6;
 
@@ -214,7 +220,6 @@ void CGhostRecorder::Stop(int Ticks, int Time)
 
 CGhostLoader::CGhostLoader()
 {
-	m_File = nullptr;
 	m_aFilename[0] = '\0';
 	ResetBuffer();
 }
@@ -233,46 +238,47 @@ void CGhostLoader::ResetBuffer()
 	m_BufferPrevItem = -1;
 }
 
-IOHANDLE CGhostLoader::ReadHeader(CGhostHeader &Header, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc, bool LogMapMismatch) const
+size_t CGhostLoader::Read(void *pData, size_t Size)
 {
-	IOHANDLE File = m_pStorage->OpenFile(pFilename, IOFLAG_READ, IStorage::TYPE_SAVE);
-	if(!File)
-	{
-		log_error_color(LOG_COLOR_GHOST, "ghost_loader", "Failed to open ghost file '%s' for reading", pFilename);
-		return nullptr;
-	}
+	const size_t Taken = std::min(Size, m_vData.size() - m_ReadPos);
+	mem_copy(pData, m_vData.data() + m_ReadPos, Taken);
+	m_ReadPos += Taken;
+	return Taken;
+}
 
-	if(io_read(File, &Header, sizeof(Header) - sizeof(SHA256_DIGEST)) != sizeof(Header) - sizeof(SHA256_DIGEST))
+bool CGhostLoader::ReadHeader(CGhostHeader &Header, const unsigned char *pData, size_t Size, size_t *pHeaderSize, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc, bool LogMapMismatch) const
+{
+	// Everything but the map's hash, which the versions before 6 do not carry.
+	constexpr size_t BaseSize = sizeof(CGhostHeader) - sizeof(SHA256_DIGEST);
+	if(Size < BaseSize)
 	{
 		log_error_color(LOG_COLOR_GHOST, "ghost_loader", "Failed to read ghost file '%s': failed to read header", pFilename);
-		io_close(File);
-		return nullptr;
+		return false;
 	}
+	mem_copy(&Header, pData, BaseSize);
 
 	if(!ValidateHeader(Header, pFilename))
 	{
-		io_close(File);
-		return nullptr;
+		return false;
 	}
 
 	if(Header.m_Version < 6)
 	{
 		mem_zero(&Header.m_MapSha256, sizeof(Header.m_MapSha256));
+		*pHeaderSize = BaseSize;
 	}
-	else if(io_read(File, &Header.m_MapSha256, sizeof(SHA256_DIGEST)) != sizeof(SHA256_DIGEST))
+	else
 	{
-		log_error_color(LOG_COLOR_GHOST, "ghost_loader", "Failed to read ghost file '%s': failed to read header map SHA256", pFilename);
-		io_close(File);
-		return nullptr;
+		if(Size < sizeof(CGhostHeader))
+		{
+			log_error_color(LOG_COLOR_GHOST, "ghost_loader", "Failed to read ghost file '%s': failed to read header map SHA256", pFilename);
+			return false;
+		}
+		mem_copy(&Header.m_MapSha256, pData + BaseSize, sizeof(SHA256_DIGEST));
+		*pHeaderSize = sizeof(CGhostHeader);
 	}
 
-	if(!CheckHeaderMap(Header, pFilename, pMap, MapSha256, MapCrc, LogMapMismatch))
-	{
-		io_close(File);
-		return nullptr;
-	}
-
-	return File;
+	return CheckHeaderMap(Header, pFilename, pMap, MapSha256, MapCrc, LogMapMismatch);
 }
 
 bool CGhostLoader::ValidateHeader(const CGhostHeader &Header, const char *pFilename) const
@@ -362,16 +368,32 @@ bool CGhostLoader::CheckHeaderMap(const CGhostHeader &Header, const char *pFilen
 
 bool CGhostLoader::Load(const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc)
 {
-	dbg_assert(!m_File, "File already open");
+	void *pData;
+	unsigned DataSize;
+	if(!m_pStorage->ReadFile(pFilename, IStorage::TYPE_SAVE, &pData, &DataSize))
+	{
+		log_error_color(LOG_COLOR_GHOST, "ghost_loader", "Failed to open ghost file '%s' for reading", pFilename);
+		return false;
+	}
+	std::vector<uint8_t> vData(static_cast<const uint8_t *>(pData), static_cast<const uint8_t *>(pData) + DataSize);
+	free(pData);
+	return LoadFromMemory(std::move(vData), pFilename, pMap, MapSha256, MapCrc);
+}
+
+bool CGhostLoader::LoadFromMemory(std::vector<uint8_t> vData, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc)
+{
+	dbg_assert(!m_Loaded, "Ghost already loaded");
 
 	CGhostHeader Header;
-	IOHANDLE File = ReadHeader(Header, pFilename, pMap, MapSha256, MapCrc, true);
-	if(!File)
+	size_t HeaderSize;
+	if(!ReadHeader(Header, vData.data(), vData.size(), &HeaderSize, pFilename, pMap, MapSha256, MapCrc, true))
 	{
 		return false;
 	}
 
-	m_File = File;
+	m_vData = std::move(vData);
+	m_ReadPos = HeaderSize;
+	m_Loaded = true;
 	str_copy(m_aFilename, pFilename);
 	m_Header = Header;
 	m_Info = m_Header.ToGhostInfo();
@@ -389,7 +411,7 @@ bool CGhostLoader::ReadChunk(int *pType)
 	ResetBuffer();
 
 	unsigned char aChunkHeader[4];
-	const unsigned ReadHeaderSize = io_read(m_File, aChunkHeader, sizeof(aChunkHeader));
+	const size_t ReadHeaderSize = Read(aChunkHeader, sizeof(aChunkHeader));
 	if(ReadHeaderSize != sizeof(aChunkHeader))
 	{
 		if(ReadHeaderSize != 0)
@@ -409,7 +431,7 @@ bool CGhostLoader::ReadChunk(int *pType)
 		return false;
 	}
 
-	if(io_read(m_File, m_aBuffer, Size) != (unsigned)Size)
+	if(Read(m_aBuffer, Size) != (size_t)Size)
 	{
 		log_error_color(LOG_COLOR_GHOST, "ghost_loader", "Failed to read ghost file '%s': error reading chunk data", m_aFilename);
 		return false;
@@ -435,7 +457,7 @@ bool CGhostLoader::ReadChunk(int *pType)
 
 bool CGhostLoader::ReadNextType(int *pType)
 {
-	dbg_assert((bool)m_File, "File not open");
+	dbg_assert(m_Loaded, "No ghost loaded");
 
 	if(m_BufferCurItem != m_BufferPrevItem && m_BufferCurItem < m_BufferNumItems)
 	{
@@ -465,7 +487,7 @@ static void UndiffItem(const uint32_t *pPast, const uint32_t *pDiff, uint32_t *p
 
 bool CGhostLoader::ReadData(int Type, void *pData, size_t Size)
 {
-	dbg_assert((bool)m_File, "File not open");
+	dbg_assert(m_Loaded, "No ghost loaded");
 	dbg_assert(Type >= 0 && Type <= (int)std::numeric_limits<unsigned char>::max(), "Type invalid");
 	dbg_assert(Size > 0 && Size <= MAX_ITEM_SIZE && Size % sizeof(uint32_t) == 0, "Size invalid");
 
@@ -499,25 +521,38 @@ bool CGhostLoader::ReadData(int Type, void *pData, size_t Size)
 
 void CGhostLoader::Close()
 {
-	if(!m_File)
+	if(!m_Loaded)
 	{
 		return;
 	}
 
-	io_close(m_File);
-	m_File = nullptr;
+	m_vData = std::vector<uint8_t>();
+	m_ReadPos = 0;
+	m_Loaded = false;
 	m_aFilename[0] = '\0';
 }
 
 bool CGhostLoader::GetGhostInfo(const char *pFilename, CGhostInfo *pGhostInfo, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc)
 {
-	CGhostHeader Header;
-	IOHANDLE File = ReadHeader(Header, pFilename, pMap, MapSha256, MapCrc, false);
+	// This is asked about every ghost of a map in turn, and only about the few
+	// bytes at the front of each - so here the file is opened and those bytes
+	// are read, rather than every ghost being taken into memory to be looked at.
+	IOHANDLE File = m_pStorage->OpenFile(pFilename, IOFLAG_READ, IStorage::TYPE_SAVE);
 	if(!File)
+	{
+		log_error_color(LOG_COLOR_GHOST, "ghost_loader", "Failed to open ghost file '%s' for reading", pFilename);
+		return false;
+	}
+	unsigned char aHeader[sizeof(CGhostHeader)];
+	const unsigned ReadSize = io_read(File, aHeader, sizeof(aHeader));
+	io_close(File);
+
+	CGhostHeader Header;
+	size_t HeaderSize;
+	if(!ReadHeader(Header, aHeader, ReadSize, &HeaderSize, pFilename, pMap, MapSha256, MapCrc, false))
 	{
 		return false;
 	}
-	io_close(File);
 	*pGhostInfo = Header.ToGhostInfo();
 	return true;
 }

@@ -4345,6 +4345,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     game_state_test.cpp
     game_wire_test.cpp
     gameworld_test.cpp
+    ghost_test.cpp
     git_revision_test.cpp
     gpu_timestamp_test.cpp
     graphics_frontend_test.cpp
@@ -4408,6 +4409,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/engine/client/asset_loader.h
     src/engine/client/font_loading.cpp
     src/engine/client/font_loading.h
+    src/engine/client/ghost.cpp
+    src/engine/client/ghost.h
     src/engine/client/graph.cpp
     src/engine/client/render_trace.cpp
     src/engine/client/render_trace.h

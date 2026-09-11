@@ -384,7 +384,10 @@ const DDNetLoader = (() => {
 
 	// A video that was written but never taken is a video nobody wanted, so the
 	// scratch files of earlier visits go at the start of this one. Once per
-	// page, and before anything writes a new one.
+	// page, and before anything writes a new one - which is why a render in a
+	// worker does not do this itself: every worker is a page as far as this
+	// script is concerned, and the second render of a batch would sweep away
+	// the video of the first one while the page was still offering it.
 	var sweptVideoScratch = false;
 	async function sweepVideoScratch() {
 		if (sweptVideoScratch) {
@@ -731,7 +734,9 @@ const DDNetLoader = (() => {
 				throw new Error(problem);
 			}
 			sweepDataCache();
-			sweepVideoScratch();
+			if (options.sweepVideoScratch !== false) {
+				sweepVideoScratch();
+			}
 			this.installErrorHandler();
 
 			const program = await this.program();
@@ -1086,6 +1091,10 @@ self.onmessage = async event => {
 			}
 		}
 		request.options.scriptUrl = program.href;
+		// Swept here, where there is one of these per page, rather than in the
+		// worker, where there is one per render.
+		await sweepVideoScratch();
+		request.options.sweepVideoScratch = false;
 		// A destination the page picked can be handed over, if it is the kind
 		// of stream that can be. Where it is not, the render stays here rather
 		// than quietly writing somewhere else.

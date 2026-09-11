@@ -270,12 +270,16 @@
 						link.download = "videos.zip";
 						link.click();
 						setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+						saveAllButton.disabled = false;
+						updateSummary();
 					} catch (error) {
 						// Too much for one zip, so they stay one download each.
+						// Said after the summary is written, because writing it
+						// is what would otherwise take this straight back off.
+						saveAllButton.disabled = false;
+						updateSummary();
 						summary.textContent = (error && error.message) || String(error);
 					}
-					saveAllButton.disabled = false;
-					updateSummary();
 				});
 				startButton.addEventListener('click', () => {
 					if (!running) {

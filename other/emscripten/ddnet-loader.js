@@ -785,6 +785,53 @@ self.onmessage = async event => {
 		});
 	}
 
+	// The viewers' own controls, as calls rather than as names to spell out:
+	// a page steering one should not have to know that `ccall` exists, nor
+	// which of the arguments are numbers. Every call answers `null` where the
+	// program is not running, the same as `call` does.
+	//
+	// The other end of these is the `DemoViewer*` block in
+	// `src/engine/client/demo_viewer_client.cpp` and the `MapViewer*` block in
+	// `src/game/map/standalone/map_viewer_main.cpp`.
+	function demoControls(instance) {
+		const number = (name, argument) => argument === undefined
+			? instance.call(name, "number")
+			: instance.call(name, null, ["number"], [argument]);
+		return {
+			/** Whether a demo is loaded and how long it is, in seconds. */
+			length: () => number("DemoViewerLength"),
+			/** How far it has played, between 0 and 1. */
+			progress: () => number("DemoViewerProgress"),
+			paused: () => number("DemoViewerPaused") === 1,
+			pause: () => number("DemoViewerSetPaused", 1),
+			play: () => number("DemoViewerSetPaused", 0),
+			/** Jumps to a part of the demo, between 0 and 1. */
+			seek: Fraction => number("DemoViewerSeekPercent", Fraction),
+			/** Jumps to a time in the demo, in seconds. */
+			seekTime: Seconds => number("DemoViewerSeekTime", Seconds),
+			restart: () => instance.call("DemoViewerSeekStart"),
+			/** The playback speed, or sets it: 1 is as it was played. */
+			speed: Value => Value === undefined ? number("DemoViewerSpeed") : number("DemoViewerSetSpeed", Value),
+			exporting: () => number("DemoViewerExporting") === 1,
+			/** Starts a video export, and says whether it started. */
+			startExport: (Width, Height, Fps, Audio) => instance.call("DemoViewerStartExport", "number",
+				["number", "number", "number", "number"], [Width, Height, Fps, Audio ? 1 : 0]) === 1,
+		};
+	}
+
+	function mapControls(instance) {
+		return {
+			loaded: () => instance.call("MapViewerMapLoaded", "number") === 1,
+			/** Fits the whole map on screen. */
+			fit: () => instance.call("MapViewerFit"),
+			/** Writes what is on screen, or the whole map, to a picture. */
+			exportView: () => instance.call("MapViewerExportView"),
+			exportFullMap: () => instance.call("MapViewerExportFullMap"),
+			/** 0 while nothing is being written, 1 while it is, 2 when it failed. */
+			exportState: () => instance.call("MapViewerExportState", "number"),
+		};
+	}
+
 	// What the render tool is asked on a command line, from what the page
 	// asked for here. It is the same program with the same arguments as the one
 	// a terminal starts, so `ddnet-demo-render --help` documents these too.
@@ -854,6 +901,29 @@ self.onmessage = async event => {
 		 */
 		start(options) {
 			return new Instance(options).run();
+		},
+
+		/**
+		 * What a demo viewer can be asked to do, bound to one of them. The page
+		 * that hosts it needs nothing else to steer it - and neither does a URL
+		 * that says where to start, which is `urlParameter` below.
+		 */
+		demoControls(instance) {
+			return demoControls(instance);
+		},
+
+		/** The same for a map viewer. */
+		mapControls(instance) {
+			return mapControls(instance);
+		},
+
+		/**
+		 * What the page's URL says about a parameter, from the fragment first:
+		 * a fragment never reaches a server, so a link to somebody's demo stays
+		 * between them and their browser.
+		 */
+		urlParameter(name) {
+			return urlParameter(name);
 		},
 
 		/** `start` with the furniture our own pages share around it. */

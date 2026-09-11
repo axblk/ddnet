@@ -58,34 +58,35 @@
 				var lastExportState = EXPORT_IDLE;
 
 				// The page is there before the viewer is and outlives it, so every
-				// call has to survive being made outside of that.
+				// call has to survive being made outside of that: until there is
+				// one, and once there is no longer one, they all answer `null`.
 				var viewer = null;
+				const map = DDNetLoader.mapControls({
+					call: (name, returnType, argTypes, args) =>
+						viewer == null ? null : viewer.call(name, returnType, argTypes, args),
+				});
 				started.then(instance => { viewer = instance; });
-				function call(name, returnType, argTypes, args) {
-					return viewer == null ? null : viewer.call(name, returnType, argTypes, args);
-				}
 
 				document.getElementById('fit-button').addEventListener('click', () => {
-					call('MapViewerFit');
+					map.fit();
 				});
 				exportViewButton.addEventListener('click', () => {
 					// The browser only hands over a download that came out of a click.
-					call('MapViewerExportView');
+					map.exportView();
 				});
 				exportFullButton.addEventListener('click', () => {
-					call('MapViewerExportFullMap');
+					map.exportFullMap();
 				});
 
 				// The page asks rather than being told: the viewer holds the main
 				// thread for as long as it draws and only lets go between frames.
 				setInterval(() => {
-					const loaded = call('MapViewerMapLoaded', 'number');
-					if (loaded === null || loaded !== 1) {
+					if (!map.loaded()) {
 						playerControls.style.display = "none";
 						return;
 					}
 					playerControls.style.display = "flex";
-					const state = call('MapViewerExportState', 'number');
+					const state = map.exportState();
 					if (state === lastExportState) {
 						return;
 					}

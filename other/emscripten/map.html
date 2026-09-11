@@ -20,6 +20,7 @@
 			<span id="view">0, 0</span>
 			<button id="zoom-in" title="Wheel up">+</button>
 			<button id="fit-button" title="Home">Fit on screen</button>
+			<button id="fullscreen-button">Full screen</button>
 			<button id="export-view-button">Save this view</button>
 			<button id="export-full-button" title="The whole map at 32 pixels per tile">Save the whole map</button>
 		</div>
@@ -46,6 +47,7 @@
 			(function() {
 				const playerControls = document.getElementById('player-controls');
 				DDNetLoader.autoHide(playerControls);
+				DDNetLoader.fullscreen(document.getElementById('fullscreen-button'));
 				const hint = document.getElementById('hint');
 				const view = document.getElementById('view');
 				const exportViewButton = document.getElementById('export-view-button');

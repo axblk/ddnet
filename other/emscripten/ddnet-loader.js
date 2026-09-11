@@ -194,6 +194,35 @@ const DDNetLoader = (() => {
 		return { show, hide };
 	}
 
+	// Filling the screen is the browser's to do and only out of a click of its
+	// own. What goes full screen is the page and not the canvas: a canvas on
+	// its own takes the controls off the screen with it, since they are beside
+	// it and not in it.
+	function fullscreen(button, options) {
+		const settings = Object.assign({ element: document.documentElement }, options || {});
+		if (!document.fullscreenEnabled) {
+			button.hidden = true;
+			return { supported: false };
+		}
+		const update = () => {
+			const on = document.fullscreenElement != null;
+			button.textContent = on ? "Leave full screen" : "Full screen";
+			button.title = on ? "Escape" : "";
+		};
+		button.addEventListener("click", () => {
+			if (document.fullscreenElement != null) {
+				document.exitFullscreen();
+			} else {
+				// A browser that says no says it in a promise nobody is
+				// waiting on, which would otherwise be an unhandled rejection.
+				settings.element.requestFullscreen().catch(() => {});
+			}
+		});
+		document.addEventListener("fullscreenchange", update);
+		update();
+		return { supported: true };
+	}
+
 	// The sizes and frame rates a video is offered in, the same ones the client
 	// offers in its own render window - see `gs_aaVideoResolutionPresets` and
 	// `s_aFpsPresets` in `src/game/client/components/menus.cpp`. Anything else
@@ -1321,6 +1350,22 @@ self.onmessage = async event => {
 		 */
 		supportProblem(needsWebGpu) {
 			return supportProblem(needsWebGpu === true);
+		},
+
+		/**
+		 * Makes a button the one that fills the screen with the page, and
+		 * keeps what is written on it right. A browser that does not allow it
+		 * leaves the button hidden.
+		 *
+		 * What goes full screen is the whole page rather than the canvas, so
+		 * that the controls beside it are still there.
+		 *
+		 * @param button The button to wire up.
+		 * @param options.element What to fill the screen with, the page
+		 * itself otherwise.
+		 */
+		fullscreen(button, options) {
+			return fullscreen(button, options);
 		},
 
 		/**

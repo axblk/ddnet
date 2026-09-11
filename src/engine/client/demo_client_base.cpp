@@ -151,6 +151,14 @@ const char *CDemoClientBase::StartVideo()
 	const int StorageType = fs_is_relative_path(m_aVideoPath) ? IStorage::TYPE_SAVE : IStorage::TYPE_ABSOLUTE;
 	m_pVideo = CreateVideo(Graphics(), Sound(), Storage(), m_Settings, m_LocalStartTime, m_aVideoPath, StorageType, false, true);
 	CDemoPlayer &Player = DemoSource(m_DemoSessionId).DemoPlayer();
+	// A demo says how long it is before a frame of it is drawn, so the file
+	// can say so too - from its first fragment, rather than only once it is
+	// closed. What is left of the demo at the speed it is played at, which is
+	// how long the export will take to run through it.
+	const IDemoPlayer::CInfo *pInfo = Player.BaseInfo();
+	const int RemainingTicks = std::max(pInfo->m_LastTick - pInfo->m_CurrentTick, 0);
+	const float Speed = pInfo->m_Speed > 0.0f ? pInfo->m_Speed : 1.0f;
+	m_pVideo->SetExpectedDuration(RemainingTicks / (float)SERVER_TICK_SPEED / Speed);
 	Player.SetVideo(m_pVideo.get());
 	if(!m_pVideo->Start())
 	{

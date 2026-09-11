@@ -184,6 +184,23 @@ class IVideo
 public:
 	virtual ~IVideo() = default;
 
+	/**
+	 * How long the video is going to be, as far as whoever starts it knows.
+	 *
+	 * A file that is written while it is made carries its length in a header
+	 * at the front, which is written before that length is known. Said in
+	 * advance, the header is right from the first fragment on, and a player
+	 * that opens the file while it is still being written knows how long it
+	 * will be. What it actually became is written over it at the end, where
+	 * the file can be written to twice.
+	 *
+	 * Only the browser's encoder does anything with this: FFmpeg writes its
+	 * own header when it closes the file.
+	 *
+	 * @param Seconds How long the export will run, 0 where that is not known.
+	 */
+	virtual void SetExpectedDuration(float Seconds) {}
+
 	virtual bool Start() = 0;
 	virtual void Stop() = 0;
 	/**

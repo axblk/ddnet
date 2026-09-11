@@ -2222,17 +2222,40 @@ if(WEBGPU_NATIVE_BACKEND)
   list(APPEND COPY_FILES ${WGPU_NATIVE_RUNTIME_RELATIVE})
 endif()
 if(TARGET_OS STREQUAL "emscripten")
-  list(APPEND COPY_FILES other/emscripten/background.png)
-  list(APPEND COPY_FILES other/emscripten/coi-serviceworker.js)
-  list(APPEND COPY_FILES other/emscripten/ddnet-loader.js)
-  list(APPEND COPY_FILES other/emscripten/ddnet-page.css)
-  list(APPEND COPY_FILES other/emscripten/ddnet-viewer.css)
-  list(APPEND COPY_FILES other/emscripten/demo.html)
-  list(APPEND COPY_FILES other/emscripten/index.html)
-  list(APPEND COPY_FILES other/emscripten/map.html)
-  list(APPEND COPY_FILES other/icons/DDNet.ico)
+  set(WEB_PAGE_FILES
+    # tidy-alphabetical-start
+    other/emscripten/background.png
+    other/emscripten/coi-serviceworker.js
+    other/emscripten/ddnet-loader.js
+    other/emscripten/ddnet-page.css
+    other/emscripten/ddnet-viewer.css
+    other/emscripten/demo.html
+    other/emscripten/index.html
+    other/emscripten/map.html
+    other/icons/DDNet.ico
+    # tidy-alphabetical-end
+  )
+  list(APPEND COPY_FILES ${WEB_PAGE_FILES})
 endif()
 file(COPY ${COPY_FILES} DESTINATION .)
+
+if(TARGET_OS STREQUAL "emscripten")
+  # The copy above runs while CMake configures, which for a page is the same
+  # trap the data files have a rule for: edit one, build, and the site is put
+  # together out of the version from the last configure. So the pages get build
+  # rules as well.
+  set(WEB_PAGE_COPY_OUTPUTS)
+  foreach(pagefile ${WEB_PAGE_FILES})
+    get_filename_component(PAGE_NAME ${pagefile} NAME)
+    add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/${PAGE_NAME}
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PROJECT_SOURCE_DIR}/${pagefile} ${PROJECT_BINARY_DIR}/${PAGE_NAME}
+      DEPENDS ${PROJECT_SOURCE_DIR}/${pagefile}
+      COMMENT ""
+      VERBATIM)
+    list(APPEND WEB_PAGE_COPY_OUTPUTS ${PROJECT_BINARY_DIR}/${PAGE_NAME})
+  endforeach()
+  add_custom_target(copy_web_page_files ALL DEPENDS ${WEB_PAGE_COPY_OUTPUTS})
+endif()
 
 set(COPY_DIRS ${SDL2_COPY_DIRS})
 file(COPY ${COPY_DIRS} DESTINATION .)
@@ -3809,6 +3832,7 @@ if(CLIENT)
       DEPENDS
         # tidy-alphabetical-start
         copy_data
+        copy_web_page_files
         demo-renderer
         demo-viewer
         game-client

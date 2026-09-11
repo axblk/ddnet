@@ -19,15 +19,10 @@
 				Drop demos here, or
 				<label><input id="files" type="file" accept=".demo" multiple hidden><button id="choose" type="button">choose files</button></label>
 			</div>
+			<!-- What to make of the videos, filled in by the loader so that this
+			     page and the demo viewer ask for the same things in the same
+			     words. -->
 			<div id="settings">
-				<label>Width <input id="width" type="number" min="16" max="3840" step="2" value="1920"></label>
-				<label>Height <input id="height" type="number" min="16" max="2160" step="2" value="1080"></label>
-				<label>FPS <input id="fps" type="number" min="1" max="240" value="60"></label>
-				<label>Quality <input id="crf" type="number" min="0" max="63" value="23" title="Lower is better, 0 is lossless"></label>
-				<label>Codec <select id="codec"><option value="">Default</option><option>h264</option><option>vp9</option><option>av1</option></select></label>
-				<label><input id="audio" type="checkbox" checked> Sound</label>
-				<label><input id="hud" type="checkbox"> Interface</label>
-				<label><input id="chat" type="checkbox" checked> Chat</label>
 				<label id="folder-choice" hidden><input id="folder" type="checkbox" checked> Save into a folder</label>
 			</div>
 			<div id="actions">
@@ -54,6 +49,12 @@
 				const errorLine = document.getElementById('error');
 				const folderChoice = document.getElementById('folder-choice');
 				const folderCheckbox = document.getElementById('folder');
+				// The folder choice belongs to this page rather than to the
+				// export, so it stays where it is and the rest goes in front
+				// of it.
+				const settingsForm = DDNetLoader.exportSettingsForm(
+					document.getElementById('settings'), { audio: true });
+				document.getElementById('settings').appendChild(folderChoice);
 				const jobs = [];
 				var running = false;
 				var stopping = false;
@@ -136,21 +137,7 @@
 				// Everything the renderer is told, read off the form once per
 				// run so that a change mid-run does not apply to half of it.
 				function settings() {
-					const number = id => {
-						const value = parseFloat(document.getElementById(id).value);
-						return isFinite(value) ? value : null;
-					};
-					const codec = document.getElementById('codec').value;
-					return {
-						width: number('width'),
-						height: number('height'),
-						fps: number('fps'),
-						crf: number('crf'),
-						codec: codec === "" ? null : codec,
-						audio: document.getElementById('audio').checked,
-						hud: document.getElementById('hud').checked,
-						chat: document.getElementById('chat').checked,
-					};
+					return settingsForm.values();
 				}
 
 				function videoName(demoName) {

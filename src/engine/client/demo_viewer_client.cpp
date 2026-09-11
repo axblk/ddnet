@@ -97,31 +97,100 @@ void CDemoViewerClient::SetSpeed(float Speed)
 	DemoSource(m_DemoSessionId).DemoPlayer().SetSpeed(std::clamp(Speed, 0.01f, 100.0f));
 }
 
-bool CDemoViewerClient::StartExport(int Width, int Height, int Fps, bool Audio)
+bool CDemoViewerClient::RequestExport(const CVideoExportSettings &Settings)
+{
+	if(m_pVideo != nullptr || m_ExportRequested)
+	{
+		return false;
+	}
+	m_RequestedSettings = Settings;
+	m_ExportRequested = true;
+	m_ExportState = EExportState::RUNNING;
+	return true;
+}
+
+bool CDemoViewerClient::StartExport(const CVideoExportSettings &Settings)
 {
 	if(m_pVideo != nullptr)
 	{
 		return false;
 	}
-	m_Settings.m_Width = std::max(Width, 1);
-	m_Settings.m_Height = std::max(Height, 1);
-	m_Settings.m_FPS = std::clamp(Fps, 1, 240);
-	m_Settings.m_Audio = Audio;
+	m_ExportState = EExportState::RUNNING;
+	m_Settings = Settings;
+	// An encoder takes whole macroblocks, so an odd size is refused rather than
+	// rounded. A window is any size the user dragged it to, so the size that
+	// comes from one is brought to an even one here instead of being turned
+	// away.
+	m_Settings.m_Width = std::clamp(Settings.m_Width, 2, 8192) & ~1;
+	m_Settings.m_Height = std::clamp(Settings.m_Height, 2, 8192) & ~1;
+	m_Settings.m_FPS = std::clamp(Settings.m_FPS, 1, 240);
+	m_Settings.m_Crf = std::clamp(Settings.m_Crf, 0, 51);
 	// The name of the demo, so that whoever ends up with the file knows what it
 	// is a video of. It is written where the user's own files go and handed to
 	// the browser from there.
 	char aName[IO_MAX_PATH_LENGTH];
 	fs_split_file_extension(fs_filename(m_aDemoPath), aName, sizeof(aName));
 	str_format(m_aVideoPath, sizeof(m_aVideoPath), "videos/%s.mp4", aName);
+	// A demo standing still is written frame after identical frame, which is
+	// not what anybody means by exporting from here on.
+	SetPaused(false);
 	const char *pError = StartVideo();
 	if(pError != nullptr)
 	{
 		log_error("videorecorder", "%s", pError);
 		m_aError[0] = '\0';
 		m_aVideoPath[0] = '\0';
+		m_ExportState = EExportState::FAILED;
 		return false;
 	}
 	return true;
+}
+
+void CDemoViewerClient::CancelExport()
+{
+	if(m_pVideo == nullptr)
+	{
+		return;
+	}
+	if(IVideo::Current() == m_pVideo.get())
+	{
+		m_pVideo->Cancel();
+	}
+	m_pVideo.reset();
+	m_aVideoPath[0] = '\0';
+	m_ExportState = EExportState::IDLE;
+}
+
+void CDemoViewerClient::FinishExport()
+{
+	// The demo player has closed it already, which is what wrote the last of
+	// it out and handed it over. Anything else is closed here.
+	if(IVideo::Current() == m_pVideo.get())
+	{
+		m_pVideo->Stop();
+	}
+	const bool Failed = m_pVideo->Status().m_HasError;
+	m_pVideo.reset();
+	if(Failed)
+	{
+		m_aError[0] = '\0';
+	}
+	log_info("videorecorder", Failed ? "Export failed" : "Export completed");
+	m_aVideoPath[0] = '\0';
+	m_ExportState = Failed ? EExportState::FAILED : EExportState::FINISHED;
+	// Writing the demo to a file played it to its end, and that ended the
+	// session it was played from. Whoever asked for the video is still sitting
+	// in front of it, so the demo is put back on, from the start and standing
+	// still.
+	const char *pError = PlayDemo();
+	if(pError == nullptr)
+	{
+		SetPaused(true);
+	}
+	else
+	{
+		log_error("client", "%s", pError);
+	}
 }
 
 bool CDemoViewerClient::Paused() const
@@ -338,6 +407,20 @@ void CDemoViewerClient::Run()
 			{
 				break;
 			}
+			// What a page asked for, done here where the stack belongs to the
+			// viewer: both of these wait for the browser, and what waits gets
+			// its stack unwound underneath it.
+			if(m_CancelRequested)
+			{
+				m_CancelRequested = false;
+				m_ExportRequested = false;
+				CancelExport();
+			}
+			if(m_ExportRequested)
+			{
+				m_ExportRequested = false;
+				StartExport(m_RequestedSettings);
+			}
 			// A demo that has run out pauses on its last frame, which is what
 			// somebody watching wants: they can seek back into it. Nobody
 			// watches a surface without a window, so there it is the end.
@@ -354,6 +437,13 @@ void CDemoViewerClient::Run()
 			if(m_pVideo != nullptr && IVideo::Current() == m_pVideo.get())
 			{
 				RenderExportFrame();
+			}
+			else if(m_pVideo != nullptr)
+			{
+				// The demo player closes the video itself when the demo runs
+				// out under it, which is what says the export is complete:
+				// what was being written is no longer the video being written.
+				FinishExport();
 			}
 			else
 			{
@@ -435,9 +525,38 @@ EMSCRIPTEN_KEEPALIVE void DemoViewerQuit()
 		g_pDemoViewer->Quit();
 }
 
-EMSCRIPTEN_KEEPALIVE int DemoViewerStartExport(int Width, int Height, int Fps, int Audio)
+EMSCRIPTEN_KEEPALIVE int DemoViewerStartExport(int Width, int Height, int Fps, int Audio, int Crf, const char *pCodec, int Hud, int Chat)
 {
-	return g_pDemoViewer != nullptr && g_pDemoViewer->StartExport(Width, Height, Fps, Audio != 0) ? 1 : 0;
+	if(g_pDemoViewer == nullptr)
+	{
+		return 0;
+	}
+	// This only asks. Whether it worked is what `DemoViewerExportState` says,
+	// a moment later - a browser is asked for an encoder before there is an
+	// answer, and asking it takes a turn of its event loop.
+	CVideoExportSettings Settings;
+	Settings.m_Width = Width;
+	Settings.m_Height = Height;
+	Settings.m_FPS = Fps;
+	Settings.m_Audio = Audio != 0;
+	Settings.m_Crf = Crf;
+	str_copy(Settings.m_aVideoCodec, pCodec == nullptr ? "" : pCodec);
+	Settings.m_ShowHud = Hud != 0;
+	Settings.m_ShowChat = Chat != 0;
+	return g_pDemoViewer->RequestExport(Settings) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE void DemoViewerCancelExport()
+{
+	if(g_pDemoViewer != nullptr)
+		g_pDemoViewer->RequestCancelExport();
+}
+
+// 0 while nothing was ever asked for, 1 while a video is being written, 2 when
+// the last one was handed over and 3 when it failed.
+EMSCRIPTEN_KEEPALIVE int DemoViewerExportState()
+{
+	return g_pDemoViewer == nullptr ? 0 : (int)g_pDemoViewer->ExportState();
 }
 
 EMSCRIPTEN_KEEPALIVE int DemoViewerPaused()

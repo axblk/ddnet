@@ -118,6 +118,154 @@ const DDNetLoader = (() => {
 		return null;
 	}
 
+	// The encoders the browser may be asked for, one profile per family, the
+	// same list and the same order as `Module.ddnetVideoFamilies` in
+	// `src/engine/client/video_webcodecs.cpp` - the program picks the first
+	// entry of a family it can actually configure, so a page only has to name
+	// the family. A page offering a choice has to ask which of them work here,
+	// because that differs between browsers and between machines.
+	const VIDEO_CODEC_FAMILIES = [
+		["H.264", ["avc1.640028", "avc1.4D0028", "avc1.42E01E"]],
+		["H.265", ["hvc1.1.6.L120.B0"]],
+		["AV1", ["av01.0.08M.08"]],
+	];
+	var videoCodecsProbe = null;
+
+	async function videoCodecs() {
+		if (videoCodecsProbe === null) {
+			videoCodecsProbe = (async () => {
+				if (typeof VideoEncoder === "undefined") {
+					return [];
+				}
+				const supported = async candidates => {
+					for (const codec of candidates) {
+						try {
+							const support = await VideoEncoder.isConfigSupported(
+								{ codec: codec, width: 1280, height: 720, bitrate: 4000000, framerate: 60 });
+							if (support.supported) {
+								return codec;
+							}
+						} catch (error) {
+							// An encoder this browser does not know at all.
+						}
+					}
+					return null;
+				};
+				const found = await Promise.all(VIDEO_CODEC_FAMILIES.map(
+					family => supported(family[1]).then(name => name === null ? null : { name, display: family[0] })));
+				return found.filter(entry => entry !== null);
+			})();
+		}
+		return await videoCodecsProbe;
+	}
+
+	// The sizes and frame rates a video is offered in, the same ones the client
+	// offers in its own render window - see `gs_aaVideoResolutionPresets` and
+	// `s_aFpsPresets` in `src/game/client/components/menus.cpp`. Anything else
+	// is typed in, which is what `Custom` is for.
+	const VIDEO_SIZE_PRESETS = [[1280, 720], [1920, 1080], [2560, 1440], [3840, 2160]];
+	const VIDEO_FPS_PRESETS = [30, 50, 60, 120, 144, 240];
+
+	function exportSettingsForm(container, options) {
+		const settings = Object.assign({ canvas: null, audio: false }, options || {});
+		const element = (tag, properties) => Object.assign(document.createElement(tag), properties || {});
+		const labelled = (text, ...controls) => {
+			const label = element("label");
+			if (text !== null) {
+				label.append(text + " ");
+			}
+			label.append(...controls);
+			container.appendChild(label);
+			return label;
+		};
+		const option = (value, text) => element("option", { value: String(value), textContent: text });
+
+		const size = element("select");
+		if (settings.canvas != null) {
+			size.appendChild(option("canvas", "Canvas size"));
+		}
+		for (const [width, height] of VIDEO_SIZE_PRESETS) {
+			size.appendChild(option(`${width}x${height}`, `${width} × ${height}`));
+		}
+		size.appendChild(option("custom", "Custom"));
+		size.value = settings.canvas != null ? "canvas" : "1920x1080";
+		labelled("Size", size);
+
+		const width = element("input", { type: "number", min: 16, max: 8192, step: 2, value: 1920 });
+		const height = element("input", { type: "number", min: 16, max: 8192, step: 2, value: 1080 });
+		const customSize = labelled(null, width, element("span", { textContent: "×" }), height);
+
+		const fps = element("select");
+		for (const value of VIDEO_FPS_PRESETS) {
+			fps.appendChild(option(value, String(value)));
+		}
+		fps.appendChild(option("custom", "Custom"));
+		fps.value = "60";
+		labelled("FPS", fps);
+		const customFpsValue = element("input", { type: "number", min: 1, max: 1000, value: 60 });
+		const customFps = labelled(null, customFpsValue);
+
+		const crf = element("input", { type: "number", min: 0, max: 51, value: 23, title: "Lower is better, 0 is lossless" });
+		labelled("Quality", crf);
+		const codec = element("select");
+		codec.appendChild(option("", "Default"));
+		labelled("Codec", codec);
+		// Which encoders are here is the browser's answer, not ours, so the
+		// menu is what it says rather than a list that may name one it does
+		// not have.
+		videoCodecs().then(codecs => {
+			for (const entry of codecs) {
+				codec.appendChild(option(entry.name, entry.display));
+			}
+		});
+
+		const audio = element("input", { type: "checkbox", checked: settings.audio === true });
+		const hud = element("input", { type: "checkbox" });
+		const chat = element("input", { type: "checkbox", checked: true });
+		labelled(null, audio, element("span", { textContent: " Sound" }));
+		labelled(null, hud, element("span", { textContent: " Interface" }));
+		labelled(null, chat, element("span", { textContent: " Chat" }));
+
+		// The fields that are typed into are only there when there is something
+		// to type: a menu of sizes with two boxes beside it reads as though the
+		// boxes were what the menu is about.
+		const updateCustom = () => {
+			customSize.hidden = size.value !== "custom";
+			customFps.hidden = fps.value !== "custom";
+		};
+		size.addEventListener("change", updateCustom);
+		fps.addEventListener("change", updateCustom);
+		updateCustom();
+
+		return {
+			/** What was chosen, as `render` and `startExport` take it. */
+			values() {
+				var chosenWidth = parseInt(width.value, 10);
+				var chosenHeight = parseInt(height.value, 10);
+				if (size.value === "canvas") {
+					chosenWidth = settings.canvas.width;
+					chosenHeight = settings.canvas.height;
+				} else if (size.value !== "custom") {
+					const parts = size.value.split("x");
+					chosenWidth = parseInt(parts[0], 10);
+					chosenHeight = parseInt(parts[1], 10);
+				}
+				return {
+					// An encoder takes whole macroblocks, and a canvas is
+					// whatever size the window left it.
+					width: chosenWidth & ~1,
+					height: chosenHeight & ~1,
+					fps: parseInt(fps.value === "custom" ? customFpsValue.value : fps.value, 10),
+					crf: parseInt(crf.value, 10),
+					codec: codec.value === "" ? null : codec.value,
+					audio: audio.checked,
+					hud: hud.checked,
+					chat: chat.checked,
+				};
+			},
+		};
+	}
+
 	// A script from another origin, as a blob. Fetched rather than linked
 	// because a blob belongs to this page: a worker may be made from it, and
 	// `importScripts` takes it without asking the server for permission it
@@ -622,8 +770,18 @@ const DDNetLoader = (() => {
 			try {
 				return await this.fetchUrlFile(url);
 			} catch (downloadError) {
-				this.output(`Failed to download ${url}: ${downloadError.message}`, { error: true, bold: true });
-				this.output("A server has to allow this page to read its files. You can drop the file into this page instead.");
+				// A fetch that is refused says nothing about why: the browser
+				// keeps that to itself and throws a bare TypeError. Almost
+				// always it is the other server not allowing this page to read
+				// it, so that is what is said - along with the way round it,
+				// which is to bring the file along instead.
+				const refused = downloadError instanceof TypeError;
+				const sameOrigin = new URL(url, location.href).origin === location.origin;
+				const reason = refused && !sameOrigin
+					? `${new URL(url).origin} does not allow this page to read its files (no CORS headers)`
+					: downloadError.message;
+				this.output(`Failed to download ${url}: ${reason}. You can drop the file into this page instead.`,
+					{ error: true, bold: true, fatal: true });
 				return null;
 			}
 		}
@@ -931,9 +1089,36 @@ self.onmessage = async event => {
 			/** The playback speed, or sets it: 1 is as it was played. */
 			speed: Value => Value === undefined ? number("DemoViewerSpeed") : number("DemoViewerSetSpeed", Value),
 			exporting: () => number("DemoViewerExporting") === 1,
-			/** Starts a video export, and says whether it started. */
-			startExport: (Width, Height, Fps, Audio) => instance.call("DemoViewerStartExport", "number",
-				["number", "number", "number", "number"], [Width, Height, Fps, Audio ? 1 : 0]) === 1,
+			/**
+			 * How an export is getting on: 0 before any was asked for, 1 while
+			 * one is being written, 2 once one was handed over, 3 when it
+			 * failed. What `startExport` answers cannot say, because in a
+			 * browser it returns before the encoder has even been asked.
+			 */
+			exportState: () => number("DemoViewerExportState"),
+			/** Throws away the export that is running, and its file with it. */
+			cancelExport: () => instance.call("DemoViewerCancelExport"),
+			/**
+			 * Starts a video export, and says whether it started. The options
+			 * are named as in `render`, because they are the same settings the
+			 * render tool takes: `width`, `height`, `fps`, `crf`, `codec`,
+			 * `audio`, `hud`, `chat`.
+			 */
+			startExport: options => {
+				const settings = options || {};
+				return instance.call("DemoViewerStartExport", "number",
+					["number", "number", "number", "number", "number", "string", "number", "number"],
+					[
+						settings.width || 0,
+						settings.height || 0,
+						settings.fps || 60,
+						settings.audio ? 1 : 0,
+						settings.crf === undefined || settings.crf === null ? 18 : settings.crf,
+						settings.codec || "",
+						settings.hud ? 1 : 0,
+						settings.chat === false ? 0 : 1,
+					]) === 1;
+			},
 		};
 	}
 
@@ -1104,20 +1289,6 @@ self.onmessage = async event => {
 		},
 
 		/**
-		 * Lets the controls over a picture fade out while nothing is happening
-		 * and come back when something does, the way a video player's do. The
-		 * elements are given the `faded` class, which is what the page's own
-		 * stylesheet makes of it.
-		 *
-		 * @param elements The element, or the elements, that belong together.
-		 * @param options.delay How long to wait before they go, in
-		 * milliseconds.
-		 */
-		autoHide(elements, options) {
-			return autoHide(elements, options);
-		},
-
-		/**
 		 * Fills an element with the settings a video export takes - size,
 		 * frame rate, quality, encoder, sound, interface and chat - and
 		 * answers with `values()`, which reads them back in the form `render`
@@ -1155,6 +1326,19 @@ self.onmessage = async event => {
 		 */
 		urlParameter(name) {
 			return urlParameter(name);
+		},
+
+		/**
+		 * Writes parameters into the page's fragment, so that the address bar
+		 * says what is being looked at and a copied link brings somebody else
+		 * to the same place. Everything the fragment already said that is not
+		 * named here stays; a value of `null` takes its parameter out.
+		 *
+		 * Replaces the history entry rather than adding one, so the back button
+		 * still leads to the page before this one.
+		 */
+		setUrlParameters(values) {
+			setUrlParameters(values);
 		},
 
 		/** `start` with the furniture our own pages share around it. */

@@ -38,3 +38,34 @@
 	text-align: center;
 	font-variant-numeric: tabular-nums;
 }
+
+/* What to make of a video of what is being watched. Sits above the bar that
+   opened it, built like it and centred the same way. */
+#export-settings {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 80px;
+	z-index: 2;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px 20px;
+	align-items: center;
+	box-sizing: border-box;
+	width: fit-content;
+	max-width: calc(100% - 30px);
+	margin: 0 auto;
+	padding: 10px 15px;
+	border-radius: 15px;
+	box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+	background-color: rgba(255, 255, 255, 0.85);
+	font-family: 'Arial', 'Helvetica', sans-serif;
+}
+#export-settings label {
+	display: flex;
+	gap: 5px;
+	align-items: center;
+}
+#export-settings input[type=number], #export-settings select {
+	width: 80px;
+}

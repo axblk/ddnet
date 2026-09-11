@@ -23,6 +23,19 @@ class CDemoViewerClient : public CDemoClientBase
 {
 public:
 	/**
+	 * How an export that somebody asked for is getting on. A browser cannot be
+	 * told, it has to ask: what starts an export there returns before the
+	 * browser has even been asked for an encoder.
+	 */
+	enum class EExportState
+	{
+		IDLE,
+		RUNNING,
+		FINISHED,
+		FAILED,
+	};
+
+	/**
 	 * The keys the viewer answers to. Held in this order in the state of the
 	 * previous frame, which is what tells a press from a hold.
 	 */
@@ -48,6 +61,15 @@ private:
 	// also the moment the page is given back its turn to paint and to answer.
 	std::chrono::nanoseconds m_NextFrameTime{};
 	int m_ExitCode = 0;
+	EExportState m_ExportState = EExportState::IDLE;
+	// What a page asked for, to be done between two frames rather than in the
+	// call that asked. Starting or ending an export waits for the browser, and
+	// waiting unwinds the stack it is waiting on - which, in a call that came
+	// from the page, is not the stack the viewer runs on. The loop has its own,
+	// and that one may be unwound.
+	bool m_ExportRequested = false;
+	bool m_CancelRequested = false;
+	CVideoExportSettings m_RequestedSettings;
 
 	IEngineInput *Input() { return m_pInput; }
 
@@ -64,6 +86,24 @@ private:
 	 */
 	bool KeyPressed(EControlKey ControlKey, bool Repeats);
 	void RenderWindowFrame();
+	/**
+	 * Starts writing a video of the demo from here on.
+	 *
+	 * @param Settings How to encode it.
+	 *
+	 * @return `true` when the export started.
+	 */
+	bool StartExport(const CVideoExportSettings &Settings);
+	/**
+	 * Throws away the export that is running, along with its unfinished file.
+	 */
+	void CancelExport();
+	/**
+	 * Closes the file of an export that has run to the end of the demo and
+	 * plays the demo again, so that what was being watched is still there
+	 * afterwards.
+	 */
+	void FinishExport();
 
 public:
 	/**
@@ -95,18 +135,29 @@ public:
 	void SeekStart();
 	void SetSpeed(float Speed);
 	/**
-	 * Starts writing a video of the demo from here on, which the page offers
-	 * once and hands to the browser's downloads when it is finished.
+	 * Asks for a video of the demo from here on, which the page offers once
+	 * and hands to the browser's downloads when it is finished. It is started
+	 * before the next frame; `ExportState` says how it went.
 	 *
-	 * @return `true` when the export started.
+	 * @param Settings How to encode it, the same settings the render tool
+	 * takes on its command line. The size, the frame rate and the quality are
+	 * brought into range here, so a page may pass on whatever was typed into
+	 * its form.
+	 * @return `true` when there was no export running already.
 	 */
-	bool StartExport(int Width, int Height, int Fps, bool Audio);
+	bool RequestExport(const CVideoExportSettings &Settings);
+	/**
+	 * Asks for the export that is running to be thrown away, along with its
+	 * unfinished file. Done before the next frame, as with `RequestExport`.
+	 */
+	void RequestCancelExport() { m_CancelRequested = true; }
 
 	bool Paused() const;
 	float Progress() const;
 	float Speed() const;
 	float Length() const;
 	bool Exporting() const;
+	EExportState ExportState() const { return m_ExportState; }
 };
 
 #endif // ENGINE_CLIENT_DEMO_VIEWER_CLIENT_H

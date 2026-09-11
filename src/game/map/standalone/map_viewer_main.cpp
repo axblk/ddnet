@@ -311,9 +311,12 @@ int main(int argc, const char **argv)
 		return 1;
 
 	CStandaloneMapView::SRenderParams RenderParams;
+	// The window is filled rather than fitted: a map in a window is not a
+	// picture of a map, and a frame of nothing around it is not what anybody
+	// opened the window for.
 	const auto &&FitView = [&]() {
 		RenderParams.m_Center = View.MapWorldSize() / 2.0f;
-		RenderParams.m_Zoom = View.FitZoom();
+		RenderParams.m_Zoom = View.FillZoom();
 	};
 	FitView();
 

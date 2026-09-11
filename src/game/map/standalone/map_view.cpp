@@ -180,6 +180,13 @@ float CStandaloneMapView::FitZoom()
 	return std::max(WorldSize.x / View.x, WorldSize.y / View.y);
 }
 
+float CStandaloneMapView::FillZoom()
+{
+	const vec2 WorldSize = MapWorldSize();
+	const vec2 View = ViewSize();
+	return std::min(WorldSize.x / View.x, WorldSize.y / View.y);
+}
+
 void CStandaloneMapView::Render(const SRenderParams &Params)
 {
 	if(m_pMap == nullptr)

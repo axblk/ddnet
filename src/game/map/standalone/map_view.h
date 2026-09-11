@@ -160,9 +160,19 @@ public:
 	 */
 	vec2 MapWorldSize();
 	/**
-	 * The zoom at which the whole map fits on the surface.
+	 * The zoom at which the whole map fits on the surface, with room left over
+	 * beside it wherever the surface and the map are not the same shape. What
+	 * a picture of a map wants.
 	 */
 	float FitZoom();
+
+	/**
+	 * The zoom at which the map covers the surface, with whatever does not fit
+	 * hanging over the edges. What a window wants: nobody looking at a map in
+	 * one wants a frame of nothing around it, least of all on a telephone held
+	 * upright, where a map that fits is a map in a letterbox.
+	 */
+	float FillZoom();
 
 	/**
 	 * The size of the surface that is actually drawn into, which is not always

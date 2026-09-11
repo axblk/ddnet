@@ -71,6 +71,7 @@ bool CStandaloneMapView::OpenWindow(int Width, int Height, IEngineGraphicsWindow
 {
 	m_Width = Width;
 	m_Height = Height;
+	m_Windowed = Windowed;
 
 	// The view draws into a surface of its own size, so the size of the
 	// picture is the size of the screen and there is nothing else to describe.
@@ -235,6 +236,57 @@ bool CStandaloneMapView::ReadFrame(CImageInfo &Image)
 	return true;
 }
 
+bool CStandaloneMapView::EnsureAsideTarget()
+{
+	const int Width = std::max(m_Width, 1);
+	const int Height = std::max(m_Height, 1);
+	if(m_AsideTarget.IsValid() && m_AsideWidth == Width && m_AsideHeight == Height)
+		return true;
+	if(m_AsideTarget.IsValid())
+		m_pGraphics->UnloadTexture(&m_AsideTarget);
+
+	IGraphics::CTextureDesc Desc;
+	Desc.m_Width = Width;
+	Desc.m_Height = Height;
+	Desc.m_Mipmaps = IGraphics::ETextureMipmaps::NONE;
+	Desc.m_Usage = IGraphics::TEXTURE_USAGE_SAMPLED | IGraphics::TEXTURE_USAGE_COLOR_TARGET | IGraphics::TEXTURE_USAGE_COPY_SOURCE;
+	m_AsideTarget = m_pGraphics->CreateTexture(Desc);
+	if(!m_AsideTarget.IsValid())
+	{
+		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "Could not create a %dx%d target to draw the picture into", Width, Height);
+		return false;
+	}
+	m_AsideWidth = Width;
+	m_AsideHeight = Height;
+	return true;
+}
+
+bool CStandaloneMapView::RenderAsideAndRead(const SRenderParams &Params, CImageInfo &Image)
+{
+	if(!m_Windowed)
+	{
+		// There is no window to keep this out of, and the frontend already
+		// draws into a target of its own here.
+		Render(Params);
+		return ReadFrame(Image);
+	}
+	if(!EnsureAsideTarget())
+		return false;
+	if(!m_pGraphics->BeginOffscreenFrame(m_AsideTarget))
+	{
+		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "Could not draw into the picture's own target");
+		return false;
+	}
+	Render(Params);
+	std::unique_ptr<IGraphics::ITextureReadback> pReadback = m_pGraphics->EndOffscreenFrame(std::exchange(Image, CImageInfo()));
+	if(pReadback == nullptr || !pReadback->Wait(Image) || Image.m_pData == nullptr)
+	{
+		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "The backend returned no image data");
+		return false;
+	}
+	return true;
+}
+
 bool CStandaloneMapView::SaveFullImage(const char *pPath, int TimeOffsetMillis)
 {
 	if(m_pMap == nullptr)
@@ -280,8 +332,11 @@ bool CStandaloneMapView::SaveFullImage(const char *pPath, int TimeOffsetMillis)
 			SRenderParams Params = ParamsForWorldRect(vec2(Left, Top), vec2(TileWidth, TileHeight));
 			Params.m_TimeOffsetMillis = TimeOffsetMillis;
 			Params.m_IgnoreParallax = true;
-			Render(Params);
-			if(!ReadFrame(Image))
+			// Beside the window, not in it: a picture of the whole map is the
+			// surface moved over all of it, and drawn into the window that is
+			// a sweep across the map that whoever asked for a picture never
+			// asked to watch.
+			if(!RenderAsideAndRead(Params, Image))
 			{
 				Image.Free();
 				return false;
@@ -342,6 +397,8 @@ void CStandaloneMapView::Shutdown()
 	UnloadMap();
 	if(m_pGraphics != nullptr)
 	{
+		if(m_AsideTarget.IsValid())
+			m_pGraphics->UnloadTexture(&m_AsideTarget);
 		m_pGraphics->Shutdown();
 		m_pGraphics = nullptr;
 	}

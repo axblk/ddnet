@@ -3,6 +3,8 @@
 
 #include <base/vmath.h>
 
+#include <engine/graphics.h>
+
 #include <game/layers.h>
 #include <game/map/map_renderer.h>
 #include <game/map/render_map.h>
@@ -93,7 +95,10 @@ public:
 
 	/**
 	 * Finishes the frame that was drawn and reads it back off the graphics
-	 * card.
+	 * card. Where there is a window, this is also what puts the frame on it.
+	 *
+	 * @param Image Where the frame is put. What is handed in is reused when it
+	 * already has the size and the format of the frame, and freed otherwise.
 	 *
 	 * @return `true` on success, `false` after reporting what went wrong.
 	 */
@@ -155,10 +160,32 @@ public:
 
 private:
 	void UnloadMap();
+	/**
+	 * Draws one frame into a texture of the view's own and reads that back, so
+	 * that nothing of it reaches the window. Without a window there is nothing
+	 * to keep it from, and the frame is drawn and read the ordinary way.
+	 *
+	 * @param Params Where that frame looks.
+	 * @param Image Where the frame is put, as in `ReadFrame`.
+	 *
+	 * @return `true` on success, `false` after reporting what went wrong.
+	 */
+	bool RenderAsideAndRead(const SRenderParams &Params, CImageInfo &Image);
+	/**
+	 * Creates the texture `RenderAsideAndRead` draws into, once and again
+	 * whenever the surface has another size.
+	 *
+	 * @return `true` when there is one to draw into.
+	 */
+	bool EnsureAsideTarget();
 
 	const char *m_pLogContext;
 	int m_Width = 0;
 	int m_Height = 0;
+	bool m_Windowed = false;
+	IGraphics::CTextureHandle m_AsideTarget;
+	int m_AsideWidth = 0;
+	int m_AsideHeight = 0;
 
 	std::unique_ptr<IKernel> m_pKernel;
 	std::unique_ptr<IStorage> m_pStorage;

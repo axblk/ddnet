@@ -18,6 +18,9 @@
 
 const DDNetLoader = (() => {
 	const DEFAULT_HOME_PATH = "/home/web_user/.local/share/ddnet";
+	// Where this script is, so that a worker can be given the same one. Read
+	// while it is being run, which is the only time a script can say.
+	const LOADER_URL = typeof document !== "undefined" && document.currentScript ? document.currentScript.src : null;
 	// A file named in the URL is fetched into the same place a dropped file
 	// goes. Anything larger than this is refused rather than filling the tab's
 	// memory with whatever a link pointed at.
@@ -60,6 +63,18 @@ const DDNetLoader = (() => {
 			sweptDataCache = true;
 			navigator.serviceWorker.controller.postMessage({ type: "ddnet-data-sweep" });
 		}
+	}
+
+	// A script from another origin, as a blob. Fetched rather than linked
+	// because a blob belongs to this page: a worker may be made from it, and
+	// `importScripts` takes it without asking the server for permission it
+	// cannot give.
+	async function fetchScript(url) {
+		const response = await fetch(url.href, { mode: "cors" });
+		if (!response.ok) {
+			throw new Error(`${url.href} answered ${response.status} ${response.statusText}`);
+		}
+		return new Blob([await response.text()], { type: "text/javascript" });
 	}
 
 	// Where a video goes while it is being made. A fragmented MP4 is valid
@@ -401,8 +416,10 @@ const DDNetLoader = (() => {
 		// whatever the page already had, since this is the page's own handler.
 		installErrorHandler() {
 			const instance = this;
-			const previous = window.onerror;
-			window.onerror = function(message, url, line, column, error) {
+			// `self`, not `window`: a program rendering in a worker has no
+			// window, and this is the one thing here that would miss it.
+			const previous = self.onerror;
+			self.onerror = function(message, url, line, column, error) {
 				instance.output(message, { error: true, bold: true });
 				if (error && error.stack) {
 					for (const line of error.stack.split("\n")) {
@@ -434,7 +451,7 @@ const DDNetLoader = (() => {
 			sweepVideoScratch();
 			this.installErrorHandler();
 
-			const program = await this.foreignProgram();
+			const program = await this.program();
 			var totalDependencies = 0;
 			this.module = await options.module({
 				websocket: {
@@ -495,12 +512,17 @@ const DDNetLoader = (() => {
 			return this;
 		}
 
-		// The program, when it is served from another origin than the page it
-		// runs on. It brings threads, and a thread's script has to come from the
-		// page's own origin: the browser refuses a worker made from a foreign
-		// URL outright. So the program is fetched - which a cross-origin request
-		// is allowed to do where the server permits it - and handed on as a
-		// blob, which belongs to whoever made it.
+		// Where the program's own script is, when the page said. Emscripten
+		// otherwise works it out from whatever script is running, which is right
+		// on a page that loaded it and wrong everywhere else - in a worker, or
+		// where the program comes from another origin.
+		//
+		// From another origin it is not enough to name it: the program brings
+		// threads, and a thread's script has to come from the page's own origin,
+		// so a worker made from a foreign URL is refused outright. The program
+		// is fetched instead - which a cross-origin request may do where the
+		// server permits it - and handed on as a blob, which belongs to whoever
+		// made it.
 		//
 		// The rest of what this takes is the page's own doing and cannot be done
 		// from here: a page that runs this has to be cross-origin isolated, so
@@ -510,19 +532,15 @@ const DDNetLoader = (() => {
 		// `<script>` that fetches the program needs `crossorigin`, because
 		// without it the browser asks for it without CORS and refuses what comes
 		// back.
-		async foreignProgram() {
+		async program() {
 			if (!this.options.scriptUrl) {
 				return null;
 			}
 			const base = new URL(this.options.scriptUrl, location.href);
 			if (base.origin === location.origin) {
-				return null;
+				return { script: base.href, base: base };
 			}
-			const response = await fetch(base.href, { mode: "cors" });
-			if (!response.ok) {
-				throw new Error(`${base.href} answered ${response.status} ${response.statusText}`);
-			}
-			return { script: new Blob([await response.text()], { type: "text/javascript" }), base: base };
+			return { script: await fetchScript(base), base: base };
 		}
 
 		// The file the program starts on, if it was given one: bytes the page
@@ -665,6 +683,99 @@ const DDNetLoader = (() => {
 		});
 	}
 
+	// A render is a worker's worth of work - every frame drawn, read back and
+	// encoded - and none of it needs the page. Done in a worker, the page stays
+	// answerable while it happens, which is the whole point of a render nobody
+	// is watching. This is what that worker runs: it loads this script and the
+	// program again, and renders with the same call the page would have made.
+	const WORKER_BOOTSTRAP = `
+self.onmessage = async event => {
+	const request = event.data;
+	// The program says its name to whoever is asking, and a module loader is
+	// asking, so there is no need to know the name here.
+	let factory = null;
+	self.define = (dependencies, provide) => { factory = provide(); };
+	self.define.amd = true;
+	try {
+		importScripts(request.loaderUrl, request.scriptUrl);
+		if (factory === null) {
+			factory = self[request.moduleName];
+		}
+		const video = await DDNetLoader.render(Object.assign({}, request.options, {
+			module: factory,
+			worker: false,
+			videoSink: request.sink,
+			onOutput: (message, kind) => self.postMessage({type: "output", message: message, kind: kind}),
+		}));
+		self.postMessage({type: "done", video: video});
+	} catch (error) {
+		self.postMessage({type: "failed", message: String((error && error.message) || error)});
+	}
+};
+`;
+
+	// Everything about a render that is data rather than a promise to call
+	// back: what survives being sent to a worker.
+	const WORKER_OPTIONS = [
+		// tidy-alphabetical-start
+		"arguments", "audio", "chat", "codec", "crf", "dataBase", "demo", "fps",
+		"height", "homePath", "hud", "moduleName", "name", "output", "preset",
+		"programName", "scriptUrl", "settings", "width",
+		// tidy-alphabetical-end
+	];
+
+	async function renderInWorker(options, loaderUrl) {
+		const program = new URL(options.scriptUrl, location.href);
+		// Both scripts go in as blobs where they are not this page's own:
+		// `importScripts` asks for a foreign script without CORS, which a page
+		// that is cross-origin isolated then refuses.
+		const [loaderScript, programScript] = await Promise.all([loaderUrl, program].map(async url =>
+			url.origin === location.origin ? url.href : URL.createObjectURL(await fetchScript(url))));
+		const request = { loaderUrl: loaderScript, scriptUrl: programScript, moduleName: options.moduleName || null, options: {}, sink: undefined };
+		for (const key of WORKER_OPTIONS) {
+			if (options[key] !== undefined) {
+				request.options[key] = options[key];
+			}
+		}
+		request.options.scriptUrl = program.href;
+		// A destination the page picked can be handed over, if it is the kind
+		// of stream that can be. Where it is not, the render stays here rather
+		// than quietly writing somewhere else.
+		const transfer = [];
+		if (options.videoSink && typeof options.videoSink !== "function") {
+			request.sink = options.videoSink;
+			transfer.push(options.videoSink);
+		}
+		const bootstrap = URL.createObjectURL(new Blob([WORKER_BOOTSTRAP], { type: "text/javascript" }));
+		const worker = new Worker(bootstrap);
+		URL.revokeObjectURL(bootstrap);
+		if (options.onStart) {
+			options.onStart({ quit: () => worker.terminate() });
+		}
+		return await new Promise((resolve, reject) => {
+			worker.onmessage = event => {
+				const message = event.data;
+				if (message.type === "output") {
+					if (options.onOutput) {
+						options.onOutput(message.message, message.kind || {});
+					}
+					return;
+				}
+				worker.terminate();
+				if (message.type === "done") {
+					resolve(message.video);
+				} else {
+					reject(new Error(message.message));
+				}
+			};
+			worker.onerror = event => {
+				worker.terminate();
+				reject(new Error(event.message || "the render worker stopped"));
+			};
+			worker.postMessage(request, transfer);
+		});
+	}
+
 	// What the render tool is asked on a command line, from what the page
 	// asked for here. It is the same program with the same arguments as the one
 	// a terminal starts, so `ddnet-demo-render --help` documents these too.
@@ -768,12 +879,21 @@ const DDNetLoader = (() => {
 		 * is where its progress is reported.
 		 * @param options.onStart Called with the running instance, whose `quit`
 		 * ends a render that is taking too long.
-		 * @param options.videoSink Where the video is written while it is made,
-		 * see `setVideoSink`.
+		 * @param options.scriptUrl Where `ddnet-demo-render.js` was loaded from.
+		 * With it the render happens in a worker and leaves the page free;
+		 * `worker: false` keeps it here.
+		 * @param options.videoSink Where the video is written while it is made.
+		 * A `WritableStream` can go to the worker with it; a function cannot,
+		 * and is only asked here.
 		 *
 		 * @returns a promise for the finished MP4 as a `Blob`.
 		 */
 		async render(options) {
+			// A worker needs to load the program itself, so it needs to be told
+			// where it is; without that this is the only thread there is.
+			if (options.worker !== false && typeof Worker === "function" && options.scriptUrl && LOADER_URL) {
+				return await renderInWorker(options, new URL(LOADER_URL, location.href));
+			}
 			const instance = new Instance(Object.assign(renderOptions(options), {
 				onVideo: file => {
 					instance.video = file;

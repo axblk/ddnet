@@ -737,14 +737,19 @@ public:
 // not be spun through microtasks either -- a microtask that queues another one
 // never lets the browser run the task that says we are visible again, so the page
 // would stay hidden and busy for good. A slow timer is the only way out.
+//
+// In a worker there is no page at all: no document to be hidden, nothing on a
+// screen to be paced by, and no animation frames to ask for. A render that runs
+// there wants the shortest turn every time, which is the last of the three.
 // clang-format off
 EM_ASYNC_JS(void, YieldToBrowser, (int WaitForFrame), {
-	if(document.hidden)
+	var onPage = typeof document !== "undefined";
+	if(onPage && document.hidden)
 	{
 		await new Promise(function(resolve) { setTimeout(resolve, 100); });
 		return;
 	}
-	if(WaitForFrame)
+	if(WaitForFrame && onPage)
 	{
 		await new Promise(function(resolve) {
 			var frame = requestAnimationFrame(function() {

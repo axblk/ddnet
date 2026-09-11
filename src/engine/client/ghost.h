@@ -104,6 +104,9 @@ public:
 
 	bool Load(const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc) override;
 	bool LoadFromMemory(std::vector<uint8_t> vData, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc);
+	// Reads a ghost of whatever map it says it belongs to, for whoever has no
+	// map loaded to check it against.
+	bool LoadAnyMap(const char *pFilename, int StorageType);
 	void Close() override;
 	const CGhostInfo *GetInfo() const override { return &m_Info; }
 

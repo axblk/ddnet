@@ -152,6 +152,23 @@ TEST(Ghost, LoadFromMemory)
 	Loader.Close();
 }
 
+TEST(Ghost, LoadAnyMap)
+{
+	CTestInfo Info;
+	std::unique_ptr<IStorage> pStorage = Info.CreateTestStorage();
+	ASSERT_NE(pStorage, nullptr);
+
+	char aFilename[IO_MAX_PATH_LENGTH];
+	Info.Filename(aFilename, sizeof(aFilename), ".ghost");
+	RecordGhost(pStorage.get(), aFilename);
+
+	CGhostLoader Loader;
+	Loader.Init(pStorage.get());
+	ASSERT_TRUE(Loader.LoadAnyMap(aFilename, IStorage::TYPE_SAVE));
+	ExpectGhostContents(Loader);
+	Loader.Close();
+}
+
 TEST(Ghost, LoadAndDeleteFile)
 {
 	CTestInfo Info;

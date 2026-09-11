@@ -326,6 +326,12 @@ bool CGhostLoader::ValidateHeader(const CGhostHeader &Header, const char *pFilen
 
 bool CGhostLoader::CheckHeaderMap(const CGhostHeader &Header, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc, bool LogMapMismatch) const
 {
+	if(pMap == nullptr)
+	{
+		// Whoever asked has no map of their own to hold this against, so the
+		// ghost's word on which map it belongs to is the only one there is.
+		return true;
+	}
 	if(str_comp(Header.m_aMap, pMap) != 0)
 	{
 		if(LogMapMismatch)
@@ -400,6 +406,22 @@ bool CGhostLoader::LoadFromMemory(std::vector<uint8_t> vData, const char *pFilen
 	m_LastItem = std::nullopt;
 	ResetBuffer();
 	return true;
+}
+
+bool CGhostLoader::LoadAnyMap(const char *pFilename, int StorageType)
+{
+	void *pData;
+	unsigned DataSize;
+	if(!m_pStorage->ReadFile(pFilename, StorageType, &pData, &DataSize))
+	{
+		log_error_color(LOG_COLOR_GHOST, "ghost_loader", "Failed to open ghost file '%s' for reading", pFilename);
+		return false;
+	}
+	std::vector<uint8_t> vData(static_cast<const uint8_t *>(pData), static_cast<const uint8_t *>(pData) + DataSize);
+	free(pData);
+	SHA256_DIGEST AnyMap;
+	mem_zero(&AnyMap, sizeof(AnyMap));
+	return LoadFromMemory(std::move(vData), pFilename, nullptr, AnyMap, 0);
 }
 
 bool CGhostLoader::ReadChunk(int *pType)

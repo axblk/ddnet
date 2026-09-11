@@ -11,47 +11,12 @@
 #include <game/client/component.h>
 #include <game/client/components/menus.h>
 #include <game/client/render.h>
+#include <game/ghost_data.h>
 
 struct CNetObj_Character;
 class CGameState;
 class CGameTickInfo;
 class CPresentationContext;
-
-enum
-{
-	GHOSTDATA_TYPE_SKIN = 0,
-	GHOSTDATA_TYPE_CHARACTER_NO_TICK,
-	GHOSTDATA_TYPE_CHARACTER,
-	GHOSTDATA_TYPE_START_TICK
-};
-
-struct CGhostSkin
-{
-	int m_aSkin[6];
-	int m_UseCustomColor;
-	int m_ColorBody;
-	int m_ColorFeet;
-};
-
-struct CGhostCharacter_NoTick
-{
-	int m_X;
-	int m_Y;
-	int m_VelX;
-	int m_VelY;
-	int m_Angle;
-	int m_Direction;
-	int m_Weapon;
-	int m_HookState;
-	int m_HookX;
-	int m_HookY;
-	int m_AttackTick;
-};
-
-struct CGhostCharacter : public CGhostCharacter_NoTick
-{
-	int m_Tick;
-};
 
 class CGhost : public CComponent
 {
@@ -170,8 +135,6 @@ private:
 	bool m_RenderingStartedByServer = false;
 
 	static void SetGhostSkinData(CGhostSkin *pSkin, const char *pSkinName, int UseCustomColor, int ColorBody, int ColorFeet);
-	static void GetGhostCharacter(CGhostCharacter *pGhostChar, const CNetObj_Character *pChar, const CNetObj_DDNetCharacter *pDDnetChar);
-	static void GetNetObjCharacter(CNetObj_Character *pChar, const CGhostCharacter *pGhostChar);
 
 	void GetPath(char *pBuf, int Size, const char *pPlayerName, int Time = -1) const;
 

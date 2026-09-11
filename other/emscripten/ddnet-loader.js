@@ -1081,6 +1081,51 @@ self.onmessage = async event => {
 		},
 
 		/**
+		 * Lets the controls over a picture fade out while nothing is happening
+		 * and come back when something does, the way a video player's do. The
+		 * elements are given the `faded` class, which is what the page's own
+		 * stylesheet makes of it.
+		 *
+		 * @param elements The element, or the elements, that belong together.
+		 * @param options.delay How long to wait before they go, in
+		 * milliseconds.
+		 */
+		autoHide(elements, options) {
+			return autoHide(elements, options);
+		},
+
+		/**
+		 * Fills an element with the settings a video export takes - size,
+		 * frame rate, quality, encoder, sound, interface and chat - and
+		 * answers with `values()`, which reads them back in the form `render`
+		 * and `startExport` take.
+		 *
+		 * The sizes and frame rates on offer are the ones the client offers,
+		 * with `Custom` for anything else.
+		 *
+		 * @param container The element the fields go into.
+		 * @param options.canvas A canvas whose size is offered as well, and
+		 * then chosen to begin with.
+		 * @param options.audio Whether sound starts out switched on.
+		 */
+		exportSettingsForm(container, options) {
+			return exportSettingsForm(container, options);
+		},
+
+		/**
+		 * The video encoders this browser can be asked for, as
+		 * `{name, display}`, most capable first and empty where it cannot
+		 * encode at all. `name` is what `render` and `startExport` take as
+		 * their `codec`; `display` is what to write in a menu.
+		 *
+		 * Asked once and remembered, because the answer cannot change while the
+		 * page is open.
+		 */
+		videoCodecs() {
+			return videoCodecs();
+		},
+
+		/**
 		 * What the page's URL says about a parameter, from the fragment first:
 		 * a fragment never reaches a server, so a link to somebody's demo stays
 		 * between them and their browser.

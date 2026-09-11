@@ -132,6 +132,9 @@ protected:
 	}
 	bool HasTexture() const override { return false; }
 
+	float ViewScale(const CRenderLayerParams &Params) const;
+	static CScreenRect Scaled(const CScreenRect &Rect, float Scale);
+
 	CMapItemGroup *m_pGroup;
 };
 

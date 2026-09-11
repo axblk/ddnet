@@ -55,6 +55,15 @@ vec2 CalcUncoveredViewSides(float ViewWidth, float ViewCenterX, float FilledCent
 		std::clamp(ViewRight - FilledCenterX - FilledHalfWidth, 0.0f, ViewWidth));
 }
 
+float CalcGroupViewScale(float Aspect, float MaxAspect, int Parallax)
+{
+	if(MaxAspect <= 0.0f || Aspect <= MaxAspect)
+		return 1.0f;
+	const float Widened = Aspect / MaxAspect;
+	const float FollowsWorld = std::clamp(Parallax, 0, 100) / 100.0f;
+	return (1.0f + (Widened - 1.0f) * FollowsWorld) / Widened;
+}
+
 void IGraphics::CalcScreenParams(float Aspect, float Zoom, float *pWidth, float *pHeight) const
 {
 	CalcViewSize(Aspect, Zoom, g_Config.m_ClViewMaxAspect / 100.0f, pWidth, pHeight);

@@ -253,6 +253,27 @@ void CalcViewSize(float Aspect, float Zoom, float MaxAspect, float *pWidth, floa
  */
 vec2 CalcUncoveredViewSides(float ViewWidth, float ViewCenterX, float FilledCenterX, float FilledHalfWidth);
 
+/**
+ * How much of the widened view a group of a map is given.
+ *
+ * A map is drawn for the screen whoever made it had, and what they put beside
+ * that screen was meant to stay beside it. A screen wider than MaxAspect shows
+ * the world further to the sides, which is what it is for; a group that does
+ * not move with the world is not the world but the frame around it, so it is
+ * made bigger to cover the wider screen instead of reaching further out. How
+ * far a group moves with the world is what its parallax says, so that is what
+ * decides between the two.
+ *
+ * @param Aspect Width over height of the screen.
+ * @param MaxAspect Aspect the view is drawn for, 0 if the view is never
+ * widened and every group therefore keeps what it has.
+ * @param Parallax How far the group moves with the world, in percent.
+ *
+ * @return What to multiply the width and the height of the group's view by,
+ * 1 wherever nothing was widened.
+ */
+float CalcGroupViewScale(float Aspect, float MaxAspect, int Parallax);
+
 // What the graphics are told about the surface they draw into: by the window
 // when it opens or changes size, or by the surface-less client for the
 // virtual screen it keeps instead.

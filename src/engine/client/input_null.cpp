@@ -7,6 +7,11 @@
 #include <engine/graphics_window.h>
 #include <engine/input.h>
 #include <engine/keys.h>
+#include <engine/shared/video.h>
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#include <emscripten/emscripten.h>
+#endif
 
 // The message box that is shown when the graphics are not there to show one
 // lives with the SDL window, which the render tool is built without. There is
@@ -84,5 +89,25 @@ IEngineInput *CreateEngineInput()
 {
 	return new CInputNull();
 }
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+extern "C" {
+
+// The page asks for these three by name, whatever program is behind it, so a
+// render without a window answers them with what it has: no window to drop a
+// file on, and an export that ends the way an interrupt ends it.
+void EmscriptenCallbackDropFile(const char *) {}
+
+void EmscriptenCallbackQuit()
+{
+	InterruptVideoExport();
+}
+
+void EmscriptenCallbackQuitForce()
+{
+	emscripten_force_exit(-1);
+}
+}
+#endif
 
 #endif

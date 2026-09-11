@@ -3521,13 +3521,18 @@ if(CLIENT)
     ${PLATFORM_CLIENT_INCLUDE_DIRS}
   )
 
-  if(VIDEORECORDER AND (VULKAN OR WEBGPU_NATIVE_BACKEND) AND NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "emscripten"))
+  if(VIDEORECORDER AND (VULKAN OR WEBGPU_BACKEND_PROTOTYPE) AND NOT TARGET_OS STREQUAL "android")
     # The client without its window: the graphics come from the object
     # library that is compiled without SDL (see ENGINE_CLIENT_GRAPHICS_FILES),
     # the SDL window and the SDL input stay out, and the null input and the
     # window-less surface take their place. A tool that renders a demo to a
     # video file never opens the editor either, and compiling it is 265 of the
     # 908 seconds this target used to take.
+    #
+    # In the browser it is the same program and the same surface: WebGPU draws
+    # into render targets without a canvas, the encoder behind `IVideo` is
+    # WebCodecs instead of FFmpeg, and a page that only wants a video out of a
+    # demo never has to show anything.
     set(DEMO_RENDERER_SRC ${ENGINE_CLIENT} ${GAME_CLIENT_MENUS_NULL} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
     # The other program built on this client is a window with a demo in it.
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/demo_viewer_(client|main)\\.(cpp|h)$")
@@ -3569,13 +3574,14 @@ if(CLIENT)
       add_dependencies(demo-renderer build_vulkan_shaders)
     endif()
     set_property(TARGET demo-renderer PROPERTY OUTPUT_NAME ddnet-demo-render)
+    set_web_export_name(demo-renderer DDNetDemoRenderer)
     set_own_rpath(demo-renderer)
     target_compile_definitions(demo-renderer PRIVATE CONF_DEMO_RENDER_TOOL)
     set_property(TARGET demo-renderer PROPERTY DDNET_NO_CLIENT_INTEGRATIONS TRUE)
     if(VULKAN)
       target_compile_definitions(demo-renderer PRIVATE CONF_BACKEND_VULKAN)
     endif()
-    if(WEBGPU_NATIVE_BACKEND)
+    if(WEBGPU_BACKEND_PROTOTYPE)
       target_compile_definitions(demo-renderer PRIVATE CONF_BACKEND_WEBGPU)
     endif()
     # No `${LIBS}`: without the network there is nothing left that talks to
@@ -3600,6 +3606,10 @@ if(CLIENT)
     )
     if(WEBGPU_NATIVE_BACKEND)
       target_link_libraries(demo-renderer WGPU::Native)
+    endif()
+    if(WEBGPU_BACKEND_PROTOTYPE AND TARGET_OS STREQUAL "emscripten")
+      target_compile_options(demo-renderer PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+      target_link_options(demo-renderer PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
     endif()
     target_include_directories(demo-renderer SYSTEM PRIVATE
       # tidy-alphabetical-start
@@ -3784,19 +3794,22 @@ if(CLIENT)
   endif()
 
   if(TARGET_OS STREQUAL "emscripten")
-    # Three programs, three pages, one data directory between them. What a
+    # Four programs, three pages, one data directory between them: the fourth
+    # program is the render tool, which has no page of its own because it shows
+    # nothing - it is there for a page that wants a video out of a demo. What a
     # server has to be given is a small part of what the build directory holds,
     # so the build says which part instead of a deploy job listing it again.
     add_custom_target(web-site
       COMMAND ${CMAKE_COMMAND}
         -DBUILD_DIR=${PROJECT_BINARY_DIR}
         -DSITE_DIR=${PROJECT_BINARY_DIR}/site
-        "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-viewer$<SEMICOLON>ddnet-map-viewer"
+        "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-render$<SEMICOLON>ddnet-demo-viewer$<SEMICOLON>ddnet-map-viewer"
         "-DPAGE_FILES=background.png$<SEMICOLON>coi-serviceworker.js$<SEMICOLON>DDNet.ico$<SEMICOLON>ddnet-loader.js$<SEMICOLON>ddnet-page.css$<SEMICOLON>ddnet-viewer.css$<SEMICOLON>demo.html$<SEMICOLON>index.html$<SEMICOLON>map.html"
         -P ${PROJECT_SOURCE_DIR}/cmake/assemble_web_site.cmake
       DEPENDS
         # tidy-alphabetical-start
         copy_data
+        demo-renderer
         demo-viewer
         game-client
         map-viewer

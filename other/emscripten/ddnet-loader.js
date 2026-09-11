@@ -1,13 +1,15 @@
-// Starting one of the programs compiled for the browser, on a canvas, with the
-// files it is given.
+// Starting one of the programs compiled for the browser, with the files it is
+// given and, where it has something to show, on a canvas.
 //
-// Two ways in. `DDNetLoader.start` puts one instance on one canvas and hands
+// Three ways in. `DDNetLoader.start` puts one instance on one canvas and hands
 // back a handle to call into it - that is all an embedding page needs, and it
 // claims no globals, so a page may have two of them or a program of its own
 // beside them. `DDNetLoader.page` is that plus the furniture our own three
 // pages share: a loading line, a console log, and the canvas filling the
-// window. The three differ in the program they start and in what they take,
-// not in how any of it works.
+// window. `DDNetLoader.render` is the same again with nothing on screen at all:
+// a demo goes in, an MP4 comes out, and the page decides what to do with it.
+// They differ in the program they start and in what they take, not in how any
+// of it works.
 //
 // A plain script rather than a module, so that a page can use it with a plain
 // `<script>` and so can we.
@@ -82,12 +84,18 @@ const DDNetLoader = (() => {
 	class Instance {
 		constructor(options) {
 			this.options = options;
-			this.canvas = options.canvas;
+			// A program that draws into a video file rather than onto the page
+			// has no canvas, and nothing here may assume one.
+			this.canvas = options.canvas || null;
 			this.homePath = options.homePath || DEFAULT_HOME_PATH;
 			this.accept = options.accept || [];
 			this.acceptLinks = options.acceptLinks === true;
 			this.module = null;
 			this.exited = false;
+			this.video = null;
+			this.finished = new Promise(resolve => {
+				this.reportFinished = resolve;
+			});
 		}
 
 		output(message, kind) {
@@ -244,6 +252,9 @@ const DDNetLoader = (() => {
 		installCanvasHandlers() {
 			const instance = this;
 			const canvas = this.canvas;
+			if (canvas == null) {
+				return;
+			}
 			installKeyGuard();
 			canvas.addEventListener('contextmenu', e => e.preventDefault());
 			canvas.addEventListener('webglcontextcreationerror', e => {
@@ -321,8 +332,10 @@ const DDNetLoader = (() => {
 				instance.stopAudio();
 				// A runtime that has already aborted answers every call with an
 				// exception, which `call` swallows, so there is nothing to ask
-				// first.
+				// first. One that is past answering never reaches `onExit`
+				// either, so whoever waits for the program is let go here.
 				instance.call('EmscriptenCallbackQuitForce');
+				instance.reportFinished();
 				if (previous) {
 					return previous.apply(this, arguments);
 				}
@@ -344,7 +357,12 @@ const DDNetLoader = (() => {
 					url: location.protocol === "https:" ? "wss://" : "ws://",
 				},
 				noInitialRun: true,
-				canvas: this.canvas,
+				canvas: this.canvas === null ? undefined : this.canvas,
+				// Where a finished video goes. Without it the export offers the
+				// file as a download, which is what somebody watching wants and
+				// a page rendering by itself does not. Read by the WebCodecs
+				// export, see `src/engine/client/video_webcodecs.cpp`.
+				ddnetVideoOutput: options.onVideo,
 				// Where `data` is, for a page that keeps it somewhere other than
 				// next to itself. Read by `webfs`, see `src/base/webfs.h`.
 				ddnetDataBase: options.dataBase,
@@ -370,19 +388,41 @@ const DDNetLoader = (() => {
 			await this.mountPersistentStorage();
 
 			const args = this.module.arguments;
-			const url = this.urlArgument();
-			if (url != null) {
-				this.output(`Downloading ${url}…`);
-				try {
-					args.push(await this.fetchUrlFile(url));
-				} catch (downloadError) {
-					this.output(`Failed to download ${url}: ${downloadError.message}`, { error: true, bold: true });
-					this.output("A server has to allow this page to read its files. You can drop the file into this page instead.");
+			const path = await this.initialFile();
+			if (path != null) {
+				if (options.fileArgument) {
+					args.push(options.fileArgument);
 				}
+				args.push(path);
 			}
-			this.canvas.style.display = "block";
+			if (this.canvas != null) {
+				this.canvas.style.display = "block";
+			}
 			this.module.callMain(args);
 			return this;
+		}
+
+		// The file the program starts on, if it was given one: bytes the page
+		// handed over, or a URL - the page's own or one of its parameters.
+		async initialFile() {
+			const file = this.options.file;
+			if (file != null && typeof file !== "string") {
+				const name = this.options.fileName || file.name || "upload";
+				const bytes = file instanceof Uint8Array ? file : new Uint8Array(file instanceof ArrayBuffer ? file : await file.arrayBuffer());
+				return await this.writeFile(this.filePath({ name: name }) || this.homePath, name, bytes);
+			}
+			const url = typeof file === "string" ? new URL(file, location.href).href : this.urlArgument();
+			if (url == null) {
+				return null;
+			}
+			this.output(`Downloading ${url}…`);
+			try {
+				return await this.fetchUrlFile(url);
+			} catch (downloadError) {
+				this.output(`Failed to download ${url}: ${downloadError.message}`, { error: true, bold: true });
+				this.output("A server has to allow this page to read its files. You can drop the file into this page instead.");
+				return null;
+			}
 		}
 
 		urlArgument() {
@@ -406,8 +446,14 @@ const DDNetLoader = (() => {
 		async mountPersistentStorage() {
 			const instance = this;
 			const FS = this.module.FS;
-			this.output("Synchronizing filesystem with IndexedDB…");
 			FS.mkdirTree(this.homePath);
+			// A program that is only passing through leaves nothing behind: the
+			// home directory is there for it to write into, and it goes with the
+			// tab.
+			if (this.options.persist === false) {
+				return;
+			}
+			this.output("Synchronizing filesystem with IndexedDB…");
 			FS.mount(this.module.IDBFS, {}, this.homePath);
 			await new Promise(resolve => FS.syncfs(true, error => {
 				if (error) {
@@ -419,6 +465,29 @@ const DDNetLoader = (() => {
 
 		onExit() {
 			this.exited = true;
+			this.reportFinished();
+			if (this.options.persist !== false) {
+				this.syncPersistentStorage();
+			}
+			if (this.canvas != null) {
+				// After the program quits, hide the canvas and reset the cursor, as
+				// the canvas will be entirely black, also blocking the view of
+				// whatever is behind it.
+				this.canvas.style.display = "none";
+				// Make sure to reset cursor because it sometimes does not become
+				// visible.
+				this.canvas.style.cursor = "default";
+				// Also reset cursor of body because the cursor sometimes does not
+				// become visible until being moved.
+				document.body.style.cursor = "default";
+			}
+			this.output(`${this.options.programName || "The program"} closed.`, { bold: true });
+			if (this.options.onExit) {
+				this.options.onExit();
+			}
+		}
+
+		syncPersistentStorage() {
 			if (this.module['ddnetSyncPersistentStorage'] !== undefined) {
 				this.module['ddnetSyncPersistentStorage'](true);
 			} else {
@@ -427,19 +496,6 @@ const DDNetLoader = (() => {
 						this.output(`Failed to synchronize filesystem with IndexedDB: ${error}`, { error: true, bold: true });
 					}
 				});
-			}
-			// After the program quits, hide the canvas and reset the cursor, as the
-			// canvas will be entirely black, also blocking the view of whatever is
-			// behind it.
-			this.canvas.style.display = "none";
-			// Make sure to reset cursor because it sometimes does not become visible.
-			this.canvas.style.cursor = "default";
-			// Also reset cursor of body because the cursor sometimes does not become
-			// visible until being moved.
-			document.body.style.cursor = "default";
-			this.output(`${this.options.programName || "The program"} closed. Reload the page to restart.`, { bold: true });
-			if (this.options.onExit) {
-				this.options.onExit();
 			}
 		}
 	}
@@ -486,6 +542,48 @@ const DDNetLoader = (() => {
 		});
 	}
 
+	// What the render tool is asked on a command line, from what the page
+	// asked for here. It is the same program with the same arguments as the one
+	// a terminal starts, so `ddnet-demo-render --help` documents these too.
+	function renderOptions(options) {
+		const args = ["--output", options.output || "video.mp4"];
+		const flag = (name, argument) => {
+			if (options[name] !== undefined && options[name] !== null) {
+				args.push(argument, String(options[name]));
+			}
+		};
+		flag("width", "--width");
+		flag("height", "--height");
+		flag("fps", "--fps");
+		flag("codec", "--codec");
+		flag("crf", "--crf");
+		flag("preset", "--preset");
+		if (options.audio === false) {
+			args.push("--no-audio");
+		}
+		if (options.hud === true) {
+			args.push("--hud");
+		}
+		if (options.chat === false) {
+			args.push("--no-chat");
+		}
+		// Everything the client takes on its command line it takes here as
+		// well, one console command per entry, so `cl_showfps 1` works.
+		for (const setting of options.settings || []) {
+			args.push(setting);
+		}
+		return Object.assign({}, options, {
+			canvas: null,
+			persist: false,
+			accept: [".demo"],
+			file: options.demo,
+			fileName: options.name || "render.demo",
+			fileArgument: "--render-demo",
+			programName: options.programName || "The demo renderer",
+			arguments: args.concat(options.arguments || []),
+		});
+	}
+
 	return {
 		/**
 		 * Starts a program on a canvas.
@@ -496,6 +594,8 @@ const DDNetLoader = (() => {
 		 * @param options.dataBase Where the `data` directory is, if it is not
 		 * next to the page.
 		 * @param options.accept The file suffixes this program takes.
+		 * @param options.file A file to start on: bytes, a `File`, or the URL of
+		 * one.
 		 * @param options.urlParams Parameters of the page's URL that may name a
 		 * file to open.
 		 * @param options.onOutput Called for every line the program writes.
@@ -511,6 +611,53 @@ const DDNetLoader = (() => {
 		/** `start` with the furniture our own pages share around it. */
 		page(options) {
 			return new Instance(pageOptions(options)).run();
+		},
+
+		/**
+		 * Renders a demo into a video file, with nothing on screen.
+		 *
+		 * The render tool draws into render targets, so it needs no canvas and
+		 * takes no part of the page: it reads a demo, encodes every frame of it
+		 * with the browser's own video encoder, and the file it would otherwise
+		 * offer as a download is handed back here instead.
+		 *
+		 * @param options.module The factory `ddnet-demo-render.js` defines, so
+		 * `DDNetDemoRenderer`.
+		 * @param options.demo The demo to render: bytes, a `File`, or the URL of
+		 * one.
+		 * @param options.name The demo's file name, when it comes as bytes.
+		 * @param options.output The name the video carries, `video.mp4`
+		 * otherwise.
+		 * @param options.width Video width in pixels, even, `cl_video_width`
+		 * otherwise; `height`, `fps`, `codec`, `crf` and `preset` the same way.
+		 * @param options.audio `false` renders without a sound track.
+		 * @param options.hud `true` shows the ingame interface, `options.chat`
+		 * `false` hides the chat.
+		 * @param options.settings Console commands, one per entry.
+		 * @param options.dataBase Where the `data` directory is, if it is not
+		 * next to the page.
+		 * @param options.onOutput Called for every line the render writes, which
+		 * is where its progress is reported.
+		 * @param options.onStart Called with the running instance, whose `quit`
+		 * ends a render that is taking too long.
+		 *
+		 * @returns a promise for the finished MP4 as a `Blob`.
+		 */
+		async render(options) {
+			const instance = new Instance(Object.assign(renderOptions(options), {
+				onVideo: file => {
+					instance.video = file;
+				},
+			}));
+			await instance.run();
+			if (options.onStart) {
+				options.onStart(instance);
+			}
+			await instance.finished;
+			if (instance.video == null) {
+				throw new Error("The demo was not rendered into a video, see the output for what went wrong");
+			}
+			return instance.video;
 		},
 	};
 })();

@@ -29,6 +29,11 @@ void CatchVideoExportInterrupt()
 	signal(SIGTERM, HandleVideoExportInterrupt);
 }
 
+void InterruptVideoExport()
+{
+	gs_InterruptSignaled = 1;
+}
+
 bool VideoExportInterrupted()
 {
 	if(gs_InterruptSignaled == 0)

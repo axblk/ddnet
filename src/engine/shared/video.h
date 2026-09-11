@@ -102,6 +102,15 @@ void CatchVideoExportInterrupt();
 bool VideoExportInterrupted();
 
 /**
+ * Asks for the same stop the interrupt signal asks for.
+ *
+ * A browser has no signals to send, so the page says it in the only way it can:
+ * by calling in. What follows is the same as after a `Ctrl+C` - the export loop
+ * notices, the encoder throws the unfinished file away, and the program ends.
+ */
+void InterruptVideoExport();
+
+/**
  * The video export arguments of a command line. The client and the demo render
  * tool both take these off the command line before the rest of it goes to the
  * console, so that `--width 1280` is not mistaken for a console command.

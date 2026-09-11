@@ -452,7 +452,15 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 			return 'no video frame was written to the file';
 		// The file is assembled in memory, which is a few hundred megabytes for
 		// a long export, and is what the browser wants for a download anyway.
-		const url = URL.createObjectURL(new Blob([header()].concat(state.fragments), {type: 'video/mp4'}));
+		const file = new Blob([header()].concat(state.fragments), {type: 'video/mp4'});
+		// A page that renders a demo for its own purposes says where the file
+		// goes, and then there is nothing to offer and nothing to click: it
+		// already has it.
+		if(typeof Module.ddnetVideoOutput === 'function') {
+			Module.ddnetVideoOutput(file, state.fileName);
+			return null;
+		}
+		const url = URL.createObjectURL(file);
 		const link = document.createElement('a');
 		link.href = url;
 		link.download = state.fileName;

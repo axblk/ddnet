@@ -351,6 +351,7 @@ const DDNetLoader = (() => {
 			sweepDataCache();
 			this.installErrorHandler();
 
+			const program = await this.foreignProgram();
 			var totalDependencies = 0;
 			this.module = await options.module({
 				websocket: {
@@ -358,14 +359,21 @@ const DDNetLoader = (() => {
 				},
 				noInitialRun: true,
 				canvas: this.canvas === null ? undefined : this.canvas,
+				// A program from another origin is loaded from a blob, see
+				// `foreignProgram`, and then only this says where its own files
+				// are - the blob has no directory to look next to.
+				mainScriptUrlOrBlob: program === null ? undefined : program.script,
+				locateFile: program === null ? undefined : path => new URL(path, program.base).href,
 				// Where a finished video goes. Without it the export offers the
 				// file as a download, which is what somebody watching wants and
 				// a page rendering by itself does not. Read by the WebCodecs
 				// export, see `src/engine/client/video_webcodecs.cpp`.
 				ddnetVideoOutput: options.onVideo,
 				// Where `data` is, for a page that keeps it somewhere other than
-				// next to itself. Read by `webfs`, see `src/base/webfs.h`.
-				ddnetDataBase: options.dataBase,
+				// next to itself. A program from another origin brings its own,
+				// so that is where to look unless the page says otherwise. Read
+				// by `webfs`, see `src/base/webfs.h`.
+				ddnetDataBase: options.dataBase || (program === null ? undefined : new URL(".", program.base).href),
 				arguments: (options.arguments || []).slice(),
 				print: text => {
 					const parsedLine = parseAnsiColorRgb(text);
@@ -400,6 +408,36 @@ const DDNetLoader = (() => {
 			}
 			this.module.callMain(args);
 			return this;
+		}
+
+		// The program, when it is served from another origin than the page it
+		// runs on. It brings threads, and a thread's script has to come from the
+		// page's own origin: the browser refuses a worker made from a foreign
+		// URL outright. So the program is fetched - which a cross-origin request
+		// is allowed to do where the server permits it - and handed on as a
+		// blob, which belongs to whoever made it.
+		//
+		// The rest of what this takes is the page's own doing and cannot be done
+		// from here: a page that runs this has to be cross-origin isolated, so
+		// `Cross-Origin-Opener-Policy: same-origin` and
+		// `Cross-Origin-Embedder-Policy: require-corp` on the page itself, or
+		// `coi-serviceworker.js` next to it; and under `require-corp` the
+		// `<script>` that fetches the program needs `crossorigin`, because
+		// without it the browser asks for it without CORS and refuses what comes
+		// back.
+		async foreignProgram() {
+			if (!this.options.scriptUrl) {
+				return null;
+			}
+			const base = new URL(this.options.scriptUrl, location.href);
+			if (base.origin === location.origin) {
+				return null;
+			}
+			const response = await fetch(base.href, { mode: "cors" });
+			if (!response.ok) {
+				throw new Error(`${base.href} answered ${response.status} ${response.statusText}`);
+			}
+			return { script: new Blob([await response.text()], { type: "text/javascript" }), base: base };
 		}
 
 		// The file the program starts on, if it was given one: bytes the page
@@ -593,6 +631,8 @@ const DDNetLoader = (() => {
 		 * @param options.canvas The canvas to draw on.
 		 * @param options.dataBase Where the `data` directory is, if it is not
 		 * next to the page.
+		 * @param options.scriptUrl Where the program's script was loaded from,
+		 * when that is another origin than this page.
 		 * @param options.accept The file suffixes this program takes.
 		 * @param options.file A file to start on: bytes, a `File`, or the URL of
 		 * one.

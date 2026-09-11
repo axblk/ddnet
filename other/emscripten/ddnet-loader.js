@@ -471,6 +471,8 @@ const DDNetLoader = (() => {
 				ddnetVideoOutput: options.onVideo,
 				// Where a video is written while it is made, see `videoSink`.
 				ddnetVideoSink: info => instance.videoSink(info),
+				// How far a render has got, once a second while it runs.
+				ddnetRenderProgress: options.onRenderProgress,
 				// Where `data` is, for a page that keeps it somewhere other than
 				// next to itself. A program from another origin brings its own,
 				// so that is where to look unless the page says otherwise. Read
@@ -706,6 +708,7 @@ self.onmessage = async event => {
 			worker: false,
 			videoSink: request.sink,
 			onOutput: (message, kind) => self.postMessage({type: "output", message: message, kind: kind}),
+			onRenderProgress: status => self.postMessage({type: "progress", status: status}),
 		}));
 		self.postMessage({type: "done", video: video});
 	} catch (error) {
@@ -758,6 +761,12 @@ self.onmessage = async event => {
 				if (message.type === "output") {
 					if (options.onOutput) {
 						options.onOutput(message.message, message.kind || {});
+					}
+					return;
+				}
+				if (message.type === "progress") {
+					if (options.onRenderProgress) {
+						options.onRenderProgress(message.status);
 					}
 					return;
 				}
@@ -875,8 +884,11 @@ self.onmessage = async event => {
 		 * @param options.settings Console commands, one per entry.
 		 * @param options.dataBase Where the `data` directory is, if it is not
 		 * next to the page.
-		 * @param options.onOutput Called for every line the render writes, which
-		 * is where its progress is reported.
+		 * @param options.onOutput Called for every line the render writes.
+		 * @param options.onRenderProgress Called once a second while the render
+		 * runs, with `{progress, encodedFrames, submittedFrames,
+		 * framesPerSecond}` - `progress` is the part of the demo that is done,
+		 * between 0 and 1.
 		 * @param options.onStart Called with the running instance, whose `quit`
 		 * ends a render that is taking too long.
 		 * @param options.scriptUrl Where `ddnet-demo-render.js` was loaded from.

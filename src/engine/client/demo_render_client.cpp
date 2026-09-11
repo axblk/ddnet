@@ -18,6 +18,20 @@
 #include <algorithm>
 #include <cinttypes>
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#include <emscripten/emscripten.h>
+
+// A page that asked for a render wants to know how far it has got, and reading
+// that out of the log is not knowing it. The numbers are the ones the log
+// carries, handed over rather than formatted.
+// clang-format off
+EM_JS(void, BrowserRenderProgress, (float Progress, double EncodedFrames, double SubmittedFrames, float FramesPerSecond), {
+	if(typeof Module.ddnetRenderProgress === 'function')
+		Module.ddnetRenderProgress({progress: Progress, encodedFrames: EncodedFrames, submittedFrames: SubmittedFrames, framesPerSecond: FramesPerSecond});
+});
+// clang-format on
+#endif
+
 bool CDemoRenderClient::Configure(const CCommandLineVideoExport &Export)
 {
 	m_Settings = Export.Settings();
@@ -50,6 +64,9 @@ void CDemoRenderClient::OnExportFrame()
 	const CVideoExportStatus Status = m_pVideo->Status();
 	log_info("videorecorder", "Rendering %.1f%% (%" PRIu64 " / %" PRIu64 " frames encoded, %.0f per second)",
 		Progress * 100.0f, Status.m_EncodedFrames, Status.m_SubmittedFrames, Status.m_FramesPerSecond);
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	BrowserRenderProgress(Progress, Status.m_EncodedFrames, Status.m_SubmittedFrames, Status.m_FramesPerSecond);
+#endif
 }
 
 void CDemoRenderClient::Run()

@@ -92,10 +92,27 @@
 				document.getElementById('restart').addEventListener('click', () => {
 					call('DemoViewerSeekStart');
 				});
-				exportButton.addEventListener('click', () => {
+				exportButton.addEventListener('click', async () => {
 					// The browser only hands over a download that came out of a click,
 					// so the export has to start from this handler and not from a
-					// question the page asks itself later.
+					// question the page asks itself later. Asking where to save is
+					// the same: it has to happen while this click is still what the
+					// browser thinks the user is doing. What is written there is
+					// written while the demo renders, so nothing is kept in memory
+					// and a video the size of a film is no different from a short
+					// one.
+					if (viewer != null && window.showSaveFilePicker) {
+						try {
+							const handle = await window.showSaveFilePicker({
+								suggestedName: "video.mp4",
+								types: [{ description: "MP4 video", accept: { "video/mp4": [".mp4"] } }],
+							});
+							viewer.setVideoSink({ stream: await handle.createWritable(), done: () => null });
+						} catch (error) {
+							// The dialog was dismissed, so the export was not asked for.
+							return;
+						}
+					}
 					const canvas = document.getElementById('canvas');
 					const started = call('DemoViewerStartExport', 'number', ['number', 'number', 'number', 'number'],
 						[canvas.width, canvas.height, 60, 0]);

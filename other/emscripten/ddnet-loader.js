@@ -62,6 +62,57 @@ const DDNetLoader = (() => {
 		}
 	}
 
+	// Where a video goes while it is being made. A fragmented MP4 is valid
+	// after every fragment, so it is written to a file in the browser's own
+	// private storage as it is encoded and only handed over when it is
+	// finished: an export that takes minutes is then bounded by what the disk
+	// holds rather than by what the tab can keep. Where there is no such
+	// storage the export falls back to keeping the file in memory.
+	const VIDEO_SCRATCH_DIRECTORY = "ddnet-video";
+	async function videoScratchDirectory(create) {
+		if (!navigator.storage || !navigator.storage.getDirectory) {
+			return null;
+		}
+		const root = await navigator.storage.getDirectory();
+		return await root.getDirectoryHandle(VIDEO_SCRATCH_DIRECTORY, { create: create });
+	}
+
+	async function videoScratchSink(info) {
+		const directory = await videoScratchDirectory(true);
+		if (directory == null) {
+			return null;
+		}
+		const handle = await directory.getFileHandle(`${Date.now()}-${sanitizeFilename(info.fileName)}`, { create: true });
+		return {
+			stream: await handle.createWritable(),
+			// The finished file, which is on disk rather than in memory: what
+			// is handed over here is a handle to it, not its contents.
+			done: async () => await handle.getFile(),
+		};
+	}
+
+	// A video that was written but never taken is a video nobody wanted, so the
+	// scratch files of earlier visits go at the start of this one. Once per
+	// page, and before anything writes a new one.
+	var sweptVideoScratch = false;
+	async function sweepVideoScratch() {
+		if (sweptVideoScratch) {
+			return;
+		}
+		sweptVideoScratch = true;
+		try {
+			const directory = await videoScratchDirectory(false);
+			if (directory == null) {
+				return;
+			}
+			for await (const name of directory.keys()) {
+				await directory.removeEntry(name).catch(() => {});
+			}
+		} catch (error) {
+			// No directory yet, or no permission to have one: nothing to sweep.
+		}
+	}
+
 	// The browser's own shortcuts stay the browser's, whatever the program
 	// makes of the keyboard. Once per page as well.
 	var installedKeyGuard = false;
@@ -93,6 +144,7 @@ const DDNetLoader = (() => {
 			this.module = null;
 			this.exited = false;
 			this.video = null;
+			this.pendingSink = null;
 			this.finished = new Promise(resolve => {
 				this.reportFinished = resolve;
 			});
@@ -159,6 +211,21 @@ const DDNetLoader = (() => {
 			const filePath = await this.fetchUrlFile(url);
 			this.call('EmscriptenCallbackDropFile', null, ['string'], [filePath]);
 			return filePath;
+		}
+
+		/**
+		 * Where the next video this program exports is written to, for a page
+		 * that has somewhere better than the default: a `WritableStream`, or
+		 * `{stream, done}` whose `done` answers with the finished file if there
+		 * is still one to hand over.
+		 *
+		 * A page asking the user where to save has to ask while the click that
+		 * started it is still the browser's idea of what the user is doing,
+		 * which is why this is set before the export starts rather than
+		 * answered when it does.
+		 */
+		setVideoSink(sink) {
+			this.pendingSink = sink;
 		}
 
 		/** Asks the program to stop. `onExit` follows once it has. */
@@ -292,6 +359,21 @@ const DDNetLoader = (() => {
 			});
 		}
 
+		// What the export asks when it starts, in order: what the page put
+		// there for this one export, what it gave once for all of them, and the
+		// scratch file otherwise.
+		async videoSink(info) {
+			if (this.pendingSink != null) {
+				const sink = this.pendingSink;
+				this.pendingSink = null;
+				return sink;
+			}
+			if (this.options.videoSink) {
+				return typeof this.options.videoSink === "function" ? await this.options.videoSink(info) : this.options.videoSink;
+			}
+			return await videoScratchSink(info);
+		}
+
 		// The audio keeps running after the runtime has stopped, and says so
 		// once per buffer. Only this instance's, and only its own doing.
 		stopAudio() {
@@ -349,6 +431,7 @@ const DDNetLoader = (() => {
 				throw new Error("DDNetLoader needs the program's factory, for example `module: DDNetDemoViewer`");
 			}
 			sweepDataCache();
+			sweepVideoScratch();
 			this.installErrorHandler();
 
 			const program = await this.foreignProgram();
@@ -369,6 +452,8 @@ const DDNetLoader = (() => {
 				// a page rendering by itself does not. Read by the WebCodecs
 				// export, see `src/engine/client/video_webcodecs.cpp`.
 				ddnetVideoOutput: options.onVideo,
+				// Where a video is written while it is made, see `videoSink`.
+				ddnetVideoSink: info => instance.videoSink(info),
 				// Where `data` is, for a page that keeps it somewhere other than
 				// next to itself. A program from another origin brings its own,
 				// so that is where to look unless the page says otherwise. Read
@@ -633,6 +718,9 @@ const DDNetLoader = (() => {
 		 * next to the page.
 		 * @param options.scriptUrl Where the program's script was loaded from,
 		 * when that is another origin than this page.
+		 * @param options.videoSink Where an exported video is written, see
+		 * `setVideoSink`. Without it the video goes to a scratch file and is
+		 * handed over when it is done.
 		 * @param options.accept The file suffixes this program takes.
 		 * @param options.file A file to start on: bytes, a `File`, or the URL of
 		 * one.
@@ -680,6 +768,8 @@ const DDNetLoader = (() => {
 		 * is where its progress is reported.
 		 * @param options.onStart Called with the running instance, whose `quit`
 		 * ends a render that is taking too long.
+		 * @param options.videoSink Where the video is written while it is made,
+		 * see `setVideoSink`.
 		 *
 		 * @returns a promise for the finished MP4 as a `Blob`.
 		 */

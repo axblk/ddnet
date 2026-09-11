@@ -387,6 +387,11 @@ int main(int argc, const char **argv)
 				FitView();
 			}
 #endif
+			// What was pressed in this frame has been read, and until this is
+			// said it stays pressed: a wheel is only ever a press and a release
+			// in the same breath, so one notch of it would otherwise go on
+			// zooming for as long as the window is open.
+			pInput->Clear();
 		}
 		else
 		{

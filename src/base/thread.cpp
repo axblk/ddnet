@@ -147,6 +147,13 @@ void thread_wait(void *thread)
 #endif
 }
 
+void thread_wait_for_other_threads()
+{
+	// Long enough not to be a spin, short enough that nobody waiting on the
+	// result notices the wait got longer.
+	std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
+
 void thread_sleep_idle(std::chrono::nanoseconds duration)
 {
 #if defined(CONF_PLATFORM_EMSCRIPTEN)

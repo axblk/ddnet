@@ -45,6 +45,22 @@ void thread_wait(void *thread);
 void thread_yield();
 
 /**
+ * Waits a short moment for work that is going on in other threads.
+ *
+ * @ingroup Threads
+ *
+ * @remark For a thread that has nothing to do but wait for a result. In the
+ * browser that is not merely polite: a worker there cannot open a file or
+ * write a line of its own, it hands the call to the main thread, and the main
+ * thread only makes such a call while it is not running. So a main thread
+ * spinning on a result is standing in the way of the very work it waits for.
+ * Sleeping is what lets those calls through - without unwinding the stack, as
+ * `thread_sleep_idle` does, so the page is not re-entered in the middle of
+ * whatever is being loaded.
+ */
+void thread_wait_for_other_threads();
+
+/**
  * Sleeps until the given duration has passed.
  *
  * @ingroup Threads

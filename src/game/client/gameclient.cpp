@@ -49,6 +49,7 @@
 #include <base/math.h>
 #include <base/mem.h>
 #include <base/str.h>
+#include <base/thread.h>
 #include <base/time.h>
 #include <base/vmath.h>
 
@@ -1130,7 +1131,14 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	// screen is still up. A session loading in the background has no loading
 	// screen to hold and picks its images up per frame instead.
 	while(Focused && Presentation.UpdateMapImages())
+	{
+		// The loading screen is what usually runs the queue, and a client that
+		// only watches demos has none - so the wait runs it itself, or the jobs
+		// it is waiting for are never even started.
+		m_AssetLoader.Update();
 		m_Menus.RenderLoading(pConnectCaption, Localize("Loading map images"), 0);
+		thread_wait_for_other_threads();
+	}
 
 	if(Client()->SessionType(SessionId) == ESessionSourceType::NETWORK)
 	{

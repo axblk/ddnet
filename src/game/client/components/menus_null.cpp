@@ -24,7 +24,16 @@
 // stand-ins instead. The backdrop the scoreboard and the message of the day
 // draw over is in menus_backdrop.cpp, which both builds share.
 
-CMenus::CMenus() = default;
+// The client opens a page as it starts, so the field that says whether one is
+// open starts out true. A program without pages never has one open, and
+// leaving it true tells the backdrop that something wants a blurred picture of
+// the scene behind it: every frame would then be drawn into a texture, blurred
+// and put back, and the part of the window the demo does not cover would keep
+// whatever that texture held before.
+CMenus::CMenus()
+{
+	m_MenuActive = false;
+}
 
 void CMenus::OnInterfacesInit(CGameClient *pClient)
 {

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 enum
 {
@@ -69,7 +70,14 @@ public:
 
 class CGhostLoader : public IGhostLoader
 {
-	IOHANDLE m_File;
+	// A ghost is read whole and then let go of: what is kept is the file, not
+	// the handle to it, and how far through it the reading has got. That is
+	// what lets the bytes come from somewhere other than a file - a job that
+	// fetched them, in a browser - and it is why nothing here holds a file
+	// open while a race is being watched.
+	std::vector<uint8_t> m_vData;
+	size_t m_ReadPos = 0;
+	bool m_Loaded = false;
 	char m_aFilename[IO_MAX_PATH_LENGTH];
 	class IStorage *m_pStorage;
 
@@ -86,7 +94,35 @@ class CGhostLoader : public IGhostLoader
 	std::optional<CGhostItem> m_LastItem;
 
 	void ResetBuffer();
-	IOHANDLE ReadHeader(CGhostHeader &Header, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc, bool LogMapMismatch) const;
+	/**
+	 * Takes the next bytes of what was loaded, as far as there are any.
+	 *
+	 * @param pData Where the bytes are put.
+	 * @param Size How many bytes are wanted.
+	 *
+	 * @return How many bytes were taken, which is less than was asked for at
+	 * the end of the ghost, exactly as reading a file would answer.
+	 */
+	size_t Read(void *pData, size_t Size);
+	/**
+	 * Reads and checks the header at the front of a ghost.
+	 *
+	 * @param Header Where the header is read to.
+	 * @param pData The front of the ghost.
+	 * @param Size How many bytes of the ghost are there.
+	 * @param pHeaderSize Where the ghost's items begin, which depends on the
+	 * version: the map's hash was only written from version 6 on.
+	 * @param pFilename What the ghost is called, for the log.
+	 * @param pMap The map the ghost has to belong to.
+	 * @param MapSha256 The hash that map has.
+	 * @param MapCrc The checksum that map has, for ghosts written before the
+	 * hash was.
+	 * @param LogMapMismatch Whether a ghost of another map is worth a line in
+	 * the log, which it is not where every ghost of a directory is looked at.
+	 *
+	 * @return `true` when there is a header of this map's ghost there.
+	 */
+	bool ReadHeader(CGhostHeader &Header, const unsigned char *pData, size_t Size, size_t *pHeaderSize, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc, bool LogMapMismatch) const;
 	bool ValidateHeader(const CGhostHeader &Header, const char *pFilename) const;
 	bool CheckHeaderMap(const CGhostHeader &Header, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc, bool LogMapMismatch) const;
 	bool ReadChunk(int *pType);
@@ -99,6 +135,20 @@ public:
 	void Init(IStorage *pStorage);
 
 	bool Load(const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc) override;
+	/**
+	 * The same with the bytes of the ghost instead of the name of a file, for
+	 * whoever already has them: they were downloaded, or read by a job.
+	 *
+	 * @param vData The whole ghost.
+	 * @param pFilename What the ghost is called, for the log.
+	 * @param pMap The map the ghost has to belong to.
+	 * @param MapSha256 The hash that map has.
+	 * @param MapCrc The checksum that map has, for ghosts written before the
+	 * hash was.
+	 *
+	 * @return `true` on success, `false` after reporting what went wrong.
+	 */
+	bool LoadFromMemory(std::vector<uint8_t> vData, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc);
 	void Close() override;
 	const CGhostInfo *GetInfo() const override { return &m_Info; }
 

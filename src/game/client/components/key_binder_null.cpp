@@ -1,11 +1,12 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
-#if defined(CONF_DEMO_RENDER_TOOL)
+#if defined(CONF_DEMO_RENDER_TOOL) || defined(CONF_DEMO_VIEWER_TOOL)
 
 #include "key_binder.h"
 
-// Reading a key press to bind it belongs to the controls page, which a tool
-// does not have.
+// Reading a key press to bind it belongs to the controls page, which neither of
+// these programs has. The demo viewer reads its own keys where it uses them,
+// see `CDemoViewerClient::HandleInput`.
 
 bool CKeyBinder::OnInput(const IInput::CEvent &Event)
 {

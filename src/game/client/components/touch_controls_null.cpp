@@ -1,10 +1,12 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
-#if defined(CONF_DEMO_RENDER_TOOL)
+#if defined(CONF_DEMO_RENDER_TOOL) || defined(CONF_DEMO_VIEWER_TOOL)
 
 #include "touch_controls.h"
 
-// On-screen controls are drawn for a finger to press, and a tool has neither.
+// On-screen controls are drawn for a finger to steer a tee with, and neither of
+// these programs steers one. A demo is watched by dragging and tapping the page
+// around it instead.
 
 void CTouchControls::OnInit() {}
 void CTouchControls::OnReset() {}

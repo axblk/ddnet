@@ -1,12 +1,13 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
-#if defined(CONF_DEMO_RENDER_TOOL)
+#if defined(CONF_DEMO_RENDER_TOOL) || defined(CONF_DEMO_VIEWER_TOOL)
 
 #include "console.h"
 
-// The console the client draws over the game, for a program that answers to
-// nobody at a keyboard. What the engine console prints goes to the log, which
-// is where a tool is read anyway.
+// The console the client draws over the game. Neither the program that turns a
+// demo into a video nor the one that shows it in a window has anything to say
+// to it: what the engine console prints goes to the log, which is where both of
+// them are read anyway.
 
 CGameConsole::CInstance::CInstance(int Type) :
 	m_Type(Type)

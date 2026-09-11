@@ -3656,9 +3656,10 @@ if(CLIENT)
 
   # A program that shows one demo in a window. It is the same client as the one
   # the render tool brings, with a window instead of a surface and a keyboard
-  # instead of a command line, so it leaves out the same things - with one
-  # difference: somebody is watching, so the parts that answer to a keyboard
-  # and to a pointer stay in.
+  # instead of a command line, so it leaves out the same things. Somebody is
+  # watching this one, but what they press goes to the viewer's own controls
+  # (`CDemoViewerClient::HandleInput`) rather than to the components a player
+  # steers a tee with, so those go as well.
   if(CLIENT AND SDL2_FOUND AND VIDEORECORDER)
     set(DEMO_VIEWER_SRC ${ENGINE_CLIENT} ${GAME_CLIENT_MENUS_NULL} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
     list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/engine/client/demo_render_(client|main)\\.(cpp|h)$")
@@ -3666,7 +3667,7 @@ if(CLIENT)
     list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
     list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/engine/client/(client|client_net|session_source_net|sixup_translate_system|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|updater|favorites|demoedit|blocklist_driver|discord|steam|notifications)\\.(cpp|h)$")
     list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/engine/client/sqlite\\.(cpp|h)$")
-    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/game/client/components/(local_server|menu_background)\\.cpp$")
+    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/game/client/components/(console|emoticon|key_binder|local_server|menu_background|spectator|touch_controls)\\.cpp$")
     list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/game/client/match_journal\\.cpp$")
     # Not part of the game either, and it compiles its own copy of the client:
     # `cmake --build . --target demo-viewer`.

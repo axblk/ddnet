@@ -1,10 +1,11 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
-#if defined(CONF_DEMO_RENDER_TOOL)
+#if defined(CONF_DEMO_RENDER_TOOL) || defined(CONF_DEMO_VIEWER_TOOL)
 
 #include "emoticon.h"
 
-// The emoticon wheel is opened by a key, and a tool has no keyboard.
+// The emoticon wheel is there to send one, which only somebody playing on a
+// server can do. Watching a demo there is nobody to send it as.
 
 void CEmoticon::OnReset() {}
 void CEmoticon::OnConsoleInit() {}

@@ -1,0 +1,72 @@
+/* The page that renders demos into videos: a list of files, what to make of
+   them, and how far each one has got. */
+#render {
+	box-sizing: border-box;
+	width: min(900px, calc(100% - 30px));
+	margin: 5vh auto;
+	padding: 15px 20px;
+	border-radius: 15px;
+	box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+	background-color: rgba(255, 255, 255, 0.9);
+	font-family: 'Arial', 'Helvetica', sans-serif;
+}
+#drop {
+	margin-bottom: 15px;
+	padding: 25px 15px;
+	border: 3px dashed #ffa500;
+	border-radius: 15px;
+	text-align: center;
+}
+#drop.over {
+	background-color: rgba(255, 165, 0, 0.2);
+}
+#settings {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px 20px;
+	align-items: center;
+	margin-bottom: 15px;
+}
+#settings label {
+	display: flex;
+	gap: 5px;
+	align-items: center;
+}
+#settings input[type=number], #settings select {
+	width: 80px;
+}
+#actions {
+	display: flex;
+	gap: 10px;
+	align-items: center;
+	margin-bottom: 15px;
+}
+#queue {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+#queue li {
+	display: flex;
+	gap: 10px;
+	align-items: center;
+	padding: 8px 0;
+	border-top: 1px solid #ddd;
+}
+#queue .name {
+	overflow: hidden;
+	flex: 1;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+#queue .status {
+	min-width: 320px;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+#queue .failed {
+	color: #c00;
+}
+#queue progress {
+	width: 120px;
+}

@@ -11,12 +11,8 @@
 		<link rel="stylesheet" href="ddnet-viewer.css">
 	</head>
 	<body>
-		<div id="loading">Loading…</div>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
-		<div id="output" style="display: none">
-			<h2>Console log</h2>
-			<div id="outputcontent"></div>
-		</div>
+		<div id="error" style="display: none"></div>
 		<canvas id="canvas" style="display: none">Canvas not supported.</canvas>
 		<div id="player-controls" style="display: none">
 			<span id="hint">Drag to move, the wheel zooms</span>
@@ -38,9 +34,7 @@
 				urlParams: ["map"],
 				elements: {
 					canvas: document.getElementById('canvas'),
-					loading: document.getElementById('loading'),
-					output: document.getElementById('output'),
-					outputContent: document.getElementById('outputcontent'),
+					error: document.getElementById('error'),
 				},
 			});
 		</script>

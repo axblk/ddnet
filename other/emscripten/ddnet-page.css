@@ -31,15 +31,16 @@ button[disabled] {
 	background-color: #965518;
 	cursor: not-allowed;
 }
-#output, #loading {
+#output, #error {
 	padding: 15px;
 	border-radius: 15px;
 	box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
 	background-color: rgba(255, 255, 255, 0.85);
 }
-/* All a page shows that starts by itself: it is gone by the time the first
-   frame is drawn, and it is only ever seen on a slow connection. */
-#loading {
+/* A page starts by itself and shows nothing while it does. This is for when
+   that does not work: one line, in the middle, instead of a canvas that stays
+   black without saying why. */
+#error {
 	width: fit-content;
 	margin: 0 auto;
 	transform: translate(0, 40vh);

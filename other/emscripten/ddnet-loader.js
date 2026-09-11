@@ -670,17 +670,37 @@ const DDNetLoader = (() => {
 		}
 	}
 
-	// The furniture our own pages share, on top of `start`: the line that says
-	// what is happening until the first frame, and the console log that is
-	// there when something goes wrong. Takes the same options plus `elements`.
+	// The furniture our own pages share, on top of `start`. Every piece of it
+	// is optional, and a page that leaves one out is not showing it: a page
+	// with no `output` keeps its log in the browser's console, where a log
+	// belongs, and says only what went wrong - in its `error` line if it has
+	// one. What is left then is the program on the canvas and nothing else,
+	// which is what a viewer should look like while it starts.
 	function pageOptions(options) {
 		const elements = options.elements;
+		const showError = message => {
+			if (elements.error) {
+				elements.error.textContent = message;
+				elements.error.style.display = "block";
+			}
+		};
 		return Object.assign({}, options, {
 			canvas: elements.canvas,
 			onProgress: text => {
-				elements.loading.textContent = text;
+				if (elements.loading) {
+					elements.loading.textContent = text;
+				}
 			},
 			onOutput: (message, kind) => {
+				if (!elements.output) {
+					if (kind.error) {
+						console.error(message);
+						showError(message);
+					} else {
+						console.log(message);
+					}
+					return;
+				}
 				const span = document.createElement("span");
 				span.textContent = message;
 				span.className = "line";
@@ -692,19 +712,27 @@ const DDNetLoader = (() => {
 				if (kind.bold) {
 					span.style.fontWeight = "bold";
 				}
-				elements.loading.style.display = "none";
+				if (elements.loading) {
+					elements.loading.style.display = "none";
+				}
 				elements.output.style.display = "flex";
 				elements.outputContent.appendChild(span);
 				elements.outputContent.appendChild(document.createElement("br"));
 				elements.outputContent.scrollTop = elements.outputContent.scrollHeight;
 			},
 			onExit: () => {
-				const restartButton = document.createElement("button");
-				restartButton.textContent = "Reload page";
-				restartButton.style.marginTop = "10px";
-				restartButton.addEventListener('click', e => location.reload());
-				elements.outputContent.appendChild(restartButton);
-				elements.outputContent.scrollTop = elements.outputContent.scrollHeight;
+				if (elements.outputContent) {
+					const restartButton = document.createElement("button");
+					restartButton.textContent = "Reload page";
+					restartButton.style.marginTop = "10px";
+					restartButton.addEventListener('click', e => location.reload());
+					elements.outputContent.appendChild(restartButton);
+					elements.outputContent.scrollTop = elements.outputContent.scrollHeight;
+				} else {
+					// The canvas is gone with the program, so without this the
+					// page would be empty and say nothing about why.
+					showError("This has stopped. Reload the page to start it again.");
+				}
 				if (options.onExit) {
 					options.onExit();
 				}

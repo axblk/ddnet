@@ -10,8 +10,8 @@
 		<link rel="stylesheet" href="ddnet-page.css">
 	</head>
 	<body>
-		<div id="loading">Loading…</div>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
+		<div id="error" style="display: none"></div>
 		<div id="output" style="display: none">
 			<h2>Console log</h2>
 			<div id="outputcontent"></div>
@@ -28,7 +28,7 @@
 				acceptLinks: true,
 				elements: {
 					canvas: document.getElementById('canvas'),
-					loading: document.getElementById('loading'),
+					error: document.getElementById('error'),
 					output: document.getElementById('output'),
 					outputContent: document.getElementById('outputcontent'),
 				},

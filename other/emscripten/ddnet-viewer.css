@@ -1,69 +1,76 @@
-/* The bar of controls a viewer page puts under its canvas. */
-#player-controls {
-	transition: opacity 0.3s linear;
-	position: absolute;
-	/* Centred by the margins rather than by moving it half its own width out
-	   of the middle, which would leave it only half the page to be wide in -
-	   and a bar of buttons uses what it is given. */
+/* The bar of controls a viewer page puts over its canvas, and what it opens.
+   Both are the same thing: a panel that sits at an edge of the screen, is as
+   wide as what is on it until the screen is narrower than that, and then
+   becomes as many rows as it needs. */
+/* The panels are stacked from the bottom of the screen upwards, so that what
+   one of them opens is above it however many rows either of them has become.
+   The stack itself catches nothing: the gap between two panels is a gap, and a
+   click there belongs to what is being watched. */
+#controls {
+	position: fixed;
+	z-index: 2;
 	left: 0;
 	right: 0;
-	bottom: 20px;
-	z-index: 2;
+	bottom: calc(clamp(5px, 2vw, 20px) + env(safe-area-inset-bottom, 0px));
 	display: flex;
-	gap: 10px;
+	flex-direction: column-reverse;
 	align-items: center;
-	box-sizing: border-box;
+	gap: 10px;
+	padding: 0 clamp(5px, 2vw, 15px);
+	pointer-events: none;
+}
+#player-controls, #export-settings {
+	pointer-events: auto;
+	/* As wide as what is on it, and no wider than the stack it is in - which
+	   is the screen less the room left at its edges. */
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	align-items: center;
+	gap: clamp(6px, 1vw, 10px);
 	width: fit-content;
-	max-width: calc(100% - 30px);
-	margin: 0 auto;
-	padding: 10px 15px;
+	max-width: 100%;
+	padding: clamp(8px, 1.5vw, 10px) clamp(10px, 2vw, 15px);
 	border-radius: 15px;
 	box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
 	background-color: rgba(255, 255, 255, 0.85);
 	color: #000;
-	/* One line, however many buttons there are: a label that breaks in two
+	/* One line per item, however many there are: a label that breaks in two
 	   makes the bar taller than its buttons and pushes the text out of them. */
 	white-space: nowrap;
-	font-family: 'Arial', 'Helvetica', sans-serif;
+	transition: opacity 0.3s linear;
+}
+/* What to make of a video of what is being watched, above the bar that opened
+   it. */
+#export-settings {
+	gap: clamp(6px, 1vw, 10px) clamp(10px, 2vw, 20px);
 }
 #player-controls input[type=range] {
-	width: 40vw;
-	min-width: 200px;
+	/* A share of the screen rather than a share of the row: a bar that is only
+	   as wide as what is on it cannot also hold something that is as wide as
+	   what is left over, because what is left over is what the bar's own width
+	   is being worked out from. Never narrower than a thumb can hit. */
+	flex: 0 1 auto;
+	width: clamp(120px, 20vw, 320px);
+	min-width: 120px;
+	touch-action: manipulation;
 }
-#player-controls button {
+#player-controls button, #export-settings button {
 	/* A button is as wide as what is written on it. Squeezing one to fit the
-	   bar puts its label outside of it. */
+	   bar puts its label outside of it - what gives instead is the room around
+	   the writing, which is what keeps a bar of a dozen controls on one line.
+	   */
 	flex: none;
+	padding: 0 clamp(8px, 1vw, 12px);
+}
+#player-controls select {
+	max-width: 10ch;
+	touch-action: manipulation;
 }
 #player-controls span {
 	min-width: 60px;
 	text-align: center;
 	font-variant-numeric: tabular-nums;
-}
-
-/* What to make of a video of what is being watched. Sits above the bar that
-   opened it, built like it and centred the same way. */
-#export-settings {
-	transition: opacity 0.3s linear;
-	position: absolute;
-	left: 0;
-	right: 0;
-	bottom: 80px;
-	z-index: 2;
-	display: flex;
-	flex-wrap: wrap;
-	gap: 10px 20px;
-	align-items: center;
-	box-sizing: border-box;
-	width: fit-content;
-	max-width: calc(100% - 30px);
-	margin: 0 auto;
-	padding: 10px 15px;
-	border-radius: 15px;
-	box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
-	background-color: rgba(255, 255, 255, 0.85);
-	color: #000;
-	font-family: 'Arial', 'Helvetica', sans-serif;
 }
 #export-settings label {
 	display: flex;
@@ -72,6 +79,20 @@
 }
 #export-settings input[type=number], #export-settings select {
 	width: 80px;
+}
+
+/* A screen too narrow for a panel in the middle of it gets one from edge to
+   edge instead, because there is nothing to spare beside it. */
+@media (max-width: 700px) {
+	#controls {
+		align-items: stretch;
+	}
+	#player-controls, #export-settings {
+		width: auto;
+	}
+	#player-controls span {
+		min-width: 0;
+	}
 }
 
 /* Out of the way while nothing is happening, and back as soon as something is.

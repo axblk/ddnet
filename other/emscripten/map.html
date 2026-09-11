@@ -2,7 +2,7 @@
 <html>
 	<head>
 		<meta charset="utf-8">
-		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 		<meta name="description" content="Look at a DDNet map in a web browser.">
 		<title>DDNet Map Viewer</title>
 		<link rel="icon" type="image/x-icon" href="DDNet.ico">
@@ -14,15 +14,17 @@
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="error" style="display: none"></div>
 		<canvas id="canvas">Canvas not supported.</canvas>
-		<div id="player-controls" style="display: none">
-			<span id="hint">Drag to move, the wheel zooms</span>
-			<button id="zoom-out" title="Wheel down">&minus;</button>
-			<span id="view">0, 0</span>
-			<button id="zoom-in" title="Wheel up">+</button>
-			<button id="fit-button" title="Home">Fit on screen</button>
-			<button id="fullscreen-button">Full screen</button>
-			<button id="export-view-button">Save this view</button>
-			<button id="export-full-button" title="The whole map at 32 pixels per tile">Save the whole map</button>
+		<div id="controls">
+			<div id="player-controls" style="display: none">
+				<span id="hint">Drag to move, the wheel zooms</span>
+				<button id="zoom-out" title="Wheel down">&minus;</button>
+				<span id="view">0, 0</span>
+				<button id="zoom-in" title="Wheel up">+</button>
+				<button id="fit-button" title="Home">Fit on screen</button>
+				<button id="fullscreen-button">Full screen</button>
+				<button id="export-view-button">Save this view</button>
+				<button id="export-full-button" title="The whole map at 32 pixels per tile">Save the whole map</button>
+			</div>
 		</div>
 		<script src="ddnet-map-viewer.js"></script>
 		<script src="ddnet-loader.js"></script>
@@ -56,6 +58,11 @@
 				const exportViewButton = document.getElementById('export-view-button');
 				const exportFullButton = document.getElementById('export-full-button');
 				const exportButtons = [exportViewButton, exportFullButton];
+				// A finger has no wheel, so what it is told to do is what it can
+				// do: the buttons beside this are the zoom there.
+				if (window.matchMedia("(pointer: coarse)").matches) {
+					hint.textContent = "Drag to move, the buttons zoom";
+				}
 				const HINT_TEXT = hint.textContent;
 				// What one press of a zoom button does. The wheel takes smaller
 				// steps because it is turned more than a button is pressed.

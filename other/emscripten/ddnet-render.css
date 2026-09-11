@@ -1,10 +1,10 @@
 /* The page that renders demos into videos: a list of files, what to make of
    them, and how far each one has got. */
 #render {
-	box-sizing: border-box;
-	width: min(900px, calc(100% - 30px));
-	margin: 5vh auto;
-	padding: 15px 20px;
+	width: min(900px, calc(100% - 2 * clamp(0px, 2vw, 15px)));
+	margin: clamp(0px, 5vh, 60px) auto;
+	padding: clamp(10px, 2vw, 15px) clamp(12px, 3vw, 20px);
+	padding-bottom: calc(clamp(10px, 2vw, 15px) + env(safe-area-inset-bottom, 0px));
 	border-radius: 15px;
 	box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
 	background-color: rgba(255, 255, 255, 0.9);
@@ -13,7 +13,7 @@
 }
 #drop {
 	margin-bottom: 15px;
-	padding: 25px 15px;
+	padding: clamp(15px, 4vw, 25px) 15px;
 	border: 3px dashed #ffa500;
 	border-radius: 15px;
 	text-align: center;
@@ -24,7 +24,7 @@
 #settings {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 10px 20px;
+	gap: 10px clamp(10px, 2vw, 20px);
 	align-items: center;
 	margin-bottom: 15px;
 }
@@ -38,6 +38,7 @@
 }
 #actions {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 10px;
 	align-items: center;
 	margin-bottom: 15px;
@@ -48,20 +49,23 @@
 	list-style: none;
 }
 #queue li {
-	display: flex;
-	gap: 10px;
+	display: grid;
+	/* The name takes what is left, the bar and the numbers take what they
+	   need. `minmax(0, 1fr)` rather than `1fr`, so that a long name is cut
+	   short instead of making the row wider than the page. */
+	grid-template-columns: minmax(0, 1fr) auto auto auto;
+	gap: 4px 10px;
 	align-items: center;
 	padding: 8px 0;
 	border-top: 1px solid #ddd;
 }
 #queue .name {
 	overflow: hidden;
-	flex: 1;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 #queue .status {
-	min-width: 320px;
+	min-width: min(320px, 100%);
 	text-align: right;
 	font-variant-numeric: tabular-nums;
 }
@@ -69,5 +73,23 @@
 	color: #c00;
 }
 #queue progress {
-	width: 120px;
+	width: clamp(60px, 15vw, 120px);
+}
+/* Too narrow for four things side by side: the name gets a line of its own and
+   the rest stays a row under it. */
+@media (max-width: 700px) {
+	#render {
+		width: 100%;
+		margin: 0;
+		border-radius: 0;
+	}
+	#queue li {
+		grid-template-columns: minmax(0, 1fr) auto auto;
+	}
+	#queue .name {
+		grid-column: 1 / -1;
+	}
+	#queue .status {
+		min-width: 0;
+	}
 }

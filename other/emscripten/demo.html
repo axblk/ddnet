@@ -2,7 +2,7 @@
 <html>
 	<head>
 		<meta charset="utf-8">
-		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 		<meta name="description" content="Watch a DDNet demo in a web browser.">
 		<title>DDNet Demo Viewer</title>
 		<link rel="icon" type="image/x-icon" href="DDNet.ico">
@@ -14,23 +14,25 @@
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="error" style="display: none"></div>
 		<canvas id="canvas">Canvas not supported.</canvas>
-		<div id="player-controls" style="display: none">
-			<button id="play-button" title="Space">Pause</button>
-			<input id="seek" type="range" min="0" max="1000" value="0" step="1" title="Seek">
-			<span id="time">0:00 / 0:00</span>
-			<button id="slower" title="Down arrow">&minus;</button>
-			<span id="speed">1.00&times;</span>
-			<button id="faster" title="Up arrow">+</button>
-			<button id="restart" title="Home">Restart</button>
-			<select id="spectate" title="Who to watch (N, P, F)"></select>
-			<button id="zoom-out" title="Zoom out">&minus;</button>
-			<button id="zoom-in" title="Zoom in">+</button>
-			<button id="fullscreen-button">Full screen</button>
-			<button id="export-button">Export video</button>
+		<div id="controls">
+			<div id="player-controls" style="display: none">
+				<button id="play-button" title="Space">Pause</button>
+				<input id="seek" type="range" min="0" max="1000" value="0" step="1" title="Seek">
+				<span id="time">0:00 / 0:00</span>
+				<button id="slower" title="Down arrow">&minus;</button>
+				<span id="speed">1.00&times;</span>
+				<button id="faster" title="Up arrow">+</button>
+				<button id="restart" title="Home">Restart</button>
+				<select id="spectate" title="Who to watch (N, P, F)"></select>
+				<button id="zoom-out" title="Zoom out">&minus;</button>
+				<button id="zoom-in" title="Zoom in">+</button>
+				<button id="fullscreen-button">Full screen</button>
+				<button id="export-button">Export video</button>
+			</div>
+			<!-- What to make of the video, filled in by the loader so that this page
+			     and the render page ask for the same things in the same words. -->
+			<div id="export-settings" style="display: none"></div>
 		</div>
-		<!-- What to make of the video, filled in by the loader so that this page
-		     and the render page ask for the same things in the same words. -->
-		<div id="export-settings" style="display: none"></div>
 		<script src="ddnet-demo-viewer.js"></script>
 		<script src="ddnet-loader.js"></script>
 		<script>

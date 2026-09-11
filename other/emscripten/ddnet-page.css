@@ -1,3 +1,12 @@
+/* What the three pages that run one of the programs share, and the page that
+   renders demos with them. Everything here is measured in what the screen has
+   rather than in what a desktop happens to have: `clamp` between a size that
+   fits a phone and one that fits a monitor, `dvh` for a height that a browser's
+   own furniture is not counted into, and the safe area for the corners a phone
+   rounds off. */
+*, *::before, *::after {
+	box-sizing: border-box;
+}
 body {
 	/* Plain and dark: what these pages show is a game, a map or a list of
 	   videos being made, and a picture behind all of that is something else to
@@ -5,19 +14,36 @@ body {
 	background-color: #222;
 	color: #eee;
 	font-family: 'Arial', 'Helvetica', sans-serif;
+	/* Between what a phone needs and what a monitor can use. */
+	font-size: clamp(14px, 0.5vw + 12px, 16px);
+	/* Nothing here scrolls, so the rubber band at the end of a page that does
+	   not scroll is only a canvas coming loose from the top of the screen. */
+	overscroll-behavior: none;
 }
 body, html, #canvas {
 	width: 100%;
+	/* A phone hides its address bar as soon as anything is scrolled, and until
+	   it does, 100% of the window is taller than what can be seen. `dvh` is
+	   how tall it is now, which is what a canvas that fills the screen has to
+	   be; `%` stays for whoever has no `dvh`. */
 	height: 100%;
 	margin: 0;
+}
+@supports (height: 100dvh) {
+	body, html, #canvas {
+		height: 100dvh;
+	}
 }
 h2 {
 	margin: 5px 0 15px 0;
 	color: #ffa500;
 }
+button, select, input {
+	font: inherit;
+}
 button {
 	height: 30px;
-	padding: 0 20px;
+	padding: 0 clamp(10px, 2vw, 20px);
 	border: none;
 	border-radius: 6px;
 	background-color: #ffa500;
@@ -25,6 +51,11 @@ button {
 	color: #fff;
 	font-weight: bold;
 	cursor: pointer;
+	/* A tap is a press, not a gesture that might become a scroll or a zoom:
+	   without this a phone waits to find out and everything here answers a
+	   third of a second late. */
+	touch-action: manipulation;
+	-webkit-tap-highlight-color: transparent;
 }
 button:hover {
 	background-color: #f27400;
@@ -33,20 +64,47 @@ button[disabled] {
 	background-color: #965518;
 	cursor: not-allowed;
 }
+button:focus-visible, select:focus-visible, input:focus-visible {
+	outline: 2px solid #ffa500;
+	outline-offset: 2px;
+}
+/* A finger is not a pointer: what it has to hit is as big as the guidance for
+   every other application on the same screen says it should be. */
+@media (pointer: coarse) {
+	button, select, input:not([type=range]):not([type=checkbox]) {
+		min-height: 44px;
+	}
+}
+/* Whoever has asked their system for less movement gets none here either. */
+@media (prefers-reduced-motion: reduce) {
+	*, *::before, *::after {
+		transition-duration: 0.01ms !important;
+		animation-duration: 0.01ms !important;
+	}
+}
 #output, #error {
-	padding: 15px;
+	padding: clamp(10px, 2vw, 15px);
 	border-radius: 15px;
 	box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
 	background-color: rgba(255, 255, 255, 0.85);
 	color: #000;
 }
 /* A page starts by itself and shows nothing while it does. This is for when
-   that does not work: one line, in the middle, instead of a canvas that stays
-   black without saying why. */
+   that does not work: one line instead of a canvas that stays black without
+   saying why. On a page that is nothing but a canvas it goes over the middle
+   of it; on the render page it is a line above the rest, where it belongs. */
 #error {
-	width: fit-content;
-	margin: 0 auto;
-	transform: translate(0, 40vh);
+	width: max-content;
+	max-width: min(90vw, 60ch);
+	margin: 0 auto 15px auto;
+}
+body:has(canvas#canvas) #error {
+	position: absolute;
+	top: 40%;
+	left: 50%;
+	z-index: 3;
+	margin: 0;
+	transform: translate(-50%, 0);
 }
 #canvas {
 	position: absolute;
@@ -60,15 +118,14 @@ button[disabled] {
 	   as long as it takes. Black, because a canvas nothing has drawn on yet is
 	   see-through. */
 	background-color: #000;
+	/* Every finger on the canvas belongs to what is being watched: dragging it
+	   moves the view rather than the page, and two fingers zoom the map rather
+	   than the writing around it. */
+	touch-action: none;
 }
 #output {
-	position: sticky;
-	width: 90%;
-	height: 90%;
-	inset: 0px;
-	margin: 0 auto;
-	box-sizing: border-box;
-	transform: translate(0, 5vh);
+	position: absolute;
+	inset: clamp(10px, 5vh, 40px) clamp(10px, 5vw, 60px);
 	display: flex;
 	flex-direction: column;
 }

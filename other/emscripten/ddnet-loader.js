@@ -208,6 +208,9 @@ const DDNetLoader = (() => {
 			const on = document.fullscreenElement != null;
 			button.textContent = on ? "Leave full screen" : "Full screen";
 			button.title = on ? "Escape" : "";
+			if (!on && screen.orientation && screen.orientation.unlock) {
+				screen.orientation.unlock();
+			}
 		};
 		button.addEventListener("click", () => {
 			if (document.fullscreenElement != null) {
@@ -215,7 +218,15 @@ const DDNetLoader = (() => {
 			} else {
 				// A browser that says no says it in a promise nobody is
 				// waiting on, which would otherwise be an unhandled rejection.
-				settings.element.requestFullscreen().catch(() => {});
+				settings.element.requestFullscreen().then(() => {
+					// What is being watched is wide and a phone is tall. Only
+					// a page that fills the screen may ask for this, which is
+					// why it is asked for here and nowhere else; a browser that
+					// does not do it says so and nothing else happens.
+					if (screen.orientation && screen.orientation.lock) {
+						screen.orientation.lock("landscape").catch(() => {});
+					}
+				}).catch(() => {});
 			}
 		});
 		document.addEventListener("fullscreenchange", update);

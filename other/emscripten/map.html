@@ -20,6 +20,9 @@
 		<canvas id="canvas" style="display: none">Canvas not supported.</canvas>
 		<div id="player-controls" style="display: none">
 			<span id="hint">Drag to move, the wheel zooms</span>
+			<button id="zoom-out" title="Wheel down">&minus;</button>
+			<span id="view">0, 0</span>
+			<button id="zoom-in" title="Wheel up">+</button>
 			<button id="fit-button" title="Home">Fit on screen</button>
 			<button id="export-view-button">Save this view</button>
 			<button id="export-full-button" title="The whole map at 32 pixels per tile">Save the whole map</button>
@@ -49,10 +52,14 @@
 			(function() {
 				const playerControls = document.getElementById('player-controls');
 				const hint = document.getElementById('hint');
+				const view = document.getElementById('view');
 				const exportViewButton = document.getElementById('export-view-button');
 				const exportFullButton = document.getElementById('export-full-button');
 				const exportButtons = [exportViewButton, exportFullButton];
 				const HINT_TEXT = hint.textContent;
+				// What one press of a zoom button does. The wheel takes smaller
+				// steps because it is turned more than a button is pressed.
+				const ZOOM_BUTTON_STEP = 1.25;
 				// The states `MapViewerExportState` answers with.
 				const EXPORT_IDLE = 0, EXPORT_PENDING = 1, EXPORT_SUCCEEDED = 2, EXPORT_FAILED = 3;
 				var lastExportState = EXPORT_IDLE;
@@ -69,6 +76,12 @@
 				// already, which is enough: there is nothing here to steer.
 				started.then(instance => { viewer = instance; }, () => {});
 
+				document.getElementById('zoom-out').addEventListener('click', () => {
+					map.zoomBy(ZOOM_BUTTON_STEP);
+				});
+				document.getElementById('zoom-in').addEventListener('click', () => {
+					map.zoomBy(1 / ZOOM_BUTTON_STEP);
+				});
 				document.getElementById('fit-button').addEventListener('click', () => {
 					map.fit();
 				});
@@ -80,6 +93,45 @@
 					map.exportFullMap();
 				});
 
+				// Where a link says to look, and how much of the map to show:
+				// `#x=120&y=64&tiles=90`, in tiles, applied once as soon as
+				// there is a map to apply it to. A map that is dropped in later
+				// brings its own view and keeps it.
+				var linkApplied = false;
+				function applyLink() {
+					if (linkApplied) {
+						return;
+					}
+					linkApplied = true;
+					const tiles = parseFloat(DDNetLoader.urlParameter("tiles"));
+					if (isFinite(tiles) && tiles > 0) {
+						map.tilesAcross(tiles);
+					}
+					const x = parseFloat(DDNetLoader.urlParameter("x"));
+					const y = parseFloat(DDNetLoader.urlParameter("y"));
+					if (isFinite(x) && isFinite(y)) {
+						map.center(x, y);
+					}
+				}
+
+				// The address bar follows the view, so that what somebody copies
+				// out of it is what they are looking at. Replacing the entry
+				// rather than adding one keeps the back button on the page
+				// before this one instead of on every pixel moved, and changing
+				// only the fragment this way loads nothing.
+				var lastLink = null;
+				function updateLink(center, tiles) {
+					const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+					params.set("x", center.x.toFixed(1));
+					params.set("y", center.y.toFixed(1));
+					params.set("tiles", tiles.toFixed(1));
+					const link = `#${params}`;
+					if (link !== lastLink) {
+						lastLink = link;
+						history.replaceState(null, "", link);
+					}
+				}
+
 				// The page asks rather than being told: the viewer holds the main
 				// thread for as long as it draws and only lets go between frames.
 				setInterval(() => {
@@ -88,6 +140,13 @@
 						return;
 					}
 					playerControls.style.display = "flex";
+					applyLink();
+					const center = map.center();
+					const tiles = map.tilesAcross();
+					if (center !== null && tiles > 0) {
+						view.textContent = `${Math.round(center.x)}, ${Math.round(center.y)} · ${Math.round(tiles)} tiles`;
+						updateLink(center, tiles);
+					}
 					const state = map.exportState();
 					if (state === lastExportState) {
 						return;

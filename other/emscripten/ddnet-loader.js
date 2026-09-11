@@ -853,11 +853,59 @@ self.onmessage = async event => {
 		};
 	}
 
+	// A tile is 32 world units across, in every map there is. The viewer is
+	// written in those units and a page has no business knowing them, so the
+	// one place that turns the one into the other is here.
+	const MAP_TILE_SIZE = 32;
+
 	function mapControls(instance) {
+		const tiles = name => {
+			const value = instance.call(name, "number");
+			return value === null ? null : value / MAP_TILE_SIZE;
+		};
+		const setNumbers = (name, values) =>
+			instance.call(name, null, values.map(() => "number"), values);
 		return {
 			loaded: () => instance.call("MapViewerMapLoaded", "number") === 1,
 			/** Fits the whole map on screen. */
 			fit: () => instance.call("MapViewerFit"),
+			/** How big the map is, in tiles. */
+			size: () => {
+				const width = tiles("MapViewerMapWidth");
+				return width === null ? null : { width, height: tiles("MapViewerMapHeight") };
+			},
+			/** Where the view looks, in tiles, or looks there. */
+			center: (X, Y) => {
+				if (X === undefined) {
+					const x = tiles("MapViewerCenterX");
+					return x === null ? null : { x, y: tiles("MapViewerCenterY") };
+				}
+				return setNumbers("MapViewerSetCenter", [X * MAP_TILE_SIZE, Y * MAP_TILE_SIZE]);
+			},
+			/**
+			 * How many tiles are across the screen, or zooms until that many
+			 * are. It is the zoom said in a way that means the same in every
+			 * window, which is what a link and a readout both need.
+			 */
+			tilesAcross: Tiles => {
+				const visible = tiles("MapViewerVisibleWidth");
+				if (Tiles === undefined) {
+					return visible;
+				}
+				// What the view is set by is the zoom, and what that comes to in
+				// tiles is the window's business - so it is asked what it shows
+				// now and told the factor between that and what is wanted.
+				if (visible > 0 && Tiles > 0) {
+					setNumbers("MapViewerSetZoom", [instance.call("MapViewerZoom", "number") * Tiles / visible]);
+				}
+			},
+			/** Zooms by a factor: 2 puts twice as much of the map on screen. */
+			zoomBy: Factor => {
+				const zoom = instance.call("MapViewerZoom", "number");
+				if (zoom !== null) {
+					setNumbers("MapViewerSetZoom", [zoom * Factor]);
+				}
+			},
 			/** Writes what is on screen, or the whole map, to a picture. */
 			exportView: () => instance.call("MapViewerExportView"),
 			exportFullMap: () => instance.call("MapViewerExportFullMap"),
@@ -949,7 +997,11 @@ self.onmessage = async event => {
 			return demoControls(instance);
 		},
 
-		/** The same for a map viewer. */
+		/**
+		 * The same for a map viewer: what it shows, in tiles, and everything
+		 * that changes it. A page steers it with these, and so does a link -
+		 * `#x=…&y=…&tiles=…` is only these calls made for somebody else.
+		 */
 		mapControls(instance) {
 			return mapControls(instance);
 		},

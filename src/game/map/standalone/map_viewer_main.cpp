@@ -38,6 +38,11 @@ namespace
 	// screen width every second and a half, whatever the zoom.
 	constexpr float ZOOM_STEP = 1.1f;
 	constexpr float PAN_SCREENS_PER_SECOND = 0.66f;
+	// How far the view can be taken either way, so that neither a wheel that
+	// keeps turning nor a page that asks for anything can put the map where it
+	// is no longer to be found.
+	constexpr float MIN_ZOOM = 0.01f;
+	constexpr float MAX_ZOOM = 1000.0f;
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 	// Where a picture the page asked for is written before it is handed to the
@@ -66,6 +71,7 @@ namespace
 
 	CStandaloneMapView *g_pView = nullptr;
 	SPageRequests *g_pRequests = nullptr;
+	CStandaloneMapView::SRenderParams *g_pRenderParams = nullptr;
 #endif
 
 	void PrintUsage(const char *pProgramName)
@@ -107,6 +113,65 @@ EMSCRIPTEN_KEEPALIVE void MapViewerExportFullMap()
 		g_pRequests->m_ExportFullMap = true;
 		g_pRequests->m_ExportState = EExportState::PENDING;
 	}
+}
+
+// Where the view looks and how close, in the world units of the map - 32 of
+// them to a tile. Unlike a picture, which needs a frame to be drawn before it
+// can be read back, this is only the state the next frame is drawn from, so it
+// is set where it is asked for: the page gets to call in between two frames,
+// which is exactly when that state is nobody else's.
+EMSCRIPTEN_KEEPALIVE void MapViewerSetCenter(float X, float Y)
+{
+	if(g_pRenderParams != nullptr)
+		g_pRenderParams->m_Center = vec2(X, Y);
+}
+
+EMSCRIPTEN_KEEPALIVE void MapViewerSetZoom(float Zoom)
+{
+	if(g_pRenderParams != nullptr)
+		g_pRenderParams->m_Zoom = std::clamp(Zoom, MIN_ZOOM, MAX_ZOOM);
+}
+
+EMSCRIPTEN_KEEPALIVE float MapViewerCenterX()
+{
+	return g_pRenderParams == nullptr ? 0.0f : g_pRenderParams->m_Center.x;
+}
+
+EMSCRIPTEN_KEEPALIVE float MapViewerCenterY()
+{
+	return g_pRenderParams == nullptr ? 0.0f : g_pRenderParams->m_Center.y;
+}
+
+EMSCRIPTEN_KEEPALIVE float MapViewerZoom()
+{
+	return g_pRenderParams == nullptr ? 1.0f : g_pRenderParams->m_Zoom;
+}
+
+// How wide the piece of the world on the screen is. That is what a zoom
+// actually means to whoever is looking, and it says the same thing in every
+// window, which the zoom itself does not: a link that names it shows the same
+// piece of the map on a phone as on a screen.
+EMSCRIPTEN_KEEPALIVE float MapViewerVisibleWidth()
+{
+	if(g_pView == nullptr || g_pRenderParams == nullptr)
+		return 0.0f;
+	IGraphics *pGraphics = g_pView->Graphics();
+	float ViewWidth, ViewHeight;
+	pGraphics->CalcScreenParams(pGraphics->ScreenAspect(), 1.0f, &ViewWidth, &ViewHeight);
+	return ViewWidth * g_pRenderParams->m_Zoom;
+}
+
+// How big the map is, which is what tells a page whether where it is looking
+// is anywhere near it. Without a game layer there is no such size, and the
+// view answers with the size of the screen instead.
+EMSCRIPTEN_KEEPALIVE float MapViewerMapWidth()
+{
+	return g_pView == nullptr ? 0.0f : g_pView->MapWorldSize().x;
+}
+
+EMSCRIPTEN_KEEPALIVE float MapViewerMapHeight()
+{
+	return g_pView == nullptr ? 0.0f : g_pView->MapWorldSize().y;
 }
 
 EMSCRIPTEN_KEEPALIVE int MapViewerMapLoaded()
@@ -226,6 +291,7 @@ int main(int argc, const char **argv)
 	SPageRequests Requests;
 	g_pView = &View;
 	g_pRequests = &Requests;
+	g_pRenderParams = &RenderParams;
 	// A picture the page asked for goes to where the user's own files live and
 	// is handed to the browser from there, which is how everything else this
 	// build writes leaves it.
@@ -310,7 +376,7 @@ int main(int argc, const char **argv)
 				RenderParams.m_Zoom /= ZOOM_STEP;
 			if(pInput->KeyPress(KEY_MOUSE_WHEEL_DOWN))
 				RenderParams.m_Zoom *= ZOOM_STEP;
-			RenderParams.m_Zoom = std::clamp(RenderParams.m_Zoom, 0.01f, 1000.0f);
+			RenderParams.m_Zoom = std::clamp(RenderParams.m_Zoom, MIN_ZOOM, MAX_ZOOM);
 			if(pInput->KeyPress(KEY_HOME))
 				FitView();
 			SaveNow = pInput->KeyPress(KEY_F2);
@@ -374,6 +440,7 @@ int main(int argc, const char **argv)
 	if(pInput != nullptr)
 		pInput->Shutdown();
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
+	g_pRenderParams = nullptr;
 	g_pRequests = nullptr;
 	g_pView = nullptr;
 #endif

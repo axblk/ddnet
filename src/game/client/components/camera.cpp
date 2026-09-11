@@ -573,8 +573,12 @@ void CCamera::ConGotoTele(IConsole::IResult *pResult, void *pUserData)
 
 void CCamera::SetView(ivec2 Pos, bool Relative)
 {
-	vec2 RealPos = vec2(Pos.x * 32.0, Pos.y * 32.0);
-	vec2 UntestedViewPos = Relative ? State().m_ForceFreeviewPos + RealPos : RealPos;
+	SetViewPos(vec2(Pos.x * 32.0f, Pos.y * 32.0f), Relative);
+}
+
+void CCamera::SetViewPos(vec2 Pos, bool Relative)
+{
+	const vec2 UntestedViewPos = Relative ? State().m_ForceFreeviewPos + Pos : Pos;
 
 	State().m_ForceFreeview = true;
 

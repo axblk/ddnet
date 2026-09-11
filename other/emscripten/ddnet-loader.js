@@ -1166,6 +1166,32 @@ self.onmessage = async event => {
 			/** Throws away the export that is running, and its file with it. */
 			cancelExport: () => instance.call("DemoViewerCancelExport"),
 			/**
+			 * Who the demo is watched over the shoulder of, or sets it: a
+			 * client id, -1 for a camera of one's own that the pointer drags
+			 * around, or -2 for whoever recorded the demo. A demo a server
+			 * recorded has nobody who recorded it, so it starts at -1.
+			 */
+			spectating: Id => Id === undefined
+				? number("DemoViewerSpectating")
+				: number("DemoViewerSetSpectate", Id),
+			/** Follows whoever is called this, once the demo has named them. */
+			spectateName: Name => instance.call("DemoViewerSetSpectateName", null, ["string"], [Name || ""]),
+			/** On to the next player there is, or the one before. */
+			spectateStep: Direction => number("DemoViewerSpectateStep", Direction),
+			/**
+			 * The players the demo has named so far, as `{id, name}` objects.
+			 * A demo names them a snapshot or two in, so a list built from this
+			 * is worth building again while it plays.
+			 */
+			players: () => JSON.parse(instance.call("DemoViewerPlayers", "string") || "[]"),
+			/**
+			 * How much of the world is in the canvas, or multiplies it. The
+			 * wheel over the canvas does the same thing.
+			 */
+			zoom: Factor => Factor === undefined
+				? number("DemoViewerZoom")
+				: number("DemoViewerZoomBy", Factor),
+			/**
 			 * Whether the viewer draws its own bar of controls over the demo,
 			 * or switches it on and off. A page with controls of its own turns
 			 * it off - better with `controls: false`, which leaves it off from

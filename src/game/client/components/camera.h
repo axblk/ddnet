@@ -47,7 +47,6 @@ private:
 
 	float CameraSmoothingProgress(float CurrentTime) const;
 
-	void ScaleZoom(float Factor);
 	void ChangeZoom(float Target, int Smoothness, bool IsUser);
 	float ZoomProgress(float CurrentTime) const;
 
@@ -76,6 +75,20 @@ public:
 	void OnReset() override;
 
 	void SetView(ivec2 Pos, bool Relative = false);
+	/**
+	 * The same in world units rather than in tiles, for whoever moves the free
+	 * view by what a pointer did: a drag of a few pixels is a fraction of a
+	 * tile, and rounded to whole ones it is either nothing or a jump.
+	 *
+	 * @param Pos Where to look, or how far to move when `Relative`.
+	 * @param Relative Whether `Pos` is measured from where the view is now.
+	 */
+	void SetViewPos(vec2 Pos, bool Relative = false);
+	/**
+	 * Multiplies the zoom, which is what one notch of a wheel or one press of
+	 * the zoom keys does.
+	 */
+	void ScaleZoom(float Factor);
 	void GotoSwitch(int Number, int Offset = -1);
 	void GotoTele(int Number, int Offset = -1);
 

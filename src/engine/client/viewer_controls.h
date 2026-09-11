@@ -49,6 +49,7 @@ public:
 		SAVE,
 		SAVE_ALL,
 		STOP,
+		EYE,
 	};
 
 	enum class EItem

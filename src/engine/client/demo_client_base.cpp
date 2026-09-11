@@ -19,6 +19,7 @@
 
 #include <game/client/gameclient.h>
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
@@ -36,6 +37,130 @@ CDemoClientBase::CDemoClientBase()
 }
 
 CDemoClientBase::~CDemoClientBase() = default;
+
+CGameClient *CDemoClientBase::Game() const
+{
+	// The game client this asks things of is the same one whether this is
+	// const or not: what is const here is the program around it, not the game
+	// it is showing.
+	return const_cast<CGameClient *>(static_cast<const CGameClient *>(GameClient()));
+}
+
+int CDemoClientBase::Spectating() const
+{
+	return Game()->m_DemoSpecId;
+}
+
+void CDemoClientBase::SetSpectate(int SpectatorId)
+{
+	// Whoever says which player to watch has said it, so a name that was
+	// waiting for the demo to turn up is no longer what is wanted.
+	m_aPendingSpectateName[0] = '\0';
+	SpectatorId = std::clamp(SpectatorId, (int)SPEC_FOLLOW, MAX_CLIENTS - 1);
+	CGameClient *pGame = Game();
+	if(pGame->m_DemoSpecId == SpectatorId)
+	{
+		return;
+	}
+	pGame->m_DemoSpecId = SpectatorId;
+	// What is watched is taken out of here while a tick is drawn, so a demo
+	// that stands still has to be shown one for the change to be seen. The
+	// events of that tick are not new, they are the ones already heard.
+	CDemoPlayer &Player = DemoSource(m_DemoSessionId).DemoPlayer();
+	if(Player.BaseInfo()->m_Paused)
+	{
+		pGame->m_SuppressEvents = true;
+		Player.SeekTick(IDemoPlayer::TICK_CURRENT);
+		pGame->m_SuppressEvents = false;
+		Player.Pause();
+	}
+}
+
+void CDemoClientBase::SpectateStep(int Direction)
+{
+	const int Current = Spectating();
+	for(int Offset = 1; Offset <= MAX_CLIENTS; ++Offset)
+	{
+		// Past the last player and past the first one lies the free view, which
+		// is why the round trip is one longer than there are players.
+		const int Candidate = ((Current < 0 ? (Direction > 0 ? -1 : MAX_CLIENTS) : Current) + Direction * Offset + MAX_CLIENTS + 1) % (MAX_CLIENTS + 1);
+		const int SpectatorId = Candidate == MAX_CLIENTS ? SPEC_FREEVIEW : Candidate;
+		if(SpectatorId == SPEC_FREEVIEW || SpectatePlayerName(SpectatorId) != nullptr)
+		{
+			SetSpectate(SpectatorId);
+			return;
+		}
+	}
+}
+
+void CDemoClientBase::SetSpectateName(const char *pName)
+{
+	str_copy(m_aPendingSpectateName, pName);
+	UpdatePendingSpectate();
+}
+
+void CDemoClientBase::UpdatePendingSpectate()
+{
+	if(m_aPendingSpectateName[0] == '\0')
+	{
+		return;
+	}
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+	{
+		const char *pName = SpectatePlayerName(ClientId);
+		if(pName != nullptr && str_comp(pName, m_aPendingSpectateName) == 0)
+		{
+			SetSpectate(ClientId);
+			return;
+		}
+	}
+}
+
+const char *CDemoClientBase::SpectatePlayerName(int ClientId) const
+{
+	if(!in_range(ClientId, 0, MAX_CLIENTS - 1))
+	{
+		return nullptr;
+	}
+	const CGameClient::CClientData &Client = Game()->m_aClients[ClientId];
+	return Client.m_Active ? Client.m_aName : nullptr;
+}
+
+void CDemoClientBase::MoveFreeView(vec2 Offset)
+{
+	// Only the free view is anybody's to move. While a player is followed the
+	// camera is on them, and the move would be undone by the next frame.
+	if(Offset != vec2(0.0f, 0.0f) && Spectating() == SPEC_FREEVIEW)
+	{
+		Game()->m_Camera.SetViewPos(Offset, true);
+	}
+}
+
+void CDemoClientBase::ScaleZoom(float Factor)
+{
+	CCamera &Camera = Game()->m_Camera;
+	if(Camera.ZoomAllowed())
+	{
+		Camera.ScaleZoom(Factor);
+	}
+}
+
+float CDemoClientBase::Zoom() const
+{
+	return Game()->m_Camera.Zoom();
+}
+
+float CDemoClientBase::WorldPerPixel() const
+{
+	const int ScreenWidth = m_pGraphics->ScreenWidth();
+	if(ScreenWidth <= 0)
+	{
+		return 0.0f;
+	}
+	float ViewWidth, ViewHeight;
+	m_pGraphics->CalcScreenParams(m_pGraphics->ScreenAspect(), Zoom(), &ViewWidth, &ViewHeight);
+	return ViewWidth / ScreenWidth;
+}
 
 void CDemoClientBase::RegisterInterfaces()
 {

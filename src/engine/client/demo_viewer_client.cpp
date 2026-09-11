@@ -16,6 +16,7 @@
 #include <engine/input.h>
 #include <engine/keys.h>
 #include <engine/shared/config.h>
+#include <engine/shared/jsonwriter.h>
 #include <engine/sound.h>
 #include <engine/textrender.h>
 
@@ -38,6 +39,9 @@ namespace
 	constexpr std::chrono::nanoseconds KEY_REPEAT_INTERVAL = 60ms;
 	// How far one press of a seek key moves.
 	constexpr float SEEK_SECONDS = 5.0f;
+	// How much of the world one notch of the wheel or one press of a zoom key
+	// adds or takes away. The same step the client zooms in.
+	constexpr float ZOOM_STEP = 1.0f;
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 	// The one viewer there is while the page is open, so that the controls
@@ -55,6 +59,11 @@ namespace
 		case CDemoViewerClient::CONTROL_KEY_SPEED_UP: return KEY_UP;
 		case CDemoViewerClient::CONTROL_KEY_SPEED_DOWN: return KEY_DOWN;
 		case CDemoViewerClient::CONTROL_KEY_RESTART: return KEY_HOME;
+		case CDemoViewerClient::CONTROL_KEY_FREE_VIEW: return KEY_F;
+		case CDemoViewerClient::CONTROL_KEY_SPECTATE_NEXT: return KEY_N;
+		case CDemoViewerClient::CONTROL_KEY_SPECTATE_PREVIOUS: return KEY_P;
+		case CDemoViewerClient::CONTROL_KEY_ZOOM_IN: return KEY_KP_PLUS;
+		case CDemoViewerClient::CONTROL_KEY_ZOOM_OUT: return KEY_KP_MINUS;
 		case CDemoViewerClient::CONTROL_KEY_QUIT: return KEY_ESCAPE;
 		default: dbg_assert_failed("Invalid control key");
 		}
@@ -318,10 +327,77 @@ bool CDemoViewerClient::HandleInput()
 	{
 		Player.SeekPercent(0.0f);
 	}
+	if(KeyPressed(CONTROL_KEY_FREE_VIEW, false))
+	{
+		// Back to whoever the demo was recorded by when there is one, so that
+		// the same key both leaves a player and comes back to them.
+		SetSpectate(Spectating() == SPEC_FREEVIEW ? SPEC_FOLLOW : SPEC_FREEVIEW);
+	}
+	if(KeyPressed(CONTROL_KEY_SPECTATE_NEXT, false))
+	{
+		SpectateStep(1);
+	}
+	if(KeyPressed(CONTROL_KEY_SPECTATE_PREVIOUS, false))
+	{
+		SpectateStep(-1);
+	}
+	if(KeyPressed(CONTROL_KEY_ZOOM_IN, true) || Input()->KeyPress(KEY_MOUSE_WHEEL_UP))
+	{
+		ScaleZoom(CCamera::ZoomStepsToValue(ZOOM_STEP));
+	}
+	if(KeyPressed(CONTROL_KEY_ZOOM_OUT, true) || Input()->KeyPress(KEY_MOUSE_WHEEL_DOWN))
+	{
+		ScaleZoom(CCamera::ZoomStepsToValue(-ZOOM_STEP));
+	}
+
+	// Dragging moves the free view, the way a map is dragged. In the pixels
+	// that are drawn, not the ones the window is measured in, so that on a
+	// screen with more of the former the world keeps up with the pointer. A
+	// press that landed on the bar belongs to the bar.
+	const vec2 MousePos = Input()->NativeMousePos() * Graphics()->ScreenHiDPIScale();
+	if(Input()->NativeMousePressed(1) && !m_Controls.Hovered())
+	{
+		if(m_Dragging)
+		{
+			MoveFreeView((m_LastMousePos - MousePos) * WorldPerPixel());
+		}
+		m_Dragging = true;
+	}
+	else
+	{
+		m_Dragging = false;
+	}
+	m_LastMousePos = MousePos;
+
 	// Everything this frame brought has been read. Nothing carries over to the
 	// next one, and the events pile up until they are let go of.
 	Input()->Clear();
 	return true;
+}
+
+const char *CDemoViewerClient::Players()
+{
+	// Written by the JSON writer rather than put together by hand: a name is
+	// whatever somebody typed, quotation marks and all.
+	CJsonStringWriter Writer;
+	Writer.BeginArray();
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+	{
+		const char *pName = SpectatePlayerName(ClientId);
+		if(pName == nullptr)
+		{
+			continue;
+		}
+		Writer.BeginObject();
+		Writer.WriteAttribute("id");
+		Writer.WriteIntValue(ClientId);
+		Writer.WriteAttribute("name");
+		Writer.WriteStrValue(pName);
+		Writer.EndObject();
+	}
+	Writer.EndArray();
+	m_Players = Writer.GetOutputString();
+	return m_Players.c_str();
 }
 
 void CDemoViewerClient::RenderControls()
@@ -351,6 +427,14 @@ void CDemoViewerClient::RenderControls()
 	str_format(aTime, sizeof(aTime), "%s / %s", aElapsed, aLength);
 	char aSpeed[16];
 	str_format(aSpeed, sizeof(aSpeed), "%.2fx", Speed());
+	// Who is being watched, cut short: a bar as wide as the longest name
+	// somebody chose is a bar that covers the demo.
+	char aSpectating[20];
+	const char *pSpectating = SpectatePlayerName(Spectating());
+	if(pSpectating != nullptr)
+		str_copy(aSpectating, pSpectating);
+	else
+		str_copy(aSpectating, Spectating() == SPEC_FOLLOW ? "Follow" : "Free view");
 
 	enum
 	{
@@ -361,6 +445,7 @@ void CDemoViewerClient::RenderControls()
 		ITEM_SPEED,
 		ITEM_FASTER,
 		ITEM_RESTART,
+		ITEM_SPECTATE,
 		NUM_ITEMS,
 	};
 	CViewerControls::SItem aItems[NUM_ITEMS];
@@ -376,6 +461,8 @@ void CDemoViewerClient::RenderControls()
 	aItems[ITEM_SPEED].m_Width = 56.0f;
 	aItems[ITEM_FASTER].m_Icon = CViewerControls::EIcon::PLUS;
 	aItems[ITEM_RESTART].m_Icon = CViewerControls::EIcon::RESTART;
+	aItems[ITEM_SPECTATE].m_Icon = CViewerControls::EIcon::EYE;
+	aItems[ITEM_SPECTATE].m_pText = aSpectating;
 
 	CViewerControls::SInput Input;
 	Input.m_MousePos = m_pInput->NativeMousePos();
@@ -401,6 +488,9 @@ void CDemoViewerClient::RenderControls()
 	case ITEM_RESTART:
 		SeekStart();
 		break;
+	case ITEM_SPECTATE:
+		SpectateStep(1);
+		break;
 	default:
 		break;
 	}
@@ -420,6 +510,11 @@ void CDemoViewerClient::RenderWindowFrame()
 	// before the frame goes out.
 	RenderControls();
 	Graphics()->Swap();
+	// The clock everything that moves by itself runs on: the camera easing
+	// towards a player it was just put on, and the zoom easing towards what
+	// the wheel asked for. Without it they are handed the same instant every
+	// frame and never arrive.
+	m_LocalTime = (time_get() - m_LocalStartTime) / (float)time_freq();
 	m_GlobalTime = (time_get() - m_GlobalStartTime) / (float)time_freq();
 }
 
@@ -516,6 +611,9 @@ void CDemoViewerClient::Run()
 			}
 			set_new_tick();
 			m_SessionManager.Update();
+			// A player asked for by name is only found once the demo has named
+			// them, which is a snapshot or two in.
+			UpdatePendingSpectate();
 			Sound()->Update();
 			GameClient()->OnUpdate();
 			// An export takes every frame in its own time, so while one runs
@@ -603,6 +701,51 @@ EMSCRIPTEN_KEEPALIVE void DemoViewerSeekStart()
 {
 	if(g_pDemoViewer != nullptr)
 		g_pDemoViewer->SeekStart();
+}
+
+// Who the demo is watched over the shoulder of. -1 is the free view, -2 is
+// whoever recorded it, and everything from 0 up is one of its players.
+EMSCRIPTEN_KEEPALIVE void DemoViewerSetSpectate(int SpectatorId)
+{
+	if(g_pDemoViewer != nullptr)
+		g_pDemoViewer->SetSpectate(SpectatorId);
+}
+
+EMSCRIPTEN_KEEPALIVE void DemoViewerSetSpectateName(const char *pName)
+{
+	if(g_pDemoViewer != nullptr)
+		g_pDemoViewer->SetSpectateName(pName == nullptr ? "" : pName);
+}
+
+EMSCRIPTEN_KEEPALIVE int DemoViewerSpectating()
+{
+	return g_pDemoViewer == nullptr ? SPEC_FREEVIEW : g_pDemoViewer->Spectating();
+}
+
+EMSCRIPTEN_KEEPALIVE void DemoViewerSpectateStep(int Direction)
+{
+	if(g_pDemoViewer != nullptr)
+		g_pDemoViewer->SpectateStep(Direction);
+}
+
+// The players the demo has named so far, as JSON. What is pointed at stays
+// there until this is called again, which is all a page reading it out needs.
+EMSCRIPTEN_KEEPALIVE const char *DemoViewerPlayers()
+{
+	return g_pDemoViewer == nullptr ? "[]" : g_pDemoViewer->Players();
+}
+
+// How much of the world is in the window. A page has no wheel over the canvas
+// while the pointer is on a button of its own, so it can ask for this instead.
+EMSCRIPTEN_KEEPALIVE void DemoViewerZoomBy(float Factor)
+{
+	if(g_pDemoViewer != nullptr)
+		g_pDemoViewer->ScaleZoom(Factor);
+}
+
+EMSCRIPTEN_KEEPALIVE float DemoViewerZoom()
+{
+	return g_pDemoViewer == nullptr ? 1.0f : g_pDemoViewer->Zoom();
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoViewerQuit()

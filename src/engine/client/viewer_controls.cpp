@@ -130,6 +130,21 @@ void CViewerControls::DrawIcon(EIcon Icon, vec2 Center, float Size, float Alpha)
 	case EIcon::STOP:
 		DrawRect(Center.x - Half, Center.y - Half, Size, Size, 1.0f, 1.0f, 1.0f, Alpha);
 		break;
+	case EIcon::EYE:
+	{
+		// A lens with a pupil in it, which is what watching looks like: rows
+		// that grow and shrink again, and a dark square in the middle of them.
+		constexpr int Rows = 8;
+		for(int i = 0; i < Rows; ++i)
+		{
+			const float Fraction = (i + 0.5f) / Rows;
+			const float RowHeight = Size / Rows;
+			const float Length = Size * (1.0f - std::abs(Fraction * 2.0f - 1.0f));
+			DrawRect(Center.x - Length / 2.0f, Center.y - Half / 2.0f + i * RowHeight / 2.0f, Length, RowHeight / 2.0f + 0.5f, 1.0f, 1.0f, 1.0f, Alpha);
+		}
+		DrawRect(Center.x - Thin / 2.0f, Center.y - Thin / 2.0f, Thin, Thin, 0.0f, 0.0f, 0.0f, Alpha);
+		break;
+	}
 	}
 }
 

@@ -450,7 +450,7 @@ const DDNetLoader = (() => {
 			// window, and this is the one thing here that would miss it.
 			const previous = self.onerror;
 			self.onerror = function(message, url, line, column, error) {
-				instance.output(message, { error: true, bold: true });
+				instance.output(message, { error: true, bold: true, fatal: true });
 				if (error && error.stack) {
 					for (const line of error.stack.split("\n")) {
 						if (line.length > 0) {
@@ -481,7 +481,7 @@ const DDNetLoader = (() => {
 			// times, in the words of whatever failed first.
 			const problem = await supportProblem(options.needsWebGpu === true);
 			if (problem !== null) {
-				this.output(problem, { error: true, bold: true });
+				this.output(problem, { error: true, bold: true, fatal: true });
 				throw new Error(problem);
 			}
 			sweepDataCache();
@@ -686,12 +686,26 @@ const DDNetLoader = (() => {
 	// belongs, and says only what went wrong - in its `error` line if it has
 	// one. What is left then is the program on the canvas and nothing else,
 	// which is what a viewer should look like while it starts.
+	//
+	// A page that does have an `output` collects the log there without showing
+	// it. Starting is not something to watch somebody else do: what a page
+	// shows while it starts is the program, and the log is what it shows once
+	// there is no program left to show - when it could not start, when it
+	// stopped, or when a page asks for it itself.
 	function pageOptions(options) {
 		const elements = options.elements;
 		const showError = message => {
 			if (elements.error) {
 				elements.error.textContent = message;
 				elements.error.style.display = "block";
+			}
+		};
+		const showLog = () => {
+			if (elements.output) {
+				elements.output.style.display = "flex";
+			}
+			if (elements.loading) {
+				elements.loading.style.display = "none";
 			}
 		};
 		return Object.assign({}, options, {
@@ -722,15 +736,15 @@ const DDNetLoader = (() => {
 				if (kind.bold) {
 					span.style.fontWeight = "bold";
 				}
-				if (elements.loading) {
-					elements.loading.style.display = "none";
+				if (kind.fatal) {
+					showLog();
 				}
-				elements.output.style.display = "flex";
 				elements.outputContent.appendChild(span);
 				elements.outputContent.appendChild(document.createElement("br"));
 				elements.outputContent.scrollTop = elements.outputContent.scrollHeight;
 			},
 			onExit: () => {
+				showLog();
 				if (elements.outputContent) {
 					const restartButton = document.createElement("button");
 					restartButton.textContent = "Reload page";

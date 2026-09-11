@@ -3,8 +3,8 @@
 #ifndef GAME_CLIENT_COMPONENTS_GHOST_H
 #define GAME_CLIENT_COMPONENTS_GHOST_H
 
+#include <engine/client/asset_loader.h>
 #include <engine/client/ghost.h>
-#include <engine/shared/jobs.h>
 
 #include <generated/protocol.h>
 
@@ -82,11 +82,10 @@ private:
 		CGhostCharacter *Get(int Index);
 	};
 
-	// Reads and decompresses a ghost file with its own ghost loader
-	class CGhostLoadJob : public IJob
+	// Reads and parses a ghost file
+	class CGhostLoadJob : public CAssetJob
 	{
 		std::unique_ptr<CGhostLoader> m_pGhostLoader;
-		char m_aFilename[IO_MAX_PATH_LENGTH];
 		char m_aMapName[MAX_MAP_LENGTH];
 		SHA256_DIGEST m_MapSha256;
 		unsigned m_MapCrc;
@@ -95,16 +94,14 @@ private:
 		CGhostPath m_Path;
 		int m_StartTick = -1;
 		char m_aPlayer[MAX_NAME_LENGTH] = {};
-		bool m_Success = false;
 
-		void Run() override;
+		bool Process() override;
 
 	public:
-		CGhostLoadJob(std::unique_ptr<CGhostLoader> pGhostLoader, const char *pFilename, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc);
+		CGhostLoadJob(std::unique_ptr<CGhostLoader> pGhostLoader, class IStorage *pStorage, const char *pFilename, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc);
 
-		bool Success() const { return m_Success; }
 		const CGhostSkin &Skin() const { return m_Skin; }
-		CGhostPath &Path() { return m_Path; }
+		CGhostPath &GhostPath() { return m_Path; }
 		int StartTick() const { return m_StartTick; }
 		const char *Player() const { return m_aPlayer; }
 	};
@@ -113,7 +110,7 @@ private:
 	{
 	public:
 		std::shared_ptr<CManagedTeeRenderInfo> m_pManagedTeeRenderInfo;
-		std::shared_ptr<CGhostLoadJob> m_pLoadJob;
+		CTypedAssetResource<CGhostLoadJob> m_LoadResource;
 		CGhostSkin m_Skin;
 		CGhostPath m_Path;
 		int m_StartTick;
@@ -122,16 +119,11 @@ private:
 
 		CGhostItem() { Reset(); }
 
-		// A loading slot is taken but has nothing to render yet
-		bool Empty() const { return m_Path.Size() == 0 && m_pLoadJob == nullptr; }
+		bool Empty() const { return m_Path.Size() == 0 && !m_LoadResource; }
 		bool Ready() const { return m_Path.Size() != 0; }
 		void Reset()
 		{
-			if(m_pLoadJob)
-			{
-				m_pLoadJob->Abort();
-				m_pLoadJob = nullptr;
-			}
+			m_LoadResource.Reset();
 			m_pManagedTeeRenderInfo = nullptr;
 			m_Path.Reset();
 			m_StartTick = -1;

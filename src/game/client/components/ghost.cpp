@@ -461,17 +461,19 @@ void CGhost::StopRender()
 	m_NewRenderTick = -1;
 }
 
-CGhost::CGhostLoadJob::CGhostLoadJob(std::unique_ptr<CGhostLoader> pGhostLoader, const char *pFilename, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc) :
-	m_pGhostLoader(std::move(pGhostLoader)), m_MapSha256(MapSha256), m_MapCrc(MapCrc)
+CGhost::CGhostLoadJob::CGhostLoadJob(std::unique_ptr<CGhostLoader> pGhostLoader, IStorage *pStorage, const char *pFilename, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc) :
+	CAssetJob(pStorage, pFilename, IStorage::TYPE_SAVE),
+	m_pGhostLoader(std::move(pGhostLoader)),
+	m_MapSha256(MapSha256),
+	m_MapCrc(MapCrc)
 {
-	str_copy(m_aFilename, pFilename);
 	str_copy(m_aMapName, pMapName);
 }
 
-void CGhost::CGhostLoadJob::Run()
+bool CGhost::CGhostLoadJob::Process()
 {
-	if(!m_pGhostLoader->Load(m_aFilename, m_aMapName, m_MapSha256, m_MapCrc))
-		return;
+	if(!m_pGhostLoader->LoadFromMemory(TakeData(), CAssetJob::Path(), m_aMapName, m_MapSha256, m_MapCrc))
+		return false;
 
 	const CGhostInfo *pInfo = m_pGhostLoader->GetInfo();
 	m_Path.SetSize(pInfo->m_NumTicks);
@@ -557,7 +559,7 @@ void CGhost::CGhostLoadJob::Run()
 	if(Error)
 	{
 		m_Path.Reset();
-		return;
+		return false;
 	}
 
 	if(FoundCharacterNoTick)
@@ -577,7 +579,7 @@ void CGhost::CGhostLoadJob::Run()
 	{
 		SetGhostSkinData(&m_Skin, "default", 0, 0, 0);
 	}
-	m_Success = true;
+	return true;
 }
 
 int CGhost::Load(const char *pFilename)
@@ -591,9 +593,9 @@ int CGhost::Load(const char *pFilename)
 
 	CGhostItem *pGhost = &m_aActiveGhosts[Slot];
 	pGhost->Reset();
-	pGhost->m_pLoadJob = std::make_shared<CGhostLoadJob>(std::move(pGhostLoader), pFilename,
-		GameClient()->Map()->BaseName(), GameClient()->Map()->Sha256(), GameClient()->Map()->Crc());
-	Engine()->AddJob(pGhost->m_pLoadJob);
+	pGhost->m_LoadResource = GameClient()->AssetLoader().Load(std::make_shared<CGhostLoadJob>(
+		std::move(pGhostLoader), Storage(), pFilename, GameClient()->Map()->BaseName(),
+		GameClient()->Map()->Sha256(), GameClient()->Map()->Crc()));
 
 	return Slot;
 }
@@ -603,22 +605,21 @@ void CGhost::OnUpdate()
 	for(int Slot = 0; Slot < MAX_ACTIVE_GHOSTS; Slot++)
 	{
 		CGhostItem &Ghost = m_aActiveGhosts[Slot];
-		if(!Ghost.m_pLoadJob || !Ghost.m_pLoadJob->Done())
+		if(!Ghost.m_LoadResource || !Ghost.m_LoadResource.IsFinished())
 			continue;
 
-		std::shared_ptr<CGhostLoadJob> pJob = std::move(Ghost.m_pLoadJob);
-		Ghost.m_pLoadJob = nullptr;
-		if(pJob->State() != IJob::STATE_DONE || !pJob->Success())
+		CTypedAssetResource<CGhostLoadJob> Resource = std::move(Ghost.m_LoadResource);
+		if(!Resource.IsReady())
 		{
-			// The slot was handed out before the file was read
 			GameClient()->m_Menus.OnGhostLoadFailed(Slot);
 			continue;
 		}
 
-		Ghost.m_Skin = pJob->Skin();
-		Ghost.m_Path = std::move(pJob->Path());
-		Ghost.m_StartTick = pJob->StartTick();
-		str_copy(Ghost.m_aPlayer, pJob->Player());
+		CGhostLoadJob &Job = Resource.Result();
+		Ghost.m_Skin = Job.Skin();
+		Ghost.m_Path = std::move(Job.GhostPath());
+		Ghost.m_StartTick = Job.StartTick();
+		str_copy(Ghost.m_aPlayer, Job.Player());
 		UpdateTeeRenderInfo(Ghost);
 	}
 }

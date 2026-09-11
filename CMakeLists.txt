@@ -3459,6 +3459,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     editor_test.cpp
     fs_test.cpp
     gameworld_test.cpp
+    ghost_test.cpp
     git_revision_test.cpp
     hash_test.cpp
     huffman_test.cpp
@@ -3508,6 +3509,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/engine/client/asset_loader.h
     src/engine/client/blocklist_driver.cpp
     src/engine/client/blocklist_driver.h
+    src/engine/client/ghost.cpp
+    src/engine/client/ghost.h
     src/engine/client/serverbrowser.cpp
     src/engine/client/serverbrowser.h
     src/engine/client/serverbrowser_http.cpp

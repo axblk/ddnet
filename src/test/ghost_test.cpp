@@ -155,6 +155,25 @@ TEST(Ghost, LoadFromMemory)
 	Loader.Close();
 }
 
+// Whoever has no map to hold a ghost against reads it anyway, and the ghost
+// says which map it belongs to.
+TEST(Ghost, LoadAnyMap)
+{
+	CTestInfo Info;
+	std::unique_ptr<IStorage> pStorage = Info.CreateTestStorage();
+	ASSERT_NE(pStorage, nullptr);
+
+	char aFilename[IO_MAX_PATH_LENGTH];
+	Info.Filename(aFilename, sizeof(aFilename), ".ghost");
+	RecordGhost(pStorage.get(), aFilename);
+
+	CGhostLoader Loader;
+	Loader.Init(pStorage.get());
+	ASSERT_TRUE(Loader.LoadAnyMap(aFilename, IStorage::TYPE_SAVE));
+	ExpectGhostContents(Loader);
+	Loader.Close();
+}
+
 // A ghost that has been loaded holds nothing but memory, so the file it came
 // from can be deleted while it is being read.
 TEST(Ghost, LoadAndDeleteFile)

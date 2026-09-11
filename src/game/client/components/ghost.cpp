@@ -31,45 +31,6 @@ void CGhost::SetGhostSkinData(CGhostSkin *pSkin, const char *pSkinName, int UseC
 	pSkin->m_ColorFeet = ColorFeet;
 }
 
-void CGhost::GetGhostCharacter(CGhostCharacter *pGhostChar, const CNetObj_Character *pChar, const CNetObj_DDNetCharacter *pDDnetChar)
-{
-	pGhostChar->m_X = pChar->m_X;
-	pGhostChar->m_Y = pChar->m_Y;
-	pGhostChar->m_VelX = pChar->m_VelX;
-	pGhostChar->m_VelY = 0;
-	pGhostChar->m_Angle = pChar->m_Angle;
-	pGhostChar->m_Direction = pChar->m_Direction;
-	int Weapon = pChar->m_Weapon;
-	if(pDDnetChar != nullptr && pDDnetChar->m_FreezeEnd != 0)
-	{
-		Weapon = WEAPON_NINJA;
-	}
-	pGhostChar->m_Weapon = Weapon;
-	pGhostChar->m_HookState = pChar->m_HookState;
-	pGhostChar->m_HookX = pChar->m_HookX;
-	pGhostChar->m_HookY = pChar->m_HookY;
-	pGhostChar->m_AttackTick = pChar->m_AttackTick;
-	pGhostChar->m_Tick = pChar->m_Tick;
-}
-
-void CGhost::GetNetObjCharacter(CNetObj_Character *pChar, const CGhostCharacter *pGhostChar)
-{
-	mem_zero(pChar, sizeof(CNetObj_Character));
-	pChar->m_X = pGhostChar->m_X;
-	pChar->m_Y = pGhostChar->m_Y;
-	pChar->m_VelX = pGhostChar->m_VelX;
-	pChar->m_VelY = 0;
-	pChar->m_Angle = pGhostChar->m_Angle;
-	pChar->m_Direction = pGhostChar->m_Direction;
-	pChar->m_Weapon = pGhostChar->m_Weapon;
-	pChar->m_HookState = pGhostChar->m_HookState;
-	pChar->m_HookX = pGhostChar->m_HookX;
-	pChar->m_HookY = pGhostChar->m_HookY;
-	pChar->m_AttackTick = pGhostChar->m_AttackTick;
-	pChar->m_HookedPlayer = -1;
-	pChar->m_Tick = pGhostChar->m_Tick;
-}
-
 CGhost::CGhostPath::CGhostPath(CGhostPath &&Other) noexcept :
 	m_ChunkSize(Other.m_ChunkSize), m_NumItems(Other.m_NumItems), m_vpChunks(std::move(Other.m_vpChunks))
 {
@@ -184,7 +145,7 @@ void CGhost::AddInfos(const CNetObj_Character *pChar, const CNetObj_DDNetCharact
 	}
 
 	CGhostCharacter GhostChar;
-	GetGhostCharacter(&GhostChar, pChar, pDDnetChar);
+	NetObjToGhostCharacter(&GhostChar, pChar, pDDnetChar);
 	m_CurGhost.m_Path.Add(GhostChar);
 	if(GhostRecorder()->IsRecording())
 		GhostRecorder()->WriteData(GHOSTDATA_TYPE_CHARACTER, &GhostChar, sizeof(CGhostCharacter));
@@ -354,8 +315,8 @@ void CGhost::ForEachGhostFrame(const CGameState &State, const CGameTickInfo &Tim
 			continue;
 
 		CNetObj_Character Player, Prev;
-		GetNetObjCharacter(&Player, Ghost.m_Path.Get(CurPos));
-		GetNetObjCharacter(&Prev, Ghost.m_Path.Get(PrevPos));
+		GhostCharacterToNetObj(&Player, Ghost.m_Path.Get(CurPos));
+		GhostCharacterToNetObj(&Prev, Ghost.m_Path.Get(PrevPos));
 
 		int TickDiff = Player.m_Tick - Prev.m_Tick;
 		float IntraTick = 0.f;

@@ -5,11 +5,56 @@
 
 #include <base/vmath.h>
 
+#include <engine/input.h>
+
 #include <chrono>
 #include <cstddef>
+#include <vector>
 
 class IGraphics;
 class ITextRender;
+
+/**
+ * What two fingers do to the picture a viewer shows.
+ *
+ * Pinching to zoom and dragging with two fingers is what every program that
+ * shows a picture on a touch screen does, and a viewer that does not is a
+ * viewer nobody can look around in on a telephone. One finger is not answered
+ * here: that is a tap or a drag, and what those mean is for whoever is showing
+ * something - the bar takes the tap, the viewer takes the drag.
+ *
+ * It is used in one call per frame, and it keeps only what it needs to tell
+ * this frame from the last one.
+ */
+class CViewerGestures
+{
+public:
+	struct SResult
+	{
+		/** What to multiply the zoom by. Above one shows more of the world. */
+		float m_Zoom = 1.0f;
+		/** How far the picture was dragged, in the pixels that are drawn. */
+		vec2 m_Move = vec2(0.0f, 0.0f);
+		/**
+		 * Whether two fingers are on the picture. While they are, whoever
+		 * also moves the view with one pointer leaves it alone: the window
+		 * system reports the first finger as a pointer as well, and a view
+		 * that is moved twice moves twice as far.
+		 */
+		bool m_Active = false;
+	};
+
+	/**
+	 * @param vFingers The fingers on the screen, as the input reports them.
+	 * @param ScreenSize How big the picture is, in the pixels that are drawn.
+	 */
+	SResult Update(const std::vector<IInput::CTouchFingerState> &vFingers, vec2 ScreenSize);
+
+private:
+	bool m_Pinching = false;
+	float m_Distance = 0.0f;
+	vec2 m_Middle = vec2(0.0f, 0.0f);
+};
 
 /**
  * The bar of controls a viewer draws over what it shows.

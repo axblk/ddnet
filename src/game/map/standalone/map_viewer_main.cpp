@@ -293,6 +293,7 @@ int main(int argc, const char **argv)
 	// would change that, so everything it offers it offers as a shape.
 	CViewerControls Controls;
 	Controls.Init(pGraphics, nullptr);
+	CViewerGestures Gestures;
 	pGraphics->AddWindowResizeListener([&] { View.OnResize(pGraphics->ScreenWidth(), pGraphics->ScreenHeight()); });
 
 	// A path that names a file where it stands is opened as it stands; the
@@ -460,13 +461,24 @@ int main(int argc, const char **argv)
 			if(Move.x != 0.0f || Move.y != 0.0f)
 				RenderParams.m_Center += normalize(Move) * (ViewWidth * RenderParams.m_Zoom * PAN_SCREENS_PER_SECOND * FrameTime);
 
+			// Two fingers pinch the map closer or further away and drag it
+			// about, the way every picture on a touch screen is handled.
+			const CViewerGestures::SResult Gesture = Gestures.Update(pInput->TouchFingerStates(), vec2(pGraphics->ScreenWidth(), pGraphics->ScreenHeight()));
+			if(Gesture.m_Active)
+			{
+				RenderParams.m_Zoom = std::clamp(RenderParams.m_Zoom * Gesture.m_Zoom, MIN_ZOOM, MAX_ZOOM);
+				RenderParams.m_Center -= Gesture.m_Move * WorldPerPixel;
+				Controls.Show();
+			}
+
 			// In the pixels that are drawn, not the ones the window is
 			// measured in: on a screen with more of the former the map would
 			// otherwise move at half the speed of the pointer.
 			const vec2 MousePos = pInput->NativeMousePos() * pGraphics->ScreenHiDPIScale();
 			// A press that landed on the bar belongs to the bar. Without this
-			// every button would drag the map out from under the pointer.
-			if(pInput->NativeMousePressed(1) && !Controls.Hovered())
+			// every button would drag the map out from under the pointer. One
+			// that is part of a pinch belongs to the pinch.
+			if(pInput->NativeMousePressed(1) && !Controls.Hovered() && !Gesture.m_Active)
 			{
 				if(Dragging)
 					RenderParams.m_Center -= (MousePos - LastMousePos) * WorldPerPixel;

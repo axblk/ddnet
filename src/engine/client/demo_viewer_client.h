@@ -70,6 +70,7 @@ private:
 	int m_ExitCode = 0;
 	EExportState m_ExportState = EExportState::IDLE;
 	CViewerControls m_Controls;
+	CViewerGestures m_Gestures;
 	bool m_ShowControls = true;
 	// Where the pointer was last frame and whether it is dragging the world
 	// along, which is how the free view is moved.

@@ -350,12 +350,23 @@ bool CDemoViewerClient::HandleInput()
 		ScaleZoom(CCamera::ZoomStepsToValue(-ZOOM_STEP));
 	}
 
+	// Two fingers pinch the demo closer or further away and drag it about, the
+	// way every picture on a touch screen is handled.
+	const CViewerGestures::SResult Gesture = m_Gestures.Update(Input()->TouchFingerStates(), vec2(Graphics()->ScreenWidth(), Graphics()->ScreenHeight()));
+	if(Gesture.m_Active)
+	{
+		ScaleZoom(Gesture.m_Zoom);
+		MoveFreeView(-Gesture.m_Move * WorldPerPixel());
+		m_Controls.Show();
+	}
+
 	// Dragging moves the free view, the way a map is dragged. In the pixels
 	// that are drawn, not the ones the window is measured in, so that on a
 	// screen with more of the former the world keeps up with the pointer. A
-	// press that landed on the bar belongs to the bar.
+	// press that landed on the bar belongs to the bar, and one that is part of
+	// a pinch belongs to the pinch.
 	const vec2 MousePos = Input()->NativeMousePos() * Graphics()->ScreenHiDPIScale();
-	if(Input()->NativeMousePressed(1) && !m_Controls.Hovered())
+	if(Input()->NativeMousePressed(1) && !m_Controls.Hovered() && !Gesture.m_Active)
 	{
 		if(m_Dragging)
 		{

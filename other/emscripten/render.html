@@ -63,7 +63,18 @@
 				const jobs = [];
 				var running = false;
 				var stopping = false;
+				// The job being rendered and the render itself: the row knows
+				// which one it is, and stopping it is the render's to do.
 				var current = null;
+				var currentRender = null;
+
+				// Stops the render that is going. What has been written of its
+				// video stays where it was written.
+				function stopCurrent() {
+					if (currentRender != null && currentRender.quit) {
+						currentRender.quit();
+					}
+				}
 
 				// Writing the videos straight into a folder is the better way
 				// round for a batch - no download per file, nothing kept in
@@ -121,12 +132,17 @@
 					row.append(name, progress, status, remove);
 					queueList.appendChild(row);
 					const job = { file, row, progress, status, remove, done: false };
+					// Any of them, at any time. The one that is being rendered
+					// is stopped where it is - what has been written of its
+					// video stays written, and the batch goes on with the next.
 					remove.addEventListener('click', () => {
-						if (job.done || !running) {
-							jobs.splice(jobs.indexOf(job), 1);
-							row.remove();
-							updateSummary();
+						job.removed = true;
+						jobs.splice(jobs.indexOf(job), 1);
+						row.remove();
+						if (job === current) {
+							stopCurrent();
 						}
+						updateSummary();
 					});
 					jobs.push(job);
 					updateSummary();
@@ -212,7 +228,7 @@
 						name: job.file.name,
 						output: name,
 						videoSink: sink,
-						onStart: instance => { current = instance; },
+						onStart: instance => { currentRender = instance; },
 						onOutput: (message, kind) => {
 							if (kind.error) {
 								lastError = message;
@@ -268,22 +284,36 @@
 					stopButton.style.display = "inline-block";
 					const options = settings();
 					updateSummary();
-					for (const job of jobs) {
+					// By index rather than by the list itself: a job may be taken
+					// off it while this runs, including the one being rendered.
+					for (var i = 0; i < jobs.length; ++i) {
+						const job = jobs[i];
 						if (stopping) {
 							break;
 						}
 						if (job.done) {
 							continue;
 						}
+						current = job;
 						try {
 							await renderJob(job, options, directory);
 						} catch (error) {
-							job.status.textContent = stopping ? "Stopped" : `Failed: ${(error && error.message) || error}`;
-							job.status.className = "status failed";
-							job.progress.style.visibility = "hidden";
+							// A job that was taken off the list took its row
+							// with it, so there is nothing left to say about it.
+							if (!job.removed) {
+								job.status.textContent = stopping ? "Stopped" : `Failed: ${(error && error.message) || error}`;
+								job.status.className = "status failed";
+								job.progress.style.visibility = "hidden";
+							}
 						}
 						job.done = true;
 						current = null;
+						currentRender = null;
+						// The one that was here may be gone, and then this index
+						// already points at the next one.
+						if (jobs[i] !== job) {
+							--i;
+						}
 						updateSummary();
 					}
 					running = false;
@@ -325,11 +355,7 @@
 				stopButton.addEventListener('click', () => {
 					stopping = true;
 					stopButton.disabled = true;
-					// The render that is going stops where it is; what has been
-					// written of its video stays where it was written.
-					if (current != null && current.quit) {
-						current.quit();
-					}
+					stopCurrent();
 					setTimeout(() => { stopButton.disabled = false; }, 1000);
 				});
 				document.getElementById('choose').addEventListener('click', () => fileInput.click());

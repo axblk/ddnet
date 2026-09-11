@@ -21,6 +21,13 @@ class ITextRender;
  * what makes the native viewers usable on their own. A page that brings its own
  * controls switches it off.
  *
+ * It behaves the way a video player's bar does: it lies along the bottom of the
+ * window, the seek bar has a line of its own above the buttons, it goes away
+ * while nothing happens, and a tap or click on the picture brings it back or
+ * sends it away again. Everything on it is at least as big as a fingertip, in
+ * the pixels of the screen rather than of the drawing surface, so it stays that
+ * big on a telephone that draws three pixels for every one it is measured in.
+ *
  * It draws with quads and, where there is one, a text render - the map viewer
  * has none, because it needs nothing out of `data/` and a font is the one thing
  * that would change that. Everything it can say without letters it says with
@@ -50,18 +57,25 @@ public:
 		SAVE_ALL,
 		STOP,
 		EYE,
+		FULLSCREEN,
 	};
 
 	enum class EItem
 	{
 		BUTTON,
+		/**
+		 * The bar somebody drags to seek. It is not put in the row with the
+		 * buttons but on a line of its own above them, across the whole width,
+		 * where a video player has it. There is room for one.
+		 */
 		SLIDER,
 		TEXT,
+		/** Empty room: what comes after it is pushed to the right. */
+		SPACER,
 	};
 
 	/**
-	 * One thing on the bar: a button, the bar somebody drags to seek, or
-	 * something written.
+	 * One thing on the bar.
 	 */
 	struct SItem
 	{
@@ -69,20 +83,34 @@ public:
 		EIcon m_Icon = EIcon::NONE;
 		/** Shown where there is a text render, ignored where there is none. */
 		const char *m_pText = nullptr;
-		/** In pixels, or 0 for as wide as what is on it. */
+		/** In screen pixels, or 0 for as wide as what is on it. */
 		float m_Width = 0.0f;
 		/** Where a slider stands, between 0 and 1. */
 		float m_Value = 0.0f;
 		bool m_Disabled = false;
+		/** A button that is on, drawn as held down. */
+		bool m_Active = false;
+		/** Left out first where the window is too narrow for everything. */
+		bool m_Optional = false;
 	};
 
 	/**
 	 * What the pointer and the keyboard did this frame.
+	 *
+	 * A finger is a pointer here: the window system reports a touch as a click
+	 * as well, and one finger on a bar is a click on it. What two fingers mean
+	 * is up to whoever is showing something, and it never reaches this.
 	 */
 	struct SInput
 	{
 		vec2 m_MousePos = vec2(0.0f, 0.0f);
 		bool m_MousePressed = false;
+		/**
+		 * Whether the button went down since the last frame. A frame can take
+		 * longer than somebody's finger does, so the state alone would lose a
+		 * quick tap altogether; this comes from the events and does not.
+		 */
+		bool m_MouseClicked = false;
 		/** Whether anything was typed, which counts as somebody being there. */
 		bool m_KeyPressed = false;
 	};
@@ -110,15 +138,22 @@ public:
 
 	/**
 	 * Whether the pointer is over the bar, so that whoever also steers with
-	 * the pointer can leave it alone while it is.
+	 * the pointer can leave it alone while it is. True while a slider is being
+	 * dragged, wherever the pointer has wandered off to.
 	 */
-	bool Hovered() const { return m_Hovered; }
+	bool Hovered() const { return m_Hovered || m_Dragging >= 0; }
 
 	/**
 	 * Brings the bar back for a while, as any other use of it does. For what
 	 * happens elsewhere and should still count as somebody being there.
 	 */
 	void Show();
+
+	/** Sends the bar away, as a tap on the picture does. */
+	void Hide();
+
+	/** Whether the bar can be seen at the moment. */
+	bool Shown() const;
 
 private:
 	IGraphics *m_pGraphics = nullptr;
@@ -127,14 +162,23 @@ private:
 	vec2 m_LastMousePos = vec2(-1.0f, -1.0f);
 	std::chrono::nanoseconds m_ShownUntil{};
 	bool m_Hovered = false;
+	bool m_Started = false;
 	// Which item is being dragged, so that the pointer may leave the bar while
 	// it is - a slider that is let go of as soon as the pointer slips off it is
 	// a slider nobody can use.
 	int m_Dragging = -1;
 	bool m_WasPressed = false;
+	// Where the button went down and when, to tell a tap on the picture from
+	// somebody dragging the view around.
+	vec2 m_PressedAt = vec2(0.0f, 0.0f);
+	std::chrono::nanoseconds m_PressedWhen{};
+	bool m_PressedOnBar = false;
 
-	void DrawIcon(EIcon Icon, vec2 Center, float Size, float Alpha);
+	float Scale() const;
 	void DrawRect(float x, float y, float w, float h, float r, float g, float b, float a);
+	void DrawRoundRect(float x, float y, float w, float h, float Radius, float r, float g, float b, float a);
+	void DrawDisc(vec2 Center, float Radius, float r, float g, float b, float a);
+	void DrawIcon(EIcon Icon, vec2 Center, float Size, float Alpha);
 };
 
 #endif // ENGINE_CLIENT_VIEWER_CONTROLS_H

@@ -436,37 +436,46 @@ void CDemoViewerClient::RenderControls()
 	else
 		str_copy(aSpectating, Spectating() == SPEC_FOLLOW ? "Follow" : "Free view");
 
+	// Left to right, the way a video player has it: what it is doing, how fast,
+	// how far along, and off on the other side what is being watched.
 	enum
 	{
-		ITEM_PLAY,
 		ITEM_SEEK,
-		ITEM_TIME,
+		ITEM_PLAY,
+		ITEM_RESTART,
 		ITEM_SLOWER,
 		ITEM_SPEED,
 		ITEM_FASTER,
-		ITEM_RESTART,
+		ITEM_TIME,
+		ITEM_SPACER,
 		ITEM_SPECTATE,
 		NUM_ITEMS,
 	};
 	CViewerControls::SItem aItems[NUM_ITEMS];
-	aItems[ITEM_PLAY].m_Icon = Paused() ? CViewerControls::EIcon::PLAY : CViewerControls::EIcon::PAUSE;
 	aItems[ITEM_SEEK].m_Type = CViewerControls::EItem::SLIDER;
 	aItems[ITEM_SEEK].m_Value = Progress();
-	aItems[ITEM_SEEK].m_Width = std::clamp(Graphics()->ScreenWidth() * 0.35f, 120.0f, 420.0f);
-	aItems[ITEM_TIME].m_Type = CViewerControls::EItem::TEXT;
-	aItems[ITEM_TIME].m_pText = aTime;
+	aItems[ITEM_PLAY].m_Icon = Paused() ? CViewerControls::EIcon::PLAY : CViewerControls::EIcon::PAUSE;
+	aItems[ITEM_RESTART].m_Icon = CViewerControls::EIcon::RESTART;
 	aItems[ITEM_SLOWER].m_Icon = CViewerControls::EIcon::MINUS;
+	aItems[ITEM_SLOWER].m_Optional = true;
 	aItems[ITEM_SPEED].m_Type = CViewerControls::EItem::TEXT;
 	aItems[ITEM_SPEED].m_pText = aSpeed;
 	aItems[ITEM_SPEED].m_Width = 56.0f;
+	aItems[ITEM_SPEED].m_Optional = true;
 	aItems[ITEM_FASTER].m_Icon = CViewerControls::EIcon::PLUS;
-	aItems[ITEM_RESTART].m_Icon = CViewerControls::EIcon::RESTART;
+	aItems[ITEM_FASTER].m_Optional = true;
+	aItems[ITEM_TIME].m_Type = CViewerControls::EItem::TEXT;
+	aItems[ITEM_TIME].m_pText = aTime;
+	aItems[ITEM_SPACER].m_Type = CViewerControls::EItem::SPACER;
 	aItems[ITEM_SPECTATE].m_Icon = CViewerControls::EIcon::EYE;
 	aItems[ITEM_SPECTATE].m_pText = aSpectating;
 
 	CViewerControls::SInput Input;
 	Input.m_MousePos = m_pInput->NativeMousePos();
 	Input.m_MousePressed = m_pInput->NativeMousePressed(1);
+	// From the events rather than from the state, because a frame can take
+	// longer than a tap does and the state alone would never see it.
+	Input.m_MouseClicked = m_pInput->KeyPress(KEY_MOUSE_1);
 	Input.m_KeyPressed = std::any_of(m_aKeyWasPressed.begin(), m_aKeyWasPressed.end(), [](bool Pressed) { return Pressed; });
 
 	float SeekTo = 0.0f;

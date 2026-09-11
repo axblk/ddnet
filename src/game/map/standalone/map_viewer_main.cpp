@@ -369,6 +369,7 @@ int main(int argc, const char **argv)
 			ITEM_ZOOM_OUT,
 			ITEM_ZOOM_IN,
 			ITEM_FIT,
+			ITEM_SPACER,
 			ITEM_SAVE_VIEW,
 			ITEM_SAVE_MAP,
 			NUM_ITEMS,
@@ -377,6 +378,9 @@ int main(int argc, const char **argv)
 		aItems[ITEM_ZOOM_OUT].m_Icon = CViewerControls::EIcon::MINUS;
 		aItems[ITEM_ZOOM_IN].m_Icon = CViewerControls::EIcon::PLUS;
 		aItems[ITEM_FIT].m_Icon = CViewerControls::EIcon::FIT;
+		// What the view does is on one side, what leaves the program on the
+		// other, so that nobody saves a picture while reaching for the zoom.
+		aItems[ITEM_SPACER].m_Type = CViewerControls::EItem::SPACER;
 		aItems[ITEM_SAVE_VIEW].m_Icon = CViewerControls::EIcon::SAVE;
 		aItems[ITEM_SAVE_MAP].m_Icon = CViewerControls::EIcon::SAVE_ALL;
 		const bool Busy = Requests.m_ExportView || Requests.m_ExportFullMap;
@@ -386,6 +390,7 @@ int main(int argc, const char **argv)
 		CViewerControls::SInput ControlsInput;
 		ControlsInput.m_MousePos = pInput->NativeMousePos();
 		ControlsInput.m_MousePressed = pInput->NativeMousePressed(1);
+		ControlsInput.m_MouseClicked = pInput->KeyPress(KEY_MOUSE_1);
 		switch(Controls.Render(aItems, NUM_ITEMS, ControlsInput, nullptr))
 		{
 		case ITEM_ZOOM_OUT:

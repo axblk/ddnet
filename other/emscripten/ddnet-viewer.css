@@ -1,5 +1,6 @@
 /* The bar of controls a viewer page puts under its canvas. */
 #player-controls {
+	transition: opacity 0.3s linear;
 	position: absolute;
 	/* Centred by the margins rather than by moving it half its own width out
 	   of the middle, which would leave it only half the page to be wide in -
@@ -42,6 +43,7 @@
 /* What to make of a video of what is being watched. Sits above the bar that
    opened it, built like it and centred the same way. */
 #export-settings {
+	transition: opacity 0.3s linear;
 	position: absolute;
 	left: 0;
 	right: 0;
@@ -68,4 +70,12 @@
 }
 #export-settings input[type=number], #export-settings select {
 	width: 80px;
+}
+
+/* Out of the way while nothing is happening, and back as soon as something is.
+   Still there, so what is being watched is not covered by a bar that has
+   nothing to say. */
+.faded {
+	opacity: 0;
+	pointer-events: none;
 }

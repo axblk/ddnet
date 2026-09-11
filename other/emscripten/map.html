@@ -45,6 +45,7 @@
 			// in `src/game/map/standalone/map_viewer_main.cpp`.
 			(function() {
 				const playerControls = document.getElementById('player-controls');
+				DDNetLoader.autoHide(playerControls);
 				const hint = document.getElementById('hint');
 				const view = document.getElementById('view');
 				const exportViewButton = document.getElementById('export-view-button');

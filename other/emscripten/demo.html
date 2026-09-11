@@ -61,6 +61,9 @@
 				exportStartButton.textContent = "Start";
 				exportSettings.appendChild(exportStartButton);
 				var seeking = false;
+				// The bar and the settings are one thing to whoever uses them,
+				// so they come and go together.
+				DDNetLoader.autoHide([playerControls, exportSettings]);
 				// Encoding a video is the browser's to do, and not every browser
 				// does it. Better said here than by an export that starts and
 				// then cannot finish.

@@ -159,6 +159,41 @@ const DDNetLoader = (() => {
 		return await videoCodecsProbe;
 	}
 
+	// Controls over a picture belong to whoever is looking at it, not in front
+	// of it: they show themselves when the pointer moves and step aside again
+	// when it stops, the way a video player's do. What is being pointed at or
+	// typed into stays, so a menu does not close itself under the hand that
+	// opened it.
+	function autoHide(elements, options) {
+		const settings = Object.assign({ delay: 2500 }, options || {});
+		const all = Array.isArray(elements) ? elements : [elements];
+		var timer = null;
+		var held = 0;
+		const hide = () => {
+			for (const element of all) {
+				element.classList.add("faded");
+			}
+		};
+		const show = () => {
+			for (const element of all) {
+				element.classList.remove("faded");
+			}
+			clearTimeout(timer);
+			timer = held > 0 ? null : setTimeout(hide, settings.delay);
+		};
+		for (const element of all) {
+			element.addEventListener("pointerenter", () => { held++; show(); });
+			element.addEventListener("pointerleave", () => { held = Math.max(held - 1, 0); show(); });
+			element.addEventListener("focusin", () => { held++; show(); });
+			element.addEventListener("focusout", () => { held = Math.max(held - 1, 0); show(); });
+		}
+		for (const event of ["pointermove", "pointerdown", "keydown", "wheel"]) {
+			window.addEventListener(event, show, { passive: true });
+		}
+		show();
+		return { show, hide };
+	}
+
 	// The sizes and frame rates a video is offered in, the same ones the client
 	// offers in its own render window - see `gs_aaVideoResolutionPresets` and
 	// `s_aFpsPresets` in `src/game/client/components/menus.cpp`. Anything else
@@ -1286,6 +1321,20 @@ self.onmessage = async event => {
 		 */
 		supportProblem(needsWebGpu) {
 			return supportProblem(needsWebGpu === true);
+		},
+
+		/**
+		 * Lets the controls over a picture fade out while nothing is happening
+		 * and come back when something does, the way a video player's do. The
+		 * elements are given the `faded` class, which is what the page's own
+		 * stylesheet makes of it.
+		 *
+		 * @param elements The element, or the elements, that belong together.
+		 * @param options.delay How long to wait before they go, in
+		 * milliseconds.
+		 */
+		autoHide(elements, options) {
+			return autoHide(elements, options);
 		},
 
 		/**

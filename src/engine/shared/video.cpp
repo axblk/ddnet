@@ -55,6 +55,8 @@ void PrintVideoExportUsage(const char *pUsageName)
 	log_info("videorecorder", "  --no-audio         Render without an audio track");
 	log_info("videorecorder", "  --hud              Show the ingame interface");
 	log_info("videorecorder", "  --no-chat          Hide the chat");
+	log_info("videorecorder", "  --follow <player>  Watch a player, by client id or by name. A demo a server");
+	log_info("videorecorder", "                     recorded has nobody to follow without this.");
 	log_info("videorecorder", "  --list-codecs      List the encoders that work on this machine");
 	log_info("videorecorder", "  --help             Show this");
 	log_info("videorecorder", "Anything else is a console command, so `cl_showfps 1` and the rest of the");
@@ -161,6 +163,15 @@ bool CCommandLineVideoExport::ParseArguments(int &ArgumentCount, const char **&p
 		{
 			HasArgument = true;
 			Parsed.m_Chat = 0;
+		}
+		else if(str_comp(pArgument, "--follow") == 0)
+		{
+			HasArgument = true;
+			const char *pValue = ReadValue();
+			if(pValue == nullptr || pValue[0] == '\0' || str_length(pValue) >= static_cast<int>(sizeof(Parsed.m_aFollow)))
+				str_copy(aError, "Invalid value for --follow.");
+			else
+				str_copy(Parsed.m_aFollow, pValue);
 		}
 		else if(str_comp(pArgument, "--list-codecs") == 0)
 		{

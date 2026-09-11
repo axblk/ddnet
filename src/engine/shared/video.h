@@ -127,6 +127,14 @@ public:
 	bool m_ListCodecs = false;
 	char m_aDemoPath[IO_MAX_PATH_LENGTH] = {};
 	char m_aVideoPath[IO_MAX_PATH_LENGTH] = {};
+	/**
+	 * Who to watch the demo over the shoulder of, as a client id or as a name,
+	 * empty for whoever recorded it.
+	 *
+	 * A demo recorded by a server has nobody who recorded it, so without this
+	 * it is rendered from a camera standing still at the middle of the map.
+	 */
+	char m_aFollow[32] = {};
 
 	/**
 	 * Reads the video export arguments and puts everything else back, in order,

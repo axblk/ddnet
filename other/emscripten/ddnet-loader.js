@@ -1317,6 +1317,11 @@ self.onmessage = async event => {
 		if (options.chat === false) {
 			args.push("--no-chat");
 		}
+		// Who to watch, for a demo a server recorded: it has nobody who
+		// recorded it, so without this the camera stands still.
+		if (options.follow !== undefined && options.follow !== null && options.follow !== "") {
+			args.push("--follow", String(options.follow));
+		}
 		// Everything the client takes on its command line it takes here as
 		// well, one console command per entry, so `cl_showfps 1` works.
 		for (const setting of options.settings || []) {

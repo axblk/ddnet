@@ -37,6 +37,7 @@ bool CDemoRenderClient::Configure(const CCommandLineVideoExport &Export)
 	m_Settings = Export.Settings();
 	str_copy(m_aDemoPath, Export.m_aDemoPath);
 	str_copy(m_aVideoPath, Export.m_aVideoPath);
+	str_copy(m_aFollow, Export.m_aFollow);
 	if(!str_endswith(m_aVideoPath, ".mp4"))
 		str_append(m_aVideoPath, ".mp4");
 	// The finished file is moved into place without replacing anything, so an
@@ -95,7 +96,20 @@ void CDemoRenderClient::Run()
 
 	const char *pError = PlayDemo();
 	if(pError == nullptr)
+	{
+		// Who to watch, now that there is a demo to watch it in. A number is a
+		// client id, anything else is a name - and a name is only a name of
+		// somebody once the demo has named them, which is a snapshot or two in.
+		int ClientId;
+		if(m_aFollow[0] != '\0')
+		{
+			if(str_toint(m_aFollow, &ClientId))
+				SetSpectate(ClientId);
+			else
+				SetSpectateName(m_aFollow);
+		}
 		pError = StartVideo();
+	}
 	if(pError != nullptr)
 	{
 		log_error("videorecorder", "%s", pError);
@@ -122,6 +136,7 @@ void CDemoRenderClient::Run()
 			}
 			set_new_tick();
 			m_SessionManager.Update();
+			UpdatePendingSpectate();
 			Sound()->Update();
 			GameClient()->OnUpdate();
 			RenderExportFrame();

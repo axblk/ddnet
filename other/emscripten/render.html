@@ -23,6 +23,7 @@
 			     page and the demo viewer ask for the same things in the same
 			     words. -->
 			<div id="settings">
+				<label id="follow-choice" title="A demo a server recorded has nobody who recorded it, so without this the camera stands still.">Follow <input id="follow" type="text" placeholder="player or id" size="10"></label>
 				<label id="folder-choice" hidden><input id="folder" type="checkbox" checked> Save into a folder</label>
 			</div>
 			<div id="actions">
@@ -48,13 +49,15 @@
 				const summary = document.getElementById('summary');
 				const errorLine = document.getElementById('error');
 				const folderChoice = document.getElementById('folder-choice');
+				const followChoice = document.getElementById('follow-choice');
+				const followInput = document.getElementById('follow');
 				const folderCheckbox = document.getElementById('folder');
 				// The folder choice belongs to this page rather than to the
 				// export, so it stays where it is and the rest goes in front
 				// of it.
 				const settingsForm = DDNetLoader.exportSettingsForm(
 					document.getElementById('settings'), { audio: true });
-				document.getElementById('settings').appendChild(folderChoice);
+				document.getElementById('settings').append(followChoice, folderChoice);
 				const jobs = [];
 				var running = false;
 				var stopping = false;
@@ -137,7 +140,7 @@
 				// Everything the renderer is told, read off the form once per
 				// run so that a change mid-run does not apply to half of it.
 				function settings() {
-					return settingsForm.values();
+					return Object.assign(settingsForm.values(), { follow: followInput.value.trim() });
 				}
 
 				function videoName(demoName) {

@@ -3462,6 +3462,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     font_loading_test.cpp
     fs_test.cpp
     gameworld_test.cpp
+    ghost_test.cpp
     git_revision_test.cpp
     hash_test.cpp
     huffman_test.cpp
@@ -3513,6 +3514,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/engine/client/blocklist_driver.h
     src/engine/client/font_loading.cpp
     src/engine/client/font_loading.h
+    src/engine/client/ghost.cpp
+    src/engine/client/ghost.h
     src/engine/client/serverbrowser.cpp
     src/engine/client/serverbrowser.h
     src/engine/client/serverbrowser_http.cpp

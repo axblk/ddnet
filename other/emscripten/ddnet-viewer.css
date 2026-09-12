@@ -39,7 +39,12 @@
 	z-index: 2;
 	inset: 0;
 	display: flex;
-	padding: calc(var(--viewer-edge) + env(safe-area-inset-top, 0px)) calc(var(--viewer-edge) + env(safe-area-inset-right, 0px)) calc(var(--viewer-edge) + env(safe-area-inset-bottom, 0px)) calc(var(--viewer-edge) + env(safe-area-inset-left, 0px));
+	/* The same distance from both sides, and that distance is whichever side
+	   needs more: a phone held sideways has its notch on one side only, and
+	   keeping clear of it on that side alone would leave everything here
+	   sitting off to one side of the screen. */
+	--viewer-side: max(env(safe-area-inset-left, 0px), env(safe-area-inset-right, 0px));
+	padding: calc(var(--viewer-edge) + env(safe-area-inset-top, 0px)) calc(var(--viewer-edge) + var(--viewer-side)) calc(var(--viewer-edge) + env(safe-area-inset-bottom, 0px));
 	pointer-events: none;
 }
 /* A demo: along the bottom, where a video player has it, and what it opens

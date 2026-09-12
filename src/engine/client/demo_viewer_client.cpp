@@ -157,22 +157,22 @@ bool CDemoViewerClient::StartExport(const CVideoExportSettings &Settings)
 	char aName[IO_MAX_PATH_LENGTH];
 	fs_split_file_extension(fs_filename(m_aDemoPath), aName, sizeof(aName));
 	str_format(m_aVideoPath, sizeof(m_aVideoPath), "videos/%s.mp4", aName);
-	// The export reads the demo out of a session of its own, from where
-	// whoever asked for it is looking. What they do next - seek away, pause,
-	// watch somebody else - is theirs and no longer the video's.
+	// The export reads the demo out of a session of its own. What whoever
+	// asked for it does next - seek away, pause, watch somebody else - is
+	// theirs and no longer the video's.
 	m_VideoSessionId = m_ExportSessionId;
-	const float From = Progress();
 	// An export that ended with its demo left the way through it open. It is
 	// closed here rather than there, so that what was written stays readable
 	// until somebody asks for the next one.
 	if(SessionState(m_ExportSessionId) != ESessionState::OFFLINE)
 		StopDemoSession(m_ExportSessionId, "");
+	// The whole demo, from its first tick, wherever the one being watched has
+	// got to. A demo that has played out sits on its last frame - which is
+	// where somebody who has just watched it and then asks for a video of it
+	// is standing, and starting there would write them a video one frame long.
 	const char *pError = PlayDemo(m_ExportSessionId);
 	if(pError == nullptr)
-	{
-		DemoSource(m_ExportSessionId).DemoPlayer().SeekPercent(std::clamp(From, 0.0f, 1.0f));
 		pError = StartVideo();
-	}
 	if(pError != nullptr)
 	{
 		log_error("videorecorder", "%s", pError);

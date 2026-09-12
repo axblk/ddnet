@@ -145,6 +145,14 @@ public:
 	const char *SpectatePlayerName(int ClientId) const;
 
 	/**
+	 * Whether a server recorded this demo rather than a client. A client's
+	 * demo is of whoever recorded it, so there is somebody to follow; a
+	 * server's is of everybody who happened to be there and of nobody in
+	 * particular, so one of them has to be picked.
+	 */
+	bool ServerDemo() const;
+
+	/**
 	 * Moves the free view, in world units. Does nothing while a player is being
 	 * followed, because then the view is theirs.
 	 */

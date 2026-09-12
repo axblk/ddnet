@@ -462,7 +462,24 @@ void CDemoViewerClient::RenderControls()
 		ITEM_SPECTATE,
 		NUM_ITEMS,
 	};
-	CViewerControls::SItem aItems[NUM_ITEMS];
+	// The players to pick from, and what picking one means. A demo a client
+	// recorded is a demo of whoever recorded it, and the button then only
+	// says whether to look over their shoulder or to look around: the list of
+	// everybody who happened to be on the server belongs to a demo the server
+	// recorded, where there is nobody whose demo it is.
+	std::vector<int> vPickable;
+	if(ServerDemo())
+	{
+		vPickable.push_back(SPEC_FREEVIEW);
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+		{
+			if(SpectatePlayerName(ClientId) != nullptr)
+				vPickable.push_back(ClientId);
+		}
+	}
+
+	std::vector<CViewerControls::SItem> vItems(NUM_ITEMS + vPickable.size());
+	CViewerControls::SItem *aItems = vItems.data();
 	aItems[ITEM_SEEK].m_Type = CViewerControls::EItem::SLIDER;
 	aItems[ITEM_SEEK].m_Value = Progress();
 	aItems[ITEM_PLAY].m_Icon = Paused() ? CViewerControls::EIcon::PLAY : CViewerControls::EIcon::PAUSE;
@@ -480,6 +497,26 @@ void CDemoViewerClient::RenderControls()
 	aItems[ITEM_SPACER].m_Type = CViewerControls::EItem::SPACER;
 	aItems[ITEM_SPECTATE].m_Icon = CViewerControls::EIcon::EYE;
 	aItems[ITEM_SPECTATE].m_pText = aSpectating;
+	aItems[ITEM_SPECTATE].m_OpensMenu = !vPickable.empty();
+	for(size_t i = 0; i < vPickable.size(); ++i)
+	{
+		CViewerControls::SItem &Item = aItems[NUM_ITEMS + i];
+		Item.m_InMenu = true;
+		Item.m_Active = vPickable[i] == Spectating();
+		if(vPickable[i] == SPEC_FREEVIEW)
+		{
+			Item.m_Icon = CViewerControls::EIcon::FREEVIEW;
+			Item.m_pText = "Free view";
+		}
+		else
+		{
+			// The name the demo holds, not a copy of it: it stays where it is
+			// for as long as this frame lasts, which is as long as the bar
+			// needs it.
+			Item.m_Icon = CViewerControls::EIcon::EYE;
+			Item.m_pText = SpectatePlayerName(vPickable[i]);
+		}
+	}
 
 	CViewerControls::SInput Input;
 	Input.m_MousePos = m_pInput->NativeMousePos();
@@ -491,7 +528,7 @@ void CDemoViewerClient::RenderControls()
 
 	float SeekTo = 0.0f;
 	CDemoPlayer &Player = DemoSource(m_DemoSessionId).DemoPlayer();
-	const int Pressed = m_Controls.Render(aItems, NUM_ITEMS, Input, &SeekTo);
+	const int Pressed = m_Controls.Render(aItems, vItems.size(), Input, &SeekTo);
 
 	// A demo that goes on playing while somebody drags along the seek bar
 	// runs out from under them: every frame moves the place they are looking
@@ -509,6 +546,12 @@ void CDemoViewerClient::RenderControls()
 		{
 			SetPaused(false);
 		}
+	}
+
+	if(Pressed >= NUM_ITEMS)
+	{
+		SetSpectate(vPickable[Pressed - NUM_ITEMS]);
+		return;
 	}
 
 	switch(Pressed)

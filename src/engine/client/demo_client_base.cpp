@@ -116,6 +116,12 @@ void CDemoClientBase::UpdatePendingSpectate()
 	}
 }
 
+bool CDemoClientBase::ServerDemo() const
+{
+	const CDemoSessionSource &Source = const_cast<CDemoClientBase *>(this)->DemoSource(m_DemoSessionId);
+	return str_comp(Source.DemoPlayer().Info()->m_Header.m_aType, "server") == 0;
+}
+
 const char *CDemoClientBase::SpectatePlayerName(int ClientId) const
 {
 	if(!in_range(ClientId, 0, MAX_CLIENTS - 1))

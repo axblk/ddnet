@@ -8,26 +8,57 @@
 		<link rel="icon" type="image/x-icon" href="DDNet.ico">
 		<script src="coi-serviceworker.js"></script>
 		<link rel="stylesheet" href="ddnet-page.css">
+		<link rel="stylesheet" href="ddnet-viewer.css">
 	</head>
 	<body>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="error" style="display: none"></div>
 		<canvas id="canvas">Canvas not supported.</canvas>
+		<!-- The bar a video player has, over the demo rather than beside it, out
+		     of the browser's own buttons: the same things the viewer draws for
+		     itself when it is a program on somebody's desktop, in the same order,
+		     with the pictures from the same set. In a browser they are real
+		     buttons - a tooltip each, a tab order, a screen reader that can say
+		     what they are - and that is worth more here than a bar the program
+		     paints into the picture. -->
+		<div id="controls" class="viewer-controls viewer-controls-bottom">
+			<!-- What to make of a video of what is being watched. Above the bar
+			     that opens it, because that is where there is room for it. -->
+			<div id="export-panel" class="viewer-panel" hidden>
+				<div class="viewer-panel-title">Export video</div>
+				<div id="export-settings" class="viewer-form"></div>
+				<div class="viewer-panel-actions">
+					<button id="export-start" class="viewer-text-button">Start</button>
+				</div>
+			</div>
+			<div id="spectate-menu" class="viewer-menu" hidden></div>
+			<div id="bar" class="viewer-bar" hidden>
+				<input id="seek" class="viewer-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
+				<div class="viewer-row">
+					<button id="play" class="viewer-button" data-icon="pause" title="Pause (Space)" aria-label="Pause"></button>
+					<button id="restart" class="viewer-button" data-icon="restart" title="Back to the start (Home)" aria-label="Back to the start"></button>
+					<span id="time" class="viewer-readout">0:00 / 0:00</span>
+					<span class="viewer-spacer"></span>
+					<button id="slower" class="viewer-button viewer-optional" data-icon="minus" title="Slower (Down arrow)" aria-label="Slower"></button>
+					<span id="speed" class="viewer-readout viewer-readout-speed viewer-optional">1.00&times;</span>
+					<button id="faster" class="viewer-button viewer-optional" data-icon="plus" title="Faster (Up arrow)" aria-label="Faster"></button>
+					<button id="spectate" class="viewer-button" data-icon="eye" title="Who to watch (N, P, F)" aria-label="Who to watch" aria-haspopup="true" aria-expanded="false"></button>
+					<button id="export" class="viewer-button" data-icon="save" title="Export video" aria-label="Export video" aria-haspopup="true" aria-expanded="false"></button>
+					<button id="fullscreen" class="viewer-button" data-icon="fullscreen" title="Full screen" aria-label="Full screen"></button>
+				</div>
+			</div>
+		</div>
 		<script src="ddnet-demo-viewer.js"></script>
 		<script src="ddnet-loader.js"></script>
 		<script>
 			// A demo is dropped onto the window, or named as `demo.html#demo=<url>`.
-			//
-			// The page brings no controls of its own: the demo fills the window
-			// and the viewer draws its bar along the bottom of it, which is also
-			// what it does when it is a program on somebody's desktop. Zooming
-			// and moving the view stay on the pointer, where they belong. The
-			// other end of what is left here is the `DemoViewer*` block in
-			// `src/engine/client/demo_viewer_client.cpp`.
 			const started = DDNetLoader.page({
 				module: DDNetDemoViewer,
 				programName: "Demo viewer",
 				accept: [".demo"],
+				// The page has a bar of its own over the canvas, so the viewer
+				// leaves off the one it would draw itself.
+				controls: false,
 				urlParams: ["demo"],
 				elements: {
 					canvas: document.getElementById('canvas'),
@@ -36,7 +67,61 @@
 			});
 		</script>
 		<script>
+			// What the bar does. The viewer answers to the keyboard as well, but a
+			// page shows no key bindings and nobody would go looking for them, so
+			// everything it can do has a button here. The other end of these is the
+			// `DemoViewer*` block in `src/engine/client/demo_viewer_client.cpp`.
 			(function() {
+				const controls = document.getElementById('controls');
+				const bar = document.getElementById('bar');
+				const canvas = document.getElementById('canvas');
+				const playButton = document.getElementById('play');
+				const seek = document.getElementById('seek');
+				const time = document.getElementById('time');
+				const speed = document.getElementById('speed');
+				const spectateButton = document.getElementById('spectate');
+				const spectateMenu = document.getElementById('spectate-menu');
+				const exportButton = document.getElementById('export');
+				const exportPanel = document.getElementById('export-panel');
+				const exportSettings = document.getElementById('export-settings');
+				const exportStart = document.getElementById('export-start');
+				const exportForm = DDNetLoader.exportSettingsForm(exportSettings, { canvas: canvas });
+				DDNetLoader.paintIcons(document);
+				DDNetLoader.fullscreen(document.getElementById('fullscreen'));
+				// The bar and what it opens are one thing to whoever uses them, so
+				// they step aside together while nothing is happening.
+				DDNetLoader.autoHide([bar, spectateMenu, exportPanel]);
+				// Encoding a video is the browser's to do, and not every browser
+				// does it. Better said here than by an export that starts and then
+				// cannot finish.
+				if (typeof VideoEncoder === "undefined") {
+					exportButton.disabled = true;
+					exportButton.title = "This browser has no video encoder";
+				}
+
+				// One panel at a time, and a click anywhere else closes it: two
+				// open panels over a picture leave nothing of the picture, and a
+				// menu that has to be dismissed with the button that opened it is
+				// one people leave open.
+				const panels = [[spectateButton, spectateMenu], [exportButton, exportPanel]];
+				function openPanel(wanted) {
+					for (const [button, panel] of panels) {
+						const open = panel === wanted && panel.hidden;
+						panel.hidden = !open;
+						button.setAttribute('aria-expanded', open ? "true" : "false");
+					}
+				}
+				document.addEventListener('pointerdown', event => {
+					if (!controls.contains(event.target)) {
+						openPanel(null);
+					}
+				});
+				document.addEventListener('keydown', event => {
+					if (event.key === "Escape") {
+						openPanel(null);
+					}
+				});
+
 				// The page is there before the viewer is and outlives it, so every
 				// call has to survive being made outside of that: until there is
 				// one, and once there is no longer one, they all answer `null`.
@@ -86,26 +171,183 @@
 
 				// The address bar follows the demo, so that what somebody copies
 				// out of it is what they are watching: where they are, how fast,
-				// and whether it stands still. What is at its default is left
-				// out, so a link stays as short as what it says.
-				function updateLink(seconds, speed, paused, spectating) {
+				// and whether it stands still. What is at its default is left out,
+				// so a link stays as short as what it says.
+				function updateLink(seconds, playbackSpeed, paused, spectating) {
 					DDNetLoader.setUrlParameters({
 						t: Math.round(seconds),
-						speed: Math.abs(speed - 1) < 0.005 ? null : speed.toFixed(2),
+						speed: Math.abs(playbackSpeed - 1) < 0.005 ? null : playbackSpeed.toFixed(2),
 						paused: paused ? 1 : null,
 						spec: spectating >= 0 ? spectating : null,
 					});
 				}
 
-				// The page asks rather than being told: the viewer holds the main
-				// thread for as long as it draws and only lets go between frames.
+				function formatTime(seconds) {
+					const total = Math.max(0, Math.round(seconds));
+					return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+				}
+
+				playButton.addEventListener('click', () => {
+					if (demo.paused()) {
+						demo.play();
+					} else {
+						demo.pause();
+					}
+				});
+				document.getElementById('restart').addEventListener('click', () => demo.restart());
+				document.getElementById('slower').addEventListener('click', () => demo.speed(demo.speed() / 1.25));
+				document.getElementById('faster').addEventListener('click', () => demo.speed(demo.speed() * 1.25));
+
+				// The demo follows the bar while it is dragged, not once it is let
+				// go of: what somebody is looking for is what they can see, and a
+				// bar that only jumps at the end is one they have to guess with.
+				// While it is being dragged the demo stands still, because one that
+				// goes on playing runs out from under whoever is looking for a
+				// place in it; it goes on again afterwards if it was going on
+				// before.
+				var seeking = false;
+				var pausedBeforeSeeking = false;
+				seek.addEventListener('input', () => {
+					if (!seeking) {
+						seeking = true;
+						pausedBeforeSeeking = demo.paused();
+						demo.pause();
+					}
+					demo.seek(seek.value / seek.max);
+				});
+				seek.addEventListener('change', () => {
+					demo.seek(seek.value / seek.max);
+					seeking = false;
+					if (!pausedBeforeSeeking) {
+						demo.play();
+					}
+				});
+
+				spectateButton.addEventListener('click', () => openPanel(spectateMenu));
+				// The export settings are asked for before the export runs, the
+				// same ones the render tool takes on its command line. While one is
+				// being written the button stops it instead.
+				exportButton.addEventListener('click', () => {
+					if (demo.exportState() === 1) {
+						demo.cancelExport();
+						return;
+					}
+					openPanel(exportPanel);
+				});
+				exportStart.addEventListener('click', async () => {
+					// The browser only hands over a download that came out of a
+					// click, so the export has to start from this handler and not
+					// from a question the page asks itself later. Asking where to
+					// save is the same: it has to happen while this click is still
+					// what the browser thinks the user is doing. What is written
+					// there is written while the demo renders, so nothing is kept
+					// in memory and a video the size of a film is no different from
+					// a short one.
+					if (viewer != null && window.showSaveFilePicker) {
+						try {
+							const handle = await window.showSaveFilePicker({
+								suggestedName: "video.mp4",
+								types: [{ description: "MP4 video", accept: { "video/mp4": [".mp4"] } }],
+							});
+							viewer.setVideoSink({ stream: await handle.createWritable(), done: () => null });
+						} catch (error) {
+							// The dialog was dismissed, so the export was not asked for.
+							return;
+						}
+					}
+					demo.startExport(exportForm.values());
+					openPanel(null);
+				});
+
+				// Who there is to watch, which is the list the viewer opens behind
+				// the same button. A demo names its players a snapshot or two in
+				// and people come and go while it plays, so the list is built again
+				// whenever it has changed - and only then, because rebuilding it
+				// under somebody reading it would take it away from them.
+				var playerList = "";
+				function updateSpectate() {
+					const players = demo.players() || [];
+					const watching = demo.spectating();
+					const signature = JSON.stringify(players);
+					if (signature !== playerList) {
+						playerList = signature;
+						// A demo a client recorded is a demo of whoever recorded
+						// it, so watching over their shoulder is what it offers
+						// besides a camera of one's own. A demo a server recorded
+						// has nobody whose demo it is, and offers everybody who
+						// happened to be there.
+						const options = [{ id: -1, name: "Free view", icon: "freeview" }]
+							.concat(players.map(player => ({ id: player.id, name: player.name, icon: "eye" })));
+						spectateMenu.replaceChildren(...options.map(option => {
+							const item = document.createElement('button');
+							item.className = "viewer-menu-item";
+							item.dataset.icon = option.icon;
+							item.dataset.id = option.id;
+							item.appendChild(Object.assign(document.createElement('span'), { textContent: option.name }));
+							item.addEventListener('click', () => {
+								demo.spectating(option.id);
+								openPanel(null);
+							});
+							return item;
+						}));
+						DDNetLoader.paintIcons(spectateMenu);
+					}
+					for (const item of spectateMenu.children) {
+						item.setAttribute('aria-checked', item.dataset.id === String(watching) ? "true" : "false");
+					}
+				}
+
+				// The page follows the demo rather than the demo telling the page:
+				// the viewer holds the main thread for as long as it draws and only
+				// lets go between frames, so asking is both simpler and cheaper
+				// than being called back.
 				setInterval(() => {
 					const length = demo.length();
 					if (length === null || length <= 0.0) {
+						bar.hidden = true;
 						return;
 					}
+					bar.hidden = false;
 					applyLink(length);
-					updateLink(demo.progress() * length, demo.speed(), demo.paused(), demo.spectating());
+					const progress = demo.progress();
+					if (!seeking) {
+						seek.value = Math.round(progress * seek.max);
+					}
+					// The filled part of the bar is where the demo is: the browser
+					// draws a slider, and a strip of time is not one.
+					seek.style.setProperty('--viewer-progress', `${(seek.value / seek.max * 100).toFixed(2)}%`);
+					time.textContent = `${formatTime(progress * length)} / ${formatTime(length)}`;
+					speed.textContent = `${demo.speed().toFixed(2)}×`;
+					const paused = demo.paused();
+					playButton.dataset.icon = paused ? "play" : "pause";
+					playButton.title = paused ? "Play (Space)" : "Pause (Space)";
+					playButton.setAttribute('aria-label', paused ? "Play" : "Pause");
+					updateSpectate();
+					updateLink(progress * length, demo.speed(), paused, demo.spectating());
+					// What the export is doing is asked for rather than remembered
+					// from the click: starting one in a browser returns long before
+					// the browser has an encoder, so the click itself knows nothing
+					// worth showing. While one runs the button stops it and says
+					// how far it has got.
+					const state = demo.exportState();
+					const running = state === 1;
+					exportButton.dataset.icon = running ? "stop" : "save";
+					exportButton.classList.toggle('viewer-on', running);
+					exportButton.title = ["Export video", "Stop the export", "The video was handed over", "The export failed"][state];
+					exportButton.setAttribute('aria-label', exportButton.title);
+					const badge = exportButton.querySelector('.viewer-badge');
+					if (running) {
+						const percent = `${Math.round(demo.exportProgress() * 100)}%`;
+						if (badge === null) {
+							exportButton.appendChild(Object.assign(document.createElement('span'),
+								{ className: "viewer-badge", textContent: percent }));
+						} else {
+							badge.textContent = percent;
+						}
+					} else if (badge !== null) {
+						badge.remove();
+					}
+					DDNetLoader.paintIcons(bar);
 				}, 200);
 			})();
 		</script>

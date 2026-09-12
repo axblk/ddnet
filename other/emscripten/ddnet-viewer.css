@@ -1,0 +1,403 @@
+/* The interface a viewer page puts over its canvas: a bar along the bottom
+   for a demo, which is something being played. These are the buttons the
+   program itself draws, said in the browser's own words - real buttons that a
+   finger, a pointer and a keyboard all reach, with a tooltip each, which is
+   the one thing the program cannot offer because it carries no font for it.
+
+   Everything here is measured in what the screen has rather than in what a
+   desktop happens to have, and everything that can be covered by a phone's
+   rounded corner or its home bar keeps out of the safe area. */
+:root {
+	--viewer-accent: #ffa500;
+	/* Dark and see-through, so that what is behind the controls is still
+	   there: what is being watched matters more than what is on top of it. */
+	--viewer-panel: rgba(24, 24, 27, 0.72);
+	--viewer-border: rgba(255, 255, 255, 0.12);
+	--viewer-hover: rgba(255, 255, 255, 0.14);
+	--viewer-text: #f4f4f5;
+	--viewer-dim: rgba(244, 244, 245, 0.65);
+	--viewer-radius: 14px;
+	--viewer-button: 38px;
+	--viewer-gap: 4px;
+	--viewer-edge: clamp(8px, 1.5vw, 16px);
+}
+/* A finger needs more room than a pointer, which is what every other
+   application on the same screen is built to. */
+@media (pointer: coarse) {
+	:root {
+		--viewer-button: 44px;
+		--viewer-gap: 2px;
+	}
+}
+
+/* The frame the controls hang in. It catches nothing itself: the gap between
+   two panels is a gap, and what is dragged there moves the view. */
+.viewer-controls {
+	position: fixed;
+	z-index: 2;
+	inset: 0;
+	display: flex;
+	padding: calc(var(--viewer-edge) + env(safe-area-inset-top, 0px)) calc(var(--viewer-edge) + env(safe-area-inset-right, 0px)) calc(var(--viewer-edge) + env(safe-area-inset-bottom, 0px)) calc(var(--viewer-edge) + env(safe-area-inset-left, 0px));
+	pointer-events: none;
+}
+/* A demo: along the bottom, where a video player has it, and what it opens
+   above it. */
+.viewer-controls-bottom {
+	flex-direction: column;
+	justify-content: flex-end;
+	align-items: center;
+	gap: 8px;
+}
+
+.viewer-bar, .viewer-menu, .viewer-panel {
+	pointer-events: auto;
+	border: 1px solid var(--viewer-border);
+	border-radius: var(--viewer-radius);
+	background-color: var(--viewer-panel);
+	box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+	color: var(--viewer-text);
+	/* The blur is what makes writing on top of a moving picture readable. A
+	   browser without it gets the same panel, only flat. */
+	backdrop-filter: blur(12px) saturate(140%);
+	-webkit-backdrop-filter: blur(12px) saturate(140%);
+	transition: opacity 0.25s ease, transform 0.25s ease;
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+	.viewer-bar, .viewer-menu, .viewer-panel {
+		background-color: rgba(24, 24, 27, 0.92);
+	}
+}
+
+.viewer-bar {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	/* As wide as it needs and no wider, up to the width of the screen less
+	   the room left at its edges. */
+	width: 100%;
+	max-width: 900px;
+	padding: 6px clamp(6px, 1.5vw, 12px) 4px clamp(6px, 1.5vw, 12px);
+}
+.viewer-row {
+	display: flex;
+	align-items: center;
+	gap: var(--viewer-gap);
+}
+/* What pushes the buttons that belong to the right to the right, the way the
+   programs' own bars do it. */
+.viewer-spacer {
+	flex: 1 1 auto;
+	min-width: 4px;
+}
+
+.viewer-button {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	gap: 4px;
+	width: var(--viewer-button);
+	height: var(--viewer-button);
+	padding: 0;
+	border: none;
+	border-radius: 10px;
+	background-color: transparent;
+	color: var(--viewer-text);
+	cursor: pointer;
+	transition: background-color 0.15s linear, color 0.15s linear, opacity 0.15s linear;
+	/* A tap is a press, not a gesture that might become a scroll: without
+	   this a phone waits to find out and every button answers late. */
+	touch-action: manipulation;
+	-webkit-tap-highlight-color: transparent;
+}
+.viewer-button svg {
+	width: 55%;
+	height: 55%;
+	fill: currentColor;
+	pointer-events: none;
+}
+.viewer-button:hover, .viewer-button:focus-visible {
+	background-color: var(--viewer-hover);
+}
+/* A button that says something is switched on says it in the accent colour,
+   the way the programs' own controls do. */
+.viewer-button[aria-pressed="true"], .viewer-button.viewer-on {
+	color: var(--viewer-accent);
+}
+.viewer-button[aria-expanded="true"] {
+	background-color: var(--viewer-hover);
+}
+.viewer-button[disabled] {
+	opacity: 0.35;
+	cursor: not-allowed;
+}
+.viewer-button:focus-visible {
+	outline: 2px solid var(--viewer-accent);
+	outline-offset: -2px;
+}
+/* How far a video has got, over the button that stops it. */
+.viewer-badge {
+	position: absolute;
+	right: 2px;
+	bottom: 0;
+	padding: 0 3px;
+	border-radius: 5px;
+	background-color: var(--viewer-accent);
+	color: #18181b;
+	font-size: 9px;
+	font-weight: bold;
+	font-variant-numeric: tabular-nums;
+	line-height: 12px;
+}
+/* Where the demo is, and where it is going to be. The bar is drawn by hand
+   rather than left to the browser, because a browser draws a slider and this
+   is a strip of time: a line that is filled up to where the demo has got and
+   is hit with a thumb rather than aimed at. */
+.viewer-seek {
+	width: 100%;
+	height: 18px;
+	margin: 0;
+	padding: 0;
+	background: transparent;
+	cursor: pointer;
+	appearance: none;
+	-webkit-appearance: none;
+	touch-action: none;
+}
+.viewer-seek::-webkit-slider-runnable-track {
+	height: 5px;
+	border-radius: 3px;
+	background: linear-gradient(to right, var(--viewer-accent) var(--viewer-progress, 0%), rgba(255, 255, 255, 0.25) var(--viewer-progress, 0%));
+}
+.viewer-seek::-moz-range-track {
+	height: 5px;
+	border-radius: 3px;
+	background: linear-gradient(to right, var(--viewer-accent) var(--viewer-progress, 0%), rgba(255, 255, 255, 0.25) var(--viewer-progress, 0%));
+}
+.viewer-seek::-webkit-slider-thumb {
+	width: 13px;
+	height: 13px;
+	margin-top: -4px;
+	border: none;
+	border-radius: 50%;
+	background-color: #fff;
+	box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+	appearance: none;
+	-webkit-appearance: none;
+	transition: transform 0.15s ease;
+}
+.viewer-seek::-moz-range-thumb {
+	width: 13px;
+	height: 13px;
+	border: none;
+	border-radius: 50%;
+	background-color: #fff;
+	box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+	transition: transform 0.15s ease;
+}
+.viewer-seek:hover::-webkit-slider-thumb, .viewer-seek:active::-webkit-slider-thumb {
+	transform: scale(1.25);
+}
+.viewer-seek:hover::-moz-range-thumb, .viewer-seek:active::-moz-range-thumb {
+	transform: scale(1.25);
+}
+.viewer-seek:focus-visible {
+	outline: 2px solid var(--viewer-accent);
+	outline-offset: 3px;
+	border-radius: 3px;
+}
+
+/* Numbers the bar says rather than asks for: where in the demo it is, and how
+   fast it is playing. Fixed width, so that a bar does not shuffle sideways
+   every time a digit changes. */
+.viewer-readout {
+	padding: 0 6px;
+	color: var(--viewer-dim);
+	font-size: clamp(11px, 0.4vw + 10px, 13px);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	user-select: none;
+}
+.viewer-readout-speed {
+	min-width: 5ch;
+	text-align: center;
+}
+
+/* What did not fit on the bar, or what is only wanted once in a while: a
+   panel at the edge the controls sit at, as tall as what is in it and no
+   taller than the screen. */
+.viewer-menu {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 180px;
+	max-width: min(320px, 90vw);
+	max-height: min(50vh, 420px);
+	padding: 6px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+}
+.viewer-menu-item {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	width: 100%;
+	min-height: 36px;
+	padding: 0 10px;
+	border: none;
+	border-radius: 8px;
+	background-color: transparent;
+	color: var(--viewer-text);
+	font-size: clamp(12px, 0.4vw + 11px, 14px);
+	text-align: left;
+	cursor: pointer;
+	touch-action: manipulation;
+	transition: background-color 0.15s linear;
+}
+.viewer-menu-item svg {
+	width: 18px;
+	height: 18px;
+	flex: none;
+	fill: currentColor;
+}
+.viewer-menu-item span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.viewer-menu-item:hover, .viewer-menu-item:focus-visible {
+	background-color: var(--viewer-hover);
+}
+.viewer-menu-item:focus-visible {
+	outline: 2px solid var(--viewer-accent);
+	outline-offset: -2px;
+}
+/* The one that is picked, or the setting that is on: a mark at the end of the
+   row, because a row that changes colour says less than a row that is
+   ticked. */
+.viewer-menu-item[aria-checked="true"], .viewer-menu-item[aria-pressed="true"] {
+	color: var(--viewer-accent);
+}
+.viewer-menu-item[aria-checked="true"]::after, .viewer-menu-item[aria-pressed="true"]::after {
+	content: "";
+	width: 6px;
+	height: 11px;
+	margin-left: auto;
+	border: solid currentColor;
+	border-width: 0 2px 2px 0;
+	transform: rotate(45deg) translate(-1px, -2px);
+}
+@media (pointer: coarse) {
+	.viewer-menu-item {
+		min-height: 44px;
+	}
+}
+
+/* What to make of a video of what is being watched. More than a menu row
+   each, so it is a small form rather than a list. */
+.viewer-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	width: min(420px, 92vw);
+	max-height: min(70vh, 560px);
+	padding: 12px 14px;
+	overflow-y: auto;
+}
+.viewer-panel-title {
+	color: var(--viewer-accent);
+	font-size: 13px;
+	font-weight: bold;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+.viewer-form {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+	gap: 8px 12px;
+	font-size: clamp(12px, 0.4vw + 11px, 14px);
+}
+.viewer-form label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+/* A field that is only there when there is something to type into it says so
+   with `hidden`, and a row that is laid out has to be told that this still
+   means gone. */
+.viewer-form label[hidden] {
+	display: none;
+}
+.viewer-form select, .viewer-form input[type=number] {
+	min-width: 0;
+	flex: 1 1 auto;
+	height: 30px;
+	padding: 0 6px;
+	border: 1px solid var(--viewer-border);
+	border-radius: 8px;
+	background-color: rgba(0, 0, 0, 0.35);
+	color: var(--viewer-text);
+	font: inherit;
+}
+.viewer-form input[type=checkbox] {
+	width: 18px;
+	height: 18px;
+	flex: none;
+	accent-color: var(--viewer-accent);
+}
+.viewer-panel-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+}
+/* The one button here that says what it does in words: starting is what the
+   whole panel is for, and a picture of it would be a guess. */
+.viewer-text-button {
+	height: 34px;
+	padding: 0 16px;
+	border: none;
+	border-radius: 9px;
+	background-color: var(--viewer-accent);
+	color: #18181b;
+	font: inherit;
+	font-weight: bold;
+	cursor: pointer;
+	touch-action: manipulation;
+	transition: background-color 0.15s linear;
+}
+.viewer-text-button:hover, .viewer-text-button:focus-visible {
+	background-color: #f27400;
+}
+.viewer-text-button:focus-visible {
+	outline: 2px solid var(--viewer-accent);
+	outline-offset: 2px;
+}
+
+/* A screen too narrow for everything drops what is marked as spare first,
+   which is the order the programs' own bars drop things in. */
+@media (max-width: 560px) {
+	.viewer-optional {
+		display: none;
+	}
+	.viewer-readout {
+		padding: 0 2px;
+	}
+}
+/* A phone held sideways is all picture and hardly any height, so the bar
+   gives up its second row of padding rather than the picture. */
+@media (max-height: 420px) {
+	.viewer-controls {
+		--viewer-edge: 6px;
+	}
+}
+
+/* Out of the way while nothing is happening, and back as soon as something
+   is. Still there, so what is being watched is not covered by a bar that has
+   nothing to say. */
+.faded {
+	opacity: 0;
+	transform: translateY(6px);
+	pointer-events: none;
+}

@@ -1874,7 +1874,12 @@ void CGraphics_Threaded::AdjustViewport(bool SendViewportChangeToBackend)
 
 	// adjust the viewport to only allow certain aspect ratios
 	// keep this in sync with backend_vulkan GetSwapImageSize's check
-	if(m_ScreenHeight > 4 * m_ScreenWidth / 5)
+	//
+	// The rule belongs to the game: a window that is taller than this would
+	// otherwise show more of the world than everybody else's does. A program
+	// that only shows something has nobody to be fair to, and a telephone held
+	// upright is exactly the window this would leave two fifths of unused.
+	if(!g_Config.m_GfxWholeWindow && m_ScreenHeight > 4 * m_ScreenWidth / 5)
 	{
 		m_IsForcedViewport = true;
 		m_ScreenHeight = 4 * m_ScreenWidth / 5;

@@ -571,6 +571,12 @@ void CDemoViewerClient::Run()
 	// from here wants anyway. Nobody is at the keyboard of a window that is not
 	// there, so the keys stay off as well.
 	m_Surfaceless = std::getenv("GFX_SURFACELESS") != nullptr;
+	// A demo fills the window it was given. The game keeps what it draws
+	// within five by four so that nobody sees further by making their window
+	// taller than everybody else's; there is nobody to be fair to here, and a
+	// telephone held upright is exactly the window that rule would leave two
+	// fifths of black.
+	g_Config.m_GfxWholeWindow = 1;
 	if(!InitGraphics(m_Surfaceless ? CreateOffscreenGraphicsWindow() : CreateSdlGraphicsWindow()))
 	{
 		m_ExitCode = 1;

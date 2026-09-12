@@ -79,6 +79,8 @@ bool CStandaloneMapView::OpenWindow(int Width, int Height, IEngineGraphicsWindow
 	g_Config.m_GfxScreenHeight = Height;
 	g_Config.m_GfxFsaaSamples = 0;
 	g_Config.m_GfxNoclip = 1;
+	// A map fills the window it was given, whatever shape that window has.
+	g_Config.m_GfxWholeWindow = 1;
 	if(Windowed)
 	{
 		// Somebody is watching this one, so it is paced by their display and

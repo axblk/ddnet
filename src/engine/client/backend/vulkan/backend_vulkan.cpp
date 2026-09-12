@@ -4239,7 +4239,7 @@ CCommandProcessorFragment_Vulkan::SSwapImgViewportExtent CCommandProcessorFragme
 	VkExtent2D AutoViewportExtent = RetSize;
 	bool UsesForcedViewport = false;
 	// keep this in sync with graphics_threaded AdjustViewport's check
-	if(AutoViewportExtent.height > 4 * AutoViewportExtent.width / 5)
+	if(!g_Config.m_GfxWholeWindow && AutoViewportExtent.height > 4 * AutoViewportExtent.width / 5)
 	{
 		AutoViewportExtent.height = 4 * AutoViewportExtent.width / 5;
 		UsesForcedViewport = true;

@@ -14,6 +14,22 @@
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="error" style="display: none"></div>
 		<canvas id="canvas">Canvas not supported.</canvas>
+		<!-- Nothing named in the address, so nothing to show yet. A file can be
+		     dropped onto the page, and a phone has nothing to drop with, so it
+		     can be chosen here as well. -->
+		<div id="open" class="viewer-open" hidden>
+			<div class="viewer-panel viewer-open-panel">
+				<div class="viewer-panel-title">Open a demo</div>
+				<p class="viewer-open-hint">Choose a <code>.demo</code> file, or drop one onto this page.</p>
+				<!-- Why the last one was no good, where the next one is
+				     chosen. -->
+				<p id="open-message" class="viewer-panel-message" role="status" hidden></p>
+				<div class="viewer-panel-actions">
+					<button id="open-button" class="viewer-text-button" disabled>Choose a demo</button>
+				</div>
+				<input id="open-file" type="file" accept=".demo" hidden>
+			</div>
+		</div>
 		<!-- The bar a video player has, over the demo rather than beside it, out
 		     of the browser's own buttons: the same things the viewer draws for
 		     itself when it is a program on somebody's desktop, in the same order,
@@ -145,6 +161,42 @@
 				// A page that cannot run this at all has been told why once
 				// already, which is enough: there is nothing here to steer.
 				started.then(instance => { viewer = instance; }, () => {});
+
+				// Nothing named in the address, so the page offers a way in of
+				// its own. A demo can be dropped onto the picture - the loader
+				// takes it there - but a phone has nothing to drop with, and a
+				// file chosen here goes the same way a dropped one does.
+				const opener = document.getElementById('open');
+				const openButton = document.getElementById('open-button');
+				const openFile = document.getElementById('open-file');
+				const openMessage = document.getElementById('open-message');
+				function offer(show, message) {
+					opener.hidden = !show;
+					openMessage.textContent = message || "";
+					openMessage.hidden = !message;
+				}
+				offer(DDNetLoader.urlParameter("demo") === null);
+				// Nothing to hand a file to until the program is running.
+				started.then(() => { openButton.disabled = false; }, () => {});
+				openButton.addEventListener('click', () => openFile.click());
+				openFile.addEventListener('change', async () => {
+					const file = openFile.files[0];
+					// The same file twice in a row is still a choice, and without
+					// this the second time would go unnoticed.
+					openFile.value = "";
+					if (file == null || viewer == null) {
+						return;
+					}
+					offer(false);
+					try {
+						await viewer.loadFile(file);
+					} catch (error) {
+						offer(true, (error && error.message) || String(error));
+					}
+				});
+				// One dropped on the picture is the loader's to take; the page
+				// only has to stop offering.
+				document.addEventListener('drop', () => offer(false), true);
 
 				// Where a link says to start, and how. Once, as soon as there is a
 				// demo to say it to - `#t=90&speed=0.5&paused=1`, in the fragment
@@ -347,6 +399,10 @@
 						return;
 					}
 					bar.hidden = false;
+					// A demo that came from somewhere else - the address, or a
+					// file dropped on the page - takes the offer away as surely
+					// as one chosen here.
+					offer(false);
 					applyLink(length);
 					const progress = demo.progress();
 					if (!seeking) {

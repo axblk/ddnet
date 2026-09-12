@@ -14,6 +14,22 @@
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="error" style="display: none"></div>
 		<canvas id="canvas">Canvas not supported.</canvas>
+		<!-- Nothing named in the address, so nothing to show yet. A file can be
+		     dropped onto the page, and a phone has nothing to drop with, so it
+		     can be chosen here as well. -->
+		<div id="open" class="viewer-open" hidden>
+			<div class="viewer-panel viewer-open-panel">
+				<div class="viewer-panel-title">Open a map</div>
+				<p class="viewer-open-hint">Choose a <code>.map</code> file, or drop one onto this page.</p>
+				<!-- Why the last one was no good, where the next one is
+				     chosen. -->
+				<p id="open-message" class="viewer-panel-message" role="status" hidden></p>
+				<div class="viewer-panel-actions">
+					<button id="open-button" class="viewer-text-button" disabled>Choose a map</button>
+				</div>
+				<input id="open-file" type="file" accept=".map" hidden>
+			</div>
+		</div>
 		<!-- A map is looked at rather than played, so there is nothing to seek
 		     through and no reason for a bar along the bottom: what the view does
 		     sits in a corner out of the way of the map, and what is asked for
@@ -119,6 +135,42 @@
 				// already, which is enough: there is nothing here to steer.
 				started.then(instance => { viewer = instance; }, () => {});
 
+				// Nothing named in the address, so the page offers a way in of
+				// its own. A map can be dropped onto the picture - the loader
+				// takes it there - but a phone has nothing to drop with, and a
+				// file chosen here goes the same way a dropped one does.
+				const opener = document.getElementById('open');
+				const openButton = document.getElementById('open-button');
+				const openFile = document.getElementById('open-file');
+				const openMessage = document.getElementById('open-message');
+				function offer(show, message) {
+					opener.hidden = !show;
+					openMessage.textContent = message || "";
+					openMessage.hidden = !message;
+				}
+				offer(DDNetLoader.urlParameter("map") === null);
+				// Nothing to hand a file to until the program is running.
+				started.then(() => { openButton.disabled = false; }, () => {});
+				openButton.addEventListener('click', () => openFile.click());
+				openFile.addEventListener('change', async () => {
+					const file = openFile.files[0];
+					// The same file twice in a row is still a choice, and without
+					// this the second time would go unnoticed.
+					openFile.value = "";
+					if (file == null || viewer == null) {
+						return;
+					}
+					offer(false);
+					try {
+						await viewer.loadFile(file);
+					} catch (error) {
+						offer(true, (error && error.message) || String(error));
+					}
+				});
+				// One dropped on the picture is the loader's to take; the page
+				// only has to stop offering.
+				document.addEventListener('drop', () => offer(false), true);
+
 				document.getElementById('zoom-out').addEventListener('click', () => map.zoomBy(BUTTON_ZOOM_STEP));
 				document.getElementById('zoom-in').addEventListener('click', () => map.zoomBy(1 / BUTTON_ZOOM_STEP));
 				document.getElementById('fit').addEventListener('click', () => map.fit());
@@ -177,6 +229,10 @@
 						return;
 					}
 					cluster.hidden = false;
+					// A map that came from somewhere else - the address, or a
+					// file dropped on the page - takes the offer away as surely
+					// as one chosen here.
+					offer(false);
 					applyLink();
 					const center = map.center();
 					const tiles = map.tilesAcross();

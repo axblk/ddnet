@@ -414,6 +414,43 @@
 	outline-offset: 2px;
 }
 
+/* Nothing to look at yet, and what to do about it: in the middle of the
+   picture, because there is nothing under it to be in the way of. A file can be
+   dropped onto the page, but a phone has nothing to drop with - so there is a
+   button as well, and it is the only way in that works everywhere. */
+.viewer-open {
+	position: fixed;
+	z-index: 3;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: var(--viewer-edge);
+	pointer-events: none;
+}
+.viewer-open[hidden] {
+	display: none;
+}
+.viewer-open-panel {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 10px;
+	max-width: min(420px, 90vw);
+	padding: 16px 20px;
+	text-align: center;
+}
+.viewer-open-hint {
+	margin: 0;
+	color: var(--viewer-dim);
+	font-size: 13px;
+	line-height: 1.4;
+}
+.viewer-open-hint code {
+	color: var(--viewer-text);
+	font-size: 12px;
+}
+
 /* A screen too narrow for everything drops what is marked as spare first,
    which is the order the programs' own bars drop things in. */
 @media (max-width: 560px) {

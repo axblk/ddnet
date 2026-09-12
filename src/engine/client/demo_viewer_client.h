@@ -72,6 +72,12 @@ private:
 	CViewerControls m_Controls;
 	CViewerGestures m_Gestures;
 	bool m_ShowControls = true;
+	// What the export menu was last set to. A viewer that is asked for a video
+	// through the page brings its own settings; one that is asked through its
+	// own controls has only what is on them, so what is not on them stays as
+	// it was between one export and the next.
+	bool m_ExportAudio = true;
+	int m_ExportFps = 60;
 	// Dragging along the seek bar stops the demo where the pointer puts it,
 	// and lets it go on afterwards only if it was going on before.
 	bool m_Seeking = false;
@@ -186,6 +192,11 @@ public:
 	 * @return `true` when there was no export running already.
 	 */
 	bool RequestExport(const CVideoExportSettings &Settings);
+	/**
+	 * Asks for a video of the given size, with the sound and the rate the
+	 * export menu was last set to. What the bar's own export button does.
+	 */
+	void ExportFromControls(int Width, int Height);
 	/**
 	 * Asks for the export that is running to be thrown away, along with its
 	 * unfinished file. Done before the next frame, as with `RequestExport`.

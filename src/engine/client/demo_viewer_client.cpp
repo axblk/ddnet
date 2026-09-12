@@ -447,8 +447,12 @@ void CDemoViewerClient::RenderControls()
 	else
 		str_copy(aSpectating, Spectating() == SPEC_FOLLOW ? "Follow" : "Free view");
 
+	char aFps[16];
+	str_format(aFps, sizeof(aFps), "%d fps", m_ExportFps);
+
 	// Left to right, the way a video player has it: what it is doing, how fast,
-	// how far along, and off on the other side what is being watched.
+	// how far along, and off on the other side what is being watched and what
+	// to make a video of.
 	enum
 	{
 		ITEM_SEEK,
@@ -460,8 +464,18 @@ void CDemoViewerClient::RenderControls()
 		ITEM_TIME,
 		ITEM_SPACER,
 		ITEM_SPECTATE,
+		ITEM_EXPORT,
+		// What the export menu offers: two things to set, and three sizes to
+		// ask for - picking a size is what starts it.
+		ITEM_EXPORT_SOUND,
+		ITEM_EXPORT_FPS,
+		ITEM_EXPORT_AS_SHOWN,
+		ITEM_EXPORT_720,
+		ITEM_EXPORT_1080,
 		NUM_ITEMS,
 	};
+	// The menu of the export button, told apart from the one the eye opens.
+	constexpr int MenuExport = 1;
 	// The players to pick from, and what picking one means. A demo a client
 	// recorded is a demo of whoever recorded it, and the button then only
 	// says whether to look over their shoulder or to look around: the list of
@@ -479,6 +493,9 @@ void CDemoViewerClient::RenderControls()
 	}
 
 	std::vector<CViewerControls::SItem> vItems(NUM_ITEMS + vPickable.size());
+	// A browser without an encoder cannot make a video, and says so before
+	// anything is asked of it.
+	const bool CanExport = VideoEncodingSupported();
 	CViewerControls::SItem *aItems = vItems.data();
 	aItems[ITEM_SEEK].m_Type = CViewerControls::EItem::SLIDER;
 	aItems[ITEM_SEEK].m_Value = Progress();
@@ -498,6 +515,28 @@ void CDemoViewerClient::RenderControls()
 	aItems[ITEM_SPECTATE].m_Icon = CViewerControls::EIcon::EYE;
 	aItems[ITEM_SPECTATE].m_pText = aSpectating;
 	aItems[ITEM_SPECTATE].m_OpensMenu = !vPickable.empty();
+	aItems[ITEM_EXPORT].m_Icon = IsExporting ? CViewerControls::EIcon::STOP : CViewerControls::EIcon::SAVE;
+	aItems[ITEM_EXPORT].m_pText = IsExporting ? aExportProgress : nullptr;
+	aItems[ITEM_EXPORT].m_OpensMenu = !IsExporting;
+	aItems[ITEM_EXPORT].m_MenuId = MenuExport;
+	aItems[ITEM_EXPORT].m_Hidden = !CanExport;
+	aItems[ITEM_EXPORT_SOUND].m_pText = "Sound";
+	aItems[ITEM_EXPORT_SOUND].m_Active = m_ExportAudio;
+	aItems[ITEM_EXPORT_SOUND].m_KeepsMenu = true;
+	aItems[ITEM_EXPORT_FPS].m_pText = aFps;
+	aItems[ITEM_EXPORT_FPS].m_KeepsMenu = true;
+	aItems[ITEM_EXPORT_AS_SHOWN].m_Icon = CViewerControls::EIcon::SAVE;
+	aItems[ITEM_EXPORT_AS_SHOWN].m_pText = "As shown";
+	aItems[ITEM_EXPORT_720].m_Icon = CViewerControls::EIcon::SAVE;
+	aItems[ITEM_EXPORT_720].m_pText = "1280 x 720";
+	aItems[ITEM_EXPORT_1080].m_Icon = CViewerControls::EIcon::SAVE;
+	aItems[ITEM_EXPORT_1080].m_pText = "1920 x 1080";
+	for(int i = ITEM_EXPORT_SOUND; i <= ITEM_EXPORT_1080; ++i)
+	{
+		aItems[i].m_InMenu = true;
+		aItems[i].m_MenuId = MenuExport;
+		aItems[i].m_Hidden = !CanExport || IsExporting;
+	}
 	for(size_t i = 0; i < vPickable.size(); ++i)
 	{
 		CViewerControls::SItem &Item = aItems[NUM_ITEMS + i];
@@ -574,9 +613,36 @@ void CDemoViewerClient::RenderControls()
 	case ITEM_SPECTATE:
 		SpectateStep(1);
 		break;
+	case ITEM_EXPORT_SOUND:
+		m_ExportAudio = !m_ExportAudio;
+		break;
+	case ITEM_EXPORT_FPS:
+		m_ExportFps = m_ExportFps == 60 ? 30 : 60;
+		break;
+	case ITEM_EXPORT_AS_SHOWN:
+		ExportFromControls(Graphics()->ScreenWidth(), Graphics()->ScreenHeight());
+		break;
+	case ITEM_EXPORT_720:
+		ExportFromControls(1280, 720);
+		break;
+	case ITEM_EXPORT_1080:
+		ExportFromControls(1920, 1080);
+		break;
 	default:
 		break;
 	}
+}
+
+void CDemoViewerClient::ExportFromControls(int Width, int Height)
+{
+	CVideoExportSettings Settings;
+	// An encoder counts in whole pairs of lines, so a window of an odd height
+	// is asked for one line less rather than refused.
+	Settings.m_Width = std::max(Width & ~1, 2);
+	Settings.m_Height = std::max(Height & ~1, 2);
+	Settings.m_FPS = m_ExportFps;
+	Settings.m_Audio = m_ExportAudio;
+	RequestExport(Settings);
 }
 
 void CDemoViewerClient::RenderWindowFrame()

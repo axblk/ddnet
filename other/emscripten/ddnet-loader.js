@@ -194,6 +194,56 @@ const DDNetLoader = (() => {
 		return { show, hide };
 	}
 
+	// The same pictures the viewers draw on their own buttons, as the browser
+	// draws pictures: one square outline each, in whatever colour the button
+	// they sit on is written in. They are named after `CViewerControls::EIcon`
+	// in `src/engine/client/viewer_controls.h` and drawn to say the same
+	// thing, so that a page and the program behind it do not offer the same
+	// button with two different pictures on it.
+	const ICONS = {
+		menu: '<rect x="3" y="5" width="18" height="2.6" rx="1.3"/><rect x="3" y="10.7" width="18" height="2.6" rx="1.3"/><rect x="3" y="16.4" width="18" height="2.6" rx="1.3"/>',
+		detail: '<path d="M12 1.5 13.9 9.1 21.5 11 13.9 12.9 12 20.5 10.1 12.9 2.5 11 10.1 9.1Z"/>',
+		entities: '<rect x="3" y="3" width="8" height="8" rx="1.6"/><rect x="13" y="3" width="8" height="8" rx="1.6"/><rect x="3" y="13" width="8" height="8" rx="1.6"/><rect x="13" y="13" width="8" height="8" rx="1.6"/>',
+		play: '<path d="M7.5 3.8 20.5 12 7.5 20.2Z"/>',
+		pause: '<rect x="5.5" y="3.5" width="4.4" height="17" rx="2.2"/><rect x="14.1" y="3.5" width="4.4" height="17" rx="2.2"/>',
+		restart: '<rect x="3.5" y="3.5" width="3.2" height="17" rx="1.6"/><path d="M20.5 3.8 20.5 20.2 8.4 12Z"/>',
+		minus: '<rect x="3" y="10.7" width="18" height="2.6" rx="1.3"/>',
+		plus: '<rect x="3" y="10.7" width="18" height="2.6" rx="1.3"/><rect x="10.7" y="3" width="2.6" height="18" rx="1.3"/>',
+		fit: '<rect x="2.7" y="4.7" width="18.6" height="14.6" rx="2" fill="none" stroke="currentColor" stroke-width="2.4"/><rect x="6.6" y="8.6" width="10.8" height="6.8" opacity="0.55"/>',
+		save: '<path d="M12 2.8V12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M8 8.8 12 13 16 8.8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.8 15.4v3.4a1.4 1.4 0 0 0 1.4 1.4h13.6a1.4 1.4 0 0 0 1.4-1.4v-3.4" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
+		save_all: '<path d="M7 2.8V9.6M4.2 7 7 10 9.8 7M1.6 13.2v3a1.4 1.4 0 0 0 1.4 1.4h8a1.4 1.4 0 0 0 1.4-1.4v-3M17 6.4V13.2M14.2 10.6 17 13.6 19.8 10.6M11.6 16.8v3a1.4 1.4 0 0 0 1.4 1.4h8a1.4 1.4 0 0 0 1.4-1.4v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+		stop: '<rect x="4.5" y="4.5" width="15" height="15" rx="3"/>',
+		eye: '<path d="M12 4.6C5.6 4.6 1.8 12 1.8 12s3.8 7.4 10.2 7.4S22.2 12 22.2 12 18.4 4.6 12 4.6Z"/><circle cx="12" cy="12" r="2.7" fill="#000"/>',
+		freeview: '<path d="M12 1.6 15.2 6.2H8.8ZM12 22.4 8.8 17.8h6.4ZM1.6 12 6.2 8.8v6.4ZM22.4 12 17.8 15.2V8.8Z"/><rect x="10.9" y="4.6" width="2.2" height="14.8" rx="1.1"/><rect x="4.6" y="10.9" width="14.8" height="2.2" rx="1.1"/>',
+		fullscreen: '<path d="M3.4 9.6V3.4h6.2M20.6 9.6V3.4h-6.2M3.4 14.4v6.2h6.2M20.6 14.4v6.2h-6.2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
+	};
+
+	function icon(name) {
+		const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		svg.setAttribute("viewBox", "0 0 24 24");
+		svg.setAttribute("aria-hidden", "true");
+		svg.setAttribute("focusable", "false");
+		svg.innerHTML = ICONS[name] || "";
+		return svg;
+	}
+
+	// Every button that named a picture in the markup gets it, so that a page
+	// says what is on its buttons where it says what its buttons are.
+	function paintIcons(root) {
+		for (const element of (root || document).querySelectorAll("[data-icon]")) {
+			const wanted = element.dataset.icon;
+			if (element.dataset.painted === wanted) {
+				continue;
+			}
+			element.dataset.painted = wanted;
+			const drawn = element.querySelector("svg");
+			if (drawn !== null) {
+				drawn.remove();
+			}
+			element.prepend(icon(wanted));
+		}
+	}
+
 	// Filling the screen is the browser's to do and only out of a click of its
 	// own. What goes full screen is the page and not the canvas: a canvas on
 	// its own takes the controls off the screen with it, since they are beside
@@ -238,8 +288,16 @@ const DDNetLoader = (() => {
 		}
 		const update = () => {
 			const on = isFullscreen();
-			button.textContent = on ? "Leave full screen" : "Full screen";
-			button.title = on ? "Escape" : "";
+			const says = on ? "Leave full screen" : "Full screen";
+			// A button with a picture on it says what it does in the words a
+			// screen reader and a tooltip use; one with words on it says it in
+			// those words. Writing over a picture would rub it out.
+			if (button.dataset.icon === undefined) {
+				button.textContent = says;
+			}
+			button.setAttribute("aria-label", says);
+			button.setAttribute("aria-pressed", on ? "true" : "false");
+			button.title = on ? `${says} (Escape)` : says;
 			if (!on && screen.orientation && screen.orientation.unlock) {
 				screen.orientation.unlock();
 			}
@@ -1618,6 +1676,31 @@ self.onmessage = async event => {
 		 */
 		fullscreen(button, options) {
 			return fullscreen(button, options);
+		},
+
+		/**
+		 * One of the pictures the viewers draw on their own buttons, as an
+		 * `<svg>` element to put on a button of the page's own. The names are
+		 * the ones `CViewerControls::EIcon` uses, in lower case: `menu`,
+		 * `detail`, `entities`, `play`, `pause`, `restart`, `minus`, `plus`,
+		 * `fit`, `save`, `save_all`, `stop`, `eye`, `freeview` and
+		 * `fullscreen`.
+		 */
+		icon(name) {
+			return icon(name);
+		},
+
+		/**
+		 * Draws the picture every `data-icon` element under `root` asks for,
+		 * so that markup can name what is on a button where it says what the
+		 * button is. Calling it again only draws what has changed, which is
+		 * how a button swaps its picture - `data-icon` is set and this is
+		 * called.
+		 *
+		 * @param root Where to look, the whole document otherwise.
+		 */
+		paintIcons(root) {
+			return paintIcons(root);
 		},
 
 		/**

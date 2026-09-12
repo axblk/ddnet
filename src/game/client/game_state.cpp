@@ -817,8 +817,14 @@ void CGameState::RebuildGameWorld()
 			SnapshotClient.m_HasExtendedCharacter ? &SnapshotClient.m_ExtendedCharacter : nullptr,
 			GameTeam, ClientId == m_LocalClientId);
 	}
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
+	// Everything that is not a player: only a game that guesses ahead needs
+	// these in a world of its own, because only it has to carry them further
+	// than the last snapshot. A demo draws them out of the snapshot itself and
+	// asks the world for nothing but the tuning of the place they are in.
 	for(const CEntitySnapshot &Entity : m_vEntities)
 		m_GameWorld.NetObjAdd(Entity.m_Id, Entity.m_Type, Entity.m_vData.data(), Entity.m_HasEntityEx ? &Entity.m_EntityEx : nullptr);
+#endif
 	m_GameWorld.NetObjEnd();
 }
 

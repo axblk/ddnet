@@ -490,6 +490,12 @@ void CGameWorld::NetCharAdd(int ObjId, CNetObj_Character *pCharObj, CNetObj_DDNe
 	}
 }
 
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
+// Takes a projectile, a pickup or a laser out of a snapshot and keeps it in
+// this world, so that a game that guesses ahead can carry it further than the
+// snapshot it came in. A demo is never ahead of anything and draws these
+// straight out of the snapshot, so the two builds that only watch one leave
+// this out - and with it every entity that is not a player.
 void CGameWorld::NetObjAdd(int ObjId, int ObjType, const void *pObjData, const CNetObj_EntityEx *pDataEx)
 {
 	if((ObjType == NETOBJTYPE_PROJECTILE || ObjType == NETOBJTYPE_DDRACEPROJECTILE || ObjType == NETOBJTYPE_DDNETPROJECTILE) && m_WorldConfig.m_PredictWeapons)
@@ -645,6 +651,7 @@ void CGameWorld::NetObjAdd(int ObjId, int ObjType, const void *pObjData, const C
 		}
 	}
 }
+#endif
 
 void CGameWorld::NetObjEnd()
 {

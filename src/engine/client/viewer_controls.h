@@ -108,6 +108,8 @@ public:
 		SAVE_ALL,
 		STOP,
 		EYE,
+		/** Arrows to all four sides: a camera that is nobody's to follow. */
+		FREEVIEW,
 		FULLSCREEN,
 	};
 
@@ -170,11 +172,30 @@ public:
 		 */
 		bool m_Hidden = false;
 		/**
-		 * Put in the menu that opens under the corner rather than beside the
-		 * other buttons. Only where the controls are in a corner; a bar has
-		 * the room and shows everything.
+		 * Put in the menu rather than in the row of buttons. What is asked for
+		 * once and then left alone goes there, and so does a list too long to
+		 * be a row - the players of a demo, say.
 		 */
 		bool m_InMenu = false;
+		/**
+		 * Opens its menu rather than being reported as pressed. Where nothing
+		 * opens the first menu, the bar adds a button of its own at the end of
+		 * the row for it.
+		 */
+		bool m_OpensMenu = false;
+		/**
+		 * Leaves the menu open when it is picked. For a row that changes
+		 * something rather than doing something, so that two of them can be
+		 * changed without opening the menu twice.
+		 */
+		bool m_KeepsMenu = false;
+		/**
+		 * Which menu this is in, or opens: items that say the same number
+		 * belong together. A bar with two things to unfold - who to watch and
+		 * what to make a video of - keeps them apart with this, and one with a
+		 * single menu never has to say anything.
+		 */
+		int m_MenuId = 0;
 	};
 
 	/**
@@ -253,6 +274,7 @@ private:
 	ITextRender *m_pTextRender = nullptr;
 	EPlacement m_Placement = EPlacement::BOTTOM_BAR;
 	bool m_MenuOpen = false;
+	int m_OpenMenuId = 0;
 	// Where the pointer was, to tell it having moved from it being somewhere.
 	vec2 m_LastMousePos = vec2(-1.0f, -1.0f);
 	std::chrono::nanoseconds m_ShownUntil{};

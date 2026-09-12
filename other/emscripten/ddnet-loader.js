@@ -41,9 +41,9 @@ const DDNetLoader = (() => {
 	const START_OPTIONS = [
 		"accept", "acceptLinks", "arguments", "canvas", "controls", "dataBase", "file", "fileArgument",
 		"fileName", "homePath", "module", "needsWebGpu", "onExit", "onOutput", "onProgress", "persist",
-		"scriptUrl", "sweepVideoScratch", "urlParams", "videoSink",
+		"programName", "scriptUrl", "signal", "sweepVideoScratch", "urlParams", "videoSink",
 	];
-	const PAGE_OPTIONS = START_OPTIONS.concat(["elements", "programName"]);
+	const PAGE_OPTIONS = START_OPTIONS.concat(["elements"]);
 	// A render takes what the command line of the render tool takes, plus the
 	// few things every program here takes. `sweepVideoScratch` and `arguments`
 	// are in it because the worker a render runs in calls back in through the
@@ -51,8 +51,8 @@ const DDNetLoader = (() => {
 	const RENDER_OPTIONS = [
 		"arguments", "audio", "chat", "codec", "crf", "dataBase", "demo", "follow", "fps", "height",
 		"homePath", "hud", "module", "moduleName", "name", "onOutput", "onProgress", "onRenderProgress",
-		"onStart", "output", "preset", "programName", "scriptUrl", "settings", "sweepVideoScratch",
-		"videoSink", "width", "worker",
+		"onStart", "output", "preset", "programName", "scriptUrl", "settings", "signal",
+		"sweepVideoScratch", "videoSink", "width", "worker",
 	];
 	const OPTION_SHAPES = {
 		accept: "array", acceptLinks: "boolean", arguments: "array", audio: "boolean", canvas: "canvas",
@@ -62,14 +62,15 @@ const DDNetLoader = (() => {
 		name: "string", needsWebGpu: "boolean", onExit: "function", onOutput: "function",
 		onProgress: "function", onRenderProgress: "function", onStart: "function", output: "string",
 		persist: "boolean", preset: "string", programName: "string", scriptUrl: "string", settings: "array",
-		sweepVideoScratch: "boolean", urlParams: "array", width: "number", worker: "boolean",
+		signal: "signal", sweepVideoScratch: "boolean", urlParams: "array", width: "number",
+		worker: "boolean",
 	};
 
 	// What a shape is called when it is being asked for, so that a complaint
 	// reads as a sentence rather than as a table lookup.
 	const SHAPE_NAMES = {
 		array: "an array", boolean: "true or false", canvas: "a canvas", function: "a function",
-		number: "a number", object: "an object", string: "a string",
+		number: "a number", object: "an object", signal: "an AbortSignal", string: "a string",
 	};
 
 	function hasShape(value, shape) {
@@ -85,6 +86,8 @@ const DDNetLoader = (() => {
 			return typeof value === "number" && isFinite(value);
 		case "object":
 			return typeof value === "object" && value !== null;
+		case "signal":
+			return typeof value === "object" && value !== null && "aborted" in value && typeof value.addEventListener === "function";
 		default:
 			return typeof value === shape;
 		}
@@ -658,8 +661,19 @@ const DDNetLoader = (() => {
 	/**
 	 * One running program. What a page gets back from `start`.
 	 */
-	class Instance {
+	// Why a stop is a stop: an `AbortSignal` says so in its own words if it
+	// was given a reason, and in ours if it was not.
+	const abortError = signal => signal.reason !== undefined && signal.reason !== null
+		? signal.reason
+		: fail("Stopped", "This was stopped.");
+
+	class Instance extends EventTarget {
 		constructor(options) {
+			super();
+			// Which kinds of event somebody is listening for, so that output
+			// nobody is listening to still reaches the console and output that
+			// somebody is listening to does not reach it twice.
+			this.listened = new Set();
 			this.options = options;
 			// A program that draws into a video file rather than onto the page
 			// has no canvas, and nothing here may assume one.
@@ -676,9 +690,25 @@ const DDNetLoader = (() => {
 			});
 		}
 
+		addEventListener(type, listener, options) {
+			this.listened.add(type);
+			super.addEventListener(type, listener, options);
+		}
+
+		// Both ways at once, on purpose: the callbacks were here first and the
+		// three own pages use them, and an event is what a page embedding one
+		// of these would rather have.
+		say(type, detail) {
+			this.dispatchEvent(new CustomEvent(type, { detail: detail }));
+		}
+
 		output(message, kind) {
+			this.say("output", { message: message, kind: kind || {} });
 			if (this.options.onOutput) {
 				this.options.onOutput(message, kind || {});
+			} else if (this.listened.has("output")) {
+				// Somebody is listening, so the console would only say it
+				// again.
 			} else if (kind && kind.error) {
 				console.error(message);
 			} else {
@@ -687,6 +717,7 @@ const DDNetLoader = (() => {
 		}
 
 		progress(text) {
+			this.say("progress", { text: text });
 			if (this.options.onProgress) {
 				this.options.onProgress(text);
 			}
@@ -958,6 +989,15 @@ const DDNetLoader = (() => {
 			if (typeof options.module !== "function") {
 				throw fail("BadOption", "DDNetLoader needs the program's factory, for example `module: DDNetDemoViewer`");
 			}
+			// A signal that is already aborted is a program that is not
+			// started, and one aborted later is a program asked to stop. Both
+			// come back as what the signal was aborted with.
+			if (options.signal) {
+				if (options.signal.aborted) {
+					throw abortError(options.signal);
+				}
+				options.signal.addEventListener("abort", () => this.quit(), { once: true });
+			}
 			// Said once, and said here: what follows would say it a hundred
 			// times, in the words of whatever failed first.
 			const problem = await supportError(options.needsWebGpu === true);
@@ -992,7 +1032,12 @@ const DDNetLoader = (() => {
 				// Where a video is written while it is made, see `videoSink`.
 				ddnetVideoSink: info => instance.videoSink(info),
 				// How far a render has got, once a second while it runs.
-				ddnetRenderProgress: options.onRenderProgress,
+				ddnetRenderProgress: status => {
+					instance.say("renderprogress", status);
+					if (options.onRenderProgress) {
+						options.onRenderProgress(status);
+					}
+				},
 				// Where `data` is, for a page that keeps it somewhere other than
 				// next to itself. A program from another origin brings its own,
 				// so that is where to look unless the page says otherwise. Read
@@ -1158,6 +1203,7 @@ const DDNetLoader = (() => {
 				document.body.style.cursor = "default";
 			}
 			this.output(`${this.options.programName || "The program"} closed.`, { bold: true });
+			this.say("exit", {});
 			if (this.options.onExit) {
 				this.options.onExit();
 			}
@@ -1302,6 +1348,23 @@ self.onmessage = async event => {
 		// tidy-alphabetical-end
 	];
 
+	// What a render hands to whoever wants to watch it: the same events the
+	// page gets as callbacks, and the way to stop it.
+	class RenderHandle extends EventTarget {
+		constructor(stop) {
+			super();
+			this.stop = stop;
+		}
+
+		say(type, detail) {
+			this.dispatchEvent(new CustomEvent(type, { detail: detail }));
+		}
+
+		quit() {
+			this.stop();
+		}
+	}
+
 	async function renderInWorker(options, loaderUrl) {
 		// A worker inherits the page's isolation, so what the page cannot do
 		// the worker cannot either - and it is said here, where the page is
@@ -1342,20 +1405,31 @@ self.onmessage = async event => {
 		// to be the one to answer for it: without this the render would be over
 		// and the promise still waiting.
 		var stopRender = () => worker.terminate();
+		const handle = new RenderHandle(() => stopRender());
 		const finished = new Promise((resolve, reject) => {
-			stopRender = () => {
+			stopRender = (reason) => {
 				worker.terminate();
-				reject(fail("RenderStopped", "The render was stopped."));
+				reject(reason !== undefined ? reason : fail("RenderStopped", "The render was stopped."));
 			};
+			if (options.signal) {
+				if (options.signal.aborted) {
+					reject(abortError(options.signal));
+					worker.terminate();
+					return;
+				}
+				options.signal.addEventListener("abort", () => stopRender(abortError(options.signal)), { once: true });
+			}
 			worker.onmessage = event => {
 				const message = event.data;
 				if (message.type === "output") {
+					handle.say("output", { message: message.message, kind: message.kind || {} });
 					if (options.onOutput) {
 						options.onOutput(message.message, message.kind || {});
 					}
 					return;
 				}
 				if (message.type === "progress") {
+					handle.say("renderprogress", message.status);
 					if (options.onRenderProgress) {
 						options.onRenderProgress(message.status);
 					}
@@ -1375,7 +1449,7 @@ self.onmessage = async event => {
 			worker.postMessage(request, transfer);
 		});
 		if (options.onStart) {
-			options.onStart({ quit: () => stopRender() });
+			options.onStart(handle);
 		}
 		return await finished;
 	}
@@ -1746,9 +1820,19 @@ self.onmessage = async event => {
 		 * @param options.controls `false` leaves off the bar of controls a
 		 * viewer otherwise draws over what it shows, for a page that puts its
 		 * own beside the canvas.
+		 * @param options.signal An `AbortSignal`. Aborting it asks the program
+		 * to stop; aborting it before the call starts nothing at all, and
+		 * either way the promise ends with whatever the signal was aborted
+		 * with.
 		 * @param options.onOutput Called for every line the program writes.
 		 * @param options.onProgress Called while the program is being fetched.
 		 * @param options.onExit Called once the program has stopped.
+		 *
+		 * The instance is also an `EventTarget`, which is the other way of
+		 * hearing the same three things: `output` with
+		 * `{detail: {message, kind}}`, `progress` with `{detail: {text}}` and
+		 * `exit`. A listener and a callback can both be there; output nobody
+		 * listens to and nobody was handed goes to the console.
 		 *
 		 * @returns a promise for the running instance.
 		 */
@@ -1979,6 +2063,13 @@ self.onmessage = async event => {
 		 * @param options.videoSink Where the video is written while it is made.
 		 * A `WritableStream` can go to the worker with it; a function cannot,
 		 * and is only asked here.
+		 * @param options.signal An `AbortSignal`. Aborting it stops the render
+		 * and ends the promise with whatever the signal was aborted with; a
+		 * render that is stopped without one ends with `RenderStopped`.
+		 *
+		 * What `onStart` is handed is an `EventTarget` as well: `output` and
+		 * `renderprogress` are the same two things the callbacks say, and
+		 * `quit()` stops it.
 		 *
 		 * @returns a promise for the finished MP4 as a `Blob`.
 		 */
@@ -2005,6 +2096,11 @@ self.onmessage = async event => {
 				options.onStart(instance);
 			}
 			await instance.finished;
+			// A render that was called off is not a render that failed, and
+			// whoever called it off is told so in their own words.
+			if (options.signal && options.signal.aborted) {
+				throw abortError(options.signal);
+			}
 			if (instance.video == null) {
 				throw fail("RenderFailed", "The demo was not rendered into a video, see the output for what went wrong");
 			}

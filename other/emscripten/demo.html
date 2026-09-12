@@ -53,8 +53,9 @@
 			</div>
 		</div>
 		<script src="ddnet-demo-viewer.js"></script>
-		<script src="ddnet-loader.js"></script>
-		<script>
+		<script type="module">
+			import DDNetLoader from "./ddnet-loader.js";
+
 			// A demo is dropped onto the window, or named as `demo.html#demo=<url>`.
 			const started = DDNetLoader.page({
 				module: DDNetDemoViewer,
@@ -69,8 +70,7 @@
 					error: document.getElementById('error'),
 				},
 			});
-		</script>
-		<script>
+
 			// What the bar does. The viewer answers to the keyboard as well, but a
 			// page shows no key bindings and nobody would go looking for them, so
 			// everything it can do has a button here. The other end of these is the

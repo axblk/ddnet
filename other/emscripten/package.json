@@ -1,0 +1,43 @@
+{
+	"name": "ddnet-loader",
+	"version": "1.0.0",
+	"description": "Run DDNet, its demo viewer and its map viewer in a browser: one canvas, one call, and a handle to steer them with.",
+	"license": "Zlib",
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./ddnet-loader.d.ts",
+			"default": "./ddnet-loader.js"
+		},
+		"./viewer.css": "./ddnet-viewer.css",
+		"./page.css": "./ddnet-page.css",
+		"./coi-serviceworker.js": "./coi-serviceworker.js",
+		"./package.json": "./package.json"
+	},
+	"types": "./ddnet-loader.d.ts",
+	"files": [
+		"README.md",
+		"coi-serviceworker.js",
+		"ddnet-loader.d.ts",
+		"ddnet-loader.js",
+		"ddnet-page.css",
+		"ddnet-viewer.css"
+	],
+	"keywords": [
+		"ddnet",
+		"teeworlds",
+		"demo",
+		"map",
+		"webassembly",
+		"emscripten"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ddnet/ddnet.git",
+		"directory": "other/emscripten"
+	},
+	"homepage": "https://ddnet.org/",
+	"engines": {
+		"node": ">=18"
+	}
+}

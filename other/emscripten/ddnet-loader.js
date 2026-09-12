@@ -11,10 +11,15 @@
 // They differ in the program they start and in what they take, not in how any
 // of it works.
 //
-// A plain script rather than a module, so that a page can use it with a plain
-// `<script>` and so can we.
-
-"use strict";
+// A module. `import DDNetLoader from "./ddnet-loader.js"` for all of it, or
+// `import { start, page } from …` for one thing at a time; a page loads it with
+// `<script type="module">`, which is what its own three pages do. A module is
+// also the only form a package can honestly offer: the alternative would be a
+// global claimed by a script, which is neither importable nor two things at
+// once - and there is no way back from a module to a global that a plain
+// `<script>` could wait for.
+//
+// Modules are strict by themselves, so nothing here says so.
 
 const DDNetLoader = (() => {
 	// What this library answers with when it refuses or cannot do something.
@@ -111,9 +116,10 @@ const DDNetLoader = (() => {
 	}
 
 	const DEFAULT_HOME_PATH = "/home/web_user/.local/share/ddnet";
-	// Where this script is, so that a worker can be given the same one. Read
-	// while it is being run, which is the only time a script can say.
-	const LOADER_URL = typeof document !== "undefined" && document.currentScript ? document.currentScript.src : null;
+	// Where this module is, so that a worker can be given the same one. A
+	// module knows this of itself, wherever it is running - which a script had
+	// to be asked for while it ran, and could only answer on a page.
+	const LOADER_URL = import.meta.url;
 	// A file named in the URL is fetched into the same place a dropped file
 	// goes. Anything larger than this is refused rather than filling the tab's
 	// memory with whatever a link pointed at.
@@ -1120,6 +1126,16 @@ const DDNetLoader = (() => {
 				// are - the blob has no directory to look next to.
 				mainScriptUrlOrBlob: program === null ? undefined : program.script,
 				locateFile: program === null ? undefined : path => new URL(path, program.base).href,
+				// What a browser will do about filling the screen, for the
+				// controls a viewer draws itself. Handed to the program rather
+				// than looked up by it: a module claims no global for anything
+				// to look up. Read by `ViewerFullscreen`, see
+				// `src/engine/client/viewer_fullscreen.cpp`.
+				ddnetFullscreen: {
+					supported: () => fullscreenSupported(),
+					active: () => isFullscreen(),
+					toggle: () => toggleFullscreen(),
+				},
 				// Where a finished video goes. Without it the export offers the
 				// file as a download, which is what somebody watching wants and
 				// a page rendering by itself does not. Read by the WebCodecs
@@ -1410,17 +1426,20 @@ const DDNetLoader = (() => {
 	const WORKER_BOOTSTRAP = `
 self.onmessage = async event => {
 	const request = event.data;
-	// The program says its name to whoever is asking, and a module loader is
-	// asking, so there is no need to know the name here.
-	let factory = null;
-	self.define = (dependencies, provide) => { factory = provide(); };
-	self.define.amd = true;
 	try {
-		importScripts(request.loaderUrl, request.scriptUrl);
-		if (factory === null) {
-			factory = self[request.moduleName];
-		}
-		const video = await DDNetLoader.render(Object.assign({}, request.options, {
+		const loader = await import(request.loaderUrl);
+		// The program is a plain script - it names itself and expects to be
+		// run as one - and a module worker has no way to run a plain script.
+		// So it is read, given a line that hands its name out, and imported as
+		// the module that makes of it. Nothing of the script itself is
+		// changed, and what it needs to find its own files it is told through
+		// \`scriptUrl\`.
+		const text = await (await fetch(request.scriptUrl)).text();
+		const wrapped = URL.createObjectURL(new Blob(
+			[text + "\\nexport default " + request.moduleName + ";"], { type: "text/javascript" }));
+		const factory = (await import(wrapped)).default;
+		URL.revokeObjectURL(wrapped);
+		const video = await loader.render(Object.assign({}, request.options, {
 			module: factory,
 			worker: false,
 			videoSink: request.sink,
@@ -1495,7 +1514,7 @@ self.onmessage = async event => {
 			transfer.push(options.videoSink);
 		}
 		const bootstrap = URL.createObjectURL(new Blob([WORKER_BOOTSTRAP], { type: "text/javascript" }));
-		const worker = new Worker(bootstrap);
+		const worker = new Worker(bootstrap, { type: "module" });
 		URL.revokeObjectURL(bootstrap);
 		// A worker that is stopped says nothing more, so whoever stopped it has
 		// to be the one to answer for it: without this the render would be over
@@ -2219,3 +2238,21 @@ self.onmessage = async event => {
 		},
 	};
 })();
+
+// Both forms of the same thing: everything at once for whoever wants to write
+// `DDNetLoader.start(…)`, and one name at a time for whoever would rather
+// import only what they use. The names are the object's own, so there is one
+// list and not two.
+export default DDNetLoader;
+export const {
+	// tidy-alphabetical-start
+	autoHide, demoControls, exportSettingsForm, fullscreen,
+	fullscreenSupported, icon, isFullscreen, mapControls, page, paintIcons,
+	render, setUrlParameters, start, supportProblem, toggleFullscreen,
+	urlParameter, version, videoCodecs, zip,
+	// tidy-alphabetical-end
+} = DDNetLoader;
+// Not as `Error`: a name at the top of a module is a name for the whole of it,
+// and this one is the browser's own further up - where the class above is
+// declared from it.
+export const DDNetLoaderError = DDNetLoader.Error;

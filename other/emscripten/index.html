@@ -18,8 +18,9 @@
 		</div>
 		<canvas id="canvas">Canvas not supported.</canvas>
 		<script src="DDNet.js"></script>
-		<script src="ddnet-loader.js"></script>
-		<script>
+		<script type="module">
+			import DDNetLoader from "./ddnet-loader.js";
+
 			// A demo, a map or a `ddnet://` link is dropped onto the window.
 			DDNetLoader.page({
 				module: DDNetClient,

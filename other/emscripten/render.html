@@ -35,8 +35,9 @@
 			<ul id="queue"></ul>
 		</div>
 		<script src="ddnet-demo-render.js"></script>
-		<script src="ddnet-loader.js"></script>
-		<script>
+		<script type="module">
+			import DDNetLoader from "./ddnet-loader.js";
+
 			// Demos are collected first and rendered afterwards, one after the
 			// other: a render uses everything the machine has, so two at once
 			// are not two at a time. The renders themselves happen in a worker,

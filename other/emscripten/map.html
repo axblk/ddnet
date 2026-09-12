@@ -40,8 +40,9 @@
 			</div>
 		</div>
 		<script src="ddnet-map-viewer.js"></script>
-		<script src="ddnet-loader.js"></script>
-		<script>
+		<script type="module">
+			import DDNetLoader from "./ddnet-loader.js";
+
 			// A map is dropped onto the window, or named as `map.html#map=<url>`.
 			const started = DDNetLoader.page({
 				module: DDNetMapViewer,
@@ -56,8 +57,7 @@
 					error: document.getElementById('error'),
 				},
 			});
-		</script>
-		<script>
+
 			// What the buttons in the corner do. Moving and zooming stay on the
 			// pointer as well, where they belong; these are for whoever has no
 			// wheel and for what a gesture cannot say. The other end of them is

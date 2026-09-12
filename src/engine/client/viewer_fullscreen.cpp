@@ -13,9 +13,10 @@
 
 // In a browser this goes through the page's loader, the same way the pages'
 // own buttons do: what a browser will do about filling the screen, and what
-// else to ask for while doing it, is knowledge that belongs there. A page put
-// together without the loader has no full screen, and asking for one then does
-// nothing rather than throwing.
+// else to ask for while doing it, is knowledge that belongs there. The loader
+// hands it over when it starts the program - it is a module and claims no
+// global name for anything to look up. A page put together without it has no
+// full screen, and asking for one then does nothing rather than throwing.
 //
 // The comparisons in that JavaScript are the loose ones. This is C++ as far as
 // the style formatter is concerned, and it writes `!==` as `!= =`.
@@ -27,7 +28,7 @@ namespace ViewerFullscreen
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 		(void)pWindow;
 		return EM_ASM_INT({
-			return typeof DDNetLoader == "undefined" || !DDNetLoader.fullscreenSupported() ? 0 : 1;
+			return !Module.ddnetFullscreen || !Module.ddnetFullscreen.supported() ? 0 : 1;
 		}) != 0;
 #else
 		return pWindow != nullptr;
@@ -39,7 +40,7 @@ namespace ViewerFullscreen
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 		(void)pWindow;
 		return EM_ASM_INT({
-			return typeof DDNetLoader == "undefined" || !DDNetLoader.isFullscreen() ? 0 : 1;
+			return !Module.ddnetFullscreen || !Module.ddnetFullscreen.active() ? 0 : 1;
 		}) != 0;
 #else
 		// What was last asked for. Somebody who leaves the full screen the way the
@@ -54,11 +55,10 @@ namespace ViewerFullscreen
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 		(void)pWindow;
 		EM_ASM({
-			if(typeof DDNetLoader == "undefined")
+			if(Module.ddnetFullscreen)
 			{
-				return;
+				Module.ddnetFullscreen.toggle();
 			}
-			DDNetLoader.toggleFullscreen();
 		});
 #else
 		// The whole screen at the resolution it already has: a viewer draws for

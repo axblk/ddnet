@@ -168,11 +168,16 @@ vec2 CStandaloneMapView::MapWorldSize()
 	return vec2(m_pGraphics->ScreenWidth(), m_pGraphics->ScreenHeight());
 }
 
-vec2 CStandaloneMapView::ViewSize() const
+vec2 CStandaloneMapView::ViewSizeForAspect(float Aspect)
 {
 	float Width, Height;
 	CalcViewSize(16.0f / 9.0f, 1.0f, 0.0f, &Width, &Height);
-	return vec2(Height * m_pGraphics->ScreenAspect(), Height);
+	return vec2(Height * Aspect, Height);
+}
+
+vec2 CStandaloneMapView::ViewSize() const
+{
+	return ViewSizeForAspect(m_pGraphics->ScreenAspect());
 }
 
 float CStandaloneMapView::FitZoom()
@@ -220,8 +225,8 @@ void CStandaloneMapView::Render(const SRenderParams &Params)
 	RenderParams.m_DebugRenderQuadClips = false;
 	RenderParams.m_DebugRenderClusterClips = false;
 	RenderParams.m_DebugRenderTileClips = false;
-	RenderParams.m_IgnoreParallax = Params.m_IgnoreParallax;
-	RenderParams.m_ViewSize = ViewSize();
+	RenderParams.m_Window = Params.m_Window;
+	RenderParams.m_ViewSize = Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f ? Params.m_ViewSize : ViewSize();
 
 	// Set up initial screen mapping
 	m_pGraphics->MapScreen(CScreenRect(0, 0, m_Width, m_Height));
@@ -339,6 +344,16 @@ bool CStandaloneMapView::SaveFullImage(const char *pPath, int TimeOffsetMillis)
 	if(!Writer.Begin(File, pPath, FullWidth, FullHeight, CImageInfo::FORMAT_RGBA))
 		return false;
 
+	// One view for the whole picture, of the picture's own shape, and every
+	// piece a window into it: a layer that moves at its own speed is then laid
+	// out across the whole map once, the way it is when the map is looked at,
+	// rather than starting again in every piece.
+	SRenderParams Whole;
+	Whole.m_ViewSize = ViewSizeForAspect(FullWidth / (float)FullHeight);
+	Whole.m_Zoom = WorldSize.x / Whole.m_ViewSize.x;
+	Whole.m_Center = WorldSize / 2.0f;
+	Whole.m_TimeOffsetMillis = TimeOffsetMillis;
+
 	std::vector<uint8_t> vBand(BandBytes);
 	CImageInfo Image;
 	for(size_t Top = 0; Top < FullHeight; Top += TileHeight)
@@ -350,9 +365,10 @@ bool CStandaloneMapView::SaveFullImage(const char *pPath, int TimeOffsetMillis)
 			// The piece that is drawn always has the shape of the surface,
 			// even where the map ends inside it; what sticks out is drawn and
 			// then left behind.
-			SRenderParams Params = ParamsForWorldRect(vec2(Left, Top), vec2(TileWidth, TileHeight));
-			Params.m_TimeOffsetMillis = TimeOffsetMillis;
-			Params.m_IgnoreParallax = true;
+			SRenderParams Params = Whole;
+			Params.m_Window = CScreenRect(
+				vec2(Left / (float)FullWidth, Top / (float)FullHeight),
+				vec2((Left + TileWidth) / (float)FullWidth, (Top + TileHeight) / (float)FullHeight));
 			// Beside the window, not in it: a picture of the whole map is the
 			// surface moved over all of it, and drawn into the window that is
 			// a sweep across the map that whoever asked for a picture never

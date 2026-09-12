@@ -306,13 +306,14 @@ bool CRenderLayerGroup::DoRender(const CRenderLayerParams &Params)
 			// which for a program that decides the view itself is not the view
 			// the game would have. Asking the game for it put every clipped
 			// group's rectangle somewhere else than the group.
-			Graphics()->MapScreen(Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f ?
-						      Graphics()->MapViewToWorld(Params.m_ViewSize * Params.m_Zoom, Params.m_Center.x, Params.m_Center.y,
-							      100.0f, 100.0f, 100.0f, 0.0f, 0.0f, Params.m_Zoom) :
-						      Graphics()->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y, 100.0f, 100.0f, 100.0f,
-							      0.0f, 0.0f, Graphics()->ScreenAspect(), Params.m_Zoom));
+			const CScreenRect WorldRect = Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f ?
+							      Graphics()->MapViewToWorld(Params.m_ViewSize * Params.m_Zoom, Params.m_Center.x, Params.m_Center.y,
+								      100.0f, 100.0f, 100.0f, 0.0f, 0.0f, Params.m_Zoom) :
+							      Graphics()->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y, 100.0f, 100.0f, 100.0f,
+								      0.0f, 0.0f, Graphics()->ScreenAspect(), Params.m_Zoom);
+			Graphics()->MapScreen(Windowed(WorldRect, Params.m_Window));
 
-			CScreenRect ScreenRect = Scaled(Graphics()->GetScreen(), ViewScale(Params));
+			CScreenRect ScreenRect = Windowed(Scaled(WorldRect, ViewScale(Params)), Params.m_Window);
 			float ScreenWidth = ScreenRect.Width();
 			float ScreenHeight = ScreenRect.Height();
 			float Left = m_pGroup->m_ClipX - ScreenRect.m_TopLeft.x;
@@ -360,8 +361,13 @@ void CRenderLayerGroup::Init()
 
 float CRenderLayerGroup::ViewScale(const CRenderLayerParams &Params) const
 {
-	const int Parallax = Params.m_IgnoreParallax ? 100 : std::max(m_pGroup->m_ParallaxX, m_pGroup->m_ParallaxY);
-	return CalcGroupViewScale(Graphics()->ScreenAspect(), g_Config.m_ClViewMaxAspect / 100.0f, Parallax);
+	const int Parallax = std::max(m_pGroup->m_ParallaxX, m_pGroup->m_ParallaxY);
+	// The shape of the view, which for a picture drawn in pieces is the shape
+	// of the whole picture and not of the piece on the surface.
+	const float Aspect = Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f ?
+				     Params.m_ViewSize.x / Params.m_ViewSize.y :
+				     Graphics()->ScreenAspect();
+	return CalcGroupViewScale(Aspect, g_Config.m_ClViewMaxAspect / 100.0f, Parallax);
 }
 
 CScreenRect CRenderLayerGroup::Scaled(const CScreenRect &Rect, float Scale)
@@ -373,10 +379,24 @@ CScreenRect CRenderLayerGroup::Scaled(const CScreenRect &Rect, float Scale)
 	return CScreenRect(Center - Half, Center + Half);
 }
 
+CScreenRect CRenderLayerGroup::Windowed(const CScreenRect &Rect, const CScreenRect &Window)
+{
+	// The whole of it is the rectangle itself, to the bit: whoever is drawing
+	// one frame rather than a picture in pieces must get exactly what they
+	// asked for, and a rectangle taken apart and put together again is not
+	// always the same number.
+	if(Window.m_TopLeft == vec2(0.0f, 0.0f) && Window.m_BottomRight == vec2(1.0f, 1.0f))
+		return Rect;
+	const vec2 Size = Rect.Size();
+	return CScreenRect(
+		Rect.m_TopLeft + Size * Window.m_TopLeft,
+		Rect.m_TopLeft + Size * Window.m_BottomRight);
+}
+
 void CRenderLayerGroup::Render(const CRenderLayerParams &Params)
 {
-	const int ParallaxX = Params.m_IgnoreParallax ? 100 : m_pGroup->m_ParallaxX;
-	const int ParallaxY = Params.m_IgnoreParallax ? 100 : m_pGroup->m_ParallaxY;
+	const int ParallaxX = m_pGroup->m_ParallaxX;
+	const int ParallaxY = m_pGroup->m_ParallaxY;
 	int ParallaxZoom = std::clamp(std::max(ParallaxX, ParallaxY), 0, 100);
 	CScreenRect ScreenRect = Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f ?
 					 Graphics()->MapViewToWorld(Params.m_ViewSize * Params.m_Zoom, Params.m_Center.x, Params.m_Center.y, ParallaxX, ParallaxY, (float)ParallaxZoom,
@@ -387,7 +407,7 @@ void CRenderLayerGroup::Render(const CRenderLayerParams &Params)
 	// sides, and a group that does not follow the world is made bigger to cover
 	// it instead - see CalcGroupViewScale. Without this, a wide screen shows
 	// what the mapper left beside their own.
-	Graphics()->MapScreen(Scaled(ScreenRect, ViewScale(Params)));
+	Graphics()->MapScreen(Windowed(Scaled(ScreenRect, ViewScale(Params)), Params.m_Window));
 }
 
 /**************

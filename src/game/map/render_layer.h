@@ -78,11 +78,17 @@ public:
 	 * look to a player, so the view is simply the window it was given.
 	 */
 	vec2 m_ViewSize = vec2(0.0f, 0.0f);
-	// Draw every group where the map itself is, whatever speed it moves at.
-	// A picture of a whole map is taken from no one place, so a layer that
-	// moves at its own speed has no one right offset either, and only this
-	// joins up between the pieces such a picture is drawn in.
-	bool m_IgnoreParallax = false;
+	/**
+	 * Which part of that view is being drawn, as fractions of it from the top
+	 * left, and the whole of it by default.
+	 *
+	 * A picture too big for one frame is drawn in pieces, and a piece is a
+	 * window into the one view all of them share rather than a view of its
+	 * own. That is what lets a layer which moves at its own speed line up
+	 * across the pieces: it is drawn once, across the whole picture, and each
+	 * piece gets the part of it that belongs there.
+	 */
+	CScreenRect m_Window = CScreenRect(0.0f, 0.0f, 1.0f, 1.0f);
 };
 
 class CRenderLayer : public CRenderComponent
@@ -147,6 +153,9 @@ protected:
 
 	float ViewScale(const CRenderLayerParams &Params) const;
 	static CScreenRect Scaled(const CScreenRect &Rect, float Scale);
+	// The part of a rectangle a window asks for, which for the whole of it is
+	// the rectangle itself.
+	static CScreenRect Windowed(const CScreenRect &Rect, const CScreenRect &Window);
 
 	CMapItemGroup *m_pGroup;
 };

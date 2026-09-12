@@ -2,6 +2,7 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "demo_viewer_client.h"
 
+#include "session_source_demo.h"
 #include "window_sdl.h"
 
 #include <base/fs.h>
@@ -69,6 +70,19 @@ namespace
 		}
 	}
 } // namespace
+
+CDemoViewerClient::CDemoViewerClient()
+{
+	// A second way through the same demo, for the export to walk at its own
+	// pace. It is made here rather than when one is asked for, because the
+	// sessions a client has are the sessions it started with.
+	auto pExportSource = std::make_unique<CDemoSessionSource>(true, [this](CDemoPlayer &DemoPlayer) { UpdateDemoIntraTimers(DemoPlayer); });
+	CDemoSessionSource *pSource = pExportSource.get();
+	m_ExportSessionId = m_SessionManager.Create(std::move(pExportSource));
+	pSource->SetLifecycleCallbacks(
+		[this]() { UpdateDemoSession(m_ExportSessionId); },
+		[this](const char *pReason) { StopDemoSession(m_ExportSessionId, pReason); });
+}
 
 void CDemoViewerClient::Configure(const char *pDemoPath, const char *pVideoPath, const CVideoExportSettings &Settings)
 {
@@ -140,16 +154,30 @@ bool CDemoViewerClient::StartExport(const CVideoExportSettings &Settings)
 	char aName[IO_MAX_PATH_LENGTH];
 	fs_split_file_extension(fs_filename(m_aDemoPath), aName, sizeof(aName));
 	str_format(m_aVideoPath, sizeof(m_aVideoPath), "videos/%s.mp4", aName);
-	// A demo standing still is written frame after identical frame, which is
-	// not what anybody means by exporting from here on.
-	SetPaused(false);
-	const char *pError = StartVideo();
+	// The export reads the demo out of a session of its own, from where
+	// whoever asked for it is looking. What they do next - seek away, pause,
+	// watch somebody else - is theirs and no longer the video's.
+	m_VideoSessionId = m_ExportSessionId;
+	const float From = Progress();
+	// An export that ended with its demo left the way through it open. It is
+	// closed here rather than there, so that what was written stays readable
+	// until somebody asks for the next one.
+	if(SessionState(m_ExportSessionId) != ESessionState::OFFLINE)
+		StopDemoSession(m_ExportSessionId, "");
+	const char *pError = PlayDemo(m_ExportSessionId);
+	if(pError == nullptr)
+	{
+		DemoSource(m_ExportSessionId).DemoPlayer().SeekPercent(std::clamp(From, 0.0f, 1.0f));
+		pError = StartVideo();
+	}
 	if(pError != nullptr)
 	{
 		log_error("videorecorder", "%s", pError);
 		m_aError[0] = '\0';
 		m_aVideoPath[0] = '\0';
 		m_ExportState = EExportState::FAILED;
+		StopDemoSession(m_ExportSessionId, "");
+		m_VideoSessionId = m_DemoSessionId;
 		return false;
 	}
 	return true;
@@ -165,9 +193,15 @@ void CDemoViewerClient::CancelExport()
 	{
 		m_pVideo->Cancel();
 	}
+	// The way through the demo that was being written is closed; the one being
+	// watched was never touched. It is closed before the encoder is let go,
+	// because a demo that is being written to a video holds the encoder and
+	// hands it its last frames as it stops.
+	StopDemoSession(m_ExportSessionId, "");
 	m_pVideo.reset();
 	m_aVideoPath[0] = '\0';
 	m_ExportState = EExportState::IDLE;
+	m_VideoSessionId = m_DemoSessionId;
 }
 
 void CDemoViewerClient::FinishExport()
@@ -187,19 +221,19 @@ void CDemoViewerClient::FinishExport()
 	log_info("videorecorder", Failed ? "Export failed" : "Export completed");
 	m_aVideoPath[0] = '\0';
 	m_ExportState = Failed ? EExportState::FAILED : EExportState::FINISHED;
-	// Writing the demo to a file played it to its end, and that ended the
-	// session it was played from. Whoever asked for the video is still sitting
-	// in front of it, so the demo is put back on, from the start and standing
-	// still.
-	const char *pError = PlayDemo();
-	if(pError == nullptr)
-	{
-		SetPaused(true);
-	}
-	else
-	{
-		log_error("client", "%s", pError);
-	}
+	// Writing the demo to a file played it to its end, which ended the session
+	// it was played from. That was the export's own way through the demo; the
+	// one being watched carried on the whole time and is where it was.
+	m_VideoSessionId = m_DemoSessionId;
+}
+
+float CDemoViewerClient::ExportProgress() const
+{
+	int First, Current, Last;
+	if(!DemoPlayer_RenderInfo(&First, &Current, &Last))
+		return 0.0f;
+	const int Total = std::max(Last - First, 0);
+	return Total == 0 ? 0.0f : std::clamp(Current - First, 0, Total) / (float)Total;
 }
 
 bool CDemoViewerClient::Paused() const
@@ -239,11 +273,10 @@ void CDemoViewerClient::UpdateAndSwap()
 
 void CDemoViewerClient::DemoPlayer_CancelActiveRender()
 {
-	if(m_pVideo != nullptr && IVideo::Current() == m_pVideo.get())
-	{
-		m_pVideo->Cancel();
-	}
-	m_pVideo.reset();
+	// Asked for while something is being drawn, and letting the encoder go
+	// there would pull it out from under the frame that is asking. The loop
+	// does it between frames instead.
+	RequestCancelExport();
 }
 
 bool CDemoViewerClient::KeyPressed(EControlKey ControlKey, bool Repeats)
@@ -416,7 +449,7 @@ void CDemoViewerClient::RenderControls()
 	// Nothing to steer, and nobody to steer it: a window that was never opened
 	// has no pointer over it, and a demo that is being written to a file is
 	// not being watched.
-	if(!m_ShowControls || m_pInput == nullptr || Exporting() || SessionState(m_DemoSessionId) != ESessionState::READY)
+	if(!m_ShowControls || m_pInput == nullptr || SessionState(m_DemoSessionId) != ESessionState::READY)
 	{
 		return;
 	}
@@ -449,6 +482,11 @@ void CDemoViewerClient::RenderControls()
 
 	char aFps[16];
 	str_format(aFps, sizeof(aFps), "%d fps", m_ExportFps);
+	// While one is being written the export button says how far it has come
+	// and stops it, because that is all there is to do about it then.
+	const bool IsExporting = Exporting();
+	char aExportProgress[16];
+	str_format(aExportProgress, sizeof(aExportProgress), "%d%%", (int)(ExportProgress() * 100.0f + 0.5f));
 
 	// Left to right, the way a video player has it: what it is doing, how fast,
 	// how far along, and off on the other side what is being watched and what
@@ -613,6 +651,11 @@ void CDemoViewerClient::RenderControls()
 	case ITEM_SPECTATE:
 		SpectateStep(1);
 		break;
+	case ITEM_EXPORT:
+		// Only reported while the menu is not what it opens, which is while
+		// one is being written.
+		RequestCancelExport();
+		break;
 	case ITEM_EXPORT_SOUND:
 		m_ExportAudio = !m_ExportAudio;
 		break;
@@ -771,11 +814,32 @@ void CDemoViewerClient::Run()
 			UpdatePendingSpectate();
 			Sound()->Update();
 			GameClient()->OnUpdate();
-			// An export takes every frame in its own time, so while one runs
-			// it decides what is drawn and the window only shows the result.
+			// An export takes every frame in its own time and may run as fast
+			// as the machine can write them. The window is drawn in between,
+			// often enough to stay usable and no more often than that: every
+			// picture drawn for whoever is watching is a picture the export
+			// does not encode.
 			if(m_pVideo != nullptr && IVideo::Current() == m_pVideo.get())
 			{
 				RenderExportFrame();
+				const std::chrono::nanoseconds Now = time_get_nanoseconds();
+				constexpr std::chrono::nanoseconds ScreenInterval = std::chrono::nanoseconds(std::chrono::seconds(1)) / 30;
+				// Only where there is a window and the export is not the demo
+				// on it: an export asked for on the command line is the whole
+				// job, and drawing it twice is time taken from it.
+				const bool Watching = m_pInput != nullptr && m_VideoSessionId != m_DemoSessionId;
+				if(Watching && Now - m_LastExportScreenRender >= ScreenInterval)
+				{
+					m_LastExportScreenRender = Now;
+					// The window measures its own clock: what is on it moves at
+					// the speed it is shown at, not at the speed frames are
+					// encoded.
+					const int64_t ExportRenderTime = m_LastRenderTime;
+					m_LastRenderTime = m_LastWindowRenderTime == 0 ? ExportRenderTime : m_LastWindowRenderTime;
+					RenderWindowFrame();
+					m_LastWindowRenderTime = m_LastRenderTime;
+					m_LastRenderTime = ExportRenderTime;
+				}
 			}
 			else if(m_pVideo != nullptr)
 			{
@@ -798,6 +862,13 @@ void CDemoViewerClient::Run()
 	}
 
 	SetState(IClient::STATE_QUITTING);
+	// The demo an export was reading from goes first, because it hands the
+	// encoder its last frames as it stops and must not be the one holding it
+	// once it is gone.
+	if(SessionState(m_ExportSessionId) != ESessionState::OFFLINE)
+	{
+		StopDemoSession(m_ExportSessionId, "");
+	}
 	if(m_pVideo != nullptr)
 	{
 		if(IVideo::Current() == m_pVideo.get())

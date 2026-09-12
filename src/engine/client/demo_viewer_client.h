@@ -24,6 +24,8 @@ class IEngineInput;
 class CDemoViewerClient : public CDemoClientBase
 {
 public:
+	CDemoViewerClient();
+
 	/**
 	 * How an export that somebody asked for is getting on. A browser cannot be
 	 * told, it has to ask: what starts an export there returns before the
@@ -59,6 +61,16 @@ public:
 	};
 
 private:
+	// The demo is read a second time for an export, out of a session of its
+	// own: what is written then owes nothing to the window it is not drawn in
+	// or to where whoever asked for it has since moved to, and watching goes
+	// on beside it.
+	CSessionId m_ExportSessionId;
+	// When the window was last drawn, which during an export is far less often
+	// than a frame is encoded. Kept apart from the export's own clock so that
+	// what is on the screen moves at the speed it is shown at.
+	int64_t m_LastWindowRenderTime = 0;
+	std::chrono::nanoseconds m_LastExportScreenRender{};
 	IEngineInput *m_pInput = nullptr;
 	bool m_Surfaceless = false;
 	std::array<bool, NUM_CONTROL_KEYS> m_aKeyWasPressed = {};
@@ -203,6 +215,8 @@ public:
 	 */
 	void RequestCancelExport() { m_CancelRequested = true; }
 
+	/** How far the export has come, between 0 and 1. */
+	float ExportProgress() const;
 	bool Paused() const;
 	float Progress() const;
 	float Speed() const;

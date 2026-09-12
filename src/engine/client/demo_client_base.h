@@ -50,6 +50,10 @@ class CDemoClientBase : public CClientWithoutConnection
 
 protected:
 	std::unique_ptr<IVideo> m_pVideo;
+	// Which session the export runs through. The same one that is being
+	// watched unless somebody made a second one for it, which is what a viewer
+	// does so that watching goes on while a video is written.
+	CSessionId m_VideoSessionId;
 	CVideoExportSettings m_Settings;
 	char m_aDemoPath[IO_MAX_PATH_LENGTH] = "";
 	// Who to follow once the demo names them, empty when nobody was asked for
@@ -97,8 +101,14 @@ protected:
 	 *
 	 * @return an error message, or `nullptr` when the demo plays.
 	 */
-	const char *PlayDemo();
-	void StopDemoSession(const char *pReason);
+	const char *PlayDemo() { return PlayDemo(m_DemoSessionId); }
+	/**
+	 * The same for a session other than the one being watched, which is how an
+	 * export gets a demo of its own to run through.
+	 */
+	const char *PlayDemo(CSessionId SessionId);
+	void StopDemoSession(const char *pReason) { StopDemoSession(m_DemoSessionId, pReason); }
+	void StopDemoSession(CSessionId SessionId, const char *pReason);
 	/**
 	 * Draws one frame into the running export and hands it to the encoder.
 	 * Does nothing while no export is running.
@@ -207,8 +217,11 @@ public:
 	const char *ErrorString() const override { return m_aError; }
 
 	const char *DemoPlayer_Play(const char *pFilename, int StorageType) override;
-	CSessionId VideoSessionId() const override { return m_DemoSessionId; }
-	bool VideoUsesOfflineAudio() const override { return false; }
+	CSessionId VideoSessionId() const override { return m_VideoSessionId; }
+	// Where the export reads from a session of its own, the sound it writes is
+	// mixed for it alone: what comes out of the speakers is the demo being
+	// watched, and the two have nothing to do with each other.
+	bool VideoUsesOfflineAudio() const override { return m_VideoSessionId != m_DemoSessionId; }
 	bool DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const override;
 
 	// The command line or the controls settled these before the export

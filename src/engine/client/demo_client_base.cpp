@@ -32,6 +32,7 @@ CDemoClientBase::CDemoClientBase()
 		[this]() { UpdateDemoSession(m_DemoSessionId); },
 		[this](const char *pReason) { StopDemoSession(pReason); });
 	m_SessionManager.SetFocused(m_DemoSessionId);
+	m_VideoSessionId = m_DemoSessionId;
 	m_StateStartTime = time_get();
 	m_LastRenderTime = time_get();
 }
@@ -239,25 +240,33 @@ const char *CDemoClientBase::DemoPlayer_Play(const char *pFilename, int StorageT
 	return PlayDemo();
 }
 
-const char *CDemoClientBase::PlayDemo()
+const char *CDemoClientBase::PlayDemo(CSessionId SessionId)
 {
-	CDemoSessionSource &Source = DemoSource(m_DemoSessionId);
+	CDemoSessionSource &Source = DemoSource(SessionId);
 	CDemoPlayer &Player = Source.DemoPlayer();
 	Player.SetListener(this);
-	SetState(IClient::STATE_LOADING);
+	// The demo on the window is what the program is doing, so opening it is the
+	// program loading. A demo opened beside it - the one an export reads from -
+	// is a state of its own, because what is on the window carries on the whole
+	// time and is not loading anything.
+	const bool Focused = SessionId == m_DemoSessionId;
+	if(Focused)
+		SetState(IClient::STATE_LOADING);
+	else
+		Source.SetState(ESessionState::LOADING_MAP);
 	if(Player.Load(Storage(), m_pConsole, m_aDemoPath, IStorage::TYPE_ALL_OR_ABSOLUTE))
 		return Player.ErrorMessage();
 	Source.SetSixup(Player.IsSixup());
 
 	const CMapInfo *pMapInfo = Player.GetMapInfo();
-	const char *pError = LoadMapSearch(m_DemoSessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
+	const char *pError = LoadMapSearch(SessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
 	if(pError != nullptr)
 	{
 		// A demo may carry its map, which is the only copy of it a machine that
 		// only renders demos is going to have.
 		if(!Player.ExtractMap(Storage()))
 			return pError;
-		pError = LoadMapSearch(m_DemoSessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
+		pError = LoadMapSearch(SessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
 		if(pError != nullptr)
 			return pError;
 	}
@@ -268,11 +277,14 @@ const char *CDemoClientBase::PlayDemo()
 	DemoServerInfo.m_MapCrc = pMapInfo->m_Crc;
 	DemoServerInfo.m_MapSize = pMapInfo->m_Size;
 
-	SetState(IClient::STATE_DEMOPLAYBACK);
-	GameClient()->OnConnected(m_DemoSessionId);
+	if(Focused)
+		SetState(IClient::STATE_DEMOPLAYBACK);
+	else
+		Source.SetState(ESessionState::READY);
+	GameClient()->OnConnected(SessionId);
 	Source.PrepareSnapshots();
 	Player.Play();
-	GameClient()->OnEnterGame(m_DemoSessionId);
+	GameClient()->OnEnterGame(SessionId);
 	return nullptr;
 }
 
@@ -281,7 +293,7 @@ const char *CDemoClientBase::StartVideo()
 	Graphics()->WaitForIdle();
 	const int StorageType = fs_is_relative_path(m_aVideoPath) ? IStorage::TYPE_SAVE : IStorage::TYPE_ABSOLUTE;
 	m_pVideo = CreateVideo(Graphics(), Sound(), Storage(), m_Settings, m_LocalStartTime, m_aVideoPath, StorageType, false, true);
-	CDemoPlayer &Player = DemoSource(m_DemoSessionId).DemoPlayer();
+	CDemoPlayer &Player = DemoSource(m_VideoSessionId).DemoPlayer();
 	// A demo says how long it is before a frame of it is drawn, so the file
 	// can say so too - from its first fragment, rather than only once it is
 	// closed. What is left of the demo at the speed it is played at, which is
@@ -301,18 +313,18 @@ const char *CDemoClientBase::StartVideo()
 	return nullptr;
 }
 
-void CDemoClientBase::StopDemoSession(const char *pReason)
+void CDemoClientBase::StopDemoSession(CSessionId SessionId, const char *pReason)
 {
 	if(pReason != nullptr && pReason[0] != '\0' && m_aError[0] == '\0')
 		str_copy(m_aError, pReason);
-	CDemoSessionSource &Source = DemoSource(m_DemoSessionId);
+	CDemoSessionSource &Source = DemoSource(SessionId);
 	char aReason[256];
 	str_copy(aReason, pReason == nullptr ? "" : pReason);
 	Source.DemoPlayer().Stop(aReason);
 	if(m_State < IClient::STATE_QUITTING)
-		GameClient()->OnSessionClosed(m_DemoSessionId);
+		GameClient()->OnSessionClosed(SessionId);
 	Source.SetState(ESessionState::OFFLINE);
-	Connection(m_DemoSessionId, CONN_MAIN).ResetSnapshots();
+	Connection(SessionId, CONN_MAIN).ResetSnapshots();
 	Source.ResetMetadata();
 }
 
@@ -320,7 +332,7 @@ bool CDemoClientBase::DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, 
 {
 	if(m_pVideo == nullptr)
 		return false;
-	const IDemoPlayer::CInfo *pInfo = DemoSource(m_DemoSessionId).DemoPlayer().BaseInfo();
+	const IDemoPlayer::CInfo *pInfo = DemoSource(m_VideoSessionId).DemoPlayer().BaseInfo();
 	*pFirstTick = pInfo->m_FirstTick;
 	*pCurrentTick = pInfo->m_CurrentTick;
 	*pLastTick = pInfo->m_LastTick;
@@ -337,11 +349,17 @@ void CDemoClientBase::RenderExportFrame()
 	IVideo *pVideo = IVideo::Current();
 	if(pVideo == nullptr || !pVideo->BeginVideoFrameRender())
 		return;
-	GameClient()->OnRenderVideoPrepare(m_DemoSessionId, pVideo->Settings());
+	GameClient()->OnRenderVideoPrepare(m_VideoSessionId, pVideo->Settings());
 	GameClient()->OnRender();
 	if(pVideo->HasAudio())
 	{
-		pVideo->NextAudioFrameTimeline([this](short *pFinalOut, unsigned Frames) { Sound()->Mix(pFinalOut, Frames); });
+		const bool Offline = VideoUsesOfflineAudio();
+		pVideo->NextAudioFrameTimeline([this, Offline](short *pFinalOut, unsigned Frames) {
+			if(Offline)
+				Sound()->MixOffline(pFinalOut, Frames);
+			else
+				Sound()->Mix(pFinalOut, Frames);
+		});
 	}
 	GameClient()->OnRenderFinalize();
 	pVideo->EndVideoFrameRender();

@@ -144,6 +144,39 @@ namespace MapViewSupport
 				log_warn(m_pLogContext, "Failed to load '%s', the entity overlay stays empty.", pPath);
 		}
 
+		// Six tilesets were drawn again for Teeworlds 0.7 with the tiles in
+		// other places, and a 0.7 map means the tiles of the 0.7 one. A map
+		// that names an image the client would go looking for under
+		// `mapres/<name>_0.7.png`, see `CMapRenderImages::Load`; loading the
+		// 0.6 file instead is what leaves holes where the map has trees.
+		static bool IsTranslatedImageName(const char *pName)
+		{
+			return !str_comp(pName, "grass_doodads") ||
+			       !str_comp(pName, "grass_main") ||
+			       !str_comp(pName, "winter_main") ||
+			       !str_comp(pName, "generic_shadows") ||
+			       !str_comp(pName, "generic_unhookable") ||
+			       !str_comp(pName, "easter");
+		}
+
+		// Whether this map was written by Teeworlds 0.7, which a viewer has to
+		// work out from the map itself: the client is told by the server it is
+		// on, and nobody here has one. The second version of an image item is
+		// 0.7's, which added the format field this fork calls `m_MustBe1`; 0.6
+		// and DDNet write the first, and so does `map_convert_07`, whose 0.7
+		// maps carry the pictures of the 0.6 tilesets inside them and need no
+		// translating.
+		bool WrittenByTeeworlds07(int Start, int Count) const
+		{
+			for(int i = 0; i < Count; i++)
+			{
+				const CMapItemImage_v2 *pImg = static_cast<const CMapItemImage_v2 *>(m_pMap->GetItem(Start + i));
+				if(pImg->m_Version > 1 && pImg->m_MustBe1 == 1)
+					return true;
+			}
+			return false;
+		}
+
 		// The client works out per image whether a tile layer, a quad layer or
 		// both use it, and loads only what is sampled. The tool loads every
 		// image both ways: it renders one picture and never has to care what
@@ -153,6 +186,7 @@ namespace MapViewSupport
 			int Start;
 			m_pMap->GetType(MAPITEMTYPE_IMAGE, &Start, &m_Count);
 			m_Count = std::clamp<int>(m_Count, 0, MAX_MAPIMAGES);
+			const bool Sixup = WrittenByTeeworlds07(Start, m_Count);
 
 			constexpr LOG_COLOR WarningLogColor = LOG_COLOR{255, 255, 0};
 
@@ -184,7 +218,7 @@ namespace MapViewSupport
 				if(pImg->m_External)
 				{
 					char aPath[IO_MAX_PATH_LENGTH];
-					str_format(aPath, sizeof(aPath), "mapres/%s.png", pName);
+					str_format(aPath, sizeof(aPath), "mapres/%s%s.png", pName, Sixup && IsTranslatedImageName(pName) ? "_0.7" : "");
 					m_aTextures[i] = m_pGraphics->LoadTexture(aPath, IStorage::TYPE_ALL, IGraphics::TEXLOAD_LAYERED);
 				}
 				else

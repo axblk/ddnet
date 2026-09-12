@@ -75,8 +75,14 @@
 				DDNetLoader.paintIcons(document);
 				DDNetLoader.fullscreen(document.getElementById('fullscreen'));
 				// The buttons and the menu are one thing to whoever uses them, so
-				// they step aside together while nothing is happening.
-				DDNetLoader.autoHide([cluster, menu]);
+				// they step aside together while nothing is happening - and a tap
+				// on the map takes them away or brings them back. The menu closes
+				// with them, because a menu over a map somebody wanted to see is
+				// worse than no menu.
+				DDNetLoader.autoHide([cluster, menu], {
+					picture: document.getElementById('canvas'),
+					onHide: () => openMenu(false),
+				});
 				// A button is pressed once where a wheel is turned several notches,
 				// so it takes a bigger step - the same one the viewer's own button
 				// takes.

@@ -265,16 +265,22 @@ const DDNetLoader = (() => {
 	// typed into stays, so a menu does not close itself under the hand that
 	// opened it.
 	function autoHide(elements, options) {
-		const settings = Object.assign({ delay: 2500 }, options || {});
+		const settings = Object.assign({ delay: 2500, picture: null, onHide: null }, options || {});
 		const all = Array.isArray(elements) ? elements : [elements];
 		var timer = null;
 		var held = 0;
+		var shown = false;
 		const hide = () => {
+			shown = false;
 			for (const element of all) {
 				element.classList.add("faded");
 			}
+			if (settings.onHide) {
+				settings.onHide();
+			}
 		};
 		const show = () => {
+			shown = true;
 			for (const element of all) {
 				element.classList.remove("faded");
 			}
@@ -287,11 +293,42 @@ const DDNetLoader = (() => {
 			element.addEventListener("focusin", () => { held++; show(); });
 			element.addEventListener("focusout", () => { held = Math.max(held - 1, 0); show(); });
 		}
+		// A press that went down on the picture, stayed where it was and was
+		// let go of again is a tap, and a tap on the picture is how a video
+		// player is told to show its controls or to get out of the way. The
+		// same rule the viewers use for the bar they draw themselves, see
+		// `CViewerControls::Render`.
+		if (settings.picture !== null) {
+			const TAP_DISTANCE = 16;
+			const TAP_TIME = 400;
+			var pressed = null;
+			settings.picture.addEventListener("pointerdown", event => {
+				// Read before the press reaches the handler below that shows
+				// everything again: what a tap does depends on what was there
+				// when it started.
+				pressed = { x: event.clientX, y: event.clientY, when: performance.now(), shown: shown };
+			}, { capture: true });
+			settings.picture.addEventListener("pointerup", event => {
+				if (pressed === null) {
+					return;
+				}
+				const moved = Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y);
+				const tap = moved <= TAP_DISTANCE && performance.now() - pressed.when <= TAP_TIME;
+				const wasShown = pressed.shown;
+				pressed = null;
+				if (tap && wasShown) {
+					hide();
+				} else if (tap) {
+					show();
+				}
+			});
+			settings.picture.addEventListener("pointercancel", () => { pressed = null; });
+		}
 		for (const event of ["pointermove", "pointerdown", "keydown", "wheel"]) {
 			window.addEventListener(event, show, { passive: true });
 		}
 		show();
-		return { show, hide };
+		return { show, hide, shown: () => shown };
 	}
 
 	// The same pictures the viewers draw on their own buttons, as the browser
@@ -1948,6 +1985,11 @@ self.onmessage = async event => {
 		 * @param elements The element, or the elements, that belong together.
 		 * @param options.delay How long to wait before they go, in
 		 * milliseconds.
+		 * @param options.picture What they are drawn over, usually the canvas.
+		 * A tap on it shows them or takes them away, which is what a tap on a
+		 * video does everywhere.
+		 * @param options.onHide Called whenever they go, so that a page can
+		 * close what one of them had opened.
 		 */
 		autoHide(elements, options) {
 			return autoHide(elements, options);

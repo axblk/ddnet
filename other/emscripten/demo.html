@@ -89,8 +89,13 @@
 				DDNetLoader.paintIcons(document);
 				DDNetLoader.fullscreen(document.getElementById('fullscreen'));
 				// The bar and what it opens are one thing to whoever uses them, so
-				// they step aside together while nothing is happening.
-				DDNetLoader.autoHide([bar, spectateMenu, exportPanel]);
+				// they step aside together while nothing is happening - and a tap
+				// on the demo takes them away or brings them back, the way a tap
+				// on a video does everywhere. What they had opened goes with them.
+				DDNetLoader.autoHide([bar, spectateMenu, exportPanel], {
+					picture: canvas,
+					onHide: () => openPanel(null),
+				});
 				// Encoding a video is the browser's to do, and not every browser
 				// does it. Better said here than by an export that starts and then
 				// cannot finish.

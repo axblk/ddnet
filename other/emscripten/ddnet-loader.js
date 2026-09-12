@@ -265,7 +265,11 @@ const DDNetLoader = (() => {
 	// typed into stays, so a menu does not close itself under the hand that
 	// opened it.
 	function autoHide(elements, options) {
-		const settings = Object.assign({ delay: 2500, picture: null, onHide: null }, options || {});
+		const settings = Object.assign({ delay: 2500, picture: null, onHide: null, signal: undefined }, options || {});
+		// What is put on the window and on the picture outlives the controls
+		// themselves, so whoever takes those off the page says so here.
+		const on = (target, type, listener, extra) =>
+			target.addEventListener(type, listener, Object.assign({ signal: settings.signal }, extra || {}));
 		const all = Array.isArray(elements) ? elements : [elements];
 		var timer = null;
 		var held = 0;
@@ -288,10 +292,10 @@ const DDNetLoader = (() => {
 			timer = held > 0 ? null : setTimeout(hide, settings.delay);
 		};
 		for (const element of all) {
-			element.addEventListener("pointerenter", () => { held++; show(); });
-			element.addEventListener("pointerleave", () => { held = Math.max(held - 1, 0); show(); });
-			element.addEventListener("focusin", () => { held++; show(); });
-			element.addEventListener("focusout", () => { held = Math.max(held - 1, 0); show(); });
+			on(element, "pointerenter", () => { held++; show(); });
+			on(element, "pointerleave", () => { held = Math.max(held - 1, 0); show(); });
+			on(element, "focusin", () => { held++; show(); });
+			on(element, "focusout", () => { held = Math.max(held - 1, 0); show(); });
 		}
 		// A press that went down on the picture, stayed where it was and was
 		// let go of again is a tap, and a tap on the picture is how a video
@@ -302,13 +306,13 @@ const DDNetLoader = (() => {
 			const TAP_DISTANCE = 16;
 			const TAP_TIME = 400;
 			var pressed = null;
-			settings.picture.addEventListener("pointerdown", event => {
+			on(settings.picture, "pointerdown", event => {
 				// Read before the press reaches the handler below that shows
 				// everything again: what a tap does depends on what was there
 				// when it started.
 				pressed = { x: event.clientX, y: event.clientY, when: performance.now(), shown: shown };
 			}, { capture: true });
-			settings.picture.addEventListener("pointerup", event => {
+			on(settings.picture, "pointerup", event => {
 				if (pressed === null) {
 					return;
 				}
@@ -322,10 +326,10 @@ const DDNetLoader = (() => {
 					show();
 				}
 			});
-			settings.picture.addEventListener("pointercancel", () => { pressed = null; });
+			on(settings.picture, "pointercancel", () => { pressed = null; });
 		}
 		for (const event of ["pointermove", "pointerdown", "keydown", "wheel"]) {
-			window.addEventListener(event, show, { passive: true });
+			on(window, event, show, { passive: true });
 		}
 		show();
 		return { show, hide, shown: () => shown };
@@ -439,8 +443,12 @@ const DDNetLoader = (() => {
 				screen.orientation.unlock();
 			}
 		};
-		button.addEventListener("click", () => toggleFullscreen(options));
-		document.addEventListener("fullscreenchange", update);
+		const signal = (options || {}).signal;
+		button.addEventListener("click", () => toggleFullscreen(options), { signal: signal });
+		// On the document rather than on the button, so it also follows the key
+		// that leaves full screen - and therefore worth taking off again when
+		// the button goes.
+		document.addEventListener("fullscreenchange", update, { signal: signal });
 		update();
 		return { supported: true };
 	}
@@ -680,19 +688,15 @@ const DDNetLoader = (() => {
 	}
 
 	// The browser's own shortcuts stay the browser's, whatever the program
-	// makes of the keyboard. Once per page as well.
-	var installedKeyGuard = false;
-	function installKeyGuard() {
-		if (installedKeyGuard) {
-			return;
-		}
-		installedKeyGuard = true;
+	// makes of the keyboard. Two programs on one page both ask for this and
+	// both get it, which changes nothing: stopping a key twice is stopping it.
+	function installKeyGuard(signal) {
 		document.addEventListener('keydown', e => {
 			// Always use default browser actions for Ctrl+F5 (refresh), F11 (fullscreen), F12 (developer console).
 			if ((e.ctrlKey && e.key === 'F5') || e.key === 'F11' || e.key == 'F12') {
 				e.stopPropagation();
 			}
-		}, true);
+		}, { capture: true, signal: signal });
 	}
 
 	/**
@@ -720,6 +724,12 @@ const DDNetLoader = (() => {
 			this.acceptLinks = options.acceptLinks === true;
 			this.module = null;
 			this.exited = false;
+			// Everything this hangs on the page hangs on one signal, and
+			// `destroy` lets go of all of it at once. A page that lives as
+			// long as its program never needs that; one that puts a viewer up
+			// and takes it down again does.
+			this.stopping = new AbortController();
+			this.destroyed = false;
 			this.video = null;
 			this.pendingSink = null;
 			this.finished = new Promise(resolve => {
@@ -827,6 +837,43 @@ const DDNetLoader = (() => {
 			this.call('EmscriptenCallbackQuit');
 		}
 
+		/**
+		 * Lets go of the page. Every handler this put on it comes off, the
+		 * sound stops, the error handler is given back, and the program is
+		 * asked to quit if it is still running.
+		 *
+		 * A page that lives as long as its program never needs this - the page
+		 * going is the program going. A page that takes a viewer off and puts
+		 * another on, or a custom element being removed, does: without it the
+		 * handlers on the window and on the document outlive what they were
+		 * for.
+		 *
+		 * Asking for anything afterwards is answered the way a program that
+		 * has stopped is answered, which is with nothing.
+		 */
+		destroy() {
+			if (this.destroyed) {
+				return;
+			}
+			this.destroyed = true;
+			// The program first, while there is still something to ask: it is
+			// what holds the canvas, the sound and the files. It stops its own
+			// sound as it goes, and taking the sound out from under a program
+			// that is still stopping leaves it reading something that is no
+			// longer there - so only one that has already stopped leaves any
+			// to stop here.
+			if (this.exited) {
+				this.stopAudio();
+			} else {
+				this.quit();
+			}
+			this.stopping.abort();
+			this.restoreErrorHandler();
+			// Whoever is waiting for the program is let go of: a program told
+			// to stop from outside may never reach `onExit`.
+			this.reportFinished();
+		}
+
 		// Everything below is how the two above are done, and how an instance
 		// comes up in the first place.
 
@@ -916,17 +963,18 @@ const DDNetLoader = (() => {
 			if (canvas == null) {
 				return;
 			}
-			installKeyGuard();
-			canvas.addEventListener('contextmenu', e => e.preventDefault());
+			const signal = this.stopping.signal;
+			installKeyGuard(signal);
+			canvas.addEventListener('contextmenu', e => e.preventDefault(), { signal: signal });
 			canvas.addEventListener('webglcontextcreationerror', e => {
 				instance.output(`Failed to create WebGL context: ${e.statusMessage || "Unknown error"}`, { error: true, bold: true });
-			});
+			}, { signal: signal });
 			canvas.addEventListener('webglcontextlost', e => {
 				// The program cannot currently recover from GL context loss, because it
 				// would require reloading all textures, framebuffers etc.
 				instance.output(`The WebGL context was lost: ${e.statusMessage || "Unknown error"}`, { error: true, bold: true });
 				instance.quit();
-			});
+			}, { signal: signal });
 			canvas.addEventListener('dragover', e => {
 				e.preventDefault();
 				e.dataTransfer.dropEffect = "none";
@@ -939,7 +987,7 @@ const DDNetLoader = (() => {
 						return;
 					}
 				}
-			});
+			}, { signal: signal });
 			canvas.addEventListener('drop', async e => {
 				e.preventDefault();
 				const droppedItem = instance.droppedItemFromDataTransfer(e.dataTransfer);
@@ -950,7 +998,7 @@ const DDNetLoader = (() => {
 				} else {
 					alert(instance.unsupportedDropMessage());
 				}
-			});
+			}, { signal: signal });
 		}
 
 		// What the export asks when it starts, in order: what the page put
@@ -998,7 +1046,8 @@ const DDNetLoader = (() => {
 			// `self`, not `window`: a program rendering in a worker has no
 			// window, and this is the one thing here that would miss it.
 			const previous = self.onerror;
-			self.onerror = function(message, url, line, column, error) {
+			this.previousErrorHandler = previous;
+			this.errorHandler = function(message, url, line, column, error) {
 				instance.output(message, { error: true, bold: true, fatal: true });
 				if (error && error.stack) {
 					for (const line of error.stack.split("\n")) {
@@ -1018,6 +1067,16 @@ const DDNetLoader = (() => {
 					return previous.apply(this, arguments);
 				}
 			};
+			self.onerror = this.errorHandler;
+		}
+
+		// Only if it is still ours: a page that put its own on afterwards has
+		// chained onto this one, and taking ours away would take theirs with
+		// it.
+		restoreErrorHandler() {
+			if (this.errorHandler !== undefined && self.onerror === this.errorHandler) {
+				self.onerror = this.previousErrorHandler;
+			}
 		}
 
 		async run() {
@@ -1033,7 +1092,7 @@ const DDNetLoader = (() => {
 				if (options.signal.aborted) {
 					throw abortError(options.signal);
 				}
-				options.signal.addEventListener("abort", () => this.quit(), { once: true });
+				options.signal.addEventListener("abort", () => this.quit(), { once: true, signal: this.stopping.signal });
 			}
 			// Said once, and said here: what follows would say it a hundred
 			// times, in the words of whatever failed first.
@@ -1926,6 +1985,8 @@ self.onmessage = async event => {
 		 * @param button The button to wire up.
 		 * @param options.element What to fill the screen with, the page
 		 * itself otherwise.
+		 * @param options.signal Takes the wiring off again, for a page that
+		 * puts the button up and takes it down.
 		 */
 		fullscreen(button, options) {
 			return fullscreen(button, options);
@@ -1996,6 +2057,8 @@ self.onmessage = async event => {
 		 * video does everywhere.
 		 * @param options.onHide Called whenever they go, so that a page can
 		 * close what one of them had opened.
+		 * @param options.signal Takes all of it off the page again, for a page
+		 * that puts the controls up and takes them down.
 		 */
 		autoHide(elements, options) {
 			return autoHide(elements, options);

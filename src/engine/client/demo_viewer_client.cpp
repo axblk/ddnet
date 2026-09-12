@@ -130,6 +130,7 @@ bool CDemoViewerClient::RequestExport(const CVideoExportSettings &Settings)
 	m_RequestedSettings = Settings;
 	m_ExportRequested = true;
 	m_ExportState = EExportState::RUNNING;
+	m_ExportStartTime = time_get_nanoseconds();
 	m_aExportError[0] = '\0';
 	return true;
 }
@@ -240,6 +241,21 @@ float CDemoViewerClient::ExportProgress() const
 		return 0.0f;
 	const int Total = std::max(Last - First, 0);
 	return Total == 0 ? 0.0f : std::clamp(Current - First, 0, Total) / (float)Total;
+}
+
+float CDemoViewerClient::ExportSecondsLeft() const
+{
+	if(m_pVideo == nullptr)
+		return -1.0f;
+	// How long it has taken to get this far, and how much further it has to
+	// go. The same sum the client makes for its own progress box, and for the
+	// same reason: the rate the encoder reports is the rate of the moment and
+	// jumps about, while this settles as the export runs.
+	const float Progress = ExportProgress();
+	const float Elapsed = std::chrono::duration<float>(time_get_nanoseconds() - m_ExportStartTime).count();
+	if(Elapsed < 1.0f || Progress < 0.01f)
+		return -1.0f;
+	return Elapsed * (1.0f - Progress) / Progress;
 }
 
 bool CDemoViewerClient::Paused() const
@@ -498,8 +514,14 @@ void CDemoViewerClient::RenderControls()
 	// While one is being written the export button says how far it has come
 	// and stops it, because that is all there is to do about it then.
 	const bool IsExporting = Exporting();
-	char aExportProgress[16];
-	str_format(aExportProgress, sizeof(aExportProgress), "%d%%", (int)(ExportProgress() * 100.0f + 0.5f));
+	char aExportProgress[32];
+	{
+		const float SecondsLeft = ExportSecondsLeft();
+		char aLeft[16] = "";
+		if(SecondsLeft >= 0.0f)
+			str_format(aLeft, sizeof(aLeft), " %d:%02d", (int)SecondsLeft / 60, (int)SecondsLeft % 60);
+		str_format(aExportProgress, sizeof(aExportProgress), "%d%%%s", (int)(ExportProgress() * 100.0f + 0.5f), aLeft);
+	}
 
 	// Left to right, the way a video player has it: what it is doing, how fast,
 	// how far along, and off on the other side what is being watched and what
@@ -1055,6 +1077,11 @@ EMSCRIPTEN_KEEPALIVE int DemoViewerExportState()
 // How far the video that is being written has got, between 0 and 1. It is not
 // where the demo on the window is: an export reads the demo through a way of
 // its own, so whoever is watching can spool about while it is written.
+EMSCRIPTEN_KEEPALIVE float DemoViewerExportSecondsLeft()
+{
+	return g_pDemoViewer == nullptr ? -1.0f : g_pDemoViewer->ExportSecondsLeft();
+}
+
 EMSCRIPTEN_KEEPALIVE float DemoViewerExportProgress()
 {
 	return g_pDemoViewer == nullptr ? 0.0f : g_pDemoViewer->ExportProgress();

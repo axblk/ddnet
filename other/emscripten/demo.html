@@ -47,6 +47,7 @@
 					<span id="speed" class="viewer-readout viewer-readout-speed viewer-optional">1.00&times;</span>
 					<button id="faster" class="viewer-button viewer-optional" data-icon="plus" title="Faster (Up arrow)" aria-label="Faster"></button>
 					<button id="spectate" class="viewer-button" data-icon="eye" title="Who to watch (N, P, F)" aria-label="Who to watch" aria-haspopup="true" aria-expanded="false"></button>
+					<span id="export-status" class="viewer-readout" role="status" hidden></span>
 					<button id="export" class="viewer-button" data-icon="save" title="Export video" aria-label="Export video" aria-haspopup="true" aria-expanded="false"></button>
 					<button id="fullscreen" class="viewer-button" data-icon="fullscreen" title="Full screen" aria-label="Full screen"></button>
 				</div>
@@ -90,6 +91,7 @@
 				const exportSettings = document.getElementById('export-settings');
 				const exportStart = document.getElementById('export-start');
 				const exportMessage = document.getElementById('export-message');
+				const exportStatus = document.getElementById('export-status');
 				const exportForm = DDNetLoader.exportSettingsForm(exportSettings, { canvas: canvas });
 				DDNetLoader.paintIcons(document);
 				DDNetLoader.fullscreen(document.getElementById('fullscreen'));
@@ -389,17 +391,15 @@
 							say(reason);
 						}
 					}
-					const badge = exportButton.querySelector('.viewer-badge');
+					// How far it has got and how much longer it has, beside the
+					// button that stops it - which is where the viewer's own bar
+					// writes it too. A time only once there is one: a rate takes
+					// a second or two to mean anything.
+					exportStatus.hidden = !running;
 					if (running) {
-						const percent = `${Math.round(demo.exportProgress() * 100)}%`;
-						if (badge === null) {
-							exportButton.appendChild(Object.assign(document.createElement('span'),
-								{ className: "viewer-badge", textContent: percent }));
-						} else {
-							badge.textContent = percent;
-						}
-					} else if (badge !== null) {
-						badge.remove();
+						const left = demo.exportSecondsLeft();
+						const eta = left === null || left < 0 ? "" : ` · ${formatTime(left)} left`;
+						exportStatus.textContent = `${Math.round(demo.exportProgress() * 100)}%${eta}`;
 					}
 					DDNetLoader.paintIcons(bar);
 				}, 200);

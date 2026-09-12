@@ -1611,6 +1611,13 @@ self.onmessage = async event => {
 			 */
 			exportProgress: () => number("DemoViewerExportProgress"),
 			/**
+			 * How much longer the export has to run, in seconds, or a negative
+			 * number while there is no telling yet. Worked out from what is
+			 * left of the demo and the rate frames are being written at, so it
+			 * follows a machine that speeds up or slows down.
+			 */
+			exportSecondsLeft: () => number("DemoViewerExportSecondsLeft"),
+			/**
 			 * Why the export that was last asked for failed, or an empty
 			 * string when none has. A page is the only place this can be
 			 * said: there is no log for whoever is looking at the demo.

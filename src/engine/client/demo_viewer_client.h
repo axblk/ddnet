@@ -81,6 +81,8 @@ private:
 	std::chrono::nanoseconds m_NextFrameTime{};
 	int m_ExitCode = 0;
 	EExportState m_ExportState = EExportState::IDLE;
+	// When the running export was asked for, to say how long it still has.
+	std::chrono::nanoseconds m_ExportStartTime{};
 	// Why the last export failed, kept after it has been reported: an export
 	// that came to nothing is the one thing here that nobody can see for
 	// themselves, and a page has no log to look in.
@@ -221,6 +223,11 @@ public:
 
 	/** How far the export has come, between 0 and 1. */
 	float ExportProgress() const;
+	/**
+	 * How much longer the export has to run, in seconds, or a negative number
+	 * when there is no telling yet.
+	 */
+	float ExportSecondsLeft() const;
 	bool Paused() const;
 	float Progress() const;
 	float Speed() const;

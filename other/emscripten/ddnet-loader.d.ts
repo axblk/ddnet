@@ -193,6 +193,7 @@ export interface DemoControls {
 	exporting(): boolean;
 	exportState(): number | null;
 	exportProgress(): number | null;
+	exportSecondsLeft(): number | null;
 	exportError(): string;
 	cancelExport(): void;
 	spectating(id?: number): number | null;

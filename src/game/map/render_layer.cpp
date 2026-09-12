@@ -301,9 +301,17 @@ bool CRenderLayerGroup::DoRender(const CRenderLayerParams &Params)
 		if(m_pGroup->m_Version >= 2 && m_pGroup->m_UseClipping)
 		{
 			// set clipping
-			Graphics()->MapScreenToInterface(Params.m_Center.x, Params.m_Center.y, Params.m_Zoom);
+			//
+			// The clip is worked out in the same view the group is drawn in,
+			// which for a program that decides the view itself is not the view
+			// the game would have. Asking the game for it put every clipped
+			// group's rectangle somewhere else than the group.
+			Graphics()->MapScreen(Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f ?
+						      Graphics()->MapViewToWorld(Params.m_ViewSize * Params.m_Zoom, Params.m_Center.x, Params.m_Center.y,
+							      100.0f, 100.0f, 100.0f, 0.0f, 0.0f, Params.m_Zoom) :
+						      Graphics()->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y, 100.0f, 100.0f, 100.0f,
+							      0.0f, 0.0f, Graphics()->ScreenAspect(), Params.m_Zoom));
 
-			// The clip is worked out in the same view the group is drawn in.
 			CScreenRect ScreenRect = Scaled(Graphics()->GetScreen(), ViewScale(Params));
 			float ScreenWidth = ScreenRect.Width();
 			float ScreenHeight = ScreenRect.Height();

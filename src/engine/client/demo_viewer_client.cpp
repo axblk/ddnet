@@ -426,19 +426,26 @@ const char *CDemoViewerClient::Players()
 	// whatever somebody typed, quotation marks and all.
 	CJsonStringWriter Writer;
 	Writer.BeginArray();
-	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+	// Who there is to pick from, which is nobody in a demo a client recorded:
+	// that demo is of whoever recorded it, and all there is to choose is
+	// whether to look over their shoulder or to look around. The same rule the
+	// bar draws itself by, see `RenderControls`.
+	if(ServerDemo())
 	{
-		const char *pName = SpectatePlayerName(ClientId);
-		if(pName == nullptr)
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
 		{
-			continue;
+			const char *pName = SpectatePlayerName(ClientId);
+			if(pName == nullptr)
+			{
+				continue;
+			}
+			Writer.BeginObject();
+			Writer.WriteAttribute("id");
+			Writer.WriteIntValue(ClientId);
+			Writer.WriteAttribute("name");
+			Writer.WriteStrValue(pName);
+			Writer.EndObject();
 		}
-		Writer.BeginObject();
-		Writer.WriteAttribute("id");
-		Writer.WriteIntValue(ClientId);
-		Writer.WriteAttribute("name");
-		Writer.WriteStrValue(pName);
-		Writer.EndObject();
 	}
 	Writer.EndArray();
 	m_Players = Writer.GetOutputString();

@@ -228,7 +228,16 @@
 					}
 				});
 
-				spectateButton.addEventListener('click', () => openPanel(spectateMenu));
+				// A demo a client recorded has nobody to pick from, so the eye
+				// does what the viewer's own does there: on to the next player
+				// there is, and past the last one the camera of one's own.
+				spectateButton.addEventListener('click', () => {
+					if (spectateMenu.childElementCount === 0) {
+						demo.spectateStep(1);
+						return;
+					}
+					openPanel(spectateMenu);
+				});
 				// The export settings are asked for before the export runs, the
 				// same ones the render tool takes on its command line. While one is
 				// being written the button stops it instead.
@@ -278,11 +287,21 @@
 						playerList = signature;
 						// A demo a client recorded is a demo of whoever recorded
 						// it, so watching over their shoulder is what it offers
-						// besides a camera of one's own. A demo a server recorded
-						// has nobody whose demo it is, and offers everybody who
-						// happened to be there.
-						const options = [{ id: -1, name: "Free view", icon: "freeview" }]
-							.concat(players.map(player => ({ id: player.id, name: player.name, icon: "eye" })));
+						// besides a camera of one's own - and nothing to pick
+						// from, which is what the viewer answers with an empty
+						// list. A demo a server recorded has nobody whose demo it
+						// is, and offers everybody who happened to be there.
+						const options = players.length === 0 ? []
+							: [{ id: -1, name: "Free view", icon: "freeview" }]
+								.concat(players.map(player => ({ id: player.id, name: player.name, icon: "eye" })));
+						spectateButton.setAttribute('aria-haspopup', options.length === 0 ? "false" : "true");
+						spectateButton.title = options.length === 0 ? "Watch somebody else (N, P, F)" : "Who to watch (N, P, F)";
+						spectateButton.setAttribute('aria-label', options.length === 0 ? "Watch somebody else" : "Who to watch");
+						// A list that has just become nothing must not stay open
+						// as an empty box over the demo.
+						if (options.length === 0 && !spectateMenu.hidden) {
+							openPanel(null);
+						}
 						spectateMenu.replaceChildren(...options.map(option => {
 							const item = document.createElement('button');
 							item.className = "viewer-menu-item";

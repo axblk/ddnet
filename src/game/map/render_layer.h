@@ -59,6 +59,12 @@ public:
 	vec2 m_Center;
 	float m_Zoom;
 	bool m_RenderText;
+	/**
+	 * Whether layers the map marks as detail are drawn. In the game this is
+	 * the graphics setting of the same name; whoever draws a picture of a map
+	 * rather than a game says what belongs in that picture itself.
+	 */
+	bool m_HighDetail;
 	bool m_RenderInvalidTiles;
 	bool m_RenderTileBorder;
 	bool m_DebugRenderGroupClips;

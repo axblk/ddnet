@@ -630,7 +630,7 @@ bool CRenderLayerTile::DoRender(const CRenderLayerParams &Params)
 		return false;
 
 	// skip rendering if detail layers if not wanted
-	if(m_Flags & LAYERFLAG_DETAIL && !g_Config.m_GfxHighDetail && Params.m_RenderType != ERenderType::RENDERTYPE_FULL_DESIGN) // detail but no details
+	if(m_Flags & LAYERFLAG_DETAIL && !Params.m_HighDetail) // detail but no details
 		return false;
 	return true;
 }
@@ -1261,7 +1261,7 @@ bool CRenderLayerQuads::DoRender(const CRenderLayerParams &Params)
 		return false;
 
 	// skip rendering if detail layers if not wanted
-	if(m_Flags & LAYERFLAG_DETAIL && !g_Config.m_GfxHighDetail && Params.m_RenderType != ERenderType::RENDERTYPE_FULL_DESIGN) // detail but no details
+	if(m_Flags & LAYERFLAG_DETAIL && !Params.m_HighDetail) // detail but no details
 		return false;
 
 	// this option only deactivates quads in the background
@@ -1283,8 +1283,8 @@ CRenderLayerEntityBase::CRenderLayerEntityBase(int GroupId, int LayerId, int Fla
 
 bool CRenderLayerEntityBase::DoRender(const CRenderLayerParams &Params)
 {
-	// skip rendering if we render background force or full design
-	if(Params.m_RenderType == ERenderType::RENDERTYPE_BACKGROUND_FORCE || Params.m_RenderType == ERenderType::RENDERTYPE_FULL_DESIGN)
+	// skip rendering if we render background force
+	if(Params.m_RenderType == ERenderType::RENDERTYPE_BACKGROUND_FORCE)
 		return false;
 
 	// skip rendering of entities if don't want them

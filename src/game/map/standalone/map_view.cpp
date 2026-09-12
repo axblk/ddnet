@@ -200,12 +200,18 @@ void CStandaloneMapView::Render(const SRenderParams &Params)
 
 	m_pEnvelopeEval->SetTimeOffset(Params.m_TimeOffsetMillis);
 
+	// Before anything is drawn, because this is where a picture out of
+	// `data/` may still have to be fetched.
+	if(Params.m_EntityOverlayVal > 0)
+		m_pMapImages->EnsureEntities();
+
 	CRenderLayerParams RenderParams;
 	RenderParams.m_RenderType = RENDERTYPE_FULL_DESIGN;
-	RenderParams.m_EntityOverlayVal = 0;
+	RenderParams.m_EntityOverlayVal = Params.m_EntityOverlayVal;
 	RenderParams.m_Center = Params.m_Center;
 	RenderParams.m_Zoom = Params.m_Zoom;
 	RenderParams.m_RenderText = false;
+	RenderParams.m_HighDetail = Params.m_HighDetail;
 	RenderParams.m_RenderInvalidTiles = false;
 	RenderParams.m_RenderTileBorder = true;
 	RenderParams.m_DebugRenderGroupClips = false;

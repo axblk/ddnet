@@ -94,6 +94,8 @@ namespace MapViewSupport
 		const char *m_pLogContext;
 		IGraphics::CTextureHandle m_aTextures[MAX_MAPIMAGES];
 		int m_Count;
+		IGraphics::CTextureHandle m_EntitiesTexture;
+		bool m_EntitiesTried = false;
 
 	public:
 		CToolMapImages(IGraphics *pGraphics, IMap *pMap, const char *pLogContext) :
@@ -115,6 +117,31 @@ namespace MapViewSupport
 				if(m_aTextures[i].IsValid())
 					m_pGraphics->UnloadTexture(&m_aTextures[i]);
 			}
+			if(m_EntitiesTexture.IsValid())
+				m_pGraphics->UnloadTexture(&m_EntitiesTexture);
+		}
+
+		// The picture of what a map does rather than of what it looks like.
+		// It is the one thing here that comes out of `data/`, so it is only
+		// fetched once somebody asks to see the entity overlay, and a program
+		// that never does still needs nothing but the map.
+		//
+		// Asked for before drawing starts, never while it is going on: what
+		// comes back is a handle the drawing then uses.
+		void EnsureEntities()
+		{
+			if(m_EntitiesTried)
+				return;
+			m_EntitiesTried = true;
+			// One picture for every kind of map, unmasked. The client picks
+			// the one the server it is on belongs to and blanks out the tiles
+			// that kind of server does not have; a viewer has no server to ask
+			// and nobody to mislead about what a tile does, so it draws what
+			// the map put there.
+			const char *pPath = "editor/entities_clear/ddnet.png";
+			m_EntitiesTexture = m_pGraphics->LoadTexture(pPath, IStorage::TYPE_ALL, IGraphics::TEXLOAD_LAYERED);
+			if(!m_EntitiesTexture.IsValid())
+				log_warn(m_pLogContext, "Failed to load '%s', the entity overlay stays empty.", pPath);
 		}
 
 		// The client works out per image whether a tile layer, a quad layer or
@@ -197,13 +224,14 @@ namespace MapViewSupport
 
 		int Num() const override { return m_Count; }
 
-		// The tool draws the design, never the entity overlays. An invalid
-		// handle is what the renderer already expects from an image that is
-		// not there, and it skips the draw.
+		// Every entity layer is drawn out of the same picture. The client
+		// keeps one per layer kind so that a game layer cannot show a switch
+		// tile, but a layer only ever holds the tiles that belong in it, so
+		// there is nothing here for that to prevent.
 		IGraphics::CTextureHandle GetEntities(EMapImageEntityLayerType EntityLayerType) override
 		{
 			(void)EntityLayerType;
-			return IGraphics::CTextureHandle();
+			return m_EntitiesTexture;
 		}
 
 		IGraphics::CTextureHandle GetSpeedupArrow() override { return IGraphics::CTextureHandle(); }

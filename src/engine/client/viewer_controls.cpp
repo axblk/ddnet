@@ -25,6 +25,11 @@ namespace
 	// and it is what decides the height of the bar rather than the icons in it.
 	constexpr float BUTTON_SIZE = 44.0f;
 	constexpr float ICON_SIZE = 20.0f;
+	// In a corner the controls lie over what is being looked at rather than on
+	// a bar under it, so they are made smaller - small enough to stay out of
+	// the way, big enough for a fingertip.
+	constexpr float CORNER_BUTTON_SIZE = 34.0f;
+	constexpr float CORNER_ICON_SIZE = 17.0f;
 	constexpr float TEXT_SIZE = 15.0f;
 	constexpr float SEEK_ROW_HEIGHT = 22.0f;
 	constexpr float PADDING_X = 10.0f;
@@ -236,8 +241,23 @@ void CViewerControls::DrawIcon(EIcon Icon, vec2 Center, float Size, float Alpha)
 		break;
 	case EIcon::FIT:
 	{
-		// Four corners of a frame, which is what fitting something into a
-		// window looks like when there is no room to write it.
+		// A picture that fills its frame, which is what a whole map in a whole
+		// window is. The frame is drawn dark inside first so that the block
+		// reads as something inside it rather than as a solid square.
+		const float Height = Size * 0.8f;
+		const float Top = Center.y - Height / 2.0f;
+		DrawRect(Center.x - Half, Top, Size, Thin, 1.0f, 1.0f, 1.0f, Alpha);
+		DrawRect(Center.x - Half, Top + Height - Thin, Size, Thin, 1.0f, 1.0f, 1.0f, Alpha);
+		DrawRect(Center.x - Half, Top, Thin, Height, 1.0f, 1.0f, 1.0f, Alpha);
+		DrawRect(Center.x + Half - Thin, Top, Thin, Height, 1.0f, 1.0f, 1.0f, Alpha);
+		const float Inset = Thin * 2.0f;
+		DrawRect(Center.x - Half + Inset, Top + Inset, Size - 2.0f * Inset, Height - 2.0f * Inset, 1.0f, 1.0f, 1.0f, 0.55f * Alpha);
+		break;
+	}
+	case EIcon::FULLSCREEN:
+	{
+		// Four corners opening outwards, which is what every program that has
+		// a full screen draws for it.
 		const float Arm = Size / 2.2f;
 		for(int Corner = 0; Corner < 4; ++Corner)
 		{
@@ -248,19 +268,6 @@ void CViewerControls::DrawIcon(EIcon Icon, vec2 Center, float Size, float Alpha)
 			DrawRect(DirX > 0.0f ? X : X + Thin - Arm, Y, Arm, Thin, 1.0f, 1.0f, 1.0f, Alpha);
 			DrawRect(X, DirY > 0.0f ? Y : Y + Thin - Arm, Thin, Arm, 1.0f, 1.0f, 1.0f, Alpha);
 		}
-		break;
-	}
-	case EIcon::FULLSCREEN:
-	{
-		// A screen: a frame with nothing in it, which is what a window that has
-		// taken over the whole screen looks like from the outside.
-		const float Thick = std::max(2.0f, Size / 8.0f);
-		const float Height = Size * 0.78f;
-		const float Top = Center.y - Height / 2.0f;
-		DrawRect(Center.x - Half, Top, Size, Thick, 1.0f, 1.0f, 1.0f, Alpha);
-		DrawRect(Center.x - Half, Top + Height - Thick, Size, Thick, 1.0f, 1.0f, 1.0f, Alpha);
-		DrawRect(Center.x - Half, Top, Thick, Height, 1.0f, 1.0f, 1.0f, Alpha);
-		DrawRect(Center.x + Half - Thick, Top, Thick, Height, 1.0f, 1.0f, 1.0f, Alpha);
 		break;
 	}
 	case EIcon::SAVE:
@@ -389,8 +396,8 @@ int CViewerControls::Render(const SItem *pItems, size_t Count, const SInput &Inp
 		}
 	}
 	const float SeekHeight = Slider < Count ? SEEK_ROW_HEIGHT * Unit : 0.0f;
-	const float ButtonSize = BUTTON_SIZE * Unit;
-	const float IconSize = ICON_SIZE * Unit;
+	const float ButtonSize = (Corner ? CORNER_BUTTON_SIZE : BUTTON_SIZE) * Unit;
+	const float IconSize = (Corner ? CORNER_ICON_SIZE : ICON_SIZE) * Unit;
 
 	const auto &&ItemWidth = [&](const SItem &Item) {
 		if(Item.m_Width > 0.0f)

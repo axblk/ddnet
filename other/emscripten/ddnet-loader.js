@@ -416,7 +416,9 @@ const DDNetLoader = (() => {
 			return;
 		}
 		// A browser that says no says it in a promise nobody is waiting on,
-		// which would otherwise be an unhandled rejection.
+		// which would otherwise be an unhandled rejection. It is said out loud
+		// all the same: a button that does nothing is the hardest kind of
+		// fault to look into, and the reason is in that rejection.
 		settings.element.requestFullscreen().then(() => {
 			// What is being watched is wide and a phone is tall. Only a page
 			// that fills the screen may ask for this, which is why it is asked
@@ -425,7 +427,7 @@ const DDNetLoader = (() => {
 			if (screen.orientation && screen.orientation.lock) {
 				screen.orientation.lock("landscape").catch(() => {});
 			}
-		}).catch(() => {});
+		}).catch(error => console.warn("DDNetLoader: this browser refused to fill the screen:", (error && error.message) || error));
 	}
 
 	function fullscreen(button, options) {

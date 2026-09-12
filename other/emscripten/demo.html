@@ -8,42 +8,26 @@
 		<link rel="icon" type="image/x-icon" href="DDNet.ico">
 		<script src="coi-serviceworker.js"></script>
 		<link rel="stylesheet" href="ddnet-page.css">
-		<link rel="stylesheet" href="ddnet-viewer.css">
 	</head>
 	<body>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="error" style="display: none"></div>
 		<canvas id="canvas">Canvas not supported.</canvas>
-		<div id="controls">
-			<div id="player-controls" style="display: none">
-				<button id="play-button" title="Space">Pause</button>
-				<input id="seek" type="range" min="0" max="1000" value="0" step="1" title="Seek">
-				<span id="time">0:00 / 0:00</span>
-				<button id="slower" title="Down arrow">&minus;</button>
-				<span id="speed">1.00&times;</span>
-				<button id="faster" title="Up arrow">+</button>
-				<button id="restart" title="Home">Restart</button>
-				<select id="spectate" title="Who to watch (N, P, F)"></select>
-				<button id="zoom-out" title="Zoom out">&minus;</button>
-				<button id="zoom-in" title="Zoom in">+</button>
-				<button id="fullscreen-button">Full screen</button>
-				<button id="export-button">Export video</button>
-			</div>
-			<!-- What to make of the video, filled in by the loader so that this page
-			     and the render page ask for the same things in the same words. -->
-			<div id="export-settings" style="display: none"></div>
-		</div>
 		<script src="ddnet-demo-viewer.js"></script>
 		<script src="ddnet-loader.js"></script>
 		<script>
 			// A demo is dropped onto the window, or named as `demo.html#demo=<url>`.
+			//
+			// The page brings no controls of its own: the demo fills the window
+			// and the viewer draws its bar along the bottom of it, which is also
+			// what it does when it is a program on somebody's desktop. Zooming
+			// and moving the view stay on the pointer, where they belong. The
+			// other end of what is left here is the `DemoViewer*` block in
+			// `src/engine/client/demo_viewer_client.cpp`.
 			const started = DDNetLoader.page({
 				module: DDNetDemoViewer,
 				programName: "Demo viewer",
 				accept: [".demo"],
-				// The page has a bar of its own under the canvas, so the
-				// viewer leaves its own off.
-				controls: false,
 				urlParams: ["demo"],
 				elements: {
 					canvas: document.getElementById('canvas'),
@@ -52,37 +36,7 @@
 			});
 		</script>
 		<script>
-			// The bar under the canvas. The viewer answers to the keyboard as well,
-			// but a page shows no key bindings and nobody would go looking for them,
-			// so everything it can do has a button here. The other end of these is
-			// the `DemoViewer*` block in `src/engine/client/demo_viewer_client.cpp`.
 			(function() {
-				const playerControls = document.getElementById('player-controls');
-				const playButton = document.getElementById('play-button');
-				const seek = document.getElementById('seek');
-				const time = document.getElementById('time');
-				const speed = document.getElementById('speed');
-				const spectate = document.getElementById('spectate');
-				const canvas = document.getElementById('canvas');
-				const exportButton = document.getElementById('export-button');
-				const exportSettings = document.getElementById('export-settings');
-				const exportForm = DDNetLoader.exportSettingsForm(exportSettings, { canvas: canvas });
-				const exportStartButton = document.createElement('button');
-				exportStartButton.textContent = "Start";
-				exportSettings.appendChild(exportStartButton);
-				var seeking = false;
-				// The bar and the settings are one thing to whoever uses them,
-				// so they come and go together.
-				DDNetLoader.autoHide([playerControls, exportSettings]);
-				DDNetLoader.fullscreen(document.getElementById('fullscreen-button'));
-				// Encoding a video is the browser's to do, and not every browser
-				// does it. Better said here than by an export that starts and
-				// then cannot finish.
-				if (typeof VideoEncoder === "undefined") {
-					exportButton.disabled = true;
-					exportButton.title = "This browser has no video encoder";
-				}
-
 				// The page is there before the viewer is and outlives it, so every
 				// call has to survive being made outside of that: until there is
 				// one, and once there is no longer one, they all answer `null`.
@@ -130,92 +84,6 @@
 					}
 				}
 
-				function formatTime(seconds) {
-					const total = Math.max(0, Math.round(seconds));
-					return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
-				}
-
-				playButton.addEventListener('click', () => {
-					if (demo.paused()) {
-						demo.play();
-					} else {
-						demo.pause();
-					}
-				});
-				// The demo follows the slider while it is dragged, not once it is
-				// let go of: what somebody is looking for is what they can see,
-				// and a bar that only jumps at the end is one they have to guess
-				// with.
-				// While it is being dragged the demo stands still: one that goes
-				// on playing runs out from under whoever is looking for a place
-				// in it. It goes on again afterwards if it was going on before.
-				var pausedBeforeSeeking = false;
-				seek.addEventListener('input', () => {
-					if (!seeking) {
-						seeking = true;
-						pausedBeforeSeeking = demo.paused();
-						demo.pause();
-					}
-					demo.seek(seek.value / seek.max);
-				});
-				seek.addEventListener('change', () => {
-					demo.seek(seek.value / seek.max);
-					seeking = false;
-					if (!pausedBeforeSeeking) {
-						demo.play();
-					}
-				});
-				spectate.addEventListener('change', () => {
-					demo.spectating(parseInt(spectate.value, 10));
-				});
-				// One notch of the wheel, for a pointer that has no wheel. The
-				// wheel itself goes straight to the canvas.
-				document.getElementById('zoom-in').addEventListener('click', () => demo.zoom(1 / 1.1547));
-				document.getElementById('zoom-out').addEventListener('click', () => demo.zoom(1.1547));
-				document.getElementById('slower').addEventListener('click', () => {
-					demo.speed(demo.speed() / 1.25);
-				});
-				document.getElementById('faster').addEventListener('click', () => {
-					demo.speed(demo.speed() * 1.25);
-				});
-				document.getElementById('restart').addEventListener('click', () => {
-					demo.restart();
-				});
-				// The export settings are asked for before the export runs, the
-				// same ones the render tool takes on its command line. While one
-				// is being written the button stops it instead.
-				exportButton.addEventListener('click', () => {
-					if (demo.exportState() === 1) {
-						demo.cancelExport();
-						return;
-					}
-					exportSettings.style.display = exportSettings.style.display === "none" ? "flex" : "none";
-				});
-				exportStartButton.addEventListener('click', async () => {
-					// The browser only hands over a download that came out of a click,
-					// so the export has to start from this handler and not from a
-					// question the page asks itself later. Asking where to save is
-					// the same: it has to happen while this click is still what the
-					// browser thinks the user is doing. What is written there is
-					// written while the demo renders, so nothing is kept in memory
-					// and a video the size of a film is no different from a short
-					// one.
-					if (viewer != null && window.showSaveFilePicker) {
-						try {
-							const handle = await window.showSaveFilePicker({
-								suggestedName: "video.mp4",
-								types: [{ description: "MP4 video", accept: { "video/mp4": [".mp4"] } }],
-							});
-							viewer.setVideoSink({ stream: await handle.createWritable(), done: () => null });
-						} catch (error) {
-							// The dialog was dismissed, so the export was not asked for.
-							return;
-						}
-					}
-					demo.startExport(exportForm.values());
-					exportSettings.style.display = "none";
-				});
-
 				// The address bar follows the demo, so that what somebody copies
 				// out of it is what they are watching: where they are, how fast,
 				// and whether it stands still. What is at its default is left
@@ -229,64 +97,15 @@
 					});
 				}
 
-				// The list of who there is to watch. A demo names its players a
-				// snapshot or two in and people come and go while it plays, so
-				// the list is built again whenever it has changed - and only
-				// then, because rebuilding it under somebody opening it would
-				// close it again.
-				var playerList = "";
-				function updateSpectate() {
-					const players = demo.players() || [];
-					const watching = demo.spectating();
-					const signature = JSON.stringify(players);
-					if (signature !== playerList) {
-						playerList = signature;
-						const options = [{ id: -1, name: "Free view" }].concat(players);
-						spectate.replaceChildren(...options.map(player => {
-							const option = document.createElement('option');
-							option.value = player.id;
-							option.textContent = player.name;
-							return option;
-						}));
-					}
-					// -2 is whoever recorded the demo, which is a player of it
-					// without being one of the ids to choose from. A demo of a
-					// race is watched that way until something else is picked.
-					const selected = String(watching);
-					if (spectate.value !== selected) {
-						spectate.value = selected;
-						if (spectate.value !== selected) {
-							spectate.selectedIndex = 0;
-						}
-					}
-				}
-
-				// The page follows the demo rather than the demo telling the page:
-				// the viewer holds the main thread for as long as it draws and only
-				// lets go between frames, so asking is both simpler and cheaper than
-				// being called back.
+				// The page asks rather than being told: the viewer holds the main
+				// thread for as long as it draws and only lets go between frames.
 				setInterval(() => {
 					const length = demo.length();
 					if (length === null || length <= 0.0) {
-						playerControls.style.display = "none";
 						return;
 					}
-					playerControls.style.display = "flex";
 					applyLink(length);
-					const progress = demo.progress();
-					if (!seeking) {
-						seek.value = Math.round(progress * seek.max);
-					}
-					time.textContent = `${formatTime(progress * length)} / ${formatTime(length)}`;
-					speed.textContent = `${demo.speed().toFixed(2)}×`;
-					playButton.textContent = demo.paused() ? "Play" : "Pause";
-					updateSpectate();
-					updateLink(progress * length, demo.speed(), demo.paused(), demo.spectating());
-					// What the export is doing is asked for rather than
-					// remembered from the click: starting one in a browser
-					// returns long before the browser has an encoder, so the
-					// click itself knows nothing worth showing.
-					exportButton.textContent = ["Export video", "Stop export", "Export finished", "Export failed"][demo.exportState()];
+					updateLink(demo.progress() * length, demo.speed(), demo.paused(), demo.spectating());
 				}, 200);
 			})();
 		</script>

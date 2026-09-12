@@ -2310,7 +2310,6 @@ if(TARGET_OS STREQUAL "emscripten")
     other/emscripten/ddnet-loader.js
     other/emscripten/ddnet-page.css
     other/emscripten/ddnet-render.css
-    other/emscripten/ddnet-viewer.css
     other/emscripten/demo.html
     other/emscripten/index.html
     other/emscripten/map.html
@@ -3922,7 +3921,7 @@ if(CLIENT)
         -DBUILD_DIR=${PROJECT_BINARY_DIR}
         -DSITE_DIR=${PROJECT_BINARY_DIR}/site
         "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-render$<SEMICOLON>ddnet-demo-viewer$<SEMICOLON>ddnet-map-viewer"
-        "-DPAGE_FILES=coi-serviceworker.js$<SEMICOLON>DDNet.ico$<SEMICOLON>ddnet-loader.js$<SEMICOLON>ddnet-page.css$<SEMICOLON>ddnet-render.css$<SEMICOLON>ddnet-viewer.css$<SEMICOLON>demo.html$<SEMICOLON>index.html$<SEMICOLON>map.html$<SEMICOLON>render.html"
+        "-DPAGE_FILES=coi-serviceworker.js$<SEMICOLON>DDNet.ico$<SEMICOLON>ddnet-loader.js$<SEMICOLON>ddnet-page.css$<SEMICOLON>ddnet-render.css$<SEMICOLON>demo.html$<SEMICOLON>index.html$<SEMICOLON>map.html$<SEMICOLON>render.html"
         -P ${PROJECT_SOURCE_DIR}/cmake/assemble_web_site.cmake
       DEPENDS
         # tidy-alphabetical-start
@@ -5021,7 +5020,6 @@ else()
   list(REMOVE_ITEM CPACK_FILES
     # tidy-alphabetical-start
     other/emscripten/ddnet-render.css
-    other/emscripten/ddnet-viewer.css
     other/emscripten/demo.html
     other/emscripten/map.html
     other/emscripten/render.html

@@ -3,6 +3,7 @@
 #include "demo_viewer_client.h"
 
 #include "session_source_demo.h"
+#include "viewer_fullscreen.h"
 #include "window_sdl.h"
 
 #include <base/fs.h>
@@ -503,6 +504,7 @@ void CDemoViewerClient::RenderControls()
 		ITEM_SPACER,
 		ITEM_SPECTATE,
 		ITEM_EXPORT,
+		ITEM_FULLSCREEN,
 		// What the export menu offers: two things to set, and three sizes to
 		// ask for - picking a size is what starts it.
 		ITEM_EXPORT_SOUND,
@@ -558,6 +560,9 @@ void CDemoViewerClient::RenderControls()
 	aItems[ITEM_EXPORT].m_OpensMenu = !IsExporting;
 	aItems[ITEM_EXPORT].m_MenuId = MenuExport;
 	aItems[ITEM_EXPORT].m_Hidden = !CanExport;
+	aItems[ITEM_FULLSCREEN].m_Icon = CViewerControls::EIcon::FULLSCREEN;
+	aItems[ITEM_FULLSCREEN].m_Active = ViewerFullscreen::Active(Window());
+	aItems[ITEM_FULLSCREEN].m_Hidden = !ViewerFullscreen::Supported(Window());
 	aItems[ITEM_EXPORT_SOUND].m_pText = "Sound";
 	aItems[ITEM_EXPORT_SOUND].m_Active = m_ExportAudio;
 	aItems[ITEM_EXPORT_SOUND].m_KeepsMenu = true;
@@ -655,6 +660,9 @@ void CDemoViewerClient::RenderControls()
 		// Only reported while the menu is not what it opens, which is while
 		// one is being written.
 		RequestCancelExport();
+		break;
+	case ITEM_FULLSCREEN:
+		ViewerFullscreen::Toggle(Window());
 		break;
 	case ITEM_EXPORT_SOUND:
 		m_ExportAudio = !m_ExportAudio;

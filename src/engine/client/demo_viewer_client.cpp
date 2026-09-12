@@ -491,7 +491,27 @@ void CDemoViewerClient::RenderControls()
 
 	float SeekTo = 0.0f;
 	CDemoPlayer &Player = DemoSource(m_DemoSessionId).DemoPlayer();
-	switch(m_Controls.Render(aItems, NUM_ITEMS, Input, &SeekTo))
+	const int Pressed = m_Controls.Render(aItems, NUM_ITEMS, Input, &SeekTo);
+
+	// A demo that goes on playing while somebody drags along the seek bar
+	// runs out from under them: every frame moves the place they are looking
+	// for further from where they are pointing. It stands still until they let
+	// go, and then goes on if it was going on before.
+	if(m_Controls.Dragging() != m_Seeking)
+	{
+		m_Seeking = m_Controls.Dragging();
+		if(m_Seeking)
+		{
+			m_PausedBeforeSeeking = Paused();
+			SetPaused(true);
+		}
+		else if(!m_PausedBeforeSeeking)
+		{
+			SetPaused(false);
+		}
+	}
+
+	switch(Pressed)
 	{
 	case ITEM_PLAY:
 		SetPaused(!Paused());

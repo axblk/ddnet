@@ -230,6 +230,13 @@ public:
 	bool Hovered() const { return m_Hovered || m_Dragging >= 0; }
 
 	/**
+	 * Whether a slider is being held. What is being watched stands still
+	 * while somebody drags along it: they are looking for a place in it, and
+	 * a place that moves away while it is being pointed at is not one.
+	 */
+	bool Dragging() const { return m_Dragging >= 0; }
+
+	/**
 	 * Brings the bar back for a while, as any other use of it does. For what
 	 * happens elsewhere and should still count as somebody being there.
 	 */

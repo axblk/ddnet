@@ -72,6 +72,10 @@ private:
 	CViewerControls m_Controls;
 	CViewerGestures m_Gestures;
 	bool m_ShowControls = true;
+	// Dragging along the seek bar stops the demo where the pointer puts it,
+	// and lets it go on afterwards only if it was going on before.
+	bool m_Seeking = false;
+	bool m_PausedBeforeSeeking = false;
 	// Where the pointer was last frame and whether it is dragging the world
 	// along, which is how the free view is moved.
 	vec2 m_LastMousePos = vec2(0.0f, 0.0f);

@@ -235,16 +235,7 @@
 					}
 				});
 
-				// A demo a client recorded has nobody to pick from, so the eye
-				// does what the viewer's own does there: on to the next player
-				// there is, and past the last one the camera of one's own.
-				spectateButton.addEventListener('click', () => {
-					if (spectateMenu.childElementCount === 0) {
-						demo.spectateStep(1);
-						return;
-					}
-					openPanel(spectateMenu);
-				});
+				spectateButton.addEventListener('click', () => openPanel(spectateMenu));
 				// The export settings are asked for before the export runs, the
 				// same ones the render tool takes on its command line. While one is
 				// being written the button stops it instead.
@@ -319,11 +310,10 @@
 						const options = players.length === 0 ? []
 							: [{ id: -1, name: "Free view", icon: "freeview" }]
 								.concat(players.map(player => ({ id: player.id, name: player.name, icon: "eye" })));
-						spectateButton.setAttribute('aria-haspopup', options.length === 0 ? "false" : "true");
-						spectateButton.title = options.length === 0 ? "Watch somebody else (N, P, F)" : "Who to watch (N, P, F)";
-						spectateButton.setAttribute('aria-label', options.length === 0 ? "Watch somebody else" : "Who to watch");
-						// A list that has just become nothing must not stay open
-						// as an empty box over the demo.
+						// A demo a client recorded has nobody to pick from, and a
+						// button that opens nothing is a button in the way. The
+						// keys still step through whoever is there.
+						spectateButton.hidden = options.length === 0;
 						if (options.length === 0 && !spectateMenu.hidden) {
 							openPanel(null);
 						}

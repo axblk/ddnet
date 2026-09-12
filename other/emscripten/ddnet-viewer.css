@@ -63,7 +63,7 @@
    and a flex box that is `hidden` is still laid out unless this says
    otherwise - the attribute only beats the browser's own stylesheet, not
    ours. */
-.viewer-bar[hidden], .viewer-cluster[hidden], .viewer-menu[hidden], .viewer-panel[hidden], .viewer-form label[hidden] {
+.viewer-bar[hidden], .viewer-button[hidden], .viewer-cluster[hidden], .viewer-menu[hidden], .viewer-menu-item[hidden], .viewer-panel[hidden], .viewer-form label[hidden] {
 	display: none;
 }
 .viewer-bar, .viewer-cluster, .viewer-menu, .viewer-panel {

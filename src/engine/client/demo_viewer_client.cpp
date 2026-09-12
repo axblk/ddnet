@@ -589,6 +589,10 @@ void CDemoViewerClient::RenderControls()
 	aItems[ITEM_SPECTATE].m_Icon = CViewerControls::EIcon::EYE;
 	aItems[ITEM_SPECTATE].m_pText = aSpectating;
 	aItems[ITEM_SPECTATE].m_OpensMenu = !vPickable.empty();
+	// A demo a client recorded has nobody to pick from, and a button that opens
+	// nothing is a button in the way. The keys still step through whoever is
+	// there, for whoever wants that.
+	aItems[ITEM_SPECTATE].m_Hidden = vPickable.empty();
 	aItems[ITEM_EXPORT].m_Icon = IsExporting ? CViewerControls::EIcon::STOP : CViewerControls::EIcon::SAVE;
 	aItems[ITEM_EXPORT].m_pText = IsExporting ? aExportProgress : nullptr;
 	aItems[ITEM_EXPORT].m_OpensMenu = !IsExporting;

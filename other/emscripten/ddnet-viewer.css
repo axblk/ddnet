@@ -343,6 +343,15 @@
 	letter-spacing: 0.04em;
 	text-transform: uppercase;
 }
+/* What went wrong, under what was asked for. Read before it is dismissed, so
+   it is left the colour of a warning rather than made loud. */
+.viewer-panel-message {
+	margin: 0;
+	color: #ff8a80;
+	font-size: 12px;
+	line-height: 1.35;
+	max-width: 46ch;
+}
 .viewer-form {
 	display: grid;
 	grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

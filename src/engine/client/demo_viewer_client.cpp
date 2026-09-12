@@ -130,6 +130,7 @@ bool CDemoViewerClient::RequestExport(const CVideoExportSettings &Settings)
 	m_RequestedSettings = Settings;
 	m_ExportRequested = true;
 	m_ExportState = EExportState::RUNNING;
+	m_aExportError[0] = '\0';
 	return true;
 }
 
@@ -140,6 +141,7 @@ bool CDemoViewerClient::StartExport(const CVideoExportSettings &Settings)
 		return false;
 	}
 	m_ExportState = EExportState::RUNNING;
+	m_aExportError[0] = '\0';
 	m_Settings = Settings;
 	// An encoder takes whole macroblocks, so an odd size is refused rather than
 	// rounded. A window is any size the user dragged it to, so the size that
@@ -174,6 +176,7 @@ bool CDemoViewerClient::StartExport(const CVideoExportSettings &Settings)
 	if(pError != nullptr)
 	{
 		log_error("videorecorder", "%s", pError);
+		str_copy(m_aExportError, pError);
 		m_aError[0] = '\0';
 		m_aVideoPath[0] = '\0';
 		m_ExportState = EExportState::FAILED;
@@ -213,10 +216,12 @@ void CDemoViewerClient::FinishExport()
 	{
 		m_pVideo->Stop();
 	}
-	const bool Failed = m_pVideo->Status().m_HasError;
+	const CVideoExportStatus Status = m_pVideo->Status();
+	const bool Failed = Status.m_HasError;
 	m_pVideo.reset();
 	if(Failed)
 	{
+		str_copy(m_aExportError, Status.m_aError[0] == '\0' ? "The video could not be written." : Status.m_aError);
 		m_aError[0] = '\0';
 	}
 	log_info("videorecorder", Failed ? "Export failed" : "Export completed");
@@ -1037,6 +1042,11 @@ EMSCRIPTEN_KEEPALIVE void DemoViewerCancelExport()
 
 // 0 while nothing was ever asked for, 1 while a video is being written, 2 when
 // the last one was handed over and 3 when it failed.
+EMSCRIPTEN_KEEPALIVE const char *DemoViewerExportError()
+{
+	return g_pDemoViewer == nullptr ? "" : g_pDemoViewer->ExportError();
+}
+
 EMSCRIPTEN_KEEPALIVE int DemoViewerExportState()
 {
 	return g_pDemoViewer == nullptr ? 0 : (int)g_pDemoViewer->ExportState();

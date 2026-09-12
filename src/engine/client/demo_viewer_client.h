@@ -81,6 +81,10 @@ private:
 	std::chrono::nanoseconds m_NextFrameTime{};
 	int m_ExitCode = 0;
 	EExportState m_ExportState = EExportState::IDLE;
+	// Why the last export failed, kept after it has been reported: an export
+	// that came to nothing is the one thing here that nobody can see for
+	// themselves, and a page has no log to look in.
+	char m_aExportError[256] = "";
 	CViewerControls m_Controls;
 	CViewerGestures m_Gestures;
 	bool m_ShowControls = true;
@@ -223,6 +227,11 @@ public:
 	float Length() const;
 	bool Exporting() const;
 	EExportState ExportState() const { return m_ExportState; }
+	/**
+	 * Why the export that was last asked for failed, or an empty string when
+	 * none has.
+	 */
+	const char *ExportError() const { return m_aExportError; }
 };
 
 #endif // ENGINE_CLIENT_DEMO_VIEWER_CLIENT_H

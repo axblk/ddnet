@@ -1532,6 +1532,12 @@ self.onmessage = async event => {
 			 * way of its own, so both move at once and apart.
 			 */
 			exportProgress: () => number("DemoViewerExportProgress"),
+			/**
+			 * Why the export that was last asked for failed, or an empty
+			 * string when none has. A page is the only place this can be
+			 * said: there is no log for whoever is looking at the demo.
+			 */
+			exportError: () => instance.call("DemoViewerExportError", "string") || "",
 			/** Throws away the export that is running, and its file with it. */
 			cancelExport: () => instance.call("DemoViewerCancelExport"),
 			/**

@@ -27,6 +27,10 @@
 			<div id="export-panel" class="viewer-panel" hidden>
 				<div class="viewer-panel-title">Export video</div>
 				<div id="export-settings" class="viewer-form"></div>
+				<!-- Why the last one came to nothing. A page is the only place
+				     this can be said: whoever is watching a demo has no log to
+				     look in. -->
+				<p id="export-message" class="viewer-panel-message" role="status" hidden></p>
 				<div class="viewer-panel-actions">
 					<button id="export-start" class="viewer-text-button">Start</button>
 				</div>
@@ -85,6 +89,7 @@
 				const exportPanel = document.getElementById('export-panel');
 				const exportSettings = document.getElementById('export-settings');
 				const exportStart = document.getElementById('export-start');
+				const exportMessage = document.getElementById('export-message');
 				const exportForm = DDNetLoader.exportSettingsForm(exportSettings, { canvas: canvas });
 				DDNetLoader.paintIcons(document);
 				DDNetLoader.fullscreen(document.getElementById('fullscreen'));
@@ -265,13 +270,31 @@
 							});
 							viewer.setVideoSink({ stream: await handle.createWritable(), done: () => null });
 						} catch (error) {
-							// The dialog was dismissed, so the export was not asked for.
+							// A dismissed dialog is somebody changing their mind
+							// and nothing to report. Anything else is a file that
+							// cannot be written, which has to be said: a button
+							// that does nothing at all is the worst of it.
+							if (error && error.name === "AbortError") {
+								return;
+							}
+							say(`The file could not be opened: ${(error && error.message) || error}`);
 							return;
 						}
 					}
-					demo.startExport(exportForm.values());
+					say("");
+					if (!demo.startExport(exportForm.values())) {
+						say("The export could not be started.");
+						return;
+					}
 					openPanel(null);
 				});
+
+				// What went wrong, in the panel it went wrong in. An empty string
+				// takes the line away again.
+				function say(message) {
+					exportMessage.textContent = message;
+					exportMessage.hidden = message === "";
+				}
 
 				// Who there is to watch, which is the list the viewer opens behind
 				// the same button. A demo names its players a snapshot or two in
@@ -359,6 +382,13 @@
 					exportButton.classList.toggle('viewer-on', running);
 					exportButton.title = ["Export video", "Stop the export", "The video was handed over", "The export failed"][state];
 					exportButton.setAttribute('aria-label', exportButton.title);
+					// An export that failed says why, where it was asked for.
+					if (state === 3) {
+						const reason = demo.exportError();
+						if (reason !== "" && exportMessage.textContent !== reason) {
+							say(reason);
+						}
+					}
 					const badge = exportButton.querySelector('.viewer-badge');
 					if (running) {
 						const percent = `${Math.round(demo.exportProgress() * 100)}%`;

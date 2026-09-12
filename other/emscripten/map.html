@@ -8,25 +8,48 @@
 		<link rel="icon" type="image/x-icon" href="DDNet.ico">
 		<script src="coi-serviceworker.js"></script>
 		<link rel="stylesheet" href="ddnet-page.css">
+		<link rel="stylesheet" href="ddnet-viewer.css">
 	</head>
 	<body>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="error" style="display: none"></div>
 		<canvas id="canvas">Canvas not supported.</canvas>
+		<!-- A map is looked at rather than played, so there is nothing to seek
+		     through and no reason for a bar along the bottom: what the view does
+		     sits in a corner out of the way of the map, and what is asked for
+		     once in a while sits behind the menu. The same buttons the viewer
+		     draws for itself, in the same order and with the same pictures -
+		     only as buttons the browser knows about, which is what gives them a
+		     tooltip and a tab order. -->
+		<div id="controls" class="viewer-controls viewer-controls-corner">
+			<div id="cluster" class="viewer-cluster" hidden>
+				<button id="fullscreen" class="viewer-button" data-icon="fullscreen" title="Full screen" aria-label="Full screen"></button>
+				<button id="zoom-out" class="viewer-button" data-icon="minus" title="Zoom out" aria-label="Zoom out"></button>
+				<button id="zoom-in" class="viewer-button" data-icon="plus" title="Zoom in" aria-label="Zoom in"></button>
+				<button id="fit" class="viewer-button" data-icon="fit" title="The whole map (Home)" aria-label="The whole map"></button>
+				<button id="menu-button" class="viewer-button" data-icon="menu" title="More" aria-label="More" aria-haspopup="true" aria-expanded="false"></button>
+			</div>
+			<!-- What is set once and then left alone, and what is asked for now
+			     and then: under the button that opens it, because that is the
+			     corner it belongs to. -->
+			<div id="menu" class="viewer-cluster viewer-cluster-column" hidden>
+				<button id="detail" class="viewer-button" data-icon="detail" title="What is only there to look at" aria-label="What is only there to look at" aria-pressed="false"></button>
+				<button id="entities" class="viewer-button" data-icon="entities" title="What the tiles do" aria-label="What the tiles do" aria-pressed="false"></button>
+				<button id="save-view" class="viewer-button" data-icon="save" title="Save what is on the screen (F2)" aria-label="Save what is on the screen"></button>
+				<button id="save-map" class="viewer-button" data-icon="save_all" title="Save the whole map" aria-label="Save the whole map"></button>
+			</div>
+		</div>
 		<script src="ddnet-map-viewer.js"></script>
 		<script src="ddnet-loader.js"></script>
 		<script>
 			// A map is dropped onto the window, or named as `map.html#map=<url>`.
-			//
-			// The page brings no controls of its own: a map fills the window and
-			// the viewer draws what there is to press into a corner of it. Moving
-			// and zooming stay on the pointer, where they belong. The other end of
-			// what is left here is the `MapViewer*` block in
-			// `src/game/map/standalone/map_viewer_main.cpp`.
 			const started = DDNetLoader.page({
 				module: DDNetMapViewer,
 				programName: "Map viewer",
 				accept: [".map"],
+				// The page has buttons of its own in the corner, so the viewer
+				// leaves off the ones it would draw itself.
+				controls: false,
 				urlParams: ["map"],
 				elements: {
 					canvas: document.getElementById('canvas'),
@@ -35,7 +58,49 @@
 			});
 		</script>
 		<script>
+			// What the buttons in the corner do. Moving and zooming stay on the
+			// pointer as well, where they belong; these are for whoever has no
+			// wheel and for what a gesture cannot say. The other end of them is
+			// the `MapViewer*` block in
+			// `src/game/map/standalone/map_viewer_main.cpp`.
 			(function() {
+				const controls = document.getElementById('controls');
+				const cluster = document.getElementById('cluster');
+				const menuButton = document.getElementById('menu-button');
+				const menu = document.getElementById('menu');
+				const detail = document.getElementById('detail');
+				const entities = document.getElementById('entities');
+				const saveView = document.getElementById('save-view');
+				const saveMap = document.getElementById('save-map');
+				DDNetLoader.paintIcons(document);
+				DDNetLoader.fullscreen(document.getElementById('fullscreen'));
+				// The buttons and the menu are one thing to whoever uses them, so
+				// they step aside together while nothing is happening.
+				DDNetLoader.autoHide([cluster, menu]);
+				// A button is pressed once where a wheel is turned several notches,
+				// so it takes a bigger step - the same one the viewer's own button
+				// takes.
+				const BUTTON_ZOOM_STEP = 1.4;
+
+				function openMenu(open) {
+					menu.hidden = !open;
+					menuButton.setAttribute('aria-expanded', open ? "true" : "false");
+				}
+				menuButton.addEventListener('click', () => openMenu(menu.hidden));
+				// A click anywhere else closes it: a menu that has to be dismissed
+				// with the button that opened it is one people leave open over the
+				// map they wanted to see.
+				document.addEventListener('pointerdown', event => {
+					if (!controls.contains(event.target)) {
+						openMenu(false);
+					}
+				});
+				document.addEventListener('keydown', event => {
+					if (event.key === "Escape") {
+						openMenu(false);
+					}
+				});
+
 				// The page is there before the viewer is and outlives it, so every
 				// call has to survive being made outside of that: until there is
 				// one, and once there is no longer one, they all answer `null`.
@@ -48,10 +113,28 @@
 				// already, which is enough: there is nothing here to steer.
 				started.then(instance => { viewer = instance; }, () => {});
 
+				document.getElementById('zoom-out').addEventListener('click', () => map.zoomBy(BUTTON_ZOOM_STEP));
+				document.getElementById('zoom-in').addEventListener('click', () => map.zoomBy(1 / BUTTON_ZOOM_STEP));
+				document.getElementById('fit').addEventListener('click', () => map.fit());
+				detail.addEventListener('click', () => map.highDetail(!map.highDetail()));
+				entities.addEventListener('click', () => map.entities(!map.entities()));
+				// Writing a picture is what the browser hands over as a download,
+				// and it only does that for what came out of a click. The click
+				// this is, which is why it is asked for here and not out of
+				// something the page works out for itself later.
+				saveView.addEventListener('click', () => {
+					map.exportView();
+					openMenu(false);
+				});
+				saveMap.addEventListener('click', () => {
+					map.exportFullMap();
+					openMenu(false);
+				});
+
 				// Where a link says to look, and how much of the map to show:
-				// `#x=120&y=64&tiles=90`, in tiles, applied once as soon as
-				// there is a map to apply it to. A map that is dropped in later
-				// brings its own view and keeps it.
+				// `#x=120&y=64&tiles=90`, in tiles, applied once as soon as there
+				// is a map to apply it to. A map that is dropped in later brings
+				// its own view and keeps it.
 				var linkApplied = false;
 				function applyLink() {
 					if (linkApplied) {
@@ -83,14 +166,28 @@
 				// thread for as long as it draws and only lets go between frames.
 				setInterval(() => {
 					if (!map.loaded()) {
+						cluster.hidden = true;
+						openMenu(false);
 						return;
 					}
+					cluster.hidden = false;
 					applyLink();
 					const center = map.center();
 					const tiles = map.tilesAcross();
 					if (center !== null && tiles > 0) {
 						updateLink(center, tiles);
 					}
+					// What is switched on is asked for rather than remembered from
+					// the click, because the window answers to its own keys as
+					// well as to these buttons.
+					detail.setAttribute('aria-pressed', map.highDetail() ? "true" : "false");
+					entities.setAttribute('aria-pressed', map.entities() ? "true" : "false");
+					// A picture is drawn in pieces between frames, and asking for
+					// a second one while the first is being written would cut into
+					// it.
+					const busy = map.exportState() === 1;
+					saveView.disabled = busy;
+					saveMap.disabled = busy;
 				}, 200);
 			})();
 		</script>

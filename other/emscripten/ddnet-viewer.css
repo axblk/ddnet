@@ -1,8 +1,10 @@
-/* The interface a viewer page puts over its canvas: a bar along the bottom
-   for a demo, which is something being played. These are the buttons the
-   program itself draws, said in the browser's own words - real buttons that a
-   finger, a pointer and a keyboard all reach, with a tooltip each, which is
-   the one thing the program cannot offer because it carries no font for it.
+/* The interface the two viewer pages put over their canvas: a bar along the
+   bottom for a demo, which is something being played, and a handful of
+   buttons in a corner for a map, which is something being looked at. These
+   are the buttons the programs themselves draw, said in the browser's own
+   words - real buttons that a finger, a pointer and a keyboard all reach,
+   with a tooltip each, which is the one thing the programs cannot offer
+   because they carry no font for them.
 
    Everything here is measured in what the screen has rather than in what a
    desktop happens to have, and everything that can be covered by a phone's
@@ -48,8 +50,16 @@
 	align-items: center;
 	gap: 8px;
 }
+/* A map: in the top right corner, out of the way of the map, and what it
+   opens under it. */
+.viewer-controls-corner {
+	flex-direction: column;
+	justify-content: flex-start;
+	align-items: flex-end;
+	gap: 8px;
+}
 
-.viewer-bar, .viewer-menu, .viewer-panel {
+.viewer-bar, .viewer-cluster, .viewer-menu, .viewer-panel {
 	pointer-events: auto;
 	border: 1px solid var(--viewer-border);
 	border-radius: var(--viewer-radius);
@@ -63,7 +73,7 @@
 	transition: opacity 0.25s ease, transform 0.25s ease;
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-	.viewer-bar, .viewer-menu, .viewer-panel {
+	.viewer-bar, .viewer-cluster, .viewer-menu, .viewer-panel {
 		background-color: rgba(24, 24, 27, 0.92);
 	}
 }
@@ -77,6 +87,20 @@
 	width: 100%;
 	max-width: 900px;
 	padding: 6px clamp(6px, 1.5vw, 12px) 4px clamp(6px, 1.5vw, 12px);
+}
+/* A row of buttons and nothing else, which is all a map needs: no seek bar
+   over it and no numbers beside it. */
+.viewer-cluster {
+	display: flex;
+	align-items: center;
+	gap: var(--viewer-gap);
+	padding: 4px;
+}
+/* The same cluster standing up, which is what a menu of nothing but pictures
+   is: a column under the button that opened it, in the corner it belongs to.
+   */
+.viewer-cluster-column {
+	flex-direction: column;
 }
 .viewer-row {
 	display: flex;
@@ -400,4 +424,8 @@
 	opacity: 0;
 	transform: translateY(6px);
 	pointer-events: none;
+}
+/* Away from the edge it sits at, which is the top one for a map. */
+.viewer-controls-corner .faded {
+	transform: translateY(-6px);
 }

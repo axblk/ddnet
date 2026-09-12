@@ -395,12 +395,18 @@ const DDNetLoader = (() => {
 	// own. What goes full screen is the page and not the canvas: a canvas on
 	// its own takes the controls off the screen with it, since they are beside
 	// it and not in it.
+	// Safari before 16.4 - which is every iPad that has not been updated since
+	// 2023 - only has this under its own name, and an iPhone has it under no
+	// name at all: there, only a video may fill the screen, and a button that
+	// asks for it is a button that does nothing. So it is asked for under both
+	// names, and where there is neither the button is taken away rather than
+	// left sitting there dead.
 	function fullscreenSupported() {
-		return document.fullscreenEnabled === true;
+		return document.fullscreenEnabled === true || document.webkitFullscreenEnabled === true;
 	}
 
 	function isFullscreen() {
-		return document.fullscreenElement != null;
+		return (document.fullscreenElement || document.webkitFullscreenElement) != null;
 	}
 
 	// Asked for by a button on the page, and by the viewers themselves for the
@@ -412,14 +418,17 @@ const DDNetLoader = (() => {
 			return;
 		}
 		if (isFullscreen()) {
-			document.exitFullscreen();
+			(document.exitFullscreen || document.webkitExitFullscreen).call(document);
 			return;
 		}
 		// A browser that says no says it in a promise nobody is waiting on,
 		// which would otherwise be an unhandled rejection. It is said out loud
 		// all the same: a button that does nothing is the hardest kind of
 		// fault to look into, and the reason is in that rejection.
-		settings.element.requestFullscreen().then(() => {
+		const ask = settings.element.requestFullscreen || settings.element.webkitRequestFullscreen;
+		// The older name returns nothing at all, so there is nothing to wait
+		// on and nothing to be told; what follows is only for the newer one.
+		Promise.resolve(ask.call(settings.element)).then(() => {
 			// What is being watched is wide and a phone is tall. Only a page
 			// that fills the screen may ask for this, which is why it is asked
 			// for here and nowhere else; a browser that does not do it says so
@@ -457,6 +466,7 @@ const DDNetLoader = (() => {
 		// that leaves full screen - and therefore worth taking off again when
 		// the button goes.
 		document.addEventListener("fullscreenchange", update, { signal: signal });
+		document.addEventListener("webkitfullscreenchange", update, { signal: signal });
 		update();
 		return { supported: true };
 	}

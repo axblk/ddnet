@@ -198,37 +198,53 @@ const DDNetLoader = (() => {
 	// own. What goes full screen is the page and not the canvas: a canvas on
 	// its own takes the controls off the screen with it, since they are beside
 	// it and not in it.
-	function fullscreen(button, options) {
+	function fullscreenSupported() {
+		return document.fullscreenEnabled === true;
+	}
+
+	function isFullscreen() {
+		return document.fullscreenElement != null;
+	}
+
+	// Asked for by a button on the page, and by the viewers themselves for the
+	// button they draw over the picture: what a browser will do about filling
+	// the screen is the same either way, and it is knowledge the page has.
+	function toggleFullscreen(options) {
 		const settings = Object.assign({ element: document.documentElement }, options || {});
-		if (!document.fullscreenEnabled) {
+		if (!fullscreenSupported()) {
+			return;
+		}
+		if (isFullscreen()) {
+			document.exitFullscreen();
+			return;
+		}
+		// A browser that says no says it in a promise nobody is waiting on,
+		// which would otherwise be an unhandled rejection.
+		settings.element.requestFullscreen().then(() => {
+			// What is being watched is wide and a phone is tall. Only a page
+			// that fills the screen may ask for this, which is why it is asked
+			// for here and nowhere else; a browser that does not do it says so
+			// and nothing else happens.
+			if (screen.orientation && screen.orientation.lock) {
+				screen.orientation.lock("landscape").catch(() => {});
+			}
+		}).catch(() => {});
+	}
+
+	function fullscreen(button, options) {
+		if (!fullscreenSupported()) {
 			button.hidden = true;
 			return { supported: false };
 		}
 		const update = () => {
-			const on = document.fullscreenElement != null;
+			const on = isFullscreen();
 			button.textContent = on ? "Leave full screen" : "Full screen";
 			button.title = on ? "Escape" : "";
 			if (!on && screen.orientation && screen.orientation.unlock) {
 				screen.orientation.unlock();
 			}
 		};
-		button.addEventListener("click", () => {
-			if (document.fullscreenElement != null) {
-				document.exitFullscreen();
-			} else {
-				// A browser that says no says it in a promise nobody is
-				// waiting on, which would otherwise be an unhandled rejection.
-				settings.element.requestFullscreen().then(() => {
-					// What is being watched is wide and a phone is tall. Only
-					// a page that fills the screen may ask for this, which is
-					// why it is asked for here and nowhere else; a browser that
-					// does not do it says so and nothing else happens.
-					if (screen.orientation && screen.orientation.lock) {
-						screen.orientation.lock("landscape").catch(() => {});
-					}
-				}).catch(() => {});
-			}
-		});
+		button.addEventListener("click", () => toggleFullscreen(options));
 		document.addEventListener("fullscreenchange", update);
 		update();
 		return { supported: true };
@@ -1582,6 +1598,32 @@ self.onmessage = async event => {
 		 */
 		fullscreen(button, options) {
 			return fullscreen(button, options);
+		},
+
+		/**
+		 * Whether this browser allows anything to fill the screen at all.
+		 * Called from the viewers, for the button they draw themselves.
+		 */
+		fullscreenSupported() {
+			return fullscreenSupported();
+		},
+
+		/** Whether something is filling the screen right now. */
+		isFullscreen() {
+			return isFullscreen();
+		},
+
+		/**
+		 * Fills the screen with the page, or stops doing so. A browser only
+		 * allows this out of something the user did, so it has to be called
+		 * while what they did still counts - straight out of the click, or in
+		 * the frame that reads it.
+		 *
+		 * @param options.element What to fill the screen with, the page
+		 * itself otherwise.
+		 */
+		toggleFullscreen(options) {
+			return toggleFullscreen(options);
 		},
 
 		/**

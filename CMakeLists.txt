@@ -2937,6 +2937,8 @@ if(CLIENT)
     video_webcodecs.cpp
     viewer_controls.cpp
     viewer_controls.h
+    viewer_fullscreen.cpp
+    viewer_fullscreen.h
     warning.cpp
     window_offscreen.cpp
     window_sdl.cpp
@@ -3388,7 +3390,7 @@ if(CLIENT)
   # out of the client. The client never names them, and they are written for a
   # program that has the video recorder, which the client can be built without.
   set(ENGINE_CLIENT_GAME ${ENGINE_CLIENT})
-  list(FILTER ENGINE_CLIENT_GAME EXCLUDE REGEX "src/engine/client/(demo_client_base|demo_render_client|demo_render_main|demo_viewer_client|demo_viewer_main|viewer_controls)\\.(cpp|h)$")
+  list(FILTER ENGINE_CLIENT_GAME EXCLUDE REGEX "src/engine/client/(demo_client_base|demo_render_client|demo_render_main|demo_viewer_client|demo_viewer_main|viewer_controls|viewer_fullscreen)\\.(cpp|h)$")
 
   set(CLIENT_SRC ${ENGINE_CLIENT_GAME} ${PLATFORM_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
 
@@ -3646,7 +3648,7 @@ if(CLIENT)
     # The other program built on this client is a window with a demo in it,
     # and with it goes the bar of controls that window draws.
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/demo_viewer_(client|main)\\.(cpp|h)$")
-    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/viewer_controls\\.(cpp|h)$")
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/viewer_(controls|fullscreen)\\.(cpp|h)$")
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/window_sdl\\.(cpp|h)$")
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/input\\.(cpp|h)$")
     # Translating a 0.7 connless packet needs a program that receives one.
@@ -3845,6 +3847,8 @@ if(CLIENT)
       src/engine/client/keynames.h
       src/engine/client/viewer_controls.cpp
       src/engine/client/viewer_controls.h
+      src/engine/client/viewer_fullscreen.cpp
+      src/engine/client/viewer_fullscreen.h
       src/engine/client/window_sdl.cpp
       src/engine/client/window_sdl.h
       src/game/map/standalone/map_viewer_main.cpp

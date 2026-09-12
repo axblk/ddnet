@@ -1374,7 +1374,20 @@ self.onmessage = async event => {
 					setNumbers("MapViewerSetZoom", [zoom * Factor]);
 				}
 			},
-			/** Writes what is on screen, or the whole map, to a picture. */
+			/**
+			 * Whether the parts of the map that are only there to be looked at
+			 * are drawn, or turns them on and off.
+			 */
+			highDetail: On => On === undefined
+				? instance.call("MapViewerHighDetail", "number") === 1
+				: instance.call("MapViewerSetHighDetail", null, ["number"], [On ? 1 : 0]),
+			/**
+			 * Whether what the tiles do is drawn over what they look like, or
+			 * turns that on and off.
+			 */
+			entities: On => On === undefined
+				? instance.call("MapViewerEntities", "number") === 1
+				: instance.call("MapViewerSetEntities", null, ["number"], [On ? 1 : 0]),
 			/**
 			 * Whether the viewer draws its own bar of controls over the map,
 			 * or switches it on and off, as in `demoControls`.
@@ -1382,6 +1395,7 @@ self.onmessage = async event => {
 			controls: Show => Show === undefined
 				? instance.call("MapViewerControls", "number") === 1
 				: instance.call("MapViewerSetControls", null, ["number"], [Show ? 1 : 0]),
+			/** Writes what is on screen, or the whole map, to a picture. */
 			exportView: () => instance.call("MapViewerExportView"),
 			exportFullMap: () => instance.call("MapViewerExportFullMap"),
 			/** 0 while nothing is being written, 1 while it is, 2 when it failed. */

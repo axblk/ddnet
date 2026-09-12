@@ -155,6 +155,34 @@ EMSCRIPTEN_KEEPALIVE void MapViewerSetZoom(float Zoom)
 		g_pRenderParams->m_Zoom = std::clamp(Zoom, MIN_ZOOM, MAX_ZOOM);
 }
 
+// What the map shows besides its tiles: the parts of it that are only there
+// to be looked at, and the overlay that says what a tile does. Both are set
+// once and then left alone, which is why the viewer keeps them behind its
+// menu rather than beside the zoom.
+EMSCRIPTEN_KEEPALIVE void MapViewerSetHighDetail(int On)
+{
+	if(g_pRenderParams != nullptr)
+		g_pRenderParams->m_HighDetail = On != 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapViewerHighDetail()
+{
+	return g_pRenderParams != nullptr && g_pRenderParams->m_HighDetail ? 1 : 0;
+}
+
+// All of it or none: a map viewer is asked what a map does, not how strongly
+// to say it.
+EMSCRIPTEN_KEEPALIVE void MapViewerSetEntities(int On)
+{
+	if(g_pRenderParams != nullptr)
+		g_pRenderParams->m_EntityOverlayVal = On != 0 ? 100 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapViewerEntities()
+{
+	return g_pRenderParams != nullptr && g_pRenderParams->m_EntityOverlayVal > 0 ? 1 : 0;
+}
+
 EMSCRIPTEN_KEEPALIVE float MapViewerCenterX()
 {
 	return g_pRenderParams == nullptr ? 0.0f : g_pRenderParams->m_Center.x;

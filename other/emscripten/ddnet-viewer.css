@@ -59,6 +59,13 @@
 	gap: 8px;
 }
 
+/* Laid out, and gone when it is said to be gone. A panel here is a flex box,
+   and a flex box that is `hidden` is still laid out unless this says
+   otherwise - the attribute only beats the browser's own stylesheet, not
+   ours. */
+.viewer-bar[hidden], .viewer-cluster[hidden], .viewer-menu[hidden], .viewer-panel[hidden], .viewer-form label[hidden] {
+	display: none;
+}
 .viewer-bar, .viewer-cluster, .viewer-menu, .viewer-panel {
 	pointer-events: auto;
 	border: 1px solid var(--viewer-border);
@@ -347,12 +354,6 @@
 	align-items: center;
 	gap: 6px;
 	min-width: 0;
-}
-/* A field that is only there when there is something to type into it says so
-   with `hidden`, and a row that is laid out has to be told that this still
-   means gone. */
-.viewer-form label[hidden] {
-	display: none;
 }
 .viewer-form select, .viewer-form input[type=number] {
 	min-width: 0;

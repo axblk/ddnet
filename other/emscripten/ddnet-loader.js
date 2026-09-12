@@ -1260,6 +1260,12 @@ self.onmessage = async event => {
 			 * browser it returns before the encoder has even been asked.
 			 */
 			exportState: () => number("DemoViewerExportState"),
+			/**
+			 * How far the video being written has got, between 0 and 1. Not
+			 * where the demo on the canvas is: the export reads it through a
+			 * way of its own, so both move at once and apart.
+			 */
+			exportProgress: () => number("DemoViewerExportProgress"),
 			/** Throws away the export that is running, and its file with it. */
 			cancelExport: () => instance.call("DemoViewerCancelExport"),
 			/**

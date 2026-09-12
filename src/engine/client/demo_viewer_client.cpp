@@ -1035,6 +1035,14 @@ EMSCRIPTEN_KEEPALIVE int DemoViewerExportState()
 	return g_pDemoViewer == nullptr ? 0 : (int)g_pDemoViewer->ExportState();
 }
 
+// How far the video that is being written has got, between 0 and 1. It is not
+// where the demo on the window is: an export reads the demo through a way of
+// its own, so whoever is watching can spool about while it is written.
+EMSCRIPTEN_KEEPALIVE float DemoViewerExportProgress()
+{
+	return g_pDemoViewer == nullptr ? 0.0f : g_pDemoViewer->ExportProgress();
+}
+
 EMSCRIPTEN_KEEPALIVE int DemoViewerPaused()
 {
 	return g_pDemoViewer != nullptr && g_pDemoViewer->Paused() ? 1 : 0;

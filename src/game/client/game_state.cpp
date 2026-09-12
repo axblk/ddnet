@@ -822,6 +822,10 @@ void CGameState::RebuildGameWorld()
 	m_GameWorld.NetObjEnd();
 }
 
+// What a game that is being played does with the world it keeps: advance it to
+// where it guesses the server to be. A demo is what already happened, so a
+// program that only watches one never asks for this and does not carry it.
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
 void CGameState::Predict(const IClient &Client, CSessionId SessionId, CStreamId StreamId)
 {
 	PredictTo(Client.PredGameTick(SessionId, StreamId), [&Client, SessionId, StreamId](int Tick) {
@@ -893,6 +897,7 @@ void CGameState::PredictTo(int TargetTick, const std::function<const CNetObj_Pla
 		}
 	}
 }
+#endif
 
 void CGameState::UpdateRenderedClient(int ClientId, bool UsePredicted, bool PredictedLocal, float IntraGameTick, float PredIntraGameTick)
 {

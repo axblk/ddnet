@@ -3839,8 +3839,12 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 
 	UpdateLocalTuning(SessionId, Session, ActiveState, Conn);
 	m_PreviousFocusedStream.reset();
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
+	// Only a game that is being played advances a world of its own to where it
+	// guesses the server to be, and only that build carries the code for it.
 	if(NetworkSource)
 		UpdatePrediction();
+#endif
 }
 
 std::function<bool(int, int, int, int)> CGameClient::GetScoreComparator(bool TimeScore, bool ReceivedMillisecondFinishTimes, bool Race7)
@@ -3904,6 +3908,7 @@ void CGameClient::UpdateEditorIngameMoved()
 	}
 }
 
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
 void CGameClient::ApplyPreInputs(int Tick, bool Direct, CGameWorld &GameWorld)
 {
 	if(!g_Config.m_ClAntiPingPreInput)
@@ -3943,7 +3948,19 @@ void CGameClient::ApplyPreInputs(int Tick, bool Direct, CGameWorld &GameWorld)
 		}
 	}
 }
+#endif
 
+#if defined(CONF_DEMO_RENDER_TOOL) || defined(CONF_DEMO_VIEWER_TOOL)
+// A demo is what already happened, so there is nothing to guess at: nobody's
+// input is on its way to a server here, and the only caller of this is the
+// network code, which a program that watches a demo does not link. Said as an
+// assert rather than as nothing at all, so that a caller that turns up one day
+// says so instead of quietly predicting nothing.
+void CGameClient::OnPredict(CSessionId SessionId, CStreamId StreamId)
+{
+	dbg_assert(false, "a demo program does not predict");
+}
+#else
 void CGameClient::OnPredict(CSessionId SessionId, CStreamId StreamId)
 {
 	const int Conn = Client()->StreamIndex(SessionId, StreamId);
@@ -3957,7 +3974,9 @@ void CGameClient::OnPredict(CSessionId SessionId, CStreamId StreamId)
 	if(pState->IsFullyPredicted())
 		ProcessPrediction();
 }
+#endif
 
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
 void CGameClient::ProcessPrediction()
 {
 	const CSessionId SessionId = Client()->FocusedSessionId();
@@ -4246,6 +4265,7 @@ void CGameClient::ProcessPrediction()
 	if(m_NewPredictedTick)
 		m_Ghost.OnNewPredictedSnapshot();
 }
+#endif
 
 void CGameClient::OnActivateEditor()
 {
@@ -4792,6 +4812,7 @@ CPhysicsRules CGameClient::PredictedPhysicsRules() const
 	return ::PredictedPhysicsRules(FocusedGameInfo().m_PredictDDRace, FocusedGameInfo().m_NoWeakHookAndBounce, PredictedOldLaser(), *GameConfig());
 }
 
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
 void CGameClient::UpdatePrediction()
 {
 	const CSessionId SessionId = Client()->FocusedSessionId();
@@ -4932,6 +4953,7 @@ void CGameClient::UpdatePrediction()
 
 	GameWorld().NetObjEnd();
 }
+#endif
 
 void CGameClient::UpdateRenderedClients(const CGameSessionContext &Session, CGameState &State, int Conn, int64_t Now, const CGameTickInfo &Time, EPresentationPlayback Playback)
 {

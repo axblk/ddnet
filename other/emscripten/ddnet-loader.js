@@ -341,6 +341,45 @@ const DDNetLoader = (() => {
 		return { show, hide, shown: () => shown };
 	}
 
+	// A viewer that fills the window needs none of this: the window tells it
+	// when it changes shape, and the picture follows. One that sits in a box of
+	// a page's own has nothing to follow - nothing tells a window that a box
+	// beside it was laid out differently - so the box is watched here and the
+	// program is told its size.
+	//
+	// The other end of it is `DemoViewerSetSize` in
+	// `src/engine/client/demo_viewer_client.cpp` and `MapViewerSetSize` in
+	// `src/game/map/standalone/map_viewer_main.cpp`.
+	function followSize(element, controls, options) {
+		const settings = Object.assign({ signal: undefined }, options || {});
+		if (typeof ResizeObserver !== "function") {
+			return { stop: () => {} };
+		}
+		var width = 0;
+		var height = 0;
+		const measure = () => {
+			const box = element.getBoundingClientRect();
+			const nextWidth = Math.round(box.width);
+			const nextHeight = Math.round(box.height);
+			// A box of no size is a box that is not being shown; the program
+			// keeps the size it had rather than being told to draw nothing.
+			if (nextWidth <= 0 || nextHeight <= 0 || (nextWidth === width && nextHeight === height)) {
+				return;
+			}
+			width = nextWidth;
+			height = nextHeight;
+			controls.setSize(width, height);
+		};
+		const observer = new ResizeObserver(measure);
+		observer.observe(element);
+		const stop = () => observer.disconnect();
+		if (settings.signal) {
+			settings.signal.addEventListener("abort", stop, { once: true });
+		}
+		measure();
+		return { stop: stop };
+	}
+
 	// The same pictures the viewers draw on their own buttons, as the browser
 	// draws pictures: one square outline each, in whatever colour the button
 	// they sit on is written in. They are named after `CViewerControls::EIcon`
@@ -1594,6 +1633,12 @@ self.onmessage = async event => {
 			? instance.call(name, "number")
 			: instance.call(name, null, ["number"], [argument]);
 		return {
+			/**
+			 * How big to draw, in the units the page measures its boxes in.
+			 * Only for a viewer that sits in a box of the page's own: one that
+			 * fills the window follows it by itself. See `followSize`.
+			 */
+			setSize: (Width, Height) => instance.call("DemoViewerSetSize", null, ["number", "number"], [Math.round(Width), Math.round(Height)]),
 			/** Whether a demo is loaded and how long it is, in seconds. */
 			length: () => number("DemoViewerLength"),
 			/** How far it has played, between 0 and 1. */
@@ -1710,6 +1755,12 @@ self.onmessage = async event => {
 			instance.call(name, null, values.map(() => "number"), values);
 		return {
 			loaded: () => instance.call("MapViewerMapLoaded", "number") === 1,
+			/**
+			 * How big to draw, in the units the page measures its boxes in.
+			 * Only for a viewer that sits in a box of the page's own: one that
+			 * fills the window follows it by itself. See `followSize`.
+			 */
+			setSize: (Width, Height) => setNumbers("MapViewerSetSize", [Math.round(Width), Math.round(Height)]),
 			/** Fits the whole map on screen. */
 			fit: () => instance.call("MapViewerFit"),
 			/** How big the map is, in tiles. */
@@ -2031,6 +2082,23 @@ self.onmessage = async event => {
 		},
 
 		/**
+		 * Keeps a viewer the size of the box it sits in.
+		 *
+		 * A viewer that fills the window follows it without being asked. One
+		 * in a box of a page's own does not, because nothing tells a window
+		 * that a box beside it changed shape: this watches the box and hands
+		 * the size to the program.
+		 *
+		 * @param element The box to follow, usually the canvas itself.
+		 * @param controls What `demoControls` or `mapControls` answered with.
+		 * @param options.signal An `AbortSignal` that stops the watching.
+		 * @returns `{stop}`, which also stops it.
+		 */
+		followSize(element, controls, options) {
+			return followSize(element, controls, options);
+		},
+
+		/**
 		 * One of the pictures the viewers draw on their own buttons, as an
 		 * `<svg>` element to put on a button of the page's own. The names are
 		 * the ones `CViewerControls::EIcon` uses, in lower case: `menu`,
@@ -2265,7 +2333,7 @@ self.onmessage = async event => {
 export default DDNetLoader;
 export const {
 	// tidy-alphabetical-start
-	autoHide, demoControls, exportSettingsForm, fullscreen,
+	autoHide, demoControls, exportSettingsForm, followSize, fullscreen,
 	fullscreenSupported, icon, isFullscreen, mapControls, page, paintIcons,
 	render, setUrlParameters, start, supportProblem, toggleFullscreen,
 	urlParameter, version, videoCodecs, zip,

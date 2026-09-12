@@ -181,6 +181,7 @@ export declare class Instance extends EventTarget {
 
 /** What a demo viewer can be asked and told. */
 export interface DemoControls {
+	setSize(width: number, height: number): void;
 	length(): number | null;
 	progress(): number | null;
 	paused(): boolean;
@@ -207,6 +208,7 @@ export interface DemoControls {
 
 /** What a map viewer can be asked and told. Everything is in tiles. */
 export interface MapControls {
+	setSize(width: number, height: number): void;
 	loaded(): boolean;
 	fit(): void;
 	size(): { width: number; height: number } | null;
@@ -282,6 +284,7 @@ export declare function toggleFullscreen(options?: FullscreenOptions): void;
 export declare function icon(name: string): SVGElement | null;
 export declare function paintIcons(root: ParentNode): void;
 export declare function autoHide(elements: Element | Element[], options?: AutoHideOptions): AutoHideHandle;
+export declare function followSize(element: Element, controls: { setSize(width: number, height: number): void }, options?: { signal?: AbortSignal }): { stop(): void };
 export declare function exportSettingsForm(container: HTMLElement, options?: ExportSettingsFormOptions): ExportSettingsForm;
 export declare function videoCodecs(): Promise<VideoCodec[]>;
 export declare function urlParameter(name: string): string | null;
@@ -305,6 +308,7 @@ declare const DDNetLoader: {
 	icon: typeof icon;
 	paintIcons: typeof paintIcons;
 	autoHide: typeof autoHide;
+	followSize: typeof followSize;
 	exportSettingsForm: typeof exportSettingsForm;
 	videoCodecs: typeof videoCodecs;
 	urlParameter: typeof urlParameter;

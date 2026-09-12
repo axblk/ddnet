@@ -258,6 +258,16 @@ float CDemoViewerClient::ExportSecondsLeft() const
 	return Elapsed * (1.0f - Progress) / Progress;
 }
 
+void CDemoViewerClient::SetSize(int Width, int Height)
+{
+	if(Window() == nullptr)
+		return;
+	// The window is what the browser calls the canvas, so this is the canvas
+	// being given a size rather than taking the one the page's stylesheet gave
+	// it. Refused where it would change nothing, which is what `Resize` does.
+	Window()->Resize(std::max(Width, 1), std::max(Height, 1), g_Config.m_GfxScreenRefreshRate);
+}
+
 bool CDemoViewerClient::Paused() const
 {
 	return DemoSource(m_DemoSessionId).DemoPlayer().BaseInfo()->m_Paused;
@@ -1045,6 +1055,14 @@ EMSCRIPTEN_KEEPALIVE int DemoViewerStartExport(int Width, int Height, int Fps, i
 	Settings.m_ShowHud = Hud != 0;
 	Settings.m_ShowChat = Chat != 0;
 	return g_pDemoViewer->RequestExport(Settings) ? 1 : 0;
+}
+
+// How big to draw. A page that gives the viewer a box of its own measures that
+// box and says so; a viewer that fills the window never needs this.
+EMSCRIPTEN_KEEPALIVE void DemoViewerSetSize(int Width, int Height)
+{
+	if(g_pDemoViewer != nullptr)
+		g_pDemoViewer->SetSize(Width, Height);
 }
 
 // Whether the viewer draws its own controls. A page with a bar of its own

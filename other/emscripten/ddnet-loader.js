@@ -17,6 +17,96 @@
 "use strict";
 
 const DDNetLoader = (() => {
+	// What this library answers with when it refuses or cannot do something.
+	// The `code` is what a caller branches on: the sentence is for whoever
+	// reads it and may be reworded, the code is part of the API and is not.
+	class DDNetLoaderError extends Error {
+		constructor(code, message) {
+			super(message);
+			this.name = "DDNetLoaderError";
+			this.code = code;
+		}
+	}
+
+	const fail = (code, message) => new DDNetLoaderError(code, message);
+
+	// This library's own version, which is not the game's: it says what the
+	// API looks like, so it changes when the API does.
+	const VERSION = "1.0.0";
+
+	// What each way in takes, and of what shape. An option nobody reads is the
+	// kind of mistake that otherwise turns up much later and in the words of
+	// whatever went without it - a mistyped `fps` is first heard of from the
+	// encoder, saying something about a frame rate of sixty.
+	const START_OPTIONS = [
+		"accept", "acceptLinks", "arguments", "canvas", "controls", "dataBase", "file", "fileArgument",
+		"fileName", "homePath", "module", "needsWebGpu", "onExit", "onOutput", "onProgress", "persist",
+		"scriptUrl", "sweepVideoScratch", "urlParams", "videoSink",
+	];
+	const PAGE_OPTIONS = START_OPTIONS.concat(["elements", "programName"]);
+	// A render takes what the command line of the render tool takes, plus the
+	// few things every program here takes. `sweepVideoScratch` and `arguments`
+	// are in it because the worker a render runs in calls back in through the
+	// same door, with those two already settled.
+	const RENDER_OPTIONS = [
+		"arguments", "audio", "chat", "codec", "crf", "dataBase", "demo", "follow", "fps", "height",
+		"homePath", "hud", "module", "moduleName", "name", "onOutput", "onProgress", "onRenderProgress",
+		"onStart", "output", "preset", "programName", "scriptUrl", "settings", "sweepVideoScratch",
+		"videoSink", "width", "worker",
+	];
+	const OPTION_SHAPES = {
+		accept: "array", acceptLinks: "boolean", arguments: "array", audio: "boolean", canvas: "canvas",
+		chat: "boolean", codec: "string", controls: "boolean", crf: "number", dataBase: "string",
+		elements: "object", fileArgument: "string", fileName: "string", follow: "string", fps: "number",
+		height: "number", homePath: "string", hud: "boolean", module: "function", moduleName: "string",
+		name: "string", needsWebGpu: "boolean", onExit: "function", onOutput: "function",
+		onProgress: "function", onRenderProgress: "function", onStart: "function", output: "string",
+		persist: "boolean", preset: "string", programName: "string", scriptUrl: "string", settings: "array",
+		sweepVideoScratch: "boolean", urlParams: "array", width: "number", worker: "boolean",
+	};
+
+	// What a shape is called when it is being asked for, so that a complaint
+	// reads as a sentence rather than as a table lookup.
+	const SHAPE_NAMES = {
+		array: "an array", boolean: "true or false", canvas: "a canvas", function: "a function",
+		number: "a number", object: "an object", string: "a string",
+	};
+
+	function hasShape(value, shape) {
+		switch (shape) {
+		case "array":
+			return Array.isArray(value);
+		case "canvas":
+			// A canvas from another document is still a canvas, so what is
+			// asked is whether it behaves like one rather than where it came
+			// from.
+			return typeof value === "object" && value !== null && typeof value.getContext === "function";
+		case "number":
+			return typeof value === "number" && isFinite(value);
+		case "object":
+			return typeof value === "object" && value !== null;
+		default:
+			return typeof value === shape;
+		}
+	}
+
+	function checkOptions(where, options, allowed) {
+		if (typeof options !== "object" || options === null) {
+			throw fail("BadOption", `DDNetLoader.${where} takes an object of options`);
+		}
+		for (const [name, value] of Object.entries(options)) {
+			if (!allowed.includes(name)) {
+				throw fail("BadOption", `DDNetLoader.${where} does not take '${name}'. It takes: ${allowed.join(", ")}.`);
+			}
+			// An option left out is an option left at its default, so only
+			// what is actually there is looked at.
+			const shape = OPTION_SHAPES[name];
+			if (shape !== undefined && value !== undefined && value !== null && !hasShape(value, shape)) {
+				throw fail("BadOption", `DDNetLoader.${where} wants ${SHAPE_NAMES[shape]} for '${name}'`);
+			}
+		}
+	}
+
 	const DEFAULT_HOME_PATH = "/home/web_user/.local/share/ddnet";
 	// Where this script is, so that a worker can be given the same one. Read
 	// while it is being run, which is the only time a script can say.
@@ -96,15 +186,16 @@ const DDNetLoader = (() => {
 	// hands out the memory they share to a page that is cross-origin isolated.
 	// Drawing without a window needs WebGPU, because that is the only backend
 	// left once the window is gone.
-	async function supportProblem(needsWebGpu) {
+	async function supportError(needsWebGpu) {
 		if (typeof SharedArrayBuffer === "undefined" || self.crossOriginIsolated === false) {
-			return "This page is not cross-origin isolated, so the browser withholds the shared memory this needs. " +
+			return fail("CrossOriginRefused",
+				"This page is not cross-origin isolated, so the browser withholds the shared memory this needs. " +
 				"The page has to send Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp, " +
-				"or load coi-serviceworker.js before anything else.";
+				"or load coi-serviceworker.js before anything else.");
 		}
 		if (needsWebGpu) {
 			if (!navigator.gpu) {
-				return "This browser has no WebGPU, which is what a render without a window draws with. A current Chrome or Firefox has it.";
+				return fail("NoWebGpu", "This browser has no WebGPU, which is what a render without a window draws with. A current Chrome or Firefox has it.");
 			}
 			// Having WebGPU and having something to draw with are two
 			// different things: a browser started without a graphics device,
@@ -112,10 +203,16 @@ const DDNetLoader = (() => {
 			// and only says so when it is asked.
 			const adapter = await navigator.gpu.requestAdapter().catch(() => null);
 			if (!adapter) {
-				return "This browser has WebGPU but no graphics adapter it is willing to use, so there is nothing to draw with.";
+				return fail("NoWebGpu", "This browser has WebGPU but no graphics adapter it is willing to use, so there is nothing to draw with.");
 			}
 		}
 		return null;
+	}
+
+	// The same thing in one sentence, for a page that only wants to say so.
+	async function supportProblem(needsWebGpu) {
+		const error = await supportError(needsWebGpu);
+		return error === null ? null : error.message;
 	}
 
 	// The encoders the browser may be asked for, one profile per family, the
@@ -483,7 +580,7 @@ const DDNetLoader = (() => {
 	async function fetchScript(url) {
 		const response = await fetch(url.href, { mode: "cors" });
 		if (!response.ok) {
-			throw new Error(`${url.href} answered ${response.status} ${response.statusText}`);
+			throw fail("FetchFailed", `${url.href} answered ${response.status} ${response.statusText}`);
 		}
 		return new Blob([await response.text()], { type: "text/javascript" });
 	}
@@ -620,7 +717,7 @@ const DDNetLoader = (() => {
 		async loadBytes(name, data) {
 			const path = this.filePath({ name: name });
 			if (path == null) {
-				throw new Error(`${name} is not a kind of file this program takes`);
+				throw fail("FileRefused", `${name} is not a kind of file this program takes`);
 			}
 			const filePath = await this.writeFile(path, name, data);
 			this.call('EmscriptenCallbackDropFile', null, ['string'], [filePath]);
@@ -687,11 +784,11 @@ const DDNetLoader = (() => {
 		async fetchUrlFile(url) {
 			const response = await fetch(url, { mode: "cors" });
 			if (!response.ok) {
-				throw new Error(`The server answered ${response.status} ${response.statusText}`);
+				throw fail("FetchFailed", `The server answered ${response.status} ${response.statusText}`);
 			}
 			const buffer = await response.arrayBuffer();
 			if (buffer.byteLength > MAX_URL_FILE_BYTES) {
-				throw new Error(`The file is larger than ${MAX_URL_FILE_BYTES} bytes`);
+				throw fail("FileTooLarge", `The file is larger than ${MAX_URL_FILE_BYTES} bytes`);
 			}
 			const name = decodeURIComponent(new URL(url).pathname.split("/").pop() || "download");
 			const path = this.filePath({ name: name }) || `${this.homePath}/${this.accept[0] === ".demo" ? "demos" : "maps"}`;
@@ -859,14 +956,14 @@ const DDNetLoader = (() => {
 			const instance = this;
 			const options = this.options;
 			if (typeof options.module !== "function") {
-				throw new Error("DDNetLoader needs the program's factory, for example `module: DDNetDemoViewer`");
+				throw fail("BadOption", "DDNetLoader needs the program's factory, for example `module: DDNetDemoViewer`");
 			}
 			// Said once, and said here: what follows would say it a hundred
 			// times, in the words of whatever failed first.
-			const problem = await supportProblem(options.needsWebGpu === true);
+			const problem = await supportError(options.needsWebGpu === true);
 			if (problem !== null) {
-				this.output(problem, { error: true, bold: true, fatal: true });
-				throw new Error(problem);
+				this.output(problem.message, { error: true, bold: true, fatal: true });
+				throw problem;
 			}
 			sweepDataCache();
 			if (options.sweepVideoScratch !== false) {
@@ -1209,9 +1306,9 @@ self.onmessage = async event => {
 		// A worker inherits the page's isolation, so what the page cannot do
 		// the worker cannot either - and it is said here, where the page is
 		// listening, rather than from inside the worker.
-		const problem = await supportProblem(true);
+		const problem = await supportError(true);
 		if (problem !== null) {
-			throw new Error(problem);
+			throw problem;
 		}
 		const program = new URL(options.scriptUrl, location.href);
 		// Both scripts go in as blobs where they are not this page's own:
@@ -1248,7 +1345,7 @@ self.onmessage = async event => {
 		const finished = new Promise((resolve, reject) => {
 			stopRender = () => {
 				worker.terminate();
-				reject(new Error("The render was stopped."));
+				reject(fail("RenderStopped", "The render was stopped."));
 			};
 			worker.onmessage = event => {
 				const message = event.data;
@@ -1268,12 +1365,12 @@ self.onmessage = async event => {
 				if (message.type === "done") {
 					resolve(message.video);
 				} else {
-					reject(new Error(message.message));
+					reject(fail("RenderFailed", message.message));
 				}
 			};
 			worker.onerror = event => {
 				worker.terminate();
-				reject(new Error(event.message || "the render worker stopped"));
+				reject(fail("RenderFailed", event.message || "the render worker stopped"));
 			};
 			worker.postMessage(request, transfer);
 		});
@@ -1498,7 +1595,7 @@ self.onmessage = async event => {
 		// something nobody should be downloading in one piece anyway.
 		const total = entries.reduce((sum, entry) => sum + entry.blob.size, 0);
 		if (total >= 0xffffffff || entries.some(entry => entry.blob.size >= 0xffffffff)) {
-			throw new Error("Too much to put into one zip file");
+			throw fail("ZipTooLarge", "Too much to put into one zip file");
 		}
 		const encoder = new TextEncoder();
 		const now = new Date();
@@ -1599,6 +1696,34 @@ self.onmessage = async event => {
 
 	return {
 		/**
+		 * This library's own version, which says what its API looks like. Not
+		 * the game's version: the two move for different reasons.
+		 */
+		version: VERSION,
+
+		/**
+		 * What this library throws and rejects with. Every one of them carries
+		 * a `code` beside its sentence, and the code is what to branch on:
+		 *
+		 * * `BadOption` - an option this does not take, or one of the wrong
+		 *   shape.
+		 * * `CrossOriginRefused` - the page is not cross-origin isolated, so
+		 *   the browser withholds the shared memory every program here needs.
+		 * * `NoWebGpu` - a render without a window was asked for and there is
+		 *   no WebGPU, or no adapter the browser will use.
+		 * * `NoVideoEncoder` - this browser cannot encode video.
+		 * * `FileRefused` - the file is not a kind the program takes.
+		 * * `FileTooLarge` - a file named in a URL is bigger than this will
+		 *   fetch into memory.
+		 * * `FetchFailed` - something the program needed answered with an
+		 *   error.
+		 * * `RenderStopped` - a render was stopped on purpose.
+		 * * `RenderFailed` - a render ended without a video.
+		 * * `ZipTooLarge` - more than fits in one zip file was put into one.
+		 */
+		Error: DDNetLoaderError,
+
+		/**
 		 * Starts a program on a canvas.
 		 *
 		 * @param options.module The factory the program's script defines, so
@@ -1628,6 +1753,7 @@ self.onmessage = async event => {
 		 * @returns a promise for the running instance.
 		 */
 		start(options) {
+			checkOptions("start", options, START_OPTIONS);
 			return new Instance(options).run();
 		},
 
@@ -1813,6 +1939,7 @@ self.onmessage = async event => {
 
 		/** `start` with the furniture our own pages share around it. */
 		page(options) {
+			checkOptions("page", options, PAGE_OPTIONS);
 			return new Instance(pageOptions(options)).run();
 		},
 
@@ -1856,6 +1983,13 @@ self.onmessage = async event => {
 		 * @returns a promise for the finished MP4 as a `Blob`.
 		 */
 		async render(options) {
+			checkOptions("render", options, RENDER_OPTIONS);
+			// Encoding is the browser's to do, and a browser without an
+			// encoder is worth saying so before a demo is fetched and a
+			// program started for nothing.
+			if (typeof VideoEncoder === "undefined") {
+				throw fail("NoVideoEncoder", "This browser cannot encode video: it has no VideoEncoder. Chrome, Edge and a current Firefox or Safari have one.");
+			}
 			// A worker needs to load the program itself, so it needs to be told
 			// where it is; without that this is the only thread there is.
 			if (options.worker !== false && typeof Worker === "function" && options.scriptUrl && LOADER_URL) {
@@ -1872,7 +2006,7 @@ self.onmessage = async event => {
 			}
 			await instance.finished;
 			if (instance.video == null) {
-				throw new Error("The demo was not rendered into a video, see the output for what went wrong");
+				throw fail("RenderFailed", "The demo was not rendered into a video, see the output for what went wrong");
 			}
 			return instance.video;
 		},

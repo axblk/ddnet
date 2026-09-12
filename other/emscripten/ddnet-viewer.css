@@ -477,6 +477,16 @@
 	transform: translateY(6px);
 	pointer-events: none;
 }
+/* The buttons themselves stay pressable while the bar is out of the way. A
+   press where a button was a moment ago is a press meant for that button, and
+   swallowing it is what makes one look broken: the bar comes back either way,
+   but only this way does the press also do what it says. The rest of the bar -
+   its background, and the strip of time, where a press would seek somewhere
+   nobody asked for - goes on letting presses through to the picture, which is
+   how a bar that has stepped aside is called back. */
+.faded .viewer-button, .faded .viewer-menu-item, .faded .viewer-text-button {
+	pointer-events: auto;
+}
 /* Away from the edge it sits at, which is the top one for a map. */
 .viewer-controls-corner .faded {
 	transform: translateY(-6px);

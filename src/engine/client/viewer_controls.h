@@ -92,6 +92,12 @@ public:
 	enum class EIcon
 	{
 		NONE,
+		/** Three lines: what everything else is behind. */
+		MENU,
+		/** A sparkle: everything a map has that is only there to look at. */
+		DETAIL,
+		/** Tiles: what a map is made of under what it looks like. */
+		ENTITIES,
 		PLAY,
 		PAUSE,
 		RESTART,
@@ -103,6 +109,26 @@ public:
 		STOP,
 		EYE,
 		FULLSCREEN,
+	};
+
+	/**
+	 * Where the controls sit.
+	 */
+	enum class EPlacement
+	{
+		/**
+		 * Along the bottom across the whole window, where a video player has
+		 * them. For something that is being played: there is a seek bar, and
+		 * what is under it is worth a row of its own.
+		 */
+		BOTTOM_BAR,
+		/**
+		 * A handful of icons in the top right corner, with the rest behind a
+		 * menu that opens under them. For something that is simply being
+		 * looked at, where a bar across the window would take away more of the
+		 * picture than it is worth.
+		 */
+		CORNER,
 	};
 
 	enum class EItem
@@ -137,6 +163,18 @@ public:
 		bool m_Active = false;
 		/** Left out first where the window is too narrow for everything. */
 		bool m_Optional = false;
+		/**
+		 * Left out altogether, for something this program cannot do where it
+		 * is running. The caller keeps its list of items the same either way
+		 * and says so here, rather than counting differently.
+		 */
+		bool m_Hidden = false;
+		/**
+		 * Put in the menu that opens under the corner rather than beside the
+		 * other buttons. Only where the controls are in a corner; a bar has
+		 * the room and shows everything.
+		 */
+		bool m_InMenu = false;
 	};
 
 	/**
@@ -166,6 +204,9 @@ public:
 	 * font to write with.
 	 */
 	void Init(IGraphics *pGraphics, ITextRender *pTextRender);
+
+	/** Where the controls sit. A bar along the bottom unless this says otherwise. */
+	void SetPlacement(EPlacement Placement) { m_Placement = Placement; }
 
 	/**
 	 * Draws the bar and says what was done with it.
@@ -203,6 +244,8 @@ public:
 private:
 	IGraphics *m_pGraphics = nullptr;
 	ITextRender *m_pTextRender = nullptr;
+	EPlacement m_Placement = EPlacement::BOTTOM_BAR;
+	bool m_MenuOpen = false;
 	// Where the pointer was, to tell it having moved from it being somewhere.
 	vec2 m_LastMousePos = vec2(-1.0f, -1.0f);
 	std::chrono::nanoseconds m_ShownUntil{};
@@ -218,6 +261,17 @@ private:
 	vec2 m_PressedAt = vec2(0.0f, 0.0f);
 	std::chrono::nanoseconds m_PressedWhen{};
 	bool m_PressedOnBar = false;
+
+	// Where an item was drawn, so that what was pressed is worked out from the
+	// same rectangles that were drawn rather than from a second guess at them.
+	struct SPlaced
+	{
+		size_t m_Index;
+		float m_X;
+		float m_Y;
+		float m_Width;
+		float m_Height;
+	};
 
 	float Scale() const;
 	void DrawRect(float x, float y, float w, float h, float r, float g, float b, float a);

@@ -33,6 +33,10 @@ namespace
 	constexpr float KNOB_RADIUS = 7.0f;
 	constexpr float KNOB_RADIUS_HELD = 9.0f;
 	constexpr float CORNER_RADIUS = 6.0f;
+	// The panel of icons in a corner: how far it stands off the edges of the
+	// window, and how much room there is around what is on it.
+	constexpr float CORNER_MARGIN = 10.0f;
+	constexpr float CORNER_PADDING = 4.0f;
 	// The strip the bar sits on does not end at the bar: it fades out upwards,
 	// so that white letters on a bright picture still have something dark under
 	// them and the bar has no edge to it.
@@ -170,6 +174,47 @@ void CViewerControls::DrawIcon(EIcon Icon, vec2 Center, float Size, float Alpha)
 	{
 	case EIcon::NONE:
 		break;
+	case EIcon::MENU:
+	{
+		// Three lines, which is what everything that did not fit is behind
+		// everywhere else.
+		const float Gap = (Size - 3.0f * Thin) / 2.0f;
+		for(int i = 0; i < 3; ++i)
+		{
+			DrawRoundRect(Center.x - Half, Center.y - Half + i * (Thin + Gap), Size, Thin, Thin / 2.0f, 1.0f, 1.0f, 1.0f, Alpha);
+		}
+		break;
+	}
+	case EIcon::DETAIL:
+	{
+		// A sparkle: a map's details are the part of it that is there to be
+		// looked at rather than played.
+		const float Arm = Half;
+		const float Waist = Thin * 0.7f;
+		constexpr int Rows = 10;
+		for(int i = 0; i < Rows; ++i)
+		{
+			const float Fraction = (i + 0.5f) / Rows;
+			const float Narrow = std::abs(Fraction * 2.0f - 1.0f);
+			const float Length = 2.0f * Arm * (1.0f - Narrow) + Waist * Narrow;
+			const float RowHeight = Size / Rows;
+			DrawRect(Center.x - Length / 2.0f, Center.y - Half + i * RowHeight, Length, RowHeight + 0.5f, 1.0f, 1.0f, 1.0f, Alpha);
+			DrawRect(Center.x - Half + i * RowHeight, Center.y - Length / 2.0f, RowHeight + 0.5f, Length, 1.0f, 1.0f, 1.0f, Alpha);
+		}
+		break;
+	}
+	case EIcon::ENTITIES:
+	{
+		// Four tiles, which is what a map is made of under what it looks like.
+		const float Tile = (Size - Thin) / 2.0f;
+		for(int i = 0; i < 4; ++i)
+		{
+			const float X = Center.x - Half + ((i & 1) == 0 ? 0.0f : Tile + Thin);
+			const float Y = Center.y - Half + ((i & 2) == 0 ? 0.0f : Tile + Thin);
+			DrawRoundRect(X, Y, Tile, Tile, Thin / 2.0f, 1.0f, 1.0f, 1.0f, Alpha);
+		}
+		break;
+	}
 	case EIcon::PLAY:
 		Triangle(1.0f);
 		break;
@@ -274,108 +319,221 @@ int CViewerControls::Render(const SItem *pItems, size_t Count, const SInput &Inp
 	const float Unit = Scale();
 	const vec2 Mouse = Input.m_MousePos * m_pGraphics->ScreenHiDPIScale();
 	const std::chrono::nanoseconds Now = time_get_nanoseconds();
-	// The first frame shows the bar, the way a video player does: a window with
-	// nothing in it but a picture is a window nobody knows what to do with, and
-	// it goes away by itself soon enough.
+	// The first frame shows the controls, the way a video player does: a window
+	// with nothing in it but a picture is a window nobody knows what to do
+	// with, and they go away by themselves soon enough.
 	if(!m_Started)
 	{
 		m_Started = true;
 		Show();
 	}
-	// Read before anything shows the bar, because a tap that brings the bar
-	// back must not be read as a tap that sends the bar it just brought away.
+	// Read before anything shows them, because a tap that brings them back
+	// must not be read as a tap that sends away what it just brought.
 	const bool ShownBeforeInput = Now <= m_ShownUntil + FADE_FOR;
 
 	// Somebody being there is the pointer moving or a key going down. A button
 	// held down is not: a finger resting on the picture says nothing, and what
-	// a press means is worked out where it is let go of.
+	// a press means is worked out where it is let go of. A menu that is open
+	// is somebody reading it, so nothing goes away under them.
 	const bool Moved = distance(Mouse, m_LastMousePos) > 1.0f;
 	m_LastMousePos = Mouse;
-	if(Moved || Input.m_KeyPressed || m_Dragging >= 0)
+	if(Moved || Input.m_KeyPressed || m_Dragging >= 0 || m_MenuOpen)
 	{
 		Show();
 	}
 
 	const float ScreenWidth = m_pGraphics->ScreenWidth();
 	const float ScreenHeight = m_pGraphics->ScreenHeight();
+	const bool Corner = m_Placement == EPlacement::CORNER;
 
-	// What goes where. The seek bar has a line of its own above the buttons,
-	// wherever the caller happened to put it in the list, because that is where
-	// a video player has it and because a bar as wide as the window is a bar
-	// that can be hit.
+	// Where everything goes. Worked out before anything is drawn, so that what
+	// answers to a press is the same rectangle that was drawn.
+	std::vector<SPlaced> vPlaced;
+	vPlaced.reserve(Count + 1);
+	// What the controls are drawn on, and what counts as being over them.
+	CScreenRect Region(0.0f, 0.0f, 0.0f, 0.0f);
+	CScreenRect MenuRegion(0.0f, 0.0f, 0.0f, 0.0f);
+	bool HasMenuRegion = false;
+	// The seek bar has a line of its own above the buttons, wherever the caller
+	// happened to put it in the list, because that is where a video player has
+	// it and because a bar as wide as the window is a bar that can be hit.
 	size_t Slider = Count;
 	for(size_t i = 0; i < Count; ++i)
 	{
-		if(pItems[i].m_Type == EItem::SLIDER && Slider == Count)
+		if(pItems[i].m_Type == EItem::SLIDER && Slider == Count && !Corner)
 		{
 			Slider = i;
 		}
 	}
 	const float SeekHeight = Slider < Count ? SEEK_ROW_HEIGHT * Unit : 0.0f;
-	const float BarHeight = SeekHeight + BUTTON_SIZE * Unit;
-	const float BarTop = ScreenHeight - BarHeight;
-	const float ButtonTop = BarTop + SeekHeight;
+	const float ButtonSize = BUTTON_SIZE * Unit;
 
-	// How wide everything in the row of buttons is, and what has to be left out
-	// to make it fit. A window narrower than the bar is a telephone standing
-	// upright, and what goes first is what was marked as being nice to have.
-	std::vector<float> vWidths(Count, 0.0f);
-	std::vector<bool> vShown(Count, true);
 	const auto &&ItemWidth = [&](const SItem &Item) {
 		if(Item.m_Width > 0.0f)
 			return Item.m_Width * Unit;
 		if(Item.m_Type == EItem::SPACER)
 			return 0.0f;
-		if(m_pTextRender != nullptr && Item.m_pText != nullptr)
+		if(!Corner && m_pTextRender != nullptr && Item.m_pText != nullptr)
 		{
 			const float Text = m_pTextRender->TextWidth(TEXT_SIZE * Unit, Item.m_pText);
 			if(Item.m_Type == EItem::TEXT)
 				return Text + 2.0f * TEXT_PADDING * Unit;
-			return std::max(BUTTON_SIZE * Unit, Text + ICON_SIZE * Unit + 3.0f * TEXT_PADDING * Unit);
+			return std::max(ButtonSize, Text + ICON_SIZE * Unit + 3.0f * TEXT_PADDING * Unit);
 		}
-		return BUTTON_SIZE * Unit;
+		return ButtonSize;
 	};
-	const float RowWidth = ScreenWidth - 2.0f * PADDING_X * Unit;
-	float Total = 0.0f;
-	for(size_t i = 0; i < Count; ++i)
+
+	// The button that opens the menu is the bar's own, not the caller's: the
+	// caller says which of its items belong in a menu and the bar works out
+	// that there has to be something to open it with. It answers with nothing,
+	// since nothing outside has anything to do about it.
+	const size_t MenuButton = Count;
+	bool HasMenu = false;
+	if(Corner)
 	{
-		if(i == Slider)
-			continue;
-		vWidths[i] = ItemWidth(pItems[i]);
-		Total += vWidths[i] + ITEM_SPACING * Unit;
+		for(size_t i = 0; i < Count; ++i)
+		{
+			HasMenu = HasMenu || (pItems[i].m_InMenu && !pItems[i].m_Hidden);
+		}
 	}
-	for(size_t i = Count; i-- > 0 && Total > RowWidth;)
+	if(!HasMenu)
 	{
-		if(i == Slider || !pItems[i].m_Optional)
-			continue;
-		vShown[i] = false;
-		Total -= vWidths[i] + ITEM_SPACING * Unit;
+		m_MenuOpen = false;
 	}
-	// Still too much, so the text gives up its letters before a button gives up
-	// its place: a button that is gone is a button nobody can press.
-	for(size_t i = Count; i-- > 0 && Total > RowWidth;)
+
+	if(Corner)
 	{
-		if(i == Slider || !vShown[i] || pItems[i].m_Type != EItem::TEXT)
-			continue;
-		vShown[i] = false;
-		Total -= vWidths[i] + ITEM_SPACING * Unit;
+		// A row of icons in the top right corner, on a panel of their own, and
+		// under it the menu when it is open.
+		const float Padding = CORNER_PADDING * Unit;
+		const float Margin = CORNER_MARGIN * Unit;
+		size_t Shown = 0;
+		for(size_t i = 0; i < Count; ++i)
+		{
+			if(pItems[i].m_Type != EItem::SPACER && !pItems[i].m_Hidden && !pItems[i].m_InMenu)
+				++Shown;
+		}
+		const size_t RowCount = Shown + (HasMenu ? 1 : 0);
+		const float PanelWidth = RowCount * ButtonSize + (RowCount + 1) * Padding;
+		const float Left = std::max(ScreenWidth - Margin - PanelWidth, 0.0f);
+		const float Top = Margin;
+		Region = CScreenRect(Left, Top, PanelWidth, ButtonSize + 2.0f * Padding);
+		float x = Left + Padding;
+		for(size_t i = 0; i < Count; ++i)
+		{
+			if(pItems[i].m_Type == EItem::SPACER || pItems[i].m_Hidden || pItems[i].m_InMenu)
+				continue;
+			vPlaced.push_back({i, x, Top + Padding, ButtonSize, ButtonSize});
+			x += ButtonSize + Padding;
+		}
+		if(HasMenu)
+		{
+			vPlaced.push_back({MenuButton, x, Top + Padding, ButtonSize, ButtonSize});
+		}
+		if(m_MenuOpen)
+		{
+			size_t InMenu = 0;
+			for(size_t i = 0; i < Count; ++i)
+			{
+				if(pItems[i].m_InMenu && !pItems[i].m_Hidden)
+					++InMenu;
+			}
+			const float MenuTop = Region.m_BottomRight.y + Padding;
+			const float MenuHeight = InMenu * ButtonSize + (InMenu + 1) * Padding;
+			// The column of the menu stands under the button that opened it.
+			const float MenuLeft = Region.m_BottomRight.x - 2.0f * Padding - ButtonSize;
+			MenuRegion = CScreenRect(MenuLeft, MenuTop, ButtonSize + 2.0f * Padding, MenuHeight);
+			HasMenuRegion = true;
+			float y = MenuTop + Padding;
+			for(size_t i = 0; i < Count; ++i)
+			{
+				if(!pItems[i].m_InMenu || pItems[i].m_Hidden)
+					continue;
+				vPlaced.push_back({i, MenuLeft + Padding, y, ButtonSize, ButtonSize});
+				y += ButtonSize + Padding;
+			}
+		}
 	}
-	const float Spare = std::max(RowWidth - Total, 0.0f);
-	size_t Spacers = 0;
-	for(size_t i = 0; i < Count; ++i)
+	else
 	{
-		if(i != Slider && vShown[i] && pItems[i].m_Type == EItem::SPACER)
-			++Spacers;
+		// A bar along the bottom. How wide everything in the row of buttons is,
+		// and what has to be left out to make it fit: a window narrower than
+		// the bar is a telephone standing upright, and what goes first is what
+		// was marked as being nice to have.
+		const float BarHeight = SeekHeight + ButtonSize;
+		const float BarTop = ScreenHeight - BarHeight;
+		Region = CScreenRect(0.0f, BarTop, ScreenWidth, BarHeight);
+		std::vector<float> vWidths(Count, 0.0f);
+		std::vector<bool> vShown(Count, true);
+		for(size_t i = 0; i < Count; ++i)
+		{
+			vShown[i] = !pItems[i].m_Hidden;
+		}
+		const float RowWidth = ScreenWidth - 2.0f * PADDING_X * Unit;
+		float Total = 0.0f;
+		for(size_t i = 0; i < Count; ++i)
+		{
+			if(i == Slider || !vShown[i])
+				continue;
+			vWidths[i] = ItemWidth(pItems[i]);
+			Total += vWidths[i] + ITEM_SPACING * Unit;
+		}
+		for(size_t i = Count; i-- > 0 && Total > RowWidth;)
+		{
+			if(i == Slider || !vShown[i] || !pItems[i].m_Optional)
+				continue;
+			vShown[i] = false;
+			Total -= vWidths[i] + ITEM_SPACING * Unit;
+		}
+		// Still too much, so the text gives up its letters before a button
+		// gives up its place: a button that is gone is a button nobody can
+		// press.
+		for(size_t i = Count; i-- > 0 && Total > RowWidth;)
+		{
+			if(i == Slider || !vShown[i] || pItems[i].m_Type != EItem::TEXT)
+				continue;
+			vShown[i] = false;
+			Total -= vWidths[i] + ITEM_SPACING * Unit;
+		}
+		const float Spare = std::max(RowWidth - Total, 0.0f);
+		size_t Spacers = 0;
+		for(size_t i = 0; i < Count; ++i)
+		{
+			if(i != Slider && vShown[i] && pItems[i].m_Type == EItem::SPACER)
+				++Spacers;
+		}
+		float x = PADDING_X * Unit;
+		for(size_t i = 0; i < Count; ++i)
+		{
+			if(i == Slider || !vShown[i])
+				continue;
+			if(pItems[i].m_Type == EItem::SPACER)
+			{
+				x += Spare / Spacers + ITEM_SPACING * Unit;
+				continue;
+			}
+			vPlaced.push_back({i, x, BarTop + SeekHeight, vWidths[i], ButtonSize});
+			x += vWidths[i] + ITEM_SPACING * Unit;
+		}
+	}
+
+	m_Hovered = Region.Inside(Mouse) || (HasMenuRegion && MenuRegion.Inside(Mouse));
+	if(!Corner)
+	{
+		// The strip the bar sits on reaches further up than the bar does, and
+		// so does what belongs to it.
+		m_Hovered = Mouse.x >= 0.0f && Mouse.x <= ScreenWidth && Mouse.y >= Region.m_TopLeft.y - FADE_HEIGHT * Unit;
 	}
 
 	if(Now > m_ShownUntil + FADE_FOR)
 	{
-		// Gone, and out of the way of the pointer with it: a bar nobody can
-		// see must not be a bar that swallows a click on the picture. What a
-		// press does is still worked out, because a tap on the picture is how
-		// the bar is asked back.
+		// Gone, and out of the way of the pointer with it: controls nobody can
+		// see must not swallow a click on the picture. What a press does is
+		// still worked out, because a tap on the picture is how they are asked
+		// back.
 		m_Hovered = false;
 		m_Dragging = -1;
+		m_MenuOpen = false;
 		if(Input.m_MouseClicked || (Input.m_MousePressed && !m_WasPressed))
 		{
 			m_PressedAt = Mouse;
@@ -396,17 +554,27 @@ int CViewerControls::Render(const SItem *pItems, size_t Count, const SInput &Inp
 	m_pGraphics->TextureClear();
 	m_pGraphics->QuadsBegin();
 
-	// The strip: dark under the bar, nothing above it, and the way from one to
-	// the other drawn in one quad with a colour at every corner.
-	const float FadeTop = std::max(BarTop - FADE_HEIGHT * Unit, 0.0f);
-	const ColorRGBA Clear = ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f);
-	const ColorRGBA Dark = ColorRGBA(0.0f, 0.0f, 0.0f, 0.72f * Alpha);
-	m_pGraphics->SetColor4(Clear, Clear, Dark, Dark);
-	IGraphics::CQuadItem Fade(0.0f, FadeTop, ScreenWidth, BarTop - FadeTop);
-	m_pGraphics->QuadsDrawTL(&Fade, 1);
-	DrawRect(0.0f, BarTop, ScreenWidth, BarHeight, 0.0f, 0.0f, 0.0f, 0.72f * Alpha);
+	if(Corner)
+	{
+		DrawRoundRect(Region.m_TopLeft.x, Region.m_TopLeft.y, Region.Width(), Region.Height(), CORNER_RADIUS * Unit, 0.0f, 0.0f, 0.0f, 0.55f * Alpha);
+		if(HasMenuRegion)
+		{
+			DrawRoundRect(MenuRegion.m_TopLeft.x, MenuRegion.m_TopLeft.y, MenuRegion.Width(), MenuRegion.Height(), CORNER_RADIUS * Unit, 0.0f, 0.0f, 0.0f, 0.55f * Alpha);
+		}
+	}
+	else
+	{
+		// The strip: dark under the bar, nothing above it, and the way from one
+		// to the other drawn in one quad with a colour at every corner.
+		const float FadeTop = std::max(Region.m_TopLeft.y - FADE_HEIGHT * Unit, 0.0f);
+		const ColorRGBA Clear = ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f);
+		const ColorRGBA Dark = ColorRGBA(0.0f, 0.0f, 0.0f, 0.72f * Alpha);
+		m_pGraphics->SetColor4(Clear, Clear, Dark, Dark);
+		IGraphics::CQuadItem Fade(0.0f, FadeTop, ScreenWidth, Region.m_TopLeft.y - FadeTop);
+		m_pGraphics->QuadsDrawTL(&Fade, 1);
+		DrawRect(0.0f, Region.m_TopLeft.y, ScreenWidth, Region.Height(), 0.0f, 0.0f, 0.0f, 0.72f * Alpha);
+	}
 
-	m_Hovered = Mouse.y >= FadeTop && Mouse.y <= ScreenHeight && Mouse.x >= 0.0f && Mouse.x <= ScreenWidth;
 	const bool Clicked = Input.m_MouseClicked || (Input.m_MousePressed && !m_WasPressed);
 	if(Clicked)
 	{
@@ -431,9 +599,9 @@ int CViewerControls::Render(const SItem *pItems, size_t Count, const SInput &Inp
 	{
 		const SItem &Item = pItems[Slider];
 		const float Left = PADDING_X * Unit;
-		const float Width = RowWidth;
-		const float Middle = BarTop + SeekHeight / 2.0f;
-		const bool Over = !Item.m_Disabled && Mouse.y >= BarTop && Mouse.y <= BarTop + SeekHeight;
+		const float Width = ScreenWidth - 2.0f * PADDING_X * Unit;
+		const float Middle = Region.m_TopLeft.y + SeekHeight / 2.0f;
+		const bool Over = !Item.m_Disabled && Mouse.y >= Region.m_TopLeft.y && Mouse.y <= Region.m_TopLeft.y + SeekHeight;
 		const bool Held = m_Dragging == (int)Slider;
 		if(Over && Clicked)
 		{
@@ -461,56 +629,66 @@ int CViewerControls::Render(const SItem *pItems, size_t Count, const SInput &Inp
 		float m_Alpha;
 	};
 	std::vector<SLabel> vLabels;
-	float x = PADDING_X * Unit;
-	for(size_t i = 0; i < Count; ++i)
+	bool ToggleMenu = false;
+	for(const SPlaced &Placed : vPlaced)
 	{
-		if(i == Slider || !vShown[i])
+		const bool IsMenuButton = Placed.m_Index == MenuButton;
+		const SItem MenuItem = [&] {
+			SItem Item;
+			Item.m_Icon = EIcon::MENU;
+			Item.m_Active = m_MenuOpen;
+			return Item;
+		}();
+		const SItem &Item = IsMenuButton ? MenuItem : pItems[Placed.m_Index];
+		const bool Over = !Item.m_Disabled && Mouse.x >= Placed.m_X && Mouse.x <= Placed.m_X + Placed.m_Width &&
+				  Mouse.y >= Placed.m_Y && Mouse.y <= Placed.m_Y + Placed.m_Height;
+		const bool WithText = !Corner && m_pTextRender != nullptr && Item.m_pText != nullptr;
+		if(Item.m_Type == EItem::BUTTON || IsMenuButton)
 		{
-			continue;
-		}
-		const SItem &Item = pItems[i];
-		if(Item.m_Type == EItem::SPACER)
-		{
-			x += Spare / Spacers + ITEM_SPACING * Unit;
-			continue;
-		}
-		const float Width = vWidths[i];
-		const bool Over = !Item.m_Disabled && Mouse.x >= x && Mouse.x <= x + Width && Mouse.y >= ButtonTop && Mouse.y <= ScreenHeight;
-		const bool WithText = m_pTextRender != nullptr && Item.m_pText != nullptr;
-		if(Item.m_Type == EItem::BUTTON)
-		{
-			const float Height = BUTTON_SIZE * Unit;
 			const float Inset = 3.0f * Unit;
 			if(Over || Item.m_Active)
 			{
 				const float Shade = Over && Input.m_MousePressed ? 0.35f : (Item.m_Active ? 0.28f : 0.18f);
-				DrawRoundRect(x + Inset, ButtonTop + Inset, Width - 2.0f * Inset, Height - 2.0f * Inset,
+				DrawRoundRect(Placed.m_X + Inset, Placed.m_Y + Inset, Placed.m_Width - 2.0f * Inset, Placed.m_Height - 2.0f * Inset,
 					CORNER_RADIUS * Unit, 1.0f, 1.0f, 1.0f, Shade * Alpha);
 			}
 			if(Item.m_Icon != EIcon::NONE)
 			{
-				const float IconX = WithText ? x + TEXT_PADDING * Unit + ICON_SIZE * Unit / 2.0f : x + Width / 2.0f;
-				DrawIcon(Item.m_Icon, vec2(IconX, ButtonTop + Height / 2.0f), ICON_SIZE * Unit, (Item.m_Disabled ? 0.35f : 1.0f) * Alpha);
+				const float IconX = WithText ? Placed.m_X + TEXT_PADDING * Unit + ICON_SIZE * Unit / 2.0f : Placed.m_X + Placed.m_Width / 2.0f;
+				DrawIcon(Item.m_Icon, vec2(IconX, Placed.m_Y + Placed.m_Height / 2.0f), ICON_SIZE * Unit, (Item.m_Disabled ? 0.35f : 1.0f) * Alpha);
 			}
 			if(Over && Clicked)
 			{
-				Pressed = (int)i;
+				if(IsMenuButton)
+					ToggleMenu = true;
+				else
+					Pressed = (int)Placed.m_Index;
 			}
 		}
 		if(WithText)
 		{
 			const float TextWidth = m_pTextRender->TextWidth(TEXT_SIZE * Unit, Item.m_pText);
 			const bool WithIcon = Item.m_Icon != EIcon::NONE && Item.m_Type == EItem::BUTTON;
-			const float TextX = WithIcon ? x + 2.0f * TEXT_PADDING * Unit + ICON_SIZE * Unit : x + (Width - TextWidth) / 2.0f;
-			vLabels.push_back({TextX, ButtonTop + (BUTTON_SIZE * Unit - TEXT_SIZE * Unit) / 2.0f, Item.m_pText, (Item.m_Disabled ? 0.4f : 1.0f) * Alpha});
+			const float TextX = WithIcon ? Placed.m_X + 2.0f * TEXT_PADDING * Unit + ICON_SIZE * Unit : Placed.m_X + (Placed.m_Width - TextWidth) / 2.0f;
+			vLabels.push_back({TextX, Placed.m_Y + (Placed.m_Height - TEXT_SIZE * Unit) / 2.0f, Item.m_pText, (Item.m_Disabled ? 0.4f : 1.0f) * Alpha});
 		}
-		x += Width + ITEM_SPACING * Unit;
 	}
 	m_pGraphics->QuadsEnd();
 
+	if(ToggleMenu)
+	{
+		m_MenuOpen = !m_MenuOpen;
+	}
+	else if(Clicked && !m_Hovered)
+	{
+		// A menu is closed by pressing anywhere that is not in it, which is
+		// what a menu does everywhere.
+		m_MenuOpen = false;
+	}
+
 	// A press that went down on the picture, stayed where it was and was let go
 	// of again is a tap, and a tap on the picture is how a video player is told
-	// to show its bar or to get out of the way.
+	// to show its controls or to get out of the way.
 	if(Released && !m_PressedOnBar && distance(Mouse, m_PressedAt) <= TAP_DISTANCE * Unit && Now - m_PressedWhen <= TAP_TIME)
 	{
 		if(ShownBeforeInput)

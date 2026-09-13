@@ -4,11 +4,14 @@
 #define ENGINE_CLIENT_ASSET_LOADER_H
 
 #include <base/dbg.h>
+#include <base/lock.h>
+#include <base/sphore.h>
 
 #include <engine/graphics.h>
 #include <engine/image.h>
 #include <engine/shared/jobs.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -30,8 +33,9 @@ template<typename TJob>
 class CTypedAssetResource;
 
 /**
- * Job that prepares an asset from its bytes. The bytes come from a file or a
- * request, or the job brings them itself, then `Process` runs on the job pool.
+ * Job that prepares an asset from its bytes. The loader gets the bytes from a
+ * file or a request, or the job brings them itself, then `Process` runs on the
+ * job pool.
  */
 class CAssetJob : public IJob
 {
@@ -82,8 +86,9 @@ public:
 };
 
 /**
- * Loads assets without blocking the main thread. At most `MaxConcurrentJobs`
- * jobs run on the job pool.
+ * Loads assets without blocking the main thread. Files are read one after the
+ * other by a reader thread, then at most `MaxConcurrentJobs` jobs run on the
+ * job pool.
  */
 class CAssetLoader
 {
@@ -94,28 +99,38 @@ class CAssetLoader
 	std::deque<std::shared_ptr<CAssetJob>> m_vpPendingJobs;
 	std::vector<std::shared_ptr<CAssetJob>> m_vpRunningJobs;
 
-	void Submit(std::shared_ptr<CAssetJob> pJob);
-	void Enqueue(std::shared_ptr<CAssetJob> pJob);
-	void UpdateFetchingJobs();
+	CLock m_ReaderLock;
+	CSemaphore m_ReaderSemaphore;
+	std::deque<std::shared_ptr<CAssetJob>> m_vpUnreadJobs GUARDED_BY(m_ReaderLock);
+	std::vector<std::shared_ptr<CAssetJob>> m_vpReadJobs GUARDED_BY(m_ReaderLock);
+	void *m_pReaderThread = nullptr;
+	std::atomic<bool> m_ReaderShutdown{false};
+
+	static void ReaderThread(void *pUser);
+	void ReadLoop() NO_THREAD_SAFETY_ANALYSIS;
+	void Submit(std::shared_ptr<CAssetJob> pJob) REQUIRES(!m_ReaderLock);
+	void Enqueue(std::shared_ptr<CAssetJob> pJob) REQUIRES(!m_ReaderLock);
+	void UpdateFetchingJobs() REQUIRES(!m_ReaderLock);
+	void UpdateReadJobs() REQUIRES(!m_ReaderLock);
 	void StartPendingJobs();
 
 public:
-	~CAssetLoader() { Shutdown(); }
+	~CAssetLoader() NO_THREAD_SAFETY_ANALYSIS { Shutdown(); }
 
 	void Init(IEngine *pEngine, size_t MaxConcurrentJobs);
 	template<typename TJob>
-	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob);
-	CImageResource LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess = {});
-	CImageResource LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess = {});
+	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob) REQUIRES(!m_ReaderLock);
+	CImageResource LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess = {}) REQUIRES(!m_ReaderLock);
+	CImageResource LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, std::function<bool(CImageInfo &)> Postprocess = {}) REQUIRES(!m_ReaderLock);
 	/**
 	 * Runs the request and loads the image from the response. The image is
 	 * read from `pPath` instead if the response is not in memory, if the
 	 * status is 304 Not Modified, or if the request failed and
 	 * `UseFileOnError` is set.
 	 */
-	CImageResource LoadImageHttp(IHttp *pHttp, std::shared_ptr<IHttpRequest> pRequest, IStorage *pStorage, const char *pPath, int StorageType, bool UseFileOnError, std::function<bool(CImageInfo &)> Postprocess = {});
-	void Update();
-	void Shutdown();
+	CImageResource LoadImageHttp(IHttp *pHttp, std::shared_ptr<IHttpRequest> pRequest, IStorage *pStorage, const char *pPath, int StorageType, bool UseFileOnError, std::function<bool(CImageInfo &)> Postprocess = {}) REQUIRES(!m_ReaderLock);
+	void Update() REQUIRES(!m_ReaderLock);
+	void Shutdown() REQUIRES(!m_ReaderLock);
 };
 
 /**

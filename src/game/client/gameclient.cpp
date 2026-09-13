@@ -98,8 +98,7 @@ const char *CGameClient::GetItemName(int Type) const { return m_NetObjHandler.Ge
 void CGameClient::OnConsoleInit()
 {
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
-	// A job reads its file before decoding it, so run more than there are threads
-	const size_t MaxConcurrentAssetJobs = std::clamp(m_pEngine->JobThreadCount() * 2, size_t{4}, size_t{16});
+	const size_t MaxConcurrentAssetJobs = std::clamp(m_pEngine->JobThreadCount(), size_t{2}, size_t{16});
 	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs);
 	m_pClient = Kernel()->RequestInterface<IClient>();
 	m_pTextRender = Kernel()->RequestInterface<ITextRender>();

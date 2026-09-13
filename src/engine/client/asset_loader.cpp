@@ -6,6 +6,7 @@
 #include <base/io.h>
 #include <base/log.h>
 #include <base/mem.h>
+#include <base/thread.h>
 
 #include <engine/engine.h>
 #include <engine/gfx/image_loader.h>
@@ -90,8 +91,6 @@ void CAssetJob::Run()
 {
 	if(State() == IJob::STATE_ABORTED)
 		return;
-	if(m_pStorage != nullptr && !ReadFile(m_pStorage, Path(), m_StorageType, m_vData))
-		m_ReadFailed = true;
 	m_Success = !m_ReadFailed && Process();
 	if(m_pRequest != nullptr && m_HttpStatus != 0 && m_HttpStatus < 400 && m_pRequest->ValidatesBeforeOverwrite())
 		m_pRequest->OnValidation(m_Success);
@@ -114,6 +113,33 @@ void CAssetLoader::Init(IEngine *pEngine, size_t MaxConcurrentJobs)
 	m_MaxConcurrentJobs = MaxConcurrentJobs;
 }
 
+void CAssetLoader::ReaderThread(void *pUser)
+{
+	static_cast<CAssetLoader *>(pUser)->ReadLoop();
+}
+
+void CAssetLoader::ReadLoop()
+{
+	while(true)
+	{
+		m_ReaderSemaphore.Wait();
+		if(m_ReaderShutdown)
+			return;
+		std::shared_ptr<CAssetJob> pJob;
+		{
+			const CLockScope LockScope(m_ReaderLock);
+			if(m_vpUnreadJobs.empty())
+				continue;
+			pJob = std::move(m_vpUnreadJobs.front());
+			m_vpUnreadJobs.pop_front();
+		}
+		if(pJob->State() != IJob::STATE_ABORTED && !CAssetJob::ReadFile(pJob->m_pStorage, pJob->Path(), pJob->m_StorageType, pJob->m_vData))
+			pJob->m_ReadFailed = true;
+		const CLockScope LockScope(m_ReaderLock);
+		m_vpReadJobs.push_back(std::move(pJob));
+	}
+}
+
 void CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob)
 {
 	dbg_assert(m_pEngine != nullptr, "Asset loader not initialized");
@@ -130,8 +156,19 @@ void CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob)
 
 void CAssetLoader::Enqueue(std::shared_ptr<CAssetJob> pJob)
 {
-	m_vpPendingJobs.push_back(std::move(pJob));
-	StartPendingJobs();
+	if(pJob->m_pStorage == nullptr)
+	{
+		m_vpPendingJobs.push_back(std::move(pJob));
+		StartPendingJobs();
+		return;
+	}
+	if(m_pReaderThread == nullptr)
+		m_pReaderThread = thread_init(ReaderThread, this, "asset reader");
+	{
+		const CLockScope LockScope(m_ReaderLock);
+		m_vpUnreadJobs.push_back(std::move(pJob));
+	}
+	m_ReaderSemaphore.Signal();
 }
 
 void CAssetLoader::UpdateFetchingJobs()
@@ -164,6 +201,17 @@ void CAssetLoader::UpdateFetchingJobs()
 		}
 		Enqueue(pJob);
 	}
+}
+
+void CAssetLoader::UpdateReadJobs()
+{
+	std::vector<std::shared_ptr<CAssetJob>> vpRead;
+	{
+		const CLockScope LockScope(m_ReaderLock);
+		vpRead.swap(m_vpReadJobs);
+	}
+	for(auto &pJob : vpRead)
+		m_vpPendingJobs.push_back(std::move(pJob));
 }
 
 CImageResource CAssetLoader::LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, std::function<bool(CImageInfo &)> Postprocess)
@@ -207,6 +255,7 @@ void CAssetLoader::Update()
 {
 	dbg_assert(m_pEngine != nullptr, "Asset loader not initialized");
 	UpdateFetchingJobs();
+	UpdateReadJobs();
 	m_vpRunningJobs.erase(
 		std::remove_if(m_vpRunningJobs.begin(), m_vpRunningJobs.end(), [](const auto &pJob) { return pJob->Done(); }),
 		m_vpRunningJobs.end());
@@ -218,6 +267,28 @@ void CAssetLoader::Shutdown()
 	if(m_pEngine == nullptr || m_Shutdown)
 		return;
 	m_Shutdown = true;
+	// Stop the reader first, so no other thread touches jobs
+	{
+		const CLockScope LockScope(m_ReaderLock);
+		for(const auto &pJob : m_vpUnreadJobs)
+			pJob->Abort();
+		for(const auto &pJob : m_vpReadJobs)
+			pJob->Abort();
+	}
+	if(m_pReaderThread != nullptr)
+	{
+		m_ReaderShutdown = true;
+		m_ReaderSemaphore.Signal();
+		thread_wait(m_pReaderThread);
+		m_pReaderThread = nullptr;
+	}
+	{
+		const CLockScope LockScope(m_ReaderLock);
+		for(const auto &pJob : m_vpReadJobs)
+			pJob->Abort();
+		m_vpUnreadJobs.clear();
+		m_vpReadJobs.clear();
+	}
 	for(const auto &pJob : m_vpFetchingJobs)
 		pJob->Abort();
 	for(const auto &pJob : m_vpPendingJobs)

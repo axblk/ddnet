@@ -116,6 +116,13 @@ void CLayers::InitTilemapSkip()
 			// so their m_Data is neither used nor validated when the map is loaded.
 			if((pTilemap->m_Flags & (TILESLAYERFLAG_TELE | TILESLAYERFLAG_SPEEDUP | TILESLAYERFLAG_FRONT | TILESLAYERFLAG_SWITCH | TILESLAYERFLAG_TUNE)) != 0)
 				continue;
+			// Only the game layer's skips are read again, by the race helper,
+			// the menu background and the editor's proof mode. For every other
+			// tile layer this asked the map to unpack the whole layer and then
+			// wrote into something nobody looks at - on Abyss that is 42 layers
+			// and 677 MiB, held for as long as the map is open.
+			if(pTilemap != m_pGameLayer)
+				continue;
 
 			CTile *pTiles = static_cast<CTile *>(m_pMap->GetData(pTilemap->m_Data));
 			if(pTiles == nullptr)

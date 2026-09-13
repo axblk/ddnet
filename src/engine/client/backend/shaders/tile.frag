@@ -18,8 +18,7 @@ void main()
 	// coordinates count cells and are wrapped here: the sampler of the tile
 	// array clamps, and wrapping in it would reach into the neighbouring
 	// layer. fract breaks the implicit derivatives at the seam, so they are
-	// taken from the unwrapped coordinates - the same way tile_border.frag
-	// has always done it.
+	// taken from the unwrapped coordinates.
 	vec3 RealTexCoords = vec3(fract(TexCoord.xy), TexCoord.z);
 	vec2 dx = dFdx(TexCoord.xy);
 	vec2 dy = dFdy(TexCoord.xy);

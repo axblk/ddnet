@@ -40,6 +40,14 @@ public:
 		float m_Zoom = 1.0f;
 		int m_TimeOffsetMillis = 0;
 		bool m_IgnoreParallax = false;
+		/** Whether layers the map marks as detail are drawn. */
+		bool m_HighDetail = true;
+		/**
+		 * How strongly the entity overlay is drawn over the design, from 0 to
+		 * 100. At 100 the design is left out altogether and what is left is
+		 * what the map does rather than what it looks like.
+		 */
+		int m_EntityOverlayVal = 0;
 	};
 
 	explicit CStandaloneMapView(const char *pLogContext);
@@ -195,6 +203,7 @@ private:
 
 	std::unique_ptr<IMap> m_pMap;
 	CLayers m_Layers;
+	CAssetLoader m_AssetLoader;
 	std::unique_ptr<MapViewSupport::CToolMapImages> m_pMapImages;
 	std::unique_ptr<MapViewSupport::CMapRenderEnvelopeEval> m_pEnvelopeEval;
 	CRenderMap m_RenderMap;

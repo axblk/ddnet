@@ -3670,8 +3670,12 @@ if(CLIENT)
       ${DEPS_CLIENT}
       ${GAME_MAP}
       ${GAME_MAP_STANDALONE}
-      # The window and the keyboard, and nothing else out of the client.
+      # The window and the keyboard, and nothing else out of the client - and
+      # the asset loader, which is how the map's images are read beside each
+      # other rather than one after another.
       # tidy-alphabetical-start
+      src/engine/client/asset_loader.cpp
+      src/engine/client/asset_loader.h
       src/engine/client/input.cpp
       src/engine/client/input.h
       src/engine/client/keyboard.cpp
@@ -4157,6 +4161,8 @@ if(TOOLS)
         target_sources(map_render PRIVATE
           ${GAME_MAP_STANDALONE}
           # tidy-alphabetical-start
+          src/engine/client/asset_loader.cpp
+          src/engine/client/asset_loader.h
           src/game/map/envelope_extrema.cpp
           src/game/map/map_renderer.cpp
           src/game/map/quad_buffer_cache.cpp

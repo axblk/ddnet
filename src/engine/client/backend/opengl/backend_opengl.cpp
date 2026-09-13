@@ -934,6 +934,9 @@ void CCommandProcessorFragment_OpenGL::DrawEmulatedArrayColor(const CCommandBuff
 	const vec2 Scale = HasTransform ? pTransformData->m_Scale : vec2(1.0f, 1.0f);
 	const bool Textured = IGraphics::VertexLayout(Container.m_Layout).m_AttributeCount >= 2 && IsTexturedState(pCommand->m_State);
 
+	// Every tile draw wraps, see SetLayeredWrap.
+	const bool Wraps = Textured && Container.m_Form == EVertexForm::LAYERED && pCommand->m_State.m_Texture.IsValid();
+
 	// A tile layer that is not stretched has nothing that changes per vertex:
 	// the colour is one colour, and the layer index becomes a volume
 	// coordinate through the texture matrix. The converted array is drawn as
@@ -943,9 +946,13 @@ void CCommandProcessorFragment_OpenGL::DrawEmulatedArrayColor(const CCommandBuff
 		SetState(pCommand->m_State, Textured);
 		glColor4f(Color.r, Color.g, Color.b, Color.a);
 		SetTextureTransform(pCommand->m_State, vec2(1.0f, 1.0f), true);
+		if(Wraps)
+			SetLayeredWrap(pCommand->m_State, true);
 		BindConvertedContainer(Container);
 		glDrawElements(GL_TRIANGLES, IndexCount, IndexStride == sizeof(uint16_t) ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT, pIndices);
 		UnbindConvertedContainer(Container);
+		if(Wraps)
+			SetLayeredWrap(pCommand->m_State, false);
 		ResetTransforms();
 		return;
 	}
@@ -991,25 +998,34 @@ void CCommandProcessorFragment_OpenGL::DrawEmulatedArrayColor(const CCommandBuff
 		}
 		m_vExpandedLayeredVertices.push_back(Vertex);
 	}
-	// A border tile is one tile stretched across the area it repeats over,
-	// and its texture coordinates run past 1 accordingly. The program takes
-	// fract() of them; fixed function has no such thing, so the volume wraps
-	// for this draw and goes back to clamping afterwards - a clamped volume
-	// hands the edge texel to the whole area, which is a flat colour where
-	// the map's border should be.
-	const bool WrapsVolume = HasTransform && Textured && !m_Has2DArrayTextures && pCommand->m_State.m_Texture.IsValid();
-	if(WrapsVolume)
-	{
-		glBindTexture(GL_TEXTURE_3D, m_vTextures[pCommand->m_State.m_Texture.Id()].m_Tex2DArray);
-		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-	}
+	if(Wraps)
+		SetLayeredWrap(pCommand->m_State, true);
 	DrawExpandedVertices(pCommand->m_State, true);
-	if(WrapsVolume)
-	{
-		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	}
+	if(Wraps)
+		SetLayeredWrap(pCommand->m_State, false);
+}
+
+// A tile quad covers as many cells as it repeats its tile over, and its
+// texture coordinates run past 1 accordingly - a border tile stretched over
+// the area it fills, and a tile layer wherever equal tiles were merged into
+// one quad. The programs take fract() of those coordinates; fixed function
+// has no such thing, so the layered texture repeats for these draws and goes
+// back to clamping afterwards - a clamped one hands the edge texel to the
+// whole quad, which is a flat colour where the tiles should be.
+//
+// What it cannot do is what fract() does at the seam: a sample next to the
+// edge of a tile reaches across and takes half a texel of the opposite edge
+// with it. Without a program there is nowhere to put the difference.
+void CCommandProcessorFragment_OpenGL::SetLayeredWrap(const CCommandBuffer::SState &State, bool Repeat)
+{
+	if(!State.m_Texture.IsValid())
+		return;
+	const TWGLenum Target = m_Has2DArrayTextures ? m_2DArrayTarget : GL_TEXTURE_3D;
+	if(!m_Has2DArrayTextures && !m_Has3DTextures)
+		return;
+	glBindTexture(Target, m_vTextures[State.m_Texture.Id()].m_Tex2DArray);
+	glTexParameteri(Target, GL_TEXTURE_WRAP_S, Repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+	glTexParameteri(Target, GL_TEXTURE_WRAP_T, Repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
 }
 
 void CCommandProcessorFragment_OpenGL::DrawEmulatedQuads(const CCommandBuffer::SCommand_DrawIndexed *pCommand, const SConvertedBuffer &Container, const uint8_t *pIndices, size_t IndexStride, uint32_t IndexCount)

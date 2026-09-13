@@ -1188,6 +1188,8 @@ void CGraphics_Threaded::RenderTileLayer(CBufferHandle VertexBuffer, EVertexLayo
 		Cmd.m_IndexBuffer = m_QuadIndexBuffer;
 		if(!SubmitIndexedDraw<CCommandBuffer::SDrawDataArrayColor>(Cmd, 1, false, [&](CCommandBuffer::SDrawDataArrayColor *pData) {
 			   pData->m_Color = Color;
+			   pData->m_Offset = vec2(0.0f, 0.0f);
+			   pData->m_Scale = vec2(1.0f, 1.0f);
 		   }))
 			return;
 	}
@@ -1204,13 +1206,13 @@ void CGraphics_Threaded::RenderBorderTiles(CBufferHandle VertexBuffer, EVertexLa
 	}
 	CCommandBuffer::SCommand_DrawIndexed Cmd;
 	Cmd.m_State = m_State;
-	Cmd.m_Program = EPipelineProgram::ARRAY_COLOR_TRANSFORM;
+	Cmd.m_Program = EPipelineProgram::ARRAY_COLOR;
 	Cmd.m_IndexCount = DrawNum * 6;
 	Cmd.m_IndexOffset = static_cast<size_t>(FirstIndex) * sizeof(uint32_t);
 	Cmd.m_VertexBuffer = VertexBuffer;
 	Cmd.m_Layout = Layout;
 	Cmd.m_IndexBuffer = m_QuadIndexBuffer;
-	SubmitIndexedDraw<CCommandBuffer::SDrawDataArrayColorTransform>(Cmd, 1, false, [&](CCommandBuffer::SDrawDataArrayColorTransform *pData) {
+	SubmitIndexedDraw<CCommandBuffer::SDrawDataArrayColor>(Cmd, 1, false, [&](CCommandBuffer::SDrawDataArrayColor *pData) {
 		pData->m_Color = Color;
 		pData->m_Offset = Offset;
 		pData->m_Scale = Scale;

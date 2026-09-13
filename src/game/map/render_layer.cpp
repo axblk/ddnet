@@ -70,7 +70,7 @@ static void FillTmpTile(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpT
 		// The tile texture is an array with one layer per tile and it wraps, so
 		// a quad that covers more than one cell just counts cells: the same
 		// tile is repeated over it. Rotation swaps which span belongs to which
-		// texture axis, the way tile_border.vert swaps its scale for it.
+		// texture axis, the way tile.vert swaps its scale for it.
 		bool HasRotation = (Flags & TILEFLAG_ROTATE) != 0;
 		const int TexSpanX = HasRotation ? SpanY : SpanX;
 		const int TexSpanY = HasRotation ? SpanX : SpanY;

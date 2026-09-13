@@ -213,7 +213,6 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 		std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> m_aUniformColor{};
 		std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> m_aInstanced{};
 		std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> m_aArrayColor{};
-		std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> m_aArrayColorTransform{};
 		std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> m_aQuadPerItem{};
 		std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> m_aQuadShared{};
 		std::array<WGPURenderPipeline, BLEND_MODE_COUNT> m_aDualAtlas{};
@@ -523,7 +522,7 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	bool CreateLayeredPrimitivePipelines(SPipelineSet &Pipelines, WGPUTextureFormat Format, uint32_t SampleCount);
 
-	bool CreateArrayColorPipelines(std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> &aPipelines, WGPUTextureFormat Format, bool Transform, uint32_t SampleCount);
+	bool CreateArrayColorPipelines(std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> &aPipelines, WGPUTextureFormat Format, uint32_t SampleCount);
 
 	bool CreateQuadPipelines(std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> &aPipelines, WGPUTextureFormat Format, bool Shared, uint32_t SampleCount);
 
@@ -2880,7 +2879,7 @@ bool CCommandProcessorFragment_WebGpu::CreateLayeredPrimitivePipelines(SPipeline
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::CreateArrayColorPipelines(std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> &aPipelines, WGPUTextureFormat Format, bool Transform, uint32_t SampleCount)
+bool CCommandProcessorFragment_WebGpu::CreateArrayColorPipelines(std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> &aPipelines, WGPUTextureFormat Format, uint32_t SampleCount)
 {
 	for(size_t Blend = 0; Blend < BLEND_MODE_COUNT; ++Blend)
 	{
@@ -2897,10 +2896,7 @@ bool CCommandProcessorFragment_WebGpu::CreateArrayColorPipelines(std::array<WGPU
 			SPipelineRecipe Recipe;
 			Recipe.m_pLabel = "DDNet WebGPU array-color pipeline";
 			Recipe.m_Layout = Textured != 0 ? m_ArrayTexturePipelineLayout : m_UntexturedPipelineLayout;
-			Recipe.m_pVertexEntry = Transform ? (Textured != 0 ? "vs_array_color_transform" : "vs_array_color_transform_untextured") : (Textured != 0 ? "vs_array_color" : "vs_array_color_untextured");
-			// Both ways through here draw tile layers, and a tile quad may
-			// cover more than one cell and repeat its tile over it, so both
-			// wrap their coordinates.
+			Recipe.m_pVertexEntry = Textured != 0 ? "vs_array_color" : "vs_array_color_untextured";
 			Recipe.m_pFragmentEntry = Textured != 0 ? "fs_layered_tiles" : "fs_untextured";
 			Recipe.m_pVertexBuffers = &VertexBuffer;
 			Recipe.m_Blend = Blend;
@@ -3008,7 +3004,7 @@ bool CCommandProcessorFragment_WebGpu::CreatePipelineSet(SPipelineSet &Pipelines
 			wgpuRenderPipelineRelease(Pipeline);
 		Pipeline = nullptr;
 	}
-	for(auto *pPipelineArray : {&Pipelines.m_aUniformColor, &Pipelines.m_aInstanced, &Pipelines.m_aArrayColor, &Pipelines.m_aArrayColorTransform, &Pipelines.m_aQuadPerItem, &Pipelines.m_aQuadShared})
+	for(auto *pPipelineArray : {&Pipelines.m_aUniformColor, &Pipelines.m_aInstanced, &Pipelines.m_aArrayColor, &Pipelines.m_aQuadPerItem, &Pipelines.m_aQuadShared})
 	{
 		for(auto &Pipeline : *pPipelineArray)
 		{
@@ -3084,8 +3080,7 @@ bool CCommandProcessorFragment_WebGpu::CreatePipelineSet(SPipelineSet &Pipelines
 	return CreateBufferedPipelines(Pipelines.m_aUniformColor, Format, "vs_uniform_color", false, SampleCount) &&
 	       CreateBufferedPipelines(Pipelines.m_aInstanced, Format, "vs_instanced", true, SampleCount) &&
 	       CreateLayeredPrimitivePipelines(Pipelines, Format, SampleCount) &&
-	       CreateArrayColorPipelines(Pipelines.m_aArrayColor, Format, false, SampleCount) &&
-	       CreateArrayColorPipelines(Pipelines.m_aArrayColorTransform, Format, true, SampleCount) &&
+	       CreateArrayColorPipelines(Pipelines.m_aArrayColor, Format, SampleCount) &&
 	       CreateQuadPipelines(Pipelines.m_aQuadPerItem, Format, false, SampleCount) &&
 	       CreateQuadPipelines(Pipelines.m_aQuadShared, Format, true, SampleCount) &&
 	       CreateDualAtlasPipelines(Pipelines, Format, SampleCount);
@@ -3168,14 +3163,10 @@ struct LayeredTilesVertexOutput {
 	output.color = color;
 	return output;
 }
+// A tile layer is drawn where it lies and a border tile is one quad stretched
+// over the area it repeats across, which is the same thing with an offset of
+// zero and a scale of one.
 @vertex fn vs_array_color(@location(0) position: vec2f, @location(1) uv: vec4u) -> LayeredTilesVertexOutput {
-	var output: LayeredTilesVertexOutput;
-	output.position = vec4f(position * transform.scale + transform.translate, 0.0, 1.0);
-	output.uv = vec3f(vec2f(uv.xy), f32(uv.z));
-	output.color = transform.color;
-	return output;
-}
-@vertex fn vs_array_color_transform(@location(0) position: vec2f, @location(1) uv: vec4u) -> LayeredTilesVertexOutput {
 	var output: LayeredTilesVertexOutput;
 	let vertex_position = position * transform.vertex_scale + transform.vertex_offset;
 	output.position = vec4f(vertex_position * transform.scale + transform.translate, 0.0, 1.0);
@@ -3185,13 +3176,6 @@ struct LayeredTilesVertexOutput {
 	return output;
 }
 @vertex fn vs_array_color_untextured(@location(0) position: vec2f) -> VertexOutput {
-	var output: VertexOutput;
-	output.position = vec4f(position * transform.scale + transform.translate, 0.0, 1.0);
-	output.uv = vec2f(0.0, 0.0);
-	output.color = transform.color;
-	return output;
-}
-@vertex fn vs_array_color_transform_untextured(@location(0) position: vec2f) -> VertexOutput {
 	var output: VertexOutput;
 	let vertex_position = position * transform.vertex_scale + transform.vertex_offset;
 	output.position = vec4f(vertex_position * transform.scale + transform.translate, 0.0, 1.0);
@@ -3506,7 +3490,7 @@ void CCommandProcessorFragment_WebGpu::DestroyDrawResources()
 				if(Pipeline != nullptr)
 					wgpuRenderPipelineRelease(Pipeline);
 		}
-		for(auto *pPipelineArray : {&Pipelines.m_aUniformColor, &Pipelines.m_aInstanced, &Pipelines.m_aArrayColor, &Pipelines.m_aArrayColorTransform, &Pipelines.m_aQuadPerItem, &Pipelines.m_aQuadShared})
+		for(auto *pPipelineArray : {&Pipelines.m_aUniformColor, &Pipelines.m_aInstanced, &Pipelines.m_aArrayColor, &Pipelines.m_aQuadPerItem, &Pipelines.m_aQuadShared})
 		{
 			for(auto &Pipeline : *pPipelineArray)
 				if(Pipeline != nullptr)
@@ -4039,21 +4023,16 @@ bool CCommandProcessorFragment_WebGpu::DrawBuffered(const CCommandBuffer::SComma
 		InstanceCount = pCommand->m_InstanceCount;
 		Pipeline = Pipelines.m_aInstanced[PipelineIndex];
 	}
-	else if(Program == EPipelineProgram::ARRAY_COLOR || Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM)
+	else if(Program == EPipelineProgram::ARRAY_COLOR)
 	{
-		const bool Transform = Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM;
-		const auto *pColorData = Transform ? nullptr : pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColor>();
-		const auto *pTransformData = Transform ? pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColorTransform>() : nullptr;
-		if(pCommand->m_InstanceCount != 1 || (Transform ? pTransformData == nullptr : pColorData == nullptr))
+		const auto *pColorData = pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColor>();
+		if(pCommand->m_InstanceCount != 1 || pColorData == nullptr)
 			return true;
-		Color = Transform ? pTransformData->m_Color : pColorData->m_Color;
-		if(Transform)
-		{
-			VertexOffset = pTransformData->m_Offset;
-			VertexScale = pTransformData->m_Scale;
-		}
+		Color = pColorData->m_Color;
+		VertexOffset = pColorData->m_Offset;
+		VertexScale = pColorData->m_Scale;
 		TextureArray = Textured;
-		Pipeline = (Transform ? Pipelines.m_aArrayColorTransform : Pipelines.m_aArrayColor)[PipelineIndex];
+		Pipeline = Pipelines.m_aArrayColor[PipelineIndex];
 	}
 	else
 		return true;

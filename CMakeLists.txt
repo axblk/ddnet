@@ -3040,8 +3040,6 @@ if(CLIENT)
     text.vert
     tile.frag
     tile.vert
-    tile_border.frag
-    tile_border.vert
     # tidy-alphabetical-end
   )
   set(EMBED_SHADER_ARGS)

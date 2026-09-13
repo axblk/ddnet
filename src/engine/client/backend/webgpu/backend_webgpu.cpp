@@ -2585,7 +2585,10 @@ bool CCommandProcessorFragment_WebGpu::CreateArrayColorPipelines(std::array<WGPU
 			Recipe.m_pLabel = "DDNet WebGPU array-color pipeline";
 			Recipe.m_Layout = Textured != 0 ? m_ArrayTexturePipelineLayout : m_UntexturedPipelineLayout;
 			Recipe.m_pVertexEntry = Transform ? (Textured != 0 ? "vs_array_color_transform" : "vs_array_color_transform_untextured") : (Textured != 0 ? "vs_array_color" : "vs_array_color_untextured");
-			Recipe.m_pFragmentEntry = Textured != 0 ? (Transform ? "fs_layered_border" : "fs_layered") : "fs_untextured";
+			// Both ways through here draw tile layers, and a tile quad may
+			// cover more than one cell and repeat its tile over it, so both
+			// wrap their coordinates.
+			Recipe.m_pFragmentEntry = Textured != 0 ? "fs_layered_tiles" : "fs_untextured";
 			Recipe.m_pVertexBuffers = &VertexBuffer;
 			Recipe.m_Blend = Blend;
 			Recipe.m_Format = Format;
@@ -2811,7 +2814,7 @@ struct LayeredVertexOutput {
 	@location(0) @interpolate(linear) uv: vec3f,
 	@location(1) color: vec4f,
 };
-struct LayeredBorderVertexOutput {
+struct LayeredTilesVertexOutput {
 	@builtin(position) position: vec4f,
 	@location(0) @interpolate(linear, centroid) uv: vec3f,
 	@location(1) color: vec4f,
@@ -2823,15 +2826,15 @@ struct LayeredBorderVertexOutput {
 	output.color = color;
 	return output;
 }
-@vertex fn vs_array_color(@location(0) position: vec2f, @location(1) uv: vec4u) -> LayeredVertexOutput {
-	var output: LayeredVertexOutput;
+@vertex fn vs_array_color(@location(0) position: vec2f, @location(1) uv: vec4u) -> LayeredTilesVertexOutput {
+	var output: LayeredTilesVertexOutput;
 	output.position = vec4f(position * transform.scale + transform.translate, 0.0, 1.0);
 	output.uv = vec3f(vec2f(uv.xy), f32(uv.z));
 	output.color = transform.color;
 	return output;
 }
-@vertex fn vs_array_color_transform(@location(0) position: vec2f, @location(1) uv: vec4u) -> LayeredBorderVertexOutput {
-	var output: LayeredBorderVertexOutput;
+@vertex fn vs_array_color_transform(@location(0) position: vec2f, @location(1) uv: vec4u) -> LayeredTilesVertexOutput {
+	var output: LayeredTilesVertexOutput;
 	let vertex_position = position * transform.vertex_scale + transform.vertex_offset;
 	output.position = vec4f(vertex_position * transform.scale + transform.translate, 0.0, 1.0);
 	let texture_scale = select(transform.vertex_scale, transform.vertex_scale.yx, uv.w > 0u);
@@ -2966,9 +2969,18 @@ result[component] = select(yuv_chroma_blue(block), yuv_chroma_red(block), second
 @fragment fn fs_layered_untextured(input: LayeredVertexOutput) -> @location(0) vec4f {
 	return input.color;
 }
-@fragment fn fs_layered_border(input: LayeredBorderVertexOutput) -> @location(0) vec4f {
-	let coordinates = fract(input.uv.xy);
-	let sample = textureSampleGrad(image_array_texture, image_sampler, coordinates, i32(input.uv.z), dpdx(input.uv.xy), dpdy(input.uv.xy));
+@fragment fn fs_layered_tiles(input: LayeredTilesVertexOutput) -> @location(0) vec4f {
+	// A quad covering several cells repeats its tile, so the coordinates count
+	// cells from 0; the array clamps. The cell is taken a little below the
+	// coordinate and never below the first, so a pixel interpolated a hair
+	// past the quad's edge does not sample the opposite edge of the tile. The
+	// derivatives come from the unwrapped coordinates.
+	let dx = dpdx(input.uv.xy);
+	let dy = dpdy(input.uv.xy);
+	let margin = max((abs(dx) + abs(dy)) / 1024.0, vec2f(1.0 / 16384.0));
+	let cell = max(floor(input.uv.xy - margin), vec2f(0.0));
+	let coordinates = clamp(input.uv.xy - cell, vec2f(0.0), vec2f(1.0));
+	let sample = textureSampleGrad(image_array_texture, image_sampler, coordinates, i32(input.uv.z), dx, dy);
 	let texture_color = select(sample, vec4f(1.0, 1.0, 1.0, sample.r), transform.alpha_texture != 0u);
 	return texture_color * input.color;
 }

@@ -713,13 +713,12 @@ class CCommandProcessorFragment_Vulkan : public CCommandProcessorFragment_Render
 		ColorRGBA m_TextOutlineColor;
 	};
 
+	// A tile layer is drawn where it lies and a border tile is one quad
+	// stretched over the area it repeats across, so the offset and the scale
+	// are always here and stand at zero and one for a layer.
 	struct SUniformTileGPos
 	{
 		float m_aPos[4 * 2];
-	};
-
-	struct SUniformTileGPosBorder : public SUniformTileGPos
-	{
 		vec2 m_Offset;
 		vec2 m_Scale;
 	};
@@ -993,7 +992,6 @@ private:
 	SPipelineContainer m_PlanarYuvPipeline;
 	SPipelineContainer m_DualAtlasPipeline;
 	SPipelineContainer m_ArrayColorPipeline;
-	SPipelineContainer m_ArrayColorTransformPipeline;
 	SPipelineContainer m_PrimitiveUniformColorPipeline;
 	SPipelineContainer m_PrimitiveInstancedPipeline;
 	SPipelineContainer m_PrimitiveInstancedPushPipeline;
@@ -1570,9 +1568,9 @@ protected:
 
 	VkPipeline &GetStandardPipe(bool IsLineGeometry, bool IsTextured, size_t BlendModeIndex);
 
-	VkPipelineLayout &GetArrayColorPipeLayout(bool HasTransform, bool IsTextured, size_t BlendModeIndex);
+	VkPipelineLayout &GetArrayColorPipeLayout(bool IsTextured, size_t BlendModeIndex);
 
-	VkPipeline &GetArrayColorPipe(bool HasTransform, bool IsTextured, size_t BlendModeIndex);
+	VkPipeline &GetArrayColorPipe(bool IsTextured, size_t BlendModeIndex);
 
 	void GetDynamicStates(const CCommandBuffer::SState &State, VkViewport &Viewport, VkRect2D &Scissor);
 
@@ -1872,7 +1870,7 @@ public:
 	[[nodiscard]] bool CreateTextGraphicsPipeline(const char *pVertName, const char *pFragName);
 
 	template<bool HasSampler>
-	[[nodiscard]] bool CreateTileGraphicsPipelineImpl(const char *pVertName, const char *pFragName, bool IsBorder, SPipelineContainer &PipeContainer, EVulkanBackendTextureModes TexMode, EVulkanBackendBlendModes BlendMode)
+	[[nodiscard]] bool CreateTileGraphicsPipelineImpl(const char *pVertName, const char *pFragName, SPipelineContainer &PipeContainer, EVulkanBackendTextureModes TexMode, EVulkanBackendBlendModes BlendMode)
 	{
 		std::array<VkVertexInputAttributeDescription, HasSampler ? 2 : 1> aAttributeDescriptions = {};
 		const uint32_t Stride = FillVertexInput(HasSampler ? IGraphics::EVertexLayout::TILE_TEXTURED : IGraphics::EVertexLayout::TILE, aAttributeDescriptions);
@@ -1881,27 +1879,24 @@ public:
 		aSetLayouts[0] = m_Standard3DTexturedDescriptorSetLayout;
 
 		uint32_t VertPushConstantSize = sizeof(SUniformTileGPos);
-		if(IsBorder)
-			VertPushConstantSize = sizeof(SUniformTileGPosBorder);
-
 		uint32_t FragPushConstantSize = sizeof(SUniformTileGVertColor);
 
 		std::array<VkPushConstantRange, 2> aPushConstants{};
 		aPushConstants[0] = {VK_SHADER_STAGE_VERTEX_BIT, 0, VertPushConstantSize};
-		aPushConstants[1] = {VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SUniformTileGPosBorder) + sizeof(SUniformTileGVertColorAlign), FragPushConstantSize};
+		aPushConstants[1] = {VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SUniformTileGPos) + sizeof(SUniformTileGVertColorAlign), FragPushConstantSize};
 
 		return CreateGraphicsPipeline<false>(pVertName, pFragName, PipeContainer, Stride, aAttributeDescriptions, aSetLayouts, aPushConstants, TexMode, BlendMode);
 	}
 
 	template<bool HasSampler>
-	[[nodiscard]] bool CreateTileGraphicsPipeline(const char *pVertName, const char *pFragName, bool IsBorder)
+	[[nodiscard]] bool CreateTileGraphicsPipeline(const char *pVertName, const char *pFragName)
 	{
 		bool Ret = true;
 
 		EVulkanBackendTextureModes TexMode = HasSampler ? VULKAN_BACKEND_TEXTURE_MODE_TEXTURED : VULKAN_BACKEND_TEXTURE_MODE_NOT_TEXTURED;
 
 		for(size_t i = 0; i < VULKAN_BACKEND_BLEND_MODE_COUNT; ++i)
-			Ret &= CreateTileGraphicsPipelineImpl<HasSampler>(pVertName, pFragName, IsBorder, !IsBorder ? m_ArrayColorPipeline : m_ArrayColorTransformPipeline, TexMode, EVulkanBackendBlendModes(i));
+			Ret &= CreateTileGraphicsPipelineImpl<HasSampler>(pVertName, pFragName, m_ArrayColorPipeline, TexMode, EVulkanBackendBlendModes(i));
 
 		return Ret;
 	}
@@ -6453,20 +6448,14 @@ VkPipeline &CCommandProcessorFragment_Vulkan::GetStandardPipe(bool IsLineGeometr
 		return GetPipeline(m_PrimitivePipeline, IsTextured, BlendModeIndex);
 }
 
-VkPipelineLayout &CCommandProcessorFragment_Vulkan::GetArrayColorPipeLayout(bool HasTransform, bool IsTextured, size_t BlendModeIndex)
+VkPipelineLayout &CCommandProcessorFragment_Vulkan::GetArrayColorPipeLayout(bool IsTextured, size_t BlendModeIndex)
 {
-	if(!HasTransform)
-		return GetPipeLayout(m_ArrayColorPipeline, IsTextured, BlendModeIndex);
-	else
-		return GetPipeLayout(m_ArrayColorTransformPipeline, IsTextured, BlendModeIndex);
+	return GetPipeLayout(m_ArrayColorPipeline, IsTextured, BlendModeIndex);
 }
 
-VkPipeline &CCommandProcessorFragment_Vulkan::GetArrayColorPipe(bool HasTransform, bool IsTextured, size_t BlendModeIndex)
+VkPipeline &CCommandProcessorFragment_Vulkan::GetArrayColorPipe(bool IsTextured, size_t BlendModeIndex)
 {
-	if(!HasTransform)
-		return GetPipeline(m_ArrayColorPipeline, IsTextured, BlendModeIndex);
-	else
-		return GetPipeline(m_ArrayColorTransformPipeline, IsTextured, BlendModeIndex);
+	return GetPipeline(m_ArrayColorPipeline, IsTextured, BlendModeIndex);
 }
 
 void CCommandProcessorFragment_Vulkan::BindPipeline(VkCommandBuffer &CommandBuffer, VkPipeline Pipeline, const VkViewport &Viewport, const VkRect2D &Scissor)
@@ -7090,7 +7079,6 @@ void CCommandProcessorFragment_Vulkan::DestroyGraphicsPipelines()
 	m_PlanarYuvPipeline.Destroy(m_VKDevice);
 	m_DualAtlasPipeline.Destroy(m_VKDevice);
 	m_ArrayColorPipeline.Destroy(m_VKDevice);
-	m_ArrayColorTransformPipeline.Destroy(m_VKDevice);
 	m_PrimitiveUniformColorPipeline.Destroy(m_VKDevice);
 	m_PrimitiveInstancedPipeline.Destroy(m_VKDevice);
 	m_PrimitiveInstancedPushPipeline.Destroy(m_VKDevice);
@@ -7135,16 +7123,10 @@ bool CCommandProcessorFragment_Vulkan::CreateGraphicsPipelines()
 	if(!CreateTextGraphicsPipeline("vulkan/text.vert.spv", "vulkan/text.frag.spv"))
 		return false;
 
-	if(!CreateTileGraphicsPipeline<false>("vulkan/tile.vert.spv", "vulkan/tile.frag.spv", false))
+	if(!CreateTileGraphicsPipeline<false>("vulkan/tile.vert.spv", "vulkan/tile.frag.spv"))
 		return false;
 
-	if(!CreateTileGraphicsPipeline<true>("vulkan/tile_textured.vert.spv", "vulkan/tile_textured.frag.spv", false))
-		return false;
-
-	if(!CreateTileGraphicsPipeline<false>("vulkan/tile_border.vert.spv", "vulkan/tile_border.frag.spv", true))
-		return false;
-
-	if(!CreateTileGraphicsPipeline<true>("vulkan/tile_border_textured.vert.spv", "vulkan/tile_border_textured.frag.spv", true))
+	if(!CreateTileGraphicsPipeline<true>("vulkan/tile_textured.vert.spv", "vulkan/tile_textured.frag.spv"))
 		return false;
 
 	if(!CreatePrimExGraphicsPipeline("vulkan/primex.vert.spv", "vulkan/primex.frag.spv", false))
@@ -7502,7 +7484,7 @@ bool CCommandProcessorFragment_Vulkan::Cmd_DrawIndexed(const CCommandBuffer::SCo
 		return Cmd_DrawIndexedDualAtlas(pCommand);
 	if(Program == EPipelineProgram::PRIMITIVE_INSTANCED)
 		return Cmd_DrawIndexedInstanced(pCommand);
-	if(Program == EPipelineProgram::ARRAY_COLOR || Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM)
+	if(Program == EPipelineProgram::ARRAY_COLOR)
 		return Cmd_DrawIndexedArrayColor(pCommand);
 	if(Program == EPipelineProgram::QUAD_PER_ITEM || Program == EPipelineProgram::QUAD_SHARED)
 		return Cmd_DrawIndexedQuadRecords(pCommand);
@@ -7585,10 +7567,8 @@ bool CCommandProcessorFragment_Vulkan::Cmd_DrawIndexedDualAtlas(const CCommandBu
 
 bool CCommandProcessorFragment_Vulkan::Cmd_DrawIndexedArrayColor(const CCommandBuffer::SCommand_DrawIndexed *pCommand)
 {
-	const bool HasTransform = pCommand->m_Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM;
-	const auto *pColorData = HasTransform ? nullptr : pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColor>();
-	const auto *pTransformData = HasTransform ? pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColorTransform>() : nullptr;
-	if((HasTransform && pTransformData == nullptr) || (!HasTransform && pColorData == nullptr))
+	const auto *pColorData = pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColor>();
+	if(pColorData == nullptr)
 		return true;
 
 	std::array<float, (size_t)4 * 2> m;
@@ -7596,23 +7576,18 @@ bool CCommandProcessorFragment_Vulkan::Cmd_DrawIndexedArrayColor(const CCommandB
 
 	const bool IsTextured = GetIsTextured(pCommand->m_State);
 	const size_t BlendModeIndex = GetBlendModeIndex(pCommand->m_State);
-	auto &PipeLayout = GetArrayColorPipeLayout(HasTransform, IsTextured, BlendModeIndex);
-	auto &PipeLine = GetArrayColorPipe(HasTransform, IsTextured, BlendModeIndex);
+	auto &PipeLayout = GetArrayColorPipeLayout(IsTextured, BlendModeIndex);
+	auto &PipeLine = GetArrayColorPipe(IsTextured, BlendModeIndex);
 	auto &CommandBuffer = BindIndexedDraw(pCommand, PipeLine, PipeLayout, true);
 
-	SUniformTileGPosBorder VertexPushConstants;
-	size_t VertexPushConstantSize = sizeof(SUniformTileGPos);
-	SUniformTileGVertColor FragPushConstants = HasTransform ? pTransformData->m_Color : pColorData->m_Color;
+	SUniformTileGPos VertexPushConstants;
+	SUniformTileGVertColor FragPushConstants = pColorData->m_Color;
 	mem_copy(VertexPushConstants.m_aPos, m.data(), m.size() * sizeof(float));
-	if(HasTransform)
-	{
-		VertexPushConstants.m_Scale = pTransformData->m_Scale;
-		VertexPushConstants.m_Offset = pTransformData->m_Offset;
-		VertexPushConstantSize = sizeof(SUniformTileGPosBorder);
-	}
+	VertexPushConstants.m_Offset = pColorData->m_Offset;
+	VertexPushConstants.m_Scale = pColorData->m_Scale;
 
-	vkCmdPushConstants(CommandBuffer, PipeLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, VertexPushConstantSize, &VertexPushConstants);
-	vkCmdPushConstants(CommandBuffer, PipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SUniformTileGPosBorder) + sizeof(SUniformTileGVertColorAlign), sizeof(SUniformTileGVertColor), &FragPushConstants);
+	vkCmdPushConstants(CommandBuffer, PipeLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(VertexPushConstants), &VertexPushConstants);
+	vkCmdPushConstants(CommandBuffer, PipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SUniformTileGPos) + sizeof(SUniformTileGVertColorAlign), sizeof(FragPushConstants), &FragPushConstants);
 	vkCmdDrawIndexed(CommandBuffer, pCommand->m_IndexCount, 1, 0, 0, 0);
 	return true;
 }

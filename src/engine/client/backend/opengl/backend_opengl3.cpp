@@ -374,8 +374,6 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 	m_pTileProgramTextured = new CGLSLTileProgram;
 	m_pPrimitive3DProgram = new CGLSLPrimitiveProgram;
 	m_pPrimitive3DProgramTextured = new CGLSLPrimitiveProgram;
-	m_pBorderTileProgram = new CGLSLTileProgram;
-	m_pBorderTileProgramTextured = new CGLSLTileProgram;
 	m_pQuadProgram = new CGLSLQuadProgram;
 	m_pQuadProgramTextured = new CGLSLQuadProgram;
 	m_pQuadProgramGrouped = new CGLSLQuadProgram;
@@ -407,17 +405,13 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 	LinkProgram(m_pPrimitive3DProgram, ShaderCompiler, "prim3d.vert", "prim3d.frag");
 	LinkProgram(m_pPrimitive3DProgramTextured, ShaderCompiler, "prim3d.vert", "prim3d.frag", {{"TW_TEXTURED", ""}});
 
-	for(CGLSLTileProgram *pProgram : {m_pTileProgram, m_pTileProgramTextured, m_pBorderTileProgram, m_pBorderTileProgramTextured})
+	for(CGLSLTileProgram *pProgram : {m_pTileProgram, m_pTileProgramTextured})
 	{
-		const bool Border = pProgram == m_pBorderTileProgram || pProgram == m_pBorderTileProgramTextured;
-		const bool Textured = pProgram == m_pTileProgramTextured || pProgram == m_pBorderTileProgramTextured;
-		LinkProgram(pProgram, ShaderCompiler, Border ? "tile_border.vert" : "tile.vert", Border ? "tile_border.frag" : "tile.frag", Textured ? std::vector<std::pair<const char *, std::string>>{{"TW_TILE_TEXTURED", ""}} : std::vector<std::pair<const char *, std::string>>{});
+		const bool Textured = pProgram == m_pTileProgramTextured;
+		LinkProgram(pProgram, ShaderCompiler, "tile.vert", "tile.frag", Textured ? std::vector<std::pair<const char *, std::string>>{{"TW_TILE_TEXTURED", ""}} : std::vector<std::pair<const char *, std::string>>{});
 		pProgram->m_LocColor = pProgram->GetUniformLoc("gVertColor");
-		if(Border)
-		{
-			pProgram->m_LocOffset = pProgram->GetUniformLoc("gOffset");
-			pProgram->m_LocScale = pProgram->GetUniformLoc("gScale");
-		}
+		pProgram->m_LocOffset = pProgram->GetUniformLoc("gOffset");
+		pProgram->m_LocScale = pProgram->GetUniformLoc("gScale");
 	}
 
 	const std::pair<CGLSLQuadProgram *, std::vector<std::pair<const char *, std::string>>> aQuadPrograms[] = {
@@ -510,8 +504,6 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Shutdown(const SCommand_Shutdown *
 	delete m_pPrimitiveProgramTextured;
 	delete m_pBlurProgram;
 	delete m_pPlanarYuvProgram;
-	delete m_pBorderTileProgram;
-	delete m_pBorderTileProgramTextured;
 	delete m_pQuadProgram;
 	delete m_pQuadProgramTextured;
 	delete m_pQuadProgramGrouped;
@@ -1227,28 +1219,18 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_DrawIndexed(const CCommandBuffer::
 		RenderDualAtlasComposite(pCommand->m_State, pCommand->m_IndexCount, pCommand->m_IndexOffset, pCommand->m_State.m_Texture.Id(), *pDrawData);
 		return;
 	}
-	else if(Program == EPipelineProgram::ARRAY_COLOR || Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM)
+	else if(Program == EPipelineProgram::ARRAY_COLOR)
 	{
-		const bool HasTransform = Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM;
-		const auto *pColorData = HasTransform ? nullptr : pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColor>();
-		const auto *pTransformData = HasTransform ? pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColorTransform>() : nullptr;
-		if((HasTransform && pTransformData == nullptr) || (!HasTransform && pColorData == nullptr))
+		const auto *pColorData = pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColor>();
+		if(pColorData == nullptr)
 			return;
 
-		CGLSLTileProgram *pProgram;
-		if(HasTransform)
-			pProgram = IsTexturedState(pCommand->m_State) ? m_pBorderTileProgramTextured : m_pBorderTileProgram;
-		else
-			pProgram = IsTexturedState(pCommand->m_State) ? m_pTileProgramTextured : m_pTileProgram;
+		CGLSLTileProgram *pProgram = IsTexturedState(pCommand->m_State) ? m_pTileProgramTextured : m_pTileProgram;
 		UseProgram(pProgram);
 		SetState(pCommand->m_State, pProgram, true);
-		const ColorRGBA &Color = HasTransform ? pTransformData->m_Color : pColorData->m_Color;
-		pProgram->SetUniformVec4(pProgram->m_LocColor, 1, (float *)&Color);
-		if(HasTransform)
-		{
-			pProgram->SetUniformVec2(pProgram->m_LocOffset, 1, (float *)&pTransformData->m_Offset);
-			pProgram->SetUniformVec2(pProgram->m_LocScale, 1, (float *)&pTransformData->m_Scale);
-		}
+		pProgram->SetUniformVec4(pProgram->m_LocColor, 1, (float *)&pColorData->m_Color);
+		pProgram->SetUniformVec2(pProgram->m_LocOffset, 1, (float *)&pColorData->m_Offset);
+		pProgram->SetUniformVec2(pProgram->m_LocScale, 1, (float *)&pColorData->m_Scale);
 		glDrawElements(GL_TRIANGLES, pCommand->m_IndexCount, GL_UNSIGNED_INT, reinterpret_cast<const void *>(pCommand->m_IndexOffset));
 		return;
 	}

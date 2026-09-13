@@ -188,8 +188,6 @@ protected:
 	CGLSLPrimitiveProgram *m_pPlanarYuvProgram;
 	CGLSLTileProgram *m_pTileProgram = nullptr;
 	CGLSLTileProgram *m_pTileProgramTextured = nullptr;
-	CGLSLTileProgram *m_pBorderTileProgram = nullptr;
-	CGLSLTileProgram *m_pBorderTileProgramTextured = nullptr;
 	CGLSLPrimitiveProgram *m_pPrimitive3DProgram = nullptr;
 	CGLSLPrimitiveProgram *m_pPrimitive3DProgramTextured = nullptr;
 	CGLSLQuadProgram *m_pQuadProgram;

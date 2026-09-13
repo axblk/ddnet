@@ -842,17 +842,18 @@ void CCommandProcessorFragment_OpenGL::DrawExpandedVertices(const CCommandBuffer
 
 void CCommandProcessorFragment_OpenGL::DrawEmulatedArrayColor(const CCommandBuffer::SCommand_DrawIndexed *pCommand, const SConvertedBuffer &Container, const uint8_t *pIndices, size_t IndexStride, uint32_t IndexCount)
 {
-	const bool HasTransform = pCommand->m_Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM;
-	const auto *pColorData = HasTransform ? nullptr : pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColor>();
-	const auto *pTransformData = HasTransform ? pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColorTransform>() : nullptr;
-	if((HasTransform && pTransformData == nullptr) || (!HasTransform && pColorData == nullptr))
+	const auto *pColorData = pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColor>();
+	if(pColorData == nullptr)
 	{
 		DropCommand("a tile draw without the colour it should be drawn in");
 		return;
 	}
-	const ColorRGBA &Color = HasTransform ? pTransformData->m_Color : pColorData->m_Color;
-	const vec2 Offset = HasTransform ? pTransformData->m_Offset : vec2(0.0f, 0.0f);
-	const vec2 Scale = HasTransform ? pTransformData->m_Scale : vec2(1.0f, 1.0f);
+	const ColorRGBA &Color = pColorData->m_Color;
+	const vec2 Offset = pColorData->m_Offset;
+	const vec2 Scale = pColorData->m_Scale;
+	// A quad that is neither moved nor stretched needs nothing done to it per
+	// vertex, which is the cheap way through below.
+	const bool HasTransform = Offset != vec2(0.0f, 0.0f) || Scale != vec2(1.0f, 1.0f);
 	const IGraphics::SVertexLayoutDesc &Layout = IGraphics::VertexLayout(Container.m_Layout);
 	const bool Textured = Layout.m_AttributeCount >= 2 && IsTexturedState(pCommand->m_State);
 
@@ -895,7 +896,7 @@ void CCommandProcessorFragment_OpenGL::DrawEmulatedArrayColor(const CCommandBuff
 		if(Textured)
 		{
 			const ColorRGBA TexCoord = ReadAttribute(pVertex, Layout.m_aAttributes[1]);
-			// The border variant stretches a tile over the area it repeats
+			// A quad is stretched over the area it repeats its tile
 			// across, and a rotated tile stretches along the other axis.
 			const vec2 TexScale = TexCoord.a > 0.0f ? vec2(Scale.y, Scale.x) : Scale;
 			Vertex.m_Tex.u = TexCoord.r * TexScale.x;
@@ -1169,7 +1170,6 @@ void CCommandProcessorFragment_OpenGL::Cmd_DrawIndexed(const CCommandBuffer::SCo
 		switch(pCommand->m_Program)
 		{
 		case EPipelineProgram::ARRAY_COLOR:
-		case EPipelineProgram::ARRAY_COLOR_TRANSFORM:
 			DrawEmulatedArrayColor(pCommand, *pContainer, pIndices, IndexStride, IndexCount);
 			break;
 		case EPipelineProgram::QUAD_PER_ITEM:

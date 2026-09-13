@@ -70,7 +70,7 @@ static void FillTmpTile(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpT
 		// The tile texture is an array with one layer per tile and it wraps, so
 		// a quad that covers more than one cell just counts cells: the same
 		// tile is repeated over it. Rotation swaps which span belongs to which
-		// texture axis, the way tile_border.vert swaps its scale for it.
+		// texture axis, the way tile.vert swaps its scale for it.
 		bool HasRotation = (Flags & TILEFLAG_ROTATE) != 0;
 		const int TexSpanX = HasRotation ? SpanY : SpanX;
 		const int TexSpanY = HasRotation ? SpanX : SpanY;
@@ -424,10 +424,16 @@ void CRenderLayerTile::RenderTileBorder(const ColorRGBA &Color, int BorderX0, in
 	int Y1 = std::min((int)Visuals.m_Height, BorderY1);
 	int X1 = std::min((int)Visuals.m_Width, BorderX1);
 
+	// A border draws a run of edge tiles, each stretched over the distance to
+	// the screen edge, so that its texture repeats there.
+	auto DrawTiles = [&](vec2 Offset, vec2 Scale, uint32_t FirstIndex, uint32_t TileCount) {
+		const uint32_t IndexCount = TileCount * 6;
+		Graphics()->RenderTileLayer(Visuals.m_BufferObjectIndex, Visuals.m_Layout, Color, &FirstIndex, &IndexCount, 1, Offset * 32.0f, Scale);
+	};
+
 	// corners
 	auto DrawCorner = [&](vec2 Offset, vec2 Scale, CTileLayerVisuals::CTileVisual &Visual) {
-		Offset *= 32.0f;
-		Graphics()->RenderBorderTiles(Visuals.m_BufferObjectIndex, Visuals.m_Layout, Color, Visual.FirstIndex(), Offset, Scale, 1);
+		DrawTiles(Offset, Scale, Visual.FirstIndex(), 1);
 	};
 
 	if(BorderX0 < 0)
@@ -469,10 +475,8 @@ void CRenderLayerTile::RenderTileBorder(const ColorRGBA &Color, int BorderX0, in
 
 	// borders
 	auto DrawBorder = [&](vec2 Offset, vec2 Scale, CTileLayerVisuals::CTileVisual &StartVisual, CTileLayerVisuals::CTileVisual &EndVisual) {
-		unsigned int DrawNum = ((EndVisual.FirstIndex() - StartVisual.FirstIndex()) / 6) + (EndVisual.DoDraw() ? 1lu : 0lu);
-		const uint32_t FirstIndex = StartVisual.FirstIndex();
-		Offset *= 32.0f;
-		Graphics()->RenderBorderTiles(Visuals.m_BufferObjectIndex, Visuals.m_Layout, Color, FirstIndex, Offset, Scale, DrawNum);
+		const uint32_t TileCount = ((EndVisual.FirstIndex() - StartVisual.FirstIndex()) / 6) + (EndVisual.DoDraw() ? 1 : 0);
+		DrawTiles(Offset, Scale, StartVisual.FirstIndex(), TileCount);
 	};
 
 	if(Y0 < (int)Visuals.m_Height && Y1 > 0)
@@ -541,8 +545,8 @@ void CRenderLayerTile::RenderKillTileBorder(const ColorRGBA &Color)
 
 	auto DrawKillBorder = [&](vec2 Offset, vec2 Scale) {
 		const uint32_t FirstIndex = Visuals.m_BorderKillTile.FirstIndex();
-		Offset *= 32.0f;
-		Graphics()->RenderBorderTiles(Visuals.m_BufferObjectIndex, Visuals.m_Layout, Color, FirstIndex, Offset, Scale, 1);
+		const uint32_t IndexCount = 6;
+		Graphics()->RenderTileLayer(Visuals.m_BufferObjectIndex, Visuals.m_Layout, Color, &FirstIndex, &IndexCount, 1, Offset * 32.0f, Scale);
 	};
 
 	// Draw left kill tile border

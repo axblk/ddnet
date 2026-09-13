@@ -1102,7 +1102,7 @@ void CGraphics_Threaded::QuadsTex3DDrawTL(const CQuadItem *pArray, int Num)
 	QuadsDrawTLImpl(m_aVerticesTex3D, pArray, Num);
 }
 
-void CGraphics_Threaded::RenderTileLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, const uint32_t *pFirstIndices, const uint32_t *pIndexCounts, size_t RangeCount)
+void CGraphics_Threaded::RenderTileLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, const uint32_t *pFirstIndices, const uint32_t *pIndexCounts, size_t RangeCount, const vec2 &Offset, const vec2 &Scale)
 {
 	if(RangeCount == 0 || !VertexBuffer.IsValid())
 		return;
@@ -1123,33 +1123,11 @@ void CGraphics_Threaded::RenderTileLayer(CBufferHandle VertexBuffer, EVertexLayo
 		Cmd.m_IndexBuffer = m_QuadIndexBuffer;
 		if(!SubmitIndexedDraw<CCommandBuffer::SDrawDataArrayColor>(Cmd, 1, false, [&](CCommandBuffer::SDrawDataArrayColor *pData) {
 			   pData->m_Color = Color;
+			   pData->m_Offset = Offset;
+			   pData->m_Scale = Scale;
 		   }))
 			return;
 	}
-}
-
-void CGraphics_Threaded::RenderBorderTiles(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, uint32_t FirstIndex, const vec2 &Offset, const vec2 &Scale, uint32_t DrawNum)
-{
-	if(DrawNum == 0 || !VertexBuffer.IsValid())
-		return;
-	if(DrawNum > std::numeric_limits<uint32_t>::max() / 6)
-	{
-		log_error("graphics", "Invalid border tile draw count. DrawCount=%u", DrawNum);
-		return;
-	}
-	CCommandBuffer::SCommand_DrawIndexed Cmd;
-	Cmd.m_State = m_State;
-	Cmd.m_Program = EPipelineProgram::ARRAY_COLOR_TRANSFORM;
-	Cmd.m_IndexCount = DrawNum * 6;
-	Cmd.m_IndexOffset = static_cast<size_t>(FirstIndex) * sizeof(uint32_t);
-	Cmd.m_VertexBuffer = VertexBuffer;
-	Cmd.m_Layout = Layout;
-	Cmd.m_IndexBuffer = m_QuadIndexBuffer;
-	SubmitIndexedDraw<CCommandBuffer::SDrawDataArrayColorTransform>(Cmd, 1, false, [&](CCommandBuffer::SDrawDataArrayColorTransform *pData) {
-		pData->m_Color = Color;
-		pData->m_Offset = Offset;
-		pData->m_Scale = Scale;
-	});
 }
 
 void CGraphics_Threaded::RenderQuadLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, SQuadRenderInfo *pQuadInfo, size_t QuadNum, int QuadOffset, bool Grouped)

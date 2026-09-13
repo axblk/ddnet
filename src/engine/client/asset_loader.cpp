@@ -6,6 +6,7 @@
 #include <base/io.h>
 #include <base/log.h>
 #include <base/mem.h>
+#include <base/thread.h>
 #include <base/time.h>
 
 #include <engine/engine.h>
@@ -98,20 +99,29 @@ bool CAssetJob::ReadFile(IStorage *pStorage, const char *pPath, int StorageType,
 	return true;
 }
 
+void CAssetJob::ReadSource()
+{
+	if(m_pStorage == nullptr || State() == IJob::STATE_ABORTED)
+		return;
+	if(!ReadFile(m_pStorage, Path(), m_StorageType, m_vData))
+		m_ReadFailed = true;
+	// Either way there is nothing left to read, and a job that is asked twice
+	// would read twice.
+	m_pStorage = nullptr;
+}
+
 void CAssetJob::Run()
 {
 	if(State() == IJob::STATE_ABORTED)
 		return;
-	// Bytes that are already here - a response, a map that is open anyway -
-	// have nothing to read, so the job goes straight to making sense of them.
-	if(m_pStorage != nullptr && !ReadFile(m_pStorage, Path(), m_StorageType, m_vData))
+	// The bytes are already here: read from a file by the loader's reader,
+	// downloaded by a request, or handed over by the caller. Failing to read
+	// is still reported from here, so that a job never hears from two threads.
+	if(m_ReadFailed)
 	{
-		m_ReadFailed = true;
 		OnReadFailed();
 		return;
 	}
-	if(State() == IJob::STATE_ABORTED)
-		return;
 	Process();
 }
 
@@ -179,6 +189,68 @@ void CAssetLoader::Init(IEngine *pEngine, size_t MaxConcurrentJobs)
 	m_MaxConcurrentJobs = MaxConcurrentJobs;
 }
 
+void CAssetLoader::ReaderThread(void *pUser)
+{
+	static_cast<CAssetLoader *>(pUser)->ReadLoop();
+}
+
+void CAssetLoader::ReadLoop()
+{
+	while(true)
+	{
+		m_ReaderSemaphore.Wait();
+		if(m_ReaderShutdown)
+			return;
+		std::shared_ptr<CAssetJob> pJob;
+		{
+			const CLockScope LockScope(m_ReaderLock);
+			if(m_vpUnreadJobs.empty())
+				continue;
+			pJob = std::move(m_vpUnreadJobs.front());
+			m_vpUnreadJobs.pop_front();
+		}
+		pJob->ReadSource();
+		const CLockScope LockScope(m_ReaderLock);
+		m_vpReadJobs.push_back(std::move(pJob));
+	}
+}
+
+void CAssetLoader::Enqueue(std::shared_ptr<CAssetJob> pJob)
+{
+	// A job that brought its bytes, or was given them by a request that has
+	// finished, has nothing to fetch and goes straight to the job pool.
+	if(!pJob->HasFileSource())
+	{
+		m_vpPendingJobs.push_back(std::move(pJob));
+		StartPendingJobs();
+		return;
+	}
+	if(m_pReaderThread == nullptr)
+		m_pReaderThread = thread_init(ReaderThread, this, "asset reader");
+	{
+		const CLockScope LockScope(m_ReaderLock);
+		m_vpUnreadJobs.push_back(std::move(pJob));
+	}
+	m_ReaderSemaphore.Signal();
+}
+
+void CAssetLoader::UpdateReadJobs()
+{
+	std::vector<std::shared_ptr<CAssetJob>> vpRead;
+	{
+		const CLockScope LockScope(m_ReaderLock);
+		vpRead.swap(m_vpReadJobs);
+	}
+	for(auto &pJob : vpRead)
+		m_vpPendingJobs.push_back(std::move(pJob));
+}
+
+size_t CAssetLoader::ReadingCount() const
+{
+	const CLockScope LockScope(const_cast<CLock &>(m_ReaderLock));
+	return m_vpUnreadJobs.size() + m_vpReadJobs.size();
+}
+
 uint64_t CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob)
 {
 	dbg_assert(m_pEngine != nullptr, "Asset loader not initialized");
@@ -193,8 +265,7 @@ uint64_t CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob)
 	dbg_assert(m_NextRequestId != 0, "Asset request ID overflow");
 	const uint64_t RequestId = m_NextRequestId++;
 	pJob->m_RequestId = RequestId;
-	m_vpPendingJobs.push_back(std::move(pJob));
-	StartPendingJobs();
+	Enqueue(std::move(pJob));
 	return RequestId;
 }
 
@@ -256,7 +327,9 @@ void CAssetLoader::UpdateWaitingJobs()
 			pJob->m_HttpSource = EHttpAssetSource::DESTINATION;
 		}
 		pJob->OnRequestFinished(pJob->m_HttpSource, std::move(vData));
-		m_vpPendingJobs.push_back(std::move(pJob));
+		// The request may have pointed the job at the file it downloaded to
+		// instead, and then that file still has to be read like any other.
+		Enqueue(std::move(pJob));
 	}
 }
 
@@ -310,6 +383,7 @@ void CAssetLoader::Update()
 {
 	dbg_assert(m_pEngine != nullptr, "Asset loader not initialized");
 	UpdateWaitingJobs();
+	UpdateReadJobs();
 	for(const auto &pJob : m_vpRunningJobs)
 	{
 		if(pJob->State() != IJob::STATE_DONE || pJob->Type() != EAssetType::IMAGE)
@@ -332,6 +406,13 @@ void CAssetLoader::AbortOwnerBeforeGeneration(int OwnerId, uint64_t Generation)
 	};
 	for(const auto &pJob : m_vpWaitingJobs)
 		AbortStaleJob(pJob);
+	{
+		const CLockScope LockScope(m_ReaderLock);
+		for(const auto &pJob : m_vpUnreadJobs)
+			AbortStaleJob(pJob);
+		for(const auto &pJob : m_vpReadJobs)
+			AbortStaleJob(pJob);
+	}
 	for(const auto &pJob : m_vpPendingJobs)
 		AbortStaleJob(pJob);
 	for(const auto &pJob : m_vpRunningJobs)
@@ -344,6 +425,30 @@ void CAssetLoader::Shutdown()
 	if(m_pEngine == nullptr || m_Shutdown)
 		return;
 	m_Shutdown = true;
+	// The reader first, so that afterwards this is the only thread that
+	// touches jobs. It is waiting on the semaphore unless it is in the middle
+	// of one file, and an aborted job reads nothing.
+	if(m_pReaderThread != nullptr)
+	{
+		{
+			const CLockScope LockScope(m_ReaderLock);
+			for(const auto &pJob : m_vpUnreadJobs)
+				pJob->Abort();
+		}
+		m_ReaderShutdown = true;
+		m_ReaderSemaphore.Signal();
+		thread_wait(m_pReaderThread);
+		m_pReaderThread = nullptr;
+	}
+	{
+		const CLockScope LockScope(m_ReaderLock);
+		for(const auto &pJob : m_vpUnreadJobs)
+			pJob->Abort();
+		for(const auto &pJob : m_vpReadJobs)
+			pJob->Abort();
+		m_vpUnreadJobs.clear();
+		m_vpReadJobs.clear();
+	}
 	for(const auto &pJob : m_vpWaitingJobs)
 		pJob->Abort();
 	for(const auto &pJob : m_vpPendingJobs)

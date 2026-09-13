@@ -4,10 +4,13 @@
 #define ENGINE_CLIENT_ASSET_LOADER_H
 
 #include <base/dbg.h>
+#include <base/lock.h>
+#include <base/sphore.h>
 
 #include <engine/image.h>
 #include <engine/shared/jobs.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -106,9 +109,10 @@ class CAssetJob : public IJob
 	uint64_t m_Generation;
 	uint64_t m_RequestId = 0;
 
-	// Reading a file is the same work whatever the bytes turn out to be, so it
-	// happens here for every asset and nowhere else. Only what is made of the
-	// bytes afterwards depends on the kind of asset, and that is Process.
+	// Where the bytes come from: a file, a request, or the caller's own hands.
+	// Fetching them is the same work whatever they turn out to be, so it is a
+	// stage of its own before the job pool - see the loader. Only what is made
+	// of them afterwards depends on the kind of asset, and that is Process.
 	IStorage *m_pStorage = nullptr;
 	int m_StorageType = 0;
 	std::vector<uint8_t> m_vData;
@@ -162,11 +166,23 @@ protected:
 
 public:
 	/**
-	 * Reads the file, if there is one, and then makes the asset out of the
-	 * bytes. The caller that has no job threads to hand the job to runs it
-	 * itself.
+	 * Makes the asset out of the bytes the job was given. The caller that has
+	 * no job threads to hand the job to runs it itself.
 	 */
 	void Run() final;
+
+	/**
+	 * Whether the bytes of this job still have to be read from a file.
+	 */
+	bool HasFileSource() const { return m_pStorage != nullptr; }
+
+	/**
+	 * Fetches the bytes of a job that reads a file, on whichever thread the
+	 * loader reads with. Never called by the job pool: how many files are read
+	 * at once is the loader's to decide and has nothing to do with how many
+	 * assets are being made at once.
+	 */
+	void ReadSource();
 
 	/**
 	 * Reads a whole file into memory. The one place in the asset pipeline that
@@ -237,7 +253,18 @@ public:
 };
 
 /**
- * Limits how many asset jobs are submitted to the engine job pool at once.
+ * Fetches the bytes of assets and hands them to the engine job pool.
+ *
+ * Fetching and making sense of what was fetched are two different kinds of
+ * work with two different right answers for how many at once, so they are two
+ * stages here. A file is read by one thread, one file after the next: a hard
+ * disk that is made to seek between two reads is slower than one that is not,
+ * and a solid state disk gains next to nothing from being asked twice over. A
+ * request is the opposite - `IHttp` runs it without a thread of ours, in the
+ * browser through the browser's own fetch, so any number can be in flight and
+ * the network is used for what it is. Bytes the caller already holds need no
+ * stage at all. Only what is made of the bytes afterwards goes to the job
+ * pool, and that is what `MaxConcurrentJobs` counts.
  *
  * The loader does not own committed resources and never calls asset owners.
  * Owners keep typed resource handles, poll completion and reject stale generations.
@@ -252,47 +279,66 @@ class CAssetLoader
 	std::deque<std::shared_ptr<CAssetJob>> m_vpPendingJobs;
 	std::vector<std::shared_ptr<CAssetJob>> m_vpRunningJobs;
 
-	uint64_t Submit(std::shared_ptr<CAssetJob> pJob);
+	// The one reader, started when the first file is asked for. It takes jobs
+	// off the front of the queue, reads them one at a time and puts them back
+	// for `Update` to pass on to the job pool. A thread of its own and not a
+	// job, because a job would be queued behind the very work it feeds.
+	CLock m_ReaderLock;
+	CSemaphore m_ReaderSemaphore;
+	std::deque<std::shared_ptr<CAssetJob>> m_vpUnreadJobs GUARDED_BY(m_ReaderLock);
+	std::vector<std::shared_ptr<CAssetJob>> m_vpReadJobs GUARDED_BY(m_ReaderLock);
+	void *m_pReaderThread = nullptr;
+	std::atomic<bool> m_ReaderShutdown{false};
+
+	static void ReaderThread(void *pUser);
+	void ReadLoop() NO_THREAD_SAFETY_ANALYSIS;
+	void Enqueue(std::shared_ptr<CAssetJob> pJob) REQUIRES(!m_ReaderLock);
+	void UpdateReadJobs() REQUIRES(!m_ReaderLock);
+
+	uint64_t Submit(std::shared_ptr<CAssetJob> pJob) REQUIRES(!m_ReaderLock);
 	uint64_t SubmitHttp(IHttp *pHttp, std::shared_ptr<CHttpAssetJob> pJob);
-	void UpdateWaitingJobs();
+	void UpdateWaitingJobs() REQUIRES(!m_ReaderLock);
 	void StartPendingJobs();
 
 public:
+	~CAssetLoader() NO_THREAD_SAFETY_ANALYSIS { Shutdown(); }
+
 	void Init(IEngine *pEngine, size_t MaxConcurrentJobs);
 	template<typename TJob>
-	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob);
+	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob) REQUIRES(!m_ReaderLock);
 	/**
 	 * Downloads and prepares an asset. The request is run immediately, the job
 	 * is only submitted to the job pool when the request finished.
 	 */
 	template<typename TJob>
-	CTypedAssetResource<TJob> LoadHttp(IHttp *pHttp, std::shared_ptr<TJob> pJob);
-	CImageResource LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {});
-	CImageResource LoadImageData(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {});
+	CTypedAssetResource<TJob> LoadHttp(IHttp *pHttp, std::shared_ptr<TJob> pJob) REQUIRES(!m_ReaderLock);
+	CImageResource LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {}) REQUIRES(!m_ReaderLock);
+	CImageResource LoadImageData(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {}) REQUIRES(!m_ReaderLock);
 	/**
 	 * Loads an image from the raw data of a datafile item, which contains the
 	 * uncompressed pixels of the image instead of an encoded image file. The
 	 * data is uncompressed on the job thread.
 	 */
-	CImageResource LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {});
+	CImageResource LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {}) REQUIRES(!m_ReaderLock);
 	/**
 	 * Loads an image that is downloaded with the given request, either from
 	 * the response or from the file that the request downloads to.
 	 *
 	 * @see LoadHttp
 	 */
-	CImageResource LoadImageHttp(IHttp *pHttp, std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {});
+	CImageResource LoadImageHttp(IHttp *pHttp, std::shared_ptr<IHttpRequest> pRequest, CHttpAssetDestination Destination, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess = {}) REQUIRES(!m_ReaderLock);
 	/**
 	 * Reads a text file - a description, a piece of configuration, a piece of
 	 * JSON - off the main thread. What the text means stays with the caller,
 	 * which is the only place that knows it.
 	 */
-	CTypedAssetResource<CTextAssetJob> LoadTextFile(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation);
-	void Update();
-	void AbortOwnerBeforeGeneration(int OwnerId, uint64_t Generation);
-	void Shutdown();
+	CTypedAssetResource<CTextAssetJob> LoadTextFile(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation) REQUIRES(!m_ReaderLock);
+	void Update() REQUIRES(!m_ReaderLock);
+	void AbortOwnerBeforeGeneration(int OwnerId, uint64_t Generation) REQUIRES(!m_ReaderLock);
+	void Shutdown() REQUIRES(!m_ReaderLock);
 
-	bool Idle() const { return m_vpWaitingJobs.empty() && m_vpPendingJobs.empty() && m_vpRunningJobs.empty(); }
+	bool Idle() const REQUIRES(!m_ReaderLock) { return m_vpWaitingJobs.empty() && m_vpPendingJobs.empty() && m_vpRunningJobs.empty() && ReadingCount() == 0; }
+	size_t ReadingCount() const REQUIRES(!m_ReaderLock);
 	size_t WaitingCount() const { return m_vpWaitingJobs.size(); }
 	size_t PendingCount() const { return m_vpPendingJobs.size(); }
 	size_t RunningCount() const { return m_vpRunningJobs.size(); }

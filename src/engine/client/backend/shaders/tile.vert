@@ -8,7 +8,7 @@ TW_PUSH(0, mat4x2 gPos)
 TW_PUSH_END
 
 #ifdef TW_TILE_TEXTURED
-TW_LOC(0) noperspective out vec3 TexCoord;
+TW_LOC(0) noperspective centroid out vec3 TexCoord;
 #endif
 
 void main()

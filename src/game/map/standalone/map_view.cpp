@@ -62,6 +62,7 @@ bool CStandaloneMapView::Init(int NumArgs, const char **ppArguments)
 
 	m_pEngine = new MapViewSupport::CMinimalEngine();
 	m_pEngine->m_JobPool.Init(MapViewSupport::JOB_THREADS);
+	m_AssetLoader.Init(m_pEngine, MapViewSupport::JOB_THREADS);
 	m_pKernel->RegisterInterface(m_pEngine);
 	m_pKernel->RegisterInterface(m_pStorage.get(), false);
 	return true;
@@ -134,9 +135,9 @@ bool CStandaloneMapView::LoadMap(const char *pPath, int StorageType)
 
 	m_pMap = std::move(pMap);
 	m_Layers.Init(m_pMap.get(), false, true);
-	m_pMapImages = std::make_unique<MapViewSupport::CToolMapImages>(m_pGraphics, m_pMap.get(), m_pLogContext);
+	m_pMapImages = std::make_unique<MapViewSupport::CToolMapImages>(m_pGraphics, m_pStorage.get(), &m_AssetLoader, m_pMap.get(), &m_Layers, m_pLogContext);
 	m_pEnvelopeEval = std::make_unique<MapViewSupport::CMapRenderEnvelopeEval>(m_pMap.get(), 0);
-	m_MapRenderer.Load(RENDERTYPE_FULL_DESIGN, &m_Layers, m_pMapImages.get(), m_pEnvelopeEval.get(), std::nullopt);
+	m_MapRenderer.Load(RENDERTYPE_FULL_DESIGN, &m_Layers, m_pMapImages.get(), m_pEnvelopeEval.get(), std::nullopt, m_pEngine);
 	return true;
 }
 
@@ -187,12 +188,18 @@ void CStandaloneMapView::Render(const SRenderParams &Params)
 
 	m_pEnvelopeEval->SetTimeOffset(Params.m_TimeOffsetMillis);
 
+	// Before anything is drawn, because this is where a picture out of
+	// `data/` may still have to be fetched.
+	if(Params.m_EntityOverlayVal > 0)
+		m_pMapImages->EnsureEntities();
+
 	CRenderLayerParams RenderParams;
 	RenderParams.m_RenderType = RENDERTYPE_FULL_DESIGN;
-	RenderParams.m_EntityOverlayVal = 0;
+	RenderParams.m_EntityOverlayVal = Params.m_EntityOverlayVal;
 	RenderParams.m_Center = Params.m_Center;
 	RenderParams.m_Zoom = Params.m_Zoom;
 	RenderParams.m_RenderText = false;
+	RenderParams.m_HighDetail = Params.m_HighDetail;
 	RenderParams.m_RenderInvalidTiles = false;
 	RenderParams.m_RenderTileBorder = true;
 	RenderParams.m_DebugRenderGroupClips = false;
@@ -404,6 +411,8 @@ void CStandaloneMapView::Shutdown()
 	}
 	if(m_pEngine != nullptr)
 	{
+		// Before the pool, because it is the pool that runs what it holds.
+		m_AssetLoader.Shutdown();
 		m_pEngine->ShutdownJobs();
 		m_pEngine = nullptr;
 	}

@@ -109,6 +109,7 @@ protected:
 	// coordinates, and one colour.
 	void SetDrawTransform(const vec2 &Offset, const vec2 &Scale, const vec2 &RotationCenter, float Rotation);
 	void SetTextureTransform(const CCommandBuffer::SState &State, const vec2 &TexScale, bool LayerCoordinates);
+	void SetLayeredWrap(const CCommandBuffer::SState &State, bool Repeat);
 	void ResetTransforms();
 	void DrawPrimitives(EPrimitiveType PrimitiveType, uint32_t VertexCount, IGraphics::CBufferHandle IndexBuffer);
 

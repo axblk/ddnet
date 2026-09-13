@@ -92,6 +92,14 @@ void CTileChunkCache::InvalidateArea(int x, int y, int w, int h)
 			m_vChunks[ChunkY * m_Columns + ChunkX].m_Dirty = true;
 }
 
+void CTileChunkCache::ReleaseRowOffsets(CChunk &Chunk)
+{
+	// A vector only ever grows, and clear() keeps what it holds, so this is
+	// the swap idiom rather than two calls to clear().
+	std::vector<uint16_t>().swap(Chunk.m_vOpaqueRowOffsets);
+	std::vector<uint16_t>().swap(Chunk.m_vTransparentRowOffsets);
+}
+
 bool CTileChunkCache::Rebuild(const CLayerSource &Source, int ChunkX, int ChunkY)
 {
 	CChunk &Chunk = m_vChunks[ChunkY * m_Columns + ChunkX];
@@ -104,9 +112,6 @@ bool CTileChunkCache::Rebuild(const CLayerSource &Source, int ChunkX, int ChunkY
 	Chunk.m_Width = X1 - X0;
 	Chunk.m_Height = Y1 - Y0;
 	const size_t Capacity = (size_t)Chunk.m_Width * Chunk.m_Height;
-	vTiles.reserve(Capacity);
-	if(Source.m_Textured)
-		vTextureCoords.reserve(Capacity);
 
 	// The chunk is walked twice, once for each pass, but the layer is read only
 	// once: m_ReadTile is a std::function that reaches into whichever layer type
@@ -118,6 +123,10 @@ bool CTileChunkCache::Rebuild(const CLayerSource &Source, int ChunkX, int ChunkY
 		int m_AngleRotate;
 	};
 	std::vector<STile> vReadTiles(Capacity);
+	// AddTileToBuffer emits one quad per tile that is not air, so counting
+	// them here gives the exact size of both buffers instead of a guess at
+	// the chunk's capacity - and zero says the chunk draws nothing at all.
+	size_t Drawn = 0;
 	for(int y = Y0; y < Y1; ++y)
 	{
 		for(int x = X0; x < X1; ++x)
@@ -125,36 +134,57 @@ bool CTileChunkCache::Rebuild(const CLayerSource &Source, int ChunkX, int ChunkY
 			STile &Tile = vReadTiles[(size_t)(y - Y0) * Chunk.m_Width + x - X0];
 			Tile = {0, 0, -1};
 			Source.m_ReadTile(x, y, &Tile.m_Index, &Tile.m_Flags, &Tile.m_AngleRotate);
+			if(Tile.m_Index != 0)
+				++Drawn;
 		}
 	}
+
+	dbg_assert(ms_CachedBytes >= Chunk.m_Bytes, "tile chunk cache memory accounting underflow");
+	ms_CachedBytes -= Chunk.m_Bytes;
+	Chunk.m_Bytes = 0;
+	Chunk.m_OpaqueTiles = 0;
+	Chunk.m_TransparentTiles = 0;
+	if(Drawn == 0)
+	{
+		// Nothing but air. Such a chunk needs no buffer and no row table, and
+		// on a large map most of them are this: of the 44836 chunks of Abyss,
+		// 36469 draw nothing at all.
+		ReleaseRowOffsets(Chunk);
+		(void)DeleteTileBuffer(m_pGraphics, Chunk.m_BufferObject);
+		Chunk.m_SourceDigest = SourceDigest(Source, ChunkX, ChunkY);
+		Chunk.m_Dirty = false;
+		return true;
+	}
+
+	vTiles.reserve(Drawn);
+	if(Source.m_Textured)
+		vTextureCoords.reserve(Drawn);
 
 	// Opaque tiles first, transparent ones after, so that either pass is one
 	// contiguous range of the same buffer.
 	for(int Pass = 0; Pass < 2; ++Pass)
 	{
 		const bool Opaque = Pass == 0;
-		std::vector<uint16_t> &vOffsets = Opaque ? Chunk.m_vOpaqueTileOffsets : Chunk.m_vTransparentTileOffsets;
-		vOffsets.resize(Capacity + 1);
+		std::vector<uint16_t> &vOffsets = Opaque ? Chunk.m_vOpaqueRowOffsets : Chunk.m_vTransparentRowOffsets;
+		vOffsets.resize((size_t)Chunk.m_Height + 1);
 		const unsigned int FirstTile = vTiles.size();
 		for(int y = Y0; y < Y1; ++y)
 		{
+			vOffsets[y - Y0] = (uint16_t)(vTiles.size() - FirstTile);
 			for(int x = X0; x < X1; ++x)
 			{
-				const size_t LocalIndex = (size_t)(y - Y0) * Chunk.m_Width + x - X0;
-				vOffsets[LocalIndex] = (uint16_t)(vTiles.size() - FirstTile);
-				const STile &Tile = vReadTiles[LocalIndex];
+				const STile &Tile = vReadTiles[(size_t)(y - Y0) * Chunk.m_Width + x - X0];
+				if(Tile.m_Index == 0)
+					continue;
 				if(((Tile.m_Flags & TILEFLAG_OPAQUE) != 0) == Opaque)
 					AddTileToBuffer(vTiles, vTextureCoords, Tile.m_Index, Tile.m_Flags, x, y, Source.m_Textured, Source.m_FillSpeedup, Tile.m_AngleRotate);
 			}
 		}
-		vOffsets[Capacity] = (uint16_t)(vTiles.size() - FirstTile);
+		vOffsets[Chunk.m_Height] = (uint16_t)(vTiles.size() - FirstTile);
 		if(Opaque)
 			Chunk.m_OpaqueTiles = vTiles.size();
 	}
 	Chunk.m_TransparentTiles = vTiles.size() - Chunk.m_OpaqueTiles;
-	dbg_assert(ms_CachedBytes >= Chunk.m_Bytes, "tile chunk cache memory accounting underflow");
-	ms_CachedBytes -= Chunk.m_Bytes;
-	Chunk.m_Bytes = 0;
 	if(!UploadTileBuffer(m_pGraphics, vTiles, vTextureCoords, Chunk.m_BufferObject))
 	{
 		// The chunk stays dirty and is retried every frame, so this is said once
@@ -179,6 +209,12 @@ void CTileChunkCache::ReleaseChunk(CChunk &Chunk)
 	ms_CachedBytes -= Chunk.m_Bytes;
 	Chunk.m_Bytes = 0;
 	Chunk.m_LastUsedTick = 0;
+	Chunk.m_OpaqueTiles = 0;
+	Chunk.m_TransparentTiles = 0;
+	// The row tables belong to the buffer they index into, so they go with it.
+	// Keeping them would leave the largest part of an evicted chunk behind,
+	// and it is the part the budget does not even count.
+	ReleaseRowOffsets(Chunk);
 	// A buffer the backend refuses to give up stays allocated until it shuts
 	// down. The chunk is rebuilt into a new one either way, so the handle has
 	// to go regardless of what the destroy answered.
@@ -302,24 +338,23 @@ void CTileChunkCache::Render(const CLayerSource &Source, const ColorRGBA &Color,
 			// Marked before the ranges are worked out: a chunk that is on
 			// screen was wanted, whether or not this pass draws anything of it.
 			Chunk.m_LastUsedTick = CurrentTick;
-			if(!Chunk.m_BufferObject.IsValid())
+			// A chunk of nothing but air has neither a buffer nor a row
+			// table, one whose upload failed has no buffer. Both are asked
+			// because a backend that refuses to destroy a buffer leaves the
+			// handle valid.
+			if(!Chunk.m_BufferObject.IsValid() || Chunk.m_vOpaqueRowOffsets.empty())
 				continue;
 
-			const int ChunkTileX = ChunkX * CHUNK_SIZE;
 			const int ChunkTileY = ChunkY * CHUNK_SIZE;
-			const int LocalX0 = std::max(X0 - ChunkTileX, 0);
 			const int LocalY0 = std::max(Y0 - ChunkTileY, 0);
-			const int LocalX1 = std::min(X1 - ChunkTileX, Chunk.m_Width);
 			const int LocalY1 = std::min(Y1 - ChunkTileY, Chunk.m_Height);
-			const size_t FirstLocalTile = (size_t)LocalY0 * Chunk.m_Width + LocalX0;
-			const size_t LastLocalTile = (size_t)(LocalY1 - 1) * Chunk.m_Width + LocalX1;
 
 			uint32_t aFirstIndices[2];
 			uint32_t aIndexCounts[2];
 			size_t RangeCount = 0;
 			const auto AddRange = [&](const std::vector<uint16_t> &vOffsets, unsigned int BaseTile) {
-				const unsigned int StartTile = BaseTile + vOffsets[FirstLocalTile];
-				const unsigned int TileCount = vOffsets[LastLocalTile] - vOffsets[FirstLocalTile];
+				const unsigned int StartTile = BaseTile + vOffsets[LocalY0];
+				const unsigned int TileCount = vOffsets[LocalY1] - vOffsets[LocalY0];
 				if(TileCount == 0)
 					return;
 				aFirstIndices[RangeCount] = StartTile * 6;
@@ -327,9 +362,9 @@ void CTileChunkCache::Render(const CLayerSource &Source, const ColorRGBA &Color,
 				++RangeCount;
 			};
 			if(AllTransparent || !TransparentPass)
-				AddRange(Chunk.m_vOpaqueTileOffsets, 0);
+				AddRange(Chunk.m_vOpaqueRowOffsets, 0);
 			if(AllTransparent || TransparentPass)
-				AddRange(Chunk.m_vTransparentTileOffsets, Chunk.m_OpaqueTiles);
+				AddRange(Chunk.m_vTransparentRowOffsets, Chunk.m_OpaqueTiles);
 			if(RangeCount == 0)
 				continue;
 			m_pGraphics->RenderTileLayer(Chunk.m_BufferObject, Layout, Color, aFirstIndices, aIndexCounts, RangeCount);

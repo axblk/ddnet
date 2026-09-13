@@ -98,10 +98,11 @@ const char *CGameClient::GetItemName(int Type) const { return m_NetObjHandler.Ge
 void CGameClient::OnConsoleInit()
 {
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
-	// At least as many as there are worker threads, so that none of them sits
-	// idle waiting for the main thread to hand out the next job, and a little
-	// more because a job alternates between reading a file and decoding it.
-	const size_t MaxConcurrentAssetJobs = std::clamp(m_pEngine->JobThreadCount() * 2, size_t{4}, size_t{16});
+	// As many as there are worker threads, so that none of them sits idle
+	// waiting for the main thread to hand out the next job. No more than that:
+	// a job now only makes an asset out of bytes that are already there, which
+	// is work for a core and never waits for anything.
+	const size_t MaxConcurrentAssetJobs = std::clamp(m_pEngine->JobThreadCount(), size_t{2}, size_t{16});
 	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs);
 	m_pClient = Kernel()->RequestInterface<IClient>();
 	m_pTextRender = Kernel()->RequestInterface<ITextRender>();

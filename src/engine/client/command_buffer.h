@@ -101,7 +101,6 @@ enum class EPipelineProgram : uint8_t
 	QUAD_PER_ITEM,
 	QUAD_SHARED,
 	ARRAY_COLOR,
-	ARRAY_COLOR_TRANSFORM,
 	DUAL_ATLAS_COMPOSITE,
 	BLUR,
 	PLANAR_YUV,
@@ -136,7 +135,6 @@ inline const SPipelineProgramDesc &PipelineProgramDesc(EPipelineProgram Program)
 		{EL::QUAD, EL::QUAD_TEXTURED, true, false, false}, // QUAD_PER_ITEM
 		{EL::QUAD, EL::QUAD_TEXTURED, true, false, false}, // QUAD_SHARED
 		{EL::TILE, EL::TILE_TEXTURED, true, false, true}, // ARRAY_COLOR
-		{EL::TILE, EL::TILE_TEXTURED, true, false, true}, // ARRAY_COLOR_TRANSFORM
 		{EL::POSITION_TEXCOORD_COLOR, EL::POSITION_TEXCOORD_COLOR, true, true, false}, // DUAL_ATLAS_COMPOSITE
 		{EL::POSITION_TEXCOORD_COLOR, EL::POSITION_TEXCOORD_COLOR, false, true, false}, // BLUR
 		{EL::POSITION_TEXCOORD_COLOR, EL::POSITION_TEXCOORD_COLOR, false, true, false}, // PLANAR_YUV
@@ -516,19 +514,16 @@ public:
 	};
 	static_assert(sizeof(SDrawDataQuadTransform) == sizeof(float) * 8);
 
+	// A tile layer is drawn where it lies, a border tile is one quad stretched
+	// over the area it repeats across. That is the same draw with an offset of
+	// zero and a scale of one, which is why there is one program for both.
 	struct SDrawDataArrayColor
-	{
-		ColorRGBA m_Color;
-	};
-	static_assert(sizeof(SDrawDataArrayColor) <= MAX_DRAW_DATA_SIZE);
-
-	struct SDrawDataArrayColorTransform
 	{
 		ColorRGBA m_Color;
 		vec2 m_Offset;
 		vec2 m_Scale;
 	};
-	static_assert(sizeof(SDrawDataArrayColorTransform) <= MAX_DRAW_DATA_SIZE);
+	static_assert(sizeof(SDrawDataArrayColor) <= MAX_DRAW_DATA_SIZE);
 
 	struct SDrawDataDualAtlas
 	{

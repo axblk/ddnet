@@ -554,8 +554,10 @@ public:
 		COUNT,
 	};
 
-	virtual void RenderTileLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, const uint32_t *pFirstIndices, const uint32_t *pIndexCounts, size_t RangeCount) = 0;
-	virtual void RenderBorderTiles(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, uint32_t FirstIndex, const vec2 &Offset, const vec2 &Scale, uint32_t DrawNum) = 0;
+	// Draws index ranges of a tile layer's quads. Offset and Scale place them:
+	// a stretched quad repeats its tile across the area, which is how the
+	// layer's border and the kill border are drawn.
+	virtual void RenderTileLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, const uint32_t *pFirstIndices, const uint32_t *pIndexCounts, size_t RangeCount, const vec2 &Offset = vec2(0.0f, 0.0f), const vec2 &Scale = vec2(1.0f, 1.0f)) = 0;
 	virtual void RenderQuadLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, SQuadRenderInfo *pQuadInfo, size_t QuadNum, int QuadOffset, bool Grouped = false) = 0;
 	virtual void RenderText(CBufferHandle VertexBuffer, int TextQuadNum, int TextureSize, CTextureHandle Texture, const ColorRGBA &TextColor, const ColorRGBA &TextOutlineColor) = 0;
 

@@ -106,6 +106,9 @@ static uint64_t AlignUp(uint64_t Value, uint64_t Alignment)
 	return (Value + Alignment - 1) / Alignment * Alignment;
 }
 
+// The next mip level of all layers, each texel sampled between the four of
+// the level above it that it covers - the filter the mipmap compute shader
+// applies.
 static std::vector<uint8_t> DownsampleMip(const uint8_t *pSource, uint32_t Width, uint32_t Height, uint32_t Layers, size_t PixelSize)
 {
 	const uint32_t NewWidth = std::max(Width / 2, 1u);
@@ -296,6 +299,11 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 #endif
 	bool m_ScreenTouched = false;
 	WGPUCommandEncoder m_CommandEncoder = nullptr;
+	// Where the mipmap passes of every texture made since the last submit are
+	// recorded. They cannot go into the frame encoder, which usually has a
+	// render pass open, and one submit per texture makes the queue wait for
+	// the last one before it takes the next write.
+	WGPUCommandEncoder m_MipmapEncoder = nullptr;
 	WGPURenderPassEncoder m_RenderPass = nullptr;
 	// A run of glyphs, a tile layer, a column of server browser rows: most
 	// consecutive draws keep the pipeline, the texture and the clip
@@ -339,6 +347,21 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	WGPUPipelineLayout m_QuadTexturedPipelineLayout = nullptr;
 	WGPUPipelineLayout m_QuadUntexturedPipelineLayout = nullptr;
 	std::array<SPipelineSet, 2> m_aPipelineSets{};
+	// Every other backend has the graphics card make its mipmaps - Vulkan
+	// blits, OpenGL calls glGenerateMipmap. WebGPU has nothing of the kind, so
+	// each level is drawn from the one above it instead, which is what those
+	// two do underneath. One pipeline per texture format, made when a format
+	// first needs one, because nothing but the render target differs.
+	WGPUShaderModule m_MipmapShader = nullptr;
+	WGPUShaderModule m_MipmapComputeShader = nullptr;
+	WGPUBindGroupLayout m_MipmapComputeBindGroupLayout = nullptr;
+	WGPUPipelineLayout m_MipmapComputePipelineLayout = nullptr;
+	WGPUComputePipeline m_MipmapComputePipeline = nullptr;
+	// wgpu on OpenGL does not show later sampling what a compute shader
+	// stored, so there the mip levels are made on the CPU.
+	bool m_GpuMipmaps = true;
+	WGPUPipelineLayout m_MipmapPipelineLayout = nullptr;
+	std::array<WGPURenderPipeline, 3> m_aMipmapPipelines{};
 	// Wrap modes, matching the Vulkan backend. Array textures hold one tile
 	// per layer, so their layer axis repeats while the tile itself must not
 	// bleed into its neighbour.
@@ -479,6 +502,13 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	void ReleasePipeline(WGPURenderPipeline &Pipeline);
 
 	bool CreateTextureBindGroups(WGPUTextureView View, WGPUBindGroupLayout Layout, uint32_t TextureBinding, std::array<WGPUBindGroup, 2> &aBindGroups, bool TextureArray);
+	WGPURenderPipeline MipmapPipeline(IGraphics::ETextureFormat Format);
+	bool GenerateMipmaps(WGPUTexture Texture, IGraphics::ETextureFormat Format, uint32_t Width, uint32_t Height, uint32_t Layers, uint32_t MipCount);
+	WGPUComputePipeline MipmapComputePipeline();
+	bool GenerateMipmapsCompute(WGPUTexture Texture, uint32_t Width, uint32_t Height, uint32_t Layers, uint32_t MipCount);
+	bool EnsureMipmapEncoder();
+	WGPUCommandBuffer FinishMipmaps();
+	bool SubmitMipmaps();
 
 	// The vertex input a pipeline is built for comes from IGraphics::VertexLayout,
 	// the same table CGraphics_Threaded tags every draw with, so a pipeline and
@@ -968,7 +998,7 @@ bool CCommandProcessorFragment_WebGpu::SubmitCommands(bool EndsFrame, bool Publi
 	if(GpuTimestampSlot >= 0 && m_CommandEncoder == nullptr && !EnsureCommandEncoder())
 		return false;
 	if(m_CommandEncoder == nullptr)
-		return true;
+		return SubmitMipmaps();
 	if(GpuTimestampSlot >= 0)
 	{
 		const uint32_t FirstQuery = static_cast<uint32_t>(GpuTimestampSlot * 2);
@@ -990,7 +1020,17 @@ bool CCommandProcessorFragment_WebGpu::SubmitCommands(bool EndsFrame, bool Publi
 		wgpuQueueWriteBuffer(m_Queue, m_StreamBuffer, m_UploadBufferSlot * STREAM_BUFFER_SIZE, m_vStreamUpload.data(), m_StreamOffset);
 	if(m_UniformOffset != 0)
 		wgpuQueueWriteBuffer(m_Queue, m_UniformBuffer, m_UploadBufferSlot * UNIFORM_BUFFER_SIZE, m_vUniformUpload.data(), m_UniformOffset);
-	wgpuQueueSubmit(m_Queue, 1, &CommandBuffer);
+	// The mipmaps first: the frame may draw with them, and nothing it holds
+	// touched those levels before they were made.
+	WGPUCommandBuffer MipmapBuffer = FinishMipmaps();
+	if(MipmapBuffer != nullptr)
+	{
+		const std::array<WGPUCommandBuffer, 2> aCommandBuffers{MipmapBuffer, CommandBuffer};
+		wgpuQueueSubmit(m_Queue, aCommandBuffers.size(), aCommandBuffers.data());
+		wgpuCommandBufferRelease(MipmapBuffer);
+	}
+	else
+		wgpuQueueSubmit(m_Queue, 1, &CommandBuffer);
 	wgpuCommandBufferRelease(CommandBuffer);
 	if(UsesUploadBuffers && !AdvanceUploadBufferSlot())
 		return false;
@@ -1148,6 +1188,7 @@ bool CCommandProcessorFragment_WebGpu::Initialize(const SCommand_Init *pCommand)
 		str_copy(pCommand->m_pVersionString, WEBGPU_IMPLEMENTATION_VERSION, 256);
 		str_copy(pCommand->m_pRendererString, Description.empty() ? BackendName(AdapterInfo.backendType) : Description.c_str(), 256);
 		log_info("gfx/webgpu", "adapter=%s backend=%s", Description.c_str(), BackendName(AdapterInfo.backendType));
+		m_GpuMipmaps = AdapterInfo.backendType != WGPUBackendType_OpenGL && AdapterInfo.backendType != WGPUBackendType_OpenGLES;
 		wgpuAdapterInfoFreeMembers(AdapterInfo);
 	}
 
@@ -1791,6 +1832,9 @@ void CCommandProcessorFragment_WebGpu::DiscardFrame()
 		wgpuCommandEncoderRelease(m_CommandEncoder);
 		m_CommandEncoder = nullptr;
 	}
+	// The textures they belong to are made regardless of whether this frame
+	// comes to anything, so the passes that fill their levels go out anyway.
+	SubmitMipmaps();
 	m_StreamOffset = 0;
 	m_UniformOffset = 0;
 	if(m_GpuTimestampActiveSlot >= 0)
@@ -2216,6 +2260,345 @@ bool CCommandProcessorFragment_WebGpu::CreateTextureBindGroups(WGPUTextureView V
 	return true;
 }
 
+WGPURenderPipeline CCommandProcessorFragment_WebGpu::MipmapPipeline(IGraphics::ETextureFormat Format)
+{
+	WGPURenderPipeline &Pipeline = m_aMipmapPipelines[static_cast<size_t>(Format)];
+	if(Pipeline != nullptr)
+		return Pipeline;
+	if(m_MipmapShader == nullptr)
+	{
+		static const char s_aShader[] = R"(
+@group(0) @binding(0) var source_sampler: sampler;
+@group(0) @binding(1) var source_texture: texture_2d<f32>;
+
+struct MipmapVertexOutput {
+	@builtin(position) position: vec4f,
+	@location(0) uv: vec2f,
+};
+
+@vertex fn vs_mipmap(@builtin(vertex_index) index: u32) -> MipmapVertexOutput {
+	// One triangle large enough to cover the whole level, with the texture
+	// coordinates running from zero to one across the part of it that is on
+	// screen. Three vertices and no vertex buffer at all.
+	var output: MipmapVertexOutput;
+	output.uv = vec2f(f32((index << 1u) & 2u), f32(index & 2u));
+	output.position = vec4f(output.uv * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0), 0.0, 1.0);
+	return output;
+}
+
+@fragment fn fs_mipmap(input: MipmapVertexOutput) -> @location(0) vec4f {
+	// The level being drawn is half the size of the one being read, so every
+	// sample lands exactly between four of its texels and the linear sampler
+	// returns their mean - the same filter the other backends use.
+	return textureSample(source_texture, source_sampler, input.uv);
+}
+)";
+		WGPUShaderSourceWGSL ShaderSource{};
+		ShaderSource.chain.sType = WGPUSType_ShaderSourceWGSL;
+		ShaderSource.code = StringView(s_aShader);
+		WGPUShaderModuleDescriptor ShaderDescriptor = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
+		ShaderDescriptor.nextInChain = &ShaderSource.chain;
+		ShaderDescriptor.label = StringView("DDNet WebGPU mipmap shader");
+		m_MipmapShader = wgpuDeviceCreateShaderModule(m_Device, &ShaderDescriptor);
+		// The source of a level is bound exactly as a sampled texture is bound
+		// to a draw, so it can be the same layout, only as the first group.
+		WGPUPipelineLayoutDescriptor PipelineLayoutDescriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+		PipelineLayoutDescriptor.label = StringView("DDNet WebGPU mipmap layout");
+		PipelineLayoutDescriptor.bindGroupLayoutCount = 1;
+		PipelineLayoutDescriptor.bindGroupLayouts = &m_TextureBindGroupLayout;
+		m_MipmapPipelineLayout = wgpuDeviceCreatePipelineLayout(m_Device, &PipelineLayoutDescriptor);
+		if(m_MipmapShader == nullptr || m_MipmapPipelineLayout == nullptr)
+			return nullptr;
+	}
+	WGPUColorTargetState ColorTarget = WGPU_COLOR_TARGET_STATE_INIT;
+	ColorTarget.format = ToWGPUFormat(Format);
+	ColorTarget.writeMask = WGPUColorWriteMask_All;
+	WGPUFragmentState Fragment = WGPU_FRAGMENT_STATE_INIT;
+	Fragment.module = m_MipmapShader;
+	Fragment.entryPoint = StringView("fs_mipmap");
+	Fragment.targetCount = 1;
+	Fragment.targets = &ColorTarget;
+	WGPURenderPipelineDescriptor Descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+	Descriptor.label = StringView("DDNet WebGPU mipmap");
+	Descriptor.layout = m_MipmapPipelineLayout;
+	Descriptor.vertex.module = m_MipmapShader;
+	Descriptor.vertex.entryPoint = StringView("vs_mipmap");
+	Descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+	Descriptor.primitive.frontFace = WGPUFrontFace_CCW;
+	Descriptor.primitive.cullMode = WGPUCullMode_None;
+	Descriptor.multisample.count = 1;
+	Descriptor.multisample.mask = UINT32_MAX;
+	Descriptor.fragment = &Fragment;
+	Pipeline = wgpuDeviceCreateRenderPipeline(m_Device, &Descriptor);
+	return Pipeline;
+}
+
+bool CCommandProcessorFragment_WebGpu::EnsureMipmapEncoder()
+{
+	if(m_MipmapEncoder != nullptr)
+		return true;
+	WGPUCommandEncoderDescriptor EncoderDescriptor = WGPU_COMMAND_ENCODER_DESCRIPTOR_INIT;
+	EncoderDescriptor.label = StringView("DDNet WebGPU mipmap encoder");
+	m_MipmapEncoder = wgpuDeviceCreateCommandEncoder(m_Device, &EncoderDescriptor);
+	if(m_MipmapEncoder == nullptr)
+	{
+		SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU could not create a command encoder");
+		return false;
+	}
+	return true;
+}
+
+WGPUCommandBuffer CCommandProcessorFragment_WebGpu::FinishMipmaps()
+{
+	if(m_MipmapEncoder == nullptr)
+		return nullptr;
+	WGPUCommandBuffer CommandBuffer = wgpuCommandEncoderFinish(m_MipmapEncoder, nullptr);
+	wgpuCommandEncoderRelease(m_MipmapEncoder);
+	m_MipmapEncoder = nullptr;
+	return CommandBuffer;
+}
+
+bool CCommandProcessorFragment_WebGpu::SubmitMipmaps()
+{
+	if(m_MipmapEncoder == nullptr)
+		return true;
+	WGPUCommandBuffer CommandBuffer = FinishMipmaps();
+	if(CommandBuffer == nullptr)
+	{
+		SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to finish the mipmap command buffer");
+		return false;
+	}
+	wgpuQueueSubmit(m_Queue, 1, &CommandBuffer);
+	wgpuCommandBufferRelease(CommandBuffer);
+	return true;
+}
+
+WGPUComputePipeline CCommandProcessorFragment_WebGpu::MipmapComputePipeline()
+{
+	if(m_MipmapComputePipeline != nullptr)
+		return m_MipmapComputePipeline;
+	static const char s_aShader[] = R"(
+@group(0) @binding(0) var source_sampler: sampler;
+@group(0) @binding(1) var source_texture: texture_2d_array<f32>;
+@group(0) @binding(2) var target_texture: texture_storage_2d_array<rgba8unorm, write>;
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_mipmap(@builtin(global_invocation_id) id: vec3u) {
+	let size = textureDimensions(target_texture);
+	if(id.x >= size.x || id.y >= size.y) {
+		return;
+	}
+	// The middle of the texel being written, in the coordinates of the level
+	// being read: half the size, so the sample lands between four texels and
+	// the linear sampler returns their mean. One invocation per texel of one
+	// layer, and every layer in the same dispatch - a tileset cut into sixteen
+	// takes one of these per level instead of sixteen render passes.
+	let uv = (vec2f(id.xy) + vec2f(0.5)) / vec2f(size);
+	let color = textureSampleLevel(source_texture, source_sampler, uv, id.z, 0.0);
+	textureStore(target_texture, id.xy, id.z, color);
+}
+)";
+	WGPUShaderSourceWGSL ShaderSource{};
+	ShaderSource.chain.sType = WGPUSType_ShaderSourceWGSL;
+	ShaderSource.code = StringView(s_aShader);
+	WGPUShaderModuleDescriptor ShaderDescriptor = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
+	ShaderDescriptor.nextInChain = &ShaderSource.chain;
+	ShaderDescriptor.label = StringView("DDNet WebGPU mipmap compute shader");
+	m_MipmapComputeShader = wgpuDeviceCreateShaderModule(m_Device, &ShaderDescriptor);
+	std::array<WGPUBindGroupLayoutEntry, 3> aEntries{};
+	for(auto &Entry : aEntries)
+		Entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+	aEntries[0].binding = 0;
+	aEntries[0].visibility = WGPUShaderStage_Compute;
+	aEntries[0].sampler.type = WGPUSamplerBindingType_Filtering;
+	aEntries[1].binding = 1;
+	aEntries[1].visibility = WGPUShaderStage_Compute;
+	aEntries[1].texture.sampleType = WGPUTextureSampleType_Float;
+	aEntries[1].texture.viewDimension = WGPUTextureViewDimension_2DArray;
+	aEntries[2].binding = 2;
+	aEntries[2].visibility = WGPUShaderStage_Compute;
+	aEntries[2].storageTexture.access = WGPUStorageTextureAccess_WriteOnly;
+	aEntries[2].storageTexture.format = WGPUTextureFormat_RGBA8Unorm;
+	aEntries[2].storageTexture.viewDimension = WGPUTextureViewDimension_2DArray;
+	WGPUBindGroupLayoutDescriptor BindGroupLayoutDescriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+	BindGroupLayoutDescriptor.label = StringView("DDNet WebGPU mipmap compute bindings");
+	BindGroupLayoutDescriptor.entryCount = aEntries.size();
+	BindGroupLayoutDescriptor.entries = aEntries.data();
+	m_MipmapComputeBindGroupLayout = wgpuDeviceCreateBindGroupLayout(m_Device, &BindGroupLayoutDescriptor);
+	WGPUPipelineLayoutDescriptor PipelineLayoutDescriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+	PipelineLayoutDescriptor.label = StringView("DDNet WebGPU mipmap compute layout");
+	PipelineLayoutDescriptor.bindGroupLayoutCount = 1;
+	PipelineLayoutDescriptor.bindGroupLayouts = &m_MipmapComputeBindGroupLayout;
+	m_MipmapComputePipelineLayout = m_MipmapComputeBindGroupLayout == nullptr ? nullptr : wgpuDeviceCreatePipelineLayout(m_Device, &PipelineLayoutDescriptor);
+	if(m_MipmapComputeShader == nullptr || m_MipmapComputePipelineLayout == nullptr)
+		return nullptr;
+	WGPUComputePipelineDescriptor Descriptor = WGPU_COMPUTE_PIPELINE_DESCRIPTOR_INIT;
+	Descriptor.label = StringView("DDNet WebGPU mipmap compute pipeline");
+	Descriptor.layout = m_MipmapComputePipelineLayout;
+	Descriptor.compute.module = m_MipmapComputeShader;
+	Descriptor.compute.entryPoint = StringView("cs_mipmap");
+	m_MipmapComputePipeline = wgpuDeviceCreateComputePipeline(m_Device, &Descriptor);
+	return m_MipmapComputePipeline;
+}
+
+bool CCommandProcessorFragment_WebGpu::GenerateMipmapsCompute(WGPUTexture Texture, uint32_t Width, uint32_t Height, uint32_t Layers, uint32_t MipCount)
+{
+	WGPUComputePipeline Pipeline = MipmapComputePipeline();
+	if(Pipeline == nullptr)
+	{
+		SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU could not create the pipeline that makes mipmaps");
+		return false;
+	}
+	if(!EnsureMipmapEncoder())
+		return false;
+	bool Recorded = true;
+	uint32_t LevelWidth = Width;
+	uint32_t LevelHeight = Height;
+	for(uint32_t Mip = 1; Mip < MipCount && Recorded; ++Mip)
+	{
+		LevelWidth = std::max(LevelWidth / 2, 1u);
+		LevelHeight = std::max(LevelHeight / 2, 1u);
+		WGPUTextureViewDescriptor ViewDescriptor = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+		ViewDescriptor.label = StringView("DDNet WebGPU mipmap level");
+		ViewDescriptor.dimension = WGPUTextureViewDimension_2DArray;
+		ViewDescriptor.baseArrayLayer = 0;
+		ViewDescriptor.arrayLayerCount = Layers;
+		ViewDescriptor.mipLevelCount = 1;
+		ViewDescriptor.baseMipLevel = Mip - 1;
+		WGPUTextureView Source = wgpuTextureCreateView(Texture, &ViewDescriptor);
+		ViewDescriptor.baseMipLevel = Mip;
+		WGPUTextureView Target = wgpuTextureCreateView(Texture, &ViewDescriptor);
+		std::array<WGPUBindGroupEntry, 3> aEntries{};
+		aEntries[0].binding = 0;
+		aEntries[0].sampler = m_aSamplers[static_cast<size_t>(ESamplerKind::CLAMP_TO_EDGE)];
+		aEntries[1].binding = 1;
+		aEntries[1].textureView = Source;
+		aEntries[2].binding = 2;
+		aEntries[2].textureView = Target;
+		WGPUBindGroupDescriptor BindGroupDescriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+		BindGroupDescriptor.label = StringView("DDNet WebGPU mipmap compute binding");
+		BindGroupDescriptor.layout = m_MipmapComputeBindGroupLayout;
+		BindGroupDescriptor.entryCount = aEntries.size();
+		BindGroupDescriptor.entries = aEntries.data();
+		WGPUBindGroup BindGroup = Source == nullptr || Target == nullptr ? nullptr : wgpuDeviceCreateBindGroup(m_Device, &BindGroupDescriptor);
+		WGPUComputePassDescriptor PassDescriptor = WGPU_COMPUTE_PASS_DESCRIPTOR_INIT;
+		PassDescriptor.label = StringView("DDNet WebGPU mipmap compute pass");
+		WGPUComputePassEncoder Pass = BindGroup == nullptr ? nullptr : wgpuCommandEncoderBeginComputePass(m_MipmapEncoder, &PassDescriptor);
+		if(Pass == nullptr)
+		{
+			Recorded = false;
+		}
+		else
+		{
+			wgpuComputePassEncoderSetPipeline(Pass, Pipeline);
+			wgpuComputePassEncoderSetBindGroup(Pass, 0, BindGroup, 0, nullptr);
+			wgpuComputePassEncoderDispatchWorkgroups(Pass, (LevelWidth + 7) / 8, (LevelHeight + 7) / 8, Layers);
+			wgpuComputePassEncoderEnd(Pass);
+			wgpuComputePassEncoderRelease(Pass);
+		}
+		if(BindGroup != nullptr)
+			wgpuBindGroupRelease(BindGroup);
+		if(Target != nullptr)
+			wgpuTextureViewRelease(Target);
+		if(Source != nullptr)
+			wgpuTextureViewRelease(Source);
+	}
+	if(!Recorded)
+	{
+		SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to record making the mipmaps of a texture");
+		return false;
+	}
+	return true;
+}
+
+bool CCommandProcessorFragment_WebGpu::GenerateMipmaps(WGPUTexture Texture, IGraphics::ETextureFormat Format, uint32_t Width, uint32_t Height, uint32_t Layers, uint32_t MipCount)
+{
+	// Every texture that asks for mipmaps is RGBA8 - the images, the tilesets
+	// cut into layers, all of them - and for that one format a level can be
+	// written straight into the texture. The render path stays for the rest,
+	// because core WebGPU does not let a shader write `r8unorm` or `rg8unorm`.
+	if(Format == IGraphics::ETextureFormat::RGBA8_UNORM)
+		return GenerateMipmapsCompute(Texture, Width, Height, Layers, MipCount);
+
+	WGPURenderPipeline Pipeline = MipmapPipeline(Format);
+	if(Pipeline == nullptr)
+	{
+		SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU could not create the pipeline that makes mipmaps");
+		return false;
+	}
+	if(!EnsureMipmapEncoder())
+		return false;
+	WGPUCommandEncoder Encoder = m_MipmapEncoder;
+	// A pass writes one level of one layer, because that is as much as a
+	// render target is: an array texture holding a tileset cut into sixteen
+	// needs sixteen of them per level.
+	bool Recorded = true;
+	for(uint32_t Mip = 1; Mip < MipCount && Recorded; ++Mip)
+	{
+		for(uint32_t Layer = 0; Layer < Layers && Recorded; ++Layer)
+		{
+			WGPUTextureViewDescriptor ViewDescriptor = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+			ViewDescriptor.label = StringView("DDNet WebGPU mipmap level");
+			ViewDescriptor.dimension = WGPUTextureViewDimension_2D;
+			ViewDescriptor.baseArrayLayer = Layer;
+			ViewDescriptor.arrayLayerCount = 1;
+			ViewDescriptor.mipLevelCount = 1;
+			ViewDescriptor.baseMipLevel = Mip - 1;
+			WGPUTextureView Source = wgpuTextureCreateView(Texture, &ViewDescriptor);
+			ViewDescriptor.baseMipLevel = Mip;
+			WGPUTextureView Target = wgpuTextureCreateView(Texture, &ViewDescriptor);
+			std::array<WGPUBindGroupEntry, 2> aEntries{};
+			aEntries[0].binding = 0;
+			aEntries[0].sampler = m_aSamplers[static_cast<size_t>(ESamplerKind::CLAMP_TO_EDGE)];
+			aEntries[1].binding = 1;
+			aEntries[1].textureView = Source;
+			WGPUBindGroupDescriptor BindGroupDescriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+			BindGroupDescriptor.label = StringView("DDNet WebGPU mipmap source binding");
+			BindGroupDescriptor.layout = m_TextureBindGroupLayout;
+			BindGroupDescriptor.entryCount = aEntries.size();
+			BindGroupDescriptor.entries = aEntries.data();
+			WGPUBindGroup BindGroup = Source == nullptr ? nullptr : wgpuDeviceCreateBindGroup(m_Device, &BindGroupDescriptor);
+			WGPURenderPassColorAttachment ColorAttachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+			ColorAttachment.view = Target;
+			ColorAttachment.loadOp = WGPULoadOp_Clear;
+			ColorAttachment.storeOp = WGPUStoreOp_Store;
+			ColorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+			WGPURenderPassDescriptor PassDescriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+			PassDescriptor.label = StringView("DDNet WebGPU mipmap pass");
+			PassDescriptor.colorAttachmentCount = 1;
+			PassDescriptor.colorAttachments = &ColorAttachment;
+			WGPURenderPassEncoder Pass = Target == nullptr || BindGroup == nullptr ? nullptr : wgpuCommandEncoderBeginRenderPass(Encoder, &PassDescriptor);
+			if(Pass == nullptr)
+			{
+				Recorded = false;
+			}
+			else
+			{
+				wgpuRenderPassEncoderSetPipeline(Pass, Pipeline);
+				wgpuRenderPassEncoderSetBindGroup(Pass, 0, BindGroup, 0, nullptr);
+				wgpuRenderPassEncoderDraw(Pass, 3, 1, 0, 0);
+				wgpuRenderPassEncoderEnd(Pass);
+				wgpuRenderPassEncoderRelease(Pass);
+			}
+			if(BindGroup != nullptr)
+				wgpuBindGroupRelease(BindGroup);
+			if(Target != nullptr)
+				wgpuTextureViewRelease(Target);
+			if(Source != nullptr)
+				wgpuTextureViewRelease(Source);
+		}
+	}
+	if(!Recorded)
+	{
+		SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to record making the mipmaps of a texture");
+		return false;
+	}
+	// Left open. It goes out ahead of the frame's own commands at the next
+	// submit, which is after the queue writes that filled the top levels and
+	// before anything that draws with them.
+	return true;
+}
+
 bool CCommandProcessorFragment_WebGpu::CreateTexture(const CCommandBuffer::SCommand_Texture_Create *pCommand)
 {
 	const auto &Desc = pCommand->m_Desc;
@@ -2237,7 +2620,14 @@ bool CCommandProcessorFragment_WebGpu::CreateTexture(const CCommandBuffer::SComm
 		const uint32_t MipCount = Desc.m_Mipmaps == IGraphics::ETextureMipmaps::GENERATE ? std::bit_width(std::max(Width, Height)) : 1;
 		WGPUTextureDescriptor TextureDescriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
 		TextureDescriptor.label = StringView("DDNet WebGPU sampled texture");
-		TextureDescriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst | (ColorTarget ? WGPUTextureUsage_RenderAttachment : WGPUTextureUsage_None) | (Desc.HasUsage(IGraphics::TEXTURE_USAGE_COPY_SOURCE) ? WGPUTextureUsage_CopySrc : WGPUTextureUsage_None);
+		// Which of the two ways the levels are made decides what the texture
+		// has to be good for: a shader writing into it, or a pass drawing into
+		// it. Asking for both would cost every texture the compression a plain
+		// sampled texture may have.
+		// Where the card cannot make the levels, they are uploaded.
+		const bool GpuMipmaps = MipCount > 1 && m_GpuMipmaps;
+		const bool ComputeMipmaps = GpuMipmaps && Desc.m_Format == IGraphics::ETextureFormat::RGBA8_UNORM;
+		TextureDescriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst | (ComputeMipmaps ? WGPUTextureUsage_StorageBinding : WGPUTextureUsage_None) | (ColorTarget || (GpuMipmaps && !ComputeMipmaps) ? WGPUTextureUsage_RenderAttachment : WGPUTextureUsage_None) | (Desc.HasUsage(IGraphics::TEXTURE_USAGE_COPY_SOURCE) ? WGPUTextureUsage_CopySrc : WGPUTextureUsage_None);
 		TextureDescriptor.dimension = WGPUTextureDimension_2D;
 		TextureDescriptor.size = {Width, Height, Layers};
 		TextureDescriptor.format = Format;
@@ -2251,32 +2641,40 @@ bool CCommandProcessorFragment_WebGpu::CreateTexture(const CCommandBuffer::SComm
 		View = NativeTexture == nullptr ? nullptr : wgpuTextureCreateView(NativeTexture, &ViewDescriptor);
 		if(View == nullptr || !CreateTextureBindGroups(View, Layout, TextureBinding, aBindGroups, TextureArray))
 			return false;
-		std::vector<uint8_t> vMipData;
-		for(uint32_t Mip = 0; Mip < MipCount; ++Mip)
+		for(uint32_t Mip = 0, LevelWidth = Width, LevelHeight = Height; Mip < MipCount; ++Mip, LevelWidth = std::max(LevelWidth / 2, 1u), LevelHeight = std::max(LevelHeight / 2, 1u))
+			MemorySize += static_cast<size_t>(LevelWidth) * LevelHeight * Layers * PixelSize;
+		// Only the top level is uploaded when the card makes the others - a
+		// third of the bytes of a full chain, and none of the work of working
+		// out what is in them. A texture created without data is a colour
+		// target: it has nothing to downsample from, and its levels are written
+		// by rendering anyway.
+		if(pData != nullptr)
 		{
-			const size_t DataSize = static_cast<size_t>(Width) * Height * Layers * PixelSize;
-			MemorySize += DataSize;
-			if(pData != nullptr)
+			std::vector<uint8_t> vLevelData;
+			const uint8_t *pLevelData = pData;
+			uint32_t LevelWidth = Width;
+			uint32_t LevelHeight = Height;
+			for(uint32_t Mip = 0; Mip < (GpuMipmaps ? 1 : MipCount); ++Mip)
 			{
+				if(Mip > 0)
+				{
+					vLevelData = DownsampleMip(pLevelData, LevelWidth, LevelHeight, Layers, PixelSize);
+					pLevelData = vLevelData.data();
+					LevelWidth = std::max(LevelWidth / 2, 1u);
+					LevelHeight = std::max(LevelHeight / 2, 1u);
+				}
 				WGPUTexelCopyTextureInfo Destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
 				Destination.texture = NativeTexture;
 				Destination.mipLevel = Mip;
 				Destination.aspect = WGPUTextureAspect_All;
 				WGPUTexelCopyBufferLayout UploadLayout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
-				UploadLayout.bytesPerRow = static_cast<size_t>(Width) * PixelSize;
-				UploadLayout.rowsPerImage = Height;
-				const WGPUExtent3D Extent{Width, Height, Layers};
-				wgpuQueueWriteTexture(m_Queue, &Destination, pData, DataSize, &UploadLayout, &Extent);
+				UploadLayout.bytesPerRow = static_cast<size_t>(LevelWidth) * PixelSize;
+				UploadLayout.rowsPerImage = LevelHeight;
+				const WGPUExtent3D Extent{LevelWidth, LevelHeight, Layers};
+				wgpuQueueWriteTexture(m_Queue, &Destination, pLevelData, static_cast<size_t>(LevelWidth) * LevelHeight * Layers * PixelSize, &UploadLayout, &Extent);
 			}
-			// A texture created without data - a colour target - has nothing to
-			// downsample from, and its mips are written by rendering anyway.
-			if(Mip + 1 < MipCount && pData != nullptr)
-			{
-				vMipData = DownsampleMip(pData, Width, Height, Layers, PixelSize);
-				pData = vMipData.data();
-				Width = std::max(Width / 2, 1u);
-				Height = std::max(Height / 2, 1u);
-			}
+			if(GpuMipmaps && !GenerateMipmaps(NativeTexture, Desc.m_Format, Width, Height, Layers, MipCount))
+				return false;
 		}
 		return true;
 	};
@@ -3211,10 +3609,32 @@ void CCommandProcessorFragment_WebGpu::DestroyDrawResources()
 		wgpuBindGroupLayoutRelease(m_UniformBindGroupLayout);
 	if(m_PrimitiveShader != nullptr)
 		wgpuShaderModuleRelease(m_PrimitiveShader);
+	for(auto &Pipeline : m_aMipmapPipelines)
+	{
+		if(Pipeline != nullptr)
+			wgpuRenderPipelineRelease(Pipeline);
+		Pipeline = nullptr;
+	}
+	if(m_MipmapPipelineLayout != nullptr)
+		wgpuPipelineLayoutRelease(m_MipmapPipelineLayout);
+	if(m_MipmapShader != nullptr)
+		wgpuShaderModuleRelease(m_MipmapShader);
+	if(m_MipmapComputePipeline != nullptr)
+		wgpuComputePipelineRelease(m_MipmapComputePipeline);
+	if(m_MipmapComputePipelineLayout != nullptr)
+		wgpuPipelineLayoutRelease(m_MipmapComputePipelineLayout);
+	if(m_MipmapComputeBindGroupLayout != nullptr)
+		wgpuBindGroupLayoutRelease(m_MipmapComputeBindGroupLayout);
+	if(m_MipmapComputeShader != nullptr)
+		wgpuShaderModuleRelease(m_MipmapComputeShader);
 	m_QuadBindGroup = nullptr;
 	m_UniformBindGroup = nullptr;
 	m_UniformBuffer = nullptr;
 	m_StreamBuffer = nullptr;
+	m_MipmapComputePipeline = nullptr;
+	m_MipmapComputePipelineLayout = nullptr;
+	m_MipmapComputeBindGroupLayout = nullptr;
+	m_MipmapComputeShader = nullptr;
 	m_PrimitivePipelineLayout = nullptr;
 	m_ArrayTexturePipelineLayout = nullptr;
 	m_QuadTexturedPipelineLayout = nullptr;
@@ -3226,6 +3646,8 @@ void CCommandProcessorFragment_WebGpu::DestroyDrawResources()
 	m_EmptyBindGroupLayout = nullptr;
 	m_UniformBindGroupLayout = nullptr;
 	m_PrimitiveShader = nullptr;
+	m_MipmapPipelineLayout = nullptr;
+	m_MipmapShader = nullptr;
 	m_StreamOffset = 0;
 	m_UniformOffset = 0;
 	m_UploadBufferSlot = 0;

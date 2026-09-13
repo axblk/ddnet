@@ -2952,6 +2952,8 @@ if(CLIENT)
     render_map.h
     tile_chunk_cache.cpp
     tile_chunk_cache.h
+    tile_run_store.cpp
+    tile_run_store.h
     # tidy-alphabetical-end
   )
   set(GAME_GENERATED_CLIENT
@@ -3645,6 +3647,7 @@ if(TOOLS)
           src/game/map/render_layer.cpp
           src/game/map/render_map.cpp
           src/game/map/tile_chunk_cache.cpp
+          src/game/map/tile_run_store.cpp
           # tidy-alphabetical-end
         )
       endif()
@@ -3749,6 +3752,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     test.h
     thread_test.cpp
     tile_chunk_cache_test.cpp
+    tile_run_store_test.cpp
     time_test.cpp
     timestamp_test.cpp
     unix_test.cpp
@@ -3771,6 +3775,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/engine/client/sqlite.cpp
     src/game/client/components/censor.cpp
     src/game/client/components/censor.h
+    src/game/map/tile_run_store.cpp
+    src/game/map/tile_run_store.h
     # tidy-alphabetical-end
   )
 

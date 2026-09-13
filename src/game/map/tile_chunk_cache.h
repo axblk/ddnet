@@ -243,28 +243,12 @@ private:
 	{
 	public:
 		IGraphics::CBufferHandle m_BufferObject;
-		unsigned int m_OpaqueTiles = 0;
-		unsigned int m_TransparentTiles = 0;
+		// How many quads of the buffer belong to which pass. Same tiles next
+		// to each other are merged into one quad, so this is not a tile count.
+		unsigned int m_OpaqueQuads = 0;
+		unsigned int m_TransparentQuads = 0;
 		int m_Width = 0;
 		int m_Height = 0;
-		// Row -> first quad of that row, one entry past the end so that a
-		// range of rows is a subtraction instead of a search. A chunk holds at
-		// most CHUNK_SIZE * CHUNK_SIZE quads, so 16 bit are enough.
-		//
-		// Per tile these tables would cost four bytes for every tile of the
-		// layer, air included, and a view of a whole map builds every chunk of
-		// it: on Abyss that is 677 MiB, more than the tile geometry itself
-		// costs on the graphics card. Per row a full chunk costs 260 bytes.
-		//
-		// What that gives up is the horizontal clip of the topmost and
-		// bottommost visible row. The drawn range has always been one span of
-		// whole rows in between, so at most CHUNK_SIZE - 1 tiles per edge row
-		// are handed to the rasterizer off-screen, which is where it drops
-		// them anyway.
-		//
-		// Both tables are empty exactly when the chunk has nothing to draw.
-		std::vector<uint16_t> m_vOpaqueRowOffsets;
-		std::vector<uint16_t> m_vTransparentRowOffsets;
 		// What the chunk's buffer costs on the graphics card, and when it was
 		// last drawn. Both are only meaningful while it holds a buffer.
 		uint64_t m_Bytes = 0;
@@ -278,10 +262,6 @@ private:
 
 	void Ensure(int Width, int Height, bool Textured);
 	bool Rebuild(const CLayerSource &Source, int ChunkX, int ChunkY);
-	/**
-	 * Gives the row tables back, which clearing them would not do.
-	 */
-	static void ReleaseRowOffsets(CChunk &Chunk);
 	/**
 	 * Gives a chunk's buffer back and marks it for rebuild.
 	 */

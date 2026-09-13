@@ -59,7 +59,7 @@ constexpr static std::array<CTexCoords, N> MakeTexCoordsTable()
 
 constexpr std::array<CTexCoords, 8> TEX_COORDS_TABLE = MakeTexCoordsTable<8>();
 
-static void FillTmpTile(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpTex, unsigned char Flags, unsigned char Index, int x, int y, const ivec2 &Offset, int Scale)
+static void FillTmpTile(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpTex, unsigned char Flags, unsigned char Index, int x, int y, int SpanX, int SpanY, const ivec2 &Offset, int Scale)
 {
 	if(pTmpTex)
 	{
@@ -67,21 +67,28 @@ static void FillTmpTile(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpT
 		const auto &aTexX = TEX_COORDS_TABLE[TableFlag].m_aTexX;
 		const auto &aTexY = TEX_COORDS_TABLE[TableFlag].m_aTexY;
 
-		pTmpTex->m_TexCoordTopLeft.x = aTexX[0];
-		pTmpTex->m_TexCoordTopLeft.y = aTexY[0];
-		pTmpTex->m_TexCoordBottomLeft.x = aTexX[3];
-		pTmpTex->m_TexCoordBottomLeft.y = aTexY[3];
-		pTmpTex->m_TexCoordTopRight.x = aTexX[1];
-		pTmpTex->m_TexCoordTopRight.y = aTexY[1];
-		pTmpTex->m_TexCoordBottomRight.x = aTexX[2];
-		pTmpTex->m_TexCoordBottomRight.y = aTexY[2];
+		// The tile texture is an array with one layer per tile and it wraps, so
+		// a quad that covers more than one cell just counts cells: the same
+		// tile is repeated over it. Rotation swaps which span belongs to which
+		// texture axis, the way tile_border.vert swaps its scale for it.
+		bool HasRotation = (Flags & TILEFLAG_ROTATE) != 0;
+		const int TexSpanX = HasRotation ? SpanY : SpanX;
+		const int TexSpanY = HasRotation ? SpanX : SpanY;
+
+		pTmpTex->m_TexCoordTopLeft.x = aTexX[0] * TexSpanX;
+		pTmpTex->m_TexCoordTopLeft.y = aTexY[0] * TexSpanY;
+		pTmpTex->m_TexCoordBottomLeft.x = aTexX[3] * TexSpanX;
+		pTmpTex->m_TexCoordBottomLeft.y = aTexY[3] * TexSpanY;
+		pTmpTex->m_TexCoordTopRight.x = aTexX[1] * TexSpanX;
+		pTmpTex->m_TexCoordTopRight.y = aTexY[1] * TexSpanY;
+		pTmpTex->m_TexCoordBottomRight.x = aTexX[2] * TexSpanX;
+		pTmpTex->m_TexCoordBottomRight.y = aTexY[2] * TexSpanY;
 
 		pTmpTex->m_TexCoordTopLeft.z = Index;
 		pTmpTex->m_TexCoordBottomLeft.z = Index;
 		pTmpTex->m_TexCoordTopRight.z = Index;
 		pTmpTex->m_TexCoordBottomRight.z = Index;
 
-		bool HasRotation = (Flags & TILEFLAG_ROTATE) != 0;
 		pTmpTex->m_TexCoordTopLeft.w = HasRotation;
 		pTmpTex->m_TexCoordBottomLeft.w = HasRotation;
 		pTmpTex->m_TexCoordTopRight.w = HasRotation;
@@ -89,7 +96,7 @@ static void FillTmpTile(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpT
 	}
 
 	vec2 TopLeft(x * Scale + Offset.x, y * Scale + Offset.y);
-	vec2 BottomRight(x * Scale + Scale + Offset.x, y * Scale + Scale + Offset.y);
+	vec2 BottomRight(x * Scale + SpanX * Scale + Offset.x, y * Scale + SpanY * Scale + Offset.y);
 	pTmpTile->m_TopLeft = TopLeft;
 	pTmpTile->m_BottomLeft.x = TopLeft.x;
 	pTmpTile->m_BottomLeft.y = BottomRight.y;
@@ -98,16 +105,17 @@ static void FillTmpTile(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpT
 	pTmpTile->m_BottomRight = BottomRight;
 }
 
-static void FillTmpTileSpeedup(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpTex, unsigned char Flags, int x, int y, const ivec2 &Offset, int Scale, short AngleRotate)
+static void FillTmpTileSpeedup(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpTex, unsigned char Flags, int x, int y, int SpanX, int SpanY, const ivec2 &Offset, int Scale, short AngleRotate)
 {
 	int Angle = AngleRotate % 360;
-	FillTmpTile(pTmpTile, pTmpTex, Angle >= 270 ? ROTATION_270 : (Angle >= 180 ? ROTATION_180 : (Angle >= 90 ? ROTATION_90 : 0)), AngleRotate % 90, x, y, Offset, Scale);
+	FillTmpTile(pTmpTile, pTmpTex, Angle >= 270 ? ROTATION_270 : (Angle >= 180 ? ROTATION_180 : (Angle >= 90 ? ROTATION_90 : 0)), AngleRotate % 90, x, y, SpanX, SpanY, Offset, Scale);
 }
 
-bool AddTileToBuffer(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicTileTextureCoords> &vTmpTileTexCoords, unsigned char Index, unsigned char Flags, int x, int y, bool DoTextureCoords, bool FillSpeedup, int AngleRotate, const ivec2 &Offset, int Scale)
+bool AddTileToBuffer(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicTileTextureCoords> &vTmpTileTexCoords, unsigned char Index, unsigned char Flags, int x, int y, int SpanX, int SpanY, bool DoTextureCoords, bool FillSpeedup, int AngleRotate, const ivec2 &Offset, int Scale)
 {
 	if(Index <= 0)
 		return false;
+	dbg_assert(SpanX >= 1 && SpanY >= 1, "A tile covers at least one cell");
 
 	vTmpTiles.emplace_back();
 	CGraphicTile &Tile = vTmpTiles.back();
@@ -119,9 +127,9 @@ bool AddTileToBuffer(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicT
 		pTileTex = &TileTex;
 	}
 	if(FillSpeedup)
-		FillTmpTileSpeedup(&Tile, pTileTex, Flags, x, y, Offset, Scale, AngleRotate);
+		FillTmpTileSpeedup(&Tile, pTileTex, Flags, x, y, SpanX, SpanY, Offset, Scale, AngleRotate);
 	else
-		FillTmpTile(&Tile, pTileTex, Flags, Index, x, y, Offset, Scale);
+		FillTmpTile(&Tile, pTileTex, Flags, Index, x, y, SpanX, SpanY, Offset, Scale);
 
 	return true;
 }
@@ -728,7 +736,7 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 		int AngleRotate = -1;
 		GetTileData(&Index, &Flags, &AngleRotate, static_cast<unsigned int>(TileX), static_cast<unsigned int>(TileY), CurOverlay);
 		Visual.SetIndexBufferByteOffset((offset_ptr32)vTiles.size());
-		if(AddTileToBuffer(vTiles, vTexCoords, Index, Flags, PosX, PosY, DoTextureCoords, AddAsSpeedup, AngleRotate, Offset))
+		if(AddTileToBuffer(vTiles, vTexCoords, Index, Flags, PosX, PosY, 1, 1, DoTextureCoords, AddAsSpeedup, AngleRotate, Offset))
 			Visual.Draw(true);
 	};
 
@@ -736,7 +744,7 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 	if(IsGameLayer)
 	{
 		Visuals.m_BorderKillTile.SetIndexBufferByteOffset((offset_ptr32)vTiles.size());
-		if(AddTileToBuffer(vTiles, vTexCoords, TILE_DEATH, 0, 0, 0, DoTextureCoords))
+		if(AddTileToBuffer(vTiles, vTexCoords, TILE_DEATH, 0, 0, 0, 1, 1, DoTextureCoords))
 			Visuals.m_BorderKillTile.Draw(true);
 	}
 

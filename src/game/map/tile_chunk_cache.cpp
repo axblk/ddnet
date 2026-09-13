@@ -92,14 +92,6 @@ void CTileChunkCache::InvalidateArea(int x, int y, int w, int h)
 			m_vChunks[ChunkY * m_Columns + ChunkX].m_Dirty = true;
 }
 
-void CTileChunkCache::ReleaseRowOffsets(CChunk &Chunk)
-{
-	// A vector only ever grows, and clear() keeps what it holds, so this is
-	// the swap idiom rather than two calls to clear().
-	std::vector<uint16_t>().swap(Chunk.m_vOpaqueRowOffsets);
-	std::vector<uint16_t>().swap(Chunk.m_vTransparentRowOffsets);
-}
-
 bool CTileChunkCache::Rebuild(const CLayerSource &Source, int ChunkX, int ChunkY)
 {
 	CChunk &Chunk = m_vChunks[ChunkY * m_Columns + ChunkX];
@@ -142,49 +134,103 @@ bool CTileChunkCache::Rebuild(const CLayerSource &Source, int ChunkX, int ChunkY
 	dbg_assert(ms_CachedBytes >= Chunk.m_Bytes, "tile chunk cache memory accounting underflow");
 	ms_CachedBytes -= Chunk.m_Bytes;
 	Chunk.m_Bytes = 0;
-	Chunk.m_OpaqueTiles = 0;
-	Chunk.m_TransparentTiles = 0;
+	Chunk.m_OpaqueQuads = 0;
+	Chunk.m_TransparentQuads = 0;
 	if(Drawn == 0)
 	{
-		// Nothing but air. Such a chunk needs no buffer and no row table, and
-		// on a large map most of them are this: of the 44836 chunks of Abyss,
-		// 36469 draw nothing at all.
-		ReleaseRowOffsets(Chunk);
+		// Nothing but air. Such a chunk needs no buffer at all, and on a large
+		// map most of them are this: of the 44836 chunks of Abyss, 36469 draw
+		// nothing.
 		(void)DeleteTileBuffer(m_pGraphics, Chunk.m_BufferObject);
 		Chunk.m_SourceDigest = SourceDigest(Source, ChunkX, ChunkY);
 		Chunk.m_Dirty = false;
 		return true;
 	}
 
-	vTiles.reserve(Drawn);
-	if(Source.m_Textured)
-		vTextureCoords.reserve(Drawn);
+	// Tiles that are the same and lie next to each other become one quad. The
+	// tile texture is an array with one layer per tile and it wraps, so a
+	// rectangle of the same tile is that tile repeated over it - which is what
+	// the border tiles have always done, only there the repeat count is a
+	// uniform instead of the quad's own texture coordinates.
+	//
+	// Rows are cut into runs of the same tile and a run that matches the one
+	// above it keeps growing downwards; when it no longer does, it is written
+	// out as one quad. That is the usual greedy meshing, and it costs one walk
+	// over the chunk per pass, the same as writing every tile did. Over the
+	// tile layers of Abyss it turns 14.5 M drawn tiles into 1.17 M quads,
+	// 8.1 % of the geometry.
+	struct SRun
+	{
+		int m_X;
+		int m_Width;
+		int m_FirstY;
+		size_t m_Tile;
+	};
+	const auto SameTile = [](const STile &Left, const STile &Right) {
+		return Left.m_Index == Right.m_Index && Left.m_Flags == Right.m_Flags && Left.m_AngleRotate == Right.m_AngleRotate;
+	};
+	std::vector<SRun> vGrowing, vRuns;
 
 	// Opaque tiles first, transparent ones after, so that either pass is one
 	// contiguous range of the same buffer.
 	for(int Pass = 0; Pass < 2; ++Pass)
 	{
 		const bool Opaque = Pass == 0;
-		std::vector<uint16_t> &vOffsets = Opaque ? Chunk.m_vOpaqueRowOffsets : Chunk.m_vTransparentRowOffsets;
-		vOffsets.resize((size_t)Chunk.m_Height + 1);
-		const unsigned int FirstTile = vTiles.size();
-		for(int y = Y0; y < Y1; ++y)
+		vGrowing.clear();
+		// One row past the bottom, so that whatever is still growing there is
+		// written out by the same code as everything else.
+		for(int y = Y0; y <= Y1; ++y)
 		{
-			vOffsets[y - Y0] = (uint16_t)(vTiles.size() - FirstTile);
-			for(int x = X0; x < X1; ++x)
+			vRuns.clear();
+			for(int x = X0; y < Y1 && x < X1;)
 			{
-				const STile &Tile = vReadTiles[(size_t)(y - Y0) * Chunk.m_Width + x - X0];
-				if(Tile.m_Index == 0)
+				const size_t First = (size_t)(y - Y0) * Chunk.m_Width + x - X0;
+				const STile &Tile = vReadTiles[First];
+				if(Tile.m_Index == 0 || ((Tile.m_Flags & TILEFLAG_OPAQUE) != 0) != Opaque)
+				{
+					++x;
 					continue;
-				if(((Tile.m_Flags & TILEFLAG_OPAQUE) != 0) == Opaque)
-					AddTileToBuffer(vTiles, vTextureCoords, Tile.m_Index, Tile.m_Flags, x, y, Source.m_Textured, Source.m_FillSpeedup, Tile.m_AngleRotate);
+				}
+				int Width = 1;
+				while(x + Width < X1 && SameTile(vReadTiles[First + Width], Tile))
+					++Width;
+				vRuns.push_back(SRun{x, Width, y, First});
+				x += Width;
 			}
+
+			// Both lists are ordered by column, so this is one walk over the
+			// two of them.
+			size_t Above = 0;
+			size_t Here = 0;
+			while(Above < vGrowing.size() || Here < vRuns.size())
+			{
+				const bool HaveAbove = Above < vGrowing.size();
+				const bool HaveHere = Here < vRuns.size();
+				if(HaveAbove && HaveHere && vGrowing[Above].m_X == vRuns[Here].m_X && vGrowing[Above].m_Width == vRuns[Here].m_Width &&
+					SameTile(vReadTiles[vGrowing[Above].m_Tile], vReadTiles[vRuns[Here].m_Tile]))
+				{
+					vRuns[Here].m_FirstY = vGrowing[Above].m_FirstY;
+					vRuns[Here].m_Tile = vGrowing[Above].m_Tile;
+					++Above;
+					++Here;
+				}
+				else if(!HaveHere || (HaveAbove && vGrowing[Above].m_X <= vRuns[Here].m_X))
+				{
+					const SRun &Run = vGrowing[Above];
+					const STile &Tile = vReadTiles[Run.m_Tile];
+					AddTileToBuffer(vTiles, vTextureCoords, Tile.m_Index, Tile.m_Flags, Run.m_X, Run.m_FirstY, Run.m_Width, y - Run.m_FirstY,
+						Source.m_Textured, Source.m_FillSpeedup, Tile.m_AngleRotate);
+					++Above;
+				}
+				else
+					++Here;
+			}
+			vGrowing.swap(vRuns);
 		}
-		vOffsets[Chunk.m_Height] = (uint16_t)(vTiles.size() - FirstTile);
 		if(Opaque)
-			Chunk.m_OpaqueTiles = vTiles.size();
+			Chunk.m_OpaqueQuads = vTiles.size();
 	}
-	Chunk.m_TransparentTiles = vTiles.size() - Chunk.m_OpaqueTiles;
+	Chunk.m_TransparentQuads = vTiles.size() - Chunk.m_OpaqueQuads;
 	if(!UploadTileBuffer(m_pGraphics, vTiles, vTextureCoords, Chunk.m_BufferObject))
 	{
 		// The chunk stays dirty and is retried every frame, so this is said once
@@ -192,7 +238,7 @@ bool CTileChunkCache::Rebuild(const CLayerSource &Source, int ChunkX, int ChunkY
 		if(!ms_ReportedUploadFailure)
 		{
 			ms_ReportedUploadFailure = true;
-			log_error("tile_chunk_cache", "failed to upload chunk %d,%d with %d tiles", ChunkX, ChunkY, (int)vTiles.size());
+			log_error("tile_chunk_cache", "failed to upload chunk %d,%d with %d quads", ChunkX, ChunkY, (int)vTiles.size());
 		}
 		return false;
 	}
@@ -209,12 +255,8 @@ void CTileChunkCache::ReleaseChunk(CChunk &Chunk)
 	ms_CachedBytes -= Chunk.m_Bytes;
 	Chunk.m_Bytes = 0;
 	Chunk.m_LastUsedTick = 0;
-	Chunk.m_OpaqueTiles = 0;
-	Chunk.m_TransparentTiles = 0;
-	// The row tables belong to the buffer they index into, so they go with it.
-	// Keeping them would leave the largest part of an evicted chunk behind,
-	// and it is the part the budget does not even count.
-	ReleaseRowOffsets(Chunk);
+	Chunk.m_OpaqueQuads = 0;
+	Chunk.m_TransparentQuads = 0;
 	// A buffer the backend refuses to give up stays allocated until it shuts
 	// down. The chunk is rebuilt into a new one either way, so the handle has
 	// to go regardless of what the destroy answered.
@@ -338,33 +380,29 @@ void CTileChunkCache::Render(const CLayerSource &Source, const ColorRGBA &Color,
 			// Marked before the ranges are worked out: a chunk that is on
 			// screen was wanted, whether or not this pass draws anything of it.
 			Chunk.m_LastUsedTick = CurrentTick;
-			// A chunk of nothing but air has neither a buffer nor a row
-			// table, one whose upload failed has no buffer. Both are asked
-			// because a backend that refuses to destroy a buffer leaves the
-			// handle valid.
-			if(!Chunk.m_BufferObject.IsValid() || Chunk.m_vOpaqueRowOffsets.empty())
+			// A chunk of nothing but air has no buffer, and neither has one
+			// whose upload failed.
+			if(!Chunk.m_BufferObject.IsValid())
 				continue;
 
-			const int ChunkTileY = ChunkY * CHUNK_SIZE;
-			const int LocalY0 = std::max(Y0 - ChunkTileY, 0);
-			const int LocalY1 = std::min(Y1 - ChunkTileY, Chunk.m_Height);
-
+			// A quad can cover many rows, so the part of a chunk that is on
+			// screen is no longer a range of its buffer. The whole chunk is
+			// drawn instead, which after the merging is a hundred or so quads
+			// rather than the four thousand tiles it used to be.
 			uint32_t aFirstIndices[2];
 			uint32_t aIndexCounts[2];
 			size_t RangeCount = 0;
-			const auto AddRange = [&](const std::vector<uint16_t> &vOffsets, unsigned int BaseTile) {
-				const unsigned int StartTile = BaseTile + vOffsets[LocalY0];
-				const unsigned int TileCount = vOffsets[LocalY1] - vOffsets[LocalY0];
-				if(TileCount == 0)
+			const auto AddRange = [&](unsigned int FirstQuad, unsigned int QuadCount) {
+				if(QuadCount == 0)
 					return;
-				aFirstIndices[RangeCount] = StartTile * 6;
-				aIndexCounts[RangeCount] = TileCount * 6;
+				aFirstIndices[RangeCount] = FirstQuad * 6;
+				aIndexCounts[RangeCount] = QuadCount * 6;
 				++RangeCount;
 			};
 			if(AllTransparent || !TransparentPass)
-				AddRange(Chunk.m_vOpaqueRowOffsets, 0);
+				AddRange(0, Chunk.m_OpaqueQuads);
 			if(AllTransparent || TransparentPass)
-				AddRange(Chunk.m_vTransparentRowOffsets, Chunk.m_OpaqueTiles);
+				AddRange(Chunk.m_OpaqueQuads, Chunk.m_TransparentQuads);
 			if(RangeCount == 0)
 				continue;
 			m_pGraphics->RenderTileLayer(Chunk.m_BufferObject, Layout, Color, aFirstIndices, aIndexCounts, RangeCount);

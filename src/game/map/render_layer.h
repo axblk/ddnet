@@ -32,7 +32,7 @@ typedef std::function<void(int GroupId, int LayerId)> FCallbackLayerInit;
 
 constexpr int BorderRenderDistance = 201;
 
-bool AddTileToBuffer(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicTileTextureCoords> &vTmpTileTexCoords, unsigned char Index, unsigned char Flags, int x, int y, bool DoTextureCoords, bool FillSpeedup = false, int AngleRotate = -1, const ivec2 &Offset = ivec2{0, 0}, int Scale = 32);
+bool AddTileToBuffer(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicTileTextureCoords> &vTmpTileTexCoords, unsigned char Index, unsigned char Flags, int x, int y, int SpanX, int SpanY, bool DoTextureCoords, bool FillSpeedup = false, int AngleRotate = -1, const ivec2 &Offset = ivec2{0, 0}, int Scale = 32);
 bool UploadTileBuffer(IGraphics *pGraphics, const std::vector<CGraphicTile> &vTiles, const std::vector<CGraphicTileTextureCoords> &vTextureCoords, IGraphics::CBufferHandle &BufferObject);
 // Returns whether the buffer was given up. A buffer that could not be handed
 // back keeps its handle, so the caller can keep the object that owns it alive.

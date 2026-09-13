@@ -574,6 +574,9 @@ CCommandProcessorFragment_OpenGL::SConvertedBuffer *CCommandProcessorFragment_Op
 			Converted.m_Color = CCommandBuffer::SColor(255, 255, 255, 255);
 			// The layer stays an index; the texture matrix maps it into the volume.
 			Converted.m_Tex = vec3(TexCoord.r, TexCoord.g, TexCoord.b);
+			// A quad over one cell has coordinates of 0 and 1 only.
+			if(TexCoord.r > 1.0f || TexCoord.g > 1.0f)
+				Container.m_CoversCells = true;
 			mem_copy(Container.m_vConverted.data() + Vertex * ConvertedStride, &Converted, sizeof(Converted));
 		}
 		else
@@ -853,8 +856,9 @@ void CCommandProcessorFragment_OpenGL::DrawEmulatedArrayColor(const CCommandBuff
 	const IGraphics::SVertexLayoutDesc &Layout = IGraphics::VertexLayout(Container.m_Layout);
 	const bool Textured = Layout.m_AttributeCount >= 2 && IsTexturedState(pCommand->m_State);
 
-	// An unstretched tile layer is drawn as converted.
-	if(!HasTransform && Container.Layered())
+	// An unstretched tile layer whose quads each cover one cell is drawn as
+	// converted.
+	if(!HasTransform && Container.Layered() && !(Textured && Container.m_CoversCells))
 	{
 		SetState(pCommand->m_State, Textured);
 		glColor4f(Color.r, Color.g, Color.b, Color.a);
@@ -868,6 +872,10 @@ void CCommandProcessorFragment_OpenGL::DrawEmulatedArrayColor(const CCommandBuff
 
 	const CCommandBuffer::SColor VertexColor = ClampedColor(Color.r * 255.0f, Color.g * 255.0f, Color.b * 255.0f, Color.a * 255.0f);
 
+	// A textured tile quad is cut into the cells it covers, six vertices
+	// at a time.
+	const bool CutsCells = Textured && Container.Layered() && IndexCount % 6 == 0;
+	std::array<CCommandBuffer::SVertexTex3DStream, 6> aQuad;
 	m_vExpandedLayeredVertices.clear();
 	m_vExpandedLayeredVertices.reserve(IndexCount);
 	for(uint32_t i = 0; i < IndexCount; ++i)
@@ -898,27 +906,82 @@ void CCommandProcessorFragment_OpenGL::DrawEmulatedArrayColor(const CCommandBuff
 		{
 			Vertex.m_Tex = vec3(0.0f, 0.0f, 0.0f);
 		}
-		m_vExpandedLayeredVertices.push_back(Vertex);
-	}
-	// A border tile is one tile stretched across the area it repeats over,
-	// and its texture coordinates run past 1 accordingly. The program takes
-	// fract() of them; fixed function has no such thing, so the volume wraps
-	// for this draw and goes back to clamping afterwards - a clamped volume
-	// hands the edge texel to the whole area, which is a flat colour where
-	// the map's border should be.
-	const bool WrapsVolume = HasTransform && Textured && pCommand->m_State.m_Texture.IsValid();
-	if(WrapsVolume)
-	{
-		glBindTexture(GL_TEXTURE_3D, m_vTextures[pCommand->m_State.m_Texture.Id()].m_Tex2DArray);
-		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+		if(!CutsCells)
+		{
+			m_vExpandedLayeredVertices.push_back(Vertex);
+			continue;
+		}
+		aQuad[i % 6] = Vertex;
+		if(i % 6 == 5 && !AppendTileCells(aQuad.data()))
+			m_vExpandedLayeredVertices.insert(m_vExpandedLayeredVertices.end(), aQuad.begin(), aQuad.end());
 	}
 	DrawExpandedVertices(pCommand->m_State, true);
-	if(WrapsVolume)
+}
+
+// A tile quad may repeat its tile over several cells, so its texture
+// coordinates count cells. The programs take fract() of them and sample the
+// clamped array; fixed function has no such thing, and repeating the volume
+// instead would blend every tile's edge with the opposite one. So the quad is
+// cut into one quad per cell here, each with coordinates between 0 and 1,
+// and the clamped volume samples every cell the way a single tile is sampled.
+// The two triangles must be one axis-aligned quad in the texture; anything
+// else is left to the caller.
+bool CCommandProcessorFragment_OpenGL::AppendTileCells(const CCommandBuffer::SVertexTex3DStream *pQuad)
+{
+	// Where a texture coordinate lands, from the first triangle.
+	const vec2 Origin = pQuad[0].m_Pos;
+	const vec2 TexOrigin(pQuad[0].m_Tex.u, pQuad[0].m_Tex.v);
+	const vec2 TexA = vec2(pQuad[1].m_Tex.u, pQuad[1].m_Tex.v) - TexOrigin;
+	const vec2 TexB = vec2(pQuad[2].m_Tex.u, pQuad[2].m_Tex.v) - TexOrigin;
+	const vec2 PosA = pQuad[1].m_Pos - Origin;
+	const vec2 PosB = pQuad[2].m_Pos - Origin;
+	const float Determinant = TexA.x * TexB.y - TexA.y * TexB.x;
+	if(std::abs(Determinant) < 1e-6f)
+		return false;
+	auto PositionAt = [&](vec2 Tex) {
+		const vec2 Delta = Tex - TexOrigin;
+		const float A = (TexB.y * Delta.x - TexB.x * Delta.y) / Determinant;
+		const float B = (TexA.x * Delta.y - TexA.y * Delta.x) / Determinant;
+		return Origin + PosA * A + PosB * B;
+	};
+
+	vec2 TexMin(pQuad[0].m_Tex.u, pQuad[0].m_Tex.v);
+	vec2 TexMax = TexMin;
+	for(int Corner = 0; Corner < 6; ++Corner)
 	{
-		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		const vec2 Tex(pQuad[Corner].m_Tex.u, pQuad[Corner].m_Tex.v);
+		const vec2 Expected = PositionAt(Tex);
+		if(std::abs(Expected.x - pQuad[Corner].m_Pos.x) > 0.01f || std::abs(Expected.y - pQuad[Corner].m_Pos.y) > 0.01f || pQuad[Corner].m_Tex.w != pQuad[0].m_Tex.w)
+			return false;
+		TexMin = vec2(std::min(TexMin.x, Tex.x), std::min(TexMin.y, Tex.y));
+		TexMax = vec2(std::max(TexMax.x, Tex.x), std::max(TexMax.y, Tex.y));
 	}
+
+	// Coordinates are whole cells; the margin keeps a rounding error from
+	// adding a sliver of a cell.
+	constexpr float Margin = 1.0f / 1024.0f;
+	const int FirstColumn = (int)std::floor(TexMin.x + Margin);
+	const int EndColumn = (int)std::ceil(TexMax.x - Margin);
+	const int FirstRow = (int)std::floor(TexMin.y + Margin);
+	const int EndRow = (int)std::ceil(TexMax.y - Margin);
+	for(int Row = FirstRow; Row < EndRow; ++Row)
+	{
+		for(int Column = FirstColumn; Column < EndColumn; ++Column)
+		{
+			const vec2 CellMin(std::max(TexMin.x, (float)Column), std::max(TexMin.y, (float)Row));
+			const vec2 CellMax(std::min(TexMax.x, Column + 1.0f), std::min(TexMax.y, Row + 1.0f));
+			const std::array<vec2, 4> aCorners = {CellMin, vec2(CellMax.x, CellMin.y), CellMax, vec2(CellMin.x, CellMax.y)};
+			for(int Corner : {0, 1, 2, 0, 2, 3})
+			{
+				CCommandBuffer::SVertexTex3DStream Vertex = pQuad[0];
+				Vertex.m_Pos = PositionAt(aCorners[Corner]);
+				Vertex.m_Tex.u = aCorners[Corner].x - Column;
+				Vertex.m_Tex.v = aCorners[Corner].y - Row;
+				m_vExpandedLayeredVertices.push_back(Vertex);
+			}
+		}
+	}
+	return true;
 }
 
 void CCommandProcessorFragment_OpenGL::DrawEmulatedQuads(const CCommandBuffer::SCommand_DrawIndexed *pCommand, const SConvertedBuffer &Container, const uint8_t *pIndices, size_t IndexStride, uint32_t IndexCount)

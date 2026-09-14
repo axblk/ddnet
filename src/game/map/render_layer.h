@@ -154,6 +154,16 @@ public:
 	bool IsValid() const override { return m_RunStore.IsBuilt() || GetRawData() != nullptr; }
 	void Unload() override;
 
+	/**
+	 * Takes the stretches somebody else has already read this layer into.
+	 *
+	 * The map renderer does that while it unpacks the layers side by side, so
+	 * that the map's copy is given back on the thread that unpacked it - see
+	 * `CMapRenderer::UnpackLayersAhead`. A layer that is given them does not
+	 * read the map's tiles at all.
+	 */
+	void UseRuns(CTileRunStore &&RunStore) { m_RunStore = std::move(RunStore); }
+
 protected:
 	virtual void *GetRawData() const;
 	template<class T>

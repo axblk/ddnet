@@ -22,20 +22,30 @@ public:
 		std::string m_FamilyName;
 	};
 
+	struct SDeferredFontFile
+	{
+		std::string m_Path;
+		/**
+		 * The font families this file brings, if the index says. A file that
+		 * names them is only read once one of them is wanted; one that names
+		 * none is read at once, because nobody could ask for it by name.
+		 */
+		std::vector<std::string> m_vFamilyNames;
+	};
+
 	/**
 	 * Paths of the font files, in the order in which they are listed in the index.
 	 * The order determines the order of the font faces and must be preserved.
 	 */
 	std::vector<std::string> m_vFontFilePaths;
 	/**
-	 * Paths of the font files that the client does not wait for, in the order
-	 * in which they are listed in the index. They are read like the others but
-	 * their faces only arrive once they are there, which for a client that
-	 * fetches them over the network is a good deal later. Until then their
-	 * glyphs are missing, so a font that the first screen needs does not belong
-	 * in here.
+	 * The font files that the client does not wait for, in the order in which
+	 * they are listed in the index. They are read like the others but their
+	 * faces only arrive once they are there, which for a client that fetches
+	 * them over the network is a good deal later. Until then their glyphs are
+	 * missing, so a font that the first screen needs does not belong in here.
 	 */
-	std::vector<std::string> m_vDeferredFontFilePaths;
+	std::vector<SDeferredFontFile> m_vDeferredFontFiles;
 	std::string m_DefaultFamilyName;
 	std::string m_IconFamilyName;
 	std::vector<std::string> m_vFallbackFamilyNames;
@@ -75,7 +85,8 @@ public:
 		IDLE,
 
 		/**
-		 * Font files are being read. No font face is usable yet.
+		 * The index or the font files are being read. No font face is usable
+		 * yet.
 		 */
 		LOADING,
 
@@ -88,12 +99,21 @@ public:
 	void Reset();
 
 	/**
-	 * Starts tracking a load of the given number of font files.
+	 * Starts tracking a load whose index is still being read. The index says
+	 * which files there are, so until it is here nothing else is known.
+	 */
+	void BeginLoadingIndex();
+
+	/**
+	 * The index has been read.
 	 *
 	 * @param FileCount The number of font files that were requested.
 	 * @param IndexSuccess Whether the font index itself was fully understood.
 	 */
-	void BeginLoading(size_t FileCount, bool IndexSuccess);
+	void IndexLoaded(size_t FileCount, bool IndexSuccess);
+
+	/** Whether the index is still on its way. */
+	bool WaitingForIndex() const { return m_State == EState::LOADING && !m_IndexLoaded; }
 
 	/**
 	 * Reports the result of one font file.
@@ -110,7 +130,7 @@ public:
 	EState State() const { return m_State; }
 	bool Loading() const { return m_State == EState::LOADING; }
 	bool Ready() const { return m_State == EState::READY; }
-	bool AllFilesFinished() const { return m_FinishedFileCount == m_FileCount; }
+	bool AllFilesFinished() const { return m_IndexLoaded && m_FinishedFileCount == m_FileCount; }
 
 	/**
 	 * @return `true` if the index, every font file and every named face were
@@ -124,6 +144,7 @@ public:
 
 private:
 	EState m_State = EState::IDLE;
+	bool m_IndexLoaded = false;
 	bool m_IndexSuccess = true;
 	bool m_FacesSuccess = true;
 	size_t m_FileCount = 0;

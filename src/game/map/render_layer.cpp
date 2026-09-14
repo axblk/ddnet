@@ -753,21 +753,27 @@ void *CRenderLayerTile::GetRawData() const
 void CRenderLayerTile::OnInit(IGraphics *pGraphics, ITextRender *pTextRender, CRenderMap *pRenderMap, std::shared_ptr<CEnvelopeManager> &pEnvelopeManager, IMap *pMap, IMapImages *pMapImages, std::optional<FCallbackLayerInit> &CallbackLayerInitOptional)
 {
 	CRenderLayer::OnInit(pGraphics, pTextRender, pRenderMap, pEnvelopeManager, pMap, pMapImages, CallbackLayerInitOptional);
-	InitTileData();
 
-	if(GivesTilesBack() && m_pTiles != nullptr)
+	// Unless the stretches are already here - then asking the map for the
+	// tiles would unpack the whole layer a second time, for nothing.
+	if(!m_RunStore.IsBuilt())
 	{
-		// Read once into stretches of the same tile, then hand the map's copy
-		// back. What stays is what the layer holds rather than what it covers,
-		// and it is what the chunks are built from afterwards.
-		const int Width = m_pLayerTilemap->m_Width;
-		const CTile *pTiles = m_pTiles;
-		m_RunStore.Build(Width, m_pLayerTilemap->m_Height, [pTiles, Width](int x, int y) -> uint16_t {
-			const CTile &Tile = pTiles[(size_t)y * Width + x];
-			return (uint16_t)Tile.m_Index | (uint16_t)((uint16_t)Tile.m_Flags << 8);
-		});
-		m_pMap->UnloadData(GetDataIndex());
-		m_pTiles = nullptr;
+		InitTileData();
+
+		if(GivesTilesBack() && m_pTiles != nullptr)
+		{
+			// Read once into stretches of the same tile, then hand the map's
+			// copy back. What stays is what the layer holds rather than what
+			// it covers, and it is what the chunks are built from afterwards.
+			const int Width = m_pLayerTilemap->m_Width;
+			const CTile *pTiles = m_pTiles;
+			m_RunStore.Build(Width, m_pLayerTilemap->m_Height, [pTiles, Width](int x, int y) -> uint16_t {
+				const CTile &Tile = pTiles[(size_t)y * Width + x];
+				return (uint16_t)Tile.m_Index | (uint16_t)((uint16_t)Tile.m_Flags << 8);
+			});
+			m_pMap->UnloadData(GetDataIndex());
+			m_pTiles = nullptr;
+		}
 	}
 
 	// shrink the clip region to the tiles that are actually drawn. Reading the

@@ -288,7 +288,7 @@ private:
 
 	static bool LoadSkinData(const char *pName, CImageInfo &Info, CSkinLoadData &Data, bool LogErrors);
 	bool LoadSkinFinish(CSkinContainer *pSkinContainer, const CSkinLoadData &Data);
-	void LoadSkinDirect(const char *pName);
+	void AddSkinContainer(const char *pName);
 	void StartLocalSkinLoad(CSkinContainer *pSkinContainer);
 	void StartDownloadedSkinLoad(CSkinContainer *pSkinContainer);
 	void StartDownload(CSkinContainer *pSkinContainer, bool Force);

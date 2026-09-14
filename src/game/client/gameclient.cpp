@@ -297,11 +297,58 @@ void CGameClient::OnConsoleInit()
 
 void CGameClient::InitializeLanguage()
 {
-	// set the language
-	g_Localization.LoadIndexfile(Storage(), Console());
-	if(g_Config.m_ClShowWelcome)
-		g_Localization.SelectDefaultLanguage(Console(), g_Config.m_ClLanguagefile, sizeof(g_Config.m_ClLanguagefile));
-	g_Localization.Load(g_Config.m_ClLanguagefile, Storage(), Console());
+	// The list of languages and the language itself are two more files, and in
+	// the browser a file is a request: read here they would be the startup
+	// waiting for the network before it has drawn anything. Until they are
+	// here every string is the English one it is written as in the source,
+	// which is what an unknown language shows anyway.
+	m_LanguageIndexResource = m_AssetLoader.Load(std::make_shared<CTextAssetJob>(Storage(), "languages/index.txt", IStorage::TYPE_ALL, ASSET_OWNER_LANGUAGE, 1));
+}
+
+void CGameClient::UpdateLanguageLoads()
+{
+	if(m_LanguageIndexResource && m_LanguageIndexResource.IsFinished())
+	{
+		if(m_LanguageIndexResource.IsReady(1))
+		{
+			const std::string Index(m_LanguageIndexResource.Result().Text());
+			g_Localization.ParseIndex(Index.c_str());
+		}
+		else
+		{
+			log_error("localization", "Couldn't open index file 'languages/index.txt'");
+		}
+		m_LanguageIndexResource.Reset();
+		if(g_Config.m_ClShowWelcome)
+		{
+			g_Localization.SelectDefaultLanguage(Console(), g_Config.m_ClLanguagefile, sizeof(g_Config.m_ClLanguagefile));
+			// The language the list picked decides which font variant is
+			// wanted, and the text render was told before there was a list.
+			TextRender()->SetFontLanguageVariant(g_Config.m_ClLanguagefile);
+		}
+		// English is the one language with no file of its own: it is what the
+		// strings already say.
+		if(g_Config.m_ClLanguagefile[0] == '\0')
+			g_Localization.ParseLanguage("", g_Config.m_ClLanguagefile);
+		else
+			m_LanguageResource = m_AssetLoader.Load(std::make_shared<CTextAssetJob>(Storage(), g_Config.m_ClLanguagefile, IStorage::TYPE_ALL, ASSET_OWNER_LANGUAGE, 1));
+	}
+	if(m_LanguageResource && m_LanguageResource.IsFinished())
+	{
+		if(m_LanguageResource.IsReady(1))
+		{
+			const std::string Language(m_LanguageResource.Result().Text());
+			g_Localization.ParseLanguage(Language.c_str(), m_LanguageResource.Path());
+			// Whatever was drawn in English before this is made again, the
+			// same way a language picked in the settings does it.
+			Client()->OnWindowResize();
+		}
+		else
+		{
+			log_error("localization", "Couldn't load language file '%s'", m_LanguageResource.Path());
+		}
+		m_LanguageResource.Reset();
+	}
 }
 
 void CGameClient::ForceUpdateConsoleRemoteCompletionSuggestions()
@@ -460,6 +507,7 @@ void CGameClient::OnUpdate()
 		FinishClientStartup();
 	}
 	UpdateAssetPackLoads();
+	UpdateLanguageLoads();
 	HandleLanguageChanged();
 
 	CUIElementBase::Init(Ui()); // update static pointer because game and editor use separate UI

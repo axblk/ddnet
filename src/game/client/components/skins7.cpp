@@ -238,6 +238,15 @@ int CSkins7::SkinScan(const char *pName, int IsDir, int DirType, void *pUser)
 	return 0;
 }
 
+void CSkins7::StartLoadingSkinList(const TSkinLoadedCallback &SkinLoadedCallback)
+{
+	m_SkinListStartTime = time_get_nanoseconds();
+	CSkinScanData SkinScanData;
+	SkinScanData.m_pThis = this;
+	SkinScanData.m_SkinLoadedCallback = SkinLoadedCallback;
+	Storage()->ListDirectory(IStorage::TYPE_ALL, SKINS_DIR, SkinScan, &SkinScanData);
+}
+
 void CSkins7::StartSkinLoad(const char *pName, int DirType)
 {
 	char aFilename[IO_MAX_PATH_LENGTH];
@@ -273,7 +282,7 @@ void CSkins7::FinishSkinLoads()
 	if(m_vSkinLoads.empty())
 	{
 		log_info("skins7", "Skin descriptions: skins=%" PRIzu " wall=%.2fms",
-			m_vSkins.size(), (time_get_nanoseconds() - m_LastRefreshTime).count() / 1000000.0);
+			m_vSkins.size(), (time_get_nanoseconds() - m_SkinListStartTime).count() / 1000000.0);
 	}
 }
 
@@ -381,6 +390,9 @@ bool CSkins7::ParseSkin(const char *pName, int DirType, std::string_view Json)
 		log_trace("skins7", "Loaded skin '%s'", Skin.m_aName);
 	}
 	m_vSkins.insert(std::lower_bound(m_vSkins.begin(), m_vSkins.end(), Skin), Skin);
+	// The descriptions arrive one after the other, so the list changes more
+	// than once; whoever keeps a list of his own goes by this time.
+	m_LastRefreshTime = time_get_nanoseconds();
 	return true;
 }
 
@@ -558,10 +570,10 @@ void CSkins7::Refresh(TSkinLoadedCallback &&SkinLoadedCallback)
 		}
 	}
 
-	CSkinScanData SkinScanData;
-	SkinScanData.m_pThis = this;
-	SkinScanData.m_SkinLoadedCallback = SkinLoadedCallback;
-	Storage()->ListDirectory(IStorage::TYPE_ALL, SKINS_DIR, SkinScan, &SkinScanData);
+	if(m_SkinListRequested)
+	{
+		StartLoadingSkinList(SkinLoadedCallback);
+	}
 
 	StartSpecialLoads();
 	SkinLoadedCallback();
@@ -784,8 +796,13 @@ bool CSkins7::RemoveSkin(const CSkin *pSkin)
 	return true;
 }
 
-const std::vector<CSkins7::CSkin> &CSkins7::GetSkins() const
+const std::vector<CSkins7::CSkin> &CSkins7::GetSkins()
 {
+	if(!m_SkinListRequested)
+	{
+		m_SkinListRequested = true;
+		StartLoadingSkinList([]() {});
+	}
 	return m_vSkins;
 }
 

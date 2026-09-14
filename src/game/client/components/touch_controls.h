@@ -4,6 +4,7 @@
 #include <base/color.h>
 #include <base/vmath.h>
 
+#include <engine/client/asset_loader.h>
 #include <engine/input.h>
 
 #include <game/client/component.h>
@@ -45,6 +46,7 @@ public:
 
 	int Sizeof() const override { return sizeof(*this); }
 	void OnInit() override;
+	void OnUpdate() override;
 	void OnReset() override;
 	void OnWindowResize() override;
 	bool OnTouchState(std::vector<IInput::CTouchFingerState> &vTouchFingerStates) override;
@@ -584,6 +586,14 @@ private:
 	 * Whether there are changes to the current configuration in editing mode.
 	 */
 	bool m_EditingChanges = false;
+
+	/**
+	 * The configuration file, while it is being read. Reading it where it is
+	 * needed would be the main thread waiting for the network; until it is
+	 * here there are no touch buttons, which is what a client whose
+	 * configuration could not be read shows anyway.
+	 */
+	CTypedAssetResource<CTextAssetJob> m_ConfigurationResource;
 
 	void InitVisibilityFunctions();
 	int NextActiveAction(int Action) const;

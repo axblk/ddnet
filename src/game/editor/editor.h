@@ -447,6 +447,8 @@ public:
 	ECursorType m_CursorType;
 
 	IGraphics::CTextureHandle GetEntitiesTexture();
+	IGraphics::CTextureHandle GetCheckerTexture();
+	IGraphics::CTextureHandle GetCursorTexture(ECursorType Type);
 
 	std::unique_ptr<CEditorMap> m_pToolsMap;
 	std::shared_ptr<CLayerGroup> m_pBrush;

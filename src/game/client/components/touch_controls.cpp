@@ -30,7 +30,9 @@
 #include <cstdlib>
 #include <functional>
 #include <iterator>
+#include <memory>
 #include <queue>
+#include <string_view>
 
 using namespace std::chrono_literals;
 
@@ -773,7 +775,31 @@ void CTouchControls::CBindToggleTouchButtonBehavior::WriteToConfiguration(CJsonW
 void CTouchControls::OnInit()
 {
 	InitVisibilityFunctions();
-	if(!LoadConfigurationFromFile(IStorage::TYPE_ALL))
+	// One more file, and in the browser a file is a request: read here it
+	// would be the startup waiting for the network before it has drawn
+	// anything. The configuration is taken when it arrives.
+	m_ConfigurationResource = GameClient()->AssetLoader().Load(std::make_shared<CTextAssetJob>(Storage(), CONFIGURATION_FILENAME, IStorage::TYPE_ALL, CGameClient::ASSET_OWNER_TOUCH_CONTROLS, 1));
+}
+
+void CTouchControls::OnUpdate()
+{
+	if(!m_ConfigurationResource || !m_ConfigurationResource.IsFinished())
+	{
+		return;
+	}
+
+	bool Loaded = false;
+	if(m_ConfigurationResource.IsReady(1))
+	{
+		const std::string_view Configuration = m_ConfigurationResource.Result().Text();
+		Loaded = ParseConfiguration(Configuration.data(), Configuration.size());
+	}
+	else
+	{
+		log_error("touch_controls", "Failed to read configuration from '%s'", CONFIGURATION_FILENAME);
+	}
+	m_ConfigurationResource.Reset();
+	if(!Loaded)
 	{
 		Client()->AddWarning(SWarning(Localize("Error loading touch controls"), Localize("Could not load touch controls from file. See local console for details.")));
 	}

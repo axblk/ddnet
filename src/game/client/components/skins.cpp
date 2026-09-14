@@ -505,7 +505,7 @@ bool CSkins::LoadSkinFinish(CSkinContainer *pSkinContainer, const CSkinLoadData 
 	return true;
 }
 
-void CSkins::LoadSkinDirect(const char *pName)
+void CSkins::AddSkinContainer(const char *pName)
 {
 	if(m_Skins.contains(pName))
 	{
@@ -514,29 +514,7 @@ void CSkins::LoadSkinDirect(const char *pName)
 	CSkinContainer SkinContainer(this, pName, CSkinContainer::EType::LOCAL, IStorage::TYPE_ALL);
 	auto &&pSkinContainer = std::make_unique<CSkinContainer>(std::move(SkinContainer));
 	pSkinContainer->SetState(pSkinContainer->DetermineInitialState());
-	const auto &[SkinIt, _] = m_Skins.insert({pSkinContainer->Name(), std::move(pSkinContainer)});
-
-	char aPath[IO_MAX_PATH_LENGTH];
-	str_format(aPath, sizeof(aPath), "skins/%s.png", pName);
-	CSkinLoadData DefaultSkinData;
-	SkinIt->second->SetState(CSkinContainer::EState::LOADING);
-	if(!Graphics()->LoadPng(DefaultSkinData.m_Info, aPath, SkinIt->second->StorageType()))
-	{
-		log_error("skins", "Failed to load PNG of skin '%s' from '%s'", pName, aPath);
-		SkinIt->second->SetState(CSkinContainer::EState::ERROR);
-	}
-	else
-	{
-		const bool DataLoaded = LoadSkinData(pName, DefaultSkinData.m_Info, DefaultSkinData, true);
-		if(DefaultSkinData.m_ResizedWidth != 0)
-			log_warn("skins", "Resizing skin '%s' from %" PRIzu "x%" PRIzu " to %" PRIzu "x%" PRIzu " because its size is not divisible by %dx%d", pName, DefaultSkinData.m_OriginalWidth, DefaultSkinData.m_OriginalHeight, DefaultSkinData.m_ResizedWidth, DefaultSkinData.m_ResizedHeight, g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridx, g_pData->m_aSprites[SPRITE_TEE_BODY].m_pSet->m_Gridy);
-		if(DataLoaded && LoadSkinFinish(SkinIt->second.get(), DefaultSkinData))
-			SkinIt->second->SetState(CSkinContainer::EState::LOADED);
-		else
-			SkinIt->second->SetState(CSkinContainer::EState::ERROR);
-	}
-	DefaultSkinData.m_Info.Free();
-	DefaultSkinData.m_InfoGrayscale.Free();
+	m_Skins.insert({pSkinContainer->Name(), std::move(pSkinContainer)});
 }
 
 void CSkins::StartSkinDecode(CSkinContainer *pSkinContainer, const char *pPath, int StorageType, ESkinDecodeSource Source)
@@ -916,7 +894,12 @@ void CSkins::Refresh(TSkinLoadedCallback &&SkinLoadedCallback)
 	m_Skins.clear();
 	m_SkinsUsageList.clear();
 
-	LoadSkinDirect("default");
+	// The default skin is a vanilla one, so it is read straight away by the
+	// same loop that reads every other skin - not here on the main thread,
+	// where in the browser it would be a request the page waits for. Whoever
+	// draws a tee before it is here gets the placeholder skin, which is what
+	// `Find` falls back to.
+	AddSkinContainer("default");
 	SkinLoadedCallback();
 
 	CSkinScanUser SkinScanUser;

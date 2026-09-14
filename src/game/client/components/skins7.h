@@ -108,7 +108,13 @@ public:
 	std::chrono::nanoseconds LastRefreshTime() const { return m_LastRefreshTime; }
 	bool StartupAssetsLoaded() const;
 
-	const std::vector<CSkin> &GetSkins() const;
+	/**
+	 * The named 0.7 skins, as the skin files describe them. They are read when
+	 * this is first asked for: a 0.7 player comes with the names of their skin
+	 * parts rather than with the name of a skin, so the descriptions are only
+	 * of interest to whoever lists them.
+	 */
+	const std::vector<CSkin> &GetSkins();
 	const std::vector<CSkinPart> &GetSkinParts(int Part) const;
 	const CSkinPart *FindSkinPartOrNullptr(int Part, const char *pName, bool AllowSpecialPart) const;
 	const CSkinPart *FindDefaultSkinPart(int Part) const;
@@ -156,10 +162,17 @@ private:
 		CTypedAssetResource<CTextAssetJob> m_Resource;
 	};
 	std::vector<CSkinLoad> m_vSkinLoads;
+	/**
+	 * Whether anybody has asked for the list of named skins yet. Once asked
+	 * for, it is kept up to date like everything else here.
+	 */
+	bool m_SkinListRequested = false;
+	std::chrono::nanoseconds m_SkinListStartTime{0};
 
 	static int SkinPartScan(const char *pName, int IsDir, int DirType, void *pUser);
 	bool RegisterSkinPart(int PartType, const char *pName, int DirType);
 	static int SkinScan(const char *pName, int IsDir, int DirType, void *pUser);
+	void StartLoadingSkinList(const TSkinLoadedCallback &SkinLoadedCallback);
 	void StartSkinLoad(const char *pName, int DirType);
 	void FinishSkinLoads();
 	bool ParseSkin(const char *pName, int DirType, std::string_view Json);

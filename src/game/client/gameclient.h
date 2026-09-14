@@ -174,6 +174,8 @@ public:
 		ASSET_OWNER_ASSET_PREVIEWS,
 		ASSET_OWNER_MAP_IMAGES,
 		ASSET_OWNER_GHOSTS,
+		ASSET_OWNER_LANGUAGE,
+		ASSET_OWNER_TOUCH_CONTROLS,
 	};
 
 	/**
@@ -679,6 +681,13 @@ public:
 	void OnWindowResize() override;
 
 	void InitializeLanguage() override;
+	/**
+	 * Takes the list of languages and the language itself once they have been
+	 * read, and asks for the language once the list says which file it is.
+	 */
+	void UpdateLanguageLoads();
+	CTypedAssetResource<CTextAssetJob> m_LanguageIndexResource;
+	CTypedAssetResource<CTextAssetJob> m_LanguageResource;
 	bool m_LanguageChanged = false;
 	void OnLanguageChange();
 	void HandleLanguageChanged();

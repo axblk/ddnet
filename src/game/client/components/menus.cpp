@@ -711,13 +711,6 @@ void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std
 
 	Ui()->MapScreen();
 
-	if(GameClient()->m_MenuBackground.IsLoading())
-	{
-		// Avoid rendering while loading the menu background as this would otherwise
-		// cause the regular menu background to be rendered for a few frames while
-		// the menu background is not loaded yet.
-		return;
-	}
 	if(!GameClient()->m_MenuBackground.Render())
 	{
 		RenderBackground();

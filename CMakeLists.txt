@@ -3164,6 +3164,7 @@ if(CLIENT)
   )
   set_src(GAME_MAP GLOB_RECURSE src/game/map
     # tidy-alphabetical-start
+    document/tile_store.h
     envelope_extrema.cpp
     envelope_extrema.h
     envelope_manager.h
@@ -3194,6 +3195,12 @@ if(CLIENT)
   list(FILTER GAME_MAP_STANDALONE INCLUDE REGEX "/standalone/")
   list(FILTER GAME_MAP_STANDALONE EXCLUDE REGEX "_main\\.cpp$")
   list(FILTER GAME_MAP EXCLUDE REGEX "/standalone/")
+  # The map as something that is changed rather than drawn. It knows nothing
+  # of a renderer, a client or a window, so that it can be tested natively and
+  # linked by whoever needs it - the web editor first.
+  set(GAME_MAP_DOCUMENT ${GAME_MAP})
+  list(FILTER GAME_MAP_DOCUMENT INCLUDE REGEX "/document/")
+  list(FILTER GAME_MAP EXCLUDE REGEX "/document/")
   set(GAME_GENERATED_CLIENT
     # tidy-alphabetical-start
     src/generated/checksum.cpp
@@ -4460,6 +4467,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     thread_test.cpp
     tile_chunk_cache_test.cpp
     tile_run_store_test.cpp
+    tile_store_test.cpp
     time_test.cpp
     timestamp_test.cpp
     unix_test.cpp
@@ -4598,6 +4606,9 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     ${TESTS}
     ${TESTS_EXTRA}
     ${TESTS_GRAPHICS}
+    # The map document, which is tested here and nowhere else for as long as
+    # it has nobody to draw it. Empty in a build without the client.
+    ${GAME_MAP_DOCUMENT}
     # tidy-alphabetical-start
     $<TARGET_OBJECTS:engine-gfx>
     $<TARGET_OBJECTS:engine-net>

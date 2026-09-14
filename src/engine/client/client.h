@@ -319,7 +319,7 @@ public:
 
 	bool ConnectionProblems() const override;
 
-	IGraphics::CTextureHandle GetDebugFont() const override { return m_DebugFont; }
+	IGraphics::CTextureHandle GetDebugFont() override;
 
 	void SendInput();
 
@@ -352,8 +352,6 @@ public:
 	const CServerInfo &ServerInfo() const override;
 	void ServerInfoRequest();
 	void SetCurrentServerInfo(const CServerInfo &ServerInfo);
-
-	void LoadDebugFont();
 
 	// ---
 

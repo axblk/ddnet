@@ -60,6 +60,10 @@ public:
 	bool StartupAssetsLoaded() const;
 
 private:
+	// The index, while it is being read. Until it is here the list holds the
+	// default flag alone: the index is a file like any other, and reading it
+	// where it is needed would be the main thread waiting for the network.
+	CTypedAssetResource<CTextAssetJob> m_IndexResource;
 	std::vector<CCountryFlag> m_vCountryFlags;
 	size_t m_aCountryCodeToIndexTable[CountryCode::MAXIMUM - CountryCode::MINIMUM + 1];
 
@@ -68,7 +72,10 @@ private:
 	bool m_LoadsPending = true;
 
 	static bool ValidateCountryCodeString(const char *pString);
-	void LoadCountryflagsIndexfile();
+	void StartLoadingIndexfile();
+	void ParseIndexfile(const char *pIndex);
+	void AddDefaultFlag();
+	void BuildCountryCodeTable();
 	void StartPendingLoads();
 	void FinishLoads();
 };

@@ -6,6 +6,7 @@
 #include <base/io.h>
 #include <base/log.h>
 #include <base/math.h>
+#include <base/mem.h>
 #include <base/str.h>
 
 #include <engine/client/asset_loader.h>
@@ -16,9 +17,16 @@
 
 #include <game/client/gameclient.h>
 
+#include <algorithm>
+#include <cstdlib>
+#include <memory>
+#include <string>
+#include <string_view>
+
 namespace
 {
 	constexpr size_t MAX_CONCURRENT_COUNTRY_FLAG_LOADS = 16;
+	constexpr const char *COUNTRY_FLAGS_INDEX_PATH = "countryflags/index.txt";
 }
 
 bool CCountryFlags::CCountryFlag::RequestLoad() const
@@ -57,13 +65,71 @@ bool CCountryFlags::ValidateCountryCodeString(const char *pString)
 	return true;
 }
 
-void CCountryFlags::LoadCountryflagsIndexfile()
+void CCountryFlags::StartLoadingIndexfile()
 {
 	m_vCountryFlags.clear();
+	// Whoever draws a flag before the index is here gets the default one,
+	// which is what an unknown country is drawn as anyway.
+	AddDefaultFlag();
+	BuildCountryCodeTable();
+	m_IndexResource = GameClient()->AssetLoader().Load(std::make_shared<CTextAssetJob>(Storage(), COUNTRY_FLAGS_INDEX_PATH, IStorage::TYPE_ALL, CGameClient::ASSET_OWNER_COUNTRY_FLAGS, m_Generation));
+}
 
-	const char *pFilename = "countryflags/index.txt";
+void CCountryFlags::AddDefaultFlag()
+{
+	const auto ExistingDefaultFlag = std::find_if(m_vCountryFlags.begin(), m_vCountryFlags.end(), [](const CCountryFlag &Flag) {
+		return Flag.m_CountryCode == CountryCode::DEFAULT;
+	});
+	if(ExistingDefaultFlag != m_vCountryFlags.end())
+		return;
+	CCountryFlag DefaultFlag;
+	DefaultFlag.m_CountryCode = CountryCode::DEFAULT;
+	str_copy(DefaultFlag.m_aCountryCodeString, "default");
+	DefaultFlag.m_State = CCountryFlag::EState::PENDING;
+	m_vCountryFlags.push_back(DefaultFlag);
+}
+
+void CCountryFlags::BuildCountryCodeTable()
+{
+	std::sort(m_vCountryFlags.begin(), m_vCountryFlags.end());
+
+	size_t DefaultIndex = 0;
+	for(size_t Index = 0; Index < m_vCountryFlags.size(); ++Index)
+	{
+		if(m_vCountryFlags[Index].m_CountryCode == CountryCode::DEFAULT)
+		{
+			DefaultIndex = Index;
+			break;
+		}
+	}
+
+	std::fill(std::begin(m_aCountryCodeToIndexTable), std::end(m_aCountryCodeToIndexTable), DefaultIndex);
+	for(size_t i = 0; i < m_vCountryFlags.size(); ++i)
+	{
+		m_aCountryCodeToIndexTable[m_vCountryFlags[i].m_CountryCode - CountryCode::MINIMUM] = i;
+	}
+	// The default flag is the one every unknown country is drawn as, so it is
+	// asked for whether anybody drew a flag or not. What it already is - on its
+	// way, or here - it stays.
+	CCountryFlag &DefaultFlag = m_vCountryFlags[DefaultIndex];
+	if(DefaultFlag.m_State == CCountryFlag::EState::UNLOADED)
+		DefaultFlag.m_State = CCountryFlag::EState::PENDING;
+	m_LoadsPending = true;
+}
+
+void CCountryFlags::ParseIndexfile(const char *pIndex)
+{
+	// The default flag is already in the list and may have been drawn, so it
+	// keeps whatever state it has; the index only adds to it.
+	// The line reader takes the buffer and frees it, so it gets one of its own
+	// rather than the bytes the job read.
+	const size_t Length = str_length(pIndex);
+	char *pBuffer = static_cast<char *>(malloc(Length + 1));
+	if(pBuffer == nullptr)
+		return;
+	mem_copy(pBuffer, pIndex, Length + 1);
 	CLineReader LineReader;
-	if(LineReader.OpenFile(Storage()->OpenFile(pFilename, IOFLAG_READ, IStorage::TYPE_ALL)))
+	LineReader.OpenBuffer(pBuffer);
 	{
 		while(const char *pLine = LineReader.Get())
 		{
@@ -109,53 +175,19 @@ void CCountryFlags::LoadCountryflagsIndexfile()
 				continue;
 			}
 
+			if(CountryFlag.m_CountryCode == CountryCode::DEFAULT)
+				continue;
 			m_vCountryFlags.push_back(CountryFlag);
 		}
 	}
-	else
-	{
-		log_error("countryflags", "Failed to open country flags index file '%s'", pFilename);
-	}
 
-	// Ensure a default flag exists
-	auto ExistingDefaultFlag = std::find_if(m_vCountryFlags.begin(), m_vCountryFlags.end(), [](const CCountryFlag &Flag) {
-		return Flag.m_CountryCode == CountryCode::DEFAULT;
-	});
-	if(ExistingDefaultFlag == m_vCountryFlags.end())
-	{
-		CCountryFlag DefaultFlag;
-		DefaultFlag.m_CountryCode = CountryCode::DEFAULT;
-		str_copy(DefaultFlag.m_aCountryCodeString, "default");
-		DefaultFlag.m_State = CCountryFlag::EState::PENDING;
-		m_vCountryFlags.push_back(DefaultFlag);
-	}
-
-	std::sort(m_vCountryFlags.begin(), m_vCountryFlags.end());
-
-	size_t DefaultIndex = 0;
-	for(size_t Index = 0; Index < m_vCountryFlags.size(); ++Index)
-	{
-		if(m_vCountryFlags[Index].m_CountryCode == CountryCode::DEFAULT)
-		{
-			DefaultIndex = Index;
-			break;
-		}
-	}
-
-	std::fill(std::begin(m_aCountryCodeToIndexTable), std::end(m_aCountryCodeToIndexTable), DefaultIndex);
-	for(size_t i = 0; i < m_vCountryFlags.size(); ++i)
-	{
-		m_aCountryCodeToIndexTable[m_vCountryFlags[i].m_CountryCode - CountryCode::MINIMUM] = i;
-	}
-	m_vCountryFlags[DefaultIndex].m_State = CCountryFlag::EState::PENDING;
-	m_LoadsPending = true;
-
+	BuildCountryCodeTable();
 	log_debug("countryflags", "Loaded %" PRIzu " country flags", m_vCountryFlags.size());
 }
 
 void CCountryFlags::OnInit()
 {
-	LoadCountryflagsIndexfile();
+	StartLoadingIndexfile();
 
 	m_FlagsQuadContainerIndex = Graphics()->CreateQuadContainer(false);
 	Graphics()->SetColor(1.0f, 1.0f, 1.0f, 1.0f);
@@ -166,6 +198,21 @@ void CCountryFlags::OnInit()
 
 void CCountryFlags::OnUpdate()
 {
+	if(m_IndexResource && m_IndexResource.IsFinished())
+	{
+		if(m_IndexResource.IsReady(m_Generation))
+		{
+			const std::string_view Index = m_IndexResource.Result().Text();
+			const std::string NullTerminated(Index);
+			ParseIndexfile(NullTerminated.c_str());
+		}
+		else
+		{
+			log_error("countryflags", "Failed to open country flags index file '%s'", COUNTRY_FLAGS_INDEX_PATH);
+		}
+		m_IndexResource.Reset();
+	}
+
 	// Both passes walk every known flag, so they must not run once all of them
 	// are resident. Rendering a flag that is not loaded yet asks for them again.
 	if(!m_LoadsPending)
@@ -184,6 +231,7 @@ void CCountryFlags::OnShutdown()
 		Graphics()->UnloadTexture(&CountryFlag.m_Texture);
 	}
 	m_vCountryFlags.clear();
+	m_IndexResource.Reset();
 }
 
 void CCountryFlags::StartPendingLoads()

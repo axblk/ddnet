@@ -23,11 +23,11 @@ void CFontTyper::CState::Reset()
 	m_TilesPlacedSinceActivate = 0;
 }
 
-void CFontTyper::OnInit(CEditor *pEditor)
+IGraphics::CTextureHandle CFontTyper::CursorTextTexture()
 {
-	CEditorComponent::OnInit(pEditor);
-
-	m_CursorTextTexture = pEditor->Graphics()->LoadTexture("editor/cursor_text.png", IStorage::TYPE_ALL, 0);
+	if(!m_CursorTextTexture.IsValid())
+		m_CursorTextTexture = Graphics()->LoadTexture("editor/cursor_text.png", IStorage::TYPE_ALL, 0);
+	return m_CursorTextTexture;
 }
 
 void CFontTyper::SetTile(ivec2 Pos, unsigned char Index, const std::shared_ptr<CLayerTiles> &pLayer)
@@ -344,7 +344,7 @@ void CFontTyper::Render()
 		std::shared_ptr<CLayerGroup> pGroup = Map()->SelectedGroup();
 		pGroup->MapScreen();
 		Graphics()->WrapClamp();
-		Graphics()->TextureSet(m_CursorTextTexture);
+		Graphics()->TextureSet(CursorTextTexture());
 		Graphics()->QuadsBegin();
 		Graphics()->SetColor(1, 1, 1, 1);
 		IGraphics::CQuadItem QuadItem(State.m_TextIndex.x * 32, State.m_TextIndex.y * 32, 32.0f, 32.0f);

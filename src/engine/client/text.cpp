@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <string>
@@ -48,6 +49,7 @@ enum
 // owner it ever has.
 constexpr int ASSET_OWNER_FONTS = 0;
 constexpr uint64_t FONT_ASSET_GENERATION = 1;
+constexpr const char *FONT_INDEX_PATH = "fonts/index.json";
 
 struct SGlyph
 {
@@ -348,6 +350,7 @@ private:
 	FT_Face m_VariantFace = nullptr;
 	FT_Face m_SelectedFace = nullptr;
 	std::vector<FT_Face> m_vFallbackFaces;
+	std::function<void()> m_GlyphMissingCallback;
 	std::vector<FT_Face> m_vFtFaces;
 
 	FT_Face GetFaceByName(const char *pFamilyName)
@@ -447,6 +450,11 @@ private:
 					return GlyphIndex;
 				}
 			}
+		}
+
+		if(Chr != REPLACEMENT_CHARACTER && m_GlyphMissingCallback)
+		{
+			m_GlyphMissingCallback();
 		}
 
 		if(!m_DefaultFace || !m_DefaultFace->charmap || !AllowReplacementCharacter)
@@ -623,6 +631,16 @@ public:
 		{
 			delete[] pTextureData;
 		}
+	}
+
+	/**
+	 * Called when a character is asked for that none of the faces here has.
+	 * That is what the fallback fonts are for, so it is also the moment to read
+	 * the ones that are only read when something needs them.
+	 */
+	void SetGlyphMissingCallback(std::function<void()> Callback)
+	{
+		m_GlyphMissingCallback = std::move(Callback);
 	}
 
 	FT_Face DefaultFace() const
@@ -1039,7 +1057,11 @@ class CTextRender : public IEngineTextRender
 	CFontIndex m_FontIndex;
 	CFontLoadProgress m_FontLoadProgress;
 	std::vector<CTypedAssetResource<CFontAssetJob>> m_vFontFileResources;
+	CTypedAssetResource<CTextAssetJob> m_FontIndexResource;
 	std::vector<CTypedAssetResource<CFontAssetJob>> m_vDeferredFontFileResources;
+	// The deferred files that nobody has asked for yet, with the families they
+	// bring. They are read when one of those is wanted and never otherwise.
+	std::vector<CFontIndex::SDeferredFontFile> m_vUnrequestedFontFiles;
 	size_t m_ReportedFontFileCount;
 	// Which language the variant face was last picked for, so that a variant
 	// whose font only arrives later is still put in place.
@@ -1121,45 +1143,63 @@ class CTextRender : public IEngineTextRender
 	}
 
 	/**
-	 * Starts reading the font files listed in the font index.
+	 * Starts reading the font index, and with it the font files it names.
 	 *
-	 * The index itself is a few hundred bytes and decides which font files to
-	 * read, so it is read here. The font files are tens of megabytes and are read
-	 * and turned into font faces by worker threads.
+	 * The index is a few hundred bytes and decides which font files to read,
+	 * but on a client that fetches its files it is a request like any other -
+	 * read here it would be the main thread waiting for the network. So it is
+	 * read by the loader like everything else, and what it names is asked for
+	 * once it is there.
 	 */
 	void LoadFontsAsync()
 	{
 		dbg_assert(m_FontLoadProgress.State() == CFontLoadProgress::EState::IDLE, "Fonts were already loaded");
 
-		const char *pFilename = "fonts/index.json";
-		void *pFileData;
-		unsigned JsonFileSize;
+		m_FontLoadProgress.BeginLoadingIndex();
+		m_ReportedFontFileCount = 0;
+		m_FontIndexResource = m_FontLoader.Load(std::make_shared<CTextAssetJob>(Storage(), FONT_INDEX_PATH, IStorage::TYPE_ALL, ASSET_OWNER_FONTS, FONT_ASSET_GENERATION));
+		PollFontLoading();
+	}
+
+	/**
+	 * Takes the font index once it has been read and asks for the files it
+	 * names.
+	 */
+	void LoadFontFiles()
+	{
 		bool IndexSuccess = false;
-		if(Storage()->ReadFile(pFilename, IStorage::TYPE_ALL, &pFileData, &JsonFileSize))
+		if(m_FontIndexResource.IsReady(FONT_ASSET_GENERATION))
 		{
-			IndexSuccess = m_FontIndex.Parse(static_cast<const char *>(pFileData), JsonFileSize, pFilename);
-			free(pFileData);
+			const std::string_view Text = m_FontIndexResource.Result().Text();
+			IndexSuccess = m_FontIndex.Parse(Text.data(), Text.size(), FONT_INDEX_PATH);
 		}
 		else
 		{
-			log_error("textrender", "Failed to open/read font index file '%s'", pFilename);
+			log_error("textrender", "Failed to open/read font index file '%s'", FONT_INDEX_PATH);
 		}
+		m_FontIndexResource.Reset();
 
-		m_FontLoadProgress.BeginLoading(m_FontIndex.m_vFontFilePaths.size(), IndexSuccess);
-		m_ReportedFontFileCount = 0;
 		m_vFontFileResources.reserve(m_FontIndex.m_vFontFilePaths.size());
 		for(const std::string &FontFilePath : m_FontIndex.m_vFontFilePaths)
 		{
 			m_vFontFileResources.push_back(m_FontLoader.Load(std::make_shared<CFontAssetJob>(Storage(), FontFilePath.c_str())));
 		}
-		// The deferred files are asked for at the same time. Only the waiting
-		// is different: these are taken whenever they turn up, in `Update`.
-		m_vDeferredFontFileResources.reserve(m_FontIndex.m_vDeferredFontFilePaths.size());
-		for(const std::string &FontFilePath : m_FontIndex.m_vDeferredFontFilePaths)
+		// The deferred files are not waited for, and the ones that say which
+		// families they bring are not even read until one of them is wanted:
+		// the three of them are thirty megabytes, and a session that draws
+		// neither an icon nor a Japanese name needs none of it. They are taken
+		// whenever they turn up, in `Update`.
+		m_vUnrequestedFontFiles.clear();
+		for(const CFontIndex::SDeferredFontFile &DeferredFontFile : m_FontIndex.m_vDeferredFontFiles)
 		{
-			m_vDeferredFontFileResources.push_back(m_FontLoader.Load(std::make_shared<CFontAssetJob>(Storage(), FontFilePath.c_str())));
+			if(!DeferredFontFile.m_vFamilyNames.empty())
+			{
+				m_vUnrequestedFontFiles.push_back(DeferredFontFile);
+				continue;
+			}
+			m_vDeferredFontFileResources.push_back(m_FontLoader.Load(std::make_shared<CFontAssetJob>(Storage(), DeferredFontFile.m_Path.c_str())));
 		}
-		PollFontLoading();
+		m_FontLoadProgress.IndexLoaded(m_vFontFileResources.size(), IndexSuccess);
 	}
 
 	/**
@@ -1172,6 +1212,12 @@ class CTextRender : public IEngineTextRender
 			return;
 
 		m_FontLoader.Update();
+		if(m_FontLoadProgress.WaitingForIndex())
+		{
+			if(!m_FontIndexResource.IsFinished())
+				return;
+			LoadFontFiles();
+		}
 		while(m_ReportedFontFileCount < m_vFontFileResources.size() && m_vFontFileResources[m_ReportedFontFileCount].IsFinished())
 		{
 			m_FontLoadProgress.ReportFile(m_vFontFileResources[m_ReportedFontFileCount].IsReady(FONT_ASSET_GENERATION));
@@ -1254,15 +1300,62 @@ class CTextRender : public IEngineTextRender
 		m_FontLoadProgress.Commit(SelectFaces() && Success);
 	}
 
+	/**
+	 * Whether any deferred font file is still on its way or has not been asked
+	 * for at all. A face that one of those brings is not missing, it is late -
+	 * or it is one that nobody has needed so far.
+	 */
+	bool DeferredFontsPending() const
+	{
+		return !m_vDeferredFontFileResources.empty() || !m_vUnrequestedFontFiles.empty();
+	}
+
+	/**
+	 * Reads the deferred font file that brings the given font family, if there
+	 * is one and it has not been asked for already.
+	 */
+	/**
+	 * Reads the fallback fonts, because something was drawn that none of the
+	 * faces here has a glyph for. Which of them holds it is not known until it
+	 * is read, so the fallbacks are read and the character is drawn as the
+	 * replacement one until they are there.
+	 */
+	void RequestFallbackFonts()
+	{
+		for(const std::string &FallbackFamilyName : m_FontIndex.m_vFallbackFamilyNames)
+		{
+			RequestFontFamily(FallbackFamilyName.c_str());
+		}
+	}
+
+	void RequestFontFamily(const char *pFamilyName)
+	{
+		if(pFamilyName == nullptr || pFamilyName[0] == '\0')
+			return;
+		for(auto It = m_vUnrequestedFontFiles.begin(); It != m_vUnrequestedFontFiles.end(); ++It)
+		{
+			if(std::none_of(It->m_vFamilyNames.begin(), It->m_vFamilyNames.end(), [&](const std::string &FamilyName) { return str_comp(FamilyName.c_str(), pFamilyName) == 0; }))
+				continue;
+			log_debug("textrender", "Reading font file '%s' for font family '%s'", It->m_Path.c_str(), pFamilyName);
+			m_vDeferredFontFileResources.push_back(m_FontLoader.Load(std::make_shared<CFontAssetJob>(Storage(), It->m_Path.c_str())));
+			m_vUnrequestedFontFiles.erase(It);
+			return;
+		}
+	}
+
 	void SelectLanguageVariant()
 	{
 		for(const auto &Variant : m_FontIndex.m_vLanguageVariants)
 		{
 			if(str_comp(m_aLanguageFile, Variant.m_LanguageFile.c_str()) == 0)
 			{
+				// The language decides which of the deferred files is worth
+				// reading: one language variant each, and the rest stays where
+				// it is.
+				RequestFontFamily(Variant.m_FamilyName.c_str());
 				// A variant whose font file is still on its way is put in
 				// place by `Update` once it is there.
-				if(m_vDeferredFontFileResources.empty() || m_pGlyphMap->HasFaceByName(Variant.m_FamilyName.c_str()))
+				if(!DeferredFontsPending() || m_pGlyphMap->HasFaceByName(Variant.m_FamilyName.c_str()))
 				{
 					m_pGlyphMap->SetVariantFaceByName(Variant.m_FamilyName.c_str());
 				}
@@ -1286,7 +1379,7 @@ class CTextRender : public IEngineTextRender
 		// A face whose font file has not arrived yet is not missing, it is
 		// late: it is picked once it is there, and only what is missing when
 		// nothing more is coming is an error.
-		const bool AllFontsHere = m_vDeferredFontFileResources.empty();
+		const bool AllFontsHere = !DeferredFontsPending();
 		bool Success = true;
 		if(!m_FontIndex.m_DefaultFamilyName.empty() && !m_pGlyphMap->SetDefaultFaceByName(m_FontIndex.m_DefaultFamilyName.c_str()))
 		{
@@ -1362,6 +1455,9 @@ public:
 		m_pStorage = Kernel()->RequestInterface<IStorage>();
 		FT_Init_FreeType(&m_FTLibrary);
 		m_pGlyphMap = new CGlyphMap(m_pGraphics);
+		// A character that none of the loaded faces has is the one sign that
+		// the fallback fonts are needed after all.
+		m_pGlyphMap->SetGlyphMissingCallback([this]() { RequestFallbackFonts(); });
 
 		// print freetype version
 		{
@@ -1439,8 +1535,10 @@ public:
 		// here, and nothing else waits for one.
 		EnsureFontsLoaded();
 		m_FontLoader.Shutdown();
+		m_FontIndexResource.Reset();
 		m_vFontFileResources.clear();
 		m_vDeferredFontFileResources.clear();
+		m_vUnrequestedFontFiles.clear();
 
 		for(auto *pTextCont : m_vpTextContainers)
 			delete pTextCont;
@@ -1463,7 +1561,7 @@ public:
 		m_pStorage = nullptr;
 	}
 
-	bool WaitForFonts() override
+	bool WaitForFonts(const std::function<void()> &Pump = {}) override
 	{
 		if(m_FontLoadProgress.State() == CFontLoadProgress::EState::IDLE)
 			return false;
@@ -1471,6 +1569,8 @@ public:
 		while(m_FontLoadProgress.Loading())
 		{
 			PollFontLoading();
+			if(Pump)
+				Pump();
 			if(m_FontLoadProgress.Loading())
 				std::this_thread::sleep_for(1ms);
 		}
@@ -1480,6 +1580,12 @@ public:
 	void SetFontPreset(EFontPreset FontPreset) override
 	{
 		EnsureFontsLoaded();
+		// The icons are a font of their own, and a viewer that draws none of
+		// them never reads it.
+		if(FontPreset == EFontPreset::ICON_FONT)
+		{
+			RequestFontFamily(m_FontIndex.m_IconFamilyName.c_str());
+		}
 		m_pGlyphMap->SetFontPreset(FontPreset);
 	}
 

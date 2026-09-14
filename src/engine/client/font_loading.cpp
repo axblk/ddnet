@@ -12,7 +12,7 @@
 void CFontIndex::Reset()
 {
 	m_vFontFilePaths.clear();
-	m_vDeferredFontFilePaths.clear();
+	m_vDeferredFontFiles.clear();
 	m_DefaultFamilyName.clear();
 	m_IconFamilyName.clear();
 	m_vFallbackFamilyNames.clear();
@@ -68,8 +68,59 @@ bool CFontIndex::Parse(const char *pJson, unsigned Length, const char *pContextN
 		}
 	};
 	ExtractFontFiles("font files", m_vFontFilePaths, true);
+
 	// The client starts without these, so an index that names none is fine.
-	ExtractFontFiles("deferred font files", m_vDeferredFontFilePaths, false);
+	// Either a file name on its own, or an object that also says which font
+	// families the file brings - and one that says so is only read when one of
+	// them is wanted, which for twenty megabytes of glyphs that most sessions
+	// never draw is the difference between fetching them and not.
+	const json_value &DeferredFontFiles = (*pJsonData)["deferred font files"];
+	if(DeferredFontFiles.type == json_array)
+	{
+		for(unsigned FontFileIndex = 0; FontFileIndex < DeferredFontFiles.u.array.length; ++FontFileIndex)
+		{
+			const json_value &Entry = DeferredFontFiles[FontFileIndex];
+			const json_value &FileName = Entry.type == json_object ? Entry["file"] : Entry;
+			if(FileName.type != json_string)
+			{
+				log_error("textrender", "Font index malformed: 'deferred font files' must be an array of strings or of objects with a 'file' (error at index %d)", FontFileIndex);
+				Success = false;
+				continue;
+			}
+			SDeferredFontFile DeferredFontFile;
+			char aFontPath[IO_MAX_PATH_LENGTH];
+			str_format(aFontPath, sizeof(aFontPath), "fonts/%s", FileName.u.string.ptr);
+			DeferredFontFile.m_Path = aFontPath;
+			if(Entry.type == json_object)
+			{
+				const json_value &Families = Entry["families"];
+				if(Families.type == json_array)
+				{
+					for(unsigned FamilyIndex = 0; FamilyIndex < Families.u.array.length; ++FamilyIndex)
+					{
+						if(Families[FamilyIndex].type != json_string)
+						{
+							log_error("textrender", "Font index malformed: 'families' must be an array of strings (error at index %d of deferred font file %d)", FamilyIndex, FontFileIndex);
+							Success = false;
+							continue;
+						}
+						DeferredFontFile.m_vFamilyNames.emplace_back(Families[FamilyIndex].u.string.ptr);
+					}
+				}
+				else if(Families.type != json_none)
+				{
+					log_error("textrender", "Font index malformed: 'families' must be an array (error at index %d of 'deferred font files')", FontFileIndex);
+					Success = false;
+				}
+			}
+			m_vDeferredFontFiles.push_back(std::move(DeferredFontFile));
+		}
+	}
+	else if(DeferredFontFiles.type != json_none)
+	{
+		log_error("textrender", "Font index malformed: 'deferred font files' must be an array");
+		Success = false;
+	}
 
 	// extract default family name
 	const json_value &DefaultFace = (*pJsonData)["default"];
@@ -149,6 +200,7 @@ bool CFontIndex::Parse(const char *pJson, unsigned Length, const char *pContextN
 void CFontLoadProgress::Reset()
 {
 	m_State = EState::IDLE;
+	m_IndexLoaded = false;
 	m_IndexSuccess = true;
 	m_FacesSuccess = true;
 	m_FileCount = 0;
@@ -156,20 +208,29 @@ void CFontLoadProgress::Reset()
 	m_FailedFileCount = 0;
 }
 
-void CFontLoadProgress::BeginLoading(size_t FileCount, bool IndexSuccess)
+void CFontLoadProgress::BeginLoadingIndex()
 {
 	dbg_assert(m_State == EState::IDLE, "Font loading was already started");
 	m_State = EState::LOADING;
-	m_IndexSuccess = IndexSuccess;
+	m_IndexLoaded = false;
+	m_IndexSuccess = true;
 	m_FacesSuccess = true;
-	m_FileCount = FileCount;
+	m_FileCount = 0;
 	m_FinishedFileCount = 0;
 	m_FailedFileCount = 0;
 }
 
+void CFontLoadProgress::IndexLoaded(size_t FileCount, bool IndexSuccess)
+{
+	dbg_assert(WaitingForIndex(), "Font index reported while none was being read");
+	m_IndexLoaded = true;
+	m_IndexSuccess = IndexSuccess;
+	m_FileCount = FileCount;
+}
+
 void CFontLoadProgress::ReportFile(bool Success)
 {
-	dbg_assert(m_State == EState::LOADING, "Font file reported while no font files were being loaded");
+	dbg_assert(m_State == EState::LOADING && m_IndexLoaded, "Font file reported while no font files were being loaded");
 	dbg_assert(m_FinishedFileCount < m_FileCount, "More font files reported than were being loaded");
 	++m_FinishedFileCount;
 	if(!Success)

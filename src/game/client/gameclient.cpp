@@ -380,7 +380,10 @@ void CGameClient::OnInit()
 	for(int i = 0; i < OLD_NUM_NETOBJTYPES; i++)
 		Client()->SnapSetStaticsize7(i, m_NetObjHandler7.GetObjSize(i));
 
-	if(!TextRender()->WaitForFonts())
+	// The wait is the length of a request where the files are fetched, and
+	// everything else that arrives in that time - a hundred sounds, the core
+	// images - would otherwise sit in the loader until the wait is over.
+	if(!TextRender()->WaitForFonts([this]() { m_AssetLoader.Update(); }))
 	{
 		Client()->AddWarning(SWarning(Localize("Some fonts could not be loaded. Check the local console for details.")));
 	}

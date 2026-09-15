@@ -411,9 +411,15 @@ int main(int argc, const char **argv)
 			const bool FullMap = Requests.m_ExportFullMap;
 			Requests.m_ExportView = false;
 			Requests.m_ExportFullMap = false;
+			if(FullMap)
+			{
+				// The frame that was just drawn goes on the screen first. What
+				// follows draws the map in pieces into a target of its own, so
+				// the window goes on showing the view all the while, and this
+				// is the frame it shows.
+				pGraphics->Swap();
+			}
 			ExportForPage(FullMap);
-			// The full export drew the map in pieces, so what is on the screen
-			// is the last of them and not what the view was showing.
 			continue;
 		}
 #endif

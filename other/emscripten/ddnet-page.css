@@ -52,6 +52,11 @@ button[disabled] {
 	border: 0;
 	overflow: hidden;
 	display: block;
+	/* The canvas is there from the first moment and covers the page, so that
+	   starting shows nothing at all rather than the page's own decoration for
+	   as long as it takes. Black, because a canvas nothing has drawn on yet is
+	   see-through. */
+	background-color: #000;
 }
 #output {
 	position: sticky;

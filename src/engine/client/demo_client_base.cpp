@@ -4,6 +4,7 @@
 
 #include <base/fs.h>
 #include <base/log.h>
+#include <base/math.h>
 #include <base/str.h>
 #include <base/time.h>
 
@@ -155,6 +156,34 @@ void CDemoClientBase::ScaleZoom(float Factor)
 float CDemoClientBase::Zoom() const
 {
 	return Game()->m_Camera.Zoom();
+}
+
+// What the zoom is when nobody has touched it. Both of these ask the camera
+// rather than remembering anything: a zoom that was asked for but refused -
+// past the far end of what is allowed - leaves the camera where it was, and a
+// note of our own would claim otherwise.
+static float DefaultZoom()
+{
+	return CCamera::ZoomStepsToValue(g_Config.m_ClDefaultZoom - 10);
+}
+
+void CDemoClientBase::ResetZoom()
+{
+	CCamera &Camera = Game()->m_Camera;
+	if(Camera.ZoomAllowed())
+	{
+		Camera.SetZoom(DefaultZoom(), g_Config.m_ClSmoothZoomTime, true);
+	}
+}
+
+bool CDemoClientBase::ZoomChanged() const
+{
+	const CCamera &Camera = Game()->m_Camera;
+	// Not exactly, because the way back is a row of multiplications: zooming
+	// in and out again by the same number of notches lands a hair beside where
+	// it started, and a button that stays over that hair is a button that
+	// never goes away.
+	return Camera.ZoomAllowed() && absolute(Camera.UserZoomTarget() - DefaultZoom()) > 0.001f * DefaultZoom();
 }
 
 bool CDemoClientBase::RecordedCameraAvailable() const

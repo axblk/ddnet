@@ -68,7 +68,10 @@ ddnet-map::part(message) { font-family: monospace; }
 
 `controls` is the bar the viewer draws for itself; without it the element shows
 nothing but the picture, and the page steers it through `element.controls`,
-which is the same `demoControls`/`mapControls` handle as above. The attributes
+which is the same `demoControls`/`mapControls` handle as above. `nozoom` takes
+the wheel, the zoom keys and the pinch off a demo, for a page that scrolls
+around the viewer or wants the demo at one size and no other; the page can
+still zoom it itself through `element.controls.zoom(factor)`. The attributes
 beyond `src` are the ones the viewer pages spell in their address — `t`,
 `speed`, `paused`, `spec` for a demo, `x`, `y`, `tiles` for a map — so a link
 somebody copied out of a viewer and an element somebody wrote by hand say the

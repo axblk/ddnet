@@ -46,7 +46,7 @@ const DDNetLoader = (() => {
 	const START_OPTIONS = [
 		"accept", "acceptLinks", "arguments", "canvas", "controls", "dataBase", "file", "fileArgument",
 		"fileName", "homePath", "module", "needsWebGpu", "onExit", "onOutput", "onProgress", "persist",
-		"programName", "scriptUrl", "signal", "sweepVideoScratch", "urlParams", "videoSink",
+		"programName", "scriptUrl", "signal", "sweepVideoScratch", "urlParams", "videoSink", "zoom",
 	];
 	const PAGE_OPTIONS = START_OPTIONS.concat(["elements"]);
 	// A render takes what the command line of the render tool takes, plus the
@@ -68,7 +68,7 @@ const DDNetLoader = (() => {
 		onProgress: "function", onRenderProgress: "function", onStart: "function", output: "string",
 		persist: "boolean", preset: "string", programName: "string", scriptUrl: "string", settings: "array",
 		signal: "signal", sweepVideoScratch: "boolean", urlParams: "array", width: "number",
-		worker: "boolean",
+		worker: "boolean", zoom: "boolean",
 	};
 
 	// What a shape is called when it is being asked for, so that a complaint
@@ -402,6 +402,7 @@ const DDNetLoader = (() => {
 		eye: '<path d="M12 4.6C5.6 4.6 1.8 12 1.8 12s3.8 7.4 10.2 7.4S22.2 12 22.2 12 18.4 4.6 12 4.6Z"/><circle cx="12" cy="12" r="2.7" fill="#000"/>',
 		freeview: '<path d="M12 1.6 15.2 6.2H8.8ZM12 22.4 8.8 17.8h6.4ZM1.6 12 6.2 8.8v6.4ZM22.4 12 17.8 15.2V8.8Z"/><rect x="10.9" y="4.6" width="2.2" height="14.8" rx="1.1"/><rect x="4.6" y="10.9" width="14.8" height="2.2" rx="1.1"/>',
 		fullscreen: '<path d="M3.4 9.6V3.4h6.2M20.6 9.6V3.4h-6.2M3.4 14.4v6.2h6.2M20.6 14.4v6.2h-6.2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
+		zoom_reset: '<path d="M9.6 3.4v6.2H3.4M14.4 3.4v6.2h6.2M9.6 20.6v-6.2H3.4M14.4 20.6v-6.2h6.2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
 	};
 
 	function icon(name) {
@@ -1242,9 +1243,12 @@ const DDNetLoader = (() => {
 				// by `webfs`, see `src/base/webfs.h`.
 				ddnetDataBase: options.dataBase || (program === null ? undefined : new URL(".", program.base).href),
 				// A viewer draws its own controls unless the page says it has
-				// its own. Said here rather than switched off once it runs, so
-				// that a bar the page does not want is never drawn at all.
-				arguments: (options.controls === false ? ["--no-controls"] : []).concat(options.arguments || []),
+				// its own, and zooms what it shows unless the page wants the
+				// wheel for itself. Said here rather than switched off once it
+				// runs, so that neither is ever there to begin with.
+				arguments: (options.controls === false ? ["--no-controls"] : [])
+					.concat(options.zoom === false ? ["--no-zoom"] : [])
+					.concat(options.arguments || []),
 				print: text => {
 					const parsedLine = parseAnsiColorRgb(text);
 					console.log(parsedLine.message);
@@ -1734,6 +1738,27 @@ self.onmessage = async event => {
 				? number("DemoPlayerZoom")
 				: number("DemoPlayerZoomBy", Factor),
 			/**
+			 * Puts the zoom back where the demo started, and says whether
+			 * there is anything to put back. Whoever turned the wheel a few
+			 * times has no way back of their own, so a page with controls of
+			 * its own offers one - while `zoomChanged()` says there is
+			 * something to undo, the way the viewer's own bar does it.
+			 */
+			resetZoom: () => instance.call("DemoPlayerResetZoom"),
+			zoomChanged: () => number("DemoPlayerZoomChanged") !== 0,
+			/**
+			 * Whether the wheel over the canvas, the zoom keys and two fingers
+			 * on the picture zoom the demo, or switches that off. A page that
+			 * scrolls around the viewer wants the wheel for itself, and one
+			 * that shows a demo at one size and no other wants none of it.
+			 * `zoom(Factor)` still works either way - this is only about what
+			 * the viewer does on its own. Better with `zoom: false` at the
+			 * start, which leaves it off from the first frame.
+			 */
+			zoomEnabled: Enable => Enable === undefined
+				? number("DemoPlayerZoomEnabled") === 1
+				: instance.call("DemoPlayerSetZoomEnabled", null, ["number"], [Enable ? 1 : 0]),
+			/**
 			 * Whether the demo's own view is available at all: a demo carries
 			 * where the camera was and how much of the world it had in it, but
 			 * only if it was recorded with one and only while somebody is
@@ -2136,6 +2161,10 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 				// Drawn by the viewer itself unless this says otherwise, and
 				// left off entirely where the page says it brings its own.
 				controls: this.hasAttribute("controls"),
+				// The demo viewer zooms what it shows when the wheel is turned
+				// over it, which a page that scrolls around it does not want.
+				// The map viewer is not asked: there, zooming is the point.
+				zoom: kind.zoomable && this.hasAttribute("nozoom") ? false : undefined,
 				file: source === null || source === "" ? undefined : source,
 				dataBase: this.getAttribute("data") || undefined,
 				signal: this.viewerStopping.signal,
@@ -2212,17 +2241,23 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 	// page spells it: a link somebody copied out of the viewer and an element
 	// somebody wrote by hand say the same things by the same names.
 	class CDemoElement extends CViewerElement {
-		static observedAttributes = ["src", "controls", "t", "speed", "paused", "spec"];
+		static observedAttributes = ["src", "controls", "nozoom", "t", "speed", "paused", "spec"];
 		static viewerKind = {
 			script: "ddnet-demo-player.js",
 			moduleName: "DDNetDemoPlayer",
 			programName: "Demo player",
 			suffix: ".demo",
+			zoomable: true,
 			controls: instance => demoControls(instance),
 			loaded: controls => controls.length() > 0,
 			apply: (controls, name, value) => {
 				const number = parseFloat(value);
-				if (name === "t" && isFinite(number)) {
+				if (name === "nozoom") {
+					// Turned off while it is there, the way `controls` is on
+					// while it is there: an attribute nobody wrote is the
+					// viewer as it comes.
+					controls.zoomEnabled(value === null);
+				} else if (name === "t" && isFinite(number)) {
 					controls.seekTime(number);
 				} else if (name === "speed" && isFinite(number)) {
 					controls.speed(number);

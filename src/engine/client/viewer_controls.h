@@ -104,6 +104,11 @@ public:
 		MINUS,
 		PLUS,
 		FIT,
+		/**
+		 * Four corners closing inwards: the picture back at the size it
+		 * started at, which is the way back out of a zoom.
+		 */
+		ZOOM_RESET,
 		SAVE,
 		SAVE_ALL,
 		STOP,

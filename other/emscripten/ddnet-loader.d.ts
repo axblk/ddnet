@@ -71,6 +71,12 @@ export interface StartOptions {
 	fileArgument?: string;
 	/** Whether the viewer draws its own controls. A page with its own says `false`. */
 	controls?: boolean;
+	/**
+	 * Whether the demo viewer zooms on the wheel, the zoom keys and a pinch.
+	 * A page that scrolls around it says `false`; what it asks for through
+	 * `zoom(factor)` works either way.
+	 */
+	zoom?: boolean;
 	/** Anything else for the command line. */
 	arguments?: string[];
 	/** Where the program's script is, for one that is not beside the page. */
@@ -202,6 +208,12 @@ export interface DemoControls {
 	spectateStep(direction: number): void;
 	players(): { id: number; name: string }[];
 	zoom(factor?: number): number | null;
+	/** Puts the zoom back where the demo started. */
+	resetZoom(): void;
+	/** Whether there is anything for `resetZoom` to put back. */
+	zoomChanged(): boolean;
+	/** Whether the viewer zooms on the wheel, the zoom keys and a pinch. */
+	zoomEnabled(enable?: boolean): boolean | void;
 	recordedCameraAvailable(): boolean;
 	recordedCamera(use?: boolean): boolean | void;
 	controls(show?: boolean): boolean | void;
@@ -319,7 +331,7 @@ export declare class ViewerElement extends HTMLElement {
 	say(message: string): void;
 }
 
-/** `<ddnet-demo>`: `src`, `controls`, `t`, `speed`, `paused`, `spec`. */
+/** `<ddnet-demo>`: `src`, `controls`, `nozoom`, `t`, `speed`, `paused`, `spec`. */
 export declare class DemoElement extends ViewerElement {
 	readonly controls: DemoControls | null;
 }

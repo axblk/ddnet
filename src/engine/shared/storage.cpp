@@ -661,6 +661,47 @@ public:
 		}
 	}
 
+	bool FetchUrl(const char *pFilename, int Type, char *pBuffer, int BufferSize) override
+	{
+		dbg_assert(pBuffer != nullptr && BufferSize > 0, "FetchUrl needs a buffer");
+		pBuffer[0] = '\0';
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		TranslateType(Type, pFilename);
+		if(Type == TYPE_ABSOLUTE)
+			return false;
+		if(str_startswith(pFilename, "mapres/../skins/"))
+			pFilename = pFilename + str_length("mapres/../");
+		if(pFilename[0] == '/' || pFilename[0] == '\\' || str_find(pFilename, "../") != nullptr || str_find(pFilename, "..\\") != nullptr)
+			return false;
+		// The same order as OpenFile, so that a file the user saved is never
+		// passed over for a delivered one of the same name. A file that is
+		// found outside the data directory - in the save directory, which is
+		// the browser's own storage - has no address and is read as before.
+		char aBuffer[IO_MAX_PATH_LENGTH];
+		if(Type == TYPE_ALL)
+		{
+			for(int i = TYPE_SAVE; i < m_NumPaths; ++i)
+			{
+				const char *pComplete = GetPath(i, pFilename, aBuffer, sizeof(aBuffer));
+				if(fs_is_file(pComplete))
+					return webfs_url(pComplete, pBuffer, BufferSize);
+			}
+			return false;
+		}
+		if(Type >= TYPE_SAVE && Type < m_NumPaths)
+		{
+			const char *pComplete = GetPath(Type, pFilename, aBuffer, sizeof(aBuffer));
+			return fs_is_file(pComplete) && webfs_url(pComplete, pBuffer, BufferSize);
+		}
+		return false;
+#else
+		// Everywhere else a file is a file and is read where it lies.
+		(void)pFilename;
+		(void)Type;
+		return false;
+#endif
+	}
+
 	template<typename F>
 	bool GenericExists(const char *pFilename, int Type, F &&CheckFunction) const
 	{

@@ -272,12 +272,25 @@ public:
 class CAssetLoader
 {
 	IEngine *m_pEngine = nullptr;
+	IHttp *m_pHttp = nullptr;
 	size_t m_MaxConcurrentJobs = 0;
 	uint64_t m_NextRequestId = 1;
 	bool m_Shutdown = false;
 	std::vector<std::shared_ptr<CHttpAssetJob>> m_vpWaitingJobs;
 	std::deque<std::shared_ptr<CAssetJob>> m_vpPendingJobs;
 	std::vector<std::shared_ptr<CAssetJob>> m_vpRunningJobs;
+
+	// A job whose file can be fetched instead of read, with the request that
+	// fetches it. There is no limit on how many of these are in flight: the
+	// request costs no thread of ours, and the platform where files are
+	// fetched is the one where waiting for one at a time hurts most.
+	class CFetchingJob
+	{
+	public:
+		std::shared_ptr<CAssetJob> m_pJob;
+		std::shared_ptr<IHttpRequest> m_pRequest;
+	};
+	std::vector<CFetchingJob> m_vFetchingJobs;
 
 	// The one reader, started when the first file is asked for. It takes jobs
 	// off the front of the queue, reads them one at a time and puts them back
@@ -293,6 +306,8 @@ class CAssetLoader
 	static void ReaderThread(void *pUser);
 	void ReadLoop() NO_THREAD_SAFETY_ANALYSIS;
 	void Enqueue(std::shared_ptr<CAssetJob> pJob) REQUIRES(!m_ReaderLock);
+	bool StartFetching(const std::shared_ptr<CAssetJob> &pJob);
+	void UpdateFetchingJobs() REQUIRES(!m_ReaderLock);
 	void UpdateReadJobs() REQUIRES(!m_ReaderLock);
 
 	uint64_t Submit(std::shared_ptr<CAssetJob> pJob) REQUIRES(!m_ReaderLock);
@@ -303,7 +318,14 @@ class CAssetLoader
 public:
 	~CAssetLoader() NO_THREAD_SAFETY_ANALYSIS { Shutdown(); }
 
-	void Init(IEngine *pEngine, size_t MaxConcurrentJobs);
+	/**
+	 * @param pEngine Engine whose job pool makes the assets.
+	 * @param MaxConcurrentJobs How many assets are made at once.
+	 * @param pHttp Used where a file can be fetched rather than read, which is
+	 * the browser. Without it every file is read, which still works there and
+	 * is simply slower.
+	 */
+	void Init(IEngine *pEngine, size_t MaxConcurrentJobs, IHttp *pHttp = nullptr);
 	template<typename TJob>
 	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob) REQUIRES(!m_ReaderLock);
 	/**
@@ -337,7 +359,7 @@ public:
 	void AbortOwnerBeforeGeneration(int OwnerId, uint64_t Generation) REQUIRES(!m_ReaderLock);
 	void Shutdown() REQUIRES(!m_ReaderLock);
 
-	bool Idle() const REQUIRES(!m_ReaderLock) { return m_vpWaitingJobs.empty() && m_vpPendingJobs.empty() && m_vpRunningJobs.empty() && ReadingCount() == 0; }
+	bool Idle() const REQUIRES(!m_ReaderLock) { return m_vpWaitingJobs.empty() && m_vFetchingJobs.empty() && m_vpPendingJobs.empty() && m_vpRunningJobs.empty() && ReadingCount() == 0; }
 	size_t ReadingCount() const REQUIRES(!m_ReaderLock);
 	size_t WaitingCount() const { return m_vpWaitingJobs.size(); }
 	size_t PendingCount() const { return m_vpPendingJobs.size(); }

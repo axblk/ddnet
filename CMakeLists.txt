@@ -3696,6 +3696,12 @@ if(CLIENT)
       # tidy-alphabetical-end
     )
     add_dependencies(demo-player generate_content_types)
+    if(TARGET_OS STREQUAL "emscripten")
+      # The browser's own fetch, so that the assets below the data directory
+      # are fetched beside each other. It brings no library with it - the one
+      # that does, curl, is not wanted here and is not needed there.
+      target_sources(demo-player PRIVATE src/engine/shared/http_emscripten.cpp src/engine/shared/http_emscripten.h)
+    endif()
     if(VULKAN)
       add_dependencies(demo-player build_vulkan_shaders)
     endif()
@@ -3796,6 +3802,12 @@ if(CLIENT)
       # tidy-alphabetical-end
     )
     add_dependencies(map-viewer generate_content_types)
+    if(TARGET_OS STREQUAL "emscripten")
+      # The browser's own fetch, so that the assets below the data directory
+      # are fetched beside each other. It brings no library with it - the one
+      # that does, curl, is not wanted here and is not needed there.
+      target_sources(map-viewer PRIVATE src/engine/shared/http_emscripten.cpp src/engine/shared/http_emscripten.h)
+    endif()
     if(VULKAN)
       add_dependencies(map-viewer build_vulkan_shaders)
     endif()

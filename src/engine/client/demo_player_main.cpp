@@ -11,6 +11,7 @@
 #include <engine/config.h>
 #include <engine/console.h>
 #include <engine/engine.h>
+#include <engine/http.h>
 #include <engine/input.h>
 #include <engine/shared/assertion_logger.h>
 #include <engine/shared/config.h>
@@ -21,6 +22,7 @@
 
 #include <game/version.h>
 
+#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -63,6 +65,10 @@ int main(int argc, const char **argv)
 	// The engine has to be destroyed before the graphics, and the client before
 	// the kernel, which owns the graphics the client keeps looking at.
 	const auto Cleanup = [&]() {
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		if(IEngineHttp *pHttp = pKernel->TryGetInterface<IEngineHttp>(); pHttp != nullptr)
+			pHttp->Shutdown();
+#endif
 		delete pEngine;
 		pKernel->Shutdown();
 		delete pClient;
@@ -98,9 +104,27 @@ int main(int argc, const char **argv)
 	pKernel->RegisterInterface(pEngineTextRender); // IEngineTextRender
 	pKernel->RegisterInterface(static_cast<ITextRender *>(pEngineTextRender), false);
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// No server to talk to, and no downloads: the one thing this is for is
+	// that the assets of a demo - the font, the core images, the skins - are
+	// fetched beside each other instead of one file after the next. Only where
+	// files are fetched anyway, which is here.
+	IEngineHttp *pEngineHttp = CreateEngineHttp();
+	pKernel->RegisterInterface(pEngineHttp); // IEngineHttp
+	pKernel->RegisterInterface(static_cast<IHttp *>(pEngineHttp), false);
+#endif
+
 	pKernel->RegisterInterface(CreateGameClient());
 
 	pEngine->Init();
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(!pEngineHttp->Init(std::chrono::seconds{1}))
+	{
+		log_error("client", "Failed to initialize the HTTP client");
+		Cleanup();
+		return -1;
+	}
+#endif
 	pConsole->Init();
 	pConfigManager->Init();
 	pKernel->RequestInterface<IGameClient>()->OnConsoleInit();
@@ -149,13 +173,18 @@ int main(int argc, const char **argv)
 		{
 			pClient->SetShowControls(false);
 		}
+		else if(str_comp(argv[Index], "--no-zoom") == 0)
+		{
+			pClient->SetZoomEnabled(false);
+		}
 		else if(str_comp(argv[Index], "--help") == 0)
 		{
-			log_info("client", "Usage: ddnet-demo-player [<demo>] [--output <video.mp4>] [--no-controls] [settings]");
+			log_info("client", "Usage: ddnet-demo-player [<demo>] [--output <video.mp4>] [--no-controls] [--no-zoom] [settings]");
 			log_info("client", "Anything else is a console command, so `cl_video_width 1920` and the");
 			log_info("client", "rest of the cl_ settings work here just as they do in the client.");
 			log_info("client", "The viewer draws its own controls over the demo, which --no-controls");
-			log_info("client", "leaves off for whoever brings their own.");
+			log_info("client", "leaves off for whoever brings their own. The wheel, the zoom keys");
+			log_info("client", "and a pinch zoom what is shown, which --no-zoom leaves out.");
 			log_info("client", "Space pauses, the arrow keys seek and change the speed, Home starts");
 			log_info("client", "over and Escape closes the window. A demo dropped on the window");
 			log_info("client", "replaces the one that is playing, and is what the viewer waits for");

@@ -5,6 +5,7 @@
 
 #include <engine/gfx/image_loader.h>
 #include <engine/graphics.h>
+#include <engine/http.h>
 
 #include <game/layers.h>
 #include <game/map/map_renderer.h>
@@ -333,6 +334,7 @@ private:
 
 	std::unique_ptr<IMap> m_pMap;
 	CLayers m_Layers;
+	IEngineHttp *m_pHttp = nullptr;
 	CAssetLoader m_AssetLoader;
 	std::unique_ptr<MapViewSupport::CToolMapImages> m_pMapImages;
 	std::unique_ptr<MapViewSupport::CMapRenderEnvelopeEval> m_pEnvelopeEval;

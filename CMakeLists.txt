@@ -2707,6 +2707,8 @@ set_src(GAME_MAP GLOB_RECURSE src/game/map
   document/structure.cpp
   document/structure.h
   document/tile_store.h
+  document_images.cpp
+  document_images.h
   document_source.cpp
   document_source.h
   envelope_extrema.cpp
@@ -4435,6 +4437,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp
+    document_images_test.cpp
     document_source_test.cpp
     document_test.cpp
     edit_test.cpp
@@ -4555,6 +4558,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/game/client/match_report_assembler.h
     src/game/client/session_game_config.cpp
     src/game/client/session_game_config.h
+    src/game/map/document_images.cpp
+    src/game/map/document_images.h
     src/game/map/document_source.cpp
     src/game/map/document_source.h
     src/game/map/tile_run_store.cpp

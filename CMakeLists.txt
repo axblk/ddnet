@@ -4229,6 +4229,7 @@ if(TOOLS)
     ghost_to_demo.cpp
     map_convert_07.cpp
     map_diff.cpp
+    map_document_bench.cpp
     map_extract.cpp
     map_find_env.cpp
     map_optimize.cpp
@@ -4291,6 +4292,11 @@ if(TOOLS)
           src/engine/client/ghost.h
           # tidy-alphabetical-end
         )
+      endif()
+      if(TOOL MATCHES "^map_document_bench$")
+        # The map document is header-only but for its reader and writer, and
+        # nothing else builds those yet.
+        list(APPEND EXTRA_TOOL_SRC ${GAME_MAP_DOCUMENT})
       endif()
       if(TOOL MATCHES "^config_")
         list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")

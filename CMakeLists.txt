@@ -2707,6 +2707,7 @@ set_src(GAME_MAP GLOB_RECURSE src/game/map
   document/structure.cpp
   document/structure.h
   document/tile_store.h
+  document/view.h
   document_images.cpp
   document_images.h
   document_render.cpp
@@ -4515,6 +4516,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     unix_test.cpp
     uuid_test.cpp
     view_size_test.cpp
+    view_test.cpp
     vmath_test.cpp
     webfs_test.cpp
     windows_test.cpp

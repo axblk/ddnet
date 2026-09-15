@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <utility>
 #include <vector>
 
 using namespace map_document;
@@ -244,4 +245,51 @@ TEST(TileStore, ReadingAPlainArrayOfAirCostsNothing)
 	EXPECT_EQ(Store.UsedChunks(), 0);
 	EXPECT_EQ(Store.Bytes(), 0u);
 	EXPECT_EQ(Store.Get(5, 5).m_Index, 0);
+}
+
+TEST(TileStore, SaysWhichBlocksAVersionChanged)
+{
+	constexpr int CHUNK = CTileStore<CTile>::CHUNK_SIZE;
+	constexpr int ACROSS = 3 * CTileStore<CTile>::CHUNKS_PER_PAGE;
+	CTileStore<CTile> First(ACROSS * CHUNK, 2 * CHUNK);
+	for(int i = 0; i < ACROSS; ++i)
+	{
+		First.Set(i * CHUNK, 0, Tile(1));
+		First.Set(i * CHUNK, CHUNK, Tile(1));
+	}
+
+	const auto &&Collect = [](const CTileStore<CTile> &Newer, const CTileStore<CTile> &Older) {
+		std::vector<std::pair<int, int>> vChanged;
+		Newer.ForEachChangedChunk(Older, [&vChanged](int ChunkX, int ChunkY) {
+			vChanged.emplace_back(ChunkX, ChunkY);
+		});
+		return vChanged;
+	};
+
+	// A store that was not touched shares everything with itself.
+	CTileStore<CTile> Second = First;
+	EXPECT_TRUE(Collect(Second, First).empty());
+
+	// One tile painted is one block to build again, wherever in the layer it
+	// is - the pages in between are shared and never looked into.
+	Second.Set(2 * CHUNK + 5, CHUNK + 5, Tile(2));
+	const std::vector<std::pair<int, int>> vOne = Collect(Second, First);
+	ASSERT_EQ(vOne.size(), 1u);
+	EXPECT_EQ(vOne[0].first, 2);
+	EXPECT_EQ(vOne[0].second, 1);
+	// And it is the same set the other way round, which is what an undo is.
+	EXPECT_EQ(Collect(First, Second), vOne);
+
+	// A tile in a block far enough away to be on another page of the list.
+	CTileStore<CTile> Third = Second;
+	Third.Set((ACROSS - 1) * CHUNK, 0, Tile(3));
+	// Row by row, so the one in the top row comes first.
+	const std::vector<std::pair<int, int>> vTwo = Collect(Third, First);
+	ASSERT_EQ(vTwo.size(), 2u);
+	EXPECT_EQ(vTwo[0], std::make_pair(ACROSS - 1, 0));
+	EXPECT_EQ(vTwo[1], std::make_pair(2, 1));
+
+	// A layer of another size is a layer to build again, all of it.
+	CTileStore<CTile> Resized(ACROSS * CHUNK, 3 * CHUNK);
+	EXPECT_EQ(Collect(Resized, First).size(), (size_t)ACROSS * 3);
 }

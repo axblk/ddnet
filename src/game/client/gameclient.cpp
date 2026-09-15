@@ -489,7 +489,15 @@ void CGameClient::OnInit()
 void CGameClient::OnUpdate()
 {
 	m_AssetLoader.Update();
-	TextRender()->Update();
+	if(TextRender()->Update())
+	{
+		// A text container keeps the glyphs it was built with, so text drawn
+		// before a deferred font arrived keeps standing in for it: an icon
+		// drawn before its font was read is a row of boxes that never redraws
+		// itself. Dropping the containers is what a language change does, for
+		// the same reason.
+		Client()->OnWindowResize();
+	}
 	if(!m_vStartupImageLoads.empty())
 	{
 		TryFinishLoadingCoreImages();

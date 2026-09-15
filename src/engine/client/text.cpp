@@ -1507,26 +1507,33 @@ public:
 	 * They arrive together so that the faces the index names are picked once
 	 * rather than after every file.
 	 */
-	void Update() override
+	bool Update() override
 	{
 		if(m_vDeferredFontFileResources.empty())
-			return;
+			return false;
 
 		m_FontLoader.Update();
 		for(const auto &Resource : m_vDeferredFontFileResources)
 		{
 			if(!Resource.IsFinished())
-				return;
+				return false;
 		}
 		for(auto &Resource : m_vDeferredFontFileResources)
 		{
 			if(!Resource.IsReady(FONT_ASSET_GENERATION))
+			{
+				// Dropped below with the rest, so say so: without this a font
+				// that never arrives leaves nothing but glyphs that are not
+				// there.
+				log_error("textrender", "Failed to read the deferred font file '%s'", Resource.Path());
 				continue;
+			}
 			m_vFontData.push_back(Resource.Result().TakeFontData());
 			AddFontFaces(m_vFontData.back(), Resource.Path());
 		}
 		m_vDeferredFontFileResources.clear();
 		SelectFaces();
+		return true;
 	}
 
 	void Shutdown() override

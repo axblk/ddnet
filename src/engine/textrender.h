@@ -214,8 +214,12 @@ public:
 	/**
 	 * Takes the font files that the client did not wait for, once they have
 	 * been read. Called once per frame.
+	 *
+	 * @return `true` if font faces were added, which means text drawn before
+	 * this was drawn without them. The caller has to drop its text containers
+	 * then, the way it does for a language change.
 	 */
-	virtual void Update() = 0;
+	virtual bool Update() = 0;
 	virtual void SetFontPreset(EFontPreset FontPreset) = 0;
 	virtual void SetFontLanguageVariant(const char *pLanguageFile) = 0;
 

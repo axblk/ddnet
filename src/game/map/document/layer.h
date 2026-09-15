@@ -1,6 +1,7 @@
 #ifndef GAME_MAP_DOCUMENT_LAYER_H
 #define GAME_MAP_DOCUMENT_LAYER_H
 
+#include <game/map/document/shared_list.h>
 #include <game/map/document/tile_store.h>
 #include <game/mapitems.h>
 
@@ -30,6 +31,21 @@ enum class ETileLayerKind
 };
 
 /**
+ * What every layer has, whatever it holds.
+ *
+ * The file format gives each kind of layer its own item with its own name in
+ * it, so this is not a layer that the others are a kind of - it is the two
+ * things the editor asks of a layer without caring what is in it.
+ */
+class CLayerProperties
+{
+public:
+	std::string m_Name;
+	/** Left out when "high detail" is off, which is the map's own choice. */
+	bool m_Detail = false;
+};
+
+/**
  * One tile layer, as a node that nobody writes to once it is shared.
  *
  * A version of the map is a version of every layer, so a layer has to be
@@ -45,7 +61,7 @@ enum class ETileLayerKind
  * setters would suggest that a layer can be edited in place, which is exactly
  * what must not happen.
  */
-class CTileLayer
+class CTileLayer : public CLayerProperties
 {
 public:
 	/**
@@ -77,8 +93,6 @@ public:
 	}
 
 	ETileLayerKind m_Kind = ETileLayerKind::TILES;
-	std::string m_Name;
-	bool m_Detail = false;
 
 	// Only a layer that is drawn as an image has these; a physics layer takes
 	// its picture from the entities of the game, not from the map.
@@ -93,10 +107,6 @@ public:
 	int Width() const { return m_Tiles.Width(); }
 	int Height() const { return m_Tiles.Height(); }
 
-	/**
-	 * What this layer holds, with a block it shares with another version of
-	 * itself counted as its share - see `CTileStore::Bytes`.
-	 */
 	/** What this layer holds, both planes of it. */
 	uint64_t Bytes() const
 	{
@@ -118,5 +128,81 @@ public:
 		return Total;
 	}
 };
+
+/**
+ * One quad layer, as a node that nobody writes to once it is shared.
+ *
+ * A quad is a few dozen bytes and a layer of them is a list, so a version
+ * that moves one corner copies that list and shares the rest of the map -
+ * there is nothing here to split into blocks the way tiles are.
+ */
+class CQuadLayer : public CLayerProperties
+{
+public:
+	/** The image the quads are drawn with, or -1 for plain colour. */
+	int m_Image = -1;
+
+	CSharedList<CQuad> m_Quads;
+
+	uint64_t Bytes() const
+	{
+		std::unordered_set<const void *> Seen;
+		return BytesOnce(Seen);
+	}
+
+	uint64_t BytesOnce(std::unordered_set<const void *> &Seen) const { return m_Quads.BytesOnce(Seen); }
+};
+
+/**
+ * One sound layer, as a node that nobody writes to once it is shared.
+ *
+ * Same shape as a quad layer: a list of places where a sound is heard, and
+ * how far it carries.
+ */
+class CSoundLayer : public CLayerProperties
+{
+public:
+	/** The sound these sources play, or -1 for a layer that plays none. */
+	int m_Sound = -1;
+
+	CSharedList<CSoundSource> m_Sources;
+
+	uint64_t Bytes() const
+	{
+		std::unordered_set<const void *> Seen;
+		return BytesOnce(Seen);
+	}
+
+	uint64_t BytesOnce(std::unordered_set<const void *> &Seen) const { return m_Sources.BytesOnce(Seen); }
+};
+
+/**
+ * A layer of a map, of whatever kind.
+ *
+ * The three kinds have almost nothing in common - a tile layer is a grid, a
+ * quad layer a list, a sound layer a list of something else - so they are
+ * held as what they are rather than behind a shared interface that would only
+ * ever be asked which one it is.
+ */
+using CLayer = std::variant<CTileLayer, CQuadLayer, CSoundLayer>;
+
+/** The name and the detail flag of a layer, whatever kind it is. */
+inline const CLayerProperties &LayerProperties(const CLayer &Layer)
+{
+	return std::visit([](const auto &Kind) -> const CLayerProperties & { return Kind; }, Layer);
+}
+
+/** What a layer holds, counting nothing that is already in `Seen`. */
+inline uint64_t LayerBytesOnce(const CLayer &Layer, std::unordered_set<const void *> &Seen)
+{
+	return std::visit([&Seen](const auto &Kind) { return Kind.BytesOnce(Seen); }, Layer);
+}
+
+/** What a layer holds, as if it were the only one holding it. */
+inline uint64_t LayerBytes(const CLayer &Layer)
+{
+	std::unordered_set<const void *> Seen;
+	return LayerBytesOnce(Layer, Seen);
+}
 
 #endif // GAME_MAP_DOCUMENT_LAYER_H

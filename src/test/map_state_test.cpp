@@ -38,7 +38,7 @@ namespace
 						Layer.m_Tiles.Set(cx * CTileStore<CTile>::CHUNK_SIZE, cy * CTileStore<CTile>::CHUNK_SIZE, Tile(1));
 					}
 				}
-				Group.m_vpLayers.push_back(std::make_shared<const CTileLayer>(std::move(Layer)));
+				Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Layer)));
 			}
 			State.AddGroup(std::move(Group));
 		}
@@ -58,12 +58,12 @@ TEST(MapState, EditReplacesOneLayerAndOneGroup)
 	const CMapState Before = ThreeByThree();
 	CMapState After = Before;
 
-	CTileLayer Changed = *After.Layer(1, 2);
+	CTileLayer Changed = *After.TileLayer(1, 2);
 	Changed.m_Tiles.Set(5, 5, Tile(7));
 	After.ReplaceLayer(1, 2, std::move(Changed));
 
-	EXPECT_EQ(Before.Layer(1, 2)->m_Tiles.Get(5, 5).m_Index, 0);
-	EXPECT_EQ(After.Layer(1, 2)->m_Tiles.Get(5, 5).m_Index, 7);
+	EXPECT_EQ(Before.TileLayer(1, 2)->m_Tiles.Get(5, 5).m_Index, 0);
+	EXPECT_EQ(After.TileLayer(1, 2)->m_Tiles.Get(5, 5).m_Index, 7);
 
 	// The group that holds it and the layer itself are new nodes.
 	EXPECT_NE(Before.Group(1), After.Group(1));
@@ -81,12 +81,12 @@ TEST(MapState, EditSharesEveryBlockItDidNotTouch)
 	const CMapState Before = ThreeByThree();
 	CMapState After = Before;
 
-	CTileLayer Changed = *After.Layer(0, 0);
+	CTileLayer Changed = *After.TileLayer(0, 0);
 	Changed.m_Tiles.Set(5, 5, Tile(7));
 	After.ReplaceLayer(0, 0, std::move(Changed));
 
-	const CTileStore<CTile> &Old = Before.Layer(0, 0)->m_Tiles;
-	const CTileStore<CTile> &New = After.Layer(0, 0)->m_Tiles;
+	const CTileStore<CTile> &Old = Before.TileLayer(0, 0)->m_Tiles;
+	const CTileStore<CTile> &New = After.TileLayer(0, 0)->m_Tiles;
 	int Shared = 0, Taken = 0;
 	for(int cy = 0; cy < Old.ChunksDown(); ++cy)
 	{
@@ -107,17 +107,17 @@ TEST(MapState, ChangingAPropertySharesTheTiles)
 	const CMapState Before = ThreeByThree();
 	CMapState After = Before;
 
-	CTileLayer Renamed = *After.Layer(2, 1);
+	CTileLayer Renamed = *After.TileLayer(2, 1);
 	Renamed.m_Name = "renamed";
 	After.ReplaceLayer(2, 1, std::move(Renamed));
 
-	EXPECT_EQ(Before.Layer(2, 1)->m_Name, "layer");
-	EXPECT_EQ(After.Layer(2, 1)->m_Name, "renamed");
+	EXPECT_EQ(LayerProperties(*Before.Layer(2, 1)).m_Name, "layer");
+	EXPECT_EQ(LayerProperties(*After.Layer(2, 1)).m_Name, "renamed");
 	EXPECT_NE(Before.Layer(2, 1), After.Layer(2, 1));
 
 	// A name is not a tile: every block came along.
-	const CTileStore<CTile> &Old = Before.Layer(2, 1)->m_Tiles;
-	const CTileStore<CTile> &New = After.Layer(2, 1)->m_Tiles;
+	const CTileStore<CTile> &Old = Before.TileLayer(2, 1)->m_Tiles;
+	const CTileStore<CTile> &New = After.TileLayer(2, 1)->m_Tiles;
 	for(int cy = 0; cy < Old.ChunksDown(); ++cy)
 	{
 		for(int cx = 0; cx < Old.ChunksAcross(); ++cx)
@@ -172,7 +172,7 @@ TEST(MapState, VersionCostsOneBlock)
 	const CMapState Before = ThreeByThree();
 	CMapState After = Before;
 
-	CTileLayer Changed = *After.Layer(1, 1);
+	CTileLayer Changed = *After.TileLayer(1, 1);
 	Changed.m_Tiles.Set(5, 5, Tile(7));
 	After.ReplaceLayer(1, 1, std::move(Changed));
 
@@ -180,6 +180,72 @@ TEST(MapState, VersionCostsOneBlock)
 	// but for one - what the second version added is that one block.
 	EXPECT_EQ(Before.Bytes(), After.Bytes());
 	const uint64_t Block = (uint64_t)CTileStore<CTile>::TILES_PER_CHUNK * sizeof(CTile);
-	EXPECT_EQ(After.Layer(1, 1)->Bytes(), Before.Layer(1, 1)->Bytes());
+	EXPECT_EQ(LayerBytes(*After.Layer(1, 1)), LayerBytes(*Before.Layer(1, 1)));
 	EXPECT_GT(Before.Bytes(), Block);
+}
+
+TEST(MapState, AGroupHoldsLayersOfEveryKind)
+{
+	CMapState State;
+	CGroup Group;
+
+	CTileLayer Tiles(ETileLayerKind::TILES, 64, 64);
+	Tiles.m_Name = "tiles";
+	CQuadLayer Quads;
+	Quads.m_Name = "quads";
+	Quads.m_Quads.Mutable().emplace_back();
+	CSoundLayer Sounds;
+	Sounds.m_Name = "sounds";
+	Sounds.m_Sources.Mutable().emplace_back();
+
+	Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Tiles)));
+	Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Quads)));
+	Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Sounds)));
+	State.AddGroup(std::move(Group));
+
+	ASSERT_EQ(State.NumLayers(0), 3u);
+	EXPECT_TRUE(std::holds_alternative<CTileLayer>(*State.Layer(0, 0)));
+	EXPECT_TRUE(std::holds_alternative<CQuadLayer>(*State.Layer(0, 1)));
+	EXPECT_TRUE(std::holds_alternative<CSoundLayer>(*State.Layer(0, 2)));
+	// The name is the one thing a layer answers without being asked what it
+	// is, because that is all the layer list of the editor needs.
+	EXPECT_EQ(LayerProperties(*State.Layer(0, 0)).m_Name, "tiles");
+	EXPECT_EQ(LayerProperties(*State.Layer(0, 1)).m_Name, "quads");
+	EXPECT_EQ(LayerProperties(*State.Layer(0, 2)).m_Name, "sounds");
+	EXPECT_GT(State.Bytes(), 0u);
+}
+
+TEST(MapState, MovingAQuadLeavesEverythingElseWhereItIs)
+{
+	CMapState Before = ThreeByThree();
+	CGroup Group;
+	CQuadLayer Quads;
+	CQuad Quad = {};
+	Quad.m_aPoints[0].x = 100;
+	Quads.m_Quads.Mutable().push_back(Quad);
+	CSoundLayer Sounds;
+	Sounds.m_Sources.Mutable().emplace_back();
+	Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Quads)));
+	Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Sounds)));
+	Before.AddGroup(std::move(Group));
+	const size_t QuadGroup = Before.NumGroups() - 1;
+
+	CMapState After = Before;
+	CQuadLayer Changed = std::get<CQuadLayer>(*After.Layer(QuadGroup, 0));
+	Changed.m_Quads.Mutable()[0].m_aPoints[0].x = 200;
+	After.ReplaceLayer(QuadGroup, 0, std::move(Changed));
+
+	EXPECT_EQ(std::get<CQuadLayer>(*Before.Layer(QuadGroup, 0)).m_Quads[0].m_aPoints[0].x, 100);
+	EXPECT_EQ(std::get<CQuadLayer>(*After.Layer(QuadGroup, 0)).m_Quads[0].m_aPoints[0].x, 200);
+
+	// The sound layer beside it, and every tile group before it, come along
+	// as the same nodes - a moved quad costs the list it was in.
+	EXPECT_EQ(Before.Layer(QuadGroup, 1), After.Layer(QuadGroup, 1));
+	for(size_t g = 0; g < QuadGroup; ++g)
+	{
+		EXPECT_EQ(Before.Group(g), After.Group(g));
+	}
+	std::unordered_set<const void *> Seen;
+	const uint64_t Both = Before.BytesOnce(Seen) + After.BytesOnce(Seen);
+	EXPECT_LT(Both, Before.Bytes() + 4 * 1024);
 }

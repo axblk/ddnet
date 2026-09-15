@@ -94,6 +94,23 @@ public:
 constexpr int ASSET_OWNER_CLIENT_CORE = -1;
 
 /**
+ * How badly an asset is wanted.
+ */
+enum class EAssetPriority
+{
+	/**
+	 * Somebody is waiting for it: it is fetched as soon as it is submitted.
+	 */
+	NORMAL,
+	/**
+	 * Nobody is waiting for it. Only a few of these are fetched at a time, so
+	 * that a hundred files that nobody waits for cannot take every connection
+	 * a browser opens to a host away from the one file that somebody does.
+	 */
+	BACKGROUND,
+};
+
+/**
  * Base job for asynchronously reading and preparing an asset.
  *
  * Jobs only own CPU-side input and results. Consumers poll the job state and
@@ -117,6 +134,7 @@ class CAssetJob : public IJob
 	int m_StorageType = 0;
 	std::vector<uint8_t> m_vData;
 	bool m_ReadFailed = false;
+	bool m_Background = false;
 
 protected:
 	/**
@@ -291,6 +309,10 @@ class CAssetLoader
 		std::shared_ptr<IHttpRequest> m_pRequest;
 	};
 	std::vector<CFetchingJob> m_vFetchingJobs;
+	// Background jobs whose turn to be fetched has not come yet, in the order
+	// they were submitted in.
+	std::deque<std::shared_ptr<CAssetJob>> m_vpDeferredFetchJobs;
+	size_t m_BackgroundFetchCount = 0;
 
 	// The one reader, started when the first file is asked for. It takes jobs
 	// off the front of the queue, reads them one at a time and puts them back
@@ -307,10 +329,12 @@ class CAssetLoader
 	void ReadLoop() NO_THREAD_SAFETY_ANALYSIS;
 	void Enqueue(std::shared_ptr<CAssetJob> pJob) REQUIRES(!m_ReaderLock);
 	bool StartFetching(const std::shared_ptr<CAssetJob> &pJob);
+	void Fetch(const std::shared_ptr<CAssetJob> &pJob, const char *pUrl);
+	void StartDeferredFetches();
 	void UpdateFetchingJobs() REQUIRES(!m_ReaderLock);
 	void UpdateReadJobs() REQUIRES(!m_ReaderLock);
 
-	uint64_t Submit(std::shared_ptr<CAssetJob> pJob) REQUIRES(!m_ReaderLock);
+	uint64_t Submit(std::shared_ptr<CAssetJob> pJob, EAssetPriority Priority) REQUIRES(!m_ReaderLock);
 	uint64_t SubmitHttp(IHttp *pHttp, std::shared_ptr<CHttpAssetJob> pJob);
 	void UpdateWaitingJobs() REQUIRES(!m_ReaderLock);
 	void StartPendingJobs();
@@ -327,7 +351,7 @@ public:
 	 */
 	void Init(IEngine *pEngine, size_t MaxConcurrentJobs, IHttp *pHttp = nullptr);
 	template<typename TJob>
-	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob) REQUIRES(!m_ReaderLock);
+	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob, EAssetPriority Priority = EAssetPriority::NORMAL) REQUIRES(!m_ReaderLock);
 	/**
 	 * Downloads and prepares an asset. The request is run immediately, the job
 	 * is only submitted to the job pool when the request finished.
@@ -359,7 +383,7 @@ public:
 	void AbortOwnerBeforeGeneration(int OwnerId, uint64_t Generation) REQUIRES(!m_ReaderLock);
 	void Shutdown() REQUIRES(!m_ReaderLock);
 
-	bool Idle() const REQUIRES(!m_ReaderLock) { return m_vpWaitingJobs.empty() && m_vFetchingJobs.empty() && m_vpPendingJobs.empty() && m_vpRunningJobs.empty() && ReadingCount() == 0; }
+	bool Idle() const REQUIRES(!m_ReaderLock) { return m_vpWaitingJobs.empty() && m_vFetchingJobs.empty() && m_vpDeferredFetchJobs.empty() && m_vpPendingJobs.empty() && m_vpRunningJobs.empty() && ReadingCount() == 0; }
 	size_t ReadingCount() const REQUIRES(!m_ReaderLock);
 	size_t WaitingCount() const { return m_vpWaitingJobs.size(); }
 	size_t PendingCount() const { return m_vpPendingJobs.size(); }
@@ -500,10 +524,10 @@ public:
 };
 
 template<typename TJob>
-CTypedAssetResource<TJob> CAssetLoader::Load(std::shared_ptr<TJob> pJob)
+CTypedAssetResource<TJob> CAssetLoader::Load(std::shared_ptr<TJob> pJob, EAssetPriority Priority)
 {
 	static_assert(std::is_base_of_v<CAssetJob, TJob>);
-	Submit(pJob);
+	Submit(pJob, Priority);
 	return CTypedAssetResource<TJob>(std::move(pJob));
 }
 

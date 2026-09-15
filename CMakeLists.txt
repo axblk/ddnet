@@ -3209,6 +3209,12 @@ if(CLIENT)
   set(GAME_MAP_DOCUMENT ${GAME_MAP})
   list(FILTER GAME_MAP_DOCUMENT INCLUDE REGEX "/document/")
   list(FILTER GAME_MAP EXCLUDE REGEX "/document/")
+
+  # The map document is the editor's core: the tests, the tool that measures
+  # it and, later, the editor itself build the same objects rather than each
+  # their own copy.
+  add_library(game-map-document EXCLUDE_FROM_ALL OBJECT ${GAME_MAP_DOCUMENT})
+  list(APPEND TARGETS_OWN game-map-document)
   set(GAME_GENERATED_CLIENT
     # tidy-alphabetical-start
     src/generated/checksum.cpp
@@ -4295,9 +4301,7 @@ if(TOOLS)
         )
       endif()
       if(TOOL MATCHES "^map_document_bench$")
-        # The map document is header-only but for its reader and writer, and
-        # nothing else builds those yet.
-        list(APPEND EXTRA_TOOL_SRC ${GAME_MAP_DOCUMENT})
+        list(APPEND EXTRA_TOOL_SRC $<TARGET_OBJECTS:game-map-document>)
       endif()
       if(TOOL MATCHES "^config_")
         list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")
@@ -4626,11 +4630,9 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     ${TESTS}
     ${TESTS_EXTRA}
     ${TESTS_GRAPHICS}
-    # The map document, which is tested here and nowhere else for as long as
-    # it has nobody to draw it. Empty in a build without the client.
-    ${GAME_MAP_DOCUMENT}
     # tidy-alphabetical-start
     $<TARGET_OBJECTS:engine-gfx>
+    $<TARGET_OBJECTS:game-map-document>
     $<TARGET_OBJECTS:engine-net>
     $<TARGET_OBJECTS:engine-shared>
     $<TARGET_OBJECTS:game-server-without-main>

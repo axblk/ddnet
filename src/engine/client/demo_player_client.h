@@ -1,7 +1,7 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
-#ifndef ENGINE_CLIENT_DEMO_VIEWER_CLIENT_H
-#define ENGINE_CLIENT_DEMO_VIEWER_CLIENT_H
+#ifndef ENGINE_CLIENT_DEMO_PLAYER_CLIENT_H
+#define ENGINE_CLIENT_DEMO_PLAYER_CLIENT_H
 
 #include "demo_client_base.h"
 #include "viewer_controls.h"
@@ -13,7 +13,7 @@
 class IEngineInput;
 
 /**
- * The client of the demo viewer: it opens one demo and shows it in a window,
+ * The client of the demo player: it opens one demo and shows it in a window,
  * at the speed of a clock, with the keyboard to steer it.
  *
  * What it is made of is `CDemoClientBase`; what it adds is a window somebody
@@ -21,10 +21,10 @@ class IEngineInput;
  * and change the speed. It can also run the same export the render tool runs,
  * out of its own loop, and then it draws the export instead of the window.
  */
-class CDemoViewerClient : public CDemoClientBase
+class CDemoPlayerClient : public CDemoClientBase
 {
 public:
-	CDemoViewerClient();
+	CDemoPlayerClient();
 
 	/**
 	 * How an export that somebody asked for is getting on. A browser cannot be
@@ -198,7 +198,7 @@ public:
 	 */
 	void SetPaused(bool Paused);
 	void SeekPercent(float Percent);
-	void SeekTime(float Seconds);
+	void SeekToTime(float Seconds);
 	void SeekStart();
 	void SetSpeed(float Speed);
 	/**
@@ -250,4 +250,4 @@ public:
 	const char *ExportError() const { return m_aExportError; }
 };
 
-#endif // ENGINE_CLIENT_DEMO_VIEWER_CLIENT_H
+#endif // ENGINE_CLIENT_DEMO_PLAYER_CLIENT_H

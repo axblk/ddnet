@@ -157,6 +157,21 @@ float CDemoClientBase::Zoom() const
 	return Game()->m_Camera.Zoom();
 }
 
+bool CDemoClientBase::RecordedCameraAvailable() const
+{
+	return Game()->m_Camera.CanUseAutoSpecCamera();
+}
+
+bool CDemoClientBase::RecordedCamera() const
+{
+	return Game()->m_Camera.IsAutoSpecCamera() && RecordedCameraAvailable();
+}
+
+void CDemoClientBase::SetRecordedCamera(bool Use)
+{
+	Game()->m_Camera.SetAutoSpecCamera(Use);
+}
+
 float CDemoClientBase::WorldPerPixel() const
 {
 	const int ScreenWidth = m_pGraphics->ScreenWidth();

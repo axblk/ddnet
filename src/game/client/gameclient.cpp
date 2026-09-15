@@ -348,7 +348,7 @@ CGameView &CGameClient::LegacyGameView()
 template<class TInterface>
 static TInterface *ToolOptionalInterface(IKernel *pKernel)
 {
-#if defined(CONF_DEMO_RENDER_TOOL) || defined(CONF_DEMO_VIEWER_TOOL)
+#if defined(CONF_DEMO_RENDER_TOOL) || defined(CONF_DEMO_PLAYER_TOOL)
 	return pKernel->TryGetInterface<TInterface>();
 #else
 	return pKernel->RequestInterface<TInterface>();
@@ -3899,7 +3899,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 
 	UpdateLocalTuning(SessionId, Session, ActiveState, Conn);
 	m_PreviousFocusedStream.reset();
-#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_PLAYER_TOOL)
 	// Only a game that is being played advances a world of its own to where it
 	// guesses the server to be, and only that build carries the code for it.
 	if(NetworkSource)
@@ -3968,7 +3968,7 @@ void CGameClient::UpdateEditorIngameMoved()
 	}
 }
 
-#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_PLAYER_TOOL)
 void CGameClient::ApplyPreInputs(int Tick, bool Direct, CGameWorld &GameWorld)
 {
 	if(!g_Config.m_ClAntiPingPreInput)
@@ -4010,7 +4010,7 @@ void CGameClient::ApplyPreInputs(int Tick, bool Direct, CGameWorld &GameWorld)
 }
 #endif
 
-#if defined(CONF_DEMO_RENDER_TOOL) || defined(CONF_DEMO_VIEWER_TOOL)
+#if defined(CONF_DEMO_RENDER_TOOL) || defined(CONF_DEMO_PLAYER_TOOL)
 // A demo is what already happened, so there is nothing to guess at: nobody's
 // input is on its way to a server here, and the only caller of this is the
 // network code, which a program that watches a demo does not link. Said as an
@@ -4036,7 +4036,7 @@ void CGameClient::OnPredict(CSessionId SessionId, CStreamId StreamId)
 }
 #endif
 
-#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_PLAYER_TOOL)
 void CGameClient::ProcessPrediction()
 {
 	const CSessionId SessionId = Client()->FocusedSessionId();
@@ -4872,7 +4872,7 @@ CPhysicsRules CGameClient::PredictedPhysicsRules() const
 	return ::PredictedPhysicsRules(FocusedGameInfo().m_PredictDDRace, FocusedGameInfo().m_NoWeakHookAndBounce, PredictedOldLaser(), *GameConfig());
 }
 
-#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_PLAYER_TOOL)
 void CGameClient::UpdatePrediction()
 {
 	const CSessionId SessionId = Client()->FocusedSessionId();

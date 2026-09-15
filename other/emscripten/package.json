@@ -1,7 +1,7 @@
 {
 	"name": "ddnet-loader",
 	"version": "1.0.0",
-	"description": "Run DDNet, its demo viewer and its map viewer in a browser: one canvas, one call, and a handle to steer them with.",
+	"description": "Run DDNet, its demo player and its map viewer in a browser: one canvas, one call, and a handle to steer them with.",
 	"license": "Zlib",
 	"type": "module",
 	"exports": {

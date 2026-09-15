@@ -2796,12 +2796,12 @@ if(CLIENT)
     connection.h
     demo_client_base.cpp
     demo_client_base.h
+    demo_player_client.cpp
+    demo_player_client.h
+    demo_player_main.cpp
     demo_render_client.cpp
     demo_render_client.h
     demo_render_main.cpp
-    demo_viewer_client.cpp
-    demo_viewer_client.h
-    demo_viewer_main.cpp
     demoedit.cpp
     demoedit.h
     discord.cpp
@@ -3319,7 +3319,7 @@ if(CLIENT)
   # out of the client. The client never names them, and they are written for a
   # program that has the video recorder, which the client can be built without.
   set(ENGINE_CLIENT_GAME ${ENGINE_CLIENT})
-  list(FILTER ENGINE_CLIENT_GAME EXCLUDE REGEX "src/engine/client/(demo_client_base|demo_render_client|demo_render_main|demo_viewer_client|demo_viewer_main|viewer_controls|viewer_fullscreen)\\.(cpp|h)$")
+  list(FILTER ENGINE_CLIENT_GAME EXCLUDE REGEX "src/engine/client/(demo_client_base|demo_render_client|demo_render_main|demo_player_client|demo_player_main|viewer_controls|viewer_fullscreen)\\.(cpp|h)$")
 
   set(CLIENT_SRC ${ENGINE_CLIENT_GAME} ${PLATFORM_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
 
@@ -3576,7 +3576,7 @@ if(CLIENT)
     set(DEMO_RENDERER_SRC ${ENGINE_CLIENT} ${GAME_CLIENT_MENUS_NULL} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
     # The other program built on this client is a window with a demo in it,
     # and with it goes the bar of controls that window draws.
-    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/demo_viewer_(client|main)\\.(cpp|h)$")
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/demo_player_(client|main)\\.(cpp|h)$")
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/viewer_(controls|fullscreen)\\.(cpp|h)$")
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/window_sdl\\.(cpp|h)$")
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/input\\.(cpp|h)$")
@@ -3671,21 +3671,21 @@ if(CLIENT)
   # the render tool brings, with a window instead of a surface and a keyboard
   # instead of a command line, so it leaves out the same things. Somebody is
   # watching this one, but what they press goes to the viewer's own controls
-  # (`CDemoViewerClient::HandleInput`) rather than to the components a player
+  # (`CDemoPlayerClient::HandleInput`) rather than to the components a player
   # steers a tee with, so those go as well.
   if(CLIENT AND SDL2_FOUND AND VIDEORECORDER)
-    set(DEMO_VIEWER_SRC ${ENGINE_CLIENT} ${GAME_CLIENT_MENUS_NULL} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
-    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/engine/client/demo_render_(client|main)\\.(cpp|h)$")
+    set(DEMO_PLAYER_SRC ${ENGINE_CLIENT} ${GAME_CLIENT_MENUS_NULL} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
+    list(FILTER DEMO_PLAYER_SRC EXCLUDE REGEX "src/engine/client/demo_render_(client|main)\\.(cpp|h)$")
     # Translating a 0.7 connless packet needs a program that receives one.
-    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
-    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/engine/client/(client|client_net|session_source_net|sixup_translate_system|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|updater|favorites|demoedit|blocklist_driver|discord|steam|notifications)\\.(cpp|h)$")
-    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/engine/client/sqlite\\.(cpp|h)$")
-    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/game/client/components/(console|emoticon|key_binder|local_server|menu_background|spectator|touch_controls)\\.cpp$")
-    list(FILTER DEMO_VIEWER_SRC EXCLUDE REGEX "src/game/client/match_journal\\.cpp$")
+    list(FILTER DEMO_PLAYER_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
+    list(FILTER DEMO_PLAYER_SRC EXCLUDE REGEX "src/engine/client/(client|client_net|session_source_net|sixup_translate_system|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|updater|favorites|demoedit|blocklist_driver|discord|steam|notifications)\\.(cpp|h)$")
+    list(FILTER DEMO_PLAYER_SRC EXCLUDE REGEX "src/engine/client/sqlite\\.(cpp|h)$")
+    list(FILTER DEMO_PLAYER_SRC EXCLUDE REGEX "src/game/client/components/(console|emoticon|key_binder|local_server|menu_background|spectator|touch_controls)\\.cpp$")
+    list(FILTER DEMO_PLAYER_SRC EXCLUDE REGEX "src/game/client/match_journal\\.cpp$")
     # Not part of the game either, and it compiles its own copy of the client:
-    # `cmake --build . --target demo-viewer`.
-    add_executable(demo-viewer EXCLUDE_FROM_ALL
-      ${DEMO_VIEWER_SRC}
+    # `cmake --build . --target demo-player`.
+    add_executable(demo-player EXCLUDE_FROM_ALL
+      ${DEMO_PLAYER_SRC}
       ${DEPS_CLIENT}
       ${WAVPACK_DEP}
       # tidy-alphabetical-start
@@ -3695,29 +3695,29 @@ if(CLIENT)
       $<TARGET_OBJECTS:game-shared>
       # tidy-alphabetical-end
     )
-    add_dependencies(demo-viewer generate_content_types)
+    add_dependencies(demo-player generate_content_types)
     if(VULKAN)
-      add_dependencies(demo-viewer build_vulkan_shaders)
+      add_dependencies(demo-player build_vulkan_shaders)
     endif()
-    set_property(TARGET demo-viewer PROPERTY OUTPUT_NAME ddnet-demo-viewer)
-    set_web_export_name(demo-viewer DDNetDemoViewer)
-    set_own_rpath(demo-viewer)
-    target_compile_definitions(demo-viewer PRIVATE CONF_DEMO_VIEWER_TOOL)
-    set_property(TARGET demo-viewer PROPERTY DDNET_NO_CLIENT_INTEGRATIONS TRUE)
+    set_property(TARGET demo-player PROPERTY OUTPUT_NAME ddnet-demo-player)
+    set_web_export_name(demo-player DDNetDemoPlayer)
+    set_own_rpath(demo-player)
+    target_compile_definitions(demo-player PRIVATE CONF_DEMO_PLAYER_TOOL)
+    set_property(TARGET demo-player PROPERTY DDNET_NO_CLIENT_INTEGRATIONS TRUE)
     if(VULKAN)
-      target_compile_definitions(demo-viewer PRIVATE CONF_BACKEND_VULKAN)
+      target_compile_definitions(demo-player PRIVATE CONF_BACKEND_VULKAN)
     endif()
-    if(WEBGPU_NATIVE_BACKEND)
-      target_compile_definitions(demo-viewer PRIVATE CONF_BACKEND_WEBGPU)
+    if(WEBGPU_BACKEND_PROTOTYPE)
+      target_compile_definitions(demo-player PRIVATE CONF_BACKEND_WEBGPU)
     endif()
     # The window is this program's own file, so what it says about GLEW is this
     # program's business as well, the same as in the client.
     if(GLEW_BUNDLED)
-      target_compile_definitions(demo-viewer PRIVATE CONF_GLEW_HAS_CONTEXT_INIT)
+      target_compile_definitions(demo-player PRIVATE CONF_GLEW_HAS_CONTEXT_INIT)
     endif()
     # No `${LIBS}`, for the same reason the render tool has none: nothing here
     # talks to the network.
-    target_link_libraries(demo-viewer
+    target_link_libraries(demo-player
       # tidy-alphabetical-start
       ${CRYPTO_LIBRARIES}
       ${FFMPEG_LIBRARIES}
@@ -3737,13 +3737,13 @@ if(CLIENT)
       ${CMAKE_THREAD_LIBS_INIT}
     )
     if(WEBGPU_NATIVE_BACKEND)
-      target_link_libraries(demo-viewer WGPU::Native)
+      target_link_libraries(demo-player WGPU::Native)
     endif()
     if(WEBGPU_BACKEND_PROTOTYPE AND TARGET_OS STREQUAL "emscripten")
-      target_compile_options(demo-viewer PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
-      target_link_options(demo-viewer PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+      target_compile_options(demo-player PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+      target_link_options(demo-player PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
     endif()
-    target_include_directories(demo-viewer SYSTEM PRIVATE
+    target_include_directories(demo-player SYSTEM PRIVATE
       # tidy-alphabetical-start
       ${FFMPEG_INCLUDE_DIRS}
       ${FREETYPE_INCLUDE_DIRS}
@@ -3759,7 +3759,7 @@ if(CLIENT)
     )
   endif()
 
-  # A program that shows one map in a window. Where the demo viewer brings a
+  # A program that shows one map in a window. Where the demo player brings a
   # whole client, this brings none at all: a map, the renderer that draws it, a
   # window and a pointer. It is the same view the map render tool draws with,
   # with somebody looking at it instead of a file to write.
@@ -3806,7 +3806,7 @@ if(CLIENT)
     if(VULKAN)
       target_compile_definitions(map-viewer PRIVATE CONF_BACKEND_VULKAN)
     endif()
-    if(WEBGPU_NATIVE_BACKEND)
+    if(WEBGPU_BACKEND_PROTOTYPE)
       target_compile_definitions(map-viewer PRIVATE CONF_BACKEND_WEBGPU)
     endif()
     if(GLEW_BUNDLED)
@@ -3856,15 +3856,15 @@ if(CLIENT)
       COMMAND ${CMAKE_COMMAND}
         -DBUILD_DIR=${PROJECT_BINARY_DIR}
         -DSITE_DIR=${PROJECT_BINARY_DIR}/site
-        "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-render$<SEMICOLON>ddnet-demo-viewer$<SEMICOLON>ddnet-map-viewer"
+        "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-render$<SEMICOLON>ddnet-demo-player$<SEMICOLON>ddnet-map-viewer"
         "-DPAGE_FILES=coi-serviceworker.js$<SEMICOLON>DDNet.ico$<SEMICOLON>ddnet-loader.js$<SEMICOLON>ddnet-page.css$<SEMICOLON>ddnet-render.css$<SEMICOLON>ddnet-viewer.css$<SEMICOLON>demo.html$<SEMICOLON>index.html$<SEMICOLON>map.html$<SEMICOLON>render.html"
         -P ${PROJECT_SOURCE_DIR}/cmake/assemble_web_site.cmake
       DEPENDS
         # tidy-alphabetical-start
         copy_data
         copy_web_page_files
+        demo-player
         demo-renderer
-        demo-viewer
         game-client
         map-viewer
         web_data_index
@@ -3909,9 +3909,9 @@ if(CLIENT)
     list(APPEND TARGETS_OWN demo-renderer)
     list(APPEND TARGETS_LINK demo-renderer)
   endif()
-  if(TARGET demo-viewer)
-    list(APPEND TARGETS_OWN demo-viewer)
-    list(APPEND TARGETS_LINK demo-viewer)
+  if(TARGET demo-player)
+    list(APPEND TARGETS_OWN demo-player)
+    list(APPEND TARGETS_LINK demo-player)
   endif()
   if(TARGET map-viewer)
     list(APPEND TARGETS_OWN map-viewer)

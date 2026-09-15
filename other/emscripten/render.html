@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<meta name="description" content="Render DDNet demos into videos in a web browser.">
+		<title>DDNet Demo Renderer</title>
+		<link rel="icon" type="image/x-icon" href="DDNet.ico">
+		<script src="coi-serviceworker.js"></script>
+		<link rel="stylesheet" href="ddnet-page.css">
+		<link rel="stylesheet" href="ddnet-render.css">
+	</head>
+	<body>
+		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
+		<div id="error" style="display: none"></div>
+		<div id="render">
+			<h2>Render demos to video</h2>
+			<div id="drop">
+				Drop demos here, or
+				<label><input id="files" type="file" accept=".demo" multiple hidden><button id="choose" type="button">choose files</button></label>
+			</div>
+			<div id="settings">
+				<label>Width <input id="width" type="number" min="16" max="3840" step="2" value="1920"></label>
+				<label>Height <input id="height" type="number" min="16" max="2160" step="2" value="1080"></label>
+				<label>FPS <input id="fps" type="number" min="1" max="240" value="60"></label>
+				<label>Quality <input id="crf" type="number" min="0" max="63" value="23" title="Lower is better, 0 is lossless"></label>
+				<label>Codec <select id="codec"><option value="">Default</option><option>h264</option><option>vp9</option><option>av1</option></select></label>
+				<label><input id="audio" type="checkbox" checked> Sound</label>
+				<label><input id="hud" type="checkbox"> Interface</label>
+				<label><input id="chat" type="checkbox" checked> Chat</label>
+				<label id="folder-choice" hidden><input id="folder" type="checkbox" checked> Save into a folder</label>
+			</div>
+			<div id="actions">
+				<button id="start" disabled>Render</button>
+				<button id="stop" style="display: none">Stop</button>
+				<span id="summary"></span>
+			</div>
+			<ul id="queue"></ul>
+		</div>
+		<script src="ddnet-demo-render.js"></script>
+		<script src="ddnet-loader.js"></script>
+		<script>
+			// Demos are collected first and rendered afterwards, one after the
+			// other: a render uses everything the machine has, so two at once
+			// are not two at a time. The renders themselves happen in a worker,
+			// which is why this page keeps answering while they run.
+			(function() {
+				const dropZone = document.getElementById('drop');
+				const fileInput = document.getElementById('files');
+				const queueList = document.getElementById('queue');
+				const startButton = document.getElementById('start');
+				const stopButton = document.getElementById('stop');
+				const summary = document.getElementById('summary');
+				const errorLine = document.getElementById('error');
+				const folderChoice = document.getElementById('folder-choice');
+				const folderCheckbox = document.getElementById('folder');
+				const jobs = [];
+				var running = false;
+				var stopping = false;
+				var current = null;
+
+				// Writing the videos straight into a folder is the better way
+				// round for a batch - no download per file, nothing kept in
+				// memory - but not every browser can be asked for a folder, and
+				// whoever would rather have downloads can say so.
+				if (window.showDirectoryPicker) {
+					folderChoice.hidden = false;
+				}
+
+				// A browser that cannot encode a video, or cannot draw without a
+				// window, would take the files and then fail on the first one.
+				var problem = typeof VideoEncoder === "undefined" ? "This browser has no video encoder." : null;
+				const sayProblem = () => {
+					errorLine.textContent = problem;
+					errorLine.style.display = "block";
+					updateSummary();
+				};
+				if (problem !== null) {
+					sayProblem();
+				} else {
+					DDNetLoader.supportProblem(true).then(found => {
+						if (found !== null) {
+							problem = found;
+							sayProblem();
+						}
+					});
+				}
+
+				function formatTime(seconds) {
+					if (!isFinite(seconds) || seconds < 0) {
+						return "";
+					}
+					const total = Math.round(seconds);
+					return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+				}
+
+				function addJob(file) {
+					if (!file.name.endsWith(".demo") || jobs.some(job => job.file === file)) {
+						return;
+					}
+					const row = document.createElement('li');
+					const name = document.createElement('span');
+					name.className = "name";
+					name.textContent = file.name;
+					const progress = document.createElement('progress');
+					progress.max = 1;
+					progress.value = 0;
+					progress.style.visibility = "hidden";
+					const status = document.createElement('span');
+					status.className = "status";
+					status.textContent = "Waiting";
+					const remove = document.createElement('button');
+					remove.textContent = "×";
+					remove.title = "Take off the list";
+					row.append(name, progress, status, remove);
+					queueList.appendChild(row);
+					const job = { file, row, progress, status, remove, done: false };
+					remove.addEventListener('click', () => {
+						if (job.done || !running) {
+							jobs.splice(jobs.indexOf(job), 1);
+							row.remove();
+							updateSummary();
+						}
+					});
+					jobs.push(job);
+					updateSummary();
+				}
+
+				function updateSummary() {
+					const waiting = jobs.filter(job => !job.done).length;
+					startButton.disabled = running || waiting === 0 || problem !== null;
+					summary.textContent = jobs.length === 0 ? "" :
+						`${jobs.length} ${jobs.length === 1 ? "demo" : "demos"}, ${waiting} to go`;
+				}
+
+				// Everything the renderer is told, read off the form once per
+				// run so that a change mid-run does not apply to half of it.
+				function settings() {
+					const number = id => {
+						const value = parseFloat(document.getElementById(id).value);
+						return isFinite(value) ? value : null;
+					};
+					const codec = document.getElementById('codec').value;
+					return {
+						width: number('width'),
+						height: number('height'),
+						fps: number('fps'),
+						crf: number('crf'),
+						codec: codec === "" ? null : codec,
+						audio: document.getElementById('audio').checked,
+						hud: document.getElementById('hud').checked,
+						chat: document.getElementById('chat').checked,
+					};
+				}
+
+				function videoName(demoName) {
+					return `${demoName.replace(/\.demo$/, "")}.mp4`;
+				}
+
+				async function renderJob(job, options, directory) {
+					job.status.textContent = "Starting…";
+					job.progress.style.visibility = "visible";
+					const name = videoName(job.file.name);
+					// Written straight into the chosen folder while it is made,
+					// so a batch of long videos never has to fit in memory.
+					var sink = undefined;
+					if (directory != null) {
+						const handle = await directory.getFileHandle(name, { create: true });
+						sink = { stream: await handle.createWritable(), done: () => null };
+					}
+					const started = performance.now();
+					var lastError = null;
+					const video = await DDNetLoader.render(Object.assign({}, options, {
+						module: DDNetDemoRenderer,
+						moduleName: "DDNetDemoRenderer",
+						scriptUrl: "ddnet-demo-render.js",
+						demo: job.file,
+						name: job.file.name,
+						output: name,
+						videoSink: sink,
+						onStart: instance => { current = instance; },
+						onOutput: (message, kind) => {
+							if (kind.error) {
+								lastError = message;
+							}
+						},
+						onRenderProgress: status => {
+							job.progress.value = status.progress;
+							const left = status.progress > 0.01
+								? (performance.now() - started) / 1000 * (1 - status.progress) / status.progress
+								: NaN;
+							job.status.textContent = `${Math.round(status.progress * 100)} %` +
+								` · ${Math.round(status.encodedFrames)} frames` +
+								` · ${status.framesPerSecond.toFixed(1)} fps` +
+								(isFinite(left) ? ` · ${formatTime(left)} left` : "");
+						},
+					}));
+					job.progress.value = 1;
+					if (directory != null) {
+						job.status.textContent = `Saved as ${name}`;
+						return;
+					}
+					// Without a folder to write into there is only the download
+					// the browser offers, and it is offered rather than taken:
+					// a browser refuses a handful of downloads nobody asked for.
+					const link = document.createElement('a');
+					link.href = URL.createObjectURL(video);
+					link.download = name;
+					link.textContent = `Save ${name}`;
+					job.status.replaceChildren(link);
+					if (lastError !== null) {
+						console.warn(lastError);
+					}
+				}
+
+				async function runQueue() {
+					// The folder is asked for while the click that started this
+					// is still what the browser thinks the user is doing; later
+					// it would be refused.
+					var directory = null;
+					if (window.showDirectoryPicker && folderCheckbox.checked) {
+						try {
+							directory = await window.showDirectoryPicker({ mode: "readwrite", id: "ddnet-videos" });
+						} catch (error) {
+							// Dismissed, so nothing was asked for after all.
+							summary.textContent = "No folder was chosen";
+							return;
+						}
+					}
+					running = true;
+					stopping = false;
+					stopButton.style.display = "inline-block";
+					const options = settings();
+					updateSummary();
+					for (const job of jobs) {
+						if (stopping) {
+							break;
+						}
+						if (job.done) {
+							continue;
+						}
+						try {
+							await renderJob(job, options, directory);
+						} catch (error) {
+							job.status.textContent = stopping ? "Stopped" : `Failed: ${(error && error.message) || error}`;
+							job.status.className = "status failed";
+							job.progress.style.visibility = "hidden";
+						}
+						job.done = true;
+						current = null;
+						updateSummary();
+					}
+					running = false;
+					stopping = false;
+					stopButton.style.display = "none";
+					updateSummary();
+				}
+
+				startButton.addEventListener('click', () => {
+					if (!running) {
+						runQueue();
+					}
+				});
+				stopButton.addEventListener('click', () => {
+					stopping = true;
+					stopButton.disabled = true;
+					// The render that is going stops where it is; what has been
+					// written of its video stays where it was written.
+					if (current != null && current.quit) {
+						current.quit();
+					}
+					setTimeout(() => { stopButton.disabled = false; }, 1000);
+				});
+				document.getElementById('choose').addEventListener('click', () => fileInput.click());
+				fileInput.addEventListener('change', () => {
+					for (const file of fileInput.files) {
+						addJob(file);
+					}
+					fileInput.value = "";
+				});
+				for (const name of ["dragenter", "dragover"]) {
+					dropZone.addEventListener(name, event => {
+						event.preventDefault();
+						dropZone.classList.add("over");
+					});
+				}
+				for (const name of ["dragleave", "drop"]) {
+					dropZone.addEventListener(name, () => dropZone.classList.remove("over"));
+				}
+				dropZone.addEventListener('drop', event => {
+					event.preventDefault();
+					for (const file of event.dataTransfer.files) {
+						addJob(file);
+					}
+				});
+				// A demo dropped anywhere else on the page would otherwise be
+				// opened by the browser, which is never what was meant here.
+				for (const name of ["dragover", "drop"]) {
+					document.addEventListener(name, event => event.preventDefault());
+				}
+			})();
+		</script>
+	</body>
+</html>

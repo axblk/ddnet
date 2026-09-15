@@ -9,6 +9,7 @@
 #include <base/log.h>
 #include <base/mem.h>
 #include <base/str.h>
+#include <base/thread.h>
 #include <base/time.h>
 
 #include <engine/console.h>
@@ -507,6 +508,12 @@ const char *CClientCore::LoadMap(CSessionId SessionId, const char *pName, const 
 		GameClient()->AssetLoader().Update();
 		if((bool)m_LoadingCallback)
 			m_LoadingCallback(IClient::LOADING_CALLBACK_DETAIL_MAP);
+		// Waiting rather than spinning, because in a browser the job cannot
+		// read its file while this thread is busy - see the remark on this
+		// call. Without it the job waits for this loop and this loop waits for
+		// the job, which is every map that is not one of the delivered ones: a
+		// downloaded map, one out of a demo, one of the user's own.
+		thread_wait_for_other_threads();
 	}
 	if(!MapFile.IsReady(MAP_ASSET_GENERATION) ||
 		!pMap->LoadFromMemory(pName, MapFile.Result().Bytes().data(), MapFile.Result().Bytes().size(), pFilename))

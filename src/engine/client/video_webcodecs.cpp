@@ -80,7 +80,7 @@ EM_JS(void, BrowserVideoProbeEntry, (int Index, char *pName, int NameCapacity, c
 	stringToUTF8(entry.display, pDisplay, DisplayCapacity);
 });
 
-EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFileName, int Width, int Height, int Fps, int Bitrate, int SampleRate, int Channels), {
+EM_ASYNC_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFileName, int Width, int Height, int Fps, int Bitrate, int SampleRate, int Channels), {
 	Module.ddnetVideoStartError = null;
 	if(typeof VideoEncoder === 'undefined') {
 		Module.ddnetVideoStartError = 'This browser has no VideoEncoder';
@@ -319,6 +319,11 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 		video: newTrack(1, Fps), audio: null,
 		fragments: [], sequence: 1, lastTimestamp: -1,
 		submitted: 0, encoded: 0,
+		// The file is written as it is made when somebody said where to, and
+		// kept in `fragments` until the end when nobody did. `writes` is the
+		// queue that keeps the fragments in order and carries a failed write
+		// back to the export.
+		sink: null, writer: null, writes: Promise.resolve(), headerWritten: false,
 	};
 	const tracks = () => state.audio === null ? [state.video] : [state.video, state.audio];
 
@@ -365,23 +370,54 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 			track.sampleCount += track.samples.length;
 			track.samples = [];
 		}
-		state.fragments.push(fragment);
 		state.sequence++;
+		if(state.writer === null) {
+			state.fragments.push(fragment);
+			return;
+		}
+		// The header names the tracks and describes their codecs, so it cannot
+		// be written before the encoders have said what they are. Until then the
+		// fragments wait - the first second of video, at most.
+		if(!state.headerWritten) {
+			if(state.audio !== null && state.audio.stopped && state.audio.description === null)
+				state.audio = null;
+			if(state.video.description === null || (state.audio !== null && state.audio.description === null)) {
+				state.fragments.push(fragment);
+				return;
+			}
+			state.headerWritten = true;
+			writeOut(header(true));
+			for(const waiting of state.fragments)
+				writeOut(waiting);
+			state.fragments = [];
+		}
+		writeOut(fragment);
 	};
 
-	const header = () => {
-		// The durations are only known once the last frame is in, which is why
-		// the header is built here and not when the export starts.
+	// One write at a time and in order, with whatever went wrong on the way
+	// ending the export rather than the file.
+	const writeOut = data => {
+		state.writes = state.writes.then(() => state.writer.write(data)).catch(error => {
+			if(!state.error)
+				state.error = 'the file could not be written: ' + String((error && error.message) || error).slice(0, 200);
+		});
+	};
+
+	// `Streaming` writes the header before the file is finished, so it carries
+	// no durations: they are only known once the last frame is in. A player
+	// takes the fragments as they come then, which is what a fragmented MP4 is
+	// for, and what every live stream does.
+	const header = (Streaming) => {
 		const list = tracks();
-		const trackDuration = track => Math.round(track.decodeTime * 1000 / track.timescale);
-		const movieDuration = Math.max(...list.map(trackDuration));
+		const trackDuration = track => Streaming ? 0 : Math.round(track.decodeTime * 1000 / track.timescale);
+		const movieDuration = Streaming ? 0 : Math.max(...list.map(track => Math.round(track.decodeTime * 1000 / track.timescale)));
 		const trackBox = (track, media) => box('trak',
 			fullBox('tkhd', 0, 3, u32(0), u32(0), u32(track.id), u32(0), u32(trackDuration(track)),
 				u32(0), u32(0), u16(0), u16(0), u16(media.volume), u16(0),
 				u32(0x00010000), u32(0), u32(0), u32(0), u32(0x00010000), u32(0), u32(0), u32(0), u32(0x40000000),
 				u32(media.width * 65536), u32(media.height * 65536)),
 			box('mdia',
-				fullBox('mdhd', 0, 0, u32(0), u32(0), u32(track.timescale), u32(track.decodeTime), u16(0x55C4), u16(0)),
+				fullBox('mdhd', 0, 0, u32(0), u32(0), u32(track.timescale), u32(Streaming ? 0 : track.decodeTime), u16(0x55C4), u16(0)),
 				fullBox('hdlr', 0, 0, u32(0), tag(media.handler), u32(0), u32(0), u32(0), Array.from(new TextEncoder().encode(media.name)).concat([0])),
 				box('minf',
 					media.header,
@@ -435,30 +471,59 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 	// file the browser cannot describe its own tracks for does not play, so it
 	// is refused rather than handed over, and the reason travels back to the
 	// export instead of leaving it looking like it worked.
-	state.finish = () => {
+	// Says what kept the file from being written, and nothing when it was.
+	state.finish = async () => {
 		// A browser that turned out not to encode audio still gets its video,
-		// so the track is only kept once the encoder has described it.
-		if(state.audio !== null && state.audio.description === null)
+		// so the track is only kept once the encoder has described it. Where the
+		// file is already being written, that was decided with the header.
+		if(!state.headerWritten && state.audio !== null && state.audio.description === null)
 			state.audio = null;
 		flush();
-		if(!state.encoded)
-			return 'the browser encoded no frames';
 		// The two ways a video track can fail to be a track are worth telling
 		// apart: one is a codec configuration nobody could produce, the other a
 		// configuration that arrived too late for anything to be written with.
-		if(state.video.description === null)
-			return 'the video codec configuration could not be read';
-		if(!state.video.sampleCount)
-			return 'no video frame was written to the file';
-		// The file is assembled in memory, which is a few hundred megabytes for
-		// a long export, and is what the browser wants for a download anyway.
-		const file = new Blob([header()].concat(state.fragments), {type: 'video/mp4'});
+		const Refused = !state.encoded ? 'the browser encoded no frames' :
+			state.video.description === null ? 'the video codec configuration could not be read' :
+			!state.video.sampleCount ? 'no video frame was written to the file' : null;
+		if(state.writer !== null) {
+			if(Refused !== null) {
+				// Nothing playable was written, so nothing is left behind: what
+				// the file was going to be is thrown away, not handed over half
+				// finished.
+				try { await state.writer.abort(); } catch(error) {}
+				return Refused;
+			}
+			await state.writes;
+			if(state.error)
+				return state.error;
+			try {
+				await state.writer.close();
+			} catch(error) {
+				return 'the file could not be closed: ' + String((error && error.message) || error).slice(0, 200);
+			}
+			// A destination that has the file in hand says so by answering with
+			// it, and then it is offered like any other; one that has already
+			// put it where it belongs answers with nothing.
+			const written = state.sink !== null && typeof state.sink.done === 'function' ? await state.sink.done() : null;
+			if(written)
+				state.offer(written);
+			return null;
+		}
+		if(Refused !== null)
+			return Refused;
+		// Without a destination the file is assembled in memory, which is a few
+		// hundred megabytes for a long export.
+		state.offer(new Blob([header(false)].concat(state.fragments), {type: 'video/mp4'}));
+		return null;
+	};
+
+	state.offer = file => {
 		// A page that renders a demo for its own purposes says where the file
 		// goes, and then there is nothing to offer and nothing to click: it
 		// already has it.
 		if(typeof Module.ddnetVideoOutput === 'function') {
 			Module.ddnetVideoOutput(file, state.fileName);
-			return null;
+			return;
 		}
 		const url = URL.createObjectURL(file);
 		const link = document.createElement('a');
@@ -494,7 +559,6 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 			}, 1000);
 		});
 		link.click();
-		return null;
 	};
 
 	try {
@@ -602,6 +666,25 @@ EM_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFil
 			state.audio = audio;
 		} catch(error) {}
 	}
+	// Where the file goes while it is made. A page that says where gets it
+	// written fragment by fragment, which is what keeps a long export out of
+	// the tab's memory and leaves something playable behind if it ends early;
+	// a page that says nothing gets the whole file at the end, as before.
+	try {
+		const sink = typeof Module.ddnetVideoSink === 'function'
+			? await Module.ddnetVideoSink({fileName: state.fileName, type: 'video/mp4', width: Width, height: Height, fps: Fps})
+			: null;
+		if(sink) {
+			state.sink = sink;
+			state.writer = (sink.stream || sink).getWriter();
+		}
+	} catch(error) {
+		Module.ddnetVideoStartError = 'the file could not be opened: ' + String((error && error.message) || error).slice(0, 200);
+		try { state.encoder.close(); } catch(closeError) {}
+		if(state.audio)
+			try { state.audio.encoder.close(); } catch(closeError) {}
+		return -1;
+	}
 	Module.ddnetVideo = state;
 	return 0;
 });
@@ -683,7 +766,11 @@ EM_ASYNC_JS(void, BrowserVideoStop, (int Cancel, char *pError, int ErrorCapacity
 			if(state.audio && !state.audio.stopped) {
 				try { await state.audio.encoder.flush(); } catch(error) { state.audio.stopped = true; }
 			}
-			reason = state.finish();
+			reason = await state.finish();
+		} else if(state.writer !== null) {
+			// A cancelled export leaves nothing behind, the same way the one
+			// that writes its own file throws the unfinished one away.
+			try { await state.writer.abort(); } catch(error) {}
 		}
 	} catch(error) {
 		reason = String((error && error.message) || error).slice(0, 200);

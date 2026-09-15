@@ -1,23 +1,37 @@
 /* The bar of controls a viewer page puts under its canvas. */
 #player-controls {
 	position: absolute;
-	left: 50%;
+	/* Centred by the margins rather than by moving it half its own width out
+	   of the middle, which would leave it only half the page to be wide in -
+	   and a bar of buttons uses what it is given. */
+	left: 0;
+	right: 0;
 	bottom: 20px;
 	z-index: 2;
 	display: flex;
 	gap: 10px;
 	align-items: center;
 	box-sizing: border-box;
+	width: fit-content;
+	max-width: calc(100% - 30px);
+	margin: 0 auto;
 	padding: 10px 15px;
-	transform: translate(-50%, 0);
 	border-radius: 15px;
 	box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
 	background-color: rgba(255, 255, 255, 0.85);
+	/* One line, however many buttons there are: a label that breaks in two
+	   makes the bar taller than its buttons and pushes the text out of them. */
+	white-space: nowrap;
 	font-family: 'Arial', 'Helvetica', sans-serif;
 }
 #player-controls input[type=range] {
 	width: 40vw;
 	min-width: 200px;
+}
+#player-controls button {
+	/* A button is as wide as what is written on it. Squeezing one to fit the
+	   bar puts its label outside of it. */
+	flex: none;
 }
 #player-controls span {
 	min-width: 60px;

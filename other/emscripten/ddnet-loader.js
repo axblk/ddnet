@@ -18,6 +18,9 @@
 
 const DDNetLoader = (() => {
 	const DEFAULT_HOME_PATH = "/home/web_user/.local/share/ddnet";
+	// Where this script is, so that a worker can be given the same one. Read
+	// while it is being run, which is the only time a script can say.
+	const LOADER_URL = typeof document !== "undefined" && document.currentScript ? document.currentScript.src : null;
 	// A file named in the URL is fetched into the same place a dropped file
 	// goes. Anything larger than this is refused rather than filling the tab's
 	// memory with whatever a link pointed at.
@@ -62,6 +65,99 @@ const DDNetLoader = (() => {
 		}
 	}
 
+	// What the browser has to be able to do before any of this is worth
+	// starting, said in one sentence rather than found out over a page of the
+	// program's own complaints.
+	//
+	// Threads are the one thing every program here needs, and a browser only
+	// hands out the memory they share to a page that is cross-origin isolated.
+	// Drawing without a window needs WebGPU, because that is the only backend
+	// left once the window is gone.
+	async function supportProblem(needsWebGpu) {
+		if (typeof SharedArrayBuffer === "undefined" || self.crossOriginIsolated === false) {
+			return "This page is not cross-origin isolated, so the browser withholds the shared memory this needs. " +
+				"The page has to send Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp, " +
+				"or load coi-serviceworker.js before anything else.";
+		}
+		if (needsWebGpu) {
+			if (!navigator.gpu) {
+				return "This browser has no WebGPU, which is what a render without a window draws with. A current Chrome or Firefox has it.";
+			}
+			// Having WebGPU and having something to draw with are two
+			// different things: a browser started without a graphics device,
+			// or one that blocklisted the one it found, answers with nothing
+			// and only says so when it is asked.
+			const adapter = await navigator.gpu.requestAdapter().catch(() => null);
+			if (!adapter) {
+				return "This browser has WebGPU but no graphics adapter it is willing to use, so there is nothing to draw with.";
+			}
+		}
+		return null;
+	}
+
+	// A script from another origin, as a blob. Fetched rather than linked
+	// because a blob belongs to this page: a worker may be made from it, and
+	// `importScripts` takes it without asking the server for permission it
+	// cannot give.
+	async function fetchScript(url) {
+		const response = await fetch(url.href, { mode: "cors" });
+		if (!response.ok) {
+			throw new Error(`${url.href} answered ${response.status} ${response.statusText}`);
+		}
+		return new Blob([await response.text()], { type: "text/javascript" });
+	}
+
+	// Where a video goes while it is being made. A fragmented MP4 is valid
+	// after every fragment, so it is written to a file in the browser's own
+	// private storage as it is encoded and only handed over when it is
+	// finished: an export that takes minutes is then bounded by what the disk
+	// holds rather than by what the tab can keep. Where there is no such
+	// storage the export falls back to keeping the file in memory.
+	const VIDEO_SCRATCH_DIRECTORY = "ddnet-video";
+	async function videoScratchDirectory(create) {
+		if (!navigator.storage || !navigator.storage.getDirectory) {
+			return null;
+		}
+		const root = await navigator.storage.getDirectory();
+		return await root.getDirectoryHandle(VIDEO_SCRATCH_DIRECTORY, { create: create });
+	}
+
+	async function videoScratchSink(info) {
+		const directory = await videoScratchDirectory(true);
+		if (directory == null) {
+			return null;
+		}
+		const handle = await directory.getFileHandle(`${Date.now()}-${sanitizeFilename(info.fileName)}`, { create: true });
+		return {
+			stream: await handle.createWritable(),
+			// The finished file, which is on disk rather than in memory: what
+			// is handed over here is a handle to it, not its contents.
+			done: async () => await handle.getFile(),
+		};
+	}
+
+	// A video that was written but never taken is a video nobody wanted, so the
+	// scratch files of earlier visits go at the start of this one. Once per
+	// page, and before anything writes a new one.
+	var sweptVideoScratch = false;
+	async function sweepVideoScratch() {
+		if (sweptVideoScratch) {
+			return;
+		}
+		sweptVideoScratch = true;
+		try {
+			const directory = await videoScratchDirectory(false);
+			if (directory == null) {
+				return;
+			}
+			for await (const name of directory.keys()) {
+				await directory.removeEntry(name).catch(() => {});
+			}
+		} catch (error) {
+			// No directory yet, or no permission to have one: nothing to sweep.
+		}
+	}
+
 	// The browser's own shortcuts stay the browser's, whatever the program
 	// makes of the keyboard. Once per page as well.
 	var installedKeyGuard = false;
@@ -93,6 +189,7 @@ const DDNetLoader = (() => {
 			this.module = null;
 			this.exited = false;
 			this.video = null;
+			this.pendingSink = null;
 			this.finished = new Promise(resolve => {
 				this.reportFinished = resolve;
 			});
@@ -159,6 +256,21 @@ const DDNetLoader = (() => {
 			const filePath = await this.fetchUrlFile(url);
 			this.call('EmscriptenCallbackDropFile', null, ['string'], [filePath]);
 			return filePath;
+		}
+
+		/**
+		 * Where the next video this program exports is written to, for a page
+		 * that has somewhere better than the default: a `WritableStream`, or
+		 * `{stream, done}` whose `done` answers with the finished file if there
+		 * is still one to hand over.
+		 *
+		 * A page asking the user where to save has to ask while the click that
+		 * started it is still the browser's idea of what the user is doing,
+		 * which is why this is set before the export starts rather than
+		 * answered when it does.
+		 */
+		setVideoSink(sink) {
+			this.pendingSink = sink;
 		}
 
 		/** Asks the program to stop. `onExit` follows once it has. */
@@ -292,6 +404,21 @@ const DDNetLoader = (() => {
 			});
 		}
 
+		// What the export asks when it starts, in order: what the page put
+		// there for this one export, what it gave once for all of them, and the
+		// scratch file otherwise.
+		async videoSink(info) {
+			if (this.pendingSink != null) {
+				const sink = this.pendingSink;
+				this.pendingSink = null;
+				return sink;
+			}
+			if (this.options.videoSink) {
+				return typeof this.options.videoSink === "function" ? await this.options.videoSink(info) : this.options.videoSink;
+			}
+			return await videoScratchSink(info);
+		}
+
 		// The audio keeps running after the runtime has stopped, and says so
 		// once per buffer. Only this instance's, and only its own doing.
 		stopAudio() {
@@ -319,8 +446,10 @@ const DDNetLoader = (() => {
 		// whatever the page already had, since this is the page's own handler.
 		installErrorHandler() {
 			const instance = this;
-			const previous = window.onerror;
-			window.onerror = function(message, url, line, column, error) {
+			// `self`, not `window`: a program rendering in a worker has no
+			// window, and this is the one thing here that would miss it.
+			const previous = self.onerror;
+			self.onerror = function(message, url, line, column, error) {
 				instance.output(message, { error: true, bold: true });
 				if (error && error.stack) {
 					for (const line of error.stack.split("\n")) {
@@ -348,10 +477,18 @@ const DDNetLoader = (() => {
 			if (typeof options.module !== "function") {
 				throw new Error("DDNetLoader needs the program's factory, for example `module: DDNetDemoViewer`");
 			}
+			// Said once, and said here: what follows would say it a hundred
+			// times, in the words of whatever failed first.
+			const problem = await supportProblem(options.needsWebGpu === true);
+			if (problem !== null) {
+				this.output(problem, { error: true, bold: true });
+				throw new Error(problem);
+			}
 			sweepDataCache();
+			sweepVideoScratch();
 			this.installErrorHandler();
 
-			const program = await this.foreignProgram();
+			const program = await this.program();
 			var totalDependencies = 0;
 			this.module = await options.module({
 				websocket: {
@@ -369,6 +506,10 @@ const DDNetLoader = (() => {
 				// a page rendering by itself does not. Read by the WebCodecs
 				// export, see `src/engine/client/video_webcodecs.cpp`.
 				ddnetVideoOutput: options.onVideo,
+				// Where a video is written while it is made, see `videoSink`.
+				ddnetVideoSink: info => instance.videoSink(info),
+				// How far a render has got, once a second while it runs.
+				ddnetRenderProgress: options.onRenderProgress,
 				// Where `data` is, for a page that keeps it somewhere other than
 				// next to itself. A program from another origin brings its own,
 				// so that is where to look unless the page says otherwise. Read
@@ -410,12 +551,17 @@ const DDNetLoader = (() => {
 			return this;
 		}
 
-		// The program, when it is served from another origin than the page it
-		// runs on. It brings threads, and a thread's script has to come from the
-		// page's own origin: the browser refuses a worker made from a foreign
-		// URL outright. So the program is fetched - which a cross-origin request
-		// is allowed to do where the server permits it - and handed on as a
-		// blob, which belongs to whoever made it.
+		// Where the program's own script is, when the page said. Emscripten
+		// otherwise works it out from whatever script is running, which is right
+		// on a page that loaded it and wrong everywhere else - in a worker, or
+		// where the program comes from another origin.
+		//
+		// From another origin it is not enough to name it: the program brings
+		// threads, and a thread's script has to come from the page's own origin,
+		// so a worker made from a foreign URL is refused outright. The program
+		// is fetched instead - which a cross-origin request may do where the
+		// server permits it - and handed on as a blob, which belongs to whoever
+		// made it.
 		//
 		// The rest of what this takes is the page's own doing and cannot be done
 		// from here: a page that runs this has to be cross-origin isolated, so
@@ -425,19 +571,15 @@ const DDNetLoader = (() => {
 		// `<script>` that fetches the program needs `crossorigin`, because
 		// without it the browser asks for it without CORS and refuses what comes
 		// back.
-		async foreignProgram() {
+		async program() {
 			if (!this.options.scriptUrl) {
 				return null;
 			}
 			const base = new URL(this.options.scriptUrl, location.href);
 			if (base.origin === location.origin) {
-				return null;
+				return { script: base.href, base: base };
 			}
-			const response = await fetch(base.href, { mode: "cors" });
-			if (!response.ok) {
-				throw new Error(`${base.href} answered ${response.status} ${response.statusText}`);
-			}
-			return { script: new Blob([await response.text()], { type: "text/javascript" }), base: base };
+			return { script: await fetchScript(base), base: base };
 		}
 
 		// The file the program starts on, if it was given one: bytes the page
@@ -538,17 +680,37 @@ const DDNetLoader = (() => {
 		}
 	}
 
-	// The furniture our own pages share, on top of `start`: the line that says
-	// what is happening until the first frame, and the console log that is
-	// there when something goes wrong. Takes the same options plus `elements`.
+	// The furniture our own pages share, on top of `start`. Every piece of it
+	// is optional, and a page that leaves one out is not showing it: a page
+	// with no `output` keeps its log in the browser's console, where a log
+	// belongs, and says only what went wrong - in its `error` line if it has
+	// one. What is left then is the program on the canvas and nothing else,
+	// which is what a viewer should look like while it starts.
 	function pageOptions(options) {
 		const elements = options.elements;
+		const showError = message => {
+			if (elements.error) {
+				elements.error.textContent = message;
+				elements.error.style.display = "block";
+			}
+		};
 		return Object.assign({}, options, {
 			canvas: elements.canvas,
 			onProgress: text => {
-				elements.loading.textContent = text;
+				if (elements.loading) {
+					elements.loading.textContent = text;
+				}
 			},
 			onOutput: (message, kind) => {
+				if (!elements.output) {
+					if (kind.error) {
+						console.error(message);
+						showError(message);
+					} else {
+						console.log(message);
+					}
+					return;
+				}
 				const span = document.createElement("span");
 				span.textContent = message;
 				span.className = "line";
@@ -560,24 +722,243 @@ const DDNetLoader = (() => {
 				if (kind.bold) {
 					span.style.fontWeight = "bold";
 				}
-				elements.loading.style.display = "none";
+				if (elements.loading) {
+					elements.loading.style.display = "none";
+				}
 				elements.output.style.display = "flex";
 				elements.outputContent.appendChild(span);
 				elements.outputContent.appendChild(document.createElement("br"));
 				elements.outputContent.scrollTop = elements.outputContent.scrollHeight;
 			},
 			onExit: () => {
-				const restartButton = document.createElement("button");
-				restartButton.textContent = "Reload page";
-				restartButton.style.marginTop = "10px";
-				restartButton.addEventListener('click', e => location.reload());
-				elements.outputContent.appendChild(restartButton);
-				elements.outputContent.scrollTop = elements.outputContent.scrollHeight;
+				if (elements.outputContent) {
+					const restartButton = document.createElement("button");
+					restartButton.textContent = "Reload page";
+					restartButton.style.marginTop = "10px";
+					restartButton.addEventListener('click', e => location.reload());
+					elements.outputContent.appendChild(restartButton);
+					elements.outputContent.scrollTop = elements.outputContent.scrollHeight;
+				} else {
+					// The canvas is gone with the program, so without this the
+					// page would be empty and say nothing about why.
+					showError("This has stopped. Reload the page to start it again.");
+				}
 				if (options.onExit) {
 					options.onExit();
 				}
 			},
 		});
+	}
+
+	// A render is a worker's worth of work - every frame drawn, read back and
+	// encoded - and none of it needs the page. Done in a worker, the page stays
+	// answerable while it happens, which is the whole point of a render nobody
+	// is watching. This is what that worker runs: it loads this script and the
+	// program again, and renders with the same call the page would have made.
+	const WORKER_BOOTSTRAP = `
+self.onmessage = async event => {
+	const request = event.data;
+	// The program says its name to whoever is asking, and a module loader is
+	// asking, so there is no need to know the name here.
+	let factory = null;
+	self.define = (dependencies, provide) => { factory = provide(); };
+	self.define.amd = true;
+	try {
+		importScripts(request.loaderUrl, request.scriptUrl);
+		if (factory === null) {
+			factory = self[request.moduleName];
+		}
+		const video = await DDNetLoader.render(Object.assign({}, request.options, {
+			module: factory,
+			worker: false,
+			videoSink: request.sink,
+			onOutput: (message, kind) => self.postMessage({type: "output", message: message, kind: kind}),
+			onRenderProgress: status => self.postMessage({type: "progress", status: status}),
+		}));
+		self.postMessage({type: "done", video: video});
+	} catch (error) {
+		self.postMessage({type: "failed", message: String((error && error.message) || error)});
+	}
+};
+`;
+
+	// Everything about a render that is data rather than a promise to call
+	// back: what survives being sent to a worker.
+	const WORKER_OPTIONS = [
+		// tidy-alphabetical-start
+		"arguments", "audio", "chat", "codec", "crf", "dataBase", "demo", "fps",
+		"height", "homePath", "hud", "moduleName", "name", "output", "preset",
+		"programName", "scriptUrl", "settings", "width",
+		// tidy-alphabetical-end
+	];
+
+	async function renderInWorker(options, loaderUrl) {
+		// A worker inherits the page's isolation, so what the page cannot do
+		// the worker cannot either - and it is said here, where the page is
+		// listening, rather than from inside the worker.
+		const problem = await supportProblem(true);
+		if (problem !== null) {
+			throw new Error(problem);
+		}
+		const program = new URL(options.scriptUrl, location.href);
+		// Both scripts go in as blobs where they are not this page's own:
+		// `importScripts` asks for a foreign script without CORS, which a page
+		// that is cross-origin isolated then refuses.
+		const [loaderScript, programScript] = await Promise.all([loaderUrl, program].map(async url =>
+			url.origin === location.origin ? url.href : URL.createObjectURL(await fetchScript(url))));
+		const request = { loaderUrl: loaderScript, scriptUrl: programScript, moduleName: options.moduleName || null, options: {}, sink: undefined };
+		for (const key of WORKER_OPTIONS) {
+			if (options[key] !== undefined) {
+				request.options[key] = options[key];
+			}
+		}
+		request.options.scriptUrl = program.href;
+		// A destination the page picked can be handed over, if it is the kind
+		// of stream that can be. Where it is not, the render stays here rather
+		// than quietly writing somewhere else.
+		const transfer = [];
+		if (options.videoSink && typeof options.videoSink !== "function") {
+			request.sink = options.videoSink;
+			transfer.push(options.videoSink);
+		}
+		const bootstrap = URL.createObjectURL(new Blob([WORKER_BOOTSTRAP], { type: "text/javascript" }));
+		const worker = new Worker(bootstrap);
+		URL.revokeObjectURL(bootstrap);
+		// A worker that is stopped says nothing more, so whoever stopped it has
+		// to be the one to answer for it: without this the render would be over
+		// and the promise still waiting.
+		var stopRender = () => worker.terminate();
+		const finished = new Promise((resolve, reject) => {
+			stopRender = () => {
+				worker.terminate();
+				reject(new Error("The render was stopped."));
+			};
+			worker.onmessage = event => {
+				const message = event.data;
+				if (message.type === "output") {
+					if (options.onOutput) {
+						options.onOutput(message.message, message.kind || {});
+					}
+					return;
+				}
+				if (message.type === "progress") {
+					if (options.onRenderProgress) {
+						options.onRenderProgress(message.status);
+					}
+					return;
+				}
+				worker.terminate();
+				if (message.type === "done") {
+					resolve(message.video);
+				} else {
+					reject(new Error(message.message));
+				}
+			};
+			worker.onerror = event => {
+				worker.terminate();
+				reject(new Error(event.message || "the render worker stopped"));
+			};
+			worker.postMessage(request, transfer);
+		});
+		if (options.onStart) {
+			options.onStart({ quit: () => stopRender() });
+		}
+		return await finished;
+	}
+
+	// The viewers' own controls, as calls rather than as names to spell out:
+	// a page steering one should not have to know that `ccall` exists, nor
+	// which of the arguments are numbers. Every call answers `null` where the
+	// program is not running, the same as `call` does.
+	//
+	// The other end of these is the `DemoViewer*` block in
+	// `src/engine/client/demo_viewer_client.cpp` and the `MapViewer*` block in
+	// `src/game/map/standalone/map_viewer_main.cpp`.
+	function demoControls(instance) {
+		const number = (name, argument) => argument === undefined
+			? instance.call(name, "number")
+			: instance.call(name, null, ["number"], [argument]);
+		return {
+			/** Whether a demo is loaded and how long it is, in seconds. */
+			length: () => number("DemoViewerLength"),
+			/** How far it has played, between 0 and 1. */
+			progress: () => number("DemoViewerProgress"),
+			paused: () => number("DemoViewerPaused") === 1,
+			pause: () => number("DemoViewerSetPaused", 1),
+			play: () => number("DemoViewerSetPaused", 0),
+			/** Jumps to a part of the demo, between 0 and 1. */
+			seek: Fraction => number("DemoViewerSeekPercent", Fraction),
+			/** Jumps to a time in the demo, in seconds. */
+			seekTime: Seconds => number("DemoViewerSeekTime", Seconds),
+			restart: () => instance.call("DemoViewerSeekStart"),
+			/** The playback speed, or sets it: 1 is as it was played. */
+			speed: Value => Value === undefined ? number("DemoViewerSpeed") : number("DemoViewerSetSpeed", Value),
+			exporting: () => number("DemoViewerExporting") === 1,
+			/** Starts a video export, and says whether it started. */
+			startExport: (Width, Height, Fps, Audio) => instance.call("DemoViewerStartExport", "number",
+				["number", "number", "number", "number"], [Width, Height, Fps, Audio ? 1 : 0]) === 1,
+		};
+	}
+
+	// A tile is 32 world units across, in every map there is. The viewer is
+	// written in those units and a page has no business knowing them, so the
+	// one place that turns the one into the other is here.
+	const MAP_TILE_SIZE = 32;
+
+	function mapControls(instance) {
+		const tiles = name => {
+			const value = instance.call(name, "number");
+			return value === null ? null : value / MAP_TILE_SIZE;
+		};
+		const setNumbers = (name, values) =>
+			instance.call(name, null, values.map(() => "number"), values);
+		return {
+			loaded: () => instance.call("MapViewerMapLoaded", "number") === 1,
+			/** Fits the whole map on screen. */
+			fit: () => instance.call("MapViewerFit"),
+			/** How big the map is, in tiles. */
+			size: () => {
+				const width = tiles("MapViewerMapWidth");
+				return width === null ? null : { width, height: tiles("MapViewerMapHeight") };
+			},
+			/** Where the view looks, in tiles, or looks there. */
+			center: (X, Y) => {
+				if (X === undefined) {
+					const x = tiles("MapViewerCenterX");
+					return x === null ? null : { x, y: tiles("MapViewerCenterY") };
+				}
+				return setNumbers("MapViewerSetCenter", [X * MAP_TILE_SIZE, Y * MAP_TILE_SIZE]);
+			},
+			/**
+			 * How many tiles are across the screen, or zooms until that many
+			 * are. It is the zoom said in a way that means the same in every
+			 * window, which is what a link and a readout both need.
+			 */
+			tilesAcross: Tiles => {
+				const visible = tiles("MapViewerVisibleWidth");
+				if (Tiles === undefined) {
+					return visible;
+				}
+				// What the view is set by is the zoom, and what that comes to in
+				// tiles is the window's business - so it is asked what it shows
+				// now and told the factor between that and what is wanted.
+				if (visible > 0 && Tiles > 0) {
+					setNumbers("MapViewerSetZoom", [instance.call("MapViewerZoom", "number") * Tiles / visible]);
+				}
+			},
+			/** Zooms by a factor: 2 puts twice as much of the map on screen. */
+			zoomBy: Factor => {
+				const zoom = instance.call("MapViewerZoom", "number");
+				if (zoom !== null) {
+					setNumbers("MapViewerSetZoom", [zoom * Factor]);
+				}
+			},
+			/** Writes what is on screen, or the whole map, to a picture. */
+			exportView: () => instance.call("MapViewerExportView"),
+			exportFullMap: () => instance.call("MapViewerExportFullMap"),
+			/** 0 while nothing is being written, 1 while it is, 2 when it failed. */
+			exportState: () => instance.call("MapViewerExportState", "number"),
+		};
 	}
 
 	// What the render tool is asked on a command line, from what the page
@@ -613,6 +994,7 @@ const DDNetLoader = (() => {
 		return Object.assign({}, options, {
 			canvas: null,
 			persist: false,
+			needsWebGpu: true,
 			accept: [".demo"],
 			file: options.demo,
 			fileName: options.name || "render.demo",
@@ -633,6 +1015,11 @@ const DDNetLoader = (() => {
 		 * next to the page.
 		 * @param options.scriptUrl Where the program's script was loaded from,
 		 * when that is another origin than this page.
+		 * @param options.videoSink Where an exported video is written, see
+		 * `setVideoSink`. Without it the video goes to a scratch file and is
+		 * handed over when it is done.
+		 * @param options.needsWebGpu Whether the program draws without a
+		 * window, which only WebGPU does. Checked before it starts.
 		 * @param options.accept The file suffixes this program takes.
 		 * @param options.file A file to start on: bytes, a `File`, or the URL of
 		 * one.
@@ -646,6 +1033,46 @@ const DDNetLoader = (() => {
 		 */
 		start(options) {
 			return new Instance(options).run();
+		},
+
+		/**
+		 * What a demo viewer can be asked to do, bound to one of them. The page
+		 * that hosts it needs nothing else to steer it - and neither does a URL
+		 * that says where to start, which is `urlParameter` below.
+		 */
+		demoControls(instance) {
+			return demoControls(instance);
+		},
+
+		/**
+		 * The same for a map viewer: what it shows, in tiles, and everything
+		 * that changes it. A page steers it with these, and so does a link -
+		 * `#x=…&y=…&tiles=…` is only these calls made for somebody else.
+		 */
+		mapControls(instance) {
+			return mapControls(instance);
+		},
+
+		/**
+		 * What this browser cannot do, in one sentence, or `null` when it can
+		 * do all of it. A page can say so itself before it offers something
+		 * that will not work. Answers with a promise, because asking a browser
+		 * for a graphics adapter is a question it takes a moment over.
+		 *
+		 * @param needsWebGpu Whether what is offered draws without a window,
+		 * which is the one thing that needs WebGPU.
+		 */
+		supportProblem(needsWebGpu) {
+			return supportProblem(needsWebGpu === true);
+		},
+
+		/**
+		 * What the page's URL says about a parameter, from the fragment first:
+		 * a fragment never reaches a server, so a link to somebody's demo stays
+		 * between them and their browser.
+		 */
+		urlParameter(name) {
+			return urlParameter(name);
 		},
 
 		/** `start` with the furniture our own pages share around it. */
@@ -676,14 +1103,28 @@ const DDNetLoader = (() => {
 		 * @param options.settings Console commands, one per entry.
 		 * @param options.dataBase Where the `data` directory is, if it is not
 		 * next to the page.
-		 * @param options.onOutput Called for every line the render writes, which
-		 * is where its progress is reported.
+		 * @param options.onOutput Called for every line the render writes.
+		 * @param options.onRenderProgress Called once a second while the render
+		 * runs, with `{progress, encodedFrames, submittedFrames,
+		 * framesPerSecond}` - `progress` is the part of the demo that is done,
+		 * between 0 and 1.
 		 * @param options.onStart Called with the running instance, whose `quit`
 		 * ends a render that is taking too long.
+		 * @param options.scriptUrl Where `ddnet-demo-render.js` was loaded from.
+		 * With it the render happens in a worker and leaves the page free;
+		 * `worker: false` keeps it here.
+		 * @param options.videoSink Where the video is written while it is made.
+		 * A `WritableStream` can go to the worker with it; a function cannot,
+		 * and is only asked here.
 		 *
 		 * @returns a promise for the finished MP4 as a `Blob`.
 		 */
 		async render(options) {
+			// A worker needs to load the program itself, so it needs to be told
+			// where it is; without that this is the only thread there is.
+			if (options.worker !== false && typeof Worker === "function" && options.scriptUrl && LOADER_URL) {
+				return await renderInWorker(options, new URL(LOADER_URL, location.href));
+			}
 			const instance = new Instance(Object.assign(renderOptions(options), {
 				onVideo: file => {
 					instance.video = file;

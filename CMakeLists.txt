@@ -3173,6 +3173,8 @@ if(CLIENT)
     document/map_state.h
     document/shared_list.h
     document/tile_store.h
+    document_source.cpp
+    document_source.h
     envelope_extrema.cpp
     envelope_extrema.h
     envelope_manager.h
@@ -4430,6 +4432,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp
+    document_source_test.cpp
     document_test.cpp
     editor_test.cpp
     font_loading_test.cpp
@@ -4547,6 +4550,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/game/client/match_report_assembler.h
     src/game/client/session_game_config.cpp
     src/game/client/session_game_config.h
+    src/game/map/document_source.cpp
+    src/game/map/document_source.h
     src/game/map/tile_run_store.cpp
     src/game/map/tile_run_store.h
     # tidy-alphabetical-end

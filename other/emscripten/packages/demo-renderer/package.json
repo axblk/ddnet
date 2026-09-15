@@ -1,0 +1,40 @@
+{
+	"name": "@ddnet/demo-renderer",
+	"version": "1.0.0",
+	"description": "Turn a DDNet demo into an MP4 in a browser, in a worker of its own.",
+	"license": "Zlib",
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./demo-renderer.d.ts",
+			"default": "./demo-renderer.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"types": "./demo-renderer.d.ts",
+	"files": [
+		"README.md",
+		"demo-renderer.d.ts",
+		"demo-renderer.js",
+		"ddnet-demo-render.js",
+		"ddnet-demo-render.wasm"
+	],
+	"dependencies": {
+		"ddnet-loader": "^1.0.0"
+	},
+	"keywords": [
+		"ddnet",
+		"teeworlds",
+		"webassembly",
+		"emscripten"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ddnet/ddnet.git",
+		"directory": "other/emscripten/packages/demo-renderer"
+	},
+	"homepage": "https://ddnet.org/",
+	"engines": {
+		"node": ">=18"
+	}
+}

@@ -9,11 +9,31 @@
 		<script src="coi-serviceworker.js"></script>
 		<link rel="stylesheet" href="ddnet-page.css">
 		<link rel="stylesheet" href="ddnet-viewer.css">
+		<!-- The packages by their own names, which is how a page that installed
+		     them from a registry would say them. Here they sit beside this page
+		     rather than under `node_modules`, and this is what says so - the
+		     code below is the same either way. -->
+		<script type="importmap">
+		{
+			"imports": {
+				"ddnet-loader": "./ddnet-loader.js",
+				"@ddnet/map-viewer": "./map-viewer.js"
+			}
+		}
+		</script>
+		<!-- The module fetches the program itself, which is one round trip
+		     after this page has been read. Saying so here starts it with the
+		     rest of them instead. -->
+		<link rel="preload" as="script" href="ddnet-map-viewer.js" crossorigin>
 	</head>
 	<body>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="error" style="display: none"></div>
 		<canvas id="canvas">Canvas not supported.</canvas>
+		<!-- A viewer is black until it has a map to draw, and fetching one over
+		     a slow line takes long enough for that to look broken rather than
+		     busy. -->
+		<p id="loading" class="viewer-loading" role="status" hidden>Loading…</p>
 		<!-- Nothing named in the address, so nothing to show yet. A file can be
 		     dropped onto the page, and a phone has nothing to drop with, so it
 		     can be chosen here as well. -->
@@ -59,22 +79,25 @@
 				<button id="save-map" class="viewer-button" data-icon="save_all" title="Save the whole map" aria-label="Save the whole map"></button>
 			</div>
 		</div>
-		<script src="ddnet-map-viewer.js"></script>
 		<script type="module">
-			import DDNetLoader from "./ddnet-loader.js";
+			import DDNetLoader from "ddnet-loader";
+			import { mapViewerPage, mapControls } from "@ddnet/map-viewer";
 
 			// A map is dropped onto the window, or named as `map.html#map=<url>`.
-			const started = DDNetLoader.page({
-				module: DDNetMapViewer,
-				programName: "Map viewer",
-				accept: [".map"],
+			const started = mapViewerPage({
 				// The page has buttons of its own in the corner, so the viewer
 				// leaves off the ones it would draw itself.
 				controls: false,
 				urlParams: ["map"],
+				// A map viewer writes nothing that outlives the tab. The picture it
+				// exports is handed to the browser as a download the moment it is
+				// written, so keeping a copy in IndexedDB would only be a copy
+				// nobody asked for.
+				persist: false,
 				elements: {
 					canvas: document.getElementById('canvas'),
 					error: document.getElementById('error'),
+					loading: document.getElementById('loading'),
 				},
 			});
 
@@ -132,13 +155,21 @@
 				// call has to survive being made outside of that: until there is
 				// one, and once there is no longer one, they all answer `null`.
 				var viewer = null;
-				const map = DDNetLoader.mapControls({
+				const map = mapControls({
 					call: (name, returnType, argTypes, args) =>
 						viewer == null ? null : viewer.call(name, returnType, argTypes, args),
 				});
 				// A page that cannot run this at all has been told why once
 				// already, which is enough: there is nothing here to steer.
 				started.then(instance => { viewer = instance; }, () => {});
+
+				// Something to look at while the program and the map are on
+				// their way. Only where there is a map on the way: a page with
+				// nothing named in its address offers a way in instead, and
+				// that is not a wait.
+				if (DDNetLoader.urlParameter("map") !== null) {
+					DDNetLoader.loadingHint(document.getElementById('loading'), () => map.loaded());
+				}
 
 				// Nothing named in the address, so the page offers a way in of
 				// its own. A map can be dropped onto the picture - the loader

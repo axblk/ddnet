@@ -22,6 +22,7 @@
 
 #include <game/version.h>
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <vector>
@@ -177,14 +178,36 @@ int main(int argc, const char **argv)
 		{
 			pClient->SetZoomEnabled(false);
 		}
+		else if(str_comp(argv[Index], "--time") == 0 || str_comp(argv[Index], "--speed") == 0)
+		{
+			const bool Time = str_comp(argv[Index], "--time") == 0;
+			if(Index + 1 >= argc)
+			{
+				log_error("client", "Missing value for %s.", argv[Index]);
+				Cleanup();
+				return -1;
+			}
+			const float Value = str_tofloat(argv[++Index]);
+			if(Time)
+				pClient->SetStartTime(std::max(Value, 0.0f));
+			else
+				pClient->SetStartSpeed(Value);
+		}
+		else if(str_comp(argv[Index], "--paused") == 0)
+		{
+			pClient->SetStartPaused(true);
+		}
 		else if(str_comp(argv[Index], "--help") == 0)
 		{
-			log_info("client", "Usage: ddnet-demo-player [<demo>] [--output <video.mp4>] [--no-controls] [--no-zoom] [settings]");
+			log_info("client", "Usage: ddnet-demo-player [<demo>] [--output <video.mp4>] [--no-controls] [--no-zoom]");
+			log_info("client", "                       [--time <seconds>] [--speed <factor>] [--paused] [settings]");
 			log_info("client", "Anything else is a console command, so `cl_video_width 1920` and the");
 			log_info("client", "rest of the cl_ settings work here just as they do in the client.");
 			log_info("client", "The viewer draws its own controls over the demo, which --no-controls");
 			log_info("client", "leaves off for whoever brings their own. The wheel, the zoom keys");
 			log_info("client", "and a pinch zoom what is shown, which --no-zoom leaves out.");
+			log_info("client", "--time, --speed and --paused say where in the demo to start and how,");
+			log_info("client", "which is what a link naming a place in a demo means.");
 			log_info("client", "Space pauses, the arrow keys seek and change the speed, Home starts");
 			log_info("client", "over and Escape closes the window. A demo dropped on the window");
 			log_info("client", "replaces the one that is playing, and is what the viewer waits for");

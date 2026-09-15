@@ -1,0 +1,40 @@
+{
+	"name": "@ddnet/map-viewer",
+	"version": "1.0.0",
+	"description": "Look at a DDNet map in a browser: a canvas, a map, and everything said in tiles.",
+	"license": "Zlib",
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./map-viewer.d.ts",
+			"default": "./map-viewer.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"types": "./map-viewer.d.ts",
+	"files": [
+		"README.md",
+		"map-viewer.d.ts",
+		"map-viewer.js",
+		"ddnet-map-viewer.js",
+		"ddnet-map-viewer.wasm"
+	],
+	"dependencies": {
+		"ddnet-loader": "^1.0.0"
+	},
+	"keywords": [
+		"ddnet",
+		"teeworlds",
+		"webassembly",
+		"emscripten"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ddnet/ddnet.git",
+		"directory": "other/emscripten/packages/map-viewer"
+	},
+	"homepage": "https://ddnet.org/",
+	"engines": {
+		"node": ">=18"
+	}
+}

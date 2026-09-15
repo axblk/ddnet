@@ -16,7 +16,7 @@
 		<script type="importmap">
 		{
 			"imports": {
-				"ddnet-loader": "./ddnet-loader.js",
+				"@ddnet/base": "./ddnet-base.js",
 				"@ddnet/demo-renderer": "./demo-renderer.js"
 			}
 		}
@@ -51,8 +51,8 @@
 			<ul id="queue"></ul>
 		</div>
 		<script type="module">
-			import DDNetLoader from "ddnet-loader";
-			import { renderDemo } from "@ddnet/demo-renderer";
+			import DDNetBase from "@ddnet/base";
+			import { renderDemo, zip } from "@ddnet/demo-renderer";
 
 			// Demos are collected first and rendered afterwards, one after the
 			// other: a render uses everything the machine has, so two at once
@@ -74,7 +74,7 @@
 				// The folder choice belongs to this page rather than to the
 				// export, so it stays where it is and the rest goes in front
 				// of it.
-				const settingsForm = DDNetLoader.exportSettingsForm(
+				const settingsForm = DDNetBase.exportSettingsForm(
 					document.getElementById('settings'), { audio: true });
 				document.getElementById('settings').append(followChoice, folderChoice);
 				const jobs = [];
@@ -112,7 +112,7 @@
 				if (problem !== null) {
 					sayProblem();
 				} else {
-					DDNetLoader.supportProblem(true).then(found => {
+					DDNetBase.supportProblem(true).then(found => {
 						if (found !== null) {
 							problem = found;
 							sayProblem();
@@ -276,19 +276,19 @@
 				const defaults = settings();
 				function applyLink() {
 					const number = name => {
-						const value = parseFloat(DDNetLoader.urlParameter(name));
+						const value = parseFloat(DDNetBase.urlParameter(name));
 						return isFinite(value) ? value : undefined;
 					};
 					const flag = name => {
-						const value = DDNetLoader.urlParameter(name);
+						const value = DDNetBase.urlParameter(name);
 						return value === null ? undefined : value === "1";
 					};
 					settingsForm.setValues({
 						width: number("width"), height: number("height"), fps: number("fps"),
-						crf: number("crf"), codec: DDNetLoader.urlParameter("codec") || undefined,
+						crf: number("crf"), codec: DDNetBase.urlParameter("codec") || undefined,
 						audio: flag("audio"), hud: flag("hud"), chat: flag("chat"),
 					});
-					const follow = DDNetLoader.urlParameter("follow");
+					const follow = DDNetBase.urlParameter("follow");
 					if (follow !== null) {
 						followInput.value = follow;
 					}
@@ -302,7 +302,7 @@
 						const same = value === defaults[name] || (value == null && defaults[name] == null);
 						values[name] = same ? null : (typeof value === "boolean" ? (value ? 1 : 0) : value);
 					}
-					DDNetLoader.setUrlParameters(values);
+					DDNetBase.setUrlParameters(values);
 				}
 
 				function videoName(demoName) {
@@ -429,7 +429,7 @@
 					try {
 						// The names are what each video is already offered
 						// under, so a zip holds what the list says it holds.
-						const archive = await DDNetLoader.zip(
+						const archive = await zip(
 							finished.map(job => ({ name: job.name, blob: job.video })));
 						const link = document.createElement('a');
 						link.href = URL.createObjectURL(archive);

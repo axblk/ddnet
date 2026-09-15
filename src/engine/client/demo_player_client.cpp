@@ -105,6 +105,40 @@ void CDemoPlayerClient::SetPaused(bool Paused)
 		Player.Unpause();
 }
 
+void CDemoPlayerClient::Play()
+{
+	if(AtEnd())
+	{
+		SeekStart();
+	}
+	SetPaused(false);
+}
+
+void CDemoPlayerClient::TogglePause()
+{
+	if(Paused())
+	{
+		Play();
+	}
+	else
+	{
+		SetPaused(true);
+	}
+}
+
+bool CDemoPlayerClient::AtEnd() const
+{
+	const float Length = this->Length();
+	if(Length <= 0.0f)
+	{
+		return false;
+	}
+	// Two ticks of slack, because both ends are reached by seeking to a tick
+	// and the tick that is reached may sit just short of the mark.
+	const float End = HasClip() ? m_ClipEnd : Length;
+	return Progress() * Length >= End - 2.0f / (float)SERVER_TICK_SPEED;
+}
+
 void CDemoPlayerClient::SeekPercent(float Percent)
 {
 	DemoSource(m_DemoSessionId).DemoPlayer().SeekPercent(std::clamp(Percent, 0.0f, 1.0f));
@@ -448,10 +482,7 @@ bool CDemoPlayerClient::HandleInput()
 	}
 	if(KeyPressed(CONTROL_KEY_PAUSE, false))
 	{
-		if(Player.BaseInfo()->m_Paused)
-			Player.Unpause();
-		else
-			Player.Pause();
+		TogglePause();
 	}
 	if(KeyPressed(CONTROL_KEY_SEEK_BACK, true))
 	{
@@ -851,7 +882,7 @@ void CDemoPlayerClient::RenderControls()
 	switch(Pressed)
 	{
 	case ITEM_PLAY:
-		SetPaused(!Paused());
+		TogglePause();
 		break;
 	case ITEM_SEEK:
 		Player.SeekPercent(SeekTo);
@@ -1209,7 +1240,17 @@ extern "C" {
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSetPaused(int Paused)
 {
-	FromPage([Paused] { g_pDemoPlayer->SetPaused(Paused != 0); });
+	FromPage([Paused] {
+		if(Paused != 0)
+		{
+			g_pDemoPlayer->SetPaused(true);
+		}
+		else
+		{
+			// Play, so that a page gets what a video would do at the end.
+			g_pDemoPlayer->Play();
+		}
+	});
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSeekPercent(float Percent)

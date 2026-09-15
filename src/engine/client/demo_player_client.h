@@ -243,6 +243,21 @@ public:
 	 * these are what they call; on every other platform nothing calls them.
 	 */
 	void SetPaused(bool Paused);
+	/**
+	 * Starts playing, from the beginning if there is nothing left to play.
+	 *
+	 * A demo stops on its last frame instead of going back to the start, so
+	 * pressing play there would do nothing visible. This is what a video does
+	 * too, and where a piece is marked out, the beginning is that piece's.
+	 */
+	void Play();
+	/** Play if it stands still, stop if it runs. */
+	void TogglePause();
+	/**
+	 * Whether it stands at the end of what is being watched - the end of the
+	 * marked piece, where there is one, and the end of the demo otherwise.
+	 */
+	bool AtEnd() const;
 	void SeekPercent(float Percent);
 	void SeekToTime(float Seconds);
 	void SeekStart();

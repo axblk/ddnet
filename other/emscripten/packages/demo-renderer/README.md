@@ -21,6 +21,13 @@ It needs WebGPU - the one way a browser draws without a window - and a
 `VideoEncoder`. Both are said to be missing before a demo is fetched for
 nothing.
 
+`renderDemo` is `DemoRenderer.render` under the name a page that renders one
+demo wants to read; the class is there for a page that would rather say it that
+way, and for one that wants a render on its own thread (`worker: false`, which
+is worth it for nothing but debugging). A page that renders a batch of them can
+put the finished videos into one zip with `zip`, so that a queue of ten is one
+prompt to save rather than ten.
+
 A film can be longer than a tab can hold: `videoSink` takes a
 `FileSystemWritableFileStream` from `showSaveFilePicker`, and then what is
 encoded is written as it is encoded and nothing is kept in memory.
@@ -28,14 +35,14 @@ encoded is written as it is encoded and nothing is kept in memory.
 The program itself is WebAssembly and ships inside this package, beside the
 module; nothing has to be told where it is. What every program of this family
 needs - the canvas, the files, the full screen - is
-[`ddnet-loader`](../..), the runtime this is built on, and a page may use that
+[`@ddnet/base`](../..), the runtime this is built on, and a page may use that
 directly as well.
 
 A browser has to be cross-origin isolated to run any of this: these programs
 use threads, and a browser only hands out shared memory to a page that sends
 `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`. Where the headers are not yours
-to set, `ddnet-loader/coi-serviceworker.js` sets them from a service worker.
+to set, `@ddnet/base/coi-serviceworker.js` sets them from a service worker.
 
 Not published anywhere yet: what is here is the package as it would be
 published, so that a page inside this repository uses exactly what a page

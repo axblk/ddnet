@@ -1,18 +1,17 @@
 // Starting one of the programs compiled for the browser, with the files it is
 // given and, where it has something to show, on a canvas.
 //
-// Three ways in. `DDNetLoader.start` puts one instance on one canvas and hands
-// back a handle to call into it - that is all an embedding page needs, and it
-// claims no globals, so a page may have two of them or a program of its own
-// beside them. `DDNetLoader.page` is that plus the furniture our own three
-// pages share: a loading line, a console log, and the canvas filling the
-// window. `DDNetLoader.render` is the same again with nothing on screen at all:
-// a demo goes in, an MP4 comes out, and the page decides what to do with it.
-// They differ in the program they start and in what they take, not in how any
-// of it works.
+// Two ways in, both of them on `Program`. `Program.open` puts one program on
+// one canvas and hands back a handle to call into it - that is all an
+// embedding page needs, and it claims no globals, so a page may have two of
+// them or a program of its own beside them. `Program.openPage` is that plus
+// the furniture our own pages share: a loading line, a console log, and the
+// canvas filling the window. A package says the rest by subclassing the
+// class: which program to start, where its script lies, and what it can be
+// asked once it runs.
 //
-// A module. `import DDNetLoader from "./ddnet-loader.js"` for all of it, or
-// `import { start, page } from …` for one thing at a time; a page loads it with
+// A module. `import DDNetBase from "./ddnet-base.js"` for all of it, or
+// `import { Program } from …` for one thing at a time; a page loads it with
 // `<script type="module">`, which is what its own three pages do. A module is
 // also the only form a package can honestly offer: the alternative would be a
 // global claimed by a script, which is neither importable nor two things at
@@ -21,19 +20,19 @@
 //
 // Modules are strict by themselves, so nothing here says so.
 
-const DDNetLoader = (() => {
+const DDNetBase = (() => {
 	// What this library answers with when it refuses or cannot do something.
 	// The `code` is what a caller branches on: the sentence is for whoever
 	// reads it and may be reworded, the code is part of the API and is not.
-	class DDNetLoaderError extends Error {
+	class DDNetBaseError extends Error {
 		constructor(code, message) {
 			super(message);
-			this.name = "DDNetLoaderError";
+			this.name = "DDNetBaseError";
 			this.code = code;
 		}
 	}
 
-	const fail = (code, message) => new DDNetLoaderError(code, message);
+	const fail = (code, message) => new DDNetBaseError(code, message);
 
 	// This library's own version, which is not the game's: it says what the
 	// API looks like, so it changes when the API does.
@@ -46,27 +45,20 @@ const DDNetLoader = (() => {
 	const START_OPTIONS = [
 		"accept", "acceptLinks", "arguments", "canvas", "controls", "dataBase", "file", "fileArgument",
 		"fileName", "homePath", "module", "needsWebGpu", "onExit", "onOutput", "onProgress",
-		"orientation", "paused", "persist", "programName", "scriptUrl", "signal", "speed",
-		"startTime", "sweepVideoScratch", "urlParams", "videoSink", "zoom",
+		"onRenderProgress", "onVideo", "orientation", "paused", "persist", "programName", "scriptUrl",
+		"signal", "speed", "startTime", "sweepVideoScratch", "urlParams", "videoSink", "zoom",
 	];
 	const PAGE_OPTIONS = START_OPTIONS.concat(["elements"]);
-	// A render takes what the command line of the render tool takes, plus the
-	// few things every program here takes. `sweepVideoScratch` and `arguments`
-	// are in it because the worker a render runs in calls back in through the
-	// same door, with those two already settled.
-	const RENDER_OPTIONS = [
-		"arguments", "audio", "chat", "codec", "crf", "dataBase", "demo", "follow", "fps", "height",
-		"homePath", "hud", "module", "moduleName", "name", "onOutput", "onProgress", "onRenderProgress",
-		"onStart", "output", "preset", "programName", "scriptUrl", "settings", "signal",
-		"sweepVideoScratch", "videoSink", "width", "worker",
-	];
+	// One table for every option any program here takes, this module's own and
+	// the ones a package adds on top - `fps` is a number wherever it is said,
+	// and one table is what makes every complaint about one read the same.
 	const OPTION_SHAPES = {
 		accept: "array", acceptLinks: "boolean", arguments: "array", audio: "boolean", canvas: "canvas",
 		chat: "boolean", codec: "string", controls: "boolean", crf: "number", dataBase: "string",
 		elements: "object", fileArgument: "string", fileName: "string", follow: "string", fps: "number",
 		height: "number", homePath: "string", hud: "boolean", module: "function", moduleName: "string",
 		name: "string", needsWebGpu: "boolean", onExit: "function", onOutput: "function",
-		onProgress: "function", onRenderProgress: "function", onStart: "function",
+		onProgress: "function", onRenderProgress: "function", onStart: "function", onVideo: "function",
 		orientation: "string", output: "string", paused: "boolean", persist: "boolean", preset: "string",
 		programName: "string", scriptUrl: "string", settings: "array",
 		signal: "signal", speed: "number", startTime: "number", sweepVideoScratch: "boolean",
@@ -100,19 +92,24 @@ const DDNetLoader = (() => {
 		}
 	}
 
+	// What a class is called out in the open: the codebase writes
+	// `CDemoPlayer` and a page imports `DemoPlayer`, and a complaint about an
+	// option is for the page to read.
+	const publicName = program => program.name.replace(/^C(?=[A-Z])/, "");
+
 	function checkOptions(where, options, allowed) {
 		if (typeof options !== "object" || options === null) {
-			throw fail("BadOption", `DDNetLoader.${where} takes an object of options`);
+			throw fail("BadOption", `${where} takes an object of options`);
 		}
 		for (const [name, value] of Object.entries(options)) {
 			if (!allowed.includes(name)) {
-				throw fail("BadOption", `DDNetLoader.${where} does not take '${name}'. It takes: ${allowed.join(", ")}.`);
+				throw fail("BadOption", `${where} does not take '${name}'. It takes: ${allowed.join(", ")}.`);
 			}
 			// An option left out is an option left at its default, so only
 			// what is actually there is looked at.
 			const shape = OPTION_SHAPES[name];
 			if (shape !== undefined && value !== undefined && value !== null && !hasShape(value, shape)) {
-				throw fail("BadOption", `DDNetLoader.${where} wants ${SHAPE_NAMES[shape]} for '${name}'`);
+				throw fail("BadOption", `${where} wants ${SHAPE_NAMES[shape]} for '${name}'`);
 			}
 		}
 	}
@@ -121,7 +118,7 @@ const DDNetLoader = (() => {
 	// Where this module is, so that a worker can be given the same one. A
 	// module knows this of itself, wherever it is running - which a script had
 	// to be asked for while it ran, and could only answer on a page.
-	const LOADER_URL = import.meta.url;
+	const MODULE_URL = import.meta.url;
 	// A file named in the URL is fetched into the same place a dropped file
 	// goes. Anything larger than this is refused rather than filling the tab's
 	// memory with whatever a link pointed at.
@@ -382,38 +379,33 @@ const DDNetLoader = (() => {
 		return { stop: stop };
 	}
 
-	// The same pictures the viewers draw on their own buttons, as the browser
-	// draws pictures: one square outline each, in whatever colour the button
-	// they sit on is written in. They are named after `CViewerControls::EIcon`
-	// in `src/engine/client/viewer_controls.h` and drawn to say the same
-	// thing, so that a page and the program behind it do not offer the same
-	// button with two different pictures on it.
+	// The pictures on the buttons, as the browser draws pictures: one square
+	// outline each, in whatever colour the button they sit on is written in.
+	// They are named after `CViewerControls::EIcon` in
+	// `src/engine/client/viewer_controls.h` and drawn to say the same thing,
+	// so that a page and the program behind it do not offer the same button
+	// with two different pictures on it.
+	//
+	// Here are the ones any page here draws. What only one viewer's buttons
+	// need comes with that viewer's package and is put in through `addIcons`,
+	// because a page that shows a map has no use for a picture of a volume
+	// slider.
 	const ICONS = {
 		menu: '<rect x="3" y="5" width="18" height="2.6" rx="1.3"/><rect x="3" y="10.7" width="18" height="2.6" rx="1.3"/><rect x="3" y="16.4" width="18" height="2.6" rx="1.3"/>',
-		detail: '<path d="M12 1.5 13.9 9.1 21.5 11 13.9 12.9 12 20.5 10.1 12.9 2.5 11 10.1 9.1Z"/>',
-		entities: '<rect x="3" y="3" width="8" height="8" rx="1.6"/><rect x="13" y="3" width="8" height="8" rx="1.6"/><rect x="3" y="13" width="8" height="8" rx="1.6"/><rect x="13" y="13" width="8" height="8" rx="1.6"/>',
-		play: '<path d="M7.5 3.8 20.5 12 7.5 20.2Z"/>',
-		pause: '<rect x="5.5" y="3.5" width="4.4" height="17" rx="2.2"/><rect x="14.1" y="3.5" width="4.4" height="17" rx="2.2"/>',
-		restart: '<rect x="3.5" y="3.5" width="3.2" height="17" rx="1.6"/><path d="M20.5 3.8 20.5 20.2 8.4 12Z"/>',
 		minus: '<rect x="3" y="10.7" width="18" height="2.6" rx="1.3"/>',
 		plus: '<rect x="3" y="10.7" width="18" height="2.6" rx="1.3"/><rect x="10.7" y="3" width="2.6" height="18" rx="1.3"/>',
 		fit: '<rect x="2.7" y="4.7" width="18.6" height="14.6" rx="2" fill="none" stroke="currentColor" stroke-width="2.4"/><rect x="6.6" y="8.6" width="10.8" height="6.8" opacity="0.55"/>',
 		save: '<path d="M12 2.8V12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M8 8.8 12 13 16 8.8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.8 15.4v3.4a1.4 1.4 0 0 0 1.4 1.4h13.6a1.4 1.4 0 0 0 1.4-1.4v-3.4" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
-		save_all: '<path d="M7 2.8V9.6M4.2 7 7 10 9.8 7M1.6 13.2v3a1.4 1.4 0 0 0 1.4 1.4h8a1.4 1.4 0 0 0 1.4-1.4v-3M17 6.4V13.2M14.2 10.6 17 13.6 19.8 10.6M11.6 16.8v3a1.4 1.4 0 0 0 1.4 1.4h8a1.4 1.4 0 0 0 1.4-1.4v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
 		stop: '<rect x="4.5" y="4.5" width="15" height="15" rx="3"/>',
-		eye: '<path d="M12 4.6C5.6 4.6 1.8 12 1.8 12s3.8 7.4 10.2 7.4S22.2 12 22.2 12 18.4 4.6 12 4.6Z"/><circle cx="12" cy="12" r="2.7" fill="#000"/>',
-		freeview: '<path d="M12 1.6 15.2 6.2H8.8ZM12 22.4 8.8 17.8h6.4ZM1.6 12 6.2 8.8v6.4ZM22.4 12 17.8 15.2V8.8Z"/><rect x="10.9" y="4.6" width="2.2" height="14.8" rx="1.1"/><rect x="4.6" y="10.9" width="14.8" height="2.2" rx="1.1"/>',
 		fullscreen: '<path d="M3.4 9.6V3.4h6.2M20.6 9.6V3.4h-6.2M3.4 14.4v6.2h6.2M20.6 14.4v6.2h-6.2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
-		zoom_reset: '<path d="M9.6 3.4v6.2H3.4M14.4 3.4v6.2h6.2M9.6 20.6v-6.2H3.4M14.4 20.6v-6.2h6.2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
-		volume: '<path d="M3 9.2h3.4L11.4 5v14L6.4 14.8H3Z"/><path d="M15.2 9.2a4 4 0 0 1 0 5.6M18 6.4a8 8 0 0 1 0 11.2" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>',
-		volume_off: '<path d="M3 9.2h3.4L11.4 5v14L6.4 14.8H3Z"/><path d="M15.4 9.6 20.6 14.8M20.6 9.6 15.4 14.8" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>',
-		// Where a piece of a demo begins and where it ends: a bar with the
-		// stretch that is kept beside it, drawn the way a cut is marked
-		// everywhere - the bar on the side the piece starts or stops at.
-		clip_start: '<rect x="4.4" y="3.6" width="2.8" height="16.8" rx="1.4"/><path d="M9.4 7.2h9.4a1.4 1.4 0 0 1 1.4 1.4v6.8a1.4 1.4 0 0 1-1.4 1.4H9.4Z" opacity="0.55"/>',
-		clip_end: '<rect x="16.8" y="3.6" width="2.8" height="16.8" rx="1.4"/><path d="M14.6 7.2H5.2a1.4 1.4 0 0 0-1.4 1.4v6.8a1.4 1.4 0 0 0 1.4 1.4h9.4Z" opacity="0.55"/>',
-		clip_clear: '<rect x="4.4" y="3.6" width="2.8" height="16.8" rx="1.4"/><rect x="16.8" y="3.6" width="2.8" height="16.8" rx="1.4"/><path d="M9.6 9.6 14.4 14.4M14.4 9.6 9.6 14.4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>',
 	};
+
+	// Pictures a package brings for its own buttons, put where every page can
+	// ask for them. Said as the package is loaded, so that a page which
+	// imported it can write `data-icon="play"` and mean it.
+	function addIcons(pictures) {
+		Object.assign(ICONS, pictures);
+	}
 
 	function icon(name) {
 		const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -530,7 +522,7 @@ const DDNetLoader = (() => {
 			document.addEventListener("fullscreenchange", releaseOrientationWhenLeaving);
 			document.addEventListener("webkitfullscreenchange", releaseOrientationWhenLeaving);
 			screen.orientation.lock(orientation).catch(() => { orientationLocked = false; });
-		}).catch(error => console.warn("DDNetLoader: this browser refused to fill the screen:", (error && error.message) || error));
+		}).catch(error => console.warn("DDNetBase: this browser refused to fill the screen:", (error && error.message) || error));
 	}
 
 	function fullscreen(button, options) {
@@ -852,7 +844,108 @@ const DDNetLoader = (() => {
 		? signal.reason
 		: fail("Stopped", "This was stopped.");
 
-	class Instance extends EventTarget {
+	class CProgram extends EventTarget {
+		/**
+		 * What a program is, said once by the class rather than by every page
+		 * that opens one: where its script lies, what the factory in it is
+		 * called, what it answers to in a log, and which files it takes.
+		 *
+		 * A class that leaves them alone is opened with a factory handed in,
+		 * which is what the full client does - it is loaded by the page and
+		 * has no package of its own.
+		 */
+		static script = null;
+		static base = MODULE_URL;
+		static moduleName = null;
+		static programName = null;
+		static suffix = null;
+
+		/** Where this program's script lies, worked out from the class. */
+		static scriptUrl() {
+			return this.script === null ? null : new URL(this.script, this.base).href;
+		}
+
+		/**
+		 * Starts the program on a canvas and answers with it, running.
+		 *
+		 * Everything a page has to say about it is said here; what the class
+		 * already knows - its script, its factory, its files - it fills in
+		 * itself, and what the page says instead of that wins.
+		 *
+		 * @param options.module The factory the program's script defines, so
+		 * `DDNetClient`, `DDNetDemoPlayer` or `DDNetMapViewer`. A class that
+		 * knows where its script lies fetches it itself and needs none.
+		 * @param options.canvas The canvas to draw on.
+		 * @param options.dataBase Where the `data` directory is, if it is not
+		 * next to the page.
+		 * @param options.scriptUrl Where the program's script was loaded from,
+		 * when that is another origin than this page.
+		 * @param options.videoSink Where an exported video is written, see
+		 * `setVideoSink`. Without it the video goes to a scratch file and is
+		 * handed over when it is done.
+		 * @param options.needsWebGpu Whether the program draws without a
+		 * window, which only WebGPU does. Checked before it starts.
+		 * @param options.accept The file suffixes this program takes.
+		 * @param options.file A file to start on: bytes, a `File`, or the URL of
+		 * one.
+		 * @param options.urlParams Parameters of the page's URL that may name a
+		 * file to open.
+		 * @param options.controls `false` leaves off the bar of controls a
+		 * viewer otherwise draws over what it shows, for a page that puts its
+		 * own beside the canvas.
+		 * @param options.signal An `AbortSignal`. Aborting it asks the program
+		 * to stop; aborting it before the call starts nothing at all, and
+		 * either way the promise ends with whatever the signal was aborted
+		 * with.
+		 * @param options.onOutput Called for every line the program writes.
+		 * @param options.onProgress Called while the program is being fetched.
+		 * @param options.onExit Called once the program has stopped.
+		 *
+		 * The program is also an `EventTarget`, which is the other way of
+		 * hearing the same three things: `output` with
+		 * `{detail: {message, kind}}`, `progress` with `{detail: {text}}` and
+		 * `exit`. A listener and a callback can both be there; output nobody
+		 * listens to and nobody was handed goes to the console.
+		 *
+		 * @returns a promise for the running program.
+		 */
+		static async open(options) {
+			const settings = await this.settings(options);
+			checkOptions(`${publicName(this)}.open`, settings, START_OPTIONS);
+			return await new this(settings).run();
+		}
+
+		/**
+		 * The same, plus the furniture our own pages share: the canvas
+		 * filling the window, a line that says what is loading, a console log
+		 * for what the program writes.
+		 */
+		static async openPage(options) {
+			const settings = await this.settings(options);
+			checkOptions(`${publicName(this)}.openPage`, settings, PAGE_OPTIONS);
+			return await new this(pageOptions(settings)).run();
+		}
+
+		/**
+		 * What was asked for, with what the class knows filled in - including
+		 * the program's factory, which is fetched here where the class knows
+		 * where it lies.
+		 */
+		static async settings(options) {
+			const settings = Object.assign({}, options);
+			if (this.script !== null) {
+				settings.scriptUrl = settings.scriptUrl || this.scriptUrl();
+				settings.programName = settings.programName || this.programName;
+				if (this.suffix !== null && settings.accept === undefined) {
+					settings.accept = [this.suffix];
+				}
+				if (settings.module === undefined) {
+					settings.module = await importProgram(settings.scriptUrl, this.moduleName);
+				}
+			}
+			return settings;
+		}
+
 		constructor(options) {
 			super();
 			// Which kinds of event somebody is listening for, so that output
@@ -907,7 +1000,7 @@ const DDNetLoader = (() => {
 			}
 		}
 
-		progress(text) {
+		sayProgress(text) {
 			this.say("progress", { text: text });
 			if (this.options.onProgress) {
 				this.options.onProgress(text);
@@ -1227,7 +1320,7 @@ const DDNetLoader = (() => {
 			const instance = this;
 			const options = this.options;
 			if (typeof options.module !== "function") {
-				throw fail("BadOption", "DDNetLoader needs the program's factory, for example `module: DDNetDemoPlayer`");
+				throw fail("BadOption", "DDNetBase needs the program's factory, for example `module: DDNetDemoPlayer`");
 			}
 			// A signal that is already aborted is a program that is not
 			// started, and one aborted later is a program asked to stop. Both
@@ -1319,7 +1412,7 @@ const DDNetLoader = (() => {
 				monitorRunDependencies: left => {
 					totalDependencies = Math.max(totalDependencies, left);
 					const value = totalDependencies - left;
-					instance.progress(totalDependencies == 1 ? "Loading…" : `Loading… (${value}/${totalDependencies})`);
+					instance.sayProgress(totalDependencies == 1 ? "Loading…" : `Loading… (${value}/${totalDependencies})`);
 				},
 			});
 
@@ -1338,8 +1431,18 @@ const DDNetLoader = (() => {
 				this.canvas.style.display = "block";
 			}
 			this.module.callMain(args);
+			// Now that it runs, for a program that wants to say what it is
+			// doing without every page having to ask it.
+			this.running();
 			return this;
 		}
+
+		/**
+		 * Called once the program runs. Nothing happens here; a program that
+		 * says what it is doing - a demo player sending the events a
+		 * `<video>` sends - starts doing it from here.
+		 */
+		running() {}
 
 		// Where the program's own script is, when the page said. Emscripten
 		// otherwise works it out from whatever script is running, which is right
@@ -1571,296 +1674,6 @@ const DDNetLoader = (() => {
 		});
 	}
 
-	// A render is a worker's worth of work - every frame drawn, read back and
-	// encoded - and none of it needs the page. Done in a worker, the page stays
-	// answerable while it happens, which is the whole point of a render nobody
-	// is watching. This is what that worker runs: it loads this script and the
-	// program again, and renders with the same call the page would have made.
-	const WORKER_BOOTSTRAP = `
-self.onmessage = async event => {
-	const request = event.data;
-	try {
-		const loader = await import(request.loaderUrl);
-		const factory = await loader.importProgram(request.scriptUrl, request.moduleName);
-		const video = await loader.render(Object.assign({}, request.options, {
-			module: factory,
-			worker: false,
-			videoSink: request.sink,
-			onOutput: (message, kind) => self.postMessage({type: "output", message: message, kind: kind}),
-			onRenderProgress: status => self.postMessage({type: "progress", status: status}),
-		}));
-		self.postMessage({type: "done", video: video});
-	} catch (error) {
-		self.postMessage({type: "failed", message: String((error && error.message) || error)});
-	}
-};
-`;
-
-	// Everything about a render that is data rather than a promise to call
-	// back: what survives being sent to a worker.
-	const WORKER_OPTIONS = [
-		// tidy-alphabetical-start
-		"arguments", "audio", "chat", "codec", "crf", "dataBase", "demo", "fps",
-		"height", "homePath", "hud", "moduleName", "name", "output", "preset",
-		"programName", "scriptUrl", "settings", "width",
-		// tidy-alphabetical-end
-	];
-
-	// What a render hands to whoever wants to watch it: the same events the
-	// page gets as callbacks, and the way to stop it.
-	class RenderHandle extends EventTarget {
-		constructor(stop) {
-			super();
-			this.stop = stop;
-		}
-
-		say(type, detail) {
-			this.dispatchEvent(new CustomEvent(type, { detail: detail }));
-		}
-
-		quit() {
-			this.stop();
-		}
-	}
-
-	async function renderInWorker(options, loaderUrl) {
-		// A worker inherits the page's isolation, so what the page cannot do
-		// the worker cannot either - and it is said here, where the page is
-		// listening, rather than from inside the worker.
-		const problem = await supportError(true);
-		if (problem !== null) {
-			throw problem;
-		}
-		const program = new URL(options.scriptUrl, location.href);
-		// Both scripts go in as blobs where they are not this page's own:
-		// `importScripts` asks for a foreign script without CORS, which a page
-		// that is cross-origin isolated then refuses.
-		const [loaderScript, programScript] = await Promise.all([loaderUrl, program].map(async url =>
-			url.origin === location.origin ? url.href : URL.createObjectURL(await fetchScript(url))));
-		const request = { loaderUrl: loaderScript, scriptUrl: programScript, moduleName: options.moduleName || null, options: {}, sink: undefined };
-		for (const key of WORKER_OPTIONS) {
-			if (options[key] !== undefined) {
-				request.options[key] = options[key];
-			}
-		}
-		request.options.scriptUrl = program.href;
-		// A worker made from a blob has a blob for an address, and nothing can
-		// be resolved against one of those. What a relative address is relative
-		// to is the page, so it is made absolute while the page is still the one
-		// asking.
-		if (typeof request.options.demo === "string") {
-			request.options.demo = new URL(request.options.demo, location.href).href;
-		}
-		// A blob outlives the worker that was made to import it unless somebody
-		// lets go of it, and a page that renders one demo after another would
-		// keep every script it ever handed over. The worker has imported both
-		// by the time the render is over, however it ended.
-		const dropScripts = () => {
-			for (const url of [loaderScript, programScript]) {
-				if (url.startsWith("blob:")) {
-					URL.revokeObjectURL(url);
-				}
-			}
-		};
-		// Swept here, where there is one of these per page, rather than in the
-		// worker, where there is one per render.
-		await sweepVideoScratch();
-		request.options.sweepVideoScratch = false;
-		// A destination the page picked can be handed over, if it is the kind
-		// of stream that can be. Where it is not, the render stays here rather
-		// than quietly writing somewhere else.
-		const transfer = [];
-		if (options.videoSink && typeof options.videoSink !== "function") {
-			request.sink = options.videoSink;
-			transfer.push(options.videoSink);
-		}
-		const bootstrap = URL.createObjectURL(new Blob([WORKER_BOOTSTRAP], { type: "text/javascript" }));
-		const worker = new Worker(bootstrap, { type: "module" });
-		URL.revokeObjectURL(bootstrap);
-		// A worker that is stopped says nothing more, so whoever stopped it has
-		// to be the one to answer for it: without this the render would be over
-		// and the promise still waiting.
-		var stopRender = () => worker.terminate();
-		const handle = new RenderHandle(() => stopRender());
-		const finished = new Promise((resolve, reject) => {
-			stopRender = (reason) => {
-				worker.terminate();
-				reject(reason !== undefined ? reason : fail("RenderStopped", "The render was stopped."));
-			};
-			if (options.signal) {
-				if (options.signal.aborted) {
-					reject(abortError(options.signal));
-					worker.terminate();
-					return;
-				}
-				options.signal.addEventListener("abort", () => stopRender(abortError(options.signal)), { once: true });
-			}
-			worker.onmessage = event => {
-				const message = event.data;
-				if (message.type === "output") {
-					handle.say("output", { message: message.message, kind: message.kind || {} });
-					if (options.onOutput) {
-						options.onOutput(message.message, message.kind || {});
-					}
-					return;
-				}
-				if (message.type === "progress") {
-					handle.say("renderprogress", message.status);
-					if (options.onRenderProgress) {
-						options.onRenderProgress(message.status);
-					}
-					return;
-				}
-				worker.terminate();
-				if (message.type === "done") {
-					resolve(message.video);
-				} else {
-					reject(fail("RenderFailed", message.message));
-				}
-			};
-			worker.onerror = event => {
-				worker.terminate();
-				reject(fail("RenderFailed", event.message || "the render worker stopped"));
-			};
-			worker.postMessage(request, transfer);
-		});
-		finished.then(dropScripts, dropScripts);
-		if (options.onStart) {
-			options.onStart(handle);
-		}
-		return await finished;
-	}
-
-	// A zip of files that are already in memory, so that a batch of them is one
-	// thing to save rather than one prompt each. Written by hand because it is
-	// short: stored, never deflated - a video is compressed already and
-	// squeezing it again would only cost time - and that leaves headers, a
-	// central directory and a checksum per file.
-	const CRC_TABLE = (() => {
-		const table = new Uint32Array(256);
-		for (let i = 0; i < 256; ++i) {
-			let value = i;
-			for (let bit = 0; bit < 8; ++bit) {
-				value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
-			}
-			table[i] = value >>> 0;
-		}
-		return table;
-	})();
-
-	function crc32(bytes) {
-		let crc = 0xffffffff;
-		for (let i = 0; i < bytes.length; ++i) {
-			crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
-		}
-		return (crc ^ 0xffffffff) >>> 0;
-	}
-
-	async function zip(entries) {
-		// A zip says its sizes and offsets in 32 bits. Past that it takes the
-		// ZIP64 records, which is a second format to write and to get wrong for
-		// something nobody should be downloading in one piece anyway.
-		const total = entries.reduce((sum, entry) => sum + entry.blob.size, 0);
-		if (total >= 0xffffffff || entries.some(entry => entry.blob.size >= 0xffffffff)) {
-			throw fail("ZipTooLarge", "Too much to put into one zip file");
-		}
-		const encoder = new TextEncoder();
-		const now = new Date();
-		const time = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xffff;
-		const date = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xffff;
-		const parts = [];
-		const central = [];
-		var offset = 0;
-		for (const entry of entries) {
-			const name = encoder.encode(entry.name);
-			const bytes = new Uint8Array(await entry.blob.arrayBuffer());
-			const crc = crc32(bytes);
-			const local = new DataView(new ArrayBuffer(30));
-			local.setUint32(0, 0x04034b50, true);
-			local.setUint16(4, 20, true);
-			local.setUint16(6, 0x0800, true); // The names are UTF-8.
-			local.setUint16(8, 0, true); // Stored.
-			local.setUint16(10, time, true);
-			local.setUint16(12, date, true);
-			local.setUint32(14, crc, true);
-			local.setUint32(18, bytes.length, true);
-			local.setUint32(22, bytes.length, true);
-			local.setUint16(26, name.length, true);
-			parts.push(local.buffer, name, bytes);
-			const directory = new DataView(new ArrayBuffer(46));
-			directory.setUint32(0, 0x02014b50, true);
-			directory.setUint16(4, 20, true);
-			directory.setUint16(6, 20, true);
-			directory.setUint16(8, 0x0800, true);
-			directory.setUint16(10, 0, true);
-			directory.setUint16(12, time, true);
-			directory.setUint16(14, date, true);
-			directory.setUint32(16, crc, true);
-			directory.setUint32(20, bytes.length, true);
-			directory.setUint32(24, bytes.length, true);
-			directory.setUint16(28, name.length, true);
-			directory.setUint32(42, offset, true);
-			central.push(directory.buffer, name);
-			offset += 30 + name.length + bytes.length;
-		}
-		const directorySize = central.reduce((sum, part) => sum + part.byteLength, 0);
-		const end = new DataView(new ArrayBuffer(22));
-		end.setUint32(0, 0x06054b50, true);
-		end.setUint16(8, entries.length, true);
-		end.setUint16(10, entries.length, true);
-		end.setUint32(12, directorySize, true);
-		end.setUint32(16, offset, true);
-		return new Blob(parts.concat(central, [end.buffer]), { type: "application/zip" });
-	}
-
-	// What the render tool is asked on a command line, from what the page
-	// asked for here. It is the same program with the same arguments as the one
-	// a terminal starts, so `ddnet-demo-render --help` documents these too.
-	function renderOptions(options) {
-		const args = ["--output", options.output || "video.mp4"];
-		const flag = (name, argument) => {
-			if (options[name] !== undefined && options[name] !== null) {
-				args.push(argument, String(options[name]));
-			}
-		};
-		flag("width", "--width");
-		flag("height", "--height");
-		flag("fps", "--fps");
-		flag("codec", "--codec");
-		flag("crf", "--crf");
-		flag("preset", "--preset");
-		if (options.audio === false) {
-			args.push("--no-audio");
-		}
-		if (options.hud === true) {
-			args.push("--hud");
-		}
-		if (options.chat === false) {
-			args.push("--no-chat");
-		}
-		// Who to watch, for a demo a server recorded: it has nobody who
-		// recorded it, so without this the camera stands still.
-		if (options.follow !== undefined && options.follow !== null && options.follow !== "") {
-			args.push("--follow", String(options.follow));
-		}
-		// Everything the client takes on its command line it takes here as
-		// well, one console command per entry, so `cl_showfps 1` works.
-		for (const setting of options.settings || []) {
-			args.push(setting);
-		}
-		return Object.assign({}, options, {
-			canvas: null,
-			persist: false,
-			needsWebGpu: true,
-			accept: [".demo"],
-			file: options.demo,
-			fileName: options.name || "render.demo",
-			fileArgument: "--render-demo",
-			programName: options.programName || "The demo renderer",
-			arguments: args.concat(options.arguments || []),
-		});
-	}
-
 	// One line to put a viewer on somebody else's page:
 	//
 	//     <ddnet-demo src="https://…/x.demo" controls></ddnet-demo>
@@ -1933,6 +1746,12 @@ self.onmessage = async event => {
 :host { display: block; position: relative; contain: content; background: #000; }
 :host([hidden]) { display: none; }
 canvas { display: block; width: 100%; height: 100%; background: #000; touch-action: none; }
+/* Where a page puts a bar of its own: over the picture, and nowhere in the
+   way of it. The overlay itself takes no pointer, so a tap that misses the
+   bar is a tap on the picture; what the page put in it takes them as
+   usual. */
+.over { position: absolute; inset: 0; pointer-events: none; }
+.over::slotted(*) { pointer-events: auto; }
 .message {
 	position: absolute;
 	inset: 0;
@@ -1960,6 +1779,14 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 	const ELEMENT_BASE = typeof HTMLElement === "undefined" ? class {} : HTMLElement;
 
 	class CViewerElement extends ELEMENT_BASE {
+		/**
+		 * The bar of controls the package builds for this viewer, for
+		 * `controls="html"`. A class taking `(viewer, options)` with a
+		 * `destroy`; `@ddnet/demo-player` has one, `@ddnet/map-viewer` has
+		 * one, and an element without one only ever draws the program's own.
+		 */
+		static viewerBar = null;
+
 		constructor() {
 			super();
 			const root = this.attachShadow({ mode: "open" });
@@ -1971,9 +1798,17 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 			this.viewerMessage.className = "message";
 			this.viewerMessage.setAttribute("part", "message");
 			this.viewerMessage.hidden = true;
-			root.append(style, this.viewerCanvas, this.viewerMessage);
+			// A page that wants its own controls over the picture puts them in
+			// the element and says which slot: `<div slot="controls">`. Below
+			// the message, because a message is what to read when there is one.
+			this.viewerSlot = document.createElement("slot");
+			this.viewerSlot.name = "controls";
+			this.viewerSlot.className = "over";
+			root.append(style, this.viewerCanvas, this.viewerSlot, this.viewerMessage);
 			this.viewerInstance = null;
 			this.viewerControls = null;
+			// The bar of real buttons, where the element was asked for one.
+			this.viewerBarInstance = null;
 			this.viewerStopping = null;
 			// What says that something is on its way, for as long as it is, see
 			// `loadingHint`.
@@ -1993,6 +1828,60 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 		/** The controls of the viewer, once it runs, and `null` before that. */
 		get controls() {
 			return this.viewerControls;
+		}
+
+		/**
+		 * The bar of buttons, where `controls="html"` asked for one, and
+		 * `null` otherwise. Its parts carry `data-role`, so a page that wants
+		 * at one of them asks this element rather than the document - which is
+		 * what makes two viewers on one page possible.
+		 */
+		get bar() {
+			return this.viewerBarInstance;
+		}
+
+		/**
+		 * Which bar was asked for. `controls` is the one the program draws
+		 * into the picture, `controls="html"` the one the package builds out
+		 * of the browser's own buttons, and neither is the default.
+		 */
+		wantsProgramControls() {
+			const asked = this.getAttribute("controls");
+			return asked !== null && asked !== "html";
+		}
+
+		wantsHtmlControls() {
+			return this.getAttribute("controls") === "html" && this.constructor.viewerBar !== null;
+		}
+
+		// Built once the program runs, taken away again when nobody asks for
+		// it any more. The bar is the package's to fill; what this knows is
+		// where it goes and what it steers.
+		applyControlsKind() {
+			const wanted = this.wantsHtmlControls();
+			if (wanted === (this.viewerBarInstance !== null)) {
+				return;
+			}
+			if (!wanted) {
+				this.viewerBarInstance.destroy();
+				this.viewerBarInstance = null;
+				return;
+			}
+			this.viewerBarInstance = new this.constructor.viewerBar(this.viewerControls, {
+				container: this,
+				picture: this,
+				slot: "controls",
+				signal: this.viewerStopping.signal,
+			});
+		}
+
+		/**
+		 * What is drawn on, for a page that has something to say about it -
+		 * how big a picture of it would be, or where a pointer is. It lives in
+		 * the shadow root, and styling it from outside is `::part(picture)`.
+		 */
+		get picture() {
+			return this.viewerCanvas;
 		}
 
 		/** What is being shown, as a file rather than as a name to fetch. */
@@ -2051,6 +1940,10 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 		disconnectedCallback() {
 			const instance = this.viewerInstance;
 			const stopping = this.viewerStopping;
+			if (this.viewerBarInstance !== null) {
+				this.viewerBarInstance.destroy();
+				this.viewerBarInstance = null;
+			}
 			this.viewerInstance = null;
 			this.viewerControls = null;
 			this.viewerStopping = null;
@@ -2083,23 +1976,23 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 			// what it needs is one wait inside another.
 			const handedOver = kind.startOptions === undefined ? {} : kind.startOptions(this);
 			this.viewerHandedOver = Object.keys(handedOver).length === 0 ? [] : (kind.startAttributes || []);
-			// Where the program is: beside the module of the package that
-			// brought this kind of viewer, wherever that module was installed
-			// to. A page that keeps the programs somewhere else says so with
-			// `base`.
-			const base = new URL(this.getAttribute("base") || ".", new URL(kind.base || LOADER_URL, location.href));
-			const scriptUrl = new URL(kind.script, base).href;
-			const factory = await importProgram(scriptUrl, kind.moduleName);
+			// Which program this is and where it lies is the class's to know
+			// (`Program.open`). A page that keeps the programs somewhere else
+			// than beside the module says so with `base`, and then the class
+			// is asked for one that looks there instead.
+			const program = this.constructor.viewerProgram;
+			const moved = this.getAttribute("base");
+			const opened = moved === null ? program : class extends program {
+				static base = new URL(moved, location.href).href;
+			};
 			const source = this.getAttribute("src");
-			const instance = await start({
-				module: factory,
-				scriptUrl: scriptUrl,
-				programName: kind.programName,
+			const instance = await opened.open({
 				canvas: this.viewerCanvas,
-				accept: [kind.suffix],
 				// Drawn by the viewer itself unless this says otherwise, and
-				// left off entirely where the page says it brings its own.
-				controls: this.hasAttribute("controls"),
+				// left off entirely where the page brings its own - either a
+				// bar of the package's (`controls="html"`) or one the page
+				// wrote itself.
+				controls: this.wantsProgramControls(),
 				// The demo viewer zooms what it shows when the wheel is turned
 				// over it, which a page that scrolls around it does not want.
 				// The map viewer is not asked: there, zooming is the point.
@@ -2132,12 +2025,26 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 				},
 			});
 			this.viewerInstance = instance;
-			this.viewerControls = kind.controls(instance);
+			// A program answers for itself: what a viewer can be asked are
+			// its own methods, not a second object made from it.
+			this.viewerControls = instance;
+			// Now there is something for a bar to steer.
+			this.applyControlsKind();
 			// Now that there is something to watch, for whoever watches it.
 			this.viewerRunning();
 			// The canvas is a box on somebody's page here, not the window, so
 			// nothing would tell the program when it changes shape.
 			followSize(this.viewerCanvas, this.viewerControls, { signal: this.viewerStopping.signal });
+			// What the element was told to show while the program was still on
+			// its way. A page that reads its own address and then says what it
+			// found does exactly that, and until the program runs there is
+			// nobody to say it to - so it is asked for again here rather than
+			// remembered somewhere.
+			const asked = this.getAttribute("src");
+			if (asked !== source && asked !== null && asked !== "") {
+				this.applyAttribute("src", asked);
+				return instance;
+			}
 			this.applyViewWhenLoaded();
 			return instance;
 		}
@@ -2192,7 +2099,15 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 					// No hint for a file that replaces another: a viewer that
 					// already has one still says it has one while the next is on
 					// its way, so there is nothing here to wait for that could
-					// be told apart from being done.
+					// be told apart from being done. The first one is a wait,
+					// and one that nobody has said anything about yet.
+					const kind = this.constructor.viewerKind;
+					if (this.viewerHint === null && !kind.loaded(this.viewerControls)) {
+						this.viewerHint = loadingHint(
+							this.viewerMessage,
+							() => this.viewerControls !== null && kind.loaded(this.viewerControls),
+							{ signal: this.viewerStopping.signal });
+					}
 					this.viewerInstance.loadUrl(value).catch(error => this.say((error && error.message) || String(error)));
 					// The new file brings its own view with it, so what the
 					// element asks for has to be put back on top of it again.
@@ -2201,7 +2116,8 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 				return;
 			}
 			if (name === "controls") {
-				this.viewerControls.controls(value !== null);
+				this.viewerControls.controls(this.wantsProgramControls());
+				this.applyControlsKind();
 				return;
 			}
 			this.constructor.viewerKind.apply(this.viewerControls, name, value, this);
@@ -2216,6 +2132,18 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 		version: VERSION,
 
 		/**
+		 * A program running on a page: the canvas, the files, what it writes,
+		 * and the way to call into it.
+		 *
+		 * This is the base the packages beside this one are built on - a demo
+		 * player is this class with the demo player's script, its factory and
+		 * everything a demo can be asked. A page that has a program of its own
+		 * opens this one directly and hands it the factory, which is what the
+		 * full client does.
+		 */
+		Program: CProgram,
+
+		/**
 		 * What this library throws and rejects with. Every one of them carries
 		 * a `code` beside its sentence, and the code is what to branch on:
 		 *
@@ -2225,61 +2153,21 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 		 *   the browser withholds the shared memory every program here needs.
 		 * * `NoWebGpu` - a render without a window was asked for and there is
 		 *   no WebGPU, or no adapter the browser will use.
-		 * * `NoVideoEncoder` - this browser cannot encode video.
 		 * * `FileRefused` - the file is not a kind the program takes.
 		 * * `FileTooLarge` - a file named in a URL is bigger than this will
 		 *   fetch into memory.
 		 * * `FetchFailed` - something the program needed answered with an
 		 *   error.
+		 *
+		 * A package throws this same class, so these four are
+		 * `@ddnet/demo-renderer`'s:
+		 *
+		 * * `NoVideoEncoder` - this browser cannot encode video.
 		 * * `RenderStopped` - a render was stopped on purpose.
 		 * * `RenderFailed` - a render ended without a video.
 		 * * `ZipTooLarge` - more than fits in one zip file was put into one.
 		 */
-		Error: DDNetLoaderError,
-
-		/**
-		 * Starts a program on a canvas.
-		 *
-		 * @param options.module The factory the program's script defines, so
-		 * `DDNetClient`, `DDNetDemoPlayer` or `DDNetMapViewer`.
-		 * @param options.canvas The canvas to draw on.
-		 * @param options.dataBase Where the `data` directory is, if it is not
-		 * next to the page.
-		 * @param options.scriptUrl Where the program's script was loaded from,
-		 * when that is another origin than this page.
-		 * @param options.videoSink Where an exported video is written, see
-		 * `setVideoSink`. Without it the video goes to a scratch file and is
-		 * handed over when it is done.
-		 * @param options.needsWebGpu Whether the program draws without a
-		 * window, which only WebGPU does. Checked before it starts.
-		 * @param options.accept The file suffixes this program takes.
-		 * @param options.file A file to start on: bytes, a `File`, or the URL of
-		 * one.
-		 * @param options.urlParams Parameters of the page's URL that may name a
-		 * file to open.
-		 * @param options.controls `false` leaves off the bar of controls a
-		 * viewer otherwise draws over what it shows, for a page that puts its
-		 * own beside the canvas.
-		 * @param options.signal An `AbortSignal`. Aborting it asks the program
-		 * to stop; aborting it before the call starts nothing at all, and
-		 * either way the promise ends with whatever the signal was aborted
-		 * with.
-		 * @param options.onOutput Called for every line the program writes.
-		 * @param options.onProgress Called while the program is being fetched.
-		 * @param options.onExit Called once the program has stopped.
-		 *
-		 * The instance is also an `EventTarget`, which is the other way of
-		 * hearing the same three things: `output` with
-		 * `{detail: {message, kind}}`, `progress` with `{detail: {text}}` and
-		 * `exit`. A listener and a callback can both be there; output nobody
-		 * listens to and nobody was handed goes to the console.
-		 *
-		 * @returns a promise for the running instance.
-		 */
-		start(options) {
-			checkOptions("start", options, START_OPTIONS);
-			return new Instance(options).run();
-		},
+		Error: DDNetBaseError,
 
 		/**
 		 * What this browser cannot do, in one sentence, or `null` when it can
@@ -2292,6 +2180,17 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 		 */
 		supportProblem(needsWebGpu) {
 			return supportProblem(needsWebGpu === true);
+		},
+
+		/**
+		 * The same question, answered with the error itself rather than with
+		 * its sentence, or `null` where there is no problem. For a package
+		 * that checks before it starts anything and then throws what it found,
+		 * so that whoever catches it reads the same `code` as from a program
+		 * that refused to start.
+		 */
+		supportError(needsWebGpu) {
+			return supportError(needsWebGpu === true);
 		},
 
 		/**
@@ -2354,6 +2253,64 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 		},
 
 		/**
+		 * Where this module itself is. A worker sees no import map, so a
+		 * package that starts one has to hand it the address of the base
+		 * rather than its name.
+		 */
+		moduleUrl: MODULE_URL,
+
+		/**
+		 * A script from another origin, as a blob of this page's own. A page
+		 * that is cross-origin isolated refuses a foreign script unless its
+		 * server allows it by name; fetched and handed over as a blob it is
+		 * this page's, and a worker may import it.
+		 *
+		 * @param url Where the script is.
+		 * @return A promise of the script as a `Blob`. `URL.createObjectURL`
+		 * makes it into something a worker can import, and whoever made one
+		 * lets go of it again.
+		 */
+		fetchScript(url) {
+			return fetchScript(new URL(url, self.location.href));
+		},
+
+		/**
+		 * Complains about an option nobody reads, which is the kind of mistake
+		 * that otherwise turns up much later and in the words of whatever went
+		 * without it. For a package that has ways in of its own: this one
+		 * knows the shape of every option any program here takes.
+		 *
+		 * @param where What to call the way in, `DemoPlayer.open` and so on.
+		 * @param options What was said.
+		 * @param allowed The names it takes.
+		 */
+		checkOptions(where, options, allowed) {
+			return checkOptions(where, options, allowed);
+		},
+
+		/**
+		 * What something stopped by a signal ends with: whatever the signal
+		 * carries as its reason, or a `Stopped` of ours. So that a package
+		 * that stops work of its own stops it in the same words a program
+		 * does.
+		 */
+		abortError(signal) {
+			return abortError(signal);
+		},
+
+		/**
+		 * Throws away the videos of earlier visits that nobody took. Done once
+		 * per page as a program starts, and only to be asked for by a package
+		 * that writes a video without starting a program here - a render in a
+		 * worker, where every worker is a page as far as this script is
+		 * concerned and the second render of a batch would otherwise sweep
+		 * away the video of the first.
+		 */
+		sweepVideoScratch() {
+			return sweepVideoScratch();
+		},
+
+		/**
 		 * The element a viewer package builds its own on: a canvas in a shadow
 		 * root, a message over it, and a program started on it as soon as the
 		 * element is in a page. What it shows and what it answers to is the
@@ -2367,6 +2324,19 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 		 * file waits as long.
 		 */
 		waitForFile: WAIT_FOR_FILE_MS,
+
+		/**
+		 * Pictures a package draws on its own buttons, added to the ones every
+		 * page here can ask for by name. A package says this as it loads, and
+		 * a page that imported it can then write `data-icon="play"` in its
+		 * markup and get one.
+		 *
+		 * @param pictures `{name: "<svg contents>"}`, drawn in a 24 by 24 box
+		 * and in `currentColor`.
+		 */
+		addIcons(pictures) {
+			addIcons(pictures);
+		},
 
 		/**
 		 * One of the pictures the viewers draw on their own buttons, as an
@@ -2494,122 +2464,25 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 			setUrlParameters(values);
 		},
 
-		/**
-		 * Puts files that are in memory into one zip file, so that a batch of
-		 * them is one thing to save. Nothing is compressed - what this is for
-		 * is videos, which are compressed already.
-		 *
-		 * @param entries `{name, blob}` objects, in the order they should be in.
-		 *
-		 * @return A promise of the zip as a `Blob`. It rejects when the whole
-		 * of it would not fit in the 32 bits a plain zip counts in.
-		 */
-		zip(entries) {
-			return zip(entries);
-		},
-
-		/** `start` with the furniture our own pages share around it. */
-		page(options) {
-			checkOptions("page", options, PAGE_OPTIONS);
-			return new Instance(pageOptions(options)).run();
-		},
-
-		/**
-		 * Renders a demo into a video file, with nothing on screen.
-		 *
-		 * The render tool draws into render targets, so it needs no canvas and
-		 * takes no part of the page: it reads a demo, encodes every frame of it
-		 * with the browser's own video encoder, and the file it would otherwise
-		 * offer as a download is handed back here instead.
-		 *
-		 * @param options.module The factory `ddnet-demo-render.js` defines, so
-		 * `DDNetDemoRenderer`.
-		 * @param options.demo The demo to render: bytes, a `File`, or the URL of
-		 * one.
-		 * @param options.name The demo's file name, when it comes as bytes.
-		 * @param options.output The name the video carries, `video.mp4`
-		 * otherwise.
-		 * @param options.width Video width in pixels, even, `cl_video_width`
-		 * otherwise; `height`, `fps`, `codec`, `crf` and `preset` the same way.
-		 * @param options.audio `false` renders without a sound track.
-		 * @param options.hud `true` shows the ingame interface, `options.chat`
-		 * `false` hides the chat.
-		 * @param options.settings Console commands, one per entry.
-		 * @param options.dataBase Where the `data` directory is, if it is not
-		 * next to the page.
-		 * @param options.onOutput Called for every line the render writes.
-		 * @param options.onRenderProgress Called once a second while the render
-		 * runs, with `{progress, encodedFrames, submittedFrames,
-		 * framesPerSecond}` - `progress` is the part of the demo that is done,
-		 * between 0 and 1.
-		 * @param options.onStart Called with the running instance, whose `quit`
-		 * ends a render that is taking too long.
-		 * @param options.scriptUrl Where `ddnet-demo-render.js` was loaded from.
-		 * With it the render happens in a worker and leaves the page free;
-		 * `worker: false` keeps it here.
-		 * @param options.videoSink Where the video is written while it is made.
-		 * A `WritableStream` can go to the worker with it; a function cannot,
-		 * and is only asked here.
-		 * @param options.signal An `AbortSignal`. Aborting it stops the render
-		 * and ends the promise with whatever the signal was aborted with; a
-		 * render that is stopped without one ends with `RenderStopped`.
-		 *
-		 * What `onStart` is handed is an `EventTarget` as well: `output` and
-		 * `renderprogress` are the same two things the callbacks say, and
-		 * `quit()` stops it.
-		 *
-		 * @returns a promise for the finished MP4 as a `Blob`.
-		 */
-		async render(options) {
-			checkOptions("render", options, RENDER_OPTIONS);
-			// Encoding is the browser's to do, and a browser without an
-			// encoder is worth saying so before a demo is fetched and a
-			// program started for nothing.
-			if (typeof VideoEncoder === "undefined") {
-				throw fail("NoVideoEncoder", "This browser cannot encode video: it has no VideoEncoder. Chrome, Edge and a current Firefox or Safari have one.");
-			}
-			// A worker needs to load the program itself, so it needs to be told
-			// where it is; without that this is the only thread there is.
-			if (options.worker !== false && typeof Worker === "function" && options.scriptUrl && LOADER_URL) {
-				return await renderInWorker(options, new URL(LOADER_URL, location.href));
-			}
-			const instance = new Instance(Object.assign(renderOptions(options), {
-				onVideo: file => {
-					instance.video = file;
-				},
-			}));
-			await instance.run();
-			if (options.onStart) {
-				options.onStart(instance);
-			}
-			await instance.finished;
-			// A render that was called off is not a render that failed, and
-			// whoever called it off is told so in their own words.
-			if (options.signal && options.signal.aborted) {
-				throw abortError(options.signal);
-			}
-			if (instance.video == null) {
-				throw fail("RenderFailed", "The demo was not rendered into a video, see the output for what went wrong");
-			}
-			return instance.video;
-		},
 	};
 })();
 
 // Both forms of the same thing: everything at once for whoever wants to write
-// `DDNetLoader.start(…)`, and one name at a time for whoever would rather
+// `DDNetBase.start(…)`, and one name at a time for whoever would rather
 // import only what they use. The names are the object's own, so there is one
 // list and not two.
-export default DDNetLoader;
+export default DDNetBase;
 export const {
 	// tidy-alphabetical-start
-	autoHide, exportSettingsForm, followSize, fullscreen, fullscreenSupported,
-	icon, importProgram, isFullscreen, loadingHint, page, paintIcons,
-	render, setUrlParameters, start, supportProblem, toggleFullscreen,
-	urlParameter, version, videoCodecs, ViewerElement, waitForFile, zip,
+	abortError, addIcons, autoHide, checkOptions, exportSettingsForm,
+	fetchScript, followSize, fullscreen, fullscreenSupported, icon,
+	importProgram, isFullscreen, loadingHint, moduleUrl, paintIcons, Program,
+	setUrlParameters, supportError, supportProblem, sweepVideoScratch,
+	toggleFullscreen, urlParameter, version, videoCodecs, ViewerElement,
+	waitForFile,
 	// tidy-alphabetical-end
-} = DDNetLoader;
+} = DDNetBase;
 // Not as `Error`: a name at the top of a module is a name for the whole of it,
 // and this one is the browser's own further up - where the class above is
 // declared from it.
-export const DDNetLoaderError = DDNetLoader.Error;
+export const DDNetBaseError = DDNetBase.Error;

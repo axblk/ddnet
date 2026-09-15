@@ -1,4 +1,4 @@
-// What `ddnet-loader.js` is, in types. Written by hand rather than generated:
+// What `ddnet-base.js` is, in types. Written by hand rather than generated:
 // the library is one file of plain JavaScript, and a hand-written declaration
 // says what it means as well as what it is - which is what somebody reading it
 // in their editor wants.
@@ -6,7 +6,7 @@
 // Kept beside the module, so that the two are changed together.
 
 /** What this library refuses or cannot do, with a `code` to branch on. */
-export declare class DDNetLoaderError extends Error {
+export declare class DDNetBaseError extends Error {
 	/**
 	 * What went wrong, as one word. Part of the API: the sentence beside it
 	 * may be reworded, this may not.
@@ -143,35 +143,6 @@ export interface VideoSettings {
 	chat?: boolean;
 }
 
-export interface RenderOptions extends VideoSettings {
-	module?: ProgramFactory;
-	/** The demo to render: bytes, a `File`, or a URL. */
-	demo: File | Blob | ArrayBuffer | Uint8Array | string;
-	/** What to call the video. */
-	name?: string;
-	output?: string;
-	/** Whose shoulder to watch over, by name. */
-	follow?: string;
-	preset?: string;
-	settings?: string[];
-	/** Whether it runs in a worker of its own. On by default. */
-	worker?: boolean;
-	/** The program's name for a worker to find it by, for example `DDNetDemoRenderer`. */
-	moduleName?: string;
-	scriptUrl?: string;
-	homePath?: string;
-	programName?: string;
-	dataBase?: string;
-	arguments?: string[];
-	videoSink?: VideoSinkSource;
-	sweepVideoScratch?: boolean;
-	signal?: AbortSignal;
-	onStart?: (handle: Instance) => void;
-	onOutput?: (message: string, kind: OutputKind) => void;
-	onProgress?: (text: string) => void;
-	onRenderProgress?: (status: RenderProgress) => void;
-}
-
 /** How a render is getting on, once a second while it runs. */
 export interface RenderProgress {
 	frames?: number;
@@ -184,7 +155,24 @@ export interface RenderProgress {
  * One running program. Also an `EventTarget`: `output`, `exit`,
  * `renderprogress`.
  */
-export declare class Instance extends EventTarget {
+export declare class Program extends EventTarget {
+	/**
+	 * What a program is, said by the class rather than by every page that
+	 * opens one. A class that leaves them alone is opened with a factory
+	 * handed in, which is what the full client does.
+	 */
+	static script: string | null;
+	static base: string;
+	static moduleName: string | null;
+	static programName: string | null;
+	static suffix: string | null;
+	/** Where this program's script lies, worked out from the class. */
+	static scriptUrl(): string | null;
+	/** Starts the program on a canvas and answers with it, running. */
+	static open<T extends Program>(this: new (options: StartOptions) => T, options: StartOptions): Promise<T>;
+	/** The same, plus the furniture our own pages share around it. */
+	static openPage<T extends Program>(this: new (options: PageOptions) => T, options: PageOptions): Promise<T>;
+
 	readonly canvas: HTMLCanvasElement | null;
 	readonly module: EmscriptenModule | null;
 	readonly exited: boolean;
@@ -259,15 +247,19 @@ export interface VideoCodec {
 }
 
 export declare const version: string;
-export declare function start(options: StartOptions): Promise<Instance>;
-export declare function page(options: PageOptions): Promise<Instance>;
-export declare function render(options: RenderOptions): Promise<File | Blob | null>;
 export declare function supportProblem(needsWebGpu?: boolean): Promise<string | null>;
+export declare function supportError(needsWebGpu?: boolean): Promise<DDNetBaseError | null>;
 export declare function fullscreen(button: HTMLElement, options?: FullscreenOptions): { supported: boolean };
 export declare function fullscreenSupported(): boolean;
 export declare function isFullscreen(): boolean;
 export declare function toggleFullscreen(options?: FullscreenOptions): void;
 export declare function icon(name: string): SVGElement | null;
+/**
+ * Pictures a package draws on its own buttons, added to the ones every page
+ * here can ask for by name. `{name: "<svg contents>"}`, drawn in a 24 by 24
+ * box and in `currentColor`.
+ */
+export declare function addIcons(pictures: Record<string, string>): void;
 export declare function paintIcons(root: ParentNode): void;
 export declare function autoHide(elements: Element | Element[], options?: AutoHideOptions): AutoHideHandle;
 export interface LoadingHintOptions {
@@ -284,7 +276,6 @@ export declare function exportSettingsForm(container: HTMLElement, options?: Exp
 export declare function videoCodecs(): Promise<VideoCodec[]>;
 export declare function urlParameter(name: string): string | null;
 export declare function setUrlParameters(values: Record<string, string | null>): void;
-export declare function zip(entries: { name: string; data: Uint8Array }[]): Blob;
 /**
  * How long a viewer element waits for a file before it gives up saying that it
  * is on its way, in milliseconds.
@@ -303,13 +294,25 @@ export declare const waitForFile: number;
  */
 export declare class ViewerElement extends HTMLElement {
 	/** The running program, or what stopped it from starting. */
-	readonly ready: Promise<Instance> | null;
+	readonly ready: Promise<Program> | null;
 	/**
 	 * The viewer's own controls, and `null` before it runs. What they are is
 	 * the package's to say: `DemoControls` for `<ddnet-demo>`, `MapControls`
 	 * for `<ddnet-map>`.
 	 */
 	readonly controls: unknown;
+	/**
+	 * What is drawn on. It lives in the shadow root, and styling it from
+	 * outside is `::part(picture)`.
+	 */
+	readonly picture: HTMLCanvasElement;
+	/**
+	 * The bar of real buttons the package builds, where `controls="html"`
+	 * asked for one, and `null` otherwise. Its parts carry `data-role`, so a
+	 * page asks this element for one of them rather than the document - which
+	 * is what lets a page hold more than one viewer.
+	 */
+	readonly bar: { readonly element: HTMLElement; part(role: string): HTMLElement | null; destroy(): void } | null;
 	/** Shows a file rather than a name to fetch. */
 	load(file: File): Promise<string>;
 	/** Puts a line over the picture, or takes it away again with `""`. */
@@ -323,19 +326,33 @@ export declare class ViewerElement extends HTMLElement {
  */
 export declare function importProgram(scriptUrl: string, moduleName: string): Promise<ProgramFactory>;
 
-/** All of it at once, for `import DDNetLoader from "ddnet-loader"`. */
-declare const DDNetLoader: {
+/**
+ * What a package needs of the base beyond starting a program: where this
+ * module is, because a worker sees no import map and has to be handed the
+ * address; a foreign script as a blob of this page's own, which is the only
+ * kind a cross-origin isolated page lets a worker import; the same complaint
+ * about a misspelt option that every way in here makes; the error a signal
+ * stops something with; and the sweep of the videos nobody took.
+ */
+export declare const moduleUrl: string;
+export declare function fetchScript(url: string | URL): Promise<Blob>;
+export declare function checkOptions(where: string, options: object, allowed: string[]): void;
+export declare function abortError(signal: AbortSignal): unknown;
+export declare function sweepVideoScratch(): Promise<void>;
+
+/** All of it at once, for `import DDNetBase from "@ddnet/base"`. */
+declare const DDNetBase: {
 	version: typeof version;
-	Error: typeof DDNetLoaderError;
-	start: typeof start;
-	page: typeof page;
-	render: typeof render;
+	Error: typeof DDNetBaseError;
+	Program: typeof Program;
 	supportProblem: typeof supportProblem;
+	supportError: typeof supportError;
 	fullscreen: typeof fullscreen;
 	fullscreenSupported: typeof fullscreenSupported;
 	isFullscreen: typeof isFullscreen;
 	toggleFullscreen: typeof toggleFullscreen;
 	icon: typeof icon;
+	addIcons: typeof addIcons;
 	paintIcons: typeof paintIcons;
 	autoHide: typeof autoHide;
 	followSize: typeof followSize;
@@ -344,9 +361,13 @@ declare const DDNetLoader: {
 	videoCodecs: typeof videoCodecs;
 	urlParameter: typeof urlParameter;
 	setUrlParameters: typeof setUrlParameters;
-	zip: typeof zip;
 	ViewerElement: typeof ViewerElement;
 	waitForFile: typeof waitForFile;
 	importProgram: typeof importProgram;
+	moduleUrl: typeof moduleUrl;
+	fetchScript: typeof fetchScript;
+	checkOptions: typeof checkOptions;
+	abortError: typeof abortError;
+	sweepVideoScratch: typeof sweepVideoScratch;
 };
-export default DDNetLoader;
+export default DDNetBase;

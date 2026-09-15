@@ -19,10 +19,14 @@
 		<canvas id="canvas">Canvas not supported.</canvas>
 		<script src="DDNet.js"></script>
 		<script type="module">
-			import DDNetLoader from "./ddnet-loader.js";
+			import { Program } from "./ddnet-base.js";
 
+			// The full client is loaded by this page rather than by a package
+			// of its own, so the base is opened directly and handed the
+			// factory the script above defined.
+			//
 			// A demo, a map or a `ddnet://` link is dropped onto the window.
-			DDNetLoader.page({
+			Program.openPage({
 				module: DDNetClient,
 				programName: "Client",
 				accept: [".demo", ".map"],

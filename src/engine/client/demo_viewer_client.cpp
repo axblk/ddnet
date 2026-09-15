@@ -2,6 +2,8 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "demo_viewer_client.h"
 
+#include "session_source_demo.h"
+#include "viewer_fullscreen.h"
 #include "window_sdl.h"
 
 #include <base/fs.h>
@@ -70,6 +72,19 @@ namespace
 	}
 } // namespace
 
+CDemoViewerClient::CDemoViewerClient()
+{
+	// A second way through the same demo, for the export to walk at its own
+	// pace. It is made here rather than when one is asked for, because the
+	// sessions a client has are the sessions it started with.
+	auto pExportSource = std::make_unique<CDemoSessionSource>(true, [this](CDemoPlayer &DemoPlayer) { UpdateDemoIntraTimers(DemoPlayer); });
+	CDemoSessionSource *pSource = pExportSource.get();
+	m_ExportSessionId = m_SessionManager.Create(std::move(pExportSource));
+	pSource->SetLifecycleCallbacks(
+		[this]() { UpdateDemoSession(m_ExportSessionId); },
+		[this](const char *pReason) { StopDemoSession(m_ExportSessionId, pReason); });
+}
+
 void CDemoViewerClient::Configure(const char *pDemoPath, const char *pVideoPath, const CVideoExportSettings &Settings)
 {
 	str_copy(m_aDemoPath, pDemoPath);
@@ -115,6 +130,7 @@ bool CDemoViewerClient::RequestExport(const CVideoExportSettings &Settings)
 	m_RequestedSettings = Settings;
 	m_ExportRequested = true;
 	m_ExportState = EExportState::RUNNING;
+	m_aExportError[0] = '\0';
 	return true;
 }
 
@@ -125,6 +141,7 @@ bool CDemoViewerClient::StartExport(const CVideoExportSettings &Settings)
 		return false;
 	}
 	m_ExportState = EExportState::RUNNING;
+	m_aExportError[0] = '\0';
 	m_Settings = Settings;
 	// An encoder takes whole macroblocks, so an odd size is refused rather than
 	// rounded. A window is any size the user dragged it to, so the size that
@@ -140,16 +157,31 @@ bool CDemoViewerClient::StartExport(const CVideoExportSettings &Settings)
 	char aName[IO_MAX_PATH_LENGTH];
 	fs_split_file_extension(fs_filename(m_aDemoPath), aName, sizeof(aName));
 	str_format(m_aVideoPath, sizeof(m_aVideoPath), "videos/%s.mp4", aName);
-	// A demo standing still is written frame after identical frame, which is
-	// not what anybody means by exporting from here on.
-	SetPaused(false);
-	const char *pError = StartVideo();
+	// The export reads the demo out of a session of its own, from where
+	// whoever asked for it is looking. What they do next - seek away, pause,
+	// watch somebody else - is theirs and no longer the video's.
+	m_VideoSessionId = m_ExportSessionId;
+	const float From = Progress();
+	// An export that ended with its demo left the way through it open. It is
+	// closed here rather than there, so that what was written stays readable
+	// until somebody asks for the next one.
+	if(SessionState(m_ExportSessionId) != ESessionState::OFFLINE)
+		StopDemoSession(m_ExportSessionId, "");
+	const char *pError = PlayDemo(m_ExportSessionId);
+	if(pError == nullptr)
+	{
+		DemoSource(m_ExportSessionId).DemoPlayer().SeekPercent(std::clamp(From, 0.0f, 1.0f));
+		pError = StartVideo();
+	}
 	if(pError != nullptr)
 	{
 		log_error("videorecorder", "%s", pError);
+		str_copy(m_aExportError, pError);
 		m_aError[0] = '\0';
 		m_aVideoPath[0] = '\0';
 		m_ExportState = EExportState::FAILED;
+		StopDemoSession(m_ExportSessionId, "");
+		m_VideoSessionId = m_DemoSessionId;
 		return false;
 	}
 	return true;
@@ -165,9 +197,15 @@ void CDemoViewerClient::CancelExport()
 	{
 		m_pVideo->Cancel();
 	}
+	// The way through the demo that was being written is closed; the one being
+	// watched was never touched. It is closed before the encoder is let go,
+	// because a demo that is being written to a video holds the encoder and
+	// hands it its last frames as it stops.
+	StopDemoSession(m_ExportSessionId, "");
 	m_pVideo.reset();
 	m_aVideoPath[0] = '\0';
 	m_ExportState = EExportState::IDLE;
+	m_VideoSessionId = m_DemoSessionId;
 }
 
 void CDemoViewerClient::FinishExport()
@@ -178,28 +216,30 @@ void CDemoViewerClient::FinishExport()
 	{
 		m_pVideo->Stop();
 	}
-	const bool Failed = m_pVideo->Status().m_HasError;
+	const CVideoExportStatus Status = m_pVideo->Status();
+	const bool Failed = Status.m_HasError;
 	m_pVideo.reset();
 	if(Failed)
 	{
+		str_copy(m_aExportError, Status.m_aError[0] == '\0' ? "The video could not be written." : Status.m_aError);
 		m_aError[0] = '\0';
 	}
 	log_info("videorecorder", Failed ? "Export failed" : "Export completed");
 	m_aVideoPath[0] = '\0';
 	m_ExportState = Failed ? EExportState::FAILED : EExportState::FINISHED;
-	// Writing the demo to a file played it to its end, and that ended the
-	// session it was played from. Whoever asked for the video is still sitting
-	// in front of it, so the demo is put back on, from the start and standing
-	// still.
-	const char *pError = PlayDemo();
-	if(pError == nullptr)
-	{
-		SetPaused(true);
-	}
-	else
-	{
-		log_error("client", "%s", pError);
-	}
+	// Writing the demo to a file played it to its end, which ended the session
+	// it was played from. That was the export's own way through the demo; the
+	// one being watched carried on the whole time and is where it was.
+	m_VideoSessionId = m_DemoSessionId;
+}
+
+float CDemoViewerClient::ExportProgress() const
+{
+	int First, Current, Last;
+	if(!DemoPlayer_RenderInfo(&First, &Current, &Last))
+		return 0.0f;
+	const int Total = std::max(Last - First, 0);
+	return Total == 0 ? 0.0f : std::clamp(Current - First, 0, Total) / (float)Total;
 }
 
 bool CDemoViewerClient::Paused() const
@@ -239,11 +279,10 @@ void CDemoViewerClient::UpdateAndSwap()
 
 void CDemoViewerClient::DemoPlayer_CancelActiveRender()
 {
-	if(m_pVideo != nullptr && IVideo::Current() == m_pVideo.get())
-	{
-		m_pVideo->Cancel();
-	}
-	m_pVideo.reset();
+	// Asked for while something is being drawn, and letting the encoder go
+	// there would pull it out from under the frame that is asking. The loop
+	// does it between frames instead.
+	RequestCancelExport();
 }
 
 bool CDemoViewerClient::KeyPressed(EControlKey ControlKey, bool Repeats)
@@ -392,19 +431,26 @@ const char *CDemoViewerClient::Players()
 	// whatever somebody typed, quotation marks and all.
 	CJsonStringWriter Writer;
 	Writer.BeginArray();
-	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+	// Who there is to pick from, which is nobody in a demo a client recorded:
+	// that demo is of whoever recorded it, and all there is to choose is
+	// whether to look over their shoulder or to look around. The same rule the
+	// bar draws itself by, see `RenderControls`.
+	if(ServerDemo())
 	{
-		const char *pName = SpectatePlayerName(ClientId);
-		if(pName == nullptr)
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
 		{
-			continue;
+			const char *pName = SpectatePlayerName(ClientId);
+			if(pName == nullptr)
+			{
+				continue;
+			}
+			Writer.BeginObject();
+			Writer.WriteAttribute("id");
+			Writer.WriteIntValue(ClientId);
+			Writer.WriteAttribute("name");
+			Writer.WriteStrValue(pName);
+			Writer.EndObject();
 		}
-		Writer.BeginObject();
-		Writer.WriteAttribute("id");
-		Writer.WriteIntValue(ClientId);
-		Writer.WriteAttribute("name");
-		Writer.WriteStrValue(pName);
-		Writer.EndObject();
 	}
 	Writer.EndArray();
 	m_Players = Writer.GetOutputString();
@@ -416,7 +462,7 @@ void CDemoViewerClient::RenderControls()
 	// Nothing to steer, and nobody to steer it: a window that was never opened
 	// has no pointer over it, and a demo that is being written to a file is
 	// not being watched.
-	if(!m_ShowControls || m_pInput == nullptr || Exporting() || SessionState(m_DemoSessionId) != ESessionState::READY)
+	if(!m_ShowControls || m_pInput == nullptr || SessionState(m_DemoSessionId) != ESessionState::READY)
 	{
 		return;
 	}
@@ -447,8 +493,17 @@ void CDemoViewerClient::RenderControls()
 	else
 		str_copy(aSpectating, Spectating() == SPEC_FOLLOW ? "Follow" : "Free view");
 
+	char aFps[16];
+	str_format(aFps, sizeof(aFps), "%d fps", m_ExportFps);
+	// While one is being written the export button says how far it has come
+	// and stops it, because that is all there is to do about it then.
+	const bool IsExporting = Exporting();
+	char aExportProgress[16];
+	str_format(aExportProgress, sizeof(aExportProgress), "%d%%", (int)(ExportProgress() * 100.0f + 0.5f));
+
 	// Left to right, the way a video player has it: what it is doing, how fast,
-	// how far along, and off on the other side what is being watched.
+	// how far along, and off on the other side what is being watched and what
+	// to make a video of.
 	enum
 	{
 		ITEM_SEEK,
@@ -460,9 +515,40 @@ void CDemoViewerClient::RenderControls()
 		ITEM_TIME,
 		ITEM_SPACER,
 		ITEM_SPECTATE,
+		ITEM_EXPORT,
+		ITEM_FULLSCREEN,
+		// What the export menu offers: two things to set, and three sizes to
+		// ask for - picking a size is what starts it.
+		ITEM_EXPORT_SOUND,
+		ITEM_EXPORT_FPS,
+		ITEM_EXPORT_AS_SHOWN,
+		ITEM_EXPORT_720,
+		ITEM_EXPORT_1080,
 		NUM_ITEMS,
 	};
-	CViewerControls::SItem aItems[NUM_ITEMS];
+	// The menu of the export button, told apart from the one the eye opens.
+	constexpr int MenuExport = 1;
+	// The players to pick from, and what picking one means. A demo a client
+	// recorded is a demo of whoever recorded it, and the button then only
+	// says whether to look over their shoulder or to look around: the list of
+	// everybody who happened to be on the server belongs to a demo the server
+	// recorded, where there is nobody whose demo it is.
+	std::vector<int> vPickable;
+	if(ServerDemo())
+	{
+		vPickable.push_back(SPEC_FREEVIEW);
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+		{
+			if(SpectatePlayerName(ClientId) != nullptr)
+				vPickable.push_back(ClientId);
+		}
+	}
+
+	std::vector<CViewerControls::SItem> vItems(NUM_ITEMS + vPickable.size());
+	// A browser without an encoder cannot make a video, and says so before
+	// anything is asked of it.
+	const bool CanExport = VideoEncodingSupported();
+	CViewerControls::SItem *aItems = vItems.data();
 	aItems[ITEM_SEEK].m_Type = CViewerControls::EItem::SLIDER;
 	aItems[ITEM_SEEK].m_Value = Progress();
 	aItems[ITEM_PLAY].m_Icon = Paused() ? CViewerControls::EIcon::PLAY : CViewerControls::EIcon::PAUSE;
@@ -480,6 +566,51 @@ void CDemoViewerClient::RenderControls()
 	aItems[ITEM_SPACER].m_Type = CViewerControls::EItem::SPACER;
 	aItems[ITEM_SPECTATE].m_Icon = CViewerControls::EIcon::EYE;
 	aItems[ITEM_SPECTATE].m_pText = aSpectating;
+	aItems[ITEM_SPECTATE].m_OpensMenu = !vPickable.empty();
+	aItems[ITEM_EXPORT].m_Icon = IsExporting ? CViewerControls::EIcon::STOP : CViewerControls::EIcon::SAVE;
+	aItems[ITEM_EXPORT].m_pText = IsExporting ? aExportProgress : nullptr;
+	aItems[ITEM_EXPORT].m_OpensMenu = !IsExporting;
+	aItems[ITEM_EXPORT].m_MenuId = MenuExport;
+	aItems[ITEM_EXPORT].m_Hidden = !CanExport;
+	aItems[ITEM_FULLSCREEN].m_Icon = CViewerControls::EIcon::FULLSCREEN;
+	aItems[ITEM_FULLSCREEN].m_Active = ViewerFullscreen::Active(Window());
+	aItems[ITEM_FULLSCREEN].m_Hidden = !ViewerFullscreen::Supported(Window());
+	aItems[ITEM_EXPORT_SOUND].m_pText = "Sound";
+	aItems[ITEM_EXPORT_SOUND].m_Active = m_ExportAudio;
+	aItems[ITEM_EXPORT_SOUND].m_KeepsMenu = true;
+	aItems[ITEM_EXPORT_FPS].m_pText = aFps;
+	aItems[ITEM_EXPORT_FPS].m_KeepsMenu = true;
+	aItems[ITEM_EXPORT_AS_SHOWN].m_Icon = CViewerControls::EIcon::SAVE;
+	aItems[ITEM_EXPORT_AS_SHOWN].m_pText = "As shown";
+	aItems[ITEM_EXPORT_720].m_Icon = CViewerControls::EIcon::SAVE;
+	aItems[ITEM_EXPORT_720].m_pText = "1280 x 720";
+	aItems[ITEM_EXPORT_1080].m_Icon = CViewerControls::EIcon::SAVE;
+	aItems[ITEM_EXPORT_1080].m_pText = "1920 x 1080";
+	for(int i = ITEM_EXPORT_SOUND; i <= ITEM_EXPORT_1080; ++i)
+	{
+		aItems[i].m_InMenu = true;
+		aItems[i].m_MenuId = MenuExport;
+		aItems[i].m_Hidden = !CanExport || IsExporting;
+	}
+	for(size_t i = 0; i < vPickable.size(); ++i)
+	{
+		CViewerControls::SItem &Item = aItems[NUM_ITEMS + i];
+		Item.m_InMenu = true;
+		Item.m_Active = vPickable[i] == Spectating();
+		if(vPickable[i] == SPEC_FREEVIEW)
+		{
+			Item.m_Icon = CViewerControls::EIcon::FREEVIEW;
+			Item.m_pText = "Free view";
+		}
+		else
+		{
+			// The name the demo holds, not a copy of it: it stays where it is
+			// for as long as this frame lasts, which is as long as the bar
+			// needs it.
+			Item.m_Icon = CViewerControls::EIcon::EYE;
+			Item.m_pText = SpectatePlayerName(vPickable[i]);
+		}
+	}
 
 	CViewerControls::SInput Input;
 	Input.m_MousePos = m_pInput->NativeMousePos();
@@ -491,7 +622,7 @@ void CDemoViewerClient::RenderControls()
 
 	float SeekTo = 0.0f;
 	CDemoPlayer &Player = DemoSource(m_DemoSessionId).DemoPlayer();
-	const int Pressed = m_Controls.Render(aItems, NUM_ITEMS, Input, &SeekTo);
+	const int Pressed = m_Controls.Render(aItems, vItems.size(), Input, &SeekTo);
 
 	// A demo that goes on playing while somebody drags along the seek bar
 	// runs out from under them: every frame moves the place they are looking
@@ -509,6 +640,12 @@ void CDemoViewerClient::RenderControls()
 		{
 			SetPaused(false);
 		}
+	}
+
+	if(Pressed >= NUM_ITEMS)
+	{
+		SetSpectate(vPickable[Pressed - NUM_ITEMS]);
+		return;
 	}
 
 	switch(Pressed)
@@ -531,9 +668,44 @@ void CDemoViewerClient::RenderControls()
 	case ITEM_SPECTATE:
 		SpectateStep(1);
 		break;
+	case ITEM_EXPORT:
+		// Only reported while the menu is not what it opens, which is while
+		// one is being written.
+		RequestCancelExport();
+		break;
+	case ITEM_FULLSCREEN:
+		ViewerFullscreen::Toggle(Window());
+		break;
+	case ITEM_EXPORT_SOUND:
+		m_ExportAudio = !m_ExportAudio;
+		break;
+	case ITEM_EXPORT_FPS:
+		m_ExportFps = m_ExportFps == 60 ? 30 : 60;
+		break;
+	case ITEM_EXPORT_AS_SHOWN:
+		ExportFromControls(Graphics()->ScreenWidth(), Graphics()->ScreenHeight());
+		break;
+	case ITEM_EXPORT_720:
+		ExportFromControls(1280, 720);
+		break;
+	case ITEM_EXPORT_1080:
+		ExportFromControls(1920, 1080);
+		break;
 	default:
 		break;
 	}
+}
+
+void CDemoViewerClient::ExportFromControls(int Width, int Height)
+{
+	CVideoExportSettings Settings;
+	// An encoder counts in whole pairs of lines, so a window of an odd height
+	// is asked for one line less rather than refused.
+	Settings.m_Width = std::max(Width & ~1, 2);
+	Settings.m_Height = std::max(Height & ~1, 2);
+	Settings.m_FPS = m_ExportFps;
+	Settings.m_Audio = m_ExportAudio;
+	RequestExport(Settings);
 }
 
 void CDemoViewerClient::RenderWindowFrame()
@@ -662,11 +834,32 @@ void CDemoViewerClient::Run()
 			UpdatePendingSpectate();
 			Sound()->Update();
 			GameClient()->OnUpdate();
-			// An export takes every frame in its own time, so while one runs
-			// it decides what is drawn and the window only shows the result.
+			// An export takes every frame in its own time and may run as fast
+			// as the machine can write them. The window is drawn in between,
+			// often enough to stay usable and no more often than that: every
+			// picture drawn for whoever is watching is a picture the export
+			// does not encode.
 			if(m_pVideo != nullptr && IVideo::Current() == m_pVideo.get())
 			{
 				RenderExportFrame();
+				const std::chrono::nanoseconds Now = time_get_nanoseconds();
+				constexpr std::chrono::nanoseconds ScreenInterval = std::chrono::nanoseconds(std::chrono::seconds(1)) / 30;
+				// Only where there is a window and the export is not the demo
+				// on it: an export asked for on the command line is the whole
+				// job, and drawing it twice is time taken from it.
+				const bool Watching = m_pInput != nullptr && m_VideoSessionId != m_DemoSessionId;
+				if(Watching && Now - m_LastExportScreenRender >= ScreenInterval)
+				{
+					m_LastExportScreenRender = Now;
+					// The window measures its own clock: what is on it moves at
+					// the speed it is shown at, not at the speed frames are
+					// encoded.
+					const int64_t ExportRenderTime = m_LastRenderTime;
+					m_LastRenderTime = m_LastWindowRenderTime == 0 ? ExportRenderTime : m_LastWindowRenderTime;
+					RenderWindowFrame();
+					m_LastWindowRenderTime = m_LastRenderTime;
+					m_LastRenderTime = ExportRenderTime;
+				}
 			}
 			else if(m_pVideo != nullptr)
 			{
@@ -689,6 +882,13 @@ void CDemoViewerClient::Run()
 	}
 
 	SetState(IClient::STATE_QUITTING);
+	// The demo an export was reading from goes first, because it hands the
+	// encoder its last frames as it stops and must not be the one holding it
+	// once it is gone.
+	if(SessionState(m_ExportSessionId) != ESessionState::OFFLINE)
+	{
+		StopDemoSession(m_ExportSessionId, "");
+	}
 	if(m_pVideo != nullptr)
 	{
 		if(IVideo::Current() == m_pVideo.get())
@@ -842,9 +1042,22 @@ EMSCRIPTEN_KEEPALIVE void DemoViewerCancelExport()
 
 // 0 while nothing was ever asked for, 1 while a video is being written, 2 when
 // the last one was handed over and 3 when it failed.
+EMSCRIPTEN_KEEPALIVE const char *DemoViewerExportError()
+{
+	return g_pDemoViewer == nullptr ? "" : g_pDemoViewer->ExportError();
+}
+
 EMSCRIPTEN_KEEPALIVE int DemoViewerExportState()
 {
 	return g_pDemoViewer == nullptr ? 0 : (int)g_pDemoViewer->ExportState();
+}
+
+// How far the video that is being written has got, between 0 and 1. It is not
+// where the demo on the window is: an export reads the demo through a way of
+// its own, so whoever is watching can spool about while it is written.
+EMSCRIPTEN_KEEPALIVE float DemoViewerExportProgress()
+{
+	return g_pDemoViewer == nullptr ? 0.0f : g_pDemoViewer->ExportProgress();
 }
 
 EMSCRIPTEN_KEEPALIVE int DemoViewerPaused()

@@ -817,11 +817,21 @@ void CGameState::RebuildGameWorld()
 			SnapshotClient.m_HasExtendedCharacter ? &SnapshotClient.m_ExtendedCharacter : nullptr,
 			GameTeam, ClientId == m_LocalClientId);
 	}
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
+	// Everything that is not a player: only a game that guesses ahead needs
+	// these in a world of its own, because only it has to carry them further
+	// than the last snapshot. A demo draws them out of the snapshot itself and
+	// asks the world for nothing but the tuning of the place they are in.
 	for(const CEntitySnapshot &Entity : m_vEntities)
 		m_GameWorld.NetObjAdd(Entity.m_Id, Entity.m_Type, Entity.m_vData.data(), Entity.m_HasEntityEx ? &Entity.m_EntityEx : nullptr);
+#endif
 	m_GameWorld.NetObjEnd();
 }
 
+// What a game that is being played does with the world it keeps: advance it to
+// where it guesses the server to be. A demo is what already happened, so a
+// program that only watches one never asks for this and does not carry it.
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
 void CGameState::Predict(const IClient &Client, CSessionId SessionId, CStreamId StreamId)
 {
 	PredictTo(Client.PredGameTick(SessionId, StreamId), [&Client, SessionId, StreamId](int Tick) {
@@ -893,6 +903,7 @@ void CGameState::PredictTo(int TargetTick, const std::function<const CNetObj_Pla
 		}
 	}
 }
+#endif
 
 void CGameState::UpdateRenderedClient(int ClientId, bool UsePredicted, bool PredictedLocal, float IntraGameTick, float PredIntraGameTick)
 {

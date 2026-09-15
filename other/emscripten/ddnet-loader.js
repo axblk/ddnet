@@ -17,6 +17,99 @@
 "use strict";
 
 const DDNetLoader = (() => {
+	// What this library answers with when it refuses or cannot do something.
+	// The `code` is what a caller branches on: the sentence is for whoever
+	// reads it and may be reworded, the code is part of the API and is not.
+	class DDNetLoaderError extends Error {
+		constructor(code, message) {
+			super(message);
+			this.name = "DDNetLoaderError";
+			this.code = code;
+		}
+	}
+
+	const fail = (code, message) => new DDNetLoaderError(code, message);
+
+	// This library's own version, which is not the game's: it says what the
+	// API looks like, so it changes when the API does.
+	const VERSION = "1.0.0";
+
+	// What each way in takes, and of what shape. An option nobody reads is the
+	// kind of mistake that otherwise turns up much later and in the words of
+	// whatever went without it - a mistyped `fps` is first heard of from the
+	// encoder, saying something about a frame rate of sixty.
+	const START_OPTIONS = [
+		"accept", "acceptLinks", "arguments", "canvas", "controls", "dataBase", "file", "fileArgument",
+		"fileName", "homePath", "module", "needsWebGpu", "onExit", "onOutput", "onProgress", "persist",
+		"programName", "scriptUrl", "signal", "sweepVideoScratch", "urlParams", "videoSink",
+	];
+	const PAGE_OPTIONS = START_OPTIONS.concat(["elements"]);
+	// A render takes what the command line of the render tool takes, plus the
+	// few things every program here takes. `sweepVideoScratch` and `arguments`
+	// are in it because the worker a render runs in calls back in through the
+	// same door, with those two already settled.
+	const RENDER_OPTIONS = [
+		"arguments", "audio", "chat", "codec", "crf", "dataBase", "demo", "follow", "fps", "height",
+		"homePath", "hud", "module", "moduleName", "name", "onOutput", "onProgress", "onRenderProgress",
+		"onStart", "output", "preset", "programName", "scriptUrl", "settings", "signal",
+		"sweepVideoScratch", "videoSink", "width", "worker",
+	];
+	const OPTION_SHAPES = {
+		accept: "array", acceptLinks: "boolean", arguments: "array", audio: "boolean", canvas: "canvas",
+		chat: "boolean", codec: "string", controls: "boolean", crf: "number", dataBase: "string",
+		elements: "object", fileArgument: "string", fileName: "string", follow: "string", fps: "number",
+		height: "number", homePath: "string", hud: "boolean", module: "function", moduleName: "string",
+		name: "string", needsWebGpu: "boolean", onExit: "function", onOutput: "function",
+		onProgress: "function", onRenderProgress: "function", onStart: "function", output: "string",
+		persist: "boolean", preset: "string", programName: "string", scriptUrl: "string", settings: "array",
+		signal: "signal", sweepVideoScratch: "boolean", urlParams: "array", width: "number",
+		worker: "boolean",
+	};
+
+	// What a shape is called when it is being asked for, so that a complaint
+	// reads as a sentence rather than as a table lookup.
+	const SHAPE_NAMES = {
+		array: "an array", boolean: "true or false", canvas: "a canvas", function: "a function",
+		number: "a number", object: "an object", signal: "an AbortSignal", string: "a string",
+	};
+
+	function hasShape(value, shape) {
+		switch (shape) {
+		case "array":
+			return Array.isArray(value);
+		case "canvas":
+			// A canvas from another document is still a canvas, so what is
+			// asked is whether it behaves like one rather than where it came
+			// from.
+			return typeof value === "object" && value !== null && typeof value.getContext === "function";
+		case "number":
+			return typeof value === "number" && isFinite(value);
+		case "object":
+			return typeof value === "object" && value !== null;
+		case "signal":
+			return typeof value === "object" && value !== null && "aborted" in value && typeof value.addEventListener === "function";
+		default:
+			return typeof value === shape;
+		}
+	}
+
+	function checkOptions(where, options, allowed) {
+		if (typeof options !== "object" || options === null) {
+			throw fail("BadOption", `DDNetLoader.${where} takes an object of options`);
+		}
+		for (const [name, value] of Object.entries(options)) {
+			if (!allowed.includes(name)) {
+				throw fail("BadOption", `DDNetLoader.${where} does not take '${name}'. It takes: ${allowed.join(", ")}.`);
+			}
+			// An option left out is an option left at its default, so only
+			// what is actually there is looked at.
+			const shape = OPTION_SHAPES[name];
+			if (shape !== undefined && value !== undefined && value !== null && !hasShape(value, shape)) {
+				throw fail("BadOption", `DDNetLoader.${where} wants ${SHAPE_NAMES[shape]} for '${name}'`);
+			}
+		}
+	}
+
 	const DEFAULT_HOME_PATH = "/home/web_user/.local/share/ddnet";
 	// Where this script is, so that a worker can be given the same one. Read
 	// while it is being run, which is the only time a script can say.
@@ -96,15 +189,16 @@ const DDNetLoader = (() => {
 	// hands out the memory they share to a page that is cross-origin isolated.
 	// Drawing without a window needs WebGPU, because that is the only backend
 	// left once the window is gone.
-	async function supportProblem(needsWebGpu) {
+	async function supportError(needsWebGpu) {
 		if (typeof SharedArrayBuffer === "undefined" || self.crossOriginIsolated === false) {
-			return "This page is not cross-origin isolated, so the browser withholds the shared memory this needs. " +
+			return fail("CrossOriginRefused",
+				"This page is not cross-origin isolated, so the browser withholds the shared memory this needs. " +
 				"The page has to send Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp, " +
-				"or load coi-serviceworker.js before anything else.";
+				"or load coi-serviceworker.js before anything else.");
 		}
 		if (needsWebGpu) {
 			if (!navigator.gpu) {
-				return "This browser has no WebGPU, which is what a render without a window draws with. A current Chrome or Firefox has it.";
+				return fail("NoWebGpu", "This browser has no WebGPU, which is what a render without a window draws with. A current Chrome or Firefox has it.");
 			}
 			// Having WebGPU and having something to draw with are two
 			// different things: a browser started without a graphics device,
@@ -112,10 +206,16 @@ const DDNetLoader = (() => {
 			// and only says so when it is asked.
 			const adapter = await navigator.gpu.requestAdapter().catch(() => null);
 			if (!adapter) {
-				return "This browser has WebGPU but no graphics adapter it is willing to use, so there is nothing to draw with.";
+				return fail("NoWebGpu", "This browser has WebGPU but no graphics adapter it is willing to use, so there is nothing to draw with.");
 			}
 		}
 		return null;
+	}
+
+	// The same thing in one sentence, for a page that only wants to say so.
+	async function supportProblem(needsWebGpu) {
+		const error = await supportError(needsWebGpu);
+		return error === null ? null : error.message;
 	}
 
 	// The encoders the browser may be asked for, one profile per family, the
@@ -165,16 +265,22 @@ const DDNetLoader = (() => {
 	// typed into stays, so a menu does not close itself under the hand that
 	// opened it.
 	function autoHide(elements, options) {
-		const settings = Object.assign({ delay: 2500 }, options || {});
+		const settings = Object.assign({ delay: 2500, picture: null, onHide: null }, options || {});
 		const all = Array.isArray(elements) ? elements : [elements];
 		var timer = null;
 		var held = 0;
+		var shown = false;
 		const hide = () => {
+			shown = false;
 			for (const element of all) {
 				element.classList.add("faded");
 			}
+			if (settings.onHide) {
+				settings.onHide();
+			}
 		};
 		const show = () => {
+			shown = true;
 			for (const element of all) {
 				element.classList.remove("faded");
 			}
@@ -187,11 +293,92 @@ const DDNetLoader = (() => {
 			element.addEventListener("focusin", () => { held++; show(); });
 			element.addEventListener("focusout", () => { held = Math.max(held - 1, 0); show(); });
 		}
+		// A press that went down on the picture, stayed where it was and was
+		// let go of again is a tap, and a tap on the picture is how a video
+		// player is told to show its controls or to get out of the way. The
+		// same rule the viewers use for the bar they draw themselves, see
+		// `CViewerControls::Render`.
+		if (settings.picture !== null) {
+			const TAP_DISTANCE = 16;
+			const TAP_TIME = 400;
+			var pressed = null;
+			settings.picture.addEventListener("pointerdown", event => {
+				// Read before the press reaches the handler below that shows
+				// everything again: what a tap does depends on what was there
+				// when it started.
+				pressed = { x: event.clientX, y: event.clientY, when: performance.now(), shown: shown };
+			}, { capture: true });
+			settings.picture.addEventListener("pointerup", event => {
+				if (pressed === null) {
+					return;
+				}
+				const moved = Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y);
+				const tap = moved <= TAP_DISTANCE && performance.now() - pressed.when <= TAP_TIME;
+				const wasShown = pressed.shown;
+				pressed = null;
+				if (tap && wasShown) {
+					hide();
+				} else if (tap) {
+					show();
+				}
+			});
+			settings.picture.addEventListener("pointercancel", () => { pressed = null; });
+		}
 		for (const event of ["pointermove", "pointerdown", "keydown", "wheel"]) {
 			window.addEventListener(event, show, { passive: true });
 		}
 		show();
-		return { show, hide };
+		return { show, hide, shown: () => shown };
+	}
+
+	// The same pictures the viewers draw on their own buttons, as the browser
+	// draws pictures: one square outline each, in whatever colour the button
+	// they sit on is written in. They are named after `CViewerControls::EIcon`
+	// in `src/engine/client/viewer_controls.h` and drawn to say the same
+	// thing, so that a page and the program behind it do not offer the same
+	// button with two different pictures on it.
+	const ICONS = {
+		menu: '<rect x="3" y="5" width="18" height="2.6" rx="1.3"/><rect x="3" y="10.7" width="18" height="2.6" rx="1.3"/><rect x="3" y="16.4" width="18" height="2.6" rx="1.3"/>',
+		detail: '<path d="M12 1.5 13.9 9.1 21.5 11 13.9 12.9 12 20.5 10.1 12.9 2.5 11 10.1 9.1Z"/>',
+		entities: '<rect x="3" y="3" width="8" height="8" rx="1.6"/><rect x="13" y="3" width="8" height="8" rx="1.6"/><rect x="3" y="13" width="8" height="8" rx="1.6"/><rect x="13" y="13" width="8" height="8" rx="1.6"/>',
+		play: '<path d="M7.5 3.8 20.5 12 7.5 20.2Z"/>',
+		pause: '<rect x="5.5" y="3.5" width="4.4" height="17" rx="2.2"/><rect x="14.1" y="3.5" width="4.4" height="17" rx="2.2"/>',
+		restart: '<rect x="3.5" y="3.5" width="3.2" height="17" rx="1.6"/><path d="M20.5 3.8 20.5 20.2 8.4 12Z"/>',
+		minus: '<rect x="3" y="10.7" width="18" height="2.6" rx="1.3"/>',
+		plus: '<rect x="3" y="10.7" width="18" height="2.6" rx="1.3"/><rect x="10.7" y="3" width="2.6" height="18" rx="1.3"/>',
+		fit: '<rect x="2.7" y="4.7" width="18.6" height="14.6" rx="2" fill="none" stroke="currentColor" stroke-width="2.4"/><rect x="6.6" y="8.6" width="10.8" height="6.8" opacity="0.55"/>',
+		save: '<path d="M12 2.8V12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M8 8.8 12 13 16 8.8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.8 15.4v3.4a1.4 1.4 0 0 0 1.4 1.4h13.6a1.4 1.4 0 0 0 1.4-1.4v-3.4" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
+		save_all: '<path d="M7 2.8V9.6M4.2 7 7 10 9.8 7M1.6 13.2v3a1.4 1.4 0 0 0 1.4 1.4h8a1.4 1.4 0 0 0 1.4-1.4v-3M17 6.4V13.2M14.2 10.6 17 13.6 19.8 10.6M11.6 16.8v3a1.4 1.4 0 0 0 1.4 1.4h8a1.4 1.4 0 0 0 1.4-1.4v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+		stop: '<rect x="4.5" y="4.5" width="15" height="15" rx="3"/>',
+		eye: '<path d="M12 4.6C5.6 4.6 1.8 12 1.8 12s3.8 7.4 10.2 7.4S22.2 12 22.2 12 18.4 4.6 12 4.6Z"/><circle cx="12" cy="12" r="2.7" fill="#000"/>',
+		freeview: '<path d="M12 1.6 15.2 6.2H8.8ZM12 22.4 8.8 17.8h6.4ZM1.6 12 6.2 8.8v6.4ZM22.4 12 17.8 15.2V8.8Z"/><rect x="10.9" y="4.6" width="2.2" height="14.8" rx="1.1"/><rect x="4.6" y="10.9" width="14.8" height="2.2" rx="1.1"/>',
+		fullscreen: '<path d="M3.4 9.6V3.4h6.2M20.6 9.6V3.4h-6.2M3.4 14.4v6.2h6.2M20.6 14.4v6.2h-6.2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
+	};
+
+	function icon(name) {
+		const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		svg.setAttribute("viewBox", "0 0 24 24");
+		svg.setAttribute("aria-hidden", "true");
+		svg.setAttribute("focusable", "false");
+		svg.innerHTML = ICONS[name] || "";
+		return svg;
+	}
+
+	// Every button that named a picture in the markup gets it, so that a page
+	// says what is on its buttons where it says what its buttons are.
+	function paintIcons(root) {
+		for (const element of (root || document).querySelectorAll("[data-icon]")) {
+			const wanted = element.dataset.icon;
+			if (element.dataset.painted === wanted) {
+				continue;
+			}
+			element.dataset.painted = wanted;
+			const drawn = element.querySelector("svg");
+			if (drawn !== null) {
+				drawn.remove();
+			}
+			element.prepend(icon(wanted));
+		}
 	}
 
 	// Filling the screen is the browser's to do and only out of a click of its
@@ -238,8 +425,16 @@ const DDNetLoader = (() => {
 		}
 		const update = () => {
 			const on = isFullscreen();
-			button.textContent = on ? "Leave full screen" : "Full screen";
-			button.title = on ? "Escape" : "";
+			const says = on ? "Leave full screen" : "Full screen";
+			// A button with a picture on it says what it does in the words a
+			// screen reader and a tooltip use; one with words on it says it in
+			// those words. Writing over a picture would rub it out.
+			if (button.dataset.icon === undefined) {
+				button.textContent = says;
+			}
+			button.setAttribute("aria-label", says);
+			button.setAttribute("aria-pressed", on ? "true" : "false");
+			button.title = on ? `${says} (Escape)` : says;
 			if (!on && screen.orientation && screen.orientation.unlock) {
 				screen.orientation.unlock();
 			}
@@ -425,7 +620,7 @@ const DDNetLoader = (() => {
 	async function fetchScript(url) {
 		const response = await fetch(url.href, { mode: "cors" });
 		if (!response.ok) {
-			throw new Error(`${url.href} answered ${response.status} ${response.statusText}`);
+			throw fail("FetchFailed", `${url.href} answered ${response.status} ${response.statusText}`);
 		}
 		return new Blob([await response.text()], { type: "text/javascript" });
 	}
@@ -503,8 +698,19 @@ const DDNetLoader = (() => {
 	/**
 	 * One running program. What a page gets back from `start`.
 	 */
-	class Instance {
+	// Why a stop is a stop: an `AbortSignal` says so in its own words if it
+	// was given a reason, and in ours if it was not.
+	const abortError = signal => signal.reason !== undefined && signal.reason !== null
+		? signal.reason
+		: fail("Stopped", "This was stopped.");
+
+	class Instance extends EventTarget {
 		constructor(options) {
+			super();
+			// Which kinds of event somebody is listening for, so that output
+			// nobody is listening to still reaches the console and output that
+			// somebody is listening to does not reach it twice.
+			this.listened = new Set();
 			this.options = options;
 			// A program that draws into a video file rather than onto the page
 			// has no canvas, and nothing here may assume one.
@@ -521,9 +727,25 @@ const DDNetLoader = (() => {
 			});
 		}
 
+		addEventListener(type, listener, options) {
+			this.listened.add(type);
+			super.addEventListener(type, listener, options);
+		}
+
+		// Both ways at once, on purpose: the callbacks were here first and the
+		// three own pages use them, and an event is what a page embedding one
+		// of these would rather have.
+		say(type, detail) {
+			this.dispatchEvent(new CustomEvent(type, { detail: detail }));
+		}
+
 		output(message, kind) {
+			this.say("output", { message: message, kind: kind || {} });
 			if (this.options.onOutput) {
 				this.options.onOutput(message, kind || {});
+			} else if (this.listened.has("output")) {
+				// Somebody is listening, so the console would only say it
+				// again.
 			} else if (kind && kind.error) {
 				console.error(message);
 			} else {
@@ -532,6 +754,7 @@ const DDNetLoader = (() => {
 		}
 
 		progress(text) {
+			this.say("progress", { text: text });
 			if (this.options.onProgress) {
 				this.options.onProgress(text);
 			}
@@ -562,7 +785,7 @@ const DDNetLoader = (() => {
 		async loadBytes(name, data) {
 			const path = this.filePath({ name: name });
 			if (path == null) {
-				throw new Error(`${name} is not a kind of file this program takes`);
+				throw fail("FileRefused", `${name} is not a kind of file this program takes`);
 			}
 			const filePath = await this.writeFile(path, name, data);
 			this.call('EmscriptenCallbackDropFile', null, ['string'], [filePath]);
@@ -629,11 +852,11 @@ const DDNetLoader = (() => {
 		async fetchUrlFile(url) {
 			const response = await fetch(url, { mode: "cors" });
 			if (!response.ok) {
-				throw new Error(`The server answered ${response.status} ${response.statusText}`);
+				throw fail("FetchFailed", `The server answered ${response.status} ${response.statusText}`);
 			}
 			const buffer = await response.arrayBuffer();
 			if (buffer.byteLength > MAX_URL_FILE_BYTES) {
-				throw new Error(`The file is larger than ${MAX_URL_FILE_BYTES} bytes`);
+				throw fail("FileTooLarge", `The file is larger than ${MAX_URL_FILE_BYTES} bytes`);
 			}
 			const name = decodeURIComponent(new URL(url).pathname.split("/").pop() || "download");
 			const path = this.filePath({ name: name }) || `${this.homePath}/${this.accept[0] === ".demo" ? "demos" : "maps"}`;
@@ -801,14 +1024,23 @@ const DDNetLoader = (() => {
 			const instance = this;
 			const options = this.options;
 			if (typeof options.module !== "function") {
-				throw new Error("DDNetLoader needs the program's factory, for example `module: DDNetDemoViewer`");
+				throw fail("BadOption", "DDNetLoader needs the program's factory, for example `module: DDNetDemoViewer`");
+			}
+			// A signal that is already aborted is a program that is not
+			// started, and one aborted later is a program asked to stop. Both
+			// come back as what the signal was aborted with.
+			if (options.signal) {
+				if (options.signal.aborted) {
+					throw abortError(options.signal);
+				}
+				options.signal.addEventListener("abort", () => this.quit(), { once: true });
 			}
 			// Said once, and said here: what follows would say it a hundred
 			// times, in the words of whatever failed first.
-			const problem = await supportProblem(options.needsWebGpu === true);
+			const problem = await supportError(options.needsWebGpu === true);
 			if (problem !== null) {
-				this.output(problem, { error: true, bold: true, fatal: true });
-				throw new Error(problem);
+				this.output(problem.message, { error: true, bold: true, fatal: true });
+				throw problem;
 			}
 			sweepDataCache();
 			if (options.sweepVideoScratch !== false) {
@@ -837,7 +1069,12 @@ const DDNetLoader = (() => {
 				// Where a video is written while it is made, see `videoSink`.
 				ddnetVideoSink: info => instance.videoSink(info),
 				// How far a render has got, once a second while it runs.
-				ddnetRenderProgress: options.onRenderProgress,
+				ddnetRenderProgress: status => {
+					instance.say("renderprogress", status);
+					if (options.onRenderProgress) {
+						options.onRenderProgress(status);
+					}
+				},
 				// Where `data` is, for a page that keeps it somewhere other than
 				// next to itself. A program from another origin brings its own,
 				// so that is where to look unless the page says otherwise. Read
@@ -1003,6 +1240,7 @@ const DDNetLoader = (() => {
 				document.body.style.cursor = "default";
 			}
 			this.output(`${this.options.programName || "The program"} closed.`, { bold: true });
+			this.say("exit", {});
 			if (this.options.onExit) {
 				this.options.onExit();
 			}
@@ -1147,13 +1385,30 @@ self.onmessage = async event => {
 		// tidy-alphabetical-end
 	];
 
+	// What a render hands to whoever wants to watch it: the same events the
+	// page gets as callbacks, and the way to stop it.
+	class RenderHandle extends EventTarget {
+		constructor(stop) {
+			super();
+			this.stop = stop;
+		}
+
+		say(type, detail) {
+			this.dispatchEvent(new CustomEvent(type, { detail: detail }));
+		}
+
+		quit() {
+			this.stop();
+		}
+	}
+
 	async function renderInWorker(options, loaderUrl) {
 		// A worker inherits the page's isolation, so what the page cannot do
 		// the worker cannot either - and it is said here, where the page is
 		// listening, rather than from inside the worker.
-		const problem = await supportProblem(true);
+		const problem = await supportError(true);
 		if (problem !== null) {
-			throw new Error(problem);
+			throw problem;
 		}
 		const program = new URL(options.scriptUrl, location.href);
 		// Both scripts go in as blobs where they are not this page's own:
@@ -1187,20 +1442,31 @@ self.onmessage = async event => {
 		// to be the one to answer for it: without this the render would be over
 		// and the promise still waiting.
 		var stopRender = () => worker.terminate();
+		const handle = new RenderHandle(() => stopRender());
 		const finished = new Promise((resolve, reject) => {
-			stopRender = () => {
+			stopRender = (reason) => {
 				worker.terminate();
-				reject(new Error("The render was stopped."));
+				reject(reason !== undefined ? reason : fail("RenderStopped", "The render was stopped."));
 			};
+			if (options.signal) {
+				if (options.signal.aborted) {
+					reject(abortError(options.signal));
+					worker.terminate();
+					return;
+				}
+				options.signal.addEventListener("abort", () => stopRender(abortError(options.signal)), { once: true });
+			}
 			worker.onmessage = event => {
 				const message = event.data;
 				if (message.type === "output") {
+					handle.say("output", { message: message.message, kind: message.kind || {} });
 					if (options.onOutput) {
 						options.onOutput(message.message, message.kind || {});
 					}
 					return;
 				}
 				if (message.type === "progress") {
+					handle.say("renderprogress", message.status);
 					if (options.onRenderProgress) {
 						options.onRenderProgress(message.status);
 					}
@@ -1210,17 +1476,17 @@ self.onmessage = async event => {
 				if (message.type === "done") {
 					resolve(message.video);
 				} else {
-					reject(new Error(message.message));
+					reject(fail("RenderFailed", message.message));
 				}
 			};
 			worker.onerror = event => {
 				worker.terminate();
-				reject(new Error(event.message || "the render worker stopped"));
+				reject(fail("RenderFailed", event.message || "the render worker stopped"));
 			};
 			worker.postMessage(request, transfer);
 		});
 		if (options.onStart) {
-			options.onStart({ quit: () => stopRender() });
+			options.onStart(handle);
 		}
 		return await finished;
 	}
@@ -1260,6 +1526,18 @@ self.onmessage = async event => {
 			 * browser it returns before the encoder has even been asked.
 			 */
 			exportState: () => number("DemoViewerExportState"),
+			/**
+			 * How far the video being written has got, between 0 and 1. Not
+			 * where the demo on the canvas is: the export reads it through a
+			 * way of its own, so both move at once and apart.
+			 */
+			exportProgress: () => number("DemoViewerExportProgress"),
+			/**
+			 * Why the export that was last asked for failed, or an empty
+			 * string when none has. A page is the only place this can be
+			 * said: there is no log for whoever is looking at the demo.
+			 */
+			exportError: () => instance.call("DemoViewerExportError", "string") || "",
 			/** Throws away the export that is running, and its file with it. */
 			cancelExport: () => instance.call("DemoViewerCancelExport"),
 			/**
@@ -1374,7 +1652,20 @@ self.onmessage = async event => {
 					setNumbers("MapViewerSetZoom", [zoom * Factor]);
 				}
 			},
-			/** Writes what is on screen, or the whole map, to a picture. */
+			/**
+			 * Whether the parts of the map that are only there to be looked at
+			 * are drawn, or turns them on and off.
+			 */
+			highDetail: On => On === undefined
+				? instance.call("MapViewerHighDetail", "number") === 1
+				: instance.call("MapViewerSetHighDetail", null, ["number"], [On ? 1 : 0]),
+			/**
+			 * Whether what the tiles do is drawn over what they look like, or
+			 * turns that on and off.
+			 */
+			entities: On => On === undefined
+				? instance.call("MapViewerEntities", "number") === 1
+				: instance.call("MapViewerSetEntities", null, ["number"], [On ? 1 : 0]),
 			/**
 			 * Whether the viewer draws its own bar of controls over the map,
 			 * or switches it on and off, as in `demoControls`.
@@ -1382,6 +1673,7 @@ self.onmessage = async event => {
 			controls: Show => Show === undefined
 				? instance.call("MapViewerControls", "number") === 1
 				: instance.call("MapViewerSetControls", null, ["number"], [Show ? 1 : 0]),
+			/** Writes what is on screen, or the whole map, to a picture. */
 			exportView: () => instance.call("MapViewerExportView"),
 			exportFullMap: () => instance.call("MapViewerExportFullMap"),
 			/** 0 while nothing is being written, 1 while it is, 2 when it failed. */
@@ -1420,7 +1712,7 @@ self.onmessage = async event => {
 		// something nobody should be downloading in one piece anyway.
 		const total = entries.reduce((sum, entry) => sum + entry.blob.size, 0);
 		if (total >= 0xffffffff || entries.some(entry => entry.blob.size >= 0xffffffff)) {
-			throw new Error("Too much to put into one zip file");
+			throw fail("ZipTooLarge", "Too much to put into one zip file");
 		}
 		const encoder = new TextEncoder();
 		const now = new Date();
@@ -1521,6 +1813,34 @@ self.onmessage = async event => {
 
 	return {
 		/**
+		 * This library's own version, which says what its API looks like. Not
+		 * the game's version: the two move for different reasons.
+		 */
+		version: VERSION,
+
+		/**
+		 * What this library throws and rejects with. Every one of them carries
+		 * a `code` beside its sentence, and the code is what to branch on:
+		 *
+		 * * `BadOption` - an option this does not take, or one of the wrong
+		 *   shape.
+		 * * `CrossOriginRefused` - the page is not cross-origin isolated, so
+		 *   the browser withholds the shared memory every program here needs.
+		 * * `NoWebGpu` - a render without a window was asked for and there is
+		 *   no WebGPU, or no adapter the browser will use.
+		 * * `NoVideoEncoder` - this browser cannot encode video.
+		 * * `FileRefused` - the file is not a kind the program takes.
+		 * * `FileTooLarge` - a file named in a URL is bigger than this will
+		 *   fetch into memory.
+		 * * `FetchFailed` - something the program needed answered with an
+		 *   error.
+		 * * `RenderStopped` - a render was stopped on purpose.
+		 * * `RenderFailed` - a render ended without a video.
+		 * * `ZipTooLarge` - more than fits in one zip file was put into one.
+		 */
+		Error: DDNetLoaderError,
+
+		/**
 		 * Starts a program on a canvas.
 		 *
 		 * @param options.module The factory the program's script defines, so
@@ -1543,13 +1863,24 @@ self.onmessage = async event => {
 		 * @param options.controls `false` leaves off the bar of controls a
 		 * viewer otherwise draws over what it shows, for a page that puts its
 		 * own beside the canvas.
+		 * @param options.signal An `AbortSignal`. Aborting it asks the program
+		 * to stop; aborting it before the call starts nothing at all, and
+		 * either way the promise ends with whatever the signal was aborted
+		 * with.
 		 * @param options.onOutput Called for every line the program writes.
 		 * @param options.onProgress Called while the program is being fetched.
 		 * @param options.onExit Called once the program has stopped.
 		 *
+		 * The instance is also an `EventTarget`, which is the other way of
+		 * hearing the same three things: `output` with
+		 * `{detail: {message, kind}}`, `progress` with `{detail: {text}}` and
+		 * `exit`. A listener and a callback can both be there; output nobody
+		 * listens to and nobody was handed goes to the console.
+		 *
 		 * @returns a promise for the running instance.
 		 */
 		start(options) {
+			checkOptions("start", options, START_OPTIONS);
 			return new Instance(options).run();
 		},
 
@@ -1601,6 +1932,31 @@ self.onmessage = async event => {
 		},
 
 		/**
+		 * One of the pictures the viewers draw on their own buttons, as an
+		 * `<svg>` element to put on a button of the page's own. The names are
+		 * the ones `CViewerControls::EIcon` uses, in lower case: `menu`,
+		 * `detail`, `entities`, `play`, `pause`, `restart`, `minus`, `plus`,
+		 * `fit`, `save`, `save_all`, `stop`, `eye`, `freeview` and
+		 * `fullscreen`.
+		 */
+		icon(name) {
+			return icon(name);
+		},
+
+		/**
+		 * Draws the picture every `data-icon` element under `root` asks for,
+		 * so that markup can name what is on a button where it says what the
+		 * button is. Calling it again only draws what has changed, which is
+		 * how a button swaps its picture - `data-icon` is set and this is
+		 * called.
+		 *
+		 * @param root Where to look, the whole document otherwise.
+		 */
+		paintIcons(root) {
+			return paintIcons(root);
+		},
+
+		/**
 		 * Whether this browser allows anything to fill the screen at all.
 		 * Called from the viewers, for the button they draw themselves.
 		 */
@@ -1635,6 +1991,11 @@ self.onmessage = async event => {
 		 * @param elements The element, or the elements, that belong together.
 		 * @param options.delay How long to wait before they go, in
 		 * milliseconds.
+		 * @param options.picture What they are drawn over, usually the canvas.
+		 * A tap on it shows them or takes them away, which is what a tap on a
+		 * video does everywhere.
+		 * @param options.onHide Called whenever they go, so that a page can
+		 * close what one of them had opened.
 		 */
 		autoHide(elements, options) {
 			return autoHide(elements, options);
@@ -1710,6 +2071,7 @@ self.onmessage = async event => {
 
 		/** `start` with the furniture our own pages share around it. */
 		page(options) {
+			checkOptions("page", options, PAGE_OPTIONS);
 			return new Instance(pageOptions(options)).run();
 		},
 
@@ -1749,10 +2111,24 @@ self.onmessage = async event => {
 		 * @param options.videoSink Where the video is written while it is made.
 		 * A `WritableStream` can go to the worker with it; a function cannot,
 		 * and is only asked here.
+		 * @param options.signal An `AbortSignal`. Aborting it stops the render
+		 * and ends the promise with whatever the signal was aborted with; a
+		 * render that is stopped without one ends with `RenderStopped`.
+		 *
+		 * What `onStart` is handed is an `EventTarget` as well: `output` and
+		 * `renderprogress` are the same two things the callbacks say, and
+		 * `quit()` stops it.
 		 *
 		 * @returns a promise for the finished MP4 as a `Blob`.
 		 */
 		async render(options) {
+			checkOptions("render", options, RENDER_OPTIONS);
+			// Encoding is the browser's to do, and a browser without an
+			// encoder is worth saying so before a demo is fetched and a
+			// program started for nothing.
+			if (typeof VideoEncoder === "undefined") {
+				throw fail("NoVideoEncoder", "This browser cannot encode video: it has no VideoEncoder. Chrome, Edge and a current Firefox or Safari have one.");
+			}
 			// A worker needs to load the program itself, so it needs to be told
 			// where it is; without that this is the only thread there is.
 			if (options.worker !== false && typeof Worker === "function" && options.scriptUrl && LOADER_URL) {
@@ -1768,8 +2144,13 @@ self.onmessage = async event => {
 				options.onStart(instance);
 			}
 			await instance.finished;
+			// A render that was called off is not a render that failed, and
+			// whoever called it off is told so in their own words.
+			if (options.signal && options.signal.aborted) {
+				throw abortError(options.signal);
+			}
 			if (instance.video == null) {
-				throw new Error("The demo was not rendered into a video, see the output for what went wrong");
+				throw fail("RenderFailed", "The demo was not rendered into a video, see the output for what went wrong");
 			}
 			return instance.video;
 		},

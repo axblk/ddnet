@@ -24,6 +24,8 @@ class IEngineInput;
 class CDemoViewerClient : public CDemoClientBase
 {
 public:
+	CDemoViewerClient();
+
 	/**
 	 * How an export that somebody asked for is getting on. A browser cannot be
 	 * told, it has to ask: what starts an export there returns before the
@@ -59,6 +61,16 @@ public:
 	};
 
 private:
+	// The demo is read a second time for an export, out of a session of its
+	// own: what is written then owes nothing to the window it is not drawn in
+	// or to where whoever asked for it has since moved to, and watching goes
+	// on beside it.
+	CSessionId m_ExportSessionId;
+	// When the window was last drawn, which during an export is far less often
+	// than a frame is encoded. Kept apart from the export's own clock so that
+	// what is on the screen moves at the speed it is shown at.
+	int64_t m_LastWindowRenderTime = 0;
+	std::chrono::nanoseconds m_LastExportScreenRender{};
 	IEngineInput *m_pInput = nullptr;
 	bool m_Surfaceless = false;
 	std::array<bool, NUM_CONTROL_KEYS> m_aKeyWasPressed = {};
@@ -69,9 +81,19 @@ private:
 	std::chrono::nanoseconds m_NextFrameTime{};
 	int m_ExitCode = 0;
 	EExportState m_ExportState = EExportState::IDLE;
+	// Why the last export failed, kept after it has been reported: an export
+	// that came to nothing is the one thing here that nobody can see for
+	// themselves, and a page has no log to look in.
+	char m_aExportError[256] = "";
 	CViewerControls m_Controls;
 	CViewerGestures m_Gestures;
 	bool m_ShowControls = true;
+	// What the export menu was last set to. A viewer that is asked for a video
+	// through the page brings its own settings; one that is asked through its
+	// own controls has only what is on them, so what is not on them stays as
+	// it was between one export and the next.
+	bool m_ExportAudio = true;
+	int m_ExportFps = 60;
 	// Dragging along the seek bar stops the demo where the pointer puts it,
 	// and lets it go on afterwards only if it was going on before.
 	bool m_Seeking = false;
@@ -187,17 +209,29 @@ public:
 	 */
 	bool RequestExport(const CVideoExportSettings &Settings);
 	/**
+	 * Asks for a video of the given size, with the sound and the rate the
+	 * export menu was last set to. What the bar's own export button does.
+	 */
+	void ExportFromControls(int Width, int Height);
+	/**
 	 * Asks for the export that is running to be thrown away, along with its
 	 * unfinished file. Done before the next frame, as with `RequestExport`.
 	 */
 	void RequestCancelExport() { m_CancelRequested = true; }
 
+	/** How far the export has come, between 0 and 1. */
+	float ExportProgress() const;
 	bool Paused() const;
 	float Progress() const;
 	float Speed() const;
 	float Length() const;
 	bool Exporting() const;
 	EExportState ExportState() const { return m_ExportState; }
+	/**
+	 * Why the export that was last asked for failed, or an empty string when
+	 * none has.
+	 */
+	const char *ExportError() const { return m_aExportError; }
 };
 
 #endif // ENGINE_CLIENT_DEMO_VIEWER_CLIENT_H

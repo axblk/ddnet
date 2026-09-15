@@ -22,6 +22,15 @@
 
 namespace
 {
+	// How many files that nobody waits for are fetched at the same time. A
+	// browser opens six connections to one host over HTTP/1.1 and queues the
+	// rest, so a hundred background requests put a hundred places between an
+	// urgent one and the network; and what arrives has to be made sense of,
+	// which is a job thread that the urgent one then waits for as well. A
+	// handful at a time keeps both free without leaving the background work
+	// standing.
+	constexpr size_t MAX_CONCURRENT_BACKGROUND_FETCHES = 6;
+
 	enum class EAssetLoadError
 	{
 		NONE,
@@ -223,12 +232,47 @@ bool CAssetLoader::StartFetching(const std::shared_ptr<CAssetJob> &pJob)
 	char aUrl[512];
 	if(!pJob->m_pStorage->FetchUrl(pJob->Path(), pJob->m_StorageType, aUrl, sizeof(aUrl)))
 		return false;
-	std::shared_ptr<IHttpRequest> pRequest = m_pHttp->CreateRequest(aUrl);
+	// A background job waits its turn rather than going out with the rest: it
+	// will be fetched, which is all the caller wanted to know.
+	if(pJob->m_Background && m_BackgroundFetchCount >= MAX_CONCURRENT_BACKGROUND_FETCHES)
+	{
+		m_vpDeferredFetchJobs.push_back(pJob);
+		return true;
+	}
+	Fetch(pJob, aUrl);
+	return true;
+}
+
+void CAssetLoader::Fetch(const std::shared_ptr<CAssetJob> &pJob, const char *pUrl)
+{
+	std::shared_ptr<IHttpRequest> pRequest = m_pHttp->CreateRequest(pUrl);
 	pRequest->WriteToMemory();
 	pRequest->LogProgress(HTTPLOG::FAILURE);
 	m_vFetchingJobs.push_back(CFetchingJob{pJob, pRequest});
+	if(pJob->m_Background)
+		++m_BackgroundFetchCount;
 	m_pHttp->Run(std::move(pRequest));
-	return true;
+}
+
+void CAssetLoader::StartDeferredFetches()
+{
+	while(!m_vpDeferredFetchJobs.empty() && m_BackgroundFetchCount < MAX_CONCURRENT_BACKGROUND_FETCHES)
+	{
+		const std::shared_ptr<CAssetJob> pJob = m_vpDeferredFetchJobs.front();
+		m_vpDeferredFetchJobs.pop_front();
+		// Whoever wanted it gave up on it in the meantime.
+		if(pJob->Done())
+			continue;
+		char aUrl[512];
+		if(pJob->m_pStorage == nullptr || !pJob->m_pStorage->FetchUrl(pJob->Path(), pJob->m_StorageType, aUrl, sizeof(aUrl)))
+		{
+			pJob->m_ReadFailed = true;
+			m_vpPendingJobs.push_back(pJob);
+			StartPendingJobs();
+			continue;
+		}
+		Fetch(pJob, aUrl);
+	}
 }
 
 void CAssetLoader::UpdateFetchingJobs()
@@ -259,6 +303,11 @@ void CAssetLoader::UpdateFetchingJobs()
 			pJob->m_ReadFailed = true;
 		}
 		It = m_vFetchingJobs.erase(It);
+		if(pJob->m_Background)
+		{
+			dbg_assert(m_BackgroundFetchCount > 0, "Background fetch count underflow");
+			--m_BackgroundFetchCount;
+		}
 		if(!pJob->Done())
 		{
 			m_vpPendingJobs.push_back(pJob);
@@ -308,7 +357,7 @@ size_t CAssetLoader::ReadingCount() const
 	return m_vpUnreadJobs.size() + m_vpReadJobs.size();
 }
 
-uint64_t CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob)
+uint64_t CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob, EAssetPriority Priority)
 {
 	dbg_assert(m_pEngine != nullptr, "Asset loader not initialized");
 	dbg_assert(pJob != nullptr, "Asset job must not be null");
@@ -322,6 +371,7 @@ uint64_t CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob)
 	dbg_assert(m_NextRequestId != 0, "Asset request ID overflow");
 	const uint64_t RequestId = m_NextRequestId++;
 	pJob->m_RequestId = RequestId;
+	pJob->m_Background = Priority == EAssetPriority::BACKGROUND;
 	Enqueue(std::move(pJob));
 	return RequestId;
 }
@@ -393,21 +443,21 @@ void CAssetLoader::UpdateWaitingJobs()
 CImageResource CAssetLoader::LoadImageFile(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess)
 {
 	auto pJob = std::make_shared<CImageAssetJob>(pStorage, pPath, StorageType, OwnerId, Generation, std::move(Postprocess));
-	Submit(pJob);
+	Submit(pJob, EAssetPriority::NORMAL);
 	return CImageResource(std::move(pJob));
 }
 
 CImageResource CAssetLoader::LoadImageData(std::vector<uint8_t> vData, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess)
 {
 	auto pJob = std::make_shared<CImageAssetJob>(std::move(vData), pContextName, OwnerId, Generation, std::move(Postprocess));
-	Submit(pJob);
+	Submit(pJob, EAssetPriority::NORMAL);
 	return CImageResource(std::move(pJob));
 }
 
 CImageResource CAssetLoader::LoadImageRawData(CDataFileRawData RawData, size_t Width, size_t Height, CImageInfo::EImageFormat Format, const char *pContextName, int OwnerId, uint64_t Generation, std::function<bool(CImageInfo &)> Postprocess)
 {
 	auto pJob = std::make_shared<CImageAssetJob>(std::move(RawData), Width, Height, Format, pContextName, OwnerId, Generation, std::move(Postprocess));
-	Submit(pJob);
+	Submit(pJob, EAssetPriority::NORMAL);
 	return CImageResource(std::move(pJob));
 }
 
@@ -441,6 +491,7 @@ void CAssetLoader::Update()
 	dbg_assert(m_pEngine != nullptr, "Asset loader not initialized");
 	UpdateWaitingJobs();
 	UpdateFetchingJobs();
+	StartDeferredFetches();
 	UpdateReadJobs();
 	for(const auto &pJob : m_vpRunningJobs)
 	{
@@ -470,6 +521,8 @@ void CAssetLoader::AbortOwnerBeforeGeneration(int OwnerId, uint64_t Generation)
 		if(Fetching.m_pJob->Done())
 			Fetching.m_pRequest->Abort();
 	}
+	for(const auto &pJob : m_vpDeferredFetchJobs)
+		AbortStaleJob(pJob);
 	{
 		const CLockScope LockScope(m_ReaderLock);
 		for(const auto &pJob : m_vpUnreadJobs)
@@ -520,12 +573,16 @@ void CAssetLoader::Shutdown()
 		Fetching.m_pJob->Abort();
 		Fetching.m_pRequest->Abort();
 	}
+	for(const auto &pJob : m_vpDeferredFetchJobs)
+		pJob->Abort();
 	for(const auto &pJob : m_vpPendingJobs)
 		pJob->Abort();
 	for(const auto &pJob : m_vpRunningJobs)
 		pJob->Abort();
 	m_vpWaitingJobs.clear();
 	m_vFetchingJobs.clear();
+	m_vpDeferredFetchJobs.clear();
+	m_BackgroundFetchCount = 0;
 	m_vpPendingJobs.clear();
 	m_vpRunningJobs.clear();
 }

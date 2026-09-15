@@ -487,20 +487,42 @@ jobs:
         export PATH=/home/runner/cmake/bin:$PATH
         source emsdk/emsdk_env.sh
         emcmake cmake -H. -G "Unix Makefiles" -B build-emscripten-headless -DCMAKE_BUILD_TYPE=Debug -DVIDEORECORDER=OFF -DVULKAN=OFF -DSERVER=OFF -DTOOLS=OFF -DHEADLESS_CLIENT=ON -DPREFER_BUNDLED_LIBS=ON
-        cmake --build build-emscripten-headless --target game-client -j$(nproc)
+        # The data directory is served next to the page rather than packed into
+        # the program, so the client only finds it if it was copied and its
+        # index written - neither of which the client target brings along.
+        cmake --build build-emscripten-headless --target game-client copy_data web_data_index -j$(nproc)
 
     - name: Test headless Emscripten client
       run: |
         source emsdk/emsdk_env.sh
+        # What the browser process exits with says more about how the browser
+        # was taken down than about the client, so what the client did is read
+        # off its output instead.
         emrun \
           --browser firefox \
           --browser-args=-headless \
           --port 8000 \
-          --silence_timeout=120 \
-          --timeout=300 \
+          --silence_timeout=300 \
+          --timeout=900 \
           --kill_start \
           --kill_exit \
-          build-emscripten-headless/index.html -- "quit" "#__emrun_autostart__"
+          build-emscripten-headless/index.html -- "quit" "#__emrun_autostart__" 2>&1 | tee emrun.log || true
+        if ! grep -q "Client startup ready" emrun.log; then
+          echo "The client did not get through its startup, see the log above."
+          exit 1
+        fi
+        # In the browser the client reads its files over the network, so a read
+        # on the main thread is the page standing still for the length of a
+        # request. The ones that are still there are listed; a new one is a new
+        # stall and fails here.
+        grep -o "'[^']*' was fetched on the main thread" emrun.log \
+          | sed "s/^'\(.*\)' was fetched on the main thread$/\1/" | sort -u > cold-reads.txt
+        grep -v '^#' other/emscripten/main-thread-reads.txt | sort -u > cold-reads-known.txt
+        if comm -23 cold-reads.txt cold-reads-known.txt | grep .; then
+          echo "The files above were fetched on the main thread and are not in other/emscripten/main-thread-reads.txt."
+          echo "Read them through the asset loader, or add them to that list if there is no way around it."
+          exit 1
+        fi
 
     - name: Build Emscripten client in release mode
       run: |

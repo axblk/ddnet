@@ -32,7 +32,7 @@ CLayerQuads::~CLayerQuads()
 void CLayerQuads::Render(const CEditorMap *pRenderMap)
 {
 	if(m_Image >= 0 && (size_t)m_Image < pRenderMap->m_vpImages.size())
-		Graphics()->TextureSet(pRenderMap->m_vpImages[m_Image]->m_Texture);
+		Graphics()->TextureSet(pRenderMap->m_vpImages[m_Image]->Texture(false));
 	else
 		Graphics()->TextureClear();
 

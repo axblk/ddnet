@@ -528,6 +528,40 @@ bool CEditorMap::Load(const char *pFilename, int StorageType, const FErrorHandle
 	{
 		int Start, Num;
 		pMap->GetType(MAPITEMTYPE_IMAGE, &Start, &Num);
+
+		// Only a tile layer samples an image by tile index and only a quad
+		// layer draws it as a plain image; each of those is its own copy on
+		// the GPU, so the map decides which ones go up. An image no layer uses
+		// is drawn in the editor's own preview and nowhere else.
+		std::vector<int> vImageLoadFlags(Num, IGraphics::TEXLOAD_NO_2D_TEXTURE);
+		{
+			int LayersStart, LayersNum;
+			pMap->GetType(MAPITEMTYPE_LAYER, &LayersStart, &LayersNum);
+			for(int l = 0; l < LayersNum; l++)
+			{
+				const CMapItemLayer *pLayerItem = (CMapItemLayer *)pMap->GetItem(LayersStart + l);
+				if(pLayerItem == nullptr)
+					continue;
+				if(pLayerItem->m_Type == LAYERTYPE_TILES)
+				{
+					const int Image = ((const CMapItemLayerTilemap *)pLayerItem)->m_Image;
+					if(Image >= 0 && Image < Num)
+						vImageLoadFlags[Image] |= IGraphics::TEXLOAD_LAYERED;
+				}
+				else if(pLayerItem->m_Type == LAYERTYPE_QUADS)
+				{
+					const int Image = ((const CMapItemLayerQuads *)pLayerItem)->m_Image;
+					if(Image >= 0 && Image < Num)
+						vImageLoadFlags[Image] &= ~IGraphics::TEXLOAD_NO_2D_TEXTURE;
+				}
+			}
+			for(int &LoadFlags : vImageLoadFlags)
+			{
+				if(LoadFlags == IGraphics::TEXLOAD_NO_2D_TEXTURE)
+					LoadFlags = 0;
+			}
+		}
+
 		for(int i = 0; i < Num; i++)
 		{
 			CMapItemImage_v2 *pItem = (CMapItemImage_v2 *)pMap->GetItem(Start + i);
@@ -563,24 +597,14 @@ bool CEditorMap::Load(const char *pFilename, int StorageType, const FErrorHandle
 				{
 					ConvertToRgba(*pImg);
 
-					int TextureLoadFlag = IGraphics::TEXLOAD_LAYERED;
-					if(pImg->m_Width % 16 != 0 || pImg->m_Height % 16 != 0)
-						TextureLoadFlag = 0;
 					pImg->m_External = 1;
 
 					// The map file does not store an external image, so its
 					// pixels are needed for the texture and for the opaque tile
 					// flags and for nothing else. Both happen here and the data
-					// is handed over rather than copied; the dimensions have to
-					// survive that, the editor still reads them.
+					// is handed over rather than copied.
 					pImg->AnalyseTileFlags();
-					const size_t Width = pImg->m_Width;
-					const size_t Height = pImg->m_Height;
-					const CImageInfo::EImageFormat Format = pImg->m_Format;
-					pImg->m_Texture = m_pEditor->Graphics()->LoadTextureRawMove(*pImg, TextureLoadFlag, aBuf);
-					pImg->m_Width = Width;
-					pImg->m_Height = Height;
-					pImg->m_Format = Format;
+					pImg->Upload(vImageLoadFlags[i], true);
 				}
 				else
 				{
@@ -609,10 +633,7 @@ bool CEditorMap::Load(const char *pFilename, int StorageType, const FErrorHandle
 
 					// copy image data
 					mem_copy(pImg->m_pData, pData, pImg->DataSize());
-					int TextureLoadFlag = IGraphics::TEXLOAD_LAYERED;
-					if(pImg->m_Width % 16 != 0 || pImg->m_Height % 16 != 0)
-						TextureLoadFlag = 0;
-					pImg->m_Texture = m_pEditor->Graphics()->LoadTextureRaw(*pImg, TextureLoadFlag, pImg->m_aName);
+					pImg->Upload(vImageLoadFlags[i], false);
 				}
 			}
 

@@ -37,6 +37,10 @@ bool CNetClient::Open(NETADDR BindAddr)
 
 void CNetClient::Close()
 {
+	// The filter points at something the caller owns, and a reopened client
+	// would otherwise hand the next packet to it.
+	m_pfnFilter = nullptr;
+	m_pFilterUser = nullptr;
 	if(!m_Socket)
 	{
 		return;
@@ -107,11 +111,12 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 		// no more packets for now
 		if(Bytes <= 0)
 			break;
-
 		if(m_pStun->OnPacket(Addr, pData, Bytes))
 		{
 			continue;
 		}
+		if(m_pfnFilter && m_pfnFilter(m_pFilterUser, &Addr, pData, Bytes))
+			continue;
 
 		SECURITY_TOKEN Token;
 		if(CNetBase::UnpackPacket(pData, Bytes, &m_RecvBuffer, Sixup, true, &Token, pResponseToken) == 0)

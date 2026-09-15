@@ -4,6 +4,7 @@
 
 #include "config.h"
 #include "huffman.h"
+#include "netban.h"
 
 #include <base/bytes.h>
 #include <base/dbg.h>
@@ -17,6 +18,17 @@
 #include <engine/shared/protocolglue.h>
 
 const unsigned char SECURITY_TOKEN_MAGIC[4] = {'T', 'K', 'E', 'N'};
+
+int CNetUdpEndpoint::Recv(NETADDR *pAddr, unsigned char **ppData, bool *pFiltered, const CNetBan *pNetBan) const
+{
+	*pFiltered = false;
+	const int Bytes = net_udp_recv(m_Socket, pAddr, ppData);
+	char aReason[128];
+	if(Bytes <= 0 || (pNetBan && pNetBan->IsBanned(pAddr, aReason, sizeof(aReason))) || !m_pfnFilter)
+		return Bytes;
+	*pFiltered = m_pfnFilter(m_pUser, pAddr, *ppData, Bytes);
+	return Bytes;
+}
 
 SECURITY_TOKEN ToSecurityToken(const unsigned char *pData)
 {
@@ -158,6 +170,11 @@ static const unsigned char NET_HEADER_EXTENDED[] = {'x', 'e'};
 // packs the data tight and sends it
 void CNetBase::SendPacketConnless(NETSOCKET Socket, NETADDR *pAddr, const void *pData, int DataSize, bool Extended, unsigned char aExtra[NET_CONNLESS_EXTRA_SIZE])
 {
+	SendPacketConnless(CNetUdpEndpoint::FromSocket(Socket), pAddr, pData, DataSize, Extended, aExtra);
+}
+
+void CNetBase::SendPacketConnless(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, const void *pData, int DataSize, bool Extended, unsigned char aExtra[NET_CONNLESS_EXTRA_SIZE])
+{
 	unsigned char aBuffer[NET_MAX_PACKETSIZE];
 	static constexpr int DATA_OFFSET = sizeof(NET_HEADER_EXTENDED) + NET_CONNLESS_EXTRA_SIZE;
 	dbg_assert(DataSize <= (int)sizeof(aBuffer) - DATA_OFFSET,
@@ -173,10 +190,15 @@ void CNetBase::SendPacketConnless(NETSOCKET Socket, NETADDR *pAddr, const void *
 		std::fill(aBuffer, aBuffer + DATA_OFFSET, 0xFF);
 	}
 	mem_copy(aBuffer + DATA_OFFSET, pData, DataSize);
-	net_udp_send(Socket, pAddr, aBuffer, DataSize + DATA_OFFSET);
+	Endpoint.Send(pAddr, aBuffer, DataSize + DATA_OFFSET);
 }
 
 void CNetBase::SendPacketConnlessWithToken7(NETSOCKET Socket, NETADDR *pAddr, const void *pData, int DataSize, SECURITY_TOKEN Token, SECURITY_TOKEN ResponseToken)
+{
+	SendPacketConnlessWithToken7(CNetUdpEndpoint::FromSocket(Socket), pAddr, pData, DataSize, Token, ResponseToken);
+}
+
+void CNetBase::SendPacketConnlessWithToken7(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, const void *pData, int DataSize, SECURITY_TOKEN Token, SECURITY_TOKEN ResponseToken)
 {
 	unsigned char aBuffer[NET_MAX_PACKETSIZE];
 	static constexpr int DATA_OFFSET = 1 + 2 * sizeof(SECURITY_TOKEN);
@@ -187,10 +209,15 @@ void CNetBase::SendPacketConnlessWithToken7(NETSOCKET Socket, NETADDR *pAddr, co
 	WriteSecurityToken(aBuffer + 1, Token);
 	WriteSecurityToken(aBuffer + 1 + sizeof(SECURITY_TOKEN), ResponseToken);
 	mem_copy(aBuffer + DATA_OFFSET, pData, DataSize);
-	net_udp_send(Socket, pAddr, aBuffer, DataSize + DATA_OFFSET);
+	Endpoint.Send(pAddr, aBuffer, DataSize + DATA_OFFSET);
 }
 
 void CNetBase::SendPacket(NETSOCKET Socket, NETADDR *pAddr, CNetPacketConstruct *pPacket, SECURITY_TOKEN SecurityToken, bool Sixup)
+{
+	SendPacket(CNetUdpEndpoint::FromSocket(Socket), pAddr, pPacket, SecurityToken, Sixup);
+}
+
+void CNetBase::SendPacket(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, CNetPacketConstruct *pPacket, SECURITY_TOKEN SecurityToken, bool Sixup)
 {
 	dbg_assert(IsValidConnectionOrientedPacket(pPacket), "Invalid packet to send. Flags=%d Ack=%d NumChunks=%d Size=%d",
 		pPacket->m_Flags, pPacket->m_Ack, pPacket->m_NumChunks, pPacket->m_DataSize);
@@ -255,7 +282,7 @@ void CNetBase::SendPacket(NETSOCKET Socket, NETADDR *pAddr, CNetPacketConstruct 
 		aBuffer[0] = ((pPacket->m_Flags << 2) & 0xfc) | ((pPacket->m_Ack >> 8) & 0x3);
 		aBuffer[1] = pPacket->m_Ack & 0xff;
 		aBuffer[2] = pPacket->m_NumChunks;
-		net_udp_send(Socket, pAddr, aBuffer, FinalSize);
+		Endpoint.Send(pAddr, aBuffer, FinalSize);
 
 		// log raw socket data
 		if(ms_DataLogSent)
@@ -414,6 +441,11 @@ int CNetBase::UnpackPacket(unsigned char *pBuffer, int Size, CNetPacketConstruct
 
 void CNetBase::SendControlMsg(NETSOCKET Socket, NETADDR *pAddr, int Ack, int ControlMsg, const void *pExtra, int ExtraSize, SECURITY_TOKEN SecurityToken, bool Sixup)
 {
+	SendControlMsg(CNetUdpEndpoint::FromSocket(Socket), pAddr, Ack, ControlMsg, pExtra, ExtraSize, SecurityToken, Sixup);
+}
+
+void CNetBase::SendControlMsg(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, int Ack, int ControlMsg, const void *pExtra, int ExtraSize, SECURITY_TOKEN SecurityToken, bool Sixup)
+{
 	CNetPacketConstruct Construct;
 	Construct.m_Flags = NET_PACKETFLAG_CONTROL;
 	Construct.m_Ack = Ack;
@@ -423,10 +455,15 @@ void CNetBase::SendControlMsg(NETSOCKET Socket, NETADDR *pAddr, int Ack, int Con
 	if(pExtra)
 		mem_copy(&Construct.m_aChunkData[1], pExtra, ExtraSize);
 
-	CNetBase::SendPacket(Socket, pAddr, &Construct, SecurityToken, Sixup);
+	CNetBase::SendPacket(Endpoint, pAddr, &Construct, SecurityToken, Sixup);
 }
 
 void CNetBase::SendControlMsgWithToken7(NETSOCKET Socket, NETADDR *pAddr, TOKEN Token, int Ack, int ControlMsg, TOKEN MyToken, bool Extended)
+{
+	SendControlMsgWithToken7(CNetUdpEndpoint::FromSocket(Socket), pAddr, Token, Ack, ControlMsg, MyToken, Extended);
+}
+
+void CNetBase::SendControlMsgWithToken7(const CNetUdpEndpoint &Endpoint, NETADDR *pAddr, TOKEN Token, int Ack, int ControlMsg, TOKEN MyToken, bool Extended)
 {
 	dbg_assert((Token & ~NET_TOKEN_MASK) == 0, "token out of range");
 	dbg_assert((MyToken & ~NET_TOKEN_MASK) == 0, "resp token out of range");
@@ -437,7 +474,7 @@ void CNetBase::SendControlMsgWithToken7(NETSOCKET Socket, NETADDR *pAddr, TOKEN 
 	aRequestTokenBuf[2] = (MyToken >> 8) & 0xff;
 	aRequestTokenBuf[3] = (MyToken) & 0xff;
 	const int Size = Extended ? sizeof(aRequestTokenBuf) : sizeof(TOKEN);
-	CNetBase::SendControlMsg(Socket, pAddr, Ack, ControlMsg, aRequestTokenBuf, Size, Token, true);
+	CNetBase::SendControlMsg(Endpoint, pAddr, Ack, ControlMsg, aRequestTokenBuf, Size, Token, true);
 }
 
 unsigned char *CNetChunkHeader::Pack(unsigned char *pData, int Split) const

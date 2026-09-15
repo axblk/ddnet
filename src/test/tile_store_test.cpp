@@ -3,6 +3,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
+#include <vector>
+
 using namespace map_document;
 
 // The tiles of a layer are held so that a version of the map costs what
@@ -202,4 +205,43 @@ TEST(TileStore, AVersionCostsTheBlockItPaintedAndNotTheMap)
 		EXPECT_EQ(First.ChunkId(i, 0), Second.ChunkId(i, 0));
 	}
 	EXPECT_NE(First.ChunkId(0, 0), Second.ChunkId(0, 0));
+}
+
+TEST(TileStore, ReadsAPlainArrayAndGivesItBack)
+{
+	constexpr int CHUNK = CTileStore<CTile>::CHUNK_SIZE;
+	const int Width = 2 * CHUNK + 5;
+	const int Height = CHUNK + 3;
+	std::vector<CTile> vTiles((size_t)Width * Height);
+	// Something in the first and the last block, nothing in between, and a
+	// tile whose only mark is its skip count - that is a tile, not air.
+	vTiles[0] = Tile(1);
+	vTiles[(size_t)(Height - 1) * Width + Width - 1] = Tile(2);
+	vTiles[(size_t)3 * Width + 7].m_Skip = 4;
+
+	CTileStore<CTile> Store(Width, Height);
+	Store.SetAll(vTiles.data());
+	// Two blocks: the one the first two tiles fall in and the one the last
+	// tile falls in. Everything in between held nothing and is no block.
+	EXPECT_EQ(Store.UsedChunks(), 2);
+	EXPECT_TRUE(Store.Get(0, 0) == Tile(1));
+	EXPECT_TRUE(Store.Get(Width - 1, Height - 1) == Tile(2));
+	EXPECT_EQ(Store.Get(7, 3).m_Skip, 4);
+	EXPECT_EQ(Store.Get(CHUNK + 1, 1).m_Index, 0);
+
+	std::vector<CTile> vBack((size_t)Width * Height);
+	Store.CopyTo(vBack.data());
+	EXPECT_EQ(std::memcmp(vTiles.data(), vBack.data(), vTiles.size() * sizeof(CTile)), 0);
+}
+
+TEST(TileStore, ReadingAPlainArrayOfAirCostsNothing)
+{
+	const std::vector<CTile> vTiles(200 * 200);
+	CTileStore<CTile> Store(200, 200);
+	Store.Set(5, 5, Tile(3));
+	Store.SetAll(vTiles.data());
+	// What was in there before is gone with it.
+	EXPECT_EQ(Store.UsedChunks(), 0);
+	EXPECT_EQ(Store.Bytes(), 0u);
+	EXPECT_EQ(Store.Get(5, 5).m_Index, 0);
 }

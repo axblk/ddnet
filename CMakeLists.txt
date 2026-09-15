@@ -3167,6 +3167,8 @@ if(CLIENT)
     document/assets.h
     document/history.h
     document/layer.h
+    document/map_file.cpp
+    document/map_file.h
     document/map_state.h
     document/shared_list.h
     document/tile_store.h
@@ -4439,6 +4441,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     jsonwriter_test.cpp
     linereader_test.cpp
     map_context_test.cpp
+    map_file_test.cpp
     map_state_test.cpp
     mapbugs_test.cpp
     mapitems_test.cpp

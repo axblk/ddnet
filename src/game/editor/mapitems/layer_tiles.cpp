@@ -182,7 +182,7 @@ void CLayerTiles::Render(const CEditorMap *pRenderMap)
 		const auto &pImage = pRenderMap->m_vpImages[m_Image];
 		if(pImage->m_Width % 16 == 0 && pImage->m_Height % 16 == 0)
 		{
-			Texture = pImage->m_Texture;
+			Texture = pImage->Texture(true);
 		}
 	}
 	Graphics()->TextureSet(Texture);

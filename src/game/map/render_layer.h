@@ -12,6 +12,7 @@ using offset_ptr32 = unsigned int;
 #include <engine/graphics.h>
 
 #include <game/map/envelope_manager.h>
+#include <game/map/quad_buffer_cache.h>
 #include <game/map/render_component.h>
 #include <game/map/render_map.h>
 #include <game/map/tile_chunk_cache.h>
@@ -38,19 +39,6 @@ bool UploadTileBuffer(IGraphics *pGraphics, const std::vector<CGraphicTile> &vTi
 // Returns whether the buffer was given up. A buffer that could not be handed
 // back keeps its handle, so the caller can keep the object that owns it alive.
 bool DeleteTileBuffer(IGraphics *pGraphics, IGraphics::CBufferHandle &BufferObject);
-
-class CClipRegion
-{
-public:
-	CClipRegion() = default;
-	CClipRegion(float X, float Y, float Width, float Height) :
-		m_X(X), m_Y(Y), m_Width(Width), m_Height(Height) {}
-
-	float m_X;
-	float m_Y;
-	float m_Width;
-	float m_Height;
-};
 
 class CRenderLayerParams
 {
@@ -285,7 +273,7 @@ public:
 	CRenderLayerQuads(int GroupId, int LayerId, int Flags, CMapItemLayerQuads *pLayerQuads);
 	void OnInit(IGraphics *pGraphics, ITextRender *pTextRender, CRenderMap *pRenderMap, std::shared_ptr<CEnvelopeManager> &pEnvelopeManager, IMap *pMap, IMapImages *pMapImages, std::optional<FCallbackLayerInit> &CallbackLayerInitOptional) override;
 	void Init() override;
-	bool IsValid() const override { return m_pLayerQuads->m_NumQuads > 0 && m_pQuads; }
+	bool IsValid() const override { return m_pLayerQuads->m_NumQuads > 0 && m_QuadSource.m_pQuads; }
 	void Render(const CRenderLayerParams &Params) override;
 	bool DoRender(const CRenderLayerParams &Params) override;
 	void Unload() override;
@@ -293,42 +281,9 @@ public:
 protected:
 	IGraphics::CTextureHandle GetTexture() const override { return m_TextureHandle; }
 
-	class CQuadLayerVisuals : public CRenderComponent
-	{
-	public:
-		CQuadLayerVisuals() :
-			m_QuadNum(0) {}
-		bool Unload();
-
-		int m_QuadNum;
-		IGraphics::CBufferHandle m_BufferObjectIndex;
-		IGraphics::EVertexLayout m_Layout = IGraphics::EVertexLayout::QUAD;
-	};
-	void RenderQuadLayer(float Alpha, const CRenderLayerParams &Params);
-
-	std::optional<CRenderLayerQuads::CQuadLayerVisuals> m_VisualQuad;
+	CQuadBufferCache m_QuadCache;
+	CQuadBufferCache::CQuadSource m_QuadSource;
 	CMapItemLayerQuads *m_pLayerQuads;
-
-	class CQuadCluster
-	{
-	public:
-		bool m_Grouped;
-		int m_StartIndex;
-		int m_NumQuads;
-
-		int m_PosEnv;
-		float m_PosEnvOffset;
-		int m_ColorEnv;
-		float m_ColorEnvOffset;
-
-		std::vector<SQuadRenderInfo> m_vQuadRenderInfo;
-		std::optional<CClipRegion> m_ClipRegion;
-	};
-	void CalculateClipping(CQuadCluster &QuadCluster);
-	bool CalculateQuadClipping(const CQuadCluster &QuadCluster, float aQuadOffsetMin[2], float aQuadOffsetMax[2]) const;
-
-	std::vector<CQuadCluster> m_vQuadClusters;
-	CQuad *m_pQuads;
 
 private:
 	IGraphics::CTextureHandle m_TextureHandle;

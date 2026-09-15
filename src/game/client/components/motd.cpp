@@ -16,6 +16,7 @@
 #include <game/client/components/scoreboard.h>
 #include <game/client/components/statboard.h>
 #include <game/client/gameclient.h>
+#include <game/client/render.h>
 
 #include <string>
 
@@ -106,12 +107,17 @@ void CMotd::OnRender(const CRenderContext &Context)
 	const float RectWidth = 630.0f + 2.0f * FontSize;
 	const float RectX = ScreenWidth / 2.0f - RectWidth / 2.0f;
 	const float RectY = 160.0f;
+	// The backdrop is a picture of the scene taken before the boards were drawn,
+	// so it only belongs behind this box while the box is the first thing over
+	// the scene. Over a scoreboard it would cut a hole into it.
+	if(!GameClient()->m_Scoreboard.IsActive() && !GameClient()->m_Statboard.IsActive())
+		GameClient()->m_Menus.RenderBackdropRegion({RectX, RectY, RectWidth, RectHeight});
 	m_TouchRect = CUIRect{RectX / ScreenWidth, RectY / ScreenHeight, RectWidth / ScreenWidth, RectHeight / ScreenHeight};
 
 	if(m_RectQuadContainer == -1)
 	{
 		Graphics()->SetColor(0.0f, 0.0f, 0.0f, 0.5f);
-		m_RectQuadContainer = Graphics()->CreateRectQuadContainer(RectX, RectY, RectWidth, RectHeight, FontSize, IGraphics::CORNER_ALL);
+		m_RectQuadContainer = RenderTools()->CreateRectQuadContainer(RectX, RectY, RectWidth, RectHeight, FontSize, IGraphics::CORNER_ALL);
 		Graphics()->SetColor(1.0f, 1.0f, 1.0f, 1.0f);
 	}
 

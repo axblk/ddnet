@@ -277,6 +277,18 @@ void fs_normalize_path(char *path);
 [[nodiscard]] int fs_rename(const char *oldname, const char *newname);
 
 /**
+ * Renames a file without replacing an existing target.
+ *
+ * @ingroup Filesystem
+ *
+ * @param oldname The current path of a file.
+ * @param newname The new path for the file.
+ *
+ * @return `0` on success. `1` on failure or if `newname` exists.
+ */
+[[nodiscard]] int fs_rename_noreplace(const char *oldname, const char *newname);
+
+/**
  * Gets the creation and the last modification date of a file or directory.
  *
  * @ingroup Filesystem

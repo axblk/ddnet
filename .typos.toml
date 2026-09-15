@@ -28,6 +28,9 @@ extend-ignore-re = [
 	'Datas',
 	'datas',
 	'iy',
+	# MP4 box names in the WebCodecs muxer
+	'trak',
+	'trun',
 	'cl_nameplates_ids_seperate_line',
 	'LWS_.*_WRITEABLE',
 	'0x510E527FUL',

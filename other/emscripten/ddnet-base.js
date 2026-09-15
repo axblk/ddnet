@@ -560,9 +560,12 @@ const DDNetBase = (() => {
 	// is typed in, which is what `Custom` is for.
 	const VIDEO_SIZE_PRESETS = [[1280, 720], [1920, 1080], [2560, 1440], [3840, 2160]];
 	const VIDEO_FPS_PRESETS = [30, 50, 60, 120, 144, 240];
+	// What a quality is called, and the constant rate factor behind it. Lower
+	// is better and 23 is what the encoder does when nobody says.
+	const VIDEO_QUALITY_PRESETS = [[16, "Best"], [18, "High"], [23, "Normal"], [28, "Small"]];
 
 	function exportSettingsForm(container, options) {
-		const settings = Object.assign({ canvas: null, audio: false }, options || {});
+		const settings = Object.assign({ canvas: null, audio: true }, options || {});
 		const element = (tag, properties) => Object.assign(document.createElement(tag), properties || {});
 		const labelled = (text, ...controls) => {
 			const label = element("label");
@@ -583,7 +586,10 @@ const DDNetBase = (() => {
 			size.appendChild(option(`${width}x${height}`, `${width} × ${height}`));
 		}
 		size.appendChild(option("custom", "Custom"));
-		size.value = settings.canvas != null ? "canvas" : "1920x1080";
+		// Full HD, even where the canvas is on offer: a video is watched
+		// somewhere else than in the window it was made in, and the window is
+		// whatever size the page happens to give it.
+		size.value = "1920x1080";
 		labelled("Size", size);
 
 		const width = element("input", { type: "number", min: 16, max: 8192, step: 2, value: 1920 });
@@ -600,8 +606,15 @@ const DDNetBase = (() => {
 		const customFpsValue = element("input", { type: "number", min: 1, max: 1000, value: 60 });
 		const customFps = labelled(null, customFpsValue);
 
+		const quality = element("select");
+		for (const [value, text] of VIDEO_QUALITY_PRESETS) {
+			quality.appendChild(option(value, `${text} (${value})`));
+		}
+		quality.appendChild(option("custom", "Custom"));
+		quality.value = "23";
+		labelled("Quality", quality);
 		const crf = element("input", { type: "number", min: 0, max: 51, value: 23, title: "Lower is better, 0 is lossless" });
-		labelled("Quality", crf);
+		const customQuality = labelled(null, crf);
 		const codec = element("select");
 		codec.appendChild(option("", "Default"));
 		labelled("Codec", codec);
@@ -639,15 +652,17 @@ const DDNetBase = (() => {
 		const updateCustom = () => {
 			customSize.hidden = size.value !== "custom";
 			customFps.hidden = fps.value !== "custom";
+			customQuality.hidden = quality.value !== "custom";
 		};
 		size.addEventListener("change", updateCustom);
 		fps.addEventListener("change", updateCustom);
+		quality.addEventListener("change", updateCustom);
 		updateCustom();
 
 		// Whoever wants to remember what was chosen - in a link, or for the
 		// next visit - is told when it changes rather than having to ask.
 		const changed = [];
-		for (const control of [size, width, height, fps, customFpsValue, crf, codec, audio, hud, chat]) {
+		for (const control of [size, width, height, fps, customFpsValue, quality, crf, codec, audio, hud, chat]) {
 			control.addEventListener("change", () => {
 				for (const listener of changed) {
 					listener();
@@ -674,7 +689,7 @@ const DDNetBase = (() => {
 					width: chosenWidth & ~1,
 					height: chosenHeight & ~1,
 					fps: parseInt(fps.value === "custom" ? customFpsValue.value : fps.value, 10),
-					crf: parseInt(crf.value, 10),
+					crf: parseInt(quality.value === "custom" ? crf.value : quality.value, 10),
 					codec: codec.value === "" ? null : codec.value,
 					audio: audio.checked,
 					hud: hud.checked,
@@ -701,7 +716,9 @@ const DDNetBase = (() => {
 					fps.value = [...fps.options].some(entry => entry.value === preset) ? preset : "custom";
 				}
 				if (chosen.crf !== undefined && chosen.crf !== null) {
+					const preset = String(chosen.crf);
 					crf.value = chosen.crf;
+					quality.value = [...quality.options].some(entry => entry.value === preset) ? preset : "custom";
 				}
 				if (chosen.codec !== undefined && chosen.codec !== null) {
 					wantedCodec = chosen.codec;

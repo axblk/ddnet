@@ -74,8 +74,7 @@
 				// The folder choice belongs to this page rather than to the
 				// export, so it stays where it is and the rest goes in front
 				// of it.
-				const settingsForm = DDNetBase.exportSettingsForm(
-					document.getElementById('settings'), { audio: true });
+				const settingsForm = DDNetBase.exportSettingsForm(document.getElementById('settings'));
 				document.getElementById('settings').append(followChoice, folderChoice);
 				const jobs = [];
 				var running = false;

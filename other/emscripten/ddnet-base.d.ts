@@ -228,9 +228,9 @@ export interface FullscreenOptions {
 }
 
 export interface ExportSettingsFormOptions {
-	/** A canvas whose size is offered as well, and chosen to begin with. */
+	/** A canvas whose size is offered as well, beside the fixed ones. */
 	canvas?: HTMLCanvasElement;
-	/** Whether sound starts out switched on. */
+	/** Whether sound starts out switched on. On by default. */
 	audio?: boolean;
 }
 

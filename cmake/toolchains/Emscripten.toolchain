@@ -38,7 +38,16 @@ set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s FULL_ES3=1")
 # Make sure C callback functions are available to JS.
 set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s DEFAULT_LIBRARY_FUNCS_TO_INCLUDE=[\\$autoResumeAudioContext,\\$dynCall]")
 set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s EXPORTED_FUNCTIONS=_main,_EmscriptenCallbackDropFile,_EmscriptenCallbackQuit,_EmscriptenCallbackQuitForce")
-set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s EXPORTED_RUNTIME_METHODS=callMain,ccall")
+
+# A program is a factory that hands out one instance per call, rather than a
+# script that claims the globals `Module`, `FS` and `IDBFS` for itself. That is
+# what lets a page put one on a canvas of its choosing, or two on two, and what
+# lets a page that is not ours embed one at all without its own globals being
+# taken. Each target names its own factory with `-s EXPORT_NAME`.
+set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s MODULARIZE=1")
+# Everything the page around an instance reaches for: starting it, calling into
+# it, and putting the files it is given where it looks for them.
+set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s EXPORTED_RUNTIME_METHODS=callMain,ccall,FS,IDBFS")
 
 # Very important: use same stack size that other platforms have, as the default of 64 KiB that Emscripten uses is too small for our code and causes stack overflows.
 set(WASM_LINKER_FLAGS "${WASM_LINKER_FLAGS} -s STACK_SIZE=1MB")

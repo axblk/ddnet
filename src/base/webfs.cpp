@@ -194,11 +194,14 @@ void CWebDataIndex::List(const char *pPath, const std::function<void(const CEntr
 
 namespace
 {
-	// Where the page is, so that a worker builds the same URL as the page does
-	// rather than resolving one against the script it was started from.
+	// Where the data directory is. A page that embeds one of these programs may
+	// well keep it somewhere other than next to itself, so it can say where; the
+	// page it is on is only the guess for when nobody said. It is read here and
+	// not on each thread, so that a worker builds the same URL as the page.
 	// clang-format off
 EM_JS(char *, WebFsPageBase, (), {
-	return stringToNewUTF8(new URL(".", location.href).href);
+	const base = Module["ddnetDataBase"];
+	return stringToNewUTF8(new URL(base === undefined ? "." : base, location.href).href);
 });
 
 EM_JS(double, WebFsNow, (), {
@@ -308,6 +311,14 @@ EM_JS(double, WebFsNow, (), {
 		// The bytes behind a name and a hash never change, so a browser may keep
 		// them for as long as it likes.
 		Url += "data/" + pEntry->m_Path + "?v=" + pEntry->m_Hash;
+		if(emscripten_is_main_runtime_thread())
+		{
+			// Named rather than counted, because the answer to one of these is
+			// always the same: read that file where every other one is read. Until
+			// then the page stands still for the length of a request, and how long
+			// that is depends on the connection of whoever opened it.
+			log_warn("webfs", "'%s' was fetched on the main thread", pEntry->m_Path.c_str());
+		}
 		std::vector<uint8_t> vData;
 		if(!WebFsFetch(Url, vData))
 			return nullptr;

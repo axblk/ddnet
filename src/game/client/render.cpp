@@ -250,9 +250,23 @@ void CRenderTools::GetRenderTeeOffsetToRenderedTee(const CAnimState *pAnim, cons
 void CRenderTools::RenderTee(const CAnimState *pAnim, const CTeeRenderInfo *pInfo, int Emote, vec2 Dir, vec2 Pos, float Alpha) const
 {
 	if(pInfo->m_Sixup.PartTexture(protocol7::SKINPART_BODY).IsValid())
+	{
 		RenderTee7(pAnim, pInfo, Emote, Dir, Pos, Alpha);
-	else
+	}
+	else if(pInfo->Valid())
+	{
 		RenderTee6(pAnim, pInfo, Emote, Dir, Pos, Alpha);
+	}
+	else
+	{
+		// The skin is not here yet. Since skins are fetched rather than read
+		// before anything is shown, a tee can be drawn before its own skin and
+		// before the default one have arrived, and then it holds the
+		// placeholder, which has no textures at all. Drawing with those binds
+		// the null texture - a red, green, blue and yellow block - so nothing
+		// is the better placeholder for the frames it takes.
+		return;
+	}
 
 	Graphics()->SetColor(1.f, 1.f, 1.f, 1.f);
 	Graphics()->QuadsSetRotation(0);

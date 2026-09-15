@@ -147,11 +147,13 @@ int main(int argc, const char **argv)
 		}
 		else if(str_comp(argv[Index], "--help") == 0)
 		{
-			log_info("client", "Usage: ddnet-demo-viewer <demo> [--output <video.mp4>] [settings]");
+			log_info("client", "Usage: ddnet-demo-viewer [<demo>] [--output <video.mp4>] [settings]");
 			log_info("client", "Anything else is a console command, so `cl_video_width 1920` and the");
 			log_info("client", "rest of the cl_ settings work here just as they do in the client.");
 			log_info("client", "Space pauses, the arrow keys seek and change the speed, Home starts");
-			log_info("client", "over and Escape closes the window.");
+			log_info("client", "over and Escape closes the window. A demo dropped on the window");
+			log_info("client", "replaces the one that is playing, and is what the viewer waits for");
+			log_info("client", "when it was given none.");
 			Cleanup();
 			return 0;
 		}
@@ -164,9 +166,13 @@ int main(int argc, const char **argv)
 			vConsoleArguments.push_back(argv[Index]);
 		}
 	}
-	if(pDemoPath == nullptr)
+	// A demo is not required: given none, the viewer opens its window and waits
+	// for one to be dropped into it, the same way the map viewer waits for a map
+	// and the client waits for whatever it is given. Writing a video of a demo
+	// that has not been named is the one thing that makes no sense.
+	if(pDemoPath == nullptr && pVideoPath != nullptr)
 	{
-		log_error("client", "Usage: ddnet-demo-viewer <demo> [--output <video.mp4>] [settings]");
+		log_error("client", "There is no demo to write a video of.");
 		Cleanup();
 		return -1;
 	}
@@ -179,7 +185,7 @@ int main(int argc, const char **argv)
 	// Nothing on the command line sets an encoding option, so these are what
 	// the settings say.
 	const CCommandLineVideoExport VideoDefaults;
-	pClient->Configure(pDemoPath, pVideoPath, VideoDefaults.Settings());
+	pClient->Configure(pDemoPath == nullptr ? "" : pDemoPath, pVideoPath, VideoDefaults.Settings());
 	pClient->Run();
 
 	const int ExitCode = pClient->ExitCode();

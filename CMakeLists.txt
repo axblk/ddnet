@@ -3165,6 +3165,7 @@ if(CLIENT)
   set_src(GAME_MAP GLOB_RECURSE src/game/map
     # tidy-alphabetical-start
     document/assets.h
+    document/document.h
     document/history.h
     document/layer.h
     document/map_file.cpp
@@ -4419,6 +4420,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp
+    document_test.cpp
     editor_test.cpp
     font_loading_test.cpp
     fs_test.cpp

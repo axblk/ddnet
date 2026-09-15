@@ -13,7 +13,10 @@ answers to what a `<video>` answers to - `currentTime`, `duration`, `paused`,
 `loadedmetadata`, `play`, `pause`, `timeupdate`, `ratechange`, `volumechange`,
 `ended` and `error` - so a page that already drives a video drives this.
 `t`, `speed`, `paused` and `spec` say where in the demo to start and who to
-watch, the same words a link out of the player uses.
+watch, the same words a link out of the player uses. `t` and `end` together
+mark a piece out: watching stops at its end, starting over goes back to its
+beginning, and an export writes that piece and nothing else - which is what a
+link to a moment in a demo is for.
 
 For a page that draws its own controls:
 

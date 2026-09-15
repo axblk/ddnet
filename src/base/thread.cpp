@@ -93,7 +93,7 @@ void *thread_init(void (*threadfunc)(void *), void *u, const char *name)
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 		// Return control to the browser's main thread to allow the pthread to be started,
 		// otherwise we deadlock when waiting for a thread immediately after starting it.
-		emscripten_sleep(0);
+		web_yield(0);
 #endif
 		return (void *)id;
 	}
@@ -135,7 +135,7 @@ void thread_wait(void *thread)
 		dbg_assert(join_result == EBUSY, "pthread_tryjoin_np failure");
 		// Busy waiting so we can periodically yield control to browser's
 		// main thread because blocking on the main thread is very bad.
-		emscripten_sleep(10);
+		web_yield(10);
 	}
 #elif defined(CONF_FAMILY_UNIX)
 	dbg_assert(pthread_join((pthread_t)thread, nullptr) == 0, "pthread_join failure");
@@ -155,7 +155,7 @@ void thread_wait_for_other_threads()
 	// fetched only arrives in Firefox once the main thread has been back to
 	// the event loop, so a wait that keeps the thread to itself waits for
 	// ever. Chrome delivers it either way.
-	emscripten_sleep(1);
+	web_yield(1);
 #else
 	// Long enough not to be a spin, short enough that nobody waiting on the
 	// result notices the wait got longer.
@@ -171,7 +171,7 @@ void thread_sleep_idle(std::chrono::nanoseconds duration)
 	// the one that hands control back, and it counts in whole milliseconds; a
 	// duration of none still hands it back once.
 	const int64_t milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-	emscripten_sleep(milliseconds > 0 ? milliseconds : 0);
+	web_yield(milliseconds);
 #else
 	if(duration > std::chrono::nanoseconds::zero())
 		std::this_thread::sleep_for(duration);
@@ -233,3 +233,41 @@ void thread_init_and_detach(void (*threadfunc)(void *), void *u, const char *nam
 	void *thread = thread_init(threadfunc, u, name);
 	thread_detach(thread);
 }
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+// How deep this thread is in `web_yield`. A number rather than a flag because
+// a wait can sit inside another one on the threads that are allowed to wait;
+// on the main thread, where the stack is unwound, the second one would be the
+// crash this is here to catch.
+//
+// Asyncify unwinds by returning through every frame, so the destructor below
+// is not reached while the wait lasts - which is the point: it runs when the
+// stack has been put back together.
+static thread_local int gs_WebYieldDepth = 0;
+
+CWebYieldScope::CWebYieldScope()
+{
+	++gs_WebYieldDepth;
+}
+
+CWebYieldScope::~CWebYieldScope()
+{
+	--gs_WebYieldDepth;
+}
+
+void web_yield(int64_t milliseconds)
+{
+	CWebYieldScope Scope;
+	emscripten_sleep(milliseconds > 0 ? (int)milliseconds : 0);
+}
+
+bool web_unwound()
+{
+	return gs_WebYieldDepth > 0;
+}
+#else
+bool web_unwound()
+{
+	return false;
+}
+#endif

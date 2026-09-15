@@ -4,6 +4,8 @@
 #ifndef BASE_THREAD_H
 #define BASE_THREAD_H
 
+#include "detect.h"
+
 #include <chrono>
 
 /**
@@ -120,5 +122,56 @@ void thread_detach(void *thread);
  * @param name Name describing the use of the thread.
  */
 void thread_init_and_detach(void (*threadfunc)(void *), void *user, const char *name);
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+/**
+ * Hands the browser back its turn for a moment and takes it up again
+ * afterwards.
+ *
+ * Everything that waits on the browser's main thread goes through here.
+ * Waiting without handing the turn back stops the page dead, and handing it
+ * back means the program's stack is unwound and put together again when the
+ * wait is over - which is what `web_unwound` is there to say.
+ *
+ * @ingroup Threads
+ *
+ * @param milliseconds How long to wait at least. Zero hands the turn back and
+ * takes it again as soon as the browser has done what it had to do.
+ */
+void web_yield(int64_t milliseconds);
+
+/**
+ * Says that this thread is handing the browser its turn back for as long as
+ * this lives, for a wait that does not go through `web_yield` - something
+ * awaited in JavaScript, say. `web_unwound` counts it the same.
+ *
+ * @ingroup Threads
+ */
+class CWebYieldScope
+{
+public:
+	CWebYieldScope();
+	~CWebYieldScope();
+	CWebYieldScope(const CWebYieldScope &Other) = delete;
+	CWebYieldScope &operator=(const CWebYieldScope &Other) = delete;
+};
+#endif
+
+/**
+ * Whether this thread is standing in `web_yield` right now: its stack is
+ * unwound, the browser is running the page, and the program goes back on the
+ * stack when the wait is over.
+ *
+ * A call that arrives from the page while that is so must not do anything
+ * that waits again - a second unwinding from underneath the first takes the
+ * program down with `memory access out of bounds`. What such a call can do
+ * instead is put the work aside for whoever is waiting to do afterwards.
+ *
+ * @ingroup Threads
+ *
+ * @return `true` for as long as the wait lasts, and always `false` outside a
+ * browser, where nothing is ever unwound.
+ */
+bool web_unwound();
 
 #endif

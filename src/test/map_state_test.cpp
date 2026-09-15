@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+using namespace map_document;
+
 // A version of the map has to cost what changed and not what the map holds,
 // so what is tested here is what two versions have in *common*: the groups,
 // the layers and the blocks of tiles that an edit did not touch have to be

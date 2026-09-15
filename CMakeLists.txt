@@ -3163,6 +3163,7 @@ if(CLIENT)
   )
   set_src(GAME_MAP GLOB_RECURSE src/game/map
     # tidy-alphabetical-start
+    document/assets.h
     document/history.h
     document/layer.h
     document/map_state.h
@@ -4403,6 +4404,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     # tidy-alphabetical-start
     aio_test.cpp
     asset_loader_test.cpp
+    assets_test.cpp
     bezier_test.cpp
     blocklist_driver_test.cpp
     bytes_be_test.cpp

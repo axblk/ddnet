@@ -1,3 +1,4 @@
+#include <base/mem.h>
 #include <base/str.h>
 
 #include <engine/shared/datafile.h>
@@ -16,7 +17,7 @@ namespace map_document
 {
 	namespace
 	{
-		void Warn(std::vector<std::string> *pvWarnings, const char *pFormat, ...)
+		[[gnu::format(printf, 2, 3)]] void Warn(std::vector<std::string> *pvWarnings, const char *pFormat, ...)
 		{
 			if(pvWarnings == nullptr)
 				return;
@@ -103,11 +104,11 @@ namespace map_document
 					return Point;
 				if(m_pUpstream != nullptr)
 				{
-					std::memcpy(&Point, &m_pUpstream[Index], sizeof(CEnvPointBezier_upstream));
+					mem_copy(&Point, &m_pUpstream[Index], sizeof(CEnvPointBezier_upstream));
 					return Point;
 				}
 				if(m_pPoints != nullptr)
-					std::memcpy(&Point, &m_pPoints[Index], sizeof(CEnvPoint));
+					mem_copy(&Point, &m_pPoints[Index], sizeof(CEnvPoint));
 				if(m_pBezier != nullptr)
 					Point.m_Bezier = m_pBezier[Index];
 				return Point;
@@ -868,7 +869,7 @@ namespace map_document
 				const CEnvPoint_runtime *pPrevious = nullptr;
 				for(const CEnvPoint_runtime &Point : State.Envelope(e)->m_Points.All())
 				{
-					std::memcpy(&vPoints[Index], &Point, sizeof(CEnvPoint));
+					mem_copy(&vPoints[Index], &Point, sizeof(CEnvPoint));
 					if(Bezier)
 					{
 						// A point holds the tangent that leads out of it, and

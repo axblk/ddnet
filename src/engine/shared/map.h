@@ -39,9 +39,10 @@ public:
 
 	[[nodiscard]] bool Load(const char *pFullName, IStorage *pStorage, const char *pPath, int StorageType) override;
 	[[nodiscard]] bool Load(IStorage *pStorage, const char *pPath, int StorageType) override;
+	[[nodiscard]] bool LoadFromMemory(const char *pFullName, std::vector<uint8_t> vData, const char *pPath) override;
 	void Unload() override;
 	bool IsLoaded() const override;
-	IOHANDLE File() const override;
+	const unsigned char *MapData() const override;
 
 	const char *FullName() const override;
 	const char *BaseName() const override;
@@ -51,6 +52,7 @@ public:
 	int Size() const override;
 
 private:
+	[[nodiscard]] bool ValidateAndTake(CDataFileReader &NewDataFile);
 	static bool ValidateMapVersion(CDataFileReader &NewDataFile);
 	static bool ExtractTiles(class CTile *pDest, size_t DestSize, const class CTile *pSrc, size_t SrcSize);
 	bool UpgradeAndValidateTilesLayerItem(CDataFileReader &NewDataFile, int GroupIndex, int LayerIndex,

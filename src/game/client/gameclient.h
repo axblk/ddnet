@@ -490,6 +490,9 @@ public:
 	bool AntiPingWeapons() const;
 	bool Predict() const;
 	bool PredictDummy(const CGameState &OtherState) const;
+	// The physics the prediction runs under. Anything that traces the same
+	// lines as the physics has to read them from here.
+	CPhysicsRules PredictedPhysicsRules() const;
 
 	const CTuningParams *GetTuning(int i) const { return &MapContext().TuningList()[i]; }
 	ColorRGBA GetDDTeamColor(int DDTeam, float Lightness = 0.5f) const;

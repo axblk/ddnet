@@ -3,15 +3,15 @@
 #ifndef GAME_SERVER_GAMEWORLD_H
 #define GAME_SERVER_GAMEWORLD_H
 
-#include "save.h"
-
 #include <game/gamecore.h>
+#include <game/teamscore.h>
 
 #include <vector>
 
 class CCollision;
 class CEntity;
 class CCharacter;
+class CGameContext;
 
 /*
 	Class: Game World
@@ -32,8 +32,11 @@ public:
 	};
 
 private:
+	friend class CEntity;
+
 	void Reset();
 	void RemoveEntities();
+	CGameContext *GameServer() { return m_pGameServer; }
 
 	CEntity *m_pNextTraverseEntity = nullptr;
 	CEntity *m_apFirstEntityTypes[NUM_ENTTYPES];
@@ -42,15 +45,37 @@ private:
 	class CConfig *m_pConfig;
 	class IServer *m_pServer;
 	CTuningParams *m_pTuningList;
+	CCollision *m_pCollision;
+	CPhysicsRules m_ModePhysicsRules;
+
+	void UpdatePhysicsRules();
 
 public:
-	class CGameContext *GameServer() { return m_pGameServer; }
 	class CConfig *Config() { return m_pConfig; }
 	class IServer *Server() { return m_pServer; }
+	int GameTick() const;
+	int AllocSnapId();
+	void FreeSnapId(int Id);
+	int GameTickSpeed() const;
+	const CCollision *Collision() const { return m_pCollision; }
+	CCollision *Collision() { return m_pCollision; }
+	CTeamsCore *Teams() { return &m_Teams; }
+	std::vector<SSwitchers> &Switchers() { return m_Core.m_vSwitchers; }
 
 	bool m_ResetRequested;
 	bool m_Paused;
+	bool ResetRequested() const { return m_ResetRequested; }
+	bool IsPaused() const { return m_Paused; }
 	CWorldCore m_Core;
+	CTeamsCore m_Teams;
+
+	/**
+	 * Sets the physics the game mode registered.
+	 *
+	 * The server config is applied on top of them every tick, so config
+	 * changes take effect without restarting the round.
+	 */
+	void SetModePhysicsRules(const CPhysicsRules &Rules);
 
 	CGameWorld();
 	~CGameWorld();
@@ -172,13 +197,6 @@ public:
 	*/
 	void SwapClients(int Client1, int Client2);
 
-	/*
-		Function: BlocksSave
-			Checks if any entity would block /save
-	*/
-	ESaveResult BlocksSave(int ClientId);
-
-	// DDRace
 	void ReleaseHooked(int ClientId);
 
 	/*

@@ -227,6 +227,10 @@ void CPlayers::RenderHookCollLine(
 	if(!GameState.CoreGameInfo().m_AllowHookColl)
 		return;
 
+	// The line has to be traced the way the hook itself is, so it reads the
+	// same rules the prediction runs under instead of the config behind them.
+	const CPhysicsRules &Rules = GameState.GameWorld().m_Core.m_PhysicsRules;
+
 	bool Local = GameState.LocalClientId() == ClientId;
 
 #if defined(CONF_VIDEORECORDER)
@@ -291,7 +295,7 @@ void CPlayers::RenderHookCollLine(
 	// Check, if the player is outside the screen-rect
 	// If the map contains hook teleports, we are out of luck since we don't know if it will enter the screen at any point.
 	const CCollision *pCollision = Context.m_Session.MapContext().Collision();
-	if(!pCollision->HasHookTeleIns())
+	if(!pCollision->HasHookTeleIns(Rules.m_DDNetMovement && Rules.m_TeleportHookOld))
 	{
 		const float MaxHookReach = HookLength + HookFireSpeed;
 
@@ -350,7 +354,7 @@ void CPlayers::RenderHookCollLine(
 	std::optional<IGraphics::CLineItem> HookTipLineSegment;
 	for(HookTick = 0; HookTick < MaxHookTicks; ++HookTick)
 	{
-		int Tele;
+		int Tele = 0;
 		vec2 HitPos, IntersectedPlayerPosition;
 		vec2 SegmentEndPos = SegmentStartPos + QuantizedDirection * HookFireSpeed;
 
@@ -362,7 +366,7 @@ void CPlayers::RenderHookCollLine(
 			{
 				vec2 RetractingHookEndPos = BasePos + normalize(SegmentEndPos - BasePos) * HookLength;
 				// you can't hook a player, if the hook is behind solids, however you miss the solids as well
-				int Hit = pCollision->IntersectLineTeleHook(SegmentStartPos, RetractingHookEndPos, &HitPos, nullptr, &Tele);
+				int Hit = Rules.m_DDNetMovement ? pCollision->IntersectLineTeleHook(SegmentStartPos, RetractingHookEndPos, &HitPos, nullptr, &Tele, Rules.m_TeleportHookOld) : pCollision->IntersectLine(SegmentStartPos, RetractingHookEndPos, &HitPos, nullptr);
 
 				if(IntersectCharacter(GameState, Context.m_Time, SegmentStartPos, HitPos, RetractingHookEndPos, ClientId, &IntersectedPlayerPosition) != -1)
 				{
@@ -392,7 +396,7 @@ void CPlayers::RenderHookCollLine(
 		}
 
 		// check for map collisions
-		int Hit = pCollision->IntersectLineTeleHook(SegmentStartPos, SegmentEndPos, &HitPos, nullptr, &Tele);
+		int Hit = Rules.m_DDNetMovement ? pCollision->IntersectLineTeleHook(SegmentStartPos, SegmentEndPos, &HitPos, nullptr, &Tele, Rules.m_TeleportHookOld) : pCollision->IntersectLine(SegmentStartPos, SegmentEndPos, &HitPos, nullptr);
 
 		// check if we intersect a player
 		if(IntersectCharacter(GameState, Context.m_Time, SegmentStartPos, HitPos, SegmentEndPos, ClientId, &IntersectedPlayerPosition) != -1)

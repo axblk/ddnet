@@ -1,5 +1,7 @@
 #include "nameplates.h"
 
+#include <base/dbg.h>
+
 #include <engine/font_icons.h>
 #include <engine/graphics.h>
 #include <engine/shared/config.h>

@@ -7,6 +7,7 @@
 #include <base/color.h>
 
 #include <engine/font_icons.h>
+#include <engine/gfx/image_manipulation.h>
 #include <engine/graphics.h>
 #include <engine/input.h>
 #include <engine/keys.h>
@@ -1483,10 +1484,19 @@ CUi::EPopupMenuFunctionResult CEditor::PopupImage(void *pContext, CUIRect View, 
 	{
 		if(pEditor->DoButton_MenuItem(&s_ExternalButton, "Embed", 0, &Slot, BUTTONFLAG_LEFT, "Embed the image into the map file."))
 		{
+			// An external image keeps no pixels in memory, so they are read
+			// back from the file the map refers to; without them there is
+			// nothing to embed.
 			if(pImg->m_pData == nullptr)
 			{
-				pEditor->ShowFileDialogError("Embedding is not possible because the image could not be loaded.");
-				return CUi::POPUP_KEEP_OPEN;
+				char aBuf[IO_MAX_PATH_LENGTH];
+				str_format(aBuf, sizeof(aBuf), "mapres/%s.png", pImg->m_aName);
+				if(!pEditor->Graphics()->LoadPng(*pImg, aBuf, IStorage::TYPE_ALL))
+				{
+					pEditor->ShowFileDialogError("Embedding is not possible because the image could not be loaded.");
+					return CUi::POPUP_KEEP_OPEN;
+				}
+				ConvertToRgba(*pImg);
 			}
 			pImg->m_External = 0;
 			return CUi::POPUP_CLOSE_CURRENT;
@@ -2033,7 +2043,7 @@ CUi::EPopupMenuFunctionResult CEditor::PopupSelectImage(void *pContext, CUIRect 
 		float Max = std::max(pEditor->Map()->m_vpImages[ShowImage]->m_Width, pEditor->Map()->m_vpImages[ShowImage]->m_Height);
 		ImageView.w *= pEditor->Map()->m_vpImages[ShowImage]->m_Width / Max;
 		ImageView.h *= pEditor->Map()->m_vpImages[ShowImage]->m_Height / Max;
-		pEditor->Graphics()->TextureSet(pEditor->Map()->m_vpImages[ShowImage]->m_Texture);
+		pEditor->Graphics()->TextureSet(pEditor->Map()->m_vpImages[ShowImage]->Texture(false));
 		pEditor->Graphics()->WrapClamp();
 		pEditor->Graphics()->QuadsBegin();
 		IGraphics::CQuadItem QuadItem(ImageView.x, ImageView.y, ImageView.w, ImageView.h);

@@ -27,7 +27,7 @@ CEditorBrushDrawAction::CEditorBrushDrawAction(CEditorMap *pMap, int Group) :
 			{
 				if(!Map()->m_pTeleLayer->m_History.empty())
 				{
-					m_TeleTileChanges = std::map(Map()->m_pTeleLayer->m_History);
+					m_TeleTileChanges = std::move(Map()->m_pTeleLayer->m_History);
 					Map()->m_pTeleLayer->ClearHistory();
 				}
 			}
@@ -35,7 +35,7 @@ CEditorBrushDrawAction::CEditorBrushDrawAction(CEditorMap *pMap, int Group) :
 			{
 				if(!Map()->m_pTuneLayer->m_History.empty())
 				{
-					m_TuneTileChanges = std::map(Map()->m_pTuneLayer->m_History);
+					m_TuneTileChanges = std::move(Map()->m_pTuneLayer->m_History);
 					Map()->m_pTuneLayer->ClearHistory();
 				}
 			}
@@ -43,7 +43,7 @@ CEditorBrushDrawAction::CEditorBrushDrawAction(CEditorMap *pMap, int Group) :
 			{
 				if(!Map()->m_pSwitchLayer->m_History.empty())
 				{
-					m_SwitchTileChanges = std::map(Map()->m_pSwitchLayer->m_History);
+					m_SwitchTileChanges = std::move(Map()->m_pSwitchLayer->m_History);
 					Map()->m_pSwitchLayer->ClearHistory();
 				}
 			}
@@ -51,14 +51,14 @@ CEditorBrushDrawAction::CEditorBrushDrawAction(CEditorMap *pMap, int Group) :
 			{
 				if(!Map()->m_pSpeedupLayer->m_History.empty())
 				{
-					m_SpeedupTileChanges = std::map(Map()->m_pSpeedupLayer->m_History);
+					m_SpeedupTileChanges = std::move(Map()->m_pSpeedupLayer->m_History);
 					Map()->m_pSpeedupLayer->ClearHistory();
 				}
 			}
 
 			if(!pLayerTiles->m_TilesHistory.empty())
 			{
-				m_vTileChanges.emplace_back(k, std::map(pLayerTiles->m_TilesHistory));
+				m_vTileChanges.emplace_back(k, std::move(pLayerTiles->m_TilesHistory));
 				pLayerTiles->ClearHistory();
 			}
 		}

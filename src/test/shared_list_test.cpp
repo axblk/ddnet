@@ -4,6 +4,8 @@
 
 #include <string>
 
+using namespace map_document;
+
 // Everything a map is made of that is not tiles lives in one of these, so
 // what is tested here is the same thing the tile store promises: a copy costs
 // a pointer, and a change costs the one list it was made in.

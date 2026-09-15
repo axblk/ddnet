@@ -18,6 +18,7 @@
 #include <engine/client.h>
 #include <engine/client/keyboard.h>
 #include <engine/client/render_trace.h>
+#include <engine/console.h>
 #include <engine/engine.h>
 #include <engine/font_icons.h>
 #include <engine/gfx/image_loader.h>
@@ -4662,6 +4663,12 @@ IGraphics::CTextureHandle CEditor::GetCursorTexture(ECursorType Type)
 	return m_aCursorTextures[FileType];
 }
 
+void CEditor::ConZoom(IConsole::IResult *pResult, void *pUserData)
+{
+	CEditor *pThis = static_cast<CEditor *>(pUserData);
+	pThis->MapView()->Zoom()->SetValueInstant(pResult->GetFloat(0));
+}
+
 void CEditor::Init()
 {
 	m_pInput = Kernel()->RequestInterface<IInput>();
@@ -4673,6 +4680,8 @@ void CEditor::Init()
 	m_pTextRender = Kernel()->RequestInterface<ITextRender>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 	m_pSound = Kernel()->RequestInterface<ISound>();
+	m_pConsole = Kernel()->RequestInterface<IConsole>();
+	m_pConsole->Register("ed_zoom", "f[zoom]", CFGFLAG_CLIENT, ConZoom, this, "Set the editor zoom, the same value the status bar shows");
 	m_RenderTools.Init(m_pGraphics, m_pTextRender);
 	m_UI.Init(Kernel(), &m_RenderTools);
 	m_UI.SetPopupMenuClosedCallback([this]() {

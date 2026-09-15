@@ -249,6 +249,9 @@ bool CDemoViewerClient::HandleInput()
 	{
 		Player.SeekPercent(0.0f);
 	}
+	// Everything this frame brought has been read. Nothing carries over to the
+	// next one, and the events pile up until they are let go of.
+	Input()->Clear();
 	return true;
 }
 
@@ -289,6 +292,10 @@ void CDemoViewerClient::Run()
 	{
 		m_pInput = Kernel()->RequestInterface<IEngineInput>();
 		m_pInput->Init();
+		// Nobody aims here. The input takes the pointer when it starts, because
+		// a game wants it; a viewer wants it left where it is, so that it can be
+		// put on a button and taken out of the window again.
+		m_pInput->MouseModeAbsolute();
 	}
 	GameClient()->InitializeLanguage();
 	if(Sound()->Init() != 0)

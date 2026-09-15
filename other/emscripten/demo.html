@@ -11,12 +11,8 @@
 		<link rel="stylesheet" href="ddnet-viewer.css">
 	</head>
 	<body>
-		<div id="loading">Loading…</div>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
-		<div id="output" style="display: none">
-			<h2>Console log</h2>
-			<div id="outputcontent"></div>
-		</div>
+		<div id="error" style="display: none"></div>
 		<canvas id="canvas" style="display: none">Canvas not supported.</canvas>
 		<div id="player-controls" style="display: none">
 			<button id="play-button" title="Space">Pause</button>
@@ -39,9 +35,7 @@
 				urlParams: ["demo"],
 				elements: {
 					canvas: document.getElementById('canvas'),
-					loading: document.getElementById('loading'),
-					output: document.getElementById('output'),
-					outputContent: document.getElementById('outputcontent'),
+					error: document.getElementById('error'),
 				},
 			});
 		</script>
@@ -59,13 +53,47 @@
 				const exportButton = document.getElementById('export-button');
 				var seeking = false;
 				var exportStarted = false;
+				// Encoding a video is the browser's to do, and not every browser
+				// does it. Better said here than by an export that starts and
+				// then cannot finish.
+				if (typeof VideoEncoder === "undefined") {
+					exportButton.disabled = true;
+					exportButton.title = "This browser has no video encoder";
+				}
 
 				// The page is there before the viewer is and outlives it, so every
-				// call has to survive being made outside of that.
+				// call has to survive being made outside of that: until there is
+				// one, and once there is no longer one, they all answer `null`.
 				var viewer = null;
-				started.then(instance => { viewer = instance; });
-				function call(name, returnType, argTypes, args) {
-					return viewer == null ? null : viewer.call(name, returnType, argTypes, args);
+				const demo = DDNetLoader.demoControls({
+					call: (name, returnType, argTypes, args) =>
+						viewer == null ? null : viewer.call(name, returnType, argTypes, args),
+				});
+				// A page that cannot run this at all has been told why once
+				// already, which is enough: there is nothing here to steer.
+				started.then(instance => { viewer = instance; }, () => {});
+
+				// Where a link says to start, and how. Once, as soon as there is a
+				// demo to say it to - `#t=90&speed=0.5&paused=1`, in the fragment
+				// so that the demo somebody sent stays between them and whoever
+				// they sent it to.
+				var linkApplied = false;
+				function applyLink(length) {
+					if (linkApplied) {
+						return;
+					}
+					linkApplied = true;
+					const startTime = parseFloat(DDNetLoader.urlParameter("t"));
+					if (isFinite(startTime) && startTime > 0) {
+						demo.seekTime(Math.min(startTime, length));
+					}
+					const startSpeed = parseFloat(DDNetLoader.urlParameter("speed"));
+					if (isFinite(startSpeed) && startSpeed > 0) {
+						demo.speed(startSpeed);
+					}
+					if (DDNetLoader.urlParameter("paused") === "1") {
+						demo.pause();
+					}
 				}
 
 				function formatTime(seconds) {
@@ -74,32 +102,51 @@
 				}
 
 				playButton.addEventListener('click', () => {
-					call('DemoViewerSetPaused', null, ['number'], [call('DemoViewerPaused', 'number') ? 0 : 1]);
+					if (demo.paused()) {
+						demo.play();
+					} else {
+						demo.pause();
+					}
 				});
 				seek.addEventListener('input', () => {
 					seeking = true;
 				});
 				seek.addEventListener('change', () => {
-					call('DemoViewerSeekPercent', null, ['number'], [seek.value / seek.max]);
+					demo.seek(seek.value / seek.max);
 					seeking = false;
 				});
 				document.getElementById('slower').addEventListener('click', () => {
-					call('DemoViewerSetSpeed', null, ['number'], [call('DemoViewerSpeed', 'number') / 1.25]);
+					demo.speed(demo.speed() / 1.25);
 				});
 				document.getElementById('faster').addEventListener('click', () => {
-					call('DemoViewerSetSpeed', null, ['number'], [call('DemoViewerSpeed', 'number') * 1.25]);
+					demo.speed(demo.speed() * 1.25);
 				});
 				document.getElementById('restart').addEventListener('click', () => {
-					call('DemoViewerSeekStart');
+					demo.restart();
 				});
-				exportButton.addEventListener('click', () => {
+				exportButton.addEventListener('click', async () => {
 					// The browser only hands over a download that came out of a click,
 					// so the export has to start from this handler and not from a
-					// question the page asks itself later.
+					// question the page asks itself later. Asking where to save is
+					// the same: it has to happen while this click is still what the
+					// browser thinks the user is doing. What is written there is
+					// written while the demo renders, so nothing is kept in memory
+					// and a video the size of a film is no different from a short
+					// one.
+					if (viewer != null && window.showSaveFilePicker) {
+						try {
+							const handle = await window.showSaveFilePicker({
+								suggestedName: "video.mp4",
+								types: [{ description: "MP4 video", accept: { "video/mp4": [".mp4"] } }],
+							});
+							viewer.setVideoSink({ stream: await handle.createWritable(), done: () => null });
+						} catch (error) {
+							// The dialog was dismissed, so the export was not asked for.
+							return;
+						}
+					}
 					const canvas = document.getElementById('canvas');
-					const started = call('DemoViewerStartExport', 'number', ['number', 'number', 'number', 'number'],
-						[canvas.width, canvas.height, 60, 0]);
-					exportStarted = started === 1;
+					exportStarted = demo.startExport(canvas.width, canvas.height, 60, false);
 					exportButton.disabled = true;
 					exportButton.textContent = exportStarted ? "Exporting…" : "Export failed";
 				});
@@ -109,20 +156,21 @@
 				// lets go between frames, so asking is both simpler and cheaper than
 				// being called back.
 				setInterval(() => {
-					const length = call('DemoViewerLength', 'number');
+					const length = demo.length();
 					if (length === null || length <= 0.0) {
 						playerControls.style.display = "none";
 						return;
 					}
 					playerControls.style.display = "flex";
-					const progress = call('DemoViewerProgress', 'number');
+					applyLink(length);
+					const progress = demo.progress();
 					if (!seeking) {
 						seek.value = Math.round(progress * seek.max);
 					}
 					time.textContent = `${formatTime(progress * length)} / ${formatTime(length)}`;
-					speed.textContent = `${call('DemoViewerSpeed', 'number').toFixed(2)}×`;
-					playButton.textContent = call('DemoViewerPaused', 'number') ? "Play" : "Pause";
-					if (exportStarted && !call('DemoViewerExporting', 'number')) {
+					speed.textContent = `${demo.speed().toFixed(2)}×`;
+					playButton.textContent = demo.paused() ? "Play" : "Pause";
+					if (exportStarted && !demo.exporting()) {
 						exportStarted = false;
 						exportButton.textContent = "Export finished";
 					}

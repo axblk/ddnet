@@ -16,6 +16,7 @@
 #include <base/fs.h>
 
 #include <engine/client/asset_loader.h>
+#include <engine/console.h>
 #include <engine/editor.h>
 #include <engine/graphics.h>
 
@@ -129,6 +130,7 @@ class CEditor : public IEditor
 	IGraphics::CGpuRenderZone m_GpuZoneDialogs;
 	class ISound *m_pSound = nullptr;
 	class IStorage *m_pStorage = nullptr;
+	class IConsole *m_pConsole = nullptr;
 	CRenderMap m_RenderMap;
 	CUi m_UI;
 	CRenderTools m_RenderTools;
@@ -175,6 +177,9 @@ public:
 	class ISound *Sound() const { return m_pSound; }
 	class ITextRender *TextRender() const { return m_pTextRender; }
 	class IStorage *Storage() const { return m_pStorage; }
+	class IConsole *Console() const { return m_pConsole; }
+
+	static void ConZoom(IConsole::IResult *pResult, void *pUserData);
 	CUi *Ui() { return &m_UI; }
 	CRenderTools *RenderTools() { return &m_RenderTools; }
 	CRenderMap *RenderMap() { return &m_RenderMap; }

@@ -18,6 +18,7 @@
 #include <engine/client.h>
 #include <engine/client/keyboard.h>
 #include <engine/client/render_trace.h>
+#include <engine/console.h>
 #include <engine/engine.h>
 #include <engine/font_icons.h>
 #include <engine/gfx/image_loader.h>
@@ -2090,7 +2091,7 @@ void CEditor::DoQuadEnvelopes(const CLayerQuads *pLayerQuads)
 	// Draw quads at points
 	if(pLayerQuads->m_Image >= 0 && pLayerQuads->m_Image < (int)Map()->m_vpImages.size())
 	{
-		Graphics()->TextureSet(Map()->m_vpImages[pLayerQuads->m_Image]->m_Texture);
+		Graphics()->TextureSet(Map()->m_vpImages[pLayerQuads->m_Image]->Texture(false));
 	}
 	else
 	{
@@ -3076,10 +3077,7 @@ bool CEditor::ReplaceImage(const char *pFilename, int StorageType, bool CheckDup
 	DilateImage(*pImg);
 
 	pImg->m_Automapper.Load(pImg->m_aName);
-	int TextureLoadFlag = IGraphics::TEXLOAD_LAYERED;
-	if(pImg->m_Width % 16 != 0 || pImg->m_Height % 16 != 0)
-		TextureLoadFlag = 0;
-	pImg->m_Texture = Graphics()->LoadTextureRaw(*pImg, TextureLoadFlag, pFilename);
+	pImg->Upload(0, false);
 
 	Map()->SortImages();
 	Map()->SelectImage(pImg);
@@ -3130,11 +3128,8 @@ bool CEditor::AddImage(const char *pFilename, int StorageType, void *pUser)
 	ConvertToRgba(*pImg);
 	DilateImage(*pImg);
 
-	int TextureLoadFlag = IGraphics::TEXLOAD_LAYERED;
-	if(pImg->m_Width % 16 != 0 || pImg->m_Height % 16 != 0)
-		TextureLoadFlag = 0;
-	pImg->m_Texture = pEditor->Graphics()->LoadTextureRaw(*pImg, TextureLoadFlag, pFilename);
 	str_copy(pImg->m_aName, aBuf);
+	pImg->Upload(0, false);
 	pImg->m_Automapper.Load(pImg->m_aName);
 	pEditor->Map()->m_vpImages.push_back(pImg);
 	pEditor->Map()->SortImages();
@@ -3383,7 +3378,7 @@ void CEditor::RenderSelectedImage(CUIRect View) const
 	float Max = std::max(pSelectedImage->m_Width, pSelectedImage->m_Height);
 	View.w *= pSelectedImage->m_Width / Max;
 	View.h *= pSelectedImage->m_Height / Max;
-	Graphics()->TextureSet(pSelectedImage->m_Texture);
+	Graphics()->TextureSet(pSelectedImage->Texture(false));
 	Graphics()->WrapClamp();
 	Graphics()->QuadsBegin();
 	IGraphics::CQuadItem QuadItem(View.x, View.y, View.w, View.h);
@@ -4664,6 +4659,12 @@ IGraphics::CTextureHandle CEditor::GetCursorTexture(ECursorType Type)
 	return m_aCursorTextures[FileType];
 }
 
+void CEditor::ConZoom(IConsole::IResult *pResult, void *pUserData)
+{
+	CEditor *pThis = static_cast<CEditor *>(pUserData);
+	pThis->MapView()->Zoom()->SetValueInstant(pResult->GetFloat(0));
+}
+
 void CEditor::Init()
 {
 	m_pInput = Kernel()->RequestInterface<IInput>();
@@ -4685,6 +4686,8 @@ void CEditor::Init()
 	m_pTextRender = Kernel()->RequestInterface<ITextRender>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 	m_pSound = Kernel()->RequestInterface<ISound>();
+	m_pConsole = Kernel()->RequestInterface<IConsole>();
+	m_pConsole->Register("ed_zoom", "f[zoom]", CFGFLAG_CLIENT, ConZoom, this, "Set the editor zoom, the same value the status bar shows");
 	m_RenderTools.Init(m_pGraphics, m_pTextRender);
 	m_UI.Init(Kernel(), &m_RenderTools);
 	m_UI.SetPopupMenuClosedCallback([this]() {

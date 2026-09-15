@@ -108,9 +108,9 @@ static std::shared_ptr<CEditorImage> ImageInfoToEditorImage(CEditorMap *pMap, CI
 	std::shared_ptr<CEditorImage> pEditorImage = std::make_shared<CEditorImage>(pMap);
 	*pEditorImage = std::move(Image);
 
-	pEditorImage->m_Texture = pMap->Editor()->Graphics()->LoadTextureRaw(*pEditorImage, IGraphics::TEXLOAD_LAYERED, pName);
 	pEditorImage->m_External = 0;
 	str_copy(pEditorImage->m_aName, pName);
+	pEditorImage->Upload(IGraphics::TEXLOAD_LAYERED, false);
 
 	return pEditorImage;
 }

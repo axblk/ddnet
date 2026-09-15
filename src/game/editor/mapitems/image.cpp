@@ -1,5 +1,10 @@
 #include "image.h"
 
+#include <engine/gfx/image_manipulation.h>
+#include <engine/graphics.h>
+#include <engine/storage.h>
+
+#include <game/editor/editor.h>
 #include <game/mapitems.h>
 
 CEditorImage::CEditorImage(CEditorMap *pMap) :
@@ -50,9 +55,54 @@ void CEditorImage::AnalyseTileFlags()
 	}
 }
 
+void CEditorImage::Upload(int LoadFlags, bool GiveUpData)
+{
+	if(m_Width % 16 != 0 || m_Height % 16 != 0)
+		LoadFlags &= ~IGraphics::TEXLOAD_LAYERED;
+	Graphics()->UnloadTexture(&m_Texture);
+	m_TextureFlags = LoadFlags;
+	if(!GiveUpData)
+	{
+		m_Texture = Graphics()->LoadTextureRaw(*this, LoadFlags, m_aName);
+		return;
+	}
+	const size_t Width = m_Width;
+	const size_t Height = m_Height;
+	const CImageInfo::EImageFormat Format = m_Format;
+	m_Texture = Graphics()->LoadTextureRawMove(*this, LoadFlags, m_aName);
+	m_Width = Width;
+	m_Height = Height;
+	m_Format = Format;
+}
+
+IGraphics::CTextureHandle CEditorImage::Texture(bool Layered)
+{
+	const bool Missing = Layered ? (m_TextureFlags & IGraphics::TEXLOAD_LAYERED) == 0 : (m_TextureFlags & IGraphics::TEXLOAD_NO_2D_TEXTURE) != 0;
+	if(!Missing || (Layered && (m_Width % 16 != 0 || m_Height % 16 != 0)))
+		return m_Texture;
+
+	const bool GiveUpData = m_pData == nullptr;
+	if(GiveUpData)
+	{
+		char aBuf[IO_MAX_PATH_LENGTH];
+		str_format(aBuf, sizeof(aBuf), "mapres/%s.png", m_aName);
+		if(!Graphics()->LoadPng(*this, aBuf, IStorage::TYPE_ALL))
+		{
+			// The render path asks every frame, so a file that is not there
+			// is not looked for again.
+			m_TextureFlags = Layered ? (m_TextureFlags | IGraphics::TEXLOAD_LAYERED) : (m_TextureFlags & ~IGraphics::TEXLOAD_NO_2D_TEXTURE);
+			return m_Texture;
+		}
+		ConvertToRgba(*this);
+	}
+	Upload(Layered ? (m_TextureFlags | IGraphics::TEXLOAD_LAYERED) : (m_TextureFlags & ~IGraphics::TEXLOAD_NO_2D_TEXTURE), GiveUpData);
+	return m_Texture;
+}
+
 void CEditorImage::Free()
 {
 	Graphics()->UnloadTexture(&m_Texture);
+	m_TextureFlags = 0;
 	m_Automapper.Unload();
 	CImageInfo::Free();
 }

@@ -2171,6 +2171,31 @@ foreach(datafile ${DATA})
   list(APPEND DATA_COPY_OUTPUTS ${PROJECT_BINARY_DIR}/data/${OUT})
 endforeach()
 add_custom_target(copy_data ALL DEPENDS ${DATA_COPY_OUTPUTS})
+
+if(TARGET_OS STREQUAL "emscripten")
+  # A browser has no directory it can walk, so the build writes down what is in
+  # `data`: what exists, how big it is and the hash its URL is named after. The
+  # client reads that instead of looking around, see `src/base/webfs.h`. The
+  # list of files is the one this file already keeps, written out for the
+  # script so that it does not have to be passed on a command line.
+  set(WEB_DATA_INDEX ${PROJECT_BINARY_DIR}/data/index.txt)
+  set(WEB_DATA_FILE_LIST ${PROJECT_BINARY_DIR}/web_data_files.txt)
+  string(REPLACE ";" "\n" WEB_DATA_FILE_LIST_CONTENT "${DATA}")
+  file(GENERATE OUTPUT ${WEB_DATA_FILE_LIST} CONTENT "${WEB_DATA_FILE_LIST_CONTENT}\n")
+  add_custom_command(OUTPUT ${WEB_DATA_INDEX}
+    COMMAND ${Python3_EXECUTABLE}
+      ${PROJECT_SOURCE_DIR}/scripts/generate_web_data.py
+      --root ${PROJECT_SOURCE_DIR}/data
+      --files ${WEB_DATA_FILE_LIST}
+      --output ${WEB_DATA_INDEX}
+    DEPENDS
+      ${PROJECT_SOURCE_DIR}/scripts/generate_web_data.py
+      ${WEB_DATA_FILE_LIST}
+      ${DATA}
+    COMMENT "Writing the data index for the browser"
+    VERBATIM)
+  add_custom_target(web_data_index ALL DEPENDS ${WEB_DATA_INDEX})
+endif()
 set(COPY_FILES
   # tidy-alphabetical-start
   ${CRASHDUMP_COPY_FILES}
@@ -2193,6 +2218,7 @@ if(WEBGPU_NATIVE_BACKEND)
 endif()
 if(TARGET_OS STREQUAL "emscripten")
   list(APPEND COPY_FILES other/emscripten/background.png)
+  list(APPEND COPY_FILES other/emscripten/coi-serviceworker.js)
   list(APPEND COPY_FILES other/emscripten/index.html)
   list(APPEND COPY_FILES other/icons/DDNet.ico)
 endif()
@@ -2387,6 +2413,8 @@ set_src(BASE GLOB_RECURSE src/base
   unicode/tolower_data.cpp
   unicode/tolower_data.h
   vmath.h
+  webfs.cpp
+  webfs.h
   windows.cpp
   windows.h
   # tidy-alphabetical-end
@@ -4324,6 +4352,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     uuid_test.cpp
     view_size_test.cpp
     vmath_test.cpp
+    webfs_test.cpp
     windows_test.cpp
     # tidy-alphabetical-end
   )
@@ -4836,11 +4865,7 @@ list(APPEND CPACK_TARGETS ${TARGET_TOOLS})
 if(STEAMAPI_KIND STREQUAL SHARED)
   list(APPEND CPACK_TARGETS ${TARGET_STEAMAPI})
 endif()
-if(TARGET_OS STREQUAL "emscripten")
-  set(CPACK_DIRS)
-else()
-  set(CPACK_DIRS data)
-endif()
+set(CPACK_DIRS data)
 list(APPEND CPACK_DIRS ${COPY_DIRS})
 set(CPACK_FILES
   license.txt
@@ -5113,8 +5138,12 @@ foreach(ext zip tar.gz tar.xz)
   endforeach()
   foreach(target ${CPACK_TARGETS})
     if(TARGET_OS STREQUAL "emscripten")
-      # The main target with Emscripten is the .html file, but we instead want the .data, .js and .wasm files and use our own index.html
-      list(APPEND COPY_TARGET_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/$<TARGET_FILE_BASE_NAME:game-client>.data ${TMPDIR}/)
+      # The main target with Emscripten is the .html file, but we instead want
+      # the .js and .wasm files and use our own index.html. The data directory
+      # is copied like everywhere else and fetched out of it a file at a time,
+      # see `src/base/webfs.h`; the index that says what is in it is written by
+      # the build, so it comes from the build directory.
+      list(APPEND COPY_TARGET_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy ${WEB_DATA_INDEX} ${TMPDIR}/data/)
       list(APPEND COPY_TARGET_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/$<TARGET_FILE_BASE_NAME:game-client>.js ${TMPDIR}/)
       list(APPEND COPY_TARGET_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/$<TARGET_FILE_BASE_NAME:game-client>.wasm ${TMPDIR}/)
     else()
@@ -5140,7 +5169,7 @@ foreach(ext zip tar.gz tar.xz)
     ${COPY_TARGET_COMMANDS}
     ${STRIP_TARGET_COMMANDS}
     COMMAND ${CMAKE_COMMAND} -E chdir pack_${CPACK_PACKAGE_FILE_NAME}_${EXT_SLUG} ${CMAKE_COMMAND} -E tar ${TAR_MODE} ../${CPACK_PACKAGE_FILE_NAME}.${ext} ${TAR_EXTRA_ARGS} -- ${CPACK_PACKAGE_FILE_NAME}/
-    DEPENDS ${CPACK_TARGETS}
+    DEPENDS ${CPACK_TARGETS} ${WEB_DATA_INDEX}
   )
   add_custom_target(package_${EXT_SLUG} DEPENDS ${CPACK_PACKAGE_FILE_NAME}.${ext})
   list(APPEND PACKAGE_TARGETS package_${EXT_SLUG})
@@ -5230,10 +5259,6 @@ foreach(target ${TARGETS})
   endif()
   if(ENABLE_PIE)
     set_property(TARGET ${target} PROPERTY POSITION_INDEPENDENT_CODE TRUE)
-  endif()
-  if(TARGET_OS STREQUAL "emscripten")
-    # Preload data directory into the filesystem
-    target_link_options(${target} PRIVATE --preload-file data)
   endif()
 endforeach()
 

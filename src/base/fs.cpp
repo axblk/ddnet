@@ -7,6 +7,7 @@
 #include <base/secure.h>
 #include <base/str.h>
 #include <base/types.h>
+#include <base/webfs.h>
 #include <base/windows.h>
 
 #include <cerrno>
@@ -130,6 +131,13 @@ static inline time_t filetime_to_unixtime(LPFILETIME filetime)
 
 void fs_listdir(const char *dir, FS_LISTDIR_CALLBACK cb, int type, void *user)
 {
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(webfs_owns(dir))
+	{
+		webfs_listdir(dir, cb, type, user);
+		return;
+	}
+#endif
 #if defined(CONF_FAMILY_WINDOWS)
 	char buffer[IO_MAX_PATH_LENGTH];
 	str_format(buffer, sizeof(buffer), "%s/*", dir);
@@ -182,6 +190,13 @@ void fs_listdir(const char *dir, FS_LISTDIR_CALLBACK cb, int type, void *user)
 
 void fs_listdir_fileinfo(const char *dir, FS_LISTDIR_CALLBACK_FILEINFO cb, int type, void *user)
 {
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(webfs_owns(dir))
+	{
+		webfs_listdir_fileinfo(dir, cb, type, user);
+		return;
+	}
+#endif
 #if defined(CONF_FAMILY_WINDOWS)
 	char buffer[IO_MAX_PATH_LENGTH];
 	str_format(buffer, sizeof(buffer), "%s/*", dir);
@@ -422,6 +437,10 @@ int fs_executable_path(char *buffer, int buffer_size)
 
 int fs_is_file(const char *path)
 {
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(webfs_owns(path))
+		return webfs_is_file(path) ? 1 : 0;
+#endif
 #if defined(CONF_FAMILY_WINDOWS)
 	const std::wstring wide_path = windows_utf8_to_wide(path);
 	DWORD attributes = GetFileAttributesW(wide_path.c_str());
@@ -436,6 +455,10 @@ int fs_is_file(const char *path)
 
 int fs_is_dir(const char *path)
 {
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(webfs_owns(path))
+		return webfs_is_dir(path) ? 1 : 0;
+#endif
 #if defined(CONF_FAMILY_WINDOWS)
 	const std::wstring wide_path = windows_utf8_to_wide(path);
 	DWORD attributes = GetFileAttributesW(wide_path.c_str());
@@ -643,6 +666,17 @@ int fs_rename_noreplace(const char *oldname, const char *newname)
 
 int fs_file_time(const char *name, time_t *created, time_t *modified)
 {
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(webfs_owns(name))
+	{
+		int64_t web_created, web_modified;
+		if(!webfs_file_time(name, &web_created, &web_modified))
+			return 1;
+		*created = web_created;
+		*modified = web_modified;
+		return 0;
+	}
+#endif
 #if defined(CONF_FAMILY_WINDOWS)
 	WIN32_FIND_DATAW finddata;
 	const std::wstring wide_name = windows_utf8_to_wide(name);

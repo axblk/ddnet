@@ -8,6 +8,7 @@
 #include <base/math.h>
 #include <base/process.h>
 #include <base/str.h>
+#include <base/webfs.h>
 
 #include <engine/client/updater.h>
 #include <engine/shared/linereader.h>
@@ -23,6 +24,7 @@
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 #include <emscripten/emscripten.h>
+#include <emscripten/threading.h>
 
 // clang-format off
 EM_ASYNC_JS(int, RequestFilesFromUserImpl, (const char *pFolder, const char *pAccept), {
@@ -121,6 +123,17 @@ public:
 	{
 		dbg_assert(NumArgs > 0, "Expected at least one argument");
 		const char *pExecutablePath = ppArguments[0];
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		// The data directory of a page is fetched, not unpacked, so it has to
+		// be there before anything looks for it - and looking for it is the
+		// next thing that happens.
+		if(!webfs_init())
+		{
+			log_error("storage", "The data directory of this page could not be read.");
+			return false;
+		}
+#endif
 
 		FindUserDirectory();
 		FindDataDirectory(pExecutablePath);
@@ -966,7 +979,17 @@ public:
 	void SyncPersistentStorage() override
 	{
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-		SyncPersistentStorageImpl();
+		// The file system, the module and the timer that holds the
+		// synchronisation back all belong to the main thread, so a caller from
+		// a job thread only asks for it to happen over there.
+		if(emscripten_is_main_runtime_thread())
+		{
+			SyncPersistentStorageImpl();
+		}
+		else
+		{
+			emscripten_async_run_in_main_runtime_thread(EM_FUNC_SIG_V, (void *)SyncPersistentStorageImpl);
+		}
 #endif
 	}
 

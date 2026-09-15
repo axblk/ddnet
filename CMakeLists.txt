@@ -4632,9 +4632,9 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     ${TESTS_GRAPHICS}
     # tidy-alphabetical-start
     $<TARGET_OBJECTS:engine-gfx>
-    $<TARGET_OBJECTS:game-map-document>
     $<TARGET_OBJECTS:engine-net>
     $<TARGET_OBJECTS:engine-shared>
+    $<TARGET_OBJECTS:game-map-document>
     $<TARGET_OBJECTS:game-server-without-main>
     $<TARGET_OBJECTS:game-shared>
     $<TARGET_OBJECTS:rust-bridge-shared>

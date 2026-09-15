@@ -7,6 +7,7 @@
 #include <vector>
 
 class CDataFileReader;
+class CDataFileWriter;
 
 namespace map_document
 {
@@ -26,6 +27,19 @@ namespace map_document
 	 * built in that case and should be thrown away.
 	 */
 	bool ReadMapState(CDataFileReader &File, CMapState *pState, std::vector<std::string> *pvWarnings);
+
+	/**
+	 * Writes a version of a document out as a map file.
+	 *
+	 * The file is left open: whoever asked for it decides when it is finished
+	 * and where it lands, because that is a matter of jobs and temporary
+	 * names rather than of the map.
+	 *
+	 * What comes out is what the state holds, item for item, in the order the
+	 * editor has always written them - so a map that was read and written
+	 * again is the same map, and a second writing of it is the same bytes.
+	 */
+	void WriteMapState(CDataFileWriter &File, const CMapState &State);
 } // namespace map_document
 
 #endif // GAME_MAP_DOCUMENT_MAP_FILE_H

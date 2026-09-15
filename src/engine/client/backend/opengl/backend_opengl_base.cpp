@@ -395,6 +395,13 @@ bool CCommandProcessorFragment_OpenGLBase::InitOpenGL(const SCommand_Init *pComm
 
 	if(*pCommand->m_pInitError != -2)
 	{
+		// The largest picture the driver holds in one texture, which where
+		// there is no window is also the largest frame that can be drawn.
+		GLint MaxTextureSize = 0;
+		glGetIntegerv(GL_MAX_TEXTURE_SIZE, &MaxTextureSize);
+		if(MaxTextureSize > 0)
+			pCommand->m_pCapabilities->m_MaxTextureDimension = static_cast<uint32_t>(MaxTextureSize);
+
 		// set some default settings
 		glEnable(GL_BLEND);
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

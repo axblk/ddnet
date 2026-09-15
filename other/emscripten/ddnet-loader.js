@@ -11,10 +11,15 @@
 // They differ in the program they start and in what they take, not in how any
 // of it works.
 //
-// A plain script rather than a module, so that a page can use it with a plain
-// `<script>` and so can we.
-
-"use strict";
+// A module. `import DDNetLoader from "./ddnet-loader.js"` for all of it, or
+// `import { start, page } from …` for one thing at a time; a page loads it with
+// `<script type="module">`, which is what its own three pages do. A module is
+// also the only form a package can honestly offer: the alternative would be a
+// global claimed by a script, which is neither importable nor two things at
+// once - and there is no way back from a module to a global that a plain
+// `<script>` could wait for.
+//
+// Modules are strict by themselves, so nothing here says so.
 
 const DDNetLoader = (() => {
 	// What this library answers with when it refuses or cannot do something.
@@ -111,9 +116,10 @@ const DDNetLoader = (() => {
 	}
 
 	const DEFAULT_HOME_PATH = "/home/web_user/.local/share/ddnet";
-	// Where this script is, so that a worker can be given the same one. Read
-	// while it is being run, which is the only time a script can say.
-	const LOADER_URL = typeof document !== "undefined" && document.currentScript ? document.currentScript.src : null;
+	// Where this module is, so that a worker can be given the same one. A
+	// module knows this of itself, wherever it is running - which a script had
+	// to be asked for while it ran, and could only answer on a page.
+	const LOADER_URL = import.meta.url;
 	// A file named in the URL is fetched into the same place a dropped file
 	// goes. Anything larger than this is refused rather than filling the tab's
 	// memory with whatever a link pointed at.
@@ -265,7 +271,11 @@ const DDNetLoader = (() => {
 	// typed into stays, so a menu does not close itself under the hand that
 	// opened it.
 	function autoHide(elements, options) {
-		const settings = Object.assign({ delay: 2500, picture: null, onHide: null }, options || {});
+		const settings = Object.assign({ delay: 2500, picture: null, onHide: null, signal: undefined }, options || {});
+		// What is put on the window and on the picture outlives the controls
+		// themselves, so whoever takes those off the page says so here.
+		const on = (target, type, listener, extra) =>
+			target.addEventListener(type, listener, Object.assign({ signal: settings.signal }, extra || {}));
 		const all = Array.isArray(elements) ? elements : [elements];
 		var timer = null;
 		var held = 0;
@@ -288,10 +298,10 @@ const DDNetLoader = (() => {
 			timer = held > 0 ? null : setTimeout(hide, settings.delay);
 		};
 		for (const element of all) {
-			element.addEventListener("pointerenter", () => { held++; show(); });
-			element.addEventListener("pointerleave", () => { held = Math.max(held - 1, 0); show(); });
-			element.addEventListener("focusin", () => { held++; show(); });
-			element.addEventListener("focusout", () => { held = Math.max(held - 1, 0); show(); });
+			on(element, "pointerenter", () => { held++; show(); });
+			on(element, "pointerleave", () => { held = Math.max(held - 1, 0); show(); });
+			on(element, "focusin", () => { held++; show(); });
+			on(element, "focusout", () => { held = Math.max(held - 1, 0); show(); });
 		}
 		// A press that went down on the picture, stayed where it was and was
 		// let go of again is a tap, and a tap on the picture is how a video
@@ -302,13 +312,13 @@ const DDNetLoader = (() => {
 			const TAP_DISTANCE = 16;
 			const TAP_TIME = 400;
 			var pressed = null;
-			settings.picture.addEventListener("pointerdown", event => {
+			on(settings.picture, "pointerdown", event => {
 				// Read before the press reaches the handler below that shows
 				// everything again: what a tap does depends on what was there
 				// when it started.
 				pressed = { x: event.clientX, y: event.clientY, when: performance.now(), shown: shown };
 			}, { capture: true });
-			settings.picture.addEventListener("pointerup", event => {
+			on(settings.picture, "pointerup", event => {
 				if (pressed === null) {
 					return;
 				}
@@ -322,13 +332,52 @@ const DDNetLoader = (() => {
 					show();
 				}
 			});
-			settings.picture.addEventListener("pointercancel", () => { pressed = null; });
+			on(settings.picture, "pointercancel", () => { pressed = null; });
 		}
 		for (const event of ["pointermove", "pointerdown", "keydown", "wheel"]) {
-			window.addEventListener(event, show, { passive: true });
+			on(window, event, show, { passive: true });
 		}
 		show();
 		return { show, hide, shown: () => shown };
+	}
+
+	// A viewer that fills the window needs none of this: the window tells it
+	// when it changes shape, and the picture follows. One that sits in a box of
+	// a page's own has nothing to follow - nothing tells a window that a box
+	// beside it was laid out differently - so the box is watched here and the
+	// program is told its size.
+	//
+	// The other end of it is `DemoViewerSetSize` in
+	// `src/engine/client/demo_viewer_client.cpp` and `MapViewerSetSize` in
+	// `src/game/map/standalone/map_viewer_main.cpp`.
+	function followSize(element, controls, options) {
+		const settings = Object.assign({ signal: undefined }, options || {});
+		if (typeof ResizeObserver !== "function") {
+			return { stop: () => {} };
+		}
+		var width = 0;
+		var height = 0;
+		const measure = () => {
+			const box = element.getBoundingClientRect();
+			const nextWidth = Math.round(box.width);
+			const nextHeight = Math.round(box.height);
+			// A box of no size is a box that is not being shown; the program
+			// keeps the size it had rather than being told to draw nothing.
+			if (nextWidth <= 0 || nextHeight <= 0 || (nextWidth === width && nextHeight === height)) {
+				return;
+			}
+			width = nextWidth;
+			height = nextHeight;
+			controls.setSize(width, height);
+		};
+		const observer = new ResizeObserver(measure);
+		observer.observe(element);
+		const stop = () => observer.disconnect();
+		if (settings.signal) {
+			settings.signal.addEventListener("abort", stop, { once: true });
+		}
+		measure();
+		return { stop: stop };
 	}
 
 	// The same pictures the viewers draw on their own buttons, as the browser
@@ -385,12 +434,18 @@ const DDNetLoader = (() => {
 	// own. What goes full screen is the page and not the canvas: a canvas on
 	// its own takes the controls off the screen with it, since they are beside
 	// it and not in it.
+	// Safari before 16.4 - which is every iPad that has not been updated since
+	// 2023 - only has this under its own name, and an iPhone has it under no
+	// name at all: there, only a video may fill the screen, and a button that
+	// asks for it is a button that does nothing. So it is asked for under both
+	// names, and where there is neither the button is taken away rather than
+	// left sitting there dead.
 	function fullscreenSupported() {
-		return document.fullscreenEnabled === true;
+		return document.fullscreenEnabled === true || document.webkitFullscreenEnabled === true;
 	}
 
 	function isFullscreen() {
-		return document.fullscreenElement != null;
+		return (document.fullscreenElement || document.webkitFullscreenElement) != null;
 	}
 
 	// Asked for by a button on the page, and by the viewers themselves for the
@@ -402,12 +457,17 @@ const DDNetLoader = (() => {
 			return;
 		}
 		if (isFullscreen()) {
-			document.exitFullscreen();
+			(document.exitFullscreen || document.webkitExitFullscreen).call(document);
 			return;
 		}
 		// A browser that says no says it in a promise nobody is waiting on,
-		// which would otherwise be an unhandled rejection.
-		settings.element.requestFullscreen().then(() => {
+		// which would otherwise be an unhandled rejection. It is said out loud
+		// all the same: a button that does nothing is the hardest kind of
+		// fault to look into, and the reason is in that rejection.
+		const ask = settings.element.requestFullscreen || settings.element.webkitRequestFullscreen;
+		// The older name returns nothing at all, so there is nothing to wait
+		// on and nothing to be told; what follows is only for the newer one.
+		Promise.resolve(ask.call(settings.element)).then(() => {
 			// What is being watched is wide and a phone is tall. Only a page
 			// that fills the screen may ask for this, which is why it is asked
 			// for here and nowhere else; a browser that does not do it says so
@@ -415,7 +475,7 @@ const DDNetLoader = (() => {
 			if (screen.orientation && screen.orientation.lock) {
 				screen.orientation.lock("landscape").catch(() => {});
 			}
-		}).catch(() => {});
+		}).catch(error => console.warn("DDNetLoader: this browser refused to fill the screen:", (error && error.message) || error));
 	}
 
 	function fullscreen(button, options) {
@@ -439,8 +499,13 @@ const DDNetLoader = (() => {
 				screen.orientation.unlock();
 			}
 		};
-		button.addEventListener("click", () => toggleFullscreen(options));
-		document.addEventListener("fullscreenchange", update);
+		const signal = (options || {}).signal;
+		button.addEventListener("click", () => toggleFullscreen(options), { signal: signal });
+		// On the document rather than on the button, so it also follows the key
+		// that leaves full screen - and therefore worth taking off again when
+		// the button goes.
+		document.addEventListener("fullscreenchange", update, { signal: signal });
+		document.addEventListener("webkitfullscreenchange", update, { signal: signal });
 		update();
 		return { supported: true };
 	}
@@ -680,19 +745,15 @@ const DDNetLoader = (() => {
 	}
 
 	// The browser's own shortcuts stay the browser's, whatever the program
-	// makes of the keyboard. Once per page as well.
-	var installedKeyGuard = false;
-	function installKeyGuard() {
-		if (installedKeyGuard) {
-			return;
-		}
-		installedKeyGuard = true;
+	// makes of the keyboard. Two programs on one page both ask for this and
+	// both get it, which changes nothing: stopping a key twice is stopping it.
+	function installKeyGuard(signal) {
 		document.addEventListener('keydown', e => {
 			// Always use default browser actions for Ctrl+F5 (refresh), F11 (fullscreen), F12 (developer console).
 			if ((e.ctrlKey && e.key === 'F5') || e.key === 'F11' || e.key == 'F12') {
 				e.stopPropagation();
 			}
-		}, true);
+		}, { capture: true, signal: signal });
 	}
 
 	/**
@@ -720,6 +781,12 @@ const DDNetLoader = (() => {
 			this.acceptLinks = options.acceptLinks === true;
 			this.module = null;
 			this.exited = false;
+			// Everything this hangs on the page hangs on one signal, and
+			// `destroy` lets go of all of it at once. A page that lives as
+			// long as its program never needs that; one that puts a viewer up
+			// and takes it down again does.
+			this.stopping = new AbortController();
+			this.destroyed = false;
 			this.video = null;
 			this.pendingSink = null;
 			this.finished = new Promise(resolve => {
@@ -827,6 +894,43 @@ const DDNetLoader = (() => {
 			this.call('EmscriptenCallbackQuit');
 		}
 
+		/**
+		 * Lets go of the page. Every handler this put on it comes off, the
+		 * sound stops, the error handler is given back, and the program is
+		 * asked to quit if it is still running.
+		 *
+		 * A page that lives as long as its program never needs this - the page
+		 * going is the program going. A page that takes a viewer off and puts
+		 * another on, or a custom element being removed, does: without it the
+		 * handlers on the window and on the document outlive what they were
+		 * for.
+		 *
+		 * Asking for anything afterwards is answered the way a program that
+		 * has stopped is answered, which is with nothing.
+		 */
+		destroy() {
+			if (this.destroyed) {
+				return;
+			}
+			this.destroyed = true;
+			// The program first, while there is still something to ask: it is
+			// what holds the canvas, the sound and the files. It stops its own
+			// sound as it goes, and taking the sound out from under a program
+			// that is still stopping leaves it reading something that is no
+			// longer there - so only one that has already stopped leaves any
+			// to stop here.
+			if (this.exited) {
+				this.stopAudio();
+			} else {
+				this.quit();
+			}
+			this.stopping.abort();
+			this.restoreErrorHandler();
+			// Whoever is waiting for the program is let go of: a program told
+			// to stop from outside may never reach `onExit`.
+			this.reportFinished();
+		}
+
 		// Everything below is how the two above are done, and how an instance
 		// comes up in the first place.
 
@@ -916,17 +1020,18 @@ const DDNetLoader = (() => {
 			if (canvas == null) {
 				return;
 			}
-			installKeyGuard();
-			canvas.addEventListener('contextmenu', e => e.preventDefault());
+			const signal = this.stopping.signal;
+			installKeyGuard(signal);
+			canvas.addEventListener('contextmenu', e => e.preventDefault(), { signal: signal });
 			canvas.addEventListener('webglcontextcreationerror', e => {
 				instance.output(`Failed to create WebGL context: ${e.statusMessage || "Unknown error"}`, { error: true, bold: true });
-			});
+			}, { signal: signal });
 			canvas.addEventListener('webglcontextlost', e => {
 				// The program cannot currently recover from GL context loss, because it
 				// would require reloading all textures, framebuffers etc.
 				instance.output(`The WebGL context was lost: ${e.statusMessage || "Unknown error"}`, { error: true, bold: true });
 				instance.quit();
-			});
+			}, { signal: signal });
 			canvas.addEventListener('dragover', e => {
 				e.preventDefault();
 				e.dataTransfer.dropEffect = "none";
@@ -939,7 +1044,7 @@ const DDNetLoader = (() => {
 						return;
 					}
 				}
-			});
+			}, { signal: signal });
 			canvas.addEventListener('drop', async e => {
 				e.preventDefault();
 				const droppedItem = instance.droppedItemFromDataTransfer(e.dataTransfer);
@@ -950,7 +1055,7 @@ const DDNetLoader = (() => {
 				} else {
 					alert(instance.unsupportedDropMessage());
 				}
-			});
+			}, { signal: signal });
 		}
 
 		// What the export asks when it starts, in order: what the page put
@@ -998,7 +1103,8 @@ const DDNetLoader = (() => {
 			// `self`, not `window`: a program rendering in a worker has no
 			// window, and this is the one thing here that would miss it.
 			const previous = self.onerror;
-			self.onerror = function(message, url, line, column, error) {
+			this.previousErrorHandler = previous;
+			this.errorHandler = function(message, url, line, column, error) {
 				instance.output(message, { error: true, bold: true, fatal: true });
 				if (error && error.stack) {
 					for (const line of error.stack.split("\n")) {
@@ -1018,6 +1124,16 @@ const DDNetLoader = (() => {
 					return previous.apply(this, arguments);
 				}
 			};
+			self.onerror = this.errorHandler;
+		}
+
+		// Only if it is still ours: a page that put its own on afterwards has
+		// chained onto this one, and taking ours away would take theirs with
+		// it.
+		restoreErrorHandler() {
+			if (this.errorHandler !== undefined && self.onerror === this.errorHandler) {
+				self.onerror = this.previousErrorHandler;
+			}
 		}
 
 		async run() {
@@ -1033,7 +1149,7 @@ const DDNetLoader = (() => {
 				if (options.signal.aborted) {
 					throw abortError(options.signal);
 				}
-				options.signal.addEventListener("abort", () => this.quit(), { once: true });
+				options.signal.addEventListener("abort", () => this.quit(), { once: true, signal: this.stopping.signal });
 			}
 			// Said once, and said here: what follows would say it a hundred
 			// times, in the words of whatever failed first.
@@ -1061,6 +1177,16 @@ const DDNetLoader = (() => {
 				// are - the blob has no directory to look next to.
 				mainScriptUrlOrBlob: program === null ? undefined : program.script,
 				locateFile: program === null ? undefined : path => new URL(path, program.base).href,
+				// What a browser will do about filling the screen, for the
+				// controls a viewer draws itself. Handed to the program rather
+				// than looked up by it: a module claims no global for anything
+				// to look up. Read by `ViewerFullscreen`, see
+				// `src/engine/client/viewer_fullscreen.cpp`.
+				ddnetFullscreen: {
+					supported: () => fullscreenSupported(),
+					active: () => isFullscreen(),
+					toggle: () => toggleFullscreen(),
+				},
 				// Where a finished video goes. Without it the export offers the
 				// file as a download, which is what somebody watching wants and
 				// a page rendering by itself does not. Read by the WebCodecs
@@ -1351,17 +1477,20 @@ const DDNetLoader = (() => {
 	const WORKER_BOOTSTRAP = `
 self.onmessage = async event => {
 	const request = event.data;
-	// The program says its name to whoever is asking, and a module loader is
-	// asking, so there is no need to know the name here.
-	let factory = null;
-	self.define = (dependencies, provide) => { factory = provide(); };
-	self.define.amd = true;
 	try {
-		importScripts(request.loaderUrl, request.scriptUrl);
-		if (factory === null) {
-			factory = self[request.moduleName];
-		}
-		const video = await DDNetLoader.render(Object.assign({}, request.options, {
+		const loader = await import(request.loaderUrl);
+		// The program is a plain script - it names itself and expects to be
+		// run as one - and a module worker has no way to run a plain script.
+		// So it is read, given a line that hands its name out, and imported as
+		// the module that makes of it. Nothing of the script itself is
+		// changed, and what it needs to find its own files it is told through
+		// \`scriptUrl\`.
+		const text = await (await fetch(request.scriptUrl)).text();
+		const wrapped = URL.createObjectURL(new Blob(
+			[text + "\\nexport default " + request.moduleName + ";"], { type: "text/javascript" }));
+		const factory = (await import(wrapped)).default;
+		URL.revokeObjectURL(wrapped);
+		const video = await loader.render(Object.assign({}, request.options, {
 			module: factory,
 			worker: false,
 			videoSink: request.sink,
@@ -1436,7 +1565,7 @@ self.onmessage = async event => {
 			transfer.push(options.videoSink);
 		}
 		const bootstrap = URL.createObjectURL(new Blob([WORKER_BOOTSTRAP], { type: "text/javascript" }));
-		const worker = new Worker(bootstrap);
+		const worker = new Worker(bootstrap, { type: "module" });
 		URL.revokeObjectURL(bootstrap);
 		// A worker that is stopped says nothing more, so whoever stopped it has
 		// to be the one to answer for it: without this the render would be over
@@ -1504,6 +1633,12 @@ self.onmessage = async event => {
 			? instance.call(name, "number")
 			: instance.call(name, null, ["number"], [argument]);
 		return {
+			/**
+			 * How big to draw, in the units the page measures its boxes in.
+			 * Only for a viewer that sits in a box of the page's own: one that
+			 * fills the window follows it by itself. See `followSize`.
+			 */
+			setSize: (Width, Height) => instance.call("DemoViewerSetSize", null, ["number", "number"], [Math.round(Width), Math.round(Height)]),
 			/** Whether a demo is loaded and how long it is, in seconds. */
 			length: () => number("DemoViewerLength"),
 			/** How far it has played, between 0 and 1. */
@@ -1532,6 +1667,13 @@ self.onmessage = async event => {
 			 * way of its own, so both move at once and apart.
 			 */
 			exportProgress: () => number("DemoViewerExportProgress"),
+			/**
+			 * How much longer the export has to run, in seconds, or a negative
+			 * number while there is no telling yet. Worked out from what is
+			 * left of the demo and the rate frames are being written at, so it
+			 * follows a machine that speeds up or slows down.
+			 */
+			exportSecondsLeft: () => number("DemoViewerExportSecondsLeft"),
 			/**
 			 * Why the export that was last asked for failed, or an empty
 			 * string when none has. A page is the only place this can be
@@ -1613,6 +1755,12 @@ self.onmessage = async event => {
 			instance.call(name, null, values.map(() => "number"), values);
 		return {
 			loaded: () => instance.call("MapViewerMapLoaded", "number") === 1,
+			/**
+			 * How big to draw, in the units the page measures its boxes in.
+			 * Only for a viewer that sits in a box of the page's own: one that
+			 * fills the window follows it by itself. See `followSize`.
+			 */
+			setSize: (Width, Height) => setNumbers("MapViewerSetSize", [Math.round(Width), Math.round(Height)]),
 			/** Fits the whole map on screen. */
 			fit: () => instance.call("MapViewerFit"),
 			/** How big the map is, in tiles. */
@@ -1926,9 +2074,28 @@ self.onmessage = async event => {
 		 * @param button The button to wire up.
 		 * @param options.element What to fill the screen with, the page
 		 * itself otherwise.
+		 * @param options.signal Takes the wiring off again, for a page that
+		 * puts the button up and takes it down.
 		 */
 		fullscreen(button, options) {
 			return fullscreen(button, options);
+		},
+
+		/**
+		 * Keeps a viewer the size of the box it sits in.
+		 *
+		 * A viewer that fills the window follows it without being asked. One
+		 * in a box of a page's own does not, because nothing tells a window
+		 * that a box beside it changed shape: this watches the box and hands
+		 * the size to the program.
+		 *
+		 * @param element The box to follow, usually the canvas itself.
+		 * @param controls What `demoControls` or `mapControls` answered with.
+		 * @param options.signal An `AbortSignal` that stops the watching.
+		 * @returns `{stop}`, which also stops it.
+		 */
+		followSize(element, controls, options) {
+			return followSize(element, controls, options);
 		},
 
 		/**
@@ -1996,6 +2163,8 @@ self.onmessage = async event => {
 		 * video does everywhere.
 		 * @param options.onHide Called whenever they go, so that a page can
 		 * close what one of them had opened.
+		 * @param options.signal Takes all of it off the page again, for a page
+		 * that puts the controls up and takes them down.
 		 */
 		autoHide(elements, options) {
 			return autoHide(elements, options);
@@ -2156,3 +2325,21 @@ self.onmessage = async event => {
 		},
 	};
 })();
+
+// Both forms of the same thing: everything at once for whoever wants to write
+// `DDNetLoader.start(…)`, and one name at a time for whoever would rather
+// import only what they use. The names are the object's own, so there is one
+// list and not two.
+export default DDNetLoader;
+export const {
+	// tidy-alphabetical-start
+	autoHide, demoControls, exportSettingsForm, followSize, fullscreen,
+	fullscreenSupported, icon, isFullscreen, mapControls, page, paintIcons,
+	render, setUrlParameters, start, supportProblem, toggleFullscreen,
+	urlParameter, version, videoCodecs, zip,
+	// tidy-alphabetical-end
+} = DDNetLoader;
+// Not as `Error`: a name at the top of a module is a name for the whole of it,
+// and this one is the browser's own further up - where the class above is
+// declared from it.
+export const DDNetLoaderError = DDNetLoader.Error;

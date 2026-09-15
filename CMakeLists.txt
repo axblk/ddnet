@@ -2695,6 +2695,8 @@ list(FILTER ENGINE_SHARED EXCLUDE REGEX "${ENGINE_NET_PATTERN}")
 set_src(GAME_MAP GLOB_RECURSE src/game/map
   # tidy-alphabetical-start
   document/assets.h
+  document/command.cpp
+  document/command.h
   document/document.h
   document/edit.cpp
   document/edit.h
@@ -4442,6 +4444,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     chunk_header_test.cpp
     client_connection_test.cpp
     color_test.cpp
+    command_test.cpp
     compression_test.cpp
     console_test.cpp
     csv_test.cpp

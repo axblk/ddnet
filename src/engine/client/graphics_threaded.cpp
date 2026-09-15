@@ -1010,6 +1010,9 @@ class CScreenshotSaveJob : public IJob
 		char aWholePath[IO_MAX_PATH_LENGTH];
 		if(CImageLoader::SavePng(m_pStorage->OpenFile(m_aName, IOFLAG_WRITE, IStorage::TYPE_SAVE, aWholePath, sizeof(aWholePath)), m_aName, m_Image))
 		{
+			// The browser keeps what was written in memory until it is told to
+			// put it away, so the screenshot would be gone with the page.
+			m_pStorage->SyncPersistentStorage();
 			log_info_color(SCREENSHOT_LOG_COLOR, "client", "Saved screenshot to '%s'", aWholePath);
 		}
 		else

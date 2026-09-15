@@ -233,3 +233,45 @@ TEST(History, ALimitGivesUpTheWayForwardBeforeTheWayBack)
 	EXPECT_EQ(History.Current().TileLayer(0, 0)->m_Tiles.Get(0, 0).m_Index, 5);
 	EXPECT_FALSE(History.CanRedo());
 }
+
+TEST(History, TheRunningByteCountIsTheCountedOne)
+{
+	CHistory History(OneLayer());
+	EXPECT_EQ(History.Bytes(), History.MeasureBytes());
+
+	// Everything that adds or drops a version, in the order that makes the
+	// two numbers most likely to come apart: strokes, a step back, a stroke
+	// that throws the way forward away, and a limit that eats the front.
+	for(int i = 0; i < 6; ++i)
+	{
+		History.Push(Draw(History.Current(), i, 5 + i), "Draw");
+		EXPECT_EQ(History.Bytes(), History.MeasureBytes()) << "after stroke " << i;
+	}
+
+	ASSERT_TRUE(History.Undo());
+	ASSERT_TRUE(History.Undo());
+	EXPECT_EQ(History.Bytes(), History.MeasureBytes()) << "after stepping back";
+
+	History.Push(Draw(History.Current(), 7, 12), "Draw");
+	EXPECT_EQ(History.Bytes(), History.MeasureBytes()) << "after dropping the way forward";
+
+	// A limit small enough that it cannot be met - the version the map is in
+	// is five blocks by now - leaves the history one version long, and the
+	// two numbers still agree on what that one holds.
+	const uint64_t Block = sizeof(CTile) * CTileStore<CTile>::TILES_PER_CHUNK;
+	History.SetLimits(2 * Block, 1000);
+	EXPECT_EQ(History.Bytes(), History.MeasureBytes()) << "after the limit ate the front";
+	EXPECT_EQ(History.NumEntries(), 1u);
+
+	// And again with the way forward to give up: standing on the oldest of
+	// four versions, a limit of two takes from the far end.
+	CHistory Second(OneLayer());
+	for(int i = 0; i < 4; ++i)
+	{
+		Second.Push(Draw(Second.Current(), i, 5 + i), "Draw");
+	}
+	Second.JumpTo(0);
+	Second.SetLimits((uint64_t)1 << 40, 2);
+	EXPECT_EQ(Second.NumEntries(), 2u);
+	EXPECT_EQ(Second.Bytes(), Second.MeasureBytes()) << "after the limit ate the way forward";
+}

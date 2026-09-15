@@ -3,6 +3,8 @@
 
 #include "layer.h"
 
+#include <game/map/quad_buffer_cache.h>
+
 class CLayerQuads : public CLayer
 {
 public:
@@ -35,6 +37,16 @@ public:
 
 	int m_Image;
 	std::vector<CQuad> m_vQuads;
+
+private:
+	CQuadBufferCache m_QuadCache;
+	CQuadBufferCache::CQuadSource m_QuadSource;
+	// The quads are written from everywhere in the editor and dragging one
+	// changes it every frame, so the buffer follows what is there rather than
+	// what someone remembered to announce.
+	// ponytail: full compare per frame, a modification counter if a map ever
+	// carries enough quads for it to show
+	std::vector<CQuad> m_vBuiltQuads;
 };
 
 #endif

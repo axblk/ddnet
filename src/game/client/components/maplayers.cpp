@@ -81,6 +81,9 @@ void CMapLayers::Render(vec2 Center, float Zoom)
 	m_Params.m_Center = Center;
 	m_Params.m_Zoom = Zoom;
 	m_Params.m_RenderText = g_Config.m_ClTextEntities;
+	// The design render is the one the menu background is drawn with, and a
+	// background that leaves out half of what the map has is not the map.
+	m_Params.m_HighDetail = g_Config.m_GfxHighDetail || m_Type == RENDERTYPE_FULL_DESIGN;
 	m_Params.m_DebugRenderGroupClips = g_Config.m_DbgRenderGroupClips;
 	m_Params.m_DebugRenderQuadClips = g_Config.m_DbgRenderQuadClips;
 	m_Params.m_DebugRenderClusterClips = g_Config.m_DbgRenderClusterClips;

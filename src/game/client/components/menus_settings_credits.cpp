@@ -39,31 +39,35 @@ void CMenus::RenderSettingsCredits(CUIRect MainView)
 	ScrollParams.m_ScrollUnit = 3.0f * FontSize;
 	s_ScrollRegion.Begin(&MainView, &ScrollParams);
 
+	size_t LinkTextIndex = 0;
 	const auto &&RenderCreditsLink = [&](const void *pLinkId, const char *pPrefix, const char *pLink, const char *pSuffix, const char *pUrl) {
-		const float LineHeight = TextRender()->TextBoundingBox(FontSize, pLink).m_H;
-		const float PrefixWidth = TextRender()->TextWidth(FontSize, pPrefix);
-		const bool PrefixOwnLine = PrefixWidth + TextRender()->TextWidth(FontSize, pLink) + TextRender()->TextWidth(FontSize, pSuffix) > MainView.w;
+		CCachedText &PrefixText = m_aSettingsCreditsLinkTexts[LinkTextIndex++];
+		CCachedText &LinkText = m_aSettingsCreditsLinkTexts[LinkTextIndex++];
+		CCachedText &SuffixText = m_aSettingsCreditsLinkTexts[LinkTextIndex++];
+		PrefixText.Update(TextRender(), pPrefix, FontSize);
+		LinkText.Update(TextRender(), pLink, FontSize);
+		SuffixText.Update(TextRender(), pSuffix, FontSize);
+		const float LineHeight = LinkText.Height();
+		const bool PrefixOwnLine = PrefixText.Width() + LinkText.Width() + SuffixText.Width() > MainView.w;
 
 		CUIRect Line, Prefix, LinkRect;
 		MainView.HSplitTop(LineHeight, &Line, &MainView);
 		s_ScrollRegion.AddRect(Line);
 		if(PrefixOwnLine)
 		{
-			Ui()->DoLabel(&Line, pPrefix, FontSize, TEXTALIGN_TL);
+			PrefixText.Render(TextRender(), vec2(Line.x, Line.y), TextRender()->DefaultTextColor());
 			MainView.HSplitTop(LineHeight, &Line, &MainView);
 			s_ScrollRegion.AddRect(Line);
 		}
 		else
 		{
-			Line.VSplitLeft(PrefixWidth, &Prefix, &Line);
-			Ui()->DoLabel(&Prefix, pPrefix, FontSize, TEXTALIGN_TL);
+			Line.VSplitLeft(PrefixText.Width(), &Prefix, &Line);
+			PrefixText.Render(TextRender(), vec2(Prefix.x, Prefix.y), TextRender()->DefaultTextColor());
 		}
 
-		Line.VSplitLeft(TextRender()->TextWidth(FontSize, pLink), &LinkRect, &Line);
+		Line.VSplitLeft(LinkText.Width(), &LinkRect, &Line);
 		const ColorRGBA LinkColor = Ui()->HotItem() == pLinkId ? ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f) : ColorRGBA(0.4f, 0.7f, 1.0f, 1.0f);
-		TextRender()->TextColor(LinkColor);
-		Ui()->DoLabel(&LinkRect, pLink, FontSize, TEXTALIGN_TL);
-		TextRender()->TextColor(TextRender()->DefaultTextColor());
+		LinkText.Render(TextRender(), vec2(LinkRect.x, LinkRect.y), LinkColor);
 
 		CUIRect Underline;
 		LinkRect.HSplitBottom(1.0f, nullptr, &Underline);
@@ -74,7 +78,7 @@ void CMenus::RenderSettingsCredits(CUIRect MainView)
 			Client()->ViewLink(pUrl);
 		}
 
-		Ui()->DoLabel(&Line, pSuffix, FontSize, TEXTALIGN_TL);
+		SuffixText.Render(TextRender(), vec2(Line.x, Line.y), TextRender()->DefaultTextColor());
 	};
 
 	static char s_StaffLinkId;
@@ -82,23 +86,11 @@ void CMenus::RenderSettingsCredits(CUIRect MainView)
 	static char s_MapsLinkId;
 	RenderCreditsLink(&s_MapsLinkId, "", "Great maps", " and many ideas from the community.", "https://ddnet.org/releases/");
 
-	CTextCursor Cursor;
-	Cursor.m_FontSize = FontSize;
-	Cursor.m_LineWidth = MainView.w;
-
-	const unsigned OldRenderFlags = TextRender()->GetRenderFlags();
-	TextRender()->SetRenderFlags(OldRenderFlags | TEXT_RENDER_FLAG_ONE_TIME_USE);
-	STextContainerIndex CreditsTextContainer;
-	TextRender()->CreateTextContainer(CreditsTextContainer, &Cursor, CREDITS);
-	TextRender()->SetRenderFlags(OldRenderFlags);
-	if(CreditsTextContainer.Valid())
-	{
-		CUIRect CreditsLabel;
-		MainView.HSplitTop(TextRender()->GetBoundingBoxTextContainer(CreditsTextContainer).m_H, &CreditsLabel, &MainView);
-		s_ScrollRegion.AddRect(CreditsLabel);
-		TextRender()->RenderTextContainer(CreditsTextContainer, TextRender()->DefaultTextColor(), TextRender()->DefaultTextOutlineColor(), CreditsLabel.x, CreditsLabel.y);
-		TextRender()->DeleteTextContainer(CreditsTextContainer);
-	}
+	m_SettingsCreditsText.Update(TextRender(), CREDITS, FontSize, MainView.w);
+	CUIRect CreditsLabel;
+	MainView.HSplitTop(m_SettingsCreditsText.Height(), &CreditsLabel, &MainView);
+	s_ScrollRegion.AddRect(CreditsLabel);
+	m_SettingsCreditsText.Render(TextRender(), vec2(CreditsLabel.x, CreditsLabel.y), TextRender()->DefaultTextColor());
 
 	static char s_TeeworldsLinkId;
 	RenderCreditsLink(&s_TeeworldsLinkId, "which is a mod of ", "Teeworlds", " by the Teeworlds developers.", "https://teeworlds.com/");

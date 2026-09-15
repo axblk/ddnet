@@ -17,6 +17,7 @@
 
 #include <engine/client.h>
 #include <engine/client/keyboard.h>
+#include <engine/client/render_trace.h>
 #include <engine/engine.h>
 #include <engine/font_icons.h>
 #include <engine/gfx/image_loader.h>
@@ -313,7 +314,10 @@ void CEditor::DoAudioPreview(CUIRect View, const void *pPlayPauseButtonId, const
 		char aTotalTime[32];
 		str_time_float(TotalTime, ETimeFormat::HOURS, aTotalTime, sizeof(aTotalTime));
 		str_format(aBuffer, sizeof(aBuffer), "%s / %s", aCurrentTime, aTotalTime);
-		Ui()->DoLabel(&SeekBar, aBuffer, SeekBar.h * 0.70f, TEXTALIGN_MC);
+		if(CUIElement::SUIElementRect *pUiElementRect = NextCachedLabelUiElement())
+			Ui()->DoLabelStreamed(*pUiElementRect, &SeekBar, aBuffer, SeekBar.h * 0.70f, TEXTALIGN_MC);
+		else
+			Ui()->DoLabel(&SeekBar, aBuffer, SeekBar.h * 0.70f, TEXTALIGN_MC);
 
 		// do the logic
 		const bool Inside = Ui()->MouseInside(&SeekBar);
@@ -350,12 +354,19 @@ void CEditor::DoMapTabs(CUIRect MapTabs)
 	ScrollParams.m_ScrollUnit = 140.0f;
 	ScrollParams.m_ScrollHorizontal = true;
 	m_MapTabsScrollRegion.Begin(&MapTabs, &ScrollParams);
+	m_vMapTabWidths.resize(m_vpMaps.size());
 
 	size_t Index = 0;
 	std::optional<size_t> CloseIndex = std::nullopt;
 	for(const auto &pMap : m_vpMaps)
 	{
-		const float ButtonWidth = std::clamp(TextRender()->TextWidth(10.0f, pMap->m_aDisplayName) + 10.0f, 60.0f, 120.0f);
+		auto &WidthCache = m_vMapTabWidths[Index];
+		if(WidthCache.first != pMap->m_aDisplayName)
+		{
+			WidthCache.first = pMap->m_aDisplayName;
+			WidthCache.second = TextRender()->TextWidth(10.0f, pMap->m_aDisplayName);
+		}
+		const float ButtonWidth = std::clamp(WidthCache.second + 10.0f, 60.0f, 120.0f);
 
 		CUIRect MapButton;
 		MapTabs.VSplitLeft(ButtonWidth + 18.0f, &MapButton, &MapTabs);
@@ -834,7 +845,10 @@ void CEditor::DoToolbarImages(CUIRect ToolBar)
 	{
 		char aLabel[64];
 		str_format(aLabel, sizeof(aLabel), "Size: %" PRIzu " × %" PRIzu, pSelectedImage->m_Width, pSelectedImage->m_Height);
-		Ui()->DoLabel(&ToolBarBottom, aLabel, 12.0f, TEXTALIGN_ML);
+		if(CUIElement::SUIElementRect *pUiElementRect = NextCachedLabelUiElement())
+			Ui()->DoLabelStreamed(*pUiElementRect, &ToolBarBottom, aLabel, 12.0f, TEXTALIGN_ML);
+		else
+			Ui()->DoLabel(&ToolBarBottom, aLabel, 12.0f, TEXTALIGN_ML);
 	}
 }
 
@@ -2413,6 +2427,16 @@ void CEditor::RenderLayers(CUIRect LayersBox)
 
 	const bool ScrollToSelection = LayerSelector()->SelectByTile() || State.m_ScrollToSelectionNext;
 	State.m_ScrollToSelectionNext = false;
+	size_t UiElementIndex = 0;
+	// A row that is scrolled out of view still takes its slot. Without that the
+	// whole pool shifts by one for every row that leaves the view, and every
+	// cached text container behind the shift is laid out again on every frame
+	// of the scroll.
+	const auto NextUiElement = [&]() {
+		if(UiElementIndex == m_vpLayerUiElements.size())
+			m_vpLayerUiElements.push_back(Ui()->GetNewUIElement(2));
+		return m_vpLayerUiElements[UiElementIndex++];
+	};
 
 	// render layers
 	for(int g = 0; g < (int)Map()->m_vpGroups.size(); g++)
@@ -2459,11 +2483,12 @@ void CEditor::RenderLayers(CUIRect LayersBox)
 			ScrollRegion.AddRect(TmpRect);
 		}
 
+		CUIElement *pGroupUiElement = NextUiElement();
 		if(ScrollRegion.AddRect(Slot))
 		{
 			Slot.VSplitLeft(15.0f, &VisibleToggle, &Slot);
 
-			const int MouseClick = DoButton_FontIcon(&Map()->m_vpGroups[g]->m_Visible, Map()->m_vpGroups[g]->m_Visible ? FontIcon::EYE : FontIcon::EYE_SLASH, Map()->m_vpGroups[g]->m_Collapse ? 1 : 0, &VisibleToggle, BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT, "Left click to toggle visibility. Right click to show this group only.", IGraphics::CORNER_L, 8.0f);
+			const int MouseClick = DoButton_FontIcon(&Map()->m_vpGroups[g]->m_Visible, Map()->m_vpGroups[g]->m_Visible ? FontIcon::EYE : FontIcon::EYE_SLASH, Map()->m_vpGroups[g]->m_Collapse ? 1 : 0, &VisibleToggle, BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT, "Left click to toggle visibility. Right click to show this group only.", IGraphics::CORNER_L, 8.0f, pGroupUiElement->Rect(0));
 			if(MouseClick == 1)
 			{
 				Map()->m_vpGroups[g]->m_Visible = !Map()->m_vpGroups[g]->m_Visible;
@@ -2505,7 +2530,7 @@ void CEditor::RenderLayers(CUIRect LayersBox)
 			bool Clicked;
 			bool Abrupted;
 			if(int Result = DoButton_DraggableEx(Map()->m_vpGroups[g].get(), aBuf, g == Map()->m_SelectedGroup, &Slot, &Clicked, &Abrupted,
-				   BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT, Map()->m_vpGroups[g]->m_Collapse ? "Select group. Shift+left click to select all layers. Double click to expand." : "Select group. Shift+left click to select all layers. Double click to collapse.", IGraphics::CORNER_R))
+				   BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT, Map()->m_vpGroups[g]->m_Collapse ? "Select group. Shift+left click to select all layers. Double click to expand." : "Select group. Shift+left click to select all layers. Double click to collapse.", IGraphics::CORNER_R, 10.0f, pGroupUiElement->Rect(1)))
 			{
 				if(State.m_Operation == ELayerOperation::NONE)
 				{
@@ -2567,6 +2592,8 @@ void CEditor::RenderLayers(CUIRect LayersBox)
 			if(Map()->m_vpGroups[g]->m_Collapse)
 				continue;
 
+			CUIElement *pUiElement = NextUiElement();
+
 			bool IsLayerSelected = false;
 			if(Map()->m_SelectedGroup == g)
 			{
@@ -2621,7 +2648,7 @@ void CEditor::RenderLayers(CUIRect LayersBox)
 			Slot.VSplitLeft(12.0f, nullptr, &Slot);
 			Slot.VSplitLeft(15.0f, &VisibleToggle, &Button);
 
-			const int MouseClick = DoButton_FontIcon(&Map()->m_vpGroups[g]->m_vpLayers[i]->m_Visible, Map()->m_vpGroups[g]->m_vpLayers[i]->m_Visible ? FontIcon::EYE : FontIcon::EYE_SLASH, 0, &VisibleToggle, BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT, "Left click to toggle visibility. Right click to show only this layer within its group.", IGraphics::CORNER_L, 8.0f);
+			const int MouseClick = DoButton_FontIcon(&Map()->m_vpGroups[g]->m_vpLayers[i]->m_Visible, Map()->m_vpGroups[g]->m_vpLayers[i]->m_Visible ? FontIcon::EYE : FontIcon::EYE_SLASH, 0, &VisibleToggle, BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT, "Left click to toggle visibility. Right click to show only this layer within its group.", IGraphics::CORNER_L, 8.0f, pUiElement->Rect(0));
 			if(MouseClick == 1)
 			{
 				Map()->m_vpGroups[g]->m_vpLayers[i]->m_Visible = !Map()->m_vpGroups[g]->m_vpLayers[i]->m_Visible;
@@ -2688,7 +2715,7 @@ void CEditor::RenderLayers(CUIRect LayersBox)
 			bool Clicked;
 			bool Abrupted;
 			if(int Result = DoButton_DraggableEx(Map()->m_vpGroups[g]->m_vpLayers[i].get(), aBuf, Checked, &Button, &Clicked, &Abrupted,
-				   BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT, "Select layer. Hold shift to select multiple.", IGraphics::CORNER_R))
+				   BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT, "Select layer. Hold shift to select multiple.", IGraphics::CORNER_R, 10.0f, pUiElement->Rect(1)))
 			{
 				if(State.m_Operation == ELayerOperation::NONE)
 				{
@@ -3499,7 +3526,10 @@ void CEditor::RenderModebar(CUIRect View)
 			str_copy(aBuf, Localize("9+ new mentions"));
 
 		TextRender()->TextColor(ColorRGBA(1.0f, 0.0f, 0.0f, 1.0f));
-		Ui()->DoLabel(&Mentions, aBuf, 10.0f, TEXTALIGN_MC);
+		if(CUIElement::SUIElementRect *pUiElementRect = NextCachedLabelUiElement())
+			Ui()->DoLabelStreamed(*pUiElementRect, &Mentions, aBuf, 10.0f, TEXTALIGN_MC);
+		else
+			Ui()->DoLabel(&Mentions, aBuf, 10.0f, TEXTALIGN_MC);
 		TextRender()->TextColor(TextRender()->DefaultTextColor());
 	}
 
@@ -3507,7 +3537,10 @@ void CEditor::RenderModebar(CUIRect View)
 	if(m_IngameMoved)
 	{
 		TextRender()->TextColor(ColorRGBA(1.0f, 0.0f, 0.0f, 1.0f));
-		Ui()->DoLabel(&IngameMoved, Localize("Moved ingame"), 10.0f, TEXTALIGN_MC);
+		if(CUIElement::SUIElementRect *pUiElementRect = NextCachedLabelUiElement())
+			Ui()->DoLabelStreamed(*pUiElementRect, &IngameMoved, Localize("Moved ingame"), 10.0f, TEXTALIGN_MC);
+		else
+			Ui()->DoLabel(&IngameMoved, Localize("Moved ingame"), 10.0f, TEXTALIGN_MC);
 		TextRender()->TextColor(TextRender()->DefaultTextColor());
 	}
 
@@ -3690,7 +3723,10 @@ void CEditor::RenderMenubar(CUIRect MenuBar)
 
 	char aBuf[256];
 	str_format(aBuf, sizeof(aBuf), "X: %.1f, Y: %.1f, Z: %.1f, T: %.1f, A: %.1f, G: %i  %s", MapView()->MouseWorldPos().x / 32.0f, MapView()->MouseWorldPos().y / 32.0f, MapView()->Zoom()->GetValue(), Map()->m_EnvelopeEvaluator.m_AnimateTime * Map()->m_EnvelopeEvaluator.m_AnimateSpeed, Map()->m_EnvelopeEvaluator.m_AnimateSpeed, MapView()->MapGrid()->Factor(), aTimeStr);
-	Ui()->DoLabel(&Info, aBuf, 10.0f, TEXTALIGN_MR);
+	if(CUIElement::SUIElementRect *pUiElementRect = NextCachedLabelUiElement())
+		Ui()->DoLabelStreamed(*pUiElementRect, &Info, aBuf, 10.0f, TEXTALIGN_MR);
+	else
+		Ui()->DoLabel(&Info, aBuf, 10.0f, TEXTALIGN_MR);
 
 	static int s_HelpButton = 0;
 	if(DoButton_Editor(&s_HelpButton, "?", 0, &Help, BUTTONFLAG_LEFT, "[F1] Open the DDNet Wiki page for the map editor in a web browser."))
@@ -3731,6 +3767,7 @@ void CEditor::Exit()
 
 void CEditor::Render()
 {
+	CRenderTrace *pTrace = Client()->RenderTrace();
 	// basic start
 	Graphics()->Clear(0.0f, 0.0f, 0.0f);
 	CUIRect View = *Ui()->Screen();
@@ -3770,7 +3807,15 @@ void CEditor::Render()
 
 	//	a little hack for now
 	if(m_Mode == MODE_LAYERS)
+	{
+		CRenderTraceScope TraceScope(pTrace, "editor/map");
+		Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::WORLD);
+		Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::EDITOR_MAP);
 		MapView()->Render(View);
+		Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::EDITOR_MAP);
+		Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::WORLD);
+	}
+	Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::INTERFACE);
 
 	if(m_Dialog == DIALOG_NONE && CLineInput::GetActiveInput() == nullptr)
 	{
@@ -3824,6 +3869,10 @@ void CEditor::Render()
 
 	// do the toolbar
 	{
+		CRenderTraceScope TraceScope(pTrace, "editor/toolbar");
+		Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::EDITOR_TOOLBAR);
+		m_pActiveLabelUiElements = &m_vpToolbarUiElements;
+		m_ActiveLabelUiElementIndex = 0;
 		CUIRect MapTabs;
 		ToolBar.HSplitTop(20.0f, &MapTabs, &ToolBar);
 		ToolBar.HSplitTop(5.0f, nullptr, &ToolBar);
@@ -3834,6 +3883,8 @@ void CEditor::Render()
 			DoToolbarImages(ToolBar);
 		else if(m_Mode == MODE_SOUNDS)
 			DoToolbarSounds(ToolBar);
+		m_pActiveLabelUiElements = nullptr;
+		Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::EDITOR_TOOLBAR);
 	}
 
 	if(m_Dialog == DIALOG_NONE)
@@ -3891,6 +3942,8 @@ void CEditor::Render()
 
 	if(m_GuiActive)
 	{
+		CRenderTraceScope TraceScope(pTrace, "editor/toolbox");
+		Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::EDITOR_TOOLBOX);
 		CUIRect DragBar;
 		ToolBox.VSplitRight(1.0f, &ToolBox, &DragBar);
 		DragBar.x -= 2.0f;
@@ -3906,6 +3959,7 @@ void CEditor::Render()
 		}
 		else if(m_Mode == MODE_SOUNDS)
 			RenderSounds(ToolBox);
+		Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::EDITOR_TOOLBOX);
 	}
 
 	Ui()->MapScreen();
@@ -3913,6 +3967,10 @@ void CEditor::Render()
 	CUIRect TooltipRect;
 	if(m_GuiActive)
 	{
+		CRenderTraceScope TraceScope(pTrace, "editor/chrome");
+		Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::EDITOR_CHROME);
+		m_pActiveLabelUiElements = &m_vpEditorChromeUiElements;
+		m_ActiveLabelUiElementIndex = 0;
 		RenderMenubar(MenuBar);
 		RenderModebar(ModeBar);
 		if(!m_ShowPicker)
@@ -3940,6 +3998,8 @@ void CEditor::Render()
 			s_ShowServerSettingsEditorLast = m_ActiveExtraEditor == EXTRAEDITOR_SERVER_SETTINGS;
 		}
 		RenderStatusbar(StatusBar, &TooltipRect);
+		m_pActiveLabelUiElements = nullptr;
+		Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::EDITOR_CHROME);
 	}
 
 	RenderPressedKeys(View);
@@ -4022,9 +4082,14 @@ void CEditor::Render()
 		}
 	}
 
-	m_FileBrowser.Render();
-	m_Prompt.Render();
-	m_FontTyper.Render();
+	{
+		CRenderTraceScope TraceScope(pTrace, "editor/dialogs");
+		Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::EDITOR_DIALOGS);
+		m_FileBrowser.Render();
+		m_Prompt.Render();
+		m_FontTyper.Render();
+		Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::EDITOR_DIALOGS);
+	}
 
 	MapView()->UpdateZoom();
 
@@ -4051,6 +4116,7 @@ void CEditor::Render()
 
 	Ui()->RenderBackButton();
 	RenderMousePointer();
+	Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::INTERFACE);
 }
 
 void CEditor::UpdateBrushPicker()
@@ -4947,6 +5013,7 @@ void CEditor::OnActivate()
 
 void CEditor::OnWindowResize()
 {
+	m_vMapTabWidths.clear();
 	Ui()->OnWindowResize();
 }
 

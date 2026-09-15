@@ -20,9 +20,13 @@ enum class EInputPriority
 	CONSOLE,
 };
 
+class CUi;
+
 // line input helper
 class CLineInput
 {
+	friend class CUi;
+
 public:
 	struct SMouseSelection
 	{
@@ -80,9 +84,17 @@ private:
 	bool m_WasCursorChanged;
 	bool m_WasRendered;
 
+	STextContainerIndex m_RenderTextContainerIndex;
+	std::string m_RenderText;
+	CTextCursor m_RenderCursor;
+	unsigned m_RenderFlags = 0;
+	ColorRGBA m_RenderTextColor;
+	ColorRGBA m_RenderSelectionColor;
+
 	char m_ClearButtonId;
 
 	void UpdateStrData();
+	void ResetRenderCache();
 	enum EMoveDirection
 	{
 		FORWARD,
@@ -105,6 +117,7 @@ public:
 	static void RenderCandidates();
 
 	static CLineInput *GetActiveInput() { return ms_pActiveInput; }
+	static void ResetActiveInputRenderCache();
 
 	CLineInput()
 	{

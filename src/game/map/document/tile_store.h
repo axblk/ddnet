@@ -190,6 +190,55 @@ namespace map_document
 		const void *ChunkId(int ChunkX, int ChunkY) const { return ChunkAt(ChunkX, ChunkY).get(); }
 
 		/**
+		 * Calls back for every block that this store and `Older` do not share,
+		 * with the block's position in blocks rather than in tiles.
+		 *
+		 * This is what the renderer wants: a block whose identity changed is a
+		 * piece of geometry that has to be built again, and no more than that -
+		 * the blocks are the same 64 by 64 squares the renderer builds in. A
+		 * stroke over a version therefore says which few squares to invalidate,
+		 * without comparing a single tile.
+		 *
+		 * Blocks the two stores share are not looked at, and neither are whole
+		 * pages of the block list they share, so this is as cheap as the change
+		 * was small. A store of another size answers with all of its blocks,
+		 * because a layer that was resized is a layer to build again.
+		 */
+		template<typename FBlock>
+		void ForEachChangedChunk(const CTileStore &Older, FBlock &&Changed) const
+		{
+			if(m_Width != Older.m_Width || m_Height != Older.m_Height)
+			{
+				for(int ChunkY = 0; ChunkY < m_ChunksDown; ++ChunkY)
+				{
+					for(int ChunkX = 0; ChunkX < m_ChunksAcross; ++ChunkX)
+					{
+						Changed(ChunkX, ChunkY);
+					}
+				}
+				return;
+			}
+			if(m_pDirectory == Older.m_pDirectory)
+				return;
+			for(int ChunkY = 0; ChunkY < m_ChunksDown; ++ChunkY)
+			{
+				for(int ChunkX = 0; ChunkX < m_ChunksAcross; ++ChunkX)
+				{
+					const size_t Index = ChunkIndex(ChunkX, ChunkY);
+					const size_t Page = Index / CHUNKS_PER_PAGE;
+					if(SamePage(Older, Page))
+					{
+						// The whole page is shared, so is every block on it.
+						ChunkX += CHUNKS_PER_PAGE - 1 - (int)(Index % CHUNKS_PER_PAGE);
+						continue;
+					}
+					if(ChunkAt(ChunkX, ChunkY) != Older.ChunkAt(ChunkX, ChunkY))
+						Changed(ChunkX, ChunkY);
+				}
+			}
+		}
+
+		/**
 		 * Whether two stores hold the same tiles. Blocks that are the same block
 		 * are not looked into, so this is cheap between two versions of one
 		 * layer and dear between two layers that were built separately.
@@ -326,6 +375,16 @@ namespace map_document
 		}
 
 		size_t ChunkIndex(int ChunkX, int ChunkY) const { return (size_t)ChunkY * m_ChunksAcross + ChunkX; }
+
+		/** Whether both stores have the same page of the block list. */
+		bool SamePage(const CTileStore &Other, size_t Page) const
+		{
+			const CPageRef *pMine = m_pDirectory == nullptr || Page >= m_pDirectory->size() ? nullptr : &(*m_pDirectory)[Page];
+			const CPageRef *pTheirs = Other.m_pDirectory == nullptr || Page >= Other.m_pDirectory->size() ? nullptr : &(*Other.m_pDirectory)[Page];
+			if(pMine == nullptr || pTheirs == nullptr)
+				return pMine == pTheirs;
+			return *pMine == *pTheirs;
+		}
 
 		const CChunkRef &ChunkAt(int ChunkX, int ChunkY) const
 		{

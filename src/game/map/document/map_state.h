@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
 
 /**
@@ -35,7 +36,7 @@ public:
 	int m_ClipW = 0;
 	int m_ClipH = 0;
 
-	std::vector<std::shared_ptr<const CTileLayer>> m_vpLayers;
+	std::vector<std::shared_ptr<const CLayer>> m_vpLayers;
 
 	/** What this group holds, its layers with it. */
 	uint64_t Bytes() const
@@ -51,7 +52,7 @@ public:
 		for(const auto &pLayer : m_vpLayers)
 		{
 			if(Seen.insert(pLayer.get()).second)
-				Total += sizeof(CTileLayer) + pLayer->BytesOnce(Seen);
+				Total += sizeof(CLayer) + LayerBytesOnce(*pLayer, Seen);
 		}
 		return Total;
 	}
@@ -66,9 +67,9 @@ public:
  * always the same three steps, and they are meant to be read as one:
  *
  * ```
- * CMapState Next = Current;                       // pointers only
- * CTileLayer Changed = *Next.Layer(Group, Layer); // pointers only
- * Changed.m_Tiles.Set(x, y, Tile);                // one block, taken apart
+ * CMapState Next = Current;                           // pointers only
+ * CTileLayer Changed = *Next.TileLayer(Group, Layer);  // pointers only
+ * Changed.m_Tiles.Set(x, y, Tile);                     // one block, apart
  * Next.ReplaceLayer(Group, Layer, std::move(Changed));
  * ```
  *
@@ -94,7 +95,7 @@ public:
 		return m_vpGroups[Group].get();
 	}
 
-	const CTileLayer *Layer(size_t Group, size_t Layer) const
+	const CLayer *Layer(size_t Group, size_t Layer) const
 	{
 		const CGroup *pGroup = this->Group(Group);
 		dbg_assert(Layer < pGroup->m_vpLayers.size(), "Layer out of range");
@@ -102,15 +103,26 @@ public:
 	}
 
 	/**
+	 * The same layer, for a caller that already knows it holds tiles - the
+	 * game layer of a map, say, or the layer a tile tool is working on.
+	 */
+	const CTileLayer *TileLayer(size_t Group, size_t Layer) const
+	{
+		const CLayer *pLayer = this->Layer(Group, Layer);
+		dbg_assert(std::holds_alternative<CTileLayer>(*pLayer), "Layer %d of group %d holds no tiles", (int)Layer, (int)Group);
+		return &std::get<CTileLayer>(*pLayer);
+	}
+
+	/**
 	 * Puts a changed layer in place of the one that was there. Every other
 	 * layer of that group, and every other group, comes along unchanged - as
 	 * the same node, not as a copy of it.
 	 */
-	void ReplaceLayer(size_t GroupIndex, size_t LayerIndex, CTileLayer Changed)
+	void ReplaceLayer(size_t GroupIndex, size_t LayerIndex, CLayer Changed)
 	{
 		CGroup ChangedGroup = *Group(GroupIndex);
 		dbg_assert(LayerIndex < ChangedGroup.m_vpLayers.size(), "Layer out of range");
-		ChangedGroup.m_vpLayers[LayerIndex] = std::make_shared<const CTileLayer>(std::move(Changed));
+		ChangedGroup.m_vpLayers[LayerIndex] = std::make_shared<const CLayer>(std::move(Changed));
 		m_vpGroups[GroupIndex] = std::make_shared<const CGroup>(std::move(ChangedGroup));
 	}
 

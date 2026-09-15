@@ -193,10 +193,13 @@ namespace map_document
 					Image.m_Name = pName;
 				}
 
+				// An external image says how big the file it names is, and
+				// that is kept even though the pixels are not: writing the
+				// map back has to say the same thing about it.
+				Image.m_Width = pItem->m_Width;
+				Image.m_Height = pItem->m_Height;
 				if(!Image.m_External)
 				{
-					Image.m_Width = pItem->m_Width;
-					Image.m_Height = pItem->m_Height;
 					const size_t Size = (size_t)std::max(0, pItem->m_Width) * std::max(0, pItem->m_Height) * 4;
 					const void *pData = File.GetData(pItem->m_ImageData);
 					if(Size == 0 || pData == nullptr || (size_t)File.GetDataSize(pItem->m_ImageData) < Size)
@@ -449,6 +452,43 @@ namespace map_document
 			return CLayer(std::move(Sounds));
 		}
 
+		/**
+		 * Reads what the automapper is set to for the layers that have it.
+		 *
+		 * It sits in items of its own that name a group and a layer, so it is
+		 * read after the groups are there to be pointed at.
+		 */
+		void ReadAutomapperConfigs(CDataFileReader &File, CMapState *pState, std::vector<std::string> *pvWarnings)
+		{
+			int Start, Num;
+			File.GetType(MAPITEMTYPE_AUTOMAPPER_CONFIG, &Start, &Num);
+			for(int i = 0; i < Num; ++i)
+			{
+				const CMapItemAutomapperConfig *pItem = static_cast<CMapItemAutomapperConfig *>(File.GetItem(Start + i));
+				if(pItem->m_Version != 1)
+				{
+					Warn(pvWarnings, "An automapper setting is of version %d, which cannot be read.", pItem->m_Version);
+					continue;
+				}
+				if(pItem->m_GroupId < 0 || (size_t)pItem->m_GroupId >= pState->NumGroups() ||
+					pItem->m_LayerId < 0 || (size_t)pItem->m_LayerId >= pState->NumLayers(pItem->m_GroupId))
+				{
+					Warn(pvWarnings, "An automapper setting points at layer %d of group %d, which the map does not have.", pItem->m_LayerId, pItem->m_GroupId);
+					continue;
+				}
+				const CLayer *pLayer = pState->Layer(pItem->m_GroupId, pItem->m_LayerId);
+				if(!std::holds_alternative<CTileLayer>(*pLayer))
+					continue;
+				CTileLayer Tiles = std::get<CTileLayer>(*pLayer);
+				if(Tiles.m_Kind != ETileLayerKind::TILES)
+					continue;
+				Tiles.m_AutomapperConfig = pItem->m_AutomapperConfig;
+				Tiles.m_AutomapperSeed = pItem->m_AutomapperSeed;
+				Tiles.m_AutomapperAutomatic = (pItem->m_Flags & CMapItemAutomapperConfig::FLAG_AUTOMATIC) != 0;
+				pState->ReplaceLayer(pItem->m_GroupId, pItem->m_LayerId, std::move(Tiles));
+			}
+		}
+
 		void ReadGroups(CDataFileReader &File, CMapState *pState, std::vector<std::string> *pvWarnings)
 		{
 			int LayersStart, LayersNum;
@@ -527,6 +567,344 @@ namespace map_document
 		ReadSounds(File, pState, pvWarnings);
 		ReadEnvelopes(File, pState, pvWarnings);
 		ReadGroups(File, pState, pvWarnings);
+		ReadAutomapperConfigs(File, pState, pvWarnings);
 		return true;
+	}
+
+	namespace
+	{
+		/** A name as the file wants it: a handful of ints with the bytes in them. */
+		void WriteName(int *pInts, size_t NumInts, const std::string &Name)
+		{
+			StrToInts(pInts, NumInts, Name.c_str());
+		}
+
+		void WriteInfo(CDataFileWriter &File, const CMapInfo &Info)
+		{
+			CMapItemInfoSettings Item;
+			Item.m_Version = 1;
+			Item.m_Author = File.AddDataString(Info.m_Author.c_str());
+			Item.m_MapVersion = File.AddDataString(Info.m_MapVersion.c_str());
+			Item.m_Credits = File.AddDataString(Info.m_Credits.c_str());
+			Item.m_License = File.AddDataString(Info.m_License.c_str());
+
+			Item.m_Settings = -1;
+			if(!Info.m_Settings.Empty())
+			{
+				// One blob of lines, each ended by a zero byte.
+				std::vector<char> vBlob;
+				for(const std::string &Setting : Info.m_Settings.All())
+				{
+					vBlob.insert(vBlob.end(), Setting.begin(), Setting.end());
+					vBlob.push_back('\0');
+				}
+				Item.m_Settings = File.AddData(vBlob.size(), vBlob.data());
+			}
+			File.AddItem(MAPITEMTYPE_INFO, 0, sizeof(Item), &Item);
+		}
+
+		void WriteImages(CDataFileWriter &File, const CMapState &State)
+		{
+			for(size_t i = 0; i < State.NumImages(); ++i)
+			{
+				const CImage *pImage = State.Image(i);
+				CMapItemImage Item;
+				Item.m_Version = 1;
+				Item.m_Width = pImage->m_Width;
+				Item.m_Height = pImage->m_Height;
+				Item.m_External = pImage->m_External ? 1 : 0;
+				Item.m_ImageName = File.AddDataString(pImage->m_Name.c_str());
+				Item.m_ImageData = -1;
+				if(!pImage->m_External && !pImage->m_Data.Empty())
+					Item.m_ImageData = File.AddData(pImage->m_Data.Size(), pImage->m_Data.All().data());
+				File.AddItem(MAPITEMTYPE_IMAGE, i, sizeof(Item), &Item);
+			}
+		}
+
+		void WriteSounds(CDataFileWriter &File, const CMapState &State)
+		{
+			for(size_t i = 0; i < State.NumSounds(); ++i)
+			{
+				const CSound *pSound = State.Sound(i);
+				CMapItemSound Item;
+				Item.m_Version = 1;
+				Item.m_External = pSound->m_External ? 1 : 0;
+				Item.m_SoundName = File.AddDataString(pSound->m_Name.c_str());
+				Item.m_SoundData = -1;
+				Item.m_SoundDataSize = pSound->m_Data.Size();
+				if(!pSound->m_Data.Empty())
+					Item.m_SoundData = File.AddData(pSound->m_Data.Size(), pSound->m_Data.All().data());
+				File.AddItem(MAPITEMTYPE_SOUND, i, sizeof(Item), &Item);
+			}
+		}
+
+		/** One plane of tiles as the plain array a data item holds. */
+		template<typename TTile>
+		int WritePlane(CDataFileWriter &File, const CTileStore<TTile> &Store)
+		{
+			std::vector<TTile> vTiles((size_t)Store.Width() * Store.Height());
+			Store.CopyTo(vTiles.data());
+			return File.AddData(vTiles.size() * sizeof(TTile), vTiles.data());
+		}
+
+		/** A plane of air, which is what a physics layer writes where its tiles would be. */
+		int WriteAir(CDataFileWriter &File, int Width, int Height)
+		{
+			const std::vector<CTile> vAir((size_t)Width * Height);
+			return File.AddData(vAir.size() * sizeof(CTile), vAir.data());
+		}
+
+		void WriteTileLayer(CDataFileWriter &File, const CTileLayer &Layer, int LayerIndex)
+		{
+			CMapItemLayerTilemap Item;
+			Item.m_Version = 3;
+			Item.m_Layer.m_Version = 0; // Was uninitialized once; nothing reads it.
+			Item.m_Layer.m_Type = LAYERTYPE_TILES;
+			Item.m_Layer.m_Flags = Layer.m_Detail ? LAYERFLAG_DETAIL : 0;
+			Item.m_Width = Layer.Width();
+			Item.m_Height = Layer.Height();
+			Item.m_Color = Layer.m_Color;
+			Item.m_ColorEnv = Layer.m_ColorEnvelope;
+			Item.m_ColorEnvOffset = Layer.m_ColorEnvelopeOffset;
+			Item.m_Image = Layer.m_Image;
+			WriteName(Item.m_aName, std::size(Item.m_aName), Layer.m_Name);
+
+			// The fields for the second planes are only read when the flags
+			// say there is one, but they were uninitialized in old files, so
+			// they are written as -1 rather than left as whatever was there.
+			Item.m_Tele = -1;
+			Item.m_Speedup = -1;
+			Item.m_Front = -1;
+			Item.m_Switch = -1;
+			Item.m_Tune = -1;
+
+			switch(Layer.m_Kind)
+			{
+			case ETileLayerKind::TILES:
+				Item.m_Flags = 0;
+				Item.m_Data = WritePlane(File, Layer.m_Tiles);
+				break;
+			case ETileLayerKind::GAME:
+				Item.m_Flags = TILESLAYERFLAG_GAME;
+				Item.m_Data = WritePlane(File, Layer.m_Tiles);
+				break;
+			case ETileLayerKind::FRONT:
+				Item.m_Flags = TILESLAYERFLAG_FRONT;
+				Item.m_Data = WriteAir(File, Layer.Width(), Layer.Height());
+				Item.m_Front = WritePlane(File, Layer.m_Tiles);
+				break;
+			case ETileLayerKind::TELE:
+				Item.m_Flags = TILESLAYERFLAG_TELE;
+				Item.m_Data = WritePlane(File, Layer.m_Tiles);
+				Item.m_Tele = WritePlane(File, std::get<CTileStore<CTeleTile>>(Layer.m_ExtraTiles));
+				break;
+			case ETileLayerKind::SPEEDUP:
+				Item.m_Flags = TILESLAYERFLAG_SPEEDUP;
+				Item.m_Data = WritePlane(File, Layer.m_Tiles);
+				Item.m_Speedup = WritePlane(File, std::get<CTileStore<CSpeedupTile>>(Layer.m_ExtraTiles));
+				break;
+			case ETileLayerKind::SWITCH:
+				Item.m_Flags = TILESLAYERFLAG_SWITCH;
+				Item.m_Data = WritePlane(File, Layer.m_Tiles);
+				Item.m_Switch = WritePlane(File, std::get<CTileStore<CSwitchTile>>(Layer.m_ExtraTiles));
+				break;
+			case ETileLayerKind::TUNE:
+				Item.m_Flags = TILESLAYERFLAG_TUNE;
+				Item.m_Data = WritePlane(File, Layer.m_Tiles);
+				Item.m_Tune = WritePlane(File, std::get<CTileStore<CTuneTile>>(Layer.m_ExtraTiles));
+				break;
+			}
+			File.AddItem(MAPITEMTYPE_LAYER, LayerIndex, sizeof(Item), &Item);
+		}
+
+		void WriteQuadLayer(CDataFileWriter &File, const CQuadLayer &Layer, int LayerIndex)
+		{
+			CMapItemLayerQuads Item;
+			Item.m_Version = 2;
+			Item.m_Layer.m_Version = 0;
+			Item.m_Layer.m_Type = LAYERTYPE_QUADS;
+			Item.m_Layer.m_Flags = Layer.m_Detail ? LAYERFLAG_DETAIL : 0;
+			Item.m_Image = Layer.m_Image;
+			Item.m_NumQuads = Layer.m_Quads.Size();
+			WriteName(Item.m_aName, std::size(Item.m_aName), Layer.m_Name);
+
+			if(!Layer.m_Quads.Empty())
+			{
+				Item.m_Data = File.AddDataSwapped(Layer.m_Quads.Size() * sizeof(CQuad), Layer.m_Quads.All().data());
+			}
+			else
+			{
+				// A reader that is old enough reads the data before it looks
+				// at how many quads there are, so there has to be one.
+				const CQuad Nothing = {};
+				Item.m_Data = File.AddDataSwapped(sizeof(CQuad), &Nothing);
+			}
+			File.AddItem(MAPITEMTYPE_LAYER, LayerIndex, sizeof(Item), &Item);
+		}
+
+		void WriteSoundLayer(CDataFileWriter &File, const CSoundLayer &Layer, int LayerIndex)
+		{
+			CMapItemLayerSounds Item;
+			Item.m_Version = 2;
+			Item.m_Layer.m_Version = 0;
+			Item.m_Layer.m_Type = LAYERTYPE_SOUNDS;
+			Item.m_Layer.m_Flags = Layer.m_Detail ? LAYERFLAG_DETAIL : 0;
+			Item.m_Sound = Layer.m_Sound;
+			Item.m_NumSources = Layer.m_Sources.Size();
+			WriteName(Item.m_aName, std::size(Item.m_aName), Layer.m_Name);
+
+			if(!Layer.m_Sources.Empty())
+			{
+				Item.m_Data = File.AddDataSwapped(Layer.m_Sources.Size() * sizeof(CSoundSource), Layer.m_Sources.All().data());
+			}
+			else
+			{
+				const CSoundSource Nothing = {};
+				Item.m_Data = File.AddDataSwapped(sizeof(CSoundSource), &Nothing);
+			}
+			File.AddItem(MAPITEMTYPE_LAYER, LayerIndex, sizeof(Item), &Item);
+		}
+
+		void WriteGroups(CDataFileWriter &File, const CMapState &State)
+		{
+			int LayerIndex = 0;
+			int AutomapperIndex = 0;
+			for(size_t g = 0; g < State.NumGroups(); ++g)
+			{
+				const CGroup *pGroup = State.Group(g);
+				CMapItemGroup Item;
+				Item.m_Version = 3;
+				Item.m_OffsetX = pGroup->m_OffsetX;
+				Item.m_OffsetY = pGroup->m_OffsetY;
+				Item.m_ParallaxX = pGroup->m_ParallaxX;
+				Item.m_ParallaxY = pGroup->m_ParallaxY;
+				Item.m_UseClipping = pGroup->m_UseClipping ? 1 : 0;
+				Item.m_ClipX = pGroup->m_ClipX;
+				Item.m_ClipY = pGroup->m_ClipY;
+				Item.m_ClipW = pGroup->m_ClipW;
+				Item.m_ClipH = pGroup->m_ClipH;
+				Item.m_StartLayer = LayerIndex;
+				Item.m_NumLayers = pGroup->m_vpLayers.size();
+				WriteName(Item.m_aName, std::size(Item.m_aName), pGroup->m_Name);
+
+				// The layers come before the group that holds them, which is
+				// the order the editor has always written them in.
+				for(size_t l = 0; l < pGroup->m_vpLayers.size(); ++l, ++LayerIndex)
+				{
+					const CLayer &Layer = *pGroup->m_vpLayers[l];
+					if(std::holds_alternative<CTileLayer>(Layer))
+					{
+						const CTileLayer &Tiles = std::get<CTileLayer>(Layer);
+						WriteTileLayer(File, Tiles, LayerIndex);
+						// Every layer that is drawn gets one of these, even
+						// one that has nothing to say, because that is what
+						// the editor writes - and a map that comes out of
+						// this is meant to be the same file it went in as.
+						if(Tiles.m_Kind == ETileLayerKind::TILES)
+						{
+							CMapItemAutomapperConfig Automapper;
+							Automapper.m_Version = 1;
+							Automapper.m_GroupId = g;
+							Automapper.m_LayerId = l;
+							Automapper.m_AutomapperConfig = Tiles.m_AutomapperConfig;
+							Automapper.m_AutomapperSeed = Tiles.m_AutomapperSeed;
+							Automapper.m_Flags = Tiles.m_AutomapperAutomatic ? CMapItemAutomapperConfig::FLAG_AUTOMATIC : 0;
+							File.AddItem(MAPITEMTYPE_AUTOMAPPER_CONFIG, AutomapperIndex, sizeof(Automapper), &Automapper);
+							++AutomapperIndex;
+						}
+					}
+					else if(std::holds_alternative<CQuadLayer>(Layer))
+					{
+						WriteQuadLayer(File, std::get<CQuadLayer>(Layer), LayerIndex);
+					}
+					else
+					{
+						WriteSoundLayer(File, std::get<CSoundLayer>(Layer), LayerIndex);
+					}
+				}
+				File.AddItem(MAPITEMTYPE_GROUP, g, sizeof(Item), &Item);
+			}
+		}
+
+		void WriteEnvelopes(CDataFileWriter &File, const CMapState &State)
+		{
+			int PointCount = 0;
+			for(size_t e = 0; e < State.NumEnvelopes(); ++e)
+			{
+				const CEnvelope *pEnvelope = State.Envelope(e);
+				CMapItemEnvelope Item;
+				Item.m_Version = 2;
+				Item.m_Channels = pEnvelope->m_Channels;
+				Item.m_StartPoint = PointCount;
+				Item.m_NumPoints = pEnvelope->m_Points.Size();
+				Item.m_Synchronized = pEnvelope->m_Synchronized ? 1 : 0;
+				WriteName(Item.m_aName, std::size(Item.m_aName), pEnvelope->m_Name);
+				File.AddItem(MAPITEMTYPE_ENVELOPE, e, sizeof(Item), &Item);
+				PointCount += Item.m_NumPoints;
+			}
+
+			// The points of every envelope end up in one item, and the bezier
+			// tangents in a second one beside it - but only if some point is
+			// a bezier at all, because a map that has none is written the way
+			// a map without them has always been written.
+			bool Bezier = false;
+			for(size_t e = 0; e < State.NumEnvelopes() && !Bezier; ++e)
+			{
+				for(const CEnvPoint_runtime &Point : State.Envelope(e)->m_Points.All())
+				{
+					if(Point.m_Curvetype == CURVETYPE_BEZIER)
+					{
+						Bezier = true;
+						break;
+					}
+				}
+			}
+
+			std::vector<CEnvPoint> vPoints(std::max(PointCount, 1));
+			std::vector<CEnvPointBezier> vBezier(Bezier ? std::max(PointCount, 1) : 0);
+			int Index = 0;
+			for(size_t e = 0; e < State.NumEnvelopes(); ++e)
+			{
+				const CEnvPoint_runtime *pPrevious = nullptr;
+				for(const CEnvPoint_runtime &Point : State.Envelope(e)->m_Points.All())
+				{
+					std::memcpy(&vPoints[Index], &Point, sizeof(CEnvPoint));
+					if(Bezier)
+					{
+						// A point holds the tangent that leads out of it, and
+						// the one that leads into it belongs to the curve the
+						// point before it started.
+						if(Point.m_Curvetype == CURVETYPE_BEZIER)
+						{
+							std::memcpy(vBezier[Index].m_aOutTangentDeltaX, Point.m_Bezier.m_aOutTangentDeltaX, sizeof(Point.m_Bezier.m_aOutTangentDeltaX));
+							std::memcpy(vBezier[Index].m_aOutTangentDeltaY, Point.m_Bezier.m_aOutTangentDeltaY, sizeof(Point.m_Bezier.m_aOutTangentDeltaY));
+						}
+						if(pPrevious != nullptr && pPrevious->m_Curvetype == CURVETYPE_BEZIER)
+						{
+							std::memcpy(vBezier[Index].m_aInTangentDeltaX, Point.m_Bezier.m_aInTangentDeltaX, sizeof(Point.m_Bezier.m_aInTangentDeltaX));
+							std::memcpy(vBezier[Index].m_aInTangentDeltaY, Point.m_Bezier.m_aInTangentDeltaY, sizeof(Point.m_Bezier.m_aInTangentDeltaY));
+						}
+					}
+					pPrevious = &Point;
+					++Index;
+				}
+			}
+			File.AddItem(MAPITEMTYPE_ENVPOINTS, 0, sizeof(CEnvPoint) * PointCount, vPoints.data());
+			if(Bezier)
+				File.AddItem(MAPITEMTYPE_ENVPOINTS_BEZIER, 0, sizeof(CEnvPointBezier) * PointCount, vBezier.data());
+		}
+	} // namespace
+
+	void WriteMapState(CDataFileWriter &File, const CMapState &State)
+	{
+		CMapItemVersion Version;
+		Version.m_Version = 1;
+		File.AddItem(MAPITEMTYPE_VERSION, 0, sizeof(Version), &Version);
+
+		WriteInfo(File, State.m_Info);
+		WriteImages(File, State);
+		WriteSounds(File, State);
+		WriteGroups(File, State);
+		WriteEnvelopes(File, State);
 	}
 } // namespace map_document

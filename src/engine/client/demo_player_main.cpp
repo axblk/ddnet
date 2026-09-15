@@ -1,6 +1,6 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
-#include "demo_viewer_client.h"
+#include "demo_player_client.h"
 
 #include <base/log.h>
 #include <base/logger.h>
@@ -24,7 +24,7 @@
 #include <memory>
 #include <vector>
 
-// Entry point of the demo viewer. The client's own entry point starts a game to
+// Entry point of the demo player. The client's own entry point starts a game to
 // play: it registers the connect link handler with the system, restarts the
 // binary when the graphics settings demand it, saves the configuration on the
 // way out and reports what went wrong in message boxes. None of that belongs in
@@ -50,7 +50,7 @@ int main(int argc, const char **argv)
 	// errors are printed.
 	pStdoutLogger->SetFilter(CLogFilter{IConsole::ToLogLevelFilter(-1)});
 
-	CDemoViewerClient *pClient = new CDemoViewerClient;
+	CDemoPlayerClient *pClient = new CDemoPlayerClient;
 	pClient->SetLoggers(std::shared_ptr<ILogger>(pFutureFileLogger), std::shared_ptr<ILogger>(pStdoutLogger));
 
 	IKernel *pKernel = IKernel::Create();
@@ -151,7 +151,7 @@ int main(int argc, const char **argv)
 		}
 		else if(str_comp(argv[Index], "--help") == 0)
 		{
-			log_info("client", "Usage: ddnet-demo-viewer [<demo>] [--output <video.mp4>] [--no-controls] [settings]");
+			log_info("client", "Usage: ddnet-demo-player [<demo>] [--output <video.mp4>] [--no-controls] [settings]");
 			log_info("client", "Anything else is a console command, so `cl_video_width 1920` and the");
 			log_info("client", "rest of the cl_ settings work here just as they do in the client.");
 			log_info("client", "The viewer draws its own controls over the demo, which --no-controls");

@@ -174,6 +174,22 @@ public:
 	void ScaleZoom(float Factor);
 	float Zoom() const;
 	/**
+	 * A demo carries the view of whoever recorded it: where the camera was and
+	 * how much of the world it had in it. That view is followed until somebody
+	 * zooms, and from then on the zoom is theirs - which is what they asked
+	 * for, but it leaves no way back to what the demo brought. These are that
+	 * way back.
+	 *
+	 * `RecordedCameraAvailable` is false where there is nothing to go back to:
+	 * a demo recorded before the camera was written into demos, or a view that
+	 * is nobody's to begin with.
+	 */
+	bool RecordedCameraAvailable() const;
+	/** Whether the view the demo brought is the one being shown. */
+	bool RecordedCamera() const;
+	/** Goes back to the view the demo brought, or leaves it for one's own. */
+	void SetRecordedCamera(bool Use);
+	/**
 	 * How wide one pixel of the window is in the world, so that what is dragged
 	 * moves with the pointer at any zoom.
 	 */

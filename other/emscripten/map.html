@@ -37,6 +37,10 @@
 		     draws for itself, in the same order and with the same pictures -
 		     only as buttons the browser knows about, which is what gives them a
 		     tooltip and a tab order. -->
+		<!-- A picture of the whole map is drawn a piece at a time over many
+		     frames, and for a large map that is long enough that somebody
+		     would otherwise wonder whether the button did anything. -->
+		<p id="saving" class="viewer-readout viewer-saving" role="status" hidden></p>
 		<div id="controls" class="viewer-controls viewer-controls-corner">
 			<div id="cluster" class="viewer-cluster" hidden>
 				<button id="fullscreen" class="viewer-button" data-icon="fullscreen" title="Full screen" aria-label="Full screen"></button>
@@ -88,6 +92,7 @@
 				const entities = document.getElementById('entities');
 				const saveView = document.getElementById('save-view');
 				const saveMap = document.getElementById('save-map');
+				const saving = document.getElementById('saving');
 				DDNetLoader.paintIcons(document);
 				DDNetLoader.fullscreen(document.getElementById('fullscreen'));
 				// The buttons and the menu are one thing to whoever uses them, so
@@ -250,6 +255,11 @@
 					const busy = map.exportState() === 1;
 					saveView.disabled = busy;
 					saveMap.disabled = busy;
+					const progress = busy ? map.exportProgress() : 0;
+					saving.hidden = !busy || !(progress > 0);
+					if (!saving.hidden) {
+						saving.textContent = `Saving the whole map… ${Math.round(progress * 100)}%`;
+					}
 				}, 200);
 			})();
 		</script>

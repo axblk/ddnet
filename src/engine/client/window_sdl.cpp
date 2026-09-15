@@ -28,6 +28,9 @@
 #include <SDL.h>
 #include <SDL_messagebox.h>
 #include <SDL_video.h>
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#include <emscripten.h>
+#endif
 #if defined(CONF_PLATFORM_IOS)
 #include <ios/ios_main.h>
 #endif
@@ -1031,6 +1034,30 @@ int CGraphicsWindow_SDL::OpenWindow(SGraphicsBackendInit &BackendInit)
 			SDL_SetHint(SDL_HINT_VIDEODRIVER, "x11,wayland");
 #endif
 	}
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// SDL looks its canvas up by the selector `#canvas`, and a selector only
+	// reaches what is in the page itself. A viewer that a page embeds as an
+	// element keeps its canvas in a shadow root, where no selector goes, and
+	// SDL would then size and listen to nothing at all. So the canvas we were
+	// handed is registered under that name before anything looks it up.
+	// In a try, because it is Emscripten's own table and not part of its API:
+	// where it is no longer there, this goes back to being a page's canvas
+	// found by its name, which is what it was before.
+	EM_ASM({
+		try
+		{
+			if(Module.canvas)
+			{
+				specialHTMLTargets["#canvas"] = Module.canvas;
+			}
+		}
+		catch(error)
+		{
+			console.warn("DDNet: this canvas could not be named for SDL:", error);
+		}
+	});
+#endif
 
 	if(!SDL_WasInit(SDL_INIT_VIDEO))
 	{

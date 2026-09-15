@@ -1,10 +1,10 @@
 # ddnet-loader
 
-Runs DDNet, its demo viewer and its map viewer in a browser: one canvas, one
+Runs DDNet, its demo player and its map viewer in a browser: one canvas, one
 call, and a handle to steer them with.
 
 The programs themselves are what this repository builds with Emscripten —
-`DDNet.js`, `ddnet-demo-viewer.js`, `ddnet-map-viewer.js`,
+`DDNet.js`, `ddnet-demo-player.js`, `ddnet-map-viewer.js`,
 `ddnet-demo-render.js` and their `.wasm` files. This module is what puts one of
 them on a page: it starts the program, gives it the file that was dropped or
 named in the URL, keeps the browser's own rules (cross-origin isolation, a
@@ -20,7 +20,7 @@ import DDNetLoader from "ddnet-loader";
 // One program on one canvas. Claims no globals: a page may have two of them,
 // or one of these beside a program of its own.
 const viewer = await DDNetLoader.start({
-	module: DDNetDemoViewer,          // the program's factory
+	module: DDNetDemoPlayer,          // the program's factory
 	canvas: document.querySelector("canvas"),
 	accept: [".demo"],
 	controls: false,                  // the page draws its own
@@ -45,6 +45,40 @@ rest — `autoHide`, `fullscreen`, `icon`, `paintIcons`, `exportSettingsForm` �
 is what our pages are built out of, offered because a page building the same
 interface would otherwise write it again.
 
+## One line
+
+For a page that only wants a viewer in a box, the element is the whole of it:
+
+```html
+<script type="module" src="ddnet-loader.js"></script>
+
+<ddnet-demo src="https://example.org/a.demo" controls></ddnet-demo>
+<ddnet-map src="https://example.org/a.map" controls x="120" y="64" tiles="90"></ddnet-map>
+```
+
+The picture lives in a shadow root, so nothing in it shares a name with the
+page around it — no `#canvas` to collide with, and no stylesheet of ours
+landing on somebody else's buttons. What may be styled from outside is named:
+
+```css
+ddnet-map { width: 800px; height: 450px; }
+ddnet-map::part(picture) { image-rendering: pixelated; }
+ddnet-map::part(message) { font-family: monospace; }
+```
+
+`controls` is the bar the viewer draws for itself; without it the element shows
+nothing but the picture, and the page steers it through `element.controls`,
+which is the same `demoControls`/`mapControls` handle as above. The attributes
+beyond `src` are the ones the viewer pages spell in their address — `t`,
+`speed`, `paused`, `spec` for a demo, `x`, `y`, `tiles` for a map — so a link
+somebody copied out of a viewer and an element somebody wrote by hand say the
+same things by the same names. Changing one later moves the running viewer;
+changing `src` shows another file.
+
+`element.ready` is the running program, so a page that wants to do more can
+wait for it, and taking the element out of the page stops the program and lets
+go of everything it held.
+
 ## What a page has to bring
 
 * **Cross-origin isolation.** The programs use threads and therefore
@@ -52,7 +86,7 @@ interface would otherwise write it again.
   and `Cross-Origin-Embedder-Policy: require-corp` on the page. A page that
   cannot set headers can load `coi-serviceworker.js` from this package
   instead, which puts them on with a service worker and reloads once.
-* **The program's script.** `<script src="ddnet-demo-viewer.js">` names its
+* **The program's script.** `<script src="ddnet-demo-player.js">` names its
   factory, or `scriptUrl` says where to fetch one from — including from another
   origin, where the server allows it.
 

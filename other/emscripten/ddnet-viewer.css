@@ -255,6 +255,19 @@
 	white-space: nowrap;
 	user-select: none;
 }
+/* What a picture of the whole map is up to. It sits in the corner opposite the
+   controls, because it has nothing to do with them and a map that is being
+   written to a file is still one somebody is looking at. */
+.viewer-saving {
+	position: absolute;
+	top: 8px;
+	left: 8px;
+	margin: 0;
+	padding: 4px 8px;
+	border-radius: 6px;
+	background-color: var(--viewer-panel, rgba(0, 0, 0, 0.65));
+	color: var(--viewer-text, #f4f4f5);
+}
 .viewer-readout-speed {
 	min-width: 5ch;
 	text-align: center;

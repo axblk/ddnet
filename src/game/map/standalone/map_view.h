@@ -3,6 +3,7 @@
 
 #include <base/vmath.h>
 
+#include <engine/gfx/image_loader.h>
 #include <engine/graphics.h>
 
 #include <game/layers.h>
@@ -10,9 +11,10 @@
 #include <game/map/render_map.h>
 #include <game/map/standalone/map_view_support.h>
 
+#include <chrono>
 #include <memory>
+#include <vector>
 
-class CImageInfo;
 class IEngineGraphics;
 class IEngineGraphicsWindow;
 class IKernel;
@@ -153,6 +155,63 @@ public:
 	bool SaveFullImage(const char *pPath, int TimeOffsetMillis);
 
 	/**
+	 * The same picture, one step at a time. A whole map is a thousand pieces
+	 * for a large one, and a loop that draws them all before it comes back
+	 * holds on to the only thread a browser has: the page then paints nothing
+	 * and answers nothing until it is over, which is indistinguishable from a
+	 * program that has hung.
+	 *
+	 * `BeginFullImage` opens the file and works out the sweep, `StepFullImage`
+	 * draws for as long as it is given and says whether there is more, and
+	 * whoever asked gets the thread back in between.
+	 *
+	 * @param pPath The file to write, as a path of the operating system.
+	 * @param TimeOffsetMillis The moment of the envelopes to draw.
+	 * @param PixelBudget How many pixels the picture may have at most, or 0
+	 * for the map at its own size. A map with more than this is drawn smaller,
+	 * keeping its shape; one with fewer is drawn as it is.
+	 *
+	 * @return `true` when there is a picture to step through.
+	 */
+	bool BeginFullImage(const char *pPath, int TimeOffsetMillis, size_t PixelBudget = 0);
+
+	/**
+	 * How large a picture of the whole map a viewer asks for when somebody
+	 * presses the button. A map is drawn at 32 pixels per tile, so abyss at
+	 * its own size is 46144 by 108768 pixels - five thousand million of them,
+	 * twenty gigabytes before they are compressed, and two and a half thousand
+	 * pieces to draw them in. That is not a picture anybody can open, and in a
+	 * browser it runs out of memory long before it is finished. So a viewer
+	 * asks for the whole map within a budget of pixels, and the map is drawn
+	 * smaller to fit it; a map that is already smaller than this is drawn at
+	 * its own size. Sixty-four million pixels is a picture of eight thousand
+	 * by eight thousand, which is a poster.
+	 */
+	static constexpr size_t VIEWER_FULL_IMAGE_PIXELS = 64 * 1000 * 1000;
+
+	/**
+	 * Draws pieces of the picture until the time given is up, at least one.
+	 *
+	 * @param Budget How long to draw for before coming back.
+	 *
+	 * @return `true` while there is more to draw. On `false` the picture is
+	 * finished or failed, which `FullImageFailed` tells apart.
+	 */
+	bool StepFullImage(std::chrono::nanoseconds Budget);
+
+	/** Whether a picture of the whole map is being drawn. */
+	bool FullImageRunning() const { return m_FullImage.m_Running; }
+
+	/** Whether the last one stopped because something went wrong. */
+	bool FullImageFailed() const { return m_FullImage.m_Failed; }
+
+	/** How far the picture has got, from 0 to 1. */
+	float FullImageProgress() const;
+
+	/** Gives up on the picture and lets go of what it held. */
+	void CancelFullImage();
+
+	/**
 	 * Draws one frame of the view, reads it back off the graphics card and
 	 * writes it as a PNG.
 	 *
@@ -216,17 +275,47 @@ private:
 	 *
 	 * @param Params Where that frame looks.
 	 * @param Image Where the frame is put, as in `ReadFrame`.
+	 * @param Width How wide to draw it, or zero for the surface's own width.
+	 * @param Height How tall to draw it, or zero for the surface's own height.
 	 *
 	 * @return `true` on success, `false` after reporting what went wrong.
 	 */
-	bool RenderAsideAndRead(const SRenderParams &Params, CImageInfo &Image);
+	bool RenderAsideAndRead(const SRenderParams &Params, CImageInfo &Image, int Width = 0, int Height = 0);
 	/**
 	 * Creates the texture `RenderAsideAndRead` draws into, once and again
-	 * whenever the surface has another size.
+	 * whenever what is drawn has another size.
+	 *
+	 * @param Width How wide the texture has to be.
+	 * @param Height How tall the texture has to be.
 	 *
 	 * @return `true` when there is one to draw into.
 	 */
-	bool EnsureAsideTarget();
+	bool EnsureAsideTarget(int Width, int Height);
+	/** Draws one piece of the picture and puts it in the band. */
+	bool StepOneFullImagePiece();
+	/** Closes the file, lets the band go, and answers what to report. */
+	bool EndFullImage(bool Success);
+
+	/**
+	 * A picture of the whole map while it is being drawn: the file it goes to,
+	 * the row of pieces being gathered, and where in the sweep it is.
+	 */
+	struct SFullImage
+	{
+		bool m_Running = false;
+		bool m_Failed = false;
+		CPngRowWriter m_Writer;
+		std::vector<uint8_t> m_vBand;
+		CImageInfo m_Image;
+		SRenderParams m_Whole;
+		size_t m_FullWidth = 0;
+		size_t m_FullHeight = 0;
+		size_t m_PieceWidth = 0;
+		size_t m_PieceHeight = 0;
+		size_t m_Top = 0;
+		size_t m_Left = 0;
+	};
+	SFullImage m_FullImage;
 
 	const char *m_pLogContext;
 	int m_Width = 0;

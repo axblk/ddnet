@@ -39,7 +39,12 @@
 	z-index: 2;
 	inset: 0;
 	display: flex;
-	padding: calc(var(--viewer-edge) + env(safe-area-inset-top, 0px)) calc(var(--viewer-edge) + env(safe-area-inset-right, 0px)) calc(var(--viewer-edge) + env(safe-area-inset-bottom, 0px)) calc(var(--viewer-edge) + env(safe-area-inset-left, 0px));
+	/* The same distance from both sides, and that distance is whichever side
+	   needs more: a phone held sideways has its notch on one side only, and
+	   keeping clear of it on that side alone would leave everything here
+	   sitting off to one side of the screen. */
+	--viewer-side: max(env(safe-area-inset-left, 0px), env(safe-area-inset-right, 0px));
+	padding: calc(var(--viewer-edge) + env(safe-area-inset-top, 0px)) calc(var(--viewer-edge) + var(--viewer-side)) calc(var(--viewer-edge) + env(safe-area-inset-bottom, 0px));
 	pointer-events: none;
 }
 /* A demo: along the bottom, where a video player has it, and what it opens
@@ -63,7 +68,7 @@
    and a flex box that is `hidden` is still laid out unless this says
    otherwise - the attribute only beats the browser's own stylesheet, not
    ours. */
-.viewer-bar[hidden], .viewer-cluster[hidden], .viewer-menu[hidden], .viewer-panel[hidden], .viewer-form label[hidden] {
+.viewer-bar[hidden], .viewer-button[hidden], .viewer-cluster[hidden], .viewer-menu[hidden], .viewer-menu-item[hidden], .viewer-panel[hidden], .viewer-form label[hidden] {
 	display: none;
 }
 .viewer-bar, .viewer-cluster, .viewer-menu, .viewer-panel {
@@ -409,6 +414,43 @@
 	outline-offset: 2px;
 }
 
+/* Nothing to look at yet, and what to do about it: in the middle of the
+   picture, because there is nothing under it to be in the way of. A file can be
+   dropped onto the page, but a phone has nothing to drop with - so there is a
+   button as well, and it is the only way in that works everywhere. */
+.viewer-open {
+	position: fixed;
+	z-index: 3;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: var(--viewer-edge);
+	pointer-events: none;
+}
+.viewer-open[hidden] {
+	display: none;
+}
+.viewer-open-panel {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 10px;
+	max-width: min(420px, 90vw);
+	padding: 16px 20px;
+	text-align: center;
+}
+.viewer-open-hint {
+	margin: 0;
+	color: var(--viewer-dim);
+	font-size: 13px;
+	line-height: 1.4;
+}
+.viewer-open-hint code {
+	color: var(--viewer-text);
+	font-size: 12px;
+}
+
 /* A screen too narrow for everything drops what is marked as spare first,
    which is the order the programs' own bars drop things in. */
 @media (max-width: 560px) {
@@ -434,6 +476,16 @@
 	opacity: 0;
 	transform: translateY(6px);
 	pointer-events: none;
+}
+/* The buttons themselves stay pressable while the bar is out of the way. A
+   press where a button was a moment ago is a press meant for that button, and
+   swallowing it is what makes one look broken: the bar comes back either way,
+   but only this way does the press also do what it says. The rest of the bar -
+   its background, and the strip of time, where a press would seek somewhere
+   nobody asked for - goes on letting presses through to the picture, which is
+   how a bar that has stepped aside is called back. */
+.faded .viewer-button, .faded .viewer-menu-item, .faded .viewer-text-button {
+	pointer-events: auto;
 }
 /* Away from the edge it sits at, which is the top one for a map. */
 .viewer-controls-corner .faded {

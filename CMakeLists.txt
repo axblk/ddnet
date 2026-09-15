@@ -2709,6 +2709,8 @@ set_src(GAME_MAP GLOB_RECURSE src/game/map
   document/tile_store.h
   document_images.cpp
   document_images.h
+  document_render.cpp
+  document_render.h
   document_source.cpp
   document_source.h
   envelope_extrema.cpp
@@ -4244,6 +4246,7 @@ if(TOOLS)
     map_convert_07.cpp
     map_diff.cpp
     map_document_bench.cpp
+    map_document_render.cpp
     map_extract.cpp
     map_find_env.cpp
     map_optimize.cpp
@@ -4267,6 +4270,7 @@ if(TOOLS)
     # The map renderer draws through the client's graphics backend, so there is
     # nothing for it to link against in a server-only build.
     list(FILTER TOOLS_SRC EXCLUDE REGEX "map_render\\.cpp$")
+    list(FILTER TOOLS_SRC EXCLUDE REGEX "map_document_render\\.cpp$")
   endif()
   foreach(ABS_T ${TOOLS_SRC})
     file(RELATIVE_PATH T "${PROJECT_SOURCE_DIR}/src/tools/" ${ABS_T})
@@ -4307,13 +4311,13 @@ if(TOOLS)
           # tidy-alphabetical-end
         )
       endif()
-      if(TOOL MATCHES "^map_document_bench$")
+      if(TOOL MATCHES "^map_document_(bench|render)$")
         list(APPEND EXTRA_TOOL_SRC $<TARGET_OBJECTS:game-map-document>)
       endif()
       if(TOOL MATCHES "^config_")
         list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")
       endif()
-      if(TOOL MATCHES "^map_render$")
+      if(TOOL MATCHES "^(map_render|map_document_render)$")
         list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS})
         list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-client-graphics-headless> $<TARGET_OBJECTS:engine-gfx>)
         # The tool draws with the client's backends, so it needs what the client
@@ -4342,12 +4346,15 @@ if(TOOLS)
       )
       target_include_directories(${TOOL} SYSTEM PRIVATE ${TOOL_INCLUDE_DIRS})
       target_link_libraries(${TOOL} ${TOOL_LIBS})
-      if(TOOL MATCHES "^map_render$")
-        target_sources(map_render PRIVATE
+      if(TOOL MATCHES "^(map_render|map_document_render)$")
+        target_sources(${TOOL} PRIVATE
           ${GAME_MAP_STANDALONE}
           # tidy-alphabetical-start
           src/engine/client/asset_loader.cpp
           src/engine/client/asset_loader.h
+          src/game/map/document_images.cpp
+          src/game/map/document_render.cpp
+          src/game/map/document_source.cpp
           src/game/map/envelope_extrema.cpp
           src/game/map/map_renderer.cpp
           src/game/map/quad_buffer_cache.cpp

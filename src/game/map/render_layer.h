@@ -133,6 +133,14 @@ public:
 	void Unload() override {}
 	void InitCallback() const override;
 
+	// A group that is not drawn out of a map file puts the same sums on the
+	// screen - see CDocumentRenderer - so these two are shared rather than
+	// written out a second time.
+	static CScreenRect Scaled(const CScreenRect &Rect, float Scale);
+	// The part of a rectangle a window asks for, which for the whole of it is
+	// the rectangle itself.
+	static CScreenRect Windowed(const CScreenRect &Rect, const CScreenRect &Window);
+
 protected:
 	IGraphics::CTextureHandle GetTexture() const override
 	{
@@ -141,10 +149,6 @@ protected:
 	bool HasTexture() const override { return false; }
 
 	float ViewScale(const CRenderLayerParams &Params) const;
-	static CScreenRect Scaled(const CScreenRect &Rect, float Scale);
-	// The part of a rectangle a window asks for, which for the whole of it is
-	// the rectangle itself.
-	static CScreenRect Windowed(const CScreenRect &Rect, const CScreenRect &Window);
 
 	CMapItemGroup *m_pGroup;
 };

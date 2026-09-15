@@ -427,3 +427,34 @@ TEST(MapFile, AMapWrittenTheWayThisWritesComesOutAsItWentIn)
 	EXPECT_EQ(vOurs, FileBytes(Map.m_pStorage.get(), "data/maps/coverage.map", IStorage::TYPE_ALL));
 	Map.m_pStorage->RemoveFile(aPath, IStorage::TYPE_ABSOLUTE);
 }
+
+TEST(MapFile, AGroupKeepsTheClipItWasSavedWith)
+{
+	// dm6 has two clipped groups, and their items are of version 2: the clip
+	// arrived with that version and the name only with the next, so a version
+	// 2 item is shorter than the struct it is read as. Asking for the whole
+	// size before reading the clip dropped it from every map of that age -
+	// found by drawing dm6 twice, once from the file and once from the
+	// document, and seeing one tile come out where the file clips it away.
+	CMapFile Map;
+	ASSERT_TRUE(Map.Read("dm6"));
+	ASSERT_GE(Map.m_State.NumGroups(), 6u);
+
+	const CGroup *pFirst = Map.m_State.Group(4);
+	EXPECT_TRUE(pFirst->m_UseClipping);
+	EXPECT_EQ(pFirst->m_ClipX, 1307);
+	EXPECT_EQ(pFirst->m_ClipY, 0);
+	EXPECT_EQ(pFirst->m_ClipW, 775);
+	EXPECT_EQ(pFirst->m_ClipH, 485);
+
+	const CGroup *pSecond = Map.m_State.Group(5);
+	EXPECT_TRUE(pSecond->m_UseClipping);
+	EXPECT_EQ(pSecond->m_ClipX, 2);
+	EXPECT_EQ(pSecond->m_ClipY, 1225);
+	EXPECT_EQ(pSecond->m_ClipW, 2884);
+	EXPECT_EQ(pSecond->m_ClipH, 1821);
+
+	// And a group that says it does not clip keeps whatever rectangle it
+	// carries - the file holds one either way.
+	EXPECT_FALSE(Map.m_State.Group(6)->m_UseClipping);
+}

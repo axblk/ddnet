@@ -7,6 +7,7 @@
 #include <game/editor/editor.h>
 #include <game/editor/editor_actions.h>
 
+#include <algorithm>
 #include <limits>
 
 CLayerQuads::CLayerQuads(CEditorMap *pMap) :
@@ -23,23 +24,32 @@ CLayerQuads::CLayerQuads(const CLayerQuads &Other) :
 	m_vQuads = Other.m_vQuads;
 }
 
-CLayerQuads::~CLayerQuads() = default;
+CLayerQuads::~CLayerQuads()
+{
+	m_QuadCache.Clear();
+}
 
 void CLayerQuads::Render(const CEditorMap *pRenderMap)
 {
 	if(m_Image >= 0 && (size_t)m_Image < pRenderMap->m_vpImages.size())
-	{
 		Graphics()->TextureSet(pRenderMap->m_vpImages[m_Image]->m_Texture);
-	}
 	else
-	{
 		Graphics()->TextureClear();
+
+	if(m_vBuiltQuads.size() != m_vQuads.size() || !std::equal(m_vQuads.begin(), m_vQuads.end(), m_vBuiltQuads.begin(), [](const CQuad &Left, const CQuad &Right) { return mem_comp(&Left, &Right, sizeof(CQuad)) == 0; }))
+	{
+		m_vBuiltQuads = m_vQuads;
+		m_QuadCache.Invalidate();
 	}
 
-	Graphics()->BlendNone();
-	Editor()->RenderMap()->ForceRenderQuads(m_vQuads.data(), m_vQuads.size(), LAYERRENDERFLAG_OPAQUE, &pRenderMap->m_EnvelopeEvaluator);
+	m_QuadCache.OnInit(Graphics());
+	m_QuadSource.m_pQuads = m_vQuads.data();
+	m_QuadSource.m_NumQuads = m_vQuads.size();
+	m_QuadSource.m_Textured = m_Image >= 0 && (size_t)m_Image < pRenderMap->m_vpImages.size();
+	// The envelopes are being edited here, so no cluster is clipped against
+	// bounds that the next mouse move invalidates.
 	Graphics()->BlendNormal();
-	Editor()->RenderMap()->ForceRenderQuads(m_vQuads.data(), m_vQuads.size(), LAYERRENDERFLAG_TRANSPARENT, &pRenderMap->m_EnvelopeEvaluator);
+	m_QuadCache.Render(m_QuadSource, &pRenderMap->m_EnvelopeEvaluator, 1.0f);
 }
 
 CQuad *CLayerQuads::NewQuad(int x, int y, int Width, int Height)

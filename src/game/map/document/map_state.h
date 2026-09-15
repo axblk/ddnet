@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -36,12 +37,21 @@ public:
 
 	std::vector<std::shared_ptr<const CTileLayer>> m_vpLayers;
 
+	/** What this group holds, its layers with it. */
 	uint64_t Bytes() const
+	{
+		std::unordered_set<const void *> Seen;
+		return BytesOnce(Seen);
+	}
+
+	/** The same, counting nothing twice - see `CTileStore::BytesOnce`. */
+	uint64_t BytesOnce(std::unordered_set<const void *> &Seen) const
 	{
 		uint64_t Total = 0;
 		for(const auto &pLayer : m_vpLayers)
 		{
-			Total += pLayer->Bytes();
+			if(Seen.insert(pLayer.get()).second)
+				Total += sizeof(CTileLayer) + pLayer->BytesOnce(Seen);
 		}
 		return Total;
 	}
@@ -121,17 +131,26 @@ public:
 	}
 
 	/**
-	 * What this version holds, with a block that several versions hold
-	 * counted as its share of it - see `CTileStore::Bytes`. Adding this up
-	 * over a history therefore says roughly what the history costs, which is
-	 * what the byte limit of the history is there to watch.
+	 * What this version holds, as if it were the only one - two versions that
+	 * share all but one block both answer with the whole map.
+	 *
+	 * What a history of versions costs together is `CHistory::Bytes`, which
+	 * walks them with one `Seen` between them.
 	 */
 	uint64_t Bytes() const
+	{
+		std::unordered_set<const void *> Seen;
+		return BytesOnce(Seen);
+	}
+
+	/** The same, counting nothing twice - see `CTileStore::BytesOnce`. */
+	uint64_t BytesOnce(std::unordered_set<const void *> &Seen) const
 	{
 		uint64_t Total = 0;
 		for(const auto &pGroup : m_vpGroups)
 		{
-			Total += pGroup->Bytes();
+			if(Seen.insert(pGroup.get()).second)
+				Total += sizeof(CGroup) + pGroup->BytesOnce(Seen);
 		}
 		return Total;
 	}

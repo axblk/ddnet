@@ -169,3 +169,35 @@ TEST(TileStore, OtherTileTypes)
 	EXPECT_EQ(Store.Get(0, 0).m_Number, 0);
 	EXPECT_EQ(Store.UsedChunks(), 1);
 }
+
+TEST(TileStore, AVersionCostsTheBlockItPaintedAndNotTheMap)
+{
+	// Big enough that the list of blocks runs over several pages - the whole
+	// point of paging it is that a version does not carry a copy of the list.
+	constexpr int CHUNK = CTileStore<CTile>::CHUNK_SIZE;
+	constexpr int ACROSS = 4 * CTileStore<CTile>::CHUNKS_PER_PAGE;
+	CTileStore<CTile> First(ACROSS * CHUNK, CHUNK);
+	for(int i = 0; i < ACROSS; ++i)
+	{
+		First.Set(i * CHUNK, 0, Tile(1));
+	}
+	ASSERT_EQ(First.UsedChunks(), ACROSS);
+
+	CTileStore<CTile> Second = First;
+	Second.Set(0, 0, Tile(2));
+
+	std::unordered_set<const void *> Seen;
+	const uint64_t Both = First.BytesOnce(Seen) + Second.BytesOnce(Seen);
+	const uint64_t Block = (uint64_t)CTileStore<CTile>::TILES_PER_CHUNK * sizeof(CTile);
+	// The second version is one block, one page and one list of pages more
+	// than the first - a few kilobytes on top of the block, and nothing that
+	// grows with how big the layer is.
+	EXPECT_GT(Both, First.Bytes() + Block);
+	EXPECT_LT(Both, First.Bytes() + Block + 8 * 1024);
+	// All the other blocks are still the same blocks.
+	for(int i = 1; i < ACROSS; ++i)
+	{
+		EXPECT_EQ(First.ChunkId(i, 0), Second.ChunkId(i, 0));
+	}
+	EXPECT_NE(First.ChunkId(0, 0), Second.ChunkId(0, 0));
+}

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <unordered_set>
 #include <vector>
 
 /**
@@ -26,9 +27,17 @@
  * A layer that holds nothing holds nothing: a square of air is no block at
  * all, which is what makes a large map affordable - most of Abyss is air.
  *
- * Copying a store copies one pointer. The blocks and the table of blocks are
- * taken apart again the moment somebody writes to a store that shares them,
- * which is safe because a document belongs to one thread.
+ * The list of blocks is itself kept in pieces, and for the same reason. A
+ * layer the size of Abyss has some eight thousand blocks, so a flat list of
+ * them is 128 KiB of pointers - and a version that copied that list would
+ * cost 128 KiB whatever it changed, eight times the block it actually
+ * painted. Measured on such a layer, one stroke cost 140 KiB and 2,3 ms.
+ * With the list in pages of `CHUNKS_PER_PAGE` blocks, a stroke copies one
+ * page and the short list of pages instead, and costs what it touched.
+ *
+ * Copying a store copies one pointer. The blocks, the pages and the list of
+ * pages are taken apart again the moment somebody writes to a store that
+ * shares them, which is safe because a document belongs to one thread.
  */
 template<typename TTile>
 class CTileStore
@@ -37,6 +46,15 @@ public:
 	/** Edge length of one block, in tiles. */
 	static constexpr int CHUNK_SIZE = 64;
 	static constexpr int TILES_PER_CHUNK = CHUNK_SIZE * CHUNK_SIZE;
+	/**
+	 * How many blocks are listed on one page of the block list.
+	 *
+	 * A write copies one page and the list of pages, so this is a trade of
+	 * one against the other: 64 is 1 KiB of page against 16 bytes of list
+	 * entry per page, which keeps both far below the 16 KiB of the block
+	 * that is copied with them.
+	 */
+	static constexpr int CHUNKS_PER_PAGE = 64;
 
 	CTileStore() = default;
 	CTileStore(int Width, int Height) { Reset(Width, Height); }
@@ -56,7 +74,7 @@ public:
 		m_Height = Height;
 		m_ChunksAcross = (Width + CHUNK_SIZE - 1) / CHUNK_SIZE;
 		m_ChunksDown = (Height + CHUNK_SIZE - 1) / CHUNK_SIZE;
-		m_pTable = nullptr;
+		m_pDirectory = nullptr;
 	}
 
 	/**
@@ -129,7 +147,7 @@ public:
 	{
 		if(m_Width != Other.m_Width || m_Height != Other.m_Height)
 			return false;
-		if(m_pTable == Other.m_pTable)
+		if(m_pDirectory == Other.m_pDirectory)
 			return true;
 		for(int ChunkY = 0; ChunkY < m_ChunksDown; ++ChunkY)
 		{
@@ -155,22 +173,43 @@ public:
 	bool operator!=(const CTileStore &Other) const { return !(*this == Other); }
 
 	/**
-	 * What this store holds that no other store holds with it, in bytes: the
-	 * blocks it is the only owner of, and its share of the rest.
+	 * What this store holds, in bytes, counting everything it points at.
 	 *
-	 * A number for somebody watching the memory go up, not for a decision -
-	 * the same layer answers differently depending on who else is holding
-	 * onto a version of it.
+	 * Two versions of a layer both answer with the whole layer even where
+	 * they share every block of it - what a *history* of versions costs is a
+	 * different question, and `BytesOnce` is the one that answers it.
 	 */
 	uint64_t Bytes() const
 	{
-		if(m_pTable == nullptr)
+		std::unordered_set<const void *> Seen;
+		return BytesOnce(Seen);
+	}
+
+	/**
+	 * The same, but counting nothing that is already in `Seen`, and putting
+	 * everything it counts in there.
+	 *
+	 * Walked over a whole history this counts every block once, whoever
+	 * shares it, which is exactly what a memory limit on the history has to
+	 * be held against. It is also why the walk is cheap: a version that
+	 * shares a page of the block list with the version before it is a page
+	 * that was seen, and the blocks on it are not looked at again.
+	 */
+	uint64_t BytesOnce(std::unordered_set<const void *> &Seen) const
+	{
+		if(m_pDirectory == nullptr || !Seen.insert(m_pDirectory.get()).second)
 			return 0;
-		uint64_t Total = sizeof(CChunkRef) * m_pTable->size();
-		for(const CChunkRef &pChunk : *m_pTable)
+		uint64_t Total = sizeof(CPageRef) * m_pDirectory->size();
+		for(const CPageRef &pPage : *m_pDirectory)
 		{
-			if(pChunk != nullptr)
-				Total += sizeof(CChunk) / (uint64_t)std::max<long>(1, pChunk.use_count());
+			if(pPage == nullptr || !Seen.insert(pPage.get()).second)
+				continue;
+			Total += sizeof(CPage);
+			for(const CChunkRef &pChunk : pPage->m_apChunks)
+			{
+				if(pChunk != nullptr && Seen.insert(pChunk.get()).second)
+					Total += sizeof(CChunk);
+			}
 		}
 		return Total;
 	}
@@ -178,13 +217,18 @@ public:
 	/** How many blocks of this store hold anything at all. */
 	int UsedChunks() const
 	{
-		if(m_pTable == nullptr)
+		if(m_pDirectory == nullptr)
 			return 0;
 		int Used = 0;
-		for(const CChunkRef &pChunk : *m_pTable)
+		for(const CPageRef &pPage : *m_pDirectory)
 		{
-			if(pChunk != nullptr)
-				++Used;
+			if(pPage == nullptr)
+				continue;
+			for(const CChunkRef &pChunk : pPage->m_apChunks)
+			{
+				if(pChunk != nullptr)
+					++Used;
+			}
 		}
 		return Used;
 	}
@@ -196,6 +240,13 @@ private:
 		TTile m_aTiles[TILES_PER_CHUNK] = {};
 	};
 	using CChunkRef = std::shared_ptr<const CChunk>;
+
+	class CPage
+	{
+	public:
+		CChunkRef m_apChunks[CHUNKS_PER_PAGE];
+	};
+	using CPageRef = std::shared_ptr<const CPage>;
 
 	static bool Same(const TTile &One, const TTile &Other)
 	{
@@ -211,32 +262,49 @@ private:
 		return std::memcmp(Chunk.m_aTiles, s_Air.m_aTiles, sizeof(s_Air.m_aTiles)) == 0;
 	}
 
+	size_t ChunkIndex(int ChunkX, int ChunkY) const { return (size_t)ChunkY * m_ChunksAcross + ChunkX; }
+
 	const CChunkRef &ChunkAt(int ChunkX, int ChunkY) const
 	{
 		static const CChunkRef s_NoChunk;
-		if(m_pTable == nullptr || ChunkX < 0 || ChunkY < 0 || ChunkX >= m_ChunksAcross || ChunkY >= m_ChunksDown)
+		if(m_pDirectory == nullptr || ChunkX < 0 || ChunkY < 0 || ChunkX >= m_ChunksAcross || ChunkY >= m_ChunksDown)
 			return s_NoChunk;
-		return (*m_pTable)[(size_t)ChunkY * m_ChunksAcross + ChunkX];
+		const size_t Index = ChunkIndex(ChunkX, ChunkY);
+		const CPageRef &pPage = (*m_pDirectory)[Index / CHUNKS_PER_PAGE];
+		if(pPage == nullptr)
+			return s_NoChunk;
+		return pPage->m_apChunks[Index % CHUNKS_PER_PAGE];
 	}
 
 	/**
 	 * The block at these coordinates, to be written to.
 	 *
-	 * Whoever else holds this store holds it as it was, so both the table and
-	 * the block are taken apart from theirs before the first write reaches
-	 * them - once each, however many tiles follow.
+	 * Whoever else holds this store holds it as it was, so the list of pages,
+	 * the page and the block are taken apart from theirs before the first
+	 * write reaches them - once each, however many tiles follow.
 	 */
 	CChunk *MutableChunk(int ChunkX, int ChunkY)
 	{
-		if(m_pTable == nullptr)
+		const size_t Index = ChunkIndex(ChunkX, ChunkY);
+		const size_t Pages = ((size_t)m_ChunksAcross * m_ChunksDown + CHUNKS_PER_PAGE - 1) / CHUNKS_PER_PAGE;
+		if(m_pDirectory == nullptr)
 		{
-			m_pTable = std::make_shared<std::vector<CChunkRef>>((size_t)m_ChunksAcross * m_ChunksDown);
+			m_pDirectory = std::make_shared<std::vector<CPageRef>>(Pages);
 		}
-		else if(m_pTable.use_count() > 1)
+		else if(m_pDirectory.use_count() > 1)
 		{
-			m_pTable = std::make_shared<std::vector<CChunkRef>>(*m_pTable);
+			m_pDirectory = std::make_shared<std::vector<CPageRef>>(*m_pDirectory);
 		}
-		CChunkRef &pChunk = (*m_pTable)[(size_t)ChunkY * m_ChunksAcross + ChunkX];
+		CPageRef &pPage = (*m_pDirectory)[Index / CHUNKS_PER_PAGE];
+		if(pPage == nullptr)
+		{
+			pPage = std::make_shared<CPage>();
+		}
+		else if(pPage.use_count() > 1)
+		{
+			pPage = std::make_shared<CPage>(*pPage);
+		}
+		CChunkRef &pChunk = const_cast<CPage *>(pPage.get())->m_apChunks[Index % CHUNKS_PER_PAGE];
 		if(pChunk == nullptr)
 		{
 			pChunk = std::make_shared<CChunk>();
@@ -245,8 +313,9 @@ private:
 		{
 			pChunk = std::make_shared<CChunk>(*pChunk);
 		}
-		// The only owner of the block is this table, and this table is only
-		// ours, so what is written here reaches nobody else.
+		// The only owner of the block is this page, the page's only owner is
+		// this directory, and the directory is only ours, so what is written
+		// here reaches nobody else.
 		return const_cast<CChunk *>(pChunk.get());
 	}
 
@@ -256,7 +325,7 @@ private:
 	int m_ChunksDown = 0;
 	// Left empty for a layer that holds nothing, which is what a layer is
 	// until somebody paints on it.
-	std::shared_ptr<std::vector<CChunkRef>> m_pTable;
+	std::shared_ptr<std::vector<CPageRef>> m_pDirectory;
 };
 
 #endif // GAME_MAP_DOCUMENT_TILE_STORE_H

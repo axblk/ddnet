@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 #include <variant>
 
 /**
@@ -96,13 +97,21 @@ public:
 	 * What this layer holds, with a block it shares with another version of
 	 * itself counted as its share - see `CTileStore::Bytes`.
 	 */
+	/** What this layer holds, both planes of it. */
 	uint64_t Bytes() const
 	{
-		uint64_t Total = m_Tiles.Bytes();
-		std::visit([&Total](const auto &Extra) {
+		std::unordered_set<const void *> Seen;
+		return BytesOnce(Seen);
+	}
+
+	/** The same, counting nothing twice - see `CTileStore::BytesOnce`. */
+	uint64_t BytesOnce(std::unordered_set<const void *> &Seen) const
+	{
+		uint64_t Total = m_Tiles.BytesOnce(Seen);
+		std::visit([&Total, &Seen](const auto &Extra) {
 			if constexpr(!std::is_same_v<std::decay_t<decltype(Extra)>, std::monostate>)
 			{
-				Total += Extra.Bytes();
+				Total += Extra.BytesOnce(Seen);
 			}
 		},
 			m_ExtraTiles);

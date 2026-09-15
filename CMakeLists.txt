@@ -3167,6 +3167,7 @@ if(CLIENT)
     document/history.h
     document/layer.h
     document/map_state.h
+    document/shared_list.h
     document/tile_store.h
     envelope_extrema.cpp
     envelope_extrema.h
@@ -4462,6 +4463,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     serverbrowser_test.cpp
     serverinfo_test.cpp
     session_manager_test.cpp
+    shared_list_test.cpp
     snapshot_test.cpp
     sound_test.cpp
     str_test.cpp

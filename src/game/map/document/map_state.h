@@ -41,6 +41,32 @@ namespace map_document
 
 		std::vector<std::shared_ptr<const CLayer>> m_vpLayers;
 
+		/**
+		 * Whether two groups are the same group. Layers that are the same
+		 * node are not looked into, so this is cheap between two versions of
+		 * one group and dear between two groups that were built separately.
+		 */
+		bool operator==(const CGroup &Other) const
+		{
+			if(m_Name != Other.m_Name ||
+				m_OffsetX != Other.m_OffsetX || m_OffsetY != Other.m_OffsetY ||
+				m_ParallaxX != Other.m_ParallaxX || m_ParallaxY != Other.m_ParallaxY ||
+				m_UseClipping != Other.m_UseClipping ||
+				m_ClipX != Other.m_ClipX || m_ClipY != Other.m_ClipY ||
+				m_ClipW != Other.m_ClipW || m_ClipH != Other.m_ClipH ||
+				m_vpLayers.size() != Other.m_vpLayers.size())
+				return false;
+			for(size_t i = 0; i < m_vpLayers.size(); ++i)
+			{
+				if(m_vpLayers[i] == Other.m_vpLayers[i])
+					continue;
+				if(*m_vpLayers[i] != *Other.m_vpLayers[i])
+					return false;
+			}
+			return true;
+		}
+		bool operator!=(const CGroup &Other) const { return !(*this == Other); }
+
 		/** What this group holds, its layers with it. */
 		uint64_t Bytes() const
 		{

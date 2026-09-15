@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+using namespace map_document;
+
 // The tiles of a layer are held so that a version of the map costs what
 // changed and not what it holds, so what is tested here is mostly what is
 // *shared*: that a copy is a copy of nothing, and that writing to one of two

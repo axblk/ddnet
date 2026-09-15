@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+using namespace map_document;
+
 // Undoing is meant to be pointing at an older version rather than putting a
 // map back together, so what is tested here is that going back really is a
 // pointer swap, that a new version drops what could have been redone, and

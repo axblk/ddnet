@@ -4214,8 +4214,8 @@ void CClient::DemoRecorder_Start(const char *pFilename, bool WithTimestamp, int 
 		GameClient()->Map()->Crc(),
 		"client",
 		GameClient()->Map()->Size(),
+		GameClient()->Map()->MapData(),
 		nullptr,
-		GameClient()->Map()->File(),
 		nullptr,
 		nullptr);
 }
@@ -5314,8 +5314,8 @@ void CClient::RaceRecord_Start(const char *pFilename)
 		GameClient()->Map()->Crc(),
 		"client",
 		GameClient()->Map()->Size(),
+		GameClient()->Map()->MapData(),
 		nullptr,
-		GameClient()->Map()->File(),
 		nullptr,
 		nullptr);
 }

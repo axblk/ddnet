@@ -32,6 +32,10 @@ class CTypedAssetResource;
 
 enum class EAssetType
 {
+	/**
+	 * Bytes that are used as they are, such as a map file.
+	 */
+	DATA,
 	FONT,
 	IMAGE,
 	SOUND,
@@ -78,6 +82,13 @@ public:
 	 */
 	bool m_UseOnError = false;
 };
+
+/**
+ * Owner of the asset jobs that the client core starts for itself. The owners
+ * of the game client are counted from zero (`CGameClient::EAssetOwner`), so
+ * whoever loads from below the game client counts down from here instead.
+ */
+constexpr int ASSET_OWNER_CLIENT_CORE = -1;
 
 /**
  * Base job for asynchronously reading and preparing an asset.
@@ -391,6 +402,33 @@ public:
 	 * The text that was read. Only valid once the job succeeded.
 	 */
 	std::string_view Text() const;
+};
+
+/**
+ * Job for a file whose bytes are the asset, such as a map.
+ *
+ * The point of loading one through here is not what is made of the bytes -
+ * nothing is - but where they come from: the loader reads them off the main
+ * thread, and in the browser it fetches them the same way as every other
+ * asset.
+ */
+class CDataAssetJob final : public CAssetJob
+{
+	bool m_Ok = false;
+
+protected:
+	// The bytes that were read are the asset, so there is nothing left to make
+	// of them.
+	void Process() override { m_Ok = true; }
+
+public:
+	CDataAssetJob(IStorage *pStorage, const char *pPath, int StorageType, int OwnerId, uint64_t Generation);
+
+	bool Success() const override { return m_Ok; }
+	/**
+	 * The bytes that were read. Only valid once the job succeeded.
+	 */
+	const std::vector<uint8_t> &Bytes() const;
 };
 
 template<typename TJob>

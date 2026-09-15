@@ -21,6 +21,7 @@
 #define CONNECTLINK_DOUBLE_SLASH "ddnet://"
 #define CONNECTLINK_NO_SLASH "ddnet:"
 
+class CAssetLoader;
 class CSnapshot;
 class CSnapshotBuffer;
 class IMap;
@@ -401,6 +402,13 @@ class IGameClient : public IInterface
 protected:
 public:
 	virtual void OnConsoleInit() = 0;
+
+	/**
+	 * The loader that runs the client's asset jobs. Everything the client
+	 * loads goes through this one queue, so that the same limit on how many
+	 * jobs run at once holds for all of it.
+	 */
+	virtual CAssetLoader &AssetLoader() = 0;
 
 	virtual void OnRconType(bool UsernameReq) = 0;
 	virtual void OnRconLine(const char *pLine) = 0;

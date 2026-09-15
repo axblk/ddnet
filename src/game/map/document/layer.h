@@ -103,6 +103,12 @@ namespace map_document
 		int m_ColorEnvelope = -1;
 		int m_ColorEnvelopeOffset = 0;
 
+		// What the automapper does to this layer when it is asked to. Only a
+		// layer that is drawn has one; a physics layer is not automapped.
+		int m_AutomapperConfig = -1;
+		int m_AutomapperSeed = 0;
+		bool m_AutomapperAutomatic = false;
+
 		CTileStore<CTile> m_Tiles;
 		CExtraTiles m_ExtraTiles;
 

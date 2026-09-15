@@ -1,3 +1,5 @@
+#include "test.h"
+
 #include <base/str.h>
 
 #include <engine/shared/datafile.h>
@@ -5,10 +7,17 @@
 
 #include <game/map/document/map_file.h>
 #include <game/mapitems.h>
+#include <game/mapitems_ex.h>
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <iterator>
 #include <memory>
+#include <vector>
 
 using namespace map_document;
 
@@ -177,4 +186,235 @@ TEST(MapFile, ReadsWhatALayerPointsAt)
 	}
 	EXPECT_TRUE(FoundGame);
 	EXPECT_TRUE(FoundSecondPlane);
+}
+
+namespace
+{
+	// Reads a whole file, for comparing what was written against what was there.
+	std::vector<uint8_t> FileBytes(IStorage *pStorage, const char *pPath, int Type)
+	{
+		void *pData;
+		unsigned Size;
+		if(!pStorage->ReadFile(pPath, Type, &pData, &Size))
+			return std::vector<uint8_t>();
+		std::vector<uint8_t> vBytes(static_cast<uint8_t *>(pData), static_cast<uint8_t *>(pData) + Size);
+		free(pData);
+		return vBytes;
+	}
+
+	// Writes a state out and hands back the bytes that landed on disk.
+	std::vector<uint8_t> WriteAndRead(IStorage *pStorage, const char *pPath, const CMapState &State)
+	{
+		CDataFileWriter Writer;
+		if(!Writer.Open(pStorage, pPath, IStorage::TYPE_ABSOLUTE))
+			return std::vector<uint8_t>();
+		WriteMapState(Writer, State);
+		Writer.Finish();
+		return FileBytes(pStorage, pPath, IStorage::TYPE_ABSOLUTE);
+	}
+} // namespace
+
+namespace
+{
+	// Everything two versions of a map have to agree on for one to be the other
+	// written down and read back.
+	void ExpectSameMap(const CMapState &One, const CMapState &Other, const std::string &Name)
+	{
+		ASSERT_EQ(One.NumGroups(), Other.NumGroups()) << Name;
+		ASSERT_EQ(One.NumImages(), Other.NumImages()) << Name;
+		ASSERT_EQ(One.NumSounds(), Other.NumSounds()) << Name;
+		ASSERT_EQ(One.NumEnvelopes(), Other.NumEnvelopes()) << Name;
+		EXPECT_EQ(One.m_Info.m_Author, Other.m_Info.m_Author) << Name;
+		EXPECT_EQ(One.m_Info.m_MapVersion, Other.m_Info.m_MapVersion) << Name;
+		EXPECT_EQ(One.m_Info.m_Credits, Other.m_Info.m_Credits) << Name;
+		EXPECT_EQ(One.m_Info.m_License, Other.m_Info.m_License) << Name;
+		ASSERT_EQ(One.m_Info.m_Settings.Size(), Other.m_Info.m_Settings.Size()) << Name;
+		for(size_t i = 0; i < One.m_Info.m_Settings.Size(); ++i)
+		{
+			EXPECT_EQ(One.m_Info.m_Settings[i], Other.m_Info.m_Settings[i]) << Name;
+		}
+
+		for(size_t i = 0; i < One.NumImages(); ++i)
+		{
+			const CImage *pOne = One.Image(i);
+			const CImage *pOther = Other.Image(i);
+			EXPECT_EQ(pOne->m_Name, pOther->m_Name) << Name;
+			EXPECT_EQ(pOne->m_External, pOther->m_External) << Name;
+			EXPECT_EQ(pOne->m_Width, pOther->m_Width) << Name;
+			EXPECT_EQ(pOne->m_Height, pOther->m_Height) << Name;
+			ASSERT_EQ(pOne->m_Data.Size(), pOther->m_Data.Size()) << Name;
+			EXPECT_EQ(std::memcmp(pOne->m_Data.All().data(), pOther->m_Data.All().data(), pOne->m_Data.Size()), 0) << Name;
+		}
+		for(size_t i = 0; i < One.NumSounds(); ++i)
+		{
+			ASSERT_EQ(One.Sound(i)->m_Data.Size(), Other.Sound(i)->m_Data.Size()) << Name;
+			EXPECT_EQ(One.Sound(i)->m_Name, Other.Sound(i)->m_Name) << Name;
+			EXPECT_EQ(std::memcmp(One.Sound(i)->m_Data.All().data(), Other.Sound(i)->m_Data.All().data(), One.Sound(i)->m_Data.Size()), 0) << Name;
+		}
+		for(size_t i = 0; i < One.NumEnvelopes(); ++i)
+		{
+			const CEnvelope *pOne = One.Envelope(i);
+			const CEnvelope *pOther = Other.Envelope(i);
+			EXPECT_EQ(pOne->m_Name, pOther->m_Name) << Name;
+			EXPECT_EQ(pOne->m_Channels, pOther->m_Channels) << Name;
+			EXPECT_EQ(pOne->m_Synchronized, pOther->m_Synchronized) << Name;
+			ASSERT_EQ(pOne->m_Points.Size(), pOther->m_Points.Size()) << Name;
+			for(size_t p = 0; p < pOne->m_Points.Size(); ++p)
+			{
+				EXPECT_EQ(std::memcmp(&pOne->m_Points[p], &pOther->m_Points[p], sizeof(CEnvPoint)), 0) << Name;
+			}
+		}
+
+		for(size_t g = 0; g < One.NumGroups(); ++g)
+		{
+			const CGroup *pOne = One.Group(g);
+			const CGroup *pOther = Other.Group(g);
+			EXPECT_EQ(pOne->m_Name, pOther->m_Name) << Name;
+			EXPECT_EQ(pOne->m_OffsetX, pOther->m_OffsetX) << Name;
+			EXPECT_EQ(pOne->m_ParallaxY, pOther->m_ParallaxY) << Name;
+			EXPECT_EQ(pOne->m_UseClipping, pOther->m_UseClipping) << Name;
+			EXPECT_EQ(pOne->m_ClipW, pOther->m_ClipW) << Name;
+			ASSERT_EQ(One.NumLayers(g), Other.NumLayers(g)) << Name;
+			for(size_t l = 0; l < One.NumLayers(g); ++l)
+			{
+				const CLayer *pLayerOne = One.Layer(g, l);
+				const CLayer *pLayerOther = Other.Layer(g, l);
+				ASSERT_EQ(pLayerOne->index(), pLayerOther->index()) << Name;
+				EXPECT_EQ(LayerProperties(*pLayerOne).m_Name, LayerProperties(*pLayerOther).m_Name) << Name;
+				EXPECT_EQ(LayerProperties(*pLayerOne).m_Detail, LayerProperties(*pLayerOther).m_Detail) << Name;
+				if(std::holds_alternative<CTileLayer>(*pLayerOne))
+				{
+					const CTileLayer &TilesOne = std::get<CTileLayer>(*pLayerOne);
+					const CTileLayer &TilesOther = std::get<CTileLayer>(*pLayerOther);
+					EXPECT_EQ((int)TilesOne.m_Kind, (int)TilesOther.m_Kind) << Name;
+					EXPECT_EQ(TilesOne.m_Image, TilesOther.m_Image) << Name;
+					EXPECT_EQ(TilesOne.m_ColorEnvelope, TilesOther.m_ColorEnvelope) << Name;
+					EXPECT_EQ(TilesOne.m_AutomapperConfig, TilesOther.m_AutomapperConfig) << Name;
+					EXPECT_EQ(TilesOne.m_AutomapperSeed, TilesOther.m_AutomapperSeed) << Name;
+					EXPECT_TRUE(TilesOne.m_Tiles == TilesOther.m_Tiles) << Name;
+					EXPECT_TRUE(TilesOne.m_ExtraTiles == TilesOther.m_ExtraTiles) << Name;
+				}
+				else if(std::holds_alternative<CQuadLayer>(*pLayerOne))
+				{
+					const CQuadLayer &QuadsOne = std::get<CQuadLayer>(*pLayerOne);
+					const CQuadLayer &QuadsOther = std::get<CQuadLayer>(*pLayerOther);
+					EXPECT_EQ(QuadsOne.m_Image, QuadsOther.m_Image) << Name;
+					ASSERT_EQ(QuadsOne.m_Quads.Size(), QuadsOther.m_Quads.Size()) << Name;
+					EXPECT_EQ(std::memcmp(QuadsOne.m_Quads.All().data(), QuadsOther.m_Quads.All().data(), QuadsOne.m_Quads.Size() * sizeof(CQuad)), 0) << Name;
+				}
+				else
+				{
+					const CSoundLayer &SoundsOne = std::get<CSoundLayer>(*pLayerOne);
+					const CSoundLayer &SoundsOther = std::get<CSoundLayer>(*pLayerOther);
+					EXPECT_EQ(SoundsOne.m_Sound, SoundsOther.m_Sound) << Name;
+					ASSERT_EQ(SoundsOne.m_Sources.Size(), SoundsOther.m_Sources.Size()) << Name;
+					EXPECT_EQ(std::memcmp(SoundsOne.m_Sources.All().data(), SoundsOther.m_Sources.All().data(), SoundsOne.m_Sources.Size() * sizeof(CSoundSource)), 0) << Name;
+				}
+			}
+		}
+	}
+} // namespace
+
+TEST(MapFile, WritingAMapThatWasReadGivesTheSameMapBack)
+{
+	CTestInfo Info;
+	const std::vector<std::string> vNames = MapNames();
+	ASSERT_GT(vNames.size(), 10u);
+
+	std::vector<std::string> vSameAsTheOriginal;
+	for(const std::string &Name : vNames)
+	{
+		CMapFile Map;
+		ASSERT_TRUE(Map.Read(Name.c_str())) << Name;
+
+		char aFirst[IO_MAX_PATH_LENGTH];
+		char aSecond[IO_MAX_PATH_LENGTH];
+		str_format(aFirst, sizeof(aFirst), "%s-1.map", Info.m_aFilenamePrefix);
+		str_format(aSecond, sizeof(aSecond), "%s-2.map", Info.m_aFilenamePrefix);
+
+		const std::vector<uint8_t> vFirst = WriteAndRead(Map.m_pStorage.get(), aFirst, Map.m_State);
+		ASSERT_FALSE(vFirst.empty()) << Name;
+
+		// The map that was written is read again, and writing that one has to
+		// give the same bytes: whatever the reader kept, the writer wrote, and
+		// whatever it threw away was already gone the first time round.
+		CDataFileReader Again;
+		ASSERT_TRUE(Again.Open(Map.m_pStorage.get(), aFirst, IStorage::TYPE_ABSOLUTE)) << Name;
+		CMapState State;
+		std::vector<std::string> vWarnings;
+		ASSERT_TRUE(ReadMapState(Again, &State, &vWarnings)) << Name;
+		EXPECT_TRUE(vWarnings.empty()) << Name << ": " << (vWarnings.empty() ? "" : vWarnings[0]);
+
+		const std::vector<uint8_t> vSecond = WriteAndRead(Map.m_pStorage.get(), aSecond, State);
+		EXPECT_EQ(vFirst, vSecond) << Name;
+		ExpectSameMap(Map.m_State, State, Name);
+
+		char aOriginal[IO_MAX_PATH_LENGTH];
+		str_format(aOriginal, sizeof(aOriginal), "data/maps/%s.map", Name.c_str());
+		if(vFirst == FileBytes(Map.m_pStorage.get(), aOriginal, IStorage::TYPE_ALL))
+			vSameAsTheOriginal.push_back(Name);
+
+		Map.m_pStorage->RemoveFile(aFirst, IStorage::TYPE_ABSOLUTE);
+		Map.m_pStorage->RemoveFile(aSecond, IStorage::TYPE_ABSOLUTE);
+	}
+	// Which ones came out byte for byte as they went in is worth knowing, but
+	// it is not what is being asked of the writer here: a map that was
+	// written by an older editor is written the way this one writes, not the
+	// way it was. The ones that do match are the ones that were already
+	// written this way - see the test below.
+	std::cerr << "[          ] " << vSameAsTheOriginal.size() << " of " << vNames.size()
+		  << " maps came out byte for byte as the file that was read:";
+	for(const std::string &Same : vSameAsTheOriginal)
+	{
+		std::cerr << " " << Same;
+	}
+	std::cerr << std::endl;
+}
+
+TEST(MapFile, NothingInTheseFilesGoesUnread)
+{
+	// A map item this does not know about is a map item that would be lost
+	// on the way out, and nothing here would notice - so the list of what
+	// there is to read is checked against the files themselves.
+	const int aKnown[] = {
+		MAPITEMTYPE_VERSION, MAPITEMTYPE_INFO, MAPITEMTYPE_IMAGE, MAPITEMTYPE_ENVELOPE,
+		MAPITEMTYPE_GROUP, MAPITEMTYPE_LAYER, MAPITEMTYPE_ENVPOINTS, MAPITEMTYPE_SOUND,
+		MAPITEMTYPE_AUTOMAPPER_CONFIG, MAPITEMTYPE_ENVPOINTS_BEZIER,
+		// The list the file keeps of its own item types that are named by a
+		// uuid rather than by a number. It is the file's bookkeeping, not the
+		// map's, and the writer makes a new one.
+		ITEMTYPE_EX};
+
+	for(const std::string &Name : MapNames())
+	{
+		CMapFile Map;
+		ASSERT_TRUE(Map.Read(Name.c_str())) << Name;
+		for(int i = 0; i < Map.m_File.NumItems(); ++i)
+		{
+			int Type;
+			Map.m_File.GetItem(i, &Type, nullptr, nullptr);
+			EXPECT_NE(std::find(std::begin(aKnown), std::end(aKnown), Type), std::end(aKnown))
+				<< Name << " holds an item of type " << Type << " that is not read";
+		}
+	}
+}
+
+TEST(MapFile, AMapWrittenTheWayThisWritesComesOutAsItWentIn)
+{
+	// `coverage` is written in the format of today, which is what this writes,
+	// so there is nothing left to explain a difference away with: the bytes
+	// have to match. It is the guard against a field being read and then
+	// written as something else - the map has envelopes, quads, sound and
+	// tile layers, an embedded and an external image, and server settings.
+	CMapFile Map;
+	ASSERT_TRUE(Map.Read("coverage"));
+	EXPECT_TRUE(Map.m_vWarnings.empty());
+
+	CTestInfo Info;
+	char aPath[IO_MAX_PATH_LENGTH];
+	str_format(aPath, sizeof(aPath), "%s.map", Info.m_aFilenamePrefix);
+	const std::vector<uint8_t> vOurs = WriteAndRead(Map.m_pStorage.get(), aPath, Map.m_State);
+	ASSERT_FALSE(vOurs.empty());
+	EXPECT_EQ(vOurs, FileBytes(Map.m_pStorage.get(), "data/maps/coverage.map", IStorage::TYPE_ALL));
+	Map.m_pStorage->RemoveFile(aPath, IStorage::TYPE_ABSOLUTE);
 }

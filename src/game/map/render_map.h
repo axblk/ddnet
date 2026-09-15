@@ -16,9 +16,6 @@ enum
 	LAYERRENDERFLAG_OPAQUE = 1,
 	LAYERRENDERFLAG_TRANSPARENT = 2,
 
-	TILERENDERFLAG_EXTEND = 4,
-	TILERENDERFLAG_FORCE_TRANSPARENT = 8,
-
 	OVERLAYRENDERFLAG_TEXT = 1,
 	OVERLAYRENDERFLAG_EDITOR = 2,
 };
@@ -82,7 +79,6 @@ public:
 	static void RenderEvalEnvelope(const IEnvelopePointAccess *pPoints, std::chrono::nanoseconds TimeNanos, ColorRGBA &Result, size_t Channels);
 	void ForceRenderQuads(CQuad *pQuads, int NumQuads, int Flags, const IEnvelopeEval *pEnvEval, float Alpha = 1.0f);
 	void RenderTile(int x, int y, unsigned char Index, float Scale, ColorRGBA Color);
-	void RenderTilemap(CTile *pTiles, int w, int h, float Scale, ColorRGBA Color, bool TextureIsValid, int RenderFlags);
 
 	// DDRace
 	void RenderTeleOverlay(CTeleTile *pTele, int w, int h, float Scale, int OverlayRenderFlags, float Alpha = 1.0f);

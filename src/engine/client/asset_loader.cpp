@@ -180,13 +180,14 @@ bool CHttpAssetJob::Abort()
 	return true;
 }
 
-void CAssetLoader::Init(IEngine *pEngine, size_t MaxConcurrentJobs)
+void CAssetLoader::Init(IEngine *pEngine, size_t MaxConcurrentJobs, IHttp *pHttp)
 {
 	dbg_assert(m_pEngine == nullptr, "Asset loader already initialized");
 	dbg_assert(pEngine != nullptr, "Asset loader engine must not be null");
 	dbg_assert(MaxConcurrentJobs > 0, "Asset loader needs at least one concurrent job");
 	m_pEngine = pEngine;
 	m_MaxConcurrentJobs = MaxConcurrentJobs;
+	m_pHttp = pHttp;
 }
 
 void CAssetLoader::ReaderThread(void *pUser)
@@ -215,6 +216,57 @@ void CAssetLoader::ReadLoop()
 	}
 }
 
+bool CAssetLoader::StartFetching(const std::shared_ptr<CAssetJob> &pJob)
+{
+	if(m_pHttp == nullptr)
+		return false;
+	char aUrl[512];
+	if(!pJob->m_pStorage->FetchUrl(pJob->Path(), pJob->m_StorageType, aUrl, sizeof(aUrl)))
+		return false;
+	std::shared_ptr<IHttpRequest> pRequest = m_pHttp->CreateRequest(aUrl);
+	pRequest->WriteToMemory();
+	pRequest->LogProgress(HTTPLOG::FAILURE);
+	m_vFetchingJobs.push_back(CFetchingJob{pJob, pRequest});
+	m_pHttp->Run(std::move(pRequest));
+	return true;
+}
+
+void CAssetLoader::UpdateFetchingJobs()
+{
+	for(auto It = m_vFetchingJobs.begin(); It != m_vFetchingJobs.end();)
+	{
+		if(!It->m_pJob->Done() && !It->m_pRequest->Done())
+		{
+			++It;
+			continue;
+		}
+		const std::shared_ptr<CAssetJob> pJob = It->m_pJob;
+		const IHttpRequest &Request = *It->m_pRequest;
+		const bool Fetched = !pJob->Done() && Request.State() == EHttpState::DONE && Request.StatusCode() < 400;
+		if(Fetched)
+		{
+			unsigned char *pResult;
+			size_t ResultSize;
+			Request.Result(&pResult, &ResultSize);
+			pJob->SetData(std::vector<uint8_t>(pResult, pResult + ResultSize));
+		}
+		else if(!pJob->Done())
+		{
+			// A file that could not be fetched is a file that could not be
+			// read; the job hears it the same way either way.
+			log_error("asset_loader", "Could not fetch '%s'", pJob->Path());
+			pJob->m_pStorage = nullptr;
+			pJob->m_ReadFailed = true;
+		}
+		It = m_vFetchingJobs.erase(It);
+		if(!pJob->Done())
+		{
+			m_vpPendingJobs.push_back(pJob);
+			StartPendingJobs();
+		}
+	}
+}
+
 void CAssetLoader::Enqueue(std::shared_ptr<CAssetJob> pJob)
 {
 	// A job that brought its bytes, or was given them by a request that has
@@ -225,6 +277,11 @@ void CAssetLoader::Enqueue(std::shared_ptr<CAssetJob> pJob)
 		StartPendingJobs();
 		return;
 	}
+	// A file that can be fetched is fetched, and then there is no queue and no
+	// reader: the request waits on its own and as many as there are may wait
+	// at the same time.
+	if(StartFetching(pJob))
+		return;
 	if(m_pReaderThread == nullptr)
 		m_pReaderThread = thread_init(ReaderThread, this, "asset reader");
 	{
@@ -383,6 +440,7 @@ void CAssetLoader::Update()
 {
 	dbg_assert(m_pEngine != nullptr, "Asset loader not initialized");
 	UpdateWaitingJobs();
+	UpdateFetchingJobs();
 	UpdateReadJobs();
 	for(const auto &pJob : m_vpRunningJobs)
 	{
@@ -406,6 +464,12 @@ void CAssetLoader::AbortOwnerBeforeGeneration(int OwnerId, uint64_t Generation)
 	};
 	for(const auto &pJob : m_vpWaitingJobs)
 		AbortStaleJob(pJob);
+	for(const auto &Fetching : m_vFetchingJobs)
+	{
+		AbortStaleJob(Fetching.m_pJob);
+		if(Fetching.m_pJob->Done())
+			Fetching.m_pRequest->Abort();
+	}
 	{
 		const CLockScope LockScope(m_ReaderLock);
 		for(const auto &pJob : m_vpUnreadJobs)
@@ -451,11 +515,17 @@ void CAssetLoader::Shutdown()
 	}
 	for(const auto &pJob : m_vpWaitingJobs)
 		pJob->Abort();
+	for(const auto &Fetching : m_vFetchingJobs)
+	{
+		Fetching.m_pJob->Abort();
+		Fetching.m_pRequest->Abort();
+	}
 	for(const auto &pJob : m_vpPendingJobs)
 		pJob->Abort();
 	for(const auto &pJob : m_vpRunningJobs)
 		pJob->Abort();
 	m_vpWaitingJobs.clear();
+	m_vFetchingJobs.clear();
 	m_vpPendingJobs.clear();
 	m_vpRunningJobs.clear();
 }

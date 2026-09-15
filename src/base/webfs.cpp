@@ -392,6 +392,26 @@ IOHANDLE webfs_open(const char *pPath)
 	return fmemopen(const_cast<uint8_t *>(pBytes->data()), pBytes->size(), "rb");
 }
 
+bool webfs_url(const char *pPath, char *pBuffer, size_t BufferSize)
+{
+	if(pBuffer == nullptr || BufferSize == 0)
+		return false;
+	pBuffer[0] = '\0';
+	const char *pRelativePath = WebFsRelativePath(pPath);
+	if(pRelativePath == nullptr)
+		return false;
+	const CWebDataIndex::CEntry *pEntry = g_WebFsIndex.Find(pRelativePath);
+	if(pEntry == nullptr || pEntry->m_IsDirectory)
+		return false;
+	std::string Base;
+	{
+		const CLockScope LockScope(g_WebFsLock);
+		Base = g_WebFsBase;
+	}
+	str_format(pBuffer, BufferSize, "%sdata/%s?v=%s", Base.c_str(), pEntry->m_Path.c_str(), pEntry->m_Hash.c_str());
+	return true;
+}
+
 bool webfs_is_file(const char *pPath)
 {
 	const char *pRelativePath = WebFsRelativePath(pPath);

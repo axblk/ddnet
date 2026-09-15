@@ -13,6 +13,7 @@
 #include <engine/console.h>
 #include <engine/engine.h>
 #include <engine/graphics.h>
+#include <engine/http.h>
 #include <engine/storage.h>
 #include <engine/textrender.h>
 
@@ -1507,7 +1508,10 @@ public:
 
 		// Start reading the fonts right away so the rest of the client can start
 		// up while the font files are being read.
-		m_FontLoader.Init(Engine(), std::clamp<size_t>(Engine()->JobThreadCount(), 1, 8));
+		// The fonts are the largest files the client reads, so they are also the
+		// ones that gain the most from being fetched beside each other. Where
+		// there is no HTTP - every native build - the loader reads them as before.
+		m_FontLoader.Init(Engine(), std::clamp<size_t>(Engine()->JobThreadCount(), 1, 8), Kernel()->TryGetInterface<IHttp>());
 		LoadFontsAsync();
 
 		m_FirstFreeTextContainerIndex = -1;

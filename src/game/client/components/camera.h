@@ -100,6 +100,13 @@ public:
 	int CamType() const { return State().m_CamType; }
 	vec2 Center() const { return State().m_Center; }
 	float Zoom() const { return State().m_Zoom; }
+	/**
+	 * The zoom that was last asked for by whoever is watching, which is not
+	 * what `Zoom` says while the camera follows the one a demo brought. It is
+	 * the one thing that tells a zoom of one's own from a zoom that came with
+	 * what is being watched.
+	 */
+	float UserZoomTarget() const { return State().m_UserZoomTarget; }
 	bool IsZoomSet() const { return State().m_ZoomSet; }
 	bool IsZooming() const { return State().m_Zooming; }
 	float ZoomSmoothingTarget() const { return State().m_ZoomSmoothingTarget; }

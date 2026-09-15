@@ -174,6 +174,20 @@ public:
 	void ScaleZoom(float Factor);
 	float Zoom() const;
 	/**
+	 * Puts the zoom back where it started, which is where `cl_default_zoom`
+	 * says. Whoever zoomed in on a corner of the map has no other way back:
+	 * the notches they came by are not counted anywhere, and finding the one
+	 * they started from by turning the wheel is guesswork.
+	 */
+	void ResetZoom();
+	/**
+	 * Whether the zoom is somewhere other than where it started, which is when
+	 * there is something for `ResetZoom` to undo. The zoom a demo brings with
+	 * its own camera is not counted: that one is left again by the camera
+	 * button, not by this.
+	 */
+	bool ZoomChanged() const;
+	/**
 	 * A demo carries the view of whoever recorded it: where the camera was and
 	 * how much of the world it had in it. That view is followed until somebody
 	 * zooms, and from then on the zoom is theirs - which is what they asked

@@ -254,6 +254,25 @@ void CViewerControls::DrawIcon(EIcon Icon, vec2 Center, float Size, float Alpha)
 		DrawRect(Center.x - Half + Inset, Top + Inset, Size - 2.0f * Inset, Height - 2.0f * Inset, 1.0f, 1.0f, 1.0f, 0.55f * Alpha);
 		break;
 	}
+	case EIcon::ZOOM_RESET:
+	{
+		// Four corners gathered towards the middle, the other way round from
+		// the full screen one beside it: the picture back at the size it
+		// started at. The bend of each corner sits just off the middle and
+		// its two lines run outwards from there.
+		const float Inner = Size * 0.1f;
+		const float Arm = Size * 0.36f;
+		for(int Corner = 0; Corner < 4; ++Corner)
+		{
+			const float DirX = (Corner & 1) == 0 ? 1.0f : -1.0f;
+			const float DirY = (Corner & 2) == 0 ? 1.0f : -1.0f;
+			const float X = Center.x + (DirX > 0.0f ? -Inner - Thin : Inner);
+			const float Y = Center.y + (DirY > 0.0f ? -Inner - Thin : Inner);
+			DrawRect(DirX > 0.0f ? X + Thin - Arm : X, Y, Arm, Thin, 1.0f, 1.0f, 1.0f, Alpha);
+			DrawRect(X, DirY > 0.0f ? Y + Thin - Arm : Y, Thin, Arm, 1.0f, 1.0f, 1.0f, Alpha);
+		}
+		break;
+	}
 	case EIcon::FULLSCREEN:
 	{
 		// Four corners opening outwards, which is what every program that has

@@ -90,6 +90,10 @@ private:
 	CViewerControls m_Controls;
 	CViewerGestures m_Gestures;
 	bool m_ShowControls = true;
+	// Whether the wheel, the zoom keys and two fingers on the picture zoom it.
+	// A page that puts the viewer in a box of its own and scrolls around it
+	// wants the wheel for its own scrolling, not for the demo.
+	bool m_ZoomEnabled = true;
 	// What the export menu was last set to. A viewer that is asked for a video
 	// through the page brings its own settings; one that is asked through its
 	// own controls has only what is on them, so what is not on them stays as
@@ -173,6 +177,16 @@ public:
 	 */
 	void SetShowControls(bool Show) { m_ShowControls = Show; }
 	bool ShowControls() const { return m_ShowControls; }
+	/**
+	 * Whether the viewer zooms what it shows when the wheel is turned over it,
+	 * the zoom keys are pressed or two fingers pinch it. It does unless it is
+	 * told otherwise; a page that wants the wheel for itself, or that wants
+	 * the demo shown at one size and no other, turns it off. What the page
+	 * asks for through `DemoPlayerZoomBy` still works either way: this is
+	 * about what the viewer does on its own.
+	 */
+	void SetZoomEnabled(bool Enabled) { m_ZoomEnabled = Enabled; }
+	bool ZoomEnabled() const { return m_ZoomEnabled; }
 
 	/**
 	 * How big to draw, in the units the window is measured in. A viewer in a

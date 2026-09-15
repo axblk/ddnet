@@ -62,6 +62,7 @@
 					<button id="slower" class="viewer-button viewer-optional" data-icon="minus" title="Slower (Down arrow)" aria-label="Slower"></button>
 					<span id="speed" class="viewer-readout viewer-readout-speed viewer-optional">1.00&times;</span>
 					<button id="faster" class="viewer-button viewer-optional" data-icon="plus" title="Faster (Up arrow)" aria-label="Faster"></button>
+					<button id="zoom-reset" class="viewer-button" data-icon="zoom_reset" title="Back to the size it started at" aria-label="Back to the size it started at" hidden></button>
 					<button id="camera" class="viewer-button" data-icon="fit" title="The view the demo brought" aria-label="The view the demo brought" aria-pressed="false" hidden></button>
 					<button id="spectate" class="viewer-button" data-icon="eye" title="Who to watch (N, P, F)" aria-label="Who to watch" aria-haspopup="true" aria-expanded="false"></button>
 					<span id="export-status" class="viewer-readout" role="status" hidden></span>
@@ -101,6 +102,7 @@
 				const seek = document.getElementById('seek');
 				const time = document.getElementById('time');
 				const speed = document.getElementById('speed');
+				const zoomResetButton = document.getElementById('zoom-reset');
 				const cameraButton = document.getElementById('camera');
 				const spectateButton = document.getElementById('spectate');
 				const spectateMenu = document.getElementById('spectate-menu');
@@ -289,6 +291,7 @@
 					}
 				});
 
+				zoomResetButton.addEventListener('click', () => demo.resetZoom());
 				cameraButton.addEventListener('click', () => demo.recordedCamera(!demo.recordedCamera()));
 				spectateButton.addEventListener('click', () => openPanel(spectateMenu));
 				// The export settings are asked for before the export runs, the
@@ -421,6 +424,10 @@
 					playButton.title = paused ? "Play (Space)" : "Pause (Space)";
 					playButton.setAttribute('aria-label', paused ? "Play" : "Pause");
 					updateSpectate();
+					// The wheel over the canvas zooms, and there is no notch
+					// counted anywhere to turn back by. The button is only
+					// there once there is something for it to undo.
+					zoomResetButton.hidden = !demo.zoomChanged();
 					// A demo carries the view of whoever recorded it, and zooming
 					// leaves that view behind. The button is only there while
 					// there is one to go back to, and says whether it is the one

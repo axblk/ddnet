@@ -115,6 +115,22 @@ bool webfs_owns(const char *pPath);
  */
 IOHANDLE webfs_open(const char *pPath);
 
+/**
+ * The address a file below the data directory is fetched from.
+ *
+ * The name carries the hash the index gave it, so the bytes behind an address
+ * never change and whoever fetched them once may keep them. Whoever wants the
+ * file without waiting for it - the asset loader, which has a request for
+ * exactly this - asks here instead of opening it.
+ *
+ * @param pPath Path of the file, as `webfs_owns` accepts it.
+ * @param pBuffer Receives the address.
+ * @param BufferSize Size of `pBuffer`.
+ *
+ * @return `false` when the index has no such file, and then `pBuffer` is empty.
+ */
+bool webfs_url(const char *pPath, char *pBuffer, size_t BufferSize);
+
 bool webfs_is_file(const char *pPath);
 bool webfs_is_dir(const char *pPath);
 /**

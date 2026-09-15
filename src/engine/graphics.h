@@ -611,6 +611,8 @@ public:
 		LAYERED,
 	};
 	static constexpr size_t MAX_TEXTURE_LAYERS = 256;
+	// The texture limit a backend that allocates nothing reports.
+	static constexpr uint32_t MAX_TEXTURE_DIMENSION_FALLBACK = 16384;
 
 	enum ETextureUsage : uint8_t
 	{
@@ -681,6 +683,9 @@ public:
 
 	// Whether EndOffscreenFrame can convert to planar YUV on this backend.
 	[[nodiscard]] virtual bool PlanarYuvConversionSupported() const = 0;
+	// The largest texture side, and so the largest frame without a window.
+	// Zero before the backend has been asked.
+	[[nodiscard]] virtual uint32_t MaxTextureDimension() const = 0;
 
 	struct CTextureRegion
 	{

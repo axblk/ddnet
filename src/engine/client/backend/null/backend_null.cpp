@@ -19,6 +19,7 @@ ERunCommandReturnTypes CCommandProcessorFragment_Null::RunCommand(const CCommand
 		Capabilities.m_2DArrayTextures = true;
 		Capabilities.m_RenderTargets = true;
 		Capabilities.m_PlanarYuvConversion = true;
+		Capabilities.m_MaxTextureDimension = IGraphics::MAX_TEXTURE_DIMENSION_FALLBACK;
 		break;
 	}
 	case CCommandBuffer::CMD_SWAP:

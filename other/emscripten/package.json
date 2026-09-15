@@ -11,6 +11,7 @@
 		},
 		"./viewer.css": "./ddnet-viewer.css",
 		"./page.css": "./ddnet-page.css",
+		"./render.css": "./ddnet-render.css",
 		"./coi-serviceworker.js": "./coi-serviceworker.js",
 		"./package.json": "./package.json"
 	},
@@ -21,6 +22,7 @@
 		"ddnet-loader.d.ts",
 		"ddnet-loader.js",
 		"ddnet-page.css",
+		"ddnet-render.css",
 		"ddnet-viewer.css"
 	],
 	"keywords": [

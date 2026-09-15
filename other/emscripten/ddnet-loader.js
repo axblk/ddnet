@@ -45,8 +45,9 @@ const DDNetLoader = (() => {
 	// encoder, saying something about a frame rate of sixty.
 	const START_OPTIONS = [
 		"accept", "acceptLinks", "arguments", "canvas", "controls", "dataBase", "file", "fileArgument",
-		"fileName", "homePath", "module", "needsWebGpu", "onExit", "onOutput", "onProgress", "persist",
-		"programName", "scriptUrl", "signal", "sweepVideoScratch", "urlParams", "videoSink", "zoom",
+		"fileName", "homePath", "module", "needsWebGpu", "onExit", "onOutput", "onProgress",
+		"orientation", "paused", "persist", "programName", "scriptUrl", "signal", "speed",
+		"startTime", "sweepVideoScratch", "urlParams", "videoSink", "zoom",
 	];
 	const PAGE_OPTIONS = START_OPTIONS.concat(["elements"]);
 	// A render takes what the command line of the render tool takes, plus the
@@ -65,10 +66,11 @@ const DDNetLoader = (() => {
 		elements: "object", fileArgument: "string", fileName: "string", follow: "string", fps: "number",
 		height: "number", homePath: "string", hud: "boolean", module: "function", moduleName: "string",
 		name: "string", needsWebGpu: "boolean", onExit: "function", onOutput: "function",
-		onProgress: "function", onRenderProgress: "function", onStart: "function", output: "string",
-		persist: "boolean", preset: "string", programName: "string", scriptUrl: "string", settings: "array",
-		signal: "signal", sweepVideoScratch: "boolean", urlParams: "array", width: "number",
-		worker: "boolean", zoom: "boolean",
+		onProgress: "function", onRenderProgress: "function", onStart: "function",
+		orientation: "string", output: "string", paused: "boolean", persist: "boolean", preset: "string",
+		programName: "string", scriptUrl: "string", settings: "array",
+		signal: "signal", speed: "number", startTime: "number", sweepVideoScratch: "boolean",
+		urlParams: "array", width: "number", worker: "boolean", zoom: "boolean",
 	};
 
 	// What a shape is called when it is being asked for, so that a complaint
@@ -403,6 +405,8 @@ const DDNetLoader = (() => {
 		freeview: '<path d="M12 1.6 15.2 6.2H8.8ZM12 22.4 8.8 17.8h6.4ZM1.6 12 6.2 8.8v6.4ZM22.4 12 17.8 15.2V8.8Z"/><rect x="10.9" y="4.6" width="2.2" height="14.8" rx="1.1"/><rect x="4.6" y="10.9" width="14.8" height="2.2" rx="1.1"/>',
 		fullscreen: '<path d="M3.4 9.6V3.4h6.2M20.6 9.6V3.4h-6.2M3.4 14.4v6.2h6.2M20.6 14.4v6.2h-6.2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
 		zoom_reset: '<path d="M9.6 3.4v6.2H3.4M14.4 3.4v6.2h6.2M9.6 20.6v-6.2H3.4M14.4 20.6v-6.2h6.2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
+		volume: '<path d="M3 9.2h3.4L11.4 5v14L6.4 14.8H3Z"/><path d="M15.2 9.2a4 4 0 0 1 0 5.6M18 6.4a8 8 0 0 1 0 11.2" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>',
+		volume_off: '<path d="M3 9.2h3.4L11.4 5v14L6.4 14.8H3Z"/><path d="M15.4 9.6 20.6 14.8M20.6 9.6 15.4 14.8" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>',
 	};
 
 	function icon(name) {
@@ -449,6 +453,46 @@ const DDNetLoader = (() => {
 		return (document.fullscreenElement || document.webkitFullscreenElement) != null;
 	}
 
+	// What is being watched is wide and a phone is tall, so turning the phone
+	// sideways is what makes the most of it - but that is a strong thing to do
+	// to somebody else's device, and whoever holds it upright usually means to.
+	// A device that is locked upright in its own settings would be turned
+	// against that, and one that is not stays turned until it is given back.
+	// So nothing is locked unless a page asks: `orientation: "landscape"`, or
+	// anything else the Screen Orientation API takes. A browser that will not
+	// do it says so and nothing else happens.
+	function wantedOrientation(options) {
+		const wanted = (options || {}).orientation;
+		if (wanted === undefined || wanted === null || wanted === "" || wanted === "any") {
+			return null;
+		}
+		return wanted;
+	}
+
+	// A lock outlives the full screen it was taken for unless somebody gives it
+	// back, and leaving the full screen is not always a button here: Escape, the
+	// browser's own way out and the viewer's own bar all end it. So the release
+	// hangs off the change rather than off any of them.
+	let orientationLocked = false;
+	function releaseOrientation() {
+		if (!orientationLocked) {
+			return;
+		}
+		orientationLocked = false;
+		if (screen.orientation && screen.orientation.unlock) {
+			screen.orientation.unlock();
+		}
+	}
+
+	function releaseOrientationWhenLeaving() {
+		if (isFullscreen()) {
+			return;
+		}
+		releaseOrientation();
+		document.removeEventListener("fullscreenchange", releaseOrientationWhenLeaving);
+		document.removeEventListener("webkitfullscreenchange", releaseOrientationWhenLeaving);
+	}
+
 	// Asked for by a button on the page, and by the viewers themselves for the
 	// button they draw over the picture: what a browser will do about filling
 	// the screen is the same either way, and it is knowledge the page has.
@@ -458,9 +502,11 @@ const DDNetLoader = (() => {
 			return;
 		}
 		if (isFullscreen()) {
+			releaseOrientation();
 			(document.exitFullscreen || document.webkitExitFullscreen).call(document);
 			return;
 		}
+		const orientation = wantedOrientation(settings);
 		// A browser that says no says it in a promise nobody is waiting on,
 		// which would otherwise be an unhandled rejection. It is said out loud
 		// all the same: a button that does nothing is the hardest kind of
@@ -469,13 +515,15 @@ const DDNetLoader = (() => {
 		// The older name returns nothing at all, so there is nothing to wait
 		// on and nothing to be told; what follows is only for the newer one.
 		Promise.resolve(ask.call(settings.element)).then(() => {
-			// What is being watched is wide and a phone is tall. Only a page
-			// that fills the screen may ask for this, which is why it is asked
-			// for here and nowhere else; a browser that does not do it says so
-			// and nothing else happens.
-			if (screen.orientation && screen.orientation.lock) {
-				screen.orientation.lock("landscape").catch(() => {});
+			// Only a page that fills the screen may ask for this, which is why
+			// it is asked for here and nowhere else.
+			if (orientation === null || !screen.orientation || !screen.orientation.lock) {
+				return;
 			}
+			orientationLocked = true;
+			document.addEventListener("fullscreenchange", releaseOrientationWhenLeaving);
+			document.addEventListener("webkitfullscreenchange", releaseOrientationWhenLeaving);
+			screen.orientation.lock(orientation).catch(() => { orientationLocked = false; });
 		}).catch(error => console.warn("DDNetLoader: this browser refused to fill the screen:", (error && error.message) || error));
 	}
 
@@ -496,9 +544,6 @@ const DDNetLoader = (() => {
 			button.setAttribute("aria-label", says);
 			button.setAttribute("aria-pressed", on ? "true" : "false");
 			button.title = on ? `${says} (Escape)` : says;
-			if (!on && screen.orientation && screen.orientation.unlock) {
-				screen.orientation.unlock();
-			}
 		};
 		const signal = (options || {}).signal;
 		button.addEventListener("click", () => toggleFullscreen(options), { signal: signal });
@@ -1221,7 +1266,7 @@ const DDNetLoader = (() => {
 				ddnetFullscreen: {
 					supported: () => fullscreenSupported(),
 					active: () => isFullscreen(),
-					toggle: () => toggleFullscreen(),
+					toggle: () => toggleFullscreen({ orientation: options.orientation }),
 				},
 				// Where a finished video goes. Without it the export offers the
 				// file as a download, which is what somebody watching wants and
@@ -1245,9 +1290,15 @@ const DDNetLoader = (() => {
 				// A viewer draws its own controls unless the page says it has
 				// its own, and zooms what it shows unless the page wants the
 				// wheel for itself. Said here rather than switched off once it
-				// runs, so that neither is ever there to begin with.
+				// runs, so that neither is ever there to begin with - and the
+				// same for where in the demo to start: a page can only ask for
+				// that once it has been given a turn, and by then the demo has
+				// played the seconds it took to get there.
 				arguments: (options.controls === false ? ["--no-controls"] : [])
 					.concat(options.zoom === false ? ["--no-zoom"] : [])
+					.concat(options.startTime === undefined ? [] : ["--time", String(options.startTime)])
+					.concat(options.speed === undefined ? [] : ["--speed", String(options.speed)])
+					.concat(options.paused === true ? ["--paused"] : [])
 					.concat(options.arguments || []),
 				print: text => {
 					const parsedLine = parseAnsiColorRgb(text);
@@ -1439,6 +1490,12 @@ const DDNetLoader = (() => {
 	function pageOptions(options) {
 		const elements = options.elements;
 		const showError = message => {
+			// Something went wrong, so nothing is coming: a hint that says it is
+			// still on its way would be the page's second answer to the same
+			// question, and the wrong one.
+			if (elements.loading) {
+				elements.loading.hidden = true;
+			}
 			if (elements.error) {
 				elements.error.textContent = message;
 				elements.error.style.display = "block";
@@ -1449,7 +1506,7 @@ const DDNetLoader = (() => {
 				elements.output.style.display = "flex";
 			}
 			if (elements.loading) {
-				elements.loading.style.display = "none";
+				elements.loading.hidden = true;
 			}
 		};
 		return Object.assign({}, options, {
@@ -1581,6 +1638,24 @@ self.onmessage = async event => {
 			}
 		}
 		request.options.scriptUrl = program.href;
+		// A worker made from a blob has a blob for an address, and nothing can
+		// be resolved against one of those. What a relative address is relative
+		// to is the page, so it is made absolute while the page is still the one
+		// asking.
+		if (typeof request.options.demo === "string") {
+			request.options.demo = new URL(request.options.demo, location.href).href;
+		}
+		// A blob outlives the worker that was made to import it unless somebody
+		// lets go of it, and a page that renders one demo after another would
+		// keep every script it ever handed over. The worker has imported both
+		// by the time the render is over, however it ended.
+		const dropScripts = () => {
+			for (const url of [loaderScript, programScript]) {
+				if (url.startsWith("blob:")) {
+					URL.revokeObjectURL(url);
+				}
+			}
+		};
 		// Swept here, where there is one of these per page, rather than in the
 		// worker, where there is one per render.
 		await sweepVideoScratch();
@@ -1643,260 +1718,11 @@ self.onmessage = async event => {
 			};
 			worker.postMessage(request, transfer);
 		});
+		finished.then(dropScripts, dropScripts);
 		if (options.onStart) {
 			options.onStart(handle);
 		}
 		return await finished;
-	}
-
-	// The viewers' own controls, as calls rather than as names to spell out:
-	// a page steering one should not have to know that `ccall` exists, nor
-	// which of the arguments are numbers. Every call answers `null` where the
-	// program is not running, the same as `call` does.
-	//
-	// The other end of these is the `DemoPlayer*` block in
-	// `src/engine/client/demo_player_client.cpp` and the `MapViewer*` block in
-	// `src/game/map/standalone/map_viewer_main.cpp`.
-	function demoControls(instance) {
-		const number = (name, argument) => argument === undefined
-			? instance.call(name, "number")
-			: instance.call(name, null, ["number"], [argument]);
-		return {
-			/**
-			 * How big to draw, in the units the page measures its boxes in.
-			 * Only for a viewer that sits in a box of the page's own: one that
-			 * fills the window follows it by itself. See `followSize`.
-			 */
-			setSize: (Width, Height) => instance.call("DemoPlayerSetSize", null, ["number", "number"], [Math.round(Width), Math.round(Height)]),
-			/** Whether a demo is loaded and how long it is, in seconds. */
-			length: () => number("DemoPlayerLength"),
-			/** How far it has played, between 0 and 1. */
-			progress: () => number("DemoPlayerProgress"),
-			paused: () => number("DemoPlayerPaused") === 1,
-			pause: () => number("DemoPlayerSetPaused", 1),
-			play: () => number("DemoPlayerSetPaused", 0),
-			/** Jumps to a part of the demo, between 0 and 1. */
-			seek: Fraction => number("DemoPlayerSeekPercent", Fraction),
-			/** Jumps to a time in the demo, in seconds from its beginning. */
-			seekTime: Seconds => number("DemoPlayerSeekToTime", Seconds),
-			restart: () => instance.call("DemoPlayerSeekStart"),
-			/** The playback speed, or sets it: 1 is as it was played. */
-			speed: Value => Value === undefined ? number("DemoPlayerSpeed") : number("DemoPlayerSetSpeed", Value),
-			exporting: () => number("DemoPlayerExporting") === 1,
-			/**
-			 * How an export is getting on: 0 before any was asked for, 1 while
-			 * one is being written, 2 once one was handed over, 3 when it
-			 * failed. What `startExport` answers cannot say, because in a
-			 * browser it returns before the encoder has even been asked.
-			 */
-			exportState: () => number("DemoPlayerExportState"),
-			/**
-			 * How far the video being written has got, between 0 and 1. Not
-			 * where the demo on the canvas is: the export reads it through a
-			 * way of its own, so both move at once and apart.
-			 */
-			exportProgress: () => number("DemoPlayerExportProgress"),
-			/**
-			 * How much longer the export has to run, in seconds, or a negative
-			 * number while there is no telling yet. Worked out from what is
-			 * left of the demo and the rate frames are being written at, so it
-			 * follows a machine that speeds up or slows down.
-			 */
-			exportSecondsLeft: () => number("DemoPlayerExportSecondsLeft"),
-			/**
-			 * Why the export that was last asked for failed, or an empty
-			 * string when none has. A page is the only place this can be
-			 * said: there is no log for whoever is looking at the demo.
-			 */
-			exportError: () => instance.call("DemoPlayerExportError", "string") || "",
-			/** Throws away the export that is running, and its file with it. */
-			cancelExport: () => instance.call("DemoPlayerCancelExport"),
-			/**
-			 * Who the demo is watched over the shoulder of, or sets it: a
-			 * client id, -1 for a camera of one's own that the pointer drags
-			 * around, or -2 for whoever recorded the demo. A demo a server
-			 * recorded has nobody who recorded it, so it starts at -1.
-			 */
-			spectating: Id => Id === undefined
-				? number("DemoPlayerSpectating")
-				: number("DemoPlayerSetSpectate", Id),
-			/** Follows whoever is called this, once the demo has named them. */
-			spectateName: Name => instance.call("DemoPlayerSetSpectateName", null, ["string"], [Name || ""]),
-			/** On to the next player there is, or the one before. */
-			spectateStep: Direction => number("DemoPlayerSpectateStep", Direction),
-			/**
-			 * The players the demo has named so far, as `{id, name}` objects.
-			 * A demo names them a snapshot or two in, so a list built from this
-			 * is worth building again while it plays.
-			 */
-			players: () => JSON.parse(instance.call("DemoPlayerPlayers", "string") || "[]"),
-			/**
-			 * How much of the world is in the canvas, or multiplies it. The
-			 * wheel over the canvas does the same thing.
-			 */
-			zoom: Factor => Factor === undefined
-				? number("DemoPlayerZoom")
-				: number("DemoPlayerZoomBy", Factor),
-			/**
-			 * Puts the zoom back where the demo started, and says whether
-			 * there is anything to put back. Whoever turned the wheel a few
-			 * times has no way back of their own, so a page with controls of
-			 * its own offers one - while `zoomChanged()` says there is
-			 * something to undo, the way the viewer's own bar does it.
-			 */
-			resetZoom: () => instance.call("DemoPlayerResetZoom"),
-			zoomChanged: () => number("DemoPlayerZoomChanged") !== 0,
-			/**
-			 * Whether the wheel over the canvas, the zoom keys and two fingers
-			 * on the picture zoom the demo, or switches that off. A page that
-			 * scrolls around the viewer wants the wheel for itself, and one
-			 * that shows a demo at one size and no other wants none of it.
-			 * `zoom(Factor)` still works either way - this is only about what
-			 * the viewer does on its own. Better with `zoom: false` at the
-			 * start, which leaves it off from the first frame.
-			 */
-			zoomEnabled: Enable => Enable === undefined
-				? number("DemoPlayerZoomEnabled") === 1
-				: instance.call("DemoPlayerSetZoomEnabled", null, ["number"], [Enable ? 1 : 0]),
-			/**
-			 * Whether the demo's own view is available at all: a demo carries
-			 * where the camera was and how much of the world it had in it, but
-			 * only if it was recorded with one and only while somebody is
-			 * being followed.
-			 */
-			recordedCameraAvailable: () => number("DemoPlayerRecordedCamera") !== 0,
-			/**
-			 * Whether the demo's own view is the one being shown, or switches
-			 * back to it. Zooming leaves it behind, which is what whoever
-			 * zoomed asked for; this is the way back.
-			 */
-			recordedCamera: Use => Use === undefined
-				? number("DemoPlayerRecordedCamera") === 2
-				: instance.call("DemoPlayerSetRecordedCamera", null, ["number"], [Use ? 1 : 0]),
-			/**
-			 * Whether the viewer draws its own bar of controls over the demo,
-			 * or switches it on and off. A page with controls of its own turns
-			 * it off - better with `controls: false`, which leaves it off from
-			 * the first frame rather than after it.
-			 */
-			controls: Show => Show === undefined
-				? number("DemoPlayerControls") === 1
-				: instance.call("DemoPlayerSetControls", null, ["number"], [Show ? 1 : 0]),
-			/**
-			 * Starts a video export, and says whether it started. The options
-			 * are named as in `render`, because they are the same settings the
-			 * render tool takes: `width`, `height`, `fps`, `crf`, `codec`,
-			 * `audio`, `hud`, `chat`.
-			 */
-			startExport: options => {
-				const settings = options || {};
-				return instance.call("DemoPlayerStartExport", "number",
-					["number", "number", "number", "number", "number", "string", "number", "number"],
-					[
-						settings.width || 0,
-						settings.height || 0,
-						settings.fps || 60,
-						settings.audio ? 1 : 0,
-						settings.crf === undefined || settings.crf === null ? 18 : settings.crf,
-						settings.codec || "",
-						settings.hud ? 1 : 0,
-						settings.chat === false ? 0 : 1,
-					]) === 1;
-			},
-		};
-	}
-
-	// A tile is 32 world units across, in every map there is. The viewer is
-	// written in those units and a page has no business knowing them, so the
-	// one place that turns the one into the other is here.
-	const MAP_TILE_SIZE = 32;
-
-	function mapControls(instance) {
-		const tiles = name => {
-			const value = instance.call(name, "number");
-			return value === null ? null : value / MAP_TILE_SIZE;
-		};
-		const setNumbers = (name, values) =>
-			instance.call(name, null, values.map(() => "number"), values);
-		return {
-			loaded: () => instance.call("MapViewerMapLoaded", "number") === 1,
-			/**
-			 * How big to draw, in the units the page measures its boxes in.
-			 * Only for a viewer that sits in a box of the page's own: one that
-			 * fills the window follows it by itself. See `followSize`.
-			 */
-			setSize: (Width, Height) => setNumbers("MapViewerSetSize", [Math.round(Width), Math.round(Height)]),
-			/** Fits the whole map on screen. */
-			fit: () => instance.call("MapViewerFit"),
-			/** How big the map is, in tiles. */
-			size: () => {
-				const width = tiles("MapViewerMapWidth");
-				return width === null ? null : { width, height: tiles("MapViewerMapHeight") };
-			},
-			/** Where the view looks, in tiles, or looks there. */
-			center: (X, Y) => {
-				if (X === undefined) {
-					const x = tiles("MapViewerCenterX");
-					return x === null ? null : { x, y: tiles("MapViewerCenterY") };
-				}
-				return setNumbers("MapViewerSetCenter", [X * MAP_TILE_SIZE, Y * MAP_TILE_SIZE]);
-			},
-			/**
-			 * How many tiles are across the screen, or zooms until that many
-			 * are. It is the zoom said in a way that means the same in every
-			 * window, which is what a link and a readout both need.
-			 */
-			tilesAcross: Tiles => {
-				const visible = tiles("MapViewerVisibleWidth");
-				if (Tiles === undefined) {
-					return visible;
-				}
-				// What the view is set by is the zoom, and what that comes to in
-				// tiles is the window's business - so it is asked what it shows
-				// now and told the factor between that and what is wanted.
-				if (visible > 0 && Tiles > 0) {
-					setNumbers("MapViewerSetZoom", [instance.call("MapViewerZoom", "number") * Tiles / visible]);
-				}
-			},
-			/** Zooms by a factor: 2 puts twice as much of the map on screen. */
-			zoomBy: Factor => {
-				const zoom = instance.call("MapViewerZoom", "number");
-				if (zoom !== null) {
-					setNumbers("MapViewerSetZoom", [zoom * Factor]);
-				}
-			},
-			/**
-			 * Whether the parts of the map that are only there to be looked at
-			 * are drawn, or turns them on and off.
-			 */
-			highDetail: On => On === undefined
-				? instance.call("MapViewerHighDetail", "number") === 1
-				: instance.call("MapViewerSetHighDetail", null, ["number"], [On ? 1 : 0]),
-			/**
-			 * Whether what the tiles do is drawn over what they look like, or
-			 * turns that on and off.
-			 */
-			entities: On => On === undefined
-				? instance.call("MapViewerEntities", "number") === 1
-				: instance.call("MapViewerSetEntities", null, ["number"], [On ? 1 : 0]),
-			/**
-			 * Whether the viewer draws its own bar of controls over the map,
-			 * or switches it on and off, as in `demoControls`.
-			 */
-			controls: Show => Show === undefined
-				? instance.call("MapViewerControls", "number") === 1
-				: instance.call("MapViewerSetControls", null, ["number"], [Show ? 1 : 0]),
-			/** Writes what is on screen, or the whole map, to a picture. */
-			exportView: () => instance.call("MapViewerExportView"),
-			exportFullMap: () => instance.call("MapViewerExportFullMap"),
-			/** 0 while nothing is being written, 1 while it is, 2 when it failed. */
-			exportState: () => instance.call("MapViewerExportState", "number"),
-			/**
-			 * How far a picture of the whole map has got, between 0 and 1. A
-			 * picture of the view is one frame and is always 0.
-			 */
-			exportProgress: () => instance.call("MapViewerExportProgress", "number"),
-		};
 	}
 
 	// A zip of files that are already in memory, so that a batch of them is one
@@ -2045,6 +1871,57 @@ self.onmessage = async event => {
 	// How long the view attributes wait for the file they belong to. Abyss,
 	// the largest map anybody has, takes a few seconds to unpack.
 	const WAIT_FOR_FILE_MS = 60000;
+	// How often the demo element asks what changed, to say it in the words a
+	// `<video>` says them in. A browser fires `timeupdate` between four and
+	// sixty times a second and says so in the standard; this is at the slow
+	// end of that, which is as often as a page can draw a time readout with
+	// anybody noticing.
+	const VIDEO_EVENT_INTERVAL_MS = 200;
+	// A demo stops on its last frame, and the last frame is not exactly the
+	// end: how near the end counts as being at it.
+	const END_OF_DEMO = 0.999;
+
+	// A viewer is black until it has something to draw, and fetching a demo or
+	// a map over a slow line takes long enough for that to look like a page
+	// that is broken rather than one that is busy. So something says so until
+	// there is a picture - and stops saying it whichever way the wait ends,
+	// including the one where the file never turns up and the error takes over.
+	function loadingHint(element, isThere, options) {
+		const settings = Object.assign({ text: "Loading\u2026", until: WAIT_FOR_FILE_MS }, options || {});
+		const signal = settings.signal;
+		const deadline = Date.now() + settings.until;
+		let stopped = false;
+		const hide = () => {
+			if (stopped) {
+				return;
+			}
+			stopped = true;
+			element.hidden = true;
+		};
+		if (settings.text !== null) {
+			element.textContent = settings.text;
+		}
+		element.hidden = false;
+		const look = () => {
+			if (stopped || (signal !== undefined && signal !== null && signal.aborted)) {
+				hide();
+				return;
+			}
+			let there = false;
+			try {
+				there = isThere() === true;
+			} catch (error) {
+				there = true;
+			}
+			if (there || Date.now() >= deadline) {
+				hide();
+				return;
+			}
+			setTimeout(look, 100);
+		};
+		look();
+		return { stop: hide };
+	}
 
 	const ELEMENT_STYLE = `
 :host { display: block; position: relative; contain: content; background: #000; }
@@ -2063,9 +1940,20 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 	font: 13px/1.45 system-ui, sans-serif;
 	text-align: center;
 }
+/* A rule of our own that sets display beats the browser's own rule for the
+   hidden attribute, so without this the message would stay where it was put
+   and the loading hint would never go away. */
+.message[hidden] { display: none; }
 `;
 
-	class CViewerElement extends HTMLElement {
+	// A worker has no DOM, and `HTMLElement` is not a name there at all - a
+	// class cannot even be declared from one that does not exist. The render
+	// worker imports this module for `start`, so the elements are declared from
+	// a stand-in there and never made: defining one needs `customElements`,
+	// which a worker has not got either.
+	const ELEMENT_BASE = typeof HTMLElement === "undefined" ? class {} : HTMLElement;
+
+	class CViewerElement extends ELEMENT_BASE {
 		constructor() {
 			super();
 			const root = this.attachShadow({ mode: "open" });
@@ -2081,10 +1969,16 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 			this.viewerInstance = null;
 			this.viewerControls = null;
 			this.viewerStopping = null;
+			// What says that something is on its way, for as long as it is, see
+			// `loadingHint`.
+			this.viewerHint = null;
 			// Which file the view attributes are waiting for. A second file
 			// asked for while the first is still on its way leaves the first
 			// wait behind, and it has to know that it is no longer the one.
 			this.viewerGeneration = 0;
+			// Which attributes the program was started with, so that they are
+			// not asked for a second time once it runs. See `startViewer`.
+			this.viewerHandedOver = [];
 			// A promise for the running program, so that a page can wait for it
 			// and hear about anything that stopped it from starting.
 			this.ready = null;
@@ -2104,8 +1998,21 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 		}
 
 		say(message) {
+			// The hint writes in the same place, so it has had its turn once
+			// there is something else to say - it must not take the message
+			// away again when the file it was waiting for finally turns up.
+			if (this.viewerHint !== null) {
+				this.viewerHint.stop();
+				this.viewerHint = null;
+			}
 			this.viewerMessage.textContent = message || "";
 			this.viewerMessage.hidden = !message;
+			// A page that put a viewer somewhere is not looking at it, so what
+			// went wrong is said to it as well as written on the picture. The
+			// same name a `<video>` says it under.
+			if (message) {
+				this.dispatchEvent(new CustomEvent("error", { detail: { message: message } }));
+			}
 		}
 
 		connectedCallback() {
@@ -2116,6 +2023,17 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 				return;
 			}
 			this.viewerStopping = new AbortController();
+			// Said from here rather than from `startViewer`, because fetching
+			// the program is itself most of the wait. An element with nothing
+			// to show is not waiting for anything and says nothing.
+			const source = this.getAttribute("src");
+			if (source !== null && source !== "") {
+				const kind = this.constructor.viewerKind;
+				this.viewerHint = loadingHint(
+					this.viewerMessage,
+					() => this.viewerControls !== null && kind.loaded(this.viewerControls),
+					{ signal: this.viewerStopping.signal });
+			}
 			this.ready = this.startViewer();
 			this.ready.catch(error => {
 				if (this.viewerStopping !== null && !this.viewerStopping.signal.aborted) {
@@ -2131,6 +2049,10 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 			this.viewerControls = null;
 			this.viewerStopping = null;
 			this.ready = null;
+			if (this.viewerHint !== null) {
+				this.viewerHint.stop();
+				this.viewerHint = null;
+			}
 			if (stopping !== null) {
 				stopping.abort();
 			}
@@ -2148,7 +2070,18 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 
 		async startViewer() {
 			const kind = this.constructor.viewerKind;
-			const base = new URL(this.getAttribute("base") || ".", new URL(LOADER_URL, location.href));
+			// What the program is started with rather than asked for
+			// afterwards, and which attributes those were: asking again once it
+			// runs would seek a demo that is already where it belongs, and a
+			// seek asked for from outside while the program is still fetching
+			// what it needs is one wait inside another.
+			const handedOver = kind.startOptions === undefined ? {} : kind.startOptions(this);
+			this.viewerHandedOver = Object.keys(handedOver).length === 0 ? [] : (kind.startAttributes || []);
+			// Where the program is: beside the module of the package that
+			// brought this kind of viewer, wherever that module was installed
+			// to. A page that keeps the programs somewhere else says so with
+			// `base`.
+			const base = new URL(this.getAttribute("base") || ".", new URL(kind.base || LOADER_URL, location.href));
 			const scriptUrl = new URL(kind.script, base).href;
 			const factory = await importProgram(scriptUrl, kind.moduleName);
 			const source = this.getAttribute("src");
@@ -2165,6 +2098,21 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 				// over it, which a page that scrolls around it does not want.
 				// The map viewer is not asked: there, zooming is the point.
 				zoom: kind.zoomable && this.hasAttribute("nozoom") ? false : undefined,
+				// Filling the screen leaves a phone where it is unless this
+				// says which way to turn it, see `wantedOrientation`.
+				orientation: this.getAttribute("orientation") || undefined,
+				// Where in the demo to start, said before it plays anything
+				// rather than once the element gets a turn: by then the demo
+				// would have played the seconds that took. The same attributes
+				// are applied again afterwards, and again whenever one of them
+				// changes, which is what makes a viewer that is already running
+				// follow them.
+				...handedOver,
+				// A viewer on somebody else's page keeps nothing: it has no
+				// settings to save and no recording to make, and an element
+				// that quietly filled a visitor's IndexedDB would be a
+				// surprise in somebody else's page.
+				persist: false,
 				file: source === null || source === "" ? undefined : source,
 				dataBase: this.getAttribute("data") || undefined,
 				signal: this.viewerStopping.signal,
@@ -2179,6 +2127,8 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 			});
 			this.viewerInstance = instance;
 			this.viewerControls = kind.controls(instance);
+			// Now that there is something to watch, for whoever watches it.
+			this.viewerRunning();
 			// The canvas is a box on somebody's page here, not the window, so
 			// nothing would tell the program when it changes shape.
 			followSize(this.viewerCanvas, this.viewerControls, { signal: this.viewerStopping.signal });
@@ -2209,8 +2159,13 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 					}
 					return;
 				}
+				// Only the first time round: a file that replaces the first one
+				// is nobody's to have positioned, so then everything the
+				// element says is applied again.
+				const handedOver = this.viewerHandedOver;
+				this.viewerHandedOver = [];
 				for (const name of this.constructor.observedAttributes) {
-					if (name !== "src" && this.hasAttribute(name)) {
+					if (name !== "src" && !handedOver.includes(name) && this.hasAttribute(name)) {
 						this.applyAttribute(name, this.getAttribute(name));
 					}
 				}
@@ -2218,10 +2173,20 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 			apply();
 		}
 
+		/**
+		 * Called once the program runs and its controls are there. Nothing
+		 * happens here; a viewer that says what it is doing says it from here.
+		 */
+		viewerRunning() {}
+
 		applyAttribute(name, value) {
 			if (name === "src") {
 				this.say("");
 				if (value !== null && value !== "") {
+					// No hint for a file that replaces another: a viewer that
+					// already has one still says it has one while the next is on
+					// its way, so there is nothing here to wait for that could
+					// be told apart from being done.
 					this.viewerInstance.loadUrl(value).catch(error => this.say((error && error.message) || String(error)));
 					// The new file brings its own view with it, so what the
 					// element asks for has to be put back on top of it again.
@@ -2234,91 +2199,6 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 				return;
 			}
 			this.constructor.viewerKind.apply(this.viewerControls, name, value, this);
-		}
-	}
-
-	// What a demo takes beyond `src`, spelled the way the address of the demo
-	// page spells it: a link somebody copied out of the viewer and an element
-	// somebody wrote by hand say the same things by the same names.
-	class CDemoElement extends CViewerElement {
-		static observedAttributes = ["src", "controls", "nozoom", "t", "speed", "paused", "spec"];
-		static viewerKind = {
-			script: "ddnet-demo-player.js",
-			moduleName: "DDNetDemoPlayer",
-			programName: "Demo player",
-			suffix: ".demo",
-			zoomable: true,
-			controls: instance => demoControls(instance),
-			loaded: controls => controls.length() > 0,
-			apply: (controls, name, value) => {
-				const number = parseFloat(value);
-				if (name === "nozoom") {
-					// Turned off while it is there, the way `controls` is on
-					// while it is there: an attribute nobody wrote is the
-					// viewer as it comes.
-					controls.zoomEnabled(value === null);
-				} else if (name === "t" && isFinite(number)) {
-					controls.seekTime(number);
-				} else if (name === "speed" && isFinite(number)) {
-					controls.speed(number);
-				} else if (name === "paused") {
-					if (value === null || value === "0" || value === "false") {
-						controls.play();
-					} else {
-						controls.pause();
-					}
-				} else if (name === "spec" && value !== null && value !== "") {
-					// A name as well as a number, as in a link: who somebody is
-					// worth watching is easier to write down than which client
-					// id they happen to have.
-					if (String(parseInt(value, 10)) === value) {
-						controls.spectating(parseInt(value, 10));
-					} else {
-						controls.spectateName(value);
-					}
-				}
-			},
-		};
-	}
-
-	class CMapElement extends CViewerElement {
-		static observedAttributes = ["src", "controls", "x", "y", "tiles"];
-		static viewerKind = {
-			script: "ddnet-map-viewer.js",
-			moduleName: "DDNetMapViewer",
-			programName: "Map viewer",
-			suffix: ".map",
-			controls: instance => mapControls(instance),
-			loaded: controls => controls.loaded(),
-			apply: (controls, name, value, element) => {
-				const number = parseFloat(value);
-				if (name === "tiles" && isFinite(number) && number > 0) {
-					controls.tilesAcross(number);
-				} else if (name === "x" || name === "y") {
-					// Both or neither: half a place to look is no place to
-					// look, and the two arrive as two separate changes.
-					const x = parseFloat(element.getAttribute("x"));
-					const y = parseFloat(element.getAttribute("y"));
-					if (isFinite(x) && isFinite(y)) {
-						controls.center(x, y);
-					}
-				}
-			},
-		};
-	}
-
-	// Defined as the module is loaded, because the point of an element is that
-	// putting one in the page is all there is to it. Twice is not an error
-	// here, only the first one counting: a page may load this more than once.
-	function defineViewerElements() {
-		if (typeof customElements === "undefined") {
-			return;
-		}
-		if (customElements.get("ddnet-demo") === undefined) {
-			customElements.define("ddnet-demo", CDemoElement);
-		}
-		if (customElements.get("ddnet-map") === undefined) {
-			customElements.define("ddnet-map", CMapElement);
 		}
 	}
 
@@ -2396,24 +2276,6 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 		},
 
 		/**
-		 * What a demo player can be asked to do, bound to one of them. The page
-		 * that hosts it needs nothing else to steer it - and neither does a URL
-		 * that says where to start, which is `urlParameter` below.
-		 */
-		demoControls(instance) {
-			return demoControls(instance);
-		},
-
-		/**
-		 * The same for a map viewer: what it shows, in tiles, and everything
-		 * that changes it. A page steers it with these, and so does a link -
-		 * `#x=…&y=…&tiles=…` is only these calls made for somebody else.
-		 */
-		mapControls(instance) {
-			return mapControls(instance);
-		},
-
-		/**
 		 * What this browser cannot do, in one sentence, or `null` when it can
 		 * do all of it. A page can say so itself before it offers something
 		 * that will not work. Answers with a promise, because asking a browser
@@ -2462,6 +2324,16 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 		},
 
 		/**
+		 * Shows an element while a viewer has nothing to draw yet, and takes it
+		 * away as soon as it has. `isThere` is asked every tenth of a second,
+		 * and the wait gives up after `until` milliseconds - a file that never
+		 * arrives has said so through the error by then.
+		 */
+		loadingHint(element, isThere, options) {
+			return loadingHint(element, isThere, options);
+		},
+
+		/**
 		 * The program's script as a module, which a plain `import` cannot do
 		 * with it: it is a classic script that names itself. Answers the
 		 * factory that names it, and remembers it, so asking twice for the same
@@ -2476,17 +2348,19 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 		},
 
 		/**
-		 * Defines `<ddnet-demo>` and `<ddnet-map>`, which this module does for
-		 * itself as it loads. Here for a page that takes them off and wants
-		 * them back, and harmless twice.
+		 * The element a viewer package builds its own on: a canvas in a shadow
+		 * root, a message over it, and a program started on it as soon as the
+		 * element is in a page. What it shows and what it answers to is the
+		 * `viewerKind` the package gives it.
 		 */
-		defineViewerElements() {
-			return defineViewerElements();
-		},
+		ViewerElement: CViewerElement,
 
-		/** The classes behind those two, for whoever wants to extend them. */
-		DemoElement: CDemoElement,
-		MapElement: CMapElement,
+		/**
+		 * How long the element waits for a file before it gives up saying that
+		 * it is on its way, in milliseconds. A package that waits for the same
+		 * file waits as long.
+		 */
+		waitForFile: WAIT_FOR_FILE_MS,
 
 		/**
 		 * One of the pictures the viewers draw on their own buttons, as an
@@ -2720,18 +2594,13 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 // `DDNetLoader.start(…)`, and one name at a time for whoever would rather
 // import only what they use. The names are the object's own, so there is one
 // list and not two.
-// Put on the page as this module loads: an element that has to be switched on
-// first is not the one line it is meant to be.
-DDNetLoader.defineViewerElements();
-
 export default DDNetLoader;
 export const {
 	// tidy-alphabetical-start
-	autoHide, defineViewerElements, DemoElement, demoControls,
-	exportSettingsForm, followSize, fullscreen, fullscreenSupported, icon,
-	importProgram, isFullscreen, MapElement, mapControls, page, paintIcons,
+	autoHide, exportSettingsForm, followSize, fullscreen, fullscreenSupported,
+	icon, importProgram, isFullscreen, loadingHint, page, paintIcons,
 	render, setUrlParameters, start, supportProblem, toggleFullscreen,
-	urlParameter, version, videoCodecs, zip,
+	urlParameter, version, videoCodecs, ViewerElement, waitForFile, zip,
 	// tidy-alphabetical-end
 } = DDNetLoader;
 // Not as `Error`: a name at the top of a module is a name for the whole of it,

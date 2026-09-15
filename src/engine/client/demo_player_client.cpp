@@ -25,6 +25,7 @@
 #include <game/client/gameclient.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
@@ -61,6 +62,7 @@ namespace
 		case CDemoPlayerClient::CONTROL_KEY_SPEED_UP: return KEY_UP;
 		case CDemoPlayerClient::CONTROL_KEY_SPEED_DOWN: return KEY_DOWN;
 		case CDemoPlayerClient::CONTROL_KEY_RESTART: return KEY_HOME;
+		case CDemoPlayerClient::CONTROL_KEY_MUTE: return KEY_M;
 		case CDemoPlayerClient::CONTROL_KEY_FREE_VIEW: return KEY_F;
 		case CDemoPlayerClient::CONTROL_KEY_SPECTATE_NEXT: return KEY_N;
 		case CDemoPlayerClient::CONTROL_KEY_SPECTATE_PREVIOUS: return KEY_P;
@@ -400,6 +402,10 @@ bool CDemoPlayerClient::HandleInput()
 	{
 		Player.SeekPercent(0.0f);
 	}
+	if(KeyPressed(CONTROL_KEY_MUTE, false))
+	{
+		SetMuted(!Muted());
+	}
 	if(KeyPressed(CONTROL_KEY_FREE_VIEW, false))
 	{
 		// Back to whoever the demo was recorded by when there is one, so that
@@ -562,6 +568,7 @@ void CDemoPlayerClient::RenderControls()
 		ITEM_SPEED,
 		ITEM_FASTER,
 		ITEM_TIME,
+		ITEM_VOLUME,
 		ITEM_SPACER,
 		ITEM_ZOOM_RESET,
 		ITEM_CAMERA,
@@ -575,10 +582,19 @@ void CDemoPlayerClient::RenderControls()
 		ITEM_EXPORT_AS_SHOWN,
 		ITEM_EXPORT_720,
 		ITEM_EXPORT_1080,
+		// What the volume button offers. A bar as narrow as a phone has no
+		// room for a slider beside the buttons, and a menu of steps is what
+		// there is room for.
+		ITEM_VOLUME_MUTE,
+		ITEM_VOLUME_25,
+		ITEM_VOLUME_50,
+		ITEM_VOLUME_75,
+		ITEM_VOLUME_100,
 		NUM_ITEMS,
 	};
 	// The menu of the export button, told apart from the one the eye opens.
 	constexpr int MenuExport = 1;
+	constexpr int MenuVolume = 2;
 	// The players to pick from, and what picking one means. A demo a client
 	// recorded is a demo of whoever recorded it, and the button then only
 	// says whether to look over their shoulder or to look around: the list of
@@ -614,6 +630,10 @@ void CDemoPlayerClient::RenderControls()
 	aItems[ITEM_FASTER].m_Optional = true;
 	aItems[ITEM_TIME].m_Type = CViewerControls::EItem::TEXT;
 	aItems[ITEM_TIME].m_pText = aTime;
+	aItems[ITEM_VOLUME].m_Icon = Muted() ? CViewerControls::EIcon::VOLUME_OFF : CViewerControls::EIcon::VOLUME;
+	aItems[ITEM_VOLUME].m_OpensMenu = true;
+	aItems[ITEM_VOLUME].m_MenuId = MenuVolume;
+	aItems[ITEM_VOLUME].m_Optional = true;
 	aItems[ITEM_SPACER].m_Type = CViewerControls::EItem::SPACER;
 	// Only once somebody has zoomed, because before that it would put the zoom
 	// where it already is. The notches somebody turned are counted nowhere, so
@@ -657,6 +677,24 @@ void CDemoPlayerClient::RenderControls()
 		aItems[i].m_InMenu = true;
 		aItems[i].m_MenuId = MenuExport;
 		aItems[i].m_Hidden = !CanExport || IsExporting;
+	}
+	aItems[ITEM_VOLUME_MUTE].m_Icon = CViewerControls::EIcon::VOLUME_OFF;
+	aItems[ITEM_VOLUME_MUTE].m_pText = "Mute";
+	aItems[ITEM_VOLUME_MUTE].m_Active = Muted();
+	static const char *const s_apVolumeText[] = {"25%", "50%", "75%", "100%"};
+	for(int i = ITEM_VOLUME_25; i <= ITEM_VOLUME_100; ++i)
+	{
+		const float Level = (i - ITEM_VOLUME_25 + 1) * 0.25f;
+		aItems[i].m_Icon = CViewerControls::EIcon::VOLUME;
+		aItems[i].m_pText = s_apVolumeText[i - ITEM_VOLUME_25];
+		// The one the volume is nearest to, so that the menu says where it
+		// stands even where it was set to something in between from a page.
+		aItems[i].m_Active = !Muted() && std::abs(Volume() - Level) < 0.125f;
+	}
+	for(int i = ITEM_VOLUME_MUTE; i <= ITEM_VOLUME_100; ++i)
+	{
+		aItems[i].m_InMenu = true;
+		aItems[i].m_MenuId = MenuVolume;
 	}
 	for(size_t i = 0; i < vPickable.size(); ++i)
 	{
@@ -721,6 +759,15 @@ void CDemoPlayerClient::RenderControls()
 		break;
 	case ITEM_SEEK:
 		Player.SeekPercent(SeekTo);
+		break;
+	case ITEM_VOLUME_MUTE:
+		SetMuted(!Muted());
+		break;
+	case ITEM_VOLUME_25:
+	case ITEM_VOLUME_50:
+	case ITEM_VOLUME_75:
+	case ITEM_VOLUME_100:
+		SetVolume((Pressed - ITEM_VOLUME_25 + 1) * 0.25f);
 		break;
 	case ITEM_SLOWER:
 		Player.AdjustSpeedIndex(-1);
@@ -872,8 +919,30 @@ void CDemoPlayerClient::Run()
 	}
 	else
 	{
+		// Where the link said to start, before a frame of the demo has been
+		// drawn. Done here rather than beside `PlayDemo` because seeking reads
+		// the demo file, and in a browser a read is a wait that hands the page
+		// back its turn: a page that calls in while the viewer waits must find
+		// it on the stack it runs its frames on, which is this one.
+		bool ApplyStart = pError == nullptr;
 		while(m_State != IClient::STATE_QUITTING)
 		{
+			if(ApplyStart)
+			{
+				ApplyStart = false;
+				if(m_StartTime >= 0.0f)
+				{
+					SeekToTime(m_StartTime);
+				}
+				if(m_StartSpeed > 0.0f)
+				{
+					SetSpeed(m_StartSpeed);
+				}
+				if(m_StartPaused)
+				{
+					SetPaused(true);
+				}
+			}
 			if(!HandleInput())
 			{
 				break;
@@ -1055,6 +1124,29 @@ EMSCRIPTEN_KEEPALIVE const char *DemoPlayerPlayers()
 
 // How much of the world is in the window. A page has no wheel over the canvas
 // while the pointer is on a button of its own, so it can ask for this instead.
+// How loud it is, between 0 and 1, the way every volume on the web is counted.
+EMSCRIPTEN_KEEPALIVE float DemoPlayerVolume()
+{
+	return g_pDemoPlayer == nullptr ? 0.0f : g_pDemoPlayer->Volume();
+}
+
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSetVolume(float Volume)
+{
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SetVolume(Volume);
+}
+
+EMSCRIPTEN_KEEPALIVE int DemoPlayerMuted()
+{
+	return g_pDemoPlayer != nullptr && g_pDemoPlayer->Muted() ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSetMuted(int Muted)
+{
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SetMuted(Muted != 0);
+}
+
 EMSCRIPTEN_KEEPALIVE void DemoPlayerZoomBy(float Factor)
 {
 	if(g_pDemoPlayer != nullptr)

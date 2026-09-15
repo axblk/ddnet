@@ -3,6 +3,7 @@
 #include "viewer_controls.h"
 
 #include <base/color.h>
+#include <base/math.h>
 #include <base/str.h>
 #include <base/time.h>
 
@@ -349,6 +350,56 @@ void CViewerControls::DrawIcon(EIcon Icon, vec2 Center, float Size, float Alpha)
 			DrawRect(Center.x - Length / 2.0f, Center.y - Half / 2.0f + i * RowHeight / 2.0f, Length, RowHeight / 2.0f + 0.5f, 1.0f, 1.0f, 1.0f, Alpha);
 		}
 		DrawDisc(Center, Thin * 0.8f, 0.0f, 0.0f, 0.0f, Alpha);
+		break;
+	}
+	case EIcon::VOLUME:
+	case EIcon::VOLUME_OFF:
+	{
+		// A speaker: a small box on the left with a cone opening to the right,
+		// drawn as rows the way the eye is. What says whether there is sound
+		// is what stands beside it - two arcs, or a cross through them.
+		const float BoxHeight = Size * 0.34f;
+		const float BoxWidth = Size * 0.16f;
+		const float ConeWidth = Size * 0.22f;
+		const float Left = Center.x - Half * 0.9f;
+		DrawRect(Left, Center.y - BoxHeight / 2.0f, BoxWidth, BoxHeight, 1.0f, 1.0f, 1.0f, Alpha);
+		constexpr int Rows = 10;
+		for(int i = 0; i < Rows; ++i)
+		{
+			// The cone grows from the box to the full height of the icon, so
+			// the rows are drawn from its middle outwards.
+			const float Fraction = (i + 0.5f) / Rows;
+			const float Height = mix(BoxHeight, Size * 0.92f, Fraction);
+			DrawRect(Left + BoxWidth + Fraction * ConeWidth - ConeWidth / Rows, Center.y - Height / 2.0f,
+				ConeWidth / Rows + 0.5f, Height, 1.0f, 1.0f, 1.0f, Alpha);
+		}
+		const float RightOfCone = Left + BoxWidth + ConeWidth;
+		if(Icon == EIcon::VOLUME)
+		{
+			// Two upright strokes, shorter the nearer they are: sound leaving
+			// the speaker, without a curve this can draw.
+			for(int i = 0; i < 2; ++i)
+			{
+				const float Height = Size * (0.34f + i * 0.28f);
+				DrawRect(RightOfCone + Size * (0.12f + i * 0.2f), Center.y - Height / 2.0f,
+					Thin * 0.8f, Height, 1.0f, 1.0f, 1.0f, Alpha);
+			}
+		}
+		else
+		{
+			// A cross, as a stair of squares: nothing here can draw a line
+			// that is not upright or flat, and at this size the stair reads as
+			// a diagonal.
+			constexpr int Steps = 7;
+			const float Step = Size * 0.46f / Steps;
+			const float CrossX = RightOfCone + Size * 0.16f;
+			for(int i = 0; i < Steps; ++i)
+			{
+				const float Offset = (i - (Steps - 1) / 2.0f) * Step;
+				DrawRect(CrossX + Offset + Size * 0.22f, Center.y + Offset, Step + 0.5f, Step + 0.5f, 1.0f, 1.0f, 1.0f, Alpha);
+				DrawRect(CrossX + Offset + Size * 0.22f, Center.y - Offset - Step, Step + 0.5f, Step + 0.5f, 1.0f, 1.0f, 1.0f, Alpha);
+			}
+		}
 		break;
 	}
 	}

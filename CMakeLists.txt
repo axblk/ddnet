@@ -2239,6 +2239,9 @@ if(TARGET_OS STREQUAL "emscripten")
     other/emscripten/demo.html
     other/emscripten/index.html
     other/emscripten/map.html
+    other/emscripten/packages/demo-player/demo-player.js
+    other/emscripten/packages/demo-renderer/demo-renderer.js
+    other/emscripten/packages/map-viewer/map-viewer.js
     other/emscripten/render.html
     other/icons/DDNet.ico
     # tidy-alphabetical-end
@@ -3511,6 +3514,13 @@ if(CLIENT)
       PROPERTY OUTPUT_NAME ${CLIENT_EXECUTABLE}
   )
   set_web_export_name(game-client DDNetClient)
+  # Settings, demos, screenshots: the client is the only program here with
+  # anything to keep, so it is the only one that mounts IndexedDB over its home
+  # directory. The viewers pass through and leave nothing behind, and the
+  # filesystem that would have held it is 6.5 KiB they do not ship.
+  if(TARGET_OS STREQUAL "emscripten")
+    target_link_options(game-client PRIVATE "-lidbfs.js" "-sEXPORTED_RUNTIME_METHODS=callMain,ccall,FS,IDBFS")
+  endif()
   target_link_libraries(game-client ${LIBS_CLIENT})
 
   if(WEBGPU_BACKEND_PROTOTYPE AND TARGET_OS STREQUAL "emscripten")
@@ -3869,7 +3879,7 @@ if(CLIENT)
         -DBUILD_DIR=${PROJECT_BINARY_DIR}
         -DSITE_DIR=${PROJECT_BINARY_DIR}/site
         "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-render$<SEMICOLON>ddnet-demo-player$<SEMICOLON>ddnet-map-viewer"
-        "-DPAGE_FILES=coi-serviceworker.js$<SEMICOLON>DDNet.ico$<SEMICOLON>ddnet-loader.js$<SEMICOLON>ddnet-page.css$<SEMICOLON>ddnet-render.css$<SEMICOLON>ddnet-viewer.css$<SEMICOLON>demo.html$<SEMICOLON>index.html$<SEMICOLON>map.html$<SEMICOLON>render.html"
+        "-DPAGE_FILES=coi-serviceworker.js$<SEMICOLON>DDNet.ico$<SEMICOLON>ddnet-loader.js$<SEMICOLON>ddnet-page.css$<SEMICOLON>ddnet-render.css$<SEMICOLON>ddnet-viewer.css$<SEMICOLON>demo-player.js$<SEMICOLON>demo-renderer.js$<SEMICOLON>demo.html$<SEMICOLON>index.html$<SEMICOLON>map-viewer.js$<SEMICOLON>map.html$<SEMICOLON>render.html"
         -P ${PROJECT_SOURCE_DIR}/cmake/assemble_web_site.cmake
       DEPENDS
         # tidy-alphabetical-start
@@ -4987,6 +4997,9 @@ else()
     other/emscripten/ddnet-viewer.css
     other/emscripten/demo.html
     other/emscripten/map.html
+    other/emscripten/packages/demo-player/demo-player.js
+    other/emscripten/packages/demo-renderer/demo-renderer.js
+    other/emscripten/packages/map-viewer/map-viewer.js
     other/emscripten/render.html
     # tidy-alphabetical-end
   )

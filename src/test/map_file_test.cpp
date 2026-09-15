@@ -216,6 +216,15 @@ namespace
 
 namespace
 {
+	// Whether two stretches of bytes are the same. Nothing of nothing is the
+	// same as nothing - and asking `memcmp` that, with the two null pointers
+	// an empty list hands out, is undefined behaviour. An external image and
+	// a layer without quads both ask exactly that.
+	bool SameBytes(const void *pOne, const void *pOther, size_t Size)
+	{
+		return Size == 0 || std::memcmp(pOne, pOther, Size) == 0;
+	}
+
 	// Everything two versions of a map have to agree on for one to be the other
 	// written down and read back.
 	void ExpectSameMap(const CMapState &One, const CMapState &Other, const std::string &Name)
@@ -243,13 +252,13 @@ namespace
 			EXPECT_EQ(pOne->m_Width, pOther->m_Width) << Name;
 			EXPECT_EQ(pOne->m_Height, pOther->m_Height) << Name;
 			ASSERT_EQ(pOne->m_Data.Size(), pOther->m_Data.Size()) << Name;
-			EXPECT_EQ(std::memcmp(pOne->m_Data.All().data(), pOther->m_Data.All().data(), pOne->m_Data.Size()), 0) << Name;
+			EXPECT_TRUE(SameBytes(pOne->m_Data.All().data(), pOther->m_Data.All().data(), pOne->m_Data.Size())) << Name;
 		}
 		for(size_t i = 0; i < One.NumSounds(); ++i)
 		{
 			ASSERT_EQ(One.Sound(i)->m_Data.Size(), Other.Sound(i)->m_Data.Size()) << Name;
 			EXPECT_EQ(One.Sound(i)->m_Name, Other.Sound(i)->m_Name) << Name;
-			EXPECT_EQ(std::memcmp(One.Sound(i)->m_Data.All().data(), Other.Sound(i)->m_Data.All().data(), One.Sound(i)->m_Data.Size()), 0) << Name;
+			EXPECT_TRUE(SameBytes(One.Sound(i)->m_Data.All().data(), Other.Sound(i)->m_Data.All().data(), One.Sound(i)->m_Data.Size())) << Name;
 		}
 		for(size_t i = 0; i < One.NumEnvelopes(); ++i)
 		{
@@ -300,7 +309,7 @@ namespace
 					const CQuadLayer &QuadsOther = std::get<CQuadLayer>(*pLayerOther);
 					EXPECT_EQ(QuadsOne.m_Image, QuadsOther.m_Image) << Name;
 					ASSERT_EQ(QuadsOne.m_Quads.Size(), QuadsOther.m_Quads.Size()) << Name;
-					EXPECT_EQ(std::memcmp(QuadsOne.m_Quads.All().data(), QuadsOther.m_Quads.All().data(), QuadsOne.m_Quads.Size() * sizeof(CQuad)), 0) << Name;
+					EXPECT_TRUE(SameBytes(QuadsOne.m_Quads.All().data(), QuadsOther.m_Quads.All().data(), QuadsOne.m_Quads.Size() * sizeof(CQuad))) << Name;
 				}
 				else
 				{
@@ -308,7 +317,7 @@ namespace
 					const CSoundLayer &SoundsOther = std::get<CSoundLayer>(*pLayerOther);
 					EXPECT_EQ(SoundsOne.m_Sound, SoundsOther.m_Sound) << Name;
 					ASSERT_EQ(SoundsOne.m_Sources.Size(), SoundsOther.m_Sources.Size()) << Name;
-					EXPECT_EQ(std::memcmp(SoundsOne.m_Sources.All().data(), SoundsOther.m_Sources.All().data(), SoundsOne.m_Sources.Size() * sizeof(CSoundSource)), 0) << Name;
+					EXPECT_TRUE(SameBytes(SoundsOne.m_Sources.All().data(), SoundsOther.m_Sources.All().data(), SoundsOne.m_Sources.Size() * sizeof(CSoundSource))) << Name;
 				}
 			}
 		}

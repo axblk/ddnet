@@ -3163,6 +3163,8 @@ if(CLIENT)
   )
   set_src(GAME_MAP GLOB_RECURSE src/game/map
     # tidy-alphabetical-start
+    document/layer.h
+    document/map_state.h
     document/tile_store.h
     envelope_extrema.cpp
     envelope_extrema.h
@@ -4431,6 +4433,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     jsonwriter_test.cpp
     linereader_test.cpp
     map_context_test.cpp
+    map_state_test.cpp
     mapbugs_test.cpp
     mapitems_test.cpp
     match_assists_test.cpp

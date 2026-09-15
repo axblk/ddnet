@@ -3251,6 +3251,15 @@ if(CLIENT)
   )
   set_src(GAME_MAP GLOB_RECURSE src/game/map
     # tidy-alphabetical-start
+    document/assets.h
+    document/document.h
+    document/history.h
+    document/layer.h
+    document/map_file.cpp
+    document/map_file.h
+    document/map_state.h
+    document/shared_list.h
+    document/tile_store.h
     envelope_extrema.cpp
     envelope_extrema.h
     envelope_manager.h
@@ -3281,6 +3290,18 @@ if(CLIENT)
   list(FILTER GAME_MAP_STANDALONE INCLUDE REGEX "/standalone/")
   list(FILTER GAME_MAP_STANDALONE EXCLUDE REGEX "_main\\.cpp$")
   list(FILTER GAME_MAP EXCLUDE REGEX "/standalone/")
+  # The map as something that is changed rather than drawn. It knows nothing
+  # of a renderer, a client or a window, so that it can be tested natively and
+  # linked by whoever needs it - the web editor first.
+  set(GAME_MAP_DOCUMENT ${GAME_MAP})
+  list(FILTER GAME_MAP_DOCUMENT INCLUDE REGEX "/document/")
+  list(FILTER GAME_MAP EXCLUDE REGEX "/document/")
+
+  # The map document is the editor's core: the tests, the tool that measures
+  # it and, later, the editor itself build the same objects rather than each
+  # their own copy.
+  add_library(game-map-document EXCLUDE_FROM_ALL OBJECT ${GAME_MAP_DOCUMENT})
+  list(APPEND TARGETS_OWN game-map-document)
   set(GAME_GENERATED_CLIENT
     # tidy-alphabetical-start
     src/generated/checksum.cpp
@@ -4251,6 +4272,7 @@ if(TOOLS)
     ghost_to_demo.cpp
     map_convert_07.cpp
     map_diff.cpp
+    map_document_bench.cpp
     map_extract.cpp
     map_find_env.cpp
     map_optimize.cpp
@@ -4306,6 +4328,9 @@ if(TOOLS)
           src/engine/client/ghost.h
           # tidy-alphabetical-end
         )
+      endif()
+      if(TOOL MATCHES "^map_document_bench$")
+        list(APPEND EXTRA_TOOL_SRC $<TARGET_OBJECTS:game-map-document>)
       endif()
       if(TOOL MATCHES "^config_")
         list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")
@@ -4418,6 +4443,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     # tidy-alphabetical-start
     aio_test.cpp
     asset_loader_test.cpp
+    assets_test.cpp
     bezier_test.cpp
     blocklist_driver_test.cpp
     bytes_be_test.cpp
@@ -4430,6 +4456,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp
+    document_test.cpp
     editor_test.cpp
     font_loading_test.cpp
     fs_test.cpp
@@ -4442,6 +4469,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     graphics_frontend_test.cpp
     graphics_threaded_test.cpp
     hash_test.cpp
+    history_test.cpp
     http_test.cpp
     huffman_test.cpp
     image_loader_test.cpp
@@ -4451,6 +4479,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     jsonwriter_test.cpp
     linereader_test.cpp
     map_context_test.cpp
+    map_file_test.cpp
+    map_state_test.cpp
     mapbugs_test.cpp
     mapitems_test.cpp
     match_journal_test.cpp
@@ -4474,6 +4504,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     serverbrowser_test.cpp
     serverinfo_test.cpp
     session_manager_test.cpp
+    shared_list_test.cpp
     snapshot_test.cpp
     sound_test.cpp
     str_test.cpp
@@ -4484,6 +4515,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     thread_test.cpp
     tile_chunk_cache_test.cpp
     tile_run_store_test.cpp
+    tile_store_test.cpp
     time_test.cpp
     timestamp_test.cpp
     unix_test.cpp
@@ -4624,6 +4656,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     $<TARGET_OBJECTS:engine-net>
     $<TARGET_OBJECTS:engine-quic>
     $<TARGET_OBJECTS:engine-shared>
+    $<TARGET_OBJECTS:game-map-document>
     $<TARGET_OBJECTS:game-server-without-main>
     $<TARGET_OBJECTS:game-shared>
     $<TARGET_OBJECTS:rust-bridge-shared>

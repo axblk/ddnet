@@ -115,6 +115,10 @@ public:
 		EYE,
 		/** Arrows to all four sides: a camera that is nobody's to follow. */
 		FREEVIEW,
+		/** Where a piece of a demo begins, ends, and the way to unmark it. */
+		CLIP_START,
+		CLIP_END,
+		CLIP_CLEAR,
 		FULLSCREEN,
 		/** A speaker with sound coming out of it. */
 		VOLUME,
@@ -169,6 +173,13 @@ public:
 		float m_Width = 0.0f;
 		/** Where a slider stands, between 0 and 1. */
 		float m_Value = 0.0f;
+		/**
+		 * A stretch of a slider that is marked out, between 0 and 1. Drawn
+		 * brighter than the rest of the line, so that a piece somebody marked
+		 * can be seen as well as read. Equal values mean nothing is marked.
+		 */
+		float m_RangeStart = 0.0f;
+		float m_RangeEnd = 0.0f;
 		bool m_Disabled = false;
 		/** A button that is on, drawn as held down. */
 		bool m_Active = false;

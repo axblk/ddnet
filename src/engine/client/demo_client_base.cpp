@@ -395,7 +395,8 @@ const char *CDemoClientBase::StartVideo()
 	// closed. What is left of the demo at the speed it is played at, which is
 	// how long the export will take to run through it.
 	const IDemoPlayer::CInfo *pInfo = Player.BaseInfo();
-	const int RemainingTicks = std::max(pInfo->m_LastTick - pInfo->m_CurrentTick, 0);
+	const int EndTick = m_VideoLastTick >= 0 ? m_VideoLastTick : pInfo->m_LastTick;
+	const int RemainingTicks = std::max(EndTick - pInfo->m_CurrentTick, 0);
 	const float Speed = pInfo->m_Speed > 0.0f ? pInfo->m_Speed : 1.0f;
 	m_pVideo->SetExpectedDuration(RemainingTicks / (float)SERVER_TICK_SPEED / Speed);
 	Player.SetVideo(m_pVideo.get());
@@ -429,9 +430,11 @@ bool CDemoClientBase::DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, 
 	if(m_pVideo == nullptr)
 		return false;
 	const IDemoPlayer::CInfo *pInfo = DemoSource(m_VideoSessionId).DemoPlayer().BaseInfo();
-	*pFirstTick = pInfo->m_FirstTick;
+	// Where the export began and where it ends, which for a marked piece is
+	// not where the demo does.
+	*pFirstTick = m_VideoFirstTick >= 0 ? m_VideoFirstTick : pInfo->m_FirstTick;
 	*pCurrentTick = pInfo->m_CurrentTick;
-	*pLastTick = pInfo->m_LastTick;
+	*pLastTick = m_VideoLastTick >= 0 ? m_VideoLastTick : pInfo->m_LastTick;
 	return true;
 }
 

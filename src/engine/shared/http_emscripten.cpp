@@ -462,10 +462,10 @@ void CHttpEmscripten::RunLoop()
 
 		// Return control to the browser so the created fetch handles are serviced.
 		// This will cause the success, failure and progress callbacks to be called.
-		emscripten_sleep(0);
+		web_yield(0);
 
 		// Wait a bit for state changes, but also wake up periodically because we
-		// need to call emscripten_sleep to service the handles.
+		// need to hand the browser its turn back to service the handles.
 		std::unique_lock Lock(m_Lock);
 		const auto &&WaitPredicate = [this]() { return m_Shutdown || !m_PendingRequests.empty() || !m_PendingFetchChanges.empty(); };
 		const auto WaitTime = std::chrono::milliseconds(100);

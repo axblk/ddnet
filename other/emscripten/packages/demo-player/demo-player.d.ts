@@ -13,6 +13,10 @@ export interface DemoControls {
 	seek(fraction: number): void;
 	seekTime(seconds: number): void;
 	restart(): void;
+	/** The piece that is marked out, or `null` where nothing is. */
+	clip(): { start: number; end: number } | null;
+	/** Marks one out, or clears it with `clip(null)`. */
+	clip(start: number | null, end?: number): void;
 	speed(value?: number): number | null;
 	exporting(): boolean;
 	exportState(): number | null;
@@ -44,7 +48,8 @@ export interface DemoControls {
 /** What a map viewer can be asked and told. Everything is in tiles. */
 
 /**
- * `<ddnet-demo>`: `src`, `controls`, `nozoom`, `t`, `speed`, `paused`, `spec`.
+ * `<ddnet-demo>`: `src`, `controls`, `nozoom`, `t`, `end`, `speed`, `paused`,
+ * `spec`.
  *
  * Beyond those it answers to what a `<video>` answers to, so that a page that
  * can drive one of those can drive this: the properties below, and the events

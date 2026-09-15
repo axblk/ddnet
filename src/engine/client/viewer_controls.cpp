@@ -352,6 +352,44 @@ void CViewerControls::DrawIcon(EIcon Icon, vec2 Center, float Size, float Alpha)
 		DrawDisc(Center, Thin * 0.8f, 0.0f, 0.0f, 0.0f, Alpha);
 		break;
 	}
+	case EIcon::CLIP_START:
+	case EIcon::CLIP_END:
+	case EIcon::CLIP_CLEAR:
+	{
+		// A bar on the side the piece starts or stops at, with the stretch
+		// that is kept beside it - the way a cut is marked everywhere. Both
+		// bars and a cross through the middle mean there is no piece any more.
+		const float BarWidth = std::max(2.0f, Size * 0.12f);
+		const float Body = Size * 0.42f;
+		const bool Start = Icon == EIcon::CLIP_START;
+		const bool Clear = Icon == EIcon::CLIP_CLEAR;
+		const float LeftBar = Center.x - Half * 0.8f;
+		const float RightBar = Center.x + Half * 0.8f - BarWidth;
+		if(Start || Clear)
+			DrawRect(LeftBar, Center.y - Half * 0.85f, BarWidth, Size * 0.85f, 1.0f, 1.0f, 1.0f, Alpha);
+		if(!Start || Clear)
+			DrawRect(RightBar, Center.y - Half * 0.85f, BarWidth, Size * 0.85f, 1.0f, 1.0f, 1.0f, Alpha);
+		if(Clear)
+		{
+			// A cross as a stair of squares, as in the muted speaker: nothing
+			// here draws a line that is not upright or flat.
+			constexpr int Steps = 6;
+			const float Step = Size * 0.34f / Steps;
+			for(int i = 0; i < Steps; ++i)
+			{
+				const float Offset = (i - (Steps - 1) / 2.0f) * Step;
+				DrawRect(Center.x + Offset - Step / 2.0f, Center.y + Offset, Step + 0.5f, Step + 0.5f, 1.0f, 1.0f, 1.0f, Alpha);
+				DrawRect(Center.x + Offset - Step / 2.0f, Center.y - Offset - Step, Step + 0.5f, Step + 0.5f, 1.0f, 1.0f, 1.0f, Alpha);
+			}
+		}
+		else
+		{
+			// What is kept, beside the bar that marks it.
+			const float BodyLeft = Start ? LeftBar + BarWidth * 2.0f : RightBar - BarWidth - Body;
+			DrawRect(BodyLeft, Center.y - Body / 2.0f, Body + BarWidth, Body, 1.0f, 1.0f, 1.0f, 0.55f * Alpha);
+		}
+		break;
+	}
 	case EIcon::VOLUME:
 	case EIcon::VOLUME_OFF:
 	{
@@ -772,6 +810,14 @@ int CViewerControls::Render(const SItem *pItems, size_t Count, const SInput &Inp
 		}
 		const float TrackHeight = TRACK_HEIGHT * Unit;
 		DrawRoundRect(Left, Middle - TrackHeight / 2.0f, Width, TrackHeight, TrackHeight / 2.0f, 1.0f, 1.0f, 1.0f, 0.3f * Alpha);
+		// The piece that is marked out, brighter than the line it sits on: it
+		// is drawn under the played part, which keeps its own colour.
+		if(Item.m_RangeEnd > Item.m_RangeStart)
+		{
+			const float RangeStart = std::clamp(Item.m_RangeStart, 0.0f, 1.0f);
+			const float RangeEnd = std::clamp(Item.m_RangeEnd, RangeStart, 1.0f);
+			DrawRect(Left + Width * RangeStart, Middle - TrackHeight / 2.0f, Width * (RangeEnd - RangeStart), TrackHeight, 1.0f, 1.0f, 1.0f, 0.55f * Alpha);
+		}
 		DrawRoundRect(Left, Middle - TrackHeight / 2.0f, Width * Value, TrackHeight, TrackHeight / 2.0f, ACCENT.r, ACCENT.g, ACCENT.b, Alpha);
 		const float Radius = (Held || Over ? KNOB_RADIUS_HELD : KNOB_RADIUS) * Unit;
 		DrawDisc(vec2(Left + Width * Value, Middle), Radius, ACCENT.r, ACCENT.g, ACCENT.b, Alpha);

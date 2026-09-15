@@ -107,10 +107,12 @@ still zoom it itself through `element.controls.zoom(factor)`. `orientation`
 says which way round to turn a phone while the viewer's own button fills the
 screen — `landscape` for the most of a wide picture. Without it the device is
 left where whoever is holding it put it. The attributes
-beyond `src` are the ones the viewer pages spell in their address — `t`,
+beyond `src` are the ones the viewer pages spell in their address — `t`, `end`,
 `speed`, `paused`, `spec` for a demo, `x`, `y`, `tiles` for a map — so a link
 somebody copied out of a viewer and an element somebody wrote by hand say the
-same things by the same names. Changing one later moves the running viewer;
+same things by the same names. `t` and `end` together are a piece of the demo
+marked out: watching stops at its end, starting over goes back to its
+beginning, and an export writes that piece and nothing else. Changing one later moves the running viewer;
 changing `src` shows another file.
 
 `<ddnet-demo>` answers to what a `<video>` answers to, because a demo in a page

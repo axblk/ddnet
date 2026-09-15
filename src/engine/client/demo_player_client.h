@@ -8,7 +8,9 @@
 
 #include <array>
 #include <chrono>
+#include <functional>
 #include <string>
+#include <vector>
 
 class IEngineInput;
 
@@ -52,6 +54,8 @@ public:
 		CONTROL_KEY_SPEED_DOWN,
 		CONTROL_KEY_RESTART,
 		CONTROL_KEY_MUTE,
+		CONTROL_KEY_CLIP_START,
+		CONTROL_KEY_CLIP_END,
 		CONTROL_KEY_FREE_VIEW,
 		CONTROL_KEY_SPECTATE_NEXT,
 		CONTROL_KEY_SPECTATE_PREVIOUS,
@@ -106,6 +110,11 @@ private:
 	float m_StartTime = -1.0f;
 	float m_StartSpeed = 0.0f;
 	bool m_StartPaused = false;
+	// The piece of the demo somebody marked out, in seconds from its
+	// beginning. A negative end means the whole demo, which is what a demo
+	// nobody has marked anything in is. See `SetClip`.
+	float m_ClipStart = 0.0f;
+	float m_ClipEnd = -1.0f;
 	// Dragging along the seek bar stops the demo where the pointer puts it,
 	// and lets it go on afterwards only if it was going on before.
 	bool m_Seeking = false;
@@ -125,6 +134,9 @@ private:
 	bool m_ExportRequested = false;
 	bool m_CancelRequested = false;
 	CVideoExportSettings m_RequestedSettings;
+	// What a page asked for that could not be done when it asked. See
+	// `FromPage`.
+	std::vector<std::function<void()>> m_vPageActions;
 
 	IEngineInput *Input() { return m_pInput; }
 
@@ -235,6 +247,33 @@ public:
 	void SeekToTime(float Seconds);
 	void SeekStart();
 	void SetSpeed(float Speed);
+
+	/**
+	 * Marks out a piece of the demo, in seconds from its beginning.
+	 *
+	 * A demo is watched for the ten seconds somebody wants to show somebody
+	 * else, and those ten seconds are what a link should open at and what a
+	 * video should hold. So a marked piece is three things at once: playback
+	 * stops at its end instead of running on, starting over goes back to its
+	 * beginning rather than to the demo's, and an export writes it and nothing
+	 * else.
+	 *
+	 * @param Start Where it begins. Below zero is the beginning of the demo.
+	 * @param End Where it ends. Anything at or before `Start` clears the mark,
+	 * which is what a whole demo is.
+	 */
+	void SetClip(float Start, float End);
+	/**
+	 * Marks the place the demo stands at as the one end of the piece or the
+	 * other, and leaves the other end where it was.
+	 */
+	void MarkClip(bool AsStart);
+	/** Where the marked piece begins, in seconds. */
+	float ClipStart() const { return m_ClipStart; }
+	/** Where it ends, or a negative number where nothing is marked. */
+	float ClipEnd() const { return m_ClipEnd; }
+	/** Whether a piece is marked out at all. */
+	bool HasClip() const { return m_ClipEnd > m_ClipStart; }
 	/**
 	 * The players the demo has named so far, as JSON: an array of objects with
 	 * an `id` and a `name`. What a page fills a list of people to watch from.
@@ -263,6 +302,28 @@ public:
 	 * unfinished file. Done before the next frame, as with `RequestExport`.
 	 */
 	void RequestCancelExport() { m_CancelRequested = true; }
+
+	/**
+	 * Does what a page asked for, now or as soon as it can be done.
+	 *
+	 * A page calls in whenever it feels like it, and often enough that is
+	 * while the viewer is standing in one of its own waits - reading a file,
+	 * loading a map, or simply between two frames. The stack is unwound then
+	 * (`web_unwound`), and anything that waits again from inside that takes
+	 * the program down. So what cannot be done now is put aside and done by
+	 * the loop, which is never unwound when it looks.
+	 *
+	 * Only what could wait needs this, and that is everything that moves the
+	 * demo or the window: asking the viewer what it is doing never waits and
+	 * has to answer straight away, because a page asking has nowhere to put
+	 * an answer that comes later.
+	 *
+	 * What is put aside takes effect a frame later, so a page that sets
+	 * something and reads it back in the same breath may still see what was
+	 * there before. Waiting for the next frame - which is how a page follows
+	 * a viewer anyway - shows it.
+	 */
+	void FromPage(std::function<void()> &&Action);
 
 	/** How far the export has come, between 0 and 1. */
 	float ExportProgress() const;

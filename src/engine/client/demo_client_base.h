@@ -60,6 +60,12 @@ protected:
 	// by name or the one who was has been found.
 	char m_aPendingSpectateName[MAX_NAME_LENGTH] = "";
 	char m_aVideoPath[IO_MAX_PATH_LENGTH] = "";
+	// Which stretch of the demo the running export writes, in ticks, or -1 for
+	// all of what is left of it. A piece somebody marked out is written and
+	// nothing else, and how far the export has come is measured against that
+	// piece rather than against the demo.
+	int m_VideoFirstTick = -1;
+	int m_VideoLastTick = -1;
 	// What the volume would be if it were not muted, so that turning the sound
 	// back on lands where it was. Zero means nothing is muted.
 	int m_VolumeBeforeMute = 0;

@@ -182,6 +182,7 @@ void CWebDataIndex::List(const char *pPath, const std::function<void(const CEntr
 #include <base/lock.h>
 #include <base/log.h>
 #include <base/str.h>
+#include <base/thread.h>
 
 #include <emscripten/emscripten.h>
 #include <emscripten/fetch.h>
@@ -252,7 +253,7 @@ EM_JS(double, WebFsNow, (), {
 		// finished by the time it returns, so this does nothing for one.
 		while(pFetch->readyState != FETCH_STATE_DONE)
 		{
-			emscripten_sleep(1);
+			web_yield(1);
 		}
 		const bool Success = pFetch->status == 200;
 		if(Success)

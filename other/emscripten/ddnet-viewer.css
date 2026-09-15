@@ -212,6 +212,19 @@
 	border-radius: 3px;
 	background: linear-gradient(to right, var(--viewer-accent) var(--viewer-progress, 0%), rgba(255, 255, 255, 0.25) var(--viewer-progress, 0%));
 }
+/* The piece that is marked out, along the same line: what is outside it is
+   dimmed rather than the piece being coloured, because the colour along there
+   already says where the demo has got to. */
+.viewer-seek-clipped::-webkit-slider-runnable-track {
+	background:
+		linear-gradient(to right, transparent var(--viewer-clip-start, 0%), rgba(255, 255, 255, 0.5) var(--viewer-clip-start, 0%), rgba(255, 255, 255, 0.5) var(--viewer-clip-end, 0%), transparent var(--viewer-clip-end, 0%)),
+		linear-gradient(to right, rgba(255, 255, 255, 0.12) var(--viewer-clip-start, 0%), var(--viewer-accent) var(--viewer-clip-start, 0%), var(--viewer-accent) var(--viewer-progress, 0%), rgba(255, 255, 255, 0.25) var(--viewer-progress, 0%), rgba(255, 255, 255, 0.12) var(--viewer-clip-end, 0%));
+}
+.viewer-seek-clipped::-moz-range-track {
+	background:
+		linear-gradient(to right, transparent var(--viewer-clip-start, 0%), rgba(255, 255, 255, 0.5) var(--viewer-clip-start, 0%), rgba(255, 255, 255, 0.5) var(--viewer-clip-end, 0%), transparent var(--viewer-clip-end, 0%)),
+		linear-gradient(to right, rgba(255, 255, 255, 0.12) var(--viewer-clip-start, 0%), var(--viewer-accent) var(--viewer-clip-start, 0%), var(--viewer-accent) var(--viewer-progress, 0%), rgba(255, 255, 255, 0.25) var(--viewer-progress, 0%), rgba(255, 255, 255, 0.12) var(--viewer-clip-end, 0%));
+}
 .viewer-seek::-webkit-slider-thumb, .viewer-volume-slider::-webkit-slider-thumb {
 	width: 13px;
 	height: 13px;

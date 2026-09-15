@@ -31,7 +31,11 @@ jobs:
 
     - name: Prepare Linux
       run: |
-        curl -LO https://github.com/Kitware/CMake/releases/download/v3.22.1/cmake-3.22.1-Linux-x86_64.tar.gz
+        # `-f` because a download that answered with an error page is not a
+        # download, and without it curl writes the page into the file and tar
+        # is the first to notice; the retries because this is the one step here
+        # that depends on somebody else's server being up.
+        curl -fLO --retry 5 --retry-all-errors --retry-delay 5 https://github.com/Kitware/CMake/releases/download/v3.22.1/cmake-3.22.1-Linux-x86_64.tar.gz
         mkdir -p /home/runner/cmake
         tar --strip-components 1 -C /home/runner/cmake -xf cmake-3.22.1-Linux-x86_64.tar.gz
         rustup default 1.89.0

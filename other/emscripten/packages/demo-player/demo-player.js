@@ -81,6 +81,24 @@ export function demoControls(instance) {
 		/** Jumps to a time in the demo, in seconds from its beginning. */
 		seekTime: Seconds => number("DemoPlayerSeekToTime", Seconds),
 		restart: () => instance.call("DemoPlayerSeekStart"),
+		/**
+		 * The piece of the demo that is marked out, as `{start, end}` in
+		 * seconds, or `null` where nothing is. Playback stops at its end,
+		 * starting over goes back to its beginning, and an export writes it
+		 * and nothing else.
+		 *
+		 * Set it with `clip(start, end)`, and clear it with `clip(0, 0)` or
+		 * `clip(null)`.
+		 */
+		clip: (Start, End) => {
+			if (Start === undefined) {
+				const end = number("DemoPlayerClipEnd");
+				const start = number("DemoPlayerClipStart");
+				return end === null || start === null || end <= start ? null : { start: start, end: end };
+			}
+			return instance.call("DemoPlayerSetClip", null, ["number", "number"],
+				Start === null ? [0, 0] : [Start, End === undefined || End === null ? 0 : End]);
+		},
 		/** The playback speed, or sets it: 1 is as it was played. */
 		speed: Value => Value === undefined ? number("DemoPlayerSpeed") : number("DemoPlayerSetSpeed", Value),
 		exporting: () => number("DemoPlayerExporting") === 1,
@@ -396,8 +414,22 @@ const VIDEO_API = {
 // What a demo takes beyond `src`, spelled the way the address of the demo
 // page spells it: a link somebody copied out of the viewer and an element
 // somebody wrote by hand say the same things by the same names.
+
+// The piece an element marks out runs from where it starts watching to where
+// `end` says, which is the same pair of words a link out of the player uses.
+// Without an `end` there is no piece.
+function markClip(controls, element) {
+	const start = parseFloat(element.getAttribute("t"));
+	const end = parseFloat(element.getAttribute("end"));
+	if (isFinite(end) && end > 0) {
+		controls.clip(isFinite(start) && start > 0 ? start : 0, end);
+	} else {
+		controls.clip(null);
+	}
+}
+
 class CDemoElement extends ViewerElement {
-	static observedAttributes = ["src", "controls", "nozoom", "t", "speed", "paused", "spec"];
+	static observedAttributes = ["src", "controls", "nozoom", "t", "end", "speed", "paused", "spec"];
 	static viewerKind = {
 		// Where the program is: beside this module, wherever this module
 		// was installed to.
@@ -420,7 +452,7 @@ class CDemoElement extends ViewerElement {
 		},
 		controls: instance => demoControls(instance),
 		loaded: controls => controls.length() > 0,
-		apply: (controls, name, value) => {
+		apply: (controls, name, value, element) => {
 			const number = parseFloat(value);
 			if (name === "nozoom") {
 				// Turned off while it is there, the way `controls` is on
@@ -429,6 +461,11 @@ class CDemoElement extends ViewerElement {
 				controls.zoomEnabled(value === null);
 			} else if (name === "t" && isFinite(number)) {
 				controls.seekTime(number);
+				// Where watching starts is also where a marked piece
+				// starts, so moving one moves the other.
+				markClip(controls, element);
+			} else if (name === "end") {
+				markClip(controls, element);
 			} else if (name === "speed" && isFinite(number)) {
 				controls.speed(number);
 			} else if (name === "paused") {

@@ -88,6 +88,14 @@
 					<button id="slower" class="viewer-button viewer-optional" data-icon="minus" title="Slower (Down arrow)" aria-label="Slower"></button>
 					<span id="speed" class="viewer-readout viewer-readout-speed viewer-optional">1.00&times;</span>
 					<button id="faster" class="viewer-button viewer-optional" data-icon="plus" title="Faster (Up arrow)" aria-label="Faster"></button>
+					<!-- The piece somebody wants to show somebody else: where it
+					     begins, where it ends, and a way to take the marks off
+					     again. What is marked is what a link opens at, what
+					     playing stops at, and what an export writes. -->
+					<button id="clip-start" class="viewer-button viewer-optional" data-icon="clip_start" title="Start the piece here (I)" aria-label="Start the piece here"></button>
+					<button id="clip-end" class="viewer-button viewer-optional" data-icon="clip_end" title="End the piece here (O)" aria-label="End the piece here"></button>
+					<button id="clip-clear" class="viewer-button viewer-optional" data-icon="clip_clear" title="The whole demo again" aria-label="The whole demo again" hidden></button>
+					<span id="clip-time" class="viewer-readout viewer-optional" hidden></span>
 					<button id="zoom-reset" class="viewer-button" data-icon="zoom_reset" title="Back to the size it started at" aria-label="Back to the size it started at" hidden></button>
 					<button id="camera" class="viewer-button" data-icon="fit" title="The view the demo brought" aria-label="The view the demo brought" aria-pressed="false" hidden></button>
 					<button id="spectate" class="viewer-button" data-icon="eye" title="Who to watch (N, P, F)" aria-label="Who to watch" aria-haspopup="true" aria-expanded="false"></button>
@@ -108,6 +116,7 @@
 			// the demo has played the seconds that took.
 			const linkTime = parseFloat(DDNetLoader.urlParameter("t"));
 			const linkSpeed = parseFloat(DDNetLoader.urlParameter("speed"));
+			const linkEnd = parseFloat(DDNetLoader.urlParameter("end"));
 			const linkStart = {
 				startTime: isFinite(linkTime) && linkTime > 0 ? linkTime : undefined,
 				speed: isFinite(linkSpeed) && linkSpeed > 0 ? linkSpeed : undefined,
@@ -150,6 +159,10 @@
 				const volume = document.getElementById('volume');
 				const time = document.getElementById('time');
 				const speed = document.getElementById('speed');
+				const clipStartButton = document.getElementById('clip-start');
+				const clipEndButton = document.getElementById('clip-end');
+				const clipClearButton = document.getElementById('clip-clear');
+				const clipTime = document.getElementById('clip-time');
 				const zoomResetButton = document.getElementById('zoom-reset');
 				const cameraButton = document.getElementById('camera');
 				const spectateButton = document.getElementById('spectate');
@@ -279,6 +292,11 @@
 					if (isFinite(startTime) && startTime > 0) {
 						demo.seekTime(Math.min(startTime, length));
 					}
+					// A link that names both ends of a piece marks it out, which
+					// is what somebody who was sent one is meant to watch.
+					if (isFinite(linkEnd) && linkEnd > 0) {
+						demo.clip(isFinite(linkTime) && linkTime > 0 ? linkTime : 0, Math.min(linkEnd, length));
+					}
 					const startSpectate = DDNetLoader.urlParameter("spec");
 					if (startSpectate !== null && startSpectate !== "") {
 						// A name as well as a number: a link to a demo of a
@@ -305,8 +323,13 @@
 				// and whether it stands still. What is at its default is left out,
 				// so a link stays as short as what it says.
 				function updateLink(seconds, playbackSpeed, paused, spectating) {
+					// A marked piece is what the link is about, so it says
+					// where that piece is rather than where the demo happens to
+					// stand: what somebody copies is what they marked.
+					const clip = demo.clip();
 					DDNetLoader.setUrlParameters({
-						t: Math.round(seconds),
+						end: clip === null ? null : Math.round(clip.end),
+						t: clip !== null ? Math.round(clip.start) : Math.round(seconds),
 						speed: Math.abs(playbackSpeed - 1) < 0.005 ? null : playbackSpeed.toFixed(2),
 						paused: paused ? 1 : null,
 						spec: spectating >= 0 ? spectating : null,
@@ -362,6 +385,39 @@
 					seeking = false;
 					if (!pausedBeforeSeeking) {
 						demo.play();
+					}
+				});
+
+				// Marking out a piece: where it is now, as the one end or the
+				// other. A piece that would be empty or backwards is no piece,
+				// so a mark that lands on the wrong side of the other one
+				// takes the other one with it.
+				function markClip(which) {
+					const length = demo.length();
+					if (length === null || length <= 0) {
+						return;
+					}
+					const now = demo.progress() * length;
+					const clip = demo.clip();
+					if (which === "start") {
+						demo.clip(now, clip !== null && clip.end > now ? clip.end : length);
+					} else {
+						demo.clip(clip !== null && clip.start < now ? clip.start : 0, now);
+					}
+				}
+				clipStartButton.addEventListener('click', () => markClip("start"));
+				clipEndButton.addEventListener('click', () => markClip("end"));
+				clipClearButton.addEventListener('click', () => demo.clip(null));
+				// The keys a video editor uses for this, and the only two keys
+				// the page has of its own: the viewer answers to the rest.
+				document.addEventListener('keydown', event => {
+					if (event.ctrlKey || event.altKey || event.metaKey || event.target !== document.body) {
+						return;
+					}
+					if (event.key === "i" || event.key === "I") {
+						markClip("start");
+					} else if (event.key === "o" || event.key === "O") {
+						markClip("end");
 					}
 				});
 
@@ -491,6 +547,19 @@
 					// The filled part of the bar is where the demo is: the browser
 					// draws a slider, and a strip of time is not one.
 					seek.style.setProperty('--viewer-progress', `${(seek.value / seek.max * 100).toFixed(2)}%`);
+					// What is marked out, drawn along the bar so that the piece
+					// can be seen rather than only read.
+					const clip = demo.clip();
+					seek.style.setProperty('--viewer-clip-start', `${clip === null ? 0 : (clip.start / length * 100).toFixed(2)}%`);
+					seek.style.setProperty('--viewer-clip-end', `${clip === null ? 0 : (clip.end / length * 100).toFixed(2)}%`);
+					seek.classList.toggle('viewer-seek-clipped', clip !== null);
+					clipClearButton.hidden = clip === null;
+					clipTime.hidden = clip === null;
+					if (clip !== null) {
+						clipTime.textContent = `${formatTime(clip.start)}–${formatTime(clip.end)}`;
+						clipStartButton.title = "Start the piece here (I)";
+						clipEndButton.title = "End the piece here (O)";
+					}
 					time.textContent = `${formatTime(progress * length)} / ${formatTime(length)}`;
 					speed.textContent = `${demo.speed().toFixed(2)}×`;
 					const paused = demo.paused();
@@ -539,7 +608,10 @@
 					const running = state === 1;
 					exportButton.dataset.icon = running ? "stop" : "save";
 					exportButton.classList.toggle('viewer-on', running);
-					exportButton.title = ["Export video", "Stop the export", "The video was handed over", "The export failed"][state];
+					exportButton.title = running ? "Stop the export"
+						: state === 2 ? "The video was handed over"
+						: state === 3 ? "The export failed"
+						: clip !== null ? "Export the marked piece" : "Export video";
 					exportButton.setAttribute('aria-label', exportButton.title);
 					// An export that failed says why, where it was asked for.
 					if (state === 3) {

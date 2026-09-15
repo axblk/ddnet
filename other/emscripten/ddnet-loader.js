@@ -407,6 +407,12 @@ const DDNetLoader = (() => {
 		zoom_reset: '<path d="M9.6 3.4v6.2H3.4M14.4 3.4v6.2h6.2M9.6 20.6v-6.2H3.4M14.4 20.6v-6.2h6.2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
 		volume: '<path d="M3 9.2h3.4L11.4 5v14L6.4 14.8H3Z"/><path d="M15.2 9.2a4 4 0 0 1 0 5.6M18 6.4a8 8 0 0 1 0 11.2" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>',
 		volume_off: '<path d="M3 9.2h3.4L11.4 5v14L6.4 14.8H3Z"/><path d="M15.4 9.6 20.6 14.8M20.6 9.6 15.4 14.8" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>',
+		// Where a piece of a demo begins and where it ends: a bar with the
+		// stretch that is kept beside it, drawn the way a cut is marked
+		// everywhere - the bar on the side the piece starts or stops at.
+		clip_start: '<rect x="4.4" y="3.6" width="2.8" height="16.8" rx="1.4"/><path d="M9.4 7.2h9.4a1.4 1.4 0 0 1 1.4 1.4v6.8a1.4 1.4 0 0 1-1.4 1.4H9.4Z" opacity="0.55"/>',
+		clip_end: '<rect x="16.8" y="3.6" width="2.8" height="16.8" rx="1.4"/><path d="M14.6 7.2H5.2a1.4 1.4 0 0 0-1.4 1.4v6.8a1.4 1.4 0 0 0 1.4 1.4h9.4Z" opacity="0.55"/>',
+		clip_clear: '<rect x="4.4" y="3.6" width="2.8" height="16.8" rx="1.4"/><rect x="16.8" y="3.6" width="2.8" height="16.8" rx="1.4"/><path d="M9.6 9.6 14.4 14.4M14.4 9.6 9.6 14.4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>',
 	};
 
 	function icon(name) {

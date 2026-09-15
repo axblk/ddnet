@@ -191,38 +191,33 @@ void CLayerTiles::Render(const CEditorMap *pRenderMap)
 	pRenderMap->m_EnvelopeEvaluator.EnvelopeEval(m_ColorEnvOffset, m_ColorEnv, ColorEnv, 4);
 	const ColorRGBA Color = ColorRGBA(m_Color.r / 255.0f, m_Color.g / 255.0f, m_Color.b / 255.0f, m_Color.a / 255.0f).Multiply(ColorEnv);
 
-	if(IsEntitiesLayer())
+	// An entity layer draws from the entities texture, where the opaque flag of
+	// a tile describes nothing, so it has no opaque pass to take out - the same
+	// rule the client renders those layers by.
+	const bool ForceTransparent = IsEntitiesLayer();
+	// Layers are created, copied and deserialized in too many places to hand
+	// the graphics over in each of them, and nothing before the first render
+	// needs it. The reader goes through the layer, so it survives every
+	// resize and never has to be built again.
+	if(!m_ChunkSource.m_ReadTile)
 	{
-		Graphics()->BlendNormal();
-		Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, Texture.IsValid(), TILERENDERFLAG_FORCE_TRANSPARENT | LAYERRENDERFLAG_TRANSPARENT);
+		m_TileChunkCache.OnInit(Graphics());
+		m_ChunkSource.m_ReadTile = [this](int x, int y, unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate) {
+			const CTile &Tile = m_pTiles[(size_t)y * m_Width + x];
+			*pIndex = Tile.m_Index;
+			*pFlags = Tile.m_Flags;
+		};
 	}
-	else
+	m_ChunkSource.m_Width = m_Width;
+	m_ChunkSource.m_Height = m_Height;
+	m_ChunkSource.m_Textured = Texture.IsValid();
+	if(!ForceTransparent)
 	{
-		const bool ForceTransparent = IsEntitiesLayer();
-		// Layers are created, copied and deserialized in too many places to hand
-		// the graphics over in each of them, and nothing before the first render
-		// needs it. The reader goes through the layer, so it survives every
-		// resize and never has to be built again.
-		if(!m_ChunkSource.m_ReadTile)
-		{
-			m_TileChunkCache.OnInit(Graphics());
-			m_ChunkSource.m_ReadTile = [this](int x, int y, unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate) {
-				const CTile &Tile = m_pTiles[(size_t)y * m_Width + x];
-				*pIndex = Tile.m_Index;
-				*pFlags = Tile.m_Flags;
-			};
-		}
-		m_ChunkSource.m_Width = m_Width;
-		m_ChunkSource.m_Height = m_Height;
-		m_ChunkSource.m_Textured = Texture.IsValid();
-		if(!ForceTransparent)
-		{
-			Graphics()->BlendNone();
-			m_TileChunkCache.Render(m_ChunkSource, Color, false, false);
-		}
-		Graphics()->BlendNormal();
-		m_TileChunkCache.Render(m_ChunkSource, Color, true, ForceTransparent);
+		Graphics()->BlendNone();
+		m_TileChunkCache.Render(m_ChunkSource, Color, false, false);
 	}
+	Graphics()->BlendNormal();
+	m_TileChunkCache.Render(m_ChunkSource, Color, true, ForceTransparent);
 
 	// Render DDRace Layers
 	if(m_RenderOverlays)

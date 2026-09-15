@@ -80,7 +80,7 @@ EM_JS(void, BrowserVideoProbeEntry, (int Index, char *pName, int NameCapacity, c
 	stringToUTF8(entry.display, pDisplay, DisplayCapacity);
 });
 
-EM_ASYNC_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFileName, int Width, int Height, int Fps, int Bitrate, int SampleRate, int Channels), {
+EM_ASYNC_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFileName, int Width, int Height, int Fps, int Bitrate, int SampleRate, int Channels, int ExpectedDurationMs), {
 	Module.ddnetVideoStartError = null;
 	if(typeof VideoEncoder === 'undefined') {
 		Module.ddnetVideoStartError = 'This browser has no VideoEncoder';
@@ -324,6 +324,9 @@ EM_ASYNC_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char
 		// queue that keeps the fragments in order and carries a failed write
 		// back to the export.
 		sink: null, writer: null, writes: Promise.resolve(), headerWritten: false,
+		// How long the export said it will be, in milliseconds, and where the
+		// header put that number so it can be corrected at the end.
+		expectedDuration: ExpectedDurationMs, seekable: false, durationFields: [],
 	};
 	const tracks = () => state.audio === null ? [state.video] : [state.video, state.audio];
 
@@ -386,7 +389,9 @@ EM_ASYNC_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char
 				return;
 			}
 			state.headerWritten = true;
-			writeOut(header(true));
+			const written = header(true);
+			state.durationFields = durationFields(written);
+			writeOut(written);
 			for(const waiting of state.fragments)
 				writeOut(waiting);
 			state.fragments = [];
@@ -403,21 +408,26 @@ EM_ASYNC_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char
 		});
 	};
 
-	// `Streaming` writes the header before the file is finished, so it carries
-	// no durations: they are only known once the last frame is in. A player
-	// takes the fragments as they come then, which is what a fragmented MP4 is
-	// for, and what every live stream does.
+	// `Streaming` writes the header before the file is finished, so the
+	// durations in it are what the export said it was going to be: a demo knows
+	// how long it is before it is rendered, and a file that says so plays with
+	// a seek bar from the first fragment on. What it actually became is written
+	// over these at the end, where the file can be written to twice - see
+	// `patchDurations`. Where nothing was said, they stay zero, and a player
+	// takes the fragments as they come, which is what a fragmented MP4 is for.
 	const header = (Streaming) => {
 		const list = tracks();
-		const trackDuration = track => Streaming ? 0 : Math.round(track.decodeTime * 1000 / track.timescale);
-		const movieDuration = Streaming ? 0 : Math.max(...list.map(track => Math.round(track.decodeTime * 1000 / track.timescale)));
+		const expected = Streaming ? Math.max(state.expectedDuration, 0) : 0;
+		const trackDuration = track => Streaming ? expected : Math.round(track.decodeTime * 1000 / track.timescale);
+		const movieDuration = Streaming ? expected : Math.max(...list.map(track => Math.round(track.decodeTime * 1000 / track.timescale)));
 		const trackBox = (track, media) => box('trak',
 			fullBox('tkhd', 0, 3, u32(0), u32(0), u32(track.id), u32(0), u32(trackDuration(track)),
 				u32(0), u32(0), u16(0), u16(0), u16(media.volume), u16(0),
 				u32(0x00010000), u32(0), u32(0), u32(0), u32(0x00010000), u32(0), u32(0), u32(0), u32(0x40000000),
 				u32(media.width * 65536), u32(media.height * 65536)),
 			box('mdia',
-				fullBox('mdhd', 0, 0, u32(0), u32(0), u32(track.timescale), u32(Streaming ? 0 : track.decodeTime), u16(0x55C4), u16(0)),
+				fullBox('mdhd', 0, 0, u32(0), u32(0), u32(track.timescale),
+					u32(Streaming ? Math.round(expected * track.timescale / 1000) : track.decodeTime), u16(0x55C4), u16(0)),
 				fullBox('hdlr', 0, 0, u32(0), tag(media.handler), u32(0), u32(0), u32(0), Array.from(new TextEncoder().encode(media.name)).concat([0])),
 				box('minf',
 					media.header,
@@ -463,15 +473,79 @@ EM_ASYNC_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char
 				u32(0x00010000), u32(0), u32(0), u32(0), u32(0x00010000), u32(0), u32(0), u32(0), u32(0x40000000),
 				u32(0), u32(0), u32(0), u32(0), u32(0), u32(0), u32(list.length + 1)),
 			videoTrack, ...audioTrack,
-			box('mvex', ...list.map(track => fullBox('trex', 0, 0, u32(track.id), u32(1), u32(0), u32(0), u32(0)))));
+			// `mehd` is where a fragmented file says how long it is as a whole,
+			// which is the one place a player looks that does not have to read
+			// every fragment first.
+			box('mvex', fullBox('mehd', 0, 0, u32(movieDuration)),
+				...list.map(track => fullBox('trex', 0, 0, u32(track.id), u32(1), u32(0), u32(0), u32(0)))));
 		return new Uint8Array(box('ftyp', tag('isom'), u32(0x200), tag('isom'), tag('iso2'), tag(sampleEntryType), tag('mp41'), tag('iso5')).concat(moov));
+	};
+
+	// Where the durations sit in the header that was written, so that the
+	// numbers can be written over once they are known. The header is the first
+	// thing in the file, so what is found here are file positions.
+	//
+	// `mvhd` and `tkhd` count in the movie's timescale, `mdhd` and `mehd` in
+	// their own track's; the layout of each is fixed for version 0, which is
+	// what is written here.
+	const durationFields = bytes => {
+		const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+		const typeOf = at => String.fromCharCode(bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]);
+		const fields = [];
+		let trackIndex = -1;
+		const walk = (from, to) => {
+			let at = from;
+			while(at + 8 <= to) {
+				const size = view.getUint32(at);
+				if(size < 8 || at + size > to)
+					return;
+				const type = typeOf(at);
+				if(type === 'moov' || type === 'mdia' || type === 'mvex')
+					walk(at + 8, at + size);
+				else if(type === 'trak') {
+					trackIndex++;
+					walk(at + 8, at + size);
+				}
+				else if(type === 'mvhd')
+					fields.push({position: at + 24, track: -1, movieScale: true});
+				else if(type === 'mehd')
+					fields.push({position: at + 12, track: -1, movieScale: true});
+				else if(type === 'tkhd')
+					fields.push({position: at + 28, track: trackIndex, movieScale: true});
+				else if(type === 'mdhd')
+					fields.push({position: at + 24, track: trackIndex, movieScale: false});
+				at += size;
+			}
+		};
+		walk(0, bytes.length);
+		return fields;
+	};
+
+	// What the file turned out to be, written over what it said it would be.
+	// Only where the destination can be written to twice: a stream that only
+	// goes forwards keeps the length the export promised, which is as close as
+	// it can be without reading the file again.
+	const patchDurations = () => {
+		if(!state.seekable || !state.headerWritten || state.durationFields.length === 0)
+			return;
+		const list = tracks();
+		const movieDuration = Math.max(...list.map(track => Math.round(track.decodeTime * 1000 / track.timescale)));
+		for(const field of state.durationFields) {
+			const track = field.track < 0 ? null : list[field.track];
+			if(field.track >= 0 && !track)
+				continue;
+			const value = track === null ? movieDuration :
+				field.movieScale ? Math.round(track.decodeTime * 1000 / track.timescale) : track.decodeTime;
+			const data = new Uint8Array(4);
+			new DataView(data.buffer).setUint32(0, value);
+			writeOut({type: 'write', position: field.position, data: data});
+		}
 	};
 
 	// Says what kept the file from being written, and nothing when it was. A
 	// file the browser cannot describe its own tracks for does not play, so it
 	// is refused rather than handed over, and the reason travels back to the
 	// export instead of leaving it looking like it worked.
-	// Says what kept the file from being written, and nothing when it was.
 	state.finish = async () => {
 		// A browser that turned out not to encode audio still gets its video,
 		// so the track is only kept once the encoder has described it. Where the
@@ -493,6 +567,7 @@ EM_ASYNC_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char
 				try { await state.writer.abort(); } catch(error) {}
 				return Refused;
 			}
+			patchDurations();
 			await state.writes;
 			if(state.error)
 				return state.error;
@@ -676,7 +751,11 @@ EM_ASYNC_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char
 			: null;
 		if(sink) {
 			state.sink = sink;
-			state.writer = (sink.stream || sink).getWriter();
+			const stream = sink.stream || sink;
+			// A file on disk can be written to twice, a pipe cannot. Only the
+			// first kind gets the durations it really has.
+			state.seekable = typeof stream.seek === 'function';
+			state.writer = stream.getWriter();
 		}
 	} catch(error) {
 		Module.ddnetVideoStartError = 'the file could not be opened: ' + String((error && error.message) || error).slice(0, 200);
@@ -846,6 +925,11 @@ public:
 		dbg_assert(ms_pCurrentVideo != this, "Stopped video must not remain current");
 	}
 
+	void SetExpectedDuration(float Seconds) override
+	{
+		m_ExpectedDurationMs = Seconds > 0.0f ? (int)(Seconds * 1000.0f) : 0;
+	}
+
 	bool Start() override;
 	void Stop() override;
 	void Cancel() override
@@ -953,6 +1037,9 @@ private:
 	bool m_HasAudio;
 	bool m_PauseLiveAudio;
 	int m_AudioSampleRate = 0;
+	// What the file's header says it will be, before it is, see
+	// `IVideo::SetExpectedDuration`.
+	int m_ExpectedDurationMs = 0;
 	int64_t m_AudioSampleCount = 0;
 	double m_AudioFrameSampleCount = 0.0;
 	short m_aAudioBuffer[AUDIO_FRAMES_PER_MIX * AUDIO_CHANNELS] = {};
@@ -1074,7 +1161,7 @@ bool CVideoWebCodecs::Start()
 		return false;
 	}
 	m_AudioSampleRate = m_HasAudio ? m_pSound->MixingRate() : 0;
-	if(BrowserVideoStart(aCodec, sizeof(aCodec), m_aFileName, m_Settings.m_Width, m_Settings.m_Height, m_Settings.m_FPS, BitRateForQuality(m_Settings), m_AudioSampleRate, AUDIO_CHANNELS) != 0)
+	if(BrowserVideoStart(aCodec, sizeof(aCodec), m_aFileName, m_Settings.m_Width, m_Settings.m_Height, m_Settings.m_FPS, BitRateForQuality(m_Settings), m_AudioSampleRate, AUDIO_CHANNELS, m_ExpectedDurationMs) != 0)
 	{
 		DestroyOffscreenTargets();
 		char aReason[192] = {};

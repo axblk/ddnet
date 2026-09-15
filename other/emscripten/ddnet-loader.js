@@ -208,6 +208,9 @@ const DDNetLoader = (() => {
 			const on = document.fullscreenElement != null;
 			button.textContent = on ? "Leave full screen" : "Full screen";
 			button.title = on ? "Escape" : "";
+			if (!on && screen.orientation && screen.orientation.unlock) {
+				screen.orientation.unlock();
+			}
 		};
 		button.addEventListener("click", () => {
 			if (document.fullscreenElement != null) {
@@ -215,7 +218,15 @@ const DDNetLoader = (() => {
 			} else {
 				// A browser that says no says it in a promise nobody is
 				// waiting on, which would otherwise be an unhandled rejection.
-				settings.element.requestFullscreen().catch(() => {});
+				settings.element.requestFullscreen().then(() => {
+					// What is being watched is wide and a phone is tall. Only
+					// a page that fills the screen may ask for this, which is
+					// why it is asked for here and nowhere else; a browser that
+					// does not do it says so and nothing else happens.
+					if (screen.orientation && screen.orientation.lock) {
+						screen.orientation.lock("landscape").catch(() => {});
+					}
+				}).catch(() => {});
 			}
 		});
 		document.addEventListener("fullscreenchange", update);
@@ -281,7 +292,19 @@ const DDNetLoader = (() => {
 			for (const entry of codecs) {
 				codec.appendChild(option(entry.name, entry.display));
 			}
+			applyCodec();
 		});
+
+		// The codec menu is filled in from what the browser answers, which is
+		// after this returns. A codec asked for before then is remembered and
+		// chosen once it is there - and left alone if it never turns up.
+		var wantedCodec = null;
+		const applyCodec = () => {
+			if (wantedCodec !== null && [...codec.options].some(entry => entry.value === wantedCodec)) {
+				codec.value = wantedCodec;
+				wantedCodec = null;
+			}
+		};
 
 		const audio = element("input", { type: "checkbox", checked: settings.audio === true });
 		const hud = element("input", { type: "checkbox" });
@@ -300,6 +323,17 @@ const DDNetLoader = (() => {
 		size.addEventListener("change", updateCustom);
 		fps.addEventListener("change", updateCustom);
 		updateCustom();
+
+		// Whoever wants to remember what was chosen - in a link, or for the
+		// next visit - is told when it changes rather than having to ask.
+		const changed = [];
+		for (const control of [size, width, height, fps, customFpsValue, crf, codec, audio, hud, chat]) {
+			control.addEventListener("change", () => {
+				for (const listener of changed) {
+					listener();
+				}
+			});
+		}
 
 		return {
 			/** What was chosen, as `render` and `startExport` take it. */
@@ -326,6 +360,44 @@ const DDNetLoader = (() => {
 					hud: hud.checked,
 					chat: chat.checked,
 				};
+			},
+
+			/**
+			 * Puts settings into the form, in the shape `values` answers. What
+			 * is left out is left as it was, so a link that names only a frame
+			 * rate changes only that.
+			 */
+			setValues(values) {
+				const chosen = values || {};
+				if (chosen.width > 0 && chosen.height > 0) {
+					const preset = `${chosen.width}x${chosen.height}`;
+					width.value = chosen.width;
+					height.value = chosen.height;
+					size.value = [...size.options].some(entry => entry.value === preset) ? preset : "custom";
+				}
+				if (chosen.fps > 0) {
+					const preset = String(chosen.fps);
+					customFpsValue.value = chosen.fps;
+					fps.value = [...fps.options].some(entry => entry.value === preset) ? preset : "custom";
+				}
+				if (chosen.crf !== undefined && chosen.crf !== null) {
+					crf.value = chosen.crf;
+				}
+				if (chosen.codec !== undefined && chosen.codec !== null) {
+					wantedCodec = chosen.codec;
+					applyCodec();
+				}
+				for (const [name, control] of [["audio", audio], ["hud", hud], ["chat", chat]]) {
+					if (chosen[name] !== undefined && chosen[name] !== null) {
+						control.checked = chosen[name] === true;
+					}
+				}
+				updateCustom();
+			},
+
+			/** Called whenever any of it is changed. */
+			onChange(listener) {
+				changed.push(listener);
 			},
 		};
 	}
@@ -373,7 +445,10 @@ const DDNetLoader = (() => {
 
 	// A video that was written but never taken is a video nobody wanted, so the
 	// scratch files of earlier visits go at the start of this one. Once per
-	// page, and before anything writes a new one.
+	// page, and before anything writes a new one - which is why a render in a
+	// worker does not do this itself: every worker is a page as far as this
+	// script is concerned, and the second render of a batch would sweep away
+	// the video of the first one while the page was still offering it.
 	var sweptVideoScratch = false;
 	async function sweepVideoScratch() {
 		if (sweptVideoScratch) {
@@ -720,7 +795,9 @@ const DDNetLoader = (() => {
 				throw new Error(problem);
 			}
 			sweepDataCache();
-			sweepVideoScratch();
+			if (options.sweepVideoScratch !== false) {
+				sweepVideoScratch();
+			}
 			this.installErrorHandler();
 
 			const program = await this.program();
@@ -750,7 +827,10 @@ const DDNetLoader = (() => {
 				// so that is where to look unless the page says otherwise. Read
 				// by `webfs`, see `src/base/webfs.h`.
 				ddnetDataBase: options.dataBase || (program === null ? undefined : new URL(".", program.base).href),
-				arguments: (options.arguments || []).slice(),
+				// A viewer draws its own controls unless the page says it has
+				// its own. Said here rather than switched off once it runs, so
+				// that a bar the page does not want is never drawn at all.
+				arguments: (options.controls === false ? ["--no-controls"] : []).concat(options.arguments || []),
 				print: text => {
 					const parsedLine = parseAnsiColorRgb(text);
 					console.log(parsedLine.message);
@@ -1072,6 +1152,10 @@ self.onmessage = async event => {
 			}
 		}
 		request.options.scriptUrl = program.href;
+		// Swept here, where there is one of these per page, rather than in the
+		// worker, where there is one per render.
+		await sweepVideoScratch();
+		request.options.sweepVideoScratch = false;
 		// A destination the page picked can be handed over, if it is the kind
 		// of stream that can be. Where it is not, the render stays here rather
 		// than quietly writing somewhere else.
@@ -1163,6 +1247,41 @@ self.onmessage = async event => {
 			/** Throws away the export that is running, and its file with it. */
 			cancelExport: () => instance.call("DemoViewerCancelExport"),
 			/**
+			 * Who the demo is watched over the shoulder of, or sets it: a
+			 * client id, -1 for a camera of one's own that the pointer drags
+			 * around, or -2 for whoever recorded the demo. A demo a server
+			 * recorded has nobody who recorded it, so it starts at -1.
+			 */
+			spectating: Id => Id === undefined
+				? number("DemoViewerSpectating")
+				: number("DemoViewerSetSpectate", Id),
+			/** Follows whoever is called this, once the demo has named them. */
+			spectateName: Name => instance.call("DemoViewerSetSpectateName", null, ["string"], [Name || ""]),
+			/** On to the next player there is, or the one before. */
+			spectateStep: Direction => number("DemoViewerSpectateStep", Direction),
+			/**
+			 * The players the demo has named so far, as `{id, name}` objects.
+			 * A demo names them a snapshot or two in, so a list built from this
+			 * is worth building again while it plays.
+			 */
+			players: () => JSON.parse(instance.call("DemoViewerPlayers", "string") || "[]"),
+			/**
+			 * How much of the world is in the canvas, or multiplies it. The
+			 * wheel over the canvas does the same thing.
+			 */
+			zoom: Factor => Factor === undefined
+				? number("DemoViewerZoom")
+				: number("DemoViewerZoomBy", Factor),
+			/**
+			 * Whether the viewer draws its own bar of controls over the demo,
+			 * or switches it on and off. A page with controls of its own turns
+			 * it off - better with `controls: false`, which leaves it off from
+			 * the first frame rather than after it.
+			 */
+			controls: Show => Show === undefined
+				? number("DemoViewerControls") === 1
+				: instance.call("DemoViewerSetControls", null, ["number"], [Show ? 1 : 0]),
+			/**
 			 * Starts a video export, and says whether it started. The options
 			 * are named as in `render`, because they are the same settings the
 			 * render tool takes: `width`, `height`, `fps`, `crf`, `codec`,
@@ -1240,11 +1359,100 @@ self.onmessage = async event => {
 				}
 			},
 			/** Writes what is on screen, or the whole map, to a picture. */
+			/**
+			 * Whether the viewer draws its own bar of controls over the map,
+			 * or switches it on and off, as in `demoControls`.
+			 */
+			controls: Show => Show === undefined
+				? instance.call("MapViewerControls", "number") === 1
+				: instance.call("MapViewerSetControls", null, ["number"], [Show ? 1 : 0]),
 			exportView: () => instance.call("MapViewerExportView"),
 			exportFullMap: () => instance.call("MapViewerExportFullMap"),
 			/** 0 while nothing is being written, 1 while it is, 2 when it failed. */
 			exportState: () => instance.call("MapViewerExportState", "number"),
 		};
+	}
+
+	// A zip of files that are already in memory, so that a batch of them is one
+	// thing to save rather than one prompt each. Written by hand because it is
+	// short: stored, never deflated - a video is compressed already and
+	// squeezing it again would only cost time - and that leaves headers, a
+	// central directory and a checksum per file.
+	const CRC_TABLE = (() => {
+		const table = new Uint32Array(256);
+		for (let i = 0; i < 256; ++i) {
+			let value = i;
+			for (let bit = 0; bit < 8; ++bit) {
+				value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+			}
+			table[i] = value >>> 0;
+		}
+		return table;
+	})();
+
+	function crc32(bytes) {
+		let crc = 0xffffffff;
+		for (let i = 0; i < bytes.length; ++i) {
+			crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+		}
+		return (crc ^ 0xffffffff) >>> 0;
+	}
+
+	async function zip(entries) {
+		// A zip says its sizes and offsets in 32 bits. Past that it takes the
+		// ZIP64 records, which is a second format to write and to get wrong for
+		// something nobody should be downloading in one piece anyway.
+		const total = entries.reduce((sum, entry) => sum + entry.blob.size, 0);
+		if (total >= 0xffffffff || entries.some(entry => entry.blob.size >= 0xffffffff)) {
+			throw new Error("Too much to put into one zip file");
+		}
+		const encoder = new TextEncoder();
+		const now = new Date();
+		const time = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xffff;
+		const date = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xffff;
+		const parts = [];
+		const central = [];
+		var offset = 0;
+		for (const entry of entries) {
+			const name = encoder.encode(entry.name);
+			const bytes = new Uint8Array(await entry.blob.arrayBuffer());
+			const crc = crc32(bytes);
+			const local = new DataView(new ArrayBuffer(30));
+			local.setUint32(0, 0x04034b50, true);
+			local.setUint16(4, 20, true);
+			local.setUint16(6, 0x0800, true); // The names are UTF-8.
+			local.setUint16(8, 0, true); // Stored.
+			local.setUint16(10, time, true);
+			local.setUint16(12, date, true);
+			local.setUint32(14, crc, true);
+			local.setUint32(18, bytes.length, true);
+			local.setUint32(22, bytes.length, true);
+			local.setUint16(26, name.length, true);
+			parts.push(local.buffer, name, bytes);
+			const directory = new DataView(new ArrayBuffer(46));
+			directory.setUint32(0, 0x02014b50, true);
+			directory.setUint16(4, 20, true);
+			directory.setUint16(6, 20, true);
+			directory.setUint16(8, 0x0800, true);
+			directory.setUint16(10, 0, true);
+			directory.setUint16(12, time, true);
+			directory.setUint16(14, date, true);
+			directory.setUint32(16, crc, true);
+			directory.setUint32(20, bytes.length, true);
+			directory.setUint32(24, bytes.length, true);
+			directory.setUint16(28, name.length, true);
+			directory.setUint32(42, offset, true);
+			central.push(directory.buffer, name);
+			offset += 30 + name.length + bytes.length;
+		}
+		const directorySize = central.reduce((sum, part) => sum + part.byteLength, 0);
+		const end = new DataView(new ArrayBuffer(22));
+		end.setUint32(0, 0x06054b50, true);
+		end.setUint16(8, entries.length, true);
+		end.setUint16(10, entries.length, true);
+		end.setUint32(12, directorySize, true);
+		end.setUint32(16, offset, true);
+		return new Blob(parts.concat(central, [end.buffer]), { type: "application/zip" });
 	}
 
 	// What the render tool is asked on a command line, from what the page
@@ -1271,6 +1479,11 @@ self.onmessage = async event => {
 		}
 		if (options.chat === false) {
 			args.push("--no-chat");
+		}
+		// Who to watch, for a demo a server recorded: it has nobody who
+		// recorded it, so without this the camera stands still.
+		if (options.follow !== undefined && options.follow !== null && options.follow !== "") {
+			args.push("--follow", String(options.follow));
 		}
 		// Everything the client takes on its command line it takes here as
 		// well, one console command per entry, so `cl_showfps 1` works.
@@ -1311,6 +1524,9 @@ self.onmessage = async event => {
 		 * one.
 		 * @param options.urlParams Parameters of the page's URL that may name a
 		 * file to open.
+		 * @param options.controls `false` leaves off the bar of controls a
+		 * viewer otherwise draws over what it shows, for a page that puts its
+		 * own beside the canvas.
 		 * @param options.onOutput Called for every line the program writes.
 		 * @param options.onProgress Called while the program is being fetched.
 		 * @param options.onExit Called once the program has stopped.
@@ -1386,7 +1602,8 @@ self.onmessage = async event => {
 		 * Fills an element with the settings a video export takes - size,
 		 * frame rate, quality, encoder, sound, interface and chat - and
 		 * answers with `values()`, which reads them back in the form `render`
-		 * and `startExport` take.
+		 * and `startExport` take, `setValues()`, which puts them there, and
+		 * `onChange()`, which says when any of them was changed.
 		 *
 		 * The sizes and frame rates on offer are the ones the client offers,
 		 * with `Custom` for anything else.
@@ -1433,6 +1650,20 @@ self.onmessage = async event => {
 		 */
 		setUrlParameters(values) {
 			setUrlParameters(values);
+		},
+
+		/**
+		 * Puts files that are in memory into one zip file, so that a batch of
+		 * them is one thing to save. Nothing is compressed - what this is for
+		 * is videos, which are compressed already.
+		 *
+		 * @param entries `{name, blob}` objects, in the order they should be in.
+		 *
+		 * @return A promise of the zip as a `Blob`. It rejects when the whole
+		 * of it would not fit in the 32 bits a plain zip counts in.
+		 */
+		zip(entries) {
+			return zip(entries);
 		},
 
 		/** `start` with the furniture our own pages share around it. */

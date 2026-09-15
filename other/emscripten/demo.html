@@ -2,7 +2,7 @@
 <html>
 	<head>
 		<meta charset="utf-8">
-		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 		<meta name="description" content="Watch a DDNet demo in a web browser.">
 		<title>DDNet Demo Viewer</title>
 		<link rel="icon" type="image/x-icon" href="DDNet.ico">
@@ -14,20 +14,25 @@
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="error" style="display: none"></div>
 		<canvas id="canvas">Canvas not supported.</canvas>
-		<div id="player-controls" style="display: none">
-			<button id="play-button" title="Space">Pause</button>
-			<input id="seek" type="range" min="0" max="1000" value="0" step="1" title="Seek">
-			<span id="time">0:00 / 0:00</span>
-			<button id="slower" title="Down arrow">&minus;</button>
-			<span id="speed">1.00&times;</span>
-			<button id="faster" title="Up arrow">+</button>
-			<button id="restart" title="Home">Restart</button>
-			<button id="fullscreen-button">Full screen</button>
-			<button id="export-button">Export video</button>
+		<div id="controls">
+			<div id="player-controls" style="display: none">
+				<button id="play-button" title="Space">Pause</button>
+				<input id="seek" type="range" min="0" max="1000" value="0" step="1" title="Seek">
+				<span id="time">0:00 / 0:00</span>
+				<button id="slower" title="Down arrow">&minus;</button>
+				<span id="speed">1.00&times;</span>
+				<button id="faster" title="Up arrow">+</button>
+				<button id="restart" title="Home">Restart</button>
+				<select id="spectate" title="Who to watch (N, P, F)"></select>
+				<button id="zoom-out" title="Zoom out">&minus;</button>
+				<button id="zoom-in" title="Zoom in">+</button>
+				<button id="fullscreen-button">Full screen</button>
+				<button id="export-button">Export video</button>
+			</div>
+			<!-- What to make of the video, filled in by the loader so that this page
+			     and the render page ask for the same things in the same words. -->
+			<div id="export-settings" style="display: none"></div>
 		</div>
-		<!-- What to make of the video, filled in by the loader so that this page
-		     and the render page ask for the same things in the same words. -->
-		<div id="export-settings" style="display: none"></div>
 		<script src="ddnet-demo-viewer.js"></script>
 		<script src="ddnet-loader.js"></script>
 		<script>
@@ -36,6 +41,9 @@
 				module: DDNetDemoViewer,
 				programName: "Demo viewer",
 				accept: [".demo"],
+				// The page has a bar of its own under the canvas, so the
+				// viewer leaves its own off.
+				controls: false,
 				urlParams: ["demo"],
 				elements: {
 					canvas: document.getElementById('canvas'),
@@ -54,6 +62,7 @@
 				const seek = document.getElementById('seek');
 				const time = document.getElementById('time');
 				const speed = document.getElementById('speed');
+				const spectate = document.getElementById('spectate');
 				const canvas = document.getElementById('canvas');
 				const exportButton = document.getElementById('export-button');
 				const exportSettings = document.getElementById('export-settings');
@@ -100,6 +109,18 @@
 					if (isFinite(startTime) && startTime > 0) {
 						demo.seekTime(Math.min(startTime, length));
 					}
+					const startSpectate = DDNetLoader.urlParameter("spec");
+					if (startSpectate !== null && startSpectate !== "") {
+						// A name as well as a number: a link to a demo of a
+						// server is worth writing before knowing which client id
+						// somebody has in it.
+						const asNumber = parseInt(startSpectate, 10);
+						if (String(asNumber) === startSpectate) {
+							demo.spectating(asNumber);
+						} else {
+							demo.spectateName(startSpectate);
+						}
+					}
 					const startSpeed = parseFloat(DDNetLoader.urlParameter("speed"));
 					if (isFinite(startSpeed) && startSpeed > 0) {
 						demo.speed(startSpeed);
@@ -121,13 +142,25 @@
 						demo.pause();
 					}
 				});
+				// The demo follows the slider while it is dragged, not once it is
+				// let go of: what somebody is looking for is what they can see,
+				// and a bar that only jumps at the end is one they have to guess
+				// with.
 				seek.addEventListener('input', () => {
 					seeking = true;
+					demo.seek(seek.value / seek.max);
 				});
 				seek.addEventListener('change', () => {
 					demo.seek(seek.value / seek.max);
 					seeking = false;
 				});
+				spectate.addEventListener('change', () => {
+					demo.spectating(parseInt(spectate.value, 10));
+				});
+				// One notch of the wheel, for a pointer that has no wheel. The
+				// wheel itself goes straight to the canvas.
+				document.getElementById('zoom-in').addEventListener('click', () => demo.zoom(1 / 1.1547));
+				document.getElementById('zoom-out').addEventListener('click', () => demo.zoom(1.1547));
 				document.getElementById('slower').addEventListener('click', () => {
 					demo.speed(demo.speed() / 1.25);
 				});
@@ -176,12 +209,45 @@
 				// out of it is what they are watching: where they are, how fast,
 				// and whether it stands still. What is at its default is left
 				// out, so a link stays as short as what it says.
-				function updateLink(seconds, speed, paused) {
+				function updateLink(seconds, speed, paused, spectating) {
 					DDNetLoader.setUrlParameters({
 						t: Math.round(seconds),
 						speed: Math.abs(speed - 1) < 0.005 ? null : speed.toFixed(2),
 						paused: paused ? 1 : null,
+						spec: spectating >= 0 ? spectating : null,
 					});
+				}
+
+				// The list of who there is to watch. A demo names its players a
+				// snapshot or two in and people come and go while it plays, so
+				// the list is built again whenever it has changed - and only
+				// then, because rebuilding it under somebody opening it would
+				// close it again.
+				var playerList = "";
+				function updateSpectate() {
+					const players = demo.players() || [];
+					const watching = demo.spectating();
+					const signature = JSON.stringify(players);
+					if (signature !== playerList) {
+						playerList = signature;
+						const options = [{ id: -1, name: "Free view" }].concat(players);
+						spectate.replaceChildren(...options.map(player => {
+							const option = document.createElement('option');
+							option.value = player.id;
+							option.textContent = player.name;
+							return option;
+						}));
+					}
+					// -2 is whoever recorded the demo, which is a player of it
+					// without being one of the ids to choose from. A demo of a
+					// race is watched that way until something else is picked.
+					const selected = String(watching);
+					if (spectate.value !== selected) {
+						spectate.value = selected;
+						if (spectate.value !== selected) {
+							spectate.selectedIndex = 0;
+						}
+					}
 				}
 
 				// The page follows the demo rather than the demo telling the page:
@@ -203,7 +269,8 @@
 					time.textContent = `${formatTime(progress * length)} / ${formatTime(length)}`;
 					speed.textContent = `${demo.speed().toFixed(2)}×`;
 					playButton.textContent = demo.paused() ? "Play" : "Pause";
-					updateLink(progress * length, demo.speed(), demo.paused());
+					updateSpectate();
+					updateLink(progress * length, demo.speed(), demo.paused(), demo.spectating());
 					// What the export is doing is asked for rather than
 					// remembered from the click: starting one in a browser
 					// returns long before the browser has an encoder, so the

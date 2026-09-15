@@ -4,9 +4,11 @@
 #define ENGINE_CLIENT_DEMO_VIEWER_CLIENT_H
 
 #include "demo_client_base.h"
+#include "viewer_controls.h"
 
 #include <array>
 #include <chrono>
+#include <string>
 
 class IEngineInput;
 
@@ -47,6 +49,11 @@ public:
 		CONTROL_KEY_SPEED_UP,
 		CONTROL_KEY_SPEED_DOWN,
 		CONTROL_KEY_RESTART,
+		CONTROL_KEY_FREE_VIEW,
+		CONTROL_KEY_SPECTATE_NEXT,
+		CONTROL_KEY_SPECTATE_PREVIOUS,
+		CONTROL_KEY_ZOOM_IN,
+		CONTROL_KEY_ZOOM_OUT,
 		CONTROL_KEY_QUIT,
 		NUM_CONTROL_KEYS,
 	};
@@ -62,6 +69,15 @@ private:
 	std::chrono::nanoseconds m_NextFrameTime{};
 	int m_ExitCode = 0;
 	EExportState m_ExportState = EExportState::IDLE;
+	CViewerControls m_Controls;
+	bool m_ShowControls = true;
+	// Where the pointer was last frame and whether it is dragging the world
+	// along, which is how the free view is moved.
+	vec2 m_LastMousePos = vec2(0.0f, 0.0f);
+	bool m_Dragging = false;
+	// What the demo calls its players, built when a page asks for it so that
+	// what is handed out stays alive until the next time it does.
+	std::string m_Players;
 	// What a page asked for, to be done between two frames rather than in the
 	// call that asked. Starting or ending an export waits for the browser, and
 	// waiting unwinds the stack it is waiting on - which, in a call that came
@@ -86,6 +102,11 @@ private:
 	 */
 	bool KeyPressed(EControlKey ControlKey, bool Repeats);
 	void RenderWindowFrame();
+	/**
+	 * Draws the viewer's own controls over the demo and does what was pressed
+	 * in them.
+	 */
+	void RenderControls();
 	/**
 	 * Starts writing a video of the demo from here on.
 	 *
@@ -115,6 +136,14 @@ public:
 	 * @param Settings How to encode that video.
 	 */
 	void Configure(const char *pDemoPath, const char *pVideoPath, const CVideoExportSettings &Settings);
+	/**
+	 * Whether the viewer draws its own bar of controls over the demo. It does
+	 * unless it is told otherwise, because a viewer that shows no way to use
+	 * it has none. A page that puts its own controls beside the canvas turns
+	 * this off.
+	 */
+	void SetShowControls(bool Show) { m_ShowControls = Show; }
+	bool ShowControls() const { return m_ShowControls; }
 	void Run();
 	int ExitCode() const { return m_ExitCode; }
 
@@ -134,6 +163,12 @@ public:
 	void SeekTime(float Seconds);
 	void SeekStart();
 	void SetSpeed(float Speed);
+	/**
+	 * The players the demo has named so far, as JSON: an array of objects with
+	 * an `id` and a `name`. What a page fills a list of people to watch from.
+	 * The answer stays valid until this is called again.
+	 */
+	const char *Players();
 	/**
 	 * Asks for a video of the demo from here on, which the page offers once
 	 * and hands to the browser's downloads when it is finished. It is started

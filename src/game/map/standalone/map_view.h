@@ -263,6 +263,8 @@ public:
 	int Height() const { return m_Height; }
 
 	IStorage *Storage() { return m_pStorage.get(); }
+	/** Who reads and decodes what is not the map itself. */
+	CAssetLoader *AssetLoader() { return &m_AssetLoader; }
 	IGraphics *Graphics();
 	IEngineGraphicsWindow *Window() { return m_pWindow; }
 	IKernel *Kernel() { return m_pKernel.get(); }

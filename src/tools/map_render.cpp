@@ -388,6 +388,9 @@ int main(int argc, const char **argv)
 	RenderParams.m_Center = AutoPosition ? vec2(MapWorldWidth / 2.0f, MapWorldHeight / 2.0f) : Position * 32.0f;
 	RenderParams.m_Zoom = Zoom;
 	RenderParams.m_RenderText = false;
+	// A picture of the whole design shows its detail layers, as upstream's
+	// tool always did for RENDERTYPE_FULL_DESIGN.
+	RenderParams.m_HighDetail = true;
 	RenderParams.m_RenderInvalidTiles = false;
 	RenderParams.m_RenderTileBorder = true;
 	RenderParams.m_DebugRenderGroupClips = false;

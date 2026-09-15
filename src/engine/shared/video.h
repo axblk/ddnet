@@ -252,6 +252,13 @@ protected:
 void InitVideoBackend();
 
 /**
+ * Whether this build can encode video where it is running. A desktop carries
+ * its encoder with it and always can; a browser has one or has not, and a
+ * viewer asks before it offers to make a video rather than after.
+ */
+bool VideoEncodingSupported();
+
+/**
  * Creates the video export that this build was linked with: the one that
  * encodes with libavcodec, or the one that hands the frames to the browser.
  *

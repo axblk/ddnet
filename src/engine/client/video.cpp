@@ -308,6 +308,11 @@ CVideo::CVideo(IGraphics *pGraphics, ISound *pSound, IStorage *pStorage, CVideoE
 	ms_pCurrentVideo = this;
 }
 
+bool VideoEncodingSupported()
+{
+	return true;
+}
+
 std::unique_ptr<IVideo> CreateVideo(IGraphics *pGraphics, ISound *pSound, IStorage *pStorage,
 	CVideoExportSettings Settings, int64_t LocalStartTime, const char *pName, int OutputStorageType,
 	bool AllowOverwrite, bool PauseLiveAudio)

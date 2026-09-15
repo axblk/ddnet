@@ -10,39 +10,33 @@
 
 #include <game/client/component.h>
 
-#include <array>
 #include <chrono>
 #include <optional>
 #include <vector>
 
+/**
+ * One of the sounds the client starts with. One job per file rather than one
+ * per handful of them: the files are read by whatever is fastest at reading -
+ * in a browser a hundred requests that wait beside each other - and every one
+ * of them is decoded as soon as its own bytes are there.
+ */
 class CSoundLoading : public CAssetJob
 {
-	class CResult
-	{
-	public:
-		int m_SetId;
-		int m_SoundId;
-		int m_SampleId;
-	};
-
 	ISound *m_pSound;
-	IStorage *m_pStorage;
-	int m_Lane;
-	int m_NumLanes;
-	bool m_Completed = false;
-	int m_NumLoaded = 0;
-	std::vector<CResult> m_vResults;
+	int m_SetId;
+	int m_SoundId;
+	int m_SampleId = -1;
 
 protected:
-	// The startup sounds are a batch, so this job has no single file of its
-	// own; it reads each of them the same way every other asset is read.
 	void Process() override;
+	void OnReadFailed() override;
 
 public:
-	CSoundLoading(ISound *pSound, IStorage *pStorage, int Lane, int NumLanes, int OwnerId, uint64_t Generation);
+	CSoundLoading(ISound *pSound, IStorage *pStorage, int SetId, int SoundId, int OwnerId, uint64_t Generation);
 	~CSoundLoading() override;
+	/** Hands the sample to the sound set it belongs to. */
 	void Commit();
-	int NumLoaded() const { return m_NumLoaded; }
+	bool Loaded() const { return m_SampleId != -1; }
 };
 
 class CSounds : public CComponent
@@ -60,7 +54,7 @@ class CSounds : public CComponent
 	CQueueEntry m_aaQueue[2][QUEUE_SIZE] = {};
 	int m_aQueuePos[2] = {};
 	int64_t m_aQueueWaitTime[2] = {};
-	std::array<CTypedAssetResource<CSoundLoading>, 2> m_aSoundResources;
+	std::vector<CTypedAssetResource<CSoundLoading>> m_vSoundResources;
 	uint64_t m_LoadGeneration = 1;
 	bool m_WaitForSoundJob = false;
 	int64_t m_SoundBatchStart = 0;

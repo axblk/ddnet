@@ -6,6 +6,7 @@
 #include <base/dbg.h>
 #include <base/log.h>
 #include <base/mem.h>
+#include <base/thread.h>
 #include <base/time.h>
 
 #include <engine/engine.h>
@@ -19,65 +20,36 @@
 #include <game/client/gameclient.h>
 #include <game/localization.h>
 
-CSoundLoading::CSoundLoading(ISound *pSound, IStorage *pStorage, int Lane, int NumLanes, int OwnerId, uint64_t Generation) :
-	CAssetJob(EAssetType::SOUND, std::vector<uint8_t>(), "audio", OwnerId, Generation),
+CSoundLoading::CSoundLoading(ISound *pSound, IStorage *pStorage, int SetId, int SoundId, int OwnerId, uint64_t Generation) :
+	CAssetJob(EAssetType::SOUND, pStorage, g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_pFilename, IStorage::TYPE_ALL, OwnerId, Generation),
 	m_pSound(pSound),
-	m_pStorage(pStorage),
-	m_Lane(Lane),
-	m_NumLanes(NumLanes)
+	m_SetId(SetId),
+	m_SoundId(SoundId)
 {
 	dbg_assert(pSound != nullptr, "Sound must not be null");
 	dbg_assert(pStorage != nullptr, "Storage must not be null");
-	dbg_assert(Lane >= 0 && Lane < NumLanes, "Invalid sound loading lane");
 }
 
 CSoundLoading::~CSoundLoading()
 {
-	for(const CResult &Result : m_vResults)
-	{
-		if(Result.m_SampleId != -1)
-			m_pSound->UnloadSample(Result.m_SampleId);
-	}
+	if(m_SampleId != -1)
+		m_pSound->UnloadSample(m_SampleId);
 }
 
 void CSoundLoading::Process()
 {
-	// Reading a hundred files to hand them to a sound system that is switched
-	// off would be work for nothing.
-	if(!m_pSound->IsSoundEnabled())
-	{
-		m_Completed = true;
-		return;
-	}
-	std::vector<uint8_t> vData;
-	for(int SetId = m_Lane; SetId < g_pData->m_NumSounds; SetId += m_NumLanes)
-	{
-		for(int SoundId = 0; SoundId < g_pData->m_aSounds[SetId].m_NumSounds; SoundId++)
-		{
-			if(State() == IJob::STATE_ABORTED)
-				return;
-			const char *pFilename = g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_pFilename;
-			vData.clear();
-			int SampleId = -1;
-			if(ReadFile(m_pStorage, pFilename, IStorage::TYPE_ALL, vData))
-				SampleId = m_pSound->LoadWVFromMem(vData.data(), static_cast<unsigned>(vData.size()), false, pFilename);
-			else
-				log_error("sound", "Failed to open/read sound file '%s'", pFilename);
-			m_NumLoaded += SampleId != -1;
-			m_vResults.push_back({SetId, SoundId, SampleId});
-		}
-	}
-	m_Completed = true;
+	m_SampleId = m_pSound->LoadWVFromMem(Data().data(), static_cast<unsigned>(Data().size()), false, Path());
+}
+
+void CSoundLoading::OnReadFailed()
+{
+	log_error("sound", "Failed to open/read sound file '%s'", Path());
 }
 
 void CSoundLoading::Commit()
 {
-	dbg_assert(m_Completed, "Cannot commit unfinished sound load job");
-	for(CResult &Result : m_vResults)
-	{
-		g_pData->m_aSounds[Result.m_SetId].m_aSounds[Result.m_SoundId].m_Id = Result.m_SampleId;
-		Result.m_SampleId = -1;
-	}
+	g_pData->m_aSounds[m_SetId].m_aSounds[m_SoundId].m_Id = m_SampleId;
+	m_SampleId = -1;
 }
 
 void CSounds::UpdateChannels()
@@ -147,41 +119,54 @@ void CSounds::OnInit()
 			g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_Id = -1;
 	}
 
-	// load sounds
-	if(g_Config.m_ClThreadsoundloading)
+	// Reading a hundred files to hand them to a sound system that is switched
+	// off would be work for nothing.
+	if(!Sound()->IsSoundEnabled())
 	{
-		for(size_t Lane = 0; Lane < m_aSoundResources.size(); ++Lane)
-		{
-			m_aSoundResources[Lane] = GameClient()->AssetLoader().Load(std::make_shared<CSoundLoading>(Sound(), Storage(), static_cast<int>(Lane), static_cast<int>(m_aSoundResources.size()), CGameClient::ASSET_OWNER_STARTUP_SOUNDS, m_LoadGeneration));
-		}
-		m_WaitForSoundJob = true;
-		GameClient()->m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Loading sound files"), 0);
-	}
-	else
-	{
-		for(int SetId = 0; SetId < g_pData->m_NumSounds; ++SetId)
-		{
-			CSoundLoading SoundLoading(Sound(), Storage(), SetId, g_pData->m_NumSounds, CGameClient::ASSET_OWNER_STARTUP_SOUNDS, m_LoadGeneration);
-			SoundLoading.Run();
-			SoundLoading.Commit();
-			m_NumSoundSamplesLoaded += SoundLoading.NumLoaded();
-			++m_NumSoundJobsFinished;
-			GameClient()->m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Loading sound files"), 1);
-		}
 		m_WaitForSoundJob = false;
-		log_info("asset_loader", "Startup sound batch: jobs=%d loaded=%d wall=%.2fms", m_NumSoundJobsFinished, m_NumSoundSamplesLoaded,
-			(time_get() - m_SoundBatchStart) * 1000.0 / time_freq());
+		return;
+	}
+
+	// A hundred files that nothing waits for: they are wanted before the first
+	// shot is fired, not before the first frame is drawn, and going out all at
+	// once they would take every connection away from the map and the images
+	// that the frame does need. Unless the startup waits for them right below,
+	// in which case they are exactly what it waits for.
+	const EAssetPriority Priority = g_Config.m_ClThreadsoundloading ? EAssetPriority::BACKGROUND : EAssetPriority::NORMAL;
+	for(int SetId = 0; SetId < g_pData->m_NumSounds; ++SetId)
+	{
+		for(int SoundId = 0; SoundId < g_pData->m_aSounds[SetId].m_NumSounds; ++SoundId)
+		{
+			m_vSoundResources.push_back(GameClient()->AssetLoader().Load(std::make_shared<CSoundLoading>(Sound(), Storage(), SetId, SoundId, CGameClient::ASSET_OWNER_STARTUP_SOUNDS, m_LoadGeneration), Priority));
+		}
+	}
+	m_WaitForSoundJob = true;
+	GameClient()->m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Loading sound files"), 0);
+
+	// `cl_threadsoundloading` says whether the client goes on while they are
+	// still coming in. Off, it waits for them here - and runs the loader while
+	// it waits, because nothing else would move the files along.
+	if(!g_Config.m_ClThreadsoundloading)
+	{
+		while(m_WaitForSoundJob)
+		{
+			GameClient()->AssetLoader().Update();
+			UpdateLoadingState();
+			if(m_WaitForSoundJob)
+				thread_wait_for_other_threads();
+		}
 	}
 }
 
 void CSounds::OnShutdown()
 {
 	++m_LoadGeneration;
-	for(auto &Resource : m_aSoundResources)
+	for(auto &Resource : m_vSoundResources)
 	{
 		Resource.Abort();
 		Resource.Reset();
 	}
+	m_vSoundResources.clear();
 	m_WaitForSoundJob = false;
 }
 
@@ -217,20 +202,21 @@ bool CSounds::UpdateLoadingState()
 	if(m_WaitForSoundJob)
 	{
 		bool Waiting = false;
-		for(auto &Resource : m_aSoundResources)
+		for(auto &Resource : m_vSoundResources)
 		{
 			if(!Resource)
 				continue;
 			if(Resource.IsReady(m_LoadGeneration))
 			{
 				CSoundLoading &SoundLoading = Resource.Result();
-				m_NumSoundSamplesLoaded += SoundLoading.NumLoaded();
+				m_NumSoundSamplesLoaded += SoundLoading.Loaded() ? 1 : 0;
 				++m_NumSoundJobsFinished;
 				SoundLoading.Commit();
 				Resource.Reset();
 			}
 			else if(Resource.IsFinished())
 			{
+				++m_NumSoundJobsFinished;
 				Resource.Reset();
 			}
 			else
@@ -241,6 +227,7 @@ bool CSounds::UpdateLoadingState()
 		m_WaitForSoundJob = Waiting;
 		if(!m_WaitForSoundJob)
 		{
+			m_vSoundResources.clear();
 			log_info("asset_loader", "Startup sound batch: jobs=%d loaded=%d wall=%.2fms", m_NumSoundJobsFinished, m_NumSoundSamplesLoaded,
 				(time_get() - m_SoundBatchStart) * 1000.0 / time_freq());
 		}

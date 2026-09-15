@@ -1,0 +1,11 @@
+# Files the client reads on the main thread in the browser, where a read is a
+# request and the page stands still for the length of it. `webfs` says so for
+# every one of them ("was fetched on the main thread"), and the headless job in
+# `build.yml` fails on any that is not listed here.
+#
+# There are none left, and the list is meant to stay that way: a file that
+# belongs to the startup is read through the asset loader, so whoever needs it
+# takes it where the bytes arrive instead of waiting for them.
+#
+# Measured with the release client in Chrome. Sorted, one path per line, as
+# `comm` wants it.

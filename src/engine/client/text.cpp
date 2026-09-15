@@ -8,6 +8,7 @@
 #include <base/math.h>
 #include <base/mem.h>
 #include <base/str.h>
+#include <base/thread.h>
 #include <base/time.h>
 
 #include <engine/console.h>
@@ -1593,7 +1594,7 @@ public:
 			if(Pump)
 				Pump();
 			if(m_FontLoadProgress.Loading())
-				std::this_thread::sleep_for(1ms);
+				thread_wait_for_other_threads();
 		}
 		return m_FontLoadProgress.Success();
 	}

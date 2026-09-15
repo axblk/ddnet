@@ -149,9 +149,18 @@ void thread_wait(void *thread)
 
 void thread_wait_for_other_threads()
 {
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// The page gets its turn back, because what is waited for here goes
+	// through it: measured with the headless client, a file that a worker
+	// fetched only arrives in Firefox once the main thread has been back to
+	// the event loop, so a wait that keeps the thread to itself waits for
+	// ever. Chrome delivers it either way.
+	emscripten_sleep(1);
+#else
 	// Long enough not to be a spin, short enough that nobody waiting on the
 	// result notices the wait got longer.
 	std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#endif
 }
 
 void thread_sleep_idle(std::chrono::nanoseconds duration)

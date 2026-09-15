@@ -1,10 +1,17 @@
+#include "test.h"
+
+#include <base/fs.h>
+#include <base/io.h>
 #include <base/logger.h>
+#include <base/mem.h>
 
 #include <engine/gfx/image_loader.h>
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <limits>
 #include <vector>
 
@@ -141,4 +148,81 @@ TEST(ImageLoader, RejectsOversizedDecodedData)
 	int PngliteIncompatible;
 	EXPECT_FALSE(CImageLoader::LoadPng(Reader, "oversized-decoded-data", Image, PngliteIncompatible));
 	EXPECT_EQ(Image.m_pData, nullptr);
+}
+
+TEST(ImageLoader, RowWriterWritesTheSamePngAsSavePng)
+{
+	// A picture written a band at a time has to come out as the picture it is,
+	// whatever the bands were.
+	constexpr size_t Width = 37;
+	constexpr size_t Height = 24;
+	CImageInfo Image;
+	Image.m_Width = Width;
+	Image.m_Height = Height;
+	Image.m_Format = CImageInfo::FORMAT_RGBA;
+	std::vector<uint8_t> vPixels(Width * Height * 4);
+	for(size_t Index = 0; Index < vPixels.size(); ++Index)
+	{
+		vPixels[Index] = static_cast<uint8_t>((Index * 7 + Index / 13) & 0xff);
+	}
+	Image.m_pData = vPixels.data();
+
+	CTestInfo Info;
+	CPngRowWriter Writer;
+	IOHANDLE File = io_open(Info.m_aFilename, IOFLAG_WRITE);
+	ASSERT_TRUE(File);
+	ASSERT_TRUE(Writer.Begin(File, Info.m_aFilename, Width, Height, CImageInfo::FORMAT_RGBA));
+	EXPECT_EQ(Writer.RowBytes(), Width * 4);
+	// Bands of different heights, and one row on its own at the end.
+	size_t Row = 0;
+	for(const size_t Band : {7u, 11u, 5u})
+	{
+		ASSERT_TRUE(Writer.WriteRows(vPixels.data() + Row * Width * 4, Band));
+		Row += Band;
+	}
+	ASSERT_TRUE(Writer.WriteRows(vPixels.data() + Row * Width * 4, Height - Row));
+	ASSERT_TRUE(Writer.End());
+
+	CByteBufferWriter Expected;
+	ASSERT_TRUE(CImageLoader::SavePng(Expected, Image));
+
+	IOHANDLE ReadFile = io_open(Info.m_aFilename, IOFLAG_READ);
+	ASSERT_TRUE(ReadFile);
+	void *pData;
+	unsigned Size;
+	ASSERT_TRUE(io_read_all(ReadFile, &pData, &Size));
+	io_close(ReadFile);
+	EXPECT_EQ(Size, Expected.Size());
+	EXPECT_EQ(mem_comp(pData, Expected.Data(), std::min<size_t>(Size, Expected.Size())), 0);
+	free(pData);
+	EXPECT_FALSE(fs_remove(Info.m_aFilename));
+
+	Image.m_pData = nullptr;
+}
+
+TEST(ImageLoader, RowWriterRefusesAnUnfinishedPicture)
+{
+	CTestInfo Info;
+	CPngRowWriter Writer;
+	IOHANDLE File = io_open(Info.m_aFilename, IOFLAG_WRITE);
+	ASSERT_TRUE(File);
+	ASSERT_TRUE(Writer.Begin(File, Info.m_aFilename, 4, 4, CImageInfo::FORMAT_RGBA));
+	const std::vector<uint8_t> vRows(4 * 4 * 4);
+	ASSERT_TRUE(Writer.WriteRows(vRows.data(), 3));
+	// One row short.
+	EXPECT_FALSE(Writer.End());
+	EXPECT_FALSE(fs_remove(Info.m_aFilename));
+}
+
+TEST(ImageLoader, RowWriterRefusesMoreRowsThanTheresRoomFor)
+{
+	CTestInfo Info;
+	CPngRowWriter Writer;
+	IOHANDLE File = io_open(Info.m_aFilename, IOFLAG_WRITE);
+	ASSERT_TRUE(File);
+	ASSERT_TRUE(Writer.Begin(File, Info.m_aFilename, 4, 4, CImageInfo::FORMAT_RGBA));
+	const std::vector<uint8_t> vRows(4 * 8 * 4);
+	EXPECT_FALSE(Writer.WriteRows(vRows.data(), 8));
+	EXPECT_FALSE(Writer.End());
+	EXPECT_FALSE(fs_remove(Info.m_aFilename));
 }

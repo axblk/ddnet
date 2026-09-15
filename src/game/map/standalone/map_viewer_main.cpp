@@ -8,6 +8,7 @@
 #include <base/time.h>
 
 #include <engine/client/viewer_controls.h>
+#include <engine/client/viewer_fullscreen.h>
 #include <engine/client/window_sdl.h>
 #include <engine/config.h>
 #include <engine/console.h>
@@ -177,10 +178,7 @@ EMSCRIPTEN_KEEPALIVE float MapViewerVisibleWidth()
 {
 	if(g_pView == nullptr || g_pRenderParams == nullptr)
 		return 0.0f;
-	IGraphics *pGraphics = g_pView->Graphics();
-	float ViewWidth, ViewHeight;
-	pGraphics->CalcScreenParams(pGraphics->ScreenAspect(), 1.0f, &ViewWidth, &ViewHeight);
-	return ViewWidth * g_pRenderParams->m_Zoom;
+	return g_pView->ViewSize().x * g_pRenderParams->m_Zoom;
 }
 
 // How big the map is, which is what tells a page whether where it is looking
@@ -296,6 +294,8 @@ int main(int argc, const char **argv)
 	// would change that, so everything it offers it offers as a shape.
 	CViewerControls Controls;
 	Controls.Init(pGraphics, nullptr);
+	Controls.SetPlacement(CViewerControls::EPlacement::CORNER);
+	CViewerGestures Gestures;
 	pGraphics->AddWindowResizeListener([&] { View.OnResize(pGraphics->ScreenWidth(), pGraphics->ScreenHeight()); });
 
 	// A path that names a file where it stands is opened as it stands; the
@@ -313,9 +313,12 @@ int main(int argc, const char **argv)
 		return 1;
 
 	CStandaloneMapView::SRenderParams RenderParams;
+	// The window is filled rather than fitted: a map in a window is not a
+	// picture of a map, and a frame of nothing around it is not what anybody
+	// opened the window for.
 	const auto &&FitView = [&]() {
 		RenderParams.m_Center = View.MapWorldSize() / 2.0f;
-		RenderParams.m_Zoom = View.FitZoom();
+		RenderParams.m_Zoom = View.FillZoom();
 	};
 	FitView();
 
@@ -360,25 +363,46 @@ int main(int argc, const char **argv)
 		Requests.m_ExportState = Success ? EExportState::SUCCEEDED : EExportState::FAILED;
 	};
 
-	// What is on the bar, and what pressing it does. Written here rather than
-	// in the loop because it is the same every frame and reads as one thing:
-	// what a map viewer offers.
+	// What the controls offer, and what pressing it does. Written here rather
+	// than in the loop because it is the same every frame and reads as one
+	// thing: what a map viewer offers.
+	//
+	// A map is not something that is being played, so there is nothing to seek
+	// through and no reason for a bar along the bottom; what the view does sits
+	// in a corner out of the way of the map, and what is used once in a while
+	// sits in a menu behind it.
 	const auto &&RenderControls = [&]() {
 		enum
 		{
+			ITEM_FULLSCREEN,
 			ITEM_ZOOM_OUT,
 			ITEM_ZOOM_IN,
 			ITEM_FIT,
+			ITEM_DETAIL,
+			ITEM_ENTITIES,
 			ITEM_SAVE_VIEW,
 			ITEM_SAVE_MAP,
 			NUM_ITEMS,
 		};
 		CViewerControls::SItem aItems[NUM_ITEMS];
+		aItems[ITEM_FULLSCREEN].m_Icon = CViewerControls::EIcon::FULLSCREEN;
+		aItems[ITEM_FULLSCREEN].m_Active = ViewerFullscreen::Active(View.Window());
+		aItems[ITEM_FULLSCREEN].m_Hidden = !ViewerFullscreen::Supported(View.Window());
 		aItems[ITEM_ZOOM_OUT].m_Icon = CViewerControls::EIcon::MINUS;
 		aItems[ITEM_ZOOM_IN].m_Icon = CViewerControls::EIcon::PLUS;
 		aItems[ITEM_FIT].m_Icon = CViewerControls::EIcon::FIT;
+		// What is asked for once and then left alone, or what somebody has to
+		// look for before they know it is there.
+		aItems[ITEM_DETAIL].m_Icon = CViewerControls::EIcon::DETAIL;
+		aItems[ITEM_DETAIL].m_Active = RenderParams.m_HighDetail;
+		aItems[ITEM_DETAIL].m_InMenu = true;
+		aItems[ITEM_ENTITIES].m_Icon = CViewerControls::EIcon::ENTITIES;
+		aItems[ITEM_ENTITIES].m_Active = RenderParams.m_EntityOverlayVal > 0;
+		aItems[ITEM_ENTITIES].m_InMenu = true;
 		aItems[ITEM_SAVE_VIEW].m_Icon = CViewerControls::EIcon::SAVE;
+		aItems[ITEM_SAVE_VIEW].m_InMenu = true;
 		aItems[ITEM_SAVE_MAP].m_Icon = CViewerControls::EIcon::SAVE_ALL;
+		aItems[ITEM_SAVE_MAP].m_InMenu = true;
 		const bool Busy = Requests.m_ExportView || Requests.m_ExportFullMap;
 		aItems[ITEM_SAVE_VIEW].m_Disabled = Busy;
 		aItems[ITEM_SAVE_MAP].m_Disabled = Busy;
@@ -386,8 +410,12 @@ int main(int argc, const char **argv)
 		CViewerControls::SInput ControlsInput;
 		ControlsInput.m_MousePos = pInput->NativeMousePos();
 		ControlsInput.m_MousePressed = pInput->NativeMousePressed(1);
+		ControlsInput.m_MouseClicked = pInput->KeyPress(KEY_MOUSE_1);
 		switch(Controls.Render(aItems, NUM_ITEMS, ControlsInput, nullptr))
 		{
+		case ITEM_FULLSCREEN:
+			ViewerFullscreen::Toggle(View.Window());
+			break;
 		case ITEM_ZOOM_OUT:
 			RenderParams.m_Zoom = std::clamp(RenderParams.m_Zoom * BUTTON_ZOOM_STEP, MIN_ZOOM, MAX_ZOOM);
 			break;
@@ -396,6 +424,14 @@ int main(int argc, const char **argv)
 			break;
 		case ITEM_FIT:
 			FitView();
+			break;
+		case ITEM_DETAIL:
+			RenderParams.m_HighDetail = !RenderParams.m_HighDetail;
+			break;
+		case ITEM_ENTITIES:
+			// All of it or none: a map viewer is asked what a map does, not
+			// how strongly to say it.
+			RenderParams.m_EntityOverlayVal = RenderParams.m_EntityOverlayVal > 0 ? 0 : 100;
 			break;
 		case ITEM_SAVE_VIEW:
 			Requests.m_ExportView = true;
@@ -441,8 +477,7 @@ int main(int argc, const char **argv)
 
 		// How far the map moves under one pixel of the pointer, which is also
 		// what the keys move by, so both stay the same speed at any zoom.
-		float ViewWidth, ViewHeight;
-		pGraphics->CalcScreenParams(pGraphics->ScreenAspect(), 1.0f, &ViewWidth, &ViewHeight);
+		const float ViewWidth = View.ViewSize().x;
 		const float WorldPerPixel = pGraphics->ScreenWidth() == 0 ? 0.0f : ViewWidth * RenderParams.m_Zoom / pGraphics->ScreenWidth();
 
 		if(pInput != nullptr)
@@ -459,13 +494,24 @@ int main(int argc, const char **argv)
 			if(Move.x != 0.0f || Move.y != 0.0f)
 				RenderParams.m_Center += normalize(Move) * (ViewWidth * RenderParams.m_Zoom * PAN_SCREENS_PER_SECOND * FrameTime);
 
+			// Two fingers pinch the map closer or further away and drag it
+			// about, the way every picture on a touch screen is handled.
+			const CViewerGestures::SResult Gesture = Gestures.Update(pInput->TouchFingerStates(), vec2(pGraphics->ScreenWidth(), pGraphics->ScreenHeight()));
+			if(Gesture.m_Active)
+			{
+				RenderParams.m_Zoom = std::clamp(RenderParams.m_Zoom * Gesture.m_Zoom, MIN_ZOOM, MAX_ZOOM);
+				RenderParams.m_Center -= Gesture.m_Move * WorldPerPixel;
+				Controls.Show();
+			}
+
 			// In the pixels that are drawn, not the ones the window is
 			// measured in: on a screen with more of the former the map would
 			// otherwise move at half the speed of the pointer.
 			const vec2 MousePos = pInput->NativeMousePos() * pGraphics->ScreenHiDPIScale();
 			// A press that landed on the bar belongs to the bar. Without this
-			// every button would drag the map out from under the pointer.
-			if(pInput->NativeMousePressed(1) && !Controls.Hovered())
+			// every button would drag the map out from under the pointer. One
+			// that is part of a pinch belongs to the pinch.
+			if(pInput->NativeMousePressed(1) && !Controls.Hovered() && !Gesture.m_Active)
 			{
 				if(Dragging)
 					RenderParams.m_Center -= (MousePos - LastMousePos) * WorldPerPixel;

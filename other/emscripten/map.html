@@ -8,35 +8,25 @@
 		<link rel="icon" type="image/x-icon" href="DDNet.ico">
 		<script src="coi-serviceworker.js"></script>
 		<link rel="stylesheet" href="ddnet-page.css">
-		<link rel="stylesheet" href="ddnet-viewer.css">
 	</head>
 	<body>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="error" style="display: none"></div>
 		<canvas id="canvas">Canvas not supported.</canvas>
-		<div id="controls">
-			<div id="player-controls" style="display: none">
-				<span id="hint">Drag to move, the wheel zooms</span>
-				<button id="zoom-out" title="Wheel down">&minus;</button>
-				<span id="view">0, 0</span>
-				<button id="zoom-in" title="Wheel up">+</button>
-				<button id="fit-button" title="Home">Fit on screen</button>
-				<button id="fullscreen-button">Full screen</button>
-				<button id="export-view-button">Save this view</button>
-				<button id="export-full-button" title="The whole map at 32 pixels per tile">Save the whole map</button>
-			</div>
-		</div>
 		<script src="ddnet-map-viewer.js"></script>
 		<script src="ddnet-loader.js"></script>
 		<script>
 			// A map is dropped onto the window, or named as `map.html#map=<url>`.
+			//
+			// The page brings no controls of its own: a map fills the window and
+			// the viewer draws what there is to press into a corner of it. Moving
+			// and zooming stay on the pointer, where they belong. The other end of
+			// what is left here is the `MapViewer*` block in
+			// `src/game/map/standalone/map_viewer_main.cpp`.
 			const started = DDNetLoader.page({
 				module: DDNetMapViewer,
 				programName: "Map viewer",
 				accept: [".map"],
-				// The page has a bar of its own under the canvas, so the
-				// viewer leaves its own off.
-				controls: false,
 				urlParams: ["map"],
 				elements: {
 					canvas: document.getElementById('canvas'),
@@ -45,32 +35,7 @@
 			});
 		</script>
 		<script>
-			// The bar under the canvas. Moving and zooming stay on the pointer,
-			// where they belong; what has a button here is what a key would do and
-			// nobody would find. The other end of these is the `MapViewer*` block
-			// in `src/game/map/standalone/map_viewer_main.cpp`.
 			(function() {
-				const playerControls = document.getElementById('player-controls');
-				DDNetLoader.autoHide(playerControls);
-				DDNetLoader.fullscreen(document.getElementById('fullscreen-button'));
-				const hint = document.getElementById('hint');
-				const view = document.getElementById('view');
-				const exportViewButton = document.getElementById('export-view-button');
-				const exportFullButton = document.getElementById('export-full-button');
-				const exportButtons = [exportViewButton, exportFullButton];
-				// A finger has no wheel, so what it is told to do is what it can
-				// do: the buttons beside this are the zoom there.
-				if (window.matchMedia("(pointer: coarse)").matches) {
-					hint.textContent = "Drag to move, the buttons zoom";
-				}
-				const HINT_TEXT = hint.textContent;
-				// What one press of a zoom button does. The wheel takes smaller
-				// steps because it is turned more than a button is pressed.
-				const ZOOM_BUTTON_STEP = 1.25;
-				// The states `MapViewerExportState` answers with.
-				const EXPORT_IDLE = 0, EXPORT_PENDING = 1, EXPORT_SUCCEEDED = 2, EXPORT_FAILED = 3;
-				var lastExportState = EXPORT_IDLE;
-
 				// The page is there before the viewer is and outlives it, so every
 				// call has to survive being made outside of that: until there is
 				// one, and once there is no longer one, they all answer `null`.
@@ -82,23 +47,6 @@
 				// A page that cannot run this at all has been told why once
 				// already, which is enough: there is nothing here to steer.
 				started.then(instance => { viewer = instance; }, () => {});
-
-				document.getElementById('zoom-out').addEventListener('click', () => {
-					map.zoomBy(ZOOM_BUTTON_STEP);
-				});
-				document.getElementById('zoom-in').addEventListener('click', () => {
-					map.zoomBy(1 / ZOOM_BUTTON_STEP);
-				});
-				document.getElementById('fit-button').addEventListener('click', () => {
-					map.fit();
-				});
-				exportViewButton.addEventListener('click', () => {
-					// The browser only hands over a download that came out of a click.
-					map.exportView();
-				});
-				exportFullButton.addEventListener('click', () => {
-					map.exportFullMap();
-				});
 
 				// Where a link says to look, and how much of the map to show:
 				// `#x=120&y=64&tiles=90`, in tiles, applied once as soon as
@@ -135,31 +83,13 @@
 				// thread for as long as it draws and only lets go between frames.
 				setInterval(() => {
 					if (!map.loaded()) {
-						playerControls.style.display = "none";
 						return;
 					}
-					playerControls.style.display = "flex";
 					applyLink();
 					const center = map.center();
 					const tiles = map.tilesAcross();
 					if (center !== null && tiles > 0) {
-						view.textContent = `${Math.round(center.x)}, ${Math.round(center.y)} · ${Math.round(tiles)} tiles`;
 						updateLink(center, tiles);
-					}
-					const state = map.exportState();
-					if (state === lastExportState) {
-						return;
-					}
-					lastExportState = state;
-					for (const button of exportButtons) {
-						button.disabled = state === EXPORT_PENDING;
-					}
-					if (state === EXPORT_PENDING) {
-						hint.textContent = "Drawing the picture…";
-					} else if (state === EXPORT_FAILED) {
-						hint.textContent = "The picture could not be saved, see the log";
-					} else {
-						hint.textContent = HINT_TEXT;
 					}
 				}, 200);
 			})();

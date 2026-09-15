@@ -20,7 +20,7 @@
 		"ddnet-map-viewer.wasm"
 	],
 	"dependencies": {
-		"ddnet-loader": "^1.0.0"
+		"@ddnet/base": "^1.0.0"
 	},
 	"keywords": [
 		"ddnet",

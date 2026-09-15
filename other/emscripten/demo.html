@@ -8,6 +8,8 @@
 		<link rel="icon" type="image/x-icon" href="DDNet.ico">
 		<script src="coi-serviceworker.js"></script>
 		<link rel="stylesheet" href="ddnet-page.css">
+		<!-- What the bar the package builds is dressed in. A page that puts a
+		     viewer in a box loads this one file and gets the same bar. -->
 		<link rel="stylesheet" href="ddnet-viewer.css">
 		<!-- The packages by their own names, which is how a page that installed
 		     them from a registry would say them. Here they sit beside this page
@@ -16,7 +18,7 @@
 		<script type="importmap">
 		{
 			"imports": {
-				"ddnet-loader": "./ddnet-loader.js",
+				"@ddnet/base": "./ddnet-base.js",
 				"@ddnet/demo-player": "./demo-player.js"
 			}
 		}
@@ -28,611 +30,146 @@
 	</head>
 	<body>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
-		<div id="error" style="display: none"></div>
-		<canvas id="canvas">Canvas not supported.</canvas>
-		<!-- A viewer is black until it has a demo to draw, and fetching one over
-		     a slow line takes long enough for that to look broken rather than
-		     busy. -->
-		<p id="loading" class="viewer-loading" role="status" hidden>Loading…</p>
-		<!-- Nothing named in the address, so nothing to show yet. A file can be
-		     dropped onto the page, and a phone has nothing to drop with, so it
-		     can be chosen here as well. -->
-		<div id="open" class="viewer-open" hidden>
-			<div class="viewer-panel viewer-open-panel">
-				<div class="viewer-panel-title">Open a demo</div>
-				<p class="viewer-open-hint">Choose a <code>.demo</code> file, or drop one onto this page.</p>
-				<!-- Why the last one was no good, where the next one is
-				     chosen. -->
-				<p id="open-message" class="viewer-panel-message" role="status" hidden></p>
-				<div class="viewer-panel-actions">
-					<button id="open-button" class="viewer-text-button" disabled>Choose a demo</button>
-				</div>
-				<input id="open-file" type="file" accept=".demo" hidden>
-			</div>
-		</div>
-		<!-- The bar a video player has, over the demo rather than beside it, out
-		     of the browser's own buttons: the same things the viewer draws for
-		     itself when it is a program on somebody's desktop, in the same order,
-		     with the pictures from the same set. In a browser they are real
-		     buttons - a tooltip each, a tab order, a screen reader that can say
-		     what they are - and that is worth more here than a bar the program
-		     paints into the picture. -->
-		<div id="controls" class="viewer-controls viewer-controls-bottom">
-			<!-- What to make of a video of what is being watched. Above the bar
-			     that opens it, because that is where there is room for it. -->
-			<div id="export-panel" class="viewer-panel" hidden>
-				<div class="viewer-panel-title">Export video</div>
-				<div id="export-settings" class="viewer-form"></div>
-				<!-- Why the last one came to nothing. A page is the only place
-				     this can be said: whoever is watching a demo has no log to
-				     look in. -->
-				<p id="export-message" class="viewer-panel-message" role="status" hidden></p>
-				<div class="viewer-panel-actions">
-					<button id="export-start" class="viewer-text-button">Start</button>
-				</div>
-			</div>
-			<div id="spectate-menu" class="viewer-menu" hidden></div>
-			<div id="bar" class="viewer-bar" hidden>
-				<input id="seek" class="viewer-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
-				<div class="viewer-row">
-					<button id="play" class="viewer-button" data-icon="pause" title="Pause (Space)" aria-label="Pause"></button>
-					<button id="restart" class="viewer-button" data-icon="restart" title="Back to the start (Home)" aria-label="Back to the start"></button>
-					<!-- How loud, where every video player puts it. The slider
-					     sits behind the button until the pointer is on it. -->
-					<div class="viewer-volume">
-						<button id="mute" class="viewer-button" data-icon="volume" title="Mute (M)" aria-label="Mute" aria-pressed="false"></button>
-						<input id="volume" class="viewer-volume-slider" type="range" min="0" max="100" value="100" step="1" aria-label="Volume">
+		<!-- The element the package brings, which is what anybody embedding a
+		     demo in a page of their own writes - one line, a `src`, and
+		     `controls="html"` for the bar of real buttons the package builds.
+		     This page is that line plus the two things only a page whose whole
+		     job is one demo has to say: a way in when nothing was named, and an
+		     address that follows what is being watched.
+		     What the element says while a demo is on its way, and what it says
+		     when one cannot be shown, it says over the picture itself. -->
+		<ddnet-demo id="viewer" controls="html">
+			<!-- Nothing named in the address, so nothing to show yet. A file can be
+			     dropped onto the page, and a phone has nothing to drop with, so it
+			     can be chosen here as well. -->
+			<div id="open" class="viewer-open" slot="controls" hidden>
+				<div class="viewer-panel viewer-open-panel">
+					<div class="viewer-panel-title">Open a demo</div>
+					<p class="viewer-open-hint">Choose a <code>.demo</code> file, or drop one onto this page.</p>
+					<!-- Why the last one was no good, where the next one is
+					     chosen. -->
+					<p id="open-message" class="viewer-panel-message" role="status" hidden></p>
+					<div class="viewer-panel-actions">
+						<button id="open-button" class="viewer-text-button" disabled>Choose a demo</button>
 					</div>
-					<span id="time" class="viewer-readout">0:00 / 0:00</span>
-					<span class="viewer-spacer"></span>
-					<button id="slower" class="viewer-button viewer-optional" data-icon="minus" title="Slower (Down arrow)" aria-label="Slower"></button>
-					<span id="speed" class="viewer-readout viewer-readout-speed viewer-optional">1.00&times;</span>
-					<button id="faster" class="viewer-button viewer-optional" data-icon="plus" title="Faster (Up arrow)" aria-label="Faster"></button>
-					<!-- The piece somebody wants to show somebody else: where it
-					     begins, where it ends, and a way to take the marks off
-					     again. What is marked is what a link opens at, what
-					     playing stops at, and what an export writes. -->
-					<button id="clip-start" class="viewer-button viewer-optional" data-icon="clip_start" title="Start the piece here (I)" aria-label="Start the piece here"></button>
-					<button id="clip-end" class="viewer-button viewer-optional" data-icon="clip_end" title="End the piece here (O)" aria-label="End the piece here"></button>
-					<button id="clip-clear" class="viewer-button viewer-optional" data-icon="clip_clear" title="The whole demo again" aria-label="The whole demo again" hidden></button>
-					<span id="clip-time" class="viewer-readout viewer-optional" hidden></span>
-					<button id="zoom-reset" class="viewer-button" data-icon="zoom_reset" title="Back to the size it started at" aria-label="Back to the size it started at" hidden></button>
-					<button id="camera" class="viewer-button" data-icon="fit" title="The view the demo brought" aria-label="The view the demo brought" aria-pressed="false" hidden></button>
-					<button id="spectate" class="viewer-button" data-icon="eye" title="Who to watch (N, P, F)" aria-label="Who to watch" aria-haspopup="true" aria-expanded="false"></button>
-					<span id="export-status" class="viewer-readout" role="status" hidden></span>
-					<button id="export" class="viewer-button" data-icon="save" title="Export video" aria-label="Export video" aria-haspopup="true" aria-expanded="false"></button>
-					<button id="fullscreen" class="viewer-button" data-icon="fullscreen" title="Full screen" aria-label="Full screen"></button>
+					<input id="open-file" type="file" accept=".demo" hidden>
 				</div>
 			</div>
-		</div>
-		<script type="module">
-			import DDNetLoader from "ddnet-loader";
-			import { demoPlayerPage, demoControls } from "@ddnet/demo-player";
-
-			// Where in the demo to start, how fast and whether to stand still
-			// there: what the address says, handed to the viewer before it
-			// plays anything rather than asked for once the page gets a turn.
-			// The page only gets one after the viewer has started, and by then
-			// the demo has played the seconds that took.
-			const linkTime = parseFloat(DDNetLoader.urlParameter("t"));
-			const linkSpeed = parseFloat(DDNetLoader.urlParameter("speed"));
-			const linkEnd = parseFloat(DDNetLoader.urlParameter("end"));
-			const linkStart = {
-				startTime: isFinite(linkTime) && linkTime > 0 ? linkTime : undefined,
-				speed: isFinite(linkSpeed) && linkSpeed > 0 ? linkSpeed : undefined,
-				paused: DDNetLoader.urlParameter("paused") === "1",
-			};
-			// Only for a demo the viewer is given at the start. One dropped in
-			// later brings its own beginning, and the address said nothing
-			// about it.
-			const startFromLink = DDNetLoader.urlParameter("demo") !== null;
-
-			// A demo is dropped onto the window, or named as `demo.html#demo=<url>`.
-			const started = demoPlayerPage(Object.assign(startFromLink ? linkStart : {}, {
-				// The page has a bar of its own over the canvas, so the viewer
-				// leaves off the one it would draw itself.
-				controls: false,
-				urlParams: ["demo"],
-				// A demo player writes nothing that outlives the tab: no
-				// settings, no recording, no screenshot. Without this it would
-				// mount IndexedDB over its home directory and read it back at
-				// every start for the sake of a directory that stays empty.
-				persist: false,
-				elements: {
-					canvas: document.getElementById('canvas'),
-					error: document.getElementById('error'),
-					loading: document.getElementById('loading'),
-				},
-			}));
-
-			// What the bar does. The viewer answers to the keyboard as well, but a
-			// page shows no key bindings and nobody would go looking for them, so
-			// everything it can do has a button here. The other end of these is the
-			// `DemoPlayer*` block in `src/engine/client/demo_player_client.cpp`.
+		</ddnet-demo>
+		<!-- What a link says has to be on the element before it starts, and it
+		     starts the moment the package below defines it - so this runs
+		     while the page is being read, which no module does. The element
+		     knows every one of these words already: it is what anybody else
+		     writing `<ddnet-demo t="4" end="8">` says. -->
+		<script>
 			(function() {
-				const controls = document.getElementById('controls');
-				const bar = document.getElementById('bar');
-				const canvas = document.getElementById('canvas');
-				const playButton = document.getElementById('play');
-				const seek = document.getElementById('seek');
-				const muteButton = document.getElementById('mute');
-				const volume = document.getElementById('volume');
-				const time = document.getElementById('time');
-				const speed = document.getElementById('speed');
-				const clipStartButton = document.getElementById('clip-start');
-				const clipEndButton = document.getElementById('clip-end');
-				const clipClearButton = document.getElementById('clip-clear');
-				const clipTime = document.getElementById('clip-time');
-				const zoomResetButton = document.getElementById('zoom-reset');
-				const cameraButton = document.getElementById('camera');
-				const spectateButton = document.getElementById('spectate');
-				const spectateMenu = document.getElementById('spectate-menu');
-				const exportButton = document.getElementById('export');
-				const exportPanel = document.getElementById('export-panel');
-				const exportSettings = document.getElementById('export-settings');
-				const exportStart = document.getElementById('export-start');
-				const exportMessage = document.getElementById('export-message');
-				const exportStatus = document.getElementById('export-status');
-				const exportForm = DDNetLoader.exportSettingsForm(exportSettings, { canvas: canvas });
-				DDNetLoader.paintIcons(document);
-				DDNetLoader.fullscreen(document.getElementById('fullscreen'));
-				// The bar and what it opens are one thing to whoever uses them, so
-				// they step aside together while nothing is happening - and a tap
-				// on the demo takes them away or brings them back, the way a tap
-				// on a video does everywhere. What they had opened goes with them.
-				DDNetLoader.autoHide([bar, spectateMenu, exportPanel], {
-					picture: canvas,
-					onHide: () => openPanel(null),
-				});
-				// Encoding a video is the browser's to do, and not every browser
-				// does it. Better said here than by an export that starts and then
-				// cannot finish.
-				if (typeof VideoEncoder === "undefined") {
-					exportButton.disabled = true;
-					exportButton.title = "This browser has no video encoder";
-				}
-
-				// One panel at a time, and a click anywhere else closes it: two
-				// open panels over a picture leave nothing of the picture, and a
-				// menu that has to be dismissed with the button that opened it is
-				// one people leave open.
-				const panels = [[spectateButton, spectateMenu], [exportButton, exportPanel]];
-				function openPanel(wanted) {
-					for (const [button, panel] of panels) {
-						const open = panel === wanted && panel.hidden;
-						panel.hidden = !open;
-						button.setAttribute('aria-expanded', open ? "true" : "false");
+				const element = document.getElementById('viewer');
+				const link = new URLSearchParams(location.hash.replace(/^#/, ""));
+				for (const [parameter, attribute] of [["demo", "src"], ["t", "t"], ["end", "end"], ["speed", "speed"], ["paused", "paused"], ["spec", "spec"]]) {
+					const value = link.get(parameter);
+					if (value !== null && value !== "") {
+						element.setAttribute(attribute, value);
 					}
 				}
-				document.addEventListener('pointerdown', event => {
-					if (!controls.contains(event.target)) {
-						openPanel(null);
-					}
-				});
-				document.addEventListener('keydown', event => {
-					if (event.key === "Escape") {
-						openPanel(null);
-					}
-				});
-
-				// The page is there before the viewer is and outlives it, so every
-				// call has to survive being made outside of that: until there is
-				// one, and once there is no longer one, they all answer `null`.
-				var viewer = null;
-				const demo = demoControls({
-					call: (name, returnType, argTypes, args) =>
-						viewer == null ? null : viewer.call(name, returnType, argTypes, args),
-				});
-				// A page that cannot run this at all has been told why once
-				// already, which is enough: there is nothing here to steer.
-				started.then(instance => { viewer = instance; }, () => {});
-
-				// Something to look at while the program and the demo are on
-				// their way. Only where there is a demo on the way: a page with
-				// nothing named in its address offers a way in instead, and
-				// that is not a wait.
-				const loadingMessage = document.getElementById('loading');
-				function sayLoading() {
-					DDNetLoader.loadingHint(loadingMessage, () => demo.length() > 0);
-				}
-				if (DDNetLoader.urlParameter("demo") !== null) {
-					sayLoading();
-				}
-
-				// Nothing named in the address, so the page offers a way in of
-				// its own. A demo can be dropped onto the picture - the loader
-				// takes it there - but a phone has nothing to drop with, and a
-				// file chosen here goes the same way a dropped one does.
-				const opener = document.getElementById('open');
-				const openButton = document.getElementById('open-button');
-				const openFile = document.getElementById('open-file');
-				const openMessage = document.getElementById('open-message');
-				function offer(show, message) {
-					opener.hidden = !show;
-					openMessage.textContent = message || "";
-					openMessage.hidden = !message;
-				}
-				offer(DDNetLoader.urlParameter("demo") === null);
-				// Nothing to hand a file to until the program is running.
-				started.then(() => { openButton.disabled = false; }, () => {});
-				openButton.addEventListener('click', () => openFile.click());
-				openFile.addEventListener('change', async () => {
-					const file = openFile.files[0];
-					// The same file twice in a row is still a choice, and without
-					// this the second time would go unnoticed.
-					openFile.value = "";
-					if (file == null || viewer == null) {
-						return;
-					}
-					offer(false);
-					try {
-						await viewer.loadFile(file);
-					} catch (error) {
-						offer(true, (error && error.message) || String(error));
-					}
-				});
-				// One dropped on the picture is the loader's to take; the page
-				// only has to stop offering.
-				document.addEventListener('drop', () => offer(false), true);
-
-				// Where a link says to start, and how. Once, as soon as there is a
-				// demo to say it to - `#t=90&speed=0.5&paused=1`, in the fragment
-				// so that the demo somebody sent stays between them and whoever
-				// they sent it to.
-				var linkApplied = false;
-				function applyLink(length) {
-					if (linkApplied) {
-						return;
-					}
-					linkApplied = true;
-					// What the viewer was started with is already where it
-					// should be; seeking a paused demo again would only cost a
-					// frame.
-					const startTime = startFromLink ? NaN : parseFloat(DDNetLoader.urlParameter("t"));
-					if (isFinite(startTime) && startTime > 0) {
-						demo.seekTime(Math.min(startTime, length));
-					}
-					// A link that names both ends of a piece marks it out, which
-					// is what somebody who was sent one is meant to watch.
-					if (isFinite(linkEnd) && linkEnd > 0) {
-						demo.clip(isFinite(linkTime) && linkTime > 0 ? linkTime : 0, Math.min(linkEnd, length));
-					}
-					const startSpectate = DDNetLoader.urlParameter("spec");
-					if (startSpectate !== null && startSpectate !== "") {
-						// A name as well as a number: a link to a demo of a
-						// server is worth writing before knowing which client id
-						// somebody has in it.
-						const asNumber = parseInt(startSpectate, 10);
-						if (String(asNumber) === startSpectate) {
-							demo.spectating(asNumber);
-						} else {
-							demo.spectateName(startSpectate);
-						}
-					}
-					const startSpeed = startFromLink ? NaN : parseFloat(DDNetLoader.urlParameter("speed"));
-					if (isFinite(startSpeed) && startSpeed > 0) {
-						demo.speed(startSpeed);
-					}
-					if (!startFromLink && DDNetLoader.urlParameter("paused") === "1") {
-						demo.pause();
-					}
-				}
-
-				// The address bar follows the demo, so that what somebody copies
-				// out of it is what they are watching: where they are, how fast,
-				// and whether it stands still. What is at its default is left out,
-				// so a link stays as short as what it says.
-				function updateLink(seconds, playbackSpeed, paused, spectating) {
-					// A marked piece is what the link is about, so it says
-					// where that piece is rather than where the demo happens to
-					// stand: what somebody copies is what they marked.
-					const clip = demo.clip();
-					DDNetLoader.setUrlParameters({
-						end: clip === null ? null : Math.round(clip.end),
-						t: clip !== null ? Math.round(clip.start) : Math.round(seconds),
-						speed: Math.abs(playbackSpeed - 1) < 0.005 ? null : playbackSpeed.toFixed(2),
-						paused: paused ? 1 : null,
-						spec: spectating >= 0 ? spectating : null,
-					});
-				}
-
-				function formatTime(seconds) {
-					const total = Math.max(0, Math.round(seconds));
-					return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
-				}
-
-				playButton.addEventListener('click', () => {
-					if (demo.paused()) {
-						demo.play();
-					} else {
-						demo.pause();
-					}
-				});
-				document.getElementById('restart').addEventListener('click', () => demo.restart());
-				// Dragging the slider says how loud, and a slider dragged to
-				// nothing is the same thing as muting - so that what the button
-				// then says is what the slider shows.
-				muteButton.addEventListener('click', () => demo.muted(!demo.muted()));
-				volume.addEventListener('input', () => {
-					const level = volume.value / volume.max;
-					demo.muted(level === 0);
-					if (level > 0) {
-						demo.volume(level);
-					}
-				});
-				document.getElementById('slower').addEventListener('click', () => demo.speed(demo.speed() / 1.25));
-				document.getElementById('faster').addEventListener('click', () => demo.speed(demo.speed() * 1.25));
-
-				// The demo follows the bar while it is dragged, not once it is let
-				// go of: what somebody is looking for is what they can see, and a
-				// bar that only jumps at the end is one they have to guess with.
-				// While it is being dragged the demo stands still, because one that
-				// goes on playing runs out from under whoever is looking for a
-				// place in it; it goes on again afterwards if it was going on
-				// before.
-				var seeking = false;
-				var pausedBeforeSeeking = false;
-				seek.addEventListener('input', () => {
-					if (!seeking) {
-						seeking = true;
-						pausedBeforeSeeking = demo.paused();
-						demo.pause();
-					}
-					demo.seek(seek.value / seek.max);
-				});
-				seek.addEventListener('change', () => {
-					demo.seek(seek.value / seek.max);
-					seeking = false;
-					if (!pausedBeforeSeeking) {
-						demo.play();
-					}
-				});
-
-				// Marking out a piece: where it is now, as the one end or the
-				// other. A piece that would be empty or backwards is no piece,
-				// so a mark that lands on the wrong side of the other one
-				// takes the other one with it.
-				function markClip(which) {
-					const length = demo.length();
-					if (length === null || length <= 0) {
-						return;
-					}
-					const now = demo.progress() * length;
-					const clip = demo.clip();
-					if (which === "start") {
-						demo.clip(now, clip !== null && clip.end > now ? clip.end : length);
-					} else {
-						demo.clip(clip !== null && clip.start < now ? clip.start : 0, now);
-					}
-				}
-				clipStartButton.addEventListener('click', () => markClip("start"));
-				clipEndButton.addEventListener('click', () => markClip("end"));
-				clipClearButton.addEventListener('click', () => demo.clip(null));
-				// The keys a video editor uses for this, and the only two keys
-				// the page has of its own: the viewer answers to the rest.
-				document.addEventListener('keydown', event => {
-					if (event.ctrlKey || event.altKey || event.metaKey || event.target !== document.body) {
-						return;
-					}
-					if (event.key === "i" || event.key === "I") {
-						markClip("start");
-					} else if (event.key === "o" || event.key === "O") {
-						markClip("end");
-					}
-				});
-
-				zoomResetButton.addEventListener('click', () => demo.resetZoom());
-				cameraButton.addEventListener('click', () => demo.recordedCamera(!demo.recordedCamera()));
-				spectateButton.addEventListener('click', () => openPanel(spectateMenu));
-				// The export settings are asked for before the export runs, the
-				// same ones the render tool takes on its command line. While one is
-				// being written the button stops it instead.
-				exportButton.addEventListener('click', () => {
-					if (demo.exportState() === 1) {
-						demo.cancelExport();
-						return;
-					}
-					openPanel(exportPanel);
-				});
-				exportStart.addEventListener('click', async () => {
-					// The browser only hands over a download that came out of a
-					// click, so the export has to start from this handler and not
-					// from a question the page asks itself later. Asking where to
-					// save is the same: it has to happen while this click is still
-					// what the browser thinks the user is doing. What is written
-					// there is written while the demo renders, so nothing is kept
-					// in memory and a video the size of a film is no different from
-					// a short one.
-					if (viewer != null && window.showSaveFilePicker) {
-						try {
-							const handle = await window.showSaveFilePicker({
-								suggestedName: "video.mp4",
-								types: [{ description: "MP4 video", accept: { "video/mp4": [".mp4"] } }],
-							});
-							viewer.setVideoSink({ stream: await handle.createWritable(), done: () => null });
-						} catch (error) {
-							// A dismissed dialog is somebody changing their mind
-							// and nothing to report. Anything else is a file that
-							// cannot be written, which has to be said: a button
-							// that does nothing at all is the worst of it.
-							if (error && error.name === "AbortError") {
-								return;
-							}
-							say(`The file could not be opened: ${(error && error.message) || error}`);
-							return;
-						}
-					}
-					say("");
-					if (!demo.startExport(exportForm.values())) {
-						say("The export could not be started.");
-						return;
-					}
-					openPanel(null);
-				});
-
-				// What went wrong, in the panel it went wrong in. An empty string
-				// takes the line away again.
-				function say(message) {
-					exportMessage.textContent = message;
-					exportMessage.hidden = message === "";
-				}
-
-				// Who there is to watch, which is the list the viewer opens behind
-				// the same button. A demo names its players a snapshot or two in
-				// and people come and go while it plays, so the list is built again
-				// whenever it has changed - and only then, because rebuilding it
-				// under somebody reading it would take it away from them.
-				var playerList = "";
-				function updateSpectate() {
-					const players = demo.players() || [];
-					const watching = demo.spectating();
-					const signature = JSON.stringify(players);
-					if (signature !== playerList) {
-						playerList = signature;
-						// A demo a client recorded is a demo of whoever recorded
-						// it, so watching over their shoulder is what it offers
-						// besides a camera of one's own - and nothing to pick
-						// from, which is what the viewer answers with an empty
-						// list. A demo a server recorded has nobody whose demo it
-						// is, and offers everybody who happened to be there.
-						const options = players.length === 0 ? []
-							: [{ id: -1, name: "Free view", icon: "freeview" }]
-								.concat(players.map(player => ({ id: player.id, name: player.name, icon: "eye" })));
-						// A demo a client recorded has nobody to pick from, and a
-						// button that opens nothing is a button in the way. The
-						// keys still step through whoever is there.
-						spectateButton.hidden = options.length === 0;
-						if (options.length === 0 && !spectateMenu.hidden) {
-							openPanel(null);
-						}
-						spectateMenu.replaceChildren(...options.map(option => {
-							const item = document.createElement('button');
-							item.className = "viewer-menu-item";
-							item.dataset.icon = option.icon;
-							item.dataset.id = option.id;
-							item.appendChild(Object.assign(document.createElement('span'), { textContent: option.name }));
-							item.addEventListener('click', () => {
-								demo.spectating(option.id);
-								openPanel(null);
-							});
-							return item;
-						}));
-						DDNetLoader.paintIcons(spectateMenu);
-					}
-					for (const item of spectateMenu.children) {
-						item.setAttribute('aria-checked', item.dataset.id === String(watching) ? "true" : "false");
-					}
-				}
-
-				// The page follows the demo rather than the demo telling the page:
-				// the viewer holds the main thread for as long as it draws and only
-				// lets go between frames, so asking is both simpler and cheaper
-				// than being called back.
-				setInterval(() => {
-					const length = demo.length();
-					if (length === null || length <= 0.0) {
-						bar.hidden = true;
-						return;
-					}
-					bar.hidden = false;
-					// A demo that came from somewhere else - the address, or a
-					// file dropped on the page - takes the offer away as surely
-					// as one chosen here.
-					offer(false);
-					applyLink(length);
-					const progress = demo.progress();
-					if (!seeking) {
-						seek.value = Math.round(progress * seek.max);
-					}
-					// The filled part of the bar is where the demo is: the browser
-					// draws a slider, and a strip of time is not one.
-					seek.style.setProperty('--viewer-progress', `${(seek.value / seek.max * 100).toFixed(2)}%`);
-					// What is marked out, drawn along the bar so that the piece
-					// can be seen rather than only read.
-					const clip = demo.clip();
-					seek.style.setProperty('--viewer-clip-start', `${clip === null ? 0 : (clip.start / length * 100).toFixed(2)}%`);
-					seek.style.setProperty('--viewer-clip-end', `${clip === null ? 0 : (clip.end / length * 100).toFixed(2)}%`);
-					seek.classList.toggle('viewer-seek-clipped', clip !== null);
-					clipClearButton.hidden = clip === null;
-					clipTime.hidden = clip === null;
-					if (clip !== null) {
-						clipTime.textContent = `${formatTime(clip.start)}–${formatTime(clip.end)}`;
-						clipStartButton.title = "Start the piece here (I)";
-						clipEndButton.title = "End the piece here (O)";
-					}
-					time.textContent = `${formatTime(progress * length)} / ${formatTime(length)}`;
-					speed.textContent = `${demo.speed().toFixed(2)}×`;
-					const paused = demo.paused();
-					playButton.dataset.icon = paused ? "play" : "pause";
-					playButton.title = paused ? "Play (Space)" : "Pause (Space)";
-					playButton.setAttribute('aria-label', paused ? "Play" : "Pause");
-					// Muting leaves the slider where it was rather than at
-					// nothing, because what it was is what unmuting comes back
-					// to - the same as a video player. While it is being dragged
-					// the slider is whoever is dragging it.
-					const muted = demo.muted();
-					const level = muted ? 0 : demo.volume();
-					if (document.activeElement !== volume) {
-						volume.value = Math.round(level * volume.max);
-					}
-					volume.style.setProperty('--viewer-progress', `${(volume.value / volume.max * 100).toFixed(2)}%`);
-					muteButton.dataset.icon = muted || level === 0 ? "volume_off" : "volume";
-					muteButton.title = muted ? "Unmute (M)" : "Mute (M)";
-					muteButton.setAttribute('aria-label', muted ? "Unmute" : "Mute");
-					muteButton.setAttribute('aria-pressed', muted ? "true" : "false");
-					updateSpectate();
-					// The wheel over the canvas zooms, and there is no notch
-					// counted anywhere to turn back by. The button is only
-					// there once there is something for it to undo.
-					zoomResetButton.hidden = !demo.zoomChanged();
-					// A demo carries the view of whoever recorded it, and zooming
-					// leaves that view behind. The button is only there while
-					// there is one to go back to, and says whether it is the one
-					// being followed.
-					const recorded = demo.recordedCameraAvailable();
-					cameraButton.hidden = !recorded;
-					if (recorded) {
-						const following = demo.recordedCamera();
-						cameraButton.classList.toggle('viewer-on', following);
-						cameraButton.setAttribute('aria-pressed', following ? "true" : "false");
-						cameraButton.title = following ? "Following the view the demo brought" : "Back to the view the demo brought";
-						cameraButton.setAttribute('aria-label', cameraButton.title);
-					}
-					updateLink(progress * length, demo.speed(), paused, demo.spectating());
-					// What the export is doing is asked for rather than remembered
-					// from the click: starting one in a browser returns long before
-					// the browser has an encoder, so the click itself knows nothing
-					// worth showing. While one runs the button stops it and says
-					// how far it has got.
-					const state = demo.exportState();
-					const running = state === 1;
-					exportButton.dataset.icon = running ? "stop" : "save";
-					exportButton.classList.toggle('viewer-on', running);
-					exportButton.title = running ? "Stop the export"
-						: state === 2 ? "The video was handed over"
-						: state === 3 ? "The export failed"
-						: clip !== null ? "Export the marked piece" : "Export video";
-					exportButton.setAttribute('aria-label', exportButton.title);
-					// An export that failed says why, where it was asked for.
-					if (state === 3) {
-						const reason = demo.exportError();
-						if (reason !== "" && exportMessage.textContent !== reason) {
-							say(reason);
-						}
-					}
-					// How far it has got and how much longer it has, beside the
-					// button that stops it - which is where the viewer's own bar
-					// writes it too. A time only once there is one: a rate takes
-					// a second or two to mean anything.
-					exportStatus.hidden = !running;
-					if (running) {
-						const left = demo.exportSecondsLeft();
-						const eta = left === null || left < 0 ? "" : ` · ${formatTime(left)} left`;
-						exportStatus.textContent = `${Math.round(demo.exportProgress() * 100)}%${eta}`;
-					}
-					DDNetLoader.paintIcons(bar);
-				}, 200);
 			})();
+		</script>
+		<script type="module">
+			import DDNetBase from "@ddnet/base";
+			import "@ddnet/demo-player";
+
+			// The element started the moment the import above defined it, with
+			// what the address said already on it - where to start, how fast,
+			// which piece, whose shoulder to watch over - and it built its own
+			// bar because `controls="html"` asked for one. Everything that bar
+			// does belongs to the package; what is left here is what belongs to
+			// a page.
+			//
+			// A demo is dropped onto the picture, or named as
+			// `demo.html#demo=<url>`.
+			const element = document.getElementById('viewer');
+			// A page that cannot run this at all has been told why by the
+			// element, over the picture, which is enough: there is nothing here
+			// to steer.
+			element.ready.catch(() => {});
+
+			// Nothing named in the address, so the page offers a way in of its
+			// own. A demo can be dropped onto the picture - the element takes
+			// it there - but a phone has nothing to drop with, and a file
+			// chosen here goes the same way a dropped one does.
+			const opener = document.getElementById('open');
+			const openButton = document.getElementById('open-button');
+			const openFile = document.getElementById('open-file');
+			const openMessage = document.getElementById('open-message');
+			function offer(show, message) {
+				opener.hidden = !show;
+				openMessage.textContent = message || "";
+				openMessage.hidden = !message;
+			}
+			offer(!element.hasAttribute("src"));
+			// Nothing to hand a file to until the program is running.
+			element.ready.then(() => { openButton.disabled = false; }, () => {});
+			// A demo that came from anywhere - the address, a drop, or this
+			// button - takes the offer away.
+			element.addEventListener('loadedmetadata', () => offer(false));
+			openButton.addEventListener('click', () => openFile.click());
+			openFile.addEventListener('change', async () => {
+				const file = openFile.files[0];
+				// The same file twice in a row is still a choice, and without
+				// this the second time would go unnoticed.
+				openFile.value = "";
+				if (file == null || element.controls == null) {
+					return;
+				}
+				offer(false);
+				forgetLink();
+				try {
+					await element.load(file);
+				} catch (error) {
+					offer(true, (error && error.message) || String(error));
+				}
+			});
+			// One dropped on the picture is the element's to take; the page
+			// only has to stop offering, and to stop applying a link that was
+			// about another demo.
+			document.addEventListener('drop', () => { offer(false); forgetLink(); }, true);
+
+			// What a link said is on the element, and the element is what
+			// applies it: where to start, how fast, which piece, whose shoulder
+			// to watch over. A demo that somebody opens here is not the demo
+			// the link was written about, so the link stops applying to it.
+			function forgetLink() {
+				for (const name of ["t", "end", "speed", "paused", "spec"]) {
+					element.removeAttribute(name);
+				}
+			}
+
+			// The address bar follows the demo, so that what somebody copies
+			// out of it is what they are watching: where they are, how fast,
+			// and whether it stands still. What is at its default is left out,
+			// so a link stays as short as what it says.
+			//
+			// Asked for rather than waited for: a demo that stands still sends
+			// no `timeupdate`, and a piece marked out while it stands still is
+			// exactly the thing somebody is about to copy a link to.
+			setInterval(() => {
+				const player = element.controls;
+				const length = element.duration;
+				if (player == null || !(length > 0)) {
+					return;
+				}
+				// A marked piece is what the link is about, so it says where
+				// that piece is rather than where the demo happens to stand:
+				// what somebody copies is what they marked.
+				const clip = player.clip();
+				const spectating = player.spectating();
+				DDNetBase.setUrlParameters({
+					end: clip === null ? null : Math.round(clip.end),
+					t: clip !== null ? Math.round(clip.start) : Math.round(element.currentTime),
+					speed: Math.abs(element.playbackRate - 1) < 0.005 ? null : element.playbackRate.toFixed(2),
+					paused: element.paused ? 1 : null,
+					spec: spectating >= 0 ? spectating : null,
+				});
+			}, 200);
 		</script>
 	</body>
 </html>

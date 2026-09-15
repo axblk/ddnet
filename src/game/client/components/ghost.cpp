@@ -7,6 +7,7 @@
 #include <base/process.h>
 #include <base/time.h>
 
+#include <engine/engine.h>
 #include <engine/ghost.h>
 #include <engine/graphics.h>
 #include <engine/shared/config.h>
@@ -340,7 +341,7 @@ void CGhost::ForEachGhostFrame(const CGameState &State, const CGameTickInfo &Tim
 
 	for(const auto &Ghost : m_aActiveGhosts)
 	{
-		if(Ghost.Empty())
+		if(!Ghost.Ready())
 			continue;
 
 		int GhostTick = Ghost.m_StartTick + PlaybackTick;
@@ -484,23 +485,25 @@ void CGhost::StopRender()
 	m_NewRenderTick = -1;
 }
 
-int CGhost::Load(const char *pFilename)
+CGhost::CGhostLoadJob::CGhostLoadJob(std::unique_ptr<CGhostLoader> pGhostLoader, IStorage *pStorage, const char *pFilename, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc, uint64_t Generation) :
+	CAssetJob(EAssetType::DATA, pStorage, pFilename, IStorage::TYPE_SAVE, CGameClient::ASSET_OWNER_GHOSTS, Generation),
+	m_pGhostLoader(std::move(pGhostLoader)),
+	m_MapSha256(MapSha256),
+	m_MapCrc(MapCrc)
 {
-	int Slot = GetSlot();
-	if(Slot == -1)
-		return -1;
+	str_copy(m_aMapName, pMapName);
+}
 
-	if(!GhostLoader()->Load(pFilename, GameClient()->Map()->BaseName(), GameClient()->Map()->Sha256(), GameClient()->Map()->Crc()))
-		return -1;
+void CGhost::CGhostLoadJob::Process()
+{
+	// The bytes are here already - the loader read them, wherever they came
+	// from - so all that is left is to make a ghost of them.
+	if(!m_pGhostLoader->LoadFromMemory(std::move(Data()), CAssetJob::Path(), m_aMapName, m_MapSha256, m_MapCrc))
+		return;
 
-	const CGhostInfo *pInfo = GhostLoader()->GetInfo();
-
-	// select ghost
-	CGhostItem *pGhost = &m_aActiveGhosts[Slot];
-	pGhost->Reset();
-	pGhost->m_Path.SetSize(pInfo->m_NumTicks);
-
-	str_copy(pGhost->m_aPlayer, pInfo->m_aOwner);
+	const CGhostInfo *pInfo = m_pGhostLoader->GetInfo();
+	m_Path.SetSize(pInfo->m_NumTicks);
+	str_copy(m_aPlayer, pInfo->m_aOwner);
 
 	int Index = 0;
 	bool FoundSkin = false;
@@ -509,7 +512,7 @@ int CGhost::Load(const char *pFilename)
 	bool Error = false;
 
 	int Type;
-	while(GhostLoader()->ReadNextType(&Type))
+	while(m_pGhostLoader->ReadNextType(&Type))
 	{
 		if(Index == pInfo->m_NumTicks && (Type == GHOSTDATA_TYPE_CHARACTER || Type == GHOSTDATA_TYPE_CHARACTER_NO_TICK))
 		{
@@ -520,7 +523,7 @@ int CGhost::Load(const char *pFilename)
 
 		if(Type == GHOSTDATA_TYPE_SKIN && !FoundSkin)
 		{
-			if(!GhostLoader()->ReadData(Type, &pGhost->m_Skin, sizeof(CGhostSkin)))
+			if(!m_pGhostLoader->ReadData(Type, &m_Skin, sizeof(CGhostSkin)))
 			{
 				log_error_color(LOG_COLOR_GHOST, "ghost", "Failed to read ghost data: failed to read skin");
 				Error = true;
@@ -536,7 +539,7 @@ int CGhost::Load(const char *pFilename)
 				Error = true;
 				break;
 			}
-			else if(!GhostLoader()->ReadData(Type, pGhost->m_Path.Get(Index++), sizeof(CGhostCharacter_NoTick)))
+			else if(!m_pGhostLoader->ReadData(Type, m_Path.Get(Index++), sizeof(CGhostCharacter_NoTick)))
 			{
 				log_error_color(LOG_COLOR_GHOST, "ghost", "Failed to read ghost data: failed to read ghost character (without tick)");
 				Error = true;
@@ -552,7 +555,7 @@ int CGhost::Load(const char *pFilename)
 				Error = true;
 				break;
 			}
-			else if(!GhostLoader()->ReadData(Type, pGhost->m_Path.Get(Index++), sizeof(CGhostCharacter)))
+			else if(!m_pGhostLoader->ReadData(Type, m_Path.Get(Index++), sizeof(CGhostCharacter)))
 			{
 				log_error_color(LOG_COLOR_GHOST, "ghost", "Failed to read ghost data: failed to read ghost character (with tick)");
 				Error = true;
@@ -562,7 +565,7 @@ int CGhost::Load(const char *pFilename)
 		}
 		else if(Type == GHOSTDATA_TYPE_START_TICK)
 		{
-			if(!GhostLoader()->ReadData(Type, &pGhost->m_StartTick, sizeof(int)))
+			if(!m_pGhostLoader->ReadData(Type, &m_StartTick, sizeof(int)))
 			{
 				log_error_color(LOG_COLOR_GHOST, "ghost", "Failed to read ghost data: failed to read start tick");
 				Error = true;
@@ -571,7 +574,7 @@ int CGhost::Load(const char *pFilename)
 		}
 	}
 
-	GhostLoader()->Close();
+	m_pGhostLoader->Close();
 
 	if(!Error && Index != pInfo->m_NumTicks)
 	{
@@ -581,30 +584,74 @@ int CGhost::Load(const char *pFilename)
 
 	if(Error)
 	{
-		pGhost->Reset();
-		return -1;
+		m_Path.Reset();
+		return;
 	}
 
 	if(FoundCharacterNoTick)
 	{
 		int StartTick = 0;
 		for(int i = 1; i < pInfo->m_NumTicks; i++) // estimate start tick
-			if(pGhost->m_Path.Get(i)->m_AttackTick != pGhost->m_Path.Get(i - 1)->m_AttackTick)
-				StartTick = pGhost->m_Path.Get(i)->m_AttackTick - i;
+			if(m_Path.Get(i)->m_AttackTick != m_Path.Get(i - 1)->m_AttackTick)
+				StartTick = m_Path.Get(i)->m_AttackTick - i;
 		for(int i = 0; i < pInfo->m_NumTicks; i++)
-			pGhost->m_Path.Get(i)->m_Tick = StartTick + i;
+			m_Path.Get(i)->m_Tick = StartTick + i;
 	}
 
-	if(pGhost->m_StartTick == -1)
-		pGhost->m_StartTick = pGhost->m_Path.Get(0)->m_Tick;
+	if(m_StartTick == -1)
+		m_StartTick = m_Path.Get(0)->m_Tick;
 
 	if(!FoundSkin)
 	{
-		SetGhostSkinData(&pGhost->m_Skin, "default", 0, 0, 0);
+		SetGhostSkinData(&m_Skin, "default", 0, 0, 0);
 	}
-	UpdateTeeRenderInfo(*pGhost);
+	m_Success = true;
+}
+
+int CGhost::Load(const char *pFilename)
+{
+	int Slot = GetSlot();
+	if(Slot == -1)
+		return -1;
+
+	auto pGhostLoader = std::make_unique<CGhostLoader>();
+	pGhostLoader->Init(Storage());
+
+	CGhostItem *pGhost = &m_aActiveGhosts[Slot];
+	pGhost->Reset();
+	pGhost->m_LoadResource = GameClient()->AssetLoader().Load(std::make_shared<CGhostLoadJob>(
+		std::move(pGhostLoader), Storage(), pFilename, GameClient()->Map()->BaseName(),
+		GameClient()->Map()->Sha256(), GameClient()->Map()->Crc(), m_LoadGeneration));
 
 	return Slot;
+}
+
+void CGhost::OnUpdate()
+{
+	for(int Slot = 0; Slot < MAX_ACTIVE_GHOSTS; Slot++)
+	{
+		CGhostItem &Ghost = m_aActiveGhosts[Slot];
+		if(!Ghost.m_LoadResource || !Ghost.m_LoadResource.IsFinished())
+			continue;
+
+		// Taken out of the slot: what comes of it is decided here and now, and
+		// the slot is free either way.
+		CTypedAssetResource<CGhostLoadJob> Resource = std::move(Ghost.m_LoadResource);
+		if(!Resource.IsReady(m_LoadGeneration))
+		{
+			// The slot is handed out before the file has been read, so the list
+			// entry holding it has to learn that nothing will be rendered from it.
+			GameClient()->m_Menus.OnGhostLoadFailed(Slot);
+			continue;
+		}
+
+		CGhostLoadJob &Job = Resource.Result();
+		Ghost.m_Skin = Job.Skin();
+		Ghost.m_Path = std::move(Job.GhostPath());
+		Ghost.m_StartTick = Job.StartTick();
+		str_copy(Ghost.m_aPlayer, Job.Player());
+		UpdateTeeRenderInfo(Ghost);
+	}
 }
 
 void CGhost::Unload(int Slot)
@@ -621,7 +668,7 @@ void CGhost::UnloadAll()
 void CGhost::SaveGhost(CMenus::CGhostItem *pItem)
 {
 	int Slot = pItem->m_Slot;
-	if(!pItem->Active() || pItem->HasFile() || m_aActiveGhosts[Slot].Empty() || GhostRecorder()->IsRecording())
+	if(!pItem->Active() || pItem->HasFile() || !m_aActiveGhosts[Slot].Ready() || GhostRecorder()->IsRecording())
 		return;
 
 	CGhostItem *pGhost = &m_aActiveGhosts[Slot];
@@ -717,11 +764,16 @@ void CGhost::OnReset()
 void CGhost::OnShutdown()
 {
 	OnReset();
+	UnloadAll();
 }
 
 void CGhost::OnMapLoad()
 {
 	OnReset();
+	// Whatever is still being read belongs to the map before this one, and a
+	// ghost of that map has no business on this one.
+	++m_LoadGeneration;
+	GameClient()->AssetLoader().AbortOwnerBeforeGeneration(CGameClient::ASSET_OWNER_GHOSTS, m_LoadGeneration);
 	UnloadAll();
 	GameClient()->m_Menus.GhostlistPopulate();
 	m_AllowRestart = false;

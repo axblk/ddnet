@@ -1,9 +1,20 @@
 {
     "font files": [
-        "DejaVuSans.ttf",
-        "Font_Awesome_6_Free-Solid-900.otf",
-        "GlowSansJ-Compressed-Book.otf",
-        "SourceHanSans.ttc"
+        "DejaVuSans.ttf"
+    ],
+    "deferred font files": [
+        {
+            "file": "Font_Awesome_6_Free-Solid-900.otf",
+            "families": ["Font Awesome 6 Free"]
+        },
+        {
+            "file": "GlowSansJ-Compressed-Book.otf",
+            "families": ["Glow Sans J Compressed Book"]
+        },
+        {
+            "file": "SourceHanSans.ttc",
+            "families": ["Source Han Sans", "Source Han Sans J", "Source Han Sans K", "Source Han Sans SC", "Source Han Sans TC"]
+        }
     ],
     "default": "DejaVu Sans",
     "language variants": {

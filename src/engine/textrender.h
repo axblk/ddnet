@@ -9,6 +9,7 @@
 #include <engine/graphics.h>
 
 #include <cstdint>
+#include <functional>
 
 enum
 {
@@ -199,7 +200,31 @@ public:
 		uint64_t m_UploadBytes = 0;
 	};
 
-	virtual bool LoadFonts() = 0;
+	/**
+	 * Waits until the fonts, which `IEngineTextRender::Init` started loading in
+	 * the background, are usable.
+	 *
+	 * Drawing or measuring text before this waits for the fonts as well, so text
+	 * is never drawn without glyphs. Call this at the point where the startup is
+	 * supposed to wait for the fonts instead of an arbitrary later one.
+	 *
+	 * @param Pump Called between two looks at the fonts, for whoever is waiting
+	 * to keep their own work moving. A client that fetches its files waits here
+	 * for the length of a request, and everything that arrives in that time
+	 * would otherwise sit and wait for the wait to be over.
+	 *
+	 * @return `true` if all fonts were loaded, `false` if any of them failed.
+	 */
+	virtual bool WaitForFonts(const std::function<void()> &Pump = {}) = 0;
+	/**
+	 * Takes the font files that the client did not wait for, once they have
+	 * been read. Called once per frame.
+	 *
+	 * @return `true` if font faces were added, which means text drawn before
+	 * this was drawn without them. The caller has to drop its text containers
+	 * then, the way it does for a language change.
+	 */
+	virtual bool Update() = 0;
 	virtual void SetFontPreset(EFontPreset FontPreset) = 0;
 	virtual void SetFontLanguageVariant(const char *pLanguageFile) = 0;
 

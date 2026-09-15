@@ -409,7 +409,7 @@ public:
 
 	bool ConnectionProblems(CSessionId SessionId, CStreamId StreamId) const override;
 
-	IGraphics::CTextureHandle GetDebugFont() const override { return m_DebugFont; }
+	IGraphics::CTextureHandle GetDebugFont() override;
 
 	void SendInput(CSessionId SessionId);
 
@@ -454,8 +454,6 @@ public:
 	const CServerInfo &ServerInfo(CSessionId SessionId) const override { return SessionSource(SessionId).ServerInfo(); }
 	void RequestServerInfo(CSessionId SessionId);
 	void SetSessionServerInfo(CSessionId SessionId, const CServerInfo &ServerInfo);
-
-	void LoadDebugFont();
 
 	// ---
 

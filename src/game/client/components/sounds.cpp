@@ -3,6 +3,8 @@
 
 #include "sounds.h"
 
+#include <base/dbg.h>
+#include <base/log.h>
 #include <base/mem.h>
 #include <base/time.h>
 
@@ -17,34 +19,64 @@
 #include <game/client/gameclient.h>
 #include <game/localization.h>
 
-CSoundLoading::CSoundLoading(CGameClient *pGameClient, bool Render) :
-	m_pGameClient(pGameClient),
-	m_Render(Render)
+CSoundLoading::CSoundLoading(ISound *pSound, IStorage *pStorage, int Lane, int NumLanes, int OwnerId, uint64_t Generation) :
+	CAssetJob(EAssetType::SOUND, std::vector<uint8_t>(), "audio", OwnerId, Generation),
+	m_pSound(pSound),
+	m_pStorage(pStorage),
+	m_Lane(Lane),
+	m_NumLanes(NumLanes)
 {
-	Abortable(true);
+	dbg_assert(pSound != nullptr, "Sound must not be null");
+	dbg_assert(pStorage != nullptr, "Storage must not be null");
+	dbg_assert(Lane >= 0 && Lane < NumLanes, "Invalid sound loading lane");
 }
 
-void CSoundLoading::Run()
+CSoundLoading::~CSoundLoading()
 {
-	for(int s = 0; s < g_pData->m_NumSounds; s++)
+	for(const CResult &Result : m_vResults)
 	{
-		const char *pLoadingCaption = Localize("Loading DDNet Client");
-		const char *pLoadingContent = Localize("Loading sound files");
+		if(Result.m_SampleId != -1)
+			m_pSound->UnloadSample(Result.m_SampleId);
+	}
+}
 
-		for(int i = 0; i < g_pData->m_aSounds[s].m_NumSounds; i++)
+void CSoundLoading::Process()
+{
+	// Reading a hundred files to hand them to a sound system that is switched
+	// off would be work for nothing.
+	if(!m_pSound->IsSoundEnabled())
+	{
+		m_Completed = true;
+		return;
+	}
+	std::vector<uint8_t> vData;
+	for(int SetId = m_Lane; SetId < g_pData->m_NumSounds; SetId += m_NumLanes)
+	{
+		for(int SoundId = 0; SoundId < g_pData->m_aSounds[SetId].m_NumSounds; SoundId++)
 		{
 			if(State() == IJob::STATE_ABORTED)
 				return;
-
-			int Id = m_pGameClient->Sound()->LoadWV(g_pData->m_aSounds[s].m_aSounds[i].m_pFilename);
-			g_pData->m_aSounds[s].m_aSounds[i].m_Id = Id;
-			// try to render a frame
-			if(m_Render)
-				m_pGameClient->m_Menus.RenderLoading(pLoadingCaption, pLoadingContent, 0);
+			const char *pFilename = g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_pFilename;
+			vData.clear();
+			int SampleId = -1;
+			if(ReadFile(m_pStorage, pFilename, IStorage::TYPE_ALL, vData))
+				SampleId = m_pSound->LoadWVFromMem(vData.data(), static_cast<unsigned>(vData.size()), false, pFilename);
+			else
+				log_error("sound", "Failed to open/read sound file '%s'", pFilename);
+			m_NumLoaded += SampleId != -1;
+			m_vResults.push_back({SetId, SoundId, SampleId});
 		}
+	}
+	m_Completed = true;
+}
 
-		if(m_Render)
-			m_pGameClient->m_Menus.RenderLoading(pLoadingCaption, pLoadingContent, 1);
+void CSoundLoading::Commit()
+{
+	dbg_assert(m_Completed, "Cannot commit unfinished sound load job");
+	for(CResult &Result : m_vResults)
+	{
+		g_pData->m_aSounds[Result.m_SetId].m_aSounds[Result.m_SoundId].m_Id = Result.m_SampleId;
+		Result.m_SampleId = -1;
 	}
 }
 
@@ -82,7 +114,7 @@ void CSounds::UpdateChannels()
 
 int CSounds::GetSampleId(int SetId)
 {
-	if(!g_Config.m_SndEnable || !Sound()->IsSoundEnabled() || m_WaitForSoundJob || SetId < 0 || SetId >= g_pData->m_NumSounds)
+	if(!g_Config.m_SndEnable || !Sound()->IsSoundEnabled() || SetId < 0 || SetId >= g_pData->m_NumSounds)
 		return -1;
 
 	CDataSoundset *pSet = &g_pData->m_aSounds[SetId];
@@ -106,20 +138,51 @@ void CSounds::OnInit()
 {
 	UpdateChannels();
 	ClearQueue();
+	m_SoundBatchStart = time_get();
+	m_NumSoundSamplesLoaded = 0;
+	m_NumSoundJobsFinished = 0;
+	for(int SetId = 0; SetId < g_pData->m_NumSounds; ++SetId)
+	{
+		for(int SoundId = 0; SoundId < g_pData->m_aSounds[SetId].m_NumSounds; ++SoundId)
+			g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_Id = -1;
+	}
 
 	// load sounds
 	if(g_Config.m_ClThreadsoundloading)
 	{
-		m_pSoundJob = std::make_shared<CSoundLoading>(GameClient(), false);
-		GameClient()->Engine()->AddJob(m_pSoundJob);
+		for(size_t Lane = 0; Lane < m_aSoundResources.size(); ++Lane)
+		{
+			m_aSoundResources[Lane] = GameClient()->AssetLoader().Load(std::make_shared<CSoundLoading>(Sound(), Storage(), static_cast<int>(Lane), static_cast<int>(m_aSoundResources.size()), CGameClient::ASSET_OWNER_STARTUP_SOUNDS, m_LoadGeneration));
+		}
 		m_WaitForSoundJob = true;
 		GameClient()->m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Loading sound files"), 0);
 	}
 	else
 	{
-		CSoundLoading(GameClient(), true).Run();
+		for(int SetId = 0; SetId < g_pData->m_NumSounds; ++SetId)
+		{
+			CSoundLoading SoundLoading(Sound(), Storage(), SetId, g_pData->m_NumSounds, CGameClient::ASSET_OWNER_STARTUP_SOUNDS, m_LoadGeneration);
+			SoundLoading.Run();
+			SoundLoading.Commit();
+			m_NumSoundSamplesLoaded += SoundLoading.NumLoaded();
+			++m_NumSoundJobsFinished;
+			GameClient()->m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Loading sound files"), 1);
+		}
 		m_WaitForSoundJob = false;
+		log_info("asset_loader", "Startup sound batch: jobs=%d loaded=%d wall=%.2fms", m_NumSoundJobsFinished, m_NumSoundSamplesLoaded,
+			(time_get() - m_SoundBatchStart) * 1000.0 / time_freq());
 	}
+}
+
+void CSounds::OnShutdown()
+{
+	++m_LoadGeneration;
+	for(auto &Resource : m_aSoundResources)
+	{
+		Resource.Abort();
+		Resource.Reset();
+	}
+	m_WaitForSoundJob = false;
 }
 
 void CSounds::OnReset()
@@ -142,10 +205,34 @@ void CSounds::Update(std::optional<vec2> ListenerPosition)
 	// check for sound initialisation
 	if(m_WaitForSoundJob)
 	{
-		if(m_pSoundJob->State() == IJob::STATE_DONE)
-			m_WaitForSoundJob = false;
-		else
-			return;
+		bool Waiting = false;
+		for(auto &Resource : m_aSoundResources)
+		{
+			if(!Resource)
+				continue;
+			if(Resource.IsReady(m_LoadGeneration))
+			{
+				CSoundLoading &SoundLoading = Resource.Result();
+				m_NumSoundSamplesLoaded += SoundLoading.NumLoaded();
+				++m_NumSoundJobsFinished;
+				SoundLoading.Commit();
+				Resource.Reset();
+			}
+			else if(Resource.IsFinished())
+			{
+				Resource.Reset();
+			}
+			else
+			{
+				Waiting = true;
+			}
+		}
+		m_WaitForSoundJob = Waiting;
+		if(!m_WaitForSoundJob)
+		{
+			log_info("asset_loader", "Startup sound batch: jobs=%d loaded=%d wall=%.2fms", m_NumSoundJobsFinished, m_NumSoundSamplesLoaded,
+				(time_get() - m_SoundBatchStart) * 1000.0 / time_freq());
+		}
 	}
 
 	if(ListenerPosition.has_value())
@@ -210,7 +297,7 @@ void CSounds::PlayAt(int Channel, int SetId, float Volume, vec2 Position)
 
 void CSounds::Stop(int SetId)
 {
-	if(m_WaitForSoundJob || SetId < 0 || SetId >= g_pData->m_NumSounds)
+	if(SetId < 0 || SetId >= g_pData->m_NumSounds)
 		return;
 
 	const CDataSoundset *pSet = &g_pData->m_aSounds[SetId];
@@ -221,7 +308,7 @@ void CSounds::Stop(int SetId)
 
 bool CSounds::IsPlaying(int SetId)
 {
-	if(m_WaitForSoundJob || SetId < 0 || SetId >= g_pData->m_NumSounds)
+	if(SetId < 0 || SetId >= g_pData->m_NumSounds)
 		return false;
 
 	const CDataSoundset *pSet = &g_pData->m_aSounds[SetId];

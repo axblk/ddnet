@@ -4695,10 +4695,14 @@ void CGameClient::OnSkinUpdate(const char *pSkinName)
 		return false;
 	};
 
+	// Tees without their own skin wear the default one, which is fetched late,
+	// so its arrival concerns them too.
+	const bool IsDefault = str_comp(pSkinName, "default") == 0;
+
 	for(std::shared_ptr<CManagedTeeRenderInfo> &pManagedTeeRenderInfo : m_vpManagedTeeRenderInfos)
 	{
 		if(!(pManagedTeeRenderInfo->SkinDescriptor().m_Flags & CSkinDescriptor::FLAG_SIX) ||
-			!NameMatches(pManagedTeeRenderInfo->SkinDescriptor().m_aSkinName))
+			!(IsDefault || NameMatches(pManagedTeeRenderInfo->SkinDescriptor().m_aSkinName)))
 		{
 			continue;
 		}

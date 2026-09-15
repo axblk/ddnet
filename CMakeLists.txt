@@ -2704,6 +2704,8 @@ set_src(GAME_MAP GLOB_RECURSE src/game/map
   document/map_file.h
   document/map_state.h
   document/shared_list.h
+  document/structure.cpp
+  document/structure.h
   document/tile_store.h
   document_source.cpp
   document_source.h
@@ -4488,6 +4490,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     snapshot_test.cpp
     sound_test.cpp
     str_test.cpp
+    structure_test.cpp
     swap_endian_test.cpp
     teehistorian_test.cpp
     test.cpp

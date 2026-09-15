@@ -13,11 +13,25 @@
 
 enum
 {
-	LAYERRENDERFLAG_OPAQUE = 1,
-	LAYERRENDERFLAG_TRANSPARENT = 2,
-
 	OVERLAYRENDERFLAG_TEXT = 1,
 	OVERLAYRENDERFLAG_EDITOR = 2,
+};
+
+/**
+ * A rectangle in world coordinates that everything it belongs to stays inside,
+ * so it can be dropped when the screen does not touch it.
+ */
+class CClipRegion
+{
+public:
+	CClipRegion() = default;
+	CClipRegion(float X, float Y, float Width, float Height) :
+		m_X(X), m_Y(Y), m_Width(Width), m_Height(Height) {}
+
+	float m_X;
+	float m_Y;
+	float m_Width;
+	float m_Height;
 };
 
 class IEnvelopePointAccess
@@ -77,7 +91,6 @@ public:
 
 	// map render methods (render_map.cpp)
 	static void RenderEvalEnvelope(const IEnvelopePointAccess *pPoints, std::chrono::nanoseconds TimeNanos, ColorRGBA &Result, size_t Channels);
-	void ForceRenderQuads(CQuad *pQuads, int NumQuads, int Flags, const IEnvelopeEval *pEnvEval, float Alpha = 1.0f);
 	void RenderTile(int x, int y, unsigned char Index, float Scale, ColorRGBA Color);
 
 	// DDRace

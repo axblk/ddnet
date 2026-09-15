@@ -98,7 +98,19 @@ bool CMap::Load(const char *pFullName, IStorage *pStorage, const char *pPath, in
 	CDataFileReader NewDataFile;
 	if(!NewDataFile.Open(pFullName, pStorage, pPath, StorageType))
 		return false;
+	return ValidateAndTake(NewDataFile);
+}
 
+bool CMap::LoadFromMemory(const char *pFullName, std::vector<uint8_t> vData, const char *pPath)
+{
+	CDataFileReader NewDataFile;
+	if(!NewDataFile.OpenFromMemory(pFullName, std::move(vData), pPath))
+		return false;
+	return ValidateAndTake(NewDataFile);
+}
+
+bool CMap::ValidateAndTake(CDataFileReader &NewDataFile)
+{
 	if(!ValidateMapVersion(NewDataFile))
 	{
 		NewDataFile.Close();
@@ -222,9 +234,9 @@ bool CMap::IsLoaded() const
 	return m_DataFile.IsOpen();
 }
 
-IOHANDLE CMap::File() const
+const unsigned char *CMap::MapData() const
 {
-	return m_DataFile.File();
+	return m_DataFile.FileData();
 }
 
 const char *CMap::FullName() const

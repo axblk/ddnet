@@ -1,5 +1,7 @@
 #include "test.h"
 
+#include <base/io.h>
+
 #include <engine/shared/datafile.h>
 #include <engine/storage.h>
 
@@ -126,6 +128,7 @@ static std::vector<uint8_t> WriteRawDataTestFile(IStorage *pStorage, const char 
 	EXPECT_TRUE(Writer.Open(pStorage, pFilename));
 	EXPECT_EQ(Writer.AddData(vData.size(), vData.data()), 0);
 	EXPECT_EQ(Writer.AddDataString("Abc"), 1);
+	EXPECT_EQ(Writer.AddData(vData.size(), vData.data()), 2);
 	Writer.Finish();
 	return vData;
 }
@@ -158,6 +161,83 @@ TEST(Datafile, RawData)
 	const std::unique_ptr<uint8_t[]> pLoadedRawData = LoadedRawData.Uncompress();
 	ASSERT_NE(pLoadedRawData, nullptr);
 	EXPECT_STREQ(reinterpret_cast<const char *>(pLoadedRawData.get()), "Abc");
+
+	// Raw data outlives the reader
+	Reader.Close();
+	const std::unique_ptr<uint8_t[]> pClosedRawData = RawData.Uncompress();
+	ASSERT_NE(pClosedRawData, nullptr);
+	EXPECT_TRUE(std::equal(vData.begin(), vData.end(), pClosedRawData.get()));
+
+	EXPECT_TRUE(pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE));
+}
+
+TEST(Datafile, ReadsAfterTheFileIsGone)
+{
+	std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	ASSERT_NE(pStorage, nullptr) << "Error creating local storage";
+	CTestInfo Info;
+	const std::vector<uint8_t> vData = WriteRawDataTestFile(pStorage.get(), Info.m_aFilename);
+
+	CDataFileReader Reader;
+	ASSERT_TRUE(Reader.Open(pStorage.get(), Info.m_aFilename, IStorage::TYPE_ALL));
+	const int FileSize = Reader.Size();
+	ASSERT_GT(FileSize, 0);
+
+	// The reader must not go back to the file
+	{
+		IOHANDLE OverwriteFile = pStorage->OpenFile(Info.m_aFilename, IOFLAG_WRITE, IStorage::TYPE_SAVE);
+		ASSERT_NE(OverwriteFile, nullptr);
+		const std::vector<uint8_t> vZeros(FileSize, 0);
+		EXPECT_EQ(io_write(OverwriteFile, vZeros.data(), vZeros.size()), vZeros.size());
+		io_close(OverwriteFile);
+	}
+
+	const void *pLoadedData = Reader.GetData(0);
+	ASSERT_NE(pLoadedData, nullptr);
+	ASSERT_EQ(Reader.GetDataSize(0), (int)vData.size());
+	EXPECT_TRUE(std::equal(vData.begin(), vData.end(), static_cast<const uint8_t *>(pLoadedData)));
+	EXPECT_STREQ(Reader.GetDataString(1), "Abc");
+
+	CDataFileRawData RawData;
+	ASSERT_TRUE(Reader.GetRawData(2, RawData));
+	ASSERT_EQ(RawData.UncompressedSize(), vData.size());
+	const std::unique_ptr<uint8_t[]> pRawData = RawData.Uncompress();
+	ASSERT_NE(pRawData, nullptr);
+	EXPECT_TRUE(std::equal(vData.begin(), vData.end(), pRawData.get()));
+
+	// Windows refuses to remove a file that is still open
+	EXPECT_TRUE(pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE));
+
+	Reader.Close();
+}
+
+TEST(Datafile, OpenFromMemory)
+{
+	std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	ASSERT_NE(pStorage, nullptr) << "Error creating local storage";
+	CTestInfo Info;
+	const std::vector<uint8_t> vData = WriteRawDataTestFile(pStorage.get(), Info.m_aFilename);
+
+	void *pFileData;
+	unsigned FileSize;
+	ASSERT_TRUE(pStorage->ReadFile(Info.m_aFilename, IStorage::TYPE_ALL, &pFileData, &FileSize));
+	const std::vector<uint8_t> vFileData(static_cast<uint8_t *>(pFileData), static_cast<uint8_t *>(pFileData) + FileSize);
+	free(pFileData);
+
+	CDataFileReader Reader;
+	ASSERT_TRUE(Reader.OpenFromMemory("memory_map", vFileData, "memory"));
+	EXPECT_STREQ(Reader.FullName(), "memory_map");
+	EXPECT_STREQ(Reader.Path(), "memory");
+	EXPECT_EQ(Reader.Size(), (int)FileSize);
+
+	const void *pLoadedData = Reader.GetData(0);
+	ASSERT_NE(pLoadedData, nullptr);
+	ASSERT_EQ(Reader.GetDataSize(0), (int)vData.size());
+	EXPECT_TRUE(std::equal(vData.begin(), vData.end(), static_cast<const uint8_t *>(pLoadedData)));
+	EXPECT_STREQ(Reader.GetDataString(1), "Abc");
+
+	CDataFileReader TruncatedReader;
+	EXPECT_FALSE(TruncatedReader.OpenFromMemory("memory_map", std::vector<uint8_t>(vFileData.begin(), vFileData.begin() + FileSize / 2), "memory"));
 
 	Reader.Close();
 	EXPECT_TRUE(pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE));

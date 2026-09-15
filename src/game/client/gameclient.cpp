@@ -5550,10 +5550,17 @@ void CGameClient::OnSkinUpdate(const char *pSkinName)
 		return false;
 	};
 
+	// Everybody who is not wearing what they asked for is wearing the default
+	// one, so the default arriving is news for all of them - and it arrives
+	// late, because skins are fetched rather than read before anything is
+	// shown. Matching by name alone would leave those tees with the
+	// placeholder for as long as they live.
+	const bool IsDefault = str_comp(pSkinName, "default") == 0;
+
 	for(std::shared_ptr<CManagedTeeRenderInfo> &pManagedTeeRenderInfo : m_vpManagedTeeRenderInfos)
 	{
 		if(!(pManagedTeeRenderInfo->SkinDescriptor().m_Flags & CSkinDescriptor::FLAG_SIX) ||
-			!NameMatches(pManagedTeeRenderInfo->SkinDescriptor().m_aSkinName))
+			!(IsDefault || NameMatches(pManagedTeeRenderInfo->SkinDescriptor().m_aSkinName)))
 		{
 			continue;
 		}

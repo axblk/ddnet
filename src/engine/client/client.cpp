@@ -5392,17 +5392,6 @@ static bool SaveUnknownCommandCallback(const char *pCommand, void *pUser)
 	return true;
 }
 
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
-extern "C" {
-
-// This will be called from Emscripten JS code
-void EmscriptenCallbackQuitForce()
-{
-	emscripten_force_exit(-1);
-}
-}
-#endif
-
 /*
 	Server Time
 	Client Mirror Time

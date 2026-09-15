@@ -145,11 +145,17 @@ int main(int argc, const char **argv)
 			}
 			pVideoPath = argv[++Index];
 		}
+		else if(str_comp(argv[Index], "--no-controls") == 0)
+		{
+			pClient->SetShowControls(false);
+		}
 		else if(str_comp(argv[Index], "--help") == 0)
 		{
-			log_info("client", "Usage: ddnet-demo-viewer [<demo>] [--output <video.mp4>] [settings]");
+			log_info("client", "Usage: ddnet-demo-viewer [<demo>] [--output <video.mp4>] [--no-controls] [settings]");
 			log_info("client", "Anything else is a console command, so `cl_video_width 1920` and the");
 			log_info("client", "rest of the cl_ settings work here just as they do in the client.");
+			log_info("client", "The viewer draws its own controls over the demo, which --no-controls");
+			log_info("client", "leaves off for whoever brings their own.");
 			log_info("client", "Space pauses, the arrow keys seek and change the speed, Home starts");
 			log_info("client", "over and Escape closes the window. A demo dropped on the window");
 			log_info("client", "replaces the one that is playing, and is what the viewer waits for");

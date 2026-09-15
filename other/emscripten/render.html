@@ -23,11 +23,13 @@
 			     page and the demo viewer ask for the same things in the same
 			     words. -->
 			<div id="settings">
+				<label id="follow-choice" title="A demo a server recorded has nobody who recorded it, so without this the camera stands still.">Follow <input id="follow" type="text" placeholder="player or id" size="10"></label>
 				<label id="folder-choice" hidden><input id="folder" type="checkbox" checked> Save into a folder</label>
 			</div>
 			<div id="actions">
 				<button id="start" disabled>Render</button>
 				<button id="stop" style="display: none">Stop</button>
+				<button id="save-all" style="display: none">Save all as zip</button>
 				<span id="summary"></span>
 			</div>
 			<ul id="queue"></ul>
@@ -48,17 +50,31 @@
 				const summary = document.getElementById('summary');
 				const errorLine = document.getElementById('error');
 				const folderChoice = document.getElementById('folder-choice');
+				const followChoice = document.getElementById('follow-choice');
+				const followInput = document.getElementById('follow');
 				const folderCheckbox = document.getElementById('folder');
+				const saveAllButton = document.getElementById('save-all');
 				// The folder choice belongs to this page rather than to the
 				// export, so it stays where it is and the rest goes in front
 				// of it.
 				const settingsForm = DDNetLoader.exportSettingsForm(
 					document.getElementById('settings'), { audio: true });
-				document.getElementById('settings').appendChild(folderChoice);
+				document.getElementById('settings').append(followChoice, folderChoice);
 				const jobs = [];
 				var running = false;
 				var stopping = false;
+				// The job being rendered and the render itself: the row knows
+				// which one it is, and stopping it is the render's to do.
 				var current = null;
+				var currentRender = null;
+
+				// Stops the render that is going. What has been written of its
+				// video stays where it was written.
+				function stopCurrent() {
+					if (currentRender != null && currentRender.quit) {
+						currentRender.quit();
+					}
+				}
 
 				// Writing the videos straight into a folder is the better way
 				// round for a batch - no download per file, nothing kept in
@@ -87,6 +103,86 @@
 					});
 				}
 
+				// The demos that are still to do, kept so that a reload - or a
+				// tab that fell over in the middle of a batch of twenty - does
+				// not mean finding and dropping all of them again. What is kept
+				// is the demo itself, because a file a browser was handed is
+				// gone as soon as the page that was handed it is; a job is
+				// forgotten as soon as it is rendered or taken off the list.
+				const QUEUE_DATABASE = "ddnet-render-queue";
+				const QUEUE_STORE = "demos";
+				// Whoever queues more than this has a disk for it and this page
+				// is not the place to keep a copy of all of it.
+				const QUEUE_LIMIT = 512 * 1024 * 1024;
+				var queueBytes = 0;
+				// What was dropped first is rendered first, and that has to
+				// survive a reload as well: the keys are strings and come back
+				// sorted as strings, which is not the order anybody dropped
+				// them in.
+				var queueOrder = 0;
+				function queueDatabase() {
+					return new Promise((resolve, reject) => {
+						const request = indexedDB.open(QUEUE_DATABASE, 1);
+						request.onupgradeneeded = () => request.result.createObjectStore(QUEUE_STORE, { keyPath: "id" });
+						request.onsuccess = () => resolve(request.result);
+						request.onerror = () => reject(request.error);
+					});
+				}
+
+				async function withQueue(mode, work) {
+					try {
+						const database = await queueDatabase();
+						const store = database.transaction(QUEUE_STORE, mode).objectStore(QUEUE_STORE);
+						const result = await new Promise((resolve, reject) => {
+							const request = work(store);
+							request.onsuccess = () => resolve(request.result);
+							request.onerror = () => reject(request.error);
+						});
+						database.close();
+						return result;
+					} catch (error) {
+						// No storage, no permission, or no room: the queue then
+						// lives only as long as the page does, which is how it
+						// was before there was any of this.
+						return null;
+					}
+				}
+
+				function rememberJob(job) {
+					if (queueBytes + job.file.size > QUEUE_LIMIT) {
+						return;
+					}
+					queueBytes += job.file.size;
+					job.remembered = true;
+					job.order = queueOrder++;
+					withQueue("readwrite", store => store.put({ id: job.id, order: job.order, file: job.file }));
+				}
+
+				function forgetJob(job) {
+					if (!job.remembered) {
+						return;
+					}
+					job.remembered = false;
+					queueBytes = Math.max(queueBytes - job.file.size, 0);
+					withQueue("readwrite", store => store.delete(job.id));
+				}
+
+				async function restoreJobs() {
+					const kept = await withQueue("readonly", store => store.getAll());
+					for (const entry of (kept || []).sort((left, right) => left.order - right.order)) {
+						// A file kept this way comes back as the file it was,
+						// name and all, so the row reads the same as it did.
+						const job = addJob(entry.file, entry.id);
+						if (job === null) {
+							continue;
+						}
+						job.remembered = true;
+						job.order = entry.order;
+						queueOrder = Math.max(queueOrder, entry.order + 1);
+						queueBytes += entry.file.size;
+					}
+				}
+
 				function formatTime(seconds) {
 					if (!isFinite(seconds) || seconds < 0) {
 						return "";
@@ -95,9 +191,9 @@
 					return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 				}
 
-				function addJob(file) {
+				function addJob(file, id) {
 					if (!file.name.endsWith(".demo") || jobs.some(job => job.file === file)) {
-						return;
+						return null;
 					}
 					const row = document.createElement('li');
 					const name = document.createElement('span');
@@ -115,21 +211,37 @@
 					remove.title = "Take off the list";
 					row.append(name, progress, status, remove);
 					queueList.appendChild(row);
-					const job = { file, row, progress, status, remove, done: false };
+					const job = { file, row, progress, status, remove, done: false, id: id || `${Date.now()}-${Math.random().toString(36).slice(2)}` };
+					// Any of them, at any time. The one that is being rendered
+					// is stopped where it is - what has been written of its
+					// video stays written, and the batch goes on with the next.
 					remove.addEventListener('click', () => {
-						if (job.done || !running) {
-							jobs.splice(jobs.indexOf(job), 1);
-							row.remove();
-							updateSummary();
+						job.removed = true;
+						jobs.splice(jobs.indexOf(job), 1);
+						row.remove();
+						forgetJob(job);
+						if (job === current) {
+							stopCurrent();
 						}
+						updateSummary();
 					});
 					jobs.push(job);
+					if (id === undefined) {
+						rememberJob(job);
+					}
 					updateSummary();
+					return job;
 				}
 
 				function updateSummary() {
 					const waiting = jobs.filter(job => !job.done).length;
 					startButton.disabled = running || waiting === 0 || problem !== null;
+					// One file to save instead of one prompt per video, once
+					// there is more than one to save. Videos written straight
+					// into a folder are already where they belong.
+					const finished = jobs.filter(job => job.video != null);
+					saveAllButton.style.display = finished.length > 1 ? "inline-block" : "none";
+					saveAllButton.textContent = `Save all ${finished.length} as zip`;
 					summary.textContent = jobs.length === 0 ? "" :
 						`${jobs.length} ${jobs.length === 1 ? "demo" : "demos"}, ${waiting} to go`;
 				}
@@ -137,7 +249,43 @@
 				// Everything the renderer is told, read off the form once per
 				// run so that a change mid-run does not apply to half of it.
 				function settings() {
-					return settingsForm.values();
+					return Object.assign(settingsForm.values(), { follow: followInput.value.trim() });
+				}
+
+				// What the page's own address says about how to render, so that
+				// a link can carry a set of settings somebody worked out once.
+				// Only what is not the default is written, so the address stays
+				// as short as what it actually says.
+				const defaults = settings();
+				function applyLink() {
+					const number = name => {
+						const value = parseFloat(DDNetLoader.urlParameter(name));
+						return isFinite(value) ? value : undefined;
+					};
+					const flag = name => {
+						const value = DDNetLoader.urlParameter(name);
+						return value === null ? undefined : value === "1";
+					};
+					settingsForm.setValues({
+						width: number("width"), height: number("height"), fps: number("fps"),
+						crf: number("crf"), codec: DDNetLoader.urlParameter("codec") || undefined,
+						audio: flag("audio"), hud: flag("hud"), chat: flag("chat"),
+					});
+					const follow = DDNetLoader.urlParameter("follow");
+					if (follow !== null) {
+						followInput.value = follow;
+					}
+				}
+
+				function updateLink() {
+					const chosen = settings();
+					const values = {};
+					for (const name of ["width", "height", "fps", "crf", "codec", "audio", "hud", "chat", "follow"]) {
+						const value = chosen[name];
+						const same = value === defaults[name] || (value == null && defaults[name] == null);
+						values[name] = same ? null : (typeof value === "boolean" ? (value ? 1 : 0) : value);
+					}
+					DDNetLoader.setUrlParameters(values);
 				}
 
 				function videoName(demoName) {
@@ -165,7 +313,7 @@
 						name: job.file.name,
 						output: name,
 						videoSink: sink,
-						onStart: instance => { current = instance; },
+						onStart: instance => { currentRender = instance; },
 						onOutput: (message, kind) => {
 							if (kind.error) {
 								lastError = message;
@@ -190,6 +338,8 @@
 					// Without a folder to write into there is only the download
 					// the browser offers, and it is offered rather than taken:
 					// a browser refuses a handful of downloads nobody asked for.
+					job.video = video;
+					job.name = name;
 					const link = document.createElement('a');
 					link.href = URL.createObjectURL(video);
 					link.download = name;
@@ -219,22 +369,37 @@
 					stopButton.style.display = "inline-block";
 					const options = settings();
 					updateSummary();
-					for (const job of jobs) {
+					// By index rather than by the list itself: a job may be taken
+					// off it while this runs, including the one being rendered.
+					for (var i = 0; i < jobs.length; ++i) {
+						const job = jobs[i];
 						if (stopping) {
 							break;
 						}
 						if (job.done) {
 							continue;
 						}
+						current = job;
 						try {
 							await renderJob(job, options, directory);
+							forgetJob(job);
 						} catch (error) {
-							job.status.textContent = stopping ? "Stopped" : `Failed: ${(error && error.message) || error}`;
-							job.status.className = "status failed";
-							job.progress.style.visibility = "hidden";
+							// A job that was taken off the list took its row
+							// with it, so there is nothing left to say about it.
+							if (!job.removed) {
+								job.status.textContent = stopping ? "Stopped" : `Failed: ${(error && error.message) || error}`;
+								job.status.className = "status failed";
+								job.progress.style.visibility = "hidden";
+							}
 						}
 						job.done = true;
 						current = null;
+						currentRender = null;
+						// The one that was here may be gone, and then this index
+						// already points at the next one.
+						if (jobs[i] !== job) {
+							--i;
+						}
 						updateSummary();
 					}
 					running = false;
@@ -243,6 +408,31 @@
 					updateSummary();
 				}
 
+				saveAllButton.addEventListener('click', async () => {
+					const finished = jobs.filter(job => job.video != null);
+					saveAllButton.disabled = true;
+					saveAllButton.textContent = "Packing…";
+					try {
+						// The names are what each video is already offered
+						// under, so a zip holds what the list says it holds.
+						const archive = await DDNetLoader.zip(
+							finished.map(job => ({ name: job.name, blob: job.video })));
+						const link = document.createElement('a');
+						link.href = URL.createObjectURL(archive);
+						link.download = "videos.zip";
+						link.click();
+						setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+						saveAllButton.disabled = false;
+						updateSummary();
+					} catch (error) {
+						// Too much for one zip, so they stay one download each.
+						// Said after the summary is written, because writing it
+						// is what would otherwise take this straight back off.
+						saveAllButton.disabled = false;
+						updateSummary();
+						summary.textContent = (error && error.message) || String(error);
+					}
+				});
 				startButton.addEventListener('click', () => {
 					if (!running) {
 						runQueue();
@@ -251,11 +441,7 @@
 				stopButton.addEventListener('click', () => {
 					stopping = true;
 					stopButton.disabled = true;
-					// The render that is going stops where it is; what has been
-					// written of its video stays where it was written.
-					if (current != null && current.quit) {
-						current.quit();
-					}
+					stopCurrent();
 					setTimeout(() => { stopButton.disabled = false; }, 1000);
 				});
 				document.getElementById('choose').addEventListener('click', () => fileInput.click());
@@ -285,6 +471,11 @@
 				for (const name of ["dragover", "drop"]) {
 					document.addEventListener(name, event => event.preventDefault());
 				}
+
+				applyLink();
+				settingsForm.onChange(updateLink);
+				followInput.addEventListener('change', updateLink);
+				restoreJobs();
 			})();
 		</script>
 	</body>

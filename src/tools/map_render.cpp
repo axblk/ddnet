@@ -145,8 +145,7 @@ int main(int argc, const char **argv)
 		RenderParams.m_Center = AutoPosition ? MapWorldSize / 2.0f : Position * 32.0f;
 		RenderParams.m_Zoom = Zoom;
 		RenderParams.m_TimeOffsetMillis = TimeOffsetMillis;
-		View.Render(RenderParams);
-		Saved = View.SaveImage(OutputFile.c_str());
+		Saved = View.SaveImage(RenderParams, OutputFile.c_str());
 	}
 
 	int ReturnCode = 1;

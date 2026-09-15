@@ -13,6 +13,7 @@
 
 #include <memory>
 
+class CGameClient;
 class IEngineGraphics;
 class IEngineGraphicsWindow;
 class IEngineSound;
@@ -51,9 +52,22 @@ protected:
 	std::unique_ptr<IVideo> m_pVideo;
 	CVideoExportSettings m_Settings;
 	char m_aDemoPath[IO_MAX_PATH_LENGTH] = "";
+	// Who to follow once the demo names them, empty when nobody was asked for
+	// by name or the one who was has been found.
+	char m_aPendingSpectateName[MAX_NAME_LENGTH] = "";
 	char m_aVideoPath[IO_MAX_PATH_LENGTH] = "";
 	char m_aError[256] = "";
 	int64_t m_LastRenderTime = 0;
+
+	/**
+	 * The game client as what it is, rather than as the interface the engine
+	 * talks to it through.
+	 *
+	 * A program built on this links the whole game client and is the only
+	 * thing steering it, so what it asks of the camera and of the spectating
+	 * it asks directly instead of widening an interface for one caller.
+	 */
+	CGameClient *Game() const;
 
 	IEngineGraphics *Graphics() { return m_pGraphics; }
 	IEngineSound *Sound() { return m_pSound; }
@@ -97,6 +111,56 @@ protected:
 	virtual void OnExportFrame() {}
 
 public:
+	/**
+	 * Who the demo is watched over the shoulder of: a client id, `SPEC_FREEVIEW`
+	 * for a camera of one's own, or `SPEC_FOLLOW` for whoever the demo was
+	 * recorded by. A demo of a server has nobody to follow, so it starts in the
+	 * free view and this is how one of the players is picked instead.
+	 */
+	int Spectating() const;
+	void SetSpectate(int SpectatorId);
+	/**
+	 * Moves on to the next player there is, or the one before, and past the end
+	 * of them back to the free view. What a bar with two buttons on it offers,
+	 * and what the keys do.
+	 *
+	 * @param Direction 1 for the next, -1 for the one before.
+	 */
+	void SpectateStep(int Direction);
+	/**
+	 * Follows whoever is called this, as soon as the demo has named them. A
+	 * name is what somebody knows before the demo is open; which client id it
+	 * belongs to is only in the demo.
+	 */
+	void SetSpectateName(const char *pName);
+	/**
+	 * Looks again for a player that was asked for by name. Does nothing once
+	 * one was found, or when none was asked for.
+	 */
+	void UpdatePendingSpectate();
+	/**
+	 * What the player of a client id is called, or `nullptr` where the demo has
+	 * no such player.
+	 */
+	const char *SpectatePlayerName(int ClientId) const;
+
+	/**
+	 * Moves the free view, in world units. Does nothing while a player is being
+	 * followed, because then the view is theirs.
+	 */
+	void MoveFreeView(vec2 Offset);
+	/**
+	 * Multiplies how much of the world is in the window, which a wheel or a pair
+	 * of buttons does one notch at a time.
+	 */
+	void ScaleZoom(float Factor);
+	float Zoom() const;
+	/**
+	 * How wide one pixel of the window is in the world, so that what is dragged
+	 * moves with the pointer at any zoom.
+	 */
+	float WorldPerPixel() const;
+
 	CDemoClientBase();
 	~CDemoClientBase() override;
 

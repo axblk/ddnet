@@ -117,6 +117,55 @@ namespace map_document
 		}
 
 		/**
+		 * Fills the store from a plain array of `Width() * Height()` tiles, row
+		 * by row, the way a map file holds them.
+		 *
+		 * A square that holds nothing but air is left as no block at all, so a
+		 * map that is mostly air costs what it holds rather than what it spans -
+		 * and a file written with runs of air in it comes out the way it went
+		 * in, because only a tile that is zero in every byte counts as air.
+		 */
+		void SetAll(const TTile *pTiles)
+		{
+			m_pDirectory = nullptr;
+			if(pTiles == nullptr)
+				return;
+			for(int ChunkY = 0; ChunkY < m_ChunksDown; ++ChunkY)
+			{
+				for(int ChunkX = 0; ChunkX < m_ChunksAcross; ++ChunkX)
+				{
+					const int Left = ChunkX * CHUNK_SIZE;
+					const int Top = ChunkY * CHUNK_SIZE;
+					const int Wide = std::min(CHUNK_SIZE, m_Width - Left);
+					const int High = std::min(CHUNK_SIZE, m_Height - Top);
+					const TTile *pFirst = pTiles + (size_t)Top * m_Width + Left;
+					if(IsAllAir(pFirst, Wide, High, m_Width))
+						continue;
+					CChunk *pChunk = MutableChunk(ChunkX, ChunkY);
+					for(int y = 0; y < High; ++y)
+					{
+						std::memcpy(pChunk->m_aTiles + (size_t)y * CHUNK_SIZE, pFirst + (size_t)y * m_Width, (size_t)Wide * sizeof(TTile));
+					}
+				}
+			}
+		}
+
+		/**
+		 * Writes the store back out as that same plain array, which is what a
+		 * map file wants; where the store has no block, the array gets air.
+		 */
+		void CopyTo(TTile *pTiles) const
+		{
+			for(int y = 0; y < m_Height; ++y)
+			{
+				for(int x = 0; x < m_Width; ++x)
+				{
+					pTiles[(size_t)y * m_Width + x] = Get(x, y);
+				}
+			}
+		}
+
+		/**
 		 * The block a piece of the layer lies in, to be read straight out of, or
 		 * `nullptr` where that piece is nothing but air.
 		 *
@@ -262,6 +311,18 @@ namespace map_document
 		{
 			static const CChunk s_Air;
 			return std::memcmp(Chunk.m_aTiles, s_Air.m_aTiles, sizeof(s_Air.m_aTiles)) == 0;
+		}
+
+		/** Whether a piece of a plain tile array is air all the way through. */
+		static bool IsAllAir(const TTile *pTiles, int Wide, int High, int Stride)
+		{
+			static const TTile s_aAir[CHUNK_SIZE] = {};
+			for(int y = 0; y < High; ++y)
+			{
+				if(std::memcmp(pTiles + (size_t)y * Stride, s_aAir, (size_t)Wide * sizeof(TTile)) != 0)
+					return false;
+			}
+			return true;
 		}
 
 		size_t ChunkIndex(int ChunkX, int ChunkY) const { return (size_t)ChunkY * m_ChunksAcross + ChunkX; }

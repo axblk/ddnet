@@ -116,6 +116,10 @@ public:
 		/** Arrows to all four sides: a camera that is nobody's to follow. */
 		FREEVIEW,
 		FULLSCREEN,
+		/** A speaker with sound coming out of it. */
+		VOLUME,
+		/** The same speaker with a cross through it, for sound that is off. */
+		VOLUME_OFF,
 	};
 
 	/**

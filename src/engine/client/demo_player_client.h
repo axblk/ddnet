@@ -51,6 +51,7 @@ public:
 		CONTROL_KEY_SPEED_UP,
 		CONTROL_KEY_SPEED_DOWN,
 		CONTROL_KEY_RESTART,
+		CONTROL_KEY_MUTE,
 		CONTROL_KEY_FREE_VIEW,
 		CONTROL_KEY_SPECTATE_NEXT,
 		CONTROL_KEY_SPECTATE_PREVIOUS,
@@ -100,6 +101,11 @@ private:
 	// it was between one export and the next.
 	bool m_ExportAudio = true;
 	int m_ExportFps = 60;
+	// What a link asked for, applied to the demo this was given as soon as it
+	// is open and before it has played anything. See `SetStartTime`.
+	float m_StartTime = -1.0f;
+	float m_StartSpeed = 0.0f;
+	bool m_StartPaused = false;
 	// Dragging along the seek bar stops the demo where the pointer puts it,
 	// and lets it go on afterwards only if it was going on before.
 	bool m_Seeking = false;
@@ -187,6 +193,20 @@ public:
 	 */
 	void SetZoomEnabled(bool Enabled) { m_ZoomEnabled = Enabled; }
 	bool ZoomEnabled() const { return m_ZoomEnabled; }
+
+	/**
+	 * Where in the demo to start, how fast, and whether to stand still there.
+	 *
+	 * A link names a place in a demo, and whoever follows it means to arrive
+	 * there - not to watch the beginning until whatever opened the viewer gets
+	 * round to seeking. That is what these are for: they are applied to the
+	 * demo the viewer was given before it has played a frame of it.
+	 *
+	 * A negative time and a speed of zero mean nothing was asked for.
+	 */
+	void SetStartTime(float Seconds) { m_StartTime = Seconds; }
+	void SetStartSpeed(float Speed) { m_StartSpeed = Speed; }
+	void SetStartPaused(bool Paused) { m_StartPaused = Paused; }
 
 	/**
 	 * How big to draw, in the units the window is measured in. A viewer in a

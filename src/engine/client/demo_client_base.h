@@ -60,6 +60,9 @@ protected:
 	// by name or the one who was has been found.
 	char m_aPendingSpectateName[MAX_NAME_LENGTH] = "";
 	char m_aVideoPath[IO_MAX_PATH_LENGTH] = "";
+	// What the volume would be if it were not muted, so that turning the sound
+	// back on lands where it was. Zero means nothing is muted.
+	int m_VolumeBeforeMute = 0;
 	char m_aError[256] = "";
 	int64_t m_LastRenderTime = 0;
 
@@ -161,6 +164,21 @@ public:
 	 * particular, so one of them has to be picked.
 	 */
 	bool ServerDemo() const;
+
+	/**
+	 * How loud what is being watched is, between 0 and 1. The same setting the
+	 * client keeps as `snd_volume`, said the way a page says it - and while it
+	 * is muted, how loud it would be if it were not.
+	 */
+	float Volume() const;
+	void SetVolume(float Volume);
+	/**
+	 * Whether the sound is off. Muting is not the same as turning the volume
+	 * down to nothing: what it was is remembered, so that turning it back on
+	 * is one press rather than a guess.
+	 */
+	bool Muted() const;
+	void SetMuted(bool Muted);
 
 	/**
 	 * Moves the free view, in world units. Does nothing while a player is being

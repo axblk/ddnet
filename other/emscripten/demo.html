@@ -9,11 +9,31 @@
 		<script src="coi-serviceworker.js"></script>
 		<link rel="stylesheet" href="ddnet-page.css">
 		<link rel="stylesheet" href="ddnet-viewer.css">
+		<!-- The packages by their own names, which is how a page that installed
+		     them from a registry would say them. Here they sit beside this page
+		     rather than under `node_modules`, and this is what says so - the
+		     code below is the same either way. -->
+		<script type="importmap">
+		{
+			"imports": {
+				"ddnet-loader": "./ddnet-loader.js",
+				"@ddnet/demo-player": "./demo-player.js"
+			}
+		}
+		</script>
+		<!-- The module fetches the program itself, which is one round trip
+		     after this page has been read. Saying so here starts it with the
+		     rest of them instead. -->
+		<link rel="preload" as="script" href="ddnet-demo-player.js" crossorigin>
 	</head>
 	<body>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<div id="error" style="display: none"></div>
 		<canvas id="canvas">Canvas not supported.</canvas>
+		<!-- A viewer is black until it has a demo to draw, and fetching one over
+		     a slow line takes long enough for that to look broken rather than
+		     busy. -->
+		<p id="loading" class="viewer-loading" role="status" hidden>Loading…</p>
 		<!-- Nothing named in the address, so nothing to show yet. A file can be
 		     dropped onto the page, and a phone has nothing to drop with, so it
 		     can be chosen here as well. -->
@@ -57,6 +77,12 @@
 				<div class="viewer-row">
 					<button id="play" class="viewer-button" data-icon="pause" title="Pause (Space)" aria-label="Pause"></button>
 					<button id="restart" class="viewer-button" data-icon="restart" title="Back to the start (Home)" aria-label="Back to the start"></button>
+					<!-- How loud, where every video player puts it. The slider
+					     sits behind the button until the pointer is on it. -->
+					<div class="viewer-volume">
+						<button id="mute" class="viewer-button" data-icon="volume" title="Mute (M)" aria-label="Mute" aria-pressed="false"></button>
+						<input id="volume" class="viewer-volume-slider" type="range" min="0" max="100" value="100" step="1" aria-label="Volume">
+					</div>
 					<span id="time" class="viewer-readout">0:00 / 0:00</span>
 					<span class="viewer-spacer"></span>
 					<button id="slower" class="viewer-button viewer-optional" data-icon="minus" title="Slower (Down arrow)" aria-label="Slower"></button>
@@ -71,24 +97,44 @@
 				</div>
 			</div>
 		</div>
-		<script src="ddnet-demo-player.js"></script>
 		<script type="module">
-			import DDNetLoader from "./ddnet-loader.js";
+			import DDNetLoader from "ddnet-loader";
+			import { demoPlayerPage, demoControls } from "@ddnet/demo-player";
+
+			// Where in the demo to start, how fast and whether to stand still
+			// there: what the address says, handed to the viewer before it
+			// plays anything rather than asked for once the page gets a turn.
+			// The page only gets one after the viewer has started, and by then
+			// the demo has played the seconds that took.
+			const linkTime = parseFloat(DDNetLoader.urlParameter("t"));
+			const linkSpeed = parseFloat(DDNetLoader.urlParameter("speed"));
+			const linkStart = {
+				startTime: isFinite(linkTime) && linkTime > 0 ? linkTime : undefined,
+				speed: isFinite(linkSpeed) && linkSpeed > 0 ? linkSpeed : undefined,
+				paused: DDNetLoader.urlParameter("paused") === "1",
+			};
+			// Only for a demo the viewer is given at the start. One dropped in
+			// later brings its own beginning, and the address said nothing
+			// about it.
+			const startFromLink = DDNetLoader.urlParameter("demo") !== null;
 
 			// A demo is dropped onto the window, or named as `demo.html#demo=<url>`.
-			const started = DDNetLoader.page({
-				module: DDNetDemoPlayer,
-				programName: "Demo player",
-				accept: [".demo"],
+			const started = demoPlayerPage(Object.assign(startFromLink ? linkStart : {}, {
 				// The page has a bar of its own over the canvas, so the viewer
 				// leaves off the one it would draw itself.
 				controls: false,
 				urlParams: ["demo"],
+				// A demo player writes nothing that outlives the tab: no
+				// settings, no recording, no screenshot. Without this it would
+				// mount IndexedDB over its home directory and read it back at
+				// every start for the sake of a directory that stays empty.
+				persist: false,
 				elements: {
 					canvas: document.getElementById('canvas'),
 					error: document.getElementById('error'),
+					loading: document.getElementById('loading'),
 				},
-			});
+			}));
 
 			// What the bar does. The viewer answers to the keyboard as well, but a
 			// page shows no key bindings and nobody would go looking for them, so
@@ -100,6 +146,8 @@
 				const canvas = document.getElementById('canvas');
 				const playButton = document.getElementById('play');
 				const seek = document.getElementById('seek');
+				const muteButton = document.getElementById('mute');
+				const volume = document.getElementById('volume');
 				const time = document.getElementById('time');
 				const speed = document.getElementById('speed');
 				const zoomResetButton = document.getElementById('zoom-reset');
@@ -158,13 +206,25 @@
 				// call has to survive being made outside of that: until there is
 				// one, and once there is no longer one, they all answer `null`.
 				var viewer = null;
-				const demo = DDNetLoader.demoControls({
+				const demo = demoControls({
 					call: (name, returnType, argTypes, args) =>
 						viewer == null ? null : viewer.call(name, returnType, argTypes, args),
 				});
 				// A page that cannot run this at all has been told why once
 				// already, which is enough: there is nothing here to steer.
 				started.then(instance => { viewer = instance; }, () => {});
+
+				// Something to look at while the program and the demo are on
+				// their way. Only where there is a demo on the way: a page with
+				// nothing named in its address offers a way in instead, and
+				// that is not a wait.
+				const loadingMessage = document.getElementById('loading');
+				function sayLoading() {
+					DDNetLoader.loadingHint(loadingMessage, () => demo.length() > 0);
+				}
+				if (DDNetLoader.urlParameter("demo") !== null) {
+					sayLoading();
+				}
 
 				// Nothing named in the address, so the page offers a way in of
 				// its own. A demo can be dropped onto the picture - the loader
@@ -212,7 +272,10 @@
 						return;
 					}
 					linkApplied = true;
-					const startTime = parseFloat(DDNetLoader.urlParameter("t"));
+					// What the viewer was started with is already where it
+					// should be; seeking a paused demo again would only cost a
+					// frame.
+					const startTime = startFromLink ? NaN : parseFloat(DDNetLoader.urlParameter("t"));
 					if (isFinite(startTime) && startTime > 0) {
 						demo.seekTime(Math.min(startTime, length));
 					}
@@ -228,11 +291,11 @@
 							demo.spectateName(startSpectate);
 						}
 					}
-					const startSpeed = parseFloat(DDNetLoader.urlParameter("speed"));
+					const startSpeed = startFromLink ? NaN : parseFloat(DDNetLoader.urlParameter("speed"));
 					if (isFinite(startSpeed) && startSpeed > 0) {
 						demo.speed(startSpeed);
 					}
-					if (DDNetLoader.urlParameter("paused") === "1") {
+					if (!startFromLink && DDNetLoader.urlParameter("paused") === "1") {
 						demo.pause();
 					}
 				}
@@ -263,6 +326,17 @@
 					}
 				});
 				document.getElementById('restart').addEventListener('click', () => demo.restart());
+				// Dragging the slider says how loud, and a slider dragged to
+				// nothing is the same thing as muting - so that what the button
+				// then says is what the slider shows.
+				muteButton.addEventListener('click', () => demo.muted(!demo.muted()));
+				volume.addEventListener('input', () => {
+					const level = volume.value / volume.max;
+					demo.muted(level === 0);
+					if (level > 0) {
+						demo.volume(level);
+					}
+				});
 				document.getElementById('slower').addEventListener('click', () => demo.speed(demo.speed() / 1.25));
 				document.getElementById('faster').addEventListener('click', () => demo.speed(demo.speed() * 1.25));
 
@@ -423,6 +497,20 @@
 					playButton.dataset.icon = paused ? "play" : "pause";
 					playButton.title = paused ? "Play (Space)" : "Pause (Space)";
 					playButton.setAttribute('aria-label', paused ? "Play" : "Pause");
+					// Muting leaves the slider where it was rather than at
+					// nothing, because what it was is what unmuting comes back
+					// to - the same as a video player. While it is being dragged
+					// the slider is whoever is dragging it.
+					const muted = demo.muted();
+					const level = muted ? 0 : demo.volume();
+					if (document.activeElement !== volume) {
+						volume.value = Math.round(level * volume.max);
+					}
+					volume.style.setProperty('--viewer-progress', `${(volume.value / volume.max * 100).toFixed(2)}%`);
+					muteButton.dataset.icon = muted || level === 0 ? "volume_off" : "volume";
+					muteButton.title = muted ? "Unmute (M)" : "Mute (M)";
+					muteButton.setAttribute('aria-label', muted ? "Unmute" : "Mute");
+					muteButton.setAttribute('aria-pressed', muted ? "true" : "false");
 					updateSpectate();
 					// The wheel over the canvas zooms, and there is no notch
 					// counted anywhere to turn back by. The button is only

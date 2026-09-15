@@ -134,6 +134,58 @@ const char *CDemoClientBase::SpectatePlayerName(int ClientId) const
 	return Client.m_Active ? Client.m_aName : nullptr;
 }
 
+// The client keeps one number for this, `snd_volume`, counted in hundredths.
+// A page counts between nothing and one, the way every other volume on the web
+// is counted, so the conversion happens here rather than in every caller.
+float CDemoClientBase::Volume() const
+{
+	// While it is muted this is what it would be if it were not, the way a
+	// `<video>` keeps its volume across being muted: the two are separate
+	// things, and a page that draws a slider from this must not see it fall to
+	// nothing and back.
+	const int Volume = Muted() ? m_VolumeBeforeMute : g_Config.m_SndVolume;
+	return std::clamp(Volume, 0, 100) / 100.0f;
+}
+
+void CDemoClientBase::SetVolume(float Volume)
+{
+	const int Level = std::clamp((int)(Volume * 100.0f + 0.5f), 0, 100);
+	// Saying how loud it should be while it is muted says how loud it will be
+	// when it is not; it does not turn the sound back on by itself.
+	if(Muted() && Level > 0)
+	{
+		m_VolumeBeforeMute = Level;
+		return;
+	}
+	g_Config.m_SndVolume = Level;
+	m_VolumeBeforeMute = 0;
+}
+
+bool CDemoClientBase::Muted() const
+{
+	return g_Config.m_SndVolume == 0;
+}
+
+void CDemoClientBase::SetMuted(bool Muted)
+{
+	if(Muted == this->Muted())
+	{
+		return;
+	}
+	if(Muted)
+	{
+		m_VolumeBeforeMute = g_Config.m_SndVolume;
+		g_Config.m_SndVolume = 0;
+	}
+	else
+	{
+		// Something has to come back, and a volume that was never anything is
+		// a button that appears to do nothing.
+		g_Config.m_SndVolume = m_VolumeBeforeMute > 0 ? m_VolumeBeforeMute : 30;
+		m_VolumeBeforeMute = 0;
+	}
+}
+
 void CDemoClientBase::MoveFreeView(vec2 Offset)
 {
 	// Only the free view is anybody's to move. While a player is followed the

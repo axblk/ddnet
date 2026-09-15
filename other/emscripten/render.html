@@ -9,6 +9,22 @@
 		<script src="coi-serviceworker.js"></script>
 		<link rel="stylesheet" href="ddnet-page.css">
 		<link rel="stylesheet" href="ddnet-render.css">
+		<!-- The packages by their own names, which is how a page that installed
+		     them from a registry would say them. Here they sit beside this page
+		     rather than under `node_modules`, and this is what says so - the
+		     code below is the same either way. -->
+		<script type="importmap">
+		{
+			"imports": {
+				"ddnet-loader": "./ddnet-loader.js",
+				"@ddnet/demo-renderer": "./demo-renderer.js"
+			}
+		}
+		</script>
+		<!-- The module fetches the program itself, which is one round trip
+		     after this page has been read. Saying so here starts it with the
+		     rest of them instead. -->
+		<link rel="preload" as="script" href="ddnet-demo-render.js" crossorigin>
 	</head>
 	<body>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
@@ -34,9 +50,9 @@
 			</div>
 			<ul id="queue"></ul>
 		</div>
-		<script src="ddnet-demo-render.js"></script>
 		<script type="module">
-			import DDNetLoader from "./ddnet-loader.js";
+			import DDNetLoader from "ddnet-loader";
+			import { renderDemo } from "@ddnet/demo-renderer";
 
 			// Demos are collected first and rendered afterwards, one after the
 			// other: a render uses everything the machine has, so two at once
@@ -306,10 +322,7 @@
 					}
 					const started = performance.now();
 					var lastError = null;
-					const video = await DDNetLoader.render(Object.assign({}, options, {
-						module: DDNetDemoRenderer,
-						moduleName: "DDNetDemoRenderer",
-						scriptUrl: "ddnet-demo-render.js",
+					const video = await renderDemo(Object.assign({}, options, {
 						demo: job.file,
 						name: job.file.name,
 						output: name,

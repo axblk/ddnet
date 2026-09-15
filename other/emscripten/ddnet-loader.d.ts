@@ -77,6 +77,21 @@ export interface StartOptions {
 	 * `zoom(factor)` works either way.
 	 */
 	zoom?: boolean;
+	/**
+	 * Which way round to turn a phone while the viewer's own button fills the
+	 * screen. Nothing is turned unless this says so; `"landscape"` is what a
+	 * page that wants the most of a wide picture asks for.
+	 */
+	orientation?: OrientationLockType | "any";
+	/**
+	 * Where in the demo to start, in seconds, how fast, and whether to stand
+	 * still there. Handed to the demo player before it plays anything: a page
+	 * that asks for the same thing afterwards only gets a turn once the viewer
+	 * runs, and by then the demo has played the seconds that took.
+	 */
+	startTime?: number;
+	speed?: number;
+	paused?: boolean;
 	/** Anything else for the command line. */
 	arguments?: string[];
 	/** Where the program's script is, for one that is not beside the page. */
@@ -85,7 +100,12 @@ export interface StartOptions {
 	dataBase?: string;
 	/** Whether what this draws needs WebGPU, which only a render does. */
 	needsWebGpu?: boolean;
-	/** Whether what the user writes is kept between visits. On by default. */
+	/**
+	 * Whether what the program writes is kept between visits, in IndexedDB
+	 * under the home directory. On by default, which is what the full client
+	 * wants; a viewer that writes nothing worth keeping says `false` and saves
+	 * itself the mount and the read-back.
+	 */
 	persist?: boolean;
 	/** Where the next video goes, without asking for it each time. */
 	videoSink?: VideoSinkSource;
@@ -186,59 +206,6 @@ export declare class Instance extends EventTarget {
 }
 
 /** What a demo player can be asked and told. */
-export interface DemoControls {
-	setSize(width: number, height: number): void;
-	length(): number | null;
-	progress(): number | null;
-	paused(): boolean;
-	play(): void;
-	pause(): void;
-	seek(fraction: number): void;
-	seekTime(seconds: number): void;
-	restart(): void;
-	speed(value?: number): number | null;
-	exporting(): boolean;
-	exportState(): number | null;
-	exportProgress(): number | null;
-	exportSecondsLeft(): number | null;
-	exportError(): string;
-	cancelExport(): void;
-	spectating(id?: number): number | null;
-	spectateName(name: string): void;
-	spectateStep(direction: number): void;
-	players(): { id: number; name: string }[];
-	zoom(factor?: number): number | null;
-	/** Puts the zoom back where the demo started. */
-	resetZoom(): void;
-	/** Whether there is anything for `resetZoom` to put back. */
-	zoomChanged(): boolean;
-	/** Whether the viewer zooms on the wheel, the zoom keys and a pinch. */
-	zoomEnabled(enable?: boolean): boolean | void;
-	recordedCameraAvailable(): boolean;
-	recordedCamera(use?: boolean): boolean | void;
-	controls(show?: boolean): boolean | void;
-	startExport(options?: VideoSettings): boolean;
-}
-
-/** What a map viewer can be asked and told. Everything is in tiles. */
-export interface MapControls {
-	setSize(width: number, height: number): void;
-	loaded(): boolean;
-	fit(): void;
-	size(): { width: number; height: number } | null;
-	center(x?: number, y?: number): { x: number; y: number } | null | void;
-	tilesAcross(tiles?: number): number | null;
-	zoomBy(factor: number): void;
-	highDetail(on?: boolean): boolean | void;
-	entities(on?: boolean): boolean | void;
-	exportView(): void;
-	exportFullMap(): void;
-	exportState(): number | null;
-	exportProgress(): number | null;
-	controls(show?: boolean): boolean | void;
-}
-
-/** Anything that can be called into, which is an `Instance` or a stand-in. */
 export interface Callable {
 	call(name: string, returnType?: string | null, argTypes?: string[], args?: unknown[]): any;
 }
@@ -263,6 +230,12 @@ export interface AutoHideHandle {
 export interface FullscreenOptions {
 	/** What to fill the screen with, the page itself otherwise. */
 	element?: Element;
+	/**
+	 * Which way round to turn a phone while the screen is filled. Nothing is
+	 * turned unless this says so; anything the Screen Orientation API takes
+	 * may be said, `"landscape"` being the one a wide picture wants.
+	 */
+	orientation?: OrientationLockType | "any";
 	signal?: AbortSignal;
 }
 
@@ -289,8 +262,6 @@ export declare const version: string;
 export declare function start(options: StartOptions): Promise<Instance>;
 export declare function page(options: PageOptions): Promise<Instance>;
 export declare function render(options: RenderOptions): Promise<File | Blob | null>;
-export declare function demoControls(instance: Callable): DemoControls;
-export declare function mapControls(instance: Callable): MapControls;
 export declare function supportProblem(needsWebGpu?: boolean): Promise<string | null>;
 export declare function fullscreen(button: HTMLElement, options?: FullscreenOptions): { supported: boolean };
 export declare function fullscreenSupported(): boolean;
@@ -299,54 +270,51 @@ export declare function toggleFullscreen(options?: FullscreenOptions): void;
 export declare function icon(name: string): SVGElement | null;
 export declare function paintIcons(root: ParentNode): void;
 export declare function autoHide(elements: Element | Element[], options?: AutoHideOptions): AutoHideHandle;
+export interface LoadingHintOptions {
+	/** What it says, `"Loading…"` otherwise; `null` leaves the text alone. */
+	text?: string | null;
+	/** How long to wait before giving up on it, 60000 ms otherwise. */
+	until?: number;
+	signal?: AbortSignal;
+}
+
+export declare function loadingHint(element: HTMLElement, isThere: () => boolean, options?: LoadingHintOptions): { stop(): void };
 export declare function followSize(element: Element, controls: { setSize(width: number, height: number): void }, options?: { signal?: AbortSignal }): { stop(): void };
 export declare function exportSettingsForm(container: HTMLElement, options?: ExportSettingsFormOptions): ExportSettingsForm;
 export declare function videoCodecs(): Promise<VideoCodec[]>;
 export declare function urlParameter(name: string): string | null;
 export declare function setUrlParameters(values: Record<string, string | null>): void;
 export declare function zip(entries: { name: string; data: Uint8Array }[]): Blob;
+/**
+ * How long a viewer element waits for a file before it gives up saying that it
+ * is on its way, in milliseconds.
+ */
+export declare const waitForFile: number;
 
 /**
- * A viewer as an element:
- *
- * ```html
- * <ddnet-demo src="https://…/x.demo" controls></ddnet-demo>
- * <ddnet-map src="https://…/x.map" controls x="120" y="64" tiles="90"></ddnet-map>
- * ```
+ * What a viewer package builds its element on: a canvas in a shadow root, a
+ * message over it, and a program started on it as soon as the element is in a
+ * page. `@ddnet/demo-player` makes `<ddnet-demo>` out of this and
+ * `@ddnet/map-viewer` makes `<ddnet-map>`.
  *
  * The picture lives in a shadow root, so nothing here shares a name with the
  * page around it. What may be styled from outside is named: `::part(picture)`
- * and `::part(message)`. The attributes beyond `src` are the ones the viewer
- * pages spell in their address, and they are applied as soon as the file they
- * belong to is there.
+ * and `::part(message)`.
  */
 export declare class ViewerElement extends HTMLElement {
 	/** The running program, or what stopped it from starting. */
 	readonly ready: Promise<Instance> | null;
-	/** The viewer's own controls, and `null` before it runs. */
-	readonly controls: DemoControls | MapControls | null;
+	/**
+	 * The viewer's own controls, and `null` before it runs. What they are is
+	 * the package's to say: `DemoControls` for `<ddnet-demo>`, `MapControls`
+	 * for `<ddnet-map>`.
+	 */
+	readonly controls: unknown;
 	/** Shows a file rather than a name to fetch. */
 	load(file: File): Promise<string>;
 	/** Puts a line over the picture, or takes it away again with `""`. */
 	say(message: string): void;
 }
-
-/** `<ddnet-demo>`: `src`, `controls`, `nozoom`, `t`, `speed`, `paused`, `spec`. */
-export declare class DemoElement extends ViewerElement {
-	readonly controls: DemoControls | null;
-}
-
-/** `<ddnet-map>`: `src`, `controls`, `x`, `y`, `tiles`. */
-export declare class MapElement extends ViewerElement {
-	readonly controls: MapControls | null;
-}
-
-/**
- * Defines `<ddnet-demo>` and `<ddnet-map>`, which this module does for itself
- * as it loads. Here for a page that takes them off and wants them back, and
- * harmless twice.
- */
-export declare function defineViewerElements(): void;
 
 /**
  * The program's script as a module, which a plain `import` cannot do with it:
@@ -362,8 +330,6 @@ declare const DDNetLoader: {
 	start: typeof start;
 	page: typeof page;
 	render: typeof render;
-	demoControls: typeof demoControls;
-	mapControls: typeof mapControls;
 	supportProblem: typeof supportProblem;
 	fullscreen: typeof fullscreen;
 	fullscreenSupported: typeof fullscreenSupported;
@@ -373,14 +339,14 @@ declare const DDNetLoader: {
 	paintIcons: typeof paintIcons;
 	autoHide: typeof autoHide;
 	followSize: typeof followSize;
+	loadingHint: typeof loadingHint;
 	exportSettingsForm: typeof exportSettingsForm;
 	videoCodecs: typeof videoCodecs;
 	urlParameter: typeof urlParameter;
 	setUrlParameters: typeof setUrlParameters;
 	zip: typeof zip;
-	DemoElement: typeof DemoElement;
-	MapElement: typeof MapElement;
-	defineViewerElements: typeof defineViewerElements;
+	ViewerElement: typeof ViewerElement;
+	waitForFile: typeof waitForFile;
 	importProgram: typeof importProgram;
 };
 export default DDNetLoader;

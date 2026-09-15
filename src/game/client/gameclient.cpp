@@ -3532,7 +3532,15 @@ void CGameClient::BuildSnapState(CSessionId SessionId, int Conn)
 	}
 	if(SessionId == Client()->DemoSessionId())
 	{
-		if(Snap.m_LocalClientId == -1 && m_DemoSpecId == SPEC_FOLLOW)
+		// A demo of a server is of nobody in particular, so there is nobody to
+		// follow and one of the players has to be picked instead - which is
+		// what this does, once and for the rest of the demo.
+		//
+		// A snapshot with no players in it at all says nothing about that. One
+		// turns up while a demo is being sought through, and taking it for a
+		// demo without a local player left whoever asked for a time in a link
+		// watching from the free view for good, with no way back but the keys.
+		if(Snap.m_NumPlayers > 0 && Snap.m_LocalClientId == -1 && m_DemoSpecId == SPEC_FOLLOW)
 		{
 			// TODO: can this be done in the translation layer?
 			if(!Client()->IsSixup(SessionId))

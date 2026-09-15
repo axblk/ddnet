@@ -166,6 +166,17 @@ public:
 	float FullImageProgress() const;
 
 	/**
+	 * Finishes the frame that was drawn and reads it back off the graphics
+	 * card. Where there is a window, this is also what puts the frame on it.
+	 *
+	 * @param Image Where the frame is put. What is handed in is reused when it
+	 * already has the size and the format of the frame, and freed otherwise.
+	 *
+	 * @return `true` on success, `false` after reporting what went wrong.
+	 */
+	bool ReadFrame(CImageInfo &Image);
+
+	/**
 	 * Draws one frame of the view beside the window, without the viewer's
 	 * controls, and writes it as a PNG.
 	 *
@@ -204,6 +215,8 @@ public:
 	int Height() const { return m_Height; }
 
 	IStorage *Storage() { return m_pStorage.get(); }
+	/** Who reads and decodes what is not the map itself. */
+	CAssetLoader *AssetLoader() { return &m_AssetLoader; }
 	IGraphics *Graphics();
 	IEngineGraphicsWindow *Window() { return m_pWindow; }
 	IKernel *Kernel() { return m_pKernel.get(); }
@@ -216,16 +229,6 @@ private:
 	void CancelFullImage();
 	/** Deletes a picture that could not be written to its end. */
 	void RemoveUnfinishedImage(const char *pPath);
-	/**
-	 * Finishes the frame that was drawn and reads it back off the graphics
-	 * card. Where there is a window, this is also what puts the frame on it.
-	 *
-	 * @param Image Where the frame is put. What is handed in is reused when it
-	 * already has the size and the format of the frame, and freed otherwise.
-	 *
-	 * @return `true` on success, `false` after reporting what went wrong.
-	 */
-	bool ReadFrame(CImageInfo &Image);
 	/**
 	 * Draws one frame into a texture of the view's own and reads that back, so
 	 * that nothing of it reaches the window. Without a window there is nothing

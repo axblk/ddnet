@@ -515,7 +515,11 @@ namespace map_document
 				Group.m_OffsetY = pItem->m_OffsetY;
 				Group.m_ParallaxX = pItem->m_ParallaxX;
 				Group.m_ParallaxY = pItem->m_ParallaxY;
-				if(pItem->m_Version >= 2 && ItemSize >= (int)sizeof(CMapItemGroup))
+				// The clip arrived with version 2 and the name with version 3,
+				// so a version 2 item is the whole thing minus the name -
+				// asking for the whole size here would drop the clip of every
+				// group that has one and no name.
+				if(pItem->m_Version >= 2 && ItemSize >= (int)(sizeof(CMapItemGroup) - sizeof(pItem->m_aName)))
 				{
 					Group.m_UseClipping = pItem->m_UseClipping != 0;
 					Group.m_ClipX = pItem->m_ClipX;

@@ -2730,6 +2730,64 @@ set(ENGINE_NET ${ENGINE_SHARED})
 list(FILTER ENGINE_NET INCLUDE REGEX "${ENGINE_NET_PATTERN}")
 list(FILTER ENGINE_SHARED EXCLUDE REGEX "${ENGINE_NET_PATTERN}")
 
+set_src(GAME_MAP GLOB_RECURSE src/game/map
+  # tidy-alphabetical-start
+  document/assets.h
+  document/document.h
+  document/edit.cpp
+  document/edit.h
+  document/history.h
+  document/layer.h
+  document/map_file.cpp
+  document/map_file.h
+  document/map_state.h
+  document/shared_list.h
+  document/structure.cpp
+  document/structure.h
+  document/tile_store.h
+  document_images.cpp
+  document_images.h
+  document_render.cpp
+  document_render.h
+  document_source.cpp
+  document_source.h
+  envelope_extrema.cpp
+  envelope_extrema.h
+  envelope_manager.h
+  map_renderer.cpp
+  map_renderer.h
+  quad_buffer_cache.cpp
+  quad_buffer_cache.h
+  render_component.cpp
+  render_component.h
+  render_interfaces.h
+  render_layer.cpp
+  render_layer.h
+  render_map.cpp
+  render_map.h
+  standalone/map_view.cpp
+  standalone/map_view.h
+  standalone/map_view_support.h
+  standalone/map_viewer_main.cpp
+  tile_chunk_cache.cpp
+  tile_chunk_cache.h
+  tile_run_store.cpp
+  tile_run_store.h
+  # tidy-alphabetical-end
+)
+# The map renderer without a client around it, and the program that is only
+# that: what the client links is the renderer, so neither belongs in it.
+set(GAME_MAP_STANDALONE ${GAME_MAP})
+list(FILTER GAME_MAP_STANDALONE INCLUDE REGEX "/standalone/")
+list(FILTER GAME_MAP_STANDALONE EXCLUDE REGEX "_main\\.cpp$")
+list(FILTER GAME_MAP EXCLUDE REGEX "/standalone/")
+# The map as something that is changed rather than drawn. It knows nothing
+# of a renderer, a client or a window, so that it can be tested natively and
+# linked by whoever needs it - the web editor first.
+set(GAME_MAP_DOCUMENT ${GAME_MAP})
+list(FILTER GAME_MAP_DOCUMENT INCLUDE REGEX "/document/")
+list(FILTER GAME_MAP EXCLUDE REGEX "/document/")
+
 # Libraries
 # SQLite is not in here: only the client and the server talk to a database.
 set(LIBS
@@ -2777,6 +2835,10 @@ endif()
 add_library(engine-net EXCLUDE_FROM_ALL OBJECT ${ENGINE_NET})
 add_library(engine-shared EXCLUDE_FROM_ALL OBJECT ${ENGINE_INTERFACE} ${ENGINE_SHARED} ${ENGINE_UUID_SHARED} ${BASE})
 add_library(engine-quic EXCLUDE_FROM_ALL OBJECT ${ENGINE_QUIC} ${RUST_BRIDGE_QUIC})
+# The map document is the editor's core: the tests, the tool that measures it
+# and, later, the editor itself build the same objects rather than each their
+# own copy. It knows nothing of the client, so it is built without one too.
+add_library(game-map-document EXCLUDE_FROM_ALL OBJECT ${GAME_MAP_DOCUMENT})
 add_library(game-shared EXCLUDE_FROM_ALL OBJECT ${GAME_SHARED} ${GAME_GENERATED_SHARED})
 # game-shared compiles src/generated/data_types.h, so the Xcode generator needs
 # generate_content_types to be a dependency of it, not just of its consumers.
@@ -2786,7 +2848,7 @@ add_dependencies(engine-shared generate_protocol)
 add_dependencies(game-shared generate_content_types)
 add_dependencies(game-shared generate_protocol)
 # tidy-alphabetical-end
-list(APPEND TARGETS_OWN engine-gfx engine-net engine-quic engine-shared game-shared)
+list(APPEND TARGETS_OWN engine-gfx engine-net engine-quic engine-shared game-map-document game-shared)
 
 if(DISCORD AND NOT DISCORD_DYNAMIC)
   add_library(discord-shared SHARED IMPORTED)
@@ -3249,59 +3311,6 @@ if(CLIENT)
     tile_art.cpp
     # tidy-alphabetical-end
   )
-  set_src(GAME_MAP GLOB_RECURSE src/game/map
-    # tidy-alphabetical-start
-    document/assets.h
-    document/document.h
-    document/history.h
-    document/layer.h
-    document/map_file.cpp
-    document/map_file.h
-    document/map_state.h
-    document/shared_list.h
-    document/tile_store.h
-    envelope_extrema.cpp
-    envelope_extrema.h
-    envelope_manager.h
-    map_renderer.cpp
-    map_renderer.h
-    quad_buffer_cache.cpp
-    quad_buffer_cache.h
-    render_component.cpp
-    render_component.h
-    render_interfaces.h
-    render_layer.cpp
-    render_layer.h
-    render_map.cpp
-    render_map.h
-    standalone/map_view.cpp
-    standalone/map_view.h
-    standalone/map_view_support.h
-    standalone/map_viewer_main.cpp
-    tile_chunk_cache.cpp
-    tile_chunk_cache.h
-    tile_run_store.cpp
-    tile_run_store.h
-    # tidy-alphabetical-end
-  )
-  # The map renderer without a client around it, and the program that is only
-  # that: what the client links is the renderer, so neither belongs in it.
-  set(GAME_MAP_STANDALONE ${GAME_MAP})
-  list(FILTER GAME_MAP_STANDALONE INCLUDE REGEX "/standalone/")
-  list(FILTER GAME_MAP_STANDALONE EXCLUDE REGEX "_main\\.cpp$")
-  list(FILTER GAME_MAP EXCLUDE REGEX "/standalone/")
-  # The map as something that is changed rather than drawn. It knows nothing
-  # of a renderer, a client or a window, so that it can be tested natively and
-  # linked by whoever needs it - the web editor first.
-  set(GAME_MAP_DOCUMENT ${GAME_MAP})
-  list(FILTER GAME_MAP_DOCUMENT INCLUDE REGEX "/document/")
-  list(FILTER GAME_MAP EXCLUDE REGEX "/document/")
-
-  # The map document is the editor's core: the tests, the tool that measures
-  # it and, later, the editor itself build the same objects rather than each
-  # their own copy.
-  add_library(game-map-document EXCLUDE_FROM_ALL OBJECT ${GAME_MAP_DOCUMENT})
-  list(APPEND TARGETS_OWN game-map-document)
   set(GAME_GENERATED_CLIENT
     # tidy-alphabetical-start
     src/generated/checksum.cpp
@@ -4273,6 +4282,7 @@ if(TOOLS)
     map_convert_07.cpp
     map_diff.cpp
     map_document_bench.cpp
+    map_document_render.cpp
     map_extract.cpp
     map_find_env.cpp
     map_optimize.cpp
@@ -4296,6 +4306,7 @@ if(TOOLS)
     # The map renderer draws through the client's graphics backend, so there is
     # nothing for it to link against in a server-only build.
     list(FILTER TOOLS_SRC EXCLUDE REGEX "map_render\\.cpp$")
+    list(FILTER TOOLS_SRC EXCLUDE REGEX "map_document_render\\.cpp$")
   endif()
   foreach(ABS_T ${TOOLS_SRC})
     file(RELATIVE_PATH T "${PROJECT_SOURCE_DIR}/src/tools/" ${ABS_T})
@@ -4329,13 +4340,13 @@ if(TOOLS)
           # tidy-alphabetical-end
         )
       endif()
-      if(TOOL MATCHES "^map_document_bench$")
+      if(TOOL MATCHES "^map_document_(bench|render)$")
         list(APPEND EXTRA_TOOL_SRC $<TARGET_OBJECTS:game-map-document>)
       endif()
       if(TOOL MATCHES "^config_")
         list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")
       endif()
-      if(TOOL MATCHES "^map_render$")
+      if(TOOL MATCHES "^(map_render|map_document_render)$")
         list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS})
         list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-client-graphics-headless> $<TARGET_OBJECTS:engine-gfx>)
         # The tool draws with the client's backends and links what the client
@@ -4368,12 +4379,15 @@ if(TOOLS)
       )
       target_include_directories(${TOOL} SYSTEM PRIVATE ${TOOL_INCLUDE_DIRS})
       target_link_libraries(${TOOL} ${TOOL_LIBS})
-      if(TOOL MATCHES "^map_render$")
-        target_sources(map_render PRIVATE
+      if(TOOL MATCHES "^(map_render|map_document_render)$")
+        target_sources(${TOOL} PRIVATE
           ${GAME_MAP_STANDALONE}
           # tidy-alphabetical-start
           src/engine/client/asset_loader.cpp
           src/engine/client/asset_loader.h
+          src/game/map/document_images.cpp
+          src/game/map/document_render.cpp
+          src/game/map/document_source.cpp
           src/game/map/envelope_extrema.cpp
           src/game/map/map_renderer.cpp
           src/game/map/quad_buffer_cache.cpp
@@ -4456,7 +4470,10 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp
+    document_images_test.cpp
+    document_source_test.cpp
     document_test.cpp
+    edit_test.cpp
     editor_test.cpp
     font_loading_test.cpp
     fs_test.cpp
@@ -4508,6 +4525,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     snapshot_test.cpp
     sound_test.cpp
     str_test.cpp
+    structure_test.cpp
     swap_endian_test.cpp
     teehistorian_test.cpp
     test.cpp
@@ -4569,6 +4587,10 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/game/client/match_stats_export.h
     src/game/client/session_game_config.cpp
     src/game/client/session_game_config.h
+    src/game/map/document_images.cpp
+    src/game/map/document_images.h
+    src/game/map/document_source.cpp
+    src/game/map/document_source.h
     src/game/map/tile_run_store.cpp
     src/game/map/tile_run_store.h
     # tidy-alphabetical-end

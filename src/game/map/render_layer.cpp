@@ -282,9 +282,18 @@ bool CRenderLayerGroup::DoRender(const CRenderLayerParams &Params)
 		if(m_pGroup->m_Version >= 2 && m_pGroup->m_UseClipping)
 		{
 			// set clipping
-			Graphics()->MapScreenToInterface(Params.m_Center.x, Params.m_Center.y, Params.m_Zoom);
+			//
+			// The clip is worked out in the same view the group is drawn in,
+			// which for a program that decides the view itself is not the view
+			// the game would have. Asking the game for it put every clipped
+			// group's rectangle somewhere else than the group.
+			Graphics()->MapScreen(Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f ?
+						      Graphics()->MapViewToWorld(Params.m_ViewSize * Params.m_Zoom, Params.m_Center.x, Params.m_Center.y,
+							      100.0f, 100.0f, 100.0f, 0.0f, 0.0f, Params.m_Zoom) :
+						      Graphics()->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y, 100.0f, 100.0f, 100.0f,
+							      0.0f, 0.0f, Graphics()->ViewportAspect(), Params.m_Zoom));
 
-			CScreenRect ScreenRect = Graphics()->GetScreen();
+			CScreenRect ScreenRect = Scaled(Graphics()->GetScreen(), ViewScale(Params));
 			float ScreenWidth = ScreenRect.Width();
 			float ScreenHeight = ScreenRect.Height();
 			float Left = m_pGroup->m_ClipX - ScreenRect.m_TopLeft.x;
@@ -330,14 +339,36 @@ void CRenderLayerGroup::Init()
 	InitCallback();
 }
 
+float CRenderLayerGroup::ViewScale(const CRenderLayerParams &Params) const
+{
+	const int Parallax = Params.m_IgnoreParallax ? 100 : std::max(m_pGroup->m_ParallaxX, m_pGroup->m_ParallaxY);
+	return CalcGroupViewScale(Graphics()->ViewportAspect(), g_Config.m_ClViewMaxAspect / 100.0f, Parallax);
+}
+
+CScreenRect CRenderLayerGroup::Scaled(const CScreenRect &Rect, float Scale)
+{
+	if(Scale == 1.0f)
+		return Rect;
+	const vec2 Center = (Rect.m_TopLeft + Rect.m_BottomRight) / 2.0f;
+	const vec2 Half = Rect.Size() * (Scale / 2.0f);
+	return CScreenRect(Center - Half, Center + Half);
+}
+
 void CRenderLayerGroup::Render(const CRenderLayerParams &Params)
 {
 	const int ParallaxX = Params.m_IgnoreParallax ? 100 : m_pGroup->m_ParallaxX;
 	const int ParallaxY = Params.m_IgnoreParallax ? 100 : m_pGroup->m_ParallaxY;
 	int ParallaxZoom = std::clamp(std::max(ParallaxX, ParallaxY), 0, 100);
-	CScreenRect ScreenRect = Graphics()->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y, ParallaxX, ParallaxY, (float)ParallaxZoom,
-		m_pGroup->m_OffsetX, m_pGroup->m_OffsetY, Graphics()->ViewportAspect(), Params.m_Zoom);
-	Graphics()->MapScreen(ScreenRect);
+	CScreenRect ScreenRect = Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f ?
+					 Graphics()->MapViewToWorld(Params.m_ViewSize * Params.m_Zoom, Params.m_Center.x, Params.m_Center.y, ParallaxX, ParallaxY, (float)ParallaxZoom,
+						 m_pGroup->m_OffsetX, m_pGroup->m_OffsetY, Params.m_Zoom) :
+					 Graphics()->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y, ParallaxX, ParallaxY, (float)ParallaxZoom,
+						 m_pGroup->m_OffsetX, m_pGroup->m_OffsetY, Graphics()->ViewportAspect(), Params.m_Zoom);
+	// A screen wider than the view is drawn for shows the world further to the
+	// sides, and a group that does not follow the world is made bigger to cover
+	// it instead - see CalcGroupViewScale. Without this, a wide screen shows
+	// what the mapper left beside their own.
+	Graphics()->MapScreen(Scaled(ScreenRect, ViewScale(Params)));
 }
 
 /**************

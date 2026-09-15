@@ -350,12 +350,23 @@ bool CDemoViewerClient::HandleInput()
 		ScaleZoom(CCamera::ZoomStepsToValue(-ZOOM_STEP));
 	}
 
+	// Two fingers pinch the demo closer or further away and drag it about, the
+	// way every picture on a touch screen is handled.
+	const CViewerGestures::SResult Gesture = m_Gestures.Update(Input()->TouchFingerStates(), vec2(Graphics()->ScreenWidth(), Graphics()->ScreenHeight()));
+	if(Gesture.m_Active)
+	{
+		ScaleZoom(Gesture.m_Zoom);
+		MoveFreeView(-Gesture.m_Move * WorldPerPixel());
+		m_Controls.Show();
+	}
+
 	// Dragging moves the free view, the way a map is dragged. In the pixels
 	// that are drawn, not the ones the window is measured in, so that on a
 	// screen with more of the former the world keeps up with the pointer. A
-	// press that landed on the bar belongs to the bar.
+	// press that landed on the bar belongs to the bar, and one that is part of
+	// a pinch belongs to the pinch.
 	const vec2 MousePos = Input()->NativeMousePos() * Graphics()->ScreenHiDPIScale();
-	if(Input()->NativeMousePressed(1) && !m_Controls.Hovered())
+	if(Input()->NativeMousePressed(1) && !m_Controls.Hovered() && !Gesture.m_Active)
 	{
 		if(m_Dragging)
 		{
@@ -436,42 +447,71 @@ void CDemoViewerClient::RenderControls()
 	else
 		str_copy(aSpectating, Spectating() == SPEC_FOLLOW ? "Follow" : "Free view");
 
+	// Left to right, the way a video player has it: what it is doing, how fast,
+	// how far along, and off on the other side what is being watched.
 	enum
 	{
-		ITEM_PLAY,
 		ITEM_SEEK,
-		ITEM_TIME,
+		ITEM_PLAY,
+		ITEM_RESTART,
 		ITEM_SLOWER,
 		ITEM_SPEED,
 		ITEM_FASTER,
-		ITEM_RESTART,
+		ITEM_TIME,
+		ITEM_SPACER,
 		ITEM_SPECTATE,
 		NUM_ITEMS,
 	};
 	CViewerControls::SItem aItems[NUM_ITEMS];
-	aItems[ITEM_PLAY].m_Icon = Paused() ? CViewerControls::EIcon::PLAY : CViewerControls::EIcon::PAUSE;
 	aItems[ITEM_SEEK].m_Type = CViewerControls::EItem::SLIDER;
 	aItems[ITEM_SEEK].m_Value = Progress();
-	aItems[ITEM_SEEK].m_Width = std::clamp(Graphics()->ScreenWidth() * 0.35f, 120.0f, 420.0f);
-	aItems[ITEM_TIME].m_Type = CViewerControls::EItem::TEXT;
-	aItems[ITEM_TIME].m_pText = aTime;
+	aItems[ITEM_PLAY].m_Icon = Paused() ? CViewerControls::EIcon::PLAY : CViewerControls::EIcon::PAUSE;
+	aItems[ITEM_RESTART].m_Icon = CViewerControls::EIcon::RESTART;
 	aItems[ITEM_SLOWER].m_Icon = CViewerControls::EIcon::MINUS;
+	aItems[ITEM_SLOWER].m_Optional = true;
 	aItems[ITEM_SPEED].m_Type = CViewerControls::EItem::TEXT;
 	aItems[ITEM_SPEED].m_pText = aSpeed;
 	aItems[ITEM_SPEED].m_Width = 56.0f;
+	aItems[ITEM_SPEED].m_Optional = true;
 	aItems[ITEM_FASTER].m_Icon = CViewerControls::EIcon::PLUS;
-	aItems[ITEM_RESTART].m_Icon = CViewerControls::EIcon::RESTART;
+	aItems[ITEM_FASTER].m_Optional = true;
+	aItems[ITEM_TIME].m_Type = CViewerControls::EItem::TEXT;
+	aItems[ITEM_TIME].m_pText = aTime;
+	aItems[ITEM_SPACER].m_Type = CViewerControls::EItem::SPACER;
 	aItems[ITEM_SPECTATE].m_Icon = CViewerControls::EIcon::EYE;
 	aItems[ITEM_SPECTATE].m_pText = aSpectating;
 
 	CViewerControls::SInput Input;
 	Input.m_MousePos = m_pInput->NativeMousePos();
 	Input.m_MousePressed = m_pInput->NativeMousePressed(1);
+	// From the events rather than from the state, because a frame can take
+	// longer than a tap does and the state alone would never see it.
+	Input.m_MouseClicked = m_pInput->KeyPress(KEY_MOUSE_1);
 	Input.m_KeyPressed = std::any_of(m_aKeyWasPressed.begin(), m_aKeyWasPressed.end(), [](bool Pressed) { return Pressed; });
 
 	float SeekTo = 0.0f;
 	CDemoPlayer &Player = DemoSource(m_DemoSessionId).DemoPlayer();
-	switch(m_Controls.Render(aItems, NUM_ITEMS, Input, &SeekTo))
+	const int Pressed = m_Controls.Render(aItems, NUM_ITEMS, Input, &SeekTo);
+
+	// A demo that goes on playing while somebody drags along the seek bar
+	// runs out from under them: every frame moves the place they are looking
+	// for further from where they are pointing. It stands still until they let
+	// go, and then goes on if it was going on before.
+	if(m_Controls.Dragging() != m_Seeking)
+	{
+		m_Seeking = m_Controls.Dragging();
+		if(m_Seeking)
+		{
+			m_PausedBeforeSeeking = Paused();
+			SetPaused(true);
+		}
+		else if(!m_PausedBeforeSeeking)
+		{
+			SetPaused(false);
+		}
+	}
+
+	switch(Pressed)
 	{
 	case ITEM_PLAY:
 		SetPaused(!Paused());
@@ -531,6 +571,12 @@ void CDemoViewerClient::Run()
 	// from here wants anyway. Nobody is at the keyboard of a window that is not
 	// there, so the keys stay off as well.
 	m_Surfaceless = std::getenv("GFX_SURFACELESS") != nullptr;
+	// A demo fills the window it was given. The game keeps what it draws
+	// within five by four so that nobody sees further by making their window
+	// taller than everybody else's; there is nobody to be fair to here, and a
+	// telephone held upright is exactly the window that rule would leave two
+	// fifths of black.
+	g_Config.m_GfxWholeWindow = 1;
 	if(!InitGraphics(m_Surfaceless ? CreateOffscreenGraphicsWindow() : CreateSdlGraphicsWindow()))
 	{
 		m_ExitCode = 1;

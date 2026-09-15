@@ -55,6 +55,15 @@ vec2 CalcUncoveredViewSides(float ViewWidth, float ViewCenterX, float FilledCent
 		std::clamp(ViewRight - FilledCenterX - FilledHalfWidth, 0.0f, ViewWidth));
 }
 
+float CalcGroupViewScale(float Aspect, float MaxAspect, int Parallax)
+{
+	if(MaxAspect <= 0.0f || Aspect <= MaxAspect)
+		return 1.0f;
+	const float Widened = Aspect / MaxAspect;
+	const float FollowsWorld = std::clamp(Parallax, 0, 100) / 100.0f;
+	return (1.0f + (Widened - 1.0f) * FollowsWorld) / Widened;
+}
+
 void IGraphics::CalcScreenParams(float Aspect, float Zoom, float *pWidth, float *pHeight) const
 {
 	CalcViewSize(Aspect, Zoom, g_Config.m_ClViewMaxAspect / 100.0f, pWidth, pHeight);
@@ -65,10 +74,15 @@ CScreenRect IGraphics::MapScreenToWorld(float CenterX, float CenterY, float Para
 {
 	float Width, Height;
 	CalcScreenParams(Aspect, Zoom, &Width, &Height);
+	return MapViewToWorld(vec2(Width, Height), CenterX, CenterY, ParallaxX, ParallaxY, ParallaxZoom, OffsetX, OffsetY, Zoom);
+}
 
-	float Scale = (ParallaxZoom * (Zoom - 1.0f) + 100.0f) / 100.0f / Zoom;
-	Width *= Scale;
-	Height *= Scale;
+CScreenRect IGraphics::MapViewToWorld(vec2 ViewSize, float CenterX, float CenterY, float ParallaxX, float ParallaxY,
+	float ParallaxZoom, float OffsetX, float OffsetY, float Zoom) const
+{
+	const float Scale = (ParallaxZoom * (Zoom - 1.0f) + 100.0f) / 100.0f / Zoom;
+	const float Width = ViewSize.x * Scale;
+	const float Height = ViewSize.y * Scale;
 
 	CenterX *= ParallaxX / 100.0f;
 	CenterY *= ParallaxY / 100.0f;

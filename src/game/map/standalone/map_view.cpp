@@ -80,6 +80,8 @@ bool CStandaloneMapView::OpenWindow(int Width, int Height, IEngineGraphicsWindow
 	g_Config.m_GfxScreenHeight = Height;
 	g_Config.m_GfxFsaaSamples = 0;
 	g_Config.m_GfxNoclip = 1;
+	// A map fills the window it was given, whatever shape that window has.
+	g_Config.m_GfxWholeWindow = 1;
 	if(Windowed)
 	{
 		// Somebody is watching this one, so it is paced by their display and
@@ -167,12 +169,25 @@ vec2 CStandaloneMapView::MapWorldSize()
 	return vec2(m_pGraphics->ScreenWidth(), m_pGraphics->ScreenHeight());
 }
 
+vec2 CStandaloneMapView::ViewSize() const
+{
+	float Width, Height;
+	CalcViewSize(16.0f / 9.0f, 1.0f, 0.0f, &Width, &Height);
+	return vec2(Height * m_pGraphics->ScreenAspect(), Height);
+}
+
 float CStandaloneMapView::FitZoom()
 {
 	const vec2 WorldSize = MapWorldSize();
-	float Vw, Vh;
-	m_pGraphics->CalcScreenParams(m_pGraphics->ScreenAspect(), 1.0f, &Vw, &Vh);
-	return std::max(WorldSize.x / Vw, WorldSize.y / Vh);
+	const vec2 View = ViewSize();
+	return std::max(WorldSize.x / View.x, WorldSize.y / View.y);
+}
+
+float CStandaloneMapView::FillZoom()
+{
+	const vec2 WorldSize = MapWorldSize();
+	const vec2 View = ViewSize();
+	return std::min(WorldSize.x / View.x, WorldSize.y / View.y);
 }
 
 void CStandaloneMapView::Render(const SRenderParams &Params)
@@ -207,6 +222,7 @@ void CStandaloneMapView::Render(const SRenderParams &Params)
 	RenderParams.m_DebugRenderClusterClips = false;
 	RenderParams.m_DebugRenderTileClips = false;
 	RenderParams.m_IgnoreParallax = Params.m_IgnoreParallax;
+	RenderParams.m_ViewSize = ViewSize();
 
 	// Set up initial screen mapping
 	m_pGraphics->MapScreen(CScreenRect(0, 0, m_Width, m_Height));
@@ -219,9 +235,8 @@ CStandaloneMapView::SRenderParams CStandaloneMapView::ParamsForWorldRect(vec2 To
 {
 	SRenderParams Params;
 	Params.m_Center = TopLeft + Size / 2.0f;
-	float ViewWidth, ViewHeight;
-	m_pGraphics->CalcScreenParams(m_pGraphics->ScreenAspect(), 1.0f, &ViewWidth, &ViewHeight);
-	Params.m_Zoom = ViewWidth <= 0.0f ? 1.0f : Size.x / ViewWidth;
+	const vec2 View = ViewSize();
+	Params.m_Zoom = View.x <= 0.0f ? 1.0f : Size.x / View.x;
 	return Params;
 }
 

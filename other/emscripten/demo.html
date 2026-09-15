@@ -146,13 +146,24 @@
 				// let go of: what somebody is looking for is what they can see,
 				// and a bar that only jumps at the end is one they have to guess
 				// with.
+				// While it is being dragged the demo stands still: one that goes
+				// on playing runs out from under whoever is looking for a place
+				// in it. It goes on again afterwards if it was going on before.
+				var pausedBeforeSeeking = false;
 				seek.addEventListener('input', () => {
-					seeking = true;
+					if (!seeking) {
+						seeking = true;
+						pausedBeforeSeeking = demo.paused();
+						demo.pause();
+					}
 					demo.seek(seek.value / seek.max);
 				});
 				seek.addEventListener('change', () => {
 					demo.seek(seek.value / seek.max);
 					seeking = false;
+					if (!pausedBeforeSeeking) {
+						demo.play();
+					}
 				});
 				spectate.addEventListener('change', () => {
 					demo.spectating(parseInt(spectate.value, 10));

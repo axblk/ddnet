@@ -127,6 +127,16 @@ EMSCRIPTEN_KEEPALIVE void MapViewerExportFullMap()
 
 // Whether the viewer draws its own bar of controls over the map. A page with
 // a bar of its own beside the canvas says so and gets a bare picture.
+// How big to draw. A page that gives the viewer a box of its own measures that
+// box and says so; a viewer that fills the window never needs this, because
+// the window tells it when it changes and a box beside it does not.
+EMSCRIPTEN_KEEPALIVE void MapViewerSetSize(int Width, int Height)
+{
+	if(g_pView == nullptr || g_pView->Window() == nullptr)
+		return;
+	g_pView->Window()->Resize(std::max(Width, 1), std::max(Height, 1), g_Config.m_GfxScreenRefreshRate);
+}
+
 EMSCRIPTEN_KEEPALIVE void MapViewerSetControls(int Show)
 {
 	if(g_pShowControls != nullptr)

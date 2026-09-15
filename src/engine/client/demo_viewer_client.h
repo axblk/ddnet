@@ -81,6 +81,8 @@ private:
 	std::chrono::nanoseconds m_NextFrameTime{};
 	int m_ExitCode = 0;
 	EExportState m_ExportState = EExportState::IDLE;
+	// When the running export was asked for, to say how long it still has.
+	std::chrono::nanoseconds m_ExportStartTime{};
 	// Why the last export failed, kept after it has been reported: an export
 	// that came to nothing is the one thing here that nobody can see for
 	// themselves, and a page has no log to look in.
@@ -171,6 +173,15 @@ public:
 	 */
 	void SetShowControls(bool Show) { m_ShowControls = Show; }
 	bool ShowControls() const { return m_ShowControls; }
+
+	/**
+	 * How big to draw, in the units the window is measured in. A viewer in a
+	 * browser normally fills the window and follows it by itself; one that
+	 * sits in a box of a page's own has nothing to follow, because nothing
+	 * tells a window that a box beside it changed shape. Then the page
+	 * measures the box and says so here.
+	 */
+	void SetSize(int Width, int Height);
 	void Run();
 	int ExitCode() const { return m_ExitCode; }
 
@@ -221,6 +232,11 @@ public:
 
 	/** How far the export has come, between 0 and 1. */
 	float ExportProgress() const;
+	/**
+	 * How much longer the export has to run, in seconds, or a negative number
+	 * when there is no telling yet.
+	 */
+	float ExportSecondsLeft() const;
 	bool Paused() const;
 	float Progress() const;
 	float Speed() const;

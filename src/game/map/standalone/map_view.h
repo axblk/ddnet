@@ -39,7 +39,18 @@ public:
 		vec2 m_Center = vec2(0.0f, 0.0f);
 		float m_Zoom = 1.0f;
 		int m_TimeOffsetMillis = 0;
-		bool m_IgnoreParallax = false;
+		/**
+		 * How much of the world the view shows before the zoom, in world
+		 * units, or zero for the one that fits the surface. A picture whose
+		 * shape is not the surface's says so here, and then the layers that
+		 * do not follow the world are laid out for that shape.
+		 */
+		vec2 m_ViewSize = vec2(0.0f, 0.0f);
+		/**
+		 * Which part of the view to draw, as fractions of it, for a picture
+		 * that is drawn in pieces. The whole of it by default.
+		 */
+		CScreenRect m_Window = CScreenRect(0.0f, 0.0f, 1.0f, 1.0f);
 		/** Whether layers the map marks as detail are drawn. */
 		bool m_HighDetail = true;
 		/**
@@ -112,6 +123,8 @@ public:
 	 * zoom of one still means here what it has always meant.
 	 */
 	vec2 ViewSize() const;
+	/** The same, for a picture whose shape is not the surface's. */
+	static vec2 ViewSizeForAspect(float Aspect);
 
 	/**
 	 * Finishes the frame that was drawn and reads it back off the graphics

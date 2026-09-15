@@ -130,6 +130,7 @@ bool CDemoViewerClient::RequestExport(const CVideoExportSettings &Settings)
 	m_RequestedSettings = Settings;
 	m_ExportRequested = true;
 	m_ExportState = EExportState::RUNNING;
+	m_ExportStartTime = time_get_nanoseconds();
 	m_aExportError[0] = '\0';
 	return true;
 }
@@ -157,22 +158,22 @@ bool CDemoViewerClient::StartExport(const CVideoExportSettings &Settings)
 	char aName[IO_MAX_PATH_LENGTH];
 	fs_split_file_extension(fs_filename(m_aDemoPath), aName, sizeof(aName));
 	str_format(m_aVideoPath, sizeof(m_aVideoPath), "videos/%s.mp4", aName);
-	// The export reads the demo out of a session of its own, from where
-	// whoever asked for it is looking. What they do next - seek away, pause,
-	// watch somebody else - is theirs and no longer the video's.
+	// The export reads the demo out of a session of its own. What whoever
+	// asked for it does next - seek away, pause, watch somebody else - is
+	// theirs and no longer the video's.
 	m_VideoSessionId = m_ExportSessionId;
-	const float From = Progress();
 	// An export that ended with its demo left the way through it open. It is
 	// closed here rather than there, so that what was written stays readable
 	// until somebody asks for the next one.
 	if(SessionState(m_ExportSessionId) != ESessionState::OFFLINE)
 		StopDemoSession(m_ExportSessionId, "");
+	// The whole demo, from its first tick, wherever the one being watched has
+	// got to. A demo that has played out sits on its last frame - which is
+	// where somebody who has just watched it and then asks for a video of it
+	// is standing, and starting there would write them a video one frame long.
 	const char *pError = PlayDemo(m_ExportSessionId);
 	if(pError == nullptr)
-	{
-		DemoSource(m_ExportSessionId).DemoPlayer().SeekPercent(std::clamp(From, 0.0f, 1.0f));
 		pError = StartVideo();
-	}
 	if(pError != nullptr)
 	{
 		log_error("videorecorder", "%s", pError);
@@ -240,6 +241,31 @@ float CDemoViewerClient::ExportProgress() const
 		return 0.0f;
 	const int Total = std::max(Last - First, 0);
 	return Total == 0 ? 0.0f : std::clamp(Current - First, 0, Total) / (float)Total;
+}
+
+float CDemoViewerClient::ExportSecondsLeft() const
+{
+	if(m_pVideo == nullptr)
+		return -1.0f;
+	// How long it has taken to get this far, and how much further it has to
+	// go. The same sum the client makes for its own progress box, and for the
+	// same reason: the rate the encoder reports is the rate of the moment and
+	// jumps about, while this settles as the export runs.
+	const float Progress = ExportProgress();
+	const float Elapsed = std::chrono::duration<float>(time_get_nanoseconds() - m_ExportStartTime).count();
+	if(Elapsed < 1.0f || Progress < 0.01f)
+		return -1.0f;
+	return Elapsed * (1.0f - Progress) / Progress;
+}
+
+void CDemoViewerClient::SetSize(int Width, int Height)
+{
+	if(Window() == nullptr)
+		return;
+	// The window is what the browser calls the canvas, so this is the canvas
+	// being given a size rather than taking the one the page's stylesheet gave
+	// it. Refused where it would change nothing, which is what `Resize` does.
+	Window()->Resize(std::max(Width, 1), std::max(Height, 1), g_Config.m_GfxScreenRefreshRate);
 }
 
 bool CDemoViewerClient::Paused() const
@@ -498,8 +524,14 @@ void CDemoViewerClient::RenderControls()
 	// While one is being written the export button says how far it has come
 	// and stops it, because that is all there is to do about it then.
 	const bool IsExporting = Exporting();
-	char aExportProgress[16];
-	str_format(aExportProgress, sizeof(aExportProgress), "%d%%", (int)(ExportProgress() * 100.0f + 0.5f));
+	char aExportProgress[32];
+	{
+		const float SecondsLeft = ExportSecondsLeft();
+		char aLeft[16] = "";
+		if(SecondsLeft >= 0.0f)
+			str_format(aLeft, sizeof(aLeft), " %d:%02d", (int)SecondsLeft / 60, (int)SecondsLeft % 60);
+		str_format(aExportProgress, sizeof(aExportProgress), "%d%%%s", (int)(ExportProgress() * 100.0f + 0.5f), aLeft);
+	}
 
 	// Left to right, the way a video player has it: what it is doing, how fast,
 	// how far along, and off on the other side what is being watched and what
@@ -567,6 +599,10 @@ void CDemoViewerClient::RenderControls()
 	aItems[ITEM_SPECTATE].m_Icon = CViewerControls::EIcon::EYE;
 	aItems[ITEM_SPECTATE].m_pText = aSpectating;
 	aItems[ITEM_SPECTATE].m_OpensMenu = !vPickable.empty();
+	// A demo a client recorded has nobody to pick from, and a button that opens
+	// nothing is a button in the way. The keys still step through whoever is
+	// there, for whoever wants that.
+	aItems[ITEM_SPECTATE].m_Hidden = vPickable.empty();
 	aItems[ITEM_EXPORT].m_Icon = IsExporting ? CViewerControls::EIcon::STOP : CViewerControls::EIcon::SAVE;
 	aItems[ITEM_EXPORT].m_pText = IsExporting ? aExportProgress : nullptr;
 	aItems[ITEM_EXPORT].m_OpensMenu = !IsExporting;
@@ -1021,6 +1057,14 @@ EMSCRIPTEN_KEEPALIVE int DemoViewerStartExport(int Width, int Height, int Fps, i
 	return g_pDemoViewer->RequestExport(Settings) ? 1 : 0;
 }
 
+// How big to draw. A page that gives the viewer a box of its own measures that
+// box and says so; a viewer that fills the window never needs this.
+EMSCRIPTEN_KEEPALIVE void DemoViewerSetSize(int Width, int Height)
+{
+	if(g_pDemoViewer != nullptr)
+		g_pDemoViewer->SetSize(Width, Height);
+}
+
 // Whether the viewer draws its own controls. A page with a bar of its own
 // beside the canvas says so and gets a bare picture.
 EMSCRIPTEN_KEEPALIVE void DemoViewerSetControls(int Show)
@@ -1055,6 +1099,11 @@ EMSCRIPTEN_KEEPALIVE int DemoViewerExportState()
 // How far the video that is being written has got, between 0 and 1. It is not
 // where the demo on the window is: an export reads the demo through a way of
 // its own, so whoever is watching can spool about while it is written.
+EMSCRIPTEN_KEEPALIVE float DemoViewerExportSecondsLeft()
+{
+	return g_pDemoViewer == nullptr ? -1.0f : g_pDemoViewer->ExportSecondsLeft();
+}
+
 EMSCRIPTEN_KEEPALIVE float DemoViewerExportProgress()
 {
 	return g_pDemoViewer == nullptr ? 0.0f : g_pDemoViewer->ExportProgress();

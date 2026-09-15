@@ -1,4 +1,4 @@
-# ddnet-loader
+# @ddnet/base
 
 The runtime the DDNet programs run on in a browser: one canvas, one call, and a
 handle to steer them with.
@@ -20,14 +20,14 @@ each holding its own program and the module that steers it:
 
 | Package | What it is | What it gives |
 |---|---|---|
-| [`@ddnet/demo-player`](packages/demo-player) | Watch a demo | `createDemoPlayer`, `<ddnet-demo>`, a `<video>`-shaped interface |
-| [`@ddnet/map-viewer`](packages/map-viewer) | Look at a map | `createMapViewer`, `<ddnet-map>`, everything said in tiles |
-| [`@ddnet/demo-renderer`](packages/demo-renderer) | Turn a demo into an MP4 | `renderDemo`, in a worker of its own |
+| [`@ddnet/demo-player`](packages/demo-player) | Watch a demo | `DemoPlayer`, `<ddnet-demo>`, a `<video>`-shaped interface |
+| [`@ddnet/map-viewer`](packages/map-viewer) | Look at a map | `MapViewer`, `<ddnet-map>`, everything said in tiles |
+| [`@ddnet/demo-renderer`](packages/demo-renderer) | Turn a demo into an MP4 | `DemoRenderer`, `renderDemo`, `zip`, in a worker of its own |
 
 ```js
-import { createDemoPlayer } from "@ddnet/demo-player";
+import { DemoPlayer } from "@ddnet/demo-player";
 
-const player = await createDemoPlayer({ canvas, src: "https://…/a.demo" });
+const player = await DemoPlayer.open({ canvas, src: "https://…/a.demo" });
 player.currentTime = 30;
 ```
 
@@ -36,14 +36,16 @@ about where it is. This package is what they are built on, and a page that
 wants what is under them — a program of its own, the full screen, the icons,
 the stylesheets — uses it directly.
 
-## Three ways in
+## Two ways in
 
 ```js
-import DDNetLoader from "ddnet-loader";
+import { Program } from "@ddnet/base";
 
 // One program on one canvas. Claims no globals: a page may have two of them,
-// or one of these beside a program of its own.
-const viewer = await DDNetLoader.start({
+// or one of these beside a program of its own. A program with a package of
+// its own is a class that knows all of this already - this is the way in for
+// one that has none, which is what the full client is.
+const viewer = await Program.open({
 	module: DDNetDemoPlayer,          // the program's factory
 	canvas: document.querySelector("canvas"),
 	accept: [".demo"],
@@ -51,28 +53,28 @@ const viewer = await DDNetLoader.start({
 	file: "https://example.org/a.demo",
 });
 
-const demo = DDNetLoader.demoControls(viewer);
-demo.play();
-demo.seek(0.5);
-
 viewer.addEventListener("output", event => console.log(event.detail.message));
 viewer.destroy();                     // lets go of the page again
 ```
 
-`DDNetLoader.page` is the same plus the furniture our own pages share: a
-loading line, a console log, and the canvas filling the window.
-`DDNetLoader.render` is the same again with nothing on screen: a demo goes in,
-an MP4 comes out, and it does the work in a worker of its own.
+`Program.openPage` is the same plus the furniture our own pages share: a
+loading line, a console log, and the canvas filling the window. A render with
+nothing on screen at all — a demo in, an MP4 out, in a worker of its own — is
+`@ddnet/demo-renderer`, which is this class with that program and that way in.
 
 `autoHide`, `fullscreen`, `icon`, `paintIcons`, `exportSettingsForm` and
 `loadingHint` are what our pages are built out of, offered because a page
-building the same interface would otherwise write it again. What a particular
-viewer can be asked — `demoControls`, `mapControls` — belongs to its package.
+building the same interface would otherwise write it again. The pictures on
+the buttons are named rather than drawn twice, and each package brings the
+ones only its own buttons need — `play` and `volume` come with
+`@ddnet/demo-player`, `entities` and `detail` with `@ddnet/map-viewer`, and a
+package of somebody's own adds theirs with `addIcons`. What a particular
+viewer can be asked belongs to its package, because it belongs to its class.
 
 The stylesheets that dress them come with the package and are imported by
-name: `ddnet-loader/viewer.css` for the bar, the menus and the panels a viewer
-page puts over the picture, `ddnet-loader/page.css` for a page that is nothing
-but a viewer, and `ddnet-loader/render.css` for one that shows a render and
+name: `@ddnet/base/viewer.css` for the bar, the menus and the panels a viewer
+page puts over the picture, `@ddnet/base/page.css` for a page that is nothing
+but a viewer, and `@ddnet/base/render.css` for one that shows a render and
 what it is doing. The element brings its own and needs none of them.
 
 ## One line
@@ -82,7 +84,7 @@ It comes with the package it belongs to and is defined by importing it - one
 `import "@ddnet/demo-player"` and `<ddnet-demo>` works:
 
 ```html
-<script type="module" src="ddnet-loader.js"></script>
+<script type="module" src="ddnet-base.js"></script>
 
 <ddnet-demo src="https://example.org/a.demo" controls></ddnet-demo>
 <ddnet-map src="https://example.org/a.map" controls x="120" y="64" tiles="90"></ddnet-map>
@@ -100,7 +102,7 @@ ddnet-map::part(message) { font-family: monospace; }
 
 `controls` is the bar the viewer draws for itself; without it the element shows
 nothing but the picture, and the page steers it through `element.controls`,
-which is the same `demoControls`/`mapControls` handle as above. `nozoom` takes
+which is the player or the viewer itself. `nozoom` takes
 the wheel, the zoom keys and the pinch off a demo, for a page that scrolls
 around the viewer or wants the demo at one size and no other; the page can
 still zoom it itself through `element.controls.zoom(factor)`. `orientation`
@@ -114,6 +116,35 @@ same things by the same names. `t` and `end` together are a piece of the demo
 marked out: watching stops at its end, starting over goes back to its
 beginning, and an export writes that piece and nothing else. Changing one later moves the running viewer;
 changing `src` shows another file.
+
+`controls="html"` is the same bar, out of the browser's own buttons rather
+than painted into the picture: the package builds it, wires it to that one
+viewer and puts it in the element. A page with three demos on it gets three
+bars, each steering its own, and reaches one of them through `element.bar`:
+
+```html
+<ddnet-demo src="https://example.org/a.demo" controls="html"></ddnet-demo>
+```
+
+That needs `@ddnet/base/viewer.css`, which is what the bar is dressed in, and
+it is what `demo.html` and `map.html` in this repository are — so what we ship
+is what we use. The parts of the bar carry `data-role` rather than an `id`,
+because an `id` is the page's to give out and there is only ever one of each.
+
+A page that would rather draw the controls itself puts them into the element,
+in the `controls` slot, and they are laid over the picture:
+
+```html
+<ddnet-demo src="https://example.org/a.demo">
+	<div class="bar" slot="controls">…buttons of your own…</div>
+</ddnet-demo>
+```
+
+The slot itself takes no pointer, which is what makes a tap that misses the bar a tap on
+the picture; what a page puts in it takes them as usual, and what a page
+already says about its own elements wins over anything the element says about
+them. The canvas is `element.picture`, for a page that has something to say
+about how big a picture of it would be.
 
 `<ddnet-demo>` answers to what a `<video>` answers to, because a demo in a page
 is a video to whoever put it there:
@@ -151,12 +182,12 @@ go of everything it held.
   factory, or `scriptUrl` says where to fetch one from — including from another
   origin, where the server allows it.
 
-`DDNetLoader.supportProblem()` answers with what is missing, in a sentence, or
+`DDNetBase.supportProblem()` answers with what is missing, in a sentence, or
 `null` when nothing is.
 
 ## Types
 
-`ddnet-loader.d.ts` is written by hand beside the module and says what the
+`ddnet-base.d.ts` is written by hand beside the module and says what the
 options and the handles are.
 
 ## Licence

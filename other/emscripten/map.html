@@ -8,6 +8,8 @@
 		<link rel="icon" type="image/x-icon" href="DDNet.ico">
 		<script src="coi-serviceworker.js"></script>
 		<link rel="stylesheet" href="ddnet-page.css">
+		<!-- What the buttons the package builds are dressed in. A page that
+		     puts a map in a box loads this one file and gets the same ones. -->
 		<link rel="stylesheet" href="ddnet-viewer.css">
 		<!-- The packages by their own names, which is how a page that installed
 		     them from a registry would say them. Here they sit beside this page
@@ -16,7 +18,7 @@
 		<script type="importmap">
 		{
 			"imports": {
-				"ddnet-loader": "./ddnet-loader.js",
+				"@ddnet/base": "./ddnet-base.js",
 				"@ddnet/map-viewer": "./map-viewer.js"
 			}
 		}
@@ -28,271 +30,135 @@
 	</head>
 	<body>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
-		<div id="error" style="display: none"></div>
-		<canvas id="canvas">Canvas not supported.</canvas>
-		<!-- A viewer is black until it has a map to draw, and fetching one over
-		     a slow line takes long enough for that to look broken rather than
-		     busy. -->
-		<p id="loading" class="viewer-loading" role="status" hidden>Loading…</p>
-		<!-- Nothing named in the address, so nothing to show yet. A file can be
-		     dropped onto the page, and a phone has nothing to drop with, so it
-		     can be chosen here as well. -->
-		<div id="open" class="viewer-open" hidden>
-			<div class="viewer-panel viewer-open-panel">
-				<div class="viewer-panel-title">Open a map</div>
-				<p class="viewer-open-hint">Choose a <code>.map</code> file, or drop one onto this page.</p>
-				<!-- Why the last one was no good, where the next one is
-				     chosen. -->
-				<p id="open-message" class="viewer-panel-message" role="status" hidden></p>
-				<div class="viewer-panel-actions">
-					<button id="open-button" class="viewer-text-button" disabled>Choose a map</button>
+		<!-- The element the package brings, which is what anybody putting a map
+		     into a page of their own writes - one line, a `src`, and
+		     `controls="html"` for the buttons the package builds. This page is
+		     that line plus the two things only a page whose whole job is one
+		     map has to say: a way in when nothing was named, and an address
+		     that follows what is being looked at. -->
+		<ddnet-map id="viewer" controls="html">
+			<!-- Nothing named in the address, so nothing to show yet. A file can be
+			     dropped onto the page, and a phone has nothing to drop with, so it
+			     can be chosen here as well. -->
+			<div id="open" class="viewer-open" slot="controls" hidden>
+				<div class="viewer-panel viewer-open-panel">
+					<div class="viewer-panel-title">Open a map</div>
+					<p class="viewer-open-hint">Choose a <code>.map</code> file, or drop one onto this page.</p>
+					<!-- Why the last one was no good, where the next one is
+					     chosen. -->
+					<p id="open-message" class="viewer-panel-message" role="status" hidden></p>
+					<div class="viewer-panel-actions">
+						<button id="open-button" class="viewer-text-button" disabled>Choose a map</button>
+					</div>
+					<input id="open-file" type="file" accept=".map" hidden>
 				</div>
-				<input id="open-file" type="file" accept=".map" hidden>
 			</div>
-		</div>
-		<!-- A map is looked at rather than played, so there is nothing to seek
-		     through and no reason for a bar along the bottom: what the view does
-		     sits in a corner out of the way of the map, and what is asked for
-		     once in a while sits behind the menu. The same buttons the viewer
-		     draws for itself, in the same order and with the same pictures -
-		     only as buttons the browser knows about, which is what gives them a
-		     tooltip and a tab order. -->
-		<!-- A picture of the whole map is drawn a piece at a time over many
-		     frames, and for a large map that is long enough that somebody
-		     would otherwise wonder whether the button did anything. -->
-		<p id="saving" class="viewer-readout viewer-saving" role="status" hidden></p>
-		<div id="controls" class="viewer-controls viewer-controls-corner">
-			<div id="cluster" class="viewer-cluster" hidden>
-				<button id="fullscreen" class="viewer-button" data-icon="fullscreen" title="Full screen" aria-label="Full screen"></button>
-				<button id="zoom-out" class="viewer-button" data-icon="minus" title="Zoom out" aria-label="Zoom out"></button>
-				<button id="zoom-in" class="viewer-button" data-icon="plus" title="Zoom in" aria-label="Zoom in"></button>
-				<button id="fit" class="viewer-button" data-icon="fit" title="The whole map (Home)" aria-label="The whole map"></button>
-				<button id="menu-button" class="viewer-button" data-icon="menu" title="More" aria-label="More" aria-haspopup="true" aria-expanded="false"></button>
-			</div>
-			<!-- What is set once and then left alone, and what is asked for now
-			     and then: under the button that opens it, because that is the
-			     corner it belongs to. -->
-			<div id="menu" class="viewer-cluster viewer-cluster-column" hidden>
-				<button id="detail" class="viewer-button" data-icon="detail" title="What is only there to look at" aria-label="What is only there to look at" aria-pressed="false"></button>
-				<button id="entities" class="viewer-button" data-icon="entities" title="What the tiles do" aria-label="What the tiles do" aria-pressed="false"></button>
-				<button id="save-view" class="viewer-button" data-icon="save" title="Save what is on the screen (F2)" aria-label="Save what is on the screen"></button>
-				<button id="save-map" class="viewer-button" data-icon="save_all" title="Save the whole map" aria-label="Save the whole map"></button>
-			</div>
-		</div>
-		<script type="module">
-			import DDNetLoader from "ddnet-loader";
-			import { mapViewerPage, mapControls } from "@ddnet/map-viewer";
-
-			// A map is dropped onto the window, or named as `map.html#map=<url>`.
-			const started = mapViewerPage({
-				// The page has buttons of its own in the corner, so the viewer
-				// leaves off the ones it would draw itself.
-				controls: false,
-				urlParams: ["map"],
-				// A map viewer writes nothing that outlives the tab. The picture it
-				// exports is handed to the browser as a download the moment it is
-				// written, so keeping a copy in IndexedDB would only be a copy
-				// nobody asked for.
-				persist: false,
-				elements: {
-					canvas: document.getElementById('canvas'),
-					error: document.getElementById('error'),
-					loading: document.getElementById('loading'),
-				},
-			});
-
-			// What the buttons in the corner do. Moving and zooming stay on the
-			// pointer as well, where they belong; these are for whoever has no
-			// wheel and for what a gesture cannot say. The other end of them is
-			// the `MapViewer*` block in
-			// `src/game/map/standalone/map_viewer_main.cpp`.
+		</ddnet-map>
+		<!-- What a link says has to be on the element before it starts, and it
+		     starts the moment the package below defines it - so this runs
+		     while the page is being read, which no module does. The element
+		     knows every one of these words already: it is what anybody else
+		     writing `<ddnet-map x="120" y="64" tiles="90">` says. -->
+		<script>
 			(function() {
-				const controls = document.getElementById('controls');
-				const cluster = document.getElementById('cluster');
-				const menuButton = document.getElementById('menu-button');
-				const menu = document.getElementById('menu');
-				const detail = document.getElementById('detail');
-				const entities = document.getElementById('entities');
-				const saveView = document.getElementById('save-view');
-				const saveMap = document.getElementById('save-map');
-				const saving = document.getElementById('saving');
-				DDNetLoader.paintIcons(document);
-				DDNetLoader.fullscreen(document.getElementById('fullscreen'));
-				// The buttons and the menu are one thing to whoever uses them, so
-				// they step aside together while nothing is happening - and a tap
-				// on the map takes them away or brings them back. The menu closes
-				// with them, because a menu over a map somebody wanted to see is
-				// worse than no menu.
-				DDNetLoader.autoHide([cluster, menu], {
-					picture: document.getElementById('canvas'),
-					onHide: () => openMenu(false),
-				});
-				// A button is pressed once where a wheel is turned several notches,
-				// so it takes a bigger step - the same one the viewer's own button
-				// takes.
-				const BUTTON_ZOOM_STEP = 1.4;
-
-				function openMenu(open) {
-					menu.hidden = !open;
-					menuButton.setAttribute('aria-expanded', open ? "true" : "false");
-				}
-				menuButton.addEventListener('click', () => openMenu(menu.hidden));
-				// A click anywhere else closes it: a menu that has to be dismissed
-				// with the button that opened it is one people leave open over the
-				// map they wanted to see.
-				document.addEventListener('pointerdown', event => {
-					if (!controls.contains(event.target)) {
-						openMenu(false);
-					}
-				});
-				document.addEventListener('keydown', event => {
-					if (event.key === "Escape") {
-						openMenu(false);
-					}
-				});
-
-				// The page is there before the viewer is and outlives it, so every
-				// call has to survive being made outside of that: until there is
-				// one, and once there is no longer one, they all answer `null`.
-				var viewer = null;
-				const map = mapControls({
-					call: (name, returnType, argTypes, args) =>
-						viewer == null ? null : viewer.call(name, returnType, argTypes, args),
-				});
-				// A page that cannot run this at all has been told why once
-				// already, which is enough: there is nothing here to steer.
-				started.then(instance => { viewer = instance; }, () => {});
-
-				// Something to look at while the program and the map are on
-				// their way. Only where there is a map on the way: a page with
-				// nothing named in its address offers a way in instead, and
-				// that is not a wait.
-				if (DDNetLoader.urlParameter("map") !== null) {
-					DDNetLoader.loadingHint(document.getElementById('loading'), () => map.loaded());
-				}
-
-				// Nothing named in the address, so the page offers a way in of
-				// its own. A map can be dropped onto the picture - the loader
-				// takes it there - but a phone has nothing to drop with, and a
-				// file chosen here goes the same way a dropped one does.
-				const opener = document.getElementById('open');
-				const openButton = document.getElementById('open-button');
-				const openFile = document.getElementById('open-file');
-				const openMessage = document.getElementById('open-message');
-				function offer(show, message) {
-					opener.hidden = !show;
-					openMessage.textContent = message || "";
-					openMessage.hidden = !message;
-				}
-				offer(DDNetLoader.urlParameter("map") === null);
-				// Nothing to hand a file to until the program is running.
-				started.then(() => { openButton.disabled = false; }, () => {});
-				openButton.addEventListener('click', () => openFile.click());
-				openFile.addEventListener('change', async () => {
-					const file = openFile.files[0];
-					// The same file twice in a row is still a choice, and without
-					// this the second time would go unnoticed.
-					openFile.value = "";
-					if (file == null || viewer == null) {
-						return;
-					}
-					offer(false);
-					try {
-						await viewer.loadFile(file);
-					} catch (error) {
-						offer(true, (error && error.message) || String(error));
-					}
-				});
-				// One dropped on the picture is the loader's to take; the page
-				// only has to stop offering.
-				document.addEventListener('drop', () => offer(false), true);
-
-				document.getElementById('zoom-out').addEventListener('click', () => map.zoomBy(BUTTON_ZOOM_STEP));
-				document.getElementById('zoom-in').addEventListener('click', () => map.zoomBy(1 / BUTTON_ZOOM_STEP));
-				document.getElementById('fit').addEventListener('click', () => map.fit());
-				detail.addEventListener('click', () => map.highDetail(!map.highDetail()));
-				entities.addEventListener('click', () => map.entities(!map.entities()));
-				// Writing a picture is what the browser hands over as a download,
-				// and it only does that for what came out of a click. The click
-				// this is, which is why it is asked for here and not out of
-				// something the page works out for itself later.
-				saveView.addEventListener('click', () => {
-					map.exportView();
-					openMenu(false);
-				});
-				saveMap.addEventListener('click', () => {
-					map.exportFullMap();
-					openMenu(false);
-				});
-
-				// Where a link says to look, and how much of the map to show:
-				// `#x=120&y=64&tiles=90`, in tiles, applied once as soon as there
-				// is a map to apply it to. A map that is dropped in later brings
-				// its own view and keeps it.
-				var linkApplied = false;
-				function applyLink() {
-					if (linkApplied) {
-						return;
-					}
-					linkApplied = true;
-					const tiles = parseFloat(DDNetLoader.urlParameter("tiles"));
-					if (isFinite(tiles) && tiles > 0) {
-						map.tilesAcross(tiles);
-					}
-					const x = parseFloat(DDNetLoader.urlParameter("x"));
-					const y = parseFloat(DDNetLoader.urlParameter("y"));
-					if (isFinite(x) && isFinite(y)) {
-						map.center(x, y);
+				const element = document.getElementById('viewer');
+				const link = new URLSearchParams(location.hash.replace(/^#/, ""));
+				for (const [parameter, attribute] of [["map", "src"], ["x", "x"], ["y", "y"], ["tiles", "tiles"]]) {
+					const value = link.get(parameter);
+					if (value !== null && value !== "") {
+						element.setAttribute(attribute, value);
 					}
 				}
+			})();
+		</script>
+		<script type="module">
+			import DDNetBase from "@ddnet/base";
+			import "@ddnet/map-viewer";
 
-				// The address bar follows the view, so that what somebody copies
-				// out of it is what they are looking at.
-				function updateLink(center, tiles) {
-					DDNetLoader.setUrlParameters({
+			// The element started the moment the import above defined it, with
+			// what the address said already on it - which map, where to look
+			// and how much of it to show - and it built its own buttons because
+			// `controls="html"` asked for them. What those buttons do belongs
+			// to the package; what is left here is what belongs to a page.
+			//
+			// A map is dropped onto the picture, or named as
+			// `map.html#map=<url>`.
+			const element = document.getElementById('viewer');
+			// A page that cannot run this at all has been told why by the
+			// element, over the picture, which is enough: there is nothing here
+			// to steer.
+			element.ready.catch(() => {});
+
+			// Nothing named in the address, so the page offers a way in of its
+			// own. A map can be dropped onto the picture - the element takes it
+			// there - but a phone has nothing to drop with, and a file chosen
+			// here goes the same way a dropped one does.
+			const opener = document.getElementById('open');
+			const openButton = document.getElementById('open-button');
+			const openFile = document.getElementById('open-file');
+			const openMessage = document.getElementById('open-message');
+			function offer(show, message) {
+				opener.hidden = !show;
+				openMessage.textContent = message || "";
+				openMessage.hidden = !message;
+			}
+			offer(!element.hasAttribute("src"));
+			// Nothing to hand a file to until the program is running.
+			element.ready.then(() => { openButton.disabled = false; }, () => {});
+			openButton.addEventListener('click', () => openFile.click());
+			openFile.addEventListener('change', async () => {
+				const file = openFile.files[0];
+				// The same file twice in a row is still a choice, and without
+				// this the second time would go unnoticed.
+				openFile.value = "";
+				if (file == null || element.controls == null) {
+					return;
+				}
+				offer(false);
+				forgetLink();
+				try {
+					await element.load(file);
+				} catch (error) {
+					offer(true, (error && error.message) || String(error));
+				}
+			});
+			// One dropped on the picture is the element's to take; the page
+			// only has to stop offering, and to stop applying a link that was
+			// about another map.
+			document.addEventListener('drop', () => { offer(false); forgetLink(); }, true);
+
+			// What a link said is on the element, and the element is what
+			// applies it: where to look and how much of the map to show, as
+			// soon as the map it belongs to is unpacked. A map that somebody
+			// opens here is not the map the link was written about, so the link
+			// stops applying to it.
+			function forgetLink() {
+				for (const name of ["x", "y", "tiles"]) {
+					element.removeAttribute(name);
+				}
+			}
+
+			// The address bar follows the view, so that what somebody copies
+			// out of it is what they are looking at. The page asks rather than
+			// being told: a map viewer has nothing to say for itself the way a
+			// demo has a clock.
+			setInterval(() => {
+				const viewer = element.controls;
+				if (viewer == null || !viewer.loaded()) {
+					return;
+				}
+				// A map that came from anywhere takes the offer away.
+				offer(false);
+				const center = viewer.center();
+				const tiles = viewer.tilesAcross();
+				if (center !== null && tiles > 0) {
+					DDNetBase.setUrlParameters({
 						x: center.x.toFixed(1),
 						y: center.y.toFixed(1),
 						tiles: tiles.toFixed(1),
 					});
 				}
-
-				// The page asks rather than being told: the viewer holds the main
-				// thread for as long as it draws and only lets go between frames.
-				setInterval(() => {
-					if (!map.loaded()) {
-						cluster.hidden = true;
-						openMenu(false);
-						return;
-					}
-					cluster.hidden = false;
-					// A map that came from somewhere else - the address, or a
-					// file dropped on the page - takes the offer away as surely
-					// as one chosen here.
-					offer(false);
-					applyLink();
-					const center = map.center();
-					const tiles = map.tilesAcross();
-					if (center !== null && tiles > 0) {
-						updateLink(center, tiles);
-					}
-					// What is switched on is asked for rather than remembered from
-					// the click, because the window answers to its own keys as
-					// well as to these buttons.
-					detail.setAttribute('aria-pressed', map.highDetail() ? "true" : "false");
-					entities.setAttribute('aria-pressed', map.entities() ? "true" : "false");
-					// A picture is drawn in pieces between frames, and asking for
-					// a second one while the first is being written would cut into
-					// it.
-					const busy = map.exportState() === 1;
-					saveView.disabled = busy;
-					saveMap.disabled = busy;
-					const progress = busy ? map.exportProgress() : 0;
-					saving.hidden = !busy || !(progress > 0);
-					if (!saving.hidden) {
-						saving.textContent = `Saving the whole map… ${Math.round(progress * 100)}%`;
-					}
-				}, 200);
-			})();
+			}, 200);
 		</script>
 	</body>
 </html>

@@ -1,13 +1,13 @@
 {
-	"name": "ddnet-loader",
+	"name": "@ddnet/base",
 	"version": "1.0.0",
 	"description": "Run DDNet, its demo player and its map viewer in a browser: one canvas, one call, and a handle to steer them with.",
 	"license": "Zlib",
 	"type": "module",
 	"exports": {
 		".": {
-			"types": "./ddnet-loader.d.ts",
-			"default": "./ddnet-loader.js"
+			"types": "./ddnet-base.d.ts",
+			"default": "./ddnet-base.js"
 		},
 		"./viewer.css": "./ddnet-viewer.css",
 		"./page.css": "./ddnet-page.css",
@@ -15,12 +15,12 @@
 		"./coi-serviceworker.js": "./coi-serviceworker.js",
 		"./package.json": "./package.json"
 	},
-	"types": "./ddnet-loader.d.ts",
+	"types": "./ddnet-base.d.ts",
 	"files": [
 		"README.md",
 		"coi-serviceworker.js",
-		"ddnet-loader.d.ts",
-		"ddnet-loader.js",
+		"ddnet-base.d.ts",
+		"ddnet-base.js",
 		"ddnet-page.css",
 		"ddnet-render.css",
 		"ddnet-viewer.css"

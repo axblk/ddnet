@@ -123,6 +123,13 @@ body:has(canvas#canvas) #error {
 	   than the writing around it. */
 	touch-action: none;
 }
+/* A page that is nothing but a viewer puts the element where the canvas would
+   otherwise be: over the whole window, with the page's own bar inside it. The
+   element brings its own canvas and fills itself with it. */
+ddnet-demo, ddnet-map {
+	position: absolute;
+	inset: 0;
+}
 #output {
 	position: absolute;
 	inset: clamp(10px, 5vh, 40px) clamp(10px, 5vw, 60px);

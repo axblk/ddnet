@@ -6,6 +6,7 @@
 #include <game/mapitems.h>
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <unordered_set>
 #include <variant>
@@ -115,6 +116,29 @@ namespace map_document
 		int Width() const { return m_Tiles.Width(); }
 		int Height() const { return m_Tiles.Height(); }
 
+		/**
+		 * Whether two layers are the same layer, everything about them
+		 * included. Two versions that share their blocks answer this without
+		 * looking into them - see `CTileStore::operator==`.
+		 */
+		bool operator==(const CTileLayer &Other) const
+		{
+			return m_Kind == Other.m_Kind &&
+			       m_Name == Other.m_Name &&
+			       m_Detail == Other.m_Detail &&
+			       m_Image == Other.m_Image &&
+			       m_Color.r == Other.m_Color.r && m_Color.g == Other.m_Color.g &&
+			       m_Color.b == Other.m_Color.b && m_Color.a == Other.m_Color.a &&
+			       m_ColorEnvelope == Other.m_ColorEnvelope &&
+			       m_ColorEnvelopeOffset == Other.m_ColorEnvelopeOffset &&
+			       m_AutomapperConfig == Other.m_AutomapperConfig &&
+			       m_AutomapperSeed == Other.m_AutomapperSeed &&
+			       m_AutomapperAutomatic == Other.m_AutomapperAutomatic &&
+			       m_Tiles == Other.m_Tiles &&
+			       m_ExtraTiles == Other.m_ExtraTiles;
+		}
+		bool operator!=(const CTileLayer &Other) const { return !(*this == Other); }
+
 		/** What this layer holds, both planes of it. */
 		uint64_t Bytes() const
 		{
@@ -152,6 +176,19 @@ namespace map_document
 
 		CSharedList<CQuad> m_Quads;
 
+		bool operator==(const CQuadLayer &Other) const
+		{
+			if(m_Name != Other.m_Name || m_Detail != Other.m_Detail || m_Image != Other.m_Image)
+				return false;
+			if(m_Quads.Id() == Other.m_Quads.Id())
+				return true;
+			if(m_Quads.Size() != Other.m_Quads.Size())
+				return false;
+			return m_Quads.Empty() ||
+			       std::memcmp(m_Quads.All().data(), Other.m_Quads.All().data(), m_Quads.Size() * sizeof(CQuad)) == 0;
+		}
+		bool operator!=(const CQuadLayer &Other) const { return !(*this == Other); }
+
 		uint64_t Bytes() const
 		{
 			std::unordered_set<const void *> Seen;
@@ -174,6 +211,19 @@ namespace map_document
 		int m_Sound = -1;
 
 		CSharedList<CSoundSource> m_Sources;
+
+		bool operator==(const CSoundLayer &Other) const
+		{
+			if(m_Name != Other.m_Name || m_Detail != Other.m_Detail || m_Sound != Other.m_Sound)
+				return false;
+			if(m_Sources.Id() == Other.m_Sources.Id())
+				return true;
+			if(m_Sources.Size() != Other.m_Sources.Size())
+				return false;
+			return m_Sources.Empty() ||
+			       std::memcmp(m_Sources.All().data(), Other.m_Sources.All().data(), m_Sources.Size() * sizeof(CSoundSource)) == 0;
+		}
+		bool operator!=(const CSoundLayer &Other) const { return !(*this == Other); }
 
 		uint64_t Bytes() const
 		{

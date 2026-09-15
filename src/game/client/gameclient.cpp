@@ -380,12 +380,14 @@ static TInterface *ToolOptionalInterface(IKernel *pKernel)
 void CGameClient::OnConsoleInit()
 {
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
+	m_pHttp = ToolOptionalInterface<IHttp>(Kernel());
 	// As many as there are worker threads, so that none of them sits idle
 	// waiting for the main thread to hand out the next job. No more than that:
 	// a job now only makes an asset out of bytes that are already there, which
-	// is work for a core and never waits for anything.
+	// is work for a core and never waits for anything. Fetching them is the
+	// loader's own business, and where a file can be fetched it says so.
 	const size_t MaxConcurrentAssetJobs = std::clamp(m_pEngine->JobThreadCount(), size_t{2}, size_t{16});
-	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs);
+	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs, m_pHttp);
 	m_pClient = Kernel()->RequestInterface<IClient>();
 	m_pRenderTrace = m_pClient->RenderTrace();
 	for(CSessionId SessionId : m_pClient->SessionIds())
@@ -418,7 +420,6 @@ void CGameClient::OnConsoleInit()
 #if defined(CONF_AUTOUPDATE)
 	m_pUpdater = ToolOptionalInterface<IUpdater>(Kernel());
 #endif
-	m_pHttp = ToolOptionalInterface<IHttp>(Kernel());
 
 	// make a list of all the systems, make sure to add them in the correct render order
 	m_vpAll.insert(m_vpAll.end(), {&m_Skins,

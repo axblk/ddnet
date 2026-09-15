@@ -27,6 +27,9 @@
 namespace
 {
 	constexpr LOG_COLOR ERROR_LOG_COLOR = LOG_COLOR{255, 0, 0};
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	constexpr LOG_COLOR WARNING_LOG_COLOR = LOG_COLOR{255, 255, 0};
+#endif
 	// How much of the picture is held in memory at once while it is written.
 	constexpr size_t MAX_FULL_IMAGE_BAND_BYTES = 512 * 1024 * 1024;
 	// How large a piece of the picture the view draws for itself, and how much
@@ -73,7 +76,22 @@ bool CStandaloneMapView::Init(int NumArgs, const char **ppArguments)
 
 	m_pEngine = new MapViewSupport::CMinimalEngine();
 	m_pEngine->m_JobPool.Init(MapViewSupport::JOB_THREADS);
-	m_AssetLoader.Init(m_pEngine, MapViewSupport::JOB_THREADS);
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// Only so that the map's images can be fetched rather than read, and only
+	// where files are fetched anyway. Everywhere else there is nothing to
+	// fetch, and this program keeps having no business with the network. A
+	// failure to start is not fatal either: the loader then reads every image
+	// as it always did, one after the other.
+	m_pHttp = CreateEngineHttp();
+	if(!m_pHttp->Init(std::chrono::seconds{1}))
+	{
+		log_warn_color(WARNING_LOG_COLOR, m_pLogContext, "Failed to initialize HTTP, fetching the map's images one at a time");
+		m_pHttp->Shutdown();
+		delete m_pHttp;
+		m_pHttp = nullptr;
+	}
+#endif
+	m_AssetLoader.Init(m_pEngine, MapViewSupport::JOB_THREADS, m_pHttp);
 	m_pKernel->RegisterInterface(m_pEngine);
 	m_pKernel->RegisterInterface(m_pStorage.get(), false);
 	return true;
@@ -566,6 +584,13 @@ void CStandaloneMapView::Shutdown()
 		m_AssetLoader.Shutdown();
 		m_pEngine->ShutdownJobs();
 		m_pEngine = nullptr;
+	}
+	if(m_pHttp != nullptr)
+	{
+		// After the loader, which is what has requests running.
+		m_pHttp->Shutdown();
+		delete m_pHttp;
+		m_pHttp = nullptr;
 	}
 	m_pWindow = nullptr;
 	if(m_pKernel != nullptr)

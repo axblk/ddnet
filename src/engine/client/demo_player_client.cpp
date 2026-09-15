@@ -414,13 +414,16 @@ bool CDemoPlayerClient::HandleInput()
 	{
 		SpectateStep(-1);
 	}
-	if(KeyPressed(CONTROL_KEY_ZOOM_IN, true) || Input()->KeyPress(KEY_MOUSE_WHEEL_UP))
+	if(m_ZoomEnabled)
 	{
-		ScaleZoom(CCamera::ZoomStepsToValue(ZOOM_STEP));
-	}
-	if(KeyPressed(CONTROL_KEY_ZOOM_OUT, true) || Input()->KeyPress(KEY_MOUSE_WHEEL_DOWN))
-	{
-		ScaleZoom(CCamera::ZoomStepsToValue(-ZOOM_STEP));
+		if(KeyPressed(CONTROL_KEY_ZOOM_IN, true) || Input()->KeyPress(KEY_MOUSE_WHEEL_UP))
+		{
+			ScaleZoom(CCamera::ZoomStepsToValue(ZOOM_STEP));
+		}
+		if(KeyPressed(CONTROL_KEY_ZOOM_OUT, true) || Input()->KeyPress(KEY_MOUSE_WHEEL_DOWN))
+		{
+			ScaleZoom(CCamera::ZoomStepsToValue(-ZOOM_STEP));
+		}
 	}
 
 	// Two fingers pinch the demo closer or further away and drag it about, the
@@ -428,7 +431,13 @@ bool CDemoPlayerClient::HandleInput()
 	const CViewerGestures::SResult Gesture = m_Gestures.Update(Input()->TouchFingerStates(), vec2(Graphics()->ScreenWidth(), Graphics()->ScreenHeight()));
 	if(Gesture.m_Active)
 	{
-		ScaleZoom(Gesture.m_Zoom);
+		// Dragging with two fingers is moving, not zooming, so it stays where
+		// the zoom is switched off - a picture that cannot be resized can
+		// still be looked around in.
+		if(m_ZoomEnabled)
+		{
+			ScaleZoom(Gesture.m_Zoom);
+		}
 		MoveFreeView(-Gesture.m_Move * WorldPerPixel());
 		m_Controls.Show();
 	}
@@ -554,6 +563,7 @@ void CDemoPlayerClient::RenderControls()
 		ITEM_FASTER,
 		ITEM_TIME,
 		ITEM_SPACER,
+		ITEM_ZOOM_RESET,
 		ITEM_CAMERA,
 		ITEM_SPECTATE,
 		ITEM_EXPORT,
@@ -605,6 +615,11 @@ void CDemoPlayerClient::RenderControls()
 	aItems[ITEM_TIME].m_Type = CViewerControls::EItem::TEXT;
 	aItems[ITEM_TIME].m_pText = aTime;
 	aItems[ITEM_SPACER].m_Type = CViewerControls::EItem::SPACER;
+	// Only once somebody has zoomed, because before that it would put the zoom
+	// where it already is. The notches somebody turned are counted nowhere, so
+	// without this there is no way back to the size the demo started at.
+	aItems[ITEM_ZOOM_RESET].m_Icon = CViewerControls::EIcon::ZOOM_RESET;
+	aItems[ITEM_ZOOM_RESET].m_Hidden = !m_ZoomEnabled || !ZoomChanged();
 	// Only where the demo brought a view of its own and there is something to
 	// go back to: a button that says nothing about what it would do is worse
 	// than no button.
@@ -715,6 +730,9 @@ void CDemoPlayerClient::RenderControls()
 		break;
 	case ITEM_RESTART:
 		SeekStart();
+		break;
+	case ITEM_ZOOM_RESET:
+		ResetZoom();
 		break;
 	case ITEM_CAMERA:
 		SetRecordedCamera(!RecordedCamera());
@@ -1046,6 +1064,35 @@ EMSCRIPTEN_KEEPALIVE void DemoPlayerZoomBy(float Factor)
 EMSCRIPTEN_KEEPALIVE float DemoPlayerZoom()
 {
 	return g_pDemoPlayer == nullptr ? 1.0f : g_pDemoPlayer->Zoom();
+}
+
+// Back to the size the demo started at. Whoever zoomed has no way back of
+// their own: the notches they turned are counted nowhere.
+EMSCRIPTEN_KEEPALIVE void DemoPlayerResetZoom()
+{
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->ResetZoom();
+}
+
+// Whether there is anything for that to undo, so that a page can keep the
+// button out of the way until there is.
+EMSCRIPTEN_KEEPALIVE int DemoPlayerZoomChanged()
+{
+	return g_pDemoPlayer != nullptr && g_pDemoPlayer->ZoomChanged() ? 1 : 0;
+}
+
+// Whether the wheel, the zoom keys and a pinch zoom the demo at all. A page
+// that wants the wheel for its own scrolling switches this off; what it asks
+// for through `DemoPlayerZoomBy` works either way.
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSetZoomEnabled(int Enabled)
+{
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SetZoomEnabled(Enabled != 0);
+}
+
+EMSCRIPTEN_KEEPALIVE int DemoPlayerZoomEnabled()
+{
+	return g_pDemoPlayer != nullptr && g_pDemoPlayer->ZoomEnabled() ? 1 : 0;
 }
 
 // The view the demo brought, which zooming leaves behind. 0 is that there is

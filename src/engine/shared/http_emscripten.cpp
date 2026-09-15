@@ -58,8 +58,12 @@ bool CHttpRequestEmscripten::ConfigureAndRun()
 		return false;
 	}
 
-	if(!str_startswith(m_aUrl, "https://") &&
-		(!g_Config.m_HttpAllowInsecure || !str_startswith(m_aUrl, "http://")))
+	// Whether a plaintext request is acceptable is the browser's decision, not
+	// ours: a page served over https may not make http requests at all, and a
+	// page served over http is in no position to ask more of its requests than
+	// of itself. Asking for `http_allow_insecure` on top of that would only
+	// keep the client from reaching the server it was loaded from.
+	if(!str_startswith(m_aUrl, "https://") && !str_startswith(m_aUrl, "http://"))
 	{
 		log_error("http", "unsupported protocol: %s", m_aUrl);
 		return false;

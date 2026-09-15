@@ -4,6 +4,7 @@
 #include <base/log.h>
 #include <base/math.h>
 #include <base/mem.h>
+#include <base/time.h>
 
 #include <engine/client/graphics_threaded.h>
 #include <engine/engine.h>
@@ -18,6 +19,7 @@
 #include <game/map/render_layer.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <utility>
 #include <vector>
@@ -27,6 +29,15 @@ namespace
 	constexpr LOG_COLOR ERROR_LOG_COLOR = LOG_COLOR{255, 0, 0};
 	// How much of the picture is held in memory at once while it is written.
 	constexpr size_t MAX_FULL_IMAGE_BAND_BYTES = 512 * 1024 * 1024;
+	// How large a piece of the picture the view draws for itself, and how much
+	// memory the band of them is given. Both only apply where the view has a
+	// window: a tool draws pieces of the size it was asked for.
+	constexpr size_t MAX_FULL_IMAGE_PIECE = 4096;
+	constexpr size_t FULL_IMAGE_BAND_BUDGET = 64 * 1024 * 1024;
+	// How long a side of the picture may get where a budget of pixels applies.
+	// A very long map would otherwise spend its whole budget on one side and
+	// come out as a picture few programs will open.
+	constexpr double MAX_FULL_IMAGE_SIDE = 16384.0;
 } // namespace
 
 CStandaloneMapView::CStandaloneMapView(const char *pLogContext) :
@@ -263,10 +274,10 @@ bool CStandaloneMapView::ReadFrame(CImageInfo &Image)
 	return true;
 }
 
-bool CStandaloneMapView::EnsureAsideTarget()
+bool CStandaloneMapView::EnsureAsideTarget(int Width, int Height)
 {
-	const int Width = std::max(m_Width, 1);
-	const int Height = std::max(m_Height, 1);
+	Width = std::max(Width, 1);
+	Height = std::max(Height, 1);
 	if(m_AsideTarget.IsValid() && m_AsideWidth == Width && m_AsideHeight == Height)
 		return true;
 	if(m_AsideTarget.IsValid())
@@ -288,8 +299,13 @@ bool CStandaloneMapView::EnsureAsideTarget()
 	return true;
 }
 
-bool CStandaloneMapView::RenderAsideAndRead(const SRenderParams &Params, CImageInfo &Image)
+bool CStandaloneMapView::RenderAsideAndRead(const SRenderParams &Params, CImageInfo &Image, int Width, int Height)
 {
+	if(Width <= 0 || Height <= 0)
+	{
+		Width = m_Width;
+		Height = m_Height;
+	}
 	if(!m_Windowed)
 	{
 		// There is no window to keep this out of, and the frontend already
@@ -297,14 +313,20 @@ bool CStandaloneMapView::RenderAsideAndRead(const SRenderParams &Params, CImageI
 		Render(Params);
 		return ReadFrame(Image);
 	}
-	if(!EnsureAsideTarget())
+	if(!EnsureAsideTarget(Width, Height))
 		return false;
 	if(!m_pGraphics->BeginOffscreenFrame(m_AsideTarget))
 	{
 		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "Could not draw into the picture's own target");
 		return false;
 	}
+	// The frame is drawn for a surface of the target's size, not the window's,
+	// because that is what it is going into.
+	const int WindowWidth = std::exchange(m_Width, Width);
+	const int WindowHeight = std::exchange(m_Height, Height);
 	Render(Params);
+	m_Width = WindowWidth;
+	m_Height = WindowHeight;
 	std::unique_ptr<IGraphics::ITextureReadback> pReadback = m_pGraphics->EndOffscreenFrame(std::exchange(Image, CImageInfo()));
 	if(pReadback == nullptr || !pReadback->Wait(Image) || Image.m_pData == nullptr)
 	{
@@ -316,6 +338,21 @@ bool CStandaloneMapView::RenderAsideAndRead(const SRenderParams &Params, CImageI
 
 bool CStandaloneMapView::SaveFullImage(const char *pPath, int TimeOffsetMillis)
 {
+	if(!BeginFullImage(pPath, TimeOffsetMillis))
+		return false;
+	// Everything at once, for a program that has nothing else to do with the
+	// thread while it waits. A viewer does, and steps instead.
+	while(StepFullImage(std::chrono::nanoseconds::max()))
+	{
+		// Drawing.
+	}
+	return !m_FullImage.m_Failed;
+}
+
+bool CStandaloneMapView::BeginFullImage(const char *pPath, int TimeOffsetMillis, size_t PixelBudget)
+{
+	CancelFullImage();
+	m_FullImage.m_Failed = true;
 	if(m_pMap == nullptr)
 	{
 		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "No map is loaded");
@@ -323,82 +360,165 @@ bool CStandaloneMapView::SaveFullImage(const char *pPath, int TimeOffsetMillis)
 	}
 
 	const vec2 WorldSize = MapWorldSize();
-	const size_t FullWidth = static_cast<size_t>(std::max(1.0f, std::round(WorldSize.x)));
-	const size_t FullHeight = static_cast<size_t>(std::max(1.0f, std::round(WorldSize.y)));
-	const size_t TileWidth = static_cast<size_t>(std::max(m_Width, 1));
-	const size_t TileHeight = static_cast<size_t>(std::max(m_Height, 1));
+	SFullImage &Full = m_FullImage;
+	// A map is drawn at 32 pixels per tile, which for a large one is more
+	// pixels than a picture can have: whoever gave a budget gets the whole map
+	// within it, in the shape the map has, and nobody gets it larger than it
+	// is. What that costs is detail, and what it saves is every piece that
+	// would have been drawn for pixels nothing can open.
+	const double Pixels = static_cast<double>(WorldSize.x) * static_cast<double>(WorldSize.y);
+	double Scale = 1.0;
+	if(PixelBudget > 0)
+	{
+		Scale = std::min({1.0, std::sqrt(static_cast<double>(PixelBudget) / Pixels),
+			MAX_FULL_IMAGE_SIDE / static_cast<double>(WorldSize.x),
+			MAX_FULL_IMAGE_SIDE / static_cast<double>(WorldSize.y)});
+	}
+	Full.m_FullWidth = static_cast<size_t>(std::max(1.0, std::round(WorldSize.x * Scale)));
+	Full.m_FullHeight = static_cast<size_t>(std::max(1.0, std::round(WorldSize.y * Scale)));
+	Full.m_PieceWidth = static_cast<size_t>(std::max(m_Width, 1));
+	Full.m_PieceHeight = static_cast<size_t>(std::max(m_Height, 1));
+	if(m_Windowed)
+	{
+		// A piece goes into a target of its own, so it need not be the size of
+		// the window: every piece costs a frame and a read back off the
+		// graphics card whatever size it is, and abyss at the size of a window
+		// is fourteen hundred of them. What bounds a piece is the largest
+		// texture the backend will make, and the band it goes into - the band
+		// is as wide as the whole picture, so on a wide map it is the height of
+		// a piece that costs memory.
+		const size_t Limit = std::clamp<size_t>(m_pGraphics->MaxTextureDimension(), 1, MAX_FULL_IMAGE_PIECE);
+		Full.m_PieceWidth = std::min(Full.m_FullWidth, Limit);
+		Full.m_PieceHeight = std::clamp<size_t>(FULL_IMAGE_BAND_BUDGET / (Full.m_FullWidth * 4), 1, std::min(Full.m_FullHeight, Limit));
+	}
 
 	// One band of the picture is as tall as the surface and as wide as the
 	// whole map, and it is the only thing here that is held in memory at once.
 	// Whoever wants a smaller one asks for a smaller surface.
-	const size_t BandBytes = FullWidth * TileHeight * 4;
+	const size_t BandBytes = Full.m_FullWidth * Full.m_PieceHeight * 4;
 	if(BandBytes > MAX_FULL_IMAGE_BAND_BYTES)
 	{
 		log_error_color(ERROR_LOG_COLOR, m_pLogContext,
 			"A %" PRIzu " by %" PRIzu " picture needs %" PRIzu " MiB per band at this surface height; ask for a surface no taller than %" PRIzu " pixels",
-			FullWidth, FullHeight, BandBytes / (1024 * 1024), MAX_FULL_IMAGE_BAND_BYTES / (FullWidth * 4));
+			Full.m_FullWidth, Full.m_FullHeight, BandBytes / (1024 * 1024), MAX_FULL_IMAGE_BAND_BYTES / (Full.m_FullWidth * 4));
 		return false;
 	}
 
 	IOHANDLE File = io_open(pPath, IOFLAG_WRITE);
-	CPngRowWriter Writer;
-	if(!Writer.Begin(File, pPath, FullWidth, FullHeight, CImageInfo::FORMAT_RGBA))
+	if(!Full.m_Writer.Begin(File, pPath, Full.m_FullWidth, Full.m_FullHeight, CImageInfo::FORMAT_RGBA))
 		return false;
 
 	// One view for the whole picture, of the picture's own shape, and every
 	// piece a window into it: a layer that moves at its own speed is then laid
 	// out across the whole map once, the way it is when the map is looked at,
 	// rather than starting again in every piece.
-	SRenderParams Whole;
-	Whole.m_ViewSize = ViewSizeForAspect(FullWidth / (float)FullHeight);
-	Whole.m_Zoom = WorldSize.x / Whole.m_ViewSize.x;
-	Whole.m_Center = WorldSize / 2.0f;
-	Whole.m_TimeOffsetMillis = TimeOffsetMillis;
+	Full.m_Whole = SRenderParams();
+	Full.m_Whole.m_ViewSize = ViewSizeForAspect(Full.m_FullWidth / (float)Full.m_FullHeight);
+	Full.m_Whole.m_Zoom = WorldSize.x / Full.m_Whole.m_ViewSize.x;
+	Full.m_Whole.m_Center = WorldSize / 2.0f;
+	Full.m_Whole.m_TimeOffsetMillis = TimeOffsetMillis;
 
-	std::vector<uint8_t> vBand(BandBytes);
-	CImageInfo Image;
-	for(size_t Top = 0; Top < FullHeight; Top += TileHeight)
+	if(Scale < 1.0)
 	{
-		const size_t Rows = std::min(TileHeight, FullHeight - Top);
-		for(size_t Left = 0; Left < FullWidth; Left += TileWidth)
-		{
-			const size_t Columns = std::min(TileWidth, FullWidth - Left);
-			// The piece that is drawn always has the shape of the surface,
-			// even where the map ends inside it; what sticks out is drawn and
-			// then left behind.
-			SRenderParams Params = Whole;
-			Params.m_Window = CScreenRect(
-				vec2(Left / (float)FullWidth, Top / (float)FullHeight),
-				vec2((Left + TileWidth) / (float)FullWidth, (Top + TileHeight) / (float)FullHeight));
-			// Beside the window, not in it: a picture of the whole map is the
-			// surface moved over all of it, and drawn into the window that is
-			// a sweep across the map that whoever asked for a picture never
-			// asked to watch.
-			if(!RenderAsideAndRead(Params, Image))
-			{
-				Image.Free();
-				return false;
-			}
-			if(Image.m_Format != CImageInfo::FORMAT_RGBA || Image.m_Width < Columns || Image.m_Height < Rows)
-			{
-				log_error_color(ERROR_LOG_COLOR, m_pLogContext, "The backend returned a %" PRIzu " by %" PRIzu " frame where %" PRIzu " by %" PRIzu " was drawn",
-					Image.m_Width, Image.m_Height, Columns, Rows);
-				Image.Free();
-				return false;
-			}
-			for(size_t Row = 0; Row < Rows; ++Row)
-			{
-				mem_copy(&vBand[(Row * FullWidth + Left) * 4], Image.m_pData + Row * Image.m_Width * 4, Columns * 4);
-			}
-		}
-		if(!Writer.WriteRows(vBand.data(), Rows))
-		{
-			Image.Free();
-			return false;
-		}
+		log_info(m_pLogContext, "The whole map is %" PRIzu " by %" PRIzu " pixels, so the picture is drawn at %" PRIzu " by %" PRIzu,
+			static_cast<size_t>(std::round(WorldSize.x)), static_cast<size_t>(std::round(WorldSize.y)), Full.m_FullWidth, Full.m_FullHeight);
 	}
-	Image.Free();
-	return Writer.End();
+
+	Full.m_vBand.assign(BandBytes, 0);
+	Full.m_Top = 0;
+	Full.m_Left = 0;
+	Full.m_Failed = false;
+	Full.m_Running = true;
+	return true;
+}
+
+bool CStandaloneMapView::StepOneFullImagePiece()
+{
+	SFullImage &Full = m_FullImage;
+	const size_t Rows = std::min(Full.m_PieceHeight, Full.m_FullHeight - Full.m_Top);
+	const size_t Columns = std::min(Full.m_PieceWidth, Full.m_FullWidth - Full.m_Left);
+	// The piece that is drawn always has the shape of the surface, even where
+	// the map ends inside it; what sticks out is drawn and then left behind.
+	SRenderParams Params = Full.m_Whole;
+	Params.m_Window = CScreenRect(
+		vec2(Full.m_Left / (float)Full.m_FullWidth, Full.m_Top / (float)Full.m_FullHeight),
+		vec2((Full.m_Left + Full.m_PieceWidth) / (float)Full.m_FullWidth, (Full.m_Top + Full.m_PieceHeight) / (float)Full.m_FullHeight));
+	// Beside the window, not in it: a picture of the whole map is the surface
+	// moved over all of it, and drawn into the window that is a sweep across
+	// the map that whoever asked for a picture never asked to watch.
+	if(!RenderAsideAndRead(Params, Full.m_Image, (int)Full.m_PieceWidth, (int)Full.m_PieceHeight))
+		return false;
+	if(Full.m_Image.m_Format != CImageInfo::FORMAT_RGBA || Full.m_Image.m_Width < Columns || Full.m_Image.m_Height < Rows)
+	{
+		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "The backend returned a %" PRIzu " by %" PRIzu " frame where %" PRIzu " by %" PRIzu " was drawn",
+			Full.m_Image.m_Width, Full.m_Image.m_Height, Columns, Rows);
+		return false;
+	}
+	for(size_t Row = 0; Row < Rows; ++Row)
+	{
+		mem_copy(&Full.m_vBand[(Row * Full.m_FullWidth + Full.m_Left) * 4], Full.m_Image.m_pData + Row * Full.m_Image.m_Width * 4, Columns * 4);
+	}
+
+	Full.m_Left += Full.m_PieceWidth;
+	if(Full.m_Left < Full.m_FullWidth)
+		return true;
+	// The band is full, so it goes out and the sweep drops to the next one.
+	if(!Full.m_Writer.WriteRows(Full.m_vBand.data(), Rows))
+		return false;
+	Full.m_Left = 0;
+	Full.m_Top += Full.m_PieceHeight;
+	return true;
+}
+
+bool CStandaloneMapView::StepFullImage(std::chrono::nanoseconds Budget)
+{
+	SFullImage &Full = m_FullImage;
+	if(!Full.m_Running)
+		return false;
+	const std::chrono::nanoseconds Until = time_get_nanoseconds() + Budget;
+	// At least one piece, however little time there is: a budget that buys
+	// nothing would leave the picture standing still for good.
+	do
+	{
+		if(Full.m_Top >= Full.m_FullHeight)
+			return EndFullImage(true);
+		if(!StepOneFullImagePiece())
+			return EndFullImage(false);
+	} while(Budget == std::chrono::nanoseconds::max() || time_get_nanoseconds() < Until);
+	return true;
+}
+
+float CStandaloneMapView::FullImageProgress() const
+{
+	const SFullImage &Full = m_FullImage;
+	if(!Full.m_Running || Full.m_FullHeight == 0 || Full.m_FullWidth == 0)
+		return 0.0f;
+	const float Bands = std::ceil(Full.m_FullHeight / (float)Full.m_PieceHeight);
+	const float InBand = std::ceil(Full.m_FullWidth / (float)Full.m_PieceWidth);
+	const float Done = Full.m_Top / (float)Full.m_PieceHeight * InBand + Full.m_Left / (float)Full.m_PieceWidth;
+	return std::clamp(Done / (Bands * InBand), 0.0f, 1.0f);
+}
+
+bool CStandaloneMapView::EndFullImage(bool Success)
+{
+	SFullImage &Full = m_FullImage;
+	Full.m_Image.Free();
+	Full.m_vBand.clear();
+	Full.m_vBand.shrink_to_fit();
+	Full.m_Running = false;
+	Full.m_Failed = !Success || !Full.m_Writer.End();
+	return false;
+}
+
+void CStandaloneMapView::CancelFullImage()
+{
+	if(m_FullImage.m_Running)
+	{
+		// The file is left where it is, half written: the writer closes it
+		// without finishing it, and half a PNG is a file a viewer refuses
+		// rather than one that quietly shows half a map.
+		EndFullImage(false);
+	}
 }
 
 bool CStandaloneMapView::SaveImage(const SRenderParams &Params, const char *pPath)

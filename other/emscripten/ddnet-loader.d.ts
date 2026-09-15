@@ -51,7 +51,7 @@ export type VideoSinkSource =
 
 /** What every way in takes. */
 export interface StartOptions {
-	/** The program's factory, for example `DDNetDemoViewer`. */
+	/** The program's factory, for example `DDNetDemoPlayer`. */
 	module: ProgramFactory;
 	/** What to call it in what the page says. */
 	programName?: string;
@@ -179,7 +179,7 @@ export declare class Instance extends EventTarget {
 	destroy(): void;
 }
 
-/** What a demo viewer can be asked and told. */
+/** What a demo player can be asked and told. */
 export interface DemoControls {
 	setSize(width: number, height: number): void;
 	length(): number | null;
@@ -202,6 +202,8 @@ export interface DemoControls {
 	spectateStep(direction: number): void;
 	players(): { id: number; name: string }[];
 	zoom(factor?: number): number | null;
+	recordedCameraAvailable(): boolean;
+	recordedCamera(use?: boolean): boolean | void;
 	controls(show?: boolean): boolean | void;
 	startExport(options?: VideoSettings): boolean;
 }
@@ -220,6 +222,7 @@ export interface MapControls {
 	exportView(): void;
 	exportFullMap(): void;
 	exportState(): number | null;
+	exportProgress(): number | null;
 	controls(show?: boolean): boolean | void;
 }
 
@@ -291,6 +294,55 @@ export declare function urlParameter(name: string): string | null;
 export declare function setUrlParameters(values: Record<string, string | null>): void;
 export declare function zip(entries: { name: string; data: Uint8Array }[]): Blob;
 
+/**
+ * A viewer as an element:
+ *
+ * ```html
+ * <ddnet-demo src="https://…/x.demo" controls></ddnet-demo>
+ * <ddnet-map src="https://…/x.map" controls x="120" y="64" tiles="90"></ddnet-map>
+ * ```
+ *
+ * The picture lives in a shadow root, so nothing here shares a name with the
+ * page around it. What may be styled from outside is named: `::part(picture)`
+ * and `::part(message)`. The attributes beyond `src` are the ones the viewer
+ * pages spell in their address, and they are applied as soon as the file they
+ * belong to is there.
+ */
+export declare class ViewerElement extends HTMLElement {
+	/** The running program, or what stopped it from starting. */
+	readonly ready: Promise<Instance> | null;
+	/** The viewer's own controls, and `null` before it runs. */
+	readonly controls: DemoControls | MapControls | null;
+	/** Shows a file rather than a name to fetch. */
+	load(file: File): Promise<string>;
+	/** Puts a line over the picture, or takes it away again with `""`. */
+	say(message: string): void;
+}
+
+/** `<ddnet-demo>`: `src`, `controls`, `t`, `speed`, `paused`, `spec`. */
+export declare class DemoElement extends ViewerElement {
+	readonly controls: DemoControls | null;
+}
+
+/** `<ddnet-map>`: `src`, `controls`, `x`, `y`, `tiles`. */
+export declare class MapElement extends ViewerElement {
+	readonly controls: MapControls | null;
+}
+
+/**
+ * Defines `<ddnet-demo>` and `<ddnet-map>`, which this module does for itself
+ * as it loads. Here for a page that takes them off and wants them back, and
+ * harmless twice.
+ */
+export declare function defineViewerElements(): void;
+
+/**
+ * The program's script as a module, which a plain `import` cannot do with it:
+ * it is a classic script that names itself. Answers the factory that names it,
+ * and remembers it, so asking twice for the same one costs nothing.
+ */
+export declare function importProgram(scriptUrl: string, moduleName: string): Promise<ProgramFactory>;
+
 /** All of it at once, for `import DDNetLoader from "ddnet-loader"`. */
 declare const DDNetLoader: {
 	version: typeof version;
@@ -314,5 +366,9 @@ declare const DDNetLoader: {
 	urlParameter: typeof urlParameter;
 	setUrlParameters: typeof setUrlParameters;
 	zip: typeof zip;
+	DemoElement: typeof DemoElement;
+	MapElement: typeof MapElement;
+	defineViewerElements: typeof defineViewerElements;
+	importProgram: typeof importProgram;
 };
 export default DDNetLoader;

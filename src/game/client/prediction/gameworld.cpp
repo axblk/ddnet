@@ -488,7 +488,7 @@ void CGameWorld::NetCharAdd(int ObjId, CNetObj_Character *pCharObj, CNetObj_DDNe
 	}
 }
 
-#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_PLAYER_TOOL)
 // Takes a projectile, a pickup or a laser out of a snapshot and keeps it in
 // this world, so that a game that guesses ahead can carry it further than the
 // snapshot it came in. A demo is never ahead of anything and draws these

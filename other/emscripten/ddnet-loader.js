@@ -347,8 +347,8 @@ const DDNetLoader = (() => {
 	// beside it was laid out differently - so the box is watched here and the
 	// program is told its size.
 	//
-	// The other end of it is `DemoViewerSetSize` in
-	// `src/engine/client/demo_viewer_client.cpp` and `MapViewerSetSize` in
+	// The other end of it is `DemoPlayerSetSize` in
+	// `src/engine/client/demo_player_client.cpp` and `MapViewerSetSize` in
 	// `src/game/map/standalone/map_viewer_main.cpp`.
 	function followSize(element, controls, options) {
 		const settings = Object.assign({ signal: undefined }, options || {});
@@ -688,6 +688,41 @@ const DDNetLoader = (() => {
 			throw fail("FetchFailed", `${url.href} answered ${response.status} ${response.statusText}`);
 		}
 		return new Blob([await response.text()], { type: "text/javascript" });
+	}
+
+	// The program's script, as something a module can hold: it is a plain
+	// script that names itself, and there is no way to run one of those from a
+	// module or from a module worker. So it is read, given a line that hands
+	// its name out, and imported as the module that makes of it. Nothing of the
+	// script itself is changed; where its own files are it is told through
+	// `scriptUrl` when it is started.
+	//
+	// Remembered by where it came from: a page with two viewers on it, or a
+	// queue of renders, would otherwise translate the same script again for
+	// each of them.
+	const importedPrograms = new Map();
+
+	async function importProgram(scriptUrl, moduleName) {
+		const key = `${scriptUrl}|${moduleName}`;
+		var pending = importedPrograms.get(key);
+		if (pending === undefined) {
+			pending = (async () => {
+				const response = await fetch(scriptUrl);
+				if (!response.ok) {
+					throw fail("FetchFailed", `${scriptUrl} answered ${response.status} ${response.statusText}`);
+				}
+				const text = await response.text();
+				const wrapped = URL.createObjectURL(new Blob(
+					[`${text}\nexport default ${moduleName};`], { type: "text/javascript" }));
+				try {
+					return (await import(wrapped)).default;
+				} finally {
+					URL.revokeObjectURL(wrapped);
+				}
+			})();
+			importedPrograms.set(key, pending);
+		}
+		return await pending;
 	}
 
 	// Where a video goes while it is being made. A fragmented MP4 is valid
@@ -1140,7 +1175,7 @@ const DDNetLoader = (() => {
 			const instance = this;
 			const options = this.options;
 			if (typeof options.module !== "function") {
-				throw fail("BadOption", "DDNetLoader needs the program's factory, for example `module: DDNetDemoViewer`");
+				throw fail("BadOption", "DDNetLoader needs the program's factory, for example `module: DDNetDemoPlayer`");
 			}
 			// A signal that is already aborted is a program that is not
 			// started, and one aborted later is a program asked to stop. Both
@@ -1479,17 +1514,7 @@ self.onmessage = async event => {
 	const request = event.data;
 	try {
 		const loader = await import(request.loaderUrl);
-		// The program is a plain script - it names itself and expects to be
-		// run as one - and a module worker has no way to run a plain script.
-		// So it is read, given a line that hands its name out, and imported as
-		// the module that makes of it. Nothing of the script itself is
-		// changed, and what it needs to find its own files it is told through
-		// \`scriptUrl\`.
-		const text = await (await fetch(request.scriptUrl)).text();
-		const wrapped = URL.createObjectURL(new Blob(
-			[text + "\\nexport default " + request.moduleName + ";"], { type: "text/javascript" }));
-		const factory = (await import(wrapped)).default;
-		URL.revokeObjectURL(wrapped);
+		const factory = await loader.importProgram(request.scriptUrl, request.moduleName);
 		const video = await loader.render(Object.assign({}, request.options, {
 			module: factory,
 			worker: false,
@@ -1625,8 +1650,8 @@ self.onmessage = async event => {
 	// which of the arguments are numbers. Every call answers `null` where the
 	// program is not running, the same as `call` does.
 	//
-	// The other end of these is the `DemoViewer*` block in
-	// `src/engine/client/demo_viewer_client.cpp` and the `MapViewer*` block in
+	// The other end of these is the `DemoPlayer*` block in
+	// `src/engine/client/demo_player_client.cpp` and the `MapViewer*` block in
 	// `src/game/map/standalone/map_viewer_main.cpp`.
 	function demoControls(instance) {
 		const number = (name, argument) => argument === undefined
@@ -1638,50 +1663,50 @@ self.onmessage = async event => {
 			 * Only for a viewer that sits in a box of the page's own: one that
 			 * fills the window follows it by itself. See `followSize`.
 			 */
-			setSize: (Width, Height) => instance.call("DemoViewerSetSize", null, ["number", "number"], [Math.round(Width), Math.round(Height)]),
+			setSize: (Width, Height) => instance.call("DemoPlayerSetSize", null, ["number", "number"], [Math.round(Width), Math.round(Height)]),
 			/** Whether a demo is loaded and how long it is, in seconds. */
-			length: () => number("DemoViewerLength"),
+			length: () => number("DemoPlayerLength"),
 			/** How far it has played, between 0 and 1. */
-			progress: () => number("DemoViewerProgress"),
-			paused: () => number("DemoViewerPaused") === 1,
-			pause: () => number("DemoViewerSetPaused", 1),
-			play: () => number("DemoViewerSetPaused", 0),
+			progress: () => number("DemoPlayerProgress"),
+			paused: () => number("DemoPlayerPaused") === 1,
+			pause: () => number("DemoPlayerSetPaused", 1),
+			play: () => number("DemoPlayerSetPaused", 0),
 			/** Jumps to a part of the demo, between 0 and 1. */
-			seek: Fraction => number("DemoViewerSeekPercent", Fraction),
-			/** Jumps to a time in the demo, in seconds. */
-			seekTime: Seconds => number("DemoViewerSeekTime", Seconds),
-			restart: () => instance.call("DemoViewerSeekStart"),
+			seek: Fraction => number("DemoPlayerSeekPercent", Fraction),
+			/** Jumps to a time in the demo, in seconds from its beginning. */
+			seekTime: Seconds => number("DemoPlayerSeekToTime", Seconds),
+			restart: () => instance.call("DemoPlayerSeekStart"),
 			/** The playback speed, or sets it: 1 is as it was played. */
-			speed: Value => Value === undefined ? number("DemoViewerSpeed") : number("DemoViewerSetSpeed", Value),
-			exporting: () => number("DemoViewerExporting") === 1,
+			speed: Value => Value === undefined ? number("DemoPlayerSpeed") : number("DemoPlayerSetSpeed", Value),
+			exporting: () => number("DemoPlayerExporting") === 1,
 			/**
 			 * How an export is getting on: 0 before any was asked for, 1 while
 			 * one is being written, 2 once one was handed over, 3 when it
 			 * failed. What `startExport` answers cannot say, because in a
 			 * browser it returns before the encoder has even been asked.
 			 */
-			exportState: () => number("DemoViewerExportState"),
+			exportState: () => number("DemoPlayerExportState"),
 			/**
 			 * How far the video being written has got, between 0 and 1. Not
 			 * where the demo on the canvas is: the export reads it through a
 			 * way of its own, so both move at once and apart.
 			 */
-			exportProgress: () => number("DemoViewerExportProgress"),
+			exportProgress: () => number("DemoPlayerExportProgress"),
 			/**
 			 * How much longer the export has to run, in seconds, or a negative
 			 * number while there is no telling yet. Worked out from what is
 			 * left of the demo and the rate frames are being written at, so it
 			 * follows a machine that speeds up or slows down.
 			 */
-			exportSecondsLeft: () => number("DemoViewerExportSecondsLeft"),
+			exportSecondsLeft: () => number("DemoPlayerExportSecondsLeft"),
 			/**
 			 * Why the export that was last asked for failed, or an empty
 			 * string when none has. A page is the only place this can be
 			 * said: there is no log for whoever is looking at the demo.
 			 */
-			exportError: () => instance.call("DemoViewerExportError", "string") || "",
+			exportError: () => instance.call("DemoPlayerExportError", "string") || "",
 			/** Throws away the export that is running, and its file with it. */
-			cancelExport: () => instance.call("DemoViewerCancelExport"),
+			cancelExport: () => instance.call("DemoPlayerCancelExport"),
 			/**
 			 * Who the demo is watched over the shoulder of, or sets it: a
 			 * client id, -1 for a camera of one's own that the pointer drags
@@ -1689,25 +1714,40 @@ self.onmessage = async event => {
 			 * recorded has nobody who recorded it, so it starts at -1.
 			 */
 			spectating: Id => Id === undefined
-				? number("DemoViewerSpectating")
-				: number("DemoViewerSetSpectate", Id),
+				? number("DemoPlayerSpectating")
+				: number("DemoPlayerSetSpectate", Id),
 			/** Follows whoever is called this, once the demo has named them. */
-			spectateName: Name => instance.call("DemoViewerSetSpectateName", null, ["string"], [Name || ""]),
+			spectateName: Name => instance.call("DemoPlayerSetSpectateName", null, ["string"], [Name || ""]),
 			/** On to the next player there is, or the one before. */
-			spectateStep: Direction => number("DemoViewerSpectateStep", Direction),
+			spectateStep: Direction => number("DemoPlayerSpectateStep", Direction),
 			/**
 			 * The players the demo has named so far, as `{id, name}` objects.
 			 * A demo names them a snapshot or two in, so a list built from this
 			 * is worth building again while it plays.
 			 */
-			players: () => JSON.parse(instance.call("DemoViewerPlayers", "string") || "[]"),
+			players: () => JSON.parse(instance.call("DemoPlayerPlayers", "string") || "[]"),
 			/**
 			 * How much of the world is in the canvas, or multiplies it. The
 			 * wheel over the canvas does the same thing.
 			 */
 			zoom: Factor => Factor === undefined
-				? number("DemoViewerZoom")
-				: number("DemoViewerZoomBy", Factor),
+				? number("DemoPlayerZoom")
+				: number("DemoPlayerZoomBy", Factor),
+			/**
+			 * Whether the demo's own view is available at all: a demo carries
+			 * where the camera was and how much of the world it had in it, but
+			 * only if it was recorded with one and only while somebody is
+			 * being followed.
+			 */
+			recordedCameraAvailable: () => number("DemoPlayerRecordedCamera") !== 0,
+			/**
+			 * Whether the demo's own view is the one being shown, or switches
+			 * back to it. Zooming leaves it behind, which is what whoever
+			 * zoomed asked for; this is the way back.
+			 */
+			recordedCamera: Use => Use === undefined
+				? number("DemoPlayerRecordedCamera") === 2
+				: instance.call("DemoPlayerSetRecordedCamera", null, ["number"], [Use ? 1 : 0]),
 			/**
 			 * Whether the viewer draws its own bar of controls over the demo,
 			 * or switches it on and off. A page with controls of its own turns
@@ -1715,8 +1755,8 @@ self.onmessage = async event => {
 			 * the first frame rather than after it.
 			 */
 			controls: Show => Show === undefined
-				? number("DemoViewerControls") === 1
-				: instance.call("DemoViewerSetControls", null, ["number"], [Show ? 1 : 0]),
+				? number("DemoPlayerControls") === 1
+				: instance.call("DemoPlayerSetControls", null, ["number"], [Show ? 1 : 0]),
 			/**
 			 * Starts a video export, and says whether it started. The options
 			 * are named as in `render`, because they are the same settings the
@@ -1725,7 +1765,7 @@ self.onmessage = async event => {
 			 */
 			startExport: options => {
 				const settings = options || {};
-				return instance.call("DemoViewerStartExport", "number",
+				return instance.call("DemoPlayerStartExport", "number",
 					["number", "number", "number", "number", "number", "string", "number", "number"],
 					[
 						settings.width || 0,
@@ -1826,6 +1866,11 @@ self.onmessage = async event => {
 			exportFullMap: () => instance.call("MapViewerExportFullMap"),
 			/** 0 while nothing is being written, 1 while it is, 2 when it failed. */
 			exportState: () => instance.call("MapViewerExportState", "number"),
+			/**
+			 * How far a picture of the whole map has got, between 0 and 1. A
+			 * picture of the view is one frame and is always 0.
+			 */
+			exportProgress: () => instance.call("MapViewerExportProgress", "number"),
 		};
 	}
 
@@ -1959,6 +2004,289 @@ self.onmessage = async event => {
 		});
 	}
 
+	// One line to put a viewer on somebody else's page:
+	//
+	//     <ddnet-demo src="https://…/x.demo" controls></ddnet-demo>
+	//     <ddnet-map src="https://…/x.map" controls></ddnet-map>
+	//
+	// The picture lives in a shadow root, so nothing here shares a name with
+	// anything on the page around it - no `#canvas` to collide with, and no
+	// stylesheet of ours landing on their buttons. What may be styled from
+	// outside is named: `::part(picture)` and `::part(message)`.
+	//
+	// The controls are the ones the viewer draws for itself. A page of our own
+	// puts real buttons beside the canvas, which is better where the page is
+	// ours to write; in somebody else's page the drawn bar is what travels.
+	// How long the view attributes wait for the file they belong to. Abyss,
+	// the largest map anybody has, takes a few seconds to unpack.
+	const WAIT_FOR_FILE_MS = 60000;
+
+	const ELEMENT_STYLE = `
+:host { display: block; position: relative; contain: content; background: #000; }
+:host([hidden]) { display: none; }
+canvas { display: block; width: 100%; height: 100%; background: #000; touch-action: none; }
+.message {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	margin: 0;
+	padding: 12px;
+	background-color: rgba(0, 0, 0, 0.65);
+	color: #f4f4f5;
+	font: 13px/1.45 system-ui, sans-serif;
+	text-align: center;
+}
+`;
+
+	class CViewerElement extends HTMLElement {
+		constructor() {
+			super();
+			const root = this.attachShadow({ mode: "open" });
+			const style = document.createElement("style");
+			style.textContent = ELEMENT_STYLE;
+			this.viewerCanvas = document.createElement("canvas");
+			this.viewerCanvas.setAttribute("part", "picture");
+			this.viewerMessage = document.createElement("p");
+			this.viewerMessage.className = "message";
+			this.viewerMessage.setAttribute("part", "message");
+			this.viewerMessage.hidden = true;
+			root.append(style, this.viewerCanvas, this.viewerMessage);
+			this.viewerInstance = null;
+			this.viewerControls = null;
+			this.viewerStopping = null;
+			// Which file the view attributes are waiting for. A second file
+			// asked for while the first is still on its way leaves the first
+			// wait behind, and it has to know that it is no longer the one.
+			this.viewerGeneration = 0;
+			// A promise for the running program, so that a page can wait for it
+			// and hear about anything that stopped it from starting.
+			this.ready = null;
+		}
+
+		/** The controls of the viewer, once it runs, and `null` before that. */
+		get controls() {
+			return this.viewerControls;
+		}
+
+		/** What is being shown, as a file rather than as a name to fetch. */
+		async load(file) {
+			const instance = await this.ready;
+			const loading = instance.loadFile(file);
+			this.applyViewWhenLoaded();
+			return await loading;
+		}
+
+		say(message) {
+			this.viewerMessage.textContent = message || "";
+			this.viewerMessage.hidden = !message;
+		}
+
+		connectedCallback() {
+			// Moving an element within a page takes it out and puts it back,
+			// and a program is too dear to throw away for that: this is only a
+			// start if there is nothing running already.
+			if (this.ready !== null) {
+				return;
+			}
+			this.viewerStopping = new AbortController();
+			this.ready = this.startViewer();
+			this.ready.catch(error => {
+				if (this.viewerStopping !== null && !this.viewerStopping.signal.aborted) {
+					this.say((error && error.message) || String(error));
+				}
+			});
+		}
+
+		disconnectedCallback() {
+			const instance = this.viewerInstance;
+			const stopping = this.viewerStopping;
+			this.viewerInstance = null;
+			this.viewerControls = null;
+			this.viewerStopping = null;
+			this.ready = null;
+			if (stopping !== null) {
+				stopping.abort();
+			}
+			if (instance !== null) {
+				instance.destroy();
+			}
+		}
+
+		attributeChangedCallback(name, before, value) {
+			if (before === value || this.viewerControls === null) {
+				return;
+			}
+			this.applyAttribute(name, value);
+		}
+
+		async startViewer() {
+			const kind = this.constructor.viewerKind;
+			const base = new URL(this.getAttribute("base") || ".", new URL(LOADER_URL, location.href));
+			const scriptUrl = new URL(kind.script, base).href;
+			const factory = await importProgram(scriptUrl, kind.moduleName);
+			const source = this.getAttribute("src");
+			const instance = await start({
+				module: factory,
+				scriptUrl: scriptUrl,
+				programName: kind.programName,
+				canvas: this.viewerCanvas,
+				accept: [kind.suffix],
+				// Drawn by the viewer itself unless this says otherwise, and
+				// left off entirely where the page says it brings its own.
+				controls: this.hasAttribute("controls"),
+				file: source === null || source === "" ? undefined : source,
+				dataBase: this.getAttribute("data") || undefined,
+				signal: this.viewerStopping.signal,
+				// A page that embeds a viewer did not ask for its address to be
+				// read, and two viewers on one page could not both have it.
+				urlParams: [],
+				onOutput: (message, options) => {
+					if (options.error) {
+						this.say(message);
+					}
+				},
+			});
+			this.viewerInstance = instance;
+			this.viewerControls = kind.controls(instance);
+			// The canvas is a box on somebody's page here, not the window, so
+			// nothing would tell the program when it changes shape.
+			followSize(this.viewerCanvas, this.viewerControls, { signal: this.viewerStopping.signal });
+			this.applyViewWhenLoaded();
+			return instance;
+		}
+
+		// What the element was asked for beyond the file itself, applied once
+		// the file is there. A viewer fits the whole map, or puts a demo at its
+		// beginning, at the moment it has one - which is after the element was
+		// told what to show, so anything applied before that would be undone
+		// again by it.
+		applyViewWhenLoaded() {
+			const kind = this.constructor.viewerKind;
+			const signal = this.viewerStopping === null ? null : this.viewerStopping.signal;
+			const generation = ++this.viewerGeneration;
+			const until = Date.now() + WAIT_FOR_FILE_MS;
+			const apply = () => {
+				if (signal === null || signal.aborted || generation !== this.viewerGeneration || this.viewerControls === null) {
+					return;
+				}
+				if (!kind.loaded(this.viewerControls)) {
+					// A file that never arrives has said so through `onOutput`
+					// by now, so the wait ends rather than going on for as long
+					// as the page is open.
+					if (Date.now() < until) {
+						setTimeout(apply, 100);
+					}
+					return;
+				}
+				for (const name of this.constructor.observedAttributes) {
+					if (name !== "src" && this.hasAttribute(name)) {
+						this.applyAttribute(name, this.getAttribute(name));
+					}
+				}
+			};
+			apply();
+		}
+
+		applyAttribute(name, value) {
+			if (name === "src") {
+				this.say("");
+				if (value !== null && value !== "") {
+					this.viewerInstance.loadUrl(value).catch(error => this.say((error && error.message) || String(error)));
+					// The new file brings its own view with it, so what the
+					// element asks for has to be put back on top of it again.
+					this.applyViewWhenLoaded();
+				}
+				return;
+			}
+			if (name === "controls") {
+				this.viewerControls.controls(value !== null);
+				return;
+			}
+			this.constructor.viewerKind.apply(this.viewerControls, name, value, this);
+		}
+	}
+
+	// What a demo takes beyond `src`, spelled the way the address of the demo
+	// page spells it: a link somebody copied out of the viewer and an element
+	// somebody wrote by hand say the same things by the same names.
+	class CDemoElement extends CViewerElement {
+		static observedAttributes = ["src", "controls", "t", "speed", "paused", "spec"];
+		static viewerKind = {
+			script: "ddnet-demo-player.js",
+			moduleName: "DDNetDemoPlayer",
+			programName: "Demo player",
+			suffix: ".demo",
+			controls: instance => demoControls(instance),
+			loaded: controls => controls.length() > 0,
+			apply: (controls, name, value) => {
+				const number = parseFloat(value);
+				if (name === "t" && isFinite(number)) {
+					controls.seekTime(number);
+				} else if (name === "speed" && isFinite(number)) {
+					controls.speed(number);
+				} else if (name === "paused") {
+					if (value === null || value === "0" || value === "false") {
+						controls.play();
+					} else {
+						controls.pause();
+					}
+				} else if (name === "spec" && value !== null && value !== "") {
+					// A name as well as a number, as in a link: who somebody is
+					// worth watching is easier to write down than which client
+					// id they happen to have.
+					if (String(parseInt(value, 10)) === value) {
+						controls.spectating(parseInt(value, 10));
+					} else {
+						controls.spectateName(value);
+					}
+				}
+			},
+		};
+	}
+
+	class CMapElement extends CViewerElement {
+		static observedAttributes = ["src", "controls", "x", "y", "tiles"];
+		static viewerKind = {
+			script: "ddnet-map-viewer.js",
+			moduleName: "DDNetMapViewer",
+			programName: "Map viewer",
+			suffix: ".map",
+			controls: instance => mapControls(instance),
+			loaded: controls => controls.loaded(),
+			apply: (controls, name, value, element) => {
+				const number = parseFloat(value);
+				if (name === "tiles" && isFinite(number) && number > 0) {
+					controls.tilesAcross(number);
+				} else if (name === "x" || name === "y") {
+					// Both or neither: half a place to look is no place to
+					// look, and the two arrive as two separate changes.
+					const x = parseFloat(element.getAttribute("x"));
+					const y = parseFloat(element.getAttribute("y"));
+					if (isFinite(x) && isFinite(y)) {
+						controls.center(x, y);
+					}
+				}
+			},
+		};
+	}
+
+	// Defined as the module is loaded, because the point of an element is that
+	// putting one in the page is all there is to it. Twice is not an error
+	// here, only the first one counting: a page may load this more than once.
+	function defineViewerElements() {
+		if (typeof customElements === "undefined") {
+			return;
+		}
+		if (customElements.get("ddnet-demo") === undefined) {
+			customElements.define("ddnet-demo", CDemoElement);
+		}
+		if (customElements.get("ddnet-map") === undefined) {
+			customElements.define("ddnet-map", CMapElement);
+		}
+	}
+
 	return {
 		/**
 		 * This library's own version, which says what its API looks like. Not
@@ -1992,7 +2320,7 @@ self.onmessage = async event => {
 		 * Starts a program on a canvas.
 		 *
 		 * @param options.module The factory the program's script defines, so
-		 * `DDNetClient`, `DDNetDemoViewer` or `DDNetMapViewer`.
+		 * `DDNetClient`, `DDNetDemoPlayer` or `DDNetMapViewer`.
 		 * @param options.canvas The canvas to draw on.
 		 * @param options.dataBase Where the `data` directory is, if it is not
 		 * next to the page.
@@ -2033,7 +2361,7 @@ self.onmessage = async event => {
 		},
 
 		/**
-		 * What a demo viewer can be asked to do, bound to one of them. The page
+		 * What a demo player can be asked to do, bound to one of them. The page
 		 * that hosts it needs nothing else to steer it - and neither does a URL
 		 * that says where to start, which is `urlParameter` below.
 		 */
@@ -2097,6 +2425,33 @@ self.onmessage = async event => {
 		followSize(element, controls, options) {
 			return followSize(element, controls, options);
 		},
+
+		/**
+		 * The program's script as a module, which a plain `import` cannot do
+		 * with it: it is a classic script that names itself. Answers the
+		 * factory that names it, and remembers it, so asking twice for the same
+		 * one costs nothing.
+		 *
+		 * @param scriptUrl Where the program's `.js` is.
+		 * @param moduleName The name it gives itself, `DDNetDemoPlayer` and so
+		 * on.
+		 */
+		importProgram(scriptUrl, moduleName) {
+			return importProgram(scriptUrl, moduleName);
+		},
+
+		/**
+		 * Defines `<ddnet-demo>` and `<ddnet-map>`, which this module does for
+		 * itself as it loads. Here for a page that takes them off and wants
+		 * them back, and harmless twice.
+		 */
+		defineViewerElements() {
+			return defineViewerElements();
+		},
+
+		/** The classes behind those two, for whoever wants to extend them. */
+		DemoElement: CDemoElement,
+		MapElement: CMapElement,
 
 		/**
 		 * One of the pictures the viewers draw on their own buttons, as an
@@ -2330,11 +2685,16 @@ self.onmessage = async event => {
 // `DDNetLoader.start(…)`, and one name at a time for whoever would rather
 // import only what they use. The names are the object's own, so there is one
 // list and not two.
+// Put on the page as this module loads: an element that has to be switched on
+// first is not the one line it is meant to be.
+DDNetLoader.defineViewerElements();
+
 export default DDNetLoader;
 export const {
 	// tidy-alphabetical-start
-	autoHide, demoControls, exportSettingsForm, followSize, fullscreen,
-	fullscreenSupported, icon, isFullscreen, mapControls, page, paintIcons,
+	autoHide, defineViewerElements, DemoElement, demoControls,
+	exportSettingsForm, followSize, fullscreen, fullscreenSupported, icon,
+	importProgram, isFullscreen, MapElement, mapControls, page, paintIcons,
 	render, setUrlParameters, start, supportProblem, toggleFullscreen,
 	urlParameter, version, videoCodecs, zip,
 	// tidy-alphabetical-end

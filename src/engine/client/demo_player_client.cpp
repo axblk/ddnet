@@ -1,6 +1,6 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
-#include "demo_viewer_client.h"
+#include "demo_player_client.h"
 
 #include "session_source_demo.h"
 #include "viewer_fullscreen.h"
@@ -48,31 +48,31 @@ namespace
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 	// The one viewer there is while the page is open, so that the controls
 	// beside the canvas have something to talk to. Nothing else ever runs two.
-	CDemoViewerClient *g_pDemoViewer = nullptr;
+	CDemoPlayerClient *g_pDemoPlayer = nullptr;
 #endif
 
-	int ControlKeyCode(CDemoViewerClient::EControlKey ControlKey)
+	int ControlKeyCode(CDemoPlayerClient::EControlKey ControlKey)
 	{
 		switch(ControlKey)
 		{
-		case CDemoViewerClient::CONTROL_KEY_PAUSE: return KEY_SPACE;
-		case CDemoViewerClient::CONTROL_KEY_SEEK_BACK: return KEY_LEFT;
-		case CDemoViewerClient::CONTROL_KEY_SEEK_FORWARD: return KEY_RIGHT;
-		case CDemoViewerClient::CONTROL_KEY_SPEED_UP: return KEY_UP;
-		case CDemoViewerClient::CONTROL_KEY_SPEED_DOWN: return KEY_DOWN;
-		case CDemoViewerClient::CONTROL_KEY_RESTART: return KEY_HOME;
-		case CDemoViewerClient::CONTROL_KEY_FREE_VIEW: return KEY_F;
-		case CDemoViewerClient::CONTROL_KEY_SPECTATE_NEXT: return KEY_N;
-		case CDemoViewerClient::CONTROL_KEY_SPECTATE_PREVIOUS: return KEY_P;
-		case CDemoViewerClient::CONTROL_KEY_ZOOM_IN: return KEY_KP_PLUS;
-		case CDemoViewerClient::CONTROL_KEY_ZOOM_OUT: return KEY_KP_MINUS;
-		case CDemoViewerClient::CONTROL_KEY_QUIT: return KEY_ESCAPE;
+		case CDemoPlayerClient::CONTROL_KEY_PAUSE: return KEY_SPACE;
+		case CDemoPlayerClient::CONTROL_KEY_SEEK_BACK: return KEY_LEFT;
+		case CDemoPlayerClient::CONTROL_KEY_SEEK_FORWARD: return KEY_RIGHT;
+		case CDemoPlayerClient::CONTROL_KEY_SPEED_UP: return KEY_UP;
+		case CDemoPlayerClient::CONTROL_KEY_SPEED_DOWN: return KEY_DOWN;
+		case CDemoPlayerClient::CONTROL_KEY_RESTART: return KEY_HOME;
+		case CDemoPlayerClient::CONTROL_KEY_FREE_VIEW: return KEY_F;
+		case CDemoPlayerClient::CONTROL_KEY_SPECTATE_NEXT: return KEY_N;
+		case CDemoPlayerClient::CONTROL_KEY_SPECTATE_PREVIOUS: return KEY_P;
+		case CDemoPlayerClient::CONTROL_KEY_ZOOM_IN: return KEY_KP_PLUS;
+		case CDemoPlayerClient::CONTROL_KEY_ZOOM_OUT: return KEY_KP_MINUS;
+		case CDemoPlayerClient::CONTROL_KEY_QUIT: return KEY_ESCAPE;
 		default: dbg_assert_failed("Invalid control key");
 		}
 	}
 } // namespace
 
-CDemoViewerClient::CDemoViewerClient()
+CDemoPlayerClient::CDemoPlayerClient()
 {
 	// A second way through the same demo, for the export to walk at its own
 	// pace. It is made here rather than when one is asked for, because the
@@ -85,14 +85,14 @@ CDemoViewerClient::CDemoViewerClient()
 		[this](const char *pReason) { StopDemoSession(m_ExportSessionId, pReason); });
 }
 
-void CDemoViewerClient::Configure(const char *pDemoPath, const char *pVideoPath, const CVideoExportSettings &Settings)
+void CDemoPlayerClient::Configure(const char *pDemoPath, const char *pVideoPath, const CVideoExportSettings &Settings)
 {
 	str_copy(m_aDemoPath, pDemoPath);
 	str_copy(m_aVideoPath, pVideoPath == nullptr ? "" : pVideoPath);
 	m_Settings = Settings;
 }
 
-void CDemoViewerClient::SetPaused(bool Paused)
+void CDemoPlayerClient::SetPaused(bool Paused)
 {
 	CDemoPlayer &Player = DemoSource(m_DemoSessionId).DemoPlayer();
 	if(Paused)
@@ -101,27 +101,35 @@ void CDemoViewerClient::SetPaused(bool Paused)
 		Player.Unpause();
 }
 
-void CDemoViewerClient::SeekPercent(float Percent)
+void CDemoPlayerClient::SeekPercent(float Percent)
 {
 	DemoSource(m_DemoSessionId).DemoPlayer().SeekPercent(std::clamp(Percent, 0.0f, 1.0f));
 }
 
-void CDemoViewerClient::SeekTime(float Seconds)
+void CDemoPlayerClient::SeekToTime(float Seconds)
 {
-	DemoSource(m_DemoSessionId).DemoPlayer().SeekTime(Seconds);
+	// Where in the demo to go, counted from its beginning. That is what a link
+	// naming a time means, and it is not what `CDemoPlayer::SeekTime` does:
+	// that one moves by a stretch of time from wherever it happens to be. The
+	// difference only shows once something has played, which is why it can sit
+	// in a page for a while without anybody noticing.
+	IDemoPlayer &Player = DemoSource(m_DemoSessionId).DemoPlayer();
+	const IDemoPlayer::CInfo *pInfo = Player.BaseInfo();
+	const float Now = (pInfo->m_CurrentTick - pInfo->m_FirstTick) / (float)SERVER_TICK_SPEED;
+	Player.SeekTime(Seconds - Now);
 }
 
-void CDemoViewerClient::SeekStart()
+void CDemoPlayerClient::SeekStart()
 {
 	DemoSource(m_DemoSessionId).DemoPlayer().SeekPercent(0.0f);
 }
 
-void CDemoViewerClient::SetSpeed(float Speed)
+void CDemoPlayerClient::SetSpeed(float Speed)
 {
 	DemoSource(m_DemoSessionId).DemoPlayer().SetSpeed(std::clamp(Speed, 0.01f, 100.0f));
 }
 
-bool CDemoViewerClient::RequestExport(const CVideoExportSettings &Settings)
+bool CDemoPlayerClient::RequestExport(const CVideoExportSettings &Settings)
 {
 	if(m_pVideo != nullptr || m_ExportRequested)
 	{
@@ -135,7 +143,7 @@ bool CDemoViewerClient::RequestExport(const CVideoExportSettings &Settings)
 	return true;
 }
 
-bool CDemoViewerClient::StartExport(const CVideoExportSettings &Settings)
+bool CDemoPlayerClient::StartExport(const CVideoExportSettings &Settings)
 {
 	if(m_pVideo != nullptr)
 	{
@@ -188,7 +196,7 @@ bool CDemoViewerClient::StartExport(const CVideoExportSettings &Settings)
 	return true;
 }
 
-void CDemoViewerClient::CancelExport()
+void CDemoPlayerClient::CancelExport()
 {
 	if(m_pVideo == nullptr)
 	{
@@ -209,7 +217,7 @@ void CDemoViewerClient::CancelExport()
 	m_VideoSessionId = m_DemoSessionId;
 }
 
-void CDemoViewerClient::FinishExport()
+void CDemoPlayerClient::FinishExport()
 {
 	// The demo player has closed it already, which is what wrote the last of
 	// it out and handed it over. Anything else is closed here.
@@ -234,7 +242,7 @@ void CDemoViewerClient::FinishExport()
 	m_VideoSessionId = m_DemoSessionId;
 }
 
-float CDemoViewerClient::ExportProgress() const
+float CDemoPlayerClient::ExportProgress() const
 {
 	int First, Current, Last;
 	if(!DemoPlayer_RenderInfo(&First, &Current, &Last))
@@ -243,7 +251,7 @@ float CDemoViewerClient::ExportProgress() const
 	return Total == 0 ? 0.0f : std::clamp(Current - First, 0, Total) / (float)Total;
 }
 
-float CDemoViewerClient::ExportSecondsLeft() const
+float CDemoPlayerClient::ExportSecondsLeft() const
 {
 	if(m_pVideo == nullptr)
 		return -1.0f;
@@ -258,7 +266,7 @@ float CDemoViewerClient::ExportSecondsLeft() const
 	return Elapsed * (1.0f - Progress) / Progress;
 }
 
-void CDemoViewerClient::SetSize(int Width, int Height)
+void CDemoPlayerClient::SetSize(int Width, int Height)
 {
 	if(Window() == nullptr)
 		return;
@@ -268,12 +276,12 @@ void CDemoViewerClient::SetSize(int Width, int Height)
 	Window()->Resize(std::max(Width, 1), std::max(Height, 1), g_Config.m_GfxScreenRefreshRate);
 }
 
-bool CDemoViewerClient::Paused() const
+bool CDemoPlayerClient::Paused() const
 {
 	return DemoSource(m_DemoSessionId).DemoPlayer().BaseInfo()->m_Paused;
 }
 
-float CDemoViewerClient::Progress() const
+float CDemoPlayerClient::Progress() const
 {
 	const IDemoPlayer::CInfo *pInfo = DemoSource(m_DemoSessionId).DemoPlayer().BaseInfo();
 	const int TotalTicks = std::max(pInfo->m_LastTick - pInfo->m_FirstTick, 0);
@@ -282,28 +290,28 @@ float CDemoViewerClient::Progress() const
 	return std::clamp(pInfo->m_CurrentTick - pInfo->m_FirstTick, 0, TotalTicks) / (float)TotalTicks;
 }
 
-float CDemoViewerClient::Speed() const
+float CDemoPlayerClient::Speed() const
 {
 	return DemoSource(m_DemoSessionId).DemoPlayer().BaseInfo()->m_Speed;
 }
 
-float CDemoViewerClient::Length() const
+float CDemoPlayerClient::Length() const
 {
 	const IDemoPlayer::CInfo *pInfo = DemoSource(m_DemoSessionId).DemoPlayer().BaseInfo();
 	return std::max(pInfo->m_LastTick - pInfo->m_FirstTick, 0) / (float)SERVER_TICK_SPEED;
 }
 
-bool CDemoViewerClient::Exporting() const
+bool CDemoPlayerClient::Exporting() const
 {
 	return m_pVideo != nullptr && IVideo::Current() == m_pVideo.get();
 }
 
-void CDemoViewerClient::UpdateAndSwap()
+void CDemoPlayerClient::UpdateAndSwap()
 {
 	Graphics()->Swap();
 }
 
-void CDemoViewerClient::DemoPlayer_CancelActiveRender()
+void CDemoPlayerClient::DemoPlayer_CancelActiveRender()
 {
 	// Asked for while something is being drawn, and letting the encoder go
 	// there would pull it out from under the frame that is asking. The loop
@@ -311,7 +319,7 @@ void CDemoViewerClient::DemoPlayer_CancelActiveRender()
 	RequestCancelExport();
 }
 
-bool CDemoViewerClient::KeyPressed(EControlKey ControlKey, bool Repeats)
+bool CDemoPlayerClient::KeyPressed(EControlKey ControlKey, bool Repeats)
 {
 	const bool Pressed = Input()->KeyIsPressed(ControlKeyCode(ControlKey));
 	const bool WasPressed = m_aKeyWasPressed[ControlKey];
@@ -330,7 +338,7 @@ bool CDemoViewerClient::KeyPressed(EControlKey ControlKey, bool Repeats)
 	return false;
 }
 
-bool CDemoViewerClient::HandleInput()
+bool CDemoPlayerClient::HandleInput()
 {
 	// Nobody is at the keyboard of a window that is not there.
 	if(m_pInput == nullptr)
@@ -451,7 +459,7 @@ bool CDemoViewerClient::HandleInput()
 	return true;
 }
 
-const char *CDemoViewerClient::Players()
+const char *CDemoPlayerClient::Players()
 {
 	// Written by the JSON writer rather than put together by hand: a name is
 	// whatever somebody typed, quotation marks and all.
@@ -483,7 +491,7 @@ const char *CDemoViewerClient::Players()
 	return m_Players.c_str();
 }
 
-void CDemoViewerClient::RenderControls()
+void CDemoPlayerClient::RenderControls()
 {
 	// Nothing to steer, and nobody to steer it: a window that was never opened
 	// has no pointer over it, and a demo that is being written to a file is
@@ -546,6 +554,7 @@ void CDemoViewerClient::RenderControls()
 		ITEM_FASTER,
 		ITEM_TIME,
 		ITEM_SPACER,
+		ITEM_CAMERA,
 		ITEM_SPECTATE,
 		ITEM_EXPORT,
 		ITEM_FULLSCREEN,
@@ -596,6 +605,12 @@ void CDemoViewerClient::RenderControls()
 	aItems[ITEM_TIME].m_Type = CViewerControls::EItem::TEXT;
 	aItems[ITEM_TIME].m_pText = aTime;
 	aItems[ITEM_SPACER].m_Type = CViewerControls::EItem::SPACER;
+	// Only where the demo brought a view of its own and there is something to
+	// go back to: a button that says nothing about what it would do is worse
+	// than no button.
+	aItems[ITEM_CAMERA].m_Icon = CViewerControls::EIcon::FIT;
+	aItems[ITEM_CAMERA].m_Active = RecordedCamera();
+	aItems[ITEM_CAMERA].m_Hidden = !RecordedCameraAvailable();
 	aItems[ITEM_SPECTATE].m_Icon = CViewerControls::EIcon::EYE;
 	aItems[ITEM_SPECTATE].m_pText = aSpectating;
 	aItems[ITEM_SPECTATE].m_OpensMenu = !vPickable.empty();
@@ -701,6 +716,9 @@ void CDemoViewerClient::RenderControls()
 	case ITEM_RESTART:
 		SeekStart();
 		break;
+	case ITEM_CAMERA:
+		SetRecordedCamera(!RecordedCamera());
+		break;
 	case ITEM_SPECTATE:
 		SpectateStep(1);
 		break;
@@ -732,7 +750,7 @@ void CDemoViewerClient::RenderControls()
 	}
 }
 
-void CDemoViewerClient::ExportFromControls(int Width, int Height)
+void CDemoPlayerClient::ExportFromControls(int Width, int Height)
 {
 	CVideoExportSettings Settings;
 	// An encoder counts in whole pairs of lines, so a window of an odd height
@@ -744,7 +762,7 @@ void CDemoViewerClient::ExportFromControls(int Width, int Height)
 	RequestExport(Settings);
 }
 
-void CDemoViewerClient::RenderWindowFrame()
+void CDemoPlayerClient::RenderWindowFrame()
 {
 	const int64_t Now = time_get();
 	m_RenderFrameTime = (Now - m_LastRenderTime) / (float)time_freq();
@@ -766,11 +784,11 @@ void CDemoViewerClient::RenderWindowFrame()
 	m_GlobalTime = (time_get() - m_GlobalStartTime) / (float)time_freq();
 }
 
-void CDemoViewerClient::Run()
+void CDemoPlayerClient::Run()
 {
 	m_LocalStartTime = m_GlobalStartTime = time_get();
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	g_pDemoViewer = this;
+	g_pDemoPlayer = this;
 #endif
 
 	// The same escape hatch the client has: a machine with no display can still
@@ -944,7 +962,7 @@ void CDemoViewerClient::Run()
 	TextRender()->Shutdown();
 	Graphics()->Shutdown();
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	g_pDemoViewer = nullptr;
+	g_pDemoPlayer = nullptr;
 #endif
 }
 
@@ -955,94 +973,109 @@ void CDemoViewerClient::Run()
 // demo is playing or after it has stopped.
 extern "C" {
 
-EMSCRIPTEN_KEEPALIVE void DemoViewerSetPaused(int Paused)
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSetPaused(int Paused)
 {
-	if(g_pDemoViewer != nullptr)
-		g_pDemoViewer->SetPaused(Paused != 0);
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SetPaused(Paused != 0);
 }
 
-EMSCRIPTEN_KEEPALIVE void DemoViewerSeekPercent(float Percent)
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSeekPercent(float Percent)
 {
-	if(g_pDemoViewer != nullptr)
-		g_pDemoViewer->SeekPercent(Percent);
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SeekPercent(Percent);
 }
 
-EMSCRIPTEN_KEEPALIVE void DemoViewerSeekTime(float Seconds)
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSeekToTime(float Seconds)
 {
-	if(g_pDemoViewer != nullptr)
-		g_pDemoViewer->SeekTime(Seconds);
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SeekToTime(Seconds);
 }
 
-EMSCRIPTEN_KEEPALIVE void DemoViewerSetSpeed(float Speed)
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSetSpeed(float Speed)
 {
-	if(g_pDemoViewer != nullptr)
-		g_pDemoViewer->SetSpeed(Speed);
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SetSpeed(Speed);
 }
 
-EMSCRIPTEN_KEEPALIVE void DemoViewerSeekStart()
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSeekStart()
 {
-	if(g_pDemoViewer != nullptr)
-		g_pDemoViewer->SeekStart();
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SeekStart();
 }
 
 // Who the demo is watched over the shoulder of. -1 is the free view, -2 is
 // whoever recorded it, and everything from 0 up is one of its players.
-EMSCRIPTEN_KEEPALIVE void DemoViewerSetSpectate(int SpectatorId)
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSetSpectate(int SpectatorId)
 {
-	if(g_pDemoViewer != nullptr)
-		g_pDemoViewer->SetSpectate(SpectatorId);
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SetSpectate(SpectatorId);
 }
 
-EMSCRIPTEN_KEEPALIVE void DemoViewerSetSpectateName(const char *pName)
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSetSpectateName(const char *pName)
 {
-	if(g_pDemoViewer != nullptr)
-		g_pDemoViewer->SetSpectateName(pName == nullptr ? "" : pName);
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SetSpectateName(pName == nullptr ? "" : pName);
 }
 
-EMSCRIPTEN_KEEPALIVE int DemoViewerSpectating()
+EMSCRIPTEN_KEEPALIVE int DemoPlayerSpectating()
 {
-	return g_pDemoViewer == nullptr ? SPEC_FREEVIEW : g_pDemoViewer->Spectating();
+	return g_pDemoPlayer == nullptr ? SPEC_FREEVIEW : g_pDemoPlayer->Spectating();
 }
 
-EMSCRIPTEN_KEEPALIVE void DemoViewerSpectateStep(int Direction)
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSpectateStep(int Direction)
 {
-	if(g_pDemoViewer != nullptr)
-		g_pDemoViewer->SpectateStep(Direction);
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SpectateStep(Direction);
 }
 
 // The players the demo has named so far, as JSON. What is pointed at stays
 // there until this is called again, which is all a page reading it out needs.
-EMSCRIPTEN_KEEPALIVE const char *DemoViewerPlayers()
+EMSCRIPTEN_KEEPALIVE const char *DemoPlayerPlayers()
 {
-	return g_pDemoViewer == nullptr ? "[]" : g_pDemoViewer->Players();
+	return g_pDemoPlayer == nullptr ? "[]" : g_pDemoPlayer->Players();
 }
 
 // How much of the world is in the window. A page has no wheel over the canvas
 // while the pointer is on a button of its own, so it can ask for this instead.
-EMSCRIPTEN_KEEPALIVE void DemoViewerZoomBy(float Factor)
+EMSCRIPTEN_KEEPALIVE void DemoPlayerZoomBy(float Factor)
 {
-	if(g_pDemoViewer != nullptr)
-		g_pDemoViewer->ScaleZoom(Factor);
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->ScaleZoom(Factor);
 }
 
-EMSCRIPTEN_KEEPALIVE float DemoViewerZoom()
+EMSCRIPTEN_KEEPALIVE float DemoPlayerZoom()
 {
-	return g_pDemoViewer == nullptr ? 1.0f : g_pDemoViewer->Zoom();
+	return g_pDemoPlayer == nullptr ? 1.0f : g_pDemoPlayer->Zoom();
 }
 
-EMSCRIPTEN_KEEPALIVE void DemoViewerQuit()
+// The view the demo brought, which zooming leaves behind. 0 is that there is
+// none, 1 is that there is one and it is not being followed, 2 is that it is.
+EMSCRIPTEN_KEEPALIVE int DemoPlayerRecordedCamera()
 {
-	if(g_pDemoViewer != nullptr)
-		g_pDemoViewer->Quit();
+	if(g_pDemoPlayer == nullptr || !g_pDemoPlayer->RecordedCameraAvailable())
+		return 0;
+	return g_pDemoPlayer->RecordedCamera() ? 2 : 1;
 }
 
-EMSCRIPTEN_KEEPALIVE int DemoViewerStartExport(int Width, int Height, int Fps, int Audio, int Crf, const char *pCodec, int Hud, int Chat)
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSetRecordedCamera(int Use)
 {
-	if(g_pDemoViewer == nullptr)
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SetRecordedCamera(Use != 0);
+}
+
+EMSCRIPTEN_KEEPALIVE void DemoPlayerQuit()
+{
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->Quit();
+}
+
+EMSCRIPTEN_KEEPALIVE int DemoPlayerStartExport(int Width, int Height, int Fps, int Audio, int Crf, const char *pCodec, int Hud, int Chat)
+{
+	if(g_pDemoPlayer == nullptr)
 	{
 		return 0;
 	}
-	// This only asks. Whether it worked is what `DemoViewerExportState` says,
+	// This only asks. Whether it worked is what `DemoPlayerExportState` says,
 	// a moment later - a browser is asked for an encoder before there is an
 	// answer, and asking it takes a turn of its event loop.
 	CVideoExportSettings Settings;
@@ -1054,84 +1087,84 @@ EMSCRIPTEN_KEEPALIVE int DemoViewerStartExport(int Width, int Height, int Fps, i
 	str_copy(Settings.m_aVideoCodec, pCodec == nullptr ? "" : pCodec);
 	Settings.m_ShowHud = Hud != 0;
 	Settings.m_ShowChat = Chat != 0;
-	return g_pDemoViewer->RequestExport(Settings) ? 1 : 0;
+	return g_pDemoPlayer->RequestExport(Settings) ? 1 : 0;
 }
 
 // How big to draw. A page that gives the viewer a box of its own measures that
 // box and says so; a viewer that fills the window never needs this.
-EMSCRIPTEN_KEEPALIVE void DemoViewerSetSize(int Width, int Height)
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSetSize(int Width, int Height)
 {
-	if(g_pDemoViewer != nullptr)
-		g_pDemoViewer->SetSize(Width, Height);
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SetSize(Width, Height);
 }
 
 // Whether the viewer draws its own controls. A page with a bar of its own
 // beside the canvas says so and gets a bare picture.
-EMSCRIPTEN_KEEPALIVE void DemoViewerSetControls(int Show)
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSetControls(int Show)
 {
-	if(g_pDemoViewer != nullptr)
-		g_pDemoViewer->SetShowControls(Show != 0);
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->SetShowControls(Show != 0);
 }
 
-EMSCRIPTEN_KEEPALIVE int DemoViewerControls()
+EMSCRIPTEN_KEEPALIVE int DemoPlayerControls()
 {
-	return g_pDemoViewer != nullptr && g_pDemoViewer->ShowControls() ? 1 : 0;
+	return g_pDemoPlayer != nullptr && g_pDemoPlayer->ShowControls() ? 1 : 0;
 }
 
-EMSCRIPTEN_KEEPALIVE void DemoViewerCancelExport()
+EMSCRIPTEN_KEEPALIVE void DemoPlayerCancelExport()
 {
-	if(g_pDemoViewer != nullptr)
-		g_pDemoViewer->RequestCancelExport();
+	if(g_pDemoPlayer != nullptr)
+		g_pDemoPlayer->RequestCancelExport();
 }
 
 // 0 while nothing was ever asked for, 1 while a video is being written, 2 when
 // the last one was handed over and 3 when it failed.
-EMSCRIPTEN_KEEPALIVE const char *DemoViewerExportError()
+EMSCRIPTEN_KEEPALIVE const char *DemoPlayerExportError()
 {
-	return g_pDemoViewer == nullptr ? "" : g_pDemoViewer->ExportError();
+	return g_pDemoPlayer == nullptr ? "" : g_pDemoPlayer->ExportError();
 }
 
-EMSCRIPTEN_KEEPALIVE int DemoViewerExportState()
+EMSCRIPTEN_KEEPALIVE int DemoPlayerExportState()
 {
-	return g_pDemoViewer == nullptr ? 0 : (int)g_pDemoViewer->ExportState();
+	return g_pDemoPlayer == nullptr ? 0 : (int)g_pDemoPlayer->ExportState();
 }
 
 // How far the video that is being written has got, between 0 and 1. It is not
 // where the demo on the window is: an export reads the demo through a way of
 // its own, so whoever is watching can spool about while it is written.
-EMSCRIPTEN_KEEPALIVE float DemoViewerExportSecondsLeft()
+EMSCRIPTEN_KEEPALIVE float DemoPlayerExportSecondsLeft()
 {
-	return g_pDemoViewer == nullptr ? -1.0f : g_pDemoViewer->ExportSecondsLeft();
+	return g_pDemoPlayer == nullptr ? -1.0f : g_pDemoPlayer->ExportSecondsLeft();
 }
 
-EMSCRIPTEN_KEEPALIVE float DemoViewerExportProgress()
+EMSCRIPTEN_KEEPALIVE float DemoPlayerExportProgress()
 {
-	return g_pDemoViewer == nullptr ? 0.0f : g_pDemoViewer->ExportProgress();
+	return g_pDemoPlayer == nullptr ? 0.0f : g_pDemoPlayer->ExportProgress();
 }
 
-EMSCRIPTEN_KEEPALIVE int DemoViewerPaused()
+EMSCRIPTEN_KEEPALIVE int DemoPlayerPaused()
 {
-	return g_pDemoViewer != nullptr && g_pDemoViewer->Paused() ? 1 : 0;
+	return g_pDemoPlayer != nullptr && g_pDemoPlayer->Paused() ? 1 : 0;
 }
 
-EMSCRIPTEN_KEEPALIVE float DemoViewerProgress()
+EMSCRIPTEN_KEEPALIVE float DemoPlayerProgress()
 {
-	return g_pDemoViewer == nullptr ? 0.0f : g_pDemoViewer->Progress();
+	return g_pDemoPlayer == nullptr ? 0.0f : g_pDemoPlayer->Progress();
 }
 
-EMSCRIPTEN_KEEPALIVE float DemoViewerSpeed()
+EMSCRIPTEN_KEEPALIVE float DemoPlayerSpeed()
 {
-	return g_pDemoViewer == nullptr ? 1.0f : g_pDemoViewer->Speed();
+	return g_pDemoPlayer == nullptr ? 1.0f : g_pDemoPlayer->Speed();
 }
 
-EMSCRIPTEN_KEEPALIVE float DemoViewerLength()
+EMSCRIPTEN_KEEPALIVE float DemoPlayerLength()
 {
-	return g_pDemoViewer == nullptr ? 0.0f : g_pDemoViewer->Length();
+	return g_pDemoPlayer == nullptr ? 0.0f : g_pDemoPlayer->Length();
 }
 
-EMSCRIPTEN_KEEPALIVE int DemoViewerExporting()
+EMSCRIPTEN_KEEPALIVE int DemoPlayerExporting()
 {
-	return g_pDemoViewer != nullptr && g_pDemoViewer->Exporting() ? 1 : 0;
+	return g_pDemoPlayer != nullptr && g_pDemoPlayer->Exporting() ? 1 : 0;
 }
 }
 #endif

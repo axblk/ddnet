@@ -19,7 +19,7 @@ private:
 	// What it takes to talk to a server this program started. A program that
 	// never starts one has nothing to remember about it, and a private field
 	// nobody reads is an error where warnings are - see `local_server_null.cpp`.
-#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_VIEWER_TOOL)
+#if !defined(CONF_DEMO_RENDER_TOOL) && !defined(CONF_DEMO_PLAYER_TOOL)
 	char m_aRconPassword[sizeof(g_Config.m_SvRconPassword)] = "";
 
 #if !defined(CONF_PLATFORM_ANDROID)

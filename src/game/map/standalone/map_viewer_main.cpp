@@ -32,6 +32,8 @@
 
 static constexpr const char *TOOL_NAME = "map_viewer";
 
+using namespace std::chrono_literals;
+
 namespace
 {
 	constexpr int DEFAULT_WIDTH = 1280;
@@ -47,6 +49,10 @@ namespace
 	// keeps turning nor a page that asks for anything can put the map where it
 	// is no longer to be found.
 	constexpr float MIN_ZOOM = 0.01f;
+	// How long one frame spends on a picture of the whole map. Long enough
+	// that the picture is not made a pixel at a time, short enough that the
+	// window still answers and a page still paints between two of them.
+	constexpr std::chrono::nanoseconds FULL_IMAGE_BUDGET = 40ms;
 	constexpr float MAX_ZOOM = 1000.0f;
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
@@ -243,6 +249,14 @@ EMSCRIPTEN_KEEPALIVE int MapViewerExportState()
 {
 	return g_pRequests == nullptr ? 0 : (int)g_pRequests->m_ExportState;
 }
+
+// How far a picture of the whole map has got, from 0 to 1. A picture of the
+// view is one frame and is over before anybody could ask; the whole of a large
+// map takes long enough that a page owes the user a line about it.
+EMSCRIPTEN_KEEPALIVE float MapViewerExportProgress()
+{
+	return g_pView == nullptr || !g_pView->FullImageRunning() ? 0.0f : g_pView->FullImageProgress();
+}
 }
 #endif
 
@@ -372,6 +386,22 @@ int main(int argc, const char **argv)
 	// and from there to the downloads, which is how everything else this build
 	// writes leaves it; everywhere else the file that was named on the command
 	// line, with the whole map beside it under its own name.
+	// Where a picture of the whole map goes once it is finished, kept here
+	// because it is drawn over many frames and the name has to outlive the
+	// frame that asked for it.
+	std::string FullMapFilename;
+	const auto &&FinishFullMap = [&](bool Success) {
+		if(Success)
+		{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+			View.Storage()->SendFileToUser(FullMapFilename.c_str(), IStorage::TYPE_SAVE);
+#else
+			constexpr LOG_COLOR SuccessLogColor = LOG_COLOR{0, 255, 128};
+			log_info_color(SuccessLogColor, TOOL_NAME, "Saved screenshot to '%s'", FullMapFilename.c_str());
+#endif
+		}
+		Requests.m_ExportState = Success ? EExportState::SUCCEEDED : EExportState::FAILED;
+	};
 	const auto &&SaveImage = [&](bool FullMap) {
 		bool Success;
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
@@ -381,7 +411,18 @@ int main(int argc, const char **argv)
 		View.Storage()->CreateFolder(EXPORT_DIRECTORY, IStorage::TYPE_SAVE);
 		char aPath[IO_MAX_PATH_LENGTH];
 		View.Storage()->GetCompletePath(IStorage::TYPE_SAVE, aFilename, aPath, sizeof(aPath));
-		Success = FullMap ? View.SaveFullImage(aPath, RenderParams.m_TimeOffsetMillis) : View.SaveImage(RenderParams, aPath);
+		if(FullMap)
+		{
+			// Begun here and drawn over the frames that follow: the whole of a
+			// large map is a thousand pieces, and drawing them all before
+			// coming back would leave the page nothing to paint or answer with
+			// for minutes at a time.
+			FullMapFilename = aFilename;
+			if(!View.BeginFullImage(aPath, RenderParams.m_TimeOffsetMillis, CStandaloneMapView::VIEWER_FULL_IMAGE_PIXELS))
+				Requests.m_ExportState = EExportState::FAILED;
+			return;
+		}
+		Success = View.SaveImage(RenderParams, aPath);
 		if(Success)
 			View.Storage()->SendFileToUser(aFilename, IStorage::TYPE_SAVE);
 #else
@@ -390,8 +431,12 @@ int main(int argc, const char **argv)
 		{
 			const size_t Dot = Path.find_last_of('.');
 			Path.insert(Dot == std::string::npos ? Path.size() : Dot, "-full");
+			FullMapFilename = Path;
+			if(!View.BeginFullImage(Path.c_str(), RenderParams.m_TimeOffsetMillis, CStandaloneMapView::VIEWER_FULL_IMAGE_PIXELS))
+				Requests.m_ExportState = EExportState::FAILED;
+			return;
 		}
-		Success = FullMap ? View.SaveFullImage(Path.c_str(), RenderParams.m_TimeOffsetMillis) : View.SaveImage(RenderParams, Path.c_str());
+		Success = View.SaveImage(RenderParams, Path.c_str());
 		if(Success)
 		{
 			constexpr LOG_COLOR SuccessLogColor = LOG_COLOR{0, 255, 128};
@@ -441,7 +486,7 @@ int main(int argc, const char **argv)
 		aItems[ITEM_SAVE_VIEW].m_InMenu = true;
 		aItems[ITEM_SAVE_MAP].m_Icon = CViewerControls::EIcon::SAVE_ALL;
 		aItems[ITEM_SAVE_MAP].m_InMenu = true;
-		const bool Busy = Requests.m_ExportView || Requests.m_ExportFullMap;
+		const bool Busy = Requests.m_ExportView || Requests.m_ExportFullMap || View.FullImageRunning();
 		aItems[ITEM_SAVE_VIEW].m_Disabled = Busy;
 		aItems[ITEM_SAVE_MAP].m_Disabled = Busy;
 
@@ -607,8 +652,20 @@ int main(int argc, const char **argv)
 			Requests.m_ExportView = false;
 			Requests.m_ExportFullMap = false;
 			SaveImage(FullMap);
-			if(pInput == nullptr)
+			if(pInput == nullptr && !View.FullImageRunning())
 				break;
+		}
+		// A picture of the whole map is drawn a little at a time, between the
+		// frames of the view it was asked from, so that the window keeps
+		// answering and a page keeps painting while it is being made.
+		else if(View.FullImageRunning())
+		{
+			if(!View.StepFullImage(FULL_IMAGE_BUDGET))
+			{
+				FinishFullMap(!View.FullImageFailed());
+				if(pInput == nullptr)
+					break;
+			}
 		}
 
 		// Nothing here is worth drawing faster than a screen shows, and with

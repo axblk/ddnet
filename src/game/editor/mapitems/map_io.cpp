@@ -127,9 +127,10 @@ bool CEditorMap::Save(const char *pFilename, const FErrorHandler &ErrorHandler)
 	{
 		std::shared_ptr<CEditorImage> pImg = m_vpImages[i];
 
-		// analyse the image for when saving (should be done when we load the image)
-		// TODO!
-		pImg->AnalyseTileFlags();
+		// An external image was analysed when it was loaded and has no pixels
+		// left here; an embedded one keeps them because they are written out.
+		if(pImg->m_pData != nullptr)
+			pImg->AnalyseTileFlags();
 
 		CMapItemImage Item;
 		Item.m_Version = 1;
@@ -566,7 +567,20 @@ bool CEditorMap::Load(const char *pFilename, int StorageType, const FErrorHandle
 					if(pImg->m_Width % 16 != 0 || pImg->m_Height % 16 != 0)
 						TextureLoadFlag = 0;
 					pImg->m_External = 1;
-					pImg->m_Texture = m_pEditor->Graphics()->LoadTextureRaw(*pImg, TextureLoadFlag, aBuf);
+
+					// The map file does not store an external image, so its
+					// pixels are needed for the texture and for the opaque tile
+					// flags and for nothing else. Both happen here and the data
+					// is handed over rather than copied; the dimensions have to
+					// survive that, the editor still reads them.
+					pImg->AnalyseTileFlags();
+					const size_t Width = pImg->m_Width;
+					const size_t Height = pImg->m_Height;
+					const CImageInfo::EImageFormat Format = pImg->m_Format;
+					pImg->m_Texture = m_pEditor->Graphics()->LoadTextureRawMove(*pImg, TextureLoadFlag, aBuf);
+					pImg->m_Width = Width;
+					pImg->m_Height = Height;
+					pImg->m_Format = Format;
 				}
 				else
 				{

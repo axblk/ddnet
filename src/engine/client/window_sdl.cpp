@@ -1274,6 +1274,13 @@ int CGraphicsWindow_SDL::OpenWindow(SGraphicsBackendInit &BackendInit)
 		}
 	}
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// SDL writes the window title into `document.title`, and in a browser that
+	// title belongs to the page, not to us: a viewer sitting in somebody else's
+	// page would rename their tab. Remember what the page says and put it back.
+	MAIN_THREAD_EM_ASM({ globalThis.__ddnetPageTitle = document.title; });
+#endif
+
 	m_pWindow = SDL_CreateWindow(
 		"DDNet Client",
 		SDL_WINDOWPOS_CENTERED_DISPLAY(g_Config.m_GfxScreen),
@@ -1281,6 +1288,17 @@ int CGraphicsWindow_SDL::OpenWindow(SGraphicsBackendInit &BackendInit)
 		g_Config.m_GfxScreenWidth,
 		g_Config.m_GfxScreenHeight,
 		SdlFlags);
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	MAIN_THREAD_EM_ASM({
+		const PageTitle = globalThis.__ddnetPageTitle;
+		delete globalThis.__ddnetPageTitle;
+		if(PageTitle != null)
+		{
+			document.title = PageTitle;
+		}
+	});
+#endif
 
 	// set caption
 	if(m_pWindow == nullptr)

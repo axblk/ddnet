@@ -16,6 +16,44 @@ new EditorPanels(editor, { container: document.querySelector("#panels") });
 The panels want `@ddnet/base/editor.css`; without it they are still there and
 still work, they are just unpainted.
 
+## The whole thing in one element
+
+A page that wants an editor rather than the pieces of one takes
+`<ddnet-editor>`. It makes the program, the canvas, the shapes over it and the
+panels, and lays them out in six areas around the map:
+
+```html
+<link rel="stylesheet" href="ddnet-editor.css">
+<script type="module">import "@ddnet/map-editor";</script>
+
+<ddnet-editor src="maps/ctf1.map" style="height: 100dvh">
+	<div slot="header">Whatever the page wants above the map</div>
+</ddnet-editor>
+```
+
+The areas are `header`, `toolbar`, `left`, `right`, `dock` and `status`; an
+area nobody fills takes no room at all. What the element fills in itself - the
+map and the panels - is light DOM as well, so the same one stylesheet dresses
+all of it and a page may reach any of it.
+
+| Attribute | What it does |
+|---|---|
+| `src` | A map to open, and changing it opens another. |
+| `urlparam` | The name of a parameter of the page's *own* address to take a map from - `urlparam="map"` reads `#map=…`. Left out, the element does not read the address at all, because two editors on one page could not both be what it is about. |
+| `theme="light"` | The light set of colours. |
+| `remember` | Keeps what is being edited in the browser's own storage, saves into it every minute, and asks before the tab goes with something unsaved in it. Without it the element keeps nothing - a page that quietly filled a visitor's storage would be a surprise. |
+
+`box.ready` is a promise for the running program, `box.editor` and
+`box.panels` are it and its panels once there are any, and `box.part("tree")`
+finds one of *this* editor's parts by name. That last one is what lets two
+editors stand on one page: `data-role` names belong to the element, not to the
+document.
+
+The keyboard works the same way. An editor answers a key when the focus is
+inside it; with the focus nowhere at all it answers only when it is the one
+editor on the page, because with two there would be no way to say which was
+meant.
+
 ## What it is made of
 
 * **The map is asked, not told.** `editor.structure()` answers what the map is

@@ -395,6 +395,88 @@ EMSCRIPTEN_KEEPALIVE int MapEditorAnimate(int Id)
 	return g_pEditor != nullptr && g_pEditor->Display(Id) != nullptr && g_pEditor->Display(Id)->m_Animate ? 1 : 0;
 }
 
+// The brush: what is in hand and what putting it down does. A stroke is the
+// page opening a change when the button goes down, calling `Paint` on every
+// move and closing it when the button comes up - one entry in the history,
+// however many tiles it touched.
+EMSCRIPTEN_KEEPALIVE int MapEditorPickTiles(int Id, int Group, int Layer, int X, int Y, int Width, int Height)
+{
+	return g_pEditor != nullptr && Group >= 0 && Layer >= 0 &&
+			       g_pEditor->PickTiles(Id, (size_t)Group, (size_t)Layer, X, Y, Width, Height) ?
+		       1 :
+		       0;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorGrab(int Id, int Group, int Layer, int X, int Y, int Width, int Height)
+{
+	return g_pEditor != nullptr && Group >= 0 && Layer >= 0 &&
+			       g_pEditor->Grab(Id, (size_t)Group, (size_t)Layer, X, Y, Width, Height) ?
+		       1 :
+		       0;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorPaint(int Id, int Group, int Layer, int X, int Y)
+{
+	if(g_pEditor == nullptr || Group < 0 || Layer < 0 || !g_pEditor->Paint(Id, (size_t)Group, (size_t)Layer, X, Y))
+		return 0;
+	SayChanged(Id);
+	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorFill(int Id, int Group, int Layer, int X, int Y, int Width, int Height)
+{
+	if(g_pEditor == nullptr || Group < 0 || Layer < 0 || !g_pEditor->Fill(Id, (size_t)Group, (size_t)Layer, X, Y, Width, Height))
+		return 0;
+	SayChanged(Id);
+	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorErase(int Id, int Group, int Layer, int X, int Y, int Width, int Height)
+{
+	if(g_pEditor == nullptr || Group < 0 || Layer < 0 || !g_pEditor->Erase(Id, (size_t)Group, (size_t)Layer, X, Y, Width, Height))
+		return 0;
+	SayChanged(Id);
+	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE void MapEditorFlipBrushX()
+{
+	if(g_pEditor != nullptr)
+		g_pEditor->FlipBrushX();
+}
+
+EMSCRIPTEN_KEEPALIVE void MapEditorFlipBrushY()
+{
+	if(g_pEditor != nullptr)
+		g_pEditor->FlipBrushY();
+}
+
+EMSCRIPTEN_KEEPALIVE void MapEditorRotateBrush()
+{
+	if(g_pEditor != nullptr)
+		g_pEditor->RotateBrush();
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorStoreBrush(int Slot)
+{
+	return g_pEditor != nullptr && Slot >= 0 && g_pEditor->StoreBrush((size_t)Slot) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorUseBrush(int Slot)
+{
+	return g_pEditor != nullptr && Slot >= 0 && g_pEditor->UseBrush((size_t)Slot) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorBrushWidth()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Brush().Width();
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorBrushHeight()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Brush().Height();
+}
+
 EMSCRIPTEN_KEEPALIVE int MapEditorLoading()
 {
 	return g_pEditor != nullptr && g_pEditor->Loading() ? 1 : 0;

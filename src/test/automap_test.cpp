@@ -65,14 +65,48 @@ TEST(Automap, EveryRulesFileTheGameShipsWithIsRead)
 	{
 		const std::string Text = RulesText(pName);
 		ASSERT_FALSE(Text.empty()) << pName;
-		const CAutomapRules Rules = ParseAutomapRules(Text.c_str());
+		std::vector<int> vNotUnderstood;
+		const CAutomapRules Rules = ParseAutomapRules(Text.c_str(), &vNotUnderstood);
 		EXPECT_GT(Rules.NumConfigs(), 0u) << pName;
+		// And every one of them is understood whole: a line left over in a
+		// file the game ships with would mean the grammar is short of a word.
+		EXPECT_TRUE(vNotUnderstood.empty()) << pName << " line " << (vNotUnderstood.empty() ? 0 : vNotUnderstood[0]);
 		for(size_t Config = 0; Config < Rules.NumConfigs(); ++Config)
 		{
 			EXPECT_NE(Rules.ConfigName(Config)[0], '\0') << pName << " config " << Config;
 			EXPECT_GT(Rules.m_vConfigs[Config].m_vRuns.size(), 0u) << pName;
 		}
 	}
+}
+
+TEST(Automap, ALineThatWasPassedOverSaysWhichOneItWas)
+{
+	// Line 1 is a configuration, 2 an index rule, 3 a rule about a place;
+	// 4 is a word the grammar does not have, 5 is blank, 6 a comment, and 7
+	// is a word it does have in a place where it belongs to nothing, because
+	// the configuration below it has no index rule yet.
+	static const char *s_pText =
+		"[test]\n"
+		"Index 1\n"
+		"Pos 0 -1 EMPTY\n"
+		"Sideways 3\n"
+		"\n"
+		"# a comment\n"
+		"[second]\n"
+		"Random 4\n";
+	std::vector<int> vNotUnderstood;
+	const CAutomapRules Rules = ParseAutomapRules(s_pText, &vNotUnderstood);
+
+	EXPECT_EQ(Rules.NumConfigs(), 2u);
+	ASSERT_EQ(vNotUnderstood.size(), 2u);
+	EXPECT_EQ(vNotUnderstood[0], 4);
+	EXPECT_EQ(vNotUnderstood[1], 8);
+	// And what was understood is still there: a line left over stops nothing.
+	ASSERT_EQ(Rules.m_vConfigs[0].m_vRuns.size(), 1u);
+	EXPECT_EQ(Rules.m_vConfigs[0].m_vRuns[0].m_vIndexRules.size(), 1u);
+
+	// Being told is the caller's choice; not asking is not an error.
+	EXPECT_EQ(ParseAutomapRules(s_pText).NumConfigs(), 2u);
 }
 
 TEST(Automap, AnOrListWithFlagsIsReadWordForWord)

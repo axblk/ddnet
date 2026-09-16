@@ -7,6 +7,7 @@
 
 #include <engine/graphics.h>
 #include <engine/shared/datafile.h>
+#include <engine/shared/jsonwriter.h>
 #include <engine/storage.h>
 
 #include <game/map/document/automap.h>
@@ -19,6 +20,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -254,10 +256,29 @@ size_t CMapEditor::LoadRules(const char *pName, const char *pText)
 {
 	if(pName == nullptr || pName[0] == '\0')
 		return 0;
-	map_document::CAutomapRules Rules = map_document::ParseAutomapRules(pText);
+	std::vector<int> vNotUnderstood;
+	map_document::CAutomapRules Rules = map_document::ParseAutomapRules(pText, &vNotUnderstood);
 	const size_t Configs = Rules.NumConfigs();
 	m_Rules[pName] = std::move(Rules);
+	m_RuleProblems[pName] = std::move(vNotUnderstood);
 	return Configs;
+}
+
+std::string CMapEditor::RuleProblems(const char *pName) const
+{
+	CJsonStringWriter Writer;
+	Writer.BeginArray();
+	if(pName != nullptr)
+	{
+		const auto Found = m_RuleProblems.find(pName);
+		if(Found != m_RuleProblems.end())
+		{
+			for(const int Line : Found->second)
+				Writer.WriteIntValue(Line);
+		}
+	}
+	Writer.EndArray();
+	return Writer.GetOutputString();
 }
 
 size_t CMapEditor::NumRuleConfigs(const char *pName) const

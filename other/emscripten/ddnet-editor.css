@@ -274,6 +274,84 @@
 	min-width: 0;
 }
 
+/* The rules file as text. A textarea cannot colour its own words, so what is
+   coloured is a `<pre>` behind it holding the same ones; the textarea above
+   is transparent but for its caret. The two therefore have to agree about
+   every measurement that moves text - font, padding, line height, wrapping -
+   or the colours slide off the words. */
+.editor-code {
+	position: relative;
+	height: 220px;
+	margin-top: 4px;
+	border-radius: 4px;
+	background: #16161a;
+	overflow: hidden;
+}
+
+.editor-code-view,
+.editor-code-text {
+	position: absolute;
+	inset: 0;
+	margin: 0;
+	padding: 6px;
+	border: 0;
+	box-sizing: border-box;
+	font: 12px/1.45 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+	white-space: pre;
+	tab-size: 4;
+	overflow: auto;
+}
+
+.editor-code-view {
+	pointer-events: none;
+	color: #cfd3d8;
+}
+
+.editor-code-text {
+	background: transparent;
+	color: transparent;
+	caret-color: #e8e8e8;
+	resize: none;
+}
+
+.editor-code-text:focus {
+	outline: 1px solid #9fb8de;
+	outline-offset: -1px;
+}
+
+.editor-code-status {
+	margin: 4px 0 0;
+	opacity: 0.75;
+}
+
+.rules-comment {
+	color: #7c8894;
+}
+
+.rules-config {
+	color: #e8b84a;
+	font-weight: 600;
+}
+
+.rules-keyword {
+	color: #7fb2f0;
+}
+
+.rules-word {
+	color: #5ad07a;
+}
+
+.rules-number {
+	color: #e0916a;
+}
+
+/* A line the program could not use. Underlined rather than only coloured,
+   because a colour on its own is not a message somebody can read. */
+.rules-problem {
+	text-decoration: underline wavy #e8615a;
+	text-underline-offset: 3px;
+}
+
 /* The four ways a quad is put into shape, between the list and the fields. */
 .editor-shape {
 	display: flex;

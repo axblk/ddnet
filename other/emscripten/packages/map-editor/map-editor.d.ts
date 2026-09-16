@@ -169,6 +169,9 @@ export declare class MapEditor {
 	tileIndex(group: number, layer: number, x: number, y: number, id?: MapId): number;
 	/** Keeps a `.rules` file under a name; answers how many configurations it holds. */
 	loadRules(name: string, text: string): number;
+	/** Which lines of a rules file were passed over, counting from one. */
+	ruleProblems(name: string): number[];
+
 	/** What the configurations of a rules file that was loaded are called. */
 	ruleConfigs(name: string): string[];
 	/** Runs one configuration over a layer, or over a piece of it, as one history entry. */

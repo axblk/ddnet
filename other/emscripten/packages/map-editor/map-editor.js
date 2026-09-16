@@ -240,6 +240,22 @@ class CMapEditor extends Program {
 		return this.call("MapEditorLoadRules", "number", ["string", "string"], [name, text]) || 0;
 	}
 
+	/**
+	 * Which lines of a rules file were passed over, counting from one.
+	 *
+	 * A rules file is read as far as it is understood, so a line the grammar
+	 * has no word for stops nothing - but somebody writing one wants to be
+	 * told which line it was.
+	 */
+	ruleProblems(name) {
+		const answer = this.call("MapEditorRuleProblems", "string", ["string"], [name]);
+		try {
+			return JSON.parse(answer || "[]");
+		} catch (error) {
+			return [];
+		}
+	}
+
 	/** What the configurations of a rules file that was loaded are called. */
 	ruleConfigs(name) {
 		const count = this.call("MapEditorNumRuleConfigs", "number", ["string"], [name]) || 0;
@@ -734,6 +750,21 @@ const PANELS_HTML = `
 			<label class="editor-small" title="Run them over every stroke, as part of the same change"><input type="checkbox" data-role="automap-auto"> auto</label>
 		</div>
 	</section>
+	<section class="editor-panel" data-role="rules-panel" hidden>
+		<header class="editor-panel-head">
+			<h2>Rules</h2>
+			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="rules-apply" title="Read the text as it stands now">apply</button>
+				<button class="editor-small" data-role="rules-revert" title="Fetch the file again as it lies beside the game">revert</button>
+				<button class="editor-small" data-role="rules-save" title="Write the text out as a file">save</button>
+			</span>
+		</header>
+		<div class="editor-code">
+			<pre class="editor-code-view" data-role="rules-view" aria-hidden="true"></pre>
+			<textarea class="editor-code-text" data-role="rules-text" spellcheck="false" wrap="off"></textarea>
+		</div>
+		<p class="editor-code-status" data-role="rules-status"></p>
+	</section>
 	<section class="editor-panel" data-role="quads-panel" hidden>
 		<header class="editor-panel-head">
 			<h2>Quads</h2>
@@ -837,6 +868,59 @@ const LAYER_PROPS = {
 	quads: [{ prop: "image", label: "Image", kind: "number" }],
 	sounds: [{ prop: "sound", label: "Sound", kind: "number" }],
 };
+
+// The grammar of a `.rules` file, as far as colouring it needs to know: the
+// words that begin a line, and the words that stand inside one. Taken from
+// the parser rather than from memory - a word the parser does not know is a
+// word this must not paint as if it did.
+const RULES_KEYWORDS = ["NewRun", "Index", "Pos", "Random", "Modulo", "NoDefaultRule", "NoLayerCopy"];
+const RULES_WORDS = ["EMPTY", "FULL", "INDEX", "NOTINDEX", "NONE", "OR", "XFLIP", "YFLIP", "ROTATE"];
+
+function escaped(text) {
+	return text.replace(/[&<>]/g, one => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[one]);
+}
+
+/**
+ * A rules file, painted.
+ *
+ * A textarea cannot colour its own text, so what is coloured is a `<pre>`
+ * behind it holding the same words; the textarea above it is transparent
+ * except for its caret. That is why the two have to be laid out to the pixel
+ * and why the scrolling of the one is copied onto the other.
+ *
+ * @param text The whole file.
+ * @param problems The line numbers the program passed over, counting from
+ * one; those lines are painted as the mistakes they are.
+ */
+function paintedRules(text, problems) {
+	const bad = new Set(problems);
+	return text.split("\n").map((line, index) => {
+		const number = index + 1;
+		const trimmed = line.trimStart();
+		let body;
+		if (trimmed.startsWith("#")) {
+			body = `<span class="rules-comment">${escaped(line)}</span>`;
+		} else if (trimmed.startsWith("[")) {
+			body = `<span class="rules-config">${escaped(line)}</span>`;
+		} else {
+			// Word by word, so that the spaces between them stay where they
+			// are - a colouring that moves the text is worse than none.
+			body = escaped(line).replace(/[^\s]+/g, word => {
+				if (RULES_KEYWORDS.includes(word)) {
+					return `<span class="rules-keyword">${word}</span>`;
+				}
+				if (RULES_WORDS.includes(word)) {
+					return `<span class="rules-word">${word}</span>`;
+				}
+				if (/^-?\d+(\.\d+)?%?$/.test(word)) {
+					return `<span class="rules-number">${word}</span>`;
+				}
+				return word;
+			});
+		}
+		return bad.has(number) ? `<span class="rules-problem">${body}</span>` : body;
+	}).join("\n");
+}
 
 // The thirteen physics tiles a layer's tiles can be turned into, in the order
 // the editor in the client offers them. The names are the command's; what
@@ -958,6 +1042,10 @@ class CEditorPanels {
 		// belong to. `null` means there are none for that picture - asked
 		// once and then remembered, so a layer without rules costs one 404.
 		this.rules = new Map();
+		// The text of those files, by the same name. Kept apart from the
+		// parsed ones because what is typed into the box is not what the
+		// program holds until somebody says so.
+		this.ruleText = new Map();
 		// Which of the places a number is used at was looked at last, so that
 		// pressing the button again goes to the next one.
 		this.gotoAt = 0;
@@ -1025,6 +1113,7 @@ class CEditorPanels {
 		this.wireAutomap();
 		this.wireConstruct();
 		this.wireShape();
+		this.wireRules();
 		this.wireEnvelopes();
 		this.wireQuads();
 		this.wireImages();
@@ -1644,6 +1733,7 @@ class CEditorPanels {
 		this.part("brush-size").textContent = size === null ? "" : `${size.width} x ${size.height}`;
 		this.refreshNumbers(layer);
 		this.refreshAutomap(layer);
+		this.refreshRules(layer);
 
 		// The picture the layer is drawn with, where the map names one that
 		// lies beside it. A layer whose picture is inside the map file, or
@@ -1893,6 +1983,10 @@ class CEditorPanels {
 				.then(answer => (answer.ok ? answer.text() : null))
 				.then(text => {
 					this.rules.set(name, text === null || this.editor.loadRules(name, text) === 0 ? null : name);
+					if (text !== null) {
+						this.ruleText.set(name, text);
+						this.part("rules-text").dataset.rules = "";
+					}
 					this.refreshTiles();
 				})
 				.catch(() => {
@@ -2196,6 +2290,104 @@ class CEditorPanels {
 			props.append(this.field(thing, description,
 				value => ({ op: "quad.setProp", group: where.group, layer: where.layer, quad: index, prop: description.prop, value: value })));
 		}
+	}
+
+	/**
+	 * The rules file of the picture a layer is drawn with, as text.
+	 *
+	 * A rules file does not belong to the map - it lies beside the game,
+	 * named after the picture - so what is edited here is the copy the
+	 * program holds. `apply` reads the text as it stands and says which lines
+	 * it could not use, `revert` fetches the file again, and `save` writes it
+	 * out so that it can be put where the game looks for it. Nothing here
+	 * touches the map, so nothing here is in the history.
+	 */
+	wireRules() {
+		const text = this.part("rules-text");
+		const view = this.part("rules-view");
+		// The painted copy is behind the text and has to be scrolled with it,
+		// or the two drift apart the moment the file is longer than the box.
+		text.addEventListener("scroll", () => {
+			view.scrollTop = text.scrollTop;
+			view.scrollLeft = text.scrollLeft;
+		}, { signal: this.stopping.signal });
+		text.addEventListener("input", () => this.paintRules(), { signal: this.stopping.signal });
+
+		this.part("rules-apply").addEventListener("click", () => {
+			const name = this.rulesNameFor(this.selectedLayer());
+			if (name === null) {
+				return;
+			}
+			this.ruleText.set(name, text.value);
+			const configs = this.editor.loadRules(name, text.value);
+			this.rules.set(name, configs === 0 ? null : name);
+			// The configurations may be other ones now, so the automapper's
+			// list has to be built again rather than kept.
+			this.part("automap-config").dataset.rules = "";
+			this.refresh();
+		}, { signal: this.stopping.signal });
+
+		this.part("rules-revert").addEventListener("click", () => {
+			const name = this.rulesNameFor(this.selectedLayer());
+			if (name === null) {
+				return;
+			}
+			this.ruleText.delete(name);
+			this.rules.delete(name);
+			this.part("automap-config").dataset.rules = "";
+			this.refresh();
+		}, { signal: this.stopping.signal });
+
+		this.part("rules-save").addEventListener("click", () => {
+			const name = this.rulesNameFor(this.selectedLayer());
+			if (name === null) {
+				return;
+			}
+			const handout = document.createElement("a");
+			const address = URL.createObjectURL(new Blob([text.value], { type: "text/plain" }));
+			handout.href = address;
+			handout.download = `${name}.rules`;
+			handout.click();
+			// Given back once the browser has had it; keeping it would keep
+			// the whole file alive for as long as the page is open.
+			setTimeout(() => URL.revokeObjectURL(address), 10000);
+		}, { signal: this.stopping.signal });
+	}
+
+	/** Paints the text as it stands, and says what the program made of it. */
+	paintRules() {
+		const name = this.rulesNameFor(this.selectedLayer());
+		const text = this.part("rules-text");
+		const problems = name === null ? [] : this.editor.ruleProblems(name);
+		// Only the lines that were passed over the last time it was read, so
+		// a line being typed is not painted as a mistake before it is done.
+		const stale = name === null || this.ruleText.get(name) !== text.value;
+		this.part("rules-view").innerHTML = paintedRules(text.value, stale ? [] : problems);
+		const configs = name === null ? [] : this.editor.ruleConfigs(name);
+		const said = [`${configs.length} ${configs.length === 1 ? "configuration" : "configurations"}`];
+		if (stale) {
+			said.push("not read yet");
+		} else if (problems.length > 0) {
+			said.push(`${problems.length === 1 ? "line" : "lines"} ${problems.join(", ")} not understood`);
+		}
+		this.part("rules-status").textContent = said.join(" \u00b7 ");
+	}
+
+	refreshRules(layer) {
+		const panel = this.part("rules-panel");
+		const name = this.rulesNameFor(layer);
+		panel.hidden = name === null || this.rules.get(name) === null;
+		if (panel.hidden || this.rules.get(name) === undefined) {
+			return;
+		}
+		const text = this.part("rules-text");
+		// The text belongs to the picture, so switching between two layers
+		// drawn with the same one keeps whatever was typed into it.
+		if (text.dataset.rules !== name) {
+			text.dataset.rules = name;
+			text.value = this.ruleText.get(name) || "";
+		}
+		this.paintRules();
 	}
 
 	/**

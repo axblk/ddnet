@@ -7,5 +7,5 @@ Icon=ddnet
 Terminal=false
 Keywords=game;multiplayer;
 Categories=Game;ArcadeGame;
-MimeType=x-scheme-handler/ddnet;
+MimeType=x-scheme-handler/ddnet;x-scheme-handler/ddnet+quic;x-scheme-handler/tw-0.7+quic;
 Comment=Launch DDNet

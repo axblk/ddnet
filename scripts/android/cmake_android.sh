@@ -163,6 +163,7 @@ function build_for_type() {
 		-DANDROID_PACKAGE_NAME_JNI="${PACKAGE_NAME//./_}" \
 		-DIPO="${build_ipo}" \
 		-DPREFER_BUNDLED_LIBS=ON \
+		-DQUIC="${QUIC:-OFF}" \
 		-DSERVER=ON \
 		-DTOOLS=OFF \
 		-DVULKAN=ON \

@@ -461,12 +461,12 @@ namespace map_document
 				// The same name and the same bytes is the same picture. An
 				// external one carries no bytes, so for those the name is all
 				// there is to go on, which is also all a game has to go on.
-				const auto SameBytes = [](const CSharedList<uint8_t> &One, const CSharedList<uint8_t> &Other) {
-					if(One.Size() != Other.Size())
+				const auto SameBytes = [](const CSharedList<uint8_t> &First, const CSharedList<uint8_t> &Second) {
+					if(First.Size() != Second.Size())
 						return false;
-					for(size_t At = 0; At < One.Size(); ++At)
+					for(size_t At = 0; At < First.Size(); ++At)
 					{
-						if(One[At] != Other[At])
+						if(First[At] != Second[At])
 							return false;
 					}
 					return true;

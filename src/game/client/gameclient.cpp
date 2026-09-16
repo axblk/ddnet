@@ -1321,12 +1321,7 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 
 	// Map bugs and tunings are reset when the map context is loaded.
 
-	m_LastShowDistanceZoom = 0.0f;
-	m_LastZoom = 0.0f;
-	m_LastShowDistance = vec2(0.0f, 0.0f);
-	m_LastDeadzone = 0.0f;
-	m_LastFollowFactor = 0.0f;
-	m_LastDummyConnected = false;
+	m_aCameraSent = {};
 
 	MultiView().Reset();
 
@@ -3792,42 +3787,63 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 			DummyRuntime.m_EnableSpectatorCount = g_Config.m_ClShowhudSpectatorCount;
 		}
 
-		float ShowDistanceZoom = m_Camera.Zoom();
-		float Zoom = m_Camera.Zoom();
-		if(m_Camera.IsZooming())
+		// Each connection is told what the view it is shown in covers. On a single
+		// screen that is the view the player looks through, for both of them as in
+		// DDNet. Side by side, the dummy has a pane of its own, with its own zoom
+		// and a narrower shape than the whole screen.
+		for(int ViewConn = IClient::CONN_MAIN; ViewConn < NUM_DUMMIES; ++ViewConn)
 		{
-			if(m_Camera.ZoomSmoothingTarget() > m_Camera.Zoom()) // Zooming out
-				ShowDistanceZoom = m_Camera.ZoomSmoothingTarget();
-			else if(m_Camera.ZoomSmoothingTarget() < m_Camera.Zoom() && m_LastShowDistanceZoom > 0) // Zooming in
-				ShowDistanceZoom = m_LastShowDistanceZoom;
+			CCameraSent &Sent = m_aCameraSent[ViewConn];
+			if(ViewConn == IClient::CONN_DUMMY && !Client()->DummyConnected())
+			{
+				Sent = {};
+				continue;
+			}
+			const CGameView &ConnView = g_Config.m_ClDummySplitScreen ? GameView(SessionId, ViewConn) : InputView();
+			const CGameView::CCameraState &Camera = ConnView.Camera();
+			float ShowDistanceZoom = Camera.m_Zoom;
+			float Zoom = Camera.m_Zoom;
+			if(Camera.m_Zooming)
+			{
+				if(Camera.m_ZoomSmoothingTarget > Camera.m_Zoom) // Zooming out
+					ShowDistanceZoom = Camera.m_ZoomSmoothingTarget;
+				else if(Camera.m_ZoomSmoothingTarget < Camera.m_Zoom && Sent.m_ShowDistanceZoom > 0) // Zooming in
+					ShowDistanceZoom = Sent.m_ShowDistanceZoom;
 
-			Zoom = m_Camera.ZoomSmoothingTarget();
-		}
+				Zoom = Camera.m_ZoomSmoothingTarget;
+			}
 
-		float Deadzone = m_Camera.Deadzone();
-		float FollowFactor = m_Camera.FollowFactor();
+			float Deadzone = m_Camera.Deadzone();
+			float FollowFactor = m_Camera.FollowFactor();
+			const CGameState *pConnState = ViewConn == IClient::CONN_MAIN ? pMainState : pDummyState;
+			if(pConnState->Snap().m_SpecInfo.m_Active && Sent.m_Sent)
+			{
+				// don't send camera information when spectating
+				Zoom = Sent.m_Zoom;
+				Deadzone = Sent.m_Deadzone;
+				FollowFactor = Sent.m_FollowFactor;
+			}
 
-		if(Snap.m_SpecInfo.m_Active)
-		{
-			// don't send camera information when spectating
-			Zoom = m_LastZoom;
-			Deadzone = m_LastDeadzone;
-			FollowFactor = m_LastFollowFactor;
-		}
-
-		// initialize dummy vital when first connected
-		if(Client()->DummyConnected() && !m_LastDummyConnected)
-		{
+			// The size itself decides, not what went into it: the zoom, the screen and
+			// the setting for wide screens all move it, and the server only cares that it
+			// clips to what is on screen.
+			const CViewport &Viewport = ConnView.Viewport();
+			const float Aspect = Viewport.m_Width > 0 && Viewport.m_Height > 0 ? Viewport.m_Width / (float)Viewport.m_Height : Graphics()->ScreenAspect();
+			float ShowDistanceX, ShowDistanceY;
+			Graphics()->CalcScreenParams(Aspect, ShowDistanceZoom, &ShowDistanceX, &ShowDistanceY);
+			if(!Sent.m_Sent || ShowDistanceX != Sent.m_ShowDistance.x || ShowDistanceY != Sent.m_ShowDistance.y)
 			{
 				CNetMsg_Cl_ShowDistance Msg;
-				float x, y;
-				Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), ShowDistanceZoom, &x, &y);
-				Msg.m_X = x;
-				Msg.m_Y = y;
+				Msg.m_X = ShowDistanceX;
+				Msg.m_Y = ShowDistanceY;
+				if(ViewConn == IClient::CONN_MAIN)
+					Client()->ChecksumData()->m_Zoom = ShowDistanceZoom;
 				CMsgPacker Packer(&Msg);
 				Msg.Pack(&Packer);
-				Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
+				Client()->SendMsg(ViewConn, &Packer, MSGFLAG_VITAL);
 			}
+
+			if(!Sent.m_Sent || Zoom != Sent.m_Zoom || Deadzone != Sent.m_Deadzone || FollowFactor != Sent.m_FollowFactor)
 			{
 				CNetMsg_Cl_CameraInfo Msg;
 				Msg.m_Zoom = round_truncate(Zoom * 1000.f);
@@ -3835,51 +3851,16 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 				Msg.m_FollowFactor = FollowFactor;
 				CMsgPacker Packer(&Msg);
 				Msg.Pack(&Packer);
-				Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
+				Client()->SendMsg(ViewConn, &Packer, MSGFLAG_VITAL);
 			}
+
+			Sent.m_Sent = true;
+			Sent.m_ShowDistanceZoom = ShowDistanceZoom;
+			Sent.m_ShowDistance = vec2(ShowDistanceX, ShowDistanceY);
+			Sent.m_Zoom = Zoom;
+			Sent.m_Deadzone = Deadzone;
+			Sent.m_FollowFactor = FollowFactor;
 		}
-
-		// send show distance
-		// The size itself decides, not what went into it: the zoom, the screen and
-		// the setting for wide screens all move it, and the server only cares that it
-		// clips to what is on screen.
-		float ShowDistanceX, ShowDistanceY;
-		Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), ShowDistanceZoom, &ShowDistanceX, &ShowDistanceY);
-		if(ShowDistanceX != m_LastShowDistance.x || ShowDistanceY != m_LastShowDistance.y)
-		{
-			CNetMsg_Cl_ShowDistance Msg;
-			Msg.m_X = ShowDistanceX;
-			Msg.m_Y = ShowDistanceY;
-			Client()->ChecksumData()->m_Zoom = ShowDistanceZoom;
-			CMsgPacker Packer(&Msg);
-			Msg.Pack(&Packer);
-
-			Client()->SendMsg(IClient::CONN_MAIN, &Packer, MSGFLAG_VITAL);
-			if(Client()->DummyConnected() && m_LastDummyConnected)
-				Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
-		}
-
-		// send camera info
-		if(Zoom != m_LastZoom || Deadzone != m_LastDeadzone || FollowFactor != m_LastFollowFactor)
-		{
-			CNetMsg_Cl_CameraInfo Msg;
-			Msg.m_Zoom = round_truncate(Zoom * 1000.f);
-			Msg.m_Deadzone = Deadzone;
-			Msg.m_FollowFactor = FollowFactor;
-			CMsgPacker Packer(&Msg);
-			Msg.Pack(&Packer);
-
-			Client()->SendMsg(IClient::CONN_MAIN, &Packer, MSGFLAG_VITAL);
-			if(Client()->DummyConnected() && m_LastDummyConnected)
-				Client()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
-		}
-
-		m_LastShowDistanceZoom = ShowDistanceZoom;
-		m_LastShowDistance = vec2(ShowDistanceX, ShowDistanceY);
-		m_LastZoom = Zoom;
-		m_LastDeadzone = Deadzone;
-		m_LastFollowFactor = FollowFactor;
-		m_LastDummyConnected = Client()->DummyConnected();
 	}
 
 	for(auto &pComponent : m_vpAll)

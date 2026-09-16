@@ -32,7 +32,6 @@ public:
 		void Reset();
 	};
 
-	void OnInit(CEditor *pEditor) override;
 	bool OnInput(const IInput::CEvent &Event) override;
 	void Render();
 
@@ -46,6 +45,7 @@ private:
 	};
 	std::chrono::nanoseconds m_CursorRenderTime;
 	IGraphics::CTextureHandle m_CursorTextTexture;
+	IGraphics::CTextureHandle CursorTextTexture();
 	CUi::SConfirmPopupContext m_ConfirmActivatePopupContext;
 
 	void SetCursor();

@@ -28,6 +28,7 @@
 #define WT_CONNECTLINK_DOUBLE_SLASH "ddnet+wt://"
 #define WT_CONNECTLINK7_DOUBLE_SLASH "tw-0.7+wt://"
 
+class CAssetLoader;
 class CSnapshot;
 class CSnapshotBuffer;
 class IMap;
@@ -347,7 +348,7 @@ public:
 	bool ConnectionProblems(CSessionId SessionId, int Conn) const { return ConnectionProblems(SessionId, StreamId(SessionId, Conn)); }
 	virtual bool ConnectionProblems(CSessionId SessionId, CStreamId StreamId) const = 0;
 
-	virtual IGraphics::CTextureHandle GetDebugFont() const = 0; // TODO: remove this function
+	virtual IGraphics::CTextureHandle GetDebugFont() = 0; // TODO: remove this function
 
 	// DDRace
 
@@ -429,6 +430,13 @@ class IGameClient : public IInterface
 protected:
 public:
 	virtual void OnConsoleInit() = 0;
+
+	/**
+	 * The loader that runs the client's asset jobs. Everything the client
+	 * loads goes through this one queue, so that the same limit on how many
+	 * jobs run at once holds for all of it.
+	 */
+	virtual CAssetLoader &AssetLoader() = 0;
 
 	virtual void OnRconType(bool UsernameReq) = 0;
 	virtual void OnRconLine(const char *pLine) = 0;

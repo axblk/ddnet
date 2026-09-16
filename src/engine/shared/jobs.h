@@ -78,6 +78,13 @@ protected:
 	 */
 	void Abortable(bool Abortable);
 
+	/**
+	 * Aborts the job only if it has not started running yet.
+	 *
+	 * @return `true` if the queued job was aborted, `false` otherwise.
+	 */
+	bool AbortQueued();
+
 public:
 	IJob();
 	virtual ~IJob();

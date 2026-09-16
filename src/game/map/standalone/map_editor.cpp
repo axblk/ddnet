@@ -9,6 +9,7 @@
 #include <engine/shared/datafile.h>
 #include <engine/storage.h>
 
+#include <game/map/document/automap.h>
 #include <game/map/document/command.h>
 #include <game/map/document/edit.h>
 #include <game/map/document/map_file.h>
@@ -233,6 +234,88 @@ std::string CMapEditor::EnvelopeJson(int Id, int Index) const
 	if(pMap == nullptr || Index < 0)
 		return "null";
 	return map_document::EnvelopeJson(pMap->m_Document.Map(), (size_t)Index);
+}
+
+int CMapEditor::TileIndex(int Id, int Group, int Layer, int x, int y) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0 || x < 0 || y < 0)
+		return -1;
+	const map_document::CMapState &Map = pMap->m_Document.Map();
+	if((size_t)Group >= Map.NumGroups() || (size_t)Layer >= Map.NumLayers((size_t)Group))
+		return -1;
+	const auto *pTiles = std::get_if<map_document::CTileLayer>(Map.Layer((size_t)Group, (size_t)Layer));
+	if(pTiles == nullptr || x >= pTiles->Width() || y >= pTiles->Height())
+		return -1;
+	return pTiles->m_Tiles.Get(x, y).m_Index;
+}
+
+size_t CMapEditor::LoadRules(const char *pName, const char *pText)
+{
+	if(pName == nullptr || pName[0] == '\0')
+		return 0;
+	map_document::CAutomapRules Rules = map_document::ParseAutomapRules(pText);
+	const size_t Configs = Rules.NumConfigs();
+	m_Rules[pName] = std::move(Rules);
+	return Configs;
+}
+
+size_t CMapEditor::NumRuleConfigs(const char *pName) const
+{
+	if(pName == nullptr)
+		return 0;
+	const auto Found = m_Rules.find(pName);
+	return Found == m_Rules.end() ? 0 : Found->second.NumConfigs();
+}
+
+const char *CMapEditor::RuleConfigName(const char *pName, size_t Config) const
+{
+	if(pName == nullptr)
+		return "";
+	const auto Found = m_Rules.find(pName);
+	return Found == m_Rules.end() ? "" : Found->second.ConfigName(Config);
+}
+
+bool CMapEditor::Automap(int Id, int Group, int Layer, const char *pRules, int Config, int Seed, int Reference,
+	int x, int y, int Width, int Height)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0 || Config < 0 || pRules == nullptr)
+		return false;
+	const auto Found = m_Rules.find(pRules);
+	if(Found == m_Rules.end() || (size_t)Config >= Found->second.NumConfigs())
+		return false;
+	const map_document::CMapState &Map = pMap->m_Document.Map();
+	if((size_t)Group >= Map.NumGroups() || (size_t)Layer >= Map.NumLayers((size_t)Group))
+		return false;
+	// Asked of the layer rather than of `TileLayer`, which is for a caller
+	// that already knows: a quad layer is a thing somebody may well have
+	// selected, not a mistake.
+	const auto *pTiles = std::get_if<map_document::CTileLayer>(Map.Layer((size_t)Group, (size_t)Layer));
+	if(pTiles == nullptr || !map_document::DrawsOwnTiles(pTiles->m_Kind))
+		return false;
+
+	// The game layer of the same map, for a run that is filtered by a physics
+	// tile. A map without one automaps without the filter.
+	const map_document::CTileLayer *pGame = nullptr;
+	for(size_t OverGroup = 0; OverGroup < Map.NumGroups() && pGame == nullptr; ++OverGroup)
+		for(size_t OverLayer = 0; OverLayer < Map.NumLayers(OverGroup); ++OverLayer)
+		{
+			const auto *pOne = std::get_if<map_document::CTileLayer>(Map.Layer(OverGroup, OverLayer));
+			if(pOne != nullptr && pOne->m_Kind == map_document::ETileLayerKind::GAME)
+			{
+				pGame = pOne;
+				break;
+			}
+		}
+
+	pMap->m_Document.Begin("Automap");
+	map_document::EditTileLayer(pMap->m_Document, (size_t)Group, (size_t)Layer, [&](map_document::CTileLayer &Changed) {
+		map_document::Automap(Changed, pGame, Found->second, (size_t)Config, Seed, Reference, x, y, Width, Height);
+	});
+	pMap->m_Document.Commit();
+	Touch();
+	return true;
 }
 
 int CMapEditor::AddImage(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels)

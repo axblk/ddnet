@@ -3,6 +3,7 @@
 
 #include <base/vmath.h>
 
+#include <game/map/document/automap.h>
 #include <game/map/document/document.h>
 #include <game/map/document/edit.h>
 #include <game/map/document/view.h>
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -269,6 +271,69 @@ public:
 	 * @return The place, in world units.
 	 */
 	vec2 WorldInGroup(int Id, size_t Group, vec2 Pixel) const;
+
+	/**
+	 * What tile stands in one place of a layer.
+	 *
+	 * One tile at a time rather than the whole plane, for the same reason the
+	 * quads and the envelope points are asked for one at a time: a map of
+	 * four million tiles is not a thing to hand out after every stroke.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it, which has to hold tiles.
+	 * @param x Where, in tiles.
+	 * @param y Where, in tiles.
+	 *
+	 * @return The index, or -1 where there is no such tile.
+	 */
+	int TileIndex(int Id, int Group, int Layer, int x, int y) const;
+
+	/**
+	 * Keeps a `.rules` file under a name, parsed, for automapping with.
+	 *
+	 * The file is not read here: natively it comes off the disk and in the
+	 * browser the page fetches it, and either way what arrives is text. The
+	 * name is the one the map calls the picture, because that is how a layer
+	 * finds its rules.
+	 *
+	 * @param pName What the rules are called - the picture's name.
+	 * @param pText The whole file.
+	 *
+	 * @return How many configurations it holds.
+	 */
+	size_t LoadRules(const char *pName, const char *pText);
+
+	/** How many configurations a rules file that was loaded holds. */
+	size_t NumRuleConfigs(const char *pName) const;
+
+	/** What one of them is called, or an empty word for one that is not there. */
+	const char *RuleConfigName(const char *pName, size_t Config) const;
+
+	/**
+	 * Runs one configuration of a rules file over a layer, or over a piece of
+	 * one, as a change of its own.
+	 *
+	 * The game layer of the same map is handed to it, so that a run which is
+	 * filtered by a physics tile has something to filter by.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it, which has to hold tiles.
+	 * @param pRules Which rules file, by the name it was loaded under.
+	 * @param Config Which configuration of it.
+	 * @param Seed The seed, or 0 for one that is made up.
+	 * @param Reference Which physics tile the first run is filtered by, -1
+	 * for none.
+	 * @param x Where the rectangle starts.
+	 * @param y Where the rectangle starts.
+	 * @param Width How wide, or -1 for the whole layer.
+	 * @param Height How tall, or -1 for the whole layer.
+	 *
+	 * @return Whether it ran.
+	 */
+	bool Automap(int Id, int Group, int Layer, const char *pRules, int Config, int Seed, int Reference,
+		int x, int y, int Width, int Height);
 
 	/**
 	 * Puts a picture into the map with its pixels, and says where it went.
@@ -614,6 +679,10 @@ private:
 	map_document::CBrush m_Brush;
 	map_document::CBrushNumbers m_Numbers;
 	std::array<map_document::CBrush, NUM_STORED_BRUSHES> m_aStoredBrushes;
+	// The `.rules` files that were handed in, by the name they came under.
+	// They belong to the editor rather than to a map: the same rules
+	// automap every map that draws with that picture.
+	std::map<std::string, map_document::CAutomapRules> m_Rules;
 };
 
 #endif // GAME_MAP_STANDALONE_MAP_EDITOR_H

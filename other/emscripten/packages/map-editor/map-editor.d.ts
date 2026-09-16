@@ -153,6 +153,16 @@ export declare class MapEditor {
 	showQuad(group?: number, layer?: number, quad?: number, id?: MapId): void;
 	/** Where a canvas point is in one group's coordinates, in world units. */
 	groupWorldAt(group: number, x: number, y: number, id?: MapId): { x: number; y: number } | null;
+	/** What tile stands in one place of a layer, or -1 where there is none. */
+	tileIndex(group: number, layer: number, x: number, y: number, id?: MapId): number;
+	/** Keeps a `.rules` file under a name; answers how many configurations it holds. */
+	loadRules(name: string, text: string): number;
+	/** What the configurations of a rules file that was loaded are called. */
+	ruleConfigs(name: string): string[];
+	/** Runs one configuration over a layer, or over a piece of it, as one history entry. */
+	automap(group: number, layer: number, rules: string, config: number, options?: {
+		seed?: number; reference?: number; x?: number; y?: number; width?: number; height?: number; id?: MapId;
+	}): boolean;
 	/** Puts a picture with its pixels into the map; answers which picture it became, or -1. */
 	addImage(name: string, pixels: ImageData, id?: MapId): number;
 	/** Puts other pixels into a picture the map has, keeping the layers drawn with it. */

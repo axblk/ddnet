@@ -315,7 +315,67 @@ namespace
 		Map.ReplaceLayer(0, 0, std::move(Bound));
 		return Map;
 	}
+	CMapState WithAPicture()
+	{
+		CMapState Map = TwoGroups();
+		CImage Image;
+		Image.m_Name = "grass";
+		Image.m_External = false;
+		Image.m_Width = 2;
+		Image.m_Height = 2;
+		Image.m_Data.Mutable().assign(2 * 2 * 4, 0x20);
+		Map.AddImage(std::move(Image));
+		CTileLayer Drawn = *Map.TileLayer(0, 0);
+		Drawn.m_Image = 0;
+		Map.ReplaceLayer(0, 0, std::move(Drawn));
+		return Map;
+	}
 } // namespace
+
+TEST(Command, APictureBesideTheMapIsAddedAndNamed)
+{
+	CCommands Commands(WithAPicture());
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"image.add","name":"desert","width":64,"height":64})"), "image"), 1);
+	const CImage *pImage = Commands.m_Document.Map().Image(1);
+	ASSERT_NE(pImage, nullptr);
+	EXPECT_EQ(pImage->m_Name, "desert");
+	EXPECT_TRUE(pImage->m_External) << "a picture that comes through a command has no pixels";
+	EXPECT_EQ(pImage->m_Width, 64);
+
+	Commands.Ok(R"({"op":"image.setProp","image":1,"prop":"name","value":"dune"})");
+	EXPECT_EQ(Commands.m_Document.Map().Image(1)->m_Name, "dune");
+}
+
+TEST(Command, APictureThatIsTakenAwayIsTakenOffTheLayersDrawnWithIt)
+{
+	CCommands Commands(WithAPicture());
+	Commands.Ok(R"({"op":"image.add","name":"desert"})");
+	// The layer is drawn with the first one; taking the second one away
+	// leaves it where it is.
+	Commands.Ok(R"({"op":"image.delete","image":1})");
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_Image, 0);
+	// And taking away the one it uses leaves it drawn with none.
+	Commands.Ok(R"({"op":"image.delete","image":0})");
+	EXPECT_EQ(Commands.m_Document.Map().NumImages(), 0u);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_Image, -1);
+}
+
+TEST(Command, APictureIsMadeExternalButNotEmbeddedWithoutPixels)
+{
+	CCommands Commands(WithAPicture());
+	// Out of the file: the pixels go, the layers stay.
+	Commands.Ok(R"({"op":"image.setProp","image":0,"prop":"external","value":true})");
+	EXPECT_TRUE(Commands.m_Document.Map().Image(0)->m_External);
+	EXPECT_TRUE(Commands.m_Document.Map().Image(0)->m_Data.Empty());
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_Image, 0);
+
+	// And back in again is not something a command can do, because the
+	// pixels are not in it.
+	EXPECT_EQ(Commands.Refused(R"({"op":"image.setProp","image":0,"prop":"external","value":false})"),
+		"that picture has no pixels of its own");
+	EXPECT_EQ(Commands.Refused(R"({"op":"image.add","name":""})"), "a picture needs a name");
+	EXPECT_EQ(Commands.Refused(R"({"op":"image.setProp","image":0,"prop":"size","value":4})"), "a picture has no 'size'");
+}
 
 TEST(Command, AnEnvelopeIsAddedAndItsPointsGoInTimeOrder)
 {

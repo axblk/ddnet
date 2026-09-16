@@ -68,6 +68,24 @@ changed and not written out says so - the page asks before the tab is closed,
 and every minute what has changed goes into the browser's own storage by
 itself.
 
+## Pictures
+
+A picture is read in by the browser, not by the program: a browser reads PNGs,
+and what comes out of a canvas is already the RGBA the map keeps. The pixels
+then cross over as bytes rather than as a command - a picture of a thousand by
+a thousand is four megabytes, and four megabytes of JSON is a text nobody
+should have to write or read - which is why `editor.addImage(name, pixels)`
+and `editor.setImagePixels(index, pixels)` are calls of their own and the rest
+of what a picture has (`image.add` for one that lies beside the map,
+`image.delete`, `image.setProp`) goes through the ordinary commands.
+
+Replacing a picture keeps every layer that is drawn with it: the tiles stay
+where they are and the picture under them changes. Taking one away does the
+opposite and takes it off them - a layer names a picture by its place, so the
+ones after it come down one and a layer that was drawn with the one that is
+gone is drawn with none. Taking the pixels back out ("out") leaves the name,
+which is a picture that lies beside the map again.
+
 ## Envelopes
 
 The envelope panel is an SVG, not a canvas, and that is the point: a few dozen
@@ -157,6 +175,6 @@ and 17 ms.
 
 ## What it is not, yet
 
-Images, sounds and the automapper are looked at but not changed, and a quad's
-picture coordinates are read but not yet edited. A layer with no picture at all is shown as a grid of numbers - the tiles are still there to
+Sounds and the automapper are looked at but not changed, and a quad's picture
+coordinates are read but not yet edited. A layer with no picture at all is shown as a grid of numbers - the tiles are still there to
 be picked, they just cannot be shown.

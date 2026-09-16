@@ -235,6 +235,44 @@ std::string CMapEditor::EnvelopeJson(int Id, int Index) const
 	return map_document::EnvelopeJson(pMap->m_Document.Map(), (size_t)Index);
 }
 
+int CMapEditor::AddImage(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || pName == nullptr || pName[0] == '\0' || Width <= 0 || Height <= 0 || pPixels == nullptr)
+		return -1;
+	map_document::CImage Image;
+	Image.m_Name = pName;
+	Image.m_External = false;
+	Image.m_Width = Width;
+	Image.m_Height = Height;
+	Image.m_Data.Mutable().assign(pPixels, pPixels + (size_t)Width * (size_t)Height * 4);
+	pMap->m_Document.Begin("Add image");
+	const size_t Index = map_document::AddImage(pMap->m_Document, std::move(Image));
+	pMap->m_Document.Commit();
+	Touch();
+	return (int)Index;
+}
+
+bool CMapEditor::SetImagePixels(int Id, int Index, int Width, int Height, const uint8_t *pPixels)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || Index < 0 || Width <= 0 || Height <= 0 || pPixels == nullptr)
+		return false;
+	const map_document::CMapState &Map = pMap->m_Document.Map();
+	if((size_t)Index >= Map.NumImages())
+		return false;
+	map_document::CImage Changed = *Map.Image((size_t)Index);
+	Changed.m_External = false;
+	Changed.m_Width = Width;
+	Changed.m_Height = Height;
+	Changed.m_Data.Mutable().assign(pPixels, pPixels + (size_t)Width * (size_t)Height * 4);
+	pMap->m_Document.Begin("Replace image");
+	map_document::SetImage(pMap->m_Document, (size_t)Index, std::move(Changed));
+	pMap->m_Document.Commit();
+	Touch();
+	return true;
+}
+
 bool CMapEditor::BrushIsCheckpoint() const
 {
 	const auto *pTele = std::get_if<map_document::CTileStore<CTeleTile>>(&m_Brush.m_ExtraTiles);

@@ -290,6 +290,21 @@ EMSCRIPTEN_KEEPALIVE int MapEditorNextFreeNumber(int Id, int Group, int Layer, i
 	return g_pEditor == nullptr ? -1 : g_pEditor->NextFreeNumber(Id, Group, Layer, Checkpoint != 0);
 }
 
+// A picture and its pixels, which come over as bytes rather than as JSON: a
+// thousand by a thousand is four megabytes, and the page has them already -
+// it decoded the PNG itself, because browsers do that.
+EMSCRIPTEN_KEEPALIVE int MapEditorAddImage(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels)
+{
+	return g_pEditor == nullptr ? -1 : g_pEditor->AddImage(Id, pName, Width, Height, pPixels);
+}
+
+// Other pixels in the place of a picture's, which keeps every layer that is
+// drawn with it - that is what replacing a picture is for.
+EMSCRIPTEN_KEEPALIVE int MapEditorSetImagePixels(int Id, int Index, int Width, int Height, const uint8_t *pPixels)
+{
+	return g_pEditor != nullptr && g_pEditor->SetImagePixels(Id, Index, Width, Height, pPixels) ? 1 : 0;
+}
+
 // Whether the tiles in hand are tele checkpoints, which have a free-number
 // count of their own. No Id: the brush belongs to the editor, not to a map.
 EMSCRIPTEN_KEEPALIVE int MapEditorBrushCheckpoint()

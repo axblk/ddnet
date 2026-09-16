@@ -130,6 +130,45 @@ namespace map_document
 	void SetQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, const CQuad &Changed);
 
 	/**
+	 * Adds a picture at the end, and says where it went.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Image The picture to add.
+	 *
+	 * @return Which picture of the map it became.
+	 */
+	size_t AddImage(CDocument &Doc, CImage Image);
+
+	/**
+	 * Takes a picture out of the map, and takes it off every layer that was
+	 * drawn with it.
+	 *
+	 * A layer names a picture by its place, the same way a quad names an
+	 * envelope, so the same rebinding is needed: what pointed past the one
+	 * that is gone comes down one, and a layer that was drawn with it is
+	 * drawn with none. A layer that used a different picture is left as the
+	 * node it is, so this costs the layers that used this one rather than the
+	 * map.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Image Which picture to take out.
+	 */
+	void DeleteImage(CDocument &Doc, size_t Image);
+
+	/**
+	 * Puts another picture in the place of one, keeping every layer that is
+	 * drawn with it.
+	 *
+	 * Which is what replacing a picture is for: the tiles stay where they
+	 * are and the picture under them changes.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Index Which picture of the map.
+	 * @param Changed What it is to be.
+	 */
+	void SetImage(CDocument &Doc, size_t Index, CImage Changed);
+
+	/**
 	 * Adds an envelope at the end, and says where it went.
 	 *
 	 * @param Doc The document being changed.

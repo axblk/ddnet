@@ -217,6 +217,53 @@ class CMapEditor extends Program {
 		return new ImageData(new Uint8ClampedArray(heap.subarray(address, address + width * height * 4)), width, height);
 	}
 
+	/**
+	 * Puts a picture into the map with its pixels, and says which picture of
+	 * the map it became - or -1 where it was refused.
+	 *
+	 * The pixels do not go through a command, because they are bytes: a
+	 * picture of a thousand by a thousand is four megabytes, and four
+	 * megabytes of JSON is a text nobody should have to write or read. The
+	 * page decodes the PNG - browsers do that - and hands over what came out.
+	 *
+	 * @param name What to call it in the map.
+	 * @param pixels An `ImageData`, which is what a canvas gives back.
+	 */
+	addImage(name, pixels, id) {
+		return this.withPixels(pixels, (address, width, height) =>
+			this.call("MapEditorAddImage", "number", ["number", "string", "number", "number", "number"],
+				[this.which(id), name, width, height, address]));
+	}
+
+	/**
+	 * Puts other pixels into a picture the map already has, keeping every
+	 * layer that is drawn with it - which is what replacing a picture is for.
+	 */
+	setImagePixels(index, pixels, id) {
+		return this.withPixels(pixels, (address, width, height) =>
+			this.ask("MapEditorSetImagePixels", "number", [this.which(id), index, width, height, address]) === 1);
+	}
+
+	// Hands the pixels to the program and takes the room back again. The
+	// program copies what it keeps, so the room is only needed for the call.
+	withPixels(pixels, work) {
+		const module = this.module;
+		if (module == null || pixels == null || !pixels.width || !pixels.height) {
+			return null;
+		}
+		const bytes = pixels.width * pixels.height * 4;
+		const address = module._malloc(bytes);
+		if (!address) {
+			return null;
+		}
+		try {
+			module.HEAPU8.set(new Uint8Array(pixels.data.buffer, pixels.data.byteOffset, bytes), address);
+			return work(address, pixels.width, pixels.height);
+		} finally {
+			module._free(address);
+		}
+	}
+
 	/** What the map is made of: groups, layers, envelopes, images, sounds. */
 	structure(id) {
 		return this.json("MapEditorStructure", [this.which(id)]);
@@ -636,6 +683,19 @@ const PANELS_HTML = `
 		<ol class="editor-quads" data-role="quad-list"></ol>
 		<div class="editor-props" data-role="quad-props"></div>
 	</section>
+	<section class="editor-panel" data-role="images-panel">
+		<header class="editor-panel-head">
+			<h2>Images</h2>
+			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="add-image" title="Read a PNG into the map">+</button>
+				<button class="editor-small" data-role="replace-image" title="Other pixels for this picture">&#8635;</button>
+				<button class="editor-small" data-role="unpack-image" title="Take the pixels out and name the file instead">out</button>
+				<button class="editor-small" data-role="delete-image" title="Take this picture out of the map">-</button>
+			</span>
+		</header>
+		<ol class="editor-images" data-role="image-list"></ol>
+		<input type="file" accept="image/png,image/*" data-role="image-file" hidden>
+	</section>
 	<section class="editor-panel" data-role="envelopes-panel">
 		<header class="editor-panel-head">
 			<h2>Envelopes</h2>
@@ -704,6 +764,31 @@ function propertyValue(thing, prop) {
 	return packed === undefined ? thing[prop] : thing[packed[0]][packed[1]];
 }
 
+/**
+ * The pixels of a picture file, decoded by the browser.
+ *
+ * A browser reads PNGs and what comes out of a canvas is already the RGBA the
+ * map keeps, so the program is never asked to decode anything - which is also
+ * why a picture that is 4096 wide is refused here rather than there: that is
+ * what a map file can hold.
+ *
+ * @return An `ImageData`, or null where the browser could not read it.
+ */
+async function pixelsOf(file) {
+	try {
+		const picture = await createImageBitmap(file);
+		const canvas = document.createElement("canvas");
+		canvas.width = picture.width;
+		canvas.height = picture.height;
+		const paint = canvas.getContext("2d", { willReadFrequently: true });
+		paint.drawImage(picture, 0, 0);
+		picture.close();
+		return paint.getImageData(0, 0, canvas.width, canvas.height);
+	} catch (error) {
+		return null;
+	}
+}
+
 // A colour as the browser writes one, and back. The map keeps four channels
 // of its own, and the alpha is not something an `<input type=color>` has.
 function hexOf(color) {
@@ -750,6 +835,8 @@ class CEditorPanels {
 		this.point = -1;
 		// Which quad of the selected layer has handles on it.
 		this.quad = -1;
+		// Which picture of the map is picked in the image panel.
+		this.image = -1;
 		// Which of the places a number is used at was looked at last, so that
 		// pressing the button again goes to the next one.
 		this.gotoAt = 0;
@@ -816,6 +903,7 @@ class CEditorPanels {
 		this.wireTileset();
 		this.wireEnvelopes();
 		this.wireQuads();
+		this.wireImages();
 		on("delete", () => this.deleteSelected());
 		on("up", () => this.moveSelected(-1));
 		on("down", () => this.moveSelected(1));
@@ -1095,6 +1183,7 @@ class CEditorPanels {
 		this.refreshProps();
 		this.refreshTiles();
 		this.refreshQuads();
+		this.refreshImages();
 		this.refreshEnvelopes();
 		this.refreshHistory();
 	}
@@ -1777,6 +1866,112 @@ class CEditorPanels {
 			props.append(this.field(thing, description,
 				value => ({ op: "quad.setProp", group: where.group, layer: where.layer, quad: index, prop: description.prop, value: value })));
 		}
+	}
+
+	/**
+	 * The pictures of the map: reading one in, swapping its pixels, taking
+	 * the pixels back out, and taking it away.
+	 *
+	 * The PNG is decoded by the browser rather than by the program - a
+	 * browser reads PNGs, and what comes out of a canvas is already the RGBA
+	 * the map keeps. What crosses over is the bytes, not a JSON text of them.
+	 */
+	wireImages() {
+		const signal = this.stopping.signal;
+		const file = this.part("image-file");
+		// What the file, once chosen, is for: a new picture or another one's
+		// pixels. Held here because the dialogue answers later.
+		let replacing = -1;
+		this.part("add-image").addEventListener("click", () => {
+			replacing = -1;
+			file.value = "";
+			file.click();
+		}, { signal: signal });
+		this.part("replace-image").addEventListener("click", () => {
+			if (this.image < 0) {
+				return;
+			}
+			replacing = this.image;
+			file.value = "";
+			file.click();
+		}, { signal: signal });
+		file.addEventListener("change", async () => {
+			const chosen = file.files && file.files[0];
+			if (!chosen) {
+				return;
+			}
+			const pixels = await pixelsOf(chosen);
+			if (pixels === null) {
+				this.say("That is not a picture this browser can read");
+				return;
+			}
+			// The name without its suffix, which is what a map calls a
+			// picture - the file is `grass_main.png`, the picture is
+			// `grass_main`.
+			const name = chosen.name.replace(/\.[^.]*$/, "");
+			this.change(() => {
+				if (replacing >= 0) {
+					return { ok: this.editor.setImagePixels(replacing, pixels) === true };
+				}
+				const index = this.editor.addImage(name, pixels);
+				if (index >= 0) {
+					this.image = index;
+				}
+				return { ok: index >= 0, error: "The picture was refused" };
+			});
+		}, { signal: signal });
+		this.part("unpack-image").addEventListener("click", () => {
+			if (this.image < 0) {
+				return;
+			}
+			this.change(() => this.editor.apply({ op: "image.setProp", image: this.image, prop: "external", value: true }));
+			this.refresh();
+		}, { signal: signal });
+		this.part("delete-image").addEventListener("click", () => {
+			if (this.image < 0) {
+				return;
+			}
+			this.change(() => this.editor.apply({ op: "image.delete", image: this.image }));
+			this.image = -1;
+			this.refresh();
+		}, { signal: signal });
+	}
+
+	refreshImages() {
+		const panel = this.part("images-panel");
+		panel.hidden = this.map === null;
+		if (panel.hidden) {
+			return;
+		}
+		const images = this.map.images || [];
+		if (this.image >= images.length) {
+			this.image = -1;
+		}
+		for (const role of ["replace-image", "unpack-image", "delete-image"]) {
+			this.part(role).disabled = this.image < 0;
+		}
+		if (this.image >= 0) {
+			this.part("unpack-image").disabled = images[this.image].external;
+		}
+		const list = this.part("image-list");
+		list.textContent = "";
+		images.forEach((image, index) => {
+			const row = document.createElement("li");
+			row.className = "editor-row";
+			row.dataset.role = "image";
+			row.dataset.image = String(index);
+			// Where its pixels are is the thing worth saying about a picture:
+			// one beside the map has to be fetched, one in it does not.
+			row.textContent = `${image.name} ${image.size[0]}x${image.size[1]}${image.external ? " (beside)" : ""}`;
+			if (index === this.image) {
+				row.classList.add("editor-selected");
+			}
+			row.addEventListener("click", () => {
+				this.image = index;
+				this.refreshImages();
+			}, { signal: this.stopping.signal });
+			list.append(row);
+		});
 	}
 
 	refreshEnvelopes() {

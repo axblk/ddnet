@@ -715,6 +715,77 @@ namespace map_document
 			Document.Commit();
 			return Succeeded();
 		}
+		if(str_comp(pOp, "image.add") == 0)
+		{
+			// Only a picture that lies beside the map: the pixels of an
+			// embedded one do not go through JSON, they go through
+			// `CMapEditor::AddImage` as the bytes they are.
+			const char *pName = Arguments.Str("name", nullptr);
+			const int Width = Arguments.Int("width", 0);
+			const int Height = Arguments.Int("height", 0);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pName == nullptr || pName[0] == '\0')
+				return Failed("a picture needs a name");
+			CImage Image;
+			Image.m_Name = pName;
+			Image.m_External = true;
+			Image.m_Width = std::max(0, Width);
+			Image.m_Height = std::max(0, Height);
+			Document.Begin(Arguments.Str("label", "Add image"), pMerge);
+			const size_t Index = AddImage(Document, std::move(Image));
+			Document.Commit();
+			return Succeeded("image", (int)Index);
+		}
+		if(str_comp(pOp, "image.delete") == 0)
+		{
+			const size_t Image = Arguments.Index("image", Map.NumImages());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			Document.Begin(Arguments.Str("label", "Delete image"), pMerge);
+			DeleteImage(Document, Image);
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "image.setProp") == 0)
+		{
+			const size_t Index = Arguments.Index("image", Map.NumImages());
+			const char *pProp = Arguments.Str("prop", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pProp == nullptr)
+				return Failed("The command has no 'prop'");
+			CImage Changed = *Map.Image(Index);
+			const json_value *pValue = json_object_get(pParsed.get(), "value");
+			if(str_comp(pProp, "name") == 0)
+			{
+				if(pValue->type != json_string || pValue->u.string.length == 0)
+					return Failed("a name is a word");
+				Changed.m_Name = pValue->u.string.ptr;
+			}
+			else if(str_comp(pProp, "external") == 0)
+			{
+				if(pValue->type != json_boolean)
+					return Failed("that is yes or no");
+				const bool External = pValue->u.boolean != 0;
+				// Going the other way needs pixels, and pixels do not come
+				// through here - a picture that has none cannot be embedded
+				// by being called embedded.
+				if(!External && Changed.m_Data.Empty())
+					return Failed("that picture has no pixels of its own");
+				Changed.m_External = External;
+				if(External)
+					Changed.m_Data = CSharedList<uint8_t>();
+			}
+			else
+			{
+				return Failed(std::string("a picture has no '") + pProp + "'");
+			}
+			Document.Begin(Arguments.Str("label", pProp), pMerge);
+			SetImage(Document, Index, std::move(Changed));
+			Document.Commit();
+			return Succeeded();
+		}
 		if(str_comp(pOp, "envelope.point.add") == 0)
 		{
 			const size_t Envelope = Arguments.Index("envelope", Map.NumEnvelopes());

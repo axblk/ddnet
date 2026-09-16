@@ -432,6 +432,7 @@ TEST(GraphicsThreaded, CommandChannelsCoverAllCoreCommands)
 		CCommandBuffer::CMD_BEGIN_RENDER_PASS,
 		CCommandBuffer::CMD_END_RENDER_PASS,
 		CCommandBuffer::CMD_FLUSH_RENDER_PASS,
+		CCommandBuffer::CMD_DRAW_VIEWPORT,
 		CCommandBuffer::CMD_DRAW,
 		CCommandBuffer::CMD_DRAW_INDEXED,
 		CCommandBuffer::CMD_PRESENTATION_TARGET_READBACK,

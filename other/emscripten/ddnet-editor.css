@@ -1,47 +1,487 @@
 /* What the map editor's panels are dressed in. A page that puts an editor in
    a box loads this one file and gets the same panels this page has.
 
-   The colours are the ones `ddnet-page.css` uses, said again here rather than
-   inherited, so that a page which only wants the panels needs nothing else. */
+   Nothing below names a colour, a size or a length of time twice: the names
+   are at the top, everything else asks for them. A host page that wants its
+   own may say so - every one of them is written as `var(--ddnet-<name>, …)`,
+   so setting `--ddnet-accent` anywhere above the panels is enough and no rule
+   here has to be overridden. */
+
+ddnet-editor,
+.editor-panels,
+.editor-overlay {
+	/* Colours. Dark, because the map is: the stage is a chessboard on dark
+	   grey and a bright edge beside it dazzles. */
+	--bg-0: var(--ddnet-bg-0, #121216);
+	--bg-1: var(--ddnet-bg-1, #1b1b20);
+	--bg-2: var(--ddnet-bg-2, #24242a);
+	--bg-3: var(--ddnet-bg-3, #2e2e36);
+	--line: var(--ddnet-line, #3a3a44);
+	--line-strong: var(--ddnet-line-strong, #7a7a8c);
+	--text-1: var(--ddnet-text-1, #ececf1);
+	--text-2: var(--ddnet-text-2, #a9a9b6);
+	--text-3: var(--ddnet-text-3, #6e6e7a);
+	--accent: var(--ddnet-accent, #ffa500);
+	/* What is written on the accent. White on orange is 1.97 : 1 and fails
+	   every step of WCAG; this is 9.38 : 1. */
+	--accent-ink: var(--ddnet-accent-ink, #1b1200);
+	/* Selection is blue and not orange on purpose: orange is the colour of
+	   the focus and of the one action. Were it also "selected", a list with
+	   the focus on another row than the selected one would show two marks
+	   that look alike. */
+	--sel: var(--ddnet-sel, #2b3d5c);
+	--danger: var(--ddnet-danger, #f0655d);
+	--danger-soft: var(--ddnet-danger-soft, #4a2320);
+	--ok: var(--ddnet-ok, #4cc38a);
+	--warn: var(--ddnet-warn, #e3c567);
+	--info: var(--ddnet-info, #6cb4ee);
+	--overlay: var(--ddnet-overlay, rgba(0, 0, 0, 0.55));
+	/* The handles on the map are white with a dark outline, so that they stay
+	   visible on whatever the map puts behind them. */
+	--handle: var(--ddnet-handle, #ffffff);
+	--handle-active: var(--ddnet-handle-active, #ffa500);
+	--handle-outline: var(--ddnet-handle-outline, #16161a);
+
+	/* Type. No font file: a package that brings a font is a package with a
+	   content-security-policy problem on somebody else's page. */
+	--font-ui: var(--ddnet-font-ui, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
+	--font-mono: var(--ddnet-font-mono, ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace);
+	--type-xs: 500 11px/16px var(--font-ui);
+	--type-sm: 400 12px/16px var(--font-ui);
+	--type-md: 400 13px/18px var(--font-ui);
+	--type-lg: 600 15px/20px var(--font-ui);
+	--type-mono: 400 12px/16px var(--font-mono);
+
+	/* Room. Everything is a multiple of four. */
+	--space-1: 4px;
+	--space-2: 8px;
+	--space-3: 12px;
+	--space-4: 16px;
+	--space-6: 24px;
+
+	/* Heights. These are the ones for a mouse; a finger gets bigger ones
+	   below, and nothing else about the grid changes with it. */
+	--row: 24px;
+	--control: 24px;
+	--button-small: 24px;
+	--button: 28px;
+	--toolbar: 40px;
+	--icon: 16px;
+	--icon-big: 18px;
+
+	--radius-1: 3px;
+	--radius-2: 6px;
+	--radius-3: 8px;
+	--shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+
+	/* Only what floats moves, and nothing moves for somebody who asked for
+	   less of it. */
+	--time-pop: 100ms;
+	--time-slide: 160ms;
+	--ease: ease-out;
+}
+
+/* A finger needs a bigger target than a pointer, and that is the whole
+   difference: text, icons, gaps and radii stay where they are. */
+/* "Big targets: on" and "off" - the same numbers as below and above, without
+   the media query. An attribute selector beats the bare name in the media
+   block, so the setting counts where there is one and the query otherwise. */
+ddnet-editor[data-big="yes"],
+.editor-panels[data-big="yes"] {
+	--row: 40px;
+	--control: 36px;
+	--button-small: 44px;
+	--button: 44px;
+	--toolbar: 48px;
+}
+
+ddnet-editor[data-big="no"],
+.editor-panels[data-big="no"] {
+	--row: 24px;
+	--control: 24px;
+	--button-small: 24px;
+	--button: 28px;
+	--toolbar: 40px;
+}
+
+[data-big="yes"] .editor-more {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+[data-big="no"] .editor-more {
+	opacity: 0;
+	pointer-events: none;
+}
+
+[data-big="yes"] .editor-zoom-step {
+	display: block;
+}
+
+[data-big="no"] .editor-zoom-step {
+	display: none;
+}
+
+/* And without a setting, the query. `:not([data-big])` stands in front because
+   the element and the panels write their answer down themselves once they are
+   there - until then, and for panels without an element, this is what counts. */
+@media (pointer: coarse) {
+	ddnet-editor:not([data-big]),
+	.editor-panels:not([data-big]),
+	.editor-overlay:not([data-big]) {
+		--row: 40px;
+		/* A field is wide, so 36 high is target enough; a button that is only
+		   as wide as its word is not, and gets the full 44. */
+		--control: 36px;
+		--button-small: 44px;
+		--button: 44px;
+		--toolbar: 48px;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	ddnet-editor,
+	.editor-panels,
+	.editor-overlay {
+		--time-pop: 0ms;
+		--time-slide: 0ms;
+	}
+
+	.editor-toast {
+		animation: none;
+	}
+}
+
+/* The light scheme, for a host page that is light and would get a dark hole
+   punched into it. It is asked for rather than guessed at, because the page
+   around the panels is the page's own and only it knows whether it follows. */
+ddnet-editor[data-theme="light"],
+.editor-panels[data-theme="light"],
+.editor-overlay[data-theme="light"] {
+	--bg-0: var(--ddnet-bg-0, #e9e9ee);
+	--bg-1: var(--ddnet-bg-1, #f7f7fa);
+	--bg-2: var(--ddnet-bg-2, #ffffff);
+	--bg-3: var(--ddnet-bg-3, #ececf2);
+	--line: var(--ddnet-line, #c9c9d3);
+	--line-strong: var(--ddnet-line-strong, #8a8a98);
+	--text-1: var(--ddnet-text-1, #1c1c22);
+	--text-2: var(--ddnet-text-2, #5a5a68);
+	--text-3: var(--ddnet-text-3, #8a8a98);
+	/* Orange is unusable as text on white - under 2 : 1 - so the light accent
+	   is a darker one, and white may be written on it. */
+	--accent: var(--ddnet-accent, #a04d00);
+	--accent-ink: var(--ddnet-accent-ink, #ffffff);
+	--sel: var(--ddnet-sel, #d6e4fa);
+	--danger: var(--ddnet-danger, #b3261e);
+	--danger-soft: var(--ddnet-danger-soft, #fbe3e1);
+	--ok: var(--ddnet-ok, #1f7a4d);
+	--warn: var(--ddnet-warn, #8a6100);
+	--info: var(--ddnet-info, #1f5fa0);
+	--overlay: var(--ddnet-overlay, rgba(20, 20, 40, 0.35));
+	--shadow: 0 8px 24px rgba(20, 20, 40, 0.18);
+}
+
+/* What `<ddnet-editor>` puts in its own areas. The map fills the middle and
+   the panels stand beside it; both are the element's light DOM, so this file
+   dresses them the same way it dresses everything else. */
+.editor-map {
+	position: relative;
+	width: 100%;
+	height: 100%;
+	min-width: 0;
+}
+
+.editor-canvas {
+	display: block;
+	width: 100%;
+	height: 100%;
+	/* The map is dragged with a finger; the page must not scroll instead. */
+	touch-action: none;
+}
 
 .editor-panels {
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
+	gap: var(--space-2);
 	min-height: 0;
-	color: #e8e8e8;
-	font: 13px/1.4 system-ui, sans-serif;
+	color: var(--text-1);
+	font: var(--type-sm);
+}
+
+/* What says it is not there is not there. A class that sets `display` beats
+   the browser's own rule for the `hidden` attribute, and half the rows in
+   here are flex rows - so a row that was switched off was still drawn. */
+ddnet-editor [hidden],
+.editor-panels[hidden],
+.editor-panels [hidden] {
+	display: none !important;
+}
+
+/* A page around the editor may dress its own buttons - `ddnet-page.css` paints
+   them orange on hover - and a `button:hover` of the page's beats a class of
+   ours. The editor's buttons are not the page's; what they look like under the
+   pointer is said below, by name. */
+ddnet-editor button:hover,
+ddnet-editor button:focus,
+.editor-panels button:hover,
+.editor-panels button:focus {
+	background: none;
+	color: inherit;
+}
+
+/* The same goes for a page that makes its own buttons finger-sized - our
+   `ddnet-page.css` sets `min-height: 44px` on every `button` at a coarse
+   pointer, and that reaches ours. How tall a button of the editor is, is the
+   editor's own answer: the classes below say it, and "Big targets: off" would
+   otherwise be overruled by a page that never heard of it. */
+ddnet-editor button,
+.editor-panels button {
+	min-height: 0;
+}
+
+/* The five areas the panels are spread into. Each is a strip of its own, told
+   apart from the next by one line and nothing else. */
+.editor-toolbar {
+	padding: 0 var(--space-2);
+	background: var(--bg-0);
+	border-bottom: 1px solid var(--line);
+}
+
+.editor-left,
+.editor-right,
+.editor-dock {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	min-height: 0;
+	box-sizing: border-box;
+	background: var(--bg-1);
+}
+
+.editor-left {
+	width: 280px;
+	height: 100%;
+	border-right: 1px solid var(--line);
+}
+
+.editor-right {
+	width: 320px;
+	height: 100%;
+	border-left: 1px solid var(--line);
+}
+
+.editor-dock {
+	height: 220px;
+	border-top: 1px solid var(--line);
+}
+
+/* Shut, the strip is its names and nothing else - the map gets the room. */
+.editor-dock-shut {
+	height: auto;
+}
+
+.editor-dock-shut .editor-area-body {
+	display: none;
+}
+
+.editor-dock-toggle {
+	margin-left: auto;
+	min-width: var(--button-small);
+}
+
+/* What an area holds under its names. It is the one thing that scrolls: an
+   area that cannot show everything scrolls by itself rather than making the
+   whole side of the window long. */
+.editor-area-body {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	padding: var(--space-2);
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-2);
+}
+
+/* A panel inside an area brings no background and no box of its own - the
+   area is the box. Between the panels of one area there are gaps, not lines. */
+.editor-area-body .editor-panel {
+	background: none;
+	border-radius: 0;
+	padding: 0;
+}
+
+/* In an area that shows one panel at a time the tab already says which one it
+   is; saying it twice is noise. */
+.editor-left .editor-panel-head h2,
+.editor-dock .editor-panel-head h2 {
+	display: none;
+}
+
+.editor-statusbar {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: var(--space-2);
+	min-height: var(--row);
+	padding: 0 var(--space-2);
+	background: var(--bg-0);
+	border-top: 1px solid var(--line);
+}
+
+.editor-statusbar .editor-hover {
+	flex-basis: auto;
+}
+
+/* The names above an area that shows one panel at a time. */
+.editor-tabs {
+	display: flex;
+	flex-wrap: wrap;
+	background: var(--bg-0);
+	border-bottom: 1px solid var(--line);
+}
+
+.editor-tab {
+	border: 0;
+	background: none;
+	color: var(--text-2);
+	font: var(--type-xs);
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	/* Square at least: a tab whose word is short - "Map", "Tiles" - is as
+	   hittable as one whose word is long. */
+	min-height: var(--button);
+	min-width: var(--button);
+	padding: 0 var(--space-2);
+	cursor: pointer;
+}
+
+.editor-tab[aria-selected="true"] {
+	color: var(--text-1);
+	box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
+.editor-tab:disabled {
+	color: var(--text-3);
+	cursor: default;
+}
+
+/* The two tabs inside a panel - the tileset and the rules that paint by
+   themselves. Quieter than the ones over a whole area: they divide one panel,
+   not the window. */
+.editor-subtabs {
+	background: none;
+	margin-bottom: var(--space-1);
+}
+
+/* A tab is a tab, whatever it divides: a finger has to be able to hit the
+   two inside the panel as well as the four over the column. */
+.editor-subtabs .editor-tab {
+	min-height: var(--button);
+	padding: 0 var(--space-1);
+}
+
+@media (hover: hover) {
+	.editor-tab:hover:not(:disabled) {
+		background: var(--bg-3);
+		color: var(--text-1);
+	}
+}
+
+/* Every text field, list and button of the editor is one of these, so what
+   they have in common is said once. The box is named beside the panels
+   because what floats over them - a dialogue, the palette - is content of the
+   box and stands beside them rather than in them. */
+ddnet-editor input,
+ddnet-editor select,
+ddnet-editor textarea,
+.editor-panels input,
+.editor-panels select,
+.editor-panels textarea {
+	font: var(--type-sm);
+	color: var(--text-1);
+	background: var(--bg-2);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-1);
+	min-height: var(--control);
+	box-sizing: border-box;
+	padding: 0 var(--space-1);
+}
+
+ddnet-editor input[type="checkbox"],
+.editor-panels input[type="checkbox"] {
+	/* The box a mouse has to hit, not the tick it draws in it: a native
+	   checkbox is thirteen pixels and that is under every rule there is. */
+	width: var(--button-small);
+	height: var(--button-small);
+	min-height: var(--button-small);
+	margin: 0;
+	border: 0;
+	background: none;
+	padding: 0;
+	accent-color: var(--accent);
+}
+
+ddnet-editor input[type="file"],
+.editor-panels input[type="file"] {
+	min-height: 0;
+	border: 0;
+	background: none;
+	padding: 0;
+}
+
+ddnet-editor input:disabled,
+ddnet-editor select:disabled,
+ddnet-editor button:disabled,
+.editor-panels input:disabled,
+.editor-panels select:disabled,
+.editor-panels button:disabled {
+	color: var(--text-3);
+	cursor: default;
+}
+
+/* A focus that has to be looked for is a focus nobody finds. Two pixels of
+   the accent, outside the element, on everything - the browser's own ring
+   differs from platform to platform and is not always visible on the dark
+   ground the editor sits on. */
+ddnet-editor :focus-visible,
+.editor-panels :focus-visible,
+.editor-overlay :focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+	border-radius: var(--radius-1);
 }
 
 .editor-bar {
 	display: flex;
 	align-items: center;
-	gap: 4px;
+	gap: var(--space-1);
 	flex-wrap: wrap;
+	min-height: var(--toolbar);
 }
 
 .editor-button {
-	width: 32px;
-	height: 32px;
-	padding: 6px;
+	width: var(--button);
+	height: var(--button);
+	padding: calc((var(--button) - var(--icon-big)) / 2);
 	border: 0;
-	border-radius: 6px;
-	background: #2b2b2fcc;
-	color: inherit;
+	border-radius: var(--radius-2);
+	background: var(--bg-2);
+	color: var(--text-1);
 	cursor: pointer;
 }
 
-.editor-button:hover:not(:disabled) {
-	background: #3d3d44;
-}
-
 .editor-button:disabled {
-	opacity: 0.35;
-	cursor: default;
+	background: var(--bg-2);
+	color: var(--text-3);
 }
 
 .editor-button[aria-pressed="true"] {
-	background: #4a6ea8;
+	background: var(--sel);
+	color: var(--text-1);
+	/* In the tool bar a switch that is on also carries the accent under it:
+	   the background alone is a colour, and a colour on its own is not a
+	   message somebody can read. */
+	box-shadow: inset 0 -2px 0 0 var(--accent);
 }
 
 .editor-button svg {
@@ -52,7 +492,7 @@
 
 .editor-status {
 	margin-left: auto;
-	opacity: 0.75;
+	color: var(--text-2);
 }
 
 /* What is under the pointer. It changes on every move, so it is given a whole
@@ -60,7 +500,7 @@
 .editor-hover {
 	flex-basis: 100%;
 	min-width: 0;
-	opacity: 0.7;
+	color: var(--text-2);
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 	overflow: hidden;
@@ -74,54 +514,81 @@
 .editor-columns {
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
+	gap: var(--space-2);
 	min-height: 0;
 	overflow: auto;
 }
 
 .editor-panel {
-	background: #232327;
-	border-radius: 6px;
-	padding: 6px 8px 8px;
+	background: var(--bg-1);
+	border-radius: var(--radius-2);
+	padding: var(--space-1) var(--space-2) var(--space-2);
 }
 
 .editor-panel-head {
 	display: flex;
 	align-items: center;
-	gap: 8px;
-	margin-bottom: 4px;
+	gap: var(--space-2);
+	min-height: var(--row);
+	margin-bottom: var(--space-1);
 }
 
 .editor-panel-head h2 {
-	font-size: 12px;
-	font-weight: 600;
-	letter-spacing: 0.06em;
+	font: var(--type-xs);
+	letter-spacing: 0.04em;
 	text-transform: uppercase;
-	opacity: 0.7;
+	color: var(--text-2);
 	margin: 0;
 }
 
 .editor-panel-tools {
 	margin-left: auto;
 	display: flex;
-	gap: 4px;
+	/* A narrow column must not push the last button out of sight; they fall
+	   onto a second line instead. */
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: var(--space-1);
 	align-items: center;
-	opacity: 0.8;
 }
 
 .editor-small {
 	border: 0;
-	border-radius: 4px;
-	background: #34343a;
-	color: inherit;
-	font: inherit;
-	font-size: 11px;
-	padding: 2px 6px;
+	border-radius: var(--radius-1);
+	background: var(--bg-3);
+	color: var(--text-1);
+	font: var(--type-xs);
+	/* A button with one character on it would be four pixels wide; it is a
+	   target before it is a label, and a target is at least as wide as it is
+	   tall (WCAG 2.5.8). */
+	min-width: var(--button-small);
+	min-height: var(--button-small);
+	padding: 0 var(--space-2);
+	white-space: nowrap;
 	cursor: pointer;
 }
 
-.editor-small:hover {
-	background: #45454d;
+.editor-small[aria-pressed="true"] {
+	background: var(--sel);
+	box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
+.editor-small:disabled {
+	background: var(--bg-2);
+	color: var(--text-3);
+}
+
+/* Nothing lights up under a finger, and nothing reserves room for a hover it
+   will never get. */
+@media (hover: hover) {
+	.editor-button:hover:not(:disabled),
+	.editor-small:hover:not(:disabled),
+	.editor-slot:hover:not(:disabled),
+	.editor-fold:hover,
+	.editor-eye:hover,
+	.editor-row:hover {
+		background: var(--bg-3);
+	}
 }
 
 .editor-tree,
@@ -135,43 +602,50 @@
 }
 
 .editor-layers {
-	margin-left: 16px;
+	margin-left: var(--space-4);
 	max-height: none;
 }
 
 .editor-row {
 	display: flex;
 	align-items: center;
-	gap: 4px;
-	padding: 2px 4px;
-	border-radius: 4px;
+	gap: var(--space-1);
+	min-height: var(--row);
+	padding: 0 var(--space-1);
+	/* Room for the accent bar a selected row carries, so that selecting one
+	   does not move its text sideways. */
+	border-left: 2px solid transparent;
+	border-radius: var(--radius-1);
 	cursor: pointer;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
 
-.editor-row:hover {
-	background: #2e2e35;
-}
-
 .editor-selected {
-	background: #4a6ea8;
+	background: var(--sel);
+	border-left-color: var(--accent);
+	color: var(--text-1);
 }
 
-/* What was undone is still there to go back to, and says so by being faint
-   rather than by disappearing - that is the whole point of a history panel. */
+/* What was undone is still there to go back to, and says so by being quiet
+   rather than by disappearing - that is the whole point of a history panel.
+   It is said in the colour and not in the opacity: opacity makes the
+   background pale as well, and the text then stands on a ground nobody
+   chose. */
 .editor-undone {
-	opacity: 0.45;
+	color: var(--text-2);
 }
 
 .editor-fold {
 	border: 0;
 	background: none;
-	color: inherit;
+	color: var(--text-1);
 	cursor: pointer;
-	padding: 0 2px;
-	font-size: 11px;
+	min-width: var(--button-small);
+	min-height: var(--button-small);
+	padding: 0;
+	font: var(--type-xs);
 }
 
 .editor-name {
@@ -179,20 +653,16 @@
 }
 
 /* The eye beside a layer. It is a button in a row that is itself clickable,
-   so it has to be small enough not to be in the way of selecting the layer
-   and clear enough to be found. */
+   so it has to be clear enough to be found and no bigger than the row. */
 .editor-eye {
 	border: 0;
 	background: none;
-	color: inherit;
+	color: var(--text-1);
 	cursor: pointer;
-	padding: 0 2px;
-	font-size: 11px;
-	opacity: 0.8;
-}
-
-.editor-eye:hover {
-	opacity: 1;
+	min-width: var(--button-small);
+	min-height: var(--button-small);
+	padding: 0;
+	font: var(--type-xs);
 }
 
 /* The quads of a layer, as a list to pick from. */
@@ -217,7 +687,7 @@
 /* The lines a server runs when it loads the map, one field each. */
 .editor-settings {
 	list-style: none;
-	margin: 6px 0 0;
+	margin: var(--space-1) 0 0;
 	padding: 0;
 	max-height: 160px;
 	overflow: auto;
@@ -226,13 +696,8 @@
 .editor-settings input {
 	flex: 1;
 	min-width: 0;
-	background: #17171a;
-	color: inherit;
-	border: 1px solid #3a3a42;
-	border-radius: 4px;
-	padding: 2px 4px;
-	font: inherit;
-	font-family: ui-monospace, monospace;
+	font: var(--type-mono);
+	font-variant-numeric: tabular-nums;
 }
 
 /* The envelope as a curve. It is stretched to fill the panel, so nothing in
@@ -241,14 +706,14 @@
 .editor-curve {
 	width: 100%;
 	height: 140px;
-	background: #141418;
-	border-radius: 4px;
+	background: var(--bg-2);
+	border-radius: var(--radius-1);
 	touch-action: none;
 	cursor: crosshair;
 }
 
 .editor-curve-zero {
-	stroke: #ffffff28;
+	stroke: var(--line-strong);
 	stroke-width: 1;
 	vector-effect: non-scaling-stroke;
 }
@@ -259,7 +724,7 @@
 }
 
 .editor-curve-picked {
-	stroke: #ffffff;
+	stroke: var(--handle);
 	stroke-width: 1.5;
 	vector-effect: non-scaling-stroke;
 }
@@ -269,8 +734,8 @@
 .editor-numbers {
 	display: flex;
 	flex-direction: column;
-	gap: 3px;
-	margin-top: 6px;
+	gap: var(--space-1);
+	margin-top: var(--space-2);
 }
 
 .editor-numbers:empty {
@@ -281,8 +746,8 @@
    them. Hidden for a layer whose picture has no rules file. */
 .editor-automap {
 	display: flex;
-	gap: 4px;
-	margin-top: 6px;
+	gap: var(--space-1);
+	margin-top: var(--space-2);
 }
 
 .editor-automap select {
@@ -303,23 +768,23 @@
 }
 
 .editor-source {
-	fill: #5a9ce8;
+	fill: var(--info);
 	fill-opacity: 0.12;
-	stroke: #5a9ce8;
+	stroke: var(--info);
 	stroke-width: 1.5;
 	vector-effect: non-scaling-stroke;
 }
 
 .editor-source-dot {
-	fill: #5a9ce8;
-	stroke: #16161a;
+	fill: var(--info);
+	stroke: var(--handle-outline);
 	stroke-width: 1.5;
 	vector-effect: non-scaling-stroke;
 }
 
 .editor-source-picked {
-	fill: #e8b84a;
-	stroke: #e8b84a;
+	fill: var(--handle-active);
+	stroke: var(--handle-active);
 }
 
 circle.editor-source-picked,
@@ -328,8 +793,8 @@ rect.editor-source-picked {
 }
 
 circle.editor-source-dot.editor-source-picked {
-	fill: #e8b84a;
-	stroke: #16161a;
+	fill: var(--handle-active);
+	stroke: var(--handle-outline);
 	fill-opacity: 1;
 }
 
@@ -341,9 +806,9 @@ circle.editor-source-dot.editor-source-picked {
 .editor-code {
 	position: relative;
 	height: 220px;
-	margin-top: 4px;
-	border-radius: 4px;
-	background: #16161a;
+	margin-top: var(--space-1);
+	border-radius: var(--radius-1);
+	background: var(--bg-2);
 	overflow: hidden;
 }
 
@@ -352,10 +817,10 @@ circle.editor-source-dot.editor-source-picked {
 	position: absolute;
 	inset: 0;
 	margin: 0;
-	padding: 6px;
+	padding: var(--space-2);
 	border: 0;
 	box-sizing: border-box;
-	font: 12px/1.45 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+	font: var(--type-mono);
 	white-space: pre;
 	tab-size: 4;
 	overflow: auto;
@@ -363,59 +828,56 @@ circle.editor-source-dot.editor-source-picked {
 
 .editor-code-view {
 	pointer-events: none;
-	color: #cfd3d8;
+	color: var(--text-1);
 }
 
 .editor-code-text {
 	background: transparent;
 	color: transparent;
-	caret-color: #e8e8e8;
+	caret-color: var(--text-1);
 	resize: none;
-}
-
-.editor-code-text:focus {
-	outline: 1px solid #9fb8de;
-	outline-offset: -1px;
+	border-radius: 0;
+	min-height: 0;
 }
 
 .editor-code-status {
-	margin: 4px 0 0;
-	opacity: 0.75;
+	margin: var(--space-1) 0 0;
+	color: var(--text-2);
 }
 
 .rules-comment {
-	color: #7c8894;
+	color: var(--text-2);
 }
 
 .rules-config {
-	color: #e8b84a;
+	color: var(--warn);
 	font-weight: 600;
 }
 
 .rules-keyword {
-	color: #7fb2f0;
+	color: var(--info);
 }
 
 .rules-word {
-	color: #5ad07a;
+	color: var(--ok);
 }
 
 .rules-number {
-	color: #e0916a;
+	color: var(--accent);
 }
 
 /* A line the program could not use. Underlined rather than only coloured,
    because a colour on its own is not a message somebody can read. */
 .rules-problem {
-	text-decoration: underline wavy #e8615a;
+	text-decoration: underline wavy var(--danger);
 	text-underline-offset: 3px;
 }
 
 /* The four ways a quad is put into shape, between the list and the fields. */
 .editor-shape {
 	display: flex;
-	gap: 4px;
-	margin-top: 6px;
+	gap: var(--space-1);
+	margin-top: var(--space-2);
 }
 
 .editor-shape button {
@@ -427,8 +889,8 @@ circle.editor-source-dot.editor-source-picked {
    lies over the game layer. Hidden for every other layer. */
 .editor-construct {
 	display: flex;
-	gap: 4px;
-	margin-top: 6px;
+	gap: var(--space-1);
+	margin-top: var(--space-2);
 }
 
 .editor-construct select {
@@ -438,49 +900,48 @@ circle.editor-source-dot.editor-source-picked {
 
 /* The row a layer would land on if it were let go of now. */
 .editor-drop {
-	outline: 1px dashed #9fb8de;
-	outline-offset: -1px;
+	outline: 2px dashed var(--accent);
+	outline-offset: -2px;
 }
 
-/* A layer that is switched off is still in the list - it is only not drawn. */
+/* A layer that is switched off is still in the list - it is only not drawn.
+   The eye beside it is struck through, so that this is not said in a colour
+   alone. */
 .editor-hidden-layer {
-	opacity: 0.5;
+	color: var(--text-2);
 }
 
 .editor-props {
 	display: flex;
 	flex-direction: column;
-	gap: 3px;
+	gap: var(--space-1);
 }
 
 .editor-prop {
 	display: flex;
 	align-items: center;
-	gap: 8px;
+	gap: var(--space-2);
+	min-height: var(--row);
 }
 
 .editor-prop > span:first-child {
 	flex: 1;
-	opacity: 0.8;
+	color: var(--text-2);
 }
 
 .editor-prop input {
 	width: 110px;
-	background: #17171a;
-	color: inherit;
-	border: 1px solid #3a3a42;
-	border-radius: 4px;
-	padding: 2px 4px;
-	font: inherit;
+	font-variant-numeric: tabular-nums;
 }
 
 .editor-prop input[type="checkbox"] {
-	width: auto;
+	width: var(--button-small);
 }
 
 .editor-readout {
 	width: 110px;
-	opacity: 0.6;
+	color: var(--text-2);
+	font-variant-numeric: tabular-nums;
 }
 
 /* The picture of a layer's tiles. Drawn at its own size rather than smoothed:
@@ -490,8 +951,8 @@ circle.editor-source-dot.editor-source-picked {
 	height: auto;
 	display: block;
 	image-rendering: pixelated;
-	background: #1a1a1e;
-	border-radius: 4px;
+	background: var(--bg-2);
+	border-radius: var(--radius-1);
 	cursor: crosshair;
 	touch-action: none;
 }
@@ -507,32 +968,32 @@ circle.editor-source-dot.editor-source-picked {
 
 .editor-proof-step,
 .editor-proof-outline {
-	stroke: #ffffff;
+	stroke: var(--handle);
 	stroke-opacity: 0.55;
 }
 
 .editor-proof-first {
-	stroke: #e2544a;
+	stroke: var(--danger);
 	stroke-width: 2;
 }
 
 .editor-proof-second {
-	stroke: #5ac26a;
+	stroke: var(--ok);
 	stroke-width: 2;
 }
 
 .editor-proof-tee {
-	fill: #5a9ce8;
+	fill: var(--info);
 	fill-opacity: 0.45;
-	stroke: #5a9ce8;
+	stroke: var(--info);
 	stroke-width: 1.5;
 	vector-effect: non-scaling-stroke;
 }
 
 .editor-proof-position {
-	fill: #5ac26a;
+	fill: var(--ok);
 	fill-opacity: 0.35;
-	stroke: #5ac26a;
+	stroke: var(--ok);
 	stroke-width: 1.5;
 	vector-effect: non-scaling-stroke;
 }
@@ -541,40 +1002,38 @@ circle.editor-source-dot.editor-source-picked {
    marked on the line rather than in a message somewhere else: the line is
    where the mistake is. */
 .editor-setting-wrong input {
-	border-color: #e2544a;
-	background: rgba(226, 84, 74, 0.12);
+	border-color: var(--danger);
+	background: var(--danger-soft);
 }
 
 .editor-setting-repeat input {
-	border-color: #e8b84a;
-	background: rgba(232, 184, 74, 0.1);
+	border-color: var(--warn);
 }
 
 .editor-setting-said {
-	margin: 4px 0 0;
-	min-height: 1.4em;
-	opacity: 0.7;
-	font-size: 11px;
+	margin: var(--space-1) 0 0;
+	min-height: 16px;
+	color: var(--text-2);
+	font: var(--type-xs);
 }
 
 .editor-setting-said-wrong {
-	color: #e2544a;
-	opacity: 1;
+	color: var(--danger);
 }
 
 /* The knife, while a cut is being made: the places clicked so far, and the
    line between them. */
 .editor-carve {
 	fill: none;
-	stroke: #ffffff;
+	stroke: var(--handle);
 	stroke-width: 1.5;
 	stroke-dasharray: 5 3;
 	vector-effect: non-scaling-stroke;
 }
 
 .editor-carve-dot {
-	fill: #e8b84a;
-	stroke: #16161a;
+	fill: var(--handle-active);
+	stroke: var(--handle-outline);
 	stroke-width: 1.5;
 	vector-effect: non-scaling-stroke;
 }
@@ -584,31 +1043,870 @@ circle.editor-source-dot.editor-source-picked {
 .editor-art {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 4px;
+	gap: var(--space-1);
 	align-items: center;
-	margin-top: 6px;
+	margin-top: var(--space-2);
 }
 
 .editor-art-field {
 	display: flex;
 	align-items: center;
-	gap: 3px;
-	font-size: 11px;
-	opacity: 0.8;
+	gap: var(--space-1);
+	min-height: var(--control);
+	font: var(--type-xs);
+	color: var(--text-2);
 }
 
 .editor-art-field input[type="number"] {
-	width: 48px;
+	width: 56px;
+	font-variant-numeric: tabular-nums;
+}
+
+
+/* The big tile chooser, over the map. It is not a panel: it floats, it is
+   shut as soon as it has been used, and it is as big as the map lets it be -
+   the small tileset beside the map is seventeen pixels a tile, and seventeen
+   pixels is not a tile anybody can tell from its neighbour. */
+.editor-picker {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	transform: translate(-50%, -50%);
+	z-index: 2;
+	padding: var(--space-2);
+	background: var(--bg-1);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+}
+
+.editor-picker-tiles {
+	display: block;
+	image-rendering: pixelated;
+	background: var(--bg-0);
+	border-radius: var(--radius-1);
+	cursor: crosshair;
+	touch-action: none;
+}
+
+.editor-picker-name {
+	margin: var(--space-1) 0 0;
+	color: var(--text-2);
+	font: var(--type-xs);
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+/* What lies under a spot on the map, where more than one layer does. */
+.editor-choose {
+	position: absolute;
+	z-index: 3;
+	list-style: none;
+	margin: 0;
+	padding: var(--space-1);
+	min-width: 160px;
+	background: var(--bg-2);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+	font: var(--type-sm);
+	color: var(--text-1);
+}
+
+.editor-choose-empty {
+	padding: var(--space-1);
+	color: var(--text-2);
+}
+
+/* The ten places a brush can be put away in. */
+.editor-slots {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-1);
+	margin-top: var(--space-2);
+}
+
+.editor-slot {
+	flex: 1;
+	min-width: var(--button-small);
+	min-height: var(--button-small);
+	border: 0;
+	border-radius: var(--radius-1);
+	background: var(--bg-2);
+	/* An empty place is quiet, but it is not switched off - it can be filled,
+	   and its number has to be readable to be aimed at. */
+	color: var(--text-2);
+	font: var(--type-mono);
+	cursor: pointer;
+}
+
+/* A place with something in it says so; an empty one is only a number. */
+.editor-slot[aria-pressed="true"] {
+	background: var(--sel);
+	color: var(--text-1);
+}
+
+/* What the line at the bottom says about where the work is. */
+.editor-statusline {
+	display: flex;
+	gap: var(--space-3);
+	color: var(--text-2);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.editor-statusline span:empty {
+	display: none;
 }
 
 /* Typing with tiles: a field and a button, on one line. */
 .editor-type {
 	display: flex;
-	gap: 4px;
-	margin-top: 6px;
+	gap: var(--space-1);
+	margin-top: var(--space-2);
 }
 
 .editor-type input {
 	flex: 1;
 	min-width: 0;
+}
+
+/* What floats over the whole editor: the palette, the menu, a menu of a
+   thing, a dialogue. The layer itself catches nothing, so that the map under
+   it keeps hearing the pointer; what is put into it catches everything. */
+.editor-over {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+}
+
+.editor-over > * {
+	pointer-events: auto;
+}
+
+/* Everything the editor can do, by its name. It sits high rather than in the
+   middle: what one is looking for is the list under the field, and a list
+   that grows downwards from a box in the middle would push itself off the
+   screen. */
+.editor-palette {
+	position: absolute;
+	left: 50%;
+	top: 10%;
+	transform: translateX(-50%);
+	z-index: 3;
+	display: flex;
+	flex-direction: column;
+	width: min(520px, calc(100% - 2 * var(--space-3)));
+	max-height: 70%;
+	padding: var(--space-2);
+	gap: var(--space-2);
+	background: var(--bg-1);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+}
+
+.editor-palette-find {
+	flex: none;
+	height: var(--toolbar);
+	padding: 0 var(--space-2);
+	font: var(--type-md);
+	color: var(--text-1);
+	background: var(--bg-2);
+	border: 1px solid var(--line);
+	border-radius: var(--radius-1);
+}
+
+.editor-palette-list {
+	flex: 1;
+	min-height: 0;
+	margin: 0;
+	padding: 0;
+	overflow-y: auto;
+	list-style: none;
+}
+
+.editor-palette-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto auto;
+	align-items: center;
+	gap: var(--space-2);
+	min-height: var(--row);
+	padding: 0 var(--space-2);
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+/* The row Enter would take. It is marked by the fill rather than by the
+   focus ring, because the focus never leaves the field - the field is what
+   the typing goes to. */
+.editor-palette-row.editor-palette-at {
+	background: var(--sel);
+}
+
+@media (hover: hover) {
+	.editor-palette-row:hover {
+		background: var(--bg-3);
+	}
+}
+
+.editor-palette-what {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.editor-palette-where {
+	color: var(--text-2);
+	font: var(--type-xs);
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.editor-palette-key {
+	min-width: 3.5em;
+	padding: 2px var(--space-1);
+	color: var(--text-2);
+	font: var(--type-xs);
+	text-align: center;
+	background: var(--bg-2);
+	border: 1px solid var(--line);
+	border-radius: var(--radius-1);
+}
+
+.editor-palette-key:empty {
+	border-color: transparent;
+	background: none;
+}
+
+/* A row that cannot be taken right now is still shown: knowing that the
+   editor can do a thing at all is most of what the palette is for. */
+.editor-palette-row.editor-palette-cannot {
+	color: var(--text-2);
+	cursor: default;
+}
+
+.editor-palette-none {
+	margin: 0;
+	padding: var(--space-2);
+	color: var(--text-2);
+	text-align: center;
+}
+
+/* The menu, and the menu of a thing. They are the same box; one hangs under
+   its button and the other at the pointer. */
+.editor-menu {
+	position: absolute;
+	z-index: 3;
+	min-width: 220px;
+	max-width: min(340px, 100%);
+	max-height: 80%;
+	padding: var(--space-1);
+	overflow-y: auto;
+	background: var(--bg-1);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+}
+
+.editor-menu-part + .editor-menu-part {
+	margin-top: var(--space-1);
+	border-top: 1px solid var(--line);
+	padding-top: var(--space-1);
+}
+
+.editor-menu-head {
+	margin: 0;
+	padding: var(--space-1) var(--space-2) 2px;
+	color: var(--text-2);
+	font: var(--type-xs);
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+.editor-menu-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-3);
+	width: 100%;
+	min-height: var(--row);
+	padding: 0 var(--space-2);
+	color: inherit;
+	font: var(--type-sm);
+	text-align: left;
+	background: none;
+	border: 0;
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+.editor-menu-row:focus-visible {
+	background: var(--bg-3);
+}
+
+@media (hover: hover) {
+	.editor-menu-row:hover:not(:disabled) {
+		background: var(--bg-3);
+	}
+}
+
+.editor-menu-row:disabled {
+	color: var(--text-2);
+	cursor: default;
+}
+
+.editor-menu-row[aria-checked="true"]::after {
+	content: "\2713";
+	color: var(--accent);
+}
+
+.editor-menu-key {
+	color: var(--text-2);
+	font: var(--type-xs);
+	white-space: nowrap;
+}
+
+.editor-menu-arrow {
+	color: var(--text-2);
+}
+
+.editor-menu-more[aria-expanded="true"] .editor-menu-arrow {
+	transform: rotate(90deg);
+}
+
+.editor-menu-under {
+	padding-left: var(--space-3);
+}
+
+/* What was asked before a thing can happen: how big a new map is, what the
+   map is to be called. Everything else the editor does needs no answer and
+   gets no dialogue. */
+.editor-dialog {
+	position: absolute;
+	inset: 0;
+	z-index: 4;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--overlay);
+}
+
+.editor-dialog-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-2);
+	width: min(360px, calc(100% - 2 * var(--space-3)));
+	padding: var(--space-3);
+	background: var(--bg-1);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+}
+
+/* The colour is named rather than inherited: a page around the editor that
+   says anything about `h2` at all beats an inherited value, whatever the
+   value is, and the page's own heading colour is for the page's own
+   background. */
+.editor-dialog-head {
+	margin: 0;
+	color: var(--text-1);
+	font: var(--type-md);
+}
+
+.editor-dialog-field {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-2);
+	min-height: var(--row);
+}
+
+.editor-dialog-field input {
+	width: 12ch;
+}
+
+.editor-dialog-buttons {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--space-2);
+	margin-top: var(--space-1);
+}
+
+/* The button that does the thing, said in the one colour the editor keeps for
+   that. It names its own hover, because the reset that keeps a page from
+   painting our buttons would otherwise take its fill away. */
+.editor-dialog-go,
+ddnet-editor .editor-dialog-go:hover,
+ddnet-editor .editor-dialog-go:focus,
+.editor-panels .editor-dialog-go:hover,
+.editor-panels .editor-dialog-go:focus {
+	color: var(--accent-ink);
+	background: var(--accent);
+	border-color: var(--accent);
+}
+
+/* The name beside the icon on the four mode buttons. Whether there is room
+   for the words is the box's answer, not the window's: `data-bar` is set from
+   the table in `map-editor.js`, which is the only place the widths are
+   written down. */
+.editor-button-text {
+	display: none;
+	margin-left: var(--space-1);
+}
+
+ddnet-editor[data-bar="labels"] .editor-button-text {
+	display: inline;
+}
+
+ddnet-editor[data-bar="labels"] .editor-bar .editor-button {
+	width: auto;
+	padding: 0 var(--space-2);
+}
+
+/* A side that lies over the map says so: it is over something, so it needs a
+   back of its own and an edge that shows where it ends. */
+ddnet-editor[data-left="drawer"] .editor-left,
+ddnet-editor[data-right="drawer"] .editor-right,
+ddnet-editor[data-left="sheet"] .editor-left,
+ddnet-editor[data-right="sheet"] .editor-right {
+	background: var(--bg-1);
+	box-shadow: var(--shadow);
+}
+
+ddnet-editor[data-left="drawer"] .editor-left,
+ddnet-editor[data-left="sheet"] .editor-left {
+	border-right: 1px solid var(--line-strong);
+}
+
+ddnet-editor[data-right="drawer"] .editor-right,
+ddnet-editor[data-right="sheet"] .editor-right {
+	border-left: 1px solid var(--line-strong);
+}
+
+/* The status as a chip: the same line, in a box of its own with a back, so
+   that it can be read over whatever the map happens to be drawing there. */
+ddnet-editor[data-status="chip"] .editor-statusbar {
+	margin: var(--space-2);
+	padding: 0 var(--space-2);
+	background: var(--bg-1);
+	border: 1px solid var(--line);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+}
+
+ddnet-editor[data-dock="overlay"] .editor-dock {
+	background: var(--bg-1);
+	border-top: 1px solid var(--line-strong);
+	box-shadow: var(--shadow);
+}
+
+/* The "..." that opens a row's own menu. At a desk it waits for the pointer to
+   come near, because the row is short and the menu is also a right-click away;
+   with a finger there is no hovering and no right button, so it is always
+   there. */
+.editor-more {
+	flex: none;
+	margin-left: auto;
+	width: var(--button-small);
+	min-height: var(--row);
+	padding: 0;
+	color: var(--text-2);
+	background: none;
+	border: 0;
+	border-radius: var(--radius-1);
+	cursor: pointer;
+	/* Not `visibility: hidden`: a hidden element cannot take the focus, and
+	   then the one way to this menu without a pointer would be a button the
+	   keyboard can never reach. Invisible and deaf to the pointer, but still
+	   in the order the Tab key walks. */
+	opacity: 0;
+	pointer-events: none;
+}
+
+@media (hover: hover) {
+	.editor-row:hover .editor-more,
+	.editor-images li:hover .editor-more,
+	.editor-quads li:hover .editor-more,
+	.editor-settings li:hover .editor-more {
+		opacity: 1;
+		pointer-events: auto;
+	}
+}
+
+.editor-more:focus-visible {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+
+
+/* The big tile chooser may be taller than the box it is in - with a finger it
+   is as wide as the box and sixteen rows of forty-four - so it scrolls. */
+.editor-picker {
+	max-width: 100%;
+	max-height: 100%;
+	overflow: auto;
+}
+
+/* A finger gets the palette as the list it is, filling the box: a 520-pixel
+   box in the middle of a 600-pixel one is a box with a frame around it. */
+ddnet-editor[data-size="phone"] .editor-palette,
+ddnet-editor[data-size="small"] .editor-palette {
+	left: 0;
+	top: 0;
+	transform: none;
+	width: 100%;
+	max-height: 100%;
+	height: 100%;
+	border-radius: 0;
+}
+
+/* Room enough that nothing needs to hide behind a tab. What grows is the map,
+   the height of the columns and what can be open at once; what does not grow
+   is anything one reads or hits - those are already the right size on the
+   glass, and a forty-inch monitor at a hundred per cent has the same dots per
+   inch as a twenty-inch one. */
+ddnet-editor[data-stack="yes"] .editor-left {
+	width: 320px;
+}
+
+ddnet-editor[data-stack="yes"] .editor-right {
+	width: 400px;
+}
+
+ddnet-editor[data-stack="yes"] .editor-dock {
+	height: 320px;
+}
+
+/* The panel that is always there takes the larger share of the column, and
+   the one under it - whichever tab is chosen - takes the rest. */
+ddnet-editor[data-stack="yes"] .editor-left .editor-panel-always {
+	flex: 3 1 0;
+	min-height: 0;
+	overflow: auto;
+	border-bottom: 1px solid var(--line);
+	padding-bottom: var(--space-2);
+	margin-bottom: var(--space-2);
+}
+
+ddnet-editor[data-stack="yes"] .editor-left .editor-panel:not(.editor-panel-always) {
+	flex: 2 1 0;
+	min-height: 0;
+	overflow: auto;
+}
+
+/* The dock side by side rather than one behind the other: the curve wants
+   width, the list of what was done wants height, and there is enough of both. */
+ddnet-editor[data-stack="yes"] .editor-dock .editor-area-body {
+	flex-direction: row;
+	align-items: stretch;
+	gap: var(--space-3);
+}
+
+ddnet-editor[data-stack="yes"] .editor-dock .editor-panel {
+	flex: 1 1 0;
+	min-width: 0;
+	overflow: auto;
+}
+
+/* The coordinate a second time, where the hand is. The line at the bottom is
+   for the eye; on a wide screen the eye and the hand are not in the same
+   place. */
+.editor-here {
+	display: none;
+}
+
+ddnet-editor[data-stack="yes"] .editor-here {
+	display: inline;
+	margin-left: auto;
+	color: var(--text-2);
+	font: var(--type-xs);
+	font-variant-numeric: tabular-nums;
+}
+
+/* The maps that are open. One row: the name, a dot while it is not saved, and
+   a cross to close it; and a plus for one more. It sits above everything the
+   editor does, because what one is editing and whether it is safe are the two
+   things that may never have to be looked for. */
+.editor-maps {
+	display: flex;
+	align-items: stretch;
+	gap: var(--space-1);
+	min-width: 0;
+	overflow-x: auto;
+	scrollbar-width: thin;
+}
+
+.editor-map-tab {
+	display: flex;
+	align-items: center;
+	gap: var(--space-1);
+	flex: 0 1 auto;
+	/* Square at least, like every other tab: a map called "ctf1" is as
+	   hittable as one called "MegaRosenkohl". */
+	min-width: var(--button);
+	max-width: 220px;
+	min-height: var(--button);
+	padding: 0 var(--space-2);
+	color: var(--text-2);
+	font: var(--type-sm);
+	background: none;
+	border: 0;
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+.editor-map-tab[aria-selected="true"] {
+	color: var(--text-1);
+	background: var(--bg-2);
+	box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
+.editor-map-name {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+/* Not saved. A dot rather than a word, because the word would be as wide as
+   the name beside it, and the title says it for whoever cannot see a dot. */
+.editor-map-dot {
+	flex: none;
+	color: var(--warn);
+	font-size: 8px;
+	line-height: 1;
+}
+
+.editor-map-close {
+	flex: none;
+	width: var(--button-small);
+	text-align: center;
+	color: var(--text-2);
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+.editor-map-add {
+	flex: none;
+	min-width: var(--button);
+	min-height: var(--button);
+	color: var(--text-2);
+	font: var(--type-md);
+	background: none;
+	border: 0;
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+/* What each open map is costing. A second map open is a second map's worth of
+   history, and history is whole versions of the map. */
+.editor-memory {
+	margin: var(--space-2) 0 0;
+	padding: 0;
+	list-style: none;
+}
+
+.editor-memory-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-2);
+	min-height: var(--row);
+	padding: 0 var(--space-1);
+	border-radius: var(--radius-1);
+}
+
+.editor-memory-size {
+	color: var(--text-2);
+	font: var(--type-xs);
+	font-variant-numeric: tabular-nums;
+}
+
+/* What just happened, over the map. The status line says the same thing at
+   the edge of the screen, where one looks for it afterwards; this is what one
+   sees without looking. With room to spare it moves to the bottom middle -
+   the top right of a forty-inch monitor is eighty centimetres from the work. */
+.editor-toasts {
+	position: absolute;
+	top: var(--space-3);
+	right: var(--space-3);
+	z-index: 6;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: var(--space-1);
+	max-width: min(360px, 60%);
+	pointer-events: none;
+}
+
+/* From 2560 on, at the bottom in the middle: that is where the eyes are while
+   working, and the top right corner of a forty-inch screen is eighty
+   centimetres away. */
+ddnet-editor[data-size="huge"] .editor-toasts {
+	top: auto;
+	right: auto;
+	left: 50%;
+	bottom: calc(var(--button) + var(--space-4));
+	align-items: center;
+	max-width: calc(100% - 2 * var(--space-3));
+	transform: translateX(-50%);
+}
+
+/* 120 ms in, 200 ms out: long enough for the eye to see the movement and
+   follow it, short enough that nobody waits for it. */
+@keyframes editor-toast-in {
+	from { opacity: 0; transform: translateY(8px); }
+	to { opacity: 1; transform: translateY(0); }
+}
+
+.editor-toast {
+	animation: editor-toast-in 120ms ease-out;
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	min-height: var(--row);
+	padding: var(--space-1) var(--space-2);
+	color: var(--text-1);
+	font: var(--type-sm);
+	background: var(--bg-1);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+	pointer-events: auto;
+}
+
+/* A mistake is marked down its edge rather than by being red all over: red
+   text on a dark box is the one thing the contrast rules never forgive. */
+.editor-toast[data-kind="error"] {
+	border-left: 3px solid var(--danger);
+}
+
+.editor-toast-close {
+	flex: none;
+	width: var(--button-small);
+	min-height: var(--button-small);
+	color: var(--text-2);
+	background: none;
+	border: 0;
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+/* What the zoom is, at the corner of the map where the hand is. */
+.editor-zoom {
+	position: absolute;
+	right: var(--space-2);
+	bottom: var(--space-2);
+	z-index: 2;
+	display: flex;
+	align-items: stretch;
+	background: var(--bg-1);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+	overflow: hidden;
+}
+
+.editor-zoom-level {
+	min-width: 5ch;
+	min-height: var(--button);
+	padding: 0 var(--space-2);
+	color: var(--text-1);
+	font: var(--type-xs);
+	font-variant-numeric: tabular-nums;
+	background: none;
+	border: 0;
+	cursor: pointer;
+}
+
+/* The two steps are a finger's business: a pointer has a wheel, and a wheel is
+   quicker than any button. */
+.editor-zoom-step {
+	display: none;
+	min-width: var(--button);
+	min-height: var(--button);
+	color: var(--text-1);
+	font: var(--type-sm);
+	background: none;
+	border: 0;
+	cursor: pointer;
+}
+
+
+
+/* The handle between a column and the map. Six pixels wide to catch, one pixel
+   wide to look at - a handle one can see is a line, and a handle one can hit
+   is wider than a line. */
+.editor-left,
+.editor-right,
+.editor-dock {
+	position: relative;
+}
+
+.editor-grip {
+	position: absolute;
+	z-index: 3;
+	background: none;
+	touch-action: none;
+}
+
+.editor-grip-left,
+.editor-grip-right {
+	top: 0;
+	bottom: 0;
+	width: 7px;
+	cursor: col-resize;
+}
+
+.editor-grip-left {
+	right: -4px;
+}
+
+.editor-grip-right {
+	left: -4px;
+}
+
+.editor-grip-dock {
+	left: 0;
+	right: 0;
+	top: -4px;
+	height: 7px;
+	cursor: row-resize;
+}
+
+@media (hover: hover) {
+	.editor-grip:hover {
+		background: var(--accent);
+	}
+}
+
+.editor-grip:focus-visible {
+	background: var(--accent);
+}
+
+/* A side that is a drawer or a sheet has no edge to drag, and neither has a
+   dock that is shut. */
+ddnet-editor[data-left="drawer"] .editor-grip-left,
+ddnet-editor[data-left="sheet"] .editor-grip-left,
+ddnet-editor[data-right="drawer"] .editor-grip-right,
+ddnet-editor[data-right="sheet"] .editor-grip-right,
+.editor-dock-shut .editor-grip-dock {
+	display: none;
+}
+
+/* What a button is called, for a hand that cannot hover. The same words as
+   the `title`, made visible: a long press asks for them. */
+.editor-tip {
+	position: absolute;
+	z-index: 7;
+	max-width: 240px;
+	padding: var(--space-1) var(--space-2);
+	color: var(--text-1);
+	font: var(--type-xs);
+	background: var(--bg-3);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-1);
+	box-shadow: var(--shadow);
+	pointer-events: none;
 }

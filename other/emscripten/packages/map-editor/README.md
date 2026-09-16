@@ -16,6 +16,268 @@ new EditorPanels(editor, { container: document.querySelector("#panels") });
 The panels want `@ddnet/base/editor.css`; without it they are still there and
 still work, they are just unpainted.
 
+## The whole thing in one element
+
+A page that wants an editor rather than the pieces of one takes
+`<ddnet-editor>`. It makes the program, the canvas, the shapes over it and the
+panels, and lays them out in six areas around the map:
+
+```html
+<link rel="stylesheet" href="ddnet-editor.css">
+<script type="module">import "@ddnet/map-editor";</script>
+
+<ddnet-editor src="maps/ctf1.map" style="height: 100dvh">
+	<div slot="header">Whatever the page wants above the map</div>
+</ddnet-editor>
+```
+
+The areas are `header`, `toolbar`, `left`, `right`, `dock` and `status`; an
+area nobody fills takes no room at all. What the editor puts in them:
+
+| Area | What stands there |
+|---|---|
+| `toolbar` | Undo, redo, what is drawn, the grid, proof mode, saving. |
+| `left` | The map's parts, one tab at a time: the layer tree, the pictures, the sounds, the map's own fields. |
+| `right` | The inspector - what the selected thing is made of, and the tileset to paint with. The tile panel has two tabs of its own: the tileset, and the rules that paint by themselves. |
+| `dock` | The strip along the bottom: envelopes, the history, the server settings, the rules file. It starts shut, because what is in it is looked at now and then and the map should not pay two hundred pixels for it the whole time. |
+| `status` | One line: what is under the pointer, and what just happened. |
+
+`box.panels.showTab("dock", "envelopes")` puts one of them in front and opens
+the strip if it was shut. What the element fills in itself - the
+map and the panels - is light DOM as well, so the same one stylesheet dresses
+all of it and a page may reach any of it.
+
+| Attribute | What it does |
+|---|---|
+| `src` | A map to open, and changing it opens another. |
+| `urlparam` | The name of a parameter of the page's *own* address to take a map from - `urlparam="map"` reads `#map=…`. Left out, the element does not read the address at all, because two editors on one page could not both be what it is about. |
+| `theme="light"` | The light set of colours. |
+| `remember` | Keeps what is being edited in the browser's own storage, saves into it every minute, and asks before the tab goes with something unsaved in it. Without it the element keeps nothing - a page that quietly filled a visitor's storage would be a surprise. |
+| `controls="none\|compact\|full"` | How much tool bar. Left out, the size of the box decides. |
+| `readonly` | Nothing may be changed: no inspector, no brush, and the tool bar keeps only what is about looking. The pointer pans and zooms and paints nothing. |
+| `targets="auto\|big\|small"` | How big the things one aims at are. Left out (or `auto`), the browser is asked: `pointer: coarse` gets the finger sizes. The other two are for the cases where that answer is wrong - a touch laptop with a mouse says `fine`, a tablet in desktop mode says `coarse`, and neither is what the hand on it is doing. |
+
+`box.ready` is a promise for the running program, `box.editor` and
+`box.panels` are it and its panels once there are any, and `box.part("tree")`
+finds one of *this* editor's parts by name. That last one is what lets two
+editors stand on one page: `data-role` names belong to the element, not to the
+document.
+
+The keyboard works the same way. An editor answers a key when the focus is
+inside it; with the focus nowhere at all it answers only when it is the one
+editor on the page, because with two there would be no way to say which was
+meant.
+
+### The shape it takes
+
+The editor answers to the size of its **box**, not of the window: an editor in
+an 800-pixel hole in a wide page is a narrow editor. `box.layout` says what it
+decided and the element says the same thing in `data-` attributes, which is
+what the stylesheet reads - the widths are written down once, in `BOX_WIDTHS`
+in `map-editor.js`, because the same numbers also decide what the panels *do*.
+
+| Box width | Left | Right | Tool bar |
+|---|---|---|---|
+| < 600 | sheet from the floor | sheet | six buttons |
+| 600–899 | drawer | drawer | icons |
+| 900–1199 | drawer | column | icons |
+| 1200 and up | column | column | icons with the modes' names |
+
+| Box height | Above the map | Status | Dock |
+|---|---|---|---|
+| < 600 | one row: the page's header goes, the tools stay | a chip in the corner of the map | over the map's foot |
+| 600 and up | two rows | a line of its own | a strip beside the map |
+
+A drawer is the same box of panels in the same place in the grid, laid *over*
+the map rather than beside it; it starts shut, and a press on the map shuts an
+open one without painting - the hand that reached past the drawer was reaching
+for its edge, not for the tile behind it.
+
+### With room to spare
+
+Past 2560 pixels wide *or* 1400 tall, nothing needs to hide behind a tab any
+more. The columns go to 320 and 400, the layer tree and the pictures stand
+above each other instead of behind each other, the inspector shows the tileset
+*and* the rules it paints by, and the dock is open with the envelope curve
+beside the history. At 3840x2160 the tree, the pictures, the properties, the
+tileset, the automapper, the curve and the history are all there at once, and
+the map is still 3120 pixels wide.
+
+What does **not** grow is anything one reads or hits. Forty inches of 3840
+pixels is a hundred and ten dots per inch - the same as twenty inches of 1920 -
+so twelve-pixel text is already the right size on the glass; making it bigger
+would only mean less map. What the room buys is the *number* of things that
+can be open, not the size of any of them.
+
+Three things do move, because on a monitor eighty centimetres wide the middle
+is not where one is looking: the tile chooser opens under the pointer rather
+than in the middle (fitted back inside the edges if it would hang over one),
+the coordinate under the pointer is shown a second time at the top of the
+inspector - the line at the bottom is for the eye, that one is for the hand -
+and the notes over the map move from the top right corner to the bottom
+middle, because that corner is the far end of the desk.
+
+### What just happened, and how far away
+
+What the editor says about what it just did is said twice: in the line along
+the bottom, where one looks for it afterwards, and as a note over the map,
+which one sees without looking. A note goes by itself after four seconds and
+never more than four stand at once; something that went *wrong* stays, marked
+down its edge, until it is dismissed - a mistake that vanished before it was
+read is a mistake nobody knows about. If the four are full it is the oldest
+plain note that gives way, never the error.
+
+The corner of the map says what the zoom is and is three buttons: further
+away, back into the picture, closer. Only the number shows for a pointer,
+which has a wheel and is quicker with it; a finger gets the minus and the plus
+at forty-four pixels each.
+
+Between each column and the map there is a handle. Dragging it sets the width
+(240 to 480 on the left, 288 to 560 on the right, 160 to 640 for the dock),
+the arrow keys move it sixteen pixels at a time, and Home or a double press
+gives it back to the stylesheet. A side that is a drawer has no edge to drag
+and does not show one.
+
+### One editor, several maps
+
+The strip at the top holds every map that is open: its name, a dot while it is
+not saved, and a cross. The program has always kept several; what it did not
+have was a way to see them.
+
+Coming back to a map brings back what the *page* knew about it as well - what
+was picked, which tabs were open, which groups were folded up, which mode the
+brush was in. The program keeps the maps and the history; the rest is the
+page's, and it is what makes coming back feel like coming back rather than
+like opening the map again. The Map tab says what each open map is costing in
+memory, because a second map open is a second map's worth of history and
+history is whole versions of a map.
+
+### With a finger
+
+One surface, not two: what changes is the *input*, read from
+`(pointer: coarse)` and from each event's `pointerType`, and it changes sizes
+and adds buttons - never what the editor can do.
+
+| Gesture | What it does |
+|---|---|
+| One finger | the layer's tool: paint, grab, fill, rub out, drag a handle |
+| Two fingers | pan and zoom about the middle of them; the angle is ignored |
+| Two-finger tap / three-finger tap | back / forward |
+| A press that stands still, with an empty brush | which layer is here? |
+| A press that stands still, with a full brush | nothing - a finger may rest while it paints |
+| A pen | paints always; once a pen has been seen a finger pans instead, because the hand holding the pen lies on the glass |
+
+The second finger of a pan lands fifty to a hundred and fifty milliseconds
+after the first, and by then the first has already put down a tile. Within
+150 ms, and while the first finger has gone less than 8 pixels, the second one
+says the first was never a stroke: it is thrown away - no tile, no history
+entry - and the two of them are a pan. After that the stroke is settled and a
+late finger is ignored, because a hand resting on the glass beside a drawing
+one is not a gesture.
+
+Three of the tool bar's buttons exist only for a finger, because on a desk
+they are keys nobody can press without a keyboard: **nothing in hand** (which
+is Escape, and an empty brush is what grabs), **the big tile chooser** (which
+is holding space, and nothing can be held), and **which layer is here** (which
+is Ctrl and the right button, and a finger has neither). Every row that has a
+menu shows a `...` for it; at a desk that button waits for the pointer to come
+near.
+
+The tileset in the inspector is nineteen pixels a tile - a picture of what is
+in hand, not a thing a finger can hit - so with a finger a touch on it opens
+the big chooser, where a tile is forty-four pixels or more.
+
+A side that is a drawer is pulled out of the edge it sleeps behind: a finger
+that starts in the twenty pixels along that edge and travels forty inwards
+opens it, and that press never paints. Twenty pixels is narrow on purpose -
+a stroke begins with the finger on the map, not on its edge.
+
+A `title` is a pointer's affordance: it appears because the mouse rested
+there, and a finger never rests anywhere without pressing. So a long press on
+a button says the same words the pointer would have been shown. Shortcuts are
+left out of those words until a key has actually been struck - `Ctrl+Z` beside
+a name is a hint on a laptop and noise on an iPad - and from the first
+keydown on they are back, in the tooltips and in the palette both.
+
+Which sizes are used is the browser's answer, and `targets` on the element
+overrules it where that answer is wrong. The command is **Big targets**
+(Ctrl+Alt+T), which goes round the three: as the browser says, on, off.
+
+## One list of everything it can do
+
+The tool bar is not a row of buttons somebody wrote out; it is what the list of
+commands says wants one. The keyboard is a lookup in the same list, the
+tooltips take their key from it, and the menu, the palette and the menu of a
+layer are built out of it. A new thing the editor can do is an entry in
+`commands.js`, not a new button:
+
+```js
+{
+	id: "view.grid", label: "A grid on the tiles", group: "View",
+	icon: "grid", bar: true, keys: ["G", "Ctrl+G"],
+	pressed: p => p.editor.grid() > 0,
+	run: p => { p.editor.grid(p.editor.grid() > 0 ? 0 : 10); p.refreshBar(); },
+}
+```
+
+`panels.run("view.grid")` does one by name, and answers whether it could be
+done at all - a command that says `enabled` is false is not done and its button
+is grey. A hundred and twelve commands answer to ninety-two keys today.
+
+Four more fields say where else a command shows up:
+
+| Field | What it does |
+|---|---|
+| `bar` | a button on the tool bar, with `icon` |
+| `menu` | a row in the menu; `Layer/Add a layer` is a row that opens onto more |
+| `for` | the kind of thing whose own menu it belongs in - `"layer"`, `"image"`, … |
+| `palette: false` | kept out of the palette; the ten brush slots are all there is |
+
+`part` names the button in a panel that a command presses, for the commands
+that are a button and nothing else. The tool bar holds only what the plan calls
+often used - the four brush modes, undo and redo, saving, the six view
+switches, the palette and the menu - and everything else is reached by name.
+
+Six of the native editor's keys cannot be had in a browser - Chrome keeps them
+whatever a page does - so they are said differently here:
+
+| There | Here | Why |
+|---|---|---|
+| Ctrl+N (new map) | Ctrl+Alt+N | Ctrl+N opens a window |
+| Ctrl+L (load) | Ctrl+O | Ctrl+L is the address bar |
+| Ctrl+T (the physics numbers) | T | Ctrl+T opens a tab |
+| Ctrl+Q (add a quad) | Q | Ctrl+Q quits, on Linux |
+| Ctrl+W, Ctrl+F4 (close the map) | Ctrl+Alt+W | both close the tab |
+| Ctrl+Shift+I (hex tile info) | Ctrl+I | Ctrl+Shift+I opens the developer tools |
+
+## Everything by its name, and the menus
+
+**Ctrl+P** opens the palette: every command there is, filtered by what is
+typed. What is called exactly that comes first, then what starts with it, then
+what has a word starting with it, then what merely holds it somewhere. Arrows
+walk it, Enter takes one, Escape gives up. A command that cannot be done right
+now is still listed, greyed: knowing that the editor can do a thing at all is
+most of what a palette is for.
+
+**Alt+M**, or the ☰ button, opens the menu - File, Edit, View, Layer, Tools,
+Settings, Help, in that order, out of the same list.
+
+**A right-click** on a row of the tree, of the pictures, of the sounds, of the
+quads, of the sources or of the settings opens the menu of that thing: what can
+be *done* to it, and nothing about what it *is* - properties live in the
+inspector, and a property with two homes is a property that disagrees with
+itself. A tile layer that lies over the game layer also gets the thirteen
+physics tiles as a submenu, which is the native editor's
+"Game tiles from this layer".
+
+Two things ask before they happen, because they cannot be undone into shape:
+**New map** wants a name and a size, and **Save as** wants a name. Everything
+else the editor does happens and can be undone.
+
+All of that floats in a layer of its own over the six areas, so that a menu
+opened from the tree is not cut off by the edge of the column the tree stands
+in.
+
 ## What it is made of
 
 * **The map is asked, not told.** `editor.structure()` answers what the map is

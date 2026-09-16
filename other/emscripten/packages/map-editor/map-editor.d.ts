@@ -215,6 +215,7 @@ export declare class MapEditor {
 	readonly maps: number[];
 
 	name(id?: MapId): string;
+	rename(id: MapId | undefined, name: string): boolean;
 	activate(id: number): boolean;
 	close(id?: MapId): boolean;
 	create(width: number, height: number, name?: string): number | null;
@@ -323,6 +324,10 @@ export declare class MapEditor {
 	rotateBrush(): void;
 	storeBrush(slot: number): boolean;
 	useBrush(slot: number): boolean;
+	/** Whether there is nothing in hand. An empty brush is what grabs. */
+	brushEmpty(): boolean;
+	/** Puts the brush down. */
+	clearBrush(): void;
 	brushSize(): { width: number; height: number } | null;
 	/** What goes beside a physics tile the brush puts down. */
 	numbers(): { number: number; delay: number; force: number; maxSpeed: number; angle: number };
@@ -344,11 +349,105 @@ export declare class MapEditor {
 	addEventListener(type: string, listener: (event: CustomEvent) => void, options?: AddEventListenerOptions): void;
 }
 
+/** One thing the editor can be told to do. */
+export interface EditorCommand {
+	id: string;
+	label: string;
+	/** File, Edit, View, Layer, Brush, Quads, Areas, Help. */
+	group: string;
+	/** The keys that reach it, as `Ctrl+Shift+Z` and the like. */
+	keys: string[];
+	/** Whether it wants a button on the tool bar. */
+	bar?: boolean;
+	/** The icon on that button. */
+	icon?: string;
+	/** Where in the menu it hangs - `File`, or `Layer/Add a layer`. */
+	menu?: string;
+	/** Which kind of thing's own menu it belongs in. */
+	for?: string | string[];
+	/** The button in a panel that it presses, where it is one. */
+	part?: string;
+	/** `false` for the commands the palette does not list - the ten slots. */
+	palette?: boolean;
+	enabled?: (panels: EditorPanels) => boolean;
+	pressed?: (panels: EditorPanels) => boolean;
+	run: (panels: EditorPanels) => void;
+}
+
 export declare class EditorPanels {
-	constructor(editor: MapEditor, options?: { container?: Element | null; dataBase?: string | null; signal?: AbortSignal });
+	constructor(editor: MapEditor, options?: {
+		container?: Element | null;
+		dataBase?: string | null;
+		/** Whether the panels listen for keys on the whole page themselves. */
+		keys?: boolean;
+		signal?: AbortSignal;
+	});
+	/** What holds the panels: the one column, or the box they were spread into. */
 	readonly element: HTMLElement;
 	/** Which group, and which layer of it, or `layer: -1` for the group. */
 	selection: { group: number; layer: number };
+	/** Which panel each area that shows one at a time has in front. */
+	readonly tab: { left: string; dock: string; tiles: string };
+	/** Everything the editor can be told to do. */
+	readonly commands: EditorCommand[];
+	/** Which of the four ways the pointer draws while no modifier says otherwise. */
+	tool: "paint" | "grab" | "fill" | "erase";
+	/** How much the line under the pointer says about a tile. */
+	tileInfo: "off" | "dec" | "hex";
+	/** Does one of the commands by name, if it can be done at all. */
+	run(id: string): boolean;
+	/** One of the panels' parts by the name it carries, wherever it stands. */
+	part(role: string): Element | null;
+	/** Every part of that name. */
+	parts(role: string): Element[];
+	/** Puts one of an area's panels in front, opening the area if it was shut. */
+	showTab(area: "left" | "dock", tab: string): void;
+	/** Brings whatever carries that name into view, and hands it back. */
+	reveal(role: string): Element | null;
+	/** Whether nothing may be changed - what `readonly` on the element sets. */
+	readonly readonly: boolean;
+	/** Whether the next touch on the map is a question about the layer there. */
+	readonly askingLayer: boolean;
+	/** Makes the next touch that question, or takes the question back. */
+	askHere(): void;
+	/** Puts one of the open maps in front, with everything about it as it was. */
+	showMap(id: number): boolean;
+	/** Closes one of them, and puts another in front if that was the one. */
+	closeMap(id: number): boolean;
+	/** Takes the shape the box says it is in. */
+	applyShape(shape: EditorLayout): void;
+	/** Which of the two schemes the editor is drawn in. */
+	scheme(next?: "dark" | "light"): "dark" | "light";
+	/**
+	 * Whether targets are drawn big enough for a finger. `auto` asks the
+	 * browser; the other two are for the cases where it lies.
+	 */
+	targets(next?: "auto" | "big" | "small"): "auto" | "big" | "small";
+	/** Whether this hand is a finger, once the setting has had its say. */
+	finger(): boolean;
+	/** Whether a shortcut belongs beside a name - true once a key was used. */
+	keysShown(): boolean;
+	/**
+	 * Says something over the map, and hands the note back. A note goes by
+	 * itself after four seconds; `kind: "error"` stays until it is dismissed.
+	 */
+	tell(text: string, kind?: "note" | "error"): Element | null;
+	/** Writes it into the status line and says it over the map as well. */
+	say(text: string, kind?: "note" | "error"): void;
+	/** Shows what that button is called, where a pointer would have hovered. */
+	showTip(what: Element): void;
+	/** Shows or hides the palette of everything the editor can do. */
+	showPalette(on: boolean): void;
+	/** Shows or hides the menu. */
+	showMenu(on: boolean): void;
+	/** The menu of one kind of thing, at a spot or under an element. */
+	showContext(kind: string, at: Element | { x: number; y: number }): void;
+	closeContext(): void;
+	/** Asks how big a new map is and what it is called, then makes it. */
+	askNewMap(): void;
+	/** Asks what the map is to be called from now on, then saves it. */
+	askSaveAs(): void;
+	closeDialog(): void;
 	refresh(): void;
 	destroy(): void;
 }
@@ -375,11 +474,61 @@ export declare function steerEditor(
 	},
 ): { destroy(): void };
 
+/**
+ * `<ddnet-editor>` - the whole editor as one element, laid out in six areas
+ * a page may fill with `slot="header"`, `"toolbar"`, `"left"`, `"right"`,
+ * `"dock"` and `"status"`.
+ *
+ * Attributes: `src`, `urlparam`, `theme="light"`, `targets="big|small"`, `remember`.
+ */
+export declare class EditorElement extends HTMLElement {
+	/** The running program, or null until it is. */
+	readonly editor: MapEditor | null;
+	/** The panels beside the map, or null until they are there. */
+	readonly panels: EditorPanels | null;
+	/** The canvas the map is drawn on; there before the program is. */
+	readonly canvas: HTMLCanvasElement;
+	/** Waits for the program, and says what stopped it if it did not start. */
+	readonly ready: Promise<MapEditor> | null;
+	/** One of this editor's parts by the name it carries in `data-role`. */
+	part(role: string): Element | null;
+	/**
+	 * What shape the editor is in, worked out from the size of its box and
+	 * from `controls` and `readonly`. Read it; it is not settable.
+	 */
+	readonly layout: EditorLayout;
+}
+
+/** The shape of an editor: what it decided, at the size it is. */
+export interface EditorLayout {
+	width: number;
+	height: number;
+	/** `phone`, `small`, `medium`, `wide`, `desk`, `huge`. */
+	size: string;
+	/** `short`, `low`, `tall`, `high`. */
+	tallness: string;
+	/** `column`, `drawer`, `sheet`, or `none` for the inspector when read-only. */
+	left: string;
+	right: string;
+	/** `none`, `looking`, `few`, `icons`, `labels`. */
+	bar: string;
+	/** `one` or `two` rows above the map. */
+	head: string;
+	/** `line` or `chip`. */
+	status: string;
+	/** `strip` beside the map's foot, or `overlay` over it. */
+	dock: string;
+	/** Whether there is room enough to stand panels above each other. */
+	stack: boolean;
+	readonly: boolean;
+}
+
 export declare const programUrl: string;
 
 declare const _default: {
 	MapEditor: typeof MapEditor;
 	EditorPanels: typeof EditorPanels;
+	EditorElement: typeof EditorElement;
 	steerEditor: typeof steerEditor;
 	programUrl: string;
 };

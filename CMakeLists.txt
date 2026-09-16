@@ -2276,6 +2276,7 @@ if(TARGET_OS STREQUAL "emscripten")
     other/emscripten/map.html
     other/emscripten/packages/demo-player/demo-player.js
     other/emscripten/packages/demo-renderer/demo-renderer.js
+    other/emscripten/packages/map-editor/commands.js
     other/emscripten/packages/map-editor/map-editor.js
     other/emscripten/packages/map-viewer/map-viewer.js
     other/emscripten/render.html

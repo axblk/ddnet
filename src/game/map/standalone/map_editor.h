@@ -203,6 +203,19 @@ public:
 	const char *Name(int Id) const;
 
 	/**
+	 * Calls the map something else.
+	 *
+	 * The name is what the file is called when the map is written out, so
+	 * this is what "save as" is made of: rename, then save.
+	 *
+	 * @param Id The number of the map.
+	 * @param pName The new name; an empty one means the unnamed one.
+	 *
+	 * @return `true` if there was such a map.
+	 */
+	bool Rename(int Id, const char *pName);
+
+	/**
 	 * What the interface asks of a map - see `map_document::Apply`.
 	 *
 	 * @param Id The number of the map.
@@ -704,6 +717,14 @@ public:
 	void FlipBrushX();
 	void FlipBrushY();
 	void RotateBrush();
+
+	/**
+	 * Puts the brush down: nothing in hand.
+	 *
+	 * An empty brush is what grabs, so this is the way to a rectangle - and
+	 * on a tablet it is a button, because there is no Escape to press.
+	 */
+	void ClearBrush();
 
 	/**
 	 * Puts the brush in hand into one of the slots, or takes one out again.

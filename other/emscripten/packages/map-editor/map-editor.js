@@ -22,7 +22,8 @@
  * here.
  */
 
-import { addIcons, paintIcons, Program } from "@ddnet/base";
+import { addIcons, followSize, paintIcons, Program, urlParameter } from "@ddnet/base";
+import { COMMANDS, commandRole, commandTitle, keyLabel, keyName, keyTable } from "./commands.js";
 
 // The pictures on the editor's own buttons. Named as the viewer names its
 // own, so that a page which shows both says the same thing twice rather than
@@ -35,6 +36,15 @@ addIcons({
 	redo: '<path d="M20 11H10a5 5 0 0 0 0 10h6M20 11l-5-5M20 11l-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
 	grid: '<path d="M9 3v18M15 3v18M3 9h18M3 15h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
 	proof: '<rect x="1.8" y="5" width="20.4" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="6.2" y="8" width="11.6" height="8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.4 1.8"/>',
+	paint: '<path d="M4 16.5 15.2 5.3a2.4 2.4 0 0 1 3.4 3.4L7.5 19.9 3 21Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
+	grab: '<path d="M6 3.5v9M6 9.5 4.2 13a6 6 0 0 0 5.3 8.5H14a6 6 0 0 0 6-6V9M20 9V7M16.5 9V6.5M13 9V6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+	fill: '<path d="M11 2.5 3.5 10a1.6 1.6 0 0 0 0 2.3l6.2 6.2a1.6 1.6 0 0 0 2.3 0l7.5-7.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M20.5 15c1.4 2 2 3.2 2 4a2 2 0 1 1-4 0c0-.8.6-2 2-4Z"/>',
+	erase: '<path d="M8.5 20.5 3 15a1.6 1.6 0 0 1 0-2.3l9.2-9.2a1.6 1.6 0 0 1 2.3 0l6.5 6.5a1.6 1.6 0 0 1 0 2.3l-8.2 8.2ZM8 8l8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
+	folder: '<path d="M2.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
+	add: '<path d="M12 4.5v15M4.5 12h15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
+	search: '<circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15 15l4.5 4.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
+	menu: '<path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
+	info: '<circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 11v5.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="7.8" r="1.2" fill="currentColor"/>',
 });
 
 /** The program, and what its script calls the factory it defines. */
@@ -50,10 +60,6 @@ export const programUrl = new URL(PROGRAM, import.meta.url).href;
 // written in those units and a page has no business knowing them, so the one
 // place that turns the one into the other is here.
 const MAP_TILE_SIZE = 32;
-
-// How many tiles apart the lines of the grid are when it is switched on. Ten,
-// because that is what somebody counting tiles counts in.
-const GRID_SPACING = 10;
 
 /**
  * A map editor: the base, told where its script lies, and the map said in the
@@ -121,6 +127,16 @@ class CMapEditor extends Program {
 	/** What a map is called. */
 	name(id) {
 		return this.call("MapEditorName", "string", ["number"], [this.which(id)]) || "";
+	}
+
+	/**
+	 * Calls a map something else.
+	 *
+	 * The name is the name of the file the map is written to, so renaming and
+	 * then saving is what "save as" is.
+	 */
+	rename(id, name) {
+		return this.call("MapEditorRename", "number", ["number", "string"], [this.which(id), name]) === 1;
 	}
 
 	/** Puts a map in front. */
@@ -879,6 +895,17 @@ class CMapEditor extends Program {
 		return width === null ? null : { width: width, height: this.call("MapEditorBrushHeight", "number") };
 	}
 
+	/** Whether there is nothing in hand. An empty brush is what grabs. */
+	brushEmpty() {
+		const size = this.brushSize();
+		return size === null || size.width === 0 || size.height === 0;
+	}
+
+	/** Puts the brush down. */
+	clearBrush() {
+		this.call("MapEditorClearBrush", null);
+	}
+
 	/**
 	 * Whether the tiles in hand are tele checkpoints, which count their
 	 * numbers apart from the teleporters. What a tile index means is the
@@ -905,17 +932,97 @@ class CMapEditor extends Program {
 // panels that know nothing about each other. Everything that can be got at
 // from outside carries `data-role`, which is also what the browser tests ask
 // for.
+/**
+ * Where each panel goes when the editor has areas to put it in, and under
+ * which tab it stands there.
+ *
+ * The panels themselves know nothing of this: they are built as one lot and
+ * then moved. A page that places them itself gets them all in one column, the
+ * way it always did.
+ */
+const PANEL_PLACES = [
+	{ role: "tree-panel", area: "left", tab: "layers", name: "Layers" },
+	{ role: "images-panel", area: "left", tab: "images", name: "Images" },
+	{ role: "audio-panel", area: "left", tab: "sounds", name: "Sounds" },
+	{ role: "info-panel", area: "left", tab: "map", name: "Map" },
+	{ role: "props-panel", area: "right" },
+	{ role: "tiles-panel", area: "right" },
+	{ role: "quads-panel", area: "right" },
+	{ role: "sounds-panel", area: "right" },
+	{ role: "envelopes-panel", area: "dock", tab: "envelopes", name: "Envelopes" },
+	{ role: "history-panel", area: "dock", tab: "history", name: "History" },
+	{ role: "settings-panel", area: "dock", tab: "settings", name: "Settings" },
+	{ role: "rules-panel", area: "dock", tab: "rules", name: "Rules" },
+];
+
+/** The two areas that show one panel at a time, and what they are called. */
+const TABBED_AREAS = { left: "structure", dock: "dock" };
+
+// Two editors on a page are two of everything, and a row of a list can only
+// be pointed at by an id that is the page's alone.
+let overCount = 0;
+
+/**
+ * Which shape the editor takes at which size of its box, widest first.
+ *
+ * One table rather than a handful of container queries, because the same
+ * numbers decide two things: what the stylesheet draws, and what the panels
+ * do - a drawer is not a column that moved, it also shuts when somebody
+ * touches the map, and a tool bar that shows six of its buttons has to be
+ * told which six. Two copies of six numbers would drift apart; the stylesheet
+ * answers to the attribute this sets.
+ *
+ * The widths are of the *box*, not of the window: an editor in an 800-pixel
+ * hole in somebody's page is a narrow editor on a wide screen.
+ */
+// Which lists have a menu of their own, and what each of their rows is. One
+// list, because two things read it: what a right-click opens, and where the
+// "..." buttons go.
+const CONTEXT_LISTS = [
+	["tree", null],
+	["image-list", "image"],
+	["sound-list", "sound"],
+	["quad-list", "quad"],
+	["source-list", "source"],
+	["setting-list", "setting"],
+];
+
+const BOX_WIDTHS = [
+	{ from: 2560, name: "huge", left: "column", right: "column", bar: "labels" },
+	{ from: 1600, name: "desk", left: "column", right: "column", bar: "labels" },
+	{ from: 1200, name: "wide", left: "column", right: "column", bar: "labels" },
+	{ from: 900, name: "medium", left: "drawer", right: "column", bar: "icons" },
+	{ from: 600, name: "small", left: "drawer", right: "drawer", bar: "icons" },
+	{ from: 0, name: "phone", left: "sheet", right: "sheet", bar: "few" },
+];
+
+/** And by height: what there is room for above and below the map. */
+const BOX_HEIGHTS = [
+	{ from: 1400, name: "high", head: "two", status: "line", dock: "strip" },
+	{ from: 600, name: "tall", head: "two", status: "line", dock: "strip" },
+	{ from: 480, name: "low", head: "one", status: "chip", dock: "overlay" },
+	{ from: 0, name: "short", head: "one", status: "chip", dock: "overlay" },
+];
+
+// The order the menu puts its headings in: what a map is, then what was just
+// done to it, then what one is looking at, then the things one reaches for.
+const MENU_ORDER = ["File", "Edit", "View", "Layer", "Tools", "Settings", "Help"];
+
+// How long a note about what happened stays, and how many may stand at once.
+const TOAST_MS = 4000;
+const TOAST_MOST = 4;
+
+// How far a column or the dock may be dragged, in pixels. The lower end is
+// what the panel inside needs; the upper end is where it starts eating the
+// map, which is the thing one is actually working on.
+const DRAG_LIMITS = {
+	left: { least: 240, most: 480 },
+	right: { least: 288, most: 560 },
+	dock: { least: 160, most: 640 },
+};
+
 const PANELS_HTML = `
 <div class="editor-bar" data-role="bar">
-	<button class="editor-button" data-role="undo" data-icon="undo" title="Undo (Ctrl+Z)" aria-label="Undo"></button>
-	<button class="editor-button" data-role="redo" data-icon="redo" title="Redo (Ctrl+Y)" aria-label="Redo"></button>
-	<button class="editor-button" data-role="fit" data-icon="fit" title="The whole map (Home)" aria-label="The whole map"></button>
-	<button class="editor-button" data-role="detail" data-icon="detail" title="What is only there to look at" aria-pressed="true"></button>
-	<button class="editor-button" data-role="entities" data-icon="entities" title="What the tiles do" aria-pressed="false"></button>
-	<button class="editor-button" data-role="animate" data-icon="play" title="Let the envelopes run" aria-pressed="false"></button>
-	<button class="editor-button" data-role="grid" data-icon="grid" title="A grid on the tiles (G)" aria-pressed="false"></button>
-	<button class="editor-button" data-role="proof" data-icon="proof" title="What a player would see (P); again for a menu background" aria-pressed="false"></button>
-	<button class="editor-button" data-role="save" data-icon="save" title="Save the map" aria-label="Save the map"></button>
 	<span class="editor-status" data-role="status" role="status"></span>
 	<span class="editor-hover" data-role="hover"></span>
 </div>
@@ -944,7 +1051,7 @@ const PANELS_HTML = `
 		</div>
 	</section>
 	<section class="editor-panel" data-role="props-panel">
-		<header class="editor-panel-head"><h2 data-role="props-title">Properties</h2></header>
+		<header class="editor-panel-head"><h2 data-role="props-title">Properties</h2><span class="editor-here" data-role="here"></span></header>
 		<div class="editor-props" data-role="props"></div>
 		<div class="editor-construct" data-role="construct" hidden>
 			<select class="editor-small" data-role="construct-tile"></select>
@@ -961,17 +1068,24 @@ const PANELS_HTML = `
 				<span data-role="brush-size"></span>
 			</span>
 		</header>
-		<canvas class="editor-tileset" data-role="tileset" width="256" height="256"></canvas>
-		<div class="editor-numbers" data-role="numbers"></div>
+		<div class="editor-tabs editor-subtabs" role="tablist">
+			<button type="button" class="editor-tab" data-role="tiles-tab" data-tab="tiles" role="tab" aria-selected="true">Tiles</button>
+			<button type="button" class="editor-tab" data-role="tiles-tab" data-tab="automap" role="tab" aria-selected="false">Automap</button>
+		</div>
+		<div data-role="tiles-body">
+			<canvas class="editor-tileset" data-role="tileset" width="256" height="256"></canvas>
+			<div class="editor-numbers" data-role="numbers"></div>
+			<div class="editor-slots" data-role="slots" role="group" aria-label="Where a brush is put away"></div>
+			<div class="editor-type" data-role="type">
+				<input type="text" data-role="type-text" placeholder="Type with the tiles&hellip;" title="Letters and digits become the tiles of a font tileset; the layer has to be drawn with one">
+				<button class="editor-small" data-role="type-place" title="Write it where the view is looking">write</button>
+			</div>
+		</div>
 		<div class="editor-automap" data-role="automap" hidden>
 			<select class="editor-small" data-role="automap-config"></select>
 			<select class="editor-small" data-role="automap-reference"></select>
 			<button class="editor-small" data-role="automap-run" title="Put the tiles the rules ask for into this layer">automap</button>
 			<label class="editor-small" title="Run them over every stroke, as part of the same change"><input type="checkbox" data-role="automap-auto"> auto</label>
-		</div>
-		<div class="editor-type" data-role="type">
-			<input type="text" data-role="type-text" placeholder="Type with the tiles&hellip;" title="Letters and digits become the tiles of a font tileset; the layer has to be drawn with one">
-			<button class="editor-small" data-role="type-place" title="Write it where the view is looking">write</button>
 		</div>
 	</section>
 	<section class="editor-panel" data-role="audio-panel">
@@ -1063,15 +1177,23 @@ const PANELS_HTML = `
 			<h2>Map</h2>
 			<span class="editor-panel-tools">
 				<button class="editor-small" data-role="append-map" title="Put another map's groups into this one">append&hellip;</button>
+			</span>
+		</header>
+		<div class="editor-props" data-role="info-props"></div>
+		<ul class="editor-memory" data-role="memory"></ul>
+		<input type="file" accept=".map" data-role="append-file" hidden>
+	</section>
+	<section class="editor-panel" data-role="settings-panel">
+		<header class="editor-panel-head">
+			<h2>Server settings</h2>
+			<span class="editor-panel-tools">
 				<button class="editor-small" data-role="add-setting" title="A line the server runs when it loads the map">+ setting</button>
 				<button class="editor-small" data-role="delete-setting" title="Take this line away">-</button>
 			</span>
 		</header>
-		<div class="editor-props" data-role="info-props"></div>
 		<ol class="editor-settings" data-role="setting-list"></ol>
 		<p class="editor-setting-said" data-role="setting-said" role="status"></p>
 		<datalist data-role="setting-names"></datalist>
-		<input type="file" accept=".map" data-role="append-file" hidden>
 	</section>
 	<section class="editor-panel" data-role="history-panel">
 		<header class="editor-panel-head">
@@ -1268,7 +1390,7 @@ class CEditorPanels {
 	 * @param options.signal Takes them off again, the same as `destroy`.
 	 */
 	constructor(editor, options) {
-		const settings = Object.assign({ container: null, dataBase: null, signal: undefined }, options || {});
+		const settings = Object.assign({ container: null, dataBase: null, keys: true, signal: undefined }, options || {});
 		this.editor = editor;
 		this.stopping = new AbortController();
 		if (settings.signal) {
@@ -1313,6 +1435,53 @@ class CEditorPanels {
 		// The shapes drawn over the canvas, made once the canvas has a parent
 		// to hang them in.
 		this.overlay = null;
+		// The big tile chooser over the map, and whether it stays open when
+		// the key that opened it is let go of.
+		this.picker = null;
+		this.zoomChip = null;
+		this.floatHome = null;
+		// Whether a keyboard has been seen. A desk has one until proven
+		// otherwise; a finger has to show one first.
+		this.sawKey = false;
+		// What a long press says, where a pointer would have hovered.
+		this.tip = null;
+		// Which shape the box is in, once something tells us. Without a box
+		// there are no areas to reshape and the panels stand in one column.
+		this.shape = null;
+		this.readonly = false;
+		this.askingLayer = false;
+		// Where the pointer last was over the map. On a big screen the tile
+		// chooser opens there rather than in the middle of a monitor that is
+		// eighty centimetres wide.
+		this.pointerAt = null;
+		// The strip of open maps, and what each of them looked like when it
+		// was last in front. The program keeps the maps; what somebody had
+		// picked, which tab was open and which groups were folded up are the
+		// page's, and they are what makes coming back to a map feel like
+		// coming back rather than like opening it again.
+		this.maps = null;
+		this.mapState = new Map();
+		this.lastMap = null;
+		this.toasts = null;
+		// What somebody dragged the columns and the dock to, in pixels, or
+		// nothing where nobody has dragged them.
+		this.dragged = { left: null, right: null, dock: null };
+		this.drawer = { left: false, right: false };
+		// What floats over the whole box, and where it floats in.
+		this.over = null;
+		this.overId = `ed${++overCount}`;
+		this.palette = null;
+		this.paletteAt = 0;
+		this.paletteRows = [];
+		this.menu = null;
+		this.context = null;
+		this.dialog = null;
+		this.pickerPinned = false;
+		// The list of layers under a spot on the map.
+		this.chooser = null;
+		// Which of the ten places a brush has been put away in are full. The
+		// program does not say, so what was put away here is remembered here.
+		this.slotsUsed = new Set();
 		// Whether what a player would see is drawn, and at which zoom:
 		// "off", "game" or "menu".
 		this.proof = "off";
@@ -1325,9 +1494,36 @@ class CEditorPanels {
 		this.tileset = null;
 		this.tilesetSource = null;
 		this.picked = null;
+		// Whether the panels listen for keys on the whole page themselves.
+		this.keys = settings.keys;
+		// The areas the panels were spread into, or null while they all stand
+		// in one column.
+		this.areas = null;
+		// The box the panels were spread into, if they were.
+		this.box = null;
+		// Which panel each area shows, for the two that show one at a time.
+		this.tab = { left: "layers", dock: "envelopes", tiles: "tiles" };
+		// Which of the four ways the pointer draws, while no modifier says
+		// otherwise.
+		this.tool = "paint";
+		// How much the line under the pointer says about a tile: "off", "dec"
+		// or "hex".
+		this.tileInfo = "hex";
+		// The commands, and the keys that reach them.
+		this.commands = COMMANDS;
+		this.keys_ = keyTable(COMMANDS);
+		// Whether the strip at the bottom is open. It starts closed: what is
+		// in it - envelopes, the history, the server settings, the rules - is
+		// looked at now and then, and the map should not pay two hundred
+		// pixels for it the whole time.
+		this.dockOpen = false;
+		// Whether each panel has anything to show at all - a different
+		// question from whether its tab is the one in front.
+		this.panelShown = new Map();
 		this.root = document.createElement("div");
 		this.root.className = "editor-panels";
 		this.root.innerHTML = PANELS_HTML;
+		this.buildBar();
 		paintIcons(this.root);
 		if (settings.container !== null) {
 			settings.container.append(this.root);
@@ -1354,16 +1550,1973 @@ class CEditorPanels {
 		this.overlay.setAttribute("class", "editor-overlay");
 		this.overlay.dataset.role = "overlay";
 		this.overlay.hidden = true;
-		parent.append(this.overlay);
+		// The big tile chooser, over the map rather than beside it: a tileset
+		// in a 320-pixel column is seventeen pixels a tile, and seventeen
+		// pixels is not a tile anybody can tell from its neighbour.
+		this.picker = document.createElement("div");
+		this.picker.className = "editor-picker";
+		this.picker.dataset.role = "picker";
+		this.picker.hidden = true;
+		this.picker.innerHTML = '<canvas class="editor-picker-tiles" data-role="picker-tiles"></canvas>'
+			+ '<p class="editor-picker-name" data-role="picker-name"></p>';
+		// Which layer a spot on the map belongs to, when more than one does.
+		// What the zoom is, where the hand is. The status line says it too, at
+		// the other end of the screen; on a wide one those are not the same
+		// place, and this is the one a finger can reach.
+		this.zoomChip = document.createElement("div");
+		this.zoomChip.className = "editor-zoom";
+		this.zoomChip.dataset.role = "zoom-chip";
+		this.zoomChip.innerHTML = '<button type="button" class="editor-zoom-step" data-role="zoom-out" aria-label="Further away">\u2212</button>'
+			+ '<button type="button" class="editor-zoom-level" data-role="zoom-level"></button>'
+			+ '<button type="button" class="editor-zoom-step" data-role="zoom-in" aria-label="Closer">+</button>';
+		this.chooser = document.createElement("ul");
+		this.chooser.className = "editor-choose";
+		this.chooser.dataset.role = "layer-choose";
+		this.chooser.hidden = true;
+		// Where the things that float over the map live. It is not the
+		// element-wide over-layer: a note in the top right corner of that
+		// would sit on the right column and cover what it is telling about.
+		this.floatHome = parent;
+		parent.append(this.overlay, this.picker, this.chooser, this.zoomChip);
+		this.wirePick(this.picker.querySelector('[data-role="picker-tiles"]'));
+		this.wireChooser();
+		this.wireZoomChip();
 	}
 
-	/** The panels themselves, for a page that wants to put them elsewhere. */
+	/**
+	 * Picking a rectangle out of a tileset, on whichever canvas shows one.
+	 * The small one beside the map and the big one over it are the same
+	 * gesture and the same answer.
+	 */
+	wirePick(canvas) {
+		let from = null;
+		// Nineteen pixels a tile is a picture of what is in hand, not a thing
+		// a finger can hit. A touch on it opens the big one, where the tiles
+		// are forty-four.
+		canvas.addEventListener("pointerdown", event => {
+			if (canvas.dataset.role !== "tileset" || !this.finger()) {
+				return;
+			}
+			event.preventDefault();
+			event.stopPropagation();
+			this.run("picker.show");
+		}, { capture: true, signal: this.stopping.signal });
+		// A refused capture must not take the pick with it.
+		const capture = (pointerId, hold) => {
+			try {
+				if (hold) {
+					canvas.setPointerCapture(pointerId);
+				} else {
+					canvas.releasePointerCapture(pointerId);
+				}
+			} catch (error) {
+				// The pick still works; it just stops at the edge.
+			}
+		};
+		const at = event => {
+			const box = canvas.getBoundingClientRect();
+			return {
+				x: Math.min(TILESET_SIDE - 1, Math.max(0, Math.floor((event.clientX - box.left) / box.width * TILESET_SIDE))),
+				y: Math.min(TILESET_SIDE - 1, Math.max(0, Math.floor((event.clientY - box.top) / box.height * TILESET_SIDE))),
+			};
+		};
+		canvas.addEventListener("pointerdown", event => {
+			from = at(event);
+			capture(event.pointerId, true);
+			this.pick(from, from);
+		}, { signal: this.stopping.signal });
+		canvas.addEventListener("pointermove", event => {
+			if (from !== null) {
+				this.pick(from, at(event));
+			}
+		}, { signal: this.stopping.signal });
+		const release = event => {
+			if (from !== null) {
+				this.pick(from, at(event));
+				from = null;
+				capture(event.pointerId, false);
+				// A pick taken from the big one is what it was opened for.
+				if (this.picker !== null && canvas === this.picker.firstElementChild && !this.pickerPinned) {
+					this.showPicker(false);
+				}
+			}
+		};
+		canvas.addEventListener("pointerup", release, { signal: this.stopping.signal });
+		canvas.addEventListener("pointercancel", () => { from = null; }, { signal: this.stopping.signal });
+	}
+
+	/**
+	 * Which layer a spot on the map belongs to. Ctrl and the right button ask
+	 * it: every tile layer that has something other than air at that spot is
+	 * one line, nearest the front first, and picking one selects it.
+	 */
+	wireChooser() {
+		const canvas = this.editor.canvas;
+		canvas.addEventListener("contextmenu", event => {
+			if (!event.ctrlKey && !event.metaKey) {
+				return;
+			}
+			event.preventDefault();
+			this.showChooser(event);
+		}, { signal: this.stopping.signal });
+		// Anywhere else shuts it again.
+		document.addEventListener("pointerdown", event => {
+			if (this.chooser !== null && !this.chooser.hidden && !this.chooser.contains(event.target)) {
+				this.chooser.hidden = true;
+			}
+		}, { signal: this.stopping.signal });
+	}
+
+	/** The three buttons of the zoom chip, all of them commands. */
+	wireZoomChip() {
+		const on = (role, id) => {
+			const button = this.zoomChip.querySelector(`[data-role="${role}"]`);
+			button.title = commandTitle(this.commands.find(which => which.id === id), this.keysShown());
+			button.addEventListener("click", () => this.run(id), { signal: this.stopping.signal });
+		};
+		on("zoom-out", "view.zoomOut");
+		on("zoom-in", "view.zoomIn");
+		// The number is a button too: it says what the zoom is, and pressing it
+		// asks for the one zoom nobody has to think about.
+		on("zoom-level", "view.fit");
+	}
+
+	/** What lies under a spot on the map, as a list to pick from. */
+	layersAt(x, y) {
+		const found = [];
+		if (this.map === null) {
+			return found;
+		}
+		this.map.groups.forEach((group, gi) => {
+			group.layers.forEach((layer, li) => {
+				if (layer.type !== "tiles") {
+					return;
+				}
+				const world = this.editor.groupWorldAt(gi, x, y);
+				if (world === null) {
+					return;
+				}
+				const tile = { x: Math.floor(world.x / MAP_TILE_SIZE), y: Math.floor(world.y / MAP_TILE_SIZE) };
+				const index = this.editor.tileIndex(gi, li, tile.x, tile.y);
+				if (index > 0) {
+					found.push({ group: gi, layer: li, name: layer.name || layer.kind, index: index, tile: tile });
+				}
+			});
+		});
+		// Nearest the front first: the last group is drawn over the others.
+		return found.reverse();
+	}
+
+	showChooser(event) {
+		const box = this.editor.canvas.getBoundingClientRect();
+		const factor = (this.editor.canvas.width || 1) / (box.width || 1);
+		const found = this.layersAt((event.clientX - box.left) * factor, (event.clientY - box.top) * factor);
+		this.chooser.textContent = "";
+		if (found.length === 0) {
+			const empty = document.createElement("li");
+			empty.className = "editor-choose-empty";
+			empty.textContent = "Nothing but air here";
+			this.chooser.append(empty);
+		}
+		for (const what of found) {
+			const row = document.createElement("li");
+			row.className = "editor-row";
+			row.dataset.role = "layer-choice";
+			row.dataset.group = String(what.group);
+			row.dataset.layer = String(what.layer);
+			row.textContent = `${what.name} \u00b7 ${what.index}`;
+			row.addEventListener("click", () => {
+				this.selection = { group: what.group, layer: what.layer };
+				this.chooser.hidden = true;
+				this.refresh();
+			}, { signal: this.stopping.signal });
+			this.chooser.append(row);
+		}
+		this.chooser.style.left = `${event.clientX - box.left}px`;
+		this.chooser.style.top = `${event.clientY - box.top}px`;
+		this.chooser.hidden = false;
+	}
+
+	/** Opens or shuts the big tile chooser. */
+	showPicker(on) {
+		const layer = this.selectedLayer();
+		const wanted = on === true && layer !== null && layer.type === "tiles";
+		this.picker.hidden = !wanted;
+		if (!wanted) {
+			this.pickerPinned = false;
+			return;
+		}
+		const canvas = this.picker.querySelector('[data-role="picker-tiles"]');
+		// A finger needs a bigger tile than an eye does, and the whole box
+		// rather than the map: a tileset sized to fit a short map would be
+		// nineteen pixels a tile again. Wide enough is what counts, because
+		// the chooser may scroll downwards and a finger scrolls it.
+		const finger = this.finger();
+		const home = finger ? this.overlayHome() : null;
+		if (home !== null && this.picker.parentElement !== home) {
+			home.append(this.picker);
+		}
+		const box = (home === null ? this.editor.canvas : home).getBoundingClientRect();
+		// As big as there is room for, and never smaller than the thirty-two
+		// pixels a tile needs to be told apart - forty-four for a finger.
+		const least = finger ? 44 : 32;
+		// And a ceiling, or a forty-inch monitor would show a tileset seventeen
+		// hundred pixels across: past a point a bigger tile says nothing more
+		// about which tile it is, and the chooser only gets harder to take in
+		// at a glance and harder to fit beside the pointer.
+		const most = finger ? 88 : 64;
+		const room = finger ? box.width : Math.min(box.width, box.height);
+		const fits = Math.floor((room - 32) / TILESET_SIDE) * TILESET_SIDE;
+		const side = Math.min(TILESET_SIDE * most, Math.max(TILESET_SIDE * least, fits));
+		canvas.width = side;
+		canvas.height = side;
+		canvas.style.width = `${side}px`;
+		canvas.style.height = `${side}px`;
+		const image = layer.image >= 0 && layer.image < this.map.images.length ? this.map.images[layer.image] : null;
+		this.picker.querySelector('[data-role="picker-name"]').textContent = image === null ? "No picture - the numbers are the tiles" : image.name;
+		this.placePicker(side);
+		this.paintPicker();
+	}
+
+	/**
+	 * Where the chooser opens.
+	 *
+	 * In the middle of what holds it, until the screen is big enough that the
+	 * middle is somewhere else entirely: on a forty-inch monitor the middle is
+	 * forty centimetres from the hand, and a chooser that opens there is a
+	 * chooser one has to go and find. Then it opens where the pointer is, and
+	 * is pushed back inside the edges rather than hanging over them.
+	 */
+	placePicker(side) {
+		const roomy = this.shape !== null && this.shape.stack === true;
+		const at = this.pointerAt;
+		if (!roomy || at === null) {
+			this.picker.style.left = "";
+			this.picker.style.top = "";
+			this.picker.style.transform = "";
+			return;
+		}
+		const home = this.picker.parentElement;
+		const room = home.getBoundingClientRect();
+		// Measured rather than guessed: the box is the tiles plus its padding,
+		// its border and the line of text under it.
+		const box = this.picker.getBoundingClientRect();
+		const width = Math.max(box.width, side);
+		const height = Math.max(box.height, side);
+		const left = Math.max(8, Math.min(at.x - room.left - width / 2, room.width - width - 8));
+		const top = Math.max(8, Math.min(at.y - room.top - height / 2, room.height - height - 8));
+		this.picker.style.left = `${left}px`;
+		this.picker.style.top = `${top}px`;
+		this.picker.style.transform = "none";
+	}
+
+	paintPicker() {
+		if (this.picker === null || this.picker.hidden) {
+			return;
+		}
+		this.paintTileset(this.picker.querySelector('[data-role="picker-tiles"]'));
+	}
+
+	/**
+	 * The strip of open maps.
+	 *
+	 * Light DOM in the element's header slot, like everything else the editor
+	 * draws, so that the one stylesheet dresses it; where there is no room for
+	 * a header row it moves down into the tool bar, which is the one row there
+	 * always is.
+	 */
+	buildMaps(box) {
+		this.maps = document.createElement("div");
+		this.maps.className = "editor-maps";
+		this.maps.dataset.role = "maps";
+		this.maps.setAttribute("role", "tablist");
+		this.maps.setAttribute("aria-label", "The maps that are open");
+		this.maps.slot = "header";
+		// Before whatever the page put in the header: what the map is called
+		// and whether it is saved are the two things nobody may have to look
+		// for, so they go first.
+		box.prepend(this.maps);
+		this.refreshMaps();
+	}
+
+	/** Puts the strip where this shape of box has room for it. */
+	placeMaps() {
+		if (this.maps === null) {
+			return;
+		}
+		const inBar = this.shape !== null && this.shape.head === "one";
+		const bar = this.part("bar");
+		if (inBar && bar !== null && this.maps.parentElement !== bar) {
+			this.maps.removeAttribute("slot");
+			bar.prepend(this.maps);
+		} else if (!inBar && this.box !== null && this.box !== undefined && this.maps.parentElement !== this.box) {
+			this.maps.slot = "header";
+			this.box.prepend(this.maps);
+		}
+	}
+
+	refreshMaps() {
+		if (this.maps === null) {
+			return;
+		}
+		const open = this.editor.maps;
+		const now = this.editor.map;
+		// Only rebuilt when the maps themselves changed. A strip built anew on
+		// every switch would throw away the button that was just clicked, and
+		// with it the focus of whoever clicked it with a keyboard.
+		const there = [...this.maps.querySelectorAll('[data-role="map-tab"]')];
+		if (there.length === open.length && there.every((tab, at) => Number(tab.dataset.map) === open[at])) {
+			for (const tab of there) {
+				const id = Number(tab.dataset.map);
+				const dirty = this.editor.dirty(id);
+				const name = this.editor.name(id) || "untitled";
+				tab.setAttribute("aria-selected", id === now ? "true" : "false");
+				tab.querySelector('[data-role="map-dot"]').hidden = !dirty;
+				tab.querySelector(".editor-map-name").textContent = name;
+				tab.title = `${name}${dirty ? " - not saved" : ""}`;
+			}
+			return;
+		}
+		this.maps.textContent = "";
+		for (const id of open) {
+			const tab = document.createElement("button");
+			tab.type = "button";
+			tab.className = "editor-map-tab";
+			tab.dataset.role = "map-tab";
+			tab.dataset.map = String(id);
+			tab.setAttribute("role", "tab");
+			tab.setAttribute("aria-selected", id === now ? "true" : "false");
+			const dirty = this.editor.dirty(id);
+			const dot = document.createElement("span");
+			dot.className = "editor-map-dot";
+			dot.dataset.role = "map-dot";
+			dot.hidden = !dirty;
+			dot.textContent = "\u25cf";
+			const name = document.createElement("span");
+			name.className = "editor-map-name";
+			name.textContent = this.editor.name(id) || "untitled";
+			tab.append(dot, name);
+			// The dot is for the eye; the title is for whoever is not reading
+			// with their eyes.
+			tab.title = `${name.textContent}${dirty ? " - not saved" : ""}`;
+			tab.addEventListener("click", () => this.showMap(id), { signal: this.stopping.signal });
+			if (open.length > 1) {
+				const shut = document.createElement("span");
+				shut.className = "editor-map-close";
+				shut.dataset.role = "map-close";
+				shut.textContent = "\u00d7";
+				shut.setAttribute("role", "button");
+				shut.setAttribute("aria-label", `Close ${name.textContent}`);
+				shut.addEventListener("click", event => {
+					event.stopPropagation();
+					this.closeMap(id);
+				}, { signal: this.stopping.signal });
+				tab.append(shut);
+			}
+			this.maps.append(tab);
+		}
+		const add = document.createElement("button");
+		add.type = "button";
+		add.className = "editor-map-add";
+		add.dataset.role = "map-add";
+		add.textContent = "+";
+		const command = this.commands.find(which => which.id === "file.new");
+		add.title = command === undefined ? "New map" : commandTitle(command, this.keysShown());
+		add.setAttribute("aria-label", "New map");
+		add.addEventListener("click", () => this.run("file.new"), { signal: this.stopping.signal });
+		this.maps.append(add);
+		this.placeMaps();
+	}
+
+	/**
+	 * What the page remembers about a map while another one is in front.
+	 *
+	 * The program keeps the maps. What was picked, which tab was open and
+	 * which groups were folded up are the page's, and they are what makes
+	 * coming back to a map feel like coming back rather than like opening it.
+	 */
+	rememberMap(which) {
+		const now = which === undefined ? this.editor.map : which;
+		if (now < 0) {
+			return;
+		}
+		this.mapState.set(now, {
+			selection: { group: this.selection.group, layer: this.selection.layer },
+			collapsed: new Set(this.collapsed),
+			tab: Object.assign({}, this.tab),
+			dockOpen: this.dockOpen,
+			tool: this.tool,
+		});
+	}
+
+	/** Puts a map in front, with everything about it as it was left. */
+	showMap(id) {
+		if (id === this.editor.map) {
+			return true;
+		}
+		this.rememberMap();
+		if (!this.editor.activate(id)) {
+			return false;
+		}
+		// Said before the state is put back, so that the refresh that follows
+		// does not put the restored state away under the old map's name.
+		this.lastMap = id;
+		const was = this.mapState.get(id);
+		if (was === undefined) {
+			this.selection = { group: 0, layer: 0 };
+			this.collapsed = new Set();
+		} else {
+			this.selection = { group: was.selection.group, layer: was.selection.layer };
+			this.collapsed = new Set(was.collapsed);
+			this.tab = Object.assign({}, was.tab);
+			this.dockOpen = was.dockOpen;
+			this.tool = was.tool;
+		}
+		this.refresh();
+		this.refreshMaps();
+		return true;
+	}
+
+	/** Closes one, and puts another in front if that was the one in front. */
+	closeMap(id) {
+		const open = this.editor.maps;
+		if (open.length < 2) {
+			return false;
+		}
+		if (id === this.editor.map) {
+			this.showMap(open.find(which => which !== id));
+		}
+		this.mapState.delete(id);
+		this.editor.close(id);
+		this.refresh();
+		this.refreshMaps();
+		return true;
+	}
+
+	/**
+	 * Where a thing that floats over everything goes.
+	 *
+	 * In a box that is a layer of its own above the six areas, so that a menu
+	 * opened from a row of the tree is not cut off by the edge of the column
+	 * the tree stands in. Without a box it is whatever holds the canvas,
+	 * which is then the only thing there is.
+	 */
+	overlayHome() {
+		const box = this.box;
+		if (box !== null && box !== undefined && box.shadowRoot !== null && box.shadowRoot !== undefined) {
+			if (this.over === null) {
+				this.over = document.createElement("div");
+				this.over.className = "editor-over";
+				this.over.slot = "over";
+				box.append(this.over);
+			}
+			return this.over;
+		}
+		const canvas = this.editor.canvas;
+		return canvas === null || canvas === undefined ? null : canvas.parentElement;
+	}
+
+	/**
+	 * Brings whatever carries that name into view and hands it back.
+	 *
+	 * A command that is a button in a panel has to open the panel first, or
+	 * it would press a button nobody can see and the page would change
+	 * somewhere the eye is not. Which tab a panel is in is not written down
+	 * twice: the panel says where it hangs, and `PANEL_PLACES` says which tab
+	 * that is.
+	 */
+	reveal(role) {
+		const found = this.part(role);
+		if (found === null) {
+			return null;
+		}
+		const panel = found.closest("[data-role$=\"-panel\"]");
+		const place = panel === null ? undefined : PANEL_PLACES.find(which => which.role === panel.dataset.role);
+		if (place !== undefined) {
+			// The dock opens by being told which tab it shows; the two
+			// columns are shown or not shown.
+			if (place.area === "left" || place.area === "right") {
+				this.showArea(place.area, true);
+			}
+			if (place.tab !== undefined && place.tab !== null) {
+				this.showTab(place.area, place.tab);
+			}
+		}
+		// The tiles panel has two tabs of its own, and some of the buttons
+		// live in the second one.
+		if (found.closest('[data-role="automap"]') !== null) {
+			this.tab.tiles = "automap";
+			this.applyTilesTab();
+		} else if (found.closest('[data-role="tiles-body"]') !== null) {
+			this.tab.tiles = "tiles";
+			this.applyTilesTab();
+		}
+		return found;
+	}
+
+	/**
+	 * Takes the shape the box says it is in.
+	 *
+	 * A side that became a drawer is shut, because a drawer lies over the map
+	 * and an editor that opened with its map covered would be an editor whose
+	 * first act is in the way. A side that became a column again is opened,
+	 * because a column takes room of its own and an empty one is a stripe of
+	 * nothing.
+	 */
+	applyShape(shape) {
+		const before = this.shape;
+		this.shape = shape;
+		this.readonly = shape.readonly;
+		// The panels say for themselves whether they are drawn for a finger,
+		// so that the stylesheet has one answer to read whether they stand in
+		// the element or on a page of their own. Every area is told as well as
+		// the root: each of them carries `editor-panels` too, and one that was
+		// not told would go on declaring the sizes the query asked for.
+		const big = this.finger() ? "yes" : "no";
+		this.root.dataset.big = big;
+		if (this.areas !== null) {
+			for (const area of Object.values(this.areas)) {
+				area.dataset.big = big;
+			}
+		}
+		// The dock is shut to begin with, because what is in it is looked at
+		// now and then; with room enough it is open, because then it costs
+		// nothing. Said once, when the box first says there is room, so that
+		// somebody who shut it keeps it shut.
+		if (shape.stack && (before === null || !before.stack)) {
+			this.dockOpen = true;
+		}
+		for (const side of ["left", "right"]) {
+			const drawer = shape[side] !== "column";
+			if (before === null || drawer !== (before[side] !== "column")) {
+				this.drawer[side] = drawer;
+				this.showArea(side, !drawer);
+			}
+			if (shape[side] === "none") {
+				this.showArea(side, false);
+			}
+		}
+		this.applyTabs();
+		this.applyTilesTab();
+		this.applyDragged();
+		this.placeMaps();
+		this.refreshBar();
+	}
+
+	/**
+	 * Whether this shape of box shows that button.
+	 *
+	 * `none` shows none of them, `looking` only what does not change the map,
+	 * `few` only what the plan calls the six a phone has room for, and the two
+	 * wide shapes show all of them - with the modes' names written out only
+	 * where there is room for the words.
+	 */
+	barShows(command) {
+		const how = this.shape === null ? "labels" : this.shape.bar;
+		if (how === "none") {
+			return false;
+		}
+		// Three of the buttons are keys on a desk and have to be buttons for a
+		// finger: there is no Escape to empty the brush with, nothing to hold
+		// to keep the tile chooser open, and no Ctrl to hold while pressing
+		// the right button that a finger also does not have.
+		if (command.touch === true && !this.finger()) {
+			return false;
+		}
+		if (how === "looking") {
+			return command.safe === true;
+		}
+		if (how === "few") {
+			return command.always === true;
+		}
+		return true;
+	}
+
+	/**
+	 * A press on the map shuts an open drawer, and does not go on to the map.
+	 *
+	 * A click that puts something away does not also paint: the hand that
+	 * reached past the drawer was reaching for the drawer's edge, not for the
+	 * tile behind it.
+	 */
+	wireDrawers() {
+		const canvas = this.editor.canvas;
+		if (canvas === null || canvas === undefined) {
+			return;
+		}
+		canvas.addEventListener("pointermove", event => {
+			this.pointerAt = { x: event.clientX, y: event.clientY };
+		}, { signal: this.stopping.signal });
+		canvas.addEventListener("pointerdown", event => {
+			this.pointerAt = { x: event.clientX, y: event.clientY };
+			const open = ["left", "right"].filter(side => this.drawer[side] && this.areaShown(side));
+			if (open.length === 0) {
+				// A finger that starts at the very edge is reaching for the
+				// drawer that lives there, not painting: strokes begin with
+				// the finger on the map.
+				this.edgeSwipe(event, canvas);
+				return;
+			}
+			for (const side of open) {
+				this.showArea(side, false);
+			}
+			event.stopPropagation();
+			event.preventDefault();
+		}, { capture: true, signal: this.stopping.signal });
+	}
+
+	/**
+	 * What a button is called, for a hand that cannot hover.
+	 *
+	 * A `title` is a pointer's affordance: it appears because the mouse rested
+	 * there, and a finger never rests anywhere without pressing. So at a
+	 * coarse pointer a long press says the same thing in the same words - the
+	 * ones the button already carries, so that there is one text and not two.
+	 */
+	wireTips() {
+		// On the document rather than on the box: the areas are the element's
+		// light DOM and the box is not known yet when the panels are wired, so
+		// whose press this is gets asked when it happens rather than now.
+		const root = document;
+		const mine = target => {
+			if (target === null || target === undefined || target.nodeType !== 1) {
+				return false;
+			}
+			return (this.box !== null && this.box !== undefined && this.box.contains(target))
+				|| (this.root !== null && this.root.contains(target));
+		};
+		let waiting = null;
+		let from = null;
+		const drop = () => {
+			if (waiting !== null) {
+				clearTimeout(waiting);
+				waiting = null;
+			}
+		};
+		const hide = () => {
+			drop();
+			if (this.tip !== null) {
+				this.tip.hidden = true;
+			}
+		};
+		root.addEventListener("pointerdown", event => {
+			hide();
+			if (event.pointerType !== "touch" && event.pointerType !== "pen") {
+				return;
+			}
+			// The map has its own long press - it asks which layer is there -
+			// and two answers to one press is one too many.
+			const what = !mine(event.target) || event.target.closest === undefined ? null
+				: event.target.closest("button[title], [role=\"separator\"][aria-label]");
+			if (what === null || what === this.editor.canvas || !mine(what)) {
+				return;
+			}
+			from = { x: event.clientX, y: event.clientY };
+			waiting = setTimeout(() => this.showTip(what), LONG_PRESS_MS);
+		}, { capture: true, signal: this.stopping.signal });
+		root.addEventListener("pointermove", event => {
+			if (waiting === null || from === null) {
+				return;
+			}
+			if (Math.hypot(event.clientX - from.x, event.clientY - from.y) > LONG_PRESS_PIXELS) {
+				drop();
+			}
+		}, { capture: true, signal: this.stopping.signal });
+		for (const gone of ["pointerup", "pointercancel"]) {
+			root.addEventListener(gone, drop, { capture: true, signal: this.stopping.signal });
+		}
+		// It goes away at the next touch anywhere, like a tooltip does when the
+		// pointer leaves.
+		root.addEventListener("click", hide, { capture: true, signal: this.stopping.signal });
+	}
+
+	/** Shows what that thing is called, beside it. */
+	showTip(what) {
+		const home = this.overlayHome();
+		if (home === null) {
+			return;
+		}
+		if (this.tip === null) {
+			this.tip = document.createElement("div");
+			this.tip.className = "editor-tip";
+			this.tip.dataset.role = "tip";
+			this.tip.setAttribute("role", "tooltip");
+			home.append(this.tip);
+		}
+		this.tip.textContent = what.title || what.getAttribute("aria-label") || "";
+		this.tip.hidden = this.tip.textContent === "";
+		if (!this.tip.hidden) {
+			this.placeAt(this.tip, what);
+		}
+	}
+
+	/**
+	 * The drawer that is pulled in from the edge it sleeps behind.
+	 *
+	 * Only with a finger, and only from a strip twenty pixels wide: with a
+	 * pointer there is a button for it, and a wider strip would swallow every
+	 * stroke that starts near the edge of the map. The drawer follows nothing
+	 * while the finger travels - it opens once the finger has gone far enough
+	 * inwards that no tap could be meant.
+	 */
+	edgeSwipe(event, canvas) {
+		if (!this.finger()) {
+			return;
+		}
+		const box = canvas.getBoundingClientRect();
+		const side = event.clientX - box.left <= EDGE_SWIPE_ZONE ? "left"
+			: box.right - event.clientX <= EDGE_SWIPE_ZONE ? "right" : null;
+		if (side === null || !this.drawer[side]) {
+			return;
+		}
+		// The stroke that would otherwise have started here never does.
+		event.stopPropagation();
+		event.preventDefault();
+		const from = event.clientX;
+		const inwards = side === "left" ? 1 : -1;
+		const move = moved => {
+			if (moved.pointerId !== event.pointerId) {
+				return;
+			}
+			if ((moved.clientX - from) * inwards >= EDGE_SWIPE_REACH) {
+				done();
+				this.showArea(side, true);
+			}
+		};
+		const done = () => {
+			canvas.removeEventListener("pointermove", move, true);
+			canvas.removeEventListener("pointerup", done, true);
+			canvas.removeEventListener("pointercancel", done, true);
+		};
+		canvas.addEventListener("pointermove", move, true);
+		canvas.addEventListener("pointerup", done, true);
+		canvas.addEventListener("pointercancel", done, true);
+	}
+
+	/**
+	 * Makes the next tap on the map a question about the layer there.
+	 *
+	 * What Ctrl and the right button do on a desk. A finger has neither, and
+	 * the long press is taken by the layer chooser only while the brush is
+	 * empty - with a full brush a finger is allowed to stand still - so with a
+	 * full brush this button is the way.
+	 */
+	askHere() {
+		this.askingLayer = !this.askingLayer;
+		this.say(this.askingLayer ? "Touch the map: which layer is there?" : "");
+		this.refreshBar();
+	}
+
+	/** An answer to that question, or no answer because none was asked. */
+	answerHere(spot) {
+		if (!this.askingLayer) {
+			return false;
+		}
+		this.askingLayer = false;
+		this.say("");
+		this.refreshBar();
+		// After this press has finished being handled: the chooser shuts
+		// itself on a press anywhere but in it, and the press that asked for
+		// it is a press anywhere but in it.
+		setTimeout(() => this.showChooser({ clientX: spot.x, clientY: spot.y }), 0);
+		return true;
+	}
+
+	/**
+	 * Whether targets are drawn big enough for a finger.
+	 *
+	 * "auto" asks the browser, which is right nearly always; "big" and
+	 * "small" are for when it is not. It lives on the element beside `theme`,
+	 * for the same reason: whether it is remembered between visits is the
+	 * page's business, not the editor's.
+	 */
+	targets(next) {
+		const box = this.box;
+		const read = () => {
+			const said = box !== null && box !== undefined
+				? box.getAttribute("targets") : this.root.dataset.targets;
+			return said === "big" || said === "small" ? said : "auto";
+		};
+		if (next === undefined) {
+			return read();
+		}
+		if (box !== null && box !== undefined) {
+			box.setAttribute("targets", next);
+		} else {
+			this.root.dataset.targets = next;
+			this.root.dataset.big = this.finger() ? "yes" : "no";
+		}
+		this.refreshBar();
+		return read();
+	}
+
+	/** Whether this hand is a finger, once the setting has had its say. */
+	finger() {
+		const said = this.targets();
+		return said === "big" ? true
+			: said === "small" ? false : matchMedia("(pointer: coarse)").matches;
+	}
+
+	/** Which of the two schemes the editor is drawn in. */
+	scheme(next) {
+		const box = this.box;
+		const read = () => {
+			const said = box !== null && box !== undefined ? box.getAttribute("theme") : this.root.dataset.theme;
+			return said === "light" ? "light" : "dark";
+		};
+		if (next === undefined) {
+			return read();
+		}
+		if (box !== null && box !== undefined) {
+			box.setAttribute("theme", next);
+		} else {
+			this.root.dataset.theme = next;
+		}
+		this.refreshBar();
+		return read();
+	}
+
+	/**
+	 * Every command that a palette would show, with what it was asked about
+	 * in front.
+	 *
+	 * The order is: what is called exactly that, then what starts with what
+	 * was typed, then what has a word starting with it, then what merely
+	 * holds it somewhere, then what only the group is called. Within a rank
+	 * the order is the list's own, which is the order of the tool bar - so an
+	 * empty question answers with the things one does most.
+	 *
+	 * The exact rank is there because one name can be the beginning of
+	 * another: typing all of "Turn the brush over" would otherwise answer
+	 * with "Turn the brush over sideways", which stands earlier in the list.
+	 */
+	findCommands(question) {
+		const asked = question.trim().toLowerCase();
+		const out = [];
+		this.commands.forEach((command, index) => {
+			if (command.palette === false) {
+				return;
+			}
+			const label = command.label.toLowerCase();
+			const group = command.group.toLowerCase();
+			if (asked === "") {
+				out.push({ command: command, rank: 0, index: index });
+				return;
+			}
+			const at = label.indexOf(asked);
+			let rank = -1;
+			if (label === asked) {
+				rank = 0;
+			} else if (at === 0) {
+				rank = 1;
+			} else if (at > 0 && !/[a-z0-9]/.test(label[at - 1])) {
+				rank = 2;
+			} else if (at > 0) {
+				rank = 3;
+			} else if (group.includes(asked) || command.id.toLowerCase().includes(asked)) {
+				rank = 4;
+			}
+			if (rank >= 0) {
+				out.push({ command: command, rank: rank, index: index });
+			}
+		});
+		out.sort((one, other) => one.rank - other.rank || one.index - other.index);
+		return out.map(found => found.command);
+	}
+
+	/**
+	 * The palette: every command there is, by its name.
+	 *
+	 * The rows are built once and only shown or hidden afterwards. A hundred
+	 * rows built again on every keystroke would be work for nothing, and the
+	 * rows never change - only which of them are the answer does.
+	 */
+	buildPalette() {
+		const home = this.overlayHome();
+		if (home === null) {
+			return false;
+		}
+		this.palette = document.createElement("div");
+		this.palette.className = "editor-palette";
+		this.palette.dataset.role = "palette";
+		this.palette.hidden = true;
+		this.palette.setAttribute("role", "dialog");
+		this.palette.setAttribute("aria-label", "Everything the editor can do");
+		const listId = `${this.overId}-palette`;
+		this.palette.innerHTML = `<input class="editor-palette-find" data-role="palette-find" type="text"
+	role="combobox" aria-expanded="true" aria-controls="${listId}" aria-autocomplete="list"
+	placeholder="What should happen?" aria-label="What should happen?" spellcheck="false">
+<ul class="editor-palette-list" data-role="palette-list" role="listbox" id="${listId}"
+	aria-label="Everything the editor can do"></ul>
+<p class="editor-palette-none" data-role="palette-none" hidden>Nothing is called that.</p>`;
+		const list = this.palette.querySelector('[data-role="palette-list"]');
+		this.paletteRows = this.commands.filter(command => command.palette !== false).map((command, index) => {
+			const row = document.createElement("li");
+			row.className = "editor-palette-row";
+			row.id = `${listId}-${index}`;
+			row.dataset.command = command.id;
+			row.setAttribute("role", "option");
+			row.setAttribute("aria-selected", "false");
+			const what = document.createElement("span");
+			what.className = "editor-palette-what";
+			what.textContent = command.label;
+			const where = document.createElement("span");
+			where.className = "editor-palette-where";
+			where.textContent = command.group;
+			const key = document.createElement("kbd");
+			key.className = "editor-palette-key";
+			key.textContent = this.keyText(command);
+			row.append(what, where, key);
+			// The pointer is not allowed to take the focus off the field: the
+			// field is what the keyboard is talking to, and a click that
+			// blurred it would close the palette before the click arrived.
+			row.addEventListener("mousedown", event => event.preventDefault(), { signal: this.stopping.signal });
+			row.addEventListener("click", () => this.runFromPalette(command), { signal: this.stopping.signal });
+			list.append(row);
+			return { command: command, row: row };
+		});
+		const find = this.palette.querySelector('[data-role="palette-find"]');
+		find.addEventListener("input", () => this.refreshPalette(), { signal: this.stopping.signal });
+		this.palette.addEventListener("keydown", event => this.onPaletteKey(event), { signal: this.stopping.signal });
+		home.append(this.palette);
+		return true;
+	}
+
+	/** Arrows walk the answer, Enter takes one, Escape gives up. */
+	onPaletteKey(event) {
+		const shown = this.paletteRows.filter(row => !row.row.hidden);
+		if (event.key === "Escape") {
+			event.stopPropagation();
+			event.preventDefault();
+			this.showPalette(false);
+			return;
+		}
+		if (event.key === "Enter") {
+			event.stopPropagation();
+			event.preventDefault();
+			if (shown.length > 0) {
+				this.runFromPalette(shown[Math.min(this.paletteAt, shown.length - 1)].command);
+			}
+			return;
+		}
+		const step = event.key === "ArrowDown" ? 1 : (event.key === "ArrowUp" ? -1 : 0);
+		if (step === 0) {
+			// Anything else is typing, and typing is the field's business -
+			// but not the editor's, or `G` would turn the grid on.
+			event.stopPropagation();
+			return;
+		}
+		event.stopPropagation();
+		event.preventDefault();
+		if (shown.length === 0) {
+			return;
+		}
+		this.paletteAt = (this.paletteAt + step + shown.length) % shown.length;
+		this.markPalette(shown);
+	}
+
+	/** Writes the shortcuts into rows that were built before the first key. */
+	refreshKeys(rows) {
+		for (const row of rows) {
+			const key = row.row.querySelector("kbd");
+			if (key !== null) {
+				key.textContent = this.keyText(row.command);
+			}
+		}
+	}
+
+	/** Which row is the one Enter would take. */
+	markPalette(shown) {
+		const find = this.palette.querySelector('[data-role="palette-find"]');
+		for (const row of this.paletteRows) {
+			row.row.classList.remove("editor-palette-at");
+			row.row.setAttribute("aria-selected", "false");
+		}
+		if (shown.length === 0) {
+			find.removeAttribute("aria-activedescendant");
+			return;
+		}
+		const at = shown[Math.min(this.paletteAt, shown.length - 1)].row;
+		at.classList.add("editor-palette-at");
+		at.setAttribute("aria-selected", "true");
+		find.setAttribute("aria-activedescendant", at.id);
+		at.scrollIntoView({ block: "nearest" });
+	}
+
+	/** Shows the rows that answer what was typed, and grays what cannot be done. */
+	refreshPalette() {
+		const question = this.palette.querySelector('[data-role="palette-find"]').value;
+		const answer = new Set(this.findCommands(question).map(command => command.id));
+		const order = this.findCommands(question);
+		const list = this.palette.querySelector('[data-role="palette-list"]');
+		this.refreshKeys(this.paletteRows);
+		for (const found of order) {
+			const row = this.paletteRows.find(which => which.command === found);
+			list.append(row.row);
+		}
+		let shown = [];
+		for (const row of this.paletteRows) {
+			const wanted = answer.has(row.command.id);
+			row.row.hidden = !wanted;
+			const can = row.command.enabled === undefined || row.command.enabled(this);
+			row.row.classList.toggle("editor-palette-cannot", !can);
+			row.row.setAttribute("aria-disabled", can ? "false" : "true");
+			if (wanted) {
+				shown.push(row);
+			}
+		}
+		shown = this.paletteRows.filter(row => !row.row.hidden);
+		this.palette.querySelector('[data-role="palette-none"]').hidden = shown.length > 0;
+		this.paletteAt = 0;
+		this.markPalette(shown);
+	}
+
+	/** Takes a row: the palette goes away first, so that what it does is seen. */
+	runFromPalette(command) {
+		this.showPalette(false);
+		this.run(command.id);
+	}
+
+	showPalette(on) {
+		if (this.palette === null && on === true && !this.buildPalette()) {
+			return;
+		}
+		if (this.palette === null) {
+			return;
+		}
+		this.showMenu(false);
+		this.closeContext();
+		this.palette.hidden = on !== true;
+		if (on !== true) {
+			this.refreshBar();
+			const canvas = this.editor.canvas;
+			if (canvas !== null && canvas !== undefined) {
+				canvas.focus();
+			}
+			return;
+		}
+		const find = this.palette.querySelector('[data-role="palette-find"]');
+		find.value = "";
+		this.refreshPalette();
+		find.focus();
+		this.refreshBar();
+	}
+
+	/**
+	 * The menu, out of the same list.
+	 *
+	 * A command says which heading it hangs under, and a heading with a slash
+	 * in it is a row that opens: `Layer/Add a layer` puts the eight kinds of
+	 * layer behind one row rather than eight rows in the way of everything
+	 * else.
+	 */
+	buildMenu() {
+		const home = this.overlayHome();
+		if (home === null) {
+			return false;
+		}
+		this.menu = document.createElement("div");
+		this.menu.className = "editor-menu";
+		this.menu.dataset.role = "menu";
+		this.menu.hidden = true;
+		this.menu.setAttribute("role", "menu");
+		this.menu.setAttribute("aria-label", "The menu");
+		const heads = new Map();
+		for (const command of this.commands) {
+			if (command.menu === undefined) {
+				continue;
+			}
+			const [head, under] = command.menu.split("/");
+			if (!heads.has(head)) {
+				heads.set(head, { plain: [], under: new Map() });
+			}
+			const at = heads.get(head);
+			if (under === undefined) {
+				at.plain.push(command);
+			} else {
+				if (!at.under.has(under)) {
+					at.under.set(under, []);
+				}
+				at.under.get(under).push(command);
+			}
+		}
+		const named = [...heads.keys()].sort((one, other) => {
+			const a = MENU_ORDER.indexOf(one);
+			const b = MENU_ORDER.indexOf(other);
+			return (a < 0 ? MENU_ORDER.length : a) - (b < 0 ? MENU_ORDER.length : b);
+		});
+		for (const head of named) {
+			const section = document.createElement("section");
+			section.className = "editor-menu-part";
+			const title = document.createElement("h3");
+			title.className = "editor-menu-head";
+			title.textContent = head;
+			section.append(title);
+			for (const command of heads.get(head).plain) {
+				section.append(this.menuRow(command));
+			}
+			for (const [under, commands] of heads.get(head).under) {
+				section.append(this.menuFold(under, commands));
+			}
+			this.menu.append(section);
+		}
+		this.menu.addEventListener("keydown", event => {
+			if (event.key === "Escape") {
+				event.stopPropagation();
+				event.preventDefault();
+				this.showMenu(false);
+			}
+		}, { signal: this.stopping.signal });
+		home.append(this.menu);
+		return true;
+	}
+
+	/** One command as a row of a menu. */
+	menuRow(command) {
+		const row = document.createElement("button");
+		row.type = "button";
+		row.className = "editor-menu-row";
+		row.dataset.command = command.id;
+		row.setAttribute("role", "menuitem");
+		const what = document.createElement("span");
+		what.textContent = command.label;
+		const key = document.createElement("kbd");
+		key.className = "editor-menu-key";
+		key.textContent = this.keyText(command);
+		row.append(what, key);
+		row.addEventListener("click", () => {
+			this.showMenu(false);
+			this.closeContext();
+			this.run(command.id);
+		}, { signal: this.stopping.signal });
+		return row;
+	}
+
+	/** A row that opens onto more rows. */
+	menuFold(label, commands) {
+		const holder = document.createElement("div");
+		holder.className = "editor-menu-fold";
+		const open = document.createElement("button");
+		open.type = "button";
+		open.className = "editor-menu-row editor-menu-more";
+		open.setAttribute("aria-expanded", "false");
+		open.innerHTML = `<span></span><span class="editor-menu-arrow" aria-hidden="true">▸</span>`;
+		open.firstElementChild.textContent = label;
+		const under = document.createElement("div");
+		under.className = "editor-menu-under";
+		under.hidden = true;
+		for (const command of commands) {
+			under.append(this.menuRow(command));
+		}
+		open.addEventListener("click", () => {
+			const shown = under.hidden;
+			under.hidden = !shown;
+			open.setAttribute("aria-expanded", shown ? "true" : "false");
+			if (shown) {
+				this.refreshMenu();
+			}
+		}, { signal: this.stopping.signal });
+		holder.append(open, under);
+		return holder;
+	}
+
+	/** What can be done right now, and what is on. */
+	refreshMenu() {
+		if (this.menu === null) {
+			return;
+		}
+		for (const row of this.menu.querySelectorAll("[data-command]")) {
+			const command = this.commands.find(which => which.id === row.dataset.command);
+			if (command === undefined) {
+				continue;
+			}
+			const key = row.querySelector("kbd");
+			if (key !== null) {
+				key.textContent = this.keyText(command);
+			}
+			row.disabled = command.enabled !== undefined && !command.enabled(this);
+			if (command.pressed !== undefined) {
+				row.setAttribute("aria-checked", command.pressed(this) ? "true" : "false");
+				row.setAttribute("role", "menuitemcheckbox");
+			}
+		}
+	}
+
+	showMenu(on) {
+		if (this.menu === null && on === true && !this.buildMenu()) {
+			return;
+		}
+		if (this.menu === null) {
+			return;
+		}
+		if (on === true) {
+			this.showPalette(false);
+			this.closeContext();
+			this.refreshMenu();
+		}
+		this.menu.hidden = on !== true;
+		if (on === true) {
+			this.placeAt(this.menu, this.part(commandRole(this.commands.find(which => which.id === "menu.open"))));
+			const first = this.menu.querySelector("button:not(:disabled)");
+			if (first !== null) {
+				first.focus();
+			}
+		}
+		this.refreshBar();
+	}
+
+	/**
+	 * Puts a thing that floats under the button it belongs to, or at a spot,
+	 * and keeps it inside the editor.
+	 *
+	 * Measured after it is shown, because a hidden box has no size and a menu
+	 * placed by the size it does not have yet would hang off the edge.
+	 */
+	placeAt(what, anchor) {
+		const home = this.overlayHome();
+		if (home === null) {
+			return;
+		}
+		const room = home.getBoundingClientRect();
+		const size = what.getBoundingClientRect();
+		let left = room.width - size.width - 8;
+		let top = 8;
+		if (anchor instanceof Element) {
+			const at = anchor.getBoundingClientRect();
+			left = at.right - room.left - size.width;
+			top = at.bottom - room.top + 4;
+		} else if (anchor !== null && anchor !== undefined) {
+			left = anchor.x - room.left;
+			top = anchor.y - room.top;
+		}
+		what.style.left = `${Math.max(4, Math.min(left, room.width - size.width - 4))}px`;
+		what.style.top = `${Math.max(4, Math.min(top, room.height - size.height - 4))}px`;
+	}
+
+	/**
+	 * The menu of a thing: what can be done to the layer, the picture, the
+	 * quad that was clicked, and nothing about what it is - that is the
+	 * inspector's, and a property with two homes is a property that disagrees
+	 * with itself.
+	 */
+	showContext(kind, at) {
+		const home = this.overlayHome();
+		if (home === null) {
+			return;
+		}
+		this.closeContext();
+		this.showMenu(false);
+		this.showPalette(false);
+		const commands = this.commands.filter(command => command.for !== undefined
+			&& [].concat(command.for).includes(kind)
+			&& (command.enabled === undefined || command.enabled(this)));
+		const layer = kind === "layer" ? this.selectedLayer() : null;
+		const physics = layer !== null && layer.construct === true;
+		if (commands.length === 0 && !physics) {
+			return;
+		}
+		this.context = document.createElement("div");
+		this.context.className = "editor-menu editor-context";
+		this.context.dataset.role = "context";
+		this.context.setAttribute("role", "menu");
+		this.context.setAttribute("aria-label", `What can be done with this ${kind}`);
+		for (const command of commands) {
+			this.context.append(this.menuRow(command));
+		}
+		if (physics) {
+			this.context.append(this.gameTilesFold());
+		}
+		this.context.addEventListener("keydown", event => {
+			if (event.key === "Escape") {
+				event.stopPropagation();
+				event.preventDefault();
+				this.closeContext();
+			}
+		}, { signal: this.stopping.signal });
+		home.append(this.context);
+		this.placeAt(this.context, at);
+		const first = this.context.querySelector("button:not(:disabled)");
+		if (first !== null) {
+			first.focus();
+		}
+	}
+
+	/** The thirteen physics tiles, behind one row. */
+	gameTilesFold() {
+		const holder = document.createElement("div");
+		holder.className = "editor-menu-fold";
+		const open = document.createElement("button");
+		open.type = "button";
+		open.className = "editor-menu-row editor-menu-more";
+		open.dataset.role = "game-tiles";
+		open.setAttribute("aria-expanded", "false");
+		open.innerHTML = `<span>Physics tiles from this layer</span><span class="editor-menu-arrow" aria-hidden="true">▸</span>`;
+		const under = document.createElement("div");
+		under.className = "editor-menu-under";
+		under.hidden = true;
+		for (const [name, label] of GAME_TILES) {
+			const row = document.createElement("button");
+			row.type = "button";
+			row.className = "editor-menu-row";
+			row.dataset.tile = name;
+			row.setAttribute("role", "menuitem");
+			row.textContent = label;
+			row.addEventListener("click", () => {
+				const where = this.selection;
+				this.closeContext();
+				this.change(() => this.editor.apply({
+					op: "layer.constructGameTiles", group: where.group, layer: where.layer, tile: name,
+				}));
+			}, { signal: this.stopping.signal });
+			under.append(row);
+		}
+		open.addEventListener("click", () => {
+			under.hidden = !under.hidden;
+			open.setAttribute("aria-expanded", under.hidden ? "false" : "true");
+		}, { signal: this.stopping.signal });
+		holder.append(open, under);
+		return holder;
+	}
+
+	/**
+	 * A "..." on every row that has a menu of its own.
+	 *
+	 * The long press opens the same menu, but nobody finds a long press, and a
+	 * finger has no right button. Added after the lists have been built rather
+	 * than inside each of the six that build them, so that a new list is a
+	 * list with a menu without anybody having to remember.
+	 */
+	addMoreButtons() {
+		for (const [role, kind] of CONTEXT_LISTS) {
+			const list = this.part(role);
+			if (list === null) {
+				continue;
+			}
+			const rows = kind === null
+				? list.querySelectorAll('[data-role="layer"], [data-role="group"]')
+				: list.querySelectorAll("li");
+			for (const row of rows) {
+				if (row.querySelector('[data-role="more"]') !== null) {
+					continue;
+				}
+				const more = document.createElement("button");
+				more.type = "button";
+				more.className = "editor-more";
+				more.dataset.role = "more";
+				more.textContent = "\u22ef";
+				more.title = "What can be done with this";
+				more.setAttribute("aria-label", "What can be done with this");
+				more.addEventListener("click", event => {
+					event.stopPropagation();
+					row.click();
+					this.showContext(kind === null ? row.dataset.role : kind, more);
+				}, { signal: this.stopping.signal });
+				row.append(more);
+			}
+		}
+	}
+
+	closeContext() {
+		if (this.context === null) {
+			return;
+		}
+		this.context.remove();
+		this.context = null;
+	}
+
+	/**
+	 * A press beside a thing that floats puts it away.
+	 *
+	 * The button that opened it is left out, or a press on it would close the
+	 * menu and the click that follows would open it again - and a button that
+	 * does nothing when pressed twice is a button nobody trusts. The dialogue
+	 * is left out too: it was asked a question and wants an answer.
+	 */
+	wireClickAway() {
+		document.addEventListener("pointerdown", event => {
+			if (this.dialog !== null) {
+				return;
+			}
+			const path = event.composedPath();
+			const inside = what => what !== null && what !== undefined && path.includes(what);
+			const onButtonFor = id => path.some(node => node instanceof Element
+				&& node.dataset !== undefined && node.dataset.command === id);
+			if (this.context !== null && !inside(this.context)) {
+				this.closeContext();
+			}
+			if (this.menu !== null && !this.menu.hidden && !inside(this.menu) && !onButtonFor("menu.open")) {
+				this.showMenu(false);
+			}
+			if (this.palette !== null && !this.palette.hidden && !inside(this.palette) && !onButtonFor("palette.open")) {
+				this.showPalette(false);
+			}
+		}, { capture: true, signal: this.stopping.signal });
+	}
+
+	/**
+	 * A right-click on a row of a list opens the menu of what that row is.
+	 *
+	 * The row is picked first, because a menu that acted on something other
+	 * than what was clicked would be a menu nobody could trust; picking is
+	 * what a plain click does, so a plain click is what it is told to do.
+	 */
+	wireContextMenus() {
+		for (const [role, kind] of CONTEXT_LISTS) {
+			const list = this.part(role);
+			if (list === null) {
+				continue;
+			}
+			list.addEventListener("contextmenu", event => {
+				// Ctrl and the right button together is the layer chooser's,
+				// and that one is about the map, not about a list.
+				const row = kind === null
+					? event.target.closest('[data-role="layer"], [data-role="group"]')
+					: event.target.closest("li");
+				if (row === null) {
+					return;
+				}
+				event.preventDefault();
+				row.click();
+				const what = kind === null ? row.dataset.role : kind;
+				this.showContext(what, { x: event.clientX, y: event.clientY });
+			}, { signal: this.stopping.signal });
+		}
+	}
+
+	/**
+	 * A dialogue: the few things that need an answer before they can happen.
+	 *
+	 * It is one box with a heading, some fields and two buttons, built from a
+	 * list of what to ask, because a new map and a new name are the same
+	 * shape and only differ in what is asked.
+	 */
+	askFor(title, fields, done) {
+		const home = this.overlayHome();
+		if (home === null) {
+			return;
+		}
+		this.closeDialog();
+		this.dialog = document.createElement("div");
+		this.dialog.className = "editor-dialog";
+		this.dialog.dataset.role = "dialog";
+		this.dialog.setAttribute("role", "dialog");
+		this.dialog.setAttribute("aria-modal", "true");
+		this.dialog.setAttribute("aria-label", title);
+		const form = document.createElement("form");
+		form.className = "editor-dialog-body";
+		const head = document.createElement("h2");
+		head.className = "editor-dialog-head";
+		head.textContent = title;
+		form.append(head);
+		const inputs = new Map();
+		for (const field of fields) {
+			const label = document.createElement("label");
+			label.className = "editor-dialog-field";
+			const name = document.createElement("span");
+			name.textContent = field.label;
+			const input = document.createElement("input");
+			input.type = field.kind === "number" ? "number" : "text";
+			input.dataset.role = `dialog-${field.name}`;
+			input.value = String(field.value);
+			if (field.kind === "number") {
+				input.min = String(field.min);
+				input.max = String(field.max);
+			}
+			label.append(name, input);
+			form.append(label);
+			inputs.set(field.name, input);
+		}
+		const row = document.createElement("div");
+		row.className = "editor-dialog-buttons";
+		const cancel = document.createElement("button");
+		cancel.type = "button";
+		cancel.className = "editor-small";
+		cancel.dataset.role = "dialog-cancel";
+		cancel.textContent = "Never mind";
+		const go = document.createElement("button");
+		go.type = "submit";
+		go.className = "editor-small editor-dialog-go";
+		go.dataset.role = "dialog-go";
+		go.textContent = title;
+		row.append(cancel, go);
+		form.append(row);
+		this.dialog.append(form);
+		cancel.addEventListener("click", () => this.closeDialog(), { signal: this.stopping.signal });
+		form.addEventListener("submit", event => {
+			event.preventDefault();
+			const answer = {};
+			for (const [name, input] of inputs) {
+				answer[name] = input.type === "number" ? Number(input.value) : input.value;
+			}
+			this.closeDialog();
+			done(answer);
+		}, { signal: this.stopping.signal });
+		this.dialog.addEventListener("keydown", event => {
+			event.stopPropagation();
+			if (event.key === "Escape") {
+				event.preventDefault();
+				this.closeDialog();
+			}
+		}, { signal: this.stopping.signal });
+		home.append(this.dialog);
+		const first = this.dialog.querySelector("input");
+		if (first !== null) {
+			first.focus();
+			first.select();
+		}
+	}
+
+	closeDialog() {
+		if (this.dialog === null) {
+			return;
+		}
+		this.dialog.remove();
+		this.dialog = null;
+		const canvas = this.editor.canvas;
+		if (canvas !== null && canvas !== undefined) {
+			canvas.focus();
+		}
+	}
+
+	/** How big, and called what. */
+	askNewMap() {
+		this.askFor("New map", [
+			{ name: "name", label: "Name", kind: "text", value: "untitled" },
+			{ name: "width", label: "Tiles across", kind: "number", value: 100, min: 2, max: 1000 },
+			{ name: "height", label: "Tiles down", kind: "number", value: 50, min: 2, max: 1000 },
+		], answer => {
+			this.editor.create(Math.max(2, answer.width), Math.max(2, answer.height), answer.name || "untitled");
+			this.refresh();
+		});
+	}
+
+	/** Called what, from now on - the name is the name of the file. */
+	askSaveAs() {
+		this.askFor("Save as", [
+			{ name: "name", label: "Name", kind: "text", value: this.editor.name() },
+		], answer => {
+			const name = (answer.name || "").trim();
+			if (name === "") {
+				return;
+			}
+			this.editor.rename(undefined, name);
+			this.editor.save();
+			this.refresh();
+		});
+	}
+
+	/**
+	 * What holds the panels: the one column while they stand in one, and the
+	 * box they were spread into once they are.
+	 */
 	get element() {
-		return this.root;
+		return this.box === null || this.box === undefined ? this.root : this.box;
 	}
 
 	part(role) {
-		return this.root.querySelector(`[data-role="${role}"]`);
+		const which = `[data-role="${role}"]`;
+		const here = this.root.querySelector(which);
+		if (here !== null || this.areas === null) {
+			return here;
+		}
+		for (const area of Object.values(this.areas)) {
+			const found = area.querySelector(which);
+			if (found !== null) {
+				return found;
+			}
+		}
+		// And last the box itself: the strip of open maps hangs in the header,
+		// which is the page's area rather than one of the six.
+		return this.box === null || this.box === undefined ? null : this.box.querySelector(which);
+	}
+
+	/**
+	 * The tool bar, out of the list of commands. Nothing here knows what any
+	 * of the buttons do; a button is a command that said it wanted one.
+	 */
+	buildBar() {
+		const bar = this.root.querySelector('[data-role="bar"]');
+		const status = bar.firstElementChild;
+		for (const command of this.commands) {
+			if (command.bar !== true) {
+				continue;
+			}
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = "editor-button";
+			button.dataset.role = commandRole(command);
+			button.dataset.command = command.id;
+			button.dataset.icon = command.icon;
+			button.title = commandTitle(command, this.keysShown());
+			button.setAttribute("aria-label", command.label);
+			if (command.pressed !== undefined) {
+				button.setAttribute("aria-pressed", "false");
+			}
+			// The name beside the icon, for the shapes of box that have room
+			// for words. Only the modes carry one: they are the four that are
+			// a choice rather than an action, and a choice wants a name.
+			if (command.text === true) {
+				const name = document.createElement("span");
+				name.className = "editor-button-text";
+				name.textContent = command.label;
+				button.append(name);
+			}
+			button.addEventListener("click", () => this.run(command.id), { signal: this.stopping.signal });
+			bar.insertBefore(button, status);
+		}
+	}
+
+	/** Does one of the commands, by name, if it can be done at all. */
+	run(id) {
+		const command = this.commands.find(which => which.id === id);
+		if (command === undefined || (command.enabled !== undefined && !command.enabled(this))) {
+			return false;
+		}
+		// One place says no, rather than a hundred commands each remembering
+		// to ask: an editor that is only to be looked at does the things that
+		// are about looking and none of the rest.
+		if (this.readonly && command.safe !== true) {
+			return false;
+		}
+		command.run(this);
+		// A command that moves the view moves nothing else: the program draws
+		// the next frame by itself, but the marks over the map and the line at
+		// the bottom are drawn here and would keep saying the old numbers.
+		if (command.group === "View") {
+			this.refreshOverlay();
+		}
+		return true;
+	}
+
+	/** Every part of that name, wherever the panels stand. */
+	parts(role) {
+		const which = `[data-role="${role}"]`;
+		const found = [...this.root.querySelectorAll(which)];
+		if (this.areas !== null) {
+			for (const area of Object.values(this.areas)) {
+				found.push(...area.querySelectorAll(which));
+			}
+		}
+		if (found.length === 0 && this.box !== null && this.box !== undefined) {
+			found.push(...this.box.querySelectorAll(which));
+		}
+		return found;
+	}
+
+	/**
+	 * Moves the panels out of the one column and into the areas of a box -
+	 * the tree and the pictures to the left, the inspector to the right, the
+	 * envelopes and the history below, the bar above and the status line at
+	 * the bottom. Nothing about a panel changes; only where it stands.
+	 */
+	spread(areas, box) {
+		// Taken before anything moves: `part` looks in the column, and the
+		// column is about to be empty.
+		const bar = this.part("bar");
+		const status = this.part("status");
+		const hover = this.part("hover");
+		const panels = new Map(PANEL_PLACES.map(place => [place.role, this.part(place.role)]));
+		this.areas = areas;
+		// What now holds every panel, for whoever asks the panels where they
+		// are: with the panels spread over six areas there is no one node that
+		// is "the panels" any more - the box is.
+		this.box = box === undefined ? null : box;
+		areas.toolbar.append(bar);
+		// The status line: what is under the pointer on the left, what is being
+		// worked in next to it, and what just happened on the right.
+		const line = document.createElement("div");
+		line.className = "editor-statusline";
+		line.innerHTML = '<span data-role="status-layer"></span><span data-role="status-brush"></span><span data-role="status-zoom"></span>';
+		areas.status.append(hover, line, status);
+		for (const area of ["left", "right", "dock"]) {
+			const here = PANEL_PLACES.filter(place => place.area === area);
+			if (TABBED_AREAS[area] !== undefined) {
+				areas[area].append(this.makeTabs(area, here));
+			}
+			const body = document.createElement("div");
+			body.className = "editor-area-body";
+			for (const place of here) {
+				const panel = panels.get(place.role);
+				if (panel !== null && panel !== undefined) {
+					body.append(panel);
+				}
+			}
+			areas[area].append(body);
+		}
+		for (const area of ["left", "right", "dock"]) {
+			areas[area].append(this.makeGrip(area));
+		}
+		this.applyTabs();
+		if (this.box !== null) {
+			this.buildMaps(this.box);
+		}
+	}
+
+	/**
+	 * The handle between a column and the map, and above the dock.
+	 *
+	 * A column has a width that suits most maps; some maps and some people want
+	 * another one, and the plan says so. It is a separator rather than a
+	 * decoration, so the arrow keys move it as well - a handle only a pointer
+	 * can reach is a handle half the people cannot use.
+	 */
+	makeGrip(area) {
+		const limits = DRAG_LIMITS[area];
+		const sideways = area !== "dock";
+		const grip = document.createElement("div");
+		grip.className = `editor-grip editor-grip-${area}`;
+		grip.dataset.role = `grip-${area}`;
+		grip.tabIndex = 0;
+		grip.setAttribute("role", "separator");
+		grip.setAttribute("aria-orientation", sideways ? "vertical" : "horizontal");
+		grip.setAttribute("aria-label", `How wide the ${area} is`);
+		const now = () => {
+			const box = this.areas[area].getBoundingClientRect();
+			return Math.round(sideways ? box.width : box.height);
+		};
+		const put = size => {
+			const want = Math.max(limits.least, Math.min(limits.most, Math.round(size)));
+			this.dragged[area] = want;
+			this.applyDragged();
+			grip.setAttribute("aria-valuenow", String(want));
+			grip.setAttribute("aria-valuemin", String(limits.least));
+			grip.setAttribute("aria-valuemax", String(limits.most));
+		};
+		let from = null;
+		grip.addEventListener("pointerdown", event => {
+			from = { at: sideways ? event.clientX : event.clientY, was: now() };
+			grip.setPointerCapture(event.pointerId);
+			event.preventDefault();
+		}, { signal: this.stopping.signal });
+		grip.addEventListener("pointermove", event => {
+			if (from === null) {
+				return;
+			}
+			// Which way is bigger depends on which edge the handle is on: the
+			// right column grows leftwards and the dock grows upwards.
+			const went = (sideways ? event.clientX : event.clientY) - from.at;
+			put(from.was + (area === "left" ? went : -went));
+		}, { signal: this.stopping.signal });
+		const letGo = event => {
+			from = null;
+			try {
+				grip.releasePointerCapture(event.pointerId);
+			} catch (error) {
+				// It had already gone; there is nothing to let go of.
+			}
+		};
+		grip.addEventListener("pointerup", letGo, { signal: this.stopping.signal });
+		grip.addEventListener("pointercancel", letGo, { signal: this.stopping.signal });
+		grip.addEventListener("keydown", event => {
+			const step = { ArrowLeft: -16, ArrowRight: 16, ArrowUp: -16, ArrowDown: 16 }[event.key];
+			if (step === undefined) {
+				if (event.key === "Home") {
+					event.preventDefault();
+					event.stopPropagation();
+					this.dragged[area] = null;
+					this.applyDragged();
+				}
+				return;
+			}
+			event.preventDefault();
+			event.stopPropagation();
+			put(now() + (area === "left" ? step : -step));
+		}, { signal: this.stopping.signal });
+		// Two presses put it back where it was: the same as Home, for a pointer.
+		grip.addEventListener("dblclick", () => {
+			this.dragged[area] = null;
+			this.applyDragged();
+		}, { signal: this.stopping.signal });
+		return grip;
+	}
+
+	/**
+	 * Puts the dragged sizes on, where this shape of box has a size to put
+	 * them on at all.
+	 *
+	 * A drawer lies over the map at a width of its own and a shut dock is its
+	 * names and nothing else; in both the stylesheet is right and a number
+	 * somebody dragged a while ago is not.
+	 */
+	applyDragged() {
+		if (this.areas === null) {
+			return;
+		}
+		for (const area of ["left", "right", "dock"]) {
+			const box = this.areas[area];
+			if (box === undefined) {
+				continue;
+			}
+			const column = area === "dock"
+				? this.dockOpen
+				: this.shape === null || this.shape[area] === "column";
+			const size = this.dragged[area];
+			if (!column || size === null) {
+				box.style.width = "";
+				box.style.height = "";
+				continue;
+			}
+			if (area === "dock") {
+				box.style.height = `${size}px`;
+			} else {
+				box.style.width = `${size}px`;
+			}
+		}
+	}
+
+	// The strip of names above an area that shows one panel at a time.
+	makeTabs(area, places) {
+		const strip = document.createElement("div");
+		strip.className = "editor-tabs";
+		strip.dataset.role = `${TABBED_AREAS[area]}-tabs`;
+		strip.setAttribute("role", "tablist");
+		for (const place of places) {
+			if (place.tab === undefined) {
+				continue;
+			}
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = "editor-tab";
+			button.dataset.role = `${TABBED_AREAS[area]}-tab`;
+			button.dataset.tab = place.tab;
+			button.setAttribute("role", "tab");
+			button.textContent = place.name;
+			button.addEventListener("click", () => this.showTab(area, place.tab), { signal: this.stopping.signal });
+			strip.append(button);
+		}
+		if (area === "dock") {
+			const toggle = document.createElement("button");
+			toggle.type = "button";
+			toggle.className = "editor-tab editor-dock-toggle";
+			toggle.dataset.role = "dock-toggle";
+			toggle.title = "Open or close the strip at the bottom";
+			toggle.addEventListener("click", () => {
+				this.dockOpen = !this.dockOpen;
+				this.applyTabs();
+			}, { signal: this.stopping.signal });
+			strip.append(toggle);
+		}
+		return strip;
+	}
+
+	/**
+	 * The two sides of the tile panel: the tileset one paints with, and the
+	 * rules that paint by themselves. They are one panel with two tabs rather
+	 * than two panels, because both are about the same layer and only one of
+	 * them is wanted at a time.
+	 */
+	applyTilesTab() {
+		const there = this.automapThere === true;
+		if (!there && this.tab.tiles === "automap") {
+			this.tab.tiles = "tiles";
+		}
+		// The same with the inspector's own two: with room they stand above
+		// each other, and the strip that chose between them goes away.
+		const roomy = this.shape !== null && this.shape.stack === true;
+		const body = this.part("tiles-body");
+		if (body !== null) {
+			body.hidden = !roomy && this.tab.tiles !== "tiles";
+		}
+		const automap = this.part("automap");
+		if (automap !== null) {
+			automap.hidden = !there || (!roomy && this.tab.tiles !== "automap");
+		}
+		for (const button of this.parts("tiles-tab")) {
+			button.hidden = roomy;
+			button.disabled = button.dataset.tab === "automap" && !there;
+			button.setAttribute("aria-selected", button.dataset.tab === this.tab.tiles ? "true" : "false");
+		}
+	}
+
+	/** Puts one of an area's panels in front, and opens the area if it was shut. */
+	showTab(area, tab) {
+		this.tab[area] = tab;
+		if (area === "dock") {
+			this.dockOpen = true;
+		}
+		this.applyTabs();
+	}
+
+	/**
+	 * Which panel each tabbed area shows. A panel with nothing to show - no
+	 * map, a layer whose picture has no rules - makes its tab grey rather than
+	 * taking it away, so that the strip does not change shape underfoot; and
+	 * if the one in front is that panel, the area falls back to the first that
+	 * has something.
+	 */
+	applyTabs() {
+		if (this.areas === null) {
+			return;
+		}
+		for (const area of Object.keys(TABBED_AREAS)) {
+			const here = PANEL_PLACES.filter(place => place.area === area && place.tab !== undefined);
+			const has = place => this.panelShown.get(place.role) !== false;
+			if (!here.some(place => place.tab === this.tab[area] && has(place))) {
+				const first = here.find(has);
+				this.tab[area] = first === undefined ? null : first.tab;
+			}
+			// With room enough, the map's parts stand above each other instead
+			// of behind each other: the layer tree is always there, and one
+			// of the other three is under it. A tab that is always in front
+			// is not a tab, so it leaves the strip.
+			const roomy = this.shape !== null && this.shape.stack === true;
+			const always = !roomy ? null
+				: area === "left" ? "layers"
+					: area === "dock" ? "envelopes" : null;
+			if (always !== null && this.tab[area] === always) {
+				const next = here.find(place => place.tab !== always && has(place));
+				this.tab[area] = next === undefined ? always : next.tab;
+			}
+			for (const place of here) {
+				const panel = this.part(place.role);
+				const shown = has(place) && (place.tab === this.tab[area] || place.tab === always);
+				if (panel !== null) {
+					panel.hidden = !shown;
+					panel.classList.toggle("editor-panel-always", place.tab === always);
+				}
+				const button = this.areas[area].querySelector(`[data-tab="${place.tab}"]`);
+				if (button !== null) {
+					button.hidden = place.tab === always;
+					button.disabled = !has(place);
+					button.setAttribute("aria-selected", place.tab === this.tab[area] ? "true" : "false");
+				}
+			}
+		}
+		const dock = this.areas.dock;
+		if (dock !== undefined) {
+			dock.classList.toggle("editor-dock-shut", !this.dockOpen);
+			this.applyDragged();
+			const toggle = dock.querySelector('[data-role="dock-toggle"]');
+			if (toggle !== null) {
+				toggle.setAttribute("aria-expanded", this.dockOpen ? "true" : "false");
+				toggle.textContent = this.dockOpen ? "\u25be" : "\u25b4";
+			}
+		}
+	}
+
+	/**
+	 * Whether a panel has anything to show. Said here rather than by setting
+	 * `hidden` straight away, because in a tabbed area the tab has a say too.
+	 */
+	showPanel(role, show) {
+		this.panelShown.set(role, show);
+		const panel = this.part(role);
+		if (panel !== null) {
+			panel.hidden = !show || !this.tabInFront(role);
+		}
+	}
+
+	// Whether the tab a panel stands under is the one in front. A panel in an
+	// area without tabs is always in front.
+	tabInFront(role) {
+		if (this.areas === null) {
+			return true;
+		}
+		const place = PANEL_PLACES.find(where => where.role === role);
+		if (place === undefined || place.tab === undefined) {
+			return true;
+		}
+		return this.tab[place.area] === place.tab;
 	}
 
 	destroy() {
@@ -1376,48 +3529,32 @@ class CEditorPanels {
 			this.overlay.remove();
 			this.overlay = null;
 		}
+		for (const floating of [this.picker, this.chooser, this.zoomChip, this.over]) {
+			if (floating !== null && floating !== undefined) {
+				floating.remove();
+			}
+		}
+		this.picker = null;
+		this.chooser = null;
+		this.over = null;
+		this.palette = null;
+		this.menu = null;
+		this.context = null;
+		this.dialog = null;
 		this.root.remove();
 	}
 
 	wire() {
 		const signal = this.stopping.signal;
 		const on = (role, handler) => this.part(role).addEventListener("click", handler, { signal: signal });
-		on("undo", () => this.stepHistory(() => this.editor.undo()));
-		on("redo", () => this.stepHistory(() => this.editor.redo()));
-		on("fit", () => this.editor.fit());
-		on("save", () => this.editor.save());
-		on("detail", () => {
-			this.editor.highDetail(!this.editor.highDetail());
-			this.refreshBar();
-		});
-		on("entities", () => {
-			this.editor.entities(this.editor.entities() > 0 ? 0 : 100);
-			this.refreshBar();
-		});
-		on("animate", () => {
-			this.editor.animate(!this.editor.animate());
-			this.refreshBar();
-		});
-		on("grid", () => {
-			this.editor.grid(this.editor.grid() > 0 ? 0 : GRID_SPACING);
-			this.refreshBar();
-		});
-		// Off, then a game, then a menu background, then off again: three
-		// states on one button, because the two on-states are the same
-		// question asked at two zooms.
-		on("proof", () => {
-			this.proof = this.proof === "off" ? "game" : (this.proof === "game" ? "menu" : "off");
-			this.refreshBar();
-			this.refreshOverlay();
-		});
 		this.wireArt();
 		this.wireType();
-		on("add-group", () => this.change(() => this.editor.apply({ op: "group.add", name: "group" })));
-		on("add-layer", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "tiles" })));
-		on("add-quads", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "quads" })));
-		on("flip-x", () => { this.editor.flipBrushX(); this.refreshTiles(); });
-		on("flip-y", () => { this.editor.flipBrushY(); this.refreshTiles(); });
-		on("rotate", () => { this.editor.rotateBrush(); this.refreshTiles(); });
+		on("add-group", () => this.run("layer.addGroup"));
+		on("add-layer", () => this.run("layer.addTiles"));
+		on("add-quads", () => this.run("layer.addQuads"));
+		on("flip-x", () => this.run("brush.flipX"));
+		on("flip-y", () => this.run("brush.flipY"));
+		on("rotate", () => this.run("brush.rotate"));
 		this.wireTileset();
 		this.wireAutomap();
 		this.wireConstruct();
@@ -1429,23 +3566,33 @@ class CEditorPanels {
 		this.wireQuads();
 		this.wireImages();
 		this.wireInfo();
-		on("delete", () => this.deleteSelected());
-		on("up", () => this.moveSelected(-1));
-		on("down", () => this.moveSelected(1));
+		this.wireContextMenus();
+		this.wireClickAway();
+		this.wireDrawers();
+		this.wireTips();
+		on("delete", () => this.run("layer.delete"));
+		on("up", () => this.run("layer.up"));
+		on("down", () => this.run("layer.down"));
 
 		// The program says when the map changed; nothing here asks it in a
 		// loop the way the viewer's buttons do, because an editor calls.
 		for (const type of ["document", "loaded", "closed", "saved", "error"]) {
 			this.editor.addEventListener(type, event => this.onProgram(type, event.detail), { signal: signal });
 		}
-		document.addEventListener("keydown", event => this.onKey(event), { signal: signal });
+		// Whoever put the panels on the page may hand out the keyboard
+		// themselves - `<ddnet-editor>` does, so that two editors on one page
+		// do not both answer to the same key.
+		if (this.keys) {
+			document.addEventListener("keydown", event => this.onKey(event), { signal: signal });
+			document.addEventListener("keyup", event => this.onKeyUp(event), { signal: signal });
+		}
 	}
 
 	onProgram(type, detail) {
 		if (type === "saved") {
 			this.say("Saved");
 		} else if (type === "error") {
-			this.say(`Failed: ${detail && detail.what ? detail.what : "something"}`);
+			this.say(`Failed: ${detail && detail.what ? detail.what : "something"}`, "error");
 		} else if (type === "loaded") {
 			this.selection = { group: 0, layer: -1 };
 			this.collapsed.clear();
@@ -1456,65 +3603,202 @@ class CEditorPanels {
 	// The keyboard belongs to whoever has the focus: a name being typed into
 	// a field is not an undo, whatever letters are in it.
 	onKey(event) {
+		// Whoever struck it has a keyboard, and from now on the tooltips and
+		// the palette are allowed to name the shortcuts. Before that they are
+		// noise on a tablet: a key nobody can press is not a hint.
+		this.sawKey = true;
+		const target = event.target;
+		if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+			// Escape is the way out of a field, and the only key a field
+			// hands on.
+			if (event.key !== "Escape") {
+				return;
+			}
+			target.blur();
+		}
+		const command = this.keys_.get(keyName(event));
+		if (command === undefined) {
+			return;
+		}
+		// A command that only belongs to the map leaves the key alone
+		// everywhere else - Tab walks through the buttons there.
+		if (command.where === "map" && event.target !== this.editor.canvas) {
+			return;
+		}
+		// A command that cannot be done now still takes the key: a disabled
+		// Ctrl+S must not reach the browser's own save dialogue.
+		event.preventDefault();
+		this.run(command.id);
+	}
+
+	/**
+	 * The one key that means something while it is held rather than when it
+	 * is struck: the big tile chooser is open for as long as the space bar is
+	 * down, unless somebody pinned it with Ctrl and space.
+	 */
+	onKeyUp(event) {
+		if (keyName(event) !== "Space" || this.pickerPinned) {
+			return;
+		}
 		const target = event.target;
 		if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
 			return;
 		}
-		// The brush, which is what an editor's keyboard is mostly for: turn it
-		// over, turn it round, and ten slots to put one away in.
-		if (!event.ctrlKey && !event.metaKey && !event.altKey) {
-			const key = event.key.toLowerCase();
-			if (key === "x" || key === "y" || key === "r") {
-				if (key === "x") {
-					this.editor.flipBrushX();
-				} else if (key === "y") {
-					this.editor.flipBrushY();
-				} else {
-					this.editor.rotateBrush();
-				}
-				this.refreshTiles();
-				event.preventDefault();
-				return;
-			}
-			if (key === "g") {
-				this.editor.grid(this.editor.grid() > 0 ? 0 : GRID_SPACING);
-				this.refreshBar();
-				event.preventDefault();
-				return;
-			}
-			if (key === "p") {
-				this.proof = this.proof === "off" ? "game" : (this.proof === "game" ? "menu" : "off");
-				this.refreshBar();
-				this.refreshOverlay();
-				event.preventDefault();
-				return;
-			}
-			if (key >= "0" && key <= "9") {
-				const slot = Number.parseInt(key, 10);
-				if (event.shiftKey) {
-					this.editor.storeBrush(slot);
-				} else {
-					this.editor.useBrush(slot);
-				}
-				this.refreshTiles();
-				event.preventDefault();
-				return;
-			}
+		this.showPicker(false);
+	}
+
+	/**
+	 * Opens the file dialogue for a map. The element around the panels keeps
+	 * the input, because a page may have put the panels somewhere without one.
+	 */
+	openMap() {
+		if (this.box !== null && this.box !== undefined && typeof this.box.openFile === "function") {
+			this.box.openFile();
+			return;
 		}
-		if (event.ctrlKey || event.metaKey) {
-			if (event.key === "z" && !event.shiftKey) {
-				this.stepHistory(() => this.editor.undo());
-			} else if (event.key === "y" || (event.key === "z" && event.shiftKey)) {
-				this.stepHistory(() => this.editor.redo());
-			} else {
-				return;
-			}
-			event.preventDefault();
+		this.say("This page opens maps its own way", "error");
+	}
+
+	/** The layer before or after the one that is selected, over all groups. */
+	stepSelection(step) {
+		if (this.map === null) {
+			return;
+		}
+		const all = [];
+		this.map.groups.forEach((group, index) => {
+			all.push({ group: index, layer: -1 });
+			group.layers.forEach((layer, which) => all.push({ group: index, layer: which }));
+		});
+		const now = all.findIndex(where => where.group === this.selection.group && where.layer === this.selection.layer);
+		const next = all[Math.min(all.length - 1, Math.max(0, (now < 0 ? 0 : now) + step))];
+		if (next !== undefined) {
+			this.selection = next;
+			this.refresh();
 		}
 	}
 
-	say(text) {
+	/**
+	 * Takes away whatever is picked - a quad, a sound source, a line of the
+	 * server settings. The layer itself has a key of its own, because losing a
+	 * layer to a stray Delete is a bad afternoon.
+	 */
+	deletePicked() {
+		const layer = this.selectedLayer();
+		const kind = layer === null ? null : layer.type;
+		if (kind === "quads" && this.quad >= 0) {
+			this.part("delete-quad").click();
+		} else if (kind === "sounds" && this.source >= 0) {
+			this.part("delete-source").click();
+		} else if (this.setting >= 0 && this.tab.dock === "settings") {
+			this.part("delete-setting").click();
+		} else {
+			this.say("Nothing picked - Ctrl+Delete takes the layer");
+		}
+	}
+
+	/**
+	 * One step back out of whatever is open: a sub-mode first, then the
+	 * focus, which always ends up on the map.
+	 */
+	escape() {
+		if (this.dialog !== null) {
+			this.closeDialog();
+			return;
+		}
+		if (this.context !== null) {
+			this.closeContext();
+			return;
+		}
+		if (this.menu !== null && !this.menu.hidden) {
+			this.showMenu(false);
+			return;
+		}
+		if (this.palette !== null && !this.palette.hidden) {
+			this.showPalette(false);
+			return;
+		}
+		if (this.carving !== null) {
+			this.knife();
+			return;
+		}
+		const canvas = this.editor.canvas;
+		if (canvas !== null && canvas !== undefined) {
+			canvas.focus();
+		}
+	}
+
+	/** Whether one of the areas beside the map is shown. */
+	areaShown(area) {
+		return this.areas !== null && !this.areas[area].hidden;
+	}
+
+	showArea(area, on) {
+		if (this.areas === null) {
+			return;
+		}
+		this.areas[area].hidden = !on;
+		this.refreshBar();
+	}
+
+
+	/**
+	 * A word about what just happened, over the map.
+	 *
+	 * The status line is where one looks for it afterwards; a note over the
+	 * map is what one sees without looking, and the two say the same thing.
+	 * A note goes away by itself after four seconds - except one about
+	 * something that went wrong, which stays until it is dismissed, because a
+	 * mistake that vanished before it was read is a mistake nobody knows about.
+	 */
+	tell(text, kind) {
+		const home = this.floatHome === null || this.floatHome === undefined
+			? this.overlayHome() : this.floatHome;
+		if (home === null || !text) {
+			return null;
+		}
+		if (this.toasts === null) {
+			this.toasts = document.createElement("div");
+			this.toasts.className = "editor-toasts";
+			this.toasts.dataset.role = "toasts";
+			home.append(this.toasts);
+		}
+		const note = document.createElement("div");
+		note.className = "editor-toast";
+		note.dataset.role = "toast";
+		note.dataset.kind = kind === "error" ? "error" : "note";
+		// What went wrong interrupts; what merely happened does not.
+		note.setAttribute("role", kind === "error" ? "alert" : "status");
+		const what = document.createElement("span");
+		what.textContent = text;
+		note.append(what);
+		if (kind === "error") {
+			const away = document.createElement("button");
+			away.type = "button";
+			away.className = "editor-toast-close";
+			away.dataset.role = "toast-close";
+			away.textContent = "\u00d7";
+			away.setAttribute("aria-label", "Dismiss");
+			away.addEventListener("click", () => note.remove(), { signal: this.stopping.signal });
+			note.append(away);
+		} else {
+			setTimeout(() => note.remove(), TOAST_MS);
+		}
+		this.toasts.append(note);
+		// Never more than a handful: a stack that grew without end would cover
+		// the map it is telling about.
+		while (this.toasts.children.length > TOAST_MOST) {
+			// A note would have gone by itself in a moment anyway; something
+			// that went wrong is still waiting to be read.
+			const oldest = this.toasts.querySelector('[data-kind="note"]')
+				|| this.toasts.firstElementChild;
+			oldest.remove();
+		}
+		return note;
+	}
+
+	say(text, kind) {
 		this.part("status").textContent = text || "";
+		this.tell(text, kind);
 	}
 
 	// Does something that changes the map and then shows what came of it. The
@@ -1529,7 +3813,7 @@ class CEditorPanels {
 		const where = { group: this.selection.group, layer: this.selection.layer };
 		const answer = work();
 		if (answer && answer.ok === false) {
-			this.say(answer.error || "Refused");
+			this.say(answer.error || "Refused", "error");
 		}
 		const after = this.editor.history();
 		// Only a change that wrote an entry leaves a snapshot. Stepping
@@ -1707,6 +3991,18 @@ class CEditorPanels {
 
 	/** Builds all three panels again out of what the program says now. */
 	refresh() {
+		// A map can come to the front without anybody going through `showMap`:
+		// making one and opening one both do it. At this moment what the page
+		// knows is still about the map that *was* in front, so this is where
+		// it is put away - a moment later `clampSelection` will have moved the
+		// selection to fit the new map and it would be gone.
+		const inFront = this.editor.map;
+		if (this.lastMap !== inFront) {
+			if (this.lastMap !== null && this.lastMap >= 0 && this.editor.maps.includes(this.lastMap)) {
+				this.rememberMap(this.lastMap);
+			}
+			this.lastMap = inFront;
+		}
 		const map = this.editor.structure();
 		this.map = map;
 		this.clampSelection();
@@ -1721,6 +4017,50 @@ class CEditorPanels {
 		this.refreshEnvelopes();
 		this.refreshInfo();
 		this.refreshHistory();
+		this.refreshStatus();
+		// Which panel each tabbed area shows can only be answered once every
+		// panel has said whether it has anything to show.
+		this.applyTabs();
+		// And the rows exist now, so they can be given their menus.
+		this.addMoreButtons();
+		this.refreshMaps();
+	}
+
+	/**
+	 * What each open map is costing, in the panel that is about the map.
+	 *
+	 * Every map keeps its own history, and a history keeps whole versions of
+	 * the map - so a second map open is a second map's worth of memory, and
+	 * somebody who opened four should be able to see that without guessing.
+	 */
+	refreshMemory() {
+		const list = this.part("memory");
+		if (list === null) {
+			return;
+		}
+		list.textContent = "";
+		const now = this.editor.map;
+		for (const id of this.editor.maps) {
+			const history = this.editor.history(id);
+			const row = document.createElement("li");
+			row.className = "editor-memory-row";
+			row.dataset.role = "memory-row";
+			row.dataset.map = String(id);
+			if (id === now) {
+				row.classList.add("editor-selected");
+			}
+			const name = document.createElement("span");
+			name.textContent = this.editor.name(id) || "untitled";
+			const size = document.createElement("span");
+			size.className = "editor-memory-size";
+			size.dataset.role = "memory-size";
+			size.textContent = history === null ? "" : `${(history.bytes / (1024 * 1024)).toFixed(1)} MiB`;
+			row.append(name, size);
+			if (history !== null) {
+				row.title = `${history.entries.length} steps, of ${(history.maxBytes / (1024 * 1024)).toFixed(0)} MiB allowed`;
+			}
+			list.append(row);
+		}
 	}
 
 	clampSelection() {
@@ -1733,18 +4073,80 @@ class CEditorPanels {
 		this.selection = { group: group, layer: Math.min(this.selection.layer, layers - 1) };
 	}
 
+	/** What the line along the bottom says about where the work is. */
+	refreshStatus() {
+		const say = (role, text) => {
+			const part = this.part(role);
+			if (part !== null) {
+				part.textContent = text;
+			}
+		};
+		const layer = this.selectedLayer();
+		const where = this.selection;
+		const group = this.map === null || where.group >= this.map.groups.length ? null : this.map.groups[where.group];
+		const groupName = group === null ? "" : (group.name || `Group ${where.group}`);
+		say("status-layer", layer === null ? groupName : `${groupName} \u203a ${layer.name || layer.kind}`);
+		const size = this.editor.brushSize();
+		say("status-brush", size === null || size.width === 0 ? "" : `Brush ${size.width} \u00d7 ${size.height}`);
+		const zoom = this.editor.zoom();
+		const percent = zoom === null ? "" : `${Math.round(100 / zoom)} %`;
+		say("status-zoom", percent);
+		if (this.zoomChip !== null && this.zoomChip !== undefined) {
+			this.zoomChip.querySelector('[data-role="zoom-level"]').textContent = percent;
+		}
+	}
+
+	/**
+	 * Whether a shortcut belongs beside a name.
+	 *
+	 * With a pointer, yes: there is a keyboard beside it. With a finger, only
+	 * once one has been used - an iPad shows `Ctrl+Z` to nobody.
+	 */
+	keysShown() {
+		return this.sawKey || !this.finger();
+	}
+
+	/** The shortcut of a command as it should be written here, if at all. */
+	keyText(command) {
+		return !this.keysShown() || command.keys === undefined || command.keys.length === 0
+			? "" : keyLabel(command.keys[0]);
+	}
+
+	/** The tool bar's button for a command, by the command's own name. */
+	barButton(command) {
+		const bar = this.part("bar");
+		return bar === null ? null : bar.querySelector(`[data-command="${command.id}"]`);
+	}
+
 	refreshBar() {
-		const history = this.editor.history();
-		const set = (role, on) => this.part(role).setAttribute("aria-pressed", on ? "true" : "false");
-		this.part("undo").disabled = !(history && history.canUndo);
-		this.part("redo").disabled = !(history && history.canRedo);
-		set("detail", this.editor.highDetail());
-		set("entities", this.editor.entities() > 0);
-		set("animate", this.editor.animate());
-		set("grid", this.editor.grid() > 0);
+		for (const command of this.commands) {
+			if (command.bar !== true) {
+				continue;
+			}
+			// By the command's own name, not by the role its button carries:
+			// two commands can end up with the same role - `palette.open` and
+			// `menu.open` are both "open" - and then one of them would be
+			// refreshed twice and the other never.
+			const button = this.barButton(command);
+			if (button === null) {
+				continue;
+			}
+			button.hidden = !this.barShows(command);
+			button.disabled = (command.enabled !== undefined && !command.enabled(this))
+				|| (this.readonly && command.safe !== true);
+			// The name is written again rather than once at the start: whether
+			// the shortcut belongs beside it is not known until the first key.
+			button.title = commandTitle(command, this.keysShown());
+			if (command.pressed !== undefined) {
+				button.setAttribute("aria-pressed", command.pressed(this) ? "true" : "false");
+			}
+		}
+		// Proof mode has three states on one button, and which of the two
+		// on-states it is in is not a thing `aria-pressed` can say.
 		const proof = this.part("proof");
-		proof.setAttribute("aria-pressed", this.proof === "off" ? "false" : "true");
-		proof.dataset.proof = this.proof;
+		if (proof !== null) {
+			proof.dataset.proof = this.proof;
+		}
 	}
 
 	refreshTree() {
@@ -1832,6 +4234,7 @@ class CEditorPanels {
 			}
 			tree.append(item);
 		});
+		this.addMoreButtons();
 	}
 
 	refreshProps() {
@@ -1904,7 +4307,7 @@ class CEditorPanels {
 		const send = value => {
 			const answer = this.editor.apply(command(value));
 			if (answer && answer.ok === false) {
-				this.say(answer.error || "Refused");
+				this.say(answer.error || "Refused", "error");
 			}
 		};
 		// What is being changed, for the history to fold a run of steps into
@@ -2004,48 +4407,54 @@ class CEditorPanels {
 	// it. The picture is the page's doing rather than the program's: it is a
 	// PNG that the map names, the browser reads PNGs, and a tileset drawn on
 	// a canvas costs the program nothing.
-	wireTileset() {
-		const canvas = this.part("tileset");
-		let from = null;
-		// A refused capture must not take the pick with it; see the canvas
-		// pointer, which holds on the same way.
-		const capture = (pointerId, hold) => {
-			try {
-				if (hold) {
-					canvas.setPointerCapture(pointerId);
+	/**
+	 * The ten places a brush can be put away in. A digit fetches one, shift
+	 * and a digit puts the brush there - the same as the keys, said where
+	 * somebody can see that there are ten of them.
+	 */
+	buildSlots() {
+		const strip = this.part("slots");
+		if (strip === null || strip.childElementCount > 0) {
+			return;
+		}
+		for (let slot = 0; slot < 10; slot++) {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = "editor-slot";
+			button.dataset.role = "slot";
+			button.dataset.slot = String(slot);
+			button.textContent = String(slot);
+			button.title = `Brush ${slot} (${slot}, shift and ${slot} to put one here)`;
+			button.addEventListener("click", event => {
+				if (event.shiftKey) {
+					this.editor.storeBrush(slot);
+					this.slotsUsed.add(slot);
 				} else {
-					canvas.releasePointerCapture(pointerId);
+					this.editor.useBrush(slot);
 				}
-			} catch (error) {
-				// The pick still works; it just stops at the edge.
-			}
-		};
-		const at = event => {
-			const box = canvas.getBoundingClientRect();
-			return {
-				x: Math.min(TILESET_SIDE - 1, Math.max(0, Math.floor((event.clientX - box.left) / box.width * TILESET_SIDE))),
-				y: Math.min(TILESET_SIDE - 1, Math.max(0, Math.floor((event.clientY - box.top) / box.height * TILESET_SIDE))),
-			};
-		};
-		canvas.addEventListener("pointerdown", event => {
-			from = at(event);
-			capture(event.pointerId, true);
-			this.pick(from, from);
-		}, { signal: this.stopping.signal });
-		canvas.addEventListener("pointermove", event => {
-			if (from !== null) {
-				this.pick(from, at(event));
-			}
-		}, { signal: this.stopping.signal });
-		const release = event => {
-			if (from !== null) {
-				this.pick(from, at(event));
-				from = null;
-				capture(event.pointerId, false);
-			}
-		};
-		canvas.addEventListener("pointerup", release, { signal: this.stopping.signal });
-		canvas.addEventListener("pointercancel", () => { from = null; }, { signal: this.stopping.signal });
+				this.refreshTiles();
+			}, { signal: this.stopping.signal });
+			strip.append(button);
+		}
+	}
+
+	refreshSlots() {
+		for (const button of this.parts("slot")) {
+			button.setAttribute("aria-pressed", this.slotsUsed.has(Number(button.dataset.slot)) ? "true" : "false");
+		}
+	}
+
+	wireTileset() {
+		this.buildSlots();
+		// The two tabs over the tileset: what is painted with, and what paints
+		// by itself.
+		for (const button of this.parts("tiles-tab")) {
+			button.addEventListener("click", () => {
+				this.tab.tiles = button.dataset.tab;
+				this.applyTilesTab();
+			}, { signal: this.stopping.signal });
+		}
+		this.wirePick(this.part("tileset"));
 	}
 
 	// Takes the rectangle between two tiles of the tileset into the brush.
@@ -2065,10 +4474,9 @@ class CEditorPanels {
 	}
 
 	refreshTiles() {
-		const panel = this.part("tiles-panel");
 		const layer = this.selectedLayer();
-		panel.hidden = layer === null || layer.type !== "tiles";
-		if (panel.hidden) {
+		this.showPanel("tiles-panel", !(layer === null || layer.type !== "tiles"));
+		if (!this.panelShown.get("tiles-panel")) {
 			return;
 		}
 		const size = this.editor.brushSize();
@@ -2104,7 +4512,9 @@ class CEditorPanels {
 				picture.src = source;
 			}
 		}
+		this.refreshSlots();
 		this.paintTileset();
+		this.paintPicker();
 	}
 
 	/**
@@ -2188,7 +4598,7 @@ class CEditorPanels {
 		const checkpoint = layer.kind === "tele" && this.editor.brushCheckpoint();
 		const free = this.editor.nextFreeNumber(where.group, where.layer, checkpoint);
 		if (free < 0) {
-			this.say("Every number is taken");
+			this.say("Every number is taken", "error");
 			return;
 		}
 		this.editor.numbers({ number: free });
@@ -2310,9 +4720,9 @@ class CEditorPanels {
 	}
 
 	refreshAutomap(layer) {
-		const box = this.part("automap");
 		const name = this.rulesNameFor(layer);
-		box.hidden = name === null || this.rules.get(name) === null;
+		this.automapThere = !(name === null || this.rules.get(name) === null);
+		this.applyTilesTab();
 		if (name === null) {
 			return;
 		}
@@ -2340,7 +4750,10 @@ class CEditorPanels {
 			return;
 		}
 		const configs = this.editor.ruleConfigs(name);
-		box.hidden = configs.length === 0;
+		// A rules file that holds no configuration is a rules file with
+		// nothing to run, so the tab for it goes grey.
+		this.automapThere = configs.length > 0;
+		this.applyTilesTab();
 		const chooser = this.part("automap-config");
 		if (chooser.dataset.rules !== name) {
 			chooser.dataset.rules = name;
@@ -2377,8 +4790,8 @@ class CEditorPanels {
 		this.part("automap-auto").checked = layer.automapperAutomatic === true;
 	}
 
-	paintTileset() {
-		const canvas = this.part("tileset");
+	paintTileset(into) {
+		const canvas = into === undefined ? this.part("tileset") : into;
 		const paint = canvas.getContext("2d");
 		const side = canvas.width / TILESET_SIDE;
 		paint.clearRect(0, 0, canvas.width, canvas.height);
@@ -2541,10 +4954,9 @@ class CEditorPanels {
 	}
 
 	refreshQuads() {
-		const panel = this.part("quads-panel");
 		const layer = this.selectedLayer();
-		panel.hidden = layer === null || layer.type !== "quads";
-		if (panel.hidden) {
+		this.showPanel("quads-panel", !(layer === null || layer.type !== "quads"));
+		if (!this.panelShown.get("quads-panel")) {
 			this.quad = -1;
 			this.editor.showQuad();
 			return;
@@ -2625,10 +5037,9 @@ class CEditorPanels {
 	}
 
 	refreshSounds() {
-		const panel = this.part("sounds-panel");
 		const layer = this.selectedLayer();
-		panel.hidden = layer === null || layer.type !== "sounds";
-		if (panel.hidden) {
+		this.showPanel("sounds-panel", !(layer === null || layer.type !== "sounds"));
+		if (!this.panelShown.get("sounds-panel")) {
 			this.source = -1;
 			this.refreshOverlay();
 			return;
@@ -2698,6 +5109,9 @@ class CEditorPanels {
 	 * the first time one of the two changed.
 	 */
 	refreshOverlay(known) {
+		// Panning and zooming change nothing about the map, but they do change
+		// what the line at the bottom says about the view.
+		this.refreshStatus();
 		const overlay = this.overlay;
 		if (overlay === null) {
 			return;
@@ -2843,6 +5257,13 @@ class CEditorPanels {
 	 */
 	hoverAt(tile) {
 		const readout = this.part("hover");
+		// The same coordinate at the top of the inspector, where the hand is.
+		// On a wide screen the line at the bottom is eighty centimetres from
+		// what the hand is doing; the stylesheet shows it only there.
+		const here = this.part("here");
+		if (here !== null) {
+			here.textContent = tile === null ? "" : `${tile.x}, ${tile.y}`;
+		}
 		if (tile === null || this.map === null) {
 			readout.textContent = "";
 			return;
@@ -2858,9 +5279,15 @@ class CEditorPanels {
 			readout.textContent = `${tile.x}, ${tile.y}`;
 			return;
 		}
+		if (this.tileInfo === "off") {
+			readout.textContent = `${tile.x}, ${tile.y}`;
+			readout.title = "";
+			return;
+		}
 		const hex = index.toString(16).toUpperCase().padStart(2, "0");
+		const number = this.tileInfo === "hex" ? `${index} (0x${hex})` : String(index);
 		const said = this.editor.explain(where.group, where.layer, index);
-		readout.textContent = `${tile.x}, ${tile.y} · ${index} (0x${hex})${said === "" ? "" : ` · ${said}`}`;
+		readout.textContent = `${tile.x}, ${tile.y} · ${number}${said === "" ? "" : ` · ${said}`}`;
 		readout.title = said;
 	}
 
@@ -3078,10 +5505,9 @@ class CEditorPanels {
 	}
 
 	refreshRules(layer) {
-		const panel = this.part("rules-panel");
 		const name = this.rulesNameFor(layer);
-		panel.hidden = name === null || this.rules.get(name) === null;
-		if (panel.hidden || this.rules.get(name) === undefined) {
+		this.showPanel("rules-panel", !(name === null || this.rules.get(name) === null));
+		if (!this.panelShown.get("rules-panel") || this.rules.get(name) === undefined) {
 			return;
 		}
 		const text = this.part("rules-text");
@@ -3131,7 +5557,7 @@ class CEditorPanels {
 			}
 			const pixels = await pixelsOf(chosen);
 			if (pixels === null) {
-				this.say("That picture could not be read");
+				this.say("That picture could not be read", "error");
 				return;
 			}
 			const name = chosen.name.replace(/\.[^.]*$/, "");
@@ -3151,12 +5577,13 @@ class CEditorPanels {
 					return;
 				}
 				const group = this.change(() => this.editor.addQuadArt(name, pixels, options));
-				this.say(group >= 0 ? `${name} as quads` : "That picture was refused");
+				this.say(group >= 0 ? `${name} as quads` : "That picture was refused",
+					group >= 0 ? "note" : "error");
 			} else {
 				const colors = this.editor.artColors(pixels);
 				const sheets = Math.max(1, Math.ceil(colors / (ART_PALETTE_SIZE - 1)));
 				if (colors === 0) {
-					this.say("Nothing in that picture is opaque");
+					this.say("Nothing in that picture is opaque", "error");
 					return;
 				}
 				if (sheets > 1 && !confirm(
@@ -3166,7 +5593,7 @@ class CEditorPanels {
 				const group = this.change(() => this.editor.addTileArt(name, pixels));
 				this.say(group >= 0
 					? `${name} as tiles: ${colors} ${colors === 1 ? "colour" : "colours"}${sheets > 1 ? ` in ${sheets} layers` : ""}`
-					: "That picture was refused");
+					: "That picture was refused", group >= 0 ? "note" : "error");
 			}
 			this.refresh();
 		}, { signal: signal });
@@ -3205,7 +5632,7 @@ class CEditorPanels {
 				this.say(`${answer.tiles} ${answer.tiles === 1 ? "tile" : "tiles"} at ${at.x}, ${at.y}`);
 				field.value = "";
 			} else {
-				this.say(answer && answer.error ? answer.error : "That text was refused");
+				this.say(answer && answer.error ? answer.error : "That text was refused", "error");
 			}
 			this.refresh();
 		};
@@ -3271,7 +5698,7 @@ class CEditorPanels {
 		if (answer && answer.ok) {
 			this.quad = answer.quad;
 		} else {
-			this.say(answer && answer.error ? answer.error : "That cut was refused");
+			this.say(answer && answer.error ? answer.error : "That cut was refused", "error");
 		}
 		this.refresh();
 		return true;
@@ -3311,7 +5738,7 @@ class CEditorPanels {
 			}
 			const pixels = await pixelsOf(chosen);
 			if (pixels === null) {
-				this.say("That is not a picture this browser can read");
+				this.say("That is not a picture this browser can read", "error");
 				return;
 			}
 			// The name without its suffix, which is what a map calls a
@@ -3347,9 +5774,8 @@ class CEditorPanels {
 	}
 
 	refreshImages() {
-		const panel = this.part("images-panel");
-		panel.hidden = this.map === null;
-		if (panel.hidden) {
+		this.showPanel("images-panel", this.map !== null);
+		if (!this.panelShown.get("images-panel")) {
 			return;
 		}
 		const images = this.map.images || [];
@@ -3473,19 +5899,18 @@ class CEditorPanels {
 		} else {
 			const bytes = this.editor.soundData(this.sound);
 			if (bytes === null) {
-				this.say("That sound has no bytes to play");
+				this.say("That sound has no bytes to play", "error");
 				return;
 			}
 			this.playing = URL.createObjectURL(new Blob([bytes], { type: "audio/ogg" }));
 			audio.src = this.playing;
 		}
-		audio.play().catch(() => this.say("This browser would not play that"));
+		audio.play().catch(() => this.say("This browser would not play that", "error"));
 	}
 
 	refreshAudio() {
-		const panel = this.part("audio-panel");
-		panel.hidden = this.map === null;
-		if (panel.hidden) {
+		this.showPanel("audio-panel", this.map !== null);
+		if (!this.panelShown.get("audio-panel")) {
 			return;
 		}
 		const sounds = this.map.sounds || [];
@@ -3542,7 +5967,7 @@ class CEditorPanels {
 			}
 			const came = await this.editor.appendFile(chosen);
 			if (came === null) {
-				this.say("That map could not be read");
+				this.say("That map could not be read", "error");
 				return;
 			}
 			// Said rather than shown somewhere: appending moves numbers about
@@ -3587,9 +6012,8 @@ class CEditorPanels {
 	}
 
 	refreshInfo() {
-		const panel = this.part("info-panel");
-		panel.hidden = this.map === null;
-		if (panel.hidden) {
+		this.showPanel("info-panel", this.map !== null);
+		if (!this.panelShown.get("info-panel")) {
 			return;
 		}
 		const info = this.map.info;
@@ -3603,6 +6027,8 @@ class CEditorPanels {
 					value => ({ op: "info.setProp", prop: description.prop, value: value })));
 			}
 		}
+
+		this.refreshMemory();
 
 		const settings = info.settings || [];
 		if (this.setting >= settings.length) {
@@ -3694,10 +6120,9 @@ class CEditorPanels {
 	}
 
 	refreshEnvelopes() {
-		const panel = this.part("envelopes-panel");
 		const count = this.envelopeCount();
-		panel.hidden = this.map === null;
-		if (panel.hidden) {
+		this.showPanel("envelopes-panel", this.map !== null);
+		if (!this.panelShown.get("envelopes-panel")) {
 			return;
 		}
 		this.envelope = count === 0 ? 0 : Math.min(this.envelope, count - 1);
@@ -4032,7 +6457,11 @@ class CEditorPanels {
  * @param options.signal Stops listening again.
  */
 function steerWithPointer(editor, options) {
-	const settings = Object.assign({ canvas: null, target: null, onChange: null, onView: null, onHover: null, onClickInGroup: null, afterStroke: null, signal: undefined }, options || {});
+	const settings = Object.assign({
+		canvas: null, target: null, mode: null, onChange: null, onView: null, onHover: null,
+		onClickInGroup: null, afterStroke: null, onLongPress: null, onFingerTap: null, onAsk: null,
+		signal: undefined,
+	}, options || {});
 	const canvas = settings.canvas || editor.canvas;
 	const stopping = new AbortController();
 	if (settings.signal) {
@@ -4043,6 +6472,28 @@ function steerWithPointer(editor, options) {
 	// a second finger on a map being painted is a mistake, not a tool.
 	let doing = null;
 	let pointer = 0;
+	// Every pointer that is down on the canvas right now. A mouse has one; a
+	// hand has as many as it has fingers on the glass, and what the hand means
+	// depends on how many of them there are.
+	const down = new Map();
+	// When the first of them landed and where, so that a second one arriving
+	// straight after can be told from one arriving later.
+	let firstAt = 0;
+	let firstAtSpot = { x: 0, y: 0 };
+	// How many were down at once before they all came up, so that a tap can
+	// be counted after the fingers have gone.
+	let mostFingers = 0;
+	// Two fingers panning and zooming, or null while they are not.
+	let gesture = null;
+	// How far they went, kept apart from the gesture itself because the
+	// gesture ends when the second finger lifts and the question "was that a
+	// tap" is only asked when the last one does.
+	let gestureMoved = -1;
+	// The press that is waiting to become a question about this place.
+	let pressing = null;
+	// Whether a pen has been seen. A hand that holds a pen rests on the glass,
+	// so once one has been seen a finger stops painting and pans instead.
+	let sawPen = false;
 	let last = { x: 0, y: 0 };
 	let from = { x: 0, y: 0 };
 	// The tiles a stroke has been over, so that whatever wants to look at
@@ -4152,7 +6603,8 @@ function steerWithPointer(editor, options) {
 		if (world === null) {
 			return false;
 		}
-		const step = editor.groupWorldAt(where.group, spot.x + HANDLE_REACH_PIXELS, spot.y);
+		const wide = event.pointerType === "touch" ? HANDLE_REACH_FINGER : HANDLE_REACH_PIXELS;
+		const step = editor.groupWorldAt(where.group, spot.x + wide, spot.y);
 		const reach = step === null ? 32 : Math.abs(step.x - world.x);
 
 		let best = null;
@@ -4184,7 +6636,8 @@ function steerWithPointer(editor, options) {
 		}
 		// How near counts, in world units: a handful of pixels, turned into
 		// world units by what a pixel is worth right now.
-		const step = editor.groupWorldAt(where.group, spot.x + HANDLE_REACH_PIXELS, spot.y);
+		const wide = event.pointerType === "touch" ? HANDLE_REACH_FINGER : HANDLE_REACH_PIXELS;
+		const step = editor.groupWorldAt(where.group, spot.x + wide, spot.y);
 		const reach = step === null ? 32 : Math.abs(step.x - world.x);
 
 		let best = null;
@@ -4209,8 +6662,115 @@ function steerWithPointer(editor, options) {
 		return true;
 	};
 
+	/**
+	 * Throws away what the first finger had begun.
+	 *
+	 * Only what is not settled yet is thrown away: a stroke that has lasted
+	 * long enough, or gone far enough, was meant, and a finger that lands on
+	 * the glass beside it is a hand resting, not a gesture.
+	 */
+	const undoTheStart = () => {
+		if (doing === null) {
+			return;
+		}
+		if (doing === "paint" || doing === "quad" || doing === "source") {
+			editor.abort();
+			changed();
+		}
+		doing = null;
+		quadPoint = null;
+		sourceDrag = null;
+		editor.mark();
+	};
+
+	/**
+	 * Whether the stroke has gone on long enough, or far enough, to be meant.
+	 *
+	 * How far is about the *first* finger: how far it has travelled since it
+	 * landed. Where the second one comes down says nothing - two fingers of
+	 * one hand land a hundred pixels apart, which is not movement.
+	 */
+	const settled = event => {
+		const now = event.timeStamp || Date.now();
+		const first = down.get(pointer);
+		const went = first === undefined ? 0
+			: Math.hypot(first.x - firstAtSpot.x, first.y - firstAtSpot.y);
+		return now - firstAt > SECOND_FINGER_MS || went > SECOND_FINGER_PIXELS;
+	};
+
+	/** Where two fingers are, as one place and one distance apart. */
+	const twoFingers = () => {
+		const spots = [...down.values()].slice(0, 2);
+		if (spots.length < 2) {
+			return null;
+		}
+		return {
+			x: (spots[0].x + spots[1].x) / 2,
+			y: (spots[0].y + spots[1].y) / 2,
+			apart: Math.max(1, Math.hypot(spots[0].x - spots[1].x, spots[0].y - spots[1].y)),
+		};
+	};
+
+	const stopPressing = () => {
+		if (pressing !== null) {
+			clearTimeout(pressing.timer);
+			pressing = null;
+		}
+	};
+
 	canvas.addEventListener("contextmenu", event => event.preventDefault(), { signal: signal });
 	canvas.addEventListener("pointerdown", event => {
+		down.set(event.pointerId, { x: event.clientX, y: event.clientY, at: event.timeStamp || Date.now() });
+		mostFingers = Math.max(mostFingers, down.size);
+		if (event.pointerType === "pen") {
+			sawPen = true;
+		}
+		if (down.size === 1) {
+			firstAt = event.timeStamp || Date.now();
+			firstAtSpot = { x: event.clientX, y: event.clientY };
+			// Somebody asked a question with a button and this tap is the
+			// answer: it says where, and it does nothing else.
+			if (settings.onAsk !== null && settings.onAsk({ x: event.clientX, y: event.clientY }) === true) {
+				return;
+			}
+			// A press that stands still is a question about the place; it is
+			// what Ctrl and the right button are on a desk, and a finger has
+			// neither.
+			if (event.pointerType === "touch" && settings.onLongPress !== null) {
+				const where = { x: event.clientX, y: event.clientY };
+				pressing = { timer: setTimeout(() => {
+					pressing = null;
+					if (settings.onLongPress(where) === true) {
+						undoTheStart();
+					}
+				}, LONG_PRESS_MS) };
+			}
+		}
+		if (down.size === 2) {
+			stopPressing();
+			if (!settled(event)) {
+				undoTheStart();
+			}
+			const two = twoFingers();
+			if (two !== null && doing === null) {
+				gesture = { x: two.x, y: two.y, apart: two.apart };
+				gestureMoved = 0;
+			}
+			return;
+		}
+		if (down.size > 2) {
+			stopPressing();
+			return;
+		}
+		// A finger on a tablet where a pen has been seen holds the paper; the
+		// pen is what draws.
+		if (sawPen && event.pointerType === "touch") {
+			pointer = event.pointerId;
+			last = { x: event.clientX, y: event.clientY };
+			capture(pointer, true);
+			doing = "move";
+			return;
+		}
 		if (doing !== null) {
 			return;
 		}
@@ -4237,12 +6797,20 @@ function steerWithPointer(editor, options) {
 			return;
 		}
 		from = tile;
-		if (event.altKey) {
-			doing = "fill";
-		} else if (event.shiftKey) {
-			doing = "grab";
-		} else if (event.ctrlKey || event.metaKey) {
-			doing = "erase";
+		// A held modifier says what this one stroke is; without one it is
+		// whatever the brush has been set to, which is painting until somebody
+		// says otherwise.
+		const asked = event.altKey ? "fill"
+			: event.shiftKey ? "grab"
+				: (event.ctrlKey || event.metaKey) ? "erase"
+					: (settings.mode === null ? "paint" : settings.mode());
+		// Nothing in hand draws nothing, so an empty brush grabs instead.
+		// That is the rule the native editor has and mappers have in their
+		// fingers: Escape empties the brush, and then dragging picks out a
+		// rectangle.
+		const chosen = asked === "paint" && editor.brushEmpty() ? "grab" : asked;
+		if (chosen !== "paint") {
+			doing = chosen;
 		} else {
 			doing = "paint";
 			touched = null;
@@ -4264,6 +6832,34 @@ function steerWithPointer(editor, options) {
 		// the pointer, not about the stroke.
 		if (settings.onHover !== null) {
 			settings.onHover(tileAt(event));
+		}
+		const held = down.get(event.pointerId);
+		if (held !== undefined) {
+			held.x = event.clientX;
+			held.y = event.clientY;
+		}
+		if (pressing !== null && down.size === 1) {
+			const away = Math.hypot(event.clientX - firstAtSpot.x, event.clientY - firstAtSpot.y);
+			if (away > LONG_PRESS_PIXELS) {
+				stopPressing();
+			}
+		}
+		// Two fingers move the map and nothing in it: the middle of them is
+		// what pans, how far apart they are is what zooms, and what angle they
+		// stand at is nothing at all.
+		if (gesture !== null && down.size >= 2) {
+			const two = twoFingers();
+			if (two === null) {
+				return;
+			}
+			const factor = scale();
+			gestureMoved += Math.hypot(two.x - gesture.x, two.y - gesture.y) + Math.abs(two.apart - gesture.apart);
+			editor.moveByPixels(-(two.x - gesture.x) * factor, -(two.y - gesture.y) * factor);
+			const box = canvas.getBoundingClientRect();
+			editor.zoomAt((two.x - box.left) * factor, (two.y - box.top) * factor, gesture.apart / two.apart);
+			gesture = { x: two.x, y: two.y, apart: two.apart };
+			moved();
+			return;
 		}
 		if (doing === null || pointer !== event.pointerId) {
 			return;
@@ -4331,7 +6927,46 @@ function steerWithPointer(editor, options) {
 		}
 	}, { signal: signal });
 
+	/**
+	 * A finger leaving: what it leaves behind, and what all of them together
+	 * turn out to have meant.
+	 *
+	 * Counted when the last of them goes, because two fingers that went down
+	 * and came up again without going anywhere are a tap, and a tap is only a
+	 * tap once it is over.
+	 */
+	const fingerUp = event => {
+		down.delete(event.pointerId);
+		stopPressing();
+		if (down.size >= 2) {
+			return false;
+		}
+		const was = gesture;
+		if (down.size < 2) {
+			gesture = null;
+		}
+		if (down.size > 0) {
+			return was !== null;
+		}
+		const fingers = mostFingers;
+		const went = gestureMoved;
+		const lasted = (event.timeStamp || Date.now()) - firstAt;
+		mostFingers = 0;
+		gestureMoved = -1;
+		if (fingers >= 2 && went >= 0 && went < FINGER_TAP_PIXELS && lasted < FINGER_TAP_MS) {
+			if (settings.onFingerTap !== null) {
+				settings.onFingerTap(fingers);
+			}
+			return true;
+		}
+		return was !== null || went >= 0;
+	};
+
 	const release = event => {
+		if (fingerUp(event)) {
+			capture(event.pointerId, false);
+			return;
+		}
 		if (doing === null || pointer !== event.pointerId) {
 			return;
 		}
@@ -4393,6 +7028,15 @@ function steerWithPointer(editor, options) {
 	};
 	canvas.addEventListener("pointerup", release, { signal: signal });
 	canvas.addEventListener("pointercancel", event => {
+		down.delete(event.pointerId);
+		stopPressing();
+		if (down.size < 2) {
+			gesture = null;
+		}
+		if (down.size === 0) {
+			mostFingers = 0;
+			gestureMoved = -1;
+		}
 		if (doing === "quad" || doing === "source") {
 			editor.commit();
 			changed();
@@ -4418,8 +7062,37 @@ function steerWithPointer(editor, options) {
 }
 
 // How near a pointer has to come to a quad's handle for it to be the one that
-// is taken hold of, in pixels of the canvas.
+// is taken hold of, in pixels of the canvas. A finger is fatter than a mouse
+// and cannot see what it covers, so it is allowed to be further off.
 const HANDLE_REACH_PIXELS = 10;
+const HANDLE_REACH_FINGER = 22;
+
+// The second finger of a pan lands fifty to a hundred and fifty milliseconds
+// after the first, and by then the first has already put down a tile. Within
+// this window, and within this many pixels, the second finger says the first
+// was never a stroke: it is thrown out, and the two of them are a pan.
+//
+// After it, a stroke is settled and a late finger is ignored - a hand resting
+// on the glass while the other draws is not a gesture.
+// How wide the strip along the edge is that a drawer is pulled out of, and
+// how far inwards a finger has to travel before it counts as a pull rather
+// than a tap. Twenty pixels is narrow enough that a stroke which starts near
+// the edge of the map still starts on the map.
+const EDGE_SWIPE_ZONE = 20;
+const EDGE_SWIPE_REACH = 40;
+
+const SECOND_FINGER_MS = 150;
+const SECOND_FINGER_PIXELS = 8;
+
+// Two or three fingers down and up again without going anywhere: back, and
+// forward. Procreate's, and the only undo a tablet without a keyboard has.
+const FINGER_TAP_MS = 250;
+const FINGER_TAP_PIXELS = 12;
+
+// A finger that stands still this long, this near where it landed, is asking
+// about the place rather than drawing on it.
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_PIXELS = 8;
 
 // What one notch of the wheel does, the same step the map viewer takes.
 const WHEEL_ZOOM_STEP = 1.1;
@@ -4516,6 +7189,621 @@ const TILE_NUMBERS = {
 // that square. Every map there is says it this way.
 const TILESET_SIDE = 16;
 
+// ---------------------------------------------------------------------------
+// The box.
+
+/**
+ * What the frame around the map is dressed in. This is the only style the
+ * package keeps in the program: everything it holds is a grid of six areas,
+ * and everything *in* those areas is the page's own light DOM, dressed by
+ * `ddnet-editor.css` the way it always was. The colours below are asked for
+ * as variables and inherit through the shadow boundary from that same file.
+ */
+const BOX_STYLE = `
+:host {
+	display: block;
+	position: relative;
+	/* The areas answer to the width of the box, not of the window: an editor
+	   in an 800-pixel hole in somebody's page is a narrow editor even on a
+	   wide screen. */
+	container-type: inline-size;
+	container-name: editor;
+	background: var(--bg-0, #121216);
+	color: var(--text-1, #ececf1);
+	font: var(--type-sm, 400 12px/16px system-ui, sans-serif);
+	overflow: hidden;
+}
+
+:host([hidden]) {
+	display: none;
+}
+
+.box {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+	grid-template-areas:
+		"head head head"
+		"tools tools tools"
+		"left map right"
+		"dock dock dock"
+		"status status status";
+	width: 100%;
+	height: 100%;
+	min-width: 0;
+	min-height: 0;
+}
+
+.area {
+	min-width: 0;
+	min-height: 0;
+	overflow: hidden;
+}
+
+/* A side that is a drawer keeps its place in the grid but is laid over the map
+   rather than beside it: the same box, the same panels, the same names - only
+   "grid-area: map" instead of its own column, which takes no arithmetic and
+   cannot be off by the height of a tool bar. A side that is shut holds a box
+   that is switched off, so it takes no width and lies over nothing. */
+:host([data-left="drawer"]) .area.left,
+:host([data-right="drawer"]) .area.right {
+	grid-area: map;
+	width: min(288px, 80%);
+	z-index: 2;
+}
+
+:host([data-left="drawer"]) .area.left {
+	justify-self: start;
+}
+
+:host([data-right="drawer"]) .area.right {
+	justify-self: end;
+}
+
+/* Narrower than a drawer is worth: from the floor, half the height, because
+   288 pixels of drawer on a 390-pixel phone leave 102 pixels of map. */
+:host([data-left="sheet"]) .area.left,
+:host([data-right="sheet"]) .area.right {
+	grid-area: map;
+	align-self: end;
+	width: 100%;
+	height: 50%;
+	z-index: 2;
+}
+
+/* Too short for two rows above the map: the page's own header is the one that
+   goes. Ours carries the tools, and the tools are the editor. */
+:host([data-head="one"]) .area.head {
+	display: none;
+}
+
+/* Too short for a line of its own: the status becomes a chip in the corner of
+   the map, and the row it had collapses because the box left it. */
+:host([data-status="chip"]) .area.status {
+	grid-area: map;
+	align-self: end;
+	justify-self: start;
+	max-width: 60%;
+	z-index: 2;
+}
+
+/* And the dock lies over the foot of the map instead of pushing it up. */
+:host([data-dock="overlay"]) .area.dock {
+	grid-area: map;
+	align-self: end;
+	height: 200px;
+	z-index: 2;
+}
+
+/* Above the six areas and over all of them: a menu opened from a row of the
+   tree would otherwise be cut off by the edge of the column the tree stands
+   in, and the column is the narrowest thing on the screen. The layer itself
+   catches nothing - only what is put in it does, or the map under it would
+   stop hearing the pointer. */
+.over {
+	position: absolute;
+	inset: 0;
+	z-index: 5;
+	pointer-events: none;
+}
+
+/* An area nobody filled takes no room at all - not a line, not a gap. The
+   class is set from a slotchange, because a slot with nothing in it is still
+   a box as far as the grid is concerned. */
+.area.empty {
+	display: none;
+}
+
+.head { grid-area: head; }
+.tools { grid-area: tools; }
+.left { grid-area: left; }
+.map { grid-area: map; position: relative; }
+.right { grid-area: right; }
+.dock { grid-area: dock; }
+.status { grid-area: status; }
+`;
+
+const BOX_HTML = `
+<div class="box" data-role="box">
+	<div class="area head"><slot name="header"></slot></div>
+	<div class="area tools"><slot name="toolbar"></slot></div>
+	<div class="area left"><slot name="left"></slot></div>
+	<div class="area map"><slot name="map"></slot></div>
+	<div class="area right"><slot name="right"></slot></div>
+	<div class="area dock"><slot name="dock"></slot></div>
+	<div class="area status"><slot name="status"></slot></div>
+</div>
+<div class="over"><slot name="over"></slot></div>
+`;
+
+/**
+ * Every editor element that is on the page right now.
+ *
+ * The keyboard is the reason: a key pressed while nothing at all has the
+ * focus belongs to the editor when there is one editor, and to nobody when
+ * there are two - there would be no way to say which.
+ */
+const boxes = new Set();
+
+/**
+ * Who has the focus, through however many shadow roots. `document.activeElement`
+ * stops at the first one and names the element that holds it, not what is
+ * inside.
+ */
+function deepActive() {
+	let element = document.activeElement;
+	while (element !== null && element.shadowRoot !== null && element.shadowRoot.activeElement !== null) {
+		element = element.shadowRoot.activeElement;
+	}
+	return element;
+}
+
+// A worker has no `HTMLElement`, and a class cannot be declared from a name
+// that is not there. Nothing in a worker makes one, so the stand-in is never
+// used for anything.
+const ELEMENT_BASE = typeof HTMLElement === "undefined" ? class {} : HTMLElement;
+
+/**
+ * `<ddnet-editor>` - the whole editor as one element.
+ *
+ * ```html
+ * <ddnet-editor src="maps/ctf1.map" style="height: 100dvh"></ddnet-editor>
+ * ```
+ *
+ * It makes the program, the canvas, the shapes over it and the panels, and
+ * lays them out in six areas: `header`, `toolbar`, `left`, `right`, `dock`
+ * and `status`. A page may put its own things into any of them with
+ * `slot="header"` and the like; what the element fills in itself is light DOM
+ * as well, so `ddnet-editor.css` dresses it and a page may reach it.
+ *
+ * Attributes: `src` a map to open, `urlparam` a parameter of the page's own
+ * address to take one from, `theme="light"`, `remember` to let it keep what
+ * is being edited in the browser's storage between visits.
+ *
+ * The element takes no part in the page's keyboard unless the focus is inside
+ * it - which is what lets two of them stand on one page.
+ */
+class CEditorElement extends ELEMENT_BASE {
+	static observedAttributes = ["src", "theme", "controls", "readonly", "targets"];
+
+	constructor() {
+		super();
+		const root = this.attachShadow({ mode: "open" });
+		root.innerHTML = `<style>${BOX_STYLE}</style>${BOX_HTML}`;
+		// What the element puts into its own light DOM: the map, and the
+		// panels beside it. A page that wants them somewhere else moves them;
+		// a page that wants none of them is Step 7's business.
+		this.mapBox = document.createElement("div");
+		this.mapBox.slot = "map";
+		this.mapBox.className = "editor-map";
+		this.editorCanvas = document.createElement("canvas");
+		this.editorCanvas.className = "editor-canvas";
+		this.editorCanvas.dataset.role = "map";
+		// The map takes the keyboard, so it has to be able to hold it.
+		this.editorCanvas.tabIndex = 0;
+		this.mapBox.append(this.editorCanvas);
+		// The way a map is chosen from the disc. The element keeps it, because
+		// opening one is a command of the editor's and not of whatever page
+		// happens to hold it.
+		this.fileInput = document.createElement("input");
+		this.fileInput.type = "file";
+		this.fileInput.accept = ".map";
+		this.fileInput.hidden = true;
+		this.fileInput.dataset.role = "open-file";
+		// One box per area the panels are spread into. Each carries
+		// `editor-panels` as well, because that is the class the stylesheet
+		// dresses everything inside a panel by.
+		this.areaBoxes = {};
+		// `status` would collide with the status line's own class, so the box
+		// around it is called something else.
+		for (const [area, name] of [["toolbar", "toolbar"], ["left", "left"], ["right", "right"], ["dock", "dock"], ["status", "statusbar"]]) {
+			const box = document.createElement("div");
+			box.slot = area;
+			box.className = `editor-panels editor-${name}`;
+			box.dataset.role = `area-${area}`;
+			this.areaBoxes[area] = box;
+		}
+		this.editorInstance = null;
+		this.editorPanels = null;
+		this.stopping = null;
+		/** A promise for the running editor, for a page that waits for one. */
+		this.ready = null;
+	}
+
+	/** The program, once it runs, and `null` before that. */
+	get editor() {
+		return this.editorInstance;
+	}
+
+	/** The panels beside the map, once they are there. */
+	get panels() {
+		return this.editorPanels;
+	}
+
+	/** The canvas the map is drawn on. It is there before the program is. */
+	get canvas() {
+		return this.editorCanvas;
+	}
+
+	/**
+	 * What shape the editor is in, and what decided it.
+	 *
+	 * Everything in here is worked out from the size of the box and from what
+	 * the page asked for, and nothing else is remembered - so a page that asks
+	 * gets the answer for the box as it stands, not for the box as it was when
+	 * something last changed.
+	 */
+	get layout() {
+		const box = this.getBoundingClientRect();
+		const last = BOX_WIDTHS[BOX_WIDTHS.length - 1];
+		const wide = BOX_WIDTHS.find(step => box.width >= step.from) || last;
+		const tall = BOX_HEIGHTS.find(step => box.height >= step.from) || BOX_HEIGHTS[BOX_HEIGHTS.length - 1];
+		const readonly = this.hasAttribute("readonly");
+		// What the page asked for beats what the size would have chosen - a
+		// page that says `controls="none"` wants its own buttons, whatever
+		// room there is for ours.
+		const said = this.getAttribute("controls");
+		const bar = readonly ? "looking"
+			: said === "none" ? "none"
+				: said === "compact" ? "icons"
+					: said === "full" ? "labels" : wide.bar;
+		// Room enough to stop hiding things behind tabs. Either measurement
+		// on its own is enough: a 3840-wide screen has the width for two
+		// panels beside the map, and a 2160-tall one has the height for two
+		// above each other. At 3840x2160 both are true.
+		const roomy = !readonly && (wide.name === "huge" || tall.name === "high");
+		return {
+			width: Math.round(box.width),
+			height: Math.round(box.height),
+			size: wide.name,
+			tallness: tall.name,
+			left: wide.left,
+			right: readonly ? "none" : wide.right,
+			bar: bar,
+			head: tall.head,
+			status: tall.status,
+			dock: tall.dock,
+			// Two panels above each other rather than one behind a tab.
+			stack: roomy,
+			readonly: readonly,
+		};
+	}
+
+	/**
+	 * Says the shape out loud, on the element itself.
+	 *
+	 * The stylesheet reads these rather than asking the box its width a second
+	 * time: the numbers are in `BOX_WIDTHS`, and a container query would be a
+	 * second copy of them.
+	 */
+	applyLayout() {
+		const now = this.layout;
+		this.dataset.size = now.size;
+		this.dataset.tall = now.tallness;
+		this.dataset.left = now.left;
+		this.dataset.right = now.right;
+		this.dataset.bar = now.bar;
+		this.dataset.head = now.head;
+		this.dataset.status = now.status;
+		this.dataset.dock = now.dock;
+		this.dataset.stack = now.stack ? "yes" : "no";
+		// Whether the editor is drawn for a finger. The query answers it in
+		// almost every case; the attribute is for the cases where it lies -
+		// a touch laptop with a mouse says `fine`, a tablet in desktop mode
+		// says `coarse`, and neither is what the hand on it is doing.
+		this.dataset.big = this.editorPanels !== null && this.editorPanels.finger() ? "yes" : "no";
+		this.dataset.readonly = now.readonly ? "yes" : "no";
+		if (this.editorPanels !== null) {
+			this.editorPanels.applyShape(now);
+		}
+	}
+
+	/**
+	 * Keeps the field somebody is typing in above the keyboard.
+	 *
+	 * An on-screen keyboard does not make the window smaller; it covers the
+	 * bottom of it, and the only thing that says so is `visualViewport`. What
+	 * the editor does about it is the least that helps: the field that has the
+	 * focus is scrolled into view, and the box says that a keyboard is up for
+	 * whoever wants to draw differently for it.
+	 */
+	watchKeyboard() {
+		const port = window.visualViewport;
+		if (port === null || port === undefined) {
+			return;
+		}
+		const look = () => {
+			const covered = window.innerHeight - port.height;
+			this.dataset.keyboard = covered > 120 ? "yes" : "no";
+			if (covered <= 120) {
+				return;
+			}
+			const focused = document.activeElement;
+			if (focused !== null && focused !== this && this.contains(focused)) {
+				focused.scrollIntoView({ block: "nearest" });
+			}
+		};
+		port.addEventListener("resize", look, { signal: this.stopping.signal });
+		look();
+	}
+
+	// The box can change size without the window doing anything at all - a
+	// page that folds a sidebar away makes the editor wider - so the box is
+	// what is watched.
+	watchSize() {
+		this.applyLayout();
+		const watcher = new ResizeObserver(() => this.applyLayout());
+		watcher.observe(this);
+		this.stopping.signal.addEventListener("abort", () => watcher.disconnect(), { once: true });
+		// A mouse plugged into a tablet changes the answer without changing
+		// the size, and the box would go on saying what it said before.
+		matchMedia("(pointer: coarse)").addEventListener("change", () => this.applyLayout(),
+			{ signal: this.stopping.signal });
+	}
+
+	/**
+	 * One of the element's parts by the name it carries. Its own first, the
+	 * frame's after - `data-role` names are this element's, not the page's,
+	 * which is what lets two editors stand on one page and both be asked.
+	 */
+	part(role) {
+		const which = `[data-role="${role}"]`;
+		return this.querySelector(which) || this.shadowRoot.querySelector(which);
+	}
+
+	/** Asks for a map file, and opens whatever comes back. */
+	openFile() {
+		this.fileInput.click();
+	}
+
+	connectedCallback() {
+		// Moving an element within a page takes it out and puts it back, and a
+		// program is too dear to throw away for that.
+		if (this.ready !== null) {
+			return;
+		}
+		boxes.add(this);
+		this.stopping = new AbortController();
+		if (!this.contains(this.mapBox)) {
+			this.append(this.mapBox, this.fileInput, ...Object.values(this.areaBoxes));
+		}
+		this.watchAreas();
+		this.watchSize();
+		this.watchKeyboard();
+		this.ready = this.start();
+	}
+
+	disconnectedCallback() {
+		boxes.delete(this);
+		const stopping = this.stopping;
+		const instance = this.editorInstance;
+		this.editorInstance = null;
+		this.editorPanels = null;
+		this.stopping = null;
+		this.ready = null;
+		if (stopping !== null) {
+			stopping.abort();
+		}
+		if (instance !== null) {
+			instance.destroy();
+		}
+	}
+
+	attributeChangedCallback(name, was, now) {
+		if (was === now) {
+			return;
+		}
+		if (name === "theme") {
+			this.applyTheme();
+		} else if (name === "controls" || name === "readonly" || name === "targets") {
+			if (this.stopping !== null) {
+				this.applyLayout();
+			}
+		} else if (name === "src" && this.editorInstance !== null && now !== null && now !== "") {
+			this.editorInstance.loadUrl(now);
+		}
+	}
+
+	// An area with nothing in it is not an empty strip at the top of the box;
+	// it is not there.
+	watchAreas() {
+		const signal = this.stopping.signal;
+		for (const slot of this.shadowRoot.querySelectorAll("slot")) {
+			const area = slot.parentElement;
+			const look = () => area.classList.toggle("empty", slot.assignedNodes({ flatten: true }).length === 0);
+			slot.addEventListener("slotchange", look, { signal: signal });
+			look();
+		}
+	}
+
+	// Which colours the panels use. The element is the one that knows which of
+	// them are its own, so it says so on each of them rather than leaving the
+	// page to find them.
+	applyTheme() {
+		const theme = this.getAttribute("theme");
+		for (const part of [this.mapBox, ...this.querySelectorAll(".editor-panels, .editor-overlay")]) {
+			if (theme === null || theme === "") {
+				delete part.dataset.theme;
+			} else {
+				part.dataset.theme = theme;
+			}
+		}
+		if (theme === null || theme === "") {
+			delete this.dataset.theme;
+		} else {
+			this.dataset.theme = theme;
+		}
+	}
+
+	async start() {
+		const signal = this.stopping.signal;
+		const source = this.getAttribute("src");
+		// A parameter of the page's own address is read only where the page
+		// said to read one: two editors on a page cannot both be the one the
+		// address is about.
+		const parameter = this.getAttribute("urlparam");
+		let instance = null;
+		try {
+			instance = await CMapEditor.open({
+				canvas: this.editorCanvas,
+				file: source !== null && source !== "" ? source :
+					(parameter === null || parameter === "" ? undefined : urlParameter(parameter) || undefined),
+				// An element in somebody else's page keeps nothing unless it
+				// was asked to: a page that quietly filled a visitor's storage
+				// would be a surprise.
+				persist: this.hasAttribute("remember"),
+				signal: signal,
+			});
+		} catch (error) {
+			this.dispatchEvent(new CustomEvent("editor-failed", { detail: { error: error } }));
+			throw error;
+		}
+		if (signal.aborted) {
+			instance.destroy();
+			return null;
+		}
+		this.editorInstance = instance;
+		// The canvas is a box on a page here, not the window, so nothing else
+		// would tell the program when it changes shape.
+		followSize(this.mapBox, instance, { signal: signal });
+		const panels = new CEditorPanels(instance, {
+			// The keyboard is handed out by the element, below.
+			keys: false,
+			signal: signal,
+		});
+		// The tree to the left, the inspector to the right, the envelopes and
+		// the history below, the bar above, the status line at the bottom.
+		panels.spread(this.areaBoxes, this);
+		this.editorPanels = panels;
+		// The box already knows its shape - it worked it out before there was
+		// anything to shape - so the panels are told once, now that they exist.
+		this.applyLayout();
+		steerWithPointer(instance, {
+			canvas: this.editorCanvas,
+			// An editor that is only to be looked at has no layer to paint in,
+			// which is the one place that has to say so - the pointer does not
+			// go through `run`, where everything else is refused.
+			target: () => (panels.readonly ? null : panels.selection),
+			mode: () => panels.tool,
+			onChange: () => panels.refresh(),
+			// Panning and zooming change nothing about the map, so the panels
+			// are left alone - but what is drawn over the canvas is now over
+			// the wrong place.
+			onView: () => panels.refreshOverlay(),
+			onHover: tile => panels.hoverAt(tile),
+			// A tap that answers a question the panels asked.
+			onAsk: spot => panels.answerHere(spot),
+			// A finger that stands still over an empty brush asks which layer
+			// is there; over a full one it is allowed to stand still.
+			onLongPress: spot => {
+				if (!instance.brushEmpty()) {
+					return false;
+				}
+				panels.showChooser({ clientX: spot.x, clientY: spot.y });
+				return true;
+			},
+			// Two fingers back, three forward. Procreate's, and the only undo
+			// a tablet without a keyboard has.
+			onFingerTap: fingers => panels.run(fingers >= 3 ? "edit.redo" : "edit.undo"),
+			// A tool that takes clicks - the knife so far - takes this one and
+			// the canvas does nothing else with it.
+			onClickInGroup: world => panels.carveAt(world),
+			// A layer that automaps itself does it while the stroke's change is
+			// still open, so that drawing and what it led to are one thing to
+			// undo.
+			afterStroke: (where, box) => panels.automapAfterStroke(where, box),
+			signal: signal,
+		});
+		this.applyTheme();
+		// Whatever has been changed goes into the browser's own storage every
+		// minute - a safety net, not a place to keep a map.
+		if (this.hasAttribute("remember")) {
+			instance.autosave(60);
+		}
+		document.addEventListener("keydown", event => {
+			if (this.hears()) {
+				panels.onKey(event);
+			}
+		}, { signal: signal });
+		document.addEventListener("keyup", event => {
+			if (this.hears()) {
+				panels.onKeyUp(event);
+			}
+		}, { signal: signal });
+		// A map let go of over the box is a map to open. The box is the whole
+		// element, so a file dropped on the panels counts as much as one
+		// dropped on the map.
+		this.fileInput.addEventListener("change", () => {
+			const file = this.fileInput.files[0];
+			// The same file twice is still a choice; without this the second
+			// time would go unnoticed.
+			this.fileInput.value = "";
+			if (file !== undefined && file !== null) {
+				instance.loadFile(file).catch(error => console.error(error));
+			}
+		}, { signal: signal });
+		this.addEventListener("dragover", event => event.preventDefault(), { signal: signal });
+		this.addEventListener("drop", event => {
+			const file = event.dataTransfer === null ? null : event.dataTransfer.files[0];
+			if (file === undefined || file === null) {
+				return;
+			}
+			event.preventDefault();
+			instance.loadFile(file).catch(error => console.error(error));
+		}, { signal: signal });
+		// A page that keeps what is being edited asks before the tab goes with
+		// something in it that is not written out even there yet. A page that
+		// keeps nothing has nothing to lose that it did not know about.
+		if (this.hasAttribute("remember")) {
+			window.addEventListener("beforeunload", event => {
+				if (instance.maps.some(id => instance.dirty(id))) {
+					event.preventDefault();
+					// What browsers before the standard wanted, and some still do.
+					event.returnValue = "";
+				}
+			}, { signal: signal });
+		}
+		this.dispatchEvent(new CustomEvent("editor-ready", { detail: { editor: instance } }));
+		return instance;
+	}
+
+	// Whether a key pressed now was meant for this editor. Inside it, always;
+	// with the focus nowhere at all, only when it is the one editor on the
+	// page - with two there would be no way to say which was meant.
+	hears() {
+		const active = deepActive();
+		if (active !== null && (this.contains(active) || this.shadowRoot.contains(active))) {
+			return true;
+		}
+		const nowhere = active === null || active === document.body || active === document.documentElement;
+		return nowhere && boxes.size === 1;
+	}
+}
+
+if (typeof customElements !== "undefined" && customElements.get("ddnet-editor") === undefined) {
+	customElements.define("ddnet-editor", CEditorElement);
+}
+
 /**
  * A map editor on a canvas the page keeps: `MapEditor.open({canvas, file})`.
  */
@@ -4524,10 +7812,13 @@ export const MapEditor = CMapEditor;
 export const EditorPanels = CEditorPanels;
 /** Dragging and the wheel on the canvas. */
 export const steerEditor = steerWithPointer;
+/** `<ddnet-editor>`, the whole thing as one element. */
+export const EditorElement = CEditorElement;
 
 export default {
 	MapEditor,
 	EditorPanels,
+	EditorElement,
 	steerEditor,
 	programUrl,
 };

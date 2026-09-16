@@ -235,6 +235,16 @@ const char *CMapEditor::Name(int Id) const
 	return pMap == nullptr ? "" : pMap->m_Name.c_str();
 }
 
+bool CMapEditor::Rename(int Id, const char *pName)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr)
+		return false;
+	pMap->m_Name = pName == nullptr || pName[0] == '\0' ? UNNAMED : pName;
+	Touch();
+	return true;
+}
+
 std::string CMapEditor::Apply(int Id, const char *pJson)
 {
 	CMap *pMap = Find(Id);
@@ -914,6 +924,12 @@ bool CMapEditor::UseBrush(size_t Slot)
 	// same way a grabbed one does.
 	m_Numbers = map_document::BrushNumbers(m_Brush);
 	return true;
+}
+
+void CMapEditor::ClearBrush()
+{
+	m_Brush = map_document::CBrush();
+	m_Numbers = map_document::CBrushNumbers();
 }
 
 void CMapEditor::OnResize(int Width, int Height)

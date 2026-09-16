@@ -129,6 +129,10 @@
 				canvas: canvas,
 				target: () => panels.selection,
 				onChange: () => panels.refresh(),
+				// Panning and zooming change nothing about the map, so the
+				// panels are left alone - but what is drawn over the canvas
+				// is now over the wrong place.
+				onView: () => panels.refreshOverlay(),
 				// A layer that automaps itself does it while the stroke's
 				// change is still open, so that drawing and what it led to
 				// are one thing to undo.

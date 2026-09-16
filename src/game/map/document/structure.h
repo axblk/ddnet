@@ -150,6 +150,34 @@ namespace map_document
 	void SetQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, const CQuad &Changed);
 
 	/**
+	 * A sound source at that place, in world units - what "add a source"
+	 * means before anybody has changed anything about it.
+	 *
+	 * It is a circle of that radius, loops, does not pan, and fades to
+	 * nothing at its edge, which is the sound somebody asking for one
+	 * usually wants; everything else about it is a field.
+	 *
+	 * @param X Where it goes, in world units.
+	 * @param Y The same, downwards.
+	 * @param Radius How far it is heard, in world units.
+	 *
+	 * @return The source, which is not in any layer yet.
+	 */
+	CSoundSource MakeSoundSource(int X, int Y, int Radius = 96);
+
+	/**
+	 * Puts a sound source at the end of a sound layer, and says which one it
+	 * became.
+	 */
+	size_t AddSoundSource(CDocument &Doc, const CLayerAddress &Layer, const CSoundSource &Source);
+
+	/** Takes one source out of a sound layer. */
+	void DeleteSoundSource(CDocument &Doc, const CLayerAddress &Layer, size_t Source);
+
+	/** Puts a changed source back in place of the one that was there. */
+	void SetSoundSource(CDocument &Doc, const CLayerAddress &Layer, size_t Source, const CSoundSource &Changed);
+
+	/**
 	 * The four ways a quad is put in order rather than dragged into it.
 	 *
 	 * All four are what the editor in the client offers beside a quad, and
@@ -221,6 +249,40 @@ namespace map_document
 	 * @param Changed What it is to be.
 	 */
 	void SetImage(CDocument &Doc, size_t Index, CImage Changed);
+
+	/**
+	 * Adds a sound at the end, and says where it went.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Sound The sound to add.
+	 *
+	 * @return Which sound of the map it became.
+	 */
+	size_t AddSound(CDocument &Doc, CSound Sound);
+
+	/**
+	 * Takes a sound out of the map, and takes it off every layer that played
+	 * it.
+	 *
+	 * The same rebinding as a picture: a layer names a sound by its place, so
+	 * what pointed past the one that is gone comes down one and a layer that
+	 * played it plays none. A layer that played another sound is left as the
+	 * node it is.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Sound Which sound to take out.
+	 */
+	void DeleteSound(CDocument &Doc, size_t Sound);
+
+	/**
+	 * Puts another sound in the place of one, keeping every layer that plays
+	 * it.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Index Which sound of the map.
+	 * @param Changed What it is to be.
+	 */
+	void SetSound(CDocument &Doc, size_t Index, CSound Changed);
 
 	/**
 	 * Adds an envelope at the end, and says where it went.

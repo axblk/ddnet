@@ -72,6 +72,24 @@ export interface Quad {
 	colorEnvOffset: number;
 }
 
+export interface SoundSource {
+	/** Where it is, in world units. */
+	position: [number, number];
+	shape: "circle" | "rectangle";
+	/** How far it carries, in world units; only a circle has one. */
+	radius?: number;
+	/** How wide and how tall, in world units; only a rectangle has one. */
+	size?: [number, number];
+	loop: boolean;
+	pan: boolean;
+	timeDelay: number;
+	falloff: number;
+	posEnv: number;
+	posEnvOffset: number;
+	soundEnv: number;
+	soundEnvOffset: number;
+}
+
 export interface Envelope {
 	name: string;
 	channels: number;
@@ -112,6 +130,10 @@ export type Command =
 	| { op: "layer.constructGameTiles"; group: number; layer: number; tile: string; label?: string }
 	| { op: "quad.setTexcoord"; group: number; layer: number; quad: number; corner: number; u: number; v: number; label?: string }
 	| { op: "quad.shape"; group: number; layer: number; quad: number; shape: "square" | "aspect" | "centerPivot" | "align"; grid?: number; label?: string }
+	| { op: "source.add"; group: number; layer: number; x: number; y: number; radius?: number; label?: string }
+	| { op: "source.delete"; group: number; layer: number; source: number; label?: string }
+	| { op: "source.setPoint"; group: number; layer: number; source: number; x: number; y: number; label?: string }
+	| { op: "source.setProp"; group: number; layer: number; source: number; prop: string; value: unknown; label?: string }
 	| { op: "layer.setProp"; group: number; layer: number; prop: string; value: unknown; label?: string }
 	| { op: "quad.add"; group: number; layer: number; x: number; y: number; width?: number; height?: number; label?: string }
 	| { op: "quad.delete"; group: number; layer: number; quad: number; label?: string }
@@ -125,6 +147,9 @@ export type Command =
 	| { op: "image.add"; name: string; width?: number; height?: number; label?: string }
 	| { op: "image.delete"; image: number; label?: string }
 	| { op: "image.setProp"; image: number; prop: "name" | "external"; value: string | boolean; label?: string }
+	| { op: "sound.add"; name: string; label?: string }
+	| { op: "sound.delete"; sound: number; label?: string }
+	| { op: "sound.setProp"; sound: number; prop: "name" | "external"; value: string | boolean; label?: string }
 	| { op: "envelope.add"; name?: string; channels?: number; label?: string }
 	| { op: "envelope.delete"; envelope: number; label?: string }
 	| { op: "envelope.setProp"; envelope: number; prop: string; value: unknown; label?: string }
@@ -169,6 +194,12 @@ export declare class MapEditor {
 	tileIndex(group: number, layer: number, x: number, y: number, id?: MapId): number;
 	/** Keeps a `.rules` file under a name; answers how many configurations it holds. */
 	loadRules(name: string, text: string): number;
+	/** The sound sources of one layer, or null for a layer that holds none. */
+	sources(group: number, layer: number, id?: number): SoundSource[] | null;
+
+	/** Where a place in one group's coordinates is on the canvas, in pixels. */
+	groupPixelAt(group: number, x: number, y: number, id?: number): { x: number; y: number } | null;
+
 	/** Which lines of a rules file were passed over, counting from one. */
 	ruleProblems(name: string): number[];
 
@@ -182,6 +213,12 @@ export declare class MapEditor {
 	addImage(name: string, pixels: ImageData, id?: MapId): number;
 	/** Puts other pixels into a picture the map has, keeping the layers drawn with it. */
 	setImagePixels(index: number, pixels: ImageData, id?: MapId): boolean;
+	/** Puts a sound with its bytes into the map; answers which sound it became, or -1. */
+	addSound(name: string, bytes: Uint8Array | ArrayBuffer, id?: MapId): number;
+	/** Puts other bytes into a sound the map has, keeping the layers that play it. */
+	setSoundData(index: number, bytes: Uint8Array | ArrayBuffer, id?: MapId): boolean;
+	/** The bytes of a sound packed into the map file, or null for one beside it. */
+	soundData(index: number, id?: MapId): Uint8Array | null;
 	/** The lowest number a physics layer is not using yet, or -1 when all are taken. */
 	nextFreeNumber(group: number, layer: number, checkpoint?: boolean, id?: MapId): number;
 	/** Moves the view to the `which`-th place a number is used; answers how many there are. */
@@ -258,6 +295,10 @@ export declare function steerEditor(
 		/** Which layer the pointer paints in - the panels know. */
 		target?: (() => { group: number; layer: number } | null) | null;
 		onChange?: (() => void) | null;
+		/** Called when only the view moved - panned or zoomed. */
+		onView?: (() => void) | null;
+		/** Called while a stroke's change is still open. */
+		afterStroke?: ((where: { group: number; layer: number }, box: { x: number; y: number; width: number; height: number }) => void) | null;
 		signal?: AbortSignal;
 	},
 ): { destroy(): void };

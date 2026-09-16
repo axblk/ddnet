@@ -246,6 +246,40 @@ public:
 	const map_document::CImage *Image(int Id, int Index) const;
 
 	/**
+	 * One sound of a map, to read its bytes out of.
+	 *
+	 * The same rule as a picture: the address is good until the map changes,
+	 * and whoever wants to play the sound should take a copy.
+	 *
+	 * @param Id The number of the map.
+	 * @param Index Which sound of the map.
+	 *
+	 * @return The sound, or `nullptr` where there is none.
+	 */
+	const map_document::CSound *Sound(int Id, int Index) const;
+
+	/**
+	 * Reads a sound into the map as bytes, and says which one it became.
+	 *
+	 * The bytes are an Opus file, and they cross as bytes rather than as a
+	 * command for the same reason a picture's pixels do: a sound is hundreds
+	 * of kilobytes, and hundreds of kilobytes of JSON are a text nobody
+	 * should write or read. What is in them is the map's business as little
+	 * as it is this program's - nothing here plays anything.
+	 *
+	 * @param Id The number of the map.
+	 * @param pName What the sound is called.
+	 * @param Size How many bytes.
+	 * @param pData The bytes.
+	 *
+	 * @return Which sound of the map it became, or -1.
+	 */
+	int AddSound(int Id, const char *pName, int Size, const uint8_t *pData);
+
+	/** Puts other bytes into a sound that is already in the map. */
+	bool SetSoundData(int Id, int Index, int Size, const uint8_t *pData);
+
+	/**
 	 * The quads of one layer, as JSON - see `map_document::QuadsJson`.
 	 *
 	 * @param Id The number of the map.
@@ -255,6 +289,9 @@ public:
 	 * @return The JSON text, or `null` for a layer that holds no quads.
 	 */
 	std::string QuadsJson(int Id, int Group, int Layer) const;
+
+	/** The sound sources of one layer - see `map_document::SoundSourcesJson`. */
+	std::string SoundSourcesJson(int Id, int Group, int Layer) const;
 
 	/**
 	 * Where a pixel of the surface is, in the coordinates one group is drawn
@@ -271,6 +308,24 @@ public:
 	 * @return The place, in world units.
 	 */
 	vec2 WorldInGroup(int Id, size_t Group, vec2 Pixel) const;
+
+	/**
+	 * The other way round: where a place in one group's coordinates is on
+	 * the surface.
+	 *
+	 * This is what an overlay drawn in the page needs. A sound source is a
+	 * circle in its group's coordinates, and an SVG circle over the canvas is
+	 * in pixels; asking the program rather than working it out in the page
+	 * is what keeps the shape over the place it belongs to when the view
+	 * moves.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param World The place, in world units.
+	 *
+	 * @return Where on the surface, in pixels from its top left.
+	 */
+	vec2 PixelInGroup(int Id, size_t Group, vec2 World) const;
 
 	/**
 	 * What tile stands in one place of a layer.

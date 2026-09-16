@@ -332,6 +332,66 @@ class CMapEditor extends Program {
 		}
 	}
 
+	/**
+	 * Reads a sound into the map as bytes, and says which one it became.
+	 *
+	 * The bytes are an Opus file - what is in them is nobody's business here;
+	 * the map keeps them and the browser is the one that can play them.
+	 */
+	addSound(name, bytes, id) {
+		return this.withBytes(bytes, (address, size) =>
+			this.call("MapEditorAddSound", "number", ["number", "string", "number", "number"],
+				[this.which(id), name, size, address]));
+	}
+
+	/** Puts other bytes into a sound the map already has. */
+	setSoundData(index, bytes, id) {
+		return this.withBytes(bytes, (address, size) =>
+			this.ask("MapEditorSetSoundData", "number", [this.which(id), index, size, address]) === 1);
+	}
+
+	/**
+	 * The bytes of a sound the map holds, as a `Uint8Array`, or null where it
+	 * holds none - a sound that lies beside the map has none here. What comes
+	 * out goes back in through `setSoundData` unchanged.
+	 *
+	 * A copy, because the program's own bytes are only good until the map
+	 * changes and whoever plays a sound holds it for longer than that.
+	 */
+	soundData(index, id) {
+		const module = this.module;
+		const map = this.which(id);
+		const size = this.ask("MapEditorSoundSize", "number", [map, index]);
+		if (module == null || size === null || size <= 0) {
+			return null;
+		}
+		const address = this.ask("MapEditorSoundData", "number", [map, index]);
+		if (!address) {
+			return null;
+		}
+		return module.HEAPU8.slice(address, address + size);
+	}
+
+	// Hands a block of bytes to the program and takes the room back again.
+	// The program copies what it keeps, the same as with the pixels.
+	withBytes(bytes, work) {
+		const module = this.module;
+		const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || 0);
+		if (module == null || view.length === 0) {
+			return null;
+		}
+		const address = module._malloc(view.length);
+		if (!address) {
+			return null;
+		}
+		try {
+			module.HEAPU8.set(view, address);
+			return work(address, view.length);
+		} finally {
+			module._free(address);
+		}
+	}
+
 	/** What the map is made of: groups, layers, envelopes, images, sounds. */
 	structure(id) {
 		return this.json("MapEditorStructure", [this.which(id)]);
@@ -371,6 +431,30 @@ class CMapEditor extends Program {
 		const map = this.which(id);
 		const wx = this.ask("MapEditorGroupWorldX", "number", [map, group, x, y]);
 		return wx === null ? null : { x: wx, y: this.ask("MapEditorGroupWorldY", "number", [map, group, x, y]) };
+	}
+
+	/**
+	 * The other way round: where a place in one group's coordinates is on the
+	 * canvas, in pixels from its top left.
+	 *
+	 * What an overlay drawn in the page has to ask. Working it out here
+	 * instead would mean keeping a second copy of the sum the renderer draws
+	 * with, and the two would drift apart the first time one of them changed.
+	 */
+	groupPixelAt(group, x, y, id) {
+		const map = this.which(id);
+		const px = this.ask("MapEditorGroupPixelX", "number", [map, group, x, y]);
+		return px === null ? null : { x: px, y: this.ask("MapEditorGroupPixelY", "number", [map, group, x, y]) };
+	}
+
+	/**
+	 * The sound sources of one layer, or null for a layer that holds none.
+	 *
+	 * Places and sizes in world units, the same as the quads, because that is
+	 * the number a page can turn a click into and back.
+	 */
+	sources(group, layer, id) {
+		return this.json("MapEditorSoundSources", [this.which(id), group, layer]);
 	}
 
 	/**
@@ -750,6 +834,32 @@ const PANELS_HTML = `
 			<label class="editor-small" title="Run them over every stroke, as part of the same change"><input type="checkbox" data-role="automap-auto"> auto</label>
 		</div>
 	</section>
+	<section class="editor-panel" data-role="audio-panel">
+		<header class="editor-panel-head">
+			<h2>Sounds</h2>
+			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="play-sound" title="Play it, through the browser">&#9654;</button>
+				<button class="editor-small" data-role="add-sound" title="Read an Opus file into the map">+</button>
+				<button class="editor-small" data-role="replace-sound" title="Other bytes for this sound">&#8635;</button>
+				<button class="editor-small" data-role="unpack-sound" title="Take the bytes out and name the file instead">out</button>
+				<button class="editor-small" data-role="delete-sound" title="Take this sound out of the map">-</button>
+			</span>
+		</header>
+		<ol class="editor-images" data-role="sound-list"></ol>
+		<input type="file" accept="audio/opus,audio/ogg,.opus" data-role="sound-file" hidden>
+		<audio data-role="sound-player" hidden></audio>
+	</section>
+	<section class="editor-panel" data-role="sounds-panel" hidden>
+		<header class="editor-panel-head">
+			<h2>Sound sources</h2>
+			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="add-source" title="A source in the middle of the view">+</button>
+				<button class="editor-small" data-role="delete-source" title="Delete the source that is picked">-</button>
+			</span>
+		</header>
+		<ol class="editor-quads" data-role="source-list"></ol>
+		<div class="editor-props" data-role="source-props"></div>
+	</section>
 	<section class="editor-panel" data-role="rules-panel" hidden>
 		<header class="editor-panel-head">
 			<h2>Rules</h2>
@@ -1049,6 +1159,15 @@ class CEditorPanels {
 		// Which of the places a number is used at was looked at last, so that
 		// pressing the button again goes to the next one.
 		this.gotoAt = 0;
+		// Which sound source is picked, or -1 for none.
+		this.source = -1;
+		// Which sound of the map is picked, and the address of the one that
+		// is playing, so that it can be given back again.
+		this.sound = -1;
+		this.playing = null;
+		// The shapes drawn over the canvas, made once the canvas has a parent
+		// to hang them in.
+		this.overlay = null;
 		// The picture of the tiles, what it was fetched from, and the
 		// rectangle that was taken out of it.
 		this.dataBase = settings.dataBase || new URL("data/", location.href).href;
@@ -1062,8 +1181,29 @@ class CEditorPanels {
 		if (settings.container !== null) {
 			settings.container.append(this.root);
 		}
+		this.makeOverlay();
 		this.wire();
 		this.refresh();
+	}
+
+	/**
+	 * The SVG that shapes are drawn on, over the canvas.
+	 *
+	 * It goes where the canvas is rather than where the panels are, because
+	 * that is what it lies over; a page that puts the canvas somewhere with
+	 * no parent to hang it in gets no overlay and loses nothing else.
+	 */
+	makeOverlay() {
+		const canvas = this.editor.canvas;
+		const parent = canvas === null || canvas === undefined ? null : canvas.parentElement;
+		if (parent === null) {
+			return;
+		}
+		this.overlay = document.createElementNS(SVG_NAMESPACE, "svg");
+		this.overlay.setAttribute("class", "editor-overlay");
+		this.overlay.dataset.role = "overlay";
+		this.overlay.hidden = true;
+		parent.append(this.overlay);
 	}
 
 	/** The panels themselves, for a page that wants to put them elsewhere. */
@@ -1077,6 +1217,14 @@ class CEditorPanels {
 
 	destroy() {
 		this.stopping.abort();
+		if (this.playing !== null) {
+			URL.revokeObjectURL(this.playing);
+			this.playing = null;
+		}
+		if (this.overlay !== null) {
+			this.overlay.remove();
+			this.overlay = null;
+		}
 		this.root.remove();
 	}
 
@@ -1114,6 +1262,8 @@ class CEditorPanels {
 		this.wireConstruct();
 		this.wireShape();
 		this.wireRules();
+		this.wireSounds();
+		this.wireAudio();
 		this.wireEnvelopes();
 		this.wireQuads();
 		this.wireImages();
@@ -1397,7 +1547,9 @@ class CEditorPanels {
 		this.refreshProps();
 		this.refreshTiles();
 		this.refreshQuads();
+		this.refreshSounds();
 		this.refreshImages();
+		this.refreshAudio();
 		this.refreshEnvelopes();
 		this.refreshInfo();
 		this.refreshHistory();
@@ -1630,6 +1782,25 @@ class CEditorPanels {
 			}, { signal: this.stopping.signal });
 			input.addEventListener("change", close, { signal: this.stopping.signal });
 			input.addEventListener("blur", close, { signal: this.stopping.signal });
+		} else if (description.kind === "choice") {
+			// A word out of a short list, which is a `<select>` rather than a
+			// field: the list is what the command will take, so a word that
+			// would be refused cannot be typed in the first place.
+			const chooser = document.createElement("select");
+			chooser.dataset.role = input.dataset.role;
+			for (const [value, label] of description.options) {
+				const option = document.createElement("option");
+				option.value = value;
+				option.textContent = label;
+				chooser.append(option);
+			}
+			chooser.value = String(current);
+			chooser.addEventListener("change", () => {
+				send(chooser.value);
+				this.refresh();
+			}, { signal: this.stopping.signal });
+			row.append(name, chooser);
+			return row;
 		} else if (description.kind === "count") {
 			// A number that is only handed over when the field is left. Every
 			// step on the way would be a change of its own, and a layer typed
@@ -2245,6 +2416,175 @@ class CEditorPanels {
 	}
 
 	/**
+	 * The sound sources of a sound layer: where they are and what they are.
+	 *
+	 * Where they are is dragged on the map like a quad's points; what they
+	 * are - the shape, how far they carry, what they are bound to - are
+	 * fields. What is heard is not shown here at all: the program has no
+	 * sound in it, and the page has the file.
+	 */
+	wireSounds() {
+		const signal = this.stopping.signal;
+		this.part("add-source").addEventListener("click", () => {
+			const where = this.selection;
+			const canvas = this.editor.canvas;
+			// In the middle of the view of its own group, the same as a quad.
+			const middle = this.editor.groupWorldAt(where.group, canvas.width / 2, canvas.height / 2);
+			if (middle === null) {
+				return;
+			}
+			const answer = this.change(() => this.editor.apply({
+				op: "source.add", group: where.group, layer: where.layer,
+				x: Math.round(middle.x), y: Math.round(middle.y),
+			}));
+			if (answer && answer.ok) {
+				this.source = answer.source;
+			}
+			this.refresh();
+		}, { signal: signal });
+		this.part("delete-source").addEventListener("click", () => {
+			if (this.source < 0) {
+				return;
+			}
+			const where = this.selection;
+			this.change(() => this.editor.apply({ op: "source.delete", group: where.group, layer: where.layer, source: this.source }));
+			this.source = -1;
+			this.refresh();
+		}, { signal: signal });
+	}
+
+	refreshSounds() {
+		const panel = this.part("sounds-panel");
+		const layer = this.selectedLayer();
+		panel.hidden = layer === null || layer.type !== "sounds";
+		if (panel.hidden) {
+			this.source = -1;
+			this.refreshOverlay();
+			return;
+		}
+		const where = this.selection;
+		const sources = this.editor.sources(where.group, where.layer) || [];
+		if (this.source >= sources.length) {
+			this.source = -1;
+		}
+		this.part("delete-source").disabled = this.source < 0;
+		const list = this.part("source-list");
+		list.textContent = "";
+		sources.forEach((source, index) => {
+			const row = document.createElement("li");
+			row.className = "editor-row";
+			row.dataset.role = "source";
+			row.dataset.source = String(index);
+			// Where it is, in tiles, the same way a quad is listed: a source
+			// has no name either.
+			row.textContent = `${index}: ${Math.round(source.position[0] / MAP_TILE_SIZE)}, ${Math.round(source.position[1] / MAP_TILE_SIZE)}`;
+			if (index === this.source) {
+				row.classList.add("editor-selected");
+			}
+			row.addEventListener("click", () => {
+				this.source = index;
+				this.refreshSounds();
+			}, { signal: this.stopping.signal });
+			list.append(row);
+		});
+		this.refreshSourceProps(sources[this.source]);
+		this.refreshOverlay(sources);
+	}
+
+	refreshSourceProps(source) {
+		const props = this.part("source-props");
+		props.textContent = "";
+		if (source === undefined) {
+			return;
+		}
+		const where = this.selection;
+		const index = this.source;
+		const thing = Object.assign({}, source, {
+			radius: source.radius === undefined ? 0 : source.radius,
+			width: source.size === undefined ? 0 : source.size[0],
+			height: source.size === undefined ? 0 : source.size[1],
+		});
+		const set = prop => value => ({
+			op: "source.setProp", group: where.group, layer: where.layer, source: index,
+			prop: prop, value: value,
+		});
+		// Which fields a source has depends on what it is heard within: a
+		// circle has a radius and no sides, a rectangle the other way round.
+		const fields = SOURCE_PROPS.concat(source.shape === "circle" ? SOURCE_CIRCLE : SOURCE_RECTANGLE);
+		for (const field of fields) {
+			props.append(this.field(thing, field, set(field.prop)));
+		}
+	}
+
+	/**
+	 * The shapes of the sound sources, drawn over the canvas as an SVG.
+	 *
+	 * The program does not draw them: a sound layer is not seen, and what is
+	 * drawn here is a working aid rather than part of the map. An SVG is what
+	 * this is for - a few shapes that stand over a picture and are told where
+	 * to stand. Where that is comes from the program (`groupPixelAt`), not
+	 * from a sum repeated here, or the shapes and the map would drift apart
+	 * the first time one of the two changed.
+	 */
+	refreshOverlay(known) {
+		const overlay = this.overlay;
+		if (overlay === null) {
+			return;
+		}
+		const layer = this.selectedLayer();
+		const where = this.selection;
+		const sources = layer !== null && layer.type === "sounds"
+			? (known || this.editor.sources(where.group, where.layer) || [])
+			: [];
+		overlay.textContent = "";
+		overlay.hidden = sources.length === 0;
+		if (overlay.hidden) {
+			return;
+		}
+		const canvas = this.editor.canvas;
+		// The canvas is drawn in the pixels the screen has and laid out in
+		// the units the page uses; the SVG is laid out, so it is told about
+		// the drawn ones and scales itself.
+		overlay.setAttribute("viewBox", `0 0 ${canvas.width} ${canvas.height}`);
+		const spot = (x, y) => this.editor.groupPixelAt(where.group, x, y);
+		sources.forEach((source, index) => {
+			const at = spot(source.position[0], source.position[1]);
+			if (at === null) {
+				return;
+			}
+			const shape = document.createElementNS(SVG_NAMESPACE, source.shape === "circle" ? "circle" : "rect");
+			if (source.shape === "circle") {
+				// A radius is a distance, so it is measured rather than
+				// converted: how far the point that far away landed.
+				const edge = spot(source.position[0] + source.radius, source.position[1]);
+				shape.setAttribute("cx", String(at.x));
+				shape.setAttribute("cy", String(at.y));
+				shape.setAttribute("r", String(Math.max(1, edge === null ? 1 : Math.abs(edge.x - at.x))));
+			} else {
+				const corner = spot(source.position[0] - source.size[0] / 2, source.position[1] - source.size[1] / 2);
+				const other = spot(source.position[0] + source.size[0] / 2, source.position[1] + source.size[1] / 2);
+				shape.setAttribute("x", String(corner === null ? at.x : corner.x));
+				shape.setAttribute("y", String(corner === null ? at.y : corner.y));
+				shape.setAttribute("width", String(Math.max(1, other === null || corner === null ? 1 : other.x - corner.x)));
+				shape.setAttribute("height", String(Math.max(1, other === null || corner === null ? 1 : other.y - corner.y)));
+			}
+			shape.setAttribute("class", index === this.source ? "editor-source editor-source-picked" : "editor-source");
+			shape.dataset.role = "source-shape";
+			shape.dataset.source = String(index);
+			overlay.append(shape);
+
+			const dot = document.createElementNS(SVG_NAMESPACE, "circle");
+			dot.setAttribute("cx", String(at.x));
+			dot.setAttribute("cy", String(at.y));
+			dot.setAttribute("r", "5");
+			dot.setAttribute("class", index === this.source ? "editor-source-dot editor-source-picked" : "editor-source-dot");
+			dot.dataset.role = "source-dot";
+			dot.dataset.source = String(index);
+			overlay.append(dot);
+		});
+	}
+
+	/**
 	 * The colours and the envelope bindings of the quad that is picked.
 	 *
 	 * Written as fields rather than dragged on the map, because that is what
@@ -2516,6 +2856,143 @@ class CEditorPanels {
 	}
 
 	/**
+	 * The sounds of the map: reading one in, swapping its bytes, taking the
+	 * bytes back out, taking it away - and hearing it.
+	 *
+	 * The bytes are an Opus file and nothing here looks into them. The
+	 * program has no sound in it and does not need any: a browser decodes
+	 * Opus, so the one place that can play a map's sound is the page.
+	 */
+	wireAudio() {
+		const signal = this.stopping.signal;
+		const file = this.part("sound-file");
+		let replacing = -1;
+		this.part("add-sound").addEventListener("click", () => {
+			replacing = -1;
+			file.value = "";
+			file.click();
+		}, { signal: signal });
+		this.part("replace-sound").addEventListener("click", () => {
+			if (this.sound < 0) {
+				return;
+			}
+			replacing = this.sound;
+			file.value = "";
+			file.click();
+		}, { signal: signal });
+		file.addEventListener("change", async () => {
+			const chosen = file.files && file.files[0];
+			if (!chosen) {
+				return;
+			}
+			const bytes = new Uint8Array(await chosen.arrayBuffer());
+			// The name without its suffix, the same as a picture: the file is
+			// `wind.opus`, the sound is `wind`.
+			const name = chosen.name.replace(/\.[^.]*$/, "");
+			this.change(() => {
+				if (replacing >= 0) {
+					return { ok: this.editor.setSoundData(replacing, bytes) === true, error: "The sound was refused" };
+				}
+				const index = this.editor.addSound(name, bytes);
+				if (index >= 0) {
+					this.sound = index;
+				}
+				return { ok: index >= 0, error: "The sound was refused" };
+			});
+			this.refresh();
+		}, { signal: signal });
+		this.part("unpack-sound").addEventListener("click", () => {
+			if (this.sound < 0) {
+				return;
+			}
+			this.change(() => this.editor.apply({ op: "sound.setProp", sound: this.sound, prop: "external", value: true }));
+			this.refresh();
+		}, { signal: signal });
+		this.part("delete-sound").addEventListener("click", () => {
+			if (this.sound < 0) {
+				return;
+			}
+			this.change(() => this.editor.apply({ op: "sound.delete", sound: this.sound }));
+			this.sound = -1;
+			this.refresh();
+		}, { signal: signal });
+		this.part("play-sound").addEventListener("click", () => this.playSound(), { signal: signal });
+	}
+
+	/**
+	 * Plays the sound that is picked, through the browser.
+	 *
+	 * A sound that lies beside the map is fetched the way its picture would
+	 * be; one that is in the map is handed over as the bytes it is. Either
+	 * way the browser decodes it - the program never has to know what Opus
+	 * is, which is the whole reason the bytes are kept as bytes.
+	 */
+	playSound() {
+		if (this.sound < 0 || this.map === null) {
+			return;
+		}
+		const sound = this.map.sounds[this.sound];
+		if (sound === undefined) {
+			return;
+		}
+		const audio = this.part("sound-player") || new Audio();
+		if (this.playing !== null) {
+			URL.revokeObjectURL(this.playing);
+			this.playing = null;
+		}
+		if (sound.external) {
+			audio.src = new URL(`mapres/${sound.name}.opus`, this.dataBase).href;
+		} else {
+			const bytes = this.editor.soundData(this.sound);
+			if (bytes === null) {
+				this.say("That sound has no bytes to play");
+				return;
+			}
+			this.playing = URL.createObjectURL(new Blob([bytes], { type: "audio/ogg" }));
+			audio.src = this.playing;
+		}
+		audio.play().catch(() => this.say("This browser would not play that"));
+	}
+
+	refreshAudio() {
+		const panel = this.part("audio-panel");
+		panel.hidden = this.map === null;
+		if (panel.hidden) {
+			return;
+		}
+		const sounds = this.map.sounds || [];
+		if (this.sound >= sounds.length) {
+			this.sound = -1;
+		}
+		for (const role of ["play-sound", "replace-sound", "unpack-sound", "delete-sound"]) {
+			this.part(role).disabled = this.sound < 0;
+		}
+		if (this.sound >= 0) {
+			this.part("unpack-sound").disabled = sounds[this.sound].external;
+		}
+		const list = this.part("sound-list");
+		list.textContent = "";
+		sounds.forEach((sound, index) => {
+			const row = document.createElement("li");
+			row.className = "editor-row";
+			row.dataset.role = "sound";
+			row.dataset.sound = String(index);
+			// Where its bytes are, the same thing worth saying about a
+			// picture: one beside the map has to be fetched, one in it does
+			// not.
+			row.textContent = `${sound.name}${sound.external ? " (beside)" : ` ${sound.bytes < 1024 ? `${sound.bytes} B` : `${Math.round(sound.bytes / 1024)} KiB`}`}`;
+			if (index === this.sound) {
+				row.classList.add("editor-selected");
+			}
+			row.addEventListener("click", () => {
+				this.sound = index;
+				this.refreshAudio();
+			}, { signal: this.stopping.signal });
+			list.append(row);
+		});
+	}
+
+	/**
 	 * What the map says about itself, and the lines a server runs when it
 	 * loads it.
 	 *
@@ -2636,7 +3113,7 @@ class CEditorPanels {
 		svg.dataset.time = String(bounds.time);
 		svg.dataset.low = String(bounds.low);
 		svg.dataset.high = String(bounds.high);
-		const make = name => document.createElementNS("http://www.w3.org/2000/svg", name);
+		const make = name => document.createElementNS(SVG_NAMESPACE, name);
 		const x = time => (bounds.time === 0 ? 0 : (time / bounds.time) * 100);
 		// Upside down, because a value that grows should go up and an SVG
 		// counts downwards.
@@ -2928,10 +3405,16 @@ class CEditorPanels {
  * one the pointer only moves the map.
  * @param options.onChange Called after anything was painted, for a page that
  * wants to show it.
+ * @param options.onView Called when only the view moved - panned or zoomed.
+ * Kept apart from `onChange` because rebuilding the panels on every pixel of
+ * a drag would be work nobody asked for; what a moved view changes is what is
+ * drawn over the canvas.
+ * @param options.afterStroke Called while a stroke's change is still open,
+ * with the layer and the rectangle it went over.
  * @param options.signal Stops listening again.
  */
 function steerWithPointer(editor, options) {
-	const settings = Object.assign({ canvas: null, target: null, onChange: null, afterStroke: null, signal: undefined }, options || {});
+	const settings = Object.assign({ canvas: null, target: null, onChange: null, onView: null, afterStroke: null, signal: undefined }, options || {});
 	const canvas = settings.canvas || editor.canvas;
 	const stopping = new AbortController();
 	if (settings.signal) {
@@ -3002,6 +3485,15 @@ function steerWithPointer(editor, options) {
 			settings.onChange();
 		}
 	};
+	// Only the view moved. Kept apart from `onChange` because that one
+	// rebuilds the panels, and rebuilding them on every pixel of a drag would
+	// be work nobody asked for - what a moved view changes is what is drawn
+	// over the canvas, and nothing else.
+	const moved = () => {
+		if (settings.onView !== null) {
+			settings.onView();
+		}
+	};
 	// The rectangle two corners make, as a place and a size. Either corner
 	// may be the one that was there first.
 	const between = (one, other) => ({
@@ -3023,6 +3515,45 @@ function steerWithPointer(editor, options) {
 	 * pointer is asked for in those coordinates too, and the two are compared
 	 * where they both mean the same thing.
 	 */
+	// Which sound source is being dragged, while one is.
+	let sourceDrag = null;
+
+	/**
+	 * Takes hold of a sound source under the pointer, if there is one.
+	 *
+	 * The same sum as the quad points, for the same reason: a source lives in
+	 * its group's coordinates, so the pointer is asked for in those too.
+	 */
+	const takeSource = (event, where) => {
+		const sources = editor.sources(where.group, where.layer);
+		if (sources === null) {
+			return false;
+		}
+		const spot = atCanvas(event);
+		const world = editor.groupWorldAt(where.group, spot.x, spot.y);
+		if (world === null) {
+			return false;
+		}
+		const step = editor.groupWorldAt(where.group, spot.x + HANDLE_REACH_PIXELS, spot.y);
+		const reach = step === null ? 32 : Math.abs(step.x - world.x);
+
+		let best = null;
+		sources.forEach((source, index) => {
+			const away = Math.hypot(source.position[0] - world.x, source.position[1] - world.y);
+			if (away <= reach && (best === null || away < best.away)) {
+				best = { source: index, away: away };
+			}
+		});
+		if (best === null) {
+			return false;
+		}
+		doing = "source";
+		sourceDrag = { group: where.group, layer: where.layer, source: best.source };
+		editor.begin("Move sound source");
+		changed();
+		return true;
+	};
+
 	const takeQuadPoint = (event, where) => {
 		const quads = editor.quads(where.group, where.layer);
 		if (quads === null) {
@@ -3069,7 +3600,7 @@ function steerWithPointer(editor, options) {
 		last = { x: event.clientX, y: event.clientY };
 		capture(pointer, true);
 		const where = target();
-		if (event.button === 0 && where !== null && takeQuadPoint(event, where)) {
+		if (event.button === 0 && where !== null && (takeQuadPoint(event, where) || takeSource(event, where))) {
 			return;
 		}
 		const tile = tileAt(event);
@@ -3107,6 +3638,10 @@ function steerWithPointer(editor, options) {
 			const factor = scale();
 			editor.moveByPixels(-(event.clientX - last.x) * factor, -(event.clientY - last.y) * factor);
 			last = { x: event.clientX, y: event.clientY };
+			// The view moved, so anything drawn over the canvas is now over
+			// the wrong place. The program redraws itself; an overlay in the
+			// page has to be told.
+			moved();
 			return;
 		}
 		if (doing === "quad") {
@@ -3117,6 +3652,17 @@ function steerWithPointer(editor, options) {
 					op: "quad.setPoint", group: quadPoint.group, layer: quadPoint.layer,
 					quad: quadPoint.quad, point: quadPoint.point,
 					x: Math.round(world.x), y: Math.round(world.y),
+				});
+			}
+			return;
+		}
+		if (doing === "source") {
+			const spot = atCanvas(event);
+			const world = editor.groupWorldAt(sourceDrag.group, spot.x, spot.y);
+			if (world !== null) {
+				editor.apply({
+					op: "source.setPoint", group: sourceDrag.group, layer: sourceDrag.layer,
+					source: sourceDrag.source, x: Math.round(world.x), y: Math.round(world.y),
 				});
 			}
 			return;
@@ -3146,9 +3692,10 @@ function steerWithPointer(editor, options) {
 		if (doing === null || pointer !== event.pointerId) {
 			return;
 		}
-		if (doing === "quad") {
+		if (doing === "quad" || doing === "source") {
 			doing = null;
 			quadPoint = null;
+			sourceDrag = null;
 			editor.commit();
 			changed();
 			capture(event.pointerId, false);
@@ -3196,7 +3743,7 @@ function steerWithPointer(editor, options) {
 	};
 	canvas.addEventListener("pointerup", release, { signal: signal });
 	canvas.addEventListener("pointercancel", event => {
-		if (doing === "quad") {
+		if (doing === "quad" || doing === "source") {
 			editor.commit();
 			changed();
 		}
@@ -3215,6 +3762,7 @@ function steerWithPointer(editor, options) {
 		event.preventDefault();
 		const at = atCanvas(event);
 		editor.zoomAt(at.x, at.y, event.deltaY > 0 ? WHEEL_ZOOM_STEP : 1 / WHEEL_ZOOM_STEP);
+		moved();
 	}, { signal: signal, passive: false });
 	return { destroy: () => stopping.abort() };
 }
@@ -3236,6 +3784,30 @@ const WHEEL_ZOOM_STEP = 1.1;
 // program counts them. "Off" is not one of them and is not in the list.
 const AUTOMAP_REFERENCES = ["Game Layer", "Hookable", "Death", "Unhookable", "Freeze",
 	"Unfreeze", "Deep Freeze", "Deep Unfreeze", "Live Freeze", "Live Unfreeze"];
+
+// What SVG elements are made in. The envelope panel says it in place; here it
+// is a name because the overlay makes one of these per source per frame.
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+
+// What a sound source has beside where it is. Which of the two shapes it is
+// decides whether it has a radius or two sides; the rest are the same either
+// way. Distances are world units, the same as everywhere a page is given one.
+const SOURCE_PROPS = [
+	{ prop: "shape", label: "Heard within", kind: "choice", options: [["circle", "Circle"], ["rectangle", "Rectangle"]] },
+	{ prop: "loop", label: "Loop", kind: "boolean" },
+	{ prop: "pan", label: "Panning", kind: "boolean" },
+	{ prop: "timeDelay", label: "Delay (s)", kind: "number" },
+	{ prop: "falloff", label: "Falloff", kind: "number" },
+	{ prop: "posEnv", label: "Position envelope", kind: "number" },
+	{ prop: "posEnvOffset", label: "Position offset", kind: "number" },
+	{ prop: "soundEnv", label: "Sound envelope", kind: "number" },
+	{ prop: "soundEnvOffset", label: "Sound offset", kind: "number" },
+];
+const SOURCE_CIRCLE = [{ prop: "radius", label: "Radius", kind: "number" }];
+const SOURCE_RECTANGLE = [
+	{ prop: "width", label: "Width", kind: "number" },
+	{ prop: "height", label: "Height", kind: "number" },
+];
 
 const QUAD_CORNERS = ["Top left", "Top right", "Bottom left", "Bottom right"];
 const QUAD_PROPS = [

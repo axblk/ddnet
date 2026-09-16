@@ -573,6 +573,125 @@ TEST(Command, DraggingThePivotCarriesTheCornersAlong)
 	EXPECT_EQ(fx2i(Quad.m_aPoints[0].y), 60) << "and did not move in the other direction";
 }
 
+namespace
+{
+	CMapState WithSounds()
+	{
+		CMapState Map = TwoGroups();
+		CSoundLayer Sounds;
+		Sounds.m_Name = "sounds";
+		CGroup Group;
+		Group.m_Name = "audible";
+		Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Sounds)));
+		Map.AddGroup(std::move(Group));
+		CEnvelope Envelope;
+		Envelope.m_Name = "volume";
+		Map.AddEnvelope(std::move(Envelope));
+		return Map;
+	}
+
+	const CSoundLayer &SoundsOf(const CMapState &Map)
+	{
+		return std::get<CSoundLayer>(*Map.Layer(2, 0));
+	}
+} // namespace
+
+TEST(Command, ASoundSourceIsPlacedMovedAndTakenOut)
+{
+	CCommands Commands(WithSounds());
+	const CJson pAnswer = Commands.Ok(R"({"op":"source.add","group":2,"layer":0,"x":320,"y":160,"radius":48})");
+	EXPECT_EQ(Number(pAnswer, "source"), 0);
+	ASSERT_EQ(SoundsOf(Commands.m_Document.Map()).m_Sources.Size(), 1u);
+	EXPECT_EQ(fx2i(SoundsOf(Commands.m_Document.Map()).m_Sources[0].m_Position.x), 320);
+	EXPECT_EQ(SoundsOf(Commands.m_Document.Map()).m_Sources[0].m_Shape.m_Circle.m_Radius, 48);
+
+	Commands.Ok(R"({"op":"source.setPoint","group":2,"layer":0,"source":0,"x":40,"y":50})");
+	EXPECT_EQ(fx2i(SoundsOf(Commands.m_Document.Map()).m_Sources[0].m_Position.y), 50);
+
+	Commands.Ok(R"({"op":"source.delete","group":2,"layer":0,"source":0})");
+	EXPECT_EQ(SoundsOf(Commands.m_Document.Map()).m_Sources.Size(), 0u);
+
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.add","group":0,"layer":0,"x":0,"y":0})"), "that layer holds no sounds");
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.add","group":2,"layer":0,"x":0,"y":0,"radius":0})"),
+		"a source is heard within something");
+}
+
+TEST(Command, WhatASoundSourceIsHeardWithinIsOneThingOrTheOther)
+{
+	CCommands Commands(WithSounds());
+	Commands.Ok(R"({"op":"source.add","group":2,"layer":0,"x":0,"y":0})");
+	const auto &&Source = [&Commands]() { return SoundsOf(Commands.m_Document.Map()).m_Sources[0]; };
+
+	// A circle has a radius and no sides.
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"radius","value":64})");
+	EXPECT_EQ(Source().m_Shape.m_Circle.m_Radius, 64);
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"width","value":10})"),
+		"this source is heard within a circle");
+
+	// Becoming a rectangle brings a size with it rather than keeping whatever
+	// stood in the same place in the union.
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"shape","value":"rectangle"})");
+	EXPECT_EQ(Source().m_Shape.m_Type, CSoundShape::SHAPE_RECTANGLE);
+	EXPECT_EQ(fx2i(Source().m_Shape.m_Rectangle.m_Width), 192);
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"height","value":64})");
+	EXPECT_EQ(fx2i(Source().m_Shape.m_Rectangle.m_Height), 64);
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"radius","value":10})"),
+		"this source is heard within a rectangle");
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"shape","value":"triangle"})"),
+		"a source is heard within a circle or a rectangle");
+
+	// Asking for the shape it already has changes nothing about its size.
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"shape","value":"rectangle"})");
+	EXPECT_EQ(fx2i(Source().m_Shape.m_Rectangle.m_Height), 64);
+
+	// The rest are fields, and a binding names an envelope the map has.
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"loop","value":false})");
+	EXPECT_EQ(Source().m_Loop, 0);
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"falloff","value":300})");
+	EXPECT_EQ(Source().m_Falloff, 255) << "a falloff is a byte";
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"soundEnv","value":0})");
+	EXPECT_EQ(Source().m_SoundEnv, 0);
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"soundEnv","value":1})"),
+		"there is no such envelope");
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"pitch","value":1})"),
+		"a sound source has no 'pitch'");
+}
+
+TEST(Command, ASoundFileIsAddedNamedAndTakenOffTheLayersPlayingIt)
+{
+	CCommands Commands(WithSounds());
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"sound.add","name":"wind"})"), "sound"), 0);
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"sound.add","name":"rain"})"), "sound"), 1);
+	const map_document::CSound *pSound = Commands.m_Document.Map().Sound(1);
+	ASSERT_NE(pSound, nullptr);
+	EXPECT_EQ(pSound->m_Name, "rain");
+	EXPECT_TRUE(pSound->m_External) << "a sound that comes through a command has no bytes";
+
+	Commands.Ok(R"({"op":"sound.setProp","sound":1,"prop":"name","value":"drizzle"})");
+	EXPECT_EQ(Commands.m_Document.Map().Sound(1)->m_Name, "drizzle");
+
+	// The layer plays the second one; taking the first one away moves it up.
+	Commands.Ok(R"({"op":"layer.setProp","group":2,"layer":0,"prop":"sound","value":1})");
+	Commands.Ok(R"({"op":"sound.delete","sound":0})");
+	EXPECT_EQ(SoundsOf(Commands.m_Document.Map()).m_Sound, 0);
+	// And taking away the one it plays leaves it silent.
+	Commands.Ok(R"({"op":"sound.delete","sound":0})");
+	EXPECT_EQ(Commands.m_Document.Map().NumSounds(), 0u);
+	EXPECT_EQ(SoundsOf(Commands.m_Document.Map()).m_Sound, -1);
+}
+
+TEST(Command, ASoundIsMadeExternalButNotEmbeddedWithoutBytes)
+{
+	CCommands Commands(WithSounds());
+	Commands.Ok(R"({"op":"sound.add","name":"wind"})");
+	// It came in beside the map, so there are no bytes to go back to.
+	EXPECT_EQ(Commands.Refused(R"({"op":"sound.setProp","sound":0,"prop":"external","value":false})"),
+		"that sound has no bytes of its own");
+	EXPECT_EQ(Commands.Refused(R"({"op":"sound.add","name":""})"), "a sound needs a name");
+	EXPECT_EQ(Commands.Refused(R"({"op":"sound.setProp","sound":0,"prop":"bytes","value":4})"), "a sound has no 'bytes'");
+	EXPECT_EQ(Commands.Refused(R"({"op":"sound.setProp","sound":0,"prop":"name","value":""})"), "a name is a word");
+}
+
 TEST(Command, AQuadsCornersAreMovedAroundInThePicture)
 {
 	CCommands Commands(WithQuads());

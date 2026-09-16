@@ -230,6 +230,14 @@ std::string CMapEditor::QuadsJson(int Id, int Group, int Layer) const
 	return map_document::QuadsJson(pMap->m_Document.Map(), (size_t)Group, (size_t)Layer);
 }
 
+std::string CMapEditor::SoundSourcesJson(int Id, int Group, int Layer) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0)
+		return "null";
+	return map_document::SoundSourcesJson(pMap->m_Document.Map(), (size_t)Group, (size_t)Layer);
+}
+
 std::string CMapEditor::EnvelopeJson(int Id, int Index) const
 {
 	const CMap *pMap = Find(Id);
@@ -377,6 +385,48 @@ bool CMapEditor::SetImagePixels(int Id, int Index, int Width, int Height, const 
 	return true;
 }
 
+const map_document::CSound *CMapEditor::Sound(int Id, int Index) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Index < 0 || (size_t)Index >= pMap->m_Document.Map().NumSounds())
+		return nullptr;
+	return pMap->m_Document.Map().Sound((size_t)Index);
+}
+
+int CMapEditor::AddSound(int Id, const char *pName, int Size, const uint8_t *pData)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || pName == nullptr || pName[0] == '\0' || Size <= 0 || pData == nullptr)
+		return -1;
+	map_document::CSound Sound;
+	Sound.m_Name = pName;
+	Sound.m_External = false;
+	Sound.m_Data.Mutable().assign(pData, pData + (size_t)Size);
+	pMap->m_Document.Begin("Add sound");
+	const size_t Index = map_document::AddSound(pMap->m_Document, std::move(Sound));
+	pMap->m_Document.Commit();
+	Touch();
+	return (int)Index;
+}
+
+bool CMapEditor::SetSoundData(int Id, int Index, int Size, const uint8_t *pData)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || Index < 0 || Size <= 0 || pData == nullptr)
+		return false;
+	const map_document::CMapState &Map = pMap->m_Document.Map();
+	if((size_t)Index >= Map.NumSounds())
+		return false;
+	map_document::CSound Changed = *Map.Sound((size_t)Index);
+	Changed.m_External = false;
+	Changed.m_Data.Mutable().assign(pData, pData + (size_t)Size);
+	pMap->m_Document.Begin("Replace sound");
+	map_document::SetSound(pMap->m_Document, (size_t)Index, std::move(Changed));
+	pMap->m_Document.Commit();
+	Touch();
+	return true;
+}
+
 bool CMapEditor::BrushIsCheckpoint() const
 {
 	const auto *pTele = std::get_if<map_document::CTileStore<CTeleTile>>(&m_Brush.m_ExtraTiles);
@@ -499,6 +549,24 @@ CDocumentRenderer::CParams CMapEditor::ParamsFor(const CMap &Map) const
 	if(Game.has_value())
 		Params.m_GridGroup = Game->m_Group;
 	return Params;
+}
+
+vec2 CMapEditor::PixelInGroup(int Id, size_t Group, vec2 World) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group >= pMap->m_Document.Map().NumGroups())
+		return vec2(0.0f, 0.0f);
+	const CScreenRect Shown = pMap->m_pRenderer->GroupScreen(*pMap->m_Document.Map().m_vpGroups[Group], ParamsFor(*pMap));
+	const float Width = std::max(1, m_View.Width());
+	const float Height = std::max(1, m_View.Height());
+	// The inverse of `WorldInGroup`, and deliberately the same sum read
+	// backwards: a group with no width on the screen would divide by nothing,
+	// and that is a group nobody can point at anyway.
+	if(Shown.Width() == 0.0f || Shown.Height() == 0.0f)
+		return vec2(0.0f, 0.0f);
+	return vec2(
+		(World.x - Shown.m_TopLeft.x) / Shown.Width() * Width,
+		(World.y - Shown.m_TopLeft.y) / Shown.Height() * Height);
 }
 
 vec2 CMapEditor::WorldInGroup(int Id, size_t Group, vec2 Pixel) const

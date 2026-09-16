@@ -428,6 +428,48 @@ namespace
 	}
 } // namespace
 
+TEST(Structure, ASoundSourceIsAddedChangedAndTakenOut)
+{
+	CMapState Map;
+	CGroup Group;
+	Group.m_vpLayers.push_back(std::make_shared<const CLayer>(CSoundLayer()));
+	Map.AddGroup(std::move(Group));
+	CDocument Document(std::move(Map));
+	const CLayerAddress Where{0, 0};
+
+	Document.Begin("Add");
+	EXPECT_EQ(AddSoundSource(Document, Where, MakeSoundSource(320, 160)), 0u);
+	EXPECT_EQ(AddSoundSource(Document, Where, MakeSoundSource(64, 64, 32)), 1u);
+	Document.Commit();
+
+	const auto &&Sources = [&Document]() -> const CSharedList<CSoundSource> & {
+		return std::get<CSoundLayer>(*Document.Map().Layer(0, 0)).m_Sources;
+	};
+	ASSERT_EQ(Sources().Size(), 2u);
+	// What a new one is: a circle that loops and is heard all the way to its
+	// edge, bound to no envelope.
+	EXPECT_EQ(fx2i(Sources()[0].m_Position.x), 320);
+	EXPECT_EQ(Sources()[0].m_Shape.m_Type, CSoundShape::SHAPE_CIRCLE);
+	EXPECT_EQ(Sources()[0].m_Shape.m_Circle.m_Radius, 96);
+	EXPECT_EQ(Sources()[0].m_Loop, 1);
+	EXPECT_EQ(Sources()[0].m_PosEnv, -1);
+	EXPECT_EQ(Sources()[1].m_Shape.m_Circle.m_Radius, 32);
+
+	Document.Begin("Move");
+	CSoundSource Moved = Sources()[0];
+	Moved.m_Position = CPoint{i2fx(10), i2fx(20)};
+	SetSoundSource(Document, Where, 0, Moved);
+	Document.Commit();
+	EXPECT_EQ(fx2i(Sources()[0].m_Position.x), 10);
+	EXPECT_EQ(fx2i(Sources()[1].m_Position.x), 64) << "the other one is left alone";
+
+	Document.Begin("Delete");
+	DeleteSoundSource(Document, Where, 0);
+	Document.Commit();
+	ASSERT_EQ(Sources().Size(), 1u);
+	EXPECT_EQ(fx2i(Sources()[0].m_Position.x), 64);
+}
+
 TEST(Structure, SquaringAQuadMakesItTheRectangleItSpans)
 {
 	CDocument Document = QuadMap();

@@ -149,6 +149,58 @@ TEST(Report, ATileLayerSaysWhichKindItIsAndHowItIsDrawn)
 	EXPECT_STREQ(json_string_get(json_object_get(pGame, "kind")), "game");
 }
 
+TEST(Report, ASoundLayerSaysWhereItsSourcesAreAndWhatTheyAre)
+{
+	CMapState Map;
+	CSoundLayer Sounds;
+	CSoundSource Circle = {};
+	Circle.m_Position = CPoint{i2fx(320), i2fx(160)};
+	Circle.m_Shape.m_Type = CSoundShape::SHAPE_CIRCLE;
+	Circle.m_Shape.m_Circle.m_Radius = 96;
+	Circle.m_Loop = 1;
+	Circle.m_Falloff = 40;
+	Circle.m_SoundEnv = 2;
+	CSoundSource Box = {};
+	Box.m_Position = CPoint{i2fx(-32), i2fx(0)};
+	Box.m_Shape.m_Type = CSoundShape::SHAPE_RECTANGLE;
+	Box.m_Shape.m_Rectangle.m_Width = i2fx(64);
+	Box.m_Shape.m_Rectangle.m_Height = i2fx(48);
+	Sounds.m_Sources = CSharedList<CSoundSource>(std::vector<CSoundSource>{Circle, Box});
+	CGroup Group;
+	Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Sounds)));
+	Group.m_vpLayers.push_back(std::make_shared<const CLayer>(CQuadLayer()));
+	Map.AddGroup(std::move(Group));
+
+	const std::string Json = SoundSourcesJson(Map, 0, 0);
+	const CJson pRead(JsonParse(Json.c_str(), Json.size()), json_value_free);
+	ASSERT_NE(pRead, nullptr) << Json;
+	ASSERT_EQ(json_array_length(pRead.get()), 2u);
+
+	const json_value *pCircle = json_array_get(pRead.get(), 0);
+	const json_value *pPosition = json_object_get(pCircle, "position");
+	ASSERT_EQ(json_array_length(pPosition), 2u);
+	EXPECT_EQ(json_int_get(json_array_get(pPosition, 0)), 320);
+	EXPECT_STREQ(json_string_get(json_object_get(pCircle, "shape")), "circle");
+	EXPECT_EQ(json_int_get(json_object_get(pCircle, "radius")), 96);
+	EXPECT_TRUE(json_boolean_get(json_object_get(pCircle, "loop")));
+	EXPECT_EQ(json_int_get(json_object_get(pCircle, "falloff")), 40);
+	EXPECT_EQ(json_int_get(json_object_get(pCircle, "soundEnv")), 2);
+
+	// The two sides of a rectangle come out in world units, and a circle has
+	// no sides to come out at all.
+	const json_value *pBox = json_array_get(pRead.get(), 1);
+	EXPECT_STREQ(json_string_get(json_object_get(pBox, "shape")), "rectangle");
+	const json_value *pSize = json_object_get(pBox, "size");
+	ASSERT_EQ(json_array_length(pSize), 2u);
+	EXPECT_EQ(json_int_get(json_array_get(pSize, 0)), 64);
+	EXPECT_EQ(json_int_get(json_array_get(pSize, 1)), 48);
+	EXPECT_EQ(json_object_get(pCircle, "size")->type, json_none);
+	EXPECT_EQ(json_object_get(pBox, "radius")->type, json_none);
+
+	// A layer that holds no sounds is not a layer that holds none of them.
+	EXPECT_STREQ(SoundSourcesJson(Map, 0, 1).c_str(), "null");
+}
+
 TEST(Report, ALayerSaysWhetherGameTilesCanBeBuiltFromIt)
 {
 	// Whether they can means knowing where the group lies over the game

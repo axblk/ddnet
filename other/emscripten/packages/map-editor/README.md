@@ -171,6 +171,47 @@ one and a binding to the one that is gone becomes no binding at all. A layer
 that was bound to nothing is left as the node it is, which is why this costs
 the layers that used the envelope rather than the map.
 
+## Sound sources
+
+A sound layer is not seen, so the shapes its sources are heard within are
+drawn by the page rather than by the program: an SVG over the canvas, which is
+what an SVG is for - a few shapes that stand over a picture and are told where
+to stand. Where that is comes from the program (`editor.groupPixelAt`), the
+other way round from what a pointer asks, so the shapes and the map cannot
+drift apart. The SVG lets every click through: taking hold of a source is the
+canvas pointer's job, the same as a quad's corner.
+
+Where a source is, is dragged; what it is, is fields. A source is heard within
+a circle or within a rectangle, and which of the two decides which fields it
+has - a circle has a radius and no sides. Changing from one to the other
+brings a size along rather than keeping whatever stood in the same place in
+the file's union of the two.
+
+Panning and zooming do not change the map, so the panels are left alone; what
+they do change is where an overlay belongs, which is why steering the canvas
+says `onView` as well as `onChange`. Rebuilding every panel on every pixel of
+a drag would be work nobody asked for.
+
+## Sound files
+
+A sound in a map is an Opus file and the program never looks into it: it takes
+the bytes, keeps them, and hands them back. There is no decoder in it and
+there does not need to be one, because the one thing that has to play a map's
+sound is a browser, and every browser decodes Opus. `editor.addSound(name,
+bytes)` puts one in, `editor.soundData(index)` takes the bytes out again
+unchanged, and the panel wraps those bytes in a `Blob` for an `<audio>`
+element. A sound that lies beside the map is played from `mapres/<name>.opus`
+instead, the same place a picture beside the map comes from.
+
+The bytes go the way a picture's pixels go - through their own C entrance,
+not through JSON - while the structure around them goes through `apply`:
+`sound.add` names one that lies beside the map, `sound.setProp` renames it or
+takes its bytes out, and `sound.delete` takes it away. Taking one away takes
+it off the layers that played it, the same arithmetic as a picture or an
+envelope: what pointed past it comes down one, what pointed at it points at
+nothing. Going the other way - beside the map back into it - is not something
+a command can do, because the bytes are not in the command.
+
 ## Quads
 
 A quad is four corners and a pivot, and all five are dragged on the map rather
@@ -265,7 +306,6 @@ and 17 ms.
 
 ## What it is not, yet
 
-Sounds are looked at but not changed, a quad's picture coordinates are read
-but not yet edited, and a rules file can be run but not written - there is no
-editor for the rules themselves. A layer with no picture at all is shown as a grid of numbers - the tiles are still there to
-be picked, they just cannot be shown.
+Proof mode, the knife, and turning a quad or a piece of a layer into art are
+not here. A layer with no picture at all is shown as a grid of numbers - the
+tiles are still there to be picked, they just cannot be shown.

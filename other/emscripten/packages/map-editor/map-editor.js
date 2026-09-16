@@ -1958,6 +1958,7 @@ class CEditorPanels {
 				tab.querySelector('[data-role="map-dot"]').hidden = !dirty;
 				tab.querySelector(".editor-map-name").textContent = name;
 				tab.title = `${name}${dirty ? " - not saved" : ""}`;
+				tab.setAttribute("aria-label", `${name}${dirty ? " (changed)" : ""}`);
 			}
 			return;
 		}
@@ -1983,6 +1984,7 @@ class CEditorPanels {
 			// The dot is for the eye; the title is for whoever is not reading
 			// with their eyes.
 			tab.title = `${name.textContent}${dirty ? " - not saved" : ""}`;
+			tab.setAttribute("aria-label", `${name.textContent}${dirty ? " (changed)" : ""}`);
 			tab.addEventListener("click", () => this.showMap(id), { signal: this.stopping.signal });
 			if (open.length > 1) {
 				const shut = document.createElement("span");
@@ -4117,12 +4119,29 @@ class CEditorPanels {
 		this.sawKey = true;
 		const target = event.target;
 		if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-			// Escape is the way out of a field, and the only key a field
-			// hands on.
+			// Escape is the way out of a field, and F6 the way on to the next
+			// area; those two are all a field hands on.
+			const name = keyName(event);
+			const on = this.keys_.get(name);
+			if (on !== undefined && (on.id === "focus.next" || on.id === "focus.previous")) {
+				event.preventDefault();
+				this.run(on.id);
+				return;
+			}
 			if (event.key !== "Escape") {
 				return;
 			}
 			target.blur();
+		}
+		// Space and Enter on a button press the button, and a list that is
+		// open to the keyboard walks with the arrows - neither is a shortcut.
+		if (target && !event.ctrlKey && !event.altKey && !event.metaKey) {
+			const own = target.tagName === "SELECT"
+				? ["ArrowUp", "ArrowDown", "Home", "End", " ", "Enter"]
+				: target.tagName === "BUTTON" || target.getAttribute("role") === "button" ? [" ", "Enter"] : [];
+			if (own.includes(event.key)) {
+				return;
+			}
 		}
 		const command = this.keys_.get(keyName(event));
 		if (command === undefined) {
@@ -4661,6 +4680,15 @@ class CEditorPanels {
 
 	refreshTree() {
 		const tree = this.part("tree");
+		// The rows are made anew, so a keyboard that was in the tree would
+		// otherwise find itself nowhere.
+		const hadFocus = tree.contains(document.activeElement);
+		if (!this.treeKeys) {
+			this.treeKeys = true;
+			tree.setAttribute("role", "tree");
+			tree.setAttribute("aria-label", "Groups and layers");
+			tree.addEventListener("keydown", event => this.onTreeKey(event), { signal: this.stopping.signal });
+		}
 		tree.textContent = "";
 		if (this.map === null) {
 			return;
@@ -4668,12 +4696,21 @@ class CEditorPanels {
 		this.map.groups.forEach((group, groupIndex) => {
 			const item = document.createElement("li");
 			item.className = "editor-group";
+			item.setAttribute("role", "none");
 			const head = document.createElement("div");
 			head.className = "editor-row";
 			head.dataset.role = "group";
 			head.dataset.group = String(groupIndex);
+			head.setAttribute("role", "treeitem");
+			head.setAttribute("aria-level", "1");
+			head.setAttribute("aria-expanded", this.collapsed.has(groupIndex) ? "false" : "true");
+			head.setAttribute("aria-selected", this.selection.group === groupIndex && this.selection.layer < 0 ? "true" : "false");
+			head.tabIndex = -1;
 			const fold = document.createElement("button");
 			fold.className = "editor-fold";
+			// The row is the one stop for the keyboard; the arrows fold it.
+			fold.tabIndex = -1;
+			fold.setAttribute("aria-hidden", "true");
 			fold.textContent = this.collapsed.has(groupIndex) ? "▸" : "▾";
 			fold.addEventListener("click", event => {
 				event.stopPropagation();
@@ -4702,12 +4739,17 @@ class CEditorPanels {
 			if (!this.collapsed.has(groupIndex)) {
 				const list = document.createElement("ul");
 				list.className = "editor-layers";
+				list.setAttribute("role", "group");
 				group.layers.forEach((layer, layerIndex) => {
 					const row = document.createElement("li");
 					row.className = "editor-row editor-layer";
 					row.dataset.role = "layer";
 					row.dataset.group = String(groupIndex);
 					row.dataset.layer = String(layerIndex);
+					row.setAttribute("role", "treeitem");
+					row.setAttribute("aria-level", "2");
+					row.setAttribute("aria-selected", this.selection.group === groupIndex && this.selection.layer === layerIndex ? "true" : "false");
+					row.tabIndex = -1;
 					const what = layer.type === "tiles" ? layer.kind : layer.type;
 					// Hiding a layer is a thing about looking, so the eye is
 					// not a property and writes no history entry.
@@ -4718,6 +4760,8 @@ class CEditorPanels {
 					eye.textContent = shown ? "\u25c9" : "\u25cb";
 					eye.title = shown ? "Hide this layer" : "Show this layer";
 					eye.setAttribute("aria-pressed", shown ? "true" : "false");
+					// Space on the row does what the eye does.
+					eye.tabIndex = -1;
 					eye.addEventListener("click", event => {
 						event.stopPropagation();
 						this.editor.visible(groupIndex, layerIndex, !shown);
@@ -4728,6 +4772,7 @@ class CEditorPanels {
 					row.append(eye, label);
 					if (!shown) {
 						row.classList.add("editor-hidden-layer");
+						row.setAttribute("aria-description", "hidden");
 					}
 					if (this.selection.group === groupIndex && this.selection.layer === layerIndex) {
 						row.classList.add("editor-selected");
@@ -4744,7 +4789,141 @@ class CEditorPanels {
 			}
 			tree.append(item);
 		});
+		// One stop for Tab in the whole tree - the row that is selected, or
+		// its group while the group is folded up - rather than one per layer.
+		const rows = [...tree.querySelectorAll('[role="treeitem"]')];
+		const stop = rows.find(row => row.getAttribute("aria-selected") === "true")
+			|| rows.find(row => row.dataset.role === "group" && Number(row.dataset.group) === this.selection.group)
+			|| rows[0];
+		if (stop !== undefined) {
+			stop.tabIndex = 0;
+			if (hadFocus) {
+				stop.focus();
+			}
+		}
 		this.addMoreButtons();
+	}
+
+	/**
+	 * The tree as a keyboard walks it: up and down go from row to row and
+	 * select, right opens a group and goes into it, left folds it or goes back
+	 * up to it, Space is the eye (or the fold) and Enter goes to the name.
+	 */
+	onTreeKey(event) {
+		const row = event.target.closest('[role="treeitem"]');
+		if (row === null || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
+			return;
+		}
+		const tree = this.part("tree");
+		const rows = [...tree.querySelectorAll('[role="treeitem"]')];
+		const at = rows.indexOf(row);
+		const group = Number(row.dataset.group);
+		const isGroup = row.dataset.role === "group";
+		const choose = other => {
+			if (other === undefined) {
+				return;
+			}
+			this.selection = { group: Number(other.dataset.group), layer: other.dataset.role === "group" ? -1 : Number(other.dataset.layer) };
+			this.refresh();
+			const now = tree.querySelector('[role="treeitem"][tabindex="0"]');
+			if (now !== null) {
+				now.focus();
+			}
+		};
+		const fold = shut => {
+			if (shut) {
+				this.collapsed.add(group);
+			} else {
+				this.collapsed.delete(group);
+			}
+			this.refreshTree();
+		};
+		switch (event.key) {
+		case "ArrowDown":
+			choose(rows[at + 1]);
+			break;
+		case "ArrowUp":
+			choose(rows[at - 1]);
+			break;
+		case "Home":
+			choose(rows[0]);
+			break;
+		case "End":
+			choose(rows[rows.length - 1]);
+			break;
+		case "ArrowRight":
+			if (isGroup && this.collapsed.has(group)) {
+				fold(false);
+			} else if (isGroup) {
+				choose(rows[at + 1] !== undefined && rows[at + 1].dataset.role === "layer" ? rows[at + 1] : undefined);
+			}
+			break;
+		case "ArrowLeft":
+			if (isGroup && !this.collapsed.has(group)) {
+				fold(true);
+			} else if (!isGroup) {
+				choose(rows.find(other => other.dataset.role === "group" && Number(other.dataset.group) === group));
+			}
+			break;
+		case " ":
+			if (isGroup) {
+				fold(!this.collapsed.has(group));
+			} else {
+				row.querySelector('[data-role="visible"]').click();
+			}
+			break;
+		case "Enter":
+		case "F2": {
+			if (row.getAttribute("aria-selected") !== "true") {
+				choose(row);
+			}
+			const name = this.part("props").querySelector("input");
+			if (name !== null) {
+				name.focus();
+				name.select();
+			}
+			break;
+		}
+		default:
+			return;
+		}
+		event.preventDefault();
+		event.stopPropagation();
+	}
+
+	/**
+	 * Where F6 goes: the areas in the order they are read - the strip of
+	 * maps, the tool bar, the left, the map, the right and the dock - leaving
+	 * out whatever is not shown. The focus lands on what that area has
+	 * selected, or else on the first thing in it that takes the focus.
+	 */
+	focusArea(step) {
+		const canvas = this.editor.canvas;
+		const areas = this.areas === null
+			? [this.element, canvas]
+			: [this.maps, this.areas.toolbar, this.areas.left, canvas, this.areas.right, this.areas.dock];
+		const shown = areas.filter(area => area !== null && area !== undefined && !area.hidden && area.getClientRects().length > 0);
+		if (shown.length === 0) {
+			return false;
+		}
+		const now = document.activeElement;
+		const from = shown.findIndex(area => area === now || (area !== canvas && area.contains(now)));
+		const next = shown[from < 0 ? (step > 0 ? 0 : shown.length - 1) : (from + step + shown.length) % shown.length];
+		if (next === canvas) {
+			canvas.focus();
+			return true;
+		}
+		const usable = one => !one.disabled && one.tabIndex >= 0 && one.getClientRects().length > 0 && one.closest("[hidden]") === null;
+		// What is chosen in the area before whatever comes first in it: the
+		// row of the tree, then the tab in front, then anything at all.
+		for (const which of ['[role="treeitem"][tabindex="0"]', '[role="tab"][aria-selected="true"]', 'button, input, select, textarea, [tabindex="0"]']) {
+			const one = [...next.querySelectorAll(which)].find(usable);
+			if (one !== undefined) {
+				one.focus();
+				return true;
+			}
+		}
+		return false;
 	}
 
 	refreshProps() {
@@ -7679,6 +7858,8 @@ const EDGE_SWIPE_ZONE = 20;
 
 // Where an element with `remember` keeps the keys somebody set.
 const KEYS_STORAGE = "ddnet-editor-keys";
+// Each element's description of its map needs a name no other element has.
+let mapHelpCount = 0;
 const EDGE_SWIPE_REACH = 40;
 
 const SECOND_FINGER_MS = 150;
@@ -7999,9 +8180,18 @@ class CEditorElement extends ELEMENT_BASE {
 		this.editorCanvas = document.createElement("canvas");
 		this.editorCanvas.className = "editor-canvas";
 		this.editorCanvas.dataset.role = "map";
-		// The map takes the keyboard, so it has to be able to hold it.
+		// The map takes the keyboard, so it has to be able to hold it. It is
+		// an application to a screen reader, whose own keys would otherwise
+		// never reach it; what it answers to, and the way out, is said in a
+		// description beside it.
 		this.editorCanvas.tabIndex = 0;
-		this.mapBox.append(this.editorCanvas);
+		this.editorCanvas.setAttribute("role", "application");
+		this.editorCanvas.setAttribute("aria-label", "Map");
+		this.mapHelp = document.createElement("p");
+		this.mapHelp.hidden = true;
+		this.mapHelp.id = `ddnet-editor-map-help-${++mapHelpCount}`;
+		this.editorCanvas.setAttribute("aria-describedby", this.mapHelp.id);
+		this.mapBox.append(this.editorCanvas, this.mapHelp);
 		// The way a map is chosen from the disc. The element keeps it, because
 		// opening one is a command of the editor's and not of whatever page
 		// happens to hold it.
@@ -8033,6 +8223,29 @@ class CEditorElement extends ELEMENT_BASE {
 	/** The program, once it runs, and `null` before that. */
 	get editor() {
 		return this.editorInstance;
+	}
+
+	/**
+	 * What the map says it answers to, for whoever cannot see it: the keys
+	 * as they are now, which are not always the table's.
+	 */
+	describeMap() {
+		const panels = this.editorPanels;
+		if (panels === null) {
+			return;
+		}
+		const key = id => {
+			const command = panels.commands.find(one => one.id === id);
+			return command === undefined || command.keys.length === 0 ? null : keyLabel(command.keys[0]);
+		};
+		const said = [
+			["palette.open", "finds any command by its name"],
+			["edit.undo", "undoes"],
+			["layer.next", "goes to the layer below"],
+			["focus.next", "goes to the next area"],
+			["edit.escape", "comes back to the map"],
+		].filter(([id]) => key(id) !== null).map(([id, what]) => `${key(id)} ${what}`);
+		this.mapHelp.textContent = `The pointer paints with the brush and the mouse wheel zooms. ${said.join(", ")}.`;
 	}
 
 	/** The panels beside the map, once they are there. */
@@ -8363,6 +8576,8 @@ class CEditorElement extends ELEMENT_BASE {
 				}
 			}, { signal: signal });
 		}
+		this.describeMap();
+		this.addEventListener("editor-keys", () => this.describeMap(), { signal: signal });
 		document.addEventListener("keydown", event => {
 			if (this.hears()) {
 				panels.onKey(event);

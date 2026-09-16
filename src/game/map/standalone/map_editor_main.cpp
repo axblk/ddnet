@@ -15,6 +15,7 @@
 #include <engine/shared/config.h>
 #include <engine/storage.h>
 
+#include <game/map/document/edit.h>
 #include <game/map/standalone/map_editor.h>
 
 #include <algorithm>
@@ -551,6 +552,48 @@ EMSCRIPTEN_KEEPALIVE int MapEditorStoreBrush(int Slot)
 EMSCRIPTEN_KEEPALIVE int MapEditorUseBrush(int Slot)
 {
 	return g_pEditor != nullptr && Slot >= 0 && g_pEditor->UseBrush((size_t)Slot) ? 1 : 0;
+}
+
+// What goes beside a physics tile: which tele, which switch and how long it
+// waits, how hard and which way a speedup pushes. One set for the brush rather
+// than one per tile - a number is chosen and then tiles are put down with it.
+// Read back after a grab, which is how a piece of a map carries its numbers.
+EMSCRIPTEN_KEEPALIVE void MapEditorSetNumbers(int Number, int Delay, int Force, int MaxSpeed, int Angle)
+{
+	if(g_pEditor == nullptr)
+		return;
+	map_document::CBrushNumbers Numbers;
+	Numbers.m_Number = Number;
+	Numbers.m_Delay = Delay;
+	Numbers.m_Force = Force;
+	Numbers.m_MaxSpeed = MaxSpeed;
+	Numbers.m_Angle = Angle;
+	g_pEditor->SetNumbers(Numbers);
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorNumber()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Numbers().m_Number;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorDelay()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Numbers().m_Delay;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorForce()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Numbers().m_Force;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorMaxSpeed()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Numbers().m_MaxSpeed;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorAngle()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Numbers().m_Angle;
 }
 
 EMSCRIPTEN_KEEPALIVE int MapEditorBrushWidth()

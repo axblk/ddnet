@@ -310,6 +310,88 @@ namespace map_document
 			Brush.m_ExtraTiles);
 	}
 
+	void SetBrushNumbers(CBrush &Brush, const CBrushNumbers &Numbers)
+	{
+		const int Number = std::clamp(Numbers.m_Number, 0, 255);
+		const int Delay = std::clamp(Numbers.m_Delay, 0, 255);
+		const int Force = std::clamp(Numbers.m_Force, 0, 255);
+		const int MaxSpeed = std::clamp(Numbers.m_MaxSpeed, 0, 255);
+		// Degrees, and the way round is what matters rather than how many
+		// turns it took to get there.
+		const short Angle = (short)(((Numbers.m_Angle % 360) + 360) % 360);
+		std::visit([&](auto &Extra) {
+			using TStore = std::decay_t<decltype(Extra)>;
+			if constexpr(std::is_same_v<TStore, std::monostate>)
+				return;
+			else
+			{
+				for(int y = 0; y < Extra.Height(); ++y)
+				{
+					for(int x = 0; x < Extra.Width(); ++x)
+					{
+						auto Tile = Extra.Get(x, y);
+						// Air carries nothing: a number on a tile that does
+						// nothing would go into the file and come back as
+						// exactly that.
+						if(Tile.m_Type == 0)
+							continue;
+						if constexpr(std::is_same_v<TStore, CTileStore<CSpeedupTile>>)
+						{
+							Tile.m_Force = (unsigned char)Force;
+							Tile.m_MaxSpeed = (unsigned char)MaxSpeed;
+							Tile.m_Angle = Angle;
+						}
+						else
+						{
+							Tile.m_Number = (unsigned char)Number;
+							if constexpr(std::is_same_v<TStore, CTileStore<CSwitchTile>>)
+								Tile.m_Delay = (unsigned char)Delay;
+						}
+						Extra.Set(x, y, Tile);
+					}
+				}
+			}
+		},
+			Brush.m_ExtraTiles);
+	}
+
+	CBrushNumbers BrushNumbers(const CBrush &Brush)
+	{
+		CBrushNumbers Numbers;
+		std::visit([&](const auto &Extra) {
+			using TStore = std::decay_t<decltype(Extra)>;
+			if constexpr(std::is_same_v<TStore, std::monostate>)
+				return;
+			else
+			{
+				for(int y = 0; y < Extra.Height(); ++y)
+				{
+					for(int x = 0; x < Extra.Width(); ++x)
+					{
+						const auto Tile = Extra.Get(x, y);
+						if(Tile.m_Type == 0)
+							continue;
+						if constexpr(std::is_same_v<TStore, CTileStore<CSpeedupTile>>)
+						{
+							Numbers.m_Force = Tile.m_Force;
+							Numbers.m_MaxSpeed = Tile.m_MaxSpeed;
+							Numbers.m_Angle = Tile.m_Angle;
+						}
+						else
+						{
+							Numbers.m_Number = Tile.m_Number;
+							if constexpr(std::is_same_v<TStore, CTileStore<CSwitchTile>>)
+								Numbers.m_Delay = Tile.m_Delay;
+						}
+						return;
+					}
+				}
+			}
+		},
+			Brush.m_ExtraTiles);
+		return Numbers;
+	}
+
 	void PaintTiles(CDocument &Doc, size_t Group, size_t Layer, int x, int y, const CBrush &Brush)
 	{
 		EditTileLayer(Doc, Group, Layer, [&](CTileLayer &Changed) {

@@ -179,6 +179,19 @@
 	opacity: 1;
 }
 
+/* The numbers that go beside a physics tile, under the tileset. Empty for a
+   layer that has none, and then it takes up no room. */
+.editor-numbers {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	margin-top: 6px;
+}
+
+.editor-numbers:empty {
+	display: none;
+}
+
 /* The row a layer would land on if it were let go of now. */
 .editor-drop {
 	outline: 1px dashed #9fb8de;

@@ -277,6 +277,24 @@ public:
 	const map_document::CBrush &Brush() const { return m_Brush; }
 
 	/**
+	 * What goes beside a physics tile the brush puts down - a tele's target,
+	 * a switch's group and delay, how hard and which way a speedup pushes.
+	 *
+	 * They belong to the brush and not to a tile: a number is chosen and then
+	 * tiles are put down with it. Grabbing a piece of a layer reads them back
+	 * off what was grabbed, so that carrying a piece of a map somewhere else
+	 * carries its numbers too.
+	 */
+	const map_document::CBrushNumbers &Numbers() const { return m_Numbers; }
+
+	/**
+	 * Sets those numbers and writes them onto the brush in hand.
+	 *
+	 * @param Numbers What to put beside the tiles from now on.
+	 */
+	void SetNumbers(const map_document::CBrushNumbers &Numbers);
+
+	/**
 	 * A brush taken out of the tileset rather than out of the map: the
 	 * rectangle of tile indexes somebody dragged over the picture of the
 	 * tiles. The kind comes from the layer it is meant for, because what a
@@ -477,6 +495,7 @@ private:
 	int m_NextId = 1;
 	bool m_NeedsRedraw = true;
 	map_document::CBrush m_Brush;
+	map_document::CBrushNumbers m_Numbers;
 	std::array<map_document::CBrush, NUM_STORED_BRUSHES> m_aStoredBrushes;
 };
 

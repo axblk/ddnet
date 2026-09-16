@@ -453,6 +453,30 @@ class CMapEditor extends Program {
 		return this.ask("MapEditorUseBrush", "number", [slot]) === 1;
 	}
 	/** How big the brush is, in tiles. */
+	/**
+	 * What goes beside a physics tile the brush puts down: which tele, which
+	 * switch and how long it waits, how hard and which way a speedup pushes.
+	 *
+	 * Called with nothing it answers what the brush is carrying, which is
+	 * what a grab or a stored brush brought back with it. Called with an
+	 * object it sets them and writes them onto the brush in hand.
+	 */
+	numbers(values) {
+		if (values === undefined) {
+			return {
+				number: this.call("MapEditorNumber", "number") || 0,
+				delay: this.call("MapEditorDelay", "number") || 0,
+				force: this.call("MapEditorForce", "number") || 0,
+				maxSpeed: this.call("MapEditorMaxSpeed", "number") || 0,
+				angle: this.call("MapEditorAngle", "number") || 0,
+			};
+		}
+		const now = this.numbers();
+		const pick = name => (values[name] === undefined ? now[name] : Math.round(values[name]));
+		return this.setNumbers("MapEditorSetNumbers",
+			[pick("number"), pick("delay"), pick("force"), pick("maxSpeed"), pick("angle")]);
+	}
+
 	brushSize() {
 		const width = this.call("MapEditorBrushWidth", "number");
 		return width === null ? null : { width: width, height: this.call("MapEditorBrushHeight", "number") };
@@ -517,6 +541,7 @@ const PANELS_HTML = `
 			</span>
 		</header>
 		<canvas class="editor-tileset" data-role="tileset" width="256" height="256"></canvas>
+		<div class="editor-numbers" data-role="numbers"></div>
 	</section>
 	<section class="editor-panel" data-role="history-panel">
 		<header class="editor-panel-head">
@@ -1249,6 +1274,7 @@ class CEditorPanels {
 		}
 		const size = this.editor.brushSize();
 		this.part("brush-size").textContent = size === null ? "" : `${size.width} x ${size.height}`;
+		this.refreshNumbers(layer);
 
 		// The picture the layer is drawn with, where the map names one that
 		// lies beside it. A layer whose picture is inside the map file, or
@@ -1278,6 +1304,56 @@ class CEditorPanels {
 			}
 		}
 		this.paintTileset();
+	}
+
+	/**
+	 * The numbers that go beside a physics tile, as fields under the tileset.
+	 *
+	 * Changing one changes the brush and nothing else: no version, no history
+	 * entry. What is put down afterwards carries it.
+	 *
+	 * @param layer The layer that is selected.
+	 */
+	refreshNumbers(layer) {
+		const box = this.part("numbers");
+		const fields = TILE_NUMBERS[layer.kind] || [];
+		// Only rebuilt when the layer wants other fields than are there, so
+		// that a number being typed is not taken away mid-word.
+		const wanted = fields.map(field => field.key).join(",");
+		if (box.dataset.fields !== wanted) {
+			box.dataset.fields = wanted;
+			box.textContent = "";
+			for (const field of fields) {
+				const row = document.createElement("label");
+				row.className = "editor-prop";
+				const name = document.createElement("span");
+				name.textContent = field.label;
+				const input = document.createElement("input");
+				input.type = "number";
+				input.min = "0";
+				input.max = String(field.max);
+				input.dataset.role = `number-${field.key}`;
+				input.addEventListener("input", () => {
+					const value = Number.parseInt(input.value, 10);
+					if (Number.isFinite(value)) {
+						this.editor.numbers({ [field.key]: value });
+					}
+				}, { signal: this.stopping.signal });
+				row.append(name, input);
+				box.append(row);
+			}
+		}
+		if (fields.length === 0) {
+			return;
+		}
+		// What the brush carries, which after a grab is what was picked up.
+		const carried = this.editor.numbers();
+		for (const field of fields) {
+			const input = box.querySelector(`[data-role="number-${field.key}"]`);
+			if (input !== null && input !== document.activeElement) {
+				input.value = String(carried[field.key]);
+			}
+		}
 	}
 
 	paintTileset() {
@@ -1546,6 +1622,20 @@ function steerWithPointer(editor, options) {
 
 // What one notch of the wheel does, the same step the map viewer takes.
 const WHEEL_ZOOM_STEP = 1.1;
+
+// What goes beside a physics tile, and which kinds of layer take which.
+// A tile index says what the tile does; these say to which of them - and a
+// layer that has none of them shows none.
+const TILE_NUMBERS = {
+	tele: [{ key: "number", label: "Number", max: 255 }],
+	switch: [{ key: "number", label: "Number", max: 255 }, { key: "delay", label: "Delay", max: 255 }],
+	speedup: [
+		{ key: "force", label: "Force", max: 255 },
+		{ key: "maxSpeed", label: "Max speed", max: 255 },
+		{ key: "angle", label: "Angle", max: 359 },
+	],
+	tune: [{ key: "number", label: "Zone", max: 255 }],
+};
 
 // A tileset is sixteen by sixteen, and the index of a tile is its place in
 // that square. Every map there is says it this way.

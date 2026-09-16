@@ -166,6 +166,55 @@ namespace map_document
 		}
 
 		/**
+		 * Gives the store another size, keeping the tiles that are still on it.
+		 *
+		 * The blocks lie in the same places whatever the layer measures - a
+		 * block is 64 by 64 tiles and a tile's place in it does not depend on
+		 * how wide the layer is - so every block that lies wholly inside both
+		 * the old size and the new one is shared rather than copied, and only
+		 * the blocks the new edge cuts through are written out tile by tile.
+		 * A layer that grows downwards therefore costs the blocks along its
+		 * old bottom edge, not the blocks it holds.
+		 *
+		 * What falls outside is gone rather than hidden: a block that the new
+		 * edge cuts through is built again from the tiles that are left, so
+		 * making a layer smaller and larger again gives air back, the way the
+		 * editor in the client does it.
+		 */
+		void Resize(int NewWidth, int NewHeight)
+		{
+			if(NewWidth == m_Width && NewHeight == m_Height)
+				return;
+			CTileStore Resized(NewWidth, NewHeight);
+			const int Wide = std::min(m_Width, NewWidth);
+			const int High = std::min(m_Height, NewHeight);
+			for(int ChunkY = 0; ChunkY * CHUNK_SIZE < High; ++ChunkY)
+			{
+				for(int ChunkX = 0; ChunkX * CHUNK_SIZE < Wide; ++ChunkX)
+				{
+					const CChunkRef &pChunk = ChunkAt(ChunkX, ChunkY);
+					if(pChunk == nullptr)
+						continue;
+					const int Left = ChunkX * CHUNK_SIZE;
+					const int Top = ChunkY * CHUNK_SIZE;
+					if(Left + CHUNK_SIZE <= Wide && Top + CHUNK_SIZE <= High)
+					{
+						Resized.PutChunk(ChunkX, ChunkY, pChunk);
+						continue;
+					}
+					for(int y = Top; y < std::min(Top + CHUNK_SIZE, High); ++y)
+					{
+						for(int x = Left; x < std::min(Left + CHUNK_SIZE, Wide); ++x)
+						{
+							Resized.Set(x, y, pChunk->m_aTiles[(size_t)(y - Top) * CHUNK_SIZE + (x - Left)]);
+						}
+					}
+				}
+			}
+			*this = std::move(Resized);
+		}
+
+		/**
 		 * The block a piece of the layer lies in, to be read straight out of, or
 		 * `nullptr` where that piece is nothing but air.
 		 *
@@ -407,6 +456,33 @@ namespace map_document
 		 */
 		CChunk *MutableChunk(int ChunkX, int ChunkY)
 		{
+			CChunkRef &pChunk = MutableChunkRef(ChunkX, ChunkY);
+			if(pChunk == nullptr)
+			{
+				pChunk = std::make_shared<CChunk>();
+			}
+			else if(pChunk.use_count() > 1)
+			{
+				pChunk = std::make_shared<CChunk>(*pChunk);
+			}
+			// The only owner of the block is this page, the page's only owner is
+			// this directory, and the directory is only ours, so what is written
+			// here reaches nobody else.
+			return const_cast<CChunk *>(pChunk.get());
+		}
+
+		/** Puts a whole block in place, shared with whoever else holds it. */
+		void PutChunk(int ChunkX, int ChunkY, const CChunkRef &pChunk)
+		{
+			MutableChunkRef(ChunkX, ChunkY) = pChunk;
+		}
+
+		/**
+		 * Where a block is held, with the list of pages and the page taken
+		 * apart from anybody else's before it is handed out.
+		 */
+		CChunkRef &MutableChunkRef(int ChunkX, int ChunkY)
+		{
 			const size_t Index = ChunkIndex(ChunkX, ChunkY);
 			const size_t Pages = ((size_t)m_ChunksAcross * m_ChunksDown + CHUNKS_PER_PAGE - 1) / CHUNKS_PER_PAGE;
 			if(m_pDirectory == nullptr)
@@ -426,19 +502,7 @@ namespace map_document
 			{
 				pPage = std::make_shared<CPage>(*pPage);
 			}
-			CChunkRef &pChunk = const_cast<CPage *>(pPage.get())->m_apChunks[Index % CHUNKS_PER_PAGE];
-			if(pChunk == nullptr)
-			{
-				pChunk = std::make_shared<CChunk>();
-			}
-			else if(pChunk.use_count() > 1)
-			{
-				pChunk = std::make_shared<CChunk>(*pChunk);
-			}
-			// The only owner of the block is this page, the page's only owner is
-			// this directory, and the directory is only ours, so what is written
-			// here reaches nobody else.
-			return const_cast<CChunk *>(pChunk.get());
+			return const_cast<CPage *>(pPage.get())->m_apChunks[Index % CHUNKS_PER_PAGE];
 		}
 
 		int m_Width = 0;

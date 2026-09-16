@@ -179,6 +179,27 @@ TEST(Command, ALayerPropertyIsSetByNameAndKind)
 		"this layer has no 'color'");
 }
 
+TEST(Command, ALayerIsResizedAndTheRefusalsSayWhy)
+{
+	CCommands Commands(TwoGroups());
+	Commands.Ok(R"({"op":"layer.resize","group":0,"layer":0,"width":20,"height":3})");
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->Width(), 20);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->Height(), 3);
+
+	// One side on its own is the other side as it stands.
+	Commands.Ok(R"({"op":"layer.resize","group":0,"layer":0,"height":9})");
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->Width(), 20);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->Height(), 9);
+
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.resize","group":0,"layer":0,"width":0})"),
+		"a layer has to be at least one tile");
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.resize","group":0,"layer":0,"width":100001})"),
+		"a layer is at most 100000 tiles a side");
+	Commands.Ok(R"({"op":"layer.add","group":0,"type":"quads"})");
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.resize","group":0,"layer":1,"width":4,"height":4})"),
+		"that layer holds no tiles");
+}
+
 TEST(Command, AChangeThatIsRefusedLeavesTheMapWhereItWas)
 {
 	CCommands Commands(TwoGroups());

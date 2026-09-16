@@ -67,6 +67,26 @@ namespace map_document
 	 */
 	size_t MoveGroup(CDocument &Doc, size_t From, size_t To);
 
+	/**
+	 * Gives a tile layer another size.
+	 *
+	 * What is still on the layer stays where it is and what falls outside is
+	 * gone; the price is the blocks the new edge cuts through rather than the
+	 * blocks the layer holds - see `CTileStore::Resize`.
+	 *
+	 * The physics layers of a map are all the size of its game layer, because
+	 * that is the size the game plays: a tele layer that is wider than the
+	 * game layer has tiles nobody can stand on, and one that is narrower is a
+	 * map whose right-hand edge teleports nobody. So resizing any of them
+	 * resizes all of them, and a plain drawn layer is resized by itself.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Layer Which layer, which has to be a tile layer.
+	 * @param Width How wide it is to be, at least one tile.
+	 * @param Height How tall.
+	 */
+	void ResizeLayer(CDocument &Doc, const CLayerAddress &Layer, int Width, int Height);
+
 	/** Adds a layer at the end of a group, and says where it went. */
 	CLayerAddress AddLayer(CDocument &Doc, size_t Group, CLayer Layer);
 

@@ -373,6 +373,9 @@ namespace map_document
 			return false;
 		}
 
+		/** How long a side of a tile layer may be, as in the client. */
+		constexpr int MAX_LAYER_SIDE = 100000;
+
 		bool ReadTileLayerKind(const char *pKind, ETileLayerKind *pOut)
 		{
 			if(str_comp(pKind, "tiles") == 0)
@@ -551,6 +554,31 @@ namespace map_document
 			const CLayerAddress Address = MoveLayer(Document, CLayerAddress{Group, Layer}, CLayerAddress{ToGroup, To});
 			Document.Commit();
 			return Succeeded("group", (int)Address.m_Group, "layer", (int)Address.m_Layer);
+		}
+		if(str_comp(pOp, "layer.resize") == 0)
+		{
+			const size_t Group = Arguments.Index("group", Map.NumGroups());
+			const size_t Layer = Arguments.Index("layer", Arguments.Failed() ? 0 : Map.NumLayers(Group));
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			const CTileLayer *pTiles = std::get_if<CTileLayer>(Map.Layer(Group, Layer));
+			if(pTiles == nullptr)
+				return Failed("that layer holds no tiles");
+			const int Width = Arguments.Int("width", pTiles->Width());
+			const int Height = Arguments.Int("height", pTiles->Height());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			// The same bounds the editor in the client offers, and for the
+			// same reason: a layer is written out as a plain array of tiles,
+			// so a size nobody could save is not one to let in.
+			if(Width <= 0 || Height <= 0)
+				return Failed("a layer has to be at least one tile");
+			if(Width > MAX_LAYER_SIDE || Height > MAX_LAYER_SIDE)
+				return Failed("a layer is at most 100000 tiles a side");
+			Document.Begin(Arguments.Str("label", "Resize layer"), pMerge);
+			ResizeLayer(Document, CLayerAddress{Group, Layer}, Width, Height);
+			Document.Commit();
+			return Succeeded();
 		}
 		if(str_comp(pOp, "layer.setProp") == 0)
 		{

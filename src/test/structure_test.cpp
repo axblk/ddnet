@@ -149,6 +149,64 @@ TEST(Structure, MovingALayerLeavesEveryOtherGroupAlone)
 	EXPECT_EQ(Document.Map().Group(1), Before.Group(1));
 }
 
+TEST(Structure, ADrawnLayerIsResizedByItself)
+{
+	CDocument Document(TwoGroups());
+	Document.Begin("Resize");
+	CTileLayer Painted = *Document.Map().TileLayer(0, 0);
+	CTile Solid = {};
+	Solid.m_Index = 4;
+	Painted.m_Tiles.Set(7, 7, Solid);
+	Painted.m_Tiles.Set(1, 1, Solid);
+	Document.Edit().ReplaceLayer(0, 0, Painted);
+	Document.Commit();
+	const CLayer *pUntouched = Document.Map().Layer(0, 1);
+
+	Document.Begin("Resize");
+	ResizeLayer(Document, CLayerAddress{0, 0}, 16, 4);
+	Document.Commit();
+
+	EXPECT_EQ(Document.Map().TileLayer(0, 0)->Width(), 16);
+	EXPECT_EQ(Document.Map().TileLayer(0, 0)->Height(), 4);
+	// What was below the new edge is gone, and the rest is where it was.
+	EXPECT_EQ(Document.Map().TileLayer(0, 0)->m_Tiles.Get(7, 7).m_Index, 0);
+	EXPECT_EQ(Document.Map().TileLayer(0, 0)->m_Tiles.Get(1, 1).m_Index, 4);
+	// The game layer is not a drawn layer's business.
+	EXPECT_EQ(Document.Map().TileLayer(1, 0)->Width(), 8);
+	// And neither is the layer beside it.
+	EXPECT_EQ(Document.Map().Layer(0, 1), pUntouched);
+}
+
+TEST(Structure, ResizingOnePhysicsLayerResizesThemAll)
+{
+	CMapState Map = TwoGroups();
+	CGroup Game = *Map.Group(1);
+	Game.m_vpLayers.push_back(std::make_shared<const CLayer>(TileLayer("tele", ETileLayerKind::TELE)));
+	Map.ReplaceGroup(1, std::move(Game));
+	CDocument Document(std::move(Map));
+	const CLayer *pDrawn = Document.Map().Layer(0, 0);
+
+	Document.Begin("Resize");
+	ResizeLayer(Document, CLayerAddress{1, 1}, 12, 12);
+	Document.Commit();
+
+	// The tele layer was asked, but the game layer plays the same size.
+	EXPECT_EQ(Document.Map().TileLayer(1, 1)->Width(), 12);
+	EXPECT_EQ(Document.Map().TileLayer(1, 1)->Height(), 12);
+	EXPECT_EQ(Document.Map().TileLayer(1, 0)->Width(), 12);
+	EXPECT_EQ(Document.Map().TileLayer(1, 0)->Height(), 12);
+	// A layer that is only drawn keeps its own size, and stays the node it is.
+	EXPECT_EQ(Document.Map().TileLayer(0, 0)->Width(), 8);
+	EXPECT_EQ(Document.Map().Layer(0, 0), pDrawn);
+
+	// A size that is already there is not a change.
+	const size_t Entries = Document.History().NumEntries();
+	Document.Begin("Resize");
+	ResizeLayer(Document, CLayerAddress{1, 0}, 12, 12);
+	Document.Commit();
+	EXPECT_EQ(Document.History().NumEntries(), Entries);
+}
+
 TEST(Structure, TheGameLayerIsFoundWhereverItIs)
 {
 	const CMapState Map = TwoGroups();

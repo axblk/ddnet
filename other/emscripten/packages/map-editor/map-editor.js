@@ -828,6 +828,13 @@ const LAYER_PROPS = {
 	sounds: [{ prop: "sound", label: "Sound", kind: "number" }],
 };
 
+// How large a tile layer is. Not a property like the others: it goes through
+// `layer.resize`, because a physics layer is not resized on its own.
+const SIZE_PROPS = [
+	{ prop: "width", label: "Width", kind: "count" },
+	{ prop: "height", label: "Height", kind: "count" },
+];
+
 // How the value of a group or layer is found in what the program said about
 // it: a clip is one array of four, an offset one of two, everything else is
 // itself.
@@ -835,6 +842,7 @@ const PACKED = {
 	offsetX: ["offset", 0], offsetY: ["offset", 1],
 	parallaxX: ["parallax", 0], parallaxY: ["parallax", 1],
 	clipX: ["clip", 0], clipY: ["clip", 1], clipW: ["clip", 2], clipH: ["clip", 3],
+	width: ["size", 0], height: ["size", 1],
 };
 
 function propertyValue(thing, prop) {
@@ -1410,7 +1418,12 @@ class CEditorPanels {
 			})));
 		}
 		if (layer.type === "tiles") {
-			props.append(this.readout("Size", `${layer.size[0]} x ${layer.size[1]}`));
+			for (const size of SIZE_PROPS) {
+				props.append(this.field(layer, size, value => ({
+					op: "layer.resize", group: where.group, layer: where.layer,
+					[size.prop]: value, label: "Resize layer",
+				})));
+			}
 		} else if (layer.type === "quads") {
 			props.append(this.readout("Quads", String(layer.quads)));
 		}
@@ -1495,6 +1508,22 @@ class CEditorPanels {
 			}, { signal: this.stopping.signal });
 			input.addEventListener("change", close, { signal: this.stopping.signal });
 			input.addEventListener("blur", close, { signal: this.stopping.signal });
+		} else if (description.kind === "count") {
+			// A number that is only handed over when the field is left. Every
+			// step on the way would be a change of its own, and a layer typed
+			// from 8 to 150 would be resized to 1 and then to 15 first - which
+			// for a size means the tiles outside are gone before the number is
+			// finished.
+			input.type = "number";
+			input.min = "1";
+			input.value = String(current);
+			input.addEventListener("change", () => {
+				const value = Number.parseInt(input.value, 10);
+				if (Number.isFinite(value)) {
+					send(value);
+				}
+				this.refresh();
+			}, { signal: this.stopping.signal });
 		} else {
 			input.type = "text";
 			input.value = String(current);

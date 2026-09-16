@@ -5,6 +5,7 @@
 #include <engine/shared/json.h>
 #include <engine/shared/jsonwriter.h>
 
+#include <game/map/document/art.h>
 #include <game/map/document/document.h>
 #include <game/map/document/edit.h>
 #include <game/map/document/structure.h>
@@ -731,6 +732,27 @@ namespace map_document
 			ResizeLayer(Document, CLayerAddress{Group, Layer}, Width, Height);
 			Document.Commit();
 			return Succeeded();
+		}
+		if(str_comp(pOp, "layer.type") == 0)
+		{
+			const size_t Group = Arguments.Index("group", Map.NumGroups());
+			const size_t Layer = Arguments.Index("layer", Arguments.Failed() ? 0 : Map.NumLayers(Group));
+			const int X = Arguments.Int("x");
+			const int Y = Arguments.Int("y");
+			const char *pText = Arguments.Str("text", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pText == nullptr)
+				return Failed("The command has no 'text'");
+			const CTileLayer *pTiles = std::get_if<CTileLayer>(Map.Layer(Group, Layer));
+			if(pTiles == nullptr)
+				return Failed("that layer holds no tiles");
+			if(!DrawsOwnTiles(pTiles->m_Kind))
+				return Failed("a physics layer draws no letters");
+			Document.Begin(Arguments.Str("label", "Type"), pMerge);
+			const int Wrote = TypeText(Document, CLayerAddress{Group, Layer}, X, Y, pText);
+			Document.Commit();
+			return Succeeded("tiles", Wrote);
 		}
 		if(str_comp(pOp, "layer.constructGameTiles") == 0)
 		{

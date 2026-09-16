@@ -14,11 +14,13 @@ Use the client console to record frame counters, component CPU zones, and native
 render_trace_start 10 trace.json
 ```
 
-The trace stops after the requested number of seconds, or earlier once its buffers are full. Use `render_trace_stop` to stop it early. Generate an interactive HTML report with:
+The trace stops after the requested number of seconds, or earlier once its buffers are full. Use `render_trace_stop` to stop it early. Turn it into a report with:
 
 ```sh
-python scripts/render_trace_report.py trace.json
+python scripts/trace_report.py trace.json
 ```
+
+The report is one self-contained HTML file that fetches nothing. It leads with the slowest one per cent of frames and what those frames spend that a median frame does not, groups the CPU scopes under the GPU zone they draw into so a component's two halves are on one row, and reports CPU times exclusively, so a column adds up to the frame. Pass `--against <trace>` to put a second trace beside it and get a delta column, which is what a before and after is for. `--self-test` checks the analysis without a trace.
 
 Tracing is disabled by default. OpenGL traces contain the CPU zones and counters but no native GPU timestamp. WebGPU keeps total frame timing when timestamp queries inside render passes are unavailable, but omits the split into zones.
 

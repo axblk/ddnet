@@ -643,6 +643,20 @@ export const COMMANDS = [
 		run: p => p.scheme(p.scheme() === "light" ? "dark" : "light"),
 	},
 	{
+		// Three states rather than a switch: the query is right nearly always,
+		// and the two answers are for the two known cases where it lies - a
+		// touch laptop with a mouse, and a tablet in desktop mode.
+		id: "view.targets", label: "Big targets", group: "View", safe: true, menu: "Settings",
+		keys: ["Ctrl+Alt+T"],
+		pressed: p => p.finger(),
+		run: p => {
+			const next = { auto: "big", big: "small", small: "auto" }[p.targets()];
+			p.targets(next);
+			p.say(next === "auto" ? "Big targets: as the browser says"
+				: next === "big" ? "Big targets: on" : "Big targets: off");
+		},
+	},
+	{
 		id: "help.wiki", label: "How mapping works (the wiki)", group: "Help", safe: true, menu: "Help",
 		keys: ["F1"],
 		run: () => window.open("https://wiki.ddnet.org/wiki/Mapping", "_blank", "noopener"),
@@ -666,9 +680,9 @@ export function commandRole(command) {
 }
 
 /** What its tooltip says: what it does, and the key that does it. */
-export function commandTitle(command) {
+export function commandTitle(command, withKeys = true) {
 	const keys = command.keys || [];
-	return keys.length === 0 ? command.label : `${command.label} (${keyLabel(keys[0])})`;
+	return keys.length === 0 || !withKeys ? command.label : `${command.label} (${keyLabel(keys[0])})`;
 }
 
 /** The commands by the keys that reach them. */

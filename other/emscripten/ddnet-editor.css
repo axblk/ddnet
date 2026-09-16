@@ -83,10 +83,52 @@ ddnet-editor,
 
 /* A finger needs a bigger target than a pointer, and that is the whole
    difference: text, icons, gaps and radii stay where they are. */
+/* „Große Ziele: an" und „aus" — dieselben Zahlen wie unten und wie oben, nur
+   ohne die Abfrage. Ein Attributwähler schlägt den nackten Namen im Medienblock,
+   also gilt die Einstellung, wo es eine gibt, und die Abfrage sonst. */
+ddnet-editor[data-big="yes"],
+.editor-panels[data-big="yes"] {
+	--row: 40px;
+	--control: 36px;
+	--button-small: 44px;
+	--button: 44px;
+	--toolbar: 48px;
+}
+
+ddnet-editor[data-big="no"],
+.editor-panels[data-big="no"] {
+	--row: 24px;
+	--control: 24px;
+	--button-small: 24px;
+	--button: 28px;
+	--toolbar: 40px;
+}
+
+[data-big="yes"] .editor-more {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+[data-big="no"] .editor-more {
+	opacity: 0;
+	pointer-events: none;
+}
+
+[data-big="yes"] .editor-zoom-step {
+	display: block;
+}
+
+[data-big="no"] .editor-zoom-step {
+	display: none;
+}
+
+/* Und ohne Einstellung die Abfrage. `:not([data-big])` steht davor, weil das
+   Element und die Tafeln ihre Antwort selbst hinschreiben, sobald sie da sind
+   — bis dahin, und fuer Tafeln ohne Element, gilt dies hier. */
 @media (pointer: coarse) {
-	ddnet-editor,
-	.editor-panels,
-	.editor-overlay {
+	ddnet-editor:not([data-big]),
+	.editor-panels:not([data-big]),
+	.editor-overlay:not([data-big]) {
 		--row: 40px;
 		/* A field is wide, so 36 high is target enough; a button that is only
 		   as wide as its word is not, and gets the full 44. */
@@ -103,6 +145,10 @@ ddnet-editor,
 	.editor-overlay {
 		--time-pop: 0ms;
 		--time-slide: 0ms;
+	}
+
+	.editor-toast {
+		animation: none;
 	}
 }
 
@@ -181,6 +227,16 @@ ddnet-editor button:focus,
 .editor-panels button:focus {
 	background: none;
 	color: inherit;
+}
+
+/* The same goes for a page that makes its own buttons finger-sized - our
+   `ddnet-page.css` sets `min-height: 44px` on every `button` at a coarse
+   pointer, and that reaches ours. How tall a button of the editor is, is the
+   editor's own answer: the classes below say it, and "Big targets: off" would
+   otherwise be overruled by a page that never heard of it. */
+ddnet-editor button,
+.editor-panels button {
+	min-height: 0;
 }
 
 /* The five areas the panels are spread into. Each is a strip of its own, told
@@ -1188,8 +1244,10 @@ circle.editor-source-dot.editor-source-picked {
 	background: var(--sel);
 }
 
-.editor-palette-row:hover {
-	background: var(--bg-3);
+@media (hover: hover) {
+	.editor-palette-row:hover {
+		background: var(--bg-3);
+	}
 }
 
 .editor-palette-what {
@@ -1283,9 +1341,14 @@ circle.editor-source-dot.editor-source-picked {
 	cursor: pointer;
 }
 
-.editor-menu-row:hover:not(:disabled),
 .editor-menu-row:focus-visible {
 	background: var(--bg-3);
+}
+
+@media (hover: hover) {
+	.editor-menu-row:hover:not(:disabled) {
+		background: var(--bg-3);
+	}
 }
 
 .editor-menu-row:disabled {
@@ -1476,12 +1539,7 @@ ddnet-editor[data-dock="overlay"] .editor-dock {
 	pointer-events: auto;
 }
 
-@media (pointer: coarse) {
-	.editor-more {
-		opacity: 1;
-		pointer-events: auto;
-	}
-}
+
 
 /* The big tile chooser may be taller than the box it is in - with a finger it
    is as wide as the box and sixteen rows of forty-four - so it scrolls. */
@@ -1663,4 +1721,191 @@ ddnet-editor[data-stack="yes"] .editor-here {
 	color: var(--text-2);
 	font: var(--type-xs);
 	font-variant-numeric: tabular-nums;
+}
+
+/* What just happened, over the map. The status line says the same thing at
+   the edge of the screen, where one looks for it afterwards; this is what one
+   sees without looking. With room to spare it moves to the bottom middle -
+   the top right of a forty-inch monitor is eighty centimetres from the work. */
+.editor-toasts {
+	position: absolute;
+	top: var(--space-3);
+	right: var(--space-3);
+	z-index: 6;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: var(--space-1);
+	max-width: min(360px, 60%);
+	pointer-events: none;
+}
+
+/* Ab 2560 unten in der Mitte: dort ist der Blick beim Arbeiten, und die obere
+   rechte Ecke eines Vierzigzoellers ist achtzig Zentimeter weit weg. */
+ddnet-editor[data-size="huge"] .editor-toasts {
+	top: auto;
+	right: auto;
+	left: 50%;
+	bottom: calc(var(--button) + var(--space-4));
+	align-items: center;
+	max-width: calc(100% - 2 * var(--space-3));
+	transform: translateX(-50%);
+}
+
+/* 120 ms herein, 200 ms hinaus: lang genug, dass das Auge die Bewegung sieht
+   und ihr folgt, kurz genug, dass niemand darauf wartet. */
+@keyframes editor-toast-in {
+	from { opacity: 0; transform: translateY(8px); }
+	to { opacity: 1; transform: translateY(0); }
+}
+
+.editor-toast {
+	animation: editor-toast-in 120ms ease-out;
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	min-height: var(--row);
+	padding: var(--space-1) var(--space-2);
+	color: var(--text-1);
+	font: var(--type-sm);
+	background: var(--bg-1);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+	pointer-events: auto;
+}
+
+/* A mistake is marked down its edge rather than by being red all over: red
+   text on a dark box is the one thing the contrast rules never forgive. */
+.editor-toast[data-kind="error"] {
+	border-left: 3px solid var(--danger);
+}
+
+.editor-toast-close {
+	flex: none;
+	width: var(--button-small);
+	min-height: var(--button-small);
+	color: var(--text-2);
+	background: none;
+	border: 0;
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+/* What the zoom is, at the corner of the map where the hand is. */
+.editor-zoom {
+	position: absolute;
+	right: var(--space-2);
+	bottom: var(--space-2);
+	z-index: 2;
+	display: flex;
+	align-items: stretch;
+	background: var(--bg-1);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+	overflow: hidden;
+}
+
+.editor-zoom-level {
+	min-width: 5ch;
+	min-height: var(--button);
+	padding: 0 var(--space-2);
+	color: var(--text-1);
+	font: var(--type-xs);
+	font-variant-numeric: tabular-nums;
+	background: none;
+	border: 0;
+	cursor: pointer;
+}
+
+/* The two steps are a finger's business: a pointer has a wheel, and a wheel is
+   quicker than any button. */
+.editor-zoom-step {
+	display: none;
+	min-width: var(--button);
+	min-height: var(--button);
+	color: var(--text-1);
+	font: var(--type-sm);
+	background: none;
+	border: 0;
+	cursor: pointer;
+}
+
+
+
+/* The handle between a column and the map. Six pixels wide to catch, one pixel
+   wide to look at - a handle one can see is a line, and a handle one can hit
+   is wider than a line. */
+.editor-left,
+.editor-right,
+.editor-dock {
+	position: relative;
+}
+
+.editor-grip {
+	position: absolute;
+	z-index: 3;
+	background: none;
+	touch-action: none;
+}
+
+.editor-grip-left,
+.editor-grip-right {
+	top: 0;
+	bottom: 0;
+	width: 7px;
+	cursor: col-resize;
+}
+
+.editor-grip-left {
+	right: -4px;
+}
+
+.editor-grip-right {
+	left: -4px;
+}
+
+.editor-grip-dock {
+	left: 0;
+	right: 0;
+	top: -4px;
+	height: 7px;
+	cursor: row-resize;
+}
+
+@media (hover: hover) {
+	.editor-grip:hover {
+		background: var(--accent);
+	}
+}
+
+.editor-grip:focus-visible {
+	background: var(--accent);
+}
+
+/* A side that is a drawer or a sheet has no edge to drag, and neither has a
+   dock that is shut. */
+ddnet-editor[data-left="drawer"] .editor-grip-left,
+ddnet-editor[data-left="sheet"] .editor-grip-left,
+ddnet-editor[data-right="drawer"] .editor-grip-right,
+ddnet-editor[data-right="sheet"] .editor-grip-right,
+.editor-dock-shut .editor-grip-dock {
+	display: none;
+}
+
+/* Was ein Knopf heißt, für eine Hand, die nicht schweben kann. Dieselben
+   Worte wie im `title`, nur sichtbar gemacht: ein langer Druck fragt danach. */
+.editor-tip {
+	position: absolute;
+	z-index: 7;
+	max-width: 240px;
+	padding: var(--space-1) var(--space-2);
+	color: var(--text-1);
+	font: var(--type-xs);
+	background: var(--bg-3);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-1);
+	box-shadow: var(--shadow);
+	pointer-events: none;
 }

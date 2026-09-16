@@ -1008,6 +1008,19 @@ const BOX_HEIGHTS = [
 // done to it, then what one is looking at, then the things one reaches for.
 const MENU_ORDER = ["File", "Edit", "View", "Layer", "Tools", "Settings", "Help"];
 
+// How long a note about what happened stays, and how many may stand at once.
+const TOAST_MS = 4000;
+const TOAST_MOST = 4;
+
+// How far a column or the dock may be dragged, in pixels. The lower end is
+// what the panel inside needs; the upper end is where it starts eating the
+// map, which is the thing one is actually working on.
+const DRAG_LIMITS = {
+	left: { least: 240, most: 480 },
+	right: { least: 288, most: 560 },
+	dock: { least: 160, most: 640 },
+};
+
 const PANELS_HTML = `
 <div class="editor-bar" data-role="bar">
 	<span class="editor-status" data-role="status" role="status"></span>
@@ -1425,6 +1438,13 @@ class CEditorPanels {
 		// The big tile chooser over the map, and whether it stays open when
 		// the key that opened it is let go of.
 		this.picker = null;
+		this.zoomChip = null;
+		this.floatHome = null;
+		// Whether a keyboard has been seen. A desk has one until proven
+		// otherwise; a finger has to show one first.
+		this.sawKey = false;
+		// What a long press says, where a pointer would have hovered.
+		this.tip = null;
 		// Which shape the box is in, once something tells us. Without a box
 		// there are no areas to reshape and the panels stand in one column.
 		this.shape = null;
@@ -1442,6 +1462,10 @@ class CEditorPanels {
 		this.maps = null;
 		this.mapState = new Map();
 		this.lastMap = null;
+		this.toasts = null;
+		// What somebody dragged the columns and the dock to, in pixels, or
+		// nothing where nobody has dragged them.
+		this.dragged = { left: null, right: null, dock: null };
 		this.drawer = { left: false, right: false };
 		// What floats over the whole box, and where it floats in.
 		this.over = null;
@@ -1536,13 +1560,27 @@ class CEditorPanels {
 		this.picker.innerHTML = '<canvas class="editor-picker-tiles" data-role="picker-tiles"></canvas>'
 			+ '<p class="editor-picker-name" data-role="picker-name"></p>';
 		// Which layer a spot on the map belongs to, when more than one does.
+		// What the zoom is, where the hand is. The status line says it too, at
+		// the other end of the screen; on a wide one those are not the same
+		// place, and this is the one a finger can reach.
+		this.zoomChip = document.createElement("div");
+		this.zoomChip.className = "editor-zoom";
+		this.zoomChip.dataset.role = "zoom-chip";
+		this.zoomChip.innerHTML = '<button type="button" class="editor-zoom-step" data-role="zoom-out" aria-label="Further away">\u2212</button>'
+			+ '<button type="button" class="editor-zoom-level" data-role="zoom-level"></button>'
+			+ '<button type="button" class="editor-zoom-step" data-role="zoom-in" aria-label="Closer">+</button>';
 		this.chooser = document.createElement("ul");
 		this.chooser.className = "editor-choose";
 		this.chooser.dataset.role = "layer-choose";
 		this.chooser.hidden = true;
-		parent.append(this.overlay, this.picker, this.chooser);
+		// Where the things that float over the map live. It is not the
+		// element-wide over-layer: a note in the top right corner of that
+		// would sit on the right column and cover what it is telling about.
+		this.floatHome = parent;
+		parent.append(this.overlay, this.picker, this.chooser, this.zoomChip);
 		this.wirePick(this.picker.querySelector('[data-role="picker-tiles"]'));
 		this.wireChooser();
+		this.wireZoomChip();
 	}
 
 	/**
@@ -1556,7 +1594,7 @@ class CEditorPanels {
 		// a finger can hit. A touch on it opens the big one, where the tiles
 		// are forty-four.
 		canvas.addEventListener("pointerdown", event => {
-			if (canvas.dataset.role !== "tileset" || !matchMedia("(pointer: coarse)").matches) {
+			if (canvas.dataset.role !== "tileset" || !this.finger()) {
 				return;
 			}
 			event.preventDefault();
@@ -1629,6 +1667,20 @@ class CEditorPanels {
 		}, { signal: this.stopping.signal });
 	}
 
+	/** The three buttons of the zoom chip, all of them commands. */
+	wireZoomChip() {
+		const on = (role, id) => {
+			const button = this.zoomChip.querySelector(`[data-role="${role}"]`);
+			button.title = commandTitle(this.commands.find(which => which.id === id), this.keysShown());
+			button.addEventListener("click", () => this.run(id), { signal: this.stopping.signal });
+		};
+		on("zoom-out", "view.zoomOut");
+		on("zoom-in", "view.zoomIn");
+		// The number is a button too: it says what the zoom is, and pressing it
+		// asks for the one zoom nobody has to think about.
+		on("zoom-level", "view.fit");
+	}
+
 	/** What lies under a spot on the map, as a list to pick from. */
 	layersAt(x, y) {
 		const found = [];
@@ -1699,7 +1751,7 @@ class CEditorPanels {
 		// rather than the map: a tileset sized to fit a short map would be
 		// nineteen pixels a tile again. Wide enough is what counts, because
 		// the chooser may scroll downwards and a finger scrolls it.
-		const finger = matchMedia("(pointer: coarse)").matches;
+		const finger = this.finger();
 		const home = finger ? this.overlayHome() : null;
 		if (home !== null && this.picker.parentElement !== home) {
 			home.append(this.picker);
@@ -1869,7 +1921,7 @@ class CEditorPanels {
 		add.dataset.role = "map-add";
 		add.textContent = "+";
 		const command = this.commands.find(which => which.id === "file.new");
-		add.title = command === undefined ? "New map" : commandTitle(command);
+		add.title = command === undefined ? "New map" : commandTitle(command, this.keysShown());
 		add.setAttribute("aria-label", "New map");
 		add.addEventListener("click", () => this.run("file.new"), { signal: this.stopping.signal });
 		this.maps.append(add);
@@ -2015,6 +2067,18 @@ class CEditorPanels {
 		const before = this.shape;
 		this.shape = shape;
 		this.readonly = shape.readonly;
+		// The panels say for themselves whether they are drawn for a finger,
+		// so that the stylesheet has one answer to read whether they stand in
+		// the element or on a page of their own. Every area is told as well as
+		// the root: each of them carries `editor-panels` too, and one that was
+		// not told would go on declaring the sizes the query asked for.
+		const big = this.finger() ? "yes" : "no";
+		this.root.dataset.big = big;
+		if (this.areas !== null) {
+			for (const area of Object.values(this.areas)) {
+				area.dataset.big = big;
+			}
+		}
 		// The dock is shut to begin with, because what is in it is looked at
 		// now and then; with room enough it is open, because then it costs
 		// nothing. Said once, when the box first says there is room, so that
@@ -2034,6 +2098,7 @@ class CEditorPanels {
 		}
 		this.applyTabs();
 		this.applyTilesTab();
+		this.applyDragged();
 		this.placeMaps();
 		this.refreshBar();
 	}
@@ -2055,7 +2120,7 @@ class CEditorPanels {
 		// finger: there is no Escape to empty the brush with, nothing to hold
 		// to keep the tile chooser open, and no Ctrl to hold while pressing
 		// the right button that a finger also does not have.
-		if (command.touch === true && !matchMedia("(pointer: coarse)").matches) {
+		if (command.touch === true && !this.finger()) {
 			return false;
 		}
 		if (how === "looking") {
@@ -2086,6 +2151,10 @@ class CEditorPanels {
 			this.pointerAt = { x: event.clientX, y: event.clientY };
 			const open = ["left", "right"].filter(side => this.drawer[side] && this.areaShown(side));
 			if (open.length === 0) {
+				// A finger that starts at the very edge is reaching for the
+				// drawer that lives there, not painting: strokes begin with
+				// the finger on the map.
+				this.edgeSwipe(event, canvas);
 				return;
 			}
 			for (const side of open) {
@@ -2094,6 +2163,134 @@ class CEditorPanels {
 			event.stopPropagation();
 			event.preventDefault();
 		}, { capture: true, signal: this.stopping.signal });
+	}
+
+	/**
+	 * What a button is called, for a hand that cannot hover.
+	 *
+	 * A `title` is a pointer's affordance: it appears because the mouse rested
+	 * there, and a finger never rests anywhere without pressing. So at a
+	 * coarse pointer a long press says the same thing in the same words - the
+	 * ones the button already carries, so that there is one text and not two.
+	 */
+	wireTips() {
+		// On the document rather than on the box: the areas are the element's
+		// light DOM and the box is not known yet when the panels are wired, so
+		// whose press this is gets asked when it happens rather than now.
+		const root = document;
+		const mine = target => {
+			if (target === null || target === undefined || target.nodeType !== 1) {
+				return false;
+			}
+			return (this.box !== null && this.box !== undefined && this.box.contains(target))
+				|| (this.root !== null && this.root.contains(target));
+		};
+		let waiting = null;
+		let from = null;
+		const drop = () => {
+			if (waiting !== null) {
+				clearTimeout(waiting);
+				waiting = null;
+			}
+		};
+		const hide = () => {
+			drop();
+			if (this.tip !== null) {
+				this.tip.hidden = true;
+			}
+		};
+		root.addEventListener("pointerdown", event => {
+			hide();
+			if (event.pointerType !== "touch" && event.pointerType !== "pen") {
+				return;
+			}
+			// The map has its own long press - it asks which layer is there -
+			// and two answers to one press is one too many.
+			const what = !mine(event.target) || event.target.closest === undefined ? null
+				: event.target.closest("button[title], [role=\"separator\"][aria-label]");
+			if (what === null || what === this.editor.canvas || !mine(what)) {
+				return;
+			}
+			from = { x: event.clientX, y: event.clientY };
+			waiting = setTimeout(() => this.showTip(what), LONG_PRESS_MS);
+		}, { capture: true, signal: this.stopping.signal });
+		root.addEventListener("pointermove", event => {
+			if (waiting === null || from === null) {
+				return;
+			}
+			if (Math.hypot(event.clientX - from.x, event.clientY - from.y) > LONG_PRESS_PIXELS) {
+				drop();
+			}
+		}, { capture: true, signal: this.stopping.signal });
+		for (const gone of ["pointerup", "pointercancel"]) {
+			root.addEventListener(gone, drop, { capture: true, signal: this.stopping.signal });
+		}
+		// It goes away at the next touch anywhere, like a tooltip does when the
+		// pointer leaves.
+		root.addEventListener("click", hide, { capture: true, signal: this.stopping.signal });
+	}
+
+	/** Shows what that thing is called, beside it. */
+	showTip(what) {
+		const home = this.overlayHome();
+		if (home === null) {
+			return;
+		}
+		if (this.tip === null) {
+			this.tip = document.createElement("div");
+			this.tip.className = "editor-tip";
+			this.tip.dataset.role = "tip";
+			this.tip.setAttribute("role", "tooltip");
+			home.append(this.tip);
+		}
+		this.tip.textContent = what.title || what.getAttribute("aria-label") || "";
+		this.tip.hidden = this.tip.textContent === "";
+		if (!this.tip.hidden) {
+			this.placeAt(this.tip, what);
+		}
+	}
+
+	/**
+	 * The drawer that is pulled in from the edge it sleeps behind.
+	 *
+	 * Only with a finger, and only from a strip twenty pixels wide: with a
+	 * pointer there is a button for it, and a wider strip would swallow every
+	 * stroke that starts near the edge of the map. The drawer follows nothing
+	 * while the finger travels - it opens once the finger has gone far enough
+	 * inwards that no tap could be meant.
+	 */
+	edgeSwipe(event, canvas) {
+		if (!this.finger()) {
+			return;
+		}
+		const box = canvas.getBoundingClientRect();
+		const side = event.clientX - box.left <= EDGE_SWIPE_ZONE ? "left"
+			: box.right - event.clientX <= EDGE_SWIPE_ZONE ? "right" : null;
+		if (side === null || !this.drawer[side]) {
+			return;
+		}
+		// The stroke that would otherwise have started here never does.
+		event.stopPropagation();
+		event.preventDefault();
+		const from = event.clientX;
+		const inwards = side === "left" ? 1 : -1;
+		const move = moved => {
+			if (moved.pointerId !== event.pointerId) {
+				return;
+			}
+			if ((moved.clientX - from) * inwards >= EDGE_SWIPE_REACH) {
+				done();
+				this.showArea(side, true);
+			}
+		};
+		const done = () => {
+			canvas.removeEventListener("pointermove", move, true);
+			canvas.removeEventListener("pointerup", done, true);
+			canvas.removeEventListener("pointercancel", done, true);
+		};
+		canvas.addEventListener("pointermove", move, true);
+		canvas.addEventListener("pointerup", done, true);
+		canvas.addEventListener("pointercancel", done, true);
 	}
 
 	/**
@@ -2123,6 +2320,41 @@ class CEditorPanels {
 		// it is a press anywhere but in it.
 		setTimeout(() => this.showChooser({ clientX: spot.x, clientY: spot.y }), 0);
 		return true;
+	}
+
+	/**
+	 * Whether targets are drawn big enough for a finger.
+	 *
+	 * "auto" asks the browser, which is right nearly always; "big" and
+	 * "small" are for when it is not. It lives on the element beside `theme`,
+	 * for the same reason: whether it is remembered between visits is the
+	 * page's business, not the editor's.
+	 */
+	targets(next) {
+		const box = this.box;
+		const read = () => {
+			const said = box !== null && box !== undefined
+				? box.getAttribute("targets") : this.root.dataset.targets;
+			return said === "big" || said === "small" ? said : "auto";
+		};
+		if (next === undefined) {
+			return read();
+		}
+		if (box !== null && box !== undefined) {
+			box.setAttribute("targets", next);
+		} else {
+			this.root.dataset.targets = next;
+			this.root.dataset.big = this.finger() ? "yes" : "no";
+		}
+		this.refreshBar();
+		return read();
+	}
+
+	/** Whether this hand is a finger, once the setting has had its say. */
+	finger() {
+		const said = this.targets();
+		return said === "big" ? true
+			: said === "small" ? false : matchMedia("(pointer: coarse)").matches;
 	}
 
 	/** Which of the two schemes the editor is drawn in. */
@@ -2233,7 +2465,7 @@ class CEditorPanels {
 			where.textContent = command.group;
 			const key = document.createElement("kbd");
 			key.className = "editor-palette-key";
-			key.textContent = command.keys === undefined || command.keys.length === 0 ? "" : keyLabel(command.keys[0]);
+			key.textContent = this.keyText(command);
 			row.append(what, where, key);
 			// The pointer is not allowed to take the focus off the field: the
 			// field is what the keyboard is talking to, and a click that
@@ -2283,6 +2515,16 @@ class CEditorPanels {
 		this.markPalette(shown);
 	}
 
+	/** Writes the shortcuts into rows that were built before the first key. */
+	refreshKeys(rows) {
+		for (const row of rows) {
+			const key = row.row.querySelector("kbd");
+			if (key !== null) {
+				key.textContent = this.keyText(row.command);
+			}
+		}
+	}
+
 	/** Which row is the one Enter would take. */
 	markPalette(shown) {
 		const find = this.palette.querySelector('[data-role="palette-find"]');
@@ -2307,6 +2549,7 @@ class CEditorPanels {
 		const answer = new Set(this.findCommands(question).map(command => command.id));
 		const order = this.findCommands(question);
 		const list = this.palette.querySelector('[data-role="palette-list"]');
+		this.refreshKeys(this.paletteRows);
 		for (const found of order) {
 			const row = this.paletteRows.find(which => which.command === found);
 			list.append(row.row);
@@ -2439,7 +2682,7 @@ class CEditorPanels {
 		what.textContent = command.label;
 		const key = document.createElement("kbd");
 		key.className = "editor-menu-key";
-		key.textContent = command.keys === undefined || command.keys.length === 0 ? "" : keyLabel(command.keys[0]);
+		key.textContent = this.keyText(command);
 		row.append(what, key);
 		row.addEventListener("click", () => {
 			this.showMenu(false);
@@ -2486,6 +2729,10 @@ class CEditorPanels {
 			const command = this.commands.find(which => which.id === row.dataset.command);
 			if (command === undefined) {
 				continue;
+			}
+			const key = row.querySelector("kbd");
+			if (key !== null) {
+				key.textContent = this.keyText(command);
 			}
 			row.disabled = command.enabled !== undefined && !command.enabled(this);
 			if (command.pressed !== undefined) {
@@ -2900,7 +3147,7 @@ class CEditorPanels {
 			button.dataset.role = commandRole(command);
 			button.dataset.command = command.id;
 			button.dataset.icon = command.icon;
-			button.title = commandTitle(command);
+			button.title = commandTitle(command, this.keysShown());
 			button.setAttribute("aria-label", command.label);
 			if (command.pressed !== undefined) {
 				button.setAttribute("aria-pressed", "false");
@@ -2932,6 +3179,12 @@ class CEditorPanels {
 			return false;
 		}
 		command.run(this);
+		// A command that moves the view moves nothing else: the program draws
+		// the next frame by itself, but the marks over the map and the line at
+		// the bottom are drawn here and would keep saying the old numbers.
+		if (command.group === "View") {
+			this.refreshOverlay();
+		}
 		return true;
 	}
 
@@ -2990,9 +3243,124 @@ class CEditorPanels {
 			}
 			areas[area].append(body);
 		}
+		for (const area of ["left", "right", "dock"]) {
+			areas[area].append(this.makeGrip(area));
+		}
 		this.applyTabs();
 		if (this.box !== null) {
 			this.buildMaps(this.box);
+		}
+	}
+
+	/**
+	 * The handle between a column and the map, and above the dock.
+	 *
+	 * A column has a width that suits most maps; some maps and some people want
+	 * another one, and the plan says so. It is a separator rather than a
+	 * decoration, so the arrow keys move it as well - a handle only a pointer
+	 * can reach is a handle half the people cannot use.
+	 */
+	makeGrip(area) {
+		const limits = DRAG_LIMITS[area];
+		const sideways = area !== "dock";
+		const grip = document.createElement("div");
+		grip.className = `editor-grip editor-grip-${area}`;
+		grip.dataset.role = `grip-${area}`;
+		grip.tabIndex = 0;
+		grip.setAttribute("role", "separator");
+		grip.setAttribute("aria-orientation", sideways ? "vertical" : "horizontal");
+		grip.setAttribute("aria-label", `How wide the ${area} is`);
+		const now = () => {
+			const box = this.areas[area].getBoundingClientRect();
+			return Math.round(sideways ? box.width : box.height);
+		};
+		const put = size => {
+			const want = Math.max(limits.least, Math.min(limits.most, Math.round(size)));
+			this.dragged[area] = want;
+			this.applyDragged();
+			grip.setAttribute("aria-valuenow", String(want));
+			grip.setAttribute("aria-valuemin", String(limits.least));
+			grip.setAttribute("aria-valuemax", String(limits.most));
+		};
+		let from = null;
+		grip.addEventListener("pointerdown", event => {
+			from = { at: sideways ? event.clientX : event.clientY, was: now() };
+			grip.setPointerCapture(event.pointerId);
+			event.preventDefault();
+		}, { signal: this.stopping.signal });
+		grip.addEventListener("pointermove", event => {
+			if (from === null) {
+				return;
+			}
+			// Which way is bigger depends on which edge the handle is on: the
+			// right column grows leftwards and the dock grows upwards.
+			const went = (sideways ? event.clientX : event.clientY) - from.at;
+			put(from.was + (area === "left" ? went : -went));
+		}, { signal: this.stopping.signal });
+		const letGo = event => {
+			from = null;
+			try {
+				grip.releasePointerCapture(event.pointerId);
+			} catch (error) {
+				// It had already gone; there is nothing to let go of.
+			}
+		};
+		grip.addEventListener("pointerup", letGo, { signal: this.stopping.signal });
+		grip.addEventListener("pointercancel", letGo, { signal: this.stopping.signal });
+		grip.addEventListener("keydown", event => {
+			const step = { ArrowLeft: -16, ArrowRight: 16, ArrowUp: -16, ArrowDown: 16 }[event.key];
+			if (step === undefined) {
+				if (event.key === "Home") {
+					event.preventDefault();
+					event.stopPropagation();
+					this.dragged[area] = null;
+					this.applyDragged();
+				}
+				return;
+			}
+			event.preventDefault();
+			event.stopPropagation();
+			put(now() + (area === "left" ? step : -step));
+		}, { signal: this.stopping.signal });
+		// Two presses put it back where it was: the same as Home, for a pointer.
+		grip.addEventListener("dblclick", () => {
+			this.dragged[area] = null;
+			this.applyDragged();
+		}, { signal: this.stopping.signal });
+		return grip;
+	}
+
+	/**
+	 * Puts the dragged sizes on, where this shape of box has a size to put
+	 * them on at all.
+	 *
+	 * A drawer lies over the map at a width of its own and a shut dock is its
+	 * names and nothing else; in both the stylesheet is right and a number
+	 * somebody dragged a while ago is not.
+	 */
+	applyDragged() {
+		if (this.areas === null) {
+			return;
+		}
+		for (const area of ["left", "right", "dock"]) {
+			const box = this.areas[area];
+			if (box === undefined) {
+				continue;
+			}
+			const column = area === "dock"
+				? this.dockOpen
+				: this.shape === null || this.shape[area] === "column";
+			const size = this.dragged[area];
+			if (!column || size === null) {
+				box.style.width = "";
+				box.style.height = "";
+				continue;
+			}
+			if (area === "dock") {
+				box.style.height = `${size}px`;
+			} else {
+				box.style.width = `${size}px`;
+			}
 		}
 	}
 
@@ -3117,6 +3485,7 @@ class CEditorPanels {
 		const dock = this.areas.dock;
 		if (dock !== undefined) {
 			dock.classList.toggle("editor-dock-shut", !this.dockOpen);
+			this.applyDragged();
 			const toggle = dock.querySelector('[data-role="dock-toggle"]');
 			if (toggle !== null) {
 				toggle.setAttribute("aria-expanded", this.dockOpen ? "true" : "false");
@@ -3160,7 +3529,7 @@ class CEditorPanels {
 			this.overlay.remove();
 			this.overlay = null;
 		}
-		for (const floating of [this.picker, this.chooser, this.over]) {
+		for (const floating of [this.picker, this.chooser, this.zoomChip, this.over]) {
 			if (floating !== null && floating !== undefined) {
 				floating.remove();
 			}
@@ -3200,6 +3569,7 @@ class CEditorPanels {
 		this.wireContextMenus();
 		this.wireClickAway();
 		this.wireDrawers();
+		this.wireTips();
 		on("delete", () => this.run("layer.delete"));
 		on("up", () => this.run("layer.up"));
 		on("down", () => this.run("layer.down"));
@@ -3222,7 +3592,7 @@ class CEditorPanels {
 		if (type === "saved") {
 			this.say("Saved");
 		} else if (type === "error") {
-			this.say(`Failed: ${detail && detail.what ? detail.what : "something"}`);
+			this.say(`Failed: ${detail && detail.what ? detail.what : "something"}`, "error");
 		} else if (type === "loaded") {
 			this.selection = { group: 0, layer: -1 };
 			this.collapsed.clear();
@@ -3233,6 +3603,10 @@ class CEditorPanels {
 	// The keyboard belongs to whoever has the focus: a name being typed into
 	// a field is not an undo, whatever letters are in it.
 	onKey(event) {
+		// Whoever struck it has a keyboard, and from now on the tooltips and
+		// the palette are allowed to name the shortcuts. Before that they are
+		// noise on a tablet: a key nobody can press is not a hint.
+		this.sawKey = true;
 		const target = event.target;
 		if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
 			// Escape is the way out of a field, and the only key a field
@@ -3282,7 +3656,7 @@ class CEditorPanels {
 			this.box.openFile();
 			return;
 		}
-		this.say("This page opens maps its own way");
+		this.say("This page opens maps its own way", "error");
 	}
 
 	/** The layer before or after the one that is selected, over all groups. */
@@ -3367,8 +3741,64 @@ class CEditorPanels {
 	}
 
 
-	say(text) {
+	/**
+	 * A word about what just happened, over the map.
+	 *
+	 * The status line is where one looks for it afterwards; a note over the
+	 * map is what one sees without looking, and the two say the same thing.
+	 * A note goes away by itself after four seconds - except one about
+	 * something that went wrong, which stays until it is dismissed, because a
+	 * mistake that vanished before it was read is a mistake nobody knows about.
+	 */
+	tell(text, kind) {
+		const home = this.floatHome === null || this.floatHome === undefined
+			? this.overlayHome() : this.floatHome;
+		if (home === null || !text) {
+			return null;
+		}
+		if (this.toasts === null) {
+			this.toasts = document.createElement("div");
+			this.toasts.className = "editor-toasts";
+			this.toasts.dataset.role = "toasts";
+			home.append(this.toasts);
+		}
+		const note = document.createElement("div");
+		note.className = "editor-toast";
+		note.dataset.role = "toast";
+		note.dataset.kind = kind === "error" ? "error" : "note";
+		// What went wrong interrupts; what merely happened does not.
+		note.setAttribute("role", kind === "error" ? "alert" : "status");
+		const what = document.createElement("span");
+		what.textContent = text;
+		note.append(what);
+		if (kind === "error") {
+			const away = document.createElement("button");
+			away.type = "button";
+			away.className = "editor-toast-close";
+			away.dataset.role = "toast-close";
+			away.textContent = "\u00d7";
+			away.setAttribute("aria-label", "Dismiss");
+			away.addEventListener("click", () => note.remove(), { signal: this.stopping.signal });
+			note.append(away);
+		} else {
+			setTimeout(() => note.remove(), TOAST_MS);
+		}
+		this.toasts.append(note);
+		// Never more than a handful: a stack that grew without end would cover
+		// the map it is telling about.
+		while (this.toasts.children.length > TOAST_MOST) {
+			// A note would have gone by itself in a moment anyway; something
+			// that went wrong is still waiting to be read.
+			const oldest = this.toasts.querySelector('[data-kind="note"]')
+				|| this.toasts.firstElementChild;
+			oldest.remove();
+		}
+		return note;
+	}
+
+	say(text, kind) {
 		this.part("status").textContent = text || "";
+		this.tell(text, kind);
 	}
 
 	// Does something that changes the map and then shows what came of it. The
@@ -3383,7 +3813,7 @@ class CEditorPanels {
 		const where = { group: this.selection.group, layer: this.selection.layer };
 		const answer = work();
 		if (answer && answer.ok === false) {
-			this.say(answer.error || "Refused");
+			this.say(answer.error || "Refused", "error");
 		}
 		const after = this.editor.history();
 		// Only a change that wrote an entry leaves a snapshot. Stepping
@@ -3659,7 +4089,27 @@ class CEditorPanels {
 		const size = this.editor.brushSize();
 		say("status-brush", size === null || size.width === 0 ? "" : `Brush ${size.width} \u00d7 ${size.height}`);
 		const zoom = this.editor.zoom();
-		say("status-zoom", zoom === null ? "" : `${Math.round(100 / zoom)} %`);
+		const percent = zoom === null ? "" : `${Math.round(100 / zoom)} %`;
+		say("status-zoom", percent);
+		if (this.zoomChip !== null && this.zoomChip !== undefined) {
+			this.zoomChip.querySelector('[data-role="zoom-level"]').textContent = percent;
+		}
+	}
+
+	/**
+	 * Whether a shortcut belongs beside a name.
+	 *
+	 * With a pointer, yes: there is a keyboard beside it. With a finger, only
+	 * once one has been used - an iPad shows `Ctrl+Z` to nobody.
+	 */
+	keysShown() {
+		return this.sawKey || !this.finger();
+	}
+
+	/** The shortcut of a command as it should be written here, if at all. */
+	keyText(command) {
+		return !this.keysShown() || command.keys === undefined || command.keys.length === 0
+			? "" : keyLabel(command.keys[0]);
 	}
 
 	/** The tool bar's button for a command, by the command's own name. */
@@ -3684,6 +4134,9 @@ class CEditorPanels {
 			button.hidden = !this.barShows(command);
 			button.disabled = (command.enabled !== undefined && !command.enabled(this))
 				|| (this.readonly && command.safe !== true);
+			// The name is written again rather than once at the start: whether
+			// the shortcut belongs beside it is not known until the first key.
+			button.title = commandTitle(command, this.keysShown());
 			if (command.pressed !== undefined) {
 				button.setAttribute("aria-pressed", command.pressed(this) ? "true" : "false");
 			}
@@ -3854,7 +4307,7 @@ class CEditorPanels {
 		const send = value => {
 			const answer = this.editor.apply(command(value));
 			if (answer && answer.ok === false) {
-				this.say(answer.error || "Refused");
+				this.say(answer.error || "Refused", "error");
 			}
 		};
 		// What is being changed, for the history to fold a run of steps into
@@ -4145,7 +4598,7 @@ class CEditorPanels {
 		const checkpoint = layer.kind === "tele" && this.editor.brushCheckpoint();
 		const free = this.editor.nextFreeNumber(where.group, where.layer, checkpoint);
 		if (free < 0) {
-			this.say("Every number is taken");
+			this.say("Every number is taken", "error");
 			return;
 		}
 		this.editor.numbers({ number: free });
@@ -5104,7 +5557,7 @@ class CEditorPanels {
 			}
 			const pixels = await pixelsOf(chosen);
 			if (pixels === null) {
-				this.say("That picture could not be read");
+				this.say("That picture could not be read", "error");
 				return;
 			}
 			const name = chosen.name.replace(/\.[^.]*$/, "");
@@ -5124,12 +5577,13 @@ class CEditorPanels {
 					return;
 				}
 				const group = this.change(() => this.editor.addQuadArt(name, pixels, options));
-				this.say(group >= 0 ? `${name} as quads` : "That picture was refused");
+				this.say(group >= 0 ? `${name} as quads` : "That picture was refused",
+					group >= 0 ? "note" : "error");
 			} else {
 				const colors = this.editor.artColors(pixels);
 				const sheets = Math.max(1, Math.ceil(colors / (ART_PALETTE_SIZE - 1)));
 				if (colors === 0) {
-					this.say("Nothing in that picture is opaque");
+					this.say("Nothing in that picture is opaque", "error");
 					return;
 				}
 				if (sheets > 1 && !confirm(
@@ -5139,7 +5593,7 @@ class CEditorPanels {
 				const group = this.change(() => this.editor.addTileArt(name, pixels));
 				this.say(group >= 0
 					? `${name} as tiles: ${colors} ${colors === 1 ? "colour" : "colours"}${sheets > 1 ? ` in ${sheets} layers` : ""}`
-					: "That picture was refused");
+					: "That picture was refused", group >= 0 ? "note" : "error");
 			}
 			this.refresh();
 		}, { signal: signal });
@@ -5178,7 +5632,7 @@ class CEditorPanels {
 				this.say(`${answer.tiles} ${answer.tiles === 1 ? "tile" : "tiles"} at ${at.x}, ${at.y}`);
 				field.value = "";
 			} else {
-				this.say(answer && answer.error ? answer.error : "That text was refused");
+				this.say(answer && answer.error ? answer.error : "That text was refused", "error");
 			}
 			this.refresh();
 		};
@@ -5244,7 +5698,7 @@ class CEditorPanels {
 		if (answer && answer.ok) {
 			this.quad = answer.quad;
 		} else {
-			this.say(answer && answer.error ? answer.error : "That cut was refused");
+			this.say(answer && answer.error ? answer.error : "That cut was refused", "error");
 		}
 		this.refresh();
 		return true;
@@ -5284,7 +5738,7 @@ class CEditorPanels {
 			}
 			const pixels = await pixelsOf(chosen);
 			if (pixels === null) {
-				this.say("That is not a picture this browser can read");
+				this.say("That is not a picture this browser can read", "error");
 				return;
 			}
 			// The name without its suffix, which is what a map calls a
@@ -5445,13 +5899,13 @@ class CEditorPanels {
 		} else {
 			const bytes = this.editor.soundData(this.sound);
 			if (bytes === null) {
-				this.say("That sound has no bytes to play");
+				this.say("That sound has no bytes to play", "error");
 				return;
 			}
 			this.playing = URL.createObjectURL(new Blob([bytes], { type: "audio/ogg" }));
 			audio.src = this.playing;
 		}
-		audio.play().catch(() => this.say("This browser would not play that"));
+		audio.play().catch(() => this.say("This browser would not play that", "error"));
 	}
 
 	refreshAudio() {
@@ -5513,7 +5967,7 @@ class CEditorPanels {
 			}
 			const came = await this.editor.appendFile(chosen);
 			if (came === null) {
-				this.say("That map could not be read");
+				this.say("That map could not be read", "error");
 				return;
 			}
 			// Said rather than shown somewhere: appending moves numbers about
@@ -6620,6 +7074,13 @@ const HANDLE_REACH_FINGER = 22;
 //
 // After it, a stroke is settled and a late finger is ignored - a hand resting
 // on the glass while the other draws is not a gesture.
+// How wide the strip along the edge is that a drawer is pulled out of, and
+// how far inwards a finger has to travel before it counts as a pull rather
+// than a tap. Twenty pixels is narrow enough that a stroke which starts near
+// the edge of the map still starts on the map.
+const EDGE_SWIPE_ZONE = 20;
+const EDGE_SWIPE_REACH = 40;
+
 const SECOND_FINGER_MS = 150;
 const SECOND_FINGER_PIXELS = 8;
 
@@ -6923,7 +7384,7 @@ const ELEMENT_BASE = typeof HTMLElement === "undefined" ? class {} : HTMLElement
  * it - which is what lets two of them stand on one page.
  */
 class CEditorElement extends ELEMENT_BASE {
-	static observedAttributes = ["src", "theme", "controls", "readonly"];
+	static observedAttributes = ["src", "theme", "controls", "readonly", "targets"];
 
 	constructor() {
 		super();
@@ -7046,6 +7507,11 @@ class CEditorElement extends ELEMENT_BASE {
 		this.dataset.status = now.status;
 		this.dataset.dock = now.dock;
 		this.dataset.stack = now.stack ? "yes" : "no";
+		// Whether the editor is drawn for a finger. The query answers it in
+		// almost every case; the attribute is for the cases where it lies -
+		// a touch laptop with a mouse says `fine`, a tablet in desktop mode
+		// says `coarse`, and neither is what the hand on it is doing.
+		this.dataset.big = this.editorPanels !== null && this.editorPanels.finger() ? "yes" : "no";
 		this.dataset.readonly = now.readonly ? "yes" : "no";
 		if (this.editorPanels !== null) {
 			this.editorPanels.applyShape(now);
@@ -7089,6 +7555,10 @@ class CEditorElement extends ELEMENT_BASE {
 		const watcher = new ResizeObserver(() => this.applyLayout());
 		watcher.observe(this);
 		this.stopping.signal.addEventListener("abort", () => watcher.disconnect(), { once: true });
+		// A mouse plugged into a tablet changes the answer without changing
+		// the size, and the box would go on saying what it said before.
+		matchMedia("(pointer: coarse)").addEventListener("change", () => this.applyLayout(),
+			{ signal: this.stopping.signal });
 	}
 
 	/**
@@ -7145,7 +7615,7 @@ class CEditorElement extends ELEMENT_BASE {
 		}
 		if (name === "theme") {
 			this.applyTheme();
-		} else if (name === "controls" || name === "readonly") {
+		} else if (name === "controls" || name === "readonly" || name === "targets") {
 			if (this.stopping !== null) {
 				this.applyLayout();
 			}

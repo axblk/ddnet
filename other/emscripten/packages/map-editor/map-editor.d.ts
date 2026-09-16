@@ -418,6 +418,24 @@ export declare class EditorPanels {
 	applyShape(shape: EditorLayout): void;
 	/** Which of the two schemes the editor is drawn in. */
 	scheme(next?: "dark" | "light"): "dark" | "light";
+	/**
+	 * Whether targets are drawn big enough for a finger. `auto` asks the
+	 * browser; the other two are for the cases where it lies.
+	 */
+	targets(next?: "auto" | "big" | "small"): "auto" | "big" | "small";
+	/** Whether this hand is a finger, once the setting has had its say. */
+	finger(): boolean;
+	/** Whether a shortcut belongs beside a name - true once a key was used. */
+	keysShown(): boolean;
+	/**
+	 * Says something over the map, and hands the note back. A note goes by
+	 * itself after four seconds; `kind: "error"` stays until it is dismissed.
+	 */
+	tell(text: string, kind?: "note" | "error"): Element | null;
+	/** Writes it into the status line and says it over the map as well. */
+	say(text: string, kind?: "note" | "error"): void;
+	/** Shows what that button is called, where a pointer would have hovered. */
+	showTip(what: Element): void;
 	/** Shows or hides the palette of everything the editor can do. */
 	showPalette(on: boolean): void;
 	/** Shows or hides the menu. */
@@ -461,7 +479,7 @@ export declare function steerEditor(
  * a page may fill with `slot="header"`, `"toolbar"`, `"left"`, `"right"`,
  * `"dock"` and `"status"`.
  *
- * Attributes: `src`, `urlparam`, `theme="light"`, `remember`.
+ * Attributes: `src`, `urlparam`, `theme="light"`, `targets="big|small"`, `remember`.
  */
 export declare class EditorElement extends HTMLElement {
 	/** The running program, or null until it is. */

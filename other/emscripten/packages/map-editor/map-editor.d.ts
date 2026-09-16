@@ -410,6 +410,10 @@ export declare class EditorPanels {
 	readonly askingLayer: boolean;
 	/** Makes the next touch that question, or takes the question back. */
 	askHere(): void;
+	/** Puts one of the open maps in front, with everything about it as it was. */
+	showMap(id: number): boolean;
+	/** Closes one of them, and puts another in front if that was the one. */
+	closeMap(id: number): boolean;
 	/** Takes the shape the box says it is in. */
 	applyShape(shape: EditorLayout): void;
 	/** Which of the two schemes the editor is drawn in. */
@@ -496,6 +500,8 @@ export interface EditorLayout {
 	status: string;
 	/** `strip` beside the map's foot, or `overlay` over it. */
 	dock: string;
+	/** Whether there is room enough to stand panels above each other. */
+	stack: boolean;
 	readonly: boolean;
 }
 

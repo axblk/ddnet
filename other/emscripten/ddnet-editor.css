@@ -1453,7 +1453,12 @@ ddnet-editor[data-dock="overlay"] .editor-dock {
 	border: 0;
 	border-radius: var(--radius-1);
 	cursor: pointer;
-	visibility: hidden;
+	/* Not `visibility: hidden`: a hidden element cannot take the focus, and
+	   then the one way to this menu without a pointer would be a button the
+	   keyboard can never reach. Invisible and deaf to the pointer, but still
+	   in the order the Tab key walks. */
+	opacity: 0;
+	pointer-events: none;
 }
 
 @media (hover: hover) {
@@ -1461,17 +1466,20 @@ ddnet-editor[data-dock="overlay"] .editor-dock {
 	.editor-images li:hover .editor-more,
 	.editor-quads li:hover .editor-more,
 	.editor-settings li:hover .editor-more {
-		visibility: visible;
+		opacity: 1;
+		pointer-events: auto;
 	}
 }
 
 .editor-more:focus-visible {
-	visibility: visible;
+	opacity: 1;
+	pointer-events: auto;
 }
 
 @media (pointer: coarse) {
 	.editor-more {
-		visibility: visible;
+		opacity: 1;
+		pointer-events: auto;
 	}
 }
 
@@ -1494,4 +1502,165 @@ ddnet-editor[data-size="small"] .editor-palette {
 	max-height: 100%;
 	height: 100%;
 	border-radius: 0;
+}
+
+/* Room enough that nothing needs to hide behind a tab. What grows is the map,
+   the height of the columns and what can be open at once; what does not grow
+   is anything one reads or hits - those are already the right size on the
+   glass, and a forty-inch monitor at a hundred per cent has the same dots per
+   inch as a twenty-inch one. */
+ddnet-editor[data-stack="yes"] .editor-left {
+	width: 320px;
+}
+
+ddnet-editor[data-stack="yes"] .editor-right {
+	width: 400px;
+}
+
+ddnet-editor[data-stack="yes"] .editor-dock {
+	height: 320px;
+}
+
+/* The panel that is always there takes the larger share of the column, and
+   the one under it - whichever tab is chosen - takes the rest. */
+ddnet-editor[data-stack="yes"] .editor-left .editor-panel-always {
+	flex: 3 1 0;
+	min-height: 0;
+	overflow: auto;
+	border-bottom: 1px solid var(--line);
+	padding-bottom: var(--space-2);
+	margin-bottom: var(--space-2);
+}
+
+ddnet-editor[data-stack="yes"] .editor-left .editor-panel:not(.editor-panel-always) {
+	flex: 2 1 0;
+	min-height: 0;
+	overflow: auto;
+}
+
+/* The dock side by side rather than one behind the other: the curve wants
+   width, the list of what was done wants height, and there is enough of both. */
+ddnet-editor[data-stack="yes"] .editor-dock .editor-area-body {
+	flex-direction: row;
+	align-items: stretch;
+	gap: var(--space-3);
+}
+
+ddnet-editor[data-stack="yes"] .editor-dock .editor-panel {
+	flex: 1 1 0;
+	min-width: 0;
+	overflow: auto;
+}
+
+/* The coordinate a second time, where the hand is. The line at the bottom is
+   for the eye; on a wide screen the eye and the hand are not in the same
+   place. */
+.editor-here {
+	display: none;
+}
+
+ddnet-editor[data-stack="yes"] .editor-here {
+	display: inline;
+	margin-left: auto;
+	color: var(--text-2);
+	font: var(--type-xs);
+	font-variant-numeric: tabular-nums;
+}
+
+/* The maps that are open. One row: the name, a dot while it is not saved, and
+   a cross to close it; and a plus for one more. It sits above everything the
+   editor does, because what one is editing and whether it is safe are the two
+   things that may never have to be looked for. */
+.editor-maps {
+	display: flex;
+	align-items: stretch;
+	gap: var(--space-1);
+	min-width: 0;
+	overflow-x: auto;
+	scrollbar-width: thin;
+}
+
+.editor-map-tab {
+	display: flex;
+	align-items: center;
+	gap: var(--space-1);
+	flex: 0 1 auto;
+	/* Square at least, like every other tab: a map called "ctf1" is as
+	   hittable as one called "MegaRosenkohl". */
+	min-width: var(--button);
+	max-width: 220px;
+	min-height: var(--button);
+	padding: 0 var(--space-2);
+	color: var(--text-2);
+	font: var(--type-sm);
+	background: none;
+	border: 0;
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+.editor-map-tab[aria-selected="true"] {
+	color: var(--text-1);
+	background: var(--bg-2);
+	box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
+.editor-map-name {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+/* Not saved. A dot rather than a word, because the word would be as wide as
+   the name beside it, and the title says it for whoever cannot see a dot. */
+.editor-map-dot {
+	flex: none;
+	color: var(--warn);
+	font-size: 8px;
+	line-height: 1;
+}
+
+.editor-map-close {
+	flex: none;
+	width: var(--button-small);
+	text-align: center;
+	color: var(--text-2);
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+.editor-map-add {
+	flex: none;
+	min-width: var(--button);
+	min-height: var(--button);
+	color: var(--text-2);
+	font: var(--type-md);
+	background: none;
+	border: 0;
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+/* What each open map is costing. A second map open is a second map's worth of
+   history, and history is whole versions of the map. */
+.editor-memory {
+	margin: var(--space-2) 0 0;
+	padding: 0;
+	list-style: none;
+}
+
+.editor-memory-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-2);
+	min-height: var(--row);
+	padding: 0 var(--space-1);
+	border-radius: var(--radius-1);
+}
+
+.editor-memory-size {
+	color: var(--text-2);
+	font: var(--type-xs);
+	font-variant-numeric: tabular-nums;
 }

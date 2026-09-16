@@ -1,6 +1,8 @@
 #ifndef GAME_MAP_DOCUMENT_REPORT_H
 #define GAME_MAP_DOCUMENT_REPORT_H
 
+#include <base/vmath.h>
+
 #include <cstddef>
 #include <string>
 
@@ -94,6 +96,26 @@ namespace map_document
 	 * holds no sounds.
 	 */
 	std::string SoundSourcesJson(const CMapState &Map, size_t Group, size_t Layer);
+
+	/**
+	 * Proof mode: the rectangles a player's screen would cover around a place.
+	 *
+	 * Twenty-one shapes from square to 16:9 give the outline of everything
+	 * anybody could see; two of them are named, because 4:3 and 16:10 are the
+	 * ones a mapper is told to check. In menu mode the zoom is the menu's
+	 * 0.7 and the places the map names for a menu background come with it.
+	 *
+	 * The page draws all of it, because it is lines over a picture and that
+	 * is what an overlay is for; what it gets is world units, the same as the
+	 * sound sources.
+	 *
+	 * @param Map The version to read.
+	 * @param Center Where the camera stands, in the game layer's coordinates.
+	 * @param Menu Whether to answer for a menu background rather than a game.
+	 *
+	 * @return The JSON text, which is an object.
+	 */
+	std::string ProofJson(const CMapState &Map, vec2 Center, bool Menu);
 
 	/**
 	 * The history as the history panel shows it: what was done, when, where

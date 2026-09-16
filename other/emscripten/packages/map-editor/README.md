@@ -171,6 +171,32 @@ one and a binding to the one that is gone becomes no binding at all. A layer
 that was bound to nothing is left as the node it is, which is why this costs
 the layers that used the envelope rather than the map.
 
+## Proof mode
+
+The one question an editor cannot answer by looking: is this still on screen
+for everybody? A map is edited at whatever zoom and in whatever window somebody
+happens to have; it is played on a screen whose shape nobody chose, at a zoom
+the game decides. Proof mode draws that screen over the map - twenty-one
+shapes from square to 16:9, which together are the outline of everything
+anybody could see, with 4:3 and 16:10 named and drawn on top because those are
+the two a mapper is told to check.
+
+The arithmetic is the game's own (`CalcViewSize`), so the rectangle here and
+the view a client ends up with are the same rectangle rather than two guesses
+about it. The document answers it (`map_document::ProofScreen`, `ProofJson`)
+and the page draws it in the same SVG the sound sources use, because it is
+lines over a picture and that is what an overlay is for.
+
+It stays in the middle of the screen and the map moves under it, the same as
+in the editor in the client: the question is what a player standing *here*
+would see, and where here is, is where the view is looking. Pressing the
+button - or `P` - once gives a game, twice gives a menu background at the
+menu's own 0.7 zoom, three times turns it off. In menu mode the places this
+map names for a menu background come with it: a map says so with time
+checkpoint tiles in its game layer, tile 35 being the first place. Places the
+map does not name are not shown, because where those stand is the client's
+business and the document does not know the client.
+
 ## Sound sources
 
 A sound layer is not seen, so the shapes its sources are heard within are
@@ -306,6 +332,5 @@ and 17 ms.
 
 ## What it is not, yet
 
-Proof mode, the knife, and turning a quad or a piece of a layer into art are
-not here. A layer with no picture at all is shown as a grid of numbers - the
+The knife and turning a quad or a piece of a layer into art are not here. A layer with no picture at all is shown as a grid of numbers - the
 tiles are still there to be picked, they just cannot be shown.

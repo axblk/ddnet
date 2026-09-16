@@ -2710,6 +2710,8 @@ set_src(GAME_MAP GLOB_RECURSE src/game/map
   document/map_file.cpp
   document/map_file.h
   document/map_state.h
+  document/proof.cpp
+  document/proof.h
   document/report.cpp
   document/report.h
   document/shared_list.h
@@ -4606,6 +4608,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     os_test.cpp
     packer_test.cpp
     prng_test.cpp
+    proof_test.cpp
     render_trace_test.cpp
     replace_words_test.cpp
     report_test.cpp

@@ -74,7 +74,7 @@ void CUi::RenderPopupMenus()
 
 		CUIRect PopupRect = PopupMenu.m_Rect;
 		if(m_RenderPopupMenuBackdropFunction)
-			m_RenderPopupMenuBackdropFunction(PopupRect);
+			m_RenderPopupMenuBackdropFunction(PopupRect, PopupMenu.m_Props.m_Corners, 3.0f);
 		PopupRect.Draw(PopupMenu.m_Props.m_BorderColor, PopupMenu.m_Props.m_Corners, 3.0f);
 		PopupRect.Margin(SPopupMenu::POPUP_BORDER, &PopupRect);
 		PopupRect.Draw(PopupMenu.m_Props.m_BackgroundColor, PopupMenu.m_Props.m_Corners, 3.0f);

@@ -165,10 +165,25 @@ dragging the pivot carries all five, which is how a quad is moved without
 changing its shape. Either way the whole drag is one history entry.
 
 What is not a point is a field: a colour on each of the four corners with its
-alpha beside it, and which envelopes move and colour the quad. A binding names
-an envelope by its place, so one the map does not have is refused rather than
-written - a map that reads back differently than it was written is not a saved
-map.
+alpha beside it, where that corner sits in the picture, and which envelopes
+move and colour the quad. A binding names an envelope by its place, so one the
+map does not have is refused rather than written - a map that reads back
+differently than it was written is not a saved map.
+
+The two picture fields per corner are in the numbers the map file holds, which
+are also the numbers the editor in the client shows: 1024 is the whole picture
+across, so 0 and 1024 are its two edges and 3072 is three pictures along. A
+fraction would have been friendlier to read and would have thrown away what a
+quad that repeats its picture forty times holds.
+
+Above the fields stand the four ways a quad is put in order rather than
+dragged into it: **square** makes it the rectangle its corners span, **aspect**
+keeps its width and takes its height from the proportions of the picture,
+**pivot** puts the pivot in the middle, and **align** moves every corner - and
+the pivot with them - onto the nearest tile. A quad dragged by four corners is
+almost never the rectangle somebody meant. The editor in the client leaves the
+first corner alone when it aligns; that is a slip rather than a rule, and it is
+not copied.
 
 The points go out in world units (`editor.quads(group, layer)`), because that
 is the only number a page can do anything with - it turns a click into a place

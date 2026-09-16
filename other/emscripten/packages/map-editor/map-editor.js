@@ -743,6 +743,12 @@ const PANELS_HTML = `
 			</span>
 		</header>
 		<ol class="editor-quads" data-role="quad-list"></ol>
+		<div class="editor-shape" data-role="shape">
+			<button class="editor-small" data-role="shape-square" title="The rectangle the corners span">square</button>
+			<button class="editor-small" data-role="shape-aspect" title="As tall as the picture's proportions ask">aspect</button>
+			<button class="editor-small" data-role="shape-centerPivot" title="The pivot into the middle">pivot</button>
+			<button class="editor-small" data-role="shape-align" title="Every corner onto the nearest tile">align</button>
+		</div>
 		<div class="editor-props" data-role="quad-props"></div>
 	</section>
 	<section class="editor-panel" data-role="images-panel">
@@ -1018,6 +1024,7 @@ class CEditorPanels {
 		this.wireTileset();
 		this.wireAutomap();
 		this.wireConstruct();
+		this.wireShape();
 		this.wireEnvelopes();
 		this.wireQuads();
 		this.wireImages();
@@ -2112,6 +2119,10 @@ class CEditorPanels {
 			this.quad = -1;
 		}
 		this.part("delete-quad").disabled = this.quad < 0;
+		// Shaping is something done to a quad, so it is there when one is
+		// picked; only the proportions also need a picture on the layer.
+		this.part("shape").hidden = this.quad < 0;
+		this.part("shape-aspect").disabled = layer.image < 0;
 		const list = this.part("quad-list");
 		list.textContent = "";
 		quads.forEach((quad, index) => {
@@ -2165,10 +2176,44 @@ class CEditorPanels {
 			props.append(this.field(thing, { prop: `corner${corner}`, label: `${name} colour`, kind: "color" }, set));
 			props.append(this.field(thing, { prop: `alpha${corner}`, label: `${name} alpha`, kind: "number" },
 				value => set(value === null ? null : color.slice(0, 3).concat([Math.min(255, Math.max(0, value))]))));
+			// Where the corner sits in the picture. 1024 is the whole picture
+			// across, which is the number the file holds and the one the
+			// editor in the client shows, so a map made in either comes out
+			// with the same numbers in it.
+			const texture = quad.texcoords.slice(corner * 2, corner * 2 + 2);
+			thing[`texU${corner}`] = texture[0];
+			thing[`texV${corner}`] = texture[1];
+			const place = (u, v) => ({
+				op: "quad.setTexcoord", group: where.group, layer: where.layer, quad: index,
+				corner: corner, u: u, v: v,
+			});
+			props.append(this.field(thing, { prop: `texU${corner}`, label: `${name} tex U`, kind: "number" },
+				value => place(value, texture[1])));
+			props.append(this.field(thing, { prop: `texV${corner}`, label: `${name} tex V`, kind: "number" },
+				value => place(texture[0], value)));
 		});
 		for (const description of QUAD_PROPS) {
 			props.append(this.field(thing, description,
 				value => ({ op: "quad.setProp", group: where.group, layer: where.layer, quad: index, prop: description.prop, value: value })));
+		}
+	}
+
+	/**
+	 * The four ways a quad is put in order rather than dragged into it.
+	 *
+	 * A quad dragged by four corners is almost never the rectangle somebody
+	 * meant, so there are buttons for the rectangle, for the proportions of
+	 * the picture, for the pivot in the middle, and for the grid.
+	 */
+	wireShape() {
+		for (const shape of ["square", "aspect", "centerPivot", "align"]) {
+			this.part(`shape-${shape}`).addEventListener("click", () => {
+				const where = this.selection;
+				this.change(() => this.editor.apply({
+					op: "quad.shape", group: where.group, layer: where.layer,
+					quad: this.quad, shape: shape,
+				}));
+			}, { signal: this.stopping.signal });
 		}
 	}
 

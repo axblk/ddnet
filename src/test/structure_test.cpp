@@ -388,6 +388,126 @@ TEST(Structure, ReplacingAPictureKeepsTheLayersDrawnWithIt)
 	EXPECT_EQ(Document.Map().Image(1)->m_Name, "second");
 }
 
+namespace
+{
+	/** A map with one quad layer, and a picture for it to be drawn with. */
+	CDocument QuadMap(int ImageWidth = 0, int ImageHeight = 0)
+	{
+		CMapState Map;
+		CGroup Group;
+		CQuadLayer Layer;
+		if(ImageWidth > 0)
+		{
+			Layer.m_Image = 0;
+			CImage Image;
+			Image.m_Name = "picture";
+			Image.m_Width = ImageWidth;
+			Image.m_Height = ImageHeight;
+			Map.AddImage(std::move(Image));
+		}
+		Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Layer)));
+		Map.AddGroup(std::move(Group));
+		return CDocument(std::move(Map));
+	}
+
+	/** A quad whose corners are somewhere rather than in a rectangle. */
+	CQuad CrookedQuad()
+	{
+		CQuad Quad = MakeQuad(0, 0, 64, 64);
+		Quad.m_aPoints[0] = CPoint{i2fx(-30), i2fx(-34)};
+		Quad.m_aPoints[1] = CPoint{i2fx(40), i2fx(-20)};
+		Quad.m_aPoints[2] = CPoint{i2fx(-20), i2fx(30)};
+		Quad.m_aPoints[3] = CPoint{i2fx(36), i2fx(26)};
+		Quad.m_aPoints[4] = CPoint{i2fx(0), i2fx(0)};
+		return Quad;
+	}
+
+	const CQuad &QuadIn(const CDocument &Document, size_t Index = 0)
+	{
+		return std::get<CQuadLayer>(*Document.Map().Layer(0, 0)).m_Quads[Index];
+	}
+} // namespace
+
+TEST(Structure, SquaringAQuadMakesItTheRectangleItSpans)
+{
+	CDocument Document = QuadMap();
+	Document.Begin("Add");
+	AddQuad(Document, CLayerAddress{0, 0}, CrookedQuad());
+	Document.Commit();
+
+	Document.Begin("Square");
+	EXPECT_TRUE(ShapeQuad(Document, CLayerAddress{0, 0}, 0, EQuadShape::SQUARE));
+	Document.Commit();
+
+	const CQuad &Quad = QuadIn(Document);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].x), -30);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].y), -34);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[1].x), 40);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[1].y), -34);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[2].x), -30);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[2].y), 30);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[3].x), 40);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[3].y), 30);
+	// The pivot is not a corner and is left where it was.
+	EXPECT_EQ(fx2i(Quad.m_aPoints[4].x), 0);
+}
+
+TEST(Structure, TheProportionsComeFromThePictureOrTheAnswerIsNo)
+{
+	// Twice as wide as it is tall, so a quad 70 across becomes 35 down.
+	CDocument Document = QuadMap(512, 256);
+	Document.Begin("Add");
+	AddQuad(Document, CLayerAddress{0, 0}, CrookedQuad());
+	Document.Commit();
+
+	Document.Begin("Aspect");
+	EXPECT_TRUE(ShapeQuad(Document, CLayerAddress{0, 0}, 0, EQuadShape::ASPECT));
+	Document.Commit();
+
+	const CQuad &Quad = QuadIn(Document);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[1].x) - fx2i(Quad.m_aPoints[0].x), 70);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[2].y) - fx2i(Quad.m_aPoints[0].y), 35);
+
+	// A layer drawn with no picture has no proportions to ask for.
+	CDocument Plain = QuadMap();
+	Plain.Begin("Add");
+	AddQuad(Plain, CLayerAddress{0, 0}, CrookedQuad());
+	Plain.Commit();
+	Plain.Begin("Aspect");
+	EXPECT_FALSE(ShapeQuad(Plain, CLayerAddress{0, 0}, 0, EQuadShape::ASPECT));
+	Plain.Abort();
+}
+
+TEST(Structure, ThePivotGoesInTheMiddleAndTheCornersOntoTheGrid)
+{
+	CDocument Document = QuadMap();
+	Document.Begin("Add");
+	AddQuad(Document, CLayerAddress{0, 0}, CrookedQuad());
+	Document.Commit();
+
+	Document.Begin("Centre");
+	EXPECT_TRUE(ShapeQuad(Document, CLayerAddress{0, 0}, 0, EQuadShape::CENTER_PIVOT));
+	Document.Commit();
+	// Halfway between -30 and 40, and between -34 and 30.
+	EXPECT_EQ(fx2i(QuadIn(Document).m_aPoints[4].x), 5);
+	EXPECT_EQ(fx2i(QuadIn(Document).m_aPoints[4].y), -2);
+
+	Document.Begin("Align");
+	EXPECT_TRUE(ShapeQuad(Document, CLayerAddress{0, 0}, 0, EQuadShape::ALIGN, 32));
+	Document.Commit();
+	const CQuad &Quad = QuadIn(Document);
+	// Every corner to the nearest crossing, and a corner left of nothing
+	// rounds away from zero rather than towards it.
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].x), -32);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].y), -32);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[1].x), 32);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[1].y), -32);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[2].x), -32);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[2].y), 32);
+	// The pivot goes along, or it would no longer be where the quad turns.
+	EXPECT_EQ(fx2i(Quad.m_aPoints[4].x), 0);
+}
+
 TEST(Structure, APointGoesWhereItsTimeBelongs)
 {
 	CDocument Document(WithEnvelopes());

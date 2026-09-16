@@ -332,6 +332,7 @@ TEST(Report, AQuadLayerSaysWhatItsQuadsAre)
 	Quad.m_aPoints[0] = CPoint{i2fx(-32), i2fx(-16)};
 	Quad.m_aPoints[4] = CPoint{i2fx(320), i2fx(160)};
 	Quad.m_aColors[2] = CColor(10, 20, 30, 40);
+	Quad.m_aTexcoords[1] = CPoint{3072, 512};
 	Quad.m_PosEnv = 2;
 	Quad.m_ColorEnvOffset = 500;
 	Quads.m_Quads = CSharedList<CQuad>(std::vector<CQuad>{Quad});
@@ -354,6 +355,12 @@ TEST(Report, AQuadLayerSaysWhatItsQuadsAre)
 	const json_value *pColors = json_object_get(pQuad, "colors");
 	ASSERT_EQ(json_array_length(pColors), 16u);
 	EXPECT_EQ(json_int_get(json_array_get(pColors, 8)), 10);
+	// Four corners in the picture, two numbers each, in the file's own
+	// numbers - 1024 is the whole picture across.
+	const json_value *pTexcoords = json_object_get(pQuad, "texcoords");
+	ASSERT_EQ(json_array_length(pTexcoords), 8u);
+	EXPECT_EQ(json_int_get(json_array_get(pTexcoords, 2)), 3072);
+	EXPECT_EQ(json_int_get(json_array_get(pTexcoords, 3)), 512);
 	EXPECT_EQ(json_int_get(json_object_get(pQuad, "posEnv")), 2);
 	EXPECT_EQ(json_int_get(json_object_get(pQuad, "colorEnvOffset")), 500);
 

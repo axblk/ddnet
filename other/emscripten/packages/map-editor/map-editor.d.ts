@@ -64,6 +64,8 @@ export interface Quad {
 	points: number[];
 	/** Four colours as sixteen numbers, each 0 to 255. */
 	colors: number[];
+	/** Four places in the picture as eight numbers; 1024 is the whole picture. */
+	texcoords: number[];
 	posEnv: number;
 	posEnvOffset: number;
 	colorEnv: number;
@@ -108,6 +110,8 @@ export type Command =
 	| { op: "layer.move"; group: number; layer: number; toGroup: number; to: number; label?: string }
 	| { op: "layer.resize"; group: number; layer: number; width?: number; height?: number; label?: string }
 	| { op: "layer.constructGameTiles"; group: number; layer: number; tile: string; label?: string }
+	| { op: "quad.setTexcoord"; group: number; layer: number; quad: number; corner: number; u: number; v: number; label?: string }
+	| { op: "quad.shape"; group: number; layer: number; quad: number; shape: "square" | "aspect" | "centerPivot" | "align"; grid?: number; label?: string }
 	| { op: "layer.setProp"; group: number; layer: number; prop: string; value: unknown; label?: string }
 	| { op: "quad.add"; group: number; layer: number; x: number; y: number; width?: number; height?: number; label?: string }
 	| { op: "quad.delete"; group: number; layer: number; quad: number; label?: string }

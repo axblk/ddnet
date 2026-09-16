@@ -303,6 +303,18 @@ namespace map_document
 				Writer.WriteIntValue(Color.a);
 			}
 			Writer.EndArray();
+			// Where the corners sit in the picture, in the numbers the file
+			// holds: 1024 is the whole picture across, so 0 and 1024 are its
+			// edges. Handing these out as a fraction would lose what a map
+			// that repeats its picture forty times holds.
+			Writer.WriteAttribute("texcoords");
+			Writer.BeginArray();
+			for(const CPoint &Point : Quad.m_aTexcoords)
+			{
+				Writer.WriteIntValue(Point.x);
+				Writer.WriteIntValue(Point.y);
+			}
+			Writer.EndArray();
 			Writer.WriteAttribute("posEnv");
 			Writer.WriteIntValue(Quad.m_PosEnv);
 			Writer.WriteAttribute("posEnvOffset");

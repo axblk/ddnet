@@ -2,12 +2,14 @@
 #define GAME_MAP_DOCUMENT_EDIT_H
 
 #include <base/dbg.h>
+#include <base/vmath.h>
 
 #include <game/map/document/document.h>
 #include <game/map/document/layer.h>
 
 #include <cstddef>
 #include <utility>
+#include <vector>
 
 namespace map_document
 {
@@ -138,6 +140,38 @@ namespace map_document
 	 * @return What it carries, or all zeroes where it carries nothing.
 	 */
 	CBrushNumbers BrushNumbers(const CBrush &Brush);
+
+	/**
+	 * The lowest number from 1 to 255 that no tile of this layer uses yet.
+	 *
+	 * What "uses" means is the layer's business: a tele layer has two counts
+	 * that do not share their numbers - the checkpoints and everything else -
+	 * and some tiles of a switch layer carry no number at all.
+	 *
+	 * @param Layer The layer to look through.
+	 * @param Checkpoint For a tele layer, whether to count the checkpoints
+	 * rather than the rest. Means nothing to the other kinds.
+	 *
+	 * @return The number, or -1 where all 255 are taken.
+	 */
+	int NextFreeNumber(const CTileLayer &Layer, bool Checkpoint = false);
+
+	/**
+	 * Every place a number is used, as tiles, one per cluster.
+	 *
+	 * The interface walks this to show somebody where a tele number goes:
+	 * one number is usually a handful of places, and a teleporter that is
+	 * four tiles wide is one of them rather than four. Which is why tiles
+	 * closer than ten to the one before are left out - the same rule the
+	 * editor in the client uses, only worked out at once instead of
+	 * remembering where it was.
+	 *
+	 * @param Layer The layer to look through.
+	 * @param Number The number to look for; 0 is no number and finds nothing.
+	 *
+	 * @return The places, in the order the layer is read, or empty.
+	 */
+	std::vector<ivec2> NumberPlaces(const CTileLayer &Layer, int Number);
 
 	/**
 	 * Changes one tile layer of the version being made.

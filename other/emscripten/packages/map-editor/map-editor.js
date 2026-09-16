@@ -259,6 +259,30 @@ class CMapEditor extends Program {
 	}
 
 	/**
+	 * The lowest number no tile of a physics layer is using yet, or -1 where
+	 * all 255 are taken.
+	 *
+	 * The checkpoints of a tele layer keep their own count, which is why
+	 * there is a flag for them.
+	 */
+	nextFreeNumber(group, layer, checkpoint, id) {
+		return this.ask("MapEditorNextFreeNumber", "number", [this.which(id), group, layer, checkpoint ? 1 : 0]);
+	}
+
+	/**
+	 * Moves the view to where a number is used, and answers how many such
+	 * places there are - zero when the view did not move.
+	 *
+	 * Which of them is the page's to count: a button that is pressed twice
+	 * goes to the next one, and the program is not the one that knows it was
+	 * pressed twice. Tiles closer together than ten are one place, so a
+	 * teleporter four tiles wide is somewhere to go rather than four.
+	 */
+	gotoNumber(group, layer, number, which, id) {
+		return this.ask("MapEditorGotoNumber", "number", [this.which(id), group, layer, number, which]);
+	}
+
+	/**
 	 * The points of one envelope.
 	 *
 	 * Not in `structure()`, which says only how many there are: a long
@@ -531,6 +555,15 @@ class CMapEditor extends Program {
 		return width === null ? null : { width: width, height: this.call("MapEditorBrushHeight", "number") };
 	}
 
+	/**
+	 * Whether the tiles in hand are tele checkpoints, which count their
+	 * numbers apart from the teleporters. What a tile index means is the
+	 * program's to know.
+	 */
+	brushCheckpoint() {
+		return this.call("MapEditorBrushCheckpoint", "number") === 1;
+	}
+
 	/** Whether the pictures of the map in front are all here yet. */
 	loading() {
 		return this.call("MapEditorLoading", "number") === 1;
@@ -717,6 +750,9 @@ class CEditorPanels {
 		this.point = -1;
 		// Which quad of the selected layer has handles on it.
 		this.quad = -1;
+		// Which of the places a number is used at was looked at last, so that
+		// pressing the button again goes to the next one.
+		this.gotoAt = 0;
 		// The picture of the tiles, what it was fetched from, and the
 		// rectangle that was taken out of it.
 		this.dataBase = settings.dataBase || new URL("data/", location.href).href;
@@ -1434,6 +1470,25 @@ class CEditorPanels {
 					}
 				}, { signal: this.stopping.signal });
 				row.append(name, input);
+				if (field.key === "number") {
+					// Beside the number, the two things somebody does with
+					// one: take one that is free, and go and look at where
+					// this one already is.
+					const free = document.createElement("button");
+					free.className = "editor-small";
+					free.dataset.role = "next-free";
+					free.textContent = "free";
+					free.title = "The lowest number this layer is not using";
+					row.append(free);
+					const goto_ = document.createElement("button");
+					goto_.className = "editor-small";
+					goto_.dataset.role = "goto-number";
+					goto_.textContent = "go";
+					goto_.title = "Look at where this number is used; again for the next one";
+					row.append(goto_);
+					free.addEventListener("click", () => this.takeFreeNumber(input), { signal: this.stopping.signal });
+					goto_.addEventListener("click", () => this.lookAtNumber(), { signal: this.stopping.signal });
+				}
 				box.append(row);
 			}
 		}
@@ -1448,6 +1503,42 @@ class CEditorPanels {
 				input.value = String(carried[field.key]);
 			}
 		}
+	}
+
+	/** Puts the lowest free number of this layer into the brush. */
+	takeFreeNumber(input) {
+		const where = this.selection;
+		const layer = this.selectedLayer();
+		if (layer === null) {
+			return;
+		}
+		// A tele layer counts its checkpoints apart from the rest, and which
+		// of the two is being put down is a question about the brush.
+		const checkpoint = layer.kind === "tele" && this.editor.brushCheckpoint();
+		const free = this.editor.nextFreeNumber(where.group, where.layer, checkpoint);
+		if (free < 0) {
+			this.say("Every number is taken");
+			return;
+		}
+		this.editor.numbers({ number: free });
+		input.value = String(free);
+	}
+
+	/**
+	 * Moves the view to where the brush's number is already used, and to the
+	 * next such place when pressed again.
+	 */
+	lookAtNumber() {
+		const where = this.selection;
+		const number = this.editor.numbers().number;
+		const places = this.editor.gotoNumber(where.group, where.layer, number, this.gotoAt);
+		if (places === 0) {
+			this.gotoAt = 0;
+			this.say(`Nothing uses ${number}`);
+			return;
+		}
+		this.say(`${(this.gotoAt % places) + 1} of ${places}`);
+		this.gotoAt = (this.gotoAt + 1) % places;
 	}
 
 	paintTileset() {

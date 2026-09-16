@@ -150,6 +150,12 @@ export declare class MapEditor {
 	showQuad(group?: number, layer?: number, quad?: number, id?: MapId): void;
 	/** Where a canvas point is in one group's coordinates, in world units. */
 	groupWorldAt(group: number, x: number, y: number, id?: MapId): { x: number; y: number } | null;
+	/** The lowest number a physics layer is not using yet, or -1 when all are taken. */
+	nextFreeNumber(group: number, layer: number, checkpoint?: boolean, id?: MapId): number;
+	/** Moves the view to the `which`-th place a number is used; answers how many there are. */
+	gotoNumber(group: number, layer: number, number: number, which: number, id?: MapId): number;
+	/** Whether the tiles in hand are tele checkpoints, which count their numbers apart. */
+	brushCheckpoint(): boolean;
 	/** The points of one envelope; times in ms, values in 22.10 fixed point. */
 	envelope(index: number, id?: MapId): Envelope | null;
 	history(id?: MapId): History | null;

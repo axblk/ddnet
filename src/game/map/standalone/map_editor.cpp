@@ -14,11 +14,13 @@
 #include <game/map/document/map_file.h>
 #include <game/map/document/report.h>
 #include <game/map/document/structure.h>
+#include <game/mapitems.h>
 
 #include <algorithm>
 #include <optional>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace
 {
@@ -231,6 +233,45 @@ std::string CMapEditor::EnvelopeJson(int Id, int Index) const
 	if(pMap == nullptr || Index < 0)
 		return "null";
 	return map_document::EnvelopeJson(pMap->m_Document.Map(), (size_t)Index);
+}
+
+bool CMapEditor::BrushIsCheckpoint() const
+{
+	const auto *pTele = std::get_if<map_document::CTileStore<CTeleTile>>(&m_Brush.m_ExtraTiles);
+	if(pTele == nullptr)
+		return false;
+	for(int y = 0; y < pTele->Height(); ++y)
+		for(int x = 0; x < pTele->Width(); ++x)
+			if(IsTeleTileCheckpoint(pTele->Get(x, y).m_Type))
+				return true;
+	return false;
+}
+
+int CMapEditor::NextFreeNumber(int Id, int Group, int Layer, bool Checkpoint) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0)
+		return -1;
+	const map_document::CTileLayer *pTiles = pMap->m_Document.Map().TileLayer((size_t)Group, (size_t)Layer);
+	return pTiles == nullptr ? -1 : map_document::NextFreeNumber(*pTiles, Checkpoint);
+}
+
+size_t CMapEditor::GotoNumber(int Id, int Group, int Layer, int Number, size_t Which)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0)
+		return 0;
+	const map_document::CTileLayer *pTiles = pMap->m_Document.Map().TileLayer((size_t)Group, (size_t)Layer);
+	if(pTiles == nullptr)
+		return 0;
+	const std::vector<ivec2> vPlaces = map_document::NumberPlaces(*pTiles, Number);
+	if(vPlaces.empty())
+		return 0;
+	// The middle of the tile rather than its corner, so that what was looked
+	// for is in the middle of the screen.
+	const ivec2 Place = vPlaces[Which % vPlaces.size()];
+	pMap->m_View.SetCenter(vec2(Place.x * 32.0f + 16.0f, Place.y * 32.0f + 16.0f));
+	return vPlaces.size();
 }
 
 map_document::CView *CMapEditor::View(int Id)

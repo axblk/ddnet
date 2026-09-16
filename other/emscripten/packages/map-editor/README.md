@@ -138,6 +138,17 @@ down with it - and grabbing a piece of a layer brings back the numbers that
 were on it, so carrying a piece of a map somewhere else carries them along.
 What is air keeps none of them.
 
+Beside the number field are the two things somebody does with a number: take
+one that is free, and go and look at where this one already is. Which number
+is free is a question about the layer and the program answers it - a tele
+layer counts its checkpoints apart from its teleporters, and which of the two
+is about to be put down is read off the brush. Going there moves the view to
+the next place that number is used and says which of how many it is; tiles
+closer together than ten count as one place, so a teleporter four tiles wide
+is somewhere to go rather than four. Which place was last looked at is the
+panel's to remember, because it is the panel that knows the button was pressed
+twice.
+
 A stroke is one change made of many stamps, which is why it costs what it
 touched rather than what the map is: a hundred strokes of eight stamps each
 take 72 ms on ctf1 and 104 ms on Tsunami, a map eight times its size, and both

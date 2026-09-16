@@ -131,6 +131,22 @@
 				onChange: () => panels.refresh(),
 			});
 
+			// Every minute, whatever has been changed goes into the browser's
+			// own storage - not into the downloads, which is what `handout`
+			// is for. It survives the tab being closed; it does not survive
+			// the browser's storage being cleared, so it is a safety net and
+			// not a place to keep a map.
+			editor.autosave(60);
+			// And if something has been changed that has not been written out
+			// even there yet, the browser asks before the tab goes.
+			window.addEventListener("beforeunload", event => {
+				if (editor.maps.some(id => editor.dirty(id))) {
+					event.preventDefault();
+					// What browsers before the standard wanted, and some still do.
+					event.returnValue = "";
+				}
+			});
+
 			// The page's own handle on what it started, for whoever opens the
 			// console and for the browser tests that drive it from outside. A
 			// page may claim a name; the package may not, and does not.
@@ -145,10 +161,19 @@
 			// finished starting.
 			function describe() {
 				const size = editor.map < 0 ? null : editor.size();
-				say(size === null ? "Open a map, or drop one onto this page." : `${editor.name()} — ${size.width} x ${size.height} tiles`);
+				if (size === null) {
+					say("Open a map, or drop one onto this page.");
+					return;
+				}
+				say(`${editor.name()} — ${size.width} x ${size.height} tiles${editor.dirty() ? " — not saved" : ""}`);
 			}
 			describe();
 
+			// `document` says the map changed, which is what "not saved" is
+			// about; `saved` says it is written out again.
+			for (const type of ["document", "saved"]) {
+				editor.addEventListener(type, () => describe());
+			}
 			for (const type of ["loaded", "closed"]) {
 				editor.addEventListener(type, () => {
 					describe();

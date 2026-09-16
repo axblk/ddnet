@@ -33,6 +33,7 @@ addIcons({
 	play: '<path d="M7.5 3.8 20.5 12 7.5 20.2Z"/>',
 	undo: '<path d="M4 11h10a5 5 0 0 1 0 10h-6M4 11l5-5M4 11l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
 	redo: '<path d="M20 11H10a5 5 0 0 0 0 10h6M20 11l-5-5M20 11l-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+	grid: '<path d="M9 3v18M15 3v18M3 9h18M3 15h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
 });
 
 /** The program, and what its script calls the factory it defines. */
@@ -49,6 +50,10 @@ export const programUrl = new URL(PROGRAM, import.meta.url).href;
 // place that turns the one into the other is here.
 const MAP_TILE_SIZE = 32;
 
+// How many tiles apart the lines of the grid are when it is switched on. Ten,
+// because that is what somebody counting tiles counts in.
+const GRID_SPACING = 10;
+
 /**
  * A map editor: the base, told where its script lies, and the map said in the
  * words a map is written in - tiles, layers, groups, history entries.
@@ -63,6 +68,11 @@ class CMapEditor extends Program {
 	static moduleName = MODULE_NAME;
 	static programName = PROGRAM_NAME;
 	static suffix = SUFFIX;
+
+	/** Where in its history each map stood when it was last written out. */
+	savedAt = new Map();
+	/** What `autosave` set going, 0 while nothing is. */
+	autosaveTimer = 0;
 
 	// A call that takes numbers and answers nothing.
 	setNumbers(name, values) {
@@ -126,9 +136,61 @@ class CMapEditor extends Program {
 			[Math.round(width), Math.round(height), name || "untitled"]);
 	}
 
-	/** Writes the map out and offers it as a file. */
-	save(id) {
-		return this.ask("MapEditorSave", "number", [this.which(id)]) === 1;
+	/**
+	 * Writes the map out.
+	 *
+	 * It always goes into the browser's own storage, where it survives the
+	 * tab; `{handout: false}` stops it from also going out to wherever the
+	 * user keeps their files, which is what an autosave wants.
+	 */
+	save(id, options) {
+		const map = this.which(id);
+		const handout = !(options && options.handout === false);
+		if (this.ask("MapEditorSave", "number", [map, handout ? 1 : 0]) !== 1) {
+			return false;
+		}
+		const history = this.history(map);
+		if (history !== null) {
+			this.savedAt.set(map, history.current);
+		}
+		return true;
+	}
+
+	/**
+	 * Whether the map has been changed since it was last written out.
+	 *
+	 * It is the place in the history that is compared, not the bytes: undoing
+	 * back to where the map was saved makes it unchanged again, which is what
+	 * somebody who undid their way back would say themselves.
+	 */
+	dirty(id) {
+		const map = this.which(id);
+		const history = this.history(map);
+		return history !== null && history.current !== (this.savedAt.get(map) || 0);
+	}
+
+	/**
+	 * Writes every map that has been changed into the browser's own storage
+	 * every so many seconds, and nowhere else - a page that dropped a file
+	 * into the downloads every minute is a page nobody leaves open. Called
+	 * with 0 it stops.
+	 */
+	autosave(seconds) {
+		if (this.autosaveTimer !== 0) {
+			clearInterval(this.autosaveTimer);
+			this.autosaveTimer = 0;
+		}
+		if (!seconds) {
+			return;
+		}
+		this.autosaveTimer = setInterval(() => {
+			for (const id of this.maps) {
+				if (this.dirty(id)) {
+					this.save(id, { handout: false });
+				}
+			}
+		}, seconds * 1000);
+		this.addEventListener("exit", () => this.autosave(0), { once: true });
 	}
 
 	/** What the map is made of: groups, layers, envelopes, images, sounds. */
@@ -274,6 +336,49 @@ class CMapEditor extends Program {
 	}
 
 	/**
+	 * Whether a layer is drawn, so that somebody can look under it.
+	 *
+	 * This changes nothing about the map: no version, no history entry,
+	 * nothing that is saved. It names the layer by where it is, so moving a
+	 * layer leaves what is hidden where it was.
+	 */
+	visible(group, layer, on, id) {
+		const map = this.which(id);
+		return on === undefined
+			? this.ask("MapEditorLayerVisible", "number", [map, group, layer]) === 1
+			: this.setNumbers("MapEditorSetLayerVisible", [map, group, layer, on ? 1 : 0]);
+	}
+
+	/**
+	 * Marks a rectangle of tiles, which is what a gesture about an area shows
+	 * while it is being made: taking a piece of a layer into the brush,
+	 * filling it, rubbing it out. Called with nothing it takes the mark away.
+	 *
+	 * The rectangle is drawn in the tiles of that group, so it sits on them
+	 * at every zoom, and it belongs to looking rather than to the map: no
+	 * version, no history entry, nothing that is saved.
+	 */
+	mark(group, x, y, width, height, id) {
+		return group === undefined || group === null
+			? this.setNumbers("MapEditorMark", [this.which(id), 0, 0, 0, 0, 0])
+			: this.setNumbers("MapEditorMark", [this.which(id), group, x, y, width, height]);
+	}
+
+	/**
+	 * How many tiles apart the lines of the grid are, or 0 for no grid.
+	 *
+	 * The grid follows the group the game layer is in, so its lines sit on
+	 * that group's tiles at every zoom, and it is left out when its lines
+	 * would be closer together than a few pixels.
+	 */
+	grid(spacing, id) {
+		const map = this.which(id);
+		return spacing === undefined
+			? this.ask("MapEditorGrid", "number", [map])
+			: this.setNumbers("MapEditorSetGrid", [map, spacing === true ? 1 : (spacing === false ? 0 : spacing)]);
+	}
+
+	/**
 	 * The brush: what is in hand and what putting it down does.
 	 *
 	 * A stroke is one change made of many stamps: open it with `begin` when
@@ -347,6 +452,7 @@ const PANELS_HTML = `
 	<button class="editor-button" data-role="detail" data-icon="detail" title="What is only there to look at" aria-pressed="true"></button>
 	<button class="editor-button" data-role="entities" data-icon="entities" title="What the tiles do" aria-pressed="false"></button>
 	<button class="editor-button" data-role="animate" data-icon="play" title="Let the envelopes run" aria-pressed="false"></button>
+	<button class="editor-button" data-role="grid" data-icon="grid" title="A grid on the tiles (G)" aria-pressed="false"></button>
 	<button class="editor-button" data-role="save" data-icon="save" title="Save the map" aria-label="Save the map"></button>
 	<span class="editor-status" data-role="status" role="status"></span>
 </div>
@@ -473,6 +579,8 @@ class CEditorPanels {
 		// panels and the program has no panels.
 		this.selection = { group: 0, layer: -1 };
 		this.collapsed = new Set();
+		// What is being dragged in the layer list, while something is.
+		this.dragging = null;
 		// The picture of the tiles, what it was fetched from, and the
 		// rectangle that was taken out of it.
 		this.dataBase = settings.dataBase || new URL("data/", location.href).href;
@@ -521,6 +629,10 @@ class CEditorPanels {
 		});
 		on("animate", () => {
 			this.editor.animate(!this.editor.animate());
+			this.refreshBar();
+		});
+		on("grid", () => {
+			this.editor.grid(this.editor.grid() > 0 ? 0 : GRID_SPACING);
 			this.refreshBar();
 		});
 		on("add-group", () => this.change(() => this.editor.apply({ op: "group.add", name: "group" })));
@@ -577,6 +689,12 @@ class CEditorPanels {
 				event.preventDefault();
 				return;
 			}
+			if (key === "g") {
+				this.editor.grid(this.editor.grid() > 0 ? 0 : GRID_SPACING);
+				this.refreshBar();
+				event.preventDefault();
+				return;
+			}
 			if (key >= "0" && key <= "9") {
 				const slot = Number.parseInt(key, 10);
 				if (event.shiftKey) {
@@ -628,6 +746,97 @@ class CEditorPanels {
 			this.selection = { group: 0, layer: -1 };
 		}
 		this.refresh();
+	}
+
+	/**
+	 * Makes one row of the tree something that can be picked up and something
+	 * that can be dropped on.
+	 *
+	 * Dropping is the same move the arrows make, so it goes through the same
+	 * command and gets the same one history entry: a layer dropped on a layer
+	 * goes to that place, a layer dropped on a group head goes to the end of
+	 * that group, and a group dropped on a group head goes to that place. The
+	 * arrows stay, because a drag is not something everybody can do.
+	 */
+	wireDragging(row, what) {
+		const signal = this.stopping.signal;
+		row.draggable = true;
+		row.addEventListener("dragstart", event => {
+			this.dragging = what;
+			event.dataTransfer.effectAllowed = "move";
+			// Something has to be carried or Firefox starts no drag at all.
+			event.dataTransfer.setData("text/plain", "");
+			event.stopPropagation();
+		}, { signal: signal });
+		row.addEventListener("dragend", () => {
+			this.dragging = null;
+			row.classList.remove("editor-drop");
+		}, { signal: signal });
+		row.addEventListener("dragover", event => {
+			if (this.dropWould(what) === null) {
+				return;
+			}
+			event.preventDefault();
+			event.dataTransfer.dropEffect = "move";
+			row.classList.add("editor-drop");
+		}, { signal: signal });
+		row.addEventListener("dragleave", () => row.classList.remove("editor-drop"), { signal: signal });
+		row.addEventListener("drop", event => {
+			const command = this.dropWould(what);
+			row.classList.remove("editor-drop");
+			this.dragging = null;
+			if (command === null) {
+				return;
+			}
+			// The page beneath may be waiting for a dropped map file; this is
+			// not one.
+			event.preventDefault();
+			event.stopPropagation();
+			const answer = this.change(() => this.editor.apply(command));
+			if (answer && answer.ok) {
+				this.selection = { group: answer.group, layer: answer.layer === undefined ? -1 : answer.layer };
+			}
+			this.refresh();
+		}, { signal: signal });
+	}
+
+	/**
+	 * What dropping what is being dragged on that row would do, or nothing.
+	 *
+	 * Where something goes is counted in the list it leaves behind - see
+	 * `MoveGroup` - and that is exactly what makes the number here the place
+	 * that was dropped on: what is dragged lands where the row it was dropped
+	 * on is now, whichever way it came from.
+	 */
+	dropWould(onto) {
+		const held = this.dragging;
+		if (held == null || this.map === null) {
+			return null;
+		}
+		if (held.layer < 0) {
+			// A group only goes where a group goes, and not onto itself.
+			if (onto.layer >= 0 || onto.group === held.group) {
+				return null;
+			}
+			return { op: "group.move", group: held.group, to: onto.group };
+		}
+		const same = onto.group === held.group;
+		let to;
+		if (onto.layer < 0) {
+			// The head of a group is the end of it: dropped there, a layer is
+			// drawn last of that group's layers. One less when it is already
+			// in that group, because then it is counted without itself.
+			to = this.map.groups[onto.group].layers.length - (same ? 1 : 0);
+			if (same && held.layer === to) {
+				return null;
+			}
+		} else {
+			if (same && onto.layer === held.layer) {
+				return null;
+			}
+			to = onto.layer;
+		}
+		return { op: "layer.move", group: held.group, layer: held.layer, toGroup: onto.group, to: to };
 	}
 
 	moveSelected(by) {
@@ -691,6 +900,7 @@ class CEditorPanels {
 		set("detail", this.editor.highDetail());
 		set("entities", this.editor.entities() > 0);
 		set("animate", this.editor.animate());
+		set("grid", this.editor.grid() > 0);
 	}
 
 	refreshTree() {
@@ -730,6 +940,7 @@ class CEditorPanels {
 				this.refreshTree();
 				this.refreshProps();
 			}, { signal: this.stopping.signal });
+			this.wireDragging(head, { group: groupIndex, layer: -1 });
 			item.append(head);
 
 			if (!this.collapsed.has(groupIndex)) {
@@ -742,7 +953,26 @@ class CEditorPanels {
 					row.dataset.group = String(groupIndex);
 					row.dataset.layer = String(layerIndex);
 					const what = layer.type === "tiles" ? layer.kind : layer.type;
-					row.textContent = `${layer.name || what} (${what})`;
+					// Hiding a layer is a thing about looking, so the eye is
+					// not a property and writes no history entry.
+					const shown = this.editor.visible(groupIndex, layerIndex);
+					const eye = document.createElement("button");
+					eye.className = "editor-eye";
+					eye.dataset.role = "visible";
+					eye.textContent = shown ? "\u25c9" : "\u25cb";
+					eye.title = shown ? "Hide this layer" : "Show this layer";
+					eye.setAttribute("aria-pressed", shown ? "true" : "false");
+					eye.addEventListener("click", event => {
+						event.stopPropagation();
+						this.editor.visible(groupIndex, layerIndex, !shown);
+						this.refreshTree();
+					}, { signal: this.stopping.signal });
+					const label = document.createElement("span");
+					label.textContent = `${layer.name || what} (${what})`;
+					row.append(eye, label);
+					if (!shown) {
+						row.classList.add("editor-hidden-layer");
+					}
 					if (this.selection.group === groupIndex && this.selection.layer === layerIndex) {
 						row.classList.add("editor-selected");
 					}
@@ -751,6 +981,7 @@ class CEditorPanels {
 						this.refreshTree();
 						this.refreshProps();
 					}, { signal: this.stopping.signal });
+					this.wireDragging(row, { group: groupIndex, layer: layerIndex });
 					list.append(row);
 				});
 				item.append(list);
@@ -1118,7 +1349,9 @@ function steerWithPointer(editor, options) {
 			return;
 		}
 		from = tile;
-		if (event.shiftKey) {
+		if (event.altKey) {
+			doing = "fill";
+		} else if (event.shiftKey) {
 			doing = "grab";
 		} else if (event.ctrlKey || event.metaKey) {
 			doing = "erase";
@@ -1127,6 +1360,11 @@ function steerWithPointer(editor, options) {
 			editor.begin("Draw");
 			editor.paint(where.group, where.layer, tile.x, tile.y);
 			changed();
+		}
+		if (doing !== "paint") {
+			// One tile is a rectangle too, and showing it from the first
+			// moment says which gesture is under way.
+			editor.mark(where.group, tile.x, tile.y, 1, 1);
 		}
 	}, { signal: signal });
 
@@ -1147,9 +1385,17 @@ function steerWithPointer(editor, options) {
 				editor.paint(where.group, where.layer, tile.x, tile.y);
 				changed();
 			}
+			return;
 		}
-		// Grabbing and rubbing out are about the rectangle the pointer ends
-		// on, so while it is moving there is nothing to do but wait.
+		// Grabbing, filling and rubbing out are about the rectangle the
+		// pointer ends on, so while it is moving the rectangle is all there
+		// is to show.
+		const where = target();
+		const tile = tileAt(event);
+		if (where !== null && tile !== null) {
+			const box = between(from, tile);
+			editor.mark(where.group, box.x, box.y, box.width, box.height);
+		}
 	}, { signal: signal });
 
 	const release = event => {
@@ -1161,16 +1407,23 @@ function steerWithPointer(editor, options) {
 		if (doing === "paint") {
 			editor.commit();
 			changed();
-		} else if (where !== null && tile !== null && (doing === "grab" || doing === "erase")) {
+		} else if (where !== null && tile !== null && (doing === "grab" || doing === "erase" || doing === "fill")) {
 			const box = between(from, tile);
 			if (doing === "grab") {
 				editor.grab(where.group, where.layer, box.x, box.y, box.width, box.height);
+			} else if (doing === "fill") {
+				// The brush is laid out over the rectangle again and again,
+				// so a fill of one tile and a fill of a pattern are the same
+				// gesture.
+				editor.fill(where.group, where.layer, box.x, box.y, box.width, box.height);
+				changed();
 			} else {
 				editor.erase(where.group, where.layer, box.x, box.y, box.width, box.height);
 				changed();
 			}
 		}
 		doing = null;
+		editor.mark();
 		canvas.releasePointerCapture(event.pointerId);
 	};
 	canvas.addEventListener("pointerup", release, { signal: signal });
@@ -1183,6 +1436,7 @@ function steerWithPointer(editor, options) {
 			changed();
 		}
 		doing = null;
+		editor.mark();
 	}, { signal: signal });
 
 	canvas.addEventListener("wheel", event => {

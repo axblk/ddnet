@@ -162,6 +162,34 @@
 	font-weight: 600;
 }
 
+/* The eye beside a layer. It is a button in a row that is itself clickable,
+   so it has to be small enough not to be in the way of selecting the layer
+   and clear enough to be found. */
+.editor-eye {
+	border: 0;
+	background: none;
+	color: inherit;
+	cursor: pointer;
+	padding: 0 2px;
+	font-size: 11px;
+	opacity: 0.8;
+}
+
+.editor-eye:hover {
+	opacity: 1;
+}
+
+/* The row a layer would land on if it were let go of now. */
+.editor-drop {
+	outline: 1px dashed #9fb8de;
+	outline-offset: -1px;
+}
+
+/* A layer that is switched off is still in the list - it is only not drawn. */
+.editor-hidden-layer {
+	opacity: 0.5;
+}
+
 .editor-props {
 	display: flex;
 	flex-direction: column;

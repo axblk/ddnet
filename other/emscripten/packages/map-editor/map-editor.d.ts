@@ -97,7 +97,11 @@ export declare class MapEditor {
 	activate(id: number): boolean;
 	close(id?: MapId): boolean;
 	create(width: number, height: number, name?: string): number | null;
-	save(id?: MapId): boolean;
+	save(id?: MapId, options?: { handout?: boolean }): boolean;
+	/** Whether the map has been changed since it was last written out. */
+	dirty(id?: MapId): boolean;
+	/** Writes every changed map into the browser's own storage every so many seconds. */
+	autosave(seconds: number): void;
 
 	structure(id?: MapId): Structure | null;
 	history(id?: MapId): History | null;
@@ -136,6 +140,12 @@ export declare class MapEditor {
 	highDetail(on?: boolean, id?: MapId): boolean | void;
 	entities(value?: boolean | number, id?: MapId): number | void;
 	animate(on?: boolean, id?: MapId): boolean | void;
+	/** Whether a layer is drawn. Changes nothing about the map itself. */
+	visible(group: number, layer: number, on?: boolean, id?: MapId): boolean | void;
+	/** Marks a rectangle of tiles, or takes the mark away when called with nothing. */
+	mark(group?: number, x?: number, y?: number, width?: number, height?: number, id?: MapId): void;
+	/** How many tiles apart the lines of the grid are, 0 for no grid. */
+	grid(spacing?: number | boolean, id?: MapId): number | void;
 	loading(): boolean;
 
 	loadFile(file: File): Promise<string>;

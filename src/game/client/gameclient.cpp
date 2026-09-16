@@ -256,8 +256,8 @@ void CGameClient::ResetChat(CSessionId SessionId)
 void CGameClient::AddChatLine(CSessionId SessionId, int Conn, int ClientId, int Team, const char *pText)
 {
 	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
-	CGameState *pState = pSession != nullptr ? pSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn)) : nullptr;
-	if(pState != nullptr)
+	CGameState *pState = FindGameState(SessionId, Conn);
+	if(pSession != nullptr && pState != nullptr)
 		m_Chat.AddLine(*pSession, *pState, SessionMessageTime(SessionId), Client()->SessionType(SessionId) == ESessionSourceType::DEMO, SessionId == Client()->FocusedSessionId(), ClientId, Team, pText);
 }
 
@@ -301,10 +301,10 @@ bool CGameClient::AudioForState(const CGameState &State, bool &Offline) const
 	{
 		if(pSession->GameStates().Find(State.Id()) != &State)
 			continue;
-		// Only the game state that is played is heard. The others of its session
-		// show the same world, and would play every sound a second time.
-		const CGameState *pPlayed = pSession->GameStates().FindByStream(Client()->StreamId(pSession->Id(), PlayedConnection(pSession->Id())));
-		return pPlayed == &State && AudioForSession(pSession->Id(), Offline);
+		// Only the seat that is played is heard. The other one shows the same
+		// world, and would play every sound a second time.
+		const CSessionId PairId = Client()->SeatSessionId(pSession->Id(), IClient::CONN_MAIN);
+		return FindGameState(PairId, PlayedConnection(PairId)) == &State && AudioForSession(PairId, Offline);
 	}
 	return false;
 }
@@ -319,7 +319,7 @@ CGameState &CGameClient::GameState(int Conn)
 	const CSessionId SessionId = Client()->FocusedSessionId();
 	if(m_pStateCache == nullptr || m_StateCacheConn != Conn || m_StateCacheSessionId != SessionId)
 	{
-		CGameState *pState = SessionContext().GameStates().FindByStream(Client()->StreamId(SessionId, Conn));
+		CGameState *pState = FindGameState(SessionId, Conn);
 		dbg_assert(pState != nullptr, "missing game state for connection");
 		m_StateCacheSessionId = SessionId;
 		m_StateCacheConn = Conn;
@@ -333,9 +333,15 @@ const CGameState &CGameClient::GameState(int Conn) const
 	return const_cast<CGameClient *>(this)->GameState(Conn);
 }
 
-int CGameClient::PlayedConnection(CSessionId SessionId) const
+CGameState *CGameClient::FindGameState(CSessionId SessionId, int Conn)
 {
-	return SessionId == Client()->DemoSessionId() ? IClient::CONN_MAIN : Client()->StreamIndex(SessionId, Client()->ActiveStreamId(SessionId));
+	CGameSessionContext *pSession = m_SessionContexts.Find(Client()->SeatSessionId(SessionId, Conn));
+	return pSession != nullptr ? pSession->State() : nullptr;
+}
+
+const CGameState *CGameClient::FindGameState(CSessionId SessionId, int Conn) const
+{
+	return const_cast<CGameClient *>(this)->FindGameState(SessionId, Conn);
 }
 
 CGameView &CGameClient::GameView(CSessionId SessionId, int Conn)
@@ -344,11 +350,9 @@ CGameView &CGameClient::GameView(CSessionId SessionId, int Conn)
 	const CGameViewId ViewId = Input && !g_Config.m_ClDummySplitScreen ? m_InputViewId : m_aPaneViewIds[SessionId == Client()->DemoSessionId() ? PANE_DEMO : Conn];
 	CGameView *pView = m_GameViews.Find(ViewId);
 	dbg_assert(pView != nullptr, "missing game view");
-	CGameSessionContext *pSession = FindSessionContext(SessionId);
-	dbg_assert(pSession != nullptr, "missing game view session");
-	CGameState *pState = pSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn));
+	CGameState *pState = FindGameState(SessionId, Conn);
 	dbg_assert(pState != nullptr, "missing game view state");
-	pView->SetTarget(SessionId, pState->Id());
+	pView->SetTarget(Client()->SeatSessionId(SessionId, Conn), pState->Id());
 	return *pView;
 }
 
@@ -385,6 +389,8 @@ void CGameClient::OnConsoleInit()
 	m_pRenderTrace = m_pClient->RenderTrace();
 	for(CSessionId SessionId : m_pClient->SessionIds())
 		dbg_assert(m_SessionContexts.Create(SessionId, "", EGameProtocol::SIX, m_pClient->StreamIds(SessionId)) != nullptr, "failed to create game session context");
+	if(m_pClient->DummySessionId().IsValid())
+		m_SessionContexts.Find(m_pClient->NetworkSessionId())->LinkDummy(*m_SessionContexts.Find(m_pClient->DummySessionId()));
 	// Every view starts out on the focused session and is pointed at its own
 	// stream the first time it is looked up.
 	const CGameSessionContext *pFocusedContext = m_SessionContexts.Find(m_pClient->FocusedSessionId());
@@ -591,42 +597,6 @@ void CGameClient::OnSessionCreated(CSessionId SessionId)
 		const CSessionPresentation *pPresentation = m_SessionPresentations.Create(SessionId);
 		dbg_assert(pPresentation != nullptr, "failed to create session presentation");
 	}
-}
-
-void CGameClient::OnSessionStreamsChanged(CSessionId SessionId)
-{
-	m_pStateCache = nullptr;
-	CGameSessionContext *pSession = FindSessionContext(SessionId);
-	dbg_assert(pSession != nullptr, "missing changed game session context");
-	const std::vector<CStreamId> vStreamIds = Client()->StreamIds(SessionId);
-	for(CStreamId StreamId : vStreamIds)
-	{
-		if(pSession->GameStates().FindByStream(StreamId) != nullptr)
-			continue;
-		const CGameStateId StateId = pSession->GameStates().Create(StreamId);
-		CGameState *pState = pSession->GameStates().Find(StateId);
-		dbg_assert(pState != nullptr, "failed to create game stream state");
-		if(pSession->MapContext().Map()->IsLoaded())
-			pState->InitPrediction(pSession->MapContext());
-	}
-
-	std::vector<CGameStateId> vRemovedStates;
-	for(const auto &pState : pSession->GameStates().States())
-	{
-		if(std::find(vStreamIds.begin(), vStreamIds.end(), pState->StreamId()) == vStreamIds.end())
-			vRemovedStates.push_back(pState->Id());
-	}
-	CSessionPresentation &Presentation = SessionPresentation(SessionId);
-	for(CGameStateId StateId : vRemovedStates)
-	{
-		CGameState *pState = pSession->GameStates().Find(StateId);
-		dbg_assert(pState != nullptr, "missing removed game stream state");
-		pSession->InputRouter().Remove(pState->StreamId());
-		pSession->LocalPlayerProfiles().Remove(pState->StreamId());
-		Presentation.RemoveState(StateId);
-		pSession->GameStates().Destroy(StateId);
-	}
-	UpdateInputRoutes(SessionId);
 }
 
 void CGameClient::OnSessionDestroyed(CSessionId SessionId)
@@ -911,7 +881,7 @@ void CGameClient::OnUpdate()
 	// handle touch events
 	std::vector<IInput::CTouchFingerState> vTouchFingerStates = Input()->TouchFingerStates();
 	const int TouchConnection = ActiveConnection();
-	CGameSessionContext &TouchSession = SessionContext();
+	CGameSessionContext &TouchSession = *FindSessionContext(Client()->SeatSessionId(Client()->FocusedSessionId(), TouchConnection));
 	CGameState &TouchState = GameState(TouchConnection);
 	CGameView &TouchView = InputView();
 	const CViewport &TouchViewport = TouchView.Viewport();
@@ -921,7 +891,6 @@ void CGameClient::OnUpdate()
 		TouchState,
 		TouchView,
 		*TouchSession.MapContext().Collision(),
-		TouchState.StreamId(),
 		Client()->State() == IClient::STATE_ONLINE || Client()->State() == IClient::STATE_DEMOPLAYBACK,
 		Client()->IsDemoPlayback(),
 		Client()->DummyAllowed(),
@@ -993,7 +962,7 @@ void CGameClient::UpdateNetworkPlayerInfo()
 		if(m_pClient->IsSixup(Client()->NetworkSessionId()))
 		{
 			if(!GotWantedSkin7(IClient::CONN_MAIN))
-				SendSkinChange7(Client()->NetworkSessionId(), Client()->PrimaryStreamId(Client()->NetworkSessionId()));
+				SendSkinChange7(Client()->NetworkSessionId(), IClient::CONN_MAIN);
 			else
 				MainRuntime.m_CheckInfo = -1;
 		}
@@ -1023,7 +992,7 @@ void CGameClient::UpdateNetworkPlayerInfo()
 		if(m_pClient->IsSixup(Client()->NetworkSessionId()))
 		{
 			if(!GotWantedSkin7(IClient::CONN_DUMMY))
-				SendSkinChange7(Client()->NetworkSessionId(), Client()->StreamId(Client()->NetworkSessionId(), IClient::CONN_DUMMY));
+				SendSkinChange7(Client()->NetworkSessionId(), IClient::CONN_DUMMY);
 			else
 				DummyRuntime.m_CheckInfo = -1;
 		}
@@ -1058,12 +1027,10 @@ void CGameClient::OnInput(const IInput::CEvent &Event)
 	}
 }
 
-void CGameClient::OnConnectionFocusChanged(CSessionId SessionId, CStreamId PreviousStreamId, CStreamId StreamId)
+void CGameClient::OnConnectionFocusChanged(CSessionId PreviousSessionId, CSessionId SessionId)
 {
-	CGameSessionContext *pSession = FindSessionContext(SessionId);
-	dbg_assert(pSession != nullptr, "missing focus-change game session context");
-	CGameState *pPreviousState = pSession->GameStates().FindByStream(PreviousStreamId);
-	CGameState *pState = pSession->GameStates().FindByStream(StreamId);
+	CGameState *pPreviousState = FindGameState(PreviousSessionId, Client()->SeatOf(PreviousSessionId));
+	CGameState *pState = FindGameState(SessionId, Client()->SeatOf(SessionId));
 	dbg_assert(pPreviousState != nullptr && pState != nullptr, "missing focus-change game state");
 	(void)InputView();
 	m_Camera.UpdateCamera();
@@ -1071,69 +1038,37 @@ void CGameClient::OnConnectionFocusChanged(CSessionId SessionId, CStreamId Previ
 		Client.UpdateSkinInfo(*pState);
 	if(g_Config.m_ClDummyResetOnSwitch)
 	{
-		const CStreamId FocusedStream = pState->StreamId();
-		for(const auto &pSessionState : pSession->GameStates().States())
+		for(CGameState *pSessionState : SessionContext().LocalStates())
 		{
-			const bool IsFocused = pSessionState->StreamId() == FocusedStream;
-			if(IsFocused != (g_Config.m_ClDummyResetOnSwitch == 2))
+			if((pSessionState == pState) != (g_Config.m_ClDummyResetOnSwitch == 2))
 				continue;
-			m_Controls.ResetInput(pSessionState->StreamId());
+			pSessionState->Input().ReleaseGameplay();
 		}
 	}
-	m_PreviousFocusedStream = pPreviousState->StreamId();
-	UpdateInputRoutes(SessionId);
-}
-
-void CGameClient::UpdateInputRoutes(CSessionId SessionId)
-{
-	CGameSessionContext *pSession = FindSessionContext(SessionId);
-	dbg_assert(pSession != nullptr, "missing input game session context");
-	const bool AcceptControls = SessionId == Client()->FocusedSessionId();
-	const CStreamId FocusedStream = Client()->ActiveStreamId(SessionId);
-	CGameStateManager &GameStates = pSession->GameStates();
-	CStreamInputRouter &Router = pSession->InputRouter();
-	std::vector<CStreamId> vRemovedStreams;
-	for(const CStreamInputRoute &Route : Router.Routes())
-	{
-		if(!GameStates.FindByStream(Route.m_Target))
-			vRemovedStreams.push_back(Route.m_Target);
-		if(!GameStates.FindByStream(Route.m_Source))
-			vRemovedStreams.push_back(Route.m_Source);
-	}
-	for(CStreamId StreamId : vRemovedStreams)
-		Router.Remove(StreamId);
-
-	for(const auto &pState : GameStates.States())
-	{
-		const CStreamId Target = pState->StreamId();
-		const EStreamInputPolicy Policy = !AcceptControls || Target == FocusedStream ? EStreamInputPolicy::DIRECT : g_Config.m_ClDummyHammer ? EStreamInputPolicy::HAMMER :
-														    g_Config.m_ClDummyCopyMoves      ? EStreamInputPolicy::COPY_MOVES :
-																		       EStreamInputPolicy::DIRECT;
-		const CStreamId Source = Policy == EStreamInputPolicy::DIRECT ? Target : FocusedStream;
-		const bool RouteSet = Router.Set(Target, Source, Policy);
-		dbg_assert(RouteSet, "failed to set input route");
-	}
+	m_PreviousFocusedConn = Client()->SeatOf(PreviousSessionId);
 }
 
 int CGameClient::OnSnapInput(CSessionId SessionId, int *pData, CStreamId StreamId, bool Force)
 {
-	UpdateInputRoutes(SessionId);
 	CGameSessionContext *pSession = FindSessionContext(SessionId);
 	dbg_assert(pSession != nullptr, "missing input game session context");
-	CGameState *pTargetState = pSession->GameStates().FindByStream(StreamId);
+	CGameState *pTargetState = pSession->State();
 	dbg_assert(pTargetState != nullptr, "missing input game state");
 	CGameState &TargetState = *pTargetState;
-	const CStreamId Target = TargetState.StreamId();
-	CStreamInputRouter &Router = pSession->InputRouter();
-	CStreamInputRoute &Route = *Router.Find(Target);
+	// The seat with the controls plays them. The other seat of the focused
+	// pair follows it the way cl_dummy_hammer and cl_dummy_copy_moves ask for.
+	const bool Input = SessionId == Client()->InputSessionId();
+	const bool Follows = !Input && Client()->SeatSessionId(SessionId, IClient::CONN_MAIN) == Client()->FocusedSessionId();
+	CStreamInputRoute &Route = pSession->InputRoute();
+	Route.m_Policy = !Follows ? EStreamInputPolicy::DIRECT : g_Config.m_ClDummyHammer ? EStreamInputPolicy::HAMMER :
+							 g_Config.m_ClDummyCopyMoves      ? EStreamInputPolicy::COPY_MOVES :
+											    EStreamInputPolicy::DIRECT;
 	const EStreamInputPolicy Policy = Route.m_Policy;
 	CNetObj_PlayerInput &TargetInput = TargetState.Input().m_InputData;
 	if(Policy != EStreamInputPolicy::HAMMER)
 		Route.FinishHammering(TargetInput);
-	if(Policy == EStreamInputPolicy::DIRECT && StreamId == Client()->ActiveStreamId(SessionId) && SessionId == Client()->FocusedSessionId())
-	{
+	if(Input)
 		return m_Controls.SnapInput(pData);
-	}
 	if(TargetState.LocalClientId() < 0)
 	{
 		return 0;
@@ -1141,7 +1076,7 @@ int CGameClient::OnSnapInput(CSessionId SessionId, int *pData, CStreamId StreamI
 
 	if(Policy != EStreamInputPolicy::HAMMER)
 	{
-		if(!Force && SessionId == Client()->FocusedSessionId() && (!TargetInput.m_Direction && !TargetInput.m_Jump && !TargetInput.m_Hook))
+		if(!Force && Follows && (!TargetInput.m_Direction && !TargetInput.m_Jump && !TargetInput.m_Hook))
 		{
 			return 0;
 		}
@@ -1282,29 +1217,29 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 {
 	CGameSessionContext *pSession = FindSessionContext(SessionId);
 	dbg_assert(pSession != nullptr, "missing closed game session context");
-	if(Client()->SessionType(SessionId) == ESessionSourceType::NETWORK)
+	// What the server said to all of its players stays with the network
+	// session when only the dummy leaves.
+	const bool ServerState = !pSession->IsDummy();
+	if(ServerState && Client()->SessionType(SessionId) == ESessionSourceType::NETWORK && pSession->State() != nullptr)
 	{
-		const CStreamId PrimaryStreamId = Client()->PrimaryStreamId(SessionId);
-		CGameState *pState = pSession->GameStates().FindByStream(PrimaryStreamId);
-		const int Conn = Client()->StreamIndex(SessionId, PrimaryStreamId);
-		if(pState != nullptr && Conn >= 0)
-		{
-			FinalizeObservedMatch(SessionId, *pSession, *pState, Client()->GameTick(SessionId, Conn), EMatchTermination::ABORTED);
-			PersistLiveStatsOnDisconnect(SessionId, *pSession);
-		}
+		FinalizeObservedMatch(SessionId, *pSession, *pSession->State(), Client()->GameTick(SessionId, SESSION_STREAM_ID), EMatchTermination::ABORTED);
+		PersistLiveStatsOnDisconnect(SessionId, *pSession);
 	}
 	for(const auto &pGameState : pSession->GameStates().States())
 		pGameState->Reset();
-	pSession->Broadcast().Reset();
-	pSession->MapMetadata().Reset();
-	pSession->Vote().Reset();
-	ResetInfoMessages(SessionId);
-	ResetChat(SessionId);
-	pSession->Stats().Reset();
-	pSession->MatchReportAssembler().Reset();
-	pSession->LiveStatsAssembler().Reset();
-	pSession->SetLastLiveStatsRequest(0);
-	pSession->InputRouter().Reset();
+	if(ServerState)
+	{
+		pSession->Broadcast().Reset();
+		pSession->MapMetadata().Reset();
+		pSession->Vote().Reset();
+		ResetInfoMessages(SessionId);
+		ResetChat(SessionId);
+		pSession->Stats().Reset();
+		pSession->MatchReportAssembler().Reset();
+		pSession->LiveStatsAssembler().Reset();
+		pSession->SetLastLiveStatsRequest(0);
+	}
+	pSession->InputRoute().Reset();
 	m_SessionPresentations.Unload(SessionId);
 #if defined(CONF_VIDEORECORDER)
 	if(SessionId == Client()->VideoSessionId() && Client()->VideoUsesOfflineAudio())
@@ -1343,7 +1278,7 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 
 	m_vSnapEntities.clear();
 
-	m_PreviousFocusedStream.reset();
+	m_PreviousFocusedConn.reset();
 
 	// Map bugs and tunings are reset when the map context is loaded.
 
@@ -1380,7 +1315,7 @@ void CGameClient::PersistLiveStatsOnDisconnect(CSessionId SessionId, CGameSessio
 	Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "match-journal", Error.c_str());
 }
 
-bool CGameClient::HandleMatchReportMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId)
+bool CGameClient::HandleMatchReportMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn)
 {
 	if(MsgId != NETMSG_MATCH_REPORT_START && MsgId != NETMSG_MATCH_REPORT_CHUNK && MsgId != NETMSG_MATCH_REPORT_END && MsgId != NETMSG_MATCH_REPORT_LOCAL_PARTICIPANT)
 		return false;
@@ -1388,7 +1323,7 @@ bool CGameClient::HandleMatchReportMessage(CSessionId SessionId, int MsgId, CUnp
 	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
 	dbg_assert(pSession != nullptr, "missing message session context");
 	CMatchReportAssembler &Assembler = pSession->MatchReportAssembler();
-	if(StreamId != Client()->PrimaryStreamId(SessionId))
+	if(Conn != IClient::CONN_MAIN)
 		return true;
 
 	CUuid MatchId;
@@ -1470,13 +1405,13 @@ bool CGameClient::HandleMatchReportMessage(CSessionId SessionId, int MsgId, CUnp
 	return true;
 }
 
-bool CGameClient::HandleLiveStatsMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId)
+bool CGameClient::HandleLiveStatsMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn)
 {
 	if(MsgId != NETMSG_LIVE_STATS_START && MsgId != NETMSG_LIVE_STATS_CHUNK && MsgId != NETMSG_LIVE_STATS_END)
 		return false;
 	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
 	dbg_assert(pSession != nullptr, "missing live stats session context");
-	if(StreamId != Client()->PrimaryStreamId(SessionId) || Client()->SessionType(SessionId) != ESessionSourceType::NETWORK)
+	if(Conn != IClient::CONN_MAIN || Client()->SessionType(SessionId) != ESessionSourceType::NETWORK)
 		return true;
 
 	CUuid MatchId;
@@ -1556,7 +1491,7 @@ void CGameClient::OnSessionFocused(CSessionId SessionId)
 	dbg_assert(pSession != nullptr, "missing focused game session context");
 	for(const auto &pBackgroundSession : m_SessionContexts.Contexts())
 	{
-		if(pBackgroundSession->Id() == SessionId)
+		if(Client()->SeatSessionId(pBackgroundSession->Id(), IClient::CONN_MAIN) == SessionId)
 			continue;
 		for(const auto &pState : pBackgroundSession->GameStates().States())
 		{
@@ -2003,9 +1938,10 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 		return;
 	m_vPreparedRenderEntries.reserve(3);
 
-	CGameSessionContext &ActiveSession = SessionContext();
-	const int ActiveConn = PlayedConnection(ActiveSession.Id());
-	CGameState *pActiveState = ActiveSession.GameStates().FindByStream(Client()->StreamId(ActiveSession.Id(), ActiveConn));
+	CGameSessionContext &FocusedSession = SessionContext();
+	const int ActiveConn = PlayedConnection(FocusedSession.Id());
+	CGameSessionContext &ActiveSession = *FindSessionContext(Client()->SeatSessionId(FocusedSession.Id(), ActiveConn));
+	CGameState *pActiveState = ActiveSession.State();
 	dbg_assert(pActiveState != nullptr, "missing active game state");
 	CGameState &ActiveState = *pActiveState;
 	CGameView &View = InputView();
@@ -2014,11 +1950,11 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 		for(const auto &pState : pSession->GameStates().States())
 			pState->SetShown(false);
 	auto AddEntry = [&](CGameSessionContext &Session, int Conn, bool Inset) {
-		CGameState *pState = Session.GameStates().FindByStream(Client()->StreamId(Session.Id(), Conn));
+		CGameState *pState = FindGameState(Session.Id(), Conn);
 		dbg_assert(pState != nullptr, "missing shown game state");
 		pState->SetShown(true);
 		CPreparedRenderEntry Entry;
-		Entry.m_pSession = &Session;
+		Entry.m_pSession = FindSessionContext(Client()->SeatSessionId(Session.Id(), Conn));
 		Entry.m_pState = pState;
 		Entry.m_pView = &GameView(Session.Id(), Conn);
 		Entry.m_Conn = Conn;
@@ -2051,7 +1987,7 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 	CGameSessionContext *pOther = nullptr;
 	for(const auto &pSession : m_SessionContexts.Contexts())
 	{
-		if((SplitScreen || PictureInPicture) && pSession.get() != &ActiveSession && Client()->IsSessionShowable(pSession->Id()))
+		if((SplitScreen || PictureInPicture) && pSession.get() != &FocusedSession && Client()->IsSessionShowable(pSession->Id()))
 		{
 			pOther = pSession.get();
 			break;
@@ -2060,7 +1996,7 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 	const bool OtherBeside = pOther != nullptr && !PictureInPicture;
 	for(const auto &pSession : m_SessionContexts.Contexts())
 	{
-		if(pSession.get() == &ActiveSession || (OtherBeside && pSession.get() == pOther))
+		if(pSession.get() == &FocusedSession || (OtherBeside && pSession.get() == pOther))
 			AddSession(*pSession, false);
 	}
 	if(pOther != nullptr && PictureInPicture)
@@ -2208,10 +2144,9 @@ void CGameClient::OnRenderVideoPrepare(CSessionId SessionId, const CVideoExportS
 
 	// Leave the camera on the view that takes input, so a console command or a
 	// question about the zoom between frames does not land on the export.
-	CGameSessionContext &FocusedSession = SessionContext();
-	CGameState *pFocusedState = FocusedSession.GameStates().FindByStream(Client()->StreamId(FocusedSession.Id(), ActiveConnection()));
-	if(pFocusedState != nullptr)
-		m_Camera.BindTarget(FocusedSession, *pFocusedState, InputView(), true, Client()->LocalTime());
+	CGameSessionContext *pInputSession = FindSessionContext(Client()->InputSessionId());
+	if(pInputSession != nullptr && pInputSession->State() != nullptr)
+		m_Camera.BindTarget(*pInputSession, *pInputSession->State(), InputView(), true, Client()->LocalTime());
 }
 #endif
 
@@ -2240,9 +2175,7 @@ bool CGameClient::OnRenderVideoProgress(bool Overlay)
 
 void CGameClient::OnDummyDisconnect()
 {
-	CGameSessionContext *pSession = FindSessionContext(Client()->NetworkSessionId());
-	dbg_assert(pSession != nullptr, "missing Network game session context");
-	CGameState *pState = pSession->GameStates().FindByStream(Client()->StreamId(pSession->Id(), IClient::CONN_DUMMY));
+	CGameState *pState = FindGameState(Client()->NetworkSessionId(), IClient::CONN_DUMMY);
 	dbg_assert(pState != nullptr, "missing Network dummy game state");
 	pState->Reset();
 }
@@ -2391,19 +2324,20 @@ void CGameClient::OnRelease()
 
 void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId)
 {
-	const int Conn = Client()->StreamIndex(SessionId, StreamId);
-	dbg_assert(Conn >= 0, "missing message stream index");
-	const bool AdditionalStream = StreamId != Client()->PrimaryStreamId(SessionId);
+	// A message on the dummy is one on the dummy seat of the network session.
+	const int Conn = Client()->SeatOf(SessionId);
+	SessionId = Client()->SeatSessionId(SessionId, IClient::CONN_MAIN);
+	const bool AdditionalStream = Conn == IClient::CONN_DUMMY;
 	CGameSessionContext *pMessageSession = m_SessionContexts.Find(SessionId);
 	dbg_assert(pMessageSession != nullptr, "missing message session context");
-	CGameState *pMessageState = pMessageSession->GameStates().FindByStream(StreamId);
+	CGameState *pMessageState = FindGameState(SessionId, Conn);
 	dbg_assert(pMessageState != nullptr, "missing message game state");
 	const bool Focused = SessionId == Client()->FocusedSessionId();
 	const bool SuppressEvents = m_SuppressEvents && SessionId == Client()->DemoSessionId();
 	const int64_t MessageTime = SessionMessageTime(SessionId);
-	if(HandleMatchReportMessage(SessionId, MsgId, pUnpacker, StreamId))
+	if(HandleMatchReportMessage(SessionId, MsgId, pUnpacker, Conn))
 		return;
-	if(HandleLiveStatsMessage(SessionId, MsgId, pUnpacker, StreamId))
+	if(HandleLiveStatsMessage(SessionId, MsgId, pUnpacker, Conn))
 		return;
 
 	// special messages
@@ -2567,10 +2501,15 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 		pMessageState->ApplyEmoticon(pMsg->m_ClientId, pMsg->m_Emoticon, Client()->GameTick(SessionId, Conn), Client()->IntraGameTickSincePrev(SessionId, Conn));
 	}
 
+	if(MsgId == NETMSGTYPE_SV_READYTOENTER)
+	{
+		Client()->EnterGame(SessionId, Conn);
+		return;
+	}
 	if(AdditionalStream)
 	{
-		const CGameState *pMainState = pMessageSession->GameStates().FindByStream(Client()->PrimaryStreamId(SessionId));
-		const CGameState *pDummyState = pMessageSession->GameStates().FindByStream(Client()->StreamId(SessionId, IClient::CONN_DUMMY));
+		const CGameState *pMainState = FindGameState(SessionId, IClient::CONN_MAIN);
+		const CGameState *pDummyState = FindGameState(SessionId, IClient::CONN_DUMMY);
 		if(pMainState == nullptr || pDummyState == nullptr)
 			return;
 		const int MainLocalId = pMainState->LocalClientId();
@@ -2601,11 +2540,6 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	{
 		const CNetMsg_Sv_MapInfo *pMsg = static_cast<const CNetMsg_Sv_MapInfo *>(pRawMsg);
 		pMessageSession->MapMetadata().SetDescription(pMsg->m_pDescription);
-	}
-	else if(MsgId == NETMSGTYPE_SV_READYTOENTER)
-	{
-		Client()->EnterGame(SessionId, Conn);
-		return;
 	}
 	else if(MsgId == NETMSGTYPE_SV_MAPSOUNDGLOBAL)
 	{
@@ -2847,9 +2781,7 @@ void CGameClient::ProcessEvents(CSessionId SessionId, int Conn)
 		return;
 
 	const int SnapType = IClient::SNAP_CURRENT;
-	CGameSessionContext *pSession = FindSessionContext(SessionId);
-	dbg_assert(pSession != nullptr, "missing event session context");
-	CGameState *pState = pSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn));
+	CGameState *pState = FindGameState(SessionId, Conn);
 	dbg_assert(pState != nullptr, "missing event game state");
 	CGameState &State = *pState;
 	bool OfflineAudio;
@@ -3137,7 +3069,7 @@ static CGameInfo GetGameInfo(const CNetObj_GameInfoEx *pInfoEx, int InfoExSize, 
 
 void CGameClient::InvalidateSnapshot(CSessionId SessionId)
 {
-	if(SessionId != Client()->FocusedSessionId())
+	if(SessionId != Client()->InputSessionId())
 		return;
 	// clear all pointers
 	mem_zero(&Snap(), sizeof(Snap()));
@@ -3148,8 +3080,10 @@ void CGameClient::InvalidateSnapshot(CSessionId SessionId)
 
 void CGameClient::OnNewSnapshot(CSessionId SessionId, CStreamId StreamId)
 {
-	const int Conn = Client()->StreamIndex(SessionId, StreamId);
-	dbg_assert(Conn >= 0, "missing snapshot stream index");
+	// A snapshot of the dummy is one of the dummy seat of the network session.
+	const bool Input = SessionId == Client()->InputSessionId();
+	const int Conn = Client()->SeatOf(SessionId);
+	SessionId = Client()->SeatSessionId(SessionId, IClient::CONN_MAIN);
 	CGameInfo GameInfo = GetGameInfo(nullptr, 0, &Client()->ServerInfo(SessionId));
 	const int NumItems = Client()->SnapNumItems(SessionId, Conn, IClient::SNAP_CURRENT);
 	for(int i = 0; i < NumItems; i++)
@@ -3163,29 +3097,29 @@ void CGameClient::OnNewSnapshot(CSessionId SessionId, CStreamId StreamId)
 	}
 	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
 	dbg_assert(pSession != nullptr, "missing snapshot session context");
-	CGameState *pState = pSession->GameStates().FindByStream(StreamId);
+	CGameState *pState = FindGameState(SessionId, Conn);
 	dbg_assert(pState != nullptr, "missing snapshot game state");
 	CGameState &State = *pState;
 	// The client runs the full prediction for the connection it shows, and only
 	// for that one, so its world must survive the snapshot instead of being
 	// rebuilt from it.
-	State.SetFullyPredicted(SessionId == Client()->FocusedSessionId() && StreamId == Client()->ActiveStreamId(SessionId));
+	State.SetFullyPredicted(Input);
 	State.SetCoreGameInfo(GameInfo);
-	State.ApplySnapshot(*Client(), SessionId, StreamId);
+	State.ApplySnapshot(*Client(), Client()->SeatSessionId(SessionId, Conn), StreamId);
 	// Every state that can end up on screen gets its snap state built, not only
 	// the one the player is looking through.
 	BuildSnapState(SessionId, Conn);
 	bool EnteredGameOver = false;
-	if(StreamId == Client()->PrimaryStreamId(SessionId))
+	if(Conn == IClient::CONN_MAIN)
 		EnteredGameOver = pSession->Stats().UpdateSnapshot(State, Client()->GameTick(SessionId, Conn));
 	bool ProcessedEvents = false;
-	if(SessionId == Client()->FocusedSessionId() && StreamId == Client()->ActiveStreamId(SessionId))
+	if(Input)
 	{
 		ProcessSnapshot(SessionId, Conn);
 		ProcessedEvents = true;
 	}
 #if defined(CONF_VIDEORECORDER)
-	else if(SessionId == Client()->VideoSessionId() && StreamId == Client()->PrimaryStreamId(SessionId))
+	else if(SessionId == Client()->VideoSessionId())
 	{
 		ProcessEvents(SessionId, Conn);
 		ProcessedEvents = true;
@@ -3217,7 +3151,7 @@ void CGameClient::ProcessAirJumpEffects(CSessionId SessionId, int Conn, CGameSta
 		if(!Character.m_HasCharacter || !Character.m_HasPrevCharacter || !(Character.m_Character.m_Jumped & 2) || (Character.m_PrevCharacter.m_Jumped & 2))
 			continue;
 
-		const CGameState *pOtherState = NetworkSource ? pSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN)) : nullptr;
+		const CGameState *pOtherState = NetworkSource ? FindGameState(SessionId, Conn == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN) : nullptr;
 		const bool IsDummy = pOtherState != nullptr && Client()->DummyConnected() && ClientId == pOtherState->LocalClientId();
 		const bool IsLocalPlayer = ClientId == State.LocalClientId();
 		if(Predict() && (IsLocalPlayer || AntiPingPlayers()) && (IsLocalPlayer || IsDummy))
@@ -3242,7 +3176,7 @@ void CGameClient::BuildSnapState(CSessionId SessionId, int Conn)
 {
 	CGameSessionContext *pSession = FindSessionContext(SessionId);
 	dbg_assert(pSession != nullptr, "missing snapshot session context");
-	CGameState *pState = pSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn));
+	CGameState *pState = FindGameState(SessionId, Conn);
 	dbg_assert(pState != nullptr, "missing snapshot game state");
 	CGameSessionContext &Session = *pSession;
 	CGameState &ActiveState = *pState;
@@ -3641,7 +3575,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 	dbg_assert(SessionId == Client()->FocusedSessionId(), "legacy snapshot must belong to focused session");
 	CGameSessionContext *pSession = FindSessionContext(SessionId);
 	dbg_assert(pSession != nullptr, "missing legacy snapshot session context");
-	CGameState *pState = pSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn));
+	CGameState *pState = FindGameState(SessionId, Conn);
 	dbg_assert(pState != nullptr, "missing legacy snapshot game state");
 	CGameSessionContext &Session = *pSession;
 	CGameState &ActiveState = *pState;
@@ -3771,16 +3705,16 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 			Client()->SendMsg(Conn, &Msg, MSGFLAG_RECORD | MSGFLAG_NOSEND);
 		}
 
-		for(const auto &pSessionState : Session.GameStates().States())
+		for(int SessionConn = IClient::CONN_MAIN; SessionConn <= IClient::CONN_DUMMY; SessionConn++)
 		{
-			const int SessionConn = Client()->StreamIndex(Session.Id(), pSessionState->StreamId());
+			CGameState *pSessionState = FindGameState(SessionId, SessionConn);
 			if(pSessionState->Runtime().m_DDRaceMsgSent || !Snap.m_pLocalInfo)
 				continue;
-			if(SessionConn < 0 || (Session.Id() == Client()->NetworkSessionId() && SessionConn == IClient::CONN_DUMMY && !Client()->DummyConnected()))
+			if(SessionConn == IClient::CONN_DUMMY && !Client()->DummyConnected())
 				continue;
 			CMsgPacker Msg(NETMSGTYPE_CL_ISDDNETLEGACY, false);
 			Msg.AddInt(DDNetVersion());
-			Client()->SendMsg(Session.Id(), pSessionState->StreamId(), &Msg, MSGFLAG_VITAL);
+			Client()->SendMsg(SessionConn, &Msg, MSGFLAG_VITAL);
 			pSessionState->Runtime().m_DDRaceMsgSent = true;
 		}
 
@@ -3804,8 +3738,8 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 			Runtime.m_ShowOthers = g_Config.m_ClShowOthers;
 		}
 
-		CGameState *pMainState = Session.GameStates().FindByStream(Client()->PrimaryStreamId(Session.Id()));
-		CGameState *pDummyState = Session.GameStates().FindByStream(Client()->StreamId(Session.Id(), IClient::CONN_DUMMY));
+		CGameState *pMainState = FindGameState(SessionId, IClient::CONN_MAIN);
+		CGameState *pDummyState = FindGameState(SessionId, IClient::CONN_DUMMY);
 		dbg_assert(pMainState != nullptr && pDummyState != nullptr, "missing Network game states");
 		CGameState::CRuntimeState &MainRuntime = pMainState->Runtime();
 		if(MainRuntime.m_EnableSpectatorCount == -1 || MainRuntime.m_EnableSpectatorCount != g_Config.m_ClShowhudSpectatorCount)
@@ -3949,7 +3883,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 	SnapCollectEntities(SessionId, Conn); // creates a collection that associates EntityEx snap items with the entities they belong to
 
 	UpdateLocalTuning(SessionId, Session, ActiveState, Conn);
-	m_PreviousFocusedStream.reset();
+	m_PreviousFocusedConn.reset();
 	if(NetworkSource)
 		UpdatePrediction();
 }
@@ -4057,13 +3991,11 @@ void CGameClient::ApplyPreInputs(int Tick, bool Direct, CGameWorld &GameWorld)
 
 void CGameClient::OnPredict(CSessionId SessionId, CStreamId StreamId)
 {
-	const int Conn = Client()->StreamIndex(SessionId, StreamId);
-	dbg_assert(Conn >= 0, "missing prediction stream index");
 	CGameSessionContext *pSession = FindSessionContext(SessionId);
 	dbg_assert(pSession != nullptr, "missing prediction game session context");
-	CGameState *pState = pSession->GameStates().FindByStream(StreamId);
+	CGameState *pState = pSession->State();
 	dbg_assert(pState != nullptr, "missing prediction game state");
-	pState->SetFullyPredicted(SessionId == Client()->FocusedSessionId() && StreamId == Client()->ActiveStreamId(SessionId));
+	pState->SetFullyPredicted(SessionId == Client()->InputSessionId());
 	pState->Predict(*Client(), SessionId, StreamId);
 	if(pState->IsFullyPredicted())
 		ProcessPrediction();
@@ -4161,8 +4093,8 @@ void CGameClient::ProcessPrediction()
 			pLocalChar->m_CanMoveInFreeze = true;
 
 		// apply inputs and tick
-		CNetObj_PlayerInput *pInputData = (CNetObj_PlayerInput *)Client()->GetInput(SessionId, Client()->StreamId(SessionId, PredictionConnection), Tick);
-		CNetObj_PlayerInput *pDummyInputData = !pDummyChar ? nullptr : (CNetObj_PlayerInput *)Client()->GetInput(SessionId, Client()->StreamId(SessionId, OtherPredictionConnection), Tick);
+		CNetObj_PlayerInput *pInputData = (CNetObj_PlayerInput *)Client()->GetInput(Client()->SeatSessionId(SessionId, PredictionConnection), SESSION_STREAM_ID, Tick);
+		CNetObj_PlayerInput *pDummyInputData = !pDummyChar ? nullptr : (CNetObj_PlayerInput *)Client()->GetInput(Client()->SeatSessionId(SessionId, OtherPredictionConnection), SESSION_STREAM_ID, Tick);
 		bool DummyFirst = pInputData && pDummyInputData && pDummyChar->GetCid() < pLocalChar->GetCid();
 
 		if(DummyFirst)
@@ -4530,10 +4462,10 @@ void CGameClient::SendSwitchTeam(int Team) const
 	Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL);
 }
 
-void CGameClient::SendStartInfo7(CSessionId SessionId, CStreamId StreamId)
+void CGameClient::SendStartInfo7(CSessionId SessionId, int Conn)
 {
-	const int ProfileIndex = StreamId != Client()->PrimaryStreamId(SessionId);
-	const CLocalPlayerProfile &Profile = RefreshPlayerProfile(SessionId, StreamId);
+	const int ProfileIndex = Conn;
+	const CLocalPlayerProfile &Profile = RefreshPlayerProfile(SessionId, Conn);
 	protocol7::CNetMsg_Cl_StartInfo Msg;
 	Msg.m_pName = Profile.m_Name.c_str();
 	Msg.m_pClan = Profile.m_Clan.c_str();
@@ -4547,26 +4479,24 @@ void CGameClient::SendStartInfo7(CSessionId SessionId, CStreamId StreamId)
 	CMsgPacker Packer(&Msg, false, true);
 	if(Msg.Pack(&Packer))
 		return;
-	Client()->SendMsg(SessionId, StreamId, &Packer, MSGFLAG_VITAL | MSGFLAG_FLUSH);
-	CGameSessionContext *pSession = FindSessionContext(SessionId);
-	dbg_assert(pSession != nullptr, "missing start-info game session context");
-	CGameState *pState = pSession->GameStates().FindByStream(StreamId);
+	Client()->SendMsg(Client()->SeatSessionId(SessionId, Conn), SESSION_STREAM_ID, &Packer, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+	CGameState *pState = FindGameState(SessionId, Conn);
 	dbg_assert(pState != nullptr, "missing start-info game state");
 	pState->Runtime().m_CheckInfo = -1;
 }
 
-const CLocalPlayerProfile &CGameClient::RefreshPlayerProfile(CSessionId SessionId, CStreamId StreamId)
+const CLocalPlayerProfile &CGameClient::RefreshPlayerProfile(CSessionId SessionId, int Conn)
 {
-	const bool UseDummyProfile = StreamId != Client()->PrimaryStreamId(SessionId);
-	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	const bool UseDummyProfile = Conn == IClient::CONN_DUMMY;
+	CGameSessionContext *pSession = FindSessionContext(Client()->SeatSessionId(SessionId, Conn));
 	dbg_assert(pSession != nullptr, "missing player-profile game session context");
-	pSession->LocalPlayerProfiles().Set(StreamId, CLocalPlayerProfile::FromLegacyConfig(*Config(), UseDummyProfile, UseDummyProfile ? Client()->DummyName() : Client()->PlayerName()));
-	return *pSession->LocalPlayerProfiles().Find(StreamId);
+	pSession->LocalPlayerProfiles().Set(SESSION_STREAM_ID, CLocalPlayerProfile::FromLegacyConfig(*Config(), UseDummyProfile, UseDummyProfile ? Client()->DummyName() : Client()->PlayerName()));
+	return *pSession->LocalPlayerProfiles().Find(SESSION_STREAM_ID);
 }
 
-void CGameClient::SendSkinChange7(CSessionId SessionId, CStreamId StreamId)
+void CGameClient::SendSkinChange7(CSessionId SessionId, int Conn)
 {
-	const int ProfileIndex = StreamId != Client()->PrimaryStreamId(SessionId);
+	const int ProfileIndex = Conn;
 	protocol7::CNetMsg_Cl_SkinChange Msg;
 	for(int p = 0; p < protocol7::NUM_SKINPARTS; p++)
 	{
@@ -4577,10 +4507,8 @@ void CGameClient::SendSkinChange7(CSessionId SessionId, CStreamId StreamId)
 	CMsgPacker Packer(&Msg, false, true);
 	if(Msg.Pack(&Packer))
 		return;
-	Client()->SendMsg(SessionId, StreamId, &Packer, MSGFLAG_VITAL | MSGFLAG_FLUSH);
-	CGameSessionContext *pSession = FindSessionContext(SessionId);
-	dbg_assert(pSession != nullptr, "missing skin-change game session context");
-	CGameState *pState = pSession->GameStates().FindByStream(StreamId);
+	Client()->SendMsg(Client()->SeatSessionId(SessionId, Conn), SESSION_STREAM_ID, &Packer, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+	CGameState *pState = FindGameState(SessionId, Conn);
 	dbg_assert(pState != nullptr, "missing skin-change game state");
 	pState->Runtime().m_CheckInfo = Client()->GameTickSpeed();
 }
@@ -4605,9 +4533,7 @@ bool CGameClient::GotWantedSkin7(int Conn)
 	}
 	m_Skins7.ValidateSkinParts(apSkinPartsPtr, aUCCVars, aColorVars, Client()->TranslationContext(Client()->NetworkSessionId()).m_GameFlags);
 
-	const CGameSessionContext *pSession = FindSessionContext(Client()->NetworkSessionId());
-	dbg_assert(pSession != nullptr, "missing wanted-skin game session context");
-	const CGameState *pState = pSession->GameStates().FindByStream(Client()->StreamId(pSession->Id(), Conn));
+	const CGameState *pState = FindGameState(Client()->NetworkSessionId(), Conn);
 	dbg_assert(pState != nullptr, "missing wanted-skin game state");
 	const int LocalClientId = pState->LocalClientId();
 	if(LocalClientId < 0 || LocalClientId >= MAX_CLIENTS)
@@ -4640,7 +4566,7 @@ void CGameClient::SendInfo(CSessionId SessionId, bool Start)
 	// and a program without a connection has no session to send it to.
 	if(!SessionId.IsValid())
 		return;
-	SendStreamInfo(SessionId, Client()->PrimaryStreamId(SessionId), Start);
+	SendPlayerInfo(Client()->SeatSessionId(SessionId, IClient::CONN_MAIN), Client()->SeatOf(SessionId), Start);
 }
 
 void CGameClient::SendDummyInfo(bool Start)
@@ -4648,24 +4574,22 @@ void CGameClient::SendDummyInfo(bool Start)
 	const CSessionId SessionId = Client()->NetworkSessionId();
 	if(!SessionId.IsValid())
 		return;
-	SendStreamInfo(SessionId, Client()->StreamId(SessionId, IClient::CONN_DUMMY), Start);
+	SendPlayerInfo(SessionId, IClient::CONN_DUMMY, Start);
 }
 
-void CGameClient::SendStreamInfo(CSessionId SessionId, CStreamId StreamId, bool Start)
+void CGameClient::SendPlayerInfo(CSessionId SessionId, int Conn, bool Start)
 {
-	CGameSessionContext *pSession = FindSessionContext(SessionId);
-	dbg_assert(pSession != nullptr, "missing Network game session context");
-	CGameState *pState = pSession->GameStates().FindByStream(StreamId);
-	dbg_assert(pState != nullptr, "missing Network stream game state");
+	CGameState *pState = FindGameState(SessionId, Conn);
+	dbg_assert(pState != nullptr, "missing Network game state");
 	if(m_pClient->IsSixup(SessionId))
 	{
 		if(Start)
-			SendStartInfo7(SessionId, StreamId);
+			SendStartInfo7(SessionId, Conn);
 		else
-			SendSkinChange7(SessionId, StreamId);
+			SendSkinChange7(SessionId, Conn);
 		return;
 	}
-	const CLocalPlayerProfile &Profile = RefreshPlayerProfile(SessionId, StreamId);
+	const CLocalPlayerProfile &Profile = RefreshPlayerProfile(SessionId, Conn);
 	if(Start)
 	{
 		CNetMsg_Cl_StartInfo Msg;
@@ -4678,7 +4602,7 @@ void CGameClient::SendStreamInfo(CSessionId SessionId, CStreamId StreamId, bool 
 		Msg.m_ColorFeet = Profile.m_ColorFeet;
 		CMsgPacker Packer(&Msg);
 		Msg.Pack(&Packer);
-		Client()->SendMsg(SessionId, StreamId, &Packer, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+		Client()->SendMsg(Client()->SeatSessionId(SessionId, Conn), SESSION_STREAM_ID, &Packer, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 		pState->Runtime().m_CheckInfo = -1;
 	}
 	else
@@ -4693,7 +4617,7 @@ void CGameClient::SendStreamInfo(CSessionId SessionId, CStreamId StreamId, bool 
 		Msg.m_ColorFeet = Profile.m_ColorFeet;
 		CMsgPacker Packer(&Msg);
 		Msg.Pack(&Packer);
-		Client()->SendMsg(SessionId, StreamId, &Packer, MSGFLAG_VITAL);
+		Client()->SendMsg(Client()->SeatSessionId(SessionId, Conn), SESSION_STREAM_ID, &Packer, MSGFLAG_VITAL);
 		pState->Runtime().m_CheckInfo = Client()->GameTickSpeed();
 	}
 }
@@ -4812,7 +4736,7 @@ ColorRGBA CalculateNameColor(ColorHSLA TextColorHSL)
 void CGameClient::UpdateLocalTuning(CSessionId SessionId, CGameSessionContext &Session, CGameState &State, int Conn)
 {
 	CGameState::CRuntimeState &Runtime = State.Runtime();
-	const CGameState *pPreviousFocusedState = m_PreviousFocusedStream.has_value() ? Session.GameStates().FindByStream(*m_PreviousFocusedStream) : nullptr;
+	const CGameState *pPreviousFocusedState = m_PreviousFocusedConn.has_value() ? FindGameState(SessionId, *m_PreviousFocusedConn) : nullptr;
 	GameWorld().m_WorldConfig.m_UseTuneZones = State.CoreGameInfo().m_PredictDDRaceTiles;
 
 	// always update default tune zone, even without character
@@ -4976,10 +4900,10 @@ void CGameClient::UpdatePrediction()
 	{
 		for(int Tick = GameWorld().GameTick() + 1; Tick <= Client()->GameTick(SessionId, PredictionConnection); Tick++)
 		{
-			CNetObj_PlayerInput *pInput = (CNetObj_PlayerInput *)Client()->GetInput(SessionId, Client()->StreamId(SessionId, PredictionConnection), Tick);
+			CNetObj_PlayerInput *pInput = (CNetObj_PlayerInput *)Client()->GetInput(Client()->SeatSessionId(SessionId, PredictionConnection), SESSION_STREAM_ID, Tick);
 			CNetObj_PlayerInput *pDummyInput = nullptr;
 			if(pDummyChar)
-				pDummyInput = (CNetObj_PlayerInput *)Client()->GetInput(SessionId, Client()->StreamId(SessionId, OtherPredictionConnection), Tick);
+				pDummyInput = (CNetObj_PlayerInput *)Client()->GetInput(Client()->SeatSessionId(SessionId, OtherPredictionConnection), SESSION_STREAM_ID, Tick);
 			if(pInput)
 				pLocalChar->OnDirectInput(pInput);
 			if(pDummyInput)
@@ -5010,10 +4934,10 @@ void CGameClient::UpdatePrediction()
 		// skip to current gametick
 		GameWorld().m_GameTick = Client()->GameTick(SessionId, PredictionConnection);
 		if(pLocalChar)
-			if(CNetObj_PlayerInput *pInput = (CNetObj_PlayerInput *)Client()->GetInput(SessionId, Client()->StreamId(SessionId, PredictionConnection), Client()->GameTick(SessionId, PredictionConnection)))
+			if(CNetObj_PlayerInput *pInput = (CNetObj_PlayerInput *)Client()->GetInput(Client()->SeatSessionId(SessionId, PredictionConnection), SESSION_STREAM_ID, Client()->GameTick(SessionId, PredictionConnection)))
 				pLocalChar->SetInput(pInput);
 		if(pDummyChar)
-			if(CNetObj_PlayerInput *pInput = (CNetObj_PlayerInput *)Client()->GetInput(SessionId, Client()->StreamId(SessionId, OtherPredictionConnection), Client()->GameTick(SessionId, PredictionConnection)))
+			if(CNetObj_PlayerInput *pInput = (CNetObj_PlayerInput *)Client()->GetInput(Client()->SeatSessionId(SessionId, OtherPredictionConnection), SESSION_STREAM_ID, Client()->GameTick(SessionId, PredictionConnection)))
 				pDummyChar->SetInput(pInput);
 	}
 
@@ -5057,9 +4981,9 @@ void CGameClient::UpdateRenderedClients(const CGameSessionContext &Session, CGam
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
 	{
 		bool IsSecondaryLocal = false;
-		for(const auto &pSessionState : Session.GameStates().States())
+		for(const CGameState *pSessionState : Session.LocalStates())
 		{
-			if(pSessionState.get() == &State || pSessionState->LocalClientId() != ClientId)
+			if(pSessionState == &State || pSessionState->LocalClientId() != ClientId)
 				continue;
 			const CGameState::CClientSnapshot &SessionLocalClient = pSessionState->Client(ClientId);
 			IsSecondaryLocal = !SessionLocalClient.m_HasDDNetPlayer || (SessionLocalClient.m_DDNetPlayer.m_Flags & EXPLAYERFLAG_PAUSED) == 0;
@@ -5642,10 +5566,8 @@ void CGameClient::DummyResetInput()
 	if(!Client()->DummyConnected())
 		return;
 
-	CGameSessionContext *pSession = FindSessionContext(Client()->NetworkSessionId());
-	dbg_assert(pSession != nullptr, "missing Network game session context");
 	const int Conn = Client()->ActiveConnection() == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN;
-	CGameState *pState = pSession->GameStates().FindByStream(Client()->StreamId(pSession->Id(), Conn));
+	CGameState *pState = FindGameState(Client()->NetworkSessionId(), Conn);
 	dbg_assert(pState != nullptr, "missing Network game state");
 	CNetObj_PlayerInput &Input = pState->Input().m_InputData;
 	int Fire = Input.m_Fire;

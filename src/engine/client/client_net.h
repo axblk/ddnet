@@ -45,8 +45,8 @@ protected:
 
 	IEngineHttp *m_pHttp = nullptr;
 
-	CSessionId m_NetworkSessionId;
 	CNetworkSessionSource *m_pNetworkSessionSource = nullptr;
+	CNetworkSessionSource *m_pDummySessionSource = nullptr;
 
 	CNetClient m_ContactNetClient;
 	NETADDR m_NetworkBindAddr = NETADDR_ZEROED;
@@ -79,12 +79,16 @@ protected:
 
 	bool m_GenerateTimeoutSeed = true;
 
-	bool m_DummySendConnInfo = false;
-	bool m_DummyConnecting = false;
-	bool m_DummyConnected = false;
 	float m_LastDummyConnectTime = 0.0f;
-	bool m_DummyReconnectOnReload = false;
-	bool m_DummyDeactivateOnReconnect = false;
+	// Whether the dummy takes the controls once it is ready again, which it
+	// does after connecting and keeps across a map reload.
+	bool m_DummyActivateOnReady = false;
+	// The seat the input session was in when the pair was last updated.
+	int m_LastActiveConnection = CONN_MAIN;
+	bool m_ForcePartnerInput = false;
+	// A dummy that just follows sends its input anyway every other time the
+	// one with the controls does, so that its prediction time does not reset.
+	bool m_ForceDummyInput = false;
 #if defined(CONF_PLATFORM_IOS)
 	bool m_DummyReconnectOnResume = false;
 #endif
@@ -105,24 +109,20 @@ protected:
 		return static_cast<const CNetworkSessionSource &>(Source);
 	}
 	using CClientCore::Connection;
-	CConnection &Connection(int Conn)
+	CNetworkSessionSource &Seat(int Conn)
 	{
-		return m_pNetworkSessionSource->ConnectionAt(Conn);
+		dbg_assert(Conn == CONN_MAIN || Conn == CONN_DUMMY, "invalid game connection");
+		return Conn == CONN_DUMMY ? *m_pDummySessionSource : *m_pNetworkSessionSource;
 	}
-	const CConnection &Connection(int Conn) const
+	const CNetworkSessionSource &Seat(int Conn) const
 	{
-		return m_pNetworkSessionSource->ConnectionAt(Conn);
+		dbg_assert(Conn == CONN_MAIN || Conn == CONN_DUMMY, "invalid game connection");
+		return Conn == CONN_DUMMY ? *m_pDummySessionSource : *m_pNetworkSessionSource;
 	}
-	CNetClient &NetClient(int Conn)
-	{
-		dbg_assert(Conn >= CONN_MAIN && Conn < NUM_CONNS, "invalid network connection");
-		return Conn == CONN_CONTACT ? m_ContactNetClient : m_pNetworkSessionSource->NetClientAt(Conn);
-	}
-	const CNetClient &NetClient(int Conn) const
-	{
-		dbg_assert(Conn >= CONN_MAIN && Conn < NUM_CONNS, "invalid network connection");
-		return Conn == CONN_CONTACT ? m_ContactNetClient : m_pNetworkSessionSource->NetClientAt(Conn);
-	}
+	CConnection &Connection(int Conn) { return Seat(Conn).Connection(); }
+	const CConnection &Connection(int Conn) const { return Seat(Conn).Connection(); }
+	CNetClient &NetClient(int Conn) { return Conn == CONN_CONTACT ? m_ContactNetClient : Seat(Conn).NetClient(); }
+	const CNetClient &NetClient(int Conn) const { return Conn == CONN_CONTACT ? m_ContactNetClient : Seat(Conn).NetClient(); }
 
 	// ----- what only a program with a server browser can answer -----
 	/**
@@ -223,20 +223,11 @@ public:
 
 	IHttp *Http();
 
-	void SetActiveConnection(int Conn) override
-	{
-		IClient::SetActiveConnection(Conn);
-		if(m_pNetworkSessionSource != nullptr)
-			m_pNetworkSessionSource->SetActiveStream(m_pNetworkSessionSource->StreamIdAt(Conn));
-	}
-	CSessionId NetworkSessionId() const override { return m_NetworkSessionId; }
 	bool ServerCapAnyPlayerFlag(CSessionId SessionId) const override { return NetworkSource(SessionId).m_ServerCapabilities.m_AnyPlayerFlag; }
 
 	// ----- send functions -----
 	void SendInfo(CSessionId SessionId, CStreamId StreamId);
-	void SendEnterGame(int Conn);
 	void SendEnterGame(CSessionId SessionId, CStreamId StreamId);
-	void SendReady(int Conn);
 	void SendReady(CSessionId SessionId, CStreamId StreamId);
 	void SendMapRequest(CSessionId SessionId);
 	void SendInput(CSessionId SessionId);
@@ -260,16 +251,12 @@ public:
 	int64_t ReconnectTime() const override { return m_pNetworkSessionSource->ReconnectTime(); }
 	void CancelReconnect() override { m_pNetworkSessionSource->CancelReconnect(); }
 
-	// called when the map is loaded and we should init for a new round
-	void OnEnterGame(int Conn);
 	void EnterGame(CSessionId SessionId, CStreamId StreamId) override;
 	// called once after being ingame for 1 second
-	void OnPostConnect(int Conn);
+	void OnPostConnect(CSessionId SessionId);
 
 	void Connect(const char *pAddress, const char *pPassword = nullptr) override;
 	CSessionId CreateNetworkSession();
-	CStreamId ConnectAdditionalStream(CSessionId SessionId);
-	bool DestroyNetworkStream(CSessionId SessionId, CStreamId StreamId);
 	bool DestroyNetworkSession(CSessionId SessionId);
 	void ConnectSession(CSessionId SessionId, const char *pAddress, const char *pPassword);
 	void DisconnectWithReason(const char *pReason);
@@ -281,6 +268,8 @@ public:
 	void FocusSessionWithSnapshot(CSessionId SessionId);
 
 	void DummyDisconnect(const char *pReason) override;
+	// Hands the controls back to the network session once the dummy is gone.
+	void ResetDummySeat();
 	void DummyConnect() override;
 	bool DummyConnected() const override;
 	bool DummyConnecting() const override;
@@ -309,12 +298,6 @@ public:
 	int MapDownloadTotalsize() const override { return !m_pNetworkSessionSource->m_pMapdownloadTask ? m_pNetworkSessionSource->m_MapdownloadTotalsize : (int)m_pNetworkSessionSource->m_pMapdownloadTask->Size(); }
 
 	void PumpNetwork(CSessionId SessionId);
-	// Storage for UpdateNetworkSession, kept so that advancing the streams of a
-	// session does not allocate on every frame. One buffer serves every session,
-	// which only holds while UpdateNetworkSession is not nested: the session
-	// manager updates one session at a time and nothing it calls updates another.
-	// Nesting it needs a buffer per session instead.
-	std::vector<CStreamId> m_vRepredict;
 	void UpdateNetworkSession(CSessionId SessionId);
 	void StopNetworkSession(CSessionId SessionId, const char *pReason);
 
@@ -332,8 +315,6 @@ public:
 
 	static void Con_Connect(IConsole::IResult *pResult, void *pUserData);
 	static void Con_DbgConnectSession(IConsole::IResult *pResult, void *pUserData);
-	static void Con_DbgConnectStream(IConsole::IResult *pResult, void *pUserData);
-	static void Con_DbgDestroyStream(IConsole::IResult *pResult, void *pUserData);
 	static void Con_DbgDestroySession(IConsole::IResult *pResult, void *pUserData);
 	static void Con_DbgDumpSessions(IConsole::IResult *pResult, void *pUserData);
 	static void Con_Disconnect(IConsole::IResult *pResult, void *pUserData);

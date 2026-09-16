@@ -52,7 +52,7 @@ bool CMotd::IsActive() const
 
 bool CMotd::IsActive(const CRenderContext &Context) const
 {
-	return Context.m_View.Motd().IsActive(Context.m_Session.Id(), Context.m_Session.Motd().Revision(), time());
+	return Context.m_View.Motd().IsActive(Context.m_Session.ServerId(), Context.m_Session.Motd().Revision(), time());
 }
 
 void CMotd::OnStateChange(int NewState, int OldState)

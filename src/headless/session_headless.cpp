@@ -9,7 +9,6 @@ public:
 	bool IsSink() const override { return true; }
 	std::vector<CStreamId> StreamIds() const override { return {CStreamId(1)}; }
 	CStreamId PrimaryStreamId() const override { return CStreamId(1); }
-	CStreamId ActiveStreamId() const override { return CStreamId(1); }
 	ESessionState State() const override { return m_State; }
 	const char *ErrorString() const override { return ""; }
 	bool SetState(ESessionState State) override

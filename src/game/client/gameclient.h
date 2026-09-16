@@ -260,8 +260,8 @@ private:
 	void ProcessSnapshot(CSessionId SessionId, int Conn);
 	void FinalizeObservedMatch(CSessionId SessionId, CGameSessionContext &Session, CGameState &State, int Tick, EMatchTermination Termination);
 	void PersistLiveStatsOnDisconnect(CSessionId SessionId, CGameSessionContext &Session);
-	bool HandleMatchReportMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId);
-	bool HandleLiveStatsMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, CStreamId StreamId);
+	bool HandleMatchReportMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn);
+	bool HandleLiveStatsMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn);
 	void RequestLiveStats(CSessionId SessionId, bool Force);
 	void ProcessPrediction();
 	void AimView(const CGameSessionContext &Session, const CGameState &State, CGameView &View) const;
@@ -277,7 +277,7 @@ private:
 	void AddChatLine(CSessionId SessionId, int Conn, int ClientId, int Team, const char *pText);
 	int64_t SessionMessageTime(CSessionId SessionId) const;
 	bool AudioForSession(CSessionId SessionId, bool &Offline) const;
-	const CLocalPlayerProfile &RefreshPlayerProfile(CSessionId SessionId, CStreamId StreamId);
+	const CLocalPlayerProfile &RefreshPlayerProfile(CSessionId SessionId, int Conn);
 
 	int m_EditorMovementDelay = 5;
 	void UpdateEditorIngameMoved();
@@ -312,11 +312,7 @@ public:
 	class IGraphics *Graphics() const { return m_pGraphics; }
 	class IGraphicsWindow *Window() const { return m_pWindow; }
 	class IClient *Client() const { return m_pClient; }
-	int ActiveConnection() const
-	{
-		const CSessionId SessionId = Client()->FocusedSessionId();
-		return Client()->StreamIndex(SessionId, Client()->ActiveStreamId(SessionId));
-	}
+	int ActiveConnection() const { return PlayedConnection(Client()->FocusedSessionId()); }
 	CGameSessionContext &SessionContext();
 	const CGameSessionContext &SessionContext() const;
 	CGameSessionContext *FindSessionContext(CSessionId SessionId) { return m_SessionContexts.Find(SessionId); }
@@ -340,10 +336,17 @@ public:
 	class CConfig *Config() const { return m_pConfig; }
 	CGameState &GameState(int Conn);
 	const CGameState &GameState(int Conn) const;
+	// The state of a seat: the network session and its dummy are addressed by
+	// the network session and the seat, every other session only has the main one.
+	CGameState *FindGameState(CSessionId SessionId, int Conn);
+	const CGameState *FindGameState(CSessionId SessionId, int Conn) const;
 	CGameView &GameView(CSessionId SessionId, int Conn);
-	// The stream of a session that is played rather than only watched: the one
+	// The seat of a session that is played rather than only watched: the one
 	// cl_dummy picks on a server, the only one there is in a demo.
-	int PlayedConnection(CSessionId SessionId) const;
+	int PlayedConnection(CSessionId SessionId) const
+	{
+		return Client()->SeatSessionId(SessionId, Client()->ActiveConnection()).IsValid() ? Client()->ActiveConnection() : IClient::CONN_MAIN;
+	}
 	CGameView &InputView();
 	class IConsole *Console() { return m_pConsole; }
 	class ITextRender *TextRender() const { return m_pTextRender; }
@@ -470,7 +473,6 @@ public:
 	// hooks
 	void OnConnected(CSessionId SessionId) override;
 	void OnSessionCreated(CSessionId SessionId) override;
-	void OnSessionStreamsChanged(CSessionId SessionId) override;
 	void OnSessionClosed(CSessionId SessionId) override;
 	void OnSessionDestroyed(CSessionId SessionId) override;
 	void OnSessionFocused(CSessionId SessionId) override;
@@ -491,7 +493,7 @@ public:
 	void OnStateChange(int NewState, int OldState) override;
 	template<typename T>
 	void ApplySkin7InfoFromGameMsg(CSessionId SessionId, const T *pMsg, int ClientId, CGameState &State);
-	void ApplySkin7InfoFromSnapObj(CSessionId SessionId, const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId, CStreamId StreamId) override;
+	void ApplySkin7InfoFromSnapObj(CSessionId SessionId, const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId);
 	int OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapshotBuffer *pTo, CStreamId StreamId) override;
 	void *TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker *pUnpacker, int Conn);
 	int TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, CStreamId StreamId) override;
@@ -500,7 +502,7 @@ public:
 	void OnNewSnapshot(CSessionId SessionId, CStreamId StreamId) override;
 	void OnPredict(CSessionId SessionId, CStreamId StreamId) override;
 	void OnActivateEditor() override;
-	void OnConnectionFocusChanged(CSessionId SessionId, CStreamId PreviousStreamId, CStreamId StreamId) override;
+	void OnConnectionFocusChanged(CSessionId PreviousSessionId, CSessionId SessionId) override;
 	int OnSnapInput(CSessionId SessionId, int *pData, CStreamId StreamId, bool Force) override;
 	void OnShutdown() override;
 	void OnEnterGame(CSessionId SessionId) override;
@@ -549,13 +551,13 @@ public:
 	// actions
 	// TODO: move these
 	void SendSwitchTeam(int Team) const;
-	void SendStartInfo7(CSessionId SessionId, CStreamId StreamId);
-	void SendSkinChange7(CSessionId SessionId, CStreamId StreamId);
+	void SendStartInfo7(CSessionId SessionId, int Conn);
+	void SendSkinChange7(CSessionId SessionId, int Conn);
 	// Returns true if the requested skin change got applied by the server
 	bool GotWantedSkin7(int Conn);
 	void SendInfo(CSessionId SessionId, bool Start);
-	void SendDummyInfo(bool Start) override;
-	void SendStreamInfo(CSessionId SessionId, CStreamId StreamId, bool Start) override;
+	void SendDummyInfo(bool Start);
+	void SendPlayerInfo(CSessionId SessionId, int Conn, bool Start);
 	void SendKill() const;
 	void SendReadyChange7(); // NOLINT(readability-make-member-function-const)
 
@@ -876,7 +878,6 @@ private:
 	std::vector<std::shared_ptr<CManagedTeeRenderInfo>> m_vpManagedTeeRenderInfos;
 	void UpdateManagedTeeRenderInfos();
 
-	void UpdateInputRoutes(CSessionId SessionId);
 	void UpdateLocalTuning(CSessionId SessionId, CGameSessionContext &Session, CGameState &State, int Conn);
 	void UpdatePrediction();
 	void UpdateRenderedClients(const CGameSessionContext &Session, CGameState &State, int Conn, int64_t Now, const CGameTickInfo &Time, EPresentationPlayback Playback);
@@ -889,7 +890,7 @@ private:
 
 	vec2 GetSmoothPos(CSessionId SessionId, const CGameState &State, int Conn, int ClientId, int64_t Now, const CCharacterCore &Prev, const CCharacterCore &Current) const;
 
-	std::optional<CStreamId> m_PreviousFocusedStream;
+	std::optional<int> m_PreviousFocusedConn;
 
 	CTuningParams *TuningList() { return MapContext().TuningList(); }
 

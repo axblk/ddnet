@@ -215,7 +215,7 @@ void CSessionPresentation::UpdateClients(const CPresentationContext &Context)
 	{
 		for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
 		{
-			const bool SessionLocal = std::any_of(Context.m_Session.GameStates().States().begin(), Context.m_Session.GameStates().States().end(), [ClientId](const auto &pState) { return pState->LocalClientId() == ClientId; });
+			const bool SessionLocal = Context.m_Session.FindLocal(ClientId) != nullptr;
 			if(!SessionLocal && (State.Protocol7Client(ClientId).m_PlayerFlags & protocol7::PLAYERFLAG_WATCHING) != 0)
 				++SpectatorCount;
 		}
@@ -266,9 +266,8 @@ void CSessionPresentation::UpdateClients(const CPresentationContext &Context)
 			Client.m_Country = CountryCode::DEFAULT;
 		}
 
-		bool SessionLocal = false;
-		for(const auto &pSessionState : Context.m_Session.GameStates().States())
-			SessionLocal |= pSessionState->LocalClientId() == ClientId;
+		const CGameSessionContext *pLocalContext = Context.m_Session.FindLocal(ClientId);
+		const bool SessionLocal = pLocalContext != nullptr;
 		Client.m_Friend = !SessionLocal && Identity.m_Active && GameClient()->Friends()->IsFriend(Client.m_aName, Client.m_aClan, true);
 
 		const CGameState *pInputState = nullptr;
@@ -276,17 +275,8 @@ void CSessionPresentation::UpdateClients(const CPresentationContext &Context)
 		{
 			if(State.LocalClientId() == ClientId)
 				pInputState = &State;
-			else
-			{
-				for(const auto &pSessionState : Context.m_Session.GameStates().States())
-				{
-					if(pSessionState->LocalClientId() == ClientId)
-					{
-						pInputState = pSessionState.get();
-						break;
-					}
-				}
-			}
+			else if(pLocalContext != nullptr)
+				pInputState = pLocalContext->State();
 		}
 		if(pInputState != nullptr)
 		{
@@ -436,7 +426,8 @@ void CSessionPresentation::UpdateClients(const CPresentationContext &Context)
 
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
 	{
-		const bool ActiveInSession = std::any_of(Context.m_Session.GameStates().States().begin(), Context.m_Session.GameStates().States().end(), [ClientId](const auto &pState) { return pState->Client(ClientId).m_HasPlayerInfo; });
+		const CGameSessionContext::CLocalStates LocalStates = Context.m_Session.LocalStates();
+		const bool ActiveInSession = std::any_of(LocalStates.begin(), LocalStates.end(), [ClientId](const CGameState *pState) { return pState->Client(ClientId).m_HasPlayerInfo; });
 		if(!ActiveInSession)
 			m_aChatIgnored[ClientId] = false;
 		if(!ActiveInSession)

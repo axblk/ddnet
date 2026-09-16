@@ -171,21 +171,26 @@ void CSpectator::ConKeySpectator(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 
-	CGameSessionContext &Session = pSelf->GameClient()->SessionContext();
-	CGameState *pState = Session.GameStates().Find(View.StateId());
+	CGameSessionContext *pSession = pSelf->GameClient()->FindSessionContext(View.SessionId());
+	CGameState *pState = pSession != nullptr ? pSession->State() : nullptr;
+	if(pState == nullptr)
+	{
+		Selector.m_Active = false;
+		return;
+	}
+	CGameSessionContext &Session = *pSession;
 	const bool Demo = Session.Id() == pSelf->Client()->DemoSessionId();
-	if(Session.Id() != View.SessionId() || (!View.IsSpectating() && !Demo) || !pState)
+	if(!View.IsSpectating() && !Demo)
 	{
 		Selector.m_Active = false;
 		return;
 	}
 
-	const int Conn = static_cast<int>(pState->StreamId().Value()) - 1;
-	if(!Demo && (Session.Id() != pSelf->Client()->NetworkSessionId() || Conn < IClient::CONN_MAIN || Conn >= IClient::NUM_CONNS))
+	if(!Demo && !pSelf->Client()->IsNetworkSeat(Session.Id()))
 		return;
 	Selector.m_OriginSessionId = Session.Id();
 	Selector.m_OriginStateId = pState->Id();
-	Selector.m_OriginConnection = Conn;
+	Selector.m_OriginConnection = pSelf->Client()->SeatOf(Session.Id());
 	Selector.m_OriginSixup = Session.Protocol() == EGameProtocol::SIXUP;
 	Selector.m_OriginDemo = Demo;
 	Selector.m_Active = true;
@@ -676,7 +681,7 @@ void CSpectator::Spectate(CGameView &View, const CGameView::CSpectatorSelectorSt
 		return;
 	}
 
-	if(Selector.m_OriginSessionId != Client()->NetworkSessionId() || Selector.m_OriginConnection < IClient::CONN_MAIN || Selector.m_OriginConnection >= IClient::NUM_CONNS || View.SpectatorMode() == SpectatorId)
+	if(!Client()->IsNetworkSeat(Selector.m_OriginSessionId) || View.SpectatorMode() == SpectatorId)
 		return;
 
 	if(Selector.m_OriginSixup)
@@ -704,7 +709,7 @@ void CSpectator::Spectate(int SpectatorId)
 {
 	CGameView::CSpectatorSelectorState Target;
 	Target.m_OriginDemo = Client()->State() == IClient::STATE_DEMOPLAYBACK;
-	Target.m_OriginSessionId = Target.m_OriginDemo ? Client()->DemoSessionId() : Client()->NetworkSessionId();
+	Target.m_OriginSessionId = Target.m_OriginDemo ? Client()->DemoSessionId() : Client()->InputSessionId();
 	Target.m_OriginConnection = Client()->ActiveConnection();
 	Target.m_OriginSixup = Client()->IsSixup(Target.m_OriginSessionId);
 	Spectate(GameClient()->InputView(), Target, SpectatorId);

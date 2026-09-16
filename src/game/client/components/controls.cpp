@@ -56,24 +56,15 @@ namespace
 
 void CControls::OnReset()
 {
-	for(const auto &pState : GameClient()->SessionContext().GameStates().States())
+	for(CGameState *pState : GameClient()->SessionContext().LocalStates())
 		pState->Input().Reset();
 }
 
 void CControls::ResetInput(int Conn)
 {
-	ResetInput(GameClient()->GameState(Conn).StreamId());
-}
-
-void CControls::ResetInput(CStreamId StreamId)
-{
-	// There is nothing to reset if the stream went away, so the graceful path
-	// below is the right one. It used to sit behind an assertion that aborted
-	// the release build before it could ever run.
-	CGameState *pState = GameClient()->SessionContext().GameStates().FindByStream(StreamId);
-	if(!pState)
-		return;
-	pState->Input().ReleaseGameplay();
+	// There is nothing to reset if the seat went away.
+	if(CGameState *pState = GameClient()->FindGameState(Client()->FocusedSessionId(), Conn))
+		pState->Input().ReleaseGameplay();
 }
 
 struct CInputState
@@ -257,7 +248,7 @@ int CControls::SnapInput(int *pData)
 	}
 	else
 	{
-		const CStreamId Source = GameClient()->GameState(GameClient()->ActiveConnection()).StreamId();
+		CGameState *pOtherState = GameClient()->FindGameState(Client()->FocusedSessionId(), 1 - GameClient()->ActiveConnection());
 		Input.m_InputData.m_TargetX = (int)Input.m_MousePos.x;
 		Input.m_InputData.m_TargetY = (int)Input.m_MousePos.y;
 
@@ -282,15 +273,9 @@ int CControls::SnapInput(int *pData)
 			Input.m_InputData.m_Direction = 1;
 
 		// dummy copy moves
-		for(const CStreamInputRoute &Route : GameClient()->SessionContext().InputRouter().Routes())
+		if(pOtherState != nullptr && g_Config.m_ClDummyCopyMoves && !g_Config.m_ClDummyHammer)
 		{
-			if(Route.m_Policy != EStreamInputPolicy::COPY_MOVES || Route.m_Source != Source)
-				continue;
-			CGameState *pTargetState = GameClient()->SessionContext().GameStates().FindByStream(Route.m_Target);
-			dbg_assert(pTargetState != nullptr, "missing copy-moves target state");
-			if(!pTargetState)
-				continue;
-			CNetObj_PlayerInput &TargetInput = pTargetState->Input().m_InputData;
+			CNetObj_PlayerInput &TargetInput = pOtherState->Input().m_InputData;
 
 			// Don't copy any input to dummy when spectating others
 			if(!GameClient()->Snap().m_SpecInfo.m_Active || GameClient()->Snap().m_SpecInfo.m_SpectatorId < 0)
@@ -311,22 +296,17 @@ int CControls::SnapInput(int *pData)
 			}
 		}
 
-		if(g_Config.m_ClDummyControl)
+		if(pOtherState != nullptr && g_Config.m_ClDummyControl)
 		{
-			for(const auto &pState : GameClient()->SessionContext().GameStates().States())
-			{
-				if(pState->StreamId() == Source)
-					continue;
-				CNetObj_PlayerInput &OtherInput = pState->Input().m_InputData;
-				OtherInput.m_Jump = g_Config.m_ClDummyJump;
+			CNetObj_PlayerInput &OtherInput = pOtherState->Input().m_InputData;
+			OtherInput.m_Jump = g_Config.m_ClDummyJump;
 
-				if(g_Config.m_ClDummyFire)
-					OtherInput.m_Fire = g_Config.m_ClDummyFire;
-				else if((OtherInput.m_Fire & 1) != 0)
-					OtherInput.m_Fire++;
+			if(g_Config.m_ClDummyFire)
+				OtherInput.m_Fire = g_Config.m_ClDummyFire;
+			else if((OtherInput.m_Fire & 1) != 0)
+				OtherInput.m_Fire++;
 
-				OtherInput.m_Hook = g_Config.m_ClDummyHook;
-			}
+			OtherInput.m_Hook = g_Config.m_ClDummyHook;
 		}
 
 		// stress testing

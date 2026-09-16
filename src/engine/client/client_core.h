@@ -106,11 +106,11 @@ protected:
 	}
 	CConnection &Connection(CSessionId SessionId, int Conn)
 	{
-		return Connection(SessionId, SessionSource(SessionId).StreamIdForIndex(Conn));
+		return Connection(SeatSessionId(SessionId, Conn), SESSION_STREAM_ID);
 	}
 	const CConnection &Connection(CSessionId SessionId, int Conn) const
 	{
-		return Connection(SessionId, SessionSource(SessionId).StreamIdForIndex(Conn));
+		return Connection(SeatSessionId(SessionId, Conn), SESSION_STREAM_ID);
 	}
 	CDemoPlayer &DemoPlayer() { return m_pDemoSessionSource->DemoPlayer(); }
 	const CDemoPlayer &DemoPlayer() const { return m_pDemoSessionSource->DemoPlayer(); }
@@ -194,9 +194,6 @@ public:
 	bool IsSessionSink(CSessionId SessionId) const override { return SessionSource(SessionId).IsSink(); }
 	std::vector<CStreamId> StreamIds(CSessionId SessionId) const override { return SessionSource(SessionId).StreamIds(); }
 	CStreamId PrimaryStreamId(CSessionId SessionId) const override { return SessionSource(SessionId).PrimaryStreamId(); }
-	CStreamId ActiveStreamId(CSessionId SessionId) const override { return SessionSource(SessionId).ActiveStreamId(); }
-	CStreamId StreamId(CSessionId SessionId, int LegacyConnection) const override { return SessionSource(SessionId).StreamIdForIndex(LegacyConnection); }
-	int StreamIndex(CSessionId SessionId, CStreamId StreamId) const override { return SessionSource(SessionId).IndexForStream(StreamId); }
 	ESessionState SessionState(CSessionId SessionId) const override { return SessionSource(SessionId).State(); }
 	const CServerInfo &ServerInfo(CSessionId SessionId) const override { return SessionSource(SessionId).ServerInfo(); }
 	bool IsSixup(CSessionId SessionId) const override { return SessionSource(SessionId).IsSixup(); }

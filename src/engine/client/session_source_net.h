@@ -18,31 +18,12 @@ class IHttpRequest;
 
 class CNetworkSessionSource : public CSessionSourceBase
 {
-public:
-	class CStreamConnection
-	{
-	public:
-		CStreamId m_Id;
-		CConnection m_Connection;
-		// The socket of this stream. It belongs to the stream and not to the
-		// connection state, because a connection state is also what a demo has,
-		// and a demo has no socket.
-		CNetClient m_NetClient;
-		bool m_SendConnectionInfo = false;
-
-		explicit CStreamConnection(CStreamId Id) :
-			m_Id(Id)
-		{
-		}
-	};
-
-private:
-	uint64_t m_NextStreamId = 1;
-	std::vector<std::unique_ptr<CStreamConnection>> m_vpStreams;
+	CConnection m_Connection;
+	// The socket belongs to the source and not to the connection state,
+	// because a connection state is also what a demo has, and a demo has no
+	// socket.
+	CNetClient m_NetClient;
 	std::unique_ptr<CSnapshotDelta[]> m_pSnapshotDeltas = std::make_unique<CSnapshotDelta[]>(2);
-	CStreamId m_PrimaryStreamId;
-	CStreamId m_ActiveStreamId;
-	CStreamId m_LastActiveStreamId;
 
 public:
 	class CMapDetails
@@ -85,36 +66,16 @@ public:
 	int64_t m_CurrentPingTime = -1;
 	int64_t m_NextPingTime = -1;
 
-	CNetworkSessionSource();
 	ESessionSourceType Type() const override { return ESessionSourceType::NETWORK; }
 	bool IsSink() const override { return true; }
-	std::vector<CStreamId> StreamIds() const override;
-	CStreamId PrimaryStreamId() const override { return m_PrimaryStreamId; }
-	CStreamId ActiveStreamId() const override { return m_ActiveStreamId; }
-	CStreamId LastActiveStreamId() const { return m_LastActiveStreamId; }
-	void SetLastActiveStreamId(CStreamId Id) { m_LastActiveStreamId = Id; }
-	bool SetActiveStream(CStreamId Id);
-	CStreamId CreateStream();
-	bool DestroyStream(CStreamId Id);
-	CConnection *Connection(CStreamId Id);
-	const CConnection *Connection(CStreamId Id) const;
-	CNetClient *NetClient(CStreamId Id);
-	const CNetClient *NetClient(CStreamId Id) const;
-	CConnection *StreamConnection(CStreamId Id) override { return Connection(Id); }
-	const CConnection *StreamConnection(CStreamId Id) const override { return Connection(Id); }
-	CStreamId StreamIdForIndex(int Index) const override { return Index < 0 ? CStreamId{} : StreamIdAt(static_cast<size_t>(Index)); }
-	int IndexForStream(CStreamId Id) const override { return StreamIndex(Id); }
-	CConnection &ConnectionAt(size_t Index);
-	const CConnection &ConnectionAt(size_t Index) const;
-	CNetClient &NetClientAt(size_t Index);
-	const CNetClient &NetClientAt(size_t Index) const;
-	CNetClient &PrimaryNetClient() { return *NetClient(PrimaryStreamId()); }
-	const CNetClient &PrimaryNetClient() const { return *NetClient(PrimaryStreamId()); }
-	CStreamId StreamIdAt(size_t Index) const;
-	int StreamIndex(CStreamId Id) const;
-	std::vector<std::unique_ptr<CStreamConnection>> &Streams() { return m_vpStreams; }
-	const std::vector<std::unique_ptr<CStreamConnection>> &Streams() const { return m_vpStreams; }
-	size_t NumStreams() const { return m_vpStreams.size(); }
+	std::vector<CStreamId> StreamIds() const override { return {PrimaryStreamId()}; }
+	CStreamId PrimaryStreamId() const override { return SESSION_STREAM_ID; }
+	CConnection &Connection() { return m_Connection; }
+	const CConnection &Connection() const { return m_Connection; }
+	CNetClient &NetClient() { return m_NetClient; }
+	const CNetClient &NetClient() const { return m_NetClient; }
+	CConnection *StreamConnection(CStreamId Id) override { return Id == PrimaryStreamId() ? &m_Connection : nullptr; }
+	const CConnection *StreamConnection(CStreamId Id) const override { return Id == PrimaryStreamId() ? &m_Connection : nullptr; }
 	CSnapshotDelta &SnapshotDelta(bool Sixup) override { return m_pSnapshotDeltas[Sixup]; }
 	bool SyncWeaponInput() const override { return m_ServerCapabilities.m_SyncWeaponInput; }
 	int64_t ReconnectTime() const { return m_ReconnectTime; }
@@ -174,8 +135,7 @@ public:
 		m_GotRconCommands = 0;
 		m_ExpectedMaplistEntries = -1;
 		m_vMaplistEntries.clear();
-		for(const auto &pStream : m_vpStreams)
-			pStream->m_Connection.m_RconAuthed = 0;
+		m_Connection.m_RconAuthed = 0;
 		m_MapDetails.reset();
 		m_PingInfoType = -1;
 		m_PingBasicToken = -1;
@@ -184,8 +144,6 @@ public:
 		m_CurrentPingTime = -1;
 		m_NextPingTime = -1;
 		m_ReconnectTime = 0;
-		m_ActiveStreamId = m_PrimaryStreamId;
-		m_LastActiveStreamId = m_PrimaryStreamId;
 	}
 
 private:

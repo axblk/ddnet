@@ -37,7 +37,6 @@ public:
 	using CClientCore::SendMsg;
 
 	CChecksumData *ChecksumData() override { return &m_ChecksumData; }
-	CSessionId NetworkSessionId() const override { return {}; }
 	EInfoState InfoState() const override { return EInfoState::ERROR; }
 	IFriends *Foes() override { return nullptr; }
 	bool ConnectionProblems(CSessionId SessionId, CStreamId StreamId) const override { return false; }

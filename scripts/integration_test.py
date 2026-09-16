@@ -807,7 +807,6 @@ def client_can_connect_two_network_sessions(test_env):
 	client.command(f"dbg_connect_session localhost:{server2.port}")
 	line = client.wait_for_log_prefix("client/session: created Network session ", timeout=5).line
 	secondary_session_id = int(line.removeprefix("client/session: created Network session "))
-	reserved_session_offset = secondary_session_id - 3
 	server2.wait_for_log_prefix("server: player has entered the game", timeout=10)
 
 	def dump_sessions(count):
@@ -817,58 +816,53 @@ def client_can_connect_two_network_sessions(test_env):
 		for _ in range(count):
 			line = client.wait_for_log_prefix("client/session: session=", timeout=5).line
 			fields = dict(field.split("=", 1) for field in line.removeprefix("client/session: ").split())
-			result[(int(fields["session"]), int(fields["stream"]))] = fields
+			result[int(fields["session"])] = fields
 		return result
 
+	# Session ids are handed out in order, so every session up to the second
+	# Network session exists; the dummy is one of them.
 	for _ in range(20):
-		sessions = dump_sessions(5 + reserved_session_offset)
-		if int(sessions[(secondary_session_id, 1)]["tick"]) > 0 and sessions[(1, 1)]["map"] == "Tutorial" and sessions[(secondary_session_id, 1)]["map"] == "dm1":
+		sessions = dump_sessions(secondary_session_id)
+		if int(sessions[secondary_session_id]["tick"]) > 0 and sessions[1]["map"] == "Tutorial" and sessions[secondary_session_id]["map"] == "dm1":
 			break
 		sleep(0.1)
 	else:
 		raise AssertionError(f"second Network session did not become ready: {sessions}")
+	dummy_session_id = next(session_id for session_id, fields in sessions.items() if fields["seat"] == "1")
 
-	client.command(f"dbg_connect_stream {secondary_session_id}")
-	server2.wait_for_log_prefix("server: player has entered the game", timeout=10)
-	client.command(f"dbg_connect_stream {secondary_session_id}")
-	server2.wait_for_log_prefix("server: player has entered the game", timeout=10)
-
+	client.command("dummy_connect")
+	server1.wait_for_log_prefix("server: player has entered the game", timeout=10)
 	for _ in range(20):
-		sessions = dump_sessions(6 + reserved_session_offset)
-		stream_ticks = {key: int(fields["tick"]) for key, fields in sessions.items() if fields["type"] == "0"}
-		expected_streams = {(1, 1), (1, 2), (secondary_session_id, 1), (secondary_session_id, 2), (secondary_session_id, 3)}
-		if set(stream_ticks) == expected_streams and all(stream_ticks[key] > 0 for key in ((1, 1), (secondary_session_id, 1), (secondary_session_id, 2), (secondary_session_id, 3))) and sessions[(secondary_session_id, 3)]["active"] == "1":
+		sessions = dump_sessions(secondary_session_id)
+		ticks = {session_id: int(fields["tick"]) for session_id, fields in sessions.items() if fields["type"] == "0"}
+		if all(ticks[session_id] > 0 for session_id in (1, dummy_session_id, secondary_session_id)) and sessions[dummy_session_id]["map"] == "Tutorial" and sessions[dummy_session_id]["state"] == "3":
 			break
 		sleep(0.1)
 	else:
-		raise AssertionError(f"Network sessions and streams did not advance independently: {stream_ticks}")
+		raise AssertionError(f"dummy session did not become ready beside the Network sessions: {sessions}")
 
-	client.command(f"dbg_destroy_stream {secondary_session_id} 2")
-	client.wait_for_log_exact(f"client/session: destroyed session {secondary_session_id} stream 2", timeout=5)
+	client.command("cl_dummy 1")
 	for _ in range(20):
-		sessions = dump_sessions(5 + reserved_session_offset)
-		remaining_ticks = {key: int(fields["tick"]) for key, fields in sessions.items() if key[0] == secondary_session_id}
-		if set(remaining_ticks) == {(secondary_session_id, 1), (secondary_session_id, 3)} and all(remaining_ticks[key] > stream_ticks[key] for key in remaining_ticks) and sessions[(secondary_session_id, 3)]["active"] == "1":
+		sessions = dump_sessions(secondary_session_id)
+		if sessions[dummy_session_id]["input"] == "1" and sessions[1]["input"] == "0":
 			break
 		sleep(0.1)
 	else:
-		raise AssertionError(f"destroying the middle stream changed the remaining streams: {remaining_ticks}")
+		raise AssertionError(f"cl_dummy 1 did not give the dummy session the input: {sessions}")
 
-	server2.command("kick 2")
-	client.wait_for_log_prefix("client: offline stream 3", timeout=5)
+	server1.command("kick 1")
 	for _ in range(20):
-		sessions = dump_sessions(4 + reserved_session_offset)
-		remaining_ticks = {key: int(fields["tick"]) for key, fields in sessions.items() if key[0] == secondary_session_id}
-		if set(remaining_ticks) == {(secondary_session_id, 1)} and remaining_ticks[(secondary_session_id, 1)] > stream_ticks[(secondary_session_id, 1)] and sessions[(secondary_session_id, 1)]["active"] == "1":
+		sessions = dump_sessions(secondary_session_id)
+		if sessions[dummy_session_id]["state"] == "0" and sessions[1]["input"] == "1" and int(sessions[1]["tick"]) > ticks[1] and int(sessions[secondary_session_id]["tick"]) > ticks[secondary_session_id]:
 			break
 		sleep(0.1)
 	else:
-		raise AssertionError(f"remote stream disconnect did not select the primary stream: {remaining_ticks}")
+		raise AssertionError(f"a kicked dummy did not hand the input back to its Network session: {sessions}")
 
 	client.command(f"dbg_destroy_session {secondary_session_id}")
 	client.wait_for_log_exact(f"client/session: destroyed Network session {secondary_session_id}", timeout=5)
-	sessions = dump_sessions(3 + reserved_session_offset)
-	if any(session_id == secondary_session_id for session_id, _ in sessions):
+	sessions = dump_sessions(secondary_session_id - 1)
+	if secondary_session_id in sessions:
 		raise AssertionError(f"destroyed Network session is still present: {sessions}")
 
 	client.exit()

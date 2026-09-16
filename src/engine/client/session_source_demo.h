@@ -21,9 +21,8 @@ public:
 	CDemoSessionSource(bool UseVideo, TUpdateIntraTimesFunc &&UpdateIntraTimesFunc);
 	ESessionSourceType Type() const override { return ESessionSourceType::DEMO; }
 	bool IsSink() const override { return false; }
-	std::vector<CStreamId> StreamIds() const override { return {CStreamId(1)}; }
-	CStreamId PrimaryStreamId() const override { return CStreamId(1); }
-	CStreamId ActiveStreamId() const override { return CStreamId(1); }
+	std::vector<CStreamId> StreamIds() const override { return {SESSION_STREAM_ID}; }
+	CStreamId PrimaryStreamId() const override { return SESSION_STREAM_ID; }
 	CDemoPlayer &DemoPlayer() { return m_DemoPlayer; }
 	const CDemoPlayer &DemoPlayer() const { return m_DemoPlayer; }
 	CSnapshotDelta &SnapshotDelta(bool Sixup) override { return m_pSnapshotDeltas[Sixup]; }
@@ -31,10 +30,6 @@ public:
 	const CConnection &Connection() const { return m_Connection; }
 	CConnection *StreamConnection(CStreamId Id) override { return Id == PrimaryStreamId() ? &m_Connection : nullptr; }
 	const CConnection *StreamConnection(CStreamId Id) const override { return Id == PrimaryStreamId() ? &m_Connection : nullptr; }
-	// A demo is one stream, and it is the one the legacy connection numbers
-	// call the main connection.
-	CStreamId StreamIdForIndex(int Index) const override { return Index == 0 ? PrimaryStreamId() : CStreamId{}; }
-	int IndexForStream(CStreamId Id) const override { return Id == PrimaryStreamId() ? 0 : -1; }
 	void PrepareSnapshots();
 };
 

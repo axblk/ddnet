@@ -825,7 +825,7 @@ void CTouchControls::OnWindowResize()
 
 bool CTouchControls::MatchesController(const CTouchControllerContext &Context) const
 {
-	return m_pControllerSession == &Context.m_Session && m_pControllerState == &Context.m_State && m_pControllerView == &Context.m_View && m_ControllerStreamId == Context.m_StreamId;
+	return m_pControllerSession == &Context.m_Session && m_pControllerState == &Context.m_State && m_pControllerView == &Context.m_View;
 }
 
 bool CTouchControls::MatchesRenderContext(const CRenderContext &Context) const
@@ -835,14 +835,12 @@ bool CTouchControls::MatchesRenderContext(const CRenderContext &Context) const
 
 void CTouchControls::BindController(const CTouchControllerContext &Context)
 {
-	dbg_assert(Context.m_State.StreamId() == Context.m_StreamId, "touch controller stream does not match state");
 	dbg_assert(Context.m_View.MatchesTarget(Context.m_Session.Id(), Context.m_State.Id()), "touch controller view does not match state");
 	dbg_assert(Context.m_Session.GameStates().Find(Context.m_State.Id()) == &Context.m_State, "touch controller state does not belong to session");
 	m_pControllerSession = &Context.m_Session;
 	m_pControllerState = &Context.m_State;
 	m_pControllerView = &Context.m_View;
 	m_pControllerCollision = &Context.m_Collision;
-	m_ControllerStreamId = Context.m_StreamId;
 	m_ControllerDemoPlayback = Context.m_IsDemoPlayback;
 	m_ControllerDummyAllowed = Context.m_DummyAllowed;
 	m_ControllerDummyConnected = Context.m_DummyConnected;

@@ -11,8 +11,9 @@
 
 int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, CStreamId StreamId)
 {
-	const int Conn = Client()->StreamIndex(SessionId, StreamId);
-	dbg_assert(Conn >= 0, "missing snapshot translation stream index");
+	// The dummy is translated as the dummy seat of the network session.
+	const int Conn = Client()->SeatOf(SessionId);
+	SessionId = Client()->SeatSessionId(SessionId, IClient::CONN_MAIN);
 	CSnapshotBuilder Builder;
 	Builder.Init();
 
@@ -21,7 +22,7 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 	CTranslationContext &TranslationContext = Client()->TranslationContext(SessionId);
 	CGameSessionContext *pSourceSession = FindSessionContext(SessionId);
 	dbg_assert(pSourceSession != nullptr, "missing snapshot translation session");
-	CGameState *pSourceState = pSourceSession->GameStates().FindByStream(StreamId);
+	CGameState *pSourceState = FindGameState(SessionId, Conn);
 	dbg_assert(pSourceState != nullptr, "missing snapshot translation state");
 
 	std::fill(std::begin(TranslationContext.m_apPlayerInfosRace), std::end(TranslationContext.m_apPlayerInfosRace), nullptr);
@@ -415,7 +416,7 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 				Client.m_Country = CountryCode::DEFAULT;
 			}
 
-			ApplySkin7InfoFromSnapObj(SessionId, pInfo, ClientId, StreamId);
+			ApplySkin7InfoFromSnapObj(m_pClient->SeatSessionId(SessionId, Conn), pInfo, ClientId);
 		}
 		else if(ItemType == protocol7::NETOBJTYPE_DE_GAMEINFO)
 		{
@@ -445,12 +446,12 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 
 int CGameClient::OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapshotBuffer *pTo, CStreamId StreamId)
 {
-	const int Conn = Client()->StreamIndex(SessionId, StreamId);
-	dbg_assert(Conn >= 0, "missing recorder stream index");
+	const int Conn = Client()->SeatOf(SessionId);
+	SessionId = Client()->SeatSessionId(SessionId, IClient::CONN_MAIN);
 	CTranslationContext &TranslationContext = Client()->TranslationContext(SessionId);
 	CGameSessionContext *pNetworkSession = FindSessionContext(SessionId);
 	dbg_assert(pNetworkSession != nullptr, "missing recorder Network session context");
-	CGameState *pState = pNetworkSession->GameStates().FindByStream(StreamId);
+	CGameState *pState = FindGameState(SessionId, Conn);
 	dbg_assert(pState != nullptr, "missing recorder Network game state");
 	CSnapshotBuilder Builder;
 	Builder.Init7(pFrom);

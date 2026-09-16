@@ -489,8 +489,7 @@ const char *CClientCore::LoadMap(CSessionId SessionId, const char *pName, const 
 
 	// Unload the current map and reset all snapshots before loading a new map,
 	// because the snapshots are only valid for the old map.
-	for(const CStreamId StreamId : SessionSource(SessionId).StreamIds())
-		Connection(SessionId, StreamId).ResetSnapshots();
+	Connection(SessionId, SESSION_STREAM_ID).ResetSnapshots();
 	GameClient()->InvalidateSnapshot(SessionId);
 	if(GameClient()->ShareLoadedMap(SessionId, pName, WantedSha256, WantedCrc))
 	{

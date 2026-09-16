@@ -1387,7 +1387,8 @@ void CHud::RenderSpectatorCount(const CRenderContext &Context)
 		StartY -= 56;
 	}
 
-	const bool HasOtherLocalPlayer = std::any_of(Context.m_Session.GameStates().States().begin(), Context.m_Session.GameStates().States().end(), [&Context](const auto &pState) { return pState->Id() != Context.m_State.Id() && pState->LocalClientId() >= 0; });
+	const CGameSessionContext::CLocalStates LocalStates = Context.m_Session.LocalStates();
+	const bool HasOtherLocalPlayer = std::any_of(LocalStates.begin(), LocalStates.end(), [&Context](const CGameState *pState) { return pState != &Context.m_State && pState->LocalClientId() >= 0; });
 	if(g_Config.m_ClShowhudDummyActions && Context.m_State.HasGameInfo() && !(Context.m_State.GameInfo().m_GameStateFlags & GAMESTATEFLAG_GAMEOVER) && HasOtherLocalPlayer)
 	{
 		StartY = StartY - 29.0f - 4; // dummy actions height and padding
@@ -1406,7 +1407,8 @@ void CHud::RenderSpectatorCount(const CRenderContext &Context)
 
 void CHud::RenderDummyActions(const CRenderContext &Context)
 {
-	const bool HasOtherLocalPlayer = std::any_of(Context.m_Session.GameStates().States().begin(), Context.m_Session.GameStates().States().end(), [&Context](const auto &pState) { return pState->Id() != Context.m_State.Id() && pState->LocalClientId() >= 0; });
+	const CGameSessionContext::CLocalStates LocalStates = Context.m_Session.LocalStates();
+	const bool HasOtherLocalPlayer = std::any_of(LocalStates.begin(), LocalStates.end(), [&Context](const CGameState *pState) { return pState != &Context.m_State && pState->LocalClientId() >= 0; });
 	if(!g_Config.m_ClShowhudDummyActions || (Context.m_State.GameInfo().m_GameStateFlags & GAMESTATEFLAG_GAMEOVER) || !HasOtherLocalPlayer)
 	{
 		return;

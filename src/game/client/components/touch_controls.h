@@ -34,7 +34,6 @@ struct CTouchControllerContext
 	CGameState &m_State;
 	CGameView &m_View;
 	CCollision &m_Collision;
-	CStreamId m_StreamId;
 	bool m_IsGameActive;
 	bool m_IsDemoPlayback;
 	bool m_DummyAllowed;
@@ -677,7 +676,6 @@ private:
 	CGameState *m_pControllerState = nullptr;
 	CGameView *m_pControllerView = nullptr;
 	CCollision *m_pControllerCollision = nullptr;
-	CStreamId m_ControllerStreamId;
 	bool m_ControllerDemoPlayback = false;
 	bool m_ControllerDummyAllowed = false;
 	bool m_ControllerDummyConnected = false;

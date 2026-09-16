@@ -44,6 +44,7 @@
 #include "render.h"
 
 #include <base/dbg.h>
+#include <base/fs.h>
 #include <base/io.h>
 #include <base/log.h>
 #include <base/math.h>
@@ -411,8 +412,6 @@ void CGameClient::OnConsoleInit()
 	m_pUpdater = ToolOptionalInterface<IUpdater>(Kernel());
 #endif
 	m_pHttp = ToolOptionalInterface<IHttp>(Kernel());
-	for(const auto &pContext : m_SessionContexts.Contexts())
-		pContext->MapContext().Init();
 
 	// make a list of all the systems, make sure to add them in the correct render order
 	m_vpAll.insert(m_vpAll.end(), {&m_Skins,
@@ -586,7 +585,6 @@ void CGameClient::OnSessionCreated(CSessionId SessionId)
 	{
 		CGameSessionContext *pContext = m_SessionContexts.Create(SessionId, "", EGameProtocol::SIX, Client()->StreamIds(SessionId));
 		dbg_assert(pContext != nullptr, "failed to create game session context");
-		pContext->MapContext().Init();
 	}
 	if(m_SessionPresentations.Find(SessionId) == nullptr)
 	{
@@ -1172,6 +1170,26 @@ int CGameClient::OnSnapInput(CSessionId SessionId, int *pData, CStreamId StreamI
 	}
 }
 
+bool CGameClient::ShareLoadedMap(CSessionId SessionId, const char *pName, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc)
+{
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing game session context");
+	// A map is never loaded into data another session still plays.
+	pSession->MapContext().Unload();
+	for(const auto &pOther : m_SessionContexts.Contexts())
+	{
+		const IMap *pMap = pOther->MapContext().Map();
+		if(pOther.get() == pSession || !pMap->IsLoaded() || str_comp(pMap->BaseName(), fs_filename(pName)) != 0)
+			continue;
+		if(WantedSha256.has_value() ? pMap->Sha256() == WantedSha256.value() : pMap->Crc() == WantedCrc)
+		{
+			pSession->MapContext().Share(pOther->MapContext());
+			return true;
+		}
+	}
+	return false;
+}
+
 void CGameClient::OnConnected(CSessionId SessionId)
 {
 	CGameSessionContext *pSession = FindSessionContext(SessionId);
@@ -1182,7 +1200,7 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	const char *pLoadMapContent = Localize("Initializing map logic");
 	if(Focused)
 		m_Menus.RenderLoading(pConnectCaption, pLoadMapContent, 0);
-	MapContext.Layers()->Init(MapContext.Map(), false, true);
+	MapContext.Data()->InitLayers();
 	MapContext.Collision()->Init(MapContext.Layers());
 	pSession->SetDescriptor(MapContext.Map()->BaseName(), Client()->IsSixup(SessionId) ? EGameProtocol::SIXUP : EGameProtocol::SIX);
 	pSession->SetServerCapAnyPlayerFlag(Client()->SessionType(SessionId) == ESessionSourceType::NETWORK && Client()->ServerCapAnyPlayerFlag(SessionId));
@@ -1190,7 +1208,7 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	for(const auto &pGameState : pSession->GameStates().States())
 		pGameState->InitPrediction(MapContext);
 	CSessionPresentation &Presentation = SessionPresentation(SessionId);
-	Presentation.Load(*pSession);
+	Presentation.Load(*pSession, m_SessionPresentations.MapPresentation(MapContext.Data(), Client()->IsSixup(SessionId)));
 
 	// The map images are fetched asynchronously. Their layers were built with
 	// texture coordinates and would draw untextured until they arrive, so the
@@ -1293,7 +1311,6 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 		m_Sounds.ClearOffline();
 #endif
 	pSession->MapContext().Unload();
-	pSession->MapContext().Map()->Unload();
 	if(SessionId == Client()->NetworkSessionId())
 	{
 		m_RaceDemo.OnNetworkSessionClosed();
@@ -1693,13 +1710,13 @@ void CGameClient::OnRender()
 		if(!m_Background.UsesCurrentMap())
 			m_Background.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
 		const std::array<SRenderComponent, 13> apWorldComponents = {
-			SRenderComponent{&Presentation.MapLayersBackground(), "world/map_background", IGraphics::EGpuRenderZone::MAP_BACKGROUND},
+			SRenderComponent{Presentation.MapLayersBackground(), "world/map_background", IGraphics::EGpuRenderZone::MAP_BACKGROUND},
 			SRenderComponent{&m_Particles.m_RenderTrail, "world/particles_trail", IGraphics::EGpuRenderZone::PARTICLES},
 			SRenderComponent{&m_Particles.m_RenderTrailExtra, "world/particles_trail_extra", IGraphics::EGpuRenderZone::PARTICLES},
 			SRenderComponent{&m_Items, "world/items", IGraphics::EGpuRenderZone::ITEMS},
 			SRenderComponent{&m_Ghost, "world/ghost", IGraphics::EGpuRenderZone::GHOST},
 			SRenderComponent{&m_Players, "world/players", IGraphics::EGpuRenderZone::PLAYERS},
-			SRenderComponent{&Presentation.MapLayersForeground(), "world/map_foreground", IGraphics::EGpuRenderZone::MAP_FOREGROUND},
+			SRenderComponent{Presentation.MapLayersForeground(), "world/map_foreground", IGraphics::EGpuRenderZone::MAP_FOREGROUND},
 			SRenderComponent{&m_Particles.m_RenderExplosions, "world/particles_explosions", IGraphics::EGpuRenderZone::PARTICLES},
 			SRenderComponent{&m_NamePlates, "world/nameplates", IGraphics::EGpuRenderZone::NAMEPLATES},
 			SRenderComponent{&m_Particles.m_RenderExtra, "world/particles_extra", IGraphics::EGpuRenderZone::PARTICLES},
@@ -1724,14 +1741,16 @@ void CGameClient::OnRender()
 		{
 			CRenderTraceScope BackgroundTraceScope(pTrace, "world/background", IGraphics::EGpuRenderZone::MAP_BACKGROUND);
 			Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::MAP_BACKGROUND);
-			if(m_Background.UsesCurrentMap())
-				Presentation.MapLayersBackgroundForce().OnRender(Context);
-			else
+			if(!m_Background.UsesCurrentMap())
 				m_Background.OnRender(Context);
+			else if(Presentation.IsLoaded())
+				Presentation.MapLayersBackgroundForce()->OnRender(Context);
 			Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::MAP_BACKGROUND);
 		}
 		for(const auto &[pComponent, pName, GpuZone] : apWorldComponents)
 		{
+			if(pComponent == nullptr)
+				continue;
 			CRenderTraceScope ComponentTraceScope(pTrace, pName, GpuZone);
 			if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
 				Graphics()->GpuRenderZoneBegin(GpuZone);

@@ -1390,7 +1390,6 @@ TEST(GameState, SessionVotesAreIndependentAndPreserveOptionsAcrossVotes)
 TEST(GameState, SnapshotWorldsAreIndependent)
 {
 	CMapContext MapContext;
-	MapContext.Init();
 	const std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
 	ASSERT_TRUE(MapContext.Map()->Load(pStorage.get(), "data/maps/ctf1.map", IStorage::TYPE_ALL));
 	MapContext.Layers()->Init(MapContext.Map(), false, true);

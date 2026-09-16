@@ -2,9 +2,14 @@
 
 #include <base/str.h>
 
+#include <engine/storage.h>
+
 #include <game/client/map_context.h>
+#include <game/mapitems.h>
 
 #include <gtest/gtest.h>
+
+#include <memory>
 
 TEST(MapContext, SettingsAreIsolated)
 {
@@ -34,6 +39,28 @@ TEST(MapContext, SettingsAreIsolated)
 	ASSERT_TRUE(Second.TuningList()[4].Get("gun_speed", &SecondGunSpeed));
 	EXPECT_FLOAT_EQ(FirstGunSpeed, 777.0f);
 	EXPECT_FLOAT_EQ(SecondGunSpeed, 1400.0f);
+}
+
+TEST(MapContext, SharedMapOutlivesTheSessionThatLoadedIt)
+{
+	const std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	CMapContext First;
+	ASSERT_TRUE(First.Map()->Load(pStorage.get(), "data/maps/ctf1.map", IStorage::TYPE_ALL));
+	First.Data()->InitLayers();
+	First.Collision()->Init(First.Layers());
+
+	CMapContext Second;
+	Second.Share(First);
+	Second.Data()->InitLayers();
+	Second.Collision()->Init(Second.Layers());
+	EXPECT_EQ(First.Data(), Second.Data());
+
+	First.Unload();
+	EXPECT_FALSE(First.Map()->IsLoaded());
+	ASSERT_TRUE(Second.Map()->IsLoaded());
+	ASSERT_NE(Second.Layers()->GameLayer(), nullptr);
+	EXPECT_EQ(Second.Collision()->GetWidth(), Second.Layers()->GameLayer()->m_Width);
+	EXPECT_EQ(Second.Data().use_count(), 1);
 }
 
 // A map may set any setting marked CFGFLAG_GAME. Naming a subset of them by hand

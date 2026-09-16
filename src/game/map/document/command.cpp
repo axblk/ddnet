@@ -306,6 +306,10 @@ namespace map_document
 		if(pOp == nullptr)
 			return Failed("The command has no 'op'");
 		const CMapState &Map = Document.Map();
+		// What this change is *of*, for the history to fold a run of them into
+		// one entry - see `CDocument::Begin`. Nothing merges that does not say
+		// so, so leaving it out is the ordinary case.
+		const char *pMerge = Arguments.Str("merge", nullptr);
 
 		// What a command does to the map is one transaction and therefore one
 		// history entry - unless the interface already has one open, in which
@@ -319,7 +323,7 @@ namespace map_document
 				return Failed(Arguments.Error());
 			CGroup Group;
 			Group.m_Name = pName;
-			Document.Begin(Arguments.Str("label", "Add group"));
+			Document.Begin(Arguments.Str("label", "Add group"), pMerge);
 			const size_t Index = AddGroup(Document, std::move(Group));
 			Document.Commit();
 			return Succeeded("group", (int)Index);
@@ -329,7 +333,7 @@ namespace map_document
 			const size_t Group = Arguments.Index("group", Map.NumGroups());
 			if(Arguments.Failed())
 				return Failed(Arguments.Error());
-			Document.Begin(Arguments.Str("label", "Delete group"));
+			Document.Begin(Arguments.Str("label", "Delete group"), pMerge);
 			DeleteGroup(Document, Group);
 			Document.Commit();
 			return Succeeded();
@@ -340,7 +344,7 @@ namespace map_document
 			const size_t To = Arguments.Index("to", Map.NumGroups());
 			if(Arguments.Failed())
 				return Failed(Arguments.Error());
-			Document.Begin(Arguments.Str("label", "Move group"));
+			Document.Begin(Arguments.Str("label", "Move group"), pMerge);
 			const size_t Index = MoveGroup(Document, Group, To);
 			Document.Commit();
 			return Succeeded("group", (int)Index);
@@ -357,7 +361,7 @@ namespace map_document
 			std::string Error;
 			if(!SetGroupProp(Changed, pProp, json_object_get(pParsed.get(), "value"), &Error))
 				return Failed(Error);
-			Document.Begin(Arguments.Str("label", pProp));
+			Document.Begin(Arguments.Str("label", pProp), pMerge);
 			Document.Edit().ReplaceGroup(Group, std::move(Changed));
 			Document.Commit();
 			return Succeeded();
@@ -398,7 +402,7 @@ namespace map_document
 			}
 			std::visit([pName](auto &Kind) { Kind.m_Name = pName; }, Layer);
 
-			Document.Begin(Arguments.Str("label", "Add layer"));
+			Document.Begin(Arguments.Str("label", "Add layer"), pMerge);
 			const CLayerAddress Address = AddLayer(Document, Group, std::move(Layer));
 			Document.Commit();
 			return Succeeded("group", (int)Address.m_Group, "layer", (int)Address.m_Layer);
@@ -409,7 +413,7 @@ namespace map_document
 			const size_t Layer = Arguments.Index("layer", Arguments.Failed() ? 0 : Map.NumLayers(Group));
 			if(Arguments.Failed())
 				return Failed(Arguments.Error());
-			Document.Begin(Arguments.Str("label", "Delete layer"));
+			Document.Begin(Arguments.Str("label", "Delete layer"), pMerge);
 			DeleteLayer(Document, CLayerAddress{Group, Layer});
 			Document.Commit();
 			return Succeeded();
@@ -424,7 +428,7 @@ namespace map_document
 			const size_t To = Arguments.Index("to", Arguments.Failed() ? 0 : Map.NumLayers(ToGroup), true);
 			if(Arguments.Failed())
 				return Failed(Arguments.Error());
-			Document.Begin(Arguments.Str("label", "Move layer"));
+			Document.Begin(Arguments.Str("label", "Move layer"), pMerge);
 			const CLayerAddress Address = MoveLayer(Document, CLayerAddress{Group, Layer}, CLayerAddress{ToGroup, To});
 			Document.Commit();
 			return Succeeded("group", (int)Address.m_Group, "layer", (int)Address.m_Layer);
@@ -442,7 +446,7 @@ namespace map_document
 			std::string Error;
 			if(!SetLayerProp(Changed, pProp, json_object_get(pParsed.get(), "value"), &Error))
 				return Failed(Error);
-			Document.Begin(Arguments.Str("label", pProp));
+			Document.Begin(Arguments.Str("label", pProp), pMerge);
 			Document.Edit().ReplaceLayer(Group, Layer, std::move(Changed));
 			Document.Commit();
 			return Succeeded();

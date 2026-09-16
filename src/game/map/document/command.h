@@ -43,6 +43,13 @@ namespace map_document
 	 * Anything may carry a `label`, which is what the history entry is
 	 * called; every command has one it falls back on.
 	 *
+	 * Anything may also carry a `merge`, which names what is being changed
+	 * rather than what is being done: two changes carrying the same `merge`,
+	 * close enough together, become one history entry. That is a number field
+	 * being stepped with its arrows - ten steps are one change of one
+	 * property, not ten things to undo. Without it nothing merges, which is
+	 * what a brush stroke wants.
+	 *
 	 * @param Document The document to change.
 	 * @param pJson The command, as a JSON object.
 	 *

@@ -256,3 +256,44 @@ TEST(Command, AChangeThatChangesNothingIsNotAnEntry)
 	Commands.Ok(R"({"op":"group.setProp","group":0,"prop":"parallaxX","value":100})");
 	EXPECT_EQ(Commands.m_Document.History().NumEntries(), 1u);
 }
+
+// A number field stepped with its arrows sends one command per step. Ten
+// steps are one change of one property, and the command says so by naming
+// what it is of - which has to be the property and the thing it belongs to,
+// or two layers' names would be the same change.
+TEST(Command, ARunOfChangesOfTheSameThingIsOneEntry)
+{
+	CCommands Commands(TwoGroups());
+	for(int Parallax = 100; Parallax > 90; --Parallax)
+	{
+		Commands.Ok(R"({"op":"group.setProp","group":0,"prop":"parallaxX","merge":"group:0:parallaxX","value":)" +
+			    std::to_string(Parallax) + "}");
+	}
+	EXPECT_EQ(Commands.m_Document.Map().Group(0)->m_ParallaxX, 91);
+	EXPECT_EQ(Commands.m_Document.History().NumEntries(), 2u);
+	EXPECT_EQ(Commands.m_Document.History().Entry(1).m_Label, "parallaxX");
+
+	// The other group's parallax is another thing, and so is another property
+	// of the same group.
+	Commands.Ok(R"({"op":"group.setProp","group":1,"prop":"parallaxX","merge":"group:1:parallaxX","value":50})");
+	Commands.Ok(R"({"op":"group.setProp","group":0,"prop":"parallaxY","merge":"group:0:parallaxY","value":50})");
+	EXPECT_EQ(Commands.m_Document.History().NumEntries(), 4u);
+
+	// And going back goes back over the whole run at once.
+	ASSERT_TRUE(Commands.m_Document.Undo());
+	ASSERT_TRUE(Commands.m_Document.Undo());
+	ASSERT_TRUE(Commands.m_Document.Undo());
+	EXPECT_EQ(Commands.m_Document.Map().Group(0)->m_ParallaxX, 100);
+}
+
+TEST(Command, WithoutSayingSoNothingMerges)
+{
+	CCommands Commands(TwoGroups());
+	// From 99, because a group starts at 100 and setting it to what it
+	// already is changes nothing and writes nothing.
+	for(int Parallax = 99; Parallax > 94; --Parallax)
+	{
+		Commands.Ok(R"({"op":"group.setProp","group":0,"prop":"parallaxX","value":)" + std::to_string(Parallax) + "}");
+	}
+	EXPECT_EQ(Commands.m_Document.History().NumEntries(), 6u);
+}

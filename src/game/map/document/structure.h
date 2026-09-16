@@ -212,14 +212,6 @@ namespace map_document
 	bool ShapeQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, EQuadShape Shape, int Grid = 32);
 
 	/**
-	 * Adds a picture at the end, and says where it went.
-	 *
-	 * @param Doc The document being changed.
-	 * @param Image The picture to add.
-	 *
-	 * @return Which picture of the map it became.
-	 */
-	/**
 	 * Makes a new quad out of four places inside an existing one - the knife.
 	 *
 	 * The old quad is left alone. What it gives the new one is its picture and
@@ -284,6 +276,14 @@ namespace map_document
 	 */
 	CAppendReport AppendMap(CDocument &Doc, const CMapState &Other);
 
+	/**
+	 * Adds a picture at the end, and says where it went.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Image The picture to add.
+	 *
+	 * @return Which picture of the map it became.
+	 */
 	size_t AddImage(CDocument &Doc, CImage Image);
 
 	/**

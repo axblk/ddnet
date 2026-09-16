@@ -472,6 +472,18 @@ class CMapEditor extends Program {
 	}
 
 	/**
+	 * What a tile of a physics layer does, in a sentence, or "" where there
+	 * is nothing to say.
+	 *
+	 * The same sentences the editor in the client shows: somebody who learned
+	 * what a tile does in one editor should not be told something else in the
+	 * other.
+	 */
+	explain(group, layer, index, id) {
+		return this.ask("MapEditorExplain", "string", [this.which(id), group, layer, index]) || "";
+	}
+
+	/**
 	 * The lowest number no tile of a physics layer is using yet, or -1 where
 	 * all 255 are taken.
 	 *
@@ -806,6 +818,7 @@ const PANELS_HTML = `
 	<button class="editor-button" data-role="proof" data-icon="proof" title="What a player would see (P); again for a menu background" aria-pressed="false"></button>
 	<button class="editor-button" data-role="save" data-icon="save" title="Save the map" aria-label="Save the map"></button>
 	<span class="editor-status" data-role="status" role="status"></span>
+	<span class="editor-hover" data-role="hover"></span>
 </div>
 <div class="editor-columns">
 	<section class="editor-panel" data-role="tree-panel">
@@ -2696,6 +2709,39 @@ class CEditorPanels {
 		return drawn;
 	}
 
+	/**
+	 * What is under the pointer, said in the bar.
+	 *
+	 * Three things, and the third is the one that matters: where, which tile,
+	 * and what that tile does. The number comes in both bases because a
+	 * mapper reads tiles in decimal and the entities sheet is sixteen wide,
+	 * so hex says which row and column in one go - `0x23` is row 2, column 3.
+	 *
+	 * @param tile Where the pointer is, in tiles, or null for gone.
+	 */
+	hoverAt(tile) {
+		const readout = this.part("hover");
+		if (tile === null || this.map === null) {
+			readout.textContent = "";
+			return;
+		}
+		const where = this.selection;
+		const layer = this.selectedLayer();
+		if (layer === null || layer.type !== "tiles") {
+			readout.textContent = `${tile.x}, ${tile.y}`;
+			return;
+		}
+		const index = this.editor.tileIndex(where.group, where.layer, tile.x, tile.y);
+		if (index < 0) {
+			readout.textContent = `${tile.x}, ${tile.y}`;
+			return;
+		}
+		const hex = index.toString(16).toUpperCase().padStart(2, "0");
+		const said = this.editor.explain(where.group, where.layer, index);
+		readout.textContent = `${tile.x}, ${tile.y} · ${index} (0x${hex})${said === "" ? "" : ` · ${said}`}`;
+		readout.title = said;
+	}
+
 	/** The shapes a sound layer's sources are heard within. */
 	paintSources(overlay, known) {
 		const layer = this.selectedLayer();
@@ -3572,7 +3618,7 @@ class CEditorPanels {
  * @param options.signal Stops listening again.
  */
 function steerWithPointer(editor, options) {
-	const settings = Object.assign({ canvas: null, target: null, onChange: null, onView: null, afterStroke: null, signal: undefined }, options || {});
+	const settings = Object.assign({ canvas: null, target: null, onChange: null, onView: null, onHover: null, afterStroke: null, signal: undefined }, options || {});
 	const canvas = settings.canvas || editor.canvas;
 	const stopping = new AbortController();
 	if (settings.signal) {
@@ -3789,6 +3835,12 @@ function steerWithPointer(editor, options) {
 	}, { signal: signal });
 
 	canvas.addEventListener("pointermove", event => {
+		// Where the pointer is, said on every move whether or not anything is
+		// being drawn with it: what is under the pointer is a question about
+		// the pointer, not about the stroke.
+		if (settings.onHover !== null) {
+			settings.onHover(tileAt(event));
+		}
 		if (doing === null || pointer !== event.pointerId) {
 			return;
 		}
@@ -3843,6 +3895,12 @@ function steerWithPointer(editor, options) {
 		if (where !== null && tile !== null) {
 			const box = between(from, tile);
 			editor.mark(where.group, box.x, box.y, box.width, box.height);
+		}
+	}, { signal: signal });
+
+	canvas.addEventListener("pointerleave", () => {
+		if (settings.onHover !== null) {
+			settings.onHover(null);
 		}
 	}, { signal: signal });
 

@@ -277,6 +277,16 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorSoundSources(int Id, int Group, int La
 	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->SoundSourcesJson(Id, Group, Layer));
 }
 
+EMSCRIPTEN_KEEPALIVE const char *MapEditorExplain(int Id, int Group, int Layer, int Index)
+{
+	if(g_pEditor == nullptr)
+		return "";
+	const char *pExplanation = g_pEditor->Explain(Id, Group, Layer, Index);
+	// An empty answer rather than nothing, because the page reads a string
+	// and "there is nothing to say" is a thing to say.
+	return pExplanation == nullptr ? "" : pExplanation;
+}
+
 EMSCRIPTEN_KEEPALIVE const char *MapEditorProof(int Id, int Menu)
 {
 	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->ProofJson(Id, Menu != 0));

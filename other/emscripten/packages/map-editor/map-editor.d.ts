@@ -213,6 +213,8 @@ export declare class MapEditor {
 	sources(group: number, layer: number, id?: number): SoundSource[] | null;
 	/** What a player would see from where the view is looking, in world units. */
 	proof(menu?: boolean, id?: MapId): Proof | null;
+	/** What a tile of a physics layer does, or "" where there is nothing to say. */
+	explain(group: number, layer: number, index: number, id?: MapId): string;
 
 	/** Where a place in one group's coordinates is on the canvas, in pixels. */
 	groupPixelAt(group: number, x: number, y: number, id?: number): { x: number; y: number } | null;
@@ -312,6 +314,8 @@ export declare function steerEditor(
 		/** Which layer the pointer paints in - the panels know. */
 		target?: (() => { group: number; layer: number } | null) | null;
 		onChange?: (() => void) | null;
+		/** Called with the tile under the pointer on every move, or null once it has left. */
+		onHover?: ((tile: { x: number; y: number } | null) => void) | null;
 		/** Called when only the view moved - panned or zoomed. */
 		onView?: (() => void) | null;
 		/** Called while a stroke's change is still open. */

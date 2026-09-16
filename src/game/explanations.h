@@ -1,5 +1,5 @@
-#ifndef GAME_EDITOR_EXPLANATIONS_H
-#define GAME_EDITOR_EXPLANATIONS_H
+#ifndef GAME_EXPLANATIONS_H
+#define GAME_EXPLANATIONS_H
 
 class CExplanations
 {

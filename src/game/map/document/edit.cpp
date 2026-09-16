@@ -392,6 +392,79 @@ namespace map_document
 		return Numbers;
 	}
 
+	namespace
+	{
+		/**
+		 * Whether a tile of this store carries the number that is being
+		 * counted, which is a different question for every kind.
+		 */
+		template<typename TStore, typename TTile>
+		bool CarriesNumber(const TTile &Tile, bool Checkpoint)
+		{
+			if constexpr(std::is_same_v<TStore, CTileStore<CTeleTile>>)
+				return IsValidTeleTile(Tile.m_Type) && IsTeleTileNumberUsed(Tile.m_Type, Checkpoint);
+			else if constexpr(std::is_same_v<TStore, CTileStore<CSwitchTile>>)
+				return IsValidSwitchTile(Tile.m_Type) && IsSwitchTileNumberUsed(Tile.m_Type);
+			else if constexpr(std::is_same_v<TStore, CTileStore<CTuneTile>>)
+				return IsValidTuneTile(Tile.m_Type);
+			else
+				return false;
+		}
+
+		// Two tiles of the same number closer together than this are one
+		// place: a teleporter is drawn several tiles wide, and somebody
+		// looking for where number seven is wants seven places, not seventy.
+		constexpr float MIN_CLUSTER_DISTANCE = 10.0f;
+	} // namespace
+
+	int NextFreeNumber(const CTileLayer &Layer, bool Checkpoint)
+	{
+		bool aTaken[256] = {};
+		std::visit([&](const auto &Extra) {
+			using TStore = std::decay_t<decltype(Extra)>;
+			if constexpr(!std::is_same_v<TStore, std::monostate> && !std::is_same_v<TStore, CTileStore<CSpeedupTile>>)
+			{
+				for(int y = 0; y < Extra.Height(); ++y)
+					for(int x = 0; x < Extra.Width(); ++x)
+					{
+						const auto Tile = Extra.Get(x, y);
+						if(CarriesNumber<TStore>(Tile, Checkpoint))
+							aTaken[Tile.m_Number] = true;
+					}
+			}
+		},
+			Layer.m_ExtraTiles);
+		for(int Number = 1; Number <= 255; ++Number)
+			if(!aTaken[Number])
+				return Number;
+		return -1;
+	}
+
+	std::vector<ivec2> NumberPlaces(const CTileLayer &Layer, int Number)
+	{
+		std::vector<ivec2> vPlaces;
+		if(Number <= 0 || Number > 255)
+			return vPlaces;
+		std::visit([&](const auto &Extra) {
+			using TStore = std::decay_t<decltype(Extra)>;
+			if constexpr(!std::is_same_v<TStore, std::monostate> && !std::is_same_v<TStore, CTileStore<CSpeedupTile>>)
+			{
+				for(int y = 0; y < Extra.Height(); ++y)
+					for(int x = 0; x < Extra.Width(); ++x)
+					{
+						const auto Tile = Extra.Get(x, y);
+						if(Tile.m_Number != Number || !CarriesNumber<TStore>(Tile, IsTeleTileCheckpoint(Tile.m_Type)))
+							continue;
+						if(!vPlaces.empty() && distance(vec2(vPlaces.back().x, vPlaces.back().y), vec2(x, y)) < MIN_CLUSTER_DISTANCE)
+							continue;
+						vPlaces.emplace_back(x, y);
+					}
+			}
+		},
+			Layer.m_ExtraTiles);
+		return vPlaces;
+	}
+
 	void PaintTiles(CDocument &Doc, size_t Group, size_t Layer, int x, int y, const CBrush &Brush)
 	{
 		EditTileLayer(Doc, Group, Layer, [&](CTileLayer &Changed) {

@@ -271,6 +271,37 @@ public:
 	vec2 WorldInGroup(int Id, size_t Group, vec2 Pixel) const;
 
 	/**
+	 * The lowest number no tile of a physics layer is using yet - see
+	 * `map_document::NextFreeNumber`.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it.
+	 * @param Checkpoint For a tele layer, whether to count the checkpoints
+	 * rather than the rest.
+	 *
+	 * @return The number, or -1 where there is none to be had.
+	 */
+	int NextFreeNumber(int Id, int Group, int Layer, bool Checkpoint) const;
+
+	/**
+	 * Looks at where a number is used, one place per cluster.
+	 *
+	 * Which place is the caller's to count, because which one somebody is
+	 * standing on is a question about the interface rather than about the
+	 * map - the editor only moves the view there.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it.
+	 * @param Number The number to look for.
+	 * @param Which Which of the places, counted from zero and wrapped round.
+	 *
+	 * @return How many places there are, and 0 when the view did not move.
+	 */
+	size_t GotoNumber(int Id, int Group, int Layer, int Number, size_t Which);
+
+	/**
 	 * The points of one envelope, as JSON - see `map_document::EnvelopeJson`.
 	 *
 	 * @param Id The number of the map.
@@ -325,6 +356,18 @@ public:
 	 * carries its numbers too.
 	 */
 	const map_document::CBrushNumbers &Numbers() const { return m_Numbers; }
+
+	/**
+	 * Whether the tiles in hand are tele checkpoints.
+	 *
+	 * Asked because the checkpoints of a tele layer keep a count of their own
+	 * apart from the teleporters, so which free number to offer depends on
+	 * which of the two is about to be put down. What a tile index means is
+	 * the program's to know, not the page's.
+	 *
+	 * @return Whether any tile of the brush is one.
+	 */
+	bool BrushIsCheckpoint() const;
 
 	/**
 	 * Sets those numbers and writes them onto the brush in hand.

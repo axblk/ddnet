@@ -283,6 +283,28 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorEnvelope(int Id, int Index)
 	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->EnvelopeJson(Id, Index));
 }
 
+// The lowest number a physics layer is not using yet, so that a page need not
+// walk the layer itself to find one.
+EMSCRIPTEN_KEEPALIVE int MapEditorNextFreeNumber(int Id, int Group, int Layer, int Checkpoint)
+{
+	return g_pEditor == nullptr ? -1 : g_pEditor->NextFreeNumber(Id, Group, Layer, Checkpoint != 0);
+}
+
+// Whether the tiles in hand are tele checkpoints, which have a free-number
+// count of their own. No Id: the brush belongs to the editor, not to a map.
+EMSCRIPTEN_KEEPALIVE int MapEditorBrushCheckpoint()
+{
+	return g_pEditor != nullptr && g_pEditor->BrushIsCheckpoint() ? 1 : 0;
+}
+
+// Moves the view to where a number is used, and says how many such places
+// there are. Which of them is the page's to count: it is the page that knows
+// somebody pressed the button twice.
+EMSCRIPTEN_KEEPALIVE int MapEditorGotoNumber(int Id, int Group, int Layer, int Number, int Which)
+{
+	return g_pEditor == nullptr ? 0 : (int)g_pEditor->GotoNumber(Id, Group, Layer, Number, (size_t)std::max(0, Which));
+}
+
 // The pixels of a picture that is packed into the map file, so that a page can
 // show a tileset it cannot fetch. They lie in the version, already unpacked,
 // and this hands out where - no copy is made, because the one the page makes

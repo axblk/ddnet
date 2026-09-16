@@ -1559,7 +1559,10 @@ void CGameClient::OnSessionFocused(CSessionId SessionId)
 		if(pBackgroundSession->Id() == SessionId)
 			continue;
 		for(const auto &pState : pBackgroundSession->GameStates().States())
+		{
 			pState->Input().ReleaseGameplay();
+			pState->ClearPrediction();
+		}
 	}
 	InvalidateSnapshot(SessionId);
 	InputView();

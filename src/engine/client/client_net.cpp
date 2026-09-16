@@ -3030,7 +3030,9 @@ void CClientWithConnection::UpdateNetworkSession(CSessionId SessionId)
 				}
 			}
 
-			if(Repredict)
+			// Only the session that gets the input is predicted, the others are
+			// drawn from their snapshots.
+			if(Repredict && SessionId == m_SessionManager.FocusedId())
 				m_vRepredict.push_back(StreamId);
 		};
 

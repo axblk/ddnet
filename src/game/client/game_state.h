@@ -604,6 +604,8 @@ public:
 	void SetCoreGameInfo(const CGameInfo &GameInfo);
 	void Predict(const IClient &Client, CSessionId SessionId, CStreamId StreamId);
 	void PredictTo(int TargetTick, const std::function<const CNetObj_PlayerInput *(int)> &InputAt);
+	// Leaves the clients to be drawn from snapshots until the next prediction.
+	void ClearPrediction();
 	void UpdateRenderedClient(int ClientId, bool UsePredicted, bool PredictedLocal, float IntraGameTick, float PredIntraGameTick);
 	void MarkPredicted(int Tick) { m_PredictionTick = Tick; }
 	/**

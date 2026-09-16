@@ -240,6 +240,19 @@
 	display: none;
 }
 
+/* The automapper, under the tileset: which rules to run and a button to run
+   them. Hidden for a layer whose picture has no rules file. */
+.editor-automap {
+	display: flex;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.editor-automap select {
+	flex: 1;
+	min-width: 0;
+}
+
 /* The row a layer would land on if it were let go of now. */
 .editor-drop {
 	outline: 1px dashed #9fb8de;

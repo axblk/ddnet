@@ -290,6 +290,39 @@ EMSCRIPTEN_KEEPALIVE int MapEditorNextFreeNumber(int Id, int Group, int Layer, i
 	return g_pEditor == nullptr ? -1 : g_pEditor->NextFreeNumber(Id, Group, Layer, Checkpoint != 0);
 }
 
+// What tile stands in one place of a layer. One at a time, because a map of
+// four million tiles is not a thing to hand out after every stroke.
+EMSCRIPTEN_KEEPALIVE int MapEditorTileIndex(int Id, int Group, int Layer, int X, int Y)
+{
+	return g_pEditor == nullptr ? -1 : g_pEditor->TileIndex(Id, Group, Layer, X, Y);
+}
+
+// A `.rules` file, as text, kept under the name the map calls the picture -
+// which is how a layer finds its rules. The file itself is not read here:
+// natively it comes off the disk and in the browser the page fetches it.
+EMSCRIPTEN_KEEPALIVE int MapEditorLoadRules(const char *pName, const char *pText)
+{
+	return g_pEditor == nullptr ? 0 : (int)g_pEditor->LoadRules(pName, pText);
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorNumRuleConfigs(const char *pName)
+{
+	return g_pEditor == nullptr ? 0 : (int)g_pEditor->NumRuleConfigs(pName);
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorRuleConfigName(const char *pName, int Config)
+{
+	return g_pEditor == nullptr || Config < 0 ? "" : Answer(std::string(g_pEditor->RuleConfigName(pName, (size_t)Config)));
+}
+
+// Runs one configuration over a layer, or over a piece of one. A change of
+// its own, so one press of the button is one entry in the history.
+EMSCRIPTEN_KEEPALIVE int MapEditorAutomap(int Id, int Group, int Layer, const char *pRules, int Config,
+	int Seed, int Reference, int X, int Y, int Width, int Height)
+{
+	return g_pEditor != nullptr && g_pEditor->Automap(Id, Group, Layer, pRules, Config, Seed, Reference, X, Y, Width, Height) ? 1 : 0;
+}
+
 // A picture and its pixels, which come over as bytes rather than as JSON: a
 // thousand by a thousand is four megabytes, and the page has them already -
 // it decoded the PNG itself, because browsers do that.

@@ -68,6 +68,34 @@ changed and not written out says so - the page asks before the tab is closed,
 and every minute what has changed goes into the browser's own storage by
 itself.
 
+## The automapper
+
+A rules file belongs to a picture, not to a layer: a layer drawn with
+`grass_main` is automapped by `grass_main.rules`. So the panel follows the
+picture - it fetches the file once, hands the text to the program, and offers
+the configurations the program found in it. A picture with no rules beside it
+costs one 404 and then the row is simply not there.
+
+What the rules say and what they do to a layer is the same grammar and the
+same sum as in the editor in the client, ported rather than reinvented, so
+that a map automapped in the browser comes out as it would have come out
+natively. The first run of a configuration may be filtered by one kind of
+physics tile, which is how one file draws freeze and hookable out of the same
+game layer; the rest read the layer they are writing into.
+
+A layer can also be told to do it by itself: then every stroke runs the rules
+over what it drew, while the stroke's change is still open, so drawing and
+what it led to are one thing to undo. Only the rectangle the stroke was over
+is run, with the margin the rules need - which is why automapping while
+drawing costs what was touched rather than what the map is.
+
+A run over a rectangle gives the same tiles as a run over everything, because
+the rectangle is worked out with a margin as wide as the rules reach and only
+the rectangle itself is written back. And the rules that only fire sometimes
+fire off a hash of the place rather than a die, so the same seed twice is the
+same map - which is why running the same configuration again writes no history
+entry at all: it changed nothing.
+
 ## Pictures
 
 A picture is read in by the browser, not by the program: a browser reads PNGs,
@@ -175,6 +203,7 @@ and 17 ms.
 
 ## What it is not, yet
 
-Sounds and the automapper are looked at but not changed, and a quad's picture
-coordinates are read but not yet edited. A layer with no picture at all is shown as a grid of numbers - the tiles are still there to
+Sounds are looked at but not changed, a quad's picture coordinates are read
+but not yet edited, and a rules file can be run but not written - there is no
+editor for the rules themselves. A layer with no picture at all is shown as a grid of numbers - the tiles are still there to
 be picked, they just cannot be shown.

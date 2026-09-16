@@ -218,6 +218,58 @@ class CMapEditor extends Program {
 	}
 
 	/**
+	 * What tile stands in one place of a layer, or -1 where there is none.
+	 *
+	 * One at a time, the way the quads and the envelope points are asked
+	 * for: a map of four million tiles is not a thing to hand out after
+	 * every stroke.
+	 */
+	tileIndex(group, layer, x, y, id) {
+		return this.ask("MapEditorTileIndex", "number", [this.which(id), group, layer, x, y]);
+	}
+
+	/**
+	 * Keeps a `.rules` file under a name, parsed, and says how many
+	 * configurations it holds.
+	 *
+	 * The file is not read by the program: the page fetches it, because a
+	 * page fetches things. The name is the one the map calls the picture,
+	 * because that is how a layer finds its rules.
+	 */
+	loadRules(name, text) {
+		return this.call("MapEditorLoadRules", "number", ["string", "string"], [name, text]) || 0;
+	}
+
+	/** What the configurations of a rules file that was loaded are called. */
+	ruleConfigs(name) {
+		const count = this.call("MapEditorNumRuleConfigs", "number", ["string"], [name]) || 0;
+		const names = [];
+		for (let index = 0; index < count; ++index) {
+			names.push(this.call("MapEditorRuleConfigName", "string", ["string", "number"], [name, index]) || "");
+		}
+		return names;
+	}
+
+	/**
+	 * Runs one configuration of a rules file over a layer, or over a piece of
+	 * one. One call is one history entry.
+	 *
+	 * @param options.seed 0 for one that is made up, which means the answer
+	 * is not the same twice.
+	 * @param options.reference Which physics tile the first run is filtered
+	 * by, -1 for none.
+	 * @param options.x The rectangle, in tiles; left out it is the whole
+	 * layer.
+	 */
+	automap(group, layer, rules, config, options) {
+		const settings = Object.assign({ seed: 0, reference: -1, x: 0, y: 0, width: -1, height: -1, id: undefined }, options || {});
+		return this.call("MapEditorAutomap", "number",
+			["number", "number", "number", "string", "number", "number", "number", "number", "number", "number", "number"],
+			[this.which(settings.id), group, layer, rules, config, settings.seed, settings.reference,
+				settings.x, settings.y, settings.width, settings.height]) === 1;
+	}
+
+	/**
 	 * Puts a picture into the map with its pixels, and says which picture of
 	 * the map it became - or -1 where it was refused.
 	 *
@@ -671,6 +723,12 @@ const PANELS_HTML = `
 		</header>
 		<canvas class="editor-tileset" data-role="tileset" width="256" height="256"></canvas>
 		<div class="editor-numbers" data-role="numbers"></div>
+		<div class="editor-automap" data-role="automap" hidden>
+			<select class="editor-small" data-role="automap-config"></select>
+			<select class="editor-small" data-role="automap-reference"></select>
+			<button class="editor-small" data-role="automap-run" title="Put the tiles the rules ask for into this layer">automap</button>
+			<label class="editor-small" title="Run them over every stroke, as part of the same change"><input type="checkbox" data-role="automap-auto"> auto</label>
+		</div>
 	</section>
 	<section class="editor-panel" data-role="quads-panel" hidden>
 		<header class="editor-panel-head">
@@ -837,6 +895,10 @@ class CEditorPanels {
 		this.quad = -1;
 		// Which picture of the map is picked in the image panel.
 		this.image = -1;
+		// The rules files that were fetched, by the name of the picture they
+		// belong to. `null` means there are none for that picture - asked
+		// once and then remembered, so a layer without rules costs one 404.
+		this.rules = new Map();
 		// Which of the places a number is used at was looked at last, so that
 		// pressing the button again goes to the next one.
 		this.gotoAt = 0;
@@ -901,6 +963,7 @@ class CEditorPanels {
 		on("flip-y", () => { this.editor.flipBrushY(); this.refreshTiles(); });
 		on("rotate", () => { this.editor.rotateBrush(); this.refreshTiles(); });
 		this.wireTileset();
+		this.wireAutomap();
 		this.wireEnvelopes();
 		this.wireQuads();
 		this.wireImages();
@@ -1494,6 +1557,7 @@ class CEditorPanels {
 		const size = this.editor.brushSize();
 		this.part("brush-size").textContent = size === null ? "" : `${size.width} x ${size.height}`;
 		this.refreshNumbers(layer);
+		this.refreshAutomap(layer);
 
 		// The picture the layer is drawn with, where the map names one that
 		// lies beside it. A layer whose picture is inside the map file, or
@@ -1628,6 +1692,141 @@ class CEditorPanels {
 		}
 		this.say(`${(this.gotoAt % places) + 1} of ${places}`);
 		this.gotoAt = (this.gotoAt + 1) % places;
+	}
+
+	/**
+	 * The automapper: which rules to run over this layer and which of their
+	 * configurations.
+	 *
+	 * The rules file belongs to the picture, not to the layer - a layer drawn
+	 * with `grass_main` is automapped by `grass_main.rules` - so what is
+	 * offered follows the picture. The page fetches the file, because a page
+	 * fetches things; the program parses it and runs it.
+	 */
+	wireAutomap() {
+		this.part("automap-run").addEventListener("click", () => {
+			const layer = this.selectedLayer();
+			const name = this.rulesNameFor(layer);
+			if (layer === null || name === null) {
+				return;
+			}
+			const config = Number.parseInt(this.part("automap-config").value, 10);
+			const reference = Number.parseInt(this.part("automap-reference").value, 10);
+			if (!Number.isFinite(config)) {
+				return;
+			}
+			const where = this.selection;
+			this.change(() => ({
+				ok: this.editor.automap(where.group, where.layer, name, config,
+					{ seed: layer.automapperSeed || 0, reference: reference }),
+				error: "The rules would not run",
+			}));
+		}, { signal: this.stopping.signal });
+		this.part("automap-auto").addEventListener("change", () => {
+			const where = this.selection;
+			this.change(() => this.editor.apply({
+				op: "layer.setProp", group: where.group, layer: where.layer,
+				prop: "automapperAutomatic", value: this.part("automap-auto").checked,
+			}));
+		}, { signal: this.stopping.signal });
+	}
+
+	/**
+	 * Runs the layer's own rules over what a stroke just drew, where the
+	 * layer was told to do that by itself.
+	 *
+	 * Called while the stroke's change is still open, so drawing and what it
+	 * led to are one entry: one undo takes both back. Only the rectangle the
+	 * stroke was over is run, with the margin the rules need - which is why a
+	 * stroke on a large map costs what it touched.
+	 */
+	automapAfterStroke(where, box) {
+		const layer = this.selectedLayer();
+		const name = this.rulesNameFor(layer);
+		if (layer === null || name === null || !layer.automapperAutomatic || layer.automapperConfig < 0) {
+			return;
+		}
+		if (this.rules.get(name) !== name) {
+			return;
+		}
+		this.editor.automap(where.group, where.layer, name, layer.automapperConfig, {
+			seed: layer.automapperSeed || 0, reference: -1,
+			x: box.x, y: box.y, width: box.width, height: box.height,
+		});
+	}
+
+	// Which rules file a layer is automapped by: the one named after its
+	// picture, and nothing at all for a layer that has no picture.
+	rulesNameFor(layer) {
+		if (layer === null || layer.type !== "tiles" || layer.image < 0 || this.map === null) {
+			return null;
+		}
+		const image = this.map.images[layer.image];
+		return image === undefined ? null : image.name;
+	}
+
+	refreshAutomap(layer) {
+		const box = this.part("automap");
+		const name = this.rulesNameFor(layer);
+		box.hidden = name === null || this.rules.get(name) === null;
+		if (name === null) {
+			return;
+		}
+		if (!this.rules.has(name)) {
+			// Asked for once. What comes back goes to the program, which
+			// parses it; what does not come back is remembered as nothing, so
+			// a picture without rules is not fetched again.
+			this.rules.set(name, undefined);
+			fetch(new URL(`editor/automap/${name}.rules`, this.dataBase).href)
+				.then(answer => (answer.ok ? answer.text() : null))
+				.then(text => {
+					this.rules.set(name, text === null || this.editor.loadRules(name, text) === 0 ? null : name);
+					this.refreshTiles();
+				})
+				.catch(() => {
+					this.rules.set(name, null);
+				});
+			return;
+		}
+		if (this.rules.get(name) === undefined) {
+			return;
+		}
+		const configs = this.editor.ruleConfigs(name);
+		box.hidden = configs.length === 0;
+		const chooser = this.part("automap-config");
+		if (chooser.dataset.rules !== name) {
+			chooser.dataset.rules = name;
+			chooser.textContent = "";
+			configs.forEach((title, index) => {
+				const option = document.createElement("option");
+				option.value = String(index);
+				option.textContent = title;
+				chooser.append(option);
+			});
+			chooser.value = String(Math.max(0, layer.automapperConfig));
+			chooser.addEventListener("change", () => {
+				const where = this.selection;
+				this.change(() => this.editor.apply({
+					op: "layer.setProp", group: where.group, layer: where.layer,
+					prop: "automapperConfig", value: Number.parseInt(chooser.value, 10),
+				}));
+			}, { signal: this.stopping.signal });
+		} else if (document.activeElement !== chooser) {
+			chooser.value = String(Math.max(0, layer.automapperConfig));
+		}
+		const reference = this.part("automap-reference");
+		if (reference.childElementCount === 0) {
+			// The first run may read the game layer instead of this one, and
+			// then only one kind of physics tile of it.
+			["Off"].concat(AUTOMAP_REFERENCES).forEach((title, index) => {
+				const option = document.createElement("option");
+				option.value = String(index - 1);
+				option.textContent = title;
+				reference.append(option);
+			});
+			reference.value = "-1";
+		}
+		this.part("automap-auto").checked = layer.automapperAutomatic === true;
 	}
 
 	paintTileset() {
@@ -2307,7 +2506,7 @@ class CEditorPanels {
  * @param options.signal Stops listening again.
  */
 function steerWithPointer(editor, options) {
-	const settings = Object.assign({ canvas: null, target: null, onChange: null, signal: undefined }, options || {});
+	const settings = Object.assign({ canvas: null, target: null, onChange: null, afterStroke: null, signal: undefined }, options || {});
 	const canvas = settings.canvas || editor.canvas;
 	const stopping = new AbortController();
 	if (settings.signal) {
@@ -2320,6 +2519,27 @@ function steerWithPointer(editor, options) {
 	let pointer = 0;
 	let last = { x: 0, y: 0 };
 	let from = { x: 0, y: 0 };
+	// The tiles a stroke has been over, so that whatever wants to look at
+	// what was drawn - the automapper - is told a rectangle rather than the
+	// whole layer.
+	let touched = null;
+	const touch = tile => {
+		if (touched === null) {
+			touched = { x: tile.x, y: tile.y, toX: tile.x, toY: tile.y };
+			return;
+		}
+		touched.x = Math.min(touched.x, tile.x);
+		touched.y = Math.min(touched.y, tile.y);
+		touched.toX = Math.max(touched.toX, tile.x);
+		touched.toY = Math.max(touched.toY, tile.y);
+	};
+	// Said while the stroke's change is still open, so that what it leads to
+	// is part of the same history entry.
+	const afterStroke = (where, box) => {
+		if (settings.afterStroke !== null && where !== null && box !== null) {
+			settings.afterStroke(where, box);
+		}
+	};
 
 	// The canvas is measured in the units the page lays out in and drawn in
 	// the pixels the screen has; a pointer that ignored the difference would
@@ -2441,6 +2661,8 @@ function steerWithPointer(editor, options) {
 			doing = "erase";
 		} else {
 			doing = "paint";
+			touched = null;
+			touch(tile);
 			editor.begin("Draw");
 			editor.paint(where.group, where.layer, tile.x, tile.y);
 			changed();
@@ -2478,6 +2700,7 @@ function steerWithPointer(editor, options) {
 			const where = target();
 			const tile = tileAt(event);
 			if (where !== null && tile !== null) {
+				touch(tile);
 				editor.paint(where.group, where.layer, tile.x, tile.y);
 				changed();
 			}
@@ -2509,20 +2732,36 @@ function steerWithPointer(editor, options) {
 		const where = target();
 		const tile = tileAt(event);
 		if (doing === "paint") {
+			// The brush is stamped with its corner on the tile, so what it
+			// covered reaches that much further than where the pointer went.
+			const brush = editor.brushSize() || { width: 1, height: 1 };
+			afterStroke(where, touched === null ? null : {
+				x: touched.x, y: touched.y,
+				width: touched.toX - touched.x + brush.width,
+				height: touched.toY - touched.y + brush.height,
+			});
 			editor.commit();
 			changed();
 		} else if (where !== null && tile !== null && (doing === "grab" || doing === "erase" || doing === "fill")) {
 			const box = between(from, tile);
 			if (doing === "grab") {
 				editor.grab(where.group, where.layer, box.x, box.y, box.width, box.height);
-			} else if (doing === "fill") {
-				// The brush is laid out over the rectangle again and again,
-				// so a fill of one tile and a fill of a pattern are the same
-				// gesture.
-				editor.fill(where.group, where.layer, box.x, box.y, box.width, box.height);
-				changed();
-			} else {
-				editor.erase(where.group, where.layer, box.x, box.y, box.width, box.height);
+			} else if (doing === "fill" || doing === "erase") {
+				// Opened here as well, so that what follows the stroke - the
+				// automapper - lands in the same history entry. The call
+				// inside opens one of its own, and one inside another is
+				// still one entry.
+				editor.begin(doing === "fill" ? "Fill" : "Erase");
+				if (doing === "fill") {
+					// The brush is laid out over the rectangle again and
+					// again, so a fill of one tile and a fill of a pattern
+					// are the same gesture.
+					editor.fill(where.group, where.layer, box.x, box.y, box.width, box.height);
+				} else {
+					editor.erase(where.group, where.layer, box.x, box.y, box.width, box.height);
+				}
+				afterStroke(where, box);
+				editor.commit();
 				changed();
 			}
 		}
@@ -2568,6 +2807,11 @@ const WHEEL_ZOOM_STEP = 1.1;
 // What a quad has beside its points: a colour on each corner, and which
 // envelopes move and colour it. The corners are named the way the file orders
 // them - top left, top right, bottom left, bottom right.
+// What the first run of a configuration may be filtered by, in the order the
+// program counts them. "Off" is not one of them and is not in the list.
+const AUTOMAP_REFERENCES = ["Game Layer", "Hookable", "Death", "Unhookable", "Freeze",
+	"Unfreeze", "Deep Freeze", "Deep Unfreeze", "Live Freeze", "Live Unfreeze"];
+
 const QUAD_CORNERS = ["Top left", "Top right", "Bottom left", "Bottom right"];
 const QUAD_PROPS = [
 	{ prop: "posEnv", label: "Position envelope", kind: "number" },

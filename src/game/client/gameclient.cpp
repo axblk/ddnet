@@ -907,7 +907,7 @@ void CGameClient::OnRender()
 		// take the mouse over and bring their own pointer.
 		if(pComponent == &m_Menus)
 			m_Hud.RenderCursor();
-		CRenderTraceScope TraceScope(pTrace, Info.m_pTraceName);
+		CRenderTraceScope TraceScope(pTrace, Info.m_pTraceName, Info.m_GpuZone);
 		if(Info.m_GpuZone != IGraphics::EGpuRenderZone::COUNT)
 			Graphics()->GpuRenderZoneBegin(Info.m_GpuZone);
 		pComponent->OnRender();

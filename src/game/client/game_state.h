@@ -572,6 +572,7 @@ private:
 	bool m_PredictionInitialized = false;
 	bool m_MapDoorsBuilt = false;
 	bool m_FullyPredicted = false;
+	bool m_Shown = false;
 	CRuntimeState m_Runtime;
 	CEffectClockState m_EffectClock;
 	CSceneClockState m_SceneClock;
@@ -615,6 +616,10 @@ public:
 	 */
 	void SetFullyPredicted(bool FullyPredicted) { m_FullyPredicted = FullyPredicted; }
 	bool IsFullyPredicted() const { return m_FullyPredicted; }
+	// Whether the last frame drew this state, beside the one that takes input or
+	// in a corner of it. Its events then get their effects too.
+	void SetShown(bool Shown) { m_Shown = Shown; }
+	bool IsShown() const { return m_Shown; }
 
 	CGameStateId Id() const { return m_Id; }
 	CStreamId StreamId() const { return m_StreamId; }

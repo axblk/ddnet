@@ -286,12 +286,16 @@ bool CGameClient::AudioForSession(CSessionId SessionId, bool &Offline) const
 
 bool CGameClient::AudioForState(const CGameState &State, bool &Offline) const
 {
+	Offline = false;
 	for(const auto &pSession : m_SessionContexts.Contexts())
 	{
-		if(pSession->GameStates().Find(State.Id()) == &State)
-			return AudioForSession(pSession->Id(), Offline);
+		if(pSession->GameStates().Find(State.Id()) != &State)
+			continue;
+		// Only the game state that is played is heard. The others of its session
+		// show the same world, and would play every sound a second time.
+		const CGameState *pPlayed = pSession->GameStates().FindByStream(Client()->StreamId(pSession->Id(), PlayedConnection(pSession->Id())));
+		return pPlayed == &State && AudioForSession(pSession->Id(), Offline);
 	}
-	Offline = false;
 	return false;
 }
 
@@ -1980,9 +1984,13 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 	CGameState &ActiveState = *pActiveState;
 	CGameView &View = InputView();
 
+	for(const auto &pSession : m_SessionContexts.Contexts())
+		for(const auto &pState : pSession->GameStates().States())
+			pState->SetShown(false);
 	auto AddEntry = [&](CGameSessionContext &Session, int Conn, bool Inset) {
 		CGameState *pState = Session.GameStates().FindByStream(Client()->StreamId(Session.Id(), Conn));
 		dbg_assert(pState != nullptr, "missing shown game state");
+		pState->SetShown(true);
 		CPreparedRenderEntry Entry;
 		Entry.m_pSession = &Session;
 		Entry.m_pState = pState;
@@ -2813,7 +2821,7 @@ void CGameClient::ProcessEvents(CSessionId SessionId, int Conn)
 	dbg_assert(pState != nullptr, "missing event game state");
 	CGameState &State = *pState;
 	bool OfflineAudio;
-	const bool AudioActive = AudioForSession(SessionId, OfflineAudio);
+	const bool AudioActive = AudioForState(State, OfflineAudio);
 	const int Num = Client()->SnapNumItems(SessionId, Conn, SnapType);
 	for(int Index = 0; Index < Num; Index++)
 	{
@@ -3151,6 +3159,14 @@ void CGameClient::OnNewSnapshot(CSessionId SessionId, CStreamId StreamId)
 		ProcessedEvents = true;
 	}
 #endif
+	else if(State.IsShown())
+	{
+		// Explosions, hits and deaths are events rather than objects, so a pane
+		// that does not take input only shows them if they are processed for its
+		// state as well. Sounds stay with the state that is played.
+		ProcessEvents(SessionId, Conn);
+		ProcessedEvents = true;
+	}
 	if(ProcessedEvents)
 		ProcessAirJumpEffects(SessionId, Conn, State);
 	if(!EnteredGameOver)

@@ -73,6 +73,10 @@ namespace
 	// map, so at that point there is no grid.
 	constexpr float MIN_PIXELS_PER_LINE = 4.0f;
 
+	// How far a quad's handle reaches, as a part of what the view shows - so
+	// that it is the same size on the screen however far the view is zoomed.
+	constexpr float HANDLE_SIZE_OF_SCREEN = 0.012f;
+
 	/** Whether whoever is drawing asked for this layer to be left out. */
 	bool Hidden(const CDocumentRenderer::CParams &Params, size_t Group, size_t Layer)
 	{
@@ -218,7 +222,6 @@ bool CDocumentRenderer::UseGroup(const CGroup &Group, const CParams &Params, CSc
 {
 	const int ParallaxX = Group.m_ParallaxX;
 	const int ParallaxY = Group.m_ParallaxY;
-	const int ParallaxZoom = std::clamp(std::max(ParallaxX, ParallaxY), 0, 100);
 	const bool OwnView = Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f;
 	const float Aspect = OwnView ? Params.m_ViewSize.x / Params.m_ViewSize.y : m_pGraphics->ScreenAspect();
 	const float Scale = CalcGroupViewScale(Aspect, g_Config.m_ClViewMaxAspect / 100.0f, std::max(ParallaxX, ParallaxY));
@@ -252,16 +255,27 @@ bool CDocumentRenderer::UseGroup(const CGroup &Group, const CParams &Params, CSc
 			(int)std::round(Bottom * m_pGraphics->ScreenHeight() / ScreenHeight) - ClipY);
 	}
 
+	const CScreenRect Screen = GroupScreen(Group, Params);
+	m_pGraphics->MapScreen(Screen);
+	if(pWorld != nullptr)
+		*pWorld = Screen;
+	return true;
+}
+
+CScreenRect CDocumentRenderer::GroupScreen(const CGroup &Group, const CParams &Params) const
+{
+	const int ParallaxX = Group.m_ParallaxX;
+	const int ParallaxY = Group.m_ParallaxY;
+	const int ParallaxZoom = std::clamp(std::max(ParallaxX, ParallaxY), 0, 100);
+	const bool OwnView = Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f;
+	const float Aspect = OwnView ? Params.m_ViewSize.x / Params.m_ViewSize.y : m_pGraphics->ScreenAspect();
+	const float Scale = CalcGroupViewScale(Aspect, g_Config.m_ClViewMaxAspect / 100.0f, std::max(ParallaxX, ParallaxY));
 	const CScreenRect World = OwnView ?
 					  m_pGraphics->MapViewToWorld(Params.m_ViewSize * Params.m_Zoom, Params.m_Center.x, Params.m_Center.y,
 						  ParallaxX, ParallaxY, (float)ParallaxZoom, Group.m_OffsetX, Group.m_OffsetY, Params.m_Zoom) :
 					  m_pGraphics->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y,
 						  ParallaxX, ParallaxY, (float)ParallaxZoom, Group.m_OffsetX, Group.m_OffsetY, m_pGraphics->ScreenAspect(), Params.m_Zoom);
-	const CScreenRect Screen = CRenderLayerGroup::Windowed(CRenderLayerGroup::Scaled(World, Scale), Params.m_Window);
-	m_pGraphics->MapScreen(Screen);
-	if(pWorld != nullptr)
-		*pWorld = Screen;
-	return true;
+	return CRenderLayerGroup::Windowed(CRenderLayerGroup::Scaled(World, Scale), Params.m_Window);
 }
 
 void CDocumentRenderer::RenderGrid(const CScreenRect &World, int Spacing)
@@ -328,6 +342,44 @@ void CDocumentRenderer::RenderMarked(const CParams::CMarked &Marked)
 	m_pGraphics->SetColor(1.0f, 1.0f, 1.0f, 0.9f);
 	m_pGraphics->LinesDraw(aBorder, std::size(aBorder));
 	m_pGraphics->LinesEnd();
+}
+
+void CDocumentRenderer::RenderQuadHandles(const CQuad &Quad)
+{
+	// How large a handle is on the screen rather than in the world, so that
+	// it stays something a pointer can hit however far the view is zoomed out.
+	const float Screen = m_pGraphics->GetScreen().Width();
+	const float Size = Screen * HANDLE_SIZE_OF_SCREEN;
+	const auto At = [](const CPoint &Point) { return vec2(fx2f(Point.x), fx2f(Point.y)); };
+
+	m_pGraphics->TextureClear();
+	IGraphics::CLineItemBatch Batch;
+	m_pGraphics->LinesBatchBegin(&Batch);
+	m_pGraphics->SetColor(1.0f, 1.0f, 1.0f, 0.9f);
+	// The four corners in the order the file keeps them, which is not the way
+	// round a line goes: top left, top right, bottom right, bottom left.
+	constexpr int aOrder[4] = {0, 1, 3, 2};
+	for(int i = 0; i < 4; ++i)
+	{
+		const vec2 From = At(Quad.m_aPoints[aOrder[i]]);
+		const vec2 To = At(Quad.m_aPoints[aOrder[(i + 1) % 4]]);
+		const IGraphics::CLineItem Line(From.x, From.y, To.x, To.y);
+		m_pGraphics->LinesBatchDraw(&Batch, &Line, 1);
+	}
+	// A cross on each point, which is a handle that can be seen over any map
+	// without covering what is under it.
+	for(size_t Point = 0; Point < std::size(Quad.m_aPoints); ++Point)
+	{
+		const vec2 Where = At(Quad.m_aPoints[Point]);
+		// The pivot is the one that moves the whole quad, so it is drawn
+		// larger than the corners it carries.
+		const float Reach = Point + 1 == std::size(Quad.m_aPoints) ? Size : Size * 0.6f;
+		const IGraphics::CLineItem aCross[2] = {
+			IGraphics::CLineItem(Where.x - Reach, Where.y, Where.x + Reach, Where.y),
+			IGraphics::CLineItem(Where.x, Where.y - Reach, Where.x, Where.y + Reach)};
+		m_pGraphics->LinesBatchDraw(&Batch, aCross, std::size(aCross));
+	}
+	m_pGraphics->LinesBatchEnd(&Batch);
 }
 
 void CDocumentRenderer::RenderTileLayer(const CTileLayer &Layer, CLayerCache &Cache, const CParams &Params)
@@ -447,6 +499,14 @@ void CDocumentRenderer::Render(const CParams &Params)
 	{
 		if(UseGroup(*m_pMap->m_vpGroups[Params.m_Marked.m_Group], Params))
 			RenderMarked(Params.m_Marked);
+	}
+	if(Params.m_ShownQuad.m_Shown && Params.m_ShownQuad.m_Group < m_pMap->NumGroups() &&
+		Params.m_ShownQuad.m_Layer < m_pMap->NumLayers(Params.m_ShownQuad.m_Group))
+	{
+		const CQuadLayer *pQuads = std::get_if<CQuadLayer>(m_pMap->Layer(Params.m_ShownQuad.m_Group, Params.m_ShownQuad.m_Layer));
+		if(pQuads != nullptr && Params.m_ShownQuad.m_Quad < pQuads->m_Quads.Size() &&
+			UseGroup(*m_pMap->m_vpGroups[Params.m_ShownQuad.m_Group], Params))
+			RenderQuadHandles(pQuads->m_Quads[Params.m_ShownQuad.m_Quad]);
 	}
 	m_pGraphics->ClipDisable();
 }

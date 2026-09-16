@@ -71,6 +71,7 @@ namespace
 		log_info(TOOL_NAME, "  -g <tiles>   Draw a grid every so many tiles (default: none)");
 		log_info(TOOL_NAME, "  -x <g>:<l>   Leave that layer out, as an editor hiding it would");
 		log_info(TOOL_NAME, "  -m <g>:<x>:<y>:<w>:<h>  Mark that rectangle of tiles");
+		log_info(TOOL_NAME, "  -q <g>:<l>:<n>  Put handles on the corners of that quad");
 		log_info(TOOL_NAME, "There is nothing to press here: the editor is driven from outside,");
 		log_info(TOOL_NAME, "which on a page is the page and on the command line is -o.");
 	}
@@ -242,6 +243,39 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorStructure(int Id)
 EMSCRIPTEN_KEEPALIVE const char *MapEditorHistory(int Id)
 {
 	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->HistoryJson(Id));
+}
+
+// Where a pixel of the surface is in the coordinates of one group - which for
+// a group with parallax is somewhere else than the plain view says. A quad's
+// points are in its group's coordinates, so this is what a pointer over one
+// has to ask.
+EMSCRIPTEN_KEEPALIVE float MapEditorGroupWorldX(int Id, int Group, float X, float Y)
+{
+	return g_pEditor == nullptr || Group < 0 ? 0.0f : g_pEditor->WorldInGroup(Id, (size_t)Group, vec2(X, Y)).x;
+}
+
+EMSCRIPTEN_KEEPALIVE float MapEditorGroupWorldY(int Id, int Group, float X, float Y)
+{
+	return g_pEditor == nullptr || Group < 0 ? 0.0f : g_pEditor->WorldInGroup(Id, (size_t)Group, vec2(X, Y)).y;
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorQuads(int Id, int Group, int Layer)
+{
+	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->QuadsJson(Id, Group, Layer));
+}
+
+// Which quad has handles on its corners. A width of nothing - `Show` of zero -
+// takes them away again. Nothing about this reaches the map.
+EMSCRIPTEN_KEEPALIVE void MapEditorShowQuad(int Id, int Group, int Layer, int Quad, int Show)
+{
+	if(g_pEditor == nullptr || g_pEditor->Display(Id) == nullptr)
+		return;
+	CDocumentRenderer::CParams::CShownQuad &Shown = g_pEditor->Display(Id)->m_ShownQuad;
+	Shown.m_Group = (size_t)std::max(0, Group);
+	Shown.m_Layer = (size_t)std::max(0, Layer);
+	Shown.m_Quad = (size_t)std::max(0, Quad);
+	Shown.m_Shown = Show != 0 && Group >= 0 && Layer >= 0 && Quad >= 0;
+	g_pEditor->Touch();
 }
 
 EMSCRIPTEN_KEEPALIVE const char *MapEditorEnvelope(int Id, int Index)
@@ -630,6 +664,7 @@ int main(int argc, const char **argv)
 	int Grid = 0;
 	std::vector<std::pair<size_t, size_t>> vHide;
 	std::string Marked;
+	std::string ShownQuad;
 	bool InvalidUsage = false;
 
 	for(int i = 1; i < argc; i++)
@@ -653,6 +688,10 @@ int main(int argc, const char **argv)
 		else if(str_comp(argv[i], "-m") == 0 && i + 1 < argc)
 		{
 			Marked = argv[++i];
+		}
+		else if(str_comp(argv[i], "-q") == 0 && i + 1 < argc)
+		{
+			ShownQuad = argv[++i];
 		}
 		else if(str_comp(argv[i], "-x") == 0 && i + 1 < argc)
 		{
@@ -712,6 +751,22 @@ int main(int argc, const char **argv)
 			Editor.Display(Id)->m_Grid = Grid;
 		for(const auto &[Group, Layer] : vHide)
 			Editor.Display(Id)->SetVisible(Group, Layer, false);
+		if(!ShownQuad.empty())
+		{
+			int aNumbers[3] = {0, 0, 0};
+			const char *pRead = ShownQuad.c_str();
+			for(int &Number : aNumbers)
+			{
+				Number = str_toint(pRead);
+				const char *pColon = str_find(pRead, ":");
+				pRead = pColon == nullptr ? "" : pColon + 1;
+			}
+			CDocumentRenderer::CParams::CShownQuad &Shown = Editor.Display(Id)->m_ShownQuad;
+			Shown.m_Group = (size_t)std::max(0, aNumbers[0]);
+			Shown.m_Layer = (size_t)std::max(0, aNumbers[1]);
+			Shown.m_Quad = (size_t)std::max(0, aNumbers[2]);
+			Shown.m_Shown = true;
+		}
 		if(!Marked.empty())
 		{
 			int aNumbers[5] = {0, 0, 0, 0, 0};

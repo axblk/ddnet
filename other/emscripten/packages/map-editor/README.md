@@ -91,6 +91,24 @@ one and a binding to the one that is gone becomes no binding at all. A layer
 that was bound to nothing is left as the node it is, which is why this costs
 the layers that used the envelope rather than the map.
 
+## Quads
+
+A quad is four corners and a pivot, and all five are dragged on the map rather
+than typed into a field: the panel lists the quads by where their pivot sits,
+picking one puts handles on it, and the program draws those handles because a
+quad lies in its group's coordinates - parallax and all - and only the program
+knows where that is on the screen. Dragging a corner moves that corner;
+dragging the pivot carries all five, which is how a quad is moved without
+changing its shape. Either way the whole drag is one history entry.
+
+The points go out in world units (`editor.quads(group, layer)`), because that
+is the only number a page can do anything with - it turns a click into a place
+and back - and the pointer asks the program where a click lands in the group
+(`editor.groupWorldAt(group, x, y)`) rather than working it out itself, so
+what is drawn and what is caught cannot drift apart. A new quad appears in the
+middle of the view of *its group*, not of the plain view: in a group with no
+parallax at all those are nowhere near each other.
+
 ## The brush
 
 The left button paints, held shift it takes a piece of the layer into the
@@ -122,7 +140,7 @@ and 17 ms.
 
 ## What it is not, yet
 
-Quads, images, sounds and the automapper are looked at but not changed. A layer
-with
+Images, sounds and the automapper are looked at but not changed, and a quad's
+colours and its picture coordinates are read but not yet edited. A layer with
 no picture at all is shown as a grid of numbers - the tiles are still there to
 be picked, they just cannot be shown.

@@ -366,3 +366,84 @@ TEST(Command, AnEnvelopeCommandThatMakesNoSenseIsRefused)
 	// Nothing of that reached the map.
 	EXPECT_EQ(Commands.m_Document.History().NumEntries(), 1u);
 }
+
+// Quads. A page works in world units and the file holds 22.10 fixed point, so
+// what is tested here is that a quad goes out and comes back as the same quad
+// - and that a pivot dragged about carries its corners along, which is what a
+// pivot is for.
+
+namespace
+{
+	CMapState WithQuads()
+	{
+		CMapState Map = TwoGroups();
+		CQuadLayer Quads;
+		Quads.m_Name = "quads";
+		CGroup Group;
+		Group.m_Name = "design";
+		Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Quads)));
+		Map.AddGroup(std::move(Group));
+		CEnvelope Envelope;
+		Envelope.m_Name = "colour";
+		Map.AddEnvelope(std::move(Envelope));
+		return Map;
+	}
+
+	const CQuadLayer &QuadsOf(const CMapState &Map)
+	{
+		return std::get<CQuadLayer>(*Map.Layer(2, 0));
+	}
+} // namespace
+
+TEST(Command, AQuadIsAddedWhereItWasAskedFor)
+{
+	CCommands Commands(WithQuads());
+	const CJson pAnswer = Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":320,"y":160,"width":64,"height":32})");
+	EXPECT_EQ(Number(pAnswer, "quad"), 0);
+	ASSERT_EQ(QuadsOf(Commands.m_Document.Map()).m_Quads.Size(), 1u);
+
+	const CQuad &Quad = QuadsOf(Commands.m_Document.Map()).m_Quads[0];
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].x), 320 - 32) << "top left";
+	EXPECT_EQ(fx2i(Quad.m_aPoints[3].y), 160 + 16) << "bottom right";
+	EXPECT_EQ(fx2i(Quad.m_aPoints[4].x), 320) << "the pivot is where it was put";
+	EXPECT_EQ(Quad.m_aColors[0].r, 255);
+	EXPECT_EQ(Quad.m_PosEnv, -1);
+}
+
+TEST(Command, DraggingThePivotCarriesTheCornersAlong)
+{
+	CCommands Commands(WithQuads());
+	Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":100,"y":100,"width":40,"height":40})");
+	// One corner on its own: only that corner moves.
+	Commands.Ok(R"({"op":"quad.setPoint","group":2,"layer":0,"quad":0,"point":0,"x":50,"y":60})");
+	EXPECT_EQ(fx2i(QuadsOf(Commands.m_Document.Map()).m_Quads[0].m_aPoints[0].x), 50);
+	EXPECT_EQ(fx2i(QuadsOf(Commands.m_Document.Map()).m_Quads[0].m_aPoints[1].x), 120) << "the other corner stayed";
+
+	// The pivot: everything moves with it, by what it moved.
+	Commands.Ok(R"({"op":"quad.setPoint","group":2,"layer":0,"quad":0,"point":4,"x":200,"y":100})");
+	const CQuad &Quad = QuadsOf(Commands.m_Document.Map()).m_Quads[0];
+	EXPECT_EQ(fx2i(Quad.m_aPoints[4].x), 200);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].x), 150) << "the corner came along";
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].y), 60) << "and did not move in the other direction";
+}
+
+TEST(Command, AQuadsColoursAndEnvelopesAreSetAndChecked)
+{
+	CCommands Commands(WithQuads());
+	Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":0,"y":0})");
+	Commands.Ok(R"({"op":"quad.setColor","group":2,"layer":0,"quad":0,"corner":1,"value":[10,20,30,40]})");
+	const CQuad &Quad = QuadsOf(Commands.m_Document.Map()).m_Quads[0];
+	EXPECT_EQ(Quad.m_aColors[1].g, 20);
+	EXPECT_EQ(Quad.m_aColors[0].g, 255) << "the other corners are left alone";
+
+	Commands.Ok(R"({"op":"quad.setProp","group":2,"layer":0,"quad":0,"prop":"colorEnv","value":0})");
+	EXPECT_EQ(QuadsOf(Commands.m_Document.Map()).m_Quads[0].m_ColorEnv, 0);
+	// There is one envelope, so binding to the second one is not a binding.
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.setProp","group":2,"layer":0,"quad":0,"prop":"colorEnv","value":1})"),
+		"there is no such envelope");
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.add","group":0,"layer":0,"x":0,"y":0})"), "that layer holds no quads");
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.delete","group":2,"layer":0,"quad":1})"), "'quad' is 1, which is not there");
+
+	Commands.Ok(R"({"op":"quad.delete","group":2,"layer":0,"quad":0})");
+	EXPECT_EQ(QuadsOf(Commands.m_Document.Map()).m_Quads.Size(), 0u);
+}

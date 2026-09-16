@@ -2020,3 +2020,43 @@ ddnet-editor[data-right="sheet"] .editor-grip-right,
 	box-shadow: var(--shadow);
 	pointer-events: none;
 }
+
+/* The line over the map for the first stroke, and the nudge of the layer
+   list when a stroke had nothing to paint in. */
+.editor-hint {
+	position: absolute;
+	left: 50%;
+	bottom: calc(var(--button) + var(--space-4));
+	z-index: 2;
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+	color: var(--text-1);
+	font: var(--type-md);
+	background: var(--bg-1);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+	transform: translateX(-50%);
+	white-space: nowrap;
+}
+
+.editor-hint-close {
+	width: var(--button-small);
+	min-height: var(--button-small);
+	color: var(--text-2);
+	background: none;
+	border: 0;
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+@keyframes editor-nudge {
+	0%, 100% { box-shadow: none; }
+	30%, 70% { box-shadow: 0 0 0 2px var(--accent); }
+}
+
+.editor-nudge {
+	animation: editor-nudge 600ms ease-out;
+}

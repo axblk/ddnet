@@ -1203,7 +1203,7 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	MapContext.Data()->InitLayers();
 	MapContext.Collision()->Init(MapContext.Layers());
 	pSession->SetDescriptor(MapContext.Map()->BaseName(), Client()->IsSixup(SessionId) ? EGameProtocol::SIXUP : EGameProtocol::SIX);
-	pSession->SetServerCapAnyPlayerFlag(Client()->SessionType(SessionId) == ESessionSourceType::NETWORK && Client()->ServerCapAnyPlayerFlag(SessionId));
+	pSession->SetServerCapAnyPlayerFlag(Client()->IsSessionSink(SessionId) && Client()->ServerCapAnyPlayerFlag(SessionId));
 	MapContext.Load(*Config());
 	for(const auto &pGameState : pSession->GameStates().States())
 		pGameState->InitPrediction(MapContext);
@@ -1218,7 +1218,7 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	while(Focused && Presentation.UpdateMapImages())
 		m_Menus.RenderLoading(pConnectCaption, Localize("Loading map images"), 0);
 
-	if(Client()->SessionType(SessionId) == ESessionSourceType::NETWORK)
+	if(Client()->IsSessionSink(SessionId))
 	{
 		if(Focused)
 		{
@@ -1527,7 +1527,7 @@ bool CGameClient::HandleLiveStatsMessage(CSessionId SessionId, int MsgId, CUnpac
 void CGameClient::RequestLiveStats(CSessionId SessionId, bool Force)
 {
 	CGameSessionContext *pSession = m_SessionContexts.Find(SessionId);
-	if(pSession == nullptr || Client()->SessionType(SessionId) != ESessionSourceType::NETWORK || Client()->SessionState(SessionId) != ESessionState::READY)
+	if(pSession == nullptr || !Client()->IsSessionSink(SessionId) || Client()->SessionState(SessionId) != ESessionState::READY)
 		return;
 	const int64_t Now = time_get();
 	if(!Force && pSession->LastLiveStatsRequest() != 0 && Now - pSession->LastLiveStatsRequest() < time_freq() * 10)

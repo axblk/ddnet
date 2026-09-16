@@ -6,6 +6,7 @@ class CHeadlessSource : public IGameSessionSource
 
 public:
 	ESessionSourceType Type() const override { return ESessionSourceType::NETWORK; }
+	bool IsSink() const override { return true; }
 	std::vector<CStreamId> StreamIds() const override { return {CStreamId(1)}; }
 	CStreamId PrimaryStreamId() const override { return CStreamId(1); }
 	CStreamId ActiveStreamId() const override { return CStreamId(1); }

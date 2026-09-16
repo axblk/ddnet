@@ -285,7 +285,7 @@ int CClientWithConnection::SendMsg(CSessionId SessionId, CStreamId StreamId, CMs
 {
 	CNetChunk Packet = {};
 
-	if(SessionState(SessionId) == ESessionState::OFFLINE)
+	if(SessionState(SessionId) == ESessionState::OFFLINE || !IsSessionSink(SessionId))
 		return 0;
 
 	// repack message (inefficient)

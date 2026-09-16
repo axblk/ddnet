@@ -87,6 +87,7 @@ public:
 
 	CNetworkSessionSource();
 	ESessionSourceType Type() const override { return ESessionSourceType::NETWORK; }
+	bool IsSink() const override { return true; }
 	std::vector<CStreamId> StreamIds() const override;
 	CStreamId PrimaryStreamId() const override { return m_PrimaryStreamId; }
 	CStreamId ActiveStreamId() const override { return m_ActiveStreamId; }

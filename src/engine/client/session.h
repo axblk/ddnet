@@ -46,6 +46,8 @@ class IGameSessionSource
 public:
 	virtual ~IGameSessionSource() = default;
 	virtual ESessionSourceType Type() const = 0;
+	// Whether input and messages go back through it: a connection, not a recording.
+	virtual bool IsSink() const = 0;
 	virtual std::vector<CStreamId> StreamIds() const = 0;
 	virtual CStreamId PrimaryStreamId() const = 0;
 	virtual CStreamId ActiveStreamId() const = 0;

@@ -191,6 +191,7 @@ public:
 	CSessionId DemoSessionId() const override { return m_DemoSessionId; }
 	std::vector<CSessionId> SessionIds() const override { return m_SessionManager.SessionIds(); }
 	ESessionSourceType SessionType(CSessionId SessionId) const override { return SessionSource(SessionId).Type(); }
+	bool IsSessionSink(CSessionId SessionId) const override { return SessionSource(SessionId).IsSink(); }
 	std::vector<CStreamId> StreamIds(CSessionId SessionId) const override { return SessionSource(SessionId).StreamIds(); }
 	CStreamId PrimaryStreamId(CSessionId SessionId) const override { return SessionSource(SessionId).PrimaryStreamId(); }
 	CStreamId ActiveStreamId(CSessionId SessionId) const override { return SessionSource(SessionId).ActiveStreamId(); }

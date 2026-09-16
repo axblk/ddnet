@@ -969,6 +969,10 @@ const PANELS_HTML = `
 			<button class="editor-small" data-role="automap-run" title="Put the tiles the rules ask for into this layer">automap</button>
 			<label class="editor-small" title="Run them over every stroke, as part of the same change"><input type="checkbox" data-role="automap-auto"> auto</label>
 		</div>
+		<div class="editor-type" data-role="type">
+			<input type="text" data-role="type-text" placeholder="Type with the tiles&hellip;" title="Letters and digits become the tiles of a font tileset; the layer has to be drawn with one">
+			<button class="editor-small" data-role="type-place" title="Write it where the view is looking">write</button>
+		</div>
 	</section>
 	<section class="editor-panel" data-role="audio-panel">
 		<header class="editor-panel-head">
@@ -1407,6 +1411,7 @@ class CEditorPanels {
 			this.refreshOverlay();
 		});
 		this.wireArt();
+		this.wireType();
 		on("add-group", () => this.change(() => this.editor.apply({ op: "group.add", name: "group" })));
 		on("add-layer", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "tiles" })));
 		on("add-quads", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "quads" })));
@@ -3164,6 +3169,52 @@ class CEditorPanels {
 					: "That picture was refused");
 			}
 			this.refresh();
+		}, { signal: signal });
+	}
+
+	/**
+	 * Typing with tiles.
+	 *
+	 * A font tileset is a tileset like any other; what makes it a font is
+	 * that `A` is at 1 and `1` is at 54, which is a convention of the sheets
+	 * people draw rather than anything the file knows. The editor in the
+	 * client types a keystroke at a time in a mode of its own; a page has
+	 * text fields, so here it is a text and one history entry - which is also
+	 * the only version that can be undone in one go.
+	 *
+	 * Where it goes is the middle of the view, because that is where somebody
+	 * is looking when they decide to write something.
+	 */
+	wireType() {
+		const signal = this.stopping.signal;
+		const write = () => {
+			const field = this.part("type-text");
+			const text = field.value;
+			if (text === "" || this.map === null) {
+				return;
+			}
+			const where = this.selection;
+			const at = this.editor.tileAt(this.editor.canvas.width / 2, this.editor.canvas.height / 2);
+			if (at === null) {
+				return;
+			}
+			const answer = this.change(() => this.editor.apply({
+				op: "layer.type", group: where.group, layer: where.layer, x: at.x, y: at.y, text: text,
+			}));
+			if (answer && answer.ok) {
+				this.say(`${answer.tiles} ${answer.tiles === 1 ? "tile" : "tiles"} at ${at.x}, ${at.y}`);
+				field.value = "";
+			} else {
+				this.say(answer && answer.error ? answer.error : "That text was refused");
+			}
+			this.refresh();
+		};
+		this.part("type-place").addEventListener("click", write, { signal: signal });
+		this.part("type-text").addEventListener("keydown", event => {
+			if (event.key === "Enter") {
+				event.preventDefault();
+				write();
+			}
 		}, { signal: signal });
 	}
 

@@ -151,6 +151,75 @@ namespace map_document
 		return Map.NumGroups() - 1;
 	}
 
+	int TypeText(CDocument &Doc, const CLayerAddress &Layer, int x, int y, const char *pText)
+	{
+		if(pText == nullptr)
+			return 0;
+		CMapState &Map = Doc.Edit();
+		CLayer Changed = *Map.Layer(Layer.m_Group, Layer.m_Layer);
+		CTileLayer *pTiles = std::get_if<CTileLayer>(&Changed);
+		dbg_assert(pTiles != nullptr, "Layer holds no tiles");
+
+		const int Started = x;
+		int Wrote = 0;
+		int At = x;
+		int Line = y;
+		const auto Put = [&](int Index) {
+			// A line that runs off the right-hand edge goes on below, in the
+			// column it started in, so a block of text stays a block.
+			if(At >= pTiles->Width())
+			{
+				At = Started;
+				++Line;
+			}
+			if(At < 0 || Line < 0 || Line >= pTiles->Height())
+			{
+				++At;
+				return;
+			}
+			CTile Tile;
+			Tile.m_Index = (unsigned char)Index;
+			pTiles->m_Tiles.Set(At, Line, Tile);
+			++At;
+			++Wrote;
+		};
+
+		for(const char *pAt = pText; *pAt != '\0'; ++pAt)
+		{
+			const char Letter = *pAt;
+			if(Letter == '\n')
+			{
+				At = Started;
+				++Line;
+			}
+			else if(Letter == ' ')
+			{
+				Put(0);
+			}
+			else if(Letter >= '1' && Letter <= '9')
+			{
+				Put(FONT_DIGIT_TILE + (Letter - '1'));
+			}
+			else if(Letter == '0')
+			{
+				// Nine digits then the zero, which is the order they stand in
+				// on the sheets people draw.
+				Put(FONT_DIGIT_TILE + 9);
+			}
+			else
+			{
+				const char Upper = Letter >= 'a' && Letter <= 'z' ? (char)(Letter - 'a' + 'A') : Letter;
+				if(Upper >= 'A' && Upper <= 'Z')
+					Put(FONT_LETTER_TILE + (Upper - 'A'));
+				// Anything else is passed over: a font tileset has letters and
+				// digits and nothing else.
+			}
+		}
+		if(Wrote > 0)
+			Map.ReplaceLayer(Layer.m_Group, Layer.m_Layer, std::move(Changed));
+		return Wrote;
+	}
+
 	size_t AddQuadArt(CDocument &Doc, const char *pName, int Width, int Height, const uint8_t *pPixels,
 		const CQuadArtOptions &Options)
 	{

@@ -257,6 +257,23 @@ envelope: what pointed past it comes down one, what pointed at it points at
 nothing. Going the other way - beside the map back into it - is not something
 a command can do, because the bytes are not in the command.
 
+## Typing with tiles
+
+A font tileset is a tileset like any other; what makes it a font is that `A` is
+at tile 1 and `1` is at tile 54, which is a convention of the sheets people
+draw rather than anything the file format knows. Letters and digits become
+those tiles, a space becomes nothing, and a newline goes down a row and back to
+the column it started in - so a block of text stays a block, and a line that
+reaches the right-hand edge wraps the same way. Anything else is passed over: a
+font tileset has 26 letters and ten digits, and refusing a comma would be
+refusing the sentence it stands in.
+
+The editor in the client does this a keystroke at a time in a mode of its own.
+A page has text fields, so here it is a text and one history entry - which is
+also the only version that can be undone in one go. It is written where the
+view is looking, because that is where somebody is when they decide to write
+something.
+
 ## A picture, turned into map
 
 Two ways of doing it, and which one is wanted is a question about the picture
@@ -440,5 +457,7 @@ and 17 ms.
 
 ## What it is not, yet
 
-Typing with tiles is not here. A layer with no picture at all is shown as a grid of numbers - the
+Nothing of the plan is missing any more. What is not here is what the plan
+says is not here: editing together, testing a map in the browser, and a new
+file format. A layer with no picture at all is shown as a grid of numbers - the
 tiles are still there to be picked, they just cannot be shown.

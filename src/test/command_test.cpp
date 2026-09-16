@@ -660,6 +660,23 @@ TEST(Command, WhatASoundSourceIsHeardWithinIsOneThingOrTheOther)
 		"a sound source has no 'pitch'");
 }
 
+TEST(Command, TextIsTypedIntoALayerThatDrawsAndNotIntoOneThatDoesNot)
+{
+	CCommands Commands(TwoGroups());
+	const CJson pTyped = Commands.Ok(R"({"op":"layer.type","group":0,"layer":0,"x":1,"y":1,"text":"HI"})");
+	EXPECT_EQ(Number(pTyped, "tiles"), 2);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_Tiles.Get(1, 1).m_Index, 8) << "H is the eighth letter";
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_Tiles.Get(2, 1).m_Index, 9);
+
+	// A physics layer other than the game and front layers draws nothing of
+	// its own - its tiles are air and its meaning sits beside them - so there
+	// is nothing for a letter to be drawn with.
+	Commands.Ok(R"({"op":"layer.add","group":1,"type":"tiles","kind":"tele","name":"tele"})");
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.type","group":1,"layer":1,"x":0,"y":0,"text":"HI"})"),
+		"a physics layer draws no letters");
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.type","group":0,"layer":0,"x":0,"y":0})"), "The command has no 'text'");
+}
+
 TEST(Command, TheKnifeCutsAPieceOutOfAQuadAndItKeepsWhatItWasCutFrom)
 {
 	CCommands Commands(WithQuads());

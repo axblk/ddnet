@@ -193,3 +193,88 @@ TEST(Art, QuadArtCanPutEveryPivotInTheSamePlaceAndCanReadEveryOtherPixel)
 	EXPECT_EQ(std::get<CQuadLayer>(*Coarse.Map().Layer(Fewer, 0)).m_Quads.Size(), 4u);
 	EXPECT_EQ(Coarse.Map().m_vpGroups[Fewer]->m_ClipW, 2 * 64);
 }
+
+namespace
+{
+	CMapState WithATileLayer(int Width, int Height)
+	{
+		CMapState Map;
+		CGroup Group;
+		Group.m_Name = "signs";
+		CTileLayer Layer(ETileLayerKind::TILES, Width, Height);
+		Layer.m_Name = "letters";
+		Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Layer)));
+		Map.AddGroup(std::move(Group));
+		return Map;
+	}
+
+	const CTileLayer &LettersOf(const CMapState &Map)
+	{
+		return std::get<CTileLayer>(*Map.Layer(0, 0));
+	}
+} // namespace
+
+TEST(Art, TextBecomesTheTilesOfAFontTileset)
+{
+	CDocument Document(WithATileLayer(16, 4));
+	Document.Begin("Type", nullptr);
+	// Five of the six: the exclamation mark is passed over, so it writes
+	// nothing and takes up no room either.
+	EXPECT_EQ(TypeText(Document, CLayerAddress{0, 0}, 2, 1, "Hi 90!"), 5);
+	Document.Commit();
+
+	const CTileLayer &Layer = LettersOf(Document.Map());
+	EXPECT_EQ(Layer.m_Tiles.Get(2, 1).m_Index, FONT_LETTER_TILE + 7) << "H is the eighth letter";
+	EXPECT_EQ(Layer.m_Tiles.Get(3, 1).m_Index, FONT_LETTER_TILE + 8) << "and a small i is the same letter";
+	EXPECT_EQ(Layer.m_Tiles.Get(4, 1).m_Index, 0) << "a space is nothing";
+	EXPECT_EQ(Layer.m_Tiles.Get(5, 1).m_Index, FONT_DIGIT_TILE + 8) << "nine is the ninth digit";
+	EXPECT_EQ(Layer.m_Tiles.Get(6, 1).m_Index, FONT_DIGIT_TILE + 9) << "and zero comes after it";
+	EXPECT_EQ(Layer.m_Tiles.Get(7, 1).m_Index, 0) << "an exclamation mark is passed over";
+	EXPECT_EQ(Layer.m_Tiles.Get(2, 0).m_Index, 0) << "nothing above it";
+}
+
+TEST(Art, ANewlineGoesBackToTheColumnItStartedInAndSoDoesTheEdge)
+{
+	CDocument Document(WithATileLayer(6, 4));
+	Document.Begin("Type", nullptr);
+	TypeText(Document, CLayerAddress{0, 0}, 2, 0, "AB\nCD");
+	Document.Commit();
+
+	const CTileLayer &Layer = LettersOf(Document.Map());
+	EXPECT_EQ(Layer.m_Tiles.Get(2, 0).m_Index, FONT_LETTER_TILE);
+	EXPECT_EQ(Layer.m_Tiles.Get(3, 0).m_Index, FONT_LETTER_TILE + 1);
+	EXPECT_EQ(Layer.m_Tiles.Get(2, 1).m_Index, FONT_LETTER_TILE + 2) << "back to the column it started in";
+	EXPECT_EQ(Layer.m_Tiles.Get(3, 1).m_Index, FONT_LETTER_TILE + 3);
+	EXPECT_EQ(Layer.m_Tiles.Get(0, 1).m_Index, 0) << "not back to the left-hand edge";
+
+	// A line that runs off the right-hand edge goes on below the same way.
+	CDocument Wraps(WithATileLayer(6, 4));
+	Wraps.Begin("Type", nullptr);
+	EXPECT_EQ(TypeText(Wraps, CLayerAddress{0, 0}, 4, 0, "ABCD"), 4);
+	Wraps.Commit();
+	const CTileLayer &Wrapped = LettersOf(Wraps.Map());
+	EXPECT_EQ(Wrapped.m_Tiles.Get(4, 0).m_Index, FONT_LETTER_TILE);
+	EXPECT_EQ(Wrapped.m_Tiles.Get(5, 0).m_Index, FONT_LETTER_TILE + 1);
+	EXPECT_EQ(Wrapped.m_Tiles.Get(4, 1).m_Index, FONT_LETTER_TILE + 2);
+	EXPECT_EQ(Wrapped.m_Tiles.Get(5, 1).m_Index, FONT_LETTER_TILE + 3);
+}
+
+TEST(Art, TypingPastTheBottomWritesWhatFitsAndNothingElse)
+{
+	CDocument Document(WithATileLayer(4, 2));
+	Document.Begin("Type", nullptr);
+	// Three lines into a layer two tall.
+	EXPECT_EQ(TypeText(Document, CLayerAddress{0, 0}, 0, 0, "A\nB\nC"), 2);
+	Document.Commit();
+	const CTileLayer &Layer = LettersOf(Document.Map());
+	EXPECT_EQ(Layer.m_Tiles.Get(0, 0).m_Index, FONT_LETTER_TILE);
+	EXPECT_EQ(Layer.m_Tiles.Get(0, 1).m_Index, FONT_LETTER_TILE + 1);
+
+	// And a text of nothing at all changes nothing at all.
+	CDocument Quiet(WithATileLayer(4, 2));
+	Quiet.Begin("Type", nullptr);
+	EXPECT_EQ(TypeText(Quiet, CLayerAddress{0, 0}, 0, 0, "!?,."), 0);
+	Quiet.Commit();
+	EXPECT_EQ(Quiet.Map().m_vpGroups[0]->m_vpLayers[0], Quiet.Map().m_vpGroups[0]->m_vpLayers[0])
+		<< "nothing written is nothing changed";
+}

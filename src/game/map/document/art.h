@@ -2,6 +2,7 @@
 #define GAME_MAP_DOCUMENT_ART_H
 
 #include "document.h"
+#include "structure.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -83,6 +84,41 @@ namespace map_document
 	 */
 	size_t AddQuadArt(CDocument &Doc, const char *pName, int Width, int Height, const uint8_t *pPixels,
 		const CQuadArtOptions &Options);
+
+	/**
+	 * Where the letters and the digits sit on a font tileset.
+	 *
+	 * A font tileset is a tileset like any other; what makes it a font is that
+	 * `A` is at 1 and `1` is at 54, which is a convention of the tilesets
+	 * people draw rather than anything the file format knows. The editor in
+	 * the client types by the same two numbers.
+	 */
+	constexpr int FONT_LETTER_TILE = 1;
+	constexpr int FONT_DIGIT_TILE = 54;
+
+	/**
+	 * Writes text into a tile layer as the tiles of a font tileset.
+	 *
+	 * Letters and digits become tiles, a space becomes nothing, and a newline
+	 * goes down a row and back to the column it started in - so a block of
+	 * text stays a block. A line that reaches the right-hand edge wraps the
+	 * same way. Anything else is passed over: a font tileset has 26 letters
+	 * and ten digits and nothing else, and refusing a comma would be refusing
+	 * the sentence it stands in.
+	 *
+	 * The editor in the client does this a keystroke at a time in a mode of
+	 * its own. A page has text fields, so here it is a text and one history
+	 * entry - which is also the only version that can be undone in one go.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Layer Which layer, which has to hold tiles.
+	 * @param x Where to start, in tiles.
+	 * @param y Where to start.
+	 * @param pText The text.
+	 *
+	 * @return How many tiles it wrote.
+	 */
+	int TypeText(CDocument &Doc, const CLayerAddress &Layer, int x, int y, const char *pText);
 } // namespace map_document
 
 #endif

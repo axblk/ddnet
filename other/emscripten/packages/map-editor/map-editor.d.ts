@@ -168,6 +168,7 @@ export type Command =
 	| { op: "layer.delete"; group: number; layer: number; label?: string }
 	| { op: "layer.move"; group: number; layer: number; toGroup: number; to: number; label?: string }
 	| { op: "layer.resize"; group: number; layer: number; width?: number; height?: number; label?: string }
+	| { op: "layer.type"; group: number; layer: number; x: number; y: number; text: string; label?: string }
 	| { op: "layer.constructGameTiles"; group: number; layer: number; tile: string; label?: string }
 	| { op: "quad.setTexcoord"; group: number; layer: number; quad: number; corner: number; u: number; v: number; label?: string }
 	| { op: "quad.carve"; group: number; layer: number; quad: number; points: number[]; label?: string }

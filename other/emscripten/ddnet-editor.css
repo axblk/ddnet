@@ -600,3 +600,15 @@ circle.editor-source-dot.editor-source-picked {
 .editor-art-field input[type="number"] {
 	width: 48px;
 }
+
+/* Typing with tiles: a field and a button, on one line. */
+.editor-type {
+	display: flex;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.editor-type input {
+	flex: 1;
+	min-width: 0;
+}

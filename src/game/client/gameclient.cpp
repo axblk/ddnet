@@ -2043,21 +2043,26 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 		}
 	};
 
-	// The session without focus is shown too, as long as it has something to
-	// show: beside the focused one on the split screen, or in a corner of it.
-	// The server always keeps the left of the screen and the demo the right, so
-	// that moving focus between them does not move them around.
-	const CSessionId OtherId = ActiveSession.Id() == Client()->DemoSessionId() ? Client()->NetworkSessionId() : Client()->DemoSessionId();
-	CGameSessionContext *pOther = FindSessionContext(OtherId);
+	// The first other session with something to show is shown too: beside the
+	// focused one on the split screen, or in a corner of it. Sessions keep the
+	// order they were opened in, so moving focus between them does not move
+	// them around.
 	const bool PictureInPicture = g_Config.m_ClPictureInPicture != 0 && !VideoOutput;
-	if(pOther == nullptr || (!SplitScreen && !PictureInPicture) || Client()->SessionState(OtherId) != ESessionState::READY)
-		pOther = nullptr;
+	CGameSessionContext *pOther = nullptr;
+	for(const auto &pSession : m_SessionContexts.Contexts())
+	{
+		if((SplitScreen || PictureInPicture) && pSession.get() != &ActiveSession && Client()->IsSessionShowable(pSession->Id()))
+		{
+			pOther = pSession.get();
+			break;
+		}
+	}
 	const bool OtherBeside = pOther != nullptr && !PictureInPicture;
-	if(OtherBeside && OtherId == Client()->NetworkSessionId())
-		AddSession(*pOther, false);
-	AddSession(ActiveSession, false);
-	if(OtherBeside && OtherId != Client()->NetworkSessionId())
-		AddSession(*pOther, false);
+	for(const auto &pSession : m_SessionContexts.Contexts())
+	{
+		if(pSession.get() == &ActiveSession || (OtherBeside && pSession.get() == pOther))
+			AddSession(*pSession, false);
+	}
 	if(pOther != nullptr && PictureInPicture)
 		AddSession(*pOther, true);
 

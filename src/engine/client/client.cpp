@@ -2956,7 +2956,7 @@ void CClient::RegisterCommands()
 	m_pConsole->Register("demo_slice_start", "", CFGFLAG_CLIENT, Con_DemoSliceBegin, this, "Mark the beginning of a demo cut");
 	m_pConsole->Register("demo_slice_end", "", CFGFLAG_CLIENT, Con_DemoSliceEnd, this, "Mark the end of a demo cut");
 	m_pConsole->Register("demo_play", "", CFGFLAG_CLIENT, Con_DemoPlay, this, "Play/pause the current demo");
-	m_pConsole->Register("toggle_session_focus", "", CFGFLAG_CLIENT, Con_ToggleSessionFocus, this, "Switch between the server and the demo that plays beside it");
+	m_pConsole->Register("toggle_session_focus", "", CFGFLAG_CLIENT, Con_ToggleSessionFocus, this, "Move the focus to the next session there is something to look at in");
 	m_pConsole->Register("demo_speed", "f[speed]", CFGFLAG_CLIENT, Con_DemoSpeed, this, "Set current demo speed");
 	m_pConsole->Register("demo_seek", "f[seconds]", CFGFLAG_CLIENT, Con_DemoSeek, this, "Seek the current demo to a time in seconds; with demo_speed 0 that is a fixed picture, which a comparison of renderers needs");
 

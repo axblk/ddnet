@@ -150,6 +150,16 @@ public:
 	virtual CStreamId StreamId(CSessionId SessionId, int LegacyConnection) const = 0;
 	virtual int StreamIndex(CSessionId SessionId, CStreamId StreamId) const = 0;
 	virtual ESessionState SessionState(CSessionId SessionId) const = 0;
+	// Whether there is something to look at in a session: it is ready, and no
+	// demo that is exported to video in the background.
+	bool IsSessionShowable(CSessionId SessionId) const
+	{
+#if defined(CONF_VIDEORECORDER)
+		if(SessionId == VideoSessionId() && SessionId != DemoSessionId())
+			return false;
+#endif
+		return SessionState(SessionId) == ESessionState::READY;
+	}
 	virtual bool DemoPlaybackPaused(CSessionId SessionId) const = 0;
 	virtual float DemoPlaybackSpeed(CSessionId SessionId) const = 0;
 	virtual int64_t DemoPlaybackTime(CSessionId SessionId) const = 0;

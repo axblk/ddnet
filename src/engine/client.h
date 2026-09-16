@@ -143,6 +143,7 @@ public:
 	virtual CSessionId DemoSessionId() const = 0;
 	virtual std::vector<CSessionId> SessionIds() const = 0;
 	virtual ESessionSourceType SessionType(CSessionId SessionId) const = 0;
+	virtual bool IsSessionSink(CSessionId SessionId) const = 0;
 	virtual std::vector<CStreamId> StreamIds(CSessionId SessionId) const = 0;
 	virtual CStreamId PrimaryStreamId(CSessionId SessionId) const = 0;
 	virtual CStreamId ActiveStreamId(CSessionId SessionId) const = 0;

@@ -21,6 +21,7 @@ public:
 	}
 
 	ESessionSourceType Type() const override { return m_Type; }
+	bool IsSink() const override { return m_Type == ESessionSourceType::NETWORK; }
 	std::vector<CStreamId> StreamIds() const override { return {CStreamId(1)}; }
 	CStreamId PrimaryStreamId() const override { return CStreamId(1); }
 	CStreamId ActiveStreamId() const override { return CStreamId(1); }

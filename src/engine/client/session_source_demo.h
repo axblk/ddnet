@@ -20,6 +20,7 @@ class CDemoSessionSource : public CSessionSourceBase
 public:
 	CDemoSessionSource(bool UseVideo, TUpdateIntraTimesFunc &&UpdateIntraTimesFunc);
 	ESessionSourceType Type() const override { return ESessionSourceType::DEMO; }
+	bool IsSink() const override { return false; }
 	std::vector<CStreamId> StreamIds() const override { return {CStreamId(1)}; }
 	CStreamId PrimaryStreamId() const override { return CStreamId(1); }
 	CStreamId ActiveStreamId() const override { return CStreamId(1); }

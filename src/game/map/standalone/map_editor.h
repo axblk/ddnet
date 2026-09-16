@@ -140,6 +140,19 @@ public:
 	int Open(const char *pPath, int StorageType);
 
 	/**
+	 * Puts a second map into one that is already open - see
+	 * `map_document::AppendMap`.
+	 *
+	 * @param Id The number of the map to put it into.
+	 * @param pPath The file to take from.
+	 * @param StorageType Where to look for it.
+	 *
+	 * @return What came over, as JSON, or `null` if the file could not be
+	 * read.
+	 */
+	std::string Append(int Id, const char *pPath, int StorageType);
+
+	/**
 	 * An empty map with a game layer, which is what "new map" means.
 	 *
 	 * @param Width How many tiles wide the game layer is.

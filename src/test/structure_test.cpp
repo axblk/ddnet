@@ -615,3 +615,133 @@ TEST(Structure, TakingAnEnvelopeOutTakesEverythingOffIt)
 	EXPECT_EQ(Map.TileLayer(1, 0)->m_ColorEnvelope, 1);
 	EXPECT_EQ(Map.Envelope(Map.TileLayer(1, 0)->m_ColorEnvelope)->m_Name, "third");
 }
+
+namespace
+{
+	CImage Picture(const char *pName, uint8_t Byte)
+	{
+		CImage Made;
+		Made.m_Name = pName;
+		Made.m_External = false;
+		Made.m_Width = 1;
+		Made.m_Height = 1;
+		Made.m_Data.Mutable() = {Byte, Byte, Byte, 255};
+		return Made;
+	}
+
+	// A map worth appending: one group that is drawn, one game group that is
+	// not to come over, a picture, a sound, an envelope and a settings line,
+	// all named by something.
+	CMapState MapToAppend(const char *pImageName, uint8_t ImageByte)
+	{
+		CMapState Map;
+		CGroup Drawn;
+		Drawn.m_Name = "decoration";
+		CTileLayer Tiles(ETileLayerKind::TILES, 4, 4);
+		Tiles.m_Name = "tiles";
+		Tiles.m_Image = 0;
+		Tiles.m_ColorEnvelope = 0;
+		Drawn.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Tiles)));
+		CSoundLayer Sounds;
+		Sounds.m_Name = "ambience";
+		Sounds.m_Sound = 0;
+		Drawn.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Sounds)));
+		Map.AddGroup(std::move(Drawn));
+
+		CGroup Game;
+		Game.m_Name = "game";
+		CTileLayer Physics(ETileLayerKind::GAME, 4, 4);
+		Physics.m_Name = "game";
+		Game.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Physics)));
+		Map.AddGroup(std::move(Game));
+
+		Map.AddImage(Picture(pImageName, ImageByte));
+		CSound Noise;
+		Noise.m_Name = "wind";
+		Map.AddSound(std::move(Noise));
+		CEnvelope Colour;
+		Colour.m_Name = "fade";
+		Map.AddEnvelope(std::move(Colour));
+		Map.m_Info.m_Settings.Mutable().push_back("sv_deepfly 0");
+		return Map;
+	}
+} // namespace
+
+TEST(Structure, AppendingBringsEverythingDrawnAndLeavesThePhysicsBehind)
+{
+	CDocument Document(TwoGroups());
+	Document.Begin("Setting up", nullptr);
+	Document.Edit().AddImage(Picture("sand", 1));
+	Document.Edit().m_Info.m_Settings.Mutable().push_back("sv_deepfly 0");
+	Document.Commit();
+	const size_t WasGroups = Document.Map().NumGroups();
+
+	Document.Begin("Append", nullptr);
+	const CAppendReport Report = AppendMap(Document, MapToAppend("grass", 2));
+	Document.Commit();
+	EXPECT_EQ(Report.m_Groups, 1u) << "the game group stays where it is";
+	EXPECT_EQ(Report.m_Images, 1u);
+	EXPECT_EQ(Report.m_Sounds, 1u);
+	EXPECT_EQ(Report.m_Envelopes, 1u);
+	EXPECT_EQ(Report.m_Settings, 0u) << "a line already there is already there";
+
+	const CMapState &Map = Document.Map();
+	ASSERT_EQ(Map.NumGroups(), WasGroups + 1);
+	EXPECT_EQ(NameOf(Map, WasGroups, 0), std::string("tiles"));
+	// Everything it named is named by its place, so every place was read again.
+	EXPECT_EQ(std::get<CTileLayer>(*Map.Layer(WasGroups, 0)).m_Image, 1) << "behind the picture that was there";
+	EXPECT_EQ(std::get<CTileLayer>(*Map.Layer(WasGroups, 0)).m_ColorEnvelope, 0);
+	EXPECT_EQ(std::get<CSoundLayer>(*Map.Layer(WasGroups, 1)).m_Sound, 0);
+	EXPECT_EQ(Map.m_Info.m_Settings.Size(), 1u);
+}
+
+TEST(Structure, APictureTheMapAlreadyHasIsNotBroughtOverTwiceUnlessItIsADifferentPicture)
+{
+	// The same name and the same bytes is the same picture.
+	CDocument Same(TwoGroups());
+	Same.Begin("Setting up", nullptr);
+	Same.Edit().AddImage(Picture("grass", 2));
+	Same.Commit();
+	Same.Begin("Append", nullptr);
+	const CAppendReport Shared = AppendMap(Same, MapToAppend("grass", 2));
+	Same.Commit();
+	EXPECT_EQ(Shared.m_Images, 0u);
+	EXPECT_EQ(Shared.m_SharedImages, 1u);
+	EXPECT_EQ(Same.Map().NumImages(), 1u);
+	EXPECT_EQ(std::get<CTileLayer>(*Same.Map().Layer(2, 0)).m_Image, 0) << "drawn with the one that was there";
+
+	// The same name and different bytes is a different picture, and losing it
+	// would change what the map looks like.
+	CDocument Other(TwoGroups());
+	Other.Begin("Setting up", nullptr);
+	Other.Edit().AddImage(Picture("grass", 9));
+	Other.Commit();
+	Other.Begin("Append", nullptr);
+	const CAppendReport Renamed = AppendMap(Other, MapToAppend("grass", 2));
+	Other.Commit();
+	EXPECT_EQ(Renamed.m_Images, 1u);
+	EXPECT_EQ(Renamed.m_RenamedImages, 1u);
+	ASSERT_EQ(Other.Map().NumImages(), 2u);
+	EXPECT_EQ(Other.Map().Image(1)->m_Name, "grass (1)");
+	EXPECT_EQ(std::get<CTileLayer>(*Other.Map().Layer(2, 0)).m_Image, 1) << "drawn with its own";
+}
+
+TEST(Structure, AppendingIsOneEntryAndUndoTakesAllOfItBack)
+{
+	CDocument Document(TwoGroups());
+	const size_t WasGroups = Document.Map().NumGroups();
+	Document.Begin("Append", nullptr);
+	AppendMap(Document, MapToAppend("grass", 2));
+	Document.Commit();
+	// One entry on top of the one every document opens with, however much came
+	// over.
+	EXPECT_EQ(Document.History().NumEntries(), 2u);
+	EXPECT_EQ(Document.Map().NumGroups(), WasGroups + 1);
+	EXPECT_EQ(Document.Map().NumImages(), 1u);
+
+	Document.Undo();
+	EXPECT_EQ(Document.Map().NumGroups(), WasGroups);
+	EXPECT_EQ(Document.Map().NumImages(), 0u);
+	EXPECT_EQ(Document.Map().NumSounds(), 0u);
+	EXPECT_EQ(Document.Map().NumEnvelopes(), 0u);
+}

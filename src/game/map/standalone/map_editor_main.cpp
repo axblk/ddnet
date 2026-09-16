@@ -302,6 +302,11 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorSettingNames(const char *pPrefix)
 	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->SettingNamesJson(pPrefix));
 }
 
+EMSCRIPTEN_KEEPALIVE const char *MapEditorAppend(int Id, const char *pPath, int StorageType)
+{
+	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->Append(Id, pPath, StorageType));
+}
+
 EMSCRIPTEN_KEEPALIVE const char *MapEditorCheckSetting(const char *pLine)
 {
 	return g_pEditor == nullptr ? "" : Answer(g_pEditor->CheckSetting(pLine));

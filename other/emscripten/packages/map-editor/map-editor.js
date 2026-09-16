@@ -504,6 +504,32 @@ class CMapEditor extends Program {
 	}
 
 	/**
+	 * Puts a second map into the one that is open: everything it draws, and
+	 * the pictures, sounds and envelopes it draws with, and the lines it asks
+	 * of a server. Not its game layer - physics belongs to the map being
+	 * worked on, and two game layers is not a map.
+	 *
+	 * One history entry, however much comes over. Answers what came over, or
+	 * null where the file could not be read.
+	 */
+	async appendFile(file, id) {
+		const where = this.filePath({ name: file.name });
+		if (where === null) {
+			return null;
+		}
+		const path = await this.writeFile(where, file.name, new Uint8Array(await file.arrayBuffer()));
+		// The file is where the page put it rather than anywhere the program
+		// would look for it, so it is named absolutely (`TYPE_ABSOLUTE`).
+		const text = this.call("MapEditorAppend", "string", ["number", "string", "number"],
+			[this.which(id), path, STORAGE_ABSOLUTE]);
+		try {
+			return text === null || text === "null" ? null : JSON.parse(text);
+		} catch (error) {
+			return null;
+		}
+	}
+
+	/**
 	 * What is wrong with one settings line, or "" where nothing is.
 	 *
 	 * Asked about a line that is not in the map yet, which is the whole point:
@@ -989,6 +1015,7 @@ const PANELS_HTML = `
 		<header class="editor-panel-head">
 			<h2>Map</h2>
 			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="append-map" title="Put another map's groups into this one">append&hellip;</button>
 				<button class="editor-small" data-role="add-setting" title="A line the server runs when it loads the map">+ setting</button>
 				<button class="editor-small" data-role="delete-setting" title="Take this line away">-</button>
 			</span>
@@ -997,6 +1024,7 @@ const PANELS_HTML = `
 		<ol class="editor-settings" data-role="setting-list"></ol>
 		<p class="editor-setting-said" data-role="setting-said" role="status"></p>
 		<datalist data-role="setting-names"></datalist>
+		<input type="file" accept=".map" data-role="append-file" hidden>
 	</section>
 	<section class="editor-panel" data-role="history-panel">
 		<header class="editor-panel-head">
@@ -3248,6 +3276,45 @@ class CEditorPanels {
 	 */
 	wireInfo() {
 		const signal = this.stopping.signal;
+		const appending = this.part("append-file");
+		this.part("append-map").addEventListener("click", () => {
+			appending.value = "";
+			appending.click();
+		}, { signal: signal });
+		appending.addEventListener("change", async () => {
+			const chosen = appending.files && appending.files[0];
+			if (!chosen) {
+				return;
+			}
+			const came = await this.editor.appendFile(chosen);
+			if (came === null) {
+				this.say("That map could not be read");
+				return;
+			}
+			// Said rather than shown somewhere: appending moves numbers about
+			// everywhere at once, and a count is the only honest summary.
+			const parts = [`${came.groups} ${came.groups === 1 ? "group" : "groups"}`];
+			if (came.images > 0) {
+				parts.push(`${came.images} ${came.images === 1 ? "picture" : "pictures"}`);
+			}
+			if (came.sharedImages > 0) {
+				parts.push(`${came.sharedImages} already there`);
+			}
+			if (came.renamedImages > 0) {
+				parts.push(`${came.renamedImages} renamed`);
+			}
+			if (came.sounds > 0) {
+				parts.push(`${came.sounds} ${came.sounds === 1 ? "sound" : "sounds"}`);
+			}
+			if (came.envelopes > 0) {
+				parts.push(`${came.envelopes} ${came.envelopes === 1 ? "envelope" : "envelopes"}`);
+			}
+			if (came.settings > 0) {
+				parts.push(`${came.settings} ${came.settings === 1 ? "setting" : "settings"}`);
+			}
+			this.say(`From ${came.name}: ${parts.join(", ")}`);
+			this.refresh();
+		}, { signal: signal });
 		this.part("add-setting").addEventListener("click", () => {
 			const answer = this.change(() => this.editor.apply({ op: "info.settings.add", value: "sv_setting 0" }));
 			if (answer && answer.ok) {
@@ -4096,6 +4163,9 @@ const AUTOMAP_REFERENCES = ["Game Layer", "Hookable", "Death", "Unhookable", "Fr
 
 // What SVG elements are made in. The envelope panel says it in place; here it
 // is a name because the overlay makes one of these per source per frame.
+/** `IStorage::TYPE_ABSOLUTE`: a path as it stands, not one to look up. */
+const STORAGE_ABSOLUTE = -2;
+
 // How many panels this page has made, so that a list one of them names is
 // not a list another one finds.
 let panelCount = 0;

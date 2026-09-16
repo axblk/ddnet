@@ -257,6 +257,24 @@ envelope: what pointed past it comes down one, what pointed at it points at
 nothing. Going the other way - beside the map back into it - is not something
 a command can do, because the bytes are not in the command.
 
+## Appending a map
+
+Another map's groups go into this one: everything it draws, the pictures,
+sounds and envelopes it draws with, and the lines it asks of a server. Not its
+game layer - physics belongs to the map being worked on, and two game layers
+is not a map.
+
+Everything a layer names, it names by its place, so every place in the map
+coming in is read again against where it ends up. Pictures are the awkward
+one. A picture with the same name *and* the same bytes is the same picture and
+is not brought over twice; one whose name is taken by a different picture is
+renamed to `name (1)` rather than dropped, because dropping it would change
+what the map looks like. A settings line already there is already there.
+
+All of it is one history entry, however much came over, and what came over is
+said in the status line as counts - appending moves numbers about everywhere
+at once, and a count is the only honest summary of that.
+
 ## Quads
 
 A quad is four corners and a pivot, and all five are dragged on the map rather
@@ -376,5 +394,6 @@ and 17 ms.
 
 ## What it is not, yet
 
-The knife and turning a quad or a piece of a layer into art are not here. A layer with no picture at all is shown as a grid of numbers - the
+The knife, turning a quad or a piece of a layer into art, and typing with
+tiles are not here. A layer with no picture at all is shown as a grid of numbers - the
 tiles are still there to be picked, they just cannot be shown.

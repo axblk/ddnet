@@ -339,6 +339,150 @@ namespace map_document
 		return true;
 	}
 
+	CAppendReport AppendMap(CDocument &Doc, const CMapState &Other)
+	{
+		CAppendReport Report;
+		CMapState &Map = Doc.Edit();
+
+		// Pictures first, because everything that is drawn names one and the
+		// names have to be settled before the layers are read again.
+		std::vector<int> vImageAt(Other.NumImages(), -1);
+		for(size_t Index = 0; Index < Other.NumImages(); ++Index)
+		{
+			CImage Coming = *Other.Image(Index);
+			size_t Taken = Map.NumImages();
+			for(size_t Have = 0; Have < Map.NumImages(); ++Have)
+			{
+				if(Map.Image(Have)->m_Name == Coming.m_Name)
+				{
+					Taken = Have;
+					break;
+				}
+			}
+			if(Taken < Map.NumImages())
+			{
+				const CImage &Had = *Map.Image(Taken);
+				// The same name and the same bytes is the same picture. An
+				// external one carries no bytes, so for those the name is all
+				// there is to go on, which is also all a game has to go on.
+				const auto SameBytes = [](const CSharedList<uint8_t> &One, const CSharedList<uint8_t> &Other) {
+					if(One.Size() != Other.Size())
+						return false;
+					for(size_t At = 0; At < One.Size(); ++At)
+					{
+						if(One[At] != Other[At])
+							return false;
+					}
+					return true;
+				};
+				if(Had.m_External == Coming.m_External && Had.m_Width == Coming.m_Width &&
+					Had.m_Height == Coming.m_Height && SameBytes(Had.m_Data, Coming.m_Data))
+				{
+					vImageAt[Index] = (int)Taken;
+					++Report.m_SharedImages;
+					continue;
+				}
+				// The name is taken by something else, so this one gets
+				// another: dropping it would change what the map looks like.
+				const auto NameIsTaken = [&Map](const std::string &Name) {
+					for(size_t Have = 0; Have < Map.NumImages(); ++Have)
+					{
+						if(Map.Image(Have)->m_Name == Name)
+							return true;
+					}
+					return false;
+				};
+				std::string Renamed = Coming.m_Name;
+				for(int Try = 1; NameIsTaken(Renamed); ++Try)
+					Renamed = Coming.m_Name + " (" + std::to_string(Try) + ")";
+				Coming.m_Name = std::move(Renamed);
+				++Report.m_RenamedImages;
+			}
+			vImageAt[Index] = (int)Map.NumImages();
+			Map.AddImage(std::move(Coming));
+			++Report.m_Images;
+		}
+
+		const int SoundAt = (int)Map.NumSounds();
+		for(size_t Index = 0; Index < Other.NumSounds(); ++Index)
+		{
+			Map.AddSound(*Other.Sound(Index));
+			++Report.m_Sounds;
+		}
+
+		const int EnvelopeAt = (int)Map.NumEnvelopes();
+		for(size_t Index = 0; Index < Other.NumEnvelopes(); ++Index)
+		{
+			Map.AddEnvelope(*Other.Envelope(Index));
+			++Report.m_Envelopes;
+		}
+
+		// Everything that is drawn, which is every group but the one the game
+		// is played in.
+		const std::optional<CLayerAddress> Game = FindGameLayer(Other);
+		for(size_t Group = 0; Group < Other.NumGroups(); ++Group)
+		{
+			if(Game.has_value() && Group == Game->m_Group)
+				continue;
+			CGroup Coming = *Other.m_vpGroups[Group];
+			for(size_t Layer = 0; Layer < Coming.m_vpLayers.size(); ++Layer)
+			{
+				CLayer Changed = *Coming.m_vpLayers[Layer];
+				const auto Shift = [](int &Bound, int By) {
+					if(Bound >= 0)
+						Bound += By;
+				};
+				if(CTileLayer *pTiles = std::get_if<CTileLayer>(&Changed); pTiles != nullptr)
+				{
+					if(pTiles->m_Image >= 0 && (size_t)pTiles->m_Image < vImageAt.size())
+						pTiles->m_Image = vImageAt[pTiles->m_Image];
+					Shift(pTiles->m_ColorEnvelope, EnvelopeAt);
+				}
+				else if(CQuadLayer *pQuads = std::get_if<CQuadLayer>(&Changed); pQuads != nullptr)
+				{
+					if(pQuads->m_Image >= 0 && (size_t)pQuads->m_Image < vImageAt.size())
+						pQuads->m_Image = vImageAt[pQuads->m_Image];
+					for(size_t Quad = 0; Quad < pQuads->m_Quads.Size(); ++Quad)
+					{
+						CQuad Point = pQuads->m_Quads[Quad];
+						Shift(Point.m_ColorEnv, EnvelopeAt);
+						Shift(Point.m_PosEnv, EnvelopeAt);
+						pQuads->m_Quads.Mutable()[Quad] = Point;
+					}
+				}
+				else if(CSoundLayer *pSounds = std::get_if<CSoundLayer>(&Changed); pSounds != nullptr)
+				{
+					Shift(pSounds->m_Sound, SoundAt);
+					for(size_t Source = 0; Source < pSounds->m_Sources.Size(); ++Source)
+					{
+						CSoundSource Heard = pSounds->m_Sources[Source];
+						Shift(Heard.m_PosEnv, EnvelopeAt);
+						Shift(Heard.m_SoundEnv, EnvelopeAt);
+						pSounds->m_Sources.Mutable()[Source] = Heard;
+					}
+				}
+				Coming.m_vpLayers[Layer] = std::make_shared<const CLayer>(std::move(Changed));
+			}
+			Map.AddGroup(std::move(Coming));
+			++Report.m_Groups;
+		}
+
+		// The lines a server runs. A line that is already there is already
+		// there; saying it twice is what the settings check complains about.
+		for(size_t Line = 0; Line < Other.m_Info.m_Settings.Size(); ++Line)
+		{
+			const std::string &Says = Other.m_Info.m_Settings[Line];
+			bool Had = false;
+			for(size_t Have = 0; Have < Map.m_Info.m_Settings.Size() && !Had; ++Have)
+				Had = Map.m_Info.m_Settings[Have] == Says;
+			if(Had)
+				continue;
+			Map.m_Info.m_Settings.Mutable().push_back(Says);
+			++Report.m_Settings;
+		}
+		return Report;
+	}
+
 	size_t AddImage(CDocument &Doc, CImage Image)
 	{
 		CMapState &Map = Doc.Edit();

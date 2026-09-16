@@ -104,6 +104,59 @@ int CMapEditor::Open(const char *pPath, int StorageType)
 	return Add(std::move(Read), aName);
 }
 
+std::string CMapEditor::Append(int Id, const char *pPath, int StorageType)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr)
+		return "null";
+	CDataFileReader File;
+	if(!File.Open(m_View.Storage(), pPath, StorageType))
+	{
+		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "Failed to open map '%s'", pPath);
+		return "null";
+	}
+	map_document::CMapState Read;
+	std::vector<std::string> vWarnings;
+	const bool Ok = map_document::ReadMapState(File, &Read, &vWarnings);
+	File.Close();
+	for(const std::string &Warning : vWarnings)
+		log_warn(m_pLogContext, "%s", Warning.c_str());
+	if(!Ok)
+	{
+		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "Failed to read map '%s'", pPath);
+		return "null";
+	}
+
+	char aName[IO_MAX_PATH_LENGTH];
+	fs_split_file_extension(fs_filename(pPath), aName, sizeof(aName));
+	std::string Label = std::string("Append ") + aName;
+	pMap->m_Document.Begin(Label.c_str(), nullptr);
+	const map_document::CAppendReport Report = map_document::AppendMap(pMap->m_Document, Read);
+	pMap->m_Document.Commit();
+	Touch();
+
+	CJsonStringWriter Writer;
+	Writer.BeginObject();
+	Writer.WriteAttribute("name");
+	Writer.WriteStrValue(aName);
+	Writer.WriteAttribute("groups");
+	Writer.WriteIntValue((int)Report.m_Groups);
+	Writer.WriteAttribute("images");
+	Writer.WriteIntValue((int)Report.m_Images);
+	Writer.WriteAttribute("sharedImages");
+	Writer.WriteIntValue((int)Report.m_SharedImages);
+	Writer.WriteAttribute("renamedImages");
+	Writer.WriteIntValue((int)Report.m_RenamedImages);
+	Writer.WriteAttribute("sounds");
+	Writer.WriteIntValue((int)Report.m_Sounds);
+	Writer.WriteAttribute("envelopes");
+	Writer.WriteIntValue((int)Report.m_Envelopes);
+	Writer.WriteAttribute("settings");
+	Writer.WriteIntValue((int)Report.m_Settings);
+	Writer.EndObject();
+	return Writer.GetOutputString();
+}
+
 int CMapEditor::Create(int Width, int Height, const char *pName)
 {
 	map_document::CMapState Map;

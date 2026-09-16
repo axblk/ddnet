@@ -619,6 +619,17 @@ class CMapEditor extends Program {
 		return this.call("MapEditorPictureProgress", "number") || 0;
 	}
 
+	/**
+	 * Whether a tile that does nothing in a physics layer may be put there.
+	 * Called with a value it sets it.
+	 */
+	allowUnused(on) {
+		if (on !== undefined) {
+			this.ask("MapEditorSetAllowUnused", null, [on ? 1 : 0]);
+		}
+		return this.call("MapEditorAllowUnused", "number") === 1;
+	}
+
 	/** Opens one of them by name, and puts it in front. */
 	openSaved(name) {
 		return this.call("MapEditorOpenSaved", "number", ["string"], [name || ""]);
@@ -1492,6 +1503,11 @@ class CEditorPanels {
 		// Whether a keyboard has been seen. A desk has one until proven
 		// otherwise; a finger has to show one first.
 		this.sawKey = false;
+		// The native editor's two settings about tiles: the tileset shown in
+		// the layer's colour (on, as there), and whether a tile that does
+		// nothing in a physics layer may be put down (off, as there).
+		this.brushColouring = true;
+		this.unusedSaidAt = -Infinity;
 		// What a long press says, where a pointer would have hovered.
 		this.tip = null;
 		// Which shape the box is in, once something tells us. Without a box
@@ -3873,7 +3889,7 @@ class CEditorPanels {
 
 		// The program says when the map changed; nothing here asks it in a
 		// loop the way the viewer's buttons do, because an editor calls.
-		for (const type of ["document", "loaded", "closed", "saved", "copied", "picture", "error"]) {
+		for (const type of ["document", "loaded", "closed", "saved", "copied", "picture", "unused", "error"]) {
 			this.editor.addEventListener(type, event => this.onProgram(type, event.detail), { signal: signal });
 		}
 		// Whoever put the panels on the page may hand out the keyboard
@@ -3888,6 +3904,16 @@ class CEditorPanels {
 	onProgram(type, detail) {
 		if (type === "saved") {
 			this.say("Saved");
+		} else if (type === "unused") {
+			// Once every few seconds at most: a stroke across a hundred tiles
+			// is one thing to say, not a hundred.
+			const now = performance.now();
+			if (now - this.unusedSaidAt > TOAST_MS) {
+				this.unusedSaidAt = now;
+				const count = detail && detail.tiles ? detail.tiles : 0;
+				this.say(`${count === 1 ? "A tile does" : "Some tiles do"} nothing in this layer and went down as air - Settings, "Allow unused tiles"`);
+			}
+			return;
 		} else if (type === "picture") {
 			this.say("The picture is in your downloads");
 		} else if (type === "error") {
@@ -5091,6 +5117,34 @@ class CEditorPanels {
 		this.part("automap-auto").checked = layer.automapperAutomatic === true;
 	}
 
+	/**
+	 * The tileset in the colour of the layer it is drawn into.
+	 *
+	 * What "brush colouring" is in the native editor: a layer that tints its
+	 * tiles blue shows a blue tileset, so that what is picked looks like what
+	 * will appear. The colour is multiplied in and the picture's own alpha is
+	 * put back, because a tint that filled the transparent parts would be a
+	 * coloured square and not a tileset. Opaque either way - how see-through a
+	 * layer is says nothing about which tile is which.
+	 */
+	tintTileset(paint, picture, canvas) {
+		const layer = this.selectedLayer();
+		if (!this.brushColouring || layer === null || !Array.isArray(layer.color)) {
+			return;
+		}
+		const [r, g, b] = layer.color;
+		if (r === 255 && g === 255 && b === 255) {
+			return;
+		}
+		paint.save();
+		paint.globalCompositeOperation = "multiply";
+		paint.fillStyle = `rgb(${r}, ${g}, ${b})`;
+		paint.fillRect(0, 0, canvas.width, canvas.height);
+		paint.globalCompositeOperation = "destination-in";
+		paint.drawImage(picture, 0, 0, canvas.width, canvas.height);
+		paint.restore();
+	}
+
 	paintTileset(into) {
 		const canvas = into === undefined ? this.part("tileset") : into;
 		const paint = canvas.getContext("2d");
@@ -5107,9 +5161,11 @@ class CEditorPanels {
 			packed.getContext("2d").putImageData(this.tileset, 0, 0);
 			paint.imageSmoothingEnabled = false;
 			paint.drawImage(packed, 0, 0, canvas.width, canvas.height);
+			this.tintTileset(paint, packed, canvas);
 		} else if (this.tileset !== null) {
 			paint.imageSmoothingEnabled = false;
 			paint.drawImage(this.tileset, 0, 0, canvas.width, canvas.height);
+			this.tintTileset(paint, this.tileset, canvas);
 		} else {
 			paint.fillStyle = "#1a1a1e";
 			paint.fillRect(0, 0, canvas.width, canvas.height);
@@ -6046,23 +6102,72 @@ class CEditorPanels {
 			// picture - the file is `grass_main.png`, the picture is
 			// `grass_main`.
 			const name = chosen.name.replace(/\.[^.]*$/, "");
-			this.change(() => {
-				if (replacing >= 0) {
-					return { ok: this.editor.setImagePixels(replacing, pixels) === true };
+			const put = (into, called) => this.change(() => {
+				if (into >= 0) {
+					this.image = into;
+					return { ok: this.editor.setImagePixels(into, pixels) === true };
 				}
-				const index = this.editor.addImage(name, pixels);
+				const index = this.editor.addImage(called, pixels);
 				if (index >= 0) {
 					this.image = index;
 				}
 				return { ok: index >= 0, error: "The picture was refused" };
 			});
-		}, { signal: signal });
-		this.part("unpack-image").addEventListener("click", () => {
-			if (this.image < 0) {
+			if (replacing >= 0) {
+				put(replacing, name);
 				return;
 			}
-			this.change(() => this.editor.apply({ op: "image.setProp", image: this.image, prop: "external", value: true }));
-			this.refresh();
+			// A map finds its pictures by name, so two of one name are one
+			// too many: the second would never be the one a layer gets. Which
+			// of the two things somebody meant is theirs to say.
+			const images = this.map === null ? [] : this.map.images;
+			const same = images.findIndex(image => image.name === name);
+			if (same < 0) {
+				put(-1, name);
+				return;
+			}
+			let free = 2;
+			while (images.some(image => image.name === `${name} ${free}`)) {
+				++free;
+			}
+			this.askFor("The map has that picture", [
+				{ name: "what", kind: "note", label: `There is already a picture called ${name}${images[same].external ? ", beside the map" : ", in the map"}.` },
+				{
+					name: "how", label: "Use the file", kind: "pick", value: "replace", choices: [
+						{ value: "replace", label: `for ${name}` },
+						{ value: "beside", label: `as ${name} ${free}` },
+					],
+				},
+			], answer => put(answer.how === "replace" ? same : -1, answer.how === "replace" ? name : `${name} ${free}`),
+			{ go: "Use it" });
+		}, { signal: signal });
+		this.part("unpack-image").addEventListener("click", async () => {
+			if (this.image < 0 || this.map === null) {
+				return;
+			}
+			const which = this.image;
+			const image = this.map.images[which];
+			const unpack = () => {
+				this.change(() => this.editor.apply({ op: "image.setProp", image: which, prop: "external", value: true }));
+				this.refresh();
+			};
+			// A picture beside the map is looked for among the game's own, by
+			// name. One the game does not have is a layer everybody else sees
+			// as nothing - which is worth one question before it happens.
+			let known = true;
+			try {
+				const answer = await fetch(new URL(`mapres/${image.name}.png`, this.dataBase).href, { method: "HEAD" });
+				known = answer.ok;
+			} catch (error) {
+				// Nobody to ask is not a no: unpacking stays possible offline.
+			}
+			if (known) {
+				unpack();
+				return;
+			}
+			this.askYesNo("Take the picture out of the map",
+				`The game has no picture called ${image.name}. Out of the map, every layer that uses it shows nothing to anybody without the file.`,
+				"Take it out anyway", unpack);
 		}, { signal: signal });
 		this.part("delete-image").addEventListener("click", () => {
 			if (this.image < 0) {

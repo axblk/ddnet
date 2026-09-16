@@ -528,3 +528,35 @@ TEST(Edit, WhatCanBeConstructedFromAndWhatCannot)
 	// A map with no game layer has nothing to construct into.
 	EXPECT_FALSE(CanConstructGameTiles(OneLayer(), 0, 0));
 }
+
+TEST(Edit, TilesThatDoNothingInAPhysicsLayerGoDownAsAir)
+{
+	// A game layer reads solid and freeze; the first index it does not read
+	// is nothing to it.
+	int Unused = 1;
+	while(Unused < 256 && IsValidGameTile(Unused))
+		++Unused;
+	ASSERT_LT(Unused, 256);
+	CBrush Game(ETileLayerKind::GAME, 3, 1);
+	Game.m_Tiles.Set(0, 0, CTile{TILE_SOLID});
+	Game.m_Tiles.Set(1, 0, CTile{(unsigned char)Unused});
+	Game.m_Tiles.Set(2, 0, CTile{TILE_FREEZE});
+	EXPECT_EQ(DropUnusedTiles(Game), 1);
+	EXPECT_EQ(Game.m_Tiles.Get(0, 0).m_Index, TILE_SOLID);
+	EXPECT_EQ(Game.m_Tiles.Get(1, 0).m_Index, TILE_AIR);
+	EXPECT_EQ(Game.m_Tiles.Get(2, 0).m_Index, TILE_FREEZE);
+
+	// The same rule on the second plane of a tele layer.
+	CBrush Tele(ETileLayerKind::TELE, 2, 1);
+	auto &Teles = std::get<CTileStore<CTeleTile>>(Tele.m_ExtraTiles);
+	Teles.Set(0, 0, TeleTile(TILE_TELEIN, 3));
+	Teles.Set(1, 0, TeleTile(TILE_SOLID, 4));
+	EXPECT_EQ(DropUnusedTiles(Tele), 1);
+	EXPECT_EQ(std::get<CTileStore<CTeleTile>>(Tele.m_ExtraTiles).Get(0, 0).m_Type, TILE_TELEIN);
+	EXPECT_EQ(std::get<CTileStore<CTeleTile>>(Tele.m_ExtraTiles).Get(1, 0).m_Type, 0);
+	EXPECT_EQ(std::get<CTileStore<CTeleTile>>(Tele.m_ExtraTiles).Get(1, 0).m_Number, 0) << "and it keeps no number";
+
+	// A layer that is only drawn has no unused tiles.
+	CBrush Drawn = TileBrush(2, 2, Unused);
+	EXPECT_EQ(DropUnusedTiles(Drawn), 0);
+}

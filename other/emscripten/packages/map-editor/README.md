@@ -306,6 +306,15 @@ history. **Take out unused envelopes** asks the program which envelopes
 nothing is bound to - a layer, a quad or a sound source - and takes all of
 them out in one step; the bindings above them come down with them.
 
+Two settings are the native editor's, and work as they do there. **Allow
+unused tiles** (Ctrl+U) is off to begin with: a game, front, tele, speedup,
+switch or tune layer then only takes the tiles the game reads there, and a
+tile it does not read goes down as air - the editor says so, once every few
+seconds however long the stroke, and names the setting. **The tileset in the
+layer's colour** is on: a layer tinted blue shows a blue tileset, so that
+what is picked looks like what will appear, with the picture's own
+transparency kept.
+
 **What the keys do** (Ctrl+/) is every shortcut on one sheet, grouped the way
 the palette groups them, and every key a command answers to rather than only
 the first.
@@ -441,6 +450,14 @@ opposite and takes it off them - a layer names a picture by its place, so the
 ones after it come down one and a layer that was drawn with the one that is
 gone is drawn with none. Taking the pixels back out ("out") leaves the name,
 which is a picture that lies beside the map again.
+
+A picture that is chosen under a name the map already has asks what it is
+for: the pixels of the one there is, or a second one beside it under the next
+free number. A map finds its pictures by name, and a second picture of the
+same name is one no layer would ever get. Taking a picture out of the map
+asks first when the game has no picture of that name - out of the map, every
+layer that uses it would show nothing to anybody without the file; one the
+game has goes out without a question.
 
 ## Envelopes
 

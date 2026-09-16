@@ -695,6 +695,25 @@ export const COMMANDS = [
 		},
 	},
 	{
+		id: "settings.brushColouring", label: "The tileset in the layer's colour", group: "Settings", safe: true, menu: "Settings",
+		pressed: p => p.brushColouring,
+		run: p => {
+			p.brushColouring = !p.brushColouring;
+			p.refresh();
+		},
+	},
+	{
+		// Ctrl+U, as in the native editor.
+		id: "settings.allowUnused", label: "Allow unused tiles", group: "Settings", menu: "Settings",
+		keys: ["Ctrl+U"],
+		pressed: p => p.editor.allowUnused(),
+		run: p => {
+			const now = p.editor.allowUnused(!p.editor.allowUnused());
+			p.say(now ? "Unused tiles may be put down" : "Unused tiles go down as air");
+			p.refreshBar();
+		},
+	},
+	{
 		// Not configurable - the keys are the table's, and the table is one
 		// place. What this is, is the sheet one looks at to find out what the
 		// keys are, which is what one actually wants from a shortcut dialogue.

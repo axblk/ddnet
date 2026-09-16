@@ -17,6 +17,7 @@
 class CGameSessionContext;
 class CGameState;
 class CGameStateId;
+class CMapData;
 class CPresentationContext;
 
 enum class EPlayerSpeedChange
@@ -47,29 +48,47 @@ public:
 
 class CStateClientPresentation;
 
+// What draws a map: its textures and the layers built from them, which hold the
+// buffers and chunk caches on the graphics card. Sessions playing the same map share
+// one, like the panes of a split screen do; every view sets the envelope time right
+// before it draws.
+class CMapPresentation : public CComponentInterfaces
+{
+	std::shared_ptr<CMapData> m_pData;
+	bool m_Sixup;
+
+public:
+	CMapRenderImages m_Images;
+	CMapLayers m_LayersBackground{ERenderType::RENDERTYPE_BACKGROUND};
+	CMapLayers m_LayersForeground{ERenderType::RENDERTYPE_FOREGROUND};
+	CMapLayers m_LayersBackgroundForce{ERenderType::RENDERTYPE_BACKGROUND_FORCE};
+
+	CMapPresentation(std::shared_ptr<CMapData> pData, bool Sixup, CMapImages &SharedMapImages);
+	~CMapPresentation() override;
+	void OnInterfacesInit(CGameClient *pClient) override;
+	void Load();
+	bool Draws(const CMapData *pData, bool Sixup) const { return m_pData.get() == pData && m_Sixup == Sixup; }
+};
+
 class CSessionPresentation : public CComponentInterfaces
 {
 	CSessionId m_SessionId;
-	CMapRenderImages m_MapImages;
-	CMapLayers m_MapLayersBackground{ERenderType::RENDERTYPE_BACKGROUND};
-	CMapLayers m_MapLayersForeground{ERenderType::RENDERTYPE_FOREGROUND};
-	CMapLayers m_MapLayersBackgroundForce{ERenderType::RENDERTYPE_BACKGROUND_FORCE};
+	std::shared_ptr<CMapPresentation> m_pMap;
 	CMapSounds m_MapSounds;
 	std::vector<std::unique_ptr<CStateClientPresentation>> m_vpClientPresentations;
 	std::array<bool, MAX_CLIENTS> m_aChatIgnored = {};
 	std::array<bool, MAX_CLIENTS> m_aEmoticonIgnored = {};
-	bool m_Loaded = false;
 	bool GetClientSkinDescriptor(const CGameState &State, int ClientId, char *pSkinName, int SkinNameSize, CSkinDescriptor &SkinDescriptor) const;
 	void ApplyClientColors(const CGameState &State, int ClientId, int Team, CTeeRenderInfo &RenderInfo) const;
 
 public:
-	CSessionPresentation(CSessionId SessionId, CMapImages &SharedMapImages);
+	explicit CSessionPresentation(CSessionId SessionId);
 	~CSessionPresentation() override;
 
 	void OnInterfacesInit(CGameClient *pClient) override;
-	void Load(CGameSessionContext &Session);
+	void Load(CGameSessionContext &Session, std::shared_ptr<CMapPresentation> pMap);
 	void Unload();
-	bool UpdateMapImages() { return m_MapImages.Update(); }
+	bool UpdateMapImages() { return m_pMap->m_Images.Update(); }
 	void PrepareRender(const CRenderContext &Context, bool UsePredictedTime);
 	void UpdateMapSounds(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool UsePredictedTime, bool Offline);
 	void UpdateClients(const CPresentationContext &Context);
@@ -88,10 +107,12 @@ public:
 	void ToggleChatIgnored(int ClientId) { m_aChatIgnored[ClientId] = !m_aChatIgnored[ClientId]; }
 
 	CSessionId SessionId() const { return m_SessionId; }
-	bool IsLoaded() const { return m_Loaded; }
-	CMapLayers &MapLayersBackground() { return m_MapLayersBackground; }
-	CMapLayers &MapLayersForeground() { return m_MapLayersForeground; }
-	CMapLayers &MapLayersBackgroundForce() { return m_MapLayersBackgroundForce; }
+	bool IsLoaded() const { return m_pMap != nullptr; }
+	const std::shared_ptr<CMapPresentation> &MapPresentation() const { return m_pMap; }
+	// None before a map is loaded, when the world is drawn without one.
+	CMapLayers *MapLayersBackground() { return m_pMap ? &m_pMap->m_LayersBackground : nullptr; }
+	CMapLayers *MapLayersForeground() { return m_pMap ? &m_pMap->m_LayersForeground : nullptr; }
+	CMapLayers *MapLayersBackgroundForce() { return m_pMap ? &m_pMap->m_LayersBackgroundForce : nullptr; }
 	CMapSounds &MapSounds() { return m_MapSounds; }
 };
 
@@ -107,6 +128,8 @@ public:
 
 	void OnInterfacesInit(CGameClient *pClient);
 	CSessionPresentation *Create(CSessionId SessionId);
+	// The presentation of a map, shared with every session that already draws it.
+	std::shared_ptr<CMapPresentation> MapPresentation(const std::shared_ptr<CMapData> &pData, bool Sixup);
 	CSessionPresentation *Find(CSessionId SessionId);
 	const CSessionPresentation *Find(CSessionId SessionId) const;
 	void SetAudible(CSessionId SessionId);

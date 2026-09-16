@@ -111,7 +111,6 @@ static int CountEntities(CGameWorld &World, int Type)
 static void RunParity(const std::string &Name)
 {
 	CMapContext MapContext;
-	MapContext.Init();
 	std::array<CTile, ParityMap::WIDTH * ParityMap::HEIGHT> aTiles{};
 	ParityMap::Install(*MapContext.Collision(), aTiles);
 

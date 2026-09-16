@@ -251,6 +251,11 @@ public:
 	// actions
 	virtual void Connect(const char *pAddress, const char *pPassword = nullptr) = 0;
 	virtual void Disconnect() = 0;
+	// Stops the demo, whether it has focus or plays beside the server.
+	virtual void CloseDemo() = 0;
+	// Moves focus between the server and a demo that plays beside it, when both
+	// are there to be looked at.
+	virtual void SwitchSessionFocus() = 0;
 
 	// dummy
 	virtual void DummyDisconnect(const char *pReason) = 0;

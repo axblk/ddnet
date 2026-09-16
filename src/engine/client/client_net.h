@@ -274,6 +274,11 @@ public:
 	void ConnectSession(CSessionId SessionId, const char *pAddress, const char *pPassword);
 	void DisconnectWithReason(const char *pReason);
 	void Disconnect() override;
+	void CloseDemo() override;
+	void SwitchSessionFocus() override;
+	// Focuses a session and hands its latest snapshot to the game again, which
+	// only builds what depends on focus when a snapshot arrives.
+	void FocusSessionWithSnapshot(CSessionId SessionId);
 
 	void DummyDisconnect(const char *pReason) override;
 	void DummyConnect() override;

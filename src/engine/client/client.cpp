@@ -174,12 +174,7 @@ void CClient::StopDemoSession(CSessionId SessionId, const char *pReason)
 	Connection(SessionId, CONN_MAIN).ResetSnapshots();
 	Source.ResetMetadata();
 	if(Focused && m_State < IClient::STATE_QUITTING)
-	{
-		FocusSession(m_NetworkSessionId);
-		CConnection &NetworkConnection = Connection(m_NetworkSessionId, ActiveConnection());
-		if(SessionSource(m_NetworkSessionId).State() == ESessionState::READY && NetworkConnection.m_apSnapshots[SNAP_PREV] && NetworkConnection.m_apSnapshots[SNAP_CURRENT])
-			GameClient()->OnNewSnapshot(m_NetworkSessionId, ActiveStreamId(m_NetworkSessionId));
-	}
+		FocusSessionWithSnapshot(m_NetworkSessionId);
 }
 
 IGraphics::CTextureHandle CClient::GetDebugFont()
@@ -2377,6 +2372,11 @@ void CClient::Con_Play(IConsole::IResult *pResult, void *pUserData)
 	pSelf->HandleDemoPath(pResult->GetString(0));
 }
 
+void CClient::Con_ToggleSessionFocus(IConsole::IResult *pResult, void *pUserData)
+{
+	static_cast<CClient *>(pUserData)->SwitchSessionFocus();
+}
+
 void CClient::Con_DemoPlay(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
@@ -2956,6 +2956,7 @@ void CClient::RegisterCommands()
 	m_pConsole->Register("demo_slice_start", "", CFGFLAG_CLIENT, Con_DemoSliceBegin, this, "Mark the beginning of a demo cut");
 	m_pConsole->Register("demo_slice_end", "", CFGFLAG_CLIENT, Con_DemoSliceEnd, this, "Mark the end of a demo cut");
 	m_pConsole->Register("demo_play", "", CFGFLAG_CLIENT, Con_DemoPlay, this, "Play/pause the current demo");
+	m_pConsole->Register("toggle_session_focus", "", CFGFLAG_CLIENT, Con_ToggleSessionFocus, this, "Switch between the server and the demo that plays beside it");
 	m_pConsole->Register("demo_speed", "f[speed]", CFGFLAG_CLIENT, Con_DemoSpeed, this, "Set current demo speed");
 	m_pConsole->Register("demo_seek", "f[seconds]", CFGFLAG_CLIENT, Con_DemoSeek, this, "Seek the current demo to a time in seconds; with demo_speed 0 that is a fixed picture, which a comparison of renderers needs");
 

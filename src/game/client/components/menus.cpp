@@ -1367,7 +1367,12 @@ void CMenus::Render()
 			if(m_GamePage == PAGE_GAME)
 			{
 				RenderGame(MainView);
-				RenderIngameHint();
+				// The game page leaves the screen below its buttons free, which is
+				// where a demo playing in the corner gets its controls.
+				if(Client()->SessionState(Client()->DemoSessionId()) == ESessionState::READY)
+					RenderDemoPlayer(*Ui()->Screen());
+				else
+					RenderIngameHint();
 			}
 			else if(m_GamePage == PAGE_PLAYERS)
 			{

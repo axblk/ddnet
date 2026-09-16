@@ -1517,6 +1517,28 @@ void CClientWithConnection::Disconnect()
 	}
 }
 
+void CClientWithConnection::CloseDemo()
+{
+	if(m_pDemoSessionSource->State() != ESessionState::OFFLINE)
+		DisconnectDemoWithReason(nullptr);
+}
+
+void CClientWithConnection::SwitchSessionFocus()
+{
+	const CSessionId Target = FocusedSessionId() == DemoSessionId() ? m_NetworkSessionId : DemoSessionId();
+	if(SessionSource(FocusedSessionId()).State() == ESessionState::READY && SessionSource(Target).State() == ESessionState::READY)
+		FocusSessionWithSnapshot(Target);
+}
+
+void CClientWithConnection::FocusSessionWithSnapshot(CSessionId SessionId)
+{
+	FocusSession(SessionId);
+	const CStreamId StreamId = ActiveStreamId(SessionId);
+	const CConnection &Conn = Connection(SessionId, StreamId);
+	if(SessionSource(SessionId).State() == ESessionState::READY && Conn.m_apSnapshots[SNAP_PREV] && Conn.m_apSnapshots[SNAP_CURRENT])
+		GameClient()->OnNewSnapshot(SessionId, StreamId);
+}
+
 bool CClientWithConnection::DummyConnected() const
 {
 	return m_DummyConnected;

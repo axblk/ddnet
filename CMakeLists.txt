@@ -2732,6 +2732,9 @@ set_src(GAME_MAP GLOB_RECURSE src/game/map
   render_layer.h
   render_map.cpp
   render_map.h
+  standalone/map_editor.cpp
+  standalone/map_editor.h
+  standalone/map_editor_main.cpp
   standalone/map_view.cpp
   standalone/map_view.h
   standalone/map_view_support.h
@@ -2748,6 +2751,11 @@ set(GAME_MAP_STANDALONE ${GAME_MAP})
 list(FILTER GAME_MAP_STANDALONE INCLUDE REGEX "/standalone/")
 list(FILTER GAME_MAP_STANDALONE EXCLUDE REGEX "_main\\.cpp$")
 list(FILTER GAME_MAP EXCLUDE REGEX "/standalone/")
+# The editor is standalone too, but it is the only one of them that holds a
+# document - the viewer and the picture tools would carry it for nothing.
+set(GAME_MAP_EDITOR ${GAME_MAP_STANDALONE})
+list(FILTER GAME_MAP_EDITOR INCLUDE REGEX "/map_editor")
+list(FILTER GAME_MAP_STANDALONE EXCLUDE REGEX "/map_editor")
 # The map as something that is changed rather than drawn. It knows nothing
 # of a renderer, a client or a window, so that it can be tested natively and
 # linked by whoever needs it - the web editor first.
@@ -3904,6 +3912,92 @@ if(CLIENT)
     )
   endif()
 
+  # The map editor: the same map, the same renderer, but as something that is
+  # changed rather than looked at. There is nothing to press in it - what a
+  # viewer offers as a bar of symbols the editor gets from the page around the
+  # canvas, because an editor is panels and forms and those belong in a
+  # document rather than in a texture.
+  if(CLIENT AND SDL2_FOUND)
+    add_executable(map-editor EXCLUDE_FROM_ALL
+      ${DEPS_CLIENT}
+      ${GAME_MAP}
+      ${GAME_MAP_STANDALONE}
+      ${GAME_MAP_EDITOR}
+      # The window and the asset loader, and nothing else out of the client.
+      # No input: every key and every click comes from the page, so that the
+      # editor never listens at a document it does not own.
+      # tidy-alphabetical-start
+      src/engine/client/asset_loader.cpp
+      src/engine/client/asset_loader.h
+      src/engine/client/window_sdl.cpp
+      src/engine/client/window_sdl.h
+      src/game/map/standalone/map_editor_main.cpp
+      # tidy-alphabetical-end
+      # tidy-alphabetical-start
+      $<TARGET_OBJECTS:engine-client-graphics>
+      $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-shared>
+      $<TARGET_OBJECTS:game-map-document>
+      $<TARGET_OBJECTS:game-shared>
+      # tidy-alphabetical-end
+    )
+    add_dependencies(map-editor generate_content_types)
+    if(TARGET_OS STREQUAL "emscripten")
+      # The browser's own fetch, so that the images of the map are fetched
+      # beside each other. It brings no library with it.
+      target_sources(map-editor PRIVATE src/engine/shared/http_emscripten.cpp src/engine/shared/http_emscripten.h)
+    endif()
+    if(VULKAN)
+      add_dependencies(map-editor build_vulkan_shaders)
+    endif()
+    set_property(TARGET map-editor PROPERTY OUTPUT_NAME ddnet-map-editor)
+    set_web_export_name(map-editor DDNetMapEditor)
+    set_own_rpath(map-editor)
+    set_property(TARGET map-editor PROPERTY DDNET_NO_CLIENT_INTEGRATIONS TRUE)
+    if(VULKAN)
+      target_compile_definitions(map-editor PRIVATE CONF_BACKEND_VULKAN)
+    endif()
+    if(WEBGPU_BACKEND_PROTOTYPE)
+      target_compile_definitions(map-editor PRIVATE CONF_BACKEND_WEBGPU)
+    endif()
+    if(GLEW_BUNDLED)
+      target_compile_definitions(map-editor PRIVATE CONF_GLEW_HAS_CONTEXT_INIT)
+    endif()
+    # No `${LIBS}` and no FreeType, as in the viewer: nothing here talks to
+    # the network, and nothing here draws a letter - the letters are the
+    # page's.
+    target_link_libraries(map-editor
+      # tidy-alphabetical-start
+      ${CRYPTO_LIBRARIES}
+      ${GLEW_LIBRARIES}
+      ${PNG_LIBRARIES}
+      ${SDL2_LIBRARIES}
+      ${VULKAN_LIBRARIES}
+      ${ZLIB_LIBRARIES}
+      # tidy-alphabetical-end
+      ${PLATFORM_CLIENT_LIBS}
+      ${PLATFORM_LIBS}
+      ${CMAKE_DL_LIBS}
+      ${CMAKE_THREAD_LIBS_INIT}
+    )
+    if(WEBGPU_NATIVE_BACKEND)
+      target_link_libraries(map-editor WGPU::Native)
+    endif()
+    if(WEBGPU_BACKEND_PROTOTYPE AND TARGET_OS STREQUAL "emscripten")
+      target_compile_options(map-editor PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+      target_link_options(map-editor PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+    endif()
+    target_include_directories(map-editor SYSTEM PRIVATE
+      # tidy-alphabetical-start
+      ${GLEW_INCLUDE_DIRS}
+      ${PNG_INCLUDE_DIRS}
+      ${SDL2_INCLUDE_DIRS}
+      # tidy-alphabetical-end
+      ${PLATFORM_CLIENT_INCLUDE_DIRS}
+      ${VULKAN_INCLUDE_DIRS}
+    )
+  endif()
+
   if(TARGET_OS STREQUAL "emscripten")
     # Four programs, three pages, one data directory between them: the fourth
     # program is the render tool, which has no page of its own because it shows
@@ -3974,6 +4068,10 @@ if(CLIENT)
   if(TARGET map-viewer)
     list(APPEND TARGETS_OWN map-viewer)
     list(APPEND TARGETS_LINK map-viewer)
+  endif()
+  if(TARGET map-editor)
+    list(APPEND TARGETS_OWN map-editor)
+    list(APPEND TARGETS_LINK map-editor)
   endif()
 endif()
 

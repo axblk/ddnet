@@ -84,23 +84,30 @@ void CRenderTrace::RecordFrame(CFrame Frame)
 		++m_DroppedFrames;
 }
 
-void CRenderTrace::RecordEvent(const char *pName, uint64_t StartNanoseconds, uint64_t DurationNanoseconds, uint64_t Generation)
+void CRenderTrace::RecordEvent(const char *pName, IGraphics::CGpuRenderZone Zone, uint64_t StartNanoseconds, uint64_t DurationNanoseconds, uint64_t Generation)
 {
 	if(!m_Enabled || Generation != m_Generation || StartNanoseconds < m_StartNanoseconds)
 		return;
-	const CEvent Event{m_CurrentFrame, StartNanoseconds - m_StartNanoseconds, DurationNanoseconds, NameId(pName)};
+	const CEvent Event{m_CurrentFrame, StartNanoseconds - m_StartNanoseconds, DurationNanoseconds, NameId(pName, Zone)};
 	if(m_vEvents.size() < MAX_EVENTS)
 		m_vEvents.push_back(Event);
 	else
 		++m_DroppedEvents;
 }
 
-uint32_t CRenderTrace::NameId(const char *pName)
+uint32_t CRenderTrace::NameId(const char *pName, IGraphics::CGpuRenderZone Zone)
 {
 	const auto It = std::ranges::find(m_vNames, pName);
 	if(It != m_vNames.end())
-		return static_cast<uint32_t>(std::distance(m_vNames.begin(), It));
+	{
+		const size_t Index = static_cast<size_t>(std::distance(m_vNames.begin(), It));
+		// The first caller to name a zone keeps it.
+		if(!m_vNameZones[Index].IsValid())
+			m_vNameZones[Index] = Zone;
+		return static_cast<uint32_t>(Index);
+	}
 	m_vNames.emplace_back(pName);
+	m_vNameZones.push_back(Zone);
 	return static_cast<uint32_t>(m_vNames.size() - 1);
 }
 
@@ -118,7 +125,7 @@ bool CRenderTrace::Save(std::span<const std::string> GpuZoneNames) const
 	Writer.WriteAttribute("format");
 	Writer.WriteStrValue("ddnet-render-trace");
 	Writer.WriteAttribute("version");
-	Writer.WriteIntValue(1);
+	Writer.WriteIntValue(2);
 	WriteUint64(Writer, "dropped_frames", m_DroppedFrames);
 	WriteUint64(Writer, "dropped_events", m_DroppedEvents);
 
@@ -126,6 +133,11 @@ bool CRenderTrace::Save(std::span<const std::string> GpuZoneNames) const
 	Writer.BeginArray();
 	for(const std::string &Name : m_vNames)
 		Writer.WriteStrValue(Name.c_str());
+	Writer.EndArray();
+	Writer.WriteAttribute("name_zones");
+	Writer.BeginArray();
+	for(IGraphics::CGpuRenderZone Zone : m_vNameZones)
+		Writer.WriteIntValue(Zone.Index());
 	Writer.EndArray();
 	Writer.WriteAttribute("gpu_zone_names");
 	Writer.BeginArray();
@@ -206,6 +218,7 @@ void CRenderTrace::Clear()
 	m_pStorage = nullptr;
 	m_Filename.clear();
 	std::vector<std::string>().swap(m_vNames);
+	std::vector<IGraphics::CGpuRenderZone>().swap(m_vNameZones);
 	std::vector<CFrame>().swap(m_vFrames);
 	std::vector<CEvent>().swap(m_vEvents);
 	m_DroppedFrames = 0;
@@ -216,12 +229,13 @@ void CRenderTrace::Clear()
 	m_CurrentFrameStartNanoseconds = 0;
 }
 
-CRenderTraceScope::CRenderTraceScope(CRenderTrace *pTrace, const char *pName)
+CRenderTraceScope::CRenderTraceScope(CRenderTrace *pTrace, const char *pName, IGraphics::CGpuRenderZone Zone)
 {
 	if(pTrace == nullptr || !pTrace->Enabled())
 		return;
 	m_pTrace = pTrace;
 	m_pName = pName;
+	m_Zone = Zone;
 	m_StartNanoseconds = NowNanoseconds();
 	m_Generation = pTrace->Generation();
 }
@@ -231,5 +245,5 @@ CRenderTraceScope::~CRenderTraceScope()
 	if(m_pTrace == nullptr)
 		return;
 	const uint64_t EndNanoseconds = NowNanoseconds();
-	m_pTrace->RecordEvent(m_pName, m_StartNanoseconds, EndNanoseconds - m_StartNanoseconds, m_Generation);
+	m_pTrace->RecordEvent(m_pName, m_Zone, m_StartNanoseconds, EndNanoseconds - m_StartNanoseconds, m_Generation);
 }

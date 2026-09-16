@@ -41,7 +41,7 @@ public:
 
 	void BeginFrame();
 	void RecordFrame(CFrame Frame);
-	void RecordEvent(const char *pName, uint64_t StartNanoseconds, uint64_t DurationNanoseconds, uint64_t Generation);
+	void RecordEvent(const char *pName, IGraphics::CGpuRenderZone Zone, uint64_t StartNanoseconds, uint64_t DurationNanoseconds, uint64_t Generation);
 
 private:
 	class CEvent
@@ -56,13 +56,15 @@ private:
 	static constexpr size_t MAX_FRAMES = 131072;
 	static constexpr size_t MAX_EVENTS = 1048576;
 
-	uint32_t NameId(const char *pName);
+	uint32_t NameId(const char *pName, IGraphics::CGpuRenderZone Zone);
 	bool Save(std::span<const std::string> GpuZoneNames) const;
 	void Clear();
 
 	IStorage *m_pStorage = nullptr;
 	std::string m_Filename;
 	std::vector<std::string> m_vNames;
+	// The GPU zone each name draws into (many-to-one).
+	std::vector<IGraphics::CGpuRenderZone> m_vNameZones;
 	std::vector<CFrame> m_vFrames;
 	std::vector<CEvent> m_vEvents;
 	uint64_t m_DroppedFrames = 0;
@@ -79,11 +81,12 @@ class CRenderTraceScope
 {
 	CRenderTrace *m_pTrace = nullptr;
 	const char *m_pName = nullptr;
+	IGraphics::CGpuRenderZone m_Zone;
 	uint64_t m_StartNanoseconds = 0;
 	uint64_t m_Generation = 0;
 
 public:
-	CRenderTraceScope(CRenderTrace *pTrace, const char *pName);
+	CRenderTraceScope(CRenderTrace *pTrace, const char *pName, IGraphics::CGpuRenderZone Zone = {});
 	~CRenderTraceScope();
 
 	CRenderTraceScope(const CRenderTraceScope &) = delete;

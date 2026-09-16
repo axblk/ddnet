@@ -3808,7 +3808,7 @@ void CEditor::Render()
 	//	a little hack for now
 	if(m_Mode == MODE_LAYERS)
 	{
-		CRenderTraceScope TraceScope(pTrace, "editor/map");
+		CRenderTraceScope TraceScope(pTrace, "editor/map", m_GpuZoneMap);
 		Graphics()->GpuRenderZoneBegin(m_GpuZoneWorld);
 		Graphics()->GpuRenderZoneBegin(m_GpuZoneMap);
 		MapView()->Render(View);
@@ -3869,7 +3869,7 @@ void CEditor::Render()
 
 	// do the toolbar
 	{
-		CRenderTraceScope TraceScope(pTrace, "editor/toolbar");
+		CRenderTraceScope TraceScope(pTrace, "editor/toolbar", m_GpuZoneToolbar);
 		Graphics()->GpuRenderZoneBegin(m_GpuZoneToolbar);
 		m_pActiveLabelUiElements = &m_vpToolbarUiElements;
 		m_ActiveLabelUiElementIndex = 0;
@@ -3942,7 +3942,7 @@ void CEditor::Render()
 
 	if(m_GuiActive)
 	{
-		CRenderTraceScope TraceScope(pTrace, "editor/toolbox");
+		CRenderTraceScope TraceScope(pTrace, "editor/toolbox", m_GpuZoneToolbox);
 		Graphics()->GpuRenderZoneBegin(m_GpuZoneToolbox);
 		CUIRect DragBar;
 		ToolBox.VSplitRight(1.0f, &ToolBox, &DragBar);
@@ -3967,7 +3967,7 @@ void CEditor::Render()
 	CUIRect TooltipRect;
 	if(m_GuiActive)
 	{
-		CRenderTraceScope TraceScope(pTrace, "editor/chrome");
+		CRenderTraceScope TraceScope(pTrace, "editor/chrome", m_GpuZoneChrome);
 		Graphics()->GpuRenderZoneBegin(m_GpuZoneChrome);
 		m_pActiveLabelUiElements = &m_vpEditorChromeUiElements;
 		m_ActiveLabelUiElementIndex = 0;
@@ -4083,7 +4083,7 @@ void CEditor::Render()
 	}
 
 	{
-		CRenderTraceScope TraceScope(pTrace, "editor/dialogs");
+		CRenderTraceScope TraceScope(pTrace, "editor/dialogs", m_GpuZoneDialogs);
 		Graphics()->GpuRenderZoneBegin(m_GpuZoneDialogs);
 		m_FileBrowser.Render();
 		m_Prompt.Render();

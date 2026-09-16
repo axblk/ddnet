@@ -225,6 +225,12 @@ export declare class MapEditor {
 	/** The maps in the browser's own storage, by name, with their size in bytes. */
 	saved(): { name: string; size: number }[];
 	/**
+	 * Which entities sheet physics layers are drawn out of: `ddnet`, `ddrace`,
+	 * `race`, `fng`, `vanilla`, `f-ddrace` or `blockworlds`. Called with a
+	 * name it sets it for every map; any other name changes nothing.
+	 */
+	entitiesImage(name?: string): string;
+	/**
 	 * Whether a tile that does nothing in a physics layer may be put there -
 	 * off by default, as in the native editor. Called with a value it sets it.
 	 */

@@ -80,6 +80,18 @@ public:
 	/** Whether something is still on its way. */
 	bool Loading() const { return !m_vLoading.empty(); }
 
+	/**
+	 * Which picture of what a map does the physics layers are drawn out of:
+	 * the name of one of `data/editor/entities_clear/`, without `.png`, such
+	 * as `ddnet`, `race` or `fng`. Nothing is fetched until it is set, and
+	 * what is fetched comes through the asset loader like any other picture,
+	 * so setting it never holds up a frame.
+	 *
+	 * Only where no shared pictures were handed in; a program that brings its
+	 * own entities sheet keeps it.
+	 */
+	void SetEntities(const char *pName);
+
 	IGraphics::CTextureHandle Get(int Index) const override;
 	int Num() const override { return (int)m_vImages.size(); }
 
@@ -137,6 +149,10 @@ private:
 	const char *m_pLogContext;
 
 	std::vector<CImage> m_vImages;
+	/** The entities sheet this document is drawn with, and where it came from. */
+	CImage m_Entities;
+	/** The place in `m_vLoading` the entities sheet takes, which no image has. */
+	static constexpr size_t ENTITIES_INDEX = (size_t)-1;
 	/**
 	 * What has been asked for and has not arrived yet. A picture that arrives
 	 * for an image the map has changed since is dropped rather than uploaded,

@@ -87,6 +87,18 @@ export interface Proof {
 	positions: { index: number; position: [number, number] }[];
 }
 
+/** One thing a map may say to a server. */
+export interface MapSetting {
+	name: string;
+	help: string;
+	/** A variable takes one number and has a range; a command takes what its args say. */
+	variable: boolean;
+	default?: number;
+	range?: [number, number];
+	/** `i` a whole number, `f` a number, `s` a word, `r` the rest of the line. */
+	args: { name: string; type: string; optional: boolean }[];
+}
+
 export interface SoundSource {
 	/** Where it is, in world units. */
 	position: [number, number];
@@ -215,6 +227,14 @@ export declare class MapEditor {
 	proof(menu?: boolean, id?: MapId): Proof | null;
 	/** What a tile of a physics layer does, or "" where there is nothing to say. */
 	explain(group: number, layer: number, index: number, id?: MapId): string;
+	/** Everything a map may say to a server, asked once and kept. */
+	settingsHelp(): MapSetting[];
+	/** What is wrong with each settings line, and where each repeats an earlier one. */
+	settingProblems(id?: MapId): { problem: string; repeats: number }[];
+	/** The names of settings that begin with what has been typed. */
+	settingNames(prefix: string): string[];
+	/** What is wrong with one settings line, or "" where nothing is. */
+	checkSetting(line: string): string;
 
 	/** Where a place in one group's coordinates is on the canvas, in pixels. */
 	groupPixelAt(group: number, x: number, y: number, id?: number): { x: number; y: number } | null;

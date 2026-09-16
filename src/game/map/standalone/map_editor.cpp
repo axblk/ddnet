@@ -16,6 +16,7 @@
 #include <game/map/document/explain.h>
 #include <game/map/document/map_file.h>
 #include <game/map/document/report.h>
+#include <game/map/document/settings.h>
 #include <game/map/document/structure.h>
 #include <game/mapitems.h>
 
@@ -245,6 +246,32 @@ std::string CMapEditor::ProofJson(int Id, bool Menu) const
 	if(pMap == nullptr)
 		return "null";
 	return map_document::ProofJson(pMap->m_Document.Map(), pMap->m_View.Center(), Menu);
+}
+
+std::string CMapEditor::SettingsHelpJson() const
+{
+	return map_document::SettingsHelpJson();
+}
+
+std::string CMapEditor::SettingProblemsJson(int Id) const
+{
+	const CMap *pMap = Find(Id);
+	return pMap == nullptr ? "[]" : map_document::SettingProblemsJson(pMap->m_Document.Map());
+}
+
+std::string CMapEditor::SettingNamesJson(const char *pPrefix) const
+{
+	CJsonStringWriter Writer;
+	Writer.BeginArray();
+	for(const std::string &Name : map_document::CompleteSetting(pPrefix))
+		Writer.WriteStrValue(Name.c_str());
+	Writer.EndArray();
+	return Writer.GetOutputString();
+}
+
+std::string CMapEditor::CheckSetting(const char *pLine) const
+{
+	return map_document::CheckSetting(pLine);
 }
 
 std::string CMapEditor::EnvelopeJson(int Id, int Index) const

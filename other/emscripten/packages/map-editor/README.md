@@ -309,6 +309,31 @@ and then the map would not be the map that was written, so it is refused.
 There is no checking of what the line *says*: that would need the console's
 own list of commands, which is the server's business and not the document's.
 
+The lines a server runs when it loads the map are checked while they are being
+typed. Nothing checks them today until a server refuses to start, which is the
+wrong moment to find out that a variable is spelled wrong.
+
+What a server would accept is not written out again here: it is every config
+variable carrying `CFGFLAG_GAME`, taken from `config_variables.h` itself so
+that the two cannot fall out of step, plus the six commands a map may use,
+which are not variables and so are not in that file. Twenty-nine things in
+all, each with the sentence the config already carries - which is what the
+line under the list says once a name is settled.
+
+Three things are said about a line: a name a server has never heard of, an
+argument that is the wrong shape or outside its range, and a line that says
+the same thing as an earlier one. The third is the interesting one, because
+"the same thing" is not "the same text": `sv_deepfly 0` twice is a mistake,
+and `tune_zone 1 ...` beside `tune_zone 2 ...` is not, so each command says
+how many of its arguments tell two of them apart.
+
+None of it refuses anything. A line on its way to being right is wrong for
+most of the time it is being written, and an editor that would not let that
+happen is an editor nobody can type in - so it is marked and explained, and
+that is all. The names that begin with what stands there go into a `datalist`,
+which is the one piece of completion a page gets for free and the one that
+already behaves the way everybody expects.
+
 ## The brush
 
 The left button paints, held shift it takes a piece of the layer into the

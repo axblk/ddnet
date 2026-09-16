@@ -536,3 +536,28 @@ circle.editor-source-dot.editor-source-picked {
 	stroke-width: 1.5;
 	vector-effect: non-scaling-stroke;
 }
+
+/* Settings that a server would not accept, and settings said twice. Both are
+   marked on the line rather than in a message somewhere else: the line is
+   where the mistake is. */
+.editor-setting-wrong input {
+	border-color: #e2544a;
+	background: rgba(226, 84, 74, 0.12);
+}
+
+.editor-setting-repeat input {
+	border-color: #e8b84a;
+	background: rgba(232, 184, 74, 0.1);
+}
+
+.editor-setting-said {
+	margin: 4px 0 0;
+	min-height: 1.4em;
+	opacity: 0.7;
+	font-size: 11px;
+}
+
+.editor-setting-said-wrong {
+	color: #e2544a;
+	opacity: 1;
+}

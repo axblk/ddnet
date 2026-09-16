@@ -7,8 +7,11 @@
 #include <game/map/document/document.h>
 #include <game/map/document/edit.h>
 #include <game/map/document/proof.h>
+#include <game/map/document/settings.h>
 
+#include <string>
 #include <variant>
+#include <vector>
 
 namespace map_document
 {
@@ -463,6 +466,68 @@ namespace map_document
 		Writer.EndArray();
 
 		Writer.EndObject();
+		return Writer.GetOutputString();
+	}
+
+	std::string SettingsHelpJson()
+	{
+		CJsonStringWriter Writer;
+		Writer.BeginArray();
+		for(const CMapSetting &Setting : KnownSettings())
+		{
+			Writer.BeginObject();
+			Writer.WriteAttribute("name");
+			Writer.WriteStrValue(Setting.m_Name.c_str());
+			Writer.WriteAttribute("help");
+			Writer.WriteStrValue(Setting.m_Help.c_str());
+			Writer.WriteAttribute("variable");
+			Writer.WriteBoolValue(Setting.m_IsVariable);
+			if(Setting.m_IsVariable)
+			{
+				Writer.WriteAttribute("default");
+				Writer.WriteIntValue(Setting.m_Default);
+				WriteIntPair(Writer, "range", Setting.m_Min, Setting.m_Max);
+			}
+			Writer.WriteAttribute("args");
+			Writer.BeginArray();
+			for(const CSettingArg &Arg : Setting.m_Args)
+			{
+				Writer.BeginObject();
+				Writer.WriteAttribute("name");
+				Writer.WriteStrValue(Arg.m_Name.c_str());
+				Writer.WriteAttribute("type");
+				const char aType[2] = {Arg.m_Type, '\0'};
+				Writer.WriteStrValue(aType);
+				Writer.WriteAttribute("optional");
+				Writer.WriteBoolValue(Arg.m_Optional);
+				Writer.EndObject();
+			}
+			Writer.EndArray();
+			Writer.EndObject();
+		}
+		Writer.EndArray();
+		return Writer.GetOutputString();
+	}
+
+	std::string SettingProblemsJson(const CMapState &Map)
+	{
+		// A line repeats an earlier one, never a later one, so each is held
+		// against what stands above it and nothing else.
+		std::vector<std::string> vAbove;
+		CJsonStringWriter Writer;
+		Writer.BeginArray();
+		for(size_t Line = 0; Line < Map.m_Info.m_Settings.Size(); ++Line)
+		{
+			const std::string &Text = Map.m_Info.m_Settings[Line];
+			Writer.BeginObject();
+			Writer.WriteAttribute("problem");
+			Writer.WriteStrValue(CheckSetting(Text.c_str()).c_str());
+			Writer.WriteAttribute("repeats");
+			Writer.WriteIntValue(CollidingSetting(vAbove, Text.c_str()));
+			Writer.EndObject();
+			vAbove.push_back(Text);
+		}
+		Writer.EndArray();
 		return Writer.GetOutputString();
 	}
 

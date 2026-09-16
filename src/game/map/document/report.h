@@ -118,6 +118,28 @@ namespace map_document
 	std::string ProofJson(const CMapState &Map, vec2 Center, bool Menu);
 
 	/**
+	 * Everything a map may say to a server, with what it means and what it
+	 * takes - see `map_document::KnownSettings`.
+	 *
+	 * The whole table at once, because it does not change while the editor
+	 * runs and a list of a few dozen is cheaper to hand over once than to ask
+	 * for at every keystroke.
+	 *
+	 * @return The JSON text, which is an array.
+	 */
+	std::string SettingsHelpJson();
+
+	/**
+	 * What is wrong with each line of a map's settings, and where each one
+	 * repeats an earlier one.
+	 *
+	 * @param Map The version to read.
+	 *
+	 * @return The JSON text, which is an array with one entry per line.
+	 */
+	std::string SettingProblemsJson(const CMapState &Map);
+
+	/**
 	 * The history as the history panel shows it: what was done, when, where
 	 * in it the map stands, and what it all costs.
 	 *

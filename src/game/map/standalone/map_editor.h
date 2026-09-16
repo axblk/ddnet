@@ -303,6 +303,23 @@ public:
 	 */
 	std::string ProofJson(int Id, bool Menu) const;
 
+	/** Everything a map may say to a server - see `map_document::SettingsHelpJson`. */
+	std::string SettingsHelpJson() const;
+
+	/** What is wrong with each settings line - see `map_document::SettingProblemsJson`. */
+	std::string SettingProblemsJson(int Id) const;
+
+	/**
+	 * The names of settings that begin with what has been typed.
+	 *
+	 * Handed over as a JSON array rather than one at a time, because it is a
+	 * list somebody is looking at all at once.
+	 */
+	std::string SettingNamesJson(const char *pPrefix) const;
+
+	/** What is wrong with one settings line - see `map_document::CheckSetting`. */
+	std::string CheckSetting(const char *pLine) const;
+
 	/**
 	 * Where a pixel of the surface is, in the coordinates one group is drawn
 	 * in - which is the plain view for a group without parallax and somewhere

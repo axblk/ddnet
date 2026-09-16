@@ -332,6 +332,14 @@ bool CStandaloneMapView::EnsureAsideTarget(int Width, int Height)
 	return true;
 }
 
+void CStandaloneMapView::DrawAside(const SRenderParams &Params)
+{
+	if(m_FullImage.m_Running && m_FullImage.m_Draw)
+		m_FullImage.m_Draw(Params);
+	else
+		Render(Params);
+}
+
 bool CStandaloneMapView::RenderAsideAndRead(const SRenderParams &Params, CImageInfo &Image, int Width, int Height)
 {
 	if(Width <= 0 || Height <= 0)
@@ -343,7 +351,7 @@ bool CStandaloneMapView::RenderAsideAndRead(const SRenderParams &Params, CImageI
 	{
 		// There is no window to keep this out of, and the frontend already
 		// draws into a target of its own here.
-		Render(Params);
+		DrawAside(Params);
 		return ReadFrame(Image);
 	}
 	if(!EnsureAsideTarget(Width, Height))
@@ -357,7 +365,7 @@ bool CStandaloneMapView::RenderAsideAndRead(const SRenderParams &Params, CImageI
 	// because that is what it is going into.
 	const int WindowWidth = std::exchange(m_Width, Width);
 	const int WindowHeight = std::exchange(m_Height, Height);
-	Render(Params);
+	DrawAside(Params);
 	m_Width = WindowWidth;
 	m_Height = WindowHeight;
 	std::unique_ptr<IGraphics::ITextureReadback> pReadback = m_pGraphics->EndOffscreenFrame(std::exchange(Image, CImageInfo()));
@@ -391,9 +399,20 @@ bool CStandaloneMapView::BeginFullImage(const char *pPath, int TimeOffsetMillis,
 		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "No map is loaded");
 		return false;
 	}
+	return BeginFullImageOf(pPath, TimeOffsetMillis, PixelBudget, MapWorldSize(), nullptr);
+}
 
-	const vec2 WorldSize = MapWorldSize();
+bool CStandaloneMapView::BeginFullImageOf(const char *pPath, int TimeOffsetMillis, size_t PixelBudget, vec2 WorldSize, FDrawPiece Draw)
+{
+	CancelFullImage();
+	m_FullImage.m_Failed = true;
+	if(WorldSize.x < 1.0f || WorldSize.y < 1.0f)
+	{
+		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "The map has no size to draw");
+		return false;
+	}
 	SFullImage &Full = m_FullImage;
+	Full.m_Draw = std::move(Draw);
 	// A map is drawn at 32 pixels per tile, which for a large one is more
 	// pixels than a picture can have: whoever gave a budget gets the whole map
 	// within it, in the shape the map has, and nobody gets it larger than it
@@ -539,6 +558,9 @@ bool CStandaloneMapView::EndFullImage(bool Success)
 	Full.m_vBand.clear();
 	Full.m_vBand.shrink_to_fit();
 	Full.m_Running = false;
+	// The drawer holds on to whatever it was given - a map, a renderer - and
+	// that is not the view's to keep once the picture is done.
+	Full.m_Draw = nullptr;
 	Full.m_Failed = !Success || !Full.m_Writer.End();
 	return false;
 }

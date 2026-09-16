@@ -318,6 +318,12 @@ export const COMMANDS = [
 		run: p => p.askSaveCopy(),
 	},
 	{
+		id: "file.picture", label: "Export as a picture", group: "File", safe: true, menu: "File",
+		keys: ["Ctrl+Shift+E"],
+		enabled: p => p.map !== null && p.editor.pictureState() !== 1,
+		run: p => p.exportPicture(),
+	},
+	{
 		id: "file.saveAs", label: "Save as…", group: "File", menu: "File",
 		keys: ["Ctrl+Shift+S"],
 		enabled: p => p.map !== null,

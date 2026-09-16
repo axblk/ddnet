@@ -42,6 +42,15 @@ namespace
 
 	CMapEditor *g_pEditor = nullptr;
 	bool g_Quit = false;
+	constexpr const char *PICTURE_DIRECTORY = "screenshots";
+	// A picture that was asked for and has not been begun yet, and how the
+	// last one went: 0 never asked, 1 under way, 2 handed over, 3 failed.
+	int g_PictureMap = -1;
+	int g_PictureState = 0;
+	std::string g_PictureFile;
+	// How long a frame may spend on the picture before the page gets the
+	// thread back - the same as the viewer.
+	constexpr std::chrono::nanoseconds PICTURE_BUDGET = std::chrono::milliseconds(40);
 	// What a question was answered with, kept alive until the next one is
 	// asked: a page reads it out of the heap after the call has returned.
 	std::string g_Answer;
@@ -308,6 +317,33 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorSettingProblems(int Id)
 EMSCRIPTEN_KEEPALIVE const char *MapEditorSettingNames(const char *pPrefix)
 {
 	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->SettingNamesJson(pPrefix));
+}
+
+/**
+ * Asks for a picture of the map in front, the whole of it.
+ *
+ * Begun between two frames and drawn over the ones after, like everything
+ * that takes longer than a frame; `MapEditorPictureState` says how it went.
+ */
+EMSCRIPTEN_KEEPALIVE int MapEditorPicture(int Id)
+{
+	if(g_pEditor == nullptr || g_pEditor->Document(Id) == nullptr || g_pEditor->PictureRunning())
+		return 0;
+	g_PictureMap = Id;
+	g_PictureState = 1;
+	return 1;
+}
+
+/** 0 never asked, 1 being drawn, 2 handed over, 3 failed. */
+EMSCRIPTEN_KEEPALIVE int MapEditorPictureState()
+{
+	return g_PictureState;
+}
+
+/** How far the picture has got, from 0 to 1. */
+EMSCRIPTEN_KEEPALIVE float MapEditorPictureProgress()
+{
+	return g_pEditor == nullptr ? 0.0f : g_pEditor->PictureProgress();
 }
 
 /** The maps that are in the browser's own storage, with their sizes. */
@@ -1090,6 +1126,34 @@ int main(int argc, const char **argv)
 			Image.Free();
 			break;
 		}
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		if(g_PictureMap >= 0)
+		{
+			// Begun here rather than in the call: the call comes from the page
+			// in the middle of whatever, and this is between two frames.
+			const int Map = std::exchange(g_PictureMap, -1);
+			char aName[IO_MAX_PATH_LENGTH];
+			str_format(aName, sizeof(aName), "%s/%s.png", PICTURE_DIRECTORY, Editor.Name(Map));
+			Editor.Storage()->CreateFolder(PICTURE_DIRECTORY, IStorage::TYPE_SAVE);
+			char aPath[IO_MAX_PATH_LENGTH];
+			Editor.Storage()->GetCompletePath(IStorage::TYPE_SAVE, aName, aPath, sizeof(aPath));
+			g_PictureFile = aName;
+			if(!Editor.BeginPicture(Map, aPath, CStandaloneMapView::VIEWER_FULL_IMAGE_PIXELS))
+			{
+				g_PictureState = 3;
+				Say("error", "{\"what\":\"picture\"}");
+			}
+		}
+		else if(Editor.PictureRunning() && !Editor.StepPicture(PICTURE_BUDGET))
+		{
+			const bool Made = !Editor.PictureFailed();
+			if(Made)
+				Editor.Storage()->SendFileToUser(g_PictureFile.c_str(), IStorage::TYPE_SAVE);
+			g_PictureState = Made ? 2 : 3;
+			Say(Made ? "picture" : "error", Made ? "{}" : "{\"what\":\"picture\"}");
+		}
+#endif
 
 		// Nothing is drawn while nothing has changed. An editor that draws
 		// sixty frames a second at a map nobody is touching empties a

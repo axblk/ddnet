@@ -747,6 +747,41 @@ CDocumentRenderer::CParams CMapEditor::ParamsFor(const CMap &Map) const
 	return Params;
 }
 
+bool CMapEditor::BeginPicture(int Id, const char *pPath, size_t PixelBudget)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr)
+		return false;
+	// The version as it is now, held by the picture for as long as it is
+	// being drawn: somebody who goes on painting while a large map is written
+	// out gets the map as it was when they asked, in every piece of it.
+	auto pShown = std::make_shared<const map_document::CMapState>(pMap->m_Document.Map());
+	const CDocumentRenderer::CParams Looked = ParamsFor(*pMap);
+	const int MapId = Id;
+	return m_View.BeginFullImageOf(pPath, pMap->m_Display.m_TimeOffsetMillis, PixelBudget, WorldSize(Id),
+		[this, MapId, pShown, Looked](const CStandaloneMapView::SRenderParams &Piece) {
+			CMap *pDrawn = Find(MapId);
+			IGraphics *pGraphics = m_View.Graphics();
+			pGraphics->MapScreen(CScreenRect(0.0f, 0.0f, m_View.Width(), m_View.Height()));
+			pGraphics->Clear(0.0f, 0.0f, 0.0f);
+			if(pDrawn == nullptr)
+				return;
+			CDocumentRenderer::CParams Params;
+			Params.m_Center = Piece.m_Center;
+			Params.m_Zoom = Piece.m_Zoom;
+			Params.m_ViewSize = Piece.m_ViewSize;
+			Params.m_Window = Piece.m_Window;
+			Params.m_TimeOffsetMillis = Piece.m_TimeOffsetMillis;
+			Params.m_HighDetail = Looked.m_HighDetail;
+			Params.m_EntityOverlayVal = Looked.m_EntityOverlayVal;
+			Params.m_pHidden = &pDrawn->m_Display.m_vHidden;
+			pDrawn->m_pRenderer->Use(pShown);
+			pDrawn->m_pRenderer->Render(Params);
+			// The next frame on the screen draws the document as it is by then.
+			m_NeedsRedraw = true;
+		});
+}
+
 vec2 CMapEditor::PixelInGroup(int Id, size_t Group, vec2 World) const
 {
 	const CMap *pMap = Find(Id);

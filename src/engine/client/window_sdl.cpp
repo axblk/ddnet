@@ -1138,7 +1138,7 @@ int CGraphicsWindow_SDL::OpenWindow(SGraphicsBackendInit &BackendInit)
 	}
 	else if(m_BackendType == BACKEND_TYPE_WEBGPU)
 	{
-		g_Config.m_GfxFsaaSamples = g_Config.m_GfxFsaaSamples >= 2 ? 4 : 0;
+		g_Config.m_GfxFsaaSamples = static_cast<int>(WebGpuMultiSamplingCount(std::max(g_Config.m_GfxFsaaSamples, 0)));
 	}
 
 	// set screen

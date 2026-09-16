@@ -41,6 +41,7 @@ addIcons({
 	fill: '<path d="M11 2.5 3.5 10a1.6 1.6 0 0 0 0 2.3l6.2 6.2a1.6 1.6 0 0 0 2.3 0l7.5-7.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M20.5 15c1.4 2 2 3.2 2 4a2 2 0 1 1-4 0c0-.8.6-2 2-4Z"/>',
 	erase: '<path d="M8.5 20.5 3 15a1.6 1.6 0 0 1 0-2.3l9.2-9.2a1.6 1.6 0 0 1 2.3 0l6.5 6.5a1.6 1.6 0 0 1 0 2.3l-8.2 8.2ZM8 8l8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
 	folder: '<path d="M2.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
+	add: '<path d="M12 4.5v15M4.5 12h15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
 });
 
 /** The program, and what its script calls the factory it defines. */
@@ -987,6 +988,7 @@ const PANELS_HTML = `
 		<div data-role="tiles-body">
 			<canvas class="editor-tileset" data-role="tileset" width="256" height="256"></canvas>
 			<div class="editor-numbers" data-role="numbers"></div>
+			<div class="editor-slots" data-role="slots" role="group" aria-label="Where a brush is put away"></div>
 			<div class="editor-type" data-role="type">
 				<input type="text" data-role="type-text" placeholder="Type with the tiles&hellip;" title="Letters and digits become the tiles of a font tileset; the layer has to be drawn with one">
 				<button class="editor-small" data-role="type-place" title="Write it where the view is looking">write</button>
@@ -1345,6 +1347,15 @@ class CEditorPanels {
 		// The shapes drawn over the canvas, made once the canvas has a parent
 		// to hang them in.
 		this.overlay = null;
+		// The big tile chooser over the map, and whether it stays open when
+		// the key that opened it is let go of.
+		this.picker = null;
+		this.pickerPinned = false;
+		// The list of layers under a spot on the map.
+		this.chooser = null;
+		// Which of the ten places a brush has been put away in are full. The
+		// program does not say, so what was put away here is remembered here.
+		this.slotsUsed = new Set();
 		// Whether what a player would see is drawn, and at which zoom:
 		// "off", "game" or "menu".
 		this.proof = "off";
@@ -1413,7 +1424,182 @@ class CEditorPanels {
 		this.overlay.setAttribute("class", "editor-overlay");
 		this.overlay.dataset.role = "overlay";
 		this.overlay.hidden = true;
-		parent.append(this.overlay);
+		// The big tile chooser, over the map rather than beside it: a tileset
+		// in a 320-pixel column is seventeen pixels a tile, and seventeen
+		// pixels is not a tile anybody can tell from its neighbour.
+		this.picker = document.createElement("div");
+		this.picker.className = "editor-picker";
+		this.picker.dataset.role = "picker";
+		this.picker.hidden = true;
+		this.picker.innerHTML = '<canvas class="editor-picker-tiles" data-role="picker-tiles"></canvas>'
+			+ '<p class="editor-picker-name" data-role="picker-name"></p>';
+		// Which layer a spot on the map belongs to, when more than one does.
+		this.chooser = document.createElement("ul");
+		this.chooser.className = "editor-choose";
+		this.chooser.dataset.role = "layer-choose";
+		this.chooser.hidden = true;
+		parent.append(this.overlay, this.picker, this.chooser);
+		this.wirePick(this.picker.querySelector('[data-role="picker-tiles"]'));
+		this.wireChooser();
+	}
+
+	/**
+	 * Picking a rectangle out of a tileset, on whichever canvas shows one.
+	 * The small one beside the map and the big one over it are the same
+	 * gesture and the same answer.
+	 */
+	wirePick(canvas) {
+		let from = null;
+		// A refused capture must not take the pick with it.
+		const capture = (pointerId, hold) => {
+			try {
+				if (hold) {
+					canvas.setPointerCapture(pointerId);
+				} else {
+					canvas.releasePointerCapture(pointerId);
+				}
+			} catch (error) {
+				// The pick still works; it just stops at the edge.
+			}
+		};
+		const at = event => {
+			const box = canvas.getBoundingClientRect();
+			return {
+				x: Math.min(TILESET_SIDE - 1, Math.max(0, Math.floor((event.clientX - box.left) / box.width * TILESET_SIDE))),
+				y: Math.min(TILESET_SIDE - 1, Math.max(0, Math.floor((event.clientY - box.top) / box.height * TILESET_SIDE))),
+			};
+		};
+		canvas.addEventListener("pointerdown", event => {
+			from = at(event);
+			capture(event.pointerId, true);
+			this.pick(from, from);
+		}, { signal: this.stopping.signal });
+		canvas.addEventListener("pointermove", event => {
+			if (from !== null) {
+				this.pick(from, at(event));
+			}
+		}, { signal: this.stopping.signal });
+		const release = event => {
+			if (from !== null) {
+				this.pick(from, at(event));
+				from = null;
+				capture(event.pointerId, false);
+				// A pick taken from the big one is what it was opened for.
+				if (this.picker !== null && canvas === this.picker.firstElementChild && !this.pickerPinned) {
+					this.showPicker(false);
+				}
+			}
+		};
+		canvas.addEventListener("pointerup", release, { signal: this.stopping.signal });
+		canvas.addEventListener("pointercancel", () => { from = null; }, { signal: this.stopping.signal });
+	}
+
+	/**
+	 * Which layer a spot on the map belongs to. Ctrl and the right button ask
+	 * it: every tile layer that has something other than air at that spot is
+	 * one line, nearest the front first, and picking one selects it.
+	 */
+	wireChooser() {
+		const canvas = this.editor.canvas;
+		canvas.addEventListener("contextmenu", event => {
+			if (!event.ctrlKey && !event.metaKey) {
+				return;
+			}
+			event.preventDefault();
+			this.showChooser(event);
+		}, { signal: this.stopping.signal });
+		// Anywhere else shuts it again.
+		document.addEventListener("pointerdown", event => {
+			if (this.chooser !== null && !this.chooser.hidden && !this.chooser.contains(event.target)) {
+				this.chooser.hidden = true;
+			}
+		}, { signal: this.stopping.signal });
+	}
+
+	/** What lies under a spot on the map, as a list to pick from. */
+	layersAt(x, y) {
+		const found = [];
+		if (this.map === null) {
+			return found;
+		}
+		this.map.groups.forEach((group, gi) => {
+			group.layers.forEach((layer, li) => {
+				if (layer.type !== "tiles") {
+					return;
+				}
+				const world = this.editor.groupWorldAt(gi, x, y);
+				if (world === null) {
+					return;
+				}
+				const tile = { x: Math.floor(world.x / MAP_TILE_SIZE), y: Math.floor(world.y / MAP_TILE_SIZE) };
+				const index = this.editor.tileIndex(gi, li, tile.x, tile.y);
+				if (index > 0) {
+					found.push({ group: gi, layer: li, name: layer.name || layer.kind, index: index, tile: tile });
+				}
+			});
+		});
+		// Nearest the front first: the last group is drawn over the others.
+		return found.reverse();
+	}
+
+	showChooser(event) {
+		const box = this.editor.canvas.getBoundingClientRect();
+		const factor = (this.editor.canvas.width || 1) / (box.width || 1);
+		const found = this.layersAt((event.clientX - box.left) * factor, (event.clientY - box.top) * factor);
+		this.chooser.textContent = "";
+		if (found.length === 0) {
+			const empty = document.createElement("li");
+			empty.className = "editor-choose-empty";
+			empty.textContent = "Nothing but air here";
+			this.chooser.append(empty);
+		}
+		for (const what of found) {
+			const row = document.createElement("li");
+			row.className = "editor-row";
+			row.dataset.role = "layer-choice";
+			row.dataset.group = String(what.group);
+			row.dataset.layer = String(what.layer);
+			row.textContent = `${what.name} \u00b7 ${what.index}`;
+			row.addEventListener("click", () => {
+				this.selection = { group: what.group, layer: what.layer };
+				this.chooser.hidden = true;
+				this.refresh();
+			}, { signal: this.stopping.signal });
+			this.chooser.append(row);
+		}
+		this.chooser.style.left = `${event.clientX - box.left}px`;
+		this.chooser.style.top = `${event.clientY - box.top}px`;
+		this.chooser.hidden = false;
+	}
+
+	/** Opens or shuts the big tile chooser. */
+	showPicker(on) {
+		const layer = this.selectedLayer();
+		const wanted = on === true && layer !== null && layer.type === "tiles";
+		this.picker.hidden = !wanted;
+		if (!wanted) {
+			this.pickerPinned = false;
+			return;
+		}
+		const canvas = this.picker.querySelector('[data-role="picker-tiles"]');
+		const box = this.editor.canvas.getBoundingClientRect();
+		// As big as the map lets it be, and never smaller than the thirty-two
+		// pixels a tile needs to be told apart.
+		const side = Math.max(TILESET_SIDE * 32, Math.floor((Math.min(box.width, box.height) - 32) / TILESET_SIDE) * TILESET_SIDE);
+		canvas.width = side;
+		canvas.height = side;
+		canvas.style.width = `${side}px`;
+		canvas.style.height = `${side}px`;
+		const image = layer.image >= 0 && layer.image < this.map.images.length ? this.map.images[layer.image] : null;
+		this.picker.querySelector('[data-role="picker-name"]').textContent = image === null ? "No picture - the numbers are the tiles" : image.name;
+		this.paintPicker();
+	}
+
+	paintPicker() {
+		if (this.picker === null || this.picker.hidden) {
+			return;
+		}
+		this.paintTileset(this.picker.querySelector('[data-role="picker-tiles"]'));
 	}
 
 	/**
@@ -1507,7 +1693,12 @@ class CEditorPanels {
 		// is "the panels" any more - the box is.
 		this.box = box === undefined ? null : box;
 		areas.toolbar.append(bar);
-		areas.status.append(status, hover);
+		// The status line: what is under the pointer on the left, what is being
+		// worked in next to it, and what just happened on the right.
+		const line = document.createElement("div");
+		line.className = "editor-statusline";
+		line.innerHTML = '<span data-role="status-layer"></span><span data-role="status-brush"></span><span data-role="status-zoom"></span>';
+		areas.status.append(hover, line, status);
 		for (const area of ["left", "right", "dock"]) {
 			const here = PANEL_PLACES.filter(place => place.area === area);
 			if (TABBED_AREAS[area] !== undefined) {
@@ -1710,6 +1901,7 @@ class CEditorPanels {
 		// do not both answer to the same key.
 		if (this.keys) {
 			document.addEventListener("keydown", event => this.onKey(event), { signal: signal });
+			document.addEventListener("keyup", event => this.onKeyUp(event), { signal: signal });
 		}
 	}
 
@@ -1750,6 +1942,22 @@ class CEditorPanels {
 		// Ctrl+S must not reach the browser's own save dialogue.
 		event.preventDefault();
 		this.run(command.id);
+	}
+
+	/**
+	 * The one key that means something while it is held rather than when it
+	 * is struck: the big tile chooser is open for as long as the space bar is
+	 * down, unless somebody pinned it with Ctrl and space.
+	 */
+	onKeyUp(event) {
+		if (keyName(event) !== "Space" || this.pickerPinned) {
+			return;
+		}
+		const target = event.target;
+		if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+			return;
+		}
+		this.showPicker(false);
 	}
 
 	/**
@@ -2038,6 +2246,7 @@ class CEditorPanels {
 		this.refreshEnvelopes();
 		this.refreshInfo();
 		this.refreshHistory();
+		this.refreshStatus();
 		// Which panel each tabbed area shows can only be answered once every
 		// panel has said whether it has anything to show.
 		this.applyTabs();
@@ -2051,6 +2260,25 @@ class CEditorPanels {
 		const group = Math.min(this.selection.group, this.map.groups.length - 1);
 		const layers = this.map.groups[group].layers.length;
 		this.selection = { group: group, layer: Math.min(this.selection.layer, layers - 1) };
+	}
+
+	/** What the line along the bottom says about where the work is. */
+	refreshStatus() {
+		const say = (role, text) => {
+			const part = this.part(role);
+			if (part !== null) {
+				part.textContent = text;
+			}
+		};
+		const layer = this.selectedLayer();
+		const where = this.selection;
+		const group = this.map === null || where.group >= this.map.groups.length ? null : this.map.groups[where.group];
+		const groupName = group === null ? "" : (group.name || `Group ${where.group}`);
+		say("status-layer", layer === null ? groupName : `${groupName} \u203a ${layer.name || layer.kind}`);
+		const size = this.editor.brushSize();
+		say("status-brush", size === null || size.width === 0 ? "" : `Brush ${size.width} \u00d7 ${size.height}`);
+		const zoom = this.editor.zoom();
+		say("status-zoom", zoom === null ? "" : `${Math.round(100 / zoom)} %`);
 	}
 
 	refreshBar() {
@@ -2332,7 +2560,45 @@ class CEditorPanels {
 	// it. The picture is the page's doing rather than the program's: it is a
 	// PNG that the map names, the browser reads PNGs, and a tileset drawn on
 	// a canvas costs the program nothing.
+	/**
+	 * The ten places a brush can be put away in. A digit fetches one, shift
+	 * and a digit puts the brush there - the same as the keys, said where
+	 * somebody can see that there are ten of them.
+	 */
+	buildSlots() {
+		const strip = this.part("slots");
+		if (strip === null || strip.childElementCount > 0) {
+			return;
+		}
+		for (let slot = 0; slot < 10; slot++) {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = "editor-slot";
+			button.dataset.role = "slot";
+			button.dataset.slot = String(slot);
+			button.textContent = String(slot);
+			button.title = `Brush ${slot} (${slot}, shift and ${slot} to put one here)`;
+			button.addEventListener("click", event => {
+				if (event.shiftKey) {
+					this.editor.storeBrush(slot);
+					this.slotsUsed.add(slot);
+				} else {
+					this.editor.useBrush(slot);
+				}
+				this.refreshTiles();
+			}, { signal: this.stopping.signal });
+			strip.append(button);
+		}
+	}
+
+	refreshSlots() {
+		for (const button of this.parts("slot")) {
+			button.setAttribute("aria-pressed", this.slotsUsed.has(Number(button.dataset.slot)) ? "true" : "false");
+		}
+	}
+
 	wireTileset() {
+		this.buildSlots();
 		// The two tabs over the tileset: what is painted with, and what paints
 		// by itself.
 		for (const button of this.parts("tiles-tab")) {
@@ -2341,47 +2607,7 @@ class CEditorPanels {
 				this.applyTilesTab();
 			}, { signal: this.stopping.signal });
 		}
-		const canvas = this.part("tileset");
-		let from = null;
-		// A refused capture must not take the pick with it; see the canvas
-		// pointer, which holds on the same way.
-		const capture = (pointerId, hold) => {
-			try {
-				if (hold) {
-					canvas.setPointerCapture(pointerId);
-				} else {
-					canvas.releasePointerCapture(pointerId);
-				}
-			} catch (error) {
-				// The pick still works; it just stops at the edge.
-			}
-		};
-		const at = event => {
-			const box = canvas.getBoundingClientRect();
-			return {
-				x: Math.min(TILESET_SIDE - 1, Math.max(0, Math.floor((event.clientX - box.left) / box.width * TILESET_SIDE))),
-				y: Math.min(TILESET_SIDE - 1, Math.max(0, Math.floor((event.clientY - box.top) / box.height * TILESET_SIDE))),
-			};
-		};
-		canvas.addEventListener("pointerdown", event => {
-			from = at(event);
-			capture(event.pointerId, true);
-			this.pick(from, from);
-		}, { signal: this.stopping.signal });
-		canvas.addEventListener("pointermove", event => {
-			if (from !== null) {
-				this.pick(from, at(event));
-			}
-		}, { signal: this.stopping.signal });
-		const release = event => {
-			if (from !== null) {
-				this.pick(from, at(event));
-				from = null;
-				capture(event.pointerId, false);
-			}
-		};
-		canvas.addEventListener("pointerup", release, { signal: this.stopping.signal });
-		canvas.addEventListener("pointercancel", () => { from = null; }, { signal: this.stopping.signal });
+		this.wirePick(this.part("tileset"));
 	}
 
 	// Takes the rectangle between two tiles of the tileset into the brush.
@@ -2439,7 +2665,9 @@ class CEditorPanels {
 				picture.src = source;
 			}
 		}
+		this.refreshSlots();
 		this.paintTileset();
+		this.paintPicker();
 	}
 
 	/**
@@ -2715,8 +2943,8 @@ class CEditorPanels {
 		this.part("automap-auto").checked = layer.automapperAutomatic === true;
 	}
 
-	paintTileset() {
-		const canvas = this.part("tileset");
+	paintTileset(into) {
+		const canvas = into === undefined ? this.part("tileset") : into;
 		const paint = canvas.getContext("2d");
 		const side = canvas.width / TILESET_SIDE;
 		paint.clearRect(0, 0, canvas.width, canvas.height);
@@ -3034,6 +3262,9 @@ class CEditorPanels {
 	 * the first time one of the two changed.
 	 */
 	refreshOverlay(known) {
+		// Panning and zooming change nothing about the map, but they do change
+		// what the line at the bottom says about the view.
+		this.refreshStatus();
 		const overlay = this.overlay;
 		if (overlay === null) {
 			return;
@@ -5205,6 +5436,11 @@ class CEditorElement extends ELEMENT_BASE {
 		document.addEventListener("keydown", event => {
 			if (this.hears()) {
 				panels.onKey(event);
+			}
+		}, { signal: signal });
+		document.addEventListener("keyup", event => {
+			if (this.hears()) {
+				panels.onKeyUp(event);
 			}
 		}, { signal: signal });
 		// A map let go of over the box is a map to open. The box is the whole

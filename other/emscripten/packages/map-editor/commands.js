@@ -27,7 +27,9 @@ export function keyName(event) {
 	if (key === undefined || key === null) {
 		return "";
 	}
-	if (key.length === 1) {
+	if (key === " ") {
+		key = "Space";
+	} else if (key.length === 1) {
 		key = key.toUpperCase();
 	}
 	if (typeof event.code === "string" && event.code.startsWith("Numpad") && event.code !== "NumpadEnter") {
@@ -114,6 +116,7 @@ function slots() {
 			palette: false,
 			run: p => {
 				p.editor.storeBrush(slot);
+				p.slotsUsed.add(slot);
 				p.refreshTiles();
 			},
 		});
@@ -224,7 +227,7 @@ export const COMMANDS = [
 		run: p => p.openMap(),
 	},
 	{
-		id: "file.new", label: "New map", group: "File",
+		id: "file.new", label: "New map", group: "File", icon: "add", bar: true,
 		// Ctrl+N belongs to the browser and cannot be taken from it.
 		keys: ["Ctrl+Alt+N"],
 		run: p => {
@@ -498,6 +501,30 @@ export const COMMANDS = [
 		},
 	},
 	...structureTabs(),
+	{
+		id: "picker.show", label: "The big tile chooser", group: "Brush",
+		keys: ["Space"],
+		enabled: p => {
+			const layer = p.selectedLayer();
+			return layer !== null && layer.type === "tiles";
+		},
+		pressed: p => p.picker !== null && !p.picker.hidden,
+		run: p => p.showPicker(p.picker === null || p.picker.hidden),
+	},
+	{
+		id: "picker.pin", label: "Leave the tile chooser open", group: "Brush",
+		keys: ["Ctrl+Space"],
+		enabled: p => {
+			const layer = p.selectedLayer();
+			return layer !== null && layer.type === "tiles";
+		},
+		pressed: p => p.pickerPinned,
+		run: p => {
+			p.pickerPinned = !p.pickerPinned;
+			p.showPicker(p.pickerPinned || (p.picker !== null && !p.picker.hidden));
+			p.pickerPinned = p.picker !== null && !p.picker.hidden ? p.pickerPinned : false;
+		},
+	},
 	{
 		id: "help.wiki", label: "How mapping works (the wiki)", group: "Help",
 		keys: ["F1"],

@@ -247,7 +247,9 @@ void CUi::Update()
 		}
 	}
 
-	m_MousePos = m_UpdatedMousePos * vec2(pScreen->w, pScreen->h) / WindowSize;
+	vec2 ViewportOffset, ViewportSize;
+	ViewportInWindow(ViewportOffset, ViewportSize);
+	m_MousePos = (m_UpdatedMousePos - ViewportOffset) * pScreen->Size() / ViewportSize;
 	m_MouseDelta = m_UpdatedMouseDelta;
 	m_UpdatedMouseDelta = vec2(0.0f, 0.0f);
 	m_LastMouseButtons = m_MouseButtons;
@@ -466,8 +468,22 @@ float CUi::ButtonColorMul(const void *pId)
 const CUIRect *CUi::Screen()
 {
 	m_Screen.h = 600.0f;
-	m_Screen.w = Graphics()->ScreenAspect() * m_Screen.h;
+	m_Screen.w = (m_Viewport.w > 0.0f ? m_Viewport.w / m_Viewport.h : Graphics()->ScreenAspect()) * m_Screen.h;
 	return &m_Screen;
+}
+
+void CUi::ViewportInWindow(vec2 &Offset, vec2 &Size) const
+{
+	Offset = m_Viewport.TopLeft() / Graphics()->ScreenHiDPIScale();
+	Size = m_Viewport.w > 0.0f ? m_Viewport.Size() / Graphics()->ScreenHiDPIScale() : vec2(Graphics()->WindowWidth(), Graphics()->WindowHeight());
+}
+
+void CUi::SetMousePos(vec2 Pos)
+{
+	vec2 Offset, Size;
+	ViewportInWindow(Offset, Size);
+	const vec2 Target = Offset + Pos / Screen()->Size() * Size;
+	OnCursorMove(Target.x - m_UpdatedMousePos.x, Target.y - m_UpdatedMousePos.y);
 }
 
 void CUi::MapScreen()
@@ -480,7 +496,7 @@ void CUi::MapScreen()
 
 float CUi::PixelSize()
 {
-	return Screen()->w / Graphics()->ScreenWidth();
+	return Screen()->w / (m_Viewport.w > 0.0f ? m_Viewport.w : Graphics()->ScreenWidth());
 }
 
 void CUi::ClipEnable(const CUIRect *pRect)

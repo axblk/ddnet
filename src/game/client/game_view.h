@@ -260,6 +260,14 @@ public:
 	// An inset is a small picture over another view. It shows the world alone,
 	// without the HUD and boards that belong to the view it sits on.
 	bool IsInset() const { return m_Inset; }
+	// Where a point given as a fraction of the whole screen lies, as a fraction
+	// of this view.
+	vec2 ScreenFractionToView(vec2 Fraction, vec2 ScreenSize) const
+	{
+		if(m_Viewport.m_Width <= 0 || m_Viewport.m_Height <= 0)
+			return Fraction;
+		return (Fraction * ScreenSize - vec2(m_Viewport.m_X, m_Viewport.m_Y)) / vec2(m_Viewport.m_Width, m_Viewport.m_Height);
+	}
 	void SetViewport(CViewport Viewport, bool Inset = false)
 	{
 		m_Viewport = Viewport;

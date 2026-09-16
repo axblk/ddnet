@@ -478,6 +478,8 @@ export declare class EditorPanels {
 	askYesNo(title: string, text: string, yes: string, done: () => void): void;
 	/** Every key the editor answers to, on one sheet, where each can be changed. */
 	showKeys(): void;
+	/** Moves the focus to the next area (`1`) or the one before (`-1`), as F6 does. */
+	focusArea(step: 1 | -1): boolean;
 	/**
 	 * Gives a command these keys and nothing else. A key another command had
 	 * moves; that command is returned, `null` when none lost one. Fires

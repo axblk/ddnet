@@ -1060,6 +1060,14 @@ int main(int argc, const char **argv)
 	if(!Editor.Init(argc, argv))
 		return 1;
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// SDL listens for keys on the whole window unless told otherwise, and it
+	// cancels what it hears there - so a space bar on one of the page's
+	// buttons would press nothing. This program takes no keys through SDL at
+	// all, because the page drives it, so SDL only gets the ones struck on the
+	// map. The hint is read out of the environment when nothing set it.
+	setenv("SDL_EMSCRIPTEN_KEYBOARD_ELEMENT", "#canvas", 1);
+#endif
 	if(!Editor.OpenWindow(Width, Height, Surfaceless ? CreateOffscreenGraphicsWindow() : CreateSdlGraphicsWindow(), !Surfaceless))
 		return 1;
 

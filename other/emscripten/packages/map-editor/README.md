@@ -68,6 +68,16 @@ inside it; with the focus nowhere at all it answers only when it is the one
 editor on the page, because with two there would be no way to say which was
 meant.
 
+Everything can be reached without a pointer. **F6** and **Shift+F6** walk
+through the areas in reading order - the strip of maps, the tool bar, the
+tree, the map, the inspector, the dock - and land on what is chosen there.
+The tree is one stop for Tab: the arrows go from row to row and select,
+right opens a group and goes into it, left folds it or goes back up to it,
+Space is the eye and Enter goes to the name. Space and Enter on a button
+press the button rather than being a shortcut. The map is a
+`role="application"` named *Map*, with a description of its keys and of
+Escape, the way back to it.
+
 ### The shape it takes
 
 The editor answers to the size of its **box**, not of the window: an editor in

@@ -739,6 +739,18 @@ export const COMMANDS = [
 		run: () => window.open("https://wiki.ddnet.org/wiki/Mapping", "_blank", "noopener"),
 	},
 	{
+		// The browser's own convention for walking from one part of a page
+		// to the next.
+		id: "focus.next", label: "The next area", group: "View", safe: true,
+		keys: ["F6"],
+		run: p => p.focusArea(1),
+	},
+	{
+		id: "focus.previous", label: "The area before", group: "View", safe: true,
+		keys: ["Shift+F6"],
+		run: p => p.focusArea(-1),
+	},
+	{
 		id: "edit.escape", label: "Back to the map", group: "Edit", safe: true,
 		keys: ["Escape"],
 		run: p => p.escape(),

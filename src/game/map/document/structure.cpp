@@ -521,9 +521,9 @@ namespace map_document
 			if(Game.has_value() && Group == Game->m_Group)
 				continue;
 			CGroup Coming = *Other.m_vpGroups[Group];
-			for(size_t Layer = 0; Layer < Coming.m_vpLayers.size(); ++Layer)
+			for(std::shared_ptr<const CLayer> &pLayer : Coming.m_vpLayers)
 			{
-				CLayer Changed = *Coming.m_vpLayers[Layer];
+				CLayer Changed = *pLayer;
 				const auto Shift = [](int &Bound, int By) {
 					if(Bound >= 0)
 						Bound += By;
@@ -557,7 +557,7 @@ namespace map_document
 						pSounds->m_Sources.Mutable()[Source] = Heard;
 					}
 				}
-				Coming.m_vpLayers[Layer] = std::make_shared<const CLayer>(std::move(Changed));
+				pLayer = std::make_shared<const CLayer>(std::move(Changed));
 			}
 			Map.AddGroup(std::move(Coming));
 			++Report.m_Groups;

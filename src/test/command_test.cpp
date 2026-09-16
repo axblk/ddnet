@@ -705,7 +705,7 @@ TEST(Command, TheKnifeCutsAPieceOutOfAQuadAndItKeepsWhatItWasCutFrom)
 	{
 		const std::string Set = R"({"op":"quad.setColor","group":2,"layer":0,"quad":0,"corner":)" +
 					std::to_string(Corner) + R"(,"value":[)" + std::to_string(Corner * 80) + R"(,0,0,255]})";
-		Commands.Ok(Set.c_str());
+		Commands.Ok(Set);
 	}
 	// And the whole picture across it, so a piece keeps the part of the
 	// picture it sits over.
@@ -765,6 +765,7 @@ TEST(Command, TheKnifeCutsInsideTheQuadAndNowhereElse)
 
 	const auto &&Places = [](const CQuad &Quad) {
 		std::vector<std::pair<int, int>> vPlaces;
+		vPlaces.reserve(4);
 		for(size_t Corner = 0; Corner < 4; ++Corner)
 			vPlaces.emplace_back(fx2i(Quad.m_aPoints[Corner].x), fx2i(Quad.m_aPoints[Corner].y));
 		std::sort(vPlaces.begin(), vPlaces.end());

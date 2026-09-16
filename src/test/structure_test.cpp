@@ -662,7 +662,7 @@ namespace
 		CEnvelope Colour;
 		Colour.m_Name = "fade";
 		Map.AddEnvelope(std::move(Colour));
-		Map.m_Info.m_Settings.Mutable().push_back("sv_deepfly 0");
+		Map.m_Info.m_Settings.Mutable().emplace_back("sv_deepfly 0");
 		return Map;
 	}
 } // namespace
@@ -672,7 +672,7 @@ TEST(Structure, AppendingBringsEverythingDrawnAndLeavesThePhysicsBehind)
 	CDocument Document(TwoGroups());
 	Document.Begin("Setting up", nullptr);
 	Document.Edit().AddImage(Picture("sand", 1));
-	Document.Edit().m_Info.m_Settings.Mutable().push_back("sv_deepfly 0");
+	Document.Edit().m_Info.m_Settings.Mutable().emplace_back("sv_deepfly 0");
 	Document.Commit();
 	const size_t WasGroups = Document.Map().NumGroups();
 

@@ -1955,6 +1955,7 @@ class CEditorPanels {
 				const dirty = this.editor.dirty(id);
 				const name = this.editor.name(id) || "untitled";
 				tab.setAttribute("aria-selected", id === now ? "true" : "false");
+				tab.tabIndex = id === now ? 0 : -1;
 				tab.querySelector('[data-role="map-dot"]').hidden = !dirty;
 				tab.querySelector(".editor-map-name").textContent = name;
 				tab.title = `${name}${dirty ? " - not saved" : ""}`;
@@ -1971,6 +1972,7 @@ class CEditorPanels {
 			tab.dataset.map = String(id);
 			tab.setAttribute("role", "tab");
 			tab.setAttribute("aria-selected", id === now ? "true" : "false");
+			tab.tabIndex = id === now ? 0 : -1;
 			const dirty = this.editor.dirty(id);
 			const dot = document.createElement("span");
 			dot.className = "editor-map-dot";
@@ -3923,6 +3925,7 @@ class CEditorPanels {
 			button.hidden = roomy;
 			button.disabled = button.dataset.tab === "automap" && !there;
 			button.setAttribute("aria-selected", button.dataset.tab === this.tab.tiles ? "true" : "false");
+			button.tabIndex = button.dataset.tab === this.tab.tiles ? 0 : -1;
 		}
 	}
 
@@ -3977,6 +3980,7 @@ class CEditorPanels {
 					button.hidden = place.tab === always;
 					button.disabled = !has(place);
 					button.setAttribute("aria-selected", place.tab === this.tab[area] ? "true" : "false");
+					button.tabIndex = place.tab === this.tab[area] ? 0 : -1;
 				}
 			}
 		}
@@ -4142,6 +4146,9 @@ class CEditorPanels {
 			if (own.includes(event.key)) {
 				return;
 			}
+		}
+		if (target && target.getAttribute && target.getAttribute("role") === "tab" && this.onTabKey(event)) {
+			return;
 		}
 		const command = this.keys_.get(keyName(event));
 		if (command === undefined) {
@@ -4889,6 +4896,30 @@ class CEditorPanels {
 		}
 		event.preventDefault();
 		event.stopPropagation();
+	}
+
+	/**
+	 * A row of tabs as a keyboard walks it: one stop for Tab, the arrows go
+	 * to the neighbour and show it, Home and End to the ends. Whether it was
+	 * one of those keys.
+	 */
+	onTabKey(event) {
+		if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey
+			|| !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+			return false;
+		}
+		const tabs = [...event.target.parentElement.children]
+			.filter(one => one.getAttribute("role") === "tab" && !one.hidden && !one.disabled);
+		const at = tabs.indexOf(event.target);
+		const next = event.key === "Home" ? tabs[0]
+			: event.key === "End" ? tabs[tabs.length - 1]
+				: tabs[(at + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
+		event.preventDefault();
+		if (next !== undefined && next !== event.target) {
+			next.click();
+			next.focus();
+		}
+		return true;
 	}
 
 	/**

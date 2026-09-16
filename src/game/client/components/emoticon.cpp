@@ -16,12 +16,12 @@
 
 CGameView::CEmoticonSelectorState &CEmoticon::Selector()
 {
-	return GameClient()->LegacyGameView().EmoticonSelector();
+	return GameClient()->InputView().EmoticonSelector();
 }
 
 const CGameView::CEmoticonSelectorState &CEmoticon::Selector() const
 {
-	return GameClient()->LegacyGameView().EmoticonSelector();
+	return GameClient()->InputView().EmoticonSelector();
 }
 
 void CEmoticon::ConKeyEmoticon(IConsole::IResult *pResult, void *pUserData)
@@ -31,7 +31,7 @@ void CEmoticon::ConKeyEmoticon(IConsole::IResult *pResult, void *pUserData)
 	if(pSelf->GameClient()->m_Scoreboard.IsActive())
 		return;
 
-	CGameView &View = pSelf->GameClient()->LegacyGameView();
+	CGameView &View = pSelf->GameClient()->InputView();
 	CGameView::CEmoticonSelectorState &Selector = View.EmoticonSelector();
 	if(pResult->GetInteger(0) == 0)
 	{

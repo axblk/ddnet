@@ -1690,7 +1690,7 @@ CUi::EPopupMenuFunctionResult CScoreboard::CScoreboardPopupContext::Render(void 
 	CUi *pUi = pPopupContext->m_pScoreboard->Ui();
 
 	CGameClient *pGameClient = pScoreboard->GameClient();
-	CGameView &OriginView = pGameClient->LegacyGameView();
+	CGameView &OriginView = pGameClient->InputView();
 	CGameSessionContext &OriginSession = pGameClient->SessionContext();
 	if(!OriginView.MatchesBinding(pPopupContext->m_ViewId, pPopupContext->m_SessionId, pPopupContext->m_StateId) || OriginSession.Id() != pPopupContext->m_SessionId)
 		return CUi::POPUP_CLOSE_CURRENT;

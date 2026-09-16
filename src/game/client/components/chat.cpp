@@ -240,7 +240,7 @@ void CChat::ConShowChat(IConsole::IResult *pResult, void *pUserData)
 	pChat->m_Show = pResult->GetInteger(0) != 0;
 	if(pChat->m_Show)
 	{
-		const CGameView &View = pChat->GameClient()->LegacyGameView();
+		const CGameView &View = pChat->GameClient()->InputView();
 		pChat->m_ShowViewId = View.Id();
 		pChat->m_ShowSessionId = View.SessionId();
 		pChat->m_ShowStateId = View.StateId();
@@ -589,7 +589,7 @@ void CChat::EnableMode(int Team)
 
 	if(m_Mode == MODE_NONE)
 	{
-		const CGameView &View = GameClient()->LegacyGameView();
+		const CGameView &View = GameClient()->InputView();
 		CGameSessionContext *pSession = GameClient()->FindSessionContext(View.SessionId());
 		CGameState *pState = pSession != nullptr ? pSession->GameStates().Find(View.StateId()) : nullptr;
 		if(pSession == nullptr || pState == nullptr || pSession->Id() != Client()->NetworkSessionId())
@@ -1356,7 +1356,7 @@ void CChat::EnsureCoherentWidth() const
 
 void CChat::SendChat(int Team, const char *pLine)
 {
-	const CGameView &View = GameClient()->LegacyGameView();
+	const CGameView &View = GameClient()->InputView();
 	const CGameSessionContext *pSession = GameClient()->FindSessionContext(View.SessionId());
 	const CGameState *pState = pSession != nullptr ? pSession->GameStates().Find(View.StateId()) : nullptr;
 	if(pState != nullptr)

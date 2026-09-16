@@ -219,6 +219,7 @@ private:
 	CSessionId m_SessionId;
 	CGameStateId m_StateId;
 	CViewport m_Viewport;
+	bool m_Inset = false;
 	CCameraState m_Camera;
 	CMotdPresentationState m_Motd;
 	CEmoticonSelectorState m_EmoticonSelector;
@@ -256,7 +257,14 @@ public:
 		m_StateId = StateId;
 	}
 	const CViewport &Viewport() const { return m_Viewport; }
-	void SetViewport(CViewport Viewport) { m_Viewport = Viewport; }
+	// An inset is a small picture over another view. It shows the world alone,
+	// without the HUD and boards that belong to the view it sits on.
+	bool IsInset() const { return m_Inset; }
+	void SetViewport(CViewport Viewport, bool Inset = false)
+	{
+		m_Viewport = Viewport;
+		m_Inset = Inset;
+	}
 	CCameraState &Camera() { return m_Camera; }
 	const CCameraState &Camera() const { return m_Camera; }
 	CMotdPresentationState &Motd() { return m_Motd; }

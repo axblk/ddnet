@@ -32,7 +32,7 @@ uint64_t CMotd::ServerMotdRevision() const
 
 void CMotd::Clear()
 {
-	GameClient()->LegacyGameView().Motd().Dismiss();
+	GameClient()->InputView().Motd().Dismiss();
 	InvalidateRenderCache();
 }
 
@@ -50,7 +50,7 @@ void CMotd::InvalidateRenderCache()
 bool CMotd::IsActive() const
 {
 	const CGameSessionContext &Session = GameClient()->SessionContext();
-	return GameClient()->LegacyGameView().Motd().IsActive(Session.Id(), Session.Motd().Revision(), time());
+	return GameClient()->InputView().Motd().IsActive(Session.Id(), Session.Motd().Revision(), time());
 }
 
 bool CMotd::IsActive(const CRenderContext &Context) const
@@ -152,7 +152,7 @@ void CMotd::DoMotd(CGameSessionContext &Session, const char *pText, bool Show)
 	{
 		if(!IsActive())
 			m_ShownSince = time_get_nanoseconds();
-		GameClient()->LegacyGameView().Motd().Show(Session.Id(), Session.Motd().Revision(), VisibleUntil);
+		GameClient()->InputView().Motd().Show(Session.Id(), Session.Motd().Revision(), VisibleUntil);
 	}
 	InvalidateRenderCache();
 

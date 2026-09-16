@@ -64,7 +64,11 @@ CTileChunkCache::CLayerSource DocumentLayerSource(const std::shared_ptr<const CL
 	CTileChunkCache::CLayerSource Source;
 	Source.m_Width = pTiles->Width();
 	Source.m_Height = pTiles->Height();
-	Source.m_Textured = pTiles->m_Image >= 0;
+	// A physics layer has no picture of its own and is still drawn out of one:
+	// the entities sheet. Uploaded without texture coordinates it would meet
+	// the textured pipeline the moment that sheet is bound, and the graphics
+	// drop such a draw - the overlay then stays empty.
+	Source.m_Textured = pTiles->m_Image >= 0 || pTiles->m_Kind != ETileLayerKind::TILES;
 	Source.m_FillSpeedup = pTiles->m_Kind == ETileLayerKind::SPEEDUP;
 	Source.m_ReadTile = [pTiles](int x, int y, unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate) {
 		switch(pTiles->m_Kind)

@@ -315,6 +315,13 @@ layer's colour** is on: a layer tinted blue shows a blue tileset, so that
 what is picked looks like what will appear, with the picture's own
 transparency kept.
 
+**Entities picture** chooses the sheet physics layers are drawn out of -
+DDNet, DDRace, Race, FNG, Vanilla, F-DDrace or Blockworlds - for every map at
+once, on the map and in the tileset of a physics layer, which shows that
+sheet instead of a grid of numbers. It is fetched when it is chosen, through
+the same loader as the map's own pictures, so choosing one never holds up a
+frame.
+
 **What the keys do** (Ctrl+/) is every shortcut on one sheet, grouped the way
 the palette groups them, and every key a command answers to rather than only
 the first.

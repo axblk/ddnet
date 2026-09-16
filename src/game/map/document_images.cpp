@@ -53,6 +53,36 @@ CDocumentImages::~CDocumentImages()
 {
 	for(CImage &Image : m_vImages)
 		Release(&Image.m_Texture);
+	Release(&m_Entities.m_Texture);
+}
+
+void CDocumentImages::SetEntities(const char *pName)
+{
+	CSource Source;
+	if(pName != nullptr && pName[0] != '\0')
+	{
+		char aPath[IO_MAX_PATH_LENGTH];
+		str_format(aPath, sizeof(aPath), "editor/entities_clear/%s.png", pName);
+		Source.m_Path = aPath;
+		Source.m_Flags = IGraphics::TEXLOAD_LAYERED;
+	}
+	if(Source == m_Entities.m_Source)
+		return;
+	// The old sheet goes at once: a frame of physics tiles drawn out of the
+	// sheet somebody just turned away from would be the wrong answer shown.
+	Release(&m_Entities.m_Texture);
+	m_Entities.m_Source = Source;
+	m_vLoading.erase(std::remove_if(m_vLoading.begin(), m_vLoading.end(), [](const CLoading &Loading) {
+		return Loading.m_Index == ENTITIES_INDEX;
+	}),
+		m_vLoading.end());
+	if(Source == CSource())
+		return;
+	CLoading Loading;
+	Loading.m_Index = ENTITIES_INDEX;
+	Loading.m_Source = Source;
+	Loading.m_Resource = m_pAssetLoader->LoadImageFile(m_pStorage, Source.m_Path.c_str(), IStorage::TYPE_ALL, ASSET_OWNER, ASSET_GENERATION);
+	m_vLoading.push_back(std::move(Loading));
 }
 
 void CDocumentImages::Release(IGraphics::CTextureHandle *pTexture)
@@ -118,6 +148,8 @@ void CDocumentImages::Use(const CMapState &Map)
 	// What was asked for and is still wanted stays on its way; the rest is
 	// dropped when it lands.
 	m_vLoading.erase(std::remove_if(m_vLoading.begin(), m_vLoading.end(), [this](const CLoading &Loading) {
+		if(Loading.m_Index == ENTITIES_INDEX)
+			return false; // not the map's, and not the map's to drop
 		return Loading.m_Index >= m_vImages.size() || m_vImages[Loading.m_Index].m_Source != Loading.m_Source;
 	}),
 		m_vLoading.end());
@@ -169,11 +201,14 @@ void CDocumentImages::Update()
 			++It;
 			continue;
 		}
-		const bool StillWanted = It->m_Index < m_vImages.size() && m_vImages[It->m_Index].m_Source == It->m_Source;
+		CImage *pInto = It->m_Index == ENTITIES_INDEX ? &m_Entities :
+								(It->m_Index < m_vImages.size() ? &m_vImages[It->m_Index] : nullptr);
+		const bool StillWanted = pInto != nullptr && pInto->m_Source == It->m_Source;
 		if(StillWanted && It->m_Resource.IsReady(ASSET_GENERATION))
 		{
 			CImageInfo Image = It->m_Resource.TakeImage();
-			m_vImages[It->m_Index].m_Texture = m_pGraphics->LoadTextureRawMove(Image, It->m_Source.m_Flags, It->m_Resource.Path());
+			Release(&pInto->m_Texture);
+			pInto->m_Texture = m_pGraphics->LoadTextureRawMove(Image, It->m_Source.m_Flags, It->m_Resource.Path());
 		}
 		else if(StillWanted)
 		{
@@ -192,7 +227,7 @@ IGraphics::CTextureHandle CDocumentImages::Get(int Index) const
 
 IGraphics::CTextureHandle CDocumentImages::GetEntities(EMapImageEntityLayerType EntityLayerType)
 {
-	return m_pShared != nullptr ? m_pShared->GetEntities(EntityLayerType) : IGraphics::CTextureHandle();
+	return m_pShared != nullptr ? m_pShared->GetEntities(EntityLayerType) : m_Entities.m_Texture;
 }
 
 IGraphics::CTextureHandle CDocumentImages::GetSpeedupArrow()

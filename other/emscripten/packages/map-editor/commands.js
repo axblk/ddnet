@@ -695,6 +695,10 @@ export const COMMANDS = [
 		},
 	},
 	{
+		id: "settings.entities", label: "Entities picture…", group: "Settings", safe: true, menu: "Settings",
+		run: p => p.askEntitiesImage(),
+	},
+	{
 		id: "settings.brushColouring", label: "The tileset in the layer's colour", group: "Settings", safe: true, menu: "Settings",
 		pressed: p => p.brushColouring,
 		run: p => {

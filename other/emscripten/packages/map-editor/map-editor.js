@@ -620,6 +620,19 @@ class CMapEditor extends Program {
 	}
 
 	/**
+	 * Which entities sheet physics layers are drawn out of - `ddnet`, `race`,
+	 * `fng`, `vanilla` and the rest of `data/editor/entities_clear/`. Called
+	 * with a name it sets it, for every map; a name that is not one of them
+	 * changes nothing.
+	 */
+	entitiesImage(name) {
+		if (name !== undefined) {
+			this.call("MapEditorSetEntitiesImage", "number", ["string"], [name]);
+		}
+		return this.call("MapEditorEntitiesImage", "string") || "ddnet";
+	}
+
+	/**
 	 * Whether a tile that does nothing in a physics layer may be put there.
 	 * Called with a value it sets it.
 	 */
@@ -3351,6 +3364,21 @@ class CEditorPanels {
 		go.focus();
 	}
 
+	/** Which entities sheet, chosen from the ones there are. */
+	askEntitiesImage() {
+		const names = { ddnet: "DDNet", ddrace: "DDRace", race: "Race", fng: "FNG", vanilla: "Vanilla", "f-ddrace": "F-DDrace", blockworlds: "Blockworlds" };
+		this.askFor("Entities picture", [
+			{ name: "what", kind: "note", label: "What physics layers are drawn with - the map is the same whichever it is." },
+			{ name: "sheet", label: "Picture", kind: "pick", value: this.editor.entitiesImage(),
+				choices: Object.entries(names).map(([value, label]) => ({ value, label })) },
+		], answer => {
+			this.editor.entitiesImage(answer.sheet);
+			this.tilesetSource = undefined;
+			this.refresh();
+			this.say(`Physics layers drawn with ${names[answer.sheet] || answer.sheet}`);
+		}, { go: "Use it" });
+	}
+
 	/**
 	 * Asks a question whose answer is yes or no.
 	 *
@@ -4822,11 +4850,16 @@ class CEditorPanels {
 		// and is asked for. Only a layer with no picture at all is left with
 		// a grid of numbers - the tiles are still there to be picked, they
 		// just cannot be shown.
-		const source = image === null ? null : (image.external ? new URL(`mapres/${image.name}.png`, this.dataBase).href : `packed:${layer.image}:${image.name}`);
+		// A physics layer has no picture of its own: it is drawn out of the
+		// entities sheet, so that is what its tileset shows too.
+		const physics = layer.kind !== undefined && layer.kind !== "tiles";
+		const source = physics
+			? new URL(`editor/entities_clear/${this.editor.entitiesImage()}.png`, this.dataBase).href
+			: image === null ? null : (image.external ? new URL(`mapres/${image.name}.png`, this.dataBase).href : `packed:${layer.image}:${image.name}`);
 		if (source !== this.tilesetSource) {
 			this.tilesetSource = source;
 			this.tileset = null;
-			if (image !== null && !image.external) {
+			if (!physics && image !== null && !image.external) {
 				this.tileset = this.editor.imageData(layer.image);
 			} else if (source !== null) {
 				const picture = new Image();

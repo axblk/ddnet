@@ -68,6 +68,7 @@ int CMapEditor::Add(map_document::CMapState Opened, const char *pName)
 	pMap->m_Name = pName == nullptr || pName[0] == '\0' ? UNNAMED : pName;
 	pMap->m_View.SetSurface(std::max(m_View.Width(), 1), std::max(m_View.Height(), 1));
 	pMap->m_pImages = std::make_unique<CDocumentImages>(m_View.Graphics(), m_View.Storage(), m_View.AssetLoader(), nullptr, m_pLogContext);
+	pMap->m_pImages->SetEntities(m_EntitiesImage.c_str());
 	pMap->m_pRenderer = std::make_unique<CDocumentRenderer>();
 	pMap->m_pRenderer->OnInit(m_View.Graphics(), pMap->m_pImages.get());
 
@@ -927,6 +928,20 @@ void CMapEditor::SetNumbers(const map_document::CBrushNumbers &Numbers)
 {
 	m_Numbers = Numbers;
 	map_document::SetBrushNumbers(m_Brush, m_Numbers);
+}
+
+bool CMapEditor::SetEntitiesImage(const char *pName)
+{
+	// The sheets there are, as the native editor offers them. A name from a
+	// page goes into a path, so it is one of these or nothing.
+	static constexpr const char *s_apKnown[] = {"ddnet", "ddrace", "race", "fng", "vanilla", "f-ddrace", "blockworlds"};
+	if(pName == nullptr || std::none_of(std::begin(s_apKnown), std::end(s_apKnown), [pName](const char *pKnown) { return str_comp(pKnown, pName) == 0; }))
+		return false;
+	m_EntitiesImage = pName;
+	for(const auto &pMap : m_vpMaps)
+		pMap->m_pImages->SetEntities(pName);
+	Touch();
+	return true;
 }
 
 const map_document::CBrush &CMapEditor::BrushToPlace()

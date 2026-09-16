@@ -81,6 +81,7 @@ namespace
 		log_info(TOOL_NAME, "  -x <g>:<l>   Leave that layer out, as an editor hiding it would");
 		log_info(TOOL_NAME, "  -m <g>:<x>:<y>:<w>:<h>  Mark that rectangle of tiles");
 		log_info(TOOL_NAME, "  -q <g>:<l>:<n>  Put handles on the corners of that quad");
+		log_info(TOOL_NAME, "  -e <sheet>      Show what the tiles do, drawn with that entities picture (ddnet, race, fng, ...)");
 		log_info(TOOL_NAME, "There is nothing to press here: the editor is driven from outside,");
 		log_info(TOOL_NAME, "which on a page is the page and on the command line is -o.");
 	}
@@ -841,6 +842,17 @@ EMSCRIPTEN_KEEPALIVE int MapEditorPaint(int Id, int Group, int Layer, int X, int
 	return 1;
 }
 
+/** Which entities sheet the physics layers are drawn out of, by name. */
+EMSCRIPTEN_KEEPALIVE int MapEditorSetEntitiesImage(const char *pName)
+{
+	return g_pEditor != nullptr && g_pEditor->SetEntitiesImage(pName) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorEntitiesImage()
+{
+	return g_pEditor == nullptr ? "" : g_pEditor->EntitiesImage();
+}
+
 /** Whether tiles that do nothing in a physics layer may be put there. */
 EMSCRIPTEN_KEEPALIVE void MapEditorSetAllowUnused(int Allow)
 {
@@ -976,6 +988,7 @@ int main(int argc, const char **argv)
 	std::vector<std::pair<size_t, size_t>> vHide;
 	std::string Marked;
 	std::string ShownQuad;
+	std::string Entities;
 	bool InvalidUsage = false;
 
 	for(int i = 1; i < argc; i++)
@@ -1003,6 +1016,10 @@ int main(int argc, const char **argv)
 		else if(str_comp(argv[i], "-q") == 0 && i + 1 < argc)
 		{
 			ShownQuad = argv[++i];
+		}
+		else if(str_comp(argv[i], "-e") == 0 && i + 1 < argc)
+		{
+			Entities = argv[++i];
 		}
 		else if(str_comp(argv[i], "-x") == 0 && i + 1 < argc)
 		{
@@ -1060,6 +1077,15 @@ int main(int argc, const char **argv)
 			return 1;
 		if(Grid > 0)
 			Editor.Display(Id)->m_Grid = Grid;
+		if(!Entities.empty())
+		{
+			if(!Editor.SetEntitiesImage(Entities.c_str()))
+			{
+				log_error(TOOL_NAME, "There is no entities picture called '%s'", Entities.c_str());
+				return 1;
+			}
+			Editor.Display(Id)->m_EntityOverlayVal = 100;
+		}
 		for(const auto &[Group, Layer] : vHide)
 			Editor.Display(Id)->SetVisible(Group, Layer, false);
 		if(!ShownQuad.empty())

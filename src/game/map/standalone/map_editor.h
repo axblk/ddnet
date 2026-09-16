@@ -783,6 +783,17 @@ public:
 	 * Off, as in the native editor: such a tile is put down as air.
 	 */
 	void SetAllowUnused(bool Allow) { m_AllowUnused = Allow; }
+
+	/**
+	 * Which entities sheet physics layers are drawn out of, for every map
+	 * that is open and every one opened later: one of the names in
+	 * `data/editor/entities_clear/`, such as `ddnet`, `race`, `fng` or
+	 * `vanilla`. A name that is not one of them is refused.
+	 *
+	 * @return Whether it was one of them.
+	 */
+	bool SetEntitiesImage(const char *pName);
+	const char *EntitiesImage() const { return m_EntitiesImage.c_str(); }
 	bool AllowUnused() const { return m_AllowUnused; }
 	/** How many tiles the last paint or fill put down as air for that reason. */
 	int LastDropped() const { return m_LastDropped; }
@@ -889,6 +900,7 @@ private:
 	// many tiles that took out the last time.
 	map_document::CBrush m_PlacedBrush;
 	bool m_AllowUnused = false;
+	std::string m_EntitiesImage = "ddnet";
 	int m_LastDropped = 0;
 	map_document::CBrushNumbers m_Numbers;
 	std::array<map_document::CBrush, NUM_STORED_BRUSHES> m_aStoredBrushes;

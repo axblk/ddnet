@@ -2233,14 +2233,17 @@ if(TARGET_OS STREQUAL "emscripten")
     # tidy-alphabetical-start
     other/emscripten/coi-serviceworker.js
     other/emscripten/ddnet-base.js
+    other/emscripten/ddnet-editor.css
     other/emscripten/ddnet-page.css
     other/emscripten/ddnet-render.css
     other/emscripten/ddnet-viewer.css
     other/emscripten/demo.html
+    other/emscripten/editor.html
     other/emscripten/index.html
     other/emscripten/map.html
     other/emscripten/packages/demo-player/demo-player.js
     other/emscripten/packages/demo-renderer/demo-renderer.js
+    other/emscripten/packages/map-editor/map-editor.js
     other/emscripten/packages/map-viewer/map-viewer.js
     other/emscripten/render.html
     other/icons/DDNet.ico
@@ -3946,6 +3949,9 @@ if(CLIENT)
       # The browser's own fetch, so that the images of the map are fetched
       # beside each other. It brings no library with it.
       target_sources(map-editor PRIVATE src/engine/shared/http_emscripten.cpp src/engine/shared/http_emscripten.h)
+      # A map somebody saved has to still be there tomorrow, which the viewers
+      # never needed: they show what they were given and leave nothing behind.
+      target_link_options(map-editor PRIVATE "-lidbfs.js" "-sEXPORTED_RUNTIME_METHODS=callMain,ccall,FS,IDBFS")
     endif()
     if(VULKAN)
       add_dependencies(map-editor build_vulkan_shaders)
@@ -3999,17 +4005,17 @@ if(CLIENT)
   endif()
 
   if(TARGET_OS STREQUAL "emscripten")
-    # Four programs, three pages, one data directory between them: the fourth
-    # program is the render tool, which has no page of its own because it shows
-    # nothing - it is there for a page that wants a video out of a demo. What a
-    # server has to be given is a small part of what the build directory holds,
-    # so the build says which part instead of a deploy job listing it again.
+    # Five programs, four pages, one data directory between them: the program
+    # without a page is the render tool, which shows nothing - it is there for
+    # a page that wants a video out of a demo. What a server has to be given is
+    # a small part of what the build directory holds, so the build says which
+    # part instead of a deploy job listing it again.
     add_custom_target(web-site
       COMMAND ${CMAKE_COMMAND}
         -DBUILD_DIR=${PROJECT_BINARY_DIR}
         -DSITE_DIR=${PROJECT_BINARY_DIR}/site
-        "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-render$<SEMICOLON>ddnet-demo-player$<SEMICOLON>ddnet-map-viewer"
-        "-DPAGE_FILES=coi-serviceworker.js$<SEMICOLON>DDNet.ico$<SEMICOLON>ddnet-base.js$<SEMICOLON>ddnet-page.css$<SEMICOLON>ddnet-render.css$<SEMICOLON>ddnet-viewer.css$<SEMICOLON>demo-player.js$<SEMICOLON>demo-renderer.js$<SEMICOLON>demo.html$<SEMICOLON>index.html$<SEMICOLON>map-viewer.js$<SEMICOLON>map.html$<SEMICOLON>render.html"
+        "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-render$<SEMICOLON>ddnet-demo-player$<SEMICOLON>ddnet-map-viewer$<SEMICOLON>ddnet-map-editor"
+        "-DPAGE_FILES=coi-serviceworker.js$<SEMICOLON>DDNet.ico$<SEMICOLON>ddnet-base.js$<SEMICOLON>ddnet-editor.css$<SEMICOLON>ddnet-page.css$<SEMICOLON>ddnet-render.css$<SEMICOLON>ddnet-viewer.css$<SEMICOLON>demo-player.js$<SEMICOLON>demo-renderer.js$<SEMICOLON>demo.html$<SEMICOLON>editor.html$<SEMICOLON>index.html$<SEMICOLON>map-editor.js$<SEMICOLON>map-viewer.js$<SEMICOLON>map.html$<SEMICOLON>render.html"
         -P ${PROJECT_SOURCE_DIR}/cmake/assemble_web_site.cmake
       DEPENDS
         # tidy-alphabetical-start
@@ -4018,6 +4024,7 @@ if(CLIENT)
         demo-player
         demo-renderer
         game-client
+        map-editor
         map-viewer
         web_data_index
         # tidy-alphabetical-end

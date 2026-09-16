@@ -97,18 +97,6 @@ public:
 	int Open(const char *pPath, int StorageType);
 
 	/**
-	 * The same, from bytes that are already here - a file the page handed
-	 * over, or one that was fetched.
-	 *
-	 * @param pData The bytes of the map file, which are not held on to.
-	 * @param Size How many of them there are.
-	 * @param pName What to call the map.
-	 *
-	 * @return The number of the map, or -1 after reporting what went wrong.
-	 */
-	int OpenFromMemory(const void *pData, size_t Size, const char *pName);
-
-	/**
 	 * An empty map with a game layer, which is what "new map" means.
 	 *
 	 * @param Width How many tiles wide the game layer is.

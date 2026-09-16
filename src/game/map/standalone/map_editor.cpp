@@ -92,28 +92,6 @@ int CMapEditor::Open(const char *pPath, int StorageType)
 	return Add(std::move(Read), aName);
 }
 
-int CMapEditor::OpenFromMemory(const void *pData, size_t Size, const char *pName)
-{
-	CDataFileReader File;
-	if(!File.OpenFromMemory(pName, pData, (unsigned)Size, pName))
-	{
-		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "Failed to read the map that was handed over");
-		return -1;
-	}
-	map_document::CMapState Read;
-	std::vector<std::string> vWarnings;
-	const bool Ok = map_document::ReadMapState(File, &Read, &vWarnings);
-	File.Close();
-	for(const std::string &Warning : vWarnings)
-		log_warn(m_pLogContext, "%s", Warning.c_str());
-	if(!Ok)
-	{
-		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "Failed to read the map that was handed over");
-		return -1;
-	}
-	return Add(std::move(Read), pName);
-}
-
 int CMapEditor::Create(int Width, int Height, const char *pName)
 {
 	map_document::CMapState Map;

@@ -1398,6 +1398,22 @@ const DDNetBase = (() => {
 						options.onRenderProgress(status);
 					}
 				},
+				// What an editor says happened: a map changed, one was opened,
+				// one was saved, something went wrong. One hook with a name
+				// and a JSON text rather than a hook for each, because the
+				// list of things an editor has to say is long and it grows;
+				// what comes out of it here is an ordinary event on the
+				// program. Read by `BrowserEditorEvent`, see
+				// `src/game/map/standalone/map_editor_main.cpp`.
+				ddnetEditorEvent: (type, json) => {
+					let detail = null;
+					try {
+						detail = JSON.parse(json);
+					} catch (error) {
+						detail = { json: json };
+					}
+					instance.say(type, detail);
+				},
 				// Where `data` is, for a page that keeps it somewhere other than
 				// next to itself. A program from another origin brings its own,
 				// so that is where to look unless the page says otherwise. Read

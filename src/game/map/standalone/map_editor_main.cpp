@@ -21,6 +21,8 @@
 #include <chrono>
 #include <cstdlib>
 #include <string>
+#include <utility>
+#include <vector>
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 #include <emscripten/emscripten.h>
@@ -37,9 +39,19 @@ namespace
 	constexpr const char *SAVE_DIRECTORY = "maps";
 
 	CMapEditor *g_pEditor = nullptr;
+	bool g_Quit = false;
 	// What a question was answered with, kept alive until the next one is
 	// asked: a page reads it out of the heap after the call has returned.
 	std::string g_Answer;
+	// What the page is still to be told, and is told between two frames.
+	//
+	// Not on the spot, because telling it means calling into the page, and
+	// the page will ask questions back - which is exactly what the buffer
+	// above cannot survive: the answer to the call that is still returning
+	// would be overwritten by the answer to the question the listener asked.
+	// Between two frames nothing is half done and nobody is waiting for an
+	// answer.
+	std::vector<std::pair<std::string, std::string>> g_vSaid;
 
 	const char *Answer(std::string &&Text)
 	{
@@ -75,17 +87,27 @@ namespace
 	 * Says that a map changed, which is the one thing the page may not find
 	 * out by asking: everything else it asks for when it needs it.
 	 */
+	void Say(const char *pType, const std::string &Json)
+	{
+		g_vSaid.emplace_back(pType, Json);
+	}
+
 	void SayChanged(int Id)
 	{
 		if(g_pEditor == nullptr)
 			return;
-		const std::string Json = "{\"map\":" + std::to_string(Id) + ",\"history\":" + g_pEditor->HistoryJson(Id) + "}";
-		BrowserEditorEvent("document", Json.c_str());
+		Say("document", "{\"map\":" + std::to_string(Id) + ",\"history\":" + g_pEditor->HistoryJson(Id) + "}");
 	}
 
-	void Say(const char *pType, const std::string &Json)
+	/** Tells the page everything that has happened since the last frame. */
+	void SayEverything()
 	{
-		BrowserEditorEvent(pType, Json.c_str());
+		// Taken away first: a listener that changes something adds to the
+		// list while it is being walked, and that belongs to the next frame.
+		std::vector<std::pair<std::string, std::string>> vSaid;
+		vSaid.swap(g_vSaid);
+		for(const auto &[Type, Json] : vSaid)
+			BrowserEditorEvent(Type.c_str(), Json.c_str());
 	}
 } // namespace
 
@@ -99,18 +121,34 @@ namespace
 // they say when they are done with an event.
 extern "C" {
 
-EMSCRIPTEN_KEEPALIVE int MapEditorOpen(const char *pName, const char *pData, int Size)
+// How the loader hands a map over, the same way it hands a demo to the demo
+// player: it writes the bytes where the program can read them and names the
+// path. Reading it is one of the two calls here that waits, so the page hears
+// what came of it as an event rather than as an answer.
+EMSCRIPTEN_KEEPALIVE void EmscriptenCallbackDropFile(const char *pPath)
 {
-	if(g_pEditor == nullptr || pData == nullptr || Size <= 0)
-		return -1;
-	const int Id = g_pEditor->OpenFromMemory(pData, (size_t)Size, pName);
+	if(g_pEditor == nullptr)
+		return;
+	const int Id = g_pEditor->Open(pPath, IStorage::TYPE_ABSOLUTE);
 	if(Id < 0)
 	{
-		Say("error", std::string("{\"what\":\"open\",\"name\":\"") + pName + "\"}");
-		return -1;
+		Say("error", std::string("{\"what\":\"open\",\"path\":\"") + pPath + "\"}");
+		return;
 	}
 	Say("loaded", "{\"map\":" + std::to_string(Id) + "}");
-	return Id;
+}
+
+// The page's two ways of closing the tab. There is nothing here that has to
+// be finished first - a map that was not saved is the page's problem, and it
+// is the page that can ask about it.
+EMSCRIPTEN_KEEPALIVE void EmscriptenCallbackQuit()
+{
+	g_Quit = true;
+}
+
+EMSCRIPTEN_KEEPALIVE void EmscriptenCallbackQuitForce()
+{
+	emscripten_force_exit(-1);
 }
 
 EMSCRIPTEN_KEEPALIVE int MapEditorCreate(int Width, int Height, const char *pName)
@@ -423,22 +461,33 @@ int main(int argc, const char **argv)
 	IGraphics *pGraphics = Editor.Graphics();
 	pGraphics->AddWindowResizeListener([&] { Editor.OnResize(pGraphics->ScreenWidth(), pGraphics->ScreenHeight()); });
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	g_pEditor = &Editor;
+#endif
+
 	if(!InputMap.empty())
 	{
 		const int Id = Editor.Open(InputMap.c_str(), fs_is_file(InputMap.c_str()) ? IStorage::TYPE_ABSOLUTE : IStorage::TYPE_ALL);
 		if(Id < 0)
 			return 1;
-	}
-
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	g_pEditor = &Editor;
+		// The page is already listening by now: starting the graphics gives
+		// the browser its thread back, and that is the moment the page was
+		// answered with a running program.
+		Say("loaded", "{\"map\":" + std::to_string(Id) + "}");
 #endif
+	}
 
 	int ReturnCode = 0;
 	const std::chrono::nanoseconds StartTime = time_get_nanoseconds();
 	std::chrono::nanoseconds NextFrameTime{};
 	while(true)
 	{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		if(g_Quit)
+			break;
+		SayEverything();
+#endif
 		Editor.Update();
 
 		const int Active = Editor.Active();

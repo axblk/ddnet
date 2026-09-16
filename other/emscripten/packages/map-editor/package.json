@@ -1,0 +1,40 @@
+{
+	"name": "@ddnet/map-editor",
+	"version": "1.0.0",
+	"description": "Edit a DDNet map in a browser: a canvas, a map, and panels built out of what the map is made of.",
+	"license": "Zlib",
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./map-editor.d.ts",
+			"default": "./map-editor.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"types": "./map-editor.d.ts",
+	"files": [
+		"README.md",
+		"map-editor.d.ts",
+		"map-editor.js",
+		"ddnet-map-editor.js",
+		"ddnet-map-editor.wasm"
+	],
+	"dependencies": {
+		"@ddnet/base": "^1.0.0"
+	},
+	"keywords": [
+		"ddnet",
+		"teeworlds",
+		"webassembly",
+		"emscripten"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ddnet/ddnet.git",
+		"directory": "other/emscripten/packages/map-editor"
+	},
+	"homepage": "https://ddnet.org/",
+	"engines": {
+		"node": ">=18"
+	}
+}

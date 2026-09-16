@@ -92,6 +92,42 @@ the map rather than beside it; it starts shut, and a press on the map shuts an
 open one without painting - the hand that reached past the drawer was reaching
 for its edge, not for the tile behind it.
 
+### With room to spare
+
+Past 2560 pixels wide *or* 1400 tall, nothing needs to hide behind a tab any
+more. The columns go to 320 and 400, the layer tree and the pictures stand
+above each other instead of behind each other, the inspector shows the tileset
+*and* the rules it paints by, and the dock is open with the envelope curve
+beside the history. At 3840x2160 the tree, the pictures, the properties, the
+tileset, the automapper, the curve and the history are all there at once, and
+the map is still 3120 pixels wide.
+
+What does **not** grow is anything one reads or hits. Forty inches of 3840
+pixels is a hundred and ten dots per inch - the same as twenty inches of 1920 -
+so twelve-pixel text is already the right size on the glass; making it bigger
+would only mean less map. What the room buys is the *number* of things that
+can be open, not the size of any of them.
+
+Two things do move, because on a monitor eighty centimetres wide the middle is
+not where one is looking: the tile chooser opens under the pointer rather than
+in the middle (fitted back inside the edges if it would hang over one), and
+the coordinate under the pointer is shown a second time at the top of the
+inspector - the line at the bottom is for the eye, that one is for the hand.
+
+### One editor, several maps
+
+The strip at the top holds every map that is open: its name, a dot while it is
+not saved, and a cross. The program has always kept several; what it did not
+have was a way to see them.
+
+Coming back to a map brings back what the *page* knew about it as well - what
+was picked, which tabs were open, which groups were folded up, which mode the
+brush was in. The program keeps the maps and the history; the rest is the
+page's, and it is what makes coming back feel like coming back rather than
+like opening the map again. The Map tab says what each open map is costing in
+memory, because a second map open is a second map's worth of history and
+history is whole versions of a map.
+
 ### With a finger
 
 One surface, not two: what changes is the *input*, read from

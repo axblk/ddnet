@@ -101,6 +101,12 @@ knows where that is on the screen. Dragging a corner moves that corner;
 dragging the pivot carries all five, which is how a quad is moved without
 changing its shape. Either way the whole drag is one history entry.
 
+What is not a point is a field: a colour on each of the four corners with its
+alpha beside it, and which envelopes move and colour the quad. A binding names
+an envelope by its place, so one the map does not have is refused rather than
+written - a map that reads back differently than it was written is not a saved
+map.
+
 The points go out in world units (`editor.quads(group, layer)`), because that
 is the only number a page can do anything with - it turns a click into a place
 and back - and the pointer asks the program where a click lands in the group
@@ -141,6 +147,5 @@ and 17 ms.
 ## What it is not, yet
 
 Images, sounds and the automapper are looked at but not changed, and a quad's
-colours and its picture coordinates are read but not yet edited. A layer with
-no picture at all is shown as a grid of numbers - the tiles are still there to
+picture coordinates are read but not yet edited. A layer with no picture at all is shown as a grid of numbers - the tiles are still there to
 be picked, they just cannot be shown.
